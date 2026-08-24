@@ -4,12 +4,14 @@ import Fastify, { type FastifyInstance } from 'fastify';
 
 import { detectMediaType, MemoryAssetStore, type AssetStore } from './assets';
 import { MemoryProjectStore, ProjectStoreError, type ProjectStore } from './projects';
+import { createRunSnapshot, MemoryRunService, RunServiceError, type RunService } from './runs';
 import { canvasDocumentSchema } from '@multimodal-canvas/domain';
 import { z } from 'zod';
 
 type BuildAppOptions = {
   assetStore?: AssetStore;
   projectStore?: ProjectStore;
+  runService?: RunService;
   logger?: boolean;
 };
 
@@ -17,6 +19,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const app = Fastify({ logger: options.logger ?? true });
   const assetStore = options.assetStore ?? new MemoryAssetStore();
   const projectStore = options.projectStore ?? new MemoryProjectStore();
+  const runService = options.runService ?? new MemoryRunService();
 
   app.register(cors, { origin: true });
   app.register(multipart, {
@@ -76,6 +79,68 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     },
   );
 
+  app.post<{ Params: { nodeId: string } }>('/v1/nodes/:nodeId/runs', async (request, reply) => {
+    const body = z
+      .object({
+        projectId: z.string().min(1),
+        modelAlias: z.string().trim().min(1).max(160).optional(),
+        parameters: z.record(z.unknown()).optional(),
+      })
+      .safeParse(request.body);
+    if (!body.success) {
+      return reply.code(400).send({ error: 'projectId is required' });
+    }
+
+    const canvas = await projectStore.getCanvas(body.data.projectId);
+    if (!canvas) return reply.code(404).send({ error: 'project not found' });
+
+    try {
+      const snapshot = createRunSnapshot(
+        body.data.projectId,
+        canvas,
+        request.params.nodeId,
+        body.data,
+      );
+      const run = await runService.create(snapshot);
+      return reply.code(202).send({ run });
+    } catch (error) {
+      if (error instanceof RunServiceError && error.code === 'invalid_target') {
+        return reply.code(400).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
+  app.get<{ Params: { runId: string } }>('/v1/runs/:runId', async (request, reply) => {
+    const run = await runService.get(request.params.runId);
+    if (!run) return reply.code(404).send({ error: 'run not found' });
+    return { run };
+  });
+
+  app.post<{ Params: { runId: string } }>('/v1/runs/:runId/retry', async (request, reply) => {
+    try {
+      const run = await runService.retry(request.params.runId);
+      return reply.code(202).send({ run });
+    } catch (error) {
+      if (error instanceof RunServiceError) {
+        return reply.code(error.code === 'not_found' ? 404 : 409).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
+  app.post<{ Params: { runId: string } }>('/v1/runs/:runId/cancel', async (request, reply) => {
+    try {
+      const run = await runService.cancel(request.params.runId);
+      return reply.code(202).send({ run });
+    } catch (error) {
+      if (error instanceof RunServiceError) {
+        return reply.code(error.code === 'not_found' ? 404 : 409).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
   app.get('/v1/assets', async () => ({ assets: await assetStore.list() }));
 
   app.post('/v1/assets/uploads', async (request, reply) => {
@@ -116,6 +181,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       return reply.type(asset.mimeType).send(asset.content);
     },
   );
+
+  app.addHook('onClose', async () => {
+    await runService.close();
+  });
 
   return app;
 }

@@ -1,6 +1,10 @@
 import { buildApp } from './app';
+import { BullMqRunService, redisConnectionFromUrl } from './runs';
 
-const app = buildApp();
+const runService = new BullMqRunService({
+  connection: redisConnectionFromUrl(process.env.REDIS_URL ?? 'redis://localhost:6379'),
+});
+const app = buildApp({ runService });
 const port = Number(process.env.API_PORT ?? 3000);
 
 try {

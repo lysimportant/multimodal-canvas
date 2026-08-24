@@ -21,6 +21,20 @@ export const nodeModeSchema = z.enum(nodeModes);
 export const portRoleSchema = z.enum(portRoles);
 export const assetStatusSchema = z.enum(assetStatuses);
 
+export const runStatuses = [
+  'draft',
+  'queued',
+  'preparing',
+  'running',
+  'processing',
+  'succeeded',
+  'failed',
+  'cancel_requested',
+  'cancelled',
+] as const;
+
+export const runStatusSchema = z.enum(runStatuses);
+
 export const assetSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -146,6 +160,93 @@ export const canvasDocumentSchema = z
     }
   });
 
+export const runInputSnapshotSchema = z.object({
+  nodeId: z.string().min(1),
+  role: portRoleSchema,
+  sortOrder: z.number().int().nonnegative(),
+  sourceAssetId: z.string().min(1).optional(),
+  snapshot: canvasNodeSchema,
+});
+
+export const runSnapshotSchema = z
+  .object({
+    projectId: z.string().min(1),
+    canvasRevision: z.number().int().nonnegative(),
+    targetNodeId: z.string().min(1),
+    modelAlias: z.string().min(1),
+    credentialId: z.string().min(1).optional(),
+    credentialVersion: z.number().int().positive().optional(),
+    parameters: z.record(z.unknown()),
+    submittedAt: z.string().datetime(),
+    nodes: z.array(canvasNodeSchema).min(1),
+    edges: z.array(canvasEdgeSchema),
+    inputs: z.array(runInputSnapshotSchema),
+  })
+  .superRefine((snapshot, context) => {
+    if (!snapshot.nodes.some((node) => node.id === snapshot.targetNodeId)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'run target node is missing from snapshot',
+        path: ['targetNodeId'],
+      });
+    }
+  });
+
+export const runResultSchema = z.object({
+  provider: z.string().min(1),
+  summary: z.string().min(1),
+  targetNodeId: z.string().min(1),
+  mediaType: mediaTypeSchema,
+  inputCount: z.number().int().nonnegative(),
+});
+
+export const runRecordSchema = z.object({
+  id: z.string().min(1),
+  projectId: z.string().min(1),
+  targetNodeId: z.string().min(1),
+  status: runStatusSchema,
+  progress: z.number().int().min(0).max(100),
+  attempt: z.number().int().positive(),
+  provider: z.string().min(1),
+  modelAlias: z.string().min(1),
+  snapshot: runSnapshotSchema,
+  result: runResultSchema.optional(),
+  error: z.string().min(1).optional(),
+  retryOf: z.string().min(1).optional(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+
+export const runJobDataSchema = z.object({
+  runId: z.string().min(1),
+  snapshot: runSnapshotSchema,
+  attempt: z.number().int().positive(),
+  retryOf: z.string().min(1).optional(),
+  cancelRequested: z.boolean().default(false),
+});
+
+export const runJobResultSchema = z.object({
+  status: z.enum(['succeeded', 'cancelled']),
+  progress: z.number().int().min(0).max(100),
+  result: runResultSchema.optional(),
+});
+
+const runStatusTransitions: Record<RunStatus, readonly RunStatus[]> = {
+  draft: ['queued'],
+  queued: ['preparing', 'cancel_requested', 'cancelled'],
+  preparing: ['running', 'cancel_requested'],
+  running: ['processing', 'cancel_requested'],
+  processing: ['succeeded', 'failed', 'cancel_requested'],
+  succeeded: [],
+  failed: [],
+  cancel_requested: ['cancelled'],
+  cancelled: [],
+};
+
+export function canTransitionRunStatus(from: RunStatus, to: RunStatus): boolean {
+  return from === to || runStatusTransitions[from].includes(to);
+}
+
 const targetRoleMediaTypes: Record<PortRole, readonly MediaType[]> = {
   prompt: ['text'],
   negativePrompt: ['text'],
@@ -185,3 +286,10 @@ export type Asset = z.infer<typeof assetSchema>;
 export type CanvasNode = z.infer<typeof canvasNodeSchema>;
 export type CanvasEdge = z.infer<typeof canvasEdgeSchema>;
 export type CanvasDocument = z.infer<typeof canvasDocumentSchema>;
+export type RunStatus = z.infer<typeof runStatusSchema>;
+export type RunInputSnapshot = z.infer<typeof runInputSnapshotSchema>;
+export type RunSnapshot = z.infer<typeof runSnapshotSchema>;
+export type RunResult = z.infer<typeof runResultSchema>;
+export type RunRecord = z.infer<typeof runRecordSchema>;
+export type RunJobData = z.infer<typeof runJobDataSchema>;
+export type RunJobResult = z.infer<typeof runJobResultSchema>;

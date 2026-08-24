@@ -1,10 +1,14 @@
 import {
   AudioLines,
+  Circle,
   Check,
+  Clock3,
   FileText,
   Image as ImageIcon,
   LoaderCircle,
+  Play,
   Plus,
+  RotateCcw,
   Search,
   SquarePlus,
   Upload,
@@ -32,9 +36,13 @@ import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } fro
 
 import {
   isPortConnectionAllowed,
+  mediaTypes,
   type Asset,
   type CanvasDocument,
   type MediaType,
+  type NodeMode,
+  type RunRecord,
+  type RunStatus,
 } from '@multimodal-canvas/domain';
 
 import '@xyflow/react/dist/style.css';
@@ -51,6 +59,12 @@ const mediaLabels: Record<MediaType, string> = {
   video: '视频',
 };
 
+const modeLabels: Record<NodeMode, string> = {
+  source: '来源',
+  generate: '生成',
+  transform: '转换',
+};
+
 const mediaIcons: Record<MediaType, typeof FileText> = {
   text: FileText,
   image: ImageIcon,
@@ -58,16 +72,13 @@ const mediaIcons: Record<MediaType, typeof FileText> = {
   video: Video,
 };
 
-type AssetNodeData = {
-  label: string;
-  mediaType: MediaType;
-  mode: 'source';
-  assetId: string;
-  contentUrl: string;
-  mimeType: string;
+type FlowNodeData = CanvasDocument['nodes'][number]['data'] & {
+  runStatus?: RunStatus;
+  runProgress?: number;
+  runError?: string;
 };
 
-type AssetFlowNode = Node<AssetNodeData, MediaType>;
+type AssetFlowNode = Node<FlowNodeData, MediaType>;
 type FlowEdge = Edge;
 type AssetFilter = 'all' | MediaType;
 type CanvasApiDocument = CanvasDocument;
@@ -104,12 +115,15 @@ function toCanvasDocument(
   const orders = new Map<string, number>();
   return {
     revision,
-    nodes: nodes.map(({ id, type, position, data }) => ({
-      id,
-      type,
-      position,
-      data,
-    })),
+    nodes: nodes.map(({ id, type, position, data }) => {
+      const {
+        runStatus: _runStatus,
+        runProgress: _runProgress,
+        runError: _runError,
+        ...savedData
+      } = data;
+      return { id, type, position, data: savedData };
+    }),
     edges: edges
       .filter((edge): edge is FlowEdge & { source: string; target: string } =>
         Boolean(edge.source && edge.target),
@@ -180,35 +194,77 @@ function AssetPreview({ asset, className = '' }: { asset: Asset; className?: str
 
 function AssetNode({ data, selected }: NodeProps<AssetFlowNode>) {
   const Icon = mediaIcons[data.mediaType];
-  const previewAsset: Asset = {
-    id: data.assetId,
-    name: data.label,
-    mediaType: data.mediaType,
-    mimeType: data.mimeType,
-    sizeBytes: 0,
-    status: 'ready',
-    contentUrl: data.contentUrl,
-  };
+  const previewAsset =
+    data.assetId && data.contentUrl
+      ? ({
+          id: data.assetId,
+          name: data.label,
+          mediaType: data.mediaType,
+          mimeType: data.mimeType ?? 'application/octet-stream',
+          sizeBytes: 0,
+          status: 'ready',
+          contentUrl: data.contentUrl,
+        } satisfies Asset)
+      : undefined;
 
   return (
-    <div className={`flow-asset-node ${selected ? 'is-selected' : ''}`}>
+    <div
+      className={`flow-asset-node ${data.mode !== 'source' ? 'flow-generate-node' : ''} ${selected ? 'is-selected' : ''}`}
+    >
       <Handle type="target" position={Position.Left} id="input:content" />
       <div className="flow-node-header">
         <span className={`media-icon media-icon-${data.mediaType}`}>
           <Icon size={15} strokeWidth={2} aria-hidden="true" />
         </span>
-        <span className="flow-node-type">{mediaLabels[data.mediaType]}来源</span>
+        <span className="flow-node-type">
+          {mediaLabels[data.mediaType]}
+          {modeLabels[data.mode]}节点
+        </span>
         <span className="flow-node-status">
-          <Check size={12} aria-hidden="true" />
+          <RunStatusIcon status={data.runStatus} />
         </span>
       </div>
-      <AssetPreview asset={previewAsset} className="flow-node-preview" />
+      {previewAsset ? (
+        <AssetPreview asset={previewAsset} className="flow-node-preview" />
+      ) : (
+        <div className="flow-node-placeholder">
+          <Icon size={24} strokeWidth={1.7} aria-hidden="true" />
+          <span>{data.runStatus ? runStatusLabel(data.runStatus) : '等待运行'}</span>
+        </div>
+      )}
       <div className="flow-node-label" title={data.label}>
         {data.label}
       </div>
       <Handle type="source" position={Position.Right} id={`output:${data.mediaType}`} />
     </div>
   );
+}
+
+function RunStatusIcon({ status }: { status?: RunStatus }) {
+  if (status === 'succeeded') return <Check size={12} aria-label="运行成功" />;
+  if (status === 'failed' || status === 'cancelled') return <X size={12} aria-label="运行失败" />;
+  if (status === 'queued' || status === 'preparing' || status === 'cancel_requested') {
+    return <Clock3 size={12} aria-label="等待运行" />;
+  }
+  if (status === 'running' || status === 'processing') {
+    return <LoaderCircle className="spin" size={12} aria-label="运行中" />;
+  }
+  return <Circle size={10} aria-label="未运行" />;
+}
+
+function runStatusLabel(status: RunStatus) {
+  const labels: Record<RunStatus, string> = {
+    draft: '草稿',
+    queued: '排队中',
+    preparing: '准备中',
+    running: '运行中',
+    processing: '处理中',
+    succeeded: '已完成',
+    failed: '失败',
+    cancel_requested: '取消中',
+    cancelled: '已取消',
+  };
+  return labels[status];
 }
 
 const nodeTypes = {
@@ -384,6 +440,7 @@ function WorkflowCanvas({
   onConnect,
   onCanvasDrop,
   onNodeSelect,
+  onAddGenerateNode,
 }: {
   nodes: AssetFlowNode[];
   edges: FlowEdge[];
@@ -396,6 +453,7 @@ function WorkflowCanvas({
     position: { x: number; y: number },
   ) => void;
   onNodeSelect: (node: AssetFlowNode) => void;
+  onAddGenerateNode: (mediaType: MediaType) => void;
 }) {
   const { screenToFlowPosition } = useReactFlow();
 
@@ -411,6 +469,23 @@ function WorkflowCanvas({
 
   return (
     <section className="canvas-area" aria-label="工作流画布">
+      <div className="canvas-node-tools" aria-label="添加生成节点">
+        {mediaTypes.map((mediaType) => {
+          const Icon = mediaIcons[mediaType];
+          return (
+            <button
+              type="button"
+              className={`canvas-node-tool media-icon-${mediaType}`}
+              key={mediaType}
+              aria-label={`新建${mediaLabels[mediaType]}生成节点`}
+              title={`新建${mediaLabels[mediaType]}生成节点`}
+              onClick={() => onAddGenerateNode(mediaType)}
+            >
+              <Icon size={15} aria-hidden="true" />
+            </button>
+          );
+        })}
+      </div>
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -452,15 +527,25 @@ export function App() {
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [notice, setNotice] = useState<{ kind: 'error' | 'success'; message: string } | null>(null);
   const [selectedNode, setSelectedNode] = useState<AssetFlowNode | null>(null);
+  const [runRecords, setRunRecords] = useState<Record<string, RunRecord>>({});
+  const [isRunning, setIsRunning] = useState(false);
   const [saveState, setSaveState] = useState('准备就绪');
   const [projectId, setProjectId] = useState<string | null>(null);
   const [canvasRevision, setCanvasRevision] = useState(0);
   const [isCanvasReady, setIsCanvasReady] = useState(false);
   const canvasRevisionRef = useRef(0);
   const canvasDirtyRef = useRef(false);
+  const saveRequestRef = useRef<Promise<void> | null>(null);
   const initializedRef = useRef(false);
   const [nodes, setNodes, applyNodesChange] = useNodesState<AssetFlowNode>([]);
   const [edges, setEdges, applyEdgesChange] = useEdgesState<FlowEdge>([]);
+
+  useEffect(() => {
+    setSelectedNode((current) => {
+      if (!current) return null;
+      return nodes.find((node) => node.id === current.id) ?? null;
+    });
+  }, [nodes]);
 
   const handleNodesChange: OnNodesChange<AssetFlowNode> = useCallback(
     (changes) => {
@@ -566,36 +651,46 @@ export function App() {
     );
   }, [canvasRevision, edges, isCanvasReady, nodes]);
 
-  useEffect(() => {
-    if (!isCanvasReady || !projectId || !canvasDirtyRef.current) return;
-    const snapshot = JSON.stringify({ nodes, edges });
-    const timer = window.setTimeout(async () => {
+  const saveCanvas = useCallback(async () => {
+    if (saveRequestRef.current) return saveRequestRef.current;
+    if (!projectId || !canvasDirtyRef.current) return;
+    const request = (async () => {
+      const snapshot = JSON.stringify({ nodes, edges });
       setSaveState('保存中');
       const document = toCanvasDocument(nodes, edges, canvasRevisionRef.current);
+      const response = await fetch(`${API_BASE_URL}/v1/projects/${projectId}/canvas`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(document),
+      });
+      const result = (await response.json().catch(() => ({}))) as {
+        canvas?: CanvasApiDocument;
+        error?: string;
+        revision?: number;
+      };
+      if (response.status === 409) {
+        setSaveState('保存冲突');
+        throw new Error(`画布版本冲突，服务器版本为 ${result.revision ?? '未知'}`);
+      }
+      if (!response.ok || !result.canvas) throw new Error(result.error ?? '画布保存失败');
+      canvasRevisionRef.current = result.canvas.revision;
+      setCanvasRevision(result.canvas.revision);
+      if (JSON.stringify({ nodes, edges }) === snapshot) canvasDirtyRef.current = false;
+      setSaveState('已保存到项目');
+    })();
+    saveRequestRef.current = request;
+    try {
+      await request;
+    } finally {
+      if (saveRequestRef.current === request) saveRequestRef.current = null;
+    }
+  }, [edges, nodes, projectId]);
+
+  useEffect(() => {
+    if (!isCanvasReady || !projectId || !canvasDirtyRef.current) return;
+    const timer = window.setTimeout(async () => {
       try {
-        const response = await fetch(`${API_BASE_URL}/v1/projects/${projectId}/canvas`, {
-          method: 'PATCH',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(document),
-        });
-        const result = (await response.json().catch(() => ({}))) as {
-          canvas?: CanvasApiDocument;
-          error?: string;
-          revision?: number;
-        };
-        if (response.status === 409) {
-          setSaveState('保存冲突');
-          setNotice({
-            kind: 'error',
-            message: `画布版本冲突，服务器版本为 ${result.revision ?? '未知'}`,
-          });
-          return;
-        }
-        if (!response.ok || !result.canvas) throw new Error(result.error ?? '画布保存失败');
-        canvasRevisionRef.current = result.canvas.revision;
-        setCanvasRevision(result.canvas.revision);
-        if (JSON.stringify({ nodes, edges }) === snapshot) canvasDirtyRef.current = false;
-        setSaveState('已保存到项目');
+        await saveCanvas();
       } catch (error) {
         setSaveState('本地草稿已保存');
         setNotice({
@@ -605,7 +700,7 @@ export function App() {
       }
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [edges, isCanvasReady, nodes, projectId]);
+  }, [isCanvasReady, projectId, saveCanvas]);
 
   const createNodeForAsset = useCallback(
     (asset: Asset, position: { x: number; y: number }): AssetFlowNode => {
@@ -623,6 +718,20 @@ export function App() {
         },
       };
     },
+    [],
+  );
+
+  const createGenerateNode = useCallback(
+    (mediaType: MediaType, position: { x: number; y: number }): AssetFlowNode => ({
+      id: `node_${mediaType}_${crypto.randomUUID()}`,
+      type: mediaType,
+      position,
+      data: {
+        label: `${mediaLabels[mediaType]}生成节点`,
+        mediaType,
+        mode: 'generate',
+      },
+    }),
     [],
   );
 
@@ -694,6 +803,19 @@ export function App() {
     [createNodeForAsset, nodes.length, setNodes],
   );
 
+  const handleAddGenerateNode = useCallback(
+    (mediaType: MediaType) => {
+      const column = nodes.length % 3;
+      const row = Math.floor(nodes.length / 3);
+      const node = createGenerateNode(mediaType, { x: 100 + column * 250, y: 100 + row * 220 });
+      setNodes((current) => [...current, node]);
+      setSelectedNode(node);
+      canvasDirtyRef.current = true;
+      setNotice({ kind: 'success', message: `${mediaLabels[mediaType]}生成节点已添加` });
+    },
+    [createGenerateNode, nodes.length, setNodes],
+  );
+
   const handleConnect = useCallback(
     (connection: Connection) => {
       if (!connection.source || !connection.target || connection.source === connection.target)
@@ -731,6 +853,141 @@ export function App() {
   const selectedAsset = selectedNode
     ? assets.find((asset) => asset.id === selectedNode.data.assetId)
     : undefined;
+
+  const selectedRun = selectedNode ? runRecords[selectedNode.id] : undefined;
+
+  const updateNodeRunState = useCallback(
+    (nodeId: string, run: RunRecord) => {
+      setRunRecords((current) => ({ ...current, [nodeId]: run }));
+      setNodes((current) =>
+        current.map((node) =>
+          node.id === nodeId
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  runStatus: run.status,
+                  runProgress: run.progress,
+                  runError: run.error,
+                },
+              }
+            : node,
+        ),
+      );
+    },
+    [setNodes],
+  );
+
+  const fetchRun = useCallback(
+    async (runId: string, nodeId: string) => {
+      const response = await fetch(`${API_BASE_URL}/v1/runs/${runId}`);
+      const result = (await response.json().catch(() => ({}))) as {
+        run?: RunRecord;
+        error?: string;
+      };
+      if (!response.ok || !result.run) throw new Error(result.error ?? '运行状态加载失败');
+      updateNodeRunState(nodeId, result.run);
+      return result.run;
+    },
+    [updateNodeRunState],
+  );
+
+  const pollRun = useCallback(
+    async (runId: string, nodeId: string) => {
+      for (let attempt = 0; attempt < 120; attempt += 1) {
+        const run = await fetchRun(runId, nodeId);
+        if (['succeeded', 'failed', 'cancelled'].includes(run.status)) return run;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      throw new Error('运行等待超时');
+    },
+    [fetchRun],
+  );
+
+  const runNode = useCallback(
+    async (node: AssetFlowNode) => {
+      if (!projectId) {
+        setNotice({ kind: 'error', message: '项目尚未连接' });
+        return;
+      }
+      if (node.data.mode === 'source') {
+        setNotice({ kind: 'error', message: '来源节点不能直接运行，请选择生成或转换节点' });
+        return;
+      }
+      setIsRunning(true);
+      setNotice(null);
+      try {
+        await saveCanvas();
+        const response = await fetch(`${API_BASE_URL}/v1/nodes/${node.id}/runs`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ projectId }),
+        });
+        const result = (await response.json().catch(() => ({}))) as {
+          run?: RunRecord;
+          error?: string;
+        };
+        if (!response.ok || !result.run) throw new Error(result.error ?? '运行提交失败');
+        updateNodeRunState(node.id, result.run);
+        const completed = await pollRun(result.run.id, node.id);
+        if (completed.status === 'succeeded') {
+          setNotice({ kind: 'success', message: `${node.data.label} 已完成` });
+        } else {
+          setNotice({
+            kind: 'error',
+            message: completed.error ?? runStatusLabel(completed.status),
+          });
+        }
+      } catch (error) {
+        setNotice({ kind: 'error', message: error instanceof Error ? error.message : '运行失败' });
+      } finally {
+        setIsRunning(false);
+      }
+    },
+    [pollRun, projectId, saveCanvas, updateNodeRunState],
+  );
+
+  const cancelSelectedRun = useCallback(async () => {
+    if (!selectedRun || !selectedNode) return;
+    try {
+      const response = await fetch(`${API_BASE_URL}/v1/runs/${selectedRun.id}/cancel`, {
+        method: 'POST',
+      });
+      const result = (await response.json().catch(() => ({}))) as {
+        run?: RunRecord;
+        error?: string;
+      };
+      if (!response.ok || !result.run) throw new Error(result.error ?? '取消运行失败');
+      updateNodeRunState(selectedNode.id, result.run);
+      setNotice({ kind: 'success', message: '已请求取消运行' });
+    } catch (error) {
+      setNotice({
+        kind: 'error',
+        message: error instanceof Error ? error.message : '取消运行失败',
+      });
+    }
+  }, [selectedNode, selectedRun, updateNodeRunState]);
+
+  const retrySelectedRun = useCallback(async () => {
+    if (!selectedRun || !selectedNode) return;
+    setIsRunning(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/v1/runs/${selectedRun.id}/retry`, {
+        method: 'POST',
+      });
+      const result = (await response.json().catch(() => ({}))) as {
+        run?: RunRecord;
+        error?: string;
+      };
+      if (!response.ok || !result.run) throw new Error(result.error ?? '重试提交失败');
+      updateNodeRunState(selectedNode.id, result.run);
+      await pollRun(result.run.id, selectedNode.id);
+    } catch (error) {
+      setNotice({ kind: 'error', message: error instanceof Error ? error.message : '重试失败' });
+    } finally {
+      setIsRunning(false);
+    }
+  }, [pollRun, selectedNode, selectedRun, updateNodeRunState]);
   const assetSummary = useMemo(
     () =>
       assets.reduce(
@@ -762,8 +1019,17 @@ export function App() {
             <button type="button" className="button button-secondary" disabled>
               导出
             </button>
-            <button type="button" className="button button-primary" disabled={nodes.length === 0}>
-              运行
+            <button
+              type="button"
+              className="button button-primary"
+              disabled={!selectedNode || selectedNode.data.mode === 'source' || isRunning}
+              onClick={() => {
+                if (selectedNode) void runNode(selectedNode);
+              }}
+              title={selectedNode ? '运行选中的生成节点' : '先选择生成或转换节点'}
+            >
+              {isRunning ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}
+              {isRunning ? '运行中' : '运行'}
             </button>
           </div>
         </header>
@@ -806,6 +1072,7 @@ export function App() {
             onConnect={handleConnect}
             onCanvasDrop={handleCanvasDrop}
             onNodeSelect={setSelectedNode}
+            onAddGenerateNode={handleAddGenerateNode}
           />
           <aside className="inspector-panel">
             <div className="panel-heading">
@@ -835,6 +1102,63 @@ export function App() {
                     <dd>content</dd>
                   </div>
                 </dl>
+              </div>
+            ) : selectedNode ? (
+              <div className="inspector-content">
+                <div
+                  className={`inspector-generate-icon media-icon media-icon-${selectedNode.data.mediaType}`}
+                >
+                  {(() => {
+                    const Icon = mediaIcons[selectedNode.data.mediaType];
+                    return <Icon size={26} aria-hidden="true" />;
+                  })()}
+                </div>
+                <span className="inspector-type">
+                  {mediaLabels[selectedNode.data.mediaType]}
+                  {modeLabels[selectedNode.data.mode]}节点
+                </span>
+                <h2 className="inspector-name">{selectedNode.data.label}</h2>
+                <dl className="inspector-details">
+                  <div>
+                    <dt>运行状态</dt>
+                    <dd>{selectedRun ? runStatusLabel(selectedRun.status) : '未运行'}</dd>
+                  </div>
+                  {selectedRun && (
+                    <div>
+                      <dt>进度</dt>
+                      <dd>{selectedRun.progress}%</dd>
+                    </div>
+                  )}
+                  <div>
+                    <dt>参考输入</dt>
+                    <dd>{selectedRun?.snapshot.inputs.length ?? 0} 个</dd>
+                  </div>
+                </dl>
+                <div className="inspector-run-actions">
+                  {selectedRun &&
+                    !['succeeded', 'failed', 'cancelled'].includes(selectedRun.status) && (
+                      <button
+                        type="button"
+                        className="button button-secondary"
+                        onClick={() => void cancelSelectedRun()}
+                      >
+                        <X size={14} />
+                        取消运行
+                      </button>
+                    )}
+                  {selectedRun && ['failed', 'cancelled'].includes(selectedRun.status) && (
+                    <button
+                      type="button"
+                      className="button button-secondary"
+                      onClick={() => void retrySelectedRun()}
+                      disabled={isRunning}
+                    >
+                      <RotateCcw size={14} />
+                      重试
+                    </button>
+                  )}
+                </div>
+                {selectedRun?.error && <p className="inspector-run-error">{selectedRun.error}</p>}
               </div>
             ) : (
               <div className="inspector-empty">

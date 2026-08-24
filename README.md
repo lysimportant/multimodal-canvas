@@ -4,7 +4,7 @@
 
 项目的核心体验是：在左侧资源库管理素材，在右侧无限画布上组合节点，通过多个参考输入驱动生成任务，并在任务完成后将结果保存回资源库。所有模型调用都经过本项目 API 和 New API，浏览器不会直接访问上游模型服务。
 
-> 当前状态：已完成 monorepo foundation、资产上传和资产到画布的来源节点切片（`v0.2.0-assets`）。当前项目/画布 API 已支持 revision 乐观锁，Web 端默认从服务端项目恢复并自动保存；API 的默认存储仍是开发用内存实现，Prisma schema 已就绪但尚未接入生产运行路径。
+> 当前状态：已完成 monorepo foundation、资产上传、资产到画布的来源节点切片（`v0.2.0-assets`）、项目/画布保存（`v0.3.0-project-canvas`）和 Mock 运行状态机（`v0.4.0-mock-runs`）。Web 端现在可以创建生成节点、提交单节点运行、查看进度、取消和重试；API 生产入口使用 BullMQ，开发测试默认仍可使用内存运行服务。API 的默认业务存储仍是开发用内存实现，Prisma schema 尚未接入生产运行路径。
 
 ## 目标
 
@@ -149,6 +149,8 @@ POST   /v1/webhooks/newapi
 
 画布保存使用 `revision` 乐观锁；提交旧版本时返回 `409 Conflict`，不能静默覆盖其他版本。
 
+运行接口提交时会校验目标节点，并创建包含画布 revision、目标节点、上游节点、边、输入角色和参数的不可变快照。来源节点不能直接运行；生成或转换节点会进入 `queued` 状态，由 BullMQ Worker 使用 Mock Provider 推进到 `succeeded`、`cancelled` 或 `failed`。重试会创建新的 run，并保留 `retryOf` 与原始快照，不重复修改原任务。
+
 项目创建后，Web 会保存当前项目 ID，并通过上述接口恢复画布。画布提交前会校验节点引用、端口媒体类型和 DAG 环路；服务端返回新的 revision 后，后续提交使用新版本。当前默认 `MemoryProjectStore` 只用于开发垂直切片，接入 PostgreSQL 前不会宣称数据可跨 API 重启持久化。
 
 ## 数据与凭据
@@ -251,7 +253,7 @@ pnpm build
 2. 完成 `packages/domain` 的节点、端口、边、资产和运行 Schema。
 3. 创建 Prisma schema 和数据库迁移。
 4. 实现 API 鉴权、项目、画布、资产和运行路由。
-5. 使用 BullMQ 和 Mock Provider 打通任务状态机。
+5. 使用 BullMQ 和 Mock Provider 打通任务状态机（`v0.4.0-mock-runs`）。
 6. 完成 Web 资源栏、画布、四类节点、设置页和属性抽屉。
 7. 接入 S3/MinIO、ffprobe、SSE 和任务历史。
 8. 实现凭据加密、连接测试、模型目录刷新和默认模型。

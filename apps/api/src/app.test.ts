@@ -196,3 +196,150 @@ describe('project and canvas endpoints', () => {
     expect(response.json().error).toBe('invalid canvas');
   });
 });
+
+describe('run endpoints', () => {
+  it('rejects source nodes and runs a generated node from an immutable input snapshot', async () => {
+    const create = await app.inject({
+      method: 'POST',
+      url: '/v1/projects',
+      payload: { name: 'Run test' },
+    });
+    const projectId = create.json().project.id;
+    const canvas = {
+      revision: 0,
+      nodes: [
+        {
+          id: 'node_prompt',
+          type: 'text',
+          position: { x: 0, y: 0 },
+          data: { label: 'Prompt', mediaType: 'text', mode: 'source' },
+        },
+        {
+          id: 'node_image',
+          type: 'image',
+          position: { x: 240, y: 0 },
+          data: { label: 'Generate image', mediaType: 'image', mode: 'generate' },
+        },
+      ],
+      edges: [
+        {
+          id: 'edge_prompt',
+          sourceNodeId: 'node_prompt',
+          sourceHandle: 'output:text',
+          targetNodeId: 'node_image',
+          targetHandle: 'input:prompt',
+          order: 0,
+        },
+      ],
+    };
+    const save = await app.inject({
+      method: 'PATCH',
+      url: `/v1/projects/${projectId}/canvas`,
+      payload: canvas,
+    });
+    expect(save.statusCode).toBe(200);
+
+    const sourceRun = await app.inject({
+      method: 'POST',
+      url: '/v1/nodes/node_prompt/runs',
+      payload: { projectId },
+    });
+    expect(sourceRun.statusCode).toBe(400);
+
+    const submit = await app.inject({
+      method: 'POST',
+      url: '/v1/nodes/node_image/runs',
+      payload: { projectId, parameters: { width: 1024 } },
+    });
+    expect(submit.statusCode).toBe(202);
+    const run = submit.json().run;
+    expect(run.status).toBe('queued');
+    expect(run.snapshot.canvasRevision).toBe(1);
+    expect(run.snapshot.inputs).toMatchObject([
+      { nodeId: 'node_prompt', role: 'prompt', sortOrder: 0 },
+    ]);
+
+    const update = await app.inject({
+      method: 'PATCH',
+      url: `/v1/projects/${projectId}/canvas`,
+      payload: {
+        ...canvas,
+        revision: 1,
+        nodes: canvas.nodes.map((node) =>
+          node.id === 'node_prompt'
+            ? { ...node, data: { ...node.data, label: 'Changed after submit' } }
+            : node,
+        ),
+      },
+    });
+    expect(update.statusCode).toBe(200);
+
+    const completed = await waitForRun(run.id, 'succeeded');
+    expect(completed.result).toMatchObject({
+      provider: 'mock',
+      targetNodeId: 'node_image',
+      inputCount: 1,
+    });
+    expect(completed.snapshot.inputs[0].snapshot.data.label).toBe('Prompt');
+  });
+
+  it('cancels a queued run and retries it without changing its attempt snapshot', async () => {
+    const create = await app.inject({
+      method: 'POST',
+      url: '/v1/projects',
+      payload: { name: 'Cancel test' },
+    });
+    const projectId = create.json().project.id;
+    await app.inject({
+      method: 'PATCH',
+      url: `/v1/projects/${projectId}/canvas`,
+      payload: {
+        revision: 0,
+        nodes: [
+          {
+            id: 'node_video',
+            type: 'video',
+            position: { x: 0, y: 0 },
+            data: { label: 'Generate video', mediaType: 'video', mode: 'generate' },
+          },
+        ],
+        edges: [],
+      },
+    });
+
+    const submit = await app.inject({
+      method: 'POST',
+      url: '/v1/nodes/node_video/runs',
+      payload: { projectId },
+    });
+    const run = submit.json().run;
+    const cancel = await app.inject({
+      method: 'POST',
+      url: `/v1/runs/${run.id}/cancel`,
+    });
+    expect(cancel.statusCode).toBe(202);
+
+    const cancelled = await waitForRun(run.id, 'cancelled');
+    expect(cancelled.progress).toBe(0);
+
+    const retry = await app.inject({
+      method: 'POST',
+      url: `/v1/runs/${run.id}/retry`,
+    });
+    expect(retry.statusCode).toBe(202);
+    expect(retry.json().run).toMatchObject({ attempt: 2, retryOf: run.id });
+
+    const completed = await waitForRun(retry.json().run.id, 'succeeded');
+    expect(completed.snapshot).toEqual(run.snapshot);
+  });
+});
+
+async function waitForRun(runId: string, expectedStatus: string) {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const response = await app.inject({ method: 'GET', url: `/v1/runs/${runId}` });
+    const run = response.json().run;
+    if (run.status === expectedStatus) return run;
+    await new Promise((resolve) => setTimeout(resolve, 15));
+  }
+  throw new Error(`run ${runId} did not reach ${expectedStatus}`);
+}

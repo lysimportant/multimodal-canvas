@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
-import { assetSchema, canvasDocumentSchema, mediaTypes, nodeModes, portRoles } from './index';
+import {
+  assetSchema,
+  canTransitionRunStatus,
+  canvasDocumentSchema,
+  mediaTypes,
+  nodeModes,
+  portRoles,
+  runJobDataSchema,
+  runSnapshotSchema,
+} from './index';
 
 describe('canvas protocol', () => {
   it('exposes the supported media, modes, and port roles', () => {
@@ -142,5 +151,84 @@ describe('canvas protocol', () => {
     });
 
     expect(result.success).toBe(false);
+  });
+
+  it('validates an immutable run snapshot and its status transitions', () => {
+    const snapshot = runSnapshotSchema.parse({
+      projectId: 'project_1',
+      canvasRevision: 3,
+      targetNodeId: 'node_image',
+      modelAlias: 'mock-image',
+      parameters: {},
+      submittedAt: '2026-08-24T00:00:00.000Z',
+      nodes: [
+        {
+          id: 'node_prompt',
+          type: 'text',
+          position: { x: 0, y: 0 },
+          data: { label: 'Prompt', mediaType: 'text', mode: 'source' },
+        },
+        {
+          id: 'node_image',
+          type: 'image',
+          position: { x: 200, y: 0 },
+          data: { label: 'Generate', mediaType: 'image', mode: 'generate' },
+        },
+      ],
+      edges: [
+        {
+          id: 'edge_prompt',
+          sourceNodeId: 'node_prompt',
+          sourceHandle: 'output:text',
+          targetNodeId: 'node_image',
+          targetHandle: 'input:prompt',
+          order: 0,
+        },
+      ],
+      inputs: [
+        {
+          nodeId: 'node_prompt',
+          role: 'prompt',
+          sortOrder: 0,
+          snapshot: {
+            id: 'node_prompt',
+            type: 'text',
+            position: { x: 0, y: 0 },
+            data: { label: 'Prompt', mediaType: 'text', mode: 'source' },
+          },
+        },
+      ],
+    });
+
+    expect(snapshot.canvasRevision).toBe(3);
+    expect(canTransitionRunStatus('queued', 'preparing')).toBe(true);
+    expect(canTransitionRunStatus('succeeded', 'running')).toBe(false);
+  });
+
+  it('defaults a queued job to an active cancellation flag of false', () => {
+    const result = runJobDataSchema.parse({
+      runId: 'run_1',
+      snapshot: {
+        projectId: 'project_1',
+        canvasRevision: 0,
+        targetNodeId: 'node_image',
+        modelAlias: 'mock-image',
+        parameters: {},
+        submittedAt: '2026-08-24T00:00:00.000Z',
+        nodes: [
+          {
+            id: 'node_image',
+            type: 'image',
+            position: { x: 0, y: 0 },
+            data: { label: 'Generate', mediaType: 'image', mode: 'generate' },
+          },
+        ],
+        edges: [],
+        inputs: [],
+      },
+      attempt: 1,
+    });
+
+    expect(result.cancelRequested).toBe(false);
   });
 });

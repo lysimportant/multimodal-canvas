@@ -10,6 +10,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@multimodal-canvas/domain": "workspace:*",
+    "@multimodal-canvas/providers": "workspace:*",
     "bullmq": "^5.41.5"
   },
   "devDependencies": {

@@ -38,6 +38,9 @@ importers:
       '@prisma/client':
         specifier: 6.16.2
         version: 6.16.2(prisma@6.16.2(typescript@5.9.3))(typescript@5.9.3)
+      bullmq:
+        specifier: ^5.41.5
+        version: 5.81.3
       fastify:
         specifier: ^5.2.1
         version: 5.12.1
@@ -94,6 +97,12 @@ importers:
 
   apps/worker:
     dependencies:
+      '@multimodal-canvas/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
+      '@multimodal-canvas/providers':
+        specifier: workspace:*
+        version: link:../../packages/providers
       bullmq:
         specifier: ^5.41.5
         version: 5.81.3

@@ -462,6 +462,34 @@ h2 {
   position: relative;
 }
 
+.canvas-node-tools {
+  background: #ffffff;
+  border: 1px solid #dce3e7;
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgb(35 53 45 / 8%);
+  display: flex;
+  gap: 4px;
+  left: 16px;
+  padding: 4px;
+  position: absolute;
+  top: 16px;
+  z-index: 4;
+}
+
+.canvas-node-tool {
+  align-items: center;
+  border: 0;
+  border-radius: 4px;
+  display: inline-flex;
+  height: 30px;
+  justify-content: center;
+  width: 30px;
+}
+
+.canvas-node-tool:hover {
+  filter: brightness(0.96);
+}
+
 .canvas-area > .react-flow {
   height: 100%;
   width: 100%;
@@ -508,6 +536,29 @@ h2 {
   box-shadow:
     0 0 0 3px rgb(24 121 78 / 14%),
     0 8px 22px rgb(35 53 45 / 9%);
+}
+
+.flow-generate-node {
+  min-height: 148px;
+}
+
+.flow-node-placeholder {
+  align-items: center;
+  background: #f4f6f7;
+  border: 1px dashed #cbd5d1;
+  border-radius: 4px;
+  color: #7c8797;
+  display: flex;
+  flex-direction: column;
+  font-size: 11px;
+  gap: 8px;
+  height: 92px;
+  justify-content: center;
+  width: 168px;
+}
+
+.flow-generate-node .flow-node-status {
+  color: #b17a23;
 }
 
 .flow-node-header {
@@ -652,6 +703,34 @@ h2 {
 
 .inspector-content {
   padding-top: 24px;
+}
+
+.inspector-generate-icon {
+  height: 150px;
+  width: 100%;
+}
+
+.inspector-run-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.inspector-run-actions .button {
+  flex: 1;
+  min-width: 0;
+  padding: 0 8px;
+}
+
+.inspector-run-error {
+  background: #fff3f1;
+  border: 1px solid #e8bbb5;
+  border-radius: 5px;
+  color: #9b4035;
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 14px 0 0;
+  padding: 9px;
 }
 
 .inspector-preview {
