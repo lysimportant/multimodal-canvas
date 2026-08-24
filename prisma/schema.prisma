@@ -1,0 +1,320 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum MediaType {
+  TEXT
+  IMAGE
+  AUDIO
+  VIDEO
+}
+
+enum NodeMode {
+  SOURCE
+  GENERATE
+  TRANSFORM
+}
+
+enum AssetStatus {
+  READY
+  ARCHIVED
+}
+
+enum RunStatus {
+  DRAFT
+  QUEUED
+  PREPARING
+  RUNNING
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  CANCEL_REQUESTED
+  CANCELLED
+}
+
+model User {
+  id          String   @id @default(uuid()) @db.Uuid
+  email       String   @unique
+  displayName String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  projects      Project[]
+  assets        Asset[]
+  runs          Run[]
+  aiCredentials AiCredential[]
+  usageLedger   UsageLedger[]
+
+  @@map("users")
+}
+
+model Project {
+  id        String   @id @default(uuid()) @db.Uuid
+  ownerId   String?  @db.Uuid
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  owner         User?                 @relation(fields: [ownerId], references: [id])
+  canvas        Canvas?
+  assets        Asset[]
+  runs          Run[]
+  aiCredentials AiCredential[]
+  modelDefaults ProjectModelDefault[]
+
+  @@index([ownerId])
+  @@map("projects")
+}
+
+model Canvas {
+  id        String   @id @default(uuid()) @db.Uuid
+  projectId String   @unique @db.Uuid
+  revision  Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  nodes   CanvasNode[]
+  edges   CanvasEdge[]
+
+  @@map("canvases")
+}
+
+model CanvasNode {
+  id         String    @id
+  canvasId   String    @db.Uuid
+  type       MediaType
+  mode       NodeMode
+  label      String
+  positionX  Float
+  positionY  Float
+  assetId    String?   @db.Uuid
+  contentUrl String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  canvas      Canvas       @relation(fields: [canvasId], references: [id], onDelete: Cascade)
+  asset       Asset?       @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  sourceEdges CanvasEdge[] @relation("SourceNode")
+  targetEdges CanvasEdge[] @relation("TargetNode")
+
+  @@index([canvasId])
+  @@index([assetId])
+  @@map("nodes")
+}
+
+model CanvasEdge {
+  id           String   @id
+  canvasId     String   @db.Uuid
+  sourceNodeId String
+  sourceHandle String
+  targetNodeId String
+  targetHandle String
+  sortOrder    Int
+  createdAt    DateTime @default(now())
+
+  canvas Canvas     @relation(fields: [canvasId], references: [id], onDelete: Cascade)
+  source CanvasNode @relation("SourceNode", fields: [sourceNodeId], references: [id], onDelete: Cascade)
+  target CanvasNode @relation("TargetNode", fields: [targetNodeId], references: [id], onDelete: Cascade)
+
+  @@index([canvasId])
+  @@index([sourceNodeId])
+  @@index([targetNodeId, targetHandle, sortOrder])
+  @@map("edges")
+}
+
+model Asset {
+  id         String      @id @default(uuid()) @db.Uuid
+  projectId  String?     @db.Uuid
+  ownerId    String?     @db.Uuid
+  name       String
+  mediaType  MediaType
+  mimeType   String
+  sizeBytes  BigInt
+  sha256     String?
+  status     AssetStatus @default(READY)
+  contentKey String
+  metadata   Json?
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+  archivedAt DateTime?
+
+  project  Project?       @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  owner    User?          @relation(fields: [ownerId], references: [id], onDelete: SetNull)
+  versions AssetVersion[]
+  nodes    CanvasNode[]
+
+  @@index([projectId, status, updatedAt])
+  @@index([ownerId])
+  @@map("assets")
+}
+
+model AssetVersion {
+  id         String   @id @default(uuid()) @db.Uuid
+  assetId    String   @db.Uuid
+  version    Int
+  sizeBytes  BigInt
+  sha256     String?
+  contentKey String
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  asset Asset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@unique([assetId, version])
+  @@map("asset_versions")
+}
+
+model Run {
+  id                String    @id @default(uuid()) @db.Uuid
+  projectId         String    @db.Uuid
+  userId            String?   @db.Uuid
+  status            RunStatus @default(DRAFT)
+  modelAlias        String?
+  credentialId      String?   @db.Uuid
+  credentialVersion Int?
+  snapshot          Json
+  parameters        Json?
+  cost              Decimal?  @db.Decimal(18, 6)
+  error             Json?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user         User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  inputs       RunInput[]
+  providerJobs ProviderJob[]
+  usageLedger  UsageLedger[]
+
+  @@index([projectId, createdAt])
+  @@index([status])
+  @@map("runs")
+}
+
+model RunInput {
+  id            String   @id @default(uuid()) @db.Uuid
+  runId         String   @db.Uuid
+  nodeId        String
+  role          String
+  sortOrder     Int
+  sourceAssetId String?  @db.Uuid
+  snapshot      Json
+  createdAt     DateTime @default(now())
+
+  run Run @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId, sortOrder])
+  @@map("run_inputs")
+}
+
+model ProviderJob {
+  id            String   @id @default(uuid()) @db.Uuid
+  runId         String   @db.Uuid
+  provider      String
+  platformJobId String?
+  status        String
+  progress      Int      @default(0)
+  payload       Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  run Run @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, platformJobId])
+  @@index([runId])
+  @@map("provider_jobs")
+}
+
+model UsageLedger {
+  id        String   @id @default(uuid()) @db.Uuid
+  runId     String?  @db.Uuid
+  userId    String?  @db.Uuid
+  amount    Decimal  @db.Decimal(18, 6)
+  currency  String   @default("USD")
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  run  Run?  @relation(fields: [runId], references: [id], onDelete: SetNull)
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([runId])
+  @@index([userId, createdAt])
+  @@map("usage_ledger")
+}
+
+model AiCredential {
+  id              String   @id @default(uuid()) @db.Uuid
+  projectId       String?  @db.Uuid
+  ownerId         String?  @db.Uuid
+  label           String
+  baseUrl         String
+  encryptedApiKey String
+  keyFingerprint  String
+  version         Int      @default(1)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  project Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  owner   User?    @relation(fields: [ownerId], references: [id], onDelete: SetNull)
+
+  @@index([projectId])
+  @@map("ai_credentials")
+}
+
+model ModelCatalog {
+  id           String    @id @default(uuid()) @db.Uuid
+  modelAlias   String    @unique
+  name         String
+  mediaType    MediaType
+  capabilities Json?
+  limitations  Json?
+  price        Json?
+  refreshedAt  DateTime
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([mediaType])
+  @@map("model_catalog")
+}
+
+model ModelCapabilityOverride {
+  id           String    @id @default(uuid()) @db.Uuid
+  modelAlias   String
+  mediaType    MediaType
+  capabilities Json
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([modelAlias, mediaType])
+  @@map("model_capability_overrides")
+}
+
+model ProjectModelDefault {
+  id         String    @id @default(uuid()) @db.Uuid
+  projectId  String    @db.Uuid
+  mediaType  MediaType
+  modelAlias String
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, mediaType])
+  @@map("project_model_defaults")
+}
+
+model WebhookEvent {
+  id          String    @id @default(uuid()) @db.Uuid
+  eventId     String    @unique
+  provider    String
+  payload     Json
+  receivedAt  DateTime  @default(now())
+  processedAt DateTime?
+
+  @@map("webhook_events")
+}

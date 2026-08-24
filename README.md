@@ -4,7 +4,7 @@
 
 项目的核心体验是：在左侧资源库管理素材，在右侧无限画布上组合节点，通过多个参考输入驱动生成任务，并在任务完成后将结果保存回资源库。所有模型调用都经过本项目 API 和 New API，浏览器不会直接访问上游模型服务。
 
-> 当前状态：项目处于初始化阶段。仓库正在按下方架构和路线图从零搭建，README 中的功能描述代表目标范围，不代表所有功能已经完成。
+> 当前状态：已完成 monorepo foundation、资产上传和资产到画布的来源节点切片（`v0.2.0-assets`）。当前项目/画布 API 已支持 revision 乐观锁，Web 端默认从服务端项目恢复并自动保存；API 的默认存储仍是开发用内存实现，Prisma schema 已就绪但尚未接入生产运行路径。
 
 ## 目标
 
@@ -149,6 +149,8 @@ POST   /v1/webhooks/newapi
 
 画布保存使用 `revision` 乐观锁；提交旧版本时返回 `409 Conflict`，不能静默覆盖其他版本。
 
+项目创建后，Web 会保存当前项目 ID，并通过上述接口恢复画布。画布提交前会校验节点引用、端口媒体类型和 DAG 环路；服务端返回新的 revision 后，后续提交使用新版本。当前默认 `MemoryProjectStore` 只用于开发垂直切片，接入 PostgreSQL 前不会宣称数据可跨 API 重启持久化。
+
 ## 数据与凭据
 
 生产数据库使用 PostgreSQL。核心数据模型包括用户、项目、画布、节点、边、资源、资源版本、运行、运行输入、Provider 任务、用量记录、AI 凭据、模型目录和 Webhook 事件。
@@ -179,6 +181,7 @@ pnpm install
 cp .env.example .env
 docker compose -f docker-compose.dev.yml up -d
 pnpm db:generate
+pnpm db:validate
 pnpm db:migrate
 ```
 

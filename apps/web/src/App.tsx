@@ -30,12 +30,19 @@ import {
 } from '@xyflow/react';
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 
-import type { Asset, MediaType } from '@multimodal-canvas/domain';
+import {
+  isPortConnectionAllowed,
+  type Asset,
+  type CanvasDocument,
+  type MediaType,
+} from '@multimodal-canvas/domain';
 
 import '@xyflow/react/dist/style.css';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000';
 const ASSET_DRAG_TYPE = 'application/x-multimodal-asset';
+const PROJECT_STORAGE_KEY = 'multimodal-canvas:project-id';
+const CANVAS_DRAFT_KEY = 'multimodal-canvas:canvas';
 
 const mediaLabels: Record<MediaType, string> = {
   text: '文字',
@@ -63,6 +70,65 @@ type AssetNodeData = {
 type AssetFlowNode = Node<AssetNodeData, MediaType>;
 type FlowEdge = Edge;
 type AssetFilter = 'all' | MediaType;
+type CanvasApiDocument = CanvasDocument;
+type LocalCanvasDraft = {
+  revision: number;
+  nodes: AssetFlowNode[];
+  edges: FlowEdge[];
+};
+
+function fromCanvasDocument(document: CanvasApiDocument) {
+  return {
+    nodes: document.nodes.map((node) => ({
+      ...node,
+      data: {
+        ...node.data,
+        mimeType: node.data.mimeType ?? 'application/octet-stream',
+      },
+    })) as AssetFlowNode[],
+    edges: document.edges.map((edge) => ({
+      id: edge.id,
+      source: edge.sourceNodeId,
+      sourceHandle: edge.sourceHandle,
+      target: edge.targetNodeId,
+      targetHandle: edge.targetHandle,
+    })) as FlowEdge[],
+  };
+}
+
+function toCanvasDocument(
+  nodes: AssetFlowNode[],
+  edges: FlowEdge[],
+  revision: number,
+): CanvasDocument {
+  const orders = new Map<string, number>();
+  return {
+    revision,
+    nodes: nodes.map(({ id, type, position, data }) => ({
+      id,
+      type,
+      position,
+      data,
+    })),
+    edges: edges
+      .filter((edge): edge is FlowEdge & { source: string; target: string } =>
+        Boolean(edge.source && edge.target),
+      )
+      .map((edge) => {
+        const orderKey = `${edge.target}:${edge.targetHandle ?? 'input:content'}`;
+        const order = orders.get(orderKey) ?? 0;
+        orders.set(orderKey, order + 1);
+        return {
+          id: edge.id,
+          sourceNodeId: edge.source,
+          sourceHandle: edge.sourceHandle ?? 'output:content',
+          targetNodeId: edge.target,
+          targetHandle: edge.targetHandle ?? 'input:content',
+          order,
+        };
+      }),
+  };
+}
 
 function assetUrl(contentUrl: string) {
   return contentUrl.startsWith('http') ? contentUrl : `${API_BASE_URL}${contentUrl}`;
@@ -380,8 +446,6 @@ function WorkflowCanvas({
 
 export function App() {
   const [assets, setAssets] = useState<Asset[]>([]);
-  const [nodes, setNodes, onNodesChange] = useNodesState<AssetFlowNode>([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState<FlowEdge>([]);
   const [activeFilter, setActiveFilter] = useState<AssetFilter>('all');
   const [query, setQuery] = useState('');
   const [isUploading, setIsUploading] = useState(false);
@@ -389,6 +453,34 @@ export function App() {
   const [notice, setNotice] = useState<{ kind: 'error' | 'success'; message: string } | null>(null);
   const [selectedNode, setSelectedNode] = useState<AssetFlowNode | null>(null);
   const [saveState, setSaveState] = useState('准备就绪');
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [canvasRevision, setCanvasRevision] = useState(0);
+  const [isCanvasReady, setIsCanvasReady] = useState(false);
+  const canvasRevisionRef = useRef(0);
+  const canvasDirtyRef = useRef(false);
+  const initializedRef = useRef(false);
+  const [nodes, setNodes, applyNodesChange] = useNodesState<AssetFlowNode>([]);
+  const [edges, setEdges, applyEdgesChange] = useEdgesState<FlowEdge>([]);
+
+  const handleNodesChange: OnNodesChange<AssetFlowNode> = useCallback(
+    (changes) => {
+      if (
+        changes.some((change) => ['position', 'add', 'remove', 'replace'].includes(change.type))
+      ) {
+        canvasDirtyRef.current = true;
+      }
+      applyNodesChange(changes);
+    },
+    [applyNodesChange],
+  );
+
+  const handleEdgesChange: OnEdgesChange<FlowEdge> = useCallback(
+    (changes) => {
+      canvasDirtyRef.current = true;
+      applyEdgesChange(changes);
+    },
+    [applyEdgesChange],
+  );
 
   const loadAssets = useCallback(async () => {
     try {
@@ -404,26 +496,116 @@ export function App() {
     }
   }, []);
 
-  useEffect(() => {
-    void loadAssets();
+  const loadProjectCanvas = useCallback(async () => {
+    setIsCanvasReady(false);
     try {
-      const stored = localStorage.getItem('multimodal-canvas:canvas');
-      if (stored) {
-        const parsed = JSON.parse(stored) as { nodes?: AssetFlowNode[]; edges?: typeof edges };
-        setNodes(parsed.nodes ?? []);
-        setEdges(parsed.edges ?? []);
-        setSaveState('本地草稿已恢复');
+      let currentProjectId = localStorage.getItem(PROJECT_STORAGE_KEY);
+      if (currentProjectId) {
+        const existing = await fetch(`${API_BASE_URL}/v1/projects/${currentProjectId}`);
+        if (!existing.ok) currentProjectId = null;
       }
-    } catch {
-      setNotice({ kind: 'error', message: '本地画布草稿无法恢复' });
+      if (!currentProjectId) {
+        const created = await fetch(`${API_BASE_URL}/v1/projects`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name: '未命名项目' }),
+        });
+        if (!created.ok) throw new Error('项目创建失败');
+        const result = (await created.json()) as { project: { id: string } };
+        currentProjectId = result.project.id;
+        localStorage.setItem(PROJECT_STORAGE_KEY, currentProjectId);
+      }
+
+      const response = await fetch(`${API_BASE_URL}/v1/projects/${currentProjectId}/canvas`);
+      if (!response.ok) throw new Error('画布加载失败');
+      const result = (await response.json()) as { canvas: CanvasApiDocument };
+      setProjectId(currentProjectId);
+      canvasRevisionRef.current = result.canvas.revision;
+      setCanvasRevision(result.canvas.revision);
+      const flowCanvas = fromCanvasDocument(result.canvas);
+      setNodes(flowCanvas.nodes);
+      setEdges(flowCanvas.edges);
+      canvasDirtyRef.current = false;
+      setSaveState(result.canvas.revision > 0 ? '已从项目恢复' : '项目已连接');
+    } catch (error) {
+      setNotice({
+        kind: 'error',
+        message: error instanceof Error ? error.message : '项目加载失败，将使用本地草稿',
+      });
+      try {
+        const stored = localStorage.getItem(CANVAS_DRAFT_KEY);
+        if (stored) {
+          const parsed = JSON.parse(stored) as LocalCanvasDraft;
+          canvasRevisionRef.current = parsed.revision ?? 0;
+          setCanvasRevision(parsed.revision ?? 0);
+          setNodes(parsed.nodes ?? []);
+          setEdges(parsed.edges ?? []);
+          canvasDirtyRef.current = false;
+          setSaveState('本地草稿已恢复');
+        }
+      } catch {
+        setNotice({ kind: 'error', message: '本地画布草稿无法恢复' });
+      }
+    } finally {
+      setIsCanvasReady(true);
     }
-  }, [loadAssets, setEdges, setNodes]);
+  }, [setEdges, setNodes]);
 
   useEffect(() => {
-    localStorage.setItem('multimodal-canvas:canvas', JSON.stringify({ revision: 0, nodes, edges }));
-    if (nodes.length > 0 && saveState === '本地草稿已恢复') return;
-    if (nodes.length > 0) setSaveState('已保存到本地草稿');
-  }, [edges, nodes, saveState]);
+    if (initializedRef.current) return;
+    initializedRef.current = true;
+    void loadAssets();
+    void loadProjectCanvas();
+  }, [loadAssets, loadProjectCanvas]);
+
+  useEffect(() => {
+    if (!isCanvasReady) return;
+    localStorage.setItem(
+      CANVAS_DRAFT_KEY,
+      JSON.stringify({ revision: canvasRevision, nodes, edges }),
+    );
+  }, [canvasRevision, edges, isCanvasReady, nodes]);
+
+  useEffect(() => {
+    if (!isCanvasReady || !projectId || !canvasDirtyRef.current) return;
+    const snapshot = JSON.stringify({ nodes, edges });
+    const timer = window.setTimeout(async () => {
+      setSaveState('保存中');
+      const document = toCanvasDocument(nodes, edges, canvasRevisionRef.current);
+      try {
+        const response = await fetch(`${API_BASE_URL}/v1/projects/${projectId}/canvas`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(document),
+        });
+        const result = (await response.json().catch(() => ({}))) as {
+          canvas?: CanvasApiDocument;
+          error?: string;
+          revision?: number;
+        };
+        if (response.status === 409) {
+          setSaveState('保存冲突');
+          setNotice({
+            kind: 'error',
+            message: `画布版本冲突，服务器版本为 ${result.revision ?? '未知'}`,
+          });
+          return;
+        }
+        if (!response.ok || !result.canvas) throw new Error(result.error ?? '画布保存失败');
+        canvasRevisionRef.current = result.canvas.revision;
+        setCanvasRevision(result.canvas.revision);
+        if (JSON.stringify({ nodes, edges }) === snapshot) canvasDirtyRef.current = false;
+        setSaveState('已保存到项目');
+      } catch (error) {
+        setSaveState('本地草稿已保存');
+        setNotice({
+          kind: 'error',
+          message: error instanceof Error ? error.message : '画布保存失败',
+        });
+      }
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [edges, isCanvasReady, nodes, projectId]);
 
   const createNodeForAsset = useCallback(
     (asset: Asset, position: { x: number; y: number }): AssetFlowNode => {
@@ -457,6 +639,7 @@ export function App() {
         }
         setAssets((current) => [...uploaded, ...current]);
         if (position) {
+          canvasDirtyRef.current = true;
           setNodes((current) => [
             ...current,
             ...uploaded.map((asset, index) =>
@@ -484,6 +667,7 @@ export function App() {
           return;
         }
         setNodes((current) => [...current, createNodeForAsset(asset, position)]);
+        canvasDirtyRef.current = true;
         return;
       }
       void uploadFiles(files, position);
@@ -504,6 +688,7 @@ export function App() {
         ...current,
         createNodeForAsset(asset, { x: 80 + column * 230, y: 80 + row * 210 }),
       ]);
+      canvasDirtyRef.current = true;
       setNotice({ kind: 'success', message: `${asset.name} 已添加到画布` });
     },
     [createNodeForAsset, nodes.length, setNodes],
@@ -513,13 +698,23 @@ export function App() {
     (connection: Connection) => {
       if (!connection.source || !connection.target || connection.source === connection.target)
         return;
+      const source = nodes.find((node) => node.id === connection.source);
+      const target = nodes.find((node) => node.id === connection.target);
+      if (
+        !source ||
+        !target ||
+        !connection.sourceHandle ||
+        !connection.targetHandle ||
+        !isPortConnectionAllowed(source, connection.sourceHandle, target, connection.targetHandle)
+      )
+        return;
       const duplicate = edges.some(
         (edge) =>
           edge.source === connection.source &&
           edge.target === connection.target &&
           edge.targetHandle === connection.targetHandle,
       );
-      if (duplicate || connection.targetHandle !== 'input:content') return;
+      if (duplicate) return;
       setEdges((current) => [
         ...current,
         {
@@ -528,8 +723,9 @@ export function App() {
           animated: true,
         },
       ]);
+      canvasDirtyRef.current = true;
     },
-    [edges, setEdges],
+    [edges, nodes, setEdges],
   );
 
   const selectedAsset = selectedNode
@@ -605,8 +801,8 @@ export function App() {
           <WorkflowCanvas
             nodes={nodes}
             edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
+            onNodesChange={handleNodesChange}
+            onEdgesChange={handleEdgesChange}
             onConnect={handleConnect}
             onCanvasDrop={handleCanvasDrop}
             onNodeSelect={setSelectedNode}
