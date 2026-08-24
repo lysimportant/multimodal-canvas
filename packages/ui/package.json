@@ -1,0 +1,14 @@
+{
+  "name": "@multimodal-canvas/ui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "prettier --check . --ignore-path ../../.prettierignore",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "vitest": "^3.0.8"
+  }
+}

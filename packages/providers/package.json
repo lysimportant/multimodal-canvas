@@ -1,0 +1,17 @@
+{
+  "name": "@multimodal-canvas/providers",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "prettier --check . --ignore-path ../../.prettierignore",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@multimodal-canvas/domain": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "^3.0.8"
+  }
+}
