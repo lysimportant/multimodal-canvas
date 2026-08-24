@@ -10,7 +10,10 @@
     "typecheck": "tsc -b"
   },
   "dependencies": {
+    "@multimodal-canvas/domain": "workspace:*",
     "@vitejs/plugin-react": "^4.3.4",
+    "@xyflow/react": "^12.11.3",
+    "lucide-react": "^1.33.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "vite": "^6.2.0"
