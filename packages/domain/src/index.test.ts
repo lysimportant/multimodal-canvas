@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { canvasDocumentSchema, mediaTypes, nodeModes, portRoles } from './index';
+import { assetSchema, canvasDocumentSchema, mediaTypes, nodeModes, portRoles } from './index';
 
 describe('canvas protocol', () => {
   it('exposes the supported media, modes, and port roles', () => {
@@ -24,5 +24,19 @@ describe('canvas protocol', () => {
     });
 
     expect(document.nodes).toHaveLength(1);
+  });
+
+  it('validates an uploaded asset reference', () => {
+    const asset = assetSchema.parse({
+      id: 'asset_image',
+      name: 'reference.png',
+      mediaType: 'image',
+      mimeType: 'image/png',
+      sizeBytes: 128,
+      status: 'ready',
+      contentUrl: '/v1/assets/asset_image/content',
+    });
+
+    expect(asset.mediaType).toBe('image');
   });
 });

@@ -10,7 +10,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@fastify/multipart": "^9.2.1",
     "@fastify/cors": "^10.0.2",
+    "@multimodal-canvas/domain": "workspace:*",
     "fastify": "^5.2.1"
   },
   "devDependencies": {
