@@ -243,6 +243,21 @@ export const openApiDocument = {
         },
       },
     },
+    '/v1/projects/{projectId}/runs': {
+      get: {
+        tags: ['runs'],
+        parameters: [{ $ref: '#/components/parameters/ProjectId' }],
+        responses: {
+          '200': response('Project run history', {
+            type: 'object',
+            required: ['runs'],
+            properties: { runs: { type: 'array', items: runSchema } },
+            additionalProperties: false,
+          }),
+          '404': response('Project not found', errorSchema),
+        },
+      },
+    },
     '/v1/projects/{projectId}/events': {
       get: {
         tags: ['runs'],

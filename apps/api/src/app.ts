@@ -323,6 +323,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   );
 
   app.get<{ Params: { projectId: string } }>(
+    '/v1/projects/:projectId/runs',
+    async (request, reply) => {
+      const { projectId } = request.params;
+      const project = await projectStore.get(projectId, projectScope(requestPrincipals, request));
+      if (!project) return reply.code(404).send({ error: 'project not found' });
+
+      return { runs: await runService.listByProject(projectId) };
+    },
+  );
+
+  app.get<{ Params: { projectId: string } }>(
     '/v1/projects/:projectId/events',
     async (request, reply) => {
       const { projectId } = request.params;

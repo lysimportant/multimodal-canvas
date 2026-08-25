@@ -25,6 +25,7 @@ describe('OpenAPI endpoint', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json().paths['/v1/runs/{runId}/retry']).toBeDefined();
+    expect(response.json().paths['/v1/projects/{projectId}/runs']).toBeDefined();
     expect(response.json().paths['/v1/settings/ai/credentials'].delete).toBeDefined();
     expect(response.json().paths['/v1/runs/{runId/retry}']).toBeUndefined();
   });
@@ -475,6 +476,56 @@ describe('project and canvas endpoints', () => {
 });
 
 describe('run endpoints', () => {
+  it('lists run history after checking project access', async () => {
+    const historyApp = buildApp({ logger: false });
+    try {
+      const create = await historyApp.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        payload: { name: 'Run history test' },
+      });
+      const projectId = create.json().project.id as string;
+      await historyApp.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${projectId}/canvas`,
+        payload: {
+          revision: 0,
+          nodes: [
+            {
+              id: 'node_history_text',
+              type: 'text',
+              position: { x: 0, y: 0 },
+              data: { label: 'Generate', mediaType: 'text', mode: 'generate' },
+            },
+          ],
+          edges: [],
+        },
+      });
+      const submit = await historyApp.inject({
+        method: 'POST',
+        url: '/v1/nodes/node_history_text/runs',
+        payload: { projectId },
+      });
+      const runId = submit.json().run.id as string;
+
+      const response = await historyApp.inject({
+        method: 'GET',
+        url: `/v1/projects/${projectId}/runs`,
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().runs).toEqual([expect.objectContaining({ id: runId, projectId })]);
+
+      const missing = await historyApp.inject({
+        method: 'GET',
+        url: '/v1/projects/project_missing/runs',
+      });
+      expect(missing.statusCode).toBe(404);
+      expect(missing.json()).toEqual({ error: 'project not found' });
+    } finally {
+      await historyApp.close();
+    }
+  });
+
   it('rejects a priced run above the configured per-run ceiling', async () => {
     vi.stubEnv('MAX_RUN_COST', '1.00');
     vi.stubEnv('RUN_COST_CURRENCY', 'USD');

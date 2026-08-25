@@ -86,6 +86,7 @@ describe('API authentication guard', () => {
     '/v1/runs/missing',
     '/v1/assets/missing/content',
     '/v1/projects/missing/canvas',
+    '/v1/projects/missing/runs',
   ])('protects %s with the Bearer token', async (url) => {
     vi.stubEnv('NODE_ENV', 'test');
     vi.stubEnv('API_AUTH_TOKEN', 'test-api-token');
