@@ -242,6 +242,57 @@ describe('NewApiProvider', () => {
     });
   });
 
+  it('uses the New API top-level output format for data[0].b64_json responses', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          created: 1_756_000_000,
+          output_format: 'webp',
+          data: [{ b64_json: 'd2VicC1pbWFnZQ==' }],
+          usage: { input_tokens: 12, output_tokens: 1 },
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        },
+      ),
+    );
+    const provider = new NewApiProvider({
+      baseUrl: 'https://api.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    });
+
+    const result = await provider.execute({
+      snapshot: {
+        projectId: 'project_1',
+        canvasRevision: 1,
+        targetNodeId: 'node_image',
+        modelAlias: 'gpt-image-2',
+        parameters: {},
+        submittedAt: '2026-08-24T00:00:00.000Z',
+        nodes: [
+          {
+            id: 'node_image',
+            type: 'image',
+            position: { x: 0, y: 0 },
+            data: { label: 'Image', mediaType: 'image', mode: 'generate' },
+          },
+        ],
+        edges: [],
+        inputs: [],
+      },
+    });
+
+    expect(result.output).toEqual({
+      mediaType: 'image',
+      kind: 'base64',
+      base64: 'd2VicC1pbWFnZQ==',
+      mimeType: 'image/webp',
+      format: 'webp',
+    });
+  });
+
   it('accepts image arrays returned under a provider-compatible output alias', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ images: [{ url: 'https://cdn.example/alias.webp' }] }), {
@@ -280,6 +331,102 @@ describe('NewApiProvider', () => {
       mediaType: 'image',
       kind: 'url',
       url: 'https://cdn.example/alias.webp',
+      mimeType: 'image/webp',
+      format: 'webp',
+    });
+  });
+
+  it('keeps a response-level image format when the result URL has no known extension', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          output_format: 'webp',
+          data: [{ url: 'https://cdn.example/generated/asset-123' }],
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        },
+      ),
+    );
+    const provider = new NewApiProvider({
+      baseUrl: 'https://api.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    });
+
+    const result = await provider.execute({
+      snapshot: {
+        projectId: 'project_1',
+        canvasRevision: 1,
+        targetNodeId: 'node_image',
+        modelAlias: 'gpt-image-2',
+        parameters: {},
+        submittedAt: '2026-08-24T00:00:00.000Z',
+        nodes: [
+          {
+            id: 'node_image',
+            type: 'image',
+            position: { x: 0, y: 0 },
+            data: { label: 'Image', mediaType: 'image', mode: 'generate' },
+          },
+        ],
+        edges: [],
+        inputs: [],
+      },
+    });
+
+    expect(result.output).toMatchObject({
+      mediaType: 'image',
+      kind: 'url',
+      mimeType: 'image/webp',
+      format: 'webp',
+    });
+  });
+
+  it('prefers an explicit response image format over a conflicting URL extension', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          output_format: 'webp',
+          data: [{ url: 'https://cdn.example/generated/asset.png' }],
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        },
+      ),
+    );
+    const provider = new NewApiProvider({
+      baseUrl: 'https://api.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    });
+
+    const result = await provider.execute({
+      snapshot: {
+        projectId: 'project_1',
+        canvasRevision: 1,
+        targetNodeId: 'node_image',
+        modelAlias: 'gpt-image-2',
+        parameters: {},
+        submittedAt: '2026-08-24T00:00:00.000Z',
+        nodes: [
+          {
+            id: 'node_image',
+            type: 'image',
+            position: { x: 0, y: 0 },
+            data: { label: 'Image', mediaType: 'image', mode: 'generate' },
+          },
+        ],
+        edges: [],
+        inputs: [],
+      },
+    });
+
+    expect(result.output).toMatchObject({
+      mediaType: 'image',
+      kind: 'url',
       mimeType: 'image/webp',
       format: 'webp',
     });
@@ -396,5 +543,188 @@ describe('NewApiProvider', () => {
         },
       }),
     ).rejects.toBeInstanceOf(NewApiProviderError);
+  });
+
+  it('classifies transient provider errors without retrying the generation request', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: {
+            message: 'temporarily overloaded',
+            type: 'rate_limit_error',
+            code: 'rate_limit',
+          },
+        }),
+        {
+          status: 429,
+          headers: {
+            'content-type': 'application/json',
+            'x-request-id': 'req-rate-1',
+          },
+        },
+      ),
+    );
+    const provider = new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    });
+
+    const error = await provider
+      .execute({
+        snapshot: {
+          projectId: 'project_1',
+          canvasRevision: 1,
+          targetNodeId: 'node_text',
+          modelAlias: 'text-v1',
+          parameters: {},
+          submittedAt: '2026-08-24T00:00:00.000Z',
+          nodes: [
+            {
+              id: 'node_text',
+              type: 'text',
+              position: { x: 0, y: 0 },
+              data: { label: 'Text', mediaType: 'text', mode: 'generate' },
+            },
+          ],
+          edges: [],
+          inputs: [],
+        },
+      })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(NewApiProviderError);
+    expect(error).toMatchObject({
+      status: 429,
+      code: 'rate_limit',
+      requestId: 'req-rate-1',
+      retryable: true,
+    });
+    expect((error as NewApiProviderError).message).toContain('temporarily overloaded');
+    // Retry policy belongs to the caller; one Provider execution means one HTTP request.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks validation errors as non-retryable and preserves provider request IDs', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({ error: { message: 'invalid model', code: 'model_not_found' } }),
+        {
+          status: 400,
+          headers: {
+            'content-type': 'application/json',
+            'x-request-id': 'req-invalid-1',
+          },
+        },
+      ),
+    );
+    const provider = new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    });
+
+    await expect(
+      provider.execute({
+        snapshot: {
+          projectId: 'project_1',
+          canvasRevision: 1,
+          targetNodeId: 'node_text',
+          modelAlias: 'missing-model',
+          parameters: {},
+          submittedAt: '2026-08-24T00:00:00.000Z',
+          nodes: [
+            {
+              id: 'node_text',
+              type: 'text',
+              position: { x: 0, y: 0 },
+              data: { label: 'Text', mediaType: 'text', mode: 'generate' },
+            },
+          ],
+          edges: [],
+          inputs: [],
+        },
+      }),
+    ).rejects.toMatchObject({
+      status: 400,
+      code: 'model_not_found',
+      requestId: 'req-invalid-1',
+      retryable: false,
+    });
+  });
+
+  it('classifies transport failures as retryable without exposing credentials', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(new Error('socket closed'));
+    const provider = new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    });
+
+    await expect(
+      provider.execute({
+        snapshot: {
+          projectId: 'project_1',
+          canvasRevision: 1,
+          targetNodeId: 'node_text',
+          modelAlias: 'text-v1',
+          parameters: {},
+          submittedAt: '2026-08-24T00:00:00.000Z',
+          nodes: [
+            {
+              id: 'node_text',
+              type: 'text',
+              position: { x: 0, y: 0 },
+              data: { label: 'Text', mediaType: 'text', mode: 'generate' },
+            },
+          ],
+          edges: [],
+          inputs: [],
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: 'NETWORK_ERROR',
+      retryable: true,
+      message: 'socket closed',
+    });
+  });
+
+  it('reports aborts as timeouts with a stable diagnostic code', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockRejectedValue(new DOMException('operation aborted', 'AbortError'));
+    const provider = new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+      timeoutMs: 1,
+    });
+
+    await expect(
+      provider.execute({
+        snapshot: {
+          projectId: 'project_1',
+          canvasRevision: 1,
+          targetNodeId: 'node_text',
+          modelAlias: 'text-v1',
+          parameters: {},
+          submittedAt: '2026-08-24T00:00:00.000Z',
+          nodes: [
+            {
+              id: 'node_text',
+              type: 'text',
+              position: { x: 0, y: 0 },
+              data: { label: 'Text', mediaType: 'text', mode: 'generate' },
+            },
+          ],
+          edges: [],
+          inputs: [],
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: 'TIMEOUT',
+      retryable: true,
+      message: 'New API 请求超时',
+    });
   });
 });

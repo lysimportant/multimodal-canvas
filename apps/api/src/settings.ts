@@ -16,14 +16,27 @@ export type ModelCatalogEntry = {
   name: string;
   mediaTypes: MediaType[];
   capabilities?: Record<string, unknown>;
+  limitations?: Record<string, unknown>;
   price?: Record<string, unknown>;
   refreshedAt: string;
+};
+
+export type ModelCapabilityOverride = {
+  modelAlias: string;
+  mediaType: MediaType;
+  capabilities: Record<string, unknown>;
 };
 
 export type UpdateAiSettingsInput = {
   baseUrl?: string;
   apiKey?: string;
   defaultModels?: Partial<Record<MediaType, string | null>>;
+};
+
+export type AiSettingsStoreOptions = {
+  /** Injectable for tests; production uses the platform fetch implementation. */
+  fetchImpl?: typeof fetch;
+  modelRequestTimeoutMs?: number;
 };
 
 export type CredentialReference = {
@@ -65,14 +78,22 @@ export class AiSettingsStore {
   private encryptedApiKey = '';
   private keyFingerprint = '';
   private readonly encryptionKey: Buffer;
+  private readonly fetchImpl?: typeof fetch;
+  private readonly modelRequestTimeoutMs: number;
   private defaultModels: Partial<Record<MediaType, string>> = {};
   private readonly models = new Map<string, ModelCatalogEntry>();
+  private readonly capabilityOverrides = new Map<string, Record<string, unknown>>();
   private updatedAt = new Date().toISOString();
 
   constructor(
     encryptionSecret = process.env.AI_CREDENTIAL_ENCRYPTION_KEY ?? randomBytes(32).toString('hex'),
+    options: AiSettingsStoreOptions = {},
   ) {
     this.encryptionKey = createHash('sha256').update(encryptionSecret).digest();
+    // Resolve the global fetch at request time when no test/deployment
+    // override is supplied, so callers can still instrument or stub it.
+    this.fetchImpl = options.fetchImpl;
+    this.modelRequestTimeoutMs = options.modelRequestTimeoutMs ?? 10_000;
     this.baseUrl = (process.env.NEW_API_BASE_URL ?? '').replace(/\/$/, '');
     const initialApiKey = process.env.NEW_API_API_KEY;
     if (initialApiKey) {
@@ -147,6 +168,8 @@ export class AiSettingsStore {
       const response = await requestModels(
         this.baseUrl,
         decrypt(this.encryptedApiKey, this.encryptionKey),
+        this.fetchImpl,
+        this.modelRequestTimeoutMs,
       );
       return { ok: true, modelCount: response.length };
     } catch (error) {
@@ -159,6 +182,8 @@ export class AiSettingsStore {
     const models = await requestModels(
       this.baseUrl,
       decrypt(this.encryptedApiKey, this.encryptionKey),
+      this.fetchImpl,
+      this.modelRequestTimeoutMs,
     );
     this.models.clear();
     for (const model of models) this.models.set(model.id, model);
@@ -170,10 +195,28 @@ export class AiSettingsStore {
     for (const model of models) this.models.set(model.id, model);
   }
 
+  replaceCapabilityOverrides(overrides: ModelCapabilityOverride[]) {
+    this.capabilityOverrides.clear();
+    for (const override of overrides) {
+      if (
+        !isRecord(override) ||
+        typeof override.modelAlias !== 'string' ||
+        !override.modelAlias.trim() ||
+        !mediaTypes.includes(override.mediaType) ||
+        !isRecord(override.capabilities)
+      ) {
+        continue;
+      }
+      this.capabilityOverrides.set(capabilityOverrideKey(override.modelAlias, override.mediaType), {
+        ...override.capabilities,
+      });
+    }
+  }
+
   listModels(mediaType?: MediaType): ModelCatalogEntry[] {
-    return [...this.models.values()].filter(
-      (model) => !mediaType || model.mediaTypes.includes(mediaType),
-    );
+    return [...this.models.values()]
+      .filter((model) => !mediaType || model.mediaTypes.includes(mediaType))
+      .map((model) => (mediaType ? this.withCapabilityOverride(model, mediaType) : model));
   }
 
   resolveModel(mediaType: MediaType, requestedAlias?: string): string {
@@ -191,6 +234,15 @@ export class AiSettingsStore {
   getCredentialReference(): CredentialReference {
     return {};
   }
+
+  private withCapabilityOverride(model: ModelCatalogEntry, mediaType: MediaType) {
+    const override = this.capabilityOverrides.get(capabilityOverrideKey(model.id, mediaType));
+    if (!override) return model;
+    return {
+      ...model,
+      capabilities: { ...(model.capabilities ?? {}), ...override },
+    };
+  }
 }
 
 /** PostgreSQL-backed AI settings, credential version, defaults and model catalog. */
@@ -202,13 +254,14 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
   constructor(
     private readonly prisma: PrismaClient,
     encryptionSecret = process.env.AI_CREDENTIAL_ENCRYPTION_KEY,
+    options: AiSettingsStoreOptions = {},
   ) {
     if (!encryptionSecret?.trim()) {
       throw new Error(
         'AI_CREDENTIAL_ENCRYPTION_KEY is required when PostgreSQL-backed AI settings are enabled',
       );
     }
-    this.memory = new AiSettingsStore(encryptionSecret);
+    this.memory = new AiSettingsStore(encryptionSecret, options);
     this.ready = this.load();
   }
 
@@ -251,6 +304,9 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
               capabilities: model.capabilities
                 ? (model.capabilities as Prisma.InputJsonValue)
                 : undefined,
+              limitations: model.limitations
+                ? (model.limitations as Prisma.InputJsonValue)
+                : undefined,
               price: model.price ? (model.price as Prisma.InputJsonValue) : undefined,
               refreshedAt: new Date(model.refreshedAt),
             })),
@@ -281,12 +337,18 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
   }
 
   private async load() {
-    const [credential, catalog] = await Promise.all([
+    const overrideDelegate = (
+      this.prisma as PrismaClient & {
+        modelCapabilityOverride?: { findMany: () => Promise<unknown[]> };
+      }
+    ).modelCapabilityOverride;
+    const [credential, catalog, overrides] = await Promise.all([
       this.prisma.aiCredential.findFirst({
         where: { projectId: null },
         orderBy: { updatedAt: 'desc' },
       }),
       this.prisma.modelCatalog.findMany(),
+      overrideDelegate?.findMany ? overrideDelegate.findMany() : Promise.resolve([]),
     ]);
     if (credential) {
       this.credentialReference = {
@@ -310,12 +372,35 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
         id: model.modelAlias,
         name: model.name,
         mediaTypes: existing ? [...new Set([...existing.mediaTypes, mediaType])] : [mediaType],
-        ...(isRecord(model.capabilities) ? { capabilities: model.capabilities } : {}),
-        ...(isRecord(model.price) ? { price: model.price } : {}),
+        ...(isRecord(model.capabilities) || existing?.capabilities
+          ? {
+              capabilities: {
+                ...(existing?.capabilities ?? {}),
+                ...(isRecord(model.capabilities) ? model.capabilities : {}),
+              },
+            }
+          : {}),
+        ...(isRecord(model.limitations) || existing?.limitations
+          ? {
+              limitations: {
+                ...(existing?.limitations ?? {}),
+                ...(isRecord(model.limitations) ? model.limitations : {}),
+              },
+            }
+          : {}),
+        ...(isRecord(model.price) || existing?.price
+          ? {
+              price: {
+                ...(existing?.price ?? {}),
+                ...(isRecord(model.price) ? model.price : {}),
+              },
+            }
+          : {}),
         refreshedAt: model.refreshedAt.toISOString(),
       });
     }
     this.memory.replaceModels([...grouped.values()]);
+    this.memory.replaceCapabilityOverrides(normalizeCapabilityOverrides(overrides));
   }
 
   private async persistCredential() {
@@ -361,6 +446,35 @@ function fromPrismaMediaType(mediaType: string): MediaType {
   return mediaType.toLowerCase() as MediaType;
 }
 
+function capabilityOverrideKey(modelAlias: string, mediaType: MediaType): string {
+  return `${modelAlias.trim()}\0${mediaType}`;
+}
+
+function normalizeCapabilityOverrides(value: unknown): ModelCapabilityOverride[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((candidate) => {
+    if (!isRecord(candidate)) return [];
+    const modelAlias = typeof candidate.modelAlias === 'string' ? candidate.modelAlias.trim() : '';
+    const mediaTypeValue =
+      typeof candidate.mediaType === 'string' ? candidate.mediaType.toLowerCase() : '';
+    const capabilities = candidate.capabilities;
+    if (
+      !modelAlias ||
+      !mediaTypes.includes(mediaTypeValue as MediaType) ||
+      !isRecord(capabilities)
+    ) {
+      return [];
+    }
+    return [
+      {
+        modelAlias,
+        mediaType: mediaTypeValue as MediaType,
+        capabilities,
+      },
+    ];
+  });
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
@@ -374,50 +488,162 @@ function isDefaultModels(value: unknown): value is Partial<Record<MediaType, str
   );
 }
 
-async function requestModels(baseUrl: string, apiKey: string): Promise<ModelCatalogEntry[]> {
+async function requestModels(
+  baseUrl: string,
+  apiKey: string,
+  fetchImpl: typeof fetch = fetch,
+  timeoutMs = 10_000,
+): Promise<ModelCatalogEntry[]> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10_000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(`${baseUrl}/models`, {
+    const response = await fetchImpl(`${baseUrl}/models`, {
       headers: { authorization: `Bearer ${apiKey}` },
       signal: controller.signal,
     });
     if (!response.ok) throw new Error(`模型服务返回 ${response.status}`);
-    const payload = (await response.json()) as { data?: unknown[] };
-    return (payload.data ?? []).flatMap(normalizeModel);
+    const payload = (await response.json()) as unknown;
+    return normalizeModelsPayload(payload);
   } finally {
     clearTimeout(timeout);
   }
 }
 
-function normalizeModel(candidate: unknown): ModelCatalogEntry[] {
-  if (!candidate || typeof candidate !== 'object') return [];
+/**
+ * Accept the OpenAI `{ data: [...] }` shape as well as common gateway
+ * variants. The returned list is deduplicated by model ID and merges explicit
+ * media capabilities from repeated records instead of letting the last record
+ * erase earlier capabilities.
+ */
+export function normalizeModelsPayload(payload: unknown): ModelCatalogEntry[] {
+  const candidates = extractModelCandidates(payload);
+  const refreshedAt = new Date().toISOString();
+  const merged = new Map<string, ModelCatalogEntry>();
+  for (const candidate of candidates) {
+    const model = normalizeModel(candidate, refreshedAt);
+    if (!model) continue;
+    const existing = merged.get(model.id);
+    if (!existing) {
+      merged.set(model.id, model);
+      continue;
+    }
+    merged.set(model.id, {
+      ...existing,
+      name: model.name !== model.id ? model.name : existing.name,
+      mediaTypes: [...new Set([...existing.mediaTypes, ...model.mediaTypes])],
+      ...(model.capabilities || existing.capabilities
+        ? { capabilities: { ...(existing.capabilities ?? {}), ...(model.capabilities ?? {}) } }
+        : {}),
+      ...(model.limitations || existing.limitations
+        ? { limitations: { ...(existing.limitations ?? {}), ...(model.limitations ?? {}) } }
+        : {}),
+      ...(model.price || existing.price
+        ? { price: { ...(existing.price ?? {}), ...(model.price ?? {}) } }
+        : {}),
+      // One refresh should expose one coherent timestamp for a model.
+      refreshedAt: model.refreshedAt,
+    });
+  }
+  return [...merged.values()];
+}
+
+function extractModelCandidates(payload: unknown): unknown[] {
+  if (Array.isArray(payload)) return payload;
+  if (!isRecord(payload)) return [];
+  for (const key of ['data', 'models', 'results']) {
+    if (Array.isArray(payload[key])) return payload[key];
+  }
+  return [];
+}
+
+function normalizeModel(candidate: unknown, refreshedAt: string): ModelCatalogEntry | undefined {
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return undefined;
   const record = candidate as Record<string, unknown>;
   const id = typeof record.id === 'string' ? record.id.trim() : '';
-  if (!id) return [];
-  const rawType = typeof record.mediaType === 'string' ? record.mediaType : undefined;
-  const mediaTypesFromPayload = Array.isArray(record.mediaTypes)
-    ? record.mediaTypes.filter(
-        (item): item is MediaType =>
-          typeof item === 'string' && mediaTypes.includes(item as MediaType),
-      )
-    : rawType && mediaTypes.includes(rawType as MediaType)
-      ? [rawType as MediaType]
-      : ['text' as const];
-  return [
-    {
-      id,
-      name: typeof record.name === 'string' ? record.name : id,
-      mediaTypes: mediaTypesFromPayload,
-      ...(record.capabilities && typeof record.capabilities === 'object'
-        ? { capabilities: record.capabilities as Record<string, unknown> }
+  if (!id) return undefined;
+  const explicitMediaTypes = extractMediaTypes(record);
+  const inferredMediaTypes =
+    explicitMediaTypes.length > 0 ? explicitMediaTypes : inferMediaTypes(id);
+  return {
+    id,
+    name: typeof record.name === 'string' && record.name.trim() ? record.name.trim() : id,
+    mediaTypes: inferredMediaTypes.length > 0 ? inferredMediaTypes : ['text'],
+    ...(isRecord(record.capabilities) ? { capabilities: record.capabilities } : {}),
+    ...(isRecord(record.limitations)
+      ? { limitations: record.limitations }
+      : isRecord(record.limits)
+        ? { limitations: record.limits }
+        : isRecord(record.constraints)
+          ? { limitations: record.constraints }
+          : {}),
+    ...(isRecord(record.price)
+      ? { price: record.price }
+      : isRecord(record.pricing)
+        ? { price: record.pricing }
         : {}),
-      ...(record.price && typeof record.price === 'object' && !Array.isArray(record.price)
-        ? { price: record.price as Record<string, unknown> }
-        : {}),
-      refreshedAt: new Date().toISOString(),
-    },
-  ];
+    refreshedAt,
+  };
+}
+
+/**
+ * Some OpenAI-compatible gateways omit media capabilities entirely. Keep the
+ * fallback deliberately narrow; database capability overrides remain the
+ * authoritative way to describe non-standard model aliases.
+ */
+function inferMediaTypes(modelAlias: string): MediaType[] {
+  const normalized = modelAlias.trim().toLowerCase();
+  if (/^(gpt-image|dall[-_]?e|imagen|flux|sdxl|stable[-_]?diffusion|midjourney)/.test(normalized)) {
+    return ['image'];
+  }
+  if (/^(sora|veo|runway|kling|wan[-_]?video|video[-_]?generation)/.test(normalized)) {
+    return ['video'];
+  }
+  if (/^(tts|whisper|speech|audio[-_]?generation|eleven)/.test(normalized)) {
+    return ['audio'];
+  }
+  return [];
+}
+
+function extractMediaTypes(record: Record<string, unknown>): MediaType[] {
+  const values: unknown[] = [];
+  for (const key of [
+    'mediaType',
+    'media_type',
+    'type',
+    'modality',
+    'modalities',
+    'mediaTypes',
+    'media_types',
+    'supportedMediaTypes',
+    'supported_media_types',
+    'supportedEndpointTypes',
+    'supported_endpoint_types',
+    'endpointTypes',
+    'endpoint_types',
+  ]) {
+    const value = record[key];
+    if (Array.isArray(value)) values.push(...value);
+    else values.push(value);
+  }
+  const normalized = values
+    .flatMap((value) => (typeof value === 'string' ? value.split(/[+,\s]/) : []))
+    .map((value) => normalizeMediaType(value))
+    .filter((value): value is MediaType => value !== undefined);
+  return [...new Set(normalized)];
+}
+
+function normalizeMediaType(value: string): MediaType | undefined {
+  const normalized = value.trim().toLowerCase().replace(/[_-]/g, '');
+  if (!normalized) return undefined;
+  if (['text', 'language', 'chat', 'completion', 'llm'].includes(normalized)) return 'text';
+  if (['image', 'images', 'imggeneration', 'imagegeneration'].includes(normalized)) {
+    return 'image';
+  }
+  if (['audio', 'speech', 'tts', 'stt', 'transcription', 'audiogeneration'].includes(normalized)) {
+    return 'audio';
+  }
+  if (['video', 'videos', 'videogeneration'].includes(normalized)) return 'video';
+  return undefined;
 }
 
 function fingerprint(value: string) {

@@ -1013,6 +1013,8 @@ export const openApiDocument = {
           name: { type: 'string' },
           mediaTypes: { type: 'array', items: mediaTypeSchema },
           capabilities: { type: 'object', additionalProperties: true },
+          limitations: { type: 'object', additionalProperties: true },
+          price: { type: 'object', additionalProperties: true },
           refreshedAt: { type: 'string', format: 'date-time' },
         },
       },

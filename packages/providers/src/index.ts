@@ -92,13 +92,49 @@ export type ProviderExecution = {
   output: ProviderOutput;
 };
 
+export type NewApiProviderErrorDetails = {
+  /** HTTP status returned by New API, when a response was received. */
+  status?: number;
+  /** Provider error code or type, if one was supplied. */
+  code?: string;
+  /** Whether a caller may retry after applying its own idempotency policy. */
+  retryable?: boolean;
+  /** Opaque provider request/correlation ID, never a credential. */
+  requestId?: string;
+};
+
+/**
+ * A structured, non-retrying provider error.
+ *
+ * The worker/API decide whether and how often to retry. Keeping this class
+ * descriptive (rather than retrying here) avoids accidentally creating a
+ * second paid generation request when a provider response is ambiguous.
+ */
 export class NewApiProviderError extends Error {
+  readonly status?: number;
+  readonly code?: string;
+  readonly retryable: boolean;
+  readonly requestId?: string;
+
   constructor(
     message: string,
-    public readonly status?: number,
+    statusOrDetails?: number | NewApiProviderErrorDetails,
+    legacyDetails?: NewApiProviderErrorDetails,
   ) {
     super(message);
     this.name = 'NewApiProviderError';
+
+    const details: NewApiProviderErrorDetails =
+      typeof statusOrDetails === 'number' || statusOrDetails === undefined
+        ? { ...legacyDetails, status: statusOrDetails ?? legacyDetails?.status }
+        : statusOrDetails;
+    this.status = details.status;
+    this.code = normalizeErrorField(details.code);
+    this.requestId = normalizeErrorField(details.requestId);
+    this.retryable = details.retryable ?? isRetryableStatus(this.status);
+
+    // Required when extending Error while targeting both Node and browsers.
+    Object.setPrototypeOf(this, new.target.prototype);
   }
 }
 
@@ -201,16 +237,30 @@ export class NewApiProvider {
       });
       const payload = await readResponsePayload(response);
       if (!response.ok) {
-        const message =
-          payload && typeof payload === 'object' && 'error' in payload
-            ? JSON.stringify((payload as { error: unknown }).error)
-            : `New API 请求失败（${response.status}）`;
-        throw new NewApiProviderError(message, response.status);
+        const providerError = extractProviderError(payload);
+        const message = providerError.message ?? `New API 请求失败（${response.status}）`;
+        throw new NewApiProviderError(message, {
+          status: response.status,
+          code: providerError.code,
+          requestId: providerError.requestId ?? responseRequestId(response),
+          retryable: isRetryableStatus(response.status),
+        });
       }
       return payload;
     } catch (error) {
       if (error instanceof NewApiProviderError) throw error;
-      throw new NewApiProviderError(error instanceof Error ? error.message : 'New API 请求失败');
+      const isTimeout = getErrorName(error) === 'AbortError';
+      throw new NewApiProviderError(
+        isTimeout
+          ? 'New API 请求超时'
+          : error instanceof Error
+            ? error.message
+            : 'New API 请求失败',
+        {
+          code: isTimeout ? 'TIMEOUT' : 'NETWORK_ERROR',
+          retryable: true,
+        },
+      );
     } finally {
       clearTimeout(timeout);
     }
@@ -238,6 +288,62 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function nonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
+}
+
+function normalizeErrorField(value: unknown): string | undefined {
+  return nonEmptyString(value) ? value.trim() : undefined;
+}
+
+/**
+ * These statuses describe a transient transport/provider condition. This is
+ * deliberately only classification: NewApiProvider never retries itself.
+ */
+function isRetryableStatus(status: number | undefined): boolean {
+  return (
+    status === 408 ||
+    status === 425 ||
+    status === 429 ||
+    (status !== undefined && status >= 500 && status <= 599)
+  );
+}
+
+type ExtractedProviderError = {
+  message?: string;
+  code?: string;
+  requestId?: string;
+};
+
+function extractProviderError(payload: unknown): ExtractedProviderError {
+  if (!isRecord(payload)) return {};
+  const nested = isRecord(payload.error) ? payload.error : undefined;
+  const message =
+    normalizeErrorField(nested?.message) ??
+    (typeof payload.error === 'string' ? normalizeErrorField(payload.error) : undefined) ??
+    normalizeErrorField(payload.message);
+  const code =
+    normalizeErrorField(nested?.code) ??
+    normalizeErrorField(nested?.type) ??
+    normalizeErrorField(payload.code) ??
+    normalizeErrorField(payload.type);
+  const requestId =
+    normalizeErrorField(nested?.request_id) ??
+    normalizeErrorField(nested?.requestId) ??
+    normalizeErrorField(payload.request_id) ??
+    normalizeErrorField(payload.requestId);
+  return { message, code, requestId };
+}
+
+function responseRequestId(response: Response): string | undefined {
+  const headers = (response as Response & { headers?: Headers }).headers;
+  for (const name of ['x-request-id', 'x-requestid', 'request-id', 'openai-request-id']) {
+    const value = headers?.get?.(name);
+    if (nonEmptyString(value)) return value.trim();
+  }
+  return undefined;
+}
+
+function getErrorName(error: unknown): string | undefined {
+  return isRecord(error) && typeof error.name === 'string' ? error.name : undefined;
 }
 
 function normalizedMimeType(value: unknown): string | undefined {
@@ -365,9 +471,20 @@ function formatFromMimeType(mimeType: string | undefined): string | undefined {
 function mimeTypeFromUrl(url: string, mediaType: 'image' | 'audio'): string | undefined {
   try {
     const pathname = new URL(url).pathname.toLowerCase();
-    const extension = pathname.slice(pathname.lastIndexOf('.') + 1);
+    const filename = pathname.slice(pathname.lastIndexOf('/') + 1);
+    const dot = filename.lastIndexOf('.');
+    if (dot <= 0 || dot === filename.length - 1) return undefined;
+    const extension = filename.slice(dot + 1);
     if (mediaType === 'image') {
+      if (!['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif'].includes(extension)) return undefined;
       return imageMimeType(extension);
+    }
+    if (
+      !['mp3', 'wav', 'opus', 'aac', 'flac', 'ogg', 'oga', 'webm', 'pcm', 'm4a', 'mp4'].includes(
+        extension,
+      )
+    ) {
+      return undefined;
     }
     return audioMimeType(extension);
   } catch {
@@ -415,10 +532,31 @@ function parseImageOutput(payload: unknown, snapshot: RunSnapshot): ImageProvide
   const item = firstMediaItem(payload);
   if (!item) throw new NewApiProviderError('New API 图片响应缺少 data[0] 内容');
 
-  const format = outputFormat(snapshot.parameters, item.format, item.output_format);
-  const mimeType =
-    normalizedMimeType(item.mime_type ?? item.mimeType ?? item.content_type ?? item.contentType) ??
-    imageMimeType(format);
+  // New API's image gateway returns `output_format` alongside `data`, while
+  // other OpenAI-compatible gateways put the same metadata on data[0]. Keep
+  // the response-level value first so the persisted MIME type matches the
+  // bytes actually returned by the provider.
+  const response = isRecord(payload) ? payload : undefined;
+  const format = outputFormat(
+    snapshot.parameters,
+    response?.output_format,
+    response?.outputFormat,
+    response?.format,
+    item.format,
+    item.output_format,
+    item.outputFormat,
+  );
+  const explicitMimeType = normalizedMimeType(
+    response?.mime_type ??
+      response?.mimeType ??
+      response?.content_type ??
+      response?.contentType ??
+      item.mime_type ??
+      item.mimeType ??
+      item.content_type ??
+      item.contentType,
+  );
+  const mimeType = explicitMimeType ?? imageMimeType(format);
   const imageUrlValue = item.url ?? item.image_url ?? item.imageUrl;
   const imageDataValue = item.data;
   const imageDataUrl =
@@ -440,17 +578,13 @@ function parseImageOutput(payload: unknown, snapshot: RunSnapshot): ImageProvide
     }
     const safeUrl = providerRemoteUrl(url);
     if (safeUrl) {
+      const urlMimeType = mimeTypeFromUrl(safeUrl, 'image');
       return {
         mediaType: 'image',
         kind: 'url',
         url: safeUrl,
-        mimeType:
-          normalizedMimeType(
-            item.mime_type ?? item.mimeType ?? item.content_type ?? item.contentType,
-          ) ??
-          mimeTypeFromUrl(safeUrl, 'image') ??
-          mimeType,
-        format: format ?? formatFromMimeType(mimeTypeFromUrl(safeUrl, 'image')),
+        mimeType: explicitMimeType ?? (format ? imageMimeType(format) : (urlMimeType ?? mimeType)),
+        format: format ?? formatFromMimeType(urlMimeType),
       };
     }
   }

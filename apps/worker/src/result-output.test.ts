@@ -50,6 +50,40 @@ describe('provider output normalization', () => {
     });
   });
 
+  it('preserves top-level New API image format and MIME hints', () => {
+    expect(
+      normalizeProviderOutput(
+        {
+          output_format: 'webp',
+          mime_type: 'image/webp',
+          data: [{ b64_json: 'd2VicC1pbWFnZQ==' }],
+        },
+        'image',
+      ),
+    ).toMatchObject({
+      mediaType: 'image',
+      kind: 'base64',
+      base64: 'd2VicC1pbWFnZQ==',
+      mimeType: 'image/webp',
+      format: 'webp',
+    });
+
+    expect(
+      normalizeProviderOutput(
+        {
+          outputFormat: 'jpeg',
+          data: [{ b64_json: 'anBlZy1pbWFnZQ==' }],
+        },
+        'image',
+      ),
+    ).toMatchObject({
+      mediaType: 'image',
+      kind: 'base64',
+      mimeType: 'image/jpeg',
+      format: 'jpeg',
+    });
+  });
+
   it('normalizes canonical provider output without leaking unknown fields', () => {
     const output = normalizeProviderOutput(
       {

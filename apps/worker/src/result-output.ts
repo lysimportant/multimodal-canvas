@@ -223,7 +223,10 @@ function normalizeBinaryOutput(
 ): ProviderBinaryOutput {
   const mimeType =
     normalizeMimeType(recordMimeType(record), mediaType) ??
-    defaultMimeType(mediaType, firstString(record.format));
+    defaultMimeType(
+      mediaType,
+      firstString(record.format, record.fileExtension, record.output_format, record.outputFormat),
+    );
   const dataUrl = firstDataUrl(
     record.url,
     record.contentUrl,
@@ -256,7 +259,12 @@ function normalizeBinaryOutput(
     record.audio,
     record.data,
   );
-  const format = firstString(record.format, record.fileExtension);
+  const format = firstString(
+    record.format,
+    record.fileExtension,
+    record.output_format,
+    record.outputFormat,
+  );
   if (!url && !base64) {
     throw new ProviderOutputError(`${mediaType} provider output has no URL or base64 content`);
   }

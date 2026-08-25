@@ -4,7 +4,7 @@
 
 项目的核心体验是：在左侧资源库管理素材，在右侧无限画布上组合节点，通过多个参考输入驱动生成任务，并在任务完成后将结果保存回资源库。所有模型调用都经过本项目 API 和 New API，浏览器不会直接访问上游模型服务。
 
-> 当前状态：已完成 monorepo foundation、资产上传与归档、项目/画布保存、Mock 运行状态机、多参考端口、AI 设置、生产持久化切片和第一方用户会话鉴权。Web 端现在可以管理资源生命周期、创建和编辑四类媒体节点、连接多个角色化参考输入、配置 New API、刷新模型并提交单节点运行；项目级运行历史、画布 RTL 交互测试、设置焦点管理、桌面/移动视觉验收、归档结果版本展示和 Chromium smoke 验收已接入。New API Worker 现在解析真实文本、图片和音频响应，并在配置 `DATABASE_URL` 时把结果写入与 API 相同的 Prisma/S3（或文件）资产版本链路；未配置数据库的本地开发继续使用内存存储。当前资产上传支持 multipart、S3/MinIO 预签名直传、SHA-256 校验和可跨实例恢复的上传会话；生产环境资产原始内容、版本和派生内容均要求用户会话并按用户隔离，内容访问支持 S3/MinIO 预签名 GET 或短时 HMAC URL。已用测试凭据验证文本生成成功；图片协议解析已覆盖 URL/base64，但该凭据当前没有可用 image channel，真实生图验收等待渠道开通。真实视频接口契约仍待接入。收费、套餐、累计额度和 usage 对账暂缓，当前只保留单次成本上限与并发保护。
+> 当前状态：已完成 monorepo foundation、资产上传与归档、项目/画布保存、Mock 运行状态机、多参考端口、AI 设置、生产持久化切片和第一方用户会话鉴权。Web 端现在可以管理资源生命周期、创建和编辑四类媒体节点、连接多个角色化参考输入、配置 New API、刷新模型并提交单节点运行；项目级运行历史、画布 RTL 交互测试、设置焦点管理、桌面/移动视觉验收、归档结果版本展示和 Chromium smoke 验收已接入。New API Worker 现在解析真实文本、图片和音频响应，并在配置 `DATABASE_URL` 时把结果写入与 API 相同的 Prisma/S3（或文件）资产版本链路；未配置数据库的本地开发继续使用内存存储。当前资产上传支持 multipart、S3/MinIO 预签名直传、SHA-256 校验和可跨实例恢复的上传会话；生产环境资产原始内容、版本和派生内容均要求用户会话并按用户隔离，内容访问支持 S3/MinIO 预签名 GET 或短时 HMAC URL。模型目录刷新兼容常见网关响应（包含真实 New API `/models` 形状）、保留限制和能力覆盖并保留旧缓存，Provider/Worker 会读取图片顶层 `output_format` 并提供状态、错误码、请求 ID 和可重试性诊断，但不会在生成层自动重试。真实图片渠道已用 `gpt-image-2` 验证成功（`/v1/images/generations` 返回 base64 图片）。真实视频接口契约仍待接入。收费、套餐、累计额度和 usage 对账暂缓，当前只保留单次成本上限与并发保护。
 
 详细的阶段状态、优先级、依赖和验收条件见 [`TODO.md`](./TODO.md)。
 
@@ -271,7 +271,7 @@ pnpm test:e2e
 - `pnpm format:check`
 - `pnpm lint`
 - `pnpm typecheck`
-- `pnpm test`（API 99 通过、1 跳过；domain 11、providers 4、worker 6、Web 43、observability 14；UI 无测试文件；无 `TEST_DATABASE_URL` 时 Prisma 集成测试安全跳过）
+- `pnpm test`（API 105 通过、1 跳过；domain 11、providers 15、worker 20、Web 43、observability 14；UI 无测试文件；无 `TEST_DATABASE_URL` 时 Prisma 集成测试安全跳过）
 - `pnpm build`
 - `pnpm test:e2e`（Chromium 10 项通过，含 Mock 默认模型切换、Clipboard 权限拒绝和非法文本回退）
 - `DATABASE_URL=... pnpm db:validate`
