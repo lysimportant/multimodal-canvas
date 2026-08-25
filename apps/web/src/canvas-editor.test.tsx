@@ -1,0 +1,410 @@
+import '@testing-library/jest-dom/vitest';
+
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { createContext, createElement } from 'react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import type { Asset, CanvasDocument } from '@multimodal-canvas/domain';
+
+type FlowConnection = {
+  source: string;
+  sourceHandle: string | null;
+  target: string;
+  targetHandle: string | null;
+};
+
+type FlowContextValue = {
+  connectHandle: (nodeId: string, type: 'source' | 'target', handleId: string | null) => void;
+};
+
+const flowContext = createContext<FlowContextValue | null>(null);
+const nodeContext = createContext<string | null>(null);
+
+function applyNodeChanges<
+  T extends { id: string; position?: { x: number; y: number }; selected?: boolean },
+>(current: T[], changes: Array<Record<string, unknown>>) {
+  return changes.reduce<T[]>((nodes, change) => {
+    const id = typeof change.id === 'string' ? change.id : undefined;
+    if (change.type === 'remove' && id) return nodes.filter((node) => node.id !== id);
+    if (change.type === 'add' && change.item) return [...nodes, change.item as T];
+    if (change.type === 'replace' && id && change.item) {
+      return nodes.map((node) => (node.id === id ? (change.item as T) : node));
+    }
+    if (change.type === 'select' && id) {
+      return nodes.map((node) =>
+        node.id === id ? { ...node, selected: Boolean(change.selected) } : node,
+      );
+    }
+    if (change.type === 'position' && id && change.position) {
+      return nodes.map((node) =>
+        node.id === id ? { ...node, position: change.position as { x: number; y: number } } : node,
+      );
+    }
+    return nodes;
+  }, current);
+}
+
+function applyEdgeChanges<T extends { id: string }>(
+  current: T[],
+  changes: Array<Record<string, unknown>>,
+) {
+  return changes.reduce<T[]>((edges, change) => {
+    const id = typeof change.id === 'string' ? change.id : undefined;
+    if (change.type === 'remove' && id) return edges.filter((edge) => edge.id !== id);
+    if (change.type === 'add' && change.item) return [...edges, change.item as T];
+    if (change.type === 'replace' && id && change.item) {
+      return edges.map((edge) => (edge.id === id ? (change.item as T) : edge));
+    }
+    if (change.type === 'select' && id) {
+      return edges.map((edge) =>
+        edge.id === id ? { ...edge, selected: Boolean(change.selected) } : edge,
+      );
+    }
+    return edges;
+  }, current);
+}
+
+vi.mock('@xyflow/react', async () => {
+  const React = await import('react');
+
+  function ReactFlowProvider({ children }: { children: React.ReactNode }) {
+    return <>{children}</>;
+  }
+
+  function useNodesState<T>(initial: T[]) {
+    const [nodes, setNodes] = React.useState(initial);
+    const applyChanges = React.useCallback((changes: Array<Record<string, unknown>>) => {
+      setNodes(
+        (current) =>
+          applyNodeChanges(
+            current as Array<{
+              id: string;
+              position?: { x: number; y: number };
+              selected?: boolean;
+            }>,
+            changes,
+          ) as T[],
+      );
+    }, []);
+    return [nodes, setNodes, applyChanges] as const;
+  }
+
+  function useEdgesState<T>(initial: T[]) {
+    const [edges, setEdges] = React.useState(initial);
+    const applyChanges = React.useCallback((changes: Array<Record<string, unknown>>) => {
+      setEdges((current) => applyEdgeChanges(current as Array<{ id: string }>, changes) as T[]);
+    }, []);
+    return [edges, setEdges, applyChanges] as const;
+  }
+
+  function useReactFlow() {
+    return {
+      screenToFlowPosition: ({ x, y }: { x: number; y: number }) => ({ x, y }),
+    };
+  }
+
+  function Handle({
+    type = 'source',
+    id = null,
+    ...props
+  }: {
+    type?: 'source' | 'target';
+    id?: string | null;
+    [key: string]: unknown;
+  }) {
+    const nodeId = React.useContext(nodeContext);
+    const flow = React.useContext(flowContext);
+    return (
+      <button
+        type="button"
+        data-testid="flow-handle"
+        data-handleid={id}
+        data-nodeid={nodeId}
+        data-handle-type={type}
+        aria-label={`${type === 'source' ? '输出' : '输入'} ${id ?? ''}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          if (nodeId && flow) flow.connectHandle(nodeId, type, id);
+        }}
+        {...props}
+      />
+    );
+  }
+
+  function ReactFlow({
+    nodes,
+    edges,
+    nodeTypes,
+    onNodesChange,
+    onNodeClick,
+    onConnect,
+    children,
+  }: {
+    nodes: Array<{ id: string; type?: string; data: unknown; selected?: boolean }>;
+    edges: Array<{ id: string; source: string; target: string }>;
+    nodeTypes: Record<string, React.ComponentType<{ data: unknown; selected?: boolean }>>;
+    onNodesChange?: (changes: Array<Record<string, unknown>>) => void;
+    onNodeClick?: (event: unknown, node: unknown) => void;
+    onConnect?: (connection: FlowConnection) => void;
+    children?: React.ReactNode;
+  }) {
+    const [pending, setPending] = React.useState<{
+      nodeId: string;
+      handleId: string | null;
+    } | null>(null);
+
+    const connectHandle = React.useCallback(
+      (nodeId: string, type: 'source' | 'target', handleId: string | null) => {
+        if (!pending) {
+          if (type === 'source') setPending({ nodeId, handleId });
+          return;
+        }
+        if (type === 'target') {
+          onConnect?.({
+            source: pending.nodeId,
+            sourceHandle: pending.handleId,
+            target: nodeId,
+            targetHandle: handleId,
+          });
+          setPending(null);
+          return;
+        }
+        setPending({ nodeId, handleId });
+      },
+      [onConnect, pending],
+    );
+
+    return (
+      <flowContext.Provider value={{ connectHandle }}>
+        <div data-testid="rf__wrapper" className="react-flow" role="application">
+          <div className="react-flow__nodes">
+            {nodes.map((node) => {
+              const NodeComponent = nodeTypes[node.type ?? 'default'];
+              if (!NodeComponent) return null;
+              return (
+                <div
+                  key={node.id}
+                  data-testid="flow-node"
+                  data-node-id={node.id}
+                  className="react-flow__node"
+                  onClick={(event) => {
+                    onNodeClick?.(event, node);
+                    onNodesChange?.([
+                      ...nodes
+                        .filter((item) => item.id !== node.id && item.selected)
+                        .map((item) => ({ type: 'select', id: item.id, selected: false })),
+                      { type: 'select', id: node.id, selected: true },
+                    ]);
+                  }}
+                >
+                  <nodeContext.Provider value={node.id}>
+                    <NodeComponent data={node.data} selected={Boolean(node.selected)} />
+                  </nodeContext.Provider>
+                </div>
+              );
+            })}
+          </div>
+          <div className="react-flow__edges">
+            {edges.map((edge) => (
+              <div
+                key={edge.id}
+                data-testid="flow-edge"
+                data-edge-id={edge.id}
+                data-source={edge.source}
+                data-target={edge.target}
+              />
+            ))}
+          </div>
+          {children}
+        </div>
+      </flowContext.Provider>
+    );
+  }
+
+  return {
+    Background: () => null,
+    BackgroundVariant: { Dots: 'dots', Lines: 'lines', Cross: 'cross' },
+    Controls: () => null,
+    Handle,
+    Position: { Left: 'left', Right: 'right', Top: 'top', Bottom: 'bottom' },
+    ReactFlow,
+    ReactFlowProvider,
+    useEdgesState,
+    useNodesState,
+    useReactFlow,
+  };
+});
+
+import { App } from './App';
+
+class ResizeObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
+const project = {
+  id: 'project_canvas_test',
+  name: '画布交互测试',
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+};
+
+const assets: Asset[] = [
+  {
+    id: 'asset-reference',
+    name: 'reference.png',
+    mediaType: 'image',
+    mimeType: 'image/png',
+    sizeBytes: 1024,
+    status: 'ready',
+    contentUrl: '/v1/assets/asset-reference/content',
+    tags: [],
+  },
+];
+
+const emptyCanvas: CanvasDocument = { revision: 0, nodes: [], edges: [] };
+const jsonResponse = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+
+let canvas: CanvasDocument;
+let fetchMock: ReturnType<typeof vi.fn>;
+
+function installApiMock() {
+  fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const rawUrl =
+      typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const url = new URL(rawUrl, 'http://localhost:3000');
+    const method = init?.method?.toUpperCase() ?? 'GET';
+
+    if (url.pathname === '/v1/models' && method === 'GET') return jsonResponse({ models: [] });
+    if (url.pathname === '/v1/assets' && method === 'GET') return jsonResponse({ assets });
+    if (url.pathname === '/v1/projects' && method === 'GET') {
+      return jsonResponse({ projects: [project] });
+    }
+    if (url.pathname === '/v1/projects' && method === 'POST') return jsonResponse({ project });
+    if (url.pathname === `/v1/projects/${project.id}/canvas` && method === 'GET') {
+      return jsonResponse({ canvas });
+    }
+    if (url.pathname === `/v1/projects/${project.id}/canvas` && method === 'PATCH') {
+      canvas = JSON.parse(String(init?.body ?? '{}')) as CanvasDocument;
+      canvas.revision += 1;
+      return jsonResponse({ canvas });
+    }
+    if (url.pathname === `/v1/projects/${project.id}` && method === 'GET') {
+      return jsonResponse({ project });
+    }
+    throw new Error(`Unhandled mock request: ${method} ${url.pathname}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+}
+
+async function renderCanvas() {
+  const user = userEvent.setup();
+  render(createElement(App));
+  await screen.findByRole('button', { name: '新建文字生成节点' });
+  await waitFor(() => expect(screen.getByRole('application')).toBeInTheDocument());
+  return { user };
+}
+
+function flowNodes() {
+  return screen.queryAllByTestId('flow-node');
+}
+
+function findNodeByLabel(label: string) {
+  return flowNodes().find((node) => within(node).queryAllByText(label).length > 0);
+}
+
+function handleFor(node: HTMLElement, handleId: string) {
+  const handle = node.querySelector(`[data-handleid="${handleId}"]`);
+  if (!(handle instanceof HTMLElement)) throw new Error(`Missing handle ${handleId}`);
+  return handle;
+}
+
+describe('画布编辑器交互', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    canvas = structuredClone(emptyCanvas);
+    vi.stubGlobal('ResizeObserver', ResizeObserverStub);
+    installApiMock();
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it('通过工具栏和资源库创建生成节点与来源节点', async () => {
+    const { user } = await renderCanvas();
+
+    await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
+    await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
+
+    expect(findNodeByLabel('图片生成节点')).toBeTruthy();
+    expect(findNodeByLabel('reference.png')).toBeTruthy();
+    expect(flowNodes()).toHaveLength(2);
+    expect(screen.getByRole('status')).toHaveTextContent('reference.png 已添加到画布');
+  });
+
+  it('支持复制粘贴，并能删除选中节点', async () => {
+    const { user } = await renderCanvas();
+
+    await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
+    const original = findNodeByLabel('文字生成节点');
+    expect(original).toBeTruthy();
+    await user.click(original!);
+    await user.keyboard('{Control>}c{/Control}');
+    await user.keyboard('{Control>}v{/Control}');
+
+    await waitFor(() => expect(flowNodes()).toHaveLength(2));
+    expect(screen.getAllByText('文字生成节点').length).toBeGreaterThanOrEqual(2);
+
+    await user.keyboard('{Delete}');
+    await waitFor(() => expect(flowNodes()).toHaveLength(1));
+  });
+
+  it('支持撤销和重做节点删除', async () => {
+    const { user } = await renderCanvas();
+
+    await user.click(screen.getByRole('button', { name: '新建音频生成节点' }));
+    const node = findNodeByLabel('音频生成节点');
+    await user.click(node!);
+    await user.keyboard('{Delete}');
+    await waitFor(() => expect(flowNodes()).toHaveLength(0));
+
+    await user.click(screen.getByRole('button', { name: '撤销' }));
+    await waitFor(() => expect(flowNodes()).toHaveLength(1));
+    expect(findNodeByLabel('音频生成节点')).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: '重做' }));
+    await waitFor(() => expect(flowNodes()).toHaveLength(0));
+  });
+
+  it('阻止非法端口连接，并提示循环依赖', async () => {
+    const { user } = await renderCanvas();
+
+    await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
+    await user.click(screen.getByRole('button', { name: '新建视频生成节点' }));
+    const imageNode = findNodeByLabel('图片生成节点')!;
+    const videoNode = findNodeByLabel('视频生成节点')!;
+
+    // 图片不能接到视频的 audioTrack 端口，连接应被静默拒绝。
+    await user.click(handleFor(imageNode, 'output:image'));
+    await user.click(handleFor(videoNode, 'input:audioTrack'));
+    expect(screen.queryAllByTestId('flow-edge')).toHaveLength(0);
+
+    // 图片角色参考是合法连线，随后反向连线会形成循环依赖。
+    await user.click(handleFor(imageNode, 'output:image'));
+    await user.click(handleFor(videoNode, 'input:character'));
+    await waitFor(() => expect(screen.queryAllByTestId('flow-edge')).toHaveLength(1));
+
+    await user.click(handleFor(videoNode, 'output:video'));
+    await user.click(handleFor(imageNode, 'input:content'));
+    expect(screen.getByRole('alert')).toHaveTextContent('不能创建循环依赖');
+    expect(screen.queryAllByTestId('flow-edge')).toHaveLength(1);
+  });
+});

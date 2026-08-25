@@ -10,5 +10,6 @@ export default defineConfig({
     environment: 'jsdom',
     restoreMocks: true,
     clearMocks: true,
+    exclude: ['e2e/**', 'node_modules/**'],
   },
 });

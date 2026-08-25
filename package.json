@@ -11,6 +11,7 @@
     "format:check": "prettier --check .",
     "lint": "turbo run lint",
     "test": "turbo run test",
+    "test:e2e": "pnpm --filter @multimodal-canvas/web test:e2e",
     "typecheck": "turbo run typecheck"
   },
   "devDependencies": {
