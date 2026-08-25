@@ -35,7 +35,7 @@ describe('API authentication guard', () => {
     }
   });
 
-  it('returns 503 for protected routes when production has no API_AUTH_TOKEN', async () => {
+  it('returns 503 for protected routes when production has no authentication configuration', async () => {
     vi.stubEnv('NODE_ENV', 'production');
     vi.stubEnv('API_AUTH_TOKEN', '');
     const app = buildApp({ logger: false });
@@ -46,7 +46,9 @@ describe('API authentication guard', () => {
       const response = await app.inject({ method: 'GET', url: '/v1/projects/project_missing' });
 
       expect(response.statusCode).toBe(503);
-      expect(response.json()).toEqual({ error: 'API_AUTH_TOKEN is required in production' });
+      expect(response.json()).toEqual({
+        error: 'API_AUTH_TOKEN or API_JWT_SECRET is required in production',
+      });
     } finally {
       await app.close();
     }
@@ -73,6 +75,76 @@ describe('API authentication guard', () => {
       expect(missing.statusCode).toBe(401);
       expect(wrong.statusCode).toBe(401);
       expect(valid.statusCode).toBe(404);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('requires an exp claim for production JWTs and keeps platform settings on service auth', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('API_AUTH_TOKEN', 'test-api-token');
+    vi.stubEnv('API_JWT_SECRET', 'test-jwt-secret');
+    const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+    const header = encode({ alg: 'HS256', typ: 'JWT' });
+    const sign = (payload: Record<string, unknown>) => {
+      const body = encode(payload);
+      const signature = createHmac('sha256', 'test-jwt-secret')
+        .update(`${header}.${body}`)
+        .digest('base64url');
+      return `Bearer ${header}.${body}.${signature}`;
+    };
+    const userId = '123e4567-e89b-12d3-a456-426614174000';
+    const app = buildApp({ logger: false, userExists: async () => true });
+
+    try {
+      const noExpiry = await app.inject({
+        method: 'GET',
+        url: '/v1/projects',
+        headers: { authorization: sign({ sub: userId }) },
+      });
+      const jwtSettings = await app.inject({
+        method: 'GET',
+        url: '/v1/settings/ai',
+        headers: { authorization: sign({ sub: userId, exp: Math.floor(Date.now() / 1000) + 300 }) },
+      });
+      const serviceSettings = await app.inject({
+        method: 'GET',
+        url: '/v1/settings/ai',
+        headers: { authorization: 'Bearer test-api-token' },
+      });
+
+      expect(noExpiry.statusCode).toBe(401);
+      expect(jwtSettings.statusCode).toBe(403);
+      expect(jwtSettings.json()).toEqual({
+        error: 'platform credential access is not permitted',
+      });
+      expect(serviceSettings.statusCode).toBe(200);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('does not accept production JWTs without a user-store lookup', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('API_JWT_SECRET', 'test-jwt-secret');
+    const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+    const header = encode({ alg: 'HS256', typ: 'JWT' });
+    const body = encode({
+      sub: '123e4567-e89b-12d3-a456-426614174000',
+      exp: Math.floor(Date.now() / 1000) + 300,
+    });
+    const signature = createHmac('sha256', 'test-jwt-secret')
+      .update(`${header}.${body}`)
+      .digest('base64url');
+    const app = buildApp({ logger: false });
+    try {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v1/projects',
+        headers: { authorization: `Bearer ${header}.${body}.${signature}` },
+      });
+      expect(response.statusCode).toBe(503);
+      expect(response.json()).toEqual({ error: 'authentication service unavailable' });
     } finally {
       await app.close();
     }
@@ -113,6 +185,18 @@ describe('API authentication guard', () => {
       });
       expect(response.statusCode).toBe(400);
       expect(response.json()).toEqual({ error: 'webhook event id is required' });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('does not exempt unknown webhook paths from the authentication guard', async () => {
+    vi.stubEnv('NODE_ENV', 'test');
+    vi.stubEnv('API_AUTH_TOKEN', 'test-api-token');
+    const app = buildApp({ logger: false });
+    try {
+      const response = await app.inject({ method: 'GET', url: '/v1/webhooks/unknown' });
+      expect(response.statusCode).toBe(401);
     } finally {
       await app.close();
     }

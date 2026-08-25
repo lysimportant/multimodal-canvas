@@ -11,6 +11,8 @@ export type AuthPrincipal = {
 export type AuthenticationOptions = {
   apiToken?: string;
   jwtSecret?: string;
+  /** Reject JWTs without an exp claim when the deployment requires short-lived tokens. */
+  requireExpiration?: boolean;
   now?: () => number;
 };
 
@@ -46,7 +48,12 @@ export function authenticateBearer(
   }
 
   if (!options.jwtSecret) return { ok: false, reason: 'invalid' };
-  return verifyHs256Jwt(token, options.jwtSecret, options.now ?? (() => Date.now()));
+  return verifyHs256Jwt(
+    token,
+    options.jwtSecret,
+    options.now ?? (() => Date.now()),
+    options.requireExpiration ?? false,
+  );
 }
 
 export function extractBearerToken(authorization: string | undefined): string | undefined {
@@ -55,7 +62,12 @@ export function extractBearerToken(authorization: string | undefined): string | 
   return token || undefined;
 }
 
-function verifyHs256Jwt(token: string, secret: string, now: () => number): AuthenticationResult {
+function verifyHs256Jwt(
+  token: string,
+  secret: string,
+  now: () => number,
+  requireExpiration: boolean,
+): AuthenticationResult {
   const parts = token.split('.');
   if (parts.length !== 3) return { ok: false, reason: 'invalid' };
 
@@ -84,6 +96,7 @@ function verifyHs256Jwt(token: string, secret: string, now: () => number): Authe
 
   const nowSeconds = Math.floor(now() / 1000);
   const expiresAt = numericClaim(payload.exp);
+  if (requireExpiration && expiresAt === undefined) return { ok: false, reason: 'invalid' };
   if (expiresAt !== undefined && nowSeconds >= expiresAt) return { ok: false, reason: 'expired' };
   const notBefore = numericClaim(payload.nbf);
   if (notBefore !== undefined && nowSeconds < notBefore) {

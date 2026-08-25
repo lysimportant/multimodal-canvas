@@ -93,6 +93,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const uploadSessionStore = options.uploadSessionStore ?? new MemoryUploadSessionStore();
   const authToken = process.env.API_AUTH_TOKEN?.trim();
   const jwtSecret = process.env.API_JWT_SECRET?.trim();
+  const requireJwtExpiration = process.env.NODE_ENV === 'production';
   const requestPrincipals = new WeakMap<object, AuthPrincipal>();
   const maxActiveRunsPerProject = parsePositiveInt(process.env.RUN_MAX_ACTIVE_PER_PROJECT);
   const rateLimitPerMinute = parsePositiveInt(process.env.API_RATE_LIMIT_PER_MINUTE);
@@ -148,10 +149,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.addHook('onRequest', async (request, reply) => {
     const pathname = request.url.split('?')[0];
-    if (pathname === '/health' || pathname.startsWith('/v1/webhooks/')) return;
+    if (pathname === '/health' || pathname === '/v1/webhooks/newapi') return;
     if (!authToken && !jwtSecret) {
       if (process.env.NODE_ENV === 'production') {
-        return reply.code(503).send({ error: 'API_AUTH_TOKEN is required in production' });
+        return reply
+          .code(503)
+          .send({ error: 'API_AUTH_TOKEN or API_JWT_SECRET is required in production' });
       }
       requestPrincipals.set(request, { method: 'anonymous' });
       return;
@@ -159,9 +162,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const result = authenticateBearer(request.headers.authorization, {
       apiToken: authToken,
       jwtSecret,
+      requireExpiration: requireJwtExpiration,
     });
     if (!result.ok) {
       return reply.code(401).send({ error: 'authentication required' });
+    }
+    if (result.principal.method === 'jwt' && !userExists && process.env.NODE_ENV === 'production') {
+      request.log.error('JWT authentication requires a production user store');
+      return reply.code(503).send({ error: 'authentication service unavailable' });
     }
     if (result.principal.userId && userExists) {
       try {
@@ -229,9 +237,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return reply.code(202).send({ accepted: true, ...result, eventId });
   });
 
-  app.get('/v1/settings/ai', async () => ({ settings: await settingsStore.get() }));
+  app.get('/v1/settings/ai', async (request, reply) => {
+    if (!canManagePlatformSettings(requestPrincipals, request)) {
+      return reply.code(403).send({ error: 'platform credential access is not permitted' });
+    }
+    return { settings: await settingsStore.get() };
+  });
 
   app.patch('/v1/settings/ai', async (request, reply) => {
+    if (!canManagePlatformSettings(requestPrincipals, request)) {
+      return reply.code(403).send({ error: 'platform credential access is not permitted' });
+    }
     const result = z
       .object({
         baseUrl: z
@@ -258,13 +274,24 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return { settings: await settingsStore.update(result.data) };
   });
 
-  app.delete('/v1/settings/ai/credentials', async () => ({
-    settings: await settingsStore.removeCredentials(),
-  }));
+  app.delete('/v1/settings/ai/credentials', async (request, reply) => {
+    if (!canManagePlatformSettings(requestPrincipals, request)) {
+      return reply.code(403).send({ error: 'platform credential access is not permitted' });
+    }
+    return { settings: await settingsStore.removeCredentials() };
+  });
 
-  app.post('/v1/settings/ai/test', async () => ({ result: await settingsStore.testConnection() }));
+  app.post('/v1/settings/ai/test', async (request, reply) => {
+    if (!canManagePlatformSettings(requestPrincipals, request)) {
+      return reply.code(403).send({ error: 'platform credential access is not permitted' });
+    }
+    return { result: await settingsStore.testConnection() };
+  });
 
   app.post('/v1/settings/ai/models/refresh', async (request, reply) => {
+    if (!canManagePlatformSettings(requestPrincipals, request)) {
+      return reply.code(403).send({ error: 'platform credential access is not permitted' });
+    }
     try {
       return { models: await settingsStore.refreshModels() };
     } catch (error) {
@@ -905,6 +932,19 @@ function uploadScope(
 ): UploadSessionScope {
   const ownerId = principals.get(request)?.userId;
   return ownerId ? { ownerId } : {};
+}
+
+/**
+ * Current AI credentials are platform-wide records. A JWT identifies an end
+ * user, but it does not convey an administrator role, so only the configured
+ * service token may manage those credentials until project-scoped credentials
+ * and roles are introduced.
+ */
+function canManagePlatformSettings(
+  principals: WeakMap<object, AuthPrincipal>,
+  request: object,
+): boolean {
+  return principals.get(request)?.method !== 'jwt';
 }
 
 function safeEqual(left: string, right: string) {

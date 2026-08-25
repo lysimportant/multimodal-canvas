@@ -65,4 +65,26 @@ describe('Bearer authentication', () => {
       reason: 'invalid',
     });
   });
+
+  it('can require an expiration claim for production JWT boundaries', () => {
+    const withoutExpiry = token({ sub: '123e4567-e89b-12d3-a456-426614174000' });
+    expect(
+      authenticateBearer(`Bearer ${withoutExpiry}`, {
+        jwtSecret: 'test-secret',
+        requireExpiration: true,
+      }),
+    ).toEqual({ ok: false, reason: 'invalid' });
+
+    const withExpiry = token({
+      sub: '123e4567-e89b-12d3-a456-426614174000',
+      exp: 2_000,
+    });
+    expect(
+      authenticateBearer(`Bearer ${withExpiry}`, {
+        jwtSecret: 'test-secret',
+        requireExpiration: true,
+        now: () => 1_500_000,
+      }),
+    ).toMatchObject({ ok: true, principal: { method: 'jwt' } });
+  });
 });
