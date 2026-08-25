@@ -4,7 +4,7 @@
 
 项目的核心体验是：在左侧资源库管理素材，在右侧无限画布上组合节点，通过多个参考输入驱动生成任务，并在任务完成后将结果保存回资源库。所有模型调用都经过本项目 API 和 New API，浏览器不会直接访问上游模型服务。
 
-> 当前状态：已完成 monorepo foundation、资产上传与归档、资产到画布的来源节点切片（`v0.2.0-assets`）、项目/画布保存（`v0.3.0-project-canvas`）、Mock 运行状态机（`v0.4.0-mock-runs`）和多参考端口/AI 设置垂直切片。Web 端现在可以管理资源生命周期、为节点连接多个角色化参考输入、配置 New API、刷新模型并提交单节点运行；API 生产入口使用 BullMQ，并在配置 `DATABASE_URL` 时使用 Prisma/PostgreSQL 保存项目、画布、资产及 AI 设置/模型目录，测试及未配置数据库的本地开发继续使用内存存储。当前资产上传支持 multipart、S3/MinIO 预签名直传、SHA-256 校验和可跨实例恢复的上传会话；成本上限、OTLP/Sentry best-effort exporter 和设置页交互测试已接入，完整用户会话鉴权与真实视频接口契约仍待接入。
+> 当前状态：已完成 monorepo foundation、资产上传与归档、项目/画布保存、Mock 运行状态机、多参考端口、AI 设置与生产持久化切片。Web 端现在可以管理资源生命周期、创建和编辑四类媒体节点、连接多个角色化参考输入、配置 New API、刷新模型并提交单节点运行；项目级运行历史、画布 RTL 交互测试和 Chromium smoke 验收已接入。API 生产入口使用 BullMQ，并在配置 `DATABASE_URL` 时使用 Prisma/PostgreSQL 保存项目、画布、资产及 AI 设置/模型目录，未配置数据库的本地开发继续使用内存存储。当前资产上传支持 multipart、S3/MinIO 预签名直传、SHA-256 校验和可跨实例恢复的上传会话；完整用户会话鉴权与真实视频接口契约仍待接入。收费、套餐、累计额度和 usage 对账暂缓，当前只保留单次成本上限与并发保护。
 
 详细的阶段状态、优先级、依赖和验收条件见 [`TODO.md`](./TODO.md)。
 
@@ -127,6 +127,7 @@ POST   /v1/projects
 GET    /v1/projects/:projectId
 GET    /v1/projects/:projectId/canvas
 PATCH  /v1/projects/:projectId/canvas
+GET    /v1/projects/:projectId/runs
 
 POST   /v1/assets/uploads
 POST   /v1/assets/uploads/complete
@@ -165,6 +166,7 @@ POST   /v1/webhooks/newapi
 - 大文件写入 S3 或本地 MinIO，不把 base64 写入画布 JSON 或普通数据库字段。
 - 资产保存 MIME、大小和 SHA-256；设置 `FFPROBE_ENABLED=true` 后可选提取并保存格式、时长、编码、尺寸和采样信息。设置 `FFMPEG_ENABLED=true` 后可生成图片缩略图、视频 poster 与音频波形，派生内容同样写入 BlobStore 并通过 `/v1/assets/:assetId/derivatives/:kind` 读取。
 - 运行记录保存模型、凭据版本、输入、参数、状态、成本和错误。
+- 收费、套餐、累计额度和供应商 usage 对账暂缓；当前成本字段只用于单次成本保护和后续扩展，不代表已接入完整计费系统。
 - 凭据通过 TLS 传输，并由服务端加密保存。
 - 读取接口只返回配置状态或不可逆指纹，不返回原始 API Key。
 - Worker 默认使用 Mock Provider；只有显式设置 `WORKER_PROVIDER=newapi` 后，文字、图片和音频任务才会通过服务端 New API 凭据调用上游。配置 `DATABASE_URL` 时 AI 凭据、默认模型和模型目录由 Prisma 持久化；视频仍需取得平台异步接口契约后接入。
@@ -259,6 +261,7 @@ pnpm lint
 pnpm typecheck
 pnpm test
 pnpm build
+pnpm test:e2e
 ```
 
 当前自动化验证结果：
@@ -270,11 +273,11 @@ pnpm build
 - `pnpm build`
 - `DATABASE_URL=... pnpm db:validate`
 
-当前 Vitest 已覆盖领域协议、Provider、Worker 状态机、API 路由、Web 画布/连线/上传/剪贴板/设置表单逻辑、SettingsPanel 交互和 observability exporter；Web/UI 的其余交互测试仍在补齐。待补的验收范围包括：
+当前 Vitest 已覆盖领域协议、Provider、Worker 状态机、API 路由、Web 画布/连线/上传/剪贴板/设置表单逻辑、SettingsPanel 和画布编辑器交互、observability exporter；Web/UI 的其余交互测试仍在补齐。待补的验收范围包括：
 
 - Vitest：Schema、端口兼容性、DAG、模型目录缓存、Provider 状态机。
 - React Testing Library：画布 Store、节点、连线。
-- Playwright：上传、拖入画布、多个参考输入、模型切换、运行和结果查看。
+- Playwright smoke：启动、节点创建和设置连接测试已通过 Chromium；完整上传、拖入画布、多个参考输入、模型切换、运行和结果查看仍待自动化。
 - API 集成测试：独立临时 PostgreSQL、Redis namespace、MinIO bucket 和 New API 测试项目。
 
 测试不得清空、覆盖、重置或批量删除真实业务数据库和上传目录；删除用户文件必须使用可恢复的软删除策略。
