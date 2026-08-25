@@ -4,7 +4,9 @@ import type { CanvasDocument } from '@multimodal-canvas/domain';
 import {
   fromCanvasDocument,
   copyCanvasSelection,
+  parseCanvasClipboard,
   pasteCanvasClipboard,
+  serializeCanvasClipboard,
   toCanvasDocument,
   wouldCreateCycle,
   type AssetFlowNode,
@@ -222,5 +224,72 @@ describe('clipboard graph transformations', () => {
       }),
     ]);
     expect(pasted.nodes.every((node) => node.selected)).toBe(true);
+  });
+
+  it('serializes a versioned browser payload and rejects unrelated text', () => {
+    const clipboard = {
+      nodes: [flowNode('a')],
+      edges: [],
+    };
+    const serialized = serializeCanvasClipboard(clipboard);
+
+    expect(parseCanvasClipboard(serialized)).toEqual(clipboard);
+    expect(parseCanvasClipboard('plain text')).toBeUndefined();
+    expect(
+      parseCanvasClipboard(
+        JSON.stringify({
+          format: 'multimodal-canvas/clipboard',
+          version: 99,
+          nodes: [],
+          edges: [],
+        }),
+      ),
+    ).toBeUndefined();
+  });
+
+  it('rejects clipboard edges that reference nodes outside the snapshot', () => {
+    const serialized = serializeCanvasClipboard({
+      nodes: [flowNode('a')],
+      edges: [flowEdge('edge', 'a', 'missing')],
+    });
+
+    expect(parseCanvasClipboard(serialized)).toBeUndefined();
+  });
+
+  it('removes runtime output metadata before copying or serializing', () => {
+    const node = flowNode('result', 'image', {
+      runStatus: 'succeeded',
+      runProgress: 100,
+      runError: 'old error',
+      resultAsset: {
+        assetId: 'asset-result',
+        version: 3,
+        contentUrl: '/v1/assets/asset-result/content',
+      },
+    });
+    node.selected = true;
+
+    const clipboard = copyCanvasSelection([node], []);
+    expect(clipboard.nodes[0].data).not.toHaveProperty('runStatus');
+    expect(clipboard.nodes[0].data).not.toHaveProperty('runProgress');
+    expect(clipboard.nodes[0].data).not.toHaveProperty('runError');
+    expect(clipboard.nodes[0].data).not.toHaveProperty('resultAsset');
+
+    const parsed = parseCanvasClipboard(serializeCanvasClipboard(clipboard));
+    expect(parsed?.nodes[0].data).not.toHaveProperty('resultAsset');
+  });
+
+  it('rejects duplicate IDs and mismatched node type/media type payloads', () => {
+    const duplicateNodes = serializeCanvasClipboard({
+      nodes: [flowNode('same'), flowNode('same')],
+      edges: [],
+    });
+    expect(parseCanvasClipboard(duplicateNodes)).toBeUndefined();
+
+    const mismatchedNode = flowNode('mismatch', 'image');
+    mismatchedNode.type = 'video';
+    expect(
+      parseCanvasClipboard(serializeCanvasClipboard({ nodes: [mismatchedNode], edges: [] })),
+    ).toBeUndefined();
   });
 });

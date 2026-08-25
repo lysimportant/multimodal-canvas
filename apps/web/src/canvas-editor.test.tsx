@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest';
 
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createContext, createElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -273,6 +273,40 @@ const jsonResponse = (body: unknown, status = 200) =>
 
 let canvas: CanvasDocument;
 let fetchMock: ReturnType<typeof vi.fn>;
+let clipboardMock: {
+  writeText: ReturnType<typeof vi.fn>;
+  readText: ReturnType<typeof vi.fn>;
+  getText: () => string;
+  setText: (value: string) => void;
+};
+let previousClipboardDescriptor: PropertyDescriptor | undefined;
+let clipboardText = '';
+
+function installClipboardMock() {
+  const writeText = vi.fn(async (value: string) => {
+    clipboardText = value;
+  });
+  const readText = vi.fn(async () => clipboardText);
+  clipboardMock = {
+    writeText,
+    readText,
+    getText: () => clipboardText,
+    setText: (value: string) => {
+      clipboardText = value;
+    },
+  };
+  restoreClipboardMock();
+}
+
+function restoreClipboardMock() {
+  Object.defineProperty(window.navigator, 'clipboard', {
+    configurable: true,
+    value: {
+      writeText: clipboardMock.writeText,
+      readText: clipboardMock.readText,
+    },
+  });
+}
 
 function installApiMock() {
   fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -305,6 +339,9 @@ function installApiMock() {
 
 async function renderCanvas() {
   const user = userEvent.setup();
+  // userEvent installs its own Clipboard stub; replace it with the test spy
+  // while keeping the text value across separate canvas instances.
+  restoreClipboardMock();
   render(createElement(App));
   await screen.findByRole('button', { name: '新建文字生成节点' });
   await waitFor(() => expect(screen.getByRole('application')).toBeInTheDocument());
@@ -328,13 +365,24 @@ function handleFor(node: HTMLElement, handleId: string) {
 describe('画布编辑器交互', () => {
   beforeEach(() => {
     window.localStorage.clear();
+    clipboardText = '';
     canvas = structuredClone(emptyCanvas);
     vi.stubGlobal('ResizeObserver', ResizeObserverStub);
+    previousClipboardDescriptor = Object.getOwnPropertyDescriptor(window.navigator, 'clipboard');
+    installClipboardMock();
     installApiMock();
   });
 
   afterEach(() => {
     cleanup();
+    if (previousClipboardDescriptor) {
+      Object.defineProperty(window.navigator, 'clipboard', previousClipboardDescriptor);
+    } else {
+      Object.defineProperty(window.navigator, 'clipboard', {
+        configurable: true,
+        value: undefined,
+      });
+    }
     vi.unstubAllGlobals();
   });
 
@@ -365,6 +413,47 @@ describe('画布编辑器交互', () => {
 
     await user.keyboard('{Delete}');
     await waitFor(() => expect(flowNodes()).toHaveLength(1));
+  });
+
+  it('通过系统 Clipboard API 在不同画布实例之间粘贴', async () => {
+    const { user } = await renderCanvas();
+
+    await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
+    await user.click(findNodeByLabel('文字生成节点')!);
+    await waitFor(() =>
+      expect(findNodeByLabel('文字生成节点')?.querySelector('.is-selected')).toBeTruthy(),
+    );
+    fireEvent.keyDown(window, { key: 'c', ctrlKey: true });
+    await waitFor(() => expect(clipboardMock.writeText).toHaveBeenCalledTimes(1));
+    expect(clipboardMock.getText()).toContain('multimodal-canvas/clipboard');
+
+    cleanup();
+    const second = await renderCanvas();
+    fireEvent.keyDown(window, { key: 'v', ctrlKey: true });
+
+    await waitFor(() => expect(flowNodes()).toHaveLength(1));
+    expect(findNodeByLabel('文字生成节点')).toBeTruthy();
+    expect(clipboardMock.readText).toHaveBeenCalledTimes(1);
+  });
+
+  it('系统剪贴板内容非法或读取失败时回退到内存剪贴板', async () => {
+    const { user } = await renderCanvas();
+
+    await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
+    await user.click(findNodeByLabel('文字生成节点')!);
+    await waitFor(() =>
+      expect(findNodeByLabel('文字生成节点')?.querySelector('.is-selected')).toBeTruthy(),
+    );
+    fireEvent.keyDown(window, { key: 'c', ctrlKey: true });
+    await waitFor(() => expect(clipboardMock.writeText).toHaveBeenCalledTimes(1));
+
+    clipboardMock.readText.mockResolvedValueOnce('unrelated text');
+    fireEvent.keyDown(window, { key: 'v', ctrlKey: true });
+    await waitFor(() => expect(flowNodes()).toHaveLength(2));
+
+    clipboardMock.readText.mockRejectedValueOnce(new Error('permission denied'));
+    fireEvent.keyDown(window, { key: 'v', ctrlKey: true });
+    await waitFor(() => expect(flowNodes()).toHaveLength(3));
   });
 
   it('支持撤销和重做节点删除', async () => {

@@ -57,6 +57,8 @@ import {
   fromCanvasDocument,
   copyCanvasSelection,
   pasteCanvasClipboard,
+  parseCanvasClipboard,
+  serializeCanvasClipboard,
   toCanvasDocument,
   type CanvasClipboard,
   type AssetFlowNode,
@@ -1639,22 +1641,40 @@ export function App() {
       if (command && key === 'c') {
         const clipboard = copyCanvasSelection(nodesRef.current, edgesRef.current, selectedNode?.id);
         if (clipboard.nodes.length === 0) return;
+        event.preventDefault();
         clipboardRef.current = clipboard;
+        const writeText = window.navigator.clipboard?.writeText;
+        if (writeText) {
+          void writeText
+            .call(window.navigator.clipboard, serializeCanvasClipboard(clipboard))
+            .catch(() => undefined);
+        }
         return;
       }
       if (command && key === 'v') {
-        const clipboard = clipboardRef.current;
-        if (!clipboard || clipboard.nodes.length === 0) return;
         event.preventDefault();
-        rememberHistory();
-        const pasted = pasteCanvasClipboard(clipboard);
-        setNodes((current) => [
-          ...current.map((node) => ({ ...node, selected: false })),
-          ...pasted.nodes,
-        ]);
-        setEdges((current) => [...current, ...pasted.edges]);
-        setSelectedNode(pasted.nodes[0] ?? null);
-        canvasDirtyRef.current = true;
+        void (async () => {
+          let clipboard = clipboardRef.current;
+          const readText = window.navigator.clipboard?.readText;
+          if (readText) {
+            try {
+              const parsed = parseCanvasClipboard(await readText.call(window.navigator.clipboard));
+              if (parsed) clipboard = parsed;
+            } catch {
+              // Browser clipboard permissions are optional; use the in-memory fallback.
+            }
+          }
+          if (!clipboard || clipboard.nodes.length === 0) return;
+          rememberHistory();
+          const pasted = pasteCanvasClipboard(clipboard);
+          setNodes((current) => [
+            ...current.map((node) => ({ ...node, selected: false })),
+            ...pasted.nodes,
+          ]);
+          setEdges((current) => [...current, ...pasted.edges]);
+          setSelectedNode(pasted.nodes[0] ?? null);
+          canvasDirtyRef.current = true;
+        })();
         return;
       }
       if (event.key !== 'Delete' && event.key !== 'Backspace') return;
