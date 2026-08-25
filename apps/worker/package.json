@@ -11,8 +11,11 @@
   },
   "dependencies": {
     "@multimodal-canvas/domain": "workspace:*",
+    "@multimodal-canvas/observability": "workspace:*",
     "@multimodal-canvas/providers": "workspace:*",
-    "bullmq": "^5.41.5"
+    "@prisma/client": "6.16.2",
+    "bullmq": "^5.41.5",
+    "pino": "10.3.1"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",

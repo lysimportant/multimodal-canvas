@@ -35,20 +35,64 @@ export const runStatuses = [
 
 export const runStatusSchema = z.enum(runStatuses);
 
+export const providerJobStatuses = [
+  'queued',
+  'submitted',
+  'running',
+  'succeeded',
+  'failed',
+  'cancelled',
+] as const;
+
+export const providerJobStatusSchema = z.enum(providerJobStatuses);
+
+export const providerJobSchema = z.object({
+  id: z.string().min(1),
+  provider: z.string().min(1),
+  platformJobId: z.string().min(1).optional(),
+  status: providerJobStatusSchema,
+  progress: z.number().int().min(0).max(100),
+  payload: z.record(z.unknown()).optional(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+
+export const runResultAssetSchema = z.object({
+  assetId: z.string().min(1),
+  version: z.number().int().positive().optional(),
+  contentUrl: z.string().min(1).optional(),
+  mimeType: z.string().min(1).optional(),
+  sizeBytes: z.number().int().nonnegative().optional(),
+  sha256: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/i)
+    .optional(),
+});
+
 export const assetSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   mediaType: mediaTypeSchema,
   mimeType: z.string().min(1),
   sizeBytes: z.number().int().nonnegative(),
+  sha256: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
   status: assetStatusSchema,
   contentUrl: z.string().min(1),
+  tags: z.array(z.string().trim().min(1).max(64)).default([]),
+  metadata: z.record(z.unknown()).optional(),
+  archivedAt: z.string().datetime().optional(),
 });
 
 export const nodeDataSchema = z.object({
   label: z.string().min(1),
   mediaType: mediaTypeSchema,
   mode: nodeModeSchema,
+  prompt: z.string().trim().max(20_000).optional(),
+  inferenceStrength: z.enum(['low', 'medium', 'high']).optional(),
+  modelAlias: z.string().trim().min(1).optional(),
   assetId: z.string().min(1).optional(),
   contentUrl: z.string().min(1).optional(),
   mimeType: z.string().min(1).optional(),
@@ -198,10 +242,13 @@ export const runResultSchema = z.object({
   targetNodeId: z.string().min(1),
   mediaType: mediaTypeSchema,
   inputCount: z.number().int().nonnegative(),
+  asset: runResultAssetSchema.optional(),
+  providerJob: providerJobSchema.optional(),
 });
 
 export const runRecordSchema = z.object({
   id: z.string().min(1),
+  userId: z.string().min(1).optional(),
   projectId: z.string().min(1),
   targetNodeId: z.string().min(1),
   status: runStatusSchema,
@@ -211,6 +258,8 @@ export const runRecordSchema = z.object({
   modelAlias: z.string().min(1),
   snapshot: runSnapshotSchema,
   result: runResultSchema.optional(),
+  providerJob: providerJobSchema.optional(),
+  idempotencyKey: z.string().trim().min(1).max(200).optional(),
   error: z.string().min(1).optional(),
   retryOf: z.string().min(1).optional(),
   createdAt: z.string().datetime(),
@@ -219,9 +268,13 @@ export const runRecordSchema = z.object({
 
 export const runJobDataSchema = z.object({
   runId: z.string().min(1),
+  userId: z.string().min(1).optional(),
   snapshot: runSnapshotSchema,
   attempt: z.number().int().positive(),
+  provider: z.enum(['mock', 'newapi']).default('mock'),
   retryOf: z.string().min(1).optional(),
+  idempotencyKey: z.string().trim().min(1).max(200).optional(),
+  providerJob: providerJobSchema.optional(),
   cancelRequested: z.boolean().default(false),
 });
 
@@ -229,6 +282,7 @@ export const runJobResultSchema = z.object({
   status: z.enum(['succeeded', 'cancelled']),
   progress: z.number().int().min(0).max(100),
   result: runResultSchema.optional(),
+  providerJob: providerJobSchema.optional(),
 });
 
 const runStatusTransitions: Record<RunStatus, readonly RunStatus[]> = {
@@ -260,12 +314,48 @@ const targetRoleMediaTypes: Record<PortRole, readonly MediaType[]> = {
   mask: ['image'],
 };
 
+const targetNodePortRoles: Record<MediaType, readonly PortRole[]> = {
+  text: ['prompt', 'negativePrompt', 'content', 'transcript'],
+  image: [
+    'prompt',
+    'negativePrompt',
+    'content',
+    'style',
+    'character',
+    'firstFrame',
+    'lastFrame',
+    'mask',
+  ],
+  audio: ['prompt', 'negativePrompt', 'content', 'audioTrack', 'transcript'],
+  video: [
+    'prompt',
+    'negativePrompt',
+    'content',
+    'style',
+    'character',
+    'firstFrame',
+    'lastFrame',
+    'audioTrack',
+    'transcript',
+    'mask',
+  ],
+};
+
+/** Returns the input roles exposed by a target node's media type. */
+export function targetPortRolesForMediaType(mediaType: MediaType): PortRole[] {
+  return [...targetNodePortRoles[mediaType]];
+}
+
 export function isPortConnectionAllowed(
   source: CanvasNode,
   sourceHandle: string,
   target: CanvasNode,
   targetHandle: string,
 ): boolean {
+  // Source nodes are terminal references. They expose an output only and
+  // cannot receive workflow inputs.
+  if (target.data.mode === 'source') return false;
+
   const sourceMediaType = sourceHandle.startsWith('output:')
     ? sourceHandle.slice('output:'.length)
     : undefined;
@@ -275,6 +365,7 @@ export function isPortConnectionAllowed(
 
   if (sourceMediaType !== source.data.mediaType || !targetRole) return false;
   if (!portRoles.includes(targetRole as PortRole)) return false;
+  if (!targetNodePortRoles[target.data.mediaType].includes(targetRole as PortRole)) return false;
   return targetRoleMediaTypes[targetRole as PortRole].includes(source.data.mediaType);
 }
 
@@ -287,6 +378,9 @@ export type CanvasNode = z.infer<typeof canvasNodeSchema>;
 export type CanvasEdge = z.infer<typeof canvasEdgeSchema>;
 export type CanvasDocument = z.infer<typeof canvasDocumentSchema>;
 export type RunStatus = z.infer<typeof runStatusSchema>;
+export type ProviderJobStatus = z.infer<typeof providerJobStatusSchema>;
+export type ProviderJob = z.infer<typeof providerJobSchema>;
+export type RunResultAsset = z.infer<typeof runResultAssetSchema>;
 export type RunInputSnapshot = z.infer<typeof runInputSnapshotSchema>;
 export type RunSnapshot = z.infer<typeof runSnapshotSchema>;
 export type RunResult = z.infer<typeof runResultSchema>;

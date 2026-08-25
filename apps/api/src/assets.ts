@@ -1,50 +1,641 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
+import { PrismaClient, type Prisma } from '@prisma/client';
 import type { Asset, MediaType } from '@multimodal-canvas/domain';
 
-export type StoredAsset = Asset & {
-  content: Buffer;
-};
+/** Object storage boundary used by asset metadata stores. */
+export interface BlobStore {
+  put(key: string, content: Buffer): Promise<void>;
+  get(key: string): Promise<Buffer | undefined>;
+  delete(key: string): Promise<void>;
+}
+
+/** S3-compatible object storage adapter (works with MinIO in development). */
+export class S3BlobStore implements BlobStore {
+  private readonly client: S3Client;
+
+  constructor(
+    private readonly bucket: string,
+    options: {
+      endpoint?: string;
+      region?: string;
+      accessKeyId?: string;
+      secretAccessKey?: string;
+      forcePathStyle?: boolean;
+    } = {},
+  ) {
+    if (!bucket.trim()) throw new Error('S3 bucket is required');
+    this.client = new S3Client({
+      region: options.region ?? 'us-east-1',
+      ...(options.endpoint ? { endpoint: options.endpoint } : {}),
+      ...(options.forcePathStyle === undefined ? {} : { forcePathStyle: options.forcePathStyle }),
+      ...(options.accessKeyId && options.secretAccessKey
+        ? {
+            credentials: {
+              accessKeyId: options.accessKeyId,
+              secretAccessKey: options.secretAccessKey,
+            },
+          }
+        : {}),
+    });
+  }
+
+  async put(key: string, content: Buffer) {
+    await this.client.send(new PutObjectCommand({ Bucket: this.bucket, Key: key, Body: content }));
+  }
+
+  async get(key: string) {
+    try {
+      const response = await this.client.send(
+        new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+      );
+      if (!response.Body) return undefined;
+      return Buffer.from(await response.Body.transformToByteArray());
+    } catch (error) {
+      if (isS3NotFound(error)) return undefined;
+      throw error;
+    }
+  }
+
+  async delete(key: string) {
+    await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
+  }
+
+  async createPresignedPutUrl(
+    key: string,
+    options: { expiresIn?: number; contentType?: string } = {},
+  ): Promise<string> {
+    const command = new PutObjectCommand({
+      Bucket: this.bucket,
+      Key: key,
+      ...(options.contentType ? { ContentType: options.contentType } : {}),
+    });
+    return getSignedUrl(this.client, command, { expiresIn: options.expiresIn ?? 900 });
+  }
+}
+
+/** In-memory object storage for tests and local development. */
+export class MemoryBlobStore implements BlobStore {
+  private readonly blobs = new Map<string, Buffer>();
+
+  async put(key: string, content: Buffer): Promise<void> {
+    this.blobs.set(key, Buffer.from(content));
+  }
+
+  async get(key: string): Promise<Buffer | undefined> {
+    const content = this.blobs.get(key);
+    return content ? Buffer.from(content) : undefined;
+  }
+
+  async delete(key: string): Promise<void> {
+    this.blobs.delete(key);
+  }
+}
+
+/** Filesystem-backed object storage constrained to a single root directory. */
+export class FileSystemBlobStore implements BlobStore {
+  private readonly root: string;
+
+  constructor(rootDirectory: string) {
+    if (!rootDirectory.trim()) throw new Error('blob store root directory is required');
+    this.root = resolve(rootDirectory);
+  }
+
+  async put(key: string, content: Buffer): Promise<void> {
+    const target = this.pathFor(key);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, content);
+  }
+
+  async get(key: string): Promise<Buffer | undefined> {
+    const target = this.pathFor(key);
+    try {
+      return await readFile(target);
+    } catch (error) {
+      if (isNodeError(error) && error.code === 'ENOENT') return undefined;
+      throw error;
+    }
+  }
+
+  async delete(key: string): Promise<void> {
+    await rm(this.pathFor(key), { force: true });
+  }
+
+  private pathFor(key: string): string {
+    if (!key || isAbsolute(key)) throw new Error('blob key must be a relative path');
+    const target = resolve(this.root, key);
+    const fromRoot = relative(this.root, target);
+    if (!fromRoot || fromRoot.startsWith(`..${sep}`) || fromRoot === '..') {
+      throw new Error('blob key escapes the storage root');
+    }
+    return target;
+  }
+}
+
+export { FileSystemBlobStore as LocalFileBlobStore };
+
+export type StoredAsset = Asset & { content: Buffer };
 
 export type CreateAssetInput = {
   name: string;
   mediaType: MediaType;
   mimeType: string;
   content: Buffer;
+  tags?: string[];
+  metadata?: Record<string, unknown>;
+  derivatives?: Record<string, { mimeType: string; content: Buffer }>;
+  /** User scope for persistent stores; omitted for legacy service calls. */
+  ownerId?: string;
+};
+
+export type UpdateAssetInput = { name?: string; tags?: string[] };
+
+export type CreateAssetVersionInput = {
+  content: Buffer;
+  metadata?: Record<string, unknown>;
+};
+
+export type AssetScope = {
+  projectId?: string;
+  ownerId?: string;
+};
+
+export type AssetVersionRecord = {
+  id: string;
+  assetId: string;
+  version: number;
+  sizeBytes: number;
+  sha256?: string;
+  contentKey: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type StoredAssetDerivative = {
+  kind: string;
+  mimeType: string;
+  sizeBytes: number;
+  sha256: string;
+  content: Buffer;
 };
 
 export interface AssetStore {
   create(input: CreateAssetInput): Promise<StoredAsset>;
-  list(): Promise<Asset[]>;
-  get(id: string): Promise<StoredAsset | undefined>;
+  list(scope?: AssetScope): Promise<Asset[]>;
+  get(id: string, scope?: AssetScope): Promise<StoredAsset | undefined>;
+  createVersion(
+    assetId: string,
+    input: CreateAssetVersionInput,
+    scope?: AssetScope,
+  ): Promise<AssetVersionRecord | undefined>;
+  listVersions(assetId: string, scope?: AssetScope): Promise<AssetVersionRecord[]>;
+  getVersionContent(
+    assetId: string,
+    version: number,
+    scope?: AssetScope,
+  ): Promise<Buffer | undefined>;
+  getDerivative(
+    id: string,
+    kind: string,
+    scope?: AssetScope,
+  ): Promise<StoredAssetDerivative | undefined>;
+  update(id: string, input: UpdateAssetInput, scope?: AssetScope): Promise<StoredAsset | undefined>;
+  setArchived(id: string, archived: boolean, scope?: AssetScope): Promise<StoredAsset | undefined>;
 }
 
+/** Volatile asset store used when DATABASE_URL is not configured. */
 export class MemoryAssetStore implements AssetStore {
   private readonly assets = new Map<string, StoredAsset>();
+  private readonly owners = new Map<string, string | undefined>();
+  private readonly derivatives = new Map<string, Map<string, StoredAssetDerivative>>();
+  private readonly versions = new Map<
+    string,
+    Map<number, AssetVersionRecord & { content: Buffer }>
+  >();
 
   async create(input: CreateAssetInput): Promise<StoredAsset> {
     const id = `asset_${randomUUID()}`;
+    const derivatives = mapDerivativeInputs(id, input.derivatives);
+    if (derivatives.length > 0) {
+      this.derivatives.set(
+        id,
+        new Map(derivatives.map((derivative) => [derivative.kind, derivative])),
+      );
+    }
     const asset: StoredAsset = {
       id,
       name: input.name,
       mediaType: input.mediaType,
       mimeType: input.mimeType,
       sizeBytes: input.content.byteLength,
+      sha256: sha256(input.content),
       status: 'ready',
       contentUrl: `/v1/assets/${id}/content`,
-      content: input.content,
+      tags: input.tags ?? [],
+      ...(metadataWithDerivatives(input.metadata, derivatives, id)
+        ? { metadata: metadataWithDerivatives(input.metadata, derivatives, id) }
+        : {}),
+      content: Buffer.from(input.content),
     };
-
     this.assets.set(id, asset);
-    return asset;
+    this.owners.set(id, input.ownerId);
+    const createdAt = new Date().toISOString();
+    this.versions.set(
+      id,
+      new Map([
+        [
+          1,
+          {
+            id: `${id}_version_1`,
+            assetId: id,
+            version: 1,
+            sizeBytes: input.content.byteLength,
+            sha256: asset.sha256,
+            contentKey: `memory/${id}/v1`,
+            ...(input.metadata ? { metadata: input.metadata } : {}),
+            createdAt,
+            content: Buffer.from(input.content),
+          },
+        ],
+      ]),
+    );
+    return { ...asset, content: Buffer.from(asset.content) };
   }
 
-  async list(): Promise<Asset[]> {
-    return Array.from(this.assets.values()).map(({ content: _content, ...asset }) => asset);
+  async list(scope: AssetScope = {}): Promise<Asset[]> {
+    return Array.from(this.assets.values())
+      .filter((asset) => this.matchesScope(asset.id, scope))
+      .map(({ content: _content, ...asset }) => asset);
   }
 
-  async get(id: string): Promise<StoredAsset | undefined> {
-    return this.assets.get(id);
+  async get(id: string, scope: AssetScope = {}): Promise<StoredAsset | undefined> {
+    const asset = this.assets.get(id);
+    return asset && this.matchesScope(id, scope)
+      ? { ...asset, content: Buffer.from(asset.content) }
+      : undefined;
+  }
+
+  async createVersion(
+    assetId: string,
+    input: CreateAssetVersionInput,
+    scope: AssetScope = {},
+  ): Promise<AssetVersionRecord | undefined> {
+    const asset = this.assets.get(assetId);
+    if (!asset || !this.matchesScope(assetId, scope)) return undefined;
+    const versionMap = this.versions.get(assetId) ?? new Map();
+    const version = Math.max(0, ...versionMap.keys()) + 1;
+    const createdAt = new Date().toISOString();
+    const record = {
+      id: `${assetId}_version_${version}`,
+      assetId,
+      version,
+      sizeBytes: input.content.byteLength,
+      sha256: sha256(input.content),
+      contentKey: `memory/${assetId}/v${version}`,
+      ...(input.metadata ? { metadata: input.metadata } : {}),
+      createdAt,
+      content: Buffer.from(input.content),
+    } satisfies AssetVersionRecord & { content: Buffer };
+    versionMap.set(version, record);
+    this.versions.set(assetId, versionMap);
+    this.assets.set(assetId, {
+      ...asset,
+      sizeBytes: record.sizeBytes,
+      sha256: record.sha256,
+      contentUrl: `/v1/assets/${assetId}/content`,
+      content: Buffer.from(input.content),
+    });
+    const { content: _content, ...publicRecord } = record;
+    return publicRecord;
+  }
+
+  async listVersions(assetId: string, scope: AssetScope = {}): Promise<AssetVersionRecord[]> {
+    if (!this.assets.has(assetId) || !this.matchesScope(assetId, scope)) return [];
+    return [...(this.versions.get(assetId)?.values() ?? [])]
+      .sort((left, right) => left.version - right.version)
+      .map(({ content: _content, ...record }) => record);
+  }
+
+  async getVersionContent(
+    assetId: string,
+    version: number,
+    scope: AssetScope = {},
+  ): Promise<Buffer | undefined> {
+    if (!this.assets.has(assetId) || !this.matchesScope(assetId, scope)) return undefined;
+    const record = this.versions.get(assetId)?.get(version);
+    return record ? Buffer.from(record.content) : undefined;
+  }
+
+  async getDerivative(
+    id: string,
+    kind: string,
+    scope: AssetScope = {},
+  ): Promise<StoredAssetDerivative | undefined> {
+    if (!this.matchesScope(id, scope)) return undefined;
+    const derivative = this.derivatives.get(id)?.get(kind);
+    return derivative ? { ...derivative, content: Buffer.from(derivative.content) } : undefined;
+  }
+
+  async update(
+    id: string,
+    input: UpdateAssetInput,
+    scope: AssetScope = {},
+  ): Promise<StoredAsset | undefined> {
+    const asset = this.assets.get(id);
+    if (!asset || !this.matchesScope(id, scope)) return undefined;
+    const next: StoredAsset = {
+      ...asset,
+      ...(input.name === undefined ? {} : { name: input.name }),
+      ...(input.tags === undefined ? {} : { tags: input.tags }),
+    };
+    this.assets.set(id, next);
+    return { ...next, content: Buffer.from(next.content) };
+  }
+
+  async setArchived(
+    id: string,
+    archived: boolean,
+    scope: AssetScope = {},
+  ): Promise<StoredAsset | undefined> {
+    const asset = this.assets.get(id);
+    if (!asset || !this.matchesScope(id, scope)) return undefined;
+    const next: StoredAsset = {
+      ...asset,
+      status: archived ? 'archived' : 'ready',
+      ...(archived ? { archivedAt: new Date().toISOString() } : { archivedAt: undefined }),
+    };
+    this.assets.set(id, next);
+    return { ...next, content: Buffer.from(next.content) };
+  }
+
+  private matchesScope(id: string, scope: AssetScope): boolean {
+    if (scope.ownerId && this.owners.get(id) !== scope.ownerId) return false;
+    return true;
+  }
+}
+
+export type PrismaAssetStoreOptions = {
+  blobStore?: BlobStore;
+  projectId?: string;
+  ownerId?: string;
+  keyPrefix?: string;
+  contentUrl?: (assetId: string) => string;
+};
+
+/** PostgreSQL-backed metadata with bytes stored behind BlobStore. */
+export class PrismaAssetStore implements AssetStore {
+  private readonly blobStore: BlobStore;
+  private readonly projectId?: string;
+  private readonly ownerId?: string;
+  private readonly keyPrefix: string;
+  private readonly contentUrl: (assetId: string) => string;
+
+  constructor(
+    private readonly prisma: PrismaClient,
+    optionsOrBlobStore: PrismaAssetStoreOptions | BlobStore = {},
+  ) {
+    const options = isBlobStore(optionsOrBlobStore)
+      ? { blobStore: optionsOrBlobStore }
+      : optionsOrBlobStore;
+    this.blobStore = options.blobStore ?? new MemoryBlobStore();
+    this.projectId = options.projectId;
+    this.ownerId = options.ownerId;
+    this.keyPrefix = trimPrefix(options.keyPrefix ?? 'assets');
+    this.contentUrl = options.contentUrl ?? ((assetId) => `/v1/assets/${assetId}/content`);
+  }
+
+  async create(input: CreateAssetInput): Promise<StoredAsset> {
+    const id = randomUUID();
+    const hash = sha256(input.content);
+    const contentKey = this.versionKey(id, 1);
+    const derivatives = mapDerivativeInputs(id, input.derivatives);
+    const derivedMetadata = metadataWithDerivatives(input.metadata, derivatives, id);
+    await this.blobStore.put(contentKey, input.content);
+    for (const derivative of derivatives) {
+      await this.blobStore.put(this.derivativeKey(contentKey, derivative.kind), derivative.content);
+    }
+    try {
+      const row = await this.prisma.$transaction(async (transaction) => {
+        const asset = await transaction.asset.create({
+          data: {
+            id,
+            ...(this.projectId ? { projectId: this.projectId } : {}),
+            ...((input.ownerId ?? this.ownerId) ? { ownerId: input.ownerId ?? this.ownerId } : {}),
+            name: input.name,
+            mediaType: toPrismaMediaType(input.mediaType),
+            mimeType: input.mimeType,
+            sizeBytes: BigInt(input.content.byteLength),
+            sha256: hash,
+            contentKey,
+            tags: input.tags ?? [],
+            ...(derivedMetadata ? { metadata: derivedMetadata as Prisma.InputJsonValue } : {}),
+          },
+        });
+        await transaction.assetVersion.create({
+          data: {
+            assetId: asset.id,
+            version: 1,
+            sizeBytes: BigInt(input.content.byteLength),
+            sha256: hash,
+            contentKey,
+          },
+        });
+        return asset;
+      });
+      return { ...mapAsset(row, this.contentUrl), content: Buffer.from(input.content) };
+    } catch (error) {
+      await this.blobStore.delete(contentKey).catch(() => undefined);
+      await Promise.all(
+        derivatives.map((derivative) =>
+          this.blobStore
+            .delete(this.derivativeKey(contentKey, derivative.kind))
+            .catch(() => undefined),
+        ),
+      );
+      throw error;
+    }
+  }
+
+  async list(scope: AssetScope = {}): Promise<Asset[]> {
+    const rows = await this.prisma.asset.findMany({
+      where: this.scopeWhere(scope),
+      orderBy: { updatedAt: 'desc' },
+    });
+    return rows.map((row) => mapAsset(row, this.contentUrl));
+  }
+
+  async get(id: string, scope: AssetScope = {}): Promise<StoredAsset | undefined> {
+    const row = await this.prisma.asset.findFirst({
+      where: { id, ...this.scopeWhere(scope) },
+    });
+    if (!row) return undefined;
+    const content = await this.blobStore.get(row.contentKey);
+    if (!content) return undefined;
+    return { ...mapAsset(row, this.contentUrl), content };
+  }
+
+  async getDerivative(
+    id: string,
+    kind: string,
+    scope: AssetScope = {},
+  ): Promise<StoredAssetDerivative | undefined> {
+    const row = await this.prisma.asset.findFirst({
+      where: { id, ...this.scopeWhere(scope) },
+      select: { contentKey: true, metadata: true },
+    });
+    if (!row || !isSafeDerivativeKind(kind)) return undefined;
+    const metadata = asRecord(row.metadata);
+    const descriptor = asRecord(metadata?.derivatives)?.[kind];
+    if (!asRecord(descriptor)?.mimeType) return undefined;
+    const content = await this.blobStore.get(this.derivativeKey(row.contentKey, kind));
+    if (!content) return undefined;
+    return {
+      kind,
+      mimeType: String(asRecord(descriptor)?.mimeType),
+      sizeBytes: content.byteLength,
+      sha256: sha256(content),
+      content,
+    };
+  }
+
+  async update(
+    id: string,
+    input: UpdateAssetInput,
+    scope: AssetScope = {},
+  ): Promise<StoredAsset | undefined> {
+    const existing = await this.prisma.asset.findFirst({
+      where: { id, ...this.scopeWhere(scope) },
+    });
+    if (!existing) return undefined;
+    const row = await this.prisma.asset.update({
+      where: { id },
+      data: {
+        ...(input.name === undefined ? {} : { name: input.name }),
+        ...(input.tags === undefined ? {} : { tags: input.tags }),
+      },
+    });
+    const content = await this.blobStore.get(row.contentKey);
+    if (!content) return undefined;
+    return { ...mapAsset(row, this.contentUrl), content };
+  }
+
+  async setArchived(
+    id: string,
+    archived: boolean,
+    scope: AssetScope = {},
+  ): Promise<StoredAsset | undefined> {
+    const existing = await this.prisma.asset.findFirst({
+      where: { id, ...this.scopeWhere(scope) },
+    });
+    if (!existing) return undefined;
+    const row = await this.prisma.asset.update({
+      where: { id },
+      data: { status: archived ? 'ARCHIVED' : 'READY', archivedAt: archived ? new Date() : null },
+    });
+    const content = await this.blobStore.get(row.contentKey);
+    if (!content) return undefined;
+    return { ...mapAsset(row, this.contentUrl), content };
+  }
+
+  async createVersion(
+    assetId: string,
+    input: CreateAssetVersionInput,
+    scope: AssetScope = {},
+  ): Promise<AssetVersionRecord | undefined> {
+    const existing = await this.prisma.asset.findFirst({
+      where: { id: assetId, ...this.scopeWhere(scope) },
+      select: { id: true },
+    });
+    if (!existing) return undefined;
+    const latest = await this.prisma.assetVersion.findFirst({
+      where: { assetId },
+      orderBy: { version: 'desc' },
+      select: { version: true },
+    });
+    const version = (latest?.version ?? 0) + 1;
+    const hash = sha256(input.content);
+    const contentKey = this.versionKey(assetId, version);
+    await this.blobStore.put(contentKey, input.content);
+    try {
+      const row = await this.prisma.$transaction(async (transaction) => {
+        const created = await transaction.assetVersion.create({
+          data: {
+            assetId,
+            version,
+            sizeBytes: BigInt(input.content.byteLength),
+            sha256: hash,
+            contentKey,
+            ...(input.metadata ? { metadata: input.metadata as Prisma.InputJsonValue } : {}),
+          },
+        });
+        await transaction.asset.update({
+          where: { id: assetId },
+          data: { sizeBytes: BigInt(input.content.byteLength), sha256: hash, contentKey },
+        });
+        return created;
+      });
+      return mapVersion(row);
+    } catch (error) {
+      await this.blobStore.delete(contentKey).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  async addVersion(assetId: string, input: CreateAssetVersionInput, scope: AssetScope = {}) {
+    return this.createVersion(assetId, input, scope);
+  }
+
+  async listVersions(assetId: string, scope: AssetScope = {}): Promise<AssetVersionRecord[]> {
+    const asset = await this.prisma.asset.findFirst({
+      where: { id: assetId, ...this.scopeWhere(scope) },
+      select: { id: true },
+    });
+    if (!asset) return [];
+    const rows = await this.prisma.assetVersion.findMany({
+      where: { assetId },
+      orderBy: { version: 'asc' },
+    });
+    return rows.map(mapVersion);
+  }
+
+  async getVersionContent(
+    assetId: string,
+    version: number,
+    scope: AssetScope = {},
+  ): Promise<Buffer | undefined> {
+    const asset = await this.prisma.asset.findFirst({
+      where: { id: assetId, ...this.scopeWhere(scope) },
+      select: { id: true },
+    });
+    if (!asset) return undefined;
+    const row = await this.prisma.assetVersion.findFirst({ where: { assetId, version } });
+    return row ? this.blobStore.get(row.contentKey) : undefined;
+  }
+
+  private scopeWhere(scope: AssetScope = {}): { projectId?: string; ownerId?: string } {
+    return {
+      ...((scope.projectId ?? this.projectId)
+        ? { projectId: scope.projectId ?? this.projectId }
+        : {}),
+      ...((scope.ownerId ?? this.ownerId) ? { ownerId: scope.ownerId ?? this.ownerId } : {}),
+    };
+  }
+
+  private versionKey(assetId: string, version: number): string {
+    return `${this.keyPrefix}/${assetId}/v${version}`;
+  }
+
+  private derivativeKey(contentKey: string, kind: string): string {
+    return `${contentKey}/derivatives/${kind}`;
   }
 }
 
@@ -53,8 +644,147 @@ export function detectMediaType(name: string, mimeType: string): MediaType | und
   if (mimeType.startsWith('audio/')) return 'audio';
   if (mimeType.startsWith('video/')) return 'video';
   if (mimeType.startsWith('text/')) return 'text';
-
   const extension = name.toLowerCase().split('.').pop();
   if (extension === 'txt' || extension === 'md' || extension === 'json') return 'text';
   return undefined;
+}
+
+function sha256(content: Buffer): string {
+  return createHash('sha256').update(content).digest('hex');
+}
+
+function trimPrefix(prefix: string): string {
+  const normalized = prefix.replace(/^\/+|\/+$/g, '');
+  if (!normalized || normalized.split('/').some((part) => part === '..')) {
+    throw new Error('invalid blob key prefix');
+  }
+  return normalized;
+}
+
+function isBlobStore(value: PrismaAssetStoreOptions | BlobStore): value is BlobStore {
+  return 'put' in value && 'get' in value && 'delete' in value;
+}
+
+function toPrismaMediaType(mediaType: MediaType): 'TEXT' | 'IMAGE' | 'AUDIO' | 'VIDEO' {
+  return mediaType.toUpperCase() as 'TEXT' | 'IMAGE' | 'AUDIO' | 'VIDEO';
+}
+
+function mapAsset(
+  row: {
+    id: string;
+    name: string;
+    mediaType: string;
+    mimeType: string;
+    sizeBytes: bigint;
+    sha256: string | null;
+    metadata?: Prisma.JsonValue | null;
+    status: string;
+    tags: string[];
+    archivedAt: Date | null;
+  },
+  contentUrl: (assetId: string) => string,
+): Asset {
+  return {
+    id: row.id,
+    name: row.name,
+    mediaType: row.mediaType.toLowerCase() as MediaType,
+    mimeType: row.mimeType,
+    sizeBytes: Number(row.sizeBytes),
+    ...(row.sha256 ? { sha256: row.sha256 } : {}),
+    status: row.status.toLowerCase() as 'ready' | 'archived',
+    contentUrl: contentUrl(row.id),
+    tags: [...row.tags],
+    ...(row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata)
+      ? { metadata: row.metadata as Record<string, unknown> }
+      : {}),
+    ...(row.archivedAt ? { archivedAt: row.archivedAt.toISOString() } : {}),
+  };
+}
+
+function mapVersion(row: {
+  id: string;
+  assetId: string;
+  version: number;
+  sizeBytes: bigint;
+  sha256: string | null;
+  contentKey: string;
+  metadata: Prisma.JsonValue | null;
+  createdAt: Date;
+}): AssetVersionRecord {
+  return {
+    id: row.id,
+    assetId: row.assetId,
+    version: row.version,
+    sizeBytes: Number(row.sizeBytes),
+    ...(row.sha256 ? { sha256: row.sha256 } : {}),
+    contentKey: row.contentKey,
+    ...(row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata)
+      ? { metadata: row.metadata as Record<string, unknown> }
+      : {}),
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
+function isNodeError(value: unknown): value is NodeJS.ErrnoException {
+  return value instanceof Error && 'code' in value;
+}
+
+function isS3NotFound(value: unknown) {
+  return Boolean(
+    value &&
+    typeof value === 'object' &&
+    ('$metadata' in value || '$fault' in value) &&
+    (('name' in value && (value as { name?: string }).name === 'NoSuchKey') ||
+      ('$metadata' in value &&
+        (value as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode === 404)),
+  );
+}
+
+function mapDerivativeInputs(
+  assetId: string,
+  inputs: Record<string, { mimeType: string; content: Buffer }> | undefined,
+): StoredAssetDerivative[] {
+  if (!inputs) return [];
+  return Object.entries(inputs)
+    .filter(([kind, input]) => isSafeDerivativeKind(kind) && input.content.byteLength > 0)
+    .map(([kind, input]) => ({
+      kind,
+      mimeType: input.mimeType,
+      sizeBytes: input.content.byteLength,
+      sha256: sha256(input.content),
+      content: Buffer.from(input.content),
+    }));
+}
+
+function metadataWithDerivatives(
+  metadata: Record<string, unknown> | undefined,
+  derivatives: StoredAssetDerivative[],
+  assetId: string,
+): Record<string, unknown> | undefined {
+  if (derivatives.length === 0 && !metadata) return undefined;
+  const descriptor = Object.fromEntries(
+    derivatives.map((derivative) => [
+      derivative.kind,
+      {
+        mimeType: derivative.mimeType,
+        sizeBytes: derivative.sizeBytes,
+        sha256: derivative.sha256,
+        contentUrl: `/v1/assets/${assetId}/derivatives/${derivative.kind}`,
+      },
+    ]),
+  );
+  return {
+    ...(metadata ?? {}),
+    ...(derivatives.length > 0 ? { derivatives: descriptor } : {}),
+  };
+}
+
+function isSafeDerivativeKind(value: string): boolean {
+  return /^(thumbnail|poster|waveform)$/.test(value);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
 }

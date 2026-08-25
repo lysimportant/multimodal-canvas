@@ -9,6 +9,7 @@ import {
   portRoles,
   runJobDataSchema,
   runSnapshotSchema,
+  targetPortRolesForMediaType,
 } from './index';
 
 describe('canvas protocol', () => {
@@ -16,6 +17,9 @@ describe('canvas protocol', () => {
     expect(mediaTypes).toEqual(['text', 'image', 'audio', 'video']);
     expect(nodeModes).toEqual(['source', 'generate', 'transform']);
     expect(portRoles).toContain('character');
+    expect(targetPortRolesForMediaType('video')).toEqual(
+      expect.arrayContaining(['prompt', 'character', 'firstFrame', 'lastFrame', 'audioTrack']),
+    );
   });
 
   it('validates a minimal canvas document', () => {
@@ -33,6 +37,94 @@ describe('canvas protocol', () => {
     });
 
     expect(document.nodes).toHaveLength(1);
+  });
+
+  it('accepts node prompt and inference strength settings', () => {
+    const document = canvasDocumentSchema.parse({
+      revision: 0,
+      nodes: [
+        {
+          id: 'node_image',
+          type: 'image',
+          position: { x: 0, y: 0 },
+          data: {
+            label: 'Image',
+            mediaType: 'image',
+            mode: 'generate',
+            prompt: 'A quiet mountain lake at dawn',
+            inferenceStrength: 'high',
+          },
+        },
+      ],
+      edges: [],
+    });
+
+    expect(document.nodes[0].data.prompt).toBe('A quiet mountain lake at dawn');
+    expect(document.nodes[0].data.inferenceStrength).toBe('high');
+  });
+
+  it('preserves optional node prompt and inference strength settings', () => {
+    const node = canvasDocumentSchema.parse({
+      revision: 0,
+      nodes: [
+        {
+          id: 'node_image',
+          type: 'image',
+          position: { x: 0, y: 0 },
+          data: {
+            label: 'Generate',
+            mediaType: 'image',
+            mode: 'generate',
+            prompt: '  A cinematic portrait  ',
+            inferenceStrength: 'high',
+          },
+        },
+      ],
+      edges: [],
+    }).nodes[0];
+
+    expect(node.data.prompt).toBe('A cinematic portrait');
+    expect(node.data.inferenceStrength).toBe('high');
+  });
+
+  it('rejects invalid node prompt and inference strength settings', () => {
+    const invalidPrompt = canvasDocumentSchema.safeParse({
+      revision: 0,
+      nodes: [
+        {
+          id: 'node_image',
+          type: 'image',
+          position: { x: 0, y: 0 },
+          data: {
+            label: 'Generate',
+            mediaType: 'image',
+            mode: 'generate',
+            prompt: 'x'.repeat(20_001),
+          },
+        },
+      ],
+      edges: [],
+    });
+    const invalidStrength = canvasDocumentSchema.safeParse({
+      revision: 0,
+      nodes: [
+        {
+          id: 'node_image',
+          type: 'image',
+          position: { x: 0, y: 0 },
+          data: {
+            label: 'Generate',
+            mediaType: 'image',
+            mode: 'generate',
+            inferenceStrength: 'extreme',
+          },
+        },
+      ],
+      edges: [],
+    });
+
+    expect(invalidPrompt.success).toBe(false);
+    expect(invalidStrength.success).toBe(false);
   });
 
   it('validates an uploaded asset reference', () => {
@@ -153,6 +245,38 @@ describe('canvas protocol', () => {
     expect(result.success).toBe(false);
   });
 
+  it('rejects connections into source nodes', () => {
+    const result = canvasDocumentSchema.safeParse({
+      revision: 0,
+      nodes: [
+        {
+          id: 'node_prompt',
+          type: 'text',
+          position: { x: 0, y: 0 },
+          data: { label: 'Prompt', mediaType: 'text', mode: 'source' },
+        },
+        {
+          id: 'node_source_image',
+          type: 'image',
+          position: { x: 200, y: 0 },
+          data: { label: 'Reference', mediaType: 'image', mode: 'source' },
+        },
+      ],
+      edges: [
+        {
+          id: 'edge_invalid_target',
+          sourceNodeId: 'node_prompt',
+          sourceHandle: 'output:text',
+          targetNodeId: 'node_source_image',
+          targetHandle: 'input:content',
+          order: 0,
+        },
+      ],
+    });
+
+    expect(result.success).toBe(false);
+  });
+
   it('validates an immutable run snapshot and its status transitions', () => {
     const snapshot = runSnapshotSchema.parse({
       projectId: 'project_1',
@@ -230,5 +354,6 @@ describe('canvas protocol', () => {
     });
 
     expect(result.cancelRequested).toBe(false);
+    expect(result.provider).toBe('mock');
   });
 });

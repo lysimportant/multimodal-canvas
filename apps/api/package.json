@@ -7,12 +7,16 @@
     "dev": "tsx watch src/index.ts",
     "lint": "prettier --check . --ignore-path ../../.prettierignore",
     "test": "vitest run",
+    "test:integration": "vitest run src/prisma.integration.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "3.862.0",
+    "@aws-sdk/s3-request-presigner": "3.862.0",
     "@fastify/cors": "^10.0.2",
     "@fastify/multipart": "^9.2.1",
     "@multimodal-canvas/domain": "workspace:*",
+    "@multimodal-canvas/observability": "workspace:*",
     "@prisma/client": "6.16.2",
     "bullmq": "^5.41.5",
     "fastify": "^5.2.1",

@@ -4,7 +4,9 @@
 
 项目的核心体验是：在左侧资源库管理素材，在右侧无限画布上组合节点，通过多个参考输入驱动生成任务，并在任务完成后将结果保存回资源库。所有模型调用都经过本项目 API 和 New API，浏览器不会直接访问上游模型服务。
 
-> 当前状态：已完成 monorepo foundation、资产上传、资产到画布的来源节点切片（`v0.2.0-assets`）、项目/画布保存（`v0.3.0-project-canvas`）和 Mock 运行状态机（`v0.4.0-mock-runs`）。Web 端现在可以创建生成节点、提交单节点运行、查看进度、取消和重试；API 生产入口使用 BullMQ，开发测试默认仍可使用内存运行服务。API 的默认业务存储仍是开发用内存实现，Prisma schema 尚未接入生产运行路径。
+> 当前状态：已完成 monorepo foundation、资产上传与归档、资产到画布的来源节点切片（`v0.2.0-assets`）、项目/画布保存（`v0.3.0-project-canvas`）、Mock 运行状态机（`v0.4.0-mock-runs`）和多参考端口/AI 设置垂直切片。Web 端现在可以管理资源生命周期、为节点连接多个角色化参考输入、配置 New API、刷新模型并提交单节点运行；API 生产入口使用 BullMQ，并在配置 `DATABASE_URL` 时使用 Prisma/PostgreSQL 保存项目、画布、资产及 AI 设置/模型目录，测试及未配置数据库的本地开发继续使用内存存储。当前资产上传支持 multipart、S3/MinIO 预签名直传、SHA-256 校验和可跨实例恢复的上传会话；成本上限、OTLP/Sentry best-effort exporter 和设置页交互测试已接入，完整用户会话鉴权与真实视频接口契约仍待接入。
+
+详细的阶段状态、优先级、依赖和验收条件见 [`TODO.md`](./TODO.md)。
 
 ## 目标
 
@@ -142,6 +144,7 @@ GET    /v1/settings/ai
 PATCH  /v1/settings/ai
 POST   /v1/settings/ai/test
 POST   /v1/settings/ai/models/refresh
+DELETE /v1/settings/ai/credentials
 GET    /v1/models?mediaType=video
 
 POST   /v1/webhooks/newapi
@@ -151,18 +154,20 @@ POST   /v1/webhooks/newapi
 
 运行接口提交时会校验目标节点，并创建包含画布 revision、目标节点、上游节点、边、输入角色和参数的不可变快照。来源节点不能直接运行；生成或转换节点会进入 `queued` 状态，由 BullMQ Worker 使用 Mock Provider 推进到 `succeeded`、`cancelled` 或 `failed`。重试会创建新的 run，并保留 `retryOf` 与原始快照，不重复修改原任务。
 
-项目创建后，Web 会保存当前项目 ID，并通过上述接口恢复画布。画布提交前会校验节点引用、端口媒体类型和 DAG 环路；服务端返回新的 revision 后，后续提交使用新版本。当前默认 `MemoryProjectStore` 只用于开发垂直切片，接入 PostgreSQL 前不会宣称数据可跨 API 重启持久化。
+项目创建后，Web 会保存当前项目 ID，并通过上述接口恢复画布。画布提交前会校验节点引用、端口媒体类型和 DAG 环路；服务端返回新的 revision 后，后续提交使用新版本。配置 `DATABASE_URL` 时 API 使用 Prisma/PostgreSQL 持久化项目、画布节点和边、资产及 AI 设置/模型目录；未配置时才回退到开发用内存 Store。
+
+`/v1/assets/uploads` 使用 multipart 直接上传；`/v1/assets/uploads/init`、`PUT /v1/assets/uploads/:uploadId` 和 `/v1/assets/uploads/complete` 提供完整性校验的直传流程。配置 PostgreSQL 与 S3/MinIO 时，初始化接口返回预签名 PUT URL，上传会话元数据保存在 `upload_sessions`，可跨 API 实例恢复；文件系统/内存实现仅用于开发和测试。
 
 ## 数据与凭据
 
 生产数据库使用 PostgreSQL。核心数据模型包括用户、项目、画布、节点、边、资源、资源版本、运行、运行输入、Provider 任务、用量记录、AI 凭据、模型目录和 Webhook 事件。
 
 - 大文件写入 S3 或本地 MinIO，不把 base64 写入画布 JSON 或普通数据库字段。
-- 资产保存 MIME、大小、哈希和 ffprobe 元数据。
+- 资产保存 MIME、大小和 SHA-256；设置 `FFPROBE_ENABLED=true` 后可选提取并保存格式、时长、编码、尺寸和采样信息。设置 `FFMPEG_ENABLED=true` 后可生成图片缩略图、视频 poster 与音频波形，派生内容同样写入 BlobStore 并通过 `/v1/assets/:assetId/derivatives/:kind` 读取。
 - 运行记录保存模型、凭据版本、输入、参数、状态、成本和错误。
 - 凭据通过 TLS 传输，并由服务端加密保存。
 - 读取接口只返回配置状态或不可逆指纹，不返回原始 API Key。
-- 默认使用 Mock Provider，开发和测试不调用真实生产模型。
+- Worker 默认使用 Mock Provider；只有显式设置 `WORKER_PROVIDER=newapi` 后，文字、图片和音频任务才会通过服务端 New API 凭据调用上游。配置 `DATABASE_URL` 时 AI 凭据、默认模型和模型目录由 Prisma 持久化；视频仍需取得平台异步接口契约后接入。
 - 业务 SQLite 数据库、WAL/SHM 文件和上传目录不属于本项目的生产方案。
 
 ## 本地开发
@@ -214,8 +219,14 @@ pnpm dev
 ```env
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/multimodal_canvas
 REDIS_URL=redis://localhost:6379
+WORKER_PROVIDER=mock
 S3_ENDPOINT=http://localhost:9000
 S3_BUCKET=multimodal-canvas-dev
+S3_ACCESS_KEY=minioadmin
+S3_SECRET_KEY=minioadmin
+ASSET_STORAGE_ROOT=.data/assets
+FFMPEG_ENABLED=false
+FFMPEG_PATH=
 
 NEW_API_BASE_URL=https://newapi.example.com/v1
 NEW_API_API_KEY=server-side-platform-key
@@ -225,6 +236,18 @@ NEW_API_IMAGE_MODEL=image-model-alias
 NEW_API_AUDIO_MODEL=audio-model-alias
 NEW_API_VIDEO_MODEL=video-model-alias
 NEW_API_VIDEO_PATH=/videos
+AI_CREDENTIAL_ENCRYPTION_KEY=replace-with-a-32-byte-server-secret
+API_AUTH_TOKEN=
+API_JWT_SECRET=
+API_RATE_LIMIT_PER_MINUTE=120
+CORS_ORIGIN=
+RUN_MAX_ACTIVE_PER_PROJECT=4
+MAX_RUN_COST=
+RUN_COST_CURRENCY=USD
+NEW_API_WEBHOOK_SECRET=
+LOG_LEVEL=info
+OTEL_SERVICE_NAME=multimodal-canvas-worker
+OBSERVABILITY_LOGGING=false
 ```
 
 请勿提交真实凭据。视频接口的路径和字段必须以实际 New API 契约为准，未知协议不会在业务层臆造。
@@ -238,10 +261,19 @@ pnpm test
 pnpm build
 ```
 
-测试范围包括：
+当前自动化验证结果：
+
+- `pnpm format:check`
+- `pnpm lint`
+- `pnpm typecheck`
+- `pnpm test`（API 82 通过、1 跳过；domain 11、providers 4、worker 6、Web 30、observability 10；UI 无测试文件；无 `TEST_DATABASE_URL` 时 Prisma 集成测试安全跳过）
+- `pnpm build`
+- `DATABASE_URL=... pnpm db:validate`
+
+当前 Vitest 已覆盖领域协议、Provider、Worker 状态机、API 路由、Web 画布/连线/上传/剪贴板/设置表单逻辑、SettingsPanel 交互和 observability exporter；Web/UI 的其余交互测试仍在补齐。待补的验收范围包括：
 
 - Vitest：Schema、端口兼容性、DAG、模型目录缓存、Provider 状态机。
-- React Testing Library：画布 Store、节点、连线、设置页。
+- React Testing Library：画布 Store、节点、连线。
 - Playwright：上传、拖入画布、多个参考输入、模型切换、运行和结果查看。
 - API 集成测试：独立临时 PostgreSQL、Redis namespace、MinIO bucket 和 New API 测试项目。
 

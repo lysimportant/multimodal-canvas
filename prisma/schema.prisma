@@ -47,6 +47,7 @@ model User {
   projects      Project[]
   assets        Asset[]
   runs          Run[]
+  uploadSessions UploadSession[]
   aiCredentials AiCredential[]
   usageLedger   UsageLedger[]
 
@@ -95,6 +96,7 @@ model CanvasNode {
   positionY  Float
   assetId    String?   @db.Uuid
   contentUrl String?
+  data       Json?
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 
@@ -139,6 +141,7 @@ model Asset {
   sha256     String?
   status     AssetStatus @default(READY)
   contentKey String
+  tags       String[]  @default([])
   metadata   Json?
   createdAt  DateTime    @default(now())
   updatedAt  DateTime    @updatedAt
@@ -170,6 +173,27 @@ model AssetVersion {
   @@map("asset_versions")
 }
 
+model UploadSession {
+  id          String    @id @default(uuid()) @db.Uuid
+  uploadId    String    @unique
+  ownerId     String?   @db.Uuid
+  name        String
+  mimeType    String
+  mediaType   MediaType
+  sizeBytes   BigInt
+  sha256      String
+  tags        String[]  @default([])
+  contentKey  String
+  createdAt   DateTime  @default(now())
+  expiresAt   DateTime
+
+  owner User? @relation(fields: [ownerId], references: [id], onDelete: SetNull)
+
+  @@index([expiresAt])
+  @@index([ownerId])
+  @@map("upload_sessions")
+}
+
 model Run {
   id                String    @id @default(uuid()) @db.Uuid
   projectId         String    @db.Uuid
@@ -180,7 +204,12 @@ model Run {
   credentialVersion Int?
   snapshot          Json
   parameters        Json?
+  result            Json?
+  attempt           Int       @default(1)
+  retryOf           String?   @db.Uuid
+  idempotencyKey    String?
   cost              Decimal?  @db.Decimal(18, 6)
+  costCurrency      String?
   error             Json?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
@@ -193,6 +222,8 @@ model Run {
 
   @@index([projectId, createdAt])
   @@index([status])
+  @@index([retryOf])
+  @@unique([projectId, idempotencyKey])
   @@map("runs")
 }
 
@@ -256,6 +287,7 @@ model AiCredential {
   encryptedApiKey String
   keyFingerprint  String
   version         Int      @default(1)
+  defaultModels   Json?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
@@ -268,7 +300,7 @@ model AiCredential {
 
 model ModelCatalog {
   id           String    @id @default(uuid()) @db.Uuid
-  modelAlias   String    @unique
+  modelAlias   String
   name         String
   mediaType    MediaType
   capabilities Json?
@@ -279,6 +311,7 @@ model ModelCatalog {
   updatedAt    DateTime  @updatedAt
 
   @@index([mediaType])
+  @@unique([modelAlias, mediaType])
   @@map("model_catalog")
 }
 
