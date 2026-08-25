@@ -2,6 +2,7 @@ node_modules
 .turbo
 dist
 coverage
+test-results
 pnpm-lock.yaml
 AGENTS.md
 README.md
