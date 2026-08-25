@@ -27,6 +27,13 @@ import {
   type ObservabilitySpan,
 } from '@multimodal-canvas/observability';
 import { createWorkerPersistenceFromEnvironment, databaseRunId } from './prisma-persistence';
+import { createResultAssetArchiverFromEnvironment } from './result-archiver';
+import {
+  normalizeProviderOutput,
+  providerOutputToArchiveInput,
+  type ProviderOutput,
+  type ResultAssetArchiveInput,
+} from './result-output';
 
 const workerName = 'multimodal-canvas-worker';
 const queueName = 'multimodal-canvas-runs';
@@ -39,6 +46,8 @@ type WorkerProgress = {
 
 export type ProviderExecution = {
   result: RunResult;
+  /** Normalized text/image/audio payload returned by a provider. */
+  output?: ProviderOutput;
   providerJob?: Partial<ProviderJob> & Pick<ProviderJob, 'provider'>;
   usage?: ProviderUsage;
 };
@@ -92,9 +101,12 @@ export type DatabaseRunIdResolver = (
 
 export type ResultAssetArchiver = (input: {
   runId: string;
+  userId?: string;
   snapshot: RunSnapshot;
   result: RunResult;
   providerJob: ProviderJob;
+  output?: ProviderOutput;
+  archiveInput?: ResultAssetArchiveInput;
 }) => Promise<RunResultAsset | undefined>;
 
 export function createProviderJobRecord(
@@ -117,7 +129,13 @@ export function createProviderJobRecord(
 export function normalizeProviderExecution(
   value: RunResult | ProviderExecution,
 ): ProviderExecution {
-  if ('result' in value && value.result && typeof value.result === 'object') return value;
+  if ('result' in value && value.result && typeof value.result === 'object') {
+    const output =
+      'output' in value && value.output !== undefined
+        ? normalizeProviderOutput(value.output, value.result.mediaType)
+        : undefined;
+    return { ...value, ...(output ? { output } : {}) };
+  }
   return { result: value as RunResult };
 }
 
@@ -359,11 +377,20 @@ export function createRunWorker(options: {
         if (await isCancellationRequested(queue, job.id)) {
           return markCancelled(providerJob.progress);
         }
+        const output = execution.output
+          ? normalizeProviderOutput(execution.output, execution.result.mediaType)
+          : undefined;
+        const archiveInput = output
+          ? providerOutputToArchiveInput(output, execution.result.mediaType)
+          : undefined;
         const asset = await options.resultArchiver?.({
           runId: data.runId,
+          ...(data.userId ? { userId: data.userId } : {}),
           snapshot: data.snapshot,
           result: execution.result,
           providerJob,
+          ...(output ? { output } : {}),
+          ...(archiveInput ? { archiveInput } : {}),
         });
         if (await isCancellationRequested(queue, job.id)) {
           return markCancelled(providerJob.progress);
@@ -459,11 +486,14 @@ if (process.env.NODE_ENV !== 'test' && process.env.RUN_SERVICE !== 'memory') {
   const connection = redisConnectionFromUrl(process.env.REDIS_URL ?? 'redis://localhost:6379');
   const processLogger = createWorkerLogger();
   const processPersistence = createProcessPersistence();
+  const processArchiver =
+    process.env.WORKER_PROVIDER === 'newapi' ? createResultAssetArchiverFromEnvironment() : {};
   const { worker } = createRunWorker({
     connection,
     providerName: process.env.WORKER_PROVIDER === 'newapi' ? 'newapi' : 'mock',
     logger: processLogger,
     ...processPersistence,
+    ...(processArchiver.resultArchiver ? { resultArchiver: processArchiver.resultArchiver } : {}),
   });
   worker.on('ready', () => processLogger.info({ worker: workerName }, 'worker ready'));
   worker.on('failed', (job, error) => {
@@ -479,6 +509,7 @@ if (process.env.NODE_ENV !== 'test' && process.env.RUN_SERVICE !== 'memory') {
     processLogger.info({ signal }, 'worker shutting down');
     await worker.close();
     await processPersistence.close?.();
+    await processArchiver.close?.();
     process.exit(0);
   };
   process.once('SIGINT', () => void shutdown('SIGINT'));

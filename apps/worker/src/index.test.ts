@@ -44,11 +44,25 @@ describe('worker provider job boundary', () => {
     expect(
       normalizeProviderExecution({
         result,
+        output: {
+          mediaType: 'text',
+          kind: 'text',
+          text: 'generated text',
+          mimeType: 'text/plain',
+          format: 'txt',
+        },
         providerJob: { provider: 'newapi', platformJobId: 'platform-1' },
         usage: { amount: '1.25', currency: 'usd', metadata: { requestId: 'req-1' } },
       }),
     ).toMatchObject({
       result,
+      output: {
+        mediaType: 'text',
+        kind: 'text',
+        text: 'generated text',
+        mimeType: 'text/plain',
+        format: 'txt',
+      },
       providerJob: { platformJobId: 'platform-1' },
       usage: { amount: '1.25', metadata: { requestId: 'req-1' } },
     });

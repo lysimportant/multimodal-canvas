@@ -44,12 +44,61 @@ export type NewApiProviderOptions = {
 
 export type NewApiProviderRequest = MockProviderRequest;
 
+/**
+ * Provider-neutral representation of a generated payload.
+ *
+ * Providers may return a remote URL or inline base64 data for binary media;
+ * the worker owns persistence and turns either representation into an asset.
+ * Text is kept as UTF-8 text so it does not need a data URL round trip.
+ */
+export type ProviderOutput =
+  | {
+      mediaType: 'text';
+      kind: 'text';
+      text: string;
+      mimeType: 'text/plain';
+      format: 'txt';
+    }
+  | {
+      mediaType: 'image' | 'audio';
+      kind: 'url';
+      url: string;
+      mimeType: string;
+      format?: string;
+    }
+  | {
+      mediaType: 'image' | 'audio';
+      kind: 'base64';
+      base64: string;
+      mimeType: string;
+      format?: string;
+    };
+
+type ImageProviderOutput = Extract<ProviderOutput, { kind: 'url' | 'base64' }> & {
+  mediaType: 'image';
+};
+
+type AudioProviderOutput = Extract<ProviderOutput, { kind: 'url' | 'base64' }> & {
+  mediaType: 'audio';
+};
+
+/**
+ * Result envelope used by providers that return material generated content.
+ * The `result` remains compatible with the domain RunResult contract while
+ * `output` carries the bytes/text before the worker archives an asset.
+ */
+export type ProviderExecution = {
+  result: RunResult;
+  output: ProviderOutput;
+};
+
 export class NewApiProviderError extends Error {
   constructor(
     message: string,
     public readonly status?: number,
   ) {
     super(message);
+    this.name = 'NewApiProviderError';
   }
 }
 
@@ -70,35 +119,45 @@ export class NewApiProvider {
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
-  async execute({ snapshot, reportProgress }: NewApiProviderRequest): Promise<RunResult> {
+  async execute({ snapshot, reportProgress }: NewApiProviderRequest): Promise<ProviderExecution> {
     const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
     if (!target) throw new NewApiProviderError('run target node is missing from snapshot');
     if (target.data.mediaType === 'video') {
       throw new NewApiProviderError('video generation requires NewApiVideoProvider');
     }
 
-    await (target.data.mediaType === 'text'
-      ? this.request(
-          '/chat/completions',
-          this.textPayload(snapshot, target.data.label, target.data.prompt),
-        )
-      : target.data.mediaType === 'image'
-        ? this.request(
-            '/images/generations',
-            this.imagePayload(snapshot, target.data.label, target.data.prompt),
+    const response =
+      target.data.mediaType === 'text'
+        ? await this.request(
+            '/chat/completions',
+            this.textPayload(snapshot, target.data.label, target.data.prompt),
           )
-        : this.request(
-            '/audio/speech',
-            this.audioPayload(snapshot, target.data.label, target.data.prompt),
-          ));
+        : target.data.mediaType === 'image'
+          ? await this.request(
+              '/images/generations',
+              this.imagePayload(snapshot, target.data.label, target.data.prompt),
+            )
+          : await this.request(
+              '/audio/speech',
+              this.audioPayload(snapshot, target.data.label, target.data.prompt),
+            );
+    const output =
+      target.data.mediaType === 'text'
+        ? parseTextOutput(response)
+        : target.data.mediaType === 'image'
+          ? parseImageOutput(response, snapshot)
+          : parseAudioOutput(response, snapshot);
     await reportProgress?.(100);
 
     return {
-      provider: 'newapi',
-      summary: `New API 已完成 ${target.data.label}`,
-      targetNodeId: target.id,
-      mediaType: target.data.mediaType,
-      inputCount: snapshot.inputs.length,
+      result: {
+        provider: 'newapi',
+        summary: `New API 已完成 ${target.data.label}`,
+        targetNodeId: target.id,
+        mediaType: target.data.mediaType,
+        inputCount: snapshot.inputs.length,
+      },
+      output,
     };
   }
 
@@ -127,10 +186,7 @@ export class NewApiProvider {
     };
   }
 
-  private async request(
-    path: string,
-    body: Record<string, unknown>,
-  ): Promise<Record<string, unknown>> {
+  private async request(path: string, body: Record<string, unknown>): Promise<unknown> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
@@ -143,7 +199,7 @@ export class NewApiProvider {
         body: JSON.stringify(body),
         signal: controller.signal,
       });
-      const payload = (await response.json().catch(() => ({}))) as unknown;
+      const payload = await readResponsePayload(response);
       if (!response.ok) {
         const message =
           payload && typeof payload === 'object' && 'error' in payload
@@ -151,7 +207,7 @@ export class NewApiProvider {
             : `New API 请求失败（${response.status}）`;
         throw new NewApiProviderError(message, response.status);
       }
-      return payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
+      return payload;
     } catch (error) {
       if (error instanceof NewApiProviderError) throw error;
       throw new NewApiProviderError(error instanceof Error ? error.message : 'New API 请求失败');
@@ -168,6 +224,383 @@ export class NewApiVideoProvider {
       'New API 视频接口契约尚未配置；请继续使用 Mock Provider 或提供视频 API 契约',
     );
   }
+}
+
+type BinaryResponsePayload = {
+  __newApiBinary: true;
+  bytes: Uint8Array;
+  mimeType?: string;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function normalizedMimeType(value: unknown): string | undefined {
+  if (!nonEmptyString(value)) return undefined;
+  const mimeType = value.split(';', 1)[0]?.trim().toLowerCase();
+  return mimeType || undefined;
+}
+
+function parseDataUrl(value: string): { base64: string; mimeType: string } | undefined {
+  const match = /^data:([^;,\s]+)?;base64,([\s\S]*)$/i.exec(value.trim());
+  if (!match || !match[2]) return undefined;
+  return {
+    base64: match[2],
+    mimeType: normalizedMimeType(match[1]) ?? 'application/octet-stream',
+  };
+}
+
+function providerRemoteUrl(value: string): string | undefined {
+  try {
+    const url = new URL(value.trim());
+    if ((url.protocol !== 'https:' && url.protocol !== 'http:') || url.username || url.password) {
+      return undefined;
+    }
+    return url.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+function outputFormat(
+  parameters: RunSnapshot['parameters'],
+  ...values: unknown[]
+): string | undefined {
+  const candidate = [
+    ...values,
+    parameters.output_format,
+    parameters.response_format,
+    parameters.format,
+  ]
+    .filter((value): value is string => nonEmptyString(value))
+    .map((value) => value.trim().toLowerCase())
+    .find((value) => !['url', 'b64_json', 'base64', 'json'].includes(value));
+  return candidate;
+}
+
+function imageMimeType(format?: string): string {
+  switch (format?.toLowerCase()) {
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+    case 'webp':
+      return 'image/webp';
+    case 'gif':
+      return 'image/gif';
+    case 'avif':
+      return 'image/avif';
+    case 'png':
+    default:
+      return 'image/png';
+  }
+}
+
+function audioMimeType(format?: string): string {
+  switch (format?.toLowerCase()) {
+    case 'wav':
+      return 'audio/wav';
+    case 'opus':
+      return 'audio/opus';
+    case 'aac':
+      return 'audio/aac';
+    case 'flac':
+      return 'audio/flac';
+    case 'ogg':
+    case 'oga':
+      return 'audio/ogg';
+    case 'webm':
+      return 'audio/webm';
+    case 'pcm':
+      return 'audio/pcm';
+    case 'm4a':
+    case 'mp4':
+      return 'audio/mp4';
+    case 'mp3':
+    default:
+      return 'audio/mpeg';
+  }
+}
+
+function formatFromMimeType(mimeType: string | undefined): string | undefined {
+  switch (mimeType) {
+    case 'image/jpeg':
+      return 'jpeg';
+    case 'image/png':
+      return 'png';
+    case 'image/webp':
+      return 'webp';
+    case 'image/gif':
+      return 'gif';
+    case 'image/avif':
+      return 'avif';
+    case 'audio/mpeg':
+      return 'mp3';
+    case 'audio/wav':
+    case 'audio/x-wav':
+      return 'wav';
+    case 'audio/opus':
+      return 'opus';
+    case 'audio/aac':
+      return 'aac';
+    case 'audio/flac':
+      return 'flac';
+    case 'audio/ogg':
+      return 'ogg';
+    case 'audio/webm':
+      return 'webm';
+    case 'audio/mp4':
+      return 'm4a';
+    case 'audio/pcm':
+      return 'pcm';
+    default:
+      return undefined;
+  }
+}
+
+function mimeTypeFromUrl(url: string, mediaType: 'image' | 'audio'): string | undefined {
+  try {
+    const pathname = new URL(url).pathname.toLowerCase();
+    const extension = pathname.slice(pathname.lastIndexOf('.') + 1);
+    if (mediaType === 'image') {
+      return imageMimeType(extension);
+    }
+    return audioMimeType(extension);
+  } catch {
+    return undefined;
+  }
+}
+
+function parseTextOutput(payload: unknown): Extract<ProviderOutput, { kind: 'text' }> {
+  if (!isRecord(payload) || !Array.isArray(payload.choices) || payload.choices.length === 0) {
+    throw new NewApiProviderError('New API 文本响应缺少 choices[0] 内容');
+  }
+  const choice = payload.choices[0];
+  if (!isRecord(choice)) throw new NewApiProviderError('New API 文本响应格式无效');
+
+  const message = isRecord(choice.message) ? choice.message.content : undefined;
+  const content =
+    extractTextContent(message) ?? (nonEmptyString(choice.text) ? choice.text : undefined);
+  if (content === undefined || content.trim().length === 0) {
+    throw new NewApiProviderError('New API 文本响应内容为空');
+  }
+  return {
+    mediaType: 'text',
+    kind: 'text',
+    text: content,
+    mimeType: 'text/plain',
+    format: 'txt',
+  };
+}
+
+function extractTextContent(value: unknown): string | undefined {
+  if (nonEmptyString(value)) return value;
+  if (isRecord(value) && nonEmptyString(value.text)) return value.text;
+  if (!Array.isArray(value)) return undefined;
+  const parts = value
+    .map((part) => {
+      if (nonEmptyString(part)) return part;
+      if (isRecord(part) && nonEmptyString(part.text)) return part.text;
+      return undefined;
+    })
+    .filter((part): part is string => part !== undefined);
+  return parts.length > 0 ? parts.join('') : undefined;
+}
+
+function parseImageOutput(payload: unknown, snapshot: RunSnapshot): ImageProviderOutput {
+  const item = firstMediaItem(payload);
+  if (!item) throw new NewApiProviderError('New API 图片响应缺少 data[0] 内容');
+
+  const format = outputFormat(snapshot.parameters, item.format, item.output_format);
+  const mimeType =
+    normalizedMimeType(item.mime_type ?? item.mimeType ?? item.content_type ?? item.contentType) ??
+    imageMimeType(format);
+  const imageUrlValue = item.url ?? item.image_url ?? item.imageUrl;
+  const imageDataValue = item.data;
+  const imageDataUrl =
+    typeof imageDataValue === 'string' && /^https?:\/\//i.test(imageDataValue.trim())
+      ? imageDataValue
+      : undefined;
+  const url =
+    (isRecord(imageUrlValue) ? imageUrlValue.url : imageUrlValue) ?? imageDataUrl ?? undefined;
+  if (nonEmptyString(url)) {
+    const dataUrl = parseDataUrl(url);
+    if (dataUrl) {
+      return {
+        mediaType: 'image',
+        kind: 'base64',
+        base64: dataUrl.base64,
+        mimeType: dataUrl.mimeType.startsWith('image/') ? dataUrl.mimeType : mimeType,
+        format: format ?? formatFromMimeType(dataUrl.mimeType),
+      };
+    }
+    const safeUrl = providerRemoteUrl(url);
+    if (safeUrl) {
+      return {
+        mediaType: 'image',
+        kind: 'url',
+        url: safeUrl,
+        mimeType:
+          normalizedMimeType(
+            item.mime_type ?? item.mimeType ?? item.content_type ?? item.contentType,
+          ) ??
+          mimeTypeFromUrl(safeUrl, 'image') ??
+          mimeType,
+        format: format ?? formatFromMimeType(mimeTypeFromUrl(safeUrl, 'image')),
+      };
+    }
+  }
+
+  const base64 = item.b64_json ?? item.b64Json ?? item.base64 ?? item.data;
+  if (nonEmptyString(base64)) {
+    const dataUrl = parseDataUrl(base64);
+    return {
+      mediaType: 'image',
+      kind: 'base64',
+      base64: dataUrl?.base64 ?? base64.trim(),
+      mimeType: dataUrl?.mimeType.startsWith('image/') ? dataUrl.mimeType : mimeType,
+      format: format ?? formatFromMimeType(dataUrl?.mimeType),
+    };
+  }
+  throw new NewApiProviderError('New API 图片响应缺少 url 或 base64 内容');
+}
+
+function parseAudioOutput(payload: unknown, snapshot: RunSnapshot): AudioProviderOutput {
+  const requestedFormat = outputFormat(snapshot.parameters);
+  if (isBinaryResponsePayload(payload)) {
+    if (payload.bytes.byteLength === 0) {
+      throw new NewApiProviderError('New API 音频响应内容为空');
+    }
+    const detectedMimeType = normalizedMimeType(payload.mimeType);
+    const mimeType =
+      detectedMimeType && detectedMimeType !== 'application/octet-stream'
+        ? detectedMimeType
+        : audioMimeType(requestedFormat);
+    return {
+      mediaType: 'audio',
+      kind: 'base64',
+      base64: bytesToBase64(payload.bytes),
+      mimeType,
+      format: formatFromMimeType(mimeType) ?? requestedFormat,
+    };
+  }
+
+  const item = firstMediaItem(payload) ?? (isRecord(payload) ? payload : undefined);
+  if (!item) throw new NewApiProviderError('New API 音频响应格式无效');
+  const format = outputFormat(snapshot.parameters, item.format, item.output_format);
+  const mimeType =
+    normalizedMimeType(item.mime_type ?? item.mimeType ?? item.content_type ?? item.contentType) ??
+    audioMimeType(format);
+  const audioUrlValue = item.url ?? item.audio_url ?? item.audioUrl;
+  const audioDataValue = item.data;
+  const audioDataUrl =
+    typeof audioDataValue === 'string' && /^https?:\/\//i.test(audioDataValue.trim())
+      ? audioDataValue
+      : undefined;
+  const url =
+    (isRecord(audioUrlValue) ? audioUrlValue.url : audioUrlValue) ?? audioDataUrl ?? undefined;
+  if (nonEmptyString(url)) {
+    const dataUrl = parseDataUrl(url);
+    if (dataUrl) {
+      return {
+        mediaType: 'audio',
+        kind: 'base64',
+        base64: dataUrl.base64,
+        mimeType: dataUrl.mimeType.startsWith('audio/') ? dataUrl.mimeType : mimeType,
+        format: format ?? formatFromMimeType(dataUrl.mimeType),
+      };
+    }
+    const safeUrl = providerRemoteUrl(url);
+    if (safeUrl) {
+      return {
+        mediaType: 'audio',
+        kind: 'url',
+        url: safeUrl,
+        mimeType:
+          normalizedMimeType(
+            item.mime_type ?? item.mimeType ?? item.content_type ?? item.contentType,
+          ) ??
+          mimeTypeFromUrl(safeUrl, 'audio') ??
+          mimeType,
+        format: format ?? formatFromMimeType(mimeTypeFromUrl(safeUrl, 'audio')),
+      };
+    }
+  }
+
+  const base64 = item.b64_json ?? item.b64Json ?? item.base64 ?? item.audio ?? item.data;
+  if (nonEmptyString(base64)) {
+    const dataUrl = parseDataUrl(base64);
+    return {
+      mediaType: 'audio',
+      kind: 'base64',
+      base64: dataUrl?.base64 ?? base64.trim(),
+      mimeType: dataUrl?.mimeType.startsWith('audio/') ? dataUrl.mimeType : mimeType,
+      format: format ?? formatFromMimeType(dataUrl?.mimeType),
+    };
+  }
+  throw new NewApiProviderError('New API 音频响应缺少 url 或 base64 内容');
+}
+
+function firstMediaItem(payload: unknown): Record<string, unknown> | undefined {
+  if (Array.isArray(payload)) {
+    const first = payload[0];
+    if (isRecord(first)) return first;
+    if (nonEmptyString(first)) return { data: first };
+    return undefined;
+  }
+  if (!isRecord(payload)) return undefined;
+  for (const key of ['data', 'images', 'output', 'results']) {
+    const collection = payload[key];
+    if (Array.isArray(collection)) {
+      const first = collection[0];
+      if (isRecord(first)) return first;
+      if (nonEmptyString(first)) return { data: first };
+    }
+  }
+  return payload;
+}
+
+function isBinaryResponsePayload(value: unknown): value is BinaryResponsePayload {
+  return isRecord(value) && value.__newApiBinary === true && value.bytes instanceof Uint8Array;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  // `btoa` is available in browsers but not in all Node runtimes. Buffer is
+  // intentionally accessed through the global value to keep this package
+  // usable in both environments without a Node-only import.
+  const bufferCtor = (
+    globalThis as { Buffer?: { from(value: Uint8Array): { toString(encoding: string): string } } }
+  ).Buffer;
+  if (bufferCtor) return bufferCtor.from(bytes).toString('base64');
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+async function readResponsePayload(response: Response): Promise<unknown> {
+  const headers = (response as Response & { headers?: Headers }).headers;
+  const mimeType = normalizedMimeType(headers?.get?.('content-type'));
+  if (typeof response.arrayBuffer !== 'function') {
+    return response.json().catch(() => ({}));
+  }
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  const text = new TextDecoder().decode(bytes);
+  const looksLikeJson =
+    mimeType?.includes('json') || /^[\s]*[\[{]/.test(text) || text.trim() === '';
+  if (looksLikeJson) {
+    try {
+      if (text.trim() === '') return {};
+      const parsed = JSON.parse(text) as unknown;
+      return typeof parsed === 'string' ? { data: parsed } : parsed;
+    } catch {
+      if (mimeType?.includes('json')) return {};
+    }
+  }
+  return { __newApiBinary: true, bytes, mimeType } satisfies BinaryResponsePayload;
 }
 
 function composePrompt(snapshot: RunSnapshot, label: string, nodePrompt?: string) {

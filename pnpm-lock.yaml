@@ -121,6 +121,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@aws-sdk/client-s3':
+        specifier: 3.862.0
+        version: 3.862.0
       '@multimodal-canvas/domain':
         specifier: workspace:*
         version: link:../../packages/domain

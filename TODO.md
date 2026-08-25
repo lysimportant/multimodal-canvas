@@ -10,7 +10,7 @@
 - `[!]` 阻塞，需要外部条件或明确契约
 - `[>]` 暂缓，排在 MVP 之后
 
-当前可执行条目计数（2026-08-26）：共 73 项；已完成 62 项，进行中 2 项，未开始 4 项，阻塞 1 项，暂缓 4 项（不含状态说明和需求模板）。新增条目时请同步更新本行。
+当前可执行条目计数（2026-08-26）：共 77 项；已完成 65 项，进行中 2 项，未开始 4 项，阻塞 2 项，暂缓 4 项（不含状态说明和需求模板）。新增条目时请同步更新本行。
 
 优先级：`P0` 阻塞 MVP 或存在数据/安全风险；`P1` MVP 必需；`P2` MVP 后增强。
 
@@ -25,7 +25,7 @@
 | 4    | 运行状态机与实时进度 | `[x]`         | P1      |
 | 5    | AI 设置与模型选择    | `[x]`         | P1      |
 | 6    | New API Provider     | `[~]`         | P1      |
-| 7    | 生产数据链路         | `[~]`         | P0      |
+| 7    | 生产数据链路         | `[x]`         | P0      |
 | 8    | 视频异步链路         | `[!]`         | P1      |
 | 9    | 安全、用量与可观测性 | `[~]`         | P0      |
 | 10   | 自动化验收与桌面端   | `[~]` / `[>]` | P1 / P2 |
@@ -83,6 +83,9 @@
 - `[x]` 文字 `/chat/completions`
 - `[x]` 图片 `/images/generations`
 - `[x]` 音频 `/audio/speech`
+- `[x]` 解析真实文本、图片和音频响应（文本片段、图片 URL/base64、音频 JSON/二进制）并转换为统一 Worker 输出
+- `[x]` Worker 生产归档器将生成结果写入 Prisma 资产与首个版本，支持 S3/MinIO 或文件 BlobStore，并保留模型、参数和运行来源元数据
+- `[!]` 当前测试凭据没有可用图片渠道；图片协议已完成，真实生图验收等待平台开通 image channel
 - `[x]` Worker 按任务 `provider` 选择 Mock 或 New API
 - `[~]` 视频接口暂未实现，必须等待真实 New API 的异步接口契约
 
@@ -91,10 +94,11 @@
 - `[x]` `pnpm format:check`
 - `[x]` `pnpm lint`
 - `[x]` `pnpm typecheck`
-- `[x]` `pnpm test`（API 99 通过、1 跳过；domain 11、providers 4、worker 6、Web 43、observability 14；UI 无测试文件；无 `TEST_DATABASE_URL` 时 Prisma 集成测试安全跳过）
+- `[x]` `pnpm test`（API 99 通过、1 跳过；domain 11、providers 8、worker 19、Web 43、observability 14；UI 无测试文件；无 `TEST_DATABASE_URL` 时 Prisma 集成测试安全跳过）
 - `[x]` `pnpm build`
 - `[x]` `pnpm test:e2e`（Chromium 10 项通过，含 Mock 默认模型切换、Clipboard 权限拒绝和非法文本回退）
 - `[x]` `DATABASE_URL=... pnpm db:validate`
+- `[x]` 临时 New API 凭据真实文本请求成功；图片模型请求返回平台无可用 image channel（协议解析与模拟归档测试通过）
 
 ## 进行中
 
@@ -117,6 +121,7 @@
 - `[x]` `asset_versions` 创建、版本内容读取和结果归档扩展点
 - `[x]` 归档与恢复的数据库持久化；节点删除不删除资源
 - `[x]` 资源访问权限已具备项目隔离，派生和原始内容均通过 API 路由提供；生产环境下载 URL 要求用户 Bearer 会话，并支持 S3/MinIO 预签名 GET 或内存/文件存储 HMAC 短时 URL（原始内容、版本和派生内容均覆盖）
+- `[x]` New API 文本/图片/音频生成结果已接入 Worker 资产归档；归档 URL 下载有 HTTPS、私网地址、超时和大小限制
 
 ### 阶段 8：视频异步链路（P1，等待契约）
 

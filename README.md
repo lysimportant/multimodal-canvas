@@ -4,7 +4,7 @@
 
 项目的核心体验是：在左侧资源库管理素材，在右侧无限画布上组合节点，通过多个参考输入驱动生成任务，并在任务完成后将结果保存回资源库。所有模型调用都经过本项目 API 和 New API，浏览器不会直接访问上游模型服务。
 
-> 当前状态：已完成 monorepo foundation、资产上传与归档、项目/画布保存、Mock 运行状态机、多参考端口、AI 设置、生产持久化切片和第一方用户会话鉴权。Web 端现在可以管理资源生命周期、创建和编辑四类媒体节点、连接多个角色化参考输入、配置 New API、刷新模型并提交单节点运行；项目级运行历史、画布 RTL 交互测试、设置焦点管理、桌面/移动视觉验收、归档结果版本展示和 Chromium smoke 验收已接入。API 生产入口使用 BullMQ，并在配置 `DATABASE_URL` 时使用 Prisma/PostgreSQL 保存项目、画布、资产、用户会话及 AI 设置/模型目录，未配置数据库的本地开发继续使用内存存储。当前资产上传支持 multipart、S3/MinIO 预签名直传、SHA-256 校验和可跨实例恢复的上传会话；生产环境资产原始内容、版本和派生内容均要求用户会话并按用户隔离，内容访问支持 S3/MinIO 预签名 GET 或短时 HMAC URL。真实视频接口契约仍待接入。收费、套餐、累计额度和 usage 对账暂缓，当前只保留单次成本上限与并发保护。
+> 当前状态：已完成 monorepo foundation、资产上传与归档、项目/画布保存、Mock 运行状态机、多参考端口、AI 设置、生产持久化切片和第一方用户会话鉴权。Web 端现在可以管理资源生命周期、创建和编辑四类媒体节点、连接多个角色化参考输入、配置 New API、刷新模型并提交单节点运行；项目级运行历史、画布 RTL 交互测试、设置焦点管理、桌面/移动视觉验收、归档结果版本展示和 Chromium smoke 验收已接入。New API Worker 现在解析真实文本、图片和音频响应，并在配置 `DATABASE_URL` 时把结果写入与 API 相同的 Prisma/S3（或文件）资产版本链路；未配置数据库的本地开发继续使用内存存储。当前资产上传支持 multipart、S3/MinIO 预签名直传、SHA-256 校验和可跨实例恢复的上传会话；生产环境资产原始内容、版本和派生内容均要求用户会话并按用户隔离，内容访问支持 S3/MinIO 预签名 GET 或短时 HMAC URL。已用测试凭据验证文本生成成功；图片协议解析已覆盖 URL/base64，但该凭据当前没有可用 image channel，真实生图验收等待渠道开通。真实视频接口契约仍待接入。收费、套餐、累计额度和 usage 对账暂缓，当前只保留单次成本上限与并发保护。
 
 详细的阶段状态、优先级、依赖和验收条件见 [`TODO.md`](./TODO.md)。
 
@@ -169,7 +169,7 @@ POST   /v1/webhooks/newapi
 - 收费、套餐、累计额度和供应商 usage 对账暂缓；当前成本字段只用于单次成本保护和后续扩展，不代表已接入完整计费系统。
 - 凭据通过 TLS 传输，并由服务端加密保存。
 - 读取接口只返回配置状态或不可逆指纹，不返回原始 API Key。
-- Worker 默认使用 Mock Provider；只有显式设置 `WORKER_PROVIDER=newapi` 后，文字、图片和音频任务才会通过服务端 New API 凭据调用上游。配置 `DATABASE_URL` 时 AI 凭据、默认模型和模型目录由 Prisma 持久化；视频仍需取得平台异步接口契约后接入。
+- Worker 默认使用 Mock Provider；只有显式设置 `WORKER_PROVIDER=newapi` 后，文字、图片和音频任务才会通过服务端 New API 凭据调用上游。配置 `DATABASE_URL` 时 AI 凭据、默认模型和模型目录由 Prisma 持久化，且生成的文本/图片/音频会由 Worker 写入同一资产 Store 并创建首个版本；`RESULT_ASSET_MAX_BYTES` 控制归档大小，远程结果 URL 仅允许服务端安全下载。视频仍需取得平台异步接口契约后接入。
 - 业务 SQLite 数据库、WAL/SHM 文件和上传目录不属于本项目的生产方案。
 
 ## 本地开发
@@ -227,6 +227,7 @@ S3_BUCKET=multimodal-canvas-dev
 S3_ACCESS_KEY=minioadmin
 S3_SECRET_KEY=minioadmin
 ASSET_STORAGE_ROOT=.data/assets
+RESULT_ASSET_MAX_BYTES=52428800
 FFMPEG_ENABLED=false
 FFMPEG_PATH=
 

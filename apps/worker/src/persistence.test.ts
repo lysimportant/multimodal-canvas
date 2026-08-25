@@ -61,6 +61,7 @@ describe('worker run persistence boundary', () => {
     const providerJobs: Array<{ runId: string; providerJob: Record<string, unknown> }> = [];
     const runLifecycle: Array<{ runId: string; status: string }> = [];
     const usageEntries: Array<Record<string, unknown>> = [];
+    const archiveCalls: Array<Record<string, unknown>> = [];
     const logEvents: Array<{
       level: string;
       bindings: Record<string, unknown>;
@@ -150,9 +151,20 @@ describe('worker run persistence boundary', () => {
               mediaType: 'text' as const,
               inputCount: 0,
             },
+            output: {
+              mediaType: 'text' as const,
+              kind: 'text' as const,
+              text: 'archivable result',
+              mimeType: 'text/plain',
+              format: 'txt',
+            },
             usage: { amount: '1.250000', currency: 'USD', metadata: { requestId: 'req_1' } },
           };
         },
+      },
+      resultArchiver: async (input) => {
+        archiveCalls.push(input as unknown as Record<string, unknown>);
+        return { assetId: 'asset_result', version: 2, mimeType: 'text/plain' };
       },
       logger: createTestLogger(),
       observability,
@@ -174,6 +186,18 @@ describe('worker run persistence boundary', () => {
         metadata: { requestId: 'req_1' },
       },
     ]);
+    expect(archiveCalls).toHaveLength(1);
+    expect(archiveCalls[0]).toMatchObject({
+      output: {
+        mediaType: 'text',
+        kind: 'text',
+        text: 'archivable result',
+      },
+      archiveInput: { mediaType: 'text', mimeType: 'text/plain' },
+    });
+    expect((archiveCalls[0].archiveInput as { content: Buffer }).content.toString('utf8')).toBe(
+      'archivable result',
+    );
     expect(logEvents.map((event) => event.message)).toContain('run started');
     expect(logEvents.map((event) => event.message)).toContain('run succeeded');
     expect(logEvents.filter((event) => event.bindings.runId !== 'run_queue_1')).toHaveLength(0);

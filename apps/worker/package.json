@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "3.862.0",
     "@multimodal-canvas/domain": "workspace:*",
     "@multimodal-canvas/observability": "workspace:*",
     "@multimodal-canvas/providers": "workspace:*",
