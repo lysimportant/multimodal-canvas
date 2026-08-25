@@ -280,6 +280,35 @@ async function mockApi(page: Page) {
   });
 }
 
+const clipboardPermissions = ['clipboard-read', 'clipboard-write'] as const;
+
+async function grantClipboardPermissions(page: Page) {
+  await page.context().grantPermissions([...clipboardPermissions], {
+    origin: new URL(page.url()).origin,
+  });
+}
+
+async function setClipboardPermission(
+  page: Page,
+  permission: (typeof clipboardPermissions)[number],
+  setting: 'granted' | 'denied' | 'prompt',
+) {
+  const client = await page.context().newCDPSession(page);
+  await client.send('Browser.setPermission', {
+    permission: { name: permission },
+    setting,
+    origin: new URL(page.url()).origin,
+  });
+}
+
+async function readSystemClipboard(page: Page) {
+  return page.evaluate(async () => navigator.clipboard.readText());
+}
+
+async function focusCanvas(page: Page) {
+  await page.locator('.react-flow__pane').click({ position: { x: 12, y: 12 } });
+}
+
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     window.localStorage.clear();
@@ -435,4 +464,75 @@ test('overrides a node model and displays the completed run result', async ({ pa
   await expect(page.getByText('Mock 结果已归档')).toBeVisible();
   await expect(page.getByText('版本 1')).toBeVisible();
   await expect(page.getByRole('status')).toContainText('文字生成节点 已完成');
+});
+
+test('允许 Clipboard 权限时可以跨画布页面复制粘贴', async ({ page }) => {
+  await page.goto('/');
+  await grantClipboardPermissions(page);
+
+  await page.getByRole('button', { name: '新建文字生成节点' }).click();
+  await expect(page.getByRole('heading', { name: '节点设置' })).toBeVisible();
+  await focusCanvas(page);
+  await page.bringToFront();
+  await page.keyboard.press('Control+c');
+  await expect.poll(() => readSystemClipboard(page)).toContain('multimodal-canvas/clipboard');
+
+  const secondPage = await page.context().newPage();
+  try {
+    await mockApi(secondPage);
+    await secondPage.goto('/');
+    await expect(secondPage.getByText('从一个节点开始')).toBeVisible();
+    await focusCanvas(secondPage);
+    await secondPage.bringToFront();
+    await secondPage.keyboard.press('Control+v');
+
+    await expect(secondPage.locator('.flow-generate-node')).toHaveCount(1);
+    await expect(secondPage.locator('.flow-generate-node')).toContainText('文字生成节点');
+  } finally {
+    await secondPage.close();
+  }
+});
+
+test('Clipboard 读取权限被拒绝时回退到内存剪贴板', async ({ page }) => {
+  await page.goto('/');
+  await setClipboardPermission(page, 'clipboard-read', 'denied');
+  await setClipboardPermission(page, 'clipboard-write', 'denied');
+
+  await page.getByRole('button', { name: '新建文字生成节点' }).click();
+  await expect(page.getByRole('heading', { name: '节点设置' })).toBeVisible();
+  await focusCanvas(page);
+  await page.bringToFront();
+  await page.keyboard.press('Control+c');
+  await expect(page.locator('.flow-generate-node')).toHaveCount(1);
+
+  await expect
+    .poll(async () => {
+      try {
+        await readSystemClipboard(page);
+        return 'granted';
+      } catch {
+        return 'denied';
+      }
+    })
+    .toBe('denied');
+
+  await page.keyboard.press('Control+v');
+  await expect(page.locator('.flow-generate-node')).toHaveCount(2);
+});
+
+test('系统剪贴板是非法文本时回退到内存剪贴板', async ({ page }) => {
+  await page.goto('/');
+  await grantClipboardPermissions(page);
+
+  await page.getByRole('button', { name: '新建文字生成节点' }).click();
+  await expect(page.getByRole('heading', { name: '节点设置' })).toBeVisible();
+  await focusCanvas(page);
+  await page.bringToFront();
+  await page.keyboard.press('Control+c');
+  await expect.poll(() => readSystemClipboard(page)).toContain('multimodal-canvas/clipboard');
+
+  await page.evaluate(async () => navigator.clipboard.writeText('plain text from outside the app'));
+  await page.keyboard.press('Control+v');
+
+  await expect(page.locator('.flow-generate-node')).toHaveCount(2);
 });

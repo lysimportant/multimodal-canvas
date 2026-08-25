@@ -269,7 +269,7 @@ pnpm test:e2e
 - `pnpm format:check`
 - `pnpm lint`
 - `pnpm typecheck`
-- `pnpm test`（API 82 通过、1 跳过；domain 11、providers 4、worker 6、Web 30、observability 10；UI 无测试文件；无 `TEST_DATABASE_URL` 时 Prisma 集成测试安全跳过）
+- `pnpm test`（API 88 通过、1 跳过；domain 11、providers 4、worker 6、Web 40、observability 14；UI 无测试文件；无 `TEST_DATABASE_URL` 时 Prisma 集成测试安全跳过）
 - `pnpm build`
 - `DATABASE_URL=... pnpm db:validate`
 
@@ -277,7 +277,7 @@ pnpm test:e2e
 
 - Vitest：Schema、端口兼容性、DAG、模型目录缓存、Provider 状态机。
 - React Testing Library：画布 Store、节点、连线。
-- Playwright smoke：启动、节点创建和设置连接测试已通过 Chromium；完整上传、拖入画布、多个参考输入、模型切换、运行和结果查看仍待自动化。
+- Playwright smoke：启动、节点创建、设置连接、上传、拖入画布、多个参考输入、模型覆盖、运行结果和 Clipboard 权限场景已通过 Chromium（9 tests）；真实模型切换仍待自动化。
 - API 集成测试：独立临时 PostgreSQL、Redis namespace、MinIO bucket 和 New API 测试项目。
 
 测试不得清空、覆盖、重置或批量删除真实业务数据库和上传目录；删除用户文件必须使用可恢复的软删除策略。
