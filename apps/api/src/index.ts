@@ -8,8 +8,10 @@ import { PrismaWebhookEventStore } from './webhooks';
 import { FfmpegMediaDerivativeGenerator, FfprobeMediaMetadataExtractor } from './media';
 import { PrismaUploadSessionStore } from './upload-sessions';
 import { PrismaRunPersistence } from './run-persistence';
+import { PrismaAuthStore } from './auth-store';
 
 const prisma = process.env.DATABASE_URL ? new PrismaClient() : undefined;
+const authStore = prisma ? new PrismaAuthStore(prisma) : undefined;
 const runPersistence = prisma ? new PrismaRunPersistence(prisma) : undefined;
 const useMemoryRunService =
   process.env.RUN_SERVICE === 'memory' ||
@@ -63,10 +65,10 @@ const mediaDerivativeGenerator =
 const app = buildApp({
   runService,
   settingsStore,
+  ...(authStore ? { authStore } : {}),
   ...(prisma
     ? {
-        userExists: async (userId: string) =>
-          Boolean(await prisma.user.findUnique({ where: { id: userId }, select: { id: true } })),
+        userExists: async (userId: string) => Boolean(await authStore!.findUserById(userId)),
       }
     : {}),
   ...(prisma ? { webhookEventStore: new PrismaWebhookEventStore(prisma) } : {}),

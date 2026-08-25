@@ -1,12 +1,31 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
+export type AuthRole = 'user' | 'admin';
+
 /** The authenticated caller attached to a request. */
 export type AuthPrincipal = {
   /** Stable application user identifier from `sub` or `user_id`. */
   userId?: string;
   /** `api-token` is a service credential without user-level scope. */
   method: 'anonymous' | 'api-token' | 'jwt';
+  /** Role is only an assertion; stateful callers must resolve the current user. */
+  role?: AuthRole;
+  /** Stateful access-token session id, when present in the JWT. */
+  sessionId?: string;
 };
+
+export type JwtClaims = {
+  sub: string;
+  exp?: number;
+  nbf?: number;
+  iat?: number;
+  sid?: string;
+  role?: AuthRole;
+};
+
+export type JwtVerificationResult =
+  | { ok: true; claims: JwtClaims }
+  | { ok: false; reason: 'missing' | 'invalid' | 'expired' | 'not-yet-valid' };
 
 export type AuthenticationOptions = {
   apiToken?: string;
@@ -48,12 +67,22 @@ export function authenticateBearer(
   }
 
   if (!options.jwtSecret) return { ok: false, reason: 'invalid' };
-  return verifyHs256Jwt(
+  const verified = verifyHs256Jwt(
     token,
     options.jwtSecret,
     options.now ?? (() => Date.now()),
     options.requireExpiration ?? false,
   );
+  if (!verified.ok) return verified;
+  return {
+    ok: true,
+    principal: {
+      method: 'jwt',
+      userId: verified.claims.sub,
+      ...(verified.claims.role ? { role: verified.claims.role } : {}),
+      ...(verified.claims.sid ? { sessionId: verified.claims.sid } : {}),
+    },
+  };
 }
 
 export function extractBearerToken(authorization: string | undefined): string | undefined {
@@ -62,12 +91,12 @@ export function extractBearerToken(authorization: string | undefined): string | 
   return token || undefined;
 }
 
-function verifyHs256Jwt(
+export function verifyHs256Jwt(
   token: string,
   secret: string,
   now: () => number,
   requireExpiration: boolean,
-): AuthenticationResult {
+): JwtVerificationResult {
   const parts = token.split('.');
   if (parts.length !== 3) return { ok: false, reason: 'invalid' };
 
@@ -113,7 +142,30 @@ function verifyHs256Jwt(
           : undefined;
   const userId = rawUserId?.trim();
   if (!userId || !USER_ID_UUID_PATTERN.test(userId)) return { ok: false, reason: 'invalid' };
-  return { ok: true, principal: { method: 'jwt', userId } };
+  const role = payload.role === 'admin' || payload.role === 'user' ? payload.role : undefined;
+  const sessionId =
+    typeof payload.sid === 'string' && payload.sid.trim() ? payload.sid.trim() : undefined;
+  return {
+    ok: true,
+    claims: {
+      sub: userId,
+      ...(expiresAt !== undefined ? { exp: expiresAt } : {}),
+      ...(notBefore !== undefined ? { nbf: notBefore } : {}),
+      ...(numericClaim(payload.iat) !== undefined ? { iat: numericClaim(payload.iat) } : {}),
+      ...(sessionId ? { sid: sessionId } : {}),
+      ...(role ? { role } : {}),
+    },
+  };
+}
+
+/** Sign a compact HS256 JWT for the first-party authentication service. */
+export function signHs256Jwt(claims: JwtClaims, secret: string): string {
+  if (!secret.trim()) throw new Error('JWT secret is required');
+  const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  const header = encode({ alg: 'HS256', typ: 'JWT' });
+  const payload = encode(claims);
+  const signature = createHmac('sha256', secret).update(`${header}.${payload}`).digest('base64url');
+  return `${header}.${payload}.${signature}`;
 }
 
 function parseJsonPart(part: string): Record<string, unknown> {

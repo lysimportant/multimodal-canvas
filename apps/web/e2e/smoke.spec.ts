@@ -72,7 +72,7 @@ async function mockApi(page: Page) {
     const modelAlias =
       typeof body.modelAlias === 'string' && body.modelAlias.length > 0
         ? body.modelAlias
-        : `mock-${mediaType}`;
+        : (settings.defaultModels[mediaType] ?? `mock-${mediaType}`);
     const now = new Date().toISOString();
     const run: RunRecord = {
       id: `run-${nodeId}`,
@@ -463,6 +463,46 @@ test('overrides a node model and displays the completed run result', async ({ pa
   await expect(page.getByRole('region', { name: '运行结果' })).toBeVisible();
   await expect(page.getByText('Mock 结果已归档')).toBeVisible();
   await expect(page.getByText('版本 1')).toBeVisible();
+  await expect(page.getByRole('status')).toContainText('文字生成节点 已完成');
+});
+
+test('切换 Mock 默认模型后新运行使用新模型', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '打开设置' }).click();
+
+  const dialog = page.getByRole('dialog', { name: 'AI 连接' });
+  await expect(dialog).toBeVisible();
+  await dialog.getByLabel('New API Base URL').fill('https://mock.newapi.local/v1');
+  await dialog.getByLabel('API Key').fill('playwright-smoke-key');
+  await dialog.getByRole('button', { name: '保存' }).click();
+  await expect(dialog.getByText('已配置 · smoke-fingerprint')).toBeVisible();
+  const refreshResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === '/v1/settings/ai/models/refresh' &&
+      response.request().method() === 'POST',
+  );
+  await expect(dialog.getByRole('button', { name: '刷新模型' })).toBeEnabled();
+  await dialog.getByRole('button', { name: '刷新模型' }).click();
+  await expect((await refreshResponse).status()).toBe(200);
+  await expect(page.getByRole('status')).toContainText('模型列表已刷新');
+  const textDefault = dialog.locator('select').first();
+  await expect(textDefault).toBeVisible();
+  await expect(textDefault.locator('option[value="mock-text-v2"]')).toHaveCount(1);
+  await textDefault.selectOption('mock-text-v2');
+  await expect(textDefault).toHaveValue('mock-text-v2');
+  await dialog.getByRole('button', { name: '关闭设置' }).click();
+
+  await page.getByRole('button', { name: '新建文字生成节点' }).click();
+  const runResponse = page.waitForResponse(
+    (response) =>
+      /\/v1\/nodes\/[^/]+\/runs$/.test(new URL(response.url()).pathname) &&
+      response.request().method() === 'POST',
+  );
+  await page.getByRole('button', { name: '生成', exact: true }).click();
+  const run = (await (await runResponse).json()).run as RunRecord;
+
+  expect(run.modelAlias).toBe('mock-text-v2');
+  await expect(page.getByRole('region', { name: '运行结果' })).toBeVisible();
   await expect(page.getByRole('status')).toContainText('文字生成节点 已完成');
 });
 

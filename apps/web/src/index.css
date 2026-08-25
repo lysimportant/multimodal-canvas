@@ -1135,6 +1135,58 @@ h2 {
   margin: 10px 0 0;
 }
 
+.inspector-result-version-list {
+  border-top: 1px solid #edf0f4;
+  margin-top: 12px;
+  padding-top: 10px;
+}
+
+.inspector-result-version-list-label {
+  color: #8993a3;
+  display: block;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.inspector-result-version-list ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  list-style: none;
+  margin: 7px 0 0;
+  padding: 0;
+}
+
+.inspector-result-version-list li {
+  align-items: center;
+  display: inline-flex;
+  gap: 3px;
+  max-width: 100%;
+}
+
+.inspector-result-version-list a {
+  color: #18794e;
+  font-size: 11px;
+  text-decoration: none;
+}
+
+.inspector-result-version-list a:hover {
+  color: #12613e;
+  text-decoration: underline;
+}
+
+.inspector-result-version-list a[aria-current='true'] {
+  font-weight: 700;
+}
+
+.inspector-result-version-list li > span {
+  color: #8993a3;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
 .inspector-preview {
   align-items: center;
   background: #f1f4f5;
@@ -1374,6 +1426,14 @@ h2 {
   font-size: 11px;
   margin-top: 24px;
   padding: 4px 0;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid #18794e;
+  outline-offset: 2px;
 }
 
 @media (max-width: 900px) {

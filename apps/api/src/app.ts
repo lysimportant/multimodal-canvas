@@ -1,9 +1,16 @@
 import multipart from '@fastify/multipart';
 import cors from '@fastify/cors';
 import Fastify, { type FastifyInstance } from 'fastify';
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 
-import { detectMediaType, MemoryAssetStore, type AssetScope, type AssetStore } from './assets';
+import {
+  createAssetAccessToken,
+  detectMediaType,
+  MemoryAssetStore,
+  verifyAssetAccessToken,
+  type AssetScope,
+  type AssetStore,
+} from './assets';
 import {
   MemoryProjectStore,
   ProjectStoreError,
@@ -33,7 +40,9 @@ import {
   type Observability,
   type ObservabilitySpan,
 } from '@multimodal-canvas/observability';
-import { authenticateBearer, type AuthPrincipal } from './auth';
+import { extractBearerToken, authenticateBearer, type AuthPrincipal } from './auth';
+import { AuthService, AuthServiceError, type AuthenticatedSession } from './auth-service';
+import { MemoryAuthStore, type AuthStore } from './auth-store';
 import {
   enforceRunCostPolicy,
   parseRunCostPolicy,
@@ -54,6 +63,10 @@ type BuildAppOptions = {
   mediaMetadataExtractor?: MediaMetadataExtractor;
   mediaDerivativeGenerator?: MediaDerivativeGenerator;
   uploadSessionStore?: UploadSessionStore;
+  /** Stateful user/session store used by the first-party authentication routes. */
+  authStore?: AuthStore;
+  /** Injectable authentication service for tests or custom deployments. */
+  authService?: AuthService;
 };
 
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
@@ -79,7 +92,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     options.observability ??
     createEnvironmentObservability({ logger: app.log, service: 'multimodal-canvas-api' });
   const requestSpans = new WeakMap<object, ObservabilitySpan>();
-  const assetStore = options.assetStore ?? new MemoryAssetStore();
+  const assetStore: AssetStore = options.assetStore ?? new MemoryAssetStore();
   const projectStore = options.projectStore ?? new MemoryProjectStore();
   const runService = options.runService ?? new MemoryRunService();
   const userExists = options.userExists;
@@ -93,8 +106,18 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const uploadSessionStore = options.uploadSessionStore ?? new MemoryUploadSessionStore();
   const authToken = process.env.API_AUTH_TOKEN?.trim();
   const jwtSecret = process.env.API_JWT_SECRET?.trim();
+  // A deployment may provide a dedicated key. Falling back to an existing
+  // server-side auth secret keeps local development usable without exposing
+  // credentials; the final fallback is process-local and non-persistent.
+  const assetAccessSecret =
+    process.env.ASSET_ACCESS_URL_SECRET?.trim() || jwtSecret || authToken || randomUUID();
+  const authStore = options.authStore ?? new MemoryAuthStore();
+  const authService =
+    options.authService ??
+    (jwtSecret ? new AuthService({ store: authStore, jwtSecret }) : undefined);
   const requireJwtExpiration = process.env.NODE_ENV === 'production';
   const requestPrincipals = new WeakMap<object, AuthPrincipal>();
+  const requestSessions = new WeakMap<object, AuthenticatedSession>();
   const maxActiveRunsPerProject = parsePositiveInt(process.env.RUN_MAX_ACTIVE_PER_PROJECT);
   const rateLimitPerMinute = parsePositiveInt(process.env.API_RATE_LIMIT_PER_MINUTE);
   const rateLimitWindowMs = 60_000;
@@ -149,7 +172,34 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.addHook('onRequest', async (request, reply) => {
     const pathname = request.url.split('?')[0];
-    if (pathname === '/health' || pathname === '/v1/webhooks/newapi') return;
+    if (
+      pathname === '/health' ||
+      pathname === '/v1/webhooks/newapi' ||
+      pathname === '/v1/auth/register' ||
+      pathname === '/v1/auth/login'
+    )
+      return;
+    if (request.method === 'GET') {
+      const signedResource = assetContentResource(pathname);
+      if (signedResource) {
+        const token = new URL(request.url, 'http://localhost').searchParams.get('access_token');
+        const verified = verifyAssetAccessToken(
+          token ?? undefined,
+          assetAccessSecret,
+          signedResource,
+        );
+        if (verified) {
+          requestPrincipals.set(request, {
+            method: 'anonymous',
+            ...(verified.ownerId ? { userId: verified.ownerId } : {}),
+          });
+          return;
+        }
+        // Do not silently fall back to development anonymous access when a
+        // caller presents a malformed, expired, or resource-mismatched token.
+        if (token !== null) return reply.code(401).send({ error: 'invalid or expired access URL' });
+      }
+    }
     if (!authToken && !jwtSecret) {
       if (process.env.NODE_ENV === 'production') {
         return reply
@@ -167,13 +217,45 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (!result.ok) {
       return reply.code(401).send({ error: 'authentication required' });
     }
-    if (result.principal.method === 'jwt' && !userExists && process.env.NODE_ENV === 'production') {
+    if (result.principal.method === 'jwt' && result.principal.sessionId && authService) {
+      const accessToken = extractBearerToken(request.headers.authorization);
+      if (!accessToken) return reply.code(401).send({ error: 'authentication required' });
+      try {
+        const session = await authService.verifyAccessToken(accessToken);
+        requestSessions.set(request, session);
+        result.principal.role = session.user.role;
+      } catch (error) {
+        if (error instanceof AuthServiceError) {
+          return reply.code(401).send({ error: 'authentication required' });
+        }
+        request.log.error({ err: error }, 'authentication session lookup failed');
+        return reply.code(503).send({ error: 'authentication service unavailable' });
+      }
+    } else if (result.principal.method === 'jwt' && result.principal.sessionId && !authService) {
+      request.log.error('stateful JWT authentication requires an authentication service');
+      return reply.code(503).send({ error: 'authentication service unavailable' });
+    }
+    // The implicit in-memory store exists to make local auth route tests and
+    // development convenient; it must not count as a production backing store
+    // for legacy stateless JWTs. Production callers must inject a real store
+    // (or the explicit userExists lookup) before those tokens are accepted.
+    const effectiveUserExists =
+      userExists ??
+      (options.authStore
+        ? async (userId: string) => Boolean(await options.authStore!.findUserById(userId))
+        : undefined);
+    if (
+      result.principal.method === 'jwt' &&
+      !result.principal.sessionId &&
+      !effectiveUserExists &&
+      process.env.NODE_ENV === 'production'
+    ) {
       request.log.error('JWT authentication requires a production user store');
       return reply.code(503).send({ error: 'authentication service unavailable' });
     }
-    if (result.principal.userId && userExists) {
+    if (result.principal.userId && effectiveUserExists && !requestSessions.has(request)) {
       try {
-        if (!(await userExists(result.principal.userId))) {
+        if (!(await effectiveUserExists(result.principal.userId))) {
           return reply.code(401).send({ error: 'authentication required' });
         }
       } catch (error) {
@@ -212,6 +294,72 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.get('/documentation', async () => openApiDocument);
   app.get('/documentation/json', async () => openApiDocument);
 
+  app.post('/v1/auth/register', async (request, reply) => {
+    if (!authService) {
+      return reply.code(503).send({ error: 'authentication service unavailable' });
+    }
+    const body = z
+      .object({
+        email: z.string(),
+        password: z.string(),
+        displayName: z.string().trim().max(120).optional(),
+      })
+      .strict()
+      .safeParse(request.body);
+    if (!body.success) return reply.code(400).send({ error: 'invalid authentication input' });
+    try {
+      return reply.code(201).send(await authService.register(body.data));
+    } catch (error) {
+      return sendAuthServiceError(reply, error);
+    }
+  });
+
+  app.post('/v1/auth/login', async (request, reply) => {
+    if (!authService) {
+      return reply.code(503).send({ error: 'authentication service unavailable' });
+    }
+    const body = z
+      .object({ email: z.string(), password: z.string() })
+      .strict()
+      .safeParse(request.body);
+    if (!body.success) return reply.code(400).send({ error: 'invalid authentication input' });
+    try {
+      return reply.send(await authService.login(body.data));
+    } catch (error) {
+      return sendAuthServiceError(reply, error);
+    }
+  });
+
+  app.get('/v1/auth/me', async (request, reply) => {
+    const session = requestSessions.get(request);
+    if (!session) return reply.code(401).send({ error: 'authentication required' });
+    return { user: session.user };
+  });
+
+  app.post('/v1/auth/logout', async (request, reply) => {
+    if (!authService) {
+      return reply.code(503).send({ error: 'authentication service unavailable' });
+    }
+    const session = requestSessions.get(request);
+    const principal = requestPrincipals.get(request);
+    const accessToken = extractBearerToken(request.headers.authorization);
+    if (!session || principal?.method !== 'jwt' || !accessToken) {
+      return reply.code(401).send({ error: 'authentication required' });
+    }
+    await authService.logout(accessToken);
+    return { loggedOut: true };
+  });
+
+  app.post('/v1/auth/logout-all', async (request, reply) => {
+    if (!authService) {
+      return reply.code(503).send({ error: 'authentication service unavailable' });
+    }
+    const session = requestSessions.get(request);
+    if (!session) return reply.code(401).send({ error: 'authentication required' });
+    const revokedSessions = await authService.logoutAll(session.user.id);
+    return { revokedSessions };
+  });
+
   app.post('/v1/webhooks/newapi', async (request, reply) => {
     const secret = process.env.NEW_API_WEBHOOK_SECRET?.trim();
     if (!secret && process.env.NODE_ENV === 'production') {
@@ -238,14 +386,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
 
   app.get('/v1/settings/ai', async (request, reply) => {
-    if (!canManagePlatformSettings(requestPrincipals, request)) {
+    if (!canManagePlatformSettings(requestPrincipals, requestSessions, request)) {
       return reply.code(403).send({ error: 'platform credential access is not permitted' });
     }
     return { settings: await settingsStore.get() };
   });
 
   app.patch('/v1/settings/ai', async (request, reply) => {
-    if (!canManagePlatformSettings(requestPrincipals, request)) {
+    if (!canManagePlatformSettings(requestPrincipals, requestSessions, request)) {
       return reply.code(403).send({ error: 'platform credential access is not permitted' });
     }
     const result = z
@@ -275,21 +423,21 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
 
   app.delete('/v1/settings/ai/credentials', async (request, reply) => {
-    if (!canManagePlatformSettings(requestPrincipals, request)) {
+    if (!canManagePlatformSettings(requestPrincipals, requestSessions, request)) {
       return reply.code(403).send({ error: 'platform credential access is not permitted' });
     }
     return { settings: await settingsStore.removeCredentials() };
   });
 
   app.post('/v1/settings/ai/test', async (request, reply) => {
-    if (!canManagePlatformSettings(requestPrincipals, request)) {
+    if (!canManagePlatformSettings(requestPrincipals, requestSessions, request)) {
       return reply.code(403).send({ error: 'platform credential access is not permitted' });
     }
     return { result: await settingsStore.testConnection() };
   });
 
   app.post('/v1/settings/ai/models/refresh', async (request, reply) => {
-    if (!canManagePlatformSettings(requestPrincipals, request)) {
+    if (!canManagePlatformSettings(requestPrincipals, requestSessions, request)) {
       return reply.code(403).send({ error: 'platform credential access is not permitted' });
     }
     try {
@@ -783,6 +931,72 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return reply.code(201).send({ asset: response });
   });
 
+  app.post<{ Params: { assetId: string } }>(
+    '/v1/assets/:assetId/access-url',
+    async (request, reply) => {
+      const result = z
+        .object({
+          expiresInSeconds: z.number().int().min(30).max(900).optional(),
+          version: z.number().int().min(1).optional(),
+          derivative: z.enum(['thumbnail', 'poster', 'waveform']).optional(),
+        })
+        .strict()
+        .safeParse(request.body ?? {});
+      if (!result.success || (result.data.version !== undefined && result.data.derivative)) {
+        return reply.code(400).send({ error: 'invalid asset access URL request' });
+      }
+
+      const scope = assetScope(requestPrincipals, request);
+      const asset = await assetStore.get(request.params.assetId, scope);
+      if (!asset) return reply.code(404).send({ error: 'asset not found' });
+
+      const resource = accessResource(request.params.assetId, result.data);
+      if (result.data.version !== undefined) {
+        const content = await assetStore.getVersionContent(
+          request.params.assetId,
+          result.data.version,
+          scope,
+        );
+        if (!content) return reply.code(404).send({ error: 'asset version not found' });
+      } else if (result.data.derivative !== undefined) {
+        const derivative = await assetStore.getDerivative(
+          request.params.assetId,
+          result.data.derivative,
+          scope,
+        );
+        if (!derivative) return reply.code(404).send({ error: 'derivative not found' });
+      }
+
+      const expiresIn = result.data.expiresInSeconds ?? 300;
+      const expiresAt = Date.now() + expiresIn * 1000;
+      const nativeUrl = await assetStore.createPresignedGetUrl?.(
+        request.params.assetId,
+        {
+          ...(result.data.version !== undefined ? { version: result.data.version } : {}),
+          ...(result.data.derivative !== undefined ? { derivative: result.data.derivative } : {}),
+          expiresIn,
+        },
+        scope,
+      );
+      if (nativeUrl)
+        return reply.send({ url: nativeUrl, expiresAt: new Date(expiresAt).toISOString() });
+      const token = createAssetAccessToken(
+        {
+          resource,
+          assetId: request.params.assetId,
+          ...(scope.ownerId ? { ownerId: scope.ownerId } : {}),
+          expiresAt,
+        },
+        assetAccessSecret,
+      );
+      const path = accessPath(request.params.assetId, result.data);
+      return reply.send({
+        url: `${path}?access_token=${encodeURIComponent(token)}`,
+        expiresAt: new Date(expiresAt).toISOString(),
+      });
+    },
+  );
+
   app.get<{ Params: { assetId: string } }>(
     '/v1/assets/:assetId/content',
     async (request, reply) => {
@@ -903,6 +1117,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     await (projectStore as ProjectStore).close?.();
     await settingsStore.close?.();
     await webhookEventStore.close?.();
+    await authStore.close?.();
   });
 
   return app;
@@ -916,6 +1131,57 @@ function projectScope(principals: WeakMap<object, AuthPrincipal>, request: objec
 function assetScope(principals: WeakMap<object, AuthPrincipal>, request: object): AssetScope {
   const userId = principals.get(request)?.userId;
   return userId ? { ownerId: userId } : {};
+}
+
+type AccessUrlRequest = {
+  version?: number;
+  derivative?: 'thumbnail' | 'poster' | 'waveform';
+};
+
+function accessResource(assetId: string, options: AccessUrlRequest): string {
+  if (options.version !== undefined) return `asset:${assetId}:version:${options.version}`;
+  if (options.derivative !== undefined) return `asset:${assetId}:derivative:${options.derivative}`;
+  return `asset:${assetId}:content`;
+}
+
+function accessPath(assetId: string, options: AccessUrlRequest): string {
+  if (options.version !== undefined) {
+    return `/v1/assets/${encodeURIComponent(assetId)}/versions/${options.version}/content`;
+  }
+  if (options.derivative !== undefined) {
+    return `/v1/assets/${encodeURIComponent(assetId)}/derivatives/${options.derivative}`;
+  }
+  return `/v1/assets/${encodeURIComponent(assetId)}/content`;
+}
+
+function assetContentResource(pathname: string): string | undefined {
+  const content = /^\/v1\/assets\/([^/]+)\/content$/.exec(pathname);
+  if (content) {
+    const assetId = decodePathSegment(content[1]);
+    return assetId ? `asset:${assetId}:content` : undefined;
+  }
+  const version = /^\/v1\/assets\/([^/]+)\/versions\/(\d+)\/content$/.exec(pathname);
+  if (version) {
+    const assetId = decodePathSegment(version[1]);
+    return assetId ? `asset:${assetId}:version:${version[2]}` : undefined;
+  }
+  const derivative = /^\/v1\/assets\/([^/]+)\/derivatives\/(thumbnail|poster|waveform)$/.exec(
+    pathname,
+  );
+  if (derivative) {
+    const assetId = decodePathSegment(derivative[1]);
+    return assetId ? `asset:${assetId}:derivative:${derivative[2]}` : undefined;
+  }
+  return undefined;
+}
+
+function decodePathSegment(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return undefined;
+  }
 }
 
 function ownerInput(
@@ -942,9 +1208,32 @@ function uploadScope(
  */
 function canManagePlatformSettings(
   principals: WeakMap<object, AuthPrincipal>,
+  sessions: WeakMap<object, AuthenticatedSession>,
   request: object,
 ): boolean {
-  return principals.get(request)?.method !== 'jwt';
+  const principal = principals.get(request);
+  if (!principal) return false;
+  if (principal.method !== 'jwt') return true;
+  // Only the first-party session lookup may grant the admin role. A role claim
+  // on a legacy stateless JWT is deliberately ignored for platform settings.
+  return sessions.get(request)?.user.role === 'admin';
+}
+
+function sendAuthServiceError(
+  reply: { code(statusCode: number): { send(payload: unknown): unknown } },
+  error: unknown,
+): unknown {
+  if (!(error instanceof AuthServiceError)) throw error;
+  switch (error.code) {
+    case 'invalid_input':
+      return reply.code(400).send({ error: error.message });
+    case 'email_taken':
+      return reply.code(409).send({ error: error.message });
+    case 'invalid_credentials':
+    case 'invalid_token':
+    case 'session_revoked':
+      return reply.code(401).send({ error: error.message });
+  }
 }
 
 function safeEqual(left: string, right: string) {

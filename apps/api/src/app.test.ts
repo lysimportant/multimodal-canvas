@@ -321,6 +321,141 @@ describe('asset endpoints', () => {
     expect(put.statusCode).toBe(400);
     expect(put.json().error).toContain('SHA-256');
   });
+
+  it('issues short-lived signed content URLs and rejects tampering or expiry', async () => {
+    const signedApp = buildApp({ logger: false });
+    try {
+      const boundary = 'signed-url-boundary';
+      const upload = await signedApp.inject({
+        method: 'POST',
+        url: '/v1/assets/uploads',
+        headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+        payload: Buffer.from(
+          `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="signed.txt"\r\nContent-Type: text/plain\r\n\r\nsigned payload\r\n--${boundary}--\r\n`,
+        ),
+      });
+      const asset = upload.json().asset;
+      const issued = await signedApp.inject({
+        method: 'POST',
+        url: `/v1/assets/${asset.id}/access-url`,
+        payload: { expiresInSeconds: 30 },
+      });
+      expect(issued.statusCode).toBe(200);
+      const signedUrl = issued.json().url as string;
+      expect(signedUrl).toContain('access_token=');
+      expect(
+        (await signedApp.inject({ method: 'GET', url: signedUrl })).rawPayload.toString(),
+      ).toBe('signed payload');
+
+      const tampered = signedUrl.replace(/access_token=([^&])/, 'access_token=x$1');
+      expect((await signedApp.inject({ method: 'GET', url: tampered })).statusCode).toBe(401);
+
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(Date.now() + 31_000));
+      try {
+        expect((await signedApp.inject({ method: 'GET', url: signedUrl })).statusCode).toBe(401);
+      } finally {
+        vi.useRealTimers();
+      }
+    } finally {
+      await signedApp.close();
+    }
+  });
+
+  it('does not allow a different authenticated user to mint or use an asset URL', async () => {
+    vi.stubEnv('API_JWT_SECRET', 'asset-url-test-secret');
+    vi.stubEnv('API_AUTH_TOKEN', '');
+    const scopedApp = buildApp({ logger: false });
+    try {
+      const register = async (email: string) => {
+        const response = await scopedApp.inject({
+          method: 'POST',
+          url: '/v1/auth/register',
+          payload: { email, password: 'strong-password-123' },
+        });
+        return response.json().accessToken as string;
+      };
+      const firstToken = await register('signed-first@example.com');
+      const secondToken = await register('signed-second@example.com');
+      const boundary = 'scoped-signed-url-boundary';
+      const upload = await scopedApp.inject({
+        method: 'POST',
+        url: '/v1/assets/uploads',
+        headers: {
+          authorization: `Bearer ${firstToken}`,
+          'content-type': `multipart/form-data; boundary=${boundary}`,
+        },
+        payload: Buffer.from(
+          `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="private.txt"\r\nContent-Type: text/plain\r\n\r\nprivate\r\n--${boundary}--\r\n`,
+        ),
+      });
+      const asset = upload.json().asset;
+      const forbiddenIssue = await scopedApp.inject({
+        method: 'POST',
+        url: `/v1/assets/${asset.id}/access-url`,
+        headers: { authorization: `Bearer ${secondToken}` },
+      });
+      expect(forbiddenIssue.statusCode).toBe(404);
+
+      const issued = await scopedApp.inject({
+        method: 'POST',
+        url: `/v1/assets/${asset.id}/access-url`,
+        headers: { authorization: `Bearer ${firstToken}` },
+      });
+      expect(issued.statusCode).toBe(200);
+      expect(
+        (await scopedApp.inject({ method: 'GET', url: issued.json().url })).rawPayload.toString(),
+      ).toBe('private');
+    } finally {
+      await scopedApp.close();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('issues scoped URLs for archived versions and media derivatives', async () => {
+    const versionedStore = new MemoryAssetStore();
+    const asset = await versionedStore.create({
+      name: 'versioned.png',
+      mediaType: 'image',
+      mimeType: 'image/png',
+      content: Buffer.from('current-image'),
+      derivatives: {
+        thumbnail: { mimeType: 'image/png', content: Buffer.from('thumbnail-image') },
+      },
+    });
+    const version = await versionedStore.createVersion(asset.id, {
+      content: Buffer.from('previous-image'),
+      metadata: { source: 'test' },
+    });
+    expect(version?.version).toBe(2);
+
+    const versionedApp = buildApp({ logger: false, assetStore: versionedStore });
+    try {
+      const issueVersion = await versionedApp.inject({
+        method: 'POST',
+        url: `/v1/assets/${asset.id}/access-url`,
+        payload: { version: 2, expiresInSeconds: 60 },
+      });
+      expect(issueVersion.statusCode).toBe(200);
+      const versionUrl = issueVersion.json().url as string;
+      expect(
+        (await versionedApp.inject({ method: 'GET', url: versionUrl })).rawPayload.toString(),
+      ).toBe('previous-image');
+
+      const issueDerivative = await versionedApp.inject({
+        method: 'POST',
+        url: `/v1/assets/${asset.id}/access-url`,
+        payload: { derivative: 'thumbnail', expiresInSeconds: 60 },
+      });
+      expect(issueDerivative.statusCode).toBe(200);
+      const derivativeUrl = issueDerivative.json().url as string;
+      expect(
+        (await versionedApp.inject({ method: 'GET', url: derivativeUrl })).rawPayload.toString(),
+      ).toBe('thumbnail-image');
+    } finally {
+      await versionedApp.close();
+    }
+  });
 });
 
 describe('project and canvas endpoints', () => {

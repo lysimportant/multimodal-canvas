@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import {
@@ -17,6 +17,11 @@ export interface BlobStore {
   put(key: string, content: Buffer): Promise<void>;
   get(key: string): Promise<Buffer | undefined>;
   delete(key: string): Promise<void>;
+  /** Optional native short-lived GET URL (for example an S3 presigned URL). */
+  createPresignedGetUrl?(
+    key: string,
+    options?: { expiresIn?: number; contentType?: string },
+  ): Promise<string>;
 }
 
 /** S3-compatible object storage adapter (works with MinIO in development). */
@@ -80,6 +85,18 @@ export class S3BlobStore implements BlobStore {
       ...(options.contentType ? { ContentType: options.contentType } : {}),
     });
     return getSignedUrl(this.client, command, { expiresIn: options.expiresIn ?? 900 });
+  }
+
+  async createPresignedGetUrl(
+    key: string,
+    options: { expiresIn?: number; contentType?: string } = {},
+  ): Promise<string> {
+    const command = new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: key,
+      ...(options.contentType ? { ResponseContentType: options.contentType } : {}),
+    });
+    return getSignedUrl(this.client, command, { expiresIn: options.expiresIn ?? 300 });
   }
 }
 
@@ -169,6 +186,73 @@ export type AssetScope = {
   ownerId?: string;
 };
 
+export type AssetAccessTokenPayload = {
+  /** Canonical resource identifier, never a user-controlled URL. */
+  resource: string;
+  assetId: string;
+  ownerId?: string;
+  expiresAt: number;
+};
+
+/**
+ * Creates a compact HMAC token for a single asset resource. The token is
+ * intentionally independent from Bearer authentication so it can be used by
+ * media tags and download clients after the issuing request has completed.
+ */
+export function createAssetAccessToken(payload: AssetAccessTokenPayload, secret: string): string {
+  if (!secret.trim()) throw new Error('asset access token secret is required');
+  const encodedPayload = encodeTokenPart(JSON.stringify(payload));
+  const signature = signTokenPart(encodedPayload, secret);
+  return `v1.${encodedPayload}.${signature}`;
+}
+
+export function verifyAssetAccessToken(
+  token: string | undefined,
+  secret: string,
+  expectedResource: string,
+  now = Date.now(),
+): AssetAccessTokenPayload | undefined {
+  if (!token || token.length > 16 * 1024 || !secret.trim()) return undefined;
+  const parts = token.split('.');
+  if (parts.length !== 3 || parts[0] !== 'v1') return undefined;
+  const [version, encodedPayload, signature] = parts;
+  if (!version || !encodedPayload || !signature) return undefined;
+  const expectedSignature = signTokenPart(encodedPayload, secret);
+  const left = Buffer.from(signature);
+  const right = Buffer.from(expectedSignature);
+  if (left.length !== right.length || !timingSafeEqual(left, right)) return undefined;
+  try {
+    const parsed = JSON.parse(decodeTokenPart(encodedPayload)) as AssetAccessTokenPayload;
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      parsed.resource !== expectedResource ||
+      typeof parsed.assetId !== 'string' ||
+      parsed.assetId.length === 0 ||
+      !Number.isSafeInteger(parsed.expiresAt) ||
+      parsed.expiresAt <= now
+    ) {
+      return undefined;
+    }
+    if (parsed.ownerId !== undefined && typeof parsed.ownerId !== 'string') return undefined;
+    return parsed;
+  } catch {
+    return undefined;
+  }
+}
+
+function encodeTokenPart(value: string): string {
+  return Buffer.from(value, 'utf8').toString('base64url');
+}
+
+function decodeTokenPart(value: string): string {
+  return Buffer.from(value, 'base64url').toString('utf8');
+}
+
+function signTokenPart(encodedPayload: string, secret: string): string {
+  return createHmac('sha256', secret).update(`v1.${encodedPayload}`).digest('base64url');
+}
+
 export type AssetVersionRecord = {
   id: string;
   assetId: string;
@@ -210,6 +294,11 @@ export interface AssetStore {
   ): Promise<StoredAssetDerivative | undefined>;
   update(id: string, input: UpdateAssetInput, scope?: AssetScope): Promise<StoredAsset | undefined>;
   setArchived(id: string, archived: boolean, scope?: AssetScope): Promise<StoredAsset | undefined>;
+  createPresignedGetUrl?(
+    id: string,
+    options: { version?: number; derivative?: string; expiresIn: number },
+    scope?: AssetScope,
+  ): Promise<string | undefined>;
 }
 
 /** Volatile asset store used when DATABASE_URL is not configured. */
@@ -619,6 +708,48 @@ export class PrismaAssetStore implements AssetStore {
     if (!asset) return undefined;
     const row = await this.prisma.assetVersion.findFirst({ where: { assetId, version } });
     return row ? this.blobStore.get(row.contentKey) : undefined;
+  }
+
+  async createPresignedGetUrl(
+    assetId: string,
+    options: { version?: number; derivative?: string; expiresIn: number },
+    scope: AssetScope = {},
+  ): Promise<string | undefined> {
+    const presigner = this.blobStore.createPresignedGetUrl;
+    if (!presigner) return undefined;
+    const asset = await this.prisma.asset.findFirst({
+      where: { id: assetId, ...this.scopeWhere(scope) },
+      select: { contentKey: true, mimeType: true },
+    });
+    if (!asset) return undefined;
+    let key = asset.contentKey;
+    let contentType = asset.mimeType;
+    if (options.version !== undefined) {
+      const version = await this.prisma.assetVersion.findFirst({
+        where: { assetId, version: options.version },
+        select: { contentKey: true },
+      });
+      if (!version) return undefined;
+      key = version.contentKey;
+    } else if (options.derivative !== undefined) {
+      if (!isSafeDerivativeKind(options.derivative)) return undefined;
+      const metadata = asRecord(
+        (
+          await this.prisma.asset.findFirst({
+            where: { id: assetId, ...this.scopeWhere(scope) },
+            select: { metadata: true },
+          })
+        )?.metadata,
+      );
+      const descriptor = asRecord(asRecord(metadata?.derivatives)?.[options.derivative]);
+      if (!descriptor?.mimeType) return undefined;
+      contentType = String(descriptor.mimeType);
+      key = this.derivativeKey(key, options.derivative);
+    }
+    return presigner.call(this.blobStore, key, {
+      expiresIn: options.expiresIn,
+      contentType,
+    });
   }
 
   private scopeWhere(scope: AssetScope = {}): { projectId?: string; ownerId?: string } {

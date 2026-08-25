@@ -190,4 +190,20 @@ describe('SettingsPanel', () => {
     expect(within(dialog).getByRole('button', { name: '测试连接' })).toBeDisabled();
     expect(within(dialog).getByRole('button', { name: '刷新模型' })).toBeDisabled();
   });
+
+  it('manages dialog focus and restores focus to the settings trigger', async () => {
+    const { dialog, user } = await openSettings();
+    const closeButton = within(dialog).getByRole('button', { name: '关闭设置' });
+    const deleteButton = within(dialog).getByRole('button', { name: '删除凭据' });
+
+    expect(closeButton).toHaveFocus();
+
+    await user.tab({ shift: true });
+    expect(deleteButton).toHaveFocus();
+    await user.tab();
+    expect(closeButton).toHaveFocus();
+
+    await user.click(closeButton);
+    await waitFor(() => expect(screen.getByRole('button', { name: '打开设置' })).toHaveFocus());
+  });
 });

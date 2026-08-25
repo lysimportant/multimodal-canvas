@@ -141,6 +141,32 @@ const response = (description: string, schema?: unknown) => ({
   ...(schema ? { content: { 'application/json': { schema } } } : {}),
 });
 
+const authUserSchema = {
+  type: 'object',
+  required: ['id', 'email', 'role', 'createdAt'],
+  properties: {
+    id: { type: 'string', format: 'uuid' },
+    email: { type: 'string', format: 'email' },
+    displayName: { type: 'string' },
+    role: { type: 'string', enum: ['user', 'admin'] },
+    createdAt: { type: 'string', format: 'date-time' },
+  },
+  additionalProperties: false,
+} as const;
+
+const authTokenSchema = {
+  type: 'object',
+  required: ['accessToken', 'tokenType', 'expiresIn', 'expiresAt', 'user'],
+  properties: {
+    accessToken: { type: 'string' },
+    tokenType: { type: 'string', enum: ['Bearer'] },
+    expiresIn: { type: 'integer', minimum: 60 },
+    expiresAt: { type: 'string', format: 'date-time' },
+    user: authUserSchema,
+  },
+  additionalProperties: false,
+} as const;
+
 const envelope = (key: string, schema: unknown) => ({
   type: 'object',
   required: [key],
@@ -163,6 +189,7 @@ export const openApiDocument = {
     { name: 'assets' },
     { name: 'runs' },
     { name: 'settings' },
+    { name: 'auth' },
     { name: 'webhooks' },
   ],
   paths: {
@@ -172,6 +199,98 @@ export const openApiDocument = {
     },
     '/documentation/json': {
       get: { tags: ['system'], responses: { '200': response('OpenAPI document') } },
+    },
+    '/v1/auth/register': {
+      post: {
+        tags: ['auth'],
+        security: [],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['email', 'password'],
+                properties: {
+                  email: { type: 'string', format: 'email' },
+                  password: { type: 'string', minLength: 8, maxLength: 512, writeOnly: true },
+                  displayName: { type: 'string', maxLength: 120 },
+                },
+                additionalProperties: false,
+              },
+            },
+          },
+        },
+        responses: {
+          '201': response('Registered', authTokenSchema),
+          '400': response('Invalid request', errorSchema),
+          '409': response('Email already registered', errorSchema),
+          '503': response('Authentication unavailable', errorSchema),
+        },
+      },
+    },
+    '/v1/auth/login': {
+      post: {
+        tags: ['auth'],
+        security: [],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['email', 'password'],
+                properties: {
+                  email: { type: 'string', format: 'email' },
+                  password: { type: 'string', writeOnly: true },
+                },
+                additionalProperties: false,
+              },
+            },
+          },
+        },
+        responses: {
+          '200': response('Logged in', authTokenSchema),
+          '400': response('Invalid request', errorSchema),
+          '401': response('Invalid credentials', errorSchema),
+          '503': response('Authentication unavailable', errorSchema),
+        },
+      },
+    },
+    '/v1/auth/me': {
+      get: {
+        tags: ['auth'],
+        responses: {
+          '200': response('Current user', envelope('user', authUserSchema)),
+          '401': response('Authentication required', errorSchema),
+        },
+      },
+    },
+    '/v1/auth/logout': {
+      post: {
+        tags: ['auth'],
+        responses: {
+          '200': response('Logged out', {
+            type: 'object',
+            required: ['loggedOut'],
+            properties: { loggedOut: { type: 'boolean', const: true } },
+          }),
+          '401': response('Authentication required', errorSchema),
+        },
+      },
+    },
+    '/v1/auth/logout-all': {
+      post: {
+        tags: ['auth'],
+        responses: {
+          '200': response('All sessions logged out', {
+            type: 'object',
+            required: ['revokedSessions'],
+            properties: { revokedSessions: { type: 'integer', minimum: 0 } },
+          }),
+          '401': response('Authentication required', errorSchema),
+        },
+      },
     },
     '/v1/projects': {
       get: {
@@ -402,13 +521,57 @@ export const openApiDocument = {
     '/v1/assets/{assetId}/content': {
       get: {
         tags: ['assets'],
-        parameters: [{ $ref: '#/components/parameters/AssetId' }],
+        parameters: [
+          { $ref: '#/components/parameters/AssetId' },
+          {
+            name: 'access_token',
+            in: 'query',
+            required: false,
+            description: 'Short-lived token returned by the access URL endpoint',
+            schema: { type: 'string' },
+          },
+        ],
         responses: {
           '200': {
             description: 'Asset content',
             content: { '*/*': { schema: { type: 'string', format: 'binary' } } },
           },
           '404': response('Not found', errorSchema),
+        },
+      },
+    },
+    '/v1/assets/{assetId}/access-url': {
+      post: {
+        tags: ['assets'],
+        parameters: [{ $ref: '#/components/parameters/AssetId' }],
+        requestBody: {
+          required: false,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  expiresInSeconds: { type: 'integer', minimum: 30, maximum: 900 },
+                  version: { type: 'integer', minimum: 1 },
+                  derivative: { type: 'string', enum: ['thumbnail', 'poster', 'waveform'] },
+                },
+                additionalProperties: false,
+              },
+            },
+          },
+        },
+        responses: {
+          '200': response('Short-lived asset access URL', {
+            type: 'object',
+            required: ['url', 'expiresAt'],
+            properties: {
+              url: { type: 'string', format: 'uri-reference' },
+              expiresAt: { type: 'string', format: 'date-time' },
+            },
+            additionalProperties: false,
+          }),
+          '400': response('Invalid access URL request', errorSchema),
+          '404': response('Asset or version not found', errorSchema),
         },
       },
     },
@@ -440,6 +603,13 @@ export const openApiDocument = {
             required: true,
             schema: { type: 'integer', minimum: 1 },
           },
+          {
+            name: 'access_token',
+            in: 'query',
+            required: false,
+            description: 'Short-lived token returned by the access URL endpoint',
+            schema: { type: 'string' },
+          },
         ],
         responses: {
           '200': {
@@ -461,6 +631,13 @@ export const openApiDocument = {
             in: 'path',
             required: true,
             schema: { type: 'string', enum: ['thumbnail', 'poster', 'waveform'] },
+          },
+          {
+            name: 'access_token',
+            in: 'query',
+            required: false,
+            description: 'Short-lived token returned by the access URL endpoint',
+            schema: { type: 'string' },
           },
         ],
         responses: {

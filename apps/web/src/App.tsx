@@ -39,7 +39,15 @@ import {
   type OnEdgesChange,
   type OnNodesChange,
 } from '@xyflow/react';
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from 'react';
 
 import {
   mediaTypes,
@@ -74,6 +82,7 @@ import {
 import { validateCanvasConnection } from './connection-utils';
 import { isCanvasShortcutTarget } from './keyboard-utils';
 import { validateAiSettingsForm, type AiSettingsFormErrors } from './settings-utils';
+import { fetchAssetVersions, type AssetVersionSummary } from './result-versions';
 
 import '@xyflow/react/dist/style.css';
 
@@ -154,6 +163,14 @@ type ProjectSummary = {
 };
 
 type CanvasBackground = 'dots' | 'lines' | 'cross' | 'blank';
+
+function getFocusableElements(container: HTMLElement) {
+  return Array.from(
+    container.querySelectorAll<HTMLElement>(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter((element) => !element.hidden && element.getAttribute('aria-hidden') !== 'true');
+}
 
 const canvasBackgroundOptions: Array<{ value: CanvasBackground; label: string }> = [
   { value: 'dots', label: '点' },
@@ -578,6 +595,40 @@ function SettingsPanel({
   const [models, setModels] = useState<ModelEntry[]>([]);
   const [busy, setBusy] = useState(false);
   const [formErrors, setFormErrors] = useState<AiSettingsFormErrors>({});
+  const dialogRef = useRef<HTMLElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    closeButtonRef.current?.focus();
+  }, []);
+
+  const handleDialogKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (event.key !== 'Tab') return;
+
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const focusableElements = getFocusableElements(dialog);
+    if (focusableElements.length === 0) {
+      event.preventDefault();
+      return;
+    }
+
+    const first = focusableElements[0];
+    const last = focusableElements[focusableElements.length - 1];
+    const activeElement = document.activeElement;
+    if (event.shiftKey) {
+      if (activeElement === first || !dialog.contains(activeElement)) {
+        event.preventDefault();
+        last.focus();
+      }
+      return;
+    }
+
+    if (activeElement === last || !dialog.contains(activeElement)) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
 
   useEffect(() => {
     void fetch(`${API_BASE_URL}/v1/settings/ai`)
@@ -721,6 +772,8 @@ function SettingsPanel({
         role="dialog"
         aria-modal="true"
         aria-labelledby="settings-title"
+        ref={dialogRef}
+        onKeyDown={handleDialogKeyDown}
       >
         <div className="panel-heading">
           <div>
@@ -733,6 +786,7 @@ function SettingsPanel({
             aria-label="关闭设置"
             title="关闭"
             onClick={onClose}
+            ref={closeButtonRef}
           >
             <X size={17} />
           </button>
@@ -975,6 +1029,9 @@ export function App() {
   const [selectedNode, setSelectedNode] = useState<AssetFlowNode | null>(null);
   const [modelCatalog, setModelCatalog] = useState<ModelEntry[]>([]);
   const [runRecords, setRunRecords] = useState<Record<string, RunRecord>>({});
+  const [resultVersions, setResultVersions] = useState<AssetVersionSummary[]>([]);
+  const [resultVersionsLoading, setResultVersionsLoading] = useState(false);
+  const [resultVersionsError, setResultVersionsError] = useState<string | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [saveState, setSaveState] = useState('准备就绪');
   const [projectId, setProjectId] = useState<string | null>(null);
@@ -988,6 +1045,8 @@ export function App() {
   const [canvasBackground, setCanvasBackground] = useState<CanvasBackground>(readCanvasBackground);
   const [canvasRevision, setCanvasRevision] = useState(0);
   const [isCanvasReady, setIsCanvasReady] = useState(false);
+  const settingsTriggerRef = useRef<HTMLButtonElement>(null);
+  const settingsWasOpenRef = useRef(false);
   const canvasRevisionRef = useRef(0);
   const canvasDirtyRef = useRef(false);
   const saveRequestRef = useRef<Promise<void> | null>(null);
@@ -1001,6 +1060,13 @@ export function App() {
   const clipboardRef = useRef<CanvasClipboard | null>(null);
   const [nodes, setNodes, applyNodesChange] = useNodesState<AssetFlowNode>([]);
   const [edges, setEdges, applyEdgesChange] = useEdgesState<FlowEdge>([]);
+
+  useEffect(() => {
+    if (settingsWasOpenRef.current && !showSettings) {
+      settingsTriggerRef.current?.focus();
+    }
+    settingsWasOpenRef.current = showSettings;
+  }, [showSettings]);
 
   useEffect(() => {
     if (!notice || notice.kind !== 'success') return;
@@ -1569,6 +1635,48 @@ export function App() {
 
   const selectedRun = selectedNode ? runRecords[selectedNode.id] : undefined;
   const selectedResultAsset: RunResultAsset | undefined = selectedRun?.result?.asset;
+  const selectedResultAssetId = selectedResultAsset?.assetId;
+  const selectedResultVersion = selectedResultAsset?.version;
+
+  useEffect(() => {
+    let active = true;
+    if (!selectedResultAssetId) {
+      setResultVersions([]);
+      setResultVersionsLoading(false);
+      setResultVersionsError(null);
+      return () => {
+        active = false;
+      };
+    }
+
+    setResultVersions([]);
+    setResultVersionsLoading(true);
+    setResultVersionsError(null);
+    void fetchAssetVersions(selectedResultAssetId, API_BASE_URL).then(
+      (versions) => {
+        if (!active) return;
+        setResultVersions(versions);
+        setResultVersionsLoading(false);
+      },
+      (error: unknown) => {
+        if (!active) return;
+        setResultVersions([]);
+        setResultVersionsLoading(false);
+        setResultVersionsError(error instanceof Error ? error.message : '结果版本加载失败');
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [selectedResultAssetId, selectedResultVersion]);
+
+  const currentResultVersion =
+    selectedResultAsset?.version ?? resultVersions[resultVersions.length - 1]?.version ?? 1;
+  const currentResultVersionRecord = resultVersions.find(
+    (version) => version.version === currentResultVersion,
+  );
+  const currentResultContentUrl =
+    currentResultVersionRecord?.contentUrl ?? selectedResultAsset?.contentUrl;
 
   const updateSelectedModel = useCallback(
     (modelAlias: string) => {
@@ -1969,6 +2077,7 @@ export function App() {
               aria-label="打开设置"
               title="设置"
               onClick={() => setShowSettings(true)}
+              ref={settingsTriggerRef}
             >
               <Settings size={16} />
             </button>
@@ -2266,29 +2375,33 @@ export function App() {
                   <section className="inspector-result" aria-label="运行结果">
                     <div className="inspector-result-heading">
                       <span className="inspector-type">运行结果</span>
-                      <span className="inspector-result-version">
-                        版本 {selectedResultAsset?.version ?? 1}
-                      </span>
+                      <span className="inspector-result-version">版本 {currentResultVersion}</span>
                     </div>
-                    {selectedResultAsset?.contentUrl ? (
+                    {currentResultContentUrl ? (
                       <a
                         className="inspector-result-link"
-                        href={resolveUploadUrl(selectedResultAsset.contentUrl, API_BASE_URL)}
+                        href={resolveUploadUrl(currentResultContentUrl, API_BASE_URL)}
                         target="_blank"
                         rel="noreferrer"
                       >
                         <AssetPreview
                           asset={{
-                            id: selectedResultAsset.assetId,
+                            id:
+                              selectedResultAsset?.assetId ??
+                              currentResultVersionRecord?.assetId ??
+                              'result',
                             name: `${selectedNode.data.label}结果`,
                             mediaType: selectedNode.data.mediaType,
                             mimeType:
-                              selectedResultAsset.mimeType ??
+                              selectedResultAsset?.mimeType ??
                               selectedNode.data.mimeType ??
                               'application/octet-stream',
-                            sizeBytes: selectedResultAsset.sizeBytes ?? 0,
+                            sizeBytes:
+                              selectedResultAsset?.sizeBytes ??
+                              currentResultVersionRecord?.sizeBytes ??
+                              0,
                             status: 'ready',
-                            contentUrl: selectedResultAsset.contentUrl,
+                            contentUrl: currentResultContentUrl,
                             tags: [],
                           }}
                           className="inspector-result-preview"
@@ -2299,6 +2412,42 @@ export function App() {
                     ) : (
                       <p className="inspector-result-pending">结果已归档，内容链接待刷新。</p>
                     )}
+                    {resultVersionsLoading && (
+                      <p className="inspector-result-pending" aria-live="polite">
+                        正在加载结果版本…
+                      </p>
+                    )}
+                    {resultVersionsError && (
+                      <p className="inspector-result-pending" aria-live="polite">
+                        版本列表加载失败：{resultVersionsError}，仍显示当前结果。
+                      </p>
+                    )}
+                    {!resultVersionsLoading &&
+                      !resultVersionsError &&
+                      resultVersions.length > 0 && (
+                        <div className="inspector-result-version-list" aria-label="结果版本列表">
+                          <span className="inspector-result-version-list-label">归档版本</span>
+                          <ul>
+                            {resultVersions.map((version) => {
+                              const versionUrl = resolveUploadUrl(version.contentUrl, API_BASE_URL);
+                              const isCurrent = version.version === currentResultVersion;
+                              return (
+                                <li key={version.id}>
+                                  <a
+                                    href={versionUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    aria-current={isCurrent ? 'true' : undefined}
+                                  >
+                                    版本 {version.version}
+                                  </a>
+                                  {isCurrent ? <span>（当前）</span> : null}
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        </div>
+                      )}
                     <p className="inspector-result-summary">{selectedRun.result.summary}</p>
                   </section>
                 )}

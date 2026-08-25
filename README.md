@@ -4,7 +4,7 @@
 
 项目的核心体验是：在左侧资源库管理素材，在右侧无限画布上组合节点，通过多个参考输入驱动生成任务，并在任务完成后将结果保存回资源库。所有模型调用都经过本项目 API 和 New API，浏览器不会直接访问上游模型服务。
 
-> 当前状态：已完成 monorepo foundation、资产上传与归档、项目/画布保存、Mock 运行状态机、多参考端口、AI 设置与生产持久化切片。Web 端现在可以管理资源生命周期、创建和编辑四类媒体节点、连接多个角色化参考输入、配置 New API、刷新模型并提交单节点运行；项目级运行历史、画布 RTL 交互测试和 Chromium smoke 验收已接入。API 生产入口使用 BullMQ，并在配置 `DATABASE_URL` 时使用 Prisma/PostgreSQL 保存项目、画布、资产及 AI 设置/模型目录，未配置数据库的本地开发继续使用内存存储。当前资产上传支持 multipart、S3/MinIO 预签名直传、SHA-256 校验和可跨实例恢复的上传会话；完整用户会话鉴权与真实视频接口契约仍待接入。收费、套餐、累计额度和 usage 对账暂缓，当前只保留单次成本上限与并发保护。
+> 当前状态：已完成 monorepo foundation、资产上传与归档、项目/画布保存、Mock 运行状态机、多参考端口、AI 设置、生产持久化切片和第一方用户会话鉴权。Web 端现在可以管理资源生命周期、创建和编辑四类媒体节点、连接多个角色化参考输入、配置 New API、刷新模型并提交单节点运行；项目级运行历史、画布 RTL 交互测试、设置焦点管理、桌面/移动视觉验收、归档结果版本展示和 Chromium smoke 验收已接入。API 生产入口使用 BullMQ，并在配置 `DATABASE_URL` 时使用 Prisma/PostgreSQL 保存项目、画布、资产、用户会话及 AI 设置/模型目录，未配置数据库的本地开发继续使用内存存储。当前资产上传支持 multipart、S3/MinIO 预签名直传、SHA-256 校验和可跨实例恢复的上传会话；生产环境资产原始内容、版本和派生内容均要求用户会话并按用户隔离，内容访问支持 S3/MinIO 预签名 GET 或短时 HMAC URL。真实视频接口契约仍待接入。收费、套餐、累计额度和 usage 对账暂缓，当前只保留单次成本上限与并发保护。
 
 详细的阶段状态、优先级、依赖和验收条件见 [`TODO.md`](./TODO.md)。
 
@@ -241,6 +241,7 @@ NEW_API_VIDEO_PATH=/videos
 AI_CREDENTIAL_ENCRYPTION_KEY=replace-with-a-32-byte-server-secret
 API_AUTH_TOKEN=
 API_JWT_SECRET=
+ASSET_ACCESS_URL_SECRET=
 API_RATE_LIMIT_PER_MINUTE=120
 CORS_ORIGIN=
 RUN_MAX_ACTIVE_PER_PROJECT=4
@@ -269,16 +270,15 @@ pnpm test:e2e
 - `pnpm format:check`
 - `pnpm lint`
 - `pnpm typecheck`
-- `pnpm test`（API 88 通过、1 跳过；domain 11、providers 4、worker 6、Web 40、observability 14；UI 无测试文件；无 `TEST_DATABASE_URL` 时 Prisma 集成测试安全跳过）
+- `pnpm test`（API 99 通过、1 跳过；domain 11、providers 4、worker 6、Web 43、observability 14；UI 无测试文件；无 `TEST_DATABASE_URL` 时 Prisma 集成测试安全跳过）
 - `pnpm build`
+- `pnpm test:e2e`（Chromium 10 项通过，含 Mock 默认模型切换、Clipboard 权限拒绝和非法文本回退）
 - `DATABASE_URL=... pnpm db:validate`
 
-当前 Vitest 已覆盖领域协议、Provider、Worker 状态机、API 路由、Web 画布/连线/上传/剪贴板/设置表单逻辑、SettingsPanel 和画布编辑器交互、observability exporter；Web/UI 的其余交互测试仍在补齐。待补的验收范围包括：
+当前 Vitest 已覆盖领域协议、Provider、Worker 状态机、API 路由、Web 画布/连线/上传/剪贴板/设置表单/结果版本逻辑、SettingsPanel 和画布编辑器交互、observability exporter；核心 Web 验收已完成。
 
-- Vitest：Schema、端口兼容性、DAG、模型目录缓存、Provider 状态机。
-- React Testing Library：画布 Store、节点、连线。
-- Playwright smoke：启动、节点创建、设置连接、上传、拖入画布、多个参考输入、模型覆盖、运行结果和 Clipboard 权限场景已通过 Chromium（9 tests）；真实模型切换仍待自动化。
-- API 集成测试：独立临时 PostgreSQL、Redis namespace、MinIO bucket 和 New API 测试项目。
+- Playwright smoke：启动、节点创建、设置连接、上传、拖入画布、多个参考输入、模型覆盖、运行结果、Mock 默认模型切换和 Clipboard 权限场景已通过 Chromium（10 tests）。
+- API 集成测试：仍需在 CI/部署环境使用独立临时 PostgreSQL、Redis namespace、MinIO bucket 和 New API 测试项目执行。
 
 测试不得清空、覆盖、重置或批量删除真实业务数据库和上传目录；删除用户文件必须使用可恢复的软删除策略。
 

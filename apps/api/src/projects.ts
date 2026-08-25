@@ -46,9 +46,10 @@ export class ProjectStoreError extends Error {
 
 export class MemoryProjectStore implements ProjectStore {
   private readonly projects = new Map<string, StoredProject>();
+  private lastTimestamp = 0;
 
   async create(input: CreateProjectInput, scope: ProjectScope = {}): Promise<Project> {
-    const timestamp = new Date().toISOString();
+    const timestamp = this.nextTimestamp();
     const project: StoredProject = {
       id: `project_${randomUUID()}`,
       name: input.name,
@@ -107,9 +108,14 @@ export class MemoryProjectStore implements ProjectStore {
       ...document,
       revision: project.canvas.revision + 1,
     };
-    const updatedAt = new Date().toISOString();
+    const updatedAt = this.nextTimestamp();
     this.projects.set(id, { ...project, updatedAt, canvas: nextCanvas });
     return nextCanvas;
+  }
+
+  private nextTimestamp(): string {
+    this.lastTimestamp = Math.max(Date.now(), this.lastTimestamp + 1);
+    return new Date(this.lastTimestamp).toISOString();
   }
 }
 
