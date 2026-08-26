@@ -95,7 +95,7 @@
 - `[x]` `pnpm format:check`
 - `[x]` `pnpm lint`
 - `[x]` `pnpm typecheck`
-- `[x]` `pnpm test`（API 132 通过、1 跳过；domain 13、providers 31、worker 38、Web 62、observability 14；UI 无测试文件；无 `TEST_DATABASE_URL` 时 Prisma 集成测试安全跳过）
+- `[x]` `pnpm test`（API 132 通过、1 跳过；domain 13、providers 32、worker 38、Web 62、observability 14；UI 无测试文件；无 `TEST_DATABASE_URL` 时 Prisma 集成测试安全跳过）
 - `[x]` `pnpm build`
 - `[x]` `pnpm test:e2e`（Chromium 12 项通过，含四类节点运行、模型切换、三参考连线、主题/侧栏/缩放、Clipboard 权限拒绝和非法文本回退）
 - `[x]` `DATABASE_URL=... pnpm db:validate`
