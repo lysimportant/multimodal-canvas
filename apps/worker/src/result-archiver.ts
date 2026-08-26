@@ -1,7 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
-import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { execFile as execFileCallback } from 'node:child_process';
+import { lookup as dnsLookup } from 'node:dns/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isIP } from 'node:net';
+import { promisify } from 'node:util';
 import { DeleteObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { PrismaClient, type Prisma } from '@prisma/client';
 import type {
@@ -17,11 +21,74 @@ import type { ResultAssetArchiveInput, ProviderOutput } from './result-output';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DEFAULT_MAX_BYTES = 50 * 1024 * 1024;
 const DEFAULT_FETCH_TIMEOUT_MS = 120_000;
+const DEFAULT_FFPROBE_TIMEOUT_MS = 10_000;
+const execFile = promisify(execFileCallback);
 
 /** Small object-storage boundary shared by filesystem and S3 adapters. */
 export interface ResultBlobStore {
   put(key: string, content: Buffer, contentType?: string): Promise<void>;
   delete(key: string): Promise<void>;
+}
+
+export type ResultMediaProbeInput = {
+  content: Buffer;
+  mimeType: string;
+  mediaType: MediaType;
+};
+
+export interface ResultMediaMetadataExtractor {
+  extract(input: ResultMediaProbeInput): Promise<Record<string, unknown>>;
+}
+
+type FfprobeResult = {
+  format?: { format_name?: string; duration?: string | number; size?: string | number };
+  streams?: Array<{
+    codec_name?: string;
+    codec_type?: string;
+    width?: number;
+    height?: number;
+    r_frame_rate?: string;
+    channels?: number;
+    sample_rate?: string | number;
+  }>;
+};
+
+type FfprobeRunner = (binary: string, args: string[], timeoutMs: number) => Promise<string>;
+type PublicHostLookup = (
+  hostname: string,
+  options: { all: true; verbatim: true },
+) => Promise<Array<{ address: string; family: number }>>;
+
+/** Worker-local ffprobe adapter used after a provider video has been downloaded. */
+export class WorkerFfprobeMediaMetadataExtractor implements ResultMediaMetadataExtractor {
+  private readonly binary: string;
+  private readonly timeoutMs: number;
+  private readonly runner: FfprobeRunner;
+
+  constructor(options: { binary?: string; timeoutMs?: number; runner?: FfprobeRunner } = {}) {
+    this.binary = options.binary ?? process.env.FFPROBE_PATH ?? 'ffprobe';
+    this.timeoutMs = positiveLimit(
+      options.timeoutMs ?? DEFAULT_FFPROBE_TIMEOUT_MS,
+      'ffprobe timeout',
+    );
+    this.runner = options.runner ?? defaultFfprobeRunner;
+  }
+
+  async extract(input: ResultMediaProbeInput): Promise<Record<string, unknown>> {
+    const directory = await mkdtemp(join(tmpdir(), 'multimodal-canvas-worker-probe-'));
+    const filePath = join(directory, `input.${extensionFor(input.mediaType, input.mimeType)}`);
+    try {
+      await writeFile(filePath, input.content, { flag: 'wx' });
+      const stdout = await this.runner(
+        this.binary,
+        ['-v', 'error', '-of', 'json', '-show_format', '-show_streams', filePath],
+        this.timeoutMs,
+      );
+      return normalizeFfprobeOutput(JSON.parse(stdout) as FfprobeResult);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
 }
 
 /** Filesystem storage adapter using the same `assets/<id>/v1` key convention as the API. */
@@ -109,6 +176,12 @@ export type PrismaResultAssetArchiverOptions = {
   fetchTimeoutMs?: number;
   /** Allow HTTP provider URLs only for local development/test environments. */
   allowHttp?: boolean;
+  /** Resolve provider hostnames and reject private/link-local answers. */
+  strictDns?: boolean;
+  /** Injectable DNS resolver for deterministic security tests. */
+  lookupHost?: PublicHostLookup;
+  /** Optional ffprobe-compatible extractor for generated media metadata. */
+  metadataExtractor?: ResultMediaMetadataExtractor;
 };
 
 /**
@@ -125,6 +198,9 @@ export class PrismaResultAssetArchiver {
   private readonly maxBytes: number;
   private readonly fetchTimeoutMs: number;
   private readonly allowHttp: boolean;
+  private readonly strictDns: boolean;
+  private readonly lookupHost: PublicHostLookup;
+  private readonly metadataExtractor?: ResultMediaMetadataExtractor;
 
   constructor(
     private readonly prisma: PrismaClient,
@@ -140,6 +216,10 @@ export class PrismaResultAssetArchiver {
       'asset fetch timeout',
     );
     this.allowHttp = options.allowHttp ?? process.env.NODE_ENV !== 'production';
+    this.strictDns = options.strictDns ?? process.env.NODE_ENV === 'production';
+    this.lookupHost =
+      options.lookupHost ?? ((hostname, lookupOptions) => dnsLookup(hostname, lookupOptions));
+    this.metadataExtractor = options.metadataExtractor;
   }
 
   async archive(input: {
@@ -153,9 +233,6 @@ export class PrismaResultAssetArchiver {
   }): Promise<RunResultAsset | undefined> {
     const archiveInput = input.archiveInput;
     if (!archiveInput) return undefined;
-    if (archiveInput.mediaType === 'video') {
-      throw new Error('video result archiving requires the asynchronous video provider');
-    }
     if (!UUID_PATTERN.test(input.snapshot.projectId)) {
       throw new Error('cannot archive a result without a PostgreSQL project UUID');
     }
@@ -171,21 +248,38 @@ export class PrismaResultAssetArchiver {
       throw new Error(`provider result exceeds the ${this.maxBytes}-byte limit`);
     }
 
+    const extractedMetadata = await this.tryExtractMetadata({
+      content,
+      mimeType: archiveInput.mimeType,
+      mediaType: archiveInput.mediaType,
+    });
+    const enrichedArchiveInput: ResultAssetArchiveInput = extractedMetadata
+      ? {
+          ...archiveInput,
+          metadata: { ...(archiveInput.metadata ?? {}), ...extractedMetadata },
+        }
+      : archiveInput;
+
     const assetId = randomUUID();
     const contentKey = `${this.keyPrefix}/${assetId}/v1`;
     const digest = createHash('sha256').update(content).digest('hex');
-    const metadata = buildResultMetadata(input, archiveInput);
+    const metadata = buildResultMetadata(input, enrichedArchiveInput);
     try {
-      await this.blobStore.put(contentKey, content, archiveInput.mimeType);
+      await this.blobStore.put(contentKey, content, enrichedArchiveInput.mimeType);
       await this.prisma.$transaction(async (transaction) => {
         await transaction.asset.create({
           data: {
             id: assetId,
             projectId: input.snapshot.projectId,
             ...(input.userId ? { ownerId: input.userId } : {}),
-            name: resultAssetName(input.snapshot, archiveInput.mediaType, archiveInput.mimeType),
-            mediaType: archiveInput.mediaType.toUpperCase() as 'TEXT' | 'IMAGE' | 'AUDIO',
-            mimeType: archiveInput.mimeType,
+            name: resultAssetName(
+              input.snapshot,
+              enrichedArchiveInput.mediaType,
+              enrichedArchiveInput.mimeType,
+            ),
+            mediaType: enrichedArchiveInput.mediaType.toUpperCase() as
+              'TEXT' | 'IMAGE' | 'AUDIO' | 'VIDEO',
+            mimeType: enrichedArchiveInput.mimeType,
             sizeBytes: BigInt(content.byteLength),
             sha256: digest,
             contentKey,
@@ -212,7 +306,7 @@ export class PrismaResultAssetArchiver {
       assetId,
       version: 1,
       contentUrl: this.contentUrl(assetId),
-      mimeType: archiveInput.mimeType,
+      mimeType: enrichedArchiveInput.mimeType,
       sizeBytes: content.byteLength,
       sha256: digest,
     };
@@ -221,6 +315,7 @@ export class PrismaResultAssetArchiver {
   private async download(url: string | undefined): Promise<Buffer | undefined> {
     if (!url) return undefined;
     const parsed = validateRemoteUrl(url, this.allowHttp);
+    await assertPublicResolvedHost(parsed.hostname, this.strictDns, this.lookupHost);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.fetchTimeoutMs);
     try {
@@ -260,6 +355,19 @@ export class PrismaResultAssetArchiver {
       clearTimeout(timeout);
     }
   }
+
+  private async tryExtractMetadata(
+    input: ResultMediaProbeInput,
+  ): Promise<Record<string, unknown> | undefined> {
+    if (!this.metadataExtractor || input.mediaType === 'text') return undefined;
+    try {
+      const metadata = await this.metadataExtractor.extract(input);
+      return Object.keys(metadata).length > 0 ? metadata : undefined;
+    } catch {
+      // Metadata probing is best-effort, matching upload handling in the API.
+      return undefined;
+    }
+  }
 }
 
 /** Build a production archiver from the same environment variables as the API. */
@@ -283,6 +391,13 @@ export function createResultAssetArchiverFromEnvironment(): {
     maxBytes: Number(process.env.RESULT_ASSET_MAX_BYTES ?? DEFAULT_MAX_BYTES),
     fetchTimeoutMs: Number(process.env.NEW_API_TIMEOUT_MS ?? DEFAULT_FETCH_TIMEOUT_MS),
     allowHttp: process.env.NODE_ENV !== 'production',
+    ...(process.env.FFPROBE_ENABLED === 'true' || process.env.FFPROBE_PATH
+      ? {
+          metadataExtractor: new WorkerFfprobeMediaMetadataExtractor({
+            binary: process.env.FFPROBE_PATH,
+          }),
+        }
+      : {}),
   });
   return {
     resultArchiver: (input) => archiver.archive(input),
@@ -305,6 +420,7 @@ function buildResultMetadata(
     runId: input.runId,
     provider: input.result.provider,
     providerJobId: input.providerJob.id,
+    ...(input.providerJob.platformJobId ? { platformJobId: input.providerJob.platformJobId } : {}),
     targetNodeId: input.result.targetNodeId,
     modelAlias: input.snapshot.modelAlias,
     parameters: sanitizeParameters(input.snapshot.parameters),
@@ -364,6 +480,48 @@ function extensionFor(mediaType: MediaType, mimeType: string): string {
   return mediaType === 'text' ? 'txt' : mediaType;
 }
 
+function normalizeFfprobeOutput(result: FfprobeResult): Record<string, unknown> {
+  const stream =
+    result.streams?.find((candidate) => candidate.codec_type === 'video') ?? result.streams?.[0];
+  const metadata: Record<string, unknown> = {};
+  const format = result.format?.format_name?.trim();
+  if (format) metadata.format = format;
+  const duration = finiteNumber(result.format?.duration);
+  if (duration !== undefined) metadata.durationSeconds = duration;
+  const probeSize = finiteNumber(result.format?.size);
+  if (probeSize !== undefined) metadata.probeSizeBytes = Math.trunc(probeSize);
+  if (stream?.codec_name) metadata.codec = stream.codec_name;
+  if (Number.isInteger(stream?.width)) metadata.width = stream?.width;
+  if (Number.isInteger(stream?.height)) metadata.height = stream?.height;
+  const frameRate = parseFrameRate(stream?.r_frame_rate);
+  if (frameRate !== undefined) metadata.frameRate = frameRate;
+  if (Number.isInteger(stream?.channels)) metadata.channels = stream?.channels;
+  const sampleRate = finiteNumber(stream?.sample_rate);
+  if (sampleRate !== undefined) metadata.sampleRate = Math.trunc(sampleRate);
+  return metadata;
+}
+
+function finiteNumber(value: string | number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function parseFrameRate(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const [numerator, denominator] = value.split('/').map(Number);
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0) {
+    return undefined;
+  }
+  return numerator / denominator;
+}
+
+function defaultFfprobeRunner(binary: string, args: string[], timeoutMs: number): Promise<string> {
+  return execFile(binary, args, { timeout: timeoutMs, maxBuffer: 2 * 1024 * 1024 }).then(
+    ({ stdout }) => String(stdout),
+  );
+}
+
 function validateRemoteUrl(value: string, allowHttp: boolean): URL {
   let parsed: URL;
   try {
@@ -380,6 +538,23 @@ function validateRemoteUrl(value: string, allowHttp: boolean): URL {
     throw new Error('provider result URL points to a private host');
   }
   return parsed;
+}
+
+async function assertPublicResolvedHost(
+  hostname: string,
+  strictDns: boolean,
+  lookupHost: PublicHostLookup,
+): Promise<void> {
+  if (!strictDns || isIP(hostname)) return;
+  let addresses: Array<{ address: string; family: number }>;
+  try {
+    addresses = await lookupHost(hostname, { all: true, verbatim: true });
+  } catch {
+    throw new Error('provider result host could not be resolved');
+  }
+  if (addresses.length === 0 || addresses.some(({ address }) => isPrivateHost(address))) {
+    throw new Error('provider result host resolves to a private host');
+  }
 }
 
 function isPrivateHost(hostname: string): boolean {

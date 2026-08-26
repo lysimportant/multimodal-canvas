@@ -107,6 +107,7 @@ vi.mock('@xyflow/react', async () => {
   function Handle({
     type = 'source',
     id = null,
+    isConnectable: _isConnectable,
     ...props
   }: {
     type?: 'source' | 'target';
@@ -222,10 +223,15 @@ vi.mock('@xyflow/react', async () => {
     );
   }
 
+  function NodeResizer() {
+    return null;
+  }
+
   return {
     Background: () => null,
     BackgroundVariant: { Dots: 'dots', Lines: 'lines', Cross: 'cross' },
     Controls: () => null,
+    NodeResizer,
     Handle,
     Position: { Left: 'left', Right: 'right', Top: 'top', Bottom: 'bottom' },
     ReactFlow,
@@ -396,6 +402,55 @@ describe('画布编辑器交互', () => {
     expect(findNodeByLabel('reference.png')).toBeTruthy();
     expect(flowNodes()).toHaveLength(2);
     expect(screen.getByRole('status')).toHaveTextContent('reference.png 已添加到画布');
+  });
+
+  it('选择文字生成节点后显示提示词输入并支持编辑', async () => {
+    const { user } = await renderCanvas();
+
+    await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
+    const node = findNodeByLabel('文字生成节点');
+    expect(node).toBeTruthy();
+    await user.click(node!);
+
+    const prompt = screen.getByRole('textbox', { name: '提示词' });
+
+    expect(prompt).toBeVisible();
+    await user.click(prompt);
+    await user.type(prompt, '写一段产品介绍');
+    expect(prompt).toHaveValue('写一段产品介绍');
+  });
+
+  it('来源节点属性可编辑，并可从 Handle 附近打开属性与创建转换', async () => {
+    const { user } = await renderCanvas();
+
+    await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
+    const source = findNodeByLabel('reference.png');
+    expect(source).toBeTruthy();
+
+    const sourceHandle = handleFor(source!, 'output:image');
+    await user.click(sourceHandle);
+    expect(screen.getByRole('textbox', { name: '节点名称' })).toHaveValue('reference.png');
+
+    const prompt = screen.getByRole('textbox', { name: '来源提示 / 说明' });
+    await user.type(prompt, '作为角色参考');
+    expect(prompt).toHaveValue('作为角色参考');
+
+    await user.click(screen.getByRole('button', { name: '创建转换' }));
+    expect(findNodeByLabel('图片转换节点')).toBeTruthy();
+    expect(screen.queryAllByTestId('flow-edge')).toHaveLength(1);
+  });
+
+  it('工具栏可以创建四类转换节点', async () => {
+    const { user } = await renderCanvas();
+
+    for (const mediaType of ['文字', '图片', '音频', '视频']) {
+      await user.click(screen.getByRole('button', { name: `新建${mediaType}转换节点` }));
+    }
+
+    expect(findNodeByLabel('文字转换节点')).toBeTruthy();
+    expect(findNodeByLabel('图片转换节点')).toBeTruthy();
+    expect(findNodeByLabel('音频转换节点')).toBeTruthy();
+    expect(findNodeByLabel('视频转换节点')).toBeTruthy();
   });
 
   it('支持复制粘贴，并能删除选中节点', async () => {

@@ -4,7 +4,7 @@
 
 项目的核心体验是：在左侧资源库管理素材，在右侧无限画布上组合节点，通过多个参考输入驱动生成任务，并在任务完成后将结果保存回资源库。所有模型调用都经过本项目 API 和 New API，浏览器不会直接访问上游模型服务。
 
-> 当前状态：已完成 monorepo foundation、资产上传与归档、项目/画布保存、Mock 运行状态机、多参考端口、AI 设置、生产持久化切片和第一方用户会话鉴权。Web 端现在可以管理资源生命周期、创建和编辑四类媒体节点、连接多个角色化参考输入、配置 New API、刷新模型并提交单节点运行；项目级运行历史、画布 RTL 交互测试、设置焦点管理、桌面/移动视觉验收、归档结果版本展示和 Chromium smoke 验收已接入。New API Worker 现在解析真实文本、图片和音频响应，并在配置 `DATABASE_URL` 时把结果写入与 API 相同的 Prisma/S3（或文件）资产版本链路；未配置数据库的本地开发继续使用内存存储。当前资产上传支持 multipart、S3/MinIO 预签名直传、SHA-256 校验和可跨实例恢复的上传会话；生产环境资产原始内容、版本和派生内容均要求用户会话并按用户隔离，内容访问支持 S3/MinIO 预签名 GET 或短时 HMAC URL。模型目录刷新兼容常见网关响应（包含真实 New API `/models` 形状）、保留限制和能力覆盖并保留旧缓存，Provider/Worker 会读取图片顶层 `output_format` 并提供状态、错误码、请求 ID 和可重试性诊断，但不会在生成层自动重试。真实图片渠道已用 `gpt-image-2` 验证成功（`/v1/images/generations` 返回 base64 图片）。真实视频接口契约仍待接入。收费、套餐、累计额度和 usage 对账暂缓，当前只保留单次成本上限与并发保护。
+> 当前状态：已完成 monorepo foundation、资产上传与归档、项目/画布保存、Mock 运行状态机、多参考端口、AI 设置、生产持久化切片和第一方用户会话鉴权。Web 端现在可以管理资源生命周期、创建和编辑四类媒体节点、连接多个角色化参考输入、配置 New API、刷新模型并提交单节点运行；项目级运行历史、画布 RTL 交互测试、设置焦点管理、桌面/移动视觉验收、归档结果版本展示和 Chromium smoke 验收已接入。New API Worker 现在解析真实文本、图片、音频和视频响应，并在配置 `DATABASE_URL` 时把结果写入与 API 相同的 Prisma/S3（或文件）资产版本链路；未配置数据库的本地开发继续使用内存存储。当前资产上传支持 multipart、S3/MinIO 预签名直传、SHA-256 校验和可跨实例恢复的上传会话；生产环境资产原始内容、版本和派生内容均要求用户会话并按用户隔离，内容访问支持 S3/MinIO 预签名 GET 或短时 HMAC URL。模型目录刷新兼容常见网关响应（包含真实 New API `/models` 形状）、保留限制和能力覆盖并保留旧缓存，Provider/Worker 会读取图片顶层 `output_format` 并提供状态、错误码、请求 ID 和可重试性诊断，但不会在生成层自动重试。真实图片渠道已用 `gpt-image-2` 验证成功；真实视频已验证 `POST /v1/videos/generations` 创建、`GET /v1/videos/:requestId` 轮询和受保护 MP4 下载。Base URL 填写网关根地址时会自动规范为 `/v1`。收费、套餐、累计额度和 usage 对账暂缓，当前只保留单次成本上限与并发保护。
 
 详细的阶段状态、优先级、依赖和验收条件见 [`TODO.md`](./TODO.md)。
 
@@ -169,7 +169,7 @@ POST   /v1/webhooks/newapi
 - 收费、套餐、累计额度和供应商 usage 对账暂缓；当前成本字段只用于单次成本保护和后续扩展，不代表已接入完整计费系统。
 - 凭据通过 TLS 传输，并由服务端加密保存。
 - 读取接口只返回配置状态或不可逆指纹，不返回原始 API Key。
-- Worker 默认使用 Mock Provider；只有显式设置 `WORKER_PROVIDER=newapi` 后，文字、图片和音频任务才会通过服务端 New API 凭据调用上游。配置 `DATABASE_URL` 时 AI 凭据、默认模型和模型目录由 Prisma 持久化，且生成的文本/图片/音频会由 Worker 写入同一资产 Store 并创建首个版本；`RESULT_ASSET_MAX_BYTES` 控制归档大小，远程结果 URL 仅允许服务端安全下载。视频仍需取得平台异步接口契约后接入。
+- Worker 默认使用 Mock Provider；只有显式设置 `WORKER_PROVIDER=newapi` 后，文字、图片、音频和视频任务才会通过服务端 New API 凭据调用上游。配置 `DATABASE_URL` 时 AI 凭据、默认模型和模型目录由 Prisma 持久化，生成结果会由 Worker 写入同一资产 Store 并创建首个版本；`RESULT_ASSET_MAX_BYTES` 控制归档大小，远程结果 URL 仅允许服务端安全下载。视频 Provider 使用 `POST /v1/videos/generations` 创建、`GET /v1/videos/:requestId` 状态轮询和受保护 content 端点下载，并在重试时复用已提交的平台任务 ID。
 - 业务 SQLite 数据库、WAL/SHM 文件和上传目录不属于本项目的生产方案。
 
 ## 本地开发
@@ -222,6 +222,8 @@ pnpm dev
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/multimodal_canvas
 REDIS_URL=redis://localhost:6379
 WORKER_PROVIDER=mock
+API_HOST=127.0.0.1
+API_ALLOW_ANONYMOUS_SETTINGS=true
 S3_ENDPOINT=http://localhost:9000
 S3_BUCKET=multimodal-canvas-dev
 S3_ACCESS_KEY=minioadmin
@@ -238,6 +240,8 @@ NEW_API_TEXT_MODEL=text-model-alias
 NEW_API_IMAGE_MODEL=image-model-alias
 NEW_API_AUDIO_MODEL=audio-model-alias
 NEW_API_VIDEO_MODEL=video-model-alias
+NEW_API_VIDEO_CREATE_PATH=/videos/generations
+NEW_API_VIDEO_JOBS_PATH=/videos
 NEW_API_VIDEO_PATH=/videos
 AI_CREDENTIAL_ENCRYPTION_KEY=replace-with-a-32-byte-server-secret
 API_AUTH_TOKEN=
@@ -254,7 +258,7 @@ OTEL_SERVICE_NAME=multimodal-canvas-worker
 OBSERVABILITY_LOGGING=false
 ```
 
-请勿提交真实凭据。视频接口的路径和字段必须以实际 New API 契约为准，未知协议不会在业务层臆造。
+请勿提交真实凭据。当前已验证的 New API 视频契约为 `POST /v1/videos/generations` 创建、`GET /v1/videos/:requestId` 查询和 `GET /v1/videos/:requestId/content` 下载；平台未提供可确认的 Webhook 契约，因此 Worker 使用有界退避轮询。未知平台字段仍只在 Provider 边界处理。
 
 ## 测试与质量
 
@@ -271,9 +275,9 @@ pnpm test:e2e
 - `pnpm format:check`
 - `pnpm lint`
 - `pnpm typecheck`
-- `pnpm test`（API 105 通过、1 跳过；domain 11、providers 15、worker 20、Web 43、observability 14；UI 无测试文件；无 `TEST_DATABASE_URL` 时 Prisma 集成测试安全跳过）
+- `pnpm test`（API 126 通过、1 跳过；domain 13、providers 26、worker 33、Web 62、observability 14；UI 无测试文件；无 `TEST_DATABASE_URL` 时 Prisma 集成测试安全跳过）
 - `pnpm build`
-- `pnpm test:e2e`（Chromium 10 项通过，含 Mock 默认模型切换、Clipboard 权限拒绝和非法文本回退）
+- `pnpm test:e2e`（Chromium 12 项通过，含视频节点多参考连线、四类节点生成、Mock 默认模型切换、Clipboard 权限拒绝和非法文本回退）
 - `DATABASE_URL=... pnpm db:validate`
 
 当前 Vitest 已覆盖领域协议、Provider、Worker 状态机、API 路由、Web 画布/连线/上传/剪贴板/设置表单/结果版本逻辑、SettingsPanel 和画布编辑器交互、observability exporter；核心 Web 验收已完成。
@@ -294,9 +298,8 @@ pnpm test:e2e
 7. 接入 S3/MinIO、ffprobe、SSE 和任务历史。
 8. 实现凭据加密、连接测试、模型目录刷新和默认模型。
 9. 实现 New API Provider 和模型能力校验。
-10. 在取得视频接口契约后实现视频 Provider。
-11. 完成模型热切换、四类媒体链路、限流、成本和监控。
-12. MVP 稳定后再开发 Tauri 桌面端。
+10. 完成模型热切换、四类媒体链路、限流、成本和监控。
+11. MVP 稳定后再开发 Tauri 桌面端。
 
 ## 非目标
 

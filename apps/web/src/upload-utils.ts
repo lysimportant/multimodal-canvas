@@ -23,7 +23,10 @@ export function buildUploadCompletePayload(uploadId: string, metadata: UploadMet
 }
 
 export function resolveUploadUrl(url: string, apiBaseUrl: string): string {
-  return url.startsWith('http') ? url : `${apiBaseUrl}${url}`;
+  // Generated previews may be returned as data/blob URLs; only API-relative
+  // paths should be prefixed with the server origin.
+  if (/^(?:https?:|data:|blob:)/i.test(url)) return url;
+  return `${apiBaseUrl}${url}`;
 }
 
 export function resolveCompleteUrl(url: string, apiBaseUrl: string): string {

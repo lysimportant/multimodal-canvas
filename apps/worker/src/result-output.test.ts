@@ -138,6 +138,63 @@ describe('provider output normalization', () => {
       mimeType: 'audio/mpeg',
       contentUrl: 'https://cdn.example/audio.mp3',
     });
+
+    expect(
+      providerOutputToArchiveInput(
+        {
+          mediaType: 'video',
+          kind: 'url',
+          url: 'https://cdn.example/video.mp4',
+          mimeType: 'video/mp4',
+          format: 'mp4',
+        },
+        'video',
+      ),
+    ).toEqual({
+      mediaType: 'video',
+      mimeType: 'video/mp4',
+      contentUrl: 'https://cdn.example/video.mp4',
+      metadata: { format: 'mp4' },
+    });
+  });
+
+  it('normalizes canonical and provider-shaped video outputs', () => {
+    expect(
+      normalizeProviderOutput(
+        {
+          mediaType: 'video',
+          kind: 'url',
+          url: 'https://cdn.example/generated.webm',
+          mimeType: 'video/webm',
+          format: 'webm',
+          platformJobId: 'must-not-cross-output-boundary',
+        },
+        'video',
+      ),
+    ).toEqual({
+      mediaType: 'video',
+      kind: 'url',
+      url: 'https://cdn.example/generated.webm',
+      mimeType: 'video/webm',
+      format: 'webm',
+    });
+    expect(
+      normalizeProviderOutput(
+        { result: { video_url: 'https://cdn.example/generated.mp4', format: 'mp4' } },
+        'video',
+      ),
+    ).toEqual({
+      mediaType: 'video',
+      kind: 'url',
+      url: 'https://cdn.example/generated.mp4',
+      mimeType: 'video/mp4',
+      format: 'mp4',
+    });
+    expect(normalizeProviderOutput(new Uint8Array([1, 2, 3]), 'video')).toMatchObject({
+      mediaType: 'video',
+      kind: 'base64',
+      mimeType: 'video/mp4',
+    });
   });
 
   it('rejects malformed, unsafe, or mismatched output', () => {

@@ -19,14 +19,14 @@ export type ProviderTextOutput = {
 
 export type ProviderBinaryOutput =
   | {
-      mediaType: 'image' | 'audio';
+      mediaType: 'image' | 'audio' | 'video';
       kind: 'url';
       url: string;
       mimeType: string;
       format?: string;
     }
   | {
-      mediaType: 'image' | 'audio';
+      mediaType: 'image' | 'audio' | 'video';
       kind: 'base64';
       base64: string;
       mimeType: string;
@@ -66,7 +66,12 @@ export function normalizeProviderOutput(
   if (value === undefined || value === null) return undefined;
 
   if (value instanceof Uint8Array) {
-    if (expectedMediaType !== 'image' && expectedMediaType !== 'audio') return undefined;
+    if (
+      expectedMediaType !== 'image' &&
+      expectedMediaType !== 'audio' &&
+      expectedMediaType !== 'video'
+    )
+      return undefined;
     if (value.byteLength === 0) throw new ProviderOutputError('provider binary output is empty');
     return {
       mediaType: expectedMediaType,
@@ -106,7 +111,11 @@ export function normalizeProviderOutput(
     };
   }
 
-  if (expectedMediaType === 'image' || expectedMediaType === 'audio') {
+  if (
+    expectedMediaType === 'image' ||
+    expectedMediaType === 'audio' ||
+    expectedMediaType === 'video'
+  ) {
     const output = extractBinary(record, expectedMediaType);
     if (!output) return undefined;
     assertExpectedMediaType(output, expectedMediaType);
@@ -194,8 +203,14 @@ function normalizeDeclaredOutput(record: Record<string, unknown>): ProviderOutpu
   }
 
   if (rawKind === 'url' || rawKind === 'base64') {
-    if (declaredMediaType !== 'image' && declaredMediaType !== 'audio') {
-      throw new ProviderOutputError('binary provider output must declare image or audio mediaType');
+    if (
+      declaredMediaType !== 'image' &&
+      declaredMediaType !== 'audio' &&
+      declaredMediaType !== 'video'
+    ) {
+      throw new ProviderOutputError(
+        'binary provider output must declare image, audio, or video mediaType',
+      );
     }
     const output = normalizeBinaryOutput(record, declaredMediaType);
     // A `url` kind may contain a data: URL. It is normalized to inline
@@ -210,8 +225,8 @@ function normalizeDeclaredOutput(record: Record<string, unknown>): ProviderOutpu
   }
 
   // Backward-compatible legacy shape used by early worker experiments:
-  // `{ kind: 'image'|'audio', url|base64, ... }`.
-  if (rawKind === 'image' || rawKind === 'audio') {
+  // `{ kind: 'image'|'audio'|'video', url|base64, ... }`.
+  if (rawKind === 'image' || rawKind === 'audio' || rawKind === 'video') {
     return normalizeBinaryOutput(record, rawKind);
   }
   throw new ProviderOutputError(`unsupported provider output kind: ${String(record.kind)}`);
@@ -219,7 +234,7 @@ function normalizeDeclaredOutput(record: Record<string, unknown>): ProviderOutpu
 
 function normalizeBinaryOutput(
   record: Record<string, unknown>,
-  mediaType: 'image' | 'audio',
+  mediaType: 'image' | 'audio' | 'video',
 ): ProviderBinaryOutput {
   const mimeType =
     normalizeMimeType(recordMimeType(record), mediaType) ??
@@ -232,6 +247,10 @@ function normalizeBinaryOutput(
     record.contentUrl,
     record.audioUrl,
     record.audio_url,
+    record.videoUrl,
+    record.video_url,
+    record.outputUrl,
+    record.output_url,
     nestedUrl(record.imageUrl),
     nestedUrl(record.image_url),
   );
@@ -249,6 +268,10 @@ function normalizeBinaryOutput(
     record.contentUrl,
     record.audioUrl,
     record.audio_url,
+    record.videoUrl,
+    record.video_url,
+    record.outputUrl,
+    record.output_url,
     nestedUrl(record.imageUrl),
     nestedUrl(record.image_url),
   );
@@ -287,7 +310,7 @@ function normalizeBinaryOutput(
 
 function extractBinary(
   record: Record<string, unknown>,
-  mediaType: 'image' | 'audio',
+  mediaType: 'image' | 'audio' | 'video',
 ): ProviderBinaryOutput | undefined {
   const direct = hasBinaryFields(record);
   if (direct) return normalizeBinaryOutput(record, mediaType);
@@ -361,6 +384,10 @@ function hasBinaryFields(record: Record<string, unknown>): boolean {
     record.contentUrl,
     record.audioUrl,
     record.audio_url,
+    record.videoUrl,
+    record.video_url,
+    record.outputUrl,
+    record.output_url,
     record.imageUrl,
     record.image_url,
     record.base64,
@@ -446,21 +473,22 @@ function textMimeType(record: Record<string, unknown>): string {
 
 function normalizeMimeType(
   value: string | undefined,
-  mediaType: 'image' | 'audio',
+  mediaType: 'image' | 'audio' | 'video',
 ): string | undefined {
   if (!value) return undefined;
   const normalized = value.toLowerCase();
   return normalized.startsWith(`${mediaType}/`) ? value : undefined;
 }
 
-function kindFromMime(value: string | undefined): 'image' | 'audio' | undefined {
+function kindFromMime(value: string | undefined): 'image' | 'audio' | 'video' | undefined {
   if (!value) return undefined;
   if (value.toLowerCase().startsWith('image/')) return 'image';
   if (value.toLowerCase().startsWith('audio/')) return 'audio';
+  if (value.toLowerCase().startsWith('video/')) return 'video';
   return undefined;
 }
 
-function defaultMimeType(mediaType: 'image' | 'audio', format?: string): string {
+function defaultMimeType(mediaType: 'image' | 'audio' | 'video', format?: string): string {
   const normalized = format?.toLowerCase().replace(/^\./, '');
   if (mediaType === 'image') {
     if (normalized === 'jpg' || normalized === 'jpeg') return 'image/jpeg';
@@ -468,10 +496,16 @@ function defaultMimeType(mediaType: 'image' | 'audio', format?: string): string 
     if (normalized === 'gif') return 'image/gif';
     return 'image/png';
   }
-  if (normalized === 'wav') return 'audio/wav';
-  if (normalized === 'ogg' || normalized === 'oga') return 'audio/ogg';
-  if (normalized === 'webm') return 'audio/webm';
-  return 'audio/mpeg';
+  if (mediaType === 'audio') {
+    if (normalized === 'wav') return 'audio/wav';
+    if (normalized === 'ogg' || normalized === 'oga') return 'audio/ogg';
+    if (normalized === 'webm') return 'audio/webm';
+    return 'audio/mpeg';
+  }
+  if (normalized === 'webm') return 'video/webm';
+  if (normalized === 'mov' || normalized === 'quicktime') return 'video/quicktime';
+  if (normalized === 'mpeg' || normalized === 'mpg') return 'video/mpeg';
+  return 'video/mp4';
 }
 
 function normalizeMediaType(value: unknown): MediaType | undefined {

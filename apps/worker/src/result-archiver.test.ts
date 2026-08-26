@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import type { PrismaClient } from '@prisma/client';
 import type { ProviderJob, RunResult, RunSnapshot } from '@multimodal-canvas/domain';
 
-import { PrismaResultAssetArchiver, type ResultBlobStore } from './result-archiver';
+import {
+  PrismaResultAssetArchiver,
+  WorkerFfprobeMediaMetadataExtractor,
+  type ResultBlobStore,
+} from './result-archiver';
 
 const projectId = '123e4567-e89b-12d3-a456-426614174000';
 const userId = '123e4567-e89b-12d3-a456-426614174001';
@@ -139,6 +143,87 @@ describe('PrismaResultAssetArchiver', () => {
     expect(rows).toHaveLength(2);
   });
 
+  it('downloads and archives a generated video with ffprobe metadata', async () => {
+    const blob = createBlobStore();
+    const rows: Record<string, unknown>[] = [];
+    const prisma = fakePrisma(async (data) => {
+      rows.push(data);
+    });
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112]), {
+        status: 200,
+        headers: { 'content-type': 'video/mp4', 'content-length': '8' },
+      }),
+    );
+    const runner = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        format: { format_name: 'mov,mp4', duration: '4.5', size: '8' },
+        streams: [
+          {
+            codec_type: 'video',
+            codec_name: 'h264',
+            width: 1280,
+            height: 720,
+            r_frame_rate: '30/1',
+          },
+        ],
+      }),
+    );
+    const archiver = new PrismaResultAssetArchiver(prisma, {
+      blobStore: blob,
+      fetchImpl,
+      metadataExtractor: new WorkerFfprobeMediaMetadataExtractor({ runner }),
+    });
+    const videoSnapshot: RunSnapshot = {
+      ...snapshot,
+      targetNodeId: 'node_video',
+      nodes: [
+        {
+          id: 'node_video',
+          type: 'video',
+          position: { x: 0, y: 0 },
+          data: { label: 'Generated video', mediaType: 'video', mode: 'generate' },
+        },
+      ],
+    };
+    const videoProviderJob: ProviderJob = {
+      ...providerJob,
+      platformJobId: 'platform-video-1',
+    };
+
+    const archived = await archiver.archive({
+      runId: 'run_video',
+      snapshot: videoSnapshot,
+      result: { ...result, targetNodeId: 'node_video', mediaType: 'video' },
+      providerJob: videoProviderJob,
+      archiveInput: {
+        mediaType: 'video',
+        mimeType: 'video/mp4',
+        contentUrl: 'https://cdn.example/generated.mp4',
+      },
+    });
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(runner).toHaveBeenCalledWith(
+      'ffprobe',
+      expect.arrayContaining(['-show_format', '-show_streams']),
+      10_000,
+    );
+    expect(archived).toMatchObject({ mimeType: 'video/mp4', sizeBytes: 8 });
+    expect(rows[0]).toMatchObject({
+      mediaType: 'VIDEO',
+      metadata: {
+        platformJobId: 'platform-video-1',
+        format: 'mov,mp4',
+        durationSeconds: 4.5,
+        codec: 'h264',
+        width: 1280,
+        height: 720,
+        frameRate: 30,
+      },
+    });
+  });
+
   it('removes the blob if the database transaction fails', async () => {
     const blob = createBlobStore();
     const prisma = fakePrisma(async () => {
@@ -189,6 +274,44 @@ describe('PrismaResultAssetArchiver', () => {
         },
       }),
     ).rejects.toThrow('private host');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('rejects a public-looking hostname that resolves to a private address', async () => {
+    const blob = createBlobStore();
+    const prisma = fakePrisma(async () => undefined);
+    const fetchImpl = vi.fn<typeof fetch>();
+    const archiver = new PrismaResultAssetArchiver(prisma, {
+      blobStore: blob,
+      fetchImpl,
+      strictDns: true,
+      lookupHost: async () => [{ address: '10.0.0.8', family: 4 }],
+    });
+
+    await expect(
+      archiver.archive({
+        runId: 'run_dns_private',
+        snapshot: {
+          ...snapshot,
+          targetNodeId: 'node_image',
+          nodes: [
+            {
+              id: 'node_image',
+              type: 'image',
+              position: { x: 0, y: 0 },
+              data: { label: 'Image', mediaType: 'image', mode: 'generate' },
+            },
+          ],
+        },
+        result: { ...result, targetNodeId: 'node_image', mediaType: 'image' },
+        providerJob,
+        archiveInput: {
+          mediaType: 'image',
+          mimeType: 'image/png',
+          contentUrl: 'https://cdn.example/private.png',
+        },
+      }),
+    ).rejects.toThrow('resolves to a private host');
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

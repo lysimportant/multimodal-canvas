@@ -1,11 +1,66 @@
 import type { Connection } from '@xyflow/react';
-import { isPortConnectionAllowed } from '@multimodal-canvas/domain';
+import { isPortConnectionAllowed, targetPortRolesForMediaType } from '@multimodal-canvas/domain';
 
 import { wouldCreateCycle, type AssetFlowNode, type FlowEdge } from './canvas-utils';
 
 export type CanvasConnectionRejection = 'invalid' | 'cycle' | 'duplicate';
 export type CanvasConnectionValidation =
   { ok: true } | { ok: false; reason: CanvasConnectionRejection };
+
+/**
+ * Resolve a connection dropped on a node body (or on one of the visual
+ * perimeter anchors) to the first compatible semantic input role.
+ *
+ * React Flow reports `targetHandle: null` when the pointer is released on the
+ * node body. The persisted protocol always needs a concrete `input:*` handle,
+ * so callers should pass this result to `validateCanvasConnection` and use the
+ * returned connection when creating the edge. Explicit semantic handles are
+ * preserved, including incompatible ones so the normal validator can reject
+ * them instead of silently changing a deliberate user choice.
+ */
+export function resolveCanvasConnectionTargetHandle(
+  connection: Connection,
+  nodes: AssetFlowNode[],
+): Connection | undefined {
+  if (!connection.source || !connection.target || connection.source === connection.target) {
+    return undefined;
+  }
+
+  const source = nodes.find((node) => node.id === connection.source);
+  const target = nodes.find((node) => node.id === connection.target);
+  if (!source || !target) return undefined;
+
+  const sourceHandle = connection.sourceHandle ?? `output:${source.data.mediaType}`;
+  const targetHandle = connection.targetHandle;
+  const needsAutoTarget =
+    !targetHandle || targetHandle.startsWith('visual:') || targetHandle === 'target';
+
+  if (!needsAutoTarget) {
+    return { ...connection, sourceHandle, targetHandle };
+  }
+
+  const role = targetPortRolesForMediaType(target.data.mediaType).find((candidate) =>
+    isPortConnectionAllowed(source, sourceHandle, target, `input:${candidate}`),
+  );
+  if (!role) return undefined;
+  return { ...connection, sourceHandle, targetHandle: `input:${role}` };
+}
+
+/**
+ * Normalize a body-drop connection and run the regular graph/port checks in
+ * one call. The normalized connection is returned only for valid connections;
+ * this keeps edge creation from accidentally persisting a null target handle.
+ */
+export function validateResolvedCanvasConnection(
+  connection: Connection,
+  nodes: AssetFlowNode[],
+  edges: FlowEdge[],
+): { ok: true; connection: Connection } | { ok: false; reason: CanvasConnectionRejection } {
+  const resolved = resolveCanvasConnectionTargetHandle(connection, nodes);
+  if (!resolved) return { ok: false, reason: 'invalid' };
+  const validation = validateCanvasConnection(resolved, nodes, edges);
+  return validation.ok ? { ok: true, connection: resolved } : validation;
+}
 
 /** Validate a React Flow connection before it is persisted in the canvas graph. */
 export function validateCanvasConnection(

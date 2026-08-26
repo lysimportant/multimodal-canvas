@@ -90,6 +90,10 @@ export const nodeDataSchema = z.object({
   label: z.string().min(1),
   mediaType: mediaTypeSchema,
   mode: nodeModeSchema,
+  /** Whether this node contributes inputs to downstream runs. Omitted means enabled for legacy canvases. */
+  enabled: z.boolean().optional(),
+  /** Downstream output is no longer derived from the current upstream inputs. */
+  stale: z.boolean().optional(),
   prompt: z.string().trim().max(20_000).optional(),
   inferenceStrength: z.enum(['low', 'medium', 'high']).optional(),
   modelAlias: z.string().trim().min(1).optional(),
@@ -98,10 +102,18 @@ export const nodeDataSchema = z.object({
   mimeType: z.string().min(1).optional(),
 });
 
+/** Legacy canvases omit this field; only an explicit false disables a node. */
+export function isCanvasNodeEnabled(node: Pick<CanvasNode, 'data'>): boolean {
+  return node.data.enabled !== false;
+}
+
 export const canvasNodeSchema = z.object({
   id: z.string().min(1),
   type: mediaTypeSchema,
   position: z.object({ x: z.number(), y: z.number() }),
+  /** User-resizable dimensions. React Flow keeps these on the node itself. */
+  width: z.number().finite().positive().max(10_000).optional(),
+  height: z.number().finite().positive().max(10_000).optional(),
   data: nodeDataSchema,
 });
 

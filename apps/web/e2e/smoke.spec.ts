@@ -335,6 +335,68 @@ test('adds a generate node from the canvas toolbar', async ({ page }) => {
   await expect(page.getByRole('heading', { name: '节点设置' })).toBeVisible();
 });
 
+test('supports theme/sidebar controls, node body connections, and corner resizing', async ({
+  page,
+}) => {
+  await page.goto('/');
+
+  await page.getByRole('button', { name: '新建图片生成节点' }).click();
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'body-reference.png',
+    mimeType: 'image/png',
+    buffer: Buffer.from('mock image'),
+  });
+  const assetCard = page.locator('.asset-card').filter({ hasText: 'body-reference.png' });
+  await expect(assetCard).toBeVisible();
+  const canvasBox = await page.locator('.canvas-area').boundingBox();
+  const cardBox = await assetCard.boundingBox();
+  expect(canvasBox).not.toBeNull();
+  expect(cardBox).not.toBeNull();
+  if (!canvasBox || !cardBox) return;
+  await page.mouse.move(cardBox.x + cardBox.width / 2, cardBox.y + cardBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(canvasBox.x + 120, canvasBox.y + 130, { steps: 14 });
+  await page.mouse.up();
+
+  const source = page.locator('.flow-asset-node').filter({ hasText: 'body-reference.png' });
+  const target = page.locator('.flow-generate-node').filter({ hasText: '图片生成节点' });
+  const sourceHandle = source.locator('.react-flow__handle.source');
+  const sourceBox = await sourceHandle.boundingBox();
+  const targetBox = await target.boundingBox();
+  expect(sourceBox).not.toBeNull();
+  expect(targetBox).not.toBeNull();
+  if (!sourceBox || !targetBox) return;
+  await page.mouse.move(sourceBox.x + sourceBox.width / 2, sourceBox.y + sourceBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(targetBox.x + targetBox.width / 2, targetBox.y + targetBox.height / 2, {
+    steps: 20,
+  });
+  await page.mouse.up();
+  await expect(page.locator('.react-flow__edge')).toHaveCount(1);
+
+  await target.click();
+  const resizeHandle = page.locator('.react-flow__resize-control.bottom.right');
+  await expect(resizeHandle).toBeVisible();
+  const before = await target.boundingBox();
+  const resizeBox = await resizeHandle.boundingBox();
+  expect(before).not.toBeNull();
+  expect(resizeBox).not.toBeNull();
+  if (!before || !resizeBox) return;
+  await page.mouse.move(resizeBox.x + resizeBox.width / 2, resizeBox.y + resizeBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(resizeBox.x + 30, resizeBox.y + 24, { steps: 8 });
+  await page.mouse.up();
+  await expect
+    .poll(async () => (await target.boundingBox())?.width ?? 0)
+    .toBeGreaterThan(before.width);
+
+  await page.getByRole('button', { name: '切换主题' }).click();
+  await page.getByRole('option', { name: '深色' }).click();
+  await expect(page.locator('.app-shell')).toHaveAttribute('data-theme', 'dark');
+  await page.getByRole('button', { name: '折叠资源栏' }).click();
+  await expect(page.locator('.resource-panel')).toHaveClass(/is-collapsed/);
+});
+
 test('saves AI settings and tests the mocked connection', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '打开设置' }).click();
@@ -464,6 +526,43 @@ test('overrides a node model and displays the completed run result', async ({ pa
   await expect(page.getByText('Mock 结果已归档')).toBeVisible();
   await expect(page.getByText('版本 1')).toBeVisible();
   await expect(page.getByRole('status')).toContainText('文字生成节点 已完成');
+});
+
+test('四类节点都可以填写提示词、运行并显示对应结果预览', async ({ page }) => {
+  await page.goto('/');
+
+  const mediaCases = [
+    { mediaType: '文字', resultSelector: '.inspector-result .inspector-result-text' },
+    { mediaType: '图片', resultSelector: '.inspector-result img' },
+    { mediaType: '音频', resultSelector: '.inspector-result audio' },
+    { mediaType: '视频', resultSelector: '.inspector-result video' },
+  ] as const;
+
+  for (const { mediaType, resultSelector } of mediaCases) {
+    await page.getByRole('button', { name: `新建${mediaType}生成节点` }).click();
+
+    const node = page
+      .locator('.flow-generate-node')
+      .filter({ hasText: `${mediaType}生成节点` })
+      .last();
+    await expect(node).toBeVisible();
+    await expect(page.getByRole('heading', { name: '节点设置' })).toBeVisible();
+
+    const prompt = page.locator('.inspector-prompt textarea');
+    await expect(prompt).toBeVisible();
+    await prompt.fill(`Playwright ${mediaType} 生成测试`);
+    await expect(prompt).toHaveValue(`Playwright ${mediaType} 生成测试`);
+
+    await page.getByRole('button', { name: '生成', exact: true }).click();
+
+    await expect(page.getByRole('region', { name: '运行结果' })).toBeVisible();
+    await expect(page.getByRole('status')).toContainText(`${mediaType}生成节点 已完成`);
+    await expect(page.locator(resultSelector)).toHaveCount(1);
+
+    if (mediaType === '音频' || mediaType === '视频') {
+      await expect(page.locator(resultSelector)).toHaveAttribute('controls', '');
+    }
+  }
 });
 
 test('切换 Mock 默认模型后新运行使用新模型', async ({ page }) => {

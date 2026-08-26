@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
 
 import { PrismaClient } from '@prisma/client';
 import type { CanvasDocument, CanvasNode, MediaType, NodeMode } from '@multimodal-canvas/domain';
@@ -14,11 +16,18 @@ export type Project = {
 
 export type StoredProject = Project & {
   canvas: CanvasDocument;
+  modelDefaults?: ProjectModelDefaults;
 };
 
 export type CreateProjectInput = {
   name: string;
 };
+
+/** Project-scoped model aliases. Omitted media types inherit global settings. */
+export type ProjectModelDefaults = Partial<Record<MediaType, string>>;
+
+/** PATCH input; null or an empty string removes a project override. */
+export type UpdateProjectModelDefaultsInput = Partial<Record<MediaType, string | null>>;
 
 /** Optional request scope used by authenticated API callers. */
 export type ProjectScope = {
@@ -31,6 +40,12 @@ export interface ProjectStore {
   get(id: string, scope?: ProjectScope): Promise<Project | undefined>;
   getCanvas(id: string, scope?: ProjectScope): Promise<CanvasDocument | undefined>;
   updateCanvas(id: string, document: CanvasDocument, scope?: ProjectScope): Promise<CanvasDocument>;
+  getModelDefaults(id: string, scope?: ProjectScope): Promise<ProjectModelDefaults | undefined>;
+  updateModelDefaults(
+    id: string,
+    defaults: UpdateProjectModelDefaultsInput,
+    scope?: ProjectScope,
+  ): Promise<ProjectModelDefaults>;
   close?(): Promise<void>;
 }
 
@@ -46,6 +61,7 @@ export class ProjectStoreError extends Error {
 
 export class MemoryProjectStore implements ProjectStore {
   private readonly projects = new Map<string, StoredProject>();
+  private readonly modelDefaults = new Map<string, ProjectModelDefaults>();
   private lastTimestamp = 0;
 
   async create(input: CreateProjectInput, scope: ProjectScope = {}): Promise<Project> {
@@ -113,10 +129,294 @@ export class MemoryProjectStore implements ProjectStore {
     return nextCanvas;
   }
 
+  async getModelDefaults(
+    id: string,
+    scope: ProjectScope = {},
+  ): Promise<ProjectModelDefaults | undefined> {
+    const project = this.projects.get(id);
+    if (!project || (scope.ownerId && project.ownerId !== scope.ownerId)) return undefined;
+    return cloneModelDefaults(this.modelDefaults.get(id) ?? {});
+  }
+
+  async updateModelDefaults(
+    id: string,
+    defaults: UpdateProjectModelDefaultsInput,
+    scope: ProjectScope = {},
+  ): Promise<ProjectModelDefaults> {
+    const project = this.projects.get(id);
+    if (!project || (scope.ownerId && project.ownerId !== scope.ownerId)) {
+      throw new ProjectStoreError('not_found', 'project not found');
+    }
+    const next = applyModelDefaults(this.modelDefaults.get(id) ?? {}, defaults);
+    this.modelDefaults.set(id, next);
+    this.projects.set(id, { ...project, updatedAt: this.nextTimestamp() });
+    return cloneModelDefaults(next);
+  }
+
   private nextTimestamp(): string {
     this.lastTimestamp = Math.max(Date.now(), this.lastTimestamp + 1);
     return new Date(this.lastTimestamp).toISOString();
   }
+}
+
+type FileProjectStoreOptions = {
+  /** JSON file used when PostgreSQL is not configured (defaults to .data/projects.json). */
+  filePath?: string;
+};
+
+type PersistedProjectStore = {
+  version: 1;
+  projects: StoredProject[];
+};
+
+/**
+ * Small durable project store for local development without PostgreSQL.
+ *
+ * The API's default test store remains in-memory; this adapter is only wired
+ * by the production entrypoint when DATABASE_URL is absent, so an API restart
+ * does not invalidate the project id kept by the Web client.
+ */
+export class FileProjectStore implements ProjectStore {
+  private readonly projects = new Map<string, StoredProject>();
+  private readonly filePath: string;
+  private readonly ready: Promise<void>;
+  private writeChain: Promise<void> = Promise.resolve();
+  private lastTimestamp = 0;
+
+  constructor(options: FileProjectStoreOptions = {}) {
+    this.filePath = resolve(
+      options.filePath ?? process.env.PROJECT_STORAGE_FILE ?? '.data/projects.json',
+    );
+    this.ready = this.load();
+  }
+
+  async create(input: CreateProjectInput, scope: ProjectScope = {}): Promise<Project> {
+    await this.ready;
+    const timestamp = this.nextTimestamp();
+    const project: StoredProject = {
+      id: `project_${randomUUID()}`,
+      name: input.name,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      canvas: { revision: 0, nodes: [], edges: [] },
+      ...(scope.ownerId ? { ownerId: scope.ownerId } : {}),
+    };
+    this.projects.set(project.id, project);
+    await this.persist();
+    return this.summary(project);
+  }
+
+  async list(scope: ProjectScope = {}): Promise<Project[]> {
+    await this.ready;
+    return [...this.projects.values()]
+      .filter((project) => !scope.ownerId || project.ownerId === scope.ownerId)
+      .sort(compareProjects)
+      .map((project) => this.summary(project));
+  }
+
+  async get(id: string, scope: ProjectScope = {}): Promise<Project | undefined> {
+    await this.ready;
+    const project = this.projects.get(id);
+    if (!project || (scope.ownerId && project.ownerId !== scope.ownerId)) return undefined;
+    return this.summary(project);
+  }
+
+  async getCanvas(id: string, scope: ProjectScope = {}): Promise<CanvasDocument | undefined> {
+    await this.ready;
+    const project = this.projects.get(id);
+    if (!project || (scope.ownerId && project.ownerId !== scope.ownerId)) return undefined;
+    return structuredClone(project.canvas);
+  }
+
+  async updateCanvas(
+    id: string,
+    document: CanvasDocument,
+    scope: ProjectScope = {},
+  ): Promise<CanvasDocument> {
+    await this.ready;
+    const project = this.projects.get(id);
+    if (!project || (scope.ownerId && project.ownerId !== scope.ownerId)) {
+      throw new ProjectStoreError('not_found', 'project not found');
+    }
+    if (document.revision !== project.canvas.revision) {
+      throw new ProjectStoreError(
+        'revision_conflict',
+        'canvas revision is stale',
+        project.canvas.revision,
+      );
+    }
+
+    const nextCanvas: CanvasDocument = {
+      ...structuredClone(document),
+      revision: project.canvas.revision + 1,
+    };
+    const updated = { ...project, updatedAt: this.nextTimestamp(), canvas: nextCanvas };
+    this.projects.set(id, updated);
+    await this.persist();
+    return structuredClone(nextCanvas);
+  }
+
+  async getModelDefaults(
+    id: string,
+    scope: ProjectScope = {},
+  ): Promise<ProjectModelDefaults | undefined> {
+    await this.ready;
+    const project = this.projects.get(id);
+    if (!project || (scope.ownerId && project.ownerId !== scope.ownerId)) return undefined;
+    return cloneModelDefaults(project.modelDefaults ?? {});
+  }
+
+  async updateModelDefaults(
+    id: string,
+    defaults: UpdateProjectModelDefaultsInput,
+    scope: ProjectScope = {},
+  ): Promise<ProjectModelDefaults> {
+    await this.ready;
+    const project = this.projects.get(id);
+    if (!project || (scope.ownerId && project.ownerId !== scope.ownerId)) {
+      throw new ProjectStoreError('not_found', 'project not found');
+    }
+    const next = applyModelDefaults(project.modelDefaults ?? {}, defaults);
+    this.projects.set(id, {
+      ...project,
+      updatedAt: this.nextTimestamp(),
+      modelDefaults: next,
+    });
+    await this.persist();
+    return cloneModelDefaults(next);
+  }
+
+  async close(): Promise<void> {
+    await this.ready;
+    await this.writeChain;
+  }
+
+  private async load(): Promise<void> {
+    try {
+      const raw = await readFile(this.filePath, 'utf8');
+      const parsed: unknown = JSON.parse(raw);
+      if (!isPersistedProjectStore(parsed)) {
+        throw new Error(`invalid project storage file: ${this.filePath}`);
+      }
+      for (const project of parsed.projects) {
+        this.projects.set(project.id, project);
+        this.lastTimestamp = Math.max(this.lastTimestamp, Date.parse(project.updatedAt));
+      }
+    } catch (error) {
+      if (isNodeError(error) && error.code === 'ENOENT') return;
+      throw error;
+    }
+  }
+
+  private async persist(): Promise<void> {
+    const snapshot = JSON.stringify(
+      { version: 1, projects: [...this.projects.values()] } satisfies PersistedProjectStore,
+      null,
+      2,
+    );
+    const tempPath = `${this.filePath}.${randomUUID()}.tmp`;
+    this.writeChain = this.writeChain
+      .catch(() => undefined)
+      .then(async () => {
+        await mkdir(dirname(this.filePath), { recursive: true });
+        await writeFile(tempPath, snapshot, 'utf8');
+        try {
+          await rename(tempPath, this.filePath);
+        } catch (error) {
+          // Windows may reject replacing an existing file. Remove only this
+          // known target and retry; the temporary snapshot remains recoverable
+          // until the rename succeeds.
+          if (!isNodeError(error) || !['EEXIST', 'EPERM'].includes(error.code ?? '')) throw error;
+          await rm(this.filePath, { force: true });
+          await rename(tempPath, this.filePath);
+        } finally {
+          await rm(tempPath, { force: true });
+        }
+      });
+    await this.writeChain;
+  }
+
+  private summary(project: StoredProject): Project {
+    return {
+      id: project.id,
+      name: project.name,
+      ...(project.ownerId ? { ownerId: project.ownerId } : {}),
+      createdAt: project.createdAt,
+      updatedAt: project.updatedAt,
+    };
+  }
+
+  private nextTimestamp(): string {
+    this.lastTimestamp = Math.max(Date.now(), this.lastTimestamp + 1);
+    return new Date(this.lastTimestamp).toISOString();
+  }
+}
+
+function compareProjects(left: Project, right: Project): number {
+  const updatedOrder = right.updatedAt.localeCompare(left.updatedAt);
+  if (updatedOrder !== 0) return updatedOrder;
+  const createdOrder = right.createdAt.localeCompare(left.createdAt);
+  return createdOrder !== 0 ? createdOrder : right.id.localeCompare(left.id);
+}
+
+function cloneModelDefaults(defaults: ProjectModelDefaults): ProjectModelDefaults {
+  return { ...defaults };
+}
+
+function applyModelDefaults(
+  current: ProjectModelDefaults,
+  input: UpdateProjectModelDefaultsInput,
+): ProjectModelDefaults {
+  const next = cloneModelDefaults(current);
+  for (const mediaType of ['text', 'image', 'audio', 'video'] as const) {
+    if (!(mediaType in input)) continue;
+    const value = input[mediaType];
+    if (value === null || value === undefined || value.trim() === '') delete next[mediaType];
+    else next[mediaType] = value.trim();
+  }
+  return next;
+}
+
+function mapProjectModelDefaults(
+  rows: Array<{ mediaType: string; modelAlias: string }>,
+): ProjectModelDefaults {
+  const defaults: ProjectModelDefaults = {};
+  for (const row of rows) {
+    const mediaType = row.mediaType.toLowerCase() as MediaType;
+    if (['text', 'image', 'audio', 'video'].includes(mediaType) && row.modelAlias.trim()) {
+      defaults[mediaType] = row.modelAlias;
+    }
+  }
+  return defaults;
+}
+
+function isPersistedProjectStore(value: unknown): value is PersistedProjectStore {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as { version?: unknown; projects?: unknown };
+  return (
+    candidate.version === 1 &&
+    Array.isArray(candidate.projects) &&
+    candidate.projects.every(isStoredProject)
+  );
+}
+
+function isStoredProject(value: unknown): value is StoredProject {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<StoredProject>;
+  return (
+    typeof candidate.id === 'string' &&
+    typeof candidate.name === 'string' &&
+    typeof candidate.createdAt === 'string' &&
+    typeof candidate.updatedAt === 'string' &&
+    Number.isFinite(Date.parse(candidate.createdAt)) &&
+    Number.isFinite(Date.parse(candidate.updatedAt)) &&
+    Boolean(candidate.canvas) &&
+    typeof candidate.canvas === 'object'
+  );
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && 'code' in error;
 }
 
 const mediaTypeToPrisma = {
@@ -266,7 +566,11 @@ export class PrismaProjectStore implements ProjectStore {
             positionY: node.position.y,
             assetId: node.data.assetId ?? null,
             contentUrl: node.data.contentUrl ?? null,
-            data: node.data,
+            data: {
+              ...node.data,
+              ...(node.width !== undefined ? { __canvasWidth: node.width } : {}),
+              ...(node.height !== undefined ? { __canvasHeight: node.height } : {}),
+            },
           })),
         });
       }
@@ -292,6 +596,71 @@ export class PrismaProjectStore implements ProjectStore {
     });
 
     return nextDocument;
+  }
+
+  async getModelDefaults(
+    id: string,
+    scope: ProjectScope = {},
+  ): Promise<ProjectModelDefaults | undefined> {
+    const project = scope.ownerId
+      ? await this.prisma.project.findFirst({
+          where: { id, ownerId: scope.ownerId },
+          select: { id: true },
+        })
+      : await this.prisma.project.findUnique({ where: { id }, select: { id: true } });
+    if (!project) return undefined;
+    const rows = await this.prisma.projectModelDefault.findMany({
+      where: { projectId: id },
+      orderBy: { mediaType: 'asc' },
+      select: { mediaType: true, modelAlias: true },
+    });
+    return mapProjectModelDefaults(rows);
+  }
+
+  async updateModelDefaults(
+    id: string,
+    defaults: UpdateProjectModelDefaultsInput,
+    scope: ProjectScope = {},
+  ): Promise<ProjectModelDefaults> {
+    return this.prisma.$transaction(async (transaction) => {
+      const project = scope.ownerId
+        ? await transaction.project.findFirst({
+            where: { id, ownerId: scope.ownerId },
+            select: { id: true },
+          })
+        : await transaction.project.findUnique({ where: { id }, select: { id: true } });
+      if (!project) throw new ProjectStoreError('not_found', 'project not found');
+
+      for (const mediaType of ['text', 'image', 'audio', 'video'] as const) {
+        if (!(mediaType in defaults)) continue;
+        const value = defaults[mediaType];
+        const prismaMediaType = mediaTypeToPrisma[mediaType];
+        if (value === null || value === undefined || value.trim() === '') {
+          await transaction.projectModelDefault.deleteMany({
+            where: { projectId: id, mediaType: prismaMediaType },
+          });
+          continue;
+        }
+        await transaction.projectModelDefault.upsert({
+          where: {
+            projectId_mediaType: { projectId: id, mediaType: prismaMediaType },
+          },
+          create: { projectId: id, mediaType: prismaMediaType, modelAlias: value.trim() },
+          update: { modelAlias: value.trim() },
+        });
+      }
+
+      await transaction.project.update({
+        where: { id },
+        data: { updatedAt: new Date() },
+      });
+      const rows = await transaction.projectModelDefault.findMany({
+        where: { projectId: id },
+        orderBy: { mediaType: 'asc' },
+        select: { mediaType: true, modelAlias: true },
+      });
+      return mapProjectModelDefaults(rows);
+    });
   }
 
   async close(): Promise<void> {
@@ -339,14 +708,18 @@ function mapCanvas(canvas: {
     revision: canvas.revision,
     nodes: canvas.nodes.map((node) => {
       const storedData = isNodeData(node.data) ? node.data : undefined;
+      const storedDimensions = readStoredDimensions(node.data);
       return {
         id: node.id,
         type: storedData?.mediaType ?? fromPrismaMediaType(node.type),
         position: { x: node.positionX, y: node.positionY },
+        ...(storedDimensions.width !== undefined ? { width: storedDimensions.width } : {}),
+        ...(storedDimensions.height !== undefined ? { height: storedDimensions.height } : {}),
         data: {
           label: storedData?.label ?? node.label,
           mediaType: storedData?.mediaType ?? fromPrismaMediaType(node.type),
           mode: storedData?.mode ?? fromPrismaNodeMode(node.mode),
+          ...(storedData?.enabled === false ? { enabled: false } : {}),
           ...((storedData?.assetId ?? node.assetId)
             ? { assetId: storedData?.assetId ?? node.assetId! }
             : {}),
@@ -367,6 +740,26 @@ function mapCanvas(canvas: {
       order: edge.sortOrder,
     })),
   };
+}
+
+function readStoredDimensions(value: unknown): { width?: number; height?: number } {
+  if (!value || typeof value !== 'object') return {};
+  const candidate = value as { __canvasWidth?: unknown; __canvasHeight?: unknown };
+  const width =
+    typeof candidate.__canvasWidth === 'number' &&
+    Number.isFinite(candidate.__canvasWidth) &&
+    candidate.__canvasWidth > 0 &&
+    candidate.__canvasWidth <= 10_000
+      ? candidate.__canvasWidth
+      : undefined;
+  const height =
+    typeof candidate.__canvasHeight === 'number' &&
+    Number.isFinite(candidate.__canvasHeight) &&
+    candidate.__canvasHeight > 0 &&
+    candidate.__canvasHeight <= 10_000
+      ? candidate.__canvasHeight
+      : undefined;
+  return { width, height };
 }
 
 function isNodeData(value: unknown): value is CanvasNode['data'] {

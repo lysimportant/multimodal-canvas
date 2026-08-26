@@ -4,6 +4,7 @@ import {
   assetSchema,
   canTransitionRunStatus,
   canvasDocumentSchema,
+  isCanvasNodeEnabled,
   mediaTypes,
   nodeModes,
   portRoles,
@@ -37,6 +38,54 @@ describe('canvas protocol', () => {
     });
 
     expect(document.nodes).toHaveLength(1);
+    // Legacy documents omit the new controls and retain their implicit defaults.
+    expect(document.nodes[0].data.enabled).toBeUndefined();
+    expect(document.nodes[0].width).toBeUndefined();
+    expect(isCanvasNodeEnabled(document.nodes[0])).toBe(true);
+  });
+
+  it('accepts enabled state and user-resizable node dimensions', () => {
+    const document = canvasDocumentSchema.parse({
+      revision: 0,
+      nodes: [
+        {
+          id: 'node_image',
+          type: 'image',
+          position: { x: 0, y: 0 },
+          width: 320,
+          height: 240,
+          data: { label: 'Image', mediaType: 'image', mode: 'generate', enabled: false },
+        },
+      ],
+      edges: [],
+    });
+
+    expect(document.nodes[0]).toMatchObject({ width: 320, height: 240 });
+    expect(document.nodes[0].data.enabled).toBe(false);
+    expect(isCanvasNodeEnabled(document.nodes[0])).toBe(false);
+  });
+
+  it('rejects non-positive or unreasonably large node dimensions', () => {
+    const base = {
+      revision: 0,
+      nodes: [
+        {
+          id: 'node_image',
+          type: 'image' as const,
+          position: { x: 0, y: 0 },
+          data: { label: 'Image', mediaType: 'image' as const, mode: 'generate' as const },
+        },
+      ],
+      edges: [],
+    };
+
+    expect(
+      canvasDocumentSchema.safeParse({ ...base, nodes: [{ ...base.nodes[0], width: 0 }] }).success,
+    ).toBe(false);
+    expect(
+      canvasDocumentSchema.safeParse({ ...base, nodes: [{ ...base.nodes[0], height: 10_001 }] })
+        .success,
+    ).toBe(false);
   });
 
   it('accepts node prompt and inference strength settings', () => {

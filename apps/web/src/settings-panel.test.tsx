@@ -45,6 +45,7 @@ const jsonResponse = (body: unknown, status = 200) =>
   });
 
 let settings: Settings;
+let projectDefaults: Partial<Record<MediaType, string>>;
 let fetchMock: ReturnType<typeof vi.fn>;
 
 function installApiMock() {
@@ -65,6 +66,19 @@ function installApiMock() {
     }
     if (url.pathname === `/v1/projects/${project.id}/canvas` && method === 'GET') {
       return jsonResponse({ canvas: { revision: 0, nodes: [], edges: [] } });
+    }
+    if (url.pathname === `/v1/projects/${project.id}/models/defaults` && method === 'GET') {
+      return jsonResponse({ defaults: projectDefaults });
+    }
+    if (url.pathname === `/v1/projects/${project.id}/models/defaults` && method === 'PATCH') {
+      const body = JSON.parse(String(init?.body ?? '{}')) as Partial<
+        Record<MediaType, string | null>
+      >;
+      for (const [mediaType, alias] of Object.entries(body)) {
+        if (alias) projectDefaults[mediaType as MediaType] = alias;
+        else delete projectDefaults[mediaType as MediaType];
+      }
+      return jsonResponse({ defaults: projectDefaults });
     }
     if (url.pathname === '/v1/settings/ai' && method === 'GET') return jsonResponse({ settings });
     if (url.pathname === '/v1/settings/ai' && method === 'PATCH') {
@@ -129,6 +143,7 @@ describe('SettingsPanel', () => {
       keyFingerprint: 'sha256:old-key',
       defaultModels: {},
     };
+    projectDefaults = {};
     installApiMock();
   });
 
@@ -177,18 +192,60 @@ describe('SettingsPanel', () => {
     const { dialog, user } = await openSettings();
     await user.click(within(dialog).getByRole('button', { name: '刷新模型' }));
 
-    const textModel = within(dialog).getByLabelText('文字');
+    const textModel = within(dialog).getByRole('combobox', { name: '平台全局默认 · 文字' });
     await waitFor(() =>
       expect(within(textModel).getByRole('option', { name: '文字模型' })).toBeInTheDocument(),
     );
     await user.selectOptions(textModel, 'text-model');
-    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('文字默认模型已更新'));
+    await waitFor(() =>
+      expect(screen.getByRole('status')).toHaveTextContent('平台全局文字默认模型已更新'),
+    );
     expect(settings.defaultModels.text).toBe('text-model');
 
     await user.click(within(dialog).getByRole('button', { name: '删除凭据' }));
     await waitFor(() => expect(within(dialog).getByText('未配置')).toBeInTheDocument());
     expect(within(dialog).getByRole('button', { name: '测试连接' })).toBeDisabled();
     expect(within(dialog).getByRole('button', { name: '刷新模型' })).toBeDisabled();
+  });
+
+  it('loads, updates, and clears current project model defaults', async () => {
+    projectDefaults.image = 'image-model';
+    const { dialog, user } = await openSettings();
+    const imageModel = within(dialog).getByRole('combobox', { name: '项目默认 · 图片' });
+
+    await waitFor(() => expect(imageModel).toBeEnabled());
+    expect(imageModel).toHaveValue('image-model');
+    expect(within(imageModel).getByRole('option', { name: '图片模型' })).toBeInTheDocument();
+    expect(within(imageModel).queryByRole('option', { name: '文字模型' })).not.toBeInTheDocument();
+
+    const textModel = within(dialog).getByRole('combobox', { name: '项目默认 · 文字' });
+    await user.selectOptions(textModel, 'text-model');
+    await waitFor(() =>
+      expect(screen.getByRole('status')).toHaveTextContent('文字项目默认模型已更新'),
+    );
+    expect(projectDefaults.text).toBe('text-model');
+    expect(
+      fetchMock.mock.calls.some(
+        ([input, init]) =>
+          String(input).includes(`/v1/projects/${project.id}/models/defaults`) &&
+          init?.method === 'PATCH' &&
+          init.body === JSON.stringify({ text: 'text-model' }),
+      ),
+    ).toBe(true);
+
+    await user.selectOptions(textModel, '');
+    await waitFor(() =>
+      expect(screen.getByRole('status')).toHaveTextContent('文字已改为继承平台全局默认'),
+    );
+    expect(projectDefaults.text).toBeUndefined();
+    expect(
+      fetchMock.mock.calls.some(
+        ([input, init]) =>
+          String(input).includes(`/v1/projects/${project.id}/models/defaults`) &&
+          init?.method === 'PATCH' &&
+          init.body === JSON.stringify({ text: null }),
+      ),
+    ).toBe(true);
   });
 
   it('manages dialog focus and restores focus to the settings trigger', async () => {

@@ -6,6 +6,8 @@ import {
   PrismaRunPersistence,
   RunPersistenceError,
   stableProviderJobId,
+  stableUsageLedgerId,
+  stableUsageLedgerIdempotencyKey,
 } from './run-persistence';
 
 const runId = '123e4567-e89b-12d3-a456-426614174000';
@@ -31,7 +33,10 @@ function createPersistence() {
       findUnique: findRun,
     },
     providerJob: { upsert: vi.fn(async (args) => args.create) },
-    usageLedger: { create: vi.fn(async (args) => ({ id: 'usage-1', ...args.data })) },
+    usageLedger: {
+      create: vi.fn(async (args) => ({ id: 'usage-1', ...args.data })),
+      upsert: vi.fn(async (args) => ({ id: args.create.id, ...args.create })),
+    },
   };
   return { prisma, persistence: new PrismaRunPersistence(prisma as never) };
 }
@@ -148,6 +153,41 @@ describe('PrismaRunPersistence', () => {
     expect(saved.runId).toBe(runId);
     expect(second.id).toBe(saved.id);
     expect(prisma.providerJob.upsert).toHaveBeenCalledTimes(2);
+    expect(prisma.providerJob.upsert).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: {
+          provider_platformJobId: { provider: 'newapi', platformJobId: 'platform-123' },
+        },
+      }),
+    );
+  });
+
+  it('reassociates a reused platform task with a retry run instead of creating a duplicate', async () => {
+    const { prisma, persistence } = createPersistence();
+    const retryRunId = '123e4567-e89b-12d3-a456-426614174020';
+
+    await persistence.upsertProviderJob({ runId, providerJob });
+    await persistence.upsertProviderJob({
+      runId: retryRunId,
+      providerJob: {
+        ...providerJob,
+        id: 'provider_job_retry_1',
+        status: 'running',
+        progress: 60,
+        updatedAt: '2026-08-25T00:02:00.000Z',
+      },
+    });
+
+    expect(prisma.providerJob.upsert).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: {
+          provider_platformJobId: { provider: 'newapi', platformJobId: 'platform-123' },
+        },
+        update: expect.objectContaining({ runId: retryRunId, progress: 60 }),
+      }),
+    );
   });
 
   it('records normalized usage with optional run and user UUIDs', async () => {
@@ -188,6 +228,86 @@ describe('PrismaRunPersistence', () => {
         currency: 'USD',
       },
     });
+  });
+
+  it('upserts identified usage using provider job identity and kind', async () => {
+    const { prisma, persistence } = createPersistence();
+    const key = stableUsageLedgerIdempotencyKey({
+      providerJobId: ' platform-job-1 ',
+      eventId: 'event-ignored-for-provider-job',
+      kind: 'Generation',
+    });
+
+    await persistence.recordUsage({
+      runId,
+      amount: '0.125000',
+      currency: 'usd',
+      providerJobId: ' platform-job-1 ',
+      eventId: 'event-ignored-for-provider-job',
+      kind: 'Generation',
+      metadata: { providerJobId: 'metadata-value-ignored', requestId: 'req-1' },
+    });
+
+    expect(key).toBeDefined();
+    expect(prisma.usageLedger.upsert).toHaveBeenCalledWith({
+      where: { idempotencyKey: key },
+      create: {
+        id: stableUsageLedgerId(key!),
+        runId,
+        providerJobId: 'platform-job-1',
+        eventId: 'event-ignored-for-provider-job',
+        kind: 'generation',
+        idempotencyKey: key,
+        amount: '0.125000',
+        currency: 'USD',
+        metadata: { providerJobId: 'metadata-value-ignored', requestId: 'req-1' },
+      },
+      update: {},
+    });
+    expect(prisma.usageLedger.create).not.toHaveBeenCalled();
+  });
+
+  it('extracts an event identity from metadata when explicit fields are omitted', async () => {
+    const { prisma, persistence } = createPersistence();
+    const key = stableUsageLedgerIdempotencyKey({ eventId: 'evt-42', kind: 'completion' });
+
+    await persistence.recordUsage({
+      amount: 2,
+      metadata: { eventId: ' evt-42 ', kind: 'Completion', prompt_tokens: 12 },
+    });
+
+    expect(prisma.usageLedger.upsert).toHaveBeenCalledWith({
+      where: { idempotencyKey: key },
+      create: expect.objectContaining({
+        id: stableUsageLedgerId(key!),
+        eventId: 'evt-42',
+        kind: 'completion',
+        idempotencyKey: key,
+        amount: '2',
+        currency: 'USD',
+      }),
+      update: {},
+    });
+    expect(prisma.usageLedger.create).not.toHaveBeenCalled();
+  });
+
+  it('keeps unidentified usage append-only for legacy callers', async () => {
+    const { prisma, persistence } = createPersistence();
+
+    await persistence.recordUsage({ amount: '0.500000', metadata: { prompt_tokens: 4 } });
+
+    expect(prisma.usageLedger.create).toHaveBeenCalledTimes(1);
+    expect(prisma.usageLedger.upsert).not.toHaveBeenCalled();
+  });
+
+  it('uses distinct keys for provider job, event, and kind combinations', () => {
+    expect(
+      stableUsageLedgerIdempotencyKey({ providerJobId: 'job-1', kind: 'generation' }),
+    ).not.toBe(stableUsageLedgerIdempotencyKey({ providerJobId: 'job-1', kind: 'completion' }));
+    expect(
+      stableUsageLedgerIdempotencyKey({ providerJobId: 'job-1', kind: 'generation' }),
+    ).not.toBe(stableUsageLedgerIdempotencyKey({ eventId: 'job-1', kind: 'generation' }));
+    expect(stableUsageLedgerIdempotencyKey({})).toBeUndefined();
   });
 
   it('rejects malformed amounts before touching Prisma', async () => {

@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { Connection } from '@xyflow/react';
 
-import { validateCanvasConnection } from './connection-utils';
+import {
+  resolveCanvasConnectionTargetHandle,
+  validateCanvasConnection,
+  validateResolvedCanvasConnection,
+} from './connection-utils';
 import type { AssetFlowNode, FlowEdge } from './canvas-utils';
 
 function node(id: string, mediaType: AssetFlowNode['data']['mediaType']): AssetFlowNode {
@@ -27,6 +31,78 @@ function edge(source: string, target: string, targetHandle = 'input:content'): F
 }
 
 describe('canvas connection validation', () => {
+  it('resolves a body drop to the first compatible semantic target role', () => {
+    const nodes = [node('source', 'image'), node('target', 'video')];
+    const resolved = resolveCanvasConnectionTargetHandle(
+      { source: 'source', target: 'target', sourceHandle: 'output:image', targetHandle: null },
+      nodes,
+    );
+
+    expect(resolved).toEqual({
+      source: 'source',
+      target: 'target',
+      sourceHandle: 'output:image',
+      targetHandle: 'input:content',
+    });
+    expect(resolved && validateCanvasConnection(resolved, nodes, [])).toEqual({ ok: true });
+    expect(
+      validateResolvedCanvasConnection(
+        { source: 'source', target: 'target', sourceHandle: 'output:image', targetHandle: null },
+        nodes,
+        [],
+      ),
+    ).toEqual({ ok: true, connection: resolved });
+  });
+
+  it('falls back to the source media output when React Flow omits sourceHandle', () => {
+    const nodes = [node('source', 'image'), node('target', 'video')];
+    expect(
+      resolveCanvasConnectionTargetHandle(
+        { source: 'source', target: 'target', sourceHandle: null, targetHandle: null },
+        nodes,
+      ),
+    ).toMatchObject({ sourceHandle: 'output:image', targetHandle: 'input:content' });
+  });
+
+  it('resolves visual perimeter anchors but preserves explicit semantic handles', () => {
+    const nodes = [node('source', 'image'), node('target', 'video')];
+    expect(
+      resolveCanvasConnectionTargetHandle(
+        {
+          source: 'source',
+          target: 'target',
+          sourceHandle: 'output:image',
+          targetHandle: 'visual:left',
+        },
+        nodes,
+      ),
+    ).toMatchObject({ targetHandle: 'input:content' });
+
+    expect(
+      resolveCanvasConnectionTargetHandle(
+        {
+          source: 'source',
+          target: 'target',
+          sourceHandle: 'output:image',
+          targetHandle: 'input:character',
+        },
+        nodes,
+      ),
+    ).toMatchObject({ targetHandle: 'input:character' });
+  });
+
+  it('returns undefined when no target role can accept the source media', () => {
+    const target = node('target', 'image');
+    target.data = { ...target.data, mode: 'source' };
+    const nodes = [node('source', 'audio'), target];
+    expect(
+      resolveCanvasConnectionTargetHandle(
+        { source: 'source', target: 'target', sourceHandle: 'output:audio', targetHandle: null },
+        nodes,
+      ),
+    ).toBeUndefined();
+  });
+
   it('accepts compatible references to the same target port in insertion order', () => {
     const nodes = [node('source-a', 'image'), node('source-b', 'image'), node('target', 'video')];
 

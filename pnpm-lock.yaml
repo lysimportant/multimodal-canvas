@@ -44,6 +44,9 @@ importers:
       '@multimodal-canvas/observability':
         specifier: workspace:*
         version: link:../../packages/observability
+      '@multimodal-canvas/providers':
+        specifier: workspace:*
+        version: link:../../packages/providers
       '@prisma/client':
         specifier: 6.16.2
         version: 6.16.2(prisma@6.16.2(typescript@5.9.3))(typescript@5.9.3)

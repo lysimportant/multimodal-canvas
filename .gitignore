@@ -15,6 +15,7 @@ prisma/migrations/
 !prisma/migrations/
 !prisma/migrations/**
 uploads/
+.data/
 *.log
 
 # IDE and OS files

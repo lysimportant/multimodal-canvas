@@ -26,6 +26,7 @@ describe('OpenAPI endpoint', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json().paths['/v1/runs/{runId}/retry']).toBeDefined();
     expect(response.json().paths['/v1/projects/{projectId}/runs']).toBeDefined();
+    expect(response.json().paths['/v1/projects/{projectId}/models/defaults']).toBeDefined();
     expect(response.json().paths['/v1/settings/ai/credentials'].delete).toBeDefined();
     expect(response.json().paths['/v1/runs/{runId/retry}']).toBeUndefined();
   });
@@ -75,7 +76,7 @@ describe('AI settings endpoints', () => {
           headers: { 'content-type': 'application/json' },
         }),
       )
-      .mockRejectedValueOnce(new Error('upstream unavailable'));
+      .mockRejectedValue(new Error('upstream unavailable'));
     vi.stubGlobal('fetch', fetchMock);
     try {
       await expect(store.refreshModels()).resolves.toMatchObject([{ id: 'image-v1' }]);

@@ -117,7 +117,7 @@ export function toCanvasDocument(
   const orders = new Map<string, number>();
   return {
     revision,
-    nodes: nodes.map(({ id, type, position, data }) => {
+    nodes: nodes.map(({ id, type, position, width, height, data }) => {
       const {
         runStatus: _runStatus,
         runProgress: _runProgress,
@@ -126,10 +126,15 @@ export function toCanvasDocument(
         modelAlias,
         ...savedData
       } = data;
+      const dimensions = {
+        ...(isPersistableDimension(width) ? { width } : {}),
+        ...(isPersistableDimension(height) ? { height } : {}),
+      };
       return {
         id,
         type,
         position,
+        ...dimensions,
         data: { ...savedData, ...(modelAlias ? { modelAlias } : {}) },
       };
     }),
@@ -151,6 +156,10 @@ export function toCanvasDocument(
         };
       }),
   };
+}
+
+function isPersistableDimension(value: number | undefined): value is number {
+  return value !== undefined && Number.isFinite(value) && value > 0 && value <= 10_000;
 }
 
 /** Return true when adding source -> target would introduce a directed cycle. */
@@ -176,6 +185,38 @@ export function wouldCreateCycle(
     pending.push(...(outgoing.get(nodeId) ?? []));
   }
   return false;
+}
+
+/** Mark every downstream node of the changed nodes as stale, preserving old results. */
+export function markDownstreamNodesStale(
+  nodes: AssetFlowNode[],
+  edges: FlowEdge[],
+  changedNodeIds: Iterable<string>,
+): AssetFlowNode[] {
+  const outgoing = new Map<string, string[]>();
+  for (const edge of edges) {
+    if (!edge.source || !edge.target) continue;
+    const targets = outgoing.get(edge.source) ?? [];
+    targets.push(edge.target);
+    outgoing.set(edge.source, targets);
+  }
+
+  const staleIds = new Set<string>();
+  const pending = [...changedNodeIds];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current) continue;
+    for (const target of outgoing.get(current) ?? []) {
+      if (staleIds.has(target)) continue;
+      staleIds.add(target);
+      pending.push(target);
+    }
+  }
+
+  if (staleIds.size === 0) return nodes;
+  return nodes.map((node) =>
+    staleIds.has(node.id) ? { ...node, data: { ...node.data, stale: true } } : node,
+  );
 }
 
 /** Capture selected nodes and only the edges fully contained by that selection. */
@@ -229,8 +270,27 @@ function isClipboardNode(value: unknown): value is AssetFlowNode {
   if (!isRecord(value.position)) return false;
   if (typeof value.position.x !== 'number' || !Number.isFinite(value.position.x)) return false;
   if (typeof value.position.y !== 'number' || !Number.isFinite(value.position.y)) return false;
+  if (
+    value.width !== undefined &&
+    (typeof value.width !== 'number' ||
+      !Number.isFinite(value.width) ||
+      value.width <= 0 ||
+      value.width > 10_000)
+  ) {
+    return false;
+  }
+  if (
+    value.height !== undefined &&
+    (typeof value.height !== 'number' ||
+      !Number.isFinite(value.height) ||
+      value.height <= 0 ||
+      value.height > 10_000)
+  ) {
+    return false;
+  }
   if (!isRecord(value.data)) return false;
   if (value.type !== value.data.mediaType) return false;
+  if (value.data.enabled !== undefined && typeof value.data.enabled !== 'boolean') return false;
   return (
     typeof value.data.label === 'string' &&
     value.data.label.trim().length > 0 &&

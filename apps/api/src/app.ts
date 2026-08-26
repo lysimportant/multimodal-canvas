@@ -16,8 +16,16 @@ import {
   ProjectStoreError,
   type ProjectScope,
   type ProjectStore,
+  type UpdateProjectModelDefaultsInput,
 } from './projects';
-import { createRunSnapshot, MemoryRunService, RunServiceError, type RunService } from './runs';
+import {
+  createRunSnapshot,
+  MemoryRunService,
+  RunServiceError,
+  type RunExecutor,
+  type RunResultArchiver,
+  type RunService,
+} from './runs';
 import { canvasDocumentSchema } from '@multimodal-canvas/domain';
 import { z } from 'zod';
 import { AiSettingsError, AiSettingsStore, type AiSettingsStoreLike } from './settings';
@@ -54,6 +62,10 @@ type BuildAppOptions = {
   assetStore?: AssetStore;
   projectStore?: ProjectStore;
   runService?: RunService;
+  /** Provider-like executor for an in-memory/local run service. */
+  runExecutor?: RunExecutor;
+  /** Optional result archiver; defaults to the configured asset store. */
+  runResultArchiver?: RunResultArchiver;
   /** Optional backing-store check for JWT subjects in production. */
   userExists?: (userId: string) => Promise<boolean>;
   logger?: boolean | { level?: string; redact?: { paths: string[]; censor: string } };
@@ -94,7 +106,26 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const requestSpans = new WeakMap<object, ObservabilitySpan>();
   const assetStore: AssetStore = options.assetStore ?? new MemoryAssetStore();
   const projectStore = options.projectStore ?? new MemoryProjectStore();
-  const runService = options.runService ?? new MemoryRunService();
+  const providerName = process.env.WORKER_PROVIDER === 'newapi' ? 'newapi' : 'mock';
+  const runService =
+    options.runService ??
+    new MemoryRunService({
+      providerName,
+      ...(options.runExecutor ? { executor: options.runExecutor } : {}),
+      resultArchiver: options.runResultArchiver ?? createAssetResultArchiver(assetStore),
+    });
+  // Callers sometimes provide a pre-built MemoryRunService so they can tune
+  // timing/provider state. Still honor an explicitly injected executor.
+  if (options.runService instanceof MemoryRunService && options.runExecutor) {
+    options.runService.setExecutor(options.runExecutor);
+  }
+  if (runService instanceof MemoryRunService) {
+    if (options.runResultArchiver || !runService.hasResultArchiver()) {
+      runService.setResultArchiver(
+        options.runResultArchiver ?? createAssetResultArchiver(assetStore),
+      );
+    }
+  }
   const userExists = options.userExists;
   const settingsStore: AiSettingsStoreLike = options.settingsStore ?? new AiSettingsStore();
   const webhookEventStore: WebhookEventStore =
@@ -498,6 +529,48 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   );
 
   app.get<{ Params: { projectId: string } }>(
+    '/v1/projects/:projectId/models/defaults',
+    async (request, reply) => {
+      const defaults = await projectStore.getModelDefaults(
+        request.params.projectId,
+        projectScope(requestPrincipals, request),
+      );
+      if (!defaults) return reply.code(404).send({ error: 'project not found' });
+      return { defaults };
+    },
+  );
+
+  app.patch<{ Params: { projectId: string } }>(
+    '/v1/projects/:projectId/models/defaults',
+    async (request, reply) => {
+      const result = z
+        .object({
+          text: z.string().trim().min(1).nullable().optional(),
+          image: z.string().trim().min(1).nullable().optional(),
+          audio: z.string().trim().min(1).nullable().optional(),
+          video: z.string().trim().min(1).nullable().optional(),
+        })
+        .strict()
+        .safeParse(request.body);
+      if (!result.success) return reply.code(400).send({ error: 'invalid project model defaults' });
+
+      try {
+        const defaults = await projectStore.updateModelDefaults(
+          request.params.projectId,
+          result.data as UpdateProjectModelDefaultsInput,
+          projectScope(requestPrincipals, request),
+        );
+        return { defaults };
+      } catch (error) {
+        if (error instanceof ProjectStoreError && error.code === 'not_found') {
+          return reply.code(404).send({ error: error.message });
+        }
+        throw error;
+      }
+    },
+  );
+
+  app.get<{ Params: { projectId: string } }>(
     '/v1/projects/:projectId/runs',
     async (request, reply) => {
       const { projectId } = request.params;
@@ -636,11 +709,18 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         }
       }
       const target = canvas.nodes.find((node) => node.id === request.params.nodeId);
+      const projectDefaults = target
+        ? await projectStore.getModelDefaults(body.data.projectId, scope)
+        : undefined;
+      // A node override wins over the project default; settingsStore then
+      // falls back to the global default when neither is present.
+      const requestedModelAlias = target
+        ? (body.data.modelAlias ??
+          target.data.modelAlias ??
+          projectDefaults?.[target.data.mediaType])
+        : body.data.modelAlias;
       const modelAlias = target
-        ? await settingsStore.resolveModel(
-            target.data.mediaType,
-            body.data.modelAlias ?? target.data.modelAlias,
-          )
+        ? await settingsStore.resolveModel(target.data.mediaType, requestedModelAlias)
         : body.data.modelAlias;
       const modelCatalog = target ? await settingsStore.listModels(target.data.mediaType) : [];
       const model = modelAlias
@@ -1213,10 +1293,27 @@ function canManagePlatformSettings(
 ): boolean {
   const principal = principals.get(request);
   if (!principal) return false;
-  if (principal.method !== 'jwt') return true;
+  if (principal.method === 'api-token') return true;
+  if (principal.method === 'anonymous') {
+    // Keep the unauthenticated local UI usable without exposing platform
+    // credentials to a network peer. The runnable dev API binds to loopback
+    // by default; deployments can disable this path explicitly.
+    const requestIp = (request as { ip?: unknown }).ip;
+    const allowAnonymous =
+      process.env.NODE_ENV !== 'production' &&
+      process.env.API_ALLOW_ANONYMOUS_SETTINGS !== 'false' &&
+      typeof requestIp === 'string' &&
+      isLoopbackAddress(requestIp);
+    return allowAnonymous;
+  }
   // Only the first-party session lookup may grant the admin role. A role claim
   // on a legacy stateless JWT is deliberately ignored for platform settings.
   return sessions.get(request)?.user.role === 'admin';
+}
+
+function isLoopbackAddress(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return normalized === '127.0.0.1' || normalized === '::1' || normalized === '::ffff:127.0.0.1';
 }
 
 function sendAuthServiceError(
@@ -1240,6 +1337,56 @@ function safeEqual(left: string, right: string) {
   const leftBuffer = Buffer.from(left);
   const rightBuffer = Buffer.from(right);
   return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+/** Archives in-memory run output through the same asset boundary as uploads. */
+function createAssetResultArchiver(assetStore: AssetStore): RunResultArchiver {
+  return async ({ run, result, output }) => {
+    if (!output || output.content.byteLength === 0) return undefined;
+    const target = run.snapshot.nodes.find((node) => node.id === result.targetNodeId);
+    const label = sanitizeAssetName(target?.data.label ?? result.targetNodeId);
+    const extension = output.format
+      ? `.${output.format.replace(/[^a-z0-9]+/gi, '').toLowerCase()}`
+      : extensionForResultMime(output.mimeType, result.mediaType);
+    const asset = await assetStore.create({
+      name: `${label}${extension}`,
+      mediaType: result.mediaType,
+      mimeType: output.mimeType,
+      content: output.content,
+      metadata: {
+        source: 'run',
+        runId: run.id,
+        targetNodeId: result.targetNodeId,
+        provider: result.provider,
+        modelAlias: run.modelAlias,
+      },
+      ...(run.userId ? { ownerId: run.userId } : {}),
+    });
+    return {
+      assetId: asset.id,
+      version: 1,
+      ...(asset.contentUrl ? { contentUrl: asset.contentUrl } : {}),
+      mimeType: asset.mimeType,
+      sizeBytes: asset.sizeBytes,
+      ...(asset.sha256 ? { sha256: asset.sha256 } : {}),
+    };
+  };
+}
+
+function sanitizeAssetName(value: string): string {
+  const normalized = value.replace(/[\\/:*?"<>|\u0000-\u001f]/g, ' ').trim();
+  return normalized.slice(0, 180) || 'Generated output';
+}
+
+function extensionForResultMime(mimeType: string, mediaType: 'text' | 'image' | 'audio' | 'video') {
+  const subtype = mimeType.split('/')[1]?.split(';')[0]?.trim().toLowerCase();
+  if (subtype === 'svg+xml') return '.svg';
+  if (subtype === 'jpeg') return '.jpg';
+  if (subtype === 'wav' || subtype === 'x-wav') return '.wav';
+  if (subtype === 'webm') return '.webm';
+  if (subtype === 'mpeg') return mediaType === 'audio' ? '.mp3' : '.mpeg';
+  if (subtype) return `.${subtype.replace(/[^a-z0-9]+/g, '')}`;
+  return mediaType === 'text' ? '.txt' : `.${mediaType}`;
 }
 
 function validateUploadContent(

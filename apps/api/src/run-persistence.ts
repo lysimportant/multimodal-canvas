@@ -55,6 +55,12 @@ export type UsageLedgerPersistenceInput = {
   runId?: string;
   /** Optional database User.id. */
   userId?: string;
+  /** Provider's stable job identifier, when the provider reports one. */
+  providerJobId?: string;
+  /** Provider webhook/event identifier, when the provider reports one. */
+  eventId?: string;
+  /** Usage event kind (for example, generation or completion). */
+  kind?: string;
   amount: number | string;
   currency?: string;
   metadata?: Record<string, unknown>;
@@ -158,6 +164,18 @@ export class PrismaRunPersistence {
     const runId = requireUuid(input.runId, 'runId');
     const providerJob = input.providerJob;
     const id = stableProviderJobId(providerJob.provider, providerJob.id);
+    // A retry receives a new local provider-job id but must reuse the same
+    // external task. Prefer the compound provider/platform identity whenever
+    // it is available; otherwise fall back to the deterministic local id for
+    // jobs that have not reached the provider yet.
+    const where = providerJob.platformJobId
+      ? {
+          provider_platformJobId: {
+            provider: providerJob.provider,
+            platformJobId: providerJob.platformJobId,
+          },
+        }
+      : { id };
     const createdAt = parseDate(providerJob.createdAt, 'createdAt');
     const updatedAt = parseDate(providerJob.updatedAt, 'updatedAt');
     const data = {
@@ -172,7 +190,7 @@ export class PrismaRunPersistence {
     };
 
     return this.prisma.providerJob.upsert({
-      where: { id },
+      where,
       create: { id, ...data },
       update: {
         runId: data.runId,
@@ -196,15 +214,39 @@ export class PrismaRunPersistence {
     const userId = explicitUserId ?? linkedRun?.userId ?? undefined;
     const amount = normalizeAmount(input.amount);
     const currency = normalizeCurrency(input.currency);
+    const metadata = input.metadata;
+    const providerJobId = normalizeUsageIdentity(input.providerJobId ?? metadata?.providerJobId);
+    const eventId = normalizeUsageIdentity(input.eventId ?? metadata?.eventId);
+    const kind = normalizeUsageKind(input.kind ?? metadata?.kind);
+    const idempotencyKey = stableUsageLedgerIdempotencyKey({ providerJobId, eventId, kind });
+    const data = {
+      ...(runId ? { runId } : {}),
+      ...(userId ? { userId } : {}),
+      ...(providerJobId ? { providerJobId } : {}),
+      ...(eventId ? { eventId } : {}),
+      ...(kind ? { kind } : {}),
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+      amount,
+      currency,
+      ...(metadata ? { metadata: metadata as Prisma.InputJsonValue } : {}),
+    };
 
-    return this.prisma.usageLedger.create({
-      data: {
-        ...(runId ? { runId } : {}),
-        ...(userId ? { userId } : {}),
-        amount,
-        currency,
-        ...(input.metadata ? { metadata: input.metadata as Prisma.InputJsonValue } : {}),
+    // Legacy callers that do not provide a provider/event identity retain the
+    // append-only create behavior. Identified usage is immutable and uses a
+    // unique key so provider retries cannot create a second charge.
+    if (!idempotencyKey) {
+      return this.prisma.usageLedger.create({ data });
+    }
+
+    return this.prisma.usageLedger.upsert({
+      where: { idempotencyKey },
+      create: {
+        id: stableUsageLedgerId(idempotencyKey),
+        ...data,
       },
+      // A duplicate provider event must return the original immutable ledger
+      // row, even if a retry carries different usage values.
+      update: {},
     });
   }
 }
@@ -271,4 +313,54 @@ export function stableProviderJobId(provider: string, providerJobId: string): st
     .digest('hex');
   const hex = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
   return hex;
+}
+
+type UsageIdentity = {
+  providerJobId?: string;
+  eventId?: string;
+  kind?: string;
+};
+
+/**
+ * Returns a stable, opaque unique key for a provider usage event.
+ *
+ * Provider job identity wins over event identity because a single provider
+ * job may be delivered through more than one transport. Event identity is a
+ * fallback for providers that do not expose a durable job id. The kind keeps
+ * separately billable event types independent while still allowing an id
+ * without a kind for legacy integrations.
+ */
+export function stableUsageLedgerIdempotencyKey(identity: UsageIdentity): string | undefined {
+  const providerJobId = normalizeUsageIdentity(identity.providerJobId);
+  const eventId = normalizeUsageIdentity(identity.eventId);
+  const kind = normalizeUsageKind(identity.kind) ?? '';
+  const source = providerJobId
+    ? `providerJobId:${providerJobId}`
+    : eventId
+      ? `eventId:${eventId}`
+      : undefined;
+  if (!source) return undefined;
+
+  return createHash('sha256')
+    .update(`multimodal-canvas:usage-ledger:v1:${source}\u0000kind:${kind}`)
+    .digest('hex');
+}
+
+/** Stable UUID primary key used for identified usage rows. */
+export function stableUsageLedgerId(idempotencyKey: string): string {
+  const digest = createHash('sha256')
+    .update(`multimodal-canvas:usage-ledger-id:${idempotencyKey}`)
+    .digest('hex');
+  return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
+}
+
+function normalizeUsageIdentity(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function normalizeUsageKind(value: unknown): string | undefined {
+  const normalized = normalizeUsageIdentity(value);
+  return normalized?.toLowerCase();
 }

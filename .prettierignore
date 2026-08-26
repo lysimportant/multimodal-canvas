@@ -7,3 +7,4 @@ pnpm-lock.yaml
 AGENTS.md
 README.md
 prisma
+apps/api/.data

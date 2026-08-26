@@ -17,6 +17,7 @@
     "@fastify/multipart": "^9.2.1",
     "@multimodal-canvas/domain": "workspace:*",
     "@multimodal-canvas/observability": "workspace:*",
+    "@multimodal-canvas/providers": "workspace:*",
     "@prisma/client": "6.16.2",
     "bullmq": "^5.41.5",
     "fastify": "^5.2.1",

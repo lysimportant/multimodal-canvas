@@ -1,6 +1,10 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { describe, expect, it, vi } from 'vitest';
 
-import { MemoryProjectStore, PrismaProjectStore } from './projects';
+import { FileProjectStore, MemoryProjectStore, PrismaProjectStore } from './projects';
 
 describe('MemoryProjectStore listing', () => {
   it('returns project summaries in updatedAt descending order', async () => {
@@ -13,6 +17,48 @@ describe('MemoryProjectStore listing', () => {
     expect(projects).toHaveLength(2);
     expect(projects.map((project) => project.id)).toEqual([second.id, first.id]);
     expect(projects[0]).not.toHaveProperty('canvas');
+  });
+});
+
+describe('FileProjectStore persistence', () => {
+  it('recovers projects and canvases after the store is recreated', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'multimodal-projects-'));
+    const filePath = join(directory, 'projects.json');
+    try {
+      const first = new FileProjectStore({ filePath });
+      const project = await first.create({ name: 'Persistent project' }, { ownerId: 'user-1' });
+      await first.updateCanvas(
+        project.id,
+        {
+          revision: 0,
+          nodes: [
+            {
+              id: 'node_text',
+              type: 'text',
+              position: { x: 12, y: 24 },
+              data: { label: 'Prompt', mediaType: 'text', mode: 'generate' },
+            },
+          ],
+          edges: [],
+        },
+        { ownerId: 'user-1' },
+      );
+      await first.close();
+
+      const restarted = new FileProjectStore({ filePath });
+      await expect(restarted.get(project.id, { ownerId: 'user-1' })).resolves.toMatchObject({
+        id: project.id,
+        name: 'Persistent project',
+      });
+      await expect(restarted.getCanvas(project.id, { ownerId: 'user-1' })).resolves.toMatchObject({
+        revision: 1,
+        nodes: [{ id: 'node_text', data: { label: 'Prompt' } }],
+      });
+      await expect(restarted.get(project.id, { ownerId: 'other-user' })).resolves.toBeUndefined();
+      await restarted.close();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });
 

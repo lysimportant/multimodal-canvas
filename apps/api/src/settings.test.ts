@@ -79,6 +79,22 @@ describe('New API model catalog normalization', () => {
     });
   });
 
+  it('infers video aliases when gateways omit explicit media capabilities', () => {
+    const models = normalizeModelsPayload({
+      data: [
+        { id: 'grok-imagine-video-1.5', object: 'model' },
+        { id: 'minimax_h3-768p', object: 'model' },
+        { id: 'minimax_h3（按次）', object: 'model' },
+      ],
+    });
+
+    expect(models.map((model) => [model.id, model.mediaTypes])).toEqual([
+      ['grok-imagine-video-1.5', ['video']],
+      ['minimax_h3-768p', ['video']],
+      ['minimax_h3（按次）', ['video']],
+    ]);
+  });
+
   it('applies media-specific capability overrides only to filtered models', () => {
     const store = new AiSettingsStore('test-encryption-secret');
     store.replaceModels([
@@ -144,12 +160,94 @@ describe('New API model catalog normalization', () => {
     const store = new AiSettingsStore('test-encryption-secret', {
       fetchImpl,
       modelRequestTimeoutMs: 100,
+      modelRequestRetryDelayMs: 0,
     });
     store.update({ baseUrl: 'https://newapi.example.com/v1', apiKey: 'test-key' });
     await expect(store.refreshModels()).resolves.toMatchObject([{ id: 'text-v1' }]);
 
-    fetchImpl.mockRejectedValueOnce(new Error('upstream unavailable'));
+    fetchImpl.mockRejectedValue(new Error('upstream unavailable'));
     await expect(store.refreshModels()).rejects.toThrow('upstream unavailable');
     expect(store.listModels()).toMatchObject([{ id: 'text-v1' }]);
+  });
+
+  it('adds /v1 when a user enters only the gateway origin', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ id: 'text-v1', type: 'text' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const store = new AiSettingsStore('test-encryption-secret', {
+      fetchImpl,
+      modelRequestRetryDelayMs: 0,
+    });
+    store.update({ baseUrl: 'https://gateway.example.com', apiKey: 'test-key' });
+
+    await expect(store.refreshModels()).resolves.toMatchObject([{ id: 'text-v1' }]);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://gateway.example.com/v1/models',
+      expect.objectContaining({ headers: { authorization: 'Bearer test-key' } }),
+    );
+  });
+
+  it('retries a connection test up to ten attempts and succeeds on the last one', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    for (let attempt = 0; attempt < 9; attempt += 1) {
+      fetchImpl.mockRejectedValueOnce(new Error(`temporary failure ${attempt + 1}`));
+    }
+    fetchImpl.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ data: [{ id: 'gpt-image-2', supported_endpoint_types: ['images'] }] }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        },
+      ),
+    );
+    const store = new AiSettingsStore('test-encryption-secret', {
+      fetchImpl,
+      modelRequestMaxAttempts: 20,
+      modelRequestRetryDelayMs: 0,
+    });
+    store.update({ baseUrl: 'https://newapi.example.com/v1', apiKey: 'test-key' });
+
+    await expect(store.testConnection()).resolves.toEqual({ ok: true, modelCount: 1 });
+    expect(fetchImpl).toHaveBeenCalledTimes(10);
+  });
+
+  it('stops after ten failed model requests', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(new Error('upstream unavailable'));
+    const store = new AiSettingsStore('test-encryption-secret', {
+      fetchImpl,
+      modelRequestMaxAttempts: 50,
+      modelRequestRetryDelayMs: 0,
+    });
+    store.update({ baseUrl: 'https://newapi.example.com/v1', apiKey: 'test-key' });
+
+    await expect(store.testConnection()).resolves.toEqual({
+      ok: false,
+      error: 'upstream unavailable',
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(10);
+  });
+
+  it('keeps immutable credential versions for queued run snapshots', () => {
+    const store = new AiSettingsStore('test-encryption-secret');
+    store.update({ baseUrl: 'https://one.example.com/v1', apiKey: 'key-one' });
+    const firstReference = store.getCredentialReference();
+    expect(firstReference.credentialId).toBeTruthy();
+    expect(firstReference.credentialVersion).toBe(1);
+
+    store.update({ baseUrl: 'https://two.example.com/v1', apiKey: 'key-two' });
+    const secondReference = store.getCredentialReference();
+    expect(secondReference.credentialVersion).toBe(2);
+    expect(store.getProviderCredentials(firstReference)).toEqual({
+      baseUrl: 'https://one.example.com/v1',
+      apiKey: 'key-one',
+    });
+    expect(store.getProviderCredentials(secondReference)).toEqual({
+      baseUrl: 'https://two.example.com/v1',
+      apiKey: 'key-two',
+    });
   });
 });

@@ -123,6 +123,15 @@ integrationDescribe('Prisma stores (isolated PostgreSQL)', () => {
     await expect(projectStore.updateCanvas(projectA.id, canvas)).resolves.toMatchObject({
       revision: 1,
     });
+    await expect(
+      projectStore.updateModelDefaults(projectA.id, {
+        text: 'project-text-model',
+        image: 'project-image-model',
+      }),
+    ).resolves.toEqual({
+      text: 'project-text-model',
+      image: 'project-image-model',
+    });
 
     // The second project cannot read or reference project A's private asset.
     const assetStoreB = new PrismaAssetStore(prisma, {
@@ -153,6 +162,10 @@ integrationDescribe('Prisma stores (isolated PostgreSQL)', () => {
     await expect(restartedProjects.getCanvas(projectA.id)).resolves.toMatchObject({
       revision: 1,
       nodes: [{ data: { assetId: assetA.id } }],
+    });
+    await expect(restartedProjects.getModelDefaults(projectA.id)).resolves.toEqual({
+      text: 'project-text-model',
+      image: 'project-image-model',
     });
     await expect(restartedAssets.get(assetA.id)).resolves.toMatchObject({
       id: assetA.id,

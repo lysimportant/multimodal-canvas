@@ -10,16 +10,22 @@ import {
   FolderOpen,
   Image as ImageIcon,
   LoaderCircle,
+  Palette,
+  PanelLeftClose,
+  PanelLeftOpen,
   Play,
   Plus,
   Pencil,
   RotateCcw,
   Search,
   Settings,
+  Sparkles,
+  Wand2,
   SquarePlus,
   Redo2,
   Undo2,
   Upload,
+  UserCircle,
   Video,
   X,
 } from 'lucide-react';
@@ -27,8 +33,7 @@ import {
   Background,
   BackgroundVariant,
   Controls,
-  Handle,
-  Position,
+  NodeResizer,
   ReactFlow,
   ReactFlowProvider,
   useEdgesState,
@@ -36,23 +41,26 @@ import {
   useReactFlow,
   type Connection,
   type NodeProps,
+  type OnConnectStartParams,
   type OnEdgesChange,
   type OnNodesChange,
 } from '@xyflow/react';
 import {
   useCallback,
+  createContext,
   useEffect,
   useMemo,
   useRef,
   useState,
+  useContext,
   type DragEvent,
+  type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
 } from 'react';
 
 import {
   mediaTypes,
-  portRoles,
-  targetPortRolesForMediaType,
   type Asset,
   type CanvasDocument,
   type MediaType,
@@ -68,6 +76,7 @@ import {
   parseCanvasClipboard,
   serializeCanvasClipboard,
   toCanvasDocument,
+  markDownstreamNodesStale,
   type CanvasClipboard,
   type AssetFlowNode,
   type FlowEdge,
@@ -79,10 +88,26 @@ import {
   resolveUploadUrl,
   sha256Hex,
 } from './upload-utils';
-import { validateCanvasConnection } from './connection-utils';
+import { validateResolvedCanvasConnection, validateCanvasConnection } from './connection-utils';
 import { isCanvasShortcutTarget } from './keyboard-utils';
 import { validateAiSettingsForm, type AiSettingsFormErrors } from './settings-utils';
 import { fetchAssetVersions, type AssetVersionSummary } from './result-versions';
+import { NodeHandles } from './NodeHandles';
+import { TextPromptEditor } from './TextPromptEditor';
+import {
+  apiFetch,
+  clearAuthSession,
+  getAuthToken,
+  login as loginWithApi,
+  logout as logoutWithApi,
+  notifyUnauthorized,
+  openAuthEventStream,
+  readAuthSession,
+  register as registerWithApi,
+  setUnauthorizedHandler,
+  type AuthUser,
+  type StoredAuthSession,
+} from './auth-client';
 
 import '@xyflow/react/dist/style.css';
 
@@ -91,6 +116,8 @@ const ASSET_DRAG_TYPE = 'application/x-multimodal-asset';
 const PROJECT_STORAGE_KEY = 'multimodal-canvas:project-id';
 const CANVAS_DRAFT_KEY = 'multimodal-canvas:canvas';
 const CANVAS_BACKGROUND_KEY = 'multimodal-canvas:background';
+const THEME_KEY = 'multimodal-canvas:theme';
+const RESOURCE_PANEL_COLLAPSED_KEY = 'multimodal-canvas:resource-panel-collapsed';
 
 const mediaLabels: Record<MediaType, string> = {
   text: '文字',
@@ -120,19 +147,6 @@ const mediaIcons: Record<MediaType, typeof FileText> = {
   video: Video,
 };
 
-const portLabels: Record<(typeof portRoles)[number], string> = {
-  prompt: '提示词',
-  negativePrompt: '负面提示词',
-  content: '内容',
-  style: '风格',
-  character: '角色',
-  firstFrame: '首帧',
-  lastFrame: '尾帧',
-  audioTrack: '音轨',
-  transcript: '转录',
-  mask: '遮罩',
-};
-
 type AssetFilter = 'all' | MediaType;
 type CanvasApiDocument = CanvasDocument;
 type LocalCanvasDraft = {
@@ -150,10 +164,11 @@ type AiSettings = {
   baseUrl: string;
   configured: boolean;
   keyFingerprint?: string;
-  defaultModels: Partial<Record<MediaType, string>>;
+  defaultModels: ModelDefaults;
 };
 
 type ModelEntry = { id: string; name: string; mediaTypes: MediaType[] };
+type ModelDefaults = Partial<Record<MediaType, string>>;
 
 type ProjectSummary = {
   id: string;
@@ -163,6 +178,15 @@ type ProjectSummary = {
 };
 
 type CanvasBackground = 'dots' | 'lines' | 'cross' | 'blank';
+type CanvasTheme = 'eye-care' | 'light' | 'dark' | 'sepia' | 'contrast';
+
+const themeOptions: Array<{ value: CanvasTheme; label: string; swatch: string }> = [
+  { value: 'eye-care', label: '护眼', swatch: 'theme-swatch-eye-care' },
+  { value: 'light', label: '明亮', swatch: 'theme-swatch-light' },
+  { value: 'dark', label: '深色', swatch: 'theme-swatch-dark' },
+  { value: 'sepia', label: '暖白', swatch: 'theme-swatch-sepia' },
+  { value: 'contrast', label: '高对比', swatch: 'theme-swatch-contrast' },
+];
 
 function getFocusableElements(container: HTMLElement) {
   return Array.from(
@@ -187,6 +211,19 @@ function readCanvasBackground(): CanvasBackground {
     : 'dots';
 }
 
+function readCanvasTheme(): CanvasTheme {
+  if (typeof window === 'undefined') return 'eye-care';
+  const stored = window.localStorage.getItem(THEME_KEY);
+  return themeOptions.some((option) => option.value === stored)
+    ? (stored as CanvasTheme)
+    : 'eye-care';
+}
+
+function readResourcePanelCollapsed() {
+  if (typeof window === 'undefined') return false;
+  return window.localStorage.getItem(RESOURCE_PANEL_COLLAPSED_KEY) === 'true';
+}
+
 async function uploadAsset(file: File, onProgress: (progress: number) => void) {
   const content = new Uint8Array(await file.arrayBuffer());
   const sha256 = await sha256Hex(content);
@@ -197,7 +234,7 @@ async function uploadAsset(file: File, onProgress: (progress: number) => void) {
     sizeBytes: content.byteLength,
     sha256,
   };
-  const initResponse = await fetch(`${API_BASE_URL}/v1/assets/uploads/init`, {
+  const initResponse = await apiFetch(`${API_BASE_URL}/v1/assets/uploads/init`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(buildUploadInitPayload(metadata)),
@@ -221,12 +258,17 @@ async function uploadAsset(file: File, onProgress: (progress: number) => void) {
     const request = new XMLHttpRequest();
     request.open('PUT', resolveUploadUrl(initResult.uploadUrl!, API_BASE_URL));
     request.setRequestHeader('content-type', 'application/octet-stream');
+    const token = getAuthToken();
+    if (token) request.setRequestHeader('authorization', `Bearer ${token}`);
     request.upload.onprogress = (event) => {
       if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 90));
     };
     request.onerror = () => reject(new Error(`${file.name} 上传请求失败`));
     request.onload = () => {
       if (request.status < 200 || request.status >= 300) {
+        if (request.status === 401) {
+          notifyUnauthorized();
+        }
         reject(new Error(`${file.name} 上传失败（${request.status}）`));
         return;
       }
@@ -236,11 +278,14 @@ async function uploadAsset(file: File, onProgress: (progress: number) => void) {
     request.send(content);
   });
 
-  const completeResponse = await fetch(resolveCompleteUrl(initResult.completeUrl!, API_BASE_URL), {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(buildUploadCompletePayload(initResult.uploadId, metadata)),
-  });
+  const completeResponse = await apiFetch(
+    resolveCompleteUrl(initResult.completeUrl!, API_BASE_URL),
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(buildUploadCompletePayload(initResult.uploadId, metadata)),
+    },
+  );
   const completeResult = (await completeResponse.json().catch(() => ({}))) as {
     asset?: Asset;
     error?: string;
@@ -252,24 +297,148 @@ async function uploadAsset(file: File, onProgress: (progress: number) => void) {
   return completeResult.asset;
 }
 
-function AssetPreview({ asset, className = '' }: { asset: Asset; className?: string }) {
-  const src = resolveUploadUrl(asset.contentUrl, API_BASE_URL);
+type AssetPreviewProps = {
+  asset: Asset;
+  className?: string;
+  interactive?: boolean;
+};
+
+function useAuthenticatedAssetUrl(asset: Asset): string {
+  const fallback = resolveUploadUrl(asset.contentUrl, API_BASE_URL);
+  const [url, setUrl] = useState(fallback);
+
+  useEffect(() => {
+    let active = true;
+    setUrl(fallback);
+    const token = getAuthToken();
+    if (!token || !asset.contentUrl.startsWith('/v1/assets/')) return;
+
+    const versionMatch = asset.contentUrl.match(/\/versions\/(\d+)\/content(?:$|\?)/);
+    const derivativeMatch = asset.contentUrl.match(
+      /\/derivatives\/(thumbnail|poster|waveform)(?:$|\?)/,
+    );
+    const body: Record<string, unknown> = versionMatch
+      ? { version: Number(versionMatch[1]) }
+      : derivativeMatch
+        ? { derivative: derivativeMatch[1] }
+        : {};
+    void apiFetch(`${API_BASE_URL}/v1/assets/${encodeURIComponent(asset.id)}/access-url`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+      .then(async (response) => {
+        const result = (await response.json().catch(() => ({}))) as { url?: string };
+        if (response.ok && result.url && active) setUrl(result.url);
+      })
+      .catch(() => {
+        // Keep the relative URL as a fallback for anonymous/local development.
+      });
+    return () => {
+      active = false;
+    };
+  }, [asset.contentUrl, asset.id, fallback]);
+
+  return url;
+}
+
+function AssetPreview({ asset, className = '', interactive = false }: AssetPreviewProps) {
+  const src = useAuthenticatedAssetUrl(asset);
   if (asset.mediaType === 'image') {
     return <img className={`asset-preview-image ${className}`} src={src} alt={asset.name} />;
   }
   if (asset.mediaType === 'video') {
     return (
-      <video className={`asset-preview-video ${className}`} src={src} muted preload="metadata" />
+      <video
+        className={`asset-preview-video ${className}`}
+        src={src}
+        muted={!interactive}
+        controls={interactive}
+        preload="metadata"
+      />
     );
   }
   if (asset.mediaType === 'audio') {
+    if (interactive) {
+      return (
+        <audio
+          className={`asset-preview-audio ${className}`}
+          src={src}
+          controls
+          preload="metadata"
+        />
+      );
+    }
     return <AudioLines className={`asset-preview-audio ${className}`} aria-hidden="true" />;
   }
   return <FileText className={`asset-preview-text ${className}`} aria-hidden="true" />;
 }
 
-function AssetNode({ data, selected }: NodeProps<AssetFlowNode>) {
+function AuthenticatedAssetLink({
+  asset,
+  className,
+  children,
+  current,
+}: {
+  asset: Asset;
+  className?: string;
+  children: ReactNode;
+  current?: boolean;
+}) {
+  const href = useAuthenticatedAssetUrl(asset);
+  return (
+    <a
+      className={className}
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      aria-current={current ? 'true' : undefined}
+    >
+      {children}
+    </a>
+  );
+}
+
+function TextResultContent({ url }: { url: string }) {
+  const [content, setContent] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    setContent(null);
+    setError(null);
+    void apiFetch(resolveUploadUrl(url, API_BASE_URL))
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`结果读取失败（${response.status}）`);
+        return response.text();
+      })
+      .then((value) => {
+        if (active) setContent(value);
+      })
+      .catch((reason: unknown) => {
+        if (active) setError(reason instanceof Error ? reason.message : '结果读取失败');
+      });
+    return () => {
+      active = false;
+    };
+  }, [url]);
+
+  if (error) return <p className="inspector-result-pending">{error}</p>;
+  if (content === null) return <p className="inspector-result-pending">正在读取文字结果…</p>;
+  return <pre className="inspector-result-text">{content}</pre>;
+}
+
+type NodeSelectionHandler = (data: AssetFlowNode['data']) => void;
+const NodeSelectionContext = createContext<NodeSelectionHandler | null>(null);
+type NodeResizeHandler = (nodeId: string, width: number, height: number) => void;
+const NodeResizeContext = createContext<NodeResizeHandler | null>(null);
+
+function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
+  const selectNode = useContext(NodeSelectionContext);
+  const resizeNode = useContext(NodeResizeContext);
   const Icon = mediaIcons[data.mediaType];
+  const Resizer = NodeResizer;
+  const enabled = data.enabled !== false;
   const resultPreviewAsset = data.resultAsset?.contentUrl
     ? ({
         id: data.resultAsset.assetId,
@@ -299,28 +468,43 @@ function AssetNode({ data, selected }: NodeProps<AssetFlowNode>) {
 
   return (
     <div
-      className={`flow-asset-node ${data.mode !== 'source' ? 'flow-generate-node' : ''} ${selected ? 'is-selected' : ''}`}
+      className={`flow-asset-node ${data.mode !== 'source' ? 'flow-generate-node' : ''} ${selected ? 'is-selected' : ''} ${enabled ? '' : 'is-disabled'}`}
+      aria-disabled={!enabled}
+      onClickCapture={() => selectNode?.(data)}
     >
-      {data.mode !== 'source'
-        ? targetPortRolesForMediaType(data.mediaType).map((role, index, roles) => (
-            <Handle
-              key={role}
-              type="target"
-              position={Position.Left}
-              id={`input:${role}`}
-              title={portLabels[role]}
-              style={{ top: `${((index + 1) / (roles.length + 1)) * 100}%` }}
-            />
-          ))
-        : null}
+      {Resizer ? (
+        <Resizer
+          isVisible={Boolean(selected)}
+          minWidth={180}
+          minHeight={140}
+          color="#18794e"
+          handleStyle={{ width: 9, height: 9, borderRadius: 2 }}
+          onResizeEnd={(_, params) => {
+            if (resizeNode && id && params.width > 0 && params.height > 0) {
+              resizeNode(id, params.width, params.height);
+            }
+          }}
+        />
+      ) : null}
+      <NodeHandles mediaType={data.mediaType} mode={data.mode} />
       <div className="flow-node-header">
         <span className={`media-icon media-icon-${data.mediaType}`}>
           <Icon size={15} strokeWidth={2} aria-hidden="true" />
         </span>
-        <span className="flow-node-type">
-          {mediaLabels[data.mediaType]}
-          {modeLabels[data.mode]}节点
+        <span className="flow-node-type">{mediaLabels[data.mediaType]}</span>
+        <span
+          className={`flow-node-mode-badge flow-node-mode-${data.mode}`}
+          title={`${modeLabels[data.mode]}模式`}
+        >
+          {data.mode === 'generate' ? (
+            <Sparkles size={10} aria-hidden="true" />
+          ) : data.mode === 'transform' ? (
+            <Wand2 size={10} aria-hidden="true" />
+          ) : null}
+          {modeLabels[data.mode]}
         </span>
+        {!enabled && <span className="flow-node-disabled-badge">停用</span>}
+        {data.stale && <span className="flow-node-stale-badge">待更新</span>}
         <span className="flow-node-status">
           <RunStatusIcon status={data.runStatus} />
         </span>
@@ -336,7 +520,6 @@ function AssetNode({ data, selected }: NodeProps<AssetFlowNode>) {
       <div className="flow-node-label" title={data.label}>
         {data.label}
       </div>
-      <Handle type="source" position={Position.Right} id={`output:${data.mediaType}`} />
     </div>
   );
 }
@@ -377,6 +560,7 @@ const nodeTypes = {
 
 function ResourcePanel({
   assets,
+  collapsed,
   showArchived,
   activeFilter,
   query,
@@ -391,8 +575,10 @@ function ResourcePanel({
   onRenameAsset,
   onArchiveAsset,
   onDrop,
+  onToggleCollapsed,
 }: {
   assets: Asset[];
+  collapsed: boolean;
   showArchived: boolean;
   activeFilter: AssetFilter;
   query: string;
@@ -407,6 +593,7 @@ function ResourcePanel({
   onRenameAsset: (asset: Asset) => void;
   onArchiveAsset: (asset: Asset) => void;
   onDrop: (event: DragEvent) => void;
+  onToggleCollapsed: () => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const filteredAssets = assets.filter((asset) => {
@@ -425,7 +612,7 @@ function ResourcePanel({
 
   return (
     <aside
-      className="resource-panel"
+      className={`resource-panel ${collapsed ? 'is-collapsed' : ''}`}
       onDragOver={(event) => event.preventDefault()}
       onDrop={onDrop}
     >
@@ -436,13 +623,22 @@ function ResourcePanel({
         </div>
         <button
           type="button"
-          className="icon-button"
+          className="icon-button resource-upload-button"
           aria-label="上传资源"
           title="上传资源"
           onClick={() => inputRef.current?.click()}
           disabled={isUploading}
         >
           {isUploading ? <LoaderCircle className="spin" size={17} /> : <Plus size={18} />}
+        </button>
+        <button
+          type="button"
+          className="icon-button resource-collapse-button"
+          aria-label={collapsed ? '展开资源栏' : '折叠资源栏'}
+          title={collapsed ? '展开资源栏' : '折叠资源栏'}
+          onClick={onToggleCollapsed}
+        >
+          {collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
         </button>
         <input
           ref={inputRef}
@@ -456,47 +652,53 @@ function ResourcePanel({
           }}
         />
       </div>
-      <label className="search-field">
-        <Search size={15} aria-hidden="true" />
-        <input
-          type="search"
-          placeholder="搜索资源"
-          value={query}
-          onChange={(event) => onQueryChange(event.target.value)}
-        />
-        {query && (
-          <button
-            type="button"
-            className="clear-search"
-            aria-label="清除搜索"
-            onClick={() => onQueryChange('')}
-          >
-            <X size={14} />
-          </button>
-        )}
-      </label>
-      <nav className="resource-filters" aria-label="资源类型">
-        {(['all', 'text', 'image', 'audio', 'video'] as AssetFilter[]).map((filter) => (
-          <button
-            type="button"
-            className={`resource-filter ${activeFilter === filter ? 'is-active' : ''}`}
-            key={filter}
-            onClick={() => onFilterChange(filter)}
-          >
-            <span>{filter === 'all' ? '全部' : mediaLabels[filter]}</span>
-            <span className="resource-count">{counts[filter]}</span>
-          </button>
-        ))}
-      </nav>
-      <button
-        type="button"
-        className={`archive-filter ${showArchived ? 'is-active' : ''}`}
-        onClick={onToggleArchived}
-      >
-        <Archive size={13} aria-hidden="true" />
-        {showArchived ? '查看可用资源' : '查看已归档资源'}
-      </button>
-      {isUploading && uploadProgress !== null && (
+      {!collapsed && (
+        <label className="search-field">
+          <Search size={15} aria-hidden="true" />
+          <input
+            type="search"
+            placeholder="搜索资源"
+            value={query}
+            onChange={(event) => onQueryChange(event.target.value)}
+          />
+          {query && (
+            <button
+              type="button"
+              className="clear-search"
+              aria-label="清除搜索"
+              onClick={() => onQueryChange('')}
+            >
+              <X size={14} />
+            </button>
+          )}
+        </label>
+      )}
+      {!collapsed && (
+        <nav className="resource-filters" aria-label="资源类型">
+          {(['all', 'text', 'image', 'audio', 'video'] as AssetFilter[]).map((filter) => (
+            <button
+              type="button"
+              className={`resource-filter ${activeFilter === filter ? 'is-active' : ''}`}
+              key={filter}
+              onClick={() => onFilterChange(filter)}
+            >
+              <span>{filter === 'all' ? '全部' : mediaLabels[filter]}</span>
+              <span className="resource-count">{counts[filter]}</span>
+            </button>
+          ))}
+        </nav>
+      )}
+      {!collapsed && (
+        <button
+          type="button"
+          className={`archive-filter ${showArchived ? 'is-active' : ''}`}
+          onClick={onToggleArchived}
+        >
+          <Archive size={13} aria-hidden="true" />
+          {showArchived ? '查看可用资源' : '查看已归档资源'}
+        </button>
+      )}
+      {!collapsed && isUploading && uploadProgress !== null && (
         <div className="upload-progress" role="status">
           <div className="upload-progress-label">
             <span>上传中</span>
@@ -507,80 +709,86 @@ function ResourcePanel({
           </div>
         </div>
       )}
-      <div className="asset-list" aria-live="polite">
-        {filteredAssets.map((asset) => (
-          <article
-            className={`asset-card ${asset.status === 'archived' ? 'is-archived' : ''}`}
-            draggable={asset.status !== 'archived'}
-            key={asset.id}
-            onDragStart={(event) => onAssetDragStart(event, asset)}
-            title={asset.status === 'archived' ? '已归档资源' : '拖入画布创建来源节点'}
-          >
-            <AssetPreview asset={asset} className="asset-card-preview" />
-            <div className="asset-card-copy">
-              <strong title={asset.name}>{asset.name}</strong>
-              <span>
-                {mediaLabels[asset.mediaType]} · {formatBytes(asset.sizeBytes)}
-              </span>
-            </div>
-            <div className="asset-card-actions">
-              <button
-                type="button"
-                className="asset-add-button"
-                aria-label={
-                  asset.status === 'archived' ? `恢复 ${asset.name}` : `添加 ${asset.name} 到画布`
-                }
-                title={asset.status === 'archived' ? '恢复资源' : '添加到画布'}
-                onClick={() =>
-                  asset.status === 'archived' ? onArchiveAsset(asset) : onAddAsset(asset)
-                }
-              >
-                {asset.status === 'archived' ? <RotateCcw size={15} /> : <SquarePlus size={16} />}
-              </button>
-              <button
-                type="button"
-                className="asset-add-button"
-                aria-label={`重命名 ${asset.name}`}
-                title="重命名"
-                onClick={() => onRenameAsset(asset)}
-              >
-                <Pencil size={14} />
-              </button>
-              {!showArchived && (
+      {!collapsed && (
+        <div className="asset-list" aria-live="polite">
+          {filteredAssets.map((asset) => (
+            <article
+              className={`asset-card ${asset.status === 'archived' ? 'is-archived' : ''}`}
+              draggable={asset.status !== 'archived'}
+              key={asset.id}
+              onDragStart={(event) => onAssetDragStart(event, asset)}
+              title={asset.status === 'archived' ? '已归档资源' : '拖入画布创建来源节点'}
+            >
+              <AssetPreview asset={asset} className="asset-card-preview" />
+              <div className="asset-card-copy">
+                <strong title={asset.name}>{asset.name}</strong>
+                <span>
+                  {mediaLabels[asset.mediaType]} · {formatBytes(asset.sizeBytes)}
+                </span>
+              </div>
+              <div className="asset-card-actions">
                 <button
                   type="button"
                   className="asset-add-button"
-                  aria-label={`归档 ${asset.name}`}
-                  title="归档"
-                  onClick={() => onArchiveAsset(asset)}
+                  aria-label={
+                    asset.status === 'archived' ? `恢复 ${asset.name}` : `添加 ${asset.name} 到画布`
+                  }
+                  title={asset.status === 'archived' ? '恢复资源' : '添加到画布'}
+                  onClick={() =>
+                    asset.status === 'archived' ? onArchiveAsset(asset) : onAddAsset(asset)
+                  }
                 >
-                  <Archive size={14} />
+                  {asset.status === 'archived' ? <RotateCcw size={15} /> : <SquarePlus size={16} />}
                 </button>
-              )}
+                <button
+                  type="button"
+                  className="asset-add-button"
+                  aria-label={`重命名 ${asset.name}`}
+                  title="重命名"
+                  onClick={() => onRenameAsset(asset)}
+                >
+                  <Pencil size={14} />
+                </button>
+                {!showArchived && (
+                  <button
+                    type="button"
+                    className="asset-add-button"
+                    aria-label={`归档 ${asset.name}`}
+                    title="归档"
+                    onClick={() => onArchiveAsset(asset)}
+                  >
+                    <Archive size={14} />
+                  </button>
+                )}
+              </div>
+            </article>
+          ))}
+          {filteredAssets.length === 0 && (
+            <div className="empty-panel compact-empty">
+              <Upload size={22} aria-hidden="true" />
+              <strong>{assets.length === 0 ? '还没有资源' : '没有匹配资源'}</strong>
+              <p>
+                {assets.length === 0
+                  ? '点击右上角上传，或将文件拖到这里。'
+                  : '尝试调整搜索或筛选条件。'}
+              </p>
             </div>
-          </article>
-        ))}
-        {filteredAssets.length === 0 && (
-          <div className="empty-panel compact-empty">
-            <Upload size={22} aria-hidden="true" />
-            <strong>{assets.length === 0 ? '还没有资源' : '没有匹配资源'}</strong>
-            <p>
-              {assets.length === 0
-                ? '点击右上角上传，或将文件拖到这里。'
-                : '尝试调整搜索或筛选条件。'}
-            </p>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
     </aside>
   );
 }
 
 function SettingsPanel({
+  projectId,
+  projectName,
   onClose,
   onNotice,
   onModelsChange,
 }: {
+  projectId: string | null;
+  projectName: string;
   onClose: () => void;
   onNotice: (notice: { kind: 'error' | 'success'; message: string }) => void;
   onModelsChange: (models: ModelEntry[]) => void;
@@ -593,6 +801,8 @@ function SettingsPanel({
   const [baseUrl, setBaseUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [models, setModels] = useState<ModelEntry[]>([]);
+  const [projectDefaults, setProjectDefaults] = useState<ModelDefaults>({});
+  const [projectDefaultsLoading, setProjectDefaultsLoading] = useState(Boolean(projectId));
   const [busy, setBusy] = useState(false);
   const [formErrors, setFormErrors] = useState<AiSettingsFormErrors>({});
   const dialogRef = useRef<HTMLElement>(null);
@@ -631,7 +841,7 @@ function SettingsPanel({
   };
 
   useEffect(() => {
-    void fetch(`${API_BASE_URL}/v1/settings/ai`)
+    void apiFetch(`${API_BASE_URL}/v1/settings/ai`)
       .then(async (response) => {
         if (!response.ok) throw new Error('设置加载失败');
         const result = (await response.json()) as { settings: AiSettings };
@@ -644,7 +854,45 @@ function SettingsPanel({
           message: error instanceof Error ? error.message : '设置加载失败',
         }),
       );
+    void apiFetch(`${API_BASE_URL}/v1/models`)
+      .then(async (response) => {
+        if (!response.ok) return;
+        const result = (await response.json()) as { models?: ModelEntry[] };
+        setModels(result.models ?? []);
+        onModelsChange(result.models ?? []);
+      })
+      .catch(() => {
+        // A configured server may not have a cached catalog yet; refresh remains available.
+      });
   }, [onNotice]);
+
+  useEffect(() => {
+    setProjectDefaults({});
+    if (!projectId) {
+      setProjectDefaultsLoading(false);
+      return;
+    }
+
+    setProjectDefaultsLoading(true);
+    void apiFetch(`${API_BASE_URL}/v1/projects/${encodeURIComponent(projectId)}/models/defaults`)
+      .then(async (response) => {
+        const result = (await response.json().catch(() => ({}))) as {
+          defaults?: ModelDefaults;
+          error?: string;
+        };
+        if (!response.ok || !result.defaults) {
+          throw new Error(result.error ?? '项目默认模型加载失败');
+        }
+        setProjectDefaults(result.defaults);
+      })
+      .catch((error: unknown) =>
+        onNotice({
+          kind: 'error',
+          message: error instanceof Error ? error.message : '项目默认模型加载失败',
+        }),
+      )
+      .finally(() => setProjectDefaultsLoading(false));
+  }, [onNotice, projectId]);
 
   const save = async () => {
     const errors = validateAiSettingsForm({
@@ -657,7 +905,7 @@ function SettingsPanel({
 
     setBusy(true);
     try {
-      const response = await fetch(`${API_BASE_URL}/v1/settings/ai`, {
+      const response = await apiFetch(`${API_BASE_URL}/v1/settings/ai`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ baseUrl, ...(apiKey ? { apiKey } : {}) }),
@@ -680,7 +928,7 @@ function SettingsPanel({
   const testConnection = async () => {
     setBusy(true);
     try {
-      const response = await fetch(`${API_BASE_URL}/v1/settings/ai/test`, { method: 'POST' });
+      const response = await apiFetch(`${API_BASE_URL}/v1/settings/ai/test`, { method: 'POST' });
       const result = (await response.json()) as {
         result?: { ok: boolean; modelCount?: number; error?: string };
       };
@@ -699,7 +947,7 @@ function SettingsPanel({
   const refreshModels = async () => {
     setBusy(true);
     try {
-      const response = await fetch(`${API_BASE_URL}/v1/settings/ai/models/refresh`, {
+      const response = await apiFetch(`${API_BASE_URL}/v1/settings/ai/models/refresh`, {
         method: 'POST',
       });
       const result = (await response.json()) as { models?: ModelEntry[]; error?: string };
@@ -714,10 +962,10 @@ function SettingsPanel({
     }
   };
 
-  const saveDefault = async (mediaType: MediaType, modelAlias: string) => {
+  const saveGlobalDefault = async (mediaType: MediaType, modelAlias: string) => {
     setBusy(true);
     try {
-      const response = await fetch(`${API_BASE_URL}/v1/settings/ai`, {
+      const response = await apiFetch(`${API_BASE_URL}/v1/settings/ai`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ defaultModels: { [mediaType]: modelAlias || null } }),
@@ -728,7 +976,7 @@ function SettingsPanel({
       };
       if (!response.ok || !result.settings) throw new Error(result.error ?? '默认模型保存失败');
       setSettings(result.settings);
-      onNotice({ kind: 'success', message: `${mediaLabels[mediaType]}默认模型已更新` });
+      onNotice({ kind: 'success', message: `平台全局${mediaLabels[mediaType]}默认模型已更新` });
     } catch (error) {
       onNotice({
         kind: 'error',
@@ -739,10 +987,50 @@ function SettingsPanel({
     }
   };
 
+  const saveProjectDefault = async (mediaType: MediaType, modelAlias: string) => {
+    if (!projectId) {
+      onNotice({ kind: 'error', message: '当前项目尚未加载，无法保存项目默认模型' });
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const response = await apiFetch(
+        `${API_BASE_URL}/v1/projects/${encodeURIComponent(projectId)}/models/defaults`,
+        {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ [mediaType]: modelAlias || null }),
+        },
+      );
+      const result = (await response.json().catch(() => ({}))) as {
+        defaults?: ModelDefaults;
+        error?: string;
+      };
+      if (!response.ok || !result.defaults) {
+        throw new Error(result.error ?? '项目默认模型保存失败');
+      }
+      setProjectDefaults(result.defaults);
+      onNotice({
+        kind: 'success',
+        message: modelAlias
+          ? `${mediaLabels[mediaType]}项目默认模型已更新`
+          : `${mediaLabels[mediaType]}已改为继承平台全局默认`,
+      });
+    } catch (error) {
+      onNotice({
+        kind: 'error',
+        message: error instanceof Error ? error.message : '项目默认模型保存失败',
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const deleteCredentials = async () => {
     setBusy(true);
     try {
-      const response = await fetch(`${API_BASE_URL}/v1/settings/ai/credentials`, {
+      const response = await apiFetch(`${API_BASE_URL}/v1/settings/ai/credentials`, {
         method: 'DELETE',
       });
       const result = (await response.json().catch(() => ({}))) as { error?: string };
@@ -862,16 +1150,44 @@ function SettingsPanel({
           {settings.configured ? `已配置 · ${settings.keyFingerprint}` : '未配置'}
         </div>
         <div className="settings-models">
-          <h2>默认模型</h2>
+          <h2>平台全局默认</h2>
+          <p className="settings-status">供所有未设置项目覆盖的节点继承。</p>
           {mediaTypes.map((mediaType) => (
             <label className="settings-field" key={mediaType}>
               <span>{mediaLabels[mediaType]}</span>
               <select
+                aria-label={`平台全局默认 · ${mediaLabels[mediaType]}`}
                 value={settings.defaultModels[mediaType] ?? ''}
-                onChange={(event) => void saveDefault(mediaType, event.target.value)}
+                onChange={(event) => void saveGlobalDefault(mediaType, event.target.value)}
                 disabled={busy}
               >
-                <option value="">继承服务端默认</option>
+                <option value="">使用服务端环境默认</option>
+                {models
+                  .filter((model) => model.mediaTypes.includes(mediaType))
+                  .map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+          ))}
+        </div>
+        <div className="settings-models">
+          <h2>当前项目默认</h2>
+          <p className="settings-status">
+            {projectId ? `${projectName} · 可覆盖平台全局默认` : '当前项目尚未加载'}
+          </p>
+          {mediaTypes.map((mediaType) => (
+            <label className="settings-field" key={mediaType}>
+              <span>{mediaLabels[mediaType]}</span>
+              <select
+                aria-label={`项目默认 · ${mediaLabels[mediaType]}`}
+                value={projectDefaults[mediaType] ?? ''}
+                onChange={(event) => void saveProjectDefault(mediaType, event.target.value)}
+                disabled={busy || projectDefaultsLoading || !projectId}
+              >
+                <option value="">继承平台全局默认</option>
                 {models
                   .filter((model) => model.mediaTypes.includes(mediaType))
                   .map((model) => (
@@ -906,8 +1222,9 @@ function WorkflowCanvas({
   onNodeDragStart,
   onCanvasDrop,
   onNodeSelect,
+  onResizeNode,
   onAddGenerateNode,
-  onBackgroundChange,
+  onAddTransformNode,
 }: {
   nodes: AssetFlowNode[];
   edges: FlowEdge[];
@@ -922,10 +1239,27 @@ function WorkflowCanvas({
     position: { x: number; y: number },
   ) => void;
   onNodeSelect: (node: AssetFlowNode) => void;
+  onResizeNode: NodeResizeHandler;
   onAddGenerateNode: (mediaType: MediaType) => void;
-  onBackgroundChange: (background: CanvasBackground) => void;
+  onAddTransformNode: (mediaType: MediaType) => void;
 }) {
   const { screenToFlowPosition } = useReactFlow();
+  const connectionStartRef = useRef<OnConnectStartParams | null>(null);
+
+  const selectNodeByData = useCallback(
+    (data: AssetFlowNode['data']) => {
+      const node =
+        nodes.find((candidate) => candidate.data === data) ??
+        nodes.find(
+          (candidate) =>
+            candidate.data.label === data.label &&
+            candidate.data.mediaType === data.mediaType &&
+            candidate.data.mode === data.mode,
+        );
+      if (node) onNodeSelect(node);
+    },
+    [nodes, onNodeSelect],
+  );
 
   const handleDrop = useCallback(
     (event: DragEvent) => {
@@ -937,75 +1271,115 @@ function WorkflowCanvas({
     [onCanvasDrop, screenToFlowPosition],
   );
 
+  const handleConnectEnd = useCallback(
+    (event: MouseEvent | TouchEvent, state: { toHandle?: unknown }) => {
+      const start = connectionStartRef.current;
+      connectionStartRef.current = null;
+      if (!start?.nodeId || state.toHandle) return;
+
+      const point =
+        'changedTouches' in event
+          ? event.changedTouches.item(0)
+          : { clientX: event.clientX, clientY: event.clientY };
+      if (!point) return;
+      const nodeElement = document
+        .elementsFromPoint(point.clientX, point.clientY)
+        .map((element) => element.closest<HTMLElement>('.react-flow__node[data-id]'))
+        .find(Boolean);
+      const targetNodeId = nodeElement?.dataset.id;
+      if (!targetNodeId || targetNodeId === start.nodeId) return;
+
+      const connection: Connection =
+        start.handleType === 'target'
+          ? {
+              source: targetNodeId,
+              sourceHandle: null,
+              target: start.nodeId,
+              targetHandle: start.handleId,
+            }
+          : {
+              source: start.nodeId,
+              sourceHandle: start.handleId,
+              target: targetNodeId,
+              targetHandle: null,
+            };
+      onConnect(connection);
+    },
+    [onConnect],
+  );
+
   return (
     <section className="canvas-area" aria-label="工作流画布">
-      <label className="canvas-background-picker">
-        <span>背景</span>
-        <select
-          aria-label="画布背景"
-          value={background}
-          onChange={(event) => onBackgroundChange(event.target.value as CanvasBackground)}
-        >
-          {canvasBackgroundOptions.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-      </label>
-      <div className="canvas-node-tools" aria-label="添加生成节点">
+      <div className="canvas-node-tools" aria-label="添加节点">
         {mediaTypes.map((mediaType) => {
-          const Icon = mediaIcons[mediaType];
           return (
-            <button
-              type="button"
-              className={`canvas-node-tool media-icon-${mediaType}`}
-              key={mediaType}
-              aria-label={`新建${mediaLabels[mediaType]}生成节点`}
-              title={`新建${mediaLabels[mediaType]}生成节点`}
-              onClick={() => onAddGenerateNode(mediaType)}
-            >
-              <Icon size={15} aria-hidden="true" />
-            </button>
+            <div className="canvas-node-tool-group" key={mediaType}>
+              <button
+                type="button"
+                className={`canvas-node-tool media-icon-${mediaType}`}
+                aria-label={`新建${mediaLabels[mediaType]}生成节点`}
+                title={`新建${mediaLabels[mediaType]}生成节点`}
+                onClick={() => onAddGenerateNode(mediaType)}
+              >
+                <Sparkles size={14} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className={`canvas-node-tool canvas-node-tool-transform media-icon-${mediaType}`}
+                aria-label={`新建${mediaLabels[mediaType]}转换节点`}
+                title={`新建${mediaLabels[mediaType]}转换节点`}
+                onClick={() => onAddTransformNode(mediaType)}
+              >
+                <Wand2 size={14} aria-hidden="true" />
+              </button>
+            </div>
           );
         })}
       </div>
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={nodeTypes}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onConnect={onConnect}
-        onNodeDragStart={onNodeDragStart}
-        onDrop={handleDrop}
-        onDragOver={(event) => {
-          event.preventDefault();
-          event.dataTransfer.dropEffect = 'copy';
-        }}
-        onNodeClick={(_, node) => onNodeSelect(node as AssetFlowNode)}
-        fitView
-        fitViewOptions={{ padding: 0.3, maxZoom: 1.1 }}
-        connectionLineStyle={{ stroke: '#18794e', strokeWidth: 2 }}
-        defaultEdgeOptions={{ animated: true, style: { stroke: '#8aa597', strokeWidth: 2 } }}
-        proOptions={{ hideAttribution: true }}
-      >
-        {background !== 'blank' && (
-          <Background
-            color="#cbd5d0"
-            gap={background === 'lines' ? 28 : 24}
-            size={background === 'cross' ? 7 : 1.2}
-            variant={
-              background === 'lines'
-                ? BackgroundVariant.Lines
-                : background === 'cross'
-                  ? BackgroundVariant.Cross
-                  : BackgroundVariant.Dots
-            }
-          />
-        )}
-        <Controls showInteractive={false} position="bottom-right" />
-      </ReactFlow>
+      <NodeSelectionContext.Provider value={selectNodeByData}>
+        <NodeResizeContext.Provider value={onResizeNode}>
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={nodeTypes}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onConnect={onConnect}
+            onConnectStart={(_event, params) => {
+              connectionStartRef.current = params;
+            }}
+            onConnectEnd={handleConnectEnd}
+            onNodeDragStart={onNodeDragStart}
+            onDrop={handleDrop}
+            onDragOver={(event) => {
+              event.preventDefault();
+              event.dataTransfer.dropEffect = 'copy';
+            }}
+            onNodeClick={(_, node) => onNodeSelect(node as AssetFlowNode)}
+            fitView
+            fitViewOptions={{ padding: 0.3, maxZoom: 1.1 }}
+            connectionLineStyle={{ stroke: '#18794e', strokeWidth: 2 }}
+            defaultEdgeOptions={{ animated: true, style: { stroke: '#8aa597', strokeWidth: 2 } }}
+            proOptions={{ hideAttribution: true }}
+          >
+            {background !== 'blank' && (
+              <Background
+                color="#cbd5d0"
+                gap={background === 'lines' ? 28 : 24}
+                size={background === 'cross' ? 7 : 1.2}
+                variant={
+                  background === 'lines'
+                    ? BackgroundVariant.Lines
+                    : background === 'cross'
+                      ? BackgroundVariant.Cross
+                      : BackgroundVariant.Dots
+                }
+              />
+            )}
+            <Controls showInteractive={false} position="bottom-right" />
+          </ReactFlow>
+        </NodeResizeContext.Provider>
+      </NodeSelectionContext.Provider>
       {nodes.length === 0 && (
         <div className="canvas-welcome">
           <span className="canvas-kicker">工作流画布</span>
@@ -1017,7 +1391,15 @@ function WorkflowCanvas({
   );
 }
 
-export function App() {
+function WorkspaceApp({
+  authUser,
+  onRequestLogin,
+  onLoggedOut,
+}: {
+  authUser: AuthUser | null;
+  onRequestLogin: () => void;
+  onLoggedOut: () => void;
+}) {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [showArchived, setShowArchived] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -1043,6 +1425,9 @@ export function App() {
   const [projectCreateError, setProjectCreateError] = useState('');
   const [isProjectLoading, setIsProjectLoading] = useState(false);
   const [canvasBackground, setCanvasBackground] = useState<CanvasBackground>(readCanvasBackground);
+  const [canvasTheme, setCanvasTheme] = useState<CanvasTheme>(readCanvasTheme);
+  const [showThemeMenu, setShowThemeMenu] = useState(false);
+  const [isResourceCollapsed, setIsResourceCollapsed] = useState(readResourcePanelCollapsed);
   const [canvasRevision, setCanvasRevision] = useState(0);
   const [isCanvasReady, setIsCanvasReady] = useState(false);
   const settingsTriggerRef = useRef<HTMLButtonElement>(null);
@@ -1050,6 +1435,7 @@ export function App() {
   const canvasRevisionRef = useRef(0);
   const canvasDirtyRef = useRef(false);
   const saveRequestRef = useRef<Promise<void> | null>(null);
+  const refreshedResultAssetIdsRef = useRef(new Set<string>());
   const initializedRef = useRef(false);
   const nodesRef = useRef<AssetFlowNode[]>([]);
   const edgesRef = useRef<FlowEdge[]>([]);
@@ -1079,6 +1465,26 @@ export function App() {
   useEffect(() => {
     window.localStorage.setItem(CANVAS_BACKGROUND_KEY, canvasBackground);
   }, [canvasBackground]);
+
+  useEffect(() => {
+    window.localStorage.setItem(THEME_KEY, canvasTheme);
+  }, [canvasTheme]);
+
+  useEffect(() => {
+    window.localStorage.setItem(RESOURCE_PANEL_COLLAPSED_KEY, String(isResourceCollapsed));
+  }, [isResourceCollapsed]);
+
+  useEffect(() => {
+    if (!showThemeMenu) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Element && !target.closest('.theme-control')) {
+        setShowThemeMenu(false);
+      }
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
+  }, [showThemeMenu]);
 
   useEffect(() => {
     if (!showProjects) return;
@@ -1144,7 +1550,7 @@ export function App() {
   }, [setEdges, setNodes]);
 
   useEffect(() => {
-    void fetch(`${API_BASE_URL}/v1/models`)
+    void apiFetch(`${API_BASE_URL}/v1/models`)
       .then(async (response) => {
         if (!response.ok) return;
         const result = (await response.json()) as { models?: ModelEntry[] };
@@ -1165,11 +1571,15 @@ export function App() {
   const handleNodesChange: OnNodesChange<AssetFlowNode> = useCallback(
     (changes) => {
       if (
-        changes.some((change) => ['position', 'add', 'remove', 'replace'].includes(change.type))
+        changes.some((change) =>
+          ['position', 'dimensions', 'add', 'remove', 'replace'].includes(change.type),
+        )
       ) {
         canvasDirtyRef.current = true;
       }
-      if (changes.some((change) => ['add', 'remove', 'replace'].includes(change.type))) {
+      if (
+        changes.some((change) => ['dimensions', 'add', 'remove', 'replace'].includes(change.type))
+      ) {
         rememberHistory();
       }
       applyNodesChange(changes);
@@ -1181,6 +1591,17 @@ export function App() {
     rememberHistory();
     canvasDirtyRef.current = true;
   }, [rememberHistory]);
+
+  const handleResizeNode = useCallback(
+    (nodeId: string, width: number, height: number) => {
+      rememberHistory();
+      canvasDirtyRef.current = true;
+      setNodes((current) =>
+        current.map((node) => (node.id === nodeId ? { ...node, width, height } : node)),
+      );
+    },
+    [rememberHistory, setNodes],
+  );
 
   const handleEdgesChange: OnEdgesChange<FlowEdge> = useCallback(
     (changes) => {
@@ -1195,7 +1616,7 @@ export function App() {
 
   const loadAssets = useCallback(async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/v1/assets`);
+      const response = await apiFetch(`${API_BASE_URL}/v1/assets`);
       if (!response.ok) throw new Error('资源加载失败');
       const result = (await response.json()) as { assets: Asset[] };
       setAssets(result.assets);
@@ -1208,7 +1629,7 @@ export function App() {
   }, []);
 
   const updateAsset = useCallback(async (asset: Asset, patch: { name?: string }) => {
-    const response = await fetch(`${API_BASE_URL}/v1/assets/${asset.id}`, {
+    const response = await apiFetch(`${API_BASE_URL}/v1/assets/${asset.id}`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(patch),
@@ -1220,7 +1641,7 @@ export function App() {
 
   const archiveAsset = useCallback(async (asset: Asset) => {
     const action = asset.status === 'archived' ? 'restore' : 'archive';
-    const response = await fetch(`${API_BASE_URL}/v1/assets/${asset.id}/${action}`, {
+    const response = await apiFetch(`${API_BASE_URL}/v1/assets/${asset.id}/${action}`, {
       method: 'POST',
     });
     const result = (await response.json().catch(() => ({}))) as { asset?: Asset; error?: string };
@@ -1229,7 +1650,7 @@ export function App() {
   }, []);
 
   const refreshProjects = useCallback(async () => {
-    const response = await fetch(`${API_BASE_URL}/v1/projects`);
+    const response = await apiFetch(`${API_BASE_URL}/v1/projects`);
     const result = (await response.json().catch(() => ({}))) as {
       projects?: ProjectSummary[];
       error?: string;
@@ -1247,7 +1668,7 @@ export function App() {
         let currentProjectId = requestedProjectId ?? localStorage.getItem(PROJECT_STORAGE_KEY);
         let currentProject = project;
         if (currentProjectId) {
-          const existing = await fetch(`${API_BASE_URL}/v1/projects/${currentProjectId}`);
+          const existing = await apiFetch(`${API_BASE_URL}/v1/projects/${currentProjectId}`);
           if (!existing.ok) {
             if (requestedProjectId) throw new Error('目标项目不存在');
             currentProjectId = null;
@@ -1256,7 +1677,7 @@ export function App() {
           }
         }
         if (!currentProjectId) {
-          const created = await fetch(`${API_BASE_URL}/v1/projects`, {
+          const created = await apiFetch(`${API_BASE_URL}/v1/projects`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ name: '未命名项目' }),
@@ -1268,7 +1689,7 @@ export function App() {
           localStorage.setItem(PROJECT_STORAGE_KEY, currentProjectId);
         }
 
-        const response = await fetch(`${API_BASE_URL}/v1/projects/${currentProjectId}/canvas`);
+        const response = await apiFetch(`${API_BASE_URL}/v1/projects/${currentProjectId}/canvas`);
         if (!response.ok) throw new Error('画布加载失败');
         const result = (await response.json()) as { canvas: CanvasApiDocument };
         setProjectId(currentProjectId);
@@ -1288,6 +1709,7 @@ export function App() {
         setEdges(flowCanvas.edges);
         setSelectedNode(null);
         setRunRecords({});
+        refreshedResultAssetIdsRef.current.clear();
         setIsRunning(false);
         historyRef.current = { past: [], future: [] };
         canvasDirtyRef.current = false;
@@ -1349,13 +1771,16 @@ export function App() {
   }, [canvasRevision, edges, isCanvasReady, nodes]);
 
   const saveCanvas = useCallback(async () => {
-    if (saveRequestRef.current) return saveRequestRef.current;
-    if (!projectId || !canvasDirtyRef.current) return;
+    if (!projectId) return;
+    if (saveRequestRef.current) await saveRequestRef.current;
+    if (!canvasDirtyRef.current) return;
     const request = (async () => {
-      const snapshot = JSON.stringify({ nodes, edges });
+      const snapshotNodes = structuredClone(nodesRef.current);
+      const snapshotEdges = structuredClone(edgesRef.current);
+      const snapshot = JSON.stringify({ nodes: snapshotNodes, edges: snapshotEdges });
       setSaveState('保存中');
-      const document = toCanvasDocument(nodes, edges, canvasRevisionRef.current);
-      const response = await fetch(`${API_BASE_URL}/v1/projects/${projectId}/canvas`, {
+      const document = toCanvasDocument(snapshotNodes, snapshotEdges, canvasRevisionRef.current);
+      const response = await apiFetch(`${API_BASE_URL}/v1/projects/${projectId}/canvas`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(document),
@@ -1367,12 +1792,49 @@ export function App() {
       };
       if (response.status === 409) {
         setSaveState('保存冲突');
-        throw new Error(`画布版本冲突，服务器版本为 ${result.revision ?? '未知'}`);
+        // A second tab or an already queued autosave may have advanced the
+        // revision. Refresh the server revision and retry the exact snapshot
+        // once so clicking 生成 does not fail just because autosave raced it.
+        const latestResponse = await apiFetch(`${API_BASE_URL}/v1/projects/${projectId}/canvas`);
+        const latestResult = (await latestResponse.json().catch(() => ({}))) as {
+          canvas?: CanvasApiDocument;
+        };
+        if (!latestResponse.ok || !latestResult.canvas) {
+          throw new Error(`画布版本冲突，服务器版本为 ${result.revision ?? '未知'}`);
+        }
+        canvasRevisionRef.current = latestResult.canvas.revision;
+        setCanvasRevision(latestResult.canvas.revision);
+        const retryDocument = toCanvasDocument(
+          snapshotNodes,
+          snapshotEdges,
+          latestResult.canvas.revision,
+        );
+        const retryResponse = await apiFetch(`${API_BASE_URL}/v1/projects/${projectId}/canvas`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(retryDocument),
+        });
+        const retryResult = (await retryResponse.json().catch(() => ({}))) as {
+          canvas?: CanvasApiDocument;
+          error?: string;
+        };
+        if (!retryResponse.ok || !retryResult.canvas) {
+          throw new Error(retryResult.error ?? '画布保存失败，请重试');
+        }
+        canvasRevisionRef.current = retryResult.canvas.revision;
+        setCanvasRevision(retryResult.canvas.revision);
+        if (JSON.stringify({ nodes: nodesRef.current, edges: edgesRef.current }) === snapshot) {
+          canvasDirtyRef.current = false;
+        }
+        setSaveState('已保存到项目');
+        return;
       }
       if (!response.ok || !result.canvas) throw new Error(result.error ?? '画布保存失败');
       canvasRevisionRef.current = result.canvas.revision;
       setCanvasRevision(result.canvas.revision);
-      if (JSON.stringify({ nodes, edges }) === snapshot) canvasDirtyRef.current = false;
+      if (JSON.stringify({ nodes: nodesRef.current, edges: edgesRef.current }) === snapshot) {
+        canvasDirtyRef.current = false;
+      }
       setSaveState('已保存到项目');
     })();
     saveRequestRef.current = request;
@@ -1381,7 +1843,7 @@ export function App() {
     } finally {
       if (saveRequestRef.current === request) saveRequestRef.current = null;
     }
-  }, [edges, nodes, projectId]);
+  }, [projectId]);
 
   const switchProject = useCallback(
     async (project: ProjectSummary) => {
@@ -1415,7 +1877,7 @@ export function App() {
     setIsProjectLoading(true);
     try {
       await saveCanvas();
-      const response = await fetch(`${API_BASE_URL}/v1/projects`, {
+      const response = await apiFetch(`${API_BASE_URL}/v1/projects`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ name }),
@@ -1453,7 +1915,7 @@ export function App() {
       }
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [isCanvasReady, projectId, saveCanvas]);
+  }, [edges, isCanvasReady, nodes, projectId, saveCanvas]);
 
   const createNodeForAsset = useCallback(
     (asset: Asset, position: { x: number; y: number }): AssetFlowNode => {
@@ -1474,19 +1936,35 @@ export function App() {
     [],
   );
 
-  const createGenerateNode = useCallback(
-    (mediaType: MediaType, position: { x: number; y: number }): AssetFlowNode => ({
-      id: `node_${mediaType}_${crypto.randomUUID()}`,
+  const createOperationNode = useCallback(
+    (
+      mediaType: MediaType,
+      position: { x: number; y: number },
+      mode: Exclude<NodeMode, 'source'>,
+    ): AssetFlowNode => ({
+      id: `node_${mediaType}_${mode}_${crypto.randomUUID()}`,
       type: mediaType,
       position,
       data: {
-        label: `${mediaLabels[mediaType]}生成节点`,
+        label: `${mediaLabels[mediaType]}${modeLabels[mode]}节点`,
         mediaType,
-        mode: 'generate',
+        mode,
         inferenceStrength: 'medium',
       },
     }),
     [],
+  );
+
+  const createGenerateNode = useCallback(
+    (mediaType: MediaType, position: { x: number; y: number }) =>
+      createOperationNode(mediaType, position, 'generate'),
+    [createOperationNode],
+  );
+
+  const createTransformNode = useCallback(
+    (mediaType: MediaType, position: { x: number; y: number }) =>
+      createOperationNode(mediaType, position, 'transform'),
+    [createOperationNode],
   );
 
   const uploadFiles = useCallback(
@@ -1531,7 +2009,9 @@ export function App() {
           return;
         }
         rememberHistory();
-        setNodes((current) => [...current, createNodeForAsset(asset, position)]);
+        const node = createNodeForAsset(asset, position);
+        setNodes((current) => [...current, node]);
+        setSelectedNode(node);
         canvasDirtyRef.current = true;
         return;
       }
@@ -1549,11 +2029,10 @@ export function App() {
     (asset: Asset) => {
       const column = nodes.length % 3;
       const row = Math.floor(nodes.length / 3);
+      const node = createNodeForAsset(asset, { x: 80 + column * 230, y: 80 + row * 210 });
       rememberHistory();
-      setNodes((current) => [
-        ...current,
-        createNodeForAsset(asset, { x: 80 + column * 230, y: 80 + row * 210 }),
-      ]);
+      setNodes((current) => [...current, node]);
+      setSelectedNode(node);
       canvasDirtyRef.current = true;
       setNotice({ kind: 'success', message: `${asset.name} 已添加到画布` });
     },
@@ -1608,19 +2087,34 @@ export function App() {
     [createGenerateNode, nodes.length, rememberHistory, setNodes],
   );
 
+  const handleAddTransformNode = useCallback(
+    (mediaType: MediaType) => {
+      const column = nodes.length % 3;
+      const row = Math.floor(nodes.length / 3);
+      const node = createTransformNode(mediaType, { x: 100 + column * 250, y: 100 + row * 220 });
+      rememberHistory();
+      setNodes((current) => [...current, node]);
+      setSelectedNode(node);
+      canvasDirtyRef.current = true;
+      setNotice({ kind: 'success', message: `${mediaLabels[mediaType]}转换节点已添加` });
+    },
+    [createTransformNode, nodes.length, rememberHistory, setNodes],
+  );
+
   const handleConnect = useCallback(
     (connection: Connection) => {
-      const validation = validateCanvasConnection(connection, nodes, edges);
+      const validation = validateResolvedCanvasConnection(connection, nodes, edges);
       if (!validation.ok && validation.reason === 'cycle') {
         setNotice({ kind: 'error', message: '不能创建循环依赖' });
       }
       if (!validation.ok) return;
       rememberHistory();
+      const resolvedConnection = validation.connection;
       setEdges((current) => [
         ...current,
         {
-          ...connection,
-          id: `edge_${connection.source}_${connection.target}_${Date.now()}`,
+          ...resolvedConnection,
+          id: `edge_${resolvedConnection.source}_${resolvedConnection.target}_${Date.now()}`,
           animated: true,
         },
       ]);
@@ -1652,7 +2146,7 @@ export function App() {
     setResultVersions([]);
     setResultVersionsLoading(true);
     setResultVersionsError(null);
-    void fetchAssetVersions(selectedResultAssetId, API_BASE_URL).then(
+    void fetchAssetVersions(selectedResultAssetId, API_BASE_URL, apiFetch).then(
       (versions) => {
         if (!active) return;
         setResultVersions(versions);
@@ -1677,24 +2171,75 @@ export function App() {
   );
   const currentResultContentUrl =
     currentResultVersionRecord?.contentUrl ?? selectedResultAsset?.contentUrl;
+  const currentResultPreviewAsset = useMemo<Asset>(
+    () => ({
+      id: selectedResultAsset?.assetId ?? currentResultVersionRecord?.assetId ?? 'result',
+      name: `${selectedNode?.data.label ?? '节点'}结果`,
+      mediaType: selectedNode?.data.mediaType ?? 'text',
+      mimeType:
+        selectedResultAsset?.mimeType ?? selectedNode?.data.mimeType ?? 'application/octet-stream',
+      sizeBytes: selectedResultAsset?.sizeBytes ?? currentResultVersionRecord?.sizeBytes ?? 0,
+      status: 'ready',
+      contentUrl: currentResultContentUrl ?? '',
+      tags: [],
+    }),
+    [
+      currentResultContentUrl,
+      currentResultVersionRecord?.assetId,
+      currentResultVersionRecord?.sizeBytes,
+      selectedNode?.data.label,
+      selectedNode?.data.mediaType,
+      selectedNode?.data.mimeType,
+      selectedResultAsset?.assetId,
+      selectedResultAsset?.mimeType,
+      selectedResultAsset?.sizeBytes,
+    ],
+  );
+
+  const updateNodeDataAndMarkDownstreamStale = useCallback(
+    (nodeId: string, update: (data: AssetFlowNode['data']) => AssetFlowNode['data']) => {
+      setNodes((current) =>
+        markDownstreamNodesStale(
+          current.map((node) =>
+            node.id === nodeId
+              ? {
+                  ...node,
+                  data: {
+                    ...update(node.data),
+                    ...(node.data.mode !== 'source' ? { stale: true } : {}),
+                  },
+                }
+              : node,
+          ),
+          edgesRef.current,
+          [nodeId],
+        ),
+      );
+    },
+    [setNodes],
+  );
 
   const updateSelectedModel = useCallback(
     (modelAlias: string) => {
       if (!selectedNode) return;
       rememberHistory();
       canvasDirtyRef.current = true;
-      setNodes((current) =>
-        current.map((node) =>
-          node.id === selectedNode.id
-            ? {
-                ...node,
-                data: { ...node.data, modelAlias: modelAlias.trim() || undefined },
-              }
-            : node,
-        ),
-      );
+      updateNodeDataAndMarkDownstreamStale(selectedNode.id, (data) => ({
+        ...data,
+        modelAlias: modelAlias.trim() || undefined,
+      }));
     },
-    [rememberHistory, selectedNode, setNodes],
+    [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
+  );
+
+  const updateSelectedEnabled = useCallback(
+    (enabled: boolean) => {
+      if (!selectedNode) return;
+      rememberHistory();
+      canvasDirtyRef.current = true;
+      updateNodeDataAndMarkDownstreamStale(selectedNode.id, (data) => ({ ...data, enabled }));
+    },
+    [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
   );
 
   const updateSelectedPrompt = useCallback(
@@ -1702,15 +2247,84 @@ export function App() {
       if (!selectedNode) return;
       rememberHistory();
       canvasDirtyRef.current = true;
-      setNodes((current) =>
-        current.map((node) =>
-          node.id === selectedNode.id
-            ? { ...node, data: { ...node.data, prompt: prompt || undefined } }
-            : node,
-        ),
-      );
+      updateNodeDataAndMarkDownstreamStale(selectedNode.id, (data) => ({
+        ...data,
+        prompt: prompt || undefined,
+      }));
     },
-    [rememberHistory, selectedNode, setNodes],
+    [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
+  );
+
+  const updateSelectedLabel = useCallback(
+    (label: string) => {
+      if (!selectedNode) return;
+      rememberHistory();
+      canvasDirtyRef.current = true;
+      updateNodeDataAndMarkDownstreamStale(selectedNode.id, (data) => ({ ...data, label }));
+    },
+    [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
+  );
+
+  const updateSelectedMode = useCallback(
+    (mode: NodeMode) => {
+      if (!selectedNode || selectedNode.data.mode === mode) return;
+      rememberHistory();
+      canvasDirtyRef.current = true;
+      updateNodeDataAndMarkDownstreamStale(selectedNode.id, (data) => ({ ...data, mode }));
+    },
+    [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
+  );
+
+  const normalizeSelectedLabel = useCallback(() => {
+    if (!selectedNode || selectedNode.data.label.trim()) return;
+    updateSelectedLabel(
+      `${mediaLabels[selectedNode.data.mediaType]}${modeLabels[selectedNode.data.mode]}节点`,
+    );
+  }, [selectedNode, updateSelectedLabel]);
+
+  const copySourcePrompt = useCallback(async (node: AssetFlowNode) => {
+    const value = node.data.prompt?.trim() || node.data.label;
+    try {
+      if (!window.navigator.clipboard) throw new Error('clipboard unavailable');
+      await window.navigator.clipboard.writeText(value);
+      setNotice({ kind: 'success', message: '来源内容已复制' });
+    } catch {
+      setNotice({ kind: 'error', message: '当前浏览器不允许访问剪贴板' });
+    }
+  }, []);
+
+  const addTransformFromSource = useCallback(
+    (sourceNode: AssetFlowNode) => {
+      const transformNode = createTransformNode(sourceNode.data.mediaType, {
+        x: sourceNode.position.x + 280,
+        y: sourceNode.position.y,
+      });
+      const connection: Connection = {
+        source: sourceNode.id,
+        sourceHandle: `output:${sourceNode.data.mediaType}`,
+        target: transformNode.id,
+        targetHandle: 'input:content',
+      };
+      const validation = validateCanvasConnection(connection, [...nodes, transformNode], edges);
+      if (!validation.ok) {
+        setNotice({ kind: 'error', message: '无法为该来源创建转换节点' });
+        return;
+      }
+      rememberHistory();
+      setNodes((current) => [...current, transformNode]);
+      setEdges((current) => [
+        ...current,
+        {
+          ...connection,
+          id: `edge_${connection.source}_${connection.target}_${Date.now()}`,
+          animated: true,
+        },
+      ]);
+      setSelectedNode(transformNode);
+      canvasDirtyRef.current = true;
+      setNotice({ kind: 'success', message: '已创建转换节点并接入来源' });
+    },
+    [createTransformNode, edges, nodes, rememberHistory, setEdges, setNodes],
   );
 
   const updateSelectedInferenceStrength = useCallback(
@@ -1718,15 +2332,12 @@ export function App() {
       if (!selectedNode) return;
       rememberHistory();
       canvasDirtyRef.current = true;
-      setNodes((current) =>
-        current.map((node) =>
-          node.id === selectedNode.id
-            ? { ...node, data: { ...node.data, inferenceStrength } }
-            : node,
-        ),
-      );
+      updateNodeDataAndMarkDownstreamStale(selectedNode.id, (data) => ({
+        ...data,
+        inferenceStrength,
+      }));
     },
-    [rememberHistory, selectedNode, setNodes],
+    [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
   );
 
   useEffect(() => {
@@ -1815,8 +2426,13 @@ export function App() {
   const updateNodeRunState = useCallback(
     (nodeId: string, run: RunRecord) => {
       setRunRecords((current) => ({ ...current, [nodeId]: run }));
-      setNodes((current) =>
-        current.map((node) =>
+      const resultAssetId = run.status === 'succeeded' ? run.result?.asset?.assetId : undefined;
+      if (resultAssetId && !refreshedResultAssetIdsRef.current.has(resultAssetId)) {
+        refreshedResultAssetIdsRef.current.add(resultAssetId);
+        void loadAssets();
+      }
+      setNodes((current) => {
+        const updated = current.map((node) =>
           node.id === nodeId
             ? {
                 ...node,
@@ -1826,36 +2442,48 @@ export function App() {
                   runProgress: run.progress,
                   runError: run.error,
                   resultAsset: run.result?.asset,
+                  ...(run.status === 'succeeded' ? { stale: false } : {}),
                 },
               }
             : node,
-        ),
-      );
+        );
+        return run.status === 'succeeded'
+          ? markDownstreamNodesStale(updated, edgesRef.current, [nodeId]).map((node) =>
+              node.id === nodeId ? { ...node, data: { ...node.data, stale: false } } : node,
+            )
+          : updated;
+      });
     },
-    [setNodes],
+    [loadAssets, setNodes],
   );
 
   useEffect(() => {
-    if (!projectId || typeof EventSource === 'undefined') return;
-    const events = new EventSource(`${API_BASE_URL}/v1/projects/${projectId}/events`);
-    const handleRunUpdate = (event: Event) => {
-      try {
-        const run = JSON.parse((event as MessageEvent<string>).data) as RunRecord;
-        updateNodeRunState(run.targetNodeId, run);
-      } catch {
-        // Ignore malformed events and keep REST polling as a fallback.
-      }
-    };
-    events.addEventListener('run.updated', handleRunUpdate);
+    if (!projectId) return;
+    const controller = new AbortController();
+    void openAuthEventStream(
+      `${API_BASE_URL}/v1/projects/${projectId}/events`,
+      (eventName, data) => {
+        if (eventName !== 'run.updated') return;
+        try {
+          const run = JSON.parse(data) as RunRecord;
+          updateNodeRunState(run.targetNodeId, run);
+        } catch {
+          // Ignore malformed events and keep REST polling as a fallback.
+        }
+      },
+      controller.signal,
+    ).catch((error: unknown) => {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      // REST polling remains the fallback when SSE is unavailable.
+    });
     return () => {
-      events.removeEventListener('run.updated', handleRunUpdate);
-      events.close();
+      controller.abort();
     };
   }, [projectId, updateNodeRunState]);
 
   const fetchRun = useCallback(
     async (runId: string, nodeId: string) => {
-      const response = await fetch(`${API_BASE_URL}/v1/runs/${runId}`);
+      const response = await apiFetch(`${API_BASE_URL}/v1/runs/${runId}`);
       const result = (await response.json().catch(() => ({}))) as {
         run?: RunRecord;
         error?: string;
@@ -1866,6 +2494,40 @@ export function App() {
     },
     [updateNodeRunState],
   );
+
+  // Restore the latest run/result for every node when a project is opened.
+  // SSE remains the live update channel, but a REST snapshot is required for
+  // browsers where EventSource is unavailable or the stream reconnects late.
+  useEffect(() => {
+    if (!projectId || !isCanvasReady) return;
+    let active = true;
+    void apiFetch(`${API_BASE_URL}/v1/projects/${projectId}/runs`)
+      .then(async (response) => {
+        const result = (await response.json().catch(() => ({}))) as {
+          runs?: RunRecord[];
+          error?: string;
+        };
+        if (!response.ok || !Array.isArray(result.runs)) {
+          throw new Error(result.error ?? '运行记录加载失败');
+        }
+        if (!active) return;
+        for (const run of result.runs) {
+          if (!active) break;
+          updateNodeRunState(run.targetNodeId, run);
+        }
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setNotice({
+            kind: 'error',
+            message: error instanceof Error ? error.message : '运行记录加载失败',
+          });
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [isCanvasReady, projectId, updateNodeRunState]);
 
   const pollRun = useCallback(
     async (runId: string, nodeId: string) => {
@@ -1889,11 +2551,15 @@ export function App() {
         setNotice({ kind: 'error', message: '来源节点不能直接运行，请选择生成或转换节点' });
         return;
       }
+      if (node.data.enabled === false) {
+        setNotice({ kind: 'error', message: '节点已停用，请先启用后再运行' });
+        return;
+      }
       setIsRunning(true);
       setNotice(null);
       try {
         await saveCanvas();
-        const response = await fetch(`${API_BASE_URL}/v1/nodes/${node.id}/runs`, {
+        const response = await apiFetch(`${API_BASE_URL}/v1/nodes/${node.id}/runs`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
@@ -1932,7 +2598,7 @@ export function App() {
   const cancelSelectedRun = useCallback(async () => {
     if (!selectedRun || !selectedNode) return;
     try {
-      const response = await fetch(`${API_BASE_URL}/v1/runs/${selectedRun.id}/cancel`, {
+      const response = await apiFetch(`${API_BASE_URL}/v1/runs/${selectedRun.id}/cancel`, {
         method: 'POST',
       });
       const result = (await response.json().catch(() => ({}))) as {
@@ -1954,7 +2620,7 @@ export function App() {
     if (!selectedRun || !selectedNode) return;
     setIsRunning(true);
     try {
-      const response = await fetch(`${API_BASE_URL}/v1/runs/${selectedRun.id}/retry`, {
+      const response = await apiFetch(`${API_BASE_URL}/v1/runs/${selectedRun.id}/retry`, {
         method: 'POST',
       });
       const result = (await response.json().catch(() => ({}))) as {
@@ -1984,7 +2650,7 @@ export function App() {
 
   return (
     <ReactFlowProvider>
-      <main className="app-shell">
+      <main className="app-shell" data-theme={canvasTheme}>
         <header className="topbar">
           <div className="brand-mark" aria-label="Multimodal Canvas">
             <span className="brand-icon">MC</span>
@@ -2051,6 +2717,56 @@ export function App() {
             </span>
           </div>
           <div className="topbar-actions">
+            <label className="topbar-background-picker">
+              <span>背景</span>
+              <select
+                aria-label="画布背景"
+                value={canvasBackground}
+                onChange={(event) => setCanvasBackground(event.target.value as CanvasBackground)}
+              >
+                {canvasBackgroundOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="theme-control">
+              <button
+                type="button"
+                className="theme-toggle"
+                aria-label="切换主题"
+                aria-expanded={showThemeMenu}
+                title="主题"
+                onClick={() => setShowThemeMenu((current) => !current)}
+              >
+                <Palette size={16} />
+                <span className="theme-toggle-label">
+                  {themeOptions.find((option) => option.value === canvasTheme)?.label}
+                </span>
+              </button>
+              {showThemeMenu && (
+                <div className="theme-menu" role="listbox" aria-label="界面主题">
+                  {themeOptions.map((option) => (
+                    <button
+                      type="button"
+                      className="theme-option"
+                      role="option"
+                      aria-selected={canvasTheme === option.value}
+                      key={option.value}
+                      onClick={() => {
+                        setCanvasTheme(option.value);
+                        setShowThemeMenu(false);
+                      }}
+                    >
+                      <span className={`theme-swatch ${option.swatch}`} aria-hidden="true" />
+                      {option.label}
+                      {canvasTheme === option.value && <Check size={14} aria-hidden="true" />}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <button
               type="button"
               className="icon-button"
@@ -2081,13 +2797,39 @@ export function App() {
             >
               <Settings size={16} />
             </button>
+            {authUser ? (
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="退出登录"
+                title={`退出登录（${authUser.displayName ?? authUser.email}）`}
+                onClick={onLoggedOut}
+              >
+                <UserCircle size={16} />
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="登录"
+                title="登录"
+                onClick={onRequestLogin}
+              >
+                <UserCircle size={16} />
+              </button>
+            )}
             <button type="button" className="button button-secondary" disabled>
               导出
             </button>
             <button
               type="button"
               className="button button-primary"
-              disabled={!selectedNode || selectedNode.data.mode === 'source' || isRunning}
+              disabled={
+                !selectedNode ||
+                selectedNode.data.mode === 'source' ||
+                selectedNode.data.enabled === false ||
+                isRunning
+              }
               onClick={() => {
                 if (selectedNode) void runNode(selectedNode);
               }}
@@ -2186,9 +2928,10 @@ export function App() {
           </div>
         )}
 
-        <div className="workspace">
+        <div className={`workspace ${isResourceCollapsed ? 'resource-panel-collapsed' : ''}`}>
           <ResourcePanel
             assets={assets}
+            collapsed={isResourceCollapsed}
             showArchived={showArchived}
             activeFilter={activeFilter}
             query={query}
@@ -2206,6 +2949,7 @@ export function App() {
               event.preventDefault();
               void uploadFiles(Array.from(event.dataTransfer.files));
             }}
+            onToggleCollapsed={() => setIsResourceCollapsed((current) => !current)}
           />
           <WorkflowCanvas
             nodes={nodes}
@@ -2216,9 +2960,10 @@ export function App() {
             onNodeDragStart={handleNodeDragStart}
             onCanvasDrop={handleCanvasDrop}
             onNodeSelect={setSelectedNode}
+            onResizeNode={handleResizeNode}
             onAddGenerateNode={handleAddGenerateNode}
+            onAddTransformNode={handleAddTransformNode}
             background={canvasBackground}
-            onBackgroundChange={setCanvasBackground}
           />
           <aside className="inspector-panel">
             <div className="panel-heading">
@@ -2227,13 +2972,48 @@ export function App() {
                 <h1>节点设置</h1>
               </div>
             </div>
-            {selectedNode && selectedAsset ? (
+            {selectedNode && selectedAsset && selectedNode.data.mode === 'source' ? (
               <div className="inspector-content">
-                <AssetPreview asset={selectedAsset} className="inspector-preview" />
+                <AssetPreview asset={selectedAsset} className="inspector-preview" interactive />
                 <span className="inspector-type">
                   {mediaLabels[selectedAsset.mediaType]}来源节点
                 </span>
                 <h2 className="inspector-name">{selectedAsset.name}</h2>
+                <label className="inspector-field inspector-label-field">
+                  <span>节点名称</span>
+                  <input
+                    aria-label="节点名称"
+                    value={selectedNode.data.label}
+                    onChange={(event) => updateSelectedLabel(event.target.value)}
+                    onBlur={normalizeSelectedLabel}
+                    placeholder="给这个来源节点命名"
+                  />
+                </label>
+                <label className="inspector-toggle-field">
+                  <input
+                    type="checkbox"
+                    checked={selectedNode.data.enabled !== false}
+                    onChange={(event) => updateSelectedEnabled(event.target.checked)}
+                  />
+                  <span>
+                    <strong>启用节点</strong>
+                    <small>关闭后不作为下游节点的参考输入</small>
+                  </span>
+                </label>
+                <label className="inspector-field">
+                  <span>节点模式</span>
+                  <select
+                    aria-label="节点模式"
+                    value={selectedNode.data.mode}
+                    onChange={(event) => updateSelectedMode(event.target.value as NodeMode)}
+                  >
+                    {(Object.keys(modeLabels) as NodeMode[]).map((mode) => (
+                      <option key={mode} value={mode}>
+                        {modeLabels[mode]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
                 <dl className="inspector-details">
                   <div>
                     <dt>资源类型</dt>
@@ -2248,6 +3028,37 @@ export function App() {
                     <dd>content</dd>
                   </div>
                 </dl>
+                <label className="inspector-prompt inspector-source-content">
+                  <span>{selectedAsset.mediaType === 'text' ? '文本内容' : '来源提示 / 说明'}</span>
+                  <TextPromptEditor
+                    nodeId={selectedNode.id}
+                    value={selectedNode.data.prompt ?? ''}
+                    onChange={updateSelectedPrompt}
+                    placeholder={
+                      selectedAsset.mediaType === 'text'
+                        ? '输入来源文本，运行下游节点时会作为参考'
+                        : '补充这份来源的用途、风格或处理要求（可选）'
+                    }
+                  />
+                </label>
+                <div className="inspector-source-actions">
+                  <button
+                    type="button"
+                    className="button button-secondary"
+                    onClick={() => void copySourcePrompt(selectedNode)}
+                  >
+                    <FileText size={14} />
+                    复制内容
+                  </button>
+                  <button
+                    type="button"
+                    className="button button-primary"
+                    onClick={() => addTransformFromSource(selectedNode)}
+                  >
+                    <Play size={14} />
+                    创建转换
+                  </button>
+                </div>
               </div>
             ) : selectedNode ? (
               <div className="inspector-content">
@@ -2264,6 +3075,41 @@ export function App() {
                   {modeLabels[selectedNode.data.mode]}节点
                 </span>
                 <h2 className="inspector-name">{selectedNode.data.label}</h2>
+                <label className="inspector-field inspector-label-field">
+                  <span>节点名称</span>
+                  <input
+                    aria-label="节点名称"
+                    value={selectedNode.data.label}
+                    onChange={(event) => updateSelectedLabel(event.target.value)}
+                    onBlur={normalizeSelectedLabel}
+                    placeholder="给这个节点命名"
+                  />
+                </label>
+                <label className="inspector-toggle-field">
+                  <input
+                    type="checkbox"
+                    checked={selectedNode.data.enabled !== false}
+                    onChange={(event) => updateSelectedEnabled(event.target.checked)}
+                  />
+                  <span>
+                    <strong>启用节点</strong>
+                    <small>关闭后不参与下游参考；节点自身也不能运行</small>
+                  </span>
+                </label>
+                <label className="inspector-field">
+                  <span>节点模式</span>
+                  <select
+                    aria-label="节点模式"
+                    value={selectedNode.data.mode}
+                    onChange={(event) => updateSelectedMode(event.target.value as NodeMode)}
+                  >
+                    {(Object.keys(modeLabels) as NodeMode[]).map((mode) => (
+                      <option key={mode} value={mode}>
+                        {modeLabels[mode]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
                 <dl className="inspector-details">
                   <div>
                     <dt>运行状态</dt>
@@ -2280,14 +3126,45 @@ export function App() {
                     <dd>{selectedRun?.snapshot.inputs.length ?? 0} 个</dd>
                   </div>
                 </dl>
+                {selectedNode.data.mode === 'source' && (
+                  <>
+                    <label className="inspector-prompt inspector-source-content">
+                      <span>来源内容 / 提示</span>
+                      <TextPromptEditor
+                        nodeId={selectedNode.id}
+                        value={selectedNode.data.prompt ?? ''}
+                        onChange={updateSelectedPrompt}
+                        placeholder="补充来源内容，供下游节点参考"
+                      />
+                    </label>
+                    <div className="inspector-source-actions">
+                      <button
+                        type="button"
+                        className="button button-secondary"
+                        onClick={() => void copySourcePrompt(selectedNode)}
+                      >
+                        <FileText size={14} />
+                        复制内容
+                      </button>
+                      <button
+                        type="button"
+                        className="button button-primary"
+                        onClick={() => addTransformFromSource(selectedNode)}
+                      >
+                        <Play size={14} />
+                        创建转换
+                      </button>
+                    </div>
+                  </>
+                )}
                 {selectedNode.data.mode !== 'source' && (
                   <>
                     <label className="inspector-prompt">
                       <span>提示词</span>
-                      <textarea
-                        rows={4}
+                      <TextPromptEditor
+                        nodeId={selectedNode.id}
                         value={selectedNode.data.prompt ?? ''}
-                        onChange={(event) => updateSelectedPrompt(event.target.value)}
+                        onChange={updateSelectedPrompt}
                         placeholder="描述你希望节点生成或转换的内容"
                       />
                     </label>
@@ -2337,7 +3214,7 @@ export function App() {
                     <button
                       type="button"
                       className="button button-primary inspector-generate-button"
-                      disabled={isRunning}
+                      disabled={isRunning || selectedNode.data.enabled === false}
                       onClick={() => void runNode(selectedNode)}
                       title="使用当前提示词、模型和推理强度生成"
                     >
@@ -2378,37 +3255,26 @@ export function App() {
                       <span className="inspector-result-version">版本 {currentResultVersion}</span>
                     </div>
                     {currentResultContentUrl ? (
-                      <a
-                        className="inspector-result-link"
-                        href={resolveUploadUrl(currentResultContentUrl, API_BASE_URL)}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        <AssetPreview
-                          asset={{
-                            id:
-                              selectedResultAsset?.assetId ??
-                              currentResultVersionRecord?.assetId ??
-                              'result',
-                            name: `${selectedNode.data.label}结果`,
-                            mediaType: selectedNode.data.mediaType,
-                            mimeType:
-                              selectedResultAsset?.mimeType ??
-                              selectedNode.data.mimeType ??
-                              'application/octet-stream',
-                            sizeBytes:
-                              selectedResultAsset?.sizeBytes ??
-                              currentResultVersionRecord?.sizeBytes ??
-                              0,
-                            status: 'ready',
-                            contentUrl: currentResultContentUrl,
-                            tags: [],
-                          }}
-                          className="inspector-result-preview"
-                        />
-                        <span>打开结果</span>
-                        <ExternalLink size={13} aria-hidden="true" />
-                      </a>
+                      <div className="inspector-result-link">
+                        {selectedNode.data.mediaType === 'text' ? (
+                          <div className="inspector-result-preview inspector-result-text-wrap">
+                            <TextResultContent url={currentResultContentUrl} />
+                          </div>
+                        ) : (
+                          <AssetPreview
+                            asset={currentResultPreviewAsset}
+                            className="inspector-result-preview"
+                            interactive
+                          />
+                        )}
+                        <AuthenticatedAssetLink
+                          asset={currentResultPreviewAsset}
+                          className="inspector-result-open"
+                        >
+                          <span>打开结果</span>
+                          <ExternalLink size={13} aria-hidden="true" />
+                        </AuthenticatedAssetLink>
+                      </div>
                     ) : (
                       <p className="inspector-result-pending">结果已归档，内容链接待刷新。</p>
                     )}
@@ -2429,18 +3295,25 @@ export function App() {
                           <span className="inspector-result-version-list-label">归档版本</span>
                           <ul>
                             {resultVersions.map((version) => {
-                              const versionUrl = resolveUploadUrl(version.contentUrl, API_BASE_URL);
                               const isCurrent = version.version === currentResultVersion;
+                              const versionAsset: Asset = {
+                                id: version.assetId,
+                                name: `${selectedNode.data.label}结果 v${version.version}`,
+                                mediaType: selectedNode.data.mediaType,
+                                mimeType:
+                                  selectedResultAsset?.mimeType ??
+                                  selectedNode.data.mimeType ??
+                                  'application/octet-stream',
+                                sizeBytes: version.sizeBytes,
+                                status: 'ready',
+                                contentUrl: version.contentUrl,
+                                tags: [],
+                              };
                               return (
                                 <li key={version.id}>
-                                  <a
-                                    href={versionUrl}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    aria-current={isCurrent ? 'true' : undefined}
-                                  >
+                                  <AuthenticatedAssetLink asset={versionAsset} current={isCurrent}>
                                     版本 {version.version}
-                                  </a>
+                                  </AuthenticatedAssetLink>
                                   {isCurrent ? <span>（当前）</span> : null}
                                 </li>
                               );
@@ -2470,6 +3343,8 @@ export function App() {
         </div>
         {showSettings && (
           <SettingsPanel
+            projectId={projectId}
+            projectName={projectName}
             onClose={() => setShowSettings(false)}
             onNotice={setNotice}
             onModelsChange={setModelCatalog}
@@ -2477,6 +3352,191 @@ export function App() {
         )}
       </main>
     </ReactFlowProvider>
+  );
+}
+
+function LoginScreen({
+  apiBaseUrl,
+  onAuthenticated,
+  onContinueAnonymous,
+}: {
+  apiBaseUrl: string;
+  onAuthenticated: (session: StoredAuthSession) => void;
+  onContinueAnonymous: () => void;
+}) {
+  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setError(null);
+    const normalizedEmail = email.trim();
+    if (!normalizedEmail || !password) {
+      setError('请输入邮箱和密码');
+      return;
+    }
+    if (mode === 'register' && password.length < 8) {
+      setError('密码至少需要 8 个字符');
+      return;
+    }
+    setBusy(true);
+    try {
+      const session =
+        mode === 'login'
+          ? await loginWithApi(apiBaseUrl, { email: normalizedEmail, password })
+          : await registerWithApi(apiBaseUrl, {
+              email: normalizedEmail,
+              password,
+              ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
+            });
+      onAuthenticated(session);
+    } catch (requestError) {
+      const message = requestError instanceof Error ? requestError.message : '认证失败';
+      setError(
+        message === 'invalid email or password'
+          ? '邮箱或密码不正确'
+          : message === 'email is already registered'
+            ? '该邮箱已注册，请直接登录'
+            : message,
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="settings-backdrop" role="presentation">
+      <section
+        className="settings-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="auth-title"
+      >
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Multimodal Canvas</p>
+            <h1 id="auth-title">{mode === 'login' ? '登录工作区' : '创建账户'}</h1>
+          </div>
+          <UserCircle size={22} aria-hidden="true" />
+        </div>
+        <p className="settings-status">
+          {mode === 'login'
+            ? '登录后可访问项目、资源和运行记录。'
+            : '注册后即可开始创建多模态工作流。'}
+        </p>
+        <form onSubmit={(event) => void submit(event)}>
+          {mode === 'register' && (
+            <label className="settings-field">
+              <span>显示名称（可选）</span>
+              <input
+                value={displayName}
+                onChange={(event) => setDisplayName(event.target.value)}
+                autoComplete="name"
+              />
+            </label>
+          )}
+          <label className="settings-field">
+            <span>邮箱</span>
+            <input
+              type="email"
+              required
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              autoComplete="email"
+              autoFocus
+            />
+          </label>
+          <label className="settings-field">
+            <span>密码</span>
+            <input
+              type="password"
+              required
+              minLength={mode === 'register' ? 8 : undefined}
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+            />
+          </label>
+          {error && (
+            <p className="settings-field-error" role="alert">
+              {error}
+            </p>
+          )}
+          <div className="settings-actions">
+            <button type="submit" className="button button-primary" disabled={busy}>
+              {busy && <LoaderCircle className="spin" size={15} />}
+              {busy ? '处理中' : mode === 'login' ? '登录' : '注册'}
+            </button>
+            <button
+              type="button"
+              className="button button-secondary"
+              disabled={busy}
+              onClick={() => {
+                setMode((current) => (current === 'login' ? 'register' : 'login'));
+                setError(null);
+              }}
+            >
+              {mode === 'login' ? '创建账户' : '返回登录'}
+            </button>
+          </div>
+        </form>
+        <button
+          type="button"
+          className="settings-delete"
+          disabled={busy}
+          onClick={onContinueAnonymous}
+        >
+          继续匿名使用
+        </button>
+      </section>
+    </div>
+  );
+}
+
+export function App() {
+  const [authSession, setAuthSession] = useState<StoredAuthSession | null>(() => readAuthSession());
+  const [authRequired, setAuthRequired] = useState(false);
+
+  useEffect(() => {
+    return setUnauthorizedHandler(() => {
+      clearAuthSession();
+      setAuthSession(null);
+      setAuthRequired(true);
+    });
+  }, []);
+
+  const handleAuthenticated = useCallback((session: StoredAuthSession) => {
+    setAuthSession(session);
+    setAuthRequired(false);
+  }, []);
+
+  const handleLogout = useCallback(() => {
+    void logoutWithApi(API_BASE_URL).finally(() => {
+      setAuthSession(null);
+      setAuthRequired(true);
+    });
+  }, []);
+
+  return (
+    <>
+      <WorkspaceApp
+        key={authSession?.user.id ?? 'anonymous'}
+        authUser={authSession?.user ?? null}
+        onRequestLogin={() => setAuthRequired(true)}
+        onLoggedOut={handleLogout}
+      />
+      {authRequired && (
+        <LoginScreen
+          apiBaseUrl={API_BASE_URL}
+          onAuthenticated={handleAuthenticated}
+          onContinueAnonymous={() => setAuthRequired(false)}
+        />
+      )}
+    </>
   );
 }
 

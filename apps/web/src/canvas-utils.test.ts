@@ -3,6 +3,7 @@ import type { CanvasDocument } from '@multimodal-canvas/domain';
 
 import {
   fromCanvasDocument,
+  markDownstreamNodesStale,
   copyCanvasSelection,
   parseCanvasClipboard,
   pasteCanvasClipboard,
@@ -40,6 +41,28 @@ function flowEdge(id: string, source: string, target: string, targetHandle?: str
   };
 }
 
+describe('stale propagation', () => {
+  it('marks all downstream nodes without clearing existing results', () => {
+    const nodes = [
+      flowNode('source'),
+      flowNode('middle', 'text', { resultAsset: { assetId: 'asset-old' } }),
+      flowNode('target', 'text'),
+      flowNode('unrelated', 'text'),
+    ];
+    const edges = [flowEdge('e1', 'source', 'middle'), flowEdge('e2', 'middle', 'target')];
+
+    const updated = markDownstreamNodesStale(nodes, edges, ['source']);
+
+    expect(updated.find((node) => node.id === 'source')?.data.stale).toBeUndefined();
+    expect(updated.find((node) => node.id === 'middle')?.data.stale).toBe(true);
+    expect(updated.find((node) => node.id === 'middle')?.data.resultAsset).toEqual({
+      assetId: 'asset-old',
+    });
+    expect(updated.find((node) => node.id === 'target')?.data.stale).toBe(true);
+    expect(updated.find((node) => node.id === 'unrelated')?.data.stale).toBeUndefined();
+  });
+});
+
 describe('canvas document conversion', () => {
   it('maps API edges and supplies a safe MIME type for nodes without one', () => {
     const document: CanvasDocument = {
@@ -49,6 +72,8 @@ describe('canvas document conversion', () => {
           id: 'source',
           type: 'image',
           position: { x: 1, y: 2 },
+          width: 280,
+          height: 190,
           data: { label: 'Source', mediaType: 'image', mode: 'source' },
         },
         {
@@ -73,6 +98,8 @@ describe('canvas document conversion', () => {
     const flow = fromCanvasDocument(document);
 
     expect(flow.nodes[0].data.mimeType).toBe('application/octet-stream');
+    expect(flow.nodes[0].width).toBe(280);
+    expect(flow.nodes[0].height).toBe(190);
     expect(flow.nodes[1].data.mimeType).toBe('video/mp4');
     expect(flow.edges).toEqual([
       {
@@ -92,6 +119,7 @@ describe('canvas document conversion', () => {
         flowNode('source-1', 'image', { runStatus: 'running', runProgress: 42 }),
         flowNode('source-2', 'image'),
         flowNode('target', 'video', {
+          enabled: false,
           modelAlias: 'video-model',
           prompt: 'Animate the reference with a slow camera move',
           inferenceStrength: 'low',
@@ -110,6 +138,7 @@ describe('canvas document conversion', () => {
     expect(document.nodes[0].data).not.toHaveProperty('runStatus');
     expect(document.nodes[0].data).not.toHaveProperty('runProgress');
     expect(document.nodes[2].data.modelAlias).toBe('video-model');
+    expect(document.nodes[2].data.enabled).toBe(false);
     expect(document.nodes[2].data.prompt).toBe('Animate the reference with a slow camera move');
     expect(document.nodes[2].data.inferenceStrength).toBe('low');
     expect(document.edges).toEqual([
@@ -138,6 +167,21 @@ describe('canvas document conversion', () => {
         order: 0,
       },
     ]);
+  });
+
+  it('persists React Flow node dimensions while omitting invalid runtime values', () => {
+    const resized = flowNode('resized');
+    resized.width = 360;
+    resized.height = 260;
+    const invalid = flowNode('invalid');
+    invalid.width = Number.NaN;
+    invalid.height = 0;
+
+    const document = toCanvasDocument([resized, invalid], [], 1);
+
+    expect(document.nodes[0]).toMatchObject({ width: 360, height: 260 });
+    expect(document.nodes[1]).not.toHaveProperty('width');
+    expect(document.nodes[1]).not.toHaveProperty('height');
   });
 
   it('keeps generated result metadata runtime-only', () => {
@@ -291,5 +335,18 @@ describe('clipboard graph transformations', () => {
     expect(
       parseCanvasClipboard(serializeCanvasClipboard({ nodes: [mismatchedNode], edges: [] })),
     ).toBeUndefined();
+  });
+
+  it('rejects malformed enabled and dimension fields in clipboard payloads', () => {
+    const node = flowNode('malformed');
+    const payload = JSON.parse(serializeCanvasClipboard({ nodes: [node], edges: [] })) as {
+      nodes: Array<Record<string, unknown>>;
+    };
+    payload.nodes[0].width = 20_001;
+    expect(parseCanvasClipboard(JSON.stringify(payload))).toBeUndefined();
+
+    payload.nodes[0].width = 200;
+    (payload.nodes[0].data as Record<string, unknown>).enabled = 'yes';
+    expect(parseCanvasClipboard(JSON.stringify(payload))).toBeUndefined();
   });
 });

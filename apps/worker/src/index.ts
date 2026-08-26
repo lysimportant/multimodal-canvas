@@ -13,6 +13,7 @@ import {
 import {
   MockProvider,
   NewApiProvider,
+  NewApiVideoProvider,
   type NewApiProviderRequest,
 } from '@multimodal-canvas/providers';
 import {
@@ -53,7 +54,8 @@ export type ProviderExecution = {
 };
 
 export type ProviderUsage = {
-  amount: number | string;
+  /** Monetary amount when the provider reports an explicit priced usage. */
+  amount?: number | string;
   currency?: string;
   userId?: string;
   metadata?: Record<string, unknown>;
@@ -84,14 +86,23 @@ export type RunPersistence = {
     error?: string;
   }): Promise<unknown>;
   upsertProviderJob(input: { runId: string; providerJob: ProviderJob }): Promise<unknown>;
+  /** Resolve the last durable provider job for a failed/cancelled retry source. */
+  findProviderJobByRunId?(runId: string): Promise<ProviderJob | undefined>;
   recordUsage(input: {
     runId?: string;
     userId?: string;
+    providerJobId?: string;
+    eventId?: string;
+    kind?: string;
     amount: number | string;
     currency?: string;
     metadata?: Record<string, unknown>;
   }): Promise<unknown>;
   close?(): Promise<void>;
+};
+
+type ProviderExecutor = {
+  execute(request: NewApiProviderRequest): Promise<RunResult | ProviderExecution>;
 };
 
 export type DatabaseRunIdResolver = (
@@ -126,6 +137,29 @@ export function createProviderJobRecord(
   };
 }
 
+/** Whether a failed/cancelled predecessor still has an unknown live task. */
+export function canResumeProviderJob(
+  providerJob: ProviderJob | undefined,
+): providerJob is ProviderJob {
+  if (!providerJob?.platformJobId) return false;
+  if (providerJob.status !== 'failed' && providerJob.status !== 'cancelled') return true;
+  const payload = providerJob.payload;
+  const statusResponse =
+    payload && typeof payload.statusResponse === 'object' && payload.statusResponse !== null
+      ? (payload.statusResponse as Record<string, unknown>)
+      : undefined;
+  const providerStatus =
+    typeof statusResponse?.providerStatus === 'string'
+      ? statusResponse.providerStatus.toLowerCase()
+      : typeof payload?.providerStatus === 'string'
+        ? payload.providerStatus.toLowerCase()
+        : undefined;
+  return (
+    !providerStatus ||
+    !['failed', 'error', 'expired', 'cancelled', 'canceled'].includes(providerStatus)
+  );
+}
+
 export function normalizeProviderExecution(
   value: RunResult | ProviderExecution,
 ): ProviderExecution {
@@ -143,9 +177,9 @@ export function createRunWorker(options: {
   connection: ConnectionOptions;
   queueName?: string;
   stepDelayMs?: number;
-  provider?: {
-    execute(request: NewApiProviderRequest): Promise<RunResult | ProviderExecution>;
-  };
+  provider?: ProviderExecutor;
+  /** Dedicated asynchronous provider used only when the target media type is video. */
+  videoProvider?: ProviderExecutor;
   providerName?: 'mock' | 'newapi';
   resultArchiver?: ResultAssetArchiver;
   persistence?: RunPersistence;
@@ -161,10 +195,14 @@ export function createRunWorker(options: {
     options.observability ??
     createEnvironmentObservability({ logger, service: 'multimodal-canvas-worker' });
   const mockProvider = new MockProvider();
-  const newApiProvider =
-    options.providerName === 'newapi'
-      ? (options.provider ?? createNewApiProviderFromEnvironment())
-      : undefined;
+  let environmentProviders: { standard: ProviderExecutor; video: ProviderExecutor } | undefined;
+  const getNewApiProvider = (video: boolean): ProviderExecutor | undefined => {
+    if (options.providerName !== 'newapi') return undefined;
+    if (video && options.videoProvider) return options.videoProvider;
+    if (options.provider) return options.provider;
+    environmentProviders ??= createNewApiProvidersFromEnvironment();
+    return video ? environmentProviders.video : environmentProviders.standard;
+  };
   const stepDelayMs = options.stepDelayMs ?? 20;
   const worker = new Worker<RunJobData, RunJobResult>(
     name,
@@ -194,16 +232,73 @@ export function createRunWorker(options: {
         initialData.snapshot,
         options.onPersistenceError,
       );
+      // A retry may be enqueued after the API process has lost its in-memory
+      // provider-job envelope. Recover the external task identity from the
+      // previous durable run before calling an asynchronous provider. This
+      // keeps a retry from issuing a second paid creation request.
+      let recoveredProviderJob: ProviderJob | undefined;
+      if (initialData.retryOf && !initialData.providerJob?.platformJobId) {
+        try {
+          // Prefer the predecessor BullMQ job: it is available even when the
+          // database adapter is disabled for local development.
+          const predecessor = await Job.fromId<RunJobData>(queue, initialData.retryOf);
+          const predecessorData = predecessor
+            ? runJobDataSchema.safeParse(predecessor.data)
+            : undefined;
+          const predecessorProviderJob = predecessorData?.success
+            ? predecessorData.data.providerJob
+            : undefined;
+          if (
+            canResumeProviderJob(predecessorProviderJob) &&
+            predecessorProviderJob.provider === initialData.provider
+          ) {
+            recoveredProviderJob = predecessorProviderJob;
+          }
+          if (!recoveredProviderJob && options.persistence?.findProviderJobByRunId) {
+            const persistedProviderJob = await options.persistence.findProviderJobByRunId(
+              initialData.retryOf,
+            );
+            if (
+              canResumeProviderJob(persistedProviderJob) &&
+              persistedProviderJob.provider === initialData.provider
+            ) {
+              recoveredProviderJob = persistedProviderJob;
+            }
+          }
+        } catch (error) {
+          runLogger.warn(serializeWorkerError(error), 'provider job recovery failed');
+          options.onPersistenceError?.(error);
+        }
+      }
       const persistProviderJob = async (providerJob: ProviderJob) => {
         if (!options.persistence || !databaseRunId) return;
         try {
-          await options.persistence.upsertProviderJob({ runId: databaseRunId, providerJob });
+          await options.persistence.upsertProviderJob({
+            runId: databaseRunId,
+            providerJob: sanitizeProviderJobRecord(providerJob),
+          });
         } catch (error) {
           runLogger.warn(
             { ...serializeWorkerError(error), providerJobStatus: providerJob.status },
             'provider job persistence failed',
           );
           options.onPersistenceError?.(error);
+        }
+      };
+      const persistProviderJobStrict = async (providerJob: ProviderJob) => {
+        if (!options.persistence || !databaseRunId) return;
+        try {
+          await options.persistence.upsertProviderJob({
+            runId: databaseRunId,
+            providerJob: sanitizeProviderJobRecord(providerJob),
+          });
+        } catch (error) {
+          runLogger.error(
+            { ...serializeWorkerError(error), providerJobStatus: providerJob.status },
+            'provider job persistence failed',
+          );
+          options.onPersistenceError?.(error);
+          throw error;
         }
       };
       const persistRun = async (
@@ -246,18 +341,46 @@ export function createRunWorker(options: {
           options.onPersistenceError?.(error);
         }
       }
-      const persistUsage = async (usage: ProviderUsage) => {
-        if (!options.persistence || !databaseRunId) return;
+      const persistUsage = async (usage: ProviderUsage, providerJob: ProviderJob) => {
+        // A provider may report token/media counters without a price. The
+        // usage ledger stores money only, so do not invent a zero/estimated
+        // charge for metadata-only responses.
+        const amount = usage.amount;
+        if (!options.persistence || !databaseRunId || amount === undefined) return;
         try {
-          await options.persistence.recordUsage({ runId: databaseRunId, ...usage });
+          await options.persistence.recordUsage({
+            runId: databaseRunId,
+            amount,
+            ...(providerJob.provider === 'newapi'
+              ? {
+                  providerJobId: providerJob.platformJobId ?? providerJob.id,
+                  kind: 'generation',
+                }
+              : {}),
+            ...(usage.currency ? { currency: usage.currency } : {}),
+            ...(usage.userId ? { userId: usage.userId } : {}),
+            ...(usage.metadata ? { metadata: usage.metadata } : {}),
+          });
         } catch (error) {
           runLogger.warn(serializeWorkerError(error), 'usage persistence failed');
           options.onPersistenceError?.(error);
         }
       };
-      await persistProviderJob(
-        initialData.providerJob ?? createProviderJobRecord(initialData.runId, initialData.provider),
-      );
+      const initialProviderJob = sanitizeProviderJobRecord({
+        ...(initialData.providerJob ??
+          createProviderJobRecord(initialData.runId, initialData.provider)),
+        ...(recoveredProviderJob?.platformJobId && !initialData.providerJob?.platformJobId
+          ? {
+              platformJobId: recoveredProviderJob.platformJobId,
+              payload: recoveredProviderJob.payload,
+            }
+          : {}),
+      });
+      if (recoveredProviderJob?.platformJobId && !initialData.providerJob?.platformJobId) {
+        const data = runJobDataSchema.parse(job.data);
+        await job.updateData({ ...data, providerJob: initialProviderJob });
+      }
+      await persistProviderJob(initialProviderJob);
 
       const update = async (status: RunStatus, progress: number) => {
         if (await isCancellationRequested(queue, job.id)) {
@@ -341,12 +464,15 @@ export function createRunWorker(options: {
           },
         };
       }
+      const target = data.snapshot.nodes.find((node) => node.id === data.snapshot.targetNodeId);
       const provider =
-        data.provider === 'newapi' ? newApiProvider : (options.provider ?? mockProvider);
+        data.provider === 'newapi'
+          ? getNewApiProvider(target?.data.mediaType === 'video')
+          : (options.provider ?? mockProvider);
       if (!provider) throw new Error('New API provider is not configured for this worker');
       const now = new Date().toISOString();
       const providerJob = {
-        ...(data.providerJob ?? createProviderJobRecord(data.runId, data.provider)),
+        ...(data.providerJob ?? initialProviderJob),
         status: 'running' as const,
         progress: 80,
         updatedAt: now,
@@ -354,16 +480,60 @@ export function createRunWorker(options: {
       await job.updateData({ ...data, providerJob });
       await persistProviderJob(providerJob);
       await persistRun('running', providerJob);
+      let activeProviderJob: ProviderJob = providerJob;
       try {
         const execution = normalizeProviderExecution(
           await provider.execute({
             snapshot: data.snapshot,
+            providerJob,
+            onProviderJob: async (update) => {
+              const currentData = runJobDataSchema.parse(job.data);
+              const current = currentData.providerJob ?? providerJob;
+              const safePayload = update.payload
+                ? sanitizeProviderJobPayload(update.payload)
+                : undefined;
+              const merged: ProviderJob = {
+                ...current,
+                ...update,
+                // Local identity is stable for the run; only the provider's
+                // platform ID/status/progress/payload are allowed to change.
+                id: current.id,
+                provider: current.provider,
+                createdAt: current.createdAt,
+                status: update.status ?? current.status,
+                progress: Math.max(current.progress, update.progress ?? current.progress),
+                ...(safePayload ? { payload: safePayload } : {}),
+                updatedAt: new Date().toISOString(),
+              };
+              if (update.payload !== undefined && !safePayload) delete merged.payload;
+              activeProviderJob = merged;
+              await job.updateData({ ...currentData, providerJob: merged });
+              await persistProviderJobStrict(merged);
+              await persistRun(
+                merged.status === 'failed'
+                  ? 'failed'
+                  : merged.status === 'cancelled'
+                    ? 'cancelled'
+                    : 'processing',
+                merged,
+              );
+              // Keep the local object in sync for cancellation/progress paths
+              // that run while the provider is polling.
+              Object.assign(providerJob, merged);
+            },
             reportProgress: async (progress) => {
-              providerJob.progress = Math.max(providerJob.progress, progress);
+              const providerProgress = Math.max(0, Math.min(100, Math.round(progress)));
+              // Provider polling owns the final processing slice. Keep the
+              // public lifecycle monotonic and reserve 100 for archived output.
+              const lifecycleProgress = Math.min(
+                99,
+                80 + Math.round((providerProgress / 100) * 19),
+              );
+              providerJob.progress = Math.max(providerJob.progress, lifecycleProgress);
               providerJob.updatedAt = new Date().toISOString();
               await job.updateProgress({
                 status: 'processing',
-                progress,
+                progress: providerJob.progress,
                 updatedAt: providerJob.updatedAt,
               } satisfies WorkerProgress);
               await persistProviderJob(providerJob);
@@ -383,40 +553,65 @@ export function createRunWorker(options: {
         const archiveInput = output
           ? providerOutputToArchiveInput(output, execution.result.mediaType)
           : undefined;
+        const rawProviderMetadata: Partial<ProviderJob> = execution.providerJob ?? {};
+        const providerMetadata: Partial<ProviderJob> = {
+          ...rawProviderMetadata,
+          ...(rawProviderMetadata.payload
+            ? { payload: sanitizeProviderJobPayload(rawProviderMetadata.payload) }
+            : {}),
+        };
+        const executionProviderJob: ProviderJob = {
+          ...providerJob,
+          ...providerMetadata,
+          id: providerJob.id,
+          provider: providerJob.provider,
+          status: 'running',
+          progress: Math.max(providerJob.progress, providerMetadata.progress ?? 0),
+          createdAt: providerJob.createdAt,
+          updatedAt: new Date().toISOString(),
+        };
+        activeProviderJob = executionProviderJob;
+        const latestData = runJobDataSchema.parse(job.data);
+        await job.updateData({ ...latestData, providerJob: executionProviderJob });
+        await persistProviderJob(executionProviderJob);
+        await persistRun('processing', executionProviderJob);
         const asset = await options.resultArchiver?.({
           runId: data.runId,
           ...(data.userId ? { userId: data.userId } : {}),
           snapshot: data.snapshot,
           result: execution.result,
-          providerJob,
+          providerJob: executionProviderJob,
           ...(output ? { output } : {}),
           ...(archiveInput ? { archiveInput } : {}),
         });
         if (await isCancellationRequested(queue, job.id)) {
-          return markCancelled(providerJob.progress);
+          return markCancelled(executionProviderJob.progress);
         }
         const completedAt = new Date().toISOString();
         const archivedResult = {
           ...execution.result,
           ...(asset ? { asset } : {}),
         } satisfies RunResult;
-        const providerMetadata: Partial<ProviderJob> = execution.providerJob ?? {};
+        const safeArchivedResult = sanitizeProviderJobPayload({ result: archivedResult })?.result;
         const completedProviderJob: ProviderJob = {
-          ...providerJob,
-          ...providerMetadata,
+          ...executionProviderJob,
           status: 'succeeded',
           progress: 100,
           payload: {
             ...(providerJob.payload ?? {}),
             ...(providerMetadata.payload ?? {}),
-            result: archivedResult,
+            ...(execution.usage?.metadata
+              ? (sanitizeProviderJobPayload({ usage: execution.usage.metadata }) ?? {})
+              : {}),
+            ...(safeArchivedResult ? { result: safeArchivedResult } : {}),
           },
           updatedAt: completedAt,
         };
-        await job.updateData({ ...data, providerJob: completedProviderJob });
+        const completedData = runJobDataSchema.parse(job.data);
+        await job.updateData({ ...completedData, providerJob: completedProviderJob });
         await persistProviderJob(completedProviderJob);
         await persistRun('succeeded', completedProviderJob, archivedResult);
-        if (execution.usage) await persistUsage(execution.usage);
+        if (execution.usage) await persistUsage(execution.usage, completedProviderJob);
         runLogger.info({ status: 'succeeded', progress: 100 }, 'run succeeded');
         finishRunSpan('ok', 'succeeded');
         return {
@@ -430,15 +625,13 @@ export function createRunWorker(options: {
         };
       } catch (error) {
         const failedAt = new Date().toISOString();
-        await job.updateData({
-          ...data,
-          providerJob: { ...providerJob, status: 'failed', updatedAt: failedAt },
-        });
         const failedProviderJob = {
-          ...providerJob,
+          ...attachProviderErrorMetadata(activeProviderJob, error),
           status: 'failed' as const,
           updatedAt: failedAt,
         };
+        const failedData = runJobDataSchema.parse(job.data);
+        await job.updateData({ ...failedData, providerJob: failedProviderJob });
         await persistProviderJob(failedProviderJob);
         await persistRun(
           'failed',
@@ -461,6 +654,178 @@ export function createRunWorker(options: {
   );
 
   return { queue, worker };
+}
+
+/** Preserve an asynchronous provider identity even when polling or download fails. */
+export function attachProviderErrorMetadata(providerJob: ProviderJob, error: unknown): ProviderJob {
+  if (!error || typeof error !== 'object') return providerJob;
+  const candidate = error as { platformJobId?: unknown; providerPayload?: unknown };
+  const platformJobId =
+    typeof candidate.platformJobId === 'string' && candidate.platformJobId.trim()
+      ? candidate.platformJobId.trim()
+      : undefined;
+  const providerPayload =
+    candidate.providerPayload &&
+    typeof candidate.providerPayload === 'object' &&
+    !Array.isArray(candidate.providerPayload)
+      ? (candidate.providerPayload as Record<string, unknown>)
+      : undefined;
+  if (!platformJobId && !providerPayload) return providerJob;
+  return {
+    ...providerJob,
+    ...(platformJobId ? { platformJobId } : {}),
+    ...(providerPayload
+      ? {
+          payload: {
+            ...(providerJob.payload ?? {}),
+            ...(sanitizeProviderJobPayload({ statusResponse: providerPayload }) ?? {}),
+          },
+        }
+      : {}),
+  };
+}
+
+/**
+ * Keep provider-job JSON useful for reconciliation without persisting a raw
+ * gateway response. In particular, signed media URLs, data URLs, base64
+ * bodies, authorization material, and arbitrary nested response fields are
+ * deliberately discarded.
+ */
+export function sanitizeProviderJobPayload(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value)) return undefined;
+  const output: Record<string, unknown> = {};
+  const allowed = new Set([
+    'contract',
+    'phase',
+    'modelAlias',
+    'providerStatus',
+    'progress',
+    'status',
+    'code',
+    'errorCode',
+    'requestId',
+    'retryable',
+    'attempt',
+    'error',
+    'statusResponse',
+    'usage',
+    'result',
+  ]);
+  for (const [key, raw] of Object.entries(value)) {
+    if (!allowed.has(key)) continue;
+    if (key === 'result') {
+      const result = sanitizeProviderResult(raw);
+      if (result) output.result = result;
+      continue;
+    }
+    if (key === 'statusResponse') {
+      const statusResponse = sanitizeProviderStatusResponse(raw);
+      if (statusResponse) output.statusResponse = statusResponse;
+      continue;
+    }
+    if (key === 'usage') {
+      const usage = sanitizeProviderUsage(raw);
+      if (usage) output.usage = usage;
+      continue;
+    }
+    const scalar = sanitizeProviderScalar(key, raw);
+    if (scalar !== undefined) output[key] = scalar;
+  }
+  return Object.keys(output).length > 0 ? output : undefined;
+}
+
+function sanitizeProviderJobRecord(providerJob: ProviderJob): ProviderJob {
+  const payload = sanitizeProviderJobPayload(providerJob.payload);
+  return {
+    ...providerJob,
+    ...(payload ? { payload } : {}),
+    ...(providerJob.payload && !payload ? { payload: undefined } : {}),
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function sanitizeProviderStatusResponse(value: unknown): Record<string, unknown> | undefined {
+  return sanitizeProviderRecord(
+    value,
+    new Set([
+      'status',
+      'phase',
+      'providerStatus',
+      'progress',
+      'code',
+      'errorCode',
+      'requestId',
+      'retryable',
+      'error',
+    ]),
+  );
+}
+
+function sanitizeProviderUsage(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value)) return undefined;
+  const output: Record<string, unknown> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    // Usage metadata is provider-defined, so retain only scalar counters and
+    // identifiers while rejecting URL/body/credential-shaped fields.
+    if (/(url|uri|base64|secret|authorization|api[-_]?key|content)/i.test(key)) continue;
+    const scalar = sanitizeProviderScalar(key, raw);
+    if (scalar !== undefined) output[key] = scalar;
+  }
+  return Object.keys(output).length > 0 ? output : undefined;
+}
+
+function sanitizeProviderResult(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value)) return undefined;
+  const output: Record<string, unknown> = {};
+  for (const key of ['provider', 'summary', 'targetNodeId', 'mediaType', 'inputCount'] as const) {
+    const scalar = sanitizeProviderScalar(key, value[key]);
+    if (scalar !== undefined) output[key] = scalar;
+  }
+  if (isRecord(value.asset)) {
+    const asset: Record<string, unknown> = {};
+    for (const key of ['assetId', 'version', 'mimeType', 'sizeBytes', 'sha256'] as const) {
+      const scalar = sanitizeProviderScalar(key, value.asset[key]);
+      if (scalar !== undefined) asset[key] = scalar;
+    }
+    if (Object.keys(asset).length > 0) output.asset = asset;
+  }
+  return Object.keys(output).length > 0 ? output : undefined;
+}
+
+function sanitizeProviderRecord(
+  value: unknown,
+  allowed: Set<string>,
+): Record<string, unknown> | undefined {
+  if (!isRecord(value)) return undefined;
+  const output: Record<string, unknown> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (!allowed.has(key)) continue;
+    const scalar = sanitizeProviderScalar(key, raw);
+    if (scalar !== undefined) output[key] = scalar;
+  }
+  return Object.keys(output).length > 0 ? output : undefined;
+}
+
+function sanitizeProviderScalar(
+  key: string,
+  value: unknown,
+): string | number | boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (typeof value !== 'string') return undefined;
+  if (
+    /(url|uri|base64|secret|authorization|api[-_]?key)/i.test(key) ||
+    /^(?:access|refresh|id)?token$/i.test(key)
+  ) {
+    return undefined;
+  }
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 2000) return undefined;
+  if (/(?:https?:|data:|blob:)/i.test(normalized)) return undefined;
+  return normalized;
 }
 
 async function isCancellationRequested(queue: Queue<RunJobData>, jobId: string | undefined) {
@@ -540,17 +905,39 @@ function createProcessPersistence(): {
   };
 }
 
-function createNewApiProviderFromEnvironment() {
+function createNewApiProvidersFromEnvironment(): {
+  standard: ProviderExecutor;
+  video: ProviderExecutor;
+} {
   const baseUrl = process.env.NEW_API_BASE_URL;
   const apiKey = process.env.NEW_API_API_KEY;
   if (!baseUrl || !apiKey) {
     throw new Error('WORKER_PROVIDER=newapi requires NEW_API_BASE_URL and NEW_API_API_KEY');
   }
-  return new NewApiProvider({
+  const timeoutMs = Number(process.env.NEW_API_TIMEOUT_MS ?? 120_000);
+  const standard = new NewApiProvider({
     baseUrl,
     apiKey,
-    timeoutMs: Number(process.env.NEW_API_TIMEOUT_MS ?? 120_000),
+    timeoutMs,
+    requireHttps: process.env.NODE_ENV === 'production',
   });
+  const video = new NewApiVideoProvider({
+    baseUrl,
+    apiKey,
+    timeoutMs,
+    videoPath: process.env.NEW_API_VIDEO_PATH ?? '/videos',
+    ...(process.env.NEW_API_VIDEO_CREATE_PATH
+      ? { videoCreatePath: process.env.NEW_API_VIDEO_CREATE_PATH }
+      : {}),
+    ...(process.env.NEW_API_VIDEO_JOBS_PATH
+      ? { videoJobsPath: process.env.NEW_API_VIDEO_JOBS_PATH }
+      : {}),
+    pollIntervalMs: Number(process.env.NEW_API_VIDEO_POLL_INTERVAL_MS ?? 2_000),
+    maxPollAttempts: Number(process.env.NEW_API_VIDEO_MAX_POLL_ATTEMPTS ?? 120),
+    maxContentBytes: Number(process.env.NEW_API_VIDEO_MAX_CONTENT_BYTES ?? 50 * 1024 * 1024),
+    requireHttps: process.env.NODE_ENV === 'production',
+  });
+  return { standard, video };
 }
 
 function cachedProviderResult(payload: Record<string, unknown> | undefined): RunResult | undefined {

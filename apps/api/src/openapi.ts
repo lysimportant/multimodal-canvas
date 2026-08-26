@@ -39,6 +39,17 @@ const projectSchema = {
   },
 } as const;
 
+const projectModelDefaultsSchema = {
+  type: 'object',
+  properties: {
+    text: { type: 'string', minLength: 1 },
+    image: { type: 'string', minLength: 1 },
+    audio: { type: 'string', minLength: 1 },
+    video: { type: 'string', minLength: 1 },
+  },
+  additionalProperties: false,
+} as const;
+
 const nodeSchema = {
   type: 'object',
   required: ['id', 'type', 'position', 'data'],
@@ -50,6 +61,8 @@ const nodeSchema = {
       required: ['x', 'y'],
       properties: { x: { type: 'number' }, y: { type: 'number' } },
     },
+    width: { type: 'number', exclusiveMinimum: 0, maximum: 10000 },
+    height: { type: 'number', exclusiveMinimum: 0, maximum: 10000 },
     data: {
       type: 'object',
       required: ['label', 'mediaType', 'mode'],
@@ -57,6 +70,10 @@ const nodeSchema = {
         label: { type: 'string' },
         mediaType: mediaTypeSchema,
         mode: { type: 'string', enum: ['source', 'generate', 'transform'] },
+        enabled: { type: 'boolean' },
+        stale: { type: 'boolean' },
+        prompt: { type: 'string', maxLength: 20000 },
+        inferenceStrength: { type: 'string', enum: ['low', 'medium', 'high'] },
         assetId: { type: 'string' },
         modelAlias: { type: 'string' },
         contentUrl: { type: 'string' },
@@ -359,6 +376,48 @@ export const openApiDocument = {
           '400': response('Invalid canvas', errorSchema),
           '404': response('Project not found', errorSchema),
           '409': response('Revision conflict', errorSchema),
+        },
+      },
+    },
+    '/v1/projects/{projectId}/models/defaults': {
+      get: {
+        tags: ['projects'],
+        parameters: [{ $ref: '#/components/parameters/ProjectId' }],
+        responses: {
+          '200': response(
+            'Project model defaults',
+            envelope('defaults', projectModelDefaultsSchema),
+          ),
+          '404': response('Project not found', errorSchema),
+        },
+      },
+      patch: {
+        tags: ['projects'],
+        parameters: [{ $ref: '#/components/parameters/ProjectId' }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  text: { type: ['string', 'null'], minLength: 1 },
+                  image: { type: ['string', 'null'], minLength: 1 },
+                  audio: { type: ['string', 'null'], minLength: 1 },
+                  video: { type: ['string', 'null'], minLength: 1 },
+                },
+                additionalProperties: false,
+              },
+            },
+          },
+        },
+        responses: {
+          '200': response(
+            'Project model defaults updated',
+            envelope('defaults', projectModelDefaultsSchema),
+          ),
+          '400': response('Invalid project model defaults', errorSchema),
+          '404': response('Project not found', errorSchema),
         },
       },
     },

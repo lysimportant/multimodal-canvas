@@ -5,15 +5,29 @@ import {
   portRoleSchema,
   runJobDataSchema,
   runJobResultSchema,
+  providerJobSchema,
+  runResultAssetSchema,
+  runResultSchema,
   runSnapshotSchema,
   type CanvasDocument,
+  type MediaType,
   type RunJobData,
+  type RunResult,
+  type RunResultAsset,
   type ProviderJob,
   type RunRecord,
   type RunSnapshot,
   type RunStatus,
 } from '@multimodal-canvas/domain';
 import type { PrismaRunPersistence } from './run-persistence';
+
+// A tiny 1-second fragmented H.264 MP4 keeps the default provider useful in
+// local development without pretending that arbitrary text is a playable
+// video. The bytes were generated once with ffmpeg and verified with ffprobe.
+const MOCK_VIDEO_MP4_BASE64 =
+  'AAAAHGZ0eXBpc281AAACAGlzbzVpc282bXA0MQAAAv5tb292AAAAbG12aGQAAAAAAAAAAAAAAAAAAAPoAAAAAAABAAABAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAACAXRyYWsAAABcdGtoZAAAAAMAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAEAAAABAAAAAAAZ1tZGlhAAAAIG1kaGQAAAAAAAAAAAAAAAAAAEAAAAAAAFXEAAAAAAAtaGRscgAAAAAAAAAAdmlkZQAAAAAAAAAAAAAAAFZpZGVvSGFuZGxlcgAAAAFIbWluZgAAABR2bWhkAAAAAQAAAAAAAAAAAAAAJGRpbmYAAAAcZHJlZgAAAAAAAAABAAAADHVybCAAAAABAAABCHN0YmwAAAC8c3RzZAAAAAAAAAABAAAArGF2YzEAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAEAAQAEgAAABIAAAAAAAAAAEWTGF2YzYwLjMuMTAwIGxpYm8yNjRydAAAAAAAAAAAAAAY//8AAAAyYXZjQwFkAAv/4QAXZ2QAC6wZGpyEAAADAAQAAAMACjwiEagBAARo7jyA/fj4AAAAABBwYXNwAAAAAQAAAAEAAAAUYnRydAAAAAAAAw1AAAMNQAAAABBzdHRzAAAAAAAAAAAAAAAQc3RzYwAAAAAAAAAAAAAAFHN0c3oAAAAAAAAAAAAAAAAAAAAQc3RjbwAAAAAAAAAAAAAAKG12ZXgAAAAgdHJleAAAAAAAAAABAAAAAQAAAAAAAAAAAAAAAAAAAGF1ZHRhAAAAWW1ldGEAAAAAAAAAIWhkbHIAAAAAAAAAAG1kaXJhcHBsAAAAAAAAAAAAAAAALGlsc3QAAAAkqXRvbwAAABxkYXRhAAAAAQAAAABMYXZmNjAuMy4xMDAAAABobW9vZgAAABBtZmhkAAAAAAAAAAEAAABQdHJhZwAAABx0ZmhkAAIAOAAAAAEAAEAAAAAAOgEBAAAAAAAUdGZkdAEAAAAAAAAAAAAAAAAAABh0cnVuAAAABQAAAAEAAABwAgAAAAAAAEJtZGF0AAAAF2dkAAusGRqchAAAAwAEAAADAAo8IhGoAAAABGjuPIAAAAATZbgABAAAB3/6eB7n500Yldj/8AAAAENtZnJhAAAAK3RmcmEBAAAAAAAAAQAAAAAAAAABAAAAAAAAAAAAAAAAAAADGgEBAQAAABBtZnJvAAAAAAAAAEM=';
+
+const MOCK_VIDEO_MP4 = Buffer.from(MOCK_VIDEO_MP4_BASE64, 'base64');
 
 export const RUN_QUEUE_NAME = 'multimodal-canvas-runs';
 export type RunProviderName = 'mock' | 'newapi';
@@ -22,6 +36,61 @@ export type RunCreateOptions = {
   userId?: string;
   estimatedCost?: { amount: string | number; currency: string };
 };
+
+/**
+ * Provider-neutral output that can be archived by the API's local asset
+ * adapter. Provider implementations may return a richer output envelope;
+ * the memory service only consumes these fields after normalization.
+ */
+export type RunOutput = {
+  content: Buffer;
+  mimeType: string;
+  format?: string;
+};
+
+/** Common output shape accepted from an injected Provider implementation. */
+export type RunExecutionOutput = {
+  mediaType?: 'text' | 'image' | 'audio' | 'video';
+  kind?: string;
+  text?: string;
+  url?: string;
+  base64?: string;
+  content?: Buffer;
+  mimeType?: string;
+  format?: string;
+};
+
+export type RunExecution = {
+  result: RunResult;
+  output?: RunExecutionOutput;
+  providerJob?: Partial<ProviderJob> & Pick<ProviderJob, 'provider'>;
+};
+
+export type RunProviderJobUpdate = Partial<ProviderJob> & Pick<ProviderJob, 'provider'>;
+
+export type RunExecutorRequest = {
+  snapshot: RunSnapshot;
+  /** Existing asynchronous task identity; providers must resume it without POSTing again. */
+  providerJob?: RunProviderJobUpdate;
+  reportProgress?: (progress: number) => Promise<void> | void;
+  /** Called as soon as an asynchronous provider creates or updates a platform task. */
+  onProviderJob?: (providerJob: RunProviderJobUpdate) => Promise<void> | void;
+};
+
+/**
+ * A function or Provider-like object can be injected for local New API runs.
+ * Keeping this structural means the API does not need to know provider
+ * specific request fields or credentials.
+ */
+export type RunExecutor =
+  | ((request: RunExecutorRequest) => Promise<RunResult | RunExecution>)
+  | { execute(request: RunExecutorRequest): Promise<RunResult | RunExecution> };
+
+export type RunResultArchiver = (input: {
+  run: Readonly<RunRecord>;
+  result: RunResult;
+  output?: RunOutput;
+}) => Promise<RunResultAsset | undefined>;
 
 export class RunServiceError extends Error {
   constructor(
@@ -57,6 +126,9 @@ export function createRunSnapshot(
   if (target.data.mode === 'source') {
     throw new RunServiceError('invalid_target', 'source nodes cannot be run directly');
   }
+  if (target.data.enabled === false) {
+    throw new RunServiceError('invalid_target', 'disabled nodes cannot be run');
+  }
 
   const includedNodeIds = new Set([targetNodeId]);
   const pendingNodeIds = [targetNodeId];
@@ -65,6 +137,8 @@ export function createRunSnapshot(
     if (!nodeId) continue;
     for (const edge of canvas.edges) {
       if (edge.targetNodeId !== nodeId || includedNodeIds.has(edge.sourceNodeId)) continue;
+      const source = canvas.nodes.find((node) => node.id === edge.sourceNodeId);
+      if (!source || source.data.enabled === false) continue;
       includedNodeIds.add(edge.sourceNodeId);
       pendingNodeIds.push(edge.sourceNodeId);
     }
@@ -75,7 +149,10 @@ export function createRunSnapshot(
     (edge) => includedNodeIds.has(edge.sourceNodeId) && includedNodeIds.has(edge.targetNodeId),
   );
   const inputs = canvas.edges
-    .filter((edge) => edge.targetNodeId === targetNodeId)
+    .filter((edge) => {
+      if (edge.targetNodeId !== targetNodeId) return false;
+      return canvas.nodes.find((node) => node.id === edge.sourceNodeId)?.data.enabled !== false;
+    })
     .sort((left, right) => left.order - right.order)
     .map((edge) => {
       const source = canvas.nodes.find((node) => node.id === edge.sourceNodeId);
@@ -108,8 +185,76 @@ function clone<T>(value: T): T {
   return structuredClone(value);
 }
 
-function createProviderJob(runId: string, provider: RunProviderName, now: string): ProviderJob {
-  return {
+function mergeProviderJob(current: ProviderJob, update: RunProviderJobUpdate): ProviderJob {
+  const updatedAt = new Date().toISOString();
+  return providerJobSchema.parse({
+    ...current,
+    ...update,
+    // The local provider-job row is immutable in identity; only the platform
+    // task fields may be supplied by an executor.
+    id: current.id,
+    provider: current.provider,
+    createdAt: current.createdAt,
+    status: update.status ?? current.status,
+    progress: Math.max(0, Math.min(100, Math.max(current.progress, update.progress ?? 0))),
+    updatedAt,
+  });
+}
+
+function attachProviderErrorToRun(run: RunRecord, error: unknown) {
+  if (!run.providerJob || !isRecord(error)) return;
+  const platformJobId = typeof error.platformJobId === 'string' ? error.platformJobId.trim() : '';
+  const providerPayload = sanitizeProviderPayload(error.providerPayload);
+  if (!platformJobId && !providerPayload) return;
+  run.providerJob = {
+    ...run.providerJob,
+    ...(platformJobId ? { platformJobId } : {}),
+    ...(providerPayload
+      ? { payload: { ...(run.providerJob.payload ?? {}), statusResponse: providerPayload } }
+      : {}),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+/** Keep provider diagnostics useful without exposing credentials or signed URLs. */
+function sanitizeProviderPayload(value: unknown, depth = 0): Record<string, unknown> | undefined {
+  if (!isRecord(value) || depth > 2) return undefined;
+  const output: Record<string, unknown> = {};
+  for (const [key, raw] of Object.entries(value).slice(0, 32)) {
+    if (/(url|uri|base64|secret|authorization|api[-_]?key|password|credential|token)/i.test(key)) {
+      continue;
+    }
+    if (typeof raw === 'string') {
+      const normalized = raw.trim();
+      if (normalized) output[key] = normalized.slice(0, 500);
+    } else if (typeof raw === 'number' || typeof raw === 'boolean') {
+      if (typeof raw !== 'number' || Number.isFinite(raw)) output[key] = raw;
+    } else if (isRecord(raw)) {
+      const nested = sanitizeProviderPayload(raw, depth + 1);
+      if (nested) output[key] = nested;
+    }
+  }
+  return Object.keys(output).length > 0 ? output : undefined;
+}
+
+function sanitizeRunErrorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : 'run execution failed';
+  return raw
+    .replace(
+      /(authorization|api[-_]?key|token|secret|password)\s*[:=]\s*[^\s,;]+/gi,
+      '$1=[redacted]',
+    )
+    .replace(/https?:\/\/[^\s)]+/gi, '[provider-url-redacted]')
+    .slice(0, 2000);
+}
+
+function createProviderJob(
+  runId: string,
+  provider: RunProviderName,
+  now: string,
+  previous?: ProviderJob,
+): ProviderJob {
+  const fresh: ProviderJob = {
     id: `provider_job_${runId}`,
     provider,
     status: 'queued',
@@ -117,6 +262,37 @@ function createProviderJob(runId: string, provider: RunProviderName, now: string
     createdAt: now,
     updatedAt: now,
   };
+  // A platform task is externally billable and must survive a retry. Keep
+  // only its provider identity/payload while assigning a new local row ID.
+  // A confirmed terminal provider failure/cancellation must instead start a
+  // new task; a timeout or transport error keeps the identity resumable.
+  if (provider !== 'newapi' || !canResumeProviderJob(previous)) return fresh;
+  return {
+    ...previous,
+    id: fresh.id,
+    provider,
+    status: 'submitted',
+    progress: Math.max(0, Math.min(100, previous.progress)),
+    createdAt: previous.createdAt,
+    updatedAt: now,
+  };
+}
+
+function canResumeProviderJob(previous: ProviderJob | undefined): previous is ProviderJob {
+  if (!previous?.platformJobId) return false;
+  if (previous.status !== 'failed' && previous.status !== 'cancelled') return true;
+  const payload = previous.payload;
+  const statusResponse = isRecord(payload?.statusResponse) ? payload.statusResponse : undefined;
+  const providerStatus =
+    typeof statusResponse?.providerStatus === 'string'
+      ? statusResponse.providerStatus.toLowerCase()
+      : typeof payload?.providerStatus === 'string'
+        ? payload.providerStatus.toLowerCase()
+        : undefined;
+  return (
+    !providerStatus ||
+    !['failed', 'error', 'expired', 'cancelled', 'canceled'].includes(providerStatus)
+  );
 }
 
 function createQueuedRun(
@@ -125,6 +301,8 @@ function createQueuedRun(
   retryOf?: string,
   provider: RunProviderName = 'mock',
   idempotencyKey?: string,
+  userId?: string,
+  previousProviderJob?: ProviderJob,
 ): RunRecord {
   const now = new Date().toISOString();
   const id = `run_${randomUUID()}`;
@@ -135,10 +313,11 @@ function createQueuedRun(
     status: 'queued',
     progress: 0,
     attempt,
+    ...(userId ? { userId } : {}),
     provider,
     modelAlias: snapshot.modelAlias,
     snapshot: clone(snapshot),
-    providerJob: createProviderJob(id, provider, now),
+    providerJob: createProviderJob(id, provider, now, previousProviderJob),
     ...(idempotencyKey ? { idempotencyKey } : {}),
     ...(retryOf ? { retryOf } : {}),
     createdAt: now,
@@ -152,10 +331,41 @@ export class MemoryRunService implements RunService {
   private readonly stepDelayMs: number;
   private readonly providerName: RunProviderName;
   private readonly idempotency = new Map<string, { runId: string; fingerprint: string }>();
+  private executor: RunExecutor;
+  private resultArchiver?: RunResultArchiver;
 
-  constructor(options: { stepDelayMs?: number; providerName?: RunProviderName } = {}) {
+  constructor(
+    options: {
+      stepDelayMs?: number;
+      providerName?: RunProviderName;
+      executor?: RunExecutor;
+      resultArchiver?: RunResultArchiver;
+    } = {},
+  ) {
     this.stepDelayMs = options.stepDelayMs ?? 20;
     this.providerName = options.providerName ?? 'mock';
+    this.executor =
+      options.executor ??
+      (this.providerName === 'mock'
+        ? mockRunExecutor
+        : () => {
+            throw new Error('New API executor is not configured for the memory run service');
+          });
+    this.resultArchiver = options.resultArchiver;
+  }
+
+  /** Allows the API composition root to inject a provider after construction. */
+  setExecutor(executor: RunExecutor) {
+    this.executor = executor;
+  }
+
+  /** Allows the composition root to attach storage after constructing a service. */
+  setResultArchiver(resultArchiver: RunResultArchiver | undefined) {
+    this.resultArchiver = resultArchiver;
+  }
+
+  hasResultArchiver(): boolean {
+    return this.resultArchiver !== undefined;
   }
 
   async create(snapshot: RunSnapshot, options: RunCreateOptions = {}): Promise<RunRecord> {
@@ -173,7 +383,15 @@ export class MemoryRunService implements RunService {
         if (existingRun) return clone(existingRun);
       }
     }
-    const run = createQueuedRun(snapshot, 1, undefined, this.providerName, idempotencyKey);
+    const run = createQueuedRun(
+      snapshot,
+      1,
+      undefined,
+      this.providerName,
+      idempotencyKey,
+      options.userId,
+      undefined,
+    );
     this.runs.set(run.id, run);
     if (idempotencyKey) {
       this.idempotency.set(idempotencyMapKey(snapshot.projectId, idempotencyKey), {
@@ -207,6 +425,9 @@ export class MemoryRunService implements RunService {
       previous.attempt + 1,
       previous.id,
       previous.provider === 'newapi' ? 'newapi' : 'mock',
+      undefined,
+      previous.userId,
+      previous.providerJob,
     );
     this.runs.set(run.id, run);
     this.schedule(run.id);
@@ -262,31 +483,110 @@ export class MemoryRunService implements RunService {
       return;
     }
 
-    const stages: Array<[RunStatus, number]> = [
-      ['preparing', 10],
-      ['running', 45],
-      ['processing', 80],
-    ];
-    for (const [status, progress] of stages) {
+    try {
+      const stages: Array<[RunStatus, number]> = [
+        ['preparing', 10],
+        ['running', 45],
+        ['processing', 80],
+      ];
+      for (const [status, progress] of stages) {
+        if (isCancellationRequested(run)) {
+          this.transition(run, 'cancelled', run.progress);
+          return;
+        }
+        this.transition(run, status, progress);
+        await new Promise((resolve) => setTimeout(resolve, this.stepDelayMs));
+      }
       if (isCancellationRequested(run)) {
         this.transition(run, 'cancelled', run.progress);
         return;
       }
-      this.transition(run, status, progress);
-      await new Promise((resolve) => setTimeout(resolve, this.stepDelayMs));
+
+      const execution = normalizeRunExecution(
+        await executeRunExecutor(this.executor, {
+          snapshot: clone(run.snapshot),
+          providerJob: run.providerJob ? clone(run.providerJob) : undefined,
+          reportProgress: (progress) => this.reportProgress(run, progress),
+          onProviderJob: (update) => {
+            if (!run.providerJob) return;
+            run.providerJob = mergeProviderJob(run.providerJob, update);
+            run.updatedAt = new Date().toISOString();
+          },
+        }),
+      );
+      if (isCancellationRequested(run)) {
+        this.transition(run, 'cancelled', run.progress);
+        return;
+      }
+      if (execution.providerJob && run.providerJob) {
+        run.providerJob = mergeProviderJob(run.providerJob, execution.providerJob);
+      }
+
+      let result = runResultSchema.parse(execution.result);
+      const output = normalizeRunOutput(execution.output, result.mediaType);
+      const archivedAsset = await this.resultArchiver?.({
+        run: clone(run),
+        result,
+        ...(output ? { output } : {}),
+      });
+      if (archivedAsset) {
+        result = runResultSchema.parse({
+          ...result,
+          asset: runResultAssetSchema.parse(archivedAsset),
+        });
+      } else if (!result.asset && output) {
+        // Keep direct MemoryRunService consumers useful even when no storage
+        // adapter is supplied (the app composition root provides one).
+        result = runResultSchema.parse({ ...result, asset: inlineResultAsset(output) });
+      } else if (!result.asset) {
+        const remoteUrl = safeOutputUrl(execution.output);
+        if (remoteUrl) {
+          const mediaType = execution.output?.mediaType ?? result.mediaType;
+          const mimeType =
+            typeof execution.output?.mimeType === 'string'
+              ? execution.output.mimeType
+              : defaultMimeType(mediaType, execution.output?.format);
+          result = runResultSchema.parse({
+            ...result,
+            asset: remoteResultAsset(remoteUrl, mimeType),
+          });
+        }
+      }
+      // Expose the terminal provider job alongside the run-level field so
+      // consumers that only persist/read the result envelope retain it.
+      if (run.providerJob && !result.providerJob) {
+        result = runResultSchema.parse({ ...result, providerJob: run.providerJob });
+      }
+      this.transition(run, 'succeeded', 100, result);
+    } catch (error) {
+      if (isCancellationRequested(run)) {
+        this.transition(run, 'cancelled', run.progress);
+        return;
+      }
+      this.fail(run, error);
     }
-    if (isCancellationRequested(run)) {
-      this.transition(run, 'cancelled', run.progress);
-      return;
+  }
+
+  private reportProgress(run: RunRecord, progress: number) {
+    if (!Number.isFinite(progress)) return;
+    this.updateProgress(run, Math.max(0, Math.min(100, Math.round(progress))));
+  }
+
+  private updateProgress(run: RunRecord, progress: number) {
+    run.progress = progress;
+    run.updatedAt = new Date().toISOString();
+    if (run.providerJob) {
+      run.providerJob = { ...run.providerJob, progress, updatedAt: run.updatedAt };
     }
-    this.transition(run, 'succeeded', 100, {
-      provider: run.provider,
-      summary: `Mock Provider 已完成 ${run.snapshot.targetNodeId}`,
-      targetNodeId: run.snapshot.targetNodeId,
-      mediaType: run.snapshot.nodes.find((node) => node.id === run.snapshot.targetNodeId)!.data
-        .mediaType,
-      inputCount: run.snapshot.inputs.length,
-    });
+  }
+
+  private fail(run: RunRecord, error: unknown) {
+    const message = sanitizeRunErrorMessage(error);
+    attachProviderErrorToRun(run, error);
+    if (canTransitionRunStatus(run.status, 'failed')) {
+      this.transition(run, 'failed', run.progress);
+    }
+    run.error = message.slice(0, 2000);
   }
 
   private transition(
@@ -322,6 +622,336 @@ export class MemoryRunService implements RunService {
       };
     }
     if (result) run.result = result;
+  }
+}
+
+/**
+ * Small deterministic executor used by the in-memory API. It intentionally
+ * does not call a model service; the generated bytes make local runs useful
+ * for previewing the complete run -> asset -> content URL flow.
+ */
+async function mockRunExecutor({
+  snapshot,
+  reportProgress,
+}: RunExecutorRequest): Promise<RunExecution> {
+  const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
+  if (!target) throw new Error('run target node is missing from snapshot');
+  await reportProgress?.(92);
+
+  const mediaType = target.data.mediaType;
+  const label = target.data.label.trim() || 'Untitled output';
+  let output: RunExecutionOutput;
+  if (mediaType === 'text') {
+    const prompt = target.data.prompt?.trim();
+    const text = prompt ? `Mock output for ${label}\n${prompt}` : `Mock output for ${label}`;
+    output = { mediaType, kind: 'text', text, mimeType: 'text/plain', format: 'txt' };
+  } else if (mediaType === 'image') {
+    const escaped = escapeXml(label);
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360"><rect width="640" height="360" fill="#172033"/><text x="32" y="190" fill="#f8fafc" font-family="sans-serif" font-size="32">${escaped}</text></svg>`;
+    output = {
+      mediaType,
+      kind: 'base64',
+      base64: Buffer.from(svg, 'utf8').toString('base64'),
+      mimeType: 'image/svg+xml',
+      format: 'svg',
+    };
+  } else if (mediaType === 'audio') {
+    output = {
+      mediaType,
+      kind: 'base64',
+      base64: createMockWav().toString('base64'),
+      mimeType: 'audio/wav',
+      format: 'wav',
+    };
+  } else {
+    // Keep local video runs playable. A real video provider replaces this
+    // fixture when NewApiVideoProvider is configured.
+    output = {
+      mediaType,
+      kind: 'base64',
+      base64: MOCK_VIDEO_MP4.toString('base64'),
+      mimeType: 'video/mp4',
+      format: 'mp4',
+    };
+  }
+
+  await reportProgress?.(100);
+  return {
+    result: {
+      provider: 'mock',
+      summary: `Mock Provider 已完成 ${target.id}`,
+      targetNodeId: target.id,
+      mediaType,
+      inputCount: snapshot.inputs.length,
+    },
+    output,
+  };
+}
+
+function executeRunExecutor(executor: RunExecutor, request: RunExecutorRequest) {
+  if (typeof executor === 'function') return executor(request);
+  if (executor && typeof executor.execute === 'function') return executor.execute(request);
+  throw new Error('run executor is not configured');
+}
+
+function normalizeRunExecution(value: RunResult | RunExecution): RunExecution {
+  const candidate = value as unknown;
+  if (isRecord(candidate) && 'result' in candidate) {
+    const parsedResult = runResultSchema.safeParse(candidate.result);
+    if (!parsedResult.success) {
+      throw new Error(`executor returned an invalid result: ${parsedResult.error.message}`);
+    }
+    const output = normalizeExecutionOutputEnvelope(candidate.output);
+    const providerJob =
+      normalizeProviderJob(candidate.providerJob) ?? parsedResult.data.providerJob;
+    return {
+      result: parsedResult.data,
+      ...(output ? { output } : {}),
+      ...(providerJob ? { providerJob } : {}),
+    };
+  }
+
+  const parsedResult = runResultSchema.safeParse(candidate);
+  if (!parsedResult.success) {
+    throw new Error(`executor returned an invalid result: ${parsedResult.error.message}`);
+  }
+  return {
+    result: parsedResult.data,
+    ...(parsedResult.data.providerJob ? { providerJob: parsedResult.data.providerJob } : {}),
+  };
+}
+
+function normalizeExecutionOutputEnvelope(value: unknown): RunExecutionOutput | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === 'string') return { text: value, kind: 'text', mediaType: 'text' };
+  if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
+    return { content: Buffer.from(value as Uint8Array) };
+  }
+  if (!isRecord(value)) return undefined;
+  return value as RunExecutionOutput;
+}
+
+function normalizeProviderJob(value: unknown): RunExecution['providerJob'] | undefined {
+  if (!isRecord(value) || typeof value.provider !== 'string' || !value.provider.trim()) {
+    return undefined;
+  }
+  const candidate = {
+    provider: value.provider,
+    ...(typeof value.id === 'string' ? { id: value.id } : {}),
+    ...(typeof value.platformJobId === 'string' ? { platformJobId: value.platformJobId } : {}),
+    ...(typeof value.status === 'string' ? { status: value.status } : {}),
+    ...(typeof value.progress === 'number' ? { progress: value.progress } : {}),
+    ...(isRecord(value.payload) ? { payload: value.payload } : {}),
+    ...(typeof value.createdAt === 'string' ? { createdAt: value.createdAt } : {}),
+    ...(typeof value.updatedAt === 'string' ? { updatedAt: value.updatedAt } : {}),
+  };
+  const complete = providerJobSchema.safeParse(candidate);
+  return complete.success
+    ? complete.data
+    : ({
+        provider: value.provider,
+        ...(typeof value.id === 'string' ? { id: value.id } : {}),
+        ...(typeof value.platformJobId === 'string' ? { platformJobId: value.platformJobId } : {}),
+        ...(typeof value.status === 'string'
+          ? { status: value.status as ProviderJob['status'] }
+          : {}),
+        ...(typeof value.progress === 'number' ? { progress: value.progress } : {}),
+      } satisfies RunExecution['providerJob']);
+}
+
+function normalizeRunOutput(
+  value: RunExecutionOutput | undefined,
+  expectedMediaType: MediaType,
+): RunOutput | undefined {
+  if (value === undefined || value === null) return undefined;
+  const record = typeof value === 'object' ? (value as Record<string, unknown>) : undefined;
+  const declaredMediaType = record?.mediaType;
+  const mediaType = isMediaType(declaredMediaType) ? declaredMediaType : expectedMediaType;
+  if (declaredMediaType !== undefined && !isMediaType(declaredMediaType)) {
+    throw new Error('executor returned an invalid output media type');
+  }
+  if (mediaType !== expectedMediaType) {
+    throw new Error(
+      `executor output media type ${mediaType} does not match target ${expectedMediaType}`,
+    );
+  }
+
+  const rawMimeType = typeof record?.mimeType === 'string' ? record.mimeType.trim() : '';
+  const mimeType = rawMimeType || defaultMimeType(mediaType, record?.format);
+  if (!mimeMatchesMediaType(mimeType, mediaType)) {
+    throw new Error(`executor output MIME type ${mimeType} does not match target ${mediaType}`);
+  }
+  const format = typeof record?.format === 'string' ? record.format : undefined;
+  const content = record?.content;
+  if (Buffer.isBuffer(content) || content instanceof Uint8Array) {
+    const bytes = Buffer.from(content as Uint8Array);
+    if (bytes.byteLength === 0) throw new Error('executor returned empty output');
+    return { content: bytes, mimeType, ...(format ? { format } : {}) };
+  }
+
+  const text = typeof record?.text === 'string' ? record.text : undefined;
+  if (text !== undefined || record?.kind === 'text') {
+    if (mediaType !== 'text') throw new Error('text output is only valid for text nodes');
+    const textValue = text ?? '';
+    if (!textValue.trim()) throw new Error('executor returned empty text output');
+    return {
+      content: Buffer.from(textValue, 'utf8'),
+      mimeType,
+      ...(format ? { format } : {}),
+    };
+  }
+
+  const base64 = typeof record?.base64 === 'string' ? record.base64 : undefined;
+  if (base64 !== undefined || record?.kind === 'base64') {
+    if (base64 === undefined) throw new Error('executor base64 output is missing data');
+    const bytes = decodeBase64(base64);
+    if (bytes.byteLength === 0) throw new Error('executor returned empty output');
+    return { content: bytes, mimeType, ...(format ? { format } : {}) };
+  }
+
+  const url = typeof record?.url === 'string' ? record.url.trim() : undefined;
+  if (url) {
+    const data = parseDataUrl(url);
+    if (data) {
+      if (!mimeMatchesMediaType(data.mimeType, mediaType)) {
+        throw new Error(
+          `executor data URL MIME type ${data.mimeType} does not match target ${mediaType}`,
+        );
+      }
+      return {
+        content: data.content,
+        mimeType: data.mimeType || mimeType,
+        ...(format ? { format } : {}),
+      };
+    }
+    // Remote URLs are intentionally not fetched by the API process. The
+    // worker/provider archiver owns that operation and can apply its policy.
+    if (!isHttpUrl(url)) throw new Error('executor output URL must use http(s) or data scheme');
+  }
+  return undefined;
+}
+
+function inlineResultAsset(output: RunOutput): RunResultAsset {
+  const sha256 = createHash('sha256').update(output.content).digest('hex');
+  return {
+    assetId: `inline_${sha256.slice(0, 24)}`,
+    version: 1,
+    contentUrl: `data:${output.mimeType};base64,${output.content.toString('base64')}`,
+    mimeType: output.mimeType,
+    sizeBytes: output.content.byteLength,
+    sha256,
+  };
+}
+
+function remoteResultAsset(url: string, mimeType: string): RunResultAsset {
+  return {
+    assetId: `remote_${createHash('sha256').update(url).digest('hex').slice(0, 24)}`,
+    contentUrl: url,
+    mimeType,
+  };
+}
+
+function safeOutputUrl(output: RunExecutionOutput | undefined): string | undefined {
+  const url = typeof output?.url === 'string' ? output.url.trim() : '';
+  if (!url || parseDataUrl(url) || !isHttpUrl(url)) return undefined;
+  return url;
+}
+
+function parseDataUrl(value: string): { mimeType: string; content: Buffer } | undefined {
+  const match = /^data:([^;,\s]+)?((?:;[^,]*)?),([\s\S]*)$/i.exec(value);
+  if (!match) return undefined;
+  const mimeType = match[1]?.trim() || 'application/octet-stream';
+  const metadata = match[2] ?? '';
+  const payload = match[3] ?? '';
+  if (/;base64(?:;|$)/i.test(metadata)) return { mimeType, content: decodeBase64(payload) };
+  try {
+    return { mimeType, content: Buffer.from(decodeURIComponent(payload), 'utf8') };
+  } catch {
+    throw new Error('executor returned an invalid data URL');
+  }
+}
+
+function decodeBase64(value: string): Buffer {
+  const normalized = value.trim().replace(/-/g, '+').replace(/_/g, '/');
+  if (!normalized || normalized.length % 4 === 1 || !/^[A-Za-z0-9+/]*={0,2}$/.test(normalized)) {
+    throw new Error('executor returned invalid base64 output');
+  }
+  return Buffer.from(normalized, 'base64');
+}
+
+function defaultMimeType(mediaType: MediaType, format?: unknown): string {
+  if (typeof format === 'string') {
+    const normalized = format.toLowerCase().replace(/^\./, '');
+    if (mediaType === 'image' && normalized === 'svg') return 'image/svg+xml';
+    if (mediaType === 'audio' && normalized === 'wav') return 'audio/wav';
+    if (mediaType === 'video' && normalized === 'webm') return 'video/webm';
+  }
+  return mediaType === 'text'
+    ? 'text/plain'
+    : mediaType === 'image'
+      ? 'image/png'
+      : mediaType === 'audio'
+        ? 'audio/wav'
+        : 'video/mp4';
+}
+
+function mimeMatchesMediaType(mimeType: string, mediaType: MediaType): boolean {
+  const normalized = mimeType.toLowerCase().split(';', 1)[0]?.trim();
+  if (normalized === 'application/octet-stream') return true;
+  return normalized?.startsWith(`${mediaType}/`) ?? false;
+}
+
+function createMockWav(): Buffer {
+  const sampleRate = 8_000;
+  const sampleCount = sampleRate / 8;
+  const dataSize = sampleCount * 2;
+  const buffer = Buffer.alloc(44 + dataSize);
+  buffer.write('RIFF', 0, 'ascii');
+  buffer.writeUInt32LE(36 + dataSize, 4);
+  buffer.write('WAVEfmt ', 8, 'ascii');
+  buffer.writeUInt32LE(16, 16);
+  buffer.writeUInt16LE(1, 20);
+  buffer.writeUInt16LE(1, 22);
+  buffer.writeUInt32LE(sampleRate, 24);
+  buffer.writeUInt32LE(sampleRate * 2, 28);
+  buffer.writeUInt16LE(2, 32);
+  buffer.writeUInt16LE(16, 34);
+  buffer.write('data', 36, 'ascii');
+  buffer.writeUInt32LE(dataSize, 40);
+  return buffer;
+}
+
+function escapeXml(value: string): string {
+  return value.replace(/[&<>'"]/g, (character) => {
+    switch (character) {
+      case '&':
+        return '&amp;';
+      case '<':
+        return '&lt;';
+      case '>':
+        return '&gt;';
+      case "'":
+        return '&apos;';
+      default:
+        return '&quot;';
+    }
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isMediaType(value: unknown): value is MediaType {
+  return value === 'text' || value === 'image' || value === 'audio' || value === 'video';
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
   }
 }
 
@@ -396,7 +1026,9 @@ export class BullMqRunService implements RunService {
       previous.id,
       previous.provider === 'newapi' ? 'newapi' : 'mock',
       undefined,
+      previous.userId,
       undefined,
+      previous.providerJob,
     );
   }
 
@@ -429,6 +1061,7 @@ export class BullMqRunService implements RunService {
     idempotencyKey?: string,
     userId?: string,
     estimatedCost?: { amount: string | number; currency: string },
+    previousProviderJob?: ProviderJob,
   ) {
     const runId = idempotencyKey
       ? createIdempotentRunId(snapshot.projectId, idempotencyKey)
@@ -464,7 +1097,7 @@ export class BullMqRunService implements RunService {
       ...(estimatedCost ? { estimatedCost } : {}),
       retryOf,
       idempotencyKey,
-      providerJob: createProviderJob(runId, providerName, now),
+      providerJob: createProviderJob(runId, providerName, now, previousProviderJob),
       cancelRequested: false,
     });
     // Persist the immutable snapshot before publishing the queue message. If
@@ -540,6 +1173,7 @@ export class BullMqRunService implements RunService {
       : new Date(job.finishedOn ?? job.processedOn ?? job.timestamp).toISOString();
     return {
       id: data.runId,
+      ...(data.userId ? { userId: data.userId } : {}),
       projectId: data.snapshot.projectId,
       targetNodeId: data.snapshot.targetNodeId,
       status,
