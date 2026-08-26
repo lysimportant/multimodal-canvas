@@ -221,9 +221,12 @@ export function createRunWorker(options: {
       ...(snapshot.credentialId ? { credentialId: snapshot.credentialId } : {}),
       ...(snapshot.credentialVersion ? { credentialVersion: snapshot.credentialVersion } : {}),
     };
-    if (options.persistence?.getProviderCredentials) {
+    if (options.persistence) {
       // A persisted worker must never silently fall back to its process
       // environment: that key may have changed after this run was queued.
+      if (!options.persistence.getProviderCredentials) {
+        throw new Error('persistent New API worker requires a credential snapshot resolver');
+      }
       if (!credentialReference.credentialId || !credentialReference.credentialVersion) {
         throw new Error('run snapshot is missing an immutable New API credential reference');
       }
