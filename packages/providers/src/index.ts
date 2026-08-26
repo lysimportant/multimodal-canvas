@@ -288,7 +288,7 @@ export class NewApiProvider {
 
   private textPayload(snapshot: RunSnapshot, label: string, nodePrompt?: string) {
     return {
-      ...snapshot.parameters,
+      ...providerParameters(snapshot.parameters, 'text'),
       model: snapshot.modelAlias,
       messages: [{ role: 'user', content: composePrompt(snapshot, label, nodePrompt) }],
     };
@@ -296,7 +296,7 @@ export class NewApiProvider {
 
   private imagePayload(snapshot: RunSnapshot, label: string, nodePrompt?: string) {
     return {
-      ...snapshot.parameters,
+      ...providerParameters(snapshot.parameters, 'image'),
       model: snapshot.modelAlias,
       prompt: composePrompt(snapshot, label, nodePrompt),
       n: 1,
@@ -305,7 +305,7 @@ export class NewApiProvider {
 
   private audioPayload(snapshot: RunSnapshot, label: string, nodePrompt?: string) {
     return {
-      ...snapshot.parameters,
+      ...providerParameters(snapshot.parameters, 'audio'),
       model: snapshot.modelAlias,
       input: composePrompt(snapshot, label, nodePrompt),
     };
@@ -1626,6 +1626,26 @@ async function readResponsePayload(response: Response): Promise<unknown> {
     }
   }
   return { __newApiBinary: true, bytes, mimeType } satisfies BinaryResponsePayload;
+}
+
+/**
+ * Remove application-only fields before crossing the provider boundary.
+ * `inferenceStrength` is intentionally translated only for chat models:
+ * image, audio and video endpoints use different option sets and commonly
+ * reject unknown reasoning fields.
+ */
+function providerParameters(
+  parameters: Record<string, unknown>,
+  mediaType: 'text' | 'image' | 'audio',
+): Record<string, unknown> {
+  const { inferenceStrength, prompt: _prompt, ...providerParameters } = parameters;
+  if (
+    mediaType === 'text' &&
+    (inferenceStrength === 'low' || inferenceStrength === 'medium' || inferenceStrength === 'high')
+  ) {
+    providerParameters.reasoning_effort = inferenceStrength;
+  }
+  return providerParameters;
 }
 
 function composePrompt(snapshot: RunSnapshot, label: string, nodePrompt?: string) {

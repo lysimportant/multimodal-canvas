@@ -154,6 +154,43 @@ describe('NewApiProvider', () => {
     expect(result.usage?.currency).toBeUndefined();
   });
 
+  it('maps the node thinking mode to reasoning_effort for text models', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: '深度回答' } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const provider = new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    });
+
+    await provider.execute({
+      snapshot: {
+        ...textSnapshot(),
+        parameters: {
+          prompt: 'runtime prompt',
+          inferenceStrength: 'high',
+          temperature: 0.2,
+        },
+      },
+    });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://newapi.example.com/v1/chat/completions',
+      expect.objectContaining({
+        body: JSON.stringify({
+          temperature: 0.2,
+          reasoning_effort: 'high',
+          model: 'text-v1',
+          messages: [{ role: 'user', content: 'runtime prompt' }],
+        }),
+      }),
+    );
+  });
+
   it('returns an explicit provider amount only with a valid currency', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
@@ -281,9 +318,8 @@ describe('NewApiProvider', () => {
         headers: expect.objectContaining({ authorization: 'Bearer server-secret' }),
         body: JSON.stringify({
           size: '1024x1024',
-          prompt: 'A neon portrait\nstyle: /v1/assets/asset_style/content',
-          inferenceStrength: 'medium',
           model: 'image-v2',
+          prompt: 'A neon portrait\nstyle: /v1/assets/asset_style/content',
           n: 1,
         }),
       }),

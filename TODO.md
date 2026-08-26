@@ -84,6 +84,7 @@
 - `[x]` 图片 `/images/generations`
 - `[x]` 音频 `/audio/speech`
 - `[x]` 解析真实文本、图片和音频响应（文本片段、图片 URL/base64、音频 JSON/二进制）并转换为统一 Worker 输出
+- `[x]` 节点推理强度在 Provider 边界映射为文字模型的 `reasoning_effort`；图片、音频和视频请求剔除内部控制字段
 - `[x]` Worker 生产归档器将生成结果写入 Prisma 资产与首个版本，支持 S3/MinIO 或文件 BlobStore，并保留模型、参数和运行来源元数据
 - `[x]` 已用 `gpt-image-2` 通过真实图片渠道验收：`POST /v1/images/generations` 首次请求返回 `200`，响应含 `data[0].b64_json`；凭据未写入仓库或日志
 - `[x]` Worker 按任务 `provider` 选择 Mock 或 New API
