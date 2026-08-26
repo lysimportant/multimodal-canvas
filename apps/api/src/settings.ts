@@ -188,11 +188,14 @@ export class AiSettingsStore {
   }
 
   removeCredentials(): AiSettings {
+    // Keep immutable historical versions so queued/running snapshots can
+    // finish with the credential captured at submission time. The active
+    // reference is cleared, so new runs cannot resolve or use a credential.
+    this.baseUrl = '';
     this.encryptedApiKey = '';
     this.keyFingerprint = '';
     this.credentialId = undefined;
     this.credentialVersion = undefined;
-    this.credentialHistory.clear();
     this.updatedAt = new Date().toISOString();
     return this.get();
   }
@@ -356,7 +359,28 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
 
   async removeCredentials() {
     await this.ready;
-    await this.prisma.aiCredential.deleteMany({ where: { projectId: null } });
+    // Do not delete or zero historical rows: queued/running jobs may refer to
+    // the current id/version. Append an empty tombstone version to revoke the
+    // active credential while leaving every immutable snapshot resolvable.
+    const current = await this.prisma.aiCredential.findFirst({
+      where: { projectId: null },
+      orderBy: { updatedAt: 'desc' },
+      select: { version: true },
+    });
+    if (current) {
+      await this.prisma.aiCredential.create({
+        data: {
+          projectId: null,
+          ownerId: null,
+          version: current.version + 1,
+          baseUrl: '',
+          encryptedApiKey: '',
+          keyFingerprint: '',
+          defaultModels: Prisma.JsonNull,
+          label: 'revoked',
+        },
+      });
+    }
     this.credentialReference = {};
     return this.memory.removeCredentials();
   }
@@ -456,7 +480,7 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
       this.prisma.modelCatalog.findMany(),
       overrideDelegate?.findMany ? overrideDelegate.findMany() : Promise.resolve([]),
     ]);
-    if (credential) {
+    if (credential?.baseUrl && credential.encryptedApiKey) {
       this.credentialReference = {
         credentialId: credential.id,
         credentialVersion: credential.version,
@@ -472,6 +496,11 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
         },
         { credentialId: credential.id, credentialVersion: credential.version },
       );
+    } else {
+      this.credentialReference = {};
+      // A revoked tombstone must override any development-time environment
+      // credentials loaded by the in-memory fallback during construction.
+      if (credential) this.memory.removeCredentials();
     }
     const grouped = new Map<string, ModelCatalogEntry>();
     for (const model of catalog) {

@@ -442,4 +442,72 @@ describe('worker provider job boundary', () => {
     });
     expect(job.data.providerJob).toMatchObject({ platformJobId: 'platform-video-retry' });
   });
+
+  it('persists a failed run when its immutable credential snapshot is unavailable', async () => {
+    const runId = '123e4567-e89b-12d3-a456-426614174013';
+    const credentialId = '123e4567-e89b-12d3-a456-426614174014';
+    const job: NonNullable<typeof bullmqState.job> = {
+      id: runId,
+      data: {
+        runId,
+        snapshot: {
+          projectId: runId,
+          canvasRevision: 1,
+          targetNodeId: 'node_text_credentials',
+          modelAlias: 'text-model',
+          credentialId,
+          credentialVersion: 4,
+          parameters: {},
+          submittedAt: '2026-08-26T00:00:00.000Z',
+          nodes: [
+            {
+              id: 'node_text_credentials',
+              type: 'text' as const,
+              position: { x: 0, y: 0 },
+              data: {
+                label: 'Text',
+                mediaType: 'text' as const,
+                mode: 'generate' as const,
+              },
+            },
+          ],
+          edges: [],
+          inputs: [],
+        },
+        attempt: 1,
+        provider: 'newapi',
+        providerJob: createProviderJobRecord(runId, 'newapi', 'queued', 0),
+        cancelRequested: false,
+      },
+      async updateData(data) {
+        this.data = data;
+      },
+      async updateProgress() {},
+    };
+    bullmqState.job = job;
+    const getProviderCredentials = vi.fn(async () => undefined);
+    const updateRun = vi.fn(async () => undefined);
+
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      stepDelayMs: 0,
+      persistence: {
+        getProviderCredentials,
+        async upsertProviderJob() {},
+        async recordUsage() {},
+        updateRun,
+      },
+    });
+
+    await expect(bullmqState.processor?.(job)).rejects.toThrow('credential snapshot');
+    expect(getProviderCredentials).toHaveBeenCalledWith({
+      credentialId,
+      credentialVersion: 4,
+    });
+    expect(job.data.providerJob).toMatchObject({ status: 'failed' });
+    expect(updateRun).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'failed', error: expect.stringContaining('unavailable') }),
+    );
+  });
 });

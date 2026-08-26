@@ -94,13 +94,14 @@
 - `[x]` `pnpm format:check`
 - `[x]` `pnpm lint`
 - `[x]` `pnpm typecheck`
-- `[x]` `pnpm test`（API 126 通过、1 跳过；domain 13、providers 26、worker 33、Web 62、observability 14；UI 无测试文件；无 `TEST_DATABASE_URL` 时 Prisma 集成测试安全跳过）
+- `[x]` `pnpm test`（API 132 通过、1 跳过；domain 13、providers 31、worker 38、Web 62、observability 14；UI 无测试文件；无 `TEST_DATABASE_URL` 时 Prisma 集成测试安全跳过）
 - `[x]` `pnpm build`
 - `[x]` `pnpm test:e2e`（Chromium 12 项通过，含四类节点运行、模型切换、三参考连线、主题/侧栏/缩放、Clipboard 权限拒绝和非法文本回退）
 - `[x]` `DATABASE_URL=... pnpm db:validate`
 - `[x]` 临时 New API 凭据真实文本与图片请求成功（图片使用 `gpt-image-2`，返回 base64 图片）；协议解析与模拟归档测试通过
 - `[x]` 连接测试与模型目录刷新失败自动重试，最多 10 次；生成请求不在 Provider 内自动重试以避免重复扣费（`apps/api/src/settings.test.ts`）
 - `[x]` 真实视频链路验证：已完成一次 New API 视频任务的创建、`queued -> in_progress -> done` 轮询和 MP4 下载；Provider/Worker/API 恢复与去重测试通过
+- `[x]` 生产 BullMQ Worker 按运行快照的 `credentialId/version` 解密读取历史凭据；凭据热切换和撤销不影响已提交任务，缺失快照不会回退到当前环境 Key
 
 ## 进行中
 
@@ -137,6 +138,7 @@
 
 - `[x]` Bearer API token、HS256 JWT（生产要求 `exp` 和用户存储校验）、Webhook HMAC、项目资源隔离和生产缺失令牌保护；邮箱注册/登录、scrypt 密码哈希、可撤销会话、`USER`/`ADMIN` 角色、当前用户查询和登出已完成，管理员会话可管理平台 AI 设置
 - `[x]` 凭据版本化、删除凭据和不可逆指纹返回
+- `[x]` 凭据删除写入撤销标记版本并保留历史加密版本，保证排队/运行快照可恢复；Worker 只接受精确凭据引用
 - `[x]` `provider_jobs`、`usage_ledger` 已接入 Worker 可选持久化边界，并完成 UUID/金额校验；New API 已解析供应商显式金额与 token/media usage（无明确货币时仅保留 metadata，不估价）；账本幂等键可防止供应商重试重复记账，运行并发额度、模型价格估算和单次成本上限已接入
 - `[>]` 收费、供应商累计额度和完整 usage 对账暂缓，待后续产品策略与供应商账单契约确定
 - `[x]` 幂等键、防重复提交、失败诊断和可恢复重试

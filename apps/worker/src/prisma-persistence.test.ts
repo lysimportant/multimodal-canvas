@@ -1,3 +1,4 @@
+import { createCipheriv, createHash, randomBytes } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -195,5 +196,62 @@ describe('WorkerPrismaRunPersistence retry recovery', () => {
       where: { runId: databaseId, platformJobId: { not: null } },
       orderBy: { updatedAt: 'desc' },
     });
+  });
+});
+
+describe('WorkerPrismaRunPersistence credential snapshots', () => {
+  const encryptionSecret = 'worker-test-encryption-secret';
+  const credentialId = '123e4567-e89b-12d3-a456-426614174012';
+
+  function encrypt(value: string) {
+    const key = createHash('sha256').update(encryptionSecret).digest();
+    const iv = randomBytes(12);
+    const cipher = createCipheriv('aes-256-gcm', key, iv);
+    const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
+    return Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString('base64url');
+  }
+
+  it('resolves the exact credential id/version and decrypts only at the worker boundary', async () => {
+    const findFirst = vi.fn(async () => ({
+      baseUrl: 'https://historical.example/v1',
+      encryptedApiKey: encrypt('historical-test-key'),
+    }));
+    const prisma = { aiCredential: { findFirst } };
+    const persistence = new WorkerPrismaRunPersistence(prisma as never, encryptionSecret);
+
+    await expect(
+      persistence.getProviderCredentials({ credentialId, credentialVersion: 7 }),
+    ).resolves.toEqual({
+      baseUrl: 'https://historical.example/v1',
+      apiKey: 'historical-test-key',
+    });
+    expect(findFirst).toHaveBeenCalledWith({
+      where: { id: credentialId, version: 7 },
+      select: { baseUrl: true, encryptedApiKey: true },
+    });
+  });
+
+  it('does not query or fall back when the snapshot reference is incomplete', async () => {
+    const findFirst = vi.fn();
+    const persistence = new WorkerPrismaRunPersistence(
+      { aiCredential: { findFirst } } as never,
+      encryptionSecret,
+    );
+
+    await expect(persistence.getProviderCredentials({ credentialId })).resolves.toBeUndefined();
+    expect(findFirst).not.toHaveBeenCalled();
+  });
+
+  it('fails clearly when the shared encryption secret is unavailable', async () => {
+    const findFirst = vi.fn();
+    const persistence = new WorkerPrismaRunPersistence(
+      { aiCredential: { findFirst } } as never,
+      '',
+    );
+
+    await expect(
+      persistence.getProviderCredentials({ credentialId, credentialVersion: 1 }),
+    ).rejects.toThrow('AI_CREDENTIAL_ENCRYPTION_KEY');
+    expect(findFirst).not.toHaveBeenCalled();
   });
 });

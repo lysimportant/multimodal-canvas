@@ -61,12 +61,26 @@ export type ProviderUsage = {
   metadata?: Record<string, unknown>;
 };
 
+export type WorkerCredentialReference = {
+  credentialId?: string;
+  credentialVersion?: number;
+};
+
+export type WorkerProviderCredentials = {
+  baseUrl: string;
+  apiKey: string;
+};
+
 /**
  * Persistence is injected by the process that owns Prisma. The worker keeps
  * this structural boundary so the default BullMQ/Mock setup has no database
  * dependency and can still run in tests or local development.
  */
 export type RunPersistence = {
+  /** Resolve the exact encrypted credential captured in a run snapshot. */
+  getProviderCredentials?(
+    reference: WorkerCredentialReference,
+  ): Promise<WorkerProviderCredentials | undefined>;
   ensureRun?(input: {
     runId: string;
     snapshot: RunSnapshot;
@@ -196,10 +210,32 @@ export function createRunWorker(options: {
     createEnvironmentObservability({ logger, service: 'multimodal-canvas-worker' });
   const mockProvider = new MockProvider();
   let environmentProviders: { standard: ProviderExecutor; video: ProviderExecutor } | undefined;
-  const getNewApiProvider = (video: boolean): ProviderExecutor | undefined => {
+  const getNewApiProvider = async (
+    video: boolean,
+    snapshot: RunSnapshot,
+  ): Promise<ProviderExecutor | undefined> => {
     if (options.providerName !== 'newapi') return undefined;
     if (video && options.videoProvider) return options.videoProvider;
     if (options.provider) return options.provider;
+    const credentialReference: WorkerCredentialReference = {
+      ...(snapshot.credentialId ? { credentialId: snapshot.credentialId } : {}),
+      ...(snapshot.credentialVersion ? { credentialVersion: snapshot.credentialVersion } : {}),
+    };
+    if (options.persistence?.getProviderCredentials) {
+      // A persisted worker must never silently fall back to its process
+      // environment: that key may have changed after this run was queued.
+      if (!credentialReference.credentialId || !credentialReference.credentialVersion) {
+        throw new Error('run snapshot is missing an immutable New API credential reference');
+      }
+      const credentials = await options.persistence.getProviderCredentials(credentialReference);
+      if (!credentials) {
+        throw new Error(
+          `New API credential snapshot ${credentialReference.credentialId}@${credentialReference.credentialVersion} is unavailable`,
+        );
+      }
+      const providers = createNewApiProviders(credentials);
+      return video ? providers.video : providers.standard;
+    }
     environmentProviders ??= createNewApiProvidersFromEnvironment();
     return video ? environmentProviders.video : environmentProviders.standard;
   };
@@ -465,23 +501,24 @@ export function createRunWorker(options: {
         };
       }
       const target = data.snapshot.nodes.find((node) => node.id === data.snapshot.targetNodeId);
-      const provider =
-        data.provider === 'newapi'
-          ? getNewApiProvider(target?.data.mediaType === 'video')
-          : (options.provider ?? mockProvider);
-      if (!provider) throw new Error('New API provider is not configured for this worker');
-      const now = new Date().toISOString();
-      const providerJob = {
-        ...(data.providerJob ?? initialProviderJob),
-        status: 'running' as const,
-        progress: 80,
-        updatedAt: now,
-      } satisfies ProviderJob;
-      await job.updateData({ ...data, providerJob });
-      await persistProviderJob(providerJob);
-      await persistRun('running', providerJob);
-      let activeProviderJob: ProviderJob = providerJob;
+      let activeProviderJob: ProviderJob = initialProviderJob;
       try {
+        const provider =
+          data.provider === 'newapi'
+            ? await getNewApiProvider(target?.data.mediaType === 'video', data.snapshot)
+            : (options.provider ?? mockProvider);
+        if (!provider) throw new Error('New API provider is not configured for this worker');
+        const now = new Date().toISOString();
+        const providerJob = {
+          ...(data.providerJob ?? initialProviderJob),
+          status: 'running' as const,
+          progress: 80,
+          updatedAt: now,
+        } satisfies ProviderJob;
+        activeProviderJob = providerJob;
+        await job.updateData({ ...data, providerJob });
+        await persistProviderJob(providerJob);
+        await persistRun('running', providerJob);
         const execution = normalizeProviderExecution(
           await provider.execute({
             snapshot: data.snapshot,
@@ -914,6 +951,14 @@ function createNewApiProvidersFromEnvironment(): {
   if (!baseUrl || !apiKey) {
     throw new Error('WORKER_PROVIDER=newapi requires NEW_API_BASE_URL and NEW_API_API_KEY');
   }
+  return createNewApiProviders({ baseUrl, apiKey });
+}
+
+function createNewApiProviders(credentials: WorkerProviderCredentials): {
+  standard: ProviderExecutor;
+  video: ProviderExecutor;
+} {
+  const { baseUrl, apiKey } = credentials;
   const timeoutMs = Number(process.env.NEW_API_TIMEOUT_MS ?? 120_000);
   const standard = new NewApiProvider({
     baseUrl,

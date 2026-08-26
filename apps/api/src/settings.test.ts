@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { Prisma } from '@prisma/client';
 
 import { AiSettingsStore, normalizeModelsPayload, PrismaAiSettingsStore } from './settings';
 
@@ -248,6 +249,54 @@ describe('New API model catalog normalization', () => {
     expect(store.getProviderCredentials(secondReference)).toEqual({
       baseUrl: 'https://two.example.com/v1',
       apiKey: 'key-two',
+    });
+  });
+
+  it('revokes the active credential without breaking historical snapshots', () => {
+    const store = new AiSettingsStore('test-encryption-secret');
+    store.update({ baseUrl: 'https://queued.example.com/v1', apiKey: 'queued-key' });
+    const snapshotReference = store.getCredentialReference();
+
+    expect(store.removeCredentials()).toMatchObject({ configured: false, baseUrl: '' });
+    expect(store.getProviderCredentials()).toBeUndefined();
+    expect(store.getProviderCredentials(snapshotReference)).toEqual({
+      baseUrl: 'https://queued.example.com/v1',
+      apiKey: 'queued-key',
+    });
+  });
+
+  it('appends a revoked Prisma version instead of deleting historical rows', async () => {
+    const findFirst = vi.fn().mockResolvedValue({
+      id: '123e4567-e89b-12d3-a456-426614174013',
+      version: 1,
+      baseUrl: '',
+      encryptedApiKey: '',
+      keyFingerprint: '',
+      defaultModels: null,
+      updatedAt: new Date('2026-08-26T00:00:00.000Z'),
+    });
+    const create = vi.fn().mockResolvedValue({});
+    const deleteMany = vi.fn();
+    const prisma = {
+      aiCredential: { findFirst, create, deleteMany },
+      modelCatalog: { findMany: vi.fn().mockResolvedValue([]) },
+    };
+    const store = new PrismaAiSettingsStore(prisma as never, 'test-encryption-secret');
+
+    await store.removeCredentials();
+
+    expect(deleteMany).not.toHaveBeenCalled();
+    expect(create).toHaveBeenCalledWith({
+      data: {
+        projectId: null,
+        ownerId: null,
+        version: 2,
+        baseUrl: '',
+        encryptedApiKey: '',
+        keyFingerprint: '',
+        defaultModels: Prisma.JsonNull,
+        label: 'revoked',
+      },
     });
   });
 });

@@ -169,7 +169,7 @@ POST   /v1/webhooks/newapi
 - 收费、套餐、累计额度和供应商 usage 对账暂缓；当前成本字段只用于单次成本保护和后续扩展，不代表已接入完整计费系统。
 - 凭据通过 TLS 传输，并由服务端加密保存。
 - 读取接口只返回配置状态或不可逆指纹，不返回原始 API Key。
-- Worker 默认使用 Mock Provider；只有显式设置 `WORKER_PROVIDER=newapi` 后，文字、图片、音频和视频任务才会通过服务端 New API 凭据调用上游。配置 `DATABASE_URL` 时 AI 凭据、默认模型和模型目录由 Prisma 持久化，生成结果会由 Worker 写入同一资产 Store 并创建首个版本；`RESULT_ASSET_MAX_BYTES` 控制归档大小，远程结果 URL 仅允许服务端安全下载。视频 Provider 使用 `POST /v1/videos/generations` 创建、`GET /v1/videos/:requestId` 状态轮询和受保护 content 端点下载，并在重试时复用已提交的平台任务 ID。
+- Worker 默认使用 Mock Provider；只有显式设置 `WORKER_PROVIDER=newapi` 后，文字、图片、音频和视频任务才会通过服务端 New API 凭据调用上游。配置 `DATABASE_URL` 时 AI 凭据、默认模型和模型目录由 Prisma 持久化，生成结果会由 Worker 写入同一资产 Store 并创建首个版本；`RESULT_ASSET_MAX_BYTES` 控制归档大小，远程结果 URL 仅允许服务端安全下载。生产 BullMQ Worker 会按运行快照中的 `credentialId/version` 解密读取对应历史凭据，凭据热切换不会改变已提交任务；删除凭据只撤销活动版本并保留快照所需历史版本。视频 Provider 使用 `POST /v1/videos/generations` 创建、`GET /v1/videos/:requestId` 状态轮询和受保护 content 端点下载，并在重试时复用已提交的平台任务 ID。
 - 业务 SQLite 数据库、WAL/SHM 文件和上传目录不属于本项目的生产方案。
 
 ## 本地开发
@@ -275,7 +275,7 @@ pnpm test:e2e
 - `pnpm format:check`
 - `pnpm lint`
 - `pnpm typecheck`
-- `pnpm test`（API 126 通过、1 跳过；domain 13、providers 26、worker 33、Web 62、observability 14；UI 无测试文件；无 `TEST_DATABASE_URL` 时 Prisma 集成测试安全跳过）
+- `pnpm test`（API 132 通过、1 跳过；domain 13、providers 31、worker 38、Web 62、observability 14；UI 无测试文件；无 `TEST_DATABASE_URL` 时 Prisma 集成测试安全跳过）
 - `pnpm build`
 - `pnpm test:e2e`（Chromium 12 项通过，含视频节点多参考连线、四类节点生成、Mock 默认模型切换、Clipboard 权限拒绝和非法文本回退）
 - `DATABASE_URL=... pnpm db:validate`
