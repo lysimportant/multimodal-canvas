@@ -57,6 +57,14 @@ import {
   quoteModelCost,
   UsagePolicyError,
 } from './usage-policy';
+import {
+  attachmentDisposition,
+  createWorkflowExport,
+  ExportError,
+  prepareResultsExport,
+  resolveExportLimits,
+} from './export';
+import { ArchiveError, buildZipArchive } from './export-archive';
 
 type BuildAppOptions = {
   assetStore?: AssetStore;
@@ -161,7 +169,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         ? false
         : true;
 
-  app.register(cors, { origin: corsOrigin });
+  app.register(cors, {
+    origin: corsOrigin,
+    // Browser downloads need to read the server-provided attachment name.
+    // These are metadata headers only; credentials remain in the body/auth
+    // boundary and are never exposed here.
+    exposedHeaders: ['content-disposition', 'content-length'],
+  });
   app.register(multipart, {
     limits: { files: 1, fileSize: MAX_UPLOAD_BYTES },
   });
@@ -525,6 +539,100 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       );
       if (!canvas) return reply.code(404).send({ error: 'project not found' });
       return { canvas };
+    },
+  );
+
+  app.get<{ Params: { projectId: string } }>(
+    '/v1/projects/:projectId/export/workflow',
+    async (request, reply) => {
+      const { projectId } = request.params;
+      const scope = projectScope(requestPrincipals, request);
+      const project = await projectStore.get(projectId, scope);
+      if (!project) return reply.code(404).send({ error: 'project not found' });
+      const canvas = await projectStore.getCanvas(projectId, scope);
+      if (!canvas) return reply.code(404).send({ error: 'project canvas not found' });
+      const runs = (await runService.listByProject(projectId)).filter(
+        (run) => run.projectId === projectId,
+      );
+      const modelDefaults = await projectStore.getModelDefaults(projectId, scope);
+      const workflow = createWorkflowExport({
+        project,
+        canvas,
+        runs,
+        ...(modelDefaults ? { modelDefaults } : {}),
+      });
+      const body = JSON.stringify(workflow, null, 2);
+      return reply
+        .type('application/json; charset=utf-8')
+        .header('content-disposition', attachmentDisposition(`${project.name}.workflow.json`))
+        .header('cache-control', 'no-store')
+        .header('content-length', String(Buffer.byteLength(body)))
+        .send(body);
+    },
+  );
+
+  app.get<{ Params: { projectId: string } }>(
+    '/v1/projects/:projectId/export/results',
+    async (request, reply) => {
+      const { projectId } = request.params;
+      const scope = projectScope(requestPrincipals, request);
+      const project = await projectStore.get(projectId, scope);
+      if (!project) return reply.code(404).send({ error: 'project not found' });
+      const canvas = await projectStore.getCanvas(projectId, scope);
+      if (!canvas) return reply.code(404).send({ error: 'project canvas not found' });
+
+      try {
+        const runs = (await runService.listByProject(projectId)).filter(
+          (run) => run.projectId === projectId,
+        );
+        const modelDefaults = await projectStore.getModelDefaults(projectId, scope);
+        const prepared = await prepareResultsExport({
+          project,
+          canvas,
+          runs,
+          ...(modelDefaults ? { modelDefaults } : {}),
+          assetStore,
+          assetScope: assetScope(requestPrincipals, request),
+        });
+        const exportLimits = resolveExportLimits();
+        // The business limit applies to result bytes. Metadata entries are
+        // small but still need room in the ZIP helper's uncompressed budget.
+        const metadataBytes = prepared.entries
+          .filter((entry) => entry.path === 'workflow.json' || entry.path === 'manifest.json')
+          .reduce(
+            (total, entry) =>
+              total +
+              (typeof entry.content === 'string'
+                ? Buffer.byteLength(entry.content)
+                : entry.content.byteLength),
+            0,
+          );
+        const archive = buildZipArchive(prepared.entries, {
+          maxEntries: Math.min(Number.MAX_SAFE_INTEGER, exportLimits.maxFiles + 2),
+          maxEntryBytes: exportLimits.maxBytes,
+          maxTotalBytes: Math.min(Number.MAX_SAFE_INTEGER, exportLimits.maxBytes + metadataBytes),
+        });
+        return reply
+          .type('application/zip')
+          .header('content-disposition', attachmentDisposition(`${project.name}.results.zip`))
+          .header('cache-control', 'no-store')
+          .header('content-length', String(archive.byteLength))
+          .send(archive);
+      } catch (error) {
+        if (error instanceof ExportError) {
+          return reply.code(error.statusCode).send({ error: error.message, code: error.code });
+        }
+        if (
+          error instanceof ArchiveError &&
+          ['too_many_entries', 'entry_too_large', 'archive_too_large'].includes(error.code)
+        ) {
+          return reply.code(413).send({ error: error.message, code: 'export_limit_exceeded' });
+        }
+        request.log.error({ err: error, projectId }, 'failed to export project results');
+        return reply
+          .code(500)
+          .send({ error: 'failed to export project results', code: 'export_failed' });
+      }
     },
   );
 

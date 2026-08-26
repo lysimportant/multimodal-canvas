@@ -5,6 +5,7 @@ import {
   Check,
   ChevronDown,
   Clock3,
+  Download,
   ExternalLink,
   FileText,
   FolderOpen,
@@ -92,6 +93,7 @@ import { validateResolvedCanvasConnection, validateCanvasConnection } from './co
 import { isCanvasShortcutTarget } from './keyboard-utils';
 import { validateAiSettingsForm, type AiSettingsFormErrors } from './settings-utils';
 import { fetchAssetVersions, type AssetVersionSummary } from './result-versions';
+import { downloadProjectExport, fetchProjectExport, type ProjectExportKind } from './export-utils';
 import { NodeHandles } from './NodeHandles';
 import { TextPromptEditor } from './TextPromptEditor';
 import {
@@ -1427,10 +1429,14 @@ function WorkspaceApp({
   const [canvasBackground, setCanvasBackground] = useState<CanvasBackground>(readCanvasBackground);
   const [canvasTheme, setCanvasTheme] = useState<CanvasTheme>(readCanvasTheme);
   const [showThemeMenu, setShowThemeMenu] = useState(false);
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   const [isResourceCollapsed, setIsResourceCollapsed] = useState(readResourcePanelCollapsed);
   const [canvasRevision, setCanvasRevision] = useState(0);
   const [isCanvasReady, setIsCanvasReady] = useState(false);
   const settingsTriggerRef = useRef<HTMLButtonElement>(null);
+  const exportTriggerRef = useRef<HTMLButtonElement>(null);
+  const exportMenuWasOpenRef = useRef(false);
   const settingsWasOpenRef = useRef(false);
   const canvasRevisionRef = useRef(0);
   const canvasDirtyRef = useRef(false);
@@ -1497,6 +1503,32 @@ function WorkspaceApp({
     document.addEventListener('pointerdown', handlePointerDown);
     return () => document.removeEventListener('pointerdown', handlePointerDown);
   }, [showProjects]);
+
+  useEffect(() => {
+    if (!showExportMenu) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Element && !target.closest('.export-control')) {
+        setShowExportMenu(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setShowExportMenu(false);
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showExportMenu]);
+
+  useEffect(() => {
+    if (exportMenuWasOpenRef.current && !showExportMenu) {
+      exportTriggerRef.current?.focus();
+    }
+    exportMenuWasOpenRef.current = showExportMenu;
+  }, [showExportMenu]);
 
   useEffect(() => {
     if (!showProjectCreate) return;
@@ -1844,6 +1876,32 @@ function WorkspaceApp({
       if (saveRequestRef.current === request) saveRequestRef.current = null;
     }
   }, [projectId]);
+
+  const exportProject = useCallback(
+    async (kind: ProjectExportKind) => {
+      if (!projectId) {
+        setNotice({ kind: 'error', message: '项目尚未加载，暂时无法导出' });
+        return;
+      }
+      setIsExporting(true);
+      setShowExportMenu(false);
+      try {
+        // Flush the latest canvas revision before asking the API for a snapshot.
+        await saveCanvas();
+        const download = await fetchProjectExport(API_BASE_URL, projectId, kind, apiFetch);
+        downloadProjectExport(download);
+        setNotice({
+          kind: 'success',
+          message: kind === 'workflow' ? '工作流已导出' : '结果包已导出',
+        });
+      } catch (error) {
+        setNotice({ kind: 'error', message: error instanceof Error ? error.message : '导出失败' });
+      } finally {
+        setIsExporting(false);
+      }
+    },
+    [projectId, saveCanvas],
+  );
 
   const switchProject = useCallback(
     async (project: ProjectSummary) => {
@@ -2818,9 +2876,61 @@ function WorkspaceApp({
                 <UserCircle size={16} />
               </button>
             )}
-            <button type="button" className="button button-secondary" disabled>
-              导出
-            </button>
+            <div className="export-control">
+              <button
+                type="button"
+                className="button button-secondary"
+                ref={exportTriggerRef}
+                aria-haspopup="menu"
+                aria-expanded={showExportMenu}
+                aria-controls="project-export-menu"
+                aria-busy={isExporting}
+                onClick={() => setShowExportMenu((current) => !current)}
+                disabled={isExporting || !projectId}
+                title={!projectId ? '项目加载后可导出' : '导出工作流或结果'}
+              >
+                {isExporting ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}
+                {isExporting ? '导出中' : '导出'}
+                <ChevronDown size={13} aria-hidden="true" />
+              </button>
+              {showExportMenu && (
+                <div
+                  className="export-menu"
+                  id="project-export-menu"
+                  role="menu"
+                  aria-label="导出选项"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    aria-label="导出工作流 JSON"
+                    className="export-menu-item"
+                    onClick={() => void exportProject('workflow')}
+                    disabled={isExporting}
+                  >
+                    <FileText size={15} aria-hidden="true" />
+                    <span>
+                      <strong>导出工作流 JSON</strong>
+                      <small>节点、连线和运行元数据</small>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    aria-label="导出结果 ZIP"
+                    className="export-menu-item"
+                    onClick={() => void exportProject('results')}
+                    disabled={isExporting}
+                  >
+                    <Archive size={15} aria-hidden="true" />
+                    <span>
+                      <strong>导出结果 ZIP</strong>
+                      <small>工作流、清单和生成结果文件</small>
+                    </span>
+                  </button>
+                </div>
+              )}
+            </div>
             <button
               type="button"
               className="button button-primary"

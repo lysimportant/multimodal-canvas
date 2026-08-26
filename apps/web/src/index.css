@@ -2151,6 +2151,62 @@ textarea:focus-visible {
   position: relative;
 }
 
+.export-control {
+  position: relative;
+}
+
+.export-menu {
+  background: var(--mc-surface, #fff);
+  border: 1px solid var(--mc-border, #dce3e7);
+  border-radius: 7px;
+  box-shadow: 0 12px 28px var(--mc-shadow, rgb(29 46 39 / 16%));
+  display: grid;
+  gap: 3px;
+  min-width: 236px;
+  padding: 6px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 25;
+}
+
+.export-menu-item {
+  align-items: flex-start;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  color: var(--mc-text, #18212f);
+  display: flex;
+  gap: 9px;
+  min-height: 42px;
+  padding: 8px;
+  text-align: left;
+  width: 100%;
+}
+
+.export-menu-item:hover:not(:disabled),
+.export-menu-item:focus-visible {
+  background: var(--mc-accent-soft, #edf7f1);
+  color: var(--mc-accent-strong, #12613e);
+}
+
+.export-menu-item > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.export-menu-item strong {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.export-menu-item small {
+  color: var(--mc-text-muted, #7a8495);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
 .theme-toggle {
   background: var(--mc-surface, #fff);
   border: 1px solid var(--mc-border-strong, #d3dce0);

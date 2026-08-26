@@ -4,7 +4,7 @@
 
 项目的核心体验是：在左侧资源库管理素材，在右侧无限画布上组合节点，通过多个参考输入驱动生成任务，并在任务完成后将结果保存回资源库。所有模型调用都经过本项目 API 和 New API，浏览器不会直接访问上游模型服务。
 
-> 当前状态：已完成 monorepo foundation、资产上传与归档、项目/画布保存、Mock 运行状态机、多参考端口、AI 设置、生产持久化切片和第一方用户会话鉴权。Web 端现在可以管理资源生命周期、创建和编辑四类媒体节点、连接多个角色化参考输入、配置 New API、刷新模型并提交单节点运行；项目级运行历史、画布 RTL 交互测试、设置焦点管理、桌面/移动视觉验收、归档结果版本展示和 Chromium smoke 验收已接入。New API Worker 现在解析真实文本、图片、音频和视频响应，并在配置 `DATABASE_URL` 时把结果写入与 API 相同的 Prisma/S3（或文件）资产版本链路；未配置数据库的本地开发继续使用内存存储。当前资产上传支持 multipart、S3/MinIO 预签名直传、SHA-256 校验和可跨实例恢复的上传会话；生产环境资产原始内容、版本和派生内容均要求用户会话并按用户隔离，内容访问支持 S3/MinIO 预签名 GET 或短时 HMAC URL。模型目录刷新兼容常见网关响应（包含真实 New API `/models` 形状）、保留限制和能力覆盖并保留旧缓存，Provider/Worker 会读取图片顶层 `output_format` 并提供状态、错误码、请求 ID 和可重试性诊断，但不会在生成层自动重试。真实图片渠道已用 `gpt-image-2` 验证成功；真实视频已验证 `POST /v1/videos/generations` 创建、`GET /v1/videos/:requestId` 轮询和受保护 MP4 下载。Base URL 填写网关根地址时会自动规范为 `/v1`。收费、套餐、累计额度和 usage 对账暂缓，当前只保留单次成本上限与并发保护。
+> 当前状态：已完成 monorepo foundation、资产上传与归档、项目/画布保存、Mock 运行状态机、多参考端口、AI 设置、生产持久化切片和第一方用户会话鉴权。Web 端现在可以管理资源生命周期、创建和编辑四类媒体节点、连接多个角色化参考输入、配置 New API、刷新模型并提交单节点运行；项目级运行历史、画布 RTL 交互测试、设置焦点管理、桌面/移动视觉验收、归档结果版本展示和 Chromium smoke 验收已接入。New API Worker 现在解析真实文本、图片、音频和视频响应，并在配置 `DATABASE_URL` 时把结果写入与 API 相同的 Prisma/S3（或文件）资产版本链路；未配置数据库的本地开发继续使用内存存储。当前资产上传支持 multipart、S3/MinIO 预签名直传、SHA-256 校验和可跨实例恢复的上传会话；生产环境资产原始内容、版本和派生内容均要求用户会话并按用户隔离，内容访问支持 S3/MinIO 预签名 GET 或短时 HMAC URL。模型目录刷新兼容常见网关响应（包含真实 New API `/models` 形状）、保留限制和能力覆盖并保留旧缓存，Provider/Worker 会读取图片顶层 `output_format` 并提供状态、错误码、请求 ID 和可重试性诊断，但不会在生成层自动重试。真实图片渠道已用 `gpt-image-2` 验证成功；真实视频已验证 `POST /v1/videos/generations` 创建、`GET /v1/videos/:requestId` 轮询和受保护 MP4 下载。项目现在支持从 Header 导出不含凭据/签名 URL 的工作流 JSON，以及包含 `workflow.json`、`manifest.json` 和结果版本文件的结果 ZIP；结果导出按项目权限隔离并有文件数/字节数上限。Base URL 填写网关根地址时会自动规范为 `/v1`。收费、套餐、累计额度和 usage 对账暂缓，当前只保留单次成本上限与并发保护。
 
 详细的阶段状态、优先级、依赖和验收条件见 [`TODO.md`](./TODO.md)。
 
@@ -128,6 +128,8 @@ GET    /v1/projects/:projectId
 GET    /v1/projects/:projectId/canvas
 PATCH  /v1/projects/:projectId/canvas
 GET    /v1/projects/:projectId/runs
+GET    /v1/projects/:projectId/export/workflow
+GET    /v1/projects/:projectId/export/results
 
 POST   /v1/assets/uploads
 POST   /v1/assets/uploads/complete
@@ -152,6 +154,8 @@ POST   /v1/webhooks/newapi
 ```
 
 画布保存使用 `revision` 乐观锁；提交旧版本时返回 `409 Conflict`，不能静默覆盖其他版本。
+
+工作流导出返回不含凭据、签名 URL 和上游访问令牌的 JSON。结果导出返回 ZIP，包含 `workflow.json`、`manifest.json` 及成功运行引用的资产版本；相同资产版本只打包一次。可用 `EXPORT_MAX_RESULT_FILES` 和 `EXPORT_MAX_RESULT_BYTES` 限制结果文件数与未压缩总大小。
 
 运行接口提交时会校验目标节点，并创建包含画布 revision、目标节点、上游节点、边、输入角色和参数的不可变快照。来源节点不能直接运行；生成或转换节点会进入 `queued` 状态，由 BullMQ Worker 使用 Mock Provider 推进到 `succeeded`、`cancelled` 或 `failed`。重试会创建新的 run，并保留 `retryOf` 与原始快照，不重复修改原任务。
 

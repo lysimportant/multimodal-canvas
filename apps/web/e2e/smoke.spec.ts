@@ -208,6 +208,38 @@ async function mockApi(page: Page) {
       await json(route, { canvas: currentCanvas });
       return;
     }
+    if (request.method() === 'GET' && path === `/v1/projects/${project.id}/export/workflow`) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        headers: {
+          'content-disposition': 'attachment; filename="Smoke.workflow.json"',
+          'access-control-expose-headers': 'content-disposition, content-length',
+        },
+        body: JSON.stringify({
+          schemaVersion: 1,
+          project,
+          canvas: currentCanvas,
+          runs: [],
+          results: [],
+        }),
+      });
+      return;
+    }
+    if (request.method() === 'GET' && path === `/v1/projects/${project.id}/export/results`) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/zip',
+        headers: {
+          'content-disposition': 'attachment; filename="Smoke.results.zip"',
+          'access-control-expose-headers': 'content-disposition, content-length',
+        },
+        // The UI only needs a non-empty response to trigger a browser download;
+        // the API suite validates the archive structure and contents.
+        body: Buffer.from('mock-results-archive'),
+      });
+      return;
+    }
     if (request.method() === 'PATCH' && path === `/v1/projects/${project.id}/canvas`) {
       const body = request.postDataJSON() as CanvasDocument;
       currentCanvas = { ...body, revision: currentCanvas.revision + 1 };
@@ -323,6 +355,26 @@ test('starts with the resource library and workflow canvas visible', async ({ pa
   await expect(page.getByRole('heading', { name: '项目资源' })).toBeVisible();
   await expect(page.getByRole('region', { name: '工作流画布' })).toBeVisible();
   await expect(page.getByText('从一个节点开始')).toBeVisible();
+});
+
+test('exports the workflow JSON and result ZIP from the header menu', async ({ page }) => {
+  await page.goto('/');
+
+  const exportButton = page.getByRole('button', { name: /^导出$/ });
+  await expect(exportButton).toBeEnabled();
+  await exportButton.click();
+  await expect(page.getByRole('menu', { name: '导出选项' })).toBeVisible();
+
+  const workflowDownload = page.waitForEvent('download');
+  await page.getByRole('menuitem', { name: /工作流 JSON/ }).click();
+  const workflow = await workflowDownload;
+  expect(workflow.suggestedFilename()).toBe('Smoke.workflow.json');
+
+  await exportButton.click();
+  const resultsDownload = page.waitForEvent('download');
+  await page.getByRole('menuitem', { name: /结果 ZIP/ }).click();
+  const results = await resultsDownload;
+  expect(results.suggestedFilename()).toBe('Smoke.results.zip');
 });
 
 test('adds a generate node from the canvas toolbar', async ({ page }) => {

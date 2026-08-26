@@ -379,6 +379,48 @@ export const openApiDocument = {
         },
       },
     },
+    '/v1/projects/{projectId}/export/workflow': {
+      get: {
+        tags: ['projects'],
+        parameters: [{ $ref: '#/components/parameters/ProjectId' }],
+        responses: {
+          '200': {
+            description: 'Portable workflow JSON download',
+            headers: {
+              'Content-Disposition': { schema: { type: 'string' } },
+            },
+            content: {
+              'application/json': {
+                schema: { type: 'object', additionalProperties: true },
+              },
+            },
+          },
+          '404': response('Project not found', errorSchema),
+        },
+      },
+    },
+    '/v1/projects/{projectId}/export/results': {
+      get: {
+        tags: ['projects'],
+        parameters: [{ $ref: '#/components/parameters/ProjectId' }],
+        responses: {
+          '200': {
+            description: 'Workflow and generated results ZIP download',
+            headers: {
+              'Content-Disposition': { schema: { type: 'string' } },
+            },
+            content: {
+              'application/zip': {
+                schema: { type: 'string', format: 'binary' },
+              },
+            },
+          },
+          '404': response('Project not found', errorSchema),
+          '409': response('Result asset unavailable', errorSchema),
+          '413': response('Export limits exceeded', errorSchema),
+        },
+      },
+    },
     '/v1/projects/{projectId}/models/defaults': {
       get: {
         tags: ['projects'],
