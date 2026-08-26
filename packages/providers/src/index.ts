@@ -40,7 +40,10 @@ export type NewApiProviderOptions = {
   apiKey: string;
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
-  /** Production callers should set this to reject plaintext HTTP endpoints. */
+  /**
+   * Reject plaintext HTTP endpoints. Production also enforces this when the
+   * option is omitted; set true explicitly for staging-like environments.
+   */
   requireHttps?: boolean;
 };
 
