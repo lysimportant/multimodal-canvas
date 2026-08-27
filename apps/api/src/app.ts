@@ -729,14 +729,37 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       .strict()
       .safeParse(request.body);
     if (!result.success) return reply.code(400).send({ error: 'invalid AI settings' });
-    return { settings: await settingsStore.update(result.data) };
+    const settings = await settingsStore.update(result.data);
+    return { settings, credentials: await settingsStore.listCredentials() };
   });
+
+  app.get('/v1/settings/ai/credentials', async (request, reply) => {
+    if (!canManagePlatformSettings(requestPrincipals, requestSessions, request)) {
+      return reply.code(403).send({ error: 'platform credential access is not permitted' });
+    }
+    return { credentials: await settingsStore.listCredentials() };
+  });
+
+  app.post<{ Params: { credentialId: string } }>(
+    '/v1/settings/ai/credentials/:credentialId/activate',
+    async (request, reply) => {
+      if (!canManagePlatformSettings(requestPrincipals, requestSessions, request)) {
+        return reply.code(403).send({ error: 'platform credential access is not permitted' });
+      }
+      const credentialId = z.string().uuid().safeParse(request.params.credentialId);
+      if (!credentialId.success) return reply.code(400).send({ error: 'invalid credential id' });
+      const settings = await settingsStore.activateCredential(credentialId.data);
+      if (!settings) return reply.code(404).send({ error: 'credential not found' });
+      return { settings, credentials: await settingsStore.listCredentials() };
+    },
+  );
 
   app.delete('/v1/settings/ai/credentials', async (request, reply) => {
     if (!canManagePlatformSettings(requestPrincipals, requestSessions, request)) {
       return reply.code(403).send({ error: 'platform credential access is not permitted' });
     }
-    return { settings: await settingsStore.removeCredentials() };
+    const settings = await settingsStore.removeCredentials();
+    return { settings, credentials: await settingsStore.listCredentials() };
   });
 
   app.post('/v1/settings/ai/test', async (request, reply) => {

@@ -1,4 +1,5 @@
 import { zodResolver } from '@hookform/resolvers/zod';
+import { useQueryClient } from '@tanstack/react-query';
 import { X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
@@ -13,12 +14,23 @@ import {
   Input,
 } from '@multimodal-canvas/ui';
 import { apiFetch } from '../auth-client';
+import type { AiCredentialSummary } from '../contracts';
 import { aiSettingsFormSchema, type AiSettingsFormValues } from '../forms/ai-settings';
+import {
+  replaceAiCredentials,
+  useActivateAiCredential,
+  useAiCredentialsQuery,
+} from '../query/credentials';
 import { useModelCatalogQuery, useRefreshModelCatalog } from '../query/models';
+import { isImeKeyboardEvent } from '../ime';
 import { API_BASE_URL, mediaLabels, type AiSettings, type ModelDefaults } from './contracts';
 
 function isAbortError(error: unknown) {
   return error instanceof Error && error.name === 'AbortError';
+}
+
+function activeCredentialId(credentials: AiCredentialSummary[]) {
+  return credentials.find((credential) => credential.active)?.id ?? '';
 }
 
 export function SettingsPanel({
@@ -26,11 +38,13 @@ export function SettingsPanel({
   projectName,
   onClose,
   onNotice,
+  presentation = 'dialog',
 }: {
   projectId: string | null;
   projectName: string;
   onClose: () => void;
   onNotice: (notice: { kind: 'error' | 'success'; message: string }) => void;
+  presentation?: 'dialog' | 'page';
 }) {
   const [settings, setSettings] = useState<AiSettings>({
     baseUrl: '',
@@ -44,6 +58,10 @@ export function SettingsPanel({
     kind: 'error' | 'success';
     message: string;
   } | null>(null);
+  const queryClient = useQueryClient();
+  const credentialsQuery = useAiCredentialsQuery();
+  const activateCredentialMutation = useActivateAiCredential();
+  const credentials = credentialsQuery.data ?? [];
   const modelCatalogQuery = useModelCatalogQuery();
   const refreshModelCatalogMutation = useRefreshModelCatalog();
   const models = modelCatalogQuery.data ?? [];
@@ -64,6 +82,8 @@ export function SettingsPanel({
   });
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const settingsLoadControllerRef = useRef<AbortController | null>(null);
+  const settingsRequestVersionRef = useRef(0);
 
   const reportNotice = useCallback(
     (nextNotice: { kind: 'error' | 'success'; message: string }) => {
@@ -73,15 +93,36 @@ export function SettingsPanel({
     [onNotice],
   );
 
+  const stopSettingsLoad = useCallback(() => {
+    settingsRequestVersionRef.current += 1;
+    settingsLoadControllerRef.current?.abort();
+    settingsLoadControllerRef.current = null;
+  }, []);
+
+  const applySettingsAndCredentials = useCallback(
+    async (nextSettings: AiSettings, nextCredentials: AiCredentialSummary[]) => {
+      setSettings(nextSettings);
+      reset({
+        baseUrl: nextSettings.baseUrl,
+        apiKey: '',
+        configured: nextSettings.configured,
+      });
+      await replaceAiCredentials(queryClient, nextCredentials);
+    },
+    [queryClient, reset],
+  );
+
   useEffect(() => {
     const controller = new AbortController();
+    const requestVersion = ++settingsRequestVersionRef.current;
+    settingsLoadControllerRef.current = controller;
     let active = true;
 
     void apiFetch(`${API_BASE_URL}/v1/settings/ai`, { signal: controller.signal })
       .then(async (response) => {
         if (!response.ok) throw new Error('设置加载失败');
         const result = (await response.json()) as { settings: AiSettings };
-        if (!active) return;
+        if (!active || requestVersion !== settingsRequestVersionRef.current) return;
         setSettings(result.settings);
         setValue('configured', result.settings.configured, { shouldDirty: false });
         if (!getFieldState('baseUrl').isDirty) {
@@ -92,16 +133,30 @@ export function SettingsPanel({
         }
       })
       .catch((error: unknown) => {
-        if (!active || isAbortError(error)) return;
+        if (
+          !active ||
+          requestVersion !== settingsRequestVersionRef.current ||
+          isAbortError(error)
+        ) {
+          return;
+        }
         reportNotice({
           kind: 'error',
           message: error instanceof Error ? error.message : '设置加载失败',
         });
+      })
+      .finally(() => {
+        if (settingsLoadControllerRef.current === controller) {
+          settingsLoadControllerRef.current = null;
+        }
       });
 
     return () => {
       active = false;
       controller.abort();
+      if (settingsLoadControllerRef.current === controller) {
+        settingsLoadControllerRef.current = null;
+      }
     };
   }, [getFieldState, reportNotice, setValue]);
 
@@ -151,6 +206,7 @@ export function SettingsPanel({
 
   const save = async ({ baseUrl, apiKey }: AiSettingsFormValues) => {
     setBusy(true);
+    stopSettingsLoad();
     try {
       const response = await apiFetch(`${API_BASE_URL}/v1/settings/ai`, {
         method: 'PATCH',
@@ -159,16 +215,24 @@ export function SettingsPanel({
       });
       const result = (await response.json().catch(() => ({}))) as {
         settings?: AiSettings;
+        credentials?: AiCredentialSummary[];
         error?: string;
       };
-      if (!response.ok || !result.settings) throw new Error(result.error ?? '设置保存失败');
-      setSettings(result.settings);
-      reset({
-        baseUrl: result.settings.baseUrl,
-        apiKey: '',
-        configured: result.settings.configured,
-      });
-      reportNotice({ kind: 'success', message: 'AI 设置已保存' });
+      if (!response.ok || !result.settings || !result.credentials) {
+        throw new Error(result.error ?? '设置保存失败');
+      }
+      await applySettingsAndCredentials(result.settings, result.credentials);
+      try {
+        await refreshModelCatalogMutation.mutateAsync();
+        reportNotice({ kind: 'success', message: 'AI 设置已保存，模型列表已自动刷新' });
+      } catch (error) {
+        reportNotice({
+          kind: 'error',
+          message: `AI 设置已保存，但模型自动刷新失败：${
+            error instanceof Error ? error.message : '上游暂不可用'
+          }。可稍后手动刷新`,
+        });
+      }
     } catch (error) {
       reportNotice({
         kind: 'error',
@@ -216,6 +280,39 @@ export function SettingsPanel({
     }
   };
 
+  const activateCredential = async (credentialId: string) => {
+    if (!credentialId || credentialId === activeCredentialId(credentials)) return;
+    setBusy(true);
+    stopSettingsLoad();
+    try {
+      const result = await activateCredentialMutation.mutateAsync(credentialId);
+      setSettings(result.settings);
+      reset({
+        baseUrl: result.settings.baseUrl,
+        apiKey: '',
+        configured: result.settings.configured,
+      });
+      try {
+        await refreshModelCatalogMutation.mutateAsync();
+        reportNotice({ kind: 'success', message: '凭据已激活，模型列表已自动刷新' });
+      } catch (error) {
+        reportNotice({
+          kind: 'error',
+          message: `凭据已激活，但模型自动刷新失败：${
+            error instanceof Error ? error.message : '上游暂不可用'
+          }。可稍后手动刷新`,
+        });
+      }
+    } catch (error) {
+      reportNotice({
+        kind: 'error',
+        message: error instanceof Error ? error.message : '凭据激活失败',
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const saveGlobalDefault = async (mediaType: MediaType, modelAlias: string) => {
     setBusy(true);
     try {
@@ -226,10 +323,14 @@ export function SettingsPanel({
       });
       const result = (await response.json().catch(() => ({}))) as {
         settings?: AiSettings;
+        credentials?: AiCredentialSummary[];
         error?: string;
       };
-      if (!response.ok || !result.settings) throw new Error(result.error ?? '默认模型保存失败');
+      if (!response.ok || !result.settings || !result.credentials) {
+        throw new Error(result.error ?? '默认模型保存失败');
+      }
       setSettings(result.settings);
+      await replaceAiCredentials(queryClient, result.credentials);
       reportNotice({
         kind: 'success',
         message: `平台全局${mediaLabels[mediaType]}默认模型已更新`,
@@ -292,15 +393,14 @@ export function SettingsPanel({
       });
       const result = (await response.json().catch(() => ({}))) as {
         settings?: AiSettings;
+        credentials?: AiCredentialSummary[];
         error?: string;
       };
-      if (!response.ok || !result.settings) throw new Error(result.error ?? '凭据删除失败');
-      setSettings(result.settings);
-      reset({
-        baseUrl: result.settings.baseUrl,
-        apiKey: '',
-        configured: result.settings.configured,
-      });
+      if (!response.ok || !result.settings || !result.credentials) {
+        throw new Error(result.error ?? '凭据删除失败');
+      }
+      stopSettingsLoad();
+      await applySettingsAndCredentials(result.settings, result.credentials);
       reportNotice({ kind: 'success', message: '凭据已删除' });
     } catch (error) {
       reportNotice({
@@ -311,6 +411,227 @@ export function SettingsPanel({
       setBusy(false);
     }
   };
+
+  const settingsContent = (
+    <>
+      <div className="panel-heading">
+        <div>
+          <p className="eyebrow">设置</p>
+          {presentation === 'dialog' ? (
+            <DialogTitle asChild>
+              <h1 id="settings-title">AI 连接</h1>
+            </DialogTitle>
+          ) : (
+            <h2 id="settings-title">AI 连接</h2>
+          )}
+        </div>
+        {presentation === 'dialog' && (
+          <DialogClose asChild>
+            <Button
+              variant="secondary"
+              size="icon"
+              className="icon-button"
+              aria-label="关闭设置"
+              title="关闭"
+              ref={closeButtonRef}
+              disabled={busy}
+            >
+              <X size={17} />
+            </Button>
+          </DialogClose>
+        )}
+      </div>
+      {panelNotice && (
+        <p
+          className={`settings-inline-notice is-${panelNotice.kind}`}
+          role={panelNotice.kind === 'error' ? 'alert' : 'status'}
+        >
+          {panelNotice.message}
+        </p>
+      )}
+      <form
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' && isImeKeyboardEvent(event)) event.preventDefault();
+        }}
+        onSubmit={(event) => void handleSubmit(save)(event)}
+      >
+        <label className="settings-field">
+          <span>已保存的 API Key</span>
+          <select
+            aria-label="已保存的 API Key"
+            value={activeCredentialId(credentials)}
+            onChange={(event) => void activateCredential(event.target.value)}
+            disabled={busy || credentialsQuery.isLoading || credentials.length === 0}
+          >
+            <option value="">
+              {credentialsQuery.isLoading
+                ? '正在加载凭据'
+                : credentials.length > 0
+                  ? '未激活凭据'
+                  : '暂无已保存凭据'}
+            </option>
+            {credentials.map((credential) => (
+              <option key={credential.id} value={credential.id}>
+                {credential.baseUrl} · {credential.keyFingerprint}
+                {credential.active ? ' · 当前' : ''}
+              </option>
+            ))}
+          </select>
+          {credentialsQuery.isError && (
+            <span className="settings-field-error">凭据列表加载失败，可重新打开设置重试</span>
+          )}
+        </label>
+        <label className="settings-field">
+          <span>New API Base URL</span>
+          <Input
+            id="settings-base-url"
+            aria-invalid={Boolean(formErrors.baseUrl)}
+            aria-describedby={formErrors.baseUrl ? 'settings-base-url-error' : undefined}
+            placeholder="https://newapi.example.com/v1"
+            {...register('baseUrl')}
+          />
+          {formErrors.baseUrl && (
+            <span id="settings-base-url-error" className="settings-field-error" role="alert">
+              {formErrors.baseUrl.message}
+            </span>
+          )}
+        </label>
+        <label className="settings-field">
+          <span>API Key</span>
+          <Input
+            id="settings-api-key"
+            aria-invalid={Boolean(formErrors.apiKey)}
+            aria-describedby={formErrors.apiKey ? 'settings-api-key-error' : undefined}
+            type="password"
+            placeholder={
+              settings.keyFingerprint ? `已配置 · ${settings.keyFingerprint}` : '输入服务端 Key'
+            }
+            {...register('apiKey')}
+          />
+          {formErrors.apiKey && (
+            <span id="settings-api-key-error" className="settings-field-error" role="alert">
+              {formErrors.apiKey.message}
+            </span>
+          )}
+        </label>
+        <div className="settings-actions">
+          <Button type="submit" className="button button-primary" disabled={busy}>
+            保存
+          </Button>
+          <Button
+            variant="secondary"
+            className="button button-secondary"
+            onClick={() => void testConnection()}
+            disabled={busy || !settings.configured}
+          >
+            测试连接
+          </Button>
+          <Button
+            variant="secondary"
+            className="button button-secondary"
+            onClick={() => void refreshModels()}
+            disabled={busy || !settings.configured}
+          >
+            刷新模型
+          </Button>
+        </div>
+        <div className="settings-status">
+          {settings.configured ? `已配置 · ${settings.keyFingerprint}` : '未配置'}
+        </div>
+        <div className="settings-models">
+          <h2>平台全局默认</h2>
+          <p className="settings-status">供所有未设置项目覆盖的节点继承。</p>
+          {mediaTypes.map((mediaType) => (
+            <label className="settings-field" key={mediaType}>
+              <span>{mediaLabels[mediaType]}</span>
+              <select
+                aria-label={`平台全局默认 · ${mediaLabels[mediaType]}`}
+                value={settings.defaultModels[mediaType] ?? ''}
+                onChange={(event) => void saveGlobalDefault(mediaType, event.target.value)}
+                disabled={busy}
+              >
+                <option value="">使用服务端环境默认</option>
+                {settings.defaultModels[mediaType] &&
+                  !models.some(
+                    (model) =>
+                      model.id === settings.defaultModels[mediaType] &&
+                      model.mediaTypes.includes(mediaType),
+                  ) && (
+                    <option value={settings.defaultModels[mediaType]}>
+                      {settings.defaultModels[mediaType]}（当前不可用）
+                    </option>
+                  )}
+                {models
+                  .filter((model) => model.mediaTypes.includes(mediaType))
+                  .map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+          ))}
+        </div>
+        <div className="settings-models">
+          <h2>当前项目默认</h2>
+          <p className="settings-status">
+            {projectId ? `${projectName} · 可覆盖平台全局默认` : '当前项目尚未加载'}
+          </p>
+          {mediaTypes.map((mediaType) => (
+            <label className="settings-field" key={mediaType}>
+              <span>{mediaLabels[mediaType]}</span>
+              <select
+                aria-label={`项目默认 · ${mediaLabels[mediaType]}`}
+                value={projectDefaults[mediaType] ?? ''}
+                onChange={(event) => void saveProjectDefault(mediaType, event.target.value)}
+                disabled={busy || projectDefaultsLoading || !projectId}
+              >
+                <option value="">继承平台全局默认</option>
+                {projectDefaults[mediaType] &&
+                  !models.some(
+                    (model) =>
+                      model.id === projectDefaults[mediaType] &&
+                      model.mediaTypes.includes(mediaType),
+                  ) && (
+                    <option value={projectDefaults[mediaType]}>
+                      {projectDefaults[mediaType]}（当前不可用）
+                    </option>
+                  )}
+                {models
+                  .filter((model) => model.mediaTypes.includes(mediaType))
+                  .map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+          ))}
+        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="settings-delete"
+          onClick={() => void deleteCredentials()}
+          disabled={busy || !settings.configured}
+        >
+          删除凭据
+        </Button>
+      </form>
+    </>
+  );
+
+  if (presentation === 'page') {
+    return (
+      <section
+        className="settings-panel settings-panel-page"
+        aria-busy={busy}
+        aria-labelledby="settings-title"
+      >
+        {settingsContent}
+      </section>
+    );
+  }
 
   return (
     <Dialog modal open onOpenChange={(open) => !open && !busy && onClose()}>
@@ -326,157 +647,13 @@ export function SettingsPanel({
           event.preventDefault();
           closeButtonRef.current?.focus();
         }}
-        onEscapeKeyDown={(event) => busy && event.preventDefault()}
+        onEscapeKeyDown={(event) => {
+          if (busy || isImeKeyboardEvent(event)) event.preventDefault();
+        }}
         onPointerDownOutside={(event) => busy && event.preventDefault()}
         onInteractOutside={(event) => busy && event.preventDefault()}
       >
-        <div className="panel-heading">
-          <div>
-            <p className="eyebrow">设置</p>
-            <DialogTitle asChild>
-              <h1 id="settings-title">AI 连接</h1>
-            </DialogTitle>
-          </div>
-          <DialogClose asChild>
-            <Button
-              variant="secondary"
-              size="icon"
-              className="icon-button"
-              aria-label="关闭设置"
-              title="关闭"
-              ref={closeButtonRef}
-              disabled={busy}
-            >
-              <X size={17} />
-            </Button>
-          </DialogClose>
-        </div>
-        {panelNotice && (
-          <p
-            className={`settings-inline-notice is-${panelNotice.kind}`}
-            role={panelNotice.kind === 'error' ? 'alert' : 'status'}
-          >
-            {panelNotice.message}
-          </p>
-        )}
-        <form onSubmit={(event) => void handleSubmit(save)(event)}>
-          <label className="settings-field">
-            <span>New API Base URL</span>
-            <Input
-              id="settings-base-url"
-              aria-invalid={Boolean(formErrors.baseUrl)}
-              aria-describedby={formErrors.baseUrl ? 'settings-base-url-error' : undefined}
-              placeholder="https://newapi.example.com/v1"
-              {...register('baseUrl')}
-            />
-            {formErrors.baseUrl && (
-              <span id="settings-base-url-error" className="settings-field-error" role="alert">
-                {formErrors.baseUrl.message}
-              </span>
-            )}
-          </label>
-          <label className="settings-field">
-            <span>API Key</span>
-            <Input
-              id="settings-api-key"
-              aria-invalid={Boolean(formErrors.apiKey)}
-              aria-describedby={formErrors.apiKey ? 'settings-api-key-error' : undefined}
-              type="password"
-              placeholder={
-                settings.keyFingerprint ? `已配置 · ${settings.keyFingerprint}` : '输入服务端 Key'
-              }
-              {...register('apiKey')}
-            />
-            {formErrors.apiKey && (
-              <span id="settings-api-key-error" className="settings-field-error" role="alert">
-                {formErrors.apiKey.message}
-              </span>
-            )}
-          </label>
-          <div className="settings-actions">
-            <Button type="submit" className="button button-primary" disabled={busy}>
-              保存
-            </Button>
-            <Button
-              variant="secondary"
-              className="button button-secondary"
-              onClick={() => void testConnection()}
-              disabled={busy || !settings.configured}
-            >
-              测试连接
-            </Button>
-            <Button
-              variant="secondary"
-              className="button button-secondary"
-              onClick={() => void refreshModels()}
-              disabled={busy || !settings.configured}
-            >
-              刷新模型
-            </Button>
-          </div>
-          <div className="settings-status">
-            {settings.configured ? `已配置 · ${settings.keyFingerprint}` : '未配置'}
-          </div>
-          <div className="settings-models">
-            <h2>平台全局默认</h2>
-            <p className="settings-status">供所有未设置项目覆盖的节点继承。</p>
-            {mediaTypes.map((mediaType) => (
-              <label className="settings-field" key={mediaType}>
-                <span>{mediaLabels[mediaType]}</span>
-                <select
-                  aria-label={`平台全局默认 · ${mediaLabels[mediaType]}`}
-                  value={settings.defaultModels[mediaType] ?? ''}
-                  onChange={(event) => void saveGlobalDefault(mediaType, event.target.value)}
-                  disabled={busy}
-                >
-                  <option value="">使用服务端环境默认</option>
-                  {models
-                    .filter((model) => model.mediaTypes.includes(mediaType))
-                    .map((model) => (
-                      <option key={model.id} value={model.id}>
-                        {model.name}
-                      </option>
-                    ))}
-                </select>
-              </label>
-            ))}
-          </div>
-          <div className="settings-models">
-            <h2>当前项目默认</h2>
-            <p className="settings-status">
-              {projectId ? `${projectName} · 可覆盖平台全局默认` : '当前项目尚未加载'}
-            </p>
-            {mediaTypes.map((mediaType) => (
-              <label className="settings-field" key={mediaType}>
-                <span>{mediaLabels[mediaType]}</span>
-                <select
-                  aria-label={`项目默认 · ${mediaLabels[mediaType]}`}
-                  value={projectDefaults[mediaType] ?? ''}
-                  onChange={(event) => void saveProjectDefault(mediaType, event.target.value)}
-                  disabled={busy || projectDefaultsLoading || !projectId}
-                >
-                  <option value="">继承平台全局默认</option>
-                  {models
-                    .filter((model) => model.mediaTypes.includes(mediaType))
-                    .map((model) => (
-                      <option key={model.id} value={model.id}>
-                        {model.name}
-                      </option>
-                    ))}
-                </select>
-              </label>
-            ))}
-          </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="settings-delete"
-            onClick={() => void deleteCredentials()}
-            disabled={busy || !settings.configured}
-          >
-            删除凭据
-          </Button>
-        </form>
+        {settingsContent}
       </DialogContent>
     </Dialog>
   );

@@ -255,6 +255,43 @@ describe('New API model catalog normalization', () => {
     });
   });
 
+  it('deduplicates identical credentials and activates an immutable historical credential', () => {
+    const store = new AiSettingsStore('test-encryption-secret');
+    store.update({ baseUrl: 'https://one.example.com/v1', apiKey: 'key-one' });
+    const firstReference = store.getCredentialReference();
+    const firstCredential = store.listCredentials()[0];
+
+    store.update({ baseUrl: 'https://one.example.com/v1', apiKey: 'key-one' });
+    expect(store.getCredentialReference()).toEqual(firstReference);
+    expect(store.listCredentials()).toHaveLength(1);
+
+    store.update({ baseUrl: 'https://two.example.com/v1', apiKey: 'key-two' });
+    const secondReference = store.getCredentialReference();
+    expect(store.listCredentials()).toHaveLength(2);
+    expect(store.listCredentials().find((credential) => credential.active)?.baseUrl).toBe(
+      'https://two.example.com/v1',
+    );
+
+    expect(store.activateCredential(firstCredential!.id)).toMatchObject({
+      baseUrl: 'https://one.example.com/v1',
+      configured: true,
+      keyFingerprint: firstCredential!.keyFingerprint,
+    });
+    expect(store.listCredentials()).toHaveLength(2);
+    expect(store.listCredentials().find((credential) => credential.active)?.baseUrl).toBe(
+      'https://one.example.com/v1',
+    );
+    expect(JSON.stringify(store.listCredentials())).not.toContain('key-one');
+    expect(store.getProviderCredentials(firstReference)).toEqual({
+      baseUrl: 'https://one.example.com/v1',
+      apiKey: 'key-one',
+    });
+    expect(store.getProviderCredentials(secondReference)).toEqual({
+      baseUrl: 'https://two.example.com/v1',
+      apiKey: 'key-two',
+    });
+  });
+
   it('revokes the active credential without breaking historical snapshots', () => {
     const store = new AiSettingsStore('test-encryption-secret');
     store.update({ baseUrl: 'https://queued.example.com/v1', apiKey: 'queued-key' });
@@ -323,5 +360,147 @@ describe('New API model catalog normalization', () => {
       defaultModels: {},
     });
     expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not append a Prisma version when the saved connection is unchanged', async () => {
+    const seed = new AiSettingsStore('test-encryption-secret');
+    seed.update({ baseUrl: 'https://same.example.com/v1', apiKey: 'same-key' });
+    const persisted = seed.getPersisted();
+    const activeRow = {
+      id: '123e4567-e89b-12d3-a456-426614174041',
+      version: 6,
+      baseUrl: persisted.baseUrl,
+      encryptedApiKey: persisted.encryptedApiKey,
+      keyFingerprint: persisted.keyFingerprint,
+      defaultModels: null,
+      updatedAt: new Date('2026-08-27T06:00:00.000Z'),
+    };
+    const findFirst = vi.fn().mockResolvedValue(activeRow);
+    const create = vi.fn();
+    const prisma = {
+      aiCredential: { findFirst, create },
+      modelCatalog: { findMany: vi.fn().mockResolvedValue([]) },
+    };
+    const store = new PrismaAiSettingsStore(prisma as never, 'test-encryption-secret');
+
+    await expect(
+      store.update({ baseUrl: activeRow.baseUrl, apiKey: 'same-key' }),
+    ).resolves.toMatchObject({
+      baseUrl: activeRow.baseUrl,
+      keyFingerprint: activeRow.keyFingerprint,
+    });
+    expect(create).not.toHaveBeenCalled();
+    expect(findFirst).toHaveBeenCalledTimes(1);
+  });
+
+  it('lists Prisma credential history by unique connection and marks the active row', async () => {
+    const seed = new AiSettingsStore('test-encryption-secret');
+    seed.update({ baseUrl: 'https://active.example.com/v1', apiKey: 'active-key' });
+    const active = seed.getPersisted();
+    const activeId = '123e4567-e89b-12d3-a456-426614174021';
+    const rows = [
+      {
+        id: activeId,
+        version: 3,
+        baseUrl: active.baseUrl,
+        encryptedApiKey: active.encryptedApiKey,
+        keyFingerprint: active.keyFingerprint,
+        defaultModels: null,
+        updatedAt: new Date('2026-08-27T03:00:00.000Z'),
+      },
+      {
+        id: '123e4567-e89b-12d3-a456-426614174020',
+        version: 2,
+        baseUrl: active.baseUrl,
+        encryptedApiKey: active.encryptedApiKey,
+        keyFingerprint: active.keyFingerprint,
+        defaultModels: null,
+        updatedAt: new Date('2026-08-27T02:00:00.000Z'),
+      },
+    ];
+    const prisma = {
+      aiCredential: {
+        findFirst: vi.fn().mockResolvedValue(rows[0]),
+        findMany: vi.fn().mockResolvedValue(rows),
+      },
+      modelCatalog: { findMany: vi.fn().mockResolvedValue([]) },
+    };
+    const store = new PrismaAiSettingsStore(prisma as never, 'test-encryption-secret');
+
+    await expect(store.listCredentials()).resolves.toEqual([
+      {
+        id: activeId,
+        baseUrl: 'https://active.example.com/v1',
+        keyFingerprint: active.keyFingerprint,
+        updatedAt: '2026-08-27T03:00:00.000Z',
+        active: true,
+      },
+    ]);
+  });
+
+  it('activates a Prisma credential by appending a new immutable version', async () => {
+    const activeSeed = new AiSettingsStore('test-encryption-secret');
+    activeSeed.update({ baseUrl: 'https://active.example.com/v1', apiKey: 'active-key' });
+    const active = activeSeed.getPersisted();
+    const historicalSeed = new AiSettingsStore('test-encryption-secret');
+    historicalSeed.update({ baseUrl: 'https://history.example.com/v1', apiKey: 'history-key' });
+    const historical = historicalSeed.getPersisted();
+    const activeRow = {
+      id: '123e4567-e89b-12d3-a456-426614174031',
+      version: 4,
+      baseUrl: active.baseUrl,
+      encryptedApiKey: active.encryptedApiKey,
+      keyFingerprint: active.keyFingerprint,
+      defaultModels: { text: 'text-model' },
+      updatedAt: new Date('2026-08-27T04:00:00.000Z'),
+    };
+    const historicalRow = {
+      id: '123e4567-e89b-12d3-a456-426614174030',
+      version: 2,
+      baseUrl: historical.baseUrl,
+      encryptedApiKey: historical.encryptedApiKey,
+      keyFingerprint: historical.keyFingerprint,
+      defaultModels: null,
+      updatedAt: new Date('2026-08-27T02:00:00.000Z'),
+    };
+    const createdId = '123e4567-e89b-12d3-a456-426614174032';
+    const create = vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+      ...data,
+      id: createdId,
+      version: data.version as number,
+      updatedAt: new Date('2026-08-27T05:00:00.000Z'),
+    }));
+    const prisma = {
+      aiCredential: {
+        findFirst: vi
+          .fn()
+          .mockResolvedValueOnce(activeRow)
+          .mockResolvedValueOnce(historicalRow)
+          .mockResolvedValueOnce(activeRow),
+        create,
+      },
+      modelCatalog: { findMany: vi.fn().mockResolvedValue([]) },
+    };
+    const store = new PrismaAiSettingsStore(prisma as never, 'test-encryption-secret');
+
+    await expect(store.activateCredential(historicalRow.id)).resolves.toMatchObject({
+      baseUrl: historicalRow.baseUrl,
+      keyFingerprint: historicalRow.keyFingerprint,
+      defaultModels: { text: 'text-model' },
+    });
+    await expect(store.getCredentialReference()).resolves.toEqual({
+      credentialId: createdId,
+      credentialVersion: 5,
+    });
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0]?.[0]).toMatchObject({
+      data: {
+        baseUrl: historicalRow.baseUrl,
+        keyFingerprint: historicalRow.keyFingerprint,
+        version: 5,
+        defaultModels: { text: 'text-model' },
+      },
+    });
+    expect(JSON.stringify(create.mock.calls[0]?.[0])).not.toContain('history-key');
   });
 });

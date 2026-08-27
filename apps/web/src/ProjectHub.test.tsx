@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest';
 
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -151,6 +151,25 @@ describe('ProjectHub', () => {
     expect(document.activeElement).toBe(otherCard);
     await user.keyboard('{ArrowDown}');
     expect(document.activeElement).toBe(activeCard);
+  });
+
+  it('does not move project focus for legacy IME navigation events', () => {
+    render(
+      <ProjectHub
+        open
+        projects={projects}
+        activeProjectId="project-active"
+        onClose={vi.fn()}
+        onSelectProject={vi.fn()}
+        onCreateProject={vi.fn()}
+      />,
+    );
+
+    const activeCard = screen.getByRole('button', { name: /当前工作流/ });
+    activeCard.focus();
+    fireEvent.keyDown(activeCard, { key: 'ArrowDown', keyCode: 229 });
+
+    expect(activeCard).toHaveFocus();
   });
 
   it('exposes list positions and keeps a single tab stop while navigating', async () => {
@@ -366,6 +385,49 @@ describe('ProjectHub', () => {
     expect(
       within(activeRow as HTMLElement).getByRole('button', { name: '归档项目' }),
     ).toBeDisabled();
+  });
+
+  it('buffers an IME rename and blocks composing Enter and Escape actions', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const onRenameProject = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <ProjectHub
+        open
+        projects={projects}
+        activeProjectId="project-active"
+        onClose={onClose}
+        onSelectProject={vi.fn()}
+        onCreateProject={vi.fn()}
+        onRenameProject={onRenameProject}
+      />,
+    );
+
+    const otherRow = screen.getByText('宣传片草稿').closest('.project-hub-card-row');
+    expect(otherRow).not.toBeNull();
+    await user.click(within(otherRow as HTMLElement).getByRole('button', { name: '重命名项目' }));
+    const input = screen.getByRole('textbox', { name: '重命名 宣传片草稿' });
+    const form = input.closest('form');
+    expect(form).not.toBeNull();
+
+    fireEvent.compositionStart(input);
+    fireEvent.change(input, { target: { value: 'zhong wen' } });
+    fireEvent.keyDown(input, { key: 'Escape', isComposing: true });
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+    fireEvent.submit(form as HTMLFormElement);
+    fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 });
+    fireEvent.submit(form as HTMLFormElement);
+
+    expect(input).toHaveValue('zhong wen');
+    expect(onClose).not.toHaveBeenCalled();
+    expect(onRenameProject).not.toHaveBeenCalled();
+
+    fireEvent.compositionEnd(input, { target: { value: '中文项目' } });
+    fireEvent.submit(form as HTMLFormElement);
+
+    expect(onRenameProject).toHaveBeenCalledTimes(1);
+    expect(onRenameProject).toHaveBeenCalledWith(projects[1], '中文项目');
   });
 
   it('shows archived projects on demand and can restore them', async () => {

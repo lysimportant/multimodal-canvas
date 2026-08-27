@@ -148,7 +148,11 @@ describe('OpenAPI endpoint', () => {
     expect(response.json().paths['/v1/runs/{runId}/retry']).toBeDefined();
     expect(response.json().paths['/v1/projects/{projectId}/runs']).toBeDefined();
     expect(response.json().paths['/v1/projects/{projectId}/models/defaults']).toBeDefined();
+    expect(response.json().paths['/v1/settings/ai/credentials'].get).toBeDefined();
     expect(response.json().paths['/v1/settings/ai/credentials'].delete).toBeDefined();
+    expect(
+      response.json().paths['/v1/settings/ai/credentials/{credentialId}/activate'].post,
+    ).toBeDefined();
     expect(response.json().paths['/v1/runs/{runId/retry}']).toBeUndefined();
   });
 });
@@ -175,6 +179,78 @@ describe('AI settings endpoints', () => {
 
     const get = await app.inject({ method: 'GET', url: '/v1/settings/ai' });
     expect(get.json().settings.configured).toBe(true);
+  });
+
+  it('lists, deduplicates, and activates credential summaries without exposing keys', async () => {
+    const settingsStore = new AiSettingsStore('credential-route-test');
+    const credentialApp = buildApp({ logger: false, settingsStore });
+    const firstKey = 'first-route-secret';
+    const secondKey = 'second-route-secret';
+    try {
+      const firstSave = await credentialApp.inject({
+        method: 'PATCH',
+        url: '/v1/settings/ai',
+        payload: { baseUrl: 'https://first.example.com/v1', apiKey: firstKey },
+      });
+      expect(firstSave.statusCode).toBe(200);
+      const firstCredential = firstSave.json().credentials[0];
+      expect(firstCredential).toMatchObject({
+        baseUrl: 'https://first.example.com/v1',
+        active: true,
+      });
+
+      const duplicateSave = await credentialApp.inject({
+        method: 'PATCH',
+        url: '/v1/settings/ai',
+        payload: { baseUrl: 'https://first.example.com/v1', apiKey: firstKey },
+      });
+      expect(duplicateSave.json().credentials).toHaveLength(1);
+      expect(duplicateSave.json().credentials[0].id).toBe(firstCredential.id);
+
+      const secondSave = await credentialApp.inject({
+        method: 'PATCH',
+        url: '/v1/settings/ai',
+        payload: { baseUrl: 'https://second.example.com/v1', apiKey: secondKey },
+      });
+      expect(secondSave.json().credentials).toHaveLength(2);
+      expect(
+        secondSave.json().credentials.find((item: { active: boolean }) => item.active),
+      ).toMatchObject({ baseUrl: 'https://second.example.com/v1' });
+
+      const list = await credentialApp.inject({
+        method: 'GET',
+        url: '/v1/settings/ai/credentials',
+      });
+      expect(list.statusCode).toBe(200);
+      expect(list.json().credentials).toHaveLength(2);
+
+      const activated = await credentialApp.inject({
+        method: 'POST',
+        url: `/v1/settings/ai/credentials/${firstCredential.id}/activate`,
+      });
+      expect(activated.statusCode).toBe(200);
+      expect(activated.json().settings).toMatchObject({
+        baseUrl: 'https://first.example.com/v1',
+        keyFingerprint: firstCredential.keyFingerprint,
+      });
+      expect(
+        activated.json().credentials.find((item: { active: boolean }) => item.active),
+      ).toMatchObject({ baseUrl: 'https://first.example.com/v1' });
+
+      const missing = await credentialApp.inject({
+        method: 'POST',
+        url: '/v1/settings/ai/credentials/123e4567-e89b-12d3-a456-426614174099/activate',
+      });
+      expect(missing.statusCode).toBe(404);
+
+      const serialized = [firstSave, duplicateSave, secondSave, list, activated]
+        .map((response) => response.body)
+        .join('\n');
+      expect(serialized).not.toContain(firstKey);
+      expect(serialized).not.toContain(secondKey);
+    } finally {
+      await credentialApp.close();
+    }
   });
 
   it('rejects insecure remote base URLs', async () => {

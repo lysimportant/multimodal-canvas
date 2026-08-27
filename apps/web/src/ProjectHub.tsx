@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+import { isImeKeyboardEvent, useImeDraft } from './ime';
 import './project-hub.css';
 
 export type ProjectHubProject = {
@@ -143,6 +144,13 @@ export function ProjectHub({
   const onCloseRef = useRef(onClose);
   const isBusy = isLoading || actionProjectId !== null;
   const isBusyRef = useRef(isBusy);
+  const suppressRenameSubmitRef = useRef(false);
+  const { bind: renameInputBinding, isComposing: isRenameComposing } =
+    useImeDraft<HTMLInputElement>({
+      identity: editingProjectId ?? undefined,
+      value: editingName,
+      onCommit: setEditingName,
+    });
 
   onCloseRef.current = onClose;
   isBusyRef.current = isBusy;
@@ -164,6 +172,8 @@ export function ProjectHub({
       wasOpenRef.current = true;
     }
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (isImeKeyboardEvent(event)) return;
+
       if (event.key === 'Escape' && !isBusyRef.current) {
         event.preventDefault();
         onCloseRef.current();
@@ -459,19 +469,31 @@ export function ProjectHub({
                       className="project-hub-rename-form"
                       onSubmit={(event) => {
                         event.preventDefault();
+                        if (isRenameComposing() || suppressRenameSubmitRef.current) {
+                          suppressRenameSubmitRef.current = false;
+                          return;
+                        }
                         void submitRename(project);
                       }}
                     >
                       <Pencil size={16} aria-hidden="true" />
                       <input
                         ref={renameInputRef}
-                        value={editingName}
+                        {...renameInputBinding}
                         maxLength={120}
                         aria-label={`重命名 ${project.name}`}
                         aria-describedby={actionError ? 'project-hub-action-error' : undefined}
                         aria-invalid={actionError ? true : undefined}
-                        onChange={(event) => setEditingName(event.target.value)}
                         onKeyDown={(event) => {
+                          if (isImeKeyboardEvent(event)) {
+                            if (event.key === 'Enter') {
+                              suppressRenameSubmitRef.current = true;
+                              window.setTimeout(() => {
+                                suppressRenameSubmitRef.current = false;
+                              }, 0);
+                            }
+                            return;
+                          }
                           if (event.key === 'Escape') {
                             event.preventDefault();
                             cancelRename();
@@ -518,6 +540,7 @@ export function ProjectHub({
                       aria-current={isActive ? 'page' : undefined}
                       aria-label={`${project.name}${isArchived ? '（已归档）' : isActive ? '（当前项目）' : ''}`}
                       onKeyDown={(event) => {
+                        if (isImeKeyboardEvent(event)) return;
                         if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
                         if (navigableProjects.length === 0) return;
                         const currentNavigableIndex = navigableProjects.findIndex(

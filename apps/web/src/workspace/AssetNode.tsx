@@ -1,25 +1,43 @@
-import { Check, Circle, Clock3, LoaderCircle, Sparkles, Wand2, X } from 'lucide-react';
+import {
+  Check,
+  Circle,
+  Clock3,
+  LoaderCircle,
+  RefreshCw,
+  Sparkles,
+  TriangleAlert,
+  Wand2,
+  X,
+} from 'lucide-react';
 import { NodeResizer, type NodeProps } from '@xyflow/react';
-import { createContext, useContext } from 'react';
+import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
 
 import type { Asset, RunStatus } from '@multimodal-canvas/domain';
 import type { AssetFlowNode } from '../canvas-utils';
 import { NodeHandles } from '../NodeHandles';
-import { AssetPreview } from './AssetPreview';
+import { AssetPreview, type AssetPreviewLoadState } from './AssetPreview';
 import { mediaIcons, mediaLabels, modeLabels } from './contracts';
 
 export type NodeSelectionHandler = (data: AssetFlowNode['data']) => void;
 export const NodeSelectionContext = createContext<NodeSelectionHandler | null>(null);
 export type NodeResizeHandler = (nodeId: string, width: number, height: number) => void;
 export const NodeResizeContext = createContext<NodeResizeHandler | null>(null);
+export type NodeRetryHandler = (nodeId: string) => void | Promise<void>;
+export const NodeRetryContext = createContext<NodeRetryHandler | null>(null);
 
-function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
+type NodePresentationState = 'empty' | 'running' | 'failed' | 'cancelled' | 'preview' | 'missing';
+
+export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const selectNode = useContext(NodeSelectionContext);
   const resizeNode = useContext(NodeResizeContext);
+  const retryNode = useContext(NodeRetryContext);
+  const [previewLoadState, setPreviewLoadState] = useState<AssetPreviewLoadState | null>(null);
+  const [isRetrying, setIsRetrying] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
   const Icon = mediaIcons[data.mediaType];
   const Resizer = NodeResizer;
   const enabled = data.enabled !== false;
-  const resultPreviewAsset = data.resultAsset?.contentUrl
+  const resultPreviewAsset = data.resultAsset
     ? ({
         id: data.resultAsset.assetId,
         name: `${data.label}结果`,
@@ -27,7 +45,7 @@ function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
         mimeType: data.resultAsset.mimeType ?? data.mimeType ?? 'application/octet-stream',
         sizeBytes: data.resultAsset.sizeBytes ?? 0,
         status: 'ready',
-        contentUrl: data.resultAsset.contentUrl,
+        contentUrl: data.resultAsset.contentUrl ?? '',
         tags: [],
       } satisfies Asset)
     : undefined;
@@ -45,6 +63,39 @@ function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
           tags: [],
         } satisfies Asset)
       : undefined);
+  const previewIdentity = previewAsset
+    ? `${previewAsset.id}:${previewAsset.contentUrl}:${previewAsset.mimeType}`
+    : '';
+  const presentationState = getNodePresentationState(data, previewAsset);
+  const effectivePreviewLoadState = previewAsset?.contentUrl
+    ? (previewLoadState ?? 'loading')
+    : 'missing';
+  const canRetry = Boolean(retryNode) && data.mode !== 'source';
+  const handlePreviewLoadState = useCallback((state: AssetPreviewLoadState) => {
+    setPreviewLoadState(state);
+  }, []);
+
+  useEffect(() => {
+    setPreviewLoadState(null);
+  }, [previewIdentity]);
+
+  useEffect(() => {
+    setRetryError(null);
+    setIsRetrying(false);
+  }, [data.runStatus]);
+
+  const handleRetry = async () => {
+    if (!retryNode || isRetrying) return;
+    setIsRetrying(true);
+    setRetryError(null);
+    try {
+      await retryNode(id);
+    } catch (error) {
+      setRetryError(error instanceof Error ? error.message : '重试提交失败');
+    } finally {
+      setIsRetrying(false);
+    }
+  };
 
   return (
     <div
@@ -85,19 +136,48 @@ function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
         </span>
         {!enabled && <span className="flow-node-disabled-badge">停用</span>}
         {data.stale && <span className="flow-node-stale-badge">待更新</span>}
-        <span className="flow-node-status">
-          <RunStatusIcon status={data.runStatus} />
+        <span
+          className={`flow-node-status ${effectivePreviewLoadState === 'error' || presentationState === 'missing' ? 'is-error' : ''}`}
+        >
+          <RunStatusIcon
+            status={data.runStatus}
+            artifactState={
+              presentationState === 'preview'
+                ? effectivePreviewLoadState
+                : presentationState === 'missing'
+                  ? 'missing'
+                  : undefined
+            }
+          />
         </span>
       </div>
-      {previewAsset ? (
+      {presentationState === 'preview' && previewAsset ? (
         <div className="flow-node-preview">
-          <AssetPreview asset={previewAsset} className="flow-node-preview-content" />
+          <AssetPreview
+            asset={previewAsset}
+            className="flow-node-preview-content"
+            mode="content"
+            onLoadStateChange={handlePreviewLoadState}
+          />
         </div>
       ) : (
-        <div className="flow-node-placeholder">
-          <Icon size={24} strokeWidth={1.7} aria-hidden="true" />
-          <span>{data.runStatus ? runStatusLabel(data.runStatus) : '等待运行'}</span>
-        </div>
+        <NodeStateContent
+          state={presentationState}
+          status={data.runStatus}
+          progress={data.runProgress}
+          error={data.runError}
+          canRetry={
+            canRetry &&
+            (presentationState === 'failed' ||
+              presentationState === 'cancelled' ||
+              presentationState === 'missing')
+          }
+          isRetrying={isRetrying}
+          retryError={retryError}
+          onRetry={() => void handleRetry()}
+          emptyLabel={data.mode === 'source' ? '资源内容不可用' : '尚未生成'}
+          icon={<Icon size={24} strokeWidth={1.7} aria-hidden="true" />}
+        />
       )}
       <div className="flow-node-label" title={data.label}>
         {data.label}
@@ -106,7 +186,106 @@ function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   );
 }
 
-function RunStatusIcon({ status }: { status?: RunStatus }) {
+function NodeStateContent({
+  state,
+  status,
+  progress,
+  error,
+  canRetry,
+  isRetrying,
+  retryError,
+  onRetry,
+  emptyLabel,
+  icon,
+}: {
+  state: NodePresentationState;
+  status?: RunStatus;
+  progress?: number;
+  error?: string;
+  canRetry: boolean;
+  isRetrying: boolean;
+  retryError: string | null;
+  onRetry: () => void;
+  emptyLabel: string;
+  icon: ReactNode;
+}) {
+  if (state === 'running') {
+    return (
+      <div
+        className="flow-node-placeholder flow-node-runtime-state"
+        role="status"
+        aria-live="polite"
+      >
+        <LoaderCircle className="spin" size={22} aria-hidden="true" />
+        <span>{status ? runStatusLabel(status) : '运行中'}</span>
+        {typeof progress === 'number' ? (
+          <span className="flow-node-progress" aria-label={`运行进度 ${progress}%`}>
+            {progress}%
+          </span>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (state === 'failed' || state === 'cancelled' || state === 'missing') {
+    const message =
+      state === 'missing'
+        ? '产物不存在或已失效'
+        : state === 'cancelled'
+          ? '运行已取消'
+          : error || '生成失败，请检查运行详情';
+    return (
+      <div className="flow-node-placeholder flow-node-runtime-state is-error" role="alert">
+        {state === 'cancelled' ? (
+          <X size={21} aria-hidden="true" />
+        ) : (
+          <TriangleAlert size={21} aria-hidden="true" />
+        )}
+        <span className="flow-node-state-message" title={message}>
+          {message}
+        </span>
+        {canRetry ? (
+          <button
+            type="button"
+            className="flow-node-retry nodrag nopan"
+            onClick={onRetry}
+            disabled={isRetrying}
+          >
+            {isRetrying ? (
+              <LoaderCircle className="spin" size={13} aria-hidden="true" />
+            ) : (
+              <RefreshCw size={13} aria-hidden="true" />
+            )}
+            {isRetrying ? '提交中…' : '重试生成'}
+          </button>
+        ) : null}
+        {retryError ? <span className="flow-node-retry-error">{retryError}</span> : null}
+      </div>
+    );
+  }
+
+  if (state === 'preview') return null;
+
+  return (
+    <div className="flow-node-placeholder">
+      {icon}
+      <span>{emptyLabel}</span>
+    </div>
+  );
+}
+
+function RunStatusIcon({
+  status,
+  artifactState,
+}: {
+  status?: RunStatus;
+  artifactState?: AssetPreviewLoadState;
+}) {
+  if (artifactState === 'error') return <X size={12} aria-label="产物加载失败" />;
+  if (artifactState === 'missing') return <TriangleAlert size={12} aria-label="产物不可用" />;
+  if (artifactState === 'loading') {
+    return <LoaderCircle className="spin" size={12} aria-label="产物加载中" />;
+  }
   if (status === 'succeeded') return <Check size={12} aria-label="运行成功" />;
   if (status === 'failed' || status === 'cancelled') return <X size={12} aria-label="运行失败" />;
   if (status === 'queued' || status === 'preparing' || status === 'cancel_requested') {
@@ -116,6 +295,27 @@ function RunStatusIcon({ status }: { status?: RunStatus }) {
     return <LoaderCircle className="spin" size={12} aria-label="运行中" />;
   }
   return <Circle size={10} aria-label="未运行" />;
+}
+
+function getNodePresentationState(
+  data: AssetFlowNode['data'],
+  previewAsset?: Asset,
+): NodePresentationState {
+  if (
+    data.runStatus === 'queued' ||
+    data.runStatus === 'preparing' ||
+    data.runStatus === 'running' ||
+    data.runStatus === 'processing' ||
+    data.runStatus === 'cancel_requested'
+  ) {
+    return 'running';
+  }
+  if (data.runStatus === 'failed') return 'failed';
+  if (data.runStatus === 'cancelled') return 'cancelled';
+  if (data.runStatus === 'succeeded' && !previewAsset?.contentUrl) return 'missing';
+  if (previewAsset?.contentUrl) return 'preview';
+  if (data.mode === 'source') return 'missing';
+  return 'empty';
 }
 
 export function runStatusLabel(status: RunStatus) {

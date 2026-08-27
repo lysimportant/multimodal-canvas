@@ -30,6 +30,58 @@ afterEach(() => {
 });
 
 describe('BullMQ run result integrity', () => {
+  it('falls back to durable persistence when the BullMQ job has expired', async () => {
+    const snapshot = createRunSnapshot(
+      'project_1',
+      {
+        revision: 4,
+        nodes: [
+          {
+            id: 'node_text',
+            type: 'text',
+            position: { x: 0, y: 0 },
+            data: { label: 'Generate', mediaType: 'text', mode: 'generate' },
+          },
+        ],
+        edges: [],
+      },
+      'node_text',
+    );
+    state.getJob = vi.fn(async () => undefined);
+    const durableRun = {
+      id: 'run_expired',
+      projectId: snapshot.projectId,
+      targetNodeId: snapshot.targetNodeId,
+      status: 'succeeded' as const,
+      progress: 100,
+      attempt: 1,
+      provider: 'mock',
+      modelAlias: snapshot.modelAlias,
+      snapshot,
+      result: {
+        provider: 'mock',
+        summary: 'durable result',
+        targetNodeId: snapshot.targetNodeId,
+        mediaType: 'text' as const,
+        inputCount: 0,
+      },
+      createdAt: '2026-08-27T00:00:00.000Z',
+      updatedAt: '2026-08-27T00:01:00.000Z',
+    };
+    const persistence = {
+      ensureRun: vi.fn(async () => undefined),
+      getRun: vi.fn(async () => durableRun),
+    };
+    const service = new BullMqRunService({
+      connection: { host: '127.0.0.1', port: 6379 },
+      persistence: persistence as never,
+    });
+
+    await expect(service.get(durableRun.id)).resolves.toEqual(durableRun);
+    expect(persistence.getRun).toHaveBeenCalledWith(durableRun.id);
+    await service.close();
+  });
+
   it('marks a completed job with an invalid result envelope as failed', async () => {
     const snapshot = createRunSnapshot(
       'project_1',

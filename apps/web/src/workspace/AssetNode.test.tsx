@@ -1,0 +1,151 @@
+import '@testing-library/jest-dom/vitest';
+
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('@xyflow/react', () => ({
+  Handle: () => null,
+  NodeResizer: () => null,
+  Position: { Top: 'top', Right: 'right', Bottom: 'bottom', Left: 'left' },
+}));
+
+import type { NodeProps } from '@xyflow/react';
+import type { AssetFlowNode } from '../canvas-utils';
+import { AssetNode, NodeRetryContext } from './AssetNode';
+
+function makeNode(overrides: Partial<AssetFlowNode['data']> = {}): AssetFlowNode {
+  return {
+    id: 'node_1',
+    type: 'text',
+    position: { x: 0, y: 0 },
+    data: {
+      label: '文案生成',
+      mediaType: 'text',
+      mode: 'generate',
+      enabled: true,
+      ...overrides,
+    },
+  } as AssetFlowNode;
+}
+
+function renderNode(node: AssetFlowNode, onRetry?: (nodeId: string) => void | Promise<void>) {
+  const props = {
+    id: node.id,
+    data: node.data,
+    selected: false,
+  } as NodeProps<AssetFlowNode>;
+  return render(
+    <NodeRetryContext.Provider value={onRetry ?? null}>
+      <AssetNode {...props} />
+    </NodeRetryContext.Provider>,
+  );
+}
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
+
+describe('AssetNode result presentation', () => {
+  it('renders a real text result inside a succeeded node', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response('真实生成文案\n第二行', { status: 200 })),
+    );
+    renderNode(
+      makeNode({
+        runStatus: 'succeeded',
+        runProgress: 100,
+        resultAsset: {
+          assetId: 'asset_text',
+          contentUrl: 'https://assets.example/result.txt',
+          mimeType: 'text/plain',
+          sizeBytes: 30,
+        },
+      }),
+    );
+
+    const content = await screen.findByText((_, element) => element?.tagName === 'PRE');
+    expect(content.textContent).toBe('真实生成文案\n第二行');
+    await waitFor(() => expect(screen.getByLabelText('运行成功')).toBeInTheDocument());
+  });
+
+  it('shows progress instead of a success placeholder while a run is active', () => {
+    renderNode(makeNode({ runStatus: 'processing', runProgress: 48 }));
+
+    expect(screen.getByRole('status')).toHaveTextContent('处理中');
+    expect(screen.getByLabelText('运行进度 48%')).toHaveTextContent('48%');
+    expect(screen.queryByLabelText('运行成功')).not.toBeInTheDocument();
+  });
+
+  it('shows the generation error and invokes the optional retry callback', async () => {
+    const onRetry = vi.fn().mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    renderNode(makeNode({ runStatus: 'failed', runError: '上游模型拒绝了请求' }), onRetry);
+
+    expect(screen.getByRole('alert')).toHaveTextContent('上游模型拒绝了请求');
+    expect(screen.getByLabelText('运行失败')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '重试生成' }));
+    await waitFor(() => expect(onRetry).toHaveBeenCalledWith('node_1'));
+  });
+
+  it('does not mask a succeeded run whose artifact URL is missing', async () => {
+    const onRetry = vi.fn();
+    const user = userEvent.setup();
+    renderNode(
+      makeNode({
+        runStatus: 'succeeded',
+        resultAsset: { assetId: 'asset_missing', mimeType: 'text/plain' },
+      }),
+      onRetry,
+    );
+
+    expect(screen.getByRole('alert')).toHaveTextContent('产物不存在或已失效');
+    expect(screen.getByLabelText('产物不可用')).toBeInTheDocument();
+    expect(screen.queryByLabelText('运行成功')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '重试生成' }));
+    expect(onRetry).toHaveBeenCalledWith('node_1');
+  });
+
+  it('replaces the success indicator when a media artifact fails to load', async () => {
+    const { container } = renderNode(
+      makeNode({
+        mediaType: 'image',
+        runStatus: 'succeeded',
+        resultAsset: {
+          assetId: 'asset_image',
+          contentUrl: 'https://assets.example/missing.png',
+          mimeType: 'image/png',
+          sizeBytes: 1024,
+        },
+      }),
+    );
+
+    const image = container.querySelector('img');
+    expect(image).not.toBeNull();
+    fireEvent.error(image!);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('图片加载失败');
+    await waitFor(() => expect(screen.getByLabelText('产物加载失败')).toBeInTheDocument());
+    expect(screen.queryByLabelText('运行成功')).not.toBeInTheDocument();
+  });
+
+  it('keeps the ungenerated state distinct from missing source content', () => {
+    const { rerender } = renderNode(makeNode());
+    expect(screen.getByText('尚未生成')).toBeInTheDocument();
+
+    const sourceNode = makeNode({ mode: 'source' });
+    const props = {
+      id: sourceNode.id,
+      data: sourceNode.data,
+      selected: false,
+    } as NodeProps<AssetFlowNode>;
+    rerender(
+      <NodeRetryContext.Provider value={null}>
+        <AssetNode {...props} />
+      </NodeRetryContext.Provider>,
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent('产物不存在或已失效');
+  });
+});

@@ -19,7 +19,7 @@ import {
   type RunSnapshot,
   type RunStatus,
 } from '@multimodal-canvas/domain';
-import type { PrismaRunPersistence } from './run-persistence';
+import { databaseRunId, type PrismaRunPersistence } from './run-persistence';
 
 // A tiny 1-second fragmented H.264 MP4 keeps the default provider useful in
 // local development without pretending that arbitrary text is a playable
@@ -1155,13 +1155,15 @@ type RunProgress = {
 export class BullMqRunService implements RunService {
   private readonly queue: Queue<RunJobData>;
   private readonly providerName: RunProviderName;
-  private readonly persistence?: Pick<PrismaRunPersistence, 'ensureRun'>;
+  private readonly persistence?: Pick<PrismaRunPersistence, 'ensureRun'> &
+    Partial<Pick<PrismaRunPersistence, 'getRun' | 'listRunsByProject'>>;
 
   constructor(options: {
     connection: ConnectionOptions;
     queueName?: string;
     providerName?: RunProviderName;
-    persistence?: Pick<PrismaRunPersistence, 'ensureRun'>;
+    persistence?: Pick<PrismaRunPersistence, 'ensureRun'> &
+      Partial<Pick<PrismaRunPersistence, 'getRun' | 'listRunsByProject'>>;
   }) {
     this.queue = new Queue<RunJobData>(options.queueName ?? RUN_QUEUE_NAME, {
       connection: options.connection,
@@ -1184,8 +1186,8 @@ export class BullMqRunService implements RunService {
 
   async get(runId: string): Promise<RunRecord | undefined> {
     const job = await this.queue.getJob(runId);
-    if (!job) return undefined;
-    return this.toRunRecord(job);
+    if (job) return this.toRunRecord(job);
+    return this.persistence?.getRun?.(runId);
   }
 
   async listByProject(projectId: string): Promise<RunRecord[]> {
@@ -1194,7 +1196,7 @@ export class BullMqRunService implements RunService {
       0,
       -1,
     );
-    const runs = await Promise.all(
+    const queueRuns = await Promise.all(
       jobs
         .filter((job) => {
           const parsed = runJobDataSchema.safeParse(job.data);
@@ -1202,7 +1204,16 @@ export class BullMqRunService implements RunService {
         })
         .map((job) => this.toRunRecord(job)),
     );
-    return runs.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    const durableRuns = (await this.persistence?.listRunsByProject?.(projectId)) ?? [];
+    const durableByDatabaseId = new Map(durableRuns.map((run) => [run.id, run]));
+    for (const run of queueRuns) {
+      durableByDatabaseId.delete(databaseRunId(run.id));
+    }
+    return [...durableByDatabaseId.values(), ...queueRuns].sort((left, right) =>
+      left.createdAt === right.createdAt
+        ? left.id.localeCompare(right.id)
+        : left.createdAt.localeCompare(right.createdAt),
+    );
   }
 
   async applyProviderWebhook(update: ProviderWebhookUpdate): Promise<RunRecord | undefined> {

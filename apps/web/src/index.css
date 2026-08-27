@@ -766,13 +766,14 @@ h2 {
   padding: 8px 11px;
   pointer-events: none;
   position: absolute;
-  bottom: 100px;
+  bottom: 18px;
   right: auto;
   transform: translateX(-50%);
   transition:
     opacity 140ms ease,
     visibility 140ms ease;
-  z-index: 2;
+  /* Keep node handles above the floating creator controls when their boxes overlap. */
+  z-index: 1;
 }
 
 .canvas-area:has(.node-quick-editor) .canvas-node-tools {

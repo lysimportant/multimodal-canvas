@@ -352,6 +352,9 @@ function installApiMock() {
     if (url.pathname === `/v1/projects/${project.id}` && method === 'GET') {
       return jsonResponse({ project });
     }
+    if (/^\/v1\/projects\/[^/]+$/.test(url.pathname) && method === 'GET') {
+      return jsonResponse({ error: 'project not found' }, 404);
+    }
     if (url.pathname === `/v1/projects/${project.id}/runs` && method === 'GET') {
       return jsonResponse({ runs: [] });
     }
@@ -405,6 +408,7 @@ function handleFor(node: HTMLElement, handleId: string) {
 
 describe('画布编辑器交互', () => {
   beforeEach(() => {
+    window.history.replaceState(null, '', `/projects/${project.id}`);
     window.localStorage.clear();
     clipboardText = '';
     canvas = structuredClone(emptyCanvas);
@@ -416,6 +420,7 @@ describe('画布编辑器交互', () => {
 
   afterEach(() => {
     cleanup();
+    window.history.replaceState(null, '', '/');
     if (previousClipboardDescriptor) {
       Object.defineProperty(window.navigator, 'clipboard', previousClipboardDescriptor);
     } else {
@@ -425,6 +430,34 @@ describe('画布编辑器交互', () => {
       });
     }
     vi.unstubAllGlobals();
+  });
+
+  it('在根路径显示主页且不会自动创建项目', async () => {
+    window.history.replaceState(null, '', '/');
+    render(createElement(App));
+
+    expect(await screen.findByRole('heading', { name: 'Multimodal Canvas' })).toBeVisible();
+    expect(screen.getByRole('link', { name: /进入工作台/ })).toHaveAttribute('href', '/workspace');
+    expect(
+      fetchMock.mock.calls.some(
+        ([input, init]) => String(input).includes('/v1/projects') && init?.method === 'POST',
+      ),
+    ).toBe(false);
+  });
+
+  it('工作台项目链接进入对应画布，并对不存在项目显示明确状态', async () => {
+    const user = userEvent.setup();
+    window.history.replaceState(null, '', '/workspace');
+    const view = render(createElement(App));
+    const projectLink = await screen.findByRole('link', { name: project.name });
+    await user.click(projectLink);
+    await screen.findByRole('application');
+    expect(window.location.pathname).toBe(`/projects/${project.id}`);
+
+    view.unmount();
+    window.history.replaceState(null, '', '/projects/missing-project');
+    render(createElement(App));
+    expect(await screen.findByRole('heading', { name: '项目不存在' })).toBeVisible();
   });
 
   it('通过工具栏和资源库创建生成节点与来源节点', async () => {
@@ -460,6 +493,25 @@ describe('画布编辑器交互', () => {
 
     await user.click(screen.getByRole('button', { name: '画布空白' }));
     expect(screen.queryByLabelText('文字生成节点生成设置')).not.toBeInTheDocument();
+  });
+
+  it('节点标题支持中文组合输入，并可作为一次编辑撤销', async () => {
+    const { user } = await renderCanvas();
+    await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
+    await user.click(findNodeByLabel('文字生成节点')!);
+    const title = screen.getByRole('textbox', { name: '节点名称' });
+
+    fireEvent.compositionStart(title);
+    fireEvent.change(title, { target: { value: 'zhong wen' } });
+    expect(title).toHaveValue('zhong wen');
+    fireEvent.change(title, { target: { value: '中文标题' } });
+    fireEvent.compositionEnd(title, { data: '中文标题' });
+    expect(title).toHaveValue('中文标题');
+    expect(findNodeByLabel('中文标题')).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: '画布空白' }));
+    fireEvent.keyDown(window, { key: 'z', ctrlKey: true });
+    expect(findNodeByLabel('文字生成节点')).toBeTruthy();
   });
 
   it('在节点浮层配置生成参数，并用最新值提交运行', async () => {

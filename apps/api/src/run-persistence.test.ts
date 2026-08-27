@@ -23,14 +23,13 @@ const providerJob = {
 };
 
 function createPersistence() {
-  const findRun = vi.fn<(args: unknown) => Promise<{ userId: string | null } | undefined>>(
-    async () => undefined,
-  );
+  const findRun = vi.fn<(args: unknown) => Promise<unknown>>(async () => undefined);
   const prisma = {
     run: {
       upsert: vi.fn(async (args) => args.create),
       update: vi.fn(async (args) => args.data),
       findUnique: findRun,
+      findMany: vi.fn(async () => [] as unknown[]),
     },
     providerJob: { upsert: vi.fn(async (args) => args.create) },
     usageLedger: {
@@ -42,6 +41,72 @@ function createPersistence() {
 }
 
 describe('PrismaRunPersistence', () => {
+  it('restores a completed run and its real result after the queue job expires', async () => {
+    const { prisma, persistence } = createPersistence();
+    const externalRunId = 'run_expired_1';
+    const projectId = '123e4567-e89b-12d3-a456-426614174010';
+    const createdAt = new Date('2026-08-25T00:00:00.000Z');
+    const updatedAt = new Date('2026-08-25T00:02:00.000Z');
+    prisma.run.findUnique.mockResolvedValue({
+      id: databaseRunId(externalRunId),
+      projectId,
+      userId: null,
+      status: 'SUCCEEDED',
+      modelAlias: 'mock-text',
+      snapshot: {
+        projectId,
+        canvasRevision: 7,
+        targetNodeId: 'node_text',
+        modelAlias: 'mock-text',
+        parameters: {},
+        submittedAt: createdAt.toISOString(),
+        nodes: [
+          {
+            id: 'node_text',
+            type: 'text',
+            position: { x: 0, y: 0 },
+            data: { label: '文案', mediaType: 'text', mode: 'generate' },
+          },
+        ],
+        edges: [],
+        inputs: [],
+      },
+      result: {
+        provider: 'mock',
+        summary: '真实生成文本',
+        targetNodeId: 'node_text',
+        mediaType: 'text',
+        inputCount: 0,
+        asset: {
+          assetId: '123e4567-e89b-12d3-a456-426614174012',
+          version: 1,
+          contentUrl: '/v1/assets/result/content',
+          mimeType: 'text/plain; charset=utf-8',
+          sizeBytes: 18,
+        },
+      },
+      attempt: 1,
+      retryOf: null,
+      idempotencyKey: 'request-1',
+      error: null,
+      createdAt,
+      updatedAt,
+      providerJobs: [],
+    });
+
+    await expect(persistence.getRun(externalRunId)).resolves.toMatchObject({
+      id: externalRunId,
+      projectId,
+      targetNodeId: 'node_text',
+      status: 'succeeded',
+      progress: 100,
+      result: { summary: '真实生成文本', asset: { version: 1 } },
+    });
+    expect(prisma.run.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: databaseRunId(externalRunId) } }),
+    );
+  });
+
   it('rejects BullMQ/API run IDs instead of writing an invalid UUID foreign key', async () => {
     const { prisma, persistence } = createPersistence();
 

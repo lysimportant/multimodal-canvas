@@ -15,12 +15,52 @@ type AiSettings = {
   defaultModels: Record<string, string>;
 };
 
+type AiCredentialSummary = {
+  id: string;
+  version: number;
+  baseUrl: string;
+  keyFingerprint: string;
+  active: boolean;
+  createdAt: string;
+};
+
 const project: Project = {
   id: 'project-smoke',
   name: 'Smoke 项目',
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
 };
+
+const projectPath = `/projects/${project.id}`;
+const validPng = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+  'base64',
+);
+const validWebm = Buffer.from(
+  'GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQRChYECGFOAZwEAAAAAAAHLEU2bdLlNu4tTq4QVSalmU6yBbk27i1OrhBZUrmtTrIGTTbuLU6uEH0O2dVOsgcFNu4xTq4QcU7trU6yCAbnsrgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVSalmoCrXsYMPQkBEiYRDVcMSTYCGQ2hyb21lV0GGQ2hyb21lFlSua6mup9eBAXPFh2qkl4hJb02DgQFV7oEBhoVWX1ZQOOCKsIEQuoEQU8CBAR9DtnUBAAAAAAAA7OeBAKDdobKBAAAAcAIAnQEqEAAQAAAHCIWFiJmEiAEkEBOtUBBl8CT+/znG/3BmfV2OH9zY5xbIYHWhpqak7oEBpZ8QAgCdASoQABAAAAcIhYWImYSIASQQAGBrAP7/uoMAoLehloEAjgDRAQAAEAkgAMAAwsF/oABAAAB1oZmml+6BAaWS0QEAABAJIADAAMLBf6AAQAAA+4EAoM+hroEA1QARAgAAEAkgAMA6QEGfMZ+YACAA/v2BkP/PzO7cX9Vv/0TX9E1/RNf/Q3B1oZmml+6BAaWS0QEAABAJIADAAMLBf6AAQAAA+4GOHFO7a427i7OBALeG94EB8YHB',
+  'base64',
+);
+
+function createSilentWav() {
+  const sampleCount = 800;
+  const buffer = Buffer.alloc(44 + sampleCount * 2);
+  buffer.write('RIFF', 0, 'ascii');
+  buffer.writeUInt32LE(buffer.length - 8, 4);
+  buffer.write('WAVE', 8, 'ascii');
+  buffer.write('fmt ', 12, 'ascii');
+  buffer.writeUInt32LE(16, 16);
+  buffer.writeUInt16LE(1, 20);
+  buffer.writeUInt16LE(1, 22);
+  buffer.writeUInt32LE(8_000, 24);
+  buffer.writeUInt32LE(16_000, 28);
+  buffer.writeUInt16LE(2, 32);
+  buffer.writeUInt16LE(16, 34);
+  buffer.write('data', 36, 'ascii');
+  buffer.writeUInt32LE(sampleCount * 2, 40);
+  return buffer;
+}
+
+const validWav = createSilentWav();
 
 const emptyCanvas: CanvasDocument = {
   revision: 0,
@@ -51,6 +91,9 @@ async function mockApi(page: Page) {
   ];
 
   const assets: Asset[] = [];
+  let credentials: AiCredentialSummary[] = [];
+  const credentialByKey = new Map<string, AiCredentialSummary>();
+  const generatedContent = new Map<string, { contentType: string; body: Buffer | string }>();
   let projectDefaults: Record<string, string> = {};
   const pendingUploads = new Map<
     string,
@@ -58,6 +101,7 @@ async function mockApi(page: Page) {
   >();
   const runs = new Map<string, RunRecord>();
   let currentCanvas: CanvasDocument = structuredClone(emptyCanvas);
+  let credentialSequence = 0;
   let uploadSequence = 0;
 
   const assetMediaType = (mimeType: string): Asset['mediaType'] => {
@@ -70,10 +114,46 @@ async function mockApi(page: Page) {
   const createRun = (nodeId: string, body: Record<string, unknown>): RunRecord => {
     const node = currentCanvas.nodes.find((item) => item.id === nodeId);
     const mediaType = node?.data.mediaType ?? 'text';
+    const parameters =
+      body.parameters && typeof body.parameters === 'object'
+        ? (body.parameters as Record<string, unknown>)
+        : {};
+    const prompt = typeof parameters.prompt === 'string' ? parameters.prompt : '未提供提示词';
     const modelAlias =
       typeof body.modelAlias === 'string' && body.modelAlias.length > 0
         ? body.modelAlias
         : (settings.defaultModels[mediaType] ?? `mock-${mediaType}`);
+    const resultAssetId = `result-${nodeId}`;
+    const contentUrl = `/v1/assets/${resultAssetId}/content`;
+    const output =
+      mediaType === 'image'
+        ? { contentType: 'image/png', body: validPng, extension: 'png' }
+        : mediaType === 'audio'
+          ? { contentType: 'audio/wav', body: validWav, extension: 'wav' }
+          : mediaType === 'video'
+            ? { contentType: 'video/webm', body: validWebm, extension: 'webm' }
+            : {
+                contentType: 'text/plain; charset=utf-8',
+                body: `这是根据“${prompt}”生成的真实文本结果。\n支持换行、复制和滚动查看。`,
+                extension: 'txt',
+              };
+    const sizeBytes = Buffer.isBuffer(output.body)
+      ? output.body.byteLength
+      : Buffer.byteLength(output.body, 'utf8');
+    generatedContent.set(contentUrl, { contentType: output.contentType, body: output.body });
+    const resultAsset: Asset = {
+      id: resultAssetId,
+      name: `generated-${mediaType}.${output.extension}`,
+      mediaType,
+      mimeType: output.contentType.split(';')[0]!,
+      sizeBytes,
+      status: 'ready',
+      contentUrl,
+      tags: ['generated'],
+    };
+    const existingAssetIndex = assets.findIndex((asset) => asset.id === resultAssetId);
+    if (existingAssetIndex >= 0) assets.splice(existingAssetIndex, 1);
+    assets.unshift(resultAsset);
     const now = new Date().toISOString();
     const run: RunRecord = {
       id: `run-${nodeId}`,
@@ -102,11 +182,11 @@ async function mockApi(page: Page) {
         mediaType,
         inputCount: 0,
         asset: {
-          assetId: `result-${nodeId}`,
+          assetId: resultAssetId,
           version: 1,
-          contentUrl: `/v1/assets/result-${nodeId}/content`,
-          mimeType: mediaType === 'text' ? 'text/plain' : `${mediaType}/*`,
-          sizeBytes: 16,
+          contentUrl,
+          mimeType: resultAsset.mimeType,
+          sizeBytes,
         },
       },
       createdAt: now,
@@ -185,11 +265,28 @@ async function mockApi(page: Page) {
       return;
     }
     if (request.method() === 'GET' && /^\/v1\/assets\/[^/]+\/content$/.test(path)) {
+      const generated = generatedContent.get(path);
+      if (generated) {
+        await route.fulfill({
+          status: 200,
+          contentType: generated.contentType,
+          body: generated.body,
+        });
+        return;
+      }
       const asset = assets.find((item) => item.contentUrl === path);
+      const body =
+        asset?.mediaType === 'image'
+          ? validPng
+          : asset?.mediaType === 'audio'
+            ? validWav
+            : asset?.mediaType === 'video'
+              ? validWebm
+              : 'mock content';
       await route.fulfill({
         status: 200,
         contentType: asset?.mimeType ?? 'text/plain',
-        body: asset?.mediaType === 'image' ? Buffer.from('iVBORw0KGgo=', 'base64') : 'mock content',
+        body,
       });
       return;
     }
@@ -207,6 +304,10 @@ async function mockApi(page: Page) {
     }
     if (request.method() === 'GET' && path === `/v1/projects/${project.id}/canvas`) {
       await json(route, { canvas: currentCanvas });
+      return;
+    }
+    if (request.method() === 'GET' && path === `/v1/projects/${project.id}/runs`) {
+      await json(route, { runs: [...runs.values()] });
       return;
     }
     if (request.method() === 'GET' && path === `/v1/projects/${project.id}/models/defaults`) {
@@ -263,12 +364,20 @@ async function mockApi(page: Page) {
       await json(route, { canvas: currentCanvas });
       return;
     }
+    if (request.method() === 'GET' && /^\/v1\/projects\/[^/]+$/.test(path)) {
+      await json(route, { error: '项目不存在' }, 404);
+      return;
+    }
     if (request.method() === 'GET' && path === '/v1/models') {
       await json(route, { models });
       return;
     }
     if (request.method() === 'GET' && path === '/v1/settings/ai') {
       await json(route, { settings });
+      return;
+    }
+    if (request.method() === 'GET' && path === '/v1/settings/ai/credentials') {
+      await json(route, { credentials });
       return;
     }
     if (request.method() === 'PATCH' && path === '/v1/settings/ai') {
@@ -292,7 +401,50 @@ async function mockApi(page: Page) {
             }
           : {}),
       };
-      await json(route, { settings });
+      if (body.apiKey) {
+        const existing = credentialByKey.get(`${settings.baseUrl}\u0000${body.apiKey}`);
+        const saved =
+          existing ??
+          ({
+            id: `credential-${++credentialSequence}`,
+            version: credentialSequence,
+            baseUrl: settings.baseUrl,
+            keyFingerprint: 'smoke-fingerprint',
+            active: true,
+            createdAt: new Date().toISOString(),
+          } satisfies AiCredentialSummary);
+        if (!existing) credentialByKey.set(`${settings.baseUrl}\u0000${body.apiKey}`, saved);
+        credentials = [
+          { ...saved, active: true },
+          ...credentials
+            .filter((credential) => credential.id !== saved.id)
+            .map((credential) => ({ ...credential, active: false })),
+        ];
+      }
+      await json(route, { settings, credentials });
+      return;
+    }
+    if (
+      request.method() === 'POST' &&
+      /^\/v1\/settings\/ai\/credentials\/[^/]+\/activate$/.test(path)
+    ) {
+      const credentialId = path.split('/')[5];
+      const selected = credentials.find((credential) => credential.id === credentialId);
+      if (!selected) {
+        await json(route, { error: '凭据不存在' }, 404);
+        return;
+      }
+      credentials = credentials.map((credential) => ({
+        ...credential,
+        active: credential.id === credentialId,
+      }));
+      settings = {
+        ...settings,
+        baseUrl: selected.baseUrl,
+        configured: true,
+        keyFingerprint: selected.keyFingerprint,
+      };
+      await json(route, { settings, credentials });
       return;
     }
     if (request.method() === 'POST' && path === '/v1/settings/ai/test') {
@@ -305,7 +457,8 @@ async function mockApi(page: Page) {
     }
     if (request.method() === 'DELETE' && path === '/v1/settings/ai/credentials') {
       settings = { ...settings, baseUrl: '', configured: false, keyFingerprint: undefined };
-      await json(route, { settings });
+      credentials = credentials.map((credential) => ({ ...credential, active: false }));
+      await json(route, { settings, credentials });
       return;
     }
 
@@ -365,17 +518,66 @@ test.beforeEach(async ({ page }) => {
   await mockApi(page);
 });
 
-test('starts with the resource library and workflow canvas visible', async ({ page }) => {
+test('主页进入工作台和项目深链，并在刷新后恢复画布', async ({ page }) => {
   await page.goto('/');
 
-  await expect(page.getByText('Multimodal Canvas')).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Multimodal Canvas' })).toBeVisible();
+  await expect(page.getByLabel('多模态生成工作流预览')).toBeVisible();
+  await expect(page.getByRole('heading', { name: '从参考输入到可复用产物' })).toBeVisible();
+
+  await page.getByRole('link', { name: '进入工作台', exact: true }).click();
+  await expect(page).toHaveURL('/workspace');
+  await expect(page.getByRole('heading', { name: '项目工作台' })).toBeVisible();
+  await expect(page.getByRole('link', { name: project.name, exact: true })).toBeVisible();
+
+  await page.getByRole('link', { name: project.name, exact: true }).click();
+  await expect(page).toHaveURL(projectPath);
+  await expect(page.getByRole('region', { name: '工作流画布' })).toBeVisible();
+
+  await page.reload();
+  await expect(page).toHaveURL(projectPath);
+  await expect(page.getByRole('region', { name: '工作流画布' })).toBeVisible();
+});
+
+test('主菜单支持键盘关闭、当前页高亮，并可进入设置和错误页面', async ({ page }) => {
+  await page.goto('/');
+
+  const menuTrigger = page.getByRole('button', { name: '打开主菜单' });
+  await menuTrigger.click();
+  let menu = page.getByRole('dialog', { name: 'Multimodal Canvas' });
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole('link', { name: /主页/ })).toHaveAttribute('aria-current', 'page');
+
+  await page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+  await expect(menuTrigger).toBeFocused();
+
+  await menuTrigger.click();
+  menu = page.getByRole('dialog', { name: 'Multimodal Canvas' });
+  await menu.getByRole('link', { name: /设置/ }).click();
+  await expect(page).toHaveURL('/settings');
+  await expect(page.getByRole('heading', { name: '连接与模型设置' })).toBeVisible();
+
+  await page.goto('/not-a-real-page');
+  await expect(page.getByRole('heading', { name: '页面不存在' })).toBeVisible();
+  await expect(page.getByText('/not-a-real-page')).toBeVisible();
+
+  await page.goto('/projects/missing-project');
+  await expect(page.getByRole('heading', { name: '项目不存在' })).toBeVisible();
+  await expect(page.getByText('无法访问项目 missing-project。')).toBeVisible();
+});
+
+test('starts with the resource library and workflow canvas visible', async ({ page }) => {
+  await page.goto(projectPath);
+
+  await expect(page.getByLabel('Multimodal Canvas', { exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: '项目资源' })).toBeVisible();
   await expect(page.getByRole('region', { name: '工作流画布' })).toBeVisible();
   await expect(page.getByText('从一个节点开始')).toBeVisible();
 });
 
 test('exports the workflow JSON and result ZIP from the header menu', async ({ page }) => {
-  await page.goto('/');
+  await page.goto(projectPath);
 
   const exportButton = page.getByRole('button', { name: /^导出$/ });
   await expect(exportButton).toBeEnabled();
@@ -395,7 +597,7 @@ test('exports the workflow JSON and result ZIP from the header menu', async ({ p
 });
 
 test('adds a generate node from the canvas toolbar', async ({ page }) => {
-  await page.goto('/');
+  await page.goto(projectPath);
 
   await page.getByRole('button', { name: '新建文字生成节点' }).click();
   const generatedNode = page.locator('.flow-generate-node');
@@ -407,7 +609,7 @@ test('adds a generate node from the canvas toolbar', async ({ page }) => {
 test('supports theme/sidebar controls, node body connections, and corner resizing', async ({
   page,
 }) => {
-  await page.goto('/');
+  await page.goto(projectPath);
 
   await page.getByRole('button', { name: '新建图片生成节点' }).click();
   await page.locator('input[type="file"]').setInputFiles({
@@ -484,23 +686,42 @@ test('supports theme/sidebar controls, node body connections, and corner resizin
 });
 
 test('saves AI settings and tests the mocked connection', async ({ page }) => {
-  await page.goto('/');
+  await page.goto(projectPath);
   await page.getByRole('button', { name: '打开设置' }).click();
 
   const dialog = page.getByRole('dialog', { name: 'AI 连接' });
+  const automaticRefresh = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === '/v1/settings/ai/models/refresh' &&
+      response.request().method() === 'POST',
+  );
+  let refreshRequestCount = 0;
+  page.on('request', (request) => {
+    if (
+      new URL(request.url()).pathname === '/v1/settings/ai/models/refresh' &&
+      request.method() === 'POST'
+    ) {
+      refreshRequestCount += 1;
+    }
+  });
   await expect(dialog).toBeVisible();
   await dialog.getByLabel('New API Base URL').fill('https://mock.newapi.local/v1');
-  await dialog.getByLabel('API Key').fill('playwright-smoke-key');
+  await dialog.getByRole('textbox', { name: 'API Key' }).fill('playwright-smoke-key');
   await dialog.getByRole('button', { name: '保存' }).click();
 
+  await expect((await automaticRefresh).status()).toBe(200);
   await expect(dialog.getByText('已配置 · smoke-fingerprint')).toBeVisible();
+  const credentialSelect = dialog.getByLabel('已保存的 API Key');
+  await expect(credentialSelect).toHaveValue('credential-1');
+  await expect(credentialSelect.locator('option', { hasText: 'smoke-fingerprint' })).toHaveCount(1);
+  await expect.poll(() => refreshRequestCount).toBe(1);
   await dialog.getByRole('button', { name: '测试连接' }).click();
-  await expect(page.getByRole('status')).toContainText('连接成功');
+  await expect(dialog.getByRole('status')).toContainText('连接成功');
 });
 
 test('settings are truly modal and contained on desktop and narrow viewports', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 760 });
-  await page.goto('/');
+  await page.goto(projectPath);
   await page.getByRole('button', { name: '切换主题' }).click();
   await page.getByRole('option', { name: '深色' }).click();
 
@@ -559,7 +780,7 @@ test('settings are truly modal and contained on desktop and narrow viewports', a
 
   for (const width of [390, 320]) {
     await page.setViewportSize({ width, height: 640 });
-    await page.goto('/');
+    await page.goto(projectPath);
     const narrowTrigger = page.getByRole('button', { name: '打开设置' });
     await narrowTrigger.click();
     dialog = page.getByRole('dialog', { name: 'AI 连接' });
@@ -609,7 +830,7 @@ test('settings are truly modal and contained on desktop and narrow viewports', a
 });
 
 test('uploads an asset and drags it into the workflow canvas', async ({ page }) => {
-  await page.goto('/');
+  await page.goto(projectPath);
 
   await page.locator('input[type="file"]').setInputFiles({
     name: 'story.txt',
@@ -628,7 +849,7 @@ test('uploads an asset and drags it into the workflow canvas', async ({ page }) 
 });
 
 test('connects three image references to one video generation node', async ({ page }) => {
-  await page.goto('/');
+  await page.goto(projectPath);
 
   for (const name of ['character.png', 'style.png', 'frame.png']) {
     await page.locator('input[type="file"]').setInputFiles({
@@ -668,6 +889,9 @@ test('connects three image references to one video generation node', async ({ pa
     await expect(sourceNodes).toHaveCount(index + 1);
   }
 
+  await focusCanvas(page);
+  await expect(page.locator('.node-quick-editor')).toHaveCount(0);
+
   const sourceHandle = (index: number) =>
     sourceNodes.nth(index).locator('.react-flow__handle.source');
   const targetHandle = (role: string) =>
@@ -706,7 +930,7 @@ test('connects three image references to one video generation node', async ({ pa
 });
 
 test('overrides a node model and displays the completed run result', async ({ page }) => {
-  await page.goto('/');
+  await page.goto(projectPath);
   await page.getByRole('button', { name: '新建文字生成节点' }).click();
 
   const modelSelect = page
@@ -721,11 +945,11 @@ test('overrides a node model and displays the completed run result', async ({ pa
   await expect(page.getByRole('region', { name: '运行结果' })).toBeVisible();
   await expect(page.getByText('Mock 结果已归档')).toBeVisible();
   await expect(page.getByText('版本 1')).toBeVisible();
-  await expect(page.getByRole('status')).toContainText('文字生成节点 已完成');
+  await expect(page.getByRole('status').filter({ hasText: '文字生成节点 已完成' })).toBeVisible();
 });
 
 test('四类节点都可以填写提示词、运行并显示对应结果预览', async ({ page }) => {
-  await page.goto('/');
+  await page.goto(projectPath);
 
   const mediaCases = [
     { mediaType: '文字', resultSelector: '.inspector-result .inspector-result-text' },
@@ -756,35 +980,60 @@ test('四类节点都可以填写提示词、运行并显示对应结果预览',
     await page.getByRole('button', { name: '生成', exact: true }).click();
 
     await expect(page.getByRole('region', { name: '运行结果' })).toBeVisible();
-    await expect(page.getByRole('status')).toContainText(`${mediaType}生成节点 已完成`);
-    await expect(page.locator(resultSelector)).toHaveCount(1);
+    await expect(
+      page.getByRole('status').filter({ hasText: `${mediaType}生成节点 已完成` }),
+    ).toBeVisible();
+    const result = page.locator(resultSelector);
+    await expect(result).toHaveCount(1);
+    await expect(node.locator('.flow-node-preview')).toBeVisible();
 
-    if (mediaType === '音频' || mediaType === '视频') {
-      await expect(page.locator(resultSelector)).toHaveAttribute('controls', '');
+    if (mediaType === '文字') {
+      await expect(result).toContainText('生成的真实文本结果');
+      await expect(node.locator('.artifact-preview-text-content')).toContainText(
+        '生成的真实文本结果',
+      );
+    } else if (mediaType === '图片') {
+      await expect
+        .poll(() => result.evaluate((image: HTMLImageElement) => image.naturalWidth))
+        .toBe(1);
+      await expect
+        .poll(() => node.locator('img').evaluate((image: HTMLImageElement) => image.naturalWidth))
+        .toBe(1);
+    } else {
+      await expect(result).toHaveAttribute('controls', '');
+      await expect
+        .poll(() =>
+          result.evaluate((media: HTMLMediaElement) => ({
+            readyState: media.readyState,
+            networkState: media.networkState,
+          })),
+        )
+        .toMatchObject({ readyState: expect.any(Number), networkState: expect.any(Number) });
+      await expect
+        .poll(() => result.evaluate((media: HTMLMediaElement) => media.readyState))
+        .toBeGreaterThanOrEqual(1);
     }
   }
 });
 
 test('切换 Mock 默认模型后新运行使用新模型', async ({ page }) => {
-  await page.goto('/');
+  await page.goto(projectPath);
   await page.getByRole('button', { name: '打开设置' }).click();
 
   const dialog = page.getByRole('dialog', { name: 'AI 连接' });
   await expect(dialog).toBeVisible();
   await dialog.getByLabel('New API Base URL').fill('https://mock.newapi.local/v1');
-  await dialog.getByLabel('API Key').fill('playwright-smoke-key');
-  await dialog.getByRole('button', { name: '保存' }).click();
-  await expect(dialog.getByText('已配置 · smoke-fingerprint')).toBeVisible();
+  await dialog.getByRole('textbox', { name: 'API Key' }).fill('playwright-smoke-key');
   const refreshResponse = page.waitForResponse(
     (response) =>
       new URL(response.url()).pathname === '/v1/settings/ai/models/refresh' &&
       response.request().method() === 'POST',
   );
-  await expect(dialog.getByRole('button', { name: '刷新模型' })).toBeEnabled();
-  await dialog.getByRole('button', { name: '刷新模型' }).click();
+  await dialog.getByRole('button', { name: '保存' }).click();
+  await expect(dialog.getByText('已配置 · smoke-fingerprint')).toBeVisible();
   await expect((await refreshResponse).status()).toBe(200);
-  await expect(page.getByRole('status')).toContainText('模型列表已刷新');
-  const textDefault = dialog.locator('select').first();
+  await expect(dialog.getByRole('status')).toContainText('模型列表已自动刷新');
+  const textDefault = dialog.getByLabel('平台全局默认 · 文字');
   await expect(textDefault).toBeVisible();
   await expect(textDefault.locator('option[value="mock-text-v2"]')).toHaveCount(1);
   await textDefault.selectOption('mock-text-v2');
@@ -802,11 +1051,11 @@ test('切换 Mock 默认模型后新运行使用新模型', async ({ page }) => 
 
   expect(run.modelAlias).toBe('mock-text-v2');
   await expect(page.getByRole('region', { name: '运行结果' })).toBeVisible();
-  await expect(page.getByRole('status')).toContainText('文字生成节点 已完成');
+  await expect(page.getByRole('status').filter({ hasText: '文字生成节点 已完成' })).toBeVisible();
 });
 
 test('允许 Clipboard 权限时可以跨画布页面复制粘贴', async ({ page }) => {
-  await page.goto('/');
+  await page.goto(projectPath);
   await grantClipboardPermissions(page);
 
   await page.getByRole('button', { name: '新建文字生成节点' }).click();
@@ -818,7 +1067,7 @@ test('允许 Clipboard 权限时可以跨画布页面复制粘贴', async ({ pag
   const secondPage = await page.context().newPage();
   try {
     await mockApi(secondPage);
-    await secondPage.goto('/');
+    await secondPage.goto(projectPath);
     await expect(secondPage.getByText('从一个节点开始')).toBeVisible();
     await focusCanvas(secondPage);
     await secondPage.bringToFront();
@@ -832,7 +1081,7 @@ test('允许 Clipboard 权限时可以跨画布页面复制粘贴', async ({ pag
 });
 
 test('Clipboard 读取权限被拒绝时回退到内存剪贴板', async ({ page }) => {
-  await page.goto('/');
+  await page.goto(projectPath);
   await setClipboardPermission(page, 'clipboard-read', 'denied');
   await setClipboardPermission(page, 'clipboard-write', 'denied');
 
@@ -858,7 +1107,7 @@ test('Clipboard 读取权限被拒绝时回退到内存剪贴板', async ({ page
 });
 
 test('系统剪贴板是非法文本时回退到内存剪贴板', async ({ page }) => {
-  await page.goto('/');
+  await page.goto(projectPath);
   await grantClipboardPermissions(page);
 
   await page.getByRole('button', { name: '新建文字生成节点' }).click();

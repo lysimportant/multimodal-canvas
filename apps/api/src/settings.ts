@@ -12,6 +12,14 @@ export type AiSettings = {
   updatedAt: string;
 };
 
+export type AiCredentialSummary = {
+  id: string;
+  baseUrl: string;
+  keyFingerprint: string;
+  updatedAt: string;
+  active: boolean;
+};
+
 export type ModelCatalogEntry = {
   id: string;
   name: string;
@@ -66,6 +74,10 @@ export type PersistedAiSettings = {
 export interface AiSettingsStoreLike {
   get(): AiSettings | Promise<AiSettings>;
   update(input: UpdateAiSettingsInput): AiSettings | Promise<AiSettings>;
+  listCredentials(): AiCredentialSummary[] | Promise<AiCredentialSummary[]>;
+  activateCredential(
+    credentialId: string,
+  ): AiSettings | undefined | Promise<AiSettings | undefined>;
   removeCredentials(): AiSettings | Promise<AiSettings>;
   testConnection(): Promise<{ ok: boolean; modelCount?: number; error?: string }>;
   refreshModels(): Promise<ModelCatalogEntry[]>;
@@ -103,6 +115,15 @@ export class AiSettingsStore {
   private credentialId?: string;
   private credentialVersion?: number;
   private readonly credentialHistory = new Map<string, ProviderCredentials>();
+  private readonly credentialRecords = new Map<
+    string,
+    ProviderCredentials & {
+      id: string;
+      version: number;
+      keyFingerprint: string;
+      updatedAt: string;
+    }
+  >();
   private updatedAt = new Date().toISOString();
 
   constructor(
@@ -158,6 +179,14 @@ export class AiSettingsStore {
   }
 
   hydrate(persisted: PersistedAiSettings, reference?: CredentialReference) {
+    if (
+      this.credentialId &&
+      (this.credentialId !== reference?.credentialId ||
+        this.credentialVersion !== reference?.credentialVersion)
+    ) {
+      this.credentialHistory.delete(credentialKey(this.getCredentialReference()));
+      this.credentialRecords.delete(this.credentialId);
+    }
     this.baseUrl = persisted.baseUrl;
     this.encryptedApiKey = persisted.encryptedApiKey;
     this.keyFingerprint = persisted.keyFingerprint;
@@ -169,10 +198,23 @@ export class AiSettingsStore {
   }
 
   update(input: UpdateAiSettingsInput): AiSettings {
-    if (input.baseUrl !== undefined) this.baseUrl = input.baseUrl.replace(/\/$/, '');
+    let changed = false;
+    if (input.baseUrl !== undefined) {
+      const baseUrl = input.baseUrl.replace(/\/$/, '');
+      if (baseUrl !== this.baseUrl) {
+        this.baseUrl = baseUrl;
+        changed = true;
+      }
+    }
     if (input.apiKey !== undefined) {
-      this.encryptedApiKey = encrypt(input.apiKey, this.encryptionKey);
-      this.keyFingerprint = fingerprint(input.apiKey);
+      const currentApiKey = this.encryptedApiKey
+        ? decrypt(this.encryptedApiKey, this.encryptionKey)
+        : undefined;
+      if (input.apiKey !== currentApiKey) {
+        this.encryptedApiKey = encrypt(input.apiKey, this.encryptionKey);
+        this.keyFingerprint = fingerprint(input.apiKey);
+        changed = true;
+      }
     }
     if (input.defaultModels) {
       const next = { ...this.defaultModels };
@@ -180,8 +222,33 @@ export class AiSettingsStore {
         if (modelAlias === null || modelAlias === '') delete next[mediaType as MediaType];
         else next[mediaType as MediaType] = modelAlias;
       }
-      this.defaultModels = next;
+      if (!sameDefaultModels(next, this.defaultModels)) {
+        this.defaultModels = next;
+        changed = true;
+      }
     }
+    if (!changed) return this.get();
+    this.updatedAt = new Date().toISOString();
+    this.registerCredential();
+    return this.get();
+  }
+
+  listCredentials(): AiCredentialSummary[] {
+    return summarizeCredentials([...this.credentialRecords.values()], this.credentialId);
+  }
+
+  activateCredential(credentialId: string): AiSettings | undefined {
+    const credential = this.credentialRecords.get(credentialId);
+    if (!credential) return undefined;
+    const currentApiKey = this.encryptedApiKey
+      ? decrypt(this.encryptedApiKey, this.encryptionKey)
+      : undefined;
+    if (credential.baseUrl === this.baseUrl && credential.apiKey === currentApiKey) {
+      return this.get();
+    }
+    this.baseUrl = credential.baseUrl;
+    this.encryptedApiKey = encrypt(credential.apiKey, this.encryptionKey);
+    this.keyFingerprint = credential.keyFingerprint;
     this.updatedAt = new Date().toISOString();
     this.registerCredential();
     return this.get();
@@ -303,13 +370,24 @@ export class AiSettingsStore {
 
   private registerCredential(advanceVersion = true) {
     if (!this.baseUrl || !this.encryptedApiKey) return;
-    this.credentialId ??= randomUUID();
-    this.credentialVersion = advanceVersion
-      ? (this.credentialVersion ?? 0) + 1
-      : (this.credentialVersion ?? 1);
-    this.credentialHistory.set(credentialKey(this.getCredentialReference()), {
+    if (advanceVersion) {
+      this.credentialId = randomUUID();
+      this.credentialVersion = (this.credentialVersion ?? 0) + 1;
+    } else {
+      this.credentialId ??= randomUUID();
+      this.credentialVersion ??= 1;
+    }
+    const credentials = {
       baseUrl: this.baseUrl,
       apiKey: decrypt(this.encryptedApiKey, this.encryptionKey),
+    };
+    this.credentialHistory.set(credentialKey(this.getCredentialReference()), credentials);
+    this.credentialRecords.set(this.credentialId, {
+      ...credentials,
+      id: this.credentialId,
+      version: this.credentialVersion,
+      keyFingerprint: this.keyFingerprint,
+      updatedAt: this.updatedAt,
     });
   }
 
@@ -361,12 +439,63 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
       const previousReference = this.memory.getCredentialReference();
       const previousStoreReference = { ...this.credentialReference };
       const result = this.memory.update(input);
+      if (samePersistedSettings(previous, this.memory.getPersisted())) return result;
       try {
         await this.persistCredential();
         return result;
       } catch (error) {
         // A database outage must not leave this process serving credentials or
         // defaults that were never durably written.
+        this.memory.hydrate(previous, previousReference);
+        this.credentialReference = previousStoreReference;
+        throw error;
+      }
+    });
+  }
+
+  async listCredentials() {
+    await this.ready;
+    await this.writeQueue;
+    const credentials = await this.prisma.aiCredential.findMany({
+      where: { projectId: null },
+      orderBy: [{ updatedAt: 'desc' }, { version: 'desc' }],
+    });
+    return summarizeCredentials(credentials, this.credentialReference.credentialId);
+  }
+
+  async activateCredential(credentialId: string) {
+    await this.ready;
+    return this.enqueueWrite(async () => {
+      const credential = await this.prisma.aiCredential.findFirst({
+        where: { id: credentialId, projectId: null },
+      });
+      if (!credential?.baseUrl || !credential.encryptedApiKey || !credential.keyFingerprint) {
+        return undefined;
+      }
+
+      const snapshot = new AiSettingsStore(this.encryptionSecret);
+      snapshot.hydrate(
+        {
+          baseUrl: credential.baseUrl,
+          encryptedApiKey: credential.encryptedApiKey,
+          keyFingerprint: credential.keyFingerprint,
+          defaultModels: {},
+          updatedAt: credential.updatedAt.toISOString(),
+        },
+        { credentialId: credential.id, credentialVersion: credential.version },
+      );
+      const providerCredentials = snapshot.getProviderCredentials();
+      if (!providerCredentials) return undefined;
+
+      const previous = this.memory.getPersisted();
+      const previousReference = this.memory.getCredentialReference();
+      const previousStoreReference = { ...this.credentialReference };
+      const result = this.memory.update(providerCredentials);
+      if (samePersistedSettings(previous, this.memory.getPersisted())) return result;
+      try {
+        await this.persistCredential();
+        return result;
+      } catch (error) {
         this.memory.hydrate(previous, previousReference);
         this.credentialReference = previousStoreReference;
         throw error;
@@ -586,6 +715,7 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
         credentialId: current.id,
         credentialVersion: current.version,
       };
+      this.memory.hydrate(persisted, this.credentialReference);
     }
   }
 
@@ -613,6 +743,58 @@ function capabilityOverrideKey(modelAlias: string, mediaType: MediaType): string
 
 function credentialKey(reference: CredentialReference): string {
   return `${reference.credentialId ?? ''}:${reference.credentialVersion ?? ''}`;
+}
+
+function sameDefaultModels(
+  left: Partial<Record<MediaType, string>>,
+  right: Partial<Record<MediaType, string>>,
+): boolean {
+  return mediaTypes.every((mediaType) => left[mediaType] === right[mediaType]);
+}
+
+function samePersistedSettings(left: PersistedAiSettings, right: PersistedAiSettings): boolean {
+  return (
+    left.baseUrl === right.baseUrl &&
+    left.encryptedApiKey === right.encryptedApiKey &&
+    left.keyFingerprint === right.keyFingerprint &&
+    sameDefaultModels(left.defaultModels, right.defaultModels)
+  );
+}
+
+function summarizeCredentials(
+  credentials: Array<{
+    id: string;
+    baseUrl: string;
+    keyFingerprint: string;
+    updatedAt: string | Date;
+  }>,
+  activeCredentialId?: string,
+): AiCredentialSummary[] {
+  const sorted = credentials
+    .filter((credential) => credential.baseUrl && credential.keyFingerprint)
+    .map((credential) => ({
+      id: credential.id,
+      baseUrl: credential.baseUrl,
+      keyFingerprint: credential.keyFingerprint,
+      updatedAt:
+        credential.updatedAt instanceof Date
+          ? credential.updatedAt.toISOString()
+          : credential.updatedAt,
+    }))
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  const deduplicated = new Map<string, (typeof sorted)[number]>();
+  for (const credential of sorted) {
+    const key = `${credential.baseUrl}\0${credential.keyFingerprint}`;
+    if (!deduplicated.has(key) || credential.id === activeCredentialId) {
+      deduplicated.set(key, credential);
+    }
+  }
+  return [...deduplicated.values()]
+    .map((credential) => ({
+      ...credential,
+      active: credential.id === activeCredentialId,
+    }))
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
 function normalizeCapabilityOverrides(value: unknown): ModelCapabilityOverride[] {

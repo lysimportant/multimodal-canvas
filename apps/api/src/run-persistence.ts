@@ -1,6 +1,16 @@
 import { createHash } from 'node:crypto';
 
-import type { ProviderJob, RunResult, RunSnapshot, RunStatus } from '@multimodal-canvas/domain';
+import {
+  providerJobSchema,
+  runRecordSchema,
+  runResultSchema,
+  runSnapshotSchema,
+  type ProviderJob,
+  type RunRecord,
+  type RunResult,
+  type RunSnapshot,
+  type RunStatus,
+} from '@multimodal-canvas/domain';
 import { Prisma, PrismaClient, type RunStatus as PrismaRunStatus } from '@prisma/client';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -77,6 +87,28 @@ type PersistenceClient = Pick<PrismaClient, 'run' | 'providerJob' | 'usageLedger
  */
 export class PrismaRunPersistence {
   constructor(private readonly prisma: PersistenceClient) {}
+
+  /** Restore one durable run when its BullMQ job has already expired. */
+  async getRun(externalRunId: string): Promise<RunRecord | undefined> {
+    const row = await this.prisma.run.findUnique({
+      where: { id: databaseRunId(externalRunId) },
+      include: { providerJobs: { orderBy: { updatedAt: 'desc' }, take: 1 } },
+    });
+    return row ? persistedRunToRecord(row, externalRunId) : undefined;
+  }
+
+  /** List durable project history, including archived generation results. */
+  async listRunsByProject(projectId: string): Promise<RunRecord[]> {
+    const rows = await this.prisma.run.findMany({
+      where: { projectId: requireUuid(projectId, 'projectId') },
+      include: { providerJobs: { orderBy: { updatedAt: 'desc' }, take: 1 } },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+    return rows.flatMap((row) => {
+      const record = persistedRunToRecord(row);
+      return record ? [record] : [];
+    });
+  }
 
   /**
    * Create the immutable run snapshot and its ordered input rows before the
@@ -253,6 +285,102 @@ export class PrismaRunPersistence {
       update: {},
     });
   }
+}
+
+function persistedRunToRecord(row: unknown, externalRunId?: string): RunRecord | undefined {
+  if (!isRecord(row)) return undefined;
+  const snapshot = runSnapshotSchema.safeParse(row.snapshot);
+  if (!snapshot.success) return undefined;
+  const status = persistedRunStatus(row.status);
+  if (!status) return undefined;
+  const result = row.result == null ? undefined : runResultSchema.safeParse(row.result);
+  const providerJobRow = Array.isArray(row.providerJobs) ? row.providerJobs[0] : undefined;
+  const providerJob = persistedProviderJob(providerJobRow);
+  const createdAt = toIsoDate(row.createdAt);
+  const updatedAt = toIsoDate(row.updatedAt);
+  if (!createdAt || !updatedAt) return undefined;
+  const error = persistedError(row.error);
+  const progress = providerJob?.progress ?? (isTerminalRunStatus(status) ? 100 : 0);
+  const candidate = {
+    id: externalRunId ?? row.id,
+    ...(typeof row.userId === 'string' ? { userId: row.userId } : {}),
+    projectId: snapshot.data.projectId,
+    targetNodeId: snapshot.data.targetNodeId,
+    status,
+    progress,
+    attempt: row.attempt,
+    provider:
+      providerJob?.provider ?? (result?.success ? result.data.provider : undefined) ?? 'mock',
+    modelAlias: snapshot.data.modelAlias,
+    snapshot: snapshot.data,
+    ...(result?.success ? { result: result.data } : {}),
+    ...(providerJob ? { providerJob } : {}),
+    ...(typeof row.idempotencyKey === 'string' && row.idempotencyKey
+      ? { idempotencyKey: row.idempotencyKey }
+      : {}),
+    ...(error ? { error } : {}),
+    ...(typeof row.retryOf === 'string' ? { retryOf: row.retryOf } : {}),
+    createdAt,
+    updatedAt,
+  };
+  const parsed = runRecordSchema.safeParse(candidate);
+  return parsed.success ? parsed.data : undefined;
+}
+
+function persistedProviderJob(value: unknown): ProviderJob | undefined {
+  if (!isRecord(value)) return undefined;
+  const createdAt = toIsoDate(value.createdAt);
+  const updatedAt = toIsoDate(value.updatedAt);
+  if (!createdAt || !updatedAt) return undefined;
+  const parsed = providerJobSchema.safeParse({
+    id: value.id,
+    provider: value.provider,
+    status: value.status,
+    progress: value.progress,
+    ...(typeof value.platformJobId === 'string' ? { platformJobId: value.platformJobId } : {}),
+    ...(isRecord(value.payload) ? { payload: value.payload } : {}),
+    createdAt,
+    updatedAt,
+  });
+  return parsed.success ? parsed.data : undefined;
+}
+
+function persistedRunStatus(value: unknown): RunStatus | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.toLowerCase();
+  return [
+    'draft',
+    'queued',
+    'preparing',
+    'running',
+    'processing',
+    'succeeded',
+    'failed',
+    'cancel_requested',
+    'cancelled',
+  ].includes(normalized)
+    ? (normalized as RunStatus)
+    : undefined;
+}
+
+function persistedError(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.trim()) return value;
+  if (!isRecord(value)) return undefined;
+  return typeof value.message === 'string' && value.message.trim() ? value.message : undefined;
+}
+
+function isTerminalRunStatus(status: RunStatus): boolean {
+  return status === 'succeeded' || status === 'failed' || status === 'cancelled';
+}
+
+function toIsoDate(value: unknown): string | undefined {
+  const date =
+    value instanceof Date ? value : typeof value === 'string' ? new Date(value) : undefined;
+  return date && !Number.isNaN(date.getTime()) ? date.toISOString() : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function isPrismaUniqueConstraintError(error: unknown): boolean {

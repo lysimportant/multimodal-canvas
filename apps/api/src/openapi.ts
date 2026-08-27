@@ -904,22 +904,83 @@ export const openApiDocument = {
           },
         },
         responses: {
-          '200': response(
-            'AI settings updated',
-            envelope('settings', { $ref: '#/components/schemas/AiSettings' }),
-          ),
+          '200': response('AI settings updated', {
+            type: 'object',
+            required: ['settings', 'credentials'],
+            properties: {
+              settings: { $ref: '#/components/schemas/AiSettings' },
+              credentials: {
+                type: 'array',
+                items: { $ref: '#/components/schemas/AiCredentialSummary' },
+              },
+            },
+            additionalProperties: false,
+          }),
           '400': response('Invalid request', errorSchema),
         },
       },
     },
     '/v1/settings/ai/credentials': {
+      get: {
+        tags: ['settings'],
+        responses: {
+          '200': response('Saved AI credentials without secrets', {
+            type: 'object',
+            required: ['credentials'],
+            properties: {
+              credentials: {
+                type: 'array',
+                items: { $ref: '#/components/schemas/AiCredentialSummary' },
+              },
+            },
+            additionalProperties: false,
+          }),
+        },
+      },
       delete: {
         tags: ['settings'],
         responses: {
-          '200': response(
-            'Credentials removed',
-            envelope('settings', { $ref: '#/components/schemas/AiSettings' }),
-          ),
+          '200': response('Credentials removed', {
+            type: 'object',
+            required: ['settings', 'credentials'],
+            properties: {
+              settings: { $ref: '#/components/schemas/AiSettings' },
+              credentials: {
+                type: 'array',
+                items: { $ref: '#/components/schemas/AiCredentialSummary' },
+              },
+            },
+            additionalProperties: false,
+          }),
+        },
+      },
+    },
+    '/v1/settings/ai/credentials/{credentialId}/activate': {
+      post: {
+        tags: ['settings'],
+        parameters: [
+          {
+            name: 'credentialId',
+            in: 'path',
+            required: true,
+            schema: { type: 'string', format: 'uuid' },
+          },
+        ],
+        responses: {
+          '200': response('Credential activated', {
+            type: 'object',
+            required: ['settings', 'credentials'],
+            properties: {
+              settings: { $ref: '#/components/schemas/AiSettings' },
+              credentials: {
+                type: 'array',
+                items: { $ref: '#/components/schemas/AiCredentialSummary' },
+              },
+            },
+            additionalProperties: false,
+          }),
+          '400': response('Invalid credential id', errorSchema),
+          '404': response('Credential not found', errorSchema),
         },
       },
     },
@@ -1136,6 +1197,18 @@ export const openApiDocument = {
             additionalProperties: false,
           },
           updatedAt: { type: 'string', format: 'date-time' },
+        },
+        additionalProperties: false,
+      },
+      AiCredentialSummary: {
+        type: 'object',
+        required: ['id', 'baseUrl', 'keyFingerprint', 'updatedAt', 'active'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          baseUrl: { type: 'string', format: 'uri' },
+          keyFingerprint: { type: 'string', minLength: 1 },
+          updatedAt: { type: 'string', format: 'date-time' },
+          active: { type: 'boolean' },
         },
         additionalProperties: false,
       },

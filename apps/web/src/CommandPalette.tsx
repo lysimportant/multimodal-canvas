@@ -2,6 +2,7 @@ import { CornerDownLeft, Search, X } from 'lucide-react';
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent, ReactNode, RefObject } from 'react';
 
+import { isImeKeyboardEvent } from './ime';
 import './command-palette.css';
 
 export type CommandPaletteCommand = {
@@ -166,6 +167,8 @@ export function CommandPalette({
   };
 
   const handleDialogKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (isImeKeyboardEvent(event)) return;
+
     if (event.key === 'Escape') {
       event.preventDefault();
       onClose();
@@ -188,6 +191,8 @@ export function CommandPalette({
   };
 
   const handleInputKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (isImeKeyboardEvent(event)) return;
+
     if (event.key === 'ArrowDown') {
       event.preventDefault();
       moveActive(1);

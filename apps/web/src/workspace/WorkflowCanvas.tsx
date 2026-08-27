@@ -18,6 +18,7 @@ import type { MediaType } from '@multimodal-canvas/domain';
 import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
 import {
   NodeResizeContext,
+  NodeRetryContext,
   NodeSelectionContext,
   nodeTypes,
   type NodeResizeHandler,
@@ -45,6 +46,7 @@ export type WorkflowCanvasProps = {
   onNodeSelect: (node: AssetFlowNode) => void;
   onClearNodeSelection: () => void;
   onResizeNode: NodeResizeHandler;
+  onRetryNode: (nodeId: string) => void | Promise<void>;
   onPromptChange: (value: string) => void;
   onModelChange: (value: string) => void;
   onInferenceStrengthChange: (value: InferenceStrength) => void;
@@ -70,6 +72,7 @@ export function WorkflowCanvas({
   onNodeSelect,
   onClearNodeSelection,
   onResizeNode,
+  onRetryNode,
   onPromptChange,
   onModelChange,
   onInferenceStrengthChange,
@@ -152,67 +155,69 @@ export function WorkflowCanvas({
       />
       <NodeSelectionContext.Provider value={selectNodeByData}>
         <NodeResizeContext.Provider value={onResizeNode}>
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            nodeTypes={nodeTypes}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onConnect={onConnect}
-            onConnectStart={(_event, params) => {
-              connectionStartRef.current = params;
-            }}
-            onConnectEnd={handleConnectEnd}
-            onNodeDragStart={onNodeDragStart}
-            onDrop={handleDrop}
-            onDragOver={(event) => {
-              event.preventDefault();
-              event.dataTransfer.dropEffect = 'copy';
-            }}
-            onNodeClick={(_, node) => onNodeSelect(node as AssetFlowNode)}
-            onPaneClick={onClearNodeSelection}
-            fitView
-            fitViewOptions={{ padding: 0.3, maxZoom: 1.1 }}
-            connectionLineStyle={{ stroke: '#18794e', strokeWidth: 2 }}
-            defaultEdgeOptions={{ animated: true, style: { stroke: '#8aa597', strokeWidth: 2 } }}
-            proOptions={{ hideAttribution: true }}
-          >
-            {background !== 'blank' && (
-              <Background
-                color="#cbd5d0"
-                gap={background === 'lines' ? 28 : 24}
-                size={background === 'cross' ? 7 : 1.2}
-                variant={
-                  background === 'lines'
-                    ? BackgroundVariant.Lines
-                    : background === 'cross'
-                      ? BackgroundVariant.Cross
-                      : BackgroundVariant.Dots
-                }
-              />
-            )}
-            {selectedNode && selectedNode.data.mode !== 'source' && (
-              <NodeToolbar
-                nodeId={selectedNode.id}
-                isVisible
-                position={Position.Bottom}
-                offset={24}
-                align="center"
-                className="node-quick-toolbar"
-              >
-                <NodeQuickEditor
-                  node={selectedNode}
-                  models={models}
-                  busy={busy}
-                  onPromptChange={onPromptChange}
-                  onModelChange={onModelChange}
-                  onInferenceStrengthChange={onInferenceStrengthChange}
-                  onRun={() => onRunNode(selectedNode)}
+          <NodeRetryContext.Provider value={onRetryNode}>
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              nodeTypes={nodeTypes}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onConnect={onConnect}
+              onConnectStart={(_event, params) => {
+                connectionStartRef.current = params;
+              }}
+              onConnectEnd={handleConnectEnd}
+              onNodeDragStart={onNodeDragStart}
+              onDrop={handleDrop}
+              onDragOver={(event) => {
+                event.preventDefault();
+                event.dataTransfer.dropEffect = 'copy';
+              }}
+              onNodeClick={(_, node) => onNodeSelect(node as AssetFlowNode)}
+              onPaneClick={onClearNodeSelection}
+              fitView
+              fitViewOptions={{ padding: 0.3, maxZoom: 1.1 }}
+              connectionLineStyle={{ stroke: '#18794e', strokeWidth: 2 }}
+              defaultEdgeOptions={{ animated: true, style: { stroke: '#8aa597', strokeWidth: 2 } }}
+              proOptions={{ hideAttribution: true }}
+            >
+              {background !== 'blank' && (
+                <Background
+                  color="#cbd5d0"
+                  gap={background === 'lines' ? 28 : 24}
+                  size={background === 'cross' ? 7 : 1.2}
+                  variant={
+                    background === 'lines'
+                      ? BackgroundVariant.Lines
+                      : background === 'cross'
+                        ? BackgroundVariant.Cross
+                        : BackgroundVariant.Dots
+                  }
                 />
-              </NodeToolbar>
-            )}
-            <Controls showInteractive={false} position="bottom-right" />
-          </ReactFlow>
+              )}
+              {selectedNode && selectedNode.data.mode !== 'source' && (
+                <NodeToolbar
+                  nodeId={selectedNode.id}
+                  isVisible
+                  position={Position.Bottom}
+                  offset={24}
+                  align="center"
+                  className="node-quick-toolbar"
+                >
+                  <NodeQuickEditor
+                    node={selectedNode}
+                    models={models}
+                    busy={busy}
+                    onPromptChange={onPromptChange}
+                    onModelChange={onModelChange}
+                    onInferenceStrengthChange={onInferenceStrengthChange}
+                    onRun={() => onRunNode(selectedNode)}
+                  />
+                </NodeToolbar>
+              )}
+              <Controls showInteractive={false} position="bottom-right" />
+            </ReactFlow>
+          </NodeRetryContext.Provider>
         </NodeResizeContext.Provider>
       </NodeSelectionContext.Provider>
       {nodes.length === 0 && (

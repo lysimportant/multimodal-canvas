@@ -1,5 +1,7 @@
 import { useEffect, useRef } from 'react';
 
+import { useImeDraft } from './ime';
+
 type TextPromptEditorProps = {
   nodeId: string;
   value: string;
@@ -14,6 +16,11 @@ type TextPromptEditorProps = {
  */
 export function TextPromptEditor({ nodeId, value, placeholder, onChange }: TextPromptEditorProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const { bind } = useImeDraft<HTMLTextAreaElement>({
+    identity: nodeId,
+    value,
+    onCommit: onChange,
+  });
 
   useEffect(() => {
     const input = inputRef.current;
@@ -22,13 +29,5 @@ export function TextPromptEditor({ nodeId, value, placeholder, onChange }: TextP
     input.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
   }, [nodeId]);
 
-  return (
-    <textarea
-      ref={inputRef}
-      rows={4}
-      value={value}
-      onChange={(event) => onChange(event.target.value)}
-      placeholder={placeholder}
-    />
-  );
+  return <textarea ref={inputRef} rows={4} {...bind} placeholder={placeholder} />;
 }

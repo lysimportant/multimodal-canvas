@@ -81,6 +81,25 @@ describe('CommandPalette', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('does not navigate, select, or close for IME and legacy 229 keyboard events', () => {
+    const onClose = vi.fn();
+    const commands = makeCommands();
+    render(<CommandPalette open commands={commands} onClose={onClose} />);
+
+    const input = screen.getByRole('searchbox');
+    const initialActiveDescendant = input.getAttribute('aria-activedescendant');
+
+    fireEvent.compositionStart(input);
+    fireEvent.keyDown(input, { key: 'ArrowDown', isComposing: true });
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+    fireEvent.keyDown(input, { key: 'Escape', isComposing: true });
+    fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 });
+
+    expect(input).toHaveAttribute('aria-activedescendant', initialActiveDescendant);
+    expect(commands[0].onSelect).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it('keeps the active command visible while navigating a long list', async () => {
     const user = userEvent.setup();
     const originalDescriptor = Object.getOwnPropertyDescriptor(

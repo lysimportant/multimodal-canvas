@@ -33,6 +33,7 @@ import {
   type OnEdgesChange,
   type OnNodesChange,
 } from '@xyflow/react';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   useCallback,
   useEffect,
@@ -41,6 +42,7 @@ import {
   useState,
   type DragEvent,
   type FormEvent,
+  type InputHTMLAttributes,
 } from 'react';
 
 import {
@@ -71,10 +73,21 @@ import {
 } from './upload-utils';
 import { validateResolvedCanvasConnection, validateCanvasConnection } from './connection-utils';
 import { isCanvasShortcutTarget } from './keyboard-utils';
+import { isImeKeyboardEvent, useImeDraft } from './ime';
 import { downloadProjectExport, fetchProjectExport, type ProjectExportKind } from './export-utils';
 import { ProjectHub } from './ProjectHub';
 import { TextPromptEditor } from './TextPromptEditor';
 import { CommandPalette, type CommandPaletteCommand } from './CommandPalette';
+import { AppNavigation } from './navigation';
+import { HomePage, NotFoundPage, ProjectCanvasPage, SettingsPage, WorkspacePage } from './pages';
+import {
+  ProjectQueryError,
+  projectQueryKeys,
+  useProjectQuery,
+  useProjectsQuery,
+  type ProjectSummary,
+} from './query/projects';
+import { appPaths, useAppNavigate, useAppRoute, type AppRoute } from './routing';
 import { AssetPreview } from './workspace/AssetPreview';
 import { runStatusLabel } from './workspace/AssetNode';
 import { ResourcePanel } from './workspace/ResourcePanel';
@@ -85,6 +98,7 @@ import type { InferenceStrength } from './workspace/NodeQuickEditor';
 import { useRunResultState } from './workspace/useRunResultState';
 import { AppQueryProvider } from './query/client';
 import { useModelCatalogQuery } from './query/models';
+import { shouldApplyRunUpdate, shouldClearNodeStale } from './run-update-utils';
 import { useWorkspacePreferences, type CanvasTheme } from './state/workspace-preferences';
 import {
   API_BASE_URL,
@@ -114,26 +128,139 @@ import {
 import '@xyflow/react/dist/style.css';
 
 const PROJECT_STORAGE_KEY = 'multimodal-canvas:project-id';
-const CANVAS_DRAFT_KEY = 'multimodal-canvas:canvas';
+const CANVAS_DRAFT_KEY_PREFIX = 'multimodal-canvas:canvas';
 
 type CanvasApiDocument = CanvasDocument;
-type LocalCanvasDraft = {
-  revision: number;
-  nodes: AssetFlowNode[];
-  edges: FlowEdge[];
+type LocalCanvasDraft = CanvasDocument;
+
+function canvasDraftKey(projectId: string) {
+  return `${CANVAS_DRAFT_KEY_PREFIX}:${projectId}`;
+}
+
+type ImeInputProps = Omit<
+  InputHTMLAttributes<HTMLInputElement>,
+  'value' | 'onChange' | 'onCompositionStart' | 'onCompositionEnd' | 'onBlur'
+> & {
+  value: string;
+  identity?: string;
+  onValueChange: (value: string) => void;
+  onValueBlur?: (value: string) => void;
 };
+
+function ImeInput({ value, identity, onValueChange, onValueBlur, ...props }: ImeInputProps) {
+  const { bind } = useImeDraft<HTMLInputElement>({
+    value,
+    identity,
+    onCommit: onValueChange,
+    onBlur: onValueBlur,
+  });
+  return <input {...props} {...bind} />;
+}
+
+function ProjectCreateDialog({
+  open,
+  name,
+  error,
+  busy,
+  onNameChange,
+  onClose,
+  onSubmit,
+}: {
+  open: boolean;
+  name: string;
+  error: string;
+  busy: boolean;
+  onNameChange: (value: string) => void;
+  onClose: () => void;
+  onSubmit: () => void;
+}) {
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (isImeKeyboardEvent(event)) return;
+      if (event.key === 'Escape' && !busy) onClose();
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [busy, onClose, open]);
+
+  if (!open) return null;
+  return (
+    <div
+      className="project-create-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !busy) onClose();
+      }}
+    >
+      <form
+        className="project-create-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="project-create-title"
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' && isImeKeyboardEvent(event)) event.preventDefault();
+        }}
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSubmit();
+        }}
+      >
+        <div className="project-create-heading">
+          <div>
+            <p className="eyebrow">项目集合</p>
+            <h2 id="project-create-title">新建项目</h2>
+          </div>
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="关闭新建项目"
+            title="关闭"
+            onClick={onClose}
+            disabled={busy}
+          >
+            <X size={17} />
+          </button>
+        </div>
+        <label className="project-create-field">
+          <span>项目名称</span>
+          <ImeInput
+            autoFocus
+            value={name}
+            maxLength={80}
+            onValueChange={onNameChange}
+            placeholder="例如：春季短片工作流"
+            aria-invalid={Boolean(error)}
+            aria-describedby={error ? 'project-create-error' : undefined}
+          />
+          {error && (
+            <span id="project-create-error" className="project-create-error" role="alert">
+              {error}
+            </span>
+          )}
+        </label>
+        <div className="project-create-actions">
+          <button
+            type="button"
+            className="button button-secondary"
+            onClick={onClose}
+            disabled={busy}
+          >
+            取消
+          </button>
+          <button type="submit" className="button button-primary" disabled={busy}>
+            {busy && <LoaderCircle className="spin" size={15} />}
+            {busy ? '创建中' : '创建项目'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
 
 type CanvasHistorySnapshot = {
   nodes: AssetFlowNode[];
   edges: FlowEdge[];
-};
-
-type ProjectSummary = {
-  id: string;
-  name: string;
-  createdAt: string;
-  updatedAt: string;
-  archivedAt?: string;
 };
 
 const themeOptions: Array<{ value: CanvasTheme; label: string; swatch: string }> = [
@@ -225,13 +352,19 @@ async function uploadAsset(file: File, onProgress: (progress: number) => void) {
 }
 
 function WorkspaceApp({
+  route,
+  initialProject,
   authUser,
   onRequestLogin,
   onLoggedOut,
+  onNavigate,
 }: {
+  route: Extract<AppRoute, { id: 'project' }>;
+  initialProject: ProjectSummary;
   authUser: AuthUser | null;
   onRequestLogin: () => void;
   onLoggedOut: () => void;
+  onNavigate: (to: string) => void;
 }) {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [showArchived, setShowArchived] = useState(false);
@@ -241,7 +374,8 @@ function WorkspaceApp({
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [notice, setNotice] = useState<{ kind: 'error' | 'success'; message: string } | null>(null);
-  const [selectedNode, setSelectedNode] = useState<AssetFlowNode | null>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const modelCatalogQuery = useModelCatalogQuery();
   const modelCatalog = modelCatalogQuery.data ?? [];
   const [runRecords, setRunRecords] = useState<Record<string, RunRecord>>({});
@@ -283,7 +417,8 @@ function WorkspaceApp({
   const canvasRevisionRef = useRef(0);
   const canvasDirtyRef = useRef(false);
   const saveRequestRef = useRef<Promise<void> | null>(null);
-  const refreshedResultAssetIdsRef = useRef(new Set<string>());
+  const refreshedResultAssetKeysRef = useRef(new Set<string>());
+  const runRecordsRef = useRef<Record<string, RunRecord>>({});
   const initializedRef = useRef(false);
   const nodesRef = useRef<AssetFlowNode[]>([]);
   const edgesRef = useRef<FlowEdge[]>([]);
@@ -294,11 +429,13 @@ function WorkspaceApp({
   const clipboardRef = useRef<CanvasClipboard | null>(null);
   const [nodes, setNodes, applyNodesChange] = useNodesState<AssetFlowNode>([]);
   const [edges, setEdges, applyEdgesChange] = useEdgesState<FlowEdge>([]);
+  const selectedNode = useMemo(
+    () => nodes.find((node) => node.id === selectedNodeId) ?? null,
+    [nodes, selectedNodeId],
+  );
 
   useEffect(() => {
-    if (settingsWasOpenRef.current && !showSettings) {
-      settingsTriggerRef.current?.focus();
-    }
+    if (settingsWasOpenRef.current && !showSettings) settingsTriggerRef.current?.focus();
     settingsWasOpenRef.current = showSettings;
   }, [showSettings]);
 
@@ -324,6 +461,7 @@ function WorkspaceApp({
       }
     };
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (isImeKeyboardEvent(event)) return;
       if (event.key === 'Escape') {
         setShowBackgroundMenu(false);
         backgroundTriggerRef.current?.focus();
@@ -371,6 +509,7 @@ function WorkspaceApp({
       }
     };
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (isImeKeyboardEvent(event)) return;
       if (event.key === 'Escape') setShowExportMenu(false);
     };
     document.addEventListener('pointerdown', handlePointerDown);
@@ -389,16 +528,8 @@ function WorkspaceApp({
   }, [showExportMenu]);
 
   useEffect(() => {
-    if (!showProjectCreate) return;
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !isProjectLoading) setShowProjectCreate(false);
-    };
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [isProjectLoading, showProjectCreate]);
-
-  useEffect(() => {
     const handleCommandShortcut = (event: KeyboardEvent) => {
+      if (isImeKeyboardEvent(event)) return;
       if (isCanvasShortcutTarget(event.target)) return;
       if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'k') return;
       event.preventDefault();
@@ -449,13 +580,6 @@ function WorkspaceApp({
     setEdges(structuredClone(next.edges));
     canvasDirtyRef.current = true;
   }, [setEdges, setNodes]);
-
-  useEffect(() => {
-    setSelectedNode((current) => {
-      if (!current) return null;
-      return nodes.find((node) => node.id === current.id) ?? null;
-    });
-  }, [nodes]);
 
   const handleNodesChange: OnNodesChange<AssetFlowNode> = useCallback(
     (changes) => {
@@ -569,9 +693,10 @@ function WorkspaceApp({
         current.map((item) => (item.id === project.id ? result.project! : item)),
       );
       if (project.id === projectId) setProjectName(result.project.name);
+      void queryClient.invalidateQueries({ queryKey: projectQueryKeys.all });
       setNotice({ kind: 'success', message: `项目已重命名为「${result.project.name}」` });
     },
-    [projectId],
+    [projectId, queryClient],
   );
 
   const setProjectArchived = useCallback(
@@ -608,8 +733,9 @@ function WorkspaceApp({
         kind: 'success',
         message: archived ? `项目「${project.name}」已归档` : `项目「${project.name}」已恢复`,
       });
+      void queryClient.invalidateQueries({ queryKey: projectQueryKeys.all });
     },
-    [includeArchivedProjects, projectId],
+    [includeArchivedProjects, projectId, queryClient],
   );
 
   const toggleArchivedProjects = useCallback(() => {
@@ -630,7 +756,7 @@ function WorkspaceApp({
       try {
         let currentProjectId = requestedProjectId ?? localStorage.getItem(PROJECT_STORAGE_KEY);
         let currentProject = project;
-        if (currentProjectId) {
+        if (currentProjectId && !currentProject) {
           const existing = await apiFetch(`${API_BASE_URL}/v1/projects/${currentProjectId}`);
           if (!existing.ok) {
             if (requestedProjectId) throw new Error('目标项目不存在');
@@ -670,9 +796,10 @@ function WorkspaceApp({
         const flowCanvas = fromCanvasDocument(result.canvas);
         setNodes(flowCanvas.nodes);
         setEdges(flowCanvas.edges);
-        setSelectedNode(null);
+        setSelectedNodeId(null);
+        runRecordsRef.current = {};
         setRunRecords({});
-        refreshedResultAssetIdsRef.current.clear();
+        refreshedResultAssetKeysRef.current.clear();
         setIsRunning(false);
         historyRef.current = { past: [], future: [] };
         canvasDirtyRef.current = false;
@@ -690,13 +817,17 @@ function WorkspaceApp({
           message: error instanceof Error ? error.message : '项目加载失败，将使用本地草稿',
         });
         try {
-          const stored = localStorage.getItem(CANVAS_DRAFT_KEY);
+          const fallbackProjectId = requestedProjectId ?? localStorage.getItem(PROJECT_STORAGE_KEY);
+          const stored = fallbackProjectId
+            ? localStorage.getItem(canvasDraftKey(fallbackProjectId))
+            : null;
           if (stored) {
             const parsed = JSON.parse(stored) as LocalCanvasDraft;
             canvasRevisionRef.current = parsed.revision ?? 0;
             setCanvasRevision(parsed.revision ?? 0);
-            setNodes(parsed.nodes ?? []);
-            setEdges(parsed.edges ?? []);
+            const flowCanvas = fromCanvasDocument(parsed);
+            setNodes(flowCanvas.nodes);
+            setEdges(flowCanvas.edges);
             historyRef.current = { past: [], future: [] };
             canvasDirtyRef.current = false;
             setSaveState('本地草稿已恢复');
@@ -716,22 +847,22 @@ function WorkspaceApp({
     if (initializedRef.current) return;
     initializedRef.current = true;
     void loadAssets();
-    void loadProjectCanvas();
+    void loadProjectCanvas(initialProject.id, initialProject);
     void refreshProjects().catch((error: unknown) =>
       setNotice({
         kind: 'error',
         message: error instanceof Error ? error.message : '项目列表加载失败',
       }),
     );
-  }, [loadAssets, loadProjectCanvas, refreshProjects]);
+  }, [initialProject, loadAssets, loadProjectCanvas, refreshProjects]);
 
   useEffect(() => {
-    if (!isCanvasReady) return;
+    if (!isCanvasReady || !projectId) return;
     localStorage.setItem(
-      CANVAS_DRAFT_KEY,
-      JSON.stringify({ revision: canvasRevision, nodes, edges }),
+      canvasDraftKey(projectId),
+      JSON.stringify(toCanvasDocument(nodes, edges, canvasRevision)),
     );
-  }, [canvasRevision, edges, isCanvasReady, nodes]);
+  }, [canvasRevision, edges, isCanvasReady, nodes, projectId]);
 
   const saveCanvas = useCallback(async () => {
     if (!projectId) return;
@@ -842,9 +973,8 @@ function WorkspaceApp({
       }
       try {
         await saveCanvas();
-        await loadProjectCanvas(project.id, project);
         setShowProjects(false);
-        setNotice({ kind: 'success', message: `已切换到「${project.name}」` });
+        onNavigate(appPaths.project(project.id));
       } catch (error) {
         setNotice({
           kind: 'error',
@@ -852,7 +982,7 @@ function WorkspaceApp({
         });
       }
     },
-    [isProjectLoading, loadProjectCanvas, projectId, saveCanvas],
+    [isProjectLoading, onNavigate, projectId, saveCanvas],
   );
 
   const createProject = useCallback(async () => {
@@ -876,10 +1006,10 @@ function WorkspaceApp({
         error?: string;
       };
       if (!response.ok || !result.project) throw new Error(result.error ?? '项目创建失败');
-      await loadProjectCanvas(result.project.id, result.project);
-      await refreshProjects();
+      setProjects((current) => [result.project!, ...current]);
+      void queryClient.invalidateQueries({ queryKey: projectQueryKeys.all });
       setShowProjectCreate(false);
-      setNotice({ kind: 'success', message: `项目「${name}」已创建` });
+      onNavigate(appPaths.project(result.project.id));
     } catch (error) {
       setNotice({
         kind: 'error',
@@ -888,7 +1018,7 @@ function WorkspaceApp({
     } finally {
       setIsProjectLoading(false);
     }
-  }, [isProjectLoading, loadProjectCanvas, projectCreateName, refreshProjects, saveCanvas]);
+  }, [isProjectLoading, onNavigate, projectCreateName, queryClient, saveCanvas]);
 
   useEffect(() => {
     if (!isCanvasReady || !projectId || !canvasDirtyRef.current) return;
@@ -1000,7 +1130,7 @@ function WorkspaceApp({
         rememberHistory();
         const node = createNodeForAsset(asset, position);
         setNodes((current) => [...current, node]);
-        setSelectedNode(node);
+        setSelectedNodeId(node.id);
         canvasDirtyRef.current = true;
         return;
       }
@@ -1021,7 +1151,7 @@ function WorkspaceApp({
       const node = createNodeForAsset(asset, { x: 80 + column * 230, y: 80 + row * 210 });
       rememberHistory();
       setNodes((current) => [...current, node]);
-      setSelectedNode(node);
+      setSelectedNodeId(node.id);
       canvasDirtyRef.current = true;
       setNotice({ kind: 'success', message: `${asset.name} 已添加到画布` });
     },
@@ -1069,7 +1199,7 @@ function WorkspaceApp({
       const node = createGenerateNode(mediaType, { x: 100 + column * 250, y: 100 + row * 220 });
       rememberHistory();
       setNodes((current) => [...current, node]);
-      setSelectedNode(node);
+      setSelectedNodeId(node.id);
       canvasDirtyRef.current = true;
       setNotice({ kind: 'success', message: `${mediaLabels[mediaType]}生成节点已添加` });
     },
@@ -1083,7 +1213,7 @@ function WorkspaceApp({
       const node = createTransformNode(mediaType, { x: 100 + column * 250, y: 100 + row * 220 });
       rememberHistory();
       setNodes((current) => [...current, node]);
-      setSelectedNode(node);
+      setSelectedNodeId(node.id);
       canvasDirtyRef.current = true;
       setNotice({ kind: 'success', message: `${mediaLabels[mediaType]}转换节点已添加` });
     },
@@ -1198,12 +1328,15 @@ function WorkspaceApp({
     [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
   );
 
-  const normalizeSelectedLabel = useCallback(() => {
-    if (!selectedNode || selectedNode.data.label.trim()) return;
-    updateSelectedLabel(
-      `${mediaLabels[selectedNode.data.mediaType]}${modeLabels[selectedNode.data.mode]}节点`,
-    );
-  }, [selectedNode, updateSelectedLabel]);
+  const normalizeSelectedLabel = useCallback(
+    (value: string) => {
+      if (!selectedNode || value.trim()) return;
+      updateSelectedLabel(
+        `${mediaLabels[selectedNode.data.mediaType]}${modeLabels[selectedNode.data.mode]}节点`,
+      );
+    },
+    [selectedNode, updateSelectedLabel],
+  );
 
   const copySourcePrompt = useCallback(async (node: AssetFlowNode) => {
     const value = node.data.prompt?.trim() || node.data.label;
@@ -1243,7 +1376,7 @@ function WorkspaceApp({
           animated: true,
         },
       ]);
-      setSelectedNode(transformNode);
+      setSelectedNodeId(transformNode.id);
       canvasDirtyRef.current = true;
       setNotice({ kind: 'success', message: '已创建转换节点并接入来源' });
     },
@@ -1265,6 +1398,7 @@ function WorkspaceApp({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (isImeKeyboardEvent(event)) return;
       if (isCanvasShortcutTarget(event.target)) return;
       const command = event.metaKey || event.ctrlKey;
       const key = event.key.toLowerCase();
@@ -1314,7 +1448,7 @@ function WorkspaceApp({
             ...pasted.nodes,
           ]);
           setEdges((current) => [...current, ...pasted.edges]);
-          setSelectedNode(pasted.nodes[0] ?? null);
+          setSelectedNodeId(pasted.nodes[0]?.id ?? null);
           canvasDirtyRef.current = true;
         })();
         return;
@@ -1338,7 +1472,7 @@ function WorkspaceApp({
             !selectedNodeIds.has(edge.target),
         ),
       );
-      setSelectedNode(null);
+      setSelectedNodeId(null);
       canvasDirtyRef.current = true;
     };
 
@@ -1348,13 +1482,25 @@ function WorkspaceApp({
 
   const updateNodeRunState = useCallback(
     (nodeId: string, run: RunRecord) => {
-      setRunRecords((current) => ({ ...current, [nodeId]: run }));
-      const resultAssetId = run.status === 'succeeded' ? run.result?.asset?.assetId : undefined;
-      if (resultAssetId && !refreshedResultAssetIdsRef.current.has(resultAssetId)) {
-        refreshedResultAssetIdsRef.current.add(resultAssetId);
+      const currentRun = runRecordsRef.current[nodeId];
+      if (!shouldApplyRunUpdate(currentRun, run)) return;
+      runRecordsRef.current = { ...runRecordsRef.current, [nodeId]: run };
+      setRunRecords(runRecordsRef.current);
+      const resultAsset = run.status === 'succeeded' ? run.result?.asset : undefined;
+      const resultAssetKey = resultAsset
+        ? `${resultAsset.assetId}:${resultAsset.version ?? 0}:${resultAsset.contentUrl ?? ''}`
+        : undefined;
+      if (resultAssetKey && !refreshedResultAssetKeysRef.current.has(resultAssetKey)) {
+        refreshedResultAssetKeysRef.current.add(resultAssetKey);
         void loadAssets();
       }
+      const hasResultAsset = Boolean(run.result?.asset);
       setNodes((current) => {
+        const clearStale = shouldClearNodeStale(
+          run,
+          canvasRevisionRef.current,
+          canvasDirtyRef.current,
+        );
         const updated = current.map((node) =>
           node.id === nodeId
             ? {
@@ -1364,15 +1510,17 @@ function WorkspaceApp({
                   runStatus: run.status,
                   runProgress: run.progress,
                   runError: run.error,
-                  resultAsset: run.result?.asset,
-                  ...(run.status === 'succeeded' ? { stale: false } : {}),
+                  resultAsset: hasResultAsset ? run.result?.asset : undefined,
+                  ...(clearStale ? { stale: false } : {}),
                 },
               }
             : node,
         );
         return run.status === 'succeeded'
           ? markDownstreamNodesStale(updated, edgesRef.current, [nodeId]).map((node) =>
-              node.id === nodeId ? { ...node, data: { ...node.data, stale: false } } : node,
+              node.id === nodeId && clearStale
+                ? { ...node, data: { ...node.data, stale: false } }
+                : node,
             )
           : updated;
       });
@@ -1550,34 +1698,54 @@ function WorkspaceApp({
     }
   }, [selectedNode, selectedRun, updateNodeRunState]);
 
-  const retrySelectedRun = useCallback(async () => {
-    if (!selectedRun || !selectedNode) return;
-    setIsRunning(true);
-    try {
-      const response = await apiFetch(`${API_BASE_URL}/v1/runs/${selectedRun.id}/retry`, {
-        method: 'POST',
-      });
-      const result = (await response.json().catch(() => ({}))) as {
-        run?: RunRecord;
-        error?: string;
-      };
-      if (!response.ok || !result.run) throw new Error(result.error ?? '重试提交失败');
-      updateNodeRunState(selectedNode.id, result.run);
-      const completed = await pollRun(result.run.id, selectedNode.id);
-      if (completed.status === 'succeeded') {
-        setNotice({ kind: 'success', message: `${selectedNode.data.label} 重试完成` });
-      } else {
-        setNotice({
-          kind: 'error',
-          message: completed.error ?? runStatusLabel(completed.status),
+  const retryNodeRun = useCallback(
+    async (nodeId: string) => {
+      const run = runRecordsRef.current[nodeId];
+      const node = nodesRef.current.find((candidate) => candidate.id === nodeId);
+      if (!run || !node) throw new Error('没有可重试的运行记录');
+      setIsRunning(true);
+      try {
+        const response = await apiFetch(`${API_BASE_URL}/v1/runs/${run.id}/retry`, {
+          method: 'POST',
         });
+        const result = (await response.json().catch(() => ({}))) as {
+          run?: RunRecord;
+          error?: string;
+        };
+        if (!response.ok || !result.run) throw new Error(result.error ?? '重试提交失败');
+        updateNodeRunState(nodeId, result.run);
+        const completed = await pollRun(result.run.id, nodeId);
+        if (completed.status !== 'succeeded') {
+          throw new Error(completed.error ?? runStatusLabel(completed.status));
+        }
+        setNotice({ kind: 'success', message: `${node.data.label} 重试完成` });
+      } finally {
+        setIsRunning(false);
       }
+    },
+    [pollRun, updateNodeRunState],
+  );
+
+  const retrySelectedRun = useCallback(async () => {
+    if (!selectedNode) return;
+    try {
+      await retryNodeRun(selectedNode.id);
     } catch (error) {
       setNotice({ kind: 'error', message: error instanceof Error ? error.message : '重试失败' });
-    } finally {
-      setIsRunning(false);
     }
-  }, [pollRun, selectedNode, selectedRun, updateNodeRunState]);
+  }, [retryNodeRun, selectedNode]);
+
+  const retryNodeFromCanvas = useCallback(
+    async (nodeId: string) => {
+      try {
+        await retryNodeRun(nodeId);
+      } catch (error) {
+        setNotice({ kind: 'error', message: error instanceof Error ? error.message : '重试失败' });
+        throw error;
+      }
+    },
+    [retryNodeRun],
+  );
 
   const commandPaletteCommands = useMemo<CommandPaletteCommand[]>(() => {
     const commands: CommandPaletteCommand[] = [
@@ -1691,6 +1859,7 @@ function WorkspaceApp({
     isProjectLoading,
     isResourceCollapsed,
     isRunning,
+    onNavigate,
     projectId,
     runNode,
     saveCanvas,
@@ -1711,6 +1880,7 @@ function WorkspaceApp({
   return (
     <ReactFlowProvider>
       <main className="app-shell" data-theme={canvasTheme}>
+        <AppNavigation route={route} projectId={projectId} className="mc-canvas-navigation" />
         <header className="topbar">
           <div className="brand-mark" aria-label="Multimodal Canvas">
             <span className="brand-icon">MC</span>
@@ -2091,79 +2261,18 @@ function WorkspaceApp({
           restoreFocusRef={commandPaletteTriggerRef}
         />
 
-        {showProjectCreate && (
-          <div
-            className="project-create-backdrop"
-            role="presentation"
-            onMouseDown={(event) => {
-              if (event.target === event.currentTarget && !isProjectLoading) {
-                setShowProjectCreate(false);
-              }
-            }}
-          >
-            <form
-              className="project-create-dialog"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="project-create-title"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void createProject();
-              }}
-            >
-              <div className="project-create-heading">
-                <div>
-                  <p className="eyebrow">项目集合</p>
-                  <h2 id="project-create-title">新建项目</h2>
-                </div>
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label="关闭新建项目"
-                  title="关闭"
-                  onClick={() => setShowProjectCreate(false)}
-                  disabled={isProjectLoading}
-                >
-                  <X size={17} />
-                </button>
-              </div>
-              <label className="project-create-field">
-                <span>项目名称</span>
-                <input
-                  autoFocus
-                  value={projectCreateName}
-                  maxLength={80}
-                  onChange={(event) => {
-                    setProjectCreateName(event.target.value);
-                    setProjectCreateError('');
-                  }}
-                  placeholder="例如：春季短片工作流"
-                  aria-invalid={Boolean(projectCreateError)}
-                  aria-describedby={projectCreateError ? 'project-create-error' : undefined}
-                />
-                {projectCreateError && (
-                  <span id="project-create-error" className="project-create-error" role="alert">
-                    {projectCreateError}
-                  </span>
-                )}
-              </label>
-              <div className="project-create-actions">
-                <button
-                  type="button"
-                  className="button button-secondary"
-                  onClick={() => setShowProjectCreate(false)}
-                  disabled={isProjectLoading}
-                >
-                  取消
-                </button>
-                <button type="submit" className="button button-primary" disabled={isProjectLoading}>
-                  {isProjectLoading && <LoaderCircle className="spin" size={15} />}
-                  {isProjectLoading ? '创建中' : '创建项目'}
-                </button>
-              </div>
-            </form>
-          </div>
-        )}
+        <ProjectCreateDialog
+          open={showProjectCreate}
+          name={projectCreateName}
+          error={projectCreateError}
+          busy={isProjectLoading}
+          onNameChange={(value) => {
+            setProjectCreateName(value);
+            setProjectCreateError('');
+          }}
+          onClose={() => setShowProjectCreate(false)}
+          onSubmit={() => void createProject()}
+        />
 
         <div className={`workspace ${isResourceCollapsed ? 'resource-panel-collapsed' : ''}`}>
           <ResourcePanel
@@ -2200,9 +2309,10 @@ function WorkspaceApp({
             onConnect={handleConnect}
             onNodeDragStart={handleNodeDragStart}
             onCanvasDrop={handleCanvasDrop}
-            onNodeSelect={setSelectedNode}
-            onClearNodeSelection={() => setSelectedNode(null)}
+            onNodeSelect={(node) => setSelectedNodeId(node.id)}
+            onClearNodeSelection={() => setSelectedNodeId(null)}
             onResizeNode={handleResizeNode}
+            onRetryNode={retryNodeFromCanvas}
             onPromptChange={updateSelectedPrompt}
             onModelChange={updateSelectedModel}
             onInferenceStrengthChange={updateSelectedInferenceStrength}
@@ -2229,11 +2339,12 @@ function WorkspaceApp({
                 <h2 className="inspector-name">{selectedAsset.name}</h2>
                 <label className="inspector-field inspector-label-field">
                   <span>节点名称</span>
-                  <input
+                  <ImeInput
                     aria-label="节点名称"
                     value={selectedNode.data.label}
-                    onChange={(event) => updateSelectedLabel(event.target.value)}
-                    onBlur={normalizeSelectedLabel}
+                    identity={selectedNode.id}
+                    onValueChange={updateSelectedLabel}
+                    onValueBlur={normalizeSelectedLabel}
                     placeholder="给这个来源节点命名"
                   />
                 </label>
@@ -2325,11 +2436,12 @@ function WorkspaceApp({
                 <h2 className="inspector-name">{selectedNode.data.label}</h2>
                 <label className="inspector-field inspector-label-field">
                   <span>节点名称</span>
-                  <input
+                  <ImeInput
                     aria-label="节点名称"
                     value={selectedNode.data.label}
-                    onChange={(event) => updateSelectedLabel(event.target.value)}
-                    onBlur={normalizeSelectedLabel}
+                    identity={selectedNode.id}
+                    onValueChange={updateSelectedLabel}
+                    onValueBlur={normalizeSelectedLabel}
                     placeholder="给这个节点命名"
                   />
                 </label>
@@ -2516,36 +2628,37 @@ function LoginScreen({
             ? '登录后可访问项目、资源和运行记录。'
             : '注册后即可开始创建多模态工作流。'}
         </p>
-        <form onSubmit={(event) => void submit(event)}>
+        <form
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && isImeKeyboardEvent(event)) event.preventDefault();
+          }}
+          onSubmit={(event) => void submit(event)}
+        >
           {mode === 'register' && (
             <label className="settings-field">
               <span>显示名称（可选）</span>
-              <input
-                value={displayName}
-                onChange={(event) => setDisplayName(event.target.value)}
-                autoComplete="name"
-              />
+              <ImeInput value={displayName} onValueChange={setDisplayName} autoComplete="name" />
             </label>
           )}
           <label className="settings-field">
             <span>邮箱</span>
-            <input
+            <ImeInput
               type="email"
               required
               value={email}
-              onChange={(event) => setEmail(event.target.value)}
+              onValueChange={setEmail}
               autoComplete="email"
               autoFocus
             />
           </label>
           <label className="settings-field">
             <span>密码</span>
-            <input
+            <ImeInput
               type="password"
               required
               minLength={mode === 'register' ? 8 : undefined}
               value={password}
-              onChange={(event) => setPassword(event.target.value)}
+              onValueChange={setPassword}
               autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
             />
           </label>
@@ -2585,6 +2698,179 @@ function LoginScreen({
   );
 }
 
+function RoutedApplication({
+  authUser,
+  onRequestLogin,
+  onLoggedOut,
+}: {
+  authUser: AuthUser | null;
+  onRequestLogin: () => void;
+  onLoggedOut: () => void;
+}) {
+  const route = useAppRoute();
+  const navigate = useAppNavigate();
+  const queryClient = useQueryClient();
+  const projectsQuery = useProjectsQuery(false);
+  const scopedProjectId =
+    route.id === 'project'
+      ? route.projectId
+      : route.id === 'settings'
+        ? route.projectId
+        : undefined;
+  const projectQuery = useProjectQuery(scopedProjectId);
+  const [showProjectCreate, setShowProjectCreate] = useState(false);
+  const [projectCreateName, setProjectCreateName] = useState('未命名项目');
+  const [projectCreateError, setProjectCreateError] = useState('');
+  const [isCreatingProject, setIsCreatingProject] = useState(false);
+  const [pageNotice, setPageNotice] = useState<{
+    kind: 'error' | 'success';
+    message: string;
+  } | null>(null);
+  const projects = projectsQuery.data ?? [];
+  const lastProjectId = localStorage.getItem(PROJECT_STORAGE_KEY);
+  const continueProject =
+    projects.find((project) => project.id === lastProjectId) ?? projects[0] ?? null;
+
+  const openProjectCreate = useCallback(() => {
+    setProjectCreateName('未命名项目');
+    setProjectCreateError('');
+    setShowProjectCreate(true);
+  }, []);
+
+  const createWorkspaceProject = useCallback(async () => {
+    const name = projectCreateName.trim();
+    if (!name) {
+      setProjectCreateError('请输入项目名称');
+      return;
+    }
+    setIsCreatingProject(true);
+    setProjectCreateError('');
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/v1/projects`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      const result = (await response.json().catch(() => ({}))) as {
+        project?: ProjectSummary;
+        error?: string;
+      };
+      if (!response.ok || !result.project) throw new Error(result.error ?? '项目创建失败');
+      queryClient.setQueryData<ProjectSummary[]>(projectQueryKeys.list(false), (current = []) => [
+        result.project!,
+        ...current.filter((project) => project.id !== result.project!.id),
+      ]);
+      queryClient.setQueryData(projectQueryKeys.detail(result.project.id), result.project);
+      localStorage.setItem(PROJECT_STORAGE_KEY, result.project.id);
+      setShowProjectCreate(false);
+      navigate(appPaths.project(result.project.id));
+    } catch (error) {
+      setProjectCreateError(error instanceof Error ? error.message : '项目创建失败');
+    } finally {
+      setIsCreatingProject(false);
+    }
+  }, [navigate, projectCreateName, queryClient]);
+
+  let content;
+  if (route.id === 'home') {
+    content = <HomePage continueProject={continueProject} />;
+  } else if (route.id === 'workspace') {
+    content = (
+      <WorkspacePage
+        projects={projects}
+        activeProjectId={lastProjectId}
+        isLoading={projectsQuery.isPending}
+        error={projectsQuery.error instanceof Error ? projectsQuery.error.message : null}
+        onRetry={() => void projectsQuery.refetch()}
+        onCreateProject={openProjectCreate}
+      />
+    );
+  } else if (route.id === 'settings') {
+    const hasProjectContext = Boolean(route.projectId);
+    const settingsError =
+      hasProjectContext && projectQuery.error instanceof Error ? projectQuery.error.message : null;
+    content = (
+      <SettingsPage
+        projectId={route.projectId}
+        projectName={projectQuery.data?.name}
+        isLoading={hasProjectContext && projectQuery.isPending}
+        error={settingsError}
+        onRetry={() => void projectQuery.refetch()}
+      >
+        {!settingsError && (!hasProjectContext || projectQuery.data) ? (
+          <SettingsPanel
+            presentation="page"
+            projectId={route.projectId ?? null}
+            projectName={projectQuery.data?.name ?? '平台全局'}
+            onClose={() => navigate(appPaths.workspace)}
+            onNotice={setPageNotice}
+          />
+        ) : null}
+      </SettingsPage>
+    );
+  } else if (route.id === 'project') {
+    const projectStatus = projectQuery.isPending
+      ? 'loading'
+      : projectQuery.error
+        ? projectQuery.error instanceof ProjectQueryError && projectQuery.error.status === 404
+          ? 'not-found'
+          : 'error'
+        : 'ready';
+    content = (
+      <ProjectCanvasPage
+        projectId={route.projectId}
+        status={projectStatus}
+        error={projectQuery.error instanceof Error ? projectQuery.error.message : null}
+        onRetry={() => void projectQuery.refetch()}
+      >
+        {projectQuery.data ? (
+          <WorkspaceApp
+            key={`${authUser?.id ?? 'anonymous'}:${route.projectId}`}
+            route={route}
+            initialProject={projectQuery.data}
+            authUser={authUser}
+            onRequestLogin={onRequestLogin}
+            onLoggedOut={onLoggedOut}
+            onNavigate={navigate}
+          />
+        ) : null}
+      </ProjectCanvasPage>
+    );
+  } else {
+    content = <NotFoundPage pathname={route.pathname} />;
+  }
+
+  return (
+    <>
+      {content}
+      {pageNotice && (
+        <div
+          className={`notice notice-${pageNotice.kind}`}
+          role={pageNotice.kind === 'error' ? 'alert' : 'status'}
+        >
+          {pageNotice.kind === 'success' ? <Check size={15} /> : <X size={15} />}
+          <span>{pageNotice.message}</span>
+          <button type="button" aria-label="关闭提示" onClick={() => setPageNotice(null)}>
+            <X size={14} />
+          </button>
+        </div>
+      )}
+      <ProjectCreateDialog
+        open={showProjectCreate}
+        name={projectCreateName}
+        error={projectCreateError}
+        busy={isCreatingProject}
+        onNameChange={(value) => {
+          setProjectCreateName(value);
+          setProjectCreateError('');
+        }}
+        onClose={() => setShowProjectCreate(false)}
+        onSubmit={() => void createWorkspaceProject()}
+      />
+    </>
+  );
+}
+
 function AppContent() {
   const [authSession, setAuthSession] = useState<StoredAuthSession | null>(() => readAuthSession());
   const [authRequired, setAuthRequired] = useState(false);
@@ -2611,8 +2897,7 @@ function AppContent() {
 
   return (
     <>
-      <WorkspaceApp
-        key={authSession?.user.id ?? 'anonymous'}
+      <RoutedApplication
         authUser={authSession?.user ?? null}
         onRequestLogin={() => setAuthRequired(true)}
         onLoggedOut={handleLogout}

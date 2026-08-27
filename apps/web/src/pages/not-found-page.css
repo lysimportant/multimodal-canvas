@@ -1,0 +1,71 @@
+.mc-not-found-page {
+  align-items: flex-start;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  margin: 0 auto;
+  min-height: calc(100svh - 64px);
+  max-width: 760px;
+  padding: 50px 28px;
+}
+
+.mc-not-found-code {
+  color: var(--mc-accent, #18794e);
+  font-size: 72px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.mc-not-found-page > svg {
+  color: var(--mc-text-faint, #8993a3);
+  margin-top: 24px;
+}
+
+.mc-not-found-page h1 {
+  color: var(--mc-text-strong, #172033);
+  font-size: 32px;
+  letter-spacing: 0;
+  margin: 14px 0 8px;
+}
+
+.mc-not-found-page p {
+  color: var(--mc-text-muted, #687386);
+  line-height: 1.7;
+  margin: 0;
+}
+
+.mc-not-found-page code {
+  overflow-wrap: anywhere;
+}
+
+.mc-not-found-page > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 26px;
+}
+
+.mc-not-found-page a {
+  align-items: center;
+  border: 1px solid var(--mc-border-strong, #d3dce0);
+  border-radius: 5px;
+  color: var(--mc-text, #18212f);
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 700;
+  gap: 7px;
+  min-height: 38px;
+  padding: 0 14px;
+  text-decoration: none;
+}
+
+.mc-not-found-page a:first-child {
+  background: var(--mc-text-strong, #172033);
+  border-color: var(--mc-text-strong, #172033);
+  color: var(--mc-surface, #ffffff);
+}
+
+.mc-not-found-page a:focus-visible {
+  outline: 2px solid var(--mc-accent, #18794e);
+  outline-offset: 2px;
+}

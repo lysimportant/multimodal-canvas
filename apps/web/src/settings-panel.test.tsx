@@ -1,7 +1,7 @@
 import '@testing-library/jest-dom/vitest';
 
 import { QueryClientProvider } from '@tanstack/react-query';
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MediaType } from '@multimodal-canvas/domain';
 
 import { App } from './App';
+import type { AiCredentialSummary } from './contracts';
 import { createAppQueryClient } from './query/client';
 import {
   useWorkspacePreferences,
@@ -38,7 +39,7 @@ const project = {
   updatedAt: '2026-01-01T00:00:00.000Z',
 };
 
-const models: Model[] = [
+const initialModels: Model[] = [
   { id: 'text-model', name: '文字模型', mediaTypes: ['text'] },
   { id: 'image-model', name: '图片模型', mediaTypes: ['image'] },
   { id: 'audio-model', name: '音频模型', mediaTypes: ['audio'] },
@@ -51,8 +52,17 @@ const jsonResponse = (body: unknown, status = 200) =>
     headers: { 'content-type': 'application/json' },
   });
 
+function mockFingerprint(value: string) {
+  let hash = 0;
+  for (const character of value) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+  return `sha256:${hash.toString(16).padStart(8, '0')}`;
+}
+
 let settings: Settings;
 let projectDefaults: Partial<Record<MediaType, string>>;
+let credentials: AiCredentialSummary[];
+let credentialSequence: number;
+let models: Model[];
 let fetchMock: ReturnType<typeof vi.fn>;
 
 function installApiMock() {
@@ -63,6 +73,9 @@ function installApiMock() {
     const method = init?.method?.toUpperCase() ?? 'GET';
 
     if (url.pathname === '/v1/models' && method === 'GET') return jsonResponse({ models });
+    if (url.pathname === '/v1/settings/ai/credentials' && method === 'GET') {
+      return jsonResponse({ credentials });
+    }
     if (url.pathname === '/v1/assets' && method === 'GET') return jsonResponse({ assets: [] });
     if (url.pathname === '/v1/projects' && method === 'GET') {
       return jsonResponse({ projects: [project] });
@@ -97,7 +110,41 @@ function installApiMock() {
       if (body.baseUrl !== undefined) settings.baseUrl = body.baseUrl;
       if (body.apiKey) {
         settings.configured = true;
-        settings.keyFingerprint = 'sha256:test-key';
+        settings.keyFingerprint = mockFingerprint(body.apiKey);
+        const existing = credentials.find(
+          (credential) =>
+            credential.baseUrl === settings.baseUrl &&
+            credential.keyFingerprint === settings.keyFingerprint,
+        );
+        credentials = credentials.map((credential) => ({ ...credential, active: false }));
+        if (existing) {
+          credentials = credentials.map((credential) => ({
+            ...credential,
+            active: credential.id === existing.id,
+          }));
+        } else {
+          credentialSequence += 1;
+          credentials.unshift({
+            id: `123e4567-e89b-12d3-a456-${String(credentialSequence).padStart(12, '0')}`,
+            baseUrl: settings.baseUrl,
+            keyFingerprint: settings.keyFingerprint,
+            updatedAt: new Date(credentialSequence * 1000).toISOString(),
+            active: true,
+          });
+        }
+      } else if (body.baseUrl !== undefined) {
+        const active = credentials.find((credential) => credential.active);
+        if (active && active.baseUrl !== settings.baseUrl) {
+          credentials = credentials.map((credential) => ({ ...credential, active: false }));
+          credentialSequence += 1;
+          credentials.unshift({
+            ...active,
+            id: `123e4567-e89b-12d3-a456-${String(credentialSequence).padStart(12, '0')}`,
+            baseUrl: settings.baseUrl,
+            updatedAt: new Date(credentialSequence * 1000).toISOString(),
+            active: true,
+          });
+        }
       }
       if (body.defaultModels) {
         for (const [mediaType, alias] of Object.entries(body.defaultModels)) {
@@ -105,7 +152,7 @@ function installApiMock() {
           else delete settings.defaultModels[mediaType as MediaType];
         }
       }
-      return jsonResponse({ settings });
+      return jsonResponse({ settings, credentials });
     }
     if (url.pathname === '/v1/settings/ai/test' && method === 'POST') {
       return jsonResponse({ result: { ok: true, modelCount: models.length } });
@@ -120,7 +167,24 @@ function installApiMock() {
         configured: false,
         keyFingerprint: undefined,
       };
-      return jsonResponse({ settings });
+      credentials = credentials.map((credential) => ({ ...credential, active: false }));
+      return jsonResponse({ settings, credentials });
+    }
+    const activation = url.pathname.match(/^\/v1\/settings\/ai\/credentials\/([^/]+)\/activate$/);
+    if (activation && method === 'POST') {
+      const selected = credentials.find((credential) => credential.id === activation[1]);
+      if (!selected) return jsonResponse({ error: 'credential not found' }, 404);
+      credentials = credentials.map((credential) => ({
+        ...credential,
+        active: credential.id === selected.id,
+      }));
+      settings = {
+        ...settings,
+        baseUrl: selected.baseUrl,
+        configured: true,
+        keyFingerprint: selected.keyFingerprint,
+      };
+      return jsonResponse({ settings, credentials });
     }
 
     throw new Error(`Unhandled mock request: ${method} ${url.pathname}`);
@@ -142,6 +206,7 @@ async function openSettings() {
 describe('SettingsPanel', () => {
   afterEach(() => {
     cleanup();
+    window.history.replaceState(null, '', '/');
     vi.unstubAllGlobals();
     useWorkspacePreferences.setState(workspacePreferenceDefaults);
     window.localStorage.clear();
@@ -149,6 +214,7 @@ describe('SettingsPanel', () => {
   });
 
   beforeEach(() => {
+    window.history.replaceState(null, '', `/projects/${project.id}`);
     window.localStorage.clear();
     useWorkspacePreferences.setState(workspacePreferenceDefaults);
     window.localStorage.clear();
@@ -159,8 +225,28 @@ describe('SettingsPanel', () => {
       keyFingerprint: 'sha256:old-key',
       defaultModels: {},
     };
+    credentialSequence = 1;
+    models = initialModels.map((model) => ({ ...model, mediaTypes: [...model.mediaTypes] }));
+    credentials = [
+      {
+        id: '123e4567-e89b-12d3-a456-000000000001',
+        baseUrl: settings.baseUrl,
+        keyFingerprint: settings.keyFingerprint!,
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        active: true,
+      },
+    ];
     projectDefaults = {};
     installApiMock();
+  });
+
+  it('renders the same settings controls on the standalone settings route', async () => {
+    window.history.replaceState(null, '', '/settings');
+    render(createElement(App));
+
+    expect(await screen.findByRole('heading', { name: '连接与模型设置' })).toBeVisible();
+    expect(await screen.findByLabelText('New API Base URL')).toHaveValue(settings.baseUrl);
+    expect(screen.queryByRole('dialog', { name: 'AI 连接' })).not.toBeInTheDocument();
   });
 
   it('loads settings and shows field validation before saving', async () => {
@@ -207,6 +293,142 @@ describe('SettingsPanel', () => {
     );
   });
 
+  it('adds and selects a saved key and refreshes model Select options exactly once', async () => {
+    models = [{ id: 'text-old', name: '旧文字模型', mediaTypes: ['text'] }];
+    const { dialog, user } = await openSettings();
+    const modelSelect = within(dialog).getByRole('combobox', {
+      name: '平台全局默认 · 文字',
+    });
+    await waitFor(() =>
+      expect(within(modelSelect).getByRole('option', { name: '旧文字模型' })).toBeInTheDocument(),
+    );
+    models = [{ id: 'text-new', name: '新文字模型', mediaTypes: ['text'] }];
+
+    const newKey = 'new-auto-sync-secret';
+    await user.type(within(dialog).getByLabelText('API Key'), newKey);
+    await user.click(within(dialog).getByRole('button', { name: '保存' }));
+
+    await waitFor(() =>
+      expect(within(dialog).getByRole('status')).toHaveTextContent(
+        'AI 设置已保存，模型列表已自动刷新',
+      ),
+    );
+    const credentialSelect = within(dialog).getByRole('combobox', { name: '已保存的 API Key' });
+    expect(credentialSelect).toHaveValue(credentials.find((credential) => credential.active)?.id);
+    expect(within(credentialSelect).getAllByRole('option')).toHaveLength(3);
+    expect(credentialSelect).not.toHaveTextContent(newKey);
+    expect(within(modelSelect).getByRole('option', { name: '新文字模型' })).toBeInTheDocument();
+    expect(
+      within(modelSelect).queryByRole('option', { name: '旧文字模型' }),
+    ).not.toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.filter(([input, init]) => {
+        const url = new URL(String(input), 'http://localhost:3000');
+        return url.pathname === '/v1/settings/ai/models/refresh' && init?.method === 'POST';
+      }),
+    ).toHaveLength(1);
+  });
+
+  it('keeps the current key and form values when saving fails', async () => {
+    const originalFetch = fetchMock;
+    const failedFetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost:3000');
+      if (url.pathname === '/v1/settings/ai' && init?.method === 'PATCH') {
+        return Promise.resolve(jsonResponse({ error: 'credential save failed' }, 500));
+      }
+      return originalFetch(input, init);
+    });
+    vi.stubGlobal('fetch', failedFetch);
+    const { dialog, user } = await openSettings();
+    const originalCredentialId = credentials[0]!.id;
+    const apiKey = within(dialog).getByLabelText('API Key');
+    await user.type(apiKey, 'unsaved-secret');
+    await user.click(within(dialog).getByRole('button', { name: '保存' }));
+
+    await waitFor(() =>
+      expect(within(dialog).getByRole('alert')).toHaveTextContent('credential save failed'),
+    );
+    expect(apiKey).toHaveValue('unsaved-secret');
+    expect(within(dialog).getByRole('combobox', { name: '已保存的 API Key' })).toHaveValue(
+      originalCredentialId,
+    );
+    expect(credentials).toHaveLength(1);
+    expect(
+      failedFetch.mock.calls.filter(([input, init]) => {
+        const url = new URL(String(input), 'http://localhost:3000');
+        return url.pathname === '/v1/settings/ai/models/refresh' && init?.method === 'POST';
+      }),
+    ).toHaveLength(0);
+  });
+
+  it('treats saving the active key as idempotent without adding a Select option', async () => {
+    const duplicateKey = 'existing-secret';
+    settings.keyFingerprint = mockFingerprint(duplicateKey);
+    credentials[0] = { ...credentials[0]!, keyFingerprint: settings.keyFingerprint };
+    const existingId = credentials[0].id;
+    const { dialog, user } = await openSettings();
+
+    await user.type(within(dialog).getByLabelText('API Key'), duplicateKey);
+    await user.click(within(dialog).getByRole('button', { name: '保存' }));
+
+    await waitFor(() =>
+      expect(within(dialog).getByRole('status')).toHaveTextContent('模型列表已自动刷新'),
+    );
+    const credentialSelect = within(dialog).getByRole('combobox', { name: '已保存的 API Key' });
+    expect(credentialSelect).toHaveValue(existingId);
+    expect(within(credentialSelect).getAllByRole('option')).toHaveLength(2);
+    expect(credentials).toHaveLength(1);
+  });
+
+  it('discards an unsaved credential draft when the dialog is cancelled', async () => {
+    const { dialog, user } = await openSettings();
+    const originalCredentialId = credentials[0]!.id;
+    await user.type(within(dialog).getByLabelText('API Key'), 'cancelled-secret');
+    await user.click(within(dialog).getByRole('button', { name: '关闭设置' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'AI 连接' })).not.toBeInTheDocument(),
+    );
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(0);
+
+    await user.click(screen.getByRole('button', { name: '打开设置' }));
+    const reopened = await screen.findByRole('dialog', { name: 'AI 连接' });
+    expect(within(reopened).getByLabelText('API Key')).toHaveValue('');
+    expect(within(reopened).getByRole('combobox', { name: '已保存的 API Key' })).toHaveValue(
+      originalCredentialId,
+    );
+  });
+
+  it('activates an existing key and refreshes settings and models exactly once', async () => {
+    const historicalId = '123e4567-e89b-12d3-a456-000000000002';
+    credentials.push({
+      id: historicalId,
+      baseUrl: 'https://history.example.com/v1',
+      keyFingerprint: 'sha256:history',
+      updatedAt: '2025-12-31T00:00:00.000Z',
+      active: false,
+    });
+    const { dialog, user } = await openSettings();
+    const credentialSelect = within(dialog).getByRole('combobox', { name: '已保存的 API Key' });
+
+    await user.selectOptions(credentialSelect, historicalId);
+
+    await waitFor(() =>
+      expect(within(dialog).getByRole('status')).toHaveTextContent(
+        '凭据已激活，模型列表已自动刷新',
+      ),
+    );
+    expect(credentialSelect).toHaveValue(historicalId);
+    expect(within(dialog).getByLabelText('New API Base URL')).toHaveValue(
+      'https://history.example.com/v1',
+    );
+    expect(
+      fetchMock.mock.calls.filter(([input, init]) => {
+        const url = new URL(String(input), 'http://localhost:3000');
+        return url.pathname === '/v1/settings/ai/models/refresh' && init?.method === 'POST';
+      }),
+    ).toHaveLength(1);
+  });
+
   it('refreshes models, saves a media default, and deletes credentials', async () => {
     const { dialog, user } = await openSettings();
     await user.click(within(dialog).getByRole('button', { name: '刷新模型' }));
@@ -236,6 +458,46 @@ describe('SettingsPanel', () => {
     expect(within(dialog).queryByText('请输入有效的 HTTP(S) Base URL')).not.toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: '测试连接' })).toBeDisabled();
     expect(within(dialog).getByRole('button', { name: '刷新模型' })).toBeDisabled();
+  });
+
+  it('keeps the previous model catalog when automatic refresh fails after saving', async () => {
+    models = [{ id: 'text-stable', name: '稳定文字模型', mediaTypes: ['text'] }];
+    const originalFetch = fetchMock;
+    const refreshFailureFetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost:3000');
+      if (url.pathname === '/v1/settings/ai/models/refresh' && init?.method === 'POST') {
+        return Promise.resolve(jsonResponse({ error: 'provider delayed' }, 502));
+      }
+      return originalFetch(input, init);
+    });
+    vi.stubGlobal('fetch', refreshFailureFetch);
+    const { dialog, user } = await openSettings();
+    const modelSelect = within(dialog).getByRole('combobox', {
+      name: '平台全局默认 · 文字',
+    });
+    await waitFor(() =>
+      expect(within(modelSelect).getByRole('option', { name: '稳定文字模型' })).toBeInTheDocument(),
+    );
+
+    await user.type(within(dialog).getByLabelText('API Key'), 'saved-before-refresh-failure');
+    await user.click(within(dialog).getByRole('button', { name: '保存' }));
+
+    await waitFor(() =>
+      expect(within(dialog).getByRole('alert')).toHaveTextContent(
+        'AI 设置已保存，但模型自动刷新失败',
+      ),
+    );
+    expect(within(modelSelect).getByRole('option', { name: '稳定文字模型' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('combobox', { name: '已保存的 API Key' })).toHaveValue(
+      credentials.find((credential) => credential.active)?.id,
+    );
+    expect(within(dialog).getByRole('button', { name: '刷新模型' })).toBeEnabled();
+    expect(
+      refreshFailureFetch.mock.calls.filter(([input, init]) => {
+        const url = new URL(String(input), 'http://localhost:3000');
+        return url.pathname === '/v1/settings/ai/models/refresh' && init?.method === 'POST';
+      }),
+    ).toHaveLength(1);
   });
 
   it('loads, updates, and clears current project model defaults', async () => {
@@ -276,6 +538,34 @@ describe('SettingsPanel', () => {
           init.body === JSON.stringify({ text: null }),
       ),
     ).toBe(true);
+  });
+
+  it('keeps unavailable global and project model values visible after credential sync', async () => {
+    settings.defaultModels.text = 'removed-text-model';
+    projectDefaults.image = 'removed-image-model';
+    const { dialog, user } = await openSettings();
+    const globalText = within(dialog).getByRole('combobox', {
+      name: '平台全局默认 · 文字',
+    });
+    const projectImage = within(dialog).getByRole('combobox', { name: '项目默认 · 图片' });
+
+    await waitFor(() => expect(projectImage).toBeEnabled());
+    expect(globalText).toHaveValue('removed-text-model');
+    expect(projectImage).toHaveValue('removed-image-model');
+    expect(
+      within(globalText).getByRole('option', { name: 'removed-text-model（当前不可用）' }),
+    ).toBeInTheDocument();
+    expect(
+      within(projectImage).getByRole('option', { name: 'removed-image-model（当前不可用）' }),
+    ).toBeInTheDocument();
+
+    await user.type(within(dialog).getByLabelText('API Key'), 'selection-preserving-secret');
+    await user.click(within(dialog).getByRole('button', { name: '保存' }));
+    await waitFor(() =>
+      expect(within(dialog).getByRole('status')).toHaveTextContent('模型列表已自动刷新'),
+    );
+    expect(globalText).toHaveValue('removed-text-model');
+    expect(projectImage).toHaveValue('removed-image-model');
   });
 
   it('manages dialog focus and restores focus to the settings trigger', async () => {
@@ -354,6 +644,78 @@ describe('SettingsPanel', () => {
     expect(JSON.parse(String(saveCall?.[1]?.body))).toEqual({
       baseUrl: 'https://trimmed.example.com/v1',
     });
+  });
+
+  it('does not let a delayed credential list overwrite a newly saved key', async () => {
+    const originalFetch = fetchMock;
+    const staleCredentials = credentials.map((credential) => ({ ...credential }));
+    let resolveCredentials: ((response: Response) => void) | undefined;
+    let credentialSignal: AbortSignal | undefined;
+    const delayedFetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost:3000');
+      if (url.pathname === '/v1/settings/ai/credentials' && (init?.method ?? 'GET') === 'GET') {
+        credentialSignal = init?.signal ?? undefined;
+        return new Promise<Response>((resolve) => {
+          resolveCredentials = resolve;
+        });
+      }
+      return originalFetch(input, init);
+    });
+    vi.stubGlobal('fetch', delayedFetch);
+    const { dialog, user } = await openSettings();
+
+    await user.type(within(dialog).getByLabelText('API Key'), 'newer-than-list-secret');
+    await user.click(within(dialog).getByRole('button', { name: '保存' }));
+    await waitFor(() =>
+      expect(within(dialog).getByRole('status')).toHaveTextContent('模型列表已自动刷新'),
+    );
+    const activeId = credentials.find((credential) => credential.active)!.id;
+    const credentialSelect = within(dialog).getByRole('combobox', { name: '已保存的 API Key' });
+    expect(credentialSignal?.aborted).toBe(true);
+    expect(credentialSelect).toHaveValue(activeId);
+
+    await act(async () => {
+      resolveCredentials?.(jsonResponse({ credentials: staleCredentials }));
+      await Promise.resolve();
+    });
+    expect(credentialSelect).toHaveValue(activeId);
+  });
+
+  it('does not let a delayed initial settings response overwrite a successful save', async () => {
+    const originalFetch = fetchMock;
+    const staleSettings = { ...settings };
+    let resolveSettings: ((response: Response) => void) | undefined;
+    let settingsSignal: AbortSignal | undefined;
+    const delayedFetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost:3000');
+      if (url.pathname === '/v1/settings/ai' && (init?.method ?? 'GET') === 'GET') {
+        settingsSignal = init?.signal ?? undefined;
+        return new Promise<Response>((resolve) => {
+          resolveSettings = resolve;
+        });
+      }
+      return originalFetch(input, init);
+    });
+    vi.stubGlobal('fetch', delayedFetch);
+    const user = userEvent.setup();
+    render(createElement(App));
+    await user.click(await screen.findByRole('button', { name: '打开设置' }));
+    const dialog = await screen.findByRole('dialog', { name: 'AI 连接' });
+    const baseUrl = within(dialog).getByLabelText('New API Base URL');
+    await user.type(baseUrl, 'https://saved.example.com/v1');
+    await user.type(within(dialog).getByLabelText('API Key'), 'saved-race-secret');
+    await user.click(within(dialog).getByRole('button', { name: '保存' }));
+    await waitFor(() =>
+      expect(within(dialog).getByRole('status')).toHaveTextContent('模型列表已自动刷新'),
+    );
+    expect(settingsSignal?.aborted).toBe(true);
+
+    await act(async () => {
+      resolveSettings?.(jsonResponse({ settings: staleSettings }));
+      await Promise.resolve();
+    });
+    expect(baseUrl).toHaveValue('https://saved.example.com/v1');
+    expect(within(dialog).getByText(/已配置 · sha256:/)).toBeInTheDocument();
   });
 
   it('preserves dirty fields when the initial settings request resolves late', async () => {
@@ -471,12 +833,23 @@ describe('SettingsPanel', () => {
     expect(screen.getByRole('dialog', { name: 'AI 连接' })).toBeInTheDocument();
 
     settings.baseUrl = 'https://busy.example.com/v1';
-    resolveSave?.(jsonResponse({ settings }));
+    resolveSave?.(jsonResponse({ settings, credentials }));
     await waitFor(() => expect(dialog).toHaveAttribute('aria-busy', 'false'));
     await user.keyboard('{Escape}');
     await waitFor(() =>
       expect(screen.queryByRole('dialog', { name: 'AI 连接' })).not.toBeInTheDocument(),
     );
     expect(screen.getByRole('button', { name: '打开设置' })).toHaveFocus();
+  });
+
+  it('does not submit or dismiss the settings dialog for IME Enter and Escape', async () => {
+    const { dialog } = await openSettings();
+    const apiKey = within(dialog).getByLabelText('API Key');
+
+    fireEvent.keyDown(apiKey, { key: 'Enter', keyCode: 229, isComposing: true });
+    fireEvent.keyDown(apiKey, { key: 'Escape', keyCode: 229, isComposing: true });
+
+    expect(screen.getByRole('dialog', { name: 'AI 连接' })).toBeInTheDocument();
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(0);
   });
 });

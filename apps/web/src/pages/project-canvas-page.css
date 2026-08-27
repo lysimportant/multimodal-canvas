@@ -1,0 +1,53 @@
+.mc-project-route-state {
+  align-items: center;
+  color: var(--mc-text-muted, #687386);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  justify-content: center;
+  min-height: calc(100svh - 64px);
+  padding: 40px 20px;
+  text-align: center;
+}
+
+.mc-project-route-state h1 {
+  color: var(--mc-text-strong, #172033);
+  font-size: 28px;
+  letter-spacing: 0;
+  margin: 4px 0 0;
+}
+
+.mc-project-route-state p {
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.mc-project-route-state > div {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  justify-content: center;
+  margin-top: 10px;
+}
+
+.mc-project-route-state a {
+  align-items: center;
+  border: 1px solid var(--mc-border-strong, #d3dce0);
+  border-radius: 5px;
+  color: var(--mc-text, #18212f);
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 700;
+  min-height: 38px;
+  padding: 0 14px;
+  text-decoration: none;
+}
+
+.mc-project-route-state a:hover,
+.mc-project-route-state a:focus-visible {
+  background: var(--mc-surface, #ffffff);
+  border-color: var(--mc-accent, #18794e);
+}
