@@ -164,18 +164,6 @@ export class PrismaRunPersistence {
     const runId = requireUuid(input.runId, 'runId');
     const providerJob = input.providerJob;
     const id = stableProviderJobId(providerJob.provider, providerJob.id);
-    // A retry receives a new local provider-job id but must reuse the same
-    // external task. Prefer the compound provider/platform identity whenever
-    // it is available; otherwise fall back to the deterministic local id for
-    // jobs that have not reached the provider yet.
-    const where = providerJob.platformJobId
-      ? {
-          provider_platformJobId: {
-            provider: providerJob.provider,
-            platformJobId: providerJob.platformJobId,
-          },
-        }
-      : { id };
     const createdAt = parseDate(providerJob.createdAt, 'createdAt');
     const updatedAt = parseDate(providerJob.updatedAt, 'updatedAt');
     const data = {
@@ -189,19 +177,35 @@ export class PrismaRunPersistence {
       updatedAt,
     };
 
-    return this.prisma.providerJob.upsert({
-      where,
-      create: { id, ...data },
-      update: {
-        runId: data.runId,
-        provider: data.provider,
-        ...(data.platformJobId !== undefined ? { platformJobId: data.platformJobId } : {}),
-        status: data.status,
-        progress: data.progress,
-        ...(data.payload !== undefined ? { payload: data.payload } : {}),
-        updatedAt: data.updatedAt,
-      },
-    });
+    const create = { id, ...data };
+    const update = {
+      runId: data.runId,
+      provider: data.provider,
+      ...(data.platformJobId !== undefined ? { platformJobId: data.platformJobId } : {}),
+      status: data.status,
+      progress: data.progress,
+      ...(data.payload !== undefined ? { payload: data.payload } : {}),
+      updatedAt: data.updatedAt,
+    };
+    try {
+      // A provider callback first enriches the local queued row. Looking up by
+      // the local identity prevents a second INSERT with the same primary key.
+      return await this.prisma.providerJob.upsert({ where: { id }, create, update });
+    } catch (error) {
+      if (!providerJob.platformJobId || !isPrismaUniqueConstraintError(error)) throw error;
+      // A retry has a new local identity but may intentionally inherit an
+      // existing external task. Reassociate that one durable platform row.
+      return this.prisma.providerJob.upsert({
+        where: {
+          provider_platformJobId: {
+            provider: providerJob.provider,
+            platformJobId: providerJob.platformJobId,
+          },
+        },
+        create,
+        update,
+      });
+    }
   }
 
   async recordUsage(input: UsageLedgerPersistenceInput) {
@@ -249,6 +253,15 @@ export class PrismaRunPersistence {
       update: {},
     });
   }
+}
+
+function isPrismaUniqueConstraintError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: unknown }).code === 'P2002'
+  );
 }
 
 export function isPrismaUuid(value: string): boolean {

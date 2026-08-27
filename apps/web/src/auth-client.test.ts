@@ -4,6 +4,7 @@ import {
   apiFetch,
   clearAuthSession,
   getAuthToken,
+  openAuthEventStream,
   persistAuthSession,
   readAuthSession,
   setUnauthorizedHandler,
@@ -22,6 +23,28 @@ const response: AuthTokenResponse = {
     createdAt: new Date().toISOString(),
   },
 };
+
+function streamResponse(...chunks: string[]): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      controller.close();
+    },
+  });
+  return new Response(stream, {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream' },
+  });
+}
+
+function pendingStreamResponse(): Response {
+  const stream = new ReadableStream<Uint8Array>({ start() {} });
+  return new Response(stream, {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream' },
+  });
+}
 
 describe('auth-client', () => {
   beforeEach(() => {
@@ -90,5 +113,70 @@ describe('auth-client', () => {
     });
     expect(readAuthSession()).toBeNull();
     expect(localStorage.getItem('multimodal-canvas:auth-session')).toBeNull();
+  });
+
+  it('reconnects with exponential backoff and suppresses replayed events', async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      const replayed = 'event: run.updated\ndata: {"id":"run-1","status":"running"}\n\n';
+      const fetcher = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(streamResponse(replayed))
+        .mockResolvedValueOnce(streamResponse(replayed))
+        .mockResolvedValueOnce(pendingStreamResponse());
+      const events: Array<[string, string]> = [];
+      const streamPromise = openAuthEventStream(
+        'http://localhost:3000/v1/projects/project-1/events',
+        (eventName, data) => events.push([eventName, data]),
+        controller.signal,
+        { initialReconnectDelayMs: 40, maxReconnectDelayMs: 100 },
+      );
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(events).toEqual([['run.updated', '{"id":"run-1","status":"running"}']]);
+
+      await vi.advanceTimersByTimeAsync(39);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(events).toHaveLength(1);
+
+      // The second stream closes immediately, so the next retry uses 80ms.
+      await vi.advanceTimersByTimeAsync(79);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fetcher).toHaveBeenCalledTimes(3);
+
+      controller.abort();
+      await expect(streamPromise).rejects.toMatchObject({ name: 'AbortError' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels an active stream and a pending reconnect delay immediately', async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(streamResponse());
+      const streamPromise = openAuthEventStream(
+        'http://localhost:3000/v1/projects/project-1/events',
+        () => undefined,
+        controller.signal,
+        { initialReconnectDelayMs: 500, maxReconnectDelayMs: 500 },
+      );
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      controller.abort();
+      await expect(streamPromise).rejects.toMatchObject({ name: 'AbortError' });
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

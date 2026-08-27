@@ -69,7 +69,7 @@ describe('PrismaResultAssetArchiver', () => {
 
     expect(archived).toMatchObject({
       version: 1,
-      contentUrl: expect.stringMatching(/^\/v1\/assets\/.+\/content$/),
+      contentUrl: expect.stringMatching(/^\/v1\/assets\/.+\/versions\/1\/content$/),
       mimeType: 'text/plain',
       sizeBytes: 12,
       sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
@@ -91,6 +91,102 @@ describe('PrismaResultAssetArchiver', () => {
       format: 'txt',
       parameters: { temperature: 0.2 },
     });
+  });
+
+  it('replays the same archive identity without creating a duplicate asset', async () => {
+    const blob = createBlobStore();
+    const state = statefulPrisma();
+    const { prisma } = state;
+    const archiver = new PrismaResultAssetArchiver(prisma, { blobStore: blob });
+    const input = {
+      runId: 'run_archive_replay',
+      snapshot,
+      result,
+      providerJob,
+      archiveKey: 'snapshot-1:node_text:provider-job-1',
+      archiveInput: {
+        mediaType: 'text' as const,
+        mimeType: 'text/plain',
+        content: Buffer.from('same charged result'),
+      },
+    };
+
+    const first = await archiver.archive(input);
+    const replay = await archiver.archive(input);
+
+    expect(replay).toEqual(first);
+    expect(state.transactions).toBe(1);
+    expect(blob.puts).toHaveLength(1);
+  });
+
+  it('rejects different content for an existing archive identity', async () => {
+    const blob = createBlobStore();
+    const { prisma } = statefulPrisma();
+    const archiver = new PrismaResultAssetArchiver(prisma, { blobStore: blob });
+    const common = {
+      runId: 'run_archive_collision',
+      snapshot,
+      result,
+      providerJob,
+      archiveKey: 'snapshot-1:node_text:provider-job-collision',
+    };
+
+    await archiver.archive({
+      ...common,
+      archiveInput: {
+        mediaType: 'text',
+        mimeType: 'text/plain',
+        content: Buffer.from('first result'),
+      },
+    });
+    await expect(
+      archiver.archive({
+        ...common,
+        archiveInput: {
+          mediaType: 'text',
+          mimeType: 'text/plain',
+          content: Buffer.from('different result'),
+        },
+      }),
+    ).rejects.toThrow('result archive identity collision');
+    expect(blob.puts).toHaveLength(1);
+  });
+
+  it('aborts a remote result download before asset creation', async () => {
+    const blob = createBlobStore();
+    const prisma = fakePrisma(async () => undefined);
+    const controller = new AbortController();
+    let providerSignal: AbortSignal | undefined;
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+      providerSignal = init?.signal ?? undefined;
+      return new Promise<Response>((_resolve, reject) => {
+        providerSignal?.addEventListener(
+          'abort',
+          () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+          { once: true },
+        );
+      });
+    });
+    const archiver = new PrismaResultAssetArchiver(prisma, { blobStore: blob, fetchImpl });
+    const pending = archiver.archive({
+      runId: 'run_archive_cancel',
+      snapshot,
+      result,
+      providerJob,
+      signal: controller.signal,
+      archiveInput: {
+        mediaType: 'text',
+        mimeType: 'text/plain',
+        contentUrl: 'https://cdn.example/cancel.txt',
+      },
+    });
+
+    await vi.waitFor(() => expect(providerSignal).toBeDefined());
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(providerSignal?.aborted).toBe(true);
+    expect(blob.puts).toHaveLength(0);
   });
 
   it('downloads a remote image URL with a bounded response', async () => {
@@ -346,4 +442,75 @@ function fakePrisma(record: (data: Record<string, unknown>) => Promise<void>) {
     },
   };
   return prisma as unknown as PrismaClient;
+}
+
+function statefulPrisma(): { prisma: PrismaClient; readonly transactions: number } {
+  let assetRow:
+    | {
+        id: string;
+        projectId: string;
+        mediaType: string;
+        mimeType: string;
+        sizeBytes: bigint;
+        sha256: string;
+        contentKey: string;
+        versions: Array<{
+          version: number;
+          sizeBytes: bigint;
+          sha256: string;
+          contentKey: string;
+        }>;
+      }
+    | undefined;
+  let transactionCount = 0;
+  const prisma = {
+    asset: {
+      async findUnique() {
+        return assetRow ? structuredClone(assetRow) : null;
+      },
+    },
+    async $transaction(callback: (transaction: unknown) => Promise<unknown>) {
+      transactionCount += 1;
+      let createdAsset: Record<string, unknown> | undefined;
+      let createdVersion: Record<string, unknown> | undefined;
+      const result = await callback({
+        asset: {
+          async create({ data }: { data: Record<string, unknown> }) {
+            createdAsset = data;
+          },
+        },
+        assetVersion: {
+          async create({ data }: { data: Record<string, unknown> }) {
+            createdVersion = data;
+          },
+        },
+      });
+      if (createdAsset && createdVersion) {
+        assetRow = {
+          id: String(createdAsset.id),
+          projectId: String(createdAsset.projectId),
+          mediaType: String(createdAsset.mediaType),
+          mimeType: String(createdAsset.mimeType),
+          sizeBytes: BigInt(createdAsset.sizeBytes as bigint),
+          sha256: String(createdAsset.sha256),
+          contentKey: String(createdAsset.contentKey),
+          versions: [
+            {
+              version: Number(createdVersion.version),
+              sizeBytes: BigInt(createdVersion.sizeBytes as bigint),
+              sha256: String(createdVersion.sha256),
+              contentKey: String(createdVersion.contentKey),
+            },
+          ],
+        };
+      }
+      return result;
+    },
+  } as unknown as PrismaClient;
+  return {
+    prisma,
+    get transactions() {
+      return transactionCount;
+    },
+  };
 }

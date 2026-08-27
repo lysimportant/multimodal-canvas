@@ -329,6 +329,10 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
   private readonly ready: Promise<void>;
   private readonly encryptionSecret: string;
   private credentialReference: CredentialReference = {};
+  // Serialize writes in this process so concurrent settings requests cannot
+  // derive the same credential version or persist another request's memory
+  // state. The queue is deliberately kept alive after failures.
+  private writeQueue: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly prisma: PrismaClient,
@@ -352,37 +356,52 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
 
   async update(input: UpdateAiSettingsInput) {
     await this.ready;
-    const result = this.memory.update(input);
-    await this.persistCredential();
-    return result;
+    return this.enqueueWrite(async () => {
+      const previous = this.memory.getPersisted();
+      const previousReference = this.memory.getCredentialReference();
+      const previousStoreReference = { ...this.credentialReference };
+      const result = this.memory.update(input);
+      try {
+        await this.persistCredential();
+        return result;
+      } catch (error) {
+        // A database outage must not leave this process serving credentials or
+        // defaults that were never durably written.
+        this.memory.hydrate(previous, previousReference);
+        this.credentialReference = previousStoreReference;
+        throw error;
+      }
+    });
   }
 
   async removeCredentials() {
     await this.ready;
-    // Do not delete or zero historical rows: queued/running jobs may refer to
-    // the current id/version. Append an empty tombstone version to revoke the
-    // active credential while leaving every immutable snapshot resolvable.
-    const current = await this.prisma.aiCredential.findFirst({
-      where: { projectId: null },
-      orderBy: { updatedAt: 'desc' },
-      select: { version: true },
-    });
-    if (current) {
-      await this.prisma.aiCredential.create({
-        data: {
-          projectId: null,
-          ownerId: null,
-          version: current.version + 1,
-          baseUrl: '',
-          encryptedApiKey: '',
-          keyFingerprint: '',
-          defaultModels: Prisma.JsonNull,
-          label: 'revoked',
-        },
+    return this.enqueueWrite(async () => {
+      // Do not delete or zero historical rows: queued/running jobs may refer
+      // to the current id/version. Append an empty tombstone version to revoke
+      // the active credential while leaving every immutable snapshot resolvable.
+      const current = await this.prisma.aiCredential.findFirst({
+        where: { projectId: null },
+        orderBy: { updatedAt: 'desc' },
+        select: { version: true },
       });
-    }
-    this.credentialReference = {};
-    return this.memory.removeCredentials();
+      if (current) {
+        await this.prisma.aiCredential.create({
+          data: {
+            projectId: null,
+            ownerId: null,
+            version: current.version + 1,
+            baseUrl: '',
+            encryptedApiKey: '',
+            keyFingerprint: '',
+            defaultModels: Prisma.JsonNull,
+            label: 'revoked',
+          },
+        });
+      }
+      this.credentialReference = {};
+      return this.memory.removeCredentials();
+    });
   }
 
   async testConnection() {
@@ -569,6 +588,15 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
       };
     }
   }
+
+  private enqueueWrite<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.writeQueue.then(operation);
+    this.writeQueue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
 }
 
 function toPrismaMediaType(mediaType: MediaType) {
@@ -643,6 +671,7 @@ async function requestModels(
       const response = await fetchImpl(`${normalizedBaseUrl}/models`, {
         headers: { authorization: `Bearer ${apiKey}` },
         signal: controller.signal,
+        redirect: 'error',
       });
       if (!response.ok) throw new Error(`模型服务返回 ${response.status}`);
       const payload = (await response.json()) as unknown;

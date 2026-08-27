@@ -170,6 +170,8 @@ export type CreateAssetInput = {
   tags?: string[];
   metadata?: Record<string, unknown>;
   derivatives?: Record<string, { mimeType: string; content: Buffer }>;
+  /** Optional project binding; omitted assets are global to their owner. */
+  projectId?: string;
   /** User scope for persistent stores; omitted for legacy service calls. */
   ownerId?: string;
 };
@@ -182,7 +184,8 @@ export type CreateAssetVersionInput = {
 };
 
 export type AssetScope = {
-  projectId?: string;
+  /** `null` explicitly selects global assets instead of omitting project scope. */
+  projectId?: string | null;
   ownerId?: string;
 };
 
@@ -304,6 +307,7 @@ export interface AssetStore {
 /** Volatile asset store used when DATABASE_URL is not configured. */
 export class MemoryAssetStore implements AssetStore {
   private readonly assets = new Map<string, StoredAsset>();
+  private readonly projects = new Map<string, string | undefined>();
   private readonly owners = new Map<string, string | undefined>();
   private readonly derivatives = new Map<string, Map<string, StoredAssetDerivative>>();
   private readonly versions = new Map<
@@ -336,6 +340,7 @@ export class MemoryAssetStore implements AssetStore {
       content: Buffer.from(input.content),
     };
     this.assets.set(id, asset);
+    this.projects.set(id, input.projectId);
     this.owners.set(id, input.ownerId);
     const createdAt = new Date().toISOString();
     this.versions.set(
@@ -467,6 +472,9 @@ export class MemoryAssetStore implements AssetStore {
   }
 
   private matchesScope(id: string, scope: AssetScope): boolean {
+    if (scope.projectId !== undefined && (this.projects.get(id) ?? null) !== scope.projectId) {
+      return false;
+    }
     if (scope.ownerId && this.owners.get(id) !== scope.ownerId) return false;
     return true;
   }
@@ -517,7 +525,9 @@ export class PrismaAssetStore implements AssetStore {
         const asset = await transaction.asset.create({
           data: {
             id,
-            ...(this.projectId ? { projectId: this.projectId } : {}),
+            ...((input.projectId ?? this.projectId)
+              ? { projectId: input.projectId ?? this.projectId }
+              : {}),
             ...((input.ownerId ?? this.ownerId) ? { ownerId: input.ownerId ?? this.ownerId } : {}),
             name: input.name,
             mediaType: toPrismaMediaType(input.mediaType),
@@ -752,12 +762,12 @@ export class PrismaAssetStore implements AssetStore {
     });
   }
 
-  private scopeWhere(scope: AssetScope = {}): { projectId?: string; ownerId?: string } {
+  private scopeWhere(scope: AssetScope = {}): { projectId?: string | null; ownerId?: string } {
+    const projectId = scope.projectId !== undefined ? scope.projectId : this.projectId;
+    const ownerId = scope.ownerId ?? this.ownerId;
     return {
-      ...((scope.projectId ?? this.projectId)
-        ? { projectId: scope.projectId ?? this.projectId }
-        : {}),
-      ...((scope.ownerId ?? this.ownerId) ? { ownerId: scope.ownerId ?? this.ownerId } : {}),
+      ...(projectId !== undefined ? { projectId } : {}),
+      ...(ownerId ? { ownerId } : {}),
     };
   }
 

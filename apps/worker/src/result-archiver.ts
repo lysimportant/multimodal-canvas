@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { execFile as execFileCallback } from 'node:child_process';
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -58,6 +58,22 @@ type PublicHostLookup = (
   hostname: string,
   options: { all: true; verbatim: true },
 ) => Promise<Array<{ address: string; family: number }>>;
+
+type ExistingResultArchive = {
+  id: string;
+  projectId: string | null;
+  mediaType: string;
+  mimeType: string;
+  sizeBytes: bigint | number | string;
+  sha256: string | null;
+  contentKey: string;
+  versions?: Array<{
+    version: number;
+    sizeBytes: bigint | number | string;
+    sha256: string | null;
+    contentKey: string;
+  }>;
+};
 
 /** Worker-local ffprobe adapter used after a provider video has been downloaded. */
 export class WorkerFfprobeMediaMetadataExtractor implements ResultMediaMetadataExtractor {
@@ -208,7 +224,8 @@ export class PrismaResultAssetArchiver {
   ) {
     this.blobStore = options.blobStore;
     this.keyPrefix = trimPrefix(options.keyPrefix ?? 'assets');
-    this.contentUrl = options.contentUrl ?? ((assetId) => `/v1/assets/${assetId}/content`);
+    this.contentUrl =
+      options.contentUrl ?? ((assetId) => `/v1/assets/${assetId}/versions/1/content`);
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.maxBytes = positiveLimit(options.maxBytes ?? DEFAULT_MAX_BYTES, 'max asset size');
     this.fetchTimeoutMs = positiveLimit(
@@ -230,7 +247,10 @@ export class PrismaResultAssetArchiver {
     providerJob: ProviderJob;
     output?: ProviderOutput;
     archiveInput?: ResultAssetArchiveInput;
+    archiveKey?: string;
+    signal?: AbortSignal;
   }): Promise<RunResultAsset | undefined> {
+    throwIfCancelled(input.signal);
     const archiveInput = input.archiveInput;
     if (!archiveInput) return undefined;
     if (!UUID_PATTERN.test(input.snapshot.projectId)) {
@@ -240,7 +260,9 @@ export class PrismaResultAssetArchiver {
       throw new Error('cannot archive a result with an invalid user UUID');
     }
 
-    const content = archiveInput.content ?? (await this.download(archiveInput.contentUrl));
+    const content =
+      archiveInput.content ?? (await this.download(archiveInput.contentUrl, input.signal));
+    throwIfCancelled(input.signal);
     if (!content || content.byteLength === 0) {
       throw new Error('provider returned an empty result payload');
     }
@@ -253,6 +275,7 @@ export class PrismaResultAssetArchiver {
       mimeType: archiveInput.mimeType,
       mediaType: archiveInput.mediaType,
     });
+    throwIfCancelled(input.signal);
     const enrichedArchiveInput: ResultAssetArchiveInput = extractedMetadata
       ? {
           ...archiveInput,
@@ -260,13 +283,29 @@ export class PrismaResultAssetArchiver {
         }
       : archiveInput;
 
-    const assetId = randomUUID();
-    const contentKey = `${this.keyPrefix}/${assetId}/v1`;
     const digest = createHash('sha256').update(content).digest('hex');
+    const assetId = deterministicResultAssetId(archiveIdentity(input));
+    const contentKey = `${this.keyPrefix}/${assetId}/v1-${digest}`;
     const metadata = buildResultMetadata(input, enrichedArchiveInput);
+    const existing = await this.findExistingArchive(assetId);
+    if (existing) {
+      return assertExistingArchiveMatches(existing, {
+        assetId,
+        projectId: input.snapshot.projectId,
+        mediaType: enrichedArchiveInput.mediaType,
+        mimeType: enrichedArchiveInput.mimeType,
+        sizeBytes: content.byteLength,
+        sha256: digest,
+        contentKey,
+        contentUrl: this.contentUrl(assetId),
+      });
+    }
+    throwIfCancelled(input.signal);
     try {
       await this.blobStore.put(contentKey, content, enrichedArchiveInput.mimeType);
+      throwIfCancelled(input.signal);
       await this.prisma.$transaction(async (transaction) => {
+        throwIfCancelled(input.signal);
         await transaction.asset.create({
           data: {
             id: assetId,
@@ -286,6 +325,7 @@ export class PrismaResultAssetArchiver {
             metadata: metadata as Prisma.InputJsonValue,
           },
         });
+        throwIfCancelled(input.signal);
         await transaction.assetVersion.create({
           data: {
             assetId,
@@ -298,6 +338,30 @@ export class PrismaResultAssetArchiver {
         });
       });
     } catch (error) {
+      let raced: ExistingResultArchive | undefined;
+      try {
+        raced = await this.findExistingArchive(assetId);
+      } catch {
+        // Preserve the original transaction error when reconciliation itself
+        // is unavailable.
+      }
+      if (raced) {
+        try {
+          return assertExistingArchiveMatches(raced, {
+            assetId,
+            projectId: input.snapshot.projectId,
+            mediaType: enrichedArchiveInput.mediaType,
+            mimeType: enrichedArchiveInput.mimeType,
+            sizeBytes: content.byteLength,
+            sha256: digest,
+            contentKey,
+            contentUrl: this.contentUrl(assetId),
+          });
+        } catch (collisionError) {
+          await this.blobStore.delete(contentKey).catch(() => undefined);
+          throw collisionError;
+        }
+      }
       await this.blobStore.delete(contentKey).catch(() => undefined);
       throw error;
     }
@@ -312,11 +376,17 @@ export class PrismaResultAssetArchiver {
     };
   }
 
-  private async download(url: string | undefined): Promise<Buffer | undefined> {
+  private async download(
+    url: string | undefined,
+    cancellationSignal?: AbortSignal,
+  ): Promise<Buffer | undefined> {
     if (!url) return undefined;
+    throwIfCancelled(cancellationSignal);
     const parsed = validateRemoteUrl(url, this.allowHttp);
     await assertPublicResolvedHost(parsed.hostname, this.strictDns, this.lookupHost);
     const controller = new AbortController();
+    const cancelDownload = () => controller.abort(cancellationSignal?.reason);
+    cancellationSignal?.addEventListener('abort', cancelDownload, { once: true });
     const timeout = setTimeout(() => controller.abort(), this.fetchTimeoutMs);
     try {
       const response = await this.fetchImpl(parsed.toString(), {
@@ -353,7 +423,42 @@ export class PrismaResultAssetArchiver {
       return Buffer.concat(chunks, total);
     } finally {
       clearTimeout(timeout);
+      cancellationSignal?.removeEventListener('abort', cancelDownload);
     }
+  }
+
+  private async findExistingArchive(assetId: string): Promise<ExistingResultArchive | undefined> {
+    const assetDelegate = (
+      this.prisma as PrismaClient & {
+        asset?: {
+          findUnique?: (input: unknown) => Promise<ExistingResultArchive | null>;
+        };
+      }
+    ).asset;
+    if (!assetDelegate?.findUnique) return undefined;
+    const row = await assetDelegate.findUnique({
+      where: { id: assetId },
+      select: {
+        id: true,
+        projectId: true,
+        mediaType: true,
+        mimeType: true,
+        sizeBytes: true,
+        sha256: true,
+        contentKey: true,
+        versions: {
+          where: { version: 1 },
+          take: 1,
+          select: {
+            version: true,
+            sizeBytes: true,
+            sha256: true,
+            contentKey: true,
+          },
+        },
+      },
+    });
+    return row ?? undefined;
   }
 
   private async tryExtractMetadata(
@@ -427,6 +532,85 @@ function buildResultMetadata(
     mediaType: archiveInput.mediaType,
     mimeType: archiveInput.mimeType,
   };
+}
+
+/** Derive the same archive identity when a retry is run under a new run ID. */
+function archiveIdentity(input: {
+  archiveKey?: string;
+  runId: string;
+  result: RunResult;
+  providerJob: ProviderJob;
+}): string {
+  if (input.archiveKey?.trim()) return input.archiveKey.trim();
+  const payloadIdentity = input.providerJob.payload?.requestProviderJobId;
+  const requestIdentity =
+    typeof payloadIdentity === 'string' && payloadIdentity.trim()
+      ? payloadIdentity.trim()
+      : (input.providerJob.platformJobId ?? input.providerJob.id);
+  return `workflow-archive:fallback:${input.runId}:${input.result.targetNodeId}:${requestIdentity}`;
+}
+
+/** Hash-based UUID keeps the existing PostgreSQL UUID contract without randomness. */
+export function deterministicResultAssetId(identity: string): string {
+  const bytes = createHash('sha256')
+    .update(`multimodal-canvas:result-asset:v1:${identity}`)
+    .digest();
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString('hex').slice(0, 32);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function assertExistingArchiveMatches(
+  existing: ExistingResultArchive,
+  expected: {
+    assetId: string;
+    projectId: string;
+    mediaType: MediaType;
+    mimeType: string;
+    sizeBytes: number;
+    sha256: string;
+    contentKey: string;
+    contentUrl: string;
+  },
+): RunResultAsset {
+  const version = existing.versions?.find((candidate) => candidate.version === 1);
+  const existingSize = Number(existing.sizeBytes);
+  const versionSize = version ? Number(version.sizeBytes) : expected.sizeBytes;
+  const compatible =
+    existing.id === expected.assetId &&
+    existing.projectId === expected.projectId &&
+    existing.mediaType.toLowerCase() === expected.mediaType &&
+    comparableMimeType(existing.mimeType) === comparableMimeType(expected.mimeType) &&
+    existingSize === expected.sizeBytes &&
+    existing.sha256?.toLowerCase() === expected.sha256.toLowerCase() &&
+    existing.contentKey === expected.contentKey &&
+    Boolean(version) &&
+    versionSize === expected.sizeBytes &&
+    version?.sha256?.toLowerCase() === expected.sha256.toLowerCase() &&
+    version.contentKey === expected.contentKey;
+  if (!compatible) {
+    throw new Error(`result archive identity collision for asset ${expected.assetId}`);
+  }
+  return {
+    assetId: expected.assetId,
+    version: 1,
+    contentUrl: expected.contentUrl,
+    mimeType: expected.mimeType,
+    sizeBytes: expected.sizeBytes,
+    sha256: expected.sha256,
+  };
+}
+
+function comparableMimeType(value: string): string {
+  return value.split(';', 1)[0]?.trim().toLowerCase() ?? '';
+}
+
+function throwIfCancelled(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  const error = new Error('worker cancellation requested');
+  error.name = 'WorkerCancellationError';
+  throw error;
 }
 
 function sanitizeParameters(parameters: Record<string, unknown>): Record<string, unknown> {

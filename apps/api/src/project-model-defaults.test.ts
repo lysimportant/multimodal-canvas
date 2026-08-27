@@ -56,6 +56,15 @@ describe('project model defaults endpoints', () => {
     const projectStore = new MemoryProjectStore();
     const settingsStore = new AiSettingsStore('project-default-test');
     settingsStore.update({ defaultModels: { image: 'global-image' } });
+    const refreshedAt = new Date().toISOString();
+    settingsStore.replaceModels(
+      ['global-image', 'project-image', 'request-image', 'node-image'].map((id) => ({
+        id,
+        name: id,
+        mediaTypes: ['image'],
+        refreshedAt,
+      })),
+    );
     const app = buildApp({ logger: false, projectStore, settingsStore });
     try {
       const projectResponse = await app.inject({

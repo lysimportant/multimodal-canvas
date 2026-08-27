@@ -120,36 +120,40 @@ export class WorkerPrismaRunPersistence implements RunPersistence {
   async upsertProviderJob(input: { runId: string; providerJob: ProviderJob }) {
     const providerJob = input.providerJob;
     const id = stableProviderJobId(providerJob.provider, providerJob.id);
-    const where = providerJob.platformJobId
-      ? {
+    const create = {
+      id,
+      runId: databaseRunId(input.runId),
+      provider: providerJob.provider,
+      ...(providerJob.platformJobId ? { platformJobId: providerJob.platformJobId } : {}),
+      status: providerJob.status,
+      progress: providerJob.progress,
+      ...(providerJob.payload ? { payload: providerJob.payload as Prisma.InputJsonValue } : {}),
+      createdAt: new Date(providerJob.createdAt),
+      updatedAt: new Date(providerJob.updatedAt),
+    };
+    const update = {
+      runId: databaseRunId(input.runId),
+      status: providerJob.status,
+      progress: providerJob.progress,
+      ...(providerJob.platformJobId ? { platformJobId: providerJob.platformJobId } : {}),
+      ...(providerJob.payload ? { payload: providerJob.payload as Prisma.InputJsonValue } : {}),
+      updatedAt: new Date(providerJob.updatedAt),
+    };
+    try {
+      return await this.prisma.providerJob.upsert({ where: { id }, create, update });
+    } catch (error) {
+      if (!providerJob.platformJobId || !isPrismaUniqueConstraintError(error)) throw error;
+      return this.prisma.providerJob.upsert({
+        where: {
           provider_platformJobId: {
             provider: providerJob.provider,
             platformJobId: providerJob.platformJobId,
           },
-        }
-      : { id };
-    return this.prisma.providerJob.upsert({
-      where,
-      create: {
-        id,
-        runId: databaseRunId(input.runId),
-        provider: providerJob.provider,
-        ...(providerJob.platformJobId ? { platformJobId: providerJob.platformJobId } : {}),
-        status: providerJob.status,
-        progress: providerJob.progress,
-        ...(providerJob.payload ? { payload: providerJob.payload as Prisma.InputJsonValue } : {}),
-        createdAt: new Date(providerJob.createdAt),
-        updatedAt: new Date(providerJob.updatedAt),
-      },
-      update: {
-        runId: databaseRunId(input.runId),
-        status: providerJob.status,
-        progress: providerJob.progress,
-        ...(providerJob.platformJobId ? { platformJobId: providerJob.platformJobId } : {}),
-        ...(providerJob.payload ? { payload: providerJob.payload as Prisma.InputJsonValue } : {}),
-        updatedAt: new Date(providerJob.updatedAt),
-      },
-    });
+        },
+        create,
+        update,
+      });
+    }
   }
 
   /**
@@ -180,6 +184,33 @@ export class WorkerPrismaRunPersistence implements RunPersistence {
       updatedAt: row.updatedAt.toISOString(),
     });
     return parsed.success ? parsed.data : undefined;
+  }
+
+  /**
+   * Returns every durable workflow task for a previous DAG attempt. This also
+   * includes synchronous completions without a platform identity because their
+   * sanitized payload contains the archived result needed to skip regeneration.
+   */
+  async findProviderJobsByRunId(runId: string): Promise<ProviderJob[]> {
+    const rows = await this.prisma.providerJob.findMany({
+      where: { runId: databaseRunId(runId) },
+      orderBy: { updatedAt: 'desc' },
+    });
+    return rows.flatMap((row) => {
+      const parsed = providerJobSchema.safeParse({
+        id: `provider_job_${runId}`,
+        provider: row.provider,
+        ...(row.platformJobId ? { platformJobId: row.platformJobId } : {}),
+        status: String(row.status).toLowerCase(),
+        progress: row.progress,
+        ...(row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
+          ? { payload: row.payload }
+          : {}),
+        createdAt: row.createdAt.toISOString(),
+        updatedAt: row.updatedAt.toISOString(),
+      });
+      return parsed.success ? [parsed.data] : [];
+    });
   }
 
   async recordUsage(input: {
@@ -231,6 +262,15 @@ export class WorkerPrismaRunPersistence implements RunPersistence {
       update: {},
     });
   }
+}
+
+function isPrismaUniqueConstraintError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: unknown }).code === 'P2002'
+  );
 }
 
 export function createWorkerPrismaPersistence(): WorkerPrismaRunPersistence | undefined {

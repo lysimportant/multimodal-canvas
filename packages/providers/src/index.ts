@@ -1,4 +1,11 @@
-import type { MediaType, ProviderJob, RunResult, RunSnapshot } from '@multimodal-canvas/domain';
+import type {
+  MediaType,
+  PortRole,
+  ProviderJob,
+  RunInputSnapshot,
+  RunResult,
+  RunSnapshot,
+} from '@multimodal-canvas/domain';
 
 export type ProviderName = 'mock' | 'newapi';
 
@@ -39,6 +46,8 @@ export type NewApiProviderOptions = {
   baseUrl: string;
   apiKey: string;
   timeoutMs?: number;
+  /** Maximum response body buffered from the provider. */
+  maxResponseBytes?: number;
   fetchImpl?: typeof fetch;
   /**
    * Reject plaintext HTTP endpoints. Production also enforces this when the
@@ -227,6 +236,7 @@ export class NewApiProvider {
   private readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly timeoutMs: number;
+  private readonly maxResponseBytes: number;
   private readonly fetchImpl: typeof fetch;
 
   constructor(options: NewApiProviderOptions) {
@@ -235,34 +245,54 @@ export class NewApiProvider {
       throw new TypeError('生产环境 New API Base URL 必须使用 HTTPS');
     }
     this.apiKey = options.apiKey;
-    this.timeoutMs = options.timeoutMs ?? 120_000;
+    this.timeoutMs = positiveInteger(options.timeoutMs, 120_000, 'timeoutMs');
+    this.maxResponseBytes = positiveInteger(
+      options.maxResponseBytes,
+      defaultResponseContentLimit,
+      'maxResponseBytes',
+    );
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
   async execute({
     snapshot,
     reportProgress,
+    providerJob,
   }: NewApiProviderRequest): Promise<ProviderExecution<StandardProviderOutput>> {
     const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
     if (!target) throw new NewApiProviderError('run target node is missing from snapshot');
     if (target.data.mediaType === 'video') {
       throw new NewApiProviderError('video generation requires NewApiVideoProvider');
     }
+    if (providerJob && providerJob.provider !== 'newapi') {
+      throw new NewApiProviderError('已有平台任务与 New API Provider 不匹配', {
+        code: 'PROVIDER_MISMATCH',
+        retryable: false,
+      });
+    }
+
+    // The worker persists this local provider-job ID before the paid POST.
+    // Reusing it on BullMQ replay lets an OpenAI-compatible gateway return the
+    // original synchronous generation instead of charging for a second one.
+    const idempotencyKey = standardRequestIdempotencyKey(snapshot, providerJob);
 
     const response =
       target.data.mediaType === 'text'
         ? await this.request(
             '/chat/completions',
             this.textPayload(snapshot, target.data.label, target.data.prompt),
+            idempotencyKey,
           )
         : target.data.mediaType === 'image'
           ? await this.request(
               '/images/generations',
               this.imagePayload(snapshot, target.data.label, target.data.prompt),
+              idempotencyKey,
             )
           : await this.request(
               '/audio/speech',
               this.audioPayload(snapshot, target.data.label, target.data.prompt),
+              idempotencyKey,
             );
     const output =
       target.data.mediaType === 'text'
@@ -287,10 +317,29 @@ export class NewApiProvider {
   }
 
   private textPayload(snapshot: RunSnapshot, label: string, nodePrompt?: string) {
+    const prompt = resolvePromptSource(snapshot, label, nodePrompt, 'text');
+    const inputMessages = orderedRunInputs(snapshot).map((input) => {
+      const name = chatInputName(input.role);
+      if (!name) throw unsupportedInputRoleError('text', input.role);
+      return {
+        role: 'user' as const,
+        name,
+        content: inputTextValue(input, 'text'),
+      };
+    });
+
     return {
       ...providerParameters(snapshot.parameters, 'text'),
       model: snapshot.modelAlias,
-      messages: [{ role: 'user', content: composePrompt(snapshot, label, nodePrompt) }],
+      messages: [
+        ...(prompt.explicit || inputMessages.length === 0
+          ? [{ role: 'user' as const, content: prompt.value }]
+          : []),
+        // `name` is part of the Chat Completions message contract. It keeps
+        // the canvas role visible at the provider boundary without turning
+        // separate inputs into one concatenated prompt string.
+        ...inputMessages,
+      ],
     };
   }
 
@@ -298,7 +347,7 @@ export class NewApiProvider {
     return {
       ...providerParameters(snapshot.parameters, 'image'),
       model: snapshot.modelAlias,
-      prompt: composePrompt(snapshot, label, nodePrompt),
+      prompt: resolveSinglePromptInput(snapshot, label, nodePrompt, 'image'),
       n: 1,
     };
   }
@@ -307,11 +356,15 @@ export class NewApiProvider {
     return {
       ...providerParameters(snapshot.parameters, 'audio'),
       model: snapshot.modelAlias,
-      input: composePrompt(snapshot, label, nodePrompt),
+      input: resolveSinglePromptInput(snapshot, label, nodePrompt, 'audio'),
     };
   }
 
-  private async request(path: string, body: Record<string, unknown>): Promise<unknown> {
+  private async request(
+    path: string,
+    body: Record<string, unknown>,
+    idempotencyKey: string,
+  ): Promise<unknown> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
@@ -321,11 +374,12 @@ export class NewApiProvider {
         headers: {
           authorization: `Bearer ${this.apiKey}`,
           'content-type': 'application/json',
+          'idempotency-key': idempotencyKey,
         },
         body: JSON.stringify(body),
         signal: controller.signal,
       });
-      const payload = await readResponsePayload(response);
+      const payload = await readResponsePayload(response, this.maxResponseBytes);
       if (!response.ok) {
         const providerError = extractProviderError(payload);
         const message = providerError.message ?? `New API 请求失败（${response.status}）`;
@@ -379,6 +433,7 @@ type VideoPollResult = {
   usage?: ProviderUsage;
 };
 
+const defaultResponseContentLimit = 50 * 1024 * 1024;
 const defaultVideoContentLimit = 50 * 1024 * 1024;
 
 /** xAI-compatible asynchronous video boundary exposed by the tested New API gateway. */
@@ -392,6 +447,7 @@ export class NewApiVideoProvider {
   private readonly pollIntervalMs: number;
   private readonly maxPollAttempts: number;
   private readonly maxContentBytes: number;
+  private readonly maxResponseBytes: number;
 
   constructor(options: NewApiVideoProviderOptions) {
     this.baseUrl = normalizeNewApiBaseUrl(options.baseUrl);
@@ -420,6 +476,11 @@ export class NewApiVideoProvider {
       defaultVideoContentLimit,
       'maxContentBytes',
     );
+    this.maxResponseBytes = positiveInteger(
+      options.maxResponseBytes,
+      defaultResponseContentLimit,
+      'maxResponseBytes',
+    );
   }
 
   async execute({
@@ -436,6 +497,10 @@ export class NewApiVideoProvider {
     if (target.data.mode !== 'generate') {
       throw new NewApiProviderError('当前视频接口仅支持 generate 模式');
     }
+    // Validate every immutable input snapshot even when this invocation only
+    // resumes an existing platform job. Otherwise a retry could silently skip
+    // a role that the original creation path would reject.
+    const inputs = mapVideoInputs(snapshot);
 
     if (existingProviderJob && existingProviderJob.provider !== 'newapi') {
       throw new NewApiProviderError('已有平台任务与 New API Provider 不匹配', {
@@ -443,6 +508,7 @@ export class NewApiVideoProvider {
         retryable: false,
       });
     }
+    const idempotencyKey = standardRequestIdempotencyKey(snapshot, existingProviderJob);
 
     let platformJobId = normalizeErrorField(existingProviderJob?.platformJobId);
     let submissionUsage: ProviderUsage | undefined;
@@ -455,7 +521,8 @@ export class NewApiVideoProvider {
         submission = await this.requestJson(
           `${this.baseUrl}${this.videoCreatePath}`,
           'POST',
-          videoPayload(snapshot, target.data.label, target.data.prompt),
+          videoPayload(snapshot, target.data.label, target.data.prompt, inputs),
+          idempotencyKey,
         );
       } catch (error) {
         // A transport failure after the provider accepted the request leaves
@@ -710,6 +777,7 @@ export class NewApiVideoProvider {
     url: string,
     method: 'GET' | 'POST',
     body?: Record<string, unknown>,
+    idempotencyKey?: string,
   ): Promise<{ payload: Record<string, unknown>; requestId?: string }> {
     const response = await this.fetchResponse(url, {
       method,
@@ -719,9 +787,10 @@ export class NewApiVideoProvider {
         authorization: `Bearer ${this.apiKey}`,
         accept: 'application/json',
         ...(body ? { 'content-type': 'application/json' } : {}),
+        ...(method === 'POST' && idempotencyKey ? { 'idempotency-key': idempotencyKey } : {}),
       },
     });
-    const payload = await readResponsePayload(response);
+    const payload = await readResponsePayload(response, this.maxResponseBytes);
     if (!response.ok) throw providerResponseError(response, payload);
     if (!isRecord(payload) || isBinaryResponsePayload(payload)) {
       throw new NewApiProviderError('New API 视频响应不是有效 JSON', {
@@ -745,7 +814,7 @@ export class NewApiVideoProvider {
         retryable: false,
       });
     }
-    const payload = await readResponsePayload(response);
+    const payload = await readResponsePayload(response, this.maxContentBytes);
     if (!response.ok) throw providerResponseError(response, payload);
     if (!isBinaryResponsePayload(payload) || payload.bytes.byteLength === 0) {
       throw new NewApiProviderError('New API 视频下载响应不包含二进制内容', {
@@ -818,6 +887,31 @@ function positiveInteger(value: number | undefined, fallback: number, name: stri
   return resolved;
 }
 
+/**
+ * Use the worker's durable per-node identity whenever it is available. The
+ * fallback deliberately contains no prompt, credential, or media data, so a
+ * direct provider caller still gets a stable and non-sensitive request key.
+ */
+function standardRequestIdempotencyKey(
+  snapshot: RunSnapshot,
+  providerJob: ProviderJobUpdate | undefined,
+): string {
+  const localJobId = providerJob?.id?.trim();
+  if (localJobId && /^[A-Za-z0-9._:-]{1,200}$/.test(localJobId)) return localJobId;
+  return `newapi-${stableIdempotencyHash(
+    `${snapshot.projectId}\u0000${snapshot.targetNodeId}\u0000${snapshot.submittedAt}`,
+  )}`;
+}
+
+function stableIdempotencyHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
 function nonNegativeInteger(value: number | undefined, fallback: number, name: string): number {
   const resolved = value ?? fallback;
   if (!Number.isSafeInteger(resolved) || resolved < 0) {
@@ -857,11 +951,16 @@ function videoPayload(
   snapshot: RunSnapshot,
   label: string,
   nodePrompt?: string,
+  inputs: VideoInputMapping = mapVideoInputs(snapshot),
 ): Record<string, unknown> {
   const parameters = snapshot.parameters;
   const payload: Record<string, unknown> = {
     model: snapshot.modelAlias,
-    prompt: composePrompt(snapshot, label, nodePrompt),
+    prompt: resolveMappedPromptInput(
+      resolvePromptSource(snapshot, label, nodePrompt, 'video'),
+      inputs.prompt,
+      'video',
+    ),
   };
   const duration = parameters.duration;
   if (typeof duration === 'number' && Number.isSafeInteger(duration) && duration > 0) {
@@ -871,22 +970,7 @@ function videoPayload(
   if (resolution) payload.resolution = resolution;
   const aspectRatio = normalizeErrorField(parameters.aspect_ratio ?? parameters.aspectRatio);
   if (aspectRatio) payload.aspect_ratio = aspectRatio;
-
-  const references = [...snapshot.inputs]
-    .sort((left, right) => left.sortOrder - right.sortOrder)
-    .flatMap((input) => {
-      if (input.snapshot.data.mediaType !== 'image') return [];
-      const url = providerVideoReferenceUrl(input.snapshot.data.contentUrl);
-      return url ? [{ role: input.role, url }] : [];
-    });
-  const firstFrameIndex = references.findIndex((reference) => reference.role === 'firstFrame');
-  if (firstFrameIndex >= 0) {
-    const [firstFrame] = references.splice(firstFrameIndex, 1);
-    if (firstFrame) payload.image = { url: firstFrame.url };
-  }
-  if (references.length > 0) {
-    payload.reference_images = references.map((reference) => ({ url: reference.url }));
-  }
+  if (inputs.firstFrame) payload.image = { url: inputImageUrl(inputs.firstFrame, 'video') };
   return payload;
 }
 
@@ -1606,13 +1690,23 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-async function readResponsePayload(response: Response): Promise<unknown> {
+async function readResponsePayload(
+  response: Response,
+  maxBytes = defaultResponseContentLimit,
+): Promise<unknown> {
   const headers = (response as Response & { headers?: Headers }).headers;
   const mimeType = normalizedMimeType(headers?.get?.('content-type'));
+  const declaredLength = Number(headers?.get?.('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    throw new NewApiProviderError('New API 响应超过大小限制', {
+      code: 'RESPONSE_TOO_LARGE',
+      retryable: false,
+    });
+  }
   if (typeof response.arrayBuffer !== 'function') {
     return response.json().catch(() => ({}));
   }
-  const bytes = new Uint8Array(await response.arrayBuffer());
+  const bytes = await readResponseBytes(response, maxBytes);
   const text = new TextDecoder().decode(bytes);
   const looksLikeJson =
     mimeType?.includes('json') || /^[\s]*[\[{]/.test(text) || text.trim() === '';
@@ -1626,6 +1720,49 @@ async function readResponsePayload(response: Response): Promise<unknown> {
     }
   }
   return { __newApiBinary: true, bytes, mimeType } satisfies BinaryResponsePayload;
+}
+
+async function readResponseBytes(response: Response, maxBytes: number): Promise<Uint8Array> {
+  const body = response.body;
+  if (body && typeof body.getReader === 'function') {
+    const reader = body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    try {
+      while (true) {
+        const next = await reader.read();
+        if (next.done) break;
+        const chunk = next.value;
+        total += chunk.byteLength;
+        if (total > maxBytes) {
+          await reader.cancel();
+          throw new NewApiProviderError('New API 响应超过大小限制', {
+            code: 'RESPONSE_TOO_LARGE',
+            retryable: false,
+          });
+        }
+        chunks.push(chunk);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return bytes;
+  }
+
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.byteLength > maxBytes) {
+    throw new NewApiProviderError('New API 响应超过大小限制', {
+      code: 'RESPONSE_TOO_LARGE',
+      retryable: false,
+    });
+  }
+  return bytes;
 }
 
 /**
@@ -1648,20 +1785,190 @@ function providerParameters(
   return providerParameters;
 }
 
-function composePrompt(snapshot: RunSnapshot, label: string, nodePrompt?: string) {
-  const parameterPrompt = snapshot.parameters.prompt;
-  const prompt =
-    typeof parameterPrompt === 'string' && parameterPrompt.trim().length > 0
-      ? parameterPrompt.trim()
-      : typeof nodePrompt === 'string' && nodePrompt.trim().length > 0
-        ? nodePrompt.trim()
-        : label;
-  const references = [...snapshot.inputs]
-    .sort((left, right) => left.sortOrder - right.sortOrder)
-    .map((input) => {
-      const data = input.snapshot.data;
-      const reference = data.contentUrl ?? data.assetId ?? data.label;
-      return `${input.role}: ${reference}`;
-    });
-  return [prompt, ...references].join('\n');
+type PromptSource = {
+  value: string;
+  /** A configured node/parameter prompt, as opposed to a display-label fallback. */
+  explicit: boolean;
+};
+
+type VideoInputMapping = {
+  prompt?: RunInputSnapshot;
+  firstFrame?: RunInputSnapshot;
+};
+
+/**
+ * The OpenAI-compatible endpoints do not share a reference-input schema. Keep
+ * the mapping at this provider boundary and fail before an outbound request
+ * whenever a canvas role has no documented field for the selected endpoint.
+ */
+function orderedRunInputs(snapshot: RunSnapshot): RunInputSnapshot[] {
+  return snapshot.inputs
+    .map((input, index) => ({ input, index }))
+    .sort((left, right) => left.input.sortOrder - right.input.sortOrder || left.index - right.index)
+    .map(({ input }) => input);
+}
+
+function resolvePromptSource(
+  snapshot: RunSnapshot,
+  label: string,
+  nodePrompt: string | undefined,
+  mediaType: 'text' | 'image' | 'audio' | 'video',
+): PromptSource {
+  const parameterPrompt = normalizeErrorField(snapshot.parameters.prompt);
+  // The TTS endpoint names its primary text field `input`. Treat it as the
+  // same provider-neutral prompt source while removing it from raw parameters.
+  const audioInput =
+    mediaType === 'audio' ? normalizeErrorField(snapshot.parameters.input) : undefined;
+  const configuredPrompt = parameterPrompt ?? audioInput ?? normalizeErrorField(nodePrompt);
+  return configuredPrompt
+    ? { value: configuredPrompt, explicit: true }
+    : { value: label, explicit: false };
+}
+
+function chatInputName(
+  role: PortRole,
+): 'canvas_prompt' | 'canvas_content' | 'canvas_transcript' | undefined {
+  switch (role) {
+    case 'prompt':
+      return 'canvas_prompt';
+    case 'content':
+      return 'canvas_content';
+    case 'transcript':
+      return 'canvas_transcript';
+    default:
+      return undefined;
+  }
+}
+
+function resolveSinglePromptInput(
+  snapshot: RunSnapshot,
+  label: string,
+  nodePrompt: string | undefined,
+  mediaType: 'image' | 'audio',
+): string {
+  let promptInput: RunInputSnapshot | undefined;
+  for (const input of orderedRunInputs(snapshot)) {
+    if (input.role !== 'prompt') throw unsupportedInputRoleError(mediaType, input.role);
+    if (promptInput) throw inputRoleCardinalityError(mediaType, 'prompt');
+    promptInput = input;
+  }
+
+  return resolveMappedPromptInput(
+    resolvePromptSource(snapshot, label, nodePrompt, mediaType),
+    promptInput,
+    mediaType,
+  );
+}
+
+function resolveMappedPromptInput(
+  prompt: PromptSource,
+  input: RunInputSnapshot | undefined,
+  mediaType: 'image' | 'audio' | 'video',
+): string {
+  if (!input) return prompt.value;
+  if (prompt.explicit) throw inputRoleConflictError(mediaType, 'prompt');
+  return inputTextValue(input, mediaType);
+}
+
+function mapVideoInputs(snapshot: RunSnapshot): VideoInputMapping {
+  const mapping: VideoInputMapping = {};
+  for (const input of orderedRunInputs(snapshot)) {
+    if (input.role === 'prompt') {
+      if (mapping.prompt) throw inputRoleCardinalityError('video', 'prompt');
+      mapping.prompt = input;
+      continue;
+    }
+    if (input.role === 'firstFrame') {
+      if (mapping.firstFrame) throw inputRoleCardinalityError('video', 'firstFrame');
+      mapping.firstFrame = input;
+      continue;
+    }
+    throw unsupportedInputRoleError('video', input.role);
+  }
+  return mapping;
+}
+
+function inputTextValue(
+  input: RunInputSnapshot,
+  targetMediaType: 'text' | 'image' | 'audio' | 'video',
+): string {
+  if (input.snapshot.data.mediaType !== 'text') {
+    throw unsupportedInputRoleError(
+      targetMediaType,
+      input.role,
+      `上游媒体类型 ${input.snapshot.data.mediaType} 无法映射为文字`,
+    );
+  }
+  const prompt = normalizeErrorField(input.snapshot.data.prompt);
+  if (prompt) return prompt;
+  const inlineText = inlineTextContent(input.snapshot.data.contentUrl);
+  if (inlineText) return inlineText;
+  throw inputRoleValueError(targetMediaType, input.role, '可发送的文字内容');
+}
+
+function inputImageUrl(input: RunInputSnapshot, targetMediaType: 'video'): string {
+  if (input.snapshot.data.mediaType !== 'image') {
+    throw unsupportedInputRoleError(
+      targetMediaType,
+      input.role,
+      `上游媒体类型 ${input.snapshot.data.mediaType} 无法映射为图片`,
+    );
+  }
+  const url = providerVideoReferenceUrl(input.snapshot.data.contentUrl);
+  if (!url) throw inputRoleValueError(targetMediaType, input.role, '可发送的图片 URL');
+  return url;
+}
+
+function inlineTextContent(value: unknown): string | undefined {
+  if (!nonEmptyString(value)) return undefined;
+  const match = /^data:text\/plain(?:;charset=[^;,]+)?(?:;(base64))?,([\s\S]*)$/i.exec(
+    value.trim(),
+  );
+  if (!match) return undefined;
+  try {
+    const decoded = match[1]
+      ? new TextDecoder().decode(
+          Uint8Array.from(atob(match[2] ?? ''), (character) => character.charCodeAt(0)),
+        )
+      : decodeURIComponent(match[2] ?? '');
+    return normalizeErrorField(decoded);
+  } catch {
+    return undefined;
+  }
+}
+
+function unsupportedInputRoleError(
+  mediaType: MediaType,
+  role: PortRole,
+  detail?: string,
+): NewApiProviderError {
+  return new NewApiProviderError(
+    `New API ${mediaType} 不支持该输入角色：${role}${detail ? `（${detail}）` : ''}`,
+    { code: 'UNSUPPORTED_INPUT_ROLE', retryable: false },
+  );
+}
+
+function inputRoleCardinalityError(mediaType: MediaType, role: PortRole): NewApiProviderError {
+  return new NewApiProviderError(`New API ${mediaType} 不支持该输入角色的多个值：${role}`, {
+    code: 'INPUT_ROLE_CARDINALITY_UNSUPPORTED',
+    retryable: false,
+  });
+}
+
+function inputRoleConflictError(mediaType: MediaType, role: PortRole): NewApiProviderError {
+  return new NewApiProviderError(
+    `New API ${mediaType} 不支持该输入角色与节点提示词同时传入：${role}`,
+    { code: 'INPUT_ROLE_CONFLICT', retryable: false },
+  );
+}
+
+function inputRoleValueError(
+  mediaType: MediaType,
+  role: PortRole,
+  expectedValue: string,
+): NewApiProviderError {
+  return new NewApiProviderError(`New API ${mediaType} 输入角色 ${role} 缺少${expectedValue}`, {
+    code: 'INPUT_ROLE_VALUE_MISSING',
+    retryable: false,
+  });
 }

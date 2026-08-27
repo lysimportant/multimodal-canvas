@@ -21,6 +21,7 @@ export type NewApiRunProviderFactory = {
 export type NewApiRunExecutorOptions = {
   settingsStore: Pick<AiSettingsStoreLike, 'getProviderCredentials'>;
   timeoutMs?: number;
+  responseMaxBytes?: number;
   videoPath?: string;
   videoCreatePath?: string;
   videoJobsPath?: string;
@@ -58,6 +59,9 @@ export function createNewApiRunExecutor(options: NewApiRunExecutorOptions) {
       baseUrl: credentials.baseUrl,
       apiKey: credentials.apiKey,
       ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      ...(options.responseMaxBytes === undefined
+        ? {}
+        : { maxResponseBytes: options.responseMaxBytes }),
       ...(options.requireHttps === undefined ? {} : { requireHttps: options.requireHttps }),
     };
     const provider =

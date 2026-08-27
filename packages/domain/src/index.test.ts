@@ -405,4 +405,164 @@ describe('canvas protocol', () => {
     expect(result.cancelRequested).toBe(false);
     expect(result.provider).toBe('mock');
   });
+
+  it('revalidates graph integrity and input references at the run boundary', () => {
+    const base = {
+      projectId: 'project_1',
+      canvasRevision: 1,
+      targetNodeId: 'node_image',
+      modelAlias: 'mock-image',
+      parameters: {},
+      submittedAt: '2026-08-24T00:00:00.000Z',
+      nodes: [
+        {
+          id: 'node_image',
+          type: 'image' as const,
+          position: { x: 0, y: 0 },
+          data: { label: 'Generate', mediaType: 'image' as const, mode: 'generate' as const },
+        },
+      ],
+      edges: [],
+      inputs: [],
+    };
+
+    expect(
+      runSnapshotSchema.safeParse({
+        ...base,
+        edges: [
+          {
+            id: 'edge_missing',
+            sourceNodeId: 'node_missing',
+            sourceHandle: 'output:text',
+            targetNodeId: 'node_image',
+            targetHandle: 'input:prompt',
+            order: 0,
+          },
+        ],
+      }).success,
+    ).toBe(false);
+
+    expect(
+      runSnapshotSchema.safeParse({
+        ...base,
+        inputs: [
+          {
+            nodeId: 'node_missing',
+            role: 'prompt',
+            sortOrder: 0,
+            snapshot: base.nodes[0],
+          },
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('persists resumable node-level workflow state alongside a frozen run snapshot', () => {
+    const job = runJobDataSchema.parse({
+      runId: 'run_workflow_1',
+      attempt: 1,
+      snapshot: {
+        projectId: 'project_1',
+        canvasRevision: 1,
+        targetNodeId: 'node_image',
+        modelAlias: 'mock-image',
+        parameters: {},
+        submittedAt: '2026-08-27T00:00:00.000Z',
+        nodes: [
+          {
+            id: 'node_prompt',
+            type: 'text',
+            position: { x: 0, y: 0 },
+            data: { label: 'Prompt', mediaType: 'text', mode: 'source' },
+          },
+          {
+            id: 'node_image',
+            type: 'image',
+            position: { x: 200, y: 0 },
+            data: { label: 'Image', mediaType: 'image', mode: 'generate' },
+          },
+        ],
+        edges: [
+          {
+            id: 'edge_prompt',
+            sourceNodeId: 'node_prompt',
+            sourceHandle: 'output:text',
+            targetNodeId: 'node_image',
+            targetHandle: 'input:prompt',
+            order: 0,
+          },
+        ],
+        inputs: [
+          {
+            nodeId: 'node_prompt',
+            role: 'prompt',
+            sortOrder: 0,
+            snapshot: {
+              id: 'node_prompt',
+              type: 'text',
+              position: { x: 0, y: 0 },
+              data: { label: 'Prompt', mediaType: 'text', mode: 'source' },
+            },
+          },
+        ],
+      },
+      workflowState: {
+        nodes: [
+          {
+            nodeId: 'node_prompt',
+            status: 'succeeded',
+            result: {
+              provider: 'source',
+              summary: 'source ready',
+              targetNodeId: 'node_prompt',
+              mediaType: 'text',
+              inputCount: 0,
+            },
+          },
+          {
+            nodeId: 'node_image',
+            status: 'pending',
+          },
+        ],
+      },
+    });
+
+    expect(job.workflowState?.nodes[0]).toMatchObject({
+      nodeId: 'node_prompt',
+      status: 'succeeded',
+    });
+  });
+
+  it('rejects workflow state that cannot be safely applied to its snapshot', () => {
+    const parse = runJobDataSchema.safeParse({
+      runId: 'run_workflow_invalid',
+      attempt: 1,
+      snapshot: {
+        projectId: 'project_1',
+        canvasRevision: 1,
+        targetNodeId: 'node_image',
+        modelAlias: 'mock-image',
+        parameters: {},
+        submittedAt: '2026-08-27T00:00:00.000Z',
+        nodes: [
+          {
+            id: 'node_image',
+            type: 'image',
+            position: { x: 0, y: 0 },
+            data: { label: 'Image', mediaType: 'image', mode: 'generate' },
+          },
+        ],
+        edges: [],
+        inputs: [],
+      },
+      workflowState: {
+        nodes: [
+          { nodeId: 'node_missing', status: 'pending' },
+          { nodeId: 'node_image', status: 'succeeded' },
+        ],
+      },
+    });
+
+    expect(parse.success).toBe(false);
+  });
 });

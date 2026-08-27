@@ -140,34 +140,56 @@ describe('PrismaRunPersistence', () => {
     });
   });
 
-  it('maps a provider job to a stable UUID and upserts its lifecycle fields', async () => {
+  it('updates the stable local provider job when a callback adds its platform ID', async () => {
     const { prisma, persistence } = createPersistence();
+    const queuedProviderJob = {
+      id: 'provider_job_run_123',
+      provider: 'newapi',
+      status: 'queued' as const,
+      progress: 0,
+      payload: { attempt: 1 },
+      createdAt: '2026-08-25T00:00:00.000Z',
+      updatedAt: '2026-08-25T00:00:00.000Z',
+    };
 
-    const saved = await persistence.upsertProviderJob({ runId, providerJob });
-    const second = await persistence.upsertProviderJob({
+    const saved = await persistence.upsertProviderJob({ runId, providerJob: queuedProviderJob });
+    const updated = await persistence.upsertProviderJob({
       runId,
-      providerJob: { ...providerJob, status: 'succeeded', progress: 100 },
+      providerJob,
     });
 
-    expect(saved.id).toBe(stableProviderJobId('newapi', providerJob.id));
+    const stableId = stableProviderJobId('newapi', providerJob.id);
+    expect(saved.id).toBe(stableId);
     expect(saved.runId).toBe(runId);
-    expect(second.id).toBe(saved.id);
+    expect(updated.id).toBe(stableId);
     expect(prisma.providerJob.upsert).toHaveBeenCalledTimes(2);
     expect(prisma.providerJob.upsert).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
-        where: {
-          provider_platformJobId: { provider: 'newapi', platformJobId: 'platform-123' },
-        },
+        where: { id: stableId },
       }),
+    );
+    expect(prisma.providerJob.upsert).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: { id: stableId },
+        update: expect.objectContaining({ platformJobId: 'platform-123' }),
+      }),
+    );
+    expect(prisma.providerJob.upsert.mock.calls[0]?.[0]?.create).not.toHaveProperty(
+      'platformJobId',
     );
   });
 
-  it('reassociates a reused platform task with a retry run instead of creating a duplicate', async () => {
+  it('reassociates a reused platform task with a retry run after the local-ID insert conflicts', async () => {
     const { prisma, persistence } = createPersistence();
     const retryRunId = '123e4567-e89b-12d3-a456-426614174020';
+    const uniqueError = Object.assign(new Error('unique'), { code: 'P2002' });
+    prisma.providerJob.upsert.mockRejectedValueOnce(uniqueError).mockResolvedValueOnce({
+      id: stableProviderJobId('newapi', 'provider_job_original'),
+      runId: retryRunId,
+    });
 
-    await persistence.upsertProviderJob({ runId, providerJob });
     await persistence.upsertProviderJob({
       runId: retryRunId,
       providerJob: {
@@ -180,6 +202,12 @@ describe('PrismaRunPersistence', () => {
     });
 
     expect(prisma.providerJob.upsert).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: { id: stableProviderJobId('newapi', 'provider_job_retry_1') },
+      }),
+    );
+    expect(prisma.providerJob.upsert).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
         where: {
@@ -188,6 +216,7 @@ describe('PrismaRunPersistence', () => {
         update: expect.objectContaining({ runId: retryRunId, progress: 60 }),
       }),
     );
+    expect(prisma.providerJob.upsert).toHaveBeenCalledTimes(2);
   });
 
   it('records normalized usage with optional run and user UUIDs', async () => {

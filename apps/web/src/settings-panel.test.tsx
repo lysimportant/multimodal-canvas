@@ -1,6 +1,7 @@
 import '@testing-library/jest-dom/vitest';
 
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -8,6 +9,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MediaType } from '@multimodal-canvas/domain';
 
 import { App } from './App';
+import { createAppQueryClient } from './query/client';
+import {
+  useWorkspacePreferences,
+  workspacePreferenceDefaults,
+} from './state/workspace-preferences';
+import { SettingsPanel } from './workspace/SettingsPanel';
 
 class ResizeObserverStub {
   observe() {}
@@ -107,9 +114,13 @@ function installApiMock() {
       return jsonResponse({ models });
     }
     if (url.pathname === '/v1/settings/ai/credentials' && method === 'DELETE') {
-      settings.configured = false;
-      delete settings.keyFingerprint;
-      return jsonResponse({ ok: true });
+      settings = {
+        ...settings,
+        baseUrl: 'https://reset.example.com/v1',
+        configured: false,
+        keyFingerprint: undefined,
+      };
+      return jsonResponse({ settings });
     }
 
     throw new Error(`Unhandled mock request: ${method} ${url.pathname}`);
@@ -132,9 +143,14 @@ describe('SettingsPanel', () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
+    useWorkspacePreferences.setState(workspacePreferenceDefaults);
+    window.localStorage.clear();
+    document.documentElement.removeAttribute('data-theme');
   });
 
   beforeEach(() => {
+    window.localStorage.clear();
+    useWorkspacePreferences.setState(workspacePreferenceDefaults);
     window.localStorage.clear();
     vi.stubGlobal('ResizeObserver', ResizeObserverStub);
     settings = {
@@ -168,10 +184,9 @@ describe('SettingsPanel', () => {
     const apiKey = within(dialog).getByLabelText('API Key');
 
     await user.clear(baseUrl);
-    await user.type(baseUrl, 'https://api.example.com/v1');
+    await user.type(baseUrl, '  https://api.example.com/v1  ');
     await user.clear(apiKey);
-    await user.type(apiKey, 'new-secret');
-    await user.click(within(dialog).getByRole('button', { name: '保存' }));
+    await user.type(apiKey, '  new-secret  {Enter}');
 
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('AI 设置已保存'));
     const saveCall = fetchMock.mock.calls.find(
@@ -181,6 +196,10 @@ describe('SettingsPanel', () => {
         String(init.body).includes('new-secret'),
     );
     expect(saveCall).toBeDefined();
+    expect(JSON.parse(String(saveCall?.[1]?.body))).toEqual({
+      baseUrl: 'https://api.example.com/v1',
+      apiKey: 'new-secret',
+    });
 
     await user.click(within(dialog).getByRole('button', { name: '测试连接' }));
     await waitFor(() =>
@@ -202,8 +221,19 @@ describe('SettingsPanel', () => {
     );
     expect(settings.defaultModels.text).toBe('text-model');
 
+    const baseUrl = within(dialog).getByLabelText('New API Base URL');
+    const apiKey = within(dialog).getByLabelText('API Key');
+    await user.clear(baseUrl);
+    await user.type(baseUrl, 'invalid');
+    await user.type(apiKey, 'dirty-key');
+    await user.click(within(dialog).getByRole('button', { name: '保存' }));
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('请输入有效的 HTTP(S) Base URL');
+
     await user.click(within(dialog).getByRole('button', { name: '删除凭据' }));
     await waitFor(() => expect(within(dialog).getByText('未配置')).toBeInTheDocument());
+    expect(baseUrl).toHaveValue('https://reset.example.com/v1');
+    expect(apiKey).toHaveValue('');
+    expect(within(dialog).queryByText('请输入有效的 HTTP(S) Base URL')).not.toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: '测试连接' })).toBeDisabled();
     expect(within(dialog).getByRole('button', { name: '刷新模型' })).toBeDisabled();
   });
@@ -254,6 +284,10 @@ describe('SettingsPanel', () => {
     const deleteButton = within(dialog).getByRole('button', { name: '删除凭据' });
 
     expect(closeButton).toHaveFocus();
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(document.querySelector('.settings-backdrop')).toBeInTheDocument();
+    expect(document.body).toHaveAttribute('data-scroll-locked');
+    expect(document.documentElement).toHaveAttribute('data-theme', 'eye-care');
 
     await user.tab({ shift: true });
     expect(deleteButton).toHaveFocus();
@@ -262,5 +296,187 @@ describe('SettingsPanel', () => {
 
     await user.click(closeButton);
     await waitFor(() => expect(screen.getByRole('button', { name: '打开设置' })).toHaveFocus());
+    expect(document.querySelector('.settings-backdrop')).not.toBeInTheDocument();
+    expect(document.body).not.toHaveAttribute('data-scroll-locked');
+  });
+
+  it('dismisses through the overlay while idle and restores the settings trigger', async () => {
+    const { user } = await openSettings();
+    const overlay = document.querySelector('.settings-backdrop');
+
+    expect(overlay).toBeInTheDocument();
+    await user.click(overlay as HTMLElement);
+
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'AI 连接' })).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole('button', { name: '打开设置' })).toHaveFocus();
+  });
+
+  it('keeps the portaled dialog on the active root theme and restores the host theme', async () => {
+    document.documentElement.setAttribute('data-theme', 'host-theme');
+    useWorkspacePreferences.setState({ canvasTheme: 'dark' });
+    const user = userEvent.setup();
+    const view = render(createElement(App));
+
+    await waitFor(() => expect(document.documentElement).toHaveAttribute('data-theme', 'dark'));
+    await user.click(await screen.findByRole('button', { name: '打开设置' }));
+    const dialog = await screen.findByRole('dialog', { name: 'AI 连接' });
+    expect(dialog.parentElement).toBe(document.body);
+    expect(dialog.ownerDocument.documentElement).toHaveAttribute('data-theme', 'dark');
+
+    act(() => useWorkspacePreferences.getState().setCanvasTheme('sepia'));
+    await waitFor(() => expect(document.documentElement).toHaveAttribute('data-theme', 'sepia'));
+    expect(dialog.ownerDocument.documentElement).toHaveAttribute('data-theme', 'sepia');
+
+    view.unmount();
+    expect(document.documentElement).toHaveAttribute('data-theme', 'host-theme');
+  });
+
+  it('omits a whitespace-only key and submits the trimmed URL with Enter', async () => {
+    const { dialog, user } = await openSettings();
+    const baseUrl = within(dialog).getByLabelText('New API Base URL');
+    const apiKey = within(dialog).getByLabelText('API Key');
+
+    await user.clear(baseUrl);
+    await user.type(baseUrl, '  https://trimmed.example.com/v1  ');
+    await user.type(apiKey, '   {Enter}');
+
+    await waitFor(() =>
+      expect(within(dialog).getByRole('status')).toHaveTextContent('AI 设置已保存'),
+    );
+    const saveCall = fetchMock.mock.calls.find(
+      ([input, init]) =>
+        String(input).includes('/v1/settings/ai') &&
+        init?.method === 'PATCH' &&
+        String(init.body).includes('trimmed.example.com'),
+    );
+    expect(JSON.parse(String(saveCall?.[1]?.body))).toEqual({
+      baseUrl: 'https://trimmed.example.com/v1',
+    });
+  });
+
+  it('preserves dirty fields when the initial settings request resolves late', async () => {
+    const immediateFetch = fetchMock;
+    let resolveSettings: ((response: Response) => void) | undefined;
+    let settingsSignal: AbortSignal | undefined;
+    const delayedFetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const rawUrl =
+        typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      const url = new URL(rawUrl, 'http://localhost:3000');
+      if (url.pathname === '/v1/settings/ai' && (init?.method ?? 'GET') === 'GET') {
+        settingsSignal = init?.signal ?? undefined;
+        return new Promise<Response>((resolve) => {
+          resolveSettings = resolve;
+        });
+      }
+      return immediateFetch(input, init);
+    });
+    vi.stubGlobal('fetch', delayedFetch);
+
+    const user = userEvent.setup();
+    render(createElement(App));
+    await user.click(await screen.findByRole('button', { name: '打开设置' }));
+    const dialog = await screen.findByRole('dialog', { name: 'AI 连接' });
+    const baseUrl = within(dialog).getByLabelText('New API Base URL');
+    const apiKey = within(dialog).getByLabelText('API Key');
+    await user.type(baseUrl, 'https://dirty.example.com/v1');
+    await user.type(apiKey, 'dirty-key');
+
+    resolveSettings?.(jsonResponse({ settings }));
+    await waitFor(() => expect(settingsSignal).toBeInstanceOf(AbortSignal));
+    await waitFor(() => expect(baseUrl).toHaveValue('https://dirty.example.com/v1'));
+    expect(apiKey).toHaveValue('dirty-key');
+
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(settingsSignal?.aborted).toBe(true));
+  });
+
+  it('aborts stale project defaults and ignores their response after the project changes', async () => {
+    const immediateFetch = fetchMock;
+    let resolveOldDefaults: ((response: Response) => void) | undefined;
+    let oldDefaultsSignal: AbortSignal | undefined;
+    const delayedFetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const rawUrl =
+        typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      const url = new URL(rawUrl, 'http://localhost:3000');
+      if (url.pathname === '/v1/projects/project_old/models/defaults') {
+        oldDefaultsSignal = init?.signal ?? undefined;
+        return new Promise<Response>((resolve) => {
+          resolveOldDefaults = resolve;
+        });
+      }
+      if (url.pathname === '/v1/projects/project_new/models/defaults') {
+        return Promise.resolve(jsonResponse({ defaults: { text: 'text-model' } }));
+      }
+      return immediateFetch(input, init);
+    });
+    vi.stubGlobal('fetch', delayedFetch);
+    const client = createAppQueryClient();
+    const onClose = vi.fn();
+    const onNotice = vi.fn();
+    const renderPanel = (projectId: string, projectName: string) => (
+      <QueryClientProvider client={client}>
+        <SettingsPanel
+          projectId={projectId}
+          projectName={projectName}
+          onClose={onClose}
+          onNotice={onNotice}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(renderPanel('project_old', '旧项目'));
+
+    await waitFor(() => expect(oldDefaultsSignal).toBeInstanceOf(AbortSignal));
+    view.rerender(renderPanel('project_new', '新项目'));
+    const textDefault = await screen.findByRole('combobox', { name: '项目默认 · 文字' });
+    await waitFor(() => expect(textDefault).toBeEnabled());
+    expect(textDefault).toHaveValue('text-model');
+    expect(oldDefaultsSignal?.aborted).toBe(true);
+
+    await act(async () => {
+      resolveOldDefaults?.(jsonResponse({ defaults: {} }));
+      await Promise.resolve();
+    });
+
+    expect(textDefault).toHaveValue('text-model');
+    expect(screen.getByText('新项目 · 可覆盖平台全局默认')).toBeInTheDocument();
+  });
+
+  it('blocks Escape and outside dismissal while a save is pending', async () => {
+    const immediateFetch = fetchMock;
+    let resolveSave: ((response: Response) => void) | undefined;
+    const delayedFetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const rawUrl =
+        typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      const url = new URL(rawUrl, 'http://localhost:3000');
+      if (url.pathname === '/v1/settings/ai' && init?.method === 'PATCH') {
+        return new Promise<Response>((resolve) => {
+          resolveSave = resolve;
+        });
+      }
+      return immediateFetch(input, init);
+    });
+    vi.stubGlobal('fetch', delayedFetch);
+
+    const { dialog, user } = await openSettings();
+    const baseUrl = within(dialog).getByLabelText('New API Base URL');
+    await user.clear(baseUrl);
+    await user.type(baseUrl, 'https://busy.example.com/v1{Enter}');
+    await waitFor(() => expect(dialog).toHaveAttribute('aria-busy', 'true'));
+    expect(within(dialog).getByRole('button', { name: '关闭设置' })).toBeDisabled();
+
+    await user.keyboard('{Escape}');
+    await user.click(document.querySelector('.settings-backdrop') as HTMLElement);
+    expect(screen.getByRole('dialog', { name: 'AI 连接' })).toBeInTheDocument();
+
+    settings.baseUrl = 'https://busy.example.com/v1';
+    resolveSave?.(jsonResponse({ settings }));
+    await waitFor(() => expect(dialog).toHaveAttribute('aria-busy', 'false'));
+    await user.keyboard('{Escape}');
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'AI 连接' })).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole('button', { name: '打开设置' })).toHaveFocus();
   });
 });

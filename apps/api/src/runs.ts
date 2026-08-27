@@ -68,6 +68,20 @@ export type RunExecution = {
 
 export type RunProviderJobUpdate = Partial<ProviderJob> & Pick<ProviderJob, 'provider'>;
 
+/**
+ * Provider callback normalized by the API webhook boundary. The payload is
+ * intentionally provider-neutral; raw webhook fields are retained only as
+ * sanitized diagnostics on the local provider-job record.
+ */
+export type ProviderWebhookUpdate = {
+  provider: string;
+  platformJobId: string;
+  status?: ProviderJob['status'];
+  progress?: number;
+  payload?: Record<string, unknown>;
+  error?: string;
+};
+
 export type RunExecutorRequest = {
   snapshot: RunSnapshot;
   /** Existing asynchronous task identity; providers must resume it without POSTing again. */
@@ -105,10 +119,46 @@ export interface RunService {
   create(snapshot: RunSnapshot, options?: RunCreateOptions): Promise<RunRecord>;
   get(runId: string): Promise<RunRecord | undefined>;
   listByProject(projectId: string): Promise<RunRecord[]>;
+  /** Apply an asynchronous provider callback when the service owns queue state. */
+  applyProviderWebhook?(update: ProviderWebhookUpdate): Promise<RunRecord | undefined>;
   retry(runId: string): Promise<RunRecord>;
   cancel(runId: string): Promise<RunRecord>;
   close(): Promise<void>;
 }
+
+/**
+ * Return the enabled upstream closure for a target, including the target
+ * itself. Keeping this traversal in the API run module makes model freezing
+ * and snapshot construction use the same inclusion rules.
+ */
+export function getRunSnapshotIncludedNodeIds(
+  canvas: CanvasDocument,
+  targetNodeId: string,
+): ReadonlySet<string> {
+  const nodesById = new Map(canvas.nodes.map((node) => [node.id, node]));
+  const includedNodeIds = new Set([targetNodeId]);
+  const pendingNodeIds = [targetNodeId];
+
+  while (pendingNodeIds.length > 0) {
+    const nodeId = pendingNodeIds.pop();
+    if (!nodeId) continue;
+    for (const edge of canvas.edges) {
+      if (edge.targetNodeId !== nodeId || includedNodeIds.has(edge.sourceNodeId)) continue;
+      const source = nodesById.get(edge.sourceNodeId);
+      if (!source || source.data.enabled === false) continue;
+      includedNodeIds.add(edge.sourceNodeId);
+      pendingNodeIds.push(edge.sourceNodeId);
+    }
+  }
+
+  return includedNodeIds;
+}
+
+export type FrozenRunAssetRef = {
+  assetId: string;
+  version: number;
+  contentUrl: string;
+};
 
 export function createRunSnapshot(
   projectId: string,
@@ -119,6 +169,10 @@ export function createRunSnapshot(
     parameters?: Record<string, unknown>;
     credentialId?: string;
     credentialVersion?: number;
+    /** Final aliases resolved by the API for included non-source nodes. */
+    nodeModelAliases?: Readonly<Record<string, string>>;
+    /** Immutable asset-version references resolved by the API for included nodes. */
+    frozenAssetRefs?: Readonly<Record<string, FrozenRunAssetRef>>;
   } = {},
 ): RunSnapshot {
   const target = canvas.nodes.find((node) => node.id === targetNodeId);
@@ -130,21 +184,31 @@ export function createRunSnapshot(
     throw new RunServiceError('invalid_target', 'disabled nodes cannot be run');
   }
 
-  const includedNodeIds = new Set([targetNodeId]);
-  const pendingNodeIds = [targetNodeId];
-  while (pendingNodeIds.length > 0) {
-    const nodeId = pendingNodeIds.pop();
-    if (!nodeId) continue;
-    for (const edge of canvas.edges) {
-      if (edge.targetNodeId !== nodeId || includedNodeIds.has(edge.sourceNodeId)) continue;
-      const source = canvas.nodes.find((node) => node.id === edge.sourceNodeId);
-      if (!source || source.data.enabled === false) continue;
-      includedNodeIds.add(edge.sourceNodeId);
-      pendingNodeIds.push(edge.sourceNodeId);
-    }
-  }
-
-  const nodes = canvas.nodes.filter((node) => includedNodeIds.has(node.id));
+  const targetModelAlias =
+    options.nodeModelAliases?.[targetNodeId] ??
+    options.modelAlias ??
+    target.data.modelAlias ??
+    `mock-${target.data.mediaType}`;
+  const includedNodeIds = getRunSnapshotIncludedNodeIds(canvas, targetNodeId);
+  const nodes = canvas.nodes
+    .filter((node) => includedNodeIds.has(node.id))
+    .map((node) => {
+      const snapshotNode = clone(node);
+      const modelAlias = options.nodeModelAliases?.[node.id];
+      if (modelAlias !== undefined) {
+        snapshotNode.data = { ...snapshotNode.data, modelAlias };
+      }
+      const frozenAssetRef = options.frozenAssetRefs?.[node.id];
+      if (frozenAssetRef !== undefined) {
+        snapshotNode.data = {
+          ...snapshotNode.data,
+          assetId: frozenAssetRef.assetId,
+          contentUrl: frozenAssetRef.contentUrl,
+        };
+      }
+      return snapshotNode;
+    });
+  const snapshotNodesById = new Map(nodes.map((node) => [node.id, node]));
   const edges = canvas.edges.filter(
     (edge) => includedNodeIds.has(edge.sourceNodeId) && includedNodeIds.has(edge.targetNodeId),
   );
@@ -157,12 +221,13 @@ export function createRunSnapshot(
     .map((edge) => {
       const source = canvas.nodes.find((node) => node.id === edge.sourceNodeId);
       if (!source) throw new RunServiceError('invalid_target', 'run input node not found');
+      const snapshotSource = snapshotNodesById.get(source.id) ?? source;
       return {
         nodeId: source.id,
         role: portRoleSchema.parse(edge.targetHandle.slice('input:'.length)),
         sortOrder: edge.order,
-        sourceAssetId: source.data.assetId,
-        snapshot: source,
+        sourceAssetId: snapshotSource.data.assetId,
+        snapshot: clone(snapshotSource),
       };
     });
 
@@ -170,7 +235,7 @@ export function createRunSnapshot(
     projectId,
     canvasRevision: canvas.revision,
     targetNodeId,
-    modelAlias: options.modelAlias ?? target.data.modelAlias ?? `mock-${target.data.mediaType}`,
+    modelAlias: targetModelAlias,
     ...(options.credentialId ? { credentialId: options.credentialId } : {}),
     ...(options.credentialVersion ? { credentialVersion: options.credentialVersion } : {}),
     parameters: options.parameters ?? {},
@@ -295,6 +360,108 @@ function canResumeProviderJob(previous: ProviderJob | undefined): previous is Pr
   );
 }
 
+function providerWebhookStatus(update: ProviderWebhookUpdate): ProviderJob['status'] | undefined {
+  return update.status;
+}
+
+/**
+ * Apply a provider callback to a run record while preserving the local run
+ * state machine. Webhooks may arrive before the worker has advanced its local
+ * lifecycle, so terminal provider states first walk through `processing`.
+ */
+function applyProviderWebhookToRecord(
+  run: RunRecord,
+  update: ProviderWebhookUpdate,
+): RunRecord | undefined {
+  if (
+    !run.providerJob ||
+    run.providerJob.provider !== update.provider ||
+    run.providerJob.platformJobId !== update.platformJobId
+  ) {
+    return undefined;
+  }
+
+  const requestedStatus = providerWebhookStatus(update);
+  const currentStatus = run.providerJob.status;
+  const terminalProviderStatus = ['succeeded', 'failed', 'cancelled'].includes(currentStatus);
+  const status = terminalProviderStatus ? currentStatus : requestedStatus;
+  const progress =
+    status === 'succeeded' || status === 'failed' || status === 'cancelled' ? 100 : update.progress;
+  const payload = sanitizeProviderPayload(update.payload);
+  run.providerJob = mergeProviderJob(run.providerJob, {
+    provider: update.provider,
+    platformJobId: update.platformJobId,
+    ...(status ? { status } : {}),
+    ...(progress !== undefined ? { progress } : {}),
+    ...(payload ? { payload } : {}),
+  });
+
+  if (status) applyProviderRunStatus(run, status);
+  if (progress !== undefined) run.progress = Math.max(run.progress, progress);
+  if (update.error) run.error = sanitizeRunErrorMessage(new Error(update.error));
+  run.updatedAt = new Date().toISOString();
+  return run;
+}
+
+function applyProviderRunStatus(run: RunRecord, status: ProviderJob['status']) {
+  if (['succeeded', 'failed', 'cancelled'].includes(run.status)) return;
+
+  if (status === 'cancelled') {
+    if (run.status !== 'cancel_requested') {
+      if (canTransitionRunStatus(run.status, 'cancel_requested')) {
+        run.status = 'cancel_requested';
+      }
+    }
+    if (run.status === 'cancel_requested' && canTransitionRunStatus(run.status, 'cancelled')) {
+      run.status = 'cancelled';
+      run.progress = 100;
+    }
+    return;
+  }
+
+  if (status === 'succeeded' || status === 'failed') {
+    advanceRunToProcessing(run);
+    if (canTransitionRunStatus(run.status, status)) {
+      run.status = status;
+      run.progress = 100;
+    }
+    return;
+  }
+
+  if (status === 'running') {
+    if (run.status === 'queued' && canTransitionRunStatus(run.status, 'preparing')) {
+      run.status = 'preparing';
+      run.progress = Math.max(run.progress, 10);
+    }
+    if (run.status === 'preparing' && canTransitionRunStatus(run.status, 'running')) {
+      run.status = 'running';
+      run.progress = Math.max(run.progress, 45);
+    }
+  } else if (status === 'submitted' && run.status === 'queued') {
+    // A submitted external task means preparation has started, but the worker
+    // may still be waiting to poll it. Keep the local status monotonic.
+    if (canTransitionRunStatus(run.status, 'preparing')) {
+      run.status = 'preparing';
+      run.progress = Math.max(run.progress, 10);
+    }
+  }
+}
+
+function advanceRunToProcessing(run: RunRecord) {
+  if (run.status === 'queued' && canTransitionRunStatus(run.status, 'preparing')) {
+    run.status = 'preparing';
+    run.progress = Math.max(run.progress, 10);
+  }
+  if (run.status === 'preparing' && canTransitionRunStatus(run.status, 'running')) {
+    run.status = 'running';
+    run.progress = Math.max(run.progress, 45);
+  }
+  if (run.status === 'running' && canTransitionRunStatus(run.status, 'processing')) {
+    run.status = 'processing';
+    run.progress = Math.max(run.progress, 80);
+  }
+}
+
 function createQueuedRun(
   snapshot: RunSnapshot,
   attempt: number,
@@ -415,21 +582,45 @@ export class MemoryRunService implements RunService {
       .map(clone);
   }
 
+  async applyProviderWebhook(update: ProviderWebhookUpdate): Promise<RunRecord | undefined> {
+    const run = [...this.runs.values()]
+      .filter(
+        (candidate) =>
+          candidate.providerJob?.provider === update.provider &&
+          candidate.providerJob.platformJobId === update.platformJobId,
+      )
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+    if (!run) return undefined;
+    applyProviderWebhookToRecord(run, update);
+    return clone(run);
+  }
+
   async retry(runId: string): Promise<RunRecord> {
     const previous = this.require(runId);
     if (previous.status !== 'failed' && previous.status !== 'cancelled') {
       throw new RunServiceError('invalid_state', 'only failed or cancelled runs can be retried');
+    }
+    const idempotencyKey = retryIdempotencyKey(previous.id, previous.attempt + 1);
+    const mapKey = idempotencyMapKey(previous.projectId, idempotencyKey);
+    const existing = this.idempotency.get(mapKey);
+    if (existing) {
+      const existingRun = this.runs.get(existing.runId);
+      if (existingRun) return clone(existingRun);
     }
     const run = createQueuedRun(
       previous.snapshot,
       previous.attempt + 1,
       previous.id,
       previous.provider === 'newapi' ? 'newapi' : 'mock',
-      undefined,
+      idempotencyKey,
       previous.userId,
       previous.providerJob,
     );
     this.runs.set(run.id, run);
+    this.idempotency.set(mapKey, {
+      runId: run.id,
+      fingerprint: snapshotFingerprint(previous.snapshot),
+    });
     this.schedule(run.id);
     return clone(run);
   }
@@ -1014,6 +1205,42 @@ export class BullMqRunService implements RunService {
     return runs.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
+  async applyProviderWebhook(update: ProviderWebhookUpdate): Promise<RunRecord | undefined> {
+    const jobs = await this.queue.getJobs(
+      ['waiting', 'active', 'completed', 'failed', 'delayed', 'paused'],
+      0,
+      -1,
+    );
+    for (const job of jobs) {
+      const data = runJobDataSchema.safeParse(job.data);
+      if (!data.success) continue;
+      const providerJob = data.data.providerJob;
+      if (
+        !providerJob ||
+        providerJob.provider !== update.provider ||
+        providerJob.platformJobId !== update.platformJobId
+      ) {
+        continue;
+      }
+
+      const current = await this.toRunRecord(job);
+      const updated = applyProviderWebhookToRecord(current, update);
+      if (!updated || !updated.providerJob) return undefined;
+
+      await job.updateData({ ...data.data, providerJob: updated.providerJob });
+      const state = await job.getState();
+      if (state !== 'completed' && state !== 'failed') {
+        await job.updateProgress({
+          status: updated.status,
+          progress: updated.progress,
+          updatedAt: updated.updatedAt,
+        } satisfies RunProgress);
+      }
+      return updated;
+    }
+    return undefined;
+  }
+
   async retry(runId: string): Promise<RunRecord> {
     const previous = await this.get(runId);
     if (!previous) throw new RunServiceError('not_found', 'run not found');
@@ -1025,7 +1252,7 @@ export class BullMqRunService implements RunService {
       previous.attempt + 1,
       previous.id,
       previous.provider === 'newapi' ? 'newapi' : 'mock',
-      undefined,
+      retryIdempotencyKey(previous.id, previous.attempt + 1),
       previous.userId,
       undefined,
       previous.providerJob,
@@ -1075,16 +1302,9 @@ export class BullMqRunService implements RunService {
           'idempotency key was already used for a different run request',
         );
       }
-      await this.persistence?.ensureRun({
-        runId,
-        snapshot: existingData.snapshot,
-        status: 'queued',
-        attempt: existingData.attempt,
-        provider: existingData.provider,
-        retryOf: existingData.retryOf,
-        idempotencyKey: existingData.idempotencyKey,
-        providerJob: existingData.providerJob,
-      });
+      // The original submission already persisted the immutable snapshot.
+      // Do not call ensureRun here: doing so would reset a running/completed
+      // database record back to `queued` for a harmless repeated request.
       return this.toRunRecord(existing);
     }
     const now = new Date().toISOString();
@@ -1117,11 +1337,35 @@ export class BullMqRunService implements RunService {
       idempotencyKey,
       providerJob: data.providerJob,
     });
-    const job = await this.queue.add('run', data, {
-      jobId: runId,
-      removeOnComplete: false,
-      removeOnFail: false,
-    });
+    let job: Job<RunJobData>;
+    try {
+      job = await this.queue.add('run', data, {
+        jobId: runId,
+        removeOnComplete: false,
+        removeOnFail: false,
+      });
+    } catch (error) {
+      // Two requests with the same idempotency key can pass the initial read
+      // concurrently. BullMQ rejects the second add; recover the already
+      // created job and return it as the idempotent result instead of surfacing
+      // a spurious 500. Preserve the original error when no job was created.
+      if (!idempotencyKey) throw error;
+      let concurrent: Job<RunJobData> | undefined;
+      try {
+        concurrent = await this.queue.getJob(runId);
+      } catch {
+        throw error;
+      }
+      if (!concurrent) throw error;
+      const concurrentData = runJobDataSchema.parse(concurrent.data);
+      if (snapshotFingerprint(concurrentData.snapshot) !== snapshotFingerprint(snapshot)) {
+        throw new RunServiceError(
+          'idempotency_conflict',
+          'idempotency key was already used for a different run request',
+        );
+      }
+      return this.toRunRecord(concurrent);
+    }
     if (idempotencyKey) {
       const persisted = runJobDataSchema.parse(job.data);
       if (snapshotFingerprint(persisted.snapshot) !== snapshotFingerprint(snapshot)) {
@@ -1204,6 +1448,11 @@ function normalizeIdempotencyKey(key: string | undefined): string | undefined {
 
 function idempotencyMapKey(projectId: string, key: string): string {
   return `${projectId}\0${key}`;
+}
+
+function retryIdempotencyKey(runId: string, attempt: number): string {
+  const digest = createHash('sha256').update(runId).digest('hex');
+  return `retry:${digest}:${attempt}`;
 }
 
 function snapshotFingerprint(snapshot: RunSnapshot): string {

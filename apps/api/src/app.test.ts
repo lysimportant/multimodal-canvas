@@ -5,8 +5,41 @@ import { MemoryAssetStore } from './assets';
 import { buildApp } from './app';
 import { MemoryProjectStore } from './projects';
 import { AiSettingsStore } from './settings';
+import { MemoryRunService } from './runs';
 
-const app = buildApp({ logger: false, assetStore: new MemoryAssetStore() });
+const appSettingsStore = new AiSettingsStore('app-test-model-catalog');
+const appModelRefreshedAt = new Date().toISOString();
+appSettingsStore.replaceModels([
+  {
+    id: 'text-model',
+    name: 'Text model',
+    mediaTypes: ['text'],
+    refreshedAt: appModelRefreshedAt,
+  },
+  {
+    id: 'video-model',
+    name: 'Video model',
+    mediaTypes: ['video'],
+    refreshedAt: appModelRefreshedAt,
+  },
+  {
+    id: 'image-node-model',
+    name: 'Image node model',
+    mediaTypes: ['image'],
+    refreshedAt: appModelRefreshedAt,
+  },
+  {
+    id: 'image-special',
+    name: 'Image special',
+    mediaTypes: ['image'],
+    refreshedAt: appModelRefreshedAt,
+  },
+]);
+const app = buildApp({
+  logger: false,
+  assetStore: new MemoryAssetStore(),
+  settingsStore: appSettingsStore,
+});
 
 afterAll(async () => app.close());
 
@@ -16,6 +49,94 @@ describe('health endpoint', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ status: 'ok', service: 'api' });
+  });
+});
+
+describe('project management endpoints', () => {
+  it('renames, archives, lists, and restores a project without losing it', async () => {
+    const projectApp = buildApp({ logger: false, projectStore: new MemoryProjectStore() });
+    try {
+      const created = await projectApp.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        payload: { name: 'Draft project' },
+      });
+      expect(created.statusCode).toBe(201);
+      const projectId = created.json().project.id as string;
+
+      const renamed = await projectApp.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${projectId}`,
+        payload: { name: 'Final project' },
+      });
+      expect(renamed.statusCode).toBe(200);
+      expect(renamed.json().project).toMatchObject({ id: projectId, name: 'Final project' });
+
+      const archived = await projectApp.inject({
+        method: 'POST',
+        url: `/v1/projects/${projectId}/archive`,
+      });
+      expect(archived.statusCode).toBe(200);
+      expect(archived.json().project).toMatchObject({
+        id: projectId,
+        name: 'Final project',
+        archivedAt: expect.any(String),
+      });
+
+      const defaultList = await projectApp.inject({ method: 'GET', url: '/v1/projects' });
+      expect(defaultList.statusCode).toBe(200);
+      expect(defaultList.json().projects).toEqual([]);
+
+      const archivedList = await projectApp.inject({
+        method: 'GET',
+        url: '/v1/projects?includeArchived=true',
+      });
+      expect(archivedList.statusCode).toBe(200);
+      expect(archivedList.json().projects).toMatchObject([
+        { id: projectId, name: 'Final project', archivedAt: expect.any(String) },
+      ]);
+
+      const restored = await projectApp.inject({
+        method: 'POST',
+        url: `/v1/projects/${projectId}/restore`,
+      });
+      expect(restored.statusCode).toBe(200);
+      expect(restored.json().project).toMatchObject({ id: projectId, name: 'Final project' });
+      expect(restored.json().project.archivedAt).toBeUndefined();
+
+      const restoredList = await projectApp.inject({ method: 'GET', url: '/v1/projects' });
+      expect(restoredList.json().projects).toMatchObject([
+        { id: projectId, name: 'Final project' },
+      ]);
+    } finally {
+      await projectApp.close();
+    }
+  });
+
+  it('rejects blank project names when creating or renaming', async () => {
+    const projectApp = buildApp({ logger: false, projectStore: new MemoryProjectStore() });
+    try {
+      const create = await projectApp.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        payload: { name: '   ' },
+      });
+      expect(create.statusCode).toBe(400);
+
+      const project = await projectApp.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        payload: { name: 'Keep this name' },
+      });
+      const rename = await projectApp.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${project.json().project.id}`,
+        payload: { name: '' },
+      });
+      expect(rename.statusCode).toBe(400);
+    } finally {
+      await projectApp.close();
+    }
   });
 });
 
@@ -960,6 +1081,115 @@ describe('project event stream', () => {
 });
 
 describe('webhook and run idempotency boundaries', () => {
+  it('applies a New API callback to the matching run and provider job', async () => {
+    let releaseExecutor!: () => void;
+    let signalProviderReady!: () => void;
+    const executorReleased = new Promise<void>((resolve) => {
+      releaseExecutor = resolve;
+    });
+    const providerReady = new Promise<void>((resolve) => {
+      signalProviderReady = resolve;
+    });
+    const runService = new MemoryRunService({
+      stepDelayMs: 0,
+      providerName: 'newapi',
+      executor: async (request) => {
+        await request.onProviderJob?.({
+          provider: 'newapi',
+          platformJobId: 'platform-webhook-app',
+          status: 'submitted',
+          progress: 5,
+        });
+        signalProviderReady();
+        await executorReleased;
+        return {
+          result: {
+            provider: 'newapi',
+            summary: 'webhook output',
+            targetNodeId: 'node_webhook_app',
+            mediaType: 'video',
+            inputCount: 0,
+          },
+        };
+      },
+    });
+    const webhookApp = buildApp({ logger: false, runService });
+
+    try {
+      const project = await webhookApp.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        payload: { name: 'Webhook lifecycle' },
+      });
+      const projectId = project.json().project.id;
+      await webhookApp.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${projectId}/canvas`,
+        payload: {
+          revision: 0,
+          nodes: [
+            {
+              id: 'node_webhook_app',
+              type: 'video',
+              position: { x: 0, y: 0 },
+              data: { label: 'Video', mediaType: 'video', mode: 'generate' },
+            },
+          ],
+          edges: [],
+        },
+      });
+      const created = await webhookApp.inject({
+        method: 'POST',
+        url: '/v1/nodes/node_webhook_app/runs',
+        payload: { projectId },
+      });
+      expect(created.statusCode).toBe(202);
+      await providerReady;
+
+      const callback = await webhookApp.inject({
+        method: 'POST',
+        url: '/v1/webhooks/newapi',
+        payload: {
+          eventId: 'webhook-event-app-1',
+          taskId: 'platform-webhook-app',
+          status: 'running',
+          progress: 95,
+          authorization: 'must-not-appear-in-run',
+        },
+      });
+      expect(callback.statusCode).toBe(202);
+      expect(callback.json()).toMatchObject({
+        accepted: true,
+        deduplicated: false,
+        updatedRunId: created.json().run.id,
+      });
+
+      const current = await webhookApp.inject({
+        method: 'GET',
+        url: `/v1/runs/${created.json().run.id}`,
+      });
+      expect(current.json().run).toMatchObject({
+        status: 'processing',
+        progress: 95,
+        providerJob: {
+          platformJobId: 'platform-webhook-app',
+          status: 'running',
+          progress: 95,
+          payload: {
+            eventId: 'webhook-event-app-1',
+            taskId: 'platform-webhook-app',
+            status: 'running',
+            progress: 95,
+          },
+        },
+      });
+      expect(JSON.stringify(current.json())).not.toContain('must-not-appear-in-run');
+    } finally {
+      releaseExecutor();
+      await webhookApp.close();
+    }
+  });
+
   it('deduplicates New API webhook event ids', async () => {
     const first = await app.inject({
       method: 'POST',

@@ -69,6 +69,7 @@ model AuthSession {
   expiresAt  DateTime
   revokedAt  DateTime?
   createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @default(now()) @updatedAt
   lastUsedAt DateTime?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -79,11 +80,12 @@ model AuthSession {
 }
 
 model Project {
-  id        String   @id @default(uuid()) @db.Uuid
-  ownerId   String?  @db.Uuid
-  name      String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id         String    @id @default(uuid()) @db.Uuid
+  ownerId    String?   @db.Uuid
+  name       String
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  archivedAt DateTime?
 
   owner         User?                 @relation(fields: [ownerId], references: [id])
   canvas        Canvas?
@@ -93,6 +95,7 @@ model Project {
   modelDefaults ProjectModelDefault[]
 
   @@index([ownerId])
+  @@index([archivedAt])
   @@map("projects")
 }
 
@@ -143,6 +146,7 @@ model CanvasEdge {
   targetHandle String
   sortOrder    Int
   createdAt    DateTime @default(now())
+  updatedAt    DateTime @default(now()) @updatedAt
 
   canvas Canvas     @relation(fields: [canvasId], references: [id], onDelete: Cascade)
   source CanvasNode @relation("SourceNode", fields: [sourceNodeId], references: [id], onDelete: Cascade)
@@ -190,6 +194,7 @@ model AssetVersion {
   contentKey String
   metadata   Json?
   createdAt  DateTime @default(now())
+  updatedAt  DateTime @default(now()) @updatedAt
 
   asset Asset @relation(fields: [assetId], references: [id], onDelete: Cascade)
 
@@ -209,6 +214,7 @@ model UploadSession {
   tags       String[]  @default([])
   contentKey String
   createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @default(now()) @updatedAt
   expiresAt  DateTime
 
   owner User? @relation(fields: [ownerId], references: [id], onDelete: SetNull)
@@ -260,6 +266,7 @@ model RunInput {
   sourceAssetId String?  @db.Uuid
   snapshot      Json
   createdAt     DateTime @default(now())
+  updatedAt     DateTime @default(now()) @updatedAt
 
   run Run @relation(fields: [runId], references: [id], onDelete: Cascade)
 
@@ -297,6 +304,7 @@ model UsageLedger {
   currency       String   @default("USD")
   metadata       Json?
   createdAt      DateTime @default(now())
+  updatedAt      DateTime @default(now()) @updatedAt
 
   run  Run?  @relation(fields: [runId], references: [id], onDelete: SetNull)
   user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
@@ -377,6 +385,8 @@ model WebhookEvent {
   payload     Json
   receivedAt  DateTime  @default(now())
   processedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @default(now()) @updatedAt
 
   @@map("webhook_events")
 }

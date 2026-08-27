@@ -187,21 +187,99 @@ export async function logout(baseUrl: string): Promise<void> {
 
 export type AuthEventHandler = (eventName: string, data: string) => void;
 
-/**
- * Opens an authenticated SSE stream without putting credentials in the URL.
- * The returned cleanup function aborts the underlying fetch.
- */
-export async function openAuthEventStream(
-  input: RequestInfo | URL,
+export type AuthEventStreamOptions = {
+  /** Delay before the first reconnect attempt. Defaults to 500ms. */
+  initialReconnectDelayMs?: number;
+  /** Maximum reconnect delay. Defaults to 10s. */
+  maxReconnectDelayMs?: number;
+  /** Number of reconnect attempts after the initial connection. Defaults to unlimited. */
+  maxReconnectAttempts?: number;
+};
+
+const DEFAULT_RECONNECT_DELAY_MS = 500;
+const DEFAULT_MAX_RECONNECT_DELAY_MS = 10_000;
+const MAX_DEDUPLICATED_EVENTS = 256;
+
+type RetryableEventStreamError = Error & { retryable?: boolean };
+
+function abortError(signal?: AbortSignal): Error {
+  const reason = signal?.reason;
+  if (
+    typeof DOMException !== 'undefined' &&
+    reason instanceof DOMException &&
+    reason.name === 'AbortError'
+  ) {
+    return reason;
+  }
+  if (typeof DOMException !== 'undefined') {
+    return new DOMException('事件流已取消', 'AbortError');
+  }
+  const error = new Error('事件流已取消');
+  error.name = 'AbortError';
+  return error;
+}
+
+function isAbortError(error: unknown, signal?: AbortSignal): boolean {
+  return (
+    Boolean(signal?.aborted) ||
+    (typeof DOMException !== 'undefined' &&
+      error instanceof DOMException &&
+      error.name === 'AbortError') ||
+    (error instanceof Error && error.name === 'AbortError')
+  );
+}
+
+function reconnectDelay(value: number | undefined, fallback: number, minimum = 0): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(minimum, value);
+}
+
+function waitForReconnectDelay(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(abortError(signal));
+
+  return new Promise<void>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => {
+      if (timer !== undefined) clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      cleanup();
+      reject(abortError(signal));
+    };
+
+    timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, delayMs);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+  });
+}
+
+function createEventEmitter(onEvent: AuthEventHandler): AuthEventHandler {
+  // The API sends a current run snapshot whenever a client reconnects. Keep a
+  // small bounded set so the same snapshot is not delivered twice when a
+  // disconnect happens immediately after the server writes it.
+  const seen = new Set<string>();
+  return (eventName, data) => {
+    const key = `${eventName}\u0000${data}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    if (seen.size > MAX_DEDUPLICATED_EVENTS) {
+      const oldest = seen.values().next().value;
+      if (typeof oldest === 'string') seen.delete(oldest);
+    }
+    onEvent(eventName, data);
+  };
+}
+
+async function consumeAuthEventStream(
+  response: Response,
   onEvent: AuthEventHandler,
   signal?: AbortSignal,
-): Promise<void> {
-  const response = await apiFetch(input, {
-    headers: { accept: 'text/event-stream' },
-    signal,
-  });
-  if (!response.ok) throw new Error(`事件流连接失败（${response.status}）`);
-  if (!response.body) return;
+): Promise<boolean> {
+  if (!response.body) return false;
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -214,10 +292,28 @@ export async function openAuthEventStream(
     eventName = 'message';
     dataLines = [];
   };
+  const processLine = (line: string) => {
+    if (!line) {
+      flush();
+      return;
+    }
+    if (line.startsWith(':')) return;
+    const separator = line.indexOf(':');
+    const field = separator >= 0 ? line.slice(0, separator) : line;
+    const value = separator >= 0 ? line.slice(separator + 1).replace(/^ /, '') : '';
+    if (field === 'event') eventName = value || 'message';
+    if (field === 'data') dataLines.push(value);
+  };
+  const cancelReader = () => {
+    void reader.cancel().catch(() => undefined);
+  };
 
+  signal?.addEventListener('abort', cancelReader, { once: true });
   try {
     while (true) {
+      if (signal?.aborted) throw abortError(signal);
       const chunk = await reader.read();
+      if (signal?.aborted) throw abortError(signal);
       if (chunk.done) {
         buffer += decoder.decode();
         break;
@@ -225,24 +321,81 @@ export async function openAuthEventStream(
       buffer += decoder.decode(chunk.value, { stream: true });
       const lines = buffer.split(/\r?\n/);
       buffer = lines.pop() ?? '';
-      for (const line of lines) {
-        if (!line) {
-          flush();
-          continue;
-        }
-        if (line.startsWith(':')) continue;
-        const separator = line.indexOf(':');
-        const field = separator >= 0 ? line.slice(0, separator) : line;
-        const value = separator >= 0 ? line.slice(separator + 1).replace(/^ /, '') : '';
-        if (field === 'event') eventName = value || 'message';
-        if (field === 'data') dataLines.push(value);
-      }
+      for (const line of lines) processLine(line);
     }
-    if (buffer) {
-      if (buffer.startsWith('data:')) dataLines.push(buffer.slice(5).replace(/^ /, ''));
-      flush();
-    }
+    if (buffer) processLine(buffer);
+    flush();
   } finally {
+    signal?.removeEventListener('abort', cancelReader);
     reader.releaseLock();
+  }
+  return true;
+}
+
+/**
+ * Opens an authenticated SSE stream without putting credentials in the URL.
+ *
+ * A dropped stream is reopened serially with bounded exponential backoff. The
+ * caller can stop both an active reader and a pending reconnect delay with the
+ * supplied AbortSignal. The optional settings are primarily useful for tests
+ * and hosts with a different retry budget; existing callers can keep using the
+ * original three-argument form.
+ */
+export async function openAuthEventStream(
+  input: RequestInfo | URL,
+  onEvent: AuthEventHandler,
+  signal?: AbortSignal,
+  options: AuthEventStreamOptions = {},
+): Promise<void> {
+  const initialDelay = reconnectDelay(options.initialReconnectDelayMs, DEFAULT_RECONNECT_DELAY_MS);
+  const maximumDelay = reconnectDelay(
+    options.maxReconnectDelayMs,
+    DEFAULT_MAX_RECONNECT_DELAY_MS,
+    initialDelay,
+  );
+  const maximumAttempts =
+    options.maxReconnectAttempts === undefined
+      ? Number.POSITIVE_INFINITY
+      : Math.max(0, Math.floor(reconnectDelay(options.maxReconnectAttempts, 0)));
+  const emitEvent = createEventEmitter(onEvent);
+  let attempts = 0;
+  let delayMs = initialDelay;
+
+  while (true) {
+    if (signal?.aborted) throw abortError(signal);
+
+    try {
+      const response = await apiFetch(input, {
+        headers: { accept: 'text/event-stream' },
+        signal,
+      });
+      if (!response.ok) {
+        const error = new Error(
+          `事件流连接失败（${response.status}）`,
+        ) as RetryableEventStreamError;
+        // Retry transient gateway/rate-limit responses, while preserving the
+        // previous one-shot rejection behavior for auth and project errors.
+        error.retryable =
+          response.status === 408 ||
+          response.status === 425 ||
+          response.status === 429 ||
+          response.status >= 500;
+        throw error;
+      }
+
+      // A successful response without a body means this runtime cannot expose
+      // an SSE reader. Let the REST run polling fallback take over.
+      if (!(await consumeAuthEventStream(response, emitEvent, signal))) return;
+    } catch (error) {
+      if (isAbortError(error, signal)) throw abortError(signal);
+      if ((error as RetryableEventStreamError)?.retryable === false) throw error;
+      if (attempts >= maximumAttempts) throw error;
+    }
+
+    if (signal?.aborted) throw abortError(signal);
+    if (attempts >= maximumAttempts) return;
+    attempts += 1;
+    await waitForReconnectDelay(delayMs, signal);
+    delayMs = Math.min(maximumDelay, Math.max(initialDelay, delayMs * 2));
   }
 }

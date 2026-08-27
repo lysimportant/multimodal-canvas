@@ -2,6 +2,10 @@
   "name": "@multimodal-canvas/ui",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./styles.css": "./src/styles.css"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "lint": "prettier --check . --ignore-path ../../.prettierignore",
@@ -9,6 +13,23 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "6.8.0",
+    "@testing-library/react": "16.3.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "jsdom": "26.1.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "vitest": "^3.0.8"
+  },
+  "dependencies": {
+    "@radix-ui/react-dialog": "^1.1.23",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "tailwind-merge": "^3.6.0"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
   }
 }

@@ -9,6 +9,34 @@ jobs:
   validate:
     name: 代码质量检查
     runs-on: ubuntu-latest
+    env:
+      WORKER_PROVIDER: mock
+      RUN_SERVICE: memory
+      NEW_API_BASE_URL: ''
+      NEW_API_API_KEY: ''
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: multimodal_canvas_ci
+          POSTGRES_USER: ci_user
+          POSTGRES_PASSWORD: ci_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci_user -d multimodal_canvas_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     steps:
       - name: 检出代码
         id: checkout
@@ -43,9 +71,81 @@ jobs:
         id: test
         run: pnpm test
 
+      - name: 验证隔离数据库迁移
+        id: integration_migrate
+        env:
+          DATABASE_URL: postgresql://ci_user:ci_password@127.0.0.1:5432/multimodal_canvas_ci?schema=public
+        run: |
+          pnpm exec prisma migrate deploy
+          pnpm exec prisma migrate diff \
+            --from-url "$DATABASE_URL" \
+            --to-schema-datamodel prisma/schema.prisma \
+            --exit-code
+
+      - name: 验证开发 Compose 配置
+        id: compose_config
+        env:
+          COMPOSE_PROJECT_NAME: multimodal-canvas-ci-${{ github.run_id }}-${{ github.run_attempt }}
+          MINIO_ROOT_USER: ci-minio-user
+          MINIO_ROOT_PASSWORD: ci-minio-password
+          S3_BUCKET: multimodal-canvas-ci
+        run: |
+          docker compose -f docker-compose.dev.yml config --quiet
+          compose_images="$(docker compose -f docker-compose.dev.yml config --images)"
+          printf '%s\n' "$compose_images" | grep -Fx \
+            'minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e'
+          printf '%s\n' "$compose_images" | grep -Fx \
+            'minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727'
+
+      - name: 验证并初始化隔离 MinIO bucket
+        id: minio_setup
+        env:
+          COMPOSE_PROJECT_NAME: multimodal-canvas-ci-${{ github.run_id }}-${{ github.run_attempt }}
+          MINIO_ROOT_USER: ci-minio-user
+          MINIO_ROOT_PASSWORD: ci-minio-password
+          S3_BUCKET: multimodal-canvas-ci
+        run: |
+          docker compose -f docker-compose.dev.yml up --detach minio
+          docker compose -f docker-compose.dev.yml run --rm --no-deps minio-init
+
+          docker compose -f docker-compose.dev.yml stop minio
+          if docker compose -f docker-compose.dev.yml run --rm --no-deps \
+            -e MINIO_INIT_MAX_ATTEMPTS=2 minio-init; then
+            echo "MinIO initializer unexpectedly succeeded while MinIO was stopped" >&2
+            exit 1
+          fi
+
+          docker compose -f docker-compose.dev.yml up --detach minio
+          docker compose -f docker-compose.dev.yml run --rm --no-deps minio-init
+
+      - name: 运行隔离 Prisma、Redis 与 MinIO 集成测试
+        id: integration_test
+        env:
+          REQUIRE_INTEGRATION_SERVICES: 'true'
+          TEST_DATABASE_URL: postgresql://ci_user:ci_password@127.0.0.1:5432/multimodal_canvas_ci?schema=public
+          TEST_REDIS_URL: redis://127.0.0.1:6379/15
+          TEST_REDIS_NAMESPACE: multimodal-canvas:ci:${{ github.run_id }}:${{ github.run_attempt }}
+          TEST_S3_ENDPOINT: http://127.0.0.1:9000
+          TEST_S3_REGION: us-east-1
+          TEST_S3_BUCKET: multimodal-canvas-ci
+          TEST_S3_ACCESS_KEY: ci-minio-user
+          TEST_S3_SECRET_KEY: ci-minio-password
+          TEST_S3_PREFIX: integration/${{ github.run_id }}/${{ github.run_attempt }}
+        run: pnpm --filter @multimodal-canvas/api test:integration
+
       - name: 构建项目
         id: build
         run: pnpm build
+
+      - name: 清理隔离 MinIO
+        id: minio_cleanup
+        if: ${{ always() && steps.checkout.outcome == 'success' }}
+        env:
+          COMPOSE_PROJECT_NAME: multimodal-canvas-ci-${{ github.run_id }}-${{ github.run_attempt }}
+          MINIO_ROOT_USER: ci-minio-user
+          MINIO_ROOT_PASSWORD: ci-minio-password
+          S3_BUCKET: multimodal-canvas-ci
+        run: docker compose -f docker-compose.dev.yml down --volumes --remove-orphans
 
       - name: 生成中文检查摘要
         if: ${{ always() }}
@@ -57,7 +157,12 @@ jobs:
           FORMAT_STATUS: ${{ steps.format.outcome }}
           TYPECHECK_STATUS: ${{ steps.typecheck.outcome }}
           TEST_STATUS: ${{ steps.test.outcome }}
+          INTEGRATION_MIGRATE_STATUS: ${{ steps.integration_migrate.outcome }}
+          COMPOSE_CONFIG_STATUS: ${{ steps.compose_config.outcome }}
+          MINIO_SETUP_STATUS: ${{ steps.minio_setup.outcome }}
+          INTEGRATION_TEST_STATUS: ${{ steps.integration_test.outcome }}
           BUILD_STATUS: ${{ steps.build.outcome }}
+          MINIO_CLEANUP_STATUS: ${{ steps.minio_cleanup.outcome }}
         run: |
           status_text() {
             case "$1" in
@@ -84,5 +189,10 @@ jobs:
             echo "| 代码格式 | $(status_text "$FORMAT_STATUS") |"
             echo "| TypeScript 类型 | $(status_text "$TYPECHECK_STATUS") |"
             echo "| 测试 | $(status_text "$TEST_STATUS") |"
+            echo "| 隔离数据库迁移 | $(status_text "$INTEGRATION_MIGRATE_STATUS") |"
+            echo "| 开发 Compose 配置 | $(status_text "$COMPOSE_CONFIG_STATUS") |"
+            echo "| MinIO 初始化与失败场景 | $(status_text "$MINIO_SETUP_STATUS") |"
+            echo "| Prisma/Redis/MinIO 集成测试 | $(status_text "$INTEGRATION_TEST_STATUS") |"
             echo "| 构建 | $(status_text "$BUILD_STATUS") |"
+            echo "| 隔离 MinIO 清理 | $(status_text "$MINIO_CLEANUP_STATUS") |"
           } >> "$GITHUB_STEP_SUMMARY"

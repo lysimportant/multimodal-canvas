@@ -75,6 +75,17 @@ describe('PrismaAssetStore', () => {
     expect(await store.update('missing', { name: 'x' })).toBeUndefined();
     expect(await store.setArchived('missing', true)).toBeUndefined();
   });
+
+  it('can explicitly scope global owner assets without widening to other projects', async () => {
+    const prisma = createFakePrisma();
+    const store = new PrismaAssetStore(prisma as never, { blobStore: new MemoryBlobStore() });
+
+    await store.get('missing', { projectId: null, ownerId: 'owner-1' });
+
+    expect(prisma.asset.findFirst).toHaveBeenLastCalledWith({
+      where: { id: 'missing', projectId: null, ownerId: 'owner-1' },
+    });
+  });
 });
 
 type FakeAsset = {

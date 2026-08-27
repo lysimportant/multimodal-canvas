@@ -16,16 +16,46 @@ services:
       - '6379:6379'
 
   minio:
-    image: minio/minio:latest
+    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     command: server /data --console-address ':9001'
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
     ports:
       - '9000:9000'
       - '9001:9001'
     volumes:
       - multimodal_canvas_minio:/data
+
+  # Creates the development bucket once MinIO accepts authenticated requests.
+  # This is intentionally a one-shot service and never touches external S3.
+  minio-init:
+    image: minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    depends_on:
+      - minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_BUCKET: ${S3_BUCKET:-multimodal-canvas-dev}
+      MINIO_INIT_MAX_ATTEMPTS: ${MINIO_INIT_MAX_ATTEMPTS:-60}
+    entrypoint:
+      - /bin/sh
+      - -ec
+    command:
+      - |
+        attempt=0
+        max_attempts="$${MINIO_INIT_MAX_ATTEMPTS}"
+        until mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"; do
+          attempt=$$((attempt + 1))
+          if [ "$${attempt}" -ge "$${max_attempts}" ]; then
+            echo "MinIO did not become ready after $${attempt} attempts" >&2
+            exit 1
+          fi
+          sleep 1
+        done
+        mc mb --ignore-existing "local/$${MINIO_BUCKET}"
+        mc stat "local/$${MINIO_BUCKET}"
+    restart: 'no'
 
 volumes:
   multimodal_canvas_postgres:

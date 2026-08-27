@@ -18,6 +18,31 @@ describe('MemoryProjectStore listing', () => {
     expect(projects.map((project) => project.id)).toEqual([second.id, first.id]);
     expect(projects[0]).not.toHaveProperty('canvas');
   });
+
+  it('renames projects and soft archives them without deleting their canvas', async () => {
+    const store = new MemoryProjectStore();
+    const project = await store.create({ name: 'Draft' });
+
+    await expect(store.update(project.id, { name: 'Final' })).resolves.toMatchObject({
+      id: project.id,
+      name: 'Final',
+    });
+    await expect(store.setArchived(project.id, true)).resolves.toMatchObject({
+      id: project.id,
+      archivedAt: expect.any(String),
+    });
+    await expect(store.list()).resolves.toEqual([]);
+    await expect(store.list({}, { includeArchived: true })).resolves.toMatchObject([
+      { id: project.id, name: 'Final', archivedAt: expect.any(String) },
+    ]);
+    await expect(store.getCanvas(project.id)).resolves.toMatchObject({ revision: 0 });
+
+    await expect(store.setArchived(project.id, false)).resolves.toMatchObject({
+      id: project.id,
+      name: 'Final',
+    });
+    await expect(store.list()).resolves.toMatchObject([{ id: project.id, name: 'Final' }]);
+  });
 });
 
 describe('FileProjectStore persistence', () => {
@@ -100,12 +125,14 @@ describe('PrismaProjectStore canvas mapping', () => {
         name: 'Second',
         createdAt: new Date('2026-08-25T00:00:00.000Z'),
         updatedAt: new Date('2026-08-25T02:00:00.000Z'),
+        archivedAt: null,
       },
       {
         id: 'project_1',
         name: 'First',
         createdAt: new Date('2026-08-25T00:00:00.000Z'),
         updatedAt: new Date('2026-08-25T01:00:00.000Z'),
+        archivedAt: null,
       },
     ]);
     const store = new PrismaProjectStore({ project: { findMany } } as never);
@@ -115,8 +142,9 @@ describe('PrismaProjectStore canvas mapping', () => {
       { id: 'project_1', name: 'First' },
     ]);
     expect(findMany).toHaveBeenCalledWith({
+      where: { archivedAt: null },
       orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }, { id: 'desc' }],
-      select: { id: true, name: true, createdAt: true, updatedAt: true },
+      select: { id: true, name: true, createdAt: true, updatedAt: true, archivedAt: true },
     });
   });
 

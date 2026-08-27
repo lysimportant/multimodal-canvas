@@ -1,15 +1,13 @@
 import {
   Archive,
-  AudioLines,
-  Circle,
   Check,
   ChevronDown,
   Clock3,
   Download,
-  ExternalLink,
   FileText,
   FolderOpen,
   Image as ImageIcon,
+  LayoutGrid,
   LoaderCircle,
   Palette,
   PanelLeftClose,
@@ -20,9 +18,6 @@ import {
   RotateCcw,
   Search,
   Settings,
-  Sparkles,
-  Wand2,
-  SquarePlus,
   Redo2,
   Undo2,
   Upload,
@@ -31,44 +26,29 @@ import {
   X,
 } from 'lucide-react';
 import {
-  Background,
-  BackgroundVariant,
-  Controls,
-  NodeResizer,
-  ReactFlow,
   ReactFlowProvider,
   useEdgesState,
   useNodesState,
-  useReactFlow,
   type Connection,
-  type NodeProps,
-  type OnConnectStartParams,
   type OnEdgesChange,
   type OnNodesChange,
 } from '@xyflow/react';
 import {
   useCallback,
-  createContext,
   useEffect,
   useMemo,
   useRef,
   useState,
-  useContext,
   type DragEvent,
   type FormEvent,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type ReactNode,
 } from 'react';
 
 import {
-  mediaTypes,
   type Asset,
   type CanvasDocument,
   type MediaType,
   type NodeMode,
   type RunRecord,
-  type RunResultAsset,
-  type RunStatus,
 } from '@multimodal-canvas/domain';
 import {
   fromCanvasDocument,
@@ -91,11 +71,31 @@ import {
 } from './upload-utils';
 import { validateResolvedCanvasConnection, validateCanvasConnection } from './connection-utils';
 import { isCanvasShortcutTarget } from './keyboard-utils';
-import { validateAiSettingsForm, type AiSettingsFormErrors } from './settings-utils';
-import { fetchAssetVersions, type AssetVersionSummary } from './result-versions';
 import { downloadProjectExport, fetchProjectExport, type ProjectExportKind } from './export-utils';
-import { NodeHandles } from './NodeHandles';
+import { ProjectHub } from './ProjectHub';
 import { TextPromptEditor } from './TextPromptEditor';
+import { CommandPalette, type CommandPaletteCommand } from './CommandPalette';
+import { AssetPreview } from './workspace/AssetPreview';
+import { runStatusLabel } from './workspace/AssetNode';
+import { ResourcePanel } from './workspace/ResourcePanel';
+import { RunPanel } from './workspace/RunPanel';
+import { SettingsPanel } from './workspace/SettingsPanel';
+import { WorkflowCanvas } from './workspace/WorkflowCanvas';
+import type { InferenceStrength } from './workspace/NodeQuickEditor';
+import { useRunResultState } from './workspace/useRunResultState';
+import { AppQueryProvider } from './query/client';
+import { useModelCatalogQuery } from './query/models';
+import { useWorkspacePreferences, type CanvasTheme } from './state/workspace-preferences';
+import {
+  API_BASE_URL,
+  ASSET_DRAG_TYPE,
+  formatBytes,
+  mediaIcons,
+  mediaLabels,
+  modeLabels,
+  type AssetFilter,
+  type CanvasBackground,
+} from './workspace/contracts';
 import {
   apiFetch,
   clearAuthSession,
@@ -113,43 +113,9 @@ import {
 
 import '@xyflow/react/dist/style.css';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000';
-const ASSET_DRAG_TYPE = 'application/x-multimodal-asset';
 const PROJECT_STORAGE_KEY = 'multimodal-canvas:project-id';
 const CANVAS_DRAFT_KEY = 'multimodal-canvas:canvas';
-const CANVAS_BACKGROUND_KEY = 'multimodal-canvas:background';
-const THEME_KEY = 'multimodal-canvas:theme';
-const RESOURCE_PANEL_COLLAPSED_KEY = 'multimodal-canvas:resource-panel-collapsed';
 
-const mediaLabels: Record<MediaType, string> = {
-  text: '文字',
-  image: '图片',
-  audio: '音频',
-  video: '视频',
-};
-
-const inferenceStrengthOptions = [
-  { value: 'low', label: '低' },
-  { value: 'medium', label: '中' },
-  { value: 'high', label: '高' },
-] as const;
-
-type InferenceStrength = (typeof inferenceStrengthOptions)[number]['value'];
-
-const modeLabels: Record<NodeMode, string> = {
-  source: '来源',
-  generate: '生成',
-  transform: '转换',
-};
-
-const mediaIcons: Record<MediaType, typeof FileText> = {
-  text: FileText,
-  image: ImageIcon,
-  audio: AudioLines,
-  video: Video,
-};
-
-type AssetFilter = 'all' | MediaType;
 type CanvasApiDocument = CanvasDocument;
 type LocalCanvasDraft = {
   revision: number;
@@ -162,25 +128,13 @@ type CanvasHistorySnapshot = {
   edges: FlowEdge[];
 };
 
-type AiSettings = {
-  baseUrl: string;
-  configured: boolean;
-  keyFingerprint?: string;
-  defaultModels: ModelDefaults;
-};
-
-type ModelEntry = { id: string; name: string; mediaTypes: MediaType[] };
-type ModelDefaults = Partial<Record<MediaType, string>>;
-
 type ProjectSummary = {
   id: string;
   name: string;
   createdAt: string;
   updatedAt: string;
+  archivedAt?: string;
 };
-
-type CanvasBackground = 'dots' | 'lines' | 'cross' | 'blank';
-type CanvasTheme = 'eye-care' | 'light' | 'dark' | 'sepia' | 'contrast';
 
 const themeOptions: Array<{ value: CanvasTheme; label: string; swatch: string }> = [
   { value: 'eye-care', label: '护眼', swatch: 'theme-swatch-eye-care' },
@@ -190,41 +144,12 @@ const themeOptions: Array<{ value: CanvasTheme; label: string; swatch: string }>
   { value: 'contrast', label: '高对比', swatch: 'theme-swatch-contrast' },
 ];
 
-function getFocusableElements(container: HTMLElement) {
-  return Array.from(
-    container.querySelectorAll<HTMLElement>(
-      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-    ),
-  ).filter((element) => !element.hidden && element.getAttribute('aria-hidden') !== 'true');
-}
-
 const canvasBackgroundOptions: Array<{ value: CanvasBackground; label: string }> = [
   { value: 'dots', label: '点' },
   { value: 'lines', label: '线条' },
   { value: 'cross', label: '十字' },
   { value: 'blank', label: '空白' },
 ];
-
-function readCanvasBackground(): CanvasBackground {
-  if (typeof window === 'undefined') return 'dots';
-  const stored = window.localStorage.getItem(CANVAS_BACKGROUND_KEY);
-  return canvasBackgroundOptions.some((option) => option.value === stored)
-    ? (stored as CanvasBackground)
-    : 'dots';
-}
-
-function readCanvasTheme(): CanvasTheme {
-  if (typeof window === 'undefined') return 'eye-care';
-  const stored = window.localStorage.getItem(THEME_KEY);
-  return themeOptions.some((option) => option.value === stored)
-    ? (stored as CanvasTheme)
-    : 'eye-care';
-}
-
-function readResourcePanelCollapsed() {
-  if (typeof window === 'undefined') return false;
-  return window.localStorage.getItem(RESOURCE_PANEL_COLLAPSED_KEY) === 'true';
-}
 
 async function uploadAsset(file: File, onProgress: (progress: number) => void) {
   const content = new Uint8Array(await file.arrayBuffer());
@@ -299,1100 +224,6 @@ async function uploadAsset(file: File, onProgress: (progress: number) => void) {
   return completeResult.asset;
 }
 
-type AssetPreviewProps = {
-  asset: Asset;
-  className?: string;
-  interactive?: boolean;
-};
-
-function useAuthenticatedAssetUrl(asset: Asset): string {
-  const fallback = resolveUploadUrl(asset.contentUrl, API_BASE_URL);
-  const [url, setUrl] = useState(fallback);
-
-  useEffect(() => {
-    let active = true;
-    setUrl(fallback);
-    const token = getAuthToken();
-    if (!token || !asset.contentUrl.startsWith('/v1/assets/')) return;
-
-    const versionMatch = asset.contentUrl.match(/\/versions\/(\d+)\/content(?:$|\?)/);
-    const derivativeMatch = asset.contentUrl.match(
-      /\/derivatives\/(thumbnail|poster|waveform)(?:$|\?)/,
-    );
-    const body: Record<string, unknown> = versionMatch
-      ? { version: Number(versionMatch[1]) }
-      : derivativeMatch
-        ? { derivative: derivativeMatch[1] }
-        : {};
-    void apiFetch(`${API_BASE_URL}/v1/assets/${encodeURIComponent(asset.id)}/access-url`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-      .then(async (response) => {
-        const result = (await response.json().catch(() => ({}))) as { url?: string };
-        if (response.ok && result.url && active) setUrl(result.url);
-      })
-      .catch(() => {
-        // Keep the relative URL as a fallback for anonymous/local development.
-      });
-    return () => {
-      active = false;
-    };
-  }, [asset.contentUrl, asset.id, fallback]);
-
-  return url;
-}
-
-function AssetPreview({ asset, className = '', interactive = false }: AssetPreviewProps) {
-  const src = useAuthenticatedAssetUrl(asset);
-  if (asset.mediaType === 'image') {
-    return <img className={`asset-preview-image ${className}`} src={src} alt={asset.name} />;
-  }
-  if (asset.mediaType === 'video') {
-    return (
-      <video
-        className={`asset-preview-video ${className}`}
-        src={src}
-        muted={!interactive}
-        controls={interactive}
-        preload="metadata"
-      />
-    );
-  }
-  if (asset.mediaType === 'audio') {
-    if (interactive) {
-      return (
-        <audio
-          className={`asset-preview-audio ${className}`}
-          src={src}
-          controls
-          preload="metadata"
-        />
-      );
-    }
-    return <AudioLines className={`asset-preview-audio ${className}`} aria-hidden="true" />;
-  }
-  return <FileText className={`asset-preview-text ${className}`} aria-hidden="true" />;
-}
-
-function AuthenticatedAssetLink({
-  asset,
-  className,
-  children,
-  current,
-}: {
-  asset: Asset;
-  className?: string;
-  children: ReactNode;
-  current?: boolean;
-}) {
-  const href = useAuthenticatedAssetUrl(asset);
-  return (
-    <a
-      className={className}
-      href={href}
-      target="_blank"
-      rel="noreferrer"
-      aria-current={current ? 'true' : undefined}
-    >
-      {children}
-    </a>
-  );
-}
-
-function TextResultContent({ url }: { url: string }) {
-  const [content, setContent] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    setContent(null);
-    setError(null);
-    void apiFetch(resolveUploadUrl(url, API_BASE_URL))
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`结果读取失败（${response.status}）`);
-        return response.text();
-      })
-      .then((value) => {
-        if (active) setContent(value);
-      })
-      .catch((reason: unknown) => {
-        if (active) setError(reason instanceof Error ? reason.message : '结果读取失败');
-      });
-    return () => {
-      active = false;
-    };
-  }, [url]);
-
-  if (error) return <p className="inspector-result-pending">{error}</p>;
-  if (content === null) return <p className="inspector-result-pending">正在读取文字结果…</p>;
-  return <pre className="inspector-result-text">{content}</pre>;
-}
-
-type NodeSelectionHandler = (data: AssetFlowNode['data']) => void;
-const NodeSelectionContext = createContext<NodeSelectionHandler | null>(null);
-type NodeResizeHandler = (nodeId: string, width: number, height: number) => void;
-const NodeResizeContext = createContext<NodeResizeHandler | null>(null);
-
-function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
-  const selectNode = useContext(NodeSelectionContext);
-  const resizeNode = useContext(NodeResizeContext);
-  const Icon = mediaIcons[data.mediaType];
-  const Resizer = NodeResizer;
-  const enabled = data.enabled !== false;
-  const resultPreviewAsset = data.resultAsset?.contentUrl
-    ? ({
-        id: data.resultAsset.assetId,
-        name: `${data.label}结果`,
-        mediaType: data.mediaType,
-        mimeType: data.resultAsset.mimeType ?? data.mimeType ?? 'application/octet-stream',
-        sizeBytes: data.resultAsset.sizeBytes ?? 0,
-        status: 'ready',
-        contentUrl: data.resultAsset.contentUrl,
-        tags: [],
-      } satisfies Asset)
-    : undefined;
-  const previewAsset =
-    resultPreviewAsset ??
-    (data.assetId && data.contentUrl
-      ? ({
-          id: data.assetId,
-          name: data.label,
-          mediaType: data.mediaType,
-          mimeType: data.mimeType ?? 'application/octet-stream',
-          sizeBytes: 0,
-          status: 'ready',
-          contentUrl: data.contentUrl,
-          tags: [],
-        } satisfies Asset)
-      : undefined);
-
-  return (
-    <div
-      className={`flow-asset-node ${data.mode !== 'source' ? 'flow-generate-node' : ''} ${selected ? 'is-selected' : ''} ${enabled ? '' : 'is-disabled'}`}
-      aria-disabled={!enabled}
-      onClickCapture={() => selectNode?.(data)}
-    >
-      {Resizer ? (
-        <Resizer
-          isVisible={Boolean(selected)}
-          minWidth={180}
-          minHeight={140}
-          color="#18794e"
-          handleStyle={{ width: 9, height: 9, borderRadius: 2 }}
-          onResizeEnd={(_, params) => {
-            if (resizeNode && id && params.width > 0 && params.height > 0) {
-              resizeNode(id, params.width, params.height);
-            }
-          }}
-        />
-      ) : null}
-      <NodeHandles mediaType={data.mediaType} mode={data.mode} />
-      <div className="flow-node-header">
-        <span className={`media-icon media-icon-${data.mediaType}`}>
-          <Icon size={15} strokeWidth={2} aria-hidden="true" />
-        </span>
-        <span className="flow-node-type">{mediaLabels[data.mediaType]}</span>
-        <span
-          className={`flow-node-mode-badge flow-node-mode-${data.mode}`}
-          title={`${modeLabels[data.mode]}模式`}
-        >
-          {data.mode === 'generate' ? (
-            <Sparkles size={10} aria-hidden="true" />
-          ) : data.mode === 'transform' ? (
-            <Wand2 size={10} aria-hidden="true" />
-          ) : null}
-          {modeLabels[data.mode]}
-        </span>
-        {!enabled && <span className="flow-node-disabled-badge">停用</span>}
-        {data.stale && <span className="flow-node-stale-badge">待更新</span>}
-        <span className="flow-node-status">
-          <RunStatusIcon status={data.runStatus} />
-        </span>
-      </div>
-      {previewAsset ? (
-        <AssetPreview asset={previewAsset} className="flow-node-preview" />
-      ) : (
-        <div className="flow-node-placeholder">
-          <Icon size={24} strokeWidth={1.7} aria-hidden="true" />
-          <span>{data.runStatus ? runStatusLabel(data.runStatus) : '等待运行'}</span>
-        </div>
-      )}
-      <div className="flow-node-label" title={data.label}>
-        {data.label}
-      </div>
-    </div>
-  );
-}
-
-function RunStatusIcon({ status }: { status?: RunStatus }) {
-  if (status === 'succeeded') return <Check size={12} aria-label="运行成功" />;
-  if (status === 'failed' || status === 'cancelled') return <X size={12} aria-label="运行失败" />;
-  if (status === 'queued' || status === 'preparing' || status === 'cancel_requested') {
-    return <Clock3 size={12} aria-label="等待运行" />;
-  }
-  if (status === 'running' || status === 'processing') {
-    return <LoaderCircle className="spin" size={12} aria-label="运行中" />;
-  }
-  return <Circle size={10} aria-label="未运行" />;
-}
-
-function runStatusLabel(status: RunStatus) {
-  const labels: Record<RunStatus, string> = {
-    draft: '草稿',
-    queued: '排队中',
-    preparing: '准备中',
-    running: '运行中',
-    processing: '处理中',
-    succeeded: '已完成',
-    failed: '失败',
-    cancel_requested: '取消中',
-    cancelled: '已取消',
-  };
-  return labels[status];
-}
-
-const nodeTypes = {
-  text: AssetNode,
-  image: AssetNode,
-  audio: AssetNode,
-  video: AssetNode,
-};
-
-function ResourcePanel({
-  assets,
-  collapsed,
-  showArchived,
-  activeFilter,
-  query,
-  isUploading,
-  uploadProgress,
-  onFilterChange,
-  onToggleArchived,
-  onQueryChange,
-  onFilesSelected,
-  onAssetDragStart,
-  onAddAsset,
-  onRenameAsset,
-  onArchiveAsset,
-  onDrop,
-  onToggleCollapsed,
-}: {
-  assets: Asset[];
-  collapsed: boolean;
-  showArchived: boolean;
-  activeFilter: AssetFilter;
-  query: string;
-  isUploading: boolean;
-  uploadProgress: number | null;
-  onFilterChange: (filter: AssetFilter) => void;
-  onToggleArchived: () => void;
-  onQueryChange: (query: string) => void;
-  onFilesSelected: (files: FileList | File[]) => void;
-  onAssetDragStart: (event: DragEvent, asset: Asset) => void;
-  onAddAsset: (asset: Asset) => void;
-  onRenameAsset: (asset: Asset) => void;
-  onArchiveAsset: (asset: Asset) => void;
-  onDrop: (event: DragEvent) => void;
-  onToggleCollapsed: () => void;
-}) {
-  const inputRef = useRef<HTMLInputElement>(null);
-  const filteredAssets = assets.filter((asset) => {
-    if (showArchived !== (asset.status === 'archived')) return false;
-    const matchesFilter = activeFilter === 'all' || asset.mediaType === activeFilter;
-    return matchesFilter && asset.name.toLowerCase().includes(query.toLowerCase());
-  });
-  const counts = assets.reduce<Record<AssetFilter, number>>(
-    (result, asset) => {
-      result[asset.mediaType] += 1;
-      result.all += 1;
-      return result;
-    },
-    { all: 0, text: 0, image: 0, audio: 0, video: 0 },
-  );
-
-  return (
-    <aside
-      className={`resource-panel ${collapsed ? 'is-collapsed' : ''}`}
-      onDragOver={(event) => event.preventDefault()}
-      onDrop={onDrop}
-    >
-      <div className="panel-heading">
-        <div>
-          <p className="eyebrow">资源库</p>
-          <h1>项目资源</h1>
-        </div>
-        <button
-          type="button"
-          className="icon-button resource-upload-button"
-          aria-label="上传资源"
-          title="上传资源"
-          onClick={() => inputRef.current?.click()}
-          disabled={isUploading}
-        >
-          {isUploading ? <LoaderCircle className="spin" size={17} /> : <Plus size={18} />}
-        </button>
-        <button
-          type="button"
-          className="icon-button resource-collapse-button"
-          aria-label={collapsed ? '展开资源栏' : '折叠资源栏'}
-          title={collapsed ? '展开资源栏' : '折叠资源栏'}
-          onClick={onToggleCollapsed}
-        >
-          {collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
-        </button>
-        <input
-          ref={inputRef}
-          className="visually-hidden"
-          type="file"
-          accept="image/*,audio/*,video/*,text/*,.md,.json"
-          multiple
-          onChange={(event) => {
-            if (event.target.files) onFilesSelected(event.target.files);
-            event.target.value = '';
-          }}
-        />
-      </div>
-      {!collapsed && (
-        <label className="search-field">
-          <Search size={15} aria-hidden="true" />
-          <input
-            type="search"
-            placeholder="搜索资源"
-            value={query}
-            onChange={(event) => onQueryChange(event.target.value)}
-          />
-          {query && (
-            <button
-              type="button"
-              className="clear-search"
-              aria-label="清除搜索"
-              onClick={() => onQueryChange('')}
-            >
-              <X size={14} />
-            </button>
-          )}
-        </label>
-      )}
-      {!collapsed && (
-        <nav className="resource-filters" aria-label="资源类型">
-          {(['all', 'text', 'image', 'audio', 'video'] as AssetFilter[]).map((filter) => (
-            <button
-              type="button"
-              className={`resource-filter ${activeFilter === filter ? 'is-active' : ''}`}
-              key={filter}
-              onClick={() => onFilterChange(filter)}
-            >
-              <span>{filter === 'all' ? '全部' : mediaLabels[filter]}</span>
-              <span className="resource-count">{counts[filter]}</span>
-            </button>
-          ))}
-        </nav>
-      )}
-      {!collapsed && (
-        <button
-          type="button"
-          className={`archive-filter ${showArchived ? 'is-active' : ''}`}
-          onClick={onToggleArchived}
-        >
-          <Archive size={13} aria-hidden="true" />
-          {showArchived ? '查看可用资源' : '查看已归档资源'}
-        </button>
-      )}
-      {!collapsed && isUploading && uploadProgress !== null && (
-        <div className="upload-progress" role="status">
-          <div className="upload-progress-label">
-            <span>上传中</span>
-            <span>{uploadProgress}%</span>
-          </div>
-          <div className="upload-progress-track">
-            <span style={{ width: `${uploadProgress}%` }} />
-          </div>
-        </div>
-      )}
-      {!collapsed && (
-        <div className="asset-list" aria-live="polite">
-          {filteredAssets.map((asset) => (
-            <article
-              className={`asset-card ${asset.status === 'archived' ? 'is-archived' : ''}`}
-              draggable={asset.status !== 'archived'}
-              key={asset.id}
-              onDragStart={(event) => onAssetDragStart(event, asset)}
-              title={asset.status === 'archived' ? '已归档资源' : '拖入画布创建来源节点'}
-            >
-              <AssetPreview asset={asset} className="asset-card-preview" />
-              <div className="asset-card-copy">
-                <strong title={asset.name}>{asset.name}</strong>
-                <span>
-                  {mediaLabels[asset.mediaType]} · {formatBytes(asset.sizeBytes)}
-                </span>
-              </div>
-              <div className="asset-card-actions">
-                <button
-                  type="button"
-                  className="asset-add-button"
-                  aria-label={
-                    asset.status === 'archived' ? `恢复 ${asset.name}` : `添加 ${asset.name} 到画布`
-                  }
-                  title={asset.status === 'archived' ? '恢复资源' : '添加到画布'}
-                  onClick={() =>
-                    asset.status === 'archived' ? onArchiveAsset(asset) : onAddAsset(asset)
-                  }
-                >
-                  {asset.status === 'archived' ? <RotateCcw size={15} /> : <SquarePlus size={16} />}
-                </button>
-                <button
-                  type="button"
-                  className="asset-add-button"
-                  aria-label={`重命名 ${asset.name}`}
-                  title="重命名"
-                  onClick={() => onRenameAsset(asset)}
-                >
-                  <Pencil size={14} />
-                </button>
-                {!showArchived && (
-                  <button
-                    type="button"
-                    className="asset-add-button"
-                    aria-label={`归档 ${asset.name}`}
-                    title="归档"
-                    onClick={() => onArchiveAsset(asset)}
-                  >
-                    <Archive size={14} />
-                  </button>
-                )}
-              </div>
-            </article>
-          ))}
-          {filteredAssets.length === 0 && (
-            <div className="empty-panel compact-empty">
-              <Upload size={22} aria-hidden="true" />
-              <strong>{assets.length === 0 ? '还没有资源' : '没有匹配资源'}</strong>
-              <p>
-                {assets.length === 0
-                  ? '点击右上角上传，或将文件拖到这里。'
-                  : '尝试调整搜索或筛选条件。'}
-              </p>
-            </div>
-          )}
-        </div>
-      )}
-    </aside>
-  );
-}
-
-function SettingsPanel({
-  projectId,
-  projectName,
-  onClose,
-  onNotice,
-  onModelsChange,
-}: {
-  projectId: string | null;
-  projectName: string;
-  onClose: () => void;
-  onNotice: (notice: { kind: 'error' | 'success'; message: string }) => void;
-  onModelsChange: (models: ModelEntry[]) => void;
-}) {
-  const [settings, setSettings] = useState<AiSettings>({
-    baseUrl: '',
-    configured: false,
-    defaultModels: {},
-  });
-  const [baseUrl, setBaseUrl] = useState('');
-  const [apiKey, setApiKey] = useState('');
-  const [models, setModels] = useState<ModelEntry[]>([]);
-  const [projectDefaults, setProjectDefaults] = useState<ModelDefaults>({});
-  const [projectDefaultsLoading, setProjectDefaultsLoading] = useState(Boolean(projectId));
-  const [busy, setBusy] = useState(false);
-  const [formErrors, setFormErrors] = useState<AiSettingsFormErrors>({});
-  const dialogRef = useRef<HTMLElement>(null);
-  const closeButtonRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    closeButtonRef.current?.focus();
-  }, []);
-
-  const handleDialogKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
-    if (event.key !== 'Tab') return;
-
-    const dialog = dialogRef.current;
-    if (!dialog) return;
-    const focusableElements = getFocusableElements(dialog);
-    if (focusableElements.length === 0) {
-      event.preventDefault();
-      return;
-    }
-
-    const first = focusableElements[0];
-    const last = focusableElements[focusableElements.length - 1];
-    const activeElement = document.activeElement;
-    if (event.shiftKey) {
-      if (activeElement === first || !dialog.contains(activeElement)) {
-        event.preventDefault();
-        last.focus();
-      }
-      return;
-    }
-
-    if (activeElement === last || !dialog.contains(activeElement)) {
-      event.preventDefault();
-      first.focus();
-    }
-  };
-
-  useEffect(() => {
-    void apiFetch(`${API_BASE_URL}/v1/settings/ai`)
-      .then(async (response) => {
-        if (!response.ok) throw new Error('设置加载失败');
-        const result = (await response.json()) as { settings: AiSettings };
-        setSettings(result.settings);
-        setBaseUrl(result.settings.baseUrl);
-      })
-      .catch((error: unknown) =>
-        onNotice({
-          kind: 'error',
-          message: error instanceof Error ? error.message : '设置加载失败',
-        }),
-      );
-    void apiFetch(`${API_BASE_URL}/v1/models`)
-      .then(async (response) => {
-        if (!response.ok) return;
-        const result = (await response.json()) as { models?: ModelEntry[] };
-        setModels(result.models ?? []);
-        onModelsChange(result.models ?? []);
-      })
-      .catch(() => {
-        // A configured server may not have a cached catalog yet; refresh remains available.
-      });
-  }, [onNotice]);
-
-  useEffect(() => {
-    setProjectDefaults({});
-    if (!projectId) {
-      setProjectDefaultsLoading(false);
-      return;
-    }
-
-    setProjectDefaultsLoading(true);
-    void apiFetch(`${API_BASE_URL}/v1/projects/${encodeURIComponent(projectId)}/models/defaults`)
-      .then(async (response) => {
-        const result = (await response.json().catch(() => ({}))) as {
-          defaults?: ModelDefaults;
-          error?: string;
-        };
-        if (!response.ok || !result.defaults) {
-          throw new Error(result.error ?? '项目默认模型加载失败');
-        }
-        setProjectDefaults(result.defaults);
-      })
-      .catch((error: unknown) =>
-        onNotice({
-          kind: 'error',
-          message: error instanceof Error ? error.message : '项目默认模型加载失败',
-        }),
-      )
-      .finally(() => setProjectDefaultsLoading(false));
-  }, [onNotice, projectId]);
-
-  const save = async () => {
-    const errors = validateAiSettingsForm({
-      baseUrl,
-      apiKey,
-      configured: settings.configured,
-    });
-    setFormErrors(errors);
-    if (Object.keys(errors).length > 0) return;
-
-    setBusy(true);
-    try {
-      const response = await apiFetch(`${API_BASE_URL}/v1/settings/ai`, {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ baseUrl, ...(apiKey ? { apiKey } : {}) }),
-      });
-      const result = (await response.json().catch(() => ({}))) as {
-        settings?: AiSettings;
-        error?: string;
-      };
-      if (!response.ok || !result.settings) throw new Error(result.error ?? '设置保存失败');
-      setSettings(result.settings);
-      setApiKey('');
-      onNotice({ kind: 'success', message: 'AI 设置已保存' });
-    } catch (error) {
-      onNotice({ kind: 'error', message: error instanceof Error ? error.message : '设置保存失败' });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const testConnection = async () => {
-    setBusy(true);
-    try {
-      const response = await apiFetch(`${API_BASE_URL}/v1/settings/ai/test`, { method: 'POST' });
-      const result = (await response.json()) as {
-        result?: { ok: boolean; modelCount?: number; error?: string };
-      };
-      if (!result.result?.ok) throw new Error(result.result?.error ?? '连接失败');
-      onNotice({
-        kind: 'success',
-        message: `连接成功，发现 ${result.result.modelCount ?? 0} 个模型`,
-      });
-    } catch (error) {
-      onNotice({ kind: 'error', message: error instanceof Error ? error.message : '连接失败' });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const refreshModels = async () => {
-    setBusy(true);
-    try {
-      const response = await apiFetch(`${API_BASE_URL}/v1/settings/ai/models/refresh`, {
-        method: 'POST',
-      });
-      const result = (await response.json()) as { models?: ModelEntry[]; error?: string };
-      if (!response.ok || !result.models) throw new Error(result.error ?? '模型刷新失败');
-      setModels(result.models);
-      onModelsChange(result.models);
-      onNotice({ kind: 'success', message: '模型列表已刷新' });
-    } catch (error) {
-      onNotice({ kind: 'error', message: error instanceof Error ? error.message : '模型刷新失败' });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const saveGlobalDefault = async (mediaType: MediaType, modelAlias: string) => {
-    setBusy(true);
-    try {
-      const response = await apiFetch(`${API_BASE_URL}/v1/settings/ai`, {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ defaultModels: { [mediaType]: modelAlias || null } }),
-      });
-      const result = (await response.json().catch(() => ({}))) as {
-        settings?: AiSettings;
-        error?: string;
-      };
-      if (!response.ok || !result.settings) throw new Error(result.error ?? '默认模型保存失败');
-      setSettings(result.settings);
-      onNotice({ kind: 'success', message: `平台全局${mediaLabels[mediaType]}默认模型已更新` });
-    } catch (error) {
-      onNotice({
-        kind: 'error',
-        message: error instanceof Error ? error.message : '默认模型保存失败',
-      });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const saveProjectDefault = async (mediaType: MediaType, modelAlias: string) => {
-    if (!projectId) {
-      onNotice({ kind: 'error', message: '当前项目尚未加载，无法保存项目默认模型' });
-      return;
-    }
-
-    setBusy(true);
-    try {
-      const response = await apiFetch(
-        `${API_BASE_URL}/v1/projects/${encodeURIComponent(projectId)}/models/defaults`,
-        {
-          method: 'PATCH',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ [mediaType]: modelAlias || null }),
-        },
-      );
-      const result = (await response.json().catch(() => ({}))) as {
-        defaults?: ModelDefaults;
-        error?: string;
-      };
-      if (!response.ok || !result.defaults) {
-        throw new Error(result.error ?? '项目默认模型保存失败');
-      }
-      setProjectDefaults(result.defaults);
-      onNotice({
-        kind: 'success',
-        message: modelAlias
-          ? `${mediaLabels[mediaType]}项目默认模型已更新`
-          : `${mediaLabels[mediaType]}已改为继承平台全局默认`,
-      });
-    } catch (error) {
-      onNotice({
-        kind: 'error',
-        message: error instanceof Error ? error.message : '项目默认模型保存失败',
-      });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const deleteCredentials = async () => {
-    setBusy(true);
-    try {
-      const response = await apiFetch(`${API_BASE_URL}/v1/settings/ai/credentials`, {
-        method: 'DELETE',
-      });
-      const result = (await response.json().catch(() => ({}))) as { error?: string };
-      if (!response.ok) throw new Error(result.error ?? '凭据删除失败');
-      setSettings((current) => ({
-        ...current,
-        configured: false,
-        keyFingerprint: undefined,
-      }));
-      setApiKey('');
-      onNotice({ kind: 'success', message: '凭据已删除' });
-    } catch (error) {
-      onNotice({ kind: 'error', message: error instanceof Error ? error.message : '凭据删除失败' });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div
-      className="settings-backdrop"
-      role="presentation"
-      onMouseDown={(event) => event.target === event.currentTarget && onClose()}
-    >
-      <section
-        className="settings-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="settings-title"
-        ref={dialogRef}
-        onKeyDown={handleDialogKeyDown}
-      >
-        <div className="panel-heading">
-          <div>
-            <p className="eyebrow">设置</p>
-            <h1 id="settings-title">AI 连接</h1>
-          </div>
-          <button
-            type="button"
-            className="icon-button"
-            aria-label="关闭设置"
-            title="关闭"
-            onClick={onClose}
-            ref={closeButtonRef}
-          >
-            <X size={17} />
-          </button>
-        </div>
-        <label className="settings-field">
-          <span>New API Base URL</span>
-          <input
-            id="settings-base-url"
-            aria-invalid={Boolean(formErrors.baseUrl)}
-            aria-describedby={formErrors.baseUrl ? 'settings-base-url-error' : undefined}
-            value={baseUrl}
-            onChange={(event) => {
-              setBaseUrl(event.target.value);
-              setFormErrors((current) => ({ ...current, baseUrl: undefined }));
-            }}
-            placeholder="https://newapi.example.com/v1"
-          />
-          {formErrors.baseUrl && (
-            <span id="settings-base-url-error" className="settings-field-error" role="alert">
-              {formErrors.baseUrl}
-            </span>
-          )}
-        </label>
-        <label className="settings-field">
-          <span>API Key</span>
-          <input
-            id="settings-api-key"
-            aria-invalid={Boolean(formErrors.apiKey)}
-            aria-describedby={formErrors.apiKey ? 'settings-api-key-error' : undefined}
-            type="password"
-            value={apiKey}
-            onChange={(event) => {
-              setApiKey(event.target.value);
-              setFormErrors((current) => ({ ...current, apiKey: undefined }));
-            }}
-            placeholder={
-              settings.keyFingerprint ? `已配置 · ${settings.keyFingerprint}` : '输入服务端 Key'
-            }
-          />
-          {formErrors.apiKey && (
-            <span id="settings-api-key-error" className="settings-field-error" role="alert">
-              {formErrors.apiKey}
-            </span>
-          )}
-        </label>
-        <div className="settings-actions">
-          <button
-            type="button"
-            className="button button-primary"
-            onClick={() => void save()}
-            disabled={busy}
-          >
-            保存
-          </button>
-          <button
-            type="button"
-            className="button button-secondary"
-            onClick={() => void testConnection()}
-            disabled={busy || !settings.configured}
-          >
-            测试连接
-          </button>
-          <button
-            type="button"
-            className="button button-secondary"
-            onClick={() => void refreshModels()}
-            disabled={busy || !settings.configured}
-          >
-            刷新模型
-          </button>
-        </div>
-        <div className="settings-status">
-          {settings.configured ? `已配置 · ${settings.keyFingerprint}` : '未配置'}
-        </div>
-        <div className="settings-models">
-          <h2>平台全局默认</h2>
-          <p className="settings-status">供所有未设置项目覆盖的节点继承。</p>
-          {mediaTypes.map((mediaType) => (
-            <label className="settings-field" key={mediaType}>
-              <span>{mediaLabels[mediaType]}</span>
-              <select
-                aria-label={`平台全局默认 · ${mediaLabels[mediaType]}`}
-                value={settings.defaultModels[mediaType] ?? ''}
-                onChange={(event) => void saveGlobalDefault(mediaType, event.target.value)}
-                disabled={busy}
-              >
-                <option value="">使用服务端环境默认</option>
-                {models
-                  .filter((model) => model.mediaTypes.includes(mediaType))
-                  .map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.name}
-                    </option>
-                  ))}
-              </select>
-            </label>
-          ))}
-        </div>
-        <div className="settings-models">
-          <h2>当前项目默认</h2>
-          <p className="settings-status">
-            {projectId ? `${projectName} · 可覆盖平台全局默认` : '当前项目尚未加载'}
-          </p>
-          {mediaTypes.map((mediaType) => (
-            <label className="settings-field" key={mediaType}>
-              <span>{mediaLabels[mediaType]}</span>
-              <select
-                aria-label={`项目默认 · ${mediaLabels[mediaType]}`}
-                value={projectDefaults[mediaType] ?? ''}
-                onChange={(event) => void saveProjectDefault(mediaType, event.target.value)}
-                disabled={busy || projectDefaultsLoading || !projectId}
-              >
-                <option value="">继承平台全局默认</option>
-                {models
-                  .filter((model) => model.mediaTypes.includes(mediaType))
-                  .map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.name}
-                    </option>
-                  ))}
-              </select>
-            </label>
-          ))}
-        </div>
-        <button
-          type="button"
-          className="settings-delete"
-          onClick={() => void deleteCredentials()}
-          disabled={busy || !settings.configured}
-        >
-          删除凭据
-        </button>
-      </section>
-    </div>
-  );
-}
-
-function WorkflowCanvas({
-  nodes,
-  edges,
-  background,
-  onNodesChange,
-  onEdgesChange,
-  onConnect,
-  onNodeDragStart,
-  onCanvasDrop,
-  onNodeSelect,
-  onResizeNode,
-  onAddGenerateNode,
-  onAddTransformNode,
-}: {
-  nodes: AssetFlowNode[];
-  edges: FlowEdge[];
-  background: CanvasBackground;
-  onNodesChange: OnNodesChange<AssetFlowNode>;
-  onEdgesChange: OnEdgesChange<FlowEdge>;
-  onConnect: (connection: Connection) => void;
-  onNodeDragStart: () => void;
-  onCanvasDrop: (
-    files: File[],
-    assetId: string | undefined,
-    position: { x: number; y: number },
-  ) => void;
-  onNodeSelect: (node: AssetFlowNode) => void;
-  onResizeNode: NodeResizeHandler;
-  onAddGenerateNode: (mediaType: MediaType) => void;
-  onAddTransformNode: (mediaType: MediaType) => void;
-}) {
-  const { screenToFlowPosition } = useReactFlow();
-  const connectionStartRef = useRef<OnConnectStartParams | null>(null);
-
-  const selectNodeByData = useCallback(
-    (data: AssetFlowNode['data']) => {
-      const node =
-        nodes.find((candidate) => candidate.data === data) ??
-        nodes.find(
-          (candidate) =>
-            candidate.data.label === data.label &&
-            candidate.data.mediaType === data.mediaType &&
-            candidate.data.mode === data.mode,
-        );
-      if (node) onNodeSelect(node);
-    },
-    [nodes, onNodeSelect],
-  );
-
-  const handleDrop = useCallback(
-    (event: DragEvent) => {
-      event.preventDefault();
-      const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
-      const assetId = event.dataTransfer.getData(ASSET_DRAG_TYPE) || undefined;
-      onCanvasDrop(Array.from(event.dataTransfer.files), assetId, position);
-    },
-    [onCanvasDrop, screenToFlowPosition],
-  );
-
-  const handleConnectEnd = useCallback(
-    (event: MouseEvent | TouchEvent, state: { toHandle?: unknown }) => {
-      const start = connectionStartRef.current;
-      connectionStartRef.current = null;
-      if (!start?.nodeId || state.toHandle) return;
-
-      const point =
-        'changedTouches' in event
-          ? event.changedTouches.item(0)
-          : { clientX: event.clientX, clientY: event.clientY };
-      if (!point) return;
-      const nodeElement = document
-        .elementsFromPoint(point.clientX, point.clientY)
-        .map((element) => element.closest<HTMLElement>('.react-flow__node[data-id]'))
-        .find(Boolean);
-      const targetNodeId = nodeElement?.dataset.id;
-      if (!targetNodeId || targetNodeId === start.nodeId) return;
-
-      const connection: Connection =
-        start.handleType === 'target'
-          ? {
-              source: targetNodeId,
-              sourceHandle: null,
-              target: start.nodeId,
-              targetHandle: start.handleId,
-            }
-          : {
-              source: start.nodeId,
-              sourceHandle: start.handleId,
-              target: targetNodeId,
-              targetHandle: null,
-            };
-      onConnect(connection);
-    },
-    [onConnect],
-  );
-
-  return (
-    <section className="canvas-area" aria-label="工作流画布">
-      <div className="canvas-node-tools" aria-label="添加节点">
-        {mediaTypes.map((mediaType) => {
-          return (
-            <div className="canvas-node-tool-group" key={mediaType}>
-              <button
-                type="button"
-                className={`canvas-node-tool media-icon-${mediaType}`}
-                aria-label={`新建${mediaLabels[mediaType]}生成节点`}
-                title={`新建${mediaLabels[mediaType]}生成节点`}
-                onClick={() => onAddGenerateNode(mediaType)}
-              >
-                <Sparkles size={14} aria-hidden="true" />
-              </button>
-              <button
-                type="button"
-                className={`canvas-node-tool canvas-node-tool-transform media-icon-${mediaType}`}
-                aria-label={`新建${mediaLabels[mediaType]}转换节点`}
-                title={`新建${mediaLabels[mediaType]}转换节点`}
-                onClick={() => onAddTransformNode(mediaType)}
-              >
-                <Wand2 size={14} aria-hidden="true" />
-              </button>
-            </div>
-          );
-        })}
-      </div>
-      <NodeSelectionContext.Provider value={selectNodeByData}>
-        <NodeResizeContext.Provider value={onResizeNode}>
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            nodeTypes={nodeTypes}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onConnect={onConnect}
-            onConnectStart={(_event, params) => {
-              connectionStartRef.current = params;
-            }}
-            onConnectEnd={handleConnectEnd}
-            onNodeDragStart={onNodeDragStart}
-            onDrop={handleDrop}
-            onDragOver={(event) => {
-              event.preventDefault();
-              event.dataTransfer.dropEffect = 'copy';
-            }}
-            onNodeClick={(_, node) => onNodeSelect(node as AssetFlowNode)}
-            fitView
-            fitViewOptions={{ padding: 0.3, maxZoom: 1.1 }}
-            connectionLineStyle={{ stroke: '#18794e', strokeWidth: 2 }}
-            defaultEdgeOptions={{ animated: true, style: { stroke: '#8aa597', strokeWidth: 2 } }}
-            proOptions={{ hideAttribution: true }}
-          >
-            {background !== 'blank' && (
-              <Background
-                color="#cbd5d0"
-                gap={background === 'lines' ? 28 : 24}
-                size={background === 'cross' ? 7 : 1.2}
-                variant={
-                  background === 'lines'
-                    ? BackgroundVariant.Lines
-                    : background === 'cross'
-                      ? BackgroundVariant.Cross
-                      : BackgroundVariant.Dots
-                }
-              />
-            )}
-            <Controls showInteractive={false} position="bottom-right" />
-          </ReactFlow>
-        </NodeResizeContext.Provider>
-      </NodeSelectionContext.Provider>
-      {nodes.length === 0 && (
-        <div className="canvas-welcome">
-          <span className="canvas-kicker">工作流画布</span>
-          <h2>从一个节点开始</h2>
-          <p>把资源拖到这里，来源节点会自动创建。</p>
-        </div>
-      )}
-    </section>
-  );
-}
-
 function WorkspaceApp({
   authUser,
   onRequestLogin,
@@ -1411,31 +242,42 @@ function WorkspaceApp({
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [notice, setNotice] = useState<{ kind: 'error' | 'success'; message: string } | null>(null);
   const [selectedNode, setSelectedNode] = useState<AssetFlowNode | null>(null);
-  const [modelCatalog, setModelCatalog] = useState<ModelEntry[]>([]);
+  const modelCatalogQuery = useModelCatalogQuery();
+  const modelCatalog = modelCatalogQuery.data ?? [];
   const [runRecords, setRunRecords] = useState<Record<string, RunRecord>>({});
-  const [resultVersions, setResultVersions] = useState<AssetVersionSummary[]>([]);
-  const [resultVersionsLoading, setResultVersionsLoading] = useState(false);
-  const [resultVersionsError, setResultVersionsError] = useState<string | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [saveState, setSaveState] = useState('准备就绪');
   const [projectId, setProjectId] = useState<string | null>(null);
   const [projectName, setProjectName] = useState('未命名项目');
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [showProjects, setShowProjects] = useState(false);
+  const [showProjectHub, setShowProjectHub] = useState(false);
+  const [includeArchivedProjects, setIncludeArchivedProjects] = useState(false);
   const [showProjectCreate, setShowProjectCreate] = useState(false);
   const [projectCreateName, setProjectCreateName] = useState('未命名项目');
   const [projectCreateError, setProjectCreateError] = useState('');
   const [isProjectLoading, setIsProjectLoading] = useState(false);
-  const [canvasBackground, setCanvasBackground] = useState<CanvasBackground>(readCanvasBackground);
-  const [canvasTheme, setCanvasTheme] = useState<CanvasTheme>(readCanvasTheme);
+  const canvasBackground = useWorkspacePreferences((state) => state.canvasBackground);
+  const setCanvasBackground = useWorkspacePreferences((state) => state.setCanvasBackground);
+  const canvasTheme = useWorkspacePreferences((state) => state.canvasTheme);
+  const setCanvasTheme = useWorkspacePreferences((state) => state.setCanvasTheme);
+  const [showBackgroundMenu, setShowBackgroundMenu] = useState(false);
   const [showThemeMenu, setShowThemeMenu] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
-  const [isResourceCollapsed, setIsResourceCollapsed] = useState(readResourcePanelCollapsed);
+  const [showCommandPalette, setShowCommandPalette] = useState(false);
+  const isResourceCollapsed = useWorkspacePreferences((state) => state.isResourcePanelCollapsed);
+  const setIsResourceCollapsed = useWorkspacePreferences(
+    (state) => state.setResourcePanelCollapsed,
+  );
   const [canvasRevision, setCanvasRevision] = useState(0);
   const [isCanvasReady, setIsCanvasReady] = useState(false);
   const settingsTriggerRef = useRef<HTMLButtonElement>(null);
   const exportTriggerRef = useRef<HTMLButtonElement>(null);
+  const commandPaletteTriggerRef = useRef<HTMLButtonElement>(null);
+  const backgroundTriggerRef = useRef<HTMLButtonElement>(null);
+  const backgroundMenuRef = useRef<HTMLDivElement>(null);
+  const uploadInputRef = useRef<HTMLInputElement>(null);
   const exportMenuWasOpenRef = useRef(false);
   const settingsWasOpenRef = useRef(false);
   const canvasRevisionRef = useRef(0);
@@ -1469,16 +311,32 @@ function WorkspaceApp({
   }, [notice]);
 
   useEffect(() => {
-    window.localStorage.setItem(CANVAS_BACKGROUND_KEY, canvasBackground);
-  }, [canvasBackground]);
-
-  useEffect(() => {
-    window.localStorage.setItem(THEME_KEY, canvasTheme);
-  }, [canvasTheme]);
-
-  useEffect(() => {
-    window.localStorage.setItem(RESOURCE_PANEL_COLLAPSED_KEY, String(isResourceCollapsed));
-  }, [isResourceCollapsed]);
+    if (!showBackgroundMenu) return;
+    const focusFrame = window.requestAnimationFrame(() => {
+      backgroundMenuRef.current
+        ?.querySelector<HTMLButtonElement>('[role="menuitemradio"][aria-checked="true"]')
+        ?.focus();
+    });
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Element && !target.closest('.background-control')) {
+        setShowBackgroundMenu(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setShowBackgroundMenu(false);
+        backgroundTriggerRef.current?.focus();
+      }
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showBackgroundMenu]);
 
   useEffect(() => {
     if (!showThemeMenu) return;
@@ -1540,6 +398,17 @@ function WorkspaceApp({
   }, [isProjectLoading, showProjectCreate]);
 
   useEffect(() => {
+    const handleCommandShortcut = (event: KeyboardEvent) => {
+      if (isCanvasShortcutTarget(event.target)) return;
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'k') return;
+      event.preventDefault();
+      setShowCommandPalette(true);
+    };
+    window.addEventListener('keydown', handleCommandShortcut);
+    return () => window.removeEventListener('keydown', handleCommandShortcut);
+  }, []);
+
+  useEffect(() => {
     nodesRef.current = nodes;
     edgesRef.current = edges;
   }, [edges, nodes]);
@@ -1580,18 +449,6 @@ function WorkspaceApp({
     setEdges(structuredClone(next.edges));
     canvasDirtyRef.current = true;
   }, [setEdges, setNodes]);
-
-  useEffect(() => {
-    void apiFetch(`${API_BASE_URL}/v1/models`)
-      .then(async (response) => {
-        if (!response.ok) return;
-        const result = (await response.json()) as { models?: ModelEntry[] };
-        setModelCatalog(result.models ?? []);
-      })
-      .catch(() => {
-        // The settings panel can refresh the catalog when the API is configured.
-      });
-  }, []);
 
   useEffect(() => {
     setSelectedNode((current) => {
@@ -1681,8 +538,9 @@ function WorkspaceApp({
     setAssets((current) => current.map((item) => (item.id === asset.id ? result.asset! : item)));
   }, []);
 
-  const refreshProjects = useCallback(async () => {
-    const response = await apiFetch(`${API_BASE_URL}/v1/projects`);
+  const refreshProjects = useCallback(async (includeArchived = false) => {
+    const query = includeArchived ? '?includeArchived=true' : '';
+    const response = await apiFetch(`${API_BASE_URL}/v1/projects${query}`);
     const result = (await response.json().catch(() => ({}))) as {
       projects?: ProjectSummary[];
       error?: string;
@@ -1691,6 +549,79 @@ function WorkspaceApp({
     setProjects(result.projects);
     return result.projects;
   }, []);
+
+  const renameProject = useCallback(
+    async (project: ProjectSummary, name: string) => {
+      const response = await apiFetch(
+        `${API_BASE_URL}/v1/projects/${encodeURIComponent(project.id)}`,
+        {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name }),
+        },
+      );
+      const result = (await response.json().catch(() => ({}))) as {
+        project?: ProjectSummary;
+        error?: string;
+      };
+      if (!response.ok || !result.project) throw new Error(result.error ?? '项目重命名失败');
+      setProjects((current) =>
+        current.map((item) => (item.id === project.id ? result.project! : item)),
+      );
+      if (project.id === projectId) setProjectName(result.project.name);
+      setNotice({ kind: 'success', message: `项目已重命名为「${result.project.name}」` });
+    },
+    [projectId],
+  );
+
+  const setProjectArchived = useCallback(
+    async (project: ProjectSummary, archived: boolean) => {
+      if (archived && project.id === projectId) {
+        throw new Error('请先切换到其他项目，再归档当前项目');
+      }
+      const action = archived ? 'archive' : 'restore';
+      const response = await apiFetch(
+        `${API_BASE_URL}/v1/projects/${encodeURIComponent(project.id)}/${action}`,
+        { method: 'POST' },
+      );
+      const result = (await response.json().catch(() => ({}))) as {
+        project?: ProjectSummary;
+        error?: string;
+      };
+      if (!response.ok || !result.project) {
+        throw new Error(result.error ?? (archived ? '项目归档失败' : '项目恢复失败'));
+      }
+      if (includeArchivedProjects) {
+        setProjects((current) =>
+          current.map((item) => (item.id === project.id ? result.project! : item)),
+        );
+      } else if (archived) {
+        setProjects((current) => current.filter((item) => item.id !== project.id));
+      } else {
+        setProjects((current) =>
+          [...current.filter((item) => item.id !== project.id), result.project!].sort(
+            (left, right) => right.updatedAt.localeCompare(left.updatedAt),
+          ),
+        );
+      }
+      setNotice({
+        kind: 'success',
+        message: archived ? `项目「${project.name}」已归档` : `项目「${project.name}」已恢复`,
+      });
+    },
+    [includeArchivedProjects, projectId],
+  );
+
+  const toggleArchivedProjects = useCallback(() => {
+    const next = !includeArchivedProjects;
+    setIncludeArchivedProjects(next);
+    void refreshProjects(next).catch((error: unknown) =>
+      setNotice({
+        kind: 'error',
+        message: error instanceof Error ? error.message : '项目列表加载失败',
+      }),
+    );
+  }, [includeArchivedProjects, refreshProjects]);
 
   const loadProjectCanvas = useCallback(
     async (requestedProjectId?: string, project?: ProjectSummary) => {
@@ -2186,73 +1117,7 @@ function WorkspaceApp({
     : undefined;
 
   const selectedRun = selectedNode ? runRecords[selectedNode.id] : undefined;
-  const selectedResultAsset: RunResultAsset | undefined = selectedRun?.result?.asset;
-  const selectedResultAssetId = selectedResultAsset?.assetId;
-  const selectedResultVersion = selectedResultAsset?.version;
-
-  useEffect(() => {
-    let active = true;
-    if (!selectedResultAssetId) {
-      setResultVersions([]);
-      setResultVersionsLoading(false);
-      setResultVersionsError(null);
-      return () => {
-        active = false;
-      };
-    }
-
-    setResultVersions([]);
-    setResultVersionsLoading(true);
-    setResultVersionsError(null);
-    void fetchAssetVersions(selectedResultAssetId, API_BASE_URL, apiFetch).then(
-      (versions) => {
-        if (!active) return;
-        setResultVersions(versions);
-        setResultVersionsLoading(false);
-      },
-      (error: unknown) => {
-        if (!active) return;
-        setResultVersions([]);
-        setResultVersionsLoading(false);
-        setResultVersionsError(error instanceof Error ? error.message : '结果版本加载失败');
-      },
-    );
-    return () => {
-      active = false;
-    };
-  }, [selectedResultAssetId, selectedResultVersion]);
-
-  const currentResultVersion =
-    selectedResultAsset?.version ?? resultVersions[resultVersions.length - 1]?.version ?? 1;
-  const currentResultVersionRecord = resultVersions.find(
-    (version) => version.version === currentResultVersion,
-  );
-  const currentResultContentUrl =
-    currentResultVersionRecord?.contentUrl ?? selectedResultAsset?.contentUrl;
-  const currentResultPreviewAsset = useMemo<Asset>(
-    () => ({
-      id: selectedResultAsset?.assetId ?? currentResultVersionRecord?.assetId ?? 'result',
-      name: `${selectedNode?.data.label ?? '节点'}结果`,
-      mediaType: selectedNode?.data.mediaType ?? 'text',
-      mimeType:
-        selectedResultAsset?.mimeType ?? selectedNode?.data.mimeType ?? 'application/octet-stream',
-      sizeBytes: selectedResultAsset?.sizeBytes ?? currentResultVersionRecord?.sizeBytes ?? 0,
-      status: 'ready',
-      contentUrl: currentResultContentUrl ?? '',
-      tags: [],
-    }),
-    [
-      currentResultContentUrl,
-      currentResultVersionRecord?.assetId,
-      currentResultVersionRecord?.sizeBytes,
-      selectedNode?.data.label,
-      selectedNode?.data.mediaType,
-      selectedNode?.data.mimeType,
-      selectedResultAsset?.assetId,
-      selectedResultAsset?.mimeType,
-      selectedResultAsset?.sizeBytes,
-    ],
-  );
+  const runResultState = useRunResultState(selectedNode, selectedRun);
 
   const updateNodeDataAndMarkDownstreamStale = useCallback(
     (nodeId: string, update: (data: AssetFlowNode['data']) => AssetFlowNode['data']) => {
@@ -2592,7 +1457,10 @@ function WorkspaceApp({
       for (let attempt = 0; attempt < 120; attempt += 1) {
         const run = await fetchRun(runId, nodeId);
         if (['succeeded', 'failed', 'cancelled'].includes(run.status)) return run;
-        await new Promise((resolve) => setTimeout(resolve, 250));
+        // SSE normally delivers updates immediately; this REST fallback backs
+        // off gradually so an unavailable stream does not hammer the API.
+        const delayMs = Math.min(1_000, 250 * 2 ** Math.min(2, Math.floor(attempt / 10)));
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
       throw new Error('运行等待超时');
     },
@@ -2601,15 +1469,16 @@ function WorkspaceApp({
 
   const runNode = useCallback(
     async (node: AssetFlowNode) => {
+      let nodeSnapshot = nodesRef.current.find((candidate) => candidate.id === node.id) ?? node;
       if (!projectId) {
         setNotice({ kind: 'error', message: '项目尚未连接' });
         return;
       }
-      if (node.data.mode === 'source') {
+      if (nodeSnapshot.data.mode === 'source') {
         setNotice({ kind: 'error', message: '来源节点不能直接运行，请选择生成或转换节点' });
         return;
       }
-      if (node.data.enabled === false) {
+      if (nodeSnapshot.data.enabled === false) {
         setNotice({ kind: 'error', message: '节点已停用，请先启用后再运行' });
         return;
       }
@@ -2617,15 +1486,22 @@ function WorkspaceApp({
       setNotice(null);
       try {
         await saveCanvas();
-        const response = await apiFetch(`${API_BASE_URL}/v1/nodes/${node.id}/runs`, {
+        // Quick-editor input handlers update the canvas before a new render has
+        // necessarily refreshed the selected-node closure. Submit the saved
+        // canvas snapshot so an immediate click never sends stale parameters.
+        nodeSnapshot =
+          nodesRef.current.find((candidate) => candidate.id === node.id) ?? nodeSnapshot;
+        const response = await apiFetch(`${API_BASE_URL}/v1/nodes/${nodeSnapshot.id}/runs`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             projectId,
-            ...(node.data.modelAlias ? { modelAlias: node.data.modelAlias } : {}),
+            ...(nodeSnapshot.data.modelAlias ? { modelAlias: nodeSnapshot.data.modelAlias } : {}),
             parameters: {
-              ...(node.data.prompt?.trim() ? { prompt: node.data.prompt.trim() } : {}),
-              inferenceStrength: node.data.inferenceStrength ?? 'medium',
+              ...(nodeSnapshot.data.prompt?.trim()
+                ? { prompt: nodeSnapshot.data.prompt.trim() }
+                : {}),
+              inferenceStrength: nodeSnapshot.data.inferenceStrength ?? 'medium',
             },
           }),
         });
@@ -2634,10 +1510,10 @@ function WorkspaceApp({
           error?: string;
         };
         if (!response.ok || !result.run) throw new Error(result.error ?? '运行提交失败');
-        updateNodeRunState(node.id, result.run);
-        const completed = await pollRun(result.run.id, node.id);
+        updateNodeRunState(nodeSnapshot.id, result.run);
+        const completed = await pollRun(result.run.id, nodeSnapshot.id);
         if (completed.status === 'succeeded') {
-          setNotice({ kind: 'success', message: `${node.data.label} 已完成` });
+          setNotice({ kind: 'success', message: `${nodeSnapshot.data.label} 已完成` });
         } else {
           setNotice({
             kind: 'error',
@@ -2687,13 +1563,139 @@ function WorkspaceApp({
       };
       if (!response.ok || !result.run) throw new Error(result.error ?? '重试提交失败');
       updateNodeRunState(selectedNode.id, result.run);
-      await pollRun(result.run.id, selectedNode.id);
+      const completed = await pollRun(result.run.id, selectedNode.id);
+      if (completed.status === 'succeeded') {
+        setNotice({ kind: 'success', message: `${selectedNode.data.label} 重试完成` });
+      } else {
+        setNotice({
+          kind: 'error',
+          message: completed.error ?? runStatusLabel(completed.status),
+        });
+      }
     } catch (error) {
       setNotice({ kind: 'error', message: error instanceof Error ? error.message : '重试失败' });
     } finally {
       setIsRunning(false);
     }
   }, [pollRun, selectedNode, selectedRun, updateNodeRunState]);
+
+  const commandPaletteCommands = useMemo<CommandPaletteCommand[]>(() => {
+    const commands: CommandPaletteCommand[] = [
+      {
+        id: 'new-text-node',
+        label: '新建文字生成节点',
+        category: '画布',
+        description: '在画布中添加一个可编辑的提示词节点',
+        shortcut: 'T',
+        icon: <FileText size={15} aria-hidden="true" />,
+        onSelect: () => handleAddGenerateNode('text'),
+      },
+      {
+        id: 'upload-asset',
+        label: '上传资源',
+        category: '资源',
+        description: '上传图片、音频、视频或文本资源',
+        icon: <Upload size={15} aria-hidden="true" />,
+        onSelect: () => uploadInputRef.current?.click(),
+      },
+      {
+        id: 'open-project-hub',
+        label: '打开工作台',
+        category: '项目',
+        description: '查看和切换所有画布项目',
+        shortcut: 'H',
+        icon: <LayoutGrid size={15} aria-hidden="true" />,
+        onSelect: () => setShowProjectHub(true),
+      },
+      {
+        id: 'save-canvas',
+        label: '保存画布',
+        category: '画布',
+        description: '立即保存当前工作流',
+        shortcut: '⌘S',
+        icon: <Check size={15} aria-hidden="true" />,
+        disabled: !projectId || isProjectLoading,
+        onSelect: async () => {
+          await saveCanvas();
+          setNotice({ kind: 'success', message: '画布已保存' });
+        },
+      },
+      {
+        id: 'export-workflow',
+        label: '导出工作流 JSON',
+        category: '导出',
+        description: '导出节点、连线和运行元数据',
+        icon: <Download size={15} aria-hidden="true" />,
+        disabled: !projectId || isExporting,
+        onSelect: () => exportProject('workflow'),
+      },
+      {
+        id: 'export-results',
+        label: '导出结果 ZIP',
+        category: '导出',
+        description: '导出工作流清单和结果文件',
+        icon: <Archive size={15} aria-hidden="true" />,
+        disabled: !projectId || isExporting,
+        onSelect: () => exportProject('results'),
+      },
+      {
+        id: 'open-settings',
+        label: '打开设置',
+        category: '应用',
+        description: '管理 API 连接和默认模型',
+        icon: <Settings size={15} aria-hidden="true" />,
+        onSelect: () => setShowSettings(true),
+      },
+      {
+        id: 'toggle-resource-panel',
+        label: isResourceCollapsed ? '展开资源栏' : '折叠资源栏',
+        category: '布局',
+        icon: isResourceCollapsed ? (
+          <PanelLeftOpen size={15} aria-hidden="true" />
+        ) : (
+          <PanelLeftClose size={15} aria-hidden="true" />
+        ),
+        onSelect: () => setIsResourceCollapsed((current) => !current),
+      },
+    ];
+
+    themeOptions.forEach((option) => {
+      commands.push({
+        id: `theme-${option.value}`,
+        label: `切换到${option.label}主题`,
+        category: '主题',
+        icon: <Palette size={15} aria-hidden="true" />,
+        disabled: canvasTheme === option.value,
+        onSelect: () => setCanvasTheme(option.value),
+      });
+    });
+
+    if (selectedNode && selectedNode.data.mode !== 'source') {
+      commands.unshift({
+        id: 'run-selected-node',
+        label: `运行「${selectedNode.data.label}」`,
+        category: '运行',
+        description: '使用当前提示词、模型和推理强度',
+        shortcut: 'R',
+        icon: <Play size={15} aria-hidden="true" />,
+        disabled: isRunning || selectedNode.data.enabled === false,
+        onSelect: () => runNode(selectedNode),
+      });
+    }
+    return commands;
+  }, [
+    canvasTheme,
+    exportProject,
+    handleAddGenerateNode,
+    isExporting,
+    isProjectLoading,
+    isResourceCollapsed,
+    isRunning,
+    projectId,
+    runNode,
+    saveCanvas,
+    selectedNode,
+  ]);
   const assetSummary = useMemo(
     () =>
       assets.reduce(
@@ -2727,6 +1729,19 @@ function WorkspaceApp({
               <FolderOpen size={15} aria-hidden="true" />
               <span className="project-name">{projectName}</span>
               <ChevronDown size={14} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className="icon-button project-hub-trigger"
+              aria-label="打开工作台"
+              title="工作台：查看所有画布"
+              onClick={() => {
+                setShowProjects(false);
+                setShowProjectHub(true);
+              }}
+              disabled={isProjectLoading}
+            >
+              <LayoutGrid size={15} aria-hidden="true" />
             </button>
             {showProjects && (
               <div className="project-menu" role="menu" aria-label="项目集合">
@@ -2775,20 +1790,100 @@ function WorkspaceApp({
             </span>
           </div>
           <div className="topbar-actions">
-            <label className="topbar-background-picker">
-              <span>背景</span>
-              <select
-                aria-label="画布背景"
-                value={canvasBackground}
-                onChange={(event) => setCanvasBackground(event.target.value as CanvasBackground)}
+            <button
+              type="button"
+              className="icon-button command-palette-trigger"
+              ref={commandPaletteTriggerRef}
+              aria-label="打开命令面板"
+              title="命令面板（Ctrl/Cmd+K）"
+              onClick={() => setShowCommandPalette(true)}
+            >
+              <Search size={16} aria-hidden="true" />
+              <span className="command-palette-trigger-label">命令</span>
+            </button>
+            <div className="background-control">
+              <button
+                type="button"
+                className="topbar-background-picker"
+                ref={backgroundTriggerRef}
+                aria-label="选择画布背景"
+                aria-expanded={showBackgroundMenu}
+                aria-haspopup="menu"
+                aria-controls="canvas-background-menu"
+                title="画布背景"
+                onClick={() => {
+                  setShowThemeMenu(false);
+                  setShowBackgroundMenu((current) => !current);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    setShowThemeMenu(false);
+                    setShowBackgroundMenu(true);
+                  }
+                }}
               >
-                {canvasBackgroundOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+                <LayoutGrid size={15} aria-hidden="true" />
+                <span>背景</span>
+                <strong>
+                  {canvasBackgroundOptions.find((option) => option.value === canvasBackground)
+                    ?.label ?? '点'}
+                </strong>
+                <ChevronDown size={12} aria-hidden="true" />
+              </button>
+              {showBackgroundMenu && (
+                <div
+                  className="background-menu"
+                  id="canvas-background-menu"
+                  ref={backgroundMenuRef}
+                  role="menu"
+                  aria-label="画布背景"
+                  onKeyDown={(event) => {
+                    const options = Array.from(
+                      event.currentTarget.querySelectorAll<HTMLButtonElement>(
+                        '[role="menuitemradio"]',
+                      ),
+                    );
+                    const currentIndex = options.indexOf(
+                      document.activeElement as HTMLButtonElement,
+                    );
+                    let nextIndex: number | undefined;
+                    if (event.key === 'ArrowDown') nextIndex = (currentIndex + 1) % options.length;
+                    if (event.key === 'ArrowUp') {
+                      nextIndex = (currentIndex - 1 + options.length) % options.length;
+                    }
+                    if (event.key === 'Home') nextIndex = 0;
+                    if (event.key === 'End') nextIndex = options.length - 1;
+                    if (nextIndex !== undefined) {
+                      event.preventDefault();
+                      options[nextIndex]?.focus();
+                    }
+                  }}
+                >
+                  {canvasBackgroundOptions.map((option) => (
+                    <button
+                      type="button"
+                      className="background-option"
+                      role="menuitemradio"
+                      aria-checked={canvasBackground === option.value}
+                      key={option.value}
+                      onClick={() => {
+                        setCanvasBackground(option.value);
+                        setShowBackgroundMenu(false);
+                        backgroundTriggerRef.current?.focus();
+                      }}
+                    >
+                      <span
+                        className={`background-swatch background-swatch-${option.value}`}
+                        aria-hidden="true"
+                      />
+                      <span>{option.label}</span>
+                      {canvasBackground === option.value && <Check size={14} aria-hidden="true" />}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <div className="theme-control">
               <button
                 type="button"
@@ -2796,7 +1891,10 @@ function WorkspaceApp({
                 aria-label="切换主题"
                 aria-expanded={showThemeMenu}
                 title="主题"
-                onClick={() => setShowThemeMenu((current) => !current)}
+                onClick={() => {
+                  setShowBackgroundMenu(false);
+                  setShowThemeMenu((current) => !current);
+                }}
               >
                 <Palette size={16} />
                 <span className="theme-toggle-label">
@@ -2964,6 +2062,35 @@ function WorkspaceApp({
           </div>
         )}
 
+        <ProjectHub
+          open={showProjectHub}
+          projects={projects}
+          activeProjectId={projectId}
+          isLoading={isProjectLoading}
+          includeArchived={includeArchivedProjects}
+          onClose={() => setShowProjectHub(false)}
+          onSelectProject={(project) => {
+            setShowProjectHub(false);
+            void switchProject(project);
+          }}
+          onRenameProject={renameProject}
+          onSetArchivedProject={setProjectArchived}
+          onToggleArchived={toggleArchivedProjects}
+          onCreateProject={() => {
+            setShowProjectHub(false);
+            setProjectCreateName('未命名项目');
+            setProjectCreateError('');
+            setShowProjectCreate(true);
+          }}
+        />
+
+        <CommandPalette
+          open={showCommandPalette}
+          commands={commandPaletteCommands}
+          onClose={() => setShowCommandPalette(false)}
+          restoreFocusRef={commandPaletteTriggerRef}
+        />
+
         {showProjectCreate && (
           <div
             className="project-create-backdrop"
@@ -3060,19 +2187,30 @@ function WorkspaceApp({
               void uploadFiles(Array.from(event.dataTransfer.files));
             }}
             onToggleCollapsed={() => setIsResourceCollapsed((current) => !current)}
+            uploadInputRef={uploadInputRef}
           />
           <WorkflowCanvas
             nodes={nodes}
             edges={edges}
+            selectedNode={selectedNode}
+            models={modelCatalog}
+            busy={isRunning}
             onNodesChange={handleNodesChange}
             onEdgesChange={handleEdgesChange}
             onConnect={handleConnect}
             onNodeDragStart={handleNodeDragStart}
             onCanvasDrop={handleCanvasDrop}
             onNodeSelect={setSelectedNode}
+            onClearNodeSelection={() => setSelectedNode(null)}
             onResizeNode={handleResizeNode}
+            onPromptChange={updateSelectedPrompt}
+            onModelChange={updateSelectedModel}
+            onInferenceStrengthChange={updateSelectedInferenceStrength}
+            onRunNode={(node) => void runNode(node)}
             onAddGenerateNode={handleAddGenerateNode}
             onAddTransformNode={handleAddTransformNode}
+            onRequestUpload={() => uploadInputRef.current?.click()}
+            onOpenProjectHub={() => setShowProjectHub(true)}
             background={canvasBackground}
           />
           <aside className="inspector-panel">
@@ -3267,173 +2405,14 @@ function WorkspaceApp({
                     </div>
                   </>
                 )}
-                {selectedNode.data.mode !== 'source' && (
-                  <>
-                    <label className="inspector-prompt">
-                      <span>提示词</span>
-                      <TextPromptEditor
-                        nodeId={selectedNode.id}
-                        value={selectedNode.data.prompt ?? ''}
-                        onChange={updateSelectedPrompt}
-                        placeholder="描述你希望节点生成或转换的内容"
-                      />
-                    </label>
-                    <div className="inspector-generation-controls">
-                      <label className="inspector-field inspector-field-model">
-                        <span>模型</span>
-                        <select
-                          value={selectedNode.data.modelAlias ?? ''}
-                          onChange={(event) => updateSelectedModel(event.target.value)}
-                        >
-                          <option value="">继承项目默认模型</option>
-                          {selectedNode.data.modelAlias &&
-                            !modelCatalog.some(
-                              (model) => model.id === selectedNode.data.modelAlias,
-                            ) && (
-                              <option value={selectedNode.data.modelAlias}>
-                                {selectedNode.data.modelAlias}
-                              </option>
-                            )}
-                          {modelCatalog
-                            .filter((model) =>
-                              model.mediaTypes.includes(selectedNode.data.mediaType),
-                            )
-                            .map((model) => (
-                              <option key={model.id} value={model.id}>
-                                {model.name}
-                              </option>
-                            ))}
-                        </select>
-                      </label>
-                      <label className="inspector-field inspector-field-strength">
-                        <span>推理强度</span>
-                        <select
-                          value={selectedNode.data.inferenceStrength ?? 'medium'}
-                          onChange={(event) =>
-                            updateSelectedInferenceStrength(event.target.value as InferenceStrength)
-                          }
-                        >
-                          {inferenceStrengthOptions.map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-                    <button
-                      type="button"
-                      className="button button-primary inspector-generate-button"
-                      disabled={isRunning || selectedNode.data.enabled === false}
-                      onClick={() => void runNode(selectedNode)}
-                      title="使用当前提示词、模型和推理强度生成"
-                    >
-                      {isRunning ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}
-                      {isRunning ? '生成中' : '生成'}
-                    </button>
-                  </>
-                )}
-                <div className="inspector-run-actions">
-                  {selectedRun &&
-                    !['succeeded', 'failed', 'cancelled'].includes(selectedRun.status) && (
-                      <button
-                        type="button"
-                        className="button button-secondary"
-                        onClick={() => void cancelSelectedRun()}
-                      >
-                        <X size={14} />
-                        取消运行
-                      </button>
-                    )}
-                  {selectedRun && ['failed', 'cancelled'].includes(selectedRun.status) && (
-                    <button
-                      type="button"
-                      className="button button-secondary"
-                      onClick={() => void retrySelectedRun()}
-                      disabled={isRunning}
-                    >
-                      <RotateCcw size={14} />
-                      重试
-                    </button>
-                  )}
-                </div>
-                {selectedRun?.error && <p className="inspector-run-error">{selectedRun.error}</p>}
-                {selectedRun?.result && (
-                  <section className="inspector-result" aria-label="运行结果">
-                    <div className="inspector-result-heading">
-                      <span className="inspector-type">运行结果</span>
-                      <span className="inspector-result-version">版本 {currentResultVersion}</span>
-                    </div>
-                    {currentResultContentUrl ? (
-                      <div className="inspector-result-link">
-                        {selectedNode.data.mediaType === 'text' ? (
-                          <div className="inspector-result-preview inspector-result-text-wrap">
-                            <TextResultContent url={currentResultContentUrl} />
-                          </div>
-                        ) : (
-                          <AssetPreview
-                            asset={currentResultPreviewAsset}
-                            className="inspector-result-preview"
-                            interactive
-                          />
-                        )}
-                        <AuthenticatedAssetLink
-                          asset={currentResultPreviewAsset}
-                          className="inspector-result-open"
-                        >
-                          <span>打开结果</span>
-                          <ExternalLink size={13} aria-hidden="true" />
-                        </AuthenticatedAssetLink>
-                      </div>
-                    ) : (
-                      <p className="inspector-result-pending">结果已归档，内容链接待刷新。</p>
-                    )}
-                    {resultVersionsLoading && (
-                      <p className="inspector-result-pending" aria-live="polite">
-                        正在加载结果版本…
-                      </p>
-                    )}
-                    {resultVersionsError && (
-                      <p className="inspector-result-pending" aria-live="polite">
-                        版本列表加载失败：{resultVersionsError}，仍显示当前结果。
-                      </p>
-                    )}
-                    {!resultVersionsLoading &&
-                      !resultVersionsError &&
-                      resultVersions.length > 0 && (
-                        <div className="inspector-result-version-list" aria-label="结果版本列表">
-                          <span className="inspector-result-version-list-label">归档版本</span>
-                          <ul>
-                            {resultVersions.map((version) => {
-                              const isCurrent = version.version === currentResultVersion;
-                              const versionAsset: Asset = {
-                                id: version.assetId,
-                                name: `${selectedNode.data.label}结果 v${version.version}`,
-                                mediaType: selectedNode.data.mediaType,
-                                mimeType:
-                                  selectedResultAsset?.mimeType ??
-                                  selectedNode.data.mimeType ??
-                                  'application/octet-stream',
-                                sizeBytes: version.sizeBytes,
-                                status: 'ready',
-                                contentUrl: version.contentUrl,
-                                tags: [],
-                              };
-                              return (
-                                <li key={version.id}>
-                                  <AuthenticatedAssetLink asset={versionAsset} current={isCurrent}>
-                                    版本 {version.version}
-                                  </AuthenticatedAssetLink>
-                                  {isCurrent ? <span>（当前）</span> : null}
-                                </li>
-                              );
-                            })}
-                          </ul>
-                        </div>
-                      )}
-                    <p className="inspector-result-summary">{selectedRun.result.summary}</p>
-                  </section>
-                )}
+                <RunPanel
+                  node={selectedNode}
+                  run={selectedRun}
+                  resultState={runResultState}
+                  busy={isRunning}
+                  onCancel={cancelSelectedRun}
+                  onRetry={retrySelectedRun}
+                />
               </div>
             ) : (
               <div className="inspector-empty">
@@ -3457,7 +2436,6 @@ function WorkspaceApp({
             projectName={projectName}
             onClose={() => setShowSettings(false)}
             onNotice={setNotice}
-            onModelsChange={setModelCatalog}
           />
         )}
       </main>
@@ -3607,7 +2585,7 @@ function LoginScreen({
   );
 }
 
-export function App() {
+function AppContent() {
   const [authSession, setAuthSession] = useState<StoredAuthSession | null>(() => readAuthSession());
   const [authRequired, setAuthRequired] = useState(false);
 
@@ -3650,8 +2628,23 @@ export function App() {
   );
 }
 
-function formatBytes(bytes: number) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+export function App() {
+  const canvasTheme = useWorkspacePreferences((state) => state.canvasTheme);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const previousTheme = root.getAttribute('data-theme');
+    root.setAttribute('data-theme', canvasTheme);
+
+    return () => {
+      if (previousTheme === null) root.removeAttribute('data-theme');
+      else root.setAttribute('data-theme', previousTheme);
+    };
+  }, [canvasTheme]);
+
+  return (
+    <AppQueryProvider>
+      <AppContent />
+    </AppQueryProvider>
+  );
 }

@@ -187,7 +187,10 @@ describe('New API model catalog normalization', () => {
     await expect(store.refreshModels()).resolves.toMatchObject([{ id: 'text-v1' }]);
     expect(fetchImpl).toHaveBeenCalledWith(
       'https://gateway.example.com/v1/models',
-      expect.objectContaining({ headers: { authorization: 'Bearer test-key' } }),
+      expect.objectContaining({
+        headers: { authorization: 'Bearer test-key' },
+        redirect: 'error',
+      }),
     );
   });
 
@@ -298,5 +301,27 @@ describe('New API model catalog normalization', () => {
         label: 'revoked',
       },
     });
+  });
+
+  it('rolls back in-memory credentials when Prisma persistence fails', async () => {
+    const create = vi.fn().mockRejectedValue(new Error('database unavailable'));
+    const prisma = {
+      aiCredential: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        create,
+      },
+      modelCatalog: { findMany: vi.fn().mockResolvedValue([]) },
+    };
+    const store = new PrismaAiSettingsStore(prisma as never, 'test-encryption-secret');
+
+    await expect(
+      store.update({ baseUrl: 'https://gateway.example.com/v1', apiKey: 'temporary-key' }),
+    ).rejects.toThrow('database unavailable');
+    await expect(store.get()).resolves.toMatchObject({
+      baseUrl: '',
+      configured: false,
+      defaultModels: {},
+    });
+    expect(create).toHaveBeenCalledTimes(1);
   });
 });

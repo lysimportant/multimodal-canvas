@@ -139,6 +139,7 @@ vi.mock('@xyflow/react', async () => {
     nodeTypes,
     onNodesChange,
     onNodeClick,
+    onPaneClick,
     onConnect,
     children,
   }: {
@@ -147,6 +148,7 @@ vi.mock('@xyflow/react', async () => {
     nodeTypes: Record<string, React.ComponentType<{ data: unknown; selected?: boolean }>>;
     onNodesChange?: (changes: Array<Record<string, unknown>>) => void;
     onNodeClick?: (event: unknown, node: unknown) => void;
+    onPaneClick?: () => void;
     onConnect?: (connection: FlowConnection) => void;
     children?: React.ReactNode;
   }) {
@@ -179,6 +181,12 @@ vi.mock('@xyflow/react', async () => {
     return (
       <flowContext.Provider value={{ connectHandle }}>
         <div data-testid="rf__wrapper" className="react-flow" role="application">
+          <button
+            type="button"
+            className="react-flow__pane"
+            aria-label="画布空白"
+            onClick={onPaneClick}
+          />
           <div className="react-flow__nodes">
             {nodes.map((node) => {
               const NodeComponent = nodeTypes[node.type ?? 'default'];
@@ -227,11 +235,16 @@ vi.mock('@xyflow/react', async () => {
     return null;
   }
 
+  function NodeToolbar({ children }: { children?: React.ReactNode }) {
+    return <div className="react-flow__node-toolbar">{children}</div>;
+  }
+
   return {
     Background: () => null,
     BackgroundVariant: { Dots: 'dots', Lines: 'lines', Cross: 'cross' },
     Controls: () => null,
     NodeResizer,
+    NodeToolbar,
     Handle,
     Position: { Left: 'left', Right: 'right', Top: 'top', Bottom: 'bottom' },
     ReactFlow,
@@ -315,6 +328,7 @@ function restoreClipboardMock() {
 }
 
 function installApiMock() {
+  const runs = new Map<string, Record<string, unknown>>();
   fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const rawUrl =
       typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
@@ -337,6 +351,27 @@ function installApiMock() {
     }
     if (url.pathname === `/v1/projects/${project.id}` && method === 'GET') {
       return jsonResponse({ project });
+    }
+    if (url.pathname === `/v1/projects/${project.id}/runs` && method === 'GET') {
+      return jsonResponse({ runs: [] });
+    }
+    const nodeRunMatch = url.pathname.match(/^\/v1\/nodes\/([^/]+)\/runs$/);
+    if (nodeRunMatch && method === 'POST') {
+      const nodeId = decodeURIComponent(nodeRunMatch[1]);
+      const run = {
+        id: `run_${nodeId}`,
+        targetNodeId: nodeId,
+        status: 'succeeded',
+        progress: 100,
+        snapshot: { inputs: [] },
+      };
+      runs.set(run.id, run);
+      return jsonResponse({ run });
+    }
+    const runMatch = url.pathname.match(/^\/v1\/runs\/([^/]+)$/);
+    if (runMatch && method === 'GET') {
+      const run = runs.get(decodeURIComponent(runMatch[1]));
+      if (run) return jsonResponse({ run });
     }
     throw new Error(`Unhandled mock request: ${method} ${url.pathname}`);
   });
@@ -415,9 +450,86 @@ describe('画布编辑器交互', () => {
     const prompt = screen.getByRole('textbox', { name: '提示词' });
 
     expect(prompt).toBeVisible();
+    const quickEditor = screen.getByLabelText('文字生成节点生成设置');
+    expect(quickEditor).toHaveClass('nodrag', 'nopan', 'nowheel');
+    expect(quickEditor).toContainElement(prompt);
+    expect(document.querySelector('.inspector-panel textarea')).toBeNull();
     await user.click(prompt);
     await user.type(prompt, '写一段产品介绍');
     expect(prompt).toHaveValue('写一段产品介绍');
+
+    await user.click(screen.getByRole('button', { name: '画布空白' }));
+    expect(screen.queryByLabelText('文字生成节点生成设置')).not.toBeInTheDocument();
+  });
+
+  it('在节点浮层配置生成参数，并用最新值提交运行', async () => {
+    const { user } = await renderCanvas();
+
+    await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
+    const node = findNodeByLabel('文字生成节点');
+    expect(node).toBeTruthy();
+    await user.click(node!);
+
+    const quickEditor = screen.getByLabelText('文字生成节点生成设置');
+    const inspector = document.querySelector<HTMLElement>('.inspector-panel');
+    expect(inspector).toBeTruthy();
+    expect(within(quickEditor).getByRole('textbox', { name: '提示词' })).toBeVisible();
+    expect(within(quickEditor).getByRole('combobox', { name: '模型' })).toBeVisible();
+    expect(within(quickEditor).getByRole('combobox', { name: '推理强度' })).toBeVisible();
+    expect(within(quickEditor).getByRole('button', { name: '生成' })).toBeVisible();
+    expect(within(inspector!).queryByRole('textbox', { name: '提示词' })).not.toBeInTheDocument();
+    expect(within(inspector!).queryByRole('combobox', { name: '模型' })).not.toBeInTheDocument();
+    expect(
+      within(inspector!).queryByRole('combobox', { name: '推理强度' }),
+    ).not.toBeInTheDocument();
+    expect(within(inspector!).queryByRole('button', { name: '生成' })).not.toBeInTheDocument();
+
+    const prompt = within(quickEditor).getByRole('textbox', { name: '提示词' });
+    await user.clear(prompt);
+    await user.type(prompt, '用最新提示词生成');
+    await user.selectOptions(
+      within(quickEditor).getByRole('combobox', { name: '推理强度' }),
+      'high',
+    );
+    await user.click(within(quickEditor).getByRole('button', { name: '生成' }));
+
+    await waitFor(() => {
+      const runCall = fetchMock.mock.calls.find(([input, init]) => {
+        const rawUrl =
+          typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        return (
+          new URL(rawUrl, 'http://localhost:3000').pathname.startsWith('/v1/nodes/') &&
+          init?.method === 'POST'
+        );
+      });
+      expect(runCall).toBeDefined();
+      const body = (runCall?.[1] as RequestInit | undefined)?.body;
+      expect(JSON.parse(String(body))).toMatchObject({
+        projectId: project.id,
+        parameters: {
+          prompt: '用最新提示词生成',
+          inferenceStrength: 'high',
+        },
+      });
+    });
+  });
+
+  it('画布背景菜单可打开、切换并持久化选择', async () => {
+    const { user } = await renderCanvas();
+
+    const trigger = screen.getByRole('button', { name: '选择画布背景' });
+    await user.click(trigger);
+
+    expect(screen.getByRole('menu', { name: '画布背景' })).toBeVisible();
+    expect(screen.getByRole('menuitemradio', { name: '点' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+
+    await user.click(screen.getByRole('menuitemradio', { name: '空白' }));
+    expect(screen.queryByRole('menu', { name: '画布背景' })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+    expect(window.localStorage.getItem('multimodal-canvas:background')).toBe('blank');
   });
 
   it('来源节点属性可编辑，并可从 Handle 附近打开属性与创建转换', async () => {

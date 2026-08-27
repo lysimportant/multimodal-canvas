@@ -12,6 +12,7 @@ export type Project = {
   ownerId?: string;
   createdAt: string;
   updatedAt: string;
+  archivedAt?: string;
 };
 
 export type StoredProject = Project & {
@@ -21,6 +22,14 @@ export type StoredProject = Project & {
 
 export type CreateProjectInput = {
   name: string;
+};
+
+export type UpdateProjectInput = {
+  name?: string;
+};
+
+export type ProjectListOptions = {
+  includeArchived?: boolean;
 };
 
 /** Project-scoped model aliases. Omitted media types inherit global settings. */
@@ -36,8 +45,10 @@ export type ProjectScope = {
 
 export interface ProjectStore {
   create(input: CreateProjectInput, scope?: ProjectScope): Promise<Project>;
-  list(scope?: ProjectScope): Promise<Project[]>;
+  list(scope?: ProjectScope, options?: ProjectListOptions): Promise<Project[]>;
   get(id: string, scope?: ProjectScope): Promise<Project | undefined>;
+  update(id: string, input: UpdateProjectInput, scope?: ProjectScope): Promise<Project | undefined>;
+  setArchived(id: string, archived: boolean, scope?: ProjectScope): Promise<Project | undefined>;
   getCanvas(id: string, scope?: ProjectScope): Promise<CanvasDocument | undefined>;
   updateCanvas(id: string, document: CanvasDocument, scope?: ProjectScope): Promise<CanvasDocument>;
   getModelDefaults(id: string, scope?: ProjectScope): Promise<ProjectModelDefaults | undefined>;
@@ -78,9 +89,13 @@ export class MemoryProjectStore implements ProjectStore {
     return project;
   }
 
-  async list(scope: ProjectScope = {}): Promise<Project[]> {
+  async list(scope: ProjectScope = {}, options: ProjectListOptions = {}): Promise<Project[]> {
     return [...this.projects.values()]
-      .filter((project) => !scope.ownerId || project.ownerId === scope.ownerId)
+      .filter(
+        (project) =>
+          (!scope.ownerId || project.ownerId === scope.ownerId) &&
+          (options.includeArchived || !project.archivedAt),
+      )
       .sort((left, right) => {
         const updatedOrder = right.updatedAt.localeCompare(left.updatedAt);
         if (updatedOrder !== 0) return updatedOrder;
@@ -94,6 +109,40 @@ export class MemoryProjectStore implements ProjectStore {
     const project = this.projects.get(id);
     if (!project || (scope.ownerId && project.ownerId !== scope.ownerId)) return undefined;
     const { canvas: _canvas, ...summary } = project;
+    return summary;
+  }
+
+  async update(
+    id: string,
+    input: UpdateProjectInput,
+    scope: ProjectScope = {},
+  ): Promise<Project | undefined> {
+    const project = this.projects.get(id);
+    if (!project || (scope.ownerId && project.ownerId !== scope.ownerId)) return undefined;
+    const next: StoredProject = {
+      ...project,
+      ...(input.name === undefined ? {} : { name: input.name }),
+      updatedAt: this.nextTimestamp(),
+    };
+    this.projects.set(id, next);
+    const { canvas: _canvas, ...summary } = next;
+    return summary;
+  }
+
+  async setArchived(
+    id: string,
+    archived: boolean,
+    scope: ProjectScope = {},
+  ): Promise<Project | undefined> {
+    const project = this.projects.get(id);
+    if (!project || (scope.ownerId && project.ownerId !== scope.ownerId)) return undefined;
+    const next: StoredProject = {
+      ...project,
+      updatedAt: this.nextTimestamp(),
+      ...(archived ? { archivedAt: new Date().toISOString() } : { archivedAt: undefined }),
+    };
+    this.projects.set(id, next);
+    const { canvas: _canvas, ...summary } = next;
     return summary;
   }
 
@@ -206,10 +255,14 @@ export class FileProjectStore implements ProjectStore {
     return this.summary(project);
   }
 
-  async list(scope: ProjectScope = {}): Promise<Project[]> {
+  async list(scope: ProjectScope = {}, options: ProjectListOptions = {}): Promise<Project[]> {
     await this.ready;
     return [...this.projects.values()]
-      .filter((project) => !scope.ownerId || project.ownerId === scope.ownerId)
+      .filter(
+        (project) =>
+          (!scope.ownerId || project.ownerId === scope.ownerId) &&
+          (options.includeArchived || !project.archivedAt),
+      )
       .sort(compareProjects)
       .map((project) => this.summary(project));
   }
@@ -219,6 +272,42 @@ export class FileProjectStore implements ProjectStore {
     const project = this.projects.get(id);
     if (!project || (scope.ownerId && project.ownerId !== scope.ownerId)) return undefined;
     return this.summary(project);
+  }
+
+  async update(
+    id: string,
+    input: UpdateProjectInput,
+    scope: ProjectScope = {},
+  ): Promise<Project | undefined> {
+    await this.ready;
+    const project = this.projects.get(id);
+    if (!project || (scope.ownerId && project.ownerId !== scope.ownerId)) return undefined;
+    const updated: StoredProject = {
+      ...project,
+      ...(input.name === undefined ? {} : { name: input.name }),
+      updatedAt: this.nextTimestamp(),
+    };
+    this.projects.set(id, updated);
+    await this.persist();
+    return this.summary(updated);
+  }
+
+  async setArchived(
+    id: string,
+    archived: boolean,
+    scope: ProjectScope = {},
+  ): Promise<Project | undefined> {
+    await this.ready;
+    const project = this.projects.get(id);
+    if (!project || (scope.ownerId && project.ownerId !== scope.ownerId)) return undefined;
+    const updated: StoredProject = {
+      ...project,
+      updatedAt: this.nextTimestamp(),
+      ...(archived ? { archivedAt: new Date().toISOString() } : { archivedAt: undefined }),
+    };
+    this.projects.set(id, updated);
+    await this.persist();
+    return this.summary(updated);
   }
 
   async getCanvas(id: string, scope: ProjectScope = {}): Promise<CanvasDocument | undefined> {
@@ -343,6 +432,7 @@ export class FileProjectStore implements ProjectStore {
       ...(project.ownerId ? { ownerId: project.ownerId } : {}),
       createdAt: project.createdAt,
       updatedAt: project.updatedAt,
+      ...(project.archivedAt ? { archivedAt: project.archivedAt } : {}),
     };
   }
 
@@ -410,6 +500,9 @@ function isStoredProject(value: unknown): value is StoredProject {
     typeof candidate.updatedAt === 'string' &&
     Number.isFinite(Date.parse(candidate.createdAt)) &&
     Number.isFinite(Date.parse(candidate.updatedAt)) &&
+    (candidate.archivedAt === undefined ||
+      (typeof candidate.archivedAt === 'string' &&
+        Number.isFinite(Date.parse(candidate.archivedAt)))) &&
     Boolean(candidate.canvas) &&
     typeof candidate.canvas === 'object'
   );
@@ -448,11 +541,14 @@ export class PrismaProjectStore implements ProjectStore {
     return mapProject(project);
   }
 
-  async list(scope: ProjectScope = {}): Promise<Project[]> {
+  async list(scope: ProjectScope = {}, options: ProjectListOptions = {}): Promise<Project[]> {
     const projects = await this.prisma.project.findMany({
-      ...(scope.ownerId ? { where: { ownerId: scope.ownerId } } : {}),
+      where: {
+        ...(scope.ownerId ? { ownerId: scope.ownerId } : {}),
+        ...(options.includeArchived ? {} : { archivedAt: null }),
+      },
       orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }, { id: 'desc' }],
-      select: { id: true, name: true, createdAt: true, updatedAt: true },
+      select: { id: true, name: true, createdAt: true, updatedAt: true, archivedAt: true },
     });
     return projects.map(mapProject);
   }
@@ -462,9 +558,43 @@ export class PrismaProjectStore implements ProjectStore {
       ? await this.prisma.project.findFirst({ where: { id, ownerId: scope.ownerId } })
       : await this.prisma.project.findUnique({
           where: { id },
-          select: { id: true, name: true, createdAt: true, updatedAt: true },
+          select: { id: true, name: true, createdAt: true, updatedAt: true, archivedAt: true },
         });
     return project ? mapProject(project) : undefined;
+  }
+
+  async update(
+    id: string,
+    input: UpdateProjectInput,
+    scope: ProjectScope = {},
+  ): Promise<Project | undefined> {
+    const project = scope.ownerId
+      ? await this.prisma.project.findFirst({ where: { id, ownerId: scope.ownerId } })
+      : await this.prisma.project.findUnique({ where: { id } });
+    if (!project) return undefined;
+    const updated = await this.prisma.project.update({
+      where: { id },
+      data: { ...(input.name === undefined ? {} : { name: input.name }) },
+      select: { id: true, name: true, createdAt: true, updatedAt: true, archivedAt: true },
+    });
+    return mapProject(updated);
+  }
+
+  async setArchived(
+    id: string,
+    archived: boolean,
+    scope: ProjectScope = {},
+  ): Promise<Project | undefined> {
+    const project = scope.ownerId
+      ? await this.prisma.project.findFirst({ where: { id, ownerId: scope.ownerId } })
+      : await this.prisma.project.findUnique({ where: { id } });
+    if (!project) return undefined;
+    const updated = await this.prisma.project.update({
+      where: { id },
+      data: { archivedAt: archived ? new Date() : null },
+      select: { id: true, name: true, createdAt: true, updatedAt: true, archivedAt: true },
+    });
+    return mapProject(updated);
   }
 
   async getCanvas(id: string, scope: ProjectScope = {}): Promise<CanvasDocument | undefined> {
@@ -673,12 +803,14 @@ function mapProject(project: {
   name: string;
   createdAt: Date;
   updatedAt: Date;
+  archivedAt?: Date | null;
 }): Project {
   return {
     id: project.id,
     name: project.name,
     createdAt: project.createdAt.toISOString(),
     updatedAt: project.updatedAt.toISOString(),
+    ...(project.archivedAt ? { archivedAt: project.archivedAt.toISOString() } : {}),
   };
 }
 

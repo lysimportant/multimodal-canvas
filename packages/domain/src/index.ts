@@ -46,6 +46,17 @@ export const providerJobStatuses = [
 
 export const providerJobStatusSchema = z.enum(providerJobStatuses);
 
+/** Lifecycle state for one frozen canvas node inside a queued DAG run. */
+export const workflowNodeStatuses = [
+  'pending',
+  'running',
+  'succeeded',
+  'failed',
+  'cancelled',
+] as const;
+
+export const workflowNodeStatusSchema = z.enum(workflowNodeStatuses);
+
 export const providerJobSchema = z.object({
   id: z.string().min(1),
   provider: z.string().min(1),
@@ -239,6 +250,44 @@ export const runSnapshotSchema = z
     inputs: z.array(runInputSnapshotSchema),
   })
   .superRefine((snapshot, context) => {
+    // Run snapshots can come from a persisted queue payload or a worker
+    // restart, so validate the graph again instead of trusting the API's
+    // earlier canvas validation. This prevents malformed edges or cycles from
+    // reaching a provider when a queue/database boundary is compromised.
+    const documentResult = canvasDocumentSchema.safeParse({
+      revision: snapshot.canvasRevision,
+      nodes: snapshot.nodes,
+      edges: snapshot.edges,
+    });
+    if (!documentResult.success) {
+      for (const issue of documentResult.error.issues) {
+        if (issue.path[0] === 'revision') continue;
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: issue.message,
+          path: issue.path,
+        });
+      }
+    }
+
+    const nodeIds = new Set(snapshot.nodes.map((node) => node.id));
+    snapshot.inputs.forEach((input, index) => {
+      if (!nodeIds.has(input.nodeId)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'run input references a missing node',
+          path: ['inputs', index, 'nodeId'],
+        });
+      }
+      if (input.snapshot.id !== input.nodeId) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'run input snapshot id does not match nodeId',
+          path: ['inputs', index, 'snapshot', 'id'],
+        });
+      }
+    });
+
     if (!snapshot.nodes.some((node) => node.id === snapshot.targetNodeId)) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -257,6 +306,46 @@ export const runResultSchema = z.object({
   asset: runResultAssetSchema.optional(),
   providerJob: providerJobSchema.optional(),
 });
+
+/**
+ * Durable execution state for one node of the immutable run snapshot. The
+ * source graph itself remains in `snapshot`; this only records lifecycle
+ * data needed to resume a BullMQ job without re-running completed work.
+ */
+export const workflowNodeStateSchema = z
+  .object({
+    nodeId: z.string().min(1),
+    status: workflowNodeStatusSchema,
+    providerJob: providerJobSchema.optional(),
+    result: runResultSchema.optional(),
+  })
+  .superRefine((state, context) => {
+    if (state.status === 'succeeded' && !state.result) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'succeeded workflow node requires a result',
+        path: ['result'],
+      });
+    }
+  });
+
+export const workflowStateSchema = z
+  .object({
+    nodes: z.array(workflowNodeStateSchema),
+  })
+  .superRefine((state, context) => {
+    const nodeIds = new Set<string>();
+    state.nodes.forEach((node, index) => {
+      if (nodeIds.has(node.nodeId)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `duplicate workflow node state: ${node.nodeId}`,
+          path: ['nodes', index, 'nodeId'],
+        });
+      }
+      nodeIds.add(node.nodeId);
+    });
+  });
 
 export const runRecordSchema = z.object({
   id: z.string().min(1),
@@ -278,17 +367,47 @@ export const runRecordSchema = z.object({
   updatedAt: z.string().datetime(),
 });
 
-export const runJobDataSchema = z.object({
-  runId: z.string().min(1),
-  userId: z.string().min(1).optional(),
-  snapshot: runSnapshotSchema,
-  attempt: z.number().int().positive(),
-  provider: z.enum(['mock', 'newapi']).default('mock'),
-  retryOf: z.string().min(1).optional(),
-  idempotencyKey: z.string().trim().min(1).max(200).optional(),
-  providerJob: providerJobSchema.optional(),
-  cancelRequested: z.boolean().default(false),
-});
+export const runJobDataSchema = z
+  .object({
+    runId: z.string().min(1),
+    userId: z.string().min(1).optional(),
+    snapshot: runSnapshotSchema,
+    attempt: z.number().int().positive(),
+    provider: z.enum(['mock', 'newapi']).default('mock'),
+    retryOf: z.string().min(1).optional(),
+    idempotencyKey: z.string().trim().min(1).max(200).optional(),
+    providerJob: providerJobSchema.optional(),
+    workflowState: workflowStateSchema.optional(),
+    cancelRequested: z.boolean().default(false),
+  })
+  .superRefine((job, context) => {
+    const nodesById = new Map(job.snapshot.nodes.map((node) => [node.id, node]));
+    job.workflowState?.nodes.forEach((state, index) => {
+      const node = nodesById.get(state.nodeId);
+      if (!node) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'workflow state references a missing snapshot node',
+          path: ['workflowState', 'nodes', index, 'nodeId'],
+        });
+        return;
+      }
+      if (state.result?.targetNodeId !== undefined && state.result.targetNodeId !== node.id) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'workflow result target does not match its node state',
+          path: ['workflowState', 'nodes', index, 'result', 'targetNodeId'],
+        });
+      }
+      if (state.result?.mediaType !== undefined && state.result.mediaType !== node.data.mediaType) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'workflow result media type does not match its node state',
+          path: ['workflowState', 'nodes', index, 'result', 'mediaType'],
+        });
+      }
+    });
+  });
 
 export const runJobResultSchema = z.object({
   status: z.enum(['succeeded', 'cancelled']),
@@ -396,6 +515,9 @@ export type RunResultAsset = z.infer<typeof runResultAssetSchema>;
 export type RunInputSnapshot = z.infer<typeof runInputSnapshotSchema>;
 export type RunSnapshot = z.infer<typeof runSnapshotSchema>;
 export type RunResult = z.infer<typeof runResultSchema>;
+export type WorkflowNodeStatus = z.infer<typeof workflowNodeStatusSchema>;
+export type WorkflowNodeState = z.infer<typeof workflowNodeStateSchema>;
+export type WorkflowState = z.infer<typeof workflowStateSchema>;
 export type RunRecord = z.infer<typeof runRecordSchema>;
 export type RunJobData = z.infer<typeof runJobDataSchema>;
 export type RunJobResult = z.infer<typeof runJobResultSchema>;

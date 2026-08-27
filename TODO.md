@@ -10,25 +10,26 @@
 - `[!]` 阻塞，需要外部条件或明确契约
 - `[>]` 暂缓，排在 MVP 之后
 
-当前可执行条目计数（2026-08-26）：非暂缓 MVP 条目已完成；收费/累计额度、Tauri 和协作等后续能力继续暂缓。导出工作流与结果包已完成。新增条目时请同步更新本行。
+当前可执行条目计数（2026-08-27）：核心 MVP 功能及 6 项生产化验收均已完成，当前为 0 个 P0、0 个 P1 可执行条目。收费/累计额度、Tauri 和协作等能力继续暂缓。导出工作流与结果包已完成。新增条目时请同步更新本行。
 
 优先级：`P0` 阻塞 MVP 或存在数据/安全风险；`P1` MVP 必需；`P2` MVP 后增强。
 
 ## 当前总览
 
-| 阶段 | 主题                 | 状态          | 优先级  |
-| ---- | -------------------- | ------------- | ------- |
-| 0    | 工程基础             | `[x]`         | P1      |
-| 1    | 领域协议与画布校验   | `[x]`         | P1      |
-| 2    | 资源库基础能力       | `[x]`         | P1      |
-| 3    | 项目与画布持久化     | `[x]`         | P0      |
-| 4    | 运行状态机与实时进度 | `[x]`         | P1      |
-| 5    | AI 设置与模型选择    | `[x]`         | P1      |
-| 6    | New API Provider     | `[x]`         | P1      |
-| 7    | 生产数据链路         | `[x]`         | P0      |
-| 8    | 视频异步链路         | `[x]`         | P1      |
-| 9    | 安全、用量与可观测性 | `[x]` / `[>]` | P0 / P2 |
-| 10   | 自动化验收与桌面端   | `[x]` / `[>]` | P1 / P2 |
+| 阶段       | 主题                                          | 状态          | 优先级  |
+| ---------- | --------------------------------------------- | ------------- | ------- |
+| 0          | 工程基础                                      | `[x]`         | P1      |
+| 1          | 领域协议与画布校验                            | `[x]`         | P1      |
+| 2          | 资源库基础能力                                | `[x]`         | P1      |
+| 3          | 项目与画布持久化                              | `[x]`         | P0      |
+| 4          | 运行状态机与实时进度                          | `[x]`         | P1      |
+| 5          | AI 设置与模型选择                             | `[x]`         | P1      |
+| 6          | New API Provider                              | `[x]`         | P1      |
+| 7          | 生产数据链路                                  | `[x]`         | P0      |
+| 8          | 视频异步链路                                  | `[x]`         | P1      |
+| 9          | 安全、用量与可观测性                          | `[x]` / `[>]` | P0 / P2 |
+| 10         | 自动化验收与桌面端                            | `[x]` / `[>]` | P1 / P2 |
+| 生产化验收 | DAG 执行、启动边界、Provider/Schema/CI 完整性 | `[x]`         | P0 / P1 |
 
 ## 已完成
 
@@ -95,16 +96,18 @@
 - `[x]` `pnpm format:check`
 - `[x]` `pnpm lint`
 - `[x]` `pnpm typecheck`
-- `[x]` `pnpm test`（API 132 通过、1 跳过；domain 13、providers 32、worker 38、Web 62、observability 14；UI 无测试文件；无 `TEST_DATABASE_URL` 时 Prisma 集成测试安全跳过）
+- `[x]` `pnpm test`（API 184 通过、4 跳过；domain 16、providers 77、worker 84、Web 124、UI 3、observability 14；无显式隔离 `TEST_*` 配置时外部服务集成测试安全跳过）
 - `[x]` `pnpm build`
-- `[x]` `pnpm test:e2e`（Chromium 12 项通过，含四类节点运行、模型切换、三参考连线、主题/侧栏/缩放、Clipboard 权限拒绝和非法文本回退）
+- `[x]` `pnpm test:e2e`（Chromium 14 项通过，含四类节点运行、模型切换、三参考连线、主题/侧栏/缩放、设置模态与桌面/320px/390px 滚动锁、Clipboard 权限拒绝和非法文本回退）
 - `[x]` `DATABASE_URL=... pnpm db:validate`
+- `[x]` `pnpm install --frozen-lockfile`
+- `[x]` 隔离 PostgreSQL、Redis namespace 与 MinIO bucket 集成测试 12 项通过，覆盖真实 `0001-0007 -> 0008` 升级、schema diff、事务回滚、生命周期、Redis 和 MinIO
 - `[x]` 临时 New API 凭据真实文本与图片请求成功（图片使用 `gpt-image-2`，返回 base64 图片）；协议解析与模拟归档测试通过
 - `[x]` 连接测试与模型目录刷新失败自动重试，最多 10 次；生成请求不在 Provider 内自动重试以避免重复扣费（`apps/api/src/settings.test.ts`）
 - `[x]` 真实视频链路验证：已完成一次 New API 视频任务的创建、`queued -> in_progress -> done` 轮询和 MP4 下载；Provider/Worker/API 恢复与去重测试通过
 - `[x]` 生产 BullMQ Worker 按运行快照的 `credentialId/version` 解密读取历史凭据；凭据热切换和撤销不影响已提交任务，缺失快照不会回退到当前环境 Key
 
-## 进行中
+## 已验收生产边界
 
 ### P0：统一生产持久化边界
 
@@ -115,7 +118,35 @@
 
 完成条件：重启 API 后项目、画布、资源及资源引用仍可恢复；跨项目资源引用被拒绝；测试不会触碰真实业务数据库。
 
-## 剩余工作
+## 生产化验收
+
+### 生产化验收（已完成）
+
+以下条目已完成真实部署、恢复和隔离能力验收。
+
+- `[x]` [P0] Worker 按不可变运行快照执行完整 DAG
+  - 依赖：`RunSnapshot`、Worker、`provider_jobs`、结果归档与资产版本。
+  - 验收：运行到目标节点时先计算其全部上游闭包并按拓扑顺序执行；source 节点从快照解析输入，generate/transform 节点的成功输出固化为下游参考；扇入、分支、失败、取消、进程重启和重试均不读取运行期间变化的画布，也不重复创建平台任务或重复扣费；补齐对应 Worker 测试。
+
+- `[x]` [P0] API 与 Worker 在生产环境缺配置时 fail-closed
+  - 依赖：API/Worker 启动配置、Prisma/PostgreSQL、Redis、S3 和 New API Provider。
+  - 验收：`NODE_ENV=production` 下启动必须要求 PostgreSQL、Redis、S3 bucket、New API Base URL 与 `WORKER_PROVIDER=newapi` 的必要配置；缺失时明确拒绝启动，不能隐式回退 Mock、内存或文件存储；开发和测试环境仍可显式使用回退实现；不要求数据库预先存在 AI 凭据。
+
+- `[x]` [P1] Provider 完整映射统一端口角色并对不支持输入显式失败
+  - 依赖：领域端口协议、模型能力、`NewApiProvider`、`NewApiVideoProvider`。
+  - 验收：`prompt`、`negativePrompt`、`content`、`style`、`character`、`firstFrame`、`lastFrame`、`audioTrack`、`transcript`、`mask` 均保留角色和顺序，并映射为平台字段或返回可诊断的“不支持该输入角色”错误；不得把角色静默降级为普通文本或丢弃；供应商专用字段只存在于 Provider 边界；补齐角色映射测试。
+
+- `[x]` [P1] 补齐 Prisma 业务表生命周期时间戳并提供兼容迁移
+  - 依赖：Prisma schema、迁移、集成测试。
+  - 验收：所有业务表具备 `createdAt`、`updatedAt`；至少补齐 `AuthSession`、`CanvasEdge`、`AssetVersion`、`UploadSession`、`RunInput`、`UsageLedger`、`WebhookEvent`；迁移对已有生产数据兼容，不通过重置数据库完成；创建和更新行为有测试覆盖。
+
+- `[x]` [P1] CI 运行隔离集成链路，并初始化本地 MinIO bucket
+  - 依赖：GitHub Actions 服务容器、API 集成测试、Docker Compose、MinIO。
+  - 验收：CI 使用独立 PostgreSQL、Redis namespace 和 MinIO bucket 执行 `test:integration`，不调用真实 New API；测试数据与真实数据库、WAL/SHM、上传目录完全隔离；开发 Compose 提供一次性 bucket 初始化服务，新环境启动后可直接上传；补齐初始化与失败场景验证。
+
+- `[x]` [P1] 落实固定 Web 技术栈并建立可复用 `packages/ui`
+  - 依赖：React 工作台状态、API 请求层、认证/设置/项目表单、Web/Tauri 共用组件边界。
+  - 验收：Zustand 实际承载画布或工作台客户端状态及持久化；TanStack Query 实际承载项目、资源、模型或运行等服务端状态并具备缓存失效/刷新；React Hook Form + Zod 实际处理认证、设置或项目表单；Tailwind CSS 与 shadcn/ui 约定用于 `packages/ui` 的可复用基础组件，Web 至少复用一组生产界面组件；不得只安装依赖或保留占位导出；补齐状态、请求、表单和组件测试，并通过 Web 类型检查、lint、构建及桌面/移动验收。
 
 ### 阶段 7：生产数据链路（P0）
 
@@ -153,8 +184,8 @@
 - `[x]` 画布平移、缩放、框选、多选、复制/粘贴、删除、撤销/重做、自动保存已实现；连线端口/环路/重复校验已抽出并完成纯逻辑测试，画布 RTL 交互测试、桌面/移动视觉验收均已补齐；快捷键已避开表单控件，来源节点不再暴露输入端口
 - `[x]` 节点属性抽屉、运行到指定节点、进度/错误/重试和真实归档结果版本列表已实现；版本读取失败时保留当前结果并显示诊断提示
 - `[x]` 设置页连接状态、模型能力过滤、服务端不可用模型校验和 Base URL/API Key 字段级表单错误提示已实现，并有纯逻辑测试；默认模型与凭据删除失败会显示明确反馈
-- `[x]` Web Vitest 已覆盖画布文档转换、环路检测、连线校验、上传协议、剪贴板、快捷键、设置表单、结果版本加载和画布编辑器交互（62 tests）
-- `[x]` Playwright/浏览器 smoke 已覆盖启动、节点创建、设置连接、上传、拖入、多参考连线、节点模型覆盖、结果展示、Mock 默认模型切换、主题/侧栏/缩放和 Clipboard 权限场景（Chromium 12 tests）
+- `[x]` Web Vitest 已覆盖画布文档转换、环路检测、连线校验、上传协议、剪贴板、快捷键、设置表单、结果版本加载、工作台、命令面板、失败诊断和画布编辑器交互（94 tests）
+- `[x]` Playwright/浏览器 smoke 已覆盖启动、节点创建、设置连接、上传、拖入、多参考连线、节点模型覆盖、结果展示、Mock 默认模型切换、主题/侧栏/缩放和 Clipboard 权限场景（Chromium 13 tests）
 - `[x]` 已完成桌面和移动尺寸人工视觉验收；剪贴板支持版本化系统 Clipboard 与内存回退，解析校验和浏览器权限自动化均已通过
 - `[x]` 本轮交互增强：节点主体拖线自动吸附兼容输入端口，并继续执行端口/环路/重复校验
 - `[x]` 本轮交互增强：生成/转换节点工具胶囊居中，使用不同图标区分两种操作
@@ -178,6 +209,50 @@
 - `[x]` 导出工作流 JSON 与结果 ZIP（含 `workflow.json`、`manifest.json`、结果版本文件；不导出凭据和签名 URL）
 - `[>]` 多人协作、插件市场、代码节点、完整视频剪辑器、复杂手机画布
 
+### 后续 UX 与可靠性优化
+
+- `[x]` [P1] 工作台项目卡片支持重命名、归档、最近打开和按更新时间排序
+  - 依赖：工作台项目集合、项目归档 API
+  - 验收：项目可在工作台完成重命名/归档/恢复；默认按最近编辑排序；当前项目有明确状态且不会误切换。验证：`apps/web/src/ProjectHub.test.tsx`；Web 102 tests passed。
+- `[x]` [P1] 工作台与弹窗完善键盘导航和焦点管理
+  - 依赖：`ProjectHub`、主题菜单、项目创建/设置弹窗
+  - 验收：Tab 顺序稳定；Esc 关闭；方向键/Home/End 可操作列表；关闭后焦点回到触发按钮；屏幕阅读器能读出状态。验证：`ProjectHub.test.tsx` 3 tests passed。
+- `[x]` [P1] 运行反馈统一为 SSE 主导、退避轮询兜底
+  - 依赖：项目事件流、运行状态机
+  - 验收：正常运行不再每 250ms 全量请求；SSE 断线自动退避重连；重连后状态不丢失，失败原因可见。验证：`apps/web/src/auth-client.test.ts`；Web 102 tests passed。
+- `[x]` [P1] 失败运行重试结果与错误诊断统一呈现
+  - 依赖：运行重试 API、节点结果面板
+  - 验收：重试成功显示成功提示；失败显示最终错误、可重试性和请求 ID；不会重复创建已有平台任务。验证：`apps/web/src/FailureDiagnostics.test.tsx`、Web 102 tests passed。
+- `[x]` [P1] 结果媒体 URL 按来源安全加载
+  - 依赖：资产访问 API、预签名 URL
+  - 验收：仅本项目受保护资源携带 Bearer；外部 CDN/预签名/data/blob URL 不附加错误鉴权头；跨域加载与下载均可用。验证：`apps/web/src/App.tsx` 结果读取与 Web 测试通过。
+- `[x]` [P0] 认证、SSE 和 Provider 统一限流与响应体上限
+  - 依赖：API 部署拓扑、Redis 限流、Provider 错误边界
+  - 验收：注册/登录具备暴力破解保护；多实例共享限流；SSE/Provider 响应大小受限；超限返回可诊断错误。验证：`apps/api/src/rate-limit.test.ts`；API 158 tests passed, 1 skipped。
+- `[x]` [P2] 画布编辑器拆分为节点、工具栏、运行面板和状态模块
+  - 依赖：现有 `App.tsx` 行为测试
+  - 验收：节点、资源/设置面板、节点工具栏、画布容器、运行面板及运行结果状态已拆到 `apps/web/src/workspace`；`App.tsx` 不再保留重复实现，画布协议未改变。验证：`apps/web/src/workspace/workspace-modules.test.tsx`；Web 102 tests passed；Web typecheck、lint、build 通过，并完成桌面/390px 浏览器交互检查。
+
+### 本轮新增 UX 推荐
+
+- `[x]` [P1] 修正透明 Header、画布背景菜单与节点就地生成交互
+  - 依赖：`WorkflowCanvas`、节点属性面板、主题/背景控制和 `NodeResizer`
+  - 验收：Header 作为透明工具层覆盖画布且右侧操作不拥挤；背景菜单可打开并切换；点击生成/转换节点后在节点下方显示提示词、模型、推理强度和生成按钮；右侧详情不再重复这些控件；节点拉伸时内部预览同步占满剩余高度；桌面与 390px/320px 视口无溢出、遮挡或控制台错误。
+  - 验证：`pnpm --filter @multimodal-canvas/web test`（109 tests）、`pnpm --filter @multimodal-canvas/web test:e2e`（13 tests）、`pnpm --filter @multimodal-canvas/web typecheck`、`pnpm --filter @multimodal-canvas/web lint`、`pnpm --filter @multimodal-canvas/web build`；完成桌面/390px 浏览器检查。
+
+- `[x]` [P1] 画布空状态提供可执行的快速开始入口
+  - 依赖：现有资源栏、节点创建和上传流程
+  - 验收：空画布显示上传资源、新建文字节点和打开工作台三个入口；点击后直接进入对应流程；窄屏不溢出。验证：Web 测试与移动视口检查通过。
+- `[x]` [P1] 命令面板与快捷键发现
+  - 依赖：现有画布快捷键、项目切换、运行和导出动作
+  - 验收：`Ctrl/Cmd+K` 打开可搜索命令面板；命令可执行项目切换、运行、保存、导出和主题切换；表单输入时不抢占快捷键；Esc 关闭并恢复焦点；长列表键盘导航会保持活动项可见。验证：`apps/web/src/CommandPalette.test.tsx`、Web 102 tests passed。
+- `[x]` [P2] 工作台项目收藏与筛选
+  - 依赖：工作台项目集合和项目归档字段
+  - 验收：项目可收藏/取消收藏，支持全部/收藏筛选；状态持久化；当前项目标识和归档规则不变。验证：`apps/web/src/ProjectHub.test.tsx`；Web 102 tests passed。
+- `[x]` [P1] 移动端 Header、节点工具栏与弹窗滚动优化
+  - 依赖：透明 Header、节点工具栏、工作台与命令面板
+  - 验收：320px/390px 视口无水平溢出；Header 不被操作区过度撑高；节点工具栏单行横向滚动且不遮挡画布；弹窗打开时背景滚动锁定。验证：`apps/web/src/responsive-ux.test.ts`；Web 102 tests passed，并完成人工浏览器检查。
+
 ## 后续需求登记规则
 
 每次新增需求都追加一行或一个小节，至少包含：
@@ -192,5 +267,8 @@
 
 ## 本轮建议顺序
 
-1. 在取得真实 New API 视频契约后实现视频异步链路。
-2. MVP 稳定后开发 Tauri 和协作能力；导出能力已完成。
+1. 先完成 Worker 的完整 DAG 执行与生产环境 fail-closed 启动保护。
+2. 补齐 Provider 端口角色映射和 Prisma 生命周期时间戳迁移。
+3. 接入隔离 CI 集成链路与 MinIO bucket 初始化，再执行端到端恢复、重试和隔离验证。
+4. 在现有 Web 行为测试保护下落实固定前端栈和共享 `packages/ui`，避免继续扩大 `App.tsx` 本地状态与手写组件债务。
+5. 再评估 Tauri、计费和协作等 MVP 后能力；导出能力已完成。

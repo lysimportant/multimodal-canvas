@@ -36,6 +36,7 @@ const projectSchema = {
     name: { type: 'string' },
     createdAt: { type: 'string', format: 'date-time' },
     updatedAt: { type: 'string', format: 'date-time' },
+    archivedAt: { type: 'string', format: 'date-time' },
   },
 } as const;
 
@@ -312,6 +313,13 @@ export const openApiDocument = {
     '/v1/projects': {
       get: {
         tags: ['projects'],
+        parameters: [
+          {
+            name: 'includeArchived',
+            in: 'query',
+            schema: { type: 'boolean', default: false },
+          },
+        ],
         responses: {
           '200': response(
             'Projects',
@@ -347,6 +355,48 @@ export const openApiDocument = {
         parameters: [{ $ref: '#/components/parameters/ProjectId' }],
         responses: {
           '200': response('Project', envelope('project', projectSchema)),
+          '404': response('Not found', errorSchema),
+        },
+      },
+      patch: {
+        tags: ['projects'],
+        parameters: [{ $ref: '#/components/parameters/ProjectId' }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['name'],
+                properties: { name: { type: 'string', minLength: 1, maxLength: 120 } },
+                additionalProperties: false,
+              },
+            },
+          },
+        },
+        responses: {
+          '200': response('Project renamed', envelope('project', projectSchema)),
+          '400': response('Invalid request', errorSchema),
+          '404': response('Not found', errorSchema),
+        },
+      },
+    },
+    '/v1/projects/{projectId}/archive': {
+      post: {
+        tags: ['projects'],
+        parameters: [{ $ref: '#/components/parameters/ProjectId' }],
+        responses: {
+          '200': response('Project archived', envelope('project', projectSchema)),
+          '404': response('Not found', errorSchema),
+        },
+      },
+    },
+    '/v1/projects/{projectId}/restore': {
+      post: {
+        tags: ['projects'],
+        parameters: [{ $ref: '#/components/parameters/ProjectId' }],
+        responses: {
+          '200': response('Project restored', envelope('project', projectSchema)),
           '404': response('Not found', errorSchema),
         },
       },
@@ -947,6 +997,7 @@ export const openApiDocument = {
               accepted: { type: 'boolean', const: true },
               eventId: { type: 'string' },
               deduplicated: { type: 'boolean' },
+              updatedRunId: { type: 'string' },
             },
             required: ['accepted', 'deduplicated', 'eventId'],
             additionalProperties: false,

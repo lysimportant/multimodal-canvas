@@ -13,6 +13,7 @@ export type ProjectSummary = {
   name: string;
   createdAt: string;
   updatedAt: string;
+  archivedAt?: string;
 };
 
 export type Notice = { kind: 'error' | 'success'; message: string };

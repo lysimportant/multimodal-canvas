@@ -41,6 +41,7 @@ import {
   sanitizeProviderJobPayload,
 } from './index';
 import { serializeWorkerError } from './logger';
+import { workflowSnapshotFingerprint } from './workflow-dag';
 
 const result = {
   provider: 'mock',
@@ -361,6 +362,109 @@ describe('worker provider job boundary', () => {
     });
   });
 
+  it('aborts built-in video polling on worker cancellation without inventing a cancel request', async () => {
+    const runId = '123e4567-e89b-12d3-a456-426614174020';
+    const credentialId = '123e4567-e89b-12d3-a456-426614174021';
+    let pollSignal: AbortSignal | undefined;
+    let markPollStarted: (() => void) | undefined;
+    const pollStarted = new Promise<void>((resolve) => {
+      markPollStarted = resolve;
+    });
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (url, init) => {
+      const requestUrl = String(url);
+      if (requestUrl.endsWith('/videos/generations')) {
+        return new Response(JSON.stringify({ request_id: 'platform-video-cancel' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (requestUrl.endsWith('/videos/platform-video-cancel')) {
+        pollSignal = init?.signal ?? undefined;
+        markPollStarted?.();
+        return new Promise<Response>((_resolve, reject) => {
+          pollSignal?.addEventListener(
+            'abort',
+            () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+            { once: true },
+          );
+        });
+      }
+      throw new Error(`unexpected New API request: ${requestUrl}`);
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+    vi.stubEnv('NEW_API_VIDEO_POLL_INTERVAL_MS', '0');
+    const job: NonNullable<typeof bullmqState.job> = {
+      id: runId,
+      data: {
+        runId,
+        snapshot: {
+          projectId: runId,
+          canvasRevision: 1,
+          targetNodeId: 'node_video_cancel',
+          modelAlias: 'video-model',
+          credentialId,
+          credentialVersion: 1,
+          parameters: {},
+          submittedAt: '2026-08-26T00:00:00.000Z',
+          nodes: [
+            {
+              id: 'node_video_cancel',
+              type: 'video' as const,
+              position: { x: 0, y: 0 },
+              data: {
+                label: 'Cancelable video',
+                mediaType: 'video' as const,
+                mode: 'generate' as const,
+              },
+            },
+          ],
+          edges: [],
+          inputs: [],
+        },
+        attempt: 1,
+        provider: 'newapi',
+        providerJob: createProviderJobRecord(runId, 'newapi'),
+        cancelRequested: false,
+      },
+      async updateData(data) {
+        this.data = data;
+      },
+      async updateProgress() {},
+    };
+    bullmqState.job = job;
+    const resultArchiver = vi.fn();
+
+    try {
+      createRunWorker({
+        connection: { host: '127.0.0.1', port: 6379 },
+        providerName: 'newapi',
+        stepDelayMs: 0,
+        cancellationPollMs: 1,
+        persistence: {
+          async getProviderCredentials() {
+            return { baseUrl: 'https://newapi.example/v1', apiKey: 'test-key' };
+          },
+          async upsertProviderJob() {},
+          async recordUsage() {},
+        },
+        resultArchiver,
+      });
+
+      const processing = bullmqState.processor?.(job);
+      await pollStarted;
+      job.data.cancelRequested = true;
+
+      await expect(processing).resolves.toMatchObject({ status: 'cancelled' });
+      expect(pollSignal?.aborted).toBe(true);
+      expect(resultArchiver).not.toHaveBeenCalled();
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(fetchImpl.mock.calls.some(([url]) => String(url).includes('/content'))).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('recovers a predecessor platform task for retries before provider execution', async () => {
     const runId = '123e4567-e89b-12d3-a456-426614174010';
     const predecessorRunId = '123e4567-e89b-12d3-a456-426614174011';
@@ -402,7 +506,11 @@ describe('worker provider job boundary', () => {
     const recovered = {
       ...createProviderJobRecord(predecessorRunId, 'newapi', 'failed', 86),
       platformJobId: 'platform-video-retry',
-      payload: { contract: 'newapi-video-v1', phase: 'polling' },
+      payload: {
+        contract: 'newapi-video-v1',
+        phase: 'polling',
+        snapshotFingerprint: workflowSnapshotFingerprint(retrySnapshot),
+      },
     };
     const providerRequests: Array<Record<string, unknown>> = [];
     const findProviderJobByRunId = vi.fn(async (sourceRunId: string) => {
@@ -423,6 +531,12 @@ describe('worker provider job boundary', () => {
               mediaType: 'video' as const,
               inputCount: 0,
             },
+            output: {
+              mediaType: 'video' as const,
+              kind: 'url' as const,
+              url: 'https://assets.example/resumed.mp4',
+              mimeType: 'video/mp4',
+            },
           };
         },
       },
@@ -432,6 +546,11 @@ describe('worker provider job boundary', () => {
         async upsertProviderJob() {},
         async recordUsage() {},
       },
+      resultArchiver: async () => ({
+        assetId: 'asset-video-retry',
+        version: 1,
+        mimeType: 'video/mp4',
+      }),
     });
 
     await bullmqState.processor?.(job);

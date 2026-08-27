@@ -134,23 +134,73 @@ describe('WorkerPrismaRunPersistence usage idempotency', () => {
 });
 
 describe('WorkerPrismaRunPersistence retry recovery', () => {
-  it('reuses the compound provider identity and moves it onto the retry run', async () => {
+  it('updates the stable local provider job when a callback adds its platform ID', async () => {
     const upsert = vi.fn(async (args) => args);
     const prisma = { providerJob: { upsert } };
     const persistence = new WorkerPrismaRunPersistence(prisma as never);
-    const providerJob = {
+    const queuedProviderJob = {
       id: 'provider_job_retry',
       provider: 'newapi',
-      platformJobId: 'platform-video-42',
-      status: 'running' as const,
-      progress: 60,
+      status: 'queued' as const,
+      progress: 0,
       createdAt: '2026-08-26T00:00:00.000Z',
-      updatedAt: '2026-08-26T00:01:00.000Z',
+      updatedAt: '2026-08-26T00:00:00.000Z',
     };
 
-    await persistence.upsertProviderJob({ runId, providerJob });
+    await persistence.upsertProviderJob({ runId, providerJob: queuedProviderJob });
+    await persistence.upsertProviderJob({
+      runId,
+      providerJob: {
+        ...queuedProviderJob,
+        platformJobId: 'platform-video-42',
+        status: 'running',
+        progress: 60,
+        updatedAt: '2026-08-26T00:01:00.000Z',
+      },
+    });
 
-    expect(upsert).toHaveBeenCalledWith(
+    expect(upsert).toHaveBeenCalledTimes(2);
+    expect(upsert).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ where: { id: expect.any(String) } }),
+    );
+    expect(upsert).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: { id: expect.any(String) },
+        update: expect.objectContaining({ runId: databaseId, platformJobId: 'platform-video-42' }),
+      }),
+    );
+    expect(upsert.mock.calls[1]?.[0]?.where).toEqual(upsert.mock.calls[0]?.[0]?.where);
+    expect(upsert.mock.calls[0]?.[0]?.create).not.toHaveProperty('platformJobId');
+  });
+
+  it('reassociates a reused platform task with a retry run after the local-ID insert conflicts', async () => {
+    const uniqueError = Object.assign(new Error('unique'), { code: 'P2002' });
+    const upsert = vi.fn().mockRejectedValueOnce(uniqueError).mockResolvedValueOnce({});
+    const persistence = new WorkerPrismaRunPersistence({ providerJob: { upsert } } as never);
+    const retryRunId = 'run_worker_usage_retry';
+
+    await persistence.upsertProviderJob({
+      runId: retryRunId,
+      providerJob: {
+        id: 'provider_job_retry_new',
+        provider: 'newapi',
+        platformJobId: 'platform-video-42',
+        status: 'running',
+        progress: 60,
+        createdAt: '2026-08-26T00:00:00.000Z',
+        updatedAt: '2026-08-26T00:01:00.000Z',
+      },
+    });
+
+    expect(upsert).toHaveBeenCalledTimes(2);
+    expect(upsert).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ where: { id: expect.any(String) } }),
+    );
+    expect(upsert).toHaveBeenNthCalledWith(
+      2,
       expect.objectContaining({
         where: {
           provider_platformJobId: {
@@ -158,7 +208,7 @@ describe('WorkerPrismaRunPersistence retry recovery', () => {
             platformJobId: 'platform-video-42',
           },
         },
-        update: expect.objectContaining({ runId: databaseId }),
+        update: expect.objectContaining({ runId: databaseRunId(retryRunId), progress: 60 }),
       }),
     );
   });
@@ -193,6 +243,93 @@ describe('WorkerPrismaRunPersistence retry recovery', () => {
       updatedAt: updatedAt.toISOString(),
     });
     expect(prisma.providerJob.findFirst).toHaveBeenCalledWith({
+      where: { runId: databaseId, platformJobId: { not: null } },
+      orderBy: { updatedAt: 'desc' },
+    });
+  });
+
+  it('returns synchronous completed jobs and asynchronous tasks for workflow recovery', async () => {
+    const createdAt = new Date('2026-08-27T00:00:00.000Z');
+    const updatedAt = new Date('2026-08-27T00:01:00.000Z');
+    const findMany = vi.fn(async () => [
+      {
+        provider: 'newapi',
+        platformJobId: null,
+        status: 'SUCCEEDED',
+        progress: 100,
+        payload: {
+          workflowNodeId: 'node_text',
+          result: {
+            provider: 'newapi',
+            model: 'text-model',
+            mediaType: 'text',
+            targetNodeId: 'node_text',
+            asset: { assetId: 'asset_text', mimeType: 'text/plain' },
+          },
+        },
+        createdAt,
+        updatedAt,
+      },
+      {
+        provider: 'newapi',
+        platformJobId: 'platform-image-1',
+        status: 'RUNNING',
+        progress: 42,
+        payload: { workflowNodeId: 'node_image', phase: 'polling' },
+        createdAt,
+        updatedAt,
+      },
+      {
+        provider: 'newapi',
+        platformJobId: 'platform-video-1',
+        status: 'SUBMITTED',
+        progress: 5,
+        payload: { workflowNodeId: 'node_video', phase: 'submitted' },
+        createdAt,
+        updatedAt,
+      },
+    ]);
+    const persistence = new WorkerPrismaRunPersistence({ providerJob: { findMany } } as never);
+
+    const recoveredJobs = await persistence.findProviderJobsByRunId(runId);
+
+    expect(recoveredJobs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          status: 'succeeded',
+          payload: expect.objectContaining({
+            workflowNodeId: 'node_text',
+            result: expect.objectContaining({
+              targetNodeId: 'node_text',
+              asset: { assetId: 'asset_text', mimeType: 'text/plain' },
+            }),
+          }),
+        }),
+        expect.objectContaining({
+          platformJobId: 'platform-image-1',
+          payload: { workflowNodeId: 'node_image', phase: 'polling' },
+        }),
+        expect.objectContaining({
+          platformJobId: 'platform-video-1',
+          payload: { workflowNodeId: 'node_video', phase: 'submitted' },
+        }),
+      ]),
+    );
+    expect(
+      recoveredJobs.find((job) => job.payload?.workflowNodeId === 'node_text'),
+    ).not.toHaveProperty('platformJobId');
+    expect(findMany).toHaveBeenCalledWith({
+      where: { runId: databaseId },
+      orderBy: { updatedAt: 'desc' },
+    });
+  });
+
+  it('keeps singular retry recovery restricted to asynchronous platform tasks', async () => {
+    const findFirst = vi.fn(async () => null);
+    const persistence = new WorkerPrismaRunPersistence({ providerJob: { findFirst } } as never);
+
+    await expect(persistence.findProviderJobByRunId(runId)).resolves.toBeUndefined();
+    expect(findFirst).toHaveBeenCalledWith({
       where: { runId: databaseId, platformJobId: { not: null } },
       orderBy: { updatedAt: 'desc' },
     });

@@ -65,6 +65,29 @@ describe('run idempotency', () => {
       code: 'idempotency_conflict',
     });
   });
+
+  it('coalesces concurrent retries of the same failed run', async () => {
+    let executions = 0;
+    const service = new MemoryRunService({
+      stepDelayMs: 0,
+      executor: async () => {
+        executions += 1;
+        throw new Error('retryable failure');
+      },
+    });
+    services.push(service);
+    const first = await service.create(snapshot());
+    const failed = await waitForTerminalRun(service, first.id);
+    expect(failed.status).toBe('failed');
+
+    const [left, right] = await Promise.all([service.retry(first.id), service.retry(first.id)]);
+
+    expect(right.id).toBe(left.id);
+    expect(left).toMatchObject({ attempt: 2, retryOf: first.id });
+    await waitForTerminalRun(service, left.id);
+    expect(await service.listByProject(first.projectId)).toHaveLength(2);
+    expect(executions).toBe(2);
+  });
 });
 
 describe('run credential snapshots', () => {
@@ -298,6 +321,103 @@ describe('asynchronous provider recovery', () => {
     const succeeded = await waitForTerminalRun(service, retry.id);
     expect(succeeded.status).toBe('succeeded');
     expect(requests).toHaveLength(2);
+  });
+});
+
+describe('provider webhook lifecycle updates', () => {
+  it('updates the matching platform job without regressing or leaking payload fields', async () => {
+    let releaseExecutor!: () => void;
+    let signalProviderReady!: () => void;
+    const executorReleased = new Promise<void>((resolve) => {
+      releaseExecutor = resolve;
+    });
+    const providerReady = new Promise<void>((resolve) => {
+      signalProviderReady = resolve;
+    });
+    const service = new MemoryRunService({
+      stepDelayMs: 0,
+      providerName: 'newapi',
+      executor: async (request) => {
+        await request.onProviderJob?.({
+          provider: 'newapi',
+          platformJobId: 'platform-webhook-1',
+          status: 'submitted',
+          progress: 5,
+        });
+        signalProviderReady();
+        await executorReleased;
+        return {
+          result: {
+            provider: 'newapi',
+            summary: 'webhook result',
+            targetNodeId: 'node_video_webhook',
+            mediaType: 'video',
+            inputCount: 0,
+          },
+        };
+      },
+    });
+
+    const videoSnapshot = createRunSnapshot(
+      'project_webhook',
+      {
+        revision: 1,
+        nodes: [
+          {
+            id: 'node_video_webhook',
+            type: 'video',
+            position: { x: 0, y: 0 },
+            data: { label: 'Video', mediaType: 'video', mode: 'generate' },
+          },
+        ],
+        edges: [],
+      },
+      'node_video_webhook',
+    );
+
+    try {
+      const run = await service.create(videoSnapshot);
+      await providerReady;
+
+      const running = await service.applyProviderWebhook({
+        provider: 'newapi',
+        platformJobId: 'platform-webhook-1',
+        status: 'running',
+        progress: 95,
+        payload: {
+          providerStatus: 'processing',
+          contentUrl: 'https://provider.example/video.mp4',
+          authorization: 'must-not-persist',
+        },
+      });
+      expect(running).toMatchObject({
+        id: run.id,
+        status: 'processing',
+        progress: 95,
+        providerJob: {
+          platformJobId: 'platform-webhook-1',
+          status: 'running',
+          progress: 95,
+          payload: { providerStatus: 'processing' },
+        },
+      });
+
+      const succeeded = await service.applyProviderWebhook({
+        provider: 'newapi',
+        platformJobId: 'platform-webhook-1',
+        status: 'succeeded',
+      });
+      expect(succeeded).toMatchObject({
+        id: run.id,
+        status: 'succeeded',
+        progress: 100,
+        providerJob: { status: 'succeeded', progress: 100 },
+      });
+      releaseExecutor();
+    } finally {
+      releaseExecutor();
+      await service.close();
+    }
   });
 });
 

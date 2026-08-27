@@ -51,6 +51,7 @@ async function mockApi(page: Page) {
   ];
 
   const assets: Asset[] = [];
+  let projectDefaults: Record<string, string> = {};
   const pendingUploads = new Map<
     string,
     { name: string; mimeType: string; sizeBytes: number; sha256: string }
@@ -208,6 +209,22 @@ async function mockApi(page: Page) {
       await json(route, { canvas: currentCanvas });
       return;
     }
+    if (request.method() === 'GET' && path === `/v1/projects/${project.id}/models/defaults`) {
+      await json(route, { defaults: projectDefaults });
+      return;
+    }
+    if (request.method() === 'PATCH' && path === `/v1/projects/${project.id}/models/defaults`) {
+      const body = request.postDataJSON() as Record<string, string | null>;
+      projectDefaults = {
+        ...projectDefaults,
+        ...Object.fromEntries(Object.entries(body).filter(([, value]) => value)),
+      };
+      for (const [mediaType, modelAlias] of Object.entries(body)) {
+        if (!modelAlias) delete projectDefaults[mediaType];
+      }
+      await json(route, { defaults: projectDefaults });
+      return;
+    }
     if (request.method() === 'GET' && path === `/v1/projects/${project.id}/export/workflow`) {
       await route.fulfill({
         status: 200,
@@ -287,8 +304,8 @@ async function mockApi(page: Page) {
       return;
     }
     if (request.method() === 'DELETE' && path === '/v1/settings/ai/credentials') {
-      settings = { ...settings, configured: false, keyFingerprint: undefined };
-      await json(route, {});
+      settings = { ...settings, baseUrl: '', configured: false, keyFingerprint: undefined };
+      await json(route, { settings });
       return;
     }
 
@@ -427,13 +444,17 @@ test('supports theme/sidebar controls, node body connections, and corner resizin
   await expect(page.locator('.react-flow__edge')).toHaveCount(1);
 
   await target.click();
+  await expect(page.locator('.node-quick-editor')).toBeVisible();
+  await expect(page.locator('.inspector-panel textarea')).toHaveCount(0);
   const resizeHandle = page.locator('.react-flow__resize-control.bottom.right');
   await expect(resizeHandle).toBeVisible();
   const before = await target.boundingBox();
+  const previewBefore = await target.locator('.flow-node-placeholder').boundingBox();
   const resizeBox = await resizeHandle.boundingBox();
   expect(before).not.toBeNull();
+  expect(previewBefore).not.toBeNull();
   expect(resizeBox).not.toBeNull();
-  if (!before || !resizeBox) return;
+  if (!before || !previewBefore || !resizeBox) return;
   await page.mouse.move(resizeBox.x + resizeBox.width / 2, resizeBox.y + resizeBox.height / 2);
   await page.mouse.down();
   await page.mouse.move(resizeBox.x + 30, resizeBox.y + 24, { steps: 8 });
@@ -441,6 +462,19 @@ test('supports theme/sidebar controls, node body connections, and corner resizin
   await expect
     .poll(async () => (await target.boundingBox())?.width ?? 0)
     .toBeGreaterThan(before.width);
+  await expect
+    .poll(async () => (await target.boundingBox())?.height ?? 0)
+    .toBeGreaterThan(before.height);
+  await expect
+    .poll(async () => (await target.locator('.flow-node-placeholder').boundingBox())?.height ?? 0)
+    .toBeGreaterThan(previewBefore.height);
+
+  await page.getByRole('button', { name: '选择画布背景' }).click();
+  await page.getByRole('menuitemradio', { name: '空白' }).click();
+  await expect(page.locator('.react-flow__background')).toHaveCount(0);
+  await page.getByRole('button', { name: '选择画布背景' }).click();
+  await page.getByRole('menuitemradio', { name: '点' }).click();
+  await expect(page.locator('.react-flow__background')).toHaveCount(1);
 
   await page.getByRole('button', { name: '切换主题' }).click();
   await page.getByRole('option', { name: '深色' }).click();
@@ -462,6 +496,116 @@ test('saves AI settings and tests the mocked connection', async ({ page }) => {
   await expect(dialog.getByText('已配置 · smoke-fingerprint')).toBeVisible();
   await dialog.getByRole('button', { name: '测试连接' }).click();
   await expect(page.getByRole('status')).toContainText('连接成功');
+});
+
+test('settings are truly modal and contained on desktop and narrow viewports', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 760 });
+  await page.goto('/');
+  await page.getByRole('button', { name: '切换主题' }).click();
+  await page.getByRole('option', { name: '深色' }).click();
+
+  const trigger = page.getByRole('button', { name: '打开设置' });
+  await trigger.click();
+  let dialog = page.getByRole('dialog', { name: 'AI 连接' });
+  let overlay = page.locator('.settings-backdrop');
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toHaveAttribute('aria-modal', 'true');
+  await expect(overlay).toBeVisible();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await expect(dialog.getByRole('button', { name: '关闭设置' })).toBeFocused();
+
+  const desktopModalState = await page.evaluate(() => {
+    const panel = document.querySelector<HTMLElement>('.settings-panel');
+    const backdrop = document.querySelector<HTMLElement>('.settings-backdrop');
+    return {
+      bodyOverflow: getComputedStyle(document.body).overflow,
+      htmlOverflow: getComputedStyle(document.documentElement).overflow,
+      panelBackground: panel ? getComputedStyle(panel).backgroundColor : '',
+      panelZIndex: panel ? Number(getComputedStyle(panel).zIndex) : 0,
+      backdropZIndex: backdrop ? Number(getComputedStyle(backdrop).zIndex) : 0,
+    };
+  });
+  expect(desktopModalState).toMatchObject({
+    bodyOverflow: 'hidden',
+    htmlOverflow: 'hidden',
+    panelBackground: 'rgb(26, 32, 40)',
+  });
+  expect(desktopModalState.panelZIndex).toBeGreaterThan(desktopModalState.backdropZIndex);
+
+  await page.evaluate(() => {
+    (window as Window & { backgroundPointerDown?: boolean }).backgroundPointerDown = false;
+    document.querySelector('.react-flow__pane')?.addEventListener(
+      'pointerdown',
+      () => {
+        (window as Window & { backgroundPointerDown?: boolean }).backgroundPointerDown = true;
+      },
+      { once: true },
+    );
+  });
+  await overlay.click({ position: { x: 12, y: 12 } });
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  expect(
+    await page.evaluate(
+      () => (window as Window & { backgroundPointerDown?: boolean }).backgroundPointerDown,
+    ),
+  ).toBe(false);
+
+  await trigger.click();
+  dialog = page.getByRole('dialog', { name: 'AI 连接' });
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+
+  for (const width of [390, 320]) {
+    await page.setViewportSize({ width, height: 640 });
+    await page.goto('/');
+    const narrowTrigger = page.getByRole('button', { name: '打开设置' });
+    await narrowTrigger.click();
+    dialog = page.getByRole('dialog', { name: 'AI 连接' });
+    overlay = page.locator('.settings-backdrop');
+    await expect(dialog).toBeVisible();
+    await expect(overlay).toBeVisible();
+    await expect(dialog.getByRole('button', { name: '关闭设置' })).toBeFocused();
+
+    const metrics = await dialog.evaluate((panel) => {
+      const rect = panel.getBoundingClientRect();
+      const style = getComputedStyle(panel);
+      return {
+        bodyOverflow: getComputedStyle(document.body).overflow,
+        htmlOverflow: getComputedStyle(document.documentElement).overflow,
+        clientHeight: panel.clientHeight,
+        clientWidth: panel.clientWidth,
+        height: rect.height,
+        left: rect.left,
+        overflowX: style.overflowX,
+        overflowY: style.overflowY,
+        right: rect.right,
+        scrollHeight: panel.scrollHeight,
+        scrollWidth: panel.scrollWidth,
+        viewportHeight: window.innerHeight,
+        viewportWidth: window.innerWidth,
+      };
+    });
+    expect(metrics.bodyOverflow).toBe('hidden');
+    expect(metrics.htmlOverflow).toBe('hidden');
+    expect(metrics.height).toBe(metrics.viewportHeight);
+    expect(metrics.left).toBeGreaterThanOrEqual(0);
+    expect(metrics.right).toBeLessThanOrEqual(metrics.viewportWidth);
+    expect(metrics.clientWidth).toBeGreaterThanOrEqual(metrics.scrollWidth);
+    expect(metrics.overflowX).toBe('hidden');
+    expect(metrics.overflowY).toBe('auto');
+    expect(metrics.scrollHeight).toBeGreaterThan(metrics.clientHeight);
+
+    const scrollTop = await dialog.evaluate((panel) => {
+      panel.scrollTop = 120;
+      return panel.scrollTop;
+    });
+    expect(scrollTop).toBeGreaterThan(0);
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    await expect(narrowTrigger).toBeFocused();
+  }
 });
 
 test('uploads an asset and drags it into the workflow canvas', async ({ page }) => {
@@ -590,7 +734,11 @@ test('四类节点都可以填写提示词、运行并显示对应结果预览',
     { mediaType: '视频', resultSelector: '.inspector-result video' },
   ] as const;
 
-  for (const { mediaType, resultSelector } of mediaCases) {
+  for (const [index, { mediaType, resultSelector }] of mediaCases.entries()) {
+    if (index > 0) {
+      await focusCanvas(page);
+      await expect(page.locator('.node-quick-editor')).toHaveCount(0);
+    }
     await page.getByRole('button', { name: `新建${mediaType}生成节点` }).click();
 
     const node = page
@@ -600,7 +748,7 @@ test('四类节点都可以填写提示词、运行并显示对应结果预览',
     await expect(node).toBeVisible();
     await expect(page.getByRole('heading', { name: '节点设置' })).toBeVisible();
 
-    const prompt = page.locator('.inspector-prompt textarea');
+    const prompt = page.locator('.node-quick-editor textarea');
     await expect(prompt).toBeVisible();
     await prompt.fill(`Playwright ${mediaType} 生成测试`);
     await expect(prompt).toHaveValue(`Playwright ${mediaType} 生成测试`);
@@ -663,7 +811,6 @@ test('允许 Clipboard 权限时可以跨画布页面复制粘贴', async ({ pag
 
   await page.getByRole('button', { name: '新建文字生成节点' }).click();
   await expect(page.getByRole('heading', { name: '节点设置' })).toBeVisible();
-  await focusCanvas(page);
   await page.bringToFront();
   await page.keyboard.press('Control+c');
   await expect.poll(() => readSystemClipboard(page)).toContain('multimodal-canvas/clipboard');
@@ -691,7 +838,6 @@ test('Clipboard 读取权限被拒绝时回退到内存剪贴板', async ({ page
 
   await page.getByRole('button', { name: '新建文字生成节点' }).click();
   await expect(page.getByRole('heading', { name: '节点设置' })).toBeVisible();
-  await focusCanvas(page);
   await page.bringToFront();
   await page.keyboard.press('Control+c');
   await expect(page.locator('.flow-generate-node')).toHaveCount(1);
@@ -717,7 +863,6 @@ test('系统剪贴板是非法文本时回退到内存剪贴板', async ({ page 
 
   await page.getByRole('button', { name: '新建文字生成节点' }).click();
   await expect(page.getByRole('heading', { name: '节点设置' })).toBeVisible();
-  await focusCanvas(page);
   await page.bringToFront();
   await page.keyboard.press('Control+c');
   await expect.poll(() => readSystemClipboard(page)).toContain('multimodal-canvas/clipboard');
