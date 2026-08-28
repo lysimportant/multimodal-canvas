@@ -31,7 +31,7 @@ function edge(source: string, target: string, targetHandle = 'input:content'): F
 }
 
 describe('canvas connection validation', () => {
-  it('resolves a body drop to the first compatible semantic target role', () => {
+  it('resolves a body drop to the recommended semantic target role', () => {
     const nodes = [node('source', 'image'), node('target', 'video')];
     const resolved = resolveCanvasConnectionTargetHandle(
       { source: 'source', target: 'target', sourceHandle: 'output:image', targetHandle: null },
@@ -42,7 +42,7 @@ describe('canvas connection validation', () => {
       source: 'source',
       target: 'target',
       sourceHandle: 'output:image',
-      targetHandle: 'input:content',
+      targetHandle: 'input:character',
     });
     expect(resolved && validateCanvasConnection(resolved, nodes, [])).toEqual({ ok: true });
     expect(
@@ -61,7 +61,7 @@ describe('canvas connection validation', () => {
         { source: 'source', target: 'target', sourceHandle: null, targetHandle: null },
         nodes,
       ),
-    ).toMatchObject({ sourceHandle: 'output:image', targetHandle: 'input:content' });
+    ).toMatchObject({ sourceHandle: 'output:image', targetHandle: 'input:character' });
   });
 
   it('resolves visual perimeter anchors but preserves explicit semantic handles', () => {
@@ -76,7 +76,7 @@ describe('canvas connection validation', () => {
         },
         nodes,
       ),
-    ).toMatchObject({ targetHandle: 'input:content' });
+    ).toMatchObject({ targetHandle: 'input:character' });
 
     expect(
       resolveCanvasConnectionTargetHandle(
@@ -89,6 +89,29 @@ describe('canvas connection validation', () => {
         nodes,
       ),
     ).toMatchObject({ targetHandle: 'input:character' });
+  });
+
+  it.each([
+    ['text', 'image', 'input:prompt'],
+    ['text', 'audio', 'input:prompt'],
+    ['text', 'video', 'input:prompt'],
+    ['image', 'image', 'input:content'],
+    ['image', 'text', 'input:content'],
+    ['audio', 'text', 'input:transcript'],
+    ['audio', 'video', 'input:audioTrack'],
+    ['video', 'text', 'input:content'],
+    ['video', 'image', 'input:content'],
+  ] as const)('uses the recommended role for %s -> %s', (sourceType, targetType, targetHandle) => {
+    const nodes = [node('source', sourceType), node('target', targetType)];
+    const resolved = resolveCanvasConnectionTargetHandle(
+      { source: 'source', target: 'target', sourceHandle: null, targetHandle: null },
+      nodes,
+    );
+
+    expect(resolved).toMatchObject({
+      sourceHandle: `output:${sourceType}`,
+      targetHandle,
+    });
   });
 
   it('returns undefined when no target role can accept the source media', () => {

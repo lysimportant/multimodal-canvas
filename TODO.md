@@ -253,6 +253,15 @@
   - 依赖：透明 Header、节点工具栏、工作台与命令面板
   - 验收：320px/390px 视口无水平溢出；Header 不被操作区过度撑高；节点工具栏单行横向滚动且不遮挡画布；弹窗打开时背景滚动锁定。验证：`apps/web/src/responsive-ux.test.ts`；Web 102 tests passed，并完成人工浏览器检查。
 
+### 本轮画布与多 API 连接优化
+
+- `[x]` [P1] 优化画布连线选中态、节点启停、就地新增和跨媒体连接语义
+  - 依赖：`WorkflowCanvas`、`AssetNode`、`NodeHandles`、画布保存协议和 Provider 能力边界
+  - 验收：选中边明显高亮且动画更快；节点可直接启用/停用；新节点落在当前视口中心；跨媒体连接使用明确角色并保留 Provider 不支持时的可诊断失败；桌面和移动端无溢出或遮挡。验证：`apps/web/src/connection-utils.test.ts`、`apps/web/src/canvas-editor.test.tsx`、`apps/web/src/workspace/canvas-position.test.ts`；Web 197 tests passed；完成 1440px、390px、320px 浏览器检查。
+- `[x]` [P1] 保存 API Key 后立即同步凭据和模型 Select
+  - 依赖：设置 API、TanStack Query 缓存和模型目录
+  - 验收：保存成功自动更新并选中新凭据、只刷新一次模型目录；保存失败/取消不改变当前值；旧请求不能覆盖新状态；重复 Key 行为幂等且不产生重复选项。验证：`apps/web/src/settings-panel.test.tsx`；Web 197 tests passed。
+
 ## 后续需求登记规则
 
 每次新增需求都追加一行或一个小节，至少包含：

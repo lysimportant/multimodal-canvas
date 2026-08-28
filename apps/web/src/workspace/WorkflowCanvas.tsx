@@ -12,19 +12,22 @@ import {
   type OnNodesChange,
 } from '@xyflow/react';
 import { FileText, LayoutGrid, Upload } from 'lucide-react';
-import { useCallback, useRef, type DragEvent } from 'react';
+import { useCallback, useEffect, useRef, type DragEvent } from 'react';
 
 import type { MediaType } from '@multimodal-canvas/domain';
 import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
 import {
   NodeResizeContext,
+  NodeEnabledContext,
   NodeRetryContext,
   NodeSelectionContext,
   nodeTypes,
+  type NodeEnabledHandler,
   type NodeResizeHandler,
 } from './AssetNode';
 import { CanvasNodeToolbar } from './CanvasNodeToolbar';
 import { NodeQuickEditor, type InferenceStrength } from './NodeQuickEditor';
+import { getCenteredCanvasNodePosition } from './canvas-position';
 import { ASSET_DRAG_TYPE, type CanvasBackground, type ModelEntry } from './contracts';
 
 export type WorkflowCanvasProps = {
@@ -46,13 +49,15 @@ export type WorkflowCanvasProps = {
   onNodeSelect: (node: AssetFlowNode) => void;
   onClearNodeSelection: () => void;
   onResizeNode: NodeResizeHandler;
+  onNodeEnabledChange: NodeEnabledHandler;
   onRetryNode: (nodeId: string) => void | Promise<void>;
   onPromptChange: (value: string) => void;
   onModelChange: (value: string) => void;
   onInferenceStrengthChange: (value: InferenceStrength) => void;
   onRunNode: (node: AssetFlowNode) => void;
-  onAddGenerateNode: (mediaType: MediaType) => void;
-  onAddTransformNode: (mediaType: MediaType) => void;
+  onAddGenerateNode: (mediaType: MediaType, position?: { x: number; y: number }) => void;
+  onAddTransformNode: (mediaType: MediaType, position?: { x: number; y: number }) => void;
+  onCanvasCenterChange: (position: { x: number; y: number }) => void;
   onRequestUpload: () => void;
   onOpenProjectHub: () => void;
 };
@@ -72,6 +77,7 @@ export function WorkflowCanvas({
   onNodeSelect,
   onClearNodeSelection,
   onResizeNode,
+  onNodeEnabledChange,
   onRetryNode,
   onPromptChange,
   onModelChange,
@@ -79,11 +85,39 @@ export function WorkflowCanvas({
   onRunNode,
   onAddGenerateNode,
   onAddTransformNode,
+  onCanvasCenterChange,
   onRequestUpload,
   onOpenProjectHub,
 }: WorkflowCanvasProps) {
   const { screenToFlowPosition } = useReactFlow();
+  const canvasAreaRef = useRef<HTMLElement>(null);
   const connectionStartRef = useRef<OnConnectStartParams | null>(null);
+
+  const getCanvasNodePosition = useCallback(() => {
+    const canvasArea = canvasAreaRef.current;
+    if (!canvasArea) return undefined;
+    const bounds = canvasArea.getBoundingClientRect();
+    return getCenteredCanvasNodePosition(bounds, screenToFlowPosition);
+  }, [screenToFlowPosition]);
+
+  const reportCanvasCenter = useCallback(() => {
+    const position = getCanvasNodePosition();
+    if (position) onCanvasCenterChange(position);
+  }, [getCanvasNodePosition, onCanvasCenterChange]);
+
+  useEffect(() => {
+    reportCanvasCenter();
+  }, [reportCanvasCenter]);
+
+  const handleAddGenerateNode = useCallback(
+    (mediaType: MediaType) => onAddGenerateNode(mediaType, getCanvasNodePosition()),
+    [getCanvasNodePosition, onAddGenerateNode],
+  );
+
+  const handleAddTransformNode = useCallback(
+    (mediaType: MediaType) => onAddTransformNode(mediaType, getCanvasNodePosition()),
+    [getCanvasNodePosition, onAddTransformNode],
+  );
 
   const selectNodeByData = useCallback(
     (data: AssetFlowNode['data']) => {
@@ -148,76 +182,82 @@ export function WorkflowCanvas({
   );
 
   return (
-    <section className="canvas-area" aria-label="工作流画布">
+    <section ref={canvasAreaRef} className="canvas-area" aria-label="工作流画布">
       <CanvasNodeToolbar
-        onAddGenerateNode={onAddGenerateNode}
-        onAddTransformNode={onAddTransformNode}
+        onAddGenerateNode={handleAddGenerateNode}
+        onAddTransformNode={handleAddTransformNode}
       />
       <NodeSelectionContext.Provider value={selectNodeByData}>
         <NodeResizeContext.Provider value={onResizeNode}>
-          <NodeRetryContext.Provider value={onRetryNode}>
-            <ReactFlow
-              nodes={nodes}
-              edges={edges}
-              nodeTypes={nodeTypes}
-              onNodesChange={onNodesChange}
-              onEdgesChange={onEdgesChange}
-              onConnect={onConnect}
-              onConnectStart={(_event, params) => {
-                connectionStartRef.current = params;
-              }}
-              onConnectEnd={handleConnectEnd}
-              onNodeDragStart={onNodeDragStart}
-              onDrop={handleDrop}
-              onDragOver={(event) => {
-                event.preventDefault();
-                event.dataTransfer.dropEffect = 'copy';
-              }}
-              onNodeClick={(_, node) => onNodeSelect(node as AssetFlowNode)}
-              onPaneClick={onClearNodeSelection}
-              fitView
-              fitViewOptions={{ padding: 0.3, maxZoom: 1.1 }}
-              connectionLineStyle={{ stroke: '#18794e', strokeWidth: 2 }}
-              defaultEdgeOptions={{ animated: true, style: { stroke: '#8aa597', strokeWidth: 2 } }}
-              proOptions={{ hideAttribution: true }}
-            >
-              {background !== 'blank' && (
-                <Background
-                  color="#cbd5d0"
-                  gap={background === 'lines' ? 28 : 24}
-                  size={background === 'cross' ? 7 : 1.2}
-                  variant={
-                    background === 'lines'
-                      ? BackgroundVariant.Lines
-                      : background === 'cross'
-                        ? BackgroundVariant.Cross
-                        : BackgroundVariant.Dots
-                  }
-                />
-              )}
-              {selectedNode && selectedNode.data.mode !== 'source' && (
-                <NodeToolbar
-                  nodeId={selectedNode.id}
-                  isVisible
-                  position={Position.Bottom}
-                  offset={24}
-                  align="center"
-                  className="node-quick-toolbar"
-                >
-                  <NodeQuickEditor
-                    node={selectedNode}
-                    models={models}
-                    busy={busy}
-                    onPromptChange={onPromptChange}
-                    onModelChange={onModelChange}
-                    onInferenceStrengthChange={onInferenceStrengthChange}
-                    onRun={() => onRunNode(selectedNode)}
+          <NodeEnabledContext.Provider value={onNodeEnabledChange}>
+            <NodeRetryContext.Provider value={onRetryNode}>
+              <ReactFlow
+                nodes={nodes}
+                edges={edges}
+                nodeTypes={nodeTypes}
+                onNodesChange={onNodesChange}
+                onEdgesChange={onEdgesChange}
+                onConnect={onConnect}
+                onConnectStart={(_event, params) => {
+                  connectionStartRef.current = params;
+                }}
+                onConnectEnd={handleConnectEnd}
+                onNodeDragStart={onNodeDragStart}
+                onMove={reportCanvasCenter}
+                onDrop={handleDrop}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = 'copy';
+                }}
+                onNodeClick={(_, node) => onNodeSelect(node as AssetFlowNode)}
+                onPaneClick={onClearNodeSelection}
+                fitView
+                fitViewOptions={{ padding: 0.3, maxZoom: 1.1 }}
+                connectionLineStyle={{ stroke: '#18794e', strokeWidth: 2 }}
+                defaultEdgeOptions={{
+                  animated: true,
+                  style: { stroke: '#8aa597', strokeWidth: 2 },
+                }}
+                proOptions={{ hideAttribution: true }}
+              >
+                {background !== 'blank' && (
+                  <Background
+                    color="#cbd5d0"
+                    gap={background === 'lines' ? 28 : 24}
+                    size={background === 'cross' ? 7 : 1.2}
+                    variant={
+                      background === 'lines'
+                        ? BackgroundVariant.Lines
+                        : background === 'cross'
+                          ? BackgroundVariant.Cross
+                          : BackgroundVariant.Dots
+                    }
                   />
-                </NodeToolbar>
-              )}
-              <Controls showInteractive={false} position="bottom-right" />
-            </ReactFlow>
-          </NodeRetryContext.Provider>
+                )}
+                {selectedNode && selectedNode.data.mode !== 'source' && (
+                  <NodeToolbar
+                    nodeId={selectedNode.id}
+                    isVisible
+                    position={Position.Bottom}
+                    offset={24}
+                    align="center"
+                    className="node-quick-toolbar"
+                  >
+                    <NodeQuickEditor
+                      node={selectedNode}
+                      models={models}
+                      busy={busy}
+                      onPromptChange={onPromptChange}
+                      onModelChange={onModelChange}
+                      onInferenceStrengthChange={onInferenceStrengthChange}
+                      onRun={() => onRunNode(selectedNode)}
+                    />
+                  </NodeToolbar>
+                )}
+                <Controls showInteractive={false} position="bottom-right" />
+              </ReactFlow>
+            </NodeRetryContext.Provider>
+          </NodeEnabledContext.Provider>
         </NodeResizeContext.Provider>
       </NodeSelectionContext.Provider>
       {nodes.length === 0 && (
@@ -233,7 +273,7 @@ export function WorkflowCanvas({
             <button
               type="button"
               className="button button-secondary"
-              onClick={() => onAddGenerateNode('text')}
+              onClick={() => handleAddGenerateNode('text')}
             >
               <FileText size={15} aria-hidden="true" />
               新建文字节点

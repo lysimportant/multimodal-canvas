@@ -12,7 +12,7 @@ vi.mock('@xyflow/react', () => ({
 
 import type { NodeProps } from '@xyflow/react';
 import type { AssetFlowNode } from '../canvas-utils';
-import { AssetNode, NodeRetryContext } from './AssetNode';
+import { AssetNode, NodeEnabledContext, NodeRetryContext } from './AssetNode';
 
 function makeNode(overrides: Partial<AssetFlowNode['data']> = {}): AssetFlowNode {
   return {
@@ -29,16 +29,22 @@ function makeNode(overrides: Partial<AssetFlowNode['data']> = {}): AssetFlowNode
   } as AssetFlowNode;
 }
 
-function renderNode(node: AssetFlowNode, onRetry?: (nodeId: string) => void | Promise<void>) {
+function renderNode(
+  node: AssetFlowNode,
+  onRetry?: (nodeId: string) => void | Promise<void>,
+  onEnabled?: (nodeId: string, enabled: boolean) => void,
+) {
   const props = {
     id: node.id,
     data: node.data,
     selected: false,
   } as NodeProps<AssetFlowNode>;
   return render(
-    <NodeRetryContext.Provider value={onRetry ?? null}>
-      <AssetNode {...props} />
-    </NodeRetryContext.Provider>,
+    <NodeEnabledContext.Provider value={onEnabled ?? null}>
+      <NodeRetryContext.Provider value={onRetry ?? null}>
+        <AssetNode {...props} />
+      </NodeRetryContext.Provider>
+    </NodeEnabledContext.Provider>,
   );
 }
 
@@ -48,6 +54,26 @@ afterEach(() => {
 });
 
 describe('AssetNode result presentation', () => {
+  it('exposes a visible enable toggle and reports the next state', async () => {
+    const onEnabled = vi.fn();
+    const user = userEvent.setup();
+    renderNode(makeNode(), undefined, onEnabled);
+
+    const toggle = screen.getByRole('button', { name: '停用节点' });
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await user.click(toggle);
+    expect(onEnabled).toHaveBeenCalledWith('node_1', false);
+  });
+
+  it('labels an already disabled node as ready to enable', () => {
+    renderNode(makeNode({ enabled: false }), undefined, vi.fn());
+
+    expect(screen.getByRole('button', { name: '启用节点' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+  });
+
   it('renders a real text result inside a succeeded node', async () => {
     vi.stubGlobal(
       'fetch',

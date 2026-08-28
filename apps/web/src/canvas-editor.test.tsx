@@ -145,7 +145,10 @@ vi.mock('@xyflow/react', async () => {
   }: {
     nodes: Array<{ id: string; type?: string; data: unknown; selected?: boolean }>;
     edges: Array<{ id: string; source: string; target: string }>;
-    nodeTypes: Record<string, React.ComponentType<{ data: unknown; selected?: boolean }>>;
+    nodeTypes: Record<
+      string,
+      React.ComponentType<{ id: string; data: unknown; selected?: boolean }>
+    >;
     onNodesChange?: (changes: Array<Record<string, unknown>>) => void;
     onNodeClick?: (event: unknown, node: unknown) => void;
     onPaneClick?: () => void;
@@ -208,7 +211,11 @@ vi.mock('@xyflow/react', async () => {
                   }}
                 >
                   <nodeContext.Provider value={node.id}>
-                    <NodeComponent data={node.data} selected={Boolean(node.selected)} />
+                    <NodeComponent
+                      id={node.id}
+                      data={node.data}
+                      selected={Boolean(node.selected)}
+                    />
                   </nodeContext.Provider>
                 </div>
               );
@@ -470,6 +477,21 @@ describe('画布编辑器交互', () => {
     expect(findNodeByLabel('reference.png')).toBeTruthy();
     expect(flowNodes()).toHaveLength(2);
     expect(screen.getByRole('status')).toHaveTextContent('reference.png 已添加到画布');
+  });
+
+  it('可以直接在画布节点上启用或停用节点', async () => {
+    const { user } = await renderCanvas();
+
+    await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
+    const node = findNodeByLabel('图片生成节点');
+    expect(node).toBeTruthy();
+
+    await user.click(within(node!).getByRole('button', { name: '停用节点' }));
+    expect(within(node!).getByRole('button', { name: '启用节点' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+    expect(node!.querySelector('.flow-asset-node')).toHaveClass('is-disabled');
   });
 
   it('选择文字生成节点后显示提示词输入并支持编辑', async () => {

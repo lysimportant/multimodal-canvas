@@ -441,7 +441,7 @@ const targetRoleMediaTypes: Record<PortRole, readonly MediaType[]> = {
   firstFrame: ['image'],
   lastFrame: ['image'],
   audioTrack: ['audio'],
-  transcript: ['text'],
+  transcript: ['audio'],
   mask: ['image'],
 };
 

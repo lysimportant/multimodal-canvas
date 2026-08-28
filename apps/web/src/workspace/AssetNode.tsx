@@ -3,6 +3,7 @@ import {
   Circle,
   Clock3,
   LoaderCircle,
+  Power,
   RefreshCw,
   Sparkles,
   TriangleAlert,
@@ -24,6 +25,8 @@ export type NodeResizeHandler = (nodeId: string, width: number, height: number) 
 export const NodeResizeContext = createContext<NodeResizeHandler | null>(null);
 export type NodeRetryHandler = (nodeId: string) => void | Promise<void>;
 export const NodeRetryContext = createContext<NodeRetryHandler | null>(null);
+export type NodeEnabledHandler = (nodeId: string, enabled: boolean) => void;
+export const NodeEnabledContext = createContext<NodeEnabledHandler | null>(null);
 
 type NodePresentationState = 'empty' | 'running' | 'failed' | 'cancelled' | 'preview' | 'missing';
 
@@ -31,6 +34,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const selectNode = useContext(NodeSelectionContext);
   const resizeNode = useContext(NodeResizeContext);
   const retryNode = useContext(NodeRetryContext);
+  const setNodeEnabled = useContext(NodeEnabledContext);
   const [previewLoadState, setPreviewLoadState] = useState<AssetPreviewLoadState | null>(null);
   const [isRetrying, setIsRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
@@ -136,6 +140,18 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
         </span>
         {!enabled && <span className="flow-node-disabled-badge">停用</span>}
         {data.stale && <span className="flow-node-stale-badge">待更新</span>}
+        {setNodeEnabled ? (
+          <button
+            type="button"
+            className="flow-node-enabled-toggle nodrag nopan nowheel"
+            aria-label={enabled ? '停用节点' : '启用节点'}
+            aria-pressed={enabled}
+            title={enabled ? '停用节点' : '启用节点'}
+            onClick={() => setNodeEnabled(id, !enabled)}
+          >
+            <Power size={13} strokeWidth={2.2} aria-hidden="true" />
+          </button>
+        ) : null}
         <span
           className={`flow-node-status ${effectivePreviewLoadState === 'error' || presentationState === 'missing' ? 'is-error' : ''}`}
         >

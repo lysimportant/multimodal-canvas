@@ -974,7 +974,6 @@ h2 {
   color: #9b4035;
   font-size: 9px;
   font-weight: 700;
-  margin-left: auto;
   padding: 2px 6px;
 }
 
@@ -985,6 +984,34 @@ h2 {
   font-size: 9px;
   font-weight: 700;
   padding: 2px 6px;
+}
+
+.flow-node-enabled-toggle {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: #687386;
+  display: inline-flex;
+  flex: 0 0 24px;
+  height: 24px;
+  justify-content: center;
+  margin-left: 4px;
+  padding: 0;
+  width: 24px;
+}
+
+.flow-node-enabled-toggle:hover,
+.flow-node-enabled-toggle:focus-visible {
+  background: #edf7f2;
+  border-color: #b7d5c5;
+  color: #12613e;
+}
+
+.flow-node-enabled-toggle[aria-pressed='false'] {
+  background: #fff1ef;
+  border-color: #edc6c1;
+  color: #9b4035;
 }
 
 .flow-asset-node.is-disabled {
@@ -1059,6 +1086,20 @@ h2 {
   color: #18794e;
   display: inline-flex;
   margin-left: auto;
+}
+
+.react-flow__edge.animated .react-flow__edge-path {
+  animation-duration: 0.7s;
+}
+
+.react-flow__edge.selected .react-flow__edge-path {
+  filter: drop-shadow(0 0 2px rgb(18 97 62 / 32%));
+  stroke: #0d5b39;
+  stroke-width: 4;
+}
+
+.react-flow__edge.selected.animated .react-flow__edge-path {
+  animation-duration: 0.28s;
 }
 
 .flow-node-preview {
@@ -2315,6 +2356,23 @@ h2 {
   box-shadow: 0 0 0 4px var(--mc-focus);
 }
 
+.flow-node-enabled-toggle {
+  color: var(--mc-text-muted);
+}
+
+.flow-node-enabled-toggle:hover,
+.flow-node-enabled-toggle:focus-visible {
+  background: var(--mc-accent-soft);
+  border-color: var(--mc-border-strong);
+  color: var(--mc-accent-strong);
+}
+
+.flow-node-enabled-toggle[aria-pressed='false'] {
+  background: #fff1ef;
+  border-color: #e8bbb5;
+  color: #9b4035;
+}
+
 .react-flow__controls {
   border-color: var(--mc-border);
   box-shadow: 0 4px 14px var(--mc-shadow);
@@ -2335,6 +2393,10 @@ h2 {
 
 .react-flow__edge-path {
   stroke: var(--mc-accent);
+}
+
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--mc-accent-strong);
 }
 
 .canvas-background-picker,

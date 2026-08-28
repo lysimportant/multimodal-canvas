@@ -412,6 +412,7 @@ function WorkspaceApp({
   const backgroundTriggerRef = useRef<HTMLButtonElement>(null);
   const backgroundMenuRef = useRef<HTMLDivElement>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
+  const canvasCenterPositionRef = useRef<{ x: number; y: number } | null>(null);
   const exportMenuWasOpenRef = useRef(false);
   const settingsWasOpenRef = useRef(false);
   const canvasRevisionRef = useRef(0);
@@ -1148,7 +1149,9 @@ function WorkspaceApp({
     (asset: Asset) => {
       const column = nodes.length % 3;
       const row = Math.floor(nodes.length / 3);
-      const node = createNodeForAsset(asset, { x: 80 + column * 230, y: 80 + row * 210 });
+      const position =
+        canvasCenterPositionRef.current ?? ({ x: 80 + column * 230, y: 80 + row * 210 } as const);
+      const node = createNodeForAsset(asset, position);
       rememberHistory();
       setNodes((current) => [...current, node]);
       setSelectedNodeId(node.id);
@@ -1193,10 +1196,14 @@ function WorkspaceApp({
   );
 
   const handleAddGenerateNode = useCallback(
-    (mediaType: MediaType) => {
+    (mediaType: MediaType, position?: { x: number; y: number }) => {
       const column = nodes.length % 3;
       const row = Math.floor(nodes.length / 3);
-      const node = createGenerateNode(mediaType, { x: 100 + column * 250, y: 100 + row * 220 });
+      const nodePosition =
+        position ??
+        canvasCenterPositionRef.current ??
+        ({ x: 100 + column * 250, y: 100 + row * 220 } as const);
+      const node = createGenerateNode(mediaType, nodePosition);
       rememberHistory();
       setNodes((current) => [...current, node]);
       setSelectedNodeId(node.id);
@@ -1207,10 +1214,14 @@ function WorkspaceApp({
   );
 
   const handleAddTransformNode = useCallback(
-    (mediaType: MediaType) => {
+    (mediaType: MediaType, position?: { x: number; y: number }) => {
       const column = nodes.length % 3;
       const row = Math.floor(nodes.length / 3);
-      const node = createTransformNode(mediaType, { x: 100 + column * 250, y: 100 + row * 220 });
+      const nodePosition =
+        position ??
+        canvasCenterPositionRef.current ??
+        ({ x: 100 + column * 250, y: 100 + row * 220 } as const);
+      const node = createTransformNode(mediaType, nodePosition);
       rememberHistory();
       setNodes((current) => [...current, node]);
       setSelectedNodeId(node.id);
@@ -1285,14 +1296,25 @@ function WorkspaceApp({
     [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
   );
 
+  const updateNodeEnabled = useCallback(
+    (nodeId: string, enabled: boolean) => {
+      rememberHistory();
+      canvasDirtyRef.current = true;
+      updateNodeDataAndMarkDownstreamStale(nodeId, (data) => ({ ...data, enabled }));
+    },
+    [rememberHistory, updateNodeDataAndMarkDownstreamStale],
+  );
+
+  const updateCanvasCenterPosition = useCallback((position: { x: number; y: number }) => {
+    canvasCenterPositionRef.current = position;
+  }, []);
+
   const updateSelectedEnabled = useCallback(
     (enabled: boolean) => {
       if (!selectedNode) return;
-      rememberHistory();
-      canvasDirtyRef.current = true;
-      updateNodeDataAndMarkDownstreamStale(selectedNode.id, (data) => ({ ...data, enabled }));
+      updateNodeEnabled(selectedNode.id, enabled);
     },
-    [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
+    [selectedNode, updateNodeEnabled],
   );
 
   const updateSelectedPrompt = useCallback(
@@ -2312,6 +2334,7 @@ function WorkspaceApp({
             onNodeSelect={(node) => setSelectedNodeId(node.id)}
             onClearNodeSelection={() => setSelectedNodeId(null)}
             onResizeNode={handleResizeNode}
+            onNodeEnabledChange={updateNodeEnabled}
             onRetryNode={retryNodeFromCanvas}
             onPromptChange={updateSelectedPrompt}
             onModelChange={updateSelectedModel}
@@ -2319,6 +2342,7 @@ function WorkspaceApp({
             onRunNode={(node) => void runNode(node)}
             onAddGenerateNode={handleAddGenerateNode}
             onAddTransformNode={handleAddTransformNode}
+            onCanvasCenterChange={updateCanvasCenterPosition}
             onRequestUpload={() => uploadInputRef.current?.click()}
             onOpenProjectHub={() => setShowProjectHub(true)}
             background={canvasBackground}
