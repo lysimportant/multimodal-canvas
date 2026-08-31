@@ -8,7 +8,6 @@ import {
   FolderOpen,
   Image as ImageIcon,
   LayoutGrid,
-  ListFilter,
   LoaderCircle,
   Palette,
   PanelLeftClose,
@@ -96,7 +95,7 @@ import {
   type ProjectSummary,
 } from './query/projects';
 import { appPaths, useAppNavigate, useAppRoute, type AppRoute } from './routing';
-import { AssetPreview } from './workspace/AssetPreview';
+import { AssetPreview, TextResultContent } from './workspace/AssetPreview';
 import { runStatusLabel } from './workspace/AssetNode';
 import { ResourcePanel } from './workspace/ResourcePanel';
 import { RunPanel } from './workspace/RunPanel';
@@ -2064,23 +2063,6 @@ function WorkspaceApp({
               {saveState.includes('保存') ? <Check size={13} aria-hidden="true" /> : null}
               <span className="save-state-label">{saveState}</span>
             </span>
-            <label className="topbar-resource-filter">
-              <ListFilter size={14} aria-hidden="true" />
-              <span className="visually-hidden">资源类型</span>
-              <select
-                aria-label="资源类型"
-                value={activeFilter}
-                onChange={(event) => setActiveFilter(event.target.value as AssetFilter)}
-              >
-                <option value="all">全部资源（{assets.length}）</option>
-                {(Object.keys(mediaLabels) as MediaType[]).map((mediaType) => (
-                  <option key={mediaType} value={mediaType}>
-                    {mediaLabels[mediaType]}（
-                    {assets.filter((asset) => asset.mediaType === mediaType).length}）
-                  </option>
-                ))}
-              </select>
-            </label>
           </div>
           <div className="topbar-actions">
             <div className="topbar-tool-cluster" aria-label="画布编辑工具">
@@ -2416,6 +2398,7 @@ function WorkspaceApp({
             isUploading={isUploading}
             uploadProgress={uploadProgress}
             onToggleArchived={() => setShowArchived((current) => !current)}
+            onFilterChange={setActiveFilter}
             onQueryChange={setQuery}
             onFilesSelected={(files) => void uploadFiles(Array.from(files))}
             onAssetDragStart={handleAssetDragStart}
@@ -2558,14 +2541,29 @@ function WorkspaceApp({
                 </div>
               ) : selectedNode ? (
                 <div className="inspector-content">
-                  <div
-                    className={`inspector-generate-icon media-icon media-icon-${selectedNode.data.mediaType}`}
-                  >
-                    {(() => {
-                      const Icon = mediaIcons[selectedNode.data.mediaType];
-                      return <Icon size={26} aria-hidden="true" />;
-                    })()}
-                  </div>
+                  {runResultState.currentContentUrl ? (
+                    <div className="inspector-generate-result-preview" aria-label="运行结果预览">
+                      {selectedNode.data.mediaType === 'text' ? (
+                        <TextResultContent url={runResultState.currentContentUrl} />
+                      ) : (
+                        <AssetPreview
+                          asset={runResultState.currentPreviewAsset}
+                          mode="content"
+                          className="inspector-result-preview"
+                          interactive
+                        />
+                      )}
+                    </div>
+                  ) : (
+                    <div
+                      className={`inspector-generate-icon media-icon media-icon-${selectedNode.data.mediaType}`}
+                    >
+                      {(() => {
+                        const Icon = mediaIcons[selectedNode.data.mediaType];
+                        return <Icon size={26} aria-hidden="true" />;
+                      })()}
+                    </div>
+                  )}
                   <span className="inspector-type">
                     {mediaLabels[selectedNode.data.mediaType]}
                     {modeLabels[selectedNode.data.mode]}节点

@@ -98,6 +98,17 @@ describe('FailureDiagnostics', () => {
     expect(screen.getByText(/不可重试，请检查模型和输入/)).toBeInTheDocument();
   });
 
+  it('explains unsupported input roles without exposing provider details', () => {
+    const run = makeRun({
+      error: 'New API image 不支持该输入角色：content',
+      errorCode: 'UNSUPPORTED_INPUT_ROLE',
+      retryable: false,
+    });
+    render(<FailureDiagnostics run={run} onRetry={vi.fn()} />);
+
+    expect(screen.getByText(/当前模型不接受该输入端口/)).toBeInTheDocument();
+  });
+
   it('surfaces a safe retry error and hides itself for non-failure runs without errors', async () => {
     const unsafeRetryToken = syntheticApiKey('sensitive');
     const onRetry = vi.fn().mockRejectedValue(new Error(`token=${unsafeRetryToken} failed`));

@@ -29,10 +29,23 @@ const assets: Asset[] = [
     contentUrl: 'https://assets.example/english.txt',
     tags: [],
   },
+  {
+    id: 'asset-image',
+    name: '图片参考',
+    mediaType: 'image',
+    mimeType: 'image/png',
+    sizeBytes: 24,
+    status: 'ready',
+    contentUrl: 'https://assets.example/image.png',
+    tags: [],
+  },
 ];
 
 function ResourcePanelHarness({ onQueryCommit }: { onQueryCommit: (value: string) => void }) {
   const [query, setQuery] = useState('');
+  const [activeFilter, setActiveFilter] = useState<'all' | 'text' | 'image' | 'audio' | 'video'>(
+    'all',
+  );
   const [renderVersion, setRenderVersion] = useState(0);
 
   return (
@@ -45,11 +58,12 @@ function ResourcePanelHarness({ onQueryCommit }: { onQueryCommit: (value: string
         assets={assets}
         collapsed={false}
         showArchived={false}
-        activeFilter="all"
+        activeFilter={activeFilter}
         query={query}
         isUploading={false}
         uploadProgress={null}
         onToggleArchived={vi.fn()}
+        onFilterChange={setActiveFilter}
         onQueryChange={(value) => {
           onQueryCommit(value);
           setQuery(value);
@@ -116,5 +130,15 @@ describe('ResourcePanel search input', () => {
     expect(input).toHaveValue('');
     expect(screen.getByText('中文参考素材')).toBeInTheDocument();
     expect(screen.getByText('English reference')).toBeInTheDocument();
+  });
+
+  it('filters assets from the sidebar and keeps archive as a separate view', async () => {
+    const user = userEvent.setup();
+    render(<ResourcePanelHarness onQueryCommit={vi.fn()} />);
+
+    await user.selectOptions(screen.getByRole('combobox', { name: '资源类型' }), 'image');
+    expect(screen.getByText('图片参考')).toBeInTheDocument();
+    expect(screen.queryByText('中文参考素材')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '归档 图片参考' })).not.toBeInTheDocument();
   });
 });

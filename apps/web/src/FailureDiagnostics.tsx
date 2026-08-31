@@ -248,7 +248,9 @@ export function FailureDiagnostics({
 
       {details.retryable === false && (
         <p className="failure-diagnostics-hint">
-          服务端标记此任务不可重试，请检查模型和输入后重新运行。
+          {details.errorCode === 'UNSUPPORTED_INPUT_ROLE'
+            ? '当前模型不接受该输入端口，请检查节点连线，或改用支持此媒体输入的模型。'
+            : '服务端标记此任务不可重试，请检查模型和输入后重新运行。'}
         </p>
       )}
       {retryError && <p className="failure-diagnostics-retry-error">{retryError}</p>}
