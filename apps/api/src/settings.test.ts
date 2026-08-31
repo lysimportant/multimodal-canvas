@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Prisma } from '@prisma/client';
 
-import { AiSettingsStore, normalizeModelsPayload, PrismaAiSettingsStore } from './settings';
+import {
+  AiCredentialNotFoundError,
+  AiSettingsStore,
+  normalizeModelsPayload,
+  PrismaAiSettingsStore,
+} from './settings';
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -18,6 +23,14 @@ describe('Prisma AI settings encryption', () => {
 });
 
 describe('New API model catalog normalization', () => {
+  it('does not bootstrap model aliases from environment variables', () => {
+    vi.stubEnv('NEW_API_TEXT_MODEL', ' text-model ');
+
+    const store = new AiSettingsStore('test-encryption-secret');
+
+    expect(store.get().defaultModels).toEqual({});
+  });
+
   it('accepts gateway model aliases and merges duplicate capability records', () => {
     const models = normalizeModelsPayload({
       data: [
@@ -118,12 +131,97 @@ describe('New API model catalog normalization', () => {
     expect(store.listModels()[0]?.capabilities).toEqual({ base64: true });
   });
 
+  it('isolates capability overrides for same-named models across credentials', () => {
+    const store = new AiSettingsStore('test-encryption-secret');
+    store.replaceModels(
+      [
+        {
+          id: 'shared-model',
+          name: 'Shared model',
+          mediaTypes: ['image'],
+          capabilities: { base: true },
+          credentialId: 'credential-a',
+          refreshedAt: '2026-08-26T00:00:00.000Z',
+        },
+        {
+          id: 'shared-model',
+          name: 'Shared model',
+          mediaTypes: ['image'],
+          capabilities: { base: true },
+          credentialId: 'credential-b',
+          refreshedAt: '2026-08-26T00:00:00.000Z',
+        },
+      ],
+      'credential-a',
+    );
+    store.replaceModels(
+      [
+        {
+          id: 'shared-model',
+          name: 'Shared model',
+          mediaTypes: ['image'],
+          capabilities: { base: true },
+          credentialId: 'credential-b',
+          refreshedAt: '2026-08-26T00:00:00.000Z',
+        },
+      ],
+      'credential-b',
+    );
+    store.replaceCapabilityOverrides([
+      {
+        credentialId: 'credential-a',
+        modelAlias: 'shared-model',
+        mediaType: 'image',
+        capabilities: { maxSize: '2048x2048' },
+      },
+      {
+        credentialId: 'credential-b',
+        modelAlias: 'shared-model',
+        mediaType: 'image',
+        capabilities: { maxSize: '4096x4096' },
+      },
+    ]);
+
+    expect(store.listModels('image', 'credential-a')[0]?.capabilities).toEqual({
+      base: true,
+      maxSize: '2048x2048',
+    });
+    expect(store.listModels('image', 'credential-b')[0]?.capabilities).toEqual({
+      base: true,
+      maxSize: '4096x4096',
+    });
+  });
+
+  it('keeps legacy null-credential overrides readable as a fallback', () => {
+    const store = new AiSettingsStore('test-encryption-secret');
+    store.replaceModels([
+      {
+        id: 'legacy-model',
+        name: 'Legacy model',
+        mediaTypes: ['image'],
+        credentialId: 'credential-a',
+        refreshedAt: '2026-08-26T00:00:00.000Z',
+      },
+    ]);
+    store.replaceCapabilityOverrides([
+      {
+        credentialId: null,
+        modelAlias: 'legacy-model',
+        mediaType: 'image',
+        capabilities: { legacy: true },
+      },
+    ]);
+
+    expect(store.listModels('image', 'credential-a')[0]?.capabilities).toEqual({ legacy: true });
+  });
+
   it('hydrates capability overrides from the PostgreSQL store when available', async () => {
     const prisma = {
       aiCredential: { findFirst: vi.fn().mockResolvedValue(null) },
       modelCatalog: {
         findMany: vi.fn().mockResolvedValue([
           {
+            credentialId: null,
             modelAlias: 'image-v1',
             name: 'Image v1',
             mediaType: 'IMAGE',
@@ -148,6 +246,92 @@ describe('New API model catalog normalization', () => {
 
     await expect(store.listModels('image')).resolves.toMatchObject([
       { id: 'image-v1', capabilities: { base64: true, maxSize: '2048x2048' } },
+    ]);
+  });
+
+  it('hydrates same-named capability overrides in separate credential scopes', async () => {
+    const seedA = new AiSettingsStore('test-encryption-secret');
+    seedA.update({ baseUrl: 'https://a.example.com/v1', apiKey: 'synthetic-key-a' });
+    const persistedA = seedA.getPersisted();
+    const seedB = new AiSettingsStore('test-encryption-secret');
+    seedB.update({ baseUrl: 'https://b.example.com/v1', apiKey: 'synthetic-key-b' });
+    const persistedB = seedB.getPersisted();
+    const credentialA = {
+      id: '123e4567-e89b-12d3-a456-426614174081',
+      version: 1,
+      ...persistedA,
+      defaultModels: null,
+      updatedAt: new Date('2026-08-26T00:00:00.000Z'),
+    };
+    const credentialB = {
+      id: '123e4567-e89b-12d3-a456-426614174082',
+      version: 1,
+      ...persistedB,
+      defaultModels: null,
+      updatedAt: new Date('2026-08-27T00:00:00.000Z'),
+    };
+    const prisma = {
+      aiCredential: {
+        findFirst: vi.fn(async (query?: { where?: { id?: string } }) =>
+          query?.where?.id === credentialA.id ? credentialA : credentialB,
+        ),
+      },
+      modelCatalog: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            credentialId: credentialA.id,
+            modelAlias: 'shared-model',
+            name: 'Shared model',
+            mediaType: 'IMAGE',
+            capabilities: { base: true },
+            limitations: null,
+            price: null,
+            refreshedAt: new Date('2026-08-26T00:00:00.000Z'),
+          },
+          {
+            credentialId: credentialB.id,
+            modelAlias: 'shared-model',
+            name: 'Shared model',
+            mediaType: 'IMAGE',
+            capabilities: { base: true },
+            limitations: null,
+            price: null,
+            refreshedAt: new Date('2026-08-26T00:00:00.000Z'),
+          },
+        ]),
+      },
+      modelCapabilityOverride: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            credentialId: credentialA.id,
+            modelAlias: 'shared-model',
+            mediaType: 'IMAGE',
+            capabilities: { maxSize: '2048x2048' },
+          },
+          {
+            credentialId: credentialB.id,
+            modelAlias: 'shared-model',
+            mediaType: 'IMAGE',
+            capabilities: { maxSize: '4096x4096' },
+          },
+        ]),
+      },
+    };
+    const store = new PrismaAiSettingsStore(prisma as never, 'test-encryption-secret');
+
+    await expect(store.listModels('image', credentialA.id)).resolves.toEqual([
+      expect.objectContaining({
+        id: 'shared-model',
+        credentialId: credentialA.id,
+        capabilities: { base: true, maxSize: '2048x2048' },
+      }),
+    ]);
+    await expect(store.listModels('image', credentialB.id)).resolves.toEqual([
+      expect.objectContaining({
+        id: 'shared-model',
+        credentialId: credentialB.id,
+        capabilities: { base: true, maxSize: '4096x4096' },
+      }),
     ]);
   });
 
@@ -221,8 +405,10 @@ describe('New API model catalog normalization', () => {
 
   it('stops after ten failed model requests', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(new Error('upstream unavailable'));
+    const onTestConnectionError = vi.fn();
     const store = new AiSettingsStore('test-encryption-secret', {
       fetchImpl,
+      onTestConnectionError,
       modelRequestMaxAttempts: 50,
       modelRequestRetryDelayMs: 0,
     });
@@ -230,9 +416,78 @@ describe('New API model catalog normalization', () => {
 
     await expect(store.testConnection()).resolves.toEqual({
       ok: false,
-      error: 'upstream unavailable',
+      error: '连接失败',
     });
+    expect(onTestConnectionError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'upstream unavailable' }),
+    );
     expect(fetchImpl).toHaveBeenCalledTimes(10);
+  });
+
+  it('does not expose sensitive upstream connection errors to the client', async () => {
+    const upstreamError = new Error(
+      'Request failed for https://gateway.example.test/v1/models?api_key=server-key: ' +
+        'Authorization: Bearer server-key; response body: internal provider details',
+    );
+    const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(upstreamError);
+    const onTestConnectionError = vi.fn();
+    const store = new AiSettingsStore('test-encryption-secret', {
+      fetchImpl,
+      onTestConnectionError,
+      modelRequestRetryDelayMs: 0,
+    });
+    store.update({ baseUrl: 'https://gateway.example.test/v1', apiKey: 'server-key' });
+
+    const result = await store.testConnection();
+
+    expect(result).toEqual({ ok: false, error: '连接失败' });
+    expect(JSON.stringify(result)).not.toContain('gateway.example.test');
+    expect(JSON.stringify(result)).not.toContain('server-key');
+    expect(JSON.stringify(result)).not.toContain('internal provider details');
+    expect(onTestConnectionError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('gateway.example.test') }),
+    );
+    expect(onTestConnectionError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.not.stringContaining('server-key') }),
+    );
+  });
+
+  it('rejects an oversized model catalog response before parsing it', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ id: 'text-v1', type: 'text' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json', 'content-length': '1024' },
+      }),
+    );
+    const store = new AiSettingsStore('response-limit-test', {
+      fetchImpl,
+      modelRequestMaxResponseBytes: 128,
+      modelRequestMaxAttempts: 1,
+      modelRequestRetryDelayMs: 0,
+    });
+    store.update({ baseUrl: 'https://newapi.example.com/v1', apiKey: 'synthetic-key' });
+
+    await expect(store.refreshModels()).rejects.toThrow('模型服务响应超出大小限制');
+    expect(store.listModels()).toEqual([]);
+  });
+
+  it('enforces the model catalog response limit while streaming', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ id: 'text-v1', type: 'text' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const store = new AiSettingsStore('stream-response-limit-test', {
+      fetchImpl,
+      modelRequestMaxResponseBytes: 8,
+      modelRequestMaxAttempts: 1,
+      modelRequestRetryDelayMs: 0,
+    });
+    store.update({ baseUrl: 'https://newapi.example.com/v1', apiKey: 'synthetic-key' });
+
+    await expect(store.refreshModels()).rejects.toThrow('模型服务响应超出大小限制');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it('keeps immutable credential versions for queued run snapshots', () => {
@@ -298,6 +553,10 @@ describe('New API model catalog normalization', () => {
     const snapshotReference = store.getCredentialReference();
 
     expect(store.removeCredentials()).toMatchObject({ configured: false, baseUrl: '' });
+    expect(store.hasCredential(snapshotReference.credentialId!)).toBe(false);
+    expect(() => store.getCredentialReference(snapshotReference.credentialId)).toThrow(
+      AiCredentialNotFoundError,
+    );
     expect(store.getProviderCredentials()).toBeUndefined();
     expect(store.getProviderCredentials(snapshotReference)).toEqual({
       baseUrl: 'https://queued.example.com/v1',
@@ -338,6 +597,10 @@ describe('New API model catalog normalization', () => {
         label: 'revoked',
       },
     });
+    await expect(store.hasCredential('123e4567-e89b-12d3-a456-426614174013')).resolves.toBe(false);
+    await expect(
+      store.getCredentialReference('123e4567-e89b-12d3-a456-426614174013'),
+    ).rejects.toThrow(AiCredentialNotFoundError);
   });
 
   it('rolls back in-memory credentials when Prisma persistence fails', async () => {
@@ -451,7 +714,7 @@ describe('New API model catalog normalization', () => {
       baseUrl: active.baseUrl,
       encryptedApiKey: active.encryptedApiKey,
       keyFingerprint: active.keyFingerprint,
-      defaultModels: { text: 'text-model' },
+      defaultModels: { text: { modelAlias: 'text-model' } },
       updatedAt: new Date('2026-08-27T04:00:00.000Z'),
     };
     const historicalRow = {
@@ -470,6 +733,11 @@ describe('New API model catalog normalization', () => {
       version: data.version as number,
       updatedAt: new Date('2026-08-27T05:00:00.000Z'),
     }));
+    const modelCatalog = {
+      findMany: vi.fn().mockResolvedValue([]),
+      createMany: vi.fn(),
+    };
+    const transaction = { aiCredential: { create }, modelCatalog };
     const prisma = {
       aiCredential: {
         findFirst: vi
@@ -479,14 +747,17 @@ describe('New API model catalog normalization', () => {
           .mockResolvedValueOnce(activeRow),
         create,
       },
-      modelCatalog: { findMany: vi.fn().mockResolvedValue([]) },
+      modelCatalog,
+      $transaction: vi.fn(async (operation: (client: typeof transaction) => Promise<unknown>) =>
+        operation(transaction),
+      ),
     };
     const store = new PrismaAiSettingsStore(prisma as never, 'test-encryption-secret');
 
     await expect(store.activateCredential(historicalRow.id)).resolves.toMatchObject({
       baseUrl: historicalRow.baseUrl,
       keyFingerprint: historicalRow.keyFingerprint,
-      defaultModels: { text: 'text-model' },
+      defaultModels: { text: { modelAlias: 'text-model' } },
     });
     await expect(store.getCredentialReference()).resolves.toEqual({
       credentialId: createdId,
@@ -498,7 +769,7 @@ describe('New API model catalog normalization', () => {
         baseUrl: historicalRow.baseUrl,
         keyFingerprint: historicalRow.keyFingerprint,
         version: 5,
-        defaultModels: { text: 'text-model' },
+        defaultModels: { text: { modelAlias: 'text-model' } },
       },
     });
     expect(JSON.stringify(create.mock.calls[0]?.[0])).not.toContain('history-key');

@@ -172,6 +172,145 @@ describe('project model defaults endpoints', () => {
     }
   });
 
+  it('validates credential bindings and catalog capabilities before writing any field', async () => {
+    const projectStore = new MemoryProjectStore();
+    const settingsStore = new AiSettingsStore('project-default-validation');
+    const firstSettings = settingsStore.update({
+      baseUrl: 'https://first-defaults.example/v1',
+      apiKey: 'synthetic-first-defaults-key',
+    });
+    const firstCredential = settingsStore
+      .listCredentials()
+      .find((credential) => credential.baseUrl === firstSettings.baseUrl);
+    if (!firstCredential) throw new Error('first credential fixture was not created');
+    settingsStore.replaceModels(
+      [
+        {
+          id: 'shared-image',
+          name: 'Shared image',
+          mediaTypes: ['image'],
+          refreshedAt: new Date().toISOString(),
+        },
+        {
+          id: 'first-video',
+          name: 'First video',
+          mediaTypes: ['video'],
+          refreshedAt: new Date().toISOString(),
+        },
+      ],
+      firstCredential.id,
+    );
+    const secondSettings = settingsStore.update({
+      baseUrl: 'https://second-defaults.example/v1',
+      apiKey: 'synthetic-second-defaults-key',
+    });
+    const secondCredential = settingsStore
+      .listCredentials()
+      .find((credential) => credential.baseUrl === secondSettings.baseUrl);
+    if (!secondCredential) throw new Error('second credential fixture was not created');
+    settingsStore.replaceModels(
+      [
+        {
+          id: 'shared-image',
+          name: 'Shared image',
+          mediaTypes: ['image'],
+          refreshedAt: new Date().toISOString(),
+        },
+      ],
+      secondCredential.id,
+    );
+    const app = buildApp({ logger: false, projectStore, settingsStore });
+
+    try {
+      const created = await app.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        payload: { name: 'Validate defaults' },
+      });
+      const projectId = created.json().project.id as string;
+
+      const ambiguous = await app.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${projectId}/models/defaults`,
+        payload: { image: 'shared-image' },
+      });
+      expect(ambiguous.statusCode).toBe(400);
+      expect(ambiguous.json().code).toBe('model_unavailable');
+      expect(
+        (
+          await app.inject({
+            method: 'GET',
+            url: `/v1/projects/${projectId}/models/defaults`,
+          })
+        ).json(),
+      ).toEqual({ defaults: {} });
+
+      const bound = await app.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${projectId}/models/defaults`,
+        payload: {
+          image: { modelAlias: 'shared-image', credentialId: firstCredential.id },
+        },
+      });
+      expect(bound.statusCode).toBe(200);
+      expect(bound.json()).toEqual({
+        defaults: { image: { modelAlias: 'shared-image', credentialId: firstCredential.id } },
+      });
+
+      const wrongMediaType = await app.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${projectId}/models/defaults`,
+        payload: {
+          video: { modelAlias: 'shared-image', credentialId: firstCredential.id },
+        },
+      });
+      expect(wrongMediaType.statusCode).toBe(400);
+
+      const invalidBatch = await app.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${projectId}/models/defaults`,
+        payload: { image: null, text: 'missing-default-model' },
+      });
+      expect(invalidBatch.statusCode).toBe(400);
+      expect(
+        (
+          await app.inject({
+            method: 'GET',
+            url: `/v1/projects/${projectId}/models/defaults`,
+          })
+        ).json(),
+      ).toEqual({
+        defaults: { image: { modelAlias: 'shared-image', credentialId: firstCredential.id } },
+      });
+
+      const unknownCredential = await app.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${projectId}/models/defaults`,
+        payload: {
+          image: {
+            modelAlias: 'shared-image',
+            credentialId: '123e4567-e89b-12d3-a456-426614174099',
+          },
+        },
+      });
+      expect(unknownCredential.statusCode).toBe(404);
+      expect(unknownCredential.json()).toMatchObject({
+        error: 'credential not found',
+        code: 'credential_not_found',
+      });
+
+      const removed = await app.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${projectId}/models/defaults`,
+        payload: { image: null },
+      });
+      expect(removed.statusCode).toBe(200);
+      expect(removed.json()).toEqual({ defaults: {} });
+    } finally {
+      await app.close();
+    }
+  });
+
   it('returns 404 for an unknown project and 400 for malformed input', async () => {
     const app = buildApp({ logger: false });
     try {

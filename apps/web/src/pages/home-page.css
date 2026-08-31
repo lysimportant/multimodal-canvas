@@ -971,7 +971,7 @@
   }
 
   .mc-home-flow-node {
-    opacity: 0.46;
+    opacity: 0.26;
     padding: 8px;
     width: 138px;
   }
@@ -981,21 +981,25 @@
   }
 
   .node-image {
-    right: -28px;
+    right: -72px;
     top: 34%;
     width: 155px;
   }
 
   .node-audio {
     bottom: 13%;
-    left: -35px;
+    left: -72px;
     width: 135px;
   }
 
   .node-video {
     bottom: 8%;
-    right: -26px;
+    right: -82px;
     width: 175px;
+  }
+
+  .mc-home-flow-line {
+    opacity: 0.28;
   }
 
   .line-prompt-image {

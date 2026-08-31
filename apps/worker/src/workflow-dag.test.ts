@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  WorkflowNodeConfigurationError,
   assertWorkflowModelAliases,
   createInitialWorkflowState,
   createNodeRunSnapshot,
   replaceWorkflowNodeState,
   workflowExecutionOrder,
+  workflowSnapshotFingerprint,
+  workflowSnapshotFingerprintV1,
 } from './workflow-dag';
 
 const snapshot = {
@@ -213,6 +216,97 @@ describe('frozen workflow DAG', () => {
     ).toBe('text-frozen');
   });
 
+  it('uses the root credential only for legacy snapshots without a node credential map', () => {
+    const legacySnapshot = {
+      ...snapshot,
+      credentialId: 'credential-legacy',
+      credentialVersion: 4,
+    };
+
+    expect(
+      createNodeRunSnapshot(
+        legacySnapshot,
+        createInitialWorkflowState(legacySnapshot),
+        'node_image',
+      ),
+    ).toMatchObject({
+      credentialId: 'credential-legacy',
+      credentialVersion: 4,
+      nodeCredentialReferences: {
+        node_image: { credentialId: 'credential-legacy', credentialVersion: 4 },
+      },
+    });
+  });
+
+  it('selects the immutable credential assigned to each workflow node', () => {
+    const credentialSnapshot = {
+      ...snapshot,
+      credentialId: 'credential-video',
+      credentialVersion: 3,
+      nodeCredentialReferences: {
+        node_draft: { credentialId: 'credential-chat', credentialVersion: 1 },
+        node_image: { credentialId: 'credential-image', credentialVersion: 2 },
+        node_video: { credentialId: 'credential-video', credentialVersion: 3 },
+      },
+      nodes: snapshot.nodes.map((node) =>
+        node.id === 'node_draft'
+          ? { ...node, data: { ...node.data, modelAlias: 'chat-model' } }
+          : node,
+      ),
+    };
+    const state = createInitialWorkflowState(credentialSnapshot);
+
+    expect(createNodeRunSnapshot(credentialSnapshot, state, 'node_draft')).toMatchObject({
+      credentialId: 'credential-chat',
+      credentialVersion: 1,
+      nodeCredentialReferences: {
+        node_draft: { credentialId: 'credential-chat', credentialVersion: 1 },
+      },
+    });
+    expect(createNodeRunSnapshot(credentialSnapshot, state, 'node_image')).toMatchObject({
+      credentialId: 'credential-image',
+      credentialVersion: 2,
+      nodeCredentialReferences: {
+        node_image: { credentialId: 'credential-image', credentialVersion: 2 },
+      },
+    });
+    expect(createNodeRunSnapshot(credentialSnapshot, state, 'node_video')).toMatchObject({
+      credentialId: 'credential-video',
+      credentialVersion: 3,
+      nodeCredentialReferences: {
+        node_video: { credentialId: 'credential-video', credentialVersion: 3 },
+      },
+    });
+  });
+
+  it('rejects a provider-backed node missing from an explicit credential map', () => {
+    const partialCredentialSnapshot = {
+      ...snapshot,
+      credentialId: 'credential-video',
+      credentialVersion: 3,
+      nodeCredentialReferences: {
+        node_video: { credentialId: 'credential-video', credentialVersion: 3 },
+      },
+    };
+
+    let thrown: unknown;
+    try {
+      createNodeRunSnapshot(
+        partialCredentialSnapshot,
+        createInitialWorkflowState(partialCredentialSnapshot),
+        'node_image',
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(WorkflowNodeConfigurationError);
+    expect(thrown).toMatchObject({
+      nodeId: 'node_image',
+      message: 'workflow node node_image is missing a frozen credential reference',
+    });
+  });
+
   it('keeps multiple roles from one upstream without duplicating its node', () => {
     const repeatedSourceSnapshot = {
       ...snapshot,
@@ -240,5 +334,67 @@ describe('frozen workflow DAG', () => {
       { role: 'prompt', sortOrder: 0 },
       { role: 'negativePrompt', sortOrder: 2 },
     ]);
+  });
+
+  it('rejects a provider snapshot for a node outside the target execution closure', () => {
+    const unrelatedSnapshot = {
+      ...snapshot,
+      nodes: [
+        ...snapshot.nodes,
+        {
+          id: 'node_unrelated',
+          type: 'text' as const,
+          position: { x: 600, y: 0 },
+          data: {
+            label: 'Unrelated',
+            mediaType: 'text' as const,
+            mode: 'generate' as const,
+            modelAlias: 'text-model',
+          },
+        },
+      ],
+    };
+
+    expect(() =>
+      createNodeRunSnapshot(
+        unrelatedSnapshot,
+        createInitialWorkflowState(unrelatedSnapshot),
+        'node_unrelated',
+      ),
+    ).toThrow('workflow node is outside the target execution closure: node_unrelated');
+  });
+
+  it('rejects a provider snapshot for a disabled upstream node', () => {
+    const disabledSnapshot = {
+      ...snapshot,
+      nodes: snapshot.nodes.map((node) =>
+        node.id === 'node_image' ? { ...node, data: { ...node.data, enabled: false } } : node,
+      ),
+    };
+
+    expect(() =>
+      createNodeRunSnapshot(
+        disabledSnapshot,
+        createInitialWorkflowState(disabledSnapshot),
+        'node_image',
+      ),
+    ).toThrow('disabled workflow node cannot be executed: node_image');
+  });
+
+  it('uses the shared timestamp-independent fingerprint and exposes exact v1 compatibility', () => {
+    const equivalent = {
+      ...snapshot,
+      submittedAt: '2026-08-27T00:01:00.000Z',
+      parameters: {
+        resolution: '1080p',
+        prompt: 'only the final node receives this prompt',
+      },
+    };
+
+    expect(workflowSnapshotFingerprint(equivalent)).toBe(workflowSnapshotFingerprint(snapshot));
+    expect(workflowSnapshotFingerprintV1(equivalent)).not.toBe(
+      workflowSnapshotFingerprintV1(snapshot),
+    );
+    expect(workflowSnapshotFingerprint(snapshot)).not.toBe(workflowSnapshotFingerprintV1(snapshot));
   });
 });

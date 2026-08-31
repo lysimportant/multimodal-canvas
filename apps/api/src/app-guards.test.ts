@@ -414,4 +414,32 @@ describe('API observability boundary', () => {
       await app.close();
     }
   });
+
+  it('omits query parameters from Fastify request logs', async () => {
+    const lines: string[] = [];
+    const app = buildApp({
+      logger: {
+        level: 'info',
+        stream: {
+          write(message) {
+            lines.push(message);
+          },
+        },
+      },
+    });
+
+    try {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/health?access_token=synthetic-log-token',
+      });
+      expect(response.statusCode).toBe(200);
+
+      const output = lines.join('');
+      expect(output).toContain('"url":"/health"');
+      expect(output).not.toContain('synthetic-log-token');
+    } finally {
+      await app.close();
+    }
+  });
 });

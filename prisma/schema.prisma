@@ -328,8 +328,11 @@ model AiCredential {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  project Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
-  owner   User?    @relation(fields: [ownerId], references: [id], onDelete: SetNull)
+  project              Project?                  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  owner                User?                     @relation(fields: [ownerId], references: [id], onDelete: SetNull)
+  models               ModelCatalog[]
+  capabilityOverrides  ModelCapabilityOverride[]
+  projectModelDefaults ProjectModelDefault[]
 
   @@index([projectId])
   @@map("ai_credentials")
@@ -337,6 +340,7 @@ model AiCredential {
 
 model ModelCatalog {
   id           String    @id @default(uuid()) @db.Uuid
+  credentialId String?   @db.Uuid
   modelAlias   String
   name         String
   mediaType    MediaType
@@ -347,46 +351,61 @@ model ModelCatalog {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
-  @@unique([modelAlias, mediaType])
-  @@index([mediaType])
+  credential AiCredential? @relation(fields: [credentialId], references: [id], onDelete: Cascade)
+
+  @@unique([credentialId, modelAlias, mediaType])
+  @@index([credentialId, mediaType])
   @@map("model_catalog")
 }
 
 model ModelCapabilityOverride {
   id           String    @id @default(uuid()) @db.Uuid
+  credentialId String?   @db.Uuid
   modelAlias   String
   mediaType    MediaType
   capabilities Json
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
-  @@unique([modelAlias, mediaType])
+  credential AiCredential? @relation(fields: [credentialId], references: [id], onDelete: Cascade)
+
+  @@unique([credentialId, modelAlias, mediaType])
   @@map("model_capability_overrides")
 }
 
 model ProjectModelDefault {
-  id         String    @id @default(uuid()) @db.Uuid
-  projectId  String    @db.Uuid
-  mediaType  MediaType
-  modelAlias String
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
+  id           String    @id @default(uuid()) @db.Uuid
+  projectId    String    @db.Uuid
+  mediaType    MediaType
+  modelAlias   String
+  credentialId String?   @db.Uuid
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project    Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  credential AiCredential? @relation(fields: [credentialId], references: [id], onDelete: SetNull)
 
   @@unique([projectId, mediaType])
+  @@index([credentialId])
   @@map("project_model_defaults")
 }
 
 model WebhookEvent {
-  id          String    @id @default(uuid()) @db.Uuid
-  eventId     String    @unique
-  provider    String
-  payload     Json
-  receivedAt  DateTime  @default(now())
-  processedAt DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @default(now()) @updatedAt
+  id                       String    @id @default(uuid()) @db.Uuid
+  eventId                  String    @unique
+  provider                 String
+  payload                  Json
+  status                   String    @default("received")
+  attemptCount             Int       @default(0)
+  processingToken          String?
+  processingStartedAt      DateTime?
+  processingLeaseExpiresAt DateTime?
+  lastError                String?
+  receivedAt               DateTime  @default(now())
+  processedAt              DateTime?
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @default(now()) @updatedAt
 
+  @@index([status, processingLeaseExpiresAt])
   @@map("webhook_events")
 }

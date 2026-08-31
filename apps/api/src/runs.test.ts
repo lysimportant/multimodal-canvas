@@ -4,8 +4,11 @@ import {
   createIdempotentRunId,
   createRunSnapshot,
   MemoryRunService,
+  snapshotFingerprint,
   type RunExecutorRequest,
 } from './runs';
+import { runSnapshotFingerprintMaterial } from '@multimodal-canvas/domain';
+import { createHash } from 'node:crypto';
 
 function snapshot() {
   return createRunSnapshot(
@@ -44,6 +47,43 @@ describe('run idempotency', () => {
     expect(repeated.id).toBe(first.id);
     expect(repeated.idempotencyKey).toBe('submit-1');
     expect(await service.listByProject('project_1')).toHaveLength(1);
+  });
+
+  it('coalesces semantically identical snapshots despite timestamp and key-order changes', async () => {
+    const service = new MemoryRunService({ stepDelayMs: 100 });
+    services.push(service);
+    const firstSnapshot = {
+      ...snapshot(),
+      parameters: {
+        nested: { first: 'one', second: 'two' },
+        list: ['first', 'second'],
+      },
+    };
+    const equivalentSnapshot = {
+      ...firstSnapshot,
+      submittedAt: '2026-08-24T00:01:00.000Z',
+      parameters: {
+        list: ['first', 'second'],
+        nested: { second: 'two', first: 'one' },
+      },
+    };
+
+    const first = await service.create(firstSnapshot, { idempotencyKey: 'semantic-1' });
+    const repeated = await service.create(equivalentSnapshot, {
+      idempotencyKey: 'semantic-1',
+    });
+
+    expect(repeated.id).toBe(first.id);
+    expect(await service.listByProject('project_1')).toHaveLength(1);
+  });
+
+  it('hashes the shared v2 fingerprint material used by the Worker', () => {
+    const value = snapshot();
+    const expected = createHash('sha256')
+      .update(runSnapshotFingerprintMaterial(value))
+      .digest('hex');
+
+    expect(snapshotFingerprint(value)).toBe(expected);
   });
 
   it('creates a stable BullMQ-compatible id from project and key', () => {
@@ -87,6 +127,27 @@ describe('run idempotency', () => {
     await waitForTerminalRun(service, left.id);
     expect(await service.listByProject(first.projectId)).toHaveLength(2);
     expect(executions).toBe(2);
+  });
+
+  it('redacts complete authorization bearer values before storing run errors', async () => {
+    const service = new MemoryRunService({
+      stepDelayMs: 0,
+      executor: async () => {
+        throw new Error(
+          'provider authorization: Bearer synthetic-bearer-secret; Authorization=Bearer synthetic-header-secret',
+        );
+      },
+    });
+    services.push(service);
+
+    const created = await service.create(snapshot());
+    const failed = await waitForTerminalRun(service, created.id);
+
+    expect(failed.status).toBe('failed');
+    expect(failed.error).toContain('authorization: Bearer [redacted]');
+    expect(failed.error).toContain('Authorization=Bearer [redacted]');
+    expect(failed.error).not.toContain('synthetic-bearer-secret');
+    expect(failed.error).not.toContain('synthetic-header-secret');
   });
 });
 

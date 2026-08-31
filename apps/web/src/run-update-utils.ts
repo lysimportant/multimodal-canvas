@@ -1,5 +1,39 @@
 import type { RunRecord } from '@multimodal-canvas/domain';
 
+/** Lifecycle updates from SSE intentionally omit the immutable input snapshot. */
+export type RunUpdate = Omit<RunRecord, 'snapshot'> & {
+  snapshot?: RunRecord['snapshot'];
+};
+
+/** Preserve the last complete snapshot when a public lifecycle event omits it. */
+export function mergeRunUpdate(
+  current: RunRecord | undefined,
+  incoming: RunUpdate,
+): RunRecord | undefined {
+  if (!current) return incoming.snapshot ? (incoming as RunRecord) : undefined;
+  if (current.id !== incoming.id) {
+    return incoming.snapshot ? (incoming as RunRecord) : undefined;
+  }
+
+  let result: RunRecord['result'];
+  if (current.result && incoming.result) {
+    result = { ...current.result, ...incoming.result };
+    if (incoming.result.asset) {
+      result.asset = current.result.asset
+        ? { ...current.result.asset, ...incoming.result.asset }
+        : incoming.result.asset;
+    }
+  } else {
+    result = incoming.result ?? current.result;
+  }
+  return {
+    ...current,
+    ...incoming,
+    snapshot: incoming.snapshot ?? current.snapshot,
+    ...(result ? { result } : {}),
+  };
+}
+
 const statusRank: Record<RunRecord['status'], number> = {
   draft: 0,
   queued: 1,
@@ -13,7 +47,7 @@ const statusRank: Record<RunRecord['status'], number> = {
 };
 
 /** Keep late SSE/poll/history responses from replacing a newer node run. */
-export function shouldApplyRunUpdate(current: RunRecord | undefined, incoming: RunRecord): boolean {
+export function shouldApplyRunUpdate(current: RunRecord | undefined, incoming: RunUpdate): boolean {
   if (!current) return true;
   if (current.id !== incoming.id) {
     const createdOrder = timestamp(incoming.createdAt) - timestamp(current.createdAt);

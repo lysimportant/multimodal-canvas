@@ -138,6 +138,15 @@ const lifecycleMigrationPath = join(
   '0008_lifecycle_timestamps',
   'migration.sql',
 );
+const modelCatalogCredentialMigrationPath = join(
+  prismaMigrationsPath,
+  '0009_model_catalog_credentials',
+);
+const projectModelDefaultCredentialMigrationPath = join(
+  prismaMigrationsPath,
+  '0010_project_model_default_credential',
+  'migration.sql',
+);
 const lifecycleTables = [
   'auth_sessions',
   'edges',
@@ -155,6 +164,17 @@ const preLifecycleMigrations = [
   '0005_user_auth_sessions',
   '0006_usage_ledger_idempotency',
   '0007_project_archive',
+] as const;
+const preModelCatalogCredentialMigrations = [
+  ...preLifecycleMigrations,
+  '0008_lifecycle_timestamps',
+] as const;
+const postLifecycleMigrations = [
+  '0009_model_catalog_credentials',
+  '0010_project_model_default_credential',
+  '0011_webhook_event_lifecycle',
+  '0012_capability_override_credential',
+  '0013_fix_capability_override_index_name',
 ] as const;
 
 describe('integration configuration safety', () => {
@@ -214,6 +234,19 @@ describe('integration configuration safety', () => {
       );
       expect(updateStatement).toMatch(/\bWHERE\b[\s\S]*\bIS NULL\b/i);
     }
+  });
+
+  it('declares the project model default credential index created by migration 0010', async () => {
+    const [schema, migrationSql] = await Promise.all([
+      readFile(prismaSchemaPath, 'utf8'),
+      readFile(projectModelDefaultCredentialMigrationPath, 'utf8'),
+    ]);
+
+    const projectModelDefault = schema.match(/model ProjectModelDefault \{[\s\S]*?\n\}/)?.[0];
+    expect(projectModelDefault).toContain('@@index([credentialId])');
+    expect(migrationSql).toContain(
+      'CREATE INDEX "project_model_defaults_credentialId_idx" ON "public"."project_model_defaults"("credentialId")',
+    );
   });
 });
 
@@ -360,7 +393,7 @@ integrationDescribe('Prisma stores (isolated PostgreSQL)', () => {
     });
     expect(updated).toMatchObject({
       configured: true,
-      defaultModels: { text: 'integration-text-model' },
+      defaultModels: { text: { modelAlias: 'integration-text-model' } },
     });
     expect(JSON.stringify(updated)).not.toContain('integration-api-key');
     await firstSettings.close?.();
@@ -368,7 +401,7 @@ integrationDescribe('Prisma stores (isolated PostgreSQL)', () => {
     const restartedSettings = new PrismaAiSettingsStore(prisma, settingsSecret);
     await expect(restartedSettings.get()).resolves.toMatchObject({
       configured: true,
-      defaultModels: { text: 'integration-text-model' },
+      defaultModels: { text: { modelAlias: 'integration-text-model' } },
     });
     await expect(restartedSettings.getCredentialReference()).resolves.toMatchObject({
       credentialVersion: 1,
@@ -601,6 +634,15 @@ integrationDescribe('Prisma stores (isolated PostgreSQL)', () => {
         migrationDatabaseUrl,
       );
 
+      // Bring the isolated database to the current schema before comparing it
+      // with the current datamodel. The assertions above already prove the
+      // 0008 compatibility boundary; later migrations only close the diff.
+      await copyMigrations(migrationWorkspace, postLifecycleMigrations);
+      await runPnpm(
+        ['exec', 'prisma', 'migrate', 'deploy', '--schema', migrationWorkspace.schemaPath],
+        migrationDatabaseUrl,
+      );
+
       legacy = new PrismaClient({ datasources: { db: { url: migrationDatabaseUrl } } });
 
       const updatedColumns = await legacy.$queryRaw<
@@ -730,6 +772,207 @@ integrationDescribe('Prisma stores (isolated PostgreSQL)', () => {
     }
   }, 120_000);
 
+  it('applies 0009 to the pre-credential model catalog without losing legacy rows', async () => {
+    const migrationDatabaseName = `mc_migration_test_${randomBytes(12).toString('hex')}`;
+    assertTemporaryDatabaseName(migrationDatabaseName);
+    const adminDatabaseUrl = withoutSchema(testDatabaseUrl!);
+    const migrationDatabaseUrl = withDatabase(testDatabaseUrl!, migrationDatabaseName);
+    const migrationWorkspace = await createMigrationWorkspace(preModelCatalogCredentialMigrations);
+    let databaseCreated = false;
+    let migrationClient: PrismaClient | undefined;
+
+    try {
+      await createTemporaryDatabase(adminDatabaseUrl, migrationDatabaseName);
+      databaseCreated = true;
+      await runPnpm(
+        ['exec', 'prisma', 'migrate', 'deploy', '--schema', migrationWorkspace.schemaPath],
+        migrationDatabaseUrl,
+      );
+
+      migrationClient = new PrismaClient({
+        datasources: { db: { url: migrationDatabaseUrl } },
+      });
+      const fixtures = await insertHistoricalModelCatalogRows(migrationClient);
+      const legacyRows = await readLegacyModelCatalogRows(migrationClient);
+      await migrationClient.$disconnect();
+      migrationClient = undefined;
+
+      await cp(
+        modelCatalogCredentialMigrationPath,
+        join(migrationWorkspace.migrationsPath, '0009_model_catalog_credentials'),
+        { recursive: true },
+      );
+      await runPnpm(
+        ['exec', 'prisma', 'migrate', 'deploy', '--schema', migrationWorkspace.schemaPath],
+        migrationDatabaseUrl,
+      );
+
+      // Apply the remaining migrations only after 0009 has been recorded.
+      // Keeping the directory in lexical order mirrors a real forward upgrade
+      // and avoids introducing an already-applied migration out of sequence.
+      await copyMigrations(migrationWorkspace, postLifecycleMigrations.slice(1));
+      await runPnpm(
+        ['exec', 'prisma', 'migrate', 'deploy', '--schema', migrationWorkspace.schemaPath],
+        migrationDatabaseUrl,
+      );
+
+      migrationClient = new PrismaClient({
+        datasources: { db: { url: migrationDatabaseUrl } },
+      });
+
+      const credentialColumn = await migrationClient.$queryRaw<
+        Array<{ dataType: string; isNullable: string }>
+      >(Prisma.sql`
+        SELECT data_type AS "dataType", is_nullable AS "isNullable"
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'model_catalog'
+          AND column_name = 'credentialId'
+      `);
+      expect(credentialColumn).toEqual([{ dataType: 'uuid', isNullable: 'YES' }]);
+
+      const migratedRows = await migrationClient.$queryRaw<
+        Array<LegacyModelCatalogRow & { credentialId: string | null }>
+      >(Prisma.sql`
+        SELECT
+          "id",
+          "credentialId",
+          "modelAlias",
+          "name",
+          "mediaType"::text AS "mediaType",
+          "capabilities",
+          "limitations",
+          "price",
+          "refreshedAt",
+          "createdAt",
+          "updatedAt"
+        FROM "public"."model_catalog"
+        ORDER BY "modelAlias", "mediaType"::text
+      `);
+      expect(
+        migratedRows.map(({ credentialId, ...row }) => {
+          expect(credentialId).toBe(fixtures.activeCredentialId);
+          return row;
+        }),
+      ).toEqual(legacyRows);
+
+      const indexes = await migrationClient.$queryRaw<
+        Array<{ indexDefinition: string; indexName: string }>
+      >(Prisma.sql`
+        SELECT indexname AS "indexName", indexdef AS "indexDefinition"
+        FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND tablename = 'model_catalog'
+        ORDER BY indexname
+      `);
+      const indexesByName = new Map(
+        indexes.map(({ indexDefinition, indexName }) => [indexName, indexDefinition]),
+      );
+      expect(indexesByName.has('model_catalog_modelAlias_mediaType_key')).toBe(false);
+      expect(indexesByName.has('model_catalog_mediaType_idx')).toBe(false);
+      expect(indexesByName.get('model_catalog_credentialId_modelAlias_mediaType_key')).toMatch(
+        /UNIQUE INDEX[\s\S]*\("credentialId", "modelAlias", "mediaType"\)/,
+      );
+      expect(indexesByName.get('model_catalog_credentialId_mediaType_idx')).toMatch(
+        /INDEX[\s\S]*\("credentialId", "mediaType"\)/,
+      );
+
+      const foreignKeys = await migrationClient.$queryRaw<
+        Array<{
+          constraintName: string;
+          deleteAction: string;
+          updateAction: string;
+        }>
+      >(Prisma.sql`
+        SELECT
+          constraints.conname AS "constraintName",
+          constraints.confdeltype::text AS "deleteAction",
+          constraints.confupdtype::text AS "updateAction"
+        FROM pg_constraint AS constraints
+        JOIN pg_class AS tables ON tables.oid = constraints.conrelid
+        JOIN pg_namespace AS schemas ON schemas.oid = tables.relnamespace
+        WHERE schemas.nspname = 'public'
+          AND tables.relname = 'model_catalog'
+          AND constraints.contype = 'f'
+          AND constraints.conname = 'model_catalog_credentialId_fkey'
+      `);
+      expect(foreignKeys).toEqual([
+        {
+          constraintName: 'model_catalog_credentialId_fkey',
+          deleteAction: 'c',
+          updateAction: 'c',
+        },
+      ]);
+
+      const scopedDuplicateId = randomUUID();
+      await migrationClient.$executeRaw(Prisma.sql`
+        INSERT INTO "public"."model_catalog"
+          ("id", "credentialId", "modelAlias", "name", "mediaType", "refreshedAt", "createdAt", "updatedAt")
+        VALUES
+          (${scopedDuplicateId}::uuid, ${fixtures.olderCredentialId}::uuid,
+           ${legacyRows[0]!.modelAlias}, 'Credential-scoped duplicate',
+           ${legacyRows[0]!.mediaType}::"public"."MediaType", CURRENT_TIMESTAMP,
+           CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      `);
+
+      await expect(
+        migrationClient.$executeRaw(Prisma.sql`
+          INSERT INTO "public"."model_catalog"
+            ("id", "credentialId", "modelAlias", "name", "mediaType", "refreshedAt", "createdAt", "updatedAt")
+          VALUES
+            (${randomUUID()}::uuid, ${fixtures.activeCredentialId}::uuid,
+             ${legacyRows[0]!.modelAlias}, 'Duplicate in one credential',
+             ${legacyRows[0]!.mediaType}::"public"."MediaType", CURRENT_TIMESTAMP,
+             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        `),
+      ).rejects.toThrow();
+
+      await expect(
+        migrationClient.$executeRaw(Prisma.sql`
+          INSERT INTO "public"."model_catalog"
+            ("id", "credentialId", "modelAlias", "name", "mediaType", "refreshedAt", "createdAt", "updatedAt")
+          VALUES
+            (${randomUUID()}::uuid, ${randomUUID()}::uuid, 'missing-credential-model',
+             'Missing credential', 'TEXT'::"public"."MediaType", CURRENT_TIMESTAMP,
+             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        `),
+      ).rejects.toThrow();
+
+      await migrationClient.$executeRaw(Prisma.sql`
+        DELETE FROM "public"."ai_credentials"
+        WHERE "id" = ${fixtures.olderCredentialId}::uuid
+      `);
+      const cascadedRows = await migrationClient.$queryRaw<Array<{ count: bigint }>>(Prisma.sql`
+        SELECT COUNT(*)::bigint AS "count"
+        FROM "public"."model_catalog"
+        WHERE "id" = ${scopedDuplicateId}::uuid
+      `);
+      expect(cascadedRows).toEqual([{ count: 0n }]);
+
+      await runPnpm(
+        [
+          'exec',
+          'prisma',
+          'migrate',
+          'diff',
+          '--from-url',
+          migrationDatabaseUrl,
+          '--to-schema-datamodel',
+          prismaSchemaPath,
+          '--exit-code',
+        ],
+        migrationDatabaseUrl,
+      );
+    } finally {
+      await migrationClient?.$disconnect();
+      try {
+        if (databaseCreated) await dropTemporaryDatabase(adminDatabaseUrl, migrationDatabaseName);
+      } finally {
+        await rm(migrationWorkspace.rootPath, { recursive: true, force: true });
+      }
+    }
+  }, 120_000);
+
   redisIntegrationDescribe('Redis isolation', () => {
     it('uses only the explicit test namespace', async () => {
       const client = new Redis(testRedisUrl!, {
@@ -788,6 +1031,109 @@ type HistoricalLifecycleRows = LifecycleRowSet & {
   webhookProcessedAt: Date;
 };
 
+type LegacyModelCatalogRow = {
+  id: string;
+  modelAlias: string;
+  name: string;
+  mediaType: string;
+  capabilities: Prisma.JsonValue | null;
+  limitations: Prisma.JsonValue | null;
+  price: Prisma.JsonValue | null;
+  refreshedAt: Date;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+async function insertHistoricalModelCatalogRows(prisma: PrismaClient): Promise<{
+  activeCredentialId: string;
+  olderCredentialId: string;
+}> {
+  const activeCredentialId = randomUUID();
+  const olderCredentialId = randomUUID();
+  const incompleteCredentialId = randomUUID();
+  const credentialCreatedAt = new Date('2025-02-01T00:00:00.000Z');
+  const activeCredentialUpdatedAt = new Date('2025-03-01T00:00:00.000Z');
+  const incompleteCredentialUpdatedAt = new Date('2025-04-01T00:00:00.000Z');
+  const catalogCreatedAt = new Date('2025-03-02T01:02:03.000Z');
+  const catalogUpdatedAt = new Date('2025-03-03T04:05:06.000Z');
+  const refreshedAt = new Date('2025-03-04T07:08:09.000Z');
+  const catalogRows = [
+    {
+      id: randomUUID(),
+      modelAlias: 'legacy-image-model',
+      name: 'Legacy Image Model',
+      mediaType: 'IMAGE',
+      capabilities: { image: true, references: 2 },
+      limitations: { maxPromptLength: 2048 },
+      price: { currency: 'USD', unit: 'image', value: 0.02 },
+    },
+    {
+      id: randomUUID(),
+      modelAlias: 'legacy-text-model',
+      name: 'Legacy Text Model',
+      mediaType: 'TEXT',
+      capabilities: { chat: true, contextWindow: 8192 },
+      limitations: null,
+      price: { currency: 'USD', unit: 'token', value: 0.000001 },
+    },
+  ] as const;
+
+  await prisma.$transaction(async (transaction) => {
+    await transaction.$executeRaw(Prisma.sql`
+      INSERT INTO "public"."ai_credentials"
+        ("id", "projectId", "ownerId", "label", "baseUrl", "encryptedApiKey",
+         "keyFingerprint", "version", "defaultModels", "createdAt", "updatedAt")
+      VALUES
+        (${olderCredentialId}::uuid, NULL, NULL, 'Legacy platform key v1',
+         'https://newapi.integration.test/v1', 'integration-encrypted-v1',
+         'integration-fingerprint-v1', 1, NULL, ${credentialCreatedAt},
+         ${activeCredentialUpdatedAt}),
+        (${activeCredentialId}::uuid, NULL, NULL, 'Legacy platform key v2',
+         'https://newapi.integration.test/v1', 'integration-encrypted-v2',
+         'integration-fingerprint-v2', 2, NULL, ${credentialCreatedAt},
+         ${activeCredentialUpdatedAt}),
+        (${incompleteCredentialId}::uuid, NULL, NULL, 'Incomplete platform key', '', '',
+         'integration-fingerprint-incomplete', 3, NULL, ${credentialCreatedAt},
+         ${incompleteCredentialUpdatedAt})
+    `);
+
+    for (const row of catalogRows) {
+      await transaction.$executeRaw(Prisma.sql`
+        INSERT INTO "public"."model_catalog"
+          ("id", "modelAlias", "name", "mediaType", "capabilities", "limitations", "price",
+           "refreshedAt", "createdAt", "updatedAt")
+        VALUES
+          (${row.id}::uuid, ${row.modelAlias}, ${row.name},
+           ${row.mediaType}::"public"."MediaType",
+           ${JSON.stringify(row.capabilities)}::jsonb,
+           ${row.limitations === null ? Prisma.sql`NULL` : Prisma.sql`${JSON.stringify(row.limitations)}::jsonb`},
+           ${JSON.stringify(row.price)}::jsonb, ${refreshedAt}, ${catalogCreatedAt},
+           ${catalogUpdatedAt})
+      `);
+    }
+  });
+
+  return { activeCredentialId, olderCredentialId };
+}
+
+async function readLegacyModelCatalogRows(prisma: PrismaClient): Promise<LegacyModelCatalogRow[]> {
+  return prisma.$queryRaw<LegacyModelCatalogRow[]>(Prisma.sql`
+    SELECT
+      "id",
+      "modelAlias",
+      "name",
+      "mediaType"::text AS "mediaType",
+      "capabilities",
+      "limitations",
+      "price",
+      "refreshedAt",
+      "createdAt",
+      "updatedAt"
+    FROM "public"."model_catalog"
+    ORDER BY "modelAlias", "mediaType"::text
+  `);
+}
+
 async function createMigrationWorkspace(migrations: readonly string[]): Promise<{
   rootPath: string;
   schemaPath: string;
@@ -815,6 +1161,22 @@ async function createMigrationWorkspace(migrations: readonly string[]): Promise<
   } catch (error) {
     await rm(rootPath, { recursive: true, force: true });
     throw error;
+  }
+}
+
+async function copyMigrations(
+  migrationWorkspace: { migrationsPath: string },
+  migrations: readonly string[],
+): Promise<void> {
+  for (const migration of migrations) {
+    if (!/^\d{4}_[a-z0-9_]+$/.test(migration)) {
+      throw new Error(`Unsafe migration directory name: ${migration}`);
+    }
+    await cp(
+      join(prismaMigrationsPath, migration),
+      join(migrationWorkspace.migrationsPath, migration),
+      { recursive: true },
+    );
   }
 }
 
@@ -1082,11 +1444,22 @@ function resolveTestS3Config():
 async function runPnpm(args: string[], databaseUrl: string): Promise<void> {
   const executable = process.platform === 'win32' ? (process.env.ComSpec ?? 'cmd.exe') : 'pnpm';
   const commandArgs = process.platform === 'win32' ? ['/d', '/s', '/c', 'pnpm.cmd', ...args] : args;
-  await execFileAsync(executable, commandArgs, {
-    cwd: workspaceRoot,
-    env: { ...process.env, DATABASE_URL: databaseUrl },
-    maxBuffer: 8 * 1024 * 1024,
-  });
+  try {
+    await execFileAsync(executable, commandArgs, {
+      cwd: workspaceRoot,
+      env: { ...process.env, DATABASE_URL: databaseUrl },
+      maxBuffer: 8 * 1024 * 1024,
+    });
+  } catch (error) {
+    const commandError = error as { stderr?: string; stdout?: string; message?: string };
+    const detail = [commandError.stderr, commandError.stdout]
+      .filter((value): value is string => Boolean(value?.trim()))
+      .join('\n')
+      .trim();
+    throw new Error(
+      detail ? `${commandError.message ?? 'Command failed'}\n${detail}` : commandError.message,
+    );
+  }
 }
 
 function withSchema(databaseUrl: string, schema: string): string {

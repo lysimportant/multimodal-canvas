@@ -1,36 +1,66 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { apiFetch } from '../auth-client';
 import { API_BASE_URL, type ModelEntry } from '../workspace/contracts';
 
 export const modelCatalogQueryKey = ['model-catalog'] as const;
 
-export async function fetchModelCatalog(signal?: AbortSignal): Promise<ModelEntry[]> {
-  const response = await apiFetch(`${API_BASE_URL}/v1/models`, { signal });
+export function modelCatalogQueryKeyFor(credentialId?: string) {
+  return credentialId ? ([...modelCatalogQueryKey, credentialId] as const) : modelCatalogQueryKey;
+}
+
+export async function fetchModelCatalog(
+  signal?: AbortSignal,
+  credentialId?: string,
+): Promise<ModelEntry[]> {
+  const query = credentialId ? `?${new URLSearchParams({ credentialId }).toString()}` : '';
+  const response = await apiFetch(`${API_BASE_URL}/v1/models${query}`, { signal });
   const result = (await response.json().catch(() => ({}))) as {
     models?: ModelEntry[];
     error?: string;
   };
   if (!response.ok || !result.models) throw new Error(result.error ?? '模型列表加载失败');
-  return result.models;
+  return result.models.map((model) =>
+    credentialId && !model.credentialId ? { ...model, credentialId } : model,
+  );
 }
 
-export async function refreshModelCatalog(): Promise<ModelEntry[]> {
+export async function refreshModelCatalog(credentialId?: string): Promise<ModelEntry[]> {
   const response = await apiFetch(`${API_BASE_URL}/v1/settings/ai/models/refresh`, {
     method: 'POST',
+    ...(credentialId
+      ? {
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ credentialId }),
+        }
+      : {}),
   });
   const result = (await response.json().catch(() => ({}))) as {
     models?: ModelEntry[];
     error?: string;
   };
   if (!response.ok || !result.models) throw new Error(result.error ?? '模型刷新失败');
-  return result.models;
+  return result.models.map((model) =>
+    credentialId && !model.credentialId ? { ...model, credentialId } : model,
+  );
 }
 
-export function useModelCatalogQuery() {
+export function useModelCatalogQuery(credentialId?: string) {
   return useQuery({
-    queryKey: modelCatalogQueryKey,
-    queryFn: ({ signal }) => fetchModelCatalog(signal),
+    queryKey: modelCatalogQueryKeyFor(credentialId),
+    queryFn: ({ signal }) => fetchModelCatalog(signal, credentialId),
+  });
+}
+
+export function useCredentialModelCatalogQueries(credentialIds: readonly string[]) {
+  const uniqueCredentialIds = [...new Set(credentialIds.filter(Boolean))];
+  const scopes: Array<string | undefined> =
+    uniqueCredentialIds.length > 0 ? uniqueCredentialIds : [undefined];
+  return useQueries({
+    queries: scopes.map((credentialId) => ({
+      queryKey: modelCatalogQueryKeyFor(credentialId),
+      queryFn: ({ signal }: { signal: AbortSignal }) => fetchModelCatalog(signal, credentialId),
+    })),
   });
 }
 
@@ -38,14 +68,15 @@ export function useRefreshModelCatalog() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: refreshModelCatalog,
-    onSuccess: async (models) => {
+    onSuccess: async (models, credentialId) => {
+      const queryKey = modelCatalogQueryKeyFor(credentialId);
       await queryClient.cancelQueries({
-        queryKey: modelCatalogQueryKey,
+        queryKey,
         exact: true,
       });
-      queryClient.setQueryData(modelCatalogQueryKey, models);
+      queryClient.setQueryData(queryKey, models);
       await queryClient.invalidateQueries({
-        queryKey: modelCatalogQueryKey,
+        queryKey,
         exact: true,
         refetchType: 'none',
       });

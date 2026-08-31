@@ -3,7 +3,12 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createAppQueryClient } from './client';
-import { modelCatalogQueryKey, useModelCatalogQuery, useRefreshModelCatalog } from './models';
+import {
+  modelCatalogQueryKey,
+  modelCatalogQueryKeyFor,
+  useModelCatalogQuery,
+  useRefreshModelCatalog,
+} from './models';
 
 afterEach(() => {
   cleanup();
@@ -86,5 +91,45 @@ describe('model catalog query', () => {
     });
 
     expect(client.getQueryData(modelCatalogQueryKey)).toEqual(refreshedModels);
+  });
+
+  it('隔离不同凭据的查询缓存并按凭据刷新', async () => {
+    const models = [{ id: 'image-v1', name: 'Image V1', mediaTypes: ['image'] }];
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ models }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const client = createAppQueryClient();
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+
+    const { result } = renderHook(
+      () => ({
+        catalog: useModelCatalogQuery('credential-image'),
+        refresh: useRefreshModelCatalog(),
+      }),
+      { wrapper },
+    );
+    await waitFor(() =>
+      expect(result.current.catalog.data?.[0]?.credentialId).toBe('credential-image'),
+    );
+
+    await act(async () => {
+      await result.current.refresh.mutateAsync('credential-image');
+    });
+
+    expect(client.getQueryData(modelCatalogQueryKeyFor('credential-image'))).toEqual([
+      { ...models[0], credentialId: 'credential-image' },
+    ]);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('credentialId=credential-image');
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
+      credentialId: 'credential-image',
+    });
   });
 });

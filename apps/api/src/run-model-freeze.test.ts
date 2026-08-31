@@ -163,7 +163,8 @@ describe('per-node run model snapshots', () => {
       model('request-video', 'video'),
     ]);
     const listModels = vi.spyOn(settingsStore, 'listModels');
-    const app = buildApp({ logger: false, projectStore, settingsStore });
+    const runService = new MemoryRunService();
+    const app = buildApp({ logger: false, projectStore, settingsStore, runService });
     apps.push(app);
     const projectId = await createProject(app);
     await app.inject({
@@ -171,6 +172,9 @@ describe('per-node run model snapshots', () => {
       url: `/v1/projects/${projectId}/models/defaults`,
       payload: { text: 'project-text' },
     });
+    // Saving a project default validates its catalog entry before the run;
+    // keep the assertion below focused on submission-time resolution calls.
+    listModels.mockClear();
 
     const submitted = await app.inject({
       method: 'POST',
@@ -179,11 +183,14 @@ describe('per-node run model snapshots', () => {
     });
 
     expect(submitted.statusCode).toBe(202);
-    const run = submitted.json().run;
-    expect(run.modelAlias).toBe('request-video');
+    const publicRun = submitted.json().run;
+    expect(publicRun.modelAlias).toBe('request-video');
+    expect(publicRun.snapshot).toEqual({ canvasRevision: 1, inputCount: 2, inputs: [null, null] });
+    const run = await runService.get(publicRun.id);
+    expect(run).toBeDefined();
     expect(
       Object.fromEntries(
-        run.snapshot.nodes.map((node: { id: string; data: { modelAlias?: string } }) => [
+        run!.snapshot.nodes.map((node: { id: string; data: { modelAlias?: string } }) => [
           node.id,
           node.data.modelAlias,
         ]),
@@ -196,7 +203,7 @@ describe('per-node run model snapshots', () => {
       node_audio: 'global-audio',
       node_video: 'request-video',
     });
-    expect(run.snapshot.inputs.map((input: { nodeId: string }) => input.nodeId)).toEqual([
+    expect(run!.snapshot.inputs.map((input: { nodeId: string }) => input.nodeId)).toEqual([
       'node_image',
       'node_audio',
     ]);
@@ -215,6 +222,108 @@ describe('per-node run model snapshots', () => {
     expect(listModels.mock.calls.filter(([mediaType]) => mediaType === 'image')).toHaveLength(1);
     expect(listModels.mock.calls.filter(([mediaType]) => mediaType === 'audio')).toHaveLength(1);
     expect(listModels.mock.calls.filter(([mediaType]) => mediaType === 'video')).toHaveLength(1);
+  });
+
+  it('freezes mixed per-node credentials without inheriting the target credential upstream', async () => {
+    const projectStore = new MemoryProjectStore();
+    const settingsStore = new AiSettingsStore('model-freeze-mixed-credentials');
+    settingsStore.update({
+      baseUrl: 'https://chat-credential.example/v1',
+      apiKey: 'synthetic-chat-credential-key',
+    });
+    const chatCredential = settingsStore
+      .listCredentials()
+      .find((credential) => credential.baseUrl === 'https://chat-credential.example/v1');
+    if (!chatCredential) throw new Error('chat credential fixture was not created');
+    settingsStore.replaceModels([model('chat-text', 'text')], chatCredential.id);
+
+    settingsStore.update({
+      baseUrl: 'https://video-credential.example/v1',
+      apiKey: 'synthetic-video-credential-key',
+    });
+    const videoCredential = settingsStore
+      .listCredentials()
+      .find((credential) => credential.baseUrl === 'https://video-credential.example/v1');
+    if (!videoCredential) throw new Error('video credential fixture was not created');
+    settingsStore.replaceModels([model('video-target', 'video')], videoCredential.id);
+
+    const runService = new MemoryRunService({ providerName: 'newapi' });
+    const app = buildApp({ logger: false, projectStore, settingsStore, runService });
+    apps.push(app);
+    const projectId = await createProject(app, {
+      revision: 0,
+      nodes: [
+        {
+          id: 'node_chat_text',
+          type: 'text',
+          position: { x: 0, y: 0 },
+          data: {
+            label: 'Chat text',
+            mediaType: 'text',
+            mode: 'generate',
+            modelAlias: 'chat-text',
+            credentialId: chatCredential.id,
+          },
+        },
+        {
+          id: 'node_video_target',
+          type: 'video',
+          position: { x: 240, y: 0 },
+          data: {
+            label: 'Video target',
+            mediaType: 'video',
+            mode: 'generate',
+            modelAlias: 'video-target',
+            credentialId: videoCredential.id,
+          },
+        },
+      ],
+      edges: [
+        {
+          id: 'edge_chat_text_video',
+          sourceNodeId: 'node_chat_text',
+          sourceHandle: 'output:text',
+          targetNodeId: 'node_video_target',
+          targetHandle: 'input:prompt',
+          order: 0,
+        },
+      ],
+    });
+
+    const chatReference = settingsStore.getCredentialReference(chatCredential.id);
+    const videoReference = settingsStore.getCredentialReference(videoCredential.id);
+    const submitted = await app.inject({
+      method: 'POST',
+      url: '/v1/nodes/node_video_target/runs',
+      payload: {
+        projectId,
+        modelAlias: 'video-target',
+        credentialId: videoCredential.id,
+      },
+    });
+
+    expect(submitted.statusCode).toBe(202);
+    const publicRun = submitted.json().run;
+    expect(publicRun).toMatchObject({
+      modelAlias: 'video-target',
+      snapshot: { canvasRevision: 1, inputCount: 1, inputs: [null] },
+    });
+    const storedRun = await runService.get(publicRun.id);
+    expect(storedRun).toBeDefined();
+    const snapshot = storedRun!.snapshot;
+    expect(snapshot).toMatchObject({
+      modelAlias: 'video-target',
+      credentialId: videoReference.credentialId,
+      credentialVersion: videoReference.credentialVersion,
+      nodeCredentialReferences: {
+        node_chat_text: chatReference,
+        node_video_target: videoReference,
+      },
+    });
+    expect(snapshot.nodeCredentialReferences!.node_chat_text.credentialId).toBe(chatCredential.id);
+    expect(snapshot.nodeCredentialReferences!.node_chat_text.credentialId).not.toBe(
+      videoCredential.id,
+    );
   });
 
   it('rejects an unavailable intermediate model before creating a run', async () => {
@@ -383,8 +492,15 @@ describe('per-node run model snapshots', () => {
       url: `/v1/runs/${first.id}/retry`,
     });
     expect(retried.statusCode).toBe(202);
-    expect(retried.json().run.snapshot).toEqual(frozenSnapshot);
-    const succeeded = await waitForStatus(runService, retried.json().run.id, 'succeeded');
+    const retriedPublicRun = retried.json().run;
+    expect(retriedPublicRun.snapshot).toEqual({
+      canvasRevision: frozenSnapshot.canvasRevision,
+      inputCount: frozenSnapshot.inputs.length,
+      inputs: Array.from({ length: frozenSnapshot.inputs.length }, () => null),
+    });
+    const retriedInternalRun = await runService.get(retriedPublicRun.id);
+    expect(retriedInternalRun?.snapshot).toEqual(frozenSnapshot);
+    const succeeded = await waitForStatus(runService, retriedPublicRun.id, 'succeeded');
     expect(succeeded.snapshot).toEqual(frozenSnapshot);
     expect(succeeded.snapshot.nodes.map((node) => node.data.modelAlias)).toEqual([
       undefined,

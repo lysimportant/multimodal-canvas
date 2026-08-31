@@ -2,7 +2,7 @@ import { LoaderCircle, Play, Sparkles } from 'lucide-react';
 
 import type { AssetFlowNode } from '../canvas-utils';
 import { TextPromptEditor } from '../TextPromptEditor';
-import { mediaLabels, type ModelEntry } from './contracts';
+import { mediaLabels, type ModelEntry, type ModelSelection } from './contracts';
 
 export type InferenceStrength = 'low' | 'medium' | 'high';
 
@@ -11,7 +11,7 @@ export type NodeQuickEditorProps = {
   models: ModelEntry[];
   busy: boolean;
   onPromptChange: (value: string) => void;
-  onModelChange: (value: string) => void;
+  onModelChange: (value: ModelSelection) => void;
   onInferenceStrengthChange: (value: InferenceStrength) => void;
   onRun: () => void;
 };
@@ -35,9 +35,17 @@ export function NodeQuickEditor({
   onRun,
 }: NodeQuickEditorProps) {
   const currentModel = node.data.modelAlias ?? '';
+  const currentCredentialId = node.data.credentialId;
   const availableModels = models.filter((model) => model.mediaTypes.includes(node.data.mediaType));
   const currentModelIsMissing =
-    Boolean(currentModel) && !availableModels.some((model) => model.id === currentModel);
+    Boolean(currentModel) &&
+    !availableModels.some(
+      (model) => model.id === currentModel && model.credentialId === currentCredentialId,
+    );
+  const currentValue = currentModel
+    ? modelOptionValue({ modelAlias: currentModel, credentialId: currentCredentialId })
+    : '';
+  const groupedModels = groupModelsByCredential(availableModels);
   const enabled = node.data.enabled !== false;
 
   return (
@@ -69,15 +77,31 @@ export function NodeQuickEditor({
       <div className="node-quick-editor-controls">
         <label className="node-quick-editor-field">
           <span>模型</span>
-          <select value={currentModel} onChange={(event) => onModelChange(event.target.value)}>
+          <select
+            value={currentValue}
+            onChange={(event) => onModelChange(parseModelOptionValue(event.target.value))}
+          >
             <option value="">继承项目默认模型</option>
             {currentModelIsMissing && (
-              <option value={currentModel}>{currentModel}（当前设置，目录中不可用）</option>
-            )}
-            {availableModels.map((model) => (
-              <option key={model.id} value={model.id}>
-                {model.name}
+              <option value={currentValue}>
+                {currentModel}
+                {currentCredentialId ? '（当前设置，目录中不可用）' : '（旧设置，未绑定 API Key）'}
               </option>
+            )}
+            {groupedModels.map((group) => (
+              <optgroup key={group.id} label={group.label}>
+                {group.models.map((model) => (
+                  <option
+                    key={`${model.credentialId ?? 'active'}:${model.id}`}
+                    value={modelOptionValue({
+                      modelAlias: model.id,
+                      credentialId: model.credentialId,
+                    })}
+                  >
+                    {model.name}
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </select>
         </label>
@@ -112,4 +136,48 @@ export function NodeQuickEditor({
       </button>
     </section>
   );
+}
+
+function modelOptionValue(selection: ModelSelection) {
+  if (!selection.modelAlias) return '';
+  return JSON.stringify([selection.credentialId ?? '', selection.modelAlias]);
+}
+
+function parseModelOptionValue(value: string): ModelSelection {
+  if (!value) return { modelAlias: '' };
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (
+      Array.isArray(parsed) &&
+      parsed.length === 2 &&
+      typeof parsed[0] === 'string' &&
+      typeof parsed[1] === 'string' &&
+      parsed[1]
+    ) {
+      return {
+        modelAlias: parsed[1],
+        ...(parsed[0] ? { credentialId: parsed[0] } : {}),
+      };
+    }
+  } catch {
+    // Keep legacy plain option values usable in tests and restored markup.
+  }
+  return { modelAlias: value };
+}
+
+function groupModelsByCredential(models: ModelEntry[]) {
+  const groups = new Map<string, { id: string; label: string; models: ModelEntry[] }>();
+  for (const model of models) {
+    const id = model.credentialId ?? 'active';
+    const group = groups.get(id) ?? {
+      id,
+      label:
+        model.credentialLabel ??
+        (model.credentialId ? `API Key · ${model.credentialId.slice(0, 8)}` : '当前 API Key'),
+      models: [],
+    };
+    group.models.push(model);
+    groups.set(id, group);
+  }
+  return [...groups.values()];
 }

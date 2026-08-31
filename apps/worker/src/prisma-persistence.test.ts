@@ -336,6 +336,45 @@ describe('WorkerPrismaRunPersistence retry recovery', () => {
   });
 });
 
+describe('WorkerPrismaRunPersistence run result persistence', () => {
+  it('writes a versioned asset on success and a diagnostic error on failure', async () => {
+    const update = vi.fn(async (args) => args);
+    const persistence = new WorkerPrismaRunPersistence({ run: { update } } as never);
+    const result = {
+      provider: 'newapi',
+      summary: 'synthetic text result',
+      targetNodeId: 'node_text',
+      mediaType: 'text' as const,
+      inputCount: 1,
+      asset: {
+        assetId: 'asset_text_persisted',
+        version: 3,
+        mimeType: 'text/plain',
+      },
+    };
+
+    await persistence.updateRun({
+      runId,
+      status: 'succeeded',
+      result,
+    });
+    await persistence.updateRun({
+      runId,
+      status: 'failed',
+      error: 'synthetic provider failure',
+    });
+
+    expect(update).toHaveBeenNthCalledWith(1, {
+      where: { id: databaseId },
+      data: { status: 'SUCCEEDED', result },
+    });
+    expect(update).toHaveBeenNthCalledWith(2, {
+      where: { id: databaseId },
+      data: { status: 'FAILED', error: { message: 'synthetic provider failure' } },
+    });
+  });
+});
+
 describe('WorkerPrismaRunPersistence credential snapshots', () => {
   const encryptionSecret = 'worker-test-encryption-secret';
   const credentialId = '123e4567-e89b-12d3-a456-426614174012';
@@ -363,7 +402,7 @@ describe('WorkerPrismaRunPersistence credential snapshots', () => {
       apiKey: 'historical-test-key',
     });
     expect(findFirst).toHaveBeenCalledWith({
-      where: { id: credentialId, version: 7 },
+      where: { id: credentialId, version: 7, projectId: null },
       select: { baseUrl: true, encryptedApiKey: true },
     });
   });

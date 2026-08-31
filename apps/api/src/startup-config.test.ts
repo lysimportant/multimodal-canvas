@@ -16,13 +16,15 @@ const productionEnvironment: StartupEnvironment = {
   S3_ACCESS_KEY: 'test-access-key',
   S3_SECRET_KEY: 'test-secret-key',
   NEW_API_BASE_URL: 'https://newapi.example.com/v1',
+  NEW_API_API_KEY: 'test-new-api-key',
+  API_AUTH_TOKEN: 'test-api-auth-token',
   WORKER_PROVIDER: 'newapi',
   RUN_SERVICE: 'bullmq',
   AI_CREDENTIAL_ENCRYPTION_KEY: 'test-encryption-secret',
 };
 
 describe('API production startup configuration', () => {
-  it('accepts the durable production configuration without a preconfigured API key', () => {
+  it('accepts durable production configuration without a database AI credential', () => {
     expect(validateApiStartupConfiguration(productionEnvironment)).toEqual([]);
     expect(() => assertApiStartupConfiguration(productionEnvironment)).not.toThrow();
   });
@@ -36,7 +38,9 @@ describe('API production startup configuration', () => {
       'S3_BUCKET',
       'S3_REGION',
       'NEW_API_BASE_URL',
+      'NEW_API_API_KEY',
       'AI_CREDENTIAL_ENCRYPTION_KEY',
+      'API_AUTH_TOKEN/API_JWT_SECRET',
       'WORKER_PROVIDER',
     ]);
     expect(() => assertApiStartupConfiguration({ NODE_ENV: 'production' })).toThrow(
@@ -46,6 +50,38 @@ describe('API production startup configuration', () => {
       /DATABASE_URL is required/,
     );
   });
+
+  it('rejects a missing New API key in an otherwise valid production configuration', () => {
+    const issues = validateApiStartupConfiguration({
+      ...productionEnvironment,
+      NEW_API_API_KEY: '  ',
+    });
+
+    expect(issues).toContainEqual({ variable: 'NEW_API_API_KEY', message: 'is required' });
+  });
+
+  it.each([
+    ['userinfo', 'https://user:marker@newapi.example.com/v1', 'must not include userinfo'],
+    ['query', 'https://newapi.example.com/v1?token=marker', 'must not include query parameters'],
+    ['hash', 'https://newapi.example.com/v1#marker', 'must not include a fragment'],
+  ])(
+    'rejects production New API URL with %s without echoing URL contents',
+    (_kind, baseUrl, message) => {
+      const environment = { ...productionEnvironment, NEW_API_BASE_URL: baseUrl };
+      const issues = validateApiStartupConfiguration(environment);
+
+      expect(issues).toContainEqual({ variable: 'NEW_API_BASE_URL', message });
+
+      let error: unknown;
+      try {
+        assertApiStartupConfiguration(environment);
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(StartupConfigurationError);
+      expect((error as Error).message).not.toContain('marker');
+    },
+  );
 
   it('rejects volatile run, storage and invalid endpoint choices in production', () => {
     const issues = validateApiStartupConfiguration({
@@ -70,6 +106,133 @@ describe('API production startup configuration', () => {
       'RUN_SERVICE',
       'API_RATE_LIMIT_REDIS_ENABLED',
     ]);
+  });
+
+  it('requires credentials when a custom S3 endpoint is configured', () => {
+    const issues = validateApiStartupConfiguration({
+      ...productionEnvironment,
+      S3_ENDPOINT: 'https://minio.example.com',
+      S3_ACCESS_KEY: '',
+      S3_SECRET_KEY: '',
+    });
+
+    expect(issues).toContainEqual({
+      variable: 'S3_ACCESS_KEY/S3_SECRET_KEY',
+      message: 'are required when S3_ENDPOINT is configured',
+    });
+  });
+
+  it('allows the AWS SDK IAM role chain when no custom S3 endpoint is configured', () => {
+    expect(
+      validateApiStartupConfiguration({
+        ...productionEnvironment,
+        S3_ACCESS_KEY: '',
+        S3_SECRET_KEY: '',
+      }),
+    ).toEqual([]);
+  });
+
+  it('rejects one-sided S3 credentials even without a custom endpoint', () => {
+    const issues = validateApiStartupConfiguration({
+      ...productionEnvironment,
+      S3_ACCESS_KEY: 'access-only',
+      S3_SECRET_KEY: '',
+    });
+
+    expect(issues).toContainEqual({
+      variable: 'S3_ACCESS_KEY/S3_SECRET_KEY',
+      message: 'must be configured together',
+    });
+  });
+
+  it('rejects wildcard CORS when credentials are enabled', () => {
+    const issues = validateApiStartupConfiguration({
+      ...productionEnvironment,
+      CORS_ORIGIN: 'https://canvas.example.com, *',
+    });
+
+    expect(issues).toContainEqual({
+      variable: 'CORS_ORIGIN',
+      message: 'must not include wildcard "*" when credentials are enabled',
+    });
+  });
+
+  it('accepts explicit positive safe integer New API limits in production', () => {
+    const issues = validateApiStartupConfiguration({
+      ...productionEnvironment,
+      NEW_API_TIMEOUT_MS: '120000',
+      NEW_API_MAX_RESPONSE_BYTES: '52428800',
+      NEW_API_VIDEO_POLL_INTERVAL_MS: '2000',
+      NEW_API_VIDEO_MAX_POLL_ATTEMPTS: '120',
+      NEW_API_VIDEO_MAX_CONTENT_BYTES: '52428800',
+    });
+
+    expect(issues).toEqual([]);
+  });
+
+  it.each(['0', '-1', '1.5', '1e3', '9007199254740992', 'not-a-number', '  '])(
+    'rejects invalid explicit New API numeric value %s in production',
+    (value) => {
+      const issues = validateApiStartupConfiguration({
+        ...productionEnvironment,
+        NEW_API_TIMEOUT_MS: value,
+      });
+
+      expect(issues).toContainEqual({
+        variable: 'NEW_API_TIMEOUT_MS',
+        message: 'must be a positive safe integer',
+      });
+    },
+  );
+
+  it('keeps explicit New API numeric values compatible outside production', () => {
+    expect(
+      validateApiStartupConfiguration({
+        NODE_ENV: 'development',
+        NEW_API_TIMEOUT_MS: 'not-a-number',
+        NEW_API_VIDEO_POLL_INTERVAL_MS: '0',
+      }),
+    ).toEqual([]);
+  });
+
+  it('validates every explicit New API numeric setting in production', () => {
+    const issues = validateApiStartupConfiguration({
+      ...productionEnvironment,
+      NEW_API_MAX_RESPONSE_BYTES: '0',
+      NEW_API_VIDEO_POLL_INTERVAL_MS: '1.2',
+      NEW_API_VIDEO_MAX_POLL_ATTEMPTS: '9007199254740992',
+      NEW_API_VIDEO_MAX_CONTENT_BYTES: '-4',
+    });
+
+    expect(issues.map(({ variable }) => variable)).toEqual([
+      'NEW_API_MAX_RESPONSE_BYTES',
+      'NEW_API_VIDEO_POLL_INTERVAL_MS',
+      'NEW_API_VIDEO_MAX_POLL_ATTEMPTS',
+      'NEW_API_VIDEO_MAX_CONTENT_BYTES',
+    ]);
+  });
+
+  it('accepts either production API authentication mechanism', () => {
+    expect(
+      validateApiStartupConfiguration({
+        ...productionEnvironment,
+        API_AUTH_TOKEN: '',
+        API_JWT_SECRET: 'test-jwt-secret',
+      }),
+    ).toEqual([]);
+  });
+
+  it('rejects production without API authentication', () => {
+    const issues = validateApiStartupConfiguration({
+      ...productionEnvironment,
+      API_AUTH_TOKEN: '',
+      API_JWT_SECRET: '',
+    });
+
+    expect(issues).toContainEqual({
+      variable: 'API_AUTH_TOKEN/API_JWT_SECRET',
+      message: 'one is required',
+    });
   });
 
   it.each(['development', 'test', undefined])(

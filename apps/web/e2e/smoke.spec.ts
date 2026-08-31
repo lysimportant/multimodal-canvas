@@ -1,5 +1,5 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
-import type { Asset, CanvasDocument, RunRecord } from '@multimodal-canvas/domain';
+import type { Asset, CanvasDocument, ModelSelection, RunRecord } from '@multimodal-canvas/domain';
 
 type Project = {
   id: string;
@@ -12,7 +12,7 @@ type AiSettings = {
   baseUrl: string;
   configured: boolean;
   keyFingerprint?: string;
-  defaultModels: Record<string, string>;
+  defaultModels: Record<string, string | ModelSelection>;
 };
 
 type AiCredentialSummary = {
@@ -29,6 +29,15 @@ const project: Project = {
   name: 'Smoke 项目',
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
+};
+
+const initialCredential: AiCredentialSummary = {
+  id: 'credential-initial',
+  version: 1,
+  baseUrl: 'https://mock.initial.local/v1',
+  keyFingerprint: 'initial-fingerprint',
+  active: true,
+  createdAt: '2026-01-01T00:00:00.000Z',
 };
 
 const projectPath = `/projects/${project.id}`;
@@ -78,8 +87,9 @@ async function json(route: Route, body: unknown, status = 200) {
 
 async function mockApi(page: Page) {
   let settings: AiSettings = {
-    baseUrl: '',
-    configured: false,
+    baseUrl: initialCredential.baseUrl,
+    configured: true,
+    keyFingerprint: initialCredential.keyFingerprint,
     defaultModels: {},
   };
   const models = [
@@ -91,10 +101,13 @@ async function mockApi(page: Page) {
   ];
 
   const assets: Asset[] = [];
-  let credentials: AiCredentialSummary[] = [];
+  const modelsForCredential = (credentialId: string) =>
+    models.map((model) => ({ ...model, credentialId }));
+
+  let credentials: AiCredentialSummary[] = [initialCredential];
   const credentialByKey = new Map<string, AiCredentialSummary>();
   const generatedContent = new Map<string, { contentType: string; body: Buffer | string }>();
-  let projectDefaults: Record<string, string> = {};
+  let projectDefaults: Record<string, string | ModelSelection> = {};
   const pendingUploads = new Map<
     string,
     { name: string; mimeType: string; sizeBytes: number; sha256: string }
@@ -119,10 +132,14 @@ async function mockApi(page: Page) {
         ? (body.parameters as Record<string, unknown>)
         : {};
     const prompt = typeof parameters.prompt === 'string' ? parameters.prompt : '未提供提示词';
-    const modelAlias =
+    const requestedModelAlias =
       typeof body.modelAlias === 'string' && body.modelAlias.length > 0
         ? body.modelAlias
         : (settings.defaultModels[mediaType] ?? `mock-${mediaType}`);
+    const modelAlias =
+      typeof requestedModelAlias === 'string'
+        ? requestedModelAlias
+        : requestedModelAlias.modelAlias;
     const resultAssetId = `result-${nodeId}`;
     const contentUrl = `/v1/assets/${resultAssetId}/content`;
     const output =
@@ -315,7 +332,7 @@ async function mockApi(page: Page) {
       return;
     }
     if (request.method() === 'PATCH' && path === `/v1/projects/${project.id}/models/defaults`) {
-      const body = request.postDataJSON() as Record<string, string | null>;
+      const body = request.postDataJSON() as Record<string, string | ModelSelection | null>;
       projectDefaults = {
         ...projectDefaults,
         ...Object.fromEntries(Object.entries(body).filter(([, value]) => value)),
@@ -369,7 +386,10 @@ async function mockApi(page: Page) {
       return;
     }
     if (request.method() === 'GET' && path === '/v1/models') {
-      await json(route, { models });
+      const credentialId =
+        url.searchParams.get('credentialId') ??
+        credentials.find((credential) => credential.active)?.id;
+      await json(route, { models: credentialId ? modelsForCredential(credentialId) : [] });
       return;
     }
     if (request.method() === 'GET' && path === '/v1/settings/ai') {
@@ -384,7 +404,7 @@ async function mockApi(page: Page) {
       const body = request.postDataJSON() as {
         baseUrl?: string;
         apiKey?: string;
-        defaultModels?: Record<string, string | null>;
+        defaultModels?: Record<string, string | ModelSelection | null>;
       };
       settings = {
         ...settings,
@@ -452,7 +472,10 @@ async function mockApi(page: Page) {
       return;
     }
     if (request.method() === 'POST' && path === '/v1/settings/ai/models/refresh') {
-      await json(route, { models });
+      const body = (request.postDataJSON() ?? {}) as { credentialId?: string };
+      const credentialId =
+        body.credentialId ?? credentials.find((credential) => credential.active)?.id;
+      await json(route, { models: credentialId ? modelsForCredential(credentialId) : [] });
       return;
     }
     if (request.method() === 'DELETE' && path === '/v1/settings/ai/credentials') {
@@ -529,6 +552,11 @@ test('主页进入工作台和项目深链，并在刷新后恢复画布', async
   await expect(page).toHaveURL('/workspace');
   await expect(page.getByRole('heading', { name: '项目工作台' })).toBeVisible();
   await expect(page.getByRole('link', { name: project.name, exact: true })).toBeVisible();
+  const projectSearch = page.getByRole('searchbox', { name: '搜索项目' });
+  await projectSearch.focus();
+  await expect
+    .poll(() => projectSearch.evaluate((element) => getComputedStyle(element).outlineStyle))
+    .toBe('none');
 
   await page.getByRole('link', { name: project.name, exact: true }).click();
   await expect(page).toHaveURL(projectPath);
@@ -570,10 +598,133 @@ test('主菜单支持键盘关闭、当前页高亮，并可进入设置和错�
 test('starts with the resource library and workflow canvas visible', async ({ page }) => {
   await page.goto(projectPath);
 
-  await expect(page.getByLabel('Multimodal Canvas', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '打开主菜单' })).toBeVisible();
   await expect(page.getByRole('heading', { name: '项目资源' })).toBeVisible();
   await expect(page.getByRole('region', { name: '工作流画布' })).toBeVisible();
   await expect(page.getByText('从一个节点开始')).toBeVisible();
+  const resourceSearch = page.locator('.search-field input');
+  await resourceSearch.focus();
+  const resourceSearchStyle = await resourceSearch.evaluate((element) => ({
+    background: getComputedStyle(element).backgroundColor,
+    outline: getComputedStyle(element).outlineStyle,
+    parentShadow: getComputedStyle(element.parentElement!).boxShadow,
+  }));
+  expect(resourceSearchStyle).toMatchObject({
+    background: 'rgba(0, 0, 0, 0)',
+    outline: 'none',
+  });
+  expect(resourceSearchStyle.parentShadow).not.toBe('none');
+});
+
+test('keeps mobile header and node tools inside the viewport', async ({ page }) => {
+  for (const width of [390, 320]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto(projectPath);
+
+    await expect(page.getByRole('region', { name: '工作流画布' })).toBeVisible();
+    const layout = await page.evaluate(() => ({
+      viewportWidth: window.innerWidth,
+      clientWidth: document.documentElement.clientWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      bodyWidth: document.body.scrollWidth,
+    }));
+    expect(layout.documentWidth, `document overflow at ${width}px`).toBeLessThanOrEqual(
+      layout.clientWidth,
+    );
+    expect(layout.bodyWidth, `body overflow at ${width}px`).toBeLessThanOrEqual(layout.clientWidth);
+
+    const chrome = [
+      page.locator('.topbar-resource-filter'),
+      page.locator('.topbar-tool-cluster'),
+      page.locator('.canvas-node-tools'),
+    ];
+    for (const container of chrome) {
+      await expect(container).toBeVisible();
+      const bounds = await container.boundingBox();
+      expect(bounds).not.toBeNull();
+      expect(
+        bounds!.x,
+        `left overflow for ${await container.getAttribute('class')}`,
+      ).toBeGreaterThanOrEqual(0);
+      expect(
+        bounds!.x + bounds!.width,
+        `right overflow for ${await container.getAttribute('class')}`,
+      ).toBeLessThanOrEqual(layout.clientWidth);
+    }
+
+    const resourceFilter = page.locator('.topbar-resource-filter');
+    await resourceFilter.getByRole('combobox', { name: '资源类型' }).focus();
+    await expect(resourceFilter).toHaveCSS('box-shadow', /0px 0px 0px 3px/);
+    const resourceFilterBounds = await resourceFilter.boundingBox();
+    const resourceSelectBounds = await resourceFilter
+      .getByRole('combobox', { name: '资源类型' })
+      .boundingBox();
+    expect(resourceFilterBounds).not.toBeNull();
+    expect(resourceSelectBounds).not.toBeNull();
+    if (resourceFilterBounds && resourceSelectBounds) {
+      expect(resourceSelectBounds.x).toBeGreaterThanOrEqual(resourceFilterBounds.x);
+      expect(resourceSelectBounds.x + resourceSelectBounds.width).toBeLessThanOrEqual(
+        resourceFilterBounds.x + resourceFilterBounds.width,
+      );
+    }
+
+    const toolCluster = page.locator('.topbar-tool-cluster');
+    const commandButton = toolCluster.getByRole('button', { name: '打开命令面板' });
+    await commandButton.focus();
+    await expect(commandButton).toBeFocused();
+
+    const nodeTools = page.locator('.canvas-node-tools');
+    await expect(nodeTools).toHaveCSS('overflow-x', 'auto');
+    const firstNodeButton = nodeTools.getByRole('button').first();
+    const lastNodeButton = nodeTools.getByRole('button').last();
+    await expect(firstNodeButton).toBeVisible();
+    await nodeTools.evaluate((element) => {
+      element.scrollLeft = element.scrollWidth - element.clientWidth;
+    });
+    await expect(lastNodeButton).toBeVisible();
+    const lastButtonBounds = await lastNodeButton.boundingBox();
+    const toolsBounds = await nodeTools.boundingBox();
+    expect(lastButtonBounds).not.toBeNull();
+    expect(toolsBounds).not.toBeNull();
+    expect(lastButtonBounds!.x).toBeGreaterThanOrEqual(toolsBounds!.x);
+    expect(lastButtonBounds!.x + lastButtonBounds!.width).toBeLessThanOrEqual(
+      toolsBounds!.x + toolsBounds!.width,
+    );
+  }
+});
+
+test('keeps the narrow project menu visible inside the viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.goto(projectPath);
+
+  await page.getByRole('button', { name: '打开项目集合' }).click();
+  const menu = page.getByRole('menu', { name: '项目集合' });
+  await expect(menu).toBeVisible();
+  const menuBounds = await menu.boundingBox();
+  expect(menuBounds).not.toBeNull();
+  expect(menuBounds!.x).toBeGreaterThanOrEqual(0);
+  expect(menuBounds!.x + menuBounds!.width).toBeLessThanOrEqual(320);
+});
+
+test('traps login focus and restores it to the trigger', async ({ page }) => {
+  await page.goto(projectPath);
+
+  const trigger = page.getByRole('button', { name: '登录' });
+  await trigger.click();
+  const dialog = page.getByRole('dialog', { name: '登录工作区' });
+  const closeButton = dialog.getByRole('button', { name: '关闭登录' });
+  const continueButton = dialog.getByRole('button', { name: '继续匿名使用' });
+
+  await expect(dialog).toBeVisible();
+  await expect(page.locator('main.app-shell')).toHaveAttribute('inert', '');
+  await expect(closeButton).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(continueButton).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(closeButton).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
 });
 
 test('exports the workflow JSON and result ZIP from the header menu', async ({ page }) => {
@@ -840,7 +991,7 @@ test('uploads an asset and drags it into the workflow canvas', async ({ page }) 
 
   const assetCard = page.locator('.asset-card').filter({ hasText: 'story.txt' });
   await expect(assetCard).toBeVisible();
-  await expect(page.getByRole('status')).toContainText('1 个资源已加入项目');
+  await expect(page.getByRole('status').filter({ hasText: '1 个资源已加入项目' })).toBeVisible();
 
   await assetCard.dragTo(page.locator('.canvas-area'));
 
@@ -927,18 +1078,125 @@ test('connects three image references to one video generation node', async ({ pa
   await connect(sourceHandle(2), targetHandle('firstFrame'));
 
   await expect(page.locator('.react-flow__edge')).toHaveCount(3);
+
+  const selectedEdge = page.locator('.react-flow__edge').first();
+  await expect(selectedEdge).toHaveClass(/animated/);
+  await selectedEdge.locator('.react-flow__edge-interaction').click();
+  await expect(selectedEdge).toHaveClass(/selected/);
+
+  const selectedEdgeStyles = await selectedEdge.evaluate((edge) => {
+    const path = edge.querySelector<SVGPathElement>('.react-flow__edge-path');
+    const shell = document.querySelector<HTMLElement>('.app-shell');
+    if (!path || !shell) return null;
+
+    const colorProbe = document.createElement('span');
+    colorProbe.style.color = 'var(--mc-accent-strong)';
+    shell.append(colorProbe);
+    const accentStrong = getComputedStyle(colorProbe).color;
+    colorProbe.remove();
+
+    const style = getComputedStyle(path);
+    return {
+      accentStrong,
+      animationDuration: style.animationDuration,
+      animationName: style.animationName,
+      stroke: style.stroke,
+    };
+  });
+  expect(selectedEdgeStyles).not.toBeNull();
+  if (!selectedEdgeStyles) return;
+  expect(selectedEdgeStyles.animationDuration).toBe('0.2s');
+  expect(selectedEdgeStyles.animationName).not.toBe('none');
+  expect(selectedEdgeStyles.stroke).toBe(selectedEdgeStyles.accentStrong);
+});
+
+test('connects mixed text, image, and audio references to one video generation node', async ({
+  page,
+}) => {
+  await page.goto(projectPath);
+
+  const references = [
+    {
+      name: 'scene-notes.txt',
+      mimeType: 'text/plain',
+      buffer: Buffer.from('A spoken scene description.'),
+      role: 'content',
+    },
+    { name: 'reference-style.png', mimeType: 'image/png', buffer: validPng, role: 'style' },
+    { name: 'voice-track.wav', mimeType: 'audio/wav', buffer: validWav, role: 'audioTrack' },
+  ] as const;
+
+  for (const reference of references) {
+    await page.locator('input[type="file"]').setInputFiles(reference);
+    await expect(page.locator('.asset-card').filter({ hasText: reference.name })).toBeVisible();
+  }
+
+  await page.getByRole('button', { name: '新建视频生成节点' }).click();
+  const videoNode = page.locator('.flow-generate-node').filter({ hasText: '视频生成节点' });
+  await expect(videoNode).toHaveCount(1);
+  const sourceNodes = page.locator('.flow-asset-node:not(.flow-generate-node)');
+  const canvasBox = await page.locator('.canvas-area').boundingBox();
+  expect(canvasBox).not.toBeNull();
+  if (!canvasBox) return;
+  const videoHeader = await videoNode.locator('.flow-node-header').boundingBox();
+  expect(videoHeader).not.toBeNull();
+  if (!videoHeader) return;
+
+  await page.mouse.move(
+    videoHeader.x + videoHeader.width / 2,
+    videoHeader.y + videoHeader.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(canvasBox.x + 640, canvasBox.y + 280, { steps: 12 });
+  await page.mouse.up();
+
+  for (const [index, reference] of references.entries()) {
+    const card = page.locator('.asset-card').filter({ hasText: reference.name });
+    const cardBox = await card.boundingBox();
+    expect(cardBox).not.toBeNull();
+    if (!cardBox) return;
+    await page.mouse.move(cardBox.x + cardBox.width / 2, cardBox.y + cardBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(canvasBox.x + 170, canvasBox.y + 120 + index * 170, { steps: 12 });
+    await page.mouse.up();
+    await expect(sourceNodes).toHaveCount(index + 1);
+  }
+
+  await focusCanvas(page);
+  const sourceHandle = (index: number) =>
+    sourceNodes.nth(index).locator('.react-flow__handle.source');
+  const targetHandle = (role: string) =>
+    videoNode.locator(`.react-flow__handle.target[data-handleid="input:${role}"]`);
+
+  const connect = async (sourceIndex: number, role: string) => {
+    const sourceBox = await sourceHandle(sourceIndex).boundingBox();
+    const targetBox = await targetHandle(role).boundingBox();
+    expect(sourceBox).not.toBeNull();
+    expect(targetBox).not.toBeNull();
+    if (!sourceBox || !targetBox) return;
+    await page.mouse.move(sourceBox.x + sourceBox.width / 2, sourceBox.y + sourceBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(targetBox.x + targetBox.width / 2, targetBox.y + targetBox.height / 2, {
+      steps: 24,
+    });
+    await page.mouse.up();
+  };
+
+  for (const [index, reference] of references.entries()) {
+    await connect(index, reference.role);
+  }
+
+  await expect(page.locator('.react-flow__edge')).toHaveCount(3);
 });
 
 test('overrides a node model and displays the completed run result', async ({ page }) => {
   await page.goto(projectPath);
   await page.getByRole('button', { name: '新建文字生成节点' }).click();
 
-  const modelSelect = page
-    .locator('select')
-    .filter({ has: page.locator('option[value="mock-text-v2"]') });
+  const modelSelect = page.getByRole('combobox', { name: '模型' });
   await expect(modelSelect).toBeVisible();
-  await modelSelect.selectOption('mock-text-v2');
-  await expect(modelSelect).toHaveValue('mock-text-v2');
+  await modelSelect.selectOption({ label: 'Mock Text v2' });
+  await expect(modelSelect).toHaveValue(JSON.stringify([initialCredential.id, 'mock-text-v2']));
 
   await page.getByRole('button', { name: '生成', exact: true }).click();
 
@@ -1035,9 +1293,11 @@ test('切换 Mock 默认模型后新运行使用新模型', async ({ page }) => 
   await expect(dialog.getByRole('status')).toContainText('模型列表已自动刷新');
   const textDefault = dialog.getByLabel('平台全局默认 · 文字');
   await expect(textDefault).toBeVisible();
-  await expect(textDefault.locator('option[value="mock-text-v2"]')).toHaveCount(1);
-  await textDefault.selectOption('mock-text-v2');
-  await expect(textDefault).toHaveValue('mock-text-v2');
+  const savedCredentialId = await dialog.getByLabel('已保存的 API Key').inputValue();
+  const mockTextV2Value = JSON.stringify([savedCredentialId, 'mock-text-v2']);
+  await expect(textDefault.locator(`option[value='${mockTextV2Value}']`)).toHaveCount(1);
+  await textDefault.selectOption(mockTextV2Value);
+  await expect(textDefault).toHaveValue(mockTextV2Value);
   await dialog.getByRole('button', { name: '关闭设置' }).click();
 
   await page.getByRole('button', { name: '新建文字生成节点' }).click();

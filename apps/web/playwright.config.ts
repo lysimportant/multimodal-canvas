@@ -1,7 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
 const webPort = Number(process.env.WEB_PORT ?? 5173);
-const webUrl = `http://127.0.0.1:${webPort}`;
+const webUrl = process.env.WEB_BASE_URL ?? `http://127.0.0.1:${webPort}`;
 
 export default defineConfig({
   testDir: './e2e',
@@ -23,10 +23,14 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
     },
   ],
-  webServer: {
-    command: `pnpm --filter @multimodal-canvas/web dev --host 127.0.0.1 --port ${webPort}`,
-    url: webUrl,
-    reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
-  },
+  ...(process.env.WEB_BASE_URL
+    ? {}
+    : {
+        webServer: {
+          command: `pnpm --filter @multimodal-canvas/web dev --host 127.0.0.1 --port ${webPort}`,
+          url: webUrl,
+          reuseExistingServer: !process.env.CI,
+          timeout: 120_000,
+        },
+      }),
 });

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import {
   portRoleSchema,
   runResultSchema,
+  runSnapshotFingerprintMaterial,
   runSnapshotSchema,
   type CanvasEdge,
   type CanvasNode,
@@ -179,6 +180,12 @@ export function createNodeRunSnapshot(
   if (target.data.mode === 'source') throw new Error('source nodes do not need provider snapshots');
 
   const allNodeIds = new Set(workflowExecutionOrder(snapshot).map((node) => node.id));
+  if (target.data.enabled === false) {
+    throw new Error(`disabled workflow node cannot be executed: ${nodeId}`);
+  }
+  if (!allNodeIds.has(nodeId)) {
+    throw new Error(`workflow node is outside the target execution closure: ${nodeId}`);
+  }
   const nodeOrder = new Map(snapshot.nodes.map((node, index) => [node.id, index]));
   const incoming = snapshot.edges
     .filter(
@@ -210,6 +217,24 @@ export function createNodeRunSnapshot(
   if (!modelAlias) {
     throw new Error(`workflow node ${nodeId} is missing a frozen model alias`);
   }
+  const nodeCredentialReferences = snapshot.nodeCredentialReferences;
+  const credentialReference =
+    nodeCredentialReferences === undefined
+      ? snapshot.credentialId && snapshot.credentialVersion
+        ? {
+            credentialId: snapshot.credentialId,
+            credentialVersion: snapshot.credentialVersion,
+          }
+        : undefined
+      : Object.prototype.hasOwnProperty.call(nodeCredentialReferences, nodeId)
+        ? nodeCredentialReferences[nodeId]
+        : undefined;
+  if (nodeCredentialReferences !== undefined && !credentialReference) {
+    throw new WorkflowNodeConfigurationError(
+      nodeId,
+      `workflow node ${nodeId} is missing a frozen credential reference`,
+    );
+  }
 
   return runSnapshotSchema.parse({
     projectId: snapshot.projectId,
@@ -218,8 +243,8 @@ export function createNodeRunSnapshot(
     // The target's submitted model is authoritative. Every other provider
     // node must carry its own model alias frozen into the submitted snapshot.
     modelAlias,
-    ...(snapshot.credentialId ? { credentialId: snapshot.credentialId } : {}),
-    ...(snapshot.credentialVersion ? { credentialVersion: snapshot.credentialVersion } : {}),
+    ...(credentialReference ?? {}),
+    ...(credentialReference ? { nodeCredentialReferences: { [nodeId]: credentialReference } } : {}),
     parameters,
     submittedAt: snapshot.submittedAt,
     // One upstream node may intentionally fill more than one role. Keep each
@@ -269,6 +294,15 @@ export function resolveWorkflowReferenceNode(
 
 /** Stable digest used to bind recovered node results to one immutable snapshot. */
 export function workflowSnapshotFingerprint(snapshot: RunSnapshot): string {
+  return createHash('sha256').update(runSnapshotFingerprintMaterial(snapshot)).digest('hex');
+}
+
+/**
+ * Fingerprint format written by workers before the shared API/domain
+ * canonicalization was introduced. It remains available only for exact
+ * recovery of persisted provider jobs from that format.
+ */
+export function workflowSnapshotFingerprintV1(snapshot: RunSnapshot): string {
   const canonical = JSON.stringify(canonicalJsonValue(runSnapshotSchema.parse(snapshot)));
   return createHash('sha256')
     .update(`multimodal-canvas:run-snapshot:v1:${canonical}`)

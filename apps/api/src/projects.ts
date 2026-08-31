@@ -3,7 +3,14 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 
 import { PrismaClient } from '@prisma/client';
-import type { CanvasDocument, CanvasNode, MediaType, NodeMode } from '@multimodal-canvas/domain';
+import { nodeDataSchema } from '@multimodal-canvas/domain';
+import type {
+  CanvasDocument,
+  CanvasNode,
+  MediaType,
+  ModelSelection,
+  NodeMode,
+} from '@multimodal-canvas/domain';
 
 export type Project = {
   id: string;
@@ -33,10 +40,12 @@ export type ProjectListOptions = {
 };
 
 /** Project-scoped model aliases. Omitted media types inherit global settings. */
-export type ProjectModelDefaults = Partial<Record<MediaType, string>>;
+export type ProjectModelDefaults = Partial<Record<MediaType, string | ModelSelection>>;
 
 /** PATCH input; null or an empty string removes a project override. */
-export type UpdateProjectModelDefaultsInput = Partial<Record<MediaType, string | null>>;
+export type UpdateProjectModelDefaultsInput = Partial<
+  Record<MediaType, string | ModelSelection | null>
+>;
 
 /** Optional request scope used by authenticated API callers. */
 export type ProjectScope = {
@@ -450,7 +459,21 @@ function compareProjects(left: Project, right: Project): number {
 }
 
 function cloneModelDefaults(defaults: ProjectModelDefaults): ProjectModelDefaults {
-  return { ...defaults };
+  return Object.fromEntries(
+    Object.entries(defaults).map(([mediaType, value]) => {
+      const selection = normalizeSelection(value);
+      return [mediaType, selection.credentialId ? selection : selection.modelAlias];
+    }),
+  ) as ProjectModelDefaults;
+}
+
+function normalizeSelection(value: string | ModelSelection): ModelSelection {
+  return typeof value === 'string'
+    ? { modelAlias: value.trim() }
+    : {
+        modelAlias: value.modelAlias.trim(),
+        ...(value.credentialId ? { credentialId: value.credentialId } : {}),
+      };
 }
 
 function applyModelDefaults(
@@ -461,20 +484,28 @@ function applyModelDefaults(
   for (const mediaType of ['text', 'image', 'audio', 'video'] as const) {
     if (!(mediaType in input)) continue;
     const value = input[mediaType];
-    if (value === null || value === undefined || value.trim() === '') delete next[mediaType];
-    else next[mediaType] = value.trim();
+    if (
+      value === null ||
+      value === undefined ||
+      (typeof value === 'string' && value.trim() === '') ||
+      (typeof value !== 'string' && value.modelAlias.trim() === '')
+    )
+      delete next[mediaType];
+    else next[mediaType] = normalizeSelection(value);
   }
   return next;
 }
 
 function mapProjectModelDefaults(
-  rows: Array<{ mediaType: string; modelAlias: string }>,
+  rows: Array<{ mediaType: string; modelAlias: string; credentialId?: string | null }>,
 ): ProjectModelDefaults {
   const defaults: ProjectModelDefaults = {};
   for (const row of rows) {
     const mediaType = row.mediaType.toLowerCase() as MediaType;
     if (['text', 'image', 'audio', 'video'].includes(mediaType) && row.modelAlias.trim()) {
-      defaults[mediaType] = row.modelAlias;
+      defaults[mediaType] = row.credentialId
+        ? { modelAlias: row.modelAlias, credentialId: row.credentialId }
+        : row.modelAlias;
     }
   }
   return defaults;
@@ -742,7 +773,7 @@ export class PrismaProjectStore implements ProjectStore {
     const rows = await this.prisma.projectModelDefault.findMany({
       where: { projectId: id },
       orderBy: { mediaType: 'asc' },
-      select: { mediaType: true, modelAlias: true },
+      select: { mediaType: true, modelAlias: true, credentialId: true },
     });
     return mapProjectModelDefaults(rows);
   }
@@ -765,18 +796,32 @@ export class PrismaProjectStore implements ProjectStore {
         if (!(mediaType in defaults)) continue;
         const value = defaults[mediaType];
         const prismaMediaType = mediaTypeToPrisma[mediaType];
-        if (value === null || value === undefined || value.trim() === '') {
+        if (
+          value === null ||
+          value === undefined ||
+          (typeof value === 'string' && value.trim() === '') ||
+          (typeof value !== 'string' && value.modelAlias.trim() === '')
+        ) {
           await transaction.projectModelDefault.deleteMany({
             where: { projectId: id, mediaType: prismaMediaType },
           });
           continue;
         }
+        const selection = normalizeSelection(value);
         await transaction.projectModelDefault.upsert({
           where: {
             projectId_mediaType: { projectId: id, mediaType: prismaMediaType },
           },
-          create: { projectId: id, mediaType: prismaMediaType, modelAlias: value.trim() },
-          update: { modelAlias: value.trim() },
+          create: {
+            projectId: id,
+            mediaType: prismaMediaType,
+            modelAlias: selection.modelAlias,
+            credentialId: selection.credentialId ?? null,
+          },
+          update: {
+            modelAlias: selection.modelAlias,
+            credentialId: selection.credentialId ?? null,
+          },
         });
       }
 
@@ -787,7 +832,7 @@ export class PrismaProjectStore implements ProjectStore {
       const rows = await transaction.projectModelDefault.findMany({
         where: { projectId: id },
         orderBy: { mediaType: 'asc' },
-        select: { mediaType: true, modelAlias: true },
+        select: { mediaType: true, modelAlias: true, credentialId: true },
       });
       return mapProjectModelDefaults(rows);
     });
@@ -839,28 +884,15 @@ function mapCanvas(canvas: {
   return {
     revision: canvas.revision,
     nodes: canvas.nodes.map((node) => {
-      const storedData = isNodeData(node.data) ? node.data : undefined;
       const storedDimensions = readStoredDimensions(node.data);
+      const data = mapNodeData(node);
       return {
         id: node.id,
-        type: storedData?.mediaType ?? fromPrismaMediaType(node.type),
+        type: data.mediaType,
         position: { x: node.positionX, y: node.positionY },
         ...(storedDimensions.width !== undefined ? { width: storedDimensions.width } : {}),
         ...(storedDimensions.height !== undefined ? { height: storedDimensions.height } : {}),
-        data: {
-          label: storedData?.label ?? node.label,
-          mediaType: storedData?.mediaType ?? fromPrismaMediaType(node.type),
-          mode: storedData?.mode ?? fromPrismaNodeMode(node.mode),
-          ...(storedData?.enabled === false ? { enabled: false } : {}),
-          ...((storedData?.assetId ?? node.assetId)
-            ? { assetId: storedData?.assetId ?? node.assetId! }
-            : {}),
-          ...((storedData?.contentUrl ?? node.contentUrl)
-            ? { contentUrl: storedData?.contentUrl ?? node.contentUrl! }
-            : {}),
-          ...(storedData?.modelAlias ? { modelAlias: storedData.modelAlias } : {}),
-          ...(storedData?.mimeType ? { mimeType: storedData.mimeType } : {}),
-        },
+        data,
       } satisfies CanvasNode;
     }),
     edges: canvas.edges.map((edge) => ({
@@ -872,6 +904,51 @@ function mapCanvas(canvas: {
       order: edge.sortOrder,
     })),
   };
+}
+
+const nodeDataFields = [
+  'label',
+  'mediaType',
+  'mode',
+  'enabled',
+  'stale',
+  'prompt',
+  'inferenceStrength',
+  'modelAlias',
+  'credentialId',
+  'assetId',
+  'contentUrl',
+  'mimeType',
+] as const satisfies ReadonlyArray<keyof CanvasNode['data']>;
+
+function mapNodeData(node: {
+  type: string;
+  mode: string;
+  label: string;
+  assetId: string | null;
+  contentUrl: string | null;
+  data: unknown;
+}): CanvasNode['data'] {
+  const rawData = isRecord(node.data) ? node.data : {};
+  const parsedData: Record<string, unknown> = {};
+
+  for (const field of nodeDataFields) {
+    const parsed = nodeDataSchema.shape[field].safeParse(rawData[field]);
+    if (parsed.success) parsedData[field] = parsed.data;
+  }
+
+  return nodeDataSchema.parse({
+    ...parsedData,
+    label: parsedData.label ?? node.label,
+    mediaType: parsedData.mediaType ?? fromPrismaMediaType(node.type),
+    mode: parsedData.mode ?? fromPrismaNodeMode(node.mode),
+    ...((parsedData.assetId ?? node.assetId)
+      ? { assetId: parsedData.assetId ?? node.assetId! }
+      : {}),
+    ...((parsedData.contentUrl ?? node.contentUrl)
+      ? { contentUrl: parsedData.contentUrl ?? node.contentUrl! }
+      : {}),
+  });
 }
 
 function readStoredDimensions(value: unknown): { width?: number; height?: number } {
@@ -894,8 +971,8 @@ function readStoredDimensions(value: unknown): { width?: number; height?: number
   return { width, height };
 }
 
-function isNodeData(value: unknown): value is CanvasNode['data'] {
-  return Boolean(value && typeof value === 'object' && 'label' in value && 'mediaType' in value);
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
 function fromPrismaMediaType(value: string): MediaType {

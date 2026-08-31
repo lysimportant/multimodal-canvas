@@ -10,12 +10,14 @@ function ImeInput({
   value,
   onCommit,
   onBlur,
+  resetKey,
 }: {
   value: string;
   onCommit: (value: string) => void;
   onBlur?: (value: string) => void;
+  resetKey?: string | number;
 }) {
-  const { bind } = useImeDraft<HTMLInputElement>({ value, onCommit, onBlur });
+  const { bind } = useImeDraft<HTMLInputElement>({ value, onCommit, onBlur, resetKey });
   return <input aria-label="IME input" {...bind} />;
 }
 
@@ -34,11 +36,12 @@ describe('IME helpers', () => {
 
     fireEvent.compositionStart(input);
     fireEvent.change(input, { target: { value: 'zhong' } });
-    expect(input).toHaveValue('zhong');
+    fireEvent.compositionUpdate(input, { target: { value: '中文' } });
+    expect(input).toHaveValue('中文');
     expect(onCommit).not.toHaveBeenCalled();
 
     view.rerender(<ImeInput value="older external value" onCommit={onCommit} />);
-    expect(input).toHaveValue('zhong');
+    expect(input).toHaveValue('中文');
 
     fireEvent.compositionEnd(input, { target: { value: '中文' } });
     fireEvent.change(input, { target: { value: '中文' } });
@@ -46,6 +49,38 @@ describe('IME helpers', () => {
     expect(input).toHaveValue('中文');
     expect(onCommit).toHaveBeenCalledTimes(1);
     expect(onCommit).toHaveBeenCalledWith('中文');
+  });
+
+  it('keeps an ordinary draft while older external values arrive out of order', () => {
+    const onCommit = vi.fn();
+    const view = render(<ImeInput value="initial" onCommit={onCommit} />);
+    const input = screen.getByRole('textbox', { name: 'IME input' });
+
+    fireEvent.change(input, { target: { value: 'draft one' } });
+    fireEvent.change(input, { target: { value: 'draft two' } });
+    expect(input).toHaveValue('draft two');
+    expect(onCommit).toHaveBeenLastCalledWith('draft two');
+
+    view.rerender(<ImeInput value="draft two" onCommit={onCommit} />);
+    expect(input).toHaveValue('draft two');
+    view.rerender(<ImeInput value="draft one" onCommit={onCommit} />);
+    expect(input).toHaveValue('draft two');
+    view.rerender(<ImeInput value="initial" onCommit={onCommit} />);
+    expect(input).toHaveValue('draft two');
+    view.rerender(<ImeInput value="authoritative external value" onCommit={onCommit} />);
+    expect(input).toHaveValue('authoritative external value');
+  });
+
+  it('accepts an authoritative owner reset after a local draft', () => {
+    const onCommit = vi.fn();
+    const view = render(<ImeInput value="initial" resetKey={0} onCommit={onCommit} />);
+    const input = screen.getByRole('textbox', { name: 'IME input' });
+
+    fireEvent.change(input, { target: { value: 'dirty draft' } });
+    expect(input).toHaveValue('dirty draft');
+
+    view.rerender(<ImeInput value="" resetKey={1} onCommit={onCommit} />);
+    expect(input).toHaveValue('');
   });
 
   it('commits an unfinished composition on blur without duplicating the final value', () => {

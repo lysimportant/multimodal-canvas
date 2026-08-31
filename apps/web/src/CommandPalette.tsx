@@ -2,7 +2,7 @@ import { CornerDownLeft, Search, X } from 'lucide-react';
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent, ReactNode, RefObject } from 'react';
 
-import { isImeKeyboardEvent } from './ime';
+import { isImeKeyboardEvent, useImeDraft } from './ime';
 import './command-palette.css';
 
 export type CommandPaletteCommand = {
@@ -79,6 +79,10 @@ export function CommandPalette({
   const [activeCommandId, setActiveCommandId] = useState<string | null>(null);
   const [selectingCommandId, setSelectingCommandId] = useState<string | null>(null);
   const [selectError, setSelectError] = useState(false);
+  const { bind: queryBinding, isComposing: isQueryComposing } = useImeDraft<HTMLInputElement>({
+    value: query,
+    onCommit: setQuery,
+  });
 
   const filteredCommands = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase();
@@ -191,7 +195,7 @@ export function CommandPalette({
   };
 
   const handleInputKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (isImeKeyboardEvent(event)) return;
+    if (isImeKeyboardEvent(event) || isQueryComposing()) return;
 
     if (event.key === 'ArrowDown') {
       event.preventDefault();
@@ -240,17 +244,16 @@ export function CommandPalette({
             ref={inputRef}
             className="command-palette-input"
             type="search"
-            value={query}
+            {...queryBinding}
             placeholder={placeholder}
             aria-label={placeholder}
             aria-controls={listboxId}
             aria-activedescendant={
               activeCommandIndex >= 0 ? `${listboxId}-option-${activeCommandIndex}` : undefined
             }
-            onChange={(event) => setQuery(event.target.value)}
             onKeyDown={handleInputKeyDown}
           />
-          {query && (
+          {queryBinding.value && (
             <button
               type="button"
               className="command-palette-icon-button"

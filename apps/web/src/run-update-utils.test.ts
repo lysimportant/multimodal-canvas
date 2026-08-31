@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import type { RunRecord } from '@multimodal-canvas/domain';
-import { shouldApplyRunUpdate, shouldClearNodeStale } from './run-update-utils';
+import {
+  mergeRunUpdate,
+  shouldApplyRunUpdate,
+  shouldClearNodeStale,
+  type RunUpdate,
+} from './run-update-utils';
 
 function run(overrides: Partial<RunRecord> = {}): RunRecord {
   return {
@@ -31,6 +36,50 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
 }
 
 describe('run update ordering', () => {
+  it('inherits the current immutable snapshot for a snapshotless lifecycle update', () => {
+    const current = run({ status: 'running', progress: 20 });
+    const { snapshot: _snapshot, ...incoming } = run({
+      status: 'processing',
+      progress: 60,
+      updatedAt: '2026-08-27T01:02:00.000Z',
+    });
+
+    const merged = mergeRunUpdate(current, incoming satisfies RunUpdate);
+
+    expect(merged).toEqual({ ...current, ...incoming, snapshot: current.snapshot });
+    expect(merged?.snapshot).toBe(current.snapshot);
+  });
+
+  it('ignores a snapshotless update until a complete run record is available', () => {
+    const { snapshot: _snapshot, ...incoming } = run({ status: 'running' });
+
+    expect(mergeRunUpdate(undefined, incoming satisfies RunUpdate)).toBeUndefined();
+  });
+
+  it.each(['text', 'image', 'audio', 'video'] as const)(
+    'keeps the snapshot available for a %s success event',
+    (mediaType) => {
+      const current = run({ status: 'running', progress: 35 });
+      const { snapshot: _snapshot, ...incoming } = run({
+        status: 'succeeded',
+        progress: 100,
+        updatedAt: '2026-08-27T01:02:00.000Z',
+        result: {
+          provider: 'newapi',
+          summary: '完成',
+          targetNodeId: current.targetNodeId,
+          mediaType,
+          inputCount: current.snapshot.inputs.length,
+        },
+      });
+
+      const merged = mergeRunUpdate(current, incoming satisfies RunUpdate);
+
+      expect(merged?.snapshot.inputs).toEqual(current.snapshot.inputs);
+      expect(() => shouldClearNodeStale(merged!, 3, false)).not.toThrow();
+    },
+  );
+
   it('rejects a late event from an older run', () => {
     const current = run({
       id: 'run-new',

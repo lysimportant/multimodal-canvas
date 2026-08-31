@@ -14,6 +14,7 @@ import {
 import { useRef, type DragEvent, type RefObject } from 'react';
 
 import type { Asset } from '@multimodal-canvas/domain';
+import { useImeDraft } from '../ime';
 import { AssetPreview } from './AssetPreview';
 import { formatBytes, mediaLabels, type AssetFilter } from './contracts';
 
@@ -25,7 +26,6 @@ export function ResourcePanel({
   query,
   isUploading,
   uploadProgress,
-  onFilterChange,
   onToggleArchived,
   onQueryChange,
   onFilesSelected,
@@ -44,7 +44,6 @@ export function ResourcePanel({
   query: string;
   isUploading: boolean;
   uploadProgress: number | null;
-  onFilterChange: (filter: AssetFilter) => void;
   onToggleArchived: () => void;
   onQueryChange: (query: string) => void;
   onFilesSelected: (files: FileList | File[]) => void;
@@ -58,20 +57,15 @@ export function ResourcePanel({
 }) {
   const localInputRef = useRef<HTMLInputElement>(null);
   const inputRef = uploadInputRef ?? localInputRef;
+  const { bind: queryBinding } = useImeDraft<HTMLInputElement>({
+    value: query,
+    onCommit: onQueryChange,
+  });
   const filteredAssets = assets.filter((asset) => {
     if (showArchived !== (asset.status === 'archived')) return false;
     const matchesFilter = activeFilter === 'all' || asset.mediaType === activeFilter;
     return matchesFilter && asset.name.toLowerCase().includes(query.toLowerCase());
   });
-  const counts = assets.reduce<Record<AssetFilter, number>>(
-    (result, asset) => {
-      result[asset.mediaType] += 1;
-      result.all += 1;
-      return result;
-    },
-    { all: 0, text: 0, image: 0, audio: 0, video: 0 },
-  );
-
   return (
     <aside
       className={`resource-panel ${collapsed ? 'is-collapsed' : ''}`}
@@ -117,13 +111,8 @@ export function ResourcePanel({
       {!collapsed && (
         <label className="search-field">
           <Search size={15} aria-hidden="true" />
-          <input
-            type="search"
-            placeholder="搜索资源"
-            value={query}
-            onChange={(event) => onQueryChange(event.target.value)}
-          />
-          {query && (
+          <input type="search" placeholder="搜索资源" {...queryBinding} />
+          {queryBinding.value && (
             <button
               type="button"
               className="clear-search"
@@ -134,21 +123,6 @@ export function ResourcePanel({
             </button>
           )}
         </label>
-      )}
-      {!collapsed && (
-        <nav className="resource-filters" aria-label="资源类型">
-          {(['all', 'text', 'image', 'audio', 'video'] as AssetFilter[]).map((filter) => (
-            <button
-              type="button"
-              className={`resource-filter ${activeFilter === filter ? 'is-active' : ''}`}
-              key={filter}
-              onClick={() => onFilterChange(filter)}
-            >
-              <span>{filter === 'all' ? '全部' : mediaLabels[filter]}</span>
-              <span className="resource-count">{counts[filter]}</span>
-            </button>
-          ))}
-        </nav>
       )}
       {!collapsed && (
         <button

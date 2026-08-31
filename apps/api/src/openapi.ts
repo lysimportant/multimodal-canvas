@@ -11,6 +11,18 @@ const errorSchema = {
 } as const;
 
 const mediaTypeSchema = { type: 'string', enum: ['text', 'image', 'audio', 'video'] } as const;
+const modelSelectionSchema = {
+  type: 'object',
+  required: ['modelAlias'],
+  properties: {
+    modelAlias: { type: 'string', minLength: 1 },
+    credentialId: { type: 'string', format: 'uuid' },
+  },
+  additionalProperties: false,
+} as const;
+const defaultModelValueSchema = {
+  oneOf: [{ type: 'string', minLength: 1 }, modelSelectionSchema],
+} as const;
 const assetSchema = {
   type: 'object',
   required: ['id', 'name', 'mediaType', 'mimeType', 'sizeBytes', 'status', 'contentUrl', 'tags'],
@@ -43,10 +55,10 @@ const projectSchema = {
 const projectModelDefaultsSchema = {
   type: 'object',
   properties: {
-    text: { type: 'string', minLength: 1 },
-    image: { type: 'string', minLength: 1 },
-    audio: { type: 'string', minLength: 1 },
-    video: { type: 'string', minLength: 1 },
+    text: defaultModelValueSchema,
+    image: defaultModelValueSchema,
+    audio: defaultModelValueSchema,
+    video: defaultModelValueSchema,
   },
   additionalProperties: false,
 } as const;
@@ -77,6 +89,7 @@ const nodeSchema = {
         inferenceStrength: { type: 'string', enum: ['low', 'medium', 'high'] },
         assetId: { type: 'string' },
         modelAlias: { type: 'string' },
+        credentialId: { type: 'string', format: 'uuid' },
         contentUrl: { type: 'string' },
         mimeType: { type: 'string' },
       },
@@ -106,6 +119,45 @@ const canvasSchema = {
     nodes: { type: 'array', items: nodeSchema },
     edges: { type: 'array', items: edgeSchema },
   },
+} as const;
+
+const runSnapshotSchema = {
+  type: 'object',
+  required: ['canvasRevision', 'inputCount', 'inputs'],
+  properties: {
+    canvasRevision: { type: 'integer', minimum: 0 },
+    inputCount: { type: 'integer', minimum: 0 },
+    // Input contents are intentionally omitted from the public run contract.
+    inputs: { type: 'array', items: { type: 'null' } },
+  },
+  additionalProperties: false,
+} as const;
+
+const runResultAssetSchema = {
+  type: 'object',
+  required: ['assetId'],
+  properties: {
+    assetId: { type: 'string' },
+    version: { type: 'integer', minimum: 1 },
+    mimeType: { type: 'string' },
+    sizeBytes: { type: 'integer', minimum: 0 },
+    sha256: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+  },
+  additionalProperties: false,
+} as const;
+
+const runResultSchema = {
+  type: 'object',
+  required: ['provider', 'summary', 'targetNodeId', 'mediaType', 'inputCount'],
+  properties: {
+    provider: { type: 'string' },
+    summary: { type: 'string' },
+    targetNodeId: { type: 'string' },
+    mediaType: mediaTypeSchema,
+    inputCount: { type: 'integer', minimum: 0 },
+    asset: runResultAssetSchema,
+  },
+  additionalProperties: false,
 } as const;
 
 const runSchema = {
@@ -145,13 +197,14 @@ const runSchema = {
     attempt: { type: 'integer', minimum: 1 },
     provider: { type: 'string' },
     modelAlias: { type: 'string' },
-    snapshot: { type: 'object', additionalProperties: true },
-    result: { type: 'object', additionalProperties: true },
-    providerJob: { type: 'object', additionalProperties: true },
+    snapshot: runSnapshotSchema,
+    result: runResultSchema,
     error: { type: 'string' },
+    retryOf: { type: 'string' },
     createdAt: { type: 'string', format: 'date-time' },
     updatedAt: { type: 'string', format: 'date-time' },
   },
+  additionalProperties: false,
 } as const;
 
 const response = (description: string, schema?: unknown) => ({
@@ -493,10 +546,34 @@ export const openApiDocument = {
               schema: {
                 type: 'object',
                 properties: {
-                  text: { type: ['string', 'null'], minLength: 1 },
-                  image: { type: ['string', 'null'], minLength: 1 },
-                  audio: { type: ['string', 'null'], minLength: 1 },
-                  video: { type: ['string', 'null'], minLength: 1 },
+                  text: {
+                    oneOf: [
+                      { type: 'string', minLength: 1 },
+                      modelSelectionSchema,
+                      { type: 'null' },
+                    ],
+                  },
+                  image: {
+                    oneOf: [
+                      { type: 'string', minLength: 1 },
+                      modelSelectionSchema,
+                      { type: 'null' },
+                    ],
+                  },
+                  audio: {
+                    oneOf: [
+                      { type: 'string', minLength: 1 },
+                      modelSelectionSchema,
+                      { type: 'null' },
+                    ],
+                  },
+                  video: {
+                    oneOf: [
+                      { type: 'string', minLength: 1 },
+                      modelSelectionSchema,
+                      { type: 'null' },
+                    ],
+                  },
                 },
                 additionalProperties: false,
               },
@@ -837,6 +914,7 @@ export const openApiDocument = {
                 properties: {
                   projectId: { type: 'string', minLength: 1 },
                   modelAlias: { type: 'string', minLength: 1, maxLength: 160 },
+                  credentialId: { type: 'string', format: 'uuid' },
                   idempotencyKey: { type: 'string', minLength: 1, maxLength: 200 },
                   parameters: { type: 'object', additionalProperties: true },
                 },
@@ -848,6 +926,7 @@ export const openApiDocument = {
         responses: {
           '202': response('Run queued', envelope('run', runSchema)),
           '400': response('Invalid request', errorSchema),
+          '403': response('Credential selection is not permitted', errorSchema),
           '404': response('Not found', errorSchema),
           '409': response('Idempotency conflict', errorSchema),
         },
@@ -893,6 +972,7 @@ export const openApiDocument = {
             'AI settings without secrets',
             envelope('settings', { $ref: '#/components/schemas/AiSettings' }),
           ),
+          '403': response('Credential access is not permitted', errorSchema),
         },
       },
       patch: {
@@ -917,6 +997,8 @@ export const openApiDocument = {
             additionalProperties: false,
           }),
           '400': response('Invalid request', errorSchema),
+          '403': response('Credential access is not permitted', errorSchema),
+          '404': response('Credential not found', errorSchema),
         },
       },
     },
@@ -1011,6 +1093,18 @@ export const openApiDocument = {
     '/v1/settings/ai/models/refresh': {
       post: {
         tags: ['settings'],
+        requestBody: {
+          required: false,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: { credentialId: { type: 'string', format: 'uuid' } },
+                additionalProperties: false,
+              },
+            },
+          },
+        },
         responses: {
           '200': response('Model catalog refreshed', {
             type: 'object',
@@ -1018,6 +1112,9 @@ export const openApiDocument = {
               models: { type: 'array', items: { $ref: '#/components/schemas/Model' } },
             },
           }),
+          '400': response('Invalid credential id', errorSchema),
+          '403': response('Credential access is not permitted', errorSchema),
+          '404': response('Credential not found', errorSchema),
           '502': response('Provider unavailable', errorSchema),
         },
       },
@@ -1025,7 +1122,10 @@ export const openApiDocument = {
     '/v1/models': {
       get: {
         tags: ['settings'],
-        parameters: [{ $ref: '#/components/parameters/MediaTypeQuery' }],
+        parameters: [
+          { $ref: '#/components/parameters/CredentialIdQuery' },
+          { $ref: '#/components/parameters/MediaTypeQuery' },
+        ],
         responses: {
           '200': response('Model catalog', {
             type: 'object',
@@ -1034,6 +1134,8 @@ export const openApiDocument = {
             },
           }),
           '400': response('Invalid media type', errorSchema),
+          '403': response('Credential access is not permitted', errorSchema),
+          '404': response('Credential not found', errorSchema),
         },
       },
     },
@@ -1119,6 +1221,12 @@ export const openApiDocument = {
       },
       AssetQuery: { name: 'query', in: 'query', required: false, schema: { type: 'string' } },
       MediaTypeQuery: { name: 'mediaType', in: 'query', required: false, schema: mediaTypeSchema },
+      CredentialIdQuery: {
+        name: 'credentialId',
+        in: 'query',
+        required: false,
+        schema: { type: 'string', format: 'uuid' },
+      },
       NewApiSignature: {
         name: 'x-newapi-signature',
         in: 'header',
@@ -1189,10 +1297,10 @@ export const openApiDocument = {
           defaultModels: {
             type: 'object',
             properties: {
-              text: { type: 'string', minLength: 1 },
-              image: { type: 'string', minLength: 1 },
-              audio: { type: 'string', minLength: 1 },
-              video: { type: 'string', minLength: 1 },
+              text: defaultModelValueSchema,
+              image: defaultModelValueSchema,
+              audio: defaultModelValueSchema,
+              video: defaultModelValueSchema,
             },
             additionalProperties: false,
           },
@@ -1220,10 +1328,10 @@ export const openApiDocument = {
           defaultModels: {
             type: 'object',
             properties: {
-              text: { type: ['string', 'null'], minLength: 1 },
-              image: { type: ['string', 'null'], minLength: 1 },
-              audio: { type: ['string', 'null'], minLength: 1 },
-              video: { type: ['string', 'null'], minLength: 1 },
+              text: { oneOf: [defaultModelValueSchema, { type: 'null' }] },
+              image: { oneOf: [defaultModelValueSchema, { type: 'null' }] },
+              audio: { oneOf: [defaultModelValueSchema, { type: 'null' }] },
+              video: { oneOf: [defaultModelValueSchema, { type: 'null' }] },
             },
             additionalProperties: false,
           },
@@ -1237,6 +1345,7 @@ export const openApiDocument = {
           id: { type: 'string' },
           name: { type: 'string' },
           mediaTypes: { type: 'array', items: mediaTypeSchema },
+          credentialId: { type: 'string', format: 'uuid' },
           capabilities: { type: 'object', additionalProperties: true },
           limitations: { type: 'object', additionalProperties: true },
           price: { type: 'object', additionalProperties: true },

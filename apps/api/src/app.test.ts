@@ -3,9 +3,11 @@ import { createHash } from 'node:crypto';
 
 import { MemoryAssetStore } from './assets';
 import { buildApp } from './app';
+import { MemoryAuthStore } from './auth-store';
 import { MemoryProjectStore } from './projects';
-import { AiSettingsStore } from './settings';
+import { AiSettingsStore, type ModelCatalogEntry } from './settings';
 import { MemoryRunService } from './runs';
+import { MemoryWebhookEventStore } from './webhooks';
 
 const appSettingsStore = new AiSettingsStore('app-test-model-catalog');
 const appModelRefreshedAt = new Date().toISOString();
@@ -35,10 +37,12 @@ appSettingsStore.replaceModels([
     refreshedAt: appModelRefreshedAt,
   },
 ]);
+const appRunService = new MemoryRunService();
 const app = buildApp({
   logger: false,
   assetStore: new MemoryAssetStore(),
   settingsStore: appSettingsStore,
+  runService: appRunService,
 });
 
 afterAll(async () => app.close());
@@ -148,37 +152,178 @@ describe('OpenAPI endpoint', () => {
     expect(response.json().paths['/v1/runs/{runId}/retry']).toBeDefined();
     expect(response.json().paths['/v1/projects/{projectId}/runs']).toBeDefined();
     expect(response.json().paths['/v1/projects/{projectId}/models/defaults']).toBeDefined();
+    expect(response.json().paths['/v1/settings/ai'].get.responses).toMatchObject({
+      '200': expect.any(Object),
+      '403': expect.any(Object),
+    });
+    expect(response.json().paths['/v1/settings/ai'].patch.responses).toMatchObject({
+      '200': expect.any(Object),
+      '400': expect.any(Object),
+      '403': expect.any(Object),
+      '404': expect.any(Object),
+    });
     expect(response.json().paths['/v1/settings/ai/credentials'].get).toBeDefined();
     expect(response.json().paths['/v1/settings/ai/credentials'].delete).toBeDefined();
     expect(
       response.json().paths['/v1/settings/ai/credentials/{credentialId}/activate'].post,
     ).toBeDefined();
     expect(response.json().paths['/v1/runs/{runId/retry}']).toBeUndefined();
+
+    const runSchema = response.json().components.schemas.Run;
+    expect(runSchema.additionalProperties).toBe(false);
+    expect(runSchema.properties.providerJob).toBeUndefined();
+    expect(runSchema.properties.snapshot).toMatchObject({
+      required: ['canvasRevision', 'inputCount', 'inputs'],
+      additionalProperties: false,
+    });
+    expect(runSchema.properties.result).toMatchObject({ additionalProperties: false });
   });
 });
 
 describe('AI settings endpoints', () => {
   it('never returns the configured API key and exposes model defaults', async () => {
-    const update = await app.inject({
+    const credentialUpdate = await app.inject({
       method: 'PATCH',
       url: '/v1/settings/ai',
       payload: {
         baseUrl: 'https://newapi.example.com/v1',
         apiKey: 'secret-test-key',
-        defaultModels: { text: 'text-model', video: 'video-model' },
       },
+    });
+    expect(credentialUpdate.statusCode).toBe(200);
+    const credentialId = credentialUpdate
+      .json()
+      .credentials.find(
+        (credential: { baseUrl: string }) => credential.baseUrl === 'https://newapi.example.com/v1',
+      ).id as string;
+    appSettingsStore.replaceModels(
+      [
+        {
+          id: 'text-model',
+          name: 'Text model',
+          mediaTypes: ['text'],
+          refreshedAt: appModelRefreshedAt,
+        },
+        {
+          id: 'video-model',
+          name: 'Video model',
+          mediaTypes: ['video'],
+          refreshedAt: appModelRefreshedAt,
+        },
+        {
+          id: 'image-node-model',
+          name: 'Image node model',
+          mediaTypes: ['image'],
+          refreshedAt: appModelRefreshedAt,
+        },
+        {
+          id: 'image-special',
+          name: 'Image special',
+          mediaTypes: ['image'],
+          refreshedAt: appModelRefreshedAt,
+        },
+      ],
+      credentialId,
+    );
+    const update = await app.inject({
+      method: 'PATCH',
+      url: '/v1/settings/ai',
+      payload: { defaultModels: { text: 'text-model', video: 'video-model' } },
     });
     expect(update.statusCode).toBe(200);
     expect(update.json().settings).toMatchObject({
       baseUrl: 'https://newapi.example.com/v1',
       configured: true,
       keyFingerprint: expect.stringMatching(/^[a-f0-9]{12}$/),
-      defaultModels: { text: 'text-model', video: 'video-model' },
+      defaultModels: {
+        text: { modelAlias: 'text-model' },
+        video: { modelAlias: 'video-model' },
+      },
     });
     expect(JSON.stringify(update.json())).not.toContain('secret-test-key');
 
     const get = await app.inject({ method: 'GET', url: '/v1/settings/ai' });
     expect(get.json().settings.configured).toBe(true);
+  });
+
+  it('validates platform defaults against the active credential catalog before saving', async () => {
+    const settingsStore = new AiSettingsStore('platform-default-validation');
+    const settingsApp = buildApp({ logger: false, settingsStore });
+    try {
+      const credentialSave = await settingsApp.inject({
+        method: 'PATCH',
+        url: '/v1/settings/ai',
+        payload: {
+          baseUrl: 'https://platform-defaults.example/v1',
+          apiKey: 'synthetic-platform-defaults-key',
+        },
+      });
+      const credentialId = credentialSave.json().credentials[0].id as string;
+      settingsStore.replaceModels(
+        [
+          {
+            id: 'platform-image',
+            name: 'Platform image',
+            mediaTypes: ['image'],
+            refreshedAt: new Date().toISOString(),
+          },
+        ],
+        credentialId,
+      );
+
+      const saved = await settingsApp.inject({
+        method: 'PATCH',
+        url: '/v1/settings/ai',
+        payload: {
+          defaultModels: {
+            image: { modelAlias: 'platform-image', credentialId },
+          },
+        },
+      });
+      expect(saved.statusCode).toBe(200);
+
+      const wrongMediaType = await settingsApp.inject({
+        method: 'PATCH',
+        url: '/v1/settings/ai',
+        payload: {
+          defaultModels: {
+            video: { modelAlias: 'platform-image', credentialId },
+          },
+        },
+      });
+      expect(wrongMediaType.statusCode).toBe(400);
+      expect(wrongMediaType.json()).toMatchObject({ code: 'model_unavailable' });
+
+      const unknownModel = await settingsApp.inject({
+        method: 'PATCH',
+        url: '/v1/settings/ai',
+        payload: { defaultModels: { image: 'missing-platform-model' } },
+      });
+      expect(unknownModel.statusCode).toBe(400);
+      expect(unknownModel.json()).toMatchObject({ code: 'model_unavailable' });
+
+      const unknownCredential = await settingsApp.inject({
+        method: 'PATCH',
+        url: '/v1/settings/ai',
+        payload: {
+          defaultModels: {
+            image: {
+              modelAlias: 'platform-image',
+              credentialId: '123e4567-e89b-12d3-a456-426614174099',
+            },
+          },
+        },
+      });
+      expect(unknownCredential.statusCode).toBe(404);
+      expect(unknownCredential.json()).toMatchObject({ code: 'credential_not_found' });
+
+      const current = await settingsApp.inject({ method: 'GET', url: '/v1/settings/ai' });
+      expect(current.json().settings.defaultModels).toEqual({
+        image: { modelAlias: 'platform-image', credentialId },
+      });
+    } finally {
+      await settingsApp.close();
+    }
   });
 
   it('lists, deduplicates, and activates credential summaries without exposing keys', async () => {
@@ -1010,7 +1155,10 @@ describe('run endpoints', () => {
     expect(run.status).toBe('queued');
     expect(run.modelAlias).toBe('image-special');
     expect(run.snapshot.canvasRevision).toBe(1);
-    expect(run.snapshot.inputs).toMatchObject([
+    expect(run.snapshot).toEqual({ canvasRevision: 1, inputCount: 1, inputs: [null] });
+    const internalRun = await appRunService.get(run.id);
+    expect(internalRun).toBeDefined();
+    expect(internalRun!.snapshot.inputs).toMatchObject([
       { nodeId: 'node_prompt', role: 'prompt', sortOrder: 0 },
     ]);
 
@@ -1035,7 +1183,9 @@ describe('run endpoints', () => {
       targetNodeId: 'node_image',
       inputCount: 1,
     });
-    expect(completed.snapshot.inputs[0].snapshot.data.label).toBe('Prompt');
+    const completedInternalRun = await appRunService.get(completed.id);
+    expect(completedInternalRun).toBeDefined();
+    expect(completedInternalRun!.snapshot.inputs[0].snapshot.data.label).toBe('Prompt');
   });
 
   it('cancels a queued run and retries it without changing its attempt snapshot', async () => {
@@ -1086,6 +1236,616 @@ describe('run endpoints', () => {
 
     const completed = await waitForRun(retry.json().run.id, 'succeeded');
     expect(completed.snapshot).toEqual(run.snapshot);
+  });
+});
+
+describe('T15C credential and model resolution contracts', () => {
+  const refreshedAt = new Date().toISOString();
+
+  const configureCredential = (settingsStore: AiSettingsStore, baseUrl: string, apiKey: string) => {
+    settingsStore.update({ baseUrl, apiKey });
+    const credential = settingsStore.listCredentials().find((item) => item.baseUrl === baseUrl);
+    if (!credential) throw new Error(`credential fixture was not created for ${baseUrl}`);
+    return credential;
+  };
+
+  const imageModel = (id: string): ModelCatalogEntry => ({
+    id,
+    name: id,
+    mediaTypes: ['image'],
+    refreshedAt,
+  });
+
+  it('accepts a known credentialId and freezes its version in the run snapshot', async () => {
+    const settingsStore = new AiSettingsStore('t15c-known-credential');
+    const credential = configureCredential(
+      settingsStore,
+      'https://known-credential.example/v1',
+      'synthetic-known-credential-key',
+    );
+    settingsStore.replaceModels([imageModel('credential-image')], credential.id);
+    const credentialRunService = new MemoryRunService();
+    const credentialApp = buildApp({
+      logger: false,
+      settingsStore,
+      projectStore: new MemoryProjectStore(),
+      runService: credentialRunService,
+    });
+
+    try {
+      const create = await credentialApp.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        payload: { name: 'Known credential run' },
+      });
+      const projectId = create.json().project.id as string;
+      const save = await credentialApp.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${projectId}/canvas`,
+        payload: {
+          revision: 0,
+          nodes: [
+            {
+              id: 'node_known_credential',
+              type: 'image',
+              position: { x: 0, y: 0 },
+              data: { label: 'Image', mediaType: 'image', mode: 'generate' },
+            },
+          ],
+          edges: [],
+        },
+      });
+      expect(save.statusCode).toBe(200);
+
+      const response = await credentialApp.inject({
+        method: 'POST',
+        url: '/v1/nodes/node_known_credential/runs',
+        payload: { projectId, modelAlias: 'credential-image', credentialId: credential.id },
+      });
+      expect(response.statusCode).toBe(202);
+      const publicRun = response.json().run;
+      expect(publicRun.modelAlias).toBe('credential-image');
+      expect(publicRun.snapshot).toEqual({ canvasRevision: 1, inputCount: 0, inputs: [] });
+      const internalRun = await credentialRunService.get(publicRun.id);
+      expect(internalRun).toBeDefined();
+      const reference = internalRun!.snapshot.nodeCredentialReferences!.node_known_credential;
+      expect(internalRun!.snapshot).toMatchObject({
+        modelAlias: 'credential-image',
+        credentialId: credential.id,
+        credentialVersion: expect.any(Number),
+        nodeCredentialReferences: {
+          node_known_credential: {
+            credentialId: credential.id,
+            credentialVersion: expect.any(Number),
+          },
+        },
+      });
+      expect(internalRun!.snapshot.credentialVersion).toBe(reference.credentialVersion);
+      expect(JSON.stringify(response.json())).not.toContain('synthetic-known-credential-key');
+    } finally {
+      await credentialApp.close();
+    }
+  });
+
+  it('rejects a syntactically valid but unknown credentialId before resolving a run', async () => {
+    const settingsStore = new AiSettingsStore('t15c-unknown-credential');
+    const credentialApp = buildApp({ logger: false, settingsStore });
+    const unknownCredentialId = '123e4567-e89b-12d3-a456-426614174099';
+
+    try {
+      const create = await credentialApp.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        payload: { name: 'Unknown credential run' },
+      });
+      const response = await credentialApp.inject({
+        method: 'POST',
+        url: '/v1/nodes/missing-node/runs',
+        payload: { projectId: create.json().project.id, credentialId: unknownCredentialId },
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toEqual({ error: 'credential not found' });
+    } finally {
+      await credentialApp.close();
+    }
+  });
+
+  it('isolates projects across users while allowing a shared platform credential in another project', async () => {
+    vi.stubEnv('NODE_ENV', 'test');
+    vi.stubEnv('API_AUTH_TOKEN', '');
+    vi.stubEnv('API_JWT_SECRET', 't15c-auth-secret');
+    const authStore = new MemoryAuthStore();
+    const projectStore = new MemoryProjectStore();
+    const settingsStore = new AiSettingsStore('t15c-cross-user-credential');
+    const credential = configureCredential(
+      settingsStore,
+      'https://shared-credential.example/v1',
+      'synthetic-shared-credential-key',
+    );
+    settingsStore.replaceModels([imageModel('shared-image')], credential.id);
+    const authRunService = new MemoryRunService();
+    const authApp = buildApp({
+      logger: false,
+      authStore,
+      projectStore,
+      settingsStore,
+      runService: authRunService,
+    });
+
+    try {
+      const aliceRegistration = await authApp.inject({
+        method: 'POST',
+        url: '/v1/auth/register',
+        payload: { email: 'alice-t15c@example.test', password: 'alice-password' },
+      });
+      const bobRegistration = await authApp.inject({
+        method: 'POST',
+        url: '/v1/auth/register',
+        payload: { email: 'bob-t15c@example.test', password: 'bob-password' },
+      });
+      expect(aliceRegistration.statusCode).toBe(201);
+      expect(bobRegistration.statusCode).toBe(201);
+      const aliceToken = aliceRegistration.json().accessToken as string;
+      const bobToken = bobRegistration.json().accessToken as string;
+      const aliceHeaders = { authorization: `Bearer ${aliceToken}` };
+      const bobHeaders = { authorization: `Bearer ${bobToken}` };
+
+      const aliceProject = await authApp.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        headers: aliceHeaders,
+        payload: { name: 'Alice project' },
+      });
+      const aliceProjectId = aliceProject.json().project.id as string;
+      await authApp.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${aliceProjectId}/canvas`,
+        headers: aliceHeaders,
+        payload: {
+          revision: 0,
+          nodes: [
+            {
+              id: 'node_alice_image',
+              type: 'image',
+              position: { x: 0, y: 0 },
+              data: { label: 'Alice image', mediaType: 'image', mode: 'generate' },
+            },
+          ],
+          edges: [],
+        },
+      });
+
+      const forbiddenRun = await authApp.inject({
+        method: 'POST',
+        url: '/v1/nodes/node_alice_image/runs',
+        headers: bobHeaders,
+        payload: {
+          projectId: aliceProjectId,
+          modelAlias: 'shared-image',
+          credentialId: credential.id,
+        },
+      });
+      expect(forbiddenRun.statusCode).toBe(404);
+      expect(forbiddenRun.json()).toEqual({ error: 'project not found' });
+
+      const bobProject = await authApp.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        headers: bobHeaders,
+        payload: { name: 'Bob project' },
+      });
+      const bobProjectId = bobProject.json().project.id as string;
+      await authApp.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${bobProjectId}/canvas`,
+        headers: bobHeaders,
+        payload: {
+          revision: 0,
+          nodes: [
+            {
+              id: 'node_bob_image',
+              type: 'image',
+              position: { x: 0, y: 0 },
+              data: { label: 'Bob image', mediaType: 'image', mode: 'generate' },
+            },
+          ],
+          edges: [],
+        },
+      });
+      const sharedCredentialRun = await authApp.inject({
+        method: 'POST',
+        url: '/v1/nodes/node_bob_image/runs',
+        headers: bobHeaders,
+        payload: {
+          projectId: bobProjectId,
+          modelAlias: 'shared-image',
+          credentialId: credential.id,
+        },
+      });
+      expect(sharedCredentialRun.statusCode).toBe(202);
+      const publicRun = sharedCredentialRun.json().run;
+      expect(publicRun).toMatchObject({
+        projectId: bobProjectId,
+        snapshot: { canvasRevision: 1, inputCount: 0, inputs: [] },
+      });
+      expect(publicRun.userId).toBeUndefined();
+      const internalRun = await authRunService.get(publicRun.id);
+      expect(internalRun).toBeDefined();
+      expect(internalRun!).toMatchObject({
+        projectId: bobProjectId,
+        userId: bobRegistration.json().user.id,
+        snapshot: {
+          credentialId: credential.id,
+          nodeCredentialReferences: {
+            node_bob_image: { credentialId: credential.id, credentialVersion: expect.any(Number) },
+          },
+        },
+      });
+    } finally {
+      await authApp.close();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('resolves node, project, then platform model selections and credential references', async () => {
+    const settingsStore = new AiSettingsStore('t15c-model-priority');
+    const platformCredential = configureCredential(
+      settingsStore,
+      'https://platform-priority.example/v1',
+      'synthetic-platform-priority-key',
+    );
+    const projectCredential = configureCredential(
+      settingsStore,
+      'https://project-priority.example/v1',
+      'synthetic-project-priority-key',
+    );
+    const nodeCredential = configureCredential(
+      settingsStore,
+      'https://node-priority.example/v1',
+      'synthetic-node-priority-key',
+    );
+    settingsStore.replaceModels([imageModel('platform-image')], platformCredential.id);
+    settingsStore.replaceModels([imageModel('project-image')], projectCredential.id);
+    settingsStore.replaceModels([imageModel('node-image')], nodeCredential.id);
+    settingsStore.update({
+      defaultModels: {
+        image: { modelAlias: 'platform-image', credentialId: platformCredential.id },
+      },
+    });
+    const priorityRunService = new MemoryRunService();
+    const priorityApp = buildApp({ logger: false, settingsStore, runService: priorityRunService });
+
+    const createRun = async (
+      nodeId: string,
+      projectName: string,
+      nodeData: Record<string, string>,
+      projectDefault?: { modelAlias: string; credentialId: string },
+    ) => {
+      const create = await priorityApp.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        payload: { name: projectName },
+      });
+      const projectId = create.json().project.id as string;
+      const save = await priorityApp.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${projectId}/canvas`,
+        payload: {
+          revision: 0,
+          nodes: [
+            {
+              id: nodeId,
+              type: 'image',
+              position: { x: 0, y: 0 },
+              data: {
+                label: nodeId,
+                mediaType: 'image',
+                mode: 'generate',
+                ...nodeData,
+              },
+            },
+          ],
+          edges: [],
+        },
+      });
+      expect(save.statusCode).toBe(200);
+      if (projectDefault) {
+        const defaults = await priorityApp.inject({
+          method: 'PATCH',
+          url: `/v1/projects/${projectId}/models/defaults`,
+          payload: { image: projectDefault },
+        });
+        expect(defaults.statusCode).toBe(200);
+      }
+      const response = await priorityApp.inject({
+        method: 'POST',
+        url: `/v1/nodes/${nodeId}/runs`,
+        payload: { projectId },
+      });
+      expect(response.statusCode).toBe(202);
+      const publicRun = response.json().run;
+      expect(publicRun.snapshot).toEqual({ canvasRevision: 1, inputCount: 0, inputs: [] });
+      const internalRun = await priorityRunService.get(publicRun.id);
+      expect(internalRun).toBeDefined();
+      return { publicRun, internalRun: internalRun! };
+    };
+
+    try {
+      const nodeRun = await createRun(
+        'node_priority_override',
+        'Node priority',
+        { modelAlias: 'node-image', credentialId: nodeCredential.id },
+        { modelAlias: 'project-image', credentialId: projectCredential.id },
+      );
+      expect(nodeRun.publicRun).toMatchObject({ modelAlias: 'node-image' });
+      expect(nodeRun.internalRun).toMatchObject({
+        modelAlias: 'node-image',
+        snapshot: {
+          credentialId: nodeCredential.id,
+          nodeCredentialReferences: {
+            node_priority_override: {
+              credentialId: nodeCredential.id,
+              credentialVersion: expect.any(Number),
+            },
+          },
+        },
+      });
+
+      const projectRun = await createRun(
+        'node_project_default',
+        'Project priority',
+        {},
+        { modelAlias: 'project-image', credentialId: projectCredential.id },
+      );
+      expect(projectRun.publicRun).toMatchObject({ modelAlias: 'project-image' });
+      expect(projectRun.internalRun).toMatchObject({
+        modelAlias: 'project-image',
+        snapshot: {
+          credentialId: projectCredential.id,
+          nodeCredentialReferences: {
+            node_project_default: {
+              credentialId: projectCredential.id,
+              credentialVersion: expect.any(Number),
+            },
+          },
+        },
+      });
+
+      const platformRun = await createRun('node_platform_default', 'Platform priority', {});
+      expect(platformRun.publicRun).toMatchObject({ modelAlias: 'platform-image' });
+      expect(platformRun.internalRun).toMatchObject({
+        modelAlias: 'platform-image',
+        snapshot: {
+          credentialId: platformCredential.id,
+          nodeCredentialReferences: {
+            node_platform_default: {
+              credentialId: platformCredential.id,
+              credentialVersion: expect.any(Number),
+            },
+          },
+        },
+      });
+    } finally {
+      await priorityApp.close();
+    }
+  });
+
+  it('keeps an explicit node credential when inheriting unbound defaults and rejects a conflicting bound default', async () => {
+    const settingsStore = new AiSettingsStore('t17a-inherited-credential');
+    const projectStore = new MemoryProjectStore();
+    const platformCredential = configureCredential(
+      settingsStore,
+      'https://platform-inherited.example/v1',
+      'synthetic-platform-inherited-key',
+    );
+    const nodeCredential = configureCredential(
+      settingsStore,
+      'https://node-inherited.example/v1',
+      'synthetic-node-inherited-key',
+    );
+    settingsStore.replaceModels(
+      [imageModel('platform-inherited'), imageModel('global-inherited')],
+      platformCredential.id,
+    );
+    settingsStore.replaceModels(
+      [imageModel('project-inherited'), imageModel('global-inherited')],
+      nodeCredential.id,
+    );
+    settingsStore.update({ defaultModels: { image: 'global-inherited' } });
+    const inheritedRunService = new MemoryRunService();
+    const inheritedApp = buildApp({
+      logger: false,
+      projectStore,
+      settingsStore,
+      runService: inheritedRunService,
+    });
+
+    try {
+      const create = await inheritedApp.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        payload: { name: 'Inherited credential' },
+      });
+      const projectId = create.json().project.id as string;
+      await inheritedApp.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${projectId}/canvas`,
+        payload: {
+          revision: 0,
+          nodes: [
+            {
+              id: 'node_inherited_credential',
+              type: 'image',
+              position: { x: 0, y: 0 },
+              data: {
+                label: 'Inherited image',
+                mediaType: 'image',
+                mode: 'generate',
+                credentialId: nodeCredential.id,
+              },
+            },
+          ],
+          edges: [],
+        },
+      });
+
+      const projectDefault = await inheritedApp.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${projectId}/models/defaults`,
+        payload: { image: 'project-inherited' },
+      });
+      expect(projectDefault.statusCode).toBe(200);
+      const projectRun = await inheritedApp.inject({
+        method: 'POST',
+        url: '/v1/nodes/node_inherited_credential/runs',
+        payload: { projectId },
+      });
+      expect(projectRun.statusCode).toBe(202);
+      const projectPublicRun = projectRun.json().run;
+      expect(projectPublicRun).toMatchObject({
+        modelAlias: 'project-inherited',
+        snapshot: { canvasRevision: 1, inputCount: 0, inputs: [] },
+      });
+      const projectInternalRun = await inheritedRunService.get(projectPublicRun.id);
+      expect(projectInternalRun).toBeDefined();
+      expect(projectInternalRun!.snapshot).toMatchObject({
+        modelAlias: 'project-inherited',
+        credentialId: nodeCredential.id,
+      });
+
+      await inheritedApp.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${projectId}/models/defaults`,
+        payload: { image: null },
+      });
+      const platformRun = await inheritedApp.inject({
+        method: 'POST',
+        url: '/v1/nodes/node_inherited_credential/runs',
+        payload: { projectId },
+      });
+      expect(platformRun.statusCode).toBe(202);
+      const platformPublicRun = platformRun.json().run;
+      expect(platformPublicRun).toMatchObject({
+        modelAlias: 'global-inherited',
+        snapshot: { canvasRevision: 1, inputCount: 0, inputs: [] },
+      });
+      const platformInternalRun = await inheritedRunService.get(platformPublicRun.id);
+      expect(platformInternalRun).toBeDefined();
+      expect(platformInternalRun!.snapshot).toMatchObject({
+        modelAlias: 'global-inherited',
+        credentialId: nodeCredential.id,
+      });
+
+      settingsStore.update({
+        defaultModels: {
+          image: { modelAlias: 'platform-inherited', credentialId: platformCredential.id },
+        },
+      });
+      const conflictingRun = await inheritedApp.inject({
+        method: 'POST',
+        url: '/v1/nodes/node_inherited_credential/runs',
+        payload: { projectId },
+      });
+      expect(conflictingRun.statusCode).toBe(400);
+      expect(conflictingRun.json()).toMatchObject({ code: 'model_unavailable' });
+    } finally {
+      await inheritedApp.close();
+    }
+  });
+
+  it('keeps legacy string model defaults compatible while normalizing platform settings', async () => {
+    const settingsStore = new AiSettingsStore('t15c-legacy-defaults');
+    const legacyApp = buildApp({ logger: false, settingsStore });
+
+    try {
+      const update = await legacyApp.inject({
+        method: 'PATCH',
+        url: '/v1/settings/ai',
+        payload: {
+          baseUrl: 'https://legacy-defaults.example/v1',
+          apiKey: 'synthetic-legacy-defaults-key',
+        },
+      });
+      expect(update.statusCode).toBe(200);
+      const credentialId = update.json().credentials[0].id as string;
+      settingsStore.replaceModels(
+        [imageModel('legacy-platform'), imageModel('legacy-project')],
+        credentialId,
+      );
+      const defaults = await legacyApp.inject({
+        method: 'PATCH',
+        url: '/v1/settings/ai',
+        payload: { defaultModels: { image: 'legacy-platform' } },
+      });
+      expect(defaults.statusCode).toBe(200);
+      expect(update.json().settings.defaultModels).toEqual({});
+      expect(defaults.json().settings.defaultModels).toEqual({
+        image: { modelAlias: 'legacy-platform' },
+      });
+
+      const create = await legacyApp.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        payload: { name: 'Legacy defaults' },
+      });
+      const projectId = create.json().project.id as string;
+      await legacyApp.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${projectId}/canvas`,
+        payload: {
+          revision: 0,
+          nodes: [
+            {
+              id: 'node_legacy_defaults',
+              type: 'image',
+              position: { x: 0, y: 0 },
+              data: { label: 'Legacy image', mediaType: 'image', mode: 'generate' },
+            },
+          ],
+          edges: [],
+        },
+      });
+
+      const projectDefault = await legacyApp.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${projectId}/models/defaults`,
+        payload: { image: 'legacy-project' },
+      });
+      expect(projectDefault.statusCode).toBe(200);
+      expect(projectDefault.json()).toEqual({ defaults: { image: 'legacy-project' } });
+
+      const projectRun = await legacyApp.inject({
+        method: 'POST',
+        url: '/v1/nodes/node_legacy_defaults/runs',
+        payload: { projectId },
+      });
+      expect(projectRun.statusCode).toBe(202);
+      expect(projectRun.json().run.modelAlias).toBe('legacy-project');
+
+      const removeProjectDefault = await legacyApp.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${projectId}/models/defaults`,
+        payload: { image: null },
+      });
+      expect(removeProjectDefault.statusCode).toBe(200);
+      expect(removeProjectDefault.json()).toEqual({ defaults: {} });
+
+      const platformRun = await legacyApp.inject({
+        method: 'POST',
+        url: '/v1/nodes/node_legacy_defaults/runs',
+        payload: { projectId },
+      });
+      expect(platformRun.statusCode).toBe(202);
+      expect(platformRun.json().run.modelAlias).toBe('legacy-platform');
+      const currentSettings = await legacyApp.inject({ method: 'GET', url: '/v1/settings/ai' });
+      expect(currentSettings.json().settings.defaultModels).toEqual({
+        image: { modelAlias: 'legacy-platform' },
+      });
+      expect(JSON.stringify(update.json())).not.toContain('synthetic-legacy-defaults-key');
+    } finally {
+      await legacyApp.close();
+    }
   });
 });
 
@@ -1189,7 +1949,12 @@ describe('webhook and run idempotency boundaries', () => {
         };
       },
     });
-    const webhookApp = buildApp({ logger: false, runService });
+    const webhookEventStore = new MemoryWebhookEventStore();
+    const runPersistence = {
+      upsertProviderJob: vi.fn(),
+      updateRun: vi.fn(),
+    };
+    const webhookApp = buildApp({ logger: false, runService, webhookEventStore, runPersistence });
 
     try {
       const project = await webhookApp.inject({
@@ -1237,8 +2002,29 @@ describe('webhook and run idempotency boundaries', () => {
       expect(callback.json()).toMatchObject({
         accepted: true,
         deduplicated: false,
+        processed: true,
+        status: 'processed',
+        attempt: 1,
         updatedRunId: created.json().run.id,
       });
+      await expect(webhookEventStore.get('webhook-event-app-1')).resolves.toMatchObject({
+        status: 'processed',
+        attempt: 1,
+      });
+      expect(runPersistence.upsertProviderJob).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerJob: expect.objectContaining({
+            platformJobId: 'platform-webhook-app',
+            status: 'running',
+          }),
+        }),
+      );
+      expect(runPersistence.updateRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runId: created.json().run.id,
+          status: 'processing',
+        }),
+      );
 
       const current = await webhookApp.inject({
         method: 'GET',
@@ -1247,6 +2033,12 @@ describe('webhook and run idempotency boundaries', () => {
       expect(current.json().run).toMatchObject({
         status: 'processing',
         progress: 95,
+        snapshot: { canvasRevision: 1, inputCount: 0, inputs: [] },
+      });
+      expect(current.json().run.providerJob).toBeUndefined();
+      const internalCurrent = await runService.get(created.json().run.id);
+      expect(internalCurrent).toBeDefined();
+      expect(internalCurrent!).toMatchObject({
         providerJob: {
           platformJobId: 'platform-webhook-app',
           status: 'running',
@@ -1266,21 +2058,86 @@ describe('webhook and run idempotency boundaries', () => {
     }
   });
 
-  it('deduplicates New API webhook event ids', async () => {
-    const first = await app.inject({
-      method: 'POST',
-      url: '/v1/webhooks/newapi',
-      headers: { 'x-newapi-event-id': 'event_1' },
-      payload: { type: 'video.completed' },
-    });
-    const second = await app.inject({
-      method: 'POST',
-      url: '/v1/webhooks/newapi',
-      headers: { 'x-newapi-event-id': 'event_1' },
-      payload: { type: 'video.completed' },
-    });
-    expect(first.statusCode).toBe(202);
-    expect(second.json()).toMatchObject({ accepted: true, deduplicated: true, eventId: 'event_1' });
+  it('deduplicates New API webhook event ids without applying the update twice', async () => {
+    const runService = new MemoryRunService({ providerName: 'newapi' });
+    const applyProviderWebhook = vi.spyOn(runService, 'applyProviderWebhook');
+    const webhookApp = buildApp({ logger: false, runService });
+
+    try {
+      const payload = { eventId: 'event_1', taskId: 'task_1', status: 'running' };
+      const first = await webhookApp.inject({
+        method: 'POST',
+        url: '/v1/webhooks/newapi',
+        payload,
+      });
+      const second = await webhookApp.inject({
+        method: 'POST',
+        url: '/v1/webhooks/newapi',
+        payload,
+      });
+      expect(first.statusCode).toBe(202);
+      expect(second.statusCode).toBe(202);
+      expect(second.json()).toMatchObject({
+        accepted: true,
+        deduplicated: true,
+        eventId: 'event_1',
+      });
+      expect(applyProviderWebhook).toHaveBeenCalledTimes(1);
+    } finally {
+      await webhookApp.close();
+    }
+  });
+
+  it('marks a failed callback retryable and processes it on the next delivery', async () => {
+    const runService = new MemoryRunService({ providerName: 'newapi' });
+    const applyProviderWebhook = vi
+      .spyOn(runService, 'applyProviderWebhook')
+      .mockRejectedValueOnce(new Error('synthetic webhook failure'));
+    const webhookEventStore = new MemoryWebhookEventStore();
+    const webhookApp = buildApp({ logger: false, runService, webhookEventStore });
+
+    try {
+      const payload = { eventId: 'event-retry', taskId: 'task-retry', status: 'running' };
+      const failed = await webhookApp.inject({
+        method: 'POST',
+        url: '/v1/webhooks/newapi',
+        payload,
+      });
+      expect(failed.statusCode).toBe(500);
+      expect(failed.json()).toMatchObject({
+        error: 'internal server error',
+        code: 'internal_error',
+        requestId: expect.any(String),
+      });
+      expect(failed.body).not.toContain('synthetic webhook failure');
+      await expect(webhookEventStore.get('event-retry')).resolves.toMatchObject({
+        status: 'failed',
+        lastError: 'synthetic webhook failure',
+      });
+
+      applyProviderWebhook.mockResolvedValue(undefined);
+      const retried = await webhookApp.inject({
+        method: 'POST',
+        url: '/v1/webhooks/newapi',
+        payload,
+      });
+      expect(retried.statusCode).toBe(202);
+      expect(retried.json()).toMatchObject({
+        accepted: true,
+        deduplicated: false,
+        processed: true,
+        status: 'processed',
+        attempt: 2,
+        eventId: 'event-retry',
+      });
+      await expect(webhookEventStore.get('event-retry')).resolves.toMatchObject({
+        status: 'processed',
+        attempt: 2,
+      });
+      expect(applyProviderWebhook).toHaveBeenCalledTimes(2);
+    } finally {
+      await webhookApp.close();
+    }
   });
 
   it('returns the same run for repeated idempotency keys', async () => {
@@ -1322,6 +2179,40 @@ describe('webhook and run idempotency boundaries', () => {
     expect(second.statusCode).toBe(202);
     expect(second.json().run.id).toBe(first.json().run.id);
   });
+});
+
+describe('API development CORS defaults', () => {
+  it.each(['http://127.0.0.1:5173', 'http://localhost:5173'])(
+    'allows the development origin %s',
+    async (origin) => {
+      vi.stubEnv('NODE_ENV', 'test');
+      vi.stubEnv('CORS_ORIGIN', '');
+      const corsApp = buildApp({ logger: false });
+      try {
+        const response = await corsApp.inject({
+          method: 'GET',
+          url: '/health',
+          headers: { origin },
+        });
+        expect(response.statusCode).toBe(200);
+        expect(response.headers['access-control-allow-origin']).toBe(origin);
+
+        const preflight = await corsApp.inject({
+          method: 'OPTIONS',
+          url: '/v1/projects/project-1/events',
+          headers: {
+            origin,
+            'access-control-request-method': 'GET',
+          },
+        });
+        expect(preflight.statusCode).toBe(204);
+        expect(preflight.headers['access-control-allow-origin']).toBe(origin);
+      } finally {
+        await corsApp.close();
+        vi.unstubAllEnvs();
+      }
+    },
+  );
 });
 
 async function waitForRun(runId: string, expectedStatus: string) {

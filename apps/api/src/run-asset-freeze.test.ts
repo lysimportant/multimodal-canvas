@@ -93,9 +93,16 @@ describe('run asset version snapshots', () => {
     expect(submitted.statusCode).toBe(202);
     const submittedRun = submitted.json().run;
     expect(submittedRun.status).toBe('queued');
+    expect(submittedRun.snapshot).toEqual({
+      canvasRevision: 1,
+      inputCount: 1,
+      inputs: [null],
+    });
+    const internalRun = await runService.get(submittedRun.id);
+    expect(internalRun).toBeDefined();
     const frozenUrl = `/v1/assets/${encodeURIComponent(asset.id)}/versions/1/content`;
-    expect(submittedRun.snapshot.nodes[0].data.contentUrl).toBe(frozenUrl);
-    expect(submittedRun.snapshot.inputs[0]).toMatchObject({
+    expect(internalRun!.snapshot.nodes[0].data.contentUrl).toBe(frozenUrl);
+    expect(internalRun!.snapshot.inputs[0]).toMatchObject({
       sourceAssetId: asset.id,
       snapshot: { data: { assetId: asset.id, contentUrl: frozenUrl } },
     });
@@ -128,7 +135,8 @@ describe('run asset version snapshots', () => {
     });
     const listVersions = vi.spyOn(assetStore, 'listVersions');
     await projectStore.updateCanvas(project.id, assetCanvas(asset.id), { ownerId });
-    const app = buildApp({ logger: false, assetStore, projectStore });
+    const runService = new MemoryRunService();
+    const app = buildApp({ logger: false, assetStore, projectStore, runService });
     apps.push(app);
 
     const submitted = await app.inject({
@@ -140,7 +148,11 @@ describe('run asset version snapshots', () => {
 
     expect(submitted.statusCode).toBe(202);
     expect(listVersions).toHaveBeenCalledWith(asset.id, { projectId: null, ownerId });
-    expect(submitted.json().run.snapshot.inputs[0]).toMatchObject({
+    const submittedRun = submitted.json().run;
+    expect(submittedRun.snapshot).toEqual({ canvasRevision: 1, inputCount: 1, inputs: [null] });
+    const internalRun = await runService.get(submittedRun.id);
+    expect(internalRun).toBeDefined();
+    expect(internalRun!.snapshot.inputs[0]).toMatchObject({
       sourceAssetId: asset.id,
       snapshot: {
         data: {

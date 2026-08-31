@@ -22,9 +22,6 @@ export type NewApiRunExecutorOptions = {
   settingsStore: Pick<AiSettingsStoreLike, 'getProviderCredentials'>;
   timeoutMs?: number;
   responseMaxBytes?: number;
-  videoPath?: string;
-  videoCreatePath?: string;
-  videoJobsPath?: string;
   videoPollIntervalMs?: number;
   videoMaxPollAttempts?: number;
   videoMaxContentBytes?: number;
@@ -68,13 +65,6 @@ export function createNewApiRunExecutor(options: NewApiRunExecutorOptions) {
       target.data.mediaType === 'video'
         ? providerFactory.createVideo({
             ...sharedOptions,
-            ...(options.videoPath === undefined ? {} : { videoPath: options.videoPath }),
-            ...(options.videoCreatePath === undefined
-              ? {}
-              : { videoCreatePath: options.videoCreatePath }),
-            ...(options.videoJobsPath === undefined
-              ? {}
-              : { videoJobsPath: options.videoJobsPath }),
             ...(options.videoPollIntervalMs === undefined
               ? {}
               : { pollIntervalMs: options.videoPollIntervalMs }),

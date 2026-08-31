@@ -56,6 +56,44 @@ describe('ProjectHub', () => {
     expect(onSelectProject).toHaveBeenCalledWith(projects[1]);
   });
 
+  it('keeps a Chinese project-search draft across a stale parent render', () => {
+    const view = render(
+      <ProjectHub
+        open
+        projects={projects}
+        activeProjectId="project-active"
+        onClose={vi.fn()}
+        onSelectProject={vi.fn()}
+        onCreateProject={vi.fn()}
+      />,
+    );
+    const input = screen.getByRole('searchbox', { name: '搜索项目' });
+
+    fireEvent.compositionStart(input);
+    fireEvent.change(input, { target: { value: 'xuan chuan' } });
+    fireEvent.compositionUpdate(input, { target: { value: '宣传片' } });
+    view.rerender(
+      <ProjectHub
+        open
+        projects={projects}
+        activeProjectId="project-active"
+        onClose={vi.fn()}
+        onSelectProject={vi.fn()}
+        onCreateProject={vi.fn()}
+      />,
+    );
+
+    expect(input).toHaveValue('宣传片');
+    expect(screen.getByText('当前工作流')).toBeInTheDocument();
+    expect(screen.getByText('宣传片草稿')).toBeInTheDocument();
+
+    fireEvent.compositionEnd(input, { target: { value: '宣传片' } });
+    fireEvent.change(input, { target: { value: '宣传片' } });
+
+    expect(screen.queryByText('当前工作流')).not.toBeInTheDocument();
+    expect(screen.getByText('宣传片草稿')).toBeInTheDocument();
+  });
+
   it('favorites projects, persists the choice, and filters to favorites', async () => {
     const user = userEvent.setup();
     const view = render(

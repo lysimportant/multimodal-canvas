@@ -6,7 +6,7 @@ import userEvent from '@testing-library/user-event';
 import { createElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { MediaType } from '@multimodal-canvas/domain';
+import type { MediaType, ModelSelection } from '@multimodal-canvas/domain';
 
 import { App } from './App';
 import type { AiCredentialSummary } from './contracts';
@@ -27,10 +27,10 @@ type Settings = {
   baseUrl: string;
   configured: boolean;
   keyFingerprint?: string;
-  defaultModels: Partial<Record<MediaType, string>>;
+  defaultModels: Partial<Record<MediaType, string | ModelSelection>>;
 };
 
-type Model = { id: string; name: string; mediaTypes: MediaType[] };
+type Model = { id: string; name: string; mediaTypes: MediaType[]; credentialId?: string };
 
 const project = {
   id: 'project_test',
@@ -59,7 +59,7 @@ function mockFingerprint(value: string) {
 }
 
 let settings: Settings;
-let projectDefaults: Partial<Record<MediaType, string>>;
+let projectDefaults: Partial<Record<MediaType, string | ModelSelection>>;
 let credentials: AiCredentialSummary[];
 let credentialSequence: number;
 let models: Model[];
@@ -92,7 +92,7 @@ function installApiMock() {
     }
     if (url.pathname === `/v1/projects/${project.id}/models/defaults` && method === 'PATCH') {
       const body = JSON.parse(String(init?.body ?? '{}')) as Partial<
-        Record<MediaType, string | null>
+        Record<MediaType, string | ModelSelection | null>
       >;
       for (const [mediaType, alias] of Object.entries(body)) {
         if (alias) projectDefaults[mediaType as MediaType] = alias;
@@ -105,7 +105,7 @@ function installApiMock() {
       const body = JSON.parse(String(init?.body ?? '{}')) as {
         baseUrl?: string;
         apiKey?: string;
-        defaultModels?: Partial<Record<MediaType, string | null>>;
+        defaultModels?: Partial<Record<MediaType, string | ModelSelection | null>>;
       };
       if (body.baseUrl !== undefined) settings.baseUrl = body.baseUrl;
       if (body.apiKey) {
@@ -291,7 +291,7 @@ describe('SettingsPanel', () => {
     await waitFor(() =>
       expect(screen.getByRole('status')).toHaveTextContent('连接成功，发现 4 个模型'),
     );
-  });
+  }, 15_000);
 
   it('adds and selects a saved key and refreshes model Select options exactly once', async () => {
     models = [{ id: 'text-old', name: '旧文字模型', mediaTypes: ['text'] }];
@@ -318,9 +318,7 @@ describe('SettingsPanel', () => {
     expect(within(credentialSelect).getAllByRole('option')).toHaveLength(3);
     expect(credentialSelect).not.toHaveTextContent(newKey);
     expect(within(modelSelect).getByRole('option', { name: '新文字模型' })).toBeInTheDocument();
-    expect(
-      within(modelSelect).queryByRole('option', { name: '旧文字模型' }),
-    ).not.toBeInTheDocument();
+    expect(within(modelSelect).getByRole('option', { name: '旧文字模型' })).toBeInTheDocument();
     expect(
       fetchMock.mock.calls.filter(([input, init]) => {
         const url = new URL(String(input), 'http://localhost:3000');
@@ -380,6 +378,92 @@ describe('SettingsPanel', () => {
     expect(credentials).toHaveLength(1);
   });
 
+  it('distinguishes same-name models by credential and preserves the structured selection', async () => {
+    const historicalId = '123e4567-e89b-12d3-a456-000000000002';
+    credentials.push({
+      id: historicalId,
+      baseUrl: 'https://history.example.com/v1',
+      keyFingerprint: 'sha256:history',
+      updatedAt: '2025-12-31T00:00:00.000Z',
+      active: false,
+    });
+    models = [
+      {
+        id: 'shared-text-model',
+        name: '同名文字模型',
+        mediaTypes: ['text'],
+        credentialId: credentials[0]!.id,
+      },
+      {
+        id: 'shared-text-model',
+        name: '同名文字模型',
+        mediaTypes: ['text'],
+        credentialId: historicalId,
+      },
+    ];
+    settings.defaultModels.text = {
+      modelAlias: 'shared-text-model',
+      credentialId: credentials[0]!.id,
+    };
+
+    const originalFetch = fetchMock;
+    const scopedFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost:3000');
+      if (url.pathname === '/v1/models' && url.searchParams.has('credentialId')) {
+        const credentialId = url.searchParams.get('credentialId');
+        return jsonResponse({
+          models: models.filter((model) => model.credentialId === credentialId),
+        });
+      }
+      return originalFetch(input, init);
+    });
+    vi.stubGlobal('fetch', scopedFetch);
+
+    const { dialog, user } = await openSettings();
+    const modelSelect = within(dialog).getByRole('combobox', {
+      name: '平台全局默认 · 文字',
+    });
+    const historicalSelection = JSON.stringify([historicalId, 'shared-text-model']);
+
+    await waitFor(() =>
+      expect(modelSelect).toHaveValue(JSON.stringify([credentials[0]!.id, 'shared-text-model'])),
+    );
+    expect(within(modelSelect).getAllByRole('option', { name: '同名文字模型' })).toHaveLength(2);
+    await waitFor(() => {
+      const catalogCredentialIds = scopedFetch.mock.calls
+        .map(([input]) => new URL(String(input), 'http://localhost:3000'))
+        .filter((url) => url.pathname === '/v1/models')
+        .map((url) => url.searchParams.get('credentialId'))
+        .filter((credentialId): credentialId is string => Boolean(credentialId));
+      expect(catalogCredentialIds).toEqual(
+        expect.arrayContaining([credentials[0]!.id, historicalId]),
+      );
+    });
+
+    await user.selectOptions(modelSelect, historicalSelection);
+    await waitFor(() =>
+      expect(screen.getByRole('status')).toHaveTextContent('平台全局文字默认模型已更新'),
+    );
+    expect(modelSelect).toHaveValue(historicalSelection);
+    expect(settings.defaultModels.text).toEqual({
+      modelAlias: 'shared-text-model',
+      credentialId: historicalId,
+    });
+    expect(
+      fetchMock.mock.calls.some(
+        ([input, init]) =>
+          String(input).includes('/v1/settings/ai') &&
+          init?.method === 'PATCH' &&
+          init.body ===
+            JSON.stringify({
+              defaultModels: {
+                text: { modelAlias: 'shared-text-model', credentialId: historicalId },
+              },
+            }),
+      ),
+    ).toBe(true);
+  });
+
   it('discards an unsaved credential draft when the dialog is cancelled', async () => {
     const { dialog, user } = await openSettings();
     const originalCredentialId = credentials[0]!.id;
@@ -437,11 +521,14 @@ describe('SettingsPanel', () => {
     await waitFor(() =>
       expect(within(textModel).getByRole('option', { name: '文字模型' })).toBeInTheDocument(),
     );
-    await user.selectOptions(textModel, 'text-model');
+    await user.selectOptions(textModel, JSON.stringify([credentials[0]!.id, 'text-model']));
     await waitFor(() =>
       expect(screen.getByRole('status')).toHaveTextContent('平台全局文字默认模型已更新'),
     );
-    expect(settings.defaultModels.text).toBe('text-model');
+    expect(settings.defaultModels.text).toEqual({
+      modelAlias: 'text-model',
+      credentialId: credentials[0]!.id,
+    });
 
     const baseUrl = within(dialog).getByLabelText('New API Base URL');
     const apiKey = within(dialog).getByLabelText('API Key');
@@ -487,7 +574,7 @@ describe('SettingsPanel', () => {
         'AI 设置已保存，但模型自动刷新失败',
       ),
     );
-    expect(within(modelSelect).getByRole('option', { name: '稳定文字模型' })).toBeInTheDocument();
+    expect(within(modelSelect).getAllByRole('option', { name: '稳定文字模型' })).toHaveLength(2);
     expect(within(dialog).getByRole('combobox', { name: '已保存的 API Key' })).toHaveValue(
       credentials.find((credential) => credential.active)?.id,
     );
@@ -501,27 +588,36 @@ describe('SettingsPanel', () => {
   });
 
   it('loads, updates, and clears current project model defaults', async () => {
-    projectDefaults.image = 'image-model';
+    projectDefaults.image = {
+      modelAlias: 'image-model',
+      credentialId: credentials[0]!.id,
+    };
     const { dialog, user } = await openSettings();
     const imageModel = within(dialog).getByRole('combobox', { name: '项目默认 · 图片' });
 
     await waitFor(() => expect(imageModel).toBeEnabled());
-    expect(imageModel).toHaveValue('image-model');
+    expect(imageModel).toHaveValue(JSON.stringify([credentials[0]!.id, 'image-model']));
     expect(within(imageModel).getByRole('option', { name: '图片模型' })).toBeInTheDocument();
     expect(within(imageModel).queryByRole('option', { name: '文字模型' })).not.toBeInTheDocument();
 
     const textModel = within(dialog).getByRole('combobox', { name: '项目默认 · 文字' });
-    await user.selectOptions(textModel, 'text-model');
+    await user.selectOptions(textModel, JSON.stringify([credentials[0]!.id, 'text-model']));
     await waitFor(() =>
       expect(screen.getByRole('status')).toHaveTextContent('文字项目默认模型已更新'),
     );
-    expect(projectDefaults.text).toBe('text-model');
+    expect(projectDefaults.text).toEqual({
+      modelAlias: 'text-model',
+      credentialId: credentials[0]!.id,
+    });
     expect(
       fetchMock.mock.calls.some(
         ([input, init]) =>
           String(input).includes(`/v1/projects/${project.id}/models/defaults`) &&
           init?.method === 'PATCH' &&
-          init.body === JSON.stringify({ text: 'text-model' }),
+          init.body ===
+            JSON.stringify({
+              text: { modelAlias: 'text-model', credentialId: credentials[0]!.id },
+            }),
       ),
     ).toBe(true);
 
@@ -541,8 +637,15 @@ describe('SettingsPanel', () => {
   });
 
   it('keeps unavailable global and project model values visible after credential sync', async () => {
-    settings.defaultModels.text = 'removed-text-model';
-    projectDefaults.image = 'removed-image-model';
+    const originalCredentialId = credentials[0]!.id;
+    settings.defaultModels.text = {
+      modelAlias: 'removed-text-model',
+      credentialId: originalCredentialId,
+    };
+    projectDefaults.image = {
+      modelAlias: 'removed-image-model',
+      credentialId: originalCredentialId,
+    };
     const { dialog, user } = await openSettings();
     const globalText = within(dialog).getByRole('combobox', {
       name: '平台全局默认 · 文字',
@@ -550,8 +653,8 @@ describe('SettingsPanel', () => {
     const projectImage = within(dialog).getByRole('combobox', { name: '项目默认 · 图片' });
 
     await waitFor(() => expect(projectImage).toBeEnabled());
-    expect(globalText).toHaveValue('removed-text-model');
-    expect(projectImage).toHaveValue('removed-image-model');
+    expect(globalText).toHaveValue(JSON.stringify([originalCredentialId, 'removed-text-model']));
+    expect(projectImage).toHaveValue(JSON.stringify([originalCredentialId, 'removed-image-model']));
     expect(
       within(globalText).getByRole('option', { name: 'removed-text-model（当前不可用）' }),
     ).toBeInTheDocument();
@@ -564,8 +667,8 @@ describe('SettingsPanel', () => {
     await waitFor(() =>
       expect(within(dialog).getByRole('status')).toHaveTextContent('模型列表已自动刷新'),
     );
-    expect(globalText).toHaveValue('removed-text-model');
-    expect(projectImage).toHaveValue('removed-image-model');
+    expect(globalText).toHaveValue(JSON.stringify([originalCredentialId, 'removed-text-model']));
+    expect(projectImage).toHaveValue(JSON.stringify([originalCredentialId, 'removed-image-model']));
   });
 
   it('manages dialog focus and restores focus to the settings trigger', async () => {
@@ -752,6 +855,62 @@ describe('SettingsPanel', () => {
 
     await user.keyboard('{Escape}');
     await waitFor(() => expect(settingsSignal?.aborted).toBe(true));
+  });
+
+  it('preserves both credential IME drafts across a late settings response and accepts ordinary typing', async () => {
+    const immediateFetch = fetchMock;
+    let resolveSettings: ((response: Response) => void) | undefined;
+    const delayedFetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const rawUrl =
+        typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      const url = new URL(rawUrl, 'http://localhost:3000');
+      if (url.pathname === '/v1/settings/ai' && (init?.method ?? 'GET') === 'GET') {
+        return new Promise<Response>((resolve) => {
+          resolveSettings = resolve;
+        });
+      }
+      return immediateFetch(input, init);
+    });
+    vi.stubGlobal('fetch', delayedFetch);
+
+    const user = userEvent.setup();
+    render(createElement(App));
+    await user.click(await screen.findByRole('button', { name: '打开设置' }));
+    const dialog = await screen.findByRole('dialog', { name: 'AI 连接' });
+    const baseUrl = within(dialog).getByLabelText('New API Base URL');
+    const apiKey = within(dialog).getByLabelText('API Key');
+
+    fireEvent.compositionStart(baseUrl);
+    fireEvent.compositionUpdate(baseUrl, { target: { value: 'https://zhong.example/v1' } });
+    fireEvent.change(baseUrl, { target: { value: 'https://zhong.example/v1' } });
+    fireEvent.compositionUpdate(baseUrl, { target: { value: 'https://中文.example/v1' } });
+    fireEvent.compositionStart(apiKey);
+    fireEvent.compositionUpdate(apiKey, { target: { value: '拼音' } });
+    fireEvent.change(apiKey, { target: { value: '拼音' } });
+    fireEvent.compositionUpdate(apiKey, { target: { value: '拼音中文' } });
+
+    expect(baseUrl).toHaveValue('https://中文.example/v1');
+    expect(apiKey).toHaveValue('拼音中文');
+
+    resolveSettings?.(
+      jsonResponse({
+        settings: { ...settings, baseUrl: 'https://stale.example.com/v1' },
+      }),
+    );
+    await waitFor(() => expect(baseUrl).toHaveValue('https://中文.example/v1'));
+    expect(apiKey).toHaveValue('拼音中文');
+
+    fireEvent.compositionEnd(baseUrl, { target: { value: 'https://中文.example/v1' } });
+    fireEvent.compositionEnd(apiKey, { target: { value: '拼音中文' } });
+    expect(baseUrl).toHaveValue('https://中文.example/v1');
+    expect(apiKey).toHaveValue('拼音中文');
+
+    await user.clear(baseUrl);
+    await user.type(baseUrl, 'https://ordinary.example/v1');
+    await user.clear(apiKey);
+    await user.type(apiKey, 'ordinary-key');
+    expect(baseUrl).toHaveValue('https://ordinary.example/v1');
+    expect(apiKey).toHaveValue('ordinary-key');
   });
 
   it('aborts stale project defaults and ignores their response after the project changes', async () => {

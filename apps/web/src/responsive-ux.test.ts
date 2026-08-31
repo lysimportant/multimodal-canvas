@@ -31,6 +31,43 @@ describe('responsive UX CSS contracts', () => {
     expect(normalizedCss).toMatch(
       /@media \(max-width: 600px\)[\s\S]*?\.topbar-actions \{[^}]*grid-column: 2;[^}]*grid-row: 1;/,
     );
+    expect(normalizedCss).toMatch(/\.save-state \{[^}]*white-space: nowrap;/);
+    expect(normalizedCss).toMatch(
+      /@media \(max-width: 600px\)[\s\S]*?\.save-state-label \{[^}]*display: none;/,
+    );
+    expect(normalizedCss).toMatch(
+      /@media \(max-width: 900px\)[\s\S]*?\.project-context:has\(\.project-menu\) \{[^}]*overflow: visible;/,
+    );
+    expect(normalizedCss).toMatch(
+      /@media \(max-width: 900px\)[\s\S]*?\.project-menu \{[^}]*max-width: calc\(100vw - 68px\);[^}]*min-width: 0;[^}]*width: min\(280px, calc\(100vw - 68px\)\);/,
+    );
+    expect(normalizedCss).toMatch(
+      /@media \(max-width: 600px\)[\s\S]*?\.topbar-actions \{[^}]*justify-content: flex-start;[^}]*max-width: 100%;[^}]*overflow: visible;/,
+    );
+    expect(normalizedCss).toMatch(
+      /@media \(max-width: 600px\)[\s\S]*?\.topbar-tool-cluster \{[^}]*flex: 0 1 auto;[^}]*max-width: 100%;[^}]*overflow-x: auto;/,
+    );
+    expect(normalizedCss).toMatch(
+      /@media \(max-width: 600px\)[\s\S]*?\.topbar-resource-filter \{[^}]*box-sizing: border-box;[^}]*flex: 0 0 min\(132px, 100%\);[^}]*max-width: 100%;[^}]*overflow: hidden;/,
+    );
+    expect(normalizedCss).toMatch(
+      /@media \(max-width: 600px\)[\s\S]*?\.topbar-resource-filter select \{[^}]*flex: 1 1 0;[^}]*min-width: 0;[^}]*overflow: hidden;[^}]*text-overflow: ellipsis;[^}]*width: 0;/,
+    );
+    const finalCanvasChromeCss = normalizedCss.slice(
+      normalizedCss.lastIndexOf('/* Canvas chrome:'),
+    );
+    expect(finalCanvasChromeCss).toMatch(
+      /@media \(max-width: 600px\)[\s\S]*?\.topbar \{[^}]*grid-template-columns: 40px minmax\(0, 1fr\);/,
+    );
+    expect(finalCanvasChromeCss).toMatch(
+      /@media \(max-width: 600px\)[\s\S]*?\.topbar-actions \{[^}]*grid-column: 2;[^}]*grid-row: 1;/,
+    );
+    expect(finalCanvasChromeCss).toMatch(
+      /\.topbar-resource-filter:focus-within \{[^}]*border-color: var\(--mc-accent\);[^}]*box-shadow: 0 0 0 3px var\(--mc-focus\);/,
+    );
+    expect(finalCanvasChromeCss).toMatch(
+      /\.topbar-tool-cluster:focus-within \{[^}]*border-color: var\(--mc-accent\);[^}]*box-shadow: 0 0 0 3px var\(--mc-focus\);/,
+    );
   });
 
   it('keeps narrow-screen notices in flow below the header', () => {
@@ -72,6 +109,90 @@ describe('responsive UX CSS contracts', () => {
     );
     expect(normalizedCss).toMatch(
       /@media \(max-width: 900px\)[\s\S]*?\.canvas-area:has\(\.node-quick-editor\) \{[^}]*flex-basis: 700px;[^}]*min-height: 700px;/,
+    );
+  });
+
+  it('keeps mobile chrome bounded while preserving local horizontal scrolling', () => {
+    expect(normalizedCss).toMatch(
+      /@media \(max-width: 600px\)[\s\S]*?\.topbar-actions \{[^}]*max-width: 100%;[^}]*overflow: visible;/,
+    );
+    expect(normalizedCss).toMatch(
+      /@media \(max-width: 600px\)[\s\S]*?\.topbar-actions, \.topbar-tool-cluster, \.topbar-resource-filter \{[^}]*min-width: 0;/,
+    );
+    expect(normalizedCss).toMatch(
+      /@media \(max-width: 600px\)[\s\S]*?\.topbar-tool-cluster \{[^}]*flex: 0 1 auto;[^}]*max-width: 100%;[^}]*overflow-x: auto;[^}]*overflow-y: hidden;/,
+    );
+    expect(normalizedCss).toMatch(
+      /@media \(max-width: 600px\)[\s\S]*?\.topbar-resource-filter \{[^}]*box-sizing: border-box;[^}]*flex: 0 0 min\(132px, 100%\);[^}]*max-width: 100%;[^}]*overflow: hidden;/,
+    );
+    expect(normalizedCss).toMatch(
+      /@media \(max-width: 600px\)[\s\S]*?\.canvas-node-tools \{[^}]*left: 12px;[^}]*overflow-x: auto;[^}]*right: 56px;[^}]*width: auto;/,
+    );
+    expect(normalizedCss).toMatch(
+      /@media \(max-width: 600px\)[\s\S]*?\.topbar-actions \{[^}]*width: 100%;/,
+    );
+    expect(normalizedCss).toMatch(
+      /@media \(max-width: 600px\)[\s\S]*?\.topbar-tool-cluster \{[^}]*flex: 1 1 auto;[^}]*width: 100%;/,
+    );
+    expect(normalizedCss).toMatch(
+      /@media \(max-width: 600px\)[\s\S]*?\.topbar-tool-cluster > \*,[^}]*flex: 0 0 auto;/,
+    );
+  });
+
+  it('wraps the resource filter within the 320px header width', () => {
+    expect(normalizedCss).toMatch(
+      /@media \(max-width: 340px\)[\s\S]*?\.project-context \{[^}]*align-content: flex-start;[^}]*flex-wrap: wrap;[^}]*overflow-x: visible;/,
+    );
+    expect(normalizedCss).toMatch(
+      /@media \(max-width: 340px\)[\s\S]*?\.topbar-resource-filter \{[^}]*flex: 1 1 calc\(100% - 12px\);[^}]*width: calc\(100% - 12px\);/,
+    );
+    expect(normalizedCss).toMatch(
+      /@media \(max-width: 340px\)[\s\S]*?\.topbar-tool-cluster \{[^}]*gap: 0;[^}]*padding: 1px;/,
+    );
+    expect(normalizedCss).toMatch(
+      /@media \(max-width: 340px\)[\s\S]*?\.topbar-tool-divider \{[^}]*margin-inline: 0;/,
+    );
+    expect(normalizedCss).toMatch(
+      /@media \(max-width: 340px\)[\s\S]*?\.topbar \{[^}]*grid-template-columns: minmax\(0, 1fr\);/,
+    );
+    expect(normalizedCss).toMatch(
+      /@media \(max-width: 340px\)[\s\S]*?\.topbar-actions \{[^}]*grid-column: 1;/,
+    );
+    expect(normalizedCss).toMatch(
+      /@media \(max-width: 340px\)[\s\S]*?\.canvas-node-tools \{[^}]*left: 8px;[^}]*right: 44px;[^}]*scroll-padding-inline: 6px;/,
+    );
+    expect(normalizedCss).toMatch(
+      /@media \(max-width: 340px\)[\s\S]*?\.canvas-node-tools \.canvas-node-tool,[^}]*\.canvas-node-tools \.canvas-node-tool-transform \{[^}]*flex: 0 0 36px;[^}]*height: 36px;[^}]*width: 36px;/,
+    );
+  });
+
+  it('makes selected animated edges visibly stronger and faster', () => {
+    expect(normalizedCss).toMatch(
+      /\.react-flow__edge\.selected \.react-flow__edge-path \{[^}]*stroke: var\(--mc-accent-strong\) !important;[^}]*stroke-width: 4px !important;/,
+    );
+    expect(normalizedCss).toMatch(
+      /\.react-flow__edge\.selected\.animated \.react-flow__edge-path \{[^}]*animation-duration: 0\.2s !important;/,
+    );
+  });
+
+  it('keeps final mobile bounds local to the viewport', () => {
+    const finalMobileCss = normalizedCss.slice(
+      normalizedCss.lastIndexOf('/* Final mobile bounds:'),
+    );
+    expect(normalizedCss).toMatch(
+      /@media \(max-width: 600px\)[\s\S]*?\.project-context \{[^}]*flex-wrap: wrap;[^}]*overflow-x: visible;/,
+    );
+    expect(finalMobileCss).toMatch(
+      /@media \(max-width: 600px\)[\s\S]*?\.topbar,[\s\S]*?\.topbar-resource-filter \{[^}]*max-width: 100%;[^}]*min-width: 0;/,
+    );
+    expect(finalMobileCss).toMatch(
+      /\.topbar-tool-cluster \{[^}]*overflow-x: auto;[^}]*overflow-y: hidden;/,
+    );
+    expect(finalMobileCss).toMatch(
+      /\.canvas-node-tools \{[^}]*box-sizing: border-box;[^}]*max-width: calc\(100% - 52px\);[^}]*min-width: 0;/,
+    );
+    expect(finalMobileCss).toMatch(
+      /\.canvas-node-tools \.canvas-node-tool,[\s\S]*?\.canvas-node-tools \.canvas-node-tool-transform \{[^}]*flex: 0 0 36px;/,
     );
   });
 });

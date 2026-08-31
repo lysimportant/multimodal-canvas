@@ -209,7 +209,7 @@ export class NewApiProviderError extends Error {
     statusOrDetails?: number | NewApiProviderErrorDetails,
     legacyDetails?: NewApiProviderErrorDetails,
   ) {
-    super(message);
+    super(sanitizeProviderErrorMessage(message));
     this.name = 'NewApiProviderError';
 
     const details: NewApiProviderErrorDetails =
@@ -217,10 +217,10 @@ export class NewApiProviderError extends Error {
         ? { ...legacyDetails, status: statusOrDetails ?? legacyDetails?.status }
         : statusOrDetails;
     this.status = details.status;
-    this.code = normalizeErrorField(details.code);
-    this.requestId = normalizeErrorField(details.requestId);
+    this.code = sanitizeProviderDiagnosticField(details.code);
+    this.requestId = sanitizeProviderDiagnosticField(details.requestId);
     this.platformJobId = normalizeErrorField(details.platformJobId);
-    this.providerPayload = details.providerPayload;
+    this.providerPayload = sanitizeProviderPayload(details.providerPayload);
     this.retryable = details.retryable ?? isRetryableStatus(this.status);
 
     // Required when extending Error while targeting both Node and browsers.
@@ -264,6 +264,7 @@ export class NewApiProvider {
     if (target.data.mediaType === 'video') {
       throw new NewApiProviderError('video generation requires NewApiVideoProvider');
     }
+    validateProviderRoleParameters(snapshot.parameters, target.data.mediaType);
     if (providerJob && providerJob.provider !== 'newapi') {
       throw new NewApiProviderError('已有平台任务与 New API Provider 不匹配', {
         code: 'PROVIDER_MISMATCH',
@@ -381,12 +382,12 @@ export class NewApiProvider {
       });
       const payload = await readResponsePayload(response, this.maxResponseBytes);
       if (!response.ok) {
-        const providerError = extractProviderError(payload);
+        const providerError = extractProviderError(payload, [this.apiKey]);
         const message = providerError.message ?? `New API 请求失败（${response.status}）`;
         throw new NewApiProviderError(message, {
           status: response.status,
           code: providerError.code,
-          requestId: providerError.requestId ?? responseRequestId(response),
+          requestId: providerError.requestId ?? responseRequestId(response, [this.apiKey]),
           retryable: isRetryableStatus(response.status),
         });
       }
@@ -398,7 +399,7 @@ export class NewApiProvider {
         isTimeout
           ? 'New API 请求超时'
           : error instanceof Error
-            ? error.message
+            ? sanitizeProviderErrorMessage(error.message, [this.apiKey])
             : 'New API 请求失败',
         {
           code: isTimeout ? 'TIMEOUT' : 'NETWORK_ERROR',
@@ -412,12 +413,6 @@ export class NewApiProvider {
 }
 
 export type NewApiVideoProviderOptions = NewApiProviderOptions & {
-  /** Legacy alias for the task/status collection path. */
-  videoPath?: string;
-  /** POST path used to create a video generation task. */
-  videoCreatePath?: string;
-  /** GET /:id and GET /:id/content task/status collection path. */
-  videoJobsPath?: string;
   pollIntervalMs?: number;
   maxPollAttempts?: number;
   maxContentBytes?: number;
@@ -435,15 +430,15 @@ type VideoPollResult = {
 
 const defaultResponseContentLimit = 50 * 1024 * 1024;
 const defaultVideoContentLimit = 50 * 1024 * 1024;
+const newApiVideoJobsPath = '/videos';
+const newApiVideoCreatePath = `${newApiVideoJobsPath}/generations`;
 
-/** xAI-compatible asynchronous video boundary exposed by the tested New API gateway. */
+/** Asynchronous video boundary using the standard New API endpoints. */
 export class NewApiVideoProvider {
   private readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
-  private readonly videoCreatePath: string;
-  private readonly videoJobsPath: string;
   private readonly pollIntervalMs: number;
   private readonly maxPollAttempts: number;
   private readonly maxContentBytes: number;
@@ -457,18 +452,6 @@ export class NewApiVideoProvider {
     this.apiKey = options.apiKey;
     this.timeoutMs = positiveInteger(options.timeoutMs, 120_000, 'timeoutMs');
     this.fetchImpl = options.fetchImpl ?? fetch;
-    const legacyPath = options.videoPath?.trim();
-    const inferredJobsPath =
-      options.videoJobsPath ??
-      (legacyPath?.endsWith('/generations')
-        ? legacyPath.slice(0, -'/generations'.length)
-        : legacyPath) ??
-      '/videos';
-    this.videoJobsPath = normalizeVideoPath(inferredJobsPath);
-    this.videoCreatePath = normalizeVideoPath(
-      options.videoCreatePath ??
-        (legacyPath?.endsWith('/generations') ? legacyPath : `${this.videoJobsPath}/generations`),
-    );
     this.pollIntervalMs = nonNegativeInteger(options.pollIntervalMs, 2_000, 'pollIntervalMs');
     this.maxPollAttempts = positiveInteger(options.maxPollAttempts, 120, 'maxPollAttempts');
     this.maxContentBytes = positiveInteger(
@@ -497,10 +480,14 @@ export class NewApiVideoProvider {
     if (target.data.mode !== 'generate') {
       throw new NewApiProviderError('当前视频接口仅支持 generate 模式');
     }
+    validateProviderRoleParameters(snapshot.parameters, 'video');
     // Validate every immutable input snapshot even when this invocation only
     // resumes an existing platform job. Otherwise a retry could silently skip
     // a role that the original creation path would reject.
     const inputs = mapVideoInputs(snapshot);
+    // A video prompt is required by the verified gateway contract. Do not
+    // substitute a display label, even when resuming an existing task.
+    resolveRequiredVideoPrompt(snapshot, target.data.label, target.data.prompt, inputs.prompt);
 
     if (existingProviderJob && existingProviderJob.provider !== 'newapi') {
       throw new NewApiProviderError('已有平台任务与 New API Provider 不匹配', {
@@ -519,7 +506,7 @@ export class NewApiVideoProvider {
       let submission: { payload: Record<string, unknown>; requestId?: string };
       try {
         submission = await this.requestJson(
-          `${this.baseUrl}${this.videoCreatePath}`,
+          `${this.baseUrl}${newApiVideoCreatePath}`,
           'POST',
           videoPayload(snapshot, target.data.label, target.data.prompt, inputs),
           idempotencyKey,
@@ -529,11 +516,11 @@ export class NewApiVideoProvider {
         // the platform task identity unknown. Do not classify this as a
         // retryable error: an automatic retry could create and charge a
         // second task. Surface it for manual provider-side reconciliation.
-        if (error instanceof NewApiProviderError && error.retryable) {
+        if (!(error instanceof NewApiProviderError) || error.retryable) {
           throw new NewApiProviderError('New API 视频创建结果未知，请先核对平台任务状态', {
-            status: error.status,
+            status: error instanceof NewApiProviderError ? error.status : undefined,
             code: 'VIDEO_SUBMISSION_UNKNOWN',
-            requestId: error.requestId,
+            requestId: error instanceof NewApiProviderError ? error.requestId : undefined,
             retryable: false,
           });
         }
@@ -546,6 +533,36 @@ export class NewApiVideoProvider {
           requestId: submission.requestId,
           retryable: false,
         });
+      }
+      const creationStatus = normalizeErrorField(
+        submission.payload.status ??
+          (isRecord(submission.payload.data) ? submission.payload.data.status : undefined),
+      )?.toLowerCase();
+      if (
+        creationStatus &&
+        ['failed', 'error', 'expired', 'cancelled', 'canceled'].includes(creationStatus)
+      ) {
+        const terminal = parseVideoPollResult(submission.payload, [this.apiKey]);
+        const providerPayload = videoJobPayloadSummary(
+          'failed',
+          snapshot.modelAlias,
+          terminal.providerStatus,
+          terminal.progress,
+        );
+        throw new NewApiProviderError(
+          terminal.error ??
+            `New API 视频任务${terminal.status === 'cancelled' ? '已取消' : '失败'}`,
+          {
+            code:
+              terminal.status === 'cancelled'
+                ? 'VIDEO_GENERATION_CANCELLED'
+                : 'VIDEO_GENERATION_FAILED',
+            requestId: submission.requestId,
+            platformJobId,
+            providerPayload,
+            retryable: false,
+          },
+        );
       }
       submissionUsage = parseProviderUsage(submission.payload);
       initialPhase = 'submitted';
@@ -576,10 +593,10 @@ export class NewApiVideoProvider {
       if (waitMs > 0) await delay(waitMs);
       try {
         const statusResponse = await this.requestJson(
-          `${this.baseUrl}${this.videoJobsPath}/${encodeURIComponent(platformJobId)}`,
+          `${this.baseUrl}${newApiVideoJobsPath}/${encodeURIComponent(platformJobId)}`,
           'GET',
         );
-        lastPoll = parseVideoPollResult(statusResponse.payload);
+        lastPoll = parseVideoPollResult(statusResponse.payload, [this.apiKey]);
         const statusPayload = videoJobPayloadSummary(
           lastPoll.status === 'succeeded' ? 'completed' : 'polling',
           snapshot.modelAlias,
@@ -631,6 +648,7 @@ export class NewApiVideoProvider {
             lastPoll?.providerStatus,
             lastPoll?.progress,
           ),
+          [this.apiKey],
         );
       }
 
@@ -664,6 +682,7 @@ export class NewApiVideoProvider {
             error,
             platformJobId,
             videoJobPayloadSummary('completed', snapshot.modelAlias, lastPoll.providerStatus, 100),
+            [this.apiKey],
           );
         }
         const usage = lastPoll.usage ?? submissionUsage;
@@ -762,7 +781,7 @@ export class NewApiVideoProvider {
         // Fall through to the canonical authenticated content endpoint.
       }
     }
-    return `${this.baseUrl}${this.videoJobsPath}/${encodeURIComponent(platformJobId)}/content`;
+    return `${this.baseUrl}${newApiVideoJobsPath}/${encodeURIComponent(platformJobId)}/content`;
   }
 
   private isProtectedProviderUrl(rawUrl: string): boolean {
@@ -791,14 +810,14 @@ export class NewApiVideoProvider {
       },
     });
     const payload = await readResponsePayload(response, this.maxResponseBytes);
-    if (!response.ok) throw providerResponseError(response, payload);
+    if (!response.ok) throw providerResponseError(response, payload, [this.apiKey]);
     if (!isRecord(payload) || isBinaryResponsePayload(payload)) {
       throw new NewApiProviderError('New API 视频响应不是有效 JSON', {
-        requestId: responseRequestId(response),
+        requestId: responseRequestId(response, [this.apiKey]),
         retryable: false,
       });
     }
-    return { payload, requestId: responseRequestId(response) };
+    return { payload, requestId: responseRequestId(response, [this.apiKey]) };
   }
 
   private async requestBinary(url: string): Promise<{ bytes: Uint8Array; mimeType: string }> {
@@ -815,10 +834,10 @@ export class NewApiVideoProvider {
       });
     }
     const payload = await readResponsePayload(response, this.maxContentBytes);
-    if (!response.ok) throw providerResponseError(response, payload);
+    if (!response.ok) throw providerResponseError(response, payload, [this.apiKey]);
     if (!isBinaryResponsePayload(payload) || payload.bytes.byteLength === 0) {
       throw new NewApiProviderError('New API 视频下载响应不包含二进制内容', {
-        requestId: responseRequestId(response),
+        requestId: responseRequestId(response, [this.apiKey]),
         retryable: false,
       });
     }
@@ -846,7 +865,7 @@ export class NewApiVideoProvider {
         isTimeout
           ? 'New API 请求超时'
           : error instanceof Error
-            ? error.message
+            ? sanitizeProviderErrorMessage(error.message, [this.apiKey])
             : 'New API 请求失败',
         { code: isTimeout ? 'TIMEOUT' : 'NETWORK_ERROR', retryable: true },
       );
@@ -869,14 +888,6 @@ function shouldRequireHttps(explicit: boolean | undefined): boolean {
     }
   ).process;
   return explicit === true || processLike?.env?.NODE_ENV === 'production';
-}
-
-function normalizeVideoPath(value: string): string {
-  const path = value.trim().replace(/\/$/, '');
-  if (!path.startsWith('/') || path.includes('..') || /[?#\\]/.test(path)) {
-    throw new TypeError('videoPath 必须是安全的绝对路径');
-  }
-  return path || '/videos';
 }
 
 function positiveInteger(value: number | undefined, fallback: number, name: string): number {
@@ -953,15 +964,13 @@ function videoPayload(
   nodePrompt?: string,
   inputs: VideoInputMapping = mapVideoInputs(snapshot),
 ): Record<string, unknown> {
-  const parameters = snapshot.parameters;
+  const prompt = resolveRequiredVideoPrompt(snapshot, label, nodePrompt, inputs.prompt);
   const payload: Record<string, unknown> = {
     model: snapshot.modelAlias,
-    prompt: resolveMappedPromptInput(
-      resolvePromptSource(snapshot, label, nodePrompt, 'video'),
-      inputs.prompt,
-      'video',
-    ),
+    prompt,
   };
+  const firstFrameUrl = inputs.firstFrame ? inputImageUrl(inputs.firstFrame, 'video') : undefined;
+  const parameters = snapshot.parameters;
   const duration = parameters.duration;
   if (typeof duration === 'number' && Number.isSafeInteger(duration) && duration > 0) {
     payload.duration = duration;
@@ -970,7 +979,7 @@ function videoPayload(
   if (resolution) payload.resolution = resolution;
   const aspectRatio = normalizeErrorField(parameters.aspect_ratio ?? parameters.aspectRatio);
   if (aspectRatio) payload.aspect_ratio = aspectRatio;
-  if (inputs.firstFrame) payload.image = { url: inputImageUrl(inputs.firstFrame, 'video') };
+  if (firstFrameUrl) payload.image = { url: firstFrameUrl };
   return payload;
 }
 
@@ -1001,7 +1010,10 @@ function extractVideoRequestId(payload: Record<string, unknown>): string | undef
   return undefined;
 }
 
-function parseVideoPollResult(payload: Record<string, unknown>): VideoPollResult {
+function parseVideoPollResult(
+  payload: Record<string, unknown>,
+  sensitiveValues: readonly string[] = [],
+): VideoPollResult {
   const data = isRecord(payload.data) ? payload.data : undefined;
   const video = isRecord(payload.video)
     ? payload.video
@@ -1030,10 +1042,13 @@ function parseVideoPollResult(payload: Record<string, unknown>): VideoPollResult
     typeof rawProgress === 'number' && Number.isFinite(rawProgress)
       ? Math.round(Math.max(0, Math.min(100, rawProgress <= 1 ? rawProgress * 100 : rawProgress)))
       : 0;
-  const errorDetails = extractProviderError(payload);
+  const errorDetails = extractProviderError(payload, sensitiveValues);
   const error =
     errorDetails.message ??
-    normalizeErrorField(payload.failure_reason ?? data?.failure_reason ?? payload.reason);
+    sanitizeOptionalProviderErrorMessage(
+      payload.failure_reason ?? data?.failure_reason ?? payload.reason,
+      sensitiveValues,
+    );
   const usage = parseProviderUsage(payload);
 
   if (['done', 'succeeded', 'completed'].includes(providerStatus)) {
@@ -1090,14 +1105,18 @@ function parseVideoPollResult(payload: Record<string, unknown>): VideoPollResult
   });
 }
 
-function providerResponseError(response: Response, payload: unknown): NewApiProviderError {
-  const providerError = extractProviderError(payload);
+function providerResponseError(
+  response: Response,
+  payload: unknown,
+  sensitiveValues: readonly string[] = [],
+): NewApiProviderError {
+  const providerError = extractProviderError(payload, sensitiveValues);
   return new NewApiProviderError(
     providerError.message ?? `New API 请求失败（${response.status}）`,
     {
       status: response.status,
       code: providerError.code,
-      requestId: providerError.requestId ?? responseRequestId(response),
+      requestId: providerError.requestId ?? responseRequestId(response, sensitiveValues),
       retryable: isRetryableStatus(response.status),
     },
   );
@@ -1107,9 +1126,10 @@ function videoJobError(
   error: unknown,
   platformJobId: string,
   providerPayload: Record<string, unknown>,
+  sensitiveValues: readonly string[] = [],
 ): NewApiProviderError {
   if (error instanceof NewApiProviderError) {
-    return new NewApiProviderError(error.message, {
+    return new NewApiProviderError(sanitizeProviderErrorMessage(error.message, sensitiveValues), {
       status: error.status,
       code: error.code,
       requestId: error.requestId,
@@ -1119,7 +1139,9 @@ function videoJobError(
     });
   }
   return new NewApiProviderError(
-    error instanceof Error ? error.message : 'New API 视频任务处理失败',
+    error instanceof Error
+      ? sanitizeProviderErrorMessage(error.message, sensitiveValues)
+      : 'New API 视频任务处理失败',
     {
       code: 'VIDEO_JOB_ERROR',
       platformJobId,
@@ -1159,6 +1181,127 @@ function normalizeErrorField(value: unknown): string | undefined {
   return nonEmptyString(value) ? value.trim() : undefined;
 }
 
+const maxProviderErrorMessageLength = 512;
+const redactedProviderErrorValue = '[REDACTED]';
+const maxProviderPayloadDepth = 4;
+const maxProviderPayloadKeys = 64;
+const maxProviderPayloadItems = 32;
+const maxProviderPayloadStringLength = 1_000;
+const sensitiveProviderPayloadKey =
+  /(?:authorization|proxy[-_ ]?authorization|x[-_ ]?api[-_ ]?key|api[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|token|secret|password|credential|cookie|session)/i;
+const urlProviderPayloadKey = /(?:url|uri|href|location|download)/i;
+
+/** Keep provider diagnostics bounded and free of credentials or signed URLs. */
+function sanitizeProviderPayload(
+  value: unknown,
+  depth = 0,
+  seen = new WeakSet<object>(),
+): Record<string, unknown> | undefined {
+  if (!isRecord(value) || depth > maxProviderPayloadDepth) return undefined;
+  if (seen.has(value)) return undefined;
+  seen.add(value);
+  try {
+    const output: Record<string, unknown> = {};
+    for (const [key, raw] of Object.entries(value).slice(0, maxProviderPayloadKeys)) {
+      if (sensitiveProviderPayloadKey.test(key) || urlProviderPayloadKey.test(key)) continue;
+      const sanitized = sanitizeProviderPayloadValue(raw, depth + 1, seen);
+      if (sanitized !== undefined) output[key] = sanitized;
+    }
+    return Object.keys(output).length > 0 ? output : undefined;
+  } finally {
+    seen.delete(value);
+  }
+}
+
+function sanitizeProviderPayloadValue(
+  value: unknown,
+  depth: number,
+  seen: WeakSet<object>,
+): unknown {
+  if (depth > maxProviderPayloadDepth) return undefined;
+  if (typeof value === 'string') {
+    const normalized = value.trim();
+    if (!normalized || /^data:[^,]+,/i.test(normalized)) return undefined;
+    return sanitizeProviderErrorMessage(normalized).slice(0, maxProviderPayloadStringLength);
+  }
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (typeof value === 'boolean') return value;
+  if (Array.isArray(value)) {
+    const items = value
+      .slice(0, maxProviderPayloadItems)
+      .map((item) => sanitizeProviderPayloadValue(item, depth + 1, seen))
+      .filter((item): item is string | number | boolean | Record<string, unknown> => {
+        return item !== undefined;
+      });
+    return items.length > 0 ? items : undefined;
+  }
+  if (isRecord(value)) return sanitizeProviderPayload(value, depth, seen);
+  return undefined;
+}
+
+/**
+ * Provider and transport errors are untrusted input. Keep their useful text,
+ * but never allow credentials, URL query strings, control characters, or an
+ * unbounded response body to cross the Provider boundary.
+ */
+function sanitizeProviderErrorMessage(
+  value: string,
+  sensitiveValues: readonly string[] = [],
+): string {
+  let message = value.trim() || 'New API 请求失败';
+
+  message = redactUrlQueryAndFragment(message);
+  for (const sensitiveValue of sensitiveValues) {
+    if (sensitiveValue) message = message.split(sensitiveValue).join(redactedProviderErrorValue);
+  }
+
+  message = message
+    .replace(
+      /(\b(?:authorization|proxy-authorization|x-api-key|api[_ -]?key|access[_ -]?token)\b\s*["']?\s*[:=]\s*["']?)(?:Bearer\s+)?[^\s,;}\]"']+/gi,
+      `$1${redactedProviderErrorValue}`,
+    )
+    .replace(/\bBearer\s+[^\s,;}\]"']+/gi, `Bearer ${redactedProviderErrorValue}`)
+    .replace(/\bsk[-_][A-Za-z0-9._-]{6,}\b/gi, redactedProviderErrorValue)
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const truncationSuffix = '... [truncated]';
+  if (message.length <= maxProviderErrorMessageLength) return message;
+  return `${message.slice(0, maxProviderErrorMessageLength - truncationSuffix.length)}${truncationSuffix}`;
+}
+
+function sanitizeOptionalProviderErrorMessage(
+  value: unknown,
+  sensitiveValues: readonly string[] = [],
+): string | undefined {
+  return sanitizeProviderDiagnosticField(value, sensitiveValues);
+}
+
+function sanitizeProviderDiagnosticField(
+  value: unknown,
+  sensitiveValues: readonly string[] = [],
+): string | undefined {
+  const field = normalizeErrorField(value);
+  if (!field) return undefined;
+  return sanitizeProviderErrorMessage(field, sensitiveValues) || undefined;
+}
+
+function redactUrlQueryAndFragment(message: string): string {
+  return message.replace(/\bhttps?:\/\/[^\s<>"']+/gi, (rawUrl) => {
+    try {
+      const parsed = new URL(rawUrl);
+      if (!parsed.search && !parsed.hash) return rawUrl;
+      parsed.search = '';
+      parsed.hash = '';
+      return parsed.toString();
+    } catch {
+      const queryIndex = rawUrl.search(/[?#]/);
+      return queryIndex >= 0 ? rawUrl.slice(0, queryIndex) : rawUrl;
+    }
+  });
+}
+
 /**
  * These statuses describe a transient transport/provider condition. This is
  * deliberately only classification: NewApiProvider never retries itself.
@@ -1178,31 +1321,43 @@ type ExtractedProviderError = {
   requestId?: string;
 };
 
-function extractProviderError(payload: unknown): ExtractedProviderError {
+function extractProviderError(
+  payload: unknown,
+  sensitiveValues: readonly string[] = [],
+): ExtractedProviderError {
   if (!isRecord(payload)) return {};
   const nested = isRecord(payload.error) ? payload.error : undefined;
-  const message =
+  const rawMessage =
     normalizeErrorField(nested?.message) ??
     (typeof payload.error === 'string' ? normalizeErrorField(payload.error) : undefined) ??
     normalizeErrorField(payload.message);
-  const code =
+  const message = rawMessage
+    ? sanitizeProviderErrorMessage(rawMessage, sensitiveValues)
+    : undefined;
+  const rawCode =
     normalizeErrorField(nested?.code) ??
     normalizeErrorField(nested?.type) ??
     normalizeErrorField(payload.code) ??
     normalizeErrorField(payload.type);
-  const requestId =
+  const code = sanitizeProviderDiagnosticField(rawCode, sensitiveValues);
+  const rawRequestId =
     normalizeErrorField(nested?.request_id) ??
     normalizeErrorField(nested?.requestId) ??
     normalizeErrorField(payload.request_id) ??
     normalizeErrorField(payload.requestId);
+  const requestId = sanitizeProviderDiagnosticField(rawRequestId, sensitiveValues);
   return { message, code, requestId };
 }
 
-function responseRequestId(response: Response): string | undefined {
+function responseRequestId(
+  response: Response,
+  sensitiveValues: readonly string[] = [],
+): string | undefined {
   const headers = (response as Response & { headers?: Headers }).headers;
   for (const name of ['x-request-id', 'x-requestid', 'request-id', 'openai-request-id']) {
     const value = headers?.get?.(name);
-    if (nonEmptyString(value)) return value.trim();
+    const requestId = sanitizeProviderDiagnosticField(value, sensitiveValues);
+    if (requestId) return requestId;
   }
   return undefined;
 }
@@ -1468,15 +1623,29 @@ function normalizeUsageCurrency(value: unknown): string | undefined {
 }
 
 function parseTextOutput(payload: unknown): Extract<ProviderOutput, { kind: 'text' }> {
-  if (!isRecord(payload) || !Array.isArray(payload.choices) || payload.choices.length === 0) {
+  if (!isRecord(payload)) {
     throw new NewApiProviderError('New API 文本响应缺少 choices[0] 内容');
   }
-  const choice = payload.choices[0];
-  if (!isRecord(choice)) throw new NewApiProviderError('New API 文本响应格式无效');
 
-  const message = isRecord(choice.message) ? choice.message.content : undefined;
-  const content =
-    extractTextContent(message) ?? (nonEmptyString(choice.text) ? choice.text : undefined);
+  // Keep Chat Completions as the canonical contract. Only fall back to the
+  // explicitly named Responses envelopes when `choices` is absent, so a
+  // malformed standard response cannot be silently reinterpreted.
+  let content: string | undefined;
+  if ('choices' in payload) {
+    if (!Array.isArray(payload.choices) || payload.choices.length === 0) {
+      throw new NewApiProviderError('New API 文本响应缺少 choices[0] 内容');
+    }
+    const choice = payload.choices[0];
+    if (!isRecord(choice)) throw new NewApiProviderError('New API 文本响应格式无效');
+    const message = isRecord(choice.message) ? choice.message.content : undefined;
+    content =
+      extractTextContent(message) ?? (nonEmptyString(choice.text) ? choice.text : undefined);
+  } else {
+    content = nonEmptyString(payload.output_text)
+      ? payload.output_text
+      : extractResponsesText(payload.output);
+  }
+
   if (content === undefined || content.trim().length === 0) {
     throw new NewApiProviderError('New API 文本响应内容为空');
   }
@@ -1487,6 +1656,25 @@ function parseTextOutput(payload: unknown): Extract<ProviderOutput, { kind: 'tex
     mimeType: 'text/plain',
     format: 'txt',
   };
+}
+
+function extractResponsesText(value: unknown): string | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const parts: string[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) continue;
+    if (item.type === 'output_text' && nonEmptyString(item.text)) {
+      parts.push(item.text);
+      continue;
+    }
+    if (!Array.isArray(item.content)) continue;
+    for (const part of item.content) {
+      if (isRecord(part) && part.type === 'output_text' && nonEmptyString(part.text)) {
+        parts.push(part.text);
+      }
+    }
+  }
+  return parts.length > 0 ? parts.join('') : undefined;
 }
 
 function extractTextContent(value: unknown): string | undefined {
@@ -1785,6 +1973,39 @@ function providerParameters(
   return providerParameters;
 }
 
+/**
+ * Input roles belong to the canvas graph, not to the untyped provider
+ * parameter bag. A role-shaped parameter would otherwise be serialized as an
+ * undocumented top-level field (or silently disappear during JSON encoding),
+ * which makes the role impossible to diagnose and can produce different
+ * behavior across gateways. Prompt is intentionally excluded because it is
+ * mapped to the endpoint's primary prompt/input field above.
+ */
+function validateProviderRoleParameters(
+  parameters: Record<string, unknown>,
+  mediaType: MediaType,
+): void {
+  for (const role of providerRoleParameterKeys) {
+    if (!Object.prototype.hasOwnProperty.call(parameters, role)) continue;
+    const value = parameters[role];
+    if (value === undefined || value === null) continue;
+    if (typeof value === 'string' && value.trim().length === 0) continue;
+    throw unsupportedInputRoleError(mediaType, role);
+  }
+}
+
+const providerRoleParameterKeys = [
+  'negativePrompt',
+  'content',
+  'style',
+  'character',
+  'firstFrame',
+  'lastFrame',
+  'audioTrack',
+  'transcript',
+  'mask',
+] as const satisfies readonly PortRole[];
+
 type PromptSource = {
   value: string;
   /** A configured node/parameter prompt, as opposed to a display-label fallback. */
@@ -1868,6 +2089,22 @@ function resolveMappedPromptInput(
   if (!input) return prompt.value;
   if (prompt.explicit) throw inputRoleConflictError(mediaType, 'prompt');
   return inputTextValue(input, mediaType);
+}
+
+function resolveRequiredVideoPrompt(
+  snapshot: RunSnapshot,
+  label: string,
+  nodePrompt: string | undefined,
+  input: RunInputSnapshot | undefined,
+): string {
+  const prompt = resolvePromptSource(snapshot, label, nodePrompt, 'video');
+  if (!prompt.explicit && !input) {
+    throw new NewApiProviderError('New API video 需要 prompt', {
+      code: 'VIDEO_PROMPT_REQUIRED',
+      retryable: false,
+    });
+  }
+  return resolveMappedPromptInput(prompt, input, 'video');
 }
 
 function mapVideoInputs(snapshot: RunSnapshot): VideoInputMapping {

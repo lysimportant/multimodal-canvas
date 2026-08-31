@@ -16,8 +16,10 @@ import {
   type RunResultAsset,
   type ProviderJob,
   type RunRecord,
+  type RunCredentialReference,
   type RunSnapshot,
   type RunStatus,
+  runSnapshotFingerprintMaterial,
 } from '@multimodal-canvas/domain';
 import { databaseRunId, type PrismaRunPersistence } from './run-persistence';
 
@@ -171,6 +173,8 @@ export function createRunSnapshot(
     credentialVersion?: number;
     /** Final aliases resolved by the API for included non-source nodes. */
     nodeModelAliases?: Readonly<Record<string, string>>;
+    /** Immutable credential selected for each included provider-backed node. */
+    nodeCredentialReferences?: Readonly<Record<string, RunCredentialReference>>;
     /** Immutable asset-version references resolved by the API for included nodes. */
     frozenAssetRefs?: Readonly<Record<string, FrozenRunAssetRef>>;
   } = {},
@@ -238,6 +242,9 @@ export function createRunSnapshot(
     modelAlias: targetModelAlias,
     ...(options.credentialId ? { credentialId: options.credentialId } : {}),
     ...(options.credentialVersion ? { credentialVersion: options.credentialVersion } : {}),
+    ...(options.nodeCredentialReferences
+      ? { nodeCredentialReferences: options.nodeCredentialReferences }
+      : {}),
     parameters: options.parameters ?? {},
     submittedAt: new Date().toISOString(),
     nodes,
@@ -252,9 +259,11 @@ function clone<T>(value: T): T {
 
 function mergeProviderJob(current: ProviderJob, update: RunProviderJobUpdate): ProviderJob {
   const updatedAt = new Date().toISOString();
+  const merged = { ...current, ...update };
+  const providerPayload = sanitizeProviderPayload(merged.payload);
   return providerJobSchema.parse({
-    ...current,
-    ...update,
+    ...merged,
+    ...(providerPayload ? { payload: providerPayload } : { payload: undefined }),
     // The local provider-job row is immutable in identity; only the platform
     // task fields may be supplied by an executor.
     id: current.id,
@@ -283,17 +292,27 @@ function attachProviderErrorToRun(run: RunRecord, error: unknown) {
 
 /** Keep provider diagnostics useful without exposing credentials or signed URLs. */
 function sanitizeProviderPayload(value: unknown, depth = 0): Record<string, unknown> | undefined {
-  if (!isRecord(value) || depth > 2) return undefined;
+  if (!isRecord(value) || depth > 3) return undefined;
   const output: Record<string, unknown> = {};
-  for (const [key, raw] of Object.entries(value).slice(0, 32)) {
-    if (/(url|uri|base64|secret|authorization|api[-_]?key|password|credential|token)/i.test(key)) {
+  for (const [key, raw] of Object.entries(value).slice(0, 64)) {
+    if (
+      /(url|uri|base64|data[-_]?url|binary|bytes|secret|authorization|api[-_]?key|password|credential|token)/i.test(
+        key,
+      )
+    ) {
       continue;
     }
     if (typeof raw === 'string') {
       const normalized = raw.trim();
-      if (normalized) output[key] = normalized.slice(0, 500);
+      if (normalized) output[key] = normalized.slice(0, 1_000);
     } else if (typeof raw === 'number' || typeof raw === 'boolean') {
       if (typeof raw !== 'number' || Number.isFinite(raw)) output[key] = raw;
+    } else if (Array.isArray(raw)) {
+      const nested = raw
+        .slice(0, 32)
+        .map((item) => sanitizeProviderPayload(item, depth + 1))
+        .filter((item): item is Record<string, unknown> => item !== undefined);
+      if (nested.length > 0) output[key] = nested;
     } else if (isRecord(raw)) {
       const nested = sanitizeProviderPayload(raw, depth + 1);
       if (nested) output[key] = nested;
@@ -306,8 +325,13 @@ function sanitizeRunErrorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : 'run execution failed';
   return raw
     .replace(
-      /(authorization|api[-_]?key|token|secret|password)\s*[:=]\s*[^\s,;]+/gi,
-      '$1=[redacted]',
+      /(\b"?authorization"?\s*[:=]\s*"?)(?:(bearer|basic|token)(\s+))?[^"',;}\s]+/gi,
+      '$1$2$3[redacted]',
+    )
+    .replace(/Bearer\s+[^\s,;)}\]]+/gi, 'Bearer [redacted]')
+    .replace(
+      /(\b"?(?:api[-_]?key|access[-_]?token|refresh[-_]?token|token|secret|password)"?\s*[:=]\s*"?)[^"',;}\s]+/gi,
+      '$1[redacted]',
     )
     .replace(/https?:\/\/[^\s)]+/gi, '[provider-url-redacted]')
     .slice(0, 2000);
@@ -893,10 +917,11 @@ function normalizeRunExecution(value: RunResult | RunExecution): RunExecution {
       throw new Error(`executor returned an invalid result: ${parsedResult.error.message}`);
     }
     const output = normalizeExecutionOutputEnvelope(candidate.output);
+    const result = sanitizeRunResult(parsedResult.data);
     const providerJob =
-      normalizeProviderJob(candidate.providerJob) ?? parsedResult.data.providerJob;
+      normalizeProviderJob(candidate.providerJob) ?? normalizeProviderJob(result.providerJob);
     return {
-      result: parsedResult.data,
+      result,
       ...(output ? { output } : {}),
       ...(providerJob ? { providerJob } : {}),
     };
@@ -906,10 +931,20 @@ function normalizeRunExecution(value: RunResult | RunExecution): RunExecution {
   if (!parsedResult.success) {
     throw new Error(`executor returned an invalid result: ${parsedResult.error.message}`);
   }
+  const result = sanitizeRunResult(parsedResult.data);
   return {
-    result: parsedResult.data,
-    ...(parsedResult.data.providerJob ? { providerJob: parsedResult.data.providerJob } : {}),
+    result,
+    ...(result.providerJob ? { providerJob: result.providerJob } : {}),
   };
+}
+
+function sanitizeRunResult(result: RunResult): RunResult {
+  if (!result.providerJob) return result;
+  const providerJob = normalizeProviderJob(result.providerJob);
+  return runResultSchema.parse({
+    ...result,
+    ...(providerJob ? { providerJob } : { providerJob: undefined }),
+  });
 }
 
 function normalizeExecutionOutputEnvelope(value: unknown): RunExecutionOutput | undefined {
@@ -932,7 +967,12 @@ function normalizeProviderJob(value: unknown): RunExecution['providerJob'] | und
     ...(typeof value.platformJobId === 'string' ? { platformJobId: value.platformJobId } : {}),
     ...(typeof value.status === 'string' ? { status: value.status } : {}),
     ...(typeof value.progress === 'number' ? { progress: value.progress } : {}),
-    ...(isRecord(value.payload) ? { payload: value.payload } : {}),
+    ...(isRecord(value.payload)
+      ? (() => {
+          const payload = sanitizeProviderPayload(value.payload);
+          return payload ? { payload } : {};
+        })()
+      : {}),
     ...(typeof value.createdAt === 'string' ? { createdAt: value.createdAt } : {}),
     ...(typeof value.updatedAt === 'string' ? { updatedAt: value.updatedAt } : {}),
   };
@@ -948,6 +988,13 @@ function normalizeProviderJob(value: unknown): RunExecution['providerJob'] | und
           : {}),
         ...(typeof value.progress === 'number' ? { progress: value.progress } : {}),
       } satisfies RunExecution['providerJob']);
+}
+
+function normalizeCompleteProviderJob(value: unknown): ProviderJob | undefined {
+  const normalized = normalizeProviderJob(value);
+  if (!normalized) return undefined;
+  const parsed = providerJobSchema.safeParse(normalized);
+  return parsed.success ? parsed.data : undefined;
 }
 
 function normalizeRunOutput(
@@ -1156,14 +1203,24 @@ export class BullMqRunService implements RunService {
   private readonly queue: Queue<RunJobData>;
   private readonly providerName: RunProviderName;
   private readonly persistence?: Pick<PrismaRunPersistence, 'ensureRun'> &
-    Partial<Pick<PrismaRunPersistence, 'getRun' | 'listRunsByProject'>>;
+    Partial<
+      Pick<
+        PrismaRunPersistence,
+        'getRun' | 'listRunsByProject' | 'getRunByProviderJob' | 'updateRun' | 'upsertProviderJob'
+      >
+    >;
 
   constructor(options: {
     connection: ConnectionOptions;
     queueName?: string;
     providerName?: RunProviderName;
     persistence?: Pick<PrismaRunPersistence, 'ensureRun'> &
-      Partial<Pick<PrismaRunPersistence, 'getRun' | 'listRunsByProject'>>;
+      Partial<
+        Pick<
+          PrismaRunPersistence,
+          'getRun' | 'listRunsByProject' | 'getRunByProviderJob' | 'updateRun' | 'upsertProviderJob'
+        >
+      >;
   }) {
     this.queue = new Queue<RunJobData>(options.queueName ?? RUN_QUEUE_NAME, {
       connection: options.connection,
@@ -1249,6 +1306,27 @@ export class BullMqRunService implements RunService {
       }
       return updated;
     }
+    // BullMQ may remove a completed/failed job before a delayed provider
+    // webhook arrives. The provider job row is durable and remains the source
+    // of truth for matching the callback in that case.
+    const durable = await this.persistence?.getRunByProviderJob?.(
+      update.provider,
+      update.platformJobId,
+    );
+    if (durable) {
+      const updated = applyProviderWebhookToRecord(durable, update);
+      if (!updated?.providerJob) return undefined;
+      await this.persistence?.upsertProviderJob?.({
+        runId: updated.id,
+        providerJob: updated.providerJob,
+      });
+      await this.persistence?.updateRun?.({
+        runId: updated.id,
+        status: updated.status,
+        ...(updated.error ? { error: updated.error } : {}),
+      });
+      return updated;
+    }
     return undefined;
   }
 
@@ -1272,7 +1350,20 @@ export class BullMqRunService implements RunService {
 
   async cancel(runId: string): Promise<RunRecord> {
     const job = await this.queue.getJob(runId);
-    if (!job) throw new RunServiceError('not_found', 'run not found');
+    if (!job) {
+      const durable = await this.persistence?.getRun?.(runId);
+      if (!durable) throw new RunServiceError('not_found', 'run not found');
+      if (['succeeded', 'failed', 'cancelled'].includes(durable.status)) {
+        throw new RunServiceError('invalid_state', 'completed runs cannot be cancelled');
+      }
+      const updated = {
+        ...durable,
+        status: 'cancel_requested' as const,
+        updatedAt: new Date().toISOString(),
+      };
+      await this.persistence?.updateRun?.({ runId, status: updated.status });
+      return updated;
+    }
     const current = await this.toRunRecord(job);
     if (['succeeded', 'failed', 'cancelled'].includes(current.status)) {
       throw new RunServiceError('invalid_state', 'completed runs cannot be cancelled');
@@ -1409,15 +1500,24 @@ export class BullMqRunService implements RunService {
         status = 'failed';
         progress = 100;
         error = 'worker returned an invalid run result';
+      } else if (completed.data.status === 'succeeded' && !completed.data.result) {
+        // The worker contract requires a result for successful runs. A
+        // malformed envelope must not be exposed as a successful run.
+        status = 'failed';
+        progress = 100;
+        error = 'worker returned an invalid run result';
       } else {
+        const completedResult = completed.data.result;
         status = completed.data.status;
         progress = completed.data.progress;
-        result = completed.data.result;
+        if (completedResult) {
+          result = sanitizeRunResult(completedResult);
+        }
       }
     }
     if (state === 'failed') {
       status = 'failed';
-      error = job.failedReason || 'worker execution failed';
+      error = sanitizeRunErrorMessage(job.failedReason || 'worker execution failed');
     }
     if (data.cancelRequested && !['succeeded', 'failed', 'cancelled'].includes(status)) {
       status = 'cancel_requested';
@@ -1426,6 +1526,12 @@ export class BullMqRunService implements RunService {
     const updatedAt = progressResult?.updatedAt
       ? progressResult.updatedAt
       : new Date(job.finishedOn ?? job.processedOn ?? job.timestamp).toISOString();
+    // `RunRecord.providerJob` is the complete durable schema. Normalize the
+    // queue/result envelope through the complete parser before exposing it;
+    // `normalizeProviderJob` intentionally returns a partial executor shape.
+    const providerJob: ProviderJob | undefined = completed?.success
+      ? normalizeCompleteProviderJob(completed.data.providerJob)
+      : normalizeCompleteProviderJob(data.providerJob);
     return {
       id: data.runId,
       ...(data.userId ? { userId: data.userId } : {}),
@@ -1438,11 +1544,7 @@ export class BullMqRunService implements RunService {
       modelAlias: data.snapshot.modelAlias,
       snapshot: clone(data.snapshot),
       ...(result ? { result } : {}),
-      ...(completed?.success && completed.data.providerJob
-        ? { providerJob: completed.data.providerJob }
-        : data.providerJob
-          ? { providerJob: data.providerJob }
-          : {}),
+      ...(providerJob ? { providerJob } : {}),
       ...(data.idempotencyKey ? { idempotencyKey: data.idempotencyKey } : {}),
       ...(error ? { error } : {}),
       ...(data.retryOf ? { retryOf: data.retryOf } : {}),
@@ -1466,9 +1568,8 @@ function retryIdempotencyKey(runId: string, attempt: number): string {
   return `retry:${digest}:${attempt}`;
 }
 
-function snapshotFingerprint(snapshot: RunSnapshot): string {
-  const { submittedAt: _submittedAt, ...stableSnapshot } = snapshot;
-  return JSON.stringify(stableSnapshot);
+export function snapshotFingerprint(snapshot: RunSnapshot): string {
+  return createHash('sha256').update(runSnapshotFingerprintMaterial(snapshot)).digest('hex');
 }
 
 export function createIdempotentRunId(projectId: string, idempotencyKey: string): string {

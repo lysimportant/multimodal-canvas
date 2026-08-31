@@ -1,5 +1,7 @@
 import '@testing-library/jest-dom/vitest';
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -10,6 +12,9 @@ import {
 } from '../state/workspace-preferences';
 import type { ProjectSummary } from '../query/projects';
 import { WorkspacePage } from './WorkspacePage';
+
+const workspaceCss = readFileSync(resolve(process.cwd(), 'src/pages/workspace-page.css'), 'utf8');
+const normalizedWorkspaceCss = workspaceCss.replace(/\s+/g, ' ');
 
 const projects: ProjectSummary[] = [
   {
@@ -75,6 +80,8 @@ describe('WorkspacePage', () => {
       'href',
       '/projects/project-alpha',
     );
+    expect(screen.getByRole('link', { name: '品牌短片' })).toHaveClass('mc-workspace-project');
+    expect(screen.getByRole('link', { name: '品牌短片' }).querySelector('a, button')).toBeNull();
     expect(screen.getByText('project-alpha')).toBeVisible();
     expect(screen.getByText('归档概念稿')).toBeVisible();
     expect(screen.queryByRole('link', { name: '归档概念稿' })).not.toBeInTheDocument();
@@ -82,6 +89,29 @@ describe('WorkspacePage', () => {
       screen.getByText('已归档', { selector: '.mc-workspace-project-action span' }),
     ).toBeVisible();
     expect(document.querySelector('.mc-workspace-project.is-active')).toHaveTextContent('品牌短片');
+  });
+
+  it('keeps project cards content-driven and compact across their information rows', () => {
+    render(<WorkspacePage projects={projects} />);
+
+    const card = screen.getByRole('link', { name: '品牌短片' });
+
+    expect(normalizedWorkspaceCss).toMatch(
+      /\.mc-workspace-project \{[^}]*grid-template-columns: 36px minmax\(0, 1fr\) auto;[^}]*grid-template-rows: auto auto;[^}]*min-height: 0;/,
+    );
+    expect(normalizedWorkspaceCss).not.toMatch(
+      /\.mc-workspace-project \{[^}]*min-height: (?:202|218)px;/,
+    );
+    expect(normalizedWorkspaceCss).toMatch(
+      /@media \(max-width: 620px\)[\s\S]*?\.mc-workspace-project \{[^}]*gap: 10px 12px;[^}]*padding: 13px;/,
+    );
+    expect(card.children).toHaveLength(4);
+    expect(card.firstElementChild).toHaveClass('mc-workspace-project-index');
+    expect(card.querySelector('.mc-workspace-project-copy')).toHaveTextContent(
+      '品牌短片多模态工作流画布project-alpha',
+    );
+    expect(card.querySelector('.mc-workspace-project-meta')).toHaveTextContent('最近更新');
+    expect(card.querySelector('.mc-workspace-project-action')).toHaveTextContent('打开画布');
   });
 
   it('filters projects and delegates project selection without changing location when prevented', async () => {
@@ -105,9 +135,37 @@ describe('WorkspacePage', () => {
     expect(screen.queryByText('归档概念稿')).not.toBeInTheDocument();
     expect(screen.getByText('1 / 2 个项目')).toBeVisible();
 
-    fireEvent.click(screen.getByRole('link', { name: '品牌短片' }));
+    fireEvent.click(screen.getByText('最近更新'));
     expect(onSelectProject).toHaveBeenCalledWith(projects[0], expect.anything());
     expect(onNavigate).toHaveBeenCalledWith('/projects/project-alpha', expect.anything());
     expect(window.location.pathname).toBe('/workspace');
+
+    onSelectProject.mockClear();
+    onNavigate.mockClear();
+    screen.getByRole('link', { name: '品牌短片' }).focus();
+    await user.keyboard('{Enter}');
+    expect(onSelectProject).toHaveBeenCalledWith(projects[0], expect.anything());
+    expect(onNavigate).toHaveBeenCalledWith('/projects/project-alpha', expect.anything());
+  });
+
+  it('keeps a Chinese workspace-search draft across a stale parent render', () => {
+    const view = render(<WorkspacePage projects={projects} />);
+    const input = screen.getByRole('searchbox', { name: '搜索项目' });
+
+    fireEvent.compositionStart(input);
+    fireEvent.change(input, { target: { value: 'pin pai' } });
+    fireEvent.compositionUpdate(input, { target: { value: '品牌' } });
+    view.rerender(<WorkspacePage projects={projects} />);
+
+    expect(input).toHaveValue('品牌');
+    expect(screen.getByText('品牌短片')).toBeInTheDocument();
+    expect(screen.getByText('归档概念稿')).toBeInTheDocument();
+
+    fireEvent.compositionEnd(input, { target: { value: '品牌' } });
+    fireEvent.change(input, { target: { value: '品牌' } });
+
+    expect(screen.getByText('品牌短片')).toBeInTheDocument();
+    expect(screen.queryByText('归档概念稿')).not.toBeInTheDocument();
+    expect(screen.getByText('1 / 2 个项目')).toBeInTheDocument();
   });
 });

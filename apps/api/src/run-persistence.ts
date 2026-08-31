@@ -16,6 +16,15 @@ import { Prisma, PrismaClient, type RunStatus as PrismaRunStatus } from '@prisma
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const AMOUNT_PATTERN = /^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,6})?$/;
 const CURRENCY_PATTERN = /^[A-Z]{3}$/;
+const MAX_PERSISTED_PROVIDER_PAYLOAD_DEPTH = 4;
+const MAX_PERSISTED_PROVIDER_PAYLOAD_KEYS = 64;
+const MAX_PERSISTED_PROVIDER_PAYLOAD_ITEMS = 32;
+const MAX_PERSISTED_PROVIDER_PAYLOAD_STRING_LENGTH = 1_000;
+const MAX_PERSISTED_ERROR_LENGTH = 2_000;
+const REDACTED_PERSISTED_VALUE = '[REDACTED]';
+const SENSITIVE_PROVIDER_KEY =
+  /(?:authorization|proxy[-_ ]?authorization|x[-_ ]?api[-_ ]?key|api[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|token|secret|password|credential|cookie|session)/i;
+const URL_PROVIDER_KEY = /(?:url|uri|href|location|download)/i;
 
 export type RunPersistenceErrorCode =
   'invalid_uuid' | 'invalid_amount' | 'invalid_currency' | 'invalid_run';
@@ -97,6 +106,33 @@ export class PrismaRunPersistence {
     return row ? persistedRunToRecord(row, externalRunId) : undefined;
   }
 
+  /** Restore the run associated with a durable external provider task. */
+  async getRunByProviderJob(
+    provider: string,
+    platformJobId: string,
+  ): Promise<RunRecord | undefined> {
+    const normalizedProvider = provider.trim();
+    const normalizedPlatformJobId = platformJobId.trim();
+    if (!normalizedProvider || !normalizedPlatformJobId) return undefined;
+    const row = await this.prisma.providerJob.findUnique({
+      where: {
+        provider_platformJobId: {
+          provider: normalizedProvider,
+          platformJobId: normalizedPlatformJobId,
+        },
+      },
+      include: {
+        run: { include: { providerJobs: { orderBy: { updatedAt: 'desc' }, take: 1 } } },
+      },
+    });
+    if (!row || !isRecord(row) || !isRecord(row.run)) return undefined;
+    // A run may have one durable provider row per workflow node. The lookup
+    // above is scoped to the callback's exact platform identity, so preserve
+    // that row instead of letting persistedRunToRecord choose another (more
+    // recently updated) provider job from the same run.
+    return persistedRunToRecord({ ...row.run, providerJobs: [row] });
+  }
+
   /** List durable project history, including archived generation results. */
   async listRunsByProject(projectId: string): Promise<RunRecord[]> {
     const rows = await this.prisma.run.findMany({
@@ -131,6 +167,7 @@ export class PrismaRunPersistence {
     }
     const cost = input.cost === undefined ? undefined : normalizeAmount(input.cost);
     const costCurrency = input.costCurrency ? normalizeCurrency(input.costCurrency) : undefined;
+    const errorMessage = sanitizePersistedError(input.error);
 
     const inputRows = snapshot.inputs.map((runInput) => ({
       nodeId: runInput.nodeId,
@@ -155,7 +192,7 @@ export class PrismaRunPersistence {
       ...(costCurrency ? { costCurrency } : {}),
       ...(input.retryOf ? { retryOf: databaseRunId(input.retryOf) } : {}),
       ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
-      ...(input.error ? { error: { message: input.error } as Prisma.InputJsonValue } : {}),
+      ...(errorMessage ? { error: { message: errorMessage } as Prisma.InputJsonValue } : {}),
       ...(inputRows.length > 0 ? { inputs: { create: inputRows } } : {}),
     };
 
@@ -169,7 +206,7 @@ export class PrismaRunPersistence {
         ...(costCurrency ? { costCurrency } : {}),
         ...(input.retryOf ? { retryOf: databaseRunId(input.retryOf) } : {}),
         ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
-        ...(input.error ? { error: { message: input.error } as Prisma.InputJsonValue } : {}),
+        ...(errorMessage ? { error: { message: errorMessage } as Prisma.InputJsonValue } : {}),
       },
     });
   }
@@ -177,16 +214,18 @@ export class PrismaRunPersistence {
   async updateRun(input: UpdateRunPersistenceInput) {
     const runId = databaseRunId(input.runId);
     const status = toPrismaRunStatus(input.status);
-    const error = input.error
-      ? ({ message: input.error } as Prisma.InputJsonValue)
+    const errorMessage = sanitizePersistedError(input.error);
+    const error = errorMessage
+      ? ({ message: errorMessage } as Prisma.InputJsonValue)
       : input.status === 'failed'
         ? ({ message: 'run failed' } as Prisma.InputJsonValue)
         : undefined;
+    const result = input.result ? sanitizePersistedRunResult(input.result) : undefined;
     return this.prisma.run.update({
       where: { id: runId },
       data: {
         status,
-        ...(input.result ? { result: input.result as Prisma.InputJsonValue } : {}),
+        ...(result ? { result: result as Prisma.InputJsonValue } : {}),
         ...(error ? { error } : {}),
       },
     });
@@ -198,13 +237,14 @@ export class PrismaRunPersistence {
     const id = stableProviderJobId(providerJob.provider, providerJob.id);
     const createdAt = parseDate(providerJob.createdAt, 'createdAt');
     const updatedAt = parseDate(providerJob.updatedAt, 'updatedAt');
+    const payload = sanitizeProviderPayload(providerJob.payload);
     const data = {
       runId,
       provider: providerJob.provider,
       ...(providerJob.platformJobId ? { platformJobId: providerJob.platformJobId } : {}),
       status: providerJob.status,
       progress: providerJob.progress,
-      ...(providerJob.payload ? { payload: providerJob.payload as Prisma.InputJsonValue } : {}),
+      ...(payload ? { payload: payload as Prisma.InputJsonValue } : {}),
       createdAt,
       updatedAt,
     };
@@ -293,7 +333,7 @@ function persistedRunToRecord(row: unknown, externalRunId?: string): RunRecord |
   if (!snapshot.success) return undefined;
   const status = persistedRunStatus(row.status);
   if (!status) return undefined;
-  const result = row.result == null ? undefined : runResultSchema.safeParse(row.result);
+  const result = row.result == null ? undefined : sanitizePersistedRunResult(row.result);
   const providerJobRow = Array.isArray(row.providerJobs) ? row.providerJobs[0] : undefined;
   const providerJob = persistedProviderJob(providerJobRow);
   const createdAt = toIsoDate(row.createdAt);
@@ -309,11 +349,10 @@ function persistedRunToRecord(row: unknown, externalRunId?: string): RunRecord |
     status,
     progress,
     attempt: row.attempt,
-    provider:
-      providerJob?.provider ?? (result?.success ? result.data.provider : undefined) ?? 'mock',
+    provider: providerJob?.provider ?? result?.provider ?? 'mock',
     modelAlias: snapshot.data.modelAlias,
     snapshot: snapshot.data,
-    ...(result?.success ? { result: result.data } : {}),
+    ...(result ? { result } : {}),
     ...(providerJob ? { providerJob } : {}),
     ...(typeof row.idempotencyKey === 'string' && row.idempotencyKey
       ? { idempotencyKey: row.idempotencyKey }
@@ -338,11 +377,26 @@ function persistedProviderJob(value: unknown): ProviderJob | undefined {
     status: value.status,
     progress: value.progress,
     ...(typeof value.platformJobId === 'string' ? { platformJobId: value.platformJobId } : {}),
-    ...(isRecord(value.payload) ? { payload: value.payload } : {}),
+    ...(isRecord(value.payload)
+      ? (() => {
+          const payload = sanitizeProviderPayload(value.payload);
+          return payload ? { payload } : {};
+        })()
+      : {}),
     createdAt,
     updatedAt,
   });
   return parsed.success ? parsed.data : undefined;
+}
+
+function sanitizePersistedRunResult(value: unknown): RunResult | undefined {
+  const parsed = runResultSchema.safeParse(value);
+  if (!parsed.success) return undefined;
+  const providerJob = persistedProviderJob(parsed.data.providerJob);
+  return runResultSchema.parse({
+    ...parsed.data,
+    ...(providerJob ? { providerJob } : { providerJob: undefined }),
+  });
 }
 
 function persistedRunStatus(value: unknown): RunStatus | undefined {
@@ -364,9 +418,103 @@ function persistedRunStatus(value: unknown): RunStatus | undefined {
 }
 
 function persistedError(value: unknown): string | undefined {
-  if (typeof value === 'string' && value.trim()) return value;
+  if (typeof value === 'string') return sanitizePersistedError(value);
   if (!isRecord(value)) return undefined;
-  return typeof value.message === 'string' && value.message.trim() ? value.message : undefined;
+  return sanitizePersistedError(value.message);
+}
+
+/**
+ * Provider responses are untrusted input. Keep only bounded diagnostics and
+ * drop fields that commonly contain credentials, signed URLs, or binary data.
+ * This is intentionally repeated on restore so legacy rows cannot bypass the
+ * persistence boundary.
+ */
+function sanitizeProviderPayload(
+  value: unknown,
+  depth = 0,
+  seen = new WeakSet<object>(),
+): Record<string, unknown> | undefined {
+  if (!isRecord(value) || depth > MAX_PERSISTED_PROVIDER_PAYLOAD_DEPTH) return undefined;
+  if (seen.has(value)) return undefined;
+  seen.add(value);
+  try {
+    const output: Record<string, unknown> = {};
+    for (const [key, raw] of Object.entries(value).slice(0, MAX_PERSISTED_PROVIDER_PAYLOAD_KEYS)) {
+      if (SENSITIVE_PROVIDER_KEY.test(key) || URL_PROVIDER_KEY.test(key)) continue;
+      const sanitized = sanitizeProviderPayloadValue(raw, depth + 1, seen);
+      if (sanitized !== undefined) output[key] = sanitized;
+    }
+    return Object.keys(output).length > 0 ? output : undefined;
+  } finally {
+    seen.delete(value);
+  }
+}
+
+function sanitizeProviderPayloadValue(
+  value: unknown,
+  depth: number,
+  seen: WeakSet<object>,
+): unknown {
+  if (depth > MAX_PERSISTED_PROVIDER_PAYLOAD_DEPTH) return undefined;
+  if (typeof value === 'string') {
+    const normalized = value.trim();
+    if (!normalized || /^data:[^,]+,/i.test(normalized)) return undefined;
+    const sanitized = sanitizePersistedError(normalized);
+    return sanitized?.slice(0, MAX_PERSISTED_PROVIDER_PAYLOAD_STRING_LENGTH);
+  }
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (typeof value === 'boolean') return value;
+  if (Array.isArray(value)) {
+    const items = value
+      .slice(0, MAX_PERSISTED_PROVIDER_PAYLOAD_ITEMS)
+      .map((item) => sanitizeProviderPayloadValue(item, depth + 1, seen))
+      .filter((item): item is string | number | boolean | Record<string, unknown> => {
+        return item !== undefined;
+      });
+    return items.length > 0 ? items : undefined;
+  }
+  if (isRecord(value)) return sanitizeProviderPayload(value, depth, seen);
+  return undefined;
+}
+
+function sanitizePersistedError(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  let message = value.trim();
+  if (!message) return undefined;
+
+  message = redactPersistedUrlQueryAndFragment(message)
+    .replace(
+      /(\b(?:authorization|proxy[-_ ]?authorization|x[-_ ]?api[-_ ]?key|api[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|token|secret|password|credential)\b\s*[=:]\s*["']?)(?:Bearer\s+|Basic\s+|Token\s+)?[^\s,;}\]"']+/gi,
+      `$1${REDACTED_PERSISTED_VALUE}`,
+    )
+    .replace(/\b(?:Bearer|Basic|Token)\s+[^\s,;}\]"']+/gi, (prefix) => {
+      const scheme = prefix.split(/\s+/, 1)[0] ?? 'Bearer';
+      return `${scheme} ${REDACTED_PERSISTED_VALUE}`;
+    })
+    .replace(/\bsk[-_][A-Za-z0-9._-]{6,}\b/gi, REDACTED_PERSISTED_VALUE)
+    .replace(/\beyJ[A-Za-z0-9_-]{20,}\b/g, REDACTED_PERSISTED_VALUE)
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!message) return undefined;
+  if (message.length <= MAX_PERSISTED_ERROR_LENGTH) return message;
+  const suffix = '... [truncated]';
+  return `${message.slice(0, MAX_PERSISTED_ERROR_LENGTH - suffix.length)}${suffix}`;
+}
+
+function redactPersistedUrlQueryAndFragment(message: string): string {
+  return message.replace(/\bhttps?:\/\/[^\s<>"']+/gi, (rawUrl) => {
+    try {
+      const parsed = new URL(rawUrl);
+      parsed.search = '';
+      parsed.hash = '';
+      return parsed.toString();
+    } catch {
+      const queryIndex = rawUrl.search(/[?#]/);
+      return queryIndex >= 0 ? rawUrl.slice(0, queryIndex) : rawUrl;
+    }
+  });
 }
 
 function isTerminalRunStatus(status: RunStatus): boolean {

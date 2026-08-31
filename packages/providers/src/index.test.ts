@@ -79,6 +79,33 @@ function providerInput(id: string, role: PortRole, sortOrder: number): RunInputS
   };
 }
 
+function syntheticApiKey(label: string): string {
+  return `${['s', 'k'].join('')}-test-${label}-123456`;
+}
+
+function providerInputWithMediaType(
+  id: string,
+  role: PortRole,
+  sortOrder: number,
+  mediaType: MediaType,
+): RunInputSnapshot {
+  const input = providerInput(id, role, sortOrder);
+  return {
+    ...input,
+    snapshot: {
+      ...input.snapshot,
+      type: mediaType,
+      data: {
+        ...input.snapshot.data,
+        mediaType,
+        ...(mediaType === 'text'
+          ? { prompt: `${role} value`, contentUrl: undefined }
+          : { prompt: undefined, contentUrl: `https://assets.example/${id}.${mediaType}` }),
+      },
+    },
+  };
+}
+
 function standardSnapshot(mediaType: StandardMediaType): RunSnapshot {
   const targetNodeId = `node_${mediaType}`;
   return {
@@ -256,6 +283,85 @@ describe('NewApiProvider', () => {
     });
     expect(result.usage?.amount).toBeUndefined();
     expect(result.usage?.currency).toBeUndefined();
+  });
+
+  it('parses the explicit Responses output_text envelope', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ output_text: 'Responses text' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const result = await new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    }).execute({ snapshot: textSnapshot() });
+    expect(result.output).toMatchObject({ kind: 'text', text: 'Responses text' });
+  });
+
+  it('parses only typed output_text parts from a Responses output array', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          output: [
+            { type: 'reasoning', summary: [{ text: 'internal' }] },
+            {
+              type: 'message',
+              content: [
+                { type: 'output_text', text: 'Visible ' },
+                { type: 'refusal', text: 'no' },
+              ],
+            },
+            { type: 'output_text', text: 'text' },
+          ],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    const result = await new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    }).execute({ snapshot: textSnapshot() });
+    expect(result.output).toMatchObject({ kind: 'text', text: 'Visible text' });
+  });
+
+  it('keeps choices as the canonical envelope when other output fields exist', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: 'Canonical text' } }],
+          output_text: 'Fallback text',
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    const result = await new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    }).execute({ snapshot: textSnapshot() });
+    expect(result.output).toMatchObject({ kind: 'text', text: 'Canonical text' });
+  });
+
+  it('rejects reasoning-only Responses output', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({ output: [{ type: 'reasoning', summary: [{ text: 'internal' }] }] }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        },
+      ),
+    );
+    await expect(
+      new NewApiProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+      }).execute({ snapshot: textSnapshot() }),
+    ).rejects.toMatchObject({ name: 'NewApiProviderError', message: 'New API 文本响应内容为空' });
   });
 
   it('maps the node thinking mode to reasoning_effort for text models', async () => {
@@ -558,6 +664,90 @@ describe('NewApiProvider', () => {
         retryable: false,
         message: `New API ${mediaType} 不支持该输入角色：${role}`,
       });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { targetMediaType: 'image', sourceMediaType: 'image', role: 'style' },
+    { targetMediaType: 'image', sourceMediaType: 'video', role: 'content' },
+  ] as const)(
+    'rejects $sourceMediaType input to unsupported $targetMediaType role $role before sending',
+    async ({ targetMediaType, sourceMediaType, role }) => {
+      const fetchImpl = vi.fn<typeof fetch>();
+      const provider = new NewApiProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+      });
+
+      await expect(
+        provider.execute({
+          snapshot: {
+            ...standardSnapshot(targetMediaType),
+            inputs: [providerInputWithMediaType('node_input', role, 0, sourceMediaType)],
+          },
+        }),
+      ).rejects.toMatchObject({
+        code: 'UNSUPPORTED_INPUT_ROLE',
+        retryable: false,
+        message: `New API ${targetMediaType} 不支持该输入角色：${role}`,
+      });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['image', 'audio', 'video'] as const)(
+    'rejects $sourceMediaType content when text mapping requires text input',
+    async (sourceMediaType) => {
+      const fetchImpl = vi.fn<typeof fetch>();
+      const provider = new NewApiProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+      });
+
+      await expect(
+        provider.execute({
+          snapshot: {
+            ...standardSnapshot('text'),
+            inputs: [providerInputWithMediaType('node_input', 'content', 0, sourceMediaType)],
+          },
+        }),
+      ).rejects.toMatchObject({
+        code: 'UNSUPPORTED_INPUT_ROLE',
+        retryable: false,
+        message: `New API text 不支持该输入角色：content（上游媒体类型 ${sourceMediaType} 无法映射为文字）`,
+      });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['text', 'image', 'audio'] as const)(
+    'rejects role-shaped parameters for $mediaType before sending a generation request',
+    async (mediaType) => {
+      const fetchImpl = vi.fn<typeof fetch>();
+      const provider = new NewApiProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+      });
+
+      for (const role of allPortRoles) {
+        if (role === 'prompt') continue;
+        await expect(
+          provider.execute({
+            snapshot: {
+              ...standardSnapshot(mediaType),
+              parameters: { [role]: `${role} parameter` },
+            },
+          }),
+        ).rejects.toMatchObject({
+          code: 'UNSUPPORTED_INPUT_ROLE',
+          retryable: false,
+          message: `New API ${mediaType} 不支持该输入角色：${role}`,
+        });
+      }
       expect(fetchImpl).not.toHaveBeenCalled();
     },
   );
@@ -924,6 +1114,35 @@ describe('NewApiProvider', () => {
     });
   });
 
+  it('returns an audio URL from a JSON media response without fabricating bytes', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ url: 'https://cdn.example/speech.ogg' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const provider = new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    });
+
+    const result = await provider.execute({
+      snapshot: {
+        ...standardSnapshot('audio'),
+        parameters: {},
+      },
+    });
+
+    expect(result.output).toEqual({
+      mediaType: 'audio',
+      kind: 'url',
+      url: 'https://cdn.example/speech.ogg',
+      mimeType: 'audio/ogg',
+      format: 'ogg',
+    });
+  });
+
   it('rejects a successful response that has no generated content', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ choices: [] }), {
@@ -1222,6 +1441,178 @@ describe('NewApiProvider', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  it('redacts the configured API key from an upstream error and preserves diagnostics', async () => {
+    const apiKey = syntheticApiKey('configured-value');
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: {
+            message: `upstream echoed API key: ${apiKey}`,
+            code: 'rate_limit',
+          },
+        }),
+        {
+          status: 429,
+          headers: { 'content-type': 'application/json', 'x-request-id': 'req-redacted-key' },
+        },
+      ),
+    );
+    const provider = new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey,
+      fetchImpl,
+    });
+
+    const error = await provider
+      .execute({ snapshot: textSnapshot() })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(NewApiProviderError);
+    expect(error).toMatchObject({
+      status: 429,
+      code: 'rate_limit',
+      requestId: 'req-redacted-key',
+      retryable: true,
+    });
+    expect((error as NewApiProviderError).message).toContain('[REDACTED]');
+    expect((error as NewApiProviderError).message).not.toContain(apiKey);
+  });
+
+  it('redacts Authorization values from an upstream error', async () => {
+    const authorizationValue = 'synthetic-authorization-value-123456';
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: {
+            message: `Authorization: Bearer ${authorizationValue}`,
+            code: 'invalid_auth',
+            request_id: 'req-invalid-auth',
+          },
+        }),
+        { status: 401, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    const provider = new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'synthetic-provider-key',
+      fetchImpl,
+    });
+
+    const error = await provider
+      .execute({ snapshot: textSnapshot() })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      status: 401,
+      code: 'invalid_auth',
+      requestId: 'req-invalid-auth',
+      retryable: false,
+    });
+    expect((error as NewApiProviderError).message).toContain('Authorization: [REDACTED]');
+    expect((error as NewApiProviderError).message).not.toContain(authorizationValue);
+  });
+
+  it('removes URL query parameters and fragments from transport errors', async () => {
+    const apiKey = 'synthetic-transport-provider-key';
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockRejectedValue(
+        new Error(
+          `GET https://newapi.example.com/v1/models?api_key=query-secret&tenant=alpha#trace failed with ${apiKey}`,
+        ),
+      );
+    const provider = new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey,
+      fetchImpl,
+    });
+
+    const error = await provider
+      .execute({ snapshot: textSnapshot() })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({ code: 'NETWORK_ERROR', retryable: true });
+    expect((error as NewApiProviderError).message).toBe(
+      'GET https://newapi.example.com/v1/models failed with [REDACTED]',
+    );
+    expect((error as NewApiProviderError).message).not.toContain('query-secret');
+    expect((error as NewApiProviderError).message).not.toContain('tenant=alpha');
+    expect((error as NewApiProviderError).message).not.toContain(apiKey);
+  });
+
+  it('bounds an oversized upstream error without losing its structured classification', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: { message: `upstream body: ${'x'.repeat(2_000)}`, code: 'overloaded' },
+        }),
+        {
+          status: 503,
+          headers: { 'content-type': 'application/json', 'x-request-id': 'req-overloaded' },
+        },
+      ),
+    );
+    const provider = new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'synthetic-provider-key',
+      fetchImpl,
+    });
+
+    const error = await provider
+      .execute({ snapshot: textSnapshot() })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(NewApiProviderError);
+    expect(error).toMatchObject({
+      status: 503,
+      code: 'overloaded',
+      requestId: 'req-overloaded',
+      retryable: true,
+    });
+    expect((error as NewApiProviderError).message).toHaveLength(512);
+    expect((error as NewApiProviderError).message).toMatch(/\.\.\. \[truncated\]$/);
+  });
+
+  it('sanitizes structured standard diagnostics from body and response headers', async () => {
+    const apiKey = 'synthetic-standard-provider-key-123456';
+    const authorizationValue = 'synthetic-standard-authorization-123456';
+    const rawCode = `rate_limit Authorization: Bearer ${authorizationValue}; key=${apiKey}; https://newapi.example.com/debug?token=query-secret&tenant=alpha#trace \u0007${'x'.repeat(800)}`;
+    const rawRequestId = `req-standard Authorization: Bearer ${authorizationValue}; key=${apiKey}; https://newapi.example.com/trace?token=query-secret&tenant=alpha#trace \u0000${'y'.repeat(800)}`;
+    const response = new Response(
+      JSON.stringify({ error: { message: 'temporarily overloaded', code: rawCode } }),
+      { status: 429, headers: { 'content-type': 'application/json' } },
+    );
+    const getHeader = response.headers.get.bind(response.headers);
+    vi.spyOn(response.headers, 'get').mockImplementation((name) =>
+      name === 'x-request-id' ? rawRequestId : getHeader(name),
+    );
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(response);
+    const provider = new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey,
+      fetchImpl,
+    });
+
+    const caught = await provider
+      .execute({ snapshot: textSnapshot() })
+      .catch((error: unknown) => error);
+
+    expect(caught).toBeInstanceOf(NewApiProviderError);
+    const error = caught as NewApiProviderError;
+    expect(error).toMatchObject({ status: 429, retryable: true });
+    expect(error.code).toContain('rate_limit');
+    expect(error.requestId).toContain('req-standard');
+    for (const diagnostic of [error.code, error.requestId]) {
+      expect(diagnostic).toBeDefined();
+      expect(diagnostic).not.toMatch(/[\u0000-\u001f\u007f]/);
+      expect(diagnostic?.length).toBeLessThanOrEqual(512);
+      expect(diagnostic).toMatch(/\.\.\. \[truncated\]$/);
+      for (const secret of [apiKey, authorizationValue, 'query-secret', 'tenant=alpha']) {
+        expect(diagnostic).not.toContain(secret);
+      }
+    }
+  });
+
   it('reports aborts as timeouts with a stable diagnostic code', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
@@ -1326,6 +1717,108 @@ describe('NewApiVideoProvider', () => {
         }),
     ).toThrow('必须使用 HTTPS');
     vi.unstubAllEnvs();
+  });
+
+  it('uses the common base URL for the standard video endpoint', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: 'prefixed-video',
+          status: 'failed',
+          error: { message: 'No eligible media account' },
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        },
+      ),
+    );
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+      pollIntervalMs: 0,
+    });
+    const snapshot = videoSnapshot();
+    snapshot.inputs = [];
+
+    await expect(provider.execute({ snapshot })).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_FAILED',
+      platformJobId: 'prefixed-video',
+      retryable: false,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://newapi.example.com/v1/videos/generations',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('sends standard video parameters by default', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ request_id: 'minimal-video' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ status: 'done', video: { url: 'https://cdn.example/minimal.mp4' } }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        ),
+      );
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+      pollIntervalMs: 0,
+      maxPollAttempts: 1,
+    });
+    const snapshot = videoSnapshot();
+    snapshot.inputs = [];
+
+    await provider.execute({ snapshot });
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      'https://newapi.example.com/v1/videos/generations',
+      expect.objectContaining({
+        body: JSON.stringify({
+          model: 'grok-imagine-video-1.5',
+          prompt: 'Animate the scene',
+          duration: 8,
+          resolution: '720p',
+          aspect_ratio: '16:9',
+        }),
+      }),
+    );
+  });
+
+  it('requires an explicit prompt instead of using the node label', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+      pollIntervalMs: 0,
+    });
+    const snapshot = videoSnapshot();
+    const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
+    if (!target) throw new Error('video target fixture is missing');
+    target.data = { ...target.data, prompt: undefined };
+    snapshot.inputs = [];
+
+    await expect(provider.execute({ snapshot })).rejects.toMatchObject({
+      code: 'VIDEO_PROMPT_REQUIRED',
+      retryable: false,
+      message: 'New API video 需要 prompt',
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('submits once, polls to done, and returns an external video URL', async () => {
@@ -1514,6 +2007,30 @@ describe('NewApiVideoProvider', () => {
     );
   });
 
+  it('rejects a non-image first frame before creating a video task', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+      pollIntervalMs: 0,
+    });
+    const snapshot = videoSnapshot();
+    snapshot.inputs[0] = providerInputWithMediaType(
+      'node_text_first_frame',
+      'firstFrame',
+      0,
+      'text',
+    );
+
+    await expect(provider.execute({ snapshot })).rejects.toMatchObject({
+      code: 'UNSUPPORTED_INPUT_ROLE',
+      retryable: false,
+      message: 'New API video 不支持该输入角色：firstFrame（上游媒体类型 text 无法映射为图片）',
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('sends one idempotent video POST and forbids automatic retry when submission is ambiguous', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
       new Response(JSON.stringify({ error: { message: 'temporarily unavailable' } }), {
@@ -1549,6 +2066,42 @@ describe('NewApiVideoProvider', () => {
     );
   });
 
+  it('surfaces an immediately failed creation response without persisting or polling it', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: 'failed-at-create',
+          status: 'failed',
+          error: { message: 'No eligible media account', code: 'media_account_unavailable' },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    const onProviderJob = vi.fn();
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+      pollIntervalMs: 0,
+    });
+
+    await expect(
+      provider.execute({ snapshot: videoSnapshot(), onProviderJob }),
+    ).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_FAILED',
+      platformJobId: 'failed-at-create',
+      retryable: false,
+      message: 'No eligible media account',
+      providerPayload: {
+        contract: 'newapi-video-v1',
+        phase: 'failed',
+        providerStatus: 'failed',
+      },
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(onProviderJob).not.toHaveBeenCalled();
+  });
+
   it.each(unsupportedVideoInputRoles)(
     'rejects unsupported video role %s before creating or resuming a paid task',
     async (role) => {
@@ -1580,6 +2133,59 @@ describe('NewApiVideoProvider', () => {
       expect(fetchImpl).not.toHaveBeenCalled();
     },
   );
+
+  it('rejects role-shaped video parameters before creating or resuming a paid task', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+      pollIntervalMs: 0,
+    });
+
+    for (const role of allPortRoles) {
+      if (role === 'prompt') continue;
+      const snapshot = videoSnapshot();
+      snapshot.parameters = { ...snapshot.parameters, [role]: `${role} parameter` };
+
+      await expect(
+        provider.execute({
+          snapshot,
+          providerJob: {
+            provider: 'newapi',
+            platformJobId: 'must-not-resume',
+            status: 'submitted',
+            progress: 10,
+          },
+        }),
+      ).rejects.toMatchObject({
+        code: 'UNSUPPORTED_INPUT_ROLE',
+        retryable: false,
+        message: `New API video 不支持该输入角色：${role}`,
+      });
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('rejects an audio input mapped to video audioTrack before creating a paid task', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+      pollIntervalMs: 0,
+    });
+
+    const snapshot = videoSnapshot();
+    snapshot.inputs.push(providerInputWithMediaType('node_audio_track', 'audioTrack', 1, 'audio'));
+
+    await expect(provider.execute({ snapshot })).rejects.toMatchObject({
+      code: 'UNSUPPORTED_INPUT_ROLE',
+      retryable: false,
+      message: 'New API video 不支持该输入角色：audioTrack',
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 
   it.each(['prompt', 'firstFrame'] as const)(
     'rejects multiple video %s inputs instead of dropping their order',
@@ -1654,45 +2260,49 @@ describe('NewApiVideoProvider', () => {
     });
   });
 
-  it('keeps custom creation and task paths independent', async () => {
+  it('resolves a relative authenticated content URL against the New API base path', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ request_id: 'custom-video' }), {
+        new Response(JSON.stringify({ request_id: 'relative-video' }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         }),
       )
       .mockResolvedValueOnce(
         new Response(
-          JSON.stringify({ status: 'done', video: { url: 'https://cdn.example/custom.mp4' } }),
-          {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          },
+          JSON.stringify({
+            status: 'done',
+            video: { url: '/v1/videos/relative-video/content' },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
         ),
+      )
+      .mockResolvedValueOnce(
+        new Response(new Uint8Array([4, 5, 6]), {
+          status: 200,
+          headers: { 'content-type': 'video/mp4', 'content-length': '3' },
+        }),
       );
     const provider = new NewApiVideoProvider({
       baseUrl: 'https://newapi.example.com/v1',
       apiKey: 'server-secret',
-      videoCreatePath: '/videos/generations',
-      videoJobsPath: '/video-tasks',
       fetchImpl,
       pollIntervalMs: 0,
       maxPollAttempts: 1,
     });
+    const snapshot = videoSnapshot();
+    snapshot.inputs = [];
 
-    await provider.execute({ snapshot: videoSnapshot() });
+    await provider.execute({ snapshot });
 
     expect(fetchImpl).toHaveBeenNthCalledWith(
-      1,
-      'https://newapi.example.com/v1/videos/generations',
-      expect.objectContaining({ method: 'POST' }),
-    );
-    expect(fetchImpl).toHaveBeenNthCalledWith(
-      2,
-      'https://newapi.example.com/v1/video-tasks/custom-video',
-      expect.objectContaining({ method: 'GET' }),
+      3,
+      'https://newapi.example.com/v1/videos/relative-video/content',
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({ authorization: 'Bearer server-secret' }),
+      }),
     );
   });
 
@@ -1785,6 +2395,91 @@ describe('NewApiVideoProvider', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  it('sanitizes video HTTP errors without changing failure metadata', async () => {
+    const apiKey = syntheticApiKey('video-value');
+    const authorizationValue = 'synthetic-video-authorization-123456';
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: {
+            message: `Authorization: Bearer ${authorizationValue}; key=${apiKey}; see https://newapi.example.com/debug?token=query-secret`,
+            code: 'video_auth_failed',
+            request_id: 'req-video-auth',
+          },
+        }),
+        { status: 401, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey,
+      fetchImpl,
+      pollIntervalMs: 0,
+    });
+
+    const error = await provider
+      .execute({ snapshot: videoSnapshot() })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(NewApiProviderError);
+    expect(error).toMatchObject({
+      status: 401,
+      code: 'video_auth_failed',
+      requestId: 'req-video-auth',
+      retryable: false,
+    });
+    expect((error as NewApiProviderError).message).not.toContain(apiKey);
+    expect((error as NewApiProviderError).message).not.toContain(authorizationValue);
+    expect((error as NewApiProviderError).message).not.toContain('query-secret');
+    expect((error as NewApiProviderError).message).toContain('https://newapi.example.com/debug');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('sanitizes structured video error diagnostics without changing retry behavior', async () => {
+    const apiKey = 'synthetic-video-provider-key-123456';
+    const authorizationValue = 'synthetic-video-authorization-123456';
+    const rawCode = `video_auth_failed Authorization: Bearer ${authorizationValue}; key=${apiKey}; https://newapi.example.com/debug?token=query-secret&tenant=alpha#trace \u0007${'x'.repeat(800)}`;
+    const rawRequestId = `req-video Authorization: Bearer ${authorizationValue}; key=${apiKey}; https://newapi.example.com/trace?token=query-secret&tenant=alpha#trace \u0000${'y'.repeat(800)}`;
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: {
+            message: 'video authentication failed',
+            code: rawCode,
+            request_id: rawRequestId,
+          },
+        }),
+        { status: 401, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey,
+      fetchImpl,
+      pollIntervalMs: 0,
+    });
+
+    const caught = await provider
+      .execute({ snapshot: videoSnapshot() })
+      .catch((error: unknown) => error);
+
+    expect(caught).toBeInstanceOf(NewApiProviderError);
+    const error = caught as NewApiProviderError;
+    expect(error).toMatchObject({ status: 401, retryable: false });
+    expect(error.code).toContain('video_auth_failed');
+    expect(error.requestId).toContain('req-video');
+    for (const diagnostic of [error.code, error.requestId]) {
+      expect(diagnostic).toBeDefined();
+      expect(diagnostic).not.toMatch(/[\u0000-\u001f\u007f]/);
+      expect(diagnostic?.length).toBeLessThanOrEqual(512);
+      expect(diagnostic).toMatch(/\.\.\. \[truncated\]$/);
+      for (const secret of [apiKey, authorizationValue, 'query-secret', 'tenant=alpha']) {
+        expect(diagnostic).not.toContain(secret);
+      }
+    }
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it('marks an ambiguous creation transport failure non-retryable', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
@@ -1800,6 +2495,36 @@ describe('NewApiVideoProvider', () => {
       code: 'VIDEO_SUBMISSION_UNKNOWN',
       retryable: false,
     });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not expose a raw response-body read error after video submission', async () => {
+    const apiKey = syntheticApiKey('video-read-value');
+    const response = new Response(null, {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+    vi.spyOn(response, 'arrayBuffer').mockRejectedValue(
+      new Error(`response stream failed with ${apiKey}`),
+    );
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(response);
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey,
+      fetchImpl,
+      pollIntervalMs: 0,
+    });
+
+    const error = await provider
+      .execute({ snapshot: videoSnapshot() })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(NewApiProviderError);
+    expect(error).toMatchObject({ code: 'VIDEO_SUBMISSION_UNKNOWN', retryable: false });
+    expect((error as NewApiProviderError).message).toBe(
+      'New API 视频创建结果未知，请先核对平台任务状态',
+    );
+    expect((error as NewApiProviderError).message).not.toContain(apiKey);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
@@ -1883,5 +2608,27 @@ describe('NewApiVideoProvider', () => {
         payload: expect.objectContaining({ phase: 'resumed' }),
       }),
     );
+  });
+
+  it('bounds and sanitizes structured provider payloads on errors', () => {
+    const error = new NewApiProviderError('provider failed', {
+      providerPayload: {
+        phase: 'failed',
+        authorization: 'Bearer provider-secret',
+        outputUrl: 'https://cdn.example.com/output.mp4?signature=secret',
+        nested: { token: 'nested-secret', safe: 'kept' },
+        long: 'x'.repeat(2_000),
+      },
+    });
+
+    expect(error.providerPayload).toMatchObject({
+      phase: 'failed',
+      nested: { safe: 'kept' },
+    });
+    expect(error.providerPayload).not.toHaveProperty('authorization');
+    expect(error.providerPayload).not.toHaveProperty('outputUrl');
+    expect(JSON.stringify(error.providerPayload)).not.toContain('provider-secret');
+    expect(JSON.stringify(error.providerPayload)).not.toContain('signature=secret');
+    expect(error.providerPayload?.long).toHaveLength(512);
   });
 });

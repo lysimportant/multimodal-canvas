@@ -27,7 +27,7 @@ export const mediaIcons: Record<MediaType, typeof FileText> = {
 
 export type AssetFilter = 'all' | MediaType;
 
-export type ModelDefaults = Partial<Record<MediaType, string>>;
+export type ModelDefaults = Partial<Record<MediaType, string | ModelSelection>>;
 
 export type AiSettings = {
   baseUrl: string;
@@ -36,7 +36,18 @@ export type AiSettings = {
   defaultModels: ModelDefaults;
 };
 
-export type ModelEntry = { id: string; name: string; mediaTypes: MediaType[] };
+export type ModelEntry = {
+  id: string;
+  name: string;
+  mediaTypes: MediaType[];
+  credentialId?: string;
+  credentialLabel?: string;
+};
+
+export type ModelSelection = {
+  modelAlias: string;
+  credentialId?: string;
+};
 
 export type CanvasBackground = 'dots' | 'lines' | 'cross' | 'blank';
 

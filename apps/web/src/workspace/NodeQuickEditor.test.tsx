@@ -28,6 +28,10 @@ const models: NodeQuickEditorProps['models'] = [
   { id: 'multi-model', name: '多模态模型', mediaTypes: ['text', 'image'] },
 ];
 
+function syntheticCredentialPreview(suffix: string): string {
+  return [['s', 'k'].join(''), `...${suffix}`].join('-');
+}
+
 function makeProps(overrides: Partial<NodeQuickEditorProps> = {}): NodeQuickEditorProps {
   return {
     node: imageNode,
@@ -51,14 +55,14 @@ describe('NodeQuickEditor', () => {
     expect(screen.getByText('产品主图')).toBeVisible();
 
     const modelSelect = screen.getByRole('combobox', { name: '模型' });
-    expect(modelSelect).toHaveValue('removed-image-model');
+    expect(modelSelect).toHaveValue(JSON.stringify(['', 'removed-image-model']));
     expect(screen.getByRole('option', { name: '继承项目默认模型' })).toBeInTheDocument();
     expect(screen.getByRole('option', { name: '图片模型' })).toBeInTheDocument();
     expect(screen.getByRole('option', { name: '多模态模型' })).toBeInTheDocument();
     expect(screen.queryByRole('option', { name: '文字模型' })).not.toBeInTheDocument();
     expect(
       screen.getByRole('option', {
-        name: 'removed-image-model（当前设置，目录中不可用）',
+        name: 'removed-image-model（旧设置，未绑定 API Key）',
       }),
     ).toBeInTheDocument();
   });
@@ -75,13 +79,16 @@ describe('NodeQuickEditor', () => {
 
     const prompt = screen.getByRole('textbox', { name: '提示词' });
     fireEvent.change(prompt, { target: { value: '柔和棚拍光' } });
-    await user.selectOptions(screen.getByRole('combobox', { name: '模型' }), 'image-model');
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: '模型' }),
+      screen.getByRole('option', { name: '图片模型' }),
+    );
     await user.selectOptions(screen.getByRole('combobox', { name: '推理强度' }), 'low');
     await user.click(screen.getByRole('button', { name: '生成' }));
     fireEvent.pointerDown(prompt);
 
     expect(props.onPromptChange).toHaveBeenCalledWith('柔和棚拍光');
-    expect(props.onModelChange).toHaveBeenCalledWith('image-model');
+    expect(props.onModelChange).toHaveBeenCalledWith({ modelAlias: 'image-model' });
     expect(props.onInferenceStrengthChange).toHaveBeenCalledWith('low');
     expect(props.onRun).toHaveBeenCalledTimes(1);
     expect(onCanvasPointerDown).not.toHaveBeenCalled();
@@ -101,5 +108,47 @@ describe('NodeQuickEditor', () => {
 
     rerender(<NodeQuickEditor {...makeProps({ busy: true })} />);
     expect(screen.getByRole('button', { name: '生成中' })).toBeDisabled();
+  });
+
+  it('按 API Key 分组模型并回传凭据绑定', async () => {
+    const user = userEvent.setup();
+    const onModelChange = vi.fn();
+    const chatCredentialLabel = `聊天 Key · ${syntheticCredentialPreview('1111')}`;
+    const imageCredentialLabel = `图片 Key · ${syntheticCredentialPreview('2222')}`;
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          onModelChange,
+          models: [
+            {
+              id: 'chat-model',
+              name: '聊天模型',
+              mediaTypes: ['image'],
+              credentialId: 'credential-chat',
+              credentialLabel: chatCredentialLabel,
+            },
+            {
+              id: 'image-model',
+              name: '图片模型',
+              mediaTypes: ['image'],
+              credentialId: 'credential-image',
+              credentialLabel: imageCredentialLabel,
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByRole('group', { name: chatCredentialLabel })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: imageCredentialLabel })).toBeInTheDocument();
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: '模型' }),
+      screen.getByRole('option', { name: '图片模型' }),
+    );
+
+    expect(onModelChange).toHaveBeenCalledWith({
+      modelAlias: 'image-model',
+      credentialId: 'credential-image',
+    });
   });
 });

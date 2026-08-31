@@ -61,6 +61,9 @@ function makeRun(
       modelAlias: 'text-model',
       credentialId: 'credential-secret-id',
       credentialVersion: 4,
+      nodeCredentialReferences: {
+        target: { credentialId: 'credential-node-secret-id', credentialVersion: 5 },
+      },
       parameters: { apiKey: 'do-not-export', temperature: 0.2 },
       submittedAt: timestamp,
       nodes: makeCanvas().nodes,
@@ -124,6 +127,7 @@ describe('workflow export sanitization', () => {
     });
     const serialized = JSON.stringify(workflow);
     expect(serialized).not.toContain('credential-secret-id');
+    expect(serialized).not.toContain('credential-node-secret-id');
     expect(serialized).not.toContain('do-not-export');
     expect(serialized).not.toContain('signed.example.invalid');
     expect(workflow.canvas.nodes[0]?.data.prompt).toBe('write a short note');

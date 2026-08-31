@@ -3,6 +3,7 @@ import '@testing-library/jest-dom/vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { ContactPage } from '../pages/ContactPage';
 import { AppLink, AppRouter, navigateApp, shouldInterceptAppLink } from './router';
 import { appPaths, getNavigationSection, parseAppRoute } from './routes';
 
@@ -10,6 +11,7 @@ describe('application route contracts', () => {
   it('parses every supported route and settings project context', () => {
     expect(parseAppRoute('/')).toEqual({ id: 'home', pathname: '/' });
     expect(parseAppRoute('/workspace/')).toEqual({ id: 'workspace', pathname: '/workspace' });
+    expect(parseAppRoute('/contact/')).toEqual({ id: 'contact', pathname: '/contact' });
     expect(parseAppRoute('/settings?project=project%201')).toEqual({
       id: 'settings',
       pathname: '/settings',
@@ -30,8 +32,26 @@ describe('application route contracts', () => {
   it('builds encoded paths and highlights project canvases as workspace content', () => {
     expect(appPaths.project('project / 1')).toBe('/projects/project%20%2F%201');
     expect(appPaths.settings('project 1')).toBe('/settings?project=project+1');
+    expect(appPaths.contact).toBe('/contact');
     expect(getNavigationSection(parseAppRoute('/projects/project-1'))).toBe('workspace');
+    expect(getNavigationSection(parseAppRoute('/contact'))).toBeNull();
     expect(getNavigationSection(parseAppRoute('/not-found'))).toBeNull();
+  });
+});
+
+describe('contact page route target', () => {
+  afterEach(() => cleanup());
+
+  it('renders product capabilities and the configured contact channel', () => {
+    render(<ContactPage />);
+
+    expect(screen.getByRole('heading', { level: 1, name: '联系我们' })).toBeVisible();
+    expect(screen.getByText('多模态工作流')).toBeVisible();
+    expect(screen.getByText('真实产物回显')).toBeVisible();
+    expect(screen.getByRole('link', { name: /lysimportant@Outlook.com/i })).toHaveAttribute(
+      'href',
+      'mailto:lysimportant@Outlook.com',
+    );
   });
 });
 

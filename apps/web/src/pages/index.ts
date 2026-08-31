@@ -1,3 +1,4 @@
+export { ContactPage, type ContactPageProps } from './ContactPage';
 export { HomePage, type HomePageProps } from './HomePage';
 export { NotFoundPage } from './NotFoundPage';
 export { PageFrame, type PageFrameProps } from './PageFrame';

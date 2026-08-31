@@ -1,7 +1,27 @@
-import { Home, LayoutGrid, Menu, Moon, Settings, Sun, X, type LucideIcon } from 'lucide-react';
-import { useEffect, useId, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import {
+  Check,
+  ExternalLink,
+  Home,
+  LayoutGrid,
+  Mail,
+  Menu,
+  Palette,
+  Settings,
+  X,
+  type LucideIcon,
+} from 'lucide-react';
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type FocusEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+} from 'react';
 
-import { useWorkspacePreferences } from '../state/workspace-preferences';
+import { useWorkspacePreferences, type CanvasTheme } from '../state/workspace-preferences';
 import { isImeKeyboardEvent } from '../ime';
 import {
   AppLink,
@@ -15,7 +35,7 @@ import {
 import './app-navigation.css';
 
 type NavigationItem = {
-  id: AppNavigationSection;
+  id: AppNavigationSection | 'contact';
   label: string;
   description: string;
   href: string;
@@ -38,12 +58,27 @@ const navigationItems: NavigationItem[] = [
     icon: LayoutGrid,
   },
   {
+    id: 'contact',
+    label: '联系我们',
+    description: '获取支持与合作信息',
+    href: appPaths.contact,
+    icon: Mail,
+  },
+  {
     id: 'settings',
     label: '设置',
     description: '配置连接与默认模型',
     href: appPaths.settings(),
     icon: Settings,
   },
+];
+
+const themeOptions: Array<{ value: CanvasTheme; label: string }> = [
+  { value: 'eye-care', label: '护眼' },
+  { value: 'light', label: '明亮' },
+  { value: 'dark', label: '深色' },
+  { value: 'sepia', label: '暖白' },
+  { value: 'contrast', label: '高对比' },
 ];
 
 export type AppNavigationProps = {
@@ -62,23 +97,141 @@ function focusableElements(container: HTMLElement) {
   );
 }
 
-function ThemeToggle() {
+function ThemeMenu() {
   const theme = useWorkspacePreferences((state) => state.canvasTheme);
   const setTheme = useWorkspacePreferences((state) => state.setCanvasTheme);
-  const isDark = theme === 'dark';
-  const nextTheme = isDark ? 'light' : 'dark';
-  const label = isDark ? '切换到浅色主题' : '切换到深色主题';
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const menuId = useId();
+  const activeIndex = Math.max(
+    0,
+    themeOptions.findIndex((option) => option.value === theme),
+  );
+  const activeLabel = themeOptions[activeIndex]?.label ?? '主题';
+
+  useEffect(() => {
+    if (!open) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!(event.target instanceof Node) || containerRef.current?.contains(event.target)) return;
+      setOpen(false);
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
+  }, [open]);
+
+  const focusOption = (index: number) => {
+    optionRefs.current[index]?.focus();
+  };
+
+  const openWithFocus = (index: number) => {
+    setOpen(true);
+    window.requestAnimationFrame(() => focusOption(index));
+  };
+
+  const closeAndRestoreFocus = () => {
+    setOpen(false);
+    window.requestAnimationFrame(() => triggerRef.current?.focus());
+  };
+
+  const handleTriggerKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (isImeKeyboardEvent(event)) return;
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      openWithFocus(activeIndex);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      openWithFocus(themeOptions.length - 1);
+    } else if (event.key === 'Escape' && open) {
+      event.preventDefault();
+      setOpen(false);
+    }
+  };
+
+  const handleOptionKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, index: number) => {
+    if (isImeKeyboardEvent(event)) return;
+    let nextIndex: number | null = null;
+    if (event.key === 'ArrowDown') nextIndex = (index + 1) % themeOptions.length;
+    else if (event.key === 'ArrowUp') {
+      nextIndex = (index - 1 + themeOptions.length) % themeOptions.length;
+    } else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = themeOptions.length - 1;
+    else if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      closeAndRestoreFocus();
+      return;
+    } else if (event.key === 'Tab') {
+      setOpen(false);
+      return;
+    }
+
+    if (nextIndex !== null) {
+      event.preventDefault();
+      focusOption(nextIndex);
+    }
+  };
+
+  const handleBlur = (event: FocusEvent<HTMLDivElement>) => {
+    if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) {
+      return;
+    }
+    setOpen(false);
+  };
 
   return (
-    <button
-      type="button"
-      className="mc-navigation-icon-button"
-      aria-label={label}
-      title={label}
-      onClick={() => setTheme(nextTheme)}
+    <div
+      ref={containerRef}
+      className="mc-navigation-theme"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={(event) => {
+        if (!event.currentTarget.contains(document.activeElement)) setOpen(false);
+      }}
+      onBlur={handleBlur}
     >
-      {isDark ? <Sun size={17} aria-hidden="true" /> : <Moon size={17} aria-hidden="true" />}
-    </button>
+      <button
+        ref={triggerRef}
+        type="button"
+        className="mc-navigation-icon-button"
+        aria-label={`切换主题，当前${activeLabel}`}
+        aria-controls={menuId}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        title="切换主题"
+        onClick={() => setOpen(true)}
+        onKeyDown={handleTriggerKeyDown}
+      >
+        <Palette size={17} aria-hidden="true" />
+      </button>
+      {open && (
+        <div id={menuId} className="mc-navigation-theme-menu" role="menu" aria-label="界面主题">
+          {themeOptions.map((option, index) => (
+            <button
+              key={option.value}
+              ref={(element) => {
+                optionRefs.current[index] = element;
+              }}
+              type="button"
+              role="menuitemradio"
+              aria-checked={theme === option.value}
+              onClick={() => {
+                setTheme(option.value);
+                closeAndRestoreFocus();
+              }}
+              onKeyDown={(event) => handleOptionKeyDown(event, index)}
+            >
+              <span
+                className={`mc-navigation-theme-swatch is-${option.value}`}
+                aria-hidden="true"
+              />
+              <span>{option.label}</span>
+              {theme === option.value && <Check size={14} aria-hidden="true" />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -90,6 +243,9 @@ export function AppNavigation({
   onNavigate,
 }: AppNavigationProps) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [isScrolled, setIsScrolled] = useState(
+    () => typeof window !== 'undefined' && window.scrollY > 16,
+  );
   const menuId = useId();
   const titleId = useId();
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -98,6 +254,13 @@ export function AppNavigation({
 
   const itemHref = (item: NavigationItem) =>
     item.id === 'settings' ? appPaths.settings(projectId) : item.href;
+
+  useEffect(() => {
+    const handleScroll = () => setIsScrolled(window.scrollY > 16);
+    handleScroll();
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -156,7 +319,11 @@ export function AppNavigation({
 
   return (
     <>
-      <header className={`mc-app-navigation ${className}`.trim()}>
+      <header
+        className={['mc-app-navigation', isScrolled ? 'is-scrolled' : '', className]
+          .filter(Boolean)
+          .join(' ')}
+      >
         <div className="mc-navigation-leading">
           <button
             ref={triggerRef}
@@ -186,27 +353,35 @@ export function AppNavigation({
           </AppLink>
         </div>
 
-        <nav className="mc-navigation-primary" aria-label="主导航">
-          {navigationItems.map((item) => {
-            const href = itemHref(item);
-            const isActive = item.id === activeSection;
-            return (
-              <AppLink
-                key={item.id}
-                className={`mc-navigation-primary-link${isActive ? ' is-active' : ''}`}
-                to={href}
-                aria-current={isActive ? 'page' : undefined}
-                onClick={handleNavigation(href)}
-              >
-                {item.label}
-              </AppLink>
-            );
-          })}
-        </nav>
-
         <div className="mc-navigation-actions">
           {actions}
-          <ThemeToggle />
+          <AppLink
+            className={`mc-navigation-header-link${route.id === 'contact' ? ' is-active' : ''}`}
+            to={appPaths.contact}
+            aria-current={route.id === 'contact' ? 'page' : undefined}
+            onClick={handleNavigation(appPaths.contact)}
+          >
+            联系我们
+          </AppLink>
+          <a
+            className="mc-navigation-header-link"
+            href="https://api.lolicon.beer"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            API获取
+            <ExternalLink size={12} aria-hidden="true" />
+          </a>
+          <a
+            className="mc-navigation-header-link"
+            href="https://lolicon.beer"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            主站
+            <ExternalLink size={12} aria-hidden="true" />
+          </a>
+          <ThemeMenu />
         </div>
       </header>
 
@@ -251,7 +426,8 @@ export function AppNavigation({
               {navigationItems.map((item, index) => {
                 const Icon = item.icon;
                 const href = itemHref(item);
-                const isActive = item.id === activeSection;
+                const isActive =
+                  item.id === activeSection || (item.id === 'contact' && route.id === 'contact');
                 return (
                   <AppLink
                     key={item.id}

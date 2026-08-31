@@ -5,6 +5,7 @@ import {
   createEnvironmentObservability,
   createLoggingObservability,
   createNoopObservability,
+  sanitizeExceptionForObservability,
 } from './index';
 
 async function flushTelemetry() {
@@ -16,6 +17,34 @@ afterEach(() => {
 });
 
 describe('observability boundary', () => {
+  it('creates a detached redacted error while preserving safe diagnostics and causes', () => {
+    const source = new Error(
+      'provider rejected Authorization: Bearer synthetic-bearer-fixture while rendering',
+      {
+        cause: new Error('model lookup failed apiKey=synthetic-key-fixture after timeout'),
+      },
+    );
+    source.name = 'ProviderError';
+
+    const sanitized = sanitizeExceptionForObservability(source);
+    const cause = sanitized.cause;
+
+    expect(sanitized).not.toBe(source);
+    expect(sanitized.name).toBe('ProviderError');
+    expect(sanitized.message).toContain('provider rejected');
+    expect(sanitized.message).toContain('while rendering');
+    expect(sanitized.message).toContain('[REDACTED]');
+    expect(sanitized.stack).not.toContain('synthetic-bearer-fixture');
+    expect(cause).toBeInstanceOf(Error);
+    expect((cause as Error).message).toContain('model lookup failed');
+    expect((cause as Error).message).toContain('after timeout');
+    expect((cause as Error).message).toContain('[REDACTED]');
+    expect(
+      JSON.stringify({ message: sanitized.message, cause: (cause as Error).message }),
+    ).not.toMatch(/synthetic-(?:bearer|key)-fixture/);
+    expect(source.message).toContain('synthetic-bearer-fixture');
+  });
+
   it('provides an offline no-op implementation', () => {
     const observability = createNoopObservability();
     expect(() => {

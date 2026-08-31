@@ -48,7 +48,11 @@ export class WorkerPrismaRunPersistence implements RunPersistence {
       );
     }
     const credential = await this.prisma.aiCredential.findFirst({
-      where: { id: reference.credentialId, version: reference.credentialVersion },
+      where: {
+        id: reference.credentialId,
+        version: reference.credentialVersion,
+        projectId: null,
+      },
       select: { baseUrl: true, encryptedApiKey: true },
     });
     if (!credential) return undefined;

@@ -14,6 +14,7 @@ import { AppNavigation } from './AppNavigation';
 describe('AppNavigation', () => {
   beforeEach(() => {
     window.history.replaceState(null, '', '/workspace');
+    Object.defineProperty(window, 'scrollY', { configurable: true, value: 0 });
     useWorkspacePreferences.setState(workspacePreferenceDefaults);
   });
 
@@ -22,12 +23,11 @@ describe('AppNavigation', () => {
     useWorkspacePreferences.setState(workspacePreferenceDefaults);
   });
 
-  it('marks the active page in desktop and drawer navigation', async () => {
+  it('removes the desktop primary navigation and marks the active drawer page', async () => {
     const user = userEvent.setup();
     render(<AppNavigation route={parseAppRoute('/projects/project-1')} projectId="project-1" />);
 
-    const primaryNavigation = screen.getByRole('navigation', { name: '主导航' });
-    expect(primaryNavigation.querySelector('a[aria-current="page"]')).toHaveTextContent('工作台');
+    expect(screen.queryByRole('navigation', { name: '主导航' })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: '打开主菜单' }));
     const drawerNavigation = screen.getByRole('navigation', { name: '菜单导航' });
@@ -38,6 +38,22 @@ describe('AppNavigation', () => {
     );
   });
 
+  it('includes and highlights the contact page in the drawer', async () => {
+    const user = userEvent.setup();
+    render(<AppNavigation route={parseAppRoute('/contact')} />);
+
+    await user.click(screen.getByRole('button', { name: '打开主菜单' }));
+    const drawerNavigation = screen.getByRole('navigation', { name: '菜单导航' });
+    const contactLink = drawerNavigation.querySelector('a[href="/contact"]');
+
+    expect(contactLink).toHaveTextContent('联系我们');
+    expect(contactLink).toHaveAttribute('aria-current', 'page');
+
+    await user.click(contactLink!);
+    expect(window.location.pathname).toBe('/contact');
+    expect(screen.queryByRole('dialog', { name: 'Multimodal Canvas' })).not.toBeInTheDocument();
+  });
+
   it('supports Escape, focus restoration, body locking, and Tab wrapping', async () => {
     const user = userEvent.setup();
     render(<AppNavigation route={parseAppRoute('/workspace')} />);
@@ -45,7 +61,7 @@ describe('AppNavigation', () => {
 
     await user.click(trigger);
     const dialog = screen.getByRole('dialog', { name: 'Multimodal Canvas' });
-    await waitFor(() => expect(screen.getAllByRole('link', { name: /工作台/ })[1]).toHaveFocus());
+    await waitFor(() => expect(screen.getByRole('link', { name: /工作台/ })).toHaveFocus());
     expect(document.body.style.overflow).toBe('hidden');
 
     const close = screen.getByRole('button', { name: '关闭主菜单' });
@@ -88,13 +104,72 @@ describe('AppNavigation', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
-  it('toggles between the existing light and dark theme states', async () => {
+  it('shows contact and external destinations in the header', () => {
+    render(<AppNavigation route={parseAppRoute('/contact')} />);
+
+    expect(screen.getByRole('link', { name: '联系我们' })).toHaveAttribute('href', '/contact');
+    expect(screen.getByRole('link', { name: '联系我们' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('link', { name: 'API获取' })).toHaveAttribute(
+      'href',
+      'https://api.lolicon.beer',
+    );
+    expect(screen.getByRole('link', { name: 'API获取' })).toHaveAttribute('target', '_blank');
+    expect(screen.getByRole('link', { name: 'API获取' })).toHaveAttribute(
+      'rel',
+      'noopener noreferrer',
+    );
+    expect(screen.getByRole('link', { name: '主站' })).toHaveAttribute(
+      'href',
+      'https://lolicon.beer',
+    );
+    expect(screen.getByRole('link', { name: '主站' })).toHaveAttribute('target', '_blank');
+    expect(screen.getByRole('link', { name: '主站' })).toHaveAttribute(
+      'rel',
+      'noopener noreferrer',
+    );
+  });
+
+  it('makes the header transparent after the page scrolls', () => {
+    render(<AppNavigation route={parseAppRoute('/')} />);
+    const header = document.querySelector('.mc-app-navigation');
+
+    expect(header).not.toHaveClass('is-scrolled');
+    Object.defineProperty(window, 'scrollY', { configurable: true, value: 80 });
+    fireEvent.scroll(window);
+    expect(header).toHaveClass('is-scrolled');
+  });
+
+  it('opens all existing themes on hover and supports keyboard selection', async () => {
     const user = userEvent.setup();
     render(<AppNavigation route={parseAppRoute('/')} />);
+    const trigger = screen.getByRole('button', { name: '切换主题，当前护眼' });
+    const container = trigger.parentElement!;
 
-    await user.click(screen.getByRole('button', { name: '切换到深色主题' }));
-    expect(useWorkspacePreferences.getState().canvasTheme).toBe('dark');
-    await user.click(screen.getByRole('button', { name: '切换到浅色主题' }));
-    expect(useWorkspacePreferences.getState().canvasTheme).toBe('light');
+    fireEvent.mouseEnter(container);
+    expect(screen.getByRole('menu', { name: '界面主题' })).toBeVisible();
+    expect(screen.getAllByRole('menuitemradio')).toHaveLength(5);
+    fireEvent.mouseLeave(container);
+    expect(screen.queryByRole('menu', { name: '界面主题' })).not.toBeInTheDocument();
+
+    await user.click(trigger);
+    expect(screen.getByRole('menu', { name: '界面主题' })).toBeVisible();
+    fireEvent.keyDown(trigger, { key: 'Escape' });
+    expect(screen.queryByRole('menu', { name: '界面主题' })).not.toBeInTheDocument();
+
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+    await waitFor(() => expect(screen.getByRole('menuitemradio', { name: '护眼' })).toHaveFocus());
+    fireEvent.keyDown(screen.getByRole('menuitemradio', { name: '护眼' }), {
+      key: 'ArrowDown',
+    });
+    expect(screen.getByRole('menuitemradio', { name: '明亮' })).toHaveFocus();
+    fireEvent.keyDown(screen.getByRole('menuitemradio', { name: '明亮' }), { key: 'End' });
+    expect(screen.getByRole('menuitemradio', { name: '高对比' })).toHaveFocus();
+
+    await user.click(screen.getByRole('menuitemradio', { name: '高对比' }));
+    expect(useWorkspacePreferences.getState().canvasTheme).toBe('contrast');
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '切换主题，当前高对比' })).toHaveFocus(),
+    );
   });
 });

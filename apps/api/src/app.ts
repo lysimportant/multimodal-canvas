@@ -1,6 +1,6 @@
 import multipart from '@fastify/multipart';
 import cors from '@fastify/cors';
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 
 import {
@@ -33,16 +33,22 @@ import {
 import { databaseRunId, type PrismaRunPersistence } from './run-persistence';
 import {
   canvasDocumentSchema,
+  mediaTypes,
   type CanvasDocument,
   type MediaType,
+  type RunCredentialReference,
+  type RunRecord,
+  type RunResultAsset,
 } from '@multimodal-canvas/domain';
 import { z } from 'zod';
 import {
+  AiCredentialNotFoundError,
   AiSettingsError,
   AiSettingsStore,
   type AiSettingsStoreLike,
   type ModelCatalogEntry,
 } from './settings';
+import type { ModelSelection } from '@multimodal-canvas/domain';
 import { openApiDocument } from './openapi';
 import { MemoryWebhookEventStore, type WebhookEventStore } from './webhooks';
 import {
@@ -59,6 +65,7 @@ import {
 } from './upload-sessions';
 import {
   createEnvironmentObservability,
+  sanitizeExceptionForObservability,
   type Observability,
   type ObservabilitySpan,
 } from '@multimodal-canvas/observability';
@@ -81,6 +88,15 @@ import {
 import { ArchiveError, buildZipArchive } from './export-archive';
 import { MemoryRateLimiter, type RateLimiter } from './rate-limit';
 
+type AppLoggerOptions = {
+  level?: string;
+  redact?: { paths: string[]; censor: string };
+  serializers?: {
+    req?: (request: FastifyRequest) => Record<string, unknown>;
+  };
+  stream?: { write(message: string): void };
+};
+
 export type BuildAppOptions = {
   assetStore?: AssetStore;
   projectStore?: ProjectStore;
@@ -91,7 +107,7 @@ export type BuildAppOptions = {
   runResultArchiver?: RunResultArchiver;
   /** Optional backing-store check for JWT subjects in production. */
   userExists?: (userId: string) => Promise<boolean>;
-  logger?: boolean | { level?: string; redact?: { paths: string[]; censor: string } };
+  logger?: boolean | AppLoggerOptions;
   observability?: Observability;
   settingsStore?: AiSettingsStoreLike;
   webhookEventStore?: WebhookEventStore;
@@ -113,9 +129,69 @@ const DEFAULT_BODY_LIMIT_BYTES = 2 * 1024 * 1024;
 const DEFAULT_SSE_MAX_BYTES = 5 * 1024 * 1024;
 const DEFAULT_SSE_MAX_EVENT_BYTES = 256 * 1024;
 
+function serializeRequestForLog(request: FastifyRequest): Record<string, unknown> {
+  return {
+    method: request.method,
+    // Access tokens and other credentials may be carried in the query string
+    // for short-lived resource URLs, so keep query parameters out of logs.
+    url: request.url.split('?')[0],
+    version: request.raw.httpVersion,
+    host: request.host,
+    remoteAddress: request.ip,
+    remotePort: request.socket?.remotePort,
+  };
+}
+
+type PublicRunSnapshot = {
+  canvasRevision: number;
+  inputCount: number;
+  /** Legacy Web clients only read `.length`; item contents stay server-side. */
+  inputs: null[];
+};
+
+type PublicRunResultAsset = {
+  assetId: string;
+  version?: number;
+  mimeType?: string;
+  sizeBytes?: number;
+  sha256?: string;
+};
+
+type PublicRunResult = {
+  provider: string;
+  summary: string;
+  targetNodeId: string;
+  mediaType: MediaType;
+  inputCount: number;
+  asset?: PublicRunResultAsset;
+};
+
+type PublicRunFields = {
+  id: string;
+  projectId: string;
+  targetNodeId: string;
+  status: RunRecord['status'];
+  progress: number;
+  attempt: number;
+  provider: string;
+  modelAlias: string;
+  result?: PublicRunResult;
+  error?: string;
+  retryOf?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type PublicRunRecord = PublicRunFields & {
+  snapshot: PublicRunSnapshot;
+};
+
+type PublicRunEvent = PublicRunFields;
+
 type RunNodeModelResolution = {
   targetModelAlias: string;
   nodeModelAliases: Record<string, string>;
+  nodeCredentialReferences: Record<string, RunCredentialReference>;
   targetModel?: ModelCatalogEntry;
 };
 
@@ -129,6 +205,161 @@ class RunAssetFreezeError extends Error {
 }
 
 /**
+ * Validate project defaults before touching the project store. A default can
+ * be a legacy unbound alias, but a bound selection must point at a usable
+ * credential-scoped catalog entry. Unbound aliases are rejected when more
+ * than one credential exposes the same model so the later run snapshot has a
+ * deterministic credential reference.
+ */
+async function validateProjectModelDefaults(input: {
+  settingsStore: AiSettingsStoreLike;
+  defaults: UpdateProjectModelDefaultsInput;
+  allowVirtualMockModels: boolean;
+  requireCredentialReferences: boolean;
+  unboundCredentialScope?: 'all' | 'active';
+}): Promise<void> {
+  const credentials = await Promise.resolve(input.settingsStore.listCredentials());
+  const catalogCache = new Map<string, Promise<ModelCatalogEntry[]>>();
+  const getCatalog = (mediaType: MediaType, credentialId?: string) => {
+    const key = `${credentialId ?? 'active'}\0${mediaType}`;
+    const cached = catalogCache.get(key);
+    if (cached) return cached;
+    const pending = Promise.resolve(input.settingsStore.listModels(mediaType, credentialId));
+    catalogCache.set(key, pending);
+    return pending;
+  };
+
+  for (const mediaType of mediaTypes) {
+    if (!Object.prototype.hasOwnProperty.call(input.defaults, mediaType)) continue;
+    const configured = input.defaults[mediaType];
+    if (configured === null || configured === undefined) continue;
+
+    const selection = typeof configured === 'string' ? { modelAlias: configured } : configured;
+    const alias = selection.modelAlias.trim();
+    const credentialId = selection.credentialId?.trim();
+    if (!alias) {
+      throw new AiSettingsError('model_unavailable', `未配置可用的 ${mediaType} 项目默认模型`);
+    }
+
+    if (alias === `mock-${mediaType}` && !credentialId && input.allowVirtualMockModels) {
+      continue;
+    }
+    if (alias.startsWith('mock-')) {
+      throw new AiSettingsError(
+        'model_unavailable',
+        `模型 ${alias} 不能作为 ${mediaType} 的生产项目默认模型`,
+      );
+    }
+
+    if (credentialId) {
+      if (!(await Promise.resolve(input.settingsStore.hasCredential(credentialId)))) {
+        throw new AiCredentialNotFoundError(credentialId);
+      }
+      const catalog = await getCatalog(mediaType, credentialId);
+      const model = catalog.find(
+        (candidate) =>
+          candidate.id === alias &&
+          candidate.mediaTypes.includes(mediaType) &&
+          (!candidate.credentialId || candidate.credentialId === credentialId),
+      );
+      if (!model) {
+        throw new AiSettingsError(
+          'model_unavailable',
+          `模型 ${alias} 不支持 ${mediaType} 媒体类型或未绑定到指定 API Key`,
+        );
+      }
+      if (input.requireCredentialReferences) {
+        await requireCredentialReference(input.settingsStore, credentialId, alias);
+      }
+      continue;
+    }
+
+    if (input.unboundCredentialScope === 'active') {
+      const activeReference = await Promise.resolve(input.settingsStore.getCredentialReference());
+      if (activeReference.credentialId) {
+        const catalog = await getCatalog(mediaType, activeReference.credentialId);
+        const model = catalog.find(
+          (candidate) =>
+            candidate.id === alias &&
+            candidate.mediaTypes.includes(mediaType) &&
+            (!candidate.credentialId || candidate.credentialId === activeReference.credentialId),
+        );
+        if (!model) {
+          throw new AiSettingsError(
+            'model_unavailable',
+            `模型 ${alias} 不支持 ${mediaType} 媒体类型或不在当前 API Key 的模型目录中`,
+          );
+        }
+        if (input.requireCredentialReferences) {
+          await requireCredentialReference(
+            input.settingsStore,
+            activeReference.credentialId,
+            alias,
+          );
+        }
+        continue;
+      }
+    }
+
+    const unscopedCatalog = await getCatalog(mediaType);
+    const credentialMatches = new Map<string, ModelCatalogEntry>();
+    await Promise.all(
+      credentials.map(async (credential) => {
+        const catalog = await getCatalog(mediaType, credential.id);
+        const model = catalog.find(
+          (candidate) =>
+            candidate.id === alias &&
+            candidate.mediaTypes.includes(mediaType) &&
+            (!candidate.credentialId || candidate.credentialId === credential.id),
+        );
+        if (model) credentialMatches.set(credential.id, model);
+      }),
+    );
+
+    if (credentialMatches.size > 1) {
+      throw new AiSettingsError(
+        'model_unavailable',
+        `模型 ${alias} 在多个 API Key 中存在，请明确指定 credentialId`,
+      );
+    }
+    if (credentialMatches.size === 1) {
+      if (input.requireCredentialReferences) {
+        await requireCredentialReference(
+          input.settingsStore,
+          [...credentialMatches.keys()][0],
+          alias,
+        );
+      }
+      continue;
+    }
+
+    const legacyModel = unscopedCatalog.find(
+      (candidate) => candidate.id === alias && !candidate.credentialId,
+    );
+    if (!legacyModel || !legacyModel.mediaTypes.includes(mediaType)) {
+      throw new AiSettingsError(
+        'model_unavailable',
+        `模型 ${alias} 不支持 ${mediaType} 媒体类型或不在模型目录中`,
+      );
+    }
+    if (input.requireCredentialReferences) {
+      await requireCredentialReference(input.settingsStore, undefined, alias);
+    }
+  }
+}
+
+async function requireCredentialReference(
+  settingsStore: AiSettingsStoreLike,
+  credentialId: string | undefined,
+  alias: string,
+): Promise<void> {
+  const reference = await Promise.resolve(settingsStore.getCredentialReference(credentialId));
+  if (!reference.credentialId || !reference.credentialVersion) {
+    throw new AiSettingsError('model_unavailable', `模型 ${alias} 未绑定可用的 API Key`);
+  }
+}
+
+/**
  * Resolve and validate every executable node in a run's upstream closure at
  * submission time. The resulting aliases are passed into the immutable run
  * snapshot; later project/settings changes therefore cannot affect retries.
@@ -138,8 +369,10 @@ async function resolveRunNodeModels(input: {
   canvas: CanvasDocument;
   targetNodeId: string;
   requestModelAlias?: string;
+  credentialId?: string;
   projectDefaults?: ProjectModelDefaults;
   allowVirtualMockModels: boolean;
+  requireCredentialReferences: boolean;
 }): Promise<RunNodeModelResolution> {
   const target = input.canvas.nodes.find((node) => node.id === input.targetNodeId);
   if (!target) throw new RunServiceError('invalid_target', 'run target node not found');
@@ -151,17 +384,37 @@ async function resolveRunNodeModels(input: {
   }
 
   const globalSettings = await input.settingsStore.get();
-  const catalogCache = new Map<MediaType, Promise<ModelCatalogEntry[]>>();
-  const getCatalog = (mediaType: MediaType) => {
-    const cached = catalogCache.get(mediaType);
+  const runCredentialId = input.credentialId ?? target.data.credentialId;
+  const catalogCache = new Map<string, Promise<ModelCatalogEntry[]>>();
+  const credentialCache = new Map<string, Promise<RunCredentialReference | undefined>>();
+  const getCatalog = (mediaType: MediaType, credentialId?: string) => {
+    const key = `${credentialId ?? 'active'}\0${mediaType}`;
+    const cached = catalogCache.get(key);
     if (cached) return cached;
-    const pending = Promise.resolve(input.settingsStore.listModels(mediaType));
-    catalogCache.set(mediaType, pending);
+    const pending = Promise.resolve(input.settingsStore.listModels(mediaType, credentialId));
+    catalogCache.set(key, pending);
+    return pending;
+  };
+  const getCredentialReference = (credentialId?: string) => {
+    const key = credentialId ?? 'active';
+    const cached = credentialCache.get(key);
+    if (cached) return cached;
+    const pending = Promise.resolve(input.settingsStore.getCredentialReference(credentialId)).then(
+      (reference) =>
+        reference.credentialId && reference.credentialVersion
+          ? {
+              credentialId: reference.credentialId,
+              credentialVersion: reference.credentialVersion,
+            }
+          : undefined,
+    );
+    credentialCache.set(key, pending);
     return pending;
   };
 
   const includedNodeIds = getRunSnapshotIncludedNodeIds(input.canvas, input.targetNodeId);
   const nodeModelAliases: Record<string, string> = {};
+  const nodeCredentialReferences: Record<string, RunCredentialReference> = {};
   let targetModel: ModelCatalogEntry | undefined;
 
   for (const node of input.canvas.nodes) {
@@ -174,23 +427,79 @@ async function resolveRunNodeModels(input: {
     }
 
     const mediaType = node.data.mediaType;
+    const nodeCredentialId =
+      node.id === input.targetNodeId ? runCredentialId : node.data.credentialId;
     const requestedAlias = node.id === input.targetNodeId ? input.requestModelAlias : undefined;
-    const alias = firstNonBlankModelAlias(
-      requestedAlias,
-      node.data.modelAlias,
+    const configured = [
+      requestedAlias ? { modelAlias: requestedAlias, credentialId: nodeCredentialId } : undefined,
+      node.data.modelAlias
+        ? {
+            modelAlias: node.data.modelAlias,
+            ...(node.data.credentialId ? { credentialId: node.data.credentialId } : {}),
+          }
+        : undefined,
       input.projectDefaults?.[mediaType],
       globalSettings.defaultModels?.[mediaType],
-      input.allowVirtualMockModels ? `mock-${mediaType}` : undefined,
-    );
+    ].find(Boolean) as string | ModelSelection | undefined;
+    const selected = configured
+      ? typeof configured === 'string'
+        ? { modelAlias: configured }
+        : configured
+      : input.allowVirtualMockModels
+        ? { modelAlias: `mock-${mediaType}` }
+        : undefined;
+    const alias = selected?.modelAlias?.trim();
     if (!alias) {
       throw new AiSettingsError(
         'model_unavailable',
         `节点 ${node.id} 未配置可用的 ${mediaType} 模型`,
       );
     }
-    const catalog = await getCatalog(mediaType);
-    const model = catalog.find((candidate) => candidate.id === alias);
-    const virtualMockModel = input.allowVirtualMockModels && alias === `mock-${mediaType}`;
+    const selectedCredentialId = selected?.credentialId?.trim();
+    if (nodeCredentialId && selectedCredentialId && selectedCredentialId !== nodeCredentialId) {
+      throw new AiSettingsError(
+        'model_unavailable',
+        `模型 ${alias} 的默认凭据与节点 ${node.id} 指定的 API Key 不一致`,
+      );
+    }
+    let effectiveCredentialId = nodeCredentialId ?? selectedCredentialId;
+    let catalog = await getCatalog(mediaType, effectiveCredentialId);
+    if (!effectiveCredentialId && alias && !alias.startsWith('mock-')) {
+      const candidates = await Promise.all(
+        (await Promise.resolve(input.settingsStore.listCredentials())).map(async (credential) => ({
+          credentialId: credential.id,
+          models: await getCatalog(mediaType, credential.id),
+        })),
+      );
+      const matches = candidates.filter((candidate) =>
+        candidate.models.some(
+          (model) =>
+            model.id === alias &&
+            model.mediaTypes.includes(mediaType) &&
+            (!model.credentialId || model.credentialId === candidate.credentialId),
+        ),
+      );
+      if (matches.length > 1) {
+        throw new AiSettingsError(
+          'model_unavailable',
+          `模型 ${alias} 在多个 API Key 中存在，请明确指定 credentialId（节点 ${node.id}）`,
+        );
+      }
+      if (matches.length === 1) {
+        effectiveCredentialId = matches[0].credentialId;
+        catalog = matches[0].models;
+      }
+    }
+    const model = catalog.find(
+      (candidate) =>
+        candidate.id === alias &&
+        candidate.mediaTypes.includes(mediaType) &&
+        (!candidate.credentialId ||
+          !effectiveCredentialId ||
+          candidate.credentialId === effectiveCredentialId),
+    );
+    const virtualMockModel =
+      input.allowVirtualMockModels && !nodeCredentialId && alias === `mock-${mediaType}`;
     if (!model && !virtualMockModel) {
       throw new AiSettingsError(
         'model_unavailable',
@@ -199,6 +508,19 @@ async function resolveRunNodeModels(input: {
     }
 
     nodeModelAliases[node.id] = alias;
+    if (!virtualMockModel) {
+      const reference = await getCredentialReference(
+        model?.credentialId ?? effectiveCredentialId ?? nodeCredentialId,
+      );
+      if (reference) {
+        nodeCredentialReferences[node.id] = reference;
+      } else if (input.requireCredentialReferences) {
+        throw new AiSettingsError(
+          'model_unavailable',
+          `模型 ${alias} 未绑定可用的 API Key（节点 ${node.id}）`,
+        );
+      }
+    }
     if (node.id === input.targetNodeId) targetModel = model;
   }
 
@@ -206,15 +528,12 @@ async function resolveRunNodeModels(input: {
   if (!targetModelAlias) {
     throw new RunServiceError('invalid_target', 'run target node not found');
   }
-  return { targetModelAlias, nodeModelAliases, ...(targetModel ? { targetModel } : {}) };
-}
-
-function firstNonBlankModelAlias(...aliases: Array<string | undefined>): string | undefined {
-  for (const alias of aliases) {
-    const normalized = alias?.trim();
-    if (normalized) return normalized;
-  }
-  return undefined;
+  return {
+    targetModelAlias,
+    nodeModelAliases,
+    nodeCredentialReferences,
+    ...(targetModel ? { targetModel } : {}),
+  };
 }
 
 async function resolveRunAssetRefs(input: {
@@ -290,22 +609,38 @@ async function resolveRunAssetRefs(input: {
 
 export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const bodyLimitBytes = parseByteLimit(process.env.API_BODY_LIMIT_BYTES, DEFAULT_BODY_LIMIT_BYTES);
+  const defaultLogger = {
+    level: process.env.LOG_LEVEL ?? 'info',
+    serializers: { req: serializeRequestForLog },
+    redact: {
+      paths: [
+        'req.headers.authorization',
+        'headers.authorization',
+        'apiKey',
+        'api_key',
+        'body.apiKey',
+        'body.api_key',
+      ],
+      censor: '[REDACTED]',
+    },
+  };
+  const logger =
+    options.logger === true || options.logger === undefined
+      ? defaultLogger
+      : typeof options.logger === 'object' && options.logger !== null
+        ? {
+            ...defaultLogger,
+            ...options.logger,
+            serializers: {
+              ...defaultLogger.serializers,
+              ...options.logger.serializers,
+              req: serializeRequestForLog,
+            },
+          }
+        : options.logger;
   const app = Fastify({
     bodyLimit: bodyLimitBytes,
-    logger: options.logger ?? {
-      level: process.env.LOG_LEVEL ?? 'info',
-      redact: {
-        paths: [
-          'req.headers.authorization',
-          'headers.authorization',
-          'apiKey',
-          'api_key',
-          'body.apiKey',
-          'body.api_key',
-        ],
-        censor: '[REDACTED]',
-      },
-    },
+    logger,
   });
   app.setErrorHandler((error, request, reply) => {
     const code = isErrorCode(error) ? error.code : undefined;
@@ -324,7 +659,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         requestId: request.id,
       });
     }
-    return reply.send(error);
+    const statusCode = errorStatusCode(error);
+    request.log.error(
+      { err: sanitizeExceptionForObservability(error), requestId: request.id },
+      'unhandled request error',
+    );
+    return reply.code(statusCode).send({
+      error: 'internal server error',
+      code: 'internal_error',
+      requestId: request.id,
+    });
   });
   const observability =
     options.observability ??
@@ -386,16 +730,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     parseByteLimit(process.env.API_SSE_MAX_EVENT_BYTES, DEFAULT_SSE_MAX_EVENT_BYTES),
     sseMaxBytes,
   );
-  const configuredCorsOrigins = parseCorsOrigins(process.env.CORS_ORIGIN);
-  const corsOrigin =
-    configuredCorsOrigins.length > 0
-      ? configuredCorsOrigins
-      : process.env.NODE_ENV === 'production'
-        ? false
-        : true;
+  const corsOrigins = resolveCorsOrigins(
+    process.env.CORS_ORIGIN,
+    process.env.NODE_ENV,
+    process.env.WEB_PORT,
+  );
 
   app.register(cors, {
-    origin: corsOrigin,
+    origin: corsOrigins.length > 0 ? corsOrigins : false,
+    credentials: true,
+    methods: ['GET', 'HEAD', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
     // Browser downloads need to read the server-provided attachment name.
     // These are metadata headers only; credentials remain in the body/auth
     // boundary and are never exposed here.
@@ -417,9 +761,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.addHook('onError', async (request, reply, error) => {
     const span = requestSpans.get(request);
     if (!span) return;
+    const telemetryError = sanitizeExceptionForObservability(error);
     span.setAttribute('http.status_code', reply.statusCode || 500);
-    span.recordException(error);
-    observability.captureException(error, {
+    span.recordException(telemetryError);
+    observability.captureException(telemetryError, {
       component: 'api',
       'http.method': request.method,
       'http.status_code': reply.statusCode || 500,
@@ -441,6 +786,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   );
 
   app.addHook('onRequest', async (request, reply) => {
+    // CORS preflight never carries application credentials. The CORS plugin
+    // has already validated the origin and will answer the wildcard OPTIONS
+    // route, so do not make preflight depend on API authentication.
+    if (request.method === 'OPTIONS') return;
     const pathname = request.url.split('?')[0];
     if (pathname === '/health' || pathname === '/v1/webhooks/newapi') return;
     const authRoute =
@@ -512,7 +861,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         if (error instanceof AuthServiceError) {
           return reply.code(401).send({ error: 'authentication required' });
         }
-        request.log.error({ err: error }, 'authentication session lookup failed');
+        request.log.error(
+          { err: sanitizeExceptionForObservability(error) },
+          'authentication session lookup failed',
+        );
         return reply.code(503).send({ error: 'authentication service unavailable' });
       }
     } else if (result.principal.method === 'jwt' && result.principal.sessionId && !authService) {
@@ -543,7 +895,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           return reply.code(401).send({ error: 'authentication required' });
         }
       } catch (error) {
-        request.log.error({ err: error }, 'authentication user lookup failed');
+        request.log.error(
+          { err: sanitizeExceptionForObservability(error) },
+          'authentication user lookup failed',
+        );
         return reply.code(503).send({ error: 'authentication service unavailable' });
       }
     }
@@ -667,32 +1022,47 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       (typeof body.eventId === 'string' && body.eventId.trim()) ||
       (typeof body.id === 'string' && body.id.trim());
     if (!eventId) return reply.code(400).send({ error: 'webhook event id is required' });
-    const result = await webhookEventStore.accept(eventId, 'newapi', body);
-    if (result.deduplicated) {
-      return reply.code(202).send({ accepted: true, ...result, eventId });
+    const claim = await webhookEventStore.claim(eventId, 'newapi', body);
+    if (claim.deduplicated) {
+      return reply.code(202).send({ accepted: true, ...claim, eventId });
     }
-    const webhookUpdate = parseNewApiWebhook(body);
-    const updatedRun = webhookUpdate
-      ? await runService.applyProviderWebhook?.(webhookUpdate)
-      : undefined;
-    if (updatedRun?.providerJob && options.runPersistence) {
-      const persistedRunId = databaseRunId(updatedRun.id);
-      await options.runPersistence.upsertProviderJob({
-        runId: persistedRunId,
-        providerJob: updatedRun.providerJob,
-      });
-      await options.runPersistence.updateRun({
-        runId: updatedRun.id,
-        status: updatedRun.status,
-        ...(updatedRun.error ? { error: updatedRun.error } : {}),
-      });
+
+    const leaseToken = claim.leaseToken;
+    if (!leaseToken) {
+      return reply.code(503).send({ error: 'webhook processing lease was not granted' });
     }
-    return reply.code(202).send({
-      accepted: true,
-      ...result,
-      eventId,
-      ...(updatedRun ? { updatedRunId: updatedRun.id } : {}),
-    });
+
+    try {
+      const webhookUpdate = parseNewApiWebhook(body);
+      const updatedRun = webhookUpdate
+        ? await runService.applyProviderWebhook?.(webhookUpdate)
+        : undefined;
+      if (updatedRun?.providerJob && options.runPersistence) {
+        const persistedRunId = databaseRunId(updatedRun.id);
+        await options.runPersistence.upsertProviderJob({
+          runId: persistedRunId,
+          providerJob: updatedRun.providerJob,
+        });
+        await options.runPersistence.updateRun({
+          runId: updatedRun.id,
+          status: updatedRun.status,
+          ...(updatedRun.error ? { error: updatedRun.error } : {}),
+        });
+      }
+      const processed = await webhookEventStore.markProcessed(eventId, leaseToken);
+      return reply.code(202).send({
+        accepted: true,
+        deduplicated: false,
+        processed: processed.applied,
+        status: processed.status,
+        attempt: processed.attempt,
+        eventId,
+        ...(updatedRun ? { updatedRunId: updatedRun.id } : {}),
+      });
+    } catch (error) {
+      await webhookEventStore.markFailed(eventId, leaseToken, error);
+      throw error;
+    }
   });
 
   app.get('/v1/settings/ai', async (request, reply) => {
@@ -719,18 +1089,100 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         apiKey: z.string().min(1).optional(),
         defaultModels: z
           .object({
-            text: z.string().min(1).nullable().optional(),
-            image: z.string().min(1).nullable().optional(),
-            audio: z.string().min(1).nullable().optional(),
-            video: z.string().min(1).nullable().optional(),
+            text: z
+              .union([
+                z.string().min(1),
+                z
+                  .object({
+                    modelAlias: z.string().min(1),
+                    credentialId: z.string().min(1).optional(),
+                  })
+                  .strict(),
+              ])
+              .nullable()
+              .optional(),
+            image: z
+              .union([
+                z.string().min(1),
+                z
+                  .object({
+                    modelAlias: z.string().min(1),
+                    credentialId: z.string().min(1).optional(),
+                  })
+                  .strict(),
+              ])
+              .nullable()
+              .optional(),
+            audio: z
+              .union([
+                z.string().min(1),
+                z
+                  .object({
+                    modelAlias: z.string().min(1),
+                    credentialId: z.string().min(1).optional(),
+                  })
+                  .strict(),
+              ])
+              .nullable()
+              .optional(),
+            video: z
+              .union([
+                z.string().min(1),
+                z
+                  .object({
+                    modelAlias: z.string().min(1),
+                    credentialId: z.string().min(1).optional(),
+                  })
+                  .strict(),
+              ])
+              .nullable()
+              .optional(),
           })
           .optional(),
       })
       .strict()
       .safeParse(request.body);
     if (!result.success) return reply.code(400).send({ error: 'invalid AI settings' });
-    const settings = await settingsStore.update(result.data);
-    return { settings, credentials: await settingsStore.listCredentials() };
+    try {
+      const defaults = result.data.defaultModels as UpdateProjectModelDefaultsInput | undefined;
+      const hasUnboundDefault = defaults
+        ? Object.values(defaults).some(
+            (selection) =>
+              selection !== null &&
+              selection !== undefined &&
+              (typeof selection === 'string' || !selection.credentialId),
+          )
+        : false;
+      if (
+        defaults &&
+        hasUnboundDefault &&
+        (result.data.baseUrl !== undefined || result.data.apiKey !== undefined)
+      ) {
+        throw new AiSettingsError(
+          'model_unavailable',
+          '更换 API Key 后请先刷新模型目录，再保存未绑定凭据的默认模型',
+        );
+      }
+      if (defaults) {
+        await validateProjectModelDefaults({
+          settingsStore,
+          defaults,
+          allowVirtualMockModels: providerName === 'mock' && process.env.NODE_ENV !== 'production',
+          requireCredentialReferences: providerName === 'newapi',
+          unboundCredentialScope: 'active',
+        });
+      }
+      const settings = await settingsStore.update(result.data);
+      return { settings, credentials: await settingsStore.listCredentials() };
+    } catch (error) {
+      if (error instanceof AiCredentialNotFoundError) {
+        return reply.code(404).send({ error: 'credential not found', code: error.code });
+      }
+      if (error instanceof AiSettingsError) {
+        return reply.code(400).send({ error: error.message, code: error.code });
+      }
+      throw error;
+    }
   });
 
   app.get('/v1/settings/ai/credentials', async (request, reply) => {
@@ -773,24 +1225,62 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (!canManagePlatformSettings(requestPrincipals, requestSessions, request)) {
       return reply.code(403).send({ error: 'platform credential access is not permitted' });
     }
+    const body = z
+      .object({ credentialId: z.string().uuid().optional() })
+      .strict()
+      .optional()
+      .safeParse(request.body);
+    if (!body.success) return reply.code(400).send({ error: 'invalid model refresh request' });
     try {
-      return { models: await settingsStore.refreshModels() };
+      return { models: await settingsStore.refreshModels(body.data?.credentialId) };
     } catch (error) {
+      if (error instanceof AiCredentialNotFoundError) {
+        return reply.code(404).send({ error: 'credential not found', code: error.code });
+      }
+      request.log.warn(
+        { err: sanitizeExceptionForObservability(error), requestId: request.id },
+        'model catalog refresh failed',
+      );
       return reply
         .code(502)
-        .send({ error: error instanceof Error ? error.message : '模型刷新失败' });
+        .send({ error: 'model catalog refresh failed', code: 'upstream_error' });
     }
   });
 
-  app.get<{ Querystring: { mediaType?: string } }>('/v1/models', async (request, reply) => {
-    if (
-      request.query.mediaType &&
-      !['text', 'image', 'audio', 'video'].includes(request.query.mediaType)
-    ) {
-      return reply.code(400).send({ error: 'invalid media type' });
-    }
-    return { models: await settingsStore.listModels(request.query.mediaType as never) };
-  });
+  app.get<{ Querystring: { credentialId?: string; mediaType?: string } }>(
+    '/v1/models',
+    async (request, reply) => {
+      const query = z
+        .object({
+          credentialId: z.string().uuid().optional(),
+          mediaType: z.enum(['text', 'image', 'audio', 'video']).optional(),
+        })
+        .safeParse(request.query);
+      if (!query.success) return reply.code(400).send({ error: 'invalid model query' });
+      if (
+        query.data.credentialId &&
+        !canManagePlatformSettings(requestPrincipals, requestSessions, request)
+      ) {
+        return reply.code(403).send({ error: 'platform credential access is not permitted' });
+      }
+      if (
+        query.data.credentialId &&
+        !(await settingsStore.hasCredential(query.data.credentialId))
+      ) {
+        return reply.code(404).send({ error: 'credential not found' });
+      }
+      try {
+        return {
+          models: await settingsStore.listModels(query.data.mediaType, query.data.credentialId),
+        };
+      } catch (error) {
+        if (error instanceof AiCredentialNotFoundError) {
+          return reply.code(404).send({ error: 'credential not found', code: error.code });
+        }
+        throw error;
+      }
+    },
+  );
 
   app.post('/v1/projects', async (request, reply) => {
     const result = z.object({ name: z.string().trim().min(1).max(120) }).safeParse(request.body);
@@ -962,7 +1452,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         ) {
           return reply.code(413).send({ error: error.message, code: 'export_limit_exceeded' });
         }
-        request.log.error({ err: error, projectId }, 'failed to export project results');
+        request.log.error(
+          { err: sanitizeExceptionForObservability(error), projectId },
+          'failed to export project results',
+        );
         return reply
           .code(500)
           .send({ error: 'failed to export project results', code: 'export_failed' });
@@ -987,25 +1480,85 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     async (request, reply) => {
       const result = z
         .object({
-          text: z.string().trim().min(1).nullable().optional(),
-          image: z.string().trim().min(1).nullable().optional(),
-          audio: z.string().trim().min(1).nullable().optional(),
-          video: z.string().trim().min(1).nullable().optional(),
+          text: z
+            .union([
+              z.string().trim().min(1),
+              z
+                .object({
+                  modelAlias: z.string().trim().min(1),
+                  credentialId: z.string().trim().min(1).optional(),
+                })
+                .strict(),
+            ])
+            .nullable()
+            .optional(),
+          image: z
+            .union([
+              z.string().trim().min(1),
+              z
+                .object({
+                  modelAlias: z.string().trim().min(1),
+                  credentialId: z.string().trim().min(1).optional(),
+                })
+                .strict(),
+            ])
+            .nullable()
+            .optional(),
+          audio: z
+            .union([
+              z.string().trim().min(1),
+              z
+                .object({
+                  modelAlias: z.string().trim().min(1),
+                  credentialId: z.string().trim().min(1).optional(),
+                })
+                .strict(),
+            ])
+            .nullable()
+            .optional(),
+          video: z
+            .union([
+              z.string().trim().min(1),
+              z
+                .object({
+                  modelAlias: z.string().trim().min(1),
+                  credentialId: z.string().trim().min(1).optional(),
+                })
+                .strict(),
+            ])
+            .nullable()
+            .optional(),
         })
         .strict()
         .safeParse(request.body);
       if (!result.success) return reply.code(400).send({ error: 'invalid project model defaults' });
 
+      const scope = projectScope(requestPrincipals, request);
+      const project = await projectStore.get(request.params.projectId, scope);
+      if (!project) return reply.code(404).send({ error: 'project not found' });
+
       try {
+        await validateProjectModelDefaults({
+          settingsStore,
+          defaults: result.data as UpdateProjectModelDefaultsInput,
+          allowVirtualMockModels: providerName === 'mock' && process.env.NODE_ENV !== 'production',
+          requireCredentialReferences: providerName === 'newapi',
+        });
         const defaults = await projectStore.updateModelDefaults(
           request.params.projectId,
           result.data as UpdateProjectModelDefaultsInput,
-          projectScope(requestPrincipals, request),
+          scope,
         );
         return { defaults };
       } catch (error) {
         if (error instanceof ProjectStoreError && error.code === 'not_found') {
           return reply.code(404).send({ error: error.message });
+        }
+        if (error instanceof AiCredentialNotFoundError) {
+          return reply.code(404).send({ error: 'credential not found', code: error.code });
+        }
+        if (error instanceof AiSettingsError) {
+          return reply.code(400).send({ error: error.message, code: error.code });
         }
         throw error;
       }
@@ -1019,7 +1572,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       const project = await projectStore.get(projectId, projectScope(requestPrincipals, request));
       if (!project) return reply.code(404).send({ error: 'project not found' });
 
-      return { runs: await runService.listByProject(projectId) };
+      return { runs: (await runService.listByProject(projectId)).map(toPublicRunRecord) };
     },
   );
 
@@ -1030,8 +1583,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       const project = await projectStore.get(projectId, projectScope(requestPrincipals, request));
       if (!project) return reply.code(404).send({ error: 'project not found' });
 
+      // reply.hijack() bypasses Fastify's normal serializer, including the
+      // point where reply headers are copied to the raw response. Preserve
+      // CORS/rate-limit headers before taking ownership of the SSE stream.
+      const responseHeaders = reply.getHeaders();
       reply.hijack();
       const response = reply.raw;
+      for (const [name, value] of Object.entries(responseHeaders)) {
+        if (value !== undefined) response.setHeader(name, value);
+      }
       response.writeHead(200, {
         'cache-control': 'no-cache, no-transform',
         connection: 'keep-alive',
@@ -1108,13 +1668,22 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         try {
           const runs = await runService.listByProject(projectId);
           for (const run of runs) {
-            const serialized = JSON.stringify(run);
+            const publicRun = toPublicRunEvent(run);
+            const serialized = JSON.stringify(publicRun);
             if (lastSeen.get(run.id) === serialized) continue;
             lastSeen.set(run.id, serialized);
-            write('run.updated', run);
+            write('run.updated', publicRun);
           }
         } catch (error) {
-          write('error', { message: error instanceof Error ? error.message : '事件读取失败' });
+          request.log.error(
+            { err: sanitizeExceptionForObservability(error), requestId: request.id },
+            'SSE run event read failed',
+          );
+          write('error', {
+            error: 'internal server error',
+            code: 'internal_error',
+            requestId: request.id,
+          });
         } finally {
           publishing = false;
         }
@@ -1167,6 +1736,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       .object({
         projectId: z.string().min(1),
         modelAlias: z.string().trim().min(1).max(160).optional(),
+        credentialId: z.string().uuid().optional(),
         idempotencyKey: z.string().trim().min(1).max(200).optional(),
         parameters: z.record(z.unknown()).optional(),
       })
@@ -1176,6 +1746,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     }
 
     const scope = projectScope(requestPrincipals, request);
+    // Running with an already configured credential does not expose or mutate
+    // its secret. Regular project users may select the credential bound to a
+    // node, while listing, activating and editing credentials remains admin-only.
+    if (body.data.credentialId && !(await settingsStore.hasCredential(body.data.credentialId))) {
+      return reply.code(404).send({ error: 'credential not found' });
+    }
     const canvas = await projectStore.getCanvas(body.data.projectId, scope);
     if (!canvas) return reply.code(404).send({ error: 'project not found' });
 
@@ -1199,8 +1775,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         canvas,
         targetNodeId: request.params.nodeId,
         ...(body.data.modelAlias ? { requestModelAlias: body.data.modelAlias } : {}),
+        ...(body.data.credentialId ? { credentialId: body.data.credentialId } : {}),
         ...(projectDefaults ? { projectDefaults } : {}),
         allowVirtualMockModels: providerName === 'mock' && process.env.NODE_ENV !== 'production',
+        requireCredentialReferences: providerName === 'newapi',
       });
       const estimatedCost = quoteModelCost(
         modelResolution.targetModel?.price,
@@ -1216,13 +1794,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         projectId: body.data.projectId,
         ...(principal?.userId ? { ownerId: principal.userId } : {}),
       });
-      const credential = await settingsStore.getCredentialReference();
+      const credential = modelResolution.nodeCredentialReferences[request.params.nodeId];
       const snapshot = createRunSnapshot(body.data.projectId, canvas, request.params.nodeId, {
         ...body.data,
         modelAlias: modelResolution.targetModelAlias,
         nodeModelAliases: modelResolution.nodeModelAliases,
+        ...(Object.keys(modelResolution.nodeCredentialReferences).length > 0
+          ? { nodeCredentialReferences: modelResolution.nodeCredentialReferences }
+          : {}),
         frozenAssetRefs,
-        ...credential,
+        ...(credential ?? {}),
       });
       const headerIdempotencyKey = request.headers['idempotency-key'];
       const idempotencyKey =
@@ -1248,7 +1829,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         },
         'run queued',
       );
-      return reply.code(202).send({ run });
+      return reply.code(202).send({ run: toPublicRunRecord(run) });
     } catch (error) {
       if (
         error instanceof RunServiceError &&
@@ -1260,6 +1841,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       }
       if (error instanceof AiSettingsError) {
         return reply.code(400).send({ error: error.message, code: error.code });
+      }
+      if (error instanceof AiCredentialNotFoundError) {
+        return reply.code(404).send({ error: 'credential not found', code: error.code });
       }
       if (error instanceof RunAssetFreezeError) {
         return reply.code(400).send({ error: error.message, code: error.code });
@@ -1279,7 +1863,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (!(await projectStore.get(run.projectId, projectScope(requestPrincipals, request)))) {
       return reply.code(404).send({ error: 'run not found' });
     }
-    return { run };
+    return { run: toPublicRunRecord(run) };
   });
 
   app.post<{ Params: { runId: string } }>('/v1/runs/:runId/retry', async (request, reply) => {
@@ -1292,7 +1876,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         return reply.code(404).send({ error: 'run not found' });
       }
       const run = await runService.retry(request.params.runId);
-      return reply.code(202).send({ run });
+      return reply.code(202).send({ run: toPublicRunRecord(run) });
     } catch (error) {
       if (error instanceof RunServiceError) {
         return reply.code(error.code === 'not_found' ? 404 : 409).send({ error: error.message });
@@ -1311,7 +1895,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         return reply.code(404).send({ error: 'run not found' });
       }
       const run = await runService.cancel(request.params.runId);
-      return reply.code(202).send({ run });
+      return reply.code(202).send({ run: toPublicRunRecord(run) });
     } catch (error) {
       if (error instanceof RunServiceError) {
         return reply.code(error.code === 'not_found' ? 404 : 409).send({ error: error.message });
@@ -2014,12 +2598,89 @@ function verifyWebhookSignature(payload: unknown, signature: string, secret: str
   return safeEqual(normalized, expected);
 }
 
+function toPublicRunRecord(run: RunRecord): PublicRunRecord {
+  const result = run.result;
+  return {
+    id: run.id,
+    projectId: run.projectId,
+    targetNodeId: run.targetNodeId,
+    status: run.status,
+    progress: run.progress,
+    attempt: run.attempt,
+    provider: run.provider,
+    modelAlias: run.modelAlias,
+    snapshot: {
+      canvasRevision: run.snapshot.canvasRevision,
+      inputCount: run.snapshot.inputs.length,
+      inputs: Array.from({ length: run.snapshot.inputs.length }, () => null),
+    },
+    ...(result
+      ? {
+          result: {
+            provider: result.provider,
+            summary: result.summary,
+            targetNodeId: result.targetNodeId,
+            mediaType: result.mediaType,
+            inputCount: result.inputCount,
+            ...(result.asset ? { asset: toPublicRunResultAsset(result.asset) } : {}),
+          },
+        }
+      : {}),
+    ...(run.error ? { error: toPublicRunError(run.error) } : {}),
+    ...(run.retryOf ? { retryOf: run.retryOf } : {}),
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt,
+  };
+}
+
+function toPublicRunEvent(run: RunRecord): PublicRunEvent {
+  const { snapshot: _snapshot, ...event } = toPublicRunRecord(run);
+  return event;
+}
+
+function toPublicRunResultAsset(asset: RunResultAsset): PublicRunResultAsset {
+  return {
+    assetId: asset.assetId,
+    ...(asset.version !== undefined ? { version: asset.version } : {}),
+    ...(asset.mimeType ? { mimeType: asset.mimeType } : {}),
+    ...(asset.sizeBytes !== undefined ? { sizeBytes: asset.sizeBytes } : {}),
+    ...(asset.sha256 ? { sha256: asset.sha256 } : {}),
+  };
+}
+
+function toPublicRunError(value: string): string {
+  return redactPublicRunErrorUrls(
+    sanitizeExceptionForObservability(new Error(value)).message,
+  ).slice(0, 2_000);
+}
+
+function redactPublicRunErrorUrls(value: string): string {
+  return value
+    .replace(/\b(?:https?|wss?):\/\/[^\s"'<>]+/gi, '[REDACTED_URL]')
+    .replace(/\bdata:[^\s"'<>]+/gi, '[REDACTED_URL]')
+    .replace(
+      /\b\/v1\/assets\/[^\s"'<>?#]+(?:\/versions\/\d+)?\/content[?#][^\s"'<>]*/gi,
+      '[REDACTED_URL]',
+    );
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
 function isErrorCode(value: unknown): value is { code: string } {
   return isRecord(value) && typeof value.code === 'string';
+}
+
+function errorStatusCode(value: unknown): number {
+  if (!isRecord(value)) return 500;
+  const statusCode = value.statusCode;
+  return typeof statusCode === 'number' &&
+    Number.isInteger(statusCode) &&
+    statusCode >= 400 &&
+    statusCode <= 599
+    ? statusCode
+    : 500;
 }
 
 function parseByteLimit(value: string | undefined, fallback: number): number {
@@ -2050,7 +2711,25 @@ function parseCorsOrigins(value: string | undefined): string[] {
   return value
     .split(',')
     .map((origin) => origin.trim())
-    .filter((origin) => origin.length > 0);
+    .filter((origin) => origin.length > 0 && origin !== '*');
+}
+
+function resolveCorsOrigins(
+  value: string | undefined,
+  nodeEnv: string | undefined,
+  webPortValue?: string,
+): string[] {
+  const configured = parseCorsOrigins(value);
+  if (nodeEnv === 'production') return [...new Set(configured)];
+  const webPort = parseLocalWebPort(webPortValue);
+  return [
+    ...new Set([`http://127.0.0.1:${webPort}`, `http://localhost:${webPort}`, ...configured]),
+  ];
+}
+
+function parseLocalWebPort(value: string | undefined): number {
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 1 && port <= 65_535 ? port : 5173;
 }
 
 function getRequestedUnits(parameters: Record<string, unknown> | undefined): number | string {
@@ -2067,7 +2746,10 @@ async function tryExtractMediaMetadata(
     const metadata = await extractor.extract(input);
     return Object.keys(metadata).length > 0 ? metadata : undefined;
   } catch (error) {
-    logger.warn({ err: error, mimeType: input.mimeType }, 'media metadata extraction failed');
+    logger.warn(
+      { err: sanitizeExceptionForObservability(error), mimeType: input.mimeType },
+      'media metadata extraction failed',
+    );
     return undefined;
   }
 }
@@ -2089,7 +2771,10 @@ async function tryGenerateMediaDerivatives(
         ]),
     );
   } catch (error) {
-    logger.warn({ err: error, mimeType: input.mimeType }, 'media derivative generation failed');
+    logger.warn(
+      { err: sanitizeExceptionForObservability(error), mimeType: input.mimeType },
+      'media derivative generation failed',
+    );
     return undefined;
   }
 }

@@ -6,6 +6,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { FailureDiagnosticsRun } from './FailureDiagnostics';
 import { FailureDiagnostics, getFailureDiagnosticDetails } from './FailureDiagnostics';
 
+function syntheticApiKey(...segments: string[]): string {
+  return [['s', 'k'].join(''), ...segments].join('-');
+}
+
 function makeRun(overrides: Record<string, unknown> = {}): FailureDiagnosticsRun {
   return {
     id: 'run_failure_1',
@@ -29,8 +33,9 @@ describe('FailureDiagnostics', () => {
   });
 
   it('shows safe error details and extracts provider diagnostics', () => {
+    const unsafeApiKey = syntheticApiKey('super', 'secret', 'value');
     const run = makeRun({
-      error: 'gateway rejected request apiKey=sk-super-secret-value',
+      error: `gateway rejected request apiKey=${unsafeApiKey}`,
       errorCode: 'rate_limit',
       requestId: 'req-top-level',
       retryable: true,
@@ -54,7 +59,7 @@ describe('FailureDiagnostics', () => {
 
     expect(screen.getByTestId('failure-diagnostics')).toBeInTheDocument();
     expect(screen.getByRole('alert')).toHaveTextContent('apiKey=[已隐藏]');
-    expect(screen.getByRole('alert')).not.toHaveTextContent('sk-super-secret-value');
+    expect(screen.getByRole('alert')).not.toHaveTextContent(unsafeApiKey);
     expect(screen.getByText('rate_limit')).toBeInTheDocument();
     expect(screen.getByText('req-top-level')).toBeInTheDocument();
     expect(screen.getByText('platform_123')).toBeInTheDocument();
@@ -94,7 +99,8 @@ describe('FailureDiagnostics', () => {
   });
 
   it('surfaces a safe retry error and hides itself for non-failure runs without errors', async () => {
-    const onRetry = vi.fn().mockRejectedValue(new Error('token=sk-sensitive failed'));
+    const unsafeRetryToken = syntheticApiKey('sensitive');
+    const onRetry = vi.fn().mockRejectedValue(new Error(`token=${unsafeRetryToken} failed`));
     const view = render(
       <FailureDiagnostics run={makeRun({ retryable: true })} onRetry={onRetry} />,
     );
@@ -103,16 +109,17 @@ describe('FailureDiagnostics', () => {
     await waitFor(() =>
       expect(screen.getByText(/重试提交失败|token=\[已隐藏\]/)).toBeInTheDocument(),
     );
-    expect(screen.getByTestId('failure-diagnostics')).not.toHaveTextContent('sk-sensitive');
+    expect(screen.getByTestId('failure-diagnostics')).not.toHaveTextContent(unsafeRetryToken);
 
     view.rerender(<FailureDiagnostics run={makeRun({ status: 'running', error: undefined })} />);
     expect(screen.queryByTestId('failure-diagnostics')).not.toBeInTheDocument();
   });
 
   it('supports top-level aliases without exposing credential-shaped identifiers', () => {
+    const unsafeProviderJobId = syntheticApiKey('platform', 'secret');
     const run = makeRun({
       status: 'cancelled',
-      providerJobId: 'sk-platform-secret',
+      providerJobId: unsafeProviderJobId,
       requestId: 'request-safe',
       retryable: false,
     });

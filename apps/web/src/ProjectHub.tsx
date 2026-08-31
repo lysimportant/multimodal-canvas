@@ -151,6 +151,10 @@ export function ProjectHub({
       value: editingName,
       onCommit: setEditingName,
     });
+  const { bind: queryBinding } = useImeDraft<HTMLInputElement>({
+    value: query,
+    onCommit: setQuery,
+  });
 
   onCloseRef.current = onClose;
   isBusyRef.current = isBusy;
@@ -370,13 +374,7 @@ export function ProjectHub({
         <div className="project-hub-toolbar">
           <label className="project-hub-search">
             <Search size={15} aria-hidden="true" />
-            <input
-              type="search"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索项目"
-              aria-label="搜索项目"
-            />
+            <input type="search" {...queryBinding} placeholder="搜索项目" aria-label="搜索项目" />
           </label>
           <label className="project-hub-sort">
             <ArrowDownUp size={14} aria-hidden="true" />

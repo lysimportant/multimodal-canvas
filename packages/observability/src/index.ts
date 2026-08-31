@@ -21,6 +21,10 @@ export type Observability = {
   captureException(error: unknown, attributes?: ObservabilityAttributes): void;
 };
 
+const MAX_EXCEPTION_MESSAGE_LENGTH = 512;
+const MAX_EXCEPTION_STACK_LENGTH = 8_192;
+const MAX_EXCEPTION_CAUSE_DEPTH = 5;
+
 const noopSpan: ObservabilitySpan = {
   setAttribute: () => undefined,
   recordException: () => undefined,
@@ -249,27 +253,89 @@ export function createLoggingObservability(
   };
 }
 
+/**
+ * Create a detached exception for telemetry adapters. Application code can
+ * keep handling the original error while vendor integrations only receive a
+ * bounded, credential-redacted diagnostic copy.
+ */
+export function sanitizeExceptionForObservability(error: unknown): Error {
+  return sanitizeExceptionValue(error, new Set<Error>(), 0);
+}
+
+function sanitizeExceptionValue(error: unknown, seen: Set<Error>, depth: number): Error {
+  if (depth >= MAX_EXCEPTION_CAUSE_DEPTH) {
+    return new Error('Exception cause depth exceeded');
+  }
+  if (!isErrorValue(error)) {
+    return new Error(
+      redactSensitiveText(safeString(error, 'Unknown exception')).slice(
+        0,
+        MAX_EXCEPTION_MESSAGE_LENGTH,
+      ),
+    );
+  }
+  if (seen.has(error)) return new Error('Circular exception cause');
+
+  seen.add(error);
+  try {
+    const message = redactSensitiveText(
+      safeString(readErrorProperty(error, 'message'), 'Unknown exception'),
+    ).slice(0, MAX_EXCEPTION_MESSAGE_LENGTH);
+    const rawCause = readErrorProperty(error, 'cause');
+    const cause =
+      rawCause === undefined ? undefined : sanitizeExceptionValue(rawCause, seen, depth + 1);
+    const sanitized = cause === undefined ? new Error(message) : new Error(message, { cause });
+    const name = redactSensitiveText(safeString(readErrorProperty(error, 'name'), 'Error')).slice(
+      0,
+      128,
+    );
+    sanitized.name = name || 'Error';
+
+    const stack = readErrorProperty(error, 'stack');
+    if (typeof stack === 'string') {
+      sanitized.stack = redactSensitiveText(stack).slice(0, MAX_EXCEPTION_STACK_LENGTH);
+    }
+    return sanitized;
+  } finally {
+    seen.delete(error);
+  }
+}
+
+function isErrorValue(value: unknown): value is Error {
+  try {
+    return value instanceof Error;
+  } catch {
+    return false;
+  }
+}
+
+function readErrorProperty(
+  error: Error,
+  property: 'name' | 'message' | 'stack' | 'cause',
+): unknown {
+  try {
+    return error[property];
+  } catch {
+    return undefined;
+  }
+}
+
+function safeString(value: unknown, fallback: string): string {
+  try {
+    return String(value);
+  } catch {
+    return fallback;
+  }
+}
+
 function serializeException(error: unknown): {
   errorName?: string;
   errorMessage: string;
 } {
-  let source: string;
-  try {
-    source = String(error instanceof Error ? error.message : error);
-  } catch {
-    source = 'Unknown exception';
-  }
-  let errorName: string | undefined;
-  if (error instanceof Error) {
-    try {
-      errorName = redactSensitiveText(error.name).slice(0, 128);
-    } catch {
-      errorName = undefined;
-    }
-  }
+  const sanitized = sanitizeExceptionForObservability(error);
   return {
-    ...(errorName ? { errorName } : {}),
-    errorMessage: redactSensitiveText(source).slice(0, 512),
+    ...(sanitized.name ? { errorName: sanitized.name } : {}),
+    errorMessage: sanitized.message,
   };
 }
 
@@ -310,9 +376,17 @@ function isSensitiveAttributeName(key: string): boolean {
 
 function redactSensitiveText(value: string): string {
   return value
+    .replace(
+      /(\b"?authorization"?\s*[:=]\s*"?)((?:bearer|basic|token)\s+)[^"',;}\s]+/gi,
+      '$1$2[REDACTED]',
+    )
+    .replace(
+      /(\b"?authorization"?\s*[:=]\s*"?)(?!(?:bearer|basic|token)\b)[^"',;}\s]+/gi,
+      '$1[REDACTED]',
+    )
     .replace(/Bearer\s+[^\s,;}]+/gi, 'Bearer [REDACTED]')
     .replace(
-      /(\"?(?:api[_-]?key|authorization|access[_-]?token|refresh[_-]?token)\"?\s*[:=]\s*\"?)(?!Bearer\b)[^\"',;}\s]+/gi,
+      /(\b"?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|client[_-]?secret|credential|secret)"?\s*[:=]\s*"?)[^"',;}\s]+/gi,
       '$1[REDACTED]',
     );
 }

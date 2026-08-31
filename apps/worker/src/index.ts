@@ -25,6 +25,7 @@ import {
 } from './logger';
 import {
   createEnvironmentObservability,
+  sanitizeExceptionForObservability,
   type Observability,
   type ObservabilitySpan,
 } from '@multimodal-canvas/observability';
@@ -53,6 +54,7 @@ import {
   workflowNodeIdFromProviderJob,
   workflowNodeState,
   workflowSnapshotFingerprint,
+  workflowSnapshotFingerprintV1,
   WorkflowNodeConfigurationError,
 } from './workflow-dag';
 
@@ -221,6 +223,19 @@ export function normalizeProviderExecution(
   return { result: value as RunResult };
 }
 
+function snapshotForProvider(snapshot: RunSnapshot, provider: string): RunSnapshot {
+  if (
+    provider !== 'mock' ||
+    snapshot.nodeCredentialReferences === undefined ||
+    Object.keys(snapshot.nodeCredentialReferences).length > 0
+  ) {
+    return snapshot;
+  }
+  const withoutCredentialReferences = { ...snapshot };
+  delete withoutCredentialReferences.nodeCredentialReferences;
+  return withoutCredentialReferences;
+}
+
 export function createRunWorker(options: {
   connection: ConnectionOptions;
   queueName?: string;
@@ -252,12 +267,11 @@ export function createRunWorker(options: {
     cancellationSignal: AbortSignal,
   ): Promise<ProviderExecutor | undefined> => {
     if (options.providerName !== 'newapi') return undefined;
-    if (video && options.videoProvider) return options.videoProvider;
-    if (options.provider) return options.provider;
     const credentialReference: WorkerCredentialReference = {
       ...(snapshot.credentialId ? { credentialId: snapshot.credentialId } : {}),
       ...(snapshot.credentialVersion ? { credentialVersion: snapshot.credentialVersion } : {}),
     };
+    let persistedCredentials: WorkerProviderCredentials | undefined;
     if (options.persistence) {
       // A persisted worker must never silently fall back to its process
       // environment: that key may have changed after this run was queued.
@@ -273,7 +287,14 @@ export function createRunWorker(options: {
           `New API credential snapshot ${credentialReference.credentialId}@${credentialReference.credentialVersion} is unavailable`,
         );
       }
-      const providers = createNewApiProviders(credentials, cancellationSignal);
+      persistedCredentials = credentials;
+    }
+    // Credential validation is deliberately before injected providers too:
+    // tests and process adapters must not bypass the durable snapshot boundary.
+    if (video && options.videoProvider) return options.videoProvider;
+    if (options.provider) return options.provider;
+    if (persistedCredentials) {
+      const providers = createNewApiProviders(persistedCredentials, cancellationSignal);
       return video ? providers.video : providers.standard;
     }
     const providers = createNewApiProvidersFromEnvironment(cancellationSignal);
@@ -285,7 +306,47 @@ export function createRunWorker(options: {
     name,
     async (job) => {
       const initialData = runJobDataSchema.parse(job.data);
-      const snapshotFingerprint = workflowSnapshotFingerprint(initialData.snapshot);
+      // BullMQ job data is mutable while a provider is running. Detach the
+      // submitted workflow snapshot once, then only merge the explicitly
+      // mutable lifecycle fields back into it on subsequent reads.
+      const immutableData = structuredClone(initialData);
+      const executionSnapshot = immutableData.snapshot;
+      const readJobData = () => {
+        const mutableData: Record<string, unknown> = isRecord(job.data) ? job.data : {};
+        return runJobDataSchema.parse({
+          ...immutableData,
+          workflowState:
+            'workflowState' in mutableData
+              ? mutableData.workflowState
+              : immutableData.workflowState,
+          providerJob:
+            'providerJob' in mutableData ? mutableData.providerJob : immutableData.providerJob,
+          cancelRequested:
+            typeof mutableData.cancelRequested === 'boolean'
+              ? mutableData.cancelRequested
+              : immutableData.cancelRequested,
+        });
+      };
+      const snapshotFingerprints = {
+        current: workflowSnapshotFingerprint(executionSnapshot),
+        legacy: workflowSnapshotFingerprintV1(executionSnapshot),
+      };
+      const snapshotFingerprint = snapshotFingerprints.current;
+      // The queue payload may contain a stale or cross-provider platform task
+      // identity. Only carry it into the immutable workflow state when its
+      // provider and snapshot provenance are trusted. A retry must recover a
+      // missing identity from the predecessor instead of trusting an
+      // unscoped platformJobId supplied on the new job.
+      const immutableProviderJob =
+        immutableData.providerJob &&
+        immutableData.providerJob.provider === initialData.provider &&
+        providerJobMatchesSnapshot(
+          immutableData.providerJob,
+          snapshotFingerprints,
+          !initialData.retryOf,
+        )
+          ? immutableData.providerJob
+          : undefined;
       const runSpan: ObservabilitySpan = observability.startSpan('run.process', {
         'run.id': initialData.runId,
         'worker.job_id': String(job.id ?? ''),
@@ -307,9 +368,18 @@ export function createRunWorker(options: {
       const databaseRunId = await resolveDatabaseRunId(
         options.resolveDatabaseRunId,
         initialData.runId,
-        initialData.snapshot,
+        executionSnapshot,
         options.onPersistenceError,
       );
+      if (options.persistence?.ensureRun && !databaseRunId) {
+        // A persistence adapter with run snapshots must resolve a durable ID
+        // before any provider work can begin. Never treat resolver failure as
+        // an opt-out from the durable idempotency boundary.
+        const error = new Error('durable run persistence requires a resolvable database run id');
+        runLogger.error(serializeWorkerError(error), 'run snapshot persistence is unavailable');
+        options.onPersistenceError?.(error);
+        throw error;
+      }
       // Retries inherit completed node results and any still-live asynchronous
       // platform tasks from the predecessor. Both sources are immutable: the
       // worker never reads the current canvas while this run is executing.
@@ -326,27 +396,27 @@ export function createRunWorker(options: {
             : undefined;
           const predecessorMatchesSnapshot =
             predecessorData?.success &&
-            workflowSnapshotFingerprint(predecessorData.data.snapshot) === snapshotFingerprint;
+            workflowSnapshotsMatch(predecessorData.data.snapshot, executionSnapshot);
           if (predecessorMatchesSnapshot && predecessorData?.success) {
             recoveredWorkflowState = predecessorData.data.workflowState;
             for (const state of recoveredWorkflowState?.nodes ?? []) {
               if (
                 state.providerJob?.provider === initialData.provider &&
-                providerJobMatchesSnapshot(state.providerJob, snapshotFingerprint, true)
+                providerJobMatchesSnapshot(state.providerJob, snapshotFingerprints, true)
               ) {
                 recoveredWorkflowProviderJobs.set(state.nodeId, state.providerJob);
               }
             }
             const predecessorProviderJob = predecessorData.data.providerJob;
             if (
-              !initialData.providerJob?.platformJobId &&
+              !immutableProviderJob?.platformJobId &&
               canResumeProviderJob(predecessorProviderJob) &&
               predecessorProviderJob.provider === initialData.provider &&
-              providerJobMatchesSnapshot(predecessorProviderJob, snapshotFingerprint, true)
+              providerJobMatchesSnapshot(predecessorProviderJob, snapshotFingerprints, true)
             ) {
               recoveredProviderJob = predecessorProviderJob;
               recoveredWorkflowProviderJobs.set(
-                initialData.snapshot.targetNodeId,
+                executionSnapshot.targetNodeId,
                 predecessorProviderJob,
               );
             }
@@ -361,12 +431,12 @@ export function createRunWorker(options: {
             const persistedJobs = await options.persistence.findProviderJobsByRunId(
               initialData.retryOf,
             );
-            const snapshotNodeIds = new Set(initialData.snapshot.nodes.map((node) => node.id));
+            const snapshotNodeIds = new Set(executionSnapshot.nodes.map((node) => node.id));
             for (const persistedJob of persistedJobs) {
               if (persistedJob.provider !== initialData.provider) continue;
-              if (!providerJobMatchesSnapshot(persistedJob, snapshotFingerprint)) continue;
+              if (!providerJobMatchesSnapshot(persistedJob, snapshotFingerprints)) continue;
               const nodeId =
-                workflowNodeIdFromProviderJob(persistedJob) ?? initialData.snapshot.targetNodeId;
+                workflowNodeIdFromProviderJob(persistedJob) ?? executionSnapshot.targetNodeId;
               if (!snapshotNodeIds.has(nodeId)) continue;
               const queuedCandidate = recoveredWorkflowProviderJobs.get(nodeId);
               if (
@@ -378,17 +448,17 @@ export function createRunWorker(options: {
               recoveredWorkflowProviderJobs.set(nodeId, persistedJob);
             }
             const targetProviderJob = recoveredWorkflowProviderJobs.get(
-              initialData.snapshot.targetNodeId,
+              executionSnapshot.targetNodeId,
             );
             if (
-              !initialData.providerJob?.platformJobId &&
+              !immutableProviderJob?.platformJobId &&
               !recoveredProviderJob &&
               canResumeProviderJob(targetProviderJob)
             ) {
               recoveredProviderJob = targetProviderJob;
             }
           } else if (
-            !initialData.providerJob?.platformJobId &&
+            !immutableProviderJob?.platformJobId &&
             !recoveredProviderJob &&
             options.persistence?.findProviderJobByRunId
           ) {
@@ -398,11 +468,11 @@ export function createRunWorker(options: {
             if (
               canResumeProviderJob(persistedProviderJob) &&
               persistedProviderJob.provider === initialData.provider &&
-              providerJobMatchesSnapshot(persistedProviderJob, snapshotFingerprint)
+              providerJobMatchesSnapshot(persistedProviderJob, snapshotFingerprints)
             ) {
               recoveredProviderJob = persistedProviderJob;
               recoveredWorkflowProviderJobs.set(
-                initialData.snapshot.targetNodeId,
+                executionSnapshot.targetNodeId,
                 persistedProviderJob,
               );
             }
@@ -448,6 +518,7 @@ export function createRunWorker(options: {
         providerJob?: ProviderJob,
         result?: RunResult,
         error?: string,
+        strict = false,
       ) => {
         if (!options.persistence?.updateRun || !databaseRunId) return;
         try {
@@ -464,23 +535,27 @@ export function createRunWorker(options: {
             'run persistence failed',
           );
           options.onPersistenceError?.(persistenceError);
+          if (strict) throw persistenceError;
         }
       };
       if (options.persistence?.ensureRun && databaseRunId) {
         try {
           await options.persistence.ensureRun({
             runId: databaseRunId,
-            snapshot: initialData.snapshot,
+            snapshot: executionSnapshot,
             status: 'queued',
             attempt: initialData.attempt,
             provider: initialData.provider,
-            providerJob: initialData.providerJob,
+            providerJob: immutableProviderJob,
             retryOf: initialData.retryOf,
             idempotencyKey: initialData.idempotencyKey,
           });
         } catch (error) {
           runLogger.warn(serializeWorkerError(error), 'run snapshot persistence failed');
           options.onPersistenceError?.(error);
+          // A durable snapshot is the source of truth for recovery and
+          // idempotency. Do not submit a provider request without it.
+          throw error;
         }
       }
       const persistUsageStrict = async (
@@ -518,9 +593,9 @@ export function createRunWorker(options: {
         }
       };
       const initialProviderJobBase = sanitizeProviderJobRecord({
-        ...(initialData.providerJob ??
+        ...(immutableProviderJob ??
           createProviderJobRecord(initialData.runId, initialData.provider)),
-        ...(recoveredProviderJob?.platformJobId && !initialData.providerJob?.platformJobId
+        ...(recoveredProviderJob?.platformJobId && !immutableProviderJob?.platformJobId
           ? {
               platformJobId: recoveredProviderJob.platformJobId,
               payload: recoveredProviderJob.payload,
@@ -530,17 +605,17 @@ export function createRunWorker(options: {
       const initialProviderJob: ProviderJob = {
         ...initialProviderJobBase,
         payload: workflowProviderPayload(
-          initialData.snapshot.targetNodeId,
+          executionSnapshot.targetNodeId,
           initialProviderJobBase.payload,
           snapshotFingerprint,
         ),
       };
       let workflowState = createInitialWorkflowState(
-        initialData.snapshot,
+        executionSnapshot,
         initialProviderJob,
-        (initialData.retryOf ? undefined : initialData.workflowState) ?? recoveredWorkflowState,
+        (initialData.retryOf ? undefined : immutableData.workflowState) ?? recoveredWorkflowState,
       );
-      const executionOrder = workflowExecutionOrder(initialData.snapshot);
+      const executionOrder = workflowExecutionOrder(executionSnapshot);
       for (const node of executionOrder) {
         if (node.data.mode === 'source') continue;
         const currentState = workflowNodeState(workflowState, node.id);
@@ -555,11 +630,11 @@ export function createRunWorker(options: {
         const providerCandidates = [
           currentState?.providerJob,
           recoveredForNode,
-          node.id === initialData.snapshot.targetNodeId ? initialProviderJob : undefined,
+          node.id === executionSnapshot.targetNodeId ? initialProviderJob : undefined,
         ].filter(
           (candidate): candidate is ProviderJob =>
             candidate !== undefined &&
-            providerJobMatchesSnapshot(candidate, snapshotFingerprint, !initialData.retryOf),
+            providerJobMatchesSnapshot(candidate, snapshotFingerprints, !initialData.retryOf),
         );
         const cachedCandidate = providerCandidates.find((candidate) =>
           cachedWorkflowResult(candidate),
@@ -571,18 +646,18 @@ export function createRunWorker(options: {
         const cachedResult =
           (currentState?.result &&
           currentState.providerJob &&
-          providerJobMatchesSnapshot(currentState.providerJob, snapshotFingerprint, false)
+          providerJobMatchesSnapshot(currentState.providerJob, snapshotFingerprints, false)
             ? currentState.result
             : undefined) ?? cachedWorkflowResult(cachedCandidate);
         const localProviderJob = createWorkflowProviderJobRecord(
           initialData.runId,
-          initialData.snapshot.targetNodeId,
+          executionSnapshot.targetNodeId,
           node.id,
           initialData.provider,
         );
         const requestProviderJobId = resolveWorkflowRequestProviderJobId({
           retryOf: initialData.retryOf,
-          targetNodeId: initialData.snapshot.targetNodeId,
+          targetNodeId: executionSnapshot.targetNodeId,
           nodeId: node.id,
           provider: initialData.provider,
           current: currentState?.providerJob,
@@ -654,9 +729,9 @@ export function createRunWorker(options: {
         });
       }
       const targetWorkflowProviderJob =
-        workflowNodeState(workflowState, initialData.snapshot.targetNodeId)?.providerJob ??
+        workflowNodeState(workflowState, executionSnapshot.targetNodeId)?.providerJob ??
         initialProviderJob;
-      const initializedData = runJobDataSchema.parse(job.data);
+      const initializedData = readJobData();
       await job.updateData({
         ...initializedData,
         providerJob: targetWorkflowProviderJob,
@@ -668,7 +743,7 @@ export function createRunWorker(options: {
         if (await isCancellationRequested(queue, job.id)) {
           return false;
         }
-        const data = runJobDataSchema.parse(job.data);
+        const data = readJobData();
         const updatedAt = new Date().toISOString();
         const currentProviderJob =
           data.providerJob ?? createProviderJobRecord(data.runId, data.provider);
@@ -680,7 +755,7 @@ export function createRunWorker(options: {
                 status: status === 'queued' ? 'queued' : 'running',
                 progress,
                 payload: workflowProviderPayload(
-                  data.snapshot.targetNodeId,
+                  executionSnapshot.targetNodeId,
                   currentProviderJob.payload,
                   snapshotFingerprint,
                 ),
@@ -688,7 +763,7 @@ export function createRunWorker(options: {
               };
         let nextWorkflowState = data.workflowState;
         const targetState = nextWorkflowState
-          ? workflowNodeState(nextWorkflowState, data.snapshot.targetNodeId)
+          ? workflowNodeState(nextWorkflowState, executionSnapshot.targetNodeId)
           : undefined;
         if (nextWorkflowState && targetState && targetState.status !== 'succeeded') {
           nextWorkflowState = replaceWorkflowNodeState(nextWorkflowState, {
@@ -717,22 +792,22 @@ export function createRunWorker(options: {
         activeNodeId?: string,
         activeNodeProviderJob?: ProviderJob,
       ): Promise<RunJobResult> => {
-        const data = runJobDataSchema.parse(job.data);
+        const data = readJobData();
         const updatedAt = new Date().toISOString();
         const providerJob: ProviderJob = {
           ...(data.providerJob ?? createProviderJobRecord(data.runId, data.provider)),
           status: 'cancelled' as const,
           progress,
           payload: workflowProviderPayload(
-            data.snapshot.targetNodeId,
+            executionSnapshot.targetNodeId,
             data.providerJob?.payload,
             snapshotFingerprint,
           ),
           updatedAt,
         };
         let nextWorkflowState =
-          data.workflowState ?? createInitialWorkflowState(data.snapshot, providerJob);
-        const targetState = workflowNodeState(nextWorkflowState, data.snapshot.targetNodeId);
+          data.workflowState ?? createInitialWorkflowState(executionSnapshot, providerJob);
+        const targetState = workflowNodeState(nextWorkflowState, executionSnapshot.targetNodeId);
         if (targetState) {
           nextWorkflowState = replaceWorkflowNodeState(nextWorkflowState, {
             ...targetState,
@@ -741,14 +816,14 @@ export function createRunWorker(options: {
           });
         }
         let cancelledActiveProviderJob: ProviderJob | undefined;
-        if (activeNodeId && activeNodeId !== data.snapshot.targetNodeId) {
+        if (activeNodeId && activeNodeId !== executionSnapshot.targetNodeId) {
           const activeState = workflowNodeState(nextWorkflowState, activeNodeId);
           const currentActiveProviderJob =
             activeNodeProviderJob ??
             activeState?.providerJob ??
             createWorkflowProviderJobRecord(
               data.runId,
-              data.snapshot.targetNodeId,
+              executionSnapshot.targetNodeId,
               activeNodeId,
               data.provider,
             );
@@ -798,15 +873,15 @@ export function createRunWorker(options: {
         return markCancelled(80);
       }
 
-      const executionData = runJobDataSchema.parse(job.data);
+      const executionData = readJobData();
       const cancellationMonitor = startCancellationMonitor(queue, job.id, cancellationPollMs);
       const cancellationSignal = cancellationMonitor.controller.signal;
       let activeNodeId: string | undefined;
       let activeProviderJob: ProviderJob | undefined;
       let currentOverallProgress = 80;
       try {
-        assertWorkflowModelAliases(executionData.snapshot);
-        const executableNodes = workflowExecutionOrder(executionData.snapshot).filter(
+        assertWorkflowModelAliases(executionSnapshot);
+        const executableNodes = workflowExecutionOrder(executionSnapshot).filter(
           (node) => node.data.mode !== 'source',
         );
         const providerNodeCount = Math.max(1, executableNodes.length);
@@ -814,10 +889,10 @@ export function createRunWorker(options: {
         for (let nodeIndex = 0; nodeIndex < executableNodes.length; nodeIndex += 1) {
           const node = executableNodes[nodeIndex];
           if (!node) continue;
-          const currentData = runJobDataSchema.parse(job.data);
+          const currentData = readJobData();
           let currentWorkflowState =
             currentData.workflowState ??
-            createInitialWorkflowState(currentData.snapshot, currentData.providerJob);
+            createInitialWorkflowState(executionSnapshot, currentData.providerJob);
           const nodeState = workflowNodeState(currentWorkflowState, node.id);
           if (!nodeState) throw new Error(`workflow state is missing node: ${node.id}`);
           if (await isCancellationRequested(queue, job.id)) {
@@ -830,10 +905,10 @@ export function createRunWorker(options: {
             continue;
           }
 
-          for (const edge of currentData.snapshot.edges.filter(
+          for (const edge of executionSnapshot.edges.filter(
             (candidate) => candidate.targetNodeId === node.id,
           )) {
-            const source = currentData.snapshot.nodes.find(
+            const source = executionSnapshot.nodes.find(
               (candidate) => candidate.id === edge.sourceNodeId,
             );
             if (source?.data.enabled === false) continue;
@@ -847,7 +922,7 @@ export function createRunWorker(options: {
           }
 
           const nodeSnapshot = createNodeRunSnapshot(
-            currentData.snapshot,
+            snapshotForProvider(executionSnapshot, currentData.provider),
             currentWorkflowState,
             node.id,
           );
@@ -858,7 +933,7 @@ export function createRunWorker(options: {
           currentOverallProgress = Math.max(currentOverallProgress, nodeStartProgress);
           const localProviderJob = createWorkflowProviderJobRecord(
             currentData.runId,
-            currentData.snapshot.targetNodeId,
+            executionSnapshot.targetNodeId,
             node.id,
             currentData.provider,
           );
@@ -889,7 +964,7 @@ export function createRunWorker(options: {
           await job.updateData({
             ...currentData,
             workflowState: currentWorkflowState,
-            ...(node.id === currentData.snapshot.targetNodeId
+            ...(node.id === executionSnapshot.targetNodeId
               ? { providerJob }
               : { providerJob: currentData.providerJob }),
           });
@@ -928,10 +1003,10 @@ export function createRunWorker(options: {
                 signal: cancellationSignal,
                 onProviderJob: async (update) => {
                   if (cancellationSignal.aborted) return;
-                  const callbackData = runJobDataSchema.parse(job.data);
+                  const callbackData = readJobData();
                   let callbackWorkflowState =
                     callbackData.workflowState ??
-                    createInitialWorkflowState(callbackData.snapshot, callbackData.providerJob);
+                    createInitialWorkflowState(executionSnapshot, callbackData.providerJob);
                   const callbackState = workflowNodeState(callbackWorkflowState, node.id);
                   const currentNodeProviderJob = callbackState?.providerJob ?? providerJob;
                   const { payload: rawPayload, ...safeUpdate } = update;
@@ -982,7 +1057,7 @@ export function createRunWorker(options: {
                   await job.updateData({
                     ...callbackData,
                     workflowState: callbackWorkflowState,
-                    ...(node.id === callbackData.snapshot.targetNodeId
+                    ...(node.id === executionSnapshot.targetNodeId
                       ? { providerJob: merged }
                       : { providerJob: callbackData.providerJob }),
                   });
@@ -1008,10 +1083,10 @@ export function createRunWorker(options: {
                       Math.round(((nodeIndex + providerProgress / 100) / providerNodeCount) * 19),
                   );
                   currentOverallProgress = Math.max(currentOverallProgress, lifecycleProgress);
-                  const progressData = runJobDataSchema.parse(job.data);
+                  const progressData = readJobData();
                   let progressWorkflowState =
                     progressData.workflowState ??
-                    createInitialWorkflowState(progressData.snapshot, progressData.providerJob);
+                    createInitialWorkflowState(executionSnapshot, progressData.providerJob);
                   const progressState = workflowNodeState(progressWorkflowState, node.id);
                   const currentNodeProviderJob = progressState?.providerJob ?? providerJob;
                   const progressedProviderJob: ProviderJob = {
@@ -1037,7 +1112,7 @@ export function createRunWorker(options: {
                   await job.updateData({
                     ...progressData,
                     workflowState: progressWorkflowState,
-                    ...(node.id === progressData.snapshot.targetNodeId
+                    ...(node.id === executionSnapshot.targetNodeId
                       ? { providerJob: progressedProviderJob }
                       : { providerJob: progressData.providerJob }),
                   });
@@ -1106,10 +1181,10 @@ export function createRunWorker(options: {
             updatedAt: new Date().toISOString(),
           };
           activeProviderJob = executionProviderJob;
-          const latestData = runJobDataSchema.parse(job.data);
+          const latestData = readJobData();
           let latestWorkflowState =
             latestData.workflowState ??
-            createInitialWorkflowState(latestData.snapshot, latestData.providerJob);
+            createInitialWorkflowState(executionSnapshot, latestData.providerJob);
           latestWorkflowState = replaceWorkflowNodeState(latestWorkflowState, {
             nodeId: node.id,
             status: 'running',
@@ -1118,7 +1193,7 @@ export function createRunWorker(options: {
           await job.updateData({
             ...latestData,
             workflowState: latestWorkflowState,
-            ...(node.id === latestData.snapshot.targetNodeId
+            ...(node.id === executionSnapshot.targetNodeId
               ? { providerJob: executionProviderJob }
               : { providerJob: latestData.providerJob }),
           });
@@ -1136,7 +1211,7 @@ export function createRunWorker(options: {
                 archiveInput,
                 signal: cancellationSignal,
                 archiveKey: createArchiveKey(
-                  currentData.snapshot,
+                  executionSnapshot,
                   node.id,
                   requestProviderJobId,
                   executionProviderJob,
@@ -1183,10 +1258,10 @@ export function createRunWorker(options: {
             updatedAt: completedAt,
           };
           activeProviderJob = completedProviderJob;
-          const completedData = runJobDataSchema.parse(job.data);
+          const completedData = readJobData();
           let completedWorkflowState =
             completedData.workflowState ??
-            createInitialWorkflowState(completedData.snapshot, completedData.providerJob);
+            createInitialWorkflowState(executionSnapshot, completedData.providerJob);
           completedWorkflowState = replaceWorkflowNodeState(completedWorkflowState, {
             nodeId: node.id,
             status: 'succeeded',
@@ -1196,7 +1271,7 @@ export function createRunWorker(options: {
           await job.updateData({
             ...completedData,
             workflowState: completedWorkflowState,
-            ...(node.id === completedData.snapshot.targetNodeId
+            ...(node.id === executionSnapshot.targetNodeId
               ? { providerJob: completedProviderJob }
               : { providerJob: completedData.providerJob }),
           });
@@ -1217,17 +1292,17 @@ export function createRunWorker(options: {
           );
         }
 
-        const completedData = runJobDataSchema.parse(job.data);
+        const completedData = readJobData();
         let completedWorkflowState =
           completedData.workflowState ??
-          createInitialWorkflowState(completedData.snapshot, completedData.providerJob);
+          createInitialWorkflowState(executionSnapshot, completedData.providerJob);
         const finalResult = workflowFinalResult(
           completedWorkflowState,
-          completedData.snapshot.targetNodeId,
+          executionSnapshot.targetNodeId,
         );
         if (!finalResult) throw new Error('workflow target completed without a result');
-        const finalTarget = completedData.snapshot.nodes.find(
-          (node) => node.id === completedData.snapshot.targetNodeId,
+        const finalTarget = executionSnapshot.nodes.find(
+          (node) => node.id === executionSnapshot.targetNodeId,
         );
         if (
           !finalTarget ||
@@ -1238,7 +1313,7 @@ export function createRunWorker(options: {
         }
         const targetState = workflowNodeState(
           completedWorkflowState,
-          completedData.snapshot.targetNodeId,
+          executionSnapshot.targetNodeId,
         );
         const finalProviderJobBase =
           targetState?.providerJob ?? completedData.providerJob ?? initialProviderJob;
@@ -1248,7 +1323,7 @@ export function createRunWorker(options: {
           status: 'succeeded',
           progress: 100,
           payload: workflowProviderPayload(
-            completedData.snapshot.targetNodeId,
+            executionSnapshot.targetNodeId,
             {
               ...(finalProviderJobBase.payload ?? {}),
               ...(safeFinalResult ? { result: safeFinalResult } : {}),
@@ -1276,7 +1351,9 @@ export function createRunWorker(options: {
           progress: 100,
           updatedAt: finalProviderJob.updatedAt,
         } satisfies WorkerProgress);
-        await persistRun('succeeded', finalProviderJob, finalResult);
+        // A successful result is externally visible only after its final run
+        // state and result have been durably persisted.
+        await persistRun('succeeded', finalProviderJob, finalResult, undefined, true);
         runLogger.info({ status: 'succeeded', progress: 100 }, 'run succeeded');
         finishRunSpan('ok', 'succeeded');
         return {
@@ -1294,21 +1371,21 @@ export function createRunWorker(options: {
         }
         const error = redactTransientAssetData(rawError);
         const failedAt = new Date().toISOString();
-        const failedData = runJobDataSchema.parse(job.data);
+        const failedData = readJobData();
         const failedNodeId =
           activeNodeId ??
           (error instanceof WorkflowNodeConfigurationError ? error.nodeId : undefined) ??
-          failedData.snapshot.targetNodeId;
+          executionSnapshot.targetNodeId;
         let failedWorkflowState =
           failedData.workflowState ??
-          createInitialWorkflowState(failedData.snapshot, failedData.providerJob);
+          createInitialWorkflowState(executionSnapshot, failedData.providerJob);
         const failedNodeState = workflowNodeState(failedWorkflowState, failedNodeId);
         const failedNodeProviderJobBase =
           activeProviderJob ??
           failedNodeState?.providerJob ??
           createWorkflowProviderJobRecord(
             failedData.runId,
-            failedData.snapshot.targetNodeId,
+            executionSnapshot.targetNodeId,
             failedNodeId,
             failedData.provider,
           );
@@ -1333,14 +1410,14 @@ export function createRunWorker(options: {
         });
         const errorMessage = serializeWorkerError(error).errorMessage;
         const rootProviderJob: ProviderJob =
-          failedNodeId === failedData.snapshot.targetNodeId
+          failedNodeId === executionSnapshot.targetNodeId
             ? failedProviderJob
             : {
                 ...(failedData.providerJob ?? initialProviderJob),
                 status: 'failed',
                 progress: Math.max(failedData.providerJob?.progress ?? 0, currentOverallProgress),
                 payload: workflowProviderPayload(
-                  failedData.snapshot.targetNodeId,
+                  executionSnapshot.targetNodeId,
                   {
                     ...(failedData.providerJob?.payload ?? {}),
                     error: errorMessage,
@@ -1363,8 +1440,9 @@ export function createRunWorker(options: {
           { ...serializeWorkerError(error), status: 'failed', workflowNodeId: failedNodeId },
           'workflow run failed',
         );
-        runSpan.recordException(error);
-        observability.captureException(error, {
+        const telemetryError = sanitizeExceptionForObservability(error);
+        runSpan.recordException(telemetryError);
+        observability.captureException(telemetryError, {
           component: 'worker',
           'run.id': executionData.runId,
           'run.provider': executionData.provider,
@@ -1538,14 +1616,42 @@ function workflowProviderPayload(
   };
 }
 
+type SnapshotFingerprints = {
+  current: string;
+  legacy: string;
+};
+
+function workflowSnapshotsMatch(left: RunSnapshot, right: RunSnapshot): boolean {
+  const leftFingerprints = {
+    current: workflowSnapshotFingerprint(left),
+    legacy: workflowSnapshotFingerprintV1(left),
+  };
+  const rightFingerprints = {
+    current: workflowSnapshotFingerprint(right),
+    legacy: workflowSnapshotFingerprintV1(right),
+  };
+  return (
+    leftFingerprints.current === rightFingerprints.current ||
+    leftFingerprints.legacy === rightFingerprints.legacy
+  );
+}
+
 function providerJobMatchesSnapshot(
   providerJob: ProviderJob | undefined,
-  snapshotFingerprint: string,
+  fingerprints: SnapshotFingerprints,
   allowLegacy = false,
 ): providerJob is ProviderJob {
   if (!providerJob) return false;
   const stored = providerJobSnapshotFingerprintValue(providerJob.payload);
-  return stored ? stored === snapshotFingerprint : allowLegacy;
+  if (stored) return stored === fingerprints.current || stored === fingerprints.legacy;
+  // A malformed fingerprint is provenance evidence, not an old payload. The
+  // legacy compatibility path is reserved for jobs that predate fingerprints
+  // and therefore have no fingerprint field at all.
+  return !hasSnapshotFingerprint(providerJob.payload) && allowLegacy;
+}
+
+function hasSnapshotFingerprint(value: unknown): boolean {
+  return isRecord(value) && Object.prototype.hasOwnProperty.call(value, 'snapshotFingerprint');
 }
 
 function providerJobSnapshotFingerprintValue(value: unknown): string | undefined {
@@ -1770,7 +1876,7 @@ function sanitizeProviderScalar(
 async function isCancellationRequested(queue: Queue<RunJobData>, jobId: string | undefined) {
   if (!jobId) return false;
   const job = await Job.fromId<RunJobData>(queue, jobId);
-  return job ? runJobDataSchema.parse(job.data).cancelRequested : false;
+  return Boolean(job && isRecord(job.data) && job.data.cancelRequested === true);
 }
 
 function redisConnectionFromUrl(redisUrl: string): ConnectionOptions {
@@ -1788,6 +1894,7 @@ function redisConnectionFromUrl(redisUrl: string): ConnectionOptions {
 
 if (shouldStartWorkerProcess()) {
   const connection = redisConnectionFromUrl(process.env.REDIS_URL ?? 'redis://localhost:6379');
+  const configuredQueueName = process.env.RUN_QUEUE_NAME?.trim();
   const processLogger = createWorkerLogger();
   const processPersistence = createProcessPersistence();
   const processArchiver =
@@ -1796,7 +1903,8 @@ if (shouldStartWorkerProcess()) {
     process.env.WORKER_PROVIDER === 'newapi' ? createAssetReferenceResolverFromEnvironment() : {};
   const { worker } = createRunWorker({
     connection,
-    providerName: process.env.WORKER_PROVIDER === 'newapi' ? 'newapi' : 'mock',
+    ...(configuredQueueName ? { queueName: configuredQueueName } : {}),
+    providerName: process.env.WORKER_PROVIDER === 'mock' ? 'mock' : 'newapi',
     logger: processLogger,
     ...processPersistence,
     ...(processArchiver.resultArchiver ? { resultArchiver: processArchiver.resultArchiver } : {}),
@@ -1895,13 +2003,6 @@ function createNewApiProviders(
     apiKey,
     timeoutMs,
     maxResponseBytes: responseMaxBytes,
-    videoPath: process.env.NEW_API_VIDEO_PATH ?? '/videos',
-    ...(process.env.NEW_API_VIDEO_CREATE_PATH
-      ? { videoCreatePath: process.env.NEW_API_VIDEO_CREATE_PATH }
-      : {}),
-    ...(process.env.NEW_API_VIDEO_JOBS_PATH
-      ? { videoJobsPath: process.env.NEW_API_VIDEO_JOBS_PATH }
-      : {}),
     pollIntervalMs: Number(process.env.NEW_API_VIDEO_POLL_INTERVAL_MS ?? 2_000),
     maxPollAttempts: Number(process.env.NEW_API_VIDEO_MAX_POLL_ATTEMPTS ?? 120),
     maxContentBytes: Number(process.env.NEW_API_VIDEO_MAX_CONTENT_BYTES ?? 50 * 1024 * 1024),

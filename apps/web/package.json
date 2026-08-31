@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc -b && vite build",
-    "dev": "vite",
+    "dev": "vite --host 127.0.0.1",
     "lint": "prettier --check . --ignore-path ../../.prettierignore",
     "test": "vitest run --passWithNoTests",
     "test:e2e": "playwright test -c playwright.config.ts",

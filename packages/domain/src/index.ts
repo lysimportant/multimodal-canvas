@@ -17,6 +17,10 @@ export const portRoles = [
 export const assetStatuses = ['ready', 'archived'] as const;
 
 export const mediaTypeSchema = z.enum(mediaTypes);
+export const modelSelectionSchema = z.object({
+  modelAlias: z.string().trim().min(1),
+  credentialId: z.string().trim().min(1).optional(),
+});
 export const nodeModeSchema = z.enum(nodeModes);
 export const portRoleSchema = z.enum(portRoles);
 export const assetStatusSchema = z.enum(assetStatuses);
@@ -108,6 +112,8 @@ export const nodeDataSchema = z.object({
   prompt: z.string().trim().max(20_000).optional(),
   inferenceStrength: z.enum(['low', 'medium', 'high']).optional(),
   modelAlias: z.string().trim().min(1).optional(),
+  /** Credential selected with the model. Omitted keeps legacy active-credential behavior. */
+  credentialId: z.string().trim().min(1).optional(),
   assetId: z.string().min(1).optional(),
   contentUrl: z.string().min(1).optional(),
   mimeType: z.string().min(1).optional(),
@@ -235,6 +241,11 @@ export const runInputSnapshotSchema = z.object({
   snapshot: canvasNodeSchema,
 });
 
+export const runCredentialReferenceSchema = z.object({
+  credentialId: z.string().min(1),
+  credentialVersion: z.number().int().positive(),
+});
+
 export const runSnapshotSchema = z
   .object({
     projectId: z.string().min(1),
@@ -243,6 +254,11 @@ export const runSnapshotSchema = z
     modelAlias: z.string().min(1),
     credentialId: z.string().min(1).optional(),
     credentialVersion: z.number().int().positive().optional(),
+    /**
+     * Immutable credential reference for each provider-backed workflow node.
+     * Omitted legacy snapshots continue to use the root credential reference.
+     */
+    nodeCredentialReferences: z.record(runCredentialReferenceSchema).optional(),
     parameters: z.record(z.unknown()),
     submittedAt: z.string().datetime(),
     nodes: z.array(canvasNodeSchema).min(1),
@@ -271,6 +287,27 @@ export const runSnapshotSchema = z
     }
 
     const nodeIds = new Set(snapshot.nodes.map((node) => node.id));
+    for (const [nodeId, reference] of Object.entries(snapshot.nodeCredentialReferences ?? {})) {
+      if (!nodeIds.has(nodeId)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'node credential references a missing node',
+          path: ['nodeCredentialReferences', nodeId],
+        });
+      }
+      if (
+        nodeId === snapshot.targetNodeId &&
+        ((snapshot.credentialId && snapshot.credentialId !== reference.credentialId) ||
+          (snapshot.credentialVersion &&
+            snapshot.credentialVersion !== reference.credentialVersion))
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'target credential reference does not match the run credential',
+          path: ['nodeCredentialReferences', nodeId],
+        });
+      }
+    }
     snapshot.inputs.forEach((input, index) => {
       if (!nodeIds.has(input.nodeId)) {
         context.addIssue({
@@ -296,6 +333,41 @@ export const runSnapshotSchema = z
       });
     }
   });
+
+/**
+ * Returns the canonical JSON identity for an immutable run snapshot.
+ * Submission time is execution metadata rather than request identity, so it
+ * is deliberately excluded. Object keys are sorted recursively while array
+ * order remains significant.
+ */
+export function canonicalRunSnapshotJson(snapshot: RunSnapshot): string {
+  const { submittedAt: _submittedAt, ...stableSnapshot } = runSnapshotSchema.parse(snapshot);
+  return JSON.stringify(canonicalJsonValue(stableSnapshot));
+}
+
+/**
+ * Returns the versioned material hashed by API and Worker run identity checks.
+ * Keeping the namespace beside the canonicalizer prevents the two processes
+ * from silently drifting to different digest inputs.
+ */
+export function runSnapshotFingerprintMaterial(snapshot: RunSnapshot): string {
+  return `multimodal-canvas:run-snapshot:v2:${canonicalRunSnapshotJson(snapshot)}`;
+}
+
+function canonicalJsonValue(value: unknown): unknown {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (Array.isArray(value)) {
+    return value.map((item) => (item === undefined ? null : canonicalJsonValue(item)));
+  }
+  if (typeof value !== 'object') return undefined;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => item !== undefined)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([key, item]) => [key, canonicalJsonValue(item)]),
+  );
+}
 
 export const runResultSchema = z.object({
   provider: z.string().min(1),
@@ -501,6 +573,7 @@ export function isPortConnectionAllowed(
 }
 
 export type MediaType = z.infer<typeof mediaTypeSchema>;
+export type ModelSelection = z.infer<typeof modelSelectionSchema>;
 export type NodeMode = z.infer<typeof nodeModeSchema>;
 export type PortRole = z.infer<typeof portRoleSchema>;
 export type AssetStatus = z.infer<typeof assetStatusSchema>;
@@ -513,6 +586,7 @@ export type ProviderJobStatus = z.infer<typeof providerJobStatusSchema>;
 export type ProviderJob = z.infer<typeof providerJobSchema>;
 export type RunResultAsset = z.infer<typeof runResultAssetSchema>;
 export type RunInputSnapshot = z.infer<typeof runInputSnapshotSchema>;
+export type RunCredentialReference = z.infer<typeof runCredentialReferenceSchema>;
 export type RunSnapshot = z.infer<typeof runSnapshotSchema>;
 export type RunResult = z.infer<typeof runResultSchema>;
 export type WorkflowNodeStatus = z.infer<typeof workflowNodeStatusSchema>;

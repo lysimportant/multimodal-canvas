@@ -116,7 +116,8 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
           minWidth={180}
           minHeight={140}
           color="#18794e"
-          handleStyle={{ width: 9, height: 9, borderRadius: 2 }}
+          handleStyle={{ width: 14, height: 14, borderRadius: 3 }}
+          lineStyle={{ borderWidth: 2 }}
           onResizeEnd={(_, params) => {
             if (resizeNode && id && params.width > 0 && params.height > 0) {
               resizeNode(id, params.width, params.height);

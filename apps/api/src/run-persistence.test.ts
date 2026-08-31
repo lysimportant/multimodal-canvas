@@ -24,6 +24,7 @@ const providerJob = {
 
 function createPersistence() {
   const findRun = vi.fn<(args: unknown) => Promise<unknown>>(async () => undefined);
+  const findProviderJob = vi.fn<(args: unknown) => Promise<unknown>>(async () => undefined);
   const prisma = {
     run: {
       upsert: vi.fn(async (args) => args.create),
@@ -31,7 +32,10 @@ function createPersistence() {
       findUnique: findRun,
       findMany: vi.fn(async () => [] as unknown[]),
     },
-    providerJob: { upsert: vi.fn(async (args) => args.create) },
+    providerJob: {
+      upsert: vi.fn(async (args) => args.create),
+      findUnique: findProviderJob,
+    },
     usageLedger: {
       create: vi.fn(async (args) => ({ id: 'usage-1', ...args.data })),
       upsert: vi.fn(async (args) => ({ id: args.create.id, ...args.create })),
@@ -41,6 +45,84 @@ function createPersistence() {
 }
 
 describe('PrismaRunPersistence', () => {
+  it('restores a run by durable provider job identity', async () => {
+    const { prisma, persistence } = createPersistence();
+    const projectId = '123e4567-e89b-12d3-a456-426614174010';
+    const snapshot = {
+      projectId,
+      canvasRevision: 1,
+      targetNodeId: 'node_video',
+      modelAlias: 'video-model',
+      parameters: {},
+      submittedAt: '2026-08-25T00:00:00.000Z',
+      nodes: [
+        {
+          id: 'node_video',
+          type: 'video',
+          position: { x: 0, y: 0 },
+          data: { label: 'Video', mediaType: 'video', mode: 'generate' },
+        },
+      ],
+      edges: [],
+      inputs: [],
+    };
+    prisma.providerJob.findUnique.mockResolvedValue({
+      id: stableProviderJobId('newapi', 'platform-lookup'),
+      provider: 'newapi',
+      platformJobId: 'platform-lookup',
+      status: 'running',
+      progress: 45,
+      createdAt: new Date('2026-08-25T00:00:00.000Z'),
+      updatedAt: new Date('2026-08-25T00:01:00.000Z'),
+      run: {
+        id: databaseRunId('run-lookup'),
+        projectId,
+        status: 'RUNNING',
+        modelAlias: 'video-model',
+        snapshot,
+        attempt: 1,
+        createdAt: new Date('2026-08-25T00:00:00.000Z'),
+        updatedAt: new Date('2026-08-25T00:01:00.000Z'),
+        providerJobs: [
+          {
+            id: stableProviderJobId('newapi', 'platform-lookup'),
+            provider: 'newapi',
+            platformJobId: 'platform-lookup',
+            status: 'running',
+            progress: 45,
+            createdAt: new Date('2026-08-25T00:00:00.000Z'),
+            updatedAt: new Date('2026-08-25T00:01:00.000Z'),
+          },
+          {
+            id: stableProviderJobId('newapi', 'platform-newer'),
+            provider: 'newapi',
+            platformJobId: 'platform-newer',
+            status: 'succeeded',
+            progress: 100,
+            createdAt: new Date('2026-08-25T00:00:00.000Z'),
+            updatedAt: new Date('2026-08-25T00:02:00.000Z'),
+          },
+        ],
+      },
+    });
+
+    await expect(
+      persistence.getRunByProviderJob('newapi', 'platform-lookup'),
+    ).resolves.toMatchObject({
+      projectId,
+      targetNodeId: 'node_video',
+      status: 'running',
+      providerJob: { platformJobId: 'platform-lookup', progress: 45 },
+    });
+    expect(prisma.providerJob.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          provider_platformJobId: { provider: 'newapi', platformJobId: 'platform-lookup' },
+        },
+      }),
+    );
+  });
+
   it('restores a completed run and its real result after the queue job expires', async () => {
     const { prisma, persistence } = createPersistence();
     const externalRunId = 'run_expired_1';
@@ -411,6 +493,199 @@ describe('PrismaRunPersistence', () => {
       code: 'invalid_amount',
     });
     expect(prisma.usageLedger.create).not.toHaveBeenCalled();
+  });
+
+  it('sanitizes provider diagnostics and run errors before durable writes', async () => {
+    const { prisma, persistence } = createPersistence();
+    const projectId = '123e4567-e89b-12d3-a456-426614174010';
+    const snapshot = {
+      projectId,
+      canvasRevision: 1,
+      targetNodeId: 'node_text',
+      modelAlias: 'text-model',
+      parameters: {},
+      submittedAt: '2026-08-25T00:00:00.000Z',
+      nodes: [
+        {
+          id: 'node_text',
+          type: 'text' as const,
+          position: { x: 0, y: 0 },
+          data: { label: 'Text', mediaType: 'text' as const, mode: 'generate' as const },
+        },
+      ],
+      edges: [],
+      inputs: [],
+    };
+
+    await persistence.ensureRun({
+      runId: 'run_sensitive_write',
+      snapshot,
+      error:
+        'Authorization: Bearer write-secret https://newapi.example.com/debug?token=query-secret#trace',
+    });
+    const ensureCall = prisma.run.upsert.mock.calls[0]?.[0];
+    expect(ensureCall.create.error).toEqual({
+      message: 'Authorization: [REDACTED] https://newapi.example.com/debug',
+    });
+    expect(JSON.stringify(ensureCall.create.error)).not.toContain('write-secret');
+    expect(JSON.stringify(ensureCall.create.error)).not.toContain('query-secret');
+
+    await persistence.upsertProviderJob({
+      runId,
+      providerJob: {
+        ...providerJob,
+        payload: {
+          providerStatus: 'processing',
+          authorization: 'Bearer provider-secret',
+          signedUrl: 'https://cdn.example.com/output.mp4?signature=secret',
+          nested: { token: 'nested-secret', safe: 'kept' },
+          items: [{ safe: true }, { password: 'item-secret' }],
+        },
+      },
+    });
+    const providerCall = prisma.providerJob.upsert.mock.calls[0]?.[0];
+    expect(providerCall.create.payload).toEqual({
+      providerStatus: 'processing',
+      nested: { safe: 'kept' },
+      items: [{ safe: true }],
+    });
+    expect(JSON.stringify(providerCall.create.payload)).not.toContain('provider-secret');
+    expect(JSON.stringify(providerCall.create.payload)).not.toContain('signature=secret');
+  });
+
+  it('sanitizes nested provider jobs on run updates while preserving asset URLs', async () => {
+    const { prisma, persistence } = createPersistence();
+    await persistence.updateRun({
+      runId,
+      status: 'failed',
+      error: 'token=update-secret https://newapi.example.com/error?key=query-secret',
+      result: {
+        provider: 'newapi',
+        summary: 'failed',
+        targetNodeId: 'node_video',
+        mediaType: 'video',
+        inputCount: 1,
+        asset: {
+          assetId: 'asset-1',
+          contentUrl: 'https://cdn.example.com/video.mp4?signature=asset-secret',
+        },
+        providerJob: {
+          id: 'provider-job-1',
+          provider: 'newapi',
+          status: 'failed',
+          progress: 100,
+          payload: {
+            phase: 'failed',
+            authorization: 'Bearer result-secret',
+            statusUrl: 'https://newapi.example.com/status?token=result-query',
+          },
+          createdAt: '2026-08-25T00:00:00.000Z',
+          updatedAt: '2026-08-25T00:01:00.000Z',
+        },
+      },
+    });
+
+    expect(prisma.run.update).toHaveBeenCalledWith({
+      where: { id: runId },
+      data: expect.objectContaining({
+        status: 'FAILED',
+        error: { message: 'token=[REDACTED] https://newapi.example.com/error' },
+        result: expect.objectContaining({
+          asset: {
+            assetId: 'asset-1',
+            contentUrl: 'https://cdn.example.com/video.mp4?signature=asset-secret',
+          },
+          providerJob: {
+            id: 'provider-job-1',
+            provider: 'newapi',
+            status: 'failed',
+            progress: 100,
+            payload: { phase: 'failed' },
+            createdAt: '2026-08-25T00:00:00.000Z',
+            updatedAt: '2026-08-25T00:01:00.000Z',
+          },
+        }),
+      }),
+    });
+  });
+
+  it('re-sanitizes legacy provider diagnostics while restoring a durable run', async () => {
+    const { prisma, persistence } = createPersistence();
+    const projectId = '123e4567-e89b-12d3-a456-426614174010';
+    const createdAt = new Date('2026-08-25T00:00:00.000Z');
+    const updatedAt = new Date('2026-08-25T00:01:00.000Z');
+    const durableProviderJob = {
+      id: stableProviderJobId('newapi', 'legacy-platform-1'),
+      provider: 'newapi',
+      platformJobId: 'legacy-platform-1',
+      status: 'succeeded',
+      progress: 100,
+      payload: {
+        phase: 'completed',
+        authorization: 'Bearer legacy-secret',
+        outputUrl: 'https://cdn.example.com/video.mp4?signature=legacy-secret',
+      },
+      createdAt,
+      updatedAt,
+    };
+    const snapshot = {
+      projectId,
+      canvasRevision: 1,
+      targetNodeId: 'node_video',
+      modelAlias: 'video-model',
+      parameters: {},
+      submittedAt: createdAt.toISOString(),
+      nodes: [
+        {
+          id: 'node_video',
+          type: 'video' as const,
+          position: { x: 0, y: 0 },
+          data: { label: 'Video', mediaType: 'video' as const, mode: 'generate' as const },
+        },
+      ],
+      edges: [],
+      inputs: [],
+    };
+    prisma.run.findUnique.mockResolvedValue({
+      id: databaseRunId('legacy_run'),
+      projectId,
+      status: 'SUCCEEDED',
+      modelAlias: 'video-model',
+      snapshot,
+      result: {
+        provider: 'newapi',
+        summary: 'done',
+        targetNodeId: 'node_video',
+        mediaType: 'video',
+        inputCount: 0,
+        asset: {
+          assetId: 'asset-legacy',
+          contentUrl: 'https://cdn.example.com/video.mp4?signature=asset-secret',
+        },
+        providerJob: {
+          ...durableProviderJob,
+          createdAt: createdAt.toISOString(),
+          updatedAt: updatedAt.toISOString(),
+        },
+      },
+      attempt: 1,
+      createdAt,
+      updatedAt,
+      providerJobs: [durableProviderJob],
+    });
+
+    const restored = await persistence.getRun('legacy_run');
+    expect(restored).toMatchObject({
+      status: 'succeeded',
+      providerJob: { payload: { phase: 'completed' } },
+      result: {
+        asset: {
+          contentUrl: 'https://cdn.example.com/video.mp4?signature=asset-secret',
+        },
+        providerJob: { payload: { phase: 'completed' } },
+      },
+    });
+    expect(JSON.stringify(restored)).not.toContain('legacy-secret');
   });
 
   it('recognizes only PostgreSQL UUID-shaped identifiers', () => {

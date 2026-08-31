@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event';
 import { createContext, createElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { Asset, CanvasDocument } from '@multimodal-canvas/domain';
+import type { Asset, CanvasDocument, RunRecord } from '@multimodal-canvas/domain';
 
 type FlowConnection = {
   source: string;
@@ -298,6 +298,8 @@ const jsonResponse = (body: unknown, status = 200) =>
   });
 
 let canvas: CanvasDocument;
+let projectRuns: RunRecord[];
+let resultContent = new Map<string, { body: string; contentType: string }>();
 let fetchMock: ReturnType<typeof vi.fn>;
 let clipboardMock: {
   writeText: ReturnType<typeof vi.fn>;
@@ -363,7 +365,13 @@ function installApiMock() {
       return jsonResponse({ error: 'project not found' }, 404);
     }
     if (url.pathname === `/v1/projects/${project.id}/runs` && method === 'GET') {
-      return jsonResponse({ runs: [] });
+      return jsonResponse({ runs: projectRuns });
+    }
+    const content = resultContent.get(url.pathname);
+    if (content && method === 'GET') {
+      return new Response(content.body, {
+        headers: { 'content-type': content.contentType },
+      });
     }
     const nodeRunMatch = url.pathname.match(/^\/v1\/nodes\/([^/]+)\/runs$/);
     if (nodeRunMatch && method === 'POST') {
@@ -386,6 +394,97 @@ function installApiMock() {
     throw new Error(`Unhandled mock request: ${method} ${url.pathname}`);
   });
   vi.stubGlobal('fetch', fetchMock);
+}
+
+function createRestoredRun(
+  node: CanvasDocument['nodes'][number],
+  options: {
+    status?: RunRecord['status'];
+    includeAsset?: boolean;
+    error?: string;
+    textContent?: string;
+  } = {},
+): RunRecord {
+  const status = options.status ?? 'succeeded';
+  const includeAsset = options.includeAsset ?? true;
+  const now = '2026-08-28T08:00:00.000Z';
+  const mediaType = node.data.mediaType;
+  const mimeType =
+    mediaType === 'image'
+      ? 'image/png'
+      : mediaType === 'video'
+        ? 'video/mp4'
+        : mediaType === 'audio'
+          ? 'audio/mpeg'
+          : 'text/plain';
+  const contentUrl = `/v1/assets/restored-${node.id}/content`;
+  const textContent = options.textContent ?? '这是刷新后从持久化运行记录回显的真实文本。';
+  resultContent.set(contentUrl, {
+    body: mediaType === 'text' ? textContent : `${mediaType} fixture bytes`,
+    contentType: mimeType,
+  });
+
+  return {
+    id: `run-restored-${node.id}`,
+    projectId: project.id,
+    targetNodeId: node.id,
+    status,
+    progress: status === 'succeeded' ? 100 : 0,
+    attempt: 1,
+    provider: 'mock',
+    modelAlias: `restored-${mediaType}`,
+    snapshot: {
+      projectId: project.id,
+      canvasRevision: canvas.revision,
+      targetNodeId: node.id,
+      modelAlias: `restored-${mediaType}`,
+      parameters: {},
+      submittedAt: now,
+      nodes: [node],
+      edges: [],
+      inputs: [],
+    },
+    ...(status === 'failed'
+      ? { error: options.error ?? '运行失败' }
+      : {
+          result: {
+            provider: 'mock',
+            summary: '持久化运行结果',
+            targetNodeId: node.id,
+            mediaType,
+            inputCount: 0,
+            ...(includeAsset
+              ? {
+                  asset: {
+                    assetId: `asset-restored-${node.id}`,
+                    version: 1,
+                    contentUrl,
+                    mimeType,
+                    sizeBytes: 128,
+                  },
+                }
+              : {}),
+          },
+        }),
+    createdAt: now,
+    updatedAt: now,
+  } satisfies RunRecord;
+}
+
+function persistedNode(mediaType: CanvasDocument['nodes'][number]['data']['mediaType']) {
+  const node = canvas.nodes.find((candidate) => candidate.data.mediaType === mediaType);
+  if (!node) throw new Error(`Missing persisted ${mediaType} node`);
+  return node;
+}
+
+function projectRunRequestCount() {
+  return fetchMock.mock.calls.filter(([input, init]) => {
+    const rawUrl =
+      typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const url = new URL(rawUrl, 'http://localhost:3000');
+    const method = init?.method?.toUpperCase() ?? 'GET';
+    return url.pathname === `/v1/projects/${project.id}/runs` && method === 'GET';
+  }).length;
 }
 
 async function renderCanvas() {
@@ -419,6 +518,8 @@ describe('画布编辑器交互', () => {
     window.localStorage.clear();
     clipboardText = '';
     canvas = structuredClone(emptyCanvas);
+    projectRuns = [];
+    resultContent = new Map();
     vi.stubGlobal('ResizeObserver', ResizeObserverStub);
     previousClipboardDescriptor = Object.getOwnPropertyDescriptor(window.navigator, 'clipboard');
     installClipboardMock();
@@ -476,7 +577,18 @@ describe('画布编辑器交互', () => {
     expect(findNodeByLabel('图片生成节点')).toBeTruthy();
     expect(findNodeByLabel('reference.png')).toBeTruthy();
     expect(flowNodes()).toHaveLength(2);
-    expect(screen.getByRole('status')).toHaveTextContent('reference.png 已添加到画布');
+    expect(screen.getByText('reference.png 已添加到画布', { exact: true })).toBeVisible();
+  });
+
+  it.each(['Delete', 'Backspace'])('新建节点后 %s 可直接删除选中节点', async (key) => {
+    const { user } = await renderCanvas();
+
+    await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
+    const node = findNodeByLabel('图片生成节点');
+    expect(node?.querySelector('.is-selected')).toBeTruthy();
+
+    await user.keyboard(`{${key}}`);
+    await waitFor(() => expect(flowNodes()).toHaveLength(0));
   });
 
   it('可以直接在画布节点上启用或停用节点', async () => {
@@ -586,6 +698,89 @@ describe('画布编辑器交互', () => {
         },
       });
     });
+  });
+
+  it('重新进入同一项目时通过持久化运行记录回填文本、图片和视频产物', async () => {
+    const { user } = await renderCanvas();
+
+    await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
+    await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
+    await user.click(screen.getByRole('button', { name: '新建视频生成节点' }));
+    await waitFor(() => expect(canvas.nodes).toHaveLength(3));
+
+    const textNode = persistedNode('text');
+    const imageNode = persistedNode('image');
+    const videoNode = persistedNode('video');
+    expect(canvas.nodes.every((node) => !('resultAsset' in node.data))).toBe(true);
+
+    const restoredText = '这是刷新后从持久化运行记录回显的真实文本。';
+    const textRun = createRestoredRun(textNode, { textContent: restoredText });
+    const imageRun = createRestoredRun(imageNode);
+    const videoRun = createRestoredRun(videoNode);
+    projectRuns = [textRun, imageRun, videoRun];
+
+    cleanup();
+    fetchMock.mockClear();
+    await renderCanvas();
+
+    await waitFor(() => expect(projectRunRequestCount()).toBeGreaterThan(0));
+    await waitFor(() => {
+      const restoredTextNode = findNodeByLabel('文字生成节点');
+      expect(restoredTextNode).toBeTruthy();
+      expect(within(restoredTextNode!).getByText(restoredText)).toBeVisible();
+    });
+    await waitFor(() => {
+      const restoredImageNode = findNodeByLabel('图片生成节点');
+      const image = restoredImageNode?.querySelector('img');
+      expect(image).toBeTruthy();
+      expect(image?.getAttribute('src')).toContain(imageRun.result?.asset?.contentUrl);
+    });
+    await waitFor(() => {
+      const restoredVideoNode = findNodeByLabel('视频生成节点');
+      const video = restoredVideoNode?.querySelector('video');
+      const source =
+        video?.getAttribute('src') ?? video?.querySelector('source')?.getAttribute('src');
+      expect(video).toBeTruthy();
+      expect(source).toContain(videoRun.result?.asset?.contentUrl);
+    });
+  });
+
+  it('重载时失败或没有 result.asset 的运行不显示成功产物', async () => {
+    const { user } = await renderCanvas();
+
+    await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
+    await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
+    await waitFor(() => expect(canvas.nodes).toHaveLength(2));
+
+    projectRuns = [
+      createRestoredRun(persistedNode('text'), {
+        status: 'failed',
+        includeAsset: false,
+        error: '持久化运行失败',
+      }),
+      createRestoredRun(persistedNode('image'), { includeAsset: false }),
+    ];
+
+    cleanup();
+    fetchMock.mockClear();
+    await renderCanvas();
+
+    await waitFor(() => expect(projectRunRequestCount()).toBeGreaterThan(0));
+    await waitFor(() => {
+      const failedNode = findNodeByLabel('文字生成节点');
+      const missingNode = findNodeByLabel('图片生成节点');
+      expect(failedNode).toBeTruthy();
+      expect(missingNode).toBeTruthy();
+      expect(within(failedNode!).getByRole('alert')).toHaveTextContent('持久化运行失败');
+      expect(within(missingNode!).getByRole('alert')).toHaveTextContent('产物不存在或已失效');
+    });
+
+    const failedNode = findNodeByLabel('文字生成节点')!;
+    const missingNode = findNodeByLabel('图片生成节点')!;
+    expect(failedNode.querySelector('.flow-node-preview')).toBeNull();
+    expect(missingNode.querySelector('.flow-node-preview')).toBeNull();
+    expect(within(failedNode).queryByLabelText('运行成功')).not.toBeInTheDocument();
+    expect(within(missingNode).queryByLabelText('运行成功')).not.toBeInTheDocument();
   });
 
   it('画布背景菜单可打开、切换并持久化选择', async () => {

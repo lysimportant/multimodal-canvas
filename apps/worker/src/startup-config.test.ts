@@ -17,13 +17,14 @@ const productionEnvironment: StartupEnvironment = {
   S3_ACCESS_KEY: 'test-access-key',
   S3_SECRET_KEY: 'test-secret-key',
   NEW_API_BASE_URL: 'https://newapi.example.com/v1',
+  NEW_API_API_KEY: 'test-new-api-key',
   WORKER_PROVIDER: 'newapi',
   RUN_SERVICE: 'bullmq',
   AI_CREDENTIAL_ENCRYPTION_KEY: 'test-encryption-secret',
 };
 
 describe('Worker production startup configuration', () => {
-  it('accepts the durable production configuration without a preconfigured API key', () => {
+  it('accepts durable production configuration without a database AI credential', () => {
     expect(validateWorkerStartupConfiguration(productionEnvironment)).toEqual([]);
     expect(() => assertWorkerStartupConfiguration(productionEnvironment)).not.toThrow();
   });
@@ -37,6 +38,7 @@ describe('Worker production startup configuration', () => {
       'S3_BUCKET',
       'S3_REGION',
       'NEW_API_BASE_URL',
+      'NEW_API_API_KEY',
       'AI_CREDENTIAL_ENCRYPTION_KEY',
       'WORKER_PROVIDER',
     ]);
@@ -47,6 +49,38 @@ describe('Worker production startup configuration', () => {
       /REDIS_URL is required/,
     );
   });
+
+  it('rejects a missing New API key in an otherwise valid production configuration', () => {
+    const issues = validateWorkerStartupConfiguration({
+      ...productionEnvironment,
+      NEW_API_API_KEY: '  ',
+    });
+
+    expect(issues).toContainEqual({ variable: 'NEW_API_API_KEY', message: 'is required' });
+  });
+
+  it.each([
+    ['userinfo', 'https://user:marker@newapi.example.com/v1', 'must not include userinfo'],
+    ['query', 'https://newapi.example.com/v1?token=marker', 'must not include query parameters'],
+    ['hash', 'https://newapi.example.com/v1#marker', 'must not include a fragment'],
+  ])(
+    'rejects production New API URL with %s without echoing URL contents',
+    (_kind, baseUrl, message) => {
+      const environment = { ...productionEnvironment, NEW_API_BASE_URL: baseUrl };
+      const issues = validateWorkerStartupConfiguration(environment);
+
+      expect(issues).toContainEqual({ variable: 'NEW_API_BASE_URL', message });
+
+      let error: unknown;
+      try {
+        assertWorkerStartupConfiguration(environment);
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(StartupConfigurationError);
+      expect((error as Error).message).not.toContain('marker');
+    },
+  );
 
   it('rejects mock, volatile and invalid provider choices in production', () => {
     const issues = validateWorkerStartupConfiguration({
@@ -69,6 +103,98 @@ describe('Worker production startup configuration', () => {
       'WORKER_PROVIDER',
       'RUN_SERVICE',
     ]);
+  });
+
+  it('requires credentials when a custom S3 endpoint is configured', () => {
+    const issues = validateWorkerStartupConfiguration({
+      ...productionEnvironment,
+      S3_ENDPOINT: 'https://minio.example.com',
+      S3_ACCESS_KEY: '',
+      S3_SECRET_KEY: '',
+    });
+
+    expect(issues).toContainEqual({
+      variable: 'S3_ACCESS_KEY/S3_SECRET_KEY',
+      message: 'are required when S3_ENDPOINT is configured',
+    });
+  });
+
+  it('allows the AWS SDK IAM role chain when no custom S3 endpoint is configured', () => {
+    expect(
+      validateWorkerStartupConfiguration({
+        ...productionEnvironment,
+        S3_ACCESS_KEY: '',
+        S3_SECRET_KEY: '',
+      }),
+    ).toEqual([]);
+  });
+
+  it('accepts explicit positive safe integer New API limits in production', () => {
+    const issues = validateWorkerStartupConfiguration({
+      ...productionEnvironment,
+      NEW_API_TIMEOUT_MS: '120000',
+      NEW_API_MAX_RESPONSE_BYTES: '52428800',
+      NEW_API_VIDEO_POLL_INTERVAL_MS: '2000',
+      NEW_API_VIDEO_MAX_POLL_ATTEMPTS: '120',
+      NEW_API_VIDEO_MAX_CONTENT_BYTES: '52428800',
+    });
+
+    expect(issues).toEqual([]);
+  });
+
+  it.each(['0', '-1', '1.5', '1e3', '9007199254740992', 'not-a-number', '  '])(
+    'rejects invalid explicit New API numeric value %s in production',
+    (value) => {
+      const issues = validateWorkerStartupConfiguration({
+        ...productionEnvironment,
+        NEW_API_TIMEOUT_MS: value,
+      });
+
+      expect(issues).toContainEqual({
+        variable: 'NEW_API_TIMEOUT_MS',
+        message: 'must be a positive safe integer',
+      });
+    },
+  );
+
+  it('keeps explicit New API numeric values compatible outside production', () => {
+    expect(
+      validateWorkerStartupConfiguration({
+        NODE_ENV: 'development',
+        NEW_API_TIMEOUT_MS: 'not-a-number',
+        NEW_API_VIDEO_POLL_INTERVAL_MS: '0',
+      }),
+    ).toEqual([]);
+  });
+
+  it('validates every explicit New API numeric setting in production', () => {
+    const issues = validateWorkerStartupConfiguration({
+      ...productionEnvironment,
+      NEW_API_MAX_RESPONSE_BYTES: '0',
+      NEW_API_VIDEO_POLL_INTERVAL_MS: '1.2',
+      NEW_API_VIDEO_MAX_POLL_ATTEMPTS: '9007199254740992',
+      NEW_API_VIDEO_MAX_CONTENT_BYTES: '-4',
+    });
+
+    expect(issues.map(({ variable }) => variable)).toEqual([
+      'NEW_API_MAX_RESPONSE_BYTES',
+      'NEW_API_VIDEO_POLL_INTERVAL_MS',
+      'NEW_API_VIDEO_MAX_POLL_ATTEMPTS',
+      'NEW_API_VIDEO_MAX_CONTENT_BYTES',
+    ]);
+  });
+
+  it('rejects one-sided S3 credentials even without a custom endpoint', () => {
+    const issues = validateWorkerStartupConfiguration({
+      ...productionEnvironment,
+      S3_ACCESS_KEY: 'access-only',
+      S3_SECRET_KEY: '',
+    });
+
+    expect(issues).toContainEqual({
+      variable: 'S3_ACCESS_KEY/S3_SECRET_KEY',
+      message: 'must be configured together',
+    });
   });
 
   it('validates production before honoring the local memory worker switch', () => {

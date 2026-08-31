@@ -1,6 +1,7 @@
 export type AppRoute =
   | { id: 'home'; pathname: '/' }
   | { id: 'workspace'; pathname: '/workspace' }
+  | { id: 'contact'; pathname: '/contact' }
   | { id: 'settings'; pathname: '/settings'; projectId?: string }
   | { id: 'project'; pathname: string; projectId: string }
   | { id: 'not-found'; pathname: string };
@@ -10,6 +11,7 @@ export type AppNavigationSection = 'home' | 'workspace' | 'settings';
 export const appPaths = {
   home: '/',
   workspace: '/workspace',
+  contact: '/contact',
   settings(projectId?: string | null) {
     if (!projectId) return '/settings';
     const query = new URLSearchParams({ project: projectId });
@@ -54,6 +56,7 @@ export function parseAppRoute(input: string | Pick<Location, 'pathname' | 'searc
   const { pathname, search } = readLocation(input);
   if (pathname === '/') return { id: 'home', pathname: '/' };
   if (pathname === '/workspace') return { id: 'workspace', pathname };
+  if (pathname === '/contact') return { id: 'contact', pathname };
   if (pathname === '/settings') {
     const projectId = new URLSearchParams(search).get('project')?.trim();
     return {
@@ -74,6 +77,6 @@ export function parseAppRoute(input: string | Pick<Location, 'pathname' | 'searc
 
 export function getNavigationSection(route: AppRoute): AppNavigationSection | null {
   if (route.id === 'project') return 'workspace';
-  if (route.id === 'not-found') return null;
+  if (route.id === 'contact' || route.id === 'not-found') return null;
   return route.id;
 }

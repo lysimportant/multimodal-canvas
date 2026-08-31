@@ -2,6 +2,7 @@ import { AlertTriangle, Archive, ArrowRight, Clock3, FolderOpen, Plus, Search } 
 import { useMemo, useState, type MouseEvent } from 'react';
 
 import { AppLink, appPaths, type AppRoute } from '../routing';
+import { useImeDraft } from '../ime';
 import type { ProjectSummary } from '../query/projects';
 import { PageFrame } from './PageFrame';
 
@@ -45,6 +46,10 @@ export function WorkspacePage({
   onNavigate,
 }: WorkspacePageProps) {
   const [query, setQuery] = useState('');
+  const { bind: queryBinding } = useImeDraft<HTMLInputElement>({
+    value: query,
+    onCommit: setQuery,
+  });
   const filteredProjects = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
     if (!normalized) return projects;
@@ -88,12 +93,7 @@ export function WorkspacePage({
           <label className="mc-workspace-search">
             <Search size={16} aria-hidden="true" />
             <span className="mc-visually-hidden">搜索项目</span>
-            <input
-              type="search"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索项目名称或 ID"
-            />
+            <input type="search" {...queryBinding} placeholder="搜索项目名称或 ID" />
           </label>
           <span className="mc-workspace-count" aria-live="polite">
             {isLoading ? '正在读取项目' : `${filteredProjects.length} / ${projects.length} 个项目`}
@@ -139,28 +139,15 @@ export function WorkspacePage({
               const href = appPaths.project(project.id);
               const isArchived = Boolean(project.archivedAt);
               const isActive = project.id === activeProjectId;
-              return (
-                <article
-                  key={project.id}
-                  className={`mc-workspace-project${isActive ? ' is-active' : ''}${isArchived ? ' is-archived' : ''}`}
-                >
+              const titleId = `mc-workspace-project-${encodeURIComponent(project.id)}-title`;
+              const className = `mc-workspace-project${isActive ? ' is-active' : ''}${isArchived ? ' is-archived' : ''}`;
+              const cardContent = (
+                <>
                   <div className="mc-workspace-project-index" aria-hidden="true">
                     <FolderOpen size={19} />
                   </div>
                   <div className="mc-workspace-project-copy">
-                    {isArchived ? (
-                      <strong>{project.name}</strong>
-                    ) : (
-                      <AppLink
-                        to={href}
-                        onClick={(event) => {
-                          onSelectProject?.(project, event);
-                          onNavigate?.(href, event);
-                        }}
-                      >
-                        {project.name}
-                      </AppLink>
-                    )}
+                    <strong id={titleId}>{project.name}</strong>
                     <span>{isArchived ? '已归档项目' : '多模态工作流画布'}</span>
                     <code>{project.id}</code>
                   </div>
@@ -184,20 +171,36 @@ export function WorkspacePage({
                         已归档
                       </span>
                     ) : (
-                      <AppLink
-                        to={href}
-                        aria-label={`打开项目：${project.name}`}
-                        onClick={(event) => {
-                          onSelectProject?.(project, event);
-                          onNavigate?.(href, event);
-                        }}
-                      >
+                      <span>
                         打开画布
                         <ArrowRight size={15} aria-hidden="true" />
-                      </AppLink>
+                      </span>
                     )}
                   </div>
-                </article>
+                </>
+              );
+
+              if (isArchived) {
+                return (
+                  <article key={project.id} className={className} aria-labelledby={titleId}>
+                    {cardContent}
+                  </article>
+                );
+              }
+
+              return (
+                <AppLink
+                  key={project.id}
+                  className={className}
+                  to={href}
+                  aria-labelledby={titleId}
+                  onClick={(event) => {
+                    onSelectProject?.(project, event);
+                    onNavigate?.(href, event);
+                  }}
+                >
+                  {cardContent}
+                </AppLink>
               );
             })}
           </div>

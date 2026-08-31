@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   assetSchema,
+  canonicalRunSnapshotJson,
   canTransitionRunStatus,
   canvasDocumentSchema,
   isCanvasNodeEnabled,
@@ -9,6 +10,7 @@ import {
   nodeModes,
   portRoles,
   runJobDataSchema,
+  runSnapshotFingerprintMaterial,
   runSnapshotSchema,
   targetPortRolesForMediaType,
 } from './index';
@@ -88,7 +90,7 @@ describe('canvas protocol', () => {
     ).toBe(false);
   });
 
-  it('accepts node prompt and inference strength settings', () => {
+  it('accepts node prompt, inference strength, and credential-bound model settings', () => {
     const document = canvasDocumentSchema.parse({
       revision: 0,
       nodes: [
@@ -102,6 +104,8 @@ describe('canvas protocol', () => {
             mode: 'generate',
             prompt: 'A quiet mountain lake at dawn',
             inferenceStrength: 'high',
+            modelAlias: 'image-studio-v2',
+            credentialId: 'credential-image',
           },
         },
       ],
@@ -110,6 +114,8 @@ describe('canvas protocol', () => {
 
     expect(document.nodes[0].data.prompt).toBe('A quiet mountain lake at dawn');
     expect(document.nodes[0].data.inferenceStrength).toBe('high');
+    expect(document.nodes[0].data.modelAlias).toBe('image-studio-v2');
+    expect(document.nodes[0].data.credentialId).toBe('credential-image');
   });
 
   it('preserves optional node prompt and inference strength settings', () => {
@@ -376,6 +382,92 @@ describe('canvas protocol', () => {
     expect(snapshot.canvasRevision).toBe(3);
     expect(canTransitionRunStatus('queued', 'preparing')).toBe(true);
     expect(canTransitionRunStatus('succeeded', 'running')).toBe(false);
+  });
+
+  it('canonicalizes run identity independently of timestamp and object key order', () => {
+    const base = runSnapshotSchema.parse({
+      projectId: 'project_1',
+      canvasRevision: 3,
+      targetNodeId: 'node_image',
+      modelAlias: 'mock-image',
+      parameters: {
+        nested: { first: 'one', second: 'two' },
+        list: ['first', 'second'],
+      },
+      submittedAt: '2026-08-24T00:00:00.000Z',
+      nodes: [
+        {
+          id: 'node_image',
+          type: 'image',
+          position: { x: 0, y: 0 },
+          data: { label: 'Generate', mediaType: 'image', mode: 'generate' },
+        },
+      ],
+      edges: [],
+      inputs: [],
+    });
+    const equivalent = runSnapshotSchema.parse({
+      ...base,
+      submittedAt: '2026-08-24T00:01:00.000Z',
+      parameters: {
+        list: ['first', 'second'],
+        nested: { second: 'two', first: 'one' },
+      },
+    });
+    const changed = runSnapshotSchema.parse({
+      ...equivalent,
+      parameters: {
+        ...equivalent.parameters,
+        list: ['second', 'first'],
+      },
+    });
+
+    expect(canonicalRunSnapshotJson(equivalent)).toBe(canonicalRunSnapshotJson(base));
+    expect(canonicalRunSnapshotJson(changed)).not.toBe(canonicalRunSnapshotJson(base));
+    expect(runSnapshotFingerprintMaterial(equivalent)).toBe(
+      `multimodal-canvas:run-snapshot:v2:${canonicalRunSnapshotJson(base)}`,
+    );
+  });
+
+  it('preserves whether node credential references were omitted or explicitly provided', () => {
+    const base = {
+      projectId: 'project_1',
+      canvasRevision: 3,
+      targetNodeId: 'node_image',
+      modelAlias: 'mock-image',
+      credentialId: 'credential-image',
+      credentialVersion: 2,
+      parameters: {},
+      submittedAt: '2026-08-24T00:00:00.000Z',
+      nodes: [
+        {
+          id: 'node_image',
+          type: 'image' as const,
+          position: { x: 0, y: 0 },
+          data: { label: 'Generate', mediaType: 'image' as const, mode: 'generate' as const },
+        },
+      ],
+      edges: [],
+      inputs: [],
+    };
+
+    const legacySnapshot = runSnapshotSchema.parse(base);
+    const emptyMappedSnapshot = runSnapshotSchema.parse({
+      ...base,
+      nodeCredentialReferences: {},
+    });
+    const mappedSnapshot = runSnapshotSchema.parse({
+      ...base,
+      nodeCredentialReferences: {
+        node_image: { credentialId: 'credential-image', credentialVersion: 2 },
+      },
+    });
+
+    expect(legacySnapshot.nodeCredentialReferences).toBeUndefined();
+    expect(emptyMappedSnapshot.nodeCredentialReferences).toEqual({});
+    expect(mappedSnapshot.nodeCredentialReferences).toEqual({
+      node_image: { credentialId: 'credential-image', credentialVersion: 2 },
+    });
   });
 
   it('defaults a queued job to an active cancellation flag of false', () => {

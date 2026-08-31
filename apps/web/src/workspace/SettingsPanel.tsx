@@ -1,8 +1,8 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useQueryClient } from '@tanstack/react-query';
 import { X } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { useForm } from 'react-hook-form';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useController, useForm } from 'react-hook-form';
 
 import { mediaTypes, type MediaType } from '@multimodal-canvas/domain';
 import {
@@ -21,9 +21,59 @@ import {
   useActivateAiCredential,
   useAiCredentialsQuery,
 } from '../query/credentials';
-import { useModelCatalogQuery, useRefreshModelCatalog } from '../query/models';
-import { isImeKeyboardEvent } from '../ime';
-import { API_BASE_URL, mediaLabels, type AiSettings, type ModelDefaults } from './contracts';
+import { useCredentialModelCatalogQueries, useRefreshModelCatalog } from '../query/models';
+import { isImeKeyboardEvent, useImeDraft } from '../ime';
+import {
+  API_BASE_URL,
+  mediaLabels,
+  type AiSettings,
+  type ModelEntry,
+  type ModelDefaults,
+  type ModelSelection,
+} from './contracts';
+
+function normalizeSelection(
+  value: string | ModelSelection | undefined,
+): ModelSelection | undefined {
+  if (!value) return undefined;
+  return typeof value === 'string' ? { modelAlias: value } : value;
+}
+
+function selectionValue(value: string | ModelSelection | undefined) {
+  const selection = normalizeSelection(value);
+  if (!selection?.modelAlias) return '';
+  return selection.credentialId
+    ? JSON.stringify([selection.credentialId, selection.modelAlias])
+    : selection.modelAlias;
+}
+
+function parseSelection(value: string): ModelSelection | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as [string, string];
+    if (Array.isArray(parsed) && parsed.length === 2) {
+      return { modelAlias: parsed[1], ...(parsed[0] ? { credentialId: parsed[0] } : {}) };
+    }
+  } catch {}
+  return { modelAlias: value };
+}
+
+function optionValue(model: { id: string; credentialId?: string }) {
+  return model.credentialId ? JSON.stringify([model.credentialId, model.id]) : model.id;
+}
+
+function selectedModel(value: string, models: Array<{ id: string; credentialId?: string }>) {
+  const parsed = parseSelection(value);
+  if (!parsed) return undefined;
+  const model = models.find(
+    (candidate) =>
+      candidate.id === parsed.modelAlias &&
+      (!parsed.credentialId || candidate.credentialId === parsed.credentialId),
+  );
+  return model
+    ? { modelAlias: model.id, ...(model.credentialId ? { credentialId: model.credentialId } : {}) }
+    : parsed;
+}
 
 function isAbortError(error: unknown) {
   return error instanceof Error && error.name === 'AbortError';
@@ -54,6 +104,7 @@ export function SettingsPanel({
   const [projectDefaults, setProjectDefaults] = useState<ModelDefaults>({});
   const [projectDefaultsLoading, setProjectDefaultsLoading] = useState(Boolean(projectId));
   const [busy, setBusy] = useState(false);
+  const [imeResetKey, setImeResetKey] = useState(0);
   const [panelNotice, setPanelNotice] = useState<{
     kind: 'error' | 'success';
     message: string;
@@ -62,11 +113,32 @@ export function SettingsPanel({
   const credentialsQuery = useAiCredentialsQuery();
   const activateCredentialMutation = useActivateAiCredential();
   const credentials = credentialsQuery.data ?? [];
-  const modelCatalogQuery = useModelCatalogQuery();
+  const currentCredentialId = activeCredentialId(credentials) || undefined;
+  const credentialModelQueries = useCredentialModelCatalogQueries(
+    credentials.map((credential) => credential.id),
+  );
   const refreshModelCatalogMutation = useRefreshModelCatalog();
-  const models = modelCatalogQuery.data ?? [];
+  const models = useMemo(() => {
+    const catalog = new Map<string, ModelEntry>();
+    for (const query of credentialModelQueries) {
+      for (const model of query.data ?? []) {
+        const key = `${model.credentialId ?? 'active'}\0${model.id}`;
+        const previous = catalog.get(key);
+        if (!previous) {
+          catalog.set(key, model);
+          continue;
+        }
+        catalog.set(key, {
+          ...previous,
+          ...model,
+          mediaTypes: [...new Set([...previous.mediaTypes, ...model.mediaTypes])],
+        });
+      }
+    }
+    return [...catalog.values()];
+  }, [credentialModelQueries]);
   const {
-    register,
+    control,
     handleSubmit,
     getFieldState,
     reset,
@@ -79,6 +151,20 @@ export function SettingsPanel({
       apiKey: '',
       configured: false,
     },
+  });
+  const { field: baseUrlField } = useController({ control, name: 'baseUrl' });
+  const { field: apiKeyField } = useController({ control, name: 'apiKey' });
+  const { bind: baseUrlImeBinding } = useImeDraft<HTMLInputElement>({
+    value: baseUrlField.value ?? '',
+    onCommit: baseUrlField.onChange,
+    resetKey: imeResetKey,
+    onBlur: () => baseUrlField.onBlur(),
+  });
+  const { bind: apiKeyImeBinding } = useImeDraft<HTMLInputElement>({
+    value: apiKeyField.value ?? '',
+    onCommit: apiKeyField.onChange,
+    resetKey: imeResetKey,
+    onBlur: () => apiKeyField.onBlur(),
   });
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -102,6 +188,7 @@ export function SettingsPanel({
   const applySettingsAndCredentials = useCallback(
     async (nextSettings: AiSettings, nextCredentials: AiCredentialSummary[]) => {
       setSettings(nextSettings);
+      setImeResetKey((current) => current + 1);
       reset({
         baseUrl: nextSettings.baseUrl,
         apiKey: '',
@@ -223,7 +310,9 @@ export function SettingsPanel({
       }
       await applySettingsAndCredentials(result.settings, result.credentials);
       try {
-        await refreshModelCatalogMutation.mutateAsync();
+        await refreshModelCatalogMutation.mutateAsync(
+          activeCredentialId(result.credentials) || undefined,
+        );
         reportNotice({ kind: 'success', message: 'AI 设置已保存，模型列表已自动刷新' });
       } catch (error) {
         reportNotice({
@@ -268,7 +357,7 @@ export function SettingsPanel({
   const refreshModels = async () => {
     setBusy(true);
     try {
-      await refreshModelCatalogMutation.mutateAsync();
+      await refreshModelCatalogMutation.mutateAsync(currentCredentialId);
       reportNotice({ kind: 'success', message: '模型列表已刷新' });
     } catch (error) {
       reportNotice({
@@ -287,13 +376,14 @@ export function SettingsPanel({
     try {
       const result = await activateCredentialMutation.mutateAsync(credentialId);
       setSettings(result.settings);
+      setImeResetKey((current) => current + 1);
       reset({
         baseUrl: result.settings.baseUrl,
         apiKey: '',
         configured: result.settings.configured,
       });
       try {
-        await refreshModelCatalogMutation.mutateAsync();
+        await refreshModelCatalogMutation.mutateAsync(credentialId);
         reportNotice({ kind: 'success', message: '凭据已激活，模型列表已自动刷新' });
       } catch (error) {
         reportNotice({
@@ -313,13 +403,14 @@ export function SettingsPanel({
     }
   };
 
-  const saveGlobalDefault = async (mediaType: MediaType, modelAlias: string) => {
+  const saveGlobalDefault = async (mediaType: MediaType, value: string) => {
+    const selection = parseSelection(value);
     setBusy(true);
     try {
       const response = await apiFetch(`${API_BASE_URL}/v1/settings/ai`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ defaultModels: { [mediaType]: modelAlias || null } }),
+        body: JSON.stringify({ defaultModels: { [mediaType]: selection ?? null } }),
       });
       const result = (await response.json().catch(() => ({}))) as {
         settings?: AiSettings;
@@ -345,7 +436,8 @@ export function SettingsPanel({
     }
   };
 
-  const saveProjectDefault = async (mediaType: MediaType, modelAlias: string) => {
+  const saveProjectDefault = async (mediaType: MediaType, value: string) => {
+    const selection = parseSelection(value);
     if (!projectId) {
       reportNotice({ kind: 'error', message: '当前项目尚未加载，无法保存项目默认模型' });
       return;
@@ -358,7 +450,7 @@ export function SettingsPanel({
         {
           method: 'PATCH',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ [mediaType]: modelAlias || null }),
+          body: JSON.stringify({ [mediaType]: selection ?? null }),
         },
       );
       const result = (await response.json().catch(() => ({}))) as {
@@ -371,7 +463,7 @@ export function SettingsPanel({
       setProjectDefaults(result.defaults);
       reportNotice({
         kind: 'success',
-        message: modelAlias
+        message: selection
           ? `${mediaLabels[mediaType]}项目默认模型已更新`
           : `${mediaLabels[mediaType]}已改为继承平台全局默认`,
       });
@@ -488,7 +580,9 @@ export function SettingsPanel({
             aria-invalid={Boolean(formErrors.baseUrl)}
             aria-describedby={formErrors.baseUrl ? 'settings-base-url-error' : undefined}
             placeholder="https://newapi.example.com/v1"
-            {...register('baseUrl')}
+            name={baseUrlField.name}
+            ref={baseUrlField.ref}
+            {...baseUrlImeBinding}
           />
           {formErrors.baseUrl && (
             <span id="settings-base-url-error" className="settings-field-error" role="alert">
@@ -506,7 +600,9 @@ export function SettingsPanel({
             placeholder={
               settings.keyFingerprint ? `已配置 · ${settings.keyFingerprint}` : '输入服务端 Key'
             }
-            {...register('apiKey')}
+            name={apiKeyField.name}
+            ref={apiKeyField.ref}
+            {...apiKeyImeBinding}
           />
           {formErrors.apiKey && (
             <span id="settings-api-key-error" className="settings-field-error" role="alert">
@@ -546,25 +642,37 @@ export function SettingsPanel({
               <span>{mediaLabels[mediaType]}</span>
               <select
                 aria-label={`平台全局默认 · ${mediaLabels[mediaType]}`}
-                value={settings.defaultModels[mediaType] ?? ''}
-                onChange={(event) => void saveGlobalDefault(mediaType, event.target.value)}
+                value={selectionValue(settings.defaultModels[mediaType])}
+                onChange={(event) =>
+                  void saveGlobalDefault(
+                    mediaType,
+                    selectionValue(selectedModel(event.target.value, models)),
+                  )
+                }
                 disabled={busy}
               >
                 <option value="">使用服务端环境默认</option>
                 {settings.defaultModels[mediaType] &&
                   !models.some(
                     (model) =>
-                      model.id === settings.defaultModels[mediaType] &&
+                      model.id ===
+                        normalizeSelection(settings.defaultModels[mediaType])?.modelAlias &&
+                      model.credentialId ===
+                        normalizeSelection(settings.defaultModels[mediaType])?.credentialId &&
                       model.mediaTypes.includes(mediaType),
                   ) && (
-                    <option value={settings.defaultModels[mediaType]}>
-                      {settings.defaultModels[mediaType]}（当前不可用）
+                    <option value={selectionValue(settings.defaultModels[mediaType])}>
+                      {normalizeSelection(settings.defaultModels[mediaType])?.modelAlias}
+                      （当前不可用）
                     </option>
                   )}
                 {models
                   .filter((model) => model.mediaTypes.includes(mediaType))
                   .map((model) => (
-                    <option key={model.id} value={model.id}>
+                    <option
+                      key={`${model.credentialId ?? 'active'}:${model.id}`}
+                      value={optionValue(model)}
+                    >
                       {model.name}
                     </option>
                   ))}
@@ -582,25 +690,35 @@ export function SettingsPanel({
               <span>{mediaLabels[mediaType]}</span>
               <select
                 aria-label={`项目默认 · ${mediaLabels[mediaType]}`}
-                value={projectDefaults[mediaType] ?? ''}
-                onChange={(event) => void saveProjectDefault(mediaType, event.target.value)}
+                value={selectionValue(projectDefaults[mediaType])}
+                onChange={(event) =>
+                  void saveProjectDefault(
+                    mediaType,
+                    selectionValue(selectedModel(event.target.value, models)),
+                  )
+                }
                 disabled={busy || projectDefaultsLoading || !projectId}
               >
                 <option value="">继承平台全局默认</option>
                 {projectDefaults[mediaType] &&
                   !models.some(
                     (model) =>
-                      model.id === projectDefaults[mediaType] &&
+                      model.id === normalizeSelection(projectDefaults[mediaType])?.modelAlias &&
+                      model.credentialId ===
+                        normalizeSelection(projectDefaults[mediaType])?.credentialId &&
                       model.mediaTypes.includes(mediaType),
                   ) && (
-                    <option value={projectDefaults[mediaType]}>
-                      {projectDefaults[mediaType]}（当前不可用）
+                    <option value={selectionValue(projectDefaults[mediaType])}>
+                      {normalizeSelection(projectDefaults[mediaType])?.modelAlias}（当前不可用）
                     </option>
                   )}
                 {models
                   .filter((model) => model.mediaTypes.includes(mediaType))
                   .map((model) => (
-                    <option key={model.id} value={model.id}>
+                    <option
+                      key={`${model.credentialId ?? 'active'}:${model.id}`}
+                      value={optionValue(model)}
+                    >
                       {model.name}
                     </option>
                   ))}

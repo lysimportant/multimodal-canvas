@@ -37,7 +37,7 @@ const rateLimiter = redisRateLimitClient
   : memoryRateLimiter;
 const authStore = prisma ? new PrismaAuthStore(prisma) : undefined;
 const runPersistence = prisma ? new PrismaRunPersistence(prisma) : undefined;
-const providerName = process.env.WORKER_PROVIDER === 'newapi' ? 'newapi' : 'mock';
+const providerName = process.env.WORKER_PROVIDER === 'mock' ? 'mock' : 'newapi';
 const settingsStore = prisma ? new PrismaAiSettingsStore(prisma) : new AiSettingsStore();
 const runExecutor =
   providerName === 'newapi'
@@ -45,13 +45,6 @@ const runExecutor =
         settingsStore,
         timeoutMs: Number(process.env.NEW_API_TIMEOUT_MS ?? 120_000),
         responseMaxBytes: Number(process.env.NEW_API_MAX_RESPONSE_BYTES ?? 50 * 1024 * 1024),
-        ...(process.env.NEW_API_VIDEO_PATH ? { videoPath: process.env.NEW_API_VIDEO_PATH } : {}),
-        ...(process.env.NEW_API_VIDEO_CREATE_PATH
-          ? { videoCreatePath: process.env.NEW_API_VIDEO_CREATE_PATH }
-          : {}),
-        ...(process.env.NEW_API_VIDEO_JOBS_PATH
-          ? { videoJobsPath: process.env.NEW_API_VIDEO_JOBS_PATH }
-          : {}),
         ...(process.env.NEW_API_VIDEO_POLL_INTERVAL_MS
           ? { videoPollIntervalMs: Number(process.env.NEW_API_VIDEO_POLL_INTERVAL_MS) }
           : {}),
@@ -74,6 +67,9 @@ const runService = useMemoryRunService
     })
   : new BullMqRunService({
       connection: redisConnectionFromUrl(process.env.REDIS_URL ?? 'redis://localhost:6379'),
+      ...(process.env.RUN_QUEUE_NAME?.trim()
+        ? { queueName: process.env.RUN_QUEUE_NAME.trim() }
+        : {}),
       providerName,
       ...(runPersistence ? { persistence: runPersistence } : {}),
     });

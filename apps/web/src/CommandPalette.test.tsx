@@ -100,6 +100,30 @@ describe('CommandPalette', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it('keeps a Chinese search draft across a stale parent render and filters after composition', () => {
+    const commands = makeCommands();
+    const view = render(<CommandPalette open commands={commands} onClose={vi.fn()} />);
+    const input = screen.getByRole('searchbox');
+    const initialActiveDescendant = input.getAttribute('aria-activedescendant');
+
+    fireEvent.compositionStart(input);
+    fireEvent.change(input, { target: { value: 'xin jian' } });
+    fireEvent.compositionUpdate(input, { target: { value: '新建' } });
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    view.rerender(<CommandPalette open commands={commands} onClose={vi.fn()} />);
+
+    expect(input).toHaveValue('新建');
+    expect(input).toHaveAttribute('aria-activedescendant', initialActiveDescendant);
+    expect(screen.getAllByRole('option')).toHaveLength(commands.length);
+
+    fireEvent.compositionEnd(input, { target: { value: '新建' } });
+    fireEvent.change(input, { target: { value: '新建' } });
+
+    expect(input).toHaveValue('新建');
+    expect(screen.getByRole('option', { name: /新建项目/ })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /打开设置/ })).not.toBeInTheDocument();
+  });
+
   it('keeps the active command visible while navigating a long list', async () => {
     const user = userEvent.setup();
     const originalDescriptor = Object.getOwnPropertyDescriptor(

@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { RunJobData, RunSnapshot, WorkflowState } from '@multimodal-canvas/domain';
+import {
+  runSnapshotFingerprintMaterial,
+  type RunJobData,
+  type RunSnapshot,
+  type WorkflowState,
+} from '@multimodal-canvas/domain';
+import { createHash } from 'node:crypto';
 
 type StubJob = {
   id: string;
@@ -39,15 +45,26 @@ import {
   replaceWorkflowNodeState,
   workflowNodeState,
   workflowSnapshotFingerprint,
+  workflowSnapshotFingerprintV1,
 } from './workflow-dag';
 
 const projectId = '123e4567-e89b-42d3-a456-426614174100';
+const credentialId = '123e4567-e89b-42d3-a456-426614174199';
+
+async function getTestProviderCredentials() {
+  return {
+    baseUrl: 'https://newapi.example/v1',
+    apiKey: 'synthetic-test-key',
+  };
+}
 
 const snapshot: RunSnapshot = {
   projectId,
   canvasRevision: 7,
   targetNodeId: 'node_video',
   modelAlias: 'video-default',
+  credentialId,
+  credentialVersion: 1,
   parameters: { resolution: '1080p' },
   submittedAt: '2026-08-27T00:00:00.000Z',
   nodes: [
@@ -238,6 +255,8 @@ function createTextSnapshot(): RunSnapshot {
     canvasRevision: 8,
     targetNodeId: 'node_draft',
     modelAlias: 'text-model',
+    credentialId,
+    credentialVersion: 1,
     parameters: {},
     submittedAt: '2026-08-27T01:00:00.000Z',
     nodes: snapshot.nodes.filter((node) => ['node_prompt', 'node_draft'].includes(node.id)),
@@ -255,6 +274,14 @@ function createTextSnapshot(): RunSnapshot {
 }
 
 describe('worker workflow DAG execution', () => {
+  it('hashes the same shared v2 fingerprint material as the API', () => {
+    const expected = createHash('sha256')
+      .update(runSnapshotFingerprintMaterial(snapshot))
+      .digest('hex');
+
+    expect(workflowSnapshotFingerprint(snapshot)).toBe(expected);
+  });
+
   it('executes fan-in nodes in order and freezes archived results into downstream snapshots', async () => {
     bullmqState.jobs.clear();
     const runId = '123e4567-e89b-42d3-a456-426614174101';
@@ -353,6 +380,162 @@ describe('worker workflow DAG execution', () => {
     });
   });
 
+  it('keeps later DAG nodes on the submitted snapshot when a provider mutates job data', async () => {
+    bullmqState.jobs.clear();
+    const runId = '123e4567-e89b-42d3-a456-426614174125';
+    const submittedSnapshot = structuredClone(snapshot);
+    const requests: RunSnapshot[] = [];
+    const job = createJob({
+      runId,
+      snapshot: submittedSnapshot,
+      attempt: 1,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(runId, 'newapi'),
+      cancelRequested: false,
+    });
+
+    const provider = {
+      execute: vi.fn(async (request: { snapshot: RunSnapshot }) => {
+        requests.push(request.snapshot);
+        const execution = createExecution(request.snapshot);
+        if (request.snapshot.targetNodeId === 'node_draft') {
+          const mutableSnapshot = job.data.snapshot as unknown as RunSnapshot;
+          const imageNode = mutableSnapshot.nodes.find((node) => node.id === 'node_image');
+          if (imageNode && imageNode.data.mode !== 'source') {
+            imageNode.data.modelAlias = 'tampered-model';
+          }
+        }
+        return execution;
+      }),
+    };
+
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      provider,
+      videoProvider: provider,
+      stepDelayMs: 0,
+      resultArchiver: async ({ result, snapshot: nodeSnapshot }) => ({
+        assetId: `asset_${nodeSnapshot.targetNodeId}`,
+        version: 1,
+        contentUrl: `https://assets.example/${nodeSnapshot.targetNodeId}`,
+        mimeType:
+          result.mediaType === 'text'
+            ? 'text/plain'
+            : result.mediaType === 'image'
+              ? 'image/png'
+              : 'video/mp4',
+      }),
+    });
+
+    await expect(bullmqState.processor?.(job)).resolves.toMatchObject({ status: 'succeeded' });
+    expect(requests.map((request) => request.targetNodeId)).toEqual([
+      'node_draft',
+      'node_image',
+      'node_video',
+    ]);
+    expect(requests[1]?.nodes.find((node) => node.id === 'node_image')?.data).toMatchObject({
+      modelAlias: 'image-model',
+    });
+    expect((job.data.snapshot as unknown as RunSnapshot).nodes).toEqual(submittedSnapshot.nodes);
+  });
+
+  it('keeps a generated node loading without a result until its asset is archived', async () => {
+    bullmqState.jobs.clear();
+    const runId = '123e4567-e89b-42d3-a456-426614174123';
+    const textSnapshot = createTextSnapshot();
+    let releaseArchive!: () => void;
+    let archiveStarted!: () => void;
+    const archiveReady = new Promise<void>((resolve) => {
+      archiveStarted = resolve;
+    });
+    const archiveRelease = new Promise<void>((resolve) => {
+      releaseArchive = resolve;
+    });
+    const job = createJob({
+      runId,
+      snapshot: textSnapshot,
+      attempt: 1,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(runId, 'newapi'),
+      cancelRequested: false,
+    });
+
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      provider: { execute: async (request) => createExecution(request.snapshot) },
+      stepDelayMs: 0,
+      resultArchiver: async () => {
+        archiveStarted();
+        await archiveRelease;
+        return { assetId: 'asset_text_loading', version: 1, mimeType: 'text/plain' };
+      },
+    });
+
+    const processing = bullmqState.processor?.(job);
+    await archiveReady;
+    expect(workflowNodeState(job.data.workflowState as WorkflowState, 'node_draft')).toMatchObject({
+      status: 'running',
+      providerJob: { status: 'running' },
+    });
+    expect(
+      workflowNodeState(job.data.workflowState as WorkflowState, 'node_draft')?.result,
+    ).toBeUndefined();
+
+    releaseArchive();
+    await expect(processing).resolves.toMatchObject({
+      status: 'succeeded',
+      result: { asset: { assetId: 'asset_text_loading', version: 1 } },
+    });
+    expect(workflowNodeState(job.data.workflowState as WorkflowState, 'node_draft')).toMatchObject({
+      status: 'succeeded',
+      result: { asset: { assetId: 'asset_text_loading', version: 1 } },
+    });
+  });
+
+  it('marks the run failed when result archiving fails and never reports succeeded', async () => {
+    bullmqState.jobs.clear();
+    const runId = '123e4567-e89b-42d3-a456-426614174124';
+    const runStatuses: string[] = [];
+    const job = createJob({
+      runId,
+      snapshot: createTextSnapshot(),
+      attempt: 1,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(runId, 'newapi'),
+      cancelRequested: false,
+    });
+
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      provider: { execute: async (request) => createExecution(request.snapshot) },
+      stepDelayMs: 0,
+      persistence: {
+        getProviderCredentials: getTestProviderCredentials,
+        async upsertProviderJob() {},
+        async recordUsage() {},
+        async updateRun(input) {
+          runStatuses.push(input.status);
+        },
+      },
+      resultArchiver: async () => {
+        throw new Error('asset archive unavailable');
+      },
+    });
+
+    await expect(bullmqState.processor?.(job)).rejects.toThrow('asset archive unavailable');
+    expect(runStatuses).toContain('failed');
+    expect(runStatuses).not.toContain('succeeded');
+    expect(workflowNodeState(job.data.workflowState as WorkflowState, 'node_draft')).toMatchObject({
+      status: 'failed',
+    });
+    expect(workflowNodeState(job.data.workflowState as WorkflowState, 'node_draft')?.result).toBe(
+      undefined,
+    );
+  });
+
   it('stops downstream execution after an intermediate node fails', async () => {
     bullmqState.jobs.clear();
     const runId = '123e4567-e89b-42d3-a456-426614174102';
@@ -394,6 +577,7 @@ describe('worker workflow DAG execution', () => {
     const state = job.data.workflowState as WorkflowState;
     expect(workflowNodeState(state, 'node_draft')?.status).toBe('succeeded');
     expect(workflowNodeState(state, 'node_image')?.status).toBe('failed');
+    expect(workflowNodeState(state, 'node_image')?.result).toBeUndefined();
     expect(workflowNodeState(state, 'node_video')?.status).toBe('pending');
     expect(job.data.providerJob).toMatchObject({ status: 'failed' });
   });
@@ -521,6 +705,7 @@ describe('worker workflow DAG execution', () => {
     const runId = '123e4567-e89b-42d3-a456-426614174112';
     const usageRecords: Array<{ providerJobId?: string }> = [];
     const persistence = {
+      getProviderCredentials: getTestProviderCredentials,
       async upsertProviderJob() {},
       async recordUsage(input: { providerJobId?: string }) {
         usageRecords.push(input);
@@ -677,6 +862,7 @@ describe('worker workflow DAG execution', () => {
     const textSnapshot = createTextSnapshot();
     const provider = { execute: vi.fn(async (request) => createExecution(request.snapshot)) };
     let rejectSucceededWrite = true;
+    const runStatuses: string[] = [];
     const job = createJob({
       runId,
       snapshot: textSnapshot,
@@ -692,17 +878,16 @@ describe('worker workflow DAG execution', () => {
       provider,
       stepDelayMs: 0,
       persistence: {
+        getProviderCredentials: getTestProviderCredentials,
         async upsertProviderJob() {},
         async recordUsage() {},
         async updateRun(input) {
+          runStatuses.push(input.status);
           if (input.status === 'succeeded' && rejectSucceededWrite) {
             rejectSucceededWrite = false;
             throw new Error('final run write unavailable');
           }
         },
-      },
-      onPersistenceError(error) {
-        throw error;
       },
       resultArchiver: async () => ({
         assetId: 'asset_draft_replayed',
@@ -716,6 +901,7 @@ describe('worker workflow DAG execution', () => {
       status: 'failed',
       result: { asset: { assetId: 'asset_draft_replayed' } },
     });
+    expect(runStatuses).toContain('failed');
 
     await expect(bullmqState.processor?.(job)).resolves.toMatchObject({
       status: 'succeeded',
@@ -753,6 +939,7 @@ describe('worker workflow DAG execution', () => {
       },
       stepDelayMs: 0,
       persistence: {
+        getProviderCredentials: getTestProviderCredentials,
         async upsertProviderJob() {},
         async recordUsage() {
           if (rejectUsage) {
@@ -828,6 +1015,7 @@ describe('worker workflow DAG execution', () => {
       },
       stepDelayMs: 0,
       persistence: {
+        getProviderCredentials: getTestProviderCredentials,
         async upsertProviderJob() {},
         async recordUsage(input) {
           usageRecords.push(input);
@@ -936,6 +1124,7 @@ describe('worker workflow DAG execution', () => {
       },
       stepDelayMs: 0,
       persistence: {
+        getProviderCredentials: getTestProviderCredentials,
         findProviderJobsByRunId,
         async upsertProviderJob() {},
         async recordUsage() {},
@@ -1043,6 +1232,63 @@ describe('worker workflow DAG execution', () => {
       status: 'succeeded',
       result: { asset: { assetId: 'asset_changed_snapshot' } },
     });
+  });
+
+  it('recovers a persisted provider task written with the legacy v1 fingerprint', async () => {
+    bullmqState.jobs.clear();
+    const runId = '123e4567-e89b-42d3-a456-426614174123';
+    const predecessorRunId = '123e4567-e89b-42d3-a456-426614174124';
+    const textSnapshot = createTextSnapshot();
+    const persistedProviderJob = {
+      ...createProviderJobRecord(predecessorRunId, 'newapi', 'failed', 80),
+      platformJobId: 'platform-v1-persisted',
+      payload: {
+        workflowNodeId: 'node_draft',
+        phase: 'polling',
+        snapshotFingerprint: workflowSnapshotFingerprintV1(textSnapshot),
+      },
+    };
+    const retry = createJob({
+      runId,
+      retryOf: predecessorRunId,
+      snapshot: textSnapshot,
+      attempt: 2,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(runId, 'newapi'),
+      cancelRequested: false,
+    });
+    const provider = {
+      execute: vi.fn(async (request) => {
+        expect(request.providerJob).toMatchObject({ platformJobId: 'platform-v1-persisted' });
+        return createExecution(request.snapshot);
+      }),
+    };
+    const findProviderJobsByRunId = vi.fn(async () => [persistedProviderJob]);
+
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      provider,
+      stepDelayMs: 0,
+      persistence: {
+        getProviderCredentials: getTestProviderCredentials,
+        findProviderJobsByRunId,
+        async upsertProviderJob() {},
+        async recordUsage() {},
+      },
+      resultArchiver: async () => ({
+        assetId: 'asset_v1_recovered',
+        version: 1,
+        mimeType: 'text/plain',
+      }),
+    });
+
+    await expect(bullmqState.processor?.(retry)).resolves.toMatchObject({
+      status: 'succeeded',
+      providerJob: { platformJobId: 'platform-v1-persisted' },
+    });
+    expect(findProviderJobsByRunId).toHaveBeenCalledWith(predecessorRunId);
+    expect(provider.execute).toHaveBeenCalledOnce();
   });
 
   it('does not reuse a legacy succeeded result without a frozen asset version', async () => {

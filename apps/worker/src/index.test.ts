@@ -41,7 +41,7 @@ import {
   sanitizeProviderJobPayload,
 } from './index';
 import { serializeWorkerError } from './logger';
-import { workflowSnapshotFingerprint } from './workflow-dag';
+import { workflowSnapshotFingerprint, workflowSnapshotFingerprintV1 } from './workflow-dag';
 
 const result = {
   provider: 'mock',
@@ -50,6 +50,55 @@ const result = {
   mediaType: 'text' as const,
   inputCount: 0,
 };
+
+function createBoundarySnapshot(targetNodeId = 'node_boundary') {
+  return {
+    projectId: 'project_provider_job_boundary',
+    canvasRevision: 1,
+    targetNodeId,
+    modelAlias: 'text-model',
+    parameters: {},
+    submittedAt: '2026-08-28T00:00:00.000Z',
+    nodes: [
+      {
+        id: targetNodeId,
+        type: 'text' as const,
+        position: { x: 0, y: 0 },
+        data: {
+          label: 'Boundary text',
+          mediaType: 'text' as const,
+          mode: 'generate' as const,
+        },
+      },
+    ],
+    edges: [],
+    inputs: [],
+  };
+}
+
+function createBoundaryJob(
+  runId: string,
+  snapshot: ReturnType<typeof createBoundarySnapshot>,
+  provider: 'mock' | 'newapi',
+  providerJob: ReturnType<typeof createProviderJobRecord>,
+) {
+  const job: NonNullable<typeof bullmqState.job> = {
+    id: runId,
+    data: {
+      runId,
+      snapshot,
+      attempt: 1,
+      provider,
+      providerJob,
+      cancelRequested: false,
+    },
+    async updateData(data) {
+      this.data = data;
+    },
+    async updateProgress() {},
+  };
+  return job;
+}
 
 describe('worker provider job boundary', () => {
   it('redacts credential-like values from error diagnostics', () => {
@@ -201,6 +250,82 @@ describe('worker provider job boundary', () => {
     ).resolves.toBeUndefined();
   });
 
+  it('does not require credentials for a mock run with an empty credential map', async () => {
+    const providerRequests: Array<Record<string, unknown>> = [];
+    const runId = 'run_mock_empty_credentials';
+    const snapshot = {
+      projectId: 'project_mock',
+      canvasRevision: 1,
+      targetNodeId: 'node_mock_empty_credentials',
+      modelAlias: 'mock-text',
+      nodeCredentialReferences: {},
+      parameters: {},
+      submittedAt: '2026-08-27T00:00:00.000Z',
+      nodes: [
+        {
+          id: 'node_mock_empty_credentials',
+          type: 'text' as const,
+          position: { x: 0, y: 0 },
+          data: {
+            label: 'Mock text',
+            mediaType: 'text' as const,
+            mode: 'generate' as const,
+          },
+        },
+      ],
+      edges: [],
+      inputs: [],
+    };
+    const job: NonNullable<typeof bullmqState.job> = {
+      id: runId,
+      data: {
+        runId,
+        snapshot,
+        attempt: 1,
+        provider: 'mock',
+        providerJob: createProviderJobRecord(runId, 'mock', 'queued', 0),
+        cancelRequested: false,
+      },
+      async updateData(data) {
+        this.data = data;
+      },
+      async updateProgress() {},
+    };
+    bullmqState.job = job;
+
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'mock',
+      provider: {
+        async execute(request) {
+          providerRequests.push(request as unknown as Record<string, unknown>);
+          return {
+            result: { ...result, targetNodeId: snapshot.targetNodeId },
+            output: {
+              mediaType: 'text' as const,
+              kind: 'text' as const,
+              text: 'mock output',
+              mimeType: 'text/plain',
+            },
+          };
+        },
+      },
+      stepDelayMs: 0,
+      persistence: {
+        async upsertProviderJob() {},
+        async recordUsage() {},
+      },
+      resultArchiver: async () => ({
+        assetId: 'asset_mock_empty_credentials',
+        version: 1,
+        mimeType: 'text/plain',
+      }),
+    });
+
+    await expect(bullmqState.processor?.(job)).resolves.toMatchObject({ status: 'succeeded' });
+    expect(providerRequests[0]?.snapshot).not.toHaveProperty('nodeCredentialReferences');
+  });
+
   it('routes video runs to the async provider and preserves its job identity', async () => {
     const databaseRunId = '123e4567-e89b-12d3-a456-426614174000';
     const progressUpdates: Array<{ progress: number }> = [];
@@ -256,6 +381,8 @@ describe('worker provider job boundary', () => {
       canvasRevision: 1,
       targetNodeId: 'node_video',
       modelAlias: 'video-model',
+      credentialId: '123e4567-e89b-12d3-a456-426614174020',
+      credentialVersion: 1,
       parameters: {},
       submittedAt: '2026-08-26T00:00:00.000Z',
       nodes: [
@@ -303,6 +430,9 @@ describe('worker provider job boundary', () => {
       videoProvider: { execute: videoExecute },
       stepDelayMs: 0,
       persistence: {
+        async getProviderCredentials() {
+          return { baseUrl: 'https://newapi.example/v1', apiKey: 'synthetic-test-key' };
+        },
         async upsertProviderJob(input) {
           providerJobs.push(input.providerJob);
         },
@@ -415,6 +545,7 @@ describe('worker provider job boundary', () => {
                 label: 'Cancelable video',
                 mediaType: 'video' as const,
                 mode: 'generate' as const,
+                prompt: 'A gentle camera move through the scene',
               },
             },
           ],
@@ -473,6 +604,8 @@ describe('worker provider job boundary', () => {
       canvasRevision: 2,
       targetNodeId: 'node_video_retry',
       modelAlias: 'video-model',
+      credentialId: '123e4567-e89b-12d3-a456-426614174021',
+      credentialVersion: 1,
       parameters: {},
       submittedAt: '2026-08-26T00:00:00.000Z',
       nodes: [
@@ -509,7 +642,7 @@ describe('worker provider job boundary', () => {
       payload: {
         contract: 'newapi-video-v1',
         phase: 'polling',
-        snapshotFingerprint: workflowSnapshotFingerprint(retrySnapshot),
+        snapshotFingerprint: workflowSnapshotFingerprintV1(retrySnapshot),
       },
     };
     const providerRequests: Array<Record<string, unknown>> = [];
@@ -543,6 +676,9 @@ describe('worker provider job boundary', () => {
       stepDelayMs: 0,
       persistence: {
         findProviderJobByRunId,
+        async getProviderCredentials() {
+          return { baseUrl: 'https://newapi.example/v1', apiKey: 'synthetic-test-key' };
+        },
         async upsertProviderJob() {},
         async recordUsage() {},
       },
@@ -561,6 +697,125 @@ describe('worker provider job boundary', () => {
     });
     expect(job.data.providerJob).toMatchObject({ platformJobId: 'platform-video-retry' });
   });
+
+  it.each(['missing', 'current', 'legacy'] as const)(
+    'reuses an initial platform task with a $fingerprintState snapshot fingerprint state on a fresh run',
+    async (fingerprintState) => {
+      const runId = `run_initial_${fingerprintState}_fingerprint`;
+      const snapshot = createBoundarySnapshot();
+      const providerJob = {
+        ...createProviderJobRecord(runId, 'mock', 'running', 40),
+        platformJobId: `platform-${fingerprintState}`,
+        ...(fingerprintState === 'missing'
+          ? {}
+          : {
+              payload: {
+                snapshotFingerprint:
+                  fingerprintState === 'current'
+                    ? workflowSnapshotFingerprint(snapshot)
+                    : workflowSnapshotFingerprintV1(snapshot),
+              },
+            }),
+      };
+      const providerRequests: Array<Record<string, unknown>> = [];
+      const job = createBoundaryJob(runId, snapshot, 'mock', providerJob);
+      bullmqState.job = job;
+
+      createRunWorker({
+        connection: { host: '127.0.0.1', port: 6379 },
+        providerName: 'mock',
+        provider: {
+          async execute(request) {
+            providerRequests.push(request as unknown as Record<string, unknown>);
+            return {
+              result: { ...result, targetNodeId: snapshot.targetNodeId },
+              output: {
+                mediaType: 'text' as const,
+                kind: 'text' as const,
+                text: 'boundary output',
+                mimeType: 'text/plain',
+              },
+            };
+          },
+        },
+        stepDelayMs: 0,
+        resultArchiver: async () => ({
+          assetId: `asset-${fingerprintState}`,
+          version: 1,
+          mimeType: 'text/plain',
+        }),
+      });
+
+      await expect(bullmqState.processor?.(job)).resolves.toMatchObject({ status: 'succeeded' });
+      expect(providerRequests[0]?.providerJob).toMatchObject({
+        platformJobId: `platform-${fingerprintState}`,
+      });
+    },
+  );
+
+  it.each([
+    {
+      name: 'a different provider',
+      providerJob: (runId: string) => ({
+        ...createProviderJobRecord(runId, 'newapi', 'running', 40),
+        platformJobId: 'platform-wrong-provider',
+      }),
+    },
+    {
+      name: 'a different snapshot fingerprint',
+      providerJob: (runId: string) => ({
+        ...createProviderJobRecord(runId, 'mock', 'running', 40),
+        platformJobId: 'platform-wrong-snapshot',
+        payload: { snapshotFingerprint: 'f'.repeat(64) },
+      }),
+    },
+    {
+      name: 'a malformed snapshot fingerprint',
+      providerJob: (runId: string) => ({
+        ...createProviderJobRecord(runId, 'mock', 'running', 40),
+        platformJobId: 'platform-malformed-fingerprint',
+        payload: { snapshotFingerprint: 'not-a-sha256' },
+      }),
+    },
+  ])(
+    'does not reuse an initial platform task with $name',
+    async ({ name, providerJob: createJob }) => {
+      const runId = `run_reject_initial_${name.replaceAll(' ', '_')}`;
+      const snapshot = createBoundarySnapshot();
+      const providerRequests: Array<Record<string, unknown>> = [];
+      const job = createBoundaryJob(runId, snapshot, 'mock', createJob(runId));
+      bullmqState.job = job;
+
+      createRunWorker({
+        connection: { host: '127.0.0.1', port: 6379 },
+        providerName: 'mock',
+        provider: {
+          async execute(request) {
+            providerRequests.push(request as unknown as Record<string, unknown>);
+            return {
+              result: { ...result, targetNodeId: snapshot.targetNodeId },
+              output: {
+                mediaType: 'text' as const,
+                kind: 'text' as const,
+                text: 'boundary output',
+                mimeType: 'text/plain',
+              },
+            };
+          },
+        },
+        stepDelayMs: 0,
+        resultArchiver: async () => ({
+          assetId: 'asset-rejected-initial',
+          version: 1,
+          mimeType: 'text/plain',
+        }),
+      });
+
+      await expect(bullmqState.processor?.(job)).resolves.toMatchObject({ status: 'succeeded' });
+      expect(providerRequests[0]?.providerJob).not.toHaveProperty('platformJobId');
+      expect(job.data.providerJob).not.toHaveProperty('platformJobId');
+    },
+  );
 
   it('persists a failed run when its immutable credential snapshot is unavailable', async () => {
     const runId = '123e4567-e89b-12d3-a456-426614174013';
@@ -604,12 +859,14 @@ describe('worker provider job boundary', () => {
       async updateProgress() {},
     };
     bullmqState.job = job;
+    const provider = { execute: vi.fn(async () => ({ result })) };
     const getProviderCredentials = vi.fn(async () => undefined);
     const updateRun = vi.fn(async () => undefined);
 
     createRunWorker({
       connection: { host: '127.0.0.1', port: 6379 },
       providerName: 'newapi',
+      provider,
       stepDelayMs: 0,
       persistence: {
         getProviderCredentials,
@@ -628,5 +885,221 @@ describe('worker provider job boundary', () => {
     expect(updateRun).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'failed', error: expect.stringContaining('unavailable') }),
     );
+    expect(provider.execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: 'missing credential snapshot resolver',
+      snapshot: {},
+      expectedError: 'persistent New API worker requires a credential snapshot resolver',
+    },
+    {
+      name: 'missing credential ID',
+      snapshot: { credentialVersion: 1 },
+      expectedError: 'run snapshot is missing an immutable New API credential reference',
+    },
+    {
+      name: 'missing credential version',
+      snapshot: { credentialId: '123e4567-e89b-12d3-a456-426614174022' },
+      expectedError: 'run snapshot is missing an immutable New API credential reference',
+    },
+  ])(
+    'fails closed for $name before an injected provider or environment fallback',
+    async ({ snapshot: credentialSnapshot, expectedError }) => {
+      const runId = '123e4567-e89b-42d3-a456-426614174023';
+      const provider = { execute: vi.fn(async () => ({ result })) };
+      const getProviderCredentials = vi.fn(async () => ({
+        baseUrl: 'https://newapi.example/v1',
+        apiKey: 'synthetic-test-key',
+      }));
+      const job: NonNullable<typeof bullmqState.job> = {
+        id: runId,
+        data: {
+          runId,
+          snapshot: {
+            projectId: 'project_credential_boundary',
+            canvasRevision: 1,
+            targetNodeId: 'node_credential_boundary',
+            modelAlias: 'text-model',
+            ...credentialSnapshot,
+            parameters: {},
+            submittedAt: '2026-08-27T00:00:00.000Z',
+            nodes: [
+              {
+                id: 'node_credential_boundary',
+                type: 'text' as const,
+                position: { x: 0, y: 0 },
+                data: {
+                  label: 'Credential boundary',
+                  mediaType: 'text' as const,
+                  mode: 'generate' as const,
+                },
+              },
+            ],
+            edges: [],
+            inputs: [],
+          },
+          attempt: 1,
+          provider: 'newapi',
+          providerJob: createProviderJobRecord(runId, 'newapi'),
+          cancelRequested: false,
+        },
+        async updateData(data) {
+          this.data = data;
+        },
+        async updateProgress() {},
+      };
+      bullmqState.job = job;
+
+      createRunWorker({
+        connection: { host: '127.0.0.1', port: 6379 },
+        providerName: 'newapi',
+        provider,
+        stepDelayMs: 0,
+        persistence: {
+          ...(expectedError.includes('resolver') ? {} : { getProviderCredentials }),
+          async upsertProviderJob() {},
+          async recordUsage() {},
+        },
+      });
+
+      await expect(bullmqState.processor?.(job)).rejects.toThrow(expectedError);
+      expect(provider.execute).not.toHaveBeenCalled();
+      if (expectedError.includes('resolver')) {
+        expect(getProviderCredentials).not.toHaveBeenCalled();
+      } else {
+        expect(getProviderCredentials).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it('fails closed before provider execution when the initial run snapshot cannot be persisted', async () => {
+    const runId = '123e4567-e89b-42d3-a456-426614174015';
+    const provider = { execute: vi.fn(async () => ({ result })) };
+    const job: NonNullable<typeof bullmqState.job> = {
+      id: runId,
+      data: {
+        runId,
+        snapshot: {
+          projectId: runId,
+          canvasRevision: 1,
+          targetNodeId: 'node_initial_persistence',
+          modelAlias: 'text-model',
+          parameters: {},
+          submittedAt: '2026-08-26T00:00:00.000Z',
+          nodes: [
+            {
+              id: 'node_initial_persistence',
+              type: 'text' as const,
+              position: { x: 0, y: 0 },
+              data: {
+                label: 'Text',
+                mediaType: 'text' as const,
+                mode: 'generate' as const,
+              },
+            },
+          ],
+          edges: [],
+          inputs: [],
+        },
+        attempt: 1,
+        provider: 'newapi',
+        providerJob: createProviderJobRecord(runId, 'newapi'),
+        cancelRequested: false,
+      },
+      async updateData(data) {
+        this.data = data;
+      },
+      async updateProgress() {},
+    };
+    bullmqState.job = job;
+    const ensureRun = vi.fn(async () => {
+      throw new Error('initial run snapshot unavailable');
+    });
+
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      provider,
+      stepDelayMs: 0,
+      persistence: {
+        ensureRun,
+        async upsertProviderJob() {},
+        async recordUsage() {},
+      },
+    });
+
+    await expect(bullmqState.processor?.(job)).rejects.toThrow('initial run snapshot unavailable');
+    expect(ensureRun).toHaveBeenCalledOnce();
+    expect(provider.execute).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when durable run ID resolution fails before provider execution', async () => {
+    const runId = 'run_initial_resolver_failure';
+    const provider = { execute: vi.fn(async () => ({ result })) };
+    const persistenceError = new Error('run ID resolver unavailable');
+    const onPersistenceError = vi.fn();
+    const ensureRun = vi.fn(async () => undefined);
+    const job: NonNullable<typeof bullmqState.job> = {
+      id: runId,
+      data: {
+        runId,
+        snapshot: {
+          projectId: 'project_initial_resolver_failure',
+          canvasRevision: 1,
+          targetNodeId: 'node_initial_resolver_failure',
+          modelAlias: 'text-model',
+          parameters: {},
+          submittedAt: '2026-08-26T00:00:00.000Z',
+          nodes: [
+            {
+              id: 'node_initial_resolver_failure',
+              type: 'text' as const,
+              position: { x: 0, y: 0 },
+              data: {
+                label: 'Text',
+                mediaType: 'text' as const,
+                mode: 'generate' as const,
+              },
+            },
+          ],
+          edges: [],
+          inputs: [],
+        },
+        attempt: 1,
+        provider: 'newapi',
+        providerJob: createProviderJobRecord(runId, 'newapi'),
+        cancelRequested: false,
+      },
+      async updateData(data) {
+        this.data = data;
+      },
+      async updateProgress() {},
+    };
+    bullmqState.job = job;
+
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      provider,
+      resolveDatabaseRunId: async () => {
+        throw persistenceError;
+      },
+      onPersistenceError,
+      stepDelayMs: 0,
+      persistence: {
+        ensureRun,
+        async upsertProviderJob() {},
+        async recordUsage() {},
+      },
+    });
+
+    await expect(bullmqState.processor?.(job)).rejects.toThrow(
+      'durable run persistence requires a resolvable database run id',
+    );
+    expect(onPersistenceError).toHaveBeenCalledWith(persistenceError);
+    expect(ensureRun).not.toHaveBeenCalled();
+    expect(provider.execute).not.toHaveBeenCalled();
   });
 });

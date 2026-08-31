@@ -1,14 +1,15 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 
-import { mediaTypes, type MediaType } from '@multimodal-canvas/domain';
+import { mediaTypes, type MediaType, type ModelSelection } from '@multimodal-canvas/domain';
+import { sanitizeExceptionForObservability } from '@multimodal-canvas/observability';
 import { normalizeNewApiBaseUrl } from '@multimodal-canvas/providers';
-import { Prisma, PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient, type ModelCatalog } from '@prisma/client';
 
 export type AiSettings = {
   baseUrl: string;
   configured: boolean;
   keyFingerprint?: string;
-  defaultModels: Partial<Record<MediaType, string>>;
+  defaultModels: Partial<Record<MediaType, string | ModelSelection>>;
   updatedAt: string;
 };
 
@@ -24,6 +25,7 @@ export type ModelCatalogEntry = {
   id: string;
   name: string;
   mediaTypes: MediaType[];
+  credentialId?: string;
   capabilities?: Record<string, unknown>;
   limitations?: Record<string, unknown>;
   price?: Record<string, unknown>;
@@ -31,6 +33,7 @@ export type ModelCatalogEntry = {
 };
 
 export type ModelCapabilityOverride = {
+  credentialId?: string | null;
   modelAlias: string;
   mediaType: MediaType;
   capabilities: Record<string, unknown>;
@@ -39,17 +42,21 @@ export type ModelCapabilityOverride = {
 export type UpdateAiSettingsInput = {
   baseUrl?: string;
   apiKey?: string;
-  defaultModels?: Partial<Record<MediaType, string | null>>;
+  defaultModels?: Partial<Record<MediaType, string | ModelSelection | null>>;
 };
 
 export type AiSettingsStoreOptions = {
   /** Injectable for tests; production uses the platform fetch implementation. */
   fetchImpl?: typeof fetch;
+  /** Receives a sanitized server-side diagnostic without changing the client error contract. */
+  onTestConnectionError?: (error: Error) => void;
   modelRequestTimeoutMs?: number;
   /** Maximum attempts for connection tests and model refreshes. Capped at 10. */
   modelRequestMaxAttempts?: number;
   /** Delay between failed model requests, in milliseconds. */
   modelRequestRetryDelayMs?: number;
+  /** Maximum bytes accepted from the upstream model catalog response. */
+  modelRequestMaxResponseBytes?: number;
 };
 
 export type CredentialReference = {
@@ -67,7 +74,7 @@ export type PersistedAiSettings = {
   baseUrl: string;
   encryptedApiKey: string;
   keyFingerprint: string;
-  defaultModels: Partial<Record<MediaType, string>>;
+  defaultModels: Partial<Record<MediaType, string | ModelSelection>>;
   updatedAt: string;
 };
 
@@ -79,11 +86,15 @@ export interface AiSettingsStoreLike {
     credentialId: string,
   ): AiSettings | undefined | Promise<AiSettings | undefined>;
   removeCredentials(): AiSettings | Promise<AiSettings>;
+  hasCredential(credentialId: string): boolean | Promise<boolean>;
   testConnection(): Promise<{ ok: boolean; modelCount?: number; error?: string }>;
-  refreshModels(): Promise<ModelCatalogEntry[]>;
-  listModels(mediaType?: MediaType): ModelCatalogEntry[] | Promise<ModelCatalogEntry[]>;
+  refreshModels(credentialId?: string): Promise<ModelCatalogEntry[]>;
+  listModels(
+    mediaType?: MediaType,
+    credentialId?: string,
+  ): ModelCatalogEntry[] | Promise<ModelCatalogEntry[]>;
   resolveModel(mediaType: MediaType, requestedAlias?: string): string | Promise<string>;
-  getCredentialReference(): CredentialReference | Promise<CredentialReference>;
+  getCredentialReference(credentialId?: string): CredentialReference | Promise<CredentialReference>;
   /** Used only by the server-side run executor; intentionally optional for test doubles. */
   getProviderCredentials?(
     reference?: CredentialReference,
@@ -100,17 +111,31 @@ export class AiSettingsError extends Error {
   }
 }
 
+export class AiCredentialNotFoundError extends Error {
+  readonly code = 'credential_not_found';
+
+  constructor(credentialId: string) {
+    super(`AI credential ${credentialId} was not found`);
+  }
+}
+
+const LEGACY_MODEL_CATALOG_KEY = '__legacy__';
+const DEFAULT_MODEL_RESPONSE_BYTES = 50 * 1024 * 1024;
+
 export class AiSettingsStore {
   private baseUrl = '';
   private encryptedApiKey = '';
   private keyFingerprint = '';
   private readonly encryptionKey: Buffer;
   private readonly fetchImpl?: typeof fetch;
+  private readonly onTestConnectionError?: (error: Error) => void;
   private readonly modelRequestTimeoutMs: number;
   private readonly modelRequestMaxAttempts: number;
   private readonly modelRequestRetryDelayMs: number;
-  private defaultModels: Partial<Record<MediaType, string>> = {};
-  private readonly models = new Map<string, ModelCatalogEntry>();
+  private readonly modelRequestMaxResponseBytes: number;
+  private defaultModels: Partial<Record<MediaType, ModelSelection>> = {};
+  private readonly modelCatalogs = new Map<string, Map<string, ModelCatalogEntry>>();
+  private readonly modelRefreshQueues = new Map<string, Promise<void>>();
   private readonly capabilityOverrides = new Map<string, Record<string, unknown>>();
   private credentialId?: string;
   private credentialVersion?: number;
@@ -134,6 +159,7 @@ export class AiSettingsStore {
     // Resolve the global fetch at request time when no test/deployment
     // override is supplied, so callers can still instrument or stub it.
     this.fetchImpl = options.fetchImpl;
+    this.onTestConnectionError = options.onTestConnectionError;
     this.modelRequestTimeoutMs = options.modelRequestTimeoutMs ?? 10_000;
     this.modelRequestMaxAttempts = Math.min(
       10,
@@ -143,19 +169,13 @@ export class AiSettingsStore {
       0,
       Math.floor(options.modelRequestRetryDelayMs ?? 250),
     );
-    this.baseUrl = (process.env.NEW_API_BASE_URL ?? '').replace(/\/$/, '');
-    const initialApiKey = process.env.NEW_API_API_KEY;
-    if (initialApiKey) {
-      this.encryptedApiKey = encrypt(initialApiKey, this.encryptionKey);
-      this.keyFingerprint = fingerprint(initialApiKey);
-      this.registerCredential();
-    }
-    this.defaultModels = Object.fromEntries(
-      mediaTypes.flatMap((mediaType) => {
-        const value = process.env[`NEW_API_${mediaType.toUpperCase()}_MODEL`];
-        return value ? [[mediaType, value]] : [];
-      }),
-    ) as Partial<Record<MediaType, string>>;
+    this.modelRequestMaxResponseBytes = parsePositiveByteLimit(
+      options.modelRequestMaxResponseBytes ?? process.env.NEW_API_MAX_RESPONSE_BYTES,
+      DEFAULT_MODEL_RESPONSE_BYTES,
+    );
+    // Provider credentials and model defaults are entered through the Web
+    // settings flow. Environment variables intentionally do not bootstrap
+    // them, which prevents a stale .env value from overriding that state.
   }
 
   get(): AiSettings {
@@ -163,7 +183,7 @@ export class AiSettingsStore {
       baseUrl: this.baseUrl,
       configured: Boolean(this.baseUrl && this.encryptedApiKey),
       ...(this.keyFingerprint ? { keyFingerprint: this.keyFingerprint } : {}),
-      defaultModels: { ...this.defaultModels },
+      defaultModels: serializeDefaultModels(this.defaultModels),
       updatedAt: this.updatedAt,
     };
   }
@@ -173,7 +193,7 @@ export class AiSettingsStore {
       baseUrl: this.baseUrl,
       encryptedApiKey: this.encryptedApiKey,
       keyFingerprint: this.keyFingerprint,
-      defaultModels: { ...this.defaultModels },
+      defaultModels: serializeDefaultModels(this.defaultModels),
       updatedAt: this.updatedAt,
     };
   }
@@ -190,7 +210,7 @@ export class AiSettingsStore {
     this.baseUrl = persisted.baseUrl;
     this.encryptedApiKey = persisted.encryptedApiKey;
     this.keyFingerprint = persisted.keyFingerprint;
-    this.defaultModels = { ...persisted.defaultModels };
+    this.defaultModels = normalizeDefaultModels(persisted.defaultModels);
     this.updatedAt = persisted.updatedAt;
     this.credentialId = reference?.credentialId;
     this.credentialVersion = reference?.credentialVersion;
@@ -199,11 +219,14 @@ export class AiSettingsStore {
 
   update(input: UpdateAiSettingsInput): AiSettings {
     let changed = false;
+    let providerCredentialsChanged = false;
+    const previousCredentialId = this.credentialId;
     if (input.baseUrl !== undefined) {
       const baseUrl = input.baseUrl.replace(/\/$/, '');
       if (baseUrl !== this.baseUrl) {
         this.baseUrl = baseUrl;
         changed = true;
+        providerCredentialsChanged = true;
       }
     }
     if (input.apiKey !== undefined) {
@@ -214,13 +237,14 @@ export class AiSettingsStore {
         this.encryptedApiKey = encrypt(input.apiKey, this.encryptionKey);
         this.keyFingerprint = fingerprint(input.apiKey);
         changed = true;
+        providerCredentialsChanged = true;
       }
     }
     if (input.defaultModels) {
       const next = { ...this.defaultModels };
       for (const [mediaType, modelAlias] of Object.entries(input.defaultModels)) {
         if (modelAlias === null || modelAlias === '') delete next[mediaType as MediaType];
-        else next[mediaType as MediaType] = modelAlias;
+        else next[mediaType as MediaType] = normalizeModelSelection(modelAlias);
       }
       if (!sameDefaultModels(next, this.defaultModels)) {
         this.defaultModels = next;
@@ -229,7 +253,12 @@ export class AiSettingsStore {
     }
     if (!changed) return this.get();
     this.updatedAt = new Date().toISOString();
-    this.registerCredential();
+    if (providerCredentialsChanged) {
+      this.registerCredential();
+    }
+    if (!providerCredentialsChanged && previousCredentialId && this.credentialId) {
+      this.copyModels(previousCredentialId, this.credentialId);
+    }
     return this.get();
   }
 
@@ -251,6 +280,7 @@ export class AiSettingsStore {
     this.keyFingerprint = credential.keyFingerprint;
     this.updatedAt = new Date().toISOString();
     this.registerCredential();
+    if (this.credentialId) this.copyModels(credentialId, this.credentialId);
     return this.get();
   }
 
@@ -267,6 +297,13 @@ export class AiSettingsStore {
     return this.get();
   }
 
+  hasCredential(credentialId: string): boolean {
+    if (!this.credentialId || !this.credentialVersion || !this.baseUrl || !this.encryptedApiKey) {
+      return false;
+    }
+    return this.credentialRecords.has(credentialId);
+  }
+
   async testConnection(): Promise<{ ok: boolean; modelCount?: number; error?: string }> {
     if (!this.baseUrl || !this.encryptedApiKey)
       return { ok: false, error: 'New API 地址和 Key 尚未配置' };
@@ -278,31 +315,80 @@ export class AiSettingsStore {
         this.modelRequestTimeoutMs,
         this.modelRequestMaxAttempts,
         this.modelRequestRetryDelayMs,
+        this.modelRequestMaxResponseBytes,
       );
       return { ok: true, modelCount: response.length };
     } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : '连接失败' };
+      const diagnostic = sanitizeExceptionForObservability(error);
+      try {
+        this.onTestConnectionError?.(diagnostic);
+      } catch {
+        // Diagnostics must never alter the stable connection-test response.
+      }
+      return { ok: false, error: '连接失败' };
     }
   }
 
-  async refreshModels(): Promise<ModelCatalogEntry[]> {
-    if (!this.baseUrl || !this.encryptedApiKey) throw new Error('New API 地址和 Key 尚未配置');
+  async refreshModels(credentialId?: string): Promise<ModelCatalogEntry[]> {
+    const resolvedCredentialId = credentialId ?? this.credentialId;
+    const credential = resolvedCredentialId
+      ? this.credentialRecords.get(resolvedCredentialId)
+      : undefined;
+    if (credentialId && !credential) throw new AiCredentialNotFoundError(credentialId);
+    const providerCredentials = credential
+      ? { baseUrl: credential.baseUrl, apiKey: credential.apiKey }
+      : this.getProviderCredentials();
+    if (!providerCredentials || !resolvedCredentialId) {
+      throw new Error('New API 地址和 Key 尚未配置');
+    }
+    return this.enqueueModelRefresh(resolvedCredentialId, () =>
+      this.refreshModelsForCredential(resolvedCredentialId, providerCredentials),
+    );
+  }
+
+  async refreshModelsForCredential(
+    credentialId: string,
+    providerCredentials: ProviderCredentials,
+  ): Promise<ModelCatalogEntry[]> {
     const models = await requestModels(
-      this.baseUrl,
-      decrypt(this.encryptedApiKey, this.encryptionKey),
+      providerCredentials.baseUrl,
+      providerCredentials.apiKey,
       this.fetchImpl,
       this.modelRequestTimeoutMs,
       this.modelRequestMaxAttempts,
       this.modelRequestRetryDelayMs,
+      this.modelRequestMaxResponseBytes,
     );
-    this.models.clear();
-    for (const model of models) this.models.set(model.id, model);
-    return this.listModels();
+    this.replaceModels(models, credentialId);
+    return this.listModels(undefined, credentialId);
   }
 
-  replaceModels(models: ModelCatalogEntry[]) {
-    this.models.clear();
-    for (const model of models) this.models.set(model.id, model);
+  replaceModels(models: ModelCatalogEntry[], credentialId?: string) {
+    const resolvedCredentialId =
+      credentialId ?? models.find((model) => model.credentialId)?.credentialId;
+    const catalog = new Map<string, ModelCatalogEntry>();
+    for (const model of models) {
+      catalog.set(model.id, {
+        ...model,
+        ...(resolvedCredentialId ? { credentialId: resolvedCredentialId } : {}),
+      });
+    }
+    this.modelCatalogs.set(modelCatalogKey(resolvedCredentialId), catalog);
+  }
+
+  copyModels(sourceCredentialId: string, targetCredentialId: string) {
+    if (sourceCredentialId === targetCredentialId) return;
+    const source = this.modelCatalogs.get(modelCatalogKey(sourceCredentialId));
+    if (!source) return;
+    this.modelCatalogs.set(
+      modelCatalogKey(targetCredentialId),
+      new Map(
+        [...source.entries()].map(([modelId, model]) => [
+          modelId,
+          { ...model, credentialId: targetCredentialId },
+        ]),
+      ),
+    );
   }
 
   replaceCapabilityOverrides(overrides: ModelCapabilityOverride[]) {
@@ -317,20 +403,25 @@ export class AiSettingsStore {
       ) {
         continue;
       }
-      this.capabilityOverrides.set(capabilityOverrideKey(override.modelAlias, override.mediaType), {
-        ...override.capabilities,
-      });
+      this.capabilityOverrides.set(
+        capabilityOverrideKey(override.credentialId, override.modelAlias, override.mediaType),
+        { ...override.capabilities },
+      );
     }
   }
 
-  listModels(mediaType?: MediaType): ModelCatalogEntry[] {
-    return [...this.models.values()]
+  listModels(mediaType?: MediaType, credentialId?: string): ModelCatalogEntry[] {
+    const catalog =
+      this.modelCatalogs.get(modelCatalogKey(credentialId ?? this.credentialId)) ??
+      (credentialId === undefined ? this.modelCatalogs.get(LEGACY_MODEL_CATALOG_KEY) : undefined);
+    return [...(catalog?.values() ?? [])]
       .filter((model) => !mediaType || model.mediaTypes.includes(mediaType))
       .map((model) => (mediaType ? this.withCapabilityOverride(model, mediaType) : model));
   }
 
   resolveModel(mediaType: MediaType, requestedAlias?: string): string {
-    const alias = requestedAlias ?? this.defaultModels[mediaType] ?? `mock-${mediaType}`;
+    const alias =
+      requestedAlias ?? this.defaultModels[mediaType]?.modelAlias ?? `mock-${mediaType}`;
     if (alias.startsWith('mock-')) return alias;
 
     const catalog = this.listModels();
@@ -341,7 +432,15 @@ export class AiSettingsStore {
     return alias;
   }
 
-  getCredentialReference(): CredentialReference {
+  getCredentialReference(credentialId?: string): CredentialReference {
+    if (credentialId) {
+      if (!this.credentialId || !this.credentialVersion || !this.baseUrl || !this.encryptedApiKey) {
+        throw new AiCredentialNotFoundError(credentialId);
+      }
+      const credential = this.credentialRecords.get(credentialId);
+      if (!credential) throw new AiCredentialNotFoundError(credentialId);
+      return { credentialId: credential.id, credentialVersion: credential.version };
+    }
     return {
       ...(this.credentialId ? { credentialId: this.credentialId } : {}),
       ...(this.credentialVersion ? { credentialVersion: this.credentialVersion } : {}),
@@ -392,12 +491,31 @@ export class AiSettingsStore {
   }
 
   private withCapabilityOverride(model: ModelCatalogEntry, mediaType: MediaType) {
-    const override = this.capabilityOverrides.get(capabilityOverrideKey(model.id, mediaType));
+    const override =
+      this.capabilityOverrides.get(
+        capabilityOverrideKey(model.credentialId, model.id, mediaType),
+      ) ?? this.capabilityOverrides.get(capabilityOverrideKey(undefined, model.id, mediaType));
     if (!override) return model;
     return {
       ...model,
       capabilities: { ...(model.capabilities ?? {}), ...override },
     };
+  }
+
+  private enqueueModelRefresh<T>(credentialId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.modelRefreshQueues.get(credentialId) ?? Promise.resolve();
+    const result = previous.then(operation);
+    const settled = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.modelRefreshQueues.set(credentialId, settled);
+    void settled.finally(() => {
+      if (this.modelRefreshQueues.get(credentialId) === settled) {
+        this.modelRefreshQueues.delete(credentialId);
+      }
+    });
+    return result;
   }
 }
 
@@ -441,7 +559,15 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
       const result = this.memory.update(input);
       if (samePersistedSettings(previous, this.memory.getPersisted())) return result;
       try {
-        await this.persistCredential();
+        const next = this.memory.getPersisted();
+        const sourceCatalogCredentialId =
+          previous.baseUrl === next.baseUrl && previous.keyFingerprint === next.keyFingerprint
+            ? previousStoreReference.credentialId
+            : undefined;
+        await this.persistCredential(
+          sourceCatalogCredentialId,
+          previous.baseUrl === next.baseUrl && previous.keyFingerprint === next.keyFingerprint,
+        );
         return result;
       } catch (error) {
         // A database outage must not leave this process serving credentials or
@@ -493,7 +619,7 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
       const result = this.memory.update(providerCredentials);
       if (samePersistedSettings(previous, this.memory.getPersisted())) return result;
       try {
-        await this.persistCredential();
+        await this.persistCredential(credential.id);
         return result;
       } catch (error) {
         this.memory.hydrate(previous, previousReference);
@@ -533,42 +659,76 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
     });
   }
 
+  async hasCredential(credentialId: string) {
+    await this.ready;
+    await this.writeQueue;
+    if (!(await this.get()).configured) return false;
+    if (credentialId === this.credentialReference.credentialId) {
+      return true;
+    }
+    const credential = await this.prisma.aiCredential.findFirst({
+      where: { id: credentialId, projectId: null },
+      select: { id: true, baseUrl: true, encryptedApiKey: true },
+    });
+    return Boolean(credential?.baseUrl && credential.encryptedApiKey);
+  }
+
   async testConnection() {
     await this.ready;
     return this.memory.testConnection();
   }
 
-  async refreshModels() {
+  async refreshModels(credentialId?: string) {
     await this.ready;
-    const models = await this.memory.refreshModels();
-    await this.prisma.$transaction(async (transaction) => {
-      await transaction.modelCatalog.deleteMany();
-      if (models.length > 0) {
-        await transaction.modelCatalog.createMany({
-          data: models.flatMap((model) =>
-            model.mediaTypes.map((mediaType) => ({
-              modelAlias: model.id,
-              name: model.name,
-              mediaType: toPrismaMediaType(mediaType),
-              capabilities: model.capabilities
-                ? (model.capabilities as Prisma.InputJsonValue)
-                : undefined,
-              limitations: model.limitations
-                ? (model.limitations as Prisma.InputJsonValue)
-                : undefined,
-              price: model.price ? (model.price as Prisma.InputJsonValue) : undefined,
-              refreshedAt: new Date(model.refreshedAt),
-            })),
-          ),
+    return this.enqueueWrite(async () => {
+      const selected = await this.resolveModelCredential(credentialId);
+      const previousModels = this.memory.listModels(undefined, selected.credentialId);
+      const models = await this.memory.refreshModelsForCredential(
+        selected.credentialId,
+        selected.providerCredentials,
+      );
+      try {
+        await this.prisma.$transaction(async (transaction) => {
+          await transaction.modelCatalog.deleteMany({
+            where: { credentialId: selected.credentialId },
+          });
+          if (models.length > 0) {
+            await transaction.modelCatalog.createMany({
+              data: models.flatMap((model) =>
+                model.mediaTypes.map((mediaType) => ({
+                  credentialId: selected.credentialId,
+                  modelAlias: model.id,
+                  name: model.name,
+                  mediaType: toPrismaMediaType(mediaType),
+                  capabilities: model.capabilities
+                    ? (model.capabilities as Prisma.InputJsonValue)
+                    : undefined,
+                  limitations: model.limitations
+                    ? (model.limitations as Prisma.InputJsonValue)
+                    : undefined,
+                  price: model.price ? (model.price as Prisma.InputJsonValue) : undefined,
+                  refreshedAt: new Date(model.refreshedAt),
+                })),
+              ),
+            });
+          }
         });
+        return models;
+      } catch (error) {
+        this.memory.replaceModels(previousModels, selected.credentialId);
+        throw error;
       }
     });
-    return models;
   }
 
-  async listModels(mediaType?: MediaType) {
+  async listModels(mediaType?: MediaType, credentialId?: string) {
     await this.ready;
-    return this.memory.listModels(mediaType);
+    await this.writeQueue;
+    const resolvedCredentialId = credentialId ?? this.credentialReference.credentialId;
+    if (credentialId && !(await this.hasCredential(credentialId))) {
+      throw new AiCredentialNotFoundError(credentialId);
+    }
+    return this.memory.listModels(mediaType, resolvedCredentialId);
   }
 
   async resolveModel(mediaType: MediaType, requestedAlias?: string) {
@@ -576,8 +736,22 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
     return this.memory.resolveModel(mediaType, requestedAlias);
   }
 
-  async getCredentialReference() {
+  async getCredentialReference(credentialId?: string) {
     await this.ready;
+    await this.writeQueue;
+    if (credentialId && credentialId !== this.credentialReference.credentialId) {
+      if (!(await this.get()).configured) {
+        throw new AiCredentialNotFoundError(credentialId);
+      }
+      const credential = await this.prisma.aiCredential.findFirst({
+        where: { id: credentialId, projectId: null },
+        select: { id: true, version: true, baseUrl: true, encryptedApiKey: true },
+      });
+      if (!credential?.baseUrl || !credential.encryptedApiKey) {
+        throw new AiCredentialNotFoundError(credentialId);
+      }
+      return { credentialId: credential.id, credentialVersion: credential.version };
+    }
     return { ...this.credentialReference };
   }
 
@@ -593,7 +767,11 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
     }
     if (!requested.credentialId || !requested.credentialVersion) return undefined;
     const historical = await this.prisma.aiCredential.findFirst({
-      where: { id: requested.credentialId, version: requested.credentialVersion },
+      where: {
+        id: requested.credentialId,
+        version: requested.credentialVersion,
+        projectId: null,
+      },
     });
     if (!historical) return undefined;
     const snapshot = new AiSettingsStore(this.encryptionSecret);
@@ -650,14 +828,42 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
       // credentials loaded by the in-memory fallback during construction.
       if (credential) this.memory.removeCredentials();
     }
-    const grouped = new Map<string, ModelCatalogEntry>();
-    for (const model of catalog) {
-      const existing = grouped.get(model.modelAlias);
+    const activeCredentialId = this.credentialReference.credentialId;
+    let resolvedCatalog = catalog;
+    if (activeCredentialId) {
+      const legacyModels = catalog.filter((model) => model.credentialId === null);
+      if (legacyModels.length > 0) {
+        const activeModels = catalog.filter((model) => model.credentialId === activeCredentialId);
+        await this.prisma.$transaction(async (transaction) => {
+          if (activeModels.length === 0) {
+            await transaction.modelCatalog.createMany({
+              data: legacyModels.map((model) => copyModelCatalogData(model, activeCredentialId)),
+              skipDuplicates: true,
+            });
+          }
+          await transaction.modelCatalog.deleteMany({ where: { credentialId: null } });
+        });
+        resolvedCatalog = [
+          ...catalog.filter((model) => model.credentialId !== null),
+          ...(activeModels.length === 0
+            ? legacyModels.map((model) => ({ ...model, credentialId: activeCredentialId }))
+            : []),
+        ];
+      }
+    }
+
+    const grouped = new Map<string, Map<string, ModelCatalogEntry>>();
+    for (const model of resolvedCatalog) {
+      const catalogCredentialId = model.credentialId ?? activeCredentialId;
+      const scopeKey = modelCatalogKey(catalogCredentialId);
+      const scopedModels = grouped.get(scopeKey) ?? new Map<string, ModelCatalogEntry>();
+      const existing = scopedModels.get(model.modelAlias);
       const mediaType = fromPrismaMediaType(model.mediaType);
-      grouped.set(model.modelAlias, {
+      scopedModels.set(model.modelAlias, {
         id: model.modelAlias,
         name: model.name,
         mediaTypes: existing ? [...new Set([...existing.mediaTypes, mediaType])] : [mediaType],
+        ...(catalogCredentialId ? { credentialId: catalogCredentialId } : {}),
         ...(isRecord(model.capabilities) || existing?.capabilities
           ? {
               capabilities: {
@@ -684,13 +890,36 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
           : {}),
         refreshedAt: model.refreshedAt.toISOString(),
       });
+      grouped.set(scopeKey, scopedModels);
     }
-    this.memory.replaceModels([...grouped.values()]);
+    for (const [scopeKey, models] of grouped) {
+      this.memory.replaceModels(
+        [...models.values()],
+        scopeKey === LEGACY_MODEL_CATALOG_KEY ? undefined : scopeKey,
+      );
+    }
     this.memory.replaceCapabilityOverrides(normalizeCapabilityOverrides(overrides));
   }
 
-  private async persistCredential() {
+  private async persistCredential(sourceCatalogCredentialId?: string, defaultsOnly = false) {
     const persisted = this.memory.getPersisted();
+    if (defaultsOnly && this.credentialReference.credentialId) {
+      const update = (
+        this.prisma.aiCredential as unknown as {
+          update?: (args: {
+            where: { id: string };
+            data: { defaultModels: PersistedAiSettings['defaultModels']; updatedAt: Date };
+          }) => Promise<unknown>;
+        }
+      ).update;
+      if (update) {
+        await update({
+          where: { id: this.credentialReference.credentialId },
+          data: { defaultModels: persisted.defaultModels, updatedAt: new Date() },
+        });
+        return;
+      }
+    }
     const existing = await this.prisma.aiCredential.findFirst({
       where: { projectId: null },
       orderBy: { updatedAt: 'desc' },
@@ -709,14 +938,64 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
       projectId: null,
       ownerId: null,
     };
-    const current = await this.prisma.aiCredential.create({ data });
+    const current = sourceCatalogCredentialId
+      ? await this.prisma.$transaction(async (transaction) => {
+          const created = await transaction.aiCredential.create({ data });
+          const sourceModels = await transaction.modelCatalog.findMany({
+            where: { credentialId: sourceCatalogCredentialId },
+          });
+          if (sourceModels.length > 0) {
+            await transaction.modelCatalog.createMany({
+              data: sourceModels.map((model) => copyModelCatalogData(model, created.id)),
+            });
+          }
+          return created;
+        })
+      : await this.prisma.aiCredential.create({ data });
     if (current) {
       this.credentialReference = {
         credentialId: current.id,
         credentialVersion: current.version,
       };
+      if (sourceCatalogCredentialId) {
+        this.memory.copyModels(sourceCatalogCredentialId, current.id);
+      }
       this.memory.hydrate(persisted, this.credentialReference);
     }
+  }
+
+  private async resolveModelCredential(credentialId?: string): Promise<{
+    credentialId: string;
+    providerCredentials: ProviderCredentials;
+  }> {
+    const resolvedCredentialId = credentialId ?? this.credentialReference.credentialId;
+    if (!resolvedCredentialId) throw new Error('New API 地址和 Key 尚未配置');
+    if (resolvedCredentialId === this.credentialReference.credentialId) {
+      const providerCredentials = this.memory.getProviderCredentials();
+      if (providerCredentials) return { credentialId: resolvedCredentialId, providerCredentials };
+    }
+
+    const credential = await this.prisma.aiCredential.findFirst({
+      where: { id: resolvedCredentialId, projectId: null },
+    });
+    if (!credential?.baseUrl || !credential.encryptedApiKey || !credential.keyFingerprint) {
+      if (credentialId) throw new AiCredentialNotFoundError(credentialId);
+      throw new Error('New API 地址和 Key 尚未配置');
+    }
+    const snapshot = new AiSettingsStore(this.encryptionSecret);
+    snapshot.hydrate(
+      {
+        baseUrl: credential.baseUrl,
+        encryptedApiKey: credential.encryptedApiKey,
+        keyFingerprint: credential.keyFingerprint,
+        defaultModels: isDefaultModels(credential.defaultModels) ? credential.defaultModels : {},
+        updatedAt: credential.updatedAt.toISOString(),
+      },
+      { credentialId: credential.id, credentialVersion: credential.version },
+    );
+    const providerCredentials = snapshot.getProviderCredentials();
+    if (!providerCredentials) throw new AiCredentialNotFoundError(resolvedCredentialId);
+    return { credentialId: resolvedCredentialId, providerCredentials };
   }
 
   private enqueueWrite<T>(operation: () => Promise<T>): Promise<T> {
@@ -729,6 +1008,26 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
   }
 }
 
+function copyModelCatalogData(
+  model: ModelCatalog,
+  credentialId: string,
+): Prisma.ModelCatalogCreateManyInput {
+  return {
+    credentialId,
+    modelAlias: model.modelAlias,
+    name: model.name,
+    mediaType: model.mediaType,
+    ...(model.capabilities === null
+      ? {}
+      : { capabilities: model.capabilities as Prisma.InputJsonValue }),
+    ...(model.limitations === null
+      ? {}
+      : { limitations: model.limitations as Prisma.InputJsonValue }),
+    ...(model.price === null ? {} : { price: model.price as Prisma.InputJsonValue }),
+    refreshedAt: model.refreshedAt,
+  };
+}
+
 function toPrismaMediaType(mediaType: MediaType) {
   return mediaType.toUpperCase() as 'TEXT' | 'IMAGE' | 'AUDIO' | 'VIDEO';
 }
@@ -737,19 +1036,65 @@ function fromPrismaMediaType(mediaType: string): MediaType {
   return mediaType.toLowerCase() as MediaType;
 }
 
-function capabilityOverrideKey(modelAlias: string, mediaType: MediaType): string {
-  return `${modelAlias.trim()}\0${mediaType}`;
+function capabilityOverrideKey(
+  credentialId: string | null | undefined,
+  modelAlias: string,
+  mediaType: MediaType,
+): string {
+  return `${credentialId ?? ''}\0${modelAlias.trim()}\0${mediaType}`;
 }
 
 function credentialKey(reference: CredentialReference): string {
   return `${reference.credentialId ?? ''}:${reference.credentialVersion ?? ''}`;
 }
 
+function modelCatalogKey(credentialId: string | undefined): string {
+  return credentialId ?? LEGACY_MODEL_CATALOG_KEY;
+}
+
 function sameDefaultModels(
-  left: Partial<Record<MediaType, string>>,
-  right: Partial<Record<MediaType, string>>,
+  left: Partial<Record<MediaType, ModelSelection>>,
+  right: Partial<Record<MediaType, ModelSelection>>,
 ): boolean {
-  return mediaTypes.every((mediaType) => left[mediaType] === right[mediaType]);
+  return mediaTypes.every(
+    (mediaType) =>
+      left[mediaType]?.modelAlias === right[mediaType]?.modelAlias &&
+      left[mediaType]?.credentialId === right[mediaType]?.credentialId,
+  );
+}
+
+function normalizeModelSelection(value: string | ModelSelection): ModelSelection {
+  if (typeof value === 'string') return { modelAlias: value.trim() };
+  return {
+    modelAlias: value.modelAlias.trim(),
+    ...(value.credentialId ? { credentialId: value.credentialId } : {}),
+  };
+}
+
+function normalizeDefaultModels(
+  value: Partial<Record<MediaType, string | ModelSelection>>,
+): Partial<Record<MediaType, ModelSelection>> {
+  return Object.fromEntries(
+    Object.entries(value).flatMap(([mediaType, selection]) =>
+      mediaTypes.includes(mediaType as MediaType) && selection
+        ? [[mediaType, normalizeModelSelection(selection)]]
+        : [],
+    ),
+  ) as Partial<Record<MediaType, ModelSelection>>;
+}
+
+function cloneDefaultModels(
+  value: Partial<Record<MediaType, ModelSelection>>,
+): Partial<Record<MediaType, ModelSelection>> {
+  return normalizeDefaultModels(value);
+}
+
+function serializeDefaultModels(
+  value: Partial<Record<MediaType, ModelSelection>>,
+): Partial<Record<MediaType, ModelSelection>> {
+  return Object.fromEntries(
+    Object.entries(value).map(([mediaType, selection]) => [mediaType, selection]),
+  ) as Partial<Record<MediaType, ModelSelection>>;
 }
 
 function samePersistedSettings(left: PersistedAiSettings, right: PersistedAiSettings): boolean {
@@ -757,7 +1102,10 @@ function samePersistedSettings(left: PersistedAiSettings, right: PersistedAiSett
     left.baseUrl === right.baseUrl &&
     left.encryptedApiKey === right.encryptedApiKey &&
     left.keyFingerprint === right.keyFingerprint &&
-    sameDefaultModels(left.defaultModels, right.defaultModels)
+    sameDefaultModels(
+      normalizeDefaultModels(left.defaultModels),
+      normalizeDefaultModels(right.defaultModels),
+    )
   );
 }
 
@@ -802,6 +1150,10 @@ function normalizeCapabilityOverrides(value: unknown): ModelCapabilityOverride[]
   return value.flatMap((candidate) => {
     if (!isRecord(candidate)) return [];
     const modelAlias = typeof candidate.modelAlias === 'string' ? candidate.modelAlias.trim() : '';
+    const credentialId =
+      typeof candidate.credentialId === 'string' && candidate.credentialId.trim()
+        ? candidate.credentialId.trim()
+        : undefined;
     const mediaTypeValue =
       typeof candidate.mediaType === 'string' ? candidate.mediaType.toLowerCase() : '';
     const capabilities = candidate.capabilities;
@@ -814,6 +1166,7 @@ function normalizeCapabilityOverrides(value: unknown): ModelCapabilityOverride[]
     }
     return [
       {
+        ...(credentialId ? { credentialId } : {}),
         modelAlias,
         mediaType: mediaTypeValue as MediaType,
         capabilities,
@@ -826,11 +1179,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
-function isDefaultModels(value: unknown): value is Partial<Record<MediaType, string>> {
+function isDefaultModels(
+  value: unknown,
+): value is Partial<Record<MediaType, string | ModelSelection>> {
   return (
     isRecord(value) &&
     Object.entries(value).every(
-      ([key, alias]) => mediaTypes.includes(key as MediaType) && typeof alias === 'string',
+      ([key, alias]) =>
+        mediaTypes.includes(key as MediaType) &&
+        (typeof alias === 'string' || (isRecord(alias) && typeof alias.modelAlias === 'string')),
     )
   );
 }
@@ -842,6 +1199,7 @@ async function requestModels(
   timeoutMs = 10_000,
   maxAttempts = 10,
   retryDelayMs = 250,
+  maxResponseBytes = DEFAULT_MODEL_RESPONSE_BYTES,
 ): Promise<ModelCatalogEntry[]> {
   const normalizedBaseUrl = normalizeNewApiBaseUrl(baseUrl);
   const attempts = Math.min(10, Math.max(1, Math.floor(maxAttempts)));
@@ -856,7 +1214,7 @@ async function requestModels(
         redirect: 'error',
       });
       if (!response.ok) throw new Error(`模型服务返回 ${response.status}`);
-      const payload = (await response.json()) as unknown;
+      const payload = await readJsonResponseWithinLimit(response, maxResponseBytes);
       return normalizeModelsPayload(payload);
     } catch (error) {
       lastError = error;
@@ -867,6 +1225,56 @@ async function requestModels(
     }
   }
   throw lastError instanceof Error ? lastError : new Error('模型服务请求失败');
+}
+
+async function readJsonResponseWithinLimit(
+  response: Response,
+  maxResponseBytes: number,
+): Promise<unknown> {
+  const contentLength = response.headers.get('content-length');
+  if (contentLength) {
+    const declaredBytes = Number(contentLength);
+    if (Number.isSafeInteger(declaredBytes) && declaredBytes > maxResponseBytes) {
+      throw new Error('模型服务响应超出大小限制');
+    }
+  }
+
+  if (!response.body) {
+    const payload = (await response.json()) as unknown;
+    const encoded = new TextEncoder().encode(JSON.stringify(payload));
+    if (encoded.byteLength > maxResponseBytes) {
+      throw new Error('模型服务响应超出大小限制');
+    }
+    return payload;
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    totalBytes += value.byteLength;
+    if (totalBytes > maxResponseBytes) {
+      await reader.cancel();
+      throw new Error('模型服务响应超出大小限制');
+    }
+    chunks.push(value);
+  }
+
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+}
+
+function parsePositiveByteLimit(value: string | number | undefined, fallback: number): number {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function delay(milliseconds: number): Promise<void> {

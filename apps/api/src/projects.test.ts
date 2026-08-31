@@ -88,7 +88,7 @@ describe('FileProjectStore persistence', () => {
 });
 
 describe('PrismaProjectStore canvas mapping', () => {
-  it('preserves a node model override when loading a persisted canvas', async () => {
+  it('preserves valid node data fields and strips internal dimensions when loading a persisted canvas', async () => {
     const findUnique = vi.fn().mockResolvedValue({
       revision: 4,
       nodes: [
@@ -105,7 +105,18 @@ describe('PrismaProjectStore canvas mapping', () => {
             label: 'Image generator',
             mediaType: 'image',
             mode: 'generate',
+            enabled: false,
+            stale: true,
+            prompt: 'A detailed mountain landscape',
+            inferenceStrength: 'high',
             modelAlias: 'image-special',
+            credentialId: 'credential-1',
+            assetId: 'asset-from-data',
+            contentUrl: 'https://example.test/image.png',
+            mimeType: 'image/png',
+            __canvasWidth: 640,
+            __canvasHeight: 480,
+            internalOnly: 'must not leak',
           },
         },
       ],
@@ -115,7 +126,72 @@ describe('PrismaProjectStore canvas mapping', () => {
 
     const canvas = await store.getCanvas('project-id');
 
-    expect(canvas?.nodes[0].data.modelAlias).toBe('image-special');
+    expect(canvas?.nodes[0]).toMatchObject({
+      type: 'image',
+      width: 640,
+      height: 480,
+      data: {
+        label: 'Image generator',
+        mediaType: 'image',
+        mode: 'generate',
+        enabled: false,
+        stale: true,
+        prompt: 'A detailed mountain landscape',
+        inferenceStrength: 'high',
+        modelAlias: 'image-special',
+        credentialId: 'credential-1',
+        assetId: 'asset-from-data',
+        contentUrl: 'https://example.test/image.png',
+        mimeType: 'image/png',
+      },
+    });
+    expect(canvas?.nodes[0].data).not.toHaveProperty('__canvasWidth');
+    expect(canvas?.nodes[0].data).not.toHaveProperty('__canvasHeight');
+    expect(canvas?.nodes[0].data).not.toHaveProperty('internalOnly');
+  });
+
+  it('falls back to legacy node columns while retaining valid JSON fields', async () => {
+    const findUnique = vi.fn().mockResolvedValue({
+      revision: 2,
+      nodes: [
+        {
+          id: 'legacy-node',
+          type: 'TEXT',
+          mode: 'TRANSFORM',
+          label: 'Legacy column label',
+          positionX: 1,
+          positionY: 2,
+          assetId: 'asset-from-column',
+          contentUrl: 'https://example.test/legacy.txt',
+          data: {
+            prompt: 'Keep this prompt',
+            stale: true,
+            enabled: 'invalid',
+            promptMetadata: 'must not leak',
+          },
+        },
+      ],
+      edges: [],
+    });
+    const store = new PrismaProjectStore({ canvas: { findUnique } } as never);
+
+    await expect(store.getCanvas('project-id')).resolves.toMatchObject({
+      revision: 2,
+      nodes: [
+        {
+          type: 'text',
+          data: {
+            label: 'Legacy column label',
+            mediaType: 'text',
+            mode: 'transform',
+            prompt: 'Keep this prompt',
+            stale: true,
+            assetId: 'asset-from-column',
+            contentUrl: 'https://example.test/legacy.txt',
+          },
+        },
+      ],
+    });
   });
 
   it('lists project summaries ordered by most recently updated', async () => {

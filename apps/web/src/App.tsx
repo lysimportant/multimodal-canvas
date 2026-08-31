@@ -8,6 +8,7 @@ import {
   FolderOpen,
   Image as ImageIcon,
   LayoutGrid,
+  ListFilter,
   LoaderCircle,
   Palette,
   PanelLeftClose,
@@ -79,7 +80,14 @@ import { ProjectHub } from './ProjectHub';
 import { TextPromptEditor } from './TextPromptEditor';
 import { CommandPalette, type CommandPaletteCommand } from './CommandPalette';
 import { AppNavigation } from './navigation';
-import { HomePage, NotFoundPage, ProjectCanvasPage, SettingsPage, WorkspacePage } from './pages';
+import {
+  ContactPage,
+  HomePage,
+  NotFoundPage,
+  ProjectCanvasPage,
+  SettingsPage,
+  WorkspacePage,
+} from './pages';
 import {
   ProjectQueryError,
   projectQueryKeys,
@@ -97,8 +105,14 @@ import { WorkflowCanvas } from './workspace/WorkflowCanvas';
 import type { InferenceStrength } from './workspace/NodeQuickEditor';
 import { useRunResultState } from './workspace/useRunResultState';
 import { AppQueryProvider } from './query/client';
-import { useModelCatalogQuery } from './query/models';
-import { shouldApplyRunUpdate, shouldClearNodeStale } from './run-update-utils';
+import { useAiCredentialsQuery } from './query/credentials';
+import { useCredentialModelCatalogQueries } from './query/models';
+import {
+  mergeRunUpdate,
+  shouldApplyRunUpdate,
+  shouldClearNodeStale,
+  type RunUpdate,
+} from './run-update-utils';
 import { useWorkspacePreferences, type CanvasTheme } from './state/workspace-preferences';
 import {
   API_BASE_URL,
@@ -109,6 +123,8 @@ import {
   modeLabels,
   type AssetFilter,
   type CanvasBackground,
+  type ModelEntry,
+  type ModelSelection,
 } from './workspace/contracts';
 import {
   apiFetch,
@@ -376,8 +392,32 @@ function WorkspaceApp({
   const [notice, setNotice] = useState<{ kind: 'error' | 'success'; message: string } | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const queryClient = useQueryClient();
-  const modelCatalogQuery = useModelCatalogQuery();
-  const modelCatalog = modelCatalogQuery.data ?? [];
+  const credentialsQuery = useAiCredentialsQuery();
+  const credentialModelQueries = useCredentialModelCatalogQueries(
+    (credentialsQuery.data ?? []).map((credential) => credential.id),
+  );
+  const modelCatalog = useMemo(() => {
+    const credentials = credentialsQuery.data ?? [];
+    const credentialLabels = new Map(
+      credentials.map((credential) => [
+        credential.id,
+        `${credential.baseUrl} · ${credential.keyFingerprint}`,
+      ]),
+    );
+    const catalog = new Map<string, ModelEntry>();
+    for (const queryResult of credentialModelQueries) {
+      for (const model of queryResult.data ?? []) {
+        const key = `${model.credentialId ?? 'active'}\0${model.id}`;
+        catalog.set(key, {
+          ...model,
+          ...(model.credentialId
+            ? { credentialLabel: credentialLabels.get(model.credentialId) ?? model.credentialLabel }
+            : {}),
+        });
+      }
+    }
+    return [...catalog.values()];
+  }, [credentialModelQueries, credentialsQuery.data]);
   const [runRecords, setRunRecords] = useState<Record<string, RunRecord>>({});
   const [isRunning, setIsRunning] = useState(false);
   const [saveState, setSaveState] = useState('准备就绪');
@@ -1087,6 +1127,36 @@ function WorkspaceApp({
     [createOperationNode],
   );
 
+  const selectCanvasNode = useCallback(
+    (nodeId: string | null) => {
+      setSelectedNodeId(nodeId);
+      setNodes((current) => {
+        let changed = false;
+        const next = current.map((node) => {
+          const selected = node.id === nodeId;
+          if (node.selected === selected) return node;
+          changed = true;
+          return { ...node, selected };
+        });
+        return changed ? next : current;
+      });
+    },
+    [setNodes],
+  );
+
+  const appendNodesAndSelect = useCallback(
+    (newNodes: AssetFlowNode[]) => {
+      if (newNodes.length === 0) return;
+      const selectedId = newNodes[newNodes.length - 1].id;
+      setNodes((current) => [
+        ...current.map((node) => (node.selected ? { ...node, selected: false } : node)),
+        ...newNodes.map((node) => ({ ...node, selected: node.id === selectedId })),
+      ]);
+      setSelectedNodeId(selectedId);
+    },
+    [setNodes],
+  );
+
   const uploadFiles = useCallback(
     async (files: File[], position?: { x: number; y: number }) => {
       if (files.length === 0) return;
@@ -1102,12 +1172,11 @@ function WorkspaceApp({
         if (position) {
           rememberHistory();
           canvasDirtyRef.current = true;
-          setNodes((current) => [
-            ...current,
-            ...uploaded.map((asset, index) =>
+          appendNodesAndSelect(
+            uploaded.map((asset, index) =>
               createNodeForAsset(asset, { x: position.x + index * 34, y: position.y + index * 34 }),
             ),
-          ]);
+          );
         }
         setNotice({ kind: 'success', message: `${uploaded.length} 个资源已加入项目` });
       } catch (error) {
@@ -1117,7 +1186,7 @@ function WorkspaceApp({
         setUploadProgress(null);
       }
     },
-    [createNodeForAsset, rememberHistory, setNodes],
+    [appendNodesAndSelect, createNodeForAsset, rememberHistory],
   );
 
   const handleCanvasDrop = useCallback(
@@ -1130,14 +1199,13 @@ function WorkspaceApp({
         }
         rememberHistory();
         const node = createNodeForAsset(asset, position);
-        setNodes((current) => [...current, node]);
-        setSelectedNodeId(node.id);
+        appendNodesAndSelect([node]);
         canvasDirtyRef.current = true;
         return;
       }
       void uploadFiles(files, position);
     },
-    [assets, createNodeForAsset, rememberHistory, setNodes, uploadFiles],
+    [appendNodesAndSelect, assets, createNodeForAsset, rememberHistory, uploadFiles],
   );
 
   const handleAssetDragStart = useCallback((event: DragEvent, asset: Asset) => {
@@ -1153,12 +1221,11 @@ function WorkspaceApp({
         canvasCenterPositionRef.current ?? ({ x: 80 + column * 230, y: 80 + row * 210 } as const);
       const node = createNodeForAsset(asset, position);
       rememberHistory();
-      setNodes((current) => [...current, node]);
-      setSelectedNodeId(node.id);
+      appendNodesAndSelect([node]);
       canvasDirtyRef.current = true;
       setNotice({ kind: 'success', message: `${asset.name} 已添加到画布` });
     },
-    [createNodeForAsset, nodes.length, rememberHistory, setNodes],
+    [appendNodesAndSelect, createNodeForAsset, nodes.length, rememberHistory],
   );
 
   const handleRenameAsset = useCallback(
@@ -1205,12 +1272,11 @@ function WorkspaceApp({
         ({ x: 100 + column * 250, y: 100 + row * 220 } as const);
       const node = createGenerateNode(mediaType, nodePosition);
       rememberHistory();
-      setNodes((current) => [...current, node]);
-      setSelectedNodeId(node.id);
+      appendNodesAndSelect([node]);
       canvasDirtyRef.current = true;
       setNotice({ kind: 'success', message: `${mediaLabels[mediaType]}生成节点已添加` });
     },
-    [createGenerateNode, nodes.length, rememberHistory, setNodes],
+    [appendNodesAndSelect, createGenerateNode, nodes.length, rememberHistory],
   );
 
   const handleAddTransformNode = useCallback(
@@ -1223,12 +1289,11 @@ function WorkspaceApp({
         ({ x: 100 + column * 250, y: 100 + row * 220 } as const);
       const node = createTransformNode(mediaType, nodePosition);
       rememberHistory();
-      setNodes((current) => [...current, node]);
-      setSelectedNodeId(node.id);
+      appendNodesAndSelect([node]);
       canvasDirtyRef.current = true;
       setNotice({ kind: 'success', message: `${mediaLabels[mediaType]}转换节点已添加` });
     },
-    [createTransformNode, nodes.length, rememberHistory, setNodes],
+    [appendNodesAndSelect, createTransformNode, nodes.length, rememberHistory],
   );
 
   const handleConnect = useCallback(
@@ -1284,13 +1349,14 @@ function WorkspaceApp({
   );
 
   const updateSelectedModel = useCallback(
-    (modelAlias: string) => {
+    ({ modelAlias, credentialId }: ModelSelection) => {
       if (!selectedNode) return;
       rememberHistory();
       canvasDirtyRef.current = true;
       updateNodeDataAndMarkDownstreamStale(selectedNode.id, (data) => ({
         ...data,
         modelAlias: modelAlias.trim() || undefined,
+        credentialId: modelAlias.trim() && credentialId ? credentialId : undefined,
       }));
     },
     [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
@@ -1389,7 +1455,7 @@ function WorkspaceApp({
         return;
       }
       rememberHistory();
-      setNodes((current) => [...current, transformNode]);
+      appendNodesAndSelect([transformNode]);
       setEdges((current) => [
         ...current,
         {
@@ -1398,11 +1464,10 @@ function WorkspaceApp({
           animated: true,
         },
       ]);
-      setSelectedNodeId(transformNode.id);
       canvasDirtyRef.current = true;
       setNotice({ kind: 'success', message: '已创建转换节点并接入来源' });
     },
-    [createTransformNode, edges, nodes, rememberHistory, setEdges, setNodes],
+    [appendNodesAndSelect, createTransformNode, edges, nodes, rememberHistory, setEdges],
   );
 
   const updateSelectedInferenceStrength = useCallback(
@@ -1418,12 +1483,54 @@ function WorkspaceApp({
     [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
   );
 
+  const deleteCanvasSelection = useCallback(
+    (nodeIds?: readonly string[]) => {
+      const selectedNodeIds = new Set(
+        nodeIds ?? nodesRef.current.filter((node) => node.selected).map((node) => node.id),
+      );
+      const selectedEdgeIds = new Set(
+        nodeIds ? [] : edgesRef.current.filter((edge) => edge.selected).map((edge) => edge.id),
+      );
+      if (selectedNodeIds.size === 0 && selectedEdgeIds.size === 0) return false;
+      rememberHistory();
+      setNodes((current) => current.filter((node) => !selectedNodeIds.has(node.id)));
+      setEdges((current) =>
+        current.filter(
+          (edge) =>
+            !selectedEdgeIds.has(edge.id) &&
+            !selectedNodeIds.has(edge.source) &&
+            !selectedNodeIds.has(edge.target),
+        ),
+      );
+      setSelectedNodeId((current) => (current && selectedNodeIds.has(current) ? null : current));
+      canvasDirtyRef.current = true;
+      return true;
+    },
+    [rememberHistory, setEdges, setNodes],
+  );
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (isImeKeyboardEvent(event)) return;
-      if (isCanvasShortcutTarget(event.target)) return;
       const command = event.metaKey || event.ctrlKey;
       const key = event.key.toLowerCase();
+
+      if (key === 'delete' || key === 'backspace') {
+        const target = event.target instanceof Element ? event.target : null;
+        const isInsideCanvas = Boolean(target?.closest('.canvas-area'));
+        const isEditable = Boolean(
+          (target instanceof HTMLElement && target.isContentEditable) ||
+          target?.closest(
+            'input, textarea, select, [contenteditable="true"], [role="textbox"], [role="combobox"]',
+          ),
+        );
+        if (isEditable || (isCanvasShortcutTarget(event.target) && !isInsideCanvas)) return;
+        if (!deleteCanvasSelection()) return;
+        event.preventDefault();
+        return;
+      }
+
+      if (isCanvasShortcutTarget(event.target)) return;
 
       if (command && key === 'z') {
         event.preventDefault();
@@ -1475,37 +1582,27 @@ function WorkspaceApp({
         })();
         return;
       }
-      if (event.key !== 'Delete' && event.key !== 'Backspace') return;
-      const selectedNodeIds = new Set(
-        nodesRef.current.filter((node) => node.selected).map((node) => node.id),
-      );
-      const selectedEdgeIds = new Set(
-        edgesRef.current.filter((edge) => edge.selected).map((edge) => edge.id),
-      );
-      if (selectedNodeIds.size === 0 && selectedEdgeIds.size === 0) return;
-      event.preventDefault();
-      rememberHistory();
-      setNodes((current) => current.filter((node) => !selectedNodeIds.has(node.id)));
-      setEdges((current) =>
-        current.filter(
-          (edge) =>
-            !selectedEdgeIds.has(edge.id) &&
-            !selectedNodeIds.has(edge.source) &&
-            !selectedNodeIds.has(edge.target),
-        ),
-      );
-      setSelectedNodeId(null);
-      canvasDirtyRef.current = true;
+      return;
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [redoCanvas, rememberHistory, selectedNode, setEdges, setNodes, undoCanvas]);
+  }, [
+    deleteCanvasSelection,
+    redoCanvas,
+    rememberHistory,
+    selectedNode,
+    setEdges,
+    setNodes,
+    undoCanvas,
+  ]);
 
   const updateNodeRunState = useCallback(
-    (nodeId: string, run: RunRecord) => {
+    (nodeId: string, incoming: RunUpdate) => {
       const currentRun = runRecordsRef.current[nodeId];
-      if (!shouldApplyRunUpdate(currentRun, run)) return;
+      if (!shouldApplyRunUpdate(currentRun, incoming)) return;
+      const run = mergeRunUpdate(currentRun, incoming);
+      if (!run) return;
       runRecordsRef.current = { ...runRecordsRef.current, [nodeId]: run };
       setRunRecords(runRecordsRef.current);
       const resultAsset = run.status === 'succeeded' ? run.result?.asset : undefined;
@@ -1558,7 +1655,7 @@ function WorkspaceApp({
       (eventName, data) => {
         if (eventName !== 'run.updated') return;
         try {
-          const run = JSON.parse(data) as RunRecord;
+          const run = JSON.parse(data) as RunUpdate;
           updateNodeRunState(run.targetNodeId, run);
         } catch {
           // Ignore malformed events and keep REST polling as a fallback.
@@ -1667,6 +1764,9 @@ function WorkspaceApp({
           body: JSON.stringify({
             projectId,
             ...(nodeSnapshot.data.modelAlias ? { modelAlias: nodeSnapshot.data.modelAlias } : {}),
+            ...(nodeSnapshot.data.credentialId
+              ? { credentialId: nodeSnapshot.data.credentialId }
+              : {}),
             parameters: {
               ...(nodeSnapshot.data.prompt?.trim()
                 ? { prompt: nodeSnapshot.data.prompt.trim() }
@@ -1887,27 +1987,11 @@ function WorkspaceApp({
     saveCanvas,
     selectedNode,
   ]);
-  const assetSummary = useMemo(
-    () =>
-      assets.reduce(
-        (summary, asset) => {
-          summary[asset.mediaType] += 1;
-          return summary;
-        },
-        { text: 0, image: 0, audio: 0, video: 0 } as Record<MediaType, number>,
-      ),
-    [assets],
-  );
-
   return (
     <ReactFlowProvider>
       <main className="app-shell" data-theme={canvasTheme}>
         <AppNavigation route={route} projectId={projectId} className="mc-canvas-navigation" />
         <header className="topbar">
-          <div className="brand-mark" aria-label="Multimodal Canvas">
-            <span className="brand-icon">MC</span>
-            <span>Multimodal Canvas</span>
-          </div>
           <div className="project-context">
             <button
               type="button"
@@ -1976,165 +2060,189 @@ function WorkspaceApp({
                 <p className="project-menu-note">每个项目独立保存一张工作流画布</p>
               </div>
             )}
-            <span className="save-state">
+            <span className="save-state" role="status" aria-label={saveState} title={saveState}>
               {saveState.includes('保存') ? <Check size={13} aria-hidden="true" /> : null}
-              {saveState}
+              <span className="save-state-label">{saveState}</span>
             </span>
+            <label className="topbar-resource-filter">
+              <ListFilter size={14} aria-hidden="true" />
+              <span className="visually-hidden">资源类型</span>
+              <select
+                aria-label="资源类型"
+                value={activeFilter}
+                onChange={(event) => setActiveFilter(event.target.value as AssetFilter)}
+              >
+                <option value="all">全部资源（{assets.length}）</option>
+                {(Object.keys(mediaLabels) as MediaType[]).map((mediaType) => (
+                  <option key={mediaType} value={mediaType}>
+                    {mediaLabels[mediaType]}（
+                    {assets.filter((asset) => asset.mediaType === mediaType).length}）
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
           <div className="topbar-actions">
-            <button
-              type="button"
-              className="icon-button command-palette-trigger"
-              ref={commandPaletteTriggerRef}
-              aria-label="打开命令面板"
-              title="命令面板（Ctrl/Cmd+K）"
-              onClick={() => setShowCommandPalette(true)}
-            >
-              <Search size={16} aria-hidden="true" />
-              <span className="command-palette-trigger-label">命令</span>
-            </button>
-            <div className="background-control">
+            <div className="topbar-tool-cluster" aria-label="画布编辑工具">
               <button
                 type="button"
-                className="topbar-background-picker"
-                ref={backgroundTriggerRef}
-                aria-label="选择画布背景"
-                aria-expanded={showBackgroundMenu}
-                aria-haspopup="menu"
-                aria-controls="canvas-background-menu"
-                title="画布背景"
-                onClick={() => {
-                  setShowThemeMenu(false);
-                  setShowBackgroundMenu((current) => !current);
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-                    event.preventDefault();
-                    setShowThemeMenu(false);
-                    setShowBackgroundMenu(true);
-                  }
-                }}
+                className="icon-button command-palette-trigger"
+                ref={commandPaletteTriggerRef}
+                aria-label="打开命令面板"
+                title="命令面板（Ctrl/Cmd+K）"
+                onClick={() => setShowCommandPalette(true)}
               >
-                <LayoutGrid size={15} aria-hidden="true" />
-                <span>背景</span>
-                <strong>
-                  {canvasBackgroundOptions.find((option) => option.value === canvasBackground)
-                    ?.label ?? '点'}
-                </strong>
-                <ChevronDown size={12} aria-hidden="true" />
+                <Search size={16} aria-hidden="true" />
+                <span className="command-palette-trigger-label">命令</span>
               </button>
-              {showBackgroundMenu && (
-                <div
-                  className="background-menu"
-                  id="canvas-background-menu"
-                  ref={backgroundMenuRef}
-                  role="menu"
-                  aria-label="画布背景"
+              <span className="topbar-tool-divider" aria-hidden="true" />
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="撤销"
+                title="撤销"
+                onClick={undoCanvas}
+                disabled={historyRef.current.past.length === 0}
+              >
+                <Undo2 size={16} />
+              </button>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="重做"
+                title="重做"
+                onClick={redoCanvas}
+                disabled={historyRef.current.future.length === 0}
+              >
+                <Redo2 size={16} />
+              </button>
+              <span className="topbar-tool-divider" aria-hidden="true" />
+              <div className="background-control">
+                <button
+                  type="button"
+                  className="topbar-background-picker"
+                  ref={backgroundTriggerRef}
+                  aria-label="选择画布背景"
+                  aria-expanded={showBackgroundMenu}
+                  aria-haspopup="menu"
+                  aria-controls="canvas-background-menu"
+                  title="画布背景"
+                  onClick={() => {
+                    setShowThemeMenu(false);
+                    setShowBackgroundMenu((current) => !current);
+                  }}
                   onKeyDown={(event) => {
-                    const options = Array.from(
-                      event.currentTarget.querySelectorAll<HTMLButtonElement>(
-                        '[role="menuitemradio"]',
-                      ),
-                    );
-                    const currentIndex = options.indexOf(
-                      document.activeElement as HTMLButtonElement,
-                    );
-                    let nextIndex: number | undefined;
-                    if (event.key === 'ArrowDown') nextIndex = (currentIndex + 1) % options.length;
-                    if (event.key === 'ArrowUp') {
-                      nextIndex = (currentIndex - 1 + options.length) % options.length;
-                    }
-                    if (event.key === 'Home') nextIndex = 0;
-                    if (event.key === 'End') nextIndex = options.length - 1;
-                    if (nextIndex !== undefined) {
+                    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
                       event.preventDefault();
-                      options[nextIndex]?.focus();
+                      setShowThemeMenu(false);
+                      setShowBackgroundMenu(true);
                     }
                   }}
                 >
-                  {canvasBackgroundOptions.map((option) => (
-                    <button
-                      type="button"
-                      className="background-option"
-                      role="menuitemradio"
-                      aria-checked={canvasBackground === option.value}
-                      key={option.value}
-                      onClick={() => {
-                        setCanvasBackground(option.value);
-                        setShowBackgroundMenu(false);
-                        backgroundTriggerRef.current?.focus();
-                      }}
-                    >
-                      <span
-                        className={`background-swatch background-swatch-${option.value}`}
-                        aria-hidden="true"
-                      />
-                      <span>{option.label}</span>
-                      {canvasBackground === option.value && <Check size={14} aria-hidden="true" />}
-                    </button>
-                  ))}
-                </div>
-              )}
+                  <LayoutGrid size={15} aria-hidden="true" />
+                  <span>背景</span>
+                  <strong>
+                    {canvasBackgroundOptions.find((option) => option.value === canvasBackground)
+                      ?.label ?? '点'}
+                  </strong>
+                  <ChevronDown size={12} aria-hidden="true" />
+                </button>
+                {showBackgroundMenu && (
+                  <div
+                    className="background-menu"
+                    id="canvas-background-menu"
+                    ref={backgroundMenuRef}
+                    role="menu"
+                    aria-label="画布背景"
+                    onKeyDown={(event) => {
+                      const options = Array.from(
+                        event.currentTarget.querySelectorAll<HTMLButtonElement>(
+                          '[role="menuitemradio"]',
+                        ),
+                      );
+                      const currentIndex = options.indexOf(
+                        document.activeElement as HTMLButtonElement,
+                      );
+                      let nextIndex: number | undefined;
+                      if (event.key === 'ArrowDown')
+                        nextIndex = (currentIndex + 1) % options.length;
+                      if (event.key === 'ArrowUp') {
+                        nextIndex = (currentIndex - 1 + options.length) % options.length;
+                      }
+                      if (event.key === 'Home') nextIndex = 0;
+                      if (event.key === 'End') nextIndex = options.length - 1;
+                      if (nextIndex !== undefined) {
+                        event.preventDefault();
+                        options[nextIndex]?.focus();
+                      }
+                    }}
+                  >
+                    {canvasBackgroundOptions.map((option) => (
+                      <button
+                        type="button"
+                        className="background-option"
+                        role="menuitemradio"
+                        aria-checked={canvasBackground === option.value}
+                        key={option.value}
+                        onClick={() => {
+                          setCanvasBackground(option.value);
+                          setShowBackgroundMenu(false);
+                          backgroundTriggerRef.current?.focus();
+                        }}
+                      >
+                        <span
+                          className={`background-swatch background-swatch-${option.value}`}
+                          aria-hidden="true"
+                        />
+                        <span>{option.label}</span>
+                        {canvasBackground === option.value && (
+                          <Check size={14} aria-hidden="true" />
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="theme-control">
+                <button
+                  type="button"
+                  className="theme-toggle"
+                  aria-label="切换主题"
+                  aria-expanded={showThemeMenu}
+                  title="主题"
+                  onClick={() => {
+                    setShowBackgroundMenu(false);
+                    setShowThemeMenu((current) => !current);
+                  }}
+                >
+                  <Palette size={16} />
+                  <span className="theme-toggle-label">
+                    {themeOptions.find((option) => option.value === canvasTheme)?.label}
+                  </span>
+                </button>
+                {showThemeMenu && (
+                  <div className="theme-menu" role="listbox" aria-label="界面主题">
+                    {themeOptions.map((option) => (
+                      <button
+                        type="button"
+                        className="theme-option"
+                        role="option"
+                        aria-selected={canvasTheme === option.value}
+                        key={option.value}
+                        onClick={() => {
+                          setCanvasTheme(option.value);
+                          setShowThemeMenu(false);
+                        }}
+                      >
+                        <span className={`theme-swatch ${option.swatch}`} aria-hidden="true" />
+                        {option.label}
+                        {canvasTheme === option.value && <Check size={14} aria-hidden="true" />}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
-            <div className="theme-control">
-              <button
-                type="button"
-                className="theme-toggle"
-                aria-label="切换主题"
-                aria-expanded={showThemeMenu}
-                title="主题"
-                onClick={() => {
-                  setShowBackgroundMenu(false);
-                  setShowThemeMenu((current) => !current);
-                }}
-              >
-                <Palette size={16} />
-                <span className="theme-toggle-label">
-                  {themeOptions.find((option) => option.value === canvasTheme)?.label}
-                </span>
-              </button>
-              {showThemeMenu && (
-                <div className="theme-menu" role="listbox" aria-label="界面主题">
-                  {themeOptions.map((option) => (
-                    <button
-                      type="button"
-                      className="theme-option"
-                      role="option"
-                      aria-selected={canvasTheme === option.value}
-                      key={option.value}
-                      onClick={() => {
-                        setCanvasTheme(option.value);
-                        setShowThemeMenu(false);
-                      }}
-                    >
-                      <span className={`theme-swatch ${option.swatch}`} aria-hidden="true" />
-                      {option.label}
-                      {canvasTheme === option.value && <Check size={14} aria-hidden="true" />}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-            <button
-              type="button"
-              className="icon-button"
-              aria-label="撤销"
-              title="撤销"
-              onClick={undoCanvas}
-              disabled={historyRef.current.past.length === 0}
-            >
-              <Undo2 size={16} />
-            </button>
-            <button
-              type="button"
-              className="icon-button"
-              aria-label="重做"
-              title="重做"
-              onClick={redoCanvas}
-              disabled={historyRef.current.future.length === 0}
-            >
-              <Redo2 size={16} />
-            </button>
             <button
               type="button"
               className="icon-button"
@@ -2296,7 +2404,9 @@ function WorkspaceApp({
           onSubmit={() => void createProject()}
         />
 
-        <div className={`workspace ${isResourceCollapsed ? 'resource-panel-collapsed' : ''}`}>
+        <div
+          className={`workspace ${isResourceCollapsed ? 'resource-panel-collapsed' : ''} ${selectedNode ? 'has-inspector' : ''}`}
+        >
           <ResourcePanel
             assets={assets}
             collapsed={isResourceCollapsed}
@@ -2305,7 +2415,6 @@ function WorkspaceApp({
             query={query}
             isUploading={isUploading}
             uploadProgress={uploadProgress}
-            onFilterChange={setActiveFilter}
             onToggleArchived={() => setShowArchived((current) => !current)}
             onQueryChange={setQuery}
             onFilesSelected={(files) => void uploadFiles(Array.from(files))}
@@ -2331,8 +2440,8 @@ function WorkspaceApp({
             onConnect={handleConnect}
             onNodeDragStart={handleNodeDragStart}
             onCanvasDrop={handleCanvasDrop}
-            onNodeSelect={(node) => setSelectedNodeId(node.id)}
-            onClearNodeSelection={() => setSelectedNodeId(null)}
+            onNodeSelect={(node) => selectCanvasNode(node.id)}
+            onClearNodeSelection={() => selectCanvasNode(null)}
             onResizeNode={handleResizeNode}
             onNodeEnabledChange={updateNodeEnabled}
             onRetryNode={retryNodeFromCanvas}
@@ -2340,6 +2449,7 @@ function WorkspaceApp({
             onModelChange={updateSelectedModel}
             onInferenceStrengthChange={updateSelectedInferenceStrength}
             onRunNode={(node) => void runNode(node)}
+            onDeleteNode={(nodeId) => deleteCanvasSelection([nodeId])}
             onAddGenerateNode={handleAddGenerateNode}
             onAddTransformNode={handleAddTransformNode}
             onCanvasCenterChange={updateCanvasCenterPosition}
@@ -2347,224 +2457,215 @@ function WorkspaceApp({
             onOpenProjectHub={() => setShowProjectHub(true)}
             background={canvasBackground}
           />
-          <aside className="inspector-panel">
-            <div className="panel-heading">
-              <div>
-                <p className="eyebrow">属性</p>
-                <h1>节点设置</h1>
-              </div>
-            </div>
-            {selectedNode && selectedAsset && selectedNode.data.mode === 'source' ? (
-              <div className="inspector-content">
-                <AssetPreview asset={selectedAsset} className="inspector-preview" interactive />
-                <span className="inspector-type">
-                  {mediaLabels[selectedAsset.mediaType]}来源节点
-                </span>
-                <h2 className="inspector-name">{selectedAsset.name}</h2>
-                <label className="inspector-field inspector-label-field">
-                  <span>节点名称</span>
-                  <ImeInput
-                    aria-label="节点名称"
-                    value={selectedNode.data.label}
-                    identity={selectedNode.id}
-                    onValueChange={updateSelectedLabel}
-                    onValueBlur={normalizeSelectedLabel}
-                    placeholder="给这个来源节点命名"
-                  />
-                </label>
-                <label className="inspector-toggle-field">
-                  <input
-                    type="checkbox"
-                    checked={selectedNode.data.enabled !== false}
-                    onChange={(event) => updateSelectedEnabled(event.target.checked)}
-                  />
-                  <span>
-                    <strong>启用节点</strong>
-                    <small>关闭后不作为下游节点的参考输入</small>
-                  </span>
-                </label>
-                <label className="inspector-field">
-                  <span>节点模式</span>
-                  <select
-                    aria-label="节点模式"
-                    value={selectedNode.data.mode}
-                    onChange={(event) => updateSelectedMode(event.target.value as NodeMode)}
-                  >
-                    {(Object.keys(modeLabels) as NodeMode[]).map((mode) => (
-                      <option key={mode} value={mode}>
-                        {modeLabels[mode]}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <dl className="inspector-details">
-                  <div>
-                    <dt>资源类型</dt>
-                    <dd>{selectedAsset.mimeType}</dd>
-                  </div>
-                  <div>
-                    <dt>文件大小</dt>
-                    <dd>{formatBytes(selectedAsset.sizeBytes)}</dd>
-                  </div>
-                  <div>
-                    <dt>输入端口</dt>
-                    <dd>content</dd>
-                  </div>
-                </dl>
-                <label className="inspector-prompt inspector-source-content">
-                  <span>{selectedAsset.mediaType === 'text' ? '文本内容' : '来源提示 / 说明'}</span>
-                  <TextPromptEditor
-                    nodeId={selectedNode.id}
-                    value={selectedNode.data.prompt ?? ''}
-                    onChange={updateSelectedPrompt}
-                    placeholder={
-                      selectedAsset.mediaType === 'text'
-                        ? '输入来源文本，运行下游节点时会作为参考'
-                        : '补充这份来源的用途、风格或处理要求（可选）'
-                    }
-                  />
-                </label>
-                <div className="inspector-source-actions">
-                  <button
-                    type="button"
-                    className="button button-secondary"
-                    onClick={() => void copySourcePrompt(selectedNode)}
-                  >
-                    <FileText size={14} />
-                    复制内容
-                  </button>
-                  <button
-                    type="button"
-                    className="button button-primary"
-                    onClick={() => addTransformFromSource(selectedNode)}
-                  >
-                    <Play size={14} />
-                    创建转换
-                  </button>
+          {selectedNode && (
+            <aside className="inspector-panel">
+              <div className="panel-heading">
+                <div>
+                  <p className="eyebrow">属性</p>
+                  <h1>节点设置</h1>
                 </div>
               </div>
-            ) : selectedNode ? (
-              <div className="inspector-content">
-                <div
-                  className={`inspector-generate-icon media-icon media-icon-${selectedNode.data.mediaType}`}
-                >
-                  {(() => {
-                    const Icon = mediaIcons[selectedNode.data.mediaType];
-                    return <Icon size={26} aria-hidden="true" />;
-                  })()}
-                </div>
-                <span className="inspector-type">
-                  {mediaLabels[selectedNode.data.mediaType]}
-                  {modeLabels[selectedNode.data.mode]}节点
-                </span>
-                <h2 className="inspector-name">{selectedNode.data.label}</h2>
-                <label className="inspector-field inspector-label-field">
-                  <span>节点名称</span>
-                  <ImeInput
-                    aria-label="节点名称"
-                    value={selectedNode.data.label}
-                    identity={selectedNode.id}
-                    onValueChange={updateSelectedLabel}
-                    onValueBlur={normalizeSelectedLabel}
-                    placeholder="给这个节点命名"
-                  />
-                </label>
-                <label className="inspector-toggle-field">
-                  <input
-                    type="checkbox"
-                    checked={selectedNode.data.enabled !== false}
-                    onChange={(event) => updateSelectedEnabled(event.target.checked)}
-                  />
-                  <span>
-                    <strong>启用节点</strong>
-                    <small>关闭后不参与下游参考；节点自身也不能运行</small>
+              {selectedNode && selectedAsset && selectedNode.data.mode === 'source' ? (
+                <div className="inspector-content">
+                  <AssetPreview asset={selectedAsset} className="inspector-preview" interactive />
+                  <span className="inspector-type">
+                    {mediaLabels[selectedAsset.mediaType]}来源节点
                   </span>
-                </label>
-                <label className="inspector-field">
-                  <span>节点模式</span>
-                  <select
-                    aria-label="节点模式"
-                    value={selectedNode.data.mode}
-                    onChange={(event) => updateSelectedMode(event.target.value as NodeMode)}
-                  >
-                    {(Object.keys(modeLabels) as NodeMode[]).map((mode) => (
-                      <option key={mode} value={mode}>
-                        {modeLabels[mode]}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <dl className="inspector-details">
-                  <div>
-                    <dt>运行状态</dt>
-                    <dd>{selectedRun ? runStatusLabel(selectedRun.status) : '未运行'}</dd>
-                  </div>
-                  {selectedRun && (
+                  <h2 className="inspector-name">{selectedAsset.name}</h2>
+                  <label className="inspector-field inspector-label-field">
+                    <span>节点名称</span>
+                    <ImeInput
+                      aria-label="节点名称"
+                      value={selectedNode.data.label}
+                      identity={selectedNode.id}
+                      onValueChange={updateSelectedLabel}
+                      onValueBlur={normalizeSelectedLabel}
+                      placeholder="给这个来源节点命名"
+                    />
+                  </label>
+                  <label className="inspector-toggle-field">
+                    <input
+                      type="checkbox"
+                      checked={selectedNode.data.enabled !== false}
+                      onChange={(event) => updateSelectedEnabled(event.target.checked)}
+                    />
+                    <span>
+                      <strong>启用节点</strong>
+                      <small>关闭后不作为下游节点的参考输入</small>
+                    </span>
+                  </label>
+                  <label className="inspector-field">
+                    <span>节点模式</span>
+                    <select
+                      aria-label="节点模式"
+                      value={selectedNode.data.mode}
+                      onChange={(event) => updateSelectedMode(event.target.value as NodeMode)}
+                    >
+                      {(Object.keys(modeLabels) as NodeMode[]).map((mode) => (
+                        <option key={mode} value={mode}>
+                          {modeLabels[mode]}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <dl className="inspector-details">
                     <div>
-                      <dt>进度</dt>
-                      <dd>{selectedRun.progress}%</dd>
+                      <dt>资源类型</dt>
+                      <dd>{selectedAsset.mimeType}</dd>
                     </div>
-                  )}
-                  <div>
-                    <dt>参考输入</dt>
-                    <dd>{selectedRun?.snapshot.inputs.length ?? 0} 个</dd>
+                    <div>
+                      <dt>文件大小</dt>
+                      <dd>{formatBytes(selectedAsset.sizeBytes)}</dd>
+                    </div>
+                    <div>
+                      <dt>输入端口</dt>
+                      <dd>content</dd>
+                    </div>
+                  </dl>
+                  <label className="inspector-prompt inspector-source-content">
+                    <span>
+                      {selectedAsset.mediaType === 'text' ? '文本内容' : '来源提示 / 说明'}
+                    </span>
+                    <TextPromptEditor
+                      nodeId={selectedNode.id}
+                      value={selectedNode.data.prompt ?? ''}
+                      onChange={updateSelectedPrompt}
+                      placeholder={
+                        selectedAsset.mediaType === 'text'
+                          ? '输入来源文本，运行下游节点时会作为参考'
+                          : '补充这份来源的用途、风格或处理要求（可选）'
+                      }
+                    />
+                  </label>
+                  <div className="inspector-source-actions">
+                    <button
+                      type="button"
+                      className="button button-secondary"
+                      onClick={() => void copySourcePrompt(selectedNode)}
+                    >
+                      <FileText size={14} />
+                      复制内容
+                    </button>
+                    <button
+                      type="button"
+                      className="button button-primary"
+                      onClick={() => addTransformFromSource(selectedNode)}
+                    >
+                      <Play size={14} />
+                      创建转换
+                    </button>
                   </div>
-                </dl>
-                {selectedNode.data.mode === 'source' && (
-                  <>
-                    <label className="inspector-prompt inspector-source-content">
-                      <span>来源内容 / 提示</span>
-                      <TextPromptEditor
-                        nodeId={selectedNode.id}
-                        value={selectedNode.data.prompt ?? ''}
-                        onChange={updateSelectedPrompt}
-                        placeholder="补充来源内容，供下游节点参考"
-                      />
-                    </label>
-                    <div className="inspector-source-actions">
-                      <button
-                        type="button"
-                        className="button button-secondary"
-                        onClick={() => void copySourcePrompt(selectedNode)}
-                      >
-                        <FileText size={14} />
-                        复制内容
-                      </button>
-                      <button
-                        type="button"
-                        className="button button-primary"
-                        onClick={() => addTransformFromSource(selectedNode)}
-                      >
-                        <Play size={14} />
-                        创建转换
-                      </button>
-                    </div>
-                  </>
-                )}
-                <RunPanel
-                  node={selectedNode}
-                  run={selectedRun}
-                  resultState={runResultState}
-                  busy={isRunning}
-                  onCancel={cancelSelectedRun}
-                  onRetry={retrySelectedRun}
-                />
-              </div>
-            ) : (
-              <div className="inspector-empty">
-                <span className="inspector-line" />
-                <p>选择画布中的节点查看属性。</p>
-                <div className="asset-summary">
-                  <span>资源总数</span>
-                  <strong>{assets.length}</strong>
-                  <small>
-                    {assetSummary.image} 图片 · {assetSummary.audio} 音频 · {assetSummary.video}{' '}
-                    视频
-                  </small>
                 </div>
-              </div>
-            )}
-          </aside>
+              ) : selectedNode ? (
+                <div className="inspector-content">
+                  <div
+                    className={`inspector-generate-icon media-icon media-icon-${selectedNode.data.mediaType}`}
+                  >
+                    {(() => {
+                      const Icon = mediaIcons[selectedNode.data.mediaType];
+                      return <Icon size={26} aria-hidden="true" />;
+                    })()}
+                  </div>
+                  <span className="inspector-type">
+                    {mediaLabels[selectedNode.data.mediaType]}
+                    {modeLabels[selectedNode.data.mode]}节点
+                  </span>
+                  <h2 className="inspector-name">{selectedNode.data.label}</h2>
+                  <label className="inspector-field inspector-label-field">
+                    <span>节点名称</span>
+                    <ImeInput
+                      aria-label="节点名称"
+                      value={selectedNode.data.label}
+                      identity={selectedNode.id}
+                      onValueChange={updateSelectedLabel}
+                      onValueBlur={normalizeSelectedLabel}
+                      placeholder="给这个节点命名"
+                    />
+                  </label>
+                  <label className="inspector-toggle-field">
+                    <input
+                      type="checkbox"
+                      checked={selectedNode.data.enabled !== false}
+                      onChange={(event) => updateSelectedEnabled(event.target.checked)}
+                    />
+                    <span>
+                      <strong>启用节点</strong>
+                      <small>关闭后不参与下游参考；节点自身也不能运行</small>
+                    </span>
+                  </label>
+                  <label className="inspector-field">
+                    <span>节点模式</span>
+                    <select
+                      aria-label="节点模式"
+                      value={selectedNode.data.mode}
+                      onChange={(event) => updateSelectedMode(event.target.value as NodeMode)}
+                    >
+                      {(Object.keys(modeLabels) as NodeMode[]).map((mode) => (
+                        <option key={mode} value={mode}>
+                          {modeLabels[mode]}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <dl className="inspector-details">
+                    <div>
+                      <dt>运行状态</dt>
+                      <dd>{selectedRun ? runStatusLabel(selectedRun.status) : '未运行'}</dd>
+                    </div>
+                    {selectedRun && (
+                      <div>
+                        <dt>进度</dt>
+                        <dd>{selectedRun.progress}%</dd>
+                      </div>
+                    )}
+                    <div>
+                      <dt>参考输入</dt>
+                      <dd>{selectedRun?.snapshot?.inputs?.length ?? 0} 个</dd>
+                    </div>
+                  </dl>
+                  {selectedNode.data.mode === 'source' && (
+                    <>
+                      <label className="inspector-prompt inspector-source-content">
+                        <span>来源内容 / 提示</span>
+                        <TextPromptEditor
+                          nodeId={selectedNode.id}
+                          value={selectedNode.data.prompt ?? ''}
+                          onChange={updateSelectedPrompt}
+                          placeholder="补充来源内容，供下游节点参考"
+                        />
+                      </label>
+                      <div className="inspector-source-actions">
+                        <button
+                          type="button"
+                          className="button button-secondary"
+                          onClick={() => void copySourcePrompt(selectedNode)}
+                        >
+                          <FileText size={14} />
+                          复制内容
+                        </button>
+                        <button
+                          type="button"
+                          className="button button-primary"
+                          onClick={() => addTransformFromSource(selectedNode)}
+                        >
+                          <Play size={14} />
+                          创建转换
+                        </button>
+                      </div>
+                    </>
+                  )}
+                  <RunPanel
+                    node={selectedNode}
+                    run={selectedRun}
+                    resultState={runResultState}
+                    busy={isRunning}
+                    onCancel={cancelSelectedRun}
+                    onRetry={retrySelectedRun}
+                  />
+                </div>
+              ) : null}
+            </aside>
+          )}
         </div>
         {showSettings && (
           <SettingsPanel
@@ -2583,10 +2684,12 @@ function LoginScreen({
   apiBaseUrl,
   onAuthenticated,
   onContinueAnonymous,
+  returnFocusTo,
 }: {
   apiBaseUrl: string;
   onAuthenticated: (session: StoredAuthSession) => void;
   onContinueAnonymous: () => void;
+  returnFocusTo?: HTMLElement | null;
 }) {
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [email, setEmail] = useState('');
@@ -2594,6 +2697,76 @@ function LoginScreen({
   const [displayName, setDisplayName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const backdropRef = useRef<HTMLDivElement | null>(null);
+  const dialogRef = useRef<HTMLElement | null>(null);
+  const busyRef = useRef(busy);
+
+  useEffect(() => {
+    busyRef.current = busy;
+  }, [busy]);
+
+  useEffect(() => {
+    const previousFocus =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const backdrop = backdropRef.current;
+    const backgroundSiblings = Array.from(backdrop?.parentElement?.children ?? []).filter(
+      (element): element is HTMLElement => element instanceof HTMLElement && element !== backdrop,
+    );
+    const backgroundState = backgroundSiblings.map((element) => ({
+      element,
+      inert: element.inert,
+      ariaHidden: element.getAttribute('aria-hidden'),
+    }));
+    backgroundSiblings.forEach((element) => {
+      element.inert = true;
+      element.setAttribute('aria-hidden', 'true');
+    });
+
+    const focusableElements = () =>
+      Array.from(
+        dialogRef.current?.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ) ?? [],
+      ).filter((element) => element.getClientRects().length > 0);
+    focusableElements()[0]?.focus();
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!busyRef.current && !isImeKeyboardEvent(event) && event.key === 'Escape') {
+        event.preventDefault();
+        onContinueAnonymous();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusable = focusableElements();
+      if (focusable.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const first = focusable[0]!;
+      const last = focusable.at(-1)!;
+      if (!dialogRef.current?.contains(document.activeElement)) {
+        event.preventDefault();
+        first.focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      backgroundState.forEach(({ element, inert, ariaHidden }) => {
+        element.inert = inert;
+        if (ariaHidden === null) element.removeAttribute('aria-hidden');
+        else element.setAttribute('aria-hidden', ariaHidden);
+      });
+      const focusTarget = returnFocusTo?.isConnected ? returnFocusTo : previousFocus;
+      if (focusTarget?.isConnected) focusTarget.focus();
+    };
+  }, [onContinueAnonymous, returnFocusTo]);
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -2633,8 +2806,16 @@ function LoginScreen({
   };
 
   return (
-    <div className="settings-backdrop" role="presentation">
+    <div
+      ref={backdropRef}
+      className="settings-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (!busy && event.target === event.currentTarget) onContinueAnonymous();
+      }}
+    >
       <section
+        ref={dialogRef}
         className="settings-panel"
         role="dialog"
         aria-modal="true"
@@ -2645,7 +2826,19 @@ function LoginScreen({
             <p className="eyebrow">Multimodal Canvas</p>
             <h1 id="auth-title">{mode === 'login' ? '登录工作区' : '创建账户'}</h1>
           </div>
-          <UserCircle size={22} aria-hidden="true" />
+          <div className="auth-heading-actions">
+            <UserCircle size={22} aria-hidden="true" />
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="关闭登录"
+              title="关闭"
+              disabled={busy}
+              onClick={onContinueAnonymous}
+            >
+              <X size={17} aria-hidden="true" />
+            </button>
+          </div>
         </div>
         <p className="settings-status">
           {mode === 'login'
@@ -2809,6 +3002,8 @@ function RoutedApplication({
         onCreateProject={openProjectCreate}
       />
     );
+  } else if (route.id === 'contact') {
+    content = <ContactPage />;
   } else if (route.id === 'settings') {
     const hasProjectContext = Boolean(route.projectId);
     const settingsError =
@@ -2898,6 +3093,7 @@ function RoutedApplication({
 function AppContent() {
   const [authSession, setAuthSession] = useState<StoredAuthSession | null>(() => readAuthSession());
   const [authRequired, setAuthRequired] = useState(false);
+  const authTriggerRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     return setUnauthorizedHandler(() => {
@@ -2912,6 +3108,13 @@ function AppContent() {
     setAuthRequired(false);
   }, []);
 
+  const handleRequestLogin = useCallback(() => {
+    authTriggerRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setAuthRequired(true);
+  }, []);
+  const handleContinueAnonymous = useCallback(() => setAuthRequired(false), []);
+
   const handleLogout = useCallback(() => {
     void logoutWithApi(API_BASE_URL).finally(() => {
       setAuthSession(null);
@@ -2923,14 +3126,15 @@ function AppContent() {
     <>
       <RoutedApplication
         authUser={authSession?.user ?? null}
-        onRequestLogin={() => setAuthRequired(true)}
+        onRequestLogin={handleRequestLogin}
         onLoggedOut={handleLogout}
       />
       {authRequired && (
         <LoginScreen
           apiBaseUrl={API_BASE_URL}
           onAuthenticated={handleAuthenticated}
-          onContinueAnonymous={() => setAuthRequired(false)}
+          onContinueAnonymous={handleContinueAnonymous}
+          returnFocusTo={authTriggerRef.current}
         />
       )}
     </>

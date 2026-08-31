@@ -343,6 +343,7 @@ input:disabled {
   color: #7a8495;
   font-size: 12px;
   gap: 4px;
+  white-space: nowrap;
 }
 
 .topbar-actions {
@@ -1090,16 +1091,6 @@ h2 {
 
 .react-flow__edge.animated .react-flow__edge-path {
   animation-duration: 0.7s;
-}
-
-.react-flow__edge.selected .react-flow__edge-path {
-  filter: drop-shadow(0 0 2px rgb(18 97 62 / 32%));
-  stroke: #0d5b39;
-  stroke-width: 4;
-}
-
-.react-flow__edge.selected.animated .react-flow__edge-path {
-  animation-duration: 0.28s;
 }
 
 .flow-node-preview {
@@ -2391,12 +2382,14 @@ h2 {
   color: var(--mc-text-faint);
 }
 
-.react-flow__edge-path {
-  stroke: var(--mc-accent);
+.react-flow {
+  --xy-edge-stroke: var(--mc-accent);
+  --xy-edge-stroke-selected: var(--mc-accent-strong);
+  --xy-edge-stroke-width: 2;
 }
 
-.react-flow__edge.selected .react-flow__edge-path {
-  stroke: var(--mc-accent-strong);
+.react-flow__edge-path {
+  stroke: var(--mc-accent);
 }
 
 .canvas-background-picker,
@@ -2822,5 +2815,413 @@ textarea:focus-visible {
 
   .node-quick-editor-controls {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Canvas chrome: keep project controls at the left edge, group editing tools,
+   and let the canvas reclaim the inspector width when nothing is selected. */
+.topbar {
+  grid-template-columns: minmax(0, 1fr) max-content;
+}
+
+.project-context {
+  justify-content: flex-start;
+  overflow: visible;
+  padding-left: 44px;
+}
+
+.project-menu {
+  left: 44px;
+  transform: none;
+}
+
+.topbar-resource-filter,
+.topbar-tool-cluster,
+.auth-heading-actions {
+  align-items: center;
+  display: inline-flex;
+}
+
+.topbar-resource-filter {
+  background: color-mix(in srgb, var(--mc-surface) 94%, transparent);
+  border: 1px solid var(--mc-border);
+  border-radius: 5px;
+  color: var(--mc-text-muted);
+  gap: 5px;
+  min-height: 30px;
+  padding: 0 7px;
+  pointer-events: auto;
+}
+
+.topbar-resource-filter:focus-within {
+  border-color: var(--mc-accent);
+  box-shadow: 0 0 0 3px var(--mc-focus);
+}
+
+.topbar-resource-filter select {
+  background: transparent;
+  border: 0;
+  color: var(--mc-text);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  max-width: 132px;
+  min-width: 0;
+  outline: 0;
+}
+
+.topbar-tool-cluster {
+  background: color-mix(in srgb, var(--mc-surface) 94%, transparent);
+  border: 1px solid var(--mc-border);
+  border-radius: 6px;
+  gap: 2px;
+  padding: 2px;
+}
+
+.topbar-tool-cluster > .icon-button,
+.topbar-tool-cluster .topbar-background-picker,
+.topbar-tool-cluster .theme-toggle {
+  background: transparent;
+  border-color: transparent;
+}
+
+.topbar-tool-cluster > .icon-button:hover:not(:disabled),
+.topbar-tool-cluster .topbar-background-picker:hover,
+.topbar-tool-cluster .theme-toggle:hover {
+  background: var(--mc-surface-muted);
+}
+
+.topbar-tool-cluster:focus-within {
+  border-color: var(--mc-accent);
+  box-shadow: 0 0 0 3px var(--mc-focus);
+}
+
+.topbar-tool-divider {
+  background: var(--mc-border-strong);
+  height: 20px;
+  margin: 0 2px;
+  width: 1px;
+}
+
+.workspace {
+  grid-template-columns: 260px minmax(0, 1fr);
+  transition: grid-template-columns 180ms ease;
+}
+
+.workspace.has-inspector {
+  grid-template-columns: 260px minmax(0, 1fr) 280px;
+}
+
+.workspace.resource-panel-collapsed,
+.workspace:has(.resource-panel.is-collapsed) {
+  grid-template-columns: 64px minmax(0, 1fr);
+}
+
+.workspace.has-inspector.resource-panel-collapsed,
+.workspace.has-inspector:has(.resource-panel.is-collapsed) {
+  grid-template-columns: 64px minmax(0, 1fr) 280px;
+}
+
+.resource-panel {
+  background: color-mix(in srgb, var(--mc-surface) 82%, transparent);
+  opacity: 0.78;
+  transition:
+    background-color 180ms ease,
+    border-color 180ms ease,
+    opacity 180ms ease,
+    padding 180ms ease;
+}
+
+.resource-panel:hover,
+.resource-panel:focus-within {
+  background: color-mix(in srgb, var(--mc-surface) 96%, transparent);
+  opacity: 1;
+}
+
+.resource-panel.is-collapsed {
+  opacity: 0.9;
+}
+
+.auth-heading-actions {
+  color: var(--mc-text-muted);
+  gap: 9px;
+}
+
+/* Composite fields own the visible focus ring. Suppress the browser-wide
+   outline on their inner controls so focus is represented exactly once. */
+.mc-workspace-search input:focus-visible,
+.search-field input:focus-visible,
+.project-create-field input:focus-visible,
+.settings-field input:focus-visible,
+.settings-field select:focus-visible,
+.inspector-field input:focus-visible,
+.inspector-field select:focus-visible,
+.inspector-prompt textarea:focus-visible,
+.node-quick-editor-field textarea:focus-visible,
+.node-quick-editor-field select:focus-visible,
+.topbar-resource-filter select:focus-visible {
+  outline: 0;
+}
+
+.search-field input {
+  background: transparent;
+}
+
+.settings-field input:focus-visible,
+.settings-field select:focus-visible {
+  border-color: var(--mc-accent);
+  box-shadow: 0 0 0 3px var(--mc-focus);
+}
+
+@media (max-width: 1200px) and (min-width: 901px) {
+  .topbar {
+    grid-template-columns: minmax(0, 1fr) max-content;
+  }
+
+  .save-state {
+    display: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .topbar {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 12px 12px 12px 56px;
+  }
+
+  .topbar-actions {
+    grid-column: 1;
+    grid-row: 1;
+    justify-content: flex-end;
+  }
+
+  .project-context {
+    grid-column: 1;
+    grid-row: 2;
+    overflow-x: auto;
+    padding-left: 0;
+    scrollbar-width: thin;
+  }
+
+  .project-context:has(.project-menu) {
+    overflow: visible;
+  }
+
+  .project-menu {
+    left: 0;
+    max-width: calc(100vw - 68px);
+    min-width: 0;
+    width: min(280px, calc(100vw - 68px));
+  }
+
+  .workspace,
+  .workspace.has-inspector,
+  .workspace.resource-panel-collapsed,
+  .workspace.has-inspector.resource-panel-collapsed,
+  .workspace:has(.resource-panel.is-collapsed),
+  .workspace.has-inspector:has(.resource-panel.is-collapsed) {
+    display: flex;
+  }
+
+  .resource-panel {
+    opacity: 1;
+    transition:
+      background-color 180ms ease,
+      max-height 180ms ease,
+      min-height 180ms ease,
+      padding 180ms ease;
+  }
+}
+
+@media (max-width: 600px) {
+  .topbar {
+    column-gap: 8px;
+    grid-template-columns: 40px minmax(0, 1fr);
+    grid-template-rows: auto auto;
+  }
+
+  .topbar-actions {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .project-context {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    padding-left: 0;
+  }
+
+  .topbar-tool-cluster {
+    max-width: 100%;
+  }
+
+  .topbar-resource-filter select {
+    max-width: 112px;
+  }
+
+  .save-state-label {
+    display: none;
+  }
+}
+
+/* Keep the selected edge unmistakable even when React Flow or a persisted
+   edge object contributes an inline stroke declaration. */
+.react-flow__edge .react-flow__edge-path {
+  transition:
+    filter 120ms ease,
+    stroke-width 120ms ease;
+}
+
+.react-flow__edge.selected .react-flow__edge-path {
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--mc-accent-strong) 58%, transparent));
+  stroke: var(--mc-accent-strong) !important;
+  stroke-width: 4px !important;
+}
+
+.react-flow__edge.selected.animated .react-flow__edge-path {
+  animation-duration: 0.2s !important;
+}
+
+@media (max-width: 600px) {
+  .project-context {
+    column-gap: 12px;
+    flex-wrap: wrap;
+    overflow-x: visible;
+    row-gap: 6px;
+  }
+
+  .topbar-actions,
+  .topbar-tool-cluster,
+  .topbar-resource-filter {
+    min-width: 0;
+  }
+
+  .topbar-actions {
+    justify-content: flex-start;
+    max-width: 100%;
+    overflow: visible;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+    scroll-padding-inline: 4px;
+  }
+
+  .topbar-tool-cluster {
+    flex: 0 1 auto;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+    scroll-padding-inline: 4px;
+  }
+
+  .topbar-resource-filter {
+    box-sizing: border-box;
+    flex: 0 0 min(132px, 100%);
+    max-width: 100%;
+    overflow: hidden;
+  }
+
+  .topbar-resource-filter select {
+    flex: 1 1 0;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    width: 0;
+  }
+}
+
+@media (max-width: 340px) {
+  .topbar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .topbar-actions {
+    grid-column: 1;
+  }
+
+  .project-context {
+    align-content: flex-start;
+    flex-wrap: wrap;
+    overflow-x: visible;
+  }
+
+  .topbar-resource-filter {
+    flex: 1 1 calc(100% - 12px);
+    width: calc(100% - 12px);
+  }
+
+  .topbar-tool-cluster {
+    gap: 0;
+    padding: 1px;
+  }
+
+  .topbar-tool-divider {
+    margin-inline: 0;
+  }
+
+  .canvas-node-tools {
+    left: 8px;
+    right: 44px;
+    scroll-padding-inline: 6px;
+  }
+
+  .canvas-node-tools .canvas-node-tool,
+  .canvas-node-tools .canvas-node-tool-transform {
+    flex: 0 0 36px;
+    height: 36px;
+    width: 36px;
+  }
+}
+
+@media (max-width: 600px) {
+  .topbar-actions {
+    width: 100%;
+  }
+
+  .topbar-tool-cluster {
+    flex: 1 1 auto;
+    width: 100%;
+  }
+
+  .topbar-tool-cluster > *,
+  .topbar-tool-cluster .background-control,
+  .topbar-tool-cluster .theme-control,
+  .topbar-tool-cluster .export-control {
+    flex: 0 0 auto;
+  }
+}
+
+/* Final mobile bounds: flex/grid descendants must be allowed to shrink, while
+   the two intentionally scrollable tool strips keep their own overflow local. */
+@media (max-width: 600px) {
+  .topbar,
+  .project-context,
+  .topbar-actions,
+  .topbar-tool-cluster,
+  .topbar-resource-filter {
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .topbar-resource-filter {
+    box-sizing: border-box;
+  }
+
+  .topbar-tool-cluster {
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .canvas-node-tools {
+    box-sizing: border-box;
+    max-width: calc(100% - 52px);
+    min-width: 0;
+  }
+
+  .canvas-node-tools .canvas-node-tool,
+  .canvas-node-tools .canvas-node-tool-transform {
+    flex: 0 0 36px;
   }
 }
