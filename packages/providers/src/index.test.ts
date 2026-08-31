@@ -636,6 +636,47 @@ describe('NewApiProvider', () => {
     );
   });
 
+  it('maps image aspect ratio to the New API field', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ url: 'https://cdn.example/portrait.png' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const provider = new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    });
+
+    await provider.execute({
+      snapshot: {
+        ...standardSnapshot('image'),
+        modelAlias: 'image-portrait-v1',
+        parameters: {
+          size: '1024x1536',
+          quality: '4k',
+          aspectRatio: '9:16',
+          prompt: 'Portrait image',
+        },
+      },
+    });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://newapi.example.com/v1/images/generations',
+      expect.objectContaining({
+        body: JSON.stringify({
+          size: '1024x1536',
+          quality: '4k',
+          aspect_ratio: '9:16',
+          model: 'image-portrait-v1',
+          prompt: 'Portrait image',
+          n: 1,
+        }),
+      }),
+    );
+  });
+
   it('maps one linked prompt to the audio input field', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(new Uint8Array([0, 1, 2, 3]), {

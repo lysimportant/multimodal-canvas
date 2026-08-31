@@ -43,6 +43,45 @@ const inferenceStrengthOptions: Array<{
   { value: 'high', label: '高' },
 ];
 
+const imageSizeOptions = [
+  { value: '1024x1024', label: '1024 × 1024 · 方形' },
+  { value: '1536x1024', label: '1536 × 1024 · 横向' },
+  { value: '1024x1536', label: '1024 × 1536 · 竖向' },
+  { value: '1792x1024', label: '1792 × 1024 · 宽幅' },
+  { value: '1024x1792', label: '1024 × 1792 · 长幅' },
+  { value: '2048x2048', label: '2048 × 2048 · 高清方形' },
+  { value: '2048x1152', label: '2048 × 1152 · 高清横向' },
+  { value: '1152x2048', label: '1152 × 2048 · 高清竖向' },
+];
+
+const imageQualityOptions = [
+  { value: '1k', label: '1K · 标准' },
+  { value: '2k', label: '2K · 高清' },
+  { value: '3k', label: '3K · 超清' },
+  { value: '4k', label: '4K · 极致' },
+];
+
+const videoSizeOptions = [
+  { value: '1280x720', label: '1280 × 720 · 横向' },
+  { value: '1920x1080', label: '1920 × 1080 · 全高清' },
+  { value: '1080x1920', label: '1080 × 1920 · 竖向' },
+  { value: '2560x1440', label: '2560 × 1440 · 2K' },
+  { value: '3840x2160', label: '3840 × 2160 · 4K' },
+];
+
+const videoResolutionOptions = ['360p', '480p', '720p', '1080p', '1440p', '2160p'];
+
+const aspectRatioOptions = [
+  { value: '1:1', label: '1:1 · 方形' },
+  { value: '16:9', label: '16:9 · 横屏' },
+  { value: '9:16', label: '9:16 · 竖屏' },
+  { value: '4:3', label: '4:3 · 标准横向' },
+  { value: '3:4', label: '3:4 · 标准竖向' },
+  { value: '3:2', label: '3:2 · 摄影横向' },
+  { value: '2:3', label: '2:3 · 摄影竖向' },
+  { value: '21:9', label: '21:9 · 超宽屏' },
+];
+
 export function NodeQuickEditor({
   node,
   models,
@@ -125,79 +164,137 @@ export function NodeQuickEditor({
       </div>
 
       {node.data.mediaType === 'image' && (
-        <div className="node-quick-editor-controls" aria-label="图片参数">
+        <>
+          <MediaDimensionPreview
+            mediaType="image"
+            size={parameters.size}
+            aspectRatio={parameters.aspectRatio}
+          />
+          <div className="node-quick-editor-controls" aria-label="图片参数">
+            <label className="node-quick-editor-field">
+              <span>图片尺寸</span>
+              <select
+                aria-label="图片尺寸"
+                value={parameters.size ?? ''}
+                onChange={(event) => updateParameter('size', event.target.value)}
+              >
+                <option value="">默认尺寸</option>
+                {imageSizeOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="node-quick-editor-field">
+              <span>图片清晰度</span>
+              <select
+                aria-label="图片清晰度"
+                value={parameters.quality ?? ''}
+                onChange={(event) => updateParameter('quality', event.target.value)}
+              >
+                <option value="">默认清晰度</option>
+                {imageQualityOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
           <label className="node-quick-editor-field">
-            <span>图片尺寸</span>
+            <span>图片比例</span>
             <select
-              aria-label="图片尺寸"
-              value={parameters.size ?? ''}
-              onChange={(event) => updateParameter('size', event.target.value)}
+              aria-label="图片比例"
+              value={parameters.aspectRatio ?? ''}
+              onChange={(event) => updateParameter('aspectRatio', event.target.value)}
             >
-              <option value="">默认尺寸</option>
-              <option value="1024x1024">1024 × 1024</option>
-              <option value="1536x1024">1536 × 1024</option>
-              <option value="1024x1536">1024 × 1536</option>
+              <option value="">跟随尺寸</option>
+              {aspectRatioOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
             </select>
           </label>
-          <label className="node-quick-editor-field">
-            <span>图片清晰度</span>
-            <select
-              aria-label="图片清晰度"
-              value={parameters.quality ?? ''}
-              onChange={(event) => updateParameter('quality', event.target.value)}
-            >
-              <option value="">默认清晰度</option>
-              <option value="low">低</option>
-              <option value="medium">中</option>
-              <option value="high">高</option>
-            </select>
-          </label>
-        </div>
+        </>
       )}
 
       {node.data.mediaType === 'video' && (
-        <div className="node-quick-editor-controls" aria-label="视频参数">
-          <label className="node-quick-editor-field">
-            <span>视频尺寸</span>
-            <select
-              aria-label="视频尺寸"
-              value={parameters.resolution ?? ''}
-              onChange={(event) => updateParameter('resolution', event.target.value)}
-            >
-              <option value="">默认尺寸</option>
-              <option value="720p">720p</option>
-              <option value="1080p">1080p</option>
-            </select>
-          </label>
-          <label className="node-quick-editor-field">
-            <span>视频清晰度</span>
-            <select
-              aria-label="视频清晰度"
-              value={parameters.quality ?? ''}
-              onChange={(event) => updateParameter('quality', event.target.value)}
-            >
-              <option value="">默认清晰度</option>
-              <option value="standard">标准</option>
-              <option value="high">高</option>
-            </select>
-          </label>
-          <label className="node-quick-editor-field">
-            <span>时长（秒）</span>
-            <select
-              aria-label="视频时长（秒）"
-              value={parameters.duration?.toString() ?? ''}
-              onChange={(event) => {
-                const value = event.target.value;
-                updateParameter('duration', value ? Number(value) : undefined);
-              }}
-            >
-              <option value="">默认时长</option>
-              <option value="4">4 秒</option>
-              <option value="8">8 秒</option>
-              <option value="12">12 秒</option>
-            </select>
-          </label>
-        </div>
+        <>
+          <MediaDimensionPreview
+            mediaType="video"
+            size={parameters.size}
+            aspectRatio={parameters.aspectRatio}
+          />
+          <div className="node-quick-editor-controls" aria-label="视频参数">
+            <label className="node-quick-editor-field">
+              <span>视频尺寸</span>
+              <select
+                aria-label="视频尺寸"
+                value={parameters.size ?? ''}
+                onChange={(event) => updateParameter('size', event.target.value)}
+              >
+                <option value="">默认尺寸</option>
+                {videoSizeOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="node-quick-editor-field">
+              <span>视频清晰度</span>
+              <select
+                aria-label="视频清晰度"
+                value={parameters.resolution ?? ''}
+                onChange={(event) => updateParameter('resolution', event.target.value)}
+              >
+                <option value="">默认清晰度</option>
+                {videoResolutionOptions.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="node-quick-editor-controls">
+            <label className="node-quick-editor-field">
+              <span>视频比例</span>
+              <select
+                aria-label="视频比例"
+                value={parameters.aspectRatio ?? ''}
+                onChange={(event) => updateParameter('aspectRatio', event.target.value)}
+              >
+                <option value="">跟随尺寸</option>
+                {aspectRatioOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="node-quick-editor-field">
+              <span>时长（秒）</span>
+              <select
+                aria-label="视频时长（秒）"
+                value={parameters.duration?.toString() ?? ''}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  updateParameter('duration', value ? Number(value) : undefined);
+                }}
+              >
+                <option value="">默认时长</option>
+                <option value="4">4 秒</option>
+                <option value="8">8 秒</option>
+                <option value="12">12 秒</option>
+                <option value="16">16 秒</option>
+                <option value="20">20 秒</option>
+              </select>
+            </label>
+          </div>
+        </>
       )}
 
       <div className="node-quick-editor-controls">
@@ -269,6 +366,80 @@ function readNodeMediaParameters(data: unknown): NodeMediaParameters {
   const candidate = (data as { parameters?: unknown }).parameters;
   if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return {};
   return { ...(candidate as Record<string, unknown>) };
+}
+
+/**
+ * 展示当前尺寸和比例的几何预览，让横竖屏差异在选择前后都可见。
+ * @param mediaType 当前节点媒体类型。
+ * @param size 当前尺寸值，例如 `1920x1080`。
+ * @param aspectRatio 用户指定的比例；未指定时从尺寸推导。
+ */
+function MediaDimensionPreview({
+  mediaType,
+  size,
+  aspectRatio,
+}: {
+  mediaType: 'image' | 'video';
+  size?: unknown;
+  aspectRatio?: unknown;
+}) {
+  const sizeValue = typeof size === 'string' && size.trim() ? size.trim() : undefined;
+  const explicitRatio = normalizeAspectRatio(aspectRatio);
+  const ratio =
+    explicitRatio ?? ratioFromSize(sizeValue) ?? (mediaType === 'video' ? '16:9' : '1:1');
+  const sizeLabel = sizeValue ?? '默认尺寸';
+  const mediaLabel = mediaType === 'image' ? '图片' : '视频';
+
+  return (
+    <div
+      className="node-quick-editor-dimension-preview"
+      aria-label={`${mediaLabel}尺寸示意图：${sizeLabel}，比例 ${ratio}`}
+    >
+      <div className="node-quick-editor-dimension-stage" aria-hidden="true">
+        <div
+          className="node-quick-editor-dimension-frame"
+          style={{ aspectRatio: ratio.replace(':', ' / ') }}
+        >
+          <span>{ratio}</span>
+        </div>
+      </div>
+      <div className="node-quick-editor-dimension-caption">
+        <strong>{sizeLabel}</strong>
+        <span>
+          {mediaLabel} · {ratio}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function normalizeAspectRatio(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const match = value.trim().match(/^(\d+)\s*:\s*(\d+)$/);
+  if (!match || Number(match[1]) <= 0 || Number(match[2]) <= 0) return undefined;
+  return `${Number(match[1])}:${Number(match[2])}`;
+}
+
+function ratioFromSize(size: string | undefined): string | undefined {
+  if (!size) return undefined;
+  const match = size.match(/^(\d+)x(\d+)$/i);
+  if (!match) return undefined;
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (!width || !height) return undefined;
+  const divisor = greatestCommonDivisor(width, height);
+  return `${width / divisor}:${height / divisor}`;
+}
+
+function greatestCommonDivisor(left: number, right: number): number {
+  let a = left;
+  let b = right;
+  while (b !== 0) {
+    const remainder = a % b;
+    a = b;
+    b = remainder;
+  }
+  return a;
 }
 
 function modelOptionValue(selection: ModelSelection) {

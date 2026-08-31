@@ -2008,11 +2008,14 @@ function providerParameters(
       parameters.quality ?? parameters.image_quality ?? parameters.imageQuality,
     );
     if (quality) providerParameters.quality = quality;
+    const aspectRatio = normalizeErrorField(parameters.aspect_ratio ?? parameters.aspectRatio);
+    if (aspectRatio) providerParameters.aspect_ratio = aspectRatio;
     delete providerParameters.image_size;
     delete providerParameters.imageSize;
     delete providerParameters.resolution;
     delete providerParameters.image_quality;
     delete providerParameters.imageQuality;
+    delete providerParameters.aspectRatio;
   }
   return providerParameters;
 }

@@ -165,7 +165,7 @@ describe('NodeQuickEditor', () => {
     });
   });
 
-  it('为图片节点回传尺寸和清晰度，并保留已有媒体参数', async () => {
+  it('为图片节点回传尺寸、清晰度和比例，并保留已有媒体参数', async () => {
     const user = userEvent.setup();
     const onParametersChange = vi.fn();
     render(
@@ -176,7 +176,7 @@ describe('NodeQuickEditor', () => {
             ...imageNode,
             data: {
               ...imageNode.data,
-              parameters: { quality: 'medium', providerOption: 'preserved' },
+              parameters: { quality: '2k', providerOption: 'preserved' },
             },
           } as AssetFlowNode,
         })}
@@ -184,19 +184,27 @@ describe('NodeQuickEditor', () => {
     );
 
     expect(screen.getByRole('combobox', { name: '图片尺寸' })).toHaveValue('');
-    expect(screen.getByRole('combobox', { name: '图片清晰度' })).toHaveValue('medium');
+    expect(screen.getByRole('combobox', { name: '图片清晰度' })).toHaveValue('2k');
+    expect(screen.getByRole('option', { name: '4K · 极致' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: '图片比例' })).toHaveValue('');
     expect(screen.queryByRole('combobox', { name: '视频尺寸' })).not.toBeInTheDocument();
 
     await user.selectOptions(screen.getByRole('combobox', { name: '图片尺寸' }), '1536x1024');
+    await user.selectOptions(screen.getByRole('combobox', { name: '图片比例' }), '9:16');
 
-    expect(onParametersChange).toHaveBeenCalledWith({
-      quality: 'medium',
+    expect(onParametersChange).toHaveBeenNthCalledWith(1, {
+      quality: '2k',
       providerOption: 'preserved',
       size: '1536x1024',
     });
+    expect(onParametersChange).toHaveBeenNthCalledWith(2, {
+      quality: '2k',
+      providerOption: 'preserved',
+      aspectRatio: '9:16',
+    });
   });
 
-  it('为视频节点回传尺寸、清晰度和秒数', async () => {
+  it('为视频节点回传尺寸、清晰度、比例和秒数', async () => {
     const user = userEvent.setup();
     const onParametersChange = vi.fn();
     render(
@@ -207,25 +215,36 @@ describe('NodeQuickEditor', () => {
             ...videoNode,
             data: {
               ...videoNode.data,
-              parameters: { resolution: '720p', quality: 'standard', duration: 4 },
+              parameters: { size: '1920x1080', resolution: '720p', duration: 4 },
             },
           } as AssetFlowNode,
         })}
       />,
     );
 
-    expect(screen.getByRole('combobox', { name: '视频尺寸' })).toHaveValue('720p');
-    expect(screen.getByRole('combobox', { name: '视频清晰度' })).toHaveValue('standard');
+    expect(screen.getByRole('combobox', { name: '视频尺寸' })).toHaveValue('1920x1080');
+    expect(screen.getByRole('combobox', { name: '视频清晰度' })).toHaveValue('720p');
+    expect(screen.getByRole('option', { name: '360p' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: '2160p' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: '视频比例' })).toHaveValue('');
     expect(screen.getByRole('combobox', { name: '视频时长（秒）' })).toHaveValue('4');
     expect(screen.queryByRole('combobox', { name: '图片尺寸' })).not.toBeInTheDocument();
 
+    await user.selectOptions(screen.getByRole('combobox', { name: '视频比例' }), '16:9');
     await user.selectOptions(screen.getByRole('combobox', { name: '视频时长（秒）' }), '8');
 
-    expect(onParametersChange).toHaveBeenCalledWith({
+    expect(onParametersChange).toHaveBeenNthCalledWith(1, {
+      size: '1920x1080',
       resolution: '720p',
-      quality: 'standard',
+      aspectRatio: '16:9',
+      duration: 4,
+    });
+    expect(onParametersChange).toHaveBeenNthCalledWith(2, {
+      size: '1920x1080',
+      resolution: '720p',
       duration: 8,
     });
+    expect(screen.getByLabelText('视频尺寸示意图：1920x1080，比例 16:9')).toBeInTheDocument();
   });
 
   it('请求优化提示词，并在无提示词或优化中时禁用按钮', async () => {
