@@ -382,12 +382,18 @@ export function TextResultContent({
   url,
   className = '',
   copyable = true,
+  editable = false,
+  onChange,
   onRetry,
   onLoadStateChange,
 }: {
   url: string;
   className?: string;
   copyable?: boolean;
+  /** 是否将文字结果渲染为可直接编辑的文本框。 */
+  editable?: boolean;
+  /** 编辑结果时回传最新文本。 */
+  onChange?: (value: string) => void;
   onRetry?: () => void;
   onLoadStateChange?: (state: AssetPreviewLoadState) => void;
 }) {
@@ -490,7 +496,19 @@ export function TextResultContent({
           </span>
         </div>
       ) : null}
-      <pre className="inspector-result-text artifact-preview-text-body">{content}</pre>
+      {editable ? (
+        <textarea
+          className="inspector-result-text artifact-preview-text-body artifact-preview-text-editor"
+          value={content}
+          aria-label="编辑文字结果"
+          onChange={(event) => {
+            setContent(event.target.value);
+            onChange?.(event.target.value);
+          }}
+        />
+      ) : (
+        <pre className="inspector-result-text artifact-preview-text-body">{content}</pre>
+      )}
     </div>
   );
 }

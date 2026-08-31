@@ -142,6 +142,40 @@ describe('canvas protocol', () => {
     expect(node.data.inferenceStrength).toBe('high');
   });
 
+  it('preserves optional media generation parameters on image and video nodes', () => {
+    const document = canvasDocumentSchema.parse({
+      revision: 0,
+      nodes: [
+        {
+          id: 'node_image',
+          type: 'image',
+          position: { x: 0, y: 0 },
+          data: {
+            label: 'Image',
+            mediaType: 'image',
+            mode: 'generate',
+            parameters: { size: '1536x1024', quality: 'high' },
+          },
+        },
+        {
+          id: 'node_video',
+          type: 'video',
+          position: { x: 100, y: 0 },
+          data: {
+            label: 'Video',
+            mediaType: 'video',
+            mode: 'generate',
+            parameters: { resolution: '1080p', quality: 'high', duration: 8 },
+          },
+        },
+      ],
+      edges: [],
+    });
+
+    expect(document.nodes[0].data.parameters).toMatchObject({ size: '1536x1024', quality: 'high' });
+    expect(document.nodes[1].data.parameters).toMatchObject({ resolution: '1080p', duration: 8 });
+  });
+
   it('rejects invalid node prompt and inference strength settings', () => {
     const invalidPrompt = canvasDocumentSchema.safeParse({
       revision: 0,

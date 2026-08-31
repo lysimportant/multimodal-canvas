@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
 import { nodeDataSchema } from '@multimodal-canvas/domain';
 import type {
   CanvasDocument,
@@ -731,7 +731,7 @@ export class PrismaProjectStore implements ProjectStore {
               ...node.data,
               ...(node.width !== undefined ? { __canvasWidth: node.width } : {}),
               ...(node.height !== undefined ? { __canvasHeight: node.height } : {}),
-            },
+            } as Prisma.InputJsonValue,
           })),
         });
       }

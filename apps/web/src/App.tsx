@@ -419,6 +419,7 @@ function WorkspaceApp({
   }, [credentialModelQueries, credentialsQuery.data]);
   const [runRecords, setRunRecords] = useState<Record<string, RunRecord>>({});
   const [isRunning, setIsRunning] = useState(false);
+  const [optimizingPrompt, setOptimizingPrompt] = useState(false);
   const [saveState, setSaveState] = useState('准备就绪');
   const [projectId, setProjectId] = useState<string | null>(null);
   const [projectName, setProjectName] = useState('未命名项目');
@@ -1395,6 +1396,37 @@ function WorkspaceApp({
     [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
   );
 
+  const updateSelectedParameters = useCallback(
+    (parameters: Record<string, unknown>) => {
+      if (!selectedNode) return;
+      rememberHistory();
+      canvasDirtyRef.current = true;
+      updateNodeDataAndMarkDownstreamStale(selectedNode.id, (data) => ({
+        ...data,
+        parameters,
+      }));
+    },
+    [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
+  );
+
+  const optimizeSelectedPrompt = useCallback(() => {
+    if (!selectedNode) return;
+    const source = selectedNode.data.prompt?.trim();
+    if (!source) {
+      setNotice({ kind: 'error', message: '请先输入提示词，再进行优化' });
+      return;
+    }
+    setOptimizingPrompt(true);
+    // 本地整理保持离线可用，不发送用户提示词或凭据到第三方服务。
+    const optimized = [
+      source,
+      '请明确主体、场景、风格、构图和光线；仅输出符合要求的最终结果。',
+    ].join('\n');
+    updateSelectedPrompt(optimized);
+    setOptimizingPrompt(false);
+    setNotice({ kind: 'success', message: '提示词已优化' });
+  }, [selectedNode, updateSelectedPrompt]);
+
   const updateSelectedLabel = useCallback(
     (label: string) => {
       if (!selectedNode) return;
@@ -1770,6 +1802,7 @@ function WorkspaceApp({
               ...(nodeSnapshot.data.prompt?.trim()
                 ? { prompt: nodeSnapshot.data.prompt.trim() }
                 : {}),
+              ...(nodeSnapshot.data.parameters ?? {}),
               inferenceStrength: nodeSnapshot.data.inferenceStrength ?? 'medium',
             },
           }),
@@ -2429,6 +2462,9 @@ function WorkspaceApp({
             onNodeEnabledChange={updateNodeEnabled}
             onRetryNode={retryNodeFromCanvas}
             onPromptChange={updateSelectedPrompt}
+            onParametersChange={updateSelectedParameters}
+            onOptimizePrompt={optimizeSelectedPrompt}
+            optimizingPrompt={optimizingPrompt}
             onModelChange={updateSelectedModel}
             onInferenceStrengthChange={updateSelectedInferenceStrength}
             onRunNode={(node) => void runNode(node)}
@@ -2544,7 +2580,11 @@ function WorkspaceApp({
                   {runResultState.currentContentUrl ? (
                     <div className="inspector-generate-result-preview" aria-label="运行结果预览">
                       {selectedNode.data.mediaType === 'text' ? (
-                        <TextResultContent url={runResultState.currentContentUrl} />
+                        <TextResultContent
+                          url={runResultState.currentContentUrl}
+                          editable
+                          onChange={updateSelectedPrompt}
+                        />
                       ) : (
                         <AssetPreview
                           asset={runResultState.currentPreviewAsset}
@@ -2659,6 +2699,7 @@ function WorkspaceApp({
                     busy={isRunning}
                     onCancel={cancelSelectedRun}
                     onRetry={retrySelectedRun}
+                    onResultEdit={updateSelectedPrompt}
                   />
                 </div>
               ) : null}

@@ -22,6 +22,19 @@ const imageNode = {
   },
 } as AssetFlowNode;
 
+const videoNode = {
+  id: 'node_video',
+  type: 'video',
+  position: { x: 0, y: 0 },
+  data: {
+    label: '广告视频',
+    mediaType: 'video',
+    mode: 'generate',
+    enabled: true,
+    prompt: '产品旋转展示',
+  },
+} as AssetFlowNode;
+
 const models: NodeQuickEditorProps['models'] = [
   { id: 'text-model', name: '文字模型', mediaTypes: ['text'] },
   { id: 'image-model', name: '图片模型', mediaTypes: ['image'] },
@@ -150,5 +163,97 @@ describe('NodeQuickEditor', () => {
       modelAlias: 'image-model',
       credentialId: 'credential-image',
     });
+  });
+
+  it('为图片节点回传尺寸和清晰度，并保留已有媒体参数', async () => {
+    const user = userEvent.setup();
+    const onParametersChange = vi.fn();
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          onParametersChange,
+          node: {
+            ...imageNode,
+            data: {
+              ...imageNode.data,
+              parameters: { quality: 'medium', providerOption: 'preserved' },
+            },
+          } as AssetFlowNode,
+        })}
+      />,
+    );
+
+    expect(screen.getByRole('combobox', { name: '图片尺寸' })).toHaveValue('');
+    expect(screen.getByRole('combobox', { name: '图片清晰度' })).toHaveValue('medium');
+    expect(screen.queryByRole('combobox', { name: '视频尺寸' })).not.toBeInTheDocument();
+
+    await user.selectOptions(screen.getByRole('combobox', { name: '图片尺寸' }), '1536x1024');
+
+    expect(onParametersChange).toHaveBeenCalledWith({
+      quality: 'medium',
+      providerOption: 'preserved',
+      size: '1536x1024',
+    });
+  });
+
+  it('为视频节点回传尺寸、清晰度和秒数', async () => {
+    const user = userEvent.setup();
+    const onParametersChange = vi.fn();
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          onParametersChange,
+          node: {
+            ...videoNode,
+            data: {
+              ...videoNode.data,
+              parameters: { resolution: '720p', quality: 'standard', duration: 4 },
+            },
+          } as AssetFlowNode,
+        })}
+      />,
+    );
+
+    expect(screen.getByRole('combobox', { name: '视频尺寸' })).toHaveValue('720p');
+    expect(screen.getByRole('combobox', { name: '视频清晰度' })).toHaveValue('standard');
+    expect(screen.getByRole('combobox', { name: '视频时长（秒）' })).toHaveValue('4');
+    expect(screen.queryByRole('combobox', { name: '图片尺寸' })).not.toBeInTheDocument();
+
+    await user.selectOptions(screen.getByRole('combobox', { name: '视频时长（秒）' }), '8');
+
+    expect(onParametersChange).toHaveBeenCalledWith({
+      resolution: '720p',
+      quality: 'standard',
+      duration: 8,
+    });
+  });
+
+  it('请求优化提示词，并在无提示词或优化中时禁用按钮', async () => {
+    const user = userEvent.setup();
+    const onOptimizePrompt = vi.fn();
+    const { rerender } = render(<NodeQuickEditor {...makeProps({ onOptimizePrompt })} />);
+
+    await user.click(screen.getByRole('button', { name: '优化提示词' }));
+    expect(onOptimizePrompt).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <NodeQuickEditor
+        {...makeProps({
+          onOptimizePrompt,
+          optimizingPrompt: true,
+        })}
+      />,
+    );
+    expect(screen.getByRole('button', { name: '优化中' })).toBeDisabled();
+
+    rerender(
+      <NodeQuickEditor
+        {...makeProps({
+          onOptimizePrompt,
+          node: { ...imageNode, data: { ...imageNode.data, prompt: '' } },
+        })}
+      />,
+    );
+    expect(screen.getByRole('button', { name: '优化提示词' })).toBeDisabled();
   });
 });

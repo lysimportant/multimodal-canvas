@@ -1554,6 +1554,22 @@ h2 {
   padding: 0;
 }
 
+.node-quick-editor-prompt-group {
+  display: grid;
+  gap: 6px;
+}
+
+.node-quick-editor-prompt-group > button {
+  justify-self: start;
+}
+
+.inspector-result-text-editor {
+  display: block;
+  min-height: 120px;
+  resize: vertical;
+  width: 100%;
+}
+
 .inspector-result-preview.audio-preview {
   background: #f5f8f6;
 }

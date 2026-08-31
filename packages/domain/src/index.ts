@@ -110,6 +110,11 @@ export const nodeDataSchema = z.object({
   /** Downstream output is no longer derived from the current upstream inputs. */
   stale: z.boolean().optional(),
   prompt: z.string().trim().max(20_000).optional(),
+  /**
+   * 与节点一同保存的媒体生成参数，例如图片尺寸/清晰度和视频分辨率/时长。
+   * 参数由对应 Provider 按已支持的字段映射，未配置时沿用模型默认值。
+   */
+  parameters: z.record(z.unknown()).optional(),
   inferenceStrength: z.enum(['low', 'medium', 'high']).optional(),
   modelAlias: z.string().trim().min(1).optional(),
   /** Credential selected with the model. Omitted keeps legacy active-credential behavior. */

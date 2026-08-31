@@ -1,10 +1,22 @@
-import { LoaderCircle, Play, Sparkles } from 'lucide-react';
+import { LoaderCircle, Play, Sparkles, WandSparkles } from 'lucide-react';
 
 import type { AssetFlowNode } from '../canvas-utils';
 import { TextPromptEditor } from '../TextPromptEditor';
 import { mediaLabels, type ModelEntry, type ModelSelection } from './contracts';
 
 export type InferenceStrength = 'low' | 'medium' | 'high';
+
+/**
+ * 生成节点可配置的媒体参数。
+ * 未识别的字段会原样保留，便于不同模型在父层扩展自己的参数。
+ */
+export type NodeMediaParameters = Record<string, unknown> & {
+  size?: string;
+  quality?: string;
+  resolution?: string;
+  aspectRatio?: string;
+  duration?: number;
+};
 
 export type NodeQuickEditorProps = {
   node: AssetFlowNode;
@@ -14,6 +26,12 @@ export type NodeQuickEditorProps = {
   onModelChange: (value: ModelSelection) => void;
   onInferenceStrengthChange: (value: InferenceStrength) => void;
   onRun: () => void;
+  /** 更新节点的媒体参数；未提供时参数控件仍可显示但不会修改父状态。 */
+  onParametersChange?: (value: NodeMediaParameters) => void;
+  /** 请求父层使用当前提示词生成优化版本。 */
+  onOptimizePrompt?: () => void;
+  /** 父层正在请求提示词优化结果。 */
+  optimizingPrompt?: boolean;
 };
 
 const inferenceStrengthOptions: Array<{
@@ -33,6 +51,9 @@ export function NodeQuickEditor({
   onModelChange,
   onInferenceStrengthChange,
   onRun,
+  onParametersChange,
+  onOptimizePrompt,
+  optimizingPrompt = false,
 }: NodeQuickEditorProps) {
   const currentModel = node.data.modelAlias ?? '';
   const currentCredentialId = node.data.credentialId;
@@ -47,6 +68,18 @@ export function NodeQuickEditor({
     : '';
   const groupedModels = groupModelsByCredential(availableModels);
   const enabled = node.data.enabled !== false;
+  const parameters = readNodeMediaParameters(node.data);
+
+  const updateParameter = (key: keyof NodeMediaParameters, value: unknown) => {
+    if (!onParametersChange) return;
+    const next = { ...parameters };
+    if (value === undefined || value === '') {
+      delete next[key];
+    } else {
+      next[key] = value;
+    }
+    onParametersChange(next);
+  };
 
   return (
     <section
@@ -64,15 +97,108 @@ export function NodeQuickEditor({
         </div>
       </header>
 
-      <label className="node-quick-editor-field node-quick-editor-prompt">
-        <span>提示词</span>
-        <TextPromptEditor
-          nodeId={node.id}
-          value={node.data.prompt ?? ''}
-          placeholder="描述你想生成的内容"
-          onChange={onPromptChange}
-        />
-      </label>
+      <div className="node-quick-editor-prompt-group">
+        <label className="node-quick-editor-field node-quick-editor-prompt">
+          <span>提示词</span>
+          <TextPromptEditor
+            nodeId={node.id}
+            value={node.data.prompt ?? ''}
+            placeholder="描述你想生成的内容"
+            onChange={onPromptChange}
+          />
+        </label>
+        {onOptimizePrompt && (
+          <button
+            type="button"
+            className="button button-secondary"
+            onClick={onOptimizePrompt}
+            disabled={busy || optimizingPrompt || !enabled || !(node.data.prompt ?? '').trim()}
+          >
+            {optimizingPrompt ? (
+              <LoaderCircle className="spin" size={15} aria-hidden="true" />
+            ) : (
+              <WandSparkles size={15} aria-hidden="true" />
+            )}
+            {optimizingPrompt ? '优化中' : '优化提示词'}
+          </button>
+        )}
+      </div>
+
+      {node.data.mediaType === 'image' && (
+        <div className="node-quick-editor-controls" aria-label="图片参数">
+          <label className="node-quick-editor-field">
+            <span>图片尺寸</span>
+            <select
+              aria-label="图片尺寸"
+              value={parameters.size ?? ''}
+              onChange={(event) => updateParameter('size', event.target.value)}
+            >
+              <option value="">默认尺寸</option>
+              <option value="1024x1024">1024 × 1024</option>
+              <option value="1536x1024">1536 × 1024</option>
+              <option value="1024x1536">1024 × 1536</option>
+            </select>
+          </label>
+          <label className="node-quick-editor-field">
+            <span>图片清晰度</span>
+            <select
+              aria-label="图片清晰度"
+              value={parameters.quality ?? ''}
+              onChange={(event) => updateParameter('quality', event.target.value)}
+            >
+              <option value="">默认清晰度</option>
+              <option value="low">低</option>
+              <option value="medium">中</option>
+              <option value="high">高</option>
+            </select>
+          </label>
+        </div>
+      )}
+
+      {node.data.mediaType === 'video' && (
+        <div className="node-quick-editor-controls" aria-label="视频参数">
+          <label className="node-quick-editor-field">
+            <span>视频尺寸</span>
+            <select
+              aria-label="视频尺寸"
+              value={parameters.resolution ?? ''}
+              onChange={(event) => updateParameter('resolution', event.target.value)}
+            >
+              <option value="">默认尺寸</option>
+              <option value="720p">720p</option>
+              <option value="1080p">1080p</option>
+            </select>
+          </label>
+          <label className="node-quick-editor-field">
+            <span>视频清晰度</span>
+            <select
+              aria-label="视频清晰度"
+              value={parameters.quality ?? ''}
+              onChange={(event) => updateParameter('quality', event.target.value)}
+            >
+              <option value="">默认清晰度</option>
+              <option value="standard">标准</option>
+              <option value="high">高</option>
+            </select>
+          </label>
+          <label className="node-quick-editor-field">
+            <span>时长（秒）</span>
+            <select
+              aria-label="视频时长（秒）"
+              value={parameters.duration?.toString() ?? ''}
+              onChange={(event) => {
+                const value = event.target.value;
+                updateParameter('duration', value ? Number(value) : undefined);
+              }}
+            >
+              <option value="">默认时长</option>
+              <option value="4">4 秒</option>
+              <option value="8">8 秒</option>
+              <option value="12">12 秒</option>
+            </select>
+          </label>
+        </div>
+      )}
 
       <div className="node-quick-editor-controls">
         <label className="node-quick-editor-field">
@@ -136,6 +262,13 @@ export function NodeQuickEditor({
       </button>
     </section>
   );
+}
+
+function readNodeMediaParameters(data: unknown): NodeMediaParameters {
+  if (!data || typeof data !== 'object') return {};
+  const candidate = (data as { parameters?: unknown }).parameters;
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return {};
+  return { ...(candidate as Record<string, unknown>) };
 }
 
 function modelOptionValue(selection: ModelSelection) {

@@ -13,6 +13,7 @@ export function RunPanel({
   busy,
   onCancel,
   onRetry,
+  onResultEdit,
 }: {
   node: AssetFlowNode;
   run?: RunRecord;
@@ -20,6 +21,8 @@ export function RunPanel({
   busy: boolean;
   onCancel: () => void | Promise<void>;
   onRetry: () => void | Promise<void>;
+  /** 文字结果被直接编辑时回写到节点提示词。 */
+  onResultEdit?: (value: string) => void;
 }) {
   const {
     resultAsset,
@@ -52,7 +55,7 @@ export function RunPanel({
             <div className="inspector-result-link">
               {node.data.mediaType === 'text' ? (
                 <div className="inspector-result-preview inspector-result-text-wrap">
-                  <TextResultContent url={currentContentUrl} />
+                  <TextResultContent url={currentContentUrl} editable onChange={onResultEdit} />
                 </div>
               ) : (
                 <AssetPreview

@@ -26,8 +26,9 @@ type StandardMediaType = Exclude<MediaType, 'video'>;
 
 const standardSupportedInputRoles = {
   text: ['prompt', 'content', 'transcript'],
-  image: ['prompt'],
-  audio: ['prompt'],
+  // 文本节点可通过提示词或内容语义端口连接；两者都映射到接口的主文字字段。
+  image: ['prompt', 'content'],
+  audio: ['prompt', 'content'],
 } as const satisfies Record<StandardMediaType, readonly PortRole[]>;
 
 const unsupportedStandardRoleCases = (['text', 'image', 'audio'] as const).flatMap((mediaType) =>
@@ -39,7 +40,7 @@ const unsupportedStandardRoleCases = (['text', 'image', 'audio'] as const).flatM
 );
 
 const unsupportedVideoInputRoles = allPortRoles.filter(
-  (role) => !(role === 'prompt' || role === 'firstFrame'),
+  (role) => !(role === 'prompt' || role === 'content' || role === 'firstFrame'),
 );
 
 const inputMediaTypeByRole: Record<PortRole, MediaType> = {
@@ -596,6 +597,45 @@ describe('NewApiProvider', () => {
     );
   });
 
+  it('normalizes image size and quality aliases for the New API payload', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ url: 'https://cdn.example/alias.png' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const provider = new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    });
+
+    await provider.execute({
+      snapshot: {
+        ...standardSnapshot('image'),
+        modelAlias: 'image-alias-v1',
+        parameters: {
+          imageSize: '1536x1024',
+          imageQuality: 'high',
+          prompt: 'Alias image',
+        },
+      },
+    });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://newapi.example.com/v1/images/generations',
+      expect.objectContaining({
+        body: JSON.stringify({
+          size: '1536x1024',
+          quality: 'high',
+          model: 'image-alias-v1',
+          prompt: 'Alias image',
+          n: 1,
+        }),
+      }),
+    );
+  });
+
   it('maps one linked prompt to the audio input field', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(new Uint8Array([0, 1, 2, 3]), {
@@ -641,6 +681,48 @@ describe('NewApiProvider', () => {
       }),
     );
   });
+
+  it.each(['image', 'audio'] as const)(
+    'maps text content connected to a %s node into its primary prompt field',
+    async (mediaType) => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        mediaType === 'image'
+          ? new Response(JSON.stringify({ data: [{ url: 'https://cdn.example/content.png' }] }), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            })
+          : new Response(new Uint8Array([0, 1, 2]), {
+              status: 200,
+              headers: { 'content-type': 'audio/mpeg' },
+            }),
+      );
+      const provider = new NewApiProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+      });
+
+      await provider.execute({
+        snapshot: {
+          ...standardSnapshot(mediaType),
+          modelAlias: `${mediaType}-v1`,
+          inputs: [providerInput('node_content', 'content', 0)],
+        },
+      });
+
+      expect(fetchImpl).toHaveBeenCalledWith(
+        `https://newapi.example.com/v1/${mediaType === 'image' ? 'images/generations' : 'audio/speech'}`,
+        expect.objectContaining({
+          body: JSON.stringify({
+            model: `${mediaType}-v1`,
+            ...(mediaType === 'image'
+              ? { prompt: 'content value', n: 1 }
+              : { input: 'content value' }),
+          }),
+        }),
+      );
+    },
+  );
 
   it.each(unsupportedStandardRoleCases)(
     '$mediaType rejects unsupported $role before sending a generation request',
@@ -691,7 +773,10 @@ describe('NewApiProvider', () => {
       ).rejects.toMatchObject({
         code: 'UNSUPPORTED_INPUT_ROLE',
         retryable: false,
-        message: `New API ${targetMediaType} 不支持该输入角色：${role}`,
+        message:
+          sourceMediaType === 'video' && targetMediaType === 'image' && role === 'content'
+            ? `New API ${targetMediaType} 不支持该输入角色：${role}（上游媒体类型 ${sourceMediaType} 无法映射为文字）`
+            : `New API ${targetMediaType} 不支持该输入角色：${role}`,
       });
       expect(fetchImpl).not.toHaveBeenCalled();
     },
@@ -1799,6 +1884,57 @@ describe('NewApiVideoProvider', () => {
     );
   });
 
+  it('normalizes video size, quality, and seconds aliases', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ request_id: 'video-alias' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ status: 'done', video: { url: 'https://cdn.example/alias.mp4' } }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        ),
+      );
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+      pollIntervalMs: 0,
+      maxPollAttempts: 1,
+    });
+    const snapshot = videoSnapshot();
+    snapshot.inputs = [];
+    snapshot.parameters = {
+      prompt: 'Alias video',
+      seconds: '12',
+      videoSize: '1920x1080',
+      videoQuality: 'high',
+    };
+
+    await provider.execute({ snapshot });
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      'https://newapi.example.com/v1/videos/generations',
+      expect.objectContaining({
+        body: JSON.stringify({
+          model: 'grok-imagine-video-1.5',
+          prompt: 'Alias video',
+          duration: 12,
+          size: '1920x1080',
+          quality: 'high',
+        }),
+      }),
+    );
+  });
+
   it('requires an explicit prompt instead of using the node label', async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     const provider = new NewApiVideoProvider({
@@ -1944,68 +2080,71 @@ describe('NewApiVideoProvider', () => {
     expect(reportProgress).toHaveBeenLastCalledWith(100);
   });
 
-  it('maps a linked prompt and first frame through the documented video fields', async () => {
-    const fetchImpl = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ request_id: 'linked-video' }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({ status: 'done', video: { url: 'https://cdn.example/linked.mp4' } }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        ),
-      );
-    const provider = new NewApiVideoProvider({
-      baseUrl: 'https://newapi.example.com/v1',
-      apiKey: 'server-secret',
-      fetchImpl,
-      pollIntervalMs: 0,
-      maxPollAttempts: 1,
-    });
-    const snapshot = videoSnapshot();
-    const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
-    if (!target) throw new Error('video target fixture is missing');
-    target.data = { ...target.data, prompt: undefined };
-    const promptInput = {
-      nodeId: 'node_prompt',
-      role: 'prompt' as const,
-      sortOrder: 0,
-      snapshot: {
-        id: 'node_prompt',
-        type: 'text' as const,
-        position: { x: -200, y: 0 },
-        data: {
-          label: 'Video prompt',
-          mediaType: 'text' as const,
-          mode: 'source' as const,
-          prompt: 'A slow camera move',
+  it.each(['prompt', 'content'] as const)(
+    'maps a linked %s and first frame through the documented video fields',
+    async (promptRole) => {
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ request_id: 'linked-video' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        )
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({ status: 'done', video: { url: 'https://cdn.example/linked.mp4' } }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        );
+      const provider = new NewApiVideoProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+        pollIntervalMs: 0,
+        maxPollAttempts: 1,
+      });
+      const snapshot = videoSnapshot();
+      const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
+      if (!target) throw new Error('video target fixture is missing');
+      target.data = { ...target.data, prompt: undefined };
+      const promptInput = {
+        nodeId: 'node_prompt',
+        role: promptRole,
+        sortOrder: 0,
+        snapshot: {
+          id: 'node_prompt',
+          type: 'text' as const,
+          position: { x: -200, y: 0 },
+          data: {
+            label: 'Video prompt',
+            mediaType: 'text' as const,
+            mode: 'source' as const,
+            prompt: 'A slow camera move',
+          },
         },
-      },
-    };
-    snapshot.nodes.push(promptInput.snapshot);
-    snapshot.inputs = [promptInput, ...snapshot.inputs];
+      };
+      snapshot.nodes.push(promptInput.snapshot);
+      snapshot.inputs = [promptInput, ...snapshot.inputs];
 
-    await provider.execute({ snapshot });
+      await provider.execute({ snapshot });
 
-    expect(fetchImpl).toHaveBeenNthCalledWith(
-      1,
-      'https://newapi.example.com/v1/videos/generations',
-      expect.objectContaining({
-        body: JSON.stringify({
-          model: 'grok-imagine-video-1.5',
-          prompt: 'A slow camera move',
-          duration: 8,
-          resolution: '720p',
-          aspect_ratio: '16:9',
-          image: { url: 'https://assets.example/first.png' },
+      expect(fetchImpl).toHaveBeenNthCalledWith(
+        1,
+        'https://newapi.example.com/v1/videos/generations',
+        expect.objectContaining({
+          body: JSON.stringify({
+            model: 'grok-imagine-video-1.5',
+            prompt: 'A slow camera move',
+            duration: 8,
+            resolution: '720p',
+            aspect_ratio: '16:9',
+            image: { url: 'https://assets.example/first.png' },
+          }),
         }),
-      }),
-    );
-  });
+      );
+    },
+  );
 
   it('rejects a non-image first frame before creating a video task', async () => {
     const fetchImpl = vi.fn<typeof fetch>();

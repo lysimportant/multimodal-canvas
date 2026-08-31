@@ -971,16 +971,38 @@ function videoPayload(
   };
   const firstFrameUrl = inputs.firstFrame ? inputImageUrl(inputs.firstFrame, 'video') : undefined;
   const parameters = snapshot.parameters;
-  const duration = parameters.duration;
-  if (typeof duration === 'number' && Number.isSafeInteger(duration) && duration > 0) {
+  const duration = positiveIntegerParameter(
+    parameters.duration ?? parameters.seconds ?? parameters.durationSeconds,
+  );
+  if (duration !== undefined) {
     payload.duration = duration;
   }
-  const resolution = normalizeErrorField(parameters.resolution);
+  const resolution = normalizeErrorField(
+    parameters.resolution ?? parameters.video_resolution ?? parameters.videoResolution,
+  );
   if (resolution) payload.resolution = resolution;
+  const size = normalizeErrorField(
+    parameters.size ?? parameters.video_size ?? parameters.videoSize,
+  );
+  if (size) payload.size = size;
+  const quality = normalizeErrorField(
+    parameters.quality ?? parameters.video_quality ?? parameters.videoQuality,
+  );
+  if (quality) payload.quality = quality;
   const aspectRatio = normalizeErrorField(parameters.aspect_ratio ?? parameters.aspectRatio);
   if (aspectRatio) payload.aspect_ratio = aspectRatio;
   if (firstFrameUrl) payload.image = { url: firstFrameUrl };
   return payload;
+}
+
+/** 将画布中的时长参数规范化为视频接口接受的正整数秒数。 */
+function positiveIntegerParameter(value: unknown): number | undefined {
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+  }
+  if (typeof value !== 'string' || !/^\d+$/.test(value.trim())) return undefined;
+  const parsed = Number(value.trim());
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 function providerVideoReferenceUrl(value: unknown): string | undefined {
@@ -1963,12 +1985,34 @@ function providerParameters(
   parameters: Record<string, unknown>,
   mediaType: 'text' | 'image' | 'audio',
 ): Record<string, unknown> {
-  const { inferenceStrength, prompt: _prompt, ...providerParameters } = parameters;
+  const {
+    inferenceStrength,
+    prompt: _prompt,
+    // `input` 是 provider-neutral 的音频提示词别名，会在下方映射到接口字段，不能重复透传。
+    input: _input,
+    ...providerParameters
+  } = parameters;
   if (
     mediaType === 'text' &&
     (inferenceStrength === 'low' || inferenceStrength === 'medium' || inferenceStrength === 'high')
   ) {
     providerParameters.reasoning_effort = inferenceStrength;
+  }
+  if (mediaType === 'image') {
+    // 兼容旧画布中的 `resolution`/`imageSize`，统一映射到兼容接口的图片 `size` 字段。
+    const size = normalizeErrorField(
+      parameters.size ?? parameters.image_size ?? parameters.imageSize ?? parameters.resolution,
+    );
+    if (size) providerParameters.size = size;
+    const quality = normalizeErrorField(
+      parameters.quality ?? parameters.image_quality ?? parameters.imageQuality,
+    );
+    if (quality) providerParameters.quality = quality;
+    delete providerParameters.image_size;
+    delete providerParameters.imageSize;
+    delete providerParameters.resolution;
+    delete providerParameters.image_quality;
+    delete providerParameters.imageQuality;
   }
   return providerParameters;
 }
@@ -2069,7 +2113,11 @@ function resolveSinglePromptInput(
 ): string {
   let promptInput: RunInputSnapshot | undefined;
   for (const input of orderedRunInputs(snapshot)) {
-    if (input.role !== 'prompt') throw unsupportedInputRoleError(mediaType, input.role);
+    // 文本节点常会连接到目标的内容端口；图片和 TTS 接口都将它视为主提示词，
+    // 但二进制或参考媒体仍在这里拒绝，避免误发到文字字段。
+    if (input.role !== 'prompt' && input.role !== 'content') {
+      throw unsupportedInputRoleError(mediaType, input.role);
+    }
     if (promptInput) throw inputRoleCardinalityError(mediaType, 'prompt');
     promptInput = input;
   }
@@ -2087,6 +2135,9 @@ function resolveMappedPromptInput(
   mediaType: 'image' | 'audio' | 'video',
 ): string {
   if (!input) return prompt.value;
+  // 文本节点接入默认 content 端口时，连接内容就是用户明确选择的提示词；
+  // 它应覆盖目标节点上遗留的提示词，避免再次触发角色冲突。
+  if (input.role === 'content') return inputTextValue(input, mediaType);
   if (prompt.explicit) throw inputRoleConflictError(mediaType, 'prompt');
   return inputTextValue(input, mediaType);
 }
@@ -2110,7 +2161,8 @@ function resolveRequiredVideoPrompt(
 function mapVideoInputs(snapshot: RunSnapshot): VideoInputMapping {
   const mapping: VideoInputMapping = {};
   for (const input of orderedRunInputs(snapshot)) {
-    if (input.role === 'prompt') {
+    // 部分画布布局会把文本默认连接到内容端口，因此将文本内容映射到视频主提示词字段。
+    if (input.role === 'prompt' || input.role === 'content') {
       if (mapping.prompt) throw inputRoleCardinalityError('video', 'prompt');
       mapping.prompt = input;
       continue;

@@ -89,6 +89,9 @@ export type WorkflowCanvasProps = {
   onNodeEnabledChange: NodeEnabledHandler;
   onRetryNode: (nodeId: string) => void | Promise<void>;
   onPromptChange: (value: string) => void;
+  onParametersChange?: (value: Record<string, unknown>) => void;
+  onOptimizePrompt?: () => void | Promise<void>;
+  optimizingPrompt?: boolean;
   onModelChange: (value: ModelSelection) => void;
   onInferenceStrengthChange: (value: InferenceStrength) => void;
   onRunNode: (node: AssetFlowNode) => void;
@@ -119,6 +122,9 @@ export function WorkflowCanvas({
   onNodeEnabledChange,
   onRetryNode,
   onPromptChange,
+  onParametersChange,
+  onOptimizePrompt,
+  optimizingPrompt,
   onModelChange,
   onInferenceStrengthChange,
   onRunNode,
@@ -381,6 +387,9 @@ export function WorkflowCanvas({
                       models={models}
                       busy={busy}
                       onPromptChange={onPromptChange}
+                      onParametersChange={onParametersChange}
+                      onOptimizePrompt={onOptimizePrompt}
+                      optimizingPrompt={optimizingPrompt}
                       onModelChange={onModelChange}
                       onInferenceStrengthChange={onInferenceStrengthChange}
                       onRun={() => onRunNode(selectedNode)}
