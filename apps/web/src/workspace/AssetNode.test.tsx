@@ -134,6 +134,29 @@ describe('AssetNode result presentation', () => {
     expect(onRetry).toHaveBeenCalledWith('node_1');
   });
 
+  it('reconstructs the protected version URL when public run data omits contentUrl', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('已回显的结果', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    renderNode(
+      makeNode({
+        runStatus: 'succeeded',
+        resultAsset: {
+          assetId: 'asset_archived',
+          version: 2,
+          mimeType: 'text/plain',
+        },
+      }),
+    );
+
+    expect(await screen.findByText((_, element) => element?.tagName === 'PRE')).toHaveTextContent(
+      '已回显的结果',
+    );
+    expect(fetchMock).toHaveBeenCalled();
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain(
+      '/v1/assets/asset_archived/versions/2/content',
+    );
+  });
+
   it('replaces the success indicator when a media artifact fails to load', async () => {
     const { container } = renderNode(
       makeNode({

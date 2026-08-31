@@ -49,7 +49,10 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
         mimeType: data.resultAsset.mimeType ?? data.mimeType ?? 'application/octet-stream',
         sizeBytes: data.resultAsset.sizeBytes ?? 0,
         status: 'ready',
-        contentUrl: data.resultAsset.contentUrl ?? '',
+        // 公共运行记录会省略 contentUrl，但生成资产仍可通过受保护的资产边界访问。
+        contentUrl:
+          data.resultAsset.contentUrl ??
+          getResultAssetContentUrl(data.resultAsset.assetId, data.resultAsset.version),
         tags: [],
       } satisfies Asset)
     : undefined;
@@ -332,6 +335,23 @@ function getNodePresentationState(
   if (previewAsset?.contentUrl) return 'preview';
   if (data.mode === 'source') return 'missing';
   return 'empty';
+}
+
+/**
+ * 当公共运行记录仅包含生成资产标识时，构造受保护的 API 路径。
+ * 内联或仅有远程地址的结果没有本地资产边界，必须等待供应商 URL。
+ */
+function getResultAssetContentUrl(assetId: string, version?: number): string {
+  if (
+    !assetId ||
+    version === undefined ||
+    assetId.startsWith('inline_') ||
+    assetId.startsWith('remote_')
+  ) {
+    return '';
+  }
+  const encodedId = encodeURIComponent(assetId);
+  return `/v1/assets/${encodedId}/versions/${version}/content`;
 }
 
 export function runStatusLabel(status: RunStatus) {
