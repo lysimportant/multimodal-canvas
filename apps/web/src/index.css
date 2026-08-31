@@ -1370,7 +1370,7 @@ h2 {
 }
 
 .inspector-generate-result-preview {
-  border: 1px solid #e0e7e3;
+  border: 1px solid var(--mc-border, #e0e7e3);
   border-radius: 6px;
   height: 120px;
   overflow: hidden;
@@ -2306,6 +2306,7 @@ h2 {
 }
 
 .search-field,
+.resource-filter-field,
 .flow-node-placeholder,
 .flow-node-preview,
 .inspector-preview,
@@ -2316,6 +2317,7 @@ h2 {
 }
 
 .search-field input,
+.resource-filter-field select,
 .project-create-field input,
 .settings-field input,
 .settings-field select,
@@ -2330,6 +2332,7 @@ h2 {
 }
 
 .search-field:focus-within,
+.resource-filter-field:focus-within,
 .project-create-field input:focus,
 .settings-field input:focus,
 .settings-field select:focus,
