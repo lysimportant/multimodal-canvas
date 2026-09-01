@@ -12,13 +12,17 @@ import {
   type OnNodesChange,
 } from '@xyflow/react';
 import { FileText, LayoutGrid, Trash2, Upload } from 'lucide-react';
+import { createPortal } from 'react-dom';
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
+  type CSSProperties,
   type DragEvent,
   type MouseEvent as ReactMouseEvent,
+  type RefObject,
 } from 'react';
 
 import type { MediaType } from '@multimodal-canvas/domain';
@@ -39,7 +43,11 @@ import {
   type CanvasContextMenuCloseReason,
   type CanvasContextMenuTarget,
 } from './CanvasContextMenu';
-import { NodeQuickEditor, type InferenceStrength } from './NodeQuickEditor';
+import {
+  NodeQuickEditor,
+  type InferenceStrength,
+  type NodeQuickEditorProps,
+} from './NodeQuickEditor';
 import { getCenteredCanvasNodePosition } from './canvas-position';
 import {
   ASSET_DRAG_TYPE,
@@ -68,6 +76,27 @@ function shouldKeepNativeContextMenu(target: EventTarget | null) {
   return target instanceof Element && Boolean(target.closest(NATIVE_CONTEXT_MENU_SELECTOR));
 }
 
+/** 快速编辑器在桌面画布中的最大宽度，单位为像素。 */
+const QUICK_EDITOR_MAX_WIDTH = 360;
+/** 快速编辑器与可见画布边界之间的最小距离，单位为像素。 */
+const QUICK_EDITOR_VIEWPORT_MARGIN = 8;
+/** 快速编辑器与选中节点之间的视觉间距，单位为像素。 */
+const QUICK_EDITOR_NODE_GAP = 16;
+
+/** 快速编辑器相对于视口的测量结果。 */
+type QuickEditorLayout = {
+  /** 浮层左边缘的视口坐标，单位为像素。 */
+  left: number;
+  /** 浮层上边缘的视口坐标，单位为像素。 */
+  top: number;
+  /** 浮层宽度，单位为像素。 */
+  width: number;
+  /** 浮层相对于选中节点的展开方向。 */
+  placement: 'above' | 'below';
+  /** 是否已取得可用于显示的首个布局结果。 */
+  ready: boolean;
+};
+
 export type WorkflowCanvasProps = {
   nodes: AssetFlowNode[];
   edges: FlowEdge[];
@@ -92,8 +121,6 @@ export type WorkflowCanvasProps = {
   onRetryNode: (nodeId: string) => void | Promise<void>;
   onPromptChange: (value: string, nodeId?: string) => void;
   onParametersChange?: (value: Record<string, unknown>, nodeId?: string) => void;
-  onOptimizePrompt?: (nodeId?: string) => void | Promise<void>;
-  optimizingPrompt?: boolean;
   onModelChange: (value: ModelSelection, nodeId?: string) => void;
   onInferenceStrengthChange: (value: InferenceStrength, nodeId?: string) => void;
   onRunNode: (node: AssetFlowNode) => void;
@@ -126,8 +153,6 @@ export function WorkflowCanvas({
   onRetryNode,
   onPromptChange,
   onParametersChange,
-  onOptimizePrompt,
-  optimizingPrompt,
   onModelChange,
   onInferenceStrengthChange,
   onRunNode,
@@ -142,6 +167,7 @@ export function WorkflowCanvas({
   const canvasAreaRef = useRef<HTMLElement>(null);
   const connectionStartRef = useRef<OnConnectStartParams | null>(null);
   const [contextMenu, setContextMenu] = useState<CanvasContextMenuTarget | null>(null);
+  const quickEditorNode = selectedNode && selectedNode.data.mode !== 'source' ? selectedNode : null;
 
   const getCanvasNodePosition = useCallback(() => {
     const canvasArea = canvasAreaRef.current;
@@ -311,7 +337,7 @@ export function WorkflowCanvas({
   return (
     <section
       ref={canvasAreaRef}
-      className="canvas-area"
+      className={`canvas-area${quickEditorNode ? ' has-quick-editor' : ''}`}
       aria-label="工作流画布"
       tabIndex={-1}
       onContextMenu={(event) => {
@@ -377,37 +403,6 @@ export function WorkflowCanvas({
                       }
                     />
                   )}
-                  {selectedNode && selectedNode.data.mode !== 'source' && (
-                    <NodeToolbar
-                      nodeId={selectedNode.id}
-                      isVisible
-                      position={Position.Bottom}
-                      offset={24}
-                      align="center"
-                      className="node-quick-toolbar"
-                    >
-                      <NodeQuickEditor
-                        node={selectedNode}
-                        models={models}
-                        busy={busy}
-                        onPromptChange={(value) => onPromptChange(value, selectedNode.id)}
-                        onParametersChange={
-                          onParametersChange
-                            ? (value) => onParametersChange(value, selectedNode.id)
-                            : undefined
-                        }
-                        onOptimizePrompt={
-                          onOptimizePrompt ? () => onOptimizePrompt(selectedNode.id) : undefined
-                        }
-                        optimizingPrompt={optimizingPrompt}
-                        onModelChange={(value) => onModelChange(value, selectedNode.id)}
-                        onInferenceStrengthChange={(value) =>
-                          onInferenceStrengthChange(value, selectedNode.id)
-                        }
-                        onRun={() => onRunNode(selectedNode)}
-                      />
-                    </NodeToolbar>
-                  )}
                   {selectedNode && onDeleteNode && (
                     <NodeToolbar
                       nodeId={selectedNode.id}
@@ -439,6 +434,26 @@ export function WorkflowCanvas({
           </NodeResizeStartContext.Provider>
         </NodeResizeContext.Provider>
       </NodeSelectionContext.Provider>
+      {quickEditorNode && (
+        <QuickEditorOverlay
+          key={quickEditorNode.id}
+          node={quickEditorNode}
+          models={models}
+          busy={busy}
+          canvasAreaRef={canvasAreaRef}
+          onPromptChange={(value) => onPromptChange(value, quickEditorNode.id)}
+          onParametersChange={
+            onParametersChange
+              ? (value) => onParametersChange(value, quickEditorNode.id)
+              : undefined
+          }
+          onModelChange={(value) => onModelChange(value, quickEditorNode.id)}
+          onInferenceStrengthChange={(value) =>
+            onInferenceStrengthChange(value, quickEditorNode.id)
+          }
+          onRun={() => onRunNode(quickEditorNode)}
+        />
+      )}
       {nodes.length === 0 && (
         <div className="canvas-welcome">
           <span className="canvas-kicker">工作流画布</span>
@@ -481,4 +496,226 @@ export function WorkflowCanvas({
       )}
     </section>
   );
+}
+
+/** 快速编辑器 portal 所需的节点与画布引用。 */
+type QuickEditorOverlayProps = Omit<NodeQuickEditorProps, 'node'> & {
+  /** 当前选中的生成或转换节点。 */
+  node: AssetFlowNode;
+  /** 用于约束浮层可见范围的画布容器引用。 */
+  canvasAreaRef: RefObject<HTMLElement | null>;
+};
+
+/**
+ * 将快速编辑器渲染到画布外层，并根据节点和画布的视口矩形定位。
+ * React Flow 的节点容器使用 `overflow: hidden`，因此编辑器不能继续嵌套在
+ * `NodeToolbar` 中；当节点靠近画布底部时，编辑器会自动放到节点上方。
+ */
+function QuickEditorOverlay({ node, canvasAreaRef, ...editorProps }: QuickEditorOverlayProps) {
+  const overlayRef = useRef<HTMLDivElement>(null);
+  /** portal 宿主在客户端挂载后确定，服务端渲染阶段保持为空。 */
+  const [portalHost, setPortalHost] = useState<HTMLElement | null>(null);
+  /** 当前编辑器视口坐标；完成首次测量前保持隐藏。 */
+  const [layout, setLayout] = useState<QuickEditorLayout>({
+    left: QUICK_EDITOR_VIEWPORT_MARGIN,
+    top: QUICK_EDITOR_VIEWPORT_MARGIN,
+    width: QUICK_EDITOR_MAX_WIDTH,
+    placement: 'below',
+    ready: false,
+  });
+
+  useLayoutEffect(() => {
+    if (typeof document === 'undefined') return;
+    const host = canvasAreaRef.current?.closest<HTMLElement>('.app-shell') ?? document.body;
+    setPortalHost((current) => (current === host ? current : host));
+  }, [canvasAreaRef]);
+
+  const measure = useCallback(() => {
+    const canvas = canvasAreaRef.current;
+    const overlay = overlayRef.current;
+    const nodeElement = findReactFlowNodeElement(node.id);
+    if (!canvas || !overlay || !nodeElement) {
+      setLayout((current) => (current.ready ? { ...current, ready: false } : current));
+      return;
+    }
+
+    const viewportWidth = Math.max(
+      window.innerWidth || 0,
+      document.documentElement.clientWidth || 0,
+      QUICK_EDITOR_MAX_WIDTH + QUICK_EDITOR_VIEWPORT_MARGIN * 2,
+    );
+    const viewportHeight = Math.max(
+      window.innerHeight || 0,
+      document.documentElement.clientHeight || 0,
+      480,
+    );
+    const canvasRect = canvas.getBoundingClientRect();
+    const hasCanvasBounds = canvasRect.width > 0 && canvasRect.height > 0;
+    const canvasLeft = hasCanvasBounds
+      ? Math.max(QUICK_EDITOR_VIEWPORT_MARGIN, canvasRect.left + QUICK_EDITOR_VIEWPORT_MARGIN)
+      : QUICK_EDITOR_VIEWPORT_MARGIN;
+    const canvasRight = hasCanvasBounds
+      ? Math.min(
+          viewportWidth - QUICK_EDITOR_VIEWPORT_MARGIN,
+          canvasRect.right - QUICK_EDITOR_VIEWPORT_MARGIN,
+        )
+      : viewportWidth - QUICK_EDITOR_VIEWPORT_MARGIN;
+    const canvasTop = hasCanvasBounds
+      ? Math.max(QUICK_EDITOR_VIEWPORT_MARGIN, canvasRect.top + QUICK_EDITOR_VIEWPORT_MARGIN)
+      : QUICK_EDITOR_VIEWPORT_MARGIN;
+    const canvasBottom = hasCanvasBounds
+      ? Math.min(
+          viewportHeight - QUICK_EDITOR_VIEWPORT_MARGIN,
+          canvasRect.bottom - QUICK_EDITOR_VIEWPORT_MARGIN,
+        )
+      : viewportHeight - QUICK_EDITOR_VIEWPORT_MARGIN;
+    const boundedRight = Math.max(canvasLeft, canvasRight);
+    const boundedBottom = Math.max(canvasTop, canvasBottom);
+    const width = Math.min(QUICK_EDITOR_MAX_WIDTH, Math.max(1, boundedRight - canvasLeft));
+    const overlayRect = overlay.getBoundingClientRect();
+    const editorHeight = overlayRect.height > 0 ? overlayRect.height : 420;
+    const nodeRect = nodeElement.getBoundingClientRect();
+    const hasNodeBounds = nodeRect.width > 0 && nodeRect.height > 0;
+    const nodeCenter = hasNodeBounds
+      ? nodeRect.left + nodeRect.width / 2
+      : (canvasLeft + boundedRight) / 2;
+    const maxLeft = Math.max(canvasLeft, boundedRight - width);
+    const left = clampQuickEditorValue(nodeCenter - width / 2, canvasLeft, maxLeft);
+
+    let top = canvasTop;
+    let placement: QuickEditorLayout['placement'] = 'below';
+    if (hasNodeBounds) {
+      const belowTop = nodeRect.bottom + QUICK_EDITOR_NODE_GAP;
+      const aboveTop = nodeRect.top - editorHeight - QUICK_EDITOR_NODE_GAP;
+      const fitsBelow = belowTop + editorHeight <= boundedBottom;
+      const fitsAbove = aboveTop >= canvasTop;
+      const hasMoreSpaceAbove = nodeRect.top - canvasTop > boundedBottom - nodeRect.bottom;
+      if (!fitsBelow && (fitsAbove || hasMoreSpaceAbove)) {
+        top = clampQuickEditorValue(
+          aboveTop,
+          canvasTop,
+          Math.max(canvasTop, boundedBottom - editorHeight),
+        );
+        placement = 'above';
+      } else {
+        top = clampQuickEditorValue(
+          belowTop,
+          canvasTop,
+          Math.max(canvasTop, boundedBottom - editorHeight),
+        );
+      }
+    }
+
+    const nextLayout: QuickEditorLayout = {
+      left: Math.round(left),
+      top: Math.round(top),
+      width: Math.round(width),
+      placement,
+      ready: true,
+    };
+    setLayout((current) =>
+      current.left === nextLayout.left &&
+      current.top === nextLayout.top &&
+      current.width === nextLayout.width &&
+      current.placement === nextLayout.placement &&
+      current.ready === nextLayout.ready
+        ? current
+        : nextLayout,
+    );
+  }, [canvasAreaRef, node.id]);
+
+  useLayoutEffect(() => {
+    if (!portalHost) return;
+    let disposed = false;
+    const update = () => {
+      if (!disposed) measure();
+    };
+
+    update();
+    const initialMeasure = window.setTimeout(update, 0);
+    window.addEventListener('resize', update);
+    window.addEventListener('scroll', update, true);
+
+    const resizeObserver =
+      typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(update);
+    const canvas = canvasAreaRef.current;
+    const nodeElement = findReactFlowNodeElement(node.id);
+    const overlay = overlayRef.current;
+    if (canvas) resizeObserver?.observe(canvas);
+    if (nodeElement) resizeObserver?.observe(nodeElement);
+    if (overlay) resizeObserver?.observe(overlay);
+
+    const mutationObserver =
+      typeof MutationObserver === 'undefined' ? null : new MutationObserver(update);
+    if (mutationObserver && nodeElement) {
+      mutationObserver.observe(nodeElement, {
+        attributes: true,
+        attributeFilter: ['class', 'style'],
+      });
+    }
+    const viewportElement = canvas?.querySelector<HTMLElement>('.react-flow__viewport');
+    if (viewportElement) {
+      mutationObserver?.observe(viewportElement, {
+        attributes: true,
+        attributeFilter: ['style'],
+      });
+    }
+
+    return () => {
+      disposed = true;
+      window.clearTimeout(initialMeasure);
+      window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update, true);
+      resizeObserver?.disconnect();
+      mutationObserver?.disconnect();
+    };
+  }, [canvasAreaRef, measure, node.id, portalHost]);
+
+  if (!portalHost) return null;
+
+  const style: CSSProperties = {
+    left: `${layout.left}px`,
+    top: `${layout.top}px`,
+    visibility: layout.ready ? 'visible' : 'hidden',
+    width: `${layout.width}px`,
+  };
+
+  return createPortal(
+    <div
+      ref={overlayRef}
+      className="quick-editor-overlay"
+      data-node-id={node.id}
+      data-placement={layout.placement}
+      style={style}
+    >
+      <NodeQuickEditor node={node} {...editorProps} />
+    </div>,
+    portalHost,
+  );
+}
+
+/**
+ * 查找 React Flow 为节点生成的视口元素，兼容测试替身使用的 data-node-id。
+ * @param nodeId 需要定位的画布节点 ID。
+ * @returns 匹配的节点元素；尚未挂载时返回 null。
+ */
+function findReactFlowNodeElement(nodeId: string): HTMLElement | null {
+  if (typeof document === 'undefined') return null;
+  const elements = document.querySelectorAll<HTMLElement>('.react-flow__node');
+  for (const element of elements) {
+    if (element.dataset.id === nodeId || element.dataset.nodeId === nodeId) return element;
+  }
+  return null;
+}
+
+/**
+ * 将编辑器坐标限制在画布可见边界内。
+ * @param value 待约束的坐标值。
+ * @param minimum 可见范围下限。
+ * @param maximum 可见范围上限。
+ * @returns 位于闭区间内的有限数值；非有限输入回退到下限。
+ */
+function clampQuickEditorValue(value: number, minimum: number, maximum: number) {
+  if (!Number.isFinite(value)) return minimum;
+  return Math.min(Math.max(value, minimum), Math.max(minimum, maximum));
 }

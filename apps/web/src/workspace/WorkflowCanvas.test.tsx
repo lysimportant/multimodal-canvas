@@ -59,6 +59,7 @@ vi.mock('@xyflow/react', async () => {
           <div
             key={node.id}
             data-testid={`canvas-node-${node.id}`}
+            data-id={node.id}
             className="react-flow__node"
             tabIndex={0}
             onClick={(event) => onNodeClick?.(event, node)}
@@ -124,6 +125,21 @@ const sourceNode = {
     enabled: true,
   },
 } as AssetFlowNode;
+
+/** 创建供 jsdom 布局断言使用的矩形。 */
+function createMockRect(left: number, top: number, width: number, height: number): DOMRect {
+  return {
+    x: left,
+    y: top,
+    top,
+    right: left + width,
+    bottom: top + height,
+    left,
+    width,
+    height,
+    toJSON: () => ({}),
+  } as DOMRect;
+}
 
 function createProps(overrides: Partial<WorkflowCanvasProps> = {}): WorkflowCanvasProps {
   return {
@@ -336,6 +352,32 @@ describe('WorkflowCanvas context menu', () => {
     expect(props.onPromptChange).toHaveBeenLastCalledWith('悬停编辑', generateNode.id);
 
     fireEvent.mouseLeave(canvasNode);
+  });
+
+  it('将靠近画布底部节点的快速编辑器渲染到节点上方', async () => {
+    const props = createProps({ nodes: [generateNode], selectedNode: null });
+    const { rerender } = render(<WorkflowCanvas {...props} />);
+    const canvas = screen.getByRole('region', { name: '工作流画布' });
+    const canvasNode = screen.getByTestId(`canvas-node-${generateNode.id}`);
+    let nodeRect = createMockRect(380, 620, 180, 80);
+
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue(createMockRect(80, 90, 720, 620));
+    vi.spyOn(canvasNode, 'getBoundingClientRect').mockImplementation(() => nodeRect);
+    rerender(<WorkflowCanvas {...props} selectedNode={generateNode} />);
+
+    const editor = await screen.findByRole('region', { name: '图片生成节点生成设置' });
+    const overlay = editor.closest<HTMLDivElement>('.quick-editor-overlay');
+
+    expect(overlay).not.toBeNull();
+    await waitFor(() => expect(overlay).toHaveAttribute('data-placement', 'above'));
+    expect(overlay).toHaveStyle({ visibility: 'visible' });
+    expect(overlay?.closest('.react-flow__node')).toBeNull();
+    expect(Number.parseInt(overlay?.style.top ?? '', 10)).toBeLessThan(620);
+
+    nodeRect = createMockRect(380, 150, 180, 80);
+    canvasNode.style.transform = 'translate(1px)';
+    await waitFor(() => expect(overlay).toHaveAttribute('data-placement', 'below'));
+    expect(Number.parseInt(overlay?.style.top ?? '', 10)).toBeGreaterThan(230);
   });
 
   it('keeps edge animation enabled while leaving selected styling to CSS', () => {

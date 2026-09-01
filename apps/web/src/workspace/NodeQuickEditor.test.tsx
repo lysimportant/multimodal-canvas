@@ -165,7 +165,7 @@ describe('NodeQuickEditor', () => {
     });
   });
 
-  it('为图片节点回传尺寸、清晰度和比例，并保留已有媒体参数', async () => {
+  it('为图片节点回传清晰度和比例，并保留已存尺寸参数', async () => {
     const user = userEvent.setup();
     const onParametersChange = vi.fn();
     render(
@@ -176,40 +176,30 @@ describe('NodeQuickEditor', () => {
             ...imageNode,
             data: {
               ...imageNode.data,
-              parameters: { quality: '2k', providerOption: 'preserved' },
+              parameters: {
+                size: '1536x1024',
+                quality: '2k',
+                providerOption: 'preserved',
+              },
             },
           } as AssetFlowNode,
         })}
       />,
     );
 
-    const sizeGroup = screen.getByText('图片尺寸').parentElement as HTMLElement;
     const qualityGroup = screen.getByText('图片清晰度').parentElement as HTMLElement;
     const ratioGroup = screen.getByText('图片比例').parentElement as HTMLElement;
     const mediaOptions = screen.getByRole('group', { name: '媒体参数' });
 
     expect(mediaOptions).toHaveClass('node-quick-editor-media-options');
-    expect(mediaOptions.querySelectorAll('.node-quick-editor-option-group')).toHaveLength(3);
-    expect(sizeGroup.querySelectorAll('.node-quick-editor-option')).toHaveLength(9);
+    expect(mediaOptions).toHaveAttribute('data-columns', '2');
+    expect(mediaOptions.querySelectorAll('.node-quick-editor-option-group')).toHaveLength(2);
+    expect(screen.queryByText('图片尺寸')).not.toBeInTheDocument();
     expect(ratioGroup.querySelectorAll('.node-quick-editor-option')).toHaveLength(9);
 
     expect(
-      sizeGroup.querySelector<HTMLButtonElement>('.node-quick-editor-option-trigger'),
-    ).toHaveAttribute('aria-expanded', 'false');
-    expect(
       qualityGroup.querySelector<HTMLButtonElement>('.node-quick-editor-option-trigger'),
     ).toHaveAttribute('aria-expanded', 'false');
-    expect(sizeGroup).toHaveAttribute('data-open', 'false');
-    await user.hover(sizeGroup);
-    expect(within(sizeGroup).getByRole('button', { name: '默认', pressed: true })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
-    expect(
-      within(sizeGroup)
-        .getByTitle('1536 × 1024 · 横向')
-        .querySelector('.node-quick-editor-size-preview'),
-    ).toBeInTheDocument();
     await user.hover(qualityGroup);
     expect(
       within(qualityGroup).getByRole('button', { name: '2K · 高清', pressed: true }),
@@ -217,29 +207,21 @@ describe('NodeQuickEditor', () => {
     expect(within(qualityGroup).getByRole('button', { name: '4K · 极致' })).toBeInTheDocument();
     await user.hover(ratioGroup);
     expect(
-      within(ratioGroup).getByRole('button', { name: '跟随尺寸', pressed: true }),
+      within(ratioGroup).getByRole('button', { name: '自动比例', pressed: true }),
     ).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.queryByText('视频尺寸')).not.toBeInTheDocument();
-    expect(screen.queryByRole('region', { name: /尺寸示意图/ })).not.toBeInTheDocument();
-
-    await user.hover(sizeGroup);
-    fireEvent.click(within(sizeGroup).getByTitle('1536 × 1024 · 横向'));
     await user.hover(ratioGroup);
     fireEvent.click(within(ratioGroup).getByRole('button', { name: /9:16/ }));
 
-    expect(onParametersChange).toHaveBeenNthCalledWith(1, {
-      quality: '2k',
-      providerOption: 'preserved',
+    expect(onParametersChange).toHaveBeenCalledTimes(1);
+    expect(onParametersChange).toHaveBeenCalledWith({
       size: '1536x1024',
-    });
-    expect(onParametersChange).toHaveBeenNthCalledWith(2, {
       quality: '2k',
       providerOption: 'preserved',
       aspectRatio: '9:16',
     });
   });
 
-  it('为视频节点回传尺寸、清晰度、比例和秒数', async () => {
+  it('为视频节点回传清晰度、比例和秒数，并保留已存尺寸参数', async () => {
     const user = userEvent.setup();
     const onParametersChange = vi.fn();
     render(
@@ -257,29 +239,22 @@ describe('NodeQuickEditor', () => {
       />,
     );
 
-    const sizeGroup = screen.getByText('视频尺寸').parentElement as HTMLElement;
     const resolutionGroup = screen.getByText('视频清晰度').parentElement as HTMLElement;
     const ratioGroup = screen.getByText('视频比例').parentElement as HTMLElement;
     const durationGroup = screen.getByText('时长（秒）').parentElement as HTMLElement;
     const mediaOptions = screen.getByRole('group', { name: '媒体参数' });
 
     expect(mediaOptions).toHaveClass('node-quick-editor-media-options');
-    expect(mediaOptions.querySelectorAll('.node-quick-editor-option-group')).toHaveLength(4);
-    expect(sizeGroup.querySelectorAll('.node-quick-editor-option')).toHaveLength(6);
+    expect(mediaOptions).toHaveAttribute('data-columns', '3');
+    expect(mediaOptions.querySelectorAll('.node-quick-editor-option-group')).toHaveLength(3);
+    expect(screen.queryByText('视频尺寸')).not.toBeInTheDocument();
     expect(resolutionGroup.querySelectorAll('.node-quick-editor-option')).toHaveLength(7);
     expect(ratioGroup.querySelectorAll('.node-quick-editor-option')).toHaveLength(9);
     expect(durationGroup.querySelectorAll('.node-quick-editor-option')).toHaveLength(6);
 
     expect(
-      sizeGroup.querySelector<HTMLButtonElement>('.node-quick-editor-option-trigger'),
+      resolutionGroup.querySelector<HTMLButtonElement>('.node-quick-editor-option-trigger'),
     ).toHaveAttribute('aria-expanded', 'false');
-    expect(sizeGroup).toHaveAttribute('data-open', 'false');
-    await user.hover(sizeGroup);
-    expect(
-      sizeGroup.querySelector<HTMLButtonElement>(
-        '.node-quick-editor-option[title="1920 × 1080 · 全高清"]',
-      ),
-    ).toHaveAttribute('aria-pressed', 'true');
     await user.hover(resolutionGroup);
     expect(
       within(resolutionGroup).getByRole('button', { name: '720p', pressed: true }),
@@ -288,14 +263,12 @@ describe('NodeQuickEditor', () => {
     expect(within(resolutionGroup).getByRole('button', { name: '2160p' })).toBeInTheDocument();
     await user.hover(ratioGroup);
     expect(
-      within(ratioGroup).getByRole('button', { name: '跟随尺寸', pressed: true }),
+      within(ratioGroup).getByRole('button', { name: '自动比例', pressed: true }),
     ).toHaveAttribute('aria-pressed', 'true');
     await user.hover(durationGroup);
     expect(
       within(durationGroup).getByRole('button', { name: '4 秒', pressed: true }),
     ).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.queryByText('图片尺寸')).not.toBeInTheDocument();
-
     await user.hover(ratioGroup);
     const ratioButton = within(ratioGroup).getByRole('button', { name: /16:9/ });
     const ratioPreview = ratioButton.querySelector('.node-quick-editor-aspect-preview');
@@ -318,34 +291,5 @@ describe('NodeQuickEditor', () => {
       resolution: '720p',
       duration: 8,
     });
-  });
-
-  it('请求优化提示词，并在无提示词或优化中时禁用按钮', async () => {
-    const user = userEvent.setup();
-    const onOptimizePrompt = vi.fn();
-    const { rerender } = render(<NodeQuickEditor {...makeProps({ onOptimizePrompt })} />);
-
-    await user.click(screen.getByRole('button', { name: '优化提示词' }));
-    expect(onOptimizePrompt).toHaveBeenCalledTimes(1);
-
-    rerender(
-      <NodeQuickEditor
-        {...makeProps({
-          onOptimizePrompt,
-          optimizingPrompt: true,
-        })}
-      />,
-    );
-    expect(screen.getByRole('button', { name: '优化中' })).toBeDisabled();
-
-    rerender(
-      <NodeQuickEditor
-        {...makeProps({
-          onOptimizePrompt,
-          node: { ...imageNode, data: { ...imageNode.data, prompt: '' } },
-        })}
-      />,
-    );
-    expect(screen.getByRole('button', { name: '优化提示词' })).toBeDisabled();
   });
 });

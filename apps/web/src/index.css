@@ -841,6 +841,19 @@ h2 {
   visibility: hidden;
 }
 
+/* 快速编辑器通过 portal 挂到画布外层，使用显式状态类继续隐藏画布底部工具。 */
+.canvas-area.has-quick-editor .canvas-node-tools {
+  opacity: 0;
+  visibility: hidden;
+}
+
+.canvas-area.has-quick-editor .canvas-node-tool,
+.canvas-area.has-quick-editor .react-flow__controls {
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+}
+
 .canvas-node-tool {
   align-items: center;
   border: 0;
@@ -1188,6 +1201,17 @@ h2 {
   z-index: 18;
 }
 
+.quick-editor-overlay {
+  pointer-events: auto;
+  position: fixed;
+  z-index: 42;
+}
+
+.quick-editor-overlay > .node-quick-editor {
+  max-width: 100%;
+  width: 100%;
+}
+
 .node-quick-editor {
   background: rgb(255 255 255 / 96%);
   border: 1px solid #d7e0dc;
@@ -1293,6 +1317,10 @@ h2 {
   min-width: 0;
 }
 
+.node-quick-editor-media-options[data-columns='2'] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .node-quick-editor-option-group {
   display: grid;
   gap: 5px;
@@ -1305,6 +1333,21 @@ h2 {
 .node-quick-editor-option-group:focus-within,
 .node-quick-editor-option-group[data-open='true'] {
   z-index: 8;
+}
+
+/* 保留触发器与浮层之间的指针通路，避免移动到浮层时触发鼠标离开。 */
+.node-quick-editor-option-group::after {
+  content: '';
+  height: 6px;
+  left: 0;
+  position: absolute;
+  right: 0;
+  top: 100%;
+}
+
+.node-quick-editor-option-group[data-placement='top']::after {
+  bottom: 100%;
+  top: auto;
 }
 
 .node-quick-editor-option-label {
@@ -1387,6 +1430,11 @@ h2 {
   z-index: 8;
 }
 
+.node-quick-editor-option-group[data-placement='top'] .node-quick-editor-option-popover {
+  bottom: calc(100% + 6px);
+  top: auto;
+}
+
 .node-quick-editor-option-group:hover .node-quick-editor-option-popover,
 .node-quick-editor-option-group:focus-within .node-quick-editor-option-popover,
 .node-quick-editor-option-group[data-open='true'] .node-quick-editor-option-popover {
@@ -1406,6 +1454,14 @@ h2 {
   .node-quick-editor-option-popover {
   left: auto;
   right: 0;
+}
+
+.node-quick-editor-media-options[data-columns='2']
+  > .node-quick-editor-option-group:nth-child(2)
+  .node-quick-editor-option-popover {
+  left: auto;
+  right: 0;
+  transform: none;
 }
 
 .node-quick-editor-option {
@@ -1433,7 +1489,6 @@ h2 {
   width: 100%;
 }
 
-.node-quick-editor-size-option,
 .node-quick-editor-aspect-option {
   min-height: 78px;
 }
@@ -1458,25 +1513,12 @@ h2 {
   width: auto;
 }
 
-.node-quick-editor-aspect-preview.is-default,
-.node-quick-editor-size-preview.is-default {
+.node-quick-editor-aspect-preview.is-default {
   aspect-ratio: 1;
   background: transparent;
   border-style: dashed;
   height: 26px;
   opacity: 0.65;
-}
-
-.node-quick-editor-size-preview {
-  background: #77b896;
-  border: 1px solid #18794e;
-  border-radius: 2px;
-  display: block;
-  flex: 0 0 auto;
-  height: 28px;
-  max-width: 46px;
-  min-width: 9px;
-  width: auto;
 }
 
 .node-quick-editor-option-copy {
@@ -1796,10 +1838,6 @@ h2 {
 .node-quick-editor-prompt-group {
   display: grid;
   gap: 6px;
-}
-
-.node-quick-editor-prompt-group > button {
-  justify-self: start;
 }
 
 .inspector-result-text-editor {
@@ -2289,6 +2327,11 @@ textarea:focus-visible {
   }
 
   .canvas-area:has(.node-quick-editor) {
+    flex-basis: 700px;
+    min-height: 700px;
+  }
+
+  .canvas-area.has-quick-editor {
     flex-basis: 700px;
     min-height: 700px;
   }

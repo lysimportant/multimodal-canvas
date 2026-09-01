@@ -1,5 +1,5 @@
-import { LoaderCircle, Play, Sparkles, WandSparkles } from 'lucide-react';
-import { useState, type FocusEvent } from 'react';
+import { LoaderCircle, Play, Sparkles } from 'lucide-react';
+import { useCallback, useLayoutEffect, useRef, useState, type FocusEvent } from 'react';
 
 import type { AssetFlowNode } from '../canvas-utils';
 import { TextPromptEditor } from '../TextPromptEditor';
@@ -29,10 +29,6 @@ export type NodeQuickEditorProps = {
   onRun: () => void;
   /** 更新节点的媒体参数；未提供时参数控件仍可显示但不会修改父状态。 */
   onParametersChange?: (value: NodeMediaParameters) => void;
-  /** 请求父层使用当前提示词生成优化版本。 */
-  onOptimizePrompt?: () => void;
-  /** 父层正在请求提示词优化结果。 */
-  optimizingPrompt?: boolean;
 };
 
 const inferenceStrengthOptions: Array<{
@@ -44,30 +40,11 @@ const inferenceStrengthOptions: Array<{
   { value: 'high', label: '高' },
 ];
 
-const imageSizeOptions = [
-  { value: '1024x1024', label: '1024 × 1024 · 方形' },
-  { value: '1536x1024', label: '1536 × 1024 · 横向' },
-  { value: '1024x1536', label: '1024 × 1536 · 竖向' },
-  { value: '1792x1024', label: '1792 × 1024 · 宽幅' },
-  { value: '1024x1792', label: '1024 × 1792 · 长幅' },
-  { value: '2048x2048', label: '2048 × 2048 · 高清方形' },
-  { value: '2048x1152', label: '2048 × 1152 · 高清横向' },
-  { value: '1152x2048', label: '1152 × 2048 · 高清竖向' },
-];
-
 const imageQualityOptions = [
   { value: '1k', label: '1K · 标准' },
   { value: '2k', label: '2K · 高清' },
   { value: '3k', label: '3K · 超清' },
   { value: '4k', label: '4K · 极致' },
-];
-
-const videoSizeOptions = [
-  { value: '1280x720', label: '1280 × 720 · 横向' },
-  { value: '1920x1080', label: '1920 × 1080 · 全高清' },
-  { value: '1080x1920', label: '1080 × 1920 · 竖向' },
-  { value: '2560x1440', label: '2560 × 1440 · 2K' },
-  { value: '3840x2160', label: '3840 × 2160 · 4K' },
 ];
 
 const videoResolutionOptions = ['360p', '480p', '720p', '1080p', '1440p', '2160p'];
@@ -83,6 +60,7 @@ const aspectRatioOptions = [
   { value: '21:9', label: '21:9 · 超宽屏' },
 ];
 
+/** 渲染选中生成节点的紧凑编辑器。 */
 export function NodeQuickEditor({
   node,
   models,
@@ -92,8 +70,6 @@ export function NodeQuickEditor({
   onInferenceStrengthChange,
   onRun,
   onParametersChange,
-  onOptimizePrompt,
-  optimizingPrompt = false,
 }: NodeQuickEditorProps) {
   const currentModel = node.data.modelAlias ?? '';
   const currentCredentialId = node.data.credentialId;
@@ -147,32 +123,15 @@ export function NodeQuickEditor({
             onChange={onPromptChange}
           />
         </label>
-        {onOptimizePrompt && (
-          <button
-            type="button"
-            className="button button-secondary"
-            onClick={onOptimizePrompt}
-            disabled={busy || optimizingPrompt || !enabled || !(node.data.prompt ?? '').trim()}
-          >
-            {optimizingPrompt ? (
-              <LoaderCircle className="spin" size={15} aria-hidden="true" />
-            ) : (
-              <WandSparkles size={15} aria-hidden="true" />
-            )}
-            {optimizingPrompt ? '优化中' : '优化提示词'}
-          </button>
-        )}
       </div>
 
       {node.data.mediaType === 'image' && (
-        <div className="node-quick-editor-media-options" role="group" aria-label="媒体参数">
-          <MediaOptionGrid
-            label="图片尺寸"
-            value={parameters.size}
-            options={imageSizeOptions}
-            onChange={(value) => updateParameter('size', value)}
-            preview="size"
-          />
+        <div
+          className="node-quick-editor-media-options"
+          data-columns="2"
+          role="group"
+          aria-label="媒体参数"
+        >
           <MediaOptionGrid
             label="图片清晰度"
             value={parameters.quality}
@@ -188,14 +147,12 @@ export function NodeQuickEditor({
       )}
 
       {node.data.mediaType === 'video' && (
-        <div className="node-quick-editor-media-options" role="group" aria-label="媒体参数">
-          <MediaOptionGrid
-            label="视频尺寸"
-            value={parameters.size}
-            options={videoSizeOptions}
-            onChange={(value) => updateParameter('size', value)}
-            preview="size"
-          />
+        <div
+          className="node-quick-editor-media-options"
+          data-columns="3"
+          role="group"
+          aria-label="媒体参数"
+        >
           <MediaOptionGrid
             label="视频清晰度"
             value={parameters.resolution}
@@ -283,6 +240,7 @@ export function NodeQuickEditor({
   );
 }
 
+/** 从节点数据中读取媒体参数，并返回可独立修改的浅拷贝。 */
 function readNodeMediaParameters(data: unknown): NodeMediaParameters {
   if (!data || typeof data !== 'object') return {};
   const candidate = (data as { parameters?: unknown }).parameters;
@@ -290,27 +248,27 @@ function readNodeMediaParameters(data: unknown): NodeMediaParameters {
   return { ...(candidate as Record<string, unknown>) };
 }
 
+/** 通用媒体参数选项。 */
 type MediaOption = { value: string; label: string };
 
 /**
  * 渲染一个紧凑的媒体参数选择器。
- * 选项面板只在悬停或键盘聚焦时展开，避免多个参数同时撑高节点编辑器。
+ * 选项面板在悬停、键盘聚焦或点击时展开，避免多个参数同时撑高节点编辑器。
  */
 function MediaOptionGrid({
   label,
   value,
   options,
   onChange,
-  preview,
 }: {
   label: string;
   value?: unknown;
   options: MediaOption[];
   onChange: (value: string) => void;
-  preview?: 'size';
 }) {
   const currentValue = typeof value === 'string' ? value : '';
   const [open, setOpen] = useState(false);
+  const { groupRef, popoverRef, placement } = usePopoverPlacement(open, options.length + 1);
   const currentLabel =
     options.find((option) => option.value === currentValue)?.label ?? (currentValue || '默认');
   const handleBlur = (event: FocusEvent<HTMLDivElement>) => {
@@ -319,9 +277,11 @@ function MediaOptionGrid({
 
   return (
     <div
+      ref={groupRef}
       className="node-quick-editor-option-group"
       aria-label={label}
       data-open={open ? 'true' : 'false'}
+      data-placement={placement}
       onMouseEnter={() => setOpen(true)}
       onMouseLeave={() => setOpen(false)}
       onFocus={() => setOpen(true)}
@@ -331,7 +291,6 @@ function MediaOptionGrid({
       <button
         type="button"
         className="node-quick-editor-option-trigger"
-        aria-haspopup="true"
         aria-expanded={open}
         onClick={() => setOpen((current) => !current)}
       >
@@ -340,44 +299,31 @@ function MediaOptionGrid({
           ▾
         </span>
       </button>
-      <div className="node-quick-editor-option-popover" role="listbox" aria-label={`${label}选项`}>
+      <div
+        ref={popoverRef}
+        className="node-quick-editor-option-popover"
+        role="group"
+        aria-label={`${label}选项`}
+      >
         <button
           type="button"
-          className={`node-quick-editor-option ${preview === 'size' ? 'node-quick-editor-size-option' : ''} ${currentValue === '' ? 'is-active' : ''}`}
+          className={`node-quick-editor-option ${currentValue === '' ? 'is-active' : ''}`}
           aria-pressed={currentValue === ''}
           onClick={() => onChange('')}
         >
-          {preview === 'size' ? (
-            <span className="node-quick-editor-size-preview is-default" />
-          ) : null}
           <span className="node-quick-editor-option-copy">默认</span>
         </button>
         {options.map((option) => {
-          const size = preview === 'size' ? parseSize(option.value) : undefined;
           return (
             <button
               type="button"
               key={option.value}
-              className={`node-quick-editor-option ${preview === 'size' ? 'node-quick-editor-size-option' : ''} ${currentValue === option.value ? 'is-active' : ''}`}
+              className={`node-quick-editor-option ${currentValue === option.value ? 'is-active' : ''}`}
               aria-pressed={currentValue === option.value}
               onClick={() => onChange(option.value)}
               title={option.label}
             >
-              {size ? (
-                <span
-                  className="node-quick-editor-size-preview"
-                  style={{ aspectRatio: `${size.width} / ${size.height}` }}
-                  aria-hidden="true"
-                />
-              ) : null}
-              <span className="node-quick-editor-option-copy">
-                <strong>{option.label}</strong>
-                {size ? (
-                  <small>
-                    {size.width} × {size.height} 像素
-                  </small>
-                ) : null}
-              </span>
+              <span className="node-quick-editor-option-copy">{option.label}</span>
             </button>
           );
         })}
@@ -386,7 +332,7 @@ function MediaOptionGrid({
   );
 }
 
-/** 比例选择器在悬停或键盘聚焦时展开纵向示意图列表。 */
+/** 比例选择器在悬停、键盘聚焦或点击时展开三列示意图。 */
 function AspectRatioOptionGrid({
   label,
   value,
@@ -400,16 +346,22 @@ function AspectRatioOptionGrid({
   const [open, setOpen] = useState(false);
   const currentLabel =
     aspectRatioOptions.find((option) => option.value === currentValue)?.label ??
-    (currentValue || '跟随尺寸');
+    (currentValue || '自动比例');
+  const { groupRef, popoverRef, placement } = usePopoverPlacement(
+    open,
+    aspectRatioOptions.length + 1,
+  );
   const handleBlur = (event: FocusEvent<HTMLDivElement>) => {
     if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
   };
 
   return (
     <div
+      ref={groupRef}
       className="node-quick-editor-option-group"
       aria-label={label}
       data-open={open ? 'true' : 'false'}
+      data-placement={placement}
       onMouseEnter={() => setOpen(true)}
       onMouseLeave={() => setOpen(false)}
       onFocus={() => setOpen(true)}
@@ -419,7 +371,6 @@ function AspectRatioOptionGrid({
       <button
         type="button"
         className="node-quick-editor-option-trigger"
-        aria-haspopup="true"
         aria-expanded={open}
         onClick={() => setOpen((current) => !current)}
       >
@@ -428,7 +379,12 @@ function AspectRatioOptionGrid({
           ▾
         </span>
       </button>
-      <div className="node-quick-editor-option-popover" role="listbox" aria-label={`${label}选项`}>
+      <div
+        ref={popoverRef}
+        className="node-quick-editor-option-popover"
+        role="group"
+        aria-label={`${label}选项`}
+      >
         <button
           type="button"
           className={`node-quick-editor-option node-quick-editor-aspect-option ${currentValue === '' ? 'is-active' : ''}`}
@@ -436,7 +392,7 @@ function AspectRatioOptionGrid({
           onClick={() => onChange('')}
         >
           <span className="node-quick-editor-aspect-preview is-default" aria-hidden="true" />
-          <span className="node-quick-editor-option-copy">跟随尺寸</span>
+          <span className="node-quick-editor-option-copy">自动比例</span>
         </button>
         {aspectRatioOptions.map((option) => (
           <button
@@ -463,20 +419,68 @@ function AspectRatioOptionGrid({
   );
 }
 
-/** 将尺寸值解析为示意图需要的宽高。 */
-function parseSize(value: string): { width: number; height: number } | undefined {
-  const match = value.match(/^(\d+)x(\d+)$/i);
-  if (!match) return undefined;
-  const width = Number(match[1]);
-  const height = Number(match[2]);
-  return width > 0 && height > 0 ? { width, height } : undefined;
+/**
+ * 根据参数组在画布中的可用空间选择浮层方向。
+ * 浮层超出画布底部时向上展开，滚动画布或窗口尺寸变化后会重新测量。
+ * @param open 当前参数面板是否展开。
+ * @param optionCount 面板中的选项总数，用于首次测量的高度估算。
+ * @returns 参数组、浮层引用与最终展开方向。
+ */
+function usePopoverPlacement(open: boolean, optionCount: number) {
+  const groupRef = useRef<HTMLDivElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const [placement, setPlacement] = useState<'top' | 'bottom'>('bottom');
+  const updatePlacement = useCallback(() => {
+    const group = groupRef.current;
+    const popover = popoverRef.current;
+    if (!group || !popover) return;
+
+    const groupRect = group.getBoundingClientRect();
+    const popoverRect = popover.getBoundingClientRect();
+    const canvasRect =
+      group.closest<HTMLElement>('.canvas-area')?.getBoundingClientRect() ??
+      document
+        .querySelector<HTMLElement>('.canvas-area.has-quick-editor, .canvas-area')
+        ?.getBoundingClientRect();
+    const topBoundary = canvasRect?.top ?? 0;
+    const bottomBoundary = canvasRect?.bottom ?? window.innerHeight;
+    const availableAbove = Math.max(0, groupRect.top - topBoundary - 6);
+    const availableBelow = Math.max(0, bottomBoundary - groupRect.bottom - 6);
+    const estimatedHeight = Math.min(
+      320,
+      Math.ceil(optionCount / 3) * (optionCount > 7 ? 78 : 56) + 17,
+    );
+    const popoverHeight = popoverRect.height || estimatedHeight;
+    const nextPlacement =
+      availableBelow >= popoverHeight || availableBelow >= availableAbove ? 'bottom' : 'top';
+    setPlacement((current) => (current === nextPlacement ? current : nextPlacement));
+  }, [optionCount]);
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setPlacement('bottom');
+      return;
+    }
+    updatePlacement();
+    const handleViewportChange = () => updatePlacement();
+    window.addEventListener('resize', handleViewportChange);
+    window.addEventListener('scroll', handleViewportChange, true);
+    return () => {
+      window.removeEventListener('resize', handleViewportChange);
+      window.removeEventListener('scroll', handleViewportChange, true);
+    };
+  }, [open, updatePlacement]);
+
+  return { groupRef, popoverRef, placement };
 }
 
+/** 将模型与凭据绑定编码为原生 select 可用的稳定值。 */
 function modelOptionValue(selection: ModelSelection) {
   if (!selection.modelAlias) return '';
   return JSON.stringify([selection.credentialId ?? '', selection.modelAlias]);
 }
 
+/** 解析模型 select 的值，并兼容旧版仅含模型别名的选项。 */
 function parseModelOptionValue(value: string): ModelSelection {
   if (!value) return { modelAlias: '' };
   try {
@@ -499,6 +503,7 @@ function parseModelOptionValue(value: string): ModelSelection {
   return { modelAlias: value };
 }
 
+/** 按凭据分组模型，供原生 select 渲染 optgroup。 */
 function groupModelsByCredential(models: ModelEntry[]) {
   const groups = new Map<string, { id: string; label: string; models: ModelEntry[] }>();
   for (const model of models) {

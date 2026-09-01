@@ -95,6 +95,12 @@ describe('responsive UX CSS contracts', () => {
     expect(normalizedCss).toMatch(
       /\.canvas-area:has\(\.node-quick-editor\) \.react-flow__controls \{[^}]*opacity: 0;[^}]*pointer-events: none;[^}]*visibility: hidden;/,
     );
+    expect(normalizedCss).toMatch(
+      /\.canvas-area\.has-quick-editor \.canvas-node-tools \{[^}]*opacity: 0;[^}]*visibility: hidden;/,
+    );
+    expect(normalizedCss).toMatch(
+      /\.canvas-area\.has-quick-editor \.react-flow__controls \{[^}]*opacity: 0;[^}]*pointer-events: none;[^}]*visibility: hidden;/,
+    );
   });
 
   it('keeps the mobile node palette single-line and touch-scrollable', () => {
@@ -112,9 +118,12 @@ describe('responsive UX CSS contracts', () => {
     );
   });
 
-  it('uses three columns for media parameter groups and their option cards', () => {
+  it('lays out media parameter groups by media type and keeps edge popovers above the canvas', () => {
     expect(normalizedCss).toMatch(
       /\.node-quick-editor-media-options \{[^}]*display: grid;[^}]*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\);/,
+    );
+    expect(normalizedCss).toMatch(
+      /\.node-quick-editor-media-options\[data-columns='2'\] \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/,
     );
     expect(normalizedCss).toMatch(
       /\.node-quick-editor-option-popover \{[^}]*min-width: min\(300px, calc\(100vw - 32px\)\);[^}]*width: min\(330px, calc\(100vw - 32px\)\);/,
@@ -124,6 +133,12 @@ describe('responsive UX CSS contracts', () => {
     );
     expect(normalizedCss).toMatch(
       /\.node-quick-editor-option \{[^}]*display: flex;[^}]*flex-direction: column;[^}]*text-align: center;/,
+    );
+    expect(normalizedCss).toMatch(
+      /\.node-quick-editor-option-group\[data-placement='top'\] \.node-quick-editor-option-popover \{[^}]*bottom: calc\(100% \+ 6px\);[^}]*top: auto;/,
+    );
+    expect(normalizedCss).toMatch(
+      /\.node-quick-editor-media-options\[data-columns='2'\][\s\S]*?\.node-quick-editor-option-group:nth-child\(2\)[\s\S]*?\.node-quick-editor-option-popover \{[^}]*left: auto;[^}]*right: 0;[^}]*transform: none;/,
     );
   });
 
