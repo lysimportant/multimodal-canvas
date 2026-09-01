@@ -142,30 +142,6 @@ export function WorkflowCanvas({
   const canvasAreaRef = useRef<HTMLElement>(null);
   const connectionStartRef = useRef<OnConnectStartParams | null>(null);
   const [contextMenu, setContextMenu] = useState<CanvasContextMenuTarget | null>(null);
-  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
-  const hoverCloseTimerRef = useRef<number | null>(null);
-
-  const clearHoverCloseTimer = useCallback(() => {
-    if (hoverCloseTimerRef.current !== null) {
-      window.clearTimeout(hoverCloseTimerRef.current);
-      hoverCloseTimerRef.current = null;
-    }
-  }, []);
-
-  const scheduleHoverClose = useCallback(() => {
-    clearHoverCloseTimer();
-    hoverCloseTimerRef.current = window.setTimeout(() => {
-      setHoveredNodeId(null);
-      hoverCloseTimerRef.current = null;
-    }, 180);
-  }, [clearHoverCloseTimer]);
-
-  useEffect(
-    () => () => {
-      clearHoverCloseTimer();
-    },
-    [clearHoverCloseTimer],
-  );
 
   const getCanvasNodePosition = useCallback(() => {
     const canvasArea = canvasAreaRef.current;
@@ -370,12 +346,6 @@ export function WorkflowCanvas({
                     event.dataTransfer.dropEffect = 'copy';
                   }}
                   onNodeClick={(_, node) => onNodeSelect(node as AssetFlowNode)}
-                  onNodeMouseEnter={(_, node) => {
-                    clearHoverCloseTimer();
-                    const hoveredNode = node as AssetFlowNode;
-                    setHoveredNodeId(hoveredNode.id);
-                  }}
-                  onNodeMouseLeave={() => scheduleHoverClose()}
                   onNodeContextMenu={(event, node) =>
                     handleNodeContextMenu(event, node as AssetFlowNode)
                   }
@@ -407,43 +377,37 @@ export function WorkflowCanvas({
                       }
                     />
                   )}
-                  {(() => {
-                    const editorNode = nodes.find((node) => node.id === hoveredNodeId);
-                    if (!editorNode || editorNode.data.mode === 'source') return null;
-                    return (
-                      <NodeToolbar
-                        nodeId={editorNode.id}
-                        isVisible
-                        position={Position.Bottom}
-                        offset={24}
-                        align="center"
-                        className="node-quick-toolbar"
-                        onMouseEnter={clearHoverCloseTimer}
-                        onMouseLeave={scheduleHoverClose}
-                      >
-                        <NodeQuickEditor
-                          node={editorNode}
-                          models={models}
-                          busy={busy}
-                          onPromptChange={(value) => onPromptChange(value, editorNode.id)}
-                          onParametersChange={
-                            onParametersChange
-                              ? (value) => onParametersChange(value, editorNode.id)
-                              : undefined
-                          }
-                          onOptimizePrompt={
-                            onOptimizePrompt ? () => onOptimizePrompt(editorNode.id) : undefined
-                          }
-                          optimizingPrompt={optimizingPrompt}
-                          onModelChange={(value) => onModelChange(value, editorNode.id)}
-                          onInferenceStrengthChange={(value) =>
-                            onInferenceStrengthChange(value, editorNode.id)
-                          }
-                          onRun={() => onRunNode(editorNode)}
-                        />
-                      </NodeToolbar>
-                    );
-                  })()}
+                  {selectedNode && selectedNode.data.mode !== 'source' && (
+                    <NodeToolbar
+                      nodeId={selectedNode.id}
+                      isVisible
+                      position={Position.Bottom}
+                      offset={24}
+                      align="center"
+                      className="node-quick-toolbar"
+                    >
+                      <NodeQuickEditor
+                        node={selectedNode}
+                        models={models}
+                        busy={busy}
+                        onPromptChange={(value) => onPromptChange(value, selectedNode.id)}
+                        onParametersChange={
+                          onParametersChange
+                            ? (value) => onParametersChange(value, selectedNode.id)
+                            : undefined
+                        }
+                        onOptimizePrompt={
+                          onOptimizePrompt ? () => onOptimizePrompt(selectedNode.id) : undefined
+                        }
+                        optimizingPrompt={optimizingPrompt}
+                        onModelChange={(value) => onModelChange(value, selectedNode.id)}
+                        onInferenceStrengthChange={(value) =>
+                          onInferenceStrengthChange(value, selectedNode.id)
+                        }
+                        onRun={() => onRunNode(selectedNode)}
+                      />
+                    </NodeToolbar>
+                  )}
                   {selectedNode && onDeleteNode && (
                     <NodeToolbar
                       nodeId={selectedNode.id}

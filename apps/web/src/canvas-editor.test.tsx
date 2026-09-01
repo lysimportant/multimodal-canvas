@@ -618,7 +618,7 @@ describe('画布编辑器交互', () => {
     await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
     const node = findNodeByLabel('文字生成节点');
     expect(node).toBeTruthy();
-    fireEvent.mouseEnter(node!);
+    await user.click(node!);
 
     const prompt = screen.getByRole('textbox', { name: '提示词' });
 
@@ -663,7 +663,7 @@ describe('画布编辑器交互', () => {
     await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
     const node = findNodeByLabel('文字生成节点');
     expect(node).toBeTruthy();
-    fireEvent.mouseEnter(node!);
+    await user.click(node!);
 
     const quickEditor = screen.getByLabelText('文字生成节点生成设置');
     const inspector = document.querySelector<HTMLElement>('.inspector-panel');
@@ -906,7 +906,7 @@ describe('画布编辑器交互', () => {
 
     await user.click(screen.getByRole('button', { name: '新建音频生成节点' }));
     const node = findNodeByLabel('音频生成节点');
-    fireEvent.mouseEnter(node!);
+    await user.click(node!);
     await user.keyboard('{Delete}');
     await waitFor(() => expect(flowNodes()).toHaveLength(0));
 

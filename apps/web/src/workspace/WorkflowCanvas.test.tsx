@@ -300,7 +300,7 @@ describe('WorkflowCanvas context menu', () => {
     expect(props.onDeleteNode).toHaveBeenCalledWith(generateNode.id);
   });
 
-  it('shows the quick editor on hover without changing selection and scopes edits to the hovered node', async () => {
+  it('shows the quick editor after clicking a node and scopes edits to the selected node', async () => {
     const user = userEvent.setup();
     const otherNode = {
       ...generateNode,
@@ -316,11 +316,17 @@ describe('WorkflowCanvas context menu', () => {
       onModelChange: vi.fn(),
       onInferenceStrengthChange: vi.fn(),
     });
-    render(<WorkflowCanvas {...props} />);
+    const { rerender } = render(<WorkflowCanvas {...props} />);
 
-    fireEvent.mouseEnter(screen.getByTestId(`canvas-node-${generateNode.id}`));
+    const canvasNode = screen.getByTestId(`canvas-node-${generateNode.id}`);
+    fireEvent.mouseEnter(canvasNode);
 
     expect(props.onNodeSelect).not.toHaveBeenCalled();
+    expect(screen.queryByRole('region', { name: '图片生成节点生成设置' })).not.toBeInTheDocument();
+
+    await user.click(canvasNode);
+    expect(props.onNodeSelect).toHaveBeenCalledWith(generateNode);
+    rerender(<WorkflowCanvas {...props} selectedNode={generateNode} />);
     expect(await screen.findByRole('region', { name: '图片生成节点生成设置' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '生成' })).toBeInTheDocument();
 
@@ -329,7 +335,7 @@ describe('WorkflowCanvas context menu', () => {
     await user.type(prompt, '悬停编辑');
     expect(props.onPromptChange).toHaveBeenLastCalledWith('悬停编辑', generateNode.id);
 
-    fireEvent.mouseLeave(screen.getByTestId(`canvas-node-${generateNode.id}`));
+    fireEvent.mouseLeave(canvasNode);
   });
 
   it('keeps edge animation enabled while leaving selected styling to CSS', () => {

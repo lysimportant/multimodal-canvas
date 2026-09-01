@@ -1,4 +1,5 @@
 import { LoaderCircle, Play, Sparkles, WandSparkles } from 'lucide-react';
+import { useState, type FocusEvent } from 'react';
 
 import type { AssetFlowNode } from '../canvas-utils';
 import { TextPromptEditor } from '../TextPromptEditor';
@@ -170,6 +171,7 @@ export function NodeQuickEditor({
             value={parameters.size}
             options={imageSizeOptions}
             onChange={(value) => updateParameter('size', value)}
+            preview="size"
           />
           <MediaOptionGrid
             label="图片清晰度"
@@ -192,6 +194,7 @@ export function NodeQuickEditor({
             value={parameters.size}
             options={videoSizeOptions}
             onChange={(value) => updateParameter('size', value)}
+            preview="size"
           />
           <MediaOptionGrid
             label="视频清晰度"
@@ -289,49 +292,101 @@ function readNodeMediaParameters(data: unknown): NodeMediaParameters {
 
 type MediaOption = { value: string; label: string };
 
-/** 渲染三列媒体参数按钮，并保留默认值按钮。 */
+/**
+ * 渲染一个紧凑的媒体参数选择器。
+ * 选项面板只在悬停或键盘聚焦时展开，避免多个参数同时撑高节点编辑器。
+ */
 function MediaOptionGrid({
   label,
   value,
   options,
   onChange,
+  preview,
 }: {
   label: string;
   value?: unknown;
   options: MediaOption[];
   onChange: (value: string) => void;
+  preview?: 'size';
 }) {
   const currentValue = typeof value === 'string' ? value : '';
+  const [open, setOpen] = useState(false);
+  const currentLabel =
+    options.find((option) => option.value === currentValue)?.label ?? (currentValue || '默认');
+  const handleBlur = (event: FocusEvent<HTMLDivElement>) => {
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
+  };
+
   return (
-    <div className="node-quick-editor-option-group" aria-label={label}>
+    <div
+      className="node-quick-editor-option-group"
+      aria-label={label}
+      data-open={open ? 'true' : 'false'}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+      onFocus={() => setOpen(true)}
+      onBlur={handleBlur}
+    >
       <span className="node-quick-editor-option-label">{label}</span>
-      <div className="node-quick-editor-option-grid">
+      <button
+        type="button"
+        className="node-quick-editor-option-trigger"
+        aria-haspopup="true"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span title={currentLabel}>{currentLabel}</span>
+        <span className="node-quick-editor-option-trigger-icon" aria-hidden="true">
+          ▾
+        </span>
+      </button>
+      <div className="node-quick-editor-option-popover" role="listbox" aria-label={`${label}选项`}>
         <button
           type="button"
           className={`node-quick-editor-option ${currentValue === '' ? 'is-active' : ''}`}
           aria-pressed={currentValue === ''}
           onClick={() => onChange('')}
         >
-          默认
+          {preview === 'size' ? (
+            <span className="node-quick-editor-size-preview is-default" />
+          ) : null}
+          <span className="node-quick-editor-option-copy">默认</span>
         </button>
-        {options.map((option) => (
-          <button
-            type="button"
-            key={option.value}
-            className={`node-quick-editor-option ${currentValue === option.value ? 'is-active' : ''}`}
-            aria-pressed={currentValue === option.value}
-            onClick={() => onChange(option.value)}
-            title={option.label}
-          >
-            {option.label}
-          </button>
-        ))}
+        {options.map((option) => {
+          const size = preview === 'size' ? parseSize(option.value) : undefined;
+          return (
+            <button
+              type="button"
+              key={option.value}
+              className={`node-quick-editor-option ${preview === 'size' ? 'node-quick-editor-size-option' : ''} ${currentValue === option.value ? 'is-active' : ''}`}
+              aria-pressed={currentValue === option.value}
+              onClick={() => onChange(option.value)}
+              title={option.label}
+            >
+              {size ? (
+                <span
+                  className="node-quick-editor-size-preview"
+                  style={{ aspectRatio: `${size.width} / ${size.height}` }}
+                  aria-hidden="true"
+                />
+              ) : null}
+              <span className="node-quick-editor-option-copy">
+                <strong>{option.label}</strong>
+                {size ? (
+                  <small>
+                    {size.width} × {size.height} 像素
+                  </small>
+                ) : null}
+              </span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
 }
 
-/** 比例按钮在悬停或键盘聚焦时显示紧凑的比例示意图。 */
+/** 比例选择器在悬停或键盘聚焦时展开纵向示意图列表。 */
 function AspectRatioOptionGrid({
   label,
   value,
@@ -342,17 +397,46 @@ function AspectRatioOptionGrid({
   onChange: (value: string) => void;
 }) {
   const currentValue = typeof value === 'string' ? value : '';
+  const [open, setOpen] = useState(false);
+  const currentLabel =
+    aspectRatioOptions.find((option) => option.value === currentValue)?.label ??
+    (currentValue || '跟随尺寸');
+  const handleBlur = (event: FocusEvent<HTMLDivElement>) => {
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
+  };
+
   return (
-    <div className="node-quick-editor-option-group" aria-label={label}>
+    <div
+      className="node-quick-editor-option-group"
+      aria-label={label}
+      data-open={open ? 'true' : 'false'}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+      onFocus={() => setOpen(true)}
+      onBlur={handleBlur}
+    >
       <span className="node-quick-editor-option-label">{label}</span>
-      <div className="node-quick-editor-option-grid">
+      <button
+        type="button"
+        className="node-quick-editor-option-trigger"
+        aria-haspopup="true"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span title={currentLabel}>{currentLabel}</span>
+        <span className="node-quick-editor-option-trigger-icon" aria-hidden="true">
+          ▾
+        </span>
+      </button>
+      <div className="node-quick-editor-option-popover" role="listbox" aria-label={`${label}选项`}>
         <button
           type="button"
           className={`node-quick-editor-option ${currentValue === '' ? 'is-active' : ''}`}
           aria-pressed={currentValue === ''}
           onClick={() => onChange('')}
         >
-          跟随尺寸
+          <span className="node-quick-editor-aspect-preview is-default" aria-hidden="true" />
+          <span className="node-quick-editor-option-copy">跟随尺寸</span>
         </button>
         {aspectRatioOptions.map((option) => (
           <button
@@ -368,12 +452,24 @@ function AspectRatioOptionGrid({
               style={{ aspectRatio: option.value.replace(':', ' / ') }}
               aria-hidden="true"
             />
-            <span>{option.value}</span>
+            <span className="node-quick-editor-option-copy">
+              <strong>{option.value}</strong>
+              <small>{option.label.replace(`${option.value} · `, '')}</small>
+            </span>
           </button>
         ))}
       </div>
     </div>
   );
+}
+
+/** 将尺寸值解析为示意图需要的宽高。 */
+function parseSize(value: string): { width: number; height: number } | undefined {
+  const match = value.match(/^(\d+)x(\d+)$/i);
+  if (!match) return undefined;
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  return width > 0 && height > 0 ? { width, height } : undefined;
 }
 
 function modelOptionValue(selection: ModelSelection) {
