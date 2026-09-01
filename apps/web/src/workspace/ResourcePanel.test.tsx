@@ -83,6 +83,17 @@ function ResourcePanelHarness({ onQueryCommit }: { onQueryCommit: (value: string
 describe('ResourcePanel search input', () => {
   afterEach(() => cleanup());
 
+  it('uses the former title area for the resource selector and actions', () => {
+    render(<ResourcePanelHarness onQueryCommit={vi.fn()} />);
+
+    const heading = document.querySelector('.resource-panel-heading');
+    expect(heading).toContainElement(screen.getByRole('combobox', { name: '资源类型' }));
+    expect(heading).toContainElement(screen.getByRole('button', { name: '上传资源' }));
+    expect(heading).toContainElement(screen.getByRole('button', { name: '折叠资源栏' }));
+    expect(screen.queryByText('资源库')).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: '项目资源' })).not.toBeInTheDocument();
+  });
+
   it('keeps a Chinese composition draft across a parent render and commits once', () => {
     const onQueryCommit = vi.fn();
     render(<ResourcePanelHarness onQueryCommit={onQueryCommit} />);

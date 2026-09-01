@@ -25,6 +25,7 @@ import type { MediaType } from '@multimodal-canvas/domain';
 import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
 import {
   NodeResizeContext,
+  NodeResizeStartContext,
   NodeEnabledContext,
   NodeRetryContext,
   NodeSelectionContext,
@@ -86,14 +87,15 @@ export type WorkflowCanvasProps = {
   onNodeSelect: (node: AssetFlowNode) => void;
   onClearNodeSelection: () => void;
   onResizeNode: NodeResizeHandler;
+  onResizeStart?: (nodeId: string) => void;
   onNodeEnabledChange: NodeEnabledHandler;
   onRetryNode: (nodeId: string) => void | Promise<void>;
-  onPromptChange: (value: string) => void;
-  onParametersChange?: (value: Record<string, unknown>) => void;
-  onOptimizePrompt?: () => void | Promise<void>;
+  onPromptChange: (value: string, nodeId?: string) => void;
+  onParametersChange?: (value: Record<string, unknown>, nodeId?: string) => void;
+  onOptimizePrompt?: (nodeId?: string) => void | Promise<void>;
   optimizingPrompt?: boolean;
-  onModelChange: (value: ModelSelection) => void;
-  onInferenceStrengthChange: (value: InferenceStrength) => void;
+  onModelChange: (value: ModelSelection, nodeId?: string) => void;
+  onInferenceStrengthChange: (value: InferenceStrength, nodeId?: string) => void;
   onRunNode: (node: AssetFlowNode) => void;
   /** App owns graph history and persistence, so deletion is handed back to it. */
   onDeleteNode?: (nodeId: string) => void;
@@ -119,6 +121,7 @@ export function WorkflowCanvas({
   onNodeSelect,
   onClearNodeSelection,
   onResizeNode,
+  onResizeStart,
   onNodeEnabledChange,
   onRetryNode,
   onPromptChange,
@@ -139,6 +142,30 @@ export function WorkflowCanvas({
   const canvasAreaRef = useRef<HTMLElement>(null);
   const connectionStartRef = useRef<OnConnectStartParams | null>(null);
   const [contextMenu, setContextMenu] = useState<CanvasContextMenuTarget | null>(null);
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  const hoverCloseTimerRef = useRef<number | null>(null);
+
+  const clearHoverCloseTimer = useCallback(() => {
+    if (hoverCloseTimerRef.current !== null) {
+      window.clearTimeout(hoverCloseTimerRef.current);
+      hoverCloseTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleHoverClose = useCallback(() => {
+    clearHoverCloseTimer();
+    hoverCloseTimerRef.current = window.setTimeout(() => {
+      setHoveredNodeId(null);
+      hoverCloseTimerRef.current = null;
+    }, 180);
+  }, [clearHoverCloseTimer]);
+
+  useEffect(
+    () => () => {
+      clearHoverCloseTimer();
+    },
+    [clearHoverCloseTimer],
+  );
 
   const getCanvasNodePosition = useCallback(() => {
     const canvasArea = canvasAreaRef.current;
@@ -321,109 +348,131 @@ export function WorkflowCanvas({
       />
       <NodeSelectionContext.Provider value={selectNodeByData}>
         <NodeResizeContext.Provider value={onResizeNode}>
-          <NodeEnabledContext.Provider value={onNodeEnabledChange}>
-            <NodeRetryContext.Provider value={onRetryNode}>
-              <ReactFlow
-                nodes={nodes}
-                edges={edges}
-                nodeTypes={nodeTypes}
-                onNodesChange={onNodesChange}
-                onEdgesChange={onEdgesChange}
-                onConnect={onConnect}
-                onConnectStart={(_event, params) => {
-                  connectionStartRef.current = params;
-                }}
-                onConnectEnd={handleConnectEnd}
-                onNodeDragStart={onNodeDragStart}
-                onMove={reportCanvasCenter}
-                onDrop={handleDrop}
-                onDragOver={(event) => {
-                  event.preventDefault();
-                  event.dataTransfer.dropEffect = 'copy';
-                }}
-                onNodeClick={(_, node) => onNodeSelect(node as AssetFlowNode)}
-                onNodeContextMenu={(event, node) =>
-                  handleNodeContextMenu(event, node as AssetFlowNode)
-                }
-                onPaneContextMenu={handlePaneContextMenu}
-                onPaneClick={() => {
-                  setContextMenu(null);
-                  onClearNodeSelection();
-                }}
-                fitView
-                minZoom={FIT_VIEW_MIN_ZOOM}
-                fitViewOptions={{ padding: 0.3, maxZoom: 1.1, minZoom: FIT_VIEW_MIN_ZOOM }}
-                connectionLineStyle={{ stroke: '#18794e', strokeWidth: 2 }}
-                defaultEdgeOptions={{
-                  animated: true,
-                }}
-                proOptions={{ hideAttribution: true }}
-              >
-                {background !== 'blank' && (
-                  <Background
-                    color="#cbd5d0"
-                    gap={background === 'lines' ? 28 : 24}
-                    size={background === 'cross' ? 7 : 1.2}
-                    variant={
-                      background === 'lines'
-                        ? BackgroundVariant.Lines
-                        : background === 'cross'
-                          ? BackgroundVariant.Cross
-                          : BackgroundVariant.Dots
-                    }
-                  />
-                )}
-                {selectedNode && selectedNode.data.mode !== 'source' && (
-                  <NodeToolbar
-                    nodeId={selectedNode.id}
-                    isVisible
-                    position={Position.Bottom}
-                    offset={24}
-                    align="center"
-                    className="node-quick-toolbar"
-                  >
-                    <NodeQuickEditor
-                      node={selectedNode}
-                      models={models}
-                      busy={busy}
-                      onPromptChange={onPromptChange}
-                      onParametersChange={onParametersChange}
-                      onOptimizePrompt={onOptimizePrompt}
-                      optimizingPrompt={optimizingPrompt}
-                      onModelChange={onModelChange}
-                      onInferenceStrengthChange={onInferenceStrengthChange}
-                      onRun={() => onRunNode(selectedNode)}
+          <NodeResizeStartContext.Provider value={onResizeStart ?? null}>
+            <NodeEnabledContext.Provider value={onNodeEnabledChange}>
+              <NodeRetryContext.Provider value={onRetryNode}>
+                <ReactFlow
+                  nodes={nodes}
+                  edges={edges}
+                  nodeTypes={nodeTypes}
+                  onNodesChange={onNodesChange}
+                  onEdgesChange={onEdgesChange}
+                  onConnect={onConnect}
+                  onConnectStart={(_event, params) => {
+                    connectionStartRef.current = params;
+                  }}
+                  onConnectEnd={handleConnectEnd}
+                  onNodeDragStart={onNodeDragStart}
+                  onMove={reportCanvasCenter}
+                  onDrop={handleDrop}
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = 'copy';
+                  }}
+                  onNodeClick={(_, node) => onNodeSelect(node as AssetFlowNode)}
+                  onNodeMouseEnter={(_, node) => {
+                    clearHoverCloseTimer();
+                    const hoveredNode = node as AssetFlowNode;
+                    setHoveredNodeId(hoveredNode.id);
+                  }}
+                  onNodeMouseLeave={() => scheduleHoverClose()}
+                  onNodeContextMenu={(event, node) =>
+                    handleNodeContextMenu(event, node as AssetFlowNode)
+                  }
+                  onPaneContextMenu={handlePaneContextMenu}
+                  onPaneClick={() => {
+                    setContextMenu(null);
+                    onClearNodeSelection();
+                  }}
+                  fitView
+                  minZoom={FIT_VIEW_MIN_ZOOM}
+                  fitViewOptions={{ padding: 0.3, maxZoom: 1.1, minZoom: FIT_VIEW_MIN_ZOOM }}
+                  connectionLineStyle={{ stroke: '#18794e', strokeWidth: 2 }}
+                  defaultEdgeOptions={{
+                    animated: true,
+                  }}
+                  proOptions={{ hideAttribution: true }}
+                >
+                  {background !== 'blank' && (
+                    <Background
+                      color="#cbd5d0"
+                      gap={background === 'lines' ? 28 : 24}
+                      size={background === 'cross' ? 7 : 1.2}
+                      variant={
+                        background === 'lines'
+                          ? BackgroundVariant.Lines
+                          : background === 'cross'
+                            ? BackgroundVariant.Cross
+                            : BackgroundVariant.Dots
+                      }
                     />
-                  </NodeToolbar>
-                )}
-                {selectedNode && onDeleteNode && (
-                  <NodeToolbar
-                    nodeId={selectedNode.id}
-                    isVisible
-                    position={Position.Top}
-                    offset={14}
-                    align="end"
-                    className="node-delete-toolbar"
-                  >
-                    <button
-                      type="button"
-                      className="node-delete-button nodrag nopan nowheel"
-                      aria-label={`删除节点：${selectedNode.data.label}`}
-                      title="删除节点"
-                      onPointerDown={(event) => event.stopPropagation()}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onDeleteNode(selectedNode.id);
-                      }}
+                  )}
+                  {(() => {
+                    const editorNode = nodes.find((node) => node.id === hoveredNodeId);
+                    if (!editorNode || editorNode.data.mode === 'source') return null;
+                    return (
+                      <NodeToolbar
+                        nodeId={editorNode.id}
+                        isVisible
+                        position={Position.Bottom}
+                        offset={24}
+                        align="center"
+                        className="node-quick-toolbar"
+                        onMouseEnter={clearHoverCloseTimer}
+                        onMouseLeave={scheduleHoverClose}
+                      >
+                        <NodeQuickEditor
+                          node={editorNode}
+                          models={models}
+                          busy={busy}
+                          onPromptChange={(value) => onPromptChange(value, editorNode.id)}
+                          onParametersChange={
+                            onParametersChange
+                              ? (value) => onParametersChange(value, editorNode.id)
+                              : undefined
+                          }
+                          onOptimizePrompt={
+                            onOptimizePrompt ? () => onOptimizePrompt(editorNode.id) : undefined
+                          }
+                          optimizingPrompt={optimizingPrompt}
+                          onModelChange={(value) => onModelChange(value, editorNode.id)}
+                          onInferenceStrengthChange={(value) =>
+                            onInferenceStrengthChange(value, editorNode.id)
+                          }
+                          onRun={() => onRunNode(editorNode)}
+                        />
+                      </NodeToolbar>
+                    );
+                  })()}
+                  {selectedNode && onDeleteNode && (
+                    <NodeToolbar
+                      nodeId={selectedNode.id}
+                      isVisible
+                      position={Position.Top}
+                      offset={14}
+                      align="end"
+                      className="node-delete-toolbar"
                     >
-                      <Trash2 size={16} strokeWidth={2.2} aria-hidden="true" />
-                    </button>
-                  </NodeToolbar>
-                )}
-                <Controls showInteractive={false} position="bottom-right" />
-              </ReactFlow>
-            </NodeRetryContext.Provider>
-          </NodeEnabledContext.Provider>
+                      <button
+                        type="button"
+                        className="node-delete-button nodrag nopan nowheel"
+                        aria-label={`删除节点：${selectedNode.data.label}`}
+                        title="删除节点"
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onDeleteNode(selectedNode.id);
+                        }}
+                      >
+                        <Trash2 size={16} strokeWidth={2.2} aria-hidden="true" />
+                      </button>
+                    </NodeToolbar>
+                  )}
+                  <Controls showInteractive={false} position="bottom-right" />
+                </ReactFlow>
+              </NodeRetryContext.Provider>
+            </NodeEnabledContext.Provider>
+          </NodeResizeStartContext.Provider>
         </NodeResizeContext.Provider>
       </NodeSelectionContext.Provider>
       {nodes.length === 0 && (

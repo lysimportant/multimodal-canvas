@@ -165,135 +165,54 @@ export function NodeQuickEditor({
 
       {node.data.mediaType === 'image' && (
         <>
-          <MediaDimensionPreview
-            mediaType="image"
-            size={parameters.size}
-            aspectRatio={parameters.aspectRatio}
+          <MediaOptionGrid
+            label="图片尺寸"
+            value={parameters.size}
+            options={imageSizeOptions}
+            onChange={(value) => updateParameter('size', value)}
           />
-          <div className="node-quick-editor-controls" aria-label="图片参数">
-            <label className="node-quick-editor-field">
-              <span>图片尺寸</span>
-              <select
-                aria-label="图片尺寸"
-                value={parameters.size ?? ''}
-                onChange={(event) => updateParameter('size', event.target.value)}
-              >
-                <option value="">默认尺寸</option>
-                {imageSizeOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="node-quick-editor-field">
-              <span>图片清晰度</span>
-              <select
-                aria-label="图片清晰度"
-                value={parameters.quality ?? ''}
-                onChange={(event) => updateParameter('quality', event.target.value)}
-              >
-                <option value="">默认清晰度</option>
-                {imageQualityOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          <label className="node-quick-editor-field">
-            <span>图片比例</span>
-            <select
-              aria-label="图片比例"
-              value={parameters.aspectRatio ?? ''}
-              onChange={(event) => updateParameter('aspectRatio', event.target.value)}
-            >
-              <option value="">跟随尺寸</option>
-              {aspectRatioOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
+          <MediaOptionGrid
+            label="图片清晰度"
+            value={parameters.quality}
+            options={imageQualityOptions}
+            onChange={(value) => updateParameter('quality', value)}
+          />
+          <AspectRatioOptionGrid
+            label="图片比例"
+            value={parameters.aspectRatio}
+            onChange={(value) => updateParameter('aspectRatio', value)}
+          />
         </>
       )}
 
       {node.data.mediaType === 'video' && (
         <>
-          <MediaDimensionPreview
-            mediaType="video"
-            size={parameters.size}
-            aspectRatio={parameters.aspectRatio}
+          <MediaOptionGrid
+            label="视频尺寸"
+            value={parameters.size}
+            options={videoSizeOptions}
+            onChange={(value) => updateParameter('size', value)}
           />
-          <div className="node-quick-editor-controls" aria-label="视频参数">
-            <label className="node-quick-editor-field">
-              <span>视频尺寸</span>
-              <select
-                aria-label="视频尺寸"
-                value={parameters.size ?? ''}
-                onChange={(event) => updateParameter('size', event.target.value)}
-              >
-                <option value="">默认尺寸</option>
-                {videoSizeOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="node-quick-editor-field">
-              <span>视频清晰度</span>
-              <select
-                aria-label="视频清晰度"
-                value={parameters.resolution ?? ''}
-                onChange={(event) => updateParameter('resolution', event.target.value)}
-              >
-                <option value="">默认清晰度</option>
-                {videoResolutionOptions.map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          <div className="node-quick-editor-controls">
-            <label className="node-quick-editor-field">
-              <span>视频比例</span>
-              <select
-                aria-label="视频比例"
-                value={parameters.aspectRatio ?? ''}
-                onChange={(event) => updateParameter('aspectRatio', event.target.value)}
-              >
-                <option value="">跟随尺寸</option>
-                {aspectRatioOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="node-quick-editor-field">
-              <span>时长（秒）</span>
-              <select
-                aria-label="视频时长（秒）"
-                value={parameters.duration?.toString() ?? ''}
-                onChange={(event) => {
-                  const value = event.target.value;
-                  updateParameter('duration', value ? Number(value) : undefined);
-                }}
-              >
-                <option value="">默认时长</option>
-                <option value="4">4 秒</option>
-                <option value="8">8 秒</option>
-                <option value="12">12 秒</option>
-                <option value="16">16 秒</option>
-                <option value="20">20 秒</option>
-              </select>
-            </label>
-          </div>
+          <MediaOptionGrid
+            label="视频清晰度"
+            value={parameters.resolution}
+            options={videoResolutionOptions.map((value) => ({ value, label: value }))}
+            onChange={(value) => updateParameter('resolution', value)}
+          />
+          <AspectRatioOptionGrid
+            label="视频比例"
+            value={parameters.aspectRatio}
+            onChange={(value) => updateParameter('aspectRatio', value)}
+          />
+          <MediaOptionGrid
+            label="时长（秒）"
+            value={parameters.duration?.toString()}
+            options={[4, 8, 12, 16, 20].map((value) => ({
+              value: String(value),
+              label: `${value} 秒`,
+            }))}
+            onChange={(value) => updateParameter('duration', value ? Number(value) : undefined)}
+          />
         </>
       )}
 
@@ -368,78 +287,93 @@ function readNodeMediaParameters(data: unknown): NodeMediaParameters {
   return { ...(candidate as Record<string, unknown>) };
 }
 
-/**
- * 展示当前尺寸和比例的几何预览，让横竖屏差异在选择前后都可见。
- * @param mediaType 当前节点媒体类型。
- * @param size 当前尺寸值，例如 `1920x1080`。
- * @param aspectRatio 用户指定的比例；未指定时从尺寸推导。
- */
-function MediaDimensionPreview({
-  mediaType,
-  size,
-  aspectRatio,
-}: {
-  mediaType: 'image' | 'video';
-  size?: unknown;
-  aspectRatio?: unknown;
-}) {
-  const sizeValue = typeof size === 'string' && size.trim() ? size.trim() : undefined;
-  const explicitRatio = normalizeAspectRatio(aspectRatio);
-  const ratio =
-    explicitRatio ?? ratioFromSize(sizeValue) ?? (mediaType === 'video' ? '16:9' : '1:1');
-  const sizeLabel = sizeValue ?? '默认尺寸';
-  const mediaLabel = mediaType === 'image' ? '图片' : '视频';
+type MediaOption = { value: string; label: string };
 
+/** 渲染三列媒体参数按钮，并保留默认值按钮。 */
+function MediaOptionGrid({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value?: unknown;
+  options: MediaOption[];
+  onChange: (value: string) => void;
+}) {
+  const currentValue = typeof value === 'string' ? value : '';
   return (
-    <div
-      className="node-quick-editor-dimension-preview"
-      aria-label={`${mediaLabel}尺寸示意图：${sizeLabel}，比例 ${ratio}`}
-    >
-      <div className="node-quick-editor-dimension-stage" aria-hidden="true">
-        <div
-          className="node-quick-editor-dimension-frame"
-          style={{ aspectRatio: ratio.replace(':', ' / ') }}
+    <div className="node-quick-editor-option-group" aria-label={label}>
+      <span className="node-quick-editor-option-label">{label}</span>
+      <div className="node-quick-editor-option-grid">
+        <button
+          type="button"
+          className={`node-quick-editor-option ${currentValue === '' ? 'is-active' : ''}`}
+          aria-pressed={currentValue === ''}
+          onClick={() => onChange('')}
         >
-          <span>{ratio}</span>
-        </div>
-      </div>
-      <div className="node-quick-editor-dimension-caption">
-        <strong>{sizeLabel}</strong>
-        <span>
-          {mediaLabel} · {ratio}
-        </span>
+          默认
+        </button>
+        {options.map((option) => (
+          <button
+            type="button"
+            key={option.value}
+            className={`node-quick-editor-option ${currentValue === option.value ? 'is-active' : ''}`}
+            aria-pressed={currentValue === option.value}
+            onClick={() => onChange(option.value)}
+            title={option.label}
+          >
+            {option.label}
+          </button>
+        ))}
       </div>
     </div>
   );
 }
 
-function normalizeAspectRatio(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const match = value.trim().match(/^(\d+)\s*:\s*(\d+)$/);
-  if (!match || Number(match[1]) <= 0 || Number(match[2]) <= 0) return undefined;
-  return `${Number(match[1])}:${Number(match[2])}`;
-}
-
-function ratioFromSize(size: string | undefined): string | undefined {
-  if (!size) return undefined;
-  const match = size.match(/^(\d+)x(\d+)$/i);
-  if (!match) return undefined;
-  const width = Number(match[1]);
-  const height = Number(match[2]);
-  if (!width || !height) return undefined;
-  const divisor = greatestCommonDivisor(width, height);
-  return `${width / divisor}:${height / divisor}`;
-}
-
-function greatestCommonDivisor(left: number, right: number): number {
-  let a = left;
-  let b = right;
-  while (b !== 0) {
-    const remainder = a % b;
-    a = b;
-    b = remainder;
-  }
-  return a;
+/** 比例按钮在悬停或键盘聚焦时显示紧凑的比例示意图。 */
+function AspectRatioOptionGrid({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value?: unknown;
+  onChange: (value: string) => void;
+}) {
+  const currentValue = typeof value === 'string' ? value : '';
+  return (
+    <div className="node-quick-editor-option-group" aria-label={label}>
+      <span className="node-quick-editor-option-label">{label}</span>
+      <div className="node-quick-editor-option-grid">
+        <button
+          type="button"
+          className={`node-quick-editor-option ${currentValue === '' ? 'is-active' : ''}`}
+          aria-pressed={currentValue === ''}
+          onClick={() => onChange('')}
+        >
+          跟随尺寸
+        </button>
+        {aspectRatioOptions.map((option) => (
+          <button
+            type="button"
+            key={option.value}
+            className={`node-quick-editor-option node-quick-editor-aspect-option ${currentValue === option.value ? 'is-active' : ''}`}
+            aria-pressed={currentValue === option.value}
+            onClick={() => onChange(option.value)}
+            title={option.label}
+          >
+            <span
+              className="node-quick-editor-aspect-preview"
+              style={{ aspectRatio: option.value.replace(':', ' / ') }}
+              aria-hidden="true"
+            />
+            <span>{option.value}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function modelOptionValue(selection: ModelSelection) {

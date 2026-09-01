@@ -60,6 +60,8 @@ import {
   serializeCanvasClipboard,
   toCanvasDocument,
   markDownstreamNodesStale,
+  withNodeAutoGrowthLimit,
+  withoutNodeAutoGrowthLimit,
   type CanvasClipboard,
   type AssetFlowNode,
   type FlowEdge,
@@ -651,10 +653,21 @@ function WorkspaceApp({
       rememberHistory();
       canvasDirtyRef.current = true;
       setNodes((current) =>
-        current.map((node) => (node.id === nodeId ? { ...node, width, height } : node)),
+        current.map((node) =>
+          node.id === nodeId ? withNodeAutoGrowthLimit({ ...node, width, height }) : node,
+        ),
       );
     },
     [rememberHistory, setNodes],
+  );
+
+  const handleResizeStart = useCallback(
+    (nodeId: string) => {
+      setNodes((current) =>
+        current.map((node) => (node.id === nodeId ? withoutNodeAutoGrowthLimit(node) : node)),
+      );
+    },
+    [setNodes],
   );
 
   const handleEdgesChange: OnEdgesChange<FlowEdge> = useCallback(
@@ -1079,7 +1092,7 @@ function WorkspaceApp({
 
   const createNodeForAsset = useCallback(
     (asset: Asset, position: { x: number; y: number }): AssetFlowNode => {
-      return {
+      return withNodeAutoGrowthLimit({
         id: `node_${asset.id}_${crypto.randomUUID()}`,
         type: asset.mediaType,
         position,
@@ -1091,7 +1104,7 @@ function WorkspaceApp({
           contentUrl: asset.contentUrl,
           mimeType: asset.mimeType,
         },
-      };
+      });
     },
     [],
   );
@@ -1101,17 +1114,18 @@ function WorkspaceApp({
       mediaType: MediaType,
       position: { x: number; y: number },
       mode: Exclude<NodeMode, 'source'>,
-    ): AssetFlowNode => ({
-      id: `node_${mediaType}_${mode}_${crypto.randomUUID()}`,
-      type: mediaType,
-      position,
-      data: {
-        label: `${mediaLabels[mediaType]}${modeLabels[mode]}节点`,
-        mediaType,
-        mode,
-        inferenceStrength: 'medium',
-      },
-    }),
+    ): AssetFlowNode =>
+      withNodeAutoGrowthLimit({
+        id: `node_${mediaType}_${mode}_${crypto.randomUUID()}`,
+        type: mediaType,
+        position,
+        data: {
+          label: `${mediaLabels[mediaType]}${modeLabels[mode]}节点`,
+          mediaType,
+          mode,
+          inferenceStrength: 'medium',
+        },
+      }),
     [],
   );
 
@@ -1349,11 +1363,12 @@ function WorkspaceApp({
   );
 
   const updateSelectedModel = useCallback(
-    ({ modelAlias, credentialId }: ModelSelection) => {
-      if (!selectedNode) return;
+    ({ modelAlias, credentialId }: ModelSelection, nodeId?: string) => {
+      const targetNodeId = nodeId ?? selectedNode?.id;
+      if (!targetNodeId) return;
       rememberHistory();
       canvasDirtyRef.current = true;
-      updateNodeDataAndMarkDownstreamStale(selectedNode.id, (data) => ({
+      updateNodeDataAndMarkDownstreamStale(targetNodeId, (data) => ({
         ...data,
         modelAlias: modelAlias.trim() || undefined,
         credentialId: modelAlias.trim() && credentialId ? credentialId : undefined,
@@ -1384,11 +1399,12 @@ function WorkspaceApp({
   );
 
   const updateSelectedPrompt = useCallback(
-    (prompt: string) => {
-      if (!selectedNode) return;
+    (prompt: string, nodeId?: string) => {
+      const targetNodeId = nodeId ?? selectedNode?.id;
+      if (!targetNodeId) return;
       rememberHistory();
       canvasDirtyRef.current = true;
-      updateNodeDataAndMarkDownstreamStale(selectedNode.id, (data) => ({
+      updateNodeDataAndMarkDownstreamStale(targetNodeId, (data) => ({
         ...data,
         prompt: prompt || undefined,
       }));
@@ -1397,11 +1413,12 @@ function WorkspaceApp({
   );
 
   const updateSelectedParameters = useCallback(
-    (parameters: Record<string, unknown>) => {
-      if (!selectedNode) return;
+    (parameters: Record<string, unknown>, nodeId?: string) => {
+      const targetNodeId = nodeId ?? selectedNode?.id;
+      if (!targetNodeId) return;
       rememberHistory();
       canvasDirtyRef.current = true;
-      updateNodeDataAndMarkDownstreamStale(selectedNode.id, (data) => ({
+      updateNodeDataAndMarkDownstreamStale(targetNodeId, (data) => ({
         ...data,
         parameters,
       }));
@@ -1409,23 +1426,30 @@ function WorkspaceApp({
     [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
   );
 
-  const optimizeSelectedPrompt = useCallback(() => {
-    if (!selectedNode) return;
-    const source = selectedNode.data.prompt?.trim();
-    if (!source) {
-      setNotice({ kind: 'error', message: '请先输入提示词，再进行优化' });
-      return;
-    }
-    setOptimizingPrompt(true);
-    // 本地整理保持离线可用，不发送用户提示词或凭据到第三方服务。
-    const optimized = [
-      source,
-      '请明确主体、场景、风格、构图和光线；仅输出符合要求的最终结果。',
-    ].join('\n');
-    updateSelectedPrompt(optimized);
-    setOptimizingPrompt(false);
-    setNotice({ kind: 'success', message: '提示词已优化' });
-  }, [selectedNode, updateSelectedPrompt]);
+  const optimizeSelectedPrompt = useCallback(
+    (nodeId?: string) => {
+      const targetNodeId = nodeId ?? selectedNode?.id;
+      const targetNode = targetNodeId
+        ? nodesRef.current.find((node) => node.id === targetNodeId)
+        : selectedNode;
+      if (!targetNode || !targetNodeId) return;
+      const source = targetNode.data.prompt?.trim();
+      if (!source) {
+        setNotice({ kind: 'error', message: '请先输入提示词，再进行优化' });
+        return;
+      }
+      setOptimizingPrompt(true);
+      // 本地整理保持离线可用，不发送用户提示词或凭据到第三方服务。
+      const optimized = [
+        source,
+        '请明确主体、场景、风格、构图和光线；仅输出符合要求的最终结果。',
+      ].join('\n');
+      updateSelectedPrompt(optimized, targetNodeId);
+      setOptimizingPrompt(false);
+      setNotice({ kind: 'success', message: '提示词已优化' });
+    },
+    [selectedNode, updateSelectedPrompt],
+  );
 
   const updateSelectedLabel = useCallback(
     (label: string) => {
@@ -1502,11 +1526,12 @@ function WorkspaceApp({
   );
 
   const updateSelectedInferenceStrength = useCallback(
-    (inferenceStrength: InferenceStrength) => {
-      if (!selectedNode) return;
+    (inferenceStrength: InferenceStrength, nodeId?: string) => {
+      const targetNodeId = nodeId ?? selectedNode?.id;
+      if (!targetNodeId) return;
       rememberHistory();
       canvasDirtyRef.current = true;
-      updateNodeDataAndMarkDownstreamStale(selectedNode.id, (data) => ({
+      updateNodeDataAndMarkDownstreamStale(targetNodeId, (data) => ({
         ...data,
         inferenceStrength,
       }));
@@ -2459,6 +2484,7 @@ function WorkspaceApp({
             onNodeSelect={(node) => selectCanvasNode(node.id)}
             onClearNodeSelection={() => selectCanvasNode(null)}
             onResizeNode={handleResizeNode}
+            onResizeStart={handleResizeStart}
             onNodeEnabledChange={updateNodeEnabled}
             onRetryNode={retryNodeFromCanvas}
             onPromptChange={updateSelectedPrompt}

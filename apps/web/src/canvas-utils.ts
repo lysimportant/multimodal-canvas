@@ -21,6 +21,13 @@ export type CanvasClipboard = {
   edges: FlowEdge[];
 };
 
+/** 节点未被用户缩放时的默认宽度，单位为像素。 */
+export const DEFAULT_FLOW_NODE_WIDTH = 180;
+/** 节点未被用户缩放时的默认高度，单位为像素。 */
+export const DEFAULT_FLOW_NODE_HEIGHT = 166;
+/** 节点可因内容自动扩张的最大倍数。 */
+export const NODE_AUTO_GROWTH_MULTIPLIER = 2;
+
 const CANVAS_CLIPBOARD_FORMAT = 'multimodal-canvas/clipboard';
 const CANVAS_CLIPBOARD_VERSION = 1;
 
@@ -91,13 +98,15 @@ export function fromCanvasDocument(document: CanvasDocument): {
   edges: FlowEdge[];
 } {
   return {
-    nodes: document.nodes.map((node) => ({
-      ...node,
-      data: {
-        ...node.data,
-        mimeType: node.data.mimeType ?? 'application/octet-stream',
-      },
-    })) as AssetFlowNode[],
+    nodes: document.nodes.map((node) =>
+      withNodeAutoGrowthLimit({
+        ...node,
+        data: {
+          ...node.data,
+          mimeType: node.data.mimeType ?? 'application/octet-stream',
+        },
+      } as AssetFlowNode),
+    ),
     edges: document.edges.map((edge) => ({
       id: edge.id,
       source: edge.sourceNodeId,
@@ -160,6 +169,41 @@ export function toCanvasDocument(
 
 function isPersistableDimension(value: number | undefined): value is number {
   return value !== undefined && Number.isFinite(value) && value > 0 && value <= 10_000;
+}
+
+/**
+ * 为节点设置基于当前手动尺寸的自动膨胀上限。
+ *
+ * React Flow 会通过 ResizeObserver 更新内容的运行时测量尺寸，但不会将该尺寸持久化。
+ * 本函数仅限制外层渲染尺寸，避免长内容无限推大节点；用户手动缩放后的 `width` 和
+ * `height` 会自然成为新的两倍上限基准。
+ *
+ * @param node 需要增加尺寸限制的 React Flow 节点。
+ * @returns 保留原有节点数据并带有 `maxWidth`、`maxHeight` 样式的新节点。
+ */
+export function withNodeAutoGrowthLimit(node: AssetFlowNode): AssetFlowNode {
+  const width = normalizedNodeDimension(node.width, DEFAULT_FLOW_NODE_WIDTH);
+  const height = normalizedNodeDimension(node.height, DEFAULT_FLOW_NODE_HEIGHT);
+  return {
+    ...node,
+    style: {
+      ...node.style,
+      maxWidth: width * NODE_AUTO_GROWTH_MULTIPLIER,
+      maxHeight: height * NODE_AUTO_GROWTH_MULTIPLIER,
+    },
+  };
+}
+
+/** 在用户开始拖拽尺寸时移除自动上限，允许手动尺寸突破当前限制。 */
+export function withoutNodeAutoGrowthLimit(node: AssetFlowNode): AssetFlowNode {
+  if (!node.style) return node;
+  const { maxWidth: _maxWidth, maxHeight: _maxHeight, ...style } = node.style;
+  return { ...node, style };
+}
+
+/** 规范化手动尺寸，防止错误的运行时测量值影响自动膨胀上限。 */
+function normalizedNodeDimension(value: number | undefined, minimum: number): number {
+  return value !== undefined && Number.isFinite(value) ? Math.max(value, minimum) : minimum;
 }
 
 /** Return true when adding source -> target would introduce a directed cycle. */
@@ -245,12 +289,12 @@ export function pasteCanvasClipboard(
   const nodes = clipboard.nodes.map((node) => {
     const id = `node_copy_${createId()}`;
     idMap.set(node.id, id);
-    return {
+    return withNodeAutoGrowthLimit({
       ...structuredClone(node),
       id,
       selected: true,
       position: { x: node.position.x + offset, y: node.position.y + offset },
-    };
+    });
   });
   const edges = clipboard.edges.map((edge) => ({
     ...structuredClone(edge),

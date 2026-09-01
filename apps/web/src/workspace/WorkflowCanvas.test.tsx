@@ -18,6 +18,8 @@ vi.mock('@xyflow/react', async () => {
   function ReactFlow({
     nodes,
     onNodeClick,
+    onNodeMouseEnter,
+    onNodeMouseLeave,
     onNodeContextMenu,
     onPaneClick,
     onPaneContextMenu,
@@ -29,6 +31,8 @@ vi.mock('@xyflow/react', async () => {
     nodes: AssetFlowNode[];
     defaultEdgeOptions?: { animated?: boolean; style?: Record<string, unknown> };
     onNodeClick?: (event: React.MouseEvent, node: AssetFlowNode) => void;
+    onNodeMouseEnter?: (event: React.MouseEvent, node: AssetFlowNode) => void;
+    onNodeMouseLeave?: (event: React.MouseEvent, node: AssetFlowNode) => void;
     onNodeContextMenu?: (event: React.MouseEvent, node: AssetFlowNode) => void;
     onPaneClick?: () => void;
     onPaneContextMenu?: React.MouseEventHandler<HTMLDivElement>;
@@ -58,6 +62,8 @@ vi.mock('@xyflow/react', async () => {
             className="react-flow__node"
             tabIndex={0}
             onClick={(event) => onNodeClick?.(event, node)}
+            onMouseEnter={(event) => onNodeMouseEnter?.(event, node)}
+            onMouseLeave={(event) => onNodeMouseLeave?.(event, node)}
             onContextMenu={(event) => onNodeContextMenu?.(event, node)}
           >
             {node.data.label}
@@ -292,6 +298,38 @@ describe('WorkflowCanvas context menu', () => {
     await user.click(screen.getByRole('button', { name: '删除节点：图片生成节点' }));
 
     expect(props.onDeleteNode).toHaveBeenCalledWith(generateNode.id);
+  });
+
+  it('shows the quick editor on hover without changing selection and scopes edits to the hovered node', async () => {
+    const user = userEvent.setup();
+    const otherNode = {
+      ...generateNode,
+      id: 'node-other-generate',
+      selected: true,
+      data: { ...generateNode.data, label: '另一个图片生成节点', prompt: '旧提示词' },
+    } as AssetFlowNode;
+    const props = createProps({
+      nodes: [generateNode, otherNode],
+      selectedNode: otherNode,
+      onPromptChange: vi.fn(),
+      onParametersChange: vi.fn(),
+      onModelChange: vi.fn(),
+      onInferenceStrengthChange: vi.fn(),
+    });
+    render(<WorkflowCanvas {...props} />);
+
+    fireEvent.mouseEnter(screen.getByTestId(`canvas-node-${generateNode.id}`));
+
+    expect(props.onNodeSelect).not.toHaveBeenCalled();
+    expect(await screen.findByRole('region', { name: '图片生成节点生成设置' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '生成' })).toBeInTheDocument();
+
+    const prompt = screen.getByRole('textbox', { name: '提示词' });
+    await user.clear(prompt);
+    await user.type(prompt, '悬停编辑');
+    expect(props.onPromptChange).toHaveBeenLastCalledWith('悬停编辑', generateNode.id);
+
+    fireEvent.mouseLeave(screen.getByTestId(`canvas-node-${generateNode.id}`));
   });
 
   it('keeps edge animation enabled while leaving selected styling to CSS', () => {

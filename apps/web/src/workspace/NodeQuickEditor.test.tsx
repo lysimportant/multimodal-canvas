@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest';
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -183,14 +183,28 @@ describe('NodeQuickEditor', () => {
       />,
     );
 
-    expect(screen.getByRole('combobox', { name: '图片尺寸' })).toHaveValue('');
-    expect(screen.getByRole('combobox', { name: '图片清晰度' })).toHaveValue('2k');
-    expect(screen.getByRole('option', { name: '4K · 极致' })).toBeInTheDocument();
-    expect(screen.getByRole('combobox', { name: '图片比例' })).toHaveValue('');
-    expect(screen.queryByRole('combobox', { name: '视频尺寸' })).not.toBeInTheDocument();
+    const sizeGroup = screen.getByText('图片尺寸').parentElement as HTMLElement;
+    const qualityGroup = screen.getByText('图片清晰度').parentElement as HTMLElement;
+    const ratioGroup = screen.getByText('图片比例').parentElement as HTMLElement;
 
-    await user.selectOptions(screen.getByRole('combobox', { name: '图片尺寸' }), '1536x1024');
-    await user.selectOptions(screen.getByRole('combobox', { name: '图片比例' }), '9:16');
+    expect(within(sizeGroup).getByRole('button', { name: '默认' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(within(qualityGroup).getByRole('button', { name: '2K · 高清' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(within(qualityGroup).getByRole('button', { name: '4K · 极致' })).toBeInTheDocument();
+    expect(within(ratioGroup).getByRole('button', { name: '跟随尺寸' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(screen.queryByText('视频尺寸')).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: /尺寸示意图/ })).not.toBeInTheDocument();
+
+    await user.click(within(sizeGroup).getByRole('button', { name: '1536 × 1024 · 横向' }));
+    await user.click(within(ratioGroup).getByRole('button', { name: /9:16/ }));
 
     expect(onParametersChange).toHaveBeenNthCalledWith(1, {
       quality: '2k',
@@ -222,16 +236,40 @@ describe('NodeQuickEditor', () => {
       />,
     );
 
-    expect(screen.getByRole('combobox', { name: '视频尺寸' })).toHaveValue('1920x1080');
-    expect(screen.getByRole('combobox', { name: '视频清晰度' })).toHaveValue('720p');
-    expect(screen.getByRole('option', { name: '360p' })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: '2160p' })).toBeInTheDocument();
-    expect(screen.getByRole('combobox', { name: '视频比例' })).toHaveValue('');
-    expect(screen.getByRole('combobox', { name: '视频时长（秒）' })).toHaveValue('4');
-    expect(screen.queryByRole('combobox', { name: '图片尺寸' })).not.toBeInTheDocument();
+    const sizeGroup = screen.getByText('视频尺寸').parentElement as HTMLElement;
+    const resolutionGroup = screen.getByText('视频清晰度').parentElement as HTMLElement;
+    const ratioGroup = screen.getByText('视频比例').parentElement as HTMLElement;
+    const durationGroup = screen.getByText('时长（秒）').parentElement as HTMLElement;
 
-    await user.selectOptions(screen.getByRole('combobox', { name: '视频比例' }), '16:9');
-    await user.selectOptions(screen.getByRole('combobox', { name: '视频时长（秒）' }), '8');
+    expect(within(sizeGroup).getByRole('button', { name: '1920 × 1080 · 全高清' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(within(resolutionGroup).getByRole('button', { name: '720p' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(within(resolutionGroup).getByRole('button', { name: '360p' })).toBeInTheDocument();
+    expect(within(resolutionGroup).getByRole('button', { name: '2160p' })).toBeInTheDocument();
+    expect(within(ratioGroup).getByRole('button', { name: '跟随尺寸' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(within(durationGroup).getByRole('button', { name: '4 秒' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(screen.queryByText('图片尺寸')).not.toBeInTheDocument();
+
+    const ratioButton = within(ratioGroup).getByRole('button', { name: /16:9/ });
+    const ratioPreview = ratioButton.querySelector('.node-quick-editor-aspect-preview');
+    expect(ratioPreview).toBeInTheDocument();
+    expect(ratioPreview).toHaveStyle({ aspectRatio: '16 / 9' });
+    await user.hover(ratioButton);
+    expect(ratioButton).toHaveAttribute('title', '16:9 · 横屏');
+
+    await user.click(ratioButton);
+    await user.click(within(durationGroup).getByRole('button', { name: '8 秒' }));
 
     expect(onParametersChange).toHaveBeenNthCalledWith(1, {
       size: '1920x1080',
@@ -244,7 +282,6 @@ describe('NodeQuickEditor', () => {
       resolution: '720p',
       duration: 8,
     });
-    expect(screen.getByLabelText('视频尺寸示意图：1920x1080，比例 16:9')).toBeInTheDocument();
   });
 
   it('请求优化提示词，并在无提示词或优化中时禁用按钮', async () => {

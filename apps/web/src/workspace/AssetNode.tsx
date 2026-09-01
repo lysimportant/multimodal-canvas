@@ -23,6 +23,8 @@ export type NodeSelectionHandler = (data: AssetFlowNode['data']) => void;
 export const NodeSelectionContext = createContext<NodeSelectionHandler | null>(null);
 export type NodeResizeHandler = (nodeId: string, width: number, height: number) => void;
 export const NodeResizeContext = createContext<NodeResizeHandler | null>(null);
+export type NodeResizeStartHandler = (nodeId: string) => void;
+export const NodeResizeStartContext = createContext<NodeResizeStartHandler | null>(null);
 export type NodeRetryHandler = (nodeId: string) => void | Promise<void>;
 export const NodeRetryContext = createContext<NodeRetryHandler | null>(null);
 export type NodeEnabledHandler = (nodeId: string, enabled: boolean) => void;
@@ -33,6 +35,7 @@ type NodePresentationState = 'empty' | 'running' | 'failed' | 'cancelled' | 'pre
 export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const selectNode = useContext(NodeSelectionContext);
   const resizeNode = useContext(NodeResizeContext);
+  const resizeStart = useContext(NodeResizeStartContext);
   const retryNode = useContext(NodeRetryContext);
   const setNodeEnabled = useContext(NodeEnabledContext);
   const [previewLoadState, setPreviewLoadState] = useState<AssetPreviewLoadState | null>(null);
@@ -118,6 +121,9 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
           color="#18794e"
           handleStyle={{ width: 14, height: 14, borderRadius: 3 }}
           lineStyle={{ borderWidth: 2 }}
+          onResizeStart={() => {
+            if (resizeStart && id) resizeStart(id);
+          }}
           onResizeEnd={(_, params) => {
             if (resizeNode && id && params.width > 0 && params.height > 0) {
               resizeNode(id, params.width, params.height);

@@ -139,6 +139,8 @@ vi.mock('@xyflow/react', async () => {
     nodeTypes,
     onNodesChange,
     onNodeClick,
+    onNodeMouseEnter,
+    onNodeMouseLeave,
     onPaneClick,
     onConnect,
     children,
@@ -151,6 +153,8 @@ vi.mock('@xyflow/react', async () => {
     >;
     onNodesChange?: (changes: Array<Record<string, unknown>>) => void;
     onNodeClick?: (event: unknown, node: unknown) => void;
+    onNodeMouseEnter?: (event: unknown, node: unknown) => void;
+    onNodeMouseLeave?: (event: unknown, node: unknown) => void;
     onPaneClick?: () => void;
     onConnect?: (connection: FlowConnection) => void;
     children?: React.ReactNode;
@@ -200,6 +204,8 @@ vi.mock('@xyflow/react', async () => {
                   data-testid="flow-node"
                   data-node-id={node.id}
                   className="react-flow__node"
+                  onMouseEnter={(event) => onNodeMouseEnter?.(event, node)}
+                  onMouseLeave={(event) => onNodeMouseLeave?.(event, node)}
                   onClick={(event) => {
                     onNodeClick?.(event, node);
                     onNodesChange?.([
@@ -612,7 +618,7 @@ describe('画布编辑器交互', () => {
     await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
     const node = findNodeByLabel('文字生成节点');
     expect(node).toBeTruthy();
-    await user.click(node!);
+    fireEvent.mouseEnter(node!);
 
     const prompt = screen.getByRole('textbox', { name: '提示词' });
 
@@ -625,8 +631,11 @@ describe('画布编辑器交互', () => {
     await user.type(prompt, '写一段产品介绍');
     expect(prompt).toHaveValue('写一段产品介绍');
 
+    fireEvent.mouseLeave(node!);
     await user.click(screen.getByRole('button', { name: '画布空白' }));
-    expect(screen.queryByLabelText('文字生成节点生成设置')).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByLabelText('文字生成节点生成设置')).not.toBeInTheDocument(),
+    );
   });
 
   it('节点标题支持中文组合输入，并可作为一次编辑撤销', async () => {
@@ -654,7 +663,7 @@ describe('画布编辑器交互', () => {
     await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
     const node = findNodeByLabel('文字生成节点');
     expect(node).toBeTruthy();
-    await user.click(node!);
+    fireEvent.mouseEnter(node!);
 
     const quickEditor = screen.getByLabelText('文字生成节点生成设置');
     const inspector = document.querySelector<HTMLElement>('.inspector-panel');
@@ -897,7 +906,7 @@ describe('画布编辑器交互', () => {
 
     await user.click(screen.getByRole('button', { name: '新建音频生成节点' }));
     const node = findNodeByLabel('音频生成节点');
-    await user.click(node!);
+    fireEvent.mouseEnter(node!);
     await user.keyboard('{Delete}');
     await waitFor(() => expect(flowNodes()).toHaveLength(0));
 

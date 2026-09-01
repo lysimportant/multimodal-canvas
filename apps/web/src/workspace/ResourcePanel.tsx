@@ -77,11 +77,33 @@ export function ResourcePanel({
       onDragOver={(event) => event.preventDefault()}
       onDrop={onDrop}
     >
-      <div className="panel-heading">
-        <div>
-          <p className="eyebrow">资源库</p>
-          <h1>项目资源</h1>
-        </div>
+      <div className="panel-heading resource-panel-heading">
+        {!collapsed && (
+          <label className="resource-filter-field">
+            <span>资源类型</span>
+            <select
+              aria-label="资源类型"
+              value={activeFilter}
+              onChange={(event) => onFilterChange(event.target.value as AssetFilter)}
+            >
+              <option value="all">全部资源（{visibleAssets.length}）</option>
+              {(Object.keys(mediaLabels) as Array<Exclude<AssetFilter, 'all'>>).map((mediaType) => (
+                <option key={mediaType} value={mediaType}>
+                  {mediaLabels[mediaType]}（
+                  {
+                    assets.filter(
+                      (asset) =>
+                        (showArchived
+                          ? asset.status === 'archived'
+                          : asset.status !== 'archived') && asset.mediaType === mediaType,
+                    ).length
+                  }
+                  ）
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <button
           type="button"
           className="icon-button resource-upload-button"
@@ -113,31 +135,6 @@ export function ResourcePanel({
           }}
         />
       </div>
-      {!collapsed && (
-        <label className="resource-filter-field">
-          <span>资源类型</span>
-          <select
-            aria-label="资源类型"
-            value={activeFilter}
-            onChange={(event) => onFilterChange(event.target.value as AssetFilter)}
-          >
-            <option value="all">全部资源（{visibleAssets.length}）</option>
-            {(Object.keys(mediaLabels) as Array<Exclude<AssetFilter, 'all'>>).map((mediaType) => (
-              <option key={mediaType} value={mediaType}>
-                {mediaLabels[mediaType]}（
-                {
-                  assets.filter(
-                    (asset) =>
-                      (showArchived ? asset.status === 'archived' : asset.status !== 'archived') &&
-                      asset.mediaType === mediaType,
-                  ).length
-                }
-                ）
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
       {!collapsed && (
         <label className="search-field">
           <Search size={15} aria-hidden="true" />
