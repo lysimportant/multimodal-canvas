@@ -186,6 +186,12 @@ describe('NodeQuickEditor', () => {
     const sizeGroup = screen.getByText('图片尺寸').parentElement as HTMLElement;
     const qualityGroup = screen.getByText('图片清晰度').parentElement as HTMLElement;
     const ratioGroup = screen.getByText('图片比例').parentElement as HTMLElement;
+    const mediaOptions = screen.getByRole('group', { name: '媒体参数' });
+
+    expect(mediaOptions).toHaveClass('node-quick-editor-media-options');
+    expect(mediaOptions.querySelectorAll('.node-quick-editor-option-group')).toHaveLength(3);
+    expect(sizeGroup.querySelectorAll('.node-quick-editor-option')).toHaveLength(9);
+    expect(ratioGroup.querySelectorAll('.node-quick-editor-option')).toHaveLength(9);
 
     expect(
       sizeGroup.querySelector<HTMLButtonElement>('.node-quick-editor-option-trigger'),
@@ -255,6 +261,14 @@ describe('NodeQuickEditor', () => {
     const resolutionGroup = screen.getByText('视频清晰度').parentElement as HTMLElement;
     const ratioGroup = screen.getByText('视频比例').parentElement as HTMLElement;
     const durationGroup = screen.getByText('时长（秒）').parentElement as HTMLElement;
+    const mediaOptions = screen.getByRole('group', { name: '媒体参数' });
+
+    expect(mediaOptions).toHaveClass('node-quick-editor-media-options');
+    expect(mediaOptions.querySelectorAll('.node-quick-editor-option-group')).toHaveLength(4);
+    expect(sizeGroup.querySelectorAll('.node-quick-editor-option')).toHaveLength(6);
+    expect(resolutionGroup.querySelectorAll('.node-quick-editor-option')).toHaveLength(7);
+    expect(ratioGroup.querySelectorAll('.node-quick-editor-option')).toHaveLength(9);
+    expect(durationGroup.querySelectorAll('.node-quick-editor-option')).toHaveLength(6);
 
     expect(
       sizeGroup.querySelector<HTMLButtonElement>('.node-quick-editor-option-trigger'),

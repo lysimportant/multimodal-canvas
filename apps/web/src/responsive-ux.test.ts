@@ -112,6 +112,21 @@ describe('responsive UX CSS contracts', () => {
     );
   });
 
+  it('uses three columns for media parameter groups and their option cards', () => {
+    expect(normalizedCss).toMatch(
+      /\.node-quick-editor-media-options \{[^}]*display: grid;[^}]*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\);/,
+    );
+    expect(normalizedCss).toMatch(
+      /\.node-quick-editor-option-popover \{[^}]*min-width: min\(300px, calc\(100vw - 32px\)\);[^}]*width: min\(330px, calc\(100vw - 32px\)\);/,
+    );
+    expect(normalizedCss).toMatch(
+      /\.node-quick-editor-option-group:hover \.node-quick-editor-option-popover, \.node-quick-editor-option-group:focus-within \.node-quick-editor-option-popover, \.node-quick-editor-option-group\[data-open='true'\] \.node-quick-editor-option-popover \{[^}]*display: grid;[^}]*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\);/,
+    );
+    expect(normalizedCss).toMatch(
+      /\.node-quick-editor-option \{[^}]*display: flex;[^}]*flex-direction: column;[^}]*text-align: center;/,
+    );
+  });
+
   it('keeps mobile chrome bounded while preserving local horizontal scrolling', () => {
     expect(normalizedCss).toMatch(
       /@media \(max-width: 600px\)[\s\S]*?\.topbar-actions \{[^}]*max-width: 100%;[^}]*overflow: visible;/,

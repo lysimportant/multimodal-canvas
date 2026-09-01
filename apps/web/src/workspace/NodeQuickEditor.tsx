@@ -165,7 +165,7 @@ export function NodeQuickEditor({
       </div>
 
       {node.data.mediaType === 'image' && (
-        <>
+        <div className="node-quick-editor-media-options" role="group" aria-label="媒体参数">
           <MediaOptionGrid
             label="图片尺寸"
             value={parameters.size}
@@ -184,11 +184,11 @@ export function NodeQuickEditor({
             value={parameters.aspectRatio}
             onChange={(value) => updateParameter('aspectRatio', value)}
           />
-        </>
+        </div>
       )}
 
       {node.data.mediaType === 'video' && (
-        <>
+        <div className="node-quick-editor-media-options" role="group" aria-label="媒体参数">
           <MediaOptionGrid
             label="视频尺寸"
             value={parameters.size}
@@ -216,7 +216,7 @@ export function NodeQuickEditor({
             }))}
             onChange={(value) => updateParameter('duration', value ? Number(value) : undefined)}
           />
-        </>
+        </div>
       )}
 
       <div className="node-quick-editor-controls">
@@ -343,7 +343,7 @@ function MediaOptionGrid({
       <div className="node-quick-editor-option-popover" role="listbox" aria-label={`${label}选项`}>
         <button
           type="button"
-          className={`node-quick-editor-option ${currentValue === '' ? 'is-active' : ''}`}
+          className={`node-quick-editor-option ${preview === 'size' ? 'node-quick-editor-size-option' : ''} ${currentValue === '' ? 'is-active' : ''}`}
           aria-pressed={currentValue === ''}
           onClick={() => onChange('')}
         >
@@ -431,7 +431,7 @@ function AspectRatioOptionGrid({
       <div className="node-quick-editor-option-popover" role="listbox" aria-label={`${label}选项`}>
         <button
           type="button"
-          className={`node-quick-editor-option ${currentValue === '' ? 'is-active' : ''}`}
+          className={`node-quick-editor-option node-quick-editor-aspect-option ${currentValue === '' ? 'is-active' : ''}`}
           aria-pressed={currentValue === ''}
           onClick={() => onChange('')}
         >
