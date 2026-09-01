@@ -66,7 +66,7 @@ describe('canvas node factories', () => {
         label: '视频生成节点',
         mediaType: 'video',
         mode: 'generate',
-        inferenceStrength: 'medium',
+        inferenceStrength: 'low',
       },
     });
   });

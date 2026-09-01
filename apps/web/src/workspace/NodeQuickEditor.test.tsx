@@ -67,17 +67,24 @@ describe('NodeQuickEditor', () => {
     expect(screen.getByText('生成设置 · 图片')).toBeVisible();
     expect(screen.getByText('产品主图')).toBeVisible();
 
-    const modelSelect = screen.getByRole('combobox', { name: '模型' });
-    expect(modelSelect).toHaveValue(JSON.stringify(['', 'removed-image-model']));
-    expect(screen.getByRole('option', { name: '继承项目默认模型' })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: '图片模型' })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: '多模态模型' })).toBeInTheDocument();
-    expect(screen.queryByRole('option', { name: '文字模型' })).not.toBeInTheDocument();
+    const modelGroup = screen.getByText('模型').parentElement as HTMLElement;
+    const modelTrigger = modelGroup.querySelector<HTMLButtonElement>(
+      '.node-quick-editor-option-trigger',
+    );
+    expect(modelTrigger).not.toBeNull();
+    expect(modelTrigger).toHaveAttribute('aria-expanded', 'false');
+    expect(modelTrigger).toHaveTextContent('removed-image-model');
+    expect(screen.queryByText('继承项目默认模型')).not.toBeInTheDocument();
+    expect(within(modelGroup).getByRole('button', { name: '图片模型' })).toBeInTheDocument();
+    expect(within(modelGroup).getByRole('button', { name: '多模态模型' })).toBeInTheDocument();
+    expect(within(modelGroup).queryByRole('button', { name: '文字模型' })).not.toBeInTheDocument();
     expect(
-      screen.getByRole('option', {
-        name: 'removed-image-model（旧设置，未绑定 API Key）',
+      within(modelGroup).getByRole('button', {
+        name: /removed-image-model.*旧设置，未绑定 API Key/,
+        pressed: true,
       }),
     ).toBeInTheDocument();
+    expect(modelGroup).toHaveAttribute('data-placement', 'top');
   });
 
   it('回传提示词、模型、推理强度和生成操作，并阻止指针事件传给画布', async () => {
@@ -92,11 +99,12 @@ describe('NodeQuickEditor', () => {
 
     const prompt = screen.getByRole('textbox', { name: '提示词' });
     fireEvent.change(prompt, { target: { value: '柔和棚拍光' } });
-    await user.selectOptions(
-      screen.getByRole('combobox', { name: '模型' }),
-      screen.getByRole('option', { name: '图片模型' }),
-    );
-    await user.selectOptions(screen.getByRole('combobox', { name: '推理强度' }), 'low');
+    const modelGroup = screen.getByText('模型').parentElement as HTMLElement;
+    const inferenceGroup = screen.getByText('推理强度').parentElement as HTMLElement;
+    await user.hover(modelGroup);
+    await user.click(within(modelGroup).getByRole('button', { name: '图片模型' }));
+    await user.hover(inferenceGroup);
+    await user.click(within(inferenceGroup).getByRole('button', { name: '低' }));
     await user.click(screen.getByRole('button', { name: '生成' }));
     fireEvent.pointerDown(prompt);
 
@@ -152,12 +160,11 @@ describe('NodeQuickEditor', () => {
       />,
     );
 
-    expect(screen.getByRole('group', { name: chatCredentialLabel })).toBeInTheDocument();
-    expect(screen.getByRole('group', { name: imageCredentialLabel })).toBeInTheDocument();
-    await user.selectOptions(
-      screen.getByRole('combobox', { name: '模型' }),
-      screen.getByRole('option', { name: '图片模型' }),
-    );
+    expect(screen.getByText(chatCredentialLabel)).toBeInTheDocument();
+    expect(screen.getByText(imageCredentialLabel)).toBeInTheDocument();
+    const modelGroup = screen.getByText('模型').parentElement as HTMLElement;
+    await user.hover(modelGroup);
+    await user.click(within(modelGroup).getByRole('button', { name: '图片模型' }));
 
     expect(onModelChange).toHaveBeenCalledWith({
       modelAlias: 'image-model',
@@ -195,20 +202,22 @@ describe('NodeQuickEditor', () => {
     expect(mediaOptions).toHaveAttribute('data-columns', '2');
     expect(mediaOptions.querySelectorAll('.node-quick-editor-option-group')).toHaveLength(2);
     expect(screen.queryByText('图片尺寸')).not.toBeInTheDocument();
-    expect(ratioGroup.querySelectorAll('.node-quick-editor-option')).toHaveLength(9);
+    expect(ratioGroup.querySelectorAll('.node-quick-editor-option')).toHaveLength(8);
 
     expect(
       qualityGroup.querySelector<HTMLButtonElement>('.node-quick-editor-option-trigger'),
     ).toHaveAttribute('aria-expanded', 'false');
     await user.hover(qualityGroup);
     expect(
-      within(qualityGroup).getByRole('button', { name: '2K · 高清', pressed: true }),
+      within(qualityGroup).getByRole('button', { name: '2K 高清', pressed: true }),
     ).toHaveAttribute('aria-pressed', 'true');
-    expect(within(qualityGroup).getByRole('button', { name: '4K · 极致' })).toBeInTheDocument();
+    expect(within(qualityGroup).getByRole('button', { name: '4K 极致' })).toBeInTheDocument();
     await user.hover(ratioGroup);
-    expect(
-      within(ratioGroup).getByRole('button', { name: '自动比例', pressed: true }),
-    ).toHaveAttribute('aria-pressed', 'true');
+    expect(within(ratioGroup).queryByText('自动比例')).not.toBeInTheDocument();
+    expect(within(ratioGroup).getByRole('button', { name: /1:1/, pressed: true })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
     await user.hover(ratioGroup);
     fireEvent.click(within(ratioGroup).getByRole('button', { name: /9:16/ }));
 
@@ -248,9 +257,9 @@ describe('NodeQuickEditor', () => {
     expect(mediaOptions).toHaveAttribute('data-columns', '3');
     expect(mediaOptions.querySelectorAll('.node-quick-editor-option-group')).toHaveLength(3);
     expect(screen.queryByText('视频尺寸')).not.toBeInTheDocument();
-    expect(resolutionGroup.querySelectorAll('.node-quick-editor-option')).toHaveLength(7);
-    expect(ratioGroup.querySelectorAll('.node-quick-editor-option')).toHaveLength(9);
-    expect(durationGroup.querySelectorAll('.node-quick-editor-option')).toHaveLength(6);
+    expect(resolutionGroup.querySelectorAll('.node-quick-editor-option')).toHaveLength(6);
+    expect(ratioGroup.querySelectorAll('.node-quick-editor-option')).toHaveLength(8);
+    expect(durationGroup.querySelectorAll('.node-quick-editor-option')).toHaveLength(5);
 
     expect(
       resolutionGroup.querySelector<HTMLButtonElement>('.node-quick-editor-option-trigger'),
@@ -262,9 +271,11 @@ describe('NodeQuickEditor', () => {
     expect(within(resolutionGroup).getByRole('button', { name: '360p' })).toBeInTheDocument();
     expect(within(resolutionGroup).getByRole('button', { name: '2160p' })).toBeInTheDocument();
     await user.hover(ratioGroup);
-    expect(
-      within(ratioGroup).getByRole('button', { name: '自动比例', pressed: true }),
-    ).toHaveAttribute('aria-pressed', 'true');
+    expect(within(ratioGroup).queryByText('自动比例')).not.toBeInTheDocument();
+    expect(within(ratioGroup).getByRole('button', { name: /1:1/, pressed: true })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
     await user.hover(durationGroup);
     expect(
       within(durationGroup).getByRole('button', { name: '4 秒', pressed: true }),
@@ -291,5 +302,53 @@ describe('NodeQuickEditor', () => {
       resolution: '720p',
       duration: 8,
     });
+  });
+
+  it('按当前视频模型能力动态显示清晰度、比例和时长，并默认选中第一项', async () => {
+    const user = userEvent.setup();
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          node: videoNode,
+          models: [
+            {
+              id: 'grok-video',
+              name: 'Grok 视频',
+              mediaTypes: ['video'],
+              capabilities: {
+                video: {
+                  resolutions: ['360p', '720p'],
+                  aspectRatios: ['16:9', '9:16'],
+                  durations: [6, 10],
+                },
+              },
+            },
+          ],
+        })}
+      />,
+    );
+
+    const resolutionGroup = screen.getByText('视频清晰度').parentElement as HTMLElement;
+    const ratioGroup = screen.getByText('视频比例').parentElement as HTMLElement;
+    const durationGroup = screen.getByText('时长（秒）').parentElement as HTMLElement;
+    await user.hover(resolutionGroup);
+    await user.hover(ratioGroup);
+    await user.hover(durationGroup);
+
+    expect(within(resolutionGroup).getAllByRole('button', { pressed: true })).toHaveLength(1);
+    expect(
+      within(resolutionGroup).getByRole('button', { name: '360p', pressed: true }),
+    ).toBeInTheDocument();
+    expect(
+      within(resolutionGroup).queryByRole('button', { name: '1080p' }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(ratioGroup).getByRole('button', { name: /16:9/, pressed: true }),
+    ).toBeInTheDocument();
+    expect(within(ratioGroup).queryByRole('button', { name: /1:1/ })).not.toBeInTheDocument();
+    expect(
+      within(durationGroup).getByRole('button', { name: '6 秒', pressed: true }),
+    ).toBeInTheDocument();
+    expect(within(durationGroup).queryByRole('button', { name: '20 秒' })).not.toBeInTheDocument();
   });
 });

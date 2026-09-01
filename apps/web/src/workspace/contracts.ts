@@ -42,6 +42,12 @@ export type ModelEntry = {
   mediaTypes: MediaType[];
   credentialId?: string;
   credentialLabel?: string;
+  /** 模型目录返回的能力描述，前端按媒体类型解析可用参数。 */
+  capabilities?: Record<string, unknown>;
+  /** 模型目录返回的限制描述，作为能力字段缺失时的兼容来源。 */
+  limitations?: Record<string, unknown>;
+  /** 模型价格信息，仅随目录透传，不参与节点参数选择。 */
+  price?: Record<string, unknown>;
 };
 
 export type ModelSelection = {

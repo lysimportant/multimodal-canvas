@@ -1122,7 +1122,7 @@ function WorkspaceApp({
           label: `${mediaLabels[mediaType]}${modeLabels[mode]}节点`,
           mediaType,
           mode,
-          inferenceStrength: 'medium',
+          inferenceStrength: 'low',
         },
       }),
     [],
@@ -1802,7 +1802,7 @@ function WorkspaceApp({
                 ? { prompt: nodeSnapshot.data.prompt.trim() }
                 : {}),
               ...(nodeSnapshot.data.parameters ?? {}),
-              inferenceStrength: nodeSnapshot.data.inferenceStrength ?? 'medium',
+              inferenceStrength: nodeSnapshot.data.inferenceStrength ?? 'low',
             },
           }),
         });

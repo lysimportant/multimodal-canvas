@@ -354,7 +354,7 @@ describe('WorkflowCanvas context menu', () => {
     fireEvent.mouseLeave(canvasNode);
   });
 
-  it('将靠近画布底部节点的快速编辑器渲染到节点上方', async () => {
+  it('将靠近画布边缘的快速编辑器避开节点缩放控制点', async () => {
     const props = createProps({ nodes: [generateNode], selectedNode: null });
     const { rerender } = render(<WorkflowCanvas {...props} />);
     const canvas = screen.getByRole('region', { name: '工作流画布' });
@@ -378,6 +378,13 @@ describe('WorkflowCanvas context menu', () => {
     canvasNode.style.transform = 'translate(1px)';
     await waitFor(() => expect(overlay).toHaveAttribute('data-placement', 'below'));
     expect(Number.parseInt(overlay?.style.top ?? '', 10)).toBeGreaterThan(230);
+
+    nodeRect = createMockRect(600, 350, 180, 80);
+    canvasNode.style.transform = 'translate(2px)';
+    await waitFor(() => expect(overlay).toHaveAttribute('data-placement', 'left'));
+    const overlayLeft = Number.parseInt(overlay?.style.left ?? '', 10);
+    const overlayWidth = Number.parseInt(overlay?.style.width ?? '', 10);
+    expect(overlayLeft + overlayWidth).toBeLessThanOrEqual(nodeRect.left - 16);
   });
 
   it('keeps edge animation enabled while leaving selected styling to CSS', () => {

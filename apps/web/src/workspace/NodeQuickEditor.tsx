@@ -1,5 +1,5 @@
 import { LoaderCircle, Play, Sparkles } from 'lucide-react';
-import { useCallback, useLayoutEffect, useRef, useState, type FocusEvent } from 'react';
+import { useState, type FocusEvent } from 'react';
 
 import type { AssetFlowNode } from '../canvas-utils';
 import { TextPromptEditor } from '../TextPromptEditor';
@@ -31,34 +31,53 @@ export type NodeQuickEditorProps = {
   onParametersChange?: (value: NodeMediaParameters) => void;
 };
 
-const inferenceStrengthOptions: Array<{
-  value: InferenceStrength;
+type MediaOption = {
+  value: string;
   label: string;
-}> = [
+  description?: string;
+  previewAspectRatio?: string;
+};
+
+type QuickOption = MediaOption & {
+  groupLabel?: string;
+};
+
+const inferenceStrengthOptions: MediaOption[] = [
   { value: 'low', label: '低' },
   { value: 'medium', label: '中' },
   { value: 'high', label: '高' },
 ];
 
-const imageQualityOptions = [
-  { value: '1k', label: '1K · 标准' },
-  { value: '2k', label: '2K · 高清' },
-  { value: '3k', label: '3K · 超清' },
-  { value: '4k', label: '4K · 极致' },
+const imageQualityOptions: MediaOption[] = [
+  { value: '1k', label: '1K', description: '标准' },
+  { value: '2k', label: '2K', description: '高清' },
+  { value: '3k', label: '3K', description: '超清' },
+  { value: '4k', label: '4K', description: '极致' },
 ];
 
-const videoResolutionOptions = ['360p', '480p', '720p', '1080p', '1440p', '2160p'];
+const videoResolutionOptions: MediaOption[] = [
+  '360p',
+  '480p',
+  '720p',
+  '1080p',
+  '1440p',
+  '2160p',
+].map((value) => ({ value, label: value }));
 
-const aspectRatioOptions = [
-  { value: '1:1', label: '1:1 · 方形' },
-  { value: '16:9', label: '16:9 · 横屏' },
-  { value: '9:16', label: '9:16 · 竖屏' },
-  { value: '4:3', label: '4:3 · 标准横向' },
-  { value: '3:4', label: '3:4 · 标准竖向' },
-  { value: '3:2', label: '3:2 · 摄影横向' },
-  { value: '2:3', label: '2:3 · 摄影竖向' },
-  { value: '21:9', label: '21:9 · 超宽屏' },
+const aspectRatioOptions: MediaOption[] = [
+  { value: '1:1', label: '1:1', description: '方形', previewAspectRatio: '1 / 1' },
+  { value: '16:9', label: '16:9', description: '横屏', previewAspectRatio: '16 / 9' },
+  { value: '9:16', label: '9:16', description: '竖屏', previewAspectRatio: '9 / 16' },
+  { value: '4:3', label: '4:3', description: '标准横向', previewAspectRatio: '4 / 3' },
+  { value: '3:4', label: '3:4', description: '标准竖向', previewAspectRatio: '3 / 4' },
+  { value: '3:2', label: '3:2', description: '摄影横向', previewAspectRatio: '3 / 2' },
+  { value: '2:3', label: '2:3', description: '摄影竖向', previewAspectRatio: '2 / 3' },
+  { value: '21:9', label: '21:9', description: '超宽屏', previewAspectRatio: '21 / 9' },
 ];
+
+const aspectRatioDescriptions: Record<string, string> = Object.fromEntries(
+  aspectRatioOptions.map((option) => [option.value, option.description ?? '']),
+);
 
 /** 渲染选中生成节点的紧凑编辑器。 */
 export function NodeQuickEditor({
@@ -74,17 +93,26 @@ export function NodeQuickEditor({
   const currentModel = node.data.modelAlias ?? '';
   const currentCredentialId = node.data.credentialId;
   const availableModels = models.filter((model) => model.mediaTypes.includes(node.data.mediaType));
+  const selectedModel = findSelectedModel(availableModels, currentModel, currentCredentialId);
   const currentModelIsMissing =
     Boolean(currentModel) &&
     !availableModels.some(
       (model) => model.id === currentModel && model.credentialId === currentCredentialId,
     );
-  const currentValue = currentModel
+  const currentModelValue = currentModel
     ? modelOptionValue({ modelAlias: currentModel, credentialId: currentCredentialId })
     : '';
-  const groupedModels = groupModelsByCredential(availableModels);
-  const enabled = node.data.enabled !== false;
+  const modelOptions = buildModelOptions(
+    availableModels,
+    currentModelValue,
+    currentModel,
+    currentCredentialId,
+    currentModelIsMissing,
+  );
+  const selectedModelValue = currentModelValue || modelOptions[0]?.value || '';
   const parameters = readNodeMediaParameters(node.data);
+  const mediaOptions = getMediaOptions(selectedModel, node.data.mediaType, parameters);
+  const enabled = node.data.enabled !== false;
 
   const updateParameter = (key: keyof NodeMediaParameters, value: unknown) => {
     if (!onParametersChange) return;
@@ -132,15 +160,17 @@ export function NodeQuickEditor({
           role="group"
           aria-label="媒体参数"
         >
-          <MediaOptionGrid
+          <QuickOptionMenu
             label="图片清晰度"
             value={parameters.quality}
-            options={imageQualityOptions}
+            options={mediaOptions.quality}
             onChange={(value) => updateParameter('quality', value)}
           />
-          <AspectRatioOptionGrid
+          <QuickOptionMenu
             label="图片比例"
             value={parameters.aspectRatio}
+            options={mediaOptions.aspectRatio}
+            aspectOptions
             onChange={(value) => updateParameter('aspectRatio', value)}
           />
         </div>
@@ -153,74 +183,41 @@ export function NodeQuickEditor({
           role="group"
           aria-label="媒体参数"
         >
-          <MediaOptionGrid
+          <QuickOptionMenu
             label="视频清晰度"
             value={parameters.resolution}
-            options={videoResolutionOptions.map((value) => ({ value, label: value }))}
+            options={mediaOptions.resolution}
             onChange={(value) => updateParameter('resolution', value)}
           />
-          <AspectRatioOptionGrid
+          <QuickOptionMenu
             label="视频比例"
             value={parameters.aspectRatio}
+            options={mediaOptions.aspectRatio}
+            aspectOptions
             onChange={(value) => updateParameter('aspectRatio', value)}
           />
-          <MediaOptionGrid
+          <QuickOptionMenu
             label="时长（秒）"
-            value={parameters.duration?.toString()}
-            options={[4, 8, 12, 16, 20].map((value) => ({
-              value: String(value),
-              label: `${value} 秒`,
-            }))}
+            value={parameters.duration}
+            options={mediaOptions.duration}
             onChange={(value) => updateParameter('duration', value ? Number(value) : undefined)}
           />
         </div>
       )}
 
       <div className="node-quick-editor-controls">
-        <label className="node-quick-editor-field">
-          <span>模型</span>
-          <select
-            value={currentValue}
-            onChange={(event) => onModelChange(parseModelOptionValue(event.target.value))}
-          >
-            <option value="">继承项目默认模型</option>
-            {currentModelIsMissing && (
-              <option value={currentValue}>
-                {currentModel}
-                {currentCredentialId ? '（当前设置，目录中不可用）' : '（旧设置，未绑定 API Key）'}
-              </option>
-            )}
-            {groupedModels.map((group) => (
-              <optgroup key={group.id} label={group.label}>
-                {group.models.map((model) => (
-                  <option
-                    key={`${model.credentialId ?? 'active'}:${model.id}`}
-                    value={modelOptionValue({
-                      modelAlias: model.id,
-                      credentialId: model.credentialId,
-                    })}
-                  >
-                    {model.name}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
-        </label>
-
-        <label className="node-quick-editor-field">
-          <span>推理强度</span>
-          <select
-            value={node.data.inferenceStrength ?? 'medium'}
-            onChange={(event) => onInferenceStrengthChange(event.target.value as InferenceStrength)}
-          >
-            {inferenceStrengthOptions.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <QuickOptionMenu
+          label="模型"
+          value={selectedModelValue}
+          options={modelOptions}
+          onChange={(value) => onModelChange(parseModelOptionValue(value))}
+        />
+        <QuickOptionMenu
+          label="推理强度"
+          value={node.data.inferenceStrength}
+          options={inferenceStrengthOptions}
+          onChange={(value) => onInferenceStrengthChange(value as InferenceStrength)}
+        />
       </div>
 
       <button
@@ -248,40 +245,41 @@ function readNodeMediaParameters(data: unknown): NodeMediaParameters {
   return { ...(candidate as Record<string, unknown>) };
 }
 
-/** 通用媒体参数选项。 */
-type MediaOption = { value: string; label: string };
-
-/**
- * 渲染一个紧凑的媒体参数选择器。
- * 选项面板在悬停、键盘聚焦或点击时展开，避免多个参数同时撑高节点编辑器。
- */
-function MediaOptionGrid({
+/** 渲染一个统一的向上展开选择菜单。 */
+function QuickOptionMenu({
   label,
   value,
   options,
   onChange,
+  aspectOptions = false,
 }: {
   label: string;
   value?: unknown;
-  options: MediaOption[];
+  options: QuickOption[];
   onChange: (value: string) => void;
+  aspectOptions?: boolean;
 }) {
-  const currentValue = typeof value === 'string' ? value : '';
+  const stringValue = value === undefined || value === null ? '' : String(value);
+  const selectedValue = options.some((option) => option.value === stringValue)
+    ? stringValue
+    : (options[0]?.value ?? '');
+  const selectedOption = options.find((option) => option.value === selectedValue) ??
+    options[0] ?? {
+      value: '',
+      label: '暂无选项',
+    };
   const [open, setOpen] = useState(false);
-  const { groupRef, popoverRef, placement } = usePopoverPlacement(open, options.length + 1);
-  const currentLabel =
-    options.find((option) => option.value === currentValue)?.label ?? (currentValue || '默认');
   const handleBlur = (event: FocusEvent<HTMLDivElement>) => {
     if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
   };
+  let previousGroup: string | undefined;
 
   return (
     <div
-      ref={groupRef}
       className="node-quick-editor-option-group"
       aria-label={label}
       data-open={open ? 'true' : 'false'}
-      data-placement={placement}
+      data-placement="top"
       onMouseEnter={() => setOpen(true)}
       onMouseLeave={() => setOpen(false)}
       onFocus={() => setOpen(true)}
@@ -291,40 +289,49 @@ function MediaOptionGrid({
       <button
         type="button"
         className="node-quick-editor-option-trigger"
+        aria-label={`${label}：${formatOptionLabel(selectedOption)}`}
         aria-expanded={open}
         onClick={() => setOpen((current) => !current)}
       >
-        <span title={currentLabel}>{currentLabel}</span>
+        <span title={formatOptionLabel(selectedOption)}>{formatOptionLabel(selectedOption)}</span>
         <span className="node-quick-editor-option-trigger-icon" aria-hidden="true">
           ▾
         </span>
       </button>
-      <div
-        ref={popoverRef}
-        className="node-quick-editor-option-popover"
-        role="group"
-        aria-label={`${label}选项`}
-      >
-        <button
-          type="button"
-          className={`node-quick-editor-option ${currentValue === '' ? 'is-active' : ''}`}
-          aria-pressed={currentValue === ''}
-          onClick={() => onChange('')}
-        >
-          <span className="node-quick-editor-option-copy">默认</span>
-        </button>
+      <div className="node-quick-editor-option-popover" role="group" aria-label={`${label}选项`}>
         {options.map((option) => {
+          const showGroup = option.groupLabel && option.groupLabel !== previousGroup;
+          previousGroup = option.groupLabel;
           return (
-            <button
-              type="button"
-              key={option.value}
-              className={`node-quick-editor-option ${currentValue === option.value ? 'is-active' : ''}`}
-              aria-pressed={currentValue === option.value}
-              onClick={() => onChange(option.value)}
-              title={option.label}
-            >
-              <span className="node-quick-editor-option-copy">{option.label}</span>
-            </button>
+            <span key={`${option.groupLabel ?? ''}:${option.value}`}>
+              {showGroup && (
+                <span className="node-quick-editor-option-group-label">{option.groupLabel}</span>
+              )}
+              <button
+                type="button"
+                className={`node-quick-editor-option ${
+                  aspectOptions ? 'node-quick-editor-aspect-option' : ''
+                } ${selectedValue === option.value ? 'is-active' : ''}`}
+                aria-pressed={selectedValue === option.value}
+                onClick={() => {
+                  onChange(option.value);
+                  setOpen(false);
+                }}
+                title={formatOptionLabel(option)}
+              >
+                {aspectOptions && option.previewAspectRatio && (
+                  <span
+                    className="node-quick-editor-aspect-preview"
+                    style={{ aspectRatio: option.previewAspectRatio }}
+                    aria-hidden="true"
+                  />
+                )}
+                <span className="node-quick-editor-option-copy">
+                  <strong>{option.label}</strong>
+                  {option.description && <small>{option.description}</small>}
+                </span>
+              </button>
+            </span>
           );
         })}
       </div>
@@ -332,155 +339,254 @@ function MediaOptionGrid({
   );
 }
 
-/** 比例选择器在悬停、键盘聚焦或点击时展开三列示意图。 */
-function AspectRatioOptionGrid({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value?: unknown;
-  onChange: (value: string) => void;
-}) {
-  const currentValue = typeof value === 'string' ? value : '';
-  const [open, setOpen] = useState(false);
-  const currentLabel =
-    aspectRatioOptions.find((option) => option.value === currentValue)?.label ??
-    (currentValue || '自动比例');
-  const { groupRef, popoverRef, placement } = usePopoverPlacement(
-    open,
-    aspectRatioOptions.length + 1,
+/** 返回当前模型的媒体能力，并为没有声明能力的旧目录提供回退选项。 */
+function getMediaOptions(
+  model: ModelEntry | undefined,
+  mediaType: AssetFlowNode['data']['mediaType'],
+  parameters: NodeMediaParameters,
+) {
+  const roots = getCapabilityRoots(model, mediaType);
+  const quality = ensureCurrentOption(
+    readCapabilityOptions(
+      roots,
+      ['quality', 'qualities', 'imageQuality', 'image_quality', 'resolution', 'resolutions'],
+      'quality',
+    ) ?? imageQualityOptions,
+    parameters.quality,
+    'quality',
   );
-  const handleBlur = (event: FocusEvent<HTMLDivElement>) => {
-    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
-  };
-
-  return (
-    <div
-      ref={groupRef}
-      className="node-quick-editor-option-group"
-      aria-label={label}
-      data-open={open ? 'true' : 'false'}
-      data-placement={placement}
-      onMouseEnter={() => setOpen(true)}
-      onMouseLeave={() => setOpen(false)}
-      onFocus={() => setOpen(true)}
-      onBlur={handleBlur}
-    >
-      <span className="node-quick-editor-option-label">{label}</span>
-      <button
-        type="button"
-        className="node-quick-editor-option-trigger"
-        aria-expanded={open}
-        onClick={() => setOpen((current) => !current)}
-      >
-        <span title={currentLabel}>{currentLabel}</span>
-        <span className="node-quick-editor-option-trigger-icon" aria-hidden="true">
-          ▾
-        </span>
-      </button>
-      <div
-        ref={popoverRef}
-        className="node-quick-editor-option-popover"
-        role="group"
-        aria-label={`${label}选项`}
-      >
-        <button
-          type="button"
-          className={`node-quick-editor-option node-quick-editor-aspect-option ${currentValue === '' ? 'is-active' : ''}`}
-          aria-pressed={currentValue === ''}
-          onClick={() => onChange('')}
-        >
-          <span className="node-quick-editor-aspect-preview is-default" aria-hidden="true" />
-          <span className="node-quick-editor-option-copy">自动比例</span>
-        </button>
-        {aspectRatioOptions.map((option) => (
-          <button
-            type="button"
-            key={option.value}
-            className={`node-quick-editor-option node-quick-editor-aspect-option ${currentValue === option.value ? 'is-active' : ''}`}
-            aria-pressed={currentValue === option.value}
-            onClick={() => onChange(option.value)}
-            title={option.label}
-          >
-            <span
-              className="node-quick-editor-aspect-preview"
-              style={{ aspectRatio: option.value.replace(':', ' / ') }}
-              aria-hidden="true"
-            />
-            <span className="node-quick-editor-option-copy">
-              <strong>{option.value}</strong>
-              <small>{option.label.replace(`${option.value} · `, '')}</small>
-            </span>
-          </button>
-        ))}
-      </div>
-    </div>
+  const resolution = ensureCurrentOption(
+    readCapabilityOptions(
+      roots,
+      ['resolution', 'resolutions', 'videoResolution', 'video_resolution', 'quality', 'qualities'],
+      'resolution',
+    ) ?? videoResolutionOptions,
+    parameters.resolution,
+    'resolution',
   );
+  const aspectRatio = ensureCurrentOption(
+    readCapabilityOptions(
+      roots,
+      ['aspectRatio', 'aspectRatios', 'aspect_ratio', 'aspect_ratios', 'ratios'],
+      'aspectRatio',
+    ) ?? aspectRatioOptions,
+    parameters.aspectRatio,
+    'aspectRatio',
+  );
+  const duration = ensureCurrentOption(
+    readCapabilityOptions(
+      roots,
+      ['duration', 'durations', 'seconds', 'durationSeconds', 'duration_seconds'],
+      'duration',
+    ) ??
+      [4, 8, 12, 16, 20].map((value) => ({
+        value: String(value),
+        label: String(value),
+        description: '秒',
+      })),
+    parameters.duration,
+    'duration',
+  );
+  return { quality, resolution, aspectRatio, duration };
 }
 
-/**
- * 根据参数组在画布中的可用空间选择浮层方向。
- * 浮层超出画布底部时向上展开，滚动画布或窗口尺寸变化后会重新测量。
- * @param open 当前参数面板是否展开。
- * @param optionCount 面板中的选项总数，用于首次测量的高度估算。
- * @returns 参数组、浮层引用与最终展开方向。
- */
-function usePopoverPlacement(open: boolean, optionCount: number) {
-  const groupRef = useRef<HTMLDivElement>(null);
-  const popoverRef = useRef<HTMLDivElement>(null);
-  const [placement, setPlacement] = useState<'top' | 'bottom'>('bottom');
-  const updatePlacement = useCallback(() => {
-    const group = groupRef.current;
-    const popover = popoverRef.current;
-    if (!group || !popover) return;
-
-    const groupRect = group.getBoundingClientRect();
-    const popoverRect = popover.getBoundingClientRect();
-    const canvasRect =
-      group.closest<HTMLElement>('.canvas-area')?.getBoundingClientRect() ??
-      document
-        .querySelector<HTMLElement>('.canvas-area.has-quick-editor, .canvas-area')
-        ?.getBoundingClientRect();
-    const topBoundary = canvasRect?.top ?? 0;
-    const bottomBoundary = canvasRect?.bottom ?? window.innerHeight;
-    const availableAbove = Math.max(0, groupRect.top - topBoundary - 6);
-    const availableBelow = Math.max(0, bottomBoundary - groupRect.bottom - 6);
-    const estimatedHeight = Math.min(
-      320,
-      Math.ceil(optionCount / 3) * (optionCount > 7 ? 78 : 56) + 17,
-    );
-    const popoverHeight = popoverRect.height || estimatedHeight;
-    const nextPlacement =
-      availableBelow >= popoverHeight || availableBelow >= availableAbove ? 'bottom' : 'top';
-    setPlacement((current) => (current === nextPlacement ? current : nextPlacement));
-  }, [optionCount]);
-
-  useLayoutEffect(() => {
-    if (!open) {
-      setPlacement('bottom');
-      return;
+/** 构造按媒体类型和凭据筛选后的模型选项。 */
+function buildModelOptions(
+  models: ModelEntry[],
+  currentValue: string,
+  currentModel: string,
+  currentCredentialId: string | undefined,
+  currentModelIsMissing: boolean,
+): QuickOption[] {
+  const options: QuickOption[] = [];
+  if (currentModelIsMissing && currentValue) {
+    options.push({
+      value: currentValue,
+      label: currentModel,
+      description: currentCredentialId ? '当前设置，目录中不可用' : '旧设置，未绑定 API Key',
+    });
+  }
+  for (const group of groupModelsByCredential(models)) {
+    for (const model of group.models) {
+      options.push({
+        value: modelOptionValue({ modelAlias: model.id, credentialId: model.credentialId }),
+        label: model.name,
+        groupLabel: group.label,
+      });
     }
-    updatePlacement();
-    const handleViewportChange = () => updatePlacement();
-    window.addEventListener('resize', handleViewportChange);
-    window.addEventListener('scroll', handleViewportChange, true);
-    return () => {
-      window.removeEventListener('resize', handleViewportChange);
-      window.removeEventListener('scroll', handleViewportChange, true);
-    };
-  }, [open, updatePlacement]);
-
-  return { groupRef, popoverRef, placement };
+  }
+  return options.length > 0 ? options : [{ value: '', label: '暂无可用模型' }];
 }
 
-/** 将模型与凭据绑定编码为原生 select 可用的稳定值。 */
+/** 找到节点当前绑定的模型；无绑定时使用当前媒体的第一个模型能力。 */
+function findSelectedModel(
+  models: ModelEntry[],
+  modelAlias: string,
+  credentialId: string | undefined,
+): ModelEntry | undefined {
+  return (
+    models.find((model) => model.id === modelAlias && model.credentialId === credentialId) ??
+    models[0]
+  );
+}
+
+/** 规范化能力对象的嵌套来源，优先使用媒体专用能力再使用顶层兼容字段。 */
+function getCapabilityRoots(
+  model: ModelEntry | undefined,
+  mediaType: AssetFlowNode['data']['mediaType'],
+): Record<string, unknown>[] {
+  if (!model) return [];
+  const roots: Record<string, unknown>[] = [];
+  for (const source of [model.capabilities, model.limitations]) {
+    if (!isRecord(source)) continue;
+    const parameters = isRecord(source.parameters) ? source.parameters : undefined;
+    const mediaParameters =
+      parameters && isRecord(parameters[mediaType]) ? parameters[mediaType] : undefined;
+    const mediaSource = isRecord(source[mediaType]) ? source[mediaType] : undefined;
+    const namedSource = (
+      isRecord(source[`${mediaType}Parameters`])
+        ? source[`${mediaType}Parameters`]
+        : isRecord(source[`${mediaType}_parameters`])
+          ? source[`${mediaType}_parameters`]
+          : undefined
+    ) as Record<string, unknown> | undefined;
+    const candidates: Array<Record<string, unknown> | undefined> = [
+      mediaSource,
+      mediaParameters,
+      namedSource,
+      parameters,
+      source,
+    ];
+    for (const candidate of candidates) {
+      if (candidate && !roots.includes(candidate)) roots.push(candidate);
+    }
+  }
+  return roots;
+}
+
+/** 从能力对象读取数组、包装对象或分隔字符串形式的选项。 */
+function readCapabilityOptions(
+  roots: Record<string, unknown>[],
+  aliases: string[],
+  kind: 'quality' | 'resolution' | 'aspectRatio' | 'duration',
+): MediaOption[] | undefined {
+  for (const root of roots) {
+    for (const alias of aliases) {
+      if (root[alias] === undefined || root[alias] === null) continue;
+      const options = normalizeRawOptions(root[alias], kind);
+      if (options.length > 0) return options;
+    }
+  }
+  return undefined;
+}
+
+/** 将能力字段转换为稳定、去重且保留上游顺序的按钮选项。 */
+function normalizeRawOptions(
+  raw: unknown,
+  kind: 'quality' | 'resolution' | 'aspectRatio' | 'duration',
+): MediaOption[] {
+  const values = collectRawOptions(raw);
+  const seen = new Set<string>();
+  const options: MediaOption[] = [];
+  for (const item of values) {
+    const value = item.value.trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    const fallbackDescription = kind === 'aspectRatio' ? aspectRatioDescriptions[value] : undefined;
+    const description =
+      item.description ?? fallbackDescription ?? (kind === 'duration' ? '秒' : undefined);
+    const label =
+      item.label ??
+      (kind === 'quality' ? value.toUpperCase() : kind === 'duration' ? value : value);
+    options.push({
+      value,
+      label,
+      ...(description ? { description } : {}),
+      ...(kind === 'aspectRatio' ? { previewAspectRatio: value.replace(':', ' / ') } : {}),
+    });
+  }
+  return options;
+}
+
+type RawOption = { value: string; label?: string; description?: string };
+
+/** 支持供应商常见的 values/options/items、{value,label}、映射和分隔字符串格式。 */
+function collectRawOptions(raw: unknown): RawOption[] {
+  if (Array.isArray(raw)) return raw.flatMap((item) => collectRawOptions(item));
+  if (typeof raw === 'string' || typeof raw === 'number') {
+    return String(raw)
+      .split(/[,;|\n]+/)
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .map((value) => ({ value }));
+  }
+  if (!isRecord(raw)) return [];
+  if (typeof raw.value === 'string' || typeof raw.value === 'number') {
+    return [
+      {
+        value: String(raw.value),
+        ...(typeof raw.label === 'string' ? { label: raw.label } : {}),
+        ...(typeof raw.description === 'string' ? { description: raw.description } : {}),
+      },
+    ];
+  }
+  for (const key of ['values', 'options', 'items']) {
+    if (raw[key] !== undefined) return collectRawOptions(raw[key]);
+  }
+  return Object.entries(raw).flatMap(([key, value]) => {
+    if (typeof value === 'string' || typeof value === 'number') {
+      return [{ value: key, label: String(value) }];
+    }
+    if (
+      isRecord(value) &&
+      (typeof value.label === 'string' || typeof value.description === 'string')
+    ) {
+      return [
+        {
+          value: key,
+          label: String(value.label ?? key),
+          ...(typeof value.description === 'string' ? { description: value.description } : {}),
+        },
+      ];
+    }
+    return [];
+  });
+}
+
+/** 把旧节点已经保存但当前模型未声明的值追加到菜单，避免数据被静默隐藏。 */
+function ensureCurrentOption(
+  options: MediaOption[],
+  currentValue: unknown,
+  kind: 'quality' | 'resolution' | 'aspectRatio' | 'duration',
+): MediaOption[] {
+  const value = currentValue === undefined || currentValue === null ? '' : String(currentValue);
+  if (!value || options.some((option) => option.value === value)) return options;
+  return [
+    ...options,
+    {
+      value,
+      label: kind === 'quality' ? value.toUpperCase() : value,
+      description: '已保存',
+      ...(kind === 'aspectRatio' ? { previewAspectRatio: value.replace(':', ' / ') } : {}),
+    },
+  ];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function formatOptionLabel(option: MediaOption): string {
+  return option.description ? `${option.label} · ${option.description}` : option.label;
+}
+
+/** 将模型与凭据绑定编码为菜单可用的稳定值。 */
 function modelOptionValue(selection: ModelSelection) {
   if (!selection.modelAlias) return '';
   return JSON.stringify([selection.credentialId ?? '', selection.modelAlias]);
 }
 
-/** 解析模型 select 的值，并兼容旧版仅含模型别名的选项。 */
+/** 解析模型菜单值，并兼容旧版仅含模型别名的值。 */
 function parseModelOptionValue(value: string): ModelSelection {
   if (!value) return { modelAlias: '' };
   try {
@@ -498,12 +604,12 @@ function parseModelOptionValue(value: string): ModelSelection {
       };
     }
   } catch {
-    // Keep legacy plain option values usable in tests and restored markup.
+    // 兼容旧版只保存模型别名的节点。
   }
   return { modelAlias: value };
 }
 
-/** 按凭据分组模型，供原生 select 渲染 optgroup。 */
+/** 按凭据分组模型，供模型菜单显示来源分组。 */
 function groupModelsByCredential(models: ModelEntry[]) {
   const groups = new Map<string, { id: string; label: string; models: ModelEntry[] }>();
   for (const model of models) {

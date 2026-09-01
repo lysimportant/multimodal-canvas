@@ -599,7 +599,7 @@ test('starts with the resource library and workflow canvas visible', async ({ pa
   await page.goto(projectPath);
 
   await expect(page.getByRole('button', { name: '打开主菜单' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: '项目资源' })).toBeVisible();
+  await expect(page.getByRole('combobox', { name: '资源类型' })).toBeVisible();
   await expect(page.getByRole('region', { name: '工作流画布' })).toBeVisible();
   await expect(page.getByText('从一个节点开始')).toBeVisible();
   const resourceSearch = page.locator('.search-field input');
@@ -634,7 +634,7 @@ test('keeps mobile header and node tools inside the viewport', async ({ page }) 
     expect(layout.bodyWidth, `body overflow at ${width}px`).toBeLessThanOrEqual(layout.clientWidth);
 
     const chrome = [
-      page.locator('.topbar-resource-filter'),
+      page.locator('.resource-filter-field'),
       page.locator('.topbar-tool-cluster'),
       page.locator('.canvas-node-tools'),
     ];
@@ -652,7 +652,7 @@ test('keeps mobile header and node tools inside the viewport', async ({ page }) 
       ).toBeLessThanOrEqual(layout.clientWidth);
     }
 
-    const resourceFilter = page.locator('.topbar-resource-filter');
+    const resourceFilter = page.locator('.resource-filter-field');
     await resourceFilter.getByRole('combobox', { name: '资源类型' }).focus();
     await expect(resourceFilter).toHaveCSS('box-shadow', /0px 0px 0px 3px/);
     const resourceFilterBounds = await resourceFilter.boundingBox();
@@ -1193,10 +1193,11 @@ test('overrides a node model and displays the completed run result', async ({ pa
   await page.goto(projectPath);
   await page.getByRole('button', { name: '新建文字生成节点' }).click();
 
-  const modelSelect = page.getByRole('combobox', { name: '模型' });
-  await expect(modelSelect).toBeVisible();
-  await modelSelect.selectOption({ label: 'Mock Text v2' });
-  await expect(modelSelect).toHaveValue(JSON.stringify([initialCredential.id, 'mock-text-v2']));
+  const modelMenu = page.locator('.node-quick-editor-option-group[aria-label="模型"]');
+  await expect(modelMenu).toBeVisible();
+  await modelMenu.hover();
+  await modelMenu.getByRole('button', { name: 'Mock Text v2' }).click();
+  await expect(modelMenu.getByRole('button', { name: '模型：Mock Text v2' })).toBeVisible();
 
   await page.getByRole('button', { name: '生成', exact: true }).click();
 

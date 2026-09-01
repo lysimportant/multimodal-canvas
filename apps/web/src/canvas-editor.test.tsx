@@ -669,23 +669,22 @@ describe('画布编辑器交互', () => {
     const inspector = document.querySelector<HTMLElement>('.inspector-panel');
     expect(inspector).toBeTruthy();
     expect(within(quickEditor).getByRole('textbox', { name: '提示词' })).toBeVisible();
-    expect(within(quickEditor).getByRole('combobox', { name: '模型' })).toBeVisible();
-    expect(within(quickEditor).getByRole('combobox', { name: '推理强度' })).toBeVisible();
+    expect(within(quickEditor).getByRole('button', { name: /^模型：/ })).toBeVisible();
+    expect(within(quickEditor).getByRole('button', { name: /^推理强度：/ })).toBeVisible();
     expect(within(quickEditor).getByRole('button', { name: '生成' })).toBeVisible();
     expect(within(inspector!).queryByRole('textbox', { name: '提示词' })).not.toBeInTheDocument();
-    expect(within(inspector!).queryByRole('combobox', { name: '模型' })).not.toBeInTheDocument();
+    expect(within(inspector!).queryByRole('button', { name: /^模型：/ })).not.toBeInTheDocument();
     expect(
-      within(inspector!).queryByRole('combobox', { name: '推理强度' }),
+      within(inspector!).queryByRole('button', { name: /^推理强度：/ }),
     ).not.toBeInTheDocument();
     expect(within(inspector!).queryByRole('button', { name: '生成' })).not.toBeInTheDocument();
 
     const prompt = within(quickEditor).getByRole('textbox', { name: '提示词' });
     await user.clear(prompt);
     await user.type(prompt, '用最新提示词生成');
-    await user.selectOptions(
-      within(quickEditor).getByRole('combobox', { name: '推理强度' }),
-      'high',
-    );
+    const inferenceGroup = within(quickEditor).getByText('推理强度').parentElement as HTMLElement;
+    await user.hover(inferenceGroup);
+    await user.click(within(inferenceGroup).getByRole('button', { name: '高' }));
     await user.click(within(quickEditor).getByRole('button', { name: '生成' }));
 
     await waitFor(() => {

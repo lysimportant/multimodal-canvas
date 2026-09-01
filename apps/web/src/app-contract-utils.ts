@@ -90,7 +90,7 @@ export function createGenerateFlowNode(
       label: `${mediaLabels[mediaType]}生成节点`,
       mediaType,
       mode: 'generate',
-      inferenceStrength: 'medium',
+      inferenceStrength: 'low',
     },
   } as AssetFlowNode;
 }
