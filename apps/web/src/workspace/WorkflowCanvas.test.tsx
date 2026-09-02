@@ -399,8 +399,11 @@ describe('WorkflowCanvas context menu', () => {
     render(<WorkflowCanvas {...createProps()} />);
 
     const canvas = screen.getByRole('region', { name: '工作流画布' });
+    const child = document.createElement('div');
+    child.addEventListener('wheel', (event) => event.stopPropagation());
+    canvas.append(child);
     const preventDefault = vi.spyOn(Event.prototype, 'preventDefault');
-    fireEvent.wheel(canvas, { ctrlKey: true, deltaY: -120 });
+    fireEvent.wheel(child, { ctrlKey: true, deltaY: -120 });
     expect(preventDefault).toHaveBeenCalled();
     preventDefault.mockRestore();
   });

@@ -66,27 +66,27 @@ function makeProps(overrides: Partial<NodeQuickEditorProps> = {}): NodeQuickEdit
 afterEach(cleanup);
 
 describe('NodeQuickEditor', () => {
-  it('只列出当前媒体模型，并保留目录中缺失的当前覆盖值', () => {
+  it('只列出当前媒体模型，并保留目录中缺失的当前覆盖值', async () => {
+    const user = userEvent.setup();
     render(<NodeQuickEditor {...makeProps()} />);
 
     expect(screen.getByText('生成设置 · 图片')).toBeVisible();
     expect(screen.getByText('产品主图')).toBeVisible();
 
     const modelGroup = screen.getByText('模型').parentElement as HTMLElement;
-    const modelTrigger = modelGroup.querySelector<HTMLButtonElement>(
-      '.node-quick-editor-option-trigger',
-    );
+    const modelTrigger = within(modelGroup).getByRole('combobox');
     expect(modelTrigger).not.toBeNull();
     expect(modelTrigger).toHaveAttribute('aria-expanded', 'false');
     expect(modelTrigger).toHaveTextContent('removed-image-model');
     expect(screen.queryByText('继承项目默认模型')).not.toBeInTheDocument();
-    expect(within(modelGroup).getByRole('button', { name: '图片模型' })).toBeInTheDocument();
-    expect(within(modelGroup).getByRole('button', { name: '多模态模型' })).toBeInTheDocument();
-    expect(within(modelGroup).queryByRole('button', { name: '文字模型' })).not.toBeInTheDocument();
+    await user.hover(modelGroup);
+    expect(within(modelGroup).getByRole('option', { name: '图片模型' })).toBeInTheDocument();
+    expect(within(modelGroup).getByRole('option', { name: '多模态模型' })).toBeInTheDocument();
+    expect(within(modelGroup).queryByRole('option', { name: '文字模型' })).not.toBeInTheDocument();
     expect(
-      within(modelGroup).getByRole('button', {
+      within(modelGroup).getByRole('option', {
         name: /removed-image-model.*旧设置，未绑定 API Key/,
-        pressed: true,
+        selected: true,
       }),
     ).toBeInTheDocument();
     expect(modelGroup).toHaveAttribute('data-placement', 'top');
@@ -107,9 +107,9 @@ describe('NodeQuickEditor', () => {
     const modelGroup = screen.getByText('模型').parentElement as HTMLElement;
     const inferenceGroup = screen.getByText('推理强度').parentElement as HTMLElement;
     await user.hover(modelGroup);
-    await user.click(within(modelGroup).getByRole('button', { name: '图片模型' }));
+    await user.click(within(modelGroup).getByRole('option', { name: '图片模型' }));
     await user.hover(inferenceGroup);
-    await user.click(within(inferenceGroup).getByRole('button', { name: 'low' }));
+    await user.click(within(inferenceGroup).getByRole('option', { name: '轻度' }));
     await user.click(screen.getByRole('button', { name: '生成' }));
     fireEvent.pointerDown(prompt);
 
@@ -123,7 +123,8 @@ describe('NodeQuickEditor', () => {
 
   it('展示 GPT-5.6 模型目录声明的全部推理强度标识', async () => {
     const user = userEvent.setup();
-    const efforts = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
+    const efforts = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+    const labels = ['轻度', '中', '高', '极高', '最高', 'Ultra'];
     render(
       <NodeQuickEditor
         {...makeProps({
@@ -152,14 +153,15 @@ describe('NodeQuickEditor', () => {
     const inferenceGroup = screen.getByText('推理强度').parentElement as HTMLElement;
     await user.hover(inferenceGroup);
 
-    for (const effort of efforts) {
-      expect(within(inferenceGroup).getByRole('button', { name: effort })).toBeInTheDocument();
+    for (const label of labels) {
+      expect(within(inferenceGroup).getByRole('option', { name: label })).toBeInTheDocument();
     }
   });
 
   it('模型目录为空时仍为 GPT-5.6 文字节点提供完整推理强度', async () => {
     const user = userEvent.setup();
-    const efforts = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
+    const efforts = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+    const labels = ['轻度', '中', '高', '极高', '最高', 'Ultra'];
     render(
       <NodeQuickEditor
         {...makeProps({
@@ -181,9 +183,41 @@ describe('NodeQuickEditor', () => {
     const inferenceGroup = screen.getByText('推理强度').parentElement as HTMLElement;
     await user.hover(inferenceGroup);
 
-    for (const effort of efforts) {
-      expect(within(inferenceGroup).getByRole('button', { name: effort })).toBeInTheDocument();
+    for (const label of labels) {
+      expect(within(inferenceGroup).getByRole('option', { name: label })).toBeInTheDocument();
     }
+  });
+
+  it('未绑定模型的文字节点也预览截图中的六档推理强度', async () => {
+    const user = userEvent.setup();
+    const labels = ['轻度', '中', '高', '极高', '最高', 'Ultra'];
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          node: {
+            ...imageNode,
+            type: 'text',
+            data: {
+              ...imageNode.data,
+              mediaType: 'text',
+              modelAlias: undefined,
+              inferenceStrength: 'max',
+            },
+          } as AssetFlowNode,
+          models: [],
+        })}
+      />,
+    );
+
+    const inferenceGroup = screen.getByText('推理强度').parentElement as HTMLElement;
+    await user.hover(inferenceGroup);
+
+    for (const label of labels) {
+      expect(within(inferenceGroup).getByRole('option', { name: label })).toBeInTheDocument();
+    }
+    expect(
+      within(inferenceGroup).getByRole('option', { name: '最高', selected: true }),
+    ).toBeInTheDocument();
   });
 
   it('GPT-5.6 目录只返回 low 占位时仍显示完整推理强度', async () => {
@@ -216,10 +250,10 @@ describe('NodeQuickEditor', () => {
     const inferenceGroup = screen.getByText('推理强度').parentElement as HTMLElement;
     await user.hover(inferenceGroup);
 
-    expect(within(inferenceGroup).getByRole('button', { name: 'none' })).toBeInTheDocument();
-    expect(within(inferenceGroup).getByRole('button', { name: 'max' })).toBeInTheDocument();
+    expect(within(inferenceGroup).getByRole('option', { name: '轻度' })).toBeInTheDocument();
+    expect(within(inferenceGroup).getByRole('option', { name: 'Ultra' })).toBeInTheDocument();
     expect(
-      within(inferenceGroup).getByRole('button', { name: 'medium', pressed: true }),
+      within(inferenceGroup).getByRole('option', { name: '中', selected: true }),
     ).toBeInTheDocument();
   });
 
@@ -253,8 +287,8 @@ describe('NodeQuickEditor', () => {
     const inferenceGroup = screen.getByText('推理强度').parentElement as HTMLElement;
     await user.hover(inferenceGroup);
 
-    expect(within(inferenceGroup).getByRole('button', { name: 'none' })).toBeInTheDocument();
-    expect(within(inferenceGroup).getByRole('button', { name: 'max' })).toBeInTheDocument();
+    expect(within(inferenceGroup).getByRole('option', { name: '轻度' })).toBeInTheDocument();
+    expect(within(inferenceGroup).getByRole('option', { name: 'Ultra' })).toBeInTheDocument();
   });
 
   it('节点停用或忙碌时禁用生成按钮', () => {
@@ -305,7 +339,7 @@ describe('NodeQuickEditor', () => {
     expect(screen.getByText(imageCredentialLabel)).toBeInTheDocument();
     const modelGroup = screen.getByText('模型').parentElement as HTMLElement;
     await user.hover(modelGroup);
-    await user.click(within(modelGroup).getByRole('button', { name: '图片模型' }));
+    await user.click(within(modelGroup).getByRole('option', { name: '图片模型' }));
 
     expect(onModelChange).toHaveBeenCalledWith({
       modelAlias: 'image-model',
@@ -473,7 +507,7 @@ describe('NodeQuickEditor', () => {
     const ratioGroup = screen.getByText('视频比例').parentElement as HTMLElement;
     const durationGroup = screen.getByText('时长（秒）').parentElement as HTMLElement;
     const modelGroup = screen.getByText('模型').parentElement as HTMLElement;
-    expect(within(modelGroup).getByRole('button', { name: '模型：未设置' })).toBeInTheDocument();
+    expect(within(modelGroup).getByRole('combobox', { name: '模型：未设置' })).toBeInTheDocument();
     expect(
       within(resolutionGroup).getByRole('button', { name: '视频清晰度：未设置' }),
     ).toBeInTheDocument();
@@ -529,9 +563,9 @@ describe('NodeQuickEditor', () => {
     await user.hover(inferenceGroup);
 
     expect(
-      within(inferenceGroup).getByRole('button', { name: 'xhigh', pressed: true }),
+      within(inferenceGroup).getByRole('option', { name: '极高', selected: true }),
     ).toBeInTheDocument();
-    expect(within(inferenceGroup).queryByRole('button', { name: 'low' })).not.toBeInTheDocument();
+    expect(within(inferenceGroup).queryByRole('option', { name: '轻度' })).not.toBeInTheDocument();
   });
 
   it('不会把对象能力映射中禁用的推理强度显示出来', async () => {
@@ -570,12 +604,10 @@ describe('NodeQuickEditor', () => {
     await user.hover(inferenceGroup);
 
     expect(
-      within(inferenceGroup).getByRole('button', { name: 'xhigh', pressed: true }),
+      within(inferenceGroup).getByRole('option', { name: '极高', selected: true }),
     ).toBeInTheDocument();
-    expect(within(inferenceGroup).queryByRole('button', { name: 'low' })).not.toBeInTheDocument();
-    expect(
-      within(inferenceGroup).queryByRole('button', { name: 'medium' }),
-    ).not.toBeInTheDocument();
-    expect(within(inferenceGroup).queryByRole('button', { name: 'high' })).not.toBeInTheDocument();
+    expect(within(inferenceGroup).queryByRole('option', { name: '轻度' })).not.toBeInTheDocument();
+    expect(within(inferenceGroup).queryByRole('option', { name: '中' })).not.toBeInTheDocument();
+    expect(within(inferenceGroup).queryByRole('option', { name: '高' })).not.toBeInTheDocument();
   });
 });

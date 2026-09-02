@@ -123,15 +123,13 @@ const LEGACY_MODEL_CATALOG_KEY = '__legacy__';
 const DEFAULT_MODEL_RESPONSE_BYTES = 50 * 1024 * 1024;
 
 /** GPT-5.6 文本模型目前可用的推理强度值，顺序与界面展示顺序保持一致。 */
-const GPT_56_REASONING_EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+const GPT_56_REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 
-/** 仅对已确认支持上述推理档位的 GPT-5.6 文本模型启用兼容补齐。 */
-const GPT_56_TEXT_MODEL_ALIASES = new Set([
-  'gpt-5.6',
-  'gpt-5.6-sol',
-  'gpt-5.6-terra',
-  'gpt-5.6-luna',
-]);
+/** 上一版兼容回退使用的档位，读取旧缓存时需要迁移到当前顺序。 */
+const LEGACY_GPT_56_REASONING_EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+
+/** GPT-5.6 系列文本模型的别名；兼容供应商增加的稳定后缀。 */
+const GPT_56_TEXT_MODEL_ALIAS_PATTERN = /^gpt-5\.6(?:$|[-_.])/;
 
 export class AiSettingsStore {
   private baseUrl = '';
@@ -1403,20 +1401,26 @@ function normalizeReasoningEffortCapabilities(
   capabilities: Record<string, unknown> | undefined,
 ): Record<string, unknown> | undefined {
   if (!mediaTypes.includes('text')) return capabilities;
-  if (!GPT_56_TEXT_MODEL_ALIASES.has(modelAlias.trim().toLowerCase())) return capabilities;
+  if (!isGpt56TextModelAlias(modelAlias)) return capabilities;
 
   const declared = capabilities?.reasoning_effort;
   const shouldFill =
     !capabilities ||
     declared === undefined ||
     declared === null ||
-    isLowOnlyReasoningEffort(declared);
+    isLowOnlyReasoningEffort(declared) ||
+    isLegacyGpt56ReasoningEffortFallback(declared);
   if (!shouldFill) return capabilities;
 
   return {
     ...(capabilities ?? {}),
     reasoning_effort: [...GPT_56_REASONING_EFFORTS],
   };
+}
+
+/** 判断模型别名是否属于已确认支持六档推理强度的 GPT-5.6 系列。 */
+function isGpt56TextModelAlias(modelAlias: string): boolean {
+  return GPT_56_TEXT_MODEL_ALIAS_PATTERN.test(modelAlias.trim().toLowerCase());
 }
 
 /** 判断能力字段是否为空或仅包含 low（忽略空白与大小写）。 */
@@ -1433,6 +1437,15 @@ function isGpt56ReasoningEffortFallback(value: unknown): boolean {
     Array.isArray(value) &&
     value.length === GPT_56_REASONING_EFFORTS.length &&
     value.every((item, index) => item === GPT_56_REASONING_EFFORTS[index])
+  );
+}
+
+/** 判断数组是否为上一版包含 none 的 GPT-5.6 兼容档位。 */
+function isLegacyGpt56ReasoningEffortFallback(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.length === LEGACY_GPT_56_REASONING_EFFORTS.length &&
+    value.every((item, index) => item === LEGACY_GPT_56_REASONING_EFFORTS[index])
   );
 }
 

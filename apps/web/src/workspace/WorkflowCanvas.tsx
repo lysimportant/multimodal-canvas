@@ -372,7 +372,9 @@ export function WorkflowCanvas({
       className={`canvas-area${quickEditorNode ? ' has-quick-editor' : ''}`}
       aria-label="工作流画布"
       tabIndex={-1}
-      onWheel={handleCanvasWheelCapture}
+      // 在捕获阶段拦截 Ctrl+滚轮，避免事件先冒泡到页面触发浏览器缩放；
+      // 不阻止继续传播，React Flow 仍可在其内部处理画布缩放。
+      onWheelCapture={handleCanvasWheelCapture}
       onContextMenu={(event) => {
         if (!shouldKeepNativeContextMenu(event.target)) event.preventDefault();
       }}

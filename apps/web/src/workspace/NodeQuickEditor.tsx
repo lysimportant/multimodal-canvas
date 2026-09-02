@@ -3,6 +3,7 @@ import { useState, type FocusEvent } from 'react';
 
 import type { AssetFlowNode } from '../canvas-utils';
 import { TextPromptEditor } from '../TextPromptEditor';
+import { CompactSelect } from './CompactSelect';
 import { mediaLabels, type ModelEntry, type ModelSelection } from './contracts';
 
 /**
@@ -44,6 +45,7 @@ type MediaOption = {
   label: string;
   description?: string;
   previewAspectRatio?: string;
+  disabled?: boolean;
 };
 
 type QuickOption = MediaOption & {
@@ -82,15 +84,23 @@ const aspectRatioDescriptions: Record<string, string> = Object.fromEntries(
 );
 
 /** GPT-5.6 文本模型支持的推理强度，目录缺失时作为兼容回退。 */
-const GPT_56_REASONING_EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+const GPT_56_REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 
-/** 仅对已确认支持完整推理档位的 GPT-5.6 文本模型启用回退。 */
-const GPT_56_TEXT_MODEL_ALIASES = new Set([
-  'gpt-5.6',
-  'gpt-5.6-sol',
-  'gpt-5.6-terra',
-  'gpt-5.6-luna',
-]);
+/** 上一版兼容回退使用的档位，展示时迁移到当前的 low 到 Ultra。 */
+const LEGACY_GPT_56_REASONING_EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+
+/** 推理强度的用户界面标签，值仍按供应商契约原样提交。 */
+const INFERENCE_STRENGTH_LABELS: Record<string, string> = {
+  low: '轻度',
+  medium: '中',
+  high: '高',
+  xhigh: '极高',
+  max: '最高',
+  ultra: 'Ultra',
+};
+
+/** GPT-5.6 系列模型可带供应商自定义后缀，仍使用相同的推理强度菜单。 */
+const GPT_56_TEXT_MODEL_ALIAS_PATTERN = /^gpt-5\.6(?:$|[-_.])/;
 
 /** 渲染选中生成节点的紧凑编辑器。 */
 export function NodeQuickEditor({
@@ -230,18 +240,24 @@ export function NodeQuickEditor({
         className="node-quick-editor-controls"
         data-has-inference={inferenceOptions.length > 0 ? 'true' : 'false'}
       >
-        <QuickOptionMenu
+        <CompactSelect
           label="模型"
           value={currentModelValue}
           options={modelOptions}
           onChange={(value) => onModelChange(parseModelOptionValue(value))}
+          className="node-quick-editor-select-group"
+          placement="top"
+          openOnHover
         />
         {inferenceOptions.length > 0 && (
-          <QuickOptionMenu
+          <CompactSelect
             label="推理强度"
             value={node.data.inferenceStrength}
             options={inferenceOptions}
             onChange={(value) => onInferenceStrengthChange(value)}
+            className="node-quick-editor-select-group"
+            placement="top"
+            openOnHover
           />
         )}
         <button
@@ -434,8 +450,8 @@ function getMediaOptions(
  *
  * 模型目录没有统一字段名：有的使用 `reasoning_effort`，有的使用
  * `thinking.levels` 或 `supported_reasoning_efforts`。这里按常见别名和
- * 嵌套结构读取；找不到声明时，仅对已确认支持完整档位的 GPT-5.6
- * 文本模型启用兼容回退，其它模型只保留节点中已经保存的当前值。
+ * 嵌套结构读取；找不到声明时，对 GPT-5.6 系列和尚未绑定模型的文字
+ * 节点显示截图约定的六档菜单，其它模型只保留节点中已经保存的当前值。
  */
 function getInferenceStrengthOptions(
   model: ModelEntry | undefined,
@@ -446,7 +462,7 @@ function getInferenceStrengthOptions(
   const roots = getCapabilityRoots(model, mediaType);
   const normalizedModelAlias = (modelAlias.trim() || model?.id || '').toLowerCase();
   const supportsGpt56Fallback =
-    mediaType === 'text' && GPT_56_TEXT_MODEL_ALIASES.has(normalizedModelAlias);
+    mediaType === 'text' && (!normalizedModelAlias || isGpt56TextModelAlias(normalizedModelAlias));
   const aliases = [
     'inferenceStrength',
     'inferenceStrengths',
@@ -474,30 +490,40 @@ function getInferenceStrengthOptions(
   ];
   const declared = readCapabilityOptions(roots, aliases, 'inferenceStrength');
   if (declared && declared.length > 0) {
-    if (supportsGpt56Fallback && isLowOnlyInferenceOptions(declared)) {
+    if (
+      supportsGpt56Fallback &&
+      (isLowOnlyInferenceOptions(declared) || isLegacyGpt56InferenceOptions(declared))
+    ) {
       return ensureCurrentOption(
-        GPT_56_REASONING_EFFORTS.map((value) => ({ value, label: value })),
+        GPT_56_REASONING_EFFORTS.map((value) => createInferenceOption(value)),
         currentValue,
         'inferenceStrength',
       );
     }
-    return ensureCurrentOption(declared, currentValue, 'inferenceStrength');
+    return ensureCurrentOption(
+      localizeInferenceOptions(declared),
+      currentValue,
+      'inferenceStrength',
+    );
   }
   const nested = readNestedInferenceOptions(roots);
   if (nested.length > 0) {
-    if (supportsGpt56Fallback && isLowOnlyInferenceOptions(nested)) {
+    if (
+      supportsGpt56Fallback &&
+      (isLowOnlyInferenceOptions(nested) || isLegacyGpt56InferenceOptions(nested))
+    ) {
       return ensureCurrentOption(
-        GPT_56_REASONING_EFFORTS.map((value) => ({ value, label: value })),
+        GPT_56_REASONING_EFFORTS.map((value) => createInferenceOption(value)),
         currentValue,
         'inferenceStrength',
       );
     }
-    return ensureCurrentOption(nested, currentValue, 'inferenceStrength');
+    return ensureCurrentOption(localizeInferenceOptions(nested), currentValue, 'inferenceStrength');
   }
 
   if (supportsGpt56Fallback) {
     return ensureCurrentOption(
-      GPT_56_REASONING_EFFORTS.map((value) => ({ value, label: value })),
+      GPT_56_REASONING_EFFORTS.map((value) => createInferenceOption(value)),
       currentValue,
       'inferenceStrength',
     );
@@ -508,7 +534,7 @@ function getInferenceStrengthOptions(
     return [
       {
         value: current,
-        label: current,
+        label: INFERENCE_STRENGTH_LABELS[current.toLowerCase()] ?? current,
         description: '已保存',
       },
     ];
@@ -522,6 +548,38 @@ function isLowOnlyInferenceOptions(options: MediaOption[]): boolean {
   return (
     options.length > 0 && options.every((option) => option.value.trim().toLowerCase() === 'low')
   );
+}
+
+/** 判断模型别名是否属于已确认支持六档推理强度的 GPT-5.6 系列。 */
+function isGpt56TextModelAlias(modelAlias: string): boolean {
+  return GPT_56_TEXT_MODEL_ALIAS_PATTERN.test(modelAlias.trim().toLowerCase());
+}
+
+/** 判断模型目录是否仍返回上一版包含 none 的 GPT-5.6 回退档位。 */
+function isLegacyGpt56InferenceOptions(options: MediaOption[]): boolean {
+  return (
+    options.length === LEGACY_GPT_56_REASONING_EFFORTS.length &&
+    options.every(
+      (option, index) =>
+        option.value.trim().toLowerCase() === LEGACY_GPT_56_REASONING_EFFORTS[index],
+    )
+  );
+}
+
+/** 将已知推理值转换为截图约定的中文标签，未知值保留模型目录原文。 */
+function localizeInferenceOptions(options: MediaOption[]): MediaOption[] {
+  return options.map((option) => ({
+    ...option,
+    label: INFERENCE_STRENGTH_LABELS[option.value.trim().toLowerCase()] ?? option.label,
+  }));
+}
+
+/** 创建带有固定 UI 标签的 GPT 推理强度选项。 */
+function createInferenceOption(value: string): MediaOption {
+  return {
+    value,
+    label: INFERENCE_STRENGTH_LABELS[value] ?? value,
+  };
 }
 
 /** 在 `reasoning`/`thinking` 等包装对象中查找强度列表。 */
@@ -620,7 +678,7 @@ function buildModelOptions(
       });
     }
   }
-  return options.length > 0 ? options : [{ value: '', label: '暂无可用模型' }];
+  return options.length > 0 ? options : [{ value: '', label: '暂无可用模型', disabled: true }];
 }
 
 /** 找到节点当前绑定的模型；无绑定时使用当前媒体的第一个模型能力。 */
@@ -770,7 +828,12 @@ function ensureCurrentOption(
     ...options,
     {
       value,
-      label: kind === 'quality' ? value.toUpperCase() : value,
+      label:
+        kind === 'quality'
+          ? value.toUpperCase()
+          : kind === 'inferenceStrength'
+            ? (INFERENCE_STRENGTH_LABELS[value.toLowerCase()] ?? value)
+            : value,
       description: '已保存',
       ...(kind === 'aspectRatio' && /^\d+(?:\.\d+)?:\d+(?:\.\d+)?$/.test(value)
         ? { previewAspectRatio: value.replace(':', ' / ') }

@@ -114,6 +114,7 @@ describe('New API model catalog normalization', () => {
       data: [
         { id: 'gpt-5.6-sol' },
         { id: 'gpt-5.6' },
+        { id: 'gpt-5.6-codex' },
         {
           id: 'gpt-5.6-terra',
           capabilities: { reasoning_effort: ['low'], streaming: true },
@@ -125,17 +126,18 @@ describe('New API model catalog normalization', () => {
         },
       ],
     });
-    const expected = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
+    const expected = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
-    expect(models).toHaveLength(4);
+    expect(models).toHaveLength(5);
     expect(models.map((model) => model.capabilities?.reasoning_effort)).toEqual([
       expected,
       expected,
       expected,
       expected,
+      expected,
     ]);
-    expect(models[2]?.capabilities).toMatchObject({ streaming: true });
-    expect(models[3]?.capabilities).toMatchObject({ contextWindow: 256_000 });
+    expect(models[3]?.capabilities).toMatchObject({ streaming: true });
+    expect(models[4]?.capabilities).toMatchObject({ contextWindow: 256_000 });
   });
 
   it('保留完整或非 GPT 模型的显式推理强度声明', () => {
@@ -164,7 +166,7 @@ describe('New API model catalog normalization', () => {
   });
 
   it('在内存模型目录替换和重复记录合并时继续保留 GPT-5.6 的完整档位', () => {
-    const expected = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
+    const expected = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
     const models = normalizeModelsPayload({
       data: [
         {

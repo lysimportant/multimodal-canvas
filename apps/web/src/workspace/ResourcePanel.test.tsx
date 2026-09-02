@@ -147,7 +147,8 @@ describe('ResourcePanel search input', () => {
     const user = userEvent.setup();
     render(<ResourcePanelHarness onQueryCommit={vi.fn()} />);
 
-    await user.selectOptions(screen.getByRole('combobox', { name: '资源类型' }), 'image');
+    await user.click(screen.getByRole('combobox', { name: '资源类型' }));
+    await user.click(screen.getByRole('option', { name: '图片（1）' }));
     expect(screen.getByText('图片参考')).toBeInTheDocument();
     expect(screen.queryByText('中文参考素材')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '归档 图片参考' })).not.toBeInTheDocument();

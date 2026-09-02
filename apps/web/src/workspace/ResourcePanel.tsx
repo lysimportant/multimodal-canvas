@@ -16,6 +16,7 @@ import { useRef, type DragEvent, type RefObject } from 'react';
 import type { Asset } from '@multimodal-canvas/domain';
 import { useImeDraft } from '../ime';
 import { AssetPreview } from './AssetPreview';
+import { CompactSelect } from './CompactSelect';
 import { formatBytes, mediaLabels, type AssetFilter } from './contracts';
 
 export function ResourcePanel({
@@ -71,6 +72,19 @@ export function ResourcePanel({
   const visibleAssets = assets.filter((asset) =>
     showArchived ? asset.status === 'archived' : asset.status !== 'archived',
   );
+  const resourceOptions = [
+    { value: 'all', label: `全部资源（${visibleAssets.length}）` },
+    ...(Object.keys(mediaLabels) as Array<Exclude<AssetFilter, 'all'>>).map((mediaType) => ({
+      value: mediaType,
+      label: `${mediaLabels[mediaType]}（${
+        assets.filter(
+          (asset) =>
+            (showArchived ? asset.status === 'archived' : asset.status !== 'archived') &&
+            asset.mediaType === mediaType,
+        ).length
+      }）`,
+    })),
+  ];
   return (
     <aside
       className={`resource-panel ${collapsed ? 'is-collapsed' : ''}`}
@@ -79,30 +93,16 @@ export function ResourcePanel({
     >
       <div className="panel-heading resource-panel-heading">
         {!collapsed && (
-          <label className="resource-filter-field">
-            <span className="visually-hidden">资源类型</span>
-            <select
-              aria-label="资源类型"
-              value={activeFilter}
-              onChange={(event) => onFilterChange(event.target.value as AssetFilter)}
-            >
-              <option value="all">全部资源（{visibleAssets.length}）</option>
-              {(Object.keys(mediaLabels) as Array<Exclude<AssetFilter, 'all'>>).map((mediaType) => (
-                <option key={mediaType} value={mediaType}>
-                  {mediaLabels[mediaType]}（
-                  {
-                    assets.filter(
-                      (asset) =>
-                        (showArchived
-                          ? asset.status === 'archived'
-                          : asset.status !== 'archived') && asset.mediaType === mediaType,
-                    ).length
-                  }
-                  ）
-                </option>
-              ))}
-            </select>
-          </label>
+          <CompactSelect
+            label="资源类型"
+            ariaLabel="资源类型"
+            hideLabel
+            className="resource-filter-field"
+            value={activeFilter}
+            options={resourceOptions}
+            placement="bottom"
+            onChange={(value) => onFilterChange(value as AssetFilter)}
+          />
         )}
         <button
           type="button"
