@@ -81,6 +81,17 @@ const aspectRatioDescriptions: Record<string, string> = Object.fromEntries(
   aspectRatioOptions.map((option) => [option.value, option.description ?? '']),
 );
 
+/** GPT-5.6 文本模型支持的推理强度，目录缺失时作为兼容回退。 */
+const GPT_56_REASONING_EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+
+/** 仅对已确认支持完整推理档位的 GPT-5.6 文本模型启用回退。 */
+const GPT_56_TEXT_MODEL_ALIASES = new Set([
+  'gpt-5.6',
+  'gpt-5.6-sol',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
+]);
+
 /** 渲染选中生成节点的紧凑编辑器。 */
 export function NodeQuickEditor({
   node,
@@ -117,6 +128,7 @@ export function NodeQuickEditor({
   const inferenceOptions = getInferenceStrengthOptions(
     selectedModel,
     node.data.mediaType,
+    currentModel,
     node.data.inferenceStrength,
   );
   const enabled = node.data.enabled !== false;
@@ -422,15 +434,19 @@ function getMediaOptions(
  *
  * 模型目录没有统一字段名：有的使用 `reasoning_effort`，有的使用
  * `thinking.levels` 或 `supported_reasoning_efforts`。这里按常见别名和
- * 嵌套结构读取；找不到声明时，仅保留节点中已经保存的当前值，避免
- * 臆造模型并不支持的推理能力。
+ * 嵌套结构读取；找不到声明时，仅对已确认支持完整档位的 GPT-5.6
+ * 文本模型启用兼容回退，其它模型只保留节点中已经保存的当前值。
  */
 function getInferenceStrengthOptions(
   model: ModelEntry | undefined,
   mediaType: AssetFlowNode['data']['mediaType'],
+  modelAlias: string,
   currentValue: unknown,
 ): QuickOption[] {
   const roots = getCapabilityRoots(model, mediaType);
+  const normalizedModelAlias = (modelAlias.trim() || model?.id || '').toLowerCase();
+  const supportsGpt56Fallback =
+    mediaType === 'text' && GPT_56_TEXT_MODEL_ALIASES.has(normalizedModelAlias);
   const aliases = [
     'inferenceStrength',
     'inferenceStrengths',
@@ -458,11 +474,33 @@ function getInferenceStrengthOptions(
   ];
   const declared = readCapabilityOptions(roots, aliases, 'inferenceStrength');
   if (declared && declared.length > 0) {
+    if (supportsGpt56Fallback && isLowOnlyInferenceOptions(declared)) {
+      return ensureCurrentOption(
+        GPT_56_REASONING_EFFORTS.map((value) => ({ value, label: value })),
+        currentValue,
+        'inferenceStrength',
+      );
+    }
     return ensureCurrentOption(declared, currentValue, 'inferenceStrength');
   }
   const nested = readNestedInferenceOptions(roots);
   if (nested.length > 0) {
+    if (supportsGpt56Fallback && isLowOnlyInferenceOptions(nested)) {
+      return ensureCurrentOption(
+        GPT_56_REASONING_EFFORTS.map((value) => ({ value, label: value })),
+        currentValue,
+        'inferenceStrength',
+      );
+    }
     return ensureCurrentOption(nested, currentValue, 'inferenceStrength');
+  }
+
+  if (supportsGpt56Fallback) {
+    return ensureCurrentOption(
+      GPT_56_REASONING_EFFORTS.map((value) => ({ value, label: value })),
+      currentValue,
+      'inferenceStrength',
+    );
   }
 
   const current = normalizeCurrentOptionValue(currentValue);
@@ -477,6 +515,13 @@ function getInferenceStrengthOptions(
   }
 
   return [];
+}
+
+/** 判断模型目录是否只返回 low 占位值。 */
+function isLowOnlyInferenceOptions(options: MediaOption[]): boolean {
+  return (
+    options.length > 0 && options.every((option) => option.value.trim().toLowerCase() === 'low')
+  );
 }
 
 /** 在 `reasoning`/`thinking` 等包装对象中查找强度列表。 */
@@ -536,7 +581,9 @@ function normalizeInferenceMap(value: Record<string, unknown>): MediaOption[] {
   ]);
   const entries = Object.entries(value).filter(([key, child]) => {
     if (metadataKeys.has(key.toLowerCase())) return false;
-    return child === true || isRecord(child);
+    if (child === true) return true;
+    if (!isRecord(child)) return false;
+    return !['enabled', 'supported', 'available'].some((flag) => child[flag] === false);
   });
   if (entries.length === 0) return [];
   return entries.map(([key, child]) => ({

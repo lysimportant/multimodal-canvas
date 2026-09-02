@@ -122,6 +122,17 @@ export class AiCredentialNotFoundError extends Error {
 const LEGACY_MODEL_CATALOG_KEY = '__legacy__';
 const DEFAULT_MODEL_RESPONSE_BYTES = 50 * 1024 * 1024;
 
+/** GPT-5.6 文本模型目前可用的推理强度值，顺序与界面展示顺序保持一致。 */
+const GPT_56_REASONING_EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+
+/** 仅对已确认支持上述推理档位的 GPT-5.6 文本模型启用兼容补齐。 */
+const GPT_56_TEXT_MODEL_ALIASES = new Set([
+  'gpt-5.6',
+  'gpt-5.6-sol',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
+]);
+
 export class AiSettingsStore {
   private baseUrl = '';
   private encryptedApiKey = '';
@@ -368,9 +379,15 @@ export class AiSettingsStore {
       credentialId ?? models.find((model) => model.credentialId)?.credentialId;
     const catalog = new Map<string, ModelCatalogEntry>();
     for (const model of models) {
+      const capabilities = normalizeReasoningEffortCapabilities(
+        model.id,
+        model.mediaTypes,
+        model.capabilities,
+      );
       catalog.set(model.id, {
         ...model,
         ...(resolvedCredentialId ? { credentialId: resolvedCredentialId } : {}),
+        ...(capabilities ? { capabilities } : {}),
       });
     }
     this.modelCatalogs.set(modelCatalogKey(resolvedCredentialId), catalog);
@@ -496,9 +513,15 @@ export class AiSettingsStore {
         capabilityOverrideKey(model.credentialId, model.id, mediaType),
       ) ?? this.capabilityOverrides.get(capabilityOverrideKey(undefined, model.id, mediaType));
     if (!override) return model;
+    const capabilities = mergeModelCapabilities(
+      model.id,
+      model.mediaTypes,
+      model.capabilities,
+      override,
+    );
     return {
       ...model,
-      capabilities: { ...(model.capabilities ?? {}), ...override },
+      ...(capabilities ? { capabilities } : {}),
     };
   }
 
@@ -1299,13 +1322,18 @@ export function normalizeModelsPayload(payload: unknown): ModelCatalogEntry[] {
       merged.set(model.id, model);
       continue;
     }
+    const mediaTypes = [...new Set([...existing.mediaTypes, ...model.mediaTypes])];
+    const capabilities = mergeModelCapabilities(
+      model.id,
+      mediaTypes,
+      existing.capabilities,
+      model.capabilities,
+    );
     merged.set(model.id, {
       ...existing,
       name: model.name !== model.id ? model.name : existing.name,
-      mediaTypes: [...new Set([...existing.mediaTypes, ...model.mediaTypes])],
-      ...(model.capabilities || existing.capabilities
-        ? { capabilities: { ...(existing.capabilities ?? {}), ...(model.capabilities ?? {}) } }
-        : {}),
+      mediaTypes,
+      ...(capabilities ? { capabilities } : {}),
       ...(model.limitations || existing.limitations
         ? { limitations: { ...(existing.limitations ?? {}), ...(model.limitations ?? {}) } }
         : {}),
@@ -1328,6 +1356,86 @@ function extractModelCandidates(payload: unknown): unknown[] {
   return [];
 }
 
+/**
+ * 合并重复模型记录的能力，并避免低档占位值覆盖已确认的非低档声明。
+ *
+ * @param modelAlias 模型别名。
+ * @param mediaTypes 模型支持的媒体类型。
+ * @param existing 已合并的能力对象。
+ * @param incoming 当前记录的能力对象。
+ * @returns 合并后的能力；两侧都没有能力时返回 `undefined`。
+ */
+function mergeModelCapabilities(
+  modelAlias: string,
+  mediaTypes: MediaType[],
+  existing: Record<string, unknown> | undefined,
+  incoming: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!existing && !incoming) {
+    return normalizeReasoningEffortCapabilities(modelAlias, mediaTypes, undefined);
+  }
+
+  const merged = { ...(existing ?? {}), ...(incoming ?? {}) };
+  const existingEffort = existing?.reasoning_effort;
+  const incomingEffort = incoming?.reasoning_effort;
+  if (
+    existingEffort !== undefined &&
+    existingEffort !== null &&
+    (isLowOnlyReasoningEffort(incomingEffort) || isGpt56ReasoningEffortFallback(incomingEffort))
+  ) {
+    merged.reasoning_effort = existingEffort;
+  }
+  return normalizeReasoningEffortCapabilities(modelAlias, mediaTypes, merged);
+}
+
+/**
+ * 为已确认的 GPT-5.6 文本模型补齐缺失或仅有 low 占位的推理强度。
+ * 未列入白名单的模型、非文本模型以及已声明任一非 low 值的模型均原样返回。
+ *
+ * @param modelAlias 模型别名。
+ * @param mediaTypes 模型支持的媒体类型。
+ * @param capabilities 上游声明的能力对象。
+ * @returns 可能补齐 `reasoning_effort` 的能力对象。
+ */
+function normalizeReasoningEffortCapabilities(
+  modelAlias: string,
+  mediaTypes: MediaType[],
+  capabilities: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!mediaTypes.includes('text')) return capabilities;
+  if (!GPT_56_TEXT_MODEL_ALIASES.has(modelAlias.trim().toLowerCase())) return capabilities;
+
+  const declared = capabilities?.reasoning_effort;
+  const shouldFill =
+    !capabilities ||
+    declared === undefined ||
+    declared === null ||
+    isLowOnlyReasoningEffort(declared);
+  if (!shouldFill) return capabilities;
+
+  return {
+    ...(capabilities ?? {}),
+    reasoning_effort: [...GPT_56_REASONING_EFFORTS],
+  };
+}
+
+/** 判断能力字段是否为空或仅包含 low（忽略空白与大小写）。 */
+function isLowOnlyReasoningEffort(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.every((item) => typeof item === 'string' && item.trim().toLowerCase() === 'low')
+  );
+}
+
+/** 判断数组是否为本模块为 GPT-5.6 生成的完整兼容档位。 */
+function isGpt56ReasoningEffortFallback(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.length === GPT_56_REASONING_EFFORTS.length &&
+    value.every((item, index) => item === GPT_56_REASONING_EFFORTS[index])
+  );
+}
+
 function normalizeModel(candidate: unknown, refreshedAt: string): ModelCatalogEntry | undefined {
   if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return undefined;
   const record = candidate as Record<string, unknown>;
@@ -1336,11 +1444,17 @@ function normalizeModel(candidate: unknown, refreshedAt: string): ModelCatalogEn
   const explicitMediaTypes = extractMediaTypes(record);
   const inferredMediaTypes =
     explicitMediaTypes.length > 0 ? explicitMediaTypes : inferMediaTypes(id);
+  const mediaTypes: MediaType[] = inferredMediaTypes.length > 0 ? inferredMediaTypes : ['text'];
+  const capabilities = normalizeReasoningEffortCapabilities(
+    id,
+    mediaTypes,
+    isRecord(record.capabilities) ? record.capabilities : undefined,
+  );
   return {
     id,
     name: typeof record.name === 'string' && record.name.trim() ? record.name.trim() : id,
-    mediaTypes: inferredMediaTypes.length > 0 ? inferredMediaTypes : ['text'],
-    ...(isRecord(record.capabilities) ? { capabilities: record.capabilities } : {}),
+    mediaTypes,
+    ...(capabilities ? { capabilities } : {}),
     ...(isRecord(record.limitations)
       ? { limitations: record.limitations }
       : isRecord(record.limits)

@@ -121,6 +121,142 @@ describe('NodeQuickEditor', () => {
     expect(screen.getByLabelText('产品主图生成设置')).toHaveClass('nodrag', 'nowheel', 'nopan');
   });
 
+  it('展示 GPT-5.6 模型目录声明的全部推理强度标识', async () => {
+    const user = userEvent.setup();
+    const efforts = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          node: {
+            ...imageNode,
+            type: 'text',
+            data: {
+              ...imageNode.data,
+              mediaType: 'text',
+              modelAlias: 'gpt-5.6-sol',
+              inferenceStrength: 'medium',
+            },
+          } as AssetFlowNode,
+          models: [
+            {
+              id: 'gpt-5.6-sol',
+              name: 'GPT-5.6 Sol',
+              mediaTypes: ['text'],
+              capabilities: { reasoning_effort: efforts },
+            },
+          ],
+        })}
+      />,
+    );
+
+    const inferenceGroup = screen.getByText('推理强度').parentElement as HTMLElement;
+    await user.hover(inferenceGroup);
+
+    for (const effort of efforts) {
+      expect(within(inferenceGroup).getByRole('button', { name: effort })).toBeInTheDocument();
+    }
+  });
+
+  it('模型目录为空时仍为 GPT-5.6 文字节点提供完整推理强度', async () => {
+    const user = userEvent.setup();
+    const efforts = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          node: {
+            ...imageNode,
+            type: 'text',
+            data: {
+              ...imageNode.data,
+              mediaType: 'text',
+              modelAlias: 'gpt-5.6-sol',
+              inferenceStrength: 'low',
+            },
+          } as AssetFlowNode,
+          models: [],
+        })}
+      />,
+    );
+
+    const inferenceGroup = screen.getByText('推理强度').parentElement as HTMLElement;
+    await user.hover(inferenceGroup);
+
+    for (const effort of efforts) {
+      expect(within(inferenceGroup).getByRole('button', { name: effort })).toBeInTheDocument();
+    }
+  });
+
+  it('GPT-5.6 目录只返回 low 占位时仍显示完整推理强度', async () => {
+    const user = userEvent.setup();
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          node: {
+            ...imageNode,
+            type: 'text',
+            data: {
+              ...imageNode.data,
+              mediaType: 'text',
+              modelAlias: 'gpt-5.6-terra',
+              inferenceStrength: 'medium',
+            },
+          } as AssetFlowNode,
+          models: [
+            {
+              id: 'gpt-5.6-terra',
+              name: 'GPT-5.6 Terra',
+              mediaTypes: ['text'],
+              capabilities: { reasoning_effort: ['low'] },
+            },
+          ],
+        })}
+      />,
+    );
+
+    const inferenceGroup = screen.getByText('推理强度').parentElement as HTMLElement;
+    await user.hover(inferenceGroup);
+
+    expect(within(inferenceGroup).getByRole('button', { name: 'none' })).toBeInTheDocument();
+    expect(within(inferenceGroup).getByRole('button', { name: 'max' })).toBeInTheDocument();
+    expect(
+      within(inferenceGroup).getByRole('button', { name: 'medium', pressed: true }),
+    ).toBeInTheDocument();
+  });
+
+  it('当前 GPT-5.6 模型不在目录时不会被其它文字模型的能力覆盖', async () => {
+    const user = userEvent.setup();
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          node: {
+            ...imageNode,
+            type: 'text',
+            data: {
+              ...imageNode.data,
+              mediaType: 'text',
+              modelAlias: 'gpt-5.6-sol',
+              inferenceStrength: 'low',
+            },
+          } as AssetFlowNode,
+          models: [
+            {
+              id: 'other-text-model',
+              name: '其它文字模型',
+              mediaTypes: ['text'],
+              capabilities: { reasoning_effort: ['low'] },
+            },
+          ],
+        })}
+      />,
+    );
+
+    const inferenceGroup = screen.getByText('推理强度').parentElement as HTMLElement;
+    await user.hover(inferenceGroup);
+
+    expect(within(inferenceGroup).getByRole('button', { name: 'none' })).toBeInTheDocument();
+    expect(within(inferenceGroup).getByRole('button', { name: 'max' })).toBeInTheDocument();
+  });
+
   it('节点停用或忙碌时禁用生成按钮', () => {
     const { rerender } = render(
       <NodeQuickEditor
@@ -396,5 +532,50 @@ describe('NodeQuickEditor', () => {
       within(inferenceGroup).getByRole('button', { name: 'xhigh', pressed: true }),
     ).toBeInTheDocument();
     expect(within(inferenceGroup).queryByRole('button', { name: 'low' })).not.toBeInTheDocument();
+  });
+
+  it('不会把对象能力映射中禁用的推理强度显示出来', async () => {
+    const user = userEvent.setup();
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          node: {
+            ...imageNode,
+            data: {
+              ...imageNode.data,
+              modelAlias: 'object-flag-model',
+              inferenceStrength: undefined,
+            },
+          } as AssetFlowNode,
+          models: [
+            {
+              id: 'object-flag-model',
+              name: '对象标记模型',
+              mediaTypes: ['image'],
+              capabilities: {
+                reasoning_effort: {
+                  low: { enabled: false },
+                  medium: { supported: false },
+                  high: { available: false },
+                  xhigh: { enabled: true },
+                },
+              },
+            },
+          ],
+        })}
+      />,
+    );
+
+    const inferenceGroup = screen.getByText('推理强度').parentElement as HTMLElement;
+    await user.hover(inferenceGroup);
+
+    expect(
+      within(inferenceGroup).getByRole('button', { name: 'xhigh', pressed: true }),
+    ).toBeInTheDocument();
+    expect(within(inferenceGroup).queryByRole('button', { name: 'low' })).not.toBeInTheDocument();
+    expect(
+      within(inferenceGroup).queryByRole('button', { name: 'medium' }),
+    ).not.toBeInTheDocument();
+    expect(within(inferenceGroup).queryByRole('button', { name: 'high' })).not.toBeInTheDocument();
   });
 });

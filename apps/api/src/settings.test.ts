@@ -109,6 +109,89 @@ describe('New API model catalog normalization', () => {
     ]);
   });
 
+  it('补齐明确 GPT-5.6 文本模型缺失或仅 low 的推理强度', () => {
+    const models = normalizeModelsPayload({
+      data: [
+        { id: 'gpt-5.6-sol' },
+        { id: 'gpt-5.6' },
+        {
+          id: 'gpt-5.6-terra',
+          capabilities: { reasoning_effort: ['low'], streaming: true },
+        },
+        {
+          id: 'gpt-5.6-luna',
+          type: 'text',
+          capabilities: { contextWindow: 256_000 },
+        },
+      ],
+    });
+    const expected = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
+
+    expect(models).toHaveLength(4);
+    expect(models.map((model) => model.capabilities?.reasoning_effort)).toEqual([
+      expected,
+      expected,
+      expected,
+      expected,
+    ]);
+    expect(models[2]?.capabilities).toMatchObject({ streaming: true });
+    expect(models[3]?.capabilities).toMatchObject({ contextWindow: 256_000 });
+  });
+
+  it('保留完整或非 GPT 模型的显式推理强度声明', () => {
+    const explicit = ['none', 'low', 'medium', 'high'];
+    const models = normalizeModelsPayload({
+      data: [
+        {
+          id: 'gpt-5.6-sol',
+          capabilities: { reasoning_effort: explicit },
+        },
+        {
+          id: 'gpt-4o',
+          capabilities: { reasoning_effort: ['low'] },
+        },
+        {
+          id: 'gpt-5.6-terra',
+          media_type: 'image',
+          capabilities: { reasoning_effort: ['low'] },
+        },
+      ],
+    });
+
+    expect(models[0]?.capabilities?.reasoning_effort).toBe(explicit);
+    expect(models[1]?.capabilities?.reasoning_effort).toEqual(['low']);
+    expect(models[2]?.capabilities?.reasoning_effort).toEqual(['low']);
+  });
+
+  it('在内存模型目录替换和重复记录合并时继续保留 GPT-5.6 的完整档位', () => {
+    const expected = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
+    const models = normalizeModelsPayload({
+      data: [
+        {
+          id: 'gpt-5.6-sol',
+          capabilities: { reasoning_effort: ['none', 'low', 'medium', 'high'] },
+        },
+        {
+          id: 'gpt-5.6-sol',
+          capabilities: { reasoning_effort: ['low'] },
+        },
+      ],
+    });
+    const store = new AiSettingsStore('test-encryption-secret');
+    store.replaceModels([
+      {
+        id: 'gpt-5.6-sol',
+        name: 'GPT-5.6 Sol',
+        mediaTypes: ['text'],
+        capabilities: { reasoning_effort: ['low'] },
+        refreshedAt: '2026-08-26T00:00:00.000Z',
+      },
+    ]);
+
+    expect(models[0]?.capabilities?.reasoning_effort).toEqual(['none', 'low', 'medium', 'high']);
+    expect(store.listModels('text')[0]?.capabilities?.reasoning_effort).toEqual(expected);
+  });
+
   it('applies media-specific capability overrides only to filtered models', () => {
     const store = new AiSettingsStore('test-encryption-secret');
     store.replaceModels([
