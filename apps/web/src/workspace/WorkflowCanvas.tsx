@@ -23,6 +23,7 @@ import {
   type DragEvent,
   type MouseEvent as ReactMouseEvent,
   type RefObject,
+  type WheelEvent as ReactWheelEvent,
 } from 'react';
 
 import type { MediaType } from '@multimodal-canvas/domain';
@@ -77,7 +78,7 @@ function shouldKeepNativeContextMenu(target: EventTarget | null) {
 }
 
 /** 快速编辑器在桌面画布中的最大宽度，单位为像素。 */
-const QUICK_EDITOR_MAX_WIDTH = 360;
+const QUICK_EDITOR_MAX_WIDTH = 560;
 /** 编辑器停靠节点侧面时保持可用控件布局的最小宽度，单位为像素。 */
 const QUICK_EDITOR_MIN_SIDE_WIDTH = 280;
 /** 快速编辑器与可见画布边界之间的最小距离，单位为像素。 */
@@ -132,6 +133,22 @@ export type WorkflowCanvasProps = {
   onAddTransformNode: (mediaType: MediaType, position?: { x: number; y: number }) => void;
   onCanvasCenterChange: (position: { x: number; y: number }) => void;
   onRequestUpload: () => void;
+  /** 清空画布并由 App 负责确认、历史记录与脏状态。 */
+  onClearCanvas?: () => void;
+  /** 撤销最近一次画布变更。 */
+  onUndoCanvas?: () => void;
+  /** 重做最近一次撤销的画布变更。 */
+  onRedoCanvas?: () => void;
+  /** 打开搜索/命令面板。 */
+  onOpenSearch?: () => void;
+  /** 打开画布背景选择器。 */
+  onOpenBackground?: () => void;
+  /** 底部工具栏清空按钮是否可用。 */
+  canClearCanvas?: boolean;
+  /** 底部工具栏撤销按钮是否可用。 */
+  canUndo?: boolean;
+  /** 底部工具栏重做按钮是否可用。 */
+  canRedo?: boolean;
   onOpenProjectHub: () => void;
 };
 
@@ -163,6 +180,14 @@ export function WorkflowCanvas({
   onAddTransformNode,
   onCanvasCenterChange,
   onRequestUpload,
+  onClearCanvas,
+  onUndoCanvas,
+  onRedoCanvas,
+  onOpenSearch,
+  onOpenBackground,
+  canClearCanvas,
+  canUndo,
+  canRedo,
   onOpenProjectHub,
 }: WorkflowCanvasProps) {
   const { screenToFlowPosition, getNodesBounds, getZoom, setCenter } = useReactFlow();
@@ -246,6 +271,11 @@ export function WorkflowCanvas({
     },
     [onCanvasDrop, screenToFlowPosition],
   );
+
+  /** 阻止浏览器将画布上的 Ctrl+滚轮解释为页面缩放，让 React Flow 接管缩放。 */
+  const handleCanvasWheelCapture = useCallback((event: ReactWheelEvent<HTMLElement>) => {
+    if (event.ctrlKey) event.preventDefault();
+  }, []);
 
   const getReturnFocusTarget = useCallback((event: CanvasContextMouseEvent) => {
     const activeElement = document.activeElement;
@@ -342,6 +372,7 @@ export function WorkflowCanvas({
       className={`canvas-area${quickEditorNode ? ' has-quick-editor' : ''}`}
       aria-label="工作流画布"
       tabIndex={-1}
+      onWheel={handleCanvasWheelCapture}
       onContextMenu={(event) => {
         if (!shouldKeepNativeContextMenu(event.target)) event.preventDefault();
       }}
@@ -349,6 +380,15 @@ export function WorkflowCanvas({
       <CanvasNodeToolbar
         onAddGenerateNode={handleAddGenerateNode}
         onAddTransformNode={handleAddTransformNode}
+        onRequestUpload={onRequestUpload}
+        onClearCanvas={onClearCanvas}
+        onUndoCanvas={onUndoCanvas}
+        onRedoCanvas={onRedoCanvas}
+        onOpenSearch={onOpenSearch}
+        onOpenBackground={onOpenBackground}
+        canClearCanvas={canClearCanvas ?? (nodes.length > 0 || edges.length > 0)}
+        canUndo={canUndo}
+        canRedo={canRedo}
       />
       <NodeSelectionContext.Provider value={selectNodeByData}>
         <NodeResizeContext.Provider value={onResizeNode}>
@@ -453,6 +493,7 @@ export function WorkflowCanvas({
           onInferenceStrengthChange={(value) =>
             onInferenceStrengthChange(value, quickEditorNode.id)
           }
+          hasConnectedInput={edges.some((edge) => edge.target === quickEditorNode.id)}
           onRun={() => onRunNode(quickEditorNode)}
         />
       )}

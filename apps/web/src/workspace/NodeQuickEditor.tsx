@@ -5,7 +5,13 @@ import type { AssetFlowNode } from '../canvas-utils';
 import { TextPromptEditor } from '../TextPromptEditor';
 import { mediaLabels, type ModelEntry, type ModelSelection } from './contracts';
 
-export type InferenceStrength = 'low' | 'medium' | 'high';
+/**
+ * 模型目录声明的推理强度标识。
+ *
+ * 不同模型可能使用 `low`、`xhigh`、`max` 或其他供应商自定义值，
+ * 因此这里不能再收窄成固定的联合类型。
+ */
+export type InferenceStrength = string;
 
 /**
  * 生成节点可配置的媒体参数。
@@ -27,6 +33,8 @@ export type NodeQuickEditorProps = {
   onModelChange: (value: ModelSelection) => void;
   onInferenceStrengthChange: (value: InferenceStrength) => void;
   onRun: () => void;
+  /** 当前节点是否有可供转换/生成的连线输入。 */
+  hasConnectedInput?: boolean;
   /** 更新节点的媒体参数；未提供时参数控件仍可显示但不会修改父状态。 */
   onParametersChange?: (value: NodeMediaParameters) => void;
 };
@@ -41,12 +49,6 @@ type MediaOption = {
 type QuickOption = MediaOption & {
   groupLabel?: string;
 };
-
-const inferenceStrengthOptions: MediaOption[] = [
-  { value: 'low', label: '低' },
-  { value: 'medium', label: '中' },
-  { value: 'high', label: '高' },
-];
 
 const imageQualityOptions: MediaOption[] = [
   { value: '1k', label: '1K', description: '标准' },
@@ -88,6 +90,7 @@ export function NodeQuickEditor({
   onModelChange,
   onInferenceStrengthChange,
   onRun,
+  hasConnectedInput = false,
   onParametersChange,
 }: NodeQuickEditorProps) {
   const currentModel = node.data.modelAlias ?? '';
@@ -109,10 +112,16 @@ export function NodeQuickEditor({
     currentCredentialId,
     currentModelIsMissing,
   );
-  const selectedModelValue = currentModelValue || modelOptions[0]?.value || '';
   const parameters = readNodeMediaParameters(node.data);
   const mediaOptions = getMediaOptions(selectedModel, node.data.mediaType, parameters);
+  const inferenceOptions = getInferenceStrengthOptions(
+    selectedModel,
+    node.data.mediaType,
+    node.data.inferenceStrength,
+  );
   const enabled = node.data.enabled !== false;
+  const hasPrompt = Boolean(node.data.prompt?.trim());
+  const hasRunnableParameters = hasPrompt || hasConnectedInput;
 
   const updateParameter = (key: keyof NodeMediaParameters, value: unknown) => {
     if (!onParametersChange) return;
@@ -205,34 +214,47 @@ export function NodeQuickEditor({
         </div>
       )}
 
-      <div className="node-quick-editor-controls">
+      <div
+        className="node-quick-editor-controls"
+        data-has-inference={inferenceOptions.length > 0 ? 'true' : 'false'}
+      >
         <QuickOptionMenu
           label="模型"
-          value={selectedModelValue}
+          value={currentModelValue}
           options={modelOptions}
           onChange={(value) => onModelChange(parseModelOptionValue(value))}
         />
-        <QuickOptionMenu
-          label="推理强度"
-          value={node.data.inferenceStrength}
-          options={inferenceStrengthOptions}
-          onChange={(value) => onInferenceStrengthChange(value as InferenceStrength)}
-        />
-      </div>
-
-      <button
-        type="button"
-        className="button button-primary node-quick-editor-run"
-        onClick={onRun}
-        disabled={busy || !enabled}
-      >
-        {busy ? (
-          <LoaderCircle className="spin" size={16} aria-hidden="true" />
-        ) : (
-          <Play size={16} aria-hidden="true" />
+        {inferenceOptions.length > 0 && (
+          <QuickOptionMenu
+            label="推理强度"
+            value={node.data.inferenceStrength}
+            options={inferenceOptions}
+            onChange={(value) => onInferenceStrengthChange(value)}
+          />
         )}
-        {busy ? '生成中' : '生成'}
-      </button>
+        <button
+          type="button"
+          className="button button-primary node-quick-editor-run"
+          aria-label={busy ? '生成中' : '生成'}
+          title={
+            busy
+              ? '生成中'
+              : !enabled
+                ? '节点已停用'
+                : !hasRunnableParameters
+                  ? '请先填写提示词或连接输入节点'
+                  : '生成'
+          }
+          onClick={onRun}
+          disabled={busy || !enabled || !hasRunnableParameters}
+        >
+          {busy ? (
+            <LoaderCircle className="spin" size={16} aria-hidden="true" />
+          ) : (
+            <Play size={16} aria-hidden="true" />
+          )}
+        </button>
+      </div>
     </section>
   );
 }
@@ -259,7 +281,10 @@ function QuickOptionMenu({
   onChange: (value: string) => void;
   aspectOptions?: boolean;
 }) {
-  const stringValue = value === undefined || value === null ? '' : String(value);
+  const stringValue = normalizeCurrentOptionValue(value);
+  const hasExplicitSelection = Boolean(
+    stringValue && options.some((option) => option.value === stringValue),
+  );
   const selectedValue = options.some((option) => option.value === stringValue)
     ? stringValue
     : (options[0]?.value ?? '');
@@ -289,11 +314,13 @@ function QuickOptionMenu({
       <button
         type="button"
         className="node-quick-editor-option-trigger"
-        aria-label={`${label}：${formatOptionLabel(selectedOption)}`}
+        aria-label={`${label}：${formatTriggerLabel(selectedOption, hasExplicitSelection, options)}`}
         aria-expanded={open}
         onClick={() => setOpen((current) => !current)}
       >
-        <span title={formatOptionLabel(selectedOption)}>{formatOptionLabel(selectedOption)}</span>
+        <span title={formatTriggerLabel(selectedOption, hasExplicitSelection, options)}>
+          {formatTriggerLabel(selectedOption, hasExplicitSelection, options)}
+        </span>
         <span className="node-quick-editor-option-trigger-icon" aria-hidden="true">
           ▾
         </span>
@@ -390,6 +417,137 @@ function getMediaOptions(
   return { quality, resolution, aspectRatio, duration };
 }
 
+/**
+ * 从当前模型能力中读取推理强度的原始标识。
+ *
+ * 模型目录没有统一字段名：有的使用 `reasoning_effort`，有的使用
+ * `thinking.levels` 或 `supported_reasoning_efforts`。这里按常见别名和
+ * 嵌套结构读取；找不到声明时，仅保留节点中已经保存的当前值，避免
+ * 臆造模型并不支持的推理能力。
+ */
+function getInferenceStrengthOptions(
+  model: ModelEntry | undefined,
+  mediaType: AssetFlowNode['data']['mediaType'],
+  currentValue: unknown,
+): QuickOption[] {
+  const roots = getCapabilityRoots(model, mediaType);
+  const aliases = [
+    'inferenceStrength',
+    'inferenceStrengths',
+    'inference_strength',
+    'inference_strengths',
+    'reasoningEffort',
+    'reasoningEffortOptions',
+    'reasoningEfforts',
+    'reasoning_effort',
+    'reasoning_effort_options',
+    'reasoning_efforts',
+    'supportedReasoningEfforts',
+    'supported_reasoning_efforts',
+    'reasoningLevels',
+    'reasoning_levels',
+    'thinkingLevels',
+    'thinking_levels',
+    'reasoning',
+    'thinking',
+    'inference',
+    'effortLevels',
+    'effort_levels',
+    'effort',
+    'efforts',
+  ];
+  const declared = readCapabilityOptions(roots, aliases, 'inferenceStrength');
+  if (declared && declared.length > 0) {
+    return ensureCurrentOption(declared, currentValue, 'inferenceStrength');
+  }
+  const nested = readNestedInferenceOptions(roots);
+  if (nested.length > 0) {
+    return ensureCurrentOption(nested, currentValue, 'inferenceStrength');
+  }
+
+  const current = normalizeCurrentOptionValue(currentValue);
+  if (current) {
+    return [
+      {
+        value: current,
+        label: current,
+        description: '已保存',
+      },
+    ];
+  }
+
+  return [];
+}
+
+/** 在 `reasoning`/`thinking` 等包装对象中查找强度列表。 */
+function readNestedInferenceOptions(roots: Record<string, unknown>[]): MediaOption[] {
+  const options: MediaOption[] = [];
+  const seen = new Set<string>();
+  const visit = (value: unknown, hint: string, depth: number) => {
+    if (depth > 4 || value === null || value === undefined) return;
+    const hintMatches = /(reason|think|effort|inference)/i.test(hint);
+    if (hintMatches) {
+      const direct = normalizeRawOptions(value, 'inferenceStrength');
+      for (const option of direct) {
+        if (seen.has(option.value)) continue;
+        seen.add(option.value);
+        options.push(option);
+      }
+      if (isRecord(value)) {
+        const keyOptions = normalizeInferenceMap(value);
+        for (const option of keyOptions) {
+          if (seen.has(option.value)) continue;
+          seen.add(option.value);
+          options.push(option);
+        }
+      }
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item) => visit(item, hint, depth + 1));
+      return;
+    }
+    if (!isRecord(value)) return;
+    for (const [key, child] of Object.entries(value)) {
+      const childHint = hintMatches ? `${hint}.${key}` : key;
+      visit(child, childHint, depth + 1);
+    }
+  };
+  roots.forEach((root) => visit(root, '', 0));
+  return options;
+}
+
+/** 兼容 `{ low: true, high: true }` 一类的能力映射。 */
+function normalizeInferenceMap(value: Record<string, unknown>): MediaOption[] {
+  const metadataKeys = new Set([
+    'enabled',
+    'supported',
+    'available',
+    'default',
+    'description',
+    'type',
+    'enum',
+    'values',
+    'options',
+    'items',
+    'levels',
+    'efforts',
+    'reasoning',
+    'thinking',
+  ]);
+  const entries = Object.entries(value).filter(([key, child]) => {
+    if (metadataKeys.has(key.toLowerCase())) return false;
+    return child === true || child === false || isRecord(child);
+  });
+  if (entries.length === 0) return [];
+  return entries.map(([key, child]) => ({
+    value: key,
+    label: isRecord(child) && typeof child.label === 'string' ? child.label : key,
+    ...(isRecord(child) && typeof child.description === 'string'
+      ? { description: child.description }
+      : {}),
+  }));
+}
+
 /** 构造按媒体类型和凭据筛选后的模型选项。 */
 function buildModelOptions(
   models: ModelEntry[],
@@ -468,7 +626,7 @@ function getCapabilityRoots(
 function readCapabilityOptions(
   roots: Record<string, unknown>[],
   aliases: string[],
-  kind: 'quality' | 'resolution' | 'aspectRatio' | 'duration',
+  kind: 'quality' | 'resolution' | 'aspectRatio' | 'duration' | 'inferenceStrength',
 ): MediaOption[] | undefined {
   for (const root of roots) {
     for (const alias of aliases) {
@@ -483,7 +641,7 @@ function readCapabilityOptions(
 /** 将能力字段转换为稳定、去重且保留上游顺序的按钮选项。 */
 function normalizeRawOptions(
   raw: unknown,
-  kind: 'quality' | 'resolution' | 'aspectRatio' | 'duration',
+  kind: 'quality' | 'resolution' | 'aspectRatio' | 'duration' | 'inferenceStrength',
 ): MediaOption[] {
   const values = collectRawOptions(raw);
   const seen = new Set<string>();
@@ -495,14 +653,14 @@ function normalizeRawOptions(
     const fallbackDescription = kind === 'aspectRatio' ? aspectRatioDescriptions[value] : undefined;
     const description =
       item.description ?? fallbackDescription ?? (kind === 'duration' ? '秒' : undefined);
-    const label =
-      item.label ??
-      (kind === 'quality' ? value.toUpperCase() : kind === 'duration' ? value : value);
+    const label = item.label ?? (kind === 'quality' ? value.toUpperCase() : value);
     options.push({
       value,
       label,
       ...(description ? { description } : {}),
-      ...(kind === 'aspectRatio' ? { previewAspectRatio: value.replace(':', ' / ') } : {}),
+      ...(kind === 'aspectRatio' && /^\d+(?:\.\d+)?:\d+(?:\.\d+)?$/.test(value)
+        ? { previewAspectRatio: value.replace(':', ' / ') }
+        : {}),
     });
   }
   return options;
@@ -530,7 +688,7 @@ function collectRawOptions(raw: unknown): RawOption[] {
       },
     ];
   }
-  for (const key of ['values', 'options', 'items']) {
+  for (const key of ['values', 'options', 'items', 'enum', 'allowed', 'supported']) {
     if (raw[key] !== undefined) return collectRawOptions(raw[key]);
   }
   return Object.entries(raw).flatMap(([key, value]) => {
@@ -557,9 +715,9 @@ function collectRawOptions(raw: unknown): RawOption[] {
 function ensureCurrentOption(
   options: MediaOption[],
   currentValue: unknown,
-  kind: 'quality' | 'resolution' | 'aspectRatio' | 'duration',
+  kind: 'quality' | 'resolution' | 'aspectRatio' | 'duration' | 'inferenceStrength',
 ): MediaOption[] {
-  const value = currentValue === undefined || currentValue === null ? '' : String(currentValue);
+  const value = normalizeCurrentOptionValue(currentValue);
   if (!value || options.some((option) => option.value === value)) return options;
   return [
     ...options,
@@ -567,9 +725,17 @@ function ensureCurrentOption(
       value,
       label: kind === 'quality' ? value.toUpperCase() : value,
       description: '已保存',
-      ...(kind === 'aspectRatio' ? { previewAspectRatio: value.replace(':', ' / ') } : {}),
+      ...(kind === 'aspectRatio' && /^\d+(?:\.\d+)?:\d+(?:\.\d+)?$/.test(value)
+        ? { previewAspectRatio: value.replace(':', ' / ') }
+        : {}),
     },
   ];
+}
+
+/** 将节点中的旧参数安全地转换为菜单可比较的非空字符串。 */
+function normalizeCurrentOptionValue(value: unknown): string {
+  if (value === undefined || value === null) return '';
+  return String(value).trim();
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -578,6 +744,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function formatOptionLabel(option: MediaOption): string {
   return option.description ? `${option.label} · ${option.description}` : option.label;
+}
+
+/**
+ * 生成触发器文案：未显式设置时不把模型/参数的首项伪装成用户已选择的值。
+ * 首项仍会在浮层中作为当前候选高亮，只有用户确认后才写入节点数据。
+ */
+function formatTriggerLabel(
+  selectedOption: MediaOption,
+  hasExplicitSelection: boolean,
+  options: MediaOption[],
+): string {
+  if (hasExplicitSelection || options.length === 0 || !options[0]?.value) {
+    return formatOptionLabel(selectedOption);
+  }
+  return '未设置';
 }
 
 /** 将模型与凭据绑定编码为菜单可用的稳定值。 */

@@ -80,7 +80,7 @@ export function ResourcePanel({
       <div className="panel-heading resource-panel-heading">
         {!collapsed && (
           <label className="resource-filter-field">
-            <span>资源类型</span>
+            <span className="visually-hidden">资源类型</span>
             <select
               aria-label="资源类型"
               value={activeFilter}

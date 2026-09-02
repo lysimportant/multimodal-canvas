@@ -498,7 +498,10 @@ function WorkspaceApp({
     });
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target;
-      if (target instanceof Element && !target.closest('.background-control')) {
+      if (
+        target instanceof Element &&
+        !target.closest('.background-control, .canvas-node-background-tool')
+      ) {
         setShowBackgroundMenu(false);
       }
     };
@@ -622,6 +625,23 @@ function WorkspaceApp({
     setEdges(structuredClone(next.edges));
     canvasDirtyRef.current = true;
   }, [setEdges, setNodes]);
+
+  /**
+   * 清空当前画布中的节点与连线。
+   *
+   * 清空属于可逆的画布编辑操作：执行前要求用户确认，并将当前快照写入
+   * 历史记录，因此仍可通过撤销恢复；项目资源库中的资产不会被删除。
+   */
+  const clearCanvas = useCallback(() => {
+    if (nodesRef.current.length === 0 && edgesRef.current.length === 0) return;
+    if (!window.confirm('确定清空当前画布吗？画布资源不会删除，且可以通过撤销恢复。')) return;
+    rememberHistory();
+    setNodes([]);
+    setEdges([]);
+    setSelectedNodeId(null);
+    canvasDirtyRef.current = true;
+    setNotice({ kind: 'success', message: '画布已清空，可通过撤销恢复' });
+  }, [rememberHistory, setEdges, setNodes]);
 
   const handleNodesChange: OnNodesChange<AssetFlowNode> = useCallback(
     (changes) => {
@@ -1122,7 +1142,6 @@ function WorkspaceApp({
           label: `${mediaLabels[mediaType]}${modeLabels[mode]}节点`,
           mediaType,
           mode,
-          inferenceStrength: 'low',
         },
       }),
     [],
@@ -1560,8 +1579,30 @@ function WorkspaceApp({
         return;
       }
 
+      // 保存是全局画布命令，即使焦点在输入控件中也应保留 Ctrl/Cmd+S。
+      if (command && key === 's') {
+        event.preventDefault();
+        void saveCanvas().catch((error: unknown) => {
+          setSaveState('保存失败');
+          setNotice({
+            kind: 'error',
+            message: error instanceof Error ? error.message : '画布保存失败',
+          });
+        });
+        return;
+      }
+
       if (isCanvasShortcutTarget(event.target)) return;
 
+      if (command && key === 'a') {
+        if (nodesRef.current.length === 0) return;
+        event.preventDefault();
+        setNodes((current) => {
+          const next = current.map((node) => (node.selected ? node : { ...node, selected: true }));
+          return next.every((node, index) => node === current[index]) ? current : next;
+        });
+        return;
+      }
       if (command && key === 'z') {
         event.preventDefault();
         if (event.shiftKey) redoCanvas();
@@ -1621,6 +1662,7 @@ function WorkspaceApp({
     deleteCanvasSelection,
     redoCanvas,
     rememberHistory,
+    saveCanvas,
     selectedNode,
     setEdges,
     setNodes,
@@ -1802,7 +1844,9 @@ function WorkspaceApp({
                 ? { prompt: nodeSnapshot.data.prompt.trim() }
                 : {}),
               ...(nodeSnapshot.data.parameters ?? {}),
-              inferenceStrength: nodeSnapshot.data.inferenceStrength ?? 'low',
+              ...(nodeSnapshot.data.inferenceStrength
+                ? { inferenceStrength: nodeSnapshot.data.inferenceStrength }
+                : {}),
             },
           }),
         });
@@ -2471,6 +2515,22 @@ function WorkspaceApp({
             onAddTransformNode={handleAddTransformNode}
             onCanvasCenterChange={updateCanvasCenterPosition}
             onRequestUpload={() => uploadInputRef.current?.click()}
+            onClearCanvas={clearCanvas}
+            onUndoCanvas={undoCanvas}
+            onRedoCanvas={redoCanvas}
+            onOpenSearch={() => {
+              setShowBackgroundMenu(false);
+              setShowThemeMenu(false);
+              setShowCommandPalette(true);
+            }}
+            onOpenBackground={() => {
+              setShowThemeMenu(false);
+              setShowCommandPalette(false);
+              setShowBackgroundMenu((current) => !current);
+            }}
+            canClearCanvas={nodes.length > 0 || edges.length > 0}
+            canUndo={historyRef.current.past.length > 0}
+            canRedo={historyRef.current.future.length > 0}
             onOpenProjectHub={() => setShowProjectHub(true)}
             background={canvasBackground}
           />

@@ -86,7 +86,7 @@ const nodeSchema = {
         enabled: { type: 'boolean' },
         stale: { type: 'boolean' },
         prompt: { type: 'string', maxLength: 20000 },
-        inferenceStrength: { type: 'string', enum: ['low', 'medium', 'high'] },
+        inferenceStrength: { type: 'string', minLength: 1 },
         assetId: { type: 'string' },
         modelAlias: { type: 'string' },
         credentialId: { type: 'string', format: 'uuid' },

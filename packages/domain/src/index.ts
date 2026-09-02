@@ -115,7 +115,11 @@ export const nodeDataSchema = z.object({
    * 参数由对应 Provider 按已支持的字段映射，未配置时沿用模型默认值。
    */
   parameters: z.record(z.unknown()).optional(),
-  inferenceStrength: z.enum(['low', 'medium', 'high']).optional(),
+  /**
+   * 模型支持的推理强度标识。不同模型的能力名称可能不同（例如
+   * `low`、`high`、`xhigh` 或 `max`），因此只校验为非空字符串。
+   */
+  inferenceStrength: z.string().trim().min(1).optional(),
   modelAlias: z.string().trim().min(1).optional(),
   /** Credential selected with the model. Omitted keeps legacy active-credential behavior. */
   credentialId: z.string().trim().min(1).optional(),

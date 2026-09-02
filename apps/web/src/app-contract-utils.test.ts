@@ -55,7 +55,7 @@ describe('canvas node factories', () => {
     });
   });
 
-  it('creates every generate node with the expected mode and default strength', () => {
+  it('creates every generate node with the expected mode without a fabricated strength', () => {
     const node = createGenerateFlowNode('video', { x: 100, y: 120 }, () => 'fixed');
 
     expect(node).toMatchObject({
@@ -66,7 +66,6 @@ describe('canvas node factories', () => {
         label: '视频生成节点',
         mediaType: 'video',
         mode: 'generate',
-        inferenceStrength: 'low',
       },
     });
   });

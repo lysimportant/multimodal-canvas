@@ -1994,9 +1994,10 @@ function providerParameters(
   } = parameters;
   if (
     mediaType === 'text' &&
-    (inferenceStrength === 'low' || inferenceStrength === 'medium' || inferenceStrength === 'high')
+    typeof inferenceStrength === 'string' &&
+    inferenceStrength.trim().length > 0
   ) {
-    providerParameters.reasoning_effort = inferenceStrength;
+    providerParameters.reasoning_effort = inferenceStrength.trim();
   }
   if (mediaType === 'image') {
     // 兼容旧画布中的 `resolution`/`imageSize`，统一映射到兼容接口的图片 `size` 字段。

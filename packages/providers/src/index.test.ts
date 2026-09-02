@@ -402,6 +402,37 @@ describe('NewApiProvider', () => {
     );
   });
 
+  it('passes through dynamic reasoning effort identifiers for text models', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: '回答' } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const provider = new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    });
+
+    await provider.execute({
+      snapshot: {
+        ...textSnapshot(),
+        parameters: {
+          prompt: 'runtime prompt',
+          inferenceStrength: ' xhigh ',
+        },
+      },
+    });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://newapi.example.com/v1/chat/completions',
+      expect.objectContaining({
+        body: expect.stringContaining('"reasoning_effort":"xhigh"'),
+      }),
+    );
+  });
+
   it('maps ordered text roles to separate chat messages without concatenating them', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ choices: [{ message: { content: 'Generated text' } }] }), {

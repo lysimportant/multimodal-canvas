@@ -37,7 +37,12 @@ const videoNode = {
 
 const models: NodeQuickEditorProps['models'] = [
   { id: 'text-model', name: '文字模型', mediaTypes: ['text'] },
-  { id: 'image-model', name: '图片模型', mediaTypes: ['image'] },
+  {
+    id: 'image-model',
+    name: '图片模型',
+    mediaTypes: ['image'],
+    capabilities: { reasoning_effort: ['low', 'medium', 'high'] },
+  },
   { id: 'multi-model', name: '多模态模型', mediaTypes: ['text', 'image'] },
 ];
 
@@ -104,7 +109,7 @@ describe('NodeQuickEditor', () => {
     await user.hover(modelGroup);
     await user.click(within(modelGroup).getByRole('button', { name: '图片模型' }));
     await user.hover(inferenceGroup);
-    await user.click(within(inferenceGroup).getByRole('button', { name: '低' }));
+    await user.click(within(inferenceGroup).getByRole('button', { name: 'low' }));
     await user.click(screen.getByRole('button', { name: '生成' }));
     fireEvent.pointerDown(prompt);
 
@@ -331,6 +336,17 @@ describe('NodeQuickEditor', () => {
     const resolutionGroup = screen.getByText('视频清晰度').parentElement as HTMLElement;
     const ratioGroup = screen.getByText('视频比例').parentElement as HTMLElement;
     const durationGroup = screen.getByText('时长（秒）').parentElement as HTMLElement;
+    const modelGroup = screen.getByText('模型').parentElement as HTMLElement;
+    expect(within(modelGroup).getByRole('button', { name: '模型：未设置' })).toBeInTheDocument();
+    expect(
+      within(resolutionGroup).getByRole('button', { name: '视频清晰度：未设置' }),
+    ).toBeInTheDocument();
+    expect(
+      within(ratioGroup).getByRole('button', { name: '视频比例：未设置' }),
+    ).toBeInTheDocument();
+    expect(
+      within(durationGroup).getByRole('button', { name: '时长（秒）：未设置' }),
+    ).toBeInTheDocument();
     await user.hover(resolutionGroup);
     await user.hover(ratioGroup);
     await user.hover(durationGroup);

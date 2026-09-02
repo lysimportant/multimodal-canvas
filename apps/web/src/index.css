@@ -1222,8 +1222,8 @@ h2 {
   display: grid;
   gap: 10px;
   padding: 12px;
-  grid-template-columns: minmax(0, 1fr) 96px 78px;
-  width: min(360px, calc(100vw - 32px));
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  width: min(560px, calc(100vw - 32px));
 }
 
 .node-quick-editor-header,
@@ -1320,8 +1320,12 @@ h2 {
 .node-quick-editor-controls {
   display: grid;
   gap: 8px;
-  grid-column: 1 / 3;
-  grid-template-columns: minmax(0, 1fr) 96px;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+}
+
+.node-quick-editor-controls[data-has-inference='false'] {
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .node-quick-editor-media-options {
@@ -1589,8 +1593,9 @@ h2 {
 
 .node-quick-editor-run {
   align-self: end;
-  grid-column: 3;
   height: 34px;
+  min-width: 38px;
+  padding: 0;
   width: 100%;
 }
 
@@ -3219,9 +3224,88 @@ textarea:focus-visible {
   }
 }
 
+/* 画布底部工具胶囊：节点创建和常用操作按组排列，组间使用细分隔线。 */
+.canvas-node-tools {
+  align-items: center;
+  flex-wrap: nowrap;
+  max-width: min(calc(100% - 24px), 760px);
+  overflow: visible;
+}
+
+.canvas-node-tools .canvas-node-tool-group {
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.canvas-node-action-group {
+  gap: 2px;
+}
+
+.canvas-node-tool-divider {
+  background: var(--mc-border-strong, #c4cfcb);
+  flex: 0 0 1px;
+  height: 24px;
+  margin: 0 2px;
+  opacity: 0.72;
+  pointer-events: none;
+}
+
+.canvas-node-action-tool {
+  background: var(--mc-surface-muted, #f0f3f5);
+  border: 1px solid var(--mc-border, #dce3e7);
+  color: var(--mc-text-muted, #687386);
+}
+
+.canvas-node-action-tool:hover:not(:disabled),
+.canvas-node-action-tool:focus-visible {
+  background: var(--mc-accent-soft, #edf7f2);
+  border-color: var(--mc-accent, #18794e);
+  color: var(--mc-accent-strong, #12613e);
+}
+
+.canvas-node-action-tool:disabled {
+  box-shadow: none;
+  cursor: not-allowed;
+  filter: none;
+  opacity: 0.38;
+  transform: none;
+}
+
+/* 背景按钮打开的菜单挂在顶栏，避免底部胶囊裁剪其浮层。 */
+.canvas-node-background-tool {
+  z-index: 4;
+}
+
+.canvas-node-action-destructive:hover:not(:disabled),
+.canvas-node-action-destructive:focus-visible {
+  background: #fff1ef;
+  border-color: #e8bbb5;
+  color: #9b4035;
+}
+
+@media (max-width: 900px) {
+  .canvas-node-tools {
+    max-width: calc(100% - 24px);
+  }
+}
+
+@media (max-width: 600px) {
+  .canvas-node-tools {
+    max-width: calc(100% - 52px);
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .canvas-node-tool-divider {
+    height: 20px;
+    margin-inline: 1px;
+  }
+}
+
 @media (max-width: 420px) {
   .node-quick-editor {
-    width: 290px;
+    width: min(560px, calc(100vw - 24px));
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
   }
 
   .node-quick-editor-option-popover {
@@ -3230,11 +3314,11 @@ textarea:focus-visible {
   }
 
   .node-quick-editor-controls {
-    grid-template-columns: minmax(0, 1fr) 72px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
   }
 
-  .node-quick-editor {
-    grid-template-columns: minmax(0, 1fr) 72px 64px;
+  .node-quick-editor-controls[data-has-inference='false'] {
+    grid-template-columns: minmax(0, 1fr) auto;
   }
 }
 

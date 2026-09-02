@@ -1199,6 +1199,9 @@ test('overrides a node model and displays the completed run result', async ({ pa
   await modelMenu.getByRole('button', { name: 'Mock Text v2' }).click();
   await expect(modelMenu.getByRole('button', { name: '模型：Mock Text v2' })).toBeVisible();
 
+  const prompt = page.locator('.node-quick-editor textarea');
+  await expect(prompt).toBeVisible();
+  await prompt.fill('验证模型覆盖后的生成结果');
   await page.getByRole('button', { name: '生成', exact: true }).click();
 
   await expect(page.getByRole('region', { name: '运行结果' })).toBeVisible();
@@ -1307,6 +1310,9 @@ test('切换 Mock 默认模型后新运行使用新模型', async ({ page }) => 
       /\/v1\/nodes\/[^/]+\/runs$/.test(new URL(response.url()).pathname) &&
       response.request().method() === 'POST',
   );
+  const prompt = page.locator('.node-quick-editor textarea');
+  await expect(prompt).toBeVisible();
+  await prompt.fill('验证默认模型切换后的新运行');
   await page.getByRole('button', { name: '生成', exact: true }).click();
   const run = (await (await runResponse).json()).run as RunRecord;
 

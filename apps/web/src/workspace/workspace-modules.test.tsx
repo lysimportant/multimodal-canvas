@@ -76,6 +76,50 @@ describe('workspace modules', () => {
     expect(onTransform).toHaveBeenCalledWith('video');
   });
 
+  it('renders grouped canvas actions and forwards their callbacks', async () => {
+    const user = userEvent.setup();
+    const callbacks = {
+      onUpload: vi.fn(),
+      onClear: vi.fn(),
+      onUndo: vi.fn(),
+      onRedo: vi.fn(),
+      onSearch: vi.fn(),
+      onBackground: vi.fn(),
+    };
+    render(
+      <CanvasNodeToolbar
+        onAddGenerateNode={vi.fn()}
+        onAddTransformNode={vi.fn()}
+        onRequestUpload={callbacks.onUpload}
+        onClearCanvas={callbacks.onClear}
+        onUndoCanvas={callbacks.onUndo}
+        onRedoCanvas={callbacks.onRedo}
+        onOpenSearch={callbacks.onSearch}
+        onOpenBackground={callbacks.onBackground}
+        canClearCanvas={false}
+        canUndo={false}
+        canRedo
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: '清空画布' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '画布撤销' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '画布重做' })).toBeEnabled();
+    expect(document.querySelectorAll('.canvas-node-tool-divider')).toHaveLength(5);
+
+    await user.click(screen.getByRole('button', { name: '上传资产' }));
+    await user.click(screen.getByRole('button', { name: '画布重做' }));
+    await user.click(screen.getByRole('button', { name: '搜索' }));
+    await user.click(screen.getByRole('button', { name: '背景' }));
+
+    expect(callbacks.onUpload).toHaveBeenCalledTimes(1);
+    expect(callbacks.onRedo).toHaveBeenCalledTimes(1);
+    expect(callbacks.onSearch).toHaveBeenCalledTimes(1);
+    expect(callbacks.onBackground).toHaveBeenCalledTimes(1);
+    expect(callbacks.onClear).not.toHaveBeenCalled();
+    expect(callbacks.onUndo).not.toHaveBeenCalled();
+  });
+
   it('keeps cancellation inside the independent run panel', async () => {
     const user = userEvent.setup();
     const onCancel = vi.fn();

@@ -176,7 +176,7 @@ describe('canvas protocol', () => {
     expect(document.nodes[1].data.parameters).toMatchObject({ resolution: '1080p', duration: 8 });
   });
 
-  it('rejects invalid node prompt and inference strength settings', () => {
+  it('rejects invalid node prompt and empty inference strength settings', () => {
     const invalidPrompt = canvasDocumentSchema.safeParse({
       revision: 0,
       nodes: [
@@ -194,6 +194,23 @@ describe('canvas protocol', () => {
       ],
       edges: [],
     });
+    const dynamicStrength = canvasDocumentSchema.safeParse({
+      revision: 0,
+      nodes: [
+        {
+          id: 'node_image',
+          type: 'image',
+          position: { x: 0, y: 0 },
+          data: {
+            label: 'Generate',
+            mediaType: 'image',
+            mode: 'generate',
+            inferenceStrength: 'xhigh',
+          },
+        },
+      ],
+      edges: [],
+    });
     const invalidStrength = canvasDocumentSchema.safeParse({
       revision: 0,
       nodes: [
@@ -205,7 +222,7 @@ describe('canvas protocol', () => {
             label: 'Generate',
             mediaType: 'image',
             mode: 'generate',
-            inferenceStrength: 'extreme',
+            inferenceStrength: '   ',
           },
         },
       ],
@@ -213,6 +230,7 @@ describe('canvas protocol', () => {
     });
 
     expect(invalidPrompt.success).toBe(false);
+    expect(dynamicStrength.success).toBe(true);
     expect(invalidStrength.success).toBe(false);
   });
 

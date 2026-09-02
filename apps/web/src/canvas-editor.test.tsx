@@ -297,6 +297,14 @@ const assets: Asset[] = [
 ];
 
 const emptyCanvas: CanvasDocument = { revision: 0, nodes: [], edges: [] };
+const modelCatalog = [
+  {
+    id: 'text-model',
+    name: '文字模型',
+    mediaTypes: ['text'],
+    capabilities: { reasoning_effort: ['low', 'medium', 'high'] },
+  },
+];
 const jsonResponse = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
@@ -350,7 +358,9 @@ function installApiMock() {
     const url = new URL(rawUrl, 'http://localhost:3000');
     const method = init?.method?.toUpperCase() ?? 'GET';
 
-    if (url.pathname === '/v1/models' && method === 'GET') return jsonResponse({ models: [] });
+    if (url.pathname === '/v1/models' && method === 'GET') {
+      return jsonResponse({ models: modelCatalog });
+    }
     if (url.pathname === '/v1/assets' && method === 'GET') return jsonResponse({ assets });
     if (url.pathname === '/v1/projects' && method === 'GET') {
       return jsonResponse({ projects: [project] });
@@ -684,7 +694,7 @@ describe('画布编辑器交互', () => {
     await user.type(prompt, '用最新提示词生成');
     const inferenceGroup = within(quickEditor).getByText('推理强度').parentElement as HTMLElement;
     await user.hover(inferenceGroup);
-    await user.click(within(inferenceGroup).getByRole('button', { name: '高' }));
+    await user.click(within(inferenceGroup).getByRole('button', { name: 'high' }));
     await user.click(within(quickEditor).getByRole('button', { name: '生成' }));
 
     await waitFor(() => {
@@ -915,6 +925,30 @@ describe('画布编辑器交互', () => {
 
     await user.click(screen.getByRole('button', { name: '重做' }));
     await waitFor(() => expect(flowNodes()).toHaveLength(0));
+  });
+
+  it('支持 Ctrl+A 全选节点，并用 Ctrl+S 保存当前画布', async () => {
+    const { user } = await renderCanvas();
+
+    await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
+    await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
+    await waitFor(() => expect(flowNodes()).toHaveLength(2));
+
+    fireEvent.keyDown(window, { key: 'a', ctrlKey: true });
+    await waitFor(() => {
+      expect(flowNodes().filter((node) => node.querySelector('.is-selected')).length).toBe(2);
+    });
+
+    fireEvent.keyDown(window, { key: 's', ctrlKey: true });
+    await waitFor(() => {
+      const saveRequests = fetchMock.mock.calls.filter(([input, init]) => {
+        const rawUrl =
+          typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        const url = new URL(rawUrl, 'http://localhost:3000');
+        return url.pathname === `/v1/projects/${project.id}/canvas` && init?.method === 'PATCH';
+      });
+      expect(saveRequests.length).toBeGreaterThan(0);
+    });
   });
 
   it('阻止非法端口连接，并提示循环依赖', async () => {
