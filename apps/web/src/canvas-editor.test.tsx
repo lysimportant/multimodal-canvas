@@ -951,6 +951,31 @@ describe('画布编辑器交互', () => {
     });
   });
 
+  it('用 Ctrl+E 拦截输入框默认行为并搜索当前项目节点', async () => {
+    const { user } = await renderCanvas();
+
+    await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
+    const node = findNodeByLabel('文字生成节点');
+    expect(node).toBeTruthy();
+    await user.click(node!);
+
+    const prompt = screen.getByRole('textbox', { name: '提示词' });
+    const shortcutEvent = new KeyboardEvent('keydown', {
+      key: 'e',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    prompt.dispatchEvent(shortcutEvent);
+
+    expect(shortcutEvent.defaultPrevented).toBe(true);
+    const searchbox = await screen.findByRole('searchbox', { name: '搜索命令…' });
+    await user.type(searchbox, '文字生成节点');
+    const nodeOptions = screen.getAllByRole('option', { name: /当前项目节点/ });
+    expect(nodeOptions).toHaveLength(1);
+    expect(nodeOptions[0]).toHaveTextContent('文字生成节点');
+  });
+
   it('阻止非法端口连接，并提示循环依赖', async () => {
     const { user } = await renderCanvas();
 

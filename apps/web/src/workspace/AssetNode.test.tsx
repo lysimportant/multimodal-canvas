@@ -4,15 +4,33 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@xyflow/react', () => ({
-  Handle: () => null,
-  NodeResizer: () => null,
-  Position: { Top: 'top', Right: 'right', Bottom: 'bottom', Left: 'left' },
-}));
+vi.mock('@xyflow/react', async () => {
+  return {
+    Handle: () => null,
+    NodeResizer: ({
+      isVisible,
+      onResizeStart,
+    }: {
+      isVisible?: boolean;
+      onResizeStart?: () => void;
+    }) =>
+      isVisible ? (
+        <button type="button" onClick={onResizeStart}>
+          开始调整尺寸
+        </button>
+      ) : null,
+    Position: { Top: 'top', Right: 'right', Bottom: 'bottom', Left: 'left' },
+  };
+});
 
 import type { NodeProps } from '@xyflow/react';
 import type { AssetFlowNode } from '../canvas-utils';
-import { AssetNode, NodeEnabledContext, NodeRetryContext } from './AssetNode';
+import {
+  AssetNode,
+  NodeEnabledContext,
+  NodeResizeStartContext,
+  NodeRetryContext,
+} from './AssetNode';
 
 function makeNode(overrides: Partial<AssetFlowNode['data']> = {}): AssetFlowNode {
   return {
@@ -33,18 +51,22 @@ function renderNode(
   node: AssetFlowNode,
   onRetry?: (nodeId: string) => void | Promise<void>,
   onEnabled?: (nodeId: string, enabled: boolean) => void,
+  onResizeStart?: (nodeId: string) => void,
+  selected = false,
 ) {
   const props = {
     id: node.id,
     data: node.data,
-    selected: false,
+    selected,
   } as NodeProps<AssetFlowNode>;
   return render(
-    <NodeEnabledContext.Provider value={onEnabled ?? null}>
-      <NodeRetryContext.Provider value={onRetry ?? null}>
-        <AssetNode {...props} />
-      </NodeRetryContext.Provider>
-    </NodeEnabledContext.Provider>,
+    <NodeResizeStartContext.Provider value={onResizeStart ?? null}>
+      <NodeEnabledContext.Provider value={onEnabled ?? null}>
+        <NodeRetryContext.Provider value={onRetry ?? null}>
+          <AssetNode {...props} />
+        </NodeRetryContext.Provider>
+      </NodeEnabledContext.Provider>
+    </NodeResizeStartContext.Provider>,
   );
 }
 
@@ -178,6 +200,74 @@ describe('AssetNode result presentation', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('图片加载失败');
     await waitFor(() => expect(screen.getByLabelText('产物加载失败')).toBeInTheDocument());
     expect(screen.queryByLabelText('运行成功')).not.toBeInTheDocument();
+  });
+
+  it('limits an initial media result to 800 by 600 until resizing begins', () => {
+    const onResizeStart = vi.fn();
+    const { container } = renderNode(
+      makeNode({
+        mediaType: 'image',
+        runStatus: 'succeeded',
+        resultAsset: {
+          assetId: 'asset_image',
+          contentUrl: 'https://assets.example/result.png',
+          mimeType: 'image/png',
+        },
+      }),
+      undefined,
+      undefined,
+      onResizeStart,
+      true,
+    );
+
+    const preview = container.querySelector('.flow-node-preview');
+    expect(preview).toHaveClass('is-initial-size-limited');
+
+    fireEvent.click(screen.getByRole('button', { name: '开始调整尺寸' }));
+
+    expect(onResizeStart).toHaveBeenCalledWith('node_1');
+    expect(preview).not.toHaveClass('is-initial-size-limited');
+  });
+
+  it('applies the initial preview limit again when a new result arrives', () => {
+    const first = makeNode({
+      mediaType: 'image',
+      runStatus: 'succeeded',
+      resultAsset: {
+        assetId: 'asset_image_1',
+        contentUrl: 'https://assets.example/result-1.png',
+        mimeType: 'image/png',
+      },
+    });
+    const view = renderNode(first, undefined, undefined, undefined, true);
+    const preview = view.container.querySelector('.flow-node-preview');
+    expect(preview).toHaveClass('is-initial-size-limited');
+
+    fireEvent.click(screen.getByRole('button', { name: '开始调整尺寸' }));
+    expect(preview).not.toHaveClass('is-initial-size-limited');
+
+    const next = makeNode({
+      mediaType: 'image',
+      runStatus: 'succeeded',
+      resultAsset: {
+        assetId: 'asset_image_2',
+        contentUrl: 'https://assets.example/result-2.png',
+        mimeType: 'image/png',
+      },
+    });
+    const nextProps = {
+      id: next.id,
+      data: next.data,
+      selected: true,
+    } as NodeProps<AssetFlowNode>;
+    view.rerender(
+      <NodeRetryContext.Provider value={null}>
+        <AssetNode {...nextProps} />
+      </NodeRetryContext.Provider>,
+    );
+    expect(view.container.querySelector('.flow-node-preview')).toHaveClass(
+      'is-initial-size-limited',
+    );
   });
 
   it('keeps the ungenerated state distinct from missing source content', () => {

@@ -30,6 +30,23 @@ export function normalizeProjectName(value: string, fallback = DEFAULT_PROJECT_N
   return value.trim() || fallback;
 }
 
+/**
+ * 为新建节点生成在当前画布中唯一且可读的默认名称。
+ * @param baseLabel 节点类型的基础名称。
+ * @param existingLabels 当前画布已有节点名称。
+ * @returns 未占用的节点名称。
+ */
+export function createUniqueNodeLabel(
+  baseLabel: string,
+  existingLabels: readonly string[],
+): string {
+  const occupied = new Set(existingLabels);
+  if (!occupied.has(baseLabel)) return baseLabel;
+  let suffix = 2;
+  while (occupied.has(`${baseLabel} ${suffix}`)) suffix += 1;
+  return `${baseLabel} ${suffix}`;
+}
+
 /** Parse persisted UI state without allowing an unknown value into React Flow. */
 export function parseCanvasBackground(value: string | null | undefined): CanvasBackground {
   return canvasBackgroundValues.includes(value as CanvasBackground)

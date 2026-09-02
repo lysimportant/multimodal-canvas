@@ -375,18 +375,19 @@ describe('NodeQuickEditor', () => {
 
     expect(mediaOptions).toHaveClass('node-quick-editor-media-options');
     expect(mediaOptions).toHaveAttribute('data-columns', '2');
-    expect(mediaOptions.querySelectorAll('.node-quick-editor-option-group')).toHaveLength(2);
+    expect(mediaOptions.querySelectorAll('.node-quick-editor-option-group')).toHaveLength(1);
     expect(screen.queryByText('图片尺寸')).not.toBeInTheDocument();
     expect(ratioGroup.querySelectorAll('.node-quick-editor-option')).toHaveLength(8);
 
-    expect(
-      qualityGroup.querySelector<HTMLButtonElement>('.node-quick-editor-option-trigger'),
-    ).toHaveAttribute('aria-expanded', 'false');
+    expect(within(qualityGroup).getByRole('combobox', { name: '图片清晰度：2K' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
     await user.hover(qualityGroup);
     expect(
-      within(qualityGroup).getByRole('button', { name: '2K 高清', pressed: true }),
-    ).toHaveAttribute('aria-pressed', 'true');
-    expect(within(qualityGroup).getByRole('button', { name: '4K 极致' })).toBeInTheDocument();
+      within(qualityGroup).getByRole('option', { name: '2K 高清', selected: true }),
+    ).toBeInTheDocument();
+    expect(within(qualityGroup).getByRole('option', { name: '4K 极致' })).toBeInTheDocument();
     await user.hover(ratioGroup);
     expect(within(ratioGroup).queryByText('自动比例')).not.toBeInTheDocument();
     expect(within(ratioGroup).getByRole('button', { name: /1:1/, pressed: true })).toHaveAttribute(
@@ -430,21 +431,21 @@ describe('NodeQuickEditor', () => {
 
     expect(mediaOptions).toHaveClass('node-quick-editor-media-options');
     expect(mediaOptions).toHaveAttribute('data-columns', '3');
-    expect(mediaOptions.querySelectorAll('.node-quick-editor-option-group')).toHaveLength(3);
+    expect(mediaOptions.querySelectorAll('.node-quick-editor-option-group')).toHaveLength(1);
     expect(screen.queryByText('视频尺寸')).not.toBeInTheDocument();
-    expect(resolutionGroup.querySelectorAll('.node-quick-editor-option')).toHaveLength(6);
+    expect(resolutionGroup.querySelectorAll('.compact-select-option')).toHaveLength(6);
     expect(ratioGroup.querySelectorAll('.node-quick-editor-option')).toHaveLength(8);
-    expect(durationGroup.querySelectorAll('.node-quick-editor-option')).toHaveLength(5);
+    expect(durationGroup.querySelectorAll('.compact-select-option')).toHaveLength(5);
 
     expect(
-      resolutionGroup.querySelector<HTMLButtonElement>('.node-quick-editor-option-trigger'),
+      within(resolutionGroup).getByRole('combobox', { name: '视频清晰度：720p' }),
     ).toHaveAttribute('aria-expanded', 'false');
     await user.hover(resolutionGroup);
     expect(
-      within(resolutionGroup).getByRole('button', { name: '720p', pressed: true }),
-    ).toHaveAttribute('aria-pressed', 'true');
-    expect(within(resolutionGroup).getByRole('button', { name: '360p' })).toBeInTheDocument();
-    expect(within(resolutionGroup).getByRole('button', { name: '2160p' })).toBeInTheDocument();
+      within(resolutionGroup).getByRole('option', { name: '720p', selected: true }),
+    ).toBeInTheDocument();
+    expect(within(resolutionGroup).getByRole('option', { name: '360p' })).toBeInTheDocument();
+    expect(within(resolutionGroup).getByRole('option', { name: '2160p' })).toBeInTheDocument();
     await user.hover(ratioGroup);
     expect(within(ratioGroup).queryByText('自动比例')).not.toBeInTheDocument();
     expect(within(ratioGroup).getByRole('button', { name: /1:1/, pressed: true })).toHaveAttribute(
@@ -453,8 +454,8 @@ describe('NodeQuickEditor', () => {
     );
     await user.hover(durationGroup);
     expect(
-      within(durationGroup).getByRole('button', { name: '4 秒', pressed: true }),
-    ).toHaveAttribute('aria-pressed', 'true');
+      within(durationGroup).getByRole('option', { name: '4 秒', selected: true }),
+    ).toBeInTheDocument();
     await user.hover(ratioGroup);
     const ratioButton = within(ratioGroup).getByRole('button', { name: /16:9/ });
     const ratioPreview = ratioButton.querySelector('.node-quick-editor-aspect-preview');
@@ -464,7 +465,7 @@ describe('NodeQuickEditor', () => {
 
     fireEvent.click(ratioButton);
     await user.hover(durationGroup);
-    fireEvent.click(within(durationGroup).getByRole('button', { name: '8 秒' }));
+    fireEvent.click(within(durationGroup).getByRole('option', { name: '8 秒' }));
 
     expect(onParametersChange).toHaveBeenNthCalledWith(1, {
       size: '1920x1080',
@@ -509,33 +510,31 @@ describe('NodeQuickEditor', () => {
     const modelGroup = screen.getByText('模型').parentElement as HTMLElement;
     expect(within(modelGroup).getByRole('combobox', { name: '模型：未设置' })).toBeInTheDocument();
     expect(
-      within(resolutionGroup).getByRole('button', { name: '视频清晰度：未设置' }),
+      within(resolutionGroup).getByRole('combobox', { name: '视频清晰度：未设置' }),
     ).toBeInTheDocument();
     expect(
       within(ratioGroup).getByRole('button', { name: '视频比例：未设置' }),
     ).toBeInTheDocument();
     expect(
-      within(durationGroup).getByRole('button', { name: '时长（秒）：未设置' }),
+      within(durationGroup).getByRole('combobox', { name: '时长（秒）：未设置' }),
     ).toBeInTheDocument();
     await user.hover(resolutionGroup);
-    await user.hover(ratioGroup);
-    await user.hover(durationGroup);
-
-    expect(within(resolutionGroup).getAllByRole('button', { pressed: true })).toHaveLength(1);
     expect(
-      within(resolutionGroup).getByRole('button', { name: '360p', pressed: true }),
+      within(resolutionGroup).getByRole('option', { name: '360p', selected: true }),
     ).toBeInTheDocument();
     expect(
-      within(resolutionGroup).queryByRole('button', { name: '1080p' }),
+      within(resolutionGroup).queryByRole('option', { name: '1080p' }),
     ).not.toBeInTheDocument();
+    await user.hover(ratioGroup);
     expect(
       within(ratioGroup).getByRole('button', { name: /16:9/, pressed: true }),
     ).toBeInTheDocument();
     expect(within(ratioGroup).queryByRole('button', { name: /1:1/ })).not.toBeInTheDocument();
+    await user.hover(durationGroup);
     expect(
-      within(durationGroup).getByRole('button', { name: '6 秒', pressed: true }),
+      within(durationGroup).getByRole('option', { name: '6 秒', selected: true }),
     ).toBeInTheDocument();
-    expect(within(durationGroup).queryByRole('button', { name: '20 秒' })).not.toBeInTheDocument();
+    expect(within(durationGroup).queryByRole('option', { name: '20 秒' })).not.toBeInTheDocument();
   });
 
   it('不会把能力映射中标记为 false 的推理强度显示为可选项', async () => {

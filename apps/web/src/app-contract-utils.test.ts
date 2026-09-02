@@ -4,6 +4,7 @@ import {
   DEFAULT_PROJECT_NAME,
   SUCCESS_NOTICE_DISMISS_MS,
   canSwitchProject,
+  createUniqueNodeLabel,
   createGenerateFlowNode,
   createSourceFlowNode,
   findProject,
@@ -37,6 +38,14 @@ const projects: ProjectSummary[] = [
 ];
 
 describe('canvas node factories', () => {
+  it('为重复节点名称生成可读且唯一的后缀', () => {
+    expect(createUniqueNodeLabel('图片生成节点', [])).toBe('图片生成节点');
+    expect(createUniqueNodeLabel('图片生成节点', ['图片生成节点'])).toBe('图片生成节点 2');
+    expect(createUniqueNodeLabel('图片生成节点', ['图片生成节点', '图片生成节点 2'])).toBe(
+      '图片生成节点 3',
+    );
+  });
+
   it('creates a source node with asset references and stable position', () => {
     const node = createSourceFlowNode(asset, { x: 24, y: 48 }, () => 'fixed');
 

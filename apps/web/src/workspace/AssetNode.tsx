@@ -39,6 +39,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const retryNode = useContext(NodeRetryContext);
   const setNodeEnabled = useContext(NodeEnabledContext);
   const [previewLoadState, setPreviewLoadState] = useState<AssetPreviewLoadState | null>(null);
+  const [isInitialPreviewSizeLimited, setIsInitialPreviewSizeLimited] = useState(true);
   const [isRetrying, setIsRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
   const Icon = mediaIcons[data.mediaType];
@@ -87,6 +88,8 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
 
   useEffect(() => {
     setPreviewLoadState(null);
+    // 每次切换到新的回显内容，都从受控的首次预览尺寸开始；用户开始调整后再解除限制。
+    setIsInitialPreviewSizeLimited(true);
   }, [previewIdentity]);
 
   useEffect(() => {
@@ -122,6 +125,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
           handleStyle={{ width: 14, height: 14, borderRadius: 3 }}
           lineStyle={{ borderWidth: 2 }}
           onResizeStart={() => {
+            setIsInitialPreviewSizeLimited(false);
             if (resizeStart && id) resizeStart(id);
           }}
           onResizeEnd={(_, params) => {
@@ -178,7 +182,9 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
         </span>
       </div>
       {presentationState === 'preview' && previewAsset ? (
-        <div className="flow-node-preview">
+        <div
+          className={`flow-node-preview ${isInitialPreviewSizeLimited ? 'is-initial-size-limited' : ''}`}
+        >
           <AssetPreview
             asset={previewAsset}
             className="flow-node-preview-content"

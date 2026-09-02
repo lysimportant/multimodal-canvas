@@ -73,6 +73,7 @@ import {
   resolveUploadUrl,
   sha256Hex,
 } from './upload-utils';
+import { createUniqueNodeLabel } from './app-contract-utils';
 import { validateResolvedCanvasConnection, validateCanvasConnection } from './connection-utils';
 import { isCanvasShortcutTarget } from './keyboard-utils';
 import { isImeKeyboardEvent, useImeDraft } from './ime';
@@ -575,8 +576,17 @@ function WorkspaceApp({
   useEffect(() => {
     const handleCommandShortcut = (event: KeyboardEvent) => {
       if (isImeKeyboardEvent(event)) return;
-      if (isCanvasShortcutTarget(event.target)) return;
-      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'k') return;
+      const key = event.key.toLowerCase();
+      if (!(event.metaKey || event.ctrlKey)) return;
+
+      // 搜索是全局命令，即使焦点在输入控件中也应拦截浏览器默认行为。
+      if (key === 'e') {
+        event.preventDefault();
+        setShowCommandPalette(true);
+        return;
+      }
+
+      if (key !== 'k' || isCanvasShortcutTarget(event.target)) return;
       event.preventDefault();
       setShowCommandPalette(true);
     };
@@ -1111,12 +1121,16 @@ function WorkspaceApp({
 
   const createNodeForAsset = useCallback(
     (asset: Asset, position: { x: number; y: number }): AssetFlowNode => {
+      const label = createUniqueNodeLabel(
+        asset.name,
+        nodesRef.current.map((node) => node.data.label),
+      );
       return withNodeAutoGrowthLimit({
         id: `node_${asset.id}_${crypto.randomUUID()}`,
         type: asset.mediaType,
         position,
         data: {
-          label: asset.name,
+          label,
           mediaType: asset.mediaType,
           mode: 'source',
           assetId: asset.id,
@@ -1139,7 +1153,10 @@ function WorkspaceApp({
         type: mediaType,
         position,
         data: {
-          label: `${mediaLabels[mediaType]}${modeLabels[mode]}节点`,
+          label: createUniqueNodeLabel(
+            `${mediaLabels[mediaType]}${modeLabels[mode]}节点`,
+            nodesRef.current.map((node) => node.data.label),
+          ),
           mediaType,
           mode,
         },
@@ -2024,6 +2041,19 @@ function WorkspaceApp({
       },
     ];
 
+    nodes.forEach((node) => {
+      const Icon = mediaIcons[node.data.mediaType];
+      commands.push({
+        id: `node-${node.id}`,
+        label: node.data.label,
+        category: '当前项目节点',
+        description: `${mediaLabels[node.data.mediaType]}${modeLabels[node.data.mode]}节点`,
+        icon: <Icon size={15} aria-hidden="true" />,
+        keywords: [node.id, node.data.mediaType, node.data.mode],
+        onSelect: () => selectCanvasNode(node.id),
+      });
+    });
+
     themeOptions.forEach((option) => {
       commands.push({
         id: `theme-${option.value}`,
@@ -2056,10 +2086,12 @@ function WorkspaceApp({
     isProjectLoading,
     isResourceCollapsed,
     isRunning,
+    nodes,
     onNavigate,
     projectId,
     runNode,
     saveCanvas,
+    selectCanvasNode,
     selectedNode,
   ]);
   return (

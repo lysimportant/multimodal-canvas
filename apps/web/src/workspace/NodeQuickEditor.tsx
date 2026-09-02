@@ -191,11 +191,14 @@ export function NodeQuickEditor({
           role="group"
           aria-label="媒体参数"
         >
-          <QuickOptionMenu
+          <CompactSelect
             label="图片清晰度"
-            value={parameters.quality}
+            value={normalizeCurrentOptionValue(parameters.quality)}
             options={mediaOptions.quality}
             onChange={(value) => updateParameter('quality', value)}
+            className="node-quick-editor-select-group"
+            placement="top"
+            openOnHover
           />
           <QuickOptionMenu
             label="图片比例"
@@ -214,11 +217,14 @@ export function NodeQuickEditor({
           role="group"
           aria-label="媒体参数"
         >
-          <QuickOptionMenu
+          <CompactSelect
             label="视频清晰度"
-            value={parameters.resolution}
+            value={normalizeCurrentOptionValue(parameters.resolution)}
             options={mediaOptions.resolution}
             onChange={(value) => updateParameter('resolution', value)}
+            className="node-quick-editor-select-group"
+            placement="top"
+            openOnHover
           />
           <QuickOptionMenu
             label="视频比例"
@@ -227,11 +233,14 @@ export function NodeQuickEditor({
             aspectOptions
             onChange={(value) => updateParameter('aspectRatio', value)}
           />
-          <QuickOptionMenu
+          <CompactSelect
             label="时长（秒）"
-            value={parameters.duration}
+            value={normalizeCurrentOptionValue(parameters.duration)}
             options={mediaOptions.duration}
             onChange={(value) => updateParameter('duration', value ? Number(value) : undefined)}
+            className="node-quick-editor-select-group"
+            placement="top"
+            openOnHover
           />
         </div>
       )}

@@ -1180,6 +1180,11 @@ h2 {
   width: 100%;
 }
 
+.flow-node-preview.is-initial-size-limited {
+  max-height: 600px;
+  max-width: 800px;
+}
+
 .flow-node-preview-content.asset-preview-image,
 .flow-node-preview-content.asset-preview-video {
   height: 100%;
