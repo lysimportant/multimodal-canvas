@@ -1223,7 +1223,7 @@ h2 {
   gap: 10px;
   padding: 12px;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
-  width: min(560px, calc(100vw - 32px));
+  width: min(485px, calc(100vw - 32px));
 }
 
 .node-quick-editor-header,
@@ -3304,7 +3304,7 @@ textarea:focus-visible {
 
 @media (max-width: 420px) {
   .node-quick-editor {
-    width: min(560px, calc(100vw - 24px));
+    width: min(485px, calc(100vw - 24px));
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
   }
 
