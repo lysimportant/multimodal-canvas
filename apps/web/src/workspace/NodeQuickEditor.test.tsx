@@ -367,4 +367,34 @@ describe('NodeQuickEditor', () => {
     ).toBeInTheDocument();
     expect(within(durationGroup).queryByRole('button', { name: '20 秒' })).not.toBeInTheDocument();
   });
+
+  it('不会把能力映射中标记为 false 的推理强度显示为可选项', async () => {
+    const user = userEvent.setup();
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          node: {
+            ...imageNode,
+            data: { ...imageNode.data, modelAlias: 'flag-model', inferenceStrength: undefined },
+          } as AssetFlowNode,
+          models: [
+            {
+              id: 'flag-model',
+              name: '标记模型',
+              mediaTypes: ['image'],
+              capabilities: { reasoning_effort: { low: false, xhigh: true } },
+            },
+          ],
+        })}
+      />,
+    );
+
+    const inferenceGroup = screen.getByText('推理强度').parentElement as HTMLElement;
+    await user.hover(inferenceGroup);
+
+    expect(
+      within(inferenceGroup).getByRole('button', { name: 'xhigh', pressed: true }),
+    ).toBeInTheDocument();
+    expect(within(inferenceGroup).queryByRole('button', { name: 'low' })).not.toBeInTheDocument();
+  });
 });

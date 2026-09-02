@@ -536,7 +536,7 @@ function normalizeInferenceMap(value: Record<string, unknown>): MediaOption[] {
   ]);
   const entries = Object.entries(value).filter(([key, child]) => {
     if (metadataKeys.has(key.toLowerCase())) return false;
-    return child === true || child === false || isRecord(child);
+    return child === true || isRecord(child);
   });
   if (entries.length === 0) return [];
   return entries.map(([key, child]) => ({
