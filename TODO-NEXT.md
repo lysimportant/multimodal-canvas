@@ -6,7 +6,7 @@
 
 ## 范围边界
 
-- PC Web 工作台、单元测试、类型检查、构建和本地宽屏复核已有证据；Mock E2E 当前仍有 1 个回归用例，不暂视为完整通过。
+- PC Web 工作台、单元测试、类型检查、构建和本地宽屏复核已有证据；Mock E2E 已修复模型快速编辑器选择器回归并全量通过。
 - 隔离环境的视频创建、查询、受保护 content 下载、MinIO 归档、`asset_versions` 写入和同 DAG 多 Key 幂等已有历史测试证据；本机当前无法复跑，且不等同于生产验收。
 - 移动端复杂画布按当前优先级后置，不阻塞 PC 交付。
 
@@ -37,9 +37,9 @@ Agent 方案已拆分为一份公共底座文档和两份入口文档，后续�
 
 - `[~]` **P0-PROD-STARTUP-02 生产启动与安全边界**
   - 范围：API/Worker 缺失配置 fail-closed、TLS、限流、请求/响应体上限、跨实例会话和密钥注入。
-  - 当前证据：代码和单元测试覆盖缺配置拒绝、认证、脱敏和限流边界；无 `DATABASE_URL` 的单机 API 已接入 `FileAiSettingsStore`，默认会将 AI 凭据 AES-GCM 密文、历史版本、模型目录和能力覆盖写入 Git 忽略的 `.data/ai-credentials.json`；未注入显式密钥且本机密钥文件尚不存在时，在存储初始化阶段生成同目录密钥文件，重启可恢复。已有文件但本机密钥丢失、密文无法解密或 JSON 损坏时，存储访问会 fail-closed；无数据库时 `newapi + BullMQ` 启动组合会被拒绝。
-  - 未完成：真实生产模式启动、入口 TLS/反向代理部署验证、跨实例全局限流、跨进程历史凭据恢复、密钥轮换后的旧快照恢复、启动前显式等待存储 readiness 和部署环境告警。
-  - 已知风险：本地文件模式只支持单机单 API 进程，不能替代 PostgreSQL/BullMQ 的跨进程或多实例恢复；入口目前未显式等待文件存储初始化，损坏或丢密钥的失败行为尚未纳入生产启动验收；凭据使用单一加密密钥，尚无 key-id、旧密钥 fallback 或重加密迁移；Redis 限流故障时会退回进程内限流。
+  - 当前证据：代码和单元测试覆盖缺配置拒绝、认证、脱敏和限流边界；无 `DATABASE_URL` 的单机 API 已接入 `FileAiSettingsStore`，默认会将 AI 凭据 AES-GCM 密文、历史版本、模型目录和能力覆盖写入 Git 忽略的 `.data/ai-credentials.json`；未注入显式密钥且本机密钥文件尚不存在时，在存储初始化阶段生成同目录密钥文件，重启可恢复。已有文件但本机密钥丢失、密文无法解密或 JSON 损坏时，存储访问会 fail-closed；无数据库时 `newapi + BullMQ` 启动组合会被拒绝。API 入口现在会在构建执行器、注册路由和监听端口前显式等待设置存储 `get()` 完成，因此本地文件或 PostgreSQL 设置初始化失败不会让服务先对外提供不完整状态。
+  - 未完成：真实生产模式启动、入口 TLS/反向代理部署验证、跨实例全局限流、跨进程历史凭据恢复、密钥轮换后的旧快照恢复和部署环境告警。
+  - 已知风险：本地文件模式只支持单机单 API 进程，不能替代 PostgreSQL/BullMQ 的跨进程或多实例恢复；损坏或丢密钥的 fail-closed 行为已有存储测试，但尚未纳入真实生产启动演练；凭据使用单一加密密钥，尚无 key-id、旧密钥 fallback 或重加密迁移；Redis 限流故障时会退回进程内限流。
   - 验收：使用不落盘的部署密钥完成 API 与 Worker 启动、重启、轮换和失败演练，日志不得暴露密钥或 Bearer token。
 
 - `[~]` **P0-MEDIA-OPS-03 真实媒体处理与可观测性**
@@ -85,10 +85,10 @@ Agent 方案已拆分为一份公共底座文档和两份入口文档，后续�
 
 - 代码质量：`pnpm format:check`、`pnpm lint`、`pnpm typecheck`、`pnpm build` 通过；构建仅有 Web 大 chunk 警告。
 - 单元测试：`pnpm test` 通过；API `286 passed / 5 skipped`（含 `file-ai-settings.test.ts` 的 6 个本地凭据持久化测试），Web `264 passed`，Worker `130 passed`，Providers `110 passed`，Domain `19 passed`，Observability `15 passed`，UI `3 passed`。
-- Mock E2E：最近一次 `pnpm test:e2e` 为 `19 passed / 1 failed`。失败用例位于 `apps/web/e2e/smoke.spec.ts:1197`，模型快速编辑器选择器未找到；在独立端口复跑仍失败，需修复 UI/测试契约后才能恢复“Mock E2E 已完成”的结论。
-- Web/API：本次检查时 5173 和 3000 均无监听，未重新启动开发服务器，未复核 Web HTTP 200 或 API `/health`；先前的 5173=200、3000 `/health`=404 仅为历史记录，不作为当前证据。
+- Mock E2E：修复 `apps/web/e2e/smoke.spec.ts:1196` 的模型快速编辑器选择器，使其匹配当前 `CompactSelect` 的可访问语义；定向用例 `1 passed`，全量 `pnpm --filter @multimodal-canvas/web test:e2e` 为 `20 passed`。
+- Web/API：用临时文件存储和 `WORKER_PROVIDER=mock` 启动真实 API 入口，3317 端口在设置存储初始化后返回 `/v1/settings/ai` HTTP 200；使用损坏 AI 设置 JSON 启动时进程在 `FileAiSettingsStore.get()` 阶段以非零状态退出，未对外监听 3318。临时服务和夹具已关闭清理。
 - 依赖服务：本机无 PostgreSQL/Redis/MinIO 监听，Docker daemon 当前不可用，因此未启动持久化 BullMQ Worker，也未完成本地隔离集成复跑。
-- 本轮仅更新 `TODO-NEXT.md`，未修改代码、配置或其他 TODO 文件；`git diff --check` 通过，提交后工作区保持干净。
+- 本轮修复 Web Mock E2E 选择器，并让 API 入口在监听前等待 AI 设置存储初始化；API 定向测试、类型检查和 E2E 已通过。生产依赖、真实供应商契约和外部服务仍未在本机完成验收；提交前将再次执行完整质量检查和 `git status`。
 
 ## 完成门槛
 

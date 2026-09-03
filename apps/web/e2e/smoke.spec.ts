@@ -1193,11 +1193,11 @@ test('overrides a node model and displays the completed run result', async ({ pa
   await page.goto(projectPath);
   await page.getByRole('button', { name: '新建文字生成节点' }).click();
 
-  const modelMenu = page.locator('.node-quick-editor-option-group[aria-label="模型"]');
-  await expect(modelMenu).toBeVisible();
-  await modelMenu.hover();
-  await modelMenu.getByRole('button', { name: 'Mock Text v2' }).click();
-  await expect(modelMenu.getByRole('button', { name: '模型：Mock Text v2' })).toBeVisible();
+  const modelSelect = page.getByRole('combobox', { name: /^模型：/ });
+  await expect(modelSelect).toBeVisible();
+  await modelSelect.hover();
+  await page.getByRole('option', { name: 'Mock Text v2' }).click();
+  await expect(page.getByRole('combobox', { name: '模型：Mock Text v2' })).toBeVisible();
 
   const prompt = page.locator('.node-quick-editor textarea');
   await expect(prompt).toBeVisible();

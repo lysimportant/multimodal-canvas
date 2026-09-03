@@ -46,6 +46,9 @@ if (!prisma && providerName === 'newapi' && process.env.RUN_SERVICE === 'bullmq'
 }
 // 本地开发也要跨 API 重启保留已加密的凭据；测试直接调用 buildApp 时仍使用隔离内存存储。
 const settingsStore = prisma ? new PrismaAiSettingsStore(prisma) : new FileAiSettingsStore();
+// 在创建执行器和监听端口前完成设置存储初始化，避免坏文件、丢密钥或数据库故障
+// 让 API 先对外提供服务，再在第一条请求或后台任务中失败。
+await settingsStore.get();
 const runExecutor =
   providerName === 'newapi'
     ? createNewApiRunExecutor({
