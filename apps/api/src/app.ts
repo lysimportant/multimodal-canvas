@@ -1034,9 +1034,19 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
     try {
       const webhookUpdate = parseNewApiWebhook(body);
-      const updatedRun = webhookUpdate
-        ? await runService.applyProviderWebhook?.(webhookUpdate)
-        : undefined;
+      if (!webhookUpdate) {
+        await webhookEventStore.markFailed(
+          eventId,
+          leaseToken,
+          new Error('webhook platform job id is required'),
+        );
+        return reply.code(400).send({
+          error: 'webhook platform job id is required',
+          code: 'invalid_webhook',
+          eventId,
+        });
+      }
+      const updatedRun = await runService.applyProviderWebhook?.(webhookUpdate);
       if (updatedRun?.providerJob && options.runPersistence) {
         const persistedRunId = databaseRunId(updatedRun.id);
         await options.runPersistence.upsertProviderJob({

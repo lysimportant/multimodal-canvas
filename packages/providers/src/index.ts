@@ -1394,6 +1394,26 @@ function normalizedMimeType(value: unknown): string | undefined {
   return mimeType || undefined;
 }
 
+/**
+ * 校验供应商声明的媒体 MIME 类型。
+ *
+ * 未声明或通用的 `application/octet-stream` 交由请求格式推断；一旦供应商
+ * 明确声明了其他媒体类型，则必须与目标类型一致，避免错误内容被归档为图片
+ * 或音频。发现跨媒体声明时抛出不可重试错误，让调用方保留诊断上下文。
+ */
+function validatedMediaMimeType(value: unknown, mediaType: 'image' | 'audio'): string | undefined {
+  const mimeType = normalizedMimeType(value);
+  if (!mimeType || mimeType === 'application/octet-stream') return undefined;
+  if (!mimeType.startsWith(`${mediaType}/`)) {
+    const label = mediaType === 'image' ? '图片' : '音频';
+    throw new NewApiProviderError(`New API ${label}响应 MIME 类型与媒体类型不匹配`, {
+      code: 'PROVIDER_OUTPUT_MIME_MISMATCH',
+      retryable: false,
+    });
+  }
+  return mimeType;
+}
+
 function parseDataUrl(value: string): { base64: string; mimeType: string } | undefined {
   const match = /^data:([^;,\s]+)?;base64,([\s\S]*)$/i.exec(value.trim());
   if (!match || !match[2]) return undefined;
@@ -1731,7 +1751,7 @@ function parseImageOutput(payload: unknown, snapshot: RunSnapshot): ImageProvide
     item.output_format,
     item.outputFormat,
   );
-  const explicitMimeType = normalizedMimeType(
+  const explicitMimeType = validatedMediaMimeType(
     response?.mime_type ??
       response?.mimeType ??
       response?.content_type ??
@@ -1740,6 +1760,7 @@ function parseImageOutput(payload: unknown, snapshot: RunSnapshot): ImageProvide
       item.mimeType ??
       item.content_type ??
       item.contentType,
+    'image',
   );
   const mimeType = explicitMimeType ?? imageMimeType(format);
   const imageUrlValue = item.url ?? item.image_url ?? item.imageUrl;
@@ -1753,11 +1774,12 @@ function parseImageOutput(payload: unknown, snapshot: RunSnapshot): ImageProvide
   if (nonEmptyString(url)) {
     const dataUrl = parseDataUrl(url);
     if (dataUrl) {
+      const dataUrlMimeType = validatedMediaMimeType(dataUrl.mimeType, 'image');
       return {
         mediaType: 'image',
         kind: 'base64',
         base64: dataUrl.base64,
-        mimeType: dataUrl.mimeType.startsWith('image/') ? dataUrl.mimeType : mimeType,
+        mimeType: dataUrlMimeType ?? mimeType,
         format: format ?? formatFromMimeType(dataUrl.mimeType),
       };
     }
@@ -1777,11 +1799,12 @@ function parseImageOutput(payload: unknown, snapshot: RunSnapshot): ImageProvide
   const base64 = item.b64_json ?? item.b64Json ?? item.base64 ?? item.data;
   if (nonEmptyString(base64)) {
     const dataUrl = parseDataUrl(base64);
+    const dataUrlMimeType = dataUrl ? validatedMediaMimeType(dataUrl.mimeType, 'image') : undefined;
     return {
       mediaType: 'image',
       kind: 'base64',
       base64: dataUrl?.base64 ?? base64.trim(),
-      mimeType: dataUrl?.mimeType.startsWith('image/') ? dataUrl.mimeType : mimeType,
+      mimeType: dataUrlMimeType ?? mimeType,
       format: format ?? formatFromMimeType(dataUrl?.mimeType),
     };
   }
@@ -1794,7 +1817,7 @@ function parseAudioOutput(payload: unknown, snapshot: RunSnapshot): AudioProvide
     if (payload.bytes.byteLength === 0) {
       throw new NewApiProviderError('New API 音频响应内容为空');
     }
-    const detectedMimeType = normalizedMimeType(payload.mimeType);
+    const detectedMimeType = validatedMediaMimeType(payload.mimeType, 'audio');
     const mimeType =
       detectedMimeType && detectedMimeType !== 'application/octet-stream'
         ? detectedMimeType
@@ -1812,8 +1835,10 @@ function parseAudioOutput(payload: unknown, snapshot: RunSnapshot): AudioProvide
   if (!item) throw new NewApiProviderError('New API 音频响应格式无效');
   const format = outputFormat(snapshot.parameters, item.format, item.output_format);
   const mimeType =
-    normalizedMimeType(item.mime_type ?? item.mimeType ?? item.content_type ?? item.contentType) ??
-    audioMimeType(format);
+    validatedMediaMimeType(
+      item.mime_type ?? item.mimeType ?? item.content_type ?? item.contentType,
+      'audio',
+    ) ?? audioMimeType(format);
   const audioUrlValue = item.url ?? item.audio_url ?? item.audioUrl;
   const audioDataValue = item.data;
   const audioDataUrl =
@@ -1825,11 +1850,12 @@ function parseAudioOutput(payload: unknown, snapshot: RunSnapshot): AudioProvide
   if (nonEmptyString(url)) {
     const dataUrl = parseDataUrl(url);
     if (dataUrl) {
+      const dataUrlMimeType = validatedMediaMimeType(dataUrl.mimeType, 'audio');
       return {
         mediaType: 'audio',
         kind: 'base64',
         base64: dataUrl.base64,
-        mimeType: dataUrl.mimeType.startsWith('audio/') ? dataUrl.mimeType : mimeType,
+        mimeType: dataUrlMimeType ?? mimeType,
         format: format ?? formatFromMimeType(dataUrl.mimeType),
       };
     }
@@ -1840,8 +1866,9 @@ function parseAudioOutput(payload: unknown, snapshot: RunSnapshot): AudioProvide
         kind: 'url',
         url: safeUrl,
         mimeType:
-          normalizedMimeType(
+          validatedMediaMimeType(
             item.mime_type ?? item.mimeType ?? item.content_type ?? item.contentType,
+            'audio',
           ) ??
           mimeTypeFromUrl(safeUrl, 'audio') ??
           mimeType,
@@ -1853,11 +1880,12 @@ function parseAudioOutput(payload: unknown, snapshot: RunSnapshot): AudioProvide
   const base64 = item.b64_json ?? item.b64Json ?? item.base64 ?? item.audio ?? item.data;
   if (nonEmptyString(base64)) {
     const dataUrl = parseDataUrl(base64);
+    const dataUrlMimeType = dataUrl ? validatedMediaMimeType(dataUrl.mimeType, 'audio') : undefined;
     return {
       mediaType: 'audio',
       kind: 'base64',
       base64: dataUrl?.base64 ?? base64.trim(),
-      mimeType: dataUrl?.mimeType.startsWith('audio/') ? dataUrl.mimeType : mimeType,
+      mimeType: dataUrlMimeType ?? mimeType,
       format: format ?? formatFromMimeType(dataUrl?.mimeType),
     };
   }

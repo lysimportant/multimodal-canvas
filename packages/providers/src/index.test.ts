@@ -1228,6 +1228,45 @@ describe('NewApiProvider', () => {
     });
   });
 
+  it('rejects an image response that explicitly declares an audio MIME type', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ mime_type: 'audio/mpeg', data: [{ b64_json: 'aW1hZ2U=' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const provider = new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    });
+
+    await expect(provider.execute({ snapshot: standardSnapshot('image') })).rejects.toMatchObject({
+      name: 'NewApiProviderError',
+      code: 'PROVIDER_OUTPUT_MIME_MISMATCH',
+      message: 'New API 图片响应 MIME 类型与媒体类型不匹配',
+    });
+  });
+
+  it('rejects an image data URL that explicitly carries an audio MIME type', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ b64_json: 'data:audio/mpeg;base64,YXVkaW8=' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const provider = new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    });
+
+    await expect(provider.execute({ snapshot: standardSnapshot('image') })).rejects.toMatchObject({
+      name: 'NewApiProviderError',
+      code: 'PROVIDER_OUTPUT_MIME_MISMATCH',
+    });
+  });
+
   it('converts an OpenAI-compatible raw audio response to base64', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(new Uint8Array([0, 1, 2, 3]), {
@@ -1268,6 +1307,26 @@ describe('NewApiProvider', () => {
       base64: 'AAECAw==',
       mimeType: 'audio/mpeg',
       format: 'mp3',
+    });
+  });
+
+  it('rejects a raw audio response with an image MIME type', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(new Uint8Array([0, 1, 2, 3]), {
+        status: 200,
+        headers: { 'content-type': 'image/png' },
+      }),
+    );
+    const provider = new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    });
+
+    await expect(provider.execute({ snapshot: standardSnapshot('audio') })).rejects.toMatchObject({
+      name: 'NewApiProviderError',
+      code: 'PROVIDER_OUTPUT_MIME_MISMATCH',
+      message: 'New API 音频响应 MIME 类型与媒体类型不匹配',
     });
   });
 

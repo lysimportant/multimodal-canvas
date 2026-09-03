@@ -2088,6 +2088,33 @@ describe('webhook and run idempotency boundaries', () => {
     }
   });
 
+  it('keeps a callback without a platform job id retryable instead of processed', async () => {
+    const webhookEventStore = new MemoryWebhookEventStore();
+    const webhookApp = buildApp({ logger: false, webhookEventStore });
+
+    try {
+      const response = await webhookApp.inject({
+        method: 'POST',
+        url: '/v1/webhooks/newapi',
+        payload: { eventId: 'event-missing-platform-job', status: 'running' },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        error: 'webhook platform job id is required',
+        code: 'invalid_webhook',
+        eventId: 'event-missing-platform-job',
+      });
+      await expect(webhookEventStore.get('event-missing-platform-job')).resolves.toMatchObject({
+        status: 'failed',
+        attempt: 1,
+        lastError: 'webhook platform job id is required',
+      });
+    } finally {
+      await webhookApp.close();
+    }
+  });
+
   it('marks a failed callback retryable and processes it on the next delivery', async () => {
     const runService = new MemoryRunService({ providerName: 'newapi' });
     const applyProviderWebhook = vi

@@ -197,6 +197,67 @@ describe('Worker production startup configuration', () => {
     });
   });
 
+  it('accepts the bounded result asset limit and an explicit ffprobe command', () => {
+    expect(
+      validateWorkerStartupConfiguration({
+        ...productionEnvironment,
+        RESULT_ASSET_MAX_BYTES: String(50 * 1024 * 1024),
+        FFPROBE_ENABLED: 'true',
+        FFPROBE_PATH: 'ffprobe',
+      }),
+    ).toEqual([]);
+  });
+
+  it.each(['0', '-1', '1.5', '1e3', '52428801', '9007199254740992', 'not-a-number', '  '])(
+    'rejects invalid explicit result asset limit %s in production',
+    (value) => {
+      const issues = validateWorkerStartupConfiguration({
+        ...productionEnvironment,
+        RESULT_ASSET_MAX_BYTES: value,
+      });
+
+      expect(issues).toContainEqual({
+        variable: 'RESULT_ASSET_MAX_BYTES',
+        message: 'must be a positive safe integer no greater than 52428800',
+      });
+    },
+  );
+
+  it.each([
+    ['yes', 'must be "true" or "false"'],
+    ['', 'must be "true" or "false"'],
+  ])('rejects invalid FFPROBE_ENABLED value %s in production', (value, message) => {
+    const issues = validateWorkerStartupConfiguration({
+      ...productionEnvironment,
+      FFPROBE_ENABLED: value,
+    });
+
+    expect(issues).toContainEqual({ variable: 'FFPROBE_ENABLED', message });
+  });
+
+  it('rejects an empty ffprobe path and a disabled tool with a path', () => {
+    expect(
+      validateWorkerStartupConfiguration({
+        ...productionEnvironment,
+        FFPROBE_PATH: '  ',
+      }),
+    ).toContainEqual({
+      variable: 'FFPROBE_PATH',
+      message: 'must not be empty when configured',
+    });
+
+    expect(
+      validateWorkerStartupConfiguration({
+        ...productionEnvironment,
+        FFPROBE_ENABLED: 'false',
+        FFPROBE_PATH: 'custom-ffprobe',
+      }),
+    ).toContainEqual({
+      variable: 'FFPROBE_ENABLED',
+      message: 'cannot be "false" when FFPROBE_PATH is configured',
+    });
+  });
+
   it('validates production before honoring the local memory worker switch', () => {
     expect(() =>
       shouldStartWorkerProcess({

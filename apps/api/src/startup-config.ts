@@ -38,6 +38,7 @@ export function validateApiStartupConfiguration(
   requireValue(environment, 'S3_REGION', issues);
   const newApiBaseUrl = requireValue(environment, 'NEW_API_BASE_URL', issues);
   requireValue(environment, 'NEW_API_API_KEY', issues);
+  requireValue(environment, 'NEW_API_WEBHOOK_SECRET', issues);
   requireValue(environment, 'AI_CREDENTIAL_ENCRYPTION_KEY', issues);
   if (!environment.API_AUTH_TOKEN?.trim() && !environment.API_JWT_SECRET?.trim()) {
     issues.push({
@@ -77,6 +78,9 @@ export function validateApiStartupConfiguration(
       message: 'must not include wildcard "*" when credentials are enabled',
     });
   }
+
+  validateMediaToolConfiguration(environment, 'FFPROBE_ENABLED', 'FFPROBE_PATH', issues);
+  validateMediaToolConfiguration(environment, 'FFMPEG_ENABLED', 'FFMPEG_PATH', issues);
 
   validatePositiveIntegerEnvironment(environment, 'RUN_MAX_ACTIVE_PER_PROJECT', issues);
   validatePositiveIntegerEnvironment(environment, 'API_RATE_LIMIT_PER_MINUTE', issues);
@@ -148,6 +152,31 @@ function validateByteLimitEnvironment(
     issues.push({
       variable,
       message: `must be a positive safe integer no greater than ${MAX_UPLOAD_BYTES}`,
+    });
+  }
+}
+
+/** 校验可选媒体工具的开关和路径，避免生产环境因配置歧义静默降级。 */
+function validateMediaToolConfiguration(
+  environment: StartupEnvironment,
+  enabledVariable: string,
+  pathVariable: string,
+  issues: StartupConfigurationIssue[],
+): void {
+  const enabled = environment[enabledVariable];
+  if (enabled !== undefined && enabled !== 'true' && enabled !== 'false') {
+    issues.push({ variable: enabledVariable, message: 'must be "true" or "false"' });
+  }
+
+  const path = environment[pathVariable];
+  const normalizedPath = path?.trim();
+  if (path !== undefined && !normalizedPath) {
+    issues.push({ variable: pathVariable, message: 'must not be empty when configured' });
+  }
+  if (enabled === 'false' && normalizedPath) {
+    issues.push({
+      variable: enabledVariable,
+      message: `cannot be "false" when ${pathVariable} is configured`,
     });
   }
 }

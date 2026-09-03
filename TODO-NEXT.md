@@ -31,14 +31,14 @@ Agent 方案已拆分为一份公共底座文档和两份入口文档，后续�
 - `[~]` **P0-REAL-INFRA-01 生产依赖验收**
   - 范围：PostgreSQL、Redis/BullMQ、生产 S3、跨实例网络与持久化配置。
   - 当前证据：隔离 PostgreSQL/Redis/MinIO、0001-0013 迁移升级、namespace、bucket 初始化和 Mock BullMQ 进程接管已通过。
-  - 当前复核：本机未发现 5432、6379、9000、9001 监听，Docker Compose 因 Docker daemon 不可用无法执行；以上证据暂仅限既有隔离测试。
+  - 当前复核：Docker Compose 已恢复并运行健康的隔离 PostgreSQL、Redis 和 MinIO（本机 5432/6379/9000/9001）；使用独立 `multimodal_canvas_test` 数据库、Redis DB 15/namespace、MinIO 测试 bucket/prefix 和 `TEST_*_CONFIRMED_ISOLATED=true` 执行 `pnpm --filter @multimodal-canvas/api test:integration`，1 个测试文件共 15 项通过。以上仅证明本机隔离服务链路，不等同生产环境验收。
   - 未完成：生产连接、生产数据兼容窗口、生产 S3 上传/下载、生产 Redis 队列和真实平台任务恢复。
   - 验收：在明确隔离的部署环境执行迁移升级、重启恢复、跨实例读写和队列接管；不得连接或清理真实生产数据。
 
 - `[~]` **P0-PROD-STARTUP-02 生产启动与安全边界**
   - 范围：API/Worker 缺失配置 fail-closed、TLS、限流、请求/响应体上限、跨实例会话和密钥注入。
   - 当前证据：代码和单元测试覆盖缺配置拒绝、认证、脱敏和限流边界；无 `DATABASE_URL` 的单机 API 已接入 `FileAiSettingsStore`，默认会将 AI 凭据 AES-GCM 密文、历史版本、模型目录和能力覆盖写入 Git 忽略的 `.data/ai-credentials.json`；未注入显式密钥且本机密钥文件尚不存在时，在存储初始化阶段生成同目录密钥文件，重启可恢复。已有文件但本机密钥丢失、密文无法解密或 JSON 损坏时，存储访问会 fail-closed；无数据库时 `newapi + BullMQ` 启动组合会被拒绝。API 入口现在会在构建执行器、注册路由和监听端口前显式等待设置存储 `get()` 完成，因此本地文件或 PostgreSQL 设置初始化失败不会让服务先对外提供不完整状态。
-  - 本轮新增：API 与 Worker 入口均在创建执行器/队列前调用生产启动校验。API 校验 `FFMPEG_ENABLED`/`FFMPEG_PATH` 与 `FFPROBE_ENABLED`/`FFPROBE_PATH` 的布尔值、空路径和冲突组合；Worker 校验 `FFPROBE_*`，并在启动阶段拒绝非法或超过 50 MiB 的 `RESULT_ASSET_MAX_BYTES`，避免配置错误延迟到媒体任务执行时才暴露。显式启用且未填写路径仍使用系统 PATH 中的默认命令，开发/测试环境保持原有 fallback。
+  - 本轮新增：API 与 Worker 入口均在创建执行器/队列前调用生产启动校验。API 校验 `FFMPEG_ENABLED`/`FFMPEG_PATH`、`FFPROBE_ENABLED`/`FFPROBE_PATH` 的布尔值、空路径和冲突组合，并要求 `NEW_API_WEBHOOK_SECRET`；Worker 校验 `FFPROBE_*`，并在启动阶段拒绝非法或超过 50 MiB 的 `RESULT_ASSET_MAX_BYTES`，避免配置错误延迟到媒体任务执行时才暴露。显式启用且未填写路径仍使用系统 PATH 中的默认命令，开发/测试环境保持原有 fallback。
   - 未完成：真实生产模式启动、入口 TLS/反向代理部署验证、跨实例全局限流、跨进程历史凭据恢复、密钥轮换后的旧快照恢复和部署环境告警。
   - 已知风险：本地文件模式只支持单机单 API 进程，不能替代 PostgreSQL/BullMQ 的跨进程或多实例恢复；损坏或丢密钥的 fail-closed 行为已有存储测试，但尚未纳入真实生产启动演练；凭据使用单一加密密钥，尚无 key-id、旧密钥 fallback 或重加密迁移；Redis 限流故障时会退回进程内限流。
   - 验收：使用不落盘的部署密钥完成 API 与 Worker 启动、重启、轮换和失败演练，日志不得暴露密钥或 Bearer token。
@@ -53,13 +53,13 @@ Agent 方案已拆分为一份公共底座文档和两份入口文档，后续�
 
 - `[!]` **P1-VIDEO-CONTRACT-04 New API 视频完整契约**
   - 当前证据：通用 Base URL 下的创建、查询 `done`、受保护 content 下载，以及本地取消/重试、Webhook/HMAC 签名与事件幂等、状态/错误/usage 归一化已有代码和注入式测试；隔离 Worker/MinIO/`asset_versions` 仍有历史测试证据。
-  - 当前复核缺口：Webhook 当前对解析后的 `JSON.stringify` 结果计算简单 HMAC，尚未按供应商确认的原始 body/编码校验，也没有时间戳重放窗口；无法解析平台任务 ID 的事件仍会被标记为 `processed`；生产缺少 `NEW_API_WEBHOOK_SECRET` 时路由返回 503 而非启动时拒绝；取消只设置本地 `cancelRequested`/停止轮询，尚未调用供应商取消接口。
+  - 当前复核缺口：Webhook 当前对解析后的 `JSON.stringify` 结果计算简单 HMAC，尚未按供应商确认的原始 body/编码校验，也没有时间戳重放窗口；缺少平台任务 ID 的事件现已记录为 `failed` 并可重试，不再标记为 `processed`；生产入口现已在启动时要求 `NEW_API_WEBHOOK_SECRET`，但供应商签名格式仍待确认；取消只设置本地 `cancelRequested`/停止轮询，尚未调用供应商取消接口。
   - 未完成：真实供应商取消接口、签名规范与回调契约、完整状态/错误/usage 计费字段、真实失败重试、真实隔离凭据 E2E、生产任务恢复和供应商扣费幂等。
   - 依赖：平台提供并确认这些外部契约和可用测试凭据。
   - 验收：同一隔离项目完成创建、轮询或 Webhook、取消、失败、重试、下载、归档、去重和计费字段核对；未知字段不得臆造。
 
 - `[~]` **P1-MEDIA-COVERAGE-05 图片、音频与参考输入**
-  - 当前证据：图片/音频请求参数与响应解析、base64/URL 受控下载和 Worker 归档边界已有 Provider/Worker 注入式测试；既有真实最小图片请求曾返回 HTTP 200/base64。
+  - 当前证据：图片/音频请求参数与响应解析、base64/URL 受控下载和 Worker 归档边界已有 Provider/Worker 注入式测试；Provider 现在对图片/音频显式跨媒体 MIME（JSON、data URL、原始响应头）fail-closed；既有真实最小图片请求曾返回 HTTP 200/base64。
   - 未完成：完整图片可选参数、图片 URL 可访问性、图片 Worker 归档、真实音频请求/响应/归档，以及多 `reference_images` 的供应商字段映射。
   - 验收：分别使用隔离凭据完成图片和音频创建、解析、受控下载、归档和资产版本；不支持的参考角色必须显式失败。
 
@@ -70,7 +70,7 @@ Agent 方案已拆分为一份公共底座文档和两份入口文档，后续�
 
 - `[~]` **P1-PROVIDER-ROLES-07 统一端口角色的真实映射**
   - 范围：`prompt`、`negativePrompt`、`content`、`style`、`character`、`firstFrame`、`lastFrame`、`audioTrack`、`transcript`、`mask`。
-  - 当前证据：本地 Provider 对未支持角色 fail-closed，并覆盖 text 的 `prompt`/`content`/`transcript`、image/audio 的主输入、video 的 `prompt`/`content`/`firstFrame` 映射，以及顺序和重复输入校验。
+  - 当前证据：本地 Provider 对未支持角色和图片/音频跨媒体 MIME fail-closed，并覆盖 text 的 `prompt`/`content`/`transcript`、image/audio 的主输入、video 的 `prompt`/`content`/`firstFrame` 映射，以及顺序和重复输入校验。
   - 未完成：真实供应商对 `negativePrompt`、`lastFrame`、`audioTrack`、`style`、`character`、`mask`、多参考图和跨媒体输入的字段契约；不能把角色静默降级或丢弃。
   - 验收：每种角色都有已确认的映射或可诊断的不支持错误，并覆盖顺序、重复输入、非法组合和重试行为。
 
@@ -86,11 +86,11 @@ Agent 方案已拆分为一份公共底座文档和两份入口文档，后续�
 以下是 2026-09-04 的只读复核结果，不代表上述生产待办已完成：
 
 - 代码质量：`pnpm format:check`、`pnpm lint`、`pnpm typecheck`、`pnpm build` 通过；构建仅有 Web 大 chunk 警告。
-- 单元测试：`pnpm test` 通过；API `294 passed / 5 skipped`（含 `file-ai-settings.test.ts` 的 6 个本地凭据持久化测试和本轮启动配置回归），Web `264 passed`，Worker `142 passed`（含本轮媒体启动配置回归），Providers `110 passed`，Domain `19 passed`，Observability `15 passed`，UI `3 passed`。
+- 单元测试：`pnpm test` 通过；API `295 passed / 5 skipped`（含 `file-ai-settings.test.ts` 的 6 个本地凭据持久化测试和本轮启动配置回归），Web `264 passed`，Worker `142 passed`（含本轮媒体启动配置回归），Providers `113 passed`（含本轮跨媒体 MIME 回归），Domain `19 passed`，Observability `15 passed`，UI `3 passed`。
 - Mock E2E：模型快速编辑器选择器已匹配当前 `CompactSelect` 的可访问语义；定向用例 `1 passed`，本轮全量 `pnpm test:e2e` 为 `20 passed`。
 - Web/API：用临时文件存储和 `WORKER_PROVIDER=mock` 启动真实 API 入口，3317 端口在设置存储初始化后返回 `/v1/settings/ai` HTTP 200；使用损坏 AI 设置 JSON 启动时进程在 `FileAiSettingsStore.get()` 阶段以非零状态退出，未对外监听 3318。临时服务和夹具已关闭清理。
-- 依赖服务：本机无 PostgreSQL/Redis/MinIO 监听，Docker daemon 当前不可用，因此未启动持久化 BullMQ Worker，也未完成本地隔离集成复跑。`pnpm --filter @multimodal-canvas/api test:integration` 已尝试但因缺少 `WORKER_PROVIDER`、`TEST_DATABASE_URL`、`TEST_REDIS_URL`、`TEST_REDIS_NAMESPACE` 和测试 S3 配置而失败；不能视为集成测试通过。
-- 本轮补充 API/Worker 媒体相关生产启动配置校验和回归测试；`pnpm test`、`pnpm test:e2e`、`pnpm format:check`、`pnpm lint`、`pnpm typecheck`、`pnpm build` 均通过。构建仅有既有 Web 大 chunk 警告。生产依赖、真实供应商契约和外部服务仍未在本机完成验收。
+- 依赖服务：Docker Compose 隔离 PostgreSQL/Redis/MinIO 均 healthy；独立数据库、Redis DB 15/namespace、MinIO bucket/prefix 的 `pnpm --filter @multimodal-canvas/api test:integration` 已通过（1 个文件、15 项）。持久化 BullMQ Worker、跨实例恢复和生产依赖仍未验收。
+- 本轮补充 API/Worker 媒体相关生产启动配置校验、Webhook 无平台任务 ID 的可重试失败边界，以及 Provider 图片/音频跨媒体 MIME fail-closed 回归；本轮完整质量检查、Mock E2E 和隔离集成测试均已按当前工作区重新通过。生产依赖、真实供应商契约和外部服务仍未在本机完成验收。
 
 ## 完成门槛
 

@@ -17,6 +17,7 @@ const productionEnvironment: StartupEnvironment = {
   S3_SECRET_KEY: 'test-secret-key',
   NEW_API_BASE_URL: 'https://newapi.example.com/v1',
   NEW_API_API_KEY: 'test-new-api-key',
+  NEW_API_WEBHOOK_SECRET: 'test-webhook-secret',
   API_AUTH_TOKEN: 'test-api-auth-token',
   WORKER_PROVIDER: 'newapi',
   RUN_SERVICE: 'bullmq',
@@ -39,6 +40,7 @@ describe('API production startup configuration', () => {
       'S3_REGION',
       'NEW_API_BASE_URL',
       'NEW_API_API_KEY',
+      'NEW_API_WEBHOOK_SECRET',
       'AI_CREDENTIAL_ENCRYPTION_KEY',
       'API_AUTH_TOKEN/API_JWT_SECRET',
       'WORKER_PROVIDER',
@@ -154,6 +156,64 @@ describe('API production startup configuration', () => {
     expect(issues).toContainEqual({
       variable: 'CORS_ORIGIN',
       message: 'must not include wildcard "*" when credentials are enabled',
+    });
+  });
+
+  it('accepts explicit media tool switches and PATH-compatible command names', () => {
+    expect(
+      validateApiStartupConfiguration({
+        ...productionEnvironment,
+        FFPROBE_ENABLED: 'true',
+        FFPROBE_PATH: 'ffprobe',
+        FFMPEG_ENABLED: 'false',
+      }),
+    ).toEqual([]);
+  });
+
+  it.each([
+    ['FFPROBE_ENABLED', 'yes'],
+    ['FFMPEG_ENABLED', 'TRUE'],
+    ['FFPROBE_ENABLED', ''],
+  ])('rejects invalid %s value %s in production', (variable, value) => {
+    const issues = validateApiStartupConfiguration({
+      ...productionEnvironment,
+      [variable]: value,
+    });
+
+    expect(issues).toContainEqual({
+      variable,
+      message: 'must be "true" or "false"',
+    });
+  });
+
+  it.each(['FFPROBE_PATH', 'FFMPEG_PATH'])(
+    'rejects an empty %s value in production',
+    (variable) => {
+      const issues = validateApiStartupConfiguration({
+        ...productionEnvironment,
+        [variable]: '  ',
+      });
+
+      expect(issues).toContainEqual({
+        variable,
+        message: 'must not be empty when configured',
+      });
+    },
+  );
+
+  it.each([
+    ['FFPROBE_ENABLED', 'FFPROBE_PATH'],
+    ['FFMPEG_ENABLED', 'FFMPEG_PATH'],
+  ])('rejects a disabled media tool with an explicit %s path', (enabledVariable, pathVariable) => {
+    const issues = validateApiStartupConfiguration({
+      ...productionEnvironment,
+      [enabledVariable]: 'false',
+      [pathVariable]: 'custom-tool',
+    });
+
+    expect(issues).toContainEqual({
+      variable: enabledVariable,
+      message: `cannot be "false" when ${pathVariable} is configured`,
     });
   });
 

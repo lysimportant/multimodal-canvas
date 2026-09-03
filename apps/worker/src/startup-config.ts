@@ -5,6 +5,8 @@ export type StartupConfigurationIssue = {
   message: string;
 };
 
+const MAX_RESULT_ASSET_BYTES = 50 * 1024 * 1024;
+
 export class StartupConfigurationError extends Error {
   constructor(
     service: string,
@@ -57,6 +59,14 @@ export function validateWorkerStartupConfiguration(
   if (environment.RUN_SERVICE && environment.RUN_SERVICE !== 'bullmq') {
     issues.push({ variable: 'RUN_SERVICE', message: 'must be "bullmq" when configured' });
   }
+
+  validateByteLimitEnvironment(
+    environment,
+    'RESULT_ASSET_MAX_BYTES',
+    MAX_RESULT_ASSET_BYTES,
+    issues,
+  );
+  validateMediaToolConfiguration(environment, 'FFPROBE_ENABLED', 'FFPROBE_PATH', issues);
 
   for (const variable of [
     'NEW_API_TIMEOUT_MS',
@@ -170,5 +180,51 @@ function validatePositiveSafeInteger(
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 1) {
     issues.push({ variable, message: 'must be a positive safe integer' });
+  }
+}
+
+/** 校验结果资产的读取上限，防止非法值延迟到任务执行阶段才暴露。 */
+function validateByteLimitEnvironment(
+  environment: StartupEnvironment,
+  variable: string,
+  maxBytes: number,
+  issues: StartupConfigurationIssue[],
+): void {
+  const raw = environment[variable];
+  if (raw === undefined) return;
+  const value = raw.trim();
+  const message = `must be a positive safe integer no greater than ${maxBytes}`;
+  if (!/^[0-9]+$/.test(value)) {
+    issues.push({ variable, message });
+    return;
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0 || parsed > maxBytes) {
+    issues.push({ variable, message });
+  }
+}
+
+/** 校验可选媒体工具的开关和路径，避免生产环境因配置歧义静默降级。 */
+function validateMediaToolConfiguration(
+  environment: StartupEnvironment,
+  enabledVariable: string,
+  pathVariable: string,
+  issues: StartupConfigurationIssue[],
+): void {
+  const enabled = environment[enabledVariable];
+  if (enabled !== undefined && enabled !== 'true' && enabled !== 'false') {
+    issues.push({ variable: enabledVariable, message: 'must be "true" or "false"' });
+  }
+
+  const path = environment[pathVariable];
+  const normalizedPath = path?.trim();
+  if (path !== undefined && !normalizedPath) {
+    issues.push({ variable: pathVariable, message: 'must not be empty when configured' });
+  }
+  if (enabled === 'false' && normalizedPath) {
+    issues.push({
+      variable: enabledVariable,
+      message: `cannot be "false" when ${pathVariable} is configured`,
+    });
   }
 }
