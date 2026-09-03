@@ -10,6 +10,14 @@
 - 隔离环境的视频创建、查询、受保护 content 下载、MinIO 归档、`asset_versions` 写入和同 DAG 多 Key 幂等已有历史测试证据；本机当前无法复跑，且不等同于生产验收。
 - 移动端复杂画布按当前优先级后置，不阻塞 PC 交付。
 
+## Agent 计划文档
+
+Agent 方案已拆分为一份公共底座文档和两份入口文档，后续实现按以下顺序引用和推进：
+
+- [Agent 公共底座与联网能力计划](TODO-AGENT-COMMON.md)
+- [画布节点 Agent 计划](TODO-AGENT-CANVAS-NODE.md)
+- [独立页面 Agent 计划](TODO-AGENT-STANDALONE.md)
+
 ## 状态约定
 
 - `[~]` 已有实现或部分证据，仍需外部环境或生产验收
