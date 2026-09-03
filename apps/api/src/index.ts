@@ -3,7 +3,8 @@ import { PrismaClient } from '@prisma/client';
 import { FileSystemBlobStore, MemoryAssetStore, PrismaAssetStore, S3BlobStore } from './assets';
 import { FileProjectStore, PrismaProjectStore } from './projects';
 import { BullMqRunService, MemoryRunService, redisConnectionFromUrl } from './runs';
-import { AiSettingsStore, PrismaAiSettingsStore } from './settings';
+import { FileAiSettingsStore } from './file-ai-settings';
+import { PrismaAiSettingsStore } from './settings';
 import { PrismaWebhookEventStore } from './webhooks';
 import { FfmpegMediaDerivativeGenerator, FfprobeMediaMetadataExtractor } from './media';
 import { PrismaUploadSessionStore } from './upload-sessions';
@@ -38,7 +39,13 @@ const rateLimiter = redisRateLimitClient
 const authStore = prisma ? new PrismaAuthStore(prisma) : undefined;
 const runPersistence = prisma ? new PrismaRunPersistence(prisma) : undefined;
 const providerName = process.env.WORKER_PROVIDER === 'mock' ? 'mock' : 'newapi';
-const settingsStore = prisma ? new PrismaAiSettingsStore(prisma) : new AiSettingsStore();
+if (!prisma && providerName === 'newapi' && process.env.RUN_SERVICE === 'bullmq') {
+  throw new Error(
+    'RUN_SERVICE=bullmq with WORKER_PROVIDER=newapi requires DATABASE_URL; local file credentials are not shared with the worker',
+  );
+}
+// 本地开发也要跨 API 重启保留已加密的凭据；测试直接调用 buildApp 时仍使用隔离内存存储。
+const settingsStore = prisma ? new PrismaAiSettingsStore(prisma) : new FileAiSettingsStore();
 const runExecutor =
   providerName === 'newapi'
     ? createNewApiRunExecutor({
