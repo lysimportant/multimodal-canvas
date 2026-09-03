@@ -1,13 +1,13 @@
 # 后续 TODO 计划（未完成项）
 
-更新时间：2026-08-31
+更新时间：2026-09-03
 
-本文件是独立的后续执行计划，只收录当前仍未完成、阻塞或暂缓的事项；项目总清单和已完成历史证据继续保留在 `TODO.md`，不在此文件中重复维护。
+本文件是独立的后续执行计划，只收录当前仍未完成、阻塞或暂缓的事项。原先引用的项目总清单 `TODO.md` 当前不在仓库中；历史完成证据需通过 Git 历史或补充文档追溯。
 
 ## 范围边界
 
-- PC Web 工作台、Mock E2E、单元测试、类型检查、构建和本地宽屏复核已完成，不作为本计划待办。
-- 隔离环境的视频创建、查询、受保护 content 下载、MinIO 归档、`asset_versions` 写入和同 DAG 多 Key 幂等已有证据，但不等同于生产验收。
+- PC Web 工作台、单元测试、类型检查、构建和本地宽屏复核已有证据；Mock E2E 当前仍有 1 个回归用例，不暂视为完整通过。
+- 隔离环境的视频创建、查询、受保护 content 下载、MinIO 归档、`asset_versions` 写入和同 DAG 多 Key 幂等已有历史测试证据；本机当前无法复跑，且不等同于生产验收。
 - 移动端复杂画布按当前优先级后置，不阻塞 PC 交付。
 
 ## 状态约定
@@ -23,18 +23,21 @@
 - `[~]` **P0-REAL-INFRA-01 生产依赖验收**
   - 范围：PostgreSQL、Redis/BullMQ、生产 S3、跨实例网络与持久化配置。
   - 当前证据：隔离 PostgreSQL/Redis/MinIO、0001-0013 迁移升级、namespace、bucket 初始化和 Mock BullMQ 进程接管已通过。
+  - 当前复核：本机未发现 5432、6379、9000、9001 监听，Docker Compose 因 Docker daemon 不可用无法执行；以上证据暂仅限既有隔离测试。
   - 未完成：生产连接、生产数据兼容窗口、生产 S3 上传/下载、生产 Redis 队列和真实平台任务恢复。
   - 验收：在明确隔离的部署环境执行迁移升级、重启恢复、跨实例读写和队列接管；不得连接或清理真实生产数据。
 
 - `[~]` **P0-PROD-STARTUP-02 生产启动与安全边界**
   - 范围：API/Worker 缺失配置 fail-closed、TLS、限流、请求/响应体上限、跨实例会话和密钥注入。
   - 当前证据：代码和单元测试覆盖缺配置拒绝、认证、脱敏和限流边界。
-  - 未完成：真实生产模式启动、跨进程历史凭据恢复、密钥轮换后的旧快照恢复和部署环境告警。
+  - 未完成：真实生产模式启动、入口 TLS/反向代理部署验证、跨实例全局限流、跨进程历史凭据恢复、密钥轮换后的旧快照恢复和部署环境告警。
+  - 已知风险：凭据使用单一加密密钥，尚无 key-id、旧密钥 fallback 或重加密迁移；Redis 限流故障时会退回进程内限流。
   - 验收：使用不落盘的部署密钥完成 API 与 Worker 启动、重启、轮换和失败演练，日志不得暴露密钥或 Bearer token。
 
 - `[~]` **P0-MEDIA-OPS-03 真实媒体处理与可观测性**
   - 范围：FFmpeg/ffprobe、生产对象存储、OTLP、Sentry、GitHub Runner/CI。
-  - 未完成：真实二进制和生产媒体归档、外部追踪/告警投递、GitHub Runner 隔离集成执行。
+  - 当前证据：媒体元数据、缩略图/poster/waveform 适配器及注入式测试已存在；真实二进制和外部服务尚未验收。
+  - 未完成：真实 FFmpeg/ffprobe 二进制和生产媒体归档、外部追踪/告警投递、GitHub Runner 隔离集成执行。
   - 验收：在隔离部署中完成图片缩略图、视频 poster、音频波形、ffprobe 元数据、失败告警和 CI 集成测试；外部投递失败不得影响主流程。
 
 ### P1：供应商契约与媒体覆盖
@@ -69,13 +72,15 @@
 
 ## 本轮本地运行状态
 
-以下是开发服务状态，不代表上述生产待办已完成：
+以下是 2026-09-03 的只读复核结果，不代表上述生产待办已完成：
 
-- API：`http://127.0.0.1:3000`，`NODE_ENV=development`、`RUN_SERVICE=memory`、`WORKER_PROVIDER=newapi`；统一 Base URL 已生效，浏览器既有设置已提交凭据，接口仅返回 `configured:true` 和不可逆指纹
-- Web：`http://127.0.0.1:5173/`
-- API `GET /health` 返回 HTTP `200`，Web 根页面返回 HTTP `200`
-- 本轮未修改代码、配置或原有 `TODO.md`；本机无可用 PostgreSQL/Redis/MinIO，因此未启动持久化 BullMQ Worker
+- 代码质量：`pnpm format:check`、`pnpm lint`、`pnpm typecheck`、`pnpm build` 通过；构建仅有 Web 大 chunk 警告。
+- 单元测试：`pnpm test` 通过；API `280 passed / 5 skipped`，Web `264 passed`，Worker `130 passed`，Providers `110 passed`，Domain `19 passed`，Observability `15 passed`，UI `3 passed`。
+- Mock E2E：`pnpm test:e2e` 为 `19 passed / 1 failed`。失败用例位于 `apps/web/e2e/smoke.spec.ts:1197`，模型快速编辑器选择器未找到；在独立端口复跑仍失败，需修复 UI/测试契约后才能恢复“Mock E2E 已完成”的结论。
+- Web：`http://127.0.0.1:5173/` 返回 HTTP `200`；当前 3000 端口由其他目录的 Next 进程占用，项目 API `GET /health` 未得到验证（当前返回 HTTP `404`）。
+- 依赖服务：本机无 PostgreSQL/Redis/MinIO 监听，Docker daemon 当前不可用，因此未启动持久化 BullMQ Worker，也未完成本地隔离集成复跑。
+- 本轮未修改代码、配置或其他 TODO 文件；工作区保持干净，`git diff --check` 通过。
 
 ## 完成门槛
 
-每个条目只有在依赖、实现、对应测试/冒烟验证、文档证据和 `git diff --check` 均完成后，才可从 `[~]`/`[!]`/`[>]` 改为 `[x]`；外部契约未知或生产环境未提供时保持原状态。
+每个条目只有在依赖、实现、对应测试/冒烟验证、文档证据和 `git diff --check` 均完成后，才可从 `[~]`/`[!]`/`[>]` 改为 `[x]`；Mock、静态代码或历史测试不能替代真实外部契约和生产环境证据，外部契约未知或生产环境未提供时保持原状态。
