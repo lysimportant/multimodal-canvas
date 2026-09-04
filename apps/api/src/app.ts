@@ -77,12 +77,7 @@ import {
 import { extractBearerToken, authenticateBearer, type AuthPrincipal } from './auth';
 import { AuthService, AuthServiceError, type AuthenticatedSession } from './auth-service';
 import { MemoryAuthStore, type AuthStore } from './auth-store';
-import {
-  enforceRunCostPolicy,
-  parseRunCostPolicy,
-  quoteModelCost,
-  UsagePolicyError,
-} from './usage-policy';
+import { quoteModelCost, UsagePolicyError } from './usage-policy';
 import {
   attachmentDisposition,
   createWorkflowExport,
@@ -2282,12 +2277,22 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         allowVirtualMockModels: providerName === 'mock' && process.env.NODE_ENV !== 'production',
         requireCredentialReferences: providerName === 'newapi',
       });
-      const estimatedCost = quoteModelCost(
-        modelResolution.targetModel?.price,
-        target ? canvasForRun.edges.filter((edge) => edge.targetNodeId === target.id).length : 0,
-        getRequestedUnits(body.parameters),
-      );
-      enforceRunCostPolicy(estimatedCost, parseRunCostPolicy());
+      // 目录价格仅作为可选估算元数据；本项目不以估算或上游费用阻断提交。
+      let estimatedCost: ReturnType<typeof quoteModelCost>;
+      try {
+        estimatedCost = quoteModelCost(
+          modelResolution.targetModel?.price,
+          target ? canvasForRun.edges.filter((edge) => edge.targetNodeId === target.id).length : 0,
+          getRequestedUnits(body.parameters),
+        );
+      } catch (error) {
+        if (!(error instanceof UsagePolicyError)) throw error;
+        request.log.warn(
+          { code: error.code, modelAlias: modelResolution.targetModelAlias },
+          'ignoring invalid provider price metadata; upstream remains responsible for billing',
+        );
+        estimatedCost = undefined;
+      }
       const principal = requestPrincipals.get(request);
       const frozenAssetRefs = await resolveRunAssetRefs({
         assetStore,
@@ -2386,11 +2391,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           requestId: request.id,
           issues: error.diagnostics,
         });
-      }
-      if (error instanceof UsagePolicyError) {
-        return reply
-          .code(error.code === 'cost_limit_exceeded' ? 429 : 400)
-          .send({ error: error.message, code: error.code });
       }
       throw error;
     }

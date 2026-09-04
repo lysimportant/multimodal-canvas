@@ -10,6 +10,12 @@
 - 隔离环境的视频创建、查询、受保护 content 下载、MinIO 归档、`asset_versions` 写入和同 DAG 多 Key 幂等已有历史测试证据；本轮已在本机 Docker 隔离服务复跑数据库、Redis 和 MinIO 集成链路，仍不等同于生产验收。
 - 移动端复杂画布按当前优先级后置，不阻塞 PC 交付。
 
+### 当前费用边界
+
+- 本项目当前不向用户收费、不做本地额度扣减或账单结算；请求产生的费用由上游 API 供应商计算和结算。
+- 项目只保留供应商返回的 `usage`、状态、请求 ID 和可选费用字段，用于运行详情、审计、故障诊断和幂等追踪；字段缺失或价格未知不阻塞功能实现。
+- 步数、Token、并发、超时和输入大小等运行资源限制仍可用于防止失控任务，但它们不是本地收费闸门，也不应被登记为收费阻塞。
+
 ## Agent 计划文档
 
 Agent 方案已拆分为一份公共底座文档和两份入口文档，后续实现按以下顺序引用和推进：
@@ -55,9 +61,9 @@ Agent 方案已拆分为一份公共底座文档和两份入口文档，后续�
 - `[!]` **P1-VIDEO-CONTRACT-04 New API 视频完整契约**
   - 当前证据：通用 Base URL 下的创建、查询 `done`、受保护 content 下载，以及本地取消/重试、Webhook/HMAC 签名与事件幂等、状态/错误/usage 归一化已有代码和注入式测试；隔离 Worker/MinIO/`asset_versions` 仍有历史测试证据。
   - 当前复核缺口：Webhook 当前对解析后的 `JSON.stringify` 结果计算简单 HMAC，尚未按供应商确认的原始 body/编码校验，也没有时间戳重放窗口；缺少平台任务 ID 的事件现已记录为 `failed` 并可重试，不再标记为 `processed`；生产入口现已在启动时要求 `NEW_API_WEBHOOK_SECRET`，但供应商签名格式仍待确认；取消只设置本地 `cancelRequested`/停止轮询，尚未调用供应商取消接口。
-  - 未完成：真实供应商取消接口、签名规范与回调契约、完整状态/错误/usage 计费字段、真实失败重试、真实隔离凭据 E2E、生产任务恢复和供应商扣费幂等。
+  - 未完成：真实供应商取消接口、签名规范与回调契约、完整状态/错误/usage 字段、真实失败重试、真实隔离凭据 E2E、生产任务恢复和供应商任务幂等；费用仍由上游负责，本项目不做计费对账。
   - 依赖：平台提供并确认这些外部契约和可用测试凭据。
-  - 验收：同一隔离项目完成创建、轮询或 Webhook、取消、失败、重试、下载、归档、去重和计费字段核对；未知字段不得臆造。
+  - 验收：同一隔离项目完成创建、轮询或 Webhook、取消、失败、重试、下载、归档、去重和 `usage`/状态字段核对（供应商返回时记录，未返回时不臆造）；未知字段不得臆造。
 
 - `[~]` **P1-MEDIA-COVERAGE-05 图片、音频与参考输入**
   - 当前证据：图片/音频请求参数与响应解析、base64/URL 受控下载和 Worker 归档边界已有 Provider/Worker 注入式测试；Provider 现在对图片/音频显式跨媒体 MIME（JSON、data URL、原始响应头）fail-closed；既有真实最小图片请求曾返回 HTTP 200/base64。
@@ -66,19 +72,19 @@ Agent 方案已拆分为一份公共底座文档和两份入口文档，后续�
 
 - `[~]` **P1-MULTIKEY-ROTATION-06 多 Key 轮换与历史恢复**
   - 当前证据：两把凭据在同一 DAG 中分别冻结 `credentialId/version`，文字+视频执行和重复幂等提交已通过；`FileAiSettingsStore` 的 6 个测试还覆盖了本地单进程 API 重启后的历史凭据精确读取、模型目录恢复、激活/撤销后冻结引用解析、坏密钥/损坏文件 fail-closed 和并发写入版本保留。
-  - 未完成：真实密钥轮换、撤销后的排队任务策略、多进程/多实例恢复、生产队列恢复和供应商侧多 Key 扣费行为；本地文件模式不能替代 PostgreSQL/BullMQ 的恢复验收。
+  - 未完成：真实密钥轮换、撤销后的排队任务策略、多进程/多实例恢复、生产队列恢复和供应商侧多 Key 请求/usage 隔离行为；本地文件模式不能替代 PostgreSQL/BullMQ 的恢复验收，费用仍由上游 API 负责。
   - 验收：轮换后新任务使用新版本，旧快照只使用其冻结版本；撤销、重启和失败恢复均 fail-closed 或按明确策略处理，日志和导出不包含原 Key。
 
 - `[~]` **P1-PROVIDER-ROLES-07 统一端口角色的真实映射**
   - 范围：`prompt`、`negativePrompt`、`content`、`style`、`character`、`firstFrame`、`lastFrame`、`audioTrack`、`transcript`、`mask`。
-  - 当前证据：本地 Provider 对未支持角色和图片/音频跨媒体 MIME fail-closed，并覆盖 text 的 `prompt`/`content`/`transcript`、image/audio 的主输入、video 的 `prompt`/`content`/`firstFrame` 映射，以及顺序和重复输入校验。
-  - 未完成：真实供应商对 `negativePrompt`、`lastFrame`、`audioTrack`、`style`、`character`、`mask`、多参考图和跨媒体输入的字段契约；不能把角色静默降级或丢弃。
+  - 当前证据：本地 Provider 对未支持角色和图片/音频跨媒体 MIME fail-closed，并覆盖 text 的 `prompt`/`content`/`transcript`、image/audio 的主输入、video 的 `prompt`/`content`/`firstFrame` 映射，以及顺序和重复输入校验；New API Chat Completions 已将文本、图片、音频、视频提及分别映射到 `text`、`image_url`、`input_audio`、`video_url` 内容块。
+  - 未完成：真实供应商对 `negativePrompt`、`lastFrame`、`audioTrack`、`style`、`character`、`mask`、多参考图和生成专用端点跨媒体输入的字段契约；不能把角色静默降级或丢弃。
   - 验收：每种角色都有已确认的映射或可诊断的不支持错误，并覆盖顺序、重复输入、非法组合和重试行为。
 
 ### P2：明确暂缓
 
 - `[>]` **P2-SSO-08 外部身份系统/单点登录**：等待 OAuth 2.0/OIDC 或兼容 JWT 契约后再接入，保留现有邮箱登录。
-- `[>]` **P2-BILLING-09 收费、累计额度与完整 usage 对账**：等待产品策略和供应商账单契约；当前仅保留单次成本上限与并发保护。
+- `[>]` **P2-USAGE-09 上游 usage 展示与可选对账**：本项目当前不实现收费、额度扣减或账单结算；仅按供应商返回值展示/记录 `usage`、状态和可选费用字段。该项为可选的可观测性增强，不阻塞任何功能交付；步数、Token、超时和并发限制仍作为运行资源保护。
 - `[>]` **P2-DESKTOP-10 Tauri 桌面壳**：Web MVP 和生产链路稳定后复用现有前端。
 - `[>]` **P2-COLLAB-11 协作与后置编辑能力**：多人协作、插件市场、代码节点、完整视频剪辑器和复杂移动端画布。
 
@@ -87,7 +93,7 @@ Agent 方案已拆分为一份公共底座文档和两份入口文档，后续�
 以下是 2026-09-04 的本轮复核结果，不代表上述生产待办已完成：
 
 - 代码质量：`pnpm format:check`、`pnpm lint`、`pnpm typecheck`、`pnpm build` 通过；构建仅有 Web 大 chunk 警告。
-- 单元测试：`pnpm test` 通过；API `295 passed / 5 skipped`（含 `file-ai-settings.test.ts` 的 6 个本地凭据持久化测试和本轮启动配置回归），Web `264 passed`，Worker `142 passed`（含本轮媒体启动配置回归），Providers `113 passed`（含本轮跨媒体 MIME 回归），Domain `19 passed`，Observability `15 passed`，UI `3 passed`。
+- 单元测试：`pnpm test` 通过；API `328 passed / 5 skipped`，Web `290 passed`，Worker `149 passed`，Providers `127 passed`（含本轮 Chat Completions 资源提及映射回归），Domain `24 passed`，Observability `15 passed`，UI `3 passed`。
 - Mock E2E：模型快速编辑器选择器已匹配当前 `CompactSelect` 的可访问语义；定向用例 `1 passed`，本轮全量 `pnpm test:e2e` 为 `20 passed`。
 - Web/API：用临时文件存储和 `WORKER_PROVIDER=mock` 启动真实 API 入口，3317 端口在设置存储初始化后返回 `/v1/settings/ai` HTTP 200；使用损坏 AI 设置 JSON 启动时进程在 `FileAiSettingsStore.get()` 阶段以非零状态退出，未对外监听 3318。临时服务和夹具已关闭清理。
 - 生产样配置烟测：Docker 隔离 PostgreSQL/Redis/MinIO 均 healthy；API 在 3320 端口返回 `/health` 200 和受保护设置 200，Worker 输出 `worker ready`；缺少生产配置时 API/Worker 均立即退出且不监听。

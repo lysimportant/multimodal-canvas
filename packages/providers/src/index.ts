@@ -293,7 +293,6 @@ export class NewApiProvider {
     if (target.data.mediaType === 'video') {
       throw new NewApiProviderError('video generation requires NewApiVideoProvider');
     }
-    assertNewApiMentionMappingUnavailable(snapshot, resolvedMentions);
     validateProviderRoleParameters(snapshot.parameters, target.data.mediaType);
     if (providerJob && providerJob.provider !== 'newapi') {
       throw new NewApiProviderError('已有平台任务与 New API Provider 不匹配', {
@@ -316,6 +315,7 @@ export class NewApiProvider {
               target.data.label,
               target.data.prompt,
               target.data.promptDocument,
+              resolvedMentions,
             ),
             idempotencyKey,
           )
@@ -327,6 +327,7 @@ export class NewApiProvider {
                 target.data.label,
                 target.data.prompt,
                 target.data.promptDocument,
+                resolvedMentions,
               ),
               idempotencyKey,
             )
@@ -337,6 +338,7 @@ export class NewApiProvider {
                 target.data.label,
                 target.data.prompt,
                 target.data.promptDocument,
+                resolvedMentions,
               ),
               idempotencyKey,
             );
@@ -367,8 +369,24 @@ export class NewApiProvider {
     label: string,
     nodePrompt?: string,
     nodePromptDocument?: PromptDocument,
+    resolvedMentions?: readonly ResolvedMention[],
   ) {
     const prompt = resolvePromptSource(snapshot, label, nodePrompt, 'text', nodePromptDocument);
+    if (!nodePromptDocument) {
+      const targetNodeId = snapshot.targetNodeId;
+      const orphanedMention =
+        (snapshot.promptMentions ?? []).find(
+          (mention) => (mention.nodeId ?? targetNodeId) === targetNodeId,
+        ) ?? (resolvedMentions ?? []).find((mention) => mention.nodeId === targetNodeId);
+      if (orphanedMention) {
+        throw promptMentionMappingError(
+          snapshot,
+          orphanedMention,
+          'RESOURCE_MENTION_RESOLUTION_INVALID',
+          '目标节点缺少 promptDocument',
+        );
+      }
+    }
     const inputMessages = orderedRunInputs(snapshot).map((input) => {
       const name = chatInputName(input.role);
       if (!name) throw unsupportedInputRoleError('text', input.role);
@@ -379,13 +397,27 @@ export class NewApiProvider {
       };
     });
 
+    const promptMessage = nodePromptDocument
+      ? (() => {
+          const contentParts = promptDocumentContentParts(
+            snapshot,
+            nodePromptDocument,
+            resolvedMentions,
+          );
+          return {
+            role: 'user' as const,
+            content: nodePromptDocument.blocks.every((block) => block.type === 'text')
+              ? contentParts.map((part) => (part.type === 'text' ? part.text : '')).join('')
+              : contentParts,
+          };
+        })()
+      : { role: 'user' as const, content: prompt.value };
+
     return {
       ...providerParameters(snapshot.parameters, 'text'),
       model: snapshot.modelAlias,
       messages: [
-        ...(prompt.explicit || inputMessages.length === 0
-          ? [{ role: 'user' as const, content: prompt.value }]
-          : []),
+        ...(prompt.explicit || inputMessages.length === 0 ? [promptMessage] : []),
         // `name` is part of the Chat Completions message contract. It keeps
         // the canvas role visible at the provider boundary without turning
         // separate inputs into one concatenated prompt string.
@@ -399,7 +431,9 @@ export class NewApiProvider {
     label: string,
     nodePrompt?: string,
     nodePromptDocument?: PromptDocument,
+    resolvedMentions?: readonly ResolvedMention[],
   ) {
+    assertPromptMentionsUnsupported('image', snapshot, nodePromptDocument, resolvedMentions);
     return {
       ...providerParameters(snapshot.parameters, 'image'),
       model: snapshot.modelAlias,
@@ -413,7 +447,9 @@ export class NewApiProvider {
     label: string,
     nodePrompt?: string,
     nodePromptDocument?: PromptDocument,
+    resolvedMentions?: readonly ResolvedMention[],
   ) {
+    assertPromptMentionsUnsupported('audio', snapshot, nodePromptDocument, resolvedMentions);
     return {
       ...providerParameters(snapshot.parameters, 'audio'),
       model: snapshot.modelAlias,
@@ -541,7 +577,12 @@ export class NewApiVideoProvider {
     if (target.data.mode !== 'generate') {
       throw new NewApiProviderError('当前视频接口仅支持 generate 模式');
     }
-    assertNewApiMentionMappingUnavailable(snapshot, resolvedMentions);
+    assertPromptMentionsUnsupported(
+      'video',
+      snapshot,
+      target.data.promptDocument,
+      resolvedMentions,
+    );
     validateProviderRoleParameters(snapshot.parameters, 'video');
     // Validate every immutable input snapshot even when this invocation only
     // resumes an existing platform job. Otherwise a retry could silently skip
@@ -2169,6 +2210,18 @@ type PromptSource = {
   explicit: boolean;
 };
 
+type ChatContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } }
+  | { type: 'input_audio'; input_audio: { data: string; format: string } }
+  | { type: 'video_url'; video_url: string };
+
+type ParsedProviderDataUrl = {
+  mimeType: string;
+  payload: string;
+  isBase64: boolean;
+};
+
 type VideoInputMapping = {
   prompt?: RunInputSnapshot;
   firstFrame?: RunInputSnapshot;
@@ -2253,27 +2306,254 @@ export function resolveProviderMentions(snapshot: RunSnapshot): ResolvedMention[
 }
 
 /**
- * P2 供应商字段映射落地前，真实 New API 不能把结构化提及只渲染成文字。
- * 此检查必须发生在任何可能计费的 HTTP 请求之前。
+ * 将目标节点的结构化提示词转换为 New API Chat Completions 内容块。
+ *
+ * 文字块和提及块均保留原始顺序；提及必须来自 Worker 根据冻结资产版本
+ * 水合的 `resolvedMentions`，缺失时 fail-closed，避免把显示标签误当成媒体内容。
  */
-function assertNewApiMentionMappingUnavailable(
+function promptDocumentContentParts(
   snapshot: RunSnapshot,
+  document: PromptDocument,
+  resolvedMentions: readonly ResolvedMention[] | undefined,
+): ChatContentPart[] {
+  const targetNodeId = snapshot.targetNodeId;
+  const targetResolved = (resolvedMentions ?? []).filter(
+    (mention) => mention.nodeId === targetNodeId,
+  );
+  const mentionsById = new Map<string, ResolvedMention>();
+  for (const mention of targetResolved) {
+    if (mentionsById.has(mention.mentionId)) {
+      throw promptMentionMappingError(
+        snapshot,
+        mention,
+        'RESOURCE_MENTION_RESOLUTION_INVALID',
+        '同一提及被解析了多个内容',
+      );
+    }
+    mentionsById.set(mention.mentionId, mention);
+  }
+
+  const referencedMentionIds = new Set<string>();
+  const parts = document.blocks.map((block): ChatContentPart => {
+    if (block.type === 'text') return { type: 'text', text: block.text };
+
+    referencedMentionIds.add(block.mentionId);
+    const mention = mentionsById.get(block.mentionId);
+    if (!mention) {
+      throw promptMentionMappingError(
+        snapshot,
+        block,
+        'RESOURCE_MENTION_RESOLUTION_MISSING',
+        'Worker 未提供冻结版本内容',
+      );
+    }
+    if (
+      mention.assetId !== block.assetId ||
+      mention.mediaType !== block.mediaType ||
+      (block.assetVersion !== undefined && mention.assetVersion !== block.assetVersion)
+    ) {
+      throw promptMentionMappingError(
+        snapshot,
+        mention,
+        'RESOURCE_MENTION_RESOLUTION_INVALID',
+        '冻结身份与提示词块不一致',
+      );
+    }
+    return mentionContentPart(snapshot, mention);
+  });
+
+  const orphaned = targetResolved.find((mention) => !referencedMentionIds.has(mention.mentionId));
+  if (orphaned) {
+    throw promptMentionMappingError(
+      snapshot,
+      orphaned,
+      'RESOURCE_MENTION_RESOLUTION_INVALID',
+      '冻结提及不在目标节点提示词文档中',
+    );
+  }
+  return parts;
+}
+
+/**
+ * 图片、音频和视频生成接口当前只有纯文本主输入（视频另有专用首帧字段）。
+ * 对这些端点不能表达的内联提及必须在 HTTP 请求前明确失败，禁止静默丢弃。
+ */
+function assertPromptMentionsUnsupported(
+  mediaType: 'image' | 'audio' | 'video',
+  snapshot: RunSnapshot,
+  document: PromptDocument | undefined,
   resolvedMentions: readonly ResolvedMention[] | undefined,
 ): void {
-  const documentHasMentions = snapshot.nodes.some((node) =>
-    node.data.promptDocument?.blocks.some((block) => block.type === 'mention'),
+  const targetNodeId = snapshot.targetNodeId;
+  const documentMentions = document?.blocks.filter((block) => block.type === 'mention') ?? [];
+  const frozenMentions = (snapshot.promptMentions ?? []).filter(
+    (mention) => (mention.nodeId ?? targetNodeId) === targetNodeId,
   );
-  if (
-    !documentHasMentions &&
-    (snapshot.promptMentions?.length ?? 0) === 0 &&
-    (resolvedMentions?.length ?? 0) === 0
-  ) {
+  const targetResolved = (resolvedMentions ?? []).filter(
+    (mention) => mention.nodeId === targetNodeId,
+  );
+
+  if (documentMentions.length === 0 && frozenMentions.length === 0 && targetResolved.length === 0) {
     return;
   }
-  throw new NewApiProviderError('New API 资源提及映射尚未实现，已在付费请求前阻断', {
-    code: 'RESOURCE_MENTION_PROVIDER_MAPPING_UNAVAILABLE',
-    retryable: false,
-  });
+
+  const firstDocumentMention = documentMentions[0];
+  const firstIdentity = firstDocumentMention ?? frozenMentions[0] ?? targetResolved[0];
+  if (
+    firstDocumentMention &&
+    !targetResolved.some((mention) => mention.mentionId === firstDocumentMention.mentionId)
+  ) {
+    throw promptMentionMappingError(
+      snapshot,
+      firstDocumentMention,
+      'RESOURCE_MENTION_RESOLUTION_MISSING',
+      'Worker 未提供冻结版本内容',
+    );
+  }
+  if (!firstIdentity) return;
+  throw promptMentionMappingError(
+    snapshot,
+    firstIdentity,
+    'RESOURCE_MENTION_PROVIDER_MAPPING_UNSUPPORTED',
+    `New API ${mediaType} 端点仅支持纯文本提示词，无法表达内联媒体提及`,
+  );
+}
+
+function mentionContentPart(snapshot: RunSnapshot, mention: ResolvedMention): ChatContentPart {
+  const dataUrl = parseProviderDataUrl(mention.source.dataUrl);
+  const declaredMimeType = normalizedMimeType(mention.source.mimeType);
+  const providerTextMime =
+    dataUrl?.mimeType === 'text/plain' &&
+    declaredMimeType !== undefined &&
+    isTextMentionMimeType(declaredMimeType);
+  const mimeType = providerTextMime ? declaredMimeType : (dataUrl?.mimeType ?? declaredMimeType);
+  if (!dataUrl || !mimeType || !declaredMimeType) {
+    throw promptMentionMappingError(
+      snapshot,
+      mention,
+      'RESOURCE_MENTION_PROVIDER_MAPPING_INVALID',
+      '缺少有效的 Provider 数据 URL 或 MIME 类型',
+    );
+  }
+  if (
+    !providerTextMime &&
+    dataUrl.mimeType !== 'application/octet-stream' &&
+    declaredMimeType !== 'application/octet-stream' &&
+    dataUrl.mimeType !== declaredMimeType
+  ) {
+    throw promptMentionMappingError(
+      snapshot,
+      mention,
+      'RESOURCE_MENTION_PROVIDER_MAPPING_INVALID',
+      '数据 URL 的 MIME 类型与冻结资源不一致',
+    );
+  }
+  const mediaTypeMatchesMime =
+    mention.mediaType === 'text'
+      ? isTextMentionMimeType(mimeType)
+      : mimeType.startsWith(`${mention.mediaType}/`);
+  if (!mediaTypeMatchesMime) {
+    throw promptMentionMappingError(
+      snapshot,
+      mention,
+      'RESOURCE_MENTION_PROVIDER_MAPPING_INVALID',
+      `MIME 类型 ${mimeType} 与资源媒体类型不一致`,
+    );
+  }
+
+  switch (mention.mediaType) {
+    case 'text': {
+      const text = decodeTextMention(dataUrl, mimeType);
+      if (text === undefined) {
+        throw promptMentionMappingError(
+          snapshot,
+          mention,
+          'RESOURCE_MENTION_PROVIDER_MAPPING_INVALID',
+          '文本资源不是可解码的 UTF-8 数据',
+        );
+      }
+      return { type: 'text', text };
+    }
+    case 'image':
+      return { type: 'image_url', image_url: { url: mention.source.dataUrl.trim() } };
+    case 'audio': {
+      if (!dataUrl.isBase64) {
+        throw promptMentionMappingError(
+          snapshot,
+          mention,
+          'RESOURCE_MENTION_PROVIDER_MAPPING_UNSUPPORTED',
+          'New API input_audio 要求 base64 音频数据',
+        );
+      }
+      const format = formatFromMimeType(mimeType);
+      if (format !== 'wav' && format !== 'mp3') {
+        throw promptMentionMappingError(
+          snapshot,
+          mention,
+          'RESOURCE_MENTION_PROVIDER_MAPPING_UNSUPPORTED',
+          `无法从 MIME 类型 ${mimeType} 确定 input_audio 格式`,
+        );
+      }
+      return { type: 'input_audio', input_audio: { data: dataUrl.payload, format } };
+    }
+    case 'video':
+      return { type: 'video_url', video_url: mention.source.dataUrl.trim() };
+    default:
+      return assertNeverMediaType(mention.mediaType);
+  }
+}
+
+function promptMentionMappingError(
+  snapshot: RunSnapshot,
+  mention: {
+    mentionId: string;
+    assetId: string;
+    mediaType: MediaType;
+  },
+  code:
+    | 'RESOURCE_MENTION_RESOLUTION_MISSING'
+    | 'RESOURCE_MENTION_RESOLUTION_INVALID'
+    | 'RESOURCE_MENTION_PROVIDER_MAPPING_UNSUPPORTED'
+    | 'RESOURCE_MENTION_PROVIDER_MAPPING_INVALID',
+  detail: string,
+): NewApiProviderError {
+  return new NewApiProviderError(
+    `New API ${snapshot.modelAlias} 无法映射资源提及 ${mention.mentionId}（资产 ${mention.assetId}，媒体类型 ${mention.mediaType}）：${detail}`,
+    { code, retryable: false },
+  );
+}
+
+function parseProviderDataUrl(value: string): ParsedProviderDataUrl | undefined {
+  const match = /^data:([^,]*),([\s\S]*)$/i.exec(value.trim());
+  if (!match) return undefined;
+  const metadata = (match[1] ?? '').split(';');
+  const mimeType = normalizedMimeType(metadata.shift()) ?? 'application/octet-stream';
+  const isBase64 = metadata.some((item) => item.trim().toLowerCase() === 'base64');
+  return { mimeType, payload: match[2] ?? '', isBase64 };
+}
+
+function decodeTextMention(dataUrl: ParsedProviderDataUrl, mimeType: string): string | undefined {
+  if (!isTextMentionMimeType(mimeType)) return undefined;
+  try {
+    if (!dataUrl.isBase64) return decodeURIComponent(dataUrl.payload);
+    const binary = atob(dataUrl.payload);
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    return undefined;
+  }
+}
+
+function isTextMentionMimeType(mimeType: string): boolean {
+  return (
+    mimeType.startsWith('text/') ||
+    mimeType === 'application/json' ||
+    mimeType === 'application/xml'
+  );
+}
+
+function assertNeverMediaType(value: never): never {
+  throw new Error(`unsupported provider mention media type: ${String(value)}`);
 }
 
 function chatInputName(

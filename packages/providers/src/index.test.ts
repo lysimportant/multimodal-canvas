@@ -363,14 +363,21 @@ describe('NewApiProvider', () => {
     }).execute({ snapshot });
 
     const request = fetchImpl.mock.calls[0]?.[1];
-    const payload = JSON.parse(String(request?.body)) as { messages: Array<{ content: string }> };
+    const payload = JSON.parse(String(request?.body)) as {
+      messages: Array<{ content: unknown }>;
+    };
     expect(payload.messages[0]?.content).toBe('new prompt @产品图');
-    expect(payload.messages[0]?.content).not.toContain('legacy prompt');
-    expect(payload.messages[0]?.content).not.toContain('derived parameter prompt');
+    expect(String(payload.messages[0]?.content)).not.toContain('legacy prompt');
+    expect(String(payload.messages[0]?.content)).not.toContain('derived parameter prompt');
   });
 
-  it('fails before a paid request when real resource-mention mapping is unavailable', async () => {
-    const fetchImpl = vi.fn<typeof fetch>();
+  it('maps a resolved image mention to an image_url content part', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
     const snapshot = textSnapshot();
     // 这两个字段只由 Worker 在 Provider 调用前临时注入，故测试通过
     // 受控类型断言构造内存态文档，不把它们加入持久化 PromptMention 类型。
@@ -414,17 +421,19 @@ describe('NewApiProvider', () => {
         },
       },
     ]);
-    await expect(
-      new NewApiProvider({
-        baseUrl: 'https://newapi.example.com/v1',
-        apiKey: 'server-secret',
-        fetchImpl,
-      }).execute({ snapshot, resolvedMentions }),
-    ).rejects.toMatchObject({
-      code: 'RESOURCE_MENTION_PROVIDER_MAPPING_UNAVAILABLE',
-      retryable: false,
-    });
-    expect(fetchImpl).not.toHaveBeenCalled();
+    await new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    }).execute({ snapshot, resolvedMentions });
+
+    const request = fetchImpl.mock.calls[0]?.[1];
+    const payload = JSON.parse(String(request?.body)) as {
+      messages: Array<{ content: unknown }>;
+    };
+    expect(payload.messages[0]?.content).toEqual([
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,aW1hZ2U=' } },
+    ]);
   });
 
   it('fails closed when a structured mention is present without a frozen list', async () => {
@@ -449,9 +458,393 @@ describe('NewApiProvider', () => {
         apiKey: 'server-secret',
         fetchImpl,
       }).execute({ snapshot }),
-    ).rejects.toMatchObject({ code: 'RESOURCE_MENTION_PROVIDER_MAPPING_UNAVAILABLE' });
+    ).rejects.toMatchObject({
+      code: 'RESOURCE_MENTION_RESOLUTION_MISSING',
+      retryable: false,
+    });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
+
+  it('preserves promptDocument order and maps text, image, audio, and video mentions', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const snapshot = textSnapshot();
+    snapshot.nodes[0].data.promptDocument = {
+      version: 1,
+      blocks: [
+        { type: 'text', text: 'before ' },
+        {
+          type: 'mention',
+          mentionId: 'mention-text',
+          assetId: 'asset-text',
+          assetVersion: 1,
+          label: '资料',
+          mediaType: 'text',
+          mimeType: 'text/plain',
+          contentUrl: 'data:text/plain;base64,5LiW55WM',
+        },
+        { type: 'text', text: ' middle ' },
+        {
+          type: 'mention',
+          mentionId: 'mention-image-1',
+          assetId: 'asset-image',
+          assetVersion: 2,
+          label: '产品图',
+          mediaType: 'image',
+          mimeType: 'image/png',
+          contentUrl: 'data:image/png;base64,aW1hZ2U=',
+        },
+        {
+          type: 'mention',
+          mentionId: 'mention-image-2',
+          assetId: 'asset-image',
+          assetVersion: 2,
+          label: '产品图重复引用',
+          mediaType: 'image',
+          mimeType: 'image/png',
+          contentUrl: 'data:image/png;base64,aW1hZ2U=',
+        },
+        {
+          type: 'mention',
+          mentionId: 'mention-audio',
+          assetId: 'asset-audio',
+          assetVersion: 3,
+          label: '声音样本',
+          mediaType: 'audio',
+          mimeType: 'audio/wav',
+          contentUrl: 'data:audio/wav;base64,YXVkaW8=',
+        },
+        {
+          type: 'mention',
+          mentionId: 'mention-video',
+          assetId: 'asset-video',
+          assetVersion: 4,
+          label: '参考视频',
+          mediaType: 'video',
+          mimeType: 'video/mp4',
+          contentUrl: 'data:video/mp4;base64,dmlkZW8=',
+        },
+        { type: 'text', text: ' after' },
+      ],
+    } as unknown as NonNullable<RunSnapshot['nodes'][number]['data']['promptDocument']>;
+    snapshot.promptMentions = [
+      {
+        nodeId: 'node_text',
+        mentionId: 'mention-text',
+        assetId: 'asset-text',
+        assetVersion: 1,
+        label: '资料',
+        mediaType: 'text',
+        blockOrder: 1,
+      },
+      {
+        nodeId: 'node_text',
+        mentionId: 'mention-image-1',
+        assetId: 'asset-image',
+        assetVersion: 2,
+        label: '产品图',
+        mediaType: 'image',
+        blockOrder: 3,
+      },
+      {
+        nodeId: 'node_text',
+        mentionId: 'mention-image-2',
+        assetId: 'asset-image',
+        assetVersion: 2,
+        label: '产品图重复引用',
+        mediaType: 'image',
+        blockOrder: 4,
+      },
+      {
+        nodeId: 'node_text',
+        mentionId: 'mention-audio',
+        assetId: 'asset-audio',
+        assetVersion: 3,
+        label: '声音样本',
+        mediaType: 'audio',
+        blockOrder: 5,
+      },
+      {
+        nodeId: 'node_text',
+        mentionId: 'mention-video',
+        assetId: 'asset-video',
+        assetVersion: 4,
+        label: '参考视频',
+        mediaType: 'video',
+        blockOrder: 6,
+      },
+    ];
+
+    const resolvedMentions = resolveProviderMentions(snapshot);
+    await new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    }).execute({ snapshot, resolvedMentions });
+
+    const request = fetchImpl.mock.calls[0]?.[1];
+    const payload = JSON.parse(String(request?.body)) as {
+      messages: Array<{ content: unknown }>;
+    };
+    expect(payload.messages[0]?.content).toEqual([
+      { type: 'text', text: 'before ' },
+      { type: 'text', text: '世界' },
+      { type: 'text', text: ' middle ' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,aW1hZ2U=' } },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,aW1hZ2U=' } },
+      { type: 'input_audio', input_audio: { data: 'YXVkaW8=', format: 'wav' } },
+      { type: 'video_url', video_url: 'data:video/mp4;base64,dmlkZW8=' },
+      { type: 'text', text: ' after' },
+    ]);
+  });
+
+  it('rejects an invalid mention payload before the text request', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const snapshot = textSnapshot();
+    snapshot.nodes[0].data.promptDocument = {
+      version: 1,
+      blocks: [
+        {
+          type: 'mention',
+          mentionId: 'mention-audio',
+          assetId: 'asset-audio',
+          assetVersion: 1,
+          label: '声音样本',
+          mediaType: 'audio',
+          mimeType: 'audio/wav',
+          contentUrl: 'data:audio/wav,not-base64',
+        },
+      ],
+    } as unknown as NonNullable<RunSnapshot['nodes'][number]['data']['promptDocument']>;
+    snapshot.promptMentions = [
+      {
+        nodeId: 'node_text',
+        mentionId: 'mention-audio',
+        assetId: 'asset-audio',
+        assetVersion: 1,
+        label: '声音样本',
+        mediaType: 'audio',
+        blockOrder: 0,
+      },
+    ];
+
+    await expect(
+      new NewApiProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+      }).execute({ snapshot, resolvedMentions: resolveProviderMentions(snapshot) }),
+    ).rejects.toMatchObject({
+      code: 'RESOURCE_MENTION_PROVIDER_MAPPING_UNSUPPORTED',
+      retryable: false,
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      mimeType: 'application/json',
+      contentUrl: 'data:application/json,%7B%22name%22%3A%22%E4%B8%96%E7%95%8C%22%7D',
+      expectedText: '{"name":"世界"}',
+    },
+    {
+      mimeType: 'application/xml',
+      contentUrl: 'data:application/xml,%3Ctitle%3E%E4%B8%96%E7%95%8C%3C%2Ftitle%3E',
+      expectedText: '<title>世界</title>',
+    },
+  ])(
+    'decodes $mimeType text mentions as UTF-8 content',
+    async ({ mimeType, contentUrl, expectedText }) => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+      const snapshot = textSnapshot();
+      snapshot.nodes[0].data.promptDocument = {
+        version: 1,
+        blocks: [
+          {
+            type: 'mention',
+            mentionId: 'mention-text-document',
+            assetId: 'asset-text-document',
+            assetVersion: 1,
+            label: '文档',
+            mediaType: 'text',
+            mimeType,
+            contentUrl,
+          },
+        ],
+      } as unknown as NonNullable<RunSnapshot['nodes'][number]['data']['promptDocument']>;
+      snapshot.promptMentions = [
+        {
+          nodeId: snapshot.targetNodeId,
+          mentionId: 'mention-text-document',
+          assetId: 'asset-text-document',
+          assetVersion: 1,
+          label: '文档',
+          mediaType: 'text',
+          blockOrder: 0,
+        },
+      ];
+
+      await new NewApiProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+      }).execute({ snapshot, resolvedMentions: resolveProviderMentions(snapshot) });
+
+      const request = fetchImpl.mock.calls[0]?.[1];
+      const payload = JSON.parse(String(request?.body)) as {
+        messages: Array<{ content: unknown }>;
+      };
+      expect(payload.messages[0]?.content).toEqual([{ type: 'text', text: expectedText }]);
+    },
+  );
+
+  it('rejects invalid UTF-8 text mention bytes before the text request', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const snapshot = textSnapshot();
+    snapshot.nodes[0].data.promptDocument = {
+      version: 1,
+      blocks: [
+        {
+          type: 'mention',
+          mentionId: 'mention-invalid-utf8',
+          assetId: 'asset-invalid-utf8',
+          assetVersion: 1,
+          label: '损坏文档',
+          mediaType: 'text',
+          mimeType: 'text/plain',
+          contentUrl: 'data:text/plain;base64,//4=',
+        },
+      ],
+    } as unknown as NonNullable<RunSnapshot['nodes'][number]['data']['promptDocument']>;
+    snapshot.promptMentions = [
+      {
+        nodeId: snapshot.targetNodeId,
+        mentionId: 'mention-invalid-utf8',
+        assetId: 'asset-invalid-utf8',
+        assetVersion: 1,
+        label: '损坏文档',
+        mediaType: 'text',
+        blockOrder: 0,
+      },
+    ];
+
+    await expect(
+      new NewApiProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+      }).execute({ snapshot, resolvedMentions: resolveProviderMentions(snapshot) }),
+    ).rejects.toMatchObject({
+      code: 'RESOURCE_MENTION_PROVIDER_MAPPING_INVALID',
+      retryable: false,
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('rejects audio mention formats outside the New API input_audio enum', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const snapshot = textSnapshot();
+    snapshot.nodes[0].data.promptDocument = {
+      version: 1,
+      blocks: [
+        {
+          type: 'mention',
+          mentionId: 'mention-ogg',
+          assetId: 'asset-ogg',
+          assetVersion: 1,
+          label: 'Ogg 音频',
+          mediaType: 'audio',
+          mimeType: 'audio/ogg',
+          contentUrl: 'data:audio/ogg;base64,b2dn',
+        },
+      ],
+    } as unknown as NonNullable<RunSnapshot['nodes'][number]['data']['promptDocument']>;
+    snapshot.promptMentions = [
+      {
+        nodeId: snapshot.targetNodeId,
+        mentionId: 'mention-ogg',
+        assetId: 'asset-ogg',
+        assetVersion: 1,
+        label: 'Ogg 音频',
+        mediaType: 'audio',
+        blockOrder: 0,
+      },
+    ];
+
+    await expect(
+      new NewApiProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+      }).execute({ snapshot, resolvedMentions: resolveProviderMentions(snapshot) }),
+    ).rejects.toMatchObject({
+      code: 'RESOURCE_MENTION_PROVIDER_MAPPING_UNSUPPORTED',
+      retryable: false,
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { targetMediaType: 'image' as const, mentionMediaType: 'image' as const },
+    { targetMediaType: 'audio' as const, mentionMediaType: 'audio' as const },
+  ])(
+    'rejects a $mentionMediaType mention on the $targetMediaType generation endpoint before POST',
+    async ({ targetMediaType, mentionMediaType }) => {
+      const fetchImpl = vi.fn<typeof fetch>();
+      const snapshot = standardSnapshot(targetMediaType);
+      const dataUrl =
+        mentionMediaType === 'image'
+          ? 'data:image/png;base64,aW1hZ2U='
+          : 'data:audio/wav;base64,YXVkaW8=';
+      snapshot.nodes[0].data.promptDocument = {
+        version: 1,
+        blocks: [
+          {
+            type: 'mention',
+            mentionId: `mention-${mentionMediaType}`,
+            assetId: `asset-${mentionMediaType}`,
+            assetVersion: 1,
+            label: mentionMediaType,
+            mediaType: mentionMediaType,
+            mimeType: mentionMediaType === 'image' ? 'image/png' : 'audio/wav',
+            contentUrl: dataUrl,
+          },
+        ],
+      } as unknown as NonNullable<RunSnapshot['nodes'][number]['data']['promptDocument']>;
+      snapshot.promptMentions = [
+        {
+          nodeId: snapshot.targetNodeId,
+          mentionId: `mention-${mentionMediaType}`,
+          assetId: `asset-${mentionMediaType}`,
+          assetVersion: 1,
+          label: mentionMediaType,
+          mediaType: mentionMediaType,
+          blockOrder: 0,
+        },
+      ];
+
+      await expect(
+        new NewApiProvider({
+          baseUrl: 'https://newapi.example.com/v1',
+          apiKey: 'server-secret',
+          fetchImpl,
+        }).execute({ snapshot, resolvedMentions: resolveProviderMentions(snapshot) }),
+      ).rejects.toMatchObject({
+        code: 'RESOURCE_MENTION_PROVIDER_MAPPING_UNSUPPORTED',
+        retryable: false,
+      });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
 
   it('parses the explicit Responses output_text envelope', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
@@ -2283,6 +2676,50 @@ describe('NewApiVideoProvider', () => {
       code: 'VIDEO_PROMPT_REQUIRED',
       retryable: false,
       message: 'New API video 需要 prompt',
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('rejects an inline prompt mention before creating a video task', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const snapshot = videoSnapshot();
+    snapshot.nodes[1]!.data.promptDocument = {
+      version: 1,
+      blocks: [
+        {
+          type: 'mention',
+          mentionId: 'mention-video-reference',
+          assetId: 'asset-video-reference',
+          assetVersion: 1,
+          label: '参考视频',
+          mediaType: 'video',
+          mimeType: 'video/mp4',
+          contentUrl: 'data:video/mp4;base64,dmlkZW8=',
+        },
+      ],
+    } as unknown as NonNullable<RunSnapshot['nodes'][number]['data']['promptDocument']>;
+    snapshot.promptMentions = [
+      {
+        nodeId: snapshot.targetNodeId,
+        mentionId: 'mention-video-reference',
+        assetId: 'asset-video-reference',
+        assetVersion: 1,
+        label: '参考视频',
+        mediaType: 'video',
+        blockOrder: 0,
+      },
+    ];
+
+    await expect(
+      new NewApiVideoProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+        pollIntervalMs: 0,
+      }).execute({ snapshot, resolvedMentions: resolveProviderMentions(snapshot) }),
+    ).rejects.toMatchObject({
+      code: 'RESOURCE_MENTION_PROVIDER_MAPPING_UNSUPPORTED',
+      retryable: false,
     });
     expect(fetchImpl).not.toHaveBeenCalled();
   });

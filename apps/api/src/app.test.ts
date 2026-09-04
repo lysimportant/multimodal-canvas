@@ -1630,7 +1630,7 @@ describe('run endpoints', () => {
     }
   });
 
-  it('rejects a priced run above the configured per-run ceiling', async () => {
+  it('does not block a priced run on local cost policy settings', async () => {
     vi.stubEnv('MAX_RUN_COST', '1.00');
     vi.stubEnv('RUN_COST_CURRENCY', 'USD');
     const settingsStore = new AiSettingsStore('cost-policy-test-secret');
@@ -1678,8 +1678,12 @@ describe('run endpoints', () => {
         url: '/v1/nodes/priced_image/runs',
         payload: { projectId },
       });
-      expect(response.statusCode).toBe(429);
-      expect(response.json()).toMatchObject({ code: 'cost_limit_exceeded' });
+      expect(response.statusCode).toBe(202);
+      expect(response.json().run).toMatchObject({
+        targetNodeId: 'priced_image',
+        modelAlias: 'priced-image',
+        provider: 'mock',
+      });
     } finally {
       await costApp.close();
       vi.unstubAllEnvs();
