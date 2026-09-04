@@ -36,8 +36,16 @@ export function validateApiStartupConfiguration(
   const redisUrl = requireValue(environment, 'REDIS_URL', issues);
   requireValue(environment, 'S3_BUCKET', issues);
   requireValue(environment, 'S3_REGION', issues);
-  const newApiBaseUrl = requireValue(environment, 'NEW_API_BASE_URL', issues);
-  requireValue(environment, 'NEW_API_API_KEY', issues);
+  const encryptionSecret = environment.AI_CREDENTIAL_ENCRYPTION_KEY?.trim();
+  // PostgreSQL 凭据存储存在时，Provider 使用数据库中按运行快照解析的凭据；
+  // 只有没有完整持久化边界时才要求静态环境变量作为明确回退路径。
+  const hasDurableCredentialStore = Boolean(databaseUrl && encryptionSecret);
+  const newApiBaseUrl = hasDurableCredentialStore
+    ? environment.NEW_API_BASE_URL?.trim()
+    : requireValue(environment, 'NEW_API_BASE_URL', issues);
+  if (!hasDurableCredentialStore) {
+    requireValue(environment, 'NEW_API_API_KEY', issues);
+  }
   requireValue(environment, 'NEW_API_WEBHOOK_SECRET', issues);
   requireValue(environment, 'AI_CREDENTIAL_ENCRYPTION_KEY', issues);
   if (!environment.API_AUTH_TOKEN?.trim() && !environment.API_JWT_SECRET?.trim()) {

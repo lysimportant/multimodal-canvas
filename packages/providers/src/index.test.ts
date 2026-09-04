@@ -2182,6 +2182,38 @@ describe('NewApiVideoProvider', () => {
     );
   });
 
+  it('forwards a Unicode video model ID without alias normalization', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ request_id: 'unicode-model-video' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ status: 'done', video: { url: 'https://cdn.example/unicode.mp4' } }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      );
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+      pollIntervalMs: 0,
+      maxPollAttempts: 1,
+    });
+    const snapshot = videoSnapshot();
+    snapshot.inputs = [];
+    snapshot.modelAlias = 'grok-imagine-video-1.5（按次）';
+
+    await provider.execute({ snapshot });
+
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(body.model).toBe('grok-imagine-video-1.5（按次）');
+  });
+
   it('normalizes video size, quality, and seconds aliases', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()

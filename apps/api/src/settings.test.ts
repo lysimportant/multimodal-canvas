@@ -109,6 +109,21 @@ describe('New API model catalog normalization', () => {
     ]);
   });
 
+  it('保留视频模型 ID 中的完整按次后缀', () => {
+    const modelId = 'grok-imagine-video-1.5（按次）';
+    const models = normalizeModelsPayload({
+      data: [{ id: modelId, object: 'model' }],
+    });
+
+    expect(models).toEqual([
+      expect.objectContaining({
+        id: modelId,
+        name: modelId,
+        mediaTypes: ['video'],
+      }),
+    ]);
+  });
+
   it('补齐明确 GPT-5.6 文本模型缺失或仅 low 的推理强度', () => {
     const models = normalizeModelsPayload({
       data: [

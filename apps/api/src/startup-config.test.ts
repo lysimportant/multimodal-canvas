@@ -53,13 +53,43 @@ describe('API production startup configuration', () => {
     );
   });
 
-  it('rejects a missing New API key in an otherwise valid production configuration', () => {
-    const issues = validateApiStartupConfiguration({
+  it('allows database-backed credentials to omit static New API URL and key', () => {
+    const {
+      NEW_API_BASE_URL: _baseUrl,
+      NEW_API_API_KEY: _apiKey,
+      ...databaseBacked
+    } = productionEnvironment;
+
+    expect(validateApiStartupConfiguration(databaseBacked)).toEqual([]);
+  });
+
+  it('requires static New API URL and key without a complete durable credential store', () => {
+    const missingDatabase = validateApiStartupConfiguration({
       ...productionEnvironment,
+      DATABASE_URL: '',
+      NEW_API_BASE_URL: '  ',
       NEW_API_API_KEY: '  ',
     });
+    expect(missingDatabase).toContainEqual({
+      variable: 'NEW_API_BASE_URL',
+      message: 'is required',
+    });
+    expect(missingDatabase).toContainEqual({ variable: 'NEW_API_API_KEY', message: 'is required' });
 
-    expect(issues).toContainEqual({ variable: 'NEW_API_API_KEY', message: 'is required' });
+    const missingEncryptionKey = validateApiStartupConfiguration({
+      ...productionEnvironment,
+      AI_CREDENTIAL_ENCRYPTION_KEY: '',
+      NEW_API_BASE_URL: '  ',
+      NEW_API_API_KEY: '  ',
+    });
+    expect(missingEncryptionKey).toContainEqual({
+      variable: 'NEW_API_BASE_URL',
+      message: 'is required',
+    });
+    expect(missingEncryptionKey).toContainEqual({
+      variable: 'NEW_API_API_KEY',
+      message: 'is required',
+    });
   });
 
   it.each([
