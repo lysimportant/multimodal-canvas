@@ -4,6 +4,7 @@ import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { PrismaClient } from '@prisma/client';
 import {
   runSnapshotSchema,
+  type FrozenPromptMention,
   type MediaType,
   type RunInputSnapshot,
   type RunSnapshot,
@@ -21,6 +22,8 @@ export type StoredAssetReference = {
   mimeType: string;
   sizeBytes: bigint;
   contentKey: string;
+  /** 资产当前状态；旧仓储适配器可省略，默认按可用处理。 */
+  status?: 'ready' | 'archived';
 };
 
 export type StoredAssetVersionReference = {
@@ -71,12 +74,119 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
     const hydratedNodes = new Map(
       hydratedInputs.map((input) => [input.nodeId, input.snapshot] as const),
     );
+    const promptMentionNodes = await this.resolvePromptMentionNodes(
+      snapshot,
+      context.userId,
+      cache,
+    );
 
-    return runSnapshotSchema.parse({
+    const parsedSnapshot = runSnapshotSchema.parse({
       ...snapshot,
       nodes: snapshot.nodes.map((node) => hydratedNodes.get(node.id) ?? node),
       inputs: hydratedInputs,
     });
+
+    // `promptMentionNodes` contains provider-only data URLs. Inject them after
+    // the durable schema parse so they cannot be serialized back into queue or
+    // persistence payloads, while preserving any separately hydrated input
+    // fields on a node that also owns inline mentions.
+    return {
+      ...parsedSnapshot,
+      nodes: parsedSnapshot.nodes.map((node) => {
+        const promptNode = promptMentionNodes.get(node.id);
+        if (!promptNode) return node;
+        return {
+          ...node,
+          ...promptNode,
+          data: { ...node.data, ...promptNode.data },
+        };
+      }),
+    };
+  }
+
+  /**
+   * 将冻结的内联提及解析为 Provider 进程内可读的临时内容。
+   *
+   * `RunSnapshot.promptMentions` 只保存资产身份和版本，不能依赖资产的
+   * 最新版本。这里把对应版本编码为 data URL 写入临时节点文档；返回值
+   * 只传给当前 Provider 调用，队列数据和持久化快照仍保持原样。
+   */
+  private async resolvePromptMentionNodes(
+    snapshot: RunSnapshot,
+    userId: string | undefined,
+    cache: Map<string, Promise<ResolvedAsset>>,
+  ): Promise<Map<string, RunSnapshot['nodes'][number]>> {
+    if (!snapshot.promptMentions || snapshot.promptMentions.length === 0) return new Map();
+
+    const frozenByNode = new Map<string, Map<string, FrozenPromptMention>>();
+    for (const mention of snapshot.promptMentions) {
+      const nodeId = mention.nodeId ?? snapshot.targetNodeId;
+      const byMention = frozenByNode.get(nodeId) ?? new Map<string, FrozenPromptMention>();
+      if (byMention.has(mention.mentionId)) {
+        throw new Error(`duplicate frozen prompt mention ${mention.mentionId} for node ${nodeId}`);
+      }
+      byMention.set(mention.mentionId, mention);
+      frozenByNode.set(nodeId, byMention);
+    }
+
+    const hydrated = new Map<string, ResolvedAsset>();
+    for (const [nodeId, mentions] of frozenByNode) {
+      const node = snapshot.nodes.find((candidate) => candidate.id === nodeId);
+      if (!node) throw new Error(`prompt mention references a missing node ${nodeId}`);
+      const document = node.data.promptDocument;
+      if (!document) {
+        throw new Error(`prompt mention node ${nodeId} is missing promptDocument`);
+      }
+      const documentMentionIds = new Set(
+        document.blocks.filter((block) => block.type === 'mention').map((block) => block.mentionId),
+      );
+      for (const [mentionId, mention] of mentions) {
+        if (!documentMentionIds.has(mentionId)) {
+          throw new Error(`frozen prompt mention ${mentionId} is missing from node ${nodeId}`);
+        }
+        const key = `${mention.assetId}:${mention.assetVersion}`;
+        const resolved = await cached(cache, key, () =>
+          this.loadAsset(snapshot.projectId, userId, mention.assetId, mention.assetVersion),
+        );
+        assertPromptMentionMetadata(mention, resolved, nodeId);
+        hydrated.set(`${nodeId}\0${mentionId}`, resolved);
+      }
+      for (const block of document.blocks) {
+        if (block.type === 'mention' && !mentions.has(block.mentionId)) {
+          throw new Error(`prompt mention ${block.mentionId} on node ${nodeId} is not frozen`);
+        }
+      }
+    }
+
+    const result = new Map<string, RunSnapshot['nodes'][number]>();
+    for (const [nodeId, mentions] of frozenByNode) {
+      const node = snapshot.nodes.find((candidate) => candidate.id === nodeId);
+      if (!node?.data.promptDocument) continue;
+      const document = node.data.promptDocument;
+      const blocks = document.blocks.map((block) => {
+        if (block.type !== 'mention') return block;
+        const mention = mentions.get(block.mentionId);
+        const resolved = hydrated.get(`${nodeId}\0${block.mentionId}`);
+        if (!mention || !resolved) return block;
+        // These fields are intentionally transient passthrough fields. They
+        // are consumed by a Provider adapter and never copied to the durable
+        // frozen mention list or a run result.
+        return {
+          ...block,
+          assetVersion: mention.assetVersion,
+          contentUrl: resolved.dataUrl,
+          mimeType: resolved.mimeType,
+        };
+      });
+      result.set(nodeId, {
+        ...node,
+        data: {
+          ...node.data,
+          promptDocument: { ...document, blocks },
+        },
+      });
+    }
+    return result;
   }
 
   private async resolveInput(
@@ -149,6 +259,9 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
     if (!sameProject && !accessibleGlobalAsset) {
       throw new Error(`asset reference ${assetId} does not belong to the run project`);
     }
+    if (asset.status === 'archived') {
+      throw new Error(`asset reference ${assetId} is archived`);
+    }
     assertMimeMatchesMediaType(asset.mimeType, asset.mediaType, assetId);
 
     const selected = await this.repository.findVersion(assetId, version);
@@ -178,6 +291,7 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
     const providerMimeType = asset.mediaType === 'text' ? 'text/plain' : mimeType;
     return {
       assetId,
+      version,
       mediaType: asset.mediaType,
       mimeType,
       dataUrl: `data:${providerMimeType};base64,${content.toString('base64')}`,
@@ -187,6 +301,7 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
 
 type ResolvedAsset = {
   assetId: string;
+  version: number;
   mediaType: MediaType;
   mimeType: string;
   dataUrl: string;
@@ -206,11 +321,13 @@ class PrismaAssetReferenceRepository implements AssetReferenceRepository {
         mimeType: true,
         sizeBytes: true,
         contentKey: true,
+        status: true,
       },
     });
     return row
       ? {
           ...row,
+          status: row.status.toLowerCase() as 'ready' | 'archived',
           mediaType: row.mediaType.toLowerCase() as MediaType,
         }
       : undefined;
@@ -397,9 +514,37 @@ function assertInputMetadata(input: RunInputSnapshot, resolved: ResolvedAsset): 
   }
 }
 
+function assertPromptMentionMetadata(
+  mention: FrozenPromptMention,
+  resolved: ResolvedAsset,
+  nodeId: string,
+): void {
+  if (mention.assetId !== resolved.assetId) {
+    throw new Error(
+      `prompt mention ${mention.mentionId} asset identity does not match node ${nodeId}`,
+    );
+  }
+  if (mention.assetVersion !== resolved.version) {
+    throw new Error(
+      `prompt mention ${mention.mentionId} asset version does not match node ${nodeId}`,
+    );
+  }
+  if (mention.mediaType !== resolved.mediaType) {
+    throw new Error(
+      `prompt mention ${mention.mentionId} media type does not match asset ${mention.assetId}`,
+    );
+  }
+}
+
 function assertMimeMatchesMediaType(mimeType: string, mediaType: MediaType, assetId: string): void {
   const normalized = normalizeMimeType(mimeType);
-  if (!normalized.startsWith(`${mediaType}/`)) {
+  const compatible =
+    mediaType === 'text'
+      ? normalized.startsWith('text/') ||
+        normalized === 'application/json' ||
+        normalized === 'application/xml'
+      : normalized.startsWith(`${mediaType}/`);
+  if (!compatible) {
     throw new Error(`asset reference ${assetId} MIME type does not match its media type`);
   }
 }

@@ -5,12 +5,16 @@ const errorSchema = {
     error: { type: 'string' },
     code: { type: 'string' },
     revision: { type: 'integer', minimum: 0 },
+    requestId: { type: 'string', minLength: 1 },
+    retryAfterSeconds: { type: 'integer', minimum: 0 },
     issues: { type: 'array', items: { type: 'object', additionalProperties: true } },
   },
   additionalProperties: true,
 } as const;
 
 const mediaTypeSchema = { type: 'string', enum: ['text', 'image', 'audio', 'video'] } as const;
+/** 节点执行模式的公开契约。 */
+const nodeModeSchema = { type: 'string', enum: ['source', 'generate', 'transform'] } as const;
 const modelSelectionSchema = {
   type: 'object',
   required: ['modelAlias'],
@@ -32,12 +36,186 @@ const assetSchema = {
     mediaType: mediaTypeSchema,
     mimeType: { type: 'string' },
     sizeBytes: { type: 'integer', minimum: 0 },
+    latestVersion: {
+      type: 'integer',
+      minimum: 1,
+      description: '资源版本索引中的当前最高版本；历史资源可能没有该字段。',
+    },
     sha256: { type: 'string', pattern: '^[a-f0-9]{64}$' },
     status: { type: 'string', enum: ['ready', 'archived'] },
     contentUrl: { type: 'string' },
     tags: { type: 'array', items: { type: 'string' } },
+    metadata: { type: 'object', additionalProperties: true },
     archivedAt: { type: 'string', format: 'date-time' },
   },
+} as const;
+
+/** 内联资源提及的 Provider-neutral 绑定元数据，并保留未知字段以便前向兼容。 */
+const mentionBindingSchema = {
+  type: 'object',
+  properties: {
+    entityName: { type: 'string', minLength: 1, maxLength: 160 },
+    semanticRole: { type: 'string', minLength: 1, maxLength: 160 },
+    scope: { type: 'string', enum: ['local', 'node', 'scene'] },
+  },
+  // 绑定对象允许保留未知语义字段，以便前向兼容；服务端仍会过滤
+  // 凭据、URL 和本地路径形态的敏感字段。
+  additionalProperties: true,
+} as const;
+
+/** 提示词文档中的结构化资源提及块。 */
+const promptMentionSchema = {
+  type: 'object',
+  required: ['type', 'mentionId', 'assetId', 'label', 'mediaType'],
+  properties: {
+    type: { type: 'string', const: 'mention' },
+    mentionId: { type: 'string', minLength: 1, maxLength: 160 },
+    assetId: { type: 'string', minLength: 1, maxLength: 512 },
+    label: { type: 'string', minLength: 1, maxLength: 512 },
+    mediaType: mediaTypeSchema,
+    assetVersion: { type: 'integer', minimum: 1 },
+    placeholder: { type: 'boolean' },
+    placeholderReason: {
+      type: 'string',
+      enum: [
+        'not_found',
+        'forbidden',
+        'archived',
+        'version_missing',
+        'mime_mismatch',
+        'size_exceeded',
+      ],
+    },
+    semanticRole: { type: 'string', minLength: 1, maxLength: 160 },
+    entityName: { type: 'string', minLength: 1, maxLength: 160 },
+    scope: { type: 'string', enum: ['local', 'node', 'scene'] },
+    binding: mentionBindingSchema,
+  },
+  additionalProperties: false,
+} as const;
+
+/** 提示词文档中的普通文本块。 */
+const promptTextBlockSchema = {
+  type: 'object',
+  required: ['type', 'text'],
+  properties: {
+    type: { type: 'string', const: 'text' },
+    text: { type: 'string', maxLength: 20_000 },
+  },
+  additionalProperties: false,
+} as const;
+
+/** 提示词文档支持的块联合。 */
+const promptBlockSchema = {
+  oneOf: [promptTextBlockSchema, promptMentionSchema],
+  discriminator: { propertyName: 'type' },
+} as const;
+
+/** 版本化提示词文档契约，块顺序即渲染顺序。 */
+const promptDocumentSchema = {
+  type: 'object',
+  required: ['version', 'blocks'],
+  properties: {
+    version: { type: 'integer', const: 1 },
+    blocks: { type: 'array', minItems: 1, maxItems: 2_000, items: promptBlockSchema },
+  },
+  additionalProperties: false,
+  description: '版本化提示词块；提及块保留资源身份，块顺序即渲染顺序。',
+} as const;
+
+/** 运行提交时冻结的资源提及元数据。 */
+const frozenPromptMentionSchema = {
+  type: 'object',
+  required: ['mentionId', 'assetId', 'assetVersion', 'mediaType', 'label', 'blockOrder'],
+  properties: {
+    nodeId: { type: 'string', minLength: 1 },
+    mentionId: { type: 'string', minLength: 1, maxLength: 160 },
+    assetId: { type: 'string', minLength: 1, maxLength: 512 },
+    assetVersion: { type: 'integer', minimum: 1 },
+    mediaType: mediaTypeSchema,
+    label: { type: 'string', minLength: 1, maxLength: 512 },
+    blockOrder: { type: 'integer', minimum: 0 },
+    semanticRole: { type: 'string', minLength: 1, maxLength: 160 },
+    entityName: { type: 'string', minLength: 1, maxLength: 160 },
+    scope: { type: 'string', enum: ['local', 'node', 'scene'] },
+    binding: mentionBindingSchema,
+  },
+  additionalProperties: false,
+  description: '运行提交时捕获的不可变资源提及元数据，不包含媒体字节、凭据或签名 URL。',
+} as const;
+
+/** 冻结资源提及时可稳定诊断的失败原因。 */
+const resourceMentionFailureReasonSchema = {
+  type: 'string',
+  enum: [
+    'not_found',
+    'forbidden',
+    'archived',
+    'version_missing',
+    'mime_mismatch',
+    'size_exceeded',
+    'placeholder',
+  ],
+} as const;
+
+/** 资源冻结及模型能力预检返回的逐项诊断。 */
+const resourceMentionDiagnosticSchema = {
+  type: 'object',
+  required: [
+    'code',
+    'message',
+    'requestId',
+    'nodeId',
+    'mentionId',
+    'assetId',
+    'mediaType',
+    'reason',
+  ],
+  properties: {
+    code: {
+      type: 'string',
+      enum: [
+        'RESOURCE_MENTION_NOT_FOUND',
+        'RESOURCE_MENTION_FORBIDDEN',
+        'RESOURCE_MENTION_ARCHIVED',
+        'RESOURCE_MENTION_VERSION_MISSING',
+        'RESOURCE_MENTION_MIME_MISMATCH',
+        'RESOURCE_MENTION_SIZE_EXCEEDED',
+        'RESOURCE_MENTION_PLACEHOLDER',
+        'RESOURCE_MENTION_CAPABILITY_UNKNOWN',
+        'RESOURCE_MENTION_MEDIA_UNSUPPORTED',
+        'RESOURCE_MENTION_ROLE_UNSUPPORTED',
+        'RESOURCE_MENTION_COUNT_EXCEEDED',
+        'RESOURCE_MENTION_MIXED_UNSUPPORTED',
+        'RESOURCE_MENTION_MODE_UNSUPPORTED',
+      ],
+    },
+    message: { type: 'string' },
+    requestId: { type: 'string', minLength: 1 },
+    nodeId: { type: 'string', minLength: 1 },
+    mentionId: { type: 'string', minLength: 1 },
+    assetId: { type: 'string', minLength: 1 },
+    mediaType: mediaTypeSchema,
+    semanticRole: { type: 'string', minLength: 1 },
+    modelAlias: { type: 'string', minLength: 1 },
+    reason: {
+      oneOf: [
+        resourceMentionFailureReasonSchema,
+        {
+          type: 'string',
+          enum: [
+            'capability_unknown',
+            'media_unsupported',
+            'role_unsupported',
+            'count_exceeded',
+            'mixed_unsupported',
+            'mode_unsupported',
+          ],
+        },
+      ],
+    },
+  },
+  additionalProperties: true,
 } as const;
 
 const projectSchema = {
@@ -82,10 +260,12 @@ const nodeSchema = {
       properties: {
         label: { type: 'string' },
         mediaType: mediaTypeSchema,
-        mode: { type: 'string', enum: ['source', 'generate', 'transform'] },
+        mode: nodeModeSchema,
         enabled: { type: 'boolean' },
         stale: { type: 'boolean' },
         prompt: { type: 'string', maxLength: 20000 },
+        promptDocument: { $ref: '#/components/schemas/PromptDocument' },
+        parameters: { type: 'object', additionalProperties: true },
         inferenceStrength: { type: 'string', minLength: 1 },
         assetId: { type: 'string' },
         modelAlias: { type: 'string' },
@@ -121,6 +301,148 @@ const canvasSchema = {
   },
 } as const;
 
+/** 工作流导出中脱敏后的结果引用。 */
+const workflowExportResultReferenceSchema = {
+  type: 'object',
+  required: ['runId', 'targetNodeId', 'mediaType', 'provider', 'modelAlias'],
+  properties: {
+    runId: { type: 'string', minLength: 1 },
+    targetNodeId: { type: 'string', minLength: 1 },
+    mediaType: mediaTypeSchema,
+    provider: { type: 'string', minLength: 1 },
+    modelAlias: { type: 'string', minLength: 1 },
+    summary: { type: 'string' },
+    asset: {
+      type: 'object',
+      required: ['assetId'],
+      properties: {
+        assetId: { type: 'string', minLength: 1 },
+        version: { type: 'integer', minimum: 1 },
+        mimeType: { type: 'string', minLength: 1 },
+        sizeBytes: { type: 'integer', minimum: 0 },
+        sha256: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+        // 结果归档中的相对路径；导出内容不会携带外部 URL。
+        path: { type: 'string', minLength: 1 },
+      },
+      additionalProperties: false,
+    },
+  },
+  additionalProperties: false,
+  description: '可移植的结果元数据；资产路径仅允许归档内相对路径，不包含签名或外部 URL。',
+} as const;
+
+/** 工作流导入和导出文档共用的顶层字段。 */
+const workflowExportProperties = {
+  schemaVersion: { type: 'integer', const: 1 },
+  exportedAt: { type: 'string', format: 'date-time' },
+  project: { $ref: '#/components/schemas/Project' },
+  canvas: { $ref: '#/components/schemas/Canvas' },
+  modelDefaults: { $ref: '#/components/schemas/ProjectModelDefaults' },
+  // 运行记录是已脱敏的不透明元数据，不包含凭据、URL 或媒体字节。
+  runs: { type: 'array', items: { type: 'object', additionalProperties: true } },
+  results: { type: 'array', items: workflowExportResultReferenceSchema },
+} as const;
+
+/** 工作流导出文档必须存在的顶层字段。 */
+const workflowExportRequired = [
+  'schemaVersion',
+  'exportedAt',
+  'project',
+  'canvas',
+  'runs',
+  'results',
+];
+
+/** 可移植工作流导出文档的公开契约。 */
+const workflowExportSchema = {
+  type: 'object',
+  required: workflowExportRequired,
+  properties: workflowExportProperties,
+  additionalProperties: false,
+  description: '可移植工作流文档，仅包含图元数据和结果引用，不包含凭据、签名 URL 或媒体字节。',
+} as const;
+
+/** 工作流导入请求，可选携带画布乐观并发修订号。 */
+const workflowImportRequestSchema = {
+  type: 'object',
+  required: workflowExportRequired,
+  properties: {
+    ...workflowExportProperties,
+    expectedRevision: { type: 'integer', minimum: 0 },
+  },
+  additionalProperties: false,
+  description: '项目导入接口接受的工作流文档；expectedRevision 用于乐观并发控制。',
+} as const;
+
+/** 导入时单个资源提及产生的问题。 */
+const workflowImportIssueSchema = {
+  type: 'object',
+  required: ['code', 'message', 'mentionId', 'assetId', 'mediaType', 'reason'],
+  properties: {
+    code: {
+      type: 'string',
+      enum: [
+        'RESOURCE_MENTION_IMPORT_NOT_FOUND',
+        'RESOURCE_MENTION_IMPORT_FORBIDDEN',
+        'RESOURCE_MENTION_IMPORT_ARCHIVED',
+        'RESOURCE_MENTION_IMPORT_VERSION_MISSING',
+        'RESOURCE_MENTION_IMPORT_MIME_MISMATCH',
+        'RESOURCE_MENTION_IMPORT_SIZE_EXCEEDED',
+        'RESOURCE_MENTION_IMPORT_PLACEHOLDER',
+      ],
+    },
+    message: { type: 'string', minLength: 1 },
+    mentionId: { type: 'string', minLength: 1 },
+    assetId: { type: 'string', minLength: 1 },
+    nodeId: { type: 'string', minLength: 1 },
+    mediaType: mediaTypeSchema,
+    reason: {
+      type: 'string',
+      enum: [
+        'not_found',
+        'forbidden',
+        'archived',
+        'version_missing',
+        'mime_mismatch',
+        'size_exceeded',
+        'placeholder',
+      ],
+    },
+  },
+  additionalProperties: false,
+  description: '逐项导入诊断；资产无法解析时以占位形式保留原始资源身份。',
+} as const;
+
+/** 工作流导入成功响应。 */
+const workflowImportResponseSchema = {
+  type: 'object',
+  required: ['workflow', 'canvas', 'issues'],
+  properties: {
+    workflow: { $ref: '#/components/schemas/WorkflowExport' },
+    canvas: { $ref: '#/components/schemas/Canvas' },
+    modelDefaults: { $ref: '#/components/schemas/ProjectModelDefaults' },
+    issues: { type: 'array', items: { $ref: '#/components/schemas/WorkflowImportIssue' } },
+  },
+  additionalProperties: false,
+} as const;
+
+/** 工作流导入失败响应。 */
+const workflowImportErrorSchema = {
+  type: 'object',
+  required: ['error'],
+  properties: {
+    error: { type: 'string' },
+    code: {
+      type: 'string',
+      enum: ['invalid_schema', 'unsupported_schema_version', 'revision_conflict'],
+    },
+    revision: { type: 'integer', minimum: 0 },
+    requestId: { type: 'string', minLength: 1 },
+    issues: { type: 'array', items: { type: 'object', additionalProperties: true } },
+  },
+  additionalProperties: true,
+} as const;
+
 const runSnapshotSchema = {
   type: 'object',
   required: ['canvasRevision', 'inputCount', 'inputs'],
@@ -129,6 +451,11 @@ const runSnapshotSchema = {
     inputCount: { type: 'integer', minimum: 0 },
     // Input contents are intentionally omitted from the public run contract.
     inputs: { type: 'array', items: { type: 'null' } },
+    promptMentions: {
+      type: 'array',
+      items: { $ref: '#/components/schemas/FrozenPromptMention' },
+      description: '运行提交时捕获的不可变资源提及元数据。',
+    },
   },
   additionalProperties: false,
 } as const;
@@ -155,7 +482,16 @@ const runResultSchema = {
     targetNodeId: { type: 'string' },
     mediaType: mediaTypeSchema,
     inputCount: { type: 'integer', minimum: 0 },
+    simulated: {
+      type: 'boolean',
+      description: '结果是否来自明确标记的 Mock/预览路径。',
+    },
     asset: runResultAssetSchema,
+    promptMentions: {
+      type: 'array',
+      items: { $ref: '#/components/schemas/FrozenPromptMention' },
+      description: '结果可用时回显的冻结资源提及元数据。',
+    },
   },
   additionalProperties: false,
 } as const;
@@ -494,7 +830,7 @@ export const openApiDocument = {
             },
             content: {
               'application/json': {
-                schema: { type: 'object', additionalProperties: true },
+                schema: { $ref: '#/components/schemas/WorkflowExport' },
               },
             },
           },
@@ -521,6 +857,30 @@ export const openApiDocument = {
           '404': response('Project not found', errorSchema),
           '409': response('Result asset unavailable', errorSchema),
           '413': response('Export limits exceeded', errorSchema),
+        },
+      },
+    },
+    '/v1/projects/{projectId}/import/workflow': {
+      post: {
+        tags: ['projects'],
+        parameters: [{ $ref: '#/components/parameters/ProjectId' }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': { schema: { $ref: '#/components/schemas/WorkflowImportRequest' } },
+          },
+        },
+        responses: {
+          '200': response('Workflow imported', {
+            $ref: '#/components/schemas/WorkflowImportResponse',
+          }),
+          '400': response('Invalid workflow import', {
+            $ref: '#/components/schemas/WorkflowImportError',
+          }),
+          '404': response('Project not found', errorSchema),
+          '409': response('Revision conflict', {
+            $ref: '#/components/schemas/WorkflowImportError',
+          }),
         },
       },
     },
@@ -622,16 +982,28 @@ export const openApiDocument = {
       get: {
         tags: ['assets'],
         parameters: [
+          { $ref: '#/components/parameters/AssetProjectId' },
           { $ref: '#/components/parameters/AssetStatus' },
           { $ref: '#/components/parameters/AssetQuery' },
+          { $ref: '#/components/parameters/AssetMediaType' },
+          { $ref: '#/components/parameters/AssetTags' },
+          { $ref: '#/components/parameters/AssetPage' },
+          { $ref: '#/components/parameters/AssetPageSize' },
         ],
         responses: {
           '200': response('Asset list', {
             type: 'object',
-            required: ['assets'],
-            properties: { assets: { type: 'array', items: assetSchema } },
+            required: ['assets', 'total', 'page', 'pageSize'],
+            properties: {
+              assets: { type: 'array', items: { $ref: '#/components/schemas/Asset' } },
+              total: { type: 'integer', minimum: 0 },
+              page: { type: 'integer', minimum: 1 },
+              pageSize: { type: 'integer', minimum: 1, maximum: 200 },
+            },
+            additionalProperties: false,
           }),
           '400': response('Invalid asset status', errorSchema),
+          '404': response('Project not found', errorSchema),
         },
       },
     },
@@ -917,6 +1289,7 @@ export const openApiDocument = {
                   credentialId: { type: 'string', format: 'uuid' },
                   idempotencyKey: { type: 'string', minLength: 1, maxLength: 200 },
                   parameters: { type: 'object', additionalProperties: true },
+                  promptDocument: { $ref: '#/components/schemas/PromptDocument' },
                 },
                 additionalProperties: false,
               },
@@ -1219,7 +1592,42 @@ export const openApiDocument = {
         required: false,
         schema: { type: 'string', enum: ['ready', 'archived'] },
       },
+      AssetProjectId: {
+        name: 'projectId',
+        in: 'query',
+        required: false,
+        schema: { type: 'string', minLength: 1 },
+        description: '按当前用户可访问的项目筛选；结果同时包含该用户的个人资源。',
+      },
       AssetQuery: { name: 'query', in: 'query', required: false, schema: { type: 'string' } },
+      AssetMediaType: {
+        name: 'mediaType',
+        in: 'query',
+        required: false,
+        schema: mediaTypeSchema,
+        description: '按资源媒体类型筛选。',
+      },
+      AssetTags: {
+        name: 'tags',
+        in: 'query',
+        required: false,
+        schema: { type: 'string', minLength: 1 },
+        description: '按标签筛选；支持逗号分隔标签或重复 tags 参数。',
+      },
+      AssetPage: {
+        name: 'page',
+        in: 'query',
+        required: false,
+        schema: { type: 'integer', minimum: 1, default: 1 },
+        description: '结果页码，从 1 开始。',
+      },
+      AssetPageSize: {
+        name: 'pageSize',
+        in: 'query',
+        required: false,
+        schema: { type: 'integer', minimum: 1, maximum: 200, default: 50 },
+        description: '每页资源数量，范围为 1-200。',
+      },
       MediaTypeQuery: { name: 'mediaType', in: 'query', required: false, schema: mediaTypeSchema },
       CredentialIdQuery: {
         name: 'credentialId',
@@ -1259,6 +1667,21 @@ export const openApiDocument = {
       },
       Project: projectSchema,
       Canvas: canvasSchema,
+      ProjectModelDefaults: projectModelDefaultsSchema,
+      MentionBinding: mentionBindingSchema,
+      PromptMention: promptMentionSchema,
+      PromptTextBlock: promptTextBlockSchema,
+      PromptBlock: promptBlockSchema,
+      PromptDocument: promptDocumentSchema,
+      FrozenPromptMention: frozenPromptMentionSchema,
+      ResourceMentionFailureReason: resourceMentionFailureReasonSchema,
+      ResourceMentionDiagnostic: resourceMentionDiagnosticSchema,
+      WorkflowExportResultReference: workflowExportResultReferenceSchema,
+      WorkflowExport: workflowExportSchema,
+      WorkflowImportRequest: workflowImportRequestSchema,
+      WorkflowImportIssue: workflowImportIssueSchema,
+      WorkflowImportResponse: workflowImportResponseSchema,
+      WorkflowImportError: workflowImportErrorSchema,
       Run: runSchema,
       UploadInitialization: {
         type: 'object',

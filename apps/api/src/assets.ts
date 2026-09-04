@@ -10,7 +10,7 @@ import {
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 import { PrismaClient, type Prisma } from '@prisma/client';
-import type { Asset, MediaType } from '@multimodal-canvas/domain';
+import type { Asset, AssetStatus, MediaType } from '@multimodal-canvas/domain';
 
 /** Object storage boundary used by asset metadata stores. */
 export interface BlobStore {
@@ -189,6 +189,51 @@ export type AssetScope = {
   ownerId?: string;
 };
 
+/**
+ * 资源索引查询条件。`list` 仍返回数组以兼容旧调用；分页参数只在
+ * 同时提供时生效，调用方可通过 `count` 获取同一条件的总数。
+ */
+export type AssetListOptions = {
+  query?: string;
+  mediaType?: MediaType;
+  status?: AssetStatus;
+  /** 需要同时命中的标签；比较不区分大小写。 */
+  tags?: readonly string[];
+  /** 结果页，从 1 开始。 */
+  page?: number;
+  /** 每页数量，最大 200。 */
+  pageSize?: number;
+};
+
+/** 资源列表的分页结果，供 API 层构造稳定的分页元数据。 */
+export type AssetListPage = {
+  assets: Asset[];
+  page: number;
+  pageSize: number;
+  total: number;
+};
+
+/**
+ * 将实际解析出的最新版本附加到公开资产元数据。
+ *
+ * `latestVersion` 是新客户端应读取的明确字段；`metadata.version` 保留
+ * 对旧版资源提及编辑器的兼容。版本号始终来自资产版本索引，不能由
+ * 用户提交的元数据覆盖。
+ */
+function withLatestAssetVersion<T extends Asset>(asset: T, latestVersion?: number): T {
+  const metadata = asset.metadata ? { ...asset.metadata } : undefined;
+  const metadataVersion = positiveVersion(metadata?.version);
+  const resolvedVersion = latestVersion ?? asset.latestVersion ?? metadataVersion;
+  if (resolvedVersion === undefined) {
+    return (metadata ? { ...asset, metadata } : { ...asset }) as T;
+  }
+  return {
+    ...asset,
+    latestVersion: resolvedVersion,
+    metadata: { ...(metadata ?? {}), version: resolvedVersion },
+  } as T;
+}
+
 export type AssetAccessTokenPayload = {
   /** Canonical resource identifier, never a user-controlled URL. */
   resource: string;
@@ -277,7 +322,12 @@ export type StoredAssetDerivative = {
 
 export interface AssetStore {
   create(input: CreateAssetInput): Promise<StoredAsset>;
-  list(scope?: AssetScope): Promise<Asset[]>;
+  list(scope?: AssetScope, options?: AssetListOptions): Promise<Asset[]>;
+  /** Optional optimized count; callers must fall back to `list` when absent. */
+  count?(
+    scope?: AssetScope,
+    options?: Omit<AssetListOptions, 'page' | 'pageSize'>,
+  ): Promise<number>;
   get(id: string, scope?: AssetScope): Promise<StoredAsset | undefined>;
   createVersion(
     assetId: string,
@@ -324,6 +374,8 @@ export class MemoryAssetStore implements AssetStore {
         new Map(derivatives.map((derivative) => [derivative.kind, derivative])),
       );
     }
+    const derivedMetadata = metadataWithDerivatives(input.metadata, derivatives, id);
+    const assetMetadata = withLatestVersionMetadata(derivedMetadata, 1);
     const asset: StoredAsset = {
       id,
       name: input.name,
@@ -334,9 +386,8 @@ export class MemoryAssetStore implements AssetStore {
       status: 'ready',
       contentUrl: `/v1/assets/${id}/content`,
       tags: input.tags ?? [],
-      ...(metadataWithDerivatives(input.metadata, derivatives, id)
-        ? { metadata: metadataWithDerivatives(input.metadata, derivatives, id) }
-        : {}),
+      latestVersion: 1,
+      ...(assetMetadata ? { metadata: assetMetadata } : {}),
       content: Buffer.from(input.content),
     };
     this.assets.set(id, asset);
@@ -365,16 +416,32 @@ export class MemoryAssetStore implements AssetStore {
     return { ...asset, content: Buffer.from(asset.content) };
   }
 
-  async list(scope: AssetScope = {}): Promise<Asset[]> {
+  async list(scope: AssetScope = {}, options: AssetListOptions = {}): Promise<Asset[]> {
+    const filtered = Array.from(this.assets.values())
+      .filter((asset) => this.matchesScope(asset.id, scope))
+      .filter((asset) => matchesAssetListOptions(asset, options))
+      .map(({ content: _content, ...asset }) =>
+        withLatestAssetVersion(asset, this.latestVersionFor(asset.id)),
+      );
+    return paginateAssets(filtered, options);
+  }
+
+  async count(
+    scope: AssetScope = {},
+    options: Omit<AssetListOptions, 'page' | 'pageSize'> = {},
+  ): Promise<number> {
     return Array.from(this.assets.values())
       .filter((asset) => this.matchesScope(asset.id, scope))
-      .map(({ content: _content, ...asset }) => asset);
+      .filter((asset) => matchesAssetListOptions(asset, options)).length;
   }
 
   async get(id: string, scope: AssetScope = {}): Promise<StoredAsset | undefined> {
     const asset = this.assets.get(id);
     return asset && this.matchesScope(id, scope)
-      ? { ...asset, content: Buffer.from(asset.content) }
+      ? withLatestAssetVersion(
+          { ...asset, content: Buffer.from(asset.content) },
+          this.latestVersionFor(id),
+        )
       : undefined;
   }
 
@@ -406,6 +473,8 @@ export class MemoryAssetStore implements AssetStore {
       sizeBytes: record.sizeBytes,
       sha256: record.sha256,
       contentUrl: `/v1/assets/${assetId}/content`,
+      latestVersion: version,
+      metadata: withLatestVersionMetadata(asset.metadata, version),
       content: Buffer.from(input.content),
     });
     const { content: _content, ...publicRecord } = record;
@@ -478,6 +547,12 @@ export class MemoryAssetStore implements AssetStore {
     if (scope.ownerId && this.owners.get(id) !== scope.ownerId) return false;
     return true;
   }
+
+  private latestVersionFor(assetId: string): number | undefined {
+    const versions = this.versions.get(assetId);
+    if (!versions || versions.size === 0) return undefined;
+    return Math.max(...versions.keys());
+  }
 }
 
 export type PrismaAssetStoreOptions = {
@@ -516,6 +591,7 @@ export class PrismaAssetStore implements AssetStore {
     const contentKey = this.versionKey(id, 1);
     const derivatives = mapDerivativeInputs(id, input.derivatives);
     const derivedMetadata = metadataWithDerivatives(input.metadata, derivatives, id);
+    const assetMetadata = withLatestVersionMetadata(derivedMetadata, 1);
     await this.blobStore.put(contentKey, input.content);
     for (const derivative of derivatives) {
       await this.blobStore.put(this.derivativeKey(contentKey, derivative.kind), derivative.content);
@@ -536,7 +612,7 @@ export class PrismaAssetStore implements AssetStore {
             sha256: hash,
             contentKey,
             tags: input.tags ?? [],
-            ...(derivedMetadata ? { metadata: derivedMetadata as Prisma.InputJsonValue } : {}),
+            ...(assetMetadata ? { metadata: assetMetadata as Prisma.InputJsonValue } : {}),
           },
         });
         await transaction.assetVersion.create({
@@ -550,7 +626,10 @@ export class PrismaAssetStore implements AssetStore {
         });
         return asset;
       });
-      return { ...mapAsset(row, this.contentUrl), content: Buffer.from(input.content) };
+      return {
+        ...mapAsset(row, this.contentUrl, 1),
+        content: Buffer.from(input.content),
+      };
     } catch (error) {
       await this.blobStore.delete(contentKey).catch(() => undefined);
       await Promise.all(
@@ -564,12 +643,46 @@ export class PrismaAssetStore implements AssetStore {
     }
   }
 
-  async list(scope: AssetScope = {}): Promise<Asset[]> {
+  async list(scope: AssetScope = {}, options: AssetListOptions = {}): Promise<Asset[]> {
     const rows = await this.prisma.asset.findMany({
       where: this.scopeWhere(scope),
       orderBy: { updatedAt: 'desc' },
+      include: {
+        versions: {
+          orderBy: { version: 'desc' },
+          take: 1,
+          select: { version: true },
+        },
+      },
     });
-    return rows.map((row) => mapAsset(row, this.contentUrl));
+    const assets = rows
+      .map((row) => mapAsset(row, this.contentUrl, row.versions?.[0]?.version))
+      .filter((asset) => matchesAssetListOptions(asset, options));
+    return paginateAssets(assets, options);
+  }
+
+  async count(
+    scope: AssetScope = {},
+    options: Omit<AssetListOptions, 'page' | 'pageSize'> = {},
+  ): Promise<number> {
+    const rows = await this.prisma.asset.findMany({
+      where: this.scopeWhere(scope),
+      select: {
+        id: true,
+        name: true,
+        mediaType: true,
+        mimeType: true,
+        sizeBytes: true,
+        sha256: true,
+        status: true,
+        tags: true,
+        archivedAt: true,
+        metadata: true,
+      },
+    });
+    return rows
+      .map((row) => mapAsset(row, this.contentUrl))
+      .filter((asset) => matchesAssetListOptions(asset, options)).length;
   }
 
   async get(id: string, scope: AssetScope = {}): Promise<StoredAsset | undefined> {
@@ -579,7 +692,10 @@ export class PrismaAssetStore implements AssetStore {
     if (!row) return undefined;
     const content = await this.blobStore.get(row.contentKey);
     if (!content) return undefined;
-    return { ...mapAsset(row, this.contentUrl), content };
+    return {
+      ...mapAsset(row, this.contentUrl, await this.latestVersionFor(id)),
+      content,
+    };
   }
 
   async getDerivative(
@@ -624,7 +740,10 @@ export class PrismaAssetStore implements AssetStore {
     });
     const content = await this.blobStore.get(row.contentKey);
     if (!content) return undefined;
-    return { ...mapAsset(row, this.contentUrl), content };
+    return {
+      ...mapAsset(row, this.contentUrl, await this.latestVersionFor(id)),
+      content,
+    };
   }
 
   async setArchived(
@@ -642,7 +761,10 @@ export class PrismaAssetStore implements AssetStore {
     });
     const content = await this.blobStore.get(row.contentKey);
     if (!content) return undefined;
-    return { ...mapAsset(row, this.contentUrl), content };
+    return {
+      ...mapAsset(row, this.contentUrl, await this.latestVersionFor(id)),
+      content,
+    };
   }
 
   async createVersion(
@@ -652,7 +774,7 @@ export class PrismaAssetStore implements AssetStore {
   ): Promise<AssetVersionRecord | undefined> {
     const existing = await this.prisma.asset.findFirst({
       where: { id: assetId, ...this.scopeWhere(scope) },
-      select: { id: true },
+      select: { id: true, metadata: true },
     });
     if (!existing) return undefined;
     const latest = await this.prisma.assetVersion.findFirst({
@@ -678,7 +800,15 @@ export class PrismaAssetStore implements AssetStore {
         });
         await transaction.asset.update({
           where: { id: assetId },
-          data: { sizeBytes: BigInt(input.content.byteLength), sha256: hash, contentKey },
+          data: {
+            sizeBytes: BigInt(input.content.byteLength),
+            sha256: hash,
+            contentKey,
+            metadata: withLatestVersionMetadata(
+              asRecord(existing.metadata),
+              version,
+            ) as Prisma.InputJsonValue,
+          },
         });
         return created;
       });
@@ -771,6 +901,15 @@ export class PrismaAssetStore implements AssetStore {
     };
   }
 
+  private async latestVersionFor(assetId: string): Promise<number | undefined> {
+    const latest = await this.prisma.assetVersion.findFirst({
+      where: { assetId },
+      orderBy: { version: 'desc' },
+      select: { version: true },
+    });
+    return latest?.version;
+  }
+
   private versionKey(assetId: string, version: number): string {
     return `${this.keyPrefix}/${assetId}/v${version}`;
   }
@@ -788,6 +927,55 @@ export function detectMediaType(name: string, mimeType: string): MediaType | und
   const extension = name.toLowerCase().split('.').pop();
   if (extension === 'txt' || extension === 'md' || extension === 'json') return 'text';
   return undefined;
+}
+
+function matchesAssetListOptions(asset: Asset, options: AssetListOptions): boolean {
+  if (options.mediaType && asset.mediaType !== options.mediaType) return false;
+  if (options.status && asset.status !== options.status) return false;
+
+  const query = options.query?.trim().toLocaleLowerCase();
+  if (query) {
+    const metadata = asset.metadata;
+    const aliases = metadata?.aliases;
+    const alias = metadata?.alias;
+    const searchableAliases = [
+      ...(typeof alias === 'string' ? [alias] : []),
+      ...(Array.isArray(aliases)
+        ? aliases.filter((value): value is string => typeof value === 'string')
+        : []),
+    ];
+    const searchable = [asset.name, asset.mimeType, ...asset.tags, ...searchableAliases]
+      .join('\u0000')
+      .toLocaleLowerCase();
+    if (!searchable.includes(query)) return false;
+  }
+
+  if (options.tags && options.tags.length > 0) {
+    const available = new Set(asset.tags.map((tag) => tag.trim().toLocaleLowerCase()));
+    for (const tag of options.tags) {
+      const normalized = tag.trim().toLocaleLowerCase();
+      if (normalized && !available.has(normalized)) return false;
+    }
+  }
+  return true;
+}
+
+function paginateAssets(assets: Asset[], options: AssetListOptions): Asset[] {
+  if (options.page === undefined && options.pageSize === undefined) return assets;
+  const page = normalizePage(options.page, 1);
+  const pageSize = normalizePageSize(options.pageSize, 50);
+  const start = (page - 1) * pageSize;
+  return assets.slice(start, start + pageSize);
+}
+
+function normalizePage(value: number | undefined, fallback: number): number {
+  return value !== undefined && Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+function normalizePageSize(value: number | undefined, fallback: number): number {
+  if (value === undefined) return fallback;
+  if (!Number.isSafeInteger(value) || value <= 0) return fallback;
+  return Math.min(value, 200);
 }
 
 function sha256(content: Buffer): string {
@@ -824,22 +1012,43 @@ function mapAsset(
     archivedAt: Date | null;
   },
   contentUrl: (assetId: string) => string,
+  latestVersion?: number,
 ): Asset {
+  const metadata =
+    row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata)
+      ? (row.metadata as Record<string, unknown>)
+      : undefined;
+  const resolvedLatestVersion = latestVersion ?? positiveVersion(metadata?.version);
+  const publicMetadata =
+    resolvedLatestVersion === undefined
+      ? metadata
+      : { ...(metadata ?? {}), version: resolvedLatestVersion };
   return {
     id: row.id,
     name: row.name,
     mediaType: row.mediaType.toLowerCase() as MediaType,
     mimeType: row.mimeType,
     sizeBytes: Number(row.sizeBytes),
+    ...(resolvedLatestVersion === undefined ? {} : { latestVersion: resolvedLatestVersion }),
     ...(row.sha256 ? { sha256: row.sha256 } : {}),
     status: row.status.toLowerCase() as 'ready' | 'archived',
     contentUrl: contentUrl(row.id),
     tags: [...row.tags],
-    ...(row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata)
-      ? { metadata: row.metadata as Record<string, unknown> }
-      : {}),
+    ...(publicMetadata ? { metadata: publicMetadata } : {}),
     ...(row.archivedAt ? { archivedAt: row.archivedAt.toISOString() } : {}),
   };
+}
+
+/** 将版本号写入兼容元数据，但不生成空 metadata 对象。 */
+function withLatestVersionMetadata(
+  metadata: Record<string, unknown> | undefined,
+  latestVersion: number,
+): Record<string, unknown> {
+  return { ...(metadata ?? {}), version: latestVersion };
+}
+
+function positiveVersion(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 
 function mapVersion(row: {

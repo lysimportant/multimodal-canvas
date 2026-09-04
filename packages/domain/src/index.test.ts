@@ -6,9 +6,12 @@ import {
   canTransitionRunStatus,
   canvasDocumentSchema,
   isCanvasNodeEnabled,
+  getEffectivePromptDocument,
   mediaTypes,
   nodeModes,
   portRoles,
+  promptDocumentSchema,
+  renderPromptDocument,
   runJobDataSchema,
   runSnapshotFingerprintMaterial,
   runSnapshotSchema,
@@ -234,6 +237,124 @@ describe('canvas protocol', () => {
     expect(invalidStrength.success).toBe(false);
   });
 
+  it('validates versioned prompt documents and preserves mention order and bindings', () => {
+    const document = promptDocumentSchema.parse({
+      version: 1,
+      blocks: [
+        { type: 'text', text: '把 ' },
+        {
+          type: 'mention',
+          mentionId: 'mention-product',
+          assetId: 'asset-product',
+          label: '产品图',
+          mediaType: 'image',
+          binding: { entityName: '产品', semanticRole: 'style', scope: 'node', future: 'keep' },
+        },
+        { type: 'text', text: ' 放在场景中' },
+      ],
+    });
+
+    expect(renderPromptDocument(document)).toBe('把 @产品图 放在场景中');
+    expect(document.blocks[1]).toMatchObject({
+      type: 'mention',
+      mentionId: 'mention-product',
+      binding: { entityName: '产品', future: 'keep' },
+    });
+  });
+
+  it('rejects empty documents, duplicate mention ids, and invalid mention fields', () => {
+    const base = { version: 1 as const, blocks: [{ type: 'text' as const, text: '' }] };
+    expect(promptDocumentSchema.safeParse({ ...base, blocks: [] }).success).toBe(false);
+    expect(
+      promptDocumentSchema.safeParse({
+        version: 1,
+        blocks: [
+          { type: 'mention', mentionId: 'same', assetId: 'a', label: 'A', mediaType: 'image' },
+          { type: 'mention', mentionId: 'same', assetId: 'b', label: 'B', mediaType: 'audio' },
+        ],
+      }).success,
+    ).toBe(false);
+    expect(
+      promptDocumentSchema.safeParse({
+        version: 1,
+        blocks: [{ type: 'mention', mentionId: 'm', assetId: '', label: 'A', mediaType: 'image' }],
+      }).success,
+    ).toBe(false);
+    expect(
+      promptDocumentSchema.safeParse({
+        version: 1,
+        blocks: [{ type: 'mention', mentionId: 'm', assetId: 'a', label: 'A', mediaType: 'model' }],
+      }).success,
+    ).toBe(false);
+    expect(
+      promptDocumentSchema.safeParse({
+        version: 1,
+        blocks: [
+          {
+            type: 'mention',
+            mentionId: 'placeholder-reason-only',
+            assetId: 'asset-a',
+            label: 'A',
+            mediaType: 'image',
+            placeholderReason: 'not_found',
+          },
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('strips provider-only fields while retaining safe forward-compatible binding fields', () => {
+    const parsed = promptDocumentSchema.parse({
+      version: 1,
+      blocks: [
+        {
+          type: 'mention',
+          mentionId: 'm-safe',
+          assetId: 'asset-a',
+          label: 'A',
+          mediaType: 'image',
+          contentUrl: 'https://signed.example/a?signature=secret',
+          apiKey: 'must-not-persist',
+          localPath: 'C:\\private\\a.png',
+          binding: {
+            entityName: '角色',
+            futureRole: 'appearance',
+            apiKey: 'binding-secret',
+            contentUrl: 'https://signed.example.invalid/binding',
+            localPath: 'C:\\private\\binding.png',
+          },
+        },
+      ],
+      apiKey: 'document-secret',
+    });
+
+    const mention = parsed.blocks[0];
+    expect(mention).not.toHaveProperty('contentUrl');
+    expect(mention).not.toHaveProperty('apiKey');
+    expect(mention).not.toHaveProperty('localPath');
+    expect(parsed).not.toHaveProperty('apiKey');
+    expect(mention).toMatchObject({
+      type: 'mention',
+      binding: { entityName: '角色', futureRole: 'appearance' },
+    });
+    if (mention.type === 'mention') {
+      expect(mention.binding).not.toHaveProperty('apiKey');
+      expect(mention.binding).not.toHaveProperty('contentUrl');
+      expect(mention.binding).not.toHaveProperty('localPath');
+    }
+  });
+
+  it('uses promptDocument before the legacy prompt and adapts legacy prompts', () => {
+    const document = { version: 1 as const, blocks: [{ type: 'text' as const, text: 'new text' }] };
+    expect(getEffectivePromptDocument({ prompt: 'old text', promptDocument: document })).toEqual(
+      document,
+    );
+    expect(getEffectivePromptDocument({ prompt: 'old text' })).toEqual({
+      version: 1,
+      blocks: [{ type: 'text', text: 'old text' }],
+    });
+  });
+
   it('validates an uploaded asset reference', () => {
     const asset = assetSchema.parse({
       id: 'asset_image',
@@ -241,11 +362,13 @@ describe('canvas protocol', () => {
       mediaType: 'image',
       mimeType: 'image/png',
       sizeBytes: 128,
+      latestVersion: 3,
       status: 'ready',
       contentUrl: '/v1/assets/asset_image/content',
     });
 
     expect(asset.mediaType).toBe('image');
+    expect(asset.latestVersion).toBe(3);
   });
 
   it('accepts compatible reference inputs and rejects cycles', () => {
@@ -434,6 +557,80 @@ describe('canvas protocol', () => {
     expect(snapshot.canvasRevision).toBe(3);
     expect(canTransitionRunStatus('queued', 'preparing')).toBe(true);
     expect(canTransitionRunStatus('succeeded', 'running')).toBe(false);
+  });
+
+  it('validates frozen prompt mentions against snapshot nodes and uniqueness', () => {
+    const base = {
+      projectId: 'project_frozen_mentions',
+      canvasRevision: 1,
+      targetNodeId: 'node_image',
+      modelAlias: 'mock-image',
+      parameters: {},
+      submittedAt: '2026-08-24T00:00:00.000Z',
+      nodes: [
+        {
+          id: 'node_image' as const,
+          type: 'image' as const,
+          position: { x: 0, y: 0 },
+          data: {
+            label: 'Image',
+            mediaType: 'image' as const,
+            mode: 'generate' as const,
+          },
+        },
+      ],
+      edges: [],
+      inputs: [],
+    };
+    const frozen = runSnapshotSchema.parse({
+      ...base,
+      promptMentions: [
+        {
+          nodeId: 'node_image',
+          mentionId: 'm-1',
+          assetId: 'asset-image',
+          assetVersion: 2,
+          mediaType: 'image',
+          label: '产品图',
+          blockOrder: 1,
+          binding: { entityName: '产品', semanticRole: 'appearance' },
+        },
+        {
+          nodeId: 'node_image',
+          mentionId: 'm-2',
+          assetId: 'asset-image',
+          assetVersion: 2,
+          mediaType: 'image',
+          label: '产品图',
+          blockOrder: 3,
+        },
+      ],
+    });
+    expect(frozen.promptMentions?.map((mention) => mention.mentionId)).toEqual(['m-1', 'm-2']);
+    expect(
+      runSnapshotSchema.safeParse({
+        ...base,
+        promptMentions: [
+          { ...frozen.promptMentions![0], mentionId: 'duplicate' },
+          { ...frozen.promptMentions![1], mentionId: 'duplicate' },
+        ],
+      }).success,
+    ).toBe(false);
+    expect(
+      runSnapshotSchema.safeParse({
+        ...base,
+        promptMentions: [{ ...frozen.promptMentions![0], nodeId: 'missing-node' }],
+      }).success,
+    ).toBe(false);
+    expect(
+      runSnapshotSchema.safeParse({
+        ...base,
+        promptMentions: [
+          { ...frozen.promptMentions![0], mentionId: 'm-order-a', blockOrder: 3 },
+          { ...frozen.promptMentions![1], mentionId: 'm-order-b', blockOrder: 1 },
+        ],
+      }).success,
+    ).toBe(false);
   });
 
   it('canonicalizes run identity independently of timestamp and object key order', () => {

@@ -108,6 +108,11 @@ describe('PrismaProjectStore canvas mapping', () => {
             enabled: false,
             stale: true,
             prompt: 'A detailed mountain landscape',
+            promptDocument: {
+              version: 1,
+              blocks: [{ type: 'text', text: 'A structured prompt' }],
+            },
+            parameters: { quality: '2k', aspectRatio: '16:9' },
             inferenceStrength: 'high',
             modelAlias: 'image-special',
             credentialId: 'credential-1',
@@ -137,6 +142,11 @@ describe('PrismaProjectStore canvas mapping', () => {
         enabled: false,
         stale: true,
         prompt: 'A detailed mountain landscape',
+        promptDocument: {
+          version: 1,
+          blocks: [{ type: 'text', text: 'A structured prompt' }],
+        },
+        parameters: { quality: '2k', aspectRatio: '16:9' },
         inferenceStrength: 'high',
         modelAlias: 'image-special',
         credentialId: 'credential-1',

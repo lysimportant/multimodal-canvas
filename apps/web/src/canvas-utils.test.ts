@@ -289,6 +289,89 @@ describe('clipboard graph transformations', () => {
     expect(pasted.nodes.every((node) => node.selected)).toBe(true);
   });
 
+  it('生成粘贴节点的新提及 ID，并保留资源身份与绑定', () => {
+    const source = flowNode('source', 'text', {
+      prompt: '@产品图',
+      promptDocument: {
+        version: 1,
+        blocks: [
+          { type: 'text', text: '参考 ' },
+          {
+            type: 'mention',
+            mentionId: 'mention-original',
+            assetId: 'asset-product',
+            label: '产品图',
+            mediaType: 'image',
+            assetVersion: 3,
+            binding: { entityName: '产品', semanticRole: 'style', scope: 'node' },
+          },
+        ],
+      },
+    });
+
+    const pasted = pasteCanvasClipboard(
+      { nodes: [source], edges: [] },
+      (() => {
+        let index = 0;
+        return () => `stable-${++index}`;
+      })(),
+    );
+    const document = pasted.nodes[0].data.promptDocument;
+    expect(document?.blocks[1]).toMatchObject({
+      type: 'mention',
+      mentionId: 'mention_copy_stable-2',
+      assetId: 'asset-product',
+      assetVersion: 3,
+      binding: { entityName: '产品', semanticRole: 'style', scope: 'node' },
+    });
+    expect(document?.blocks[1]).not.toMatchObject({ mentionId: 'mention-original' });
+  });
+
+  it('不会把提及绑定、参数中的凭据或临时路径带入剪贴板', () => {
+    const source = flowNode('sensitive', 'text', {
+      parameters: {
+        apiKey: 'provider-secret',
+        temperature: 0.2,
+        signedUrl: 'https://signed.example.invalid/input',
+      },
+      promptDocument: {
+        version: 1,
+        blocks: [
+          {
+            type: 'mention',
+            mentionId: 'mention-sensitive',
+            assetId: 'asset-safe',
+            label: '安全资源',
+            mediaType: 'image',
+            binding: {
+              entityName: '角色',
+              futureRole: 'appearance',
+              apiKey: 'binding-secret',
+              contentUrl: 'https://signed.example.invalid/binding',
+              localPath: 'C:\\private\\binding.png',
+            },
+          },
+        ],
+      },
+    });
+
+    const serialized = serializeCanvasClipboard({ nodes: [source], edges: [] });
+    expect(serialized).not.toContain('provider-secret');
+    expect(serialized).not.toContain('binding-secret');
+    expect(serialized).not.toContain('signed.example.invalid');
+    expect(serialized).not.toContain('C:\\private\\binding.png');
+
+    const parsed = parseCanvasClipboard(serialized);
+    const data = parsed?.nodes[0]?.data as Record<string, any> | undefined;
+    expect(data?.parameters).toEqual({ temperature: 0.2 });
+    expect(data?.promptDocument?.blocks[0]).toMatchObject({
+      binding: { entityName: '角色', futureRole: 'appearance' },
+    });
+    expect(data?.promptDocument?.blocks[0].binding).not.toHaveProperty('apiKey');
+    expect(data?.promptDocument?.blocks[0].binding).not.toHaveProperty('contentUrl');
+    expect(data?.promptDocument?.blocks[0].binding).not.toHaveProperty('localPath');
+  });
+
   it('serializes a versioned browser payload and rejects unrelated text', () => {
     const clipboard = {
       nodes: [flowNode('a')],

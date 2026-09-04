@@ -7,6 +7,7 @@ import {
   NewApiProviderError,
   NewApiVideoProvider,
   normalizeNewApiBaseUrl,
+  resolveProviderMentions,
 } from './index';
 
 const allPortRoles = [
@@ -164,10 +165,59 @@ describe('MockProvider', () => {
       inputCount: 0,
     });
   });
+
+  it('echoes every frozen prompt mention without exposing media content', async () => {
+    const mentions = [
+      {
+        nodeId: 'node_image',
+        mentionId: 'm-1',
+        assetId: 'asset-image',
+        assetVersion: 3,
+        mediaType: 'image' as const,
+        label: '产品图',
+        blockOrder: 0,
+        binding: { entityName: '产品', semanticRole: 'appearance' },
+      },
+      {
+        nodeId: 'node_image',
+        mentionId: 'm-2',
+        assetId: 'asset-image',
+        assetVersion: 3,
+        mediaType: 'image' as const,
+        label: '产品图',
+        blockOrder: 2,
+      },
+    ];
+    const result = await new MockProvider().execute({
+      snapshot: {
+        projectId: 'project_1',
+        canvasRevision: 1,
+        targetNodeId: 'node_image',
+        modelAlias: 'mock-image',
+        parameters: {},
+        submittedAt: '2026-08-24T00:00:00.000Z',
+        nodes: [
+          {
+            id: 'node_image',
+            type: 'image',
+            position: { x: 0, y: 0 },
+            data: { label: 'Image', mediaType: 'image', mode: 'generate' },
+          },
+        ],
+        edges: [],
+        inputs: [],
+        promptMentions: mentions,
+      },
+    });
+
+    expect(result.promptMentions).toEqual(mentions);
+    expect(result.simulated).toBe(true);
+    expect(JSON.stringify(result)).not.toContain('contentUrl');
+  });
 });
 
 describe('NewApiProvider', () => {
-  const textSnapshot = () => ({
+  const textSnapshot = (): RunSnapshot => ({
     projectId: 'project_usage',
     canvasRevision: 1,
     targetNodeId: 'node_text',
@@ -284,6 +334,123 @@ describe('NewApiProvider', () => {
     });
     expect(result.usage?.amount).toBeUndefined();
     expect(result.usage?.currency).toBeUndefined();
+  });
+
+  it('uses a structured prompt document before the legacy node prompt', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const snapshot = textSnapshot();
+    snapshot.parameters.prompt = 'derived parameter prompt';
+    snapshot.nodes[0].data = {
+      ...snapshot.nodes[0].data,
+      prompt: 'legacy prompt',
+      promptDocument: {
+        version: 1,
+        blocks: [
+          { type: 'text', text: 'new prompt ' },
+          { type: 'text', text: '@产品图' },
+        ],
+      },
+    };
+    await new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    }).execute({ snapshot });
+
+    const request = fetchImpl.mock.calls[0]?.[1];
+    const payload = JSON.parse(String(request?.body)) as { messages: Array<{ content: string }> };
+    expect(payload.messages[0]?.content).toBe('new prompt @产品图');
+    expect(payload.messages[0]?.content).not.toContain('legacy prompt');
+    expect(payload.messages[0]?.content).not.toContain('derived parameter prompt');
+  });
+
+  it('fails before a paid request when real resource-mention mapping is unavailable', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const snapshot = textSnapshot();
+    // 这两个字段只由 Worker 在 Provider 调用前临时注入，故测试通过
+    // 受控类型断言构造内存态文档，不把它们加入持久化 PromptMention 类型。
+    snapshot.nodes[0].data.promptDocument = {
+      version: 1,
+      blocks: [
+        {
+          type: 'mention',
+          mentionId: 'mention-image',
+          assetId: 'asset-image',
+          assetVersion: 2,
+          label: '产品图',
+          mediaType: 'image',
+          mimeType: 'image/png',
+          contentUrl: 'data:image/png;base64,aW1hZ2U=',
+        },
+      ],
+    } as unknown as NonNullable<RunSnapshot['nodes'][number]['data']['promptDocument']>;
+    snapshot.promptMentions = [
+      {
+        nodeId: 'node_text',
+        mentionId: 'mention-image',
+        assetId: 'asset-image',
+        assetVersion: 2,
+        label: '产品图',
+        mediaType: 'image',
+        blockOrder: 0,
+      },
+    ];
+    const resolvedMentions = resolveProviderMentions(snapshot);
+
+    expect(resolvedMentions).toMatchObject([
+      {
+        nodeId: 'node_text',
+        mentionId: 'mention-image',
+        assetVersion: 2,
+        source: {
+          kind: 'data-url',
+          mimeType: 'image/png',
+          dataUrl: 'data:image/png;base64,aW1hZ2U=',
+        },
+      },
+    ]);
+    await expect(
+      new NewApiProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+      }).execute({ snapshot, resolvedMentions }),
+    ).rejects.toMatchObject({
+      code: 'RESOURCE_MENTION_PROVIDER_MAPPING_UNAVAILABLE',
+      retryable: false,
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when a structured mention is present without a frozen list', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const snapshot = textSnapshot();
+    snapshot.nodes[0].data.promptDocument = {
+      version: 1,
+      blocks: [
+        {
+          type: 'mention',
+          mentionId: 'mention-unfrozen',
+          assetId: 'asset-image',
+          label: '产品图',
+          mediaType: 'image',
+        },
+      ],
+    };
+
+    await expect(
+      new NewApiProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+      }).execute({ snapshot }),
+    ).rejects.toMatchObject({ code: 'RESOURCE_MENTION_PROVIDER_MAPPING_UNAVAILABLE' });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('parses the explicit Responses output_text envelope', async () => {

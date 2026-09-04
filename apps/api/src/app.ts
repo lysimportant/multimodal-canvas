@@ -9,6 +9,7 @@ import {
   MemoryAssetStore,
   verifyAssetAccessToken,
   type AssetScope,
+  type AssetListOptions,
   type AssetStore,
 } from './assets';
 import {
@@ -34,8 +35,12 @@ import { databaseRunId, type PrismaRunPersistence } from './run-persistence';
 import {
   canvasDocumentSchema,
   mediaTypes,
+  promptDocumentSchema,
   type CanvasDocument,
+  type FrozenPromptMention,
   type MediaType,
+  type PromptDocument,
+  type PromptMention,
   type RunCredentialReference,
   type RunRecord,
   type RunResultAsset,
@@ -87,6 +92,11 @@ import {
 } from './export';
 import { ArchiveError, buildZipArchive } from './export-archive';
 import { MemoryRateLimiter, type RateLimiter } from './rate-limit';
+import {
+  checkResourceMentionCapabilities,
+  type ResourceMentionCapabilityDiagnostic,
+} from './resource-mention-capabilities';
+import { importWorkflowExport, WorkflowImportError } from './workflow-import';
 
 type AppLoggerOptions = {
   level?: string;
@@ -128,6 +138,60 @@ const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 const DEFAULT_BODY_LIMIT_BYTES = 2 * 1024 * 1024;
 const DEFAULT_SSE_MAX_BYTES = 5 * 1024 * 1024;
 const DEFAULT_SSE_MAX_EVENT_BYTES = 256 * 1024;
+const DEFAULT_ASSET_LIST_PAGE = 1;
+const DEFAULT_ASSET_LIST_PAGE_SIZE = 50;
+const MAX_ASSET_LIST_PAGE_SIZE = 200;
+
+type AssetListQuery = {
+  /** 资源所属项目；提供后只返回该项目资源和当前用户的个人资源。 */
+  projectId?: string;
+  query?: string;
+  mediaType?: string;
+  status?: string;
+  tags?: string | string[];
+  page?: string;
+  pageSize?: string;
+};
+
+const assetListQuerySchema = z.object({
+  projectId: z.string().trim().min(1).max(512).optional(),
+  query: z.string().trim().max(512).optional(),
+  mediaType: z.enum(['text', 'image', 'audio', 'video']).optional(),
+  status: z.enum(['ready', 'archived']).optional(),
+  tags: z
+    .union([z.string(), z.array(z.string())])
+    .transform((value) => (Array.isArray(value) ? value : [value]))
+    .transform((values) => values.flatMap((value) => value.split(',')))
+    .transform((values) => values.map((value) => value.trim()).filter(Boolean))
+    .refine((values) => values.length <= 32 && values.every((value) => value.length <= 64), {
+      message: 'invalid asset tags',
+    })
+    .optional(),
+  page: parsePositiveQueryInt().optional(),
+  pageSize: parsePositiveQueryInt()
+    .refine((value) => value <= MAX_ASSET_LIST_PAGE_SIZE, 'asset page size is too large')
+    .optional(),
+});
+
+type RunRequestBody = {
+  projectId: string;
+  modelAlias?: string;
+  credentialId?: string;
+  idempotencyKey?: string;
+  parameters?: Record<string, unknown>;
+  promptDocument?: PromptDocument;
+};
+
+const runRequestBodySchema = z.object({
+  projectId: z.string().min(1),
+  modelAlias: z.string().trim().min(1).max(160).optional(),
+  credentialId: z.string().uuid().optional(),
+  idempotencyKey: z.string().trim().min(1).max(200).optional(),
+  parameters: z.record(z.unknown()).optional(),
+  // Parse this field separately to keep Fastify's route type instantiation
+  // bounded while retaining the domain schema and its diagnostics.
+  promptDocument: z.unknown().optional(),
+});
 
 function serializeRequestForLog(request: FastifyRequest): Record<string, unknown> {
   return {
@@ -147,6 +211,8 @@ type PublicRunSnapshot = {
   inputCount: number;
   /** Legacy Web clients only read `.length`; item contents stay server-side. */
   inputs: null[];
+  /** 已冻结的资源提及元数据；不包含 URL、凭据或媒体内容。 */
+  promptMentions?: FrozenPromptMention[];
 };
 
 type PublicRunResultAsset = {
@@ -163,7 +229,11 @@ type PublicRunResult = {
   targetNodeId: string;
   mediaType: MediaType;
   inputCount: number;
+  /** Mock 预览结果必须明确标记，不能被误认为真实供应商输出。 */
+  simulated?: boolean;
   asset?: PublicRunResultAsset;
+  /** 仅返回冻结提及元数据，不返回媒体内容、URL 或凭据。 */
+  promptMentions?: FrozenPromptMention[];
 };
 
 type PublicRunFields = {
@@ -193,7 +263,15 @@ type RunNodeModelResolution = {
   nodeModelAliases: Record<string, string>;
   nodeCredentialReferences: Record<string, RunCredentialReference>;
   targetModel?: ModelCatalogEntry;
+  /** 每个可执行节点实际解析到的模型，供提交前能力预检使用。 */
+  nodeModels: Record<string, ModelCatalogEntry | undefined>;
 };
+
+class ResourceMentionCapabilityError extends Error {
+  constructor(public readonly diagnostics: ResourceMentionCapabilityDiagnostic[]) {
+    super('资源提及与当前模型能力不兼容');
+  }
+}
 
 class RunAssetFreezeError extends Error {
   constructor(
@@ -201,6 +279,35 @@ class RunAssetFreezeError extends Error {
     message: string,
   ) {
     super(message);
+  }
+}
+
+export type ResourceMentionFailureReason =
+  | 'not_found'
+  | 'forbidden'
+  | 'archived'
+  | 'version_missing'
+  | 'mime_mismatch'
+  | 'size_exceeded'
+  | 'placeholder';
+
+export type ResourceMentionDiagnostic = {
+  code: `RESOURCE_MENTION_${Uppercase<ResourceMentionFailureReason>}`;
+  message: string;
+  requestId: string;
+  nodeId: string;
+  mentionId: string;
+  assetId: string;
+  mediaType: MediaType;
+  reason: ResourceMentionFailureReason;
+};
+
+class ResourceMentionFreezeError extends Error {
+  readonly diagnostics: ResourceMentionDiagnostic[];
+
+  constructor(diagnostics: ResourceMentionDiagnostic[]) {
+    super('资源提及无法冻结');
+    this.diagnostics = diagnostics;
   }
 }
 
@@ -415,6 +522,7 @@ async function resolveRunNodeModels(input: {
   const includedNodeIds = getRunSnapshotIncludedNodeIds(input.canvas, input.targetNodeId);
   const nodeModelAliases: Record<string, string> = {};
   const nodeCredentialReferences: Record<string, RunCredentialReference> = {};
+  const nodeModels: Record<string, ModelCatalogEntry | undefined> = {};
   let targetModel: ModelCatalogEntry | undefined;
 
   for (const node of input.canvas.nodes) {
@@ -508,6 +616,7 @@ async function resolveRunNodeModels(input: {
     }
 
     nodeModelAliases[node.id] = alias;
+    nodeModels[node.id] = model;
     if (!virtualMockModel) {
       const reference = await getCredentialReference(
         model?.credentialId ?? effectiveCredentialId ?? nodeCredentialId,
@@ -532,6 +641,7 @@ async function resolveRunNodeModels(input: {
     targetModelAlias,
     nodeModelAliases,
     nodeCredentialReferences,
+    nodeModels,
     ...(targetModel ? { targetModel } : {}),
   };
 }
@@ -544,10 +654,9 @@ async function resolveRunAssetRefs(input: {
   ownerId?: string;
 }): Promise<Record<string, FrozenRunAssetRef>> {
   const includedNodeIds = getRunSnapshotIncludedNodeIds(input.canvas, input.targetNodeId);
-  const projectAssetScope: AssetScope = {
-    projectId: input.projectId,
-    ...(input.ownerId ? { ownerId: input.ownerId } : {}),
-  };
+  // 项目权限已经由项目存储边界校验；项目内资源按项目身份授权，兼容
+  // 早期没有 ownerId 的项目资产。个人资源仍在 globalAssetScope 中按用户隔离。
+  const projectAssetScope: AssetScope = { projectId: input.projectId };
   const globalAssetScope: AssetScope = {
     projectId: null,
     ...(input.ownerId ? { ownerId: input.ownerId } : {}),
@@ -605,6 +714,232 @@ async function resolveRunAssetRefs(input: {
     frozenAssetRefs[node.id] = resolved.ref;
   }
   return frozenAssetRefs;
+}
+
+const DEFAULT_RESOURCE_MENTION_MAX_BYTES = 50 * 1024 * 1024;
+
+type PromptMentionResolutionInput = {
+  assetStore: AssetStore;
+  canvas: CanvasDocument;
+  targetNodeId?: string;
+  projectId: string;
+  ownerId?: string;
+  requestId: string;
+};
+
+/**
+ * 校验并冻结节点提示词中的资源提及。这里同时承担保存前校验和运行
+ * 前冻结，避免快照在排队期间跟随资源的最新版本漂移。
+ */
+async function resolvePromptMentionRefs(
+  input: PromptMentionResolutionInput,
+): Promise<FrozenPromptMention[]> {
+  const includedNodeIds = input.targetNodeId
+    ? getRunSnapshotIncludedNodeIds(input.canvas, input.targetNodeId)
+    : undefined;
+  // 项目资源由已校验的项目权限授权，不再额外要求资产 ownerId；否则
+  // 匿名创建的项目资产或未来共享项目资产会在搜索后又被运行边界拒绝。
+  const projectScope: AssetScope = { projectId: input.projectId };
+  const globalScope: AssetScope = {
+    projectId: null,
+    ...(input.ownerId ? { ownerId: input.ownerId } : {}),
+  };
+  const maxBytes = parseByteLimit(
+    process.env.RESOURCE_MENTION_MAX_BYTES,
+    DEFAULT_RESOURCE_MENTION_MAX_BYTES,
+  );
+  const assetCache = new Map<
+    string,
+    Promise<{
+      asset: Awaited<ReturnType<AssetStore['get']>>;
+      scope: AssetScope;
+      accessible: boolean;
+    }>
+  >();
+
+  const loadAsset = (assetId: string) => {
+    const cached = assetCache.get(assetId);
+    if (cached) return cached;
+    const pending = (async () => {
+      const projectAsset = await input.assetStore.get(assetId, projectScope);
+      if (projectAsset) return { asset: projectAsset, scope: projectScope, accessible: true };
+      const globalAsset = await input.assetStore.get(assetId, globalScope);
+      if (globalAsset) return { asset: globalAsset, scope: globalScope, accessible: true };
+      // A second, unscoped lookup only distinguishes not-found from forbidden;
+      // no unscoped value is returned to the client.
+      const existing = await input.assetStore.get(assetId);
+      return { asset: existing, scope: projectScope, accessible: false };
+    })();
+    assetCache.set(assetId, pending);
+    return pending;
+  };
+
+  const frozen: FrozenPromptMention[] = [];
+  const diagnostics: ResourceMentionDiagnostic[] = [];
+  for (const node of input.canvas.nodes) {
+    if (includedNodeIds && !includedNodeIds.has(node.id)) continue;
+    // 来源节点的说明文本中的 @ 仅是元数据，不参与 Provider 请求或资源冻结。
+    if (node.data.mode === 'source') continue;
+    const document = node.data.promptDocument;
+    if (!document) continue;
+    const parsedDocument = promptDocumentSchema.parse(document);
+    for (const [blockOrder, block] of parsedDocument.blocks.entries()) {
+      if (block.type !== 'mention') continue;
+      const base = {
+        requestId: input.requestId,
+        nodeId: node.id,
+        mentionId: block.mentionId,
+        assetId: block.assetId,
+        mediaType: block.mediaType,
+      } as const;
+      // Imported placeholders retain their original identity but must never
+      // trigger an asset lookup or reach a provider executor. Treat a reason
+      // without the legacy boolean as a placeholder as well so malformed
+      // forward-compatible documents fail closed at this boundary.
+      if (block.placeholder || block.placeholderReason) {
+        diagnostics.push({
+          ...base,
+          reason: 'placeholder',
+          code: 'RESOURCE_MENTION_PLACEHOLDER',
+          message: `资源提及 ${block.mentionId} 是不可执行占位，请重新绑定资产`,
+        });
+        continue;
+      }
+      const loaded = await loadAsset(block.assetId);
+      if (!loaded.accessible || !loaded.asset) {
+        diagnostics.push({
+          ...base,
+          reason: loaded.asset ? 'forbidden' : 'not_found',
+          code: `RESOURCE_MENTION_${(loaded.asset ? 'forbidden' : 'not_found').toUpperCase()}` as ResourceMentionDiagnostic['code'],
+          message: loaded.asset
+            ? `资源提及 ${block.mentionId} 无权访问资产 ${block.assetId}`
+            : `资源提及 ${block.mentionId} 的资产 ${block.assetId} 不存在`,
+        });
+        continue;
+      }
+      const asset = loaded.asset;
+      if (asset.status === 'archived') {
+        diagnostics.push({
+          ...base,
+          reason: 'archived',
+          code: 'RESOURCE_MENTION_ARCHIVED',
+          message: `资源提及 ${block.mentionId} 引用的资产 ${block.assetId} 已归档`,
+        });
+        continue;
+      }
+      if (
+        asset.mediaType !== block.mediaType ||
+        !isMentionMimeCompatible(asset.mimeType, block.mediaType)
+      ) {
+        diagnostics.push({
+          ...base,
+          reason: 'mime_mismatch',
+          code: 'RESOURCE_MENTION_MIME_MISMATCH',
+          message: `资源提及 ${block.mentionId} 的媒体类型与资产 ${block.assetId} 不匹配`,
+        });
+        continue;
+      }
+      const versions = await input.assetStore.listVersions(block.assetId, loaded.scope);
+      const selectedVersion = block.assetVersion
+        ? versions.find((candidate) => candidate.version === block.assetVersion)
+        : versions.reduce(
+            (latest, candidate) =>
+              !latest || candidate.version > latest.version ? candidate : latest,
+            undefined as (typeof versions)[number] | undefined,
+          );
+      if (!selectedVersion) {
+        diagnostics.push({
+          ...base,
+          reason: 'version_missing',
+          code: 'RESOURCE_MENTION_VERSION_MISSING',
+          message: block.assetVersion
+            ? `资源提及 ${block.mentionId} 指定的资产 ${block.assetId} 版本不存在`
+            : `资源提及 ${block.mentionId} 的资产 ${block.assetId} 没有可冻结版本`,
+        });
+        continue;
+      }
+      if (selectedVersion.sizeBytes <= 0 || selectedVersion.sizeBytes > maxBytes) {
+        diagnostics.push({
+          ...base,
+          reason: 'size_exceeded',
+          code: 'RESOURCE_MENTION_SIZE_EXCEEDED',
+          message: `资源提及 ${block.mentionId} 的资产 ${block.assetId} 超出 ${maxBytes} 字节限制`,
+        });
+        continue;
+      }
+      frozen.push({
+        nodeId: node.id,
+        mentionId: block.mentionId,
+        assetId: block.assetId,
+        assetVersion: selectedVersion.version,
+        mediaType: block.mediaType,
+        label: block.label,
+        blockOrder,
+        ...((block.semanticRole ?? block.binding?.semanticRole)
+          ? { semanticRole: block.semanticRole ?? block.binding?.semanticRole }
+          : {}),
+        ...((block.entityName ?? block.binding?.entityName)
+          ? { entityName: block.entityName ?? block.binding?.entityName }
+          : {}),
+        ...((block.scope ?? block.binding?.scope)
+          ? { scope: block.scope ?? block.binding?.scope }
+          : {}),
+        ...(block.binding ? { binding: block.binding } : {}),
+      });
+    }
+  }
+  if (diagnostics.length > 0) throw new ResourceMentionFreezeError(diagnostics);
+  return frozen;
+}
+
+function isMentionMimeCompatible(mimeType: string, mediaType: MediaType): boolean {
+  const normalized = mimeType.trim().toLowerCase().split(';', 1)[0];
+  if (mediaType === 'text') {
+    return (
+      normalized.startsWith('text/') || /^(application\/json|application\/xml)$/.test(normalized)
+    );
+  }
+  return normalized.startsWith(`${mediaType}/`);
+}
+
+/**
+ * 对运行快照中每个可执行节点做资源提及能力预检。源节点的提示词只是
+ * 元数据，不会单独调用 Provider，因此不参与付费能力判断。
+ */
+function validateRunPromptMentionCapabilities(input: {
+  canvas: CanvasDocument;
+  targetNodeId: string;
+  frozenPromptMentions: readonly FrozenPromptMention[];
+  nodeModelAliases: Readonly<Record<string, string>>;
+  nodeModels: Readonly<Record<string, ModelCatalogEntry | undefined>>;
+  requestId: string;
+  allowMockPreview: boolean;
+}): ResourceMentionCapabilityDiagnostic[] {
+  if (input.frozenPromptMentions.length === 0) return [];
+  const included = getRunSnapshotIncludedNodeIds(input.canvas, input.targetNodeId);
+  const byNode = new Map<string, FrozenPromptMention[]>();
+  for (const mention of input.frozenPromptMentions) {
+    const nodeId = mention.nodeId ?? input.targetNodeId;
+    const list = byNode.get(nodeId) ?? [];
+    list.push(mention);
+    byNode.set(nodeId, list);
+  }
+  const diagnostics: ResourceMentionCapabilityDiagnostic[] = [];
+  for (const [nodeId, mentions] of byNode) {
+    if (!included.has(nodeId)) continue;
+    const node = input.canvas.nodes.find((candidate) => candidate.id === nodeId);
+    if (!node || node.data.mode === 'source') continue;
+    const result = checkResourceMentionCapabilities({
+      node: { id: node.id, data: { mediaType: node.data.mediaType, mode: node.data.mode } },
+      modelAlias: input.nodeModelAliases[nodeId] ?? node.data.modelAlias ?? 'unknown-model',
+      model: input.nodeModels[nodeId],
+      mentions: [...mentions].sort((left, right) => left.blockOrder - right.blockOrder),
+      requestId: input.requestId,
+      allowMockPreview: input.allowMockPreview,
+    });
+    diagnostics.push(...result.issues);
+  }
+  return diagnostics;
 }
 
 export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
@@ -1405,6 +1740,121 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     },
   );
 
+  app.post<{ Params: { projectId: string } }>(
+    '/v1/projects/:projectId/import/workflow',
+    async (request, reply) => {
+      const scope = projectScope(requestPrincipals, request);
+      const project = await projectStore.get(request.params.projectId, scope);
+      if (!project) return reply.code(404).send({ error: 'project not found' });
+      const currentCanvas = await projectStore.getCanvas(request.params.projectId, scope);
+      if (!currentCanvas) return reply.code(404).send({ error: 'project canvas not found' });
+
+      const body = request.body;
+      const bodyRecord = isRecord(body) ? body : undefined;
+      const workflowInput =
+        bodyRecord && isRecord(bodyRecord.workflow) ? bodyRecord.workflow : body;
+      const expectedRevision = bodyRecord?.expectedRevision;
+      if (expectedRevision !== undefined) {
+        if (
+          typeof expectedRevision !== 'number' ||
+          !Number.isSafeInteger(expectedRevision) ||
+          expectedRevision < 0
+        ) {
+          return reply.code(400).send({
+            error: 'invalid workflow import revision',
+            code: 'invalid_schema',
+            requestId: request.id,
+          });
+        }
+        if (expectedRevision !== currentCanvas.revision) {
+          return reply.code(409).send({
+            error: 'canvas revision is stale',
+            code: 'revision_conflict',
+            revision: currentCanvas.revision,
+            requestId: request.id,
+          });
+        }
+      }
+
+      try {
+        const imported = await importWorkflowExport(workflowInput, {
+          assetStore,
+          assetScope: assetScope(requestPrincipals, request),
+          projectId: request.params.projectId,
+        });
+        let modelDefaults = await projectStore.getModelDefaults(request.params.projectId, scope);
+        if (imported.modelDefaults) {
+          await validateProjectModelDefaults({
+            settingsStore,
+            defaults: imported.modelDefaults as UpdateProjectModelDefaultsInput,
+            allowVirtualMockModels:
+              providerName === 'mock' && process.env.NODE_ENV !== 'production',
+            requireCredentialReferences: providerName === 'newapi',
+          });
+        }
+
+        // 导出文件中的 revision 只是源项目元数据；写入目标项目前必须
+        // 以目标当前 revision 为乐观锁基线。
+        const rebasedCanvas: CanvasDocument = {
+          ...imported.canvas,
+          revision: currentCanvas.revision,
+        };
+        const canvas = await projectStore.updateCanvas(
+          request.params.projectId,
+          rebasedCanvas,
+          scope,
+        );
+        if (imported.modelDefaults) {
+          modelDefaults = await projectStore.updateModelDefaults(
+            request.params.projectId,
+            imported.modelDefaults as UpdateProjectModelDefaultsInput,
+            scope,
+          );
+        }
+        return {
+          workflow: imported.workflow,
+          canvas,
+          ...(modelDefaults ? { modelDefaults } : {}),
+          issues: imported.issues,
+        };
+      } catch (error) {
+        if (error instanceof WorkflowImportError) {
+          return reply.code(400).send({
+            error: error.message,
+            code: error.code,
+            requestId: request.id,
+            ...(error.issues.length > 0 ? { issues: error.issues } : {}),
+          });
+        }
+        if (error instanceof ProjectStoreError && error.code === 'revision_conflict') {
+          return reply.code(409).send({
+            error: error.message,
+            code: 'revision_conflict',
+            revision: error.revision,
+            requestId: request.id,
+          });
+        }
+        if (error instanceof ProjectStoreError && error.code === 'not_found') {
+          return reply.code(404).send({ error: error.message, requestId: request.id });
+        }
+        if (error instanceof ProjectStoreError && error.code === 'invalid_asset') {
+          return reply
+            .code(400)
+            .send({ error: error.message, code: error.code, requestId: request.id });
+        }
+        if (error instanceof AiCredentialNotFoundError) {
+          return reply.code(404).send({ error: 'credential not found', code: error.code });
+        }
+        if (error instanceof AiSettingsError) {
+          return reply
+            .code(400)
+            .send({ error: error.message, code: error.code, requestId: request.id });
+        }
+        throw error;
+      }
+    },
+  );
+
   app.get<{ Params: { projectId: string } }>(
     '/v1/projects/:projectId/export/results',
     async (request, reply) => {
@@ -1720,6 +2170,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       }
 
       try {
+        const principal = requestPrincipals.get(request);
+        await resolvePromptMentionRefs({
+          assetStore,
+          canvas: result.data,
+          projectId: request.params.projectId,
+          ...(principal?.userId ? { ownerId: principal.userId } : {}),
+          requestId: request.id,
+        });
         const canvas = await projectStore.updateCanvas(
           request.params.projectId,
           result.data,
@@ -1736,38 +2194,72 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         if (error instanceof ProjectStoreError && error.code === 'invalid_asset') {
           return reply.code(400).send({ error: error.message });
         }
+        if (error instanceof ResourceMentionFreezeError) {
+          return reply.code(400).send({
+            error: error.message,
+            code: 'RESOURCE_MENTION_FREEZE_FAILED',
+            requestId: request.id,
+            issues: error.diagnostics,
+          });
+        }
         throw error;
       }
     },
   );
 
   app.post<{ Params: { nodeId: string } }>('/v1/nodes/:nodeId/runs', async (request, reply) => {
-    const body = z
-      .object({
-        projectId: z.string().min(1),
-        modelAlias: z.string().trim().min(1).max(160).optional(),
-        credentialId: z.string().uuid().optional(),
-        idempotencyKey: z.string().trim().min(1).max(200).optional(),
-        parameters: z.record(z.unknown()).optional(),
-      })
-      .safeParse(request.body);
-    if (!body.success) {
+    const parsedBody = runRequestBodySchema.safeParse(request.body);
+    if (!parsedBody.success) {
       return reply.code(400).send({ error: 'projectId is required' });
     }
+    const promptResult =
+      parsedBody.data.promptDocument === undefined
+        ? undefined
+        : promptDocumentSchema.safeParse(parsedBody.data.promptDocument);
+    if (promptResult && !promptResult.success) {
+      return reply.code(400).send({
+        error: 'invalid prompt document',
+        issues: promptResult.error.issues,
+      });
+    }
+    const body: RunRequestBody = {
+      projectId: parsedBody.data.projectId,
+      ...(parsedBody.data.modelAlias ? { modelAlias: parsedBody.data.modelAlias } : {}),
+      ...(parsedBody.data.credentialId ? { credentialId: parsedBody.data.credentialId } : {}),
+      ...(parsedBody.data.idempotencyKey ? { idempotencyKey: parsedBody.data.idempotencyKey } : {}),
+      ...(parsedBody.data.parameters ? { parameters: parsedBody.data.parameters } : {}),
+      ...(promptResult?.success ? { promptDocument: promptResult.data } : {}),
+    };
 
     const scope = projectScope(requestPrincipals, request);
     // Running with an already configured credential does not expose or mutate
     // its secret. Regular project users may select the credential bound to a
     // node, while listing, activating and editing credentials remains admin-only.
-    if (body.data.credentialId && !(await settingsStore.hasCredential(body.data.credentialId))) {
+    if (body.credentialId && !(await settingsStore.hasCredential(body.credentialId))) {
       return reply.code(404).send({ error: 'credential not found' });
     }
-    const canvas = await projectStore.getCanvas(body.data.projectId, scope);
+    const canvas = await projectStore.getCanvas(body.projectId, scope);
     if (!canvas) return reply.code(404).send({ error: 'project not found' });
 
     try {
+      // A request may submit a freshly edited document before the canvas PATCH
+      // reaches storage. It applies only to the target node's immutable run
+      // snapshot; it never mutates the saved canvas implicitly.
+      const canvasForRun = body.promptDocument
+        ? {
+            ...canvas,
+            nodes: canvas.nodes.map((node) =>
+              node.id === request.params.nodeId
+                ? {
+                    ...node,
+                    data: { ...node.data, promptDocument: body.promptDocument },
+                  }
+                : node,
+            ),
+          }
+        : canvas;
       if (maxActiveRunsPerProject !== undefined) {
-        const activeRuns = await runService.listByProject(body.data.projectId);
+        const activeRuns = await runService.listByProject(body.projectId);
         const activeCount = activeRuns.filter((run) =>
           ['queued', 'preparing', 'running', 'processing', 'cancel_requested'].includes(run.status),
         ).length;
@@ -1778,46 +2270,67 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           });
         }
       }
-      const target = canvas.nodes.find((node) => node.id === request.params.nodeId);
-      const projectDefaults = await projectStore.getModelDefaults(body.data.projectId, scope);
+      const target = canvasForRun.nodes.find((node) => node.id === request.params.nodeId);
+      const projectDefaults = await projectStore.getModelDefaults(body.projectId, scope);
       const modelResolution = await resolveRunNodeModels({
         settingsStore,
-        canvas,
+        canvas: canvasForRun,
         targetNodeId: request.params.nodeId,
-        ...(body.data.modelAlias ? { requestModelAlias: body.data.modelAlias } : {}),
-        ...(body.data.credentialId ? { credentialId: body.data.credentialId } : {}),
+        ...(body.modelAlias ? { requestModelAlias: body.modelAlias } : {}),
+        ...(body.credentialId ? { credentialId: body.credentialId } : {}),
         ...(projectDefaults ? { projectDefaults } : {}),
         allowVirtualMockModels: providerName === 'mock' && process.env.NODE_ENV !== 'production',
         requireCredentialReferences: providerName === 'newapi',
       });
       const estimatedCost = quoteModelCost(
         modelResolution.targetModel?.price,
-        target ? canvas.edges.filter((edge) => edge.targetNodeId === target.id).length : 0,
-        getRequestedUnits(body.data.parameters),
+        target ? canvasForRun.edges.filter((edge) => edge.targetNodeId === target.id).length : 0,
+        getRequestedUnits(body.parameters),
       );
       enforceRunCostPolicy(estimatedCost, parseRunCostPolicy());
       const principal = requestPrincipals.get(request);
       const frozenAssetRefs = await resolveRunAssetRefs({
         assetStore,
-        canvas,
+        canvas: canvasForRun,
         targetNodeId: request.params.nodeId,
-        projectId: body.data.projectId,
+        projectId: body.projectId,
         ...(principal?.userId ? { ownerId: principal.userId } : {}),
       });
+      const frozenPromptMentions = await resolvePromptMentionRefs({
+        assetStore,
+        canvas: canvasForRun,
+        targetNodeId: request.params.nodeId,
+        projectId: body.projectId,
+        ...(principal?.userId ? { ownerId: principal.userId } : {}),
+        requestId: request.id,
+      });
+      const capabilityDiagnostics = validateRunPromptMentionCapabilities({
+        canvas: canvasForRun,
+        targetNodeId: request.params.nodeId,
+        frozenPromptMentions,
+        nodeModelAliases: modelResolution.nodeModelAliases,
+        nodeModels: modelResolution.nodeModels,
+        requestId: request.id,
+        allowMockPreview: providerName === 'mock' && process.env.NODE_ENV !== 'production',
+      });
+      if (capabilityDiagnostics.length > 0) {
+        throw new ResourceMentionCapabilityError(capabilityDiagnostics);
+      }
       const credential = modelResolution.nodeCredentialReferences[request.params.nodeId];
-      const snapshot = createRunSnapshot(body.data.projectId, canvas, request.params.nodeId, {
-        ...body.data,
+      const snapshot = createRunSnapshot(body.projectId, canvasForRun, request.params.nodeId, {
+        ...body,
         modelAlias: modelResolution.targetModelAlias,
         nodeModelAliases: modelResolution.nodeModelAliases,
         ...(Object.keys(modelResolution.nodeCredentialReferences).length > 0
           ? { nodeCredentialReferences: modelResolution.nodeCredentialReferences }
           : {}),
         frozenAssetRefs,
+        ...(frozenPromptMentions.length > 0 ? { frozenPromptMentions } : {}),
         ...(credential ?? {}),
       });
       const headerIdempotencyKey = request.headers['idempotency-key'];
       const idempotencyKey =
-        typeof headerIdempotencyKey === 'string' ? headerIdempotencyKey : body.data.idempotencyKey;
+        typeof headerIdempotencyKey === 'string' ? headerIdempotencyKey : body.idempotencyKey;
       const run = await runService.create(snapshot, {
         ...(idempotencyKey ? { idempotencyKey } : {}),
         ...(principal?.userId ? { userId: principal.userId } : {}),
@@ -1828,7 +2341,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       request.log.info(
         {
           runId: run.id,
-          projectId: body.data.projectId,
+          projectId: body.projectId,
           nodeId: request.params.nodeId,
           provider: run.provider,
           modelAlias: run.modelAlias,
@@ -1857,6 +2370,22 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       }
       if (error instanceof RunAssetFreezeError) {
         return reply.code(400).send({ error: error.message, code: error.code });
+      }
+      if (error instanceof ResourceMentionFreezeError) {
+        return reply.code(400).send({
+          error: error.message,
+          code: 'RESOURCE_MENTION_FREEZE_FAILED',
+          requestId: request.id,
+          issues: error.diagnostics,
+        });
+      }
+      if (error instanceof ResourceMentionCapabilityError) {
+        return reply.code(400).send({
+          error: error.message,
+          code: 'RESOURCE_MENTION_CAPABILITY_UNSUPPORTED',
+          requestId: request.id,
+          issues: error.diagnostics,
+        });
       }
       if (error instanceof UsagePolicyError) {
         return reply
@@ -1914,26 +2443,49 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     }
   });
 
-  app.get<{ Querystring: { status?: 'ready' | 'archived'; query?: string } }>(
-    '/v1/assets',
-    async (request, reply) => {
-      const query = request.query.query?.trim().toLowerCase();
-      const status = request.query.status;
-      if (status && status !== 'ready' && status !== 'archived') {
+  app.get<{ Querystring: AssetListQuery }>('/v1/assets', async (request, reply) => {
+    const parsedQuery = assetListQuerySchema.safeParse(request.query);
+    if (!parsedQuery.success) {
+      const query = request.query as AssetListQuery;
+      if (query.status !== undefined && !['ready', 'archived'].includes(query.status)) {
         return reply.code(400).send({ error: 'invalid asset status' });
       }
-      const assets = await assetStore.list(assetScope(requestPrincipals, request));
-      return {
-        assets: assets.filter(
-          (asset) =>
-            (!status || asset.status === status) &&
-            (!query ||
-              asset.name.toLowerCase().includes(query) ||
-              asset.tags.some((tag) => tag.toLowerCase().includes(query))),
-        ),
-      };
-    },
-  );
+      if (
+        query.mediaType !== undefined &&
+        !['text', 'image', 'audio', 'video'].includes(query.mediaType)
+      ) {
+        return reply.code(400).send({ error: 'invalid asset media type' });
+      }
+      return reply.code(400).send({ error: 'invalid asset query' });
+    }
+
+    const page = parsedQuery.data.page ?? DEFAULT_ASSET_LIST_PAGE;
+    const pageSize = parsedQuery.data.pageSize ?? DEFAULT_ASSET_LIST_PAGE_SIZE;
+    const options: AssetListOptions = {
+      ...(parsedQuery.data.query ? { query: parsedQuery.data.query } : {}),
+      ...(parsedQuery.data.mediaType ? { mediaType: parsedQuery.data.mediaType } : {}),
+      ...(parsedQuery.data.status ? { status: parsedQuery.data.status } : {}),
+      ...(parsedQuery.data.tags && parsedQuery.data.tags.length > 0
+        ? { tags: parsedQuery.data.tags }
+        : {}),
+      page,
+      pageSize,
+    };
+    const requestedProjectId = parsedQuery.data.projectId;
+    if (requestedProjectId !== undefined) {
+      // 项目 ID 只用于缩小资源范围，项目本身仍需经过当前请求的项目权限校验。
+      // 失败统一返回 404，避免通过资源索引探测其他用户的项目是否存在。
+      const project = await projectStore.get(
+        requestedProjectId,
+        projectScope(requestPrincipals, request),
+      );
+      if (!project) return reply.code(404).send({ error: 'project not found' });
+    }
+
+    const scopes = assetListScopes(requestPrincipals, request, requestedProjectId);
+    const result = await listAssetsForScopes(assetStore, scopes, options);
+    return { assets: result.assets, total: result.total, page, pageSize };
+  });
 
   app.post('/v1/assets/uploads', { bodyLimit: MAX_UPLOAD_BYTES }, async (request, reply) => {
     const file = await request.file();
@@ -2297,6 +2849,60 @@ function assetScope(principals: WeakMap<object, AuthPrincipal>, request: object)
   return userId ? { ownerId: userId } : {};
 }
 
+/**
+ * 构造资源索引的授权范围。
+ *
+ * 项目查询使用项目范围，并由路由先校验项目权限；个人资源显式限定为
+ * `projectId: null`，避免把其他项目的资源混入当前 `@` 搜索。未提供项目
+ * 参数时保留旧的用户/匿名列表行为，兼容旧客户端。
+ */
+function assetListScopes(
+  principals: WeakMap<object, AuthPrincipal>,
+  request: object,
+  projectId: string | undefined,
+): AssetScope[] {
+  if (projectId === undefined) return [assetScope(principals, request)];
+  const userId = principals.get(request)?.userId;
+  const projectScope: AssetScope = { projectId };
+  const personalScope: AssetScope = {
+    projectId: null,
+    ...(userId ? { ownerId: userId } : {}),
+  };
+  return [projectScope, personalScope];
+}
+
+/**
+ * 在项目资源和个人资源两个授权范围上执行同一组索引条件，并在 API 边界
+ * 完成去重、总数和分页。AssetStore 的单范围接口保持不变，旧实现也可复用。
+ */
+async function listAssetsForScopes(
+  assetStore: AssetStore,
+  scopes: readonly AssetScope[],
+  options: AssetListOptions,
+): Promise<{ assets: Awaited<ReturnType<AssetStore['list']>>; total: number }> {
+  if (scopes.length === 1) {
+    const scope = scopes[0];
+    const { page: _page, pageSize: _pageSize, ...countOptions } = options;
+    const [assets, total] = await Promise.all([
+      assetStore.list(scope, options),
+      typeof assetStore.count === 'function'
+        ? assetStore.count(scope, countOptions)
+        : assetStore.list(scope, countOptions).then((all) => all.length),
+    ]);
+    return { assets, total };
+  }
+
+  const unpagedOptions: AssetListOptions = { ...options };
+  delete unpagedOptions.page;
+  delete unpagedOptions.pageSize;
+  const lists = await Promise.all(scopes.map((scope) => assetStore.list(scope, unpagedOptions)));
+  const assets = [...new Map(lists.flat().map((asset) => [asset.id, asset])).values()];
+  const page = options.page ?? DEFAULT_ASSET_LIST_PAGE;
+  const pageSize = options.pageSize ?? DEFAULT_ASSET_LIST_PAGE_SIZE;
+  const start = (page - 1) * pageSize;
+  return { assets: assets.slice(start, start + pageSize), total: assets.length };
+}
+
 type AccessUrlRequest = {
   version?: number;
   derivative?: 'thumbnail' | 'poster' | 'waveform';
@@ -2423,7 +3029,7 @@ function safeEqual(left: string, right: string) {
   return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
-/** Archives in-memory run output through the same asset boundary as uploads. */
+/** 将内存运行产物归档到所属项目，并复用上传资产的存储边界。 */
 function createAssetResultArchiver(assetStore: AssetStore): RunResultArchiver {
   return async ({ run, result, output }) => {
     if (!output || output.content.byteLength === 0) return undefined;
@@ -2433,6 +3039,7 @@ function createAssetResultArchiver(assetStore: AssetStore): RunResultArchiver {
       ? `.${output.format.replace(/[^a-z0-9]+/gi, '').toLowerCase()}`
       : extensionForResultMime(output.mimeType, result.mediaType);
     const asset = await assetStore.create({
+      projectId: run.projectId,
       name: `${label}${extension}`,
       mediaType: result.mediaType,
       mimeType: output.mimeType,
@@ -2623,6 +3230,9 @@ function toPublicRunRecord(run: RunRecord): PublicRunRecord {
       canvasRevision: run.snapshot.canvasRevision,
       inputCount: run.snapshot.inputs.length,
       inputs: Array.from({ length: run.snapshot.inputs.length }, () => null),
+      ...(run.snapshot.promptMentions && run.snapshot.promptMentions.length > 0
+        ? { promptMentions: run.snapshot.promptMentions.map((mention) => ({ ...mention })) }
+        : {}),
     },
     ...(result
       ? {
@@ -2632,7 +3242,11 @@ function toPublicRunRecord(run: RunRecord): PublicRunRecord {
             targetNodeId: result.targetNodeId,
             mediaType: result.mediaType,
             inputCount: result.inputCount,
+            ...(result.simulated !== undefined ? { simulated: result.simulated } : {}),
             ...(result.asset ? { asset: toPublicRunResultAsset(result.asset) } : {}),
+            ...(result.promptMentions && result.promptMentions.length > 0
+              ? { promptMentions: result.promptMentions.map((mention) => ({ ...mention })) }
+              : {}),
           },
         }
       : {}),
@@ -2714,6 +3328,15 @@ function parsePositiveInt(value: string | undefined): number | undefined {
   if (!value) return undefined;
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+/** 解析资源列表中的正整数查询参数，拒绝小数、符号和超出安全范围的值。 */
+function parsePositiveQueryInt() {
+  return z
+    .string()
+    .regex(/^[1-9][0-9]*$/)
+    .transform((value) => Number(value))
+    .refine((value) => Number.isSafeInteger(value), 'asset pagination value is invalid');
 }
 
 function parseCorsOrigins(value: string | undefined): string[] {

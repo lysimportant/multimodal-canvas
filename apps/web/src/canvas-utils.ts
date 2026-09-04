@@ -5,6 +5,7 @@ import type {
   RunResultAsset,
   RunStatus,
 } from '@multimodal-canvas/domain';
+import { promptDocumentSchema } from '@multimodal-canvas/domain';
 
 export type FlowNodeData = CanvasDocument['nodes'][number]['data'] & {
   runStatus?: RunStatus;
@@ -294,6 +295,7 @@ export function pasteCanvasClipboard(
       id,
       selected: true,
       position: { x: node.position.x + offset, y: node.position.y + offset },
+      data: remapPromptMentionIds(node.data, createId),
     });
   });
   const edges = clipboard.edges.map((edge) => ({
@@ -303,6 +305,36 @@ export function pasteCanvasClipboard(
     target: idMap.get(edge.target) ?? edge.target,
   }));
   return { nodes, edges };
+}
+
+/**
+ * 为粘贴出来的节点生成新的提及身份。
+ *
+ * 提及 ID 只在单个提示词文档内定位，但复制节点仍应得到新的身份，避免
+ * 编辑器、撤销记录或后续导出把复制品误认为原节点的提及。旧节点没有
+ * 结构化文档时保持原有数据不变。
+ *
+ * @param data 待复制的节点数据。
+ * @param createId 生成唯一后缀的函数，测试和调用方可注入稳定实现。
+ * @returns 保留原字段并替换提及 ID 的节点数据。
+ */
+function remapPromptMentionIds(
+  data: AssetFlowNode['data'],
+  createId: () => string,
+): AssetFlowNode['data'] {
+  const document = data.promptDocument;
+  if (!document) return data;
+  return {
+    ...data,
+    promptDocument: {
+      ...document,
+      blocks: document.blocks.map((block) =>
+        block.type === 'mention'
+          ? { ...block, mentionId: `mention_copy_${createId()}` }
+          : { ...block },
+      ),
+    },
+  };
 }
 
 function isClipboardNode(value: unknown): value is AssetFlowNode {
@@ -355,7 +387,56 @@ function cloneNodeForClipboard(node: AssetFlowNode): AssetFlowNode {
     resultAsset: _resultAsset,
     ...data
   } = cloned.data;
-  return { ...cloned, data };
+  const safeData = sanitizeClipboardValue(data) as AssetFlowNode['data'];
+  if (isRecord(safeData) && safeData.promptDocument !== undefined) {
+    const parsed = promptDocumentSchema.safeParse(safeData.promptDocument);
+    if (parsed.success) safeData.promptDocument = parsed.data;
+    else delete safeData.promptDocument;
+  }
+  return { ...cloned, data: safeData };
+}
+
+/**
+ * 清理跨剪贴板边界的数据，避免把凭据、签名 URL 或本地路径带入复制内容。
+ * 普通前向兼容字段仍保留；提示词文档随后再由领域 schema 做结构化校验。
+ */
+function sanitizeClipboardValue(value: unknown, key?: string): unknown {
+  if (key && isSensitiveClipboardKey(key)) return undefined;
+  if (value === null || value === undefined) return value;
+  if (typeof value === 'string') return looksLikeLocalPath(value) ? undefined : value;
+  if (typeof value === 'boolean' || typeof value === 'number') return value;
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => sanitizeClipboardValue(item))
+      .filter((item): item is Exclude<unknown, undefined> => item !== undefined);
+  }
+  if (typeof value === 'object') {
+    const output: Record<string, unknown> = {};
+    for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
+      const sanitized = sanitizeClipboardValue(childValue, childKey);
+      if (sanitized !== undefined) output[childKey] = sanitized;
+    }
+    return output;
+  }
+  return undefined;
+}
+
+function isSensitiveClipboardKey(key: string): boolean {
+  const normalized = key
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/[-\s]+/g, '_')
+    .toLowerCase();
+  return (
+    /(?:^|_)(?:api_key|access_token|refresh_token|authorization|password|secret(?:_key)?|credential(?:s|_id|_version)?|signed_url|presigned_url)(?:_|$)/.test(
+      normalized,
+    ) ||
+    /(?:url|uri)$/.test(normalized) ||
+    /(?:^|_)(?:local_?path|file_?path|path)(?:_|$)/.test(normalized)
+  );
+}
+
+function looksLikeLocalPath(value: string): boolean {
+  return /^(?:[a-zA-Z]:[\\/]|\\\\|file:)/.test(value.trim());
 }
 
 function isClipboardEdge(value: unknown): value is FlowEdge {

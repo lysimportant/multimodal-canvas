@@ -2,6 +2,7 @@ import { Job, Queue, Worker, type ConnectionOptions } from 'bullmq';
 import {
   runJobDataSchema,
   runResultSchema,
+  frozenPromptMentionSchema,
   type ProviderJob,
   type RunResult,
   type RunResultAsset,
@@ -15,6 +16,7 @@ import {
   MockProvider,
   NewApiProvider,
   NewApiVideoProvider,
+  resolveProviderMentions,
   type NewApiProviderRequest,
 } from '@multimodal-canvas/providers';
 import {
@@ -989,6 +991,10 @@ export function createRunWorker(options: {
                 currentData.userId ? { userId: currentData.userId } : undefined,
               )
             : nodeSnapshot;
+          const resolvedMentions =
+            options.assetReferenceResolver && providerSnapshot.promptMentions?.length
+              ? resolveProviderMentions(providerSnapshot)
+              : undefined;
           const requestProviderJobId = workflowRequestProviderJobId(providerJob);
           const providerRequestJob =
             node.data.mediaType === 'video' || !requestProviderJobId
@@ -999,6 +1005,7 @@ export function createRunWorker(options: {
               provider,
               {
                 snapshot: providerSnapshot,
+                ...(resolvedMentions?.length ? { resolvedMentions } : {}),
                 providerJob: providerRequestJob,
                 signal: cancellationSignal,
                 onProviderJob: async (update) => {
@@ -1836,6 +1843,15 @@ function sanitizeProviderResult(value: unknown): Record<string, unknown> | undef
       if (scalar !== undefined) asset[key] = scalar;
     }
     if (Object.keys(asset).length > 0) output.asset = asset;
+  }
+  if (Array.isArray(value.promptMentions)) {
+    const mentions = value.promptMentions
+      .slice(0, 2_000)
+      .map((mention) => frozenPromptMentionSchema.safeParse(mention))
+      .filter((parsed) => parsed.success)
+      .map((parsed) => (parsed.success ? parsed.data : undefined))
+      .filter((mention): mention is NonNullable<typeof mention> => mention !== undefined);
+    if (mentions.length > 0) output.promptMentions = mentions;
   }
   return Object.keys(output).length > 0 ? output : undefined;
 }

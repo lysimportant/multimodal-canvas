@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import type { RunSnapshot } from '@multimodal-canvas/domain';
+
 import {
   WorkflowNodeConfigurationError,
   assertWorkflowModelAliases,
@@ -11,7 +13,7 @@ import {
   workflowSnapshotFingerprintV1,
 } from './workflow-dag';
 
-const snapshot = {
+const snapshot: RunSnapshot = {
   projectId: 'project_1',
   canvasRevision: 7,
   targetNodeId: 'node_video',
@@ -333,6 +335,91 @@ describe('frozen workflow DAG', () => {
     expect(imageSnapshot.inputs.filter((input) => input.nodeId === 'node_draft')).toMatchObject([
       { role: 'prompt', sortOrder: 0 },
       { role: 'negativePrompt', sortOrder: 2 },
+    ]);
+  });
+
+  it('carries only the current node frozen prompt mentions into provider snapshots', () => {
+    const withMentions = structuredClone(snapshot);
+    withMentions.nodes = withMentions.nodes.map((node) =>
+      node.id === 'node_image'
+        ? {
+            ...node,
+            data: {
+              ...node.data,
+              promptDocument: {
+                version: 1 as const,
+                blocks: [
+                  { type: 'text' as const, text: 'use ' },
+                  {
+                    type: 'mention' as const,
+                    mentionId: 'image-mention',
+                    assetId: 'asset_style',
+                    label: 'style',
+                    mediaType: 'image' as const,
+                  },
+                ],
+              },
+            },
+          }
+        : node.id === 'node_video'
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                promptDocument: {
+                  version: 1 as const,
+                  blocks: [
+                    { type: 'text' as const, text: 'animate ' },
+                    {
+                      type: 'mention' as const,
+                      mentionId: 'video-mention',
+                      assetId: 'asset_style',
+                      label: 'style',
+                      mediaType: 'image' as const,
+                    },
+                  ],
+                },
+              },
+            }
+          : node,
+    );
+    withMentions.promptMentions = [
+      {
+        nodeId: 'node_image',
+        mentionId: 'image-mention',
+        assetId: 'asset_style',
+        assetVersion: 2,
+        mediaType: 'image',
+        label: 'style',
+        blockOrder: 1,
+      },
+      {
+        nodeId: 'node_video',
+        mentionId: 'video-mention',
+        assetId: 'asset_style',
+        assetVersion: 3,
+        mediaType: 'image',
+        label: 'style',
+        blockOrder: 1,
+      },
+    ];
+
+    const imageSnapshot = createNodeRunSnapshot(
+      withMentions,
+      createInitialWorkflowState(withMentions),
+      'node_image',
+    );
+    const videoSnapshot = createNodeRunSnapshot(
+      withMentions,
+      createInitialWorkflowState(withMentions),
+      'node_video',
+    );
+
+    expect(imageSnapshot.promptMentions?.map((mention) => mention.mentionId)).toEqual([
+      'image-mention',
+    ]);
+    expect(videoSnapshot.promptMentions?.map((mention) => mention.mentionId)).toEqual([
+      'video-mention',
     ]);
   });
 

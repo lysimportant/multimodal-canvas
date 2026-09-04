@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { FileSystemBlobStore, MemoryBlobStore, PrismaAssetStore } from './assets';
+import { FileSystemBlobStore, MemoryAssetStore, MemoryBlobStore, PrismaAssetStore } from './assets';
 
 describe('BlobStore implementations', () => {
   it('copies bytes in memory and persists bytes in a local directory', async () => {
@@ -48,6 +48,7 @@ describe('PrismaAssetStore', () => {
     });
     expect(created.id).toMatch(/^[0-9a-f-]{36}$/);
     expect(created.sha256).toBe('2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824');
+    expect(created).toMatchObject({ latestVersion: 1, metadata: { version: 1 } });
     expect(await blobStore.get(`assets/${created.id}/v1`)).toEqual(Buffer.from('hello'));
 
     expect((await store.list())[0]).toMatchObject({ id: created.id, name: 'prompt.txt' });
@@ -60,6 +61,13 @@ describe('PrismaAssetStore', () => {
     expect(version).toMatchObject({ assetId: created.id, version: 2, sizeBytes: 8 });
     expect(await store.getVersionContent(created.id, 2)).toEqual(Buffer.from('hello v2'));
     expect(await store.listVersions(created.id)).toHaveLength(2);
+    expect(await store.get(created.id)).toMatchObject({
+      latestVersion: 2,
+      metadata: { version: 2 },
+    });
+    expect(await store.list()).toEqual([
+      expect.objectContaining({ latestVersion: 2, metadata: { version: 2 } }),
+    ]);
 
     expect((await store.setArchived(created.id, true))?.status).toBe('archived');
     expect((await store.setArchived(created.id, false))?.status).toBe('ready');
@@ -88,6 +96,74 @@ describe('PrismaAssetStore', () => {
   });
 });
 
+describe('asset index queries', () => {
+  it('filters by query, media type, tags, status, and paginates without exposing bytes', async () => {
+    const store = new MemoryAssetStore();
+    await store.create({
+      projectId: 'project-1',
+      name: '产品图.png',
+      mediaType: 'image',
+      mimeType: 'image/png',
+      content: Buffer.from('image'),
+      tags: ['Product', 'Hero'],
+      metadata: { aliases: ['主视觉'] },
+    });
+    const archived = await store.create({
+      projectId: 'project-1',
+      name: '旁白.txt',
+      mediaType: 'text',
+      mimeType: 'text/plain',
+      content: Buffer.from('text'),
+      tags: ['script'],
+    });
+    await store.setArchived(archived.id, true, { projectId: 'project-1' });
+    await store.create({
+      projectId: 'project-1',
+      name: '场景.png',
+      mediaType: 'image',
+      mimeType: 'image/png',
+      content: Buffer.from('scene'),
+      tags: ['Scene'],
+    });
+
+    const filtered = await store.list(
+      { projectId: 'project-1' },
+      { query: '主视觉', mediaType: 'image', tags: ['product'], status: 'ready' },
+    );
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0]).toMatchObject({ name: '产品图.png', mediaType: 'image' });
+    expect(filtered[0]).not.toHaveProperty('content');
+
+    const page = await store.list(
+      { projectId: 'project-1' },
+      { mediaType: 'image', page: 2, pageSize: 1 },
+    );
+    expect(page).toHaveLength(1);
+    expect(await store.count({ projectId: 'project-1' }, { mediaType: 'image' })).toBe(2);
+  });
+
+  it('derives the latest version from the immutable version index', async () => {
+    const store = new MemoryAssetStore();
+    const asset = await store.create({
+      projectId: 'project-versions',
+      name: 'reference.png',
+      mediaType: 'image',
+      mimeType: 'image/png',
+      content: Buffer.from('v1'),
+      metadata: { source: 'test', version: 99 },
+    });
+    expect(asset).toMatchObject({ latestVersion: 1, metadata: { source: 'test', version: 1 } });
+
+    await store.createVersion(
+      asset.id,
+      { content: Buffer.from('v2') },
+      { projectId: 'project-versions' },
+    );
+    const listed = await store.list({ projectId: 'project-versions' });
+    expect(listed[0]).toMatchObject({ latestVersion: 2, metadata: { source: 'test', version: 2 } });
+  });
+});
+
 type FakeAsset = {
   id: string;
   projectId: string | null;
@@ -100,6 +176,7 @@ type FakeAsset = {
   status: string;
   contentKey: string;
   tags: string[];
+  metadata?: Record<string, unknown> | null;
   archivedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;

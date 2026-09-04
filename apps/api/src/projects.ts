@@ -913,6 +913,8 @@ const nodeDataFields = [
   'enabled',
   'stale',
   'prompt',
+  'promptDocument',
+  'parameters',
   'inferenceStrength',
   'modelAlias',
   'credentialId',

@@ -56,4 +56,28 @@ describe('TextPromptEditor', () => {
     expect(editor).toHaveValue('Product shot 2026!');
     expect(onChange).toHaveBeenLastCalledWith('Product shot 2026!');
   });
+
+  it('切换节点后将提示词字段滚动到可见区域', () => {
+    const scrollIntoView = vi.fn();
+    const originalScrollIntoView = HTMLTextAreaElement.prototype.scrollIntoView;
+    Object.defineProperty(HTMLTextAreaElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    const view = render(
+      <TextPromptEditor nodeId="node-one" value="" placeholder="输入提示词" onChange={vi.fn()} />,
+    );
+
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest', behavior: 'smooth' });
+    scrollIntoView.mockClear();
+    view.rerender(
+      <TextPromptEditor nodeId="node-two" value="" placeholder="输入提示词" onChange={vi.fn()} />,
+    );
+
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest', behavior: 'smooth' });
+    Object.defineProperty(HTMLTextAreaElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: originalScrollIntoView,
+    });
+  });
 });

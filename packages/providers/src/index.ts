@@ -1,4 +1,6 @@
 import type {
+  FrozenPromptMention,
+  PromptDocument,
   MediaType,
   PortRole,
   ProviderJob,
@@ -6,8 +8,26 @@ import type {
   RunResult,
   RunSnapshot,
 } from '@multimodal-canvas/domain';
+import { renderPromptDocument } from '@multimodal-canvas/domain';
 
 export type ProviderName = 'mock' | 'newapi';
+
+/**
+ * Provider-neutral 的已解析资源提及。
+ *
+ * 冻结字段来自不可变运行快照，`source` 只存在于 Worker 到 Provider 的
+ * 进程内调用中，不得写回队列、运行记录或公开 API。
+ */
+export type ResolvedMention = FrozenPromptMention & {
+  /** 新快照始终提供明确节点 ID；旧快照在解析时补为目标节点。 */
+  nodeId: string;
+  /** 当前 Worker 已读取并校验的不可变资产版本内容。 */
+  source: {
+    kind: 'data-url';
+    mimeType: string;
+    dataUrl: string;
+  };
+};
 
 export type ProviderCapability = {
   mediaType: MediaType;
@@ -23,6 +43,8 @@ export const mockProviderCapabilities: ProviderCapability[] = [
 
 export type MockProviderRequest = {
   snapshot: RunSnapshot;
+  /** Worker 在进程内解析的资源内容；真实适配器只能按正式供应商契约消费。 */
+  resolvedMentions?: readonly ResolvedMention[];
   reportProgress?: (progress: number) => Promise<void> | void;
 };
 
@@ -38,6 +60,12 @@ export class MockProvider {
       targetNodeId: target.id,
       mediaType: target.data.mediaType,
       inputCount: snapshot.inputs.length,
+      ...(snapshot.promptMentions && snapshot.promptMentions.length > 0
+        ? {
+            simulated: true,
+            promptMentions: snapshot.promptMentions.map((mention) => ({ ...mention })),
+          }
+        : {}),
     };
   }
 }
@@ -258,12 +286,14 @@ export class NewApiProvider {
     snapshot,
     reportProgress,
     providerJob,
+    resolvedMentions,
   }: NewApiProviderRequest): Promise<ProviderExecution<StandardProviderOutput>> {
     const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
     if (!target) throw new NewApiProviderError('run target node is missing from snapshot');
     if (target.data.mediaType === 'video') {
       throw new NewApiProviderError('video generation requires NewApiVideoProvider');
     }
+    assertNewApiMentionMappingUnavailable(snapshot, resolvedMentions);
     validateProviderRoleParameters(snapshot.parameters, target.data.mediaType);
     if (providerJob && providerJob.provider !== 'newapi') {
       throw new NewApiProviderError('已有平台任务与 New API Provider 不匹配', {
@@ -281,18 +311,33 @@ export class NewApiProvider {
       target.data.mediaType === 'text'
         ? await this.request(
             '/chat/completions',
-            this.textPayload(snapshot, target.data.label, target.data.prompt),
+            this.textPayload(
+              snapshot,
+              target.data.label,
+              target.data.prompt,
+              target.data.promptDocument,
+            ),
             idempotencyKey,
           )
         : target.data.mediaType === 'image'
           ? await this.request(
               '/images/generations',
-              this.imagePayload(snapshot, target.data.label, target.data.prompt),
+              this.imagePayload(
+                snapshot,
+                target.data.label,
+                target.data.prompt,
+                target.data.promptDocument,
+              ),
               idempotencyKey,
             )
           : await this.request(
               '/audio/speech',
-              this.audioPayload(snapshot, target.data.label, target.data.prompt),
+              this.audioPayload(
+                snapshot,
+                target.data.label,
+                target.data.prompt,
+                target.data.promptDocument,
+              ),
               idempotencyKey,
             );
     const output =
@@ -317,8 +362,13 @@ export class NewApiProvider {
     };
   }
 
-  private textPayload(snapshot: RunSnapshot, label: string, nodePrompt?: string) {
-    const prompt = resolvePromptSource(snapshot, label, nodePrompt, 'text');
+  private textPayload(
+    snapshot: RunSnapshot,
+    label: string,
+    nodePrompt?: string,
+    nodePromptDocument?: PromptDocument,
+  ) {
+    const prompt = resolvePromptSource(snapshot, label, nodePrompt, 'text', nodePromptDocument);
     const inputMessages = orderedRunInputs(snapshot).map((input) => {
       const name = chatInputName(input.role);
       if (!name) throw unsupportedInputRoleError('text', input.role);
@@ -344,20 +394,30 @@ export class NewApiProvider {
     };
   }
 
-  private imagePayload(snapshot: RunSnapshot, label: string, nodePrompt?: string) {
+  private imagePayload(
+    snapshot: RunSnapshot,
+    label: string,
+    nodePrompt?: string,
+    nodePromptDocument?: PromptDocument,
+  ) {
     return {
       ...providerParameters(snapshot.parameters, 'image'),
       model: snapshot.modelAlias,
-      prompt: resolveSinglePromptInput(snapshot, label, nodePrompt, 'image'),
+      prompt: resolveSinglePromptInput(snapshot, label, nodePrompt, 'image', nodePromptDocument),
       n: 1,
     };
   }
 
-  private audioPayload(snapshot: RunSnapshot, label: string, nodePrompt?: string) {
+  private audioPayload(
+    snapshot: RunSnapshot,
+    label: string,
+    nodePrompt?: string,
+    nodePromptDocument?: PromptDocument,
+  ) {
     return {
       ...providerParameters(snapshot.parameters, 'audio'),
       model: snapshot.modelAlias,
-      input: resolveSinglePromptInput(snapshot, label, nodePrompt, 'audio'),
+      input: resolveSinglePromptInput(snapshot, label, nodePrompt, 'audio', nodePromptDocument),
     };
   }
 
@@ -471,6 +531,7 @@ export class NewApiVideoProvider {
     reportProgress,
     providerJob: existingProviderJob,
     onProviderJob,
+    resolvedMentions,
   }: NewApiProviderRequest): Promise<ProviderExecution<VideoProviderOutput>> {
     const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
     if (!target) throw new NewApiProviderError('run target node is missing from snapshot');
@@ -480,6 +541,7 @@ export class NewApiVideoProvider {
     if (target.data.mode !== 'generate') {
       throw new NewApiProviderError('当前视频接口仅支持 generate 模式');
     }
+    assertNewApiMentionMappingUnavailable(snapshot, resolvedMentions);
     validateProviderRoleParameters(snapshot.parameters, 'video');
     // Validate every immutable input snapshot even when this invocation only
     // resumes an existing platform job. Otherwise a retry could silently skip
@@ -487,7 +549,13 @@ export class NewApiVideoProvider {
     const inputs = mapVideoInputs(snapshot);
     // A video prompt is required by the verified gateway contract. Do not
     // substitute a display label, even when resuming an existing task.
-    resolveRequiredVideoPrompt(snapshot, target.data.label, target.data.prompt, inputs.prompt);
+    resolveRequiredVideoPrompt(
+      snapshot,
+      target.data.label,
+      target.data.prompt,
+      inputs.prompt,
+      target.data.promptDocument,
+    );
 
     if (existingProviderJob && existingProviderJob.provider !== 'newapi') {
       throw new NewApiProviderError('已有平台任务与 New API Provider 不匹配', {
@@ -508,7 +576,13 @@ export class NewApiVideoProvider {
         submission = await this.requestJson(
           `${this.baseUrl}${newApiVideoCreatePath}`,
           'POST',
-          videoPayload(snapshot, target.data.label, target.data.prompt, inputs),
+          videoPayload(
+            snapshot,
+            target.data.label,
+            target.data.prompt,
+            inputs,
+            target.data.promptDocument,
+          ),
           idempotencyKey,
         );
       } catch (error) {
@@ -963,8 +1037,15 @@ function videoPayload(
   label: string,
   nodePrompt?: string,
   inputs: VideoInputMapping = mapVideoInputs(snapshot),
+  nodePromptDocument?: PromptDocument,
 ): Record<string, unknown> {
-  const prompt = resolveRequiredVideoPrompt(snapshot, label, nodePrompt, inputs.prompt);
+  const prompt = resolveRequiredVideoPrompt(
+    snapshot,
+    label,
+    nodePrompt,
+    inputs.prompt,
+    nodePromptDocument,
+  );
   const payload: Record<string, unknown> = {
     model: snapshot.modelAlias,
     prompt,
@@ -2110,7 +2191,11 @@ function resolvePromptSource(
   label: string,
   nodePrompt: string | undefined,
   mediaType: 'text' | 'image' | 'audio' | 'video',
+  nodePromptDocument?: PromptDocument,
 ): PromptSource {
+  if (nodePromptDocument !== undefined) {
+    return { value: renderPromptDocument(nodePromptDocument), explicit: true };
+  }
   const parameterPrompt = normalizeErrorField(snapshot.parameters.prompt);
   // The TTS endpoint names its primary text field `input`. Treat it as the
   // same provider-neutral prompt source while removing it from raw parameters.
@@ -2120,6 +2205,75 @@ function resolvePromptSource(
   return configuredPrompt
     ? { value: configuredPrompt, explicit: true }
     : { value: label, explicit: false };
+}
+
+/**
+ * 从 Worker 临时水合的运行快照构造 Provider-neutral 提及列表。
+ *
+ * 函数严格核对冻结身份与文档块，防止 Provider 收到“标签看似正确、实际
+ * 资产或版本不一致”的输入。返回列表保持快照中的提及顺序和重复项。
+ *
+ * @throws 当冻结提及没有对应文档块、媒体身份不一致或内容尚未解析时抛错。
+ */
+export function resolveProviderMentions(snapshot: RunSnapshot): ResolvedMention[] {
+  return (snapshot.promptMentions ?? []).map((frozen) => {
+    const nodeId = frozen.nodeId ?? snapshot.targetNodeId;
+    const node = snapshot.nodes.find((candidate) => candidate.id === nodeId);
+    const block = node?.data.promptDocument?.blocks.find(
+      (candidate) => candidate.type === 'mention' && candidate.mentionId === frozen.mentionId,
+    );
+    if (!node || !block || block.type !== 'mention') {
+      throw new Error(`resolved prompt mention ${frozen.mentionId} is missing from node ${nodeId}`);
+    }
+    if (block.assetId !== frozen.assetId || block.mediaType !== frozen.mediaType) {
+      throw new Error(
+        `resolved prompt mention ${frozen.mentionId} does not match its frozen identity`,
+      );
+    }
+    // Worker 只在 Provider 进程内把这两个字段临时注入；它们不属于
+    // PromptMention 持久化协议，因此通过受控记录读取而不扩展领域类型。
+    const hydratedBlock = block as unknown as Record<string, unknown>;
+    const mimeType = nonEmptyString(hydratedBlock.mimeType)
+      ? hydratedBlock.mimeType.trim()
+      : undefined;
+    const dataUrl = nonEmptyString(hydratedBlock.contentUrl)
+      ? hydratedBlock.contentUrl.trim()
+      : undefined;
+    if (!mimeType || !dataUrl?.startsWith('data:')) {
+      throw new Error(
+        `resolved prompt mention ${frozen.mentionId} has no provider-readable content`,
+      );
+    }
+    return {
+      ...frozen,
+      nodeId,
+      source: { kind: 'data-url', mimeType, dataUrl },
+    };
+  });
+}
+
+/**
+ * P2 供应商字段映射落地前，真实 New API 不能把结构化提及只渲染成文字。
+ * 此检查必须发生在任何可能计费的 HTTP 请求之前。
+ */
+function assertNewApiMentionMappingUnavailable(
+  snapshot: RunSnapshot,
+  resolvedMentions: readonly ResolvedMention[] | undefined,
+): void {
+  const documentHasMentions = snapshot.nodes.some((node) =>
+    node.data.promptDocument?.blocks.some((block) => block.type === 'mention'),
+  );
+  if (
+    !documentHasMentions &&
+    (snapshot.promptMentions?.length ?? 0) === 0 &&
+    (resolvedMentions?.length ?? 0) === 0
+  ) {
+    return;
+  }
+  throw new NewApiProviderError('New API 资源提及映射尚未实现，已在付费请求前阻断', {
+    code: 'RESOURCE_MENTION_PROVIDER_MAPPING_UNAVAILABLE',
+    retryable: false,
+  });
 }
 
 function chatInputName(
@@ -2142,6 +2296,7 @@ function resolveSinglePromptInput(
   label: string,
   nodePrompt: string | undefined,
   mediaType: 'image' | 'audio',
+  nodePromptDocument?: PromptDocument,
 ): string {
   let promptInput: RunInputSnapshot | undefined;
   for (const input of orderedRunInputs(snapshot)) {
@@ -2155,7 +2310,7 @@ function resolveSinglePromptInput(
   }
 
   return resolveMappedPromptInput(
-    resolvePromptSource(snapshot, label, nodePrompt, mediaType),
+    resolvePromptSource(snapshot, label, nodePrompt, mediaType, nodePromptDocument),
     promptInput,
     mediaType,
   );
@@ -2179,8 +2334,9 @@ function resolveRequiredVideoPrompt(
   label: string,
   nodePrompt: string | undefined,
   input: RunInputSnapshot | undefined,
+  nodePromptDocument?: PromptDocument,
 ): string {
-  const prompt = resolvePromptSource(snapshot, label, nodePrompt, 'video');
+  const prompt = resolvePromptSource(snapshot, label, nodePrompt, 'video', nodePromptDocument);
   if (!prompt.explicit && !input) {
     throw new NewApiProviderError('New API video 需要 prompt', {
       code: 'VIDEO_PROMPT_REQUIRED',

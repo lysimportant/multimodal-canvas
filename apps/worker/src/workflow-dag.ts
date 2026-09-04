@@ -236,6 +236,13 @@ export function createNodeRunSnapshot(
     );
   }
 
+  // 内联资源提及属于具体节点的提示词文档。为每个 Provider 子快照只
+  // 携带当前节点的冻结提及，避免上游或其他节点的引用被误传给模型。
+  // 旧快照中的提及可能没有 nodeId；这类记录只归属于原始运行目标。
+  const promptMentions = snapshot.promptMentions?.filter((mention) =>
+    mention.nodeId ? mention.nodeId === nodeId : nodeId === snapshot.targetNodeId,
+  );
+
   return runSnapshotSchema.parse({
     projectId: snapshot.projectId,
     canvasRevision: snapshot.canvasRevision,
@@ -263,6 +270,9 @@ export function createNodeRunSnapshot(
         snapshot: source,
       };
     }),
+    ...(promptMentions && promptMentions.length > 0
+      ? { promptMentions: promptMentions.map((mention) => structuredClone(mention)) }
+      : {}),
   });
 }
 

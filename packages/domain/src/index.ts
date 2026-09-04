@@ -90,6 +90,8 @@ export const assetSchema = z.object({
   mediaType: mediaTypeSchema,
   mimeType: z.string().min(1),
   sizeBytes: z.number().int().nonnegative(),
+  /** 资源索引返回的当前最高版本；旧资源可能暂时没有该字段。 */
+  latestVersion: z.number().int().positive().optional(),
   sha256: z
     .string()
     .regex(/^[a-f0-9]{64}$/)
@@ -101,6 +103,191 @@ export const assetSchema = z.object({
   archivedAt: z.string().datetime().optional(),
 });
 
+/**
+ * 提示词中提及资源的通用绑定信息。
+ * 未识别的普通字段会被保留，便于后续语义角色扩展；凭据、临时 URL 和
+ * 本地路径等敏感字段在领域解析边界直接丢弃，避免进入持久化文档。
+ */
+const mentionBindingObjectSchema = z
+  .object({
+    entityName: z.string().trim().min(1).max(160).optional(),
+    semanticRole: z.string().trim().min(1).max(160).optional(),
+    scope: z.enum(['local', 'node', 'scene']).optional(),
+  })
+  .passthrough();
+
+export const mentionBindingSchema = z.preprocess(
+  (value) => sanitizeMentionBindingValue(value),
+  mentionBindingObjectSchema,
+);
+
+/** 在绑定的前向兼容字段中移除凭据、URL 和本地路径。 */
+function sanitizeMentionBindingValue(value: unknown, key?: string): unknown {
+  if (key && isSensitiveMentionKey(key)) return undefined;
+  if (value === null || value === undefined) return value;
+  if (typeof value === 'string') return looksLikeLocalPath(value) ? undefined : value;
+  if (typeof value === 'boolean' || typeof value === 'number') return value;
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => sanitizeMentionBindingValue(item))
+      .filter((item): item is Exclude<unknown, undefined> => item !== undefined);
+  }
+  if (typeof value === 'object') {
+    const output: Record<string, unknown> = {};
+    for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
+      const sanitized = sanitizeMentionBindingValue(childValue, childKey);
+      if (sanitized !== undefined) output[childKey] = sanitized;
+    }
+    return output;
+  }
+  return undefined;
+}
+
+function isSensitiveMentionKey(key: string): boolean {
+  const normalized = key
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/[-\s]+/g, '_')
+    .toLowerCase();
+  return (
+    /(?:^|_)(?:api_key|access_token|refresh_token|authorization|password|secret(?:_key)?|credential(?:s|_id|_version)?|signed_url|presigned_url)(?:_|$)/.test(
+      normalized,
+    ) ||
+    /(?:url|uri)$/.test(normalized) ||
+    /(?:^|_)(?:local_?path|file_?path|path)(?:_|$)/.test(normalized)
+  );
+}
+
+function looksLikeLocalPath(value: string): boolean {
+  return /^(?:[a-zA-Z]:[\\/]|\\\\|file:)/.test(value.trim());
+}
+
+/** 资源提及块。assetVersion 用于用户明确选择某个历史版本的场景。 */
+export const promptMentionSchema = z
+  .object({
+    type: z.literal('mention'),
+    mentionId: z.string().trim().min(1).max(160),
+    assetId: z.string().trim().min(1).max(512),
+    label: z.string().trim().min(1).max(512),
+    mediaType: mediaTypeSchema,
+    assetVersion: z.number().int().positive().optional(),
+    /** 导入时资源不可访问会保留身份并标记为不可执行占位。 */
+    placeholder: z.boolean().optional(),
+    placeholderReason: z
+      .enum([
+        'not_found',
+        'forbidden',
+        'archived',
+        'version_missing',
+        'mime_mismatch',
+        'size_exceeded',
+      ])
+      .optional(),
+    semanticRole: z.string().trim().min(1).max(160).optional(),
+    entityName: z.string().trim().min(1).max(160).optional(),
+    scope: z.enum(['local', 'node', 'scene']).optional(),
+    binding: mentionBindingSchema.optional(),
+  })
+  // 提及块只允许协议字段；Worker 的临时内容会在解析器完成 schema
+  // 校验后以内存字段注入，避免 URL、凭据或本地路径进入持久化数据。
+  .strip();
+
+/** 普通文字块，允许为空以表达空提示词文档。 */
+export const promptTextBlockSchema = z
+  .object({
+    type: z.literal('text'),
+    text: z.string().max(20_000),
+  })
+  .strip();
+
+export const promptBlockSchema = z.discriminatedUnion('type', [
+  promptTextBlockSchema,
+  promptMentionSchema,
+]);
+
+/**
+ * 版本化提示词文档。块顺序就是文字和资源提及的渲染顺序。
+ * 文档必须至少包含一个块；提及 ID 只要求在当前文档内唯一。
+ */
+export const promptDocumentSchema = z
+  .object({
+    version: z.literal(1),
+    blocks: z.array(promptBlockSchema).min(1).max(2_000),
+  })
+  .strip()
+  .superRefine((document, context) => {
+    const mentionIds = new Set<string>();
+    let textLength = 0;
+    document.blocks.forEach((block, index) => {
+      if (block.type === 'text') {
+        textLength += block.text.length;
+        return;
+      }
+      if (mentionIds.has(block.mentionId)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `duplicate prompt mention id: ${block.mentionId}`,
+          path: ['blocks', index, 'mentionId'],
+        });
+      }
+      mentionIds.add(block.mentionId);
+      if (block.placeholderReason && block.placeholder !== true) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'placeholderReason requires placeholder: true',
+          path: ['blocks', index, 'placeholder'],
+        });
+      }
+    });
+    if (textLength > 20_000) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'prompt document text exceeds the 20000-character limit',
+        path: ['blocks'],
+      });
+    }
+  });
+
+/**
+ * 将结构化提示词渲染为兼容旧 Provider 的纯文本。
+ * 资源身份不会依赖显示名；渲染仅用于旧接口或预览输出。
+ */
+export function renderPromptDocument(document: PromptDocument): string {
+  const parsed = promptDocumentSchema.parse(document);
+  return parsed.blocks
+    .map((block) => (block.type === 'text' ? block.text : `@${block.label}`))
+    .join('');
+}
+
+/** 返回节点真正的提示词来源，promptDocument 始终优先于旧 prompt。 */
+export function getEffectivePromptDocument(input: {
+  prompt?: string;
+  promptDocument?: PromptDocument;
+}): PromptDocument {
+  if (input.promptDocument !== undefined) return promptDocumentSchema.parse(input.promptDocument);
+  return {
+    version: 1,
+    blocks: [{ type: 'text', text: input.prompt ?? '' }],
+  };
+}
+
+/** 已写入运行快照的、带不可变资产版本的资源提及。 */
+export const frozenPromptMentionSchema = z
+  .object({
+    /** 节点 ID 在旧快照中可省略；新快照始终写入。 */
+    nodeId: z.string().trim().min(1).optional(),
+    mentionId: z.string().trim().min(1).max(160),
+    assetId: z.string().trim().min(1).max(512),
+    assetVersion: z.number().int().positive(),
+    mediaType: mediaTypeSchema,
+    label: z.string().trim().min(1).max(512),
+    blockOrder: z.number().int().nonnegative(),
+    semanticRole: z.string().trim().min(1).max(160).optional(),
+    entityName: z.string().trim().min(1).max(160).optional(),
+    scope: z.enum(['local', 'node', 'scene']).optional(),
+    binding: mentionBindingSchema.optional(),
+  })
+  .strip();
+
 export const nodeDataSchema = z.object({
   label: z.string().min(1),
   mediaType: mediaTypeSchema,
@@ -110,6 +297,8 @@ export const nodeDataSchema = z.object({
   /** Downstream output is no longer derived from the current upstream inputs. */
   stale: z.boolean().optional(),
   prompt: z.string().trim().max(20_000).optional(),
+  /** 版本化提示词文档；存在时它是唯一执行来源，旧 prompt 仅作兼容字段。 */
+  promptDocument: promptDocumentSchema.optional(),
   /**
    * 与节点一同保存的媒体生成参数，例如图片尺寸/清晰度和视频分辨率/时长。
    * 参数由对应 Provider 按已支持的字段映射，未配置时沿用模型默认值。
@@ -273,6 +462,8 @@ export const runSnapshotSchema = z
     nodes: z.array(canvasNodeSchema).min(1),
     edges: z.array(canvasEdgeSchema),
     inputs: z.array(runInputSnapshotSchema),
+    /** 按节点保存已冻结的内联提及；旧快照可省略该字段。 */
+    promptMentions: z.array(frozenPromptMentionSchema).optional(),
   })
   .superRefine((snapshot, context) => {
     // Run snapshots can come from a persisted queue payload or a worker
@@ -334,6 +525,37 @@ export const runSnapshotSchema = z
       }
     });
 
+    const mentionKeys = new Set<string>();
+    const lastMentionOrderByNode = new Map<string, number>();
+    snapshot.promptMentions?.forEach((mention, index) => {
+      if (mention.nodeId && !nodeIds.has(mention.nodeId)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'prompt mention references a missing snapshot node',
+          path: ['promptMentions', index, 'nodeId'],
+        });
+      }
+      const key = `${mention.nodeId ?? ''}\0${mention.mentionId}`;
+      if (mentionKeys.has(key)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `duplicate frozen prompt mention: ${mention.mentionId}`,
+          path: ['promptMentions', index, 'mentionId'],
+        });
+      }
+      mentionKeys.add(key);
+      const orderNodeId = mention.nodeId ?? snapshot.targetNodeId;
+      const previousOrder = lastMentionOrderByNode.get(orderNodeId);
+      if (previousOrder !== undefined && mention.blockOrder < previousOrder) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'frozen prompt mentions must be ordered by blockOrder per node',
+          path: ['promptMentions', index, 'blockOrder'],
+        });
+      }
+      lastMentionOrderByNode.set(orderNodeId, mention.blockOrder);
+    });
+
     if (!snapshot.nodes.some((node) => node.id === snapshot.targetNodeId)) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -384,8 +606,12 @@ export const runResultSchema = z.object({
   targetNodeId: z.string().min(1),
   mediaType: mediaTypeSchema,
   inputCount: z.number().int().nonnegative(),
+  /** 明确标记结果来自不证明真实供应商能力的 Mock/预览路径。 */
+  simulated: z.boolean().optional(),
   asset: runResultAssetSchema.optional(),
   providerJob: providerJobSchema.optional(),
+  /** Mock/预览可回显已解析的冻结提及；不包含媒体内容或临时 URL。 */
+  promptMentions: z.array(frozenPromptMentionSchema).optional(),
 });
 
 /**
@@ -587,7 +813,14 @@ export type NodeMode = z.infer<typeof nodeModeSchema>;
 export type PortRole = z.infer<typeof portRoleSchema>;
 export type AssetStatus = z.infer<typeof assetStatusSchema>;
 export type Asset = z.infer<typeof assetSchema>;
+export type MentionBinding = z.infer<typeof mentionBindingSchema>;
+export type PromptMention = z.infer<typeof promptMentionSchema>;
+export type PromptTextBlock = z.infer<typeof promptTextBlockSchema>;
+export type PromptBlock = z.infer<typeof promptBlockSchema>;
+export type PromptDocument = z.infer<typeof promptDocumentSchema>;
+export type FrozenPromptMention = z.infer<typeof frozenPromptMentionSchema>;
 export type CanvasNode = z.infer<typeof canvasNodeSchema>;
+export type NodeData = z.infer<typeof nodeDataSchema>;
 export type CanvasEdge = z.infer<typeof canvasEdgeSchema>;
 export type CanvasDocument = z.infer<typeof canvasDocumentSchema>;
 export type RunStatus = z.infer<typeof runStatusSchema>;

@@ -50,7 +50,9 @@ import {
   type CanvasDocument,
   type MediaType,
   type NodeMode,
+  type PromptDocument,
   type RunRecord,
+  renderPromptDocument,
 } from '@multimodal-canvas/domain';
 import {
   fromCanvasDocument,
@@ -712,7 +714,8 @@ function WorkspaceApp({
 
   const loadAssets = useCallback(async () => {
     try {
-      const response = await apiFetch(`${API_BASE_URL}/v1/assets`);
+      const search = new URLSearchParams({ projectId: initialProject.id });
+      const response = await apiFetch(`${API_BASE_URL}/v1/assets?${search.toString()}`);
       if (!response.ok) throw new Error('资源加载失败');
       const result = (await response.json()) as { assets: Asset[] };
       setAssets(result.assets);
@@ -722,7 +725,7 @@ function WorkspaceApp({
         message: error instanceof Error ? error.message : '资源加载失败',
       });
     }
-  }, []);
+  }, [initialProject.id]);
 
   const updateAsset = useCallback(async (asset: Asset, patch: { name?: string }) => {
     const response = await apiFetch(`${API_BASE_URL}/v1/assets/${asset.id}`, {
@@ -1442,6 +1445,33 @@ function WorkspaceApp({
       updateNodeDataAndMarkDownstreamStale(targetNodeId, (data) => ({
         ...data,
         prompt: prompt || undefined,
+        // 仅提供纯文本的调用方（例如结果编辑）会显式替换结构化文档，
+        // 避免旧提及继续作为实际执行来源。
+        ...(data.promptDocument
+          ? {
+              promptDocument: {
+                version: 1 as const,
+                blocks: [{ type: 'text' as const, text: prompt }],
+              },
+            }
+          : {}),
+      }));
+    },
+    [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
+  );
+
+  /** 保存结构化提示词，并同步维护旧节点仍读取的纯文本派生字段。 */
+  const updateSelectedPromptDocument = useCallback(
+    (document: PromptDocument, nodeId?: string) => {
+      const targetNodeId = nodeId ?? selectedNode?.id;
+      if (!targetNodeId) return;
+      rememberHistory();
+      canvasDirtyRef.current = true;
+      const prompt = renderPromptDocument(document);
+      updateNodeDataAndMarkDownstreamStale(targetNodeId, (data) => ({
+        ...data,
+        prompt: prompt || undefined,
+        promptDocument: document,
       }));
     },
     [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
@@ -1492,7 +1522,9 @@ function WorkspaceApp({
   );
 
   const copySourcePrompt = useCallback(async (node: AssetFlowNode) => {
-    const value = node.data.prompt?.trim() || node.data.label;
+    const value = node.data.promptDocument
+      ? renderPromptDocument(node.data.promptDocument).trim() || node.data.label
+      : node.data.prompt?.trim() || node.data.label;
     try {
       if (!window.navigator.clipboard) throw new Error('clipboard unavailable');
       await window.navigator.clipboard.writeText(value);
@@ -1660,12 +1692,25 @@ function WorkspaceApp({
           if (!clipboard || clipboard.nodes.length === 0) return;
           rememberHistory();
           const pasted = pasteCanvasClipboard(clipboard);
+          // 剪贴板刻意不携带 URL；粘贴回当前项目后按资产 ID 重新水合
+          // 当前用户可见的规范内容地址，避免源节点预览因安全清洗而消失。
+          const hydratedNodes = pasted.nodes.map((node) => {
+            const assetId = node.data.assetId;
+            const asset = assetId
+              ? assets.find((candidate) => candidate.id === assetId)
+              : undefined;
+            if (!asset) return node;
+            return {
+              ...node,
+              data: { ...node.data, contentUrl: asset.contentUrl, mimeType: asset.mimeType },
+            };
+          });
           setNodes((current) => [
             ...current.map((node) => ({ ...node, selected: false })),
-            ...pasted.nodes,
+            ...hydratedNodes,
           ]);
           setEdges((current) => [...current, ...pasted.edges]);
-          setSelectedNodeId(pasted.nodes[0]?.id ?? null);
+          setSelectedNodeId(hydratedNodes[0]?.id ?? null);
           canvasDirtyRef.current = true;
         })();
         return;
@@ -1677,6 +1722,7 @@ function WorkspaceApp({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [
     deleteCanvasSelection,
+    assets,
     redoCanvas,
     rememberHistory,
     saveCanvas,
@@ -1847,6 +1893,9 @@ function WorkspaceApp({
         // canvas snapshot so an immediate click never sends stale parameters.
         nodeSnapshot =
           nodesRef.current.find((candidate) => candidate.id === node.id) ?? nodeSnapshot;
+        const effectivePrompt = nodeSnapshot.data.promptDocument
+          ? renderPromptDocument(nodeSnapshot.data.promptDocument).trim()
+          : nodeSnapshot.data.prompt?.trim();
         const response = await apiFetch(`${API_BASE_URL}/v1/nodes/${nodeSnapshot.id}/runs`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1857,14 +1906,15 @@ function WorkspaceApp({
               ? { credentialId: nodeSnapshot.data.credentialId }
               : {}),
             parameters: {
-              ...(nodeSnapshot.data.prompt?.trim()
-                ? { prompt: nodeSnapshot.data.prompt.trim() }
-                : {}),
               ...(nodeSnapshot.data.parameters ?? {}),
+              ...(effectivePrompt ? { prompt: effectivePrompt } : {}),
               ...(nodeSnapshot.data.inferenceStrength
                 ? { inferenceStrength: nodeSnapshot.data.inferenceStrength }
                 : {}),
             },
+            ...(nodeSnapshot.data.promptDocument
+              ? { promptDocument: nodeSnapshot.data.promptDocument }
+              : {}),
           }),
         });
         const result = (await response.json().catch(() => ({}))) as {
@@ -2524,6 +2574,7 @@ function WorkspaceApp({
             nodes={nodes}
             edges={edges}
             selectedNode={selectedNode}
+            assets={assets}
             models={modelCatalog}
             busy={isRunning}
             onNodesChange={handleNodesChange}
@@ -2537,7 +2588,7 @@ function WorkspaceApp({
             onResizeStart={handleResizeStart}
             onNodeEnabledChange={updateNodeEnabled}
             onRetryNode={retryNodeFromCanvas}
-            onPromptChange={updateSelectedPrompt}
+            onPromptDocumentChange={updateSelectedPromptDocument}
             onParametersChange={updateSelectedParameters}
             onModelChange={updateSelectedModel}
             onInferenceStrengthChange={updateSelectedInferenceStrength}
@@ -2638,7 +2689,9 @@ function WorkspaceApp({
                     <TextPromptEditor
                       nodeId={selectedNode.id}
                       value={selectedNode.data.prompt ?? ''}
-                      onChange={updateSelectedPrompt}
+                      promptDocument={selectedNode.data.promptDocument}
+                      assets={assets}
+                      onDocumentChange={updateSelectedPromptDocument}
                       placeholder={
                         selectedAsset.mediaType === 'text'
                           ? '输入来源文本，运行下游节点时会作为参考'
@@ -2758,7 +2811,9 @@ function WorkspaceApp({
                         <TextPromptEditor
                           nodeId={selectedNode.id}
                           value={selectedNode.data.prompt ?? ''}
-                          onChange={updateSelectedPrompt}
+                          promptDocument={selectedNode.data.promptDocument}
+                          assets={assets}
+                          onDocumentChange={updateSelectedPromptDocument}
                           placeholder="补充来源内容，供下游节点参考"
                         />
                       </label>

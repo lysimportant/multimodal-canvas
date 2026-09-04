@@ -55,6 +55,120 @@ beforeEach(() => {
 });
 
 describe('StoredAssetReferenceResolver', () => {
+  it('hydrates frozen inline prompt mentions in memory without mutating the durable snapshot', async () => {
+    const content = Buffer.from('frozen image bytes');
+    const snapshot = promptMentionSnapshot({
+      assetId: imageAssetId,
+      assetVersion: 2,
+      label: '产品图',
+      mediaType: 'image',
+    });
+    const { repository, blobStore } = fixtures({
+      assets: [asset(imageAssetId, 'image', 'image/png', content, projectId)],
+      versions: [
+        {
+          assetId: imageAssetId,
+          version: 2,
+          sizeBytes: BigInt(content.byteLength),
+          contentKey: 'objects/image-v2',
+        },
+      ],
+      blobs: { 'objects/image-v2': content },
+    });
+    const resolver = new StoredAssetReferenceResolver(repository, blobStore);
+
+    const hydrated = await resolver.resolve(snapshot);
+    const mention = hydrated.nodes
+      .find((node) => node.id === 'node_target')
+      ?.data.promptDocument?.blocks.find((block) => block.type === 'mention');
+
+    expect(mention).toMatchObject({
+      mentionId: 'mention-1',
+      assetId: imageAssetId,
+      assetVersion: 2,
+      mimeType: 'image/png',
+      contentUrl: `data:image/png;base64,${content.toString('base64')}`,
+    });
+    expect(hydrated.promptMentions?.[0]).not.toHaveProperty('contentUrl');
+    expect(snapshot.nodes.find((node) => node.id === 'node_target')?.data.promptDocument).toEqual(
+      snapshot.nodes.find((node) => node.id === 'node_target')?.data.promptDocument,
+    );
+    expect(repository.findVersion).toHaveBeenCalledWith(imageAssetId, 2);
+    expect(blobStore.get).toHaveBeenCalledWith('objects/image-v2', content.byteLength + 1);
+  });
+
+  it('reuses one frozen load for repeated mentions while retaining block order', async () => {
+    const content = Buffer.from('same image');
+    const snapshot = promptMentionSnapshot({
+      assetId: imageAssetId,
+      assetVersion: 1,
+      label: '产品图',
+      mediaType: 'image',
+      repeat: true,
+    });
+    const { repository, blobStore } = fixtures({
+      assets: [asset(imageAssetId, 'image', 'image/png', content, projectId)],
+      blobs: { 'objects/image-current': content },
+    });
+    const resolver = new StoredAssetReferenceResolver(repository, blobStore);
+
+    const hydrated = await resolver.resolve(snapshot);
+    const blocks = hydrated.nodes.find((node) => node.id === 'node_target')?.data.promptDocument
+      ?.blocks;
+    expect(
+      blocks?.filter((block) => block.type === 'mention').map((block) => block.mentionId),
+    ).toEqual(['mention-1', 'mention-2']);
+    expect(repository.findVersion).toHaveBeenCalledTimes(1);
+    expect(blobStore.get).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects archived assets before reading inline prompt bytes', async () => {
+    const content = Buffer.from('archived');
+    const archived = {
+      ...asset(imageAssetId, 'image', 'image/png', content, projectId),
+      status: 'archived' as const,
+    };
+    const { repository, blobStore } = fixtures({
+      assets: [archived],
+      blobs: { 'objects/image-current': content },
+    });
+    const resolver = new StoredAssetReferenceResolver(repository, blobStore);
+
+    await expect(
+      resolver.resolve(
+        promptMentionSnapshot({
+          assetId: imageAssetId,
+          assetVersion: 1,
+          label: '归档图',
+          mediaType: 'image',
+        }),
+      ),
+    ).rejects.toThrow('is archived');
+    expect(blobStore.get).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when a frozen mention is not represented in the prompt document', async () => {
+    const content = Buffer.from('image');
+    const snapshot = promptMentionSnapshot({
+      assetId: imageAssetId,
+      assetVersion: 1,
+      label: '图',
+      mediaType: 'image',
+    });
+    snapshot.nodes[0]!.data.promptDocument = {
+      version: 1,
+      blocks: [{ type: 'text', text: '没有提及' }],
+    };
+    const { repository, blobStore } = fixtures({
+      assets: [asset(imageAssetId, 'image', 'image/png', content, projectId)],
+      blobs: { 'objects/image-current': content },
+    });
+
+    await expect(
+      new StoredAssetReferenceResolver(repository, blobStore).resolve(snapshot),
+    ).rejects.toThrow('is missing from node node_target');
+  });
+
   it('hydrates an explicitly versioned text reference without mutating the durable snapshot', async () => {
     const content = Buffer.from('Hello reference', 'utf8');
     const snapshot = referenceSnapshot({ assetId: textAssetId, prompt: 'stale source prompt' });
@@ -408,6 +522,95 @@ describe('createRunWorker asset hydration boundary', () => {
     });
   });
 
+  it('passes provider-neutral resolved mentions without persisting their content', async () => {
+    const content = Buffer.from('resolved image bytes');
+    const durableSnapshot = promptMentionSnapshot({
+      assetId: imageAssetId,
+      assetVersion: 2,
+      label: '产品图',
+      mediaType: 'image',
+    });
+    const { repository, blobStore } = fixtures({
+      assets: [asset(imageAssetId, 'image', 'image/png', content, projectId)],
+      versions: [
+        {
+          assetId: imageAssetId,
+          version: 2,
+          sizeBytes: BigInt(content.byteLength),
+          contentKey: 'objects/image-v2',
+        },
+      ],
+      blobs: { 'objects/image-v2': content },
+    });
+    const resolver = new StoredAssetReferenceResolver(repository, blobStore);
+    let providerMentions: unknown;
+    const job: StubJob = {
+      id: projectId,
+      data: {
+        runId: projectId,
+        userId,
+        snapshot: durableSnapshot,
+        attempt: 1,
+        provider: 'mock',
+        cancelRequested: false,
+      },
+      async updateData(data) {
+        this.data = data;
+      },
+      async updateProgress() {},
+    };
+    bullmqState.job = job;
+
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      stepDelayMs: 0,
+      assetReferenceResolver: resolver,
+      provider: {
+        async execute(request) {
+          providerMentions = request.resolvedMentions;
+          return {
+            result: {
+              provider: 'mock',
+              summary: 'generated',
+              targetNodeId: 'node_target',
+              mediaType: 'image' as const,
+              inputCount: 0,
+            },
+            output: {
+              mediaType: 'image' as const,
+              kind: 'url' as const,
+              url: 'https://assets.example/generated.png',
+              mimeType: 'image/png',
+            },
+          };
+        },
+      },
+      resultArchiver: async () => ({
+        assetId: 'asset_resolved_target',
+        version: 1,
+        mimeType: 'image/png',
+      }),
+    });
+
+    await bullmqState.processor?.(job);
+
+    expect(providerMentions).toMatchObject([
+      {
+        nodeId: 'node_target',
+        mentionId: 'mention-1',
+        assetId: imageAssetId,
+        assetVersion: 2,
+        blockOrder: 1,
+        source: {
+          kind: 'data-url',
+          mimeType: 'image/png',
+          dataUrl: `data:image/png;base64,${content.toString('base64')}`,
+        },
+      },
+    ]);
+    expect(JSON.stringify(job.data)).not.toContain(content.toString('base64'));
+  });
+
   it('redacts transient asset bytes when a provider echoes its request in an error', async () => {
     const content = Buffer.from('never persist this prompt', 'utf8');
     const durableSnapshot = referenceSnapshot({ assetId: textAssetId });
@@ -546,6 +749,73 @@ function referenceSnapshot(options: {
         snapshot: source,
       },
     ],
+  };
+}
+
+function promptMentionSnapshot(options: {
+  assetId: string;
+  assetVersion: number;
+  label: string;
+  mediaType: 'image';
+  repeat?: boolean;
+}): RunSnapshot {
+  const blocks = [
+    { type: 'text' as const, text: '请使用 ' },
+    {
+      type: 'mention' as const,
+      mentionId: 'mention-1',
+      assetId: options.assetId,
+      assetVersion: options.assetVersion,
+      label: options.label,
+      mediaType: options.mediaType,
+    },
+    ...(options.repeat
+      ? [
+          { type: 'text' as const, text: ' 和 ' },
+          {
+            type: 'mention' as const,
+            mentionId: 'mention-2',
+            assetId: options.assetId,
+            assetVersion: options.assetVersion,
+            label: options.label,
+            mediaType: options.mediaType,
+          },
+        ]
+      : []),
+  ];
+  const target = {
+    id: 'node_target',
+    type: 'image' as const,
+    position: { x: 200, y: 0 },
+    data: {
+      label: 'Target',
+      mediaType: 'image' as const,
+      mode: 'generate' as const,
+      promptDocument: { version: 1 as const, blocks },
+    },
+  };
+  const mentions = blocks
+    .filter((block) => block.type === 'mention')
+    .map((block, index) => ({
+      nodeId: target.id,
+      mentionId: block.mentionId,
+      assetId: block.assetId,
+      assetVersion: options.assetVersion,
+      mediaType: block.mediaType,
+      label: block.label,
+      blockOrder: index * 2 + 1,
+    }));
+  return {
+    projectId,
+    canvasRevision: 1,
+    targetNodeId: target.id,
+    modelAlias: 'target-model',
+    parameters: {},
+    submittedAt: '2026-08-27T00:00:00.000Z',
+    nodes: [target],
+    edges: [],
+    inputs: [],
+    promptMentions: mentions,
   };
 }
 

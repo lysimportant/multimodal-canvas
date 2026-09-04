@@ -648,6 +648,53 @@ describe('画布编辑器交互', () => {
     );
   });
 
+  it('在工作台快速编辑器中搜索并保存结构化资源提及', async () => {
+    const { user } = await renderCanvas();
+
+    await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
+    const node = findNodeByLabel('文字生成节点');
+    expect(node).toBeTruthy();
+    await user.click(node!);
+
+    const quickEditor = screen.getByLabelText('文字生成节点生成设置');
+    const prompt = within(quickEditor).getByRole('textbox', { name: '提示词' });
+    await user.type(prompt, '根据 @ref');
+    expect(screen.getByRole('listbox', { name: '选择资源' })).toBeInTheDocument();
+    await user.keyboard('{Enter}');
+
+    expect(prompt).toHaveValue('根据 @reference.png');
+    expect(within(quickEditor).getByRole('article')).toHaveTextContent('@reference.png');
+
+    await user.click(within(quickEditor).getByRole('button', { name: '生成' }));
+    await waitFor(() => {
+      const runCall = fetchMock.mock.calls.find(([input, init]) => {
+        const rawUrl =
+          typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        return (
+          new URL(rawUrl, 'http://localhost:3000').pathname.startsWith('/v1/nodes/') &&
+          init?.method === 'POST'
+        );
+      });
+      expect(runCall).toBeDefined();
+      const body = JSON.parse(String((runCall?.[1] as RequestInit | undefined)?.body));
+      expect(body).toMatchObject({
+        promptDocument: {
+          version: 1,
+          blocks: [
+            { type: 'text', text: '根据 ' },
+            {
+              type: 'mention',
+              assetId: 'asset-reference',
+              label: 'reference.png',
+              mediaType: 'image',
+            },
+          ],
+        },
+        parameters: { prompt: '根据 @reference.png' },
+      });
+    });
+  });
+
   it('节点标题支持中文组合输入，并可作为一次编辑撤销', async () => {
     const { user } = await renderCanvas();
     await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));

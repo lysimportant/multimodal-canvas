@@ -26,7 +26,7 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from 'react';
 
-import type { MediaType } from '@multimodal-canvas/domain';
+import type { Asset, MediaType, PromptDocument } from '@multimodal-canvas/domain';
 import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
 import {
   NodeResizeContext,
@@ -104,6 +104,8 @@ export type WorkflowCanvasProps = {
   nodes: AssetFlowNode[];
   edges: FlowEdge[];
   selectedNode: AssetFlowNode | null;
+  /** 当前项目中可访问的资源，供所有节点的提及编辑器共用。 */
+  assets?: readonly Asset[];
   models: ModelEntry[];
   busy: boolean;
   background: CanvasBackground;
@@ -122,7 +124,8 @@ export type WorkflowCanvasProps = {
   onResizeStart?: (nodeId: string) => void;
   onNodeEnabledChange: NodeEnabledHandler;
   onRetryNode: (nodeId: string) => void | Promise<void>;
-  onPromptChange: (value: string, nodeId?: string) => void;
+  onPromptChange?: (value: string, nodeId?: string) => void;
+  onPromptDocumentChange?: (document: PromptDocument, nodeId?: string) => void;
   onParametersChange?: (value: Record<string, unknown>, nodeId?: string) => void;
   onModelChange: (value: ModelSelection, nodeId?: string) => void;
   onInferenceStrengthChange: (value: InferenceStrength, nodeId?: string) => void;
@@ -156,6 +159,7 @@ export function WorkflowCanvas({
   nodes,
   edges,
   selectedNode,
+  assets = [],
   models,
   busy,
   background,
@@ -171,6 +175,7 @@ export function WorkflowCanvas({
   onNodeEnabledChange,
   onRetryNode,
   onPromptChange,
+  onPromptDocumentChange,
   onParametersChange,
   onModelChange,
   onInferenceStrengthChange,
@@ -485,7 +490,15 @@ export function WorkflowCanvas({
           models={models}
           busy={busy}
           canvasAreaRef={canvasAreaRef}
-          onPromptChange={(value) => onPromptChange(value, quickEditorNode.id)}
+          assets={assets}
+          onPromptChange={
+            onPromptChange ? (value) => onPromptChange(value, quickEditorNode.id) : undefined
+          }
+          onPromptDocumentChange={
+            onPromptDocumentChange
+              ? (document) => onPromptDocumentChange(document, quickEditorNode.id)
+              : undefined
+          }
           onParametersChange={
             onParametersChange
               ? (value) => onParametersChange(value, quickEditorNode.id)

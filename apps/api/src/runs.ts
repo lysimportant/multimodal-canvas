@@ -3,6 +3,7 @@ import { Job, Queue, type ConnectionOptions } from 'bullmq';
 import {
   canTransitionRunStatus,
   portRoleSchema,
+  renderPromptDocument,
   runJobDataSchema,
   runJobResultSchema,
   providerJobSchema,
@@ -10,6 +11,7 @@ import {
   runResultSchema,
   runSnapshotSchema,
   type CanvasDocument,
+  type FrozenPromptMention,
   type MediaType,
   type RunJobData,
   type RunResult,
@@ -177,6 +179,8 @@ export function createRunSnapshot(
     nodeCredentialReferences?: Readonly<Record<string, RunCredentialReference>>;
     /** Immutable asset-version references resolved by the API for included nodes. */
     frozenAssetRefs?: Readonly<Record<string, FrozenRunAssetRef>>;
+    /** 提交 API 已完成权限和版本校验的内联资源提及。 */
+    frozenPromptMentions?: readonly FrozenPromptMention[];
   } = {},
 ): RunSnapshot {
   const target = canvas.nodes.find((node) => node.id === targetNodeId);
@@ -250,6 +254,9 @@ export function createRunSnapshot(
     nodes,
     edges,
     inputs,
+    ...(options.frozenPromptMentions
+      ? { promptMentions: options.frozenPromptMentions.map((mention) => clone(mention)) }
+      : {}),
   });
 }
 
@@ -857,7 +864,9 @@ async function mockRunExecutor({
   const label = target.data.label.trim() || 'Untitled output';
   let output: RunExecutionOutput;
   if (mediaType === 'text') {
-    const prompt = target.data.prompt?.trim();
+    const prompt = target.data.promptDocument
+      ? renderPromptDocument(target.data.promptDocument).trim()
+      : target.data.prompt?.trim();
     const text = prompt ? `Mock output for ${label}\n${prompt}` : `Mock output for ${label}`;
     output = { mediaType, kind: 'text', text, mimeType: 'text/plain', format: 'txt' };
   } else if (mediaType === 'image') {
@@ -898,6 +907,12 @@ async function mockRunExecutor({
       targetNodeId: target.id,
       mediaType,
       inputCount: snapshot.inputs.length,
+      ...(snapshot.promptMentions && snapshot.promptMentions.length > 0
+        ? {
+            simulated: true,
+            promptMentions: snapshot.promptMentions.map((mention) => clone(mention)),
+          }
+        : {}),
     },
     output,
   };

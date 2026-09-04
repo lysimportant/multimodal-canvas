@@ -4,8 +4,11 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { PromptDocument } from '@multimodal-canvas/domain';
 import type { AssetFlowNode } from '../canvas-utils';
 import { NodeQuickEditor, type NodeQuickEditorProps } from './NodeQuickEditor';
+
+type PromptMentionBlock = Extract<PromptDocument['blocks'][number], { type: 'mention' }>;
 
 const imageNode = {
   id: 'node_image',
@@ -63,6 +66,21 @@ function makeProps(overrides: Partial<NodeQuickEditorProps> = {}): NodeQuickEdit
   };
 }
 
+function makeMentionDocument(mention: PromptMentionBlock): PromptDocument {
+  return {
+    version: 1,
+    blocks: [{ type: 'text', text: '参考 ' }, mention],
+  };
+}
+
+const imageMention: PromptMentionBlock = {
+  type: 'mention',
+  mentionId: 'mention-image',
+  assetId: 'asset-image',
+  label: '产品图',
+  mediaType: 'image',
+};
+
 afterEach(cleanup);
 
 describe('NodeQuickEditor', () => {
@@ -90,6 +108,162 @@ describe('NodeQuickEditor', () => {
       }),
     ).toBeInTheDocument();
     expect(modelGroup).toHaveAttribute('data-placement', 'top');
+  });
+
+  it('资源提及时对未声明能力的模型显示原因和兜底提示', () => {
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          node: {
+            ...imageNode,
+            data: {
+              ...imageNode.data,
+              modelAlias: 'undeclared-model',
+              promptDocument: makeMentionDocument(imageMention),
+            },
+          } as AssetFlowNode,
+          models: [
+            {
+              id: 'undeclared-model',
+              name: '未声明模型',
+              mediaTypes: ['image'],
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByText('当前模型的资源提及能力需要确认')).toBeInTheDocument();
+    expect(screen.getByText('模型 未声明模型 未声明可引用的资源媒体类型。')).toBeInTheDocument();
+    expect(screen.getByText('请刷新模型目录或选择已声明支持资源提及的模型。')).toBeInTheDocument();
+  });
+
+  it('资源提及时指出当前模型不支持提及的媒体类型', () => {
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          node: {
+            ...imageNode,
+            data: {
+              ...imageNode.data,
+              modelAlias: 'image-only-model',
+              promptDocument: makeMentionDocument({
+                ...imageMention,
+                mediaType: 'video',
+                label: '参考视频',
+              }),
+            },
+          } as AssetFlowNode,
+          models: [
+            {
+              id: 'image-only-model',
+              name: '图片模型',
+              mediaTypes: ['image'],
+              capabilities: { mentionMediaTypes: ['image'] },
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByText('模型 图片模型 不支持视频提及。')).toBeInTheDocument();
+  });
+
+  it('transform 模式缺少 modes 声明时显示未知能力提示', () => {
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          node: {
+            ...imageNode,
+            data: {
+              ...imageNode.data,
+              mode: 'transform',
+              modelAlias: 'transform-model',
+              promptDocument: makeMentionDocument(imageMention),
+            },
+          } as AssetFlowNode,
+          models: [
+            {
+              id: 'transform-model',
+              name: '转换模型',
+              mediaTypes: ['image'],
+              capabilities: { mentionMediaTypes: ['image'] },
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByText('模型 转换模型 未声明 transform 模式的提及能力。')).toBeInTheDocument();
+  });
+
+  it('资源提及不兼容时展示兼容模型建议并支持一键切换', async () => {
+    const user = userEvent.setup();
+    const onModelChange = vi.fn();
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          onModelChange,
+          node: {
+            ...imageNode,
+            data: {
+              ...imageNode.data,
+              modelAlias: 'incompatible-model',
+              promptDocument: makeMentionDocument(imageMention),
+            },
+          } as AssetFlowNode,
+          models: [
+            {
+              id: 'incompatible-model',
+              name: '当前模型',
+              mediaTypes: ['image'],
+              capabilities: { mentionMediaTypes: ['video'] },
+            },
+            {
+              id: 'compatible-model',
+              name: '兼容图片模型',
+              mediaTypes: ['image'],
+              capabilities: { mentionMediaTypes: ['image'] },
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByText('建议切换：')).toBeInTheDocument();
+    const suggestion = screen.getByRole('button', { name: '兼容图片模型' });
+    expect(suggestion).toBeInTheDocument();
+
+    await user.click(suggestion);
+
+    expect(onModelChange).toHaveBeenCalledWith({ modelAlias: 'compatible-model' });
+  });
+
+  it('没有资源提及时不显示资源提及能力警告', () => {
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          node: {
+            ...imageNode,
+            data: {
+              ...imageNode.data,
+              modelAlias: 'undeclared-model',
+              promptDocument: { version: 1, blocks: [{ type: 'text', text: '纯文字提示' }] },
+            },
+          } as AssetFlowNode,
+          models: [
+            {
+              id: 'undeclared-model',
+              name: '未声明模型',
+              mediaTypes: ['image'],
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.queryByText('当前模型的资源提及能力需要确认')).not.toBeInTheDocument();
+    expect(screen.queryByText(/未声明可引用的资源媒体类型/)).not.toBeInTheDocument();
   });
 
   it('回传提示词、模型、推理强度和生成操作，并阻止指针事件传给画布', async () => {

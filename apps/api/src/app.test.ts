@@ -457,7 +457,213 @@ describe('asset endpoints', () => {
     const response = await app.inject({ method: 'GET', url: '/v1/assets' });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ assets: [] });
+    expect(response.json()).toEqual({ assets: [], total: 0, page: 1, pageSize: 50 });
+  });
+
+  it('filters, paginates, and scopes asset search results to the authenticated owner', async () => {
+    vi.stubEnv('NODE_ENV', 'test');
+    vi.stubEnv('API_AUTH_TOKEN', '');
+    vi.stubEnv('API_JWT_SECRET', 'asset-list-query-secret');
+    const assetStore = new MemoryAssetStore();
+    const authStore = new MemoryAuthStore();
+    const listApp = buildApp({ logger: false, assetStore, authStore });
+    try {
+      const register = async (email: string) => {
+        const response = await listApp.inject({
+          method: 'POST',
+          url: '/v1/auth/register',
+          payload: { email, password: 'strong-password-123' },
+        });
+        expect(response.statusCode).toBe(201);
+        return response.json() as { accessToken: string; user: { id: string } };
+      };
+      const owner = await register('asset-list-owner@example.test');
+      const other = await register('asset-list-other@example.test');
+
+      await assetStore.create({
+        ownerId: owner.user.id,
+        name: 'hero-one.png',
+        mediaType: 'image',
+        mimeType: 'image/png',
+        content: Buffer.from('one'),
+        tags: ['Hero', 'Reference'],
+      });
+      await assetStore.create({
+        ownerId: owner.user.id,
+        name: 'hero-two.png',
+        mediaType: 'image',
+        mimeType: 'image/png',
+        content: Buffer.from('two'),
+        tags: ['hero', 'Reference'],
+      });
+      const archived = await assetStore.create({
+        ownerId: owner.user.id,
+        name: 'hero-archived.png',
+        mediaType: 'image',
+        mimeType: 'image/png',
+        content: Buffer.from('archived'),
+        tags: ['hero', 'Reference'],
+      });
+      await assetStore.setArchived(archived.id, true, { ownerId: owner.user.id });
+      await assetStore.create({
+        ownerId: other.user.id,
+        name: 'hero-other.png',
+        mediaType: 'image',
+        mimeType: 'image/png',
+        content: Buffer.from('other'),
+        tags: ['hero', 'Reference'],
+      });
+
+      const headers = { authorization: `Bearer ${owner.accessToken}` };
+      const firstPage = await listApp.inject({
+        method: 'GET',
+        url: '/v1/assets?query=hero&mediaType=image&status=ready&tags=HERO,reference&page=1&pageSize=1',
+        headers,
+      });
+      expect(firstPage.statusCode).toBe(200);
+      expect(firstPage.json()).toMatchObject({ total: 2, page: 1, pageSize: 1 });
+      expect(firstPage.json().assets).toHaveLength(1);
+      expect(firstPage.json().assets[0].name).toBe('hero-one.png');
+
+      const secondPage = await listApp.inject({
+        method: 'GET',
+        url: '/v1/assets?query=hero&mediaType=image&status=ready&tags=hero&Page=ignored&page=2&pageSize=1',
+        headers,
+      });
+      expect(secondPage.statusCode).toBe(200);
+      expect(secondPage.json()).toMatchObject({ total: 2, page: 2, pageSize: 1 });
+      expect(secondPage.json().assets).toHaveLength(1);
+      expect(secondPage.json().assets[0].name).toBe('hero-two.png');
+
+      const archivedResults = await listApp.inject({
+        method: 'GET',
+        url: '/v1/assets?status=archived&mediaType=image',
+        headers,
+      });
+      expect(archivedResults.statusCode).toBe(200);
+      expect(archivedResults.json()).toMatchObject({ total: 1, page: 1, pageSize: 50 });
+      expect(archivedResults.json().assets[0].name).toBe('hero-archived.png');
+
+      expect(
+        (
+          await listApp.inject({
+            method: 'GET',
+            url: '/v1/assets',
+            headers: { authorization: `Bearer ${other.accessToken}` },
+          })
+        ).json().total,
+      ).toBe(1);
+      expect(
+        (await listApp.inject({ method: 'GET', url: '/v1/assets?mediaType=invalid', headers }))
+          .statusCode,
+      ).toBe(400);
+      expect(
+        (await listApp.inject({ method: 'GET', url: '/v1/assets?page=0', headers })).statusCode,
+      ).toBe(400);
+    } finally {
+      await listApp.close();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('limits project-scoped asset search to the selected project plus personal resources', async () => {
+    vi.stubEnv('NODE_ENV', 'test');
+    vi.stubEnv('API_AUTH_TOKEN', '');
+    vi.stubEnv('API_JWT_SECRET', 'asset-project-scope-secret');
+    const assetStore = new MemoryAssetStore();
+    const projectStore = new MemoryProjectStore();
+    const authStore = new MemoryAuthStore();
+    const listApp = buildApp({ logger: false, assetStore, projectStore, authStore });
+    try {
+      const register = async (email: string) => {
+        const response = await listApp.inject({
+          method: 'POST',
+          url: '/v1/auth/register',
+          payload: { email, password: 'strong-password-123' },
+        });
+        expect(response.statusCode).toBe(201);
+        return response.json() as { accessToken: string; user: { id: string } };
+      };
+      const owner = await register('asset-project-owner@example.test');
+      const other = await register('asset-project-other@example.test');
+      const createProject = async (name: string, accessToken: string) => {
+        const response = await listApp.inject({
+          method: 'POST',
+          url: '/v1/projects',
+          headers: { authorization: `Bearer ${accessToken}` },
+          payload: { name },
+        });
+        expect(response.statusCode).toBe(201);
+        return response.json().project as { id: string };
+      };
+      const ownerProject = await createProject('Owner project', owner.accessToken);
+      const otherProject = await createProject('Other project', other.accessToken);
+
+      const createAsset = (input: { name: string; projectId?: string; ownerId?: string }) =>
+        assetStore.create({
+          ...input,
+          mediaType: 'image',
+          mimeType: 'image/png',
+          content: Buffer.from(input.name),
+        });
+      await createAsset({ name: 'project-only.png', projectId: ownerProject.id });
+      await createAsset({ name: 'personal.png', ownerId: owner.user.id });
+      await createAsset({
+        name: 'other-project.png',
+        projectId: otherProject.id,
+        ownerId: other.user.id,
+      });
+
+      const scoped = await listApp.inject({
+        method: 'GET',
+        url: `/v1/assets?projectId=${encodeURIComponent(ownerProject.id)}`,
+        headers: { authorization: `Bearer ${owner.accessToken}` },
+      });
+      expect(scoped.statusCode).toBe(200);
+      expect(scoped.json().total).toBe(2);
+      expect(scoped.json().assets.map((asset: { name: string }) => asset.name)).toEqual(
+        expect.arrayContaining(['project-only.png', 'personal.png']),
+      );
+      expect(scoped.json().assets.map((asset: { name: string }) => asset.name)).not.toContain(
+        'other-project.png',
+      );
+
+      const forbiddenProject = await listApp.inject({
+        method: 'GET',
+        url: `/v1/assets?projectId=${encodeURIComponent(otherProject.id)}`,
+        headers: { authorization: `Bearer ${owner.accessToken}` },
+      });
+      expect(forbiddenProject.statusCode).toBe(404);
+    } finally {
+      await listApp.close();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('returns the current asset version in an explicit field and legacy metadata', async () => {
+    const assetStore = new MemoryAssetStore();
+    const listApp = buildApp({ logger: false, assetStore });
+    try {
+      const created = await assetStore.create({
+        name: 'versioned-reference.png',
+        mediaType: 'image',
+        mimeType: 'image/png',
+        content: Buffer.from('version-one'),
+      });
+      await assetStore.createVersion(created.id, { content: Buffer.from('version-two') });
+
+      const response = await listApp.inject({ method: 'GET', url: '/v1/assets' });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().assets).toEqual([
+        expect.objectContaining({
+          id: created.id,
+          latestVersion: 2,
+          metadata: expect.objectContaining({ version: 2 }),
+        }),
+      ]);
+    } finally {
+      await listApp.close();
+    }
   });
 
   it('uploads an asset and serves its original content', async () => {
@@ -950,6 +1156,426 @@ describe('project and canvas endpoints', () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json().error).toBe('invalid canvas');
+  });
+});
+
+describe('workflow import HTTP contract', () => {
+  /** 构造只包含一个文本节点的最小工作流导出文档。 */
+  function workflowImportPayload(
+    options: {
+      nodeId?: string;
+      projectId?: string;
+      projectName?: string;
+      canvasRevision?: number;
+      promptBlocks?: Array<Record<string, unknown>>;
+      modelDefaults?: Record<string, unknown>;
+    } = {},
+  ) {
+    return {
+      schemaVersion: 1,
+      exportedAt: '2026-09-04T00:00:00.000Z',
+      project: {
+        id: options.projectId ?? 'project_source_import',
+        name: options.projectName ?? 'Source workflow',
+        createdAt: '2026-08-01T00:00:00.000Z',
+        updatedAt: '2026-08-02T00:00:00.000Z',
+      },
+      canvas: {
+        revision: options.canvasRevision ?? 27,
+        nodes: [
+          {
+            id: options.nodeId ?? 'node_imported_text',
+            type: 'text',
+            position: { x: 32, y: 48 },
+            data: {
+              label: 'Imported text',
+              mediaType: 'text',
+              mode: 'generate',
+              ...(options.promptBlocks
+                ? { promptDocument: { version: 1, blocks: options.promptBlocks } }
+                : {}),
+            },
+          },
+        ],
+        edges: [],
+      },
+      ...(options.modelDefaults ? { modelDefaults: options.modelDefaults } : {}),
+      runs: [],
+      results: [],
+    };
+  }
+
+  it('imports a direct workflow body without overwriting the target project identity', async () => {
+    const projectStore = new MemoryProjectStore();
+    const importApp = buildApp({ logger: false, projectStore });
+    try {
+      const created = await importApp.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        payload: { name: 'Target project' },
+      });
+      const target = created.json().project as {
+        id: string;
+        name: string;
+        createdAt: string;
+      };
+      const workflow = workflowImportPayload({
+        nodeId: 'node_direct_import',
+        projectId: 'project_source_direct',
+        projectName: 'Source direct project',
+      });
+
+      const response = await importApp.inject({
+        method: 'POST',
+        url: `/v1/projects/${target.id}/import/workflow`,
+        payload: { ...workflow, expectedRevision: 0 },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        workflow: {
+          project: { id: 'project_source_direct', name: 'Source direct project' },
+        },
+        canvas: { revision: 1, nodes: [{ id: 'node_direct_import' }] },
+        issues: [],
+      });
+      const currentProject = await importApp.inject({
+        method: 'GET',
+        url: `/v1/projects/${target.id}`,
+      });
+      expect(currentProject.json().project).toMatchObject({
+        id: target.id,
+        name: target.name,
+        createdAt: target.createdAt,
+      });
+      expect(currentProject.json().project.id).not.toBe(workflow.project.id);
+    } finally {
+      await importApp.close();
+    }
+  });
+
+  it('imports a wrapped workflow with an expected target revision', async () => {
+    const importApp = buildApp({ logger: false, projectStore: new MemoryProjectStore() });
+    try {
+      const created = await importApp.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        payload: { name: 'Wrapped target' },
+      });
+      const projectId = created.json().project.id as string;
+      const workflow = workflowImportPayload({
+        nodeId: 'node_wrapped_import',
+        canvasRevision: 91,
+      });
+
+      const response = await importApp.inject({
+        method: 'POST',
+        url: `/v1/projects/${projectId}/import/workflow`,
+        payload: { workflow, expectedRevision: 0 },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        canvas: { revision: 1, nodes: [{ id: 'node_wrapped_import' }] },
+        issues: [],
+      });
+      const currentCanvas = await importApp.inject({
+        method: 'GET',
+        url: `/v1/projects/${projectId}/canvas`,
+      });
+      expect(currentCanvas.json().canvas).toMatchObject({
+        revision: 1,
+        nodes: [{ id: 'node_wrapped_import' }],
+      });
+    } finally {
+      await importApp.close();
+    }
+  });
+
+  it('returns 409 for a stale revision without partially writing model defaults', async () => {
+    const projectStore = new MemoryProjectStore();
+    const settingsStore = new AiSettingsStore('workflow-import-revision-atomicity');
+    settingsStore.replaceModels([
+      {
+        id: 'revision-image-model',
+        name: 'Revision image model',
+        mediaTypes: ['image'],
+        refreshedAt: appModelRefreshedAt,
+      },
+      {
+        id: 'revision-text-model',
+        name: 'Revision text model',
+        mediaTypes: ['text'],
+        refreshedAt: appModelRefreshedAt,
+      },
+    ]);
+    const importApp = buildApp({ logger: false, projectStore, settingsStore });
+    try {
+      const created = await importApp.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        payload: { name: 'Revision target' },
+      });
+      const projectId = created.json().project.id as string;
+      const saved = await importApp.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${projectId}/canvas`,
+        payload: {
+          revision: 0,
+          nodes: [
+            {
+              id: 'node_current_before_conflict',
+              type: 'text',
+              position: { x: 0, y: 0 },
+              data: { label: 'Current', mediaType: 'text', mode: 'generate' },
+            },
+          ],
+          edges: [],
+        },
+      });
+      expect(saved.statusCode).toBe(200);
+      const defaults = await importApp.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${projectId}/models/defaults`,
+        payload: { image: 'revision-image-model' },
+      });
+      expect(defaults.statusCode).toBe(200);
+
+      const response = await importApp.inject({
+        method: 'POST',
+        url: `/v1/projects/${projectId}/import/workflow`,
+        payload: {
+          workflow: workflowImportPayload({
+            nodeId: 'node_must_not_replace_current',
+            modelDefaults: { text: 'revision-text-model' },
+          }),
+          expectedRevision: 0,
+        },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({ code: 'revision_conflict', revision: 1 });
+      const currentDefaults = await importApp.inject({
+        method: 'GET',
+        url: `/v1/projects/${projectId}/models/defaults`,
+      });
+      expect(currentDefaults.json()).toEqual({
+        defaults: { image: 'revision-image-model' },
+      });
+      const currentCanvas = await importApp.inject({
+        method: 'GET',
+        url: `/v1/projects/${projectId}/canvas`,
+      });
+      expect(currentCanvas.json().canvas).toMatchObject({
+        revision: 1,
+        nodes: [{ id: 'node_current_before_conflict' }],
+      });
+    } finally {
+      await importApp.close();
+    }
+  });
+
+  it('persists one placeholder and issue for every missing mentioned resource', async () => {
+    const assetStore = new MemoryAssetStore();
+    const importApp = buildApp({
+      logger: false,
+      assetStore,
+      projectStore: new MemoryProjectStore(),
+    });
+    try {
+      const created = await importApp.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        payload: { name: 'Missing resource target' },
+      });
+      const projectId = created.json().project.id as string;
+      const workflow = workflowImportPayload({
+        nodeId: 'node_missing_mentions',
+        promptBlocks: [
+          { type: 'text', text: '参考 ' },
+          {
+            type: 'mention',
+            mentionId: 'mention_missing_image',
+            assetId: 'asset_missing_image',
+            label: '缺失图片',
+            mediaType: 'image',
+            assetVersion: 2,
+            semanticRole: 'style',
+          },
+          { type: 'text', text: ' 和 ' },
+          {
+            type: 'mention',
+            mentionId: 'mention_missing_audio',
+            assetId: 'asset_missing_audio',
+            label: '缺失音频',
+            mediaType: 'audio',
+            assetVersion: 1,
+            binding: { entityName: '角色甲', semanticRole: 'characterVoice' },
+          },
+        ],
+      });
+
+      const response = await importApp.inject({
+        method: 'POST',
+        url: `/v1/projects/${projectId}/import/workflow`,
+        payload: { ...workflow, expectedRevision: 0 },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            code: 'RESOURCE_MENTION_IMPORT_NOT_FOUND',
+            nodeId: 'node_missing_mentions',
+            mentionId: 'mention_missing_image',
+            assetId: 'asset_missing_image',
+            reason: 'not_found',
+          }),
+          expect.objectContaining({
+            code: 'RESOURCE_MENTION_IMPORT_NOT_FOUND',
+            nodeId: 'node_missing_mentions',
+            mentionId: 'mention_missing_audio',
+            assetId: 'asset_missing_audio',
+            reason: 'not_found',
+          }),
+        ]),
+      );
+      expect(response.json().issues).toHaveLength(2);
+      const importedBlocks = response.json().canvas.nodes[0].data.promptDocument.blocks as Array<
+        Record<string, unknown>
+      >;
+      expect(importedBlocks.filter((block) => block.type === 'mention')).toMatchObject([
+        {
+          mentionId: 'mention_missing_image',
+          assetId: 'asset_missing_image',
+          placeholder: true,
+          placeholderReason: 'not_found',
+          semanticRole: 'style',
+        },
+        {
+          mentionId: 'mention_missing_audio',
+          assetId: 'asset_missing_audio',
+          placeholder: true,
+          placeholderReason: 'not_found',
+          binding: { entityName: '角色甲', semanticRole: 'characterVoice' },
+        },
+      ]);
+      expect(JSON.stringify(response.json().issues)).not.toMatch(/contentUrl|signedUrl|apiKey/i);
+
+      const currentCanvas = await importApp.inject({
+        method: 'GET',
+        url: `/v1/projects/${projectId}/canvas`,
+      });
+      expect(
+        currentCanvas
+          .json()
+          .canvas.nodes[0].data.promptDocument.blocks.filter(
+            (block: { type: string }) => block.type === 'mention',
+          ),
+      ).toEqual(importedBlocks.filter((block) => block.type === 'mention'));
+    } finally {
+      await importApp.close();
+    }
+  });
+
+  it('imports valid model defaults and rejects invalid defaults without changing saved state', async () => {
+    const settingsStore = new AiSettingsStore('workflow-import-model-defaults');
+    settingsStore.replaceModels([
+      {
+        id: 'import-image-model',
+        name: 'Import image model',
+        mediaTypes: ['image'],
+        refreshedAt: appModelRefreshedAt,
+      },
+      {
+        id: 'import-text-model',
+        name: 'Import text model',
+        mediaTypes: ['text'],
+        refreshedAt: appModelRefreshedAt,
+      },
+      {
+        id: 'import-text-model-next',
+        name: 'Next import text model',
+        mediaTypes: ['text'],
+        refreshedAt: appModelRefreshedAt,
+      },
+    ]);
+    const importApp = buildApp({
+      logger: false,
+      settingsStore,
+      projectStore: new MemoryProjectStore(),
+    });
+    try {
+      const created = await importApp.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        payload: { name: 'Model defaults target' },
+      });
+      const projectId = created.json().project.id as string;
+      const valid = await importApp.inject({
+        method: 'POST',
+        url: `/v1/projects/${projectId}/import/workflow`,
+        payload: {
+          ...workflowImportPayload({
+            nodeId: 'node_valid_defaults',
+            modelDefaults: {
+              image: 'import-image-model',
+              text: 'import-text-model',
+            },
+          }),
+          expectedRevision: 0,
+        },
+      });
+
+      expect(valid.statusCode).toBe(200);
+      expect(valid.json()).toMatchObject({
+        modelDefaults: {
+          image: 'import-image-model',
+          text: 'import-text-model',
+        },
+        canvas: { revision: 1, nodes: [{ id: 'node_valid_defaults' }] },
+      });
+      const invalid = await importApp.inject({
+        method: 'POST',
+        url: `/v1/projects/${projectId}/import/workflow`,
+        payload: {
+          ...workflowImportPayload({
+            nodeId: 'node_invalid_defaults',
+            modelDefaults: {
+              text: 'import-text-model-next',
+              image: 'model_not_in_catalog',
+            },
+          }),
+          expectedRevision: 1,
+        },
+      });
+
+      expect(invalid.statusCode).toBe(400);
+      expect(invalid.json()).toMatchObject({
+        code: 'model_unavailable',
+        requestId: expect.any(String),
+      });
+      const currentDefaults = await importApp.inject({
+        method: 'GET',
+        url: `/v1/projects/${projectId}/models/defaults`,
+      });
+      expect(currentDefaults.json()).toEqual({
+        defaults: {
+          image: 'import-image-model',
+          text: 'import-text-model',
+        },
+      });
+      const currentCanvas = await importApp.inject({
+        method: 'GET',
+        url: `/v1/projects/${projectId}/canvas`,
+      });
+      expect(currentCanvas.json().canvas).toMatchObject({
+        revision: 1,
+        nodes: [{ id: 'node_valid_defaults' }],
+      });
+    } finally {
+      await importApp.close();
+    }
   });
 });
 
