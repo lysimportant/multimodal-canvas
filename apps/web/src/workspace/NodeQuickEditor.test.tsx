@@ -147,7 +147,7 @@ describe('NodeQuickEditor', () => {
     expect(modelGroup).toHaveAttribute('data-placement', 'top');
   });
 
-  it('资源提及时对未声明能力的模型显示原因和兜底提示', () => {
+  it('资源提及时不再显示额外能力诊断', () => {
     render(
       <NodeQuickEditor
         {...makeProps({
@@ -170,12 +170,11 @@ describe('NodeQuickEditor', () => {
       />,
     );
 
-    expect(screen.getByText('当前模型的资源提及能力需要确认')).toBeInTheDocument();
-    expect(screen.getByText('模型 未声明模型 未声明可引用的资源媒体类型。')).toBeInTheDocument();
-    expect(screen.getByText('请刷新模型目录或选择已声明支持资源提及的模型。')).toBeInTheDocument();
+    expect(screen.queryByText('当前模型的资源提及能力需要确认')).not.toBeInTheDocument();
+    expect(screen.queryByText(/未声明可引用的资源媒体类型/)).not.toBeInTheDocument();
   });
 
-  it('资源提及时指出当前模型不支持提及的媒体类型', () => {
+  it('资源提及时不再显示媒体能力诊断', () => {
     render(
       <NodeQuickEditor
         {...makeProps({
@@ -203,10 +202,10 @@ describe('NodeQuickEditor', () => {
       />,
     );
 
-    expect(screen.getByText('模型 图片模型 不支持视频提及。')).toBeInTheDocument();
+    expect(screen.queryByText('模型 图片模型 不支持视频提及。')).not.toBeInTheDocument();
   });
 
-  it('transform 模式缺少 modes 声明时显示未知能力提示', () => {
+  it('transform 模式不再显示能力诊断', () => {
     render(
       <NodeQuickEditor
         {...makeProps({
@@ -231,11 +230,10 @@ describe('NodeQuickEditor', () => {
       />,
     );
 
-    expect(screen.getByText('模型 转换模型 未声明 transform 模式的提及能力。')).toBeInTheDocument();
+    expect(screen.queryByText(/未声明 transform 模式的提及能力/)).not.toBeInTheDocument();
   });
 
-  it('资源提及不兼容时展示兼容模型建议并支持一键切换', async () => {
-    const user = userEvent.setup();
+  it('资源提及不兼容时不再显示切换建议', () => {
     const onModelChange = vi.fn();
     render(
       <NodeQuickEditor
@@ -267,13 +265,9 @@ describe('NodeQuickEditor', () => {
       />,
     );
 
-    expect(screen.getByText('建议切换：')).toBeInTheDocument();
-    const suggestion = screen.getByRole('button', { name: '兼容图片模型' });
-    expect(suggestion).toBeInTheDocument();
-
-    await user.click(suggestion);
-
-    expect(onModelChange).toHaveBeenCalledWith({ modelAlias: 'compatible-model' });
+    expect(screen.queryByText('建议切换：')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '兼容图片模型' })).not.toBeInTheDocument();
+    expect(onModelChange).not.toHaveBeenCalled();
   });
 
   it('没有资源提及时不显示资源提及能力警告', () => {

@@ -1322,6 +1322,11 @@ h2 {
   resize: vertical;
 }
 
+.node-quick-editor-prompt textarea {
+  max-height: 180px;
+  min-height: 102px;
+}
+
 .node-quick-editor-field select {
   height: 34px;
   padding: 0 8px;

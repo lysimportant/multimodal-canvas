@@ -1,4 +1,4 @@
-import { AlertTriangle, LoaderCircle, Play } from 'lucide-react';
+import { LoaderCircle, Play } from 'lucide-react';
 import { useState, type FocusEvent } from 'react';
 
 import type { Asset, PromptDocument } from '@multimodal-canvas/domain';
@@ -67,16 +67,6 @@ type MediaOption = {
 
 type QuickOption = MediaOption & {
   groupLabel?: string;
-};
-
-type MentionCapabilityIssue = {
-  code: 'unknown' | 'media' | 'role' | 'count' | 'mixed' | 'mode';
-  message: string;
-};
-
-type MentionCapabilityStatus = {
-  issues: MentionCapabilityIssue[];
-  suggestions: ModelEntry[];
 };
 
 const imageQualityOptions: MediaOption[] = [
@@ -186,7 +176,6 @@ export function NodeQuickEditor({
   const effectivePrompt = node.data.promptDocument
     ? renderPromptDocument(node.data.promptDocument)
     : (node.data.prompt ?? '');
-  const mentionCapability = getMentionCapabilityStatus(node, selectedModel, availableModels);
   const hasPrompt = Boolean(effectivePrompt.trim());
   const hasRunnableParameters = hasPrompt || hasConnectedInput;
   const invalidVideoDimensions = (['width', 'height'] as const).filter((field) => {
@@ -222,56 +211,18 @@ export function NodeQuickEditor({
     >
       <div className="node-quick-editor-prompt-group">
         <label className="node-quick-editor-field node-quick-editor-prompt">
-          <span>提示词</span>
           <TextPromptEditor
             nodeId={node.id}
             value={node.data.prompt ?? ''}
             promptDocument={node.data.promptDocument}
             assets={assets}
             placeholder="描述你想生成的内容"
+            ariaLabel="提示词"
             onChange={onPromptDocumentChange ? undefined : onPromptChange}
             onDocumentChange={onPromptDocumentChange}
           />
         </label>
       </div>
-
-      {mentionCapability.issues.length > 0 && (
-        <aside className="node-quick-editor-capability-warning" role="status">
-          <AlertTriangle size={14} aria-hidden="true" />
-          <div>
-            <strong>当前模型的资源提及能力需要确认</strong>
-            <ul>
-              {mentionCapability.issues.slice(0, 3).map((issue) => (
-                <li key={`${issue.code}:${issue.message}`}>{issue.message}</li>
-              ))}
-            </ul>
-            {mentionCapability.suggestions.length > 0 ? (
-              <div className="node-quick-editor-capability-suggestions">
-                <span>建议切换：</span>
-                {mentionCapability.suggestions.slice(0, 3).map((model) => (
-                  <button
-                    key={`${model.credentialId ?? 'active'}:${model.id}`}
-                    type="button"
-                    className="node-quick-editor-capability-model"
-                    onClick={() =>
-                      onModelChange({
-                        modelAlias: model.id,
-                        ...(model.credentialId ? { credentialId: model.credentialId } : {}),
-                      })
-                    }
-                  >
-                    {model.name}
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <span className="node-quick-editor-capability-hint">
-                请刷新模型目录或选择已声明支持资源提及的模型。
-              </span>
-            )}
-          </div>
-        </aside>
-      )}
 
       {node.data.mediaType === 'image' && (
         <div
@@ -508,184 +459,6 @@ export function NodeQuickEditor({
     </section>
   );
 }
-
-/**
- * 在前端给出资源提及的早期能力提示；最终判定仍由 API 在提交前执行。
- * 能力字段缺失时按未知处理，避免把未声明能力误显示成已支持。
- */
-function getMentionCapabilityStatus(
-  node: AssetFlowNode,
-  selectedModel: ModelEntry | undefined,
-  availableModels: ModelEntry[],
-): MentionCapabilityStatus {
-  const mentions =
-    node.data.promptDocument?.blocks.filter(
-      (block): block is Extract<PromptDocument['blocks'][number], { type: 'mention' }> =>
-        block.type === 'mention',
-    ) ?? [];
-  if (mentions.length === 0) return { issues: [], suggestions: [] };
-
-  const issues = selectedModel
-    ? mentionCapabilityIssues(node, selectedModel, mentions)
-    : mentions.map(() => ({
-        code: 'unknown' as const,
-        message: '尚未选择模型，无法确认资源提及能力。',
-      }));
-  if (issues.length === 0) return { issues, suggestions: [] };
-  const suggestions = availableModels.filter(
-    (model) =>
-      model !== selectedModel && mentionCapabilityIssues(node, model, mentions).length === 0,
-  );
-  return { issues, suggestions };
-}
-
-/** 根据当前模型声明检查媒体、语义角色、数量、混合媒体和模式。 */
-function mentionCapabilityIssues(
-  node: AssetFlowNode,
-  model: ModelEntry,
-  mentions: Array<Extract<PromptDocument['blocks'][number], { type: 'mention' }>>,
-): MentionCapabilityIssue[] {
-  const roots = getCapabilityRoots(model, node.data.mediaType);
-  const declaredMediaTypes = readDeclaredMediaTypes(roots);
-  const declaredRoles = readDeclaredStrings(roots, [
-    'semanticRoles',
-    'semantic_roles',
-    'mentionSemanticRoles',
-    'mention_semantic_roles',
-  ]);
-  const maxMentions = readDeclaredPositiveInteger(roots, [
-    'maxMentions',
-    'max_mentions',
-    'maxReferences',
-  ]);
-  const mixed = readDeclaredBoolean(roots, [
-    'supportsMixedMentions',
-    'supports_mixed_mentions',
-    'mixedMentions',
-    'mixed_mentions',
-  ]);
-  const modes = readDeclaredStrings(roots, ['modes', 'supportedModes', 'supported_modes']);
-  const issues: MentionCapabilityIssue[] = [];
-
-  if (!declaredMediaTypes) {
-    issues.push({
-      code: 'unknown',
-      message: `模型 ${model.name} 未声明可引用的资源媒体类型。`,
-    });
-  } else {
-    for (const mention of mentions) {
-      if (!declaredMediaTypes.includes(mention.mediaType)) {
-        issues.push({
-          code: 'media',
-          message: `模型 ${model.name} 不支持${mediaLabels[mention.mediaType]}提及。`,
-        });
-      }
-    }
-  }
-  if (declaredRoles) {
-    for (const mention of mentions) {
-      if (mention.semanticRole && !declaredRoles.includes(mention.semanticRole)) {
-        issues.push({
-          code: 'role',
-          message: `模型 ${model.name} 未声明语义角色“${mention.semanticRole}”。`,
-        });
-      }
-    }
-  } else if (mentions.some((mention) => mention.semanticRole)) {
-    issues.push({ code: 'unknown', message: `模型 ${model.name} 未声明语义角色能力。` });
-  }
-  if (maxMentions !== undefined && mentions.length > maxMentions) {
-    issues.push({
-      code: 'count',
-      message: `模型 ${model.name} 最多支持 ${maxMentions} 个资源提及。`,
-    });
-  } else if (maxMentions === undefined && mentions.length > 1) {
-    issues.push({ code: 'unknown', message: `模型 ${model.name} 未声明资源提及数量上限。` });
-  }
-  if (new Set(mentions.map((mention) => mention.mediaType)).size > 1) {
-    if (mixed === false) {
-      issues.push({ code: 'mixed', message: `模型 ${model.name} 不支持混合媒体资源提及。` });
-    } else if (mixed === undefined) {
-      issues.push({ code: 'unknown', message: `模型 ${model.name} 未声明混合媒体提及能力。` });
-    }
-  }
-  if (modes && !modes.includes(node.data.mode)) {
-    issues.push({
-      code: 'mode',
-      message: `模型 ${model.name} 未声明 ${node.data.mode} 模式的提及能力。`,
-    });
-  } else if (!modes && node.data.mode !== 'generate') {
-    // 与 API 的 fail-closed 规则保持一致：transform/source 的提及语义
-    // 依赖供应商契约，缺少 modes 声明时不能在界面上假装可执行。
-    issues.push({
-      code: 'unknown',
-      message: `模型 ${model.name} 未声明 ${node.data.mode} 模式的提及能力。`,
-    });
-  }
-  return dedupeMentionCapabilityIssues(issues);
-}
-
-function readDeclaredMediaTypes(roots: Record<string, unknown>[]): string[] | undefined {
-  return readDeclaredStrings(roots, [
-    'mentionMediaTypes',
-    'mention_media_types',
-    'supportedMentionMediaTypes',
-    'supported_mention_media_types',
-    'referenceMediaTypes',
-    'reference_media_types',
-  ]);
-}
-
-function readDeclaredStrings(
-  roots: Record<string, unknown>[],
-  keys: string[],
-): string[] | undefined {
-  for (const root of roots) {
-    for (const key of keys) {
-      const value = root[key];
-      const values = Array.isArray(value)
-        ? value.filter((item): item is string => typeof item === 'string')
-        : typeof value === 'string'
-          ? value
-              .split(/[,;|\\n]+/)
-              .map((item) => item.trim())
-              .filter(Boolean)
-          : undefined;
-      if (values && values.length > 0) return values;
-    }
-  }
-  return undefined;
-}
-
-function readDeclaredPositiveInteger(
-  roots: Record<string, unknown>[],
-  keys: string[],
-): number | undefined {
-  for (const root of roots) {
-    for (const key of keys) {
-      const value = root[key];
-      if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) return value;
-    }
-  }
-  return undefined;
-}
-
-function readDeclaredBoolean(
-  roots: Record<string, unknown>[],
-  keys: string[],
-): boolean | undefined {
-  for (const root of roots) {
-    for (const key of keys) {
-      if (typeof root[key] === 'boolean') return root[key] as boolean;
-    }
-  }
-  return undefined;
-}
-
-function dedupeMentionCapabilityIssues(issues: MentionCapabilityIssue[]): MentionCapabilityIssue[] {
-  return [...new Map(issues.map((issue) => [`${issue.code}:${issue.message}`, issue])).values()];
-}
-
 /** 从节点数据中读取媒体参数，并返回可独立修改的浅拷贝。 */
 function readNodeMediaParameters(data: unknown): NodeMediaParameters {
   if (!data || typeof data !== 'object') return {};
