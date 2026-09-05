@@ -51,6 +51,23 @@
 - Provider 的状态、取消、回调、签名和幂等正式契约。
 - 可复现的 PostgreSQL、Redis、S3/MinIO、FFmpeg/ffprobe 测试配置。
 
+## 2026-09-05 本地执行检查点
+
+本轮从 `main @ 4f4da4f` 恢复，工作区起始状态干净；Node `v24.12.0`、pnpm `11.19.0`、Docker Server `29.7.2`。已使用专用 Compose 项目 `mc-acceptance-test-p0p1`，PostgreSQL `127.0.0.1:19432`、Redis `127.0.0.1:19379`、MinIO `127.0.0.1:19900`，仅使用合成凭据和隔离 bucket/prefix。
+
+已通过的本地命令与结果：
+
+- `pwsh -NoProfile -File scripts/verify-isolated.ps1 -Action Start -Project mc-acceptance-test-p0p1`：设施健康、MinIO bucket 初始化成功。
+- `pwsh -NoProfile -File scripts/verify-isolated.ps1 -Action Test -Project mc-acceptance-test-p0p1`：隔离 PostgreSQL 35 项、Redis 9 项、生产入口 22 项通过；迁移无 pending，schema 无差异。
+- `pwsh -NoProfile -File scripts/verify-media-ops.ps1 ...`：API 媒体/存储 40 项、Worker 归档/输出 35 项、Observability 21 项通过；使用本地 FFmpeg/ffprobe 9.0.1。
+- `pwsh -NoProfile -File scripts/verify-s3-permissions.ps1 -Project mc-acceptance-test-p0p1`：29 项通过，临时用户、策略、bucket 和对象均已精确清理；报告写入 `.data/s3-permissions-0e8686148e4d4531a44c954d5a5a1185.json`。
+- `pnpm --filter @multimodal-canvas/providers test --maxWorkers=1 --minWorkers=1`：266 passed、0 failed、0 skipped；providers typecheck、lint、build 均通过。
+- `pnpm --filter @multimodal-canvas/domain test --maxWorkers=1 --minWorkers=1`：24 passed；Worker 全量：183 passed。
+
+本轮没有发送任何外部 Provider 请求，也没有修改数据库 schema、依赖或用户数据。上述结果只能关闭本地设施和回归检查点，不能把真实供应商取消、Webhook、幂等/重复计费、跨进程崩溃接管或真实 TTS 音频验收标记为完成。
+
+下一步仍需用户提供：真实视频任务中断/接管演练授权与查询接口；已确认的 TTS 模型、voice、格式、测试 Key 及单次请求授权；Provider 正式的状态、取消、Webhook 原始签名/编码、时间窗口、幂等范围和重复计费契约。未获得这些输入前，保持 P0-ISOLATED-RECOVERY-01、P1-ADAPTER-CONTRACT-04、P1-ISOLATED-AUDIO-05、P1-INPUT-MAPPING-07 的现有状态，不重复创建可能计费的任务。
+
 ## P2：后置能力
 
 ### [ ] P2-SSO-10 外部身份系统
