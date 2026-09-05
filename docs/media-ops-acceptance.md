@@ -5,7 +5,7 @@
 日期：2026-09-05。起点 `main` / `9692ed8`，Node `v24.12.0`、pnpm `11.19.0`。
 仅处理 P0-03/P1-05 的媒体归档和可观测性本地缺口，没有连接生产或收费 Provider，未提交推送。
 开始时 Worker 归档/输出 20、API 媒体 6、Observability 15 项定向测试通过。
-仓库没有 README 或项目级 AGENTS.md；执行边界来自本任务提供的代理规则和合并 TODO。
+仓库没有 README 或项目级 AGENTS.md；执行边界来自本任务提供的代理规则和 Local TODO。
 
 ## 实际修复
 

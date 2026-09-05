@@ -41,4 +41,4 @@ pnpm --filter @multimodal-canvas/api exec vitest run src/file-ai-settings.test.t
 pnpm --filter @multimodal-canvas/worker exec vitest run src/prisma-persistence.test.ts --maxWorkers=1 --minWorkers=1
 ```
 
-独立 Worker 崩溃接管、冻结媒体、隔离 TLS 入口、媒体工具和 HTTP 追踪投递的进一步证据见 `TODO-CONSOLIDATED.md`。实际部署与供应商侧撤销/任务语义仍需各自证据，不能由本地数据库结果推导通过。
+独立 Worker 崩溃接管、冻结媒体、隔离 TLS 入口、媒体工具和 HTTP 追踪投递的进一步证据见 `TODO-LOCAL.md`。实际部署与供应商侧撤销/任务语义见 `TODO-SERVER.md`，不能由本地数据库结果推导通过。
