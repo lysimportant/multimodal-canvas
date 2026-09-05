@@ -1,0 +1,12 @@
+# 默认日志覆盖代理错误通道；隐藏媒体签名和请求头，保留故障诊断信息。
+log default {
+	format filter {
+		wrap json
+		fields {
+			request>headers delete
+			request>uri query {
+				replace access_token REDACTED
+			}
+		}
+	}
+}

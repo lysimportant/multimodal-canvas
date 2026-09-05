@@ -2526,6 +2526,7 @@ function WorkspaceApp({
   );
 }
 
+/** 渲染登录与注册表单；仅提供匿名回调时可关闭，认证失败保留表单并显示错误。 */
 function LoginScreen({
   apiBaseUrl,
   onAuthenticated,
@@ -2534,7 +2535,8 @@ function LoginScreen({
 }: {
   apiBaseUrl: string;
   onAuthenticated: (session: StoredAuthSession) => void;
-  onContinueAnonymous: () => void;
+  /** 仅开发环境提供；缺省时关闭按钮、背景点击和 Escape 均不能跳过认证。 */
+  onContinueAnonymous?: () => void;
   returnFocusTo?: HTMLElement | null;
 }) {
   const [mode, setMode] = useState<'login' | 'register'>('login');
@@ -2577,7 +2579,12 @@ function LoginScreen({
     focusableElements()[0]?.focus();
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (!busyRef.current && !isImeKeyboardEvent(event) && event.key === 'Escape') {
+      if (
+        onContinueAnonymous &&
+        !busyRef.current &&
+        !isImeKeyboardEvent(event) &&
+        event.key === 'Escape'
+      ) {
         event.preventDefault();
         onContinueAnonymous();
         return;
@@ -2657,7 +2664,7 @@ function LoginScreen({
       className="settings-backdrop"
       role="presentation"
       onMouseDown={(event) => {
-        if (!busy && event.target === event.currentTarget) onContinueAnonymous();
+        if (!busy && event.target === event.currentTarget) onContinueAnonymous?.();
       }}
     >
       <section
@@ -2674,16 +2681,18 @@ function LoginScreen({
           </div>
           <div className="auth-heading-actions">
             <UserCircle size={22} aria-hidden="true" />
-            <button
-              type="button"
-              className="icon-button"
-              aria-label="关闭登录"
-              title="关闭"
-              disabled={busy}
-              onClick={onContinueAnonymous}
-            >
-              <X size={17} aria-hidden="true" />
-            </button>
+            {onContinueAnonymous && (
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="关闭登录"
+                title="关闭"
+                disabled={busy}
+                onClick={onContinueAnonymous}
+              >
+                <X size={17} aria-hidden="true" />
+              </button>
+            )}
           </div>
         </div>
         <p className="settings-status">
@@ -2748,14 +2757,16 @@ function LoginScreen({
             </button>
           </div>
         </form>
-        <button
-          type="button"
-          className="settings-delete"
-          disabled={busy}
-          onClick={onContinueAnonymous}
-        >
-          继续匿名使用
-        </button>
+        {onContinueAnonymous && (
+          <button
+            type="button"
+            className="settings-delete"
+            disabled={busy}
+            onClick={onContinueAnonymous}
+          >
+            继续匿名使用
+          </button>
+        )}
       </section>
     </div>
   );
@@ -2936,9 +2947,11 @@ function RoutedApplication({
   );
 }
 
+/** 根据会话控制应用入口；生产环境未认证时不挂载工作区或发起其数据请求。 */
 function AppContent() {
+  const allowAnonymous = import.meta.env.DEV;
   const [authSession, setAuthSession] = useState<StoredAuthSession | null>(() => readAuthSession());
-  const [authRequired, setAuthRequired] = useState(false);
+  const [authRequired, setAuthRequired] = useState(() => !allowAnonymous && !authSession);
   const authTriggerRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -2970,16 +2983,18 @@ function AppContent() {
 
   return (
     <>
-      <RoutedApplication
-        authUser={authSession?.user ?? null}
-        onRequestLogin={handleRequestLogin}
-        onLoggedOut={handleLogout}
-      />
+      {(allowAnonymous || authSession) && (
+        <RoutedApplication
+          authUser={authSession?.user ?? null}
+          onRequestLogin={handleRequestLogin}
+          onLoggedOut={handleLogout}
+        />
+      )}
       {authRequired && (
         <LoginScreen
           apiBaseUrl={API_BASE_URL}
           onAuthenticated={handleAuthenticated}
-          onContinueAnonymous={handleContinueAnonymous}
+          onContinueAnonymous={allowAnonymous ? handleContinueAnonymous : undefined}
           returnFocusTo={authTriggerRef.current}
         />
       )}

@@ -11,6 +11,9 @@ importers:
       '@prisma/client':
         specifier: 6.16.2
         version: 6.16.2(prisma@6.16.2(typescript@5.9.3))(typescript@5.9.3)
+      esbuild:
+        specifier: 0.25.12
+        version: 0.25.12
       prettier:
         specifier: ^3.5.3
         version: 3.9.6

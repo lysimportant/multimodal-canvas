@@ -1,0 +1,24 @@
+# 本地 HTTPS 不自动修改证书信任；公网 server profile 使用真实域名自动申请证书。
+{
+	skip_install_trust
+	import /etc/caddy/logging.caddy
+}
+
+{$MC_DOMAIN} {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy same-origin
+	}
+	# API 直接转发，避免经静态 Web 入口再增加一跳并丢失客户端地址。
+	@api path /v1/* /health /documentation /documentation/*
+	handle @api {
+		reverse_proxy api:3000 {
+			flush_interval -1
+		}
+	}
+	handle {
+		reverse_proxy web:8080
+	}
+}

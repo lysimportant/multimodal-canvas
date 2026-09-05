@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "build": "turbo run build",
+    "build:runtime": "node scripts/build-runtime.mjs",
     "db:generate": "prisma generate",
     "db:validate": "prisma validate",
     "db:migrate": "prisma migrate dev",
@@ -10,12 +11,14 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "turbo run lint",
-    "test": "turbo run test",
+    "test": "pnpm test:runtime && turbo run test",
     "test:e2e": "pnpm --filter @multimodal-canvas/web test:e2e",
+    "test:runtime": "node --test scripts/build-runtime.test.mjs",
     "typecheck": "turbo run typecheck"
   },
   "devDependencies": {
     "@prisma/client": "6.16.2",
+    "esbuild": "0.25.12",
     "prettier": "^3.5.3",
     "prisma": "6.16.2",
     "turbo": "^2.4.4",

@@ -1,9 +1,16 @@
+import '@testing-library/jest-dom/vitest';
+
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { createElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { App } from './App';
 import {
   apiFetch,
   clearAuthSession,
   getAuthToken,
+  notifyUnauthorized,
   openAuthEventStream,
   persistAuthSession,
   readAuthSession,
@@ -179,4 +186,148 @@ describe('auth-client', () => {
       vi.useRealTimers();
     }
   });
+});
+
+describe('App authentication gate', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    clearAuthSession();
+    window.history.replaceState(null, '', '/workspace');
+    vi.stubEnv('DEV', false);
+    vi.stubEnv('PROD', true);
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () =>
+        new Response(JSON.stringify({ projects: [] }), {
+          headers: { 'content-type': 'application/json' },
+        }),
+    );
+  });
+
+  afterEach(() => {
+    cleanup();
+    clearAuthSession();
+    window.history.replaceState(null, '', '/');
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it('生产环境首次访问强制登录，不挂载工作区，也不能匿名退出', () => {
+    render(createElement(App));
+
+    const dialog = screen.getByRole('dialog', { name: '登录工作区' });
+    expect(within(dialog).queryByRole('button', { name: '关闭登录' })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: '继续匿名使用' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', { name: '项目工作台', hidden: true }),
+    ).not.toBeInTheDocument();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.mouseDown(dialog.closest('.settings-backdrop')!);
+
+    expect(dialog).toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', { name: '项目工作台', hidden: true }),
+    ).not.toBeInTheDocument();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { development: false, action: 'login' },
+    { development: false, action: 'register' },
+    { development: true, action: 'login' },
+    { development: true, action: 'register' },
+  ])('DEV=$development 时保留正常 $action 认证路径', async ({ development, action }) => {
+    vi.stubEnv('DEV', development);
+    vi.stubEnv('PROD', !development);
+    vi.mocked(globalThis.fetch).mockImplementation(async (input) => {
+      const rawUrl =
+        typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      const url = new URL(rawUrl, 'http://localhost:3000');
+      if (url.pathname === `/v1/auth/${action}`) {
+        return new Response(JSON.stringify(response), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.pathname === '/v1/projects') {
+        return new Response(JSON.stringify({ projects: [] }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      throw new Error(`Unexpected auth regression request: ${url.pathname}`);
+    });
+    const user = userEvent.setup();
+    render(createElement(App));
+    if (development) act(() => notifyUnauthorized());
+
+    if (action === 'register') {
+      await user.click(screen.getByRole('button', { name: '创建账户' }));
+      await user.type(screen.getByLabelText('显示名称（可选）'), '认证测试');
+    }
+    await user.type(screen.getByLabelText('邮箱'), response.user.email);
+    await user.type(screen.getByLabelText('密码'), 'synthetic-test-password');
+    await user.click(screen.getByRole('button', { name: action === 'login' ? '登录' : '注册' }));
+
+    expect(await screen.findByRole('heading', { name: '项目工作台' })).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(readAuthSession()?.user.id).toBe(response.user.id);
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringMatching(new RegExp(`/v1/auth/${action}$`)),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          email: response.user.email,
+          password: 'synthetic-test-password',
+          ...(action === 'register' ? { displayName: '认证测试' } : {}),
+        }),
+      }),
+    );
+  });
+
+  it('生产环境恢复有效会话，但会话失效后重新阻止匿名访问工作区', async () => {
+    persistAuthSession(response);
+    render(createElement(App));
+
+    expect(await screen.findByRole('heading', { name: '项目工作台' })).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+    act(() => notifyUnauthorized());
+
+    const dialog = screen.getByRole('dialog', { name: '登录工作区' });
+    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.mouseDown(dialog.closest('.settings-backdrop')!);
+    expect(dialog).toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: '关闭登录' })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: '继续匿名使用' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', { name: '项目工作台', hidden: true }),
+    ).not.toBeInTheDocument();
+    expect(readAuthSession()).toBeNull();
+  });
+
+  it.each(['关闭登录', '继续匿名使用', 'backdrop', 'Escape'])(
+    '开发环境保留匿名工作区和 %s 退出方式',
+    async (dismissal) => {
+      vi.stubEnv('DEV', true);
+      vi.stubEnv('PROD', false);
+      const user = userEvent.setup();
+      render(createElement(App));
+      expect(await screen.findByRole('heading', { name: '项目工作台' })).toBeInTheDocument();
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+      act(() => notifyUnauthorized());
+      const dialog = screen.getByRole('dialog', { name: '登录工作区' });
+      if (dismissal === 'Escape') {
+        fireEvent.keyDown(document, { key: 'Escape' });
+      } else if (dismissal === 'backdrop') {
+        fireEvent.mouseDown(dialog.closest('.settings-backdrop')!);
+      } else {
+        await user.click(within(dialog).getByRole('button', { name: dismissal }));
+      }
+
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: '项目工作台' })).toBeInTheDocument();
+      expect(readAuthSession()).toBeNull();
+    },
+  );
 });

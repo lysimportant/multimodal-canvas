@@ -1,0 +1,29 @@
+{
+	skip_install_trust
+	import /etc/caddy/logging.caddy
+}
+
+# 正式静态 Web 与同源 API；不签发本机证书，也不启用请求访问日志。
+:8080 {
+	root * /usr/share/caddy
+	encode zstd gzip
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy same-origin
+	}
+	request_body {
+		max_size 100MB
+	}
+	@api path /v1/* /health /documentation /documentation/*
+	handle @api {
+		reverse_proxy api:3000 {
+			flush_interval -1
+		}
+	}
+	handle {
+		try_files {path} /index.html
+		@index path /index.html
+		header @index Cache-Control no-cache
+		file_server
+	}
+}

@@ -14,9 +14,14 @@ import { PrismaAuthStore } from './auth-store';
 import { createNewApiRunExecutor } from './newapi-run-executor';
 import { createApiRateLimiter } from './runtime-rate-limit';
 import { assertApiStartupConfiguration } from './startup-config';
+import { resolveS3DownloadMode, resolveS3UploadMode } from './upload-transport';
 
 assertApiStartupConfiguration();
 
+/** 上传传输方式在客户端初始化前完成校验，proxy 仍使用同一 S3 存储和 TLS 配置。 */
+const s3UploadMode = resolveS3UploadMode(process.env.S3_UPLOAD_MODE);
+/** 下载代理仅改用 API 短期签名路径，保留同一 S3 后端及资源授权边界。 */
+const s3DownloadMode = resolveS3DownloadMode(process.env.S3_DOWNLOAD_MODE);
 const prisma = process.env.DATABASE_URL ? new PrismaClient() : undefined;
 const rateLimiter = await createApiRateLimiter();
 const authStore = prisma ? new PrismaAuthStore(prisma) : undefined;
@@ -89,7 +94,7 @@ const assetStore = prisma
 const uploadSessionStore = prisma
   ? new PrismaUploadSessionStore(prisma, {
       blobStore: blobStore!,
-      ...(blobStore instanceof S3BlobStore
+      ...(blobStore instanceof S3BlobStore && s3UploadMode === 'direct'
         ? {
             uploadUrlForKey: (contentKey) =>
               blobStore.createPresignedPutUrl(contentKey, {
@@ -108,6 +113,7 @@ const mediaDerivativeGenerator =
     ? new FfmpegMediaDerivativeGenerator({ binary: process.env.FFMPEG_PATH })
     : undefined;
 const app = buildApp({
+  s3DownloadMode,
   runService,
   ...(runExecutor ? { runExecutor } : {}),
   settingsStore,

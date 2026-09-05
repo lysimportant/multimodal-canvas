@@ -1,0 +1,271 @@
+# Windows / Linux 共用正式运行配置；HTTPS 入口按需启用，不要求预先提供域名。
+name: multimodal-canvas-app
+
+x-logging: &bounded-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: '3'
+
+x-runtime-environment: &runtime-environment
+  NODE_ENV: production
+  NODE_EXTRA_CA_CERTS: /run/multimodal/secrets/ca.crt
+  API_HOST: 0.0.0.0
+  API_PORT: '3000'
+  # API 不发布端口；Caddy 直接转发，只信任最近一跳。
+  API_TRUST_PROXY_HOPS: '1'
+  RUN_SERVICE: bullmq
+  RUN_QUEUE_NAME: canvas-production
+  WORKER_PROVIDER: newapi
+  S3_ENDPOINT: https://minio:9000
+  S3_BUCKET: canvas
+  S3_REGION: us-east-1
+  S3_UPLOAD_MODE: proxy
+  S3_DOWNLOAD_MODE: proxy
+  FFMPEG_ENABLED: 'true'
+  FFPROBE_ENABLED: 'true'
+  NEW_API_VIDEO_CONTRACT: ${MC_VIDEO_CONTRACT:-newapi-unified-v1}
+  # 本机入口与 API 同源，默认不开放跨域；服务器仅允许显式 HTTPS 来源。
+  CORS_ORIGIN: ${MC_PUBLIC_ORIGIN:-}
+  API_RATE_LIMIT_REDIS_ENABLED: 'true'
+  API_RATE_LIMIT_PER_MINUTE: '600'
+
+x-runtime: &runtime
+  init: true
+  restart: unless-stopped
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=512m
+  volumes:
+    - app_secrets:/run/multimodal:ro
+  environment: *runtime-environment
+  stop_grace_period: 90s
+  logging: *bounded-logging
+
+services:
+  initialize:
+    image: multimodal-canvas-initialize:local
+    build:
+      context: .
+      target: initialize
+    volumes:
+      - secrets:/run/multimodal
+      - app_secrets:/run/multimodal-views/app
+      - postgres_secrets:/run/multimodal-views/postgres
+      - redis_secrets:/run/multimodal-views/redis
+      - minio_secrets:/run/multimodal-views/minio
+      - storage_secrets:/run/multimodal-views/storage
+    restart: 'no'
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    logging: *bounded-logging
+    environment:
+      POSTGRES_DB: canvas
+      POSTGRES_USER: canvas
+      POSTGRES_PASSWORD_FILE: /run/multimodal/secrets/postgres-password
+    volumes:
+      - postgres:/var/lib/postgresql/data
+      - postgres_secrets:/run/multimodal:ro
+    depends_on:
+      initialize:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U canvas -d canvas']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    logging: *bounded-logging
+    command: ['redis-server', '/run/multimodal/secrets/redis.conf']
+    volumes:
+      - redis:/data
+      - redis_secrets:/run/multimodal:ro
+    depends_on:
+      initialize:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - REDISCLI_AUTH="$$(cat /run/multimodal/secrets/redis-password)" redis-cli --tls --cacert /run/multimodal/secrets/ca.crt -h redis ping | grep -q PONG
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    restart: unless-stopped
+    logging: *bounded-logging
+    command:
+      [
+        'server',
+        '/data',
+        '--certs-dir',
+        '/run/multimodal/secrets/minio',
+        '--console-address',
+        ':9001',
+      ]
+    environment:
+      MINIO_ROOT_USER: canvas-root
+      MINIO_ROOT_PASSWORD_FILE: /run/multimodal/secrets/minio-password
+    volumes:
+      - minio:/data
+      - minio_secrets:/run/multimodal:ro
+    depends_on:
+      initialize:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'curl',
+          '--fail',
+          '--cacert',
+          '/run/multimodal/secrets/ca.crt',
+          'https://localhost:9000/minio/health/ready',
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  storage-init:
+    image: minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    restart: 'no'
+    environment:
+      SSL_CERT_FILE: /run/multimodal/secrets/ca.crt
+    volumes:
+      - storage_secrets:/run/multimodal:ro
+    tmpfs:
+      - /tmp
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ['/bin/sh', '-ec']
+    command:
+      - |
+        mc --config-dir /tmp/mc alias set local https://minio:9000 canvas-root "$$(cat /run/multimodal/secrets/minio-password)" >/dev/null
+        mc --config-dir /tmp/mc mb --ignore-existing local/canvas
+        mc --config-dir /tmp/mc admin user add local canvas-app "$$(cat /run/multimodal/secrets/s3-password)" >/dev/null
+        mc --config-dir /tmp/mc admin policy attach local readwrite --user canvas-app >/dev/null
+        mc --config-dir /tmp/mc stat local/canvas
+
+  migrate:
+    <<: *runtime
+    image: multimodal-canvas-migrate:local
+    build:
+      context: .
+      target: migrate
+    restart: 'no'
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *runtime
+    image: multimodal-canvas-api:local
+    build:
+      context: .
+      target: api
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      storage-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'node', 'docker/run.mjs', 'health', 'api']
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 18
+
+  worker:
+    <<: *runtime
+    image: multimodal-canvas-worker:local
+    build:
+      context: .
+      target: worker
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'node', 'docker/run.mjs', 'health', 'worker']
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 18
+
+  web:
+    image: multimodal-canvas-web:local
+    build:
+      context: .
+      target: web
+    restart: unless-stopped
+    tmpfs:
+      - /data:rw,noexec,nosuid,size=16m
+      - /config:rw,noexec,nosuid,size=16m
+    ports:
+      - '127.0.0.1:${MC_HTTP_PORT:-8080}:8080'
+    depends_on:
+      api:
+        condition: service_healthy
+    logging: *bounded-logging
+
+  gateway: &gateway
+    image: caddy:2.10.2-alpine
+    profiles: ['server']
+    restart: unless-stopped
+    environment:
+      MC_DOMAIN: ${MC_DOMAIN:-}
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp'
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./docker/logging.caddy:/etc/caddy/logging.caddy:ro
+      - gateway_data:/data
+      - gateway_config:/config
+    depends_on:
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1:2019/config/']
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
+      retries: 18
+    logging: *bounded-logging
+
+  gateway-local:
+    <<: *gateway
+    profiles: ['local-https']
+    environment:
+      MC_DOMAIN: 'localhost, :443'
+    ports:
+      - '127.0.0.1:${MC_HTTPS_PORT:-8443}:443'
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./docker/logging.caddy:/etc/caddy/logging.caddy:ro
+      - local_gateway_data:/data
+      - local_gateway_config:/config
+
+volumes:
+  secrets:
+  app_secrets:
+  postgres_secrets:
+  redis_secrets:
+  minio_secrets:
+  storage_secrets:
+  postgres:
+  redis:
+  minio:
+  gateway_data:
+  gateway_config:
+  local_gateway_data:
+  local_gateway_config:

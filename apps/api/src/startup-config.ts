@@ -1,3 +1,6 @@
+import { resolveS3DownloadMode, resolveS3UploadMode } from './upload-transport';
+import { resolveApiProxyTrust } from './proxy-trust';
+
 export type StartupEnvironment = Readonly<Record<string, string | undefined>>;
 
 export type StartupConfigurationIssue = {
@@ -96,6 +99,21 @@ export function validateApiStartupConfiguration(
   if (environment.RUN_SERVICE && environment.RUN_SERVICE !== 'bullmq') {
     issues.push({ variable: 'RUN_SERVICE', message: 'must be "bullmq" when configured' });
   }
+  try {
+    resolveS3UploadMode(environment.S3_UPLOAD_MODE);
+  } catch {
+    issues.push({ variable: 'S3_UPLOAD_MODE', message: 'must be "proxy" or "direct"' });
+  }
+  try {
+    resolveS3DownloadMode(environment.S3_DOWNLOAD_MODE);
+  } catch {
+    issues.push({ variable: 'S3_DOWNLOAD_MODE', message: 'must be "proxy" or "direct"' });
+  }
+  try {
+    resolveApiProxyTrust(environment.API_TRUST_PROXY_HOPS);
+  } catch {
+    issues.push({ variable: 'API_TRUST_PROXY_HOPS', message: 'must be "0" or "1"' });
+  }
   if (environment.API_RATE_LIMIT_REDIS_ENABLED === 'false') {
     issues.push({
       variable: 'API_RATE_LIMIT_REDIS_ENABLED',
@@ -124,10 +142,13 @@ export function validateApiStartupConfiguration(
   return issues;
 }
 
-/** Throws before the production entrypoint creates any fallback-capable clients. */
+/** 在创建客户端前拒绝不完整的生产配置；所有环境都校验 S3 传输方式和可信代理跳数。 */
 export function assertApiStartupConfiguration(environment: StartupEnvironment = process.env): void {
   const issues = validateApiStartupConfiguration(environment);
   if (issues.length > 0) throw new StartupConfigurationError('API', issues);
+  resolveS3UploadMode(environment.S3_UPLOAD_MODE);
+  resolveS3DownloadMode(environment.S3_DOWNLOAD_MODE);
+  resolveApiProxyTrust(environment.API_TRUST_PROXY_HOPS);
 }
 
 function requireValue(

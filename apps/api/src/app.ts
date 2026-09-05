@@ -92,6 +92,8 @@ import {
   type ResourceMentionCapabilityDiagnostic,
 } from './resource-mention-capabilities';
 import { importWorkflowExport, WorkflowImportError } from './workflow-import';
+import { resolveS3DownloadMode, type S3DownloadMode } from './upload-transport';
+import { resolveApiProxyTrust } from './proxy-trust';
 
 type AppLoggerOptions = {
   level?: string;
@@ -104,6 +106,8 @@ type AppLoggerOptions = {
 
 export type BuildAppOptions = {
   assetStore?: AssetStore;
+  /** 默认 direct；proxy 仅返回受资源、所有者和有效期约束的 API 下载路径。 */
+  s3DownloadMode?: S3DownloadMode;
   projectStore?: ProjectStore;
   runService?: RunService;
   /** Provider-like executor for an in-memory/local run service. */
@@ -937,7 +941,14 @@ function validateRunPromptMentionCapabilities(input: {
   return diagnostics;
 }
 
+/**
+ * 构建 API 路由与授权边界，不自动监听端口。
+ * @param options 注入的存储、服务及下载方式；生产入口负责校验和注入环境配置。
+ * @returns 可监听端口或注入请求的 Fastify 实例。
+ * @throws 下载方式或可信代理跳数非法时在创建服务器前抛出错误。
+ */
 export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
+  const s3DownloadMode = resolveS3DownloadMode(options.s3DownloadMode);
   const bodyLimitBytes = parseByteLimit(process.env.API_BODY_LIMIT_BYTES, DEFAULT_BODY_LIMIT_BYTES);
   const defaultLogger = {
     level: process.env.LOG_LEVEL ?? 'info',
@@ -971,6 +982,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const app = Fastify({
     bodyLimit: bodyLimitBytes,
     logger,
+    trustProxy: resolveApiProxyTrust(process.env.API_TRUST_PROXY_HOPS),
   });
   // 保留 JSON Webhook 的原始 UTF-8 字节，验签必须针对供应商发送的字节串，
   // 不能对解析后的对象重新序列化（空格、换行和转义差异都会改变签名）。
@@ -2706,17 +2718,19 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
       const expiresIn = result.data.expiresInSeconds ?? 300;
       const expiresAt = Date.now() + expiresIn * 1000;
-      const nativeUrl = await assetStore.createPresignedGetUrl?.(
-        request.params.assetId,
-        {
-          ...(result.data.version !== undefined ? { version: result.data.version } : {}),
-          ...(result.data.derivative !== undefined ? { derivative: result.data.derivative } : {}),
-          expiresIn,
-        },
-        scope,
-      );
-      if (nativeUrl)
-        return reply.send({ url: nativeUrl, expiresAt: new Date(expiresAt).toISOString() });
+      if (s3DownloadMode === 'direct') {
+        const nativeUrl = await assetStore.createPresignedGetUrl?.(
+          request.params.assetId,
+          {
+            ...(result.data.version !== undefined ? { version: result.data.version } : {}),
+            ...(result.data.derivative !== undefined ? { derivative: result.data.derivative } : {}),
+            expiresIn,
+          },
+          scope,
+        );
+        if (nativeUrl)
+          return reply.send({ url: nativeUrl, expiresAt: new Date(expiresAt).toISOString() });
+      }
       const token = createAssetAccessToken(
         {
           resource,

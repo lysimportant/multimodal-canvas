@@ -25,6 +25,112 @@ const productionEnvironment: StartupEnvironment = {
 };
 
 describe('API production startup configuration', () => {
+  it.each([undefined, '0', '1'])('accepts bounded API proxy trust %s', (hops) => {
+    const environment = { ...productionEnvironment, API_TRUST_PROXY_HOPS: hops };
+    expect(validateApiStartupConfiguration(environment)).toEqual([]);
+    expect(() => assertApiStartupConfiguration(environment)).not.toThrow();
+  });
+
+  it.each(['', 'true', 'false', '2', '-1', '1.0', ' 1', '*'])(
+    'rejects invalid production API proxy trust %j',
+    (hops) => {
+      const environment = { ...productionEnvironment, API_TRUST_PROXY_HOPS: hops };
+      expect(validateApiStartupConfiguration(environment)).toContainEqual({
+        variable: 'API_TRUST_PROXY_HOPS',
+        message: 'must be "0" or "1"',
+      });
+      expect(() => assertApiStartupConfiguration(environment)).toThrow(StartupConfigurationError);
+    },
+  );
+
+  it.each(['development', 'test', undefined])(
+    'rejects unbounded API proxy trust outside production (%s)',
+    (nodeEnvironment) => {
+      expect(() =>
+        assertApiStartupConfiguration({ NODE_ENV: nodeEnvironment, API_TRUST_PROXY_HOPS: 'true' }),
+      ).toThrow('API_TRUST_PROXY_HOPS must be "0" or "1"');
+    },
+  );
+
+  it.each([undefined, 'direct', 'proxy'])('accepts S3 download mode %s', (mode) => {
+    const environment = { ...productionEnvironment, S3_DOWNLOAD_MODE: mode };
+    expect(validateApiStartupConfiguration(environment)).toEqual([]);
+    expect(() => assertApiStartupConfiguration(environment)).not.toThrow();
+  });
+
+  it.each(['', ' ', 'Proxy', 'DIRECT', ' proxy', 'direct ', 'unsupported'])(
+    'rejects invalid S3 download mode %j before production startup',
+    (mode) => {
+      const environment = { ...productionEnvironment, S3_DOWNLOAD_MODE: mode };
+      expect(validateApiStartupConfiguration(environment)).toContainEqual({
+        variable: 'S3_DOWNLOAD_MODE',
+        message: 'must be "proxy" or "direct"',
+      });
+      expect(() => assertApiStartupConfiguration(environment)).toThrow(StartupConfigurationError);
+      expect(() => assertApiStartupConfiguration(environment)).toThrow(
+        'S3_DOWNLOAD_MODE must be "proxy" or "direct"',
+      );
+    },
+  );
+
+  it.each(['development', 'test', undefined])(
+    'rejects invalid S3 download mode outside production (%s)',
+    (nodeEnvironment) => {
+      expect(() =>
+        assertApiStartupConfiguration({
+          NODE_ENV: nodeEnvironment,
+          S3_DOWNLOAD_MODE: 'unsupported',
+        }),
+      ).toThrow('S3_DOWNLOAD_MODE must be "proxy" or "direct"');
+    },
+  );
+
+  it.each([undefined, 'direct', 'proxy'])('accepts S3 upload mode %s', (mode) => {
+    const environment = { ...productionEnvironment, S3_UPLOAD_MODE: mode };
+    expect(validateApiStartupConfiguration(environment)).toEqual([]);
+    expect(() => assertApiStartupConfiguration(environment)).not.toThrow();
+  });
+
+  it.each(['', ' ', 'Proxy', 'DIRECT', ' proxy', 'direct ', 'unsupported'])(
+    'rejects invalid S3 upload mode %j before production startup',
+    (mode) => {
+      const environment = { ...productionEnvironment, S3_UPLOAD_MODE: mode };
+      expect(validateApiStartupConfiguration(environment)).toContainEqual({
+        variable: 'S3_UPLOAD_MODE',
+        message: 'must be "proxy" or "direct"',
+      });
+      expect(() => assertApiStartupConfiguration(environment)).toThrow(StartupConfigurationError);
+      expect(() => assertApiStartupConfiguration(environment)).toThrow(
+        'S3_UPLOAD_MODE must be "proxy" or "direct"',
+      );
+    },
+  );
+
+  it.each(['development', 'test', undefined])(
+    'rejects invalid S3 upload mode outside production (%s)',
+    (nodeEnvironment) => {
+      expect(() =>
+        assertApiStartupConfiguration({ NODE_ENV: nodeEnvironment, S3_UPLOAD_MODE: 'unsupported' }),
+      ).toThrow('S3_UPLOAD_MODE must be "proxy" or "direct"');
+    },
+  );
+
+  it('does not let proxy uploads bypass production storage or TLS requirements', () => {
+    const issues = validateApiStartupConfiguration({
+      ...productionEnvironment,
+      S3_UPLOAD_MODE: 'proxy',
+      S3_DOWNLOAD_MODE: 'proxy',
+      S3_BUCKET: '',
+      REDIS_URL: 'redis://redis:6379',
+      S3_ENDPOINT: 'http://minio:9000',
+    });
+    expect(issues.map(({ variable }) => variable)).toEqual([
+      'S3_BUCKET',
+      'REDIS_URL',
+      'S3_ENDPOINT',
+    ]);
+  });
+
   it.each(['newapi-unified-v1', 'legacy-v1'])('accepts video contract %s', (contract) => {
     expect(
       validateApiStartupConfiguration({
