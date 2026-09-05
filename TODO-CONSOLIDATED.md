@@ -44,7 +44,7 @@
 - [x] 多个独立 API/Worker 进程恢复同一冻结资源版本；Worker 保存任务 ID 后强制退出，后继经真实 BullMQ 租约接管，不重复 usage。
 - [x] 合成文本/图片/音频经过真实 Worker/Prisma/MinIO 归档；移除专用队列记录后仍可从数据库恢复。
 - [x] 真实文本与图片在用户指定 sub2 地址调用并经过同一归档链路，结果摘要与数据库关联一致。
-- [!] 真实供应商异步视频任务的跨进程恢复还没有成功证据：该部署统一视频创建返回 404，归属 P1-VIDEO-CONTRACT-04；不能以合成平台任务替代。
+- [!] 真实供应商异步视频任务的跨进程恢复还没有成功证据：本次真实视频已完成创建、轮询、内容下载和归档，但尚未在该供应商任务进行 Worker 崩溃接管；不能以合成平台任务替代。
 
 隔离部署验收已执行，不连接或清理业务生产数据。实际部署地址、网络权限与回滚执行统一归属 P1-PRODUCTION-09。
 
@@ -69,12 +69,12 @@
 
 ## P1：真实 Provider、媒体覆盖与多 Key
 
-### `[!]` P1-VIDEO-CONTRACT-04 New API 视频完整契约
+### `[~]` P1-VIDEO-CONTRACT-04 New API 视频完整契约
 
 - [x] 已按 New API 官方文档实现统一 `POST /v1/video/generations` 与同路径任务查询、`task_id/status/url/format/metadata`；保留显式 legacy 协议和旧任务恢复，不把 Sora multipart 混入 JSON。
 - [x] API/Worker 新任务显式选择统一协议，POST 前持久化合同和 submitting 状态；旧平台 ID 按冻结协议查询，创建结果不明不自动重试，取消不丢平台身份。
 - [x] Provider 包 266 项单 worker 测试通过，包含 54 项统一视频、未知状态/ID/MIME/下载、预取消和旧协议恢复边界；实际 UTF-8 请求体断言模型完整名称与空格均不被改写。
-- [!] 两次分别授权的视频请求在 New API 单数统一路径返回 404；第二次严格使用 `grok-imagine-video-1.5（按次）`，没有改名或删后缀。已从 sub2 官方固定版本 README/源码确认该平台使用复数 `/v1/videos/generations`，对应显式 `legacy-v1`。正确端点的后续请求待用户确认，不能归咎于模型名或宣称生成成功。
+- [x] 真实 sub2 视频使用精确模型 `grok-imagine-video-1.5（按次）` 原样发送，显式选择 `legacy-v1`；`POST /v1/videos/generations` 返回 200，随后 15 次查询和 `/content` 下载均返回 200。视频经 API、Worker、Prisma、MinIO 归档并读回校验：MP4 748009 字节、8.041667 秒、SHA-256 `e732827344a7aebe4e32795bbbee4d5c4a9606200508129d406d81d820b1cc77`，运行状态 `succeeded`。
 - [!] 该部署的真实取消、Webhook 原始 body 签名/编码、时间戳重放、幂等范围和安全重试尚无确认契约。
 
 当前解析 JSON 的通用 HMAC 框架不能冒充供应商正式 Webhook。缺少正式契约、缺少平台 ID 或结果不明时保持可诊断失败。
@@ -108,7 +108,7 @@
 - [x] 用户明确提供三类测试凭据；通过无回显 stdin/进程内存注入，临时隔离数据库只存加密值，退出清理随机 schema，不把 Key 写入源码、夹具、日志或导出。
 - [x] 文本 `gpt-5.5` 与图片 `gpt-image-2` 各一次 HTTP 200；真实 API 入队、Worker 执行、Prisma/MinIO 归档及读回摘要验证通过。
 - [x] 供应商 requestId 摘要与持久化 payload 对应，文本 total_tokens=8694、图片 total_tokens=273；没有返回价格或费用时保持未知。
-- [x] 视频首次 POST 返回 404；用户纠正模型名称并重新授权后，完整名称的一次请求仍为 404。两次分别保存失败证据，未自动切换协议重发；已确认 sub2 使用不同端点，后续调用另行确认。
+- [x] 视频首次单数路径 404 的失败证据保留；确认 Sub2API 复数路径后，仅执行一次新的 `legacy-v1` 请求，完整模型名不变并成功归档。新证据见 `docs/live-provider-acceptance.md` 和 `.data/live-provider-<session>-video.json`。
 
 本项只关闭“最小真实请求和证据链”，不代表视频、音频、所有参数或实际生产部署通过。当前仅有一个真实 origin：`https://ai.helunox.cc.cd`；New API 官方文档不是第二个已实测服务器。
 
@@ -147,13 +147,13 @@ Web MVP 和生产链路稳定后再接入 Tauri 桌面壳。
 
 ## 外部依赖登记
 
-| 依赖                                                | 影响事项                                                            | 处理原则                                             |
-| --------------------------------------------------- | ------------------------------------------------------------------- | ---------------------------------------------------- |
-| Provider 创建/查询/取消/Webhook/签名/usage/幂等契约 | P1-VIDEO-CONTRACT-04、P1-PROVIDER-ROLES-07                          | 未确认不猜字段；无法表达时显式失败                   |
-| 真实音频模型/voice、视频追加调用及平台轮换授权      | P1-VIDEO-CONTRACT-04、P1-MEDIA-COVERAGE-05、P1-MULTIKEY-ROTATION-06 | 三类测试 Key 已提供，文本/图片已通过；不扩大调用范围 |
-| PostgreSQL、Redis/BullMQ、生产 S3 和部署权限        | P0-REAL-INFRA-01、P1-PRODUCTION-09                                  | 独立 namespace、bucket、数据库和回滚方案             |
-| TLS/反向代理、OTLP/Sentry、CI Runner                | P0-PROD-STARTUP-02、P0-MEDIA-OPS-03、P1-PRODUCTION-09               | 先完成脱敏、失败隔离和演练，再接生产                 |
-| 价格、预算、本地收费策略                            | 无                                                                  | 不作为功能阻断条件；费用由上游负责                   |
+| 依赖                                                | 影响事项                                                            | 处理原则                                               |
+| --------------------------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------ |
+| Provider 创建/查询/取消/Webhook/签名/usage/幂等契约 | P1-VIDEO-CONTRACT-04、P1-PROVIDER-ROLES-07                          | 未确认不猜字段；无法表达时显式失败                     |
+| 真实音频模型/voice、视频高级契约及平台轮换授权      | P1-VIDEO-CONTRACT-04、P1-MEDIA-COVERAGE-05、P1-MULTIKEY-ROTATION-06 | 文本/图片/视频最小闭环已通过；不扩大音频和高级契约范围 |
+| PostgreSQL、Redis/BullMQ、生产 S3 和部署权限        | P0-REAL-INFRA-01、P1-PRODUCTION-09                                  | 独立 namespace、bucket、数据库和回滚方案               |
+| TLS/反向代理、OTLP/Sentry、CI Runner                | P0-PROD-STARTUP-02、P0-MEDIA-OPS-03、P1-PRODUCTION-09               | 先完成脱敏、失败隔离和演练，再接生产                   |
+| 价格、预算、本地收费策略                            | 无                                                                  | 不作为功能阻断条件；费用由上游负责                     |
 
 ## 验收规则与执行顺序
 
@@ -181,8 +181,8 @@ Web MVP 和生产链路稳定后再接入 Tauri 桌面壳。
 - [x] 最终安全复核将 Windows 专用 PostgreSQL/Redis/MinIO 四端口限制为 `127.0.0.1`，S3 验收拒绝非回环绑定。仅重建本次测试容器、保留卷；补验迁移/schema diff、35+9+22 项集成及 29 项 S3 权限通过。日志 `.data/acceptance-loopback-integration.log`、`.data/acceptance-loopback-s3.log`。未修改原有开发服务。
 - [x] 最终 Linux 源清单与当前应用源码、测试、Linux 脚本和 Docker 文件一致；后续差异仅验收文档和上述两个 Windows 脚本，脚本已实际补验，文档执行最终格式检查。源清单 SHA-256 为 `328E776E0B28CCD6AAF521C93654E0EC5AAA2A0BD60FDB45F96F7676026A8CC9`。
 - [x] 精确扫描 354 份源码与验收日志，没有匹配用户提供的三把真实 Key；常见 Token/私钥模式扫描也无匹配。凭据只在无回显 stdin/进程内存中注入，临时数据库仅保留密文，按本次随机 schema 清理。
-- 真实平台证据见 `docs/live-provider-acceptance.md`：同一 sub2 origin 的文本/图片各一次成功并归档；视频两次分别授权的单数端点请求均 404，完整模型名不被替换。已确认 Sub2API 官方使用复数视频端点，追加调用待明确确认。
-- 本轮验收与兼容性修复随 `v0.13.13` 归档，对应提交可用 `git rev-list -n 1 v0.13.13` 查询。本检查点不关闭视频追加调用、音频模型/voice、供应商高级字段/回调契约、平台侧轮换和真实部署授权等外部事项。
+- 真实平台证据见 `docs/live-provider-acceptance.md`：同一 sub2 origin 的文本、图片、视频均已通过一次真实请求并归档；视频完整模型名不被替换。单数路径 404 失败证据仍保留，复数 `legacy-v1` 成功证据已追加。
+- 本轮验收与兼容性修复随 `v0.13.13` 归档；本次真实视频证据需追加后续提交归档。本检查点不关闭真实音频模型/voice、供应商高级字段/回调契约、平台侧轮换、真实部署授权和视频跨进程崩溃接管等外部事项。
 
 ### 2026-09-05 P0/P1 凭据恢复执行检查点
 

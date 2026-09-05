@@ -8,7 +8,7 @@ New API 官方文档用于核对兼容协议，不是另一个已验收的服务
 - 用户指定文本、图片、视频测试 Key 与模型。凭据通过无回显 stdin 注入内存，子进程通过 IPC 获取，不写入源码、命令参数、日志或配置文件。
 - 真实请求经过 API 运行提交、BullMQ、Worker、冻结凭据引用、Prisma 和 MinIO 归档。基础设施是专用 `mc-acceptance-test-p0p1`，不是业务生产库。
 - 每次创建随机 `mc_live_test_<24hex>` schema 和队列，数据库凭据字段只存密文；结束清理本次 schema/队列，测试资产保留在隔离桶及被 Git 忽略的 `.data`。
-- 每次 POST 前记录发送意图，不自动重试。用户明确纠正视频模型名称后才执行第二次指定请求；两次分开记录，不伪装成一次成功。
+- 每次 POST 前记录发送意图，不自动重试。视频先保留两次单数路径失败证据，确认复数契约并重新授权后才执行第三次指定请求；三次分开记录，不伪装成一次成功。
 - 不对视频 404 推断未受理或未计费。没有返回价格或费用时保持未知，不估算本地收费。
 
 ## 已成功链路
@@ -50,13 +50,34 @@ requestId 摘要为 `45e42b8856643ae5e11fa8a34d4f30f5b7f88324d757f29ba8460b8cb99
 404 只能证明该请求失败，不能断言该模型本身不支持视频。没有平台任务 ID、视频成品或 usage，
 因此查询、任务恢复、下载及视频归档的真实链路还不能验收。
 
+### 复数 Sub2API 视频真实验收
+
+用户重新注入视频测试凭据后，隔离设施恢复并执行了一次新的真实请求；模型字符串完整保留为
+`grok-imagine-video-1.5（按次）`，没有删除后缀、空格或替换模型。API/Worker 显式使用
+`videoContract: 'legacy-v1'`，只发送一次创建 POST，不自动重试。
+
+| 项目             | 结果                                                                        |
+| ---------------- | --------------------------------------------------------------------------- |
+| 创建             | `POST /v1/videos/generations`，HTTP 200，1 次                               |
+| 查询             | `GET /v1/videos/{request_id}`，HTTP 200，15 次                              |
+| 内容             | `GET /v1/videos/{request_id}/content`，HTTP 200，1 次                       |
+| 运行状态         | `succeeded`；API、Worker、Prisma、MinIO 归档成功                            |
+| 输出             | `video/mp4`，748009 字节，8.041667 秒                                       |
+| 内容 SHA-256     | `e732827344a7aebe4e32795bbbee4d5c4a9606200508129d406d81d820b1cc77`          |
+| 内部运行 ID      | `run_idem_d744bd4050bb95934594a8cce5512d8ac69ccdd25957bfb8e835bfc0e0df9868` |
+| 平台任务 ID 摘要 | `70d075e9879bad1a4a3b029ec6ed5453b2b29451b155aeec708e422bd2db31c4`          |
+| 证据文件         | `.data/live-provider-<session>-video.json`；实际 Key 和原始签名 URL 未写入  |
+
+本次仅证明当前 sub2 部署的创建、异步查询、内容下载和归档最小闭环；供应商取消、Webhook 签名、
+幂等期限、重复计费规则和真实跨进程崩溃接管仍未验证。此前单数路径 404 不再作为当前视频模型失败结论。
+
 只读调查确认站点实际加载的脚本标识 Sub2API 并链接官方项目。固定提交
 `b1748c4ea99ce2120401a269142aa071e18a84da` 的
 [官方 README](https://github.com/Wei-Shaw/sub2api/blob/b1748c4ea99ce2120401a269142aa071e18a84da/README.md#L750)
 及[路由源码](https://github.com/Wei-Shaw/sub2api/blob/b1748c4ea99ce2120401a269142aa071e18a84da/backend/internal/server/routes/gateway.go#L268)
 列出创建 `POST /v1/videos/generations`、查询 `GET /v1/videos/{request_id}`，对应应用显式
 `NEW_API_VIDEO_CONTRACT=legacy-v1`。这是协议差异的来源证据，不证明站点具体部署版本。
-已请求用户确认在正确复数端点执行一次；获得后续请求授权前不自动切换协议重发。
+本次已在用户重新授权后按上述复数端点完成一次真实验收；没有自动切换协议或重复创建。
 
 ## 其它边界
 
