@@ -3788,6 +3788,26 @@ textarea:focus-visible {
   }
 }
 
+/* 节点尺寸由 React Flow 与用户拖拽控制，预览内容不参与外层尺寸测量。 */
+.flow-asset-node {
+  min-height: 0;
+}
+
+.flow-node-preview {
+  contain: layout paint;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* 顶部工具统一为同一层级，避免背景与设置按钮各自投下阴影。 */
+.topbar-tool-cluster,
+.topbar-resource-filter,
+.topbar-actions > .icon-button,
+.topbar-background-picker,
+.theme-toggle {
+  box-shadow: none;
+}
+
 /* 画布底部工具胶囊：节点创建和常用操作按组排列，组间使用细分隔线。 */
 .canvas-node-tools {
   align-items: center;

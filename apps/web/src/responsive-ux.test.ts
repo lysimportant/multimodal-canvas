@@ -89,6 +89,7 @@ describe('responsive UX CSS contracts', () => {
       /\.flow-asset-node \{[^}]*display: flex;[^}]*flex-direction: column;[^}]*height: 100%;/,
     );
     expect(normalizedCss).toMatch(/\.flow-node-preview \{[^}]*flex: 1 1 0;[^}]*min-height: 0;/);
+    expect(normalizedCss).toMatch(/\.flow-node-preview \{[^}]*contain: layout paint;/);
     expect(normalizedCss).toMatch(
       /\.canvas-area:has\(\.node-quick-editor\) \.canvas-node-tools \{[^}]*opacity: 0;[^}]*visibility: hidden;/,
     );
@@ -100,6 +101,12 @@ describe('responsive UX CSS contracts', () => {
     );
     expect(normalizedCss).toMatch(
       /\.canvas-area\.has-quick-editor \.react-flow__controls \{[^}]*opacity: 0;[^}]*pointer-events: none;[^}]*visibility: hidden;/,
+    );
+  });
+
+  it('keeps the top editing controls on one visual layer', () => {
+    expect(normalizedCss).toMatch(
+      /\.topbar-tool-cluster,[\s\S]*?\.topbar-background-picker,[\s\S]*?box-shadow: none;/,
     );
   });
 
