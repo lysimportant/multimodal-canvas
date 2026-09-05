@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -33,6 +33,155 @@ describe('BlobStore implementations', () => {
 
 describe('PrismaAssetStore', () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it('prefers new derivative keys, falls back only when missing, and signs the selected key', async () => {
+    const blobStore = new MemoryBlobStore();
+    const presigner = vi.fn(async (key: string) => `https://storage.example/${key}`);
+    Object.assign(blobStore, { createPresignedGetUrl: presigner });
+    const prisma = createFakePrisma();
+    const store = new PrismaAssetStore(prisma as never, { blobStore });
+    const asset = await store.create({
+      name: 'image.png',
+      mediaType: 'image',
+      mimeType: 'image/png',
+      content: Buffer.from('source'),
+      metadata: { derivatives: { thumbnail: { mimeType: 'image/jpeg' } } },
+    });
+    const newKey = `assets/${asset.id}/v1.derivatives/thumbnail`;
+    const oldKey = `assets/${asset.id}/v1/derivatives/thumbnail`;
+    const get = vi.spyOn(blobStore, 'get');
+    const options = { derivative: 'thumbnail', expiresIn: 60 };
+    await blobStore.put(oldKey, Buffer.from('legacy-preview'));
+    expect((await store.getDerivative(asset.id, 'thumbnail'))?.content).toEqual(
+      Buffer.from('legacy-preview'),
+    );
+    expect(get.mock.calls.map(([key]) => key)).toEqual([newKey, oldKey]);
+    expect(await store.createPresignedGetUrl(asset.id, options)).toBe(
+      `https://storage.example/${oldKey}`,
+    );
+    expect(presigner).toHaveBeenLastCalledWith(oldKey, {
+      expiresIn: 60,
+      contentType: 'image/jpeg',
+    });
+    expect(await blobStore.get(newKey)).toBeUndefined();
+    await blobStore.put(newKey, Buffer.from('current-preview'));
+    get.mockClear();
+    expect((await store.getDerivative(asset.id, 'thumbnail'))?.content).toEqual(
+      Buffer.from('current-preview'),
+    );
+    expect(get.mock.calls.map(([key]) => key)).toEqual([newKey]);
+    expect(await store.createPresignedGetUrl(asset.id, options)).toBe(
+      `https://storage.example/${newKey}`,
+    );
+    expect(await blobStore.get(oldKey)).toEqual(Buffer.from('legacy-preview'));
+  });
+
+  it('uses existence checks for presigning and does not hide storage permission failures', async () => {
+    const blobStore = new MemoryBlobStore();
+    const exists = vi.fn(async (key: string) => key.includes('/derivatives/'));
+    const presigner = vi.fn(async (key: string) => `https://storage.example/${key}`);
+    Object.assign(blobStore, { exists, createPresignedGetUrl: presigner });
+    const prisma = createFakePrisma();
+    const store = new PrismaAssetStore(prisma as never, { blobStore, projectId: 'project-1' });
+    const asset = await store.create({
+      name: 'video.mp4',
+      mediaType: 'video',
+      mimeType: 'video/mp4',
+      content: Buffer.from('source'),
+      metadata: { derivatives: { poster: { mimeType: 'image/jpeg' } } },
+    });
+    const get = vi.spyOn(blobStore, 'get');
+    const newKey = `assets/${asset.id}/v1.derivatives/poster`;
+    const oldKey = `assets/${asset.id}/v1/derivatives/poster`;
+    const options = { derivative: 'poster', expiresIn: 60 };
+    expect(await store.createPresignedGetUrl(asset.id, options)).toBe(
+      `https://storage.example/${oldKey}`,
+    );
+    expect(exists.mock.calls.map(([key]) => key)).toEqual([newKey, oldKey]);
+    expect(get).not.toHaveBeenCalled();
+    exists.mockReset().mockResolvedValue(false);
+    presigner.mockClear();
+    expect(await store.createPresignedGetUrl(asset.id, options)).toBeUndefined();
+    expect(presigner).not.toHaveBeenCalled();
+    exists.mockReset().mockRejectedValue(new Error('access denied'));
+    await expect(store.createPresignedGetUrl(asset.id, options)).rejects.toThrow('access denied');
+    expect(exists.mock.calls.map(([key]) => key)).toEqual([newKey]);
+    get.mockRejectedValue(new Error('read denied'));
+    await expect(store.getDerivative(asset.id, 'poster')).rejects.toThrow('read denied');
+    expect(get.mock.calls.map(([key]) => key)).toEqual([newKey]);
+    get.mockClear();
+    exists.mockClear();
+    expect(
+      await store.getDerivative(asset.id, 'poster', { projectId: 'project-2' }),
+    ).toBeUndefined();
+    expect(
+      await store.createPresignedGetUrl(asset.id, options, { projectId: 'project-2' }),
+    ).toBeUndefined();
+    expect(get).not.toHaveBeenCalled();
+    expect(exists).not.toHaveBeenCalled();
+  });
+
+  it('cleans only newly written keys if a derivative upload fails before the transaction', async () => {
+    const blobStore = new MemoryBlobStore();
+    const put = vi.spyOn(blobStore, 'put');
+    put
+      .mockImplementationOnce(async () => undefined)
+      .mockRejectedValueOnce(new Error('preview upload failed'));
+    const remove = vi.spyOn(blobStore, 'delete');
+    const prisma = createFakePrisma();
+    const store = new PrismaAssetStore(prisma as never, { blobStore });
+    await expect(
+      store.create({
+        name: 'image.png',
+        mediaType: 'image',
+        mimeType: 'image/png',
+        content: Buffer.from('source'),
+        derivatives: { thumbnail: { mimeType: 'image/jpeg', content: Buffer.from('preview') } },
+      }),
+    ).rejects.toThrow('preview upload failed');
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(remove.mock.calls.map(([key]) => key)).toEqual(put.mock.calls.map(([key]) => key));
+    expect(remove.mock.calls[1][0]).toContain('/v1.derivatives/thumbnail');
+    expect(remove.mock.calls.every(([key]) => !key.includes('/derivatives/'))).toBe(true);
+  });
+
+  it.each(['thumbnail', 'poster', 'waveform'] as const)(
+    'persists %s next to a real source file and reads it after restart',
+    async (kind) => {
+      const root = await mkdtemp(join(tmpdir(), 'multimodal-file-derivative-'));
+      try {
+        const blobStore = new FileSystemBlobStore(root);
+        const prisma = createFakePrisma();
+        const store = new PrismaAssetStore(prisma as never, { blobStore });
+        const created = await store.create({
+          name: 'source.png',
+          mediaType: 'image',
+          mimeType: 'image/png',
+          content: Buffer.from('original'),
+          derivatives: { [kind]: { mimeType: 'image/png', content: Buffer.from('preview') } },
+        });
+        const contentKey = `assets/${created.id}/v1`;
+        expect((await stat(join(root, contentKey))).isFile()).toBe(true);
+        expect((await stat(join(root, `${contentKey}.derivatives`))).isDirectory()).toBe(true);
+        expect(await readFile(join(root, `${contentKey}.derivatives/${kind}`))).toEqual(
+          Buffer.from('preview'),
+        );
+        const restarted = new PrismaAssetStore(prisma as never, {
+          blobStore: new FileSystemBlobStore(root),
+        });
+        expect((await restarted.get(created.id))?.content).toEqual(Buffer.from('original'));
+        expect(await restarted.getVersionContent(created.id, 1)).toEqual(Buffer.from('original'));
+        expect((await restarted.getDerivative(created.id, kind))?.content).toEqual(
+          Buffer.from('preview'),
+        );
+        await blobStore.delete(`${contentKey}.derivatives/${kind}`);
+        expect(await restarted.getDerivative(created.id, kind)).toBeUndefined();
+        expect(await blobStore.get(contentKey)).toEqual(Buffer.from('original'));
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('stores metadata and version bytes behind a BlobStore', async () => {
     const blobStore = new MemoryBlobStore();

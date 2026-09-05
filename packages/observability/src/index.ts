@@ -52,6 +52,12 @@ export type ObservabilityExporterOptions = {
   sentryDsn?: string;
   fetch?: typeof globalThis.fetch;
   now?: () => number;
+  /** 单次 HTTP 投递超时，单位毫秒；默认 2000，必须为正整数。 */
+  timeoutMs?: number;
+  /** 每个适配器允许的并行投递上限；默认 32，超出即丢弃遥测。 */
+  maxPendingExports?: number;
+  /** 仅接收固定故障代码，不包含目标 URL、请求头或响应内容；回调异常被隔离。 */
+  onExportFailure?: (reason: 'timeout' | 'network' | 'http' | 'capacity') => void;
 };
 
 /**
@@ -76,14 +82,16 @@ export function createExportingObservability(
     parseOtlpHeaders(
       process.env.OTEL_EXPORTER_OTLP_TRACES_HEADERS ?? process.env.OTEL_EXPORTER_OTLP_HEADERS,
     );
-  const request = options.fetch ?? globalThis.fetch;
+  const transport = options.fetch ?? globalThis.fetch;
   const now = options.now ?? (() => Date.now());
-  if ((!otlpEndpoint && !sentryDsn) || typeof request !== 'function') {
+  if ((!otlpEndpoint && !sentryDsn) || typeof transport !== 'function') {
     return createNoopObservability();
   }
+  const request = createBoundedTransport(transport, options);
 
   return {
     startSpan(name, attributes = {}) {
+      name = redactSensitiveText(name).slice(0, 512);
       const startedAt = safeNow(now);
       const traceId = randomHex(16);
       const spanId = randomHex(8);
@@ -93,12 +101,14 @@ export function createExportingObservability(
       const exceptions: Array<{ name?: string; message: string }> = [];
       const span: ObservabilitySpan = {
         setAttribute(key, value) {
-          if (!ended) spanAttributes = { ...spanAttributes, [key]: sanitizeAttribute(key, value) };
+          if (!ended) spanAttributes = sanitizeAttributes({ ...spanAttributes, [key]: value });
         },
         recordException(error) {
           if (ended) return;
           const serialized = serializeException(error);
-          exceptions.push({ name: serialized.errorName, message: serialized.errorMessage });
+          if (exceptions.length < 16) {
+            exceptions.push({ name: serialized.errorName, message: serialized.errorMessage });
+          }
           status = 'error';
         },
         end(finalStatus = status) {
@@ -190,9 +200,16 @@ export function createLoggingObservability(
   options: { enabled?: boolean; service?: string } = {},
 ): Observability {
   if (options.enabled === false) return noopObservability;
-  const service = options.service ?? process.env.OTEL_SERVICE_NAME ?? 'multimodal-canvas';
+  const service = redactSensitiveText(
+    options.service ?? process.env.OTEL_SERVICE_NAME ?? 'multimodal-canvas',
+  ).slice(0, 512);
+  const safeLogger: ObservabilityLogger = {
+    info: (bindings, message) => isolatedLog(() => logger.info(bindings, message)),
+    error: (bindings, message) => isolatedLog(() => logger.error(bindings, message)),
+  };
   return {
     startSpan(name, attributes = {}) {
+      name = redactSensitiveText(name).slice(0, 512);
       const startedAt = performance.now();
       let ended = false;
       let status: SpanStatus = 'unset';
@@ -200,16 +217,16 @@ export function createLoggingObservability(
       const span = {
         setAttribute(attributeName: string, value: ObservabilityAttribute) {
           if (!ended) {
-            spanAttributes = {
+            spanAttributes = sanitizeAttributes({
               ...spanAttributes,
-              [attributeName]: sanitizeAttribute(attributeName, value),
-            };
+              [attributeName]: value,
+            });
           }
         },
         recordException(error: unknown) {
           if (ended) return;
           const details = serializeException(error);
-          logger.error(
+          safeLogger.error(
             {
               event: 'telemetry.span.exception',
               service,
@@ -224,7 +241,7 @@ export function createLoggingObservability(
         end(finalStatus: SpanStatus = status) {
           if (ended) return;
           ended = true;
-          logger.info(
+          safeLogger.info(
             {
               event: 'telemetry.span',
               service,
@@ -240,7 +257,7 @@ export function createLoggingObservability(
       return span;
     },
     captureException(error, attributes = {}) {
-      logger.error(
+      safeLogger.error(
         {
           event: 'telemetry.exception',
           service,
@@ -352,7 +369,12 @@ function sanitizeAttributes(attributes: ObservabilityAttributes): ObservabilityA
   try {
     if (!attributes || typeof attributes !== 'object') return {};
     return Object.fromEntries(
-      Object.entries(attributes).map(([key, value]) => [key, sanitizeAttribute(key, value)]),
+      Object.entries(attributes)
+        .slice(0, 64)
+        .map(([key, value]) => [
+          redactSensitiveText(key).slice(0, 128),
+          sanitizeAttribute(key, value),
+        ]),
     );
   } catch {
     return {};
@@ -365,17 +387,36 @@ function sanitizeAttribute(
 ): ObservabilityAttribute | undefined {
   if (value === undefined) return undefined;
   if (isSensitiveAttributeName(key)) return '[REDACTED]';
-  return typeof value === 'string' ? redactSensitiveText(value).slice(0, 512) : value;
+  if (typeof value === 'string') return redactSensitiveText(value).slice(0, 512);
+  if (typeof value === 'boolean') return value;
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
 function isSensitiveAttributeName(key: string): boolean {
-  return /(?:api[_-]?key|authorization|access[_-]?token|refresh[_-]?token|password|secret|credential)/i.test(
-    key,
+  return (
+    /(?:api[_-]?key|authorization|access[_-]?token|refresh[_-]?token|password|secret|credential|cookie|signature|payload|snapshot|request[._-]?body|response[._-]?body)/i.test(
+      key,
+    ) || /(?:^|[._-])(?:token|prompt)(?:$|[._-])/i.test(key)
   );
 }
 
 function redactSensitiveText(value: string): string {
   return value
+    .replace(/\b(?:set-cookie|cookie)\s*[:=]\s*[^\r\n]+/gi, 'Cookie: [REDACTED]')
+    .replace(/\b(?:https?|s3|redis|rediss|postgres|postgresql):\/\/[^\s<>"']+/gi, (candidate) => {
+      try {
+        const url = new URL(candidate);
+        if (url.username || url.password) {
+          url.username = 'REDACTED';
+          url.password = '';
+        }
+        if (url.search) url.search = '?REDACTED';
+        if (url.hash) url.hash = '#REDACTED';
+        return url.toString();
+      } catch {
+        return '[REDACTED URL]';
+      }
+    })
     .replace(
       /(\b"?authorization"?\s*[:=]\s*"?)((?:bearer|basic|token)\s+)[^"',;}\s]+/gi,
       '$1$2[REDACTED]',
@@ -386,9 +427,75 @@ function redactSensitiveText(value: string): string {
     )
     .replace(/Bearer\s+[^\s,;}]+/gi, 'Bearer [REDACTED]')
     .replace(
-      /(\b"?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|client[_-]?secret|credential|secret)"?\s*[:=]\s*"?)[^"',;}\s]+/gi,
+      /(\b"?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|client[_-]?secret|credential|secret|signature)"?\s*[:=]\s*"?)[^"',;}\s]+/gi,
       '$1[REDACTED]',
     );
+}
+
+/** 隔离日志设备异常，避免磁盘或传输故障影响业务结果。 */
+function isolatedLog(write: () => void): void {
+  try {
+    write();
+  } catch {
+    return;
+  }
+}
+
+/** 包装 HTTP 投递：限制并发、禁止重定向、取消响应体，并在超时后释放容量。 */
+function createBoundedTransport(
+  transport: typeof globalThis.fetch,
+  options: ObservabilityExporterOptions,
+): typeof globalThis.fetch {
+  const timeoutMs = options.timeoutMs ?? 2_000;
+  const maxPending = options.maxPendingExports ?? 32;
+  if (
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs <= 0 ||
+    timeoutMs > 2_147_483_647 ||
+    !Number.isSafeInteger(maxPending) ||
+    maxPending <= 0
+  ) {
+    throw new Error('telemetry timeout and capacity must be positive integers');
+  }
+  let pending = 0;
+  const report = (reason: 'timeout' | 'network' | 'http' | 'capacity') =>
+    isolatedLog(() => options.onExportFailure?.(reason));
+  return async (input, init) => {
+    if (pending >= maxPending) {
+      report('capacity');
+      throw new Error('telemetry capacity exceeded');
+    }
+    pending += 1;
+    const controller = new AbortController();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const deadline = new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          controller.abort();
+          reject(new Error('telemetry delivery timed out'));
+        }, timeoutMs);
+      });
+      const delivery = (async () => {
+        const response = await transport(input, {
+          ...init,
+          redirect: 'error',
+          signal: controller.signal,
+        });
+        await response.body?.cancel();
+        return response;
+      })();
+      const response = await Promise.race([delivery, deadline]);
+      if (!response.ok) report('http');
+      return response;
+    } catch {
+      report(controller.signal.aborted ? 'timeout' : 'network');
+      throw new Error('telemetry delivery failed');
+    } finally {
+      if (timeout !== undefined) clearTimeout(timeout);
+      controller.abort();
+      pending -= 1;
+    }
+  };
 }
 
 function normalizeOtlpEndpoint(value: string | undefined): string | undefined {
@@ -485,7 +592,14 @@ async function sendOtlpSpan(
     const payload = {
       resourceSpans: [
         {
-          resource: { attributes: [{ key: 'service.name', value: { stringValue: span.service } }] },
+          resource: {
+            attributes: [
+              {
+                key: 'service.name',
+                value: { stringValue: redactSensitiveText(span.service).slice(0, 512) },
+              },
+            ],
+          },
           scopeSpans: [
             {
               scope: { name: 'multimodal-canvas' },
@@ -532,7 +646,7 @@ async function sendSentryException(
       JSON.stringify({
         event_id: eventId,
         platform: 'node',
-        server_name: service,
+        server_name: redactSensitiveText(service).slice(0, 512),
         exception: {
           values: [
             {

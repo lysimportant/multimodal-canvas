@@ -160,6 +160,7 @@ describe('createNewApiRunExecutor', () => {
       pollIntervalMs: 2500,
       maxPollAttempts: 300,
       maxContentBytes: 12_345,
+      videoContract: 'newapi-unified-v1',
     });
     expect(providers.videoExecute).toHaveBeenCalledWith({
       snapshot: runSnapshot,
@@ -181,6 +182,24 @@ describe('createNewApiRunExecutor', () => {
     );
     expect(providers.createStandard).not.toHaveBeenCalled();
     expect(providers.createVideo).not.toHaveBeenCalled();
+  });
+
+  it('passes an explicitly selected legacy video contract', async () => {
+    const providers = providerFactory();
+    const executor = createNewApiRunExecutor({
+      settingsStore: {
+        getProviderCredentials: () => ({
+          baseUrl: 'https://newapi.example.test/v1',
+          apiKey: 'test-api-key',
+        }),
+      },
+      videoContract: 'legacy-v1',
+      providerFactory: providers.factory,
+    });
+    await executor({ snapshot: snapshot('video') });
+    expect(providers.createVideo).toHaveBeenCalledWith(
+      expect.objectContaining({ videoContract: 'legacy-v1' }),
+    );
   });
 
   it('resolves the credential version captured in the run snapshot', async () => {

@@ -72,6 +72,16 @@ export function validateWorkerStartupConfiguration(
   }
   validateS3CredentialPair(environment, issues);
 
+  if (
+    environment.NEW_API_VIDEO_CONTRACT !== undefined &&
+    !['newapi-unified-v1', 'legacy-v1'].includes(environment.NEW_API_VIDEO_CONTRACT)
+  ) {
+    issues.push({
+      variable: 'NEW_API_VIDEO_CONTRACT',
+      message: 'must be "newapi-unified-v1" or "legacy-v1"',
+    });
+  }
+
   if (environment.WORKER_PROVIDER !== 'newapi') {
     issues.push({ variable: 'WORKER_PROVIDER', message: 'must be "newapi"' });
   }
@@ -86,6 +96,7 @@ export function validateWorkerStartupConfiguration(
     issues,
   );
   validateMediaToolConfiguration(environment, 'FFPROBE_ENABLED', 'FFPROBE_PATH', issues);
+  validateMediaToolConfiguration(environment, 'FFMPEG_ENABLED', 'FFMPEG_PATH', issues);
 
   for (const variable of [
     'NEW_API_TIMEOUT_MS',

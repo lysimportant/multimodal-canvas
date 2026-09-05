@@ -12,7 +12,9 @@ API 文件存储、Prisma 存储和 Worker 共用 `@multimodal-canvas/credential
 
 Prisma 历史行重加密保留 `id/version/updatedAt`，不能改变活动排序或越过撤销墓碑。写入同时比较旧密文、key-id、版本和时间；竞争失败时返回固定错误并拒绝此次凭据读取，不覆盖另一实例的新密文。API 和 Worker 都不能以活动 Key 替代无法恢复的冻结引用。
 
-撤销的既有语义保持不变：当前实例撤销默认配置后不再据此创建新运行，但已冻结 ID/版本的排队任务仍可读取历史凭据。本轮验证 API 重启后仍识别撤销墓碑，不代表其他运行中实例的内存设置缓存会立即同步撤销；跨实例即时撤销仍待补齐。供应商侧撤销可能使任务失败，不能自动换 Key 或重建收费任务；若需要同时终止排队任务，应由部署负责人单独确认并取消相关运行。
+撤销的既有语义保持不变：撤销提交后开始的当前设置操作先重读数据库，运行中的其他 API 实例不能继续使用旧缓存为新任务选择凭据。已冻结 ID/版本的排队任务仍只读取对应历史记录，部分引用或版本不匹配不回退当前 Key。数据库故障时拒绝读取，不回退缓存；本机文件模式仍只支持单 API 进程。供应商侧撤销可能使任务失败，不能自动换 Key 或重建收费任务；同时终止已排队任务仍需明确取消相关运行。
+
+设置创建、默认模型修改和撤销使用短事务表锁串行提交，普通 SELECT 不被排斥。获得锁后按数据库 UTC `clock_timestamp()` 与已存最大 `updatedAt + 1ms` 取较大值，避免实例时钟偏差、锁等待或历史未来时间破坏撤销排序。写入前验证最新活动引用和时间，过期修改显式失败；锁不跨 Provider 网络请求，无需改表或回填数据。
 
 ## 迁移与回滚
 
@@ -28,6 +30,7 @@ Prisma 历史行重加密保留 `id/version/updatedAt`，不能改变活动排�
 - 文件模式：先复现“内存已轮换但未写回”和“写回失败仍放行”，修复后验证仅持有新密钥时可恢复多个冻结版本。
 - 隔离 PostgreSQL：API/Worker 分别在独立 Node 进程轮换历史行，重建 API 并移除旧密钥后仍可读取；活动凭据、撤销墓碑、版本和业务时间保持不变。
 - 真实数据库竞争屏障：新实例先写，迟到实例 CAS 失败，最终密文只需最新密钥即可恢复。
+- 两个长驻独立 Node 进程验证设置/目录更新、撤销与历史读取；真实 PostgreSQL 屏障验证默认模型写入与撤销竞争、应用时钟偏差及锁后时间排序。
 - 全新隔离 Docker 栈执行迁移、Prisma/Redis/MinIO 集成及生产模式 API/Worker 启动。这里的生产模式指 `NODE_ENV=production` 配置路径，不是已验收的生产部署。
 
 复现使用显式隔离 `TEST_DATABASE_URL`、`TEST_REDIS_*` 和 `TEST_S3_*`，从项目根目录运行：
@@ -38,4 +41,4 @@ pnpm --filter @multimodal-canvas/api exec vitest run src/file-ai-settings.test.t
 pnpm --filter @multimodal-canvas/worker exec vitest run src/prisma-persistence.test.ts --maxWorkers=1 --minWorkers=1
 ```
 
-完整生产 TLS/反向代理、真实 Provider、队列任务恢复、冻结媒体版本恢复、媒体工具及外部告警投递仍未全部验收，不能由这些结果推导 P0/P1 已完成。
+独立 Worker 崩溃接管、冻结媒体、隔离 TLS 入口、媒体工具和 HTTP 追踪投递的进一步证据见 `TODO-CONSOLIDATED.md`。实际部署与供应商侧撤销/任务语义仍需各自证据，不能由本地数据库结果推导通过。

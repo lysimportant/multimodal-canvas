@@ -4,6 +4,7 @@ import {
   type NewApiProviderOptions,
   type NewApiProviderRequest,
   type NewApiVideoProviderOptions,
+  type NewApiVideoContract,
   type ProviderExecution,
 } from '@multimodal-canvas/providers';
 
@@ -25,6 +26,8 @@ export type NewApiRunExecutorOptions = {
   videoPollIntervalMs?: number;
   videoMaxPollAttempts?: number;
   videoMaxContentBytes?: number;
+  /** 新任务的视频协议；历史任务以持久化协议为准。默认使用官方统一接口。 */
+  videoContract?: NewApiVideoContract;
   requireHttps?: boolean;
   providerFactory?: NewApiRunProviderFactory;
 };
@@ -34,7 +37,7 @@ const defaultProviderFactory: NewApiRunProviderFactory = {
   createVideo: (options) => new NewApiVideoProvider(options),
 };
 
-/** Creates the executor used only by the API's in-memory/local run service. */
+/** 创建 API 本地运行执行器，按冻结凭据版本选择 Provider；缺凭据时拒绝执行。 */
 export function createNewApiRunExecutor(options: NewApiRunExecutorOptions) {
   const providerFactory = options.providerFactory ?? defaultProviderFactory;
 
@@ -65,6 +68,7 @@ export function createNewApiRunExecutor(options: NewApiRunExecutorOptions) {
       target.data.mediaType === 'video'
         ? providerFactory.createVideo({
             ...sharedOptions,
+            videoContract: options.videoContract ?? 'newapi-unified-v1',
             ...(options.videoPollIntervalMs === undefined
               ? {}
               : { pollIntervalMs: options.videoPollIntervalMs }),

@@ -255,6 +255,12 @@ function normalizeBinaryOutput(
     nestedUrl(record.image_url),
   );
   if (dataUrl) {
+    if (
+      dataUrl.mimeType !== 'application/octet-stream' &&
+      !dataUrl.mimeType.startsWith(`${mediaType}/`)
+    ) {
+      throw new ProviderOutputError('provider data URL media type mismatch');
+    }
     return {
       mediaType,
       kind: 'base64',
@@ -321,7 +327,7 @@ function extractBinary(
     const itemRecord = asRecord(item);
     if (!itemRecord) {
       if (typeof item === 'string') {
-        return normalizeBinaryOutput({ data: item, ...record }, mediaType);
+        return normalizeBinaryOutput({ ...record, data: item }, mediaType);
       }
       continue;
     }
@@ -408,7 +414,12 @@ function firstSafeUrl(...values: unknown[]): string | undefined {
     const candidate = value.trim();
     try {
       const parsed = new URL(candidate);
-      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return candidate;
+      if (
+        (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
+        !parsed.username &&
+        !parsed.password
+      )
+        return candidate;
     } catch {
       // Ignore malformed/relative URLs. Provider assets must be fetchable by
       // the server and therefore use an absolute HTTP(S) URL.
@@ -477,7 +488,11 @@ function normalizeMimeType(
 ): string | undefined {
   if (!value) return undefined;
   const normalized = value.toLowerCase();
-  return normalized.startsWith(`${mediaType}/`) ? value : undefined;
+  if (normalized === 'application/octet-stream') return undefined;
+  if (!normalized.startsWith(`${mediaType}/`)) {
+    throw new ProviderOutputError('provider output MIME type mismatch');
+  }
+  return value;
 }
 
 function kindFromMime(value: string | undefined): 'image' | 'audio' | 'video' | undefined {
@@ -497,6 +512,10 @@ function defaultMimeType(mediaType: 'image' | 'audio' | 'video', format?: string
     return 'image/png';
   }
   if (mediaType === 'audio') {
+    if (normalized === 'aac') return 'audio/aac';
+    if (normalized === 'flac') return 'audio/flac';
+    if (normalized === 'opus') return 'audio/ogg';
+    if (normalized === 'pcm') return 'audio/pcm';
     if (normalized === 'wav') return 'audio/wav';
     if (normalized === 'ogg' || normalized === 'oga') return 'audio/ogg';
     if (normalized === 'webm') return 'audio/webm';

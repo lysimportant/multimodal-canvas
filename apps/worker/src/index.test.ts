@@ -502,13 +502,16 @@ describe('worker provider job boundary', () => {
     });
     const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (url, init) => {
       const requestUrl = String(url);
-      if (requestUrl.endsWith('/videos/generations')) {
-        return new Response(JSON.stringify({ request_id: 'platform-video-cancel' }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
+      if (requestUrl.endsWith('/video/generations')) {
+        return new Response(
+          JSON.stringify({ task_id: 'platform-video-cancel', status: 'queued' }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        );
       }
-      if (requestUrl.endsWith('/videos/platform-video-cancel')) {
+      if (requestUrl.endsWith('/video/generations/platform-video-cancel')) {
         pollSignal = init?.signal ?? undefined;
         markPollStarted?.();
         return new Promise<Response>((_resolve, reject) => {
@@ -582,7 +585,12 @@ describe('worker provider job boundary', () => {
       });
 
       const processing = bullmqState.processor?.(job);
-      await pollStarted;
+      await Promise.race([
+        pollStarted,
+        Promise.resolve(processing).then(() => {
+          throw new Error('video processing ended before the cancellation boundary');
+        }),
+      ]);
       job.data.cancelRequested = true;
 
       await expect(processing).resolves.toMatchObject({ status: 'cancelled' });

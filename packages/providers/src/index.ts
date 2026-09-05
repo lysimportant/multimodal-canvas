@@ -111,12 +111,19 @@ export function normalizeNewApiBaseUrl(value: string): string {
   return parsed.toString().replace(/\/$/, '');
 }
 
+/** Provider 返回的持久化增量，普通关联 ID 不占用异步平台任务身份。 */
 export type ProviderJobUpdate = Partial<ProviderJob> & Pick<ProviderJob, 'provider'>;
 
 export type NewApiProviderRequest = MockProviderRequest & {
-  /** Existing asynchronous task identity used to resume without another paid POST. */
+  /**
+   * 调用方的协作取消信号。信号只终止本地请求、轮询和下载，不会猜测
+   * 或伪造供应商的远程取消接口；已提交的视频任务仍通过 `providerJob`
+   * 保留平台任务 ID 供后续恢复或人工核对。
+   */
+  signal?: AbortSignal;
+  /** 已冻结合同及异步平台身份，用于恢复查询，避免再次发送收费 POST。 */
   providerJob?: ProviderJobUpdate;
-  /** Persist asynchronous platform identity before polling can fail or time out. */
+  /** 新视频 POST 前必须持久化合同，创建后持久化平台 ID；失败时停止执行，不自动重试。 */
   onProviderJob?: (providerJob: ProviderJobUpdate) => Promise<void> | void;
 };
 
@@ -207,7 +214,7 @@ export type NewApiProviderErrorDetails = {
   status?: number;
   /** Provider error code or type, if one was supplied. */
   code?: string;
-  /** Whether a caller may retry after applying its own idempotency policy. */
+  /** 仅表示错误可能是临时的；重试前必须确认供应商幂等，不能据此认定不会重复收费。 */
   retryable?: boolean;
   /** Opaque provider request/correlation ID, never a credential. */
   requestId?: string;
@@ -257,8 +264,8 @@ export class NewApiProviderError extends Error {
 }
 
 /**
- * Maps the provider-neutral snapshot to the OpenAI-compatible New API contract.
- * Video remains isolated in NewApiVideoProvider until its platform contract is known.
+ * 将通用快照映射为 New API 文本、图片或音频请求。
+ * 视频由 NewApiVideoProvider 按显式冻结合同独立处理。
  */
 export class NewApiProvider {
   private readonly baseUrl: string;
@@ -287,7 +294,9 @@ export class NewApiProvider {
     reportProgress,
     providerJob,
     resolvedMentions,
+    signal,
   }: NewApiProviderRequest): Promise<ProviderExecution<StandardProviderOutput>> {
+    throwIfProviderSignalAborted(signal);
     const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
     if (!target) throw new NewApiProviderError('run target node is missing from snapshot');
     if (target.data.mediaType === 'video') {
@@ -301,9 +310,8 @@ export class NewApiProvider {
       });
     }
 
-    // The worker persists this local provider-job ID before the paid POST.
-    // Reusing it on BullMQ replay lets an OpenAI-compatible gateway return the
-    // original synchronous generation instead of charging for a second one.
+    // Worker 在请求前持久化本地任务身份，重放时仅保证发送相同的幂等键。
+    // 供应商是否识别该键、如何去重及计费尚需契约确认，不能据此自动重试。
     const idempotencyKey = standardRequestIdempotencyKey(snapshot, providerJob);
 
     const response =
@@ -318,6 +326,7 @@ export class NewApiProvider {
               resolvedMentions,
             ),
             idempotencyKey,
+            signal,
           )
         : target.data.mediaType === 'image'
           ? await this.request(
@@ -330,6 +339,7 @@ export class NewApiProvider {
                 resolvedMentions,
               ),
               idempotencyKey,
+              signal,
             )
           : await this.request(
               '/audio/speech',
@@ -341,15 +351,17 @@ export class NewApiProvider {
                 resolvedMentions,
               ),
               idempotencyKey,
+              signal,
             );
     const output =
       target.data.mediaType === 'text'
-        ? parseTextOutput(response)
+        ? parseTextOutput(response.payload)
         : target.data.mediaType === 'image'
-          ? parseImageOutput(response, snapshot)
-          : parseAudioOutput(response, snapshot);
-    const usage = parseProviderUsage(response);
+          ? parseImageOutput(response.payload, snapshot)
+          : parseAudioOutput(response.payload, snapshot);
+    const usage = parseProviderUsage(response.payload);
     await reportProgress?.(100);
+    throwIfProviderSignalAborted(signal);
 
     return {
       result: {
@@ -360,6 +372,14 @@ export class NewApiProvider {
         inputCount: snapshot.inputs.length,
       },
       output,
+      ...(response.requestId
+        ? {
+            providerJob: {
+              provider: 'newapi' as const,
+              payload: { requestId: response.requestId },
+            },
+          }
+        : {}),
       ...(usage ? { usage } : {}),
     };
   }
@@ -450,21 +470,33 @@ export class NewApiProvider {
     resolvedMentions?: readonly ResolvedMention[],
   ) {
     assertPromptMentionsUnsupported('audio', snapshot, nodePromptDocument, resolvedMentions);
+    const input = resolveSinglePromptInput(
+      snapshot,
+      label,
+      nodePrompt,
+      'audio',
+      nodePromptDocument,
+    );
+    if (!input.trim() || [...input].length > 4096) {
+      throw invalidProviderParameter('audio', 'input', '必须为 1 到 4096 个字符');
+    }
     return {
       ...providerParameters(snapshot.parameters, 'audio'),
       model: snapshot.modelAlias,
-      input: resolveSinglePromptInput(snapshot, label, nodePrompt, 'audio', nodePromptDocument),
+      input,
     };
   }
 
+  /** 返回内容及脱敏请求关联 ID；同步 completion ID 不属于视频平台任务身份。 */
   private async request(
     path: string,
     body: Record<string, unknown>,
     idempotencyKey: string,
-  ): Promise<unknown> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    externalSignal?: AbortSignal,
+  ): Promise<{ payload: unknown; requestId?: string }> {
+    const abortContext = createProviderAbortContext(this.timeoutMs, externalSignal);
     try {
+      throwIfProviderSignalAborted(externalSignal);
       const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
         method: 'POST',
         redirect: 'error',
@@ -474,9 +506,16 @@ export class NewApiProvider {
           'idempotency-key': idempotencyKey,
         },
         body: JSON.stringify(body),
-        signal: controller.signal,
+        signal: abortContext.signal,
       });
-      const payload = await readResponsePayload(response, this.maxResponseBytes);
+      if (externalSignal?.aborted) discardResponseBody(response);
+      throwIfProviderSignalAborted(externalSignal);
+      const payload = await readResponsePayload(
+        response,
+        this.maxResponseBytes,
+        abortContext.signal,
+      );
+      throwIfProviderSignalAborted(externalSignal);
       if (!response.ok) {
         const providerError = extractProviderError(payload, [this.apiKey]);
         const message = providerError.message ?? `New API 请求失败（${response.status}）`;
@@ -487,9 +526,18 @@ export class NewApiProvider {
           retryable: isRetryableStatus(response.status),
         });
       }
-      return payload;
+      const bodyRequestId = isRecord(payload)
+        ? [payload.request_id, payload.requestId, payload.id]
+            .map((value) => sanitizeProviderDiagnosticField(value, [this.apiKey]))
+            .find((value) => value !== undefined)
+        : undefined;
+      const requestId = responseRequestId(response, [this.apiKey]) ?? bodyRequestId;
+      return { payload, ...(requestId ? { requestId } : {}) };
     } catch (error) {
       if (error instanceof NewApiProviderError) throw error;
+      if (abortContext.wasExternallyAborted()) {
+        throw providerCancellationError();
+      }
       const isTimeout = getErrorName(error) === 'AbortError';
       throw new NewApiProviderError(
         isTimeout
@@ -503,17 +551,30 @@ export class NewApiProvider {
         },
       );
     } finally {
-      clearTimeout(timeout);
+      abortContext.cleanup();
     }
   }
 }
 
+/** 新建视频任务可选择的契约；Sora multipart 尚未实现，禁止隐式兼容。 */
+export type NewApiVideoContract = 'newapi-unified-v1' | 'legacy-v1';
+
+/** 历史契约标识保持可读，不将已提交任务迁移到另一条查询路径。 */
+type FrozenVideoContract = NewApiVideoContract | 'newapi-video-v1';
+
+/** 视频执行选项；构造器默认 legacy，新任务可显式选官方统一协议。 */
 export type NewApiVideoProviderOptions = NewApiProviderOptions & {
+  /** 仅用于尚未冻结合同的新任务；恢复优先使用 providerJob.payload.contract。 */
+  videoContract?: NewApiVideoContract;
+  /** 查询等待基数，单位毫秒；允许 0 供隔离测试使用。 */
   pollIntervalMs?: number;
+  /** 单次执行的最大查询次数，必须为正整数。 */
   maxPollAttempts?: number;
+  /** 同源受保护视频的下载上限，单位字节；默认 50 MiB。 */
   maxContentBytes?: number;
 };
 
+/** 已解析的视频查询结果；媒体元数据只保留已确认的数值字段。 */
 type VideoPollResult = {
   status: 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled';
   providerStatus: string;
@@ -522,6 +583,8 @@ type VideoPollResult = {
   outputUrl?: string;
   error?: string;
   usage?: ProviderUsage;
+  outputFormat?: string;
+  mediaMetadata?: Record<string, number>;
 };
 
 const defaultResponseContentLimit = 50 * 1024 * 1024;
@@ -529,7 +592,10 @@ const defaultVideoContentLimit = 50 * 1024 * 1024;
 const newApiVideoJobsPath = '/videos';
 const newApiVideoCreatePath = `${newApiVideoJobsPath}/generations`;
 
-/** Asynchronous video boundary using the standard New API endpoints. */
+/**
+ * 按冻结契约执行官方统一视频或历史网关任务，不混入 Sora multipart 字段。
+ * 新建任务必须先通过 onProviderJob 持久化合同；已有 ID 不重新 POST。
+ */
 export class NewApiVideoProvider {
   private readonly baseUrl: string;
   private readonly apiKey: string;
@@ -539,8 +605,15 @@ export class NewApiVideoProvider {
   private readonly maxPollAttempts: number;
   private readonly maxContentBytes: number;
   private readonly maxResponseBytes: number;
+  /** 新任务默认合同，不覆盖历史任务的冻结合同。 */
+  private readonly videoContract: NewApiVideoContract;
 
+  /** 校验连接与轮询配置；不发请求，未知合同直接抛出 TypeError。 */
   constructor(options: NewApiVideoProviderOptions) {
+    this.videoContract = options.videoContract ?? 'legacy-v1';
+    if (this.videoContract !== 'legacy-v1' && this.videoContract !== 'newapi-unified-v1') {
+      throw new TypeError('不支持的视频合同；仅允许 legacy-v1 或 newapi-unified-v1');
+    }
     this.baseUrl = normalizeNewApiBaseUrl(options.baseUrl);
     if (shouldRequireHttps(options.requireHttps) && !this.baseUrl.startsWith('https://')) {
       throw new TypeError('生产环境 New API Base URL 必须使用 HTTPS');
@@ -562,13 +635,19 @@ export class NewApiVideoProvider {
     );
   }
 
+  /** 执行或恢复视频任务；新建要求先落盘合同，返回媒体、usage 与脱敏任务摘要。 */
   async execute({
     snapshot,
     reportProgress,
     providerJob: existingProviderJob,
     onProviderJob,
     resolvedMentions,
+    signal,
   }: NewApiProviderRequest): Promise<ProviderExecution<VideoProviderOutput>> {
+    throwIfProviderSignalAborted(
+      signal,
+      existingProviderJob?.provider === 'newapi' ? existingProviderJob.platformJobId : undefined,
+    );
     const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
     if (!target) throw new NewApiProviderError('run target node is missing from snapshot');
     if (target.data.mediaType !== 'video') {
@@ -584,12 +663,13 @@ export class NewApiVideoProvider {
       resolvedMentions,
     );
     validateProviderRoleParameters(snapshot.parameters, 'video');
-    // Validate every immutable input snapshot even when this invocation only
-    // resumes an existing platform job. Otherwise a retry could silently skip
-    // a role that the original creation path would reject.
+    const contract = resolveVideoContract(existingProviderJob, this.videoContract);
+    const unified = contract === 'newapi-unified-v1';
+    if (unified) validateUnifiedVideoParameters(snapshot.parameters);
+    else validateMediaParameters(snapshot.parameters, 'video');
+    // 恢复也校验冻结输入，避免绕过创建时禁止的参考角色。
     const inputs = mapVideoInputs(snapshot);
-    // A video prompt is required by the verified gateway contract. Do not
-    // substitute a display label, even when resuming an existing task.
+    // 既有适配器要求明确的视频提示词；恢复任务时也不能用显示标签替代。
     resolveRequiredVideoPrompt(
       snapshot,
       target.data.label,
@@ -607,47 +687,117 @@ export class NewApiVideoProvider {
     const idempotencyKey = standardRequestIdempotencyKey(snapshot, existingProviderJob);
 
     let platformJobId = normalizeErrorField(existingProviderJob?.platformJobId);
+    const jobsPath = unified ? '/video/generations' : newApiVideoJobsPath;
+    let requestId = sanitizeProviderDiagnosticField(existingProviderJob?.payload?.requestId, [
+      this.apiKey,
+    ]);
     let submissionUsage: ProviderUsage | undefined;
     let initialPhase: 'submitted' | 'resumed' = 'resumed';
     if (!platformJobId) {
-      // Creating a video may charge immediately. Never retry this POST inside
-      // the provider because a lost response could otherwise create duplicates.
-      let submission: { payload: Record<string, unknown>; requestId?: string };
-      try {
-        submission = await this.requestJson(
-          `${this.baseUrl}${newApiVideoCreatePath}`,
-          'POST',
-          videoPayload(
+      if (existingProviderJob?.payload?.phase === 'submitting') {
+        throw new NewApiProviderError('New API 视频创建结果未知，请先核对平台任务状态', {
+          code: 'VIDEO_SUBMISSION_UNKNOWN',
+          providerPayload: videoJobPayloadSummary(contract, 'submitting', snapshot.modelAlias),
+          retryable: false,
+        });
+      }
+      const body = unified
+        ? unifiedVideoPayload(
             snapshot,
             target.data.label,
             target.data.prompt,
             inputs,
             target.data.promptDocument,
-          ),
+          )
+        : videoPayload(
+            snapshot,
+            target.data.label,
+            target.data.prompt,
+            inputs,
+            target.data.promptDocument,
+          );
+      const pendingPayload = videoJobPayloadSummary(contract, 'submitting', snapshot.modelAlias);
+      if (!onProviderJob) {
+        throw new NewApiProviderError('创建视频前必须提供合同持久化回调', {
+          code: 'VIDEO_CONTRACT_PERSISTENCE_REQUIRED',
+          providerPayload: pendingPayload,
+          retryable: false,
+        });
+      }
+      try {
+        await onProviderJob({
+          provider: 'newapi',
+          status: 'queued',
+          progress: 0,
+          payload: pendingPayload,
+        });
+      } catch {
+        throw new NewApiProviderError('视频合同持久化失败', {
+          code: 'VIDEO_CONTRACT_PERSISTENCE_FAILED',
+          providerPayload: pendingPayload,
+          retryable: false,
+        });
+      }
+      throwIfProviderSignalAborted(signal);
+      // 创建可能立即收费，响应丢失时不重发；稳定 key 不证明供应商支持去重。
+      let submission: { payload: Record<string, unknown>; requestId?: string };
+      try {
+        submission = await this.requestJson(
+          `${this.baseUrl}${unified ? jobsPath : newApiVideoCreatePath}`,
+          'POST',
+          body,
           idempotencyKey,
+          signal,
+          contract,
         );
       } catch (error) {
-        // A transport failure after the provider accepted the request leaves
-        // the platform task identity unknown. Do not classify this as a
-        // retryable error: an automatic retry could create and charge a
-        // second task. Surface it for manual provider-side reconciliation.
+        // 已受理但响应丢失时无法确认任务身份，必须人工核对，不能按临时故障自动重建。
         if (!(error instanceof NewApiProviderError) || error.retryable) {
           throw new NewApiProviderError('New API 视频创建结果未知，请先核对平台任务状态', {
             status: error instanceof NewApiProviderError ? error.status : undefined,
             code: 'VIDEO_SUBMISSION_UNKNOWN',
             requestId: error instanceof NewApiProviderError ? error.requestId : undefined,
+            providerPayload: pendingPayload,
             retryable: false,
           });
         }
         throw error;
       }
-      platformJobId = extractVideoRequestId(submission.payload);
+      platformJobId = unified
+        ? normalizeErrorField(submission.payload.task_id)
+        : extractVideoRequestId(submission.payload);
+      requestId = submission.requestId;
       if (!platformJobId) {
-        throw new NewApiProviderError('New API 视频创建响应缺少 request_id', {
-          code: 'VIDEO_REQUEST_ID_MISSING',
-          requestId: submission.requestId,
-          retryable: false,
-        });
+        throw new NewApiProviderError(
+          `New API 视频创建响应缺少 ${unified ? 'task_id' : 'request_id'}`,
+          {
+            code: 'VIDEO_REQUEST_ID_MISSING',
+            requestId: submission.requestId,
+            providerPayload: pendingPayload,
+            retryable: false,
+          },
+        );
+      }
+      let unifiedCreation: VideoPollResult | undefined;
+      if (unified) {
+        try {
+          unifiedCreation = parseUnifiedVideoPollResult(submission.payload, [this.apiKey]);
+        } catch (error) {
+          throw videoJobError(
+            error,
+            platformJobId,
+            videoJobPayloadSummary(
+              contract,
+              'submitted',
+              snapshot.modelAlias,
+              undefined,
+              undefined,
+              undefined,
+              requestId,
+            ),
+            [this.apiKey],
+          );
+        }
       }
       const creationStatus = normalizeErrorField(
         submission.payload.status ??
@@ -657,8 +807,9 @@ export class NewApiVideoProvider {
         creationStatus &&
         ['failed', 'error', 'expired', 'cancelled', 'canceled'].includes(creationStatus)
       ) {
-        const terminal = parseVideoPollResult(submission.payload, [this.apiKey]);
+        const terminal = unifiedCreation ?? parseVideoPollResult(submission.payload, [this.apiKey]);
         const providerPayload = videoJobPayloadSummary(
+          contract,
           'failed',
           snapshot.modelAlias,
           terminal.providerStatus,
@@ -682,7 +833,10 @@ export class NewApiVideoProvider {
       submissionUsage = parseProviderUsage(submission.payload);
       initialPhase = 'submitted';
     }
-    const initialPayload = videoJobPayloadSummary(initialPhase, snapshot.modelAlias);
+    const initialPayload = {
+      ...videoJobPayloadSummary(contract, initialPhase, snapshot.modelAlias),
+      ...(requestId ? { requestId } : {}),
+    };
     const submittedProviderJob: ProviderJobUpdate = {
       provider: 'newapi',
       platformJobId,
@@ -700,46 +854,57 @@ export class NewApiVideoProvider {
         retryable: false,
       });
     }
-    await reportProgress?.(submittedProviderJob.progress ?? 5);
+    await reportVideoProgress(reportProgress, submittedProviderJob.progress ?? 5, platformJobId);
+    throwIfProviderSignalAborted(signal, platformJobId);
 
     let lastPoll: VideoPollResult | undefined;
     for (let attempt = 1; attempt <= this.maxPollAttempts; attempt += 1) {
       const waitMs = videoPollDelay(this.pollIntervalMs, attempt);
-      if (waitMs > 0) await delay(waitMs);
+      if (waitMs > 0) await delay(waitMs, signal, platformJobId);
       try {
         const statusResponse = await this.requestJson(
-          `${this.baseUrl}${newApiVideoJobsPath}/${encodeURIComponent(platformJobId)}`,
+          `${this.baseUrl}${jobsPath}/${encodeURIComponent(platformJobId)}`,
           'GET',
+          undefined,
+          undefined,
+          signal,
         );
-        lastPoll = parseVideoPollResult(statusResponse.payload, [this.apiKey]);
+        if (unified && normalizeErrorField(statusResponse.payload.task_id) !== platformJobId) {
+          throw new NewApiProviderError('New API 视频查询返回了不同的平台任务身份', {
+            code: 'VIDEO_TASK_ID_MISMATCH',
+            retryable: false,
+          });
+        }
+        lastPoll = unified
+          ? parseUnifiedVideoPollResult(statusResponse.payload, [this.apiKey])
+          : parseVideoPollResult(statusResponse.payload, [this.apiKey]);
+        requestId = statusResponse.requestId ?? requestId;
+        throwIfProviderSignalAborted(signal, platformJobId);
         const statusPayload = videoJobPayloadSummary(
+          contract,
           lastPoll.status === 'succeeded' ? 'completed' : 'polling',
           snapshot.modelAlias,
           lastPoll.providerStatus,
           lastPoll.status === 'succeeded' ? 100 : lastPoll.progress,
+          lastPoll.mediaMetadata,
+          requestId,
         );
-        await onProviderJob?.({
-          provider: 'newapi',
-          platformJobId,
-          status:
-            lastPoll.status === 'failed'
-              ? 'failed'
-              : lastPoll.status === 'cancelled'
-                ? 'cancelled'
-                : lastPoll.status === 'pending'
-                  ? 'submitted'
-                  : 'running',
-          progress: lastPoll.status === 'succeeded' ? 99 : lastPoll.progress,
-          payload: statusPayload,
-        });
-      } catch (error) {
-        if (!(error instanceof NewApiProviderError) && lastPoll && onProviderJob) {
-          const statusPayload = videoJobPayloadSummary(
-            'polling',
-            snapshot.modelAlias,
-            lastPoll.providerStatus,
-            lastPoll.progress,
-          );
+        try {
+          await onProviderJob?.({
+            provider: 'newapi',
+            platformJobId,
+            status:
+              lastPoll.status === 'failed'
+                ? 'failed'
+                : lastPoll.status === 'cancelled'
+                  ? 'cancelled'
+                  : lastPoll.status === 'pending'
+                    ? 'submitted'
+                    : 'running',
+            progress: lastPoll.status === 'succeeded' ? 99 : lastPoll.progress,
+            payload: statusPayload,
+          });
+        } catch {
           throw new NewApiProviderError('视频任务状态持久化失败', {
             code: 'VIDEO_JOB_PERSISTENCE_FAILED',
             platformJobId,
@@ -747,6 +912,7 @@ export class NewApiVideoProvider {
             retryable: false,
           });
         }
+      } catch (error) {
         if (
           error instanceof NewApiProviderError &&
           error.retryable &&
@@ -758,6 +924,7 @@ export class NewApiVideoProvider {
           error,
           platformJobId,
           videoJobPayloadSummary(
+            contract,
             'polling',
             snapshot.modelAlias,
             lastPoll?.providerStatus,
@@ -778,6 +945,7 @@ export class NewApiVideoProvider {
                 : 'VIDEO_GENERATION_FAILED',
             platformJobId,
             providerPayload: videoJobPayloadSummary(
+              contract,
               'failed',
               snapshot.modelAlias,
               lastPoll.providerStatus,
@@ -791,17 +959,24 @@ export class NewApiVideoProvider {
       if (lastPoll.status === 'succeeded') {
         let output: VideoProviderOutput;
         try {
-          output = await this.videoOutput(platformJobId, lastPoll);
+          output = await this.videoOutput(platformJobId, lastPoll, signal, contract);
         } catch (error) {
           throw videoJobError(
             error,
             platformJobId,
-            videoJobPayloadSummary('completed', snapshot.modelAlias, lastPoll.providerStatus, 100),
+            videoJobPayloadSummary(
+              contract,
+              'completed',
+              snapshot.modelAlias,
+              lastPoll.providerStatus,
+              100,
+            ),
             [this.apiKey],
           );
         }
         const usage = lastPoll.usage ?? submissionUsage;
-        await reportProgress?.(100);
+        await reportVideoProgress(reportProgress, 100, platformJobId);
+        throwIfProviderSignalAborted(signal, platformJobId);
         return {
           result: {
             provider: 'newapi',
@@ -816,10 +991,13 @@ export class NewApiVideoProvider {
             status: 'succeeded',
             progress: 100,
             payload: videoJobPayloadSummary(
+              contract,
               'completed',
               snapshot.modelAlias,
               lastPoll.providerStatus,
               100,
+              lastPoll.mediaMetadata,
+              requestId,
             ),
           },
           ...(usage ? { usage } : {}),
@@ -830,13 +1008,15 @@ export class NewApiVideoProvider {
         5,
         Math.min(95, lastPoll.progress || Math.round((attempt / this.maxPollAttempts) * 90)),
       );
-      await reportProgress?.(progress);
+      await reportVideoProgress(reportProgress, progress, platformJobId);
+      throwIfProviderSignalAborted(signal, platformJobId);
     }
 
     throw new NewApiProviderError('New API 视频任务轮询超时', {
       code: 'VIDEO_POLL_TIMEOUT',
       platformJobId,
       providerPayload: videoJobPayloadSummary(
+        contract,
         'polling',
         snapshot.modelAlias,
         lastPoll?.providerStatus,
@@ -849,15 +1029,31 @@ export class NewApiVideoProvider {
   private async videoOutput(
     platformJobId: string,
     poll: VideoPollResult,
+    signal?: AbortSignal,
+    contract: FrozenVideoContract = 'legacy-v1',
   ): Promise<VideoProviderOutput> {
+    throwIfProviderSignalAborted(signal, platformJobId);
     const rawUrl = poll.outputUrl;
+    if (contract === 'newapi-unified-v1' && (!rawUrl || !providerRemoteUrl(rawUrl))) {
+      throw new NewApiProviderError('New API 统一视频完成响应缺少有效资源 URL', {
+        code: 'VIDEO_OUTPUT_URL_INVALID',
+        retryable: false,
+      });
+    }
     if (rawUrl) {
       const dataUrl = parseDataUrl(rawUrl);
       if (dataUrl?.mimeType.startsWith('video/')) {
+        const base64 = validatedMediaBase64(dataUrl.base64);
+        if (atob(base64).length > this.maxContentBytes) {
+          throw new NewApiProviderError('New API 视频内容超过归档大小限制', {
+            code: 'VIDEO_CONTENT_TOO_LARGE',
+            retryable: false,
+          });
+        }
         return {
           mediaType: 'video',
           kind: 'base64',
-          base64: dataUrl.base64,
+          base64,
           mimeType: dataUrl.mimeType,
           format: formatFromMimeType(dataUrl.mimeType),
         };
@@ -865,19 +1061,21 @@ export class NewApiVideoProvider {
 
       const remoteUrl = providerRemoteUrl(rawUrl);
       if (remoteUrl && !this.isProtectedProviderUrl(remoteUrl)) {
-        const mimeType = videoMimeTypeFromUrl(remoteUrl);
+        const mimeType = poll.outputFormat
+          ? videoMimeTypeFromFormat(poll.outputFormat)
+          : videoMimeTypeFromUrl(remoteUrl);
         return {
           mediaType: 'video',
           kind: 'url',
           url: remoteUrl,
           mimeType,
-          format: formatFromMimeType(mimeType),
+          format: poll.outputFormat ?? formatFromMimeType(mimeType),
         };
       }
     }
 
     const contentUrl = this.protectedContentUrl(platformJobId, rawUrl);
-    const content = await this.requestBinary(contentUrl);
+    const content = await this.requestBinary(contentUrl, signal, platformJobId);
     return {
       mediaType: 'video',
       kind: 'base64',
@@ -907,75 +1105,122 @@ export class NewApiVideoProvider {
     }
   }
 
+  /** 在响应体读取完成前保留超时与取消监听，返回已解析的平台响应及请求 ID。 */
   private async requestJson(
     url: string,
     method: 'GET' | 'POST',
     body?: Record<string, unknown>,
     idempotencyKey?: string,
+    externalSignal?: AbortSignal,
+    contract: FrozenVideoContract = 'legacy-v1',
   ): Promise<{ payload: Record<string, unknown>; requestId?: string }> {
-    const response = await this.fetchResponse(url, {
-      method,
-      redirect: 'error',
-      ...(body ? { body: JSON.stringify(body) } : {}),
-      headers: {
-        authorization: `Bearer ${this.apiKey}`,
-        accept: 'application/json',
-        ...(body ? { 'content-type': 'application/json' } : {}),
-        ...(method === 'POST' && idempotencyKey ? { 'idempotency-key': idempotencyKey } : {}),
+    throwIfProviderSignalAborted(externalSignal);
+    return this.fetchResponse(
+      url,
+      {
+        method,
+        redirect: 'error',
+        ...(body ? { body: JSON.stringify(body) } : {}),
+        headers: {
+          authorization: `Bearer ${this.apiKey}`,
+          accept: 'application/json',
+          ...(body ? { 'content-type': 'application/json' } : {}),
+          ...(method === 'POST' && idempotencyKey ? { 'idempotency-key': idempotencyKey } : {}),
+        },
       },
-    });
-    const payload = await readResponsePayload(response, this.maxResponseBytes);
-    if (!response.ok) throw providerResponseError(response, payload, [this.apiKey]);
-    if (!isRecord(payload) || isBinaryResponsePayload(payload)) {
-      throw new NewApiProviderError('New API 视频响应不是有效 JSON', {
-        requestId: responseRequestId(response, [this.apiKey]),
-        retryable: false,
-      });
-    }
-    return { payload, requestId: responseRequestId(response, [this.apiKey]) };
+      async (response, requestSignal) => {
+        const payload = await readResponsePayload(response, this.maxResponseBytes, requestSignal);
+        throwIfProviderSignalAborted(
+          externalSignal,
+          method === 'POST' && isRecord(payload)
+            ? contract === 'newapi-unified-v1'
+              ? normalizeErrorField(payload.task_id)
+              : extractVideoRequestId(payload)
+            : undefined,
+        );
+        if (!response.ok) throw providerResponseError(response, payload, [this.apiKey]);
+        if (!isRecord(payload) || isBinaryResponsePayload(payload)) {
+          throw new NewApiProviderError('New API 视频响应不是有效 JSON', {
+            requestId: responseRequestId(response, [this.apiKey]),
+            retryable: false,
+          });
+        }
+        return { payload, requestId: responseRequestId(response, [this.apiKey]) };
+      },
+      externalSignal,
+    );
   }
 
-  private async requestBinary(url: string): Promise<{ bytes: Uint8Array; mimeType: string }> {
-    const response = await this.fetchResponse(url, {
-      method: 'GET',
-      redirect: 'error',
-      headers: { authorization: `Bearer ${this.apiKey}`, accept: 'video/*,*/*' },
-    });
-    const declaredLength = Number(response.headers.get('content-length'));
-    if (Number.isFinite(declaredLength) && declaredLength > this.maxContentBytes) {
-      throw new NewApiProviderError('New API 视频内容超过归档大小限制', {
-        code: 'VIDEO_CONTENT_TOO_LARGE',
-        retryable: false,
-      });
-    }
-    const payload = await readResponsePayload(response, this.maxContentBytes);
-    if (!response.ok) throw providerResponseError(response, payload, [this.apiKey]);
-    if (!isBinaryResponsePayload(payload) || payload.bytes.byteLength === 0) {
-      throw new NewApiProviderError('New API 视频下载响应不包含二进制内容', {
-        requestId: responseRequestId(response, [this.apiKey]),
-        retryable: false,
-      });
-    }
-    if (payload.bytes.byteLength > this.maxContentBytes) {
-      throw new NewApiProviderError('New API 视频内容超过归档大小限制', {
-        code: 'VIDEO_CONTENT_TOO_LARGE',
-        retryable: false,
-      });
-    }
-    const mimeType = normalizedMimeType(payload.mimeType);
-    return {
-      bytes: payload.bytes,
-      mimeType: mimeType?.startsWith('video/') ? mimeType : 'video/mp4',
-    };
+  /** 在同一取消生命周期内下载受保护内容，禁止将明确的非视频 MIME 伪装为视频。 */
+  private async requestBinary(
+    url: string,
+    externalSignal?: AbortSignal,
+    platformJobId?: string,
+  ): Promise<{ bytes: Uint8Array; mimeType: string }> {
+    throwIfProviderSignalAborted(externalSignal, platformJobId);
+    return this.fetchResponse(
+      url,
+      {
+        method: 'GET',
+        redirect: 'error',
+        headers: { authorization: `Bearer ${this.apiKey}`, accept: 'video/*,*/*' },
+      },
+      async (response, requestSignal) => {
+        const declaredLength = Number(response.headers.get('content-length'));
+        if (Number.isFinite(declaredLength) && declaredLength > this.maxContentBytes) {
+          discardResponseBody(response);
+          throw new NewApiProviderError('New API 视频内容超过归档大小限制', {
+            code: 'VIDEO_CONTENT_TOO_LARGE',
+            retryable: false,
+          });
+        }
+        const payload = await readResponsePayload(response, this.maxContentBytes, requestSignal);
+        throwIfProviderSignalAborted(externalSignal, platformJobId);
+        if (!response.ok) throw providerResponseError(response, payload, [this.apiKey]);
+        if (!isBinaryResponsePayload(payload) || payload.bytes.byteLength === 0) {
+          throw new NewApiProviderError('New API 视频下载响应不包含二进制内容', {
+            requestId: responseRequestId(response, [this.apiKey]),
+            retryable: false,
+          });
+        }
+        const mimeType = normalizedMimeType(payload.mimeType);
+        if (mimeType && mimeType !== 'application/octet-stream' && !mimeType.startsWith('video/')) {
+          throw new NewApiProviderError('New API 视频下载响应 MIME 类型不匹配', {
+            code: 'VIDEO_CONTENT_TYPE_INVALID',
+            retryable: false,
+          });
+        }
+        return {
+          bytes: payload.bytes,
+          mimeType: mimeType?.startsWith('video/') ? mimeType : 'video/mp4',
+        };
+      },
+      externalSignal,
+    );
   }
 
-  private async fetchResponse(url: string, init: RequestInit): Promise<Response> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+  /** 覆盖响应头及消费响应体的完整 I/O 生命周期，统一脱敏传输异常。 */
+  private async fetchResponse<Result>(
+    url: string,
+    init: RequestInit,
+    consume: (response: Response, signal: AbortSignal) => Promise<Result>,
+    externalSignal?: AbortSignal,
+  ): Promise<Result> {
+    const abortContext = createProviderAbortContext(this.timeoutMs, externalSignal);
     try {
-      return await this.fetchImpl(url, { ...init, redirect: 'error', signal: controller.signal });
+      throwIfProviderSignalAborted(externalSignal);
+      const response = await this.fetchImpl(url, {
+        ...init,
+        redirect: 'error',
+        signal: abortContext.signal,
+      });
+      return await consume(response, abortContext.signal);
     } catch (error) {
+      if (error instanceof NewApiProviderError) throw error;
       const isTimeout = getErrorName(error) === 'AbortError';
+      if (abortContext.wasExternallyAborted()) {
+        throw providerCancellationError();
+      }
       throw new NewApiProviderError(
         isTimeout
           ? 'New API 请求超时'
@@ -985,7 +1230,7 @@ export class NewApiVideoProvider {
         { code: isTimeout ? 'TIMEOUT' : 'NETWORK_ERROR', retryable: true },
       );
     } finally {
-      clearTimeout(timeout);
+      abortContext.cleanup();
     }
   }
 }
@@ -1014,9 +1259,8 @@ function positiveInteger(value: number | undefined, fallback: number, name: stri
 }
 
 /**
- * Use the worker's durable per-node identity whenever it is available. The
- * fallback deliberately contains no prompt, credential, or media data, so a
- * direct provider caller still gets a stable and non-sensitive request key.
+ * 优先使用 Worker 已持久化的节点任务身份，回退键不包含提示词、凭据或媒体。
+ * 这里只保证同一输入得到稳定请求键，不能证明供应商支持幂等或不会重复收费。
  */
 function standardRequestIdempotencyKey(
   snapshot: RunSnapshot,
@@ -1046,8 +1290,100 @@ function nonNegativeInteger(value: number | undefined, fallback: number, name: s
   return resolved;
 }
 
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+/** Provider 请求的超时和调用方取消状态。 */
+type ProviderAbortContext = {
+  signal: AbortSignal;
+  wasExternallyAborted: () => boolean;
+  cleanup: () => void;
+};
+
+/**
+ * 将调用方取消信号与 Provider 超时合并为一次请求生命周期。
+ *
+ * `AbortSignal.timeout()` 在部分 Node/浏览器版本中不可用，因此这里保留
+ * 显式计时器；`wasExternallyAborted` 用于把用户取消与请求超时区分诊断。
+ */
+function createProviderAbortContext(
+  timeoutMs: number,
+  externalSignal?: AbortSignal,
+): ProviderAbortContext {
+  const controller = new AbortController();
+  let externallyAborted = false;
+  const onExternalAbort = () => {
+    if (controller.signal.aborted) return;
+    externallyAborted = true;
+    controller.abort(externalSignal?.reason);
+  };
+  if (externalSignal) {
+    if (externalSignal.aborted) onExternalAbort();
+    else externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+  }
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  return {
+    signal: controller.signal,
+    wasExternallyAborted: () => externallyAborted,
+    cleanup: () => {
+      clearTimeout(timeout);
+      externalSignal?.removeEventListener('abort', onExternalAbort);
+    },
+  };
+}
+
+/** Provider 请求在调用方主动取消后使用的稳定、不可重试诊断。 */
+function providerCancellationError(platformJobId?: string): NewApiProviderError {
+  return new NewApiProviderError('New API 请求已取消', {
+    code: 'ABORTED',
+    ...(platformJobId ? { platformJobId } : {}),
+    retryable: false,
+  });
+}
+
+/** 在开始本地 I/O 前将调用方取消转为 Provider 可诊断错误。 */
+function throwIfProviderSignalAborted(
+  signal: AbortSignal | undefined,
+  platformJobId?: string,
+): void {
+  if (signal?.aborted) throw providerCancellationError(platformJobId);
+}
+
+/** 本地进度回调失败必须保留已知平台身份，且不能触发重新创建上游任务。 */
+async function reportVideoProgress(
+  reportProgress: MockProviderRequest['reportProgress'],
+  progress: number,
+  platformJobId: string,
+): Promise<void> {
+  try {
+    await reportProgress?.(progress);
+  } catch {
+    throw new NewApiProviderError('视频任务进度回调失败', {
+      code: 'VIDEO_PROGRESS_FAILED',
+      platformJobId,
+      retryable: false,
+    });
+  }
+}
+
+/** 可由调用方取消的轮询等待，取消后不会开始下一次状态查询。 */
+function delay(milliseconds: number, signal?: AbortSignal, platformJobId?: string): Promise<void> {
+  throwIfProviderSignalAborted(signal, platformJobId);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      reject(providerCancellationError(platformJobId));
+    };
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, milliseconds);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+  });
 }
 
 function videoPollDelay(baseMilliseconds: number, attempt: number): number {
@@ -1058,18 +1394,164 @@ function videoPollDelay(baseMilliseconds: number, attempt: number): number {
   return baseMilliseconds * multiplier;
 }
 
+/** 只保存明确合同、状态及数值型媒体元数据，不存储签名 URL 或原始响应。 */
 function videoJobPayloadSummary(
-  phase: 'submitted' | 'resumed' | 'polling' | 'completed' | 'failed',
+  contract: FrozenVideoContract,
+  phase: 'submitting' | 'submitted' | 'resumed' | 'polling' | 'completed' | 'failed',
   modelAlias: string,
   providerStatus?: string,
   progress?: number,
+  mediaMetadata?: Record<string, number>,
+  requestId?: string,
 ): Record<string, unknown> {
   return {
-    contract: 'newapi-video-v1',
+    contract,
     phase,
     modelAlias,
     ...(providerStatus ? { providerStatus } : {}),
     ...(progress !== undefined ? { progress } : {}),
+    ...(mediaMetadata ? { mediaMetadata } : {}),
+    ...(requestId ? { requestId } : {}),
+  };
+}
+
+/** 优先使用冻结合同；无合同老平台 ID 只能沿旧查询路径恢复，未知合同失败关闭。 */
+function resolveVideoContract(
+  job: ProviderJobUpdate | undefined,
+  selected: NewApiVideoContract,
+): FrozenVideoContract {
+  const frozen = job?.payload?.contract;
+  if (frozen === 'newapi-unified-v1' || frozen === 'legacy-v1' || frozen === 'newapi-video-v1')
+    return frozen;
+  if (frozen !== undefined)
+    throw new NewApiProviderError('已有视频任务的合同无法识别', {
+      code: 'VIDEO_CONTRACT_UNSUPPORTED',
+      platformJobId: job?.platformJobId,
+      retryable: false,
+    });
+  return normalizeErrorField(job?.platformJobId) ? 'legacy-v1' : selected;
+}
+
+/** 官方通用视频 JSON 参数白名单；不把 legacy/Sora 或不明确的 metadata 映射进来。 */
+function validateUnifiedVideoParameters(parameters: Record<string, unknown>): void {
+  for (const [parameter, value] of Object.entries(parameters)) {
+    if (value === undefined || parameter === 'inferenceStrength') continue;
+    if (
+      ![
+        'prompt',
+        'duration',
+        'width',
+        'height',
+        'fps',
+        'seed',
+        'n',
+        'response_format',
+        'user',
+      ].includes(parameter)
+    ) {
+      throw unsupportedProviderParameter('video', parameter);
+    }
+    if (parameter === 'n' || parameter === 'response_format') {
+      if (value !== (parameter === 'n' ? 1 : 'url'))
+        throw unsupportedProviderParameter('video', parameter);
+    } else if (parameter === 'duration') {
+      if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0)
+        throw invalidProviderParameter('video', parameter, '必须为正有限秒数');
+    } else if (['width', 'height', 'fps', 'seed'].includes(parameter)) {
+      if (
+        typeof value !== 'number' ||
+        !Number.isSafeInteger(value) ||
+        (parameter !== 'seed' && value <= 0)
+      )
+        throw invalidProviderParameter('video', parameter, '必须为合法整数');
+    } else if (!nonEmptyString(value))
+      throw invalidProviderParameter('video', parameter, '必须为非空字符串');
+  }
+}
+
+/** 根据公开通用视频合同创建请求，首帧 image 是字符串，不能使用 Sora 的文件字段。 */
+function unifiedVideoPayload(
+  snapshot: RunSnapshot,
+  label: string,
+  prompt: string | undefined,
+  inputs: VideoInputMapping,
+  document?: PromptDocument,
+): Record<string, unknown> {
+  const resolvedPrompt = resolveRequiredVideoPrompt(
+    snapshot,
+    label,
+    prompt,
+    inputs.prompt,
+    document,
+  );
+  if (!resolvedPrompt.trim()) throw invalidProviderParameter('video', 'prompt', '必须为非空字符串');
+  const payload: Record<string, unknown> = { model: snapshot.modelAlias, prompt: resolvedPrompt };
+  for (const parameter of [
+    'duration',
+    'width',
+    'height',
+    'fps',
+    'seed',
+    'n',
+    'response_format',
+    'user',
+  ]) {
+    if (snapshot.parameters[parameter] !== undefined)
+      payload[parameter] = snapshot.parameters[parameter];
+  }
+  if (inputs.firstFrame) payload.image = inputImageUrl(inputs.firstFrame, 'video');
+  return payload;
+}
+
+/** 严格读取官方通用视频状态、URL、格式与数值元数据，拒绝混入其他协议的状态别名。 */
+function parseUnifiedVideoPollResult(
+  payload: Record<string, unknown>,
+  sensitiveValues: readonly string[],
+): VideoPollResult {
+  const providerStatus = normalizeErrorField(payload.status);
+  const statuses = {
+    queued: 'pending',
+    in_progress: 'running',
+    completed: 'succeeded',
+    failed: 'failed',
+  } as const;
+  if (!providerStatus || !Object.prototype.hasOwnProperty.call(statuses, providerStatus)) {
+    throw new NewApiProviderError('New API 统一视频响应状态无法识别', {
+      code: 'VIDEO_STATUS_UNKNOWN',
+      retryable: false,
+    });
+  }
+  const status = statuses[providerStatus as keyof typeof statuses];
+  const outputFormat = normalizeErrorField(payload.format);
+  if (payload.format !== undefined && !outputFormat)
+    throw new NewApiProviderError('New API 统一视频输出格式无效', {
+      code: 'VIDEO_OUTPUT_FORMAT_UNSUPPORTED',
+      retryable: false,
+    });
+  if (outputFormat && !['mp4', 'webm', 'mov', 'm4v'].includes(outputFormat))
+    throw new NewApiProviderError('New API 统一视频输出格式不受支持', {
+      code: 'VIDEO_OUTPUT_FORMAT_UNSUPPORTED',
+      retryable: false,
+    });
+  const mediaMetadata: Record<string, number> = {};
+  if (isRecord(payload.metadata)) {
+    for (const field of ['duration', 'width', 'height', 'fps', 'seed']) {
+      const value = payload.metadata[field];
+      if (typeof value === 'number' && Number.isFinite(value)) mediaMetadata[field] = value;
+    }
+  }
+  const usage = parseProviderUsage(payload);
+  const error = extractProviderError(payload, sensitiveValues).message;
+  return {
+    status,
+    providerStatus,
+    progress: status === 'succeeded' ? 100 : 0,
+    payload,
+    ...(nonEmptyString(payload.url) ? { outputUrl: payload.url.trim() } : {}),
+    ...(outputFormat ? { outputFormat } : {}),
+    ...(Object.keys(mediaMetadata).length ? { mediaMetadata } : {}),
+    ...(usage ? { usage } : {}),
+    ...(error ? { error } : {}),
   };
 }
 
@@ -1130,7 +1612,8 @@ function positiveIntegerParameter(value: unknown): number | undefined {
 function providerVideoReferenceUrl(value: unknown): string | undefined {
   if (!nonEmptyString(value)) return undefined;
   const candidate = value.trim();
-  if (/^data:image\/[^;,\s]+;base64,/i.test(candidate)) return candidate;
+  const dataUrl = parseDataUrl(candidate);
+  if (dataUrl?.mimeType.startsWith('image/') && isValidBase64(dataUrl.base64)) return candidate;
   return providerRemoteUrl(candidate);
 }
 
@@ -1295,6 +1778,14 @@ function videoJobError(
   );
 }
 
+/** 将已验证的视频格式映射为 MIME，不依赖资源 URL 的扩展名或签名参数。 */
+function videoMimeTypeFromFormat(format: string): string {
+  if (format === 'webm') return 'video/webm';
+  if (format === 'mov') return 'video/quicktime';
+  if (format === 'm4v') return 'video/x-m4v';
+  return 'video/mp4';
+}
+
 function videoMimeTypeFromUrl(url: string): string {
   try {
     const pathname = new URL(url).pathname.toLowerCase();
@@ -1435,7 +1926,9 @@ function redactUrlQueryAndFragment(message: string): string {
   return message.replace(/\bhttps?:\/\/[^\s<>"']+/gi, (rawUrl) => {
     try {
       const parsed = new URL(rawUrl);
-      if (!parsed.search && !parsed.hash) return rawUrl;
+      if (!parsed.search && !parsed.hash && !parsed.username && !parsed.password) return rawUrl;
+      parsed.username = '';
+      parsed.password = '';
       parsed.search = '';
       parsed.hash = '';
       return parsed.toString();
@@ -1536,6 +2029,7 @@ function validatedMediaMimeType(value: unknown, mediaType: 'image' | 'audio'): s
   return mimeType;
 }
 
+/** 解析内嵌数据地址；内容仍需由调用方执行 MIME 和 base64 校验。 */
 function parseDataUrl(value: string): { base64: string; mimeType: string } | undefined {
   const match = /^data:([^;,\s]+)?;base64,([\s\S]*)$/i.exec(value.trim());
   if (!match || !match[2]) return undefined;
@@ -1543,6 +2037,27 @@ function parseDataUrl(value: string): { base64: string; mimeType: string } | und
     base64: match[2],
     mimeType: normalizedMimeType(match[1]) ?? 'application/octet-stream',
   };
+}
+
+/** 判断是否包含非空且可解码的标准 base64，禁止把 URL 或错误文本当作媒体归档。 */
+function isValidBase64(value: string): boolean {
+  try {
+    return atob(value).length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** 返回合法的内嵌媒体编码，否则在归档前给出不含原始内容的明确诊断。 */
+function validatedMediaBase64(value: string): string {
+  const normalized = value.trim();
+  if (!isValidBase64(normalized)) {
+    throw new NewApiProviderError('New API 媒体响应不包含有效 base64', {
+      code: 'PROVIDER_OUTPUT_BASE64_INVALID',
+      retryable: false,
+    });
+  }
+  return normalized;
 }
 
 function providerRemoteUrl(value: string): string | undefined {
@@ -1900,7 +2415,7 @@ function parseImageOutput(payload: unknown, snapshot: RunSnapshot): ImageProvide
       return {
         mediaType: 'image',
         kind: 'base64',
-        base64: dataUrl.base64,
+        base64: validatedMediaBase64(dataUrl.base64),
         mimeType: dataUrlMimeType ?? mimeType,
         format: format ?? formatFromMimeType(dataUrl.mimeType),
       };
@@ -1925,7 +2440,7 @@ function parseImageOutput(payload: unknown, snapshot: RunSnapshot): ImageProvide
     return {
       mediaType: 'image',
       kind: 'base64',
-      base64: dataUrl?.base64 ?? base64.trim(),
+      base64: validatedMediaBase64(dataUrl?.base64 ?? base64),
       mimeType: dataUrlMimeType ?? mimeType,
       format: format ?? formatFromMimeType(dataUrl?.mimeType),
     };
@@ -1976,7 +2491,7 @@ function parseAudioOutput(payload: unknown, snapshot: RunSnapshot): AudioProvide
       return {
         mediaType: 'audio',
         kind: 'base64',
-        base64: dataUrl.base64,
+        base64: validatedMediaBase64(dataUrl.base64),
         mimeType: dataUrlMimeType ?? mimeType,
         format: format ?? formatFromMimeType(dataUrl.mimeType),
       };
@@ -2006,7 +2521,7 @@ function parseAudioOutput(payload: unknown, snapshot: RunSnapshot): AudioProvide
     return {
       mediaType: 'audio',
       kind: 'base64',
-      base64: dataUrl?.base64 ?? base64.trim(),
+      base64: validatedMediaBase64(dataUrl?.base64 ?? base64),
       mimeType: dataUrlMimeType ?? mimeType,
       format: format ?? formatFromMimeType(dataUrl?.mimeType),
     };
@@ -2014,8 +2529,10 @@ function parseAudioOutput(payload: unknown, snapshot: RunSnapshot): AudioProvide
   throw new NewApiProviderError('New API 音频响应缺少 url 或 base64 内容');
 }
 
+/** 单输出运行不允许静默丢弃供应商返回的多项媒体。 */
 function firstMediaItem(payload: unknown): Record<string, unknown> | undefined {
   if (Array.isArray(payload)) {
+    assertSingleMediaResult(payload);
     const first = payload[0];
     if (isRecord(first)) return first;
     if (nonEmptyString(first)) return { data: first };
@@ -2025,12 +2542,23 @@ function firstMediaItem(payload: unknown): Record<string, unknown> | undefined {
   for (const key of ['data', 'images', 'output', 'results']) {
     const collection = payload[key];
     if (Array.isArray(collection)) {
+      assertSingleMediaResult(collection);
       const first = collection[0];
       if (isRecord(first)) return first;
       if (nonEmptyString(first)) return { data: first };
     }
   }
   return payload;
+}
+
+/** 生成结果目前只有一个归档槽位，多项响应必须交由调用方明确处理。 */
+function assertSingleMediaResult(items: unknown[]): void {
+  if (items.length > 1) {
+    throw new NewApiProviderError('New API 返回多个媒体结果，当前运行仅支持单项归档', {
+      code: 'PROVIDER_OUTPUT_CARDINALITY_UNSUPPORTED',
+      retryable: false,
+    });
+  }
 }
 
 function isBinaryResponsePayload(value: unknown): value is BinaryResponsePayload {
@@ -2050,23 +2578,26 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+/** 有界读取 JSON 或媒体内容；取消信号涵盖响应体，不仅涵盖响应头。 */
 async function readResponsePayload(
   response: Response,
   maxBytes = defaultResponseContentLimit,
+  signal?: AbortSignal,
 ): Promise<unknown> {
   const headers = (response as Response & { headers?: Headers }).headers;
   const mimeType = normalizedMimeType(headers?.get?.('content-type'));
   const declaredLength = Number(headers?.get?.('content-length'));
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    discardResponseBody(response);
     throw new NewApiProviderError('New API 响应超过大小限制', {
       code: 'RESPONSE_TOO_LARGE',
       retryable: false,
     });
   }
   if (typeof response.arrayBuffer !== 'function') {
-    return response.json().catch(() => ({}));
+    return withResponseAbort(() => response.json(), signal);
   }
-  const bytes = await readResponseBytes(response, maxBytes);
+  const bytes = await readResponseBytes(response, maxBytes, signal);
   const text = new TextDecoder().decode(bytes);
   const looksLikeJson =
     mimeType?.includes('json') || /^[\s]*[\[{]/.test(text) || text.trim() === '';
@@ -2082,7 +2613,42 @@ async function readResponsePayload(
   return { __newApiBinary: true, bytes, mimeType } satisfies BinaryResponsePayload;
 }
 
-async function readResponseBytes(response: Response, maxBytes: number): Promise<Uint8Array> {
+/**
+ * 清理已经拒绝的响应；底层取消失败不得覆盖原始诊断或阻塞错误返回。
+ * 此操作只释放本地流，不代表远程任务已取消。
+ */
+function discardResponseBody(response: Response): void {
+  void response.body?.cancel().catch(() => undefined);
+}
+
+/**
+ * 将读取操作绑定到请求信号；使用稳定 AbortError，避免泄露调用方的取消原因。
+ * 无论操作还是取消先完成，均移除监听，底层操作晚到的异常也有处理器。
+ */
+async function withResponseAbort<Value>(
+  operation: () => Promise<Value>,
+  signal?: AbortSignal,
+): Promise<Value> {
+  if (!signal) return operation();
+  if (signal.aborted) throw new DOMException('Provider response aborted', 'AbortError');
+  let onAbort: () => void = () => undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(new DOMException('Provider response aborted', 'AbortError'));
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([operation(), aborted]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
+}
+
+/** 逐块执行大小限制及取消检查；失败时释放读取锁并异步关闭底层流。 */
+async function readResponseBytes(
+  response: Response,
+  maxBytes: number,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
   const body = response.body;
   if (body && typeof body.getReader === 'function') {
     const reader = body.getReader();
@@ -2090,12 +2656,11 @@ async function readResponseBytes(response: Response, maxBytes: number): Promise<
     let total = 0;
     try {
       while (true) {
-        const next = await reader.read();
+        const next = await withResponseAbort(() => reader.read(), signal);
         if (next.done) break;
         const chunk = next.value;
         total += chunk.byteLength;
         if (total > maxBytes) {
-          await reader.cancel();
           throw new NewApiProviderError('New API 响应超过大小限制', {
             code: 'RESPONSE_TOO_LARGE',
             retryable: false,
@@ -2103,6 +2668,9 @@ async function readResponseBytes(response: Response, maxBytes: number): Promise<
         }
         chunks.push(chunk);
       }
+    } catch (error) {
+      void reader.cancel().catch(() => undefined);
+      throw error;
     } finally {
       reader.releaseLock();
     }
@@ -2115,7 +2683,7 @@ async function readResponseBytes(response: Response, maxBytes: number): Promise<
     return bytes;
   }
 
-  const bytes = new Uint8Array(await response.arrayBuffer());
+  const bytes = new Uint8Array(await withResponseAbort(() => response.arrayBuffer(), signal));
   if (bytes.byteLength > maxBytes) {
     throw new NewApiProviderError('New API 响应超过大小限制', {
       code: 'RESPONSE_TOO_LARGE',
@@ -2135,6 +2703,7 @@ function providerParameters(
   parameters: Record<string, unknown>,
   mediaType: 'text' | 'image' | 'audio',
 ): Record<string, unknown> {
+  if (mediaType !== 'text') validateMediaParameters(parameters, mediaType);
   const {
     inferenceStrength,
     prompt: _prompt,
@@ -2186,9 +2755,187 @@ function validateProviderRoleParameters(
   for (const role of providerRoleParameterKeys) {
     if (!Object.prototype.hasOwnProperty.call(parameters, role)) continue;
     const value = parameters[role];
+    if (mediaType === 'image' && role === 'style' && (value === 'vivid' || value === 'natural'))
+      continue;
     if (value === undefined || value === null) continue;
     if (typeof value === 'string' && value.trim().length === 0) continue;
     throw unsupportedInputRoleError(mediaType, role);
+  }
+  for (const parameter of undocumentedReferenceParameters) {
+    if (parameters[parameter] !== undefined && parameters[parameter] !== null) {
+      throw unsupportedProviderParameter(mediaType, parameter);
+    }
+  }
+}
+
+/** 未确认的参考参数别名不能绕过图端口校验或静默降级。 */
+const undocumentedReferenceParameters = [
+  'reference_images',
+  'referenceImages',
+  'reference_image',
+  'referenceImage',
+  'negative_prompt',
+  'first_frame',
+  'last_frame',
+  'audio_track',
+  'input_reference',
+  'image',
+  'images',
+  'image_url',
+  'image_urls',
+  'audio',
+  'video',
+] as const;
+
+/** 已有映射及公开图像/TTS 契约的参数边界；不意味着所有模型支持全部选项。 */
+const supportedMediaParameters: Record<'image' | 'audio' | 'video', readonly string[]> = {
+  image: [
+    'prompt',
+    'inferenceStrength',
+    'size',
+    'image_size',
+    'imageSize',
+    'resolution',
+    'quality',
+    'image_quality',
+    'imageQuality',
+    'aspect_ratio',
+    'aspectRatio',
+    'n',
+    'style',
+    'response_format',
+    'output_format',
+    'background',
+    'moderation',
+    'user',
+    'stream',
+  ],
+  audio: ['prompt', 'input', 'inferenceStrength', 'voice', 'response_format', 'speed'],
+  video: [
+    'prompt',
+    'inferenceStrength',
+    'duration',
+    'seconds',
+    'durationSeconds',
+    'resolution',
+    'video_resolution',
+    'videoResolution',
+    'size',
+    'video_size',
+    'videoSize',
+    'quality',
+    'video_quality',
+    'videoQuality',
+    'aspect_ratio',
+    'aspectRatio',
+  ],
+};
+
+/** 返回非重试的未知契约诊断，只包含字段名，不包含输入值或媒体内容。 */
+function unsupportedProviderParameter(
+  mediaType: MediaType,
+  parameter: string,
+): NewApiProviderError {
+  return new NewApiProviderError(`New API ${mediaType} 尚不支持参数：${parameter}`, {
+    code: 'UNSUPPORTED_PROVIDER_PARAMETER',
+    retryable: false,
+  });
+}
+
+/** 返回字段范围或类型错误；约束描述由本地代码提供，不拼接不可信输入值。 */
+function invalidProviderParameter(
+  mediaType: MediaType,
+  parameter: string,
+  constraint: string,
+): NewApiProviderError {
+  return new NewApiProviderError(`New API ${mediaType} 参数 ${parameter} ${constraint}`, {
+    code: 'INVALID_PROVIDER_PARAMETER',
+    retryable: false,
+  });
+}
+
+/**
+ * 在生成或恢复前拒绝未知参数、类型错误及无法归档的多输出/流式模式。
+ * 图像结果当前仅承载一项；TTS voice 必须显式配置，不猜测默认音色。
+ */
+function validateMediaParameters(
+  parameters: Record<string, unknown>,
+  mediaType: 'image' | 'audio' | 'video',
+): void {
+  for (const [parameter, value] of Object.entries(parameters)) {
+    if (value === undefined) continue;
+    if (!supportedMediaParameters[mediaType].includes(parameter))
+      throw unsupportedProviderParameter(mediaType, parameter);
+    if (parameter === 'inferenceStrength') continue;
+    if (parameter === 'n') {
+      if (value !== 1) throw unsupportedProviderParameter(mediaType, parameter);
+    } else if (parameter === 'stream') {
+      if (value !== false) throw unsupportedProviderParameter(mediaType, parameter);
+    } else if (parameter === 'speed') {
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0.25 || value > 4) {
+        throw invalidProviderParameter(mediaType, parameter, '必须为 0.25 到 4 的有限数值');
+      }
+    } else if (['duration', 'seconds', 'durationSeconds'].includes(parameter)) {
+      if (positiveIntegerParameter(value) === undefined)
+        throw invalidProviderParameter(mediaType, parameter, '必须为正整数秒数');
+    } else if (!nonEmptyString(value)) {
+      throw invalidProviderParameter(mediaType, parameter, '必须为非空字符串');
+    }
+  }
+  const formats =
+    mediaType === 'audio' ? ['mp3', 'opus', 'aac', 'flac', 'wav', 'pcm'] : ['url', 'b64_json'];
+  if (
+    parameters.response_format !== undefined &&
+    !formats.includes(String(parameters.response_format))
+  ) {
+    throw invalidProviderParameter(mediaType, 'response_format', '不在已支持格式范围内');
+  }
+  if (
+    mediaType === 'audio' &&
+    !['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'].includes(String(parameters.voice))
+  ) {
+    throw invalidProviderParameter(mediaType, 'voice', '必须显式选择已确认的音色');
+  }
+  if (
+    mediaType === 'image' &&
+    parameters.output_format !== undefined &&
+    !['png', 'jpeg', 'webp'].includes(String(parameters.output_format))
+  ) {
+    throw invalidProviderParameter(mediaType, 'output_format', '不在已支持格式范围内');
+  }
+  if (
+    mediaType === 'image' &&
+    parameters.background === 'transparent' &&
+    parameters.output_format === 'jpeg'
+  ) {
+    throw invalidProviderParameter(mediaType, 'background', '透明背景不能使用 jpeg 输出');
+  }
+  const aliasGroups =
+    mediaType === 'image'
+      ? [
+          ['size', 'image_size', 'imageSize', 'resolution'],
+          ['quality', 'image_quality', 'imageQuality'],
+          ['aspect_ratio', 'aspectRatio'],
+        ]
+      : mediaType === 'video'
+        ? [
+            ['duration', 'seconds', 'durationSeconds'],
+            ['resolution', 'video_resolution', 'videoResolution'],
+            ['size', 'video_size', 'videoSize'],
+            ['quality', 'video_quality', 'videoQuality'],
+            ['aspect_ratio', 'aspectRatio'],
+          ]
+        : [];
+  for (const aliases of aliasGroups) {
+    const values = aliases
+      .filter((alias) => parameters[alias] !== undefined)
+      .map((alias) =>
+        alias === 'duration' || alias === 'seconds' || alias === 'durationSeconds'
+          ? positiveIntegerParameter(parameters[alias])
+          : String(parameters[alias]).trim(),
+      );
+    if (new Set(values).size > 1)
+      throw invalidProviderParameter(mediaType, aliases.join('/'), '别名值冲突');
   }
 }
 
@@ -2637,6 +3384,7 @@ function mapVideoInputs(snapshot: RunSnapshot): VideoInputMapping {
     }
     if (input.role === 'firstFrame') {
       if (mapping.firstFrame) throw inputRoleCardinalityError('video', 'firstFrame');
+      inputImageUrl(input, 'video');
       mapping.firstFrame = input;
       continue;
     }

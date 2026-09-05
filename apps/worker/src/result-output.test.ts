@@ -7,6 +7,36 @@ import {
 } from './result-output';
 
 describe('provider output normalization', () => {
+  it('normalizes string-array base64 and audio format hints', () => {
+    expect(
+      providerOutputToArchiveInput({ data: ['aGVsbG8='], format: 'flac' }, 'audio'),
+    ).toMatchObject({
+      mimeType: 'audio/flac',
+      content: Buffer.from('hello'),
+    });
+    for (const [format, mimeType] of [
+      ['aac', 'audio/aac'],
+      ['opus', 'audio/ogg'],
+      ['pcm', 'audio/pcm'],
+    ]) {
+      expect(normalizeProviderOutput({ base64: 'aGVsbG8=', format }, 'audio')).toMatchObject({
+        mimeType,
+      });
+    }
+  });
+
+  it('rejects explicit mismatched MIME, data URLs, and embedded URL credentials', () => {
+    for (const fields of [
+      { kind: 'base64', base64: 'aGVsbG8=', mimeType: 'audio/wav' },
+      { kind: 'url', url: 'data:audio/wav;base64,aGVsbG8=' },
+      { kind: 'url', url: 'https://synthetic-user:synthetic-secret@cdn.example/image' },
+    ]) {
+      expect(() => normalizeProviderOutput({ ...fields, mediaType: 'image' }, 'image')).toThrow(
+        ProviderOutputError,
+      );
+    }
+  });
+
   it('normalizes OpenAI chat text and preserves content parts order', () => {
     const output = normalizeProviderOutput(
       {

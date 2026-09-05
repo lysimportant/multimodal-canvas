@@ -1,0 +1,35 @@
+# 仅用于一次性本地 Linux 验收；不打包用户 .env、主机依赖或生产配置。
+FROM node:24.12.0-bookworm-slim AS dependencies
+
+ENV PNPM_HOME=/opt/acceptance-pnpm
+ENV PATH=${PNPM_HOME}/node_modules/.bin:${PATH}
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/acceptance-browsers
+
+RUN npm install --prefix /opt/acceptance-pnpm --no-audit --no-fund pnpm@11.19.0 \
+    && printf 'Acquire::Retries "3";\n' > /etc/apt/apt.conf.d/80acceptance-retries \
+    && apt-get update \
+    && apt-get install --no-install-recommends --yes ffmpeg openssl curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY apps/api/package.json ./apps/api/package.json
+COPY apps/web/package.json ./apps/web/package.json
+COPY apps/worker/package.json ./apps/worker/package.json
+COPY packages/credential-crypto/package.json ./packages/credential-crypto/package.json
+COPY packages/domain/package.json ./packages/domain/package.json
+COPY packages/observability/package.json ./packages/observability/package.json
+COPY packages/providers/package.json ./packages/providers/package.json
+COPY packages/ui/package.json ./packages/ui/package.json
+COPY prisma ./prisma
+RUN pnpm install --frozen-lockfile
+# 仅对容器内浏览器依赖安装做三次有界重试，失败仍使镜像构建失败。
+RUN for attempt in 1 2 3; do \
+      pnpm --filter @multimodal-canvas/web exec playwright install --with-deps chromium && break; \
+      if [ "$attempt" -eq 3 ]; then exit 1; fi; \
+      sleep 2; \
+    done
+
+FROM dependencies AS acceptance
+COPY . .
+ENTRYPOINT ["/bin/bash", "/workspace/scripts/verify-linux-ci.sh"]

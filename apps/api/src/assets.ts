@@ -4,6 +4,7 @@ import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import {
   DeleteObjectCommand,
   GetObjectCommand,
+  HeadObjectCommand,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
@@ -17,6 +18,8 @@ export interface BlobStore {
   put(key: string, content: Buffer): Promise<void>;
   get(key: string): Promise<Buffer | undefined>;
   delete(key: string): Promise<void>;
+  /** 可选的无内容存在性检查；只有对象缺失返回 false，权限及传输错误必须抛出。 */
+  exists?(key: string): Promise<boolean>;
   /** Optional native short-lived GET URL (for example an S3 presigned URL). */
   createPresignedGetUrl?(
     key: string,
@@ -73,6 +76,17 @@ export class S3BlobStore implements BlobStore {
 
   async delete(key: string) {
     await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
+  }
+
+  /** 使用 HEAD 选择新旧派生键，避免签名时下载预览；不掩盖权限或网络故障。 */
+  async exists(key: string): Promise<boolean> {
+    try {
+      await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }));
+      return true;
+    } catch (error) {
+      if (isS3NotFound(error)) return false;
+      throw error;
+    }
   }
 
   async createPresignedPutUrl(
@@ -133,12 +147,14 @@ export class FileSystemBlobStore implements BlobStore {
     await writeFile(target, content);
   }
 
+  /** 读取相对键；缺失或源文件下不可能存在的子路径返回 undefined，其它 I/O 错误继续抛出。 */
   async get(key: string): Promise<Buffer | undefined> {
     const target = this.pathFor(key);
     try {
       return await readFile(target);
     } catch (error) {
-      if (isNodeError(error) && error.code === 'ENOENT') return undefined;
+      if (isNodeError(error) && (error.code === 'ENOENT' || error.code === 'ENOTDIR'))
+        return undefined;
       throw error;
     }
   }
@@ -585,6 +601,7 @@ export class PrismaAssetStore implements AssetStore {
     this.contentUrl = options.contentUrl ?? ((assetId) => `/v1/assets/${assetId}/content`);
   }
 
+  /** 创建源资源、版本和旁路预览；失败时只清理本次新键，不触碰旧布局对象。 */
   async create(input: CreateAssetInput): Promise<StoredAsset> {
     const id = randomUUID();
     const hash = sha256(input.content);
@@ -592,11 +609,14 @@ export class PrismaAssetStore implements AssetStore {
     const derivatives = mapDerivativeInputs(id, input.derivatives);
     const derivedMetadata = metadataWithDerivatives(input.metadata, derivatives, id);
     const assetMetadata = withLatestVersionMetadata(derivedMetadata, 1);
-    await this.blobStore.put(contentKey, input.content);
-    for (const derivative of derivatives) {
-      await this.blobStore.put(this.derivativeKey(contentKey, derivative.kind), derivative.content);
-    }
     try {
+      await this.blobStore.put(contentKey, input.content);
+      for (const derivative of derivatives) {
+        await this.blobStore.put(
+          this.derivativeKey(contentKey, derivative.kind),
+          derivative.content,
+        );
+      }
       const row = await this.prisma.$transaction(async (transaction) => {
         const asset = await transaction.asset.create({
           data: {
@@ -698,6 +718,7 @@ export class PrismaAssetStore implements AssetStore {
     };
   }
 
+  /** 在项目/所有者范围内读取预览；新键缺失时只读回退旧 S3 键，存储错误不会触发回退。 */
   async getDerivative(
     id: string,
     kind: string,
@@ -711,15 +732,18 @@ export class PrismaAssetStore implements AssetStore {
     const metadata = asRecord(row.metadata);
     const descriptor = asRecord(metadata?.derivatives)?.[kind];
     if (!asRecord(descriptor)?.mimeType) return undefined;
-    const content = await this.blobStore.get(this.derivativeKey(row.contentKey, kind));
-    if (!content) return undefined;
-    return {
-      kind,
-      mimeType: String(asRecord(descriptor)?.mimeType),
-      sizeBytes: content.byteLength,
-      sha256: sha256(content),
-      content,
-    };
+    for (const key of this.derivativeReadKeys(row.contentKey, kind)) {
+      const content = await this.blobStore.get(key);
+      if (content === undefined) continue;
+      return {
+        kind,
+        mimeType: String(asRecord(descriptor)?.mimeType),
+        sizeBytes: content.byteLength,
+        sha256: sha256(content),
+        content,
+      };
+    }
+    return undefined;
   }
 
   async update(
@@ -850,6 +874,7 @@ export class PrismaAssetStore implements AssetStore {
     return row ? this.blobStore.get(row.contentKey) : undefined;
   }
 
+  /** 为授权范围内的源版本或实际存在的预览签名；预览支持新旧布局，错误保持显式。 */
   async createPresignedGetUrl(
     assetId: string,
     options: { version?: number; derivative?: string; expiresIn: number },
@@ -884,7 +909,18 @@ export class PrismaAssetStore implements AssetStore {
       const descriptor = asRecord(asRecord(metadata?.derivatives)?.[options.derivative]);
       if (!descriptor?.mimeType) return undefined;
       contentType = String(descriptor.mimeType);
-      key = this.derivativeKey(key, options.derivative);
+      let existingKey: string | undefined;
+      for (const candidate of this.derivativeReadKeys(key, options.derivative)) {
+        const exists = this.blobStore.exists
+          ? await this.blobStore.exists(candidate)
+          : (await this.blobStore.get(candidate)) !== undefined;
+        if (exists) {
+          existingKey = candidate;
+          break;
+        }
+      }
+      if (!existingKey) return undefined;
+      key = existingKey;
     }
     return presigner.call(this.blobStore, key, {
       expiresIn: options.expiresIn,
@@ -914,8 +950,14 @@ export class PrismaAssetStore implements AssetStore {
     return `${this.keyPrefix}/${assetId}/v${version}`;
   }
 
+  /** 新派生文件写入源文件的旁路目录，源对象键和内容不变。 */
   private derivativeKey(contentKey: string, kind: string): string {
-    return `${contentKey}/derivatives/${kind}`;
+    return `${contentKey}.derivatives/${kind}`;
+  }
+
+  /** 优先新键，只有不存在时才读取旧 S3 键；不迁移、不重写旧对象。 */
+  private derivativeReadKeys(contentKey: string, kind: string): [string, string] {
+    return [this.derivativeKey(contentKey, kind), `${contentKey}/derivatives/${kind}`];
   }
 }
 

@@ -115,7 +115,7 @@ function standardSnapshot(mediaType: StandardMediaType): RunSnapshot {
     canvasRevision: 1,
     targetNodeId,
     modelAlias: `${mediaType}-v1`,
-    parameters: {},
+    parameters: mediaType === 'audio' ? { voice: 'alloy' } : {},
     submittedAt: '2026-08-24T00:00:00.000Z',
     nodes: [
       {
@@ -1287,7 +1287,7 @@ describe('NewApiProvider', () => {
         canvasRevision: 1,
         targetNodeId: 'node_audio',
         modelAlias: 'audio-v1',
-        parameters: { response_format: 'mp3' },
+        parameters: { response_format: 'mp3', voice: 'alloy' },
         submittedAt: '2026-08-24T00:00:00.000Z',
         nodes: [
           {
@@ -1307,6 +1307,7 @@ describe('NewApiProvider', () => {
       expect.objectContaining({
         body: JSON.stringify({
           response_format: 'mp3',
+          voice: 'alloy',
           model: 'audio-v1',
           input: 'Read this sentence',
         }),
@@ -1346,6 +1347,7 @@ describe('NewApiProvider', () => {
         `https://newapi.example.com/v1/${mediaType === 'image' ? 'images/generations' : 'audio/speech'}`,
         expect.objectContaining({
           body: JSON.stringify({
+            ...(mediaType === 'audio' ? { voice: 'alloy' } : {}),
             model: `${mediaType}-v1`,
             ...(mediaType === 'image'
               ? { prompt: 'content value', n: 1 }
@@ -1846,7 +1848,7 @@ describe('NewApiProvider', () => {
         canvasRevision: 1,
         targetNodeId: 'node_audio',
         modelAlias: 'audio-v1',
-        parameters: { input: 'say hello', response_format: 'mp3' },
+        parameters: { input: 'say hello', response_format: 'mp3', voice: 'alloy' },
         submittedAt: '2026-08-24T00:00:00.000Z',
         nodes: [
           {
@@ -1906,7 +1908,7 @@ describe('NewApiProvider', () => {
     const result = await provider.execute({
       snapshot: {
         ...standardSnapshot('audio'),
-        parameters: {},
+        parameters: { voice: 'alloy' },
       },
     });
 
@@ -2389,6 +2391,38 @@ describe('NewApiProvider', () => {
     }
   });
 
+  it('classifies a caller abort separately from a provider timeout', async () => {
+    const controller = new AbortController();
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+      return await new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener(
+          'abort',
+          () => reject(new DOMException('operation aborted', 'AbortError')),
+          { once: true },
+        );
+      });
+    });
+    const provider = new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+      timeoutMs: 10_000,
+    });
+
+    const execution = provider.execute({ snapshot: textSnapshot(), signal: controller.signal });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const requestSignal = fetchImpl.mock.calls[0]?.[1]?.signal;
+    expect(requestSignal).toBeInstanceOf(AbortSignal);
+    controller.abort();
+
+    await expect(execution).rejects.toMatchObject({
+      code: 'ABORTED',
+      retryable: false,
+      message: 'New API 请求已取消',
+    });
+    expect(requestSignal?.aborted).toBe(true);
+  });
+
   it('reports aborts as timeouts with a stable diagnostic code', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
@@ -2518,7 +2552,7 @@ describe('NewApiVideoProvider', () => {
     const snapshot = videoSnapshot();
     snapshot.inputs = [];
 
-    await expect(provider.execute({ snapshot })).rejects.toMatchObject({
+    await expect(provider.execute({ snapshot, onProviderJob: vi.fn() })).rejects.toMatchObject({
       code: 'VIDEO_GENERATION_FAILED',
       platformJobId: 'prefixed-video',
       retryable: false,
@@ -2558,7 +2592,7 @@ describe('NewApiVideoProvider', () => {
     const snapshot = videoSnapshot();
     snapshot.inputs = [];
 
-    await provider.execute({ snapshot });
+    await provider.execute({ snapshot, onProviderJob: vi.fn() });
 
     expect(fetchImpl).toHaveBeenNthCalledWith(
       1,
@@ -2575,37 +2609,46 @@ describe('NewApiVideoProvider', () => {
     );
   });
 
-  it('forwards a Unicode video model ID without alias normalization', async () => {
-    const fetchImpl = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ request_id: 'unicode-model-video' }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({ status: 'done', video: { url: 'https://cdn.example/unicode.mp4' } }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        ),
-      );
-    const provider = new NewApiVideoProvider({
-      baseUrl: 'https://newapi.example.com/v1',
-      apiKey: 'server-secret',
-      fetchImpl,
-      pollIntervalMs: 0,
-      maxPollAttempts: 1,
-    });
-    const snapshot = videoSnapshot();
-    snapshot.inputs = [];
-    snapshot.modelAlias = 'grok-imagine-video-1.5（按次）';
+  it.each(['grok-imagine-video-1.5（按次）', 'grok-imagine-video-1.5 （按次）'])(
+    '视频模型名按 UTF-8 原样发送，不规范化空格或后缀：%s',
+    async (modelAlias) => {
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ request_id: 'unicode-model-video' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        )
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({ status: 'done', video: { url: 'https://cdn.example/unicode.mp4' } }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        );
+      const provider = new NewApiVideoProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+        pollIntervalMs: 0,
+        maxPollAttempts: 1,
+      });
+      const snapshot = videoSnapshot();
+      snapshot.inputs = [];
+      snapshot.modelAlias = modelAlias;
 
-    await provider.execute({ snapshot });
+      await provider.execute({ snapshot, onProviderJob: vi.fn() });
 
-    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
-    expect(body.model).toBe('grok-imagine-video-1.5（按次）');
-  });
+      const [requestUrl, requestInit] = fetchImpl.mock.calls[0]!;
+      const requestBytes = await new Request(requestUrl, requestInit).arrayBuffer();
+      const requestBody = new TextDecoder('utf-8', { fatal: true }).decode(requestBytes);
+      expect(JSON.parse(requestBody).model).toBe(modelAlias);
+      expect(requestBody).toContain(`"model":${JSON.stringify(modelAlias)}`);
+      expect(snapshot.modelAlias).toBe(modelAlias);
+      expect(requestUrl).toBe('https://newapi.example.com/v1/videos/generations');
+      expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    },
+  );
 
   it('normalizes video size, quality, and seconds aliases', async () => {
     const fetchImpl = vi
@@ -2641,7 +2684,7 @@ describe('NewApiVideoProvider', () => {
       videoQuality: 'high',
     };
 
-    await provider.execute({ snapshot });
+    await provider.execute({ snapshot, onProviderJob: vi.fn() });
 
     expect(fetchImpl).toHaveBeenNthCalledWith(
       1,
@@ -2672,7 +2715,7 @@ describe('NewApiVideoProvider', () => {
     target.data = { ...target.data, prompt: undefined };
     snapshot.inputs = [];
 
-    await expect(provider.execute({ snapshot })).rejects.toMatchObject({
+    await expect(provider.execute({ snapshot, onProviderJob: vi.fn() })).rejects.toMatchObject({
       code: 'VIDEO_PROMPT_REQUIRED',
       retryable: false,
       message: 'New API video 需要 prompt',
@@ -2813,21 +2856,27 @@ describe('NewApiVideoProvider', () => {
       status: 'succeeded',
       progress: 100,
       payload: {
-        contract: 'newapi-video-v1',
+        contract: 'legacy-v1',
         phase: 'completed',
         modelAlias: 'grok-imagine-video-1.5',
         providerStatus: 'done',
         progress: 100,
       },
     });
+    expect(onProviderJob).toHaveBeenNthCalledWith(1, {
+      provider: 'newapi',
+      status: 'queued',
+      progress: 0,
+      payload: { contract: 'legacy-v1', phase: 'submitting', modelAlias: 'grok-imagine-video-1.5' },
+    });
     expect(onProviderJob).toHaveBeenNthCalledWith(
-      1,
+      2,
       expect.objectContaining({
         provider: 'newapi',
         platformJobId: 'video-request-123',
         status: 'submitted',
         payload: expect.objectContaining({
-          contract: 'newapi-video-v1',
+          contract: 'legacy-v1',
           phase: 'submitted',
           modelAlias: 'grok-imagine-video-1.5',
         }),
@@ -2838,7 +2887,7 @@ describe('NewApiVideoProvider', () => {
         platformJobId: 'video-request-123',
         status: 'running',
         payload: expect.objectContaining({
-          contract: 'newapi-video-v1',
+          contract: 'legacy-v1',
           phase: 'completed',
           providerStatus: 'done',
         }),
@@ -2894,7 +2943,7 @@ describe('NewApiVideoProvider', () => {
       snapshot.nodes.push(promptInput.snapshot);
       snapshot.inputs = [promptInput, ...snapshot.inputs];
 
-      await provider.execute({ snapshot });
+      await provider.execute({ snapshot, onProviderJob: vi.fn() });
 
       expect(fetchImpl).toHaveBeenNthCalledWith(
         1,
@@ -2929,7 +2978,7 @@ describe('NewApiVideoProvider', () => {
       'text',
     );
 
-    await expect(provider.execute({ snapshot })).rejects.toMatchObject({
+    await expect(provider.execute({ snapshot, onProviderJob: vi.fn() })).rejects.toMatchObject({
       code: 'UNSUPPORTED_INPUT_ROLE',
       retryable: false,
       message: 'New API video 不支持该输入角色：firstFrame（上游媒体类型 text 无法映射为图片）',
@@ -2952,6 +3001,7 @@ describe('NewApiVideoProvider', () => {
     });
     const request = {
       snapshot: videoSnapshot(),
+      onProviderJob: vi.fn(),
       providerJob: { provider: 'newapi' as const, id: 'provider_job_video_retry' },
     };
 
@@ -2972,7 +3022,50 @@ describe('NewApiVideoProvider', () => {
     );
   });
 
-  it('surfaces an immediately failed creation response without persisting or polling it', async () => {
+  it('stops an in-flight video creation without automatically retrying it', async () => {
+    const controller = new AbortController();
+    let markCreateStarted: (() => void) | undefined;
+    const createStarted = new Promise<void>((resolve) => {
+      markCreateStarted = resolve;
+    });
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (url, init) => {
+      if (!String(url).endsWith('/videos/generations')) {
+        throw new Error(`unexpected New API request: ${String(url)}`);
+      }
+      markCreateStarted?.();
+      return await new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener(
+          'abort',
+          () => reject(new DOMException('operation aborted', 'AbortError')),
+          { once: true },
+        );
+      });
+    });
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+      pollIntervalMs: 0,
+      timeoutMs: 10_000,
+    });
+
+    const execution = provider.execute({
+      snapshot: videoSnapshot(),
+      signal: controller.signal,
+      onProviderJob: vi.fn(),
+    });
+    await createStarted;
+    controller.abort();
+
+    await expect(execution).rejects.toMatchObject({
+      code: 'ABORTED',
+      retryable: false,
+      message: 'New API 请求已取消',
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('创建立即失败时仅冻结提交合同，不轮询或持久化成功状态', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
       new Response(
         JSON.stringify({
@@ -2999,13 +3092,18 @@ describe('NewApiVideoProvider', () => {
       retryable: false,
       message: 'No eligible media account',
       providerPayload: {
-        contract: 'newapi-video-v1',
+        contract: 'legacy-v1',
         phase: 'failed',
         providerStatus: 'failed',
       },
     });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(onProviderJob).not.toHaveBeenCalled();
+    expect(onProviderJob).toHaveBeenCalledExactlyOnceWith({
+      provider: 'newapi',
+      status: 'queued',
+      progress: 0,
+      payload: { contract: 'legacy-v1', phase: 'submitting', modelAlias: 'grok-imagine-video-1.5' },
+    });
   });
 
   it.each(unsupportedVideoInputRoles)(
@@ -3085,7 +3183,7 @@ describe('NewApiVideoProvider', () => {
     const snapshot = videoSnapshot();
     snapshot.inputs.push(providerInputWithMediaType('node_audio_track', 'audioTrack', 1, 'audio'));
 
-    await expect(provider.execute({ snapshot })).rejects.toMatchObject({
+    await expect(provider.execute({ snapshot, onProviderJob: vi.fn() })).rejects.toMatchObject({
       code: 'UNSUPPORTED_INPUT_ROLE',
       retryable: false,
       message: 'New API video 不支持该输入角色：audioTrack',
@@ -3109,7 +3207,7 @@ describe('NewApiVideoProvider', () => {
         snapshot.inputs.push(providerInput('node_prompt_earlier', role, 1));
       }
 
-      await expect(provider.execute({ snapshot })).rejects.toMatchObject({
+      await expect(provider.execute({ snapshot, onProviderJob: vi.fn() })).rejects.toMatchObject({
         code: 'INPUT_ROLE_CARDINALITY_UNSUPPORTED',
         retryable: false,
         message: `New API video 不支持该输入角色的多个值：${role}`,
@@ -3147,7 +3245,7 @@ describe('NewApiVideoProvider', () => {
       maxPollAttempts: 1,
     });
 
-    const execution = await provider.execute({ snapshot: videoSnapshot() });
+    const execution = await provider.execute({ snapshot: videoSnapshot(), onProviderJob: vi.fn() });
 
     expect(fetchImpl).toHaveBeenNthCalledWith(
       3,
@@ -3200,7 +3298,7 @@ describe('NewApiVideoProvider', () => {
     const snapshot = videoSnapshot();
     snapshot.inputs = [];
 
-    await provider.execute({ snapshot });
+    await provider.execute({ snapshot, onProviderJob: vi.fn() });
 
     expect(fetchImpl).toHaveBeenNthCalledWith(
       3,
@@ -3238,7 +3336,9 @@ describe('NewApiVideoProvider', () => {
       maxPollAttempts: 2,
     });
 
-    await expect(provider.execute({ snapshot: videoSnapshot() })).rejects.toMatchObject({
+    await expect(
+      provider.execute({ snapshot: videoSnapshot(), onProviderJob: vi.fn() }),
+    ).rejects.toMatchObject({
       code: 'VIDEO_GENERATION_FAILED',
       retryable: false,
       message: 'content rejected',
@@ -3270,13 +3370,115 @@ describe('NewApiVideoProvider', () => {
       maxPollAttempts: 2,
     });
 
-    await expect(provider.execute({ snapshot: videoSnapshot() })).rejects.toMatchObject({
+    await expect(
+      provider.execute({ snapshot: videoSnapshot(), onProviderJob: vi.fn() }),
+    ).rejects.toMatchObject({
       code: 'VIDEO_POLL_TIMEOUT',
       platformJobId: 'slow-video',
       retryable: true,
     });
     expect(fetchImpl).toHaveBeenCalledTimes(3);
     expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+  });
+
+  it('propagates a caller abort through video polling with a non-retryable diagnostic', async () => {
+    const controller = new AbortController();
+    let pollSignal: AbortSignal | undefined;
+    let markPollStarted: (() => void) | undefined;
+    const pollStarted = new Promise<void>((resolve) => {
+      markPollStarted = resolve;
+    });
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (url, init) => {
+      const requestUrl = String(url);
+      if (requestUrl.endsWith('/videos/generations')) {
+        return new Response(JSON.stringify({ request_id: 'cancelled-video' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (requestUrl.endsWith('/videos/cancelled-video')) {
+        pollSignal = init?.signal ?? undefined;
+        markPollStarted?.();
+        return await new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            'abort',
+            () => reject(new DOMException('operation aborted', 'AbortError')),
+            { once: true },
+          );
+        });
+      }
+      throw new Error(`unexpected New API request: ${requestUrl}`);
+    });
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+      pollIntervalMs: 0,
+      maxPollAttempts: 3,
+      timeoutMs: 10_000,
+    });
+
+    const execution = provider.execute({
+      snapshot: videoSnapshot(),
+      signal: controller.signal,
+      onProviderJob: vi.fn(),
+    });
+    await pollStarted;
+    expect(pollSignal).toBeInstanceOf(AbortSignal);
+    controller.abort();
+
+    await expect(execution).rejects.toMatchObject({
+      code: 'ABORTED',
+      platformJobId: 'cancelled-video',
+      retryable: false,
+      message: 'New API 请求已取消',
+    });
+    expect(pollSignal?.aborted).toBe(true);
+    expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+  });
+
+  it('stops an in-flight poll delay before sending the next video status request', async () => {
+    const controller = new AbortController();
+    let markSubmitted: (() => void) | undefined;
+    const submitted = new Promise<void>((resolve) => {
+      markSubmitted = resolve;
+    });
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (url) => {
+      const requestUrl = String(url);
+      if (requestUrl.endsWith('/videos/generations')) {
+        return new Response(JSON.stringify({ request_id: 'delayed-video' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      throw new Error(`unexpected New API request: ${requestUrl}`);
+    });
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+      pollIntervalMs: 10_000,
+      timeoutMs: 10_000,
+    });
+
+    const execution = provider.execute({
+      snapshot: videoSnapshot(),
+      signal: controller.signal,
+      onProviderJob: async (providerJob) => {
+        if (providerJob.platformJobId === 'delayed-video') markSubmitted?.();
+      },
+    });
+    await submitted;
+    // 平台身份持久化后，等待进入本地轮询延迟再取消，避免只测到请求前取消。
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.abort();
+
+    await expect(execution).rejects.toMatchObject({
+      code: 'ABORTED',
+      platformJobId: 'delayed-video',
+      retryable: false,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it('rejects a creation response that omits the platform request ID', async () => {
@@ -3293,7 +3495,9 @@ describe('NewApiVideoProvider', () => {
       pollIntervalMs: 0,
     });
 
-    await expect(provider.execute({ snapshot: videoSnapshot() })).rejects.toMatchObject({
+    await expect(
+      provider.execute({ snapshot: videoSnapshot(), onProviderJob: vi.fn() }),
+    ).rejects.toMatchObject({
       code: 'VIDEO_REQUEST_ID_MISSING',
       requestId: 'transport-request',
       retryable: false,
@@ -3324,7 +3528,7 @@ describe('NewApiVideoProvider', () => {
     });
 
     const error = await provider
-      .execute({ snapshot: videoSnapshot() })
+      .execute({ snapshot: videoSnapshot(), onProviderJob: vi.fn() })
       .catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(NewApiProviderError);
@@ -3366,7 +3570,7 @@ describe('NewApiVideoProvider', () => {
     });
 
     const caught = await provider
-      .execute({ snapshot: videoSnapshot() })
+      .execute({ snapshot: videoSnapshot(), onProviderJob: vi.fn() })
       .catch((error: unknown) => error);
 
     expect(caught).toBeInstanceOf(NewApiProviderError);
@@ -3397,7 +3601,9 @@ describe('NewApiVideoProvider', () => {
       pollIntervalMs: 0,
     });
 
-    await expect(provider.execute({ snapshot: videoSnapshot() })).rejects.toMatchObject({
+    await expect(
+      provider.execute({ snapshot: videoSnapshot(), onProviderJob: vi.fn() }),
+    ).rejects.toMatchObject({
       code: 'VIDEO_SUBMISSION_UNKNOWN',
       retryable: false,
     });
@@ -3422,7 +3628,7 @@ describe('NewApiVideoProvider', () => {
     });
 
     const error = await provider
-      .execute({ snapshot: videoSnapshot() })
+      .execute({ snapshot: videoSnapshot(), onProviderJob: vi.fn() })
       .catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(NewApiProviderError);
@@ -3451,8 +3657,8 @@ describe('NewApiVideoProvider', () => {
     await expect(
       provider.execute({
         snapshot: videoSnapshot(),
-        onProviderJob: async () => {
-          throw new Error('database unavailable');
+        onProviderJob: async (update) => {
+          if (update.platformJobId) throw new Error('database unavailable');
         },
       }),
     ).rejects.toMatchObject({

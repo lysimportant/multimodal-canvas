@@ -81,12 +81,15 @@ function catalogRow(
   };
 }
 
+/** 构造目录持久化替身；事务复用同一存储，锁和数据库时间的真实行为另由 PostgreSQL 集成验收。 */
 function createPrismaCatalogFixture(
   initialCredentials: CredentialRow[],
   initialCatalog: CatalogRow[],
 ) {
   const credentials = initialCredentials.map((row) => ({ ...row }));
   const catalog = initialCatalog.map((row) => ({ ...row }));
+  /** 合成数据库时钟独立于应用 Date.now；写入时间仍不得早于现有最大时间加一毫秒。 */
+  const databaseClockMs = new Date('2026-08-28T02:00:00.000Z').getTime();
   let credentialSequence = 0;
   let modelSequence = 0;
 
@@ -103,6 +106,9 @@ function createPrismaCatalogFixture(
       );
     }),
     create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+      if (!(data.updatedAt instanceof Date) || !Number.isFinite(data.updatedAt.getTime())) {
+        throw new Error('Credential fixture requires the transaction database timestamp');
+      }
       credentialSequence += 1;
       const created: CredentialRow = {
         id: `00000000-0000-4000-8000-${String(credentialSequence).padStart(12, '0')}`,
@@ -111,7 +117,7 @@ function createPrismaCatalogFixture(
         encryptedApiKey: data.encryptedApiKey as string,
         keyFingerprint: data.keyFingerprint as string,
         defaultModels: data.defaultModels,
-        updatedAt: new Date(`2026-08-28T02:00:${String(credentialSequence).padStart(2, '0')}.000Z`),
+        updatedAt: new Date(data.updatedAt),
       };
       credentials.push(created);
       return created;
@@ -144,7 +150,25 @@ function createPrismaCatalogFixture(
     }),
   };
 
-  const transaction = { aiCredential, modelCatalog };
+  const transaction = {
+    aiCredential,
+    modelCatalog,
+    $executeRaw: vi.fn(async (query: TemplateStringsArray) => {
+      expect(query.join('')).toBe('LOCK TABLE "ai_credentials" IN SHARE ROW EXCLUSIVE MODE');
+      return 0;
+    }),
+    $queryRaw: vi.fn(async (query: TemplateStringsArray) => {
+      expect(query.join('')).toContain('clock_timestamp()');
+      expect(query.join('')).toContain('MAX("updatedAt")');
+      return [
+        {
+          updatedAt: new Date(
+            Math.max(databaseClockMs, ...credentials.map((row) => row.updatedAt.getTime() + 1)),
+          ),
+        },
+      ];
+    }),
+  };
   const prisma = {
     aiCredential,
     modelCatalog,
@@ -153,7 +177,7 @@ function createPrismaCatalogFixture(
     ),
   };
 
-  return { prisma, credentials, catalog, aiCredential, modelCatalog };
+  return { prisma, credentials, catalog, aiCredential, modelCatalog, transaction };
 }
 
 function threeMediaCanvas(): CanvasDocument {
@@ -324,6 +348,19 @@ describe('credential-scoped model catalogs', () => {
     const nextReference = await store.getCredentialReference();
 
     expect(nextReference.credentialId).not.toBe(active.id);
+    expect(fixture.transaction.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(fixture.transaction.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(fixture.transaction.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      fixture.transaction.$queryRaw.mock.invocationCallOrder[0]!,
+    );
+    expect(fixture.transaction.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      fixture.aiCredential.create.mock.invocationCallOrder[0]!,
+    );
+    const databaseTimestamp = (await fixture.transaction.$queryRaw.mock.results[0]!.value)[0]!
+      .updatedAt;
+    expect(
+      fixture.credentials.find((row) => row.id === nextReference.credentialId)?.updatedAt,
+    ).toEqual(databaseTimestamp);
     expect(fixture.catalog).toContainEqual(
       expect.objectContaining({ credentialId: nextReference.credentialId, modelAlias: 'chat-v1' }),
     );
@@ -361,6 +398,10 @@ describe('credential-scoped model catalogs', () => {
 
     await store.activateCredential(historical.id);
     const nextReference = await store.getCredentialReference();
+    expect(fixture.transaction.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(
+      fixture.credentials.find((row) => row.id === nextReference.credentialId)?.updatedAt.getTime(),
+    ).toBeGreaterThan(active.updatedAt.getTime());
     const reloaded = new PrismaAiSettingsStore(fixture.prisma as never, encryptionSecret);
 
     await expect(reloaded.listModels('image', nextReference.credentialId)).resolves.toEqual([
@@ -403,11 +444,15 @@ describe('credential-scoped model catalogs', () => {
     const update = store.update({ defaultModels: { text: 'chat-fresh' } });
     await Promise.resolve();
     expect(fixture.aiCredential.create).not.toHaveBeenCalled();
+    expect(fixture.transaction.$executeRaw).not.toHaveBeenCalled();
+    expect(fixture.transaction.$queryRaw).not.toHaveBeenCalled();
 
     releaseRefresh?.();
     await refresh;
     await update;
     const nextReference = await store.getCredentialReference();
+    expect(fixture.transaction.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(fixture.transaction.$queryRaw).toHaveBeenCalledTimes(1);
 
     expect(
       fixture.catalog.filter((row) => row.credentialId === nextReference.credentialId),

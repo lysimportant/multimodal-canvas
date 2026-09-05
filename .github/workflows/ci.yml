@@ -52,16 +52,33 @@ jobs:
         id: node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24.12.0
           cache: pnpm
 
       - name: 安装依赖
         id: install
         run: pnpm install --frozen-lockfile
 
+      - name: 配置隔离媒体验收工具
+        id: media_tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes ffmpeg openssl
+          ffmpeg -version
+          ffprobe -version
+          openssl version
+
       - name: 检查代码格式
         id: format
         run: pnpm format:check
+
+      - name: 运行各包 lint
+        id: lint
+        run: pnpm lint
+
+      - name: 构建项目及集成测试依赖
+        id: build
+        run: pnpm build
 
       - name: 检查 TypeScript 类型
         id: typecheck
@@ -69,7 +86,7 @@ jobs:
 
       - name: 运行测试
         id: test
-        run: pnpm test
+        run: pnpm exec turbo run test --force --concurrency=1 --continue=dependencies-successful -- --maxWorkers=1 --minWorkers=1
 
       - name: 验证隔离数据库迁移
         id: integration_migrate
@@ -87,7 +104,10 @@ jobs:
         env:
           TEST_REDIS_URL: redis://127.0.0.1:6379
           TEST_REDIS_NAMESPACE: ci-rate-limit-${{ github.run_id }}-${{ github.run_attempt }}
-        run: pnpm --filter @multimodal-canvas/api exec vitest run --config vitest.rate-limit-integration.config.ts
+        run: >-
+          pnpm --filter @multimodal-canvas/api exec vitest run
+          --config vitest.rate-limit-integration.config.ts
+          --reporter=default --reporter=json --outputFile=../../test-results/ci/rate-limit.json
 
       - name: 验证开发 Compose 配置
         id: compose_config
@@ -138,11 +158,69 @@ jobs:
           TEST_S3_ACCESS_KEY: ci-minio-user
           TEST_S3_SECRET_KEY: ci-minio-password
           TEST_S3_PREFIX: integration/${{ github.run_id }}/${{ github.run_attempt }}
-        run: pnpm --filter @multimodal-canvas/api test:integration
+        run: >-
+          pnpm --filter @multimodal-canvas/api test:integration
+          --maxWorkers=1 --minWorkers=1
+          --reporter=default --reporter=json --outputFile=../../test-results/ci/integration.json
 
-      - name: 构建项目
-        id: build
-        run: pnpm build
+      - name: 验证本地 TLS 代理到生产模式 API 入口
+        id: production_entry
+        env:
+          REQUIRE_PRODUCTION_ENTRY: 'true'
+          TEST_DATABASE_URL: postgresql://ci_user:ci_password@127.0.0.1:5432/multimodal_canvas_ci?schema=public
+          TEST_REDIS_URL: redis://127.0.0.1:6379/15
+          TEST_S3_ENDPOINT: http://127.0.0.1:9000
+          TEST_S3_REGION: us-east-1
+          TEST_S3_BUCKET: multimodal-canvas-ci-${{ github.run_id }}-${{ github.run_attempt }}
+          TEST_S3_ACCESS_KEY: ci-minio-user
+          TEST_S3_SECRET_KEY: ci-minio-password
+        run: >-
+          pnpm --filter @multimodal-canvas/api exec vitest run src/production-proxy.test.ts
+          --maxWorkers=1 --minWorkers=1
+          --reporter=default --reporter=json --outputFile=../../test-results/ci/production-entry.json
+
+      - name: 验证真实媒体处理与隔离 S3 归档
+        id: media_acceptance
+        env:
+          MEDIA_REAL_TESTS: 'true'
+          MEDIA_OPS_INTEGRATION: 'true'
+          TEST_DATABASE_URL: postgresql://ci_user:ci_password@127.0.0.1:5432/multimodal_canvas_ci?schema=public
+          TEST_S3_ENDPOINT: http://127.0.0.1:9000
+          TEST_S3_REGION: us-east-1
+          TEST_S3_BUCKET: multimodal-canvas-ci-${{ github.run_id }}-${{ github.run_attempt }}
+          TEST_S3_ACCESS_KEY: ci-minio-user
+          TEST_S3_SECRET_KEY: ci-minio-password
+        run: >-
+          pnpm --filter @multimodal-canvas/api exec vitest run
+          src/media.real.test.ts src/media-ops.integration.test.ts
+          --maxWorkers=1 --minWorkers=1
+          --reporter=default --reporter=json --outputFile=../../test-results/ci/media.json
+
+      - name: 确认独立验收套件没有跳过或遗漏
+        id: integration_coverage
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          for (const name of ['rate-limit', 'integration', 'production-entry', 'media']) {
+            const report = JSON.parse(readFileSync(`test-results/ci/${name}.json`, 'utf8'));
+            assert.equal(report.success, true, `${name}: 测试失败`);
+            assert.ok(report.numTotalTests > 0, `${name}: 没有执行测试`);
+            assert.equal(report.numPendingTests, 0, `${name}: 存在跳过的测试`);
+            assert.equal(report.numTodoTests ?? 0, 0, `${name}: 存在待办测试`);
+            assert.equal(report.numPassedTests, report.numTotalTests, `${name}: 验收未全部通过`);
+            console.log(`${name}: ${report.numPassedTests} 项通过，无跳过`);
+          }
+          NODE
+
+      - name: 保存隔离验收报告
+        if: ${{ always() && steps.checkout.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: isolated-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: test-results/ci/*.json
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: 清理隔离 MinIO
         id: minio_cleanup
@@ -161,7 +239,9 @@ jobs:
           PNPM_STATUS: ${{ steps.pnpm.outcome }}
           NODE_STATUS: ${{ steps.node.outcome }}
           INSTALL_STATUS: ${{ steps.install.outcome }}
+          MEDIA_TOOLS_STATUS: ${{ steps.media_tools.outcome }}
           FORMAT_STATUS: ${{ steps.format.outcome }}
+          LINT_STATUS: ${{ steps.lint.outcome }}
           TYPECHECK_STATUS: ${{ steps.typecheck.outcome }}
           TEST_STATUS: ${{ steps.test.outcome }}
           INTEGRATION_MIGRATE_STATUS: ${{ steps.integration_migrate.outcome }}
@@ -170,6 +250,9 @@ jobs:
           MINIO_SETUP_STATUS: ${{ steps.minio_setup.outcome }}
           INTEGRATION_TEST_STATUS: ${{ steps.integration_test.outcome }}
           BUILD_STATUS: ${{ steps.build.outcome }}
+          PRODUCTION_ENTRY_STATUS: ${{ steps.production_entry.outcome }}
+          MEDIA_ACCEPTANCE_STATUS: ${{ steps.media_acceptance.outcome }}
+          INTEGRATION_COVERAGE_STATUS: ${{ steps.integration_coverage.outcome }}
           MINIO_CLEANUP_STATUS: ${{ steps.minio_cleanup.outcome }}
         run: |
           status_text() {
@@ -194,7 +277,9 @@ jobs:
             echo "| 配置 pnpm | $(status_text "$PNPM_STATUS") |"
             echo "| 配置 Node.js | $(status_text "$NODE_STATUS") |"
             echo "| 安装依赖 | $(status_text "$INSTALL_STATUS") |"
+            echo "| 媒体验收工具 | $(status_text "$MEDIA_TOOLS_STATUS") |"
             echo "| 代码格式 | $(status_text "$FORMAT_STATUS") |"
+            echo "| 各包 lint | $(status_text "$LINT_STATUS") |"
             echo "| TypeScript 类型 | $(status_text "$TYPECHECK_STATUS") |"
             echo "| 测试 | $(status_text "$TEST_STATUS") |"
             echo "| 隔离数据库迁移 | $(status_text "$INTEGRATION_MIGRATE_STATUS") |"
@@ -203,5 +288,8 @@ jobs:
             echo "| MinIO 初始化与失败场景 | $(status_text "$MINIO_SETUP_STATUS") |"
             echo "| Prisma/Redis/MinIO 集成测试 | $(status_text "$INTEGRATION_TEST_STATUS") |"
             echo "| 构建 | $(status_text "$BUILD_STATUS") |"
+            echo "| 本地 TLS 生产模式入口 | $(status_text "$PRODUCTION_ENTRY_STATUS") |"
+            echo "| 真实媒体与隔离 S3 归档 | $(status_text "$MEDIA_ACCEPTANCE_STATUS") |"
+            echo "| 独立验收无跳过检查 | $(status_text "$INTEGRATION_COVERAGE_STATUS") |"
             echo "| 隔离 MinIO 清理 | $(status_text "$MINIO_CLEANUP_STATUS") |"
           } >> "$GITHUB_STEP_SUMMARY"

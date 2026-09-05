@@ -79,7 +79,7 @@ export class FfprobeMediaMetadataExtractor implements MediaMetadataExtractor {
 
   constructor(options: FfprobeMediaMetadataExtractorOptions = {}) {
     this.binary = options.binary ?? process.env.FFPROBE_PATH ?? 'ffprobe';
-    this.timeoutMs = options.timeoutMs ?? 10_000;
+    this.timeoutMs = validateTimeout(options.timeoutMs ?? 10_000);
     this.runner = options.runner ?? defaultFfprobeRunner;
   }
 
@@ -91,7 +91,17 @@ export class FfprobeMediaMetadataExtractor implements MediaMetadataExtractor {
       await writeFile(filePath, input.content, { flag: 'wx' });
       const stdout = await this.runner(
         this.binary,
-        ['-v', 'error', '-of', 'json', '-show_format', '-show_streams', filePath],
+        [
+          '-v',
+          'error',
+          '-protocol_whitelist',
+          'file,pipe',
+          '-of',
+          'json',
+          '-show_format',
+          '-show_streams',
+          filePath,
+        ],
         this.timeoutMs,
       );
       return normalizeFfprobeOutput(JSON.parse(stdout) as FfprobeResult);
@@ -117,11 +127,17 @@ export class FfmpegMediaDerivativeGenerator implements MediaDerivativeGenerator 
 
   constructor(options: FfmpegMediaDerivativeGeneratorOptions = {}) {
     this.binary = options.binary ?? process.env.FFMPEG_PATH ?? 'ffmpeg';
-    this.timeoutMs = options.timeoutMs ?? 30_000;
-    this.runner = options.runner ?? defaultFfmpegRunner;
+    this.timeoutMs = validateTimeout(options.timeoutMs ?? 30_000);
+    const runner = options.runner ?? defaultFfmpegRunner;
+    this.runner = async (binary, args, timeoutMs) => {
+      const content = await runner(binary, args, timeoutMs);
+      if (content.byteLength === 0) throw new Error('media derivative output is empty');
+      return content;
+    };
   }
 
   async generate(input: MediaProbeInput): Promise<MediaDerivative[]> {
+    if (input.mediaType === 'text') return [];
     const directory = await mkdtemp(join(tmpdir(), 'multimodal-canvas-derivatives-'));
     const extension = extensionForMime(input.mimeType, input.mediaType);
     const sourcePath = join(directory, `input${extension}`);
@@ -137,6 +153,9 @@ export class FfmpegMediaDerivativeGenerator implements MediaDerivativeGenerator 
               [
                 '-v',
                 'error',
+                '-nostdin',
+                '-protocol_whitelist',
+                'file,pipe',
                 '-i',
                 sourcePath,
                 '-vf',
@@ -162,6 +181,9 @@ export class FfmpegMediaDerivativeGenerator implements MediaDerivativeGenerator 
               [
                 '-v',
                 'error',
+                '-nostdin',
+                '-protocol_whitelist',
+                'file,pipe',
                 '-ss',
                 '0',
                 '-i',
@@ -189,14 +211,19 @@ export class FfmpegMediaDerivativeGenerator implements MediaDerivativeGenerator 
               [
                 '-v',
                 'error',
+                '-nostdin',
+                '-protocol_whitelist',
+                'file,pipe',
                 '-i',
                 sourcePath,
                 '-filter_complex',
                 'aformat=channel_layouts=mono,showwavespic=s=640x160:colors=4f8f8b',
                 '-frames:v',
                 '1',
+                '-c:v',
+                'png',
                 '-f',
-                'image2',
+                'image2pipe',
                 'pipe:1',
               ],
               this.timeoutMs,
@@ -235,8 +262,15 @@ function normalizeFfprobeOutput(result: FfprobeResult): MediaProbeMetadata {
 }
 
 function defaultFfprobeRunner(binary: string, args: string[], timeoutMs: number): Promise<string> {
-  return execFile(binary, args, { timeout: timeoutMs, maxBuffer: 2 * 1024 * 1024 }).then(
+  return execFile(binary, args, {
+    timeout: timeoutMs,
+    maxBuffer: 2 * 1024 * 1024,
+    windowsHide: true,
+  }).then(
     ({ stdout }) => String(stdout),
+    () => {
+      throw new Error('media metadata probe failed or timed out');
+    },
   );
 }
 
@@ -245,16 +279,24 @@ function defaultFfmpegRunner(binary: string, args: string[], timeoutMs: number):
     execFileCallback(
       binary,
       args,
-      { timeout: timeoutMs, maxBuffer: 20 * 1024 * 1024, encoding: 'buffer' },
+      { timeout: timeoutMs, maxBuffer: 20 * 1024 * 1024, encoding: 'buffer', windowsHide: true },
       (error, stdout) => {
         if (error) {
-          reject(error);
+          reject(new Error('media derivative generation failed or timed out'));
           return;
         }
         resolve(Buffer.from(stdout));
       },
     );
   });
+}
+
+/** 校验子进程超时，单位毫秒；禁止零值、非整数和溢出使超时保护失效。 */
+function validateTimeout(value: number): number {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > 2_147_483_647) {
+    throw new Error('media timeout must be a positive integer within timer range');
+  }
+  return value;
 }
 
 function finiteNumber(value: string | number | undefined): number | undefined {

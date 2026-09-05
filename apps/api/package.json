@@ -7,7 +7,7 @@
     "dev": "tsx watch src/index.ts",
     "lint": "prettier --check . --ignore-path ../../.prettierignore",
     "test": "vitest run",
-    "test:integration": "vitest run --config vitest.integration.config.ts src/prisma.integration.test.ts",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

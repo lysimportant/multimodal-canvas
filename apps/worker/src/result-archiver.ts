@@ -5,6 +5,10 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isIP } from 'node:net';
+import { request as requestHttp } from 'node:http';
+import { request as requestHttps } from 'node:https';
+import { pipeline, Readable } from 'node:stream';
+import { createBrotliDecompress, createGunzip, createInflate } from 'node:zlib';
 import { promisify } from 'node:util';
 import { DeleteObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { PrismaClient, type Prisma } from '@prisma/client';
@@ -15,6 +19,7 @@ import type {
   RunResultAsset,
   RunSnapshot,
 } from '@multimodal-canvas/domain';
+import { sanitizeExceptionForObservability } from '@multimodal-canvas/observability';
 import type { ResultAssetArchiver } from './index';
 import type { ResultAssetArchiveInput, ProviderOutput } from './result-output';
 
@@ -38,6 +43,86 @@ export type ResultMediaProbeInput = {
 
 export interface ResultMediaMetadataExtractor {
   extract(input: ResultMediaProbeInput): Promise<Record<string, unknown>>;
+}
+
+/** 原始结果的可选预览；内容不得为空，仅允许 API 已支持的三种派生类型。 */
+export type ResultMediaDerivative = {
+  kind: 'thumbnail' | 'poster' | 'waveform';
+  mimeType: string;
+  content: Buffer;
+};
+
+/** 生成预览；失败只影响预览状态，不改变原始结果的成功状态。 */
+export interface ResultMediaDerivativeGenerator {
+  generate(input: ResultMediaProbeInput): Promise<ResultMediaDerivative[]>;
+}
+
+/** Worker 的 FFmpeg 预览适配器；限制执行时间、输出大小和可访问协议。 */
+export class WorkerFfmpegMediaDerivativeGenerator implements ResultMediaDerivativeGenerator {
+  private readonly binary: string;
+  private readonly timeoutMs: number;
+
+  /** 指定已安装的本地 FFmpeg；超时以毫秒计，默认 30 秒。 */
+  constructor(options: { binary?: string; timeoutMs?: number } = {}) {
+    this.binary = options.binary ?? process.env.FFMPEG_PATH ?? 'ffmpeg';
+    this.timeoutMs = positiveLimit(options.timeoutMs ?? 30_000, 'ffmpeg timeout');
+  }
+
+  /** 为图片、视频、音频生成单个预览；工具失败返回固定诊断，不暴露原始 stderr。 */
+  async generate(input: ResultMediaProbeInput): Promise<ResultMediaDerivative[]> {
+    if (input.mediaType === 'text') return [];
+    const directory = await mkdtemp(join(tmpdir(), 'multimodal-canvas-worker-derivative-'));
+    const source = join(directory, `input.${extensionFor(input.mediaType, input.mimeType)}`);
+    const audio = input.mediaType === 'audio';
+    try {
+      await writeFile(source, input.content, { flag: 'wx' });
+      const { stdout } = await execFile(
+        this.binary,
+        [
+          '-v',
+          'error',
+          '-nostdin',
+          '-protocol_whitelist',
+          'file,pipe',
+          '-i',
+          source,
+          ...(audio
+            ? [
+                '-filter_complex',
+                'aformat=channel_layouts=mono,showwavespic=s=640x160:colors=4f8f8b',
+              ]
+            : ['-vf', 'scale=640:-2']),
+          '-frames:v',
+          '1',
+          '-threads',
+          '1',
+          '-c:v',
+          audio ? 'png' : 'mjpeg',
+          '-f',
+          'image2pipe',
+          'pipe:1',
+        ],
+        {
+          timeout: this.timeoutMs,
+          maxBuffer: 20 * 1024 * 1024,
+          encoding: 'buffer',
+          windowsHide: true,
+        },
+      );
+      if (stdout.byteLength === 0) throw new Error('empty derivative');
+      return [
+        {
+          kind: audio ? 'waveform' : input.mediaType === 'image' ? 'thumbnail' : 'poster',
+          mimeType: audio ? 'image/png' : 'image/jpeg',
+          content: Buffer.from(stdout),
+        },
+      ];
+    } catch {
+      throw new Error('media derivative generation failed or timed out');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
 }
 
 type FfprobeResult = {
@@ -97,7 +182,17 @@ export class WorkerFfprobeMediaMetadataExtractor implements ResultMediaMetadataE
       await writeFile(filePath, input.content, { flag: 'wx' });
       const stdout = await this.runner(
         this.binary,
-        ['-v', 'error', '-of', 'json', '-show_format', '-show_streams', filePath],
+        [
+          '-v',
+          'error',
+          '-protocol_whitelist',
+          'file,pipe',
+          '-of',
+          'json',
+          '-show_format',
+          '-show_streams',
+          filePath,
+        ],
         this.timeoutMs,
       );
       return normalizeFfprobeOutput(JSON.parse(stdout) as FfprobeResult);
@@ -140,6 +235,8 @@ export class WorkerFileBlobStore implements ResultBlobStore {
 /** S3-compatible storage adapter (works with MinIO in development). */
 export class WorkerS3BlobStore implements ResultBlobStore {
   private readonly client: S3Client;
+  /** 单次 S3 请求（含 SDK 重试）的毫秒上限，默认 30 秒。 */
+  private readonly timeoutMs: number;
 
   constructor(
     private readonly bucket: string,
@@ -149,9 +246,11 @@ export class WorkerS3BlobStore implements ResultBlobStore {
       accessKeyId?: string;
       secretAccessKey?: string;
       forcePathStyle?: boolean;
+      timeoutMs?: number;
     } = {},
   ) {
     if (!bucket.trim()) throw new Error('S3 bucket is required');
+    this.timeoutMs = positiveLimit(options.timeoutMs ?? 30_000, 'S3 timeout');
     this.client = new S3Client({
       region: options.region ?? 'us-east-1',
       ...(options.endpoint ? { endpoint: options.endpoint } : {}),
@@ -175,11 +274,14 @@ export class WorkerS3BlobStore implements ResultBlobStore {
         Body: content,
         ...(contentType ? { ContentType: contentType } : {}),
       }),
+      { abortSignal: AbortSignal.timeout(this.timeoutMs) },
     );
   }
 
   async delete(key: string): Promise<void> {
-    await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
+    await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }), {
+      abortSignal: AbortSignal.timeout(this.timeoutMs),
+    });
   }
 }
 
@@ -198,6 +300,8 @@ export type PrismaResultAssetArchiverOptions = {
   lookupHost?: PublicHostLookup;
   /** Optional ffprobe-compatible extractor for generated media metadata. */
   metadataExtractor?: ResultMediaMetadataExtractor;
+  /** 可选预览生成器；生产可通过 FFMPEG_ENABLED/FFMPEG_PATH 启用。 */
+  derivativeGenerator?: ResultMediaDerivativeGenerator;
 };
 
 /**
@@ -217,6 +321,8 @@ export class PrismaResultAssetArchiver {
   private readonly strictDns: boolean;
   private readonly lookupHost: PublicHostLookup;
   private readonly metadataExtractor?: ResultMediaMetadataExtractor;
+  /** 预览是辅助归档，失败会记录状态并保留原始结果。 */
+  private readonly derivativeGenerator?: ResultMediaDerivativeGenerator;
 
   constructor(
     private readonly prisma: PrismaClient,
@@ -226,7 +332,6 @@ export class PrismaResultAssetArchiver {
     this.keyPrefix = trimPrefix(options.keyPrefix ?? 'assets');
     this.contentUrl =
       options.contentUrl ?? ((assetId) => `/v1/assets/${assetId}/versions/1/content`);
-    this.fetchImpl = options.fetchImpl ?? fetch;
     this.maxBytes = positiveLimit(options.maxBytes ?? DEFAULT_MAX_BYTES, 'max asset size');
     this.fetchTimeoutMs = positiveLimit(
       options.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS,
@@ -236,7 +341,14 @@ export class PrismaResultAssetArchiver {
     this.strictDns = options.strictDns ?? process.env.NODE_ENV === 'production';
     this.lookupHost =
       options.lookupHost ?? ((hostname, lookupOptions) => dnsLookup(hostname, lookupOptions));
+    this.fetchImpl =
+      options.fetchImpl ??
+      (this.strictDns
+        ? (url, init) =>
+            fetchWithPublicDns(new URL(String(url)), init?.signal ?? undefined, this.lookupHost)
+        : fetch);
     this.metadataExtractor = options.metadataExtractor;
+    this.derivativeGenerator = options.derivativeGenerator;
   }
 
   async archive(input: {
@@ -251,7 +363,7 @@ export class PrismaResultAssetArchiver {
     signal?: AbortSignal;
   }): Promise<RunResultAsset | undefined> {
     throwIfCancelled(input.signal);
-    const archiveInput = input.archiveInput;
+    let archiveInput = input.archiveInput;
     if (!archiveInput) return undefined;
     if (!UUID_PATTERN.test(input.snapshot.projectId)) {
       throw new Error('cannot archive a result without a PostgreSQL project UUID');
@@ -260,8 +372,11 @@ export class PrismaResultAssetArchiver {
       throw new Error('cannot archive a result with an invalid user UUID');
     }
 
-    const content =
-      archiveInput.content ?? (await this.download(archiveInput.contentUrl, input.signal));
+    const downloaded = archiveInput.content
+      ? undefined
+      : await this.download(archiveInput.contentUrl, archiveInput.mediaType, input.signal);
+    const content = archiveInput.content ?? downloaded?.content;
+    if (downloaded?.mimeType) archiveInput = { ...archiveInput, mimeType: downloaded.mimeType };
     throwIfCancelled(input.signal);
     if (!content || content.byteLength === 0) {
       throw new Error('provider returned an empty result payload');
@@ -301,8 +416,19 @@ export class PrismaResultAssetArchiver {
       });
     }
     throwIfCancelled(input.signal);
+    const storedKeys = [contentKey];
     try {
       await this.blobStore.put(contentKey, content, enrichedArchiveInput.mimeType);
+      throwIfCancelled(input.signal);
+      if (this.derivativeGenerator && archiveInput.mediaType !== 'text') {
+        const derivatives = await this.storeDerivatives(
+          { content, mimeType: archiveInput.mimeType, mediaType: archiveInput.mediaType },
+          contentKey,
+          assetId,
+          storedKeys,
+        );
+        Object.assign(metadata, derivatives);
+      }
       throwIfCancelled(input.signal);
       await this.prisma.$transaction(async (transaction) => {
         throwIfCancelled(input.signal);
@@ -339,8 +465,10 @@ export class PrismaResultAssetArchiver {
       });
     } catch (error) {
       let raced: ExistingResultArchive | undefined;
+      let reconciled = false;
       try {
         raced = await this.findExistingArchive(assetId);
+        reconciled = true;
       } catch {
         // Preserve the original transaction error when reconciliation itself
         // is unavailable.
@@ -358,11 +486,15 @@ export class PrismaResultAssetArchiver {
             contentUrl: this.contentUrl(assetId),
           });
         } catch (collisionError) {
-          await this.blobStore.delete(contentKey).catch(() => undefined);
+          if (raced.contentKey !== contentKey) {
+            for (const key of storedKeys) await this.blobStore.delete(key).catch(() => undefined);
+          }
           throw collisionError;
         }
       }
-      await this.blobStore.delete(contentKey).catch(() => undefined);
+      if (reconciled) {
+        for (const key of storedKeys) await this.blobStore.delete(key).catch(() => undefined);
+      }
       throw error;
     }
 
@@ -376,43 +508,115 @@ export class PrismaResultAssetArchiver {
     };
   }
 
+  /** 写入与 API 一致的派生描述；任一预览失败只记录固定状态，不泄露工具或存储诊断。 */
+  private async storeDerivatives(
+    input: ResultMediaProbeInput,
+    contentKey: string,
+    assetId: string,
+    storedKeys: string[],
+  ): Promise<Record<string, unknown>> {
+    try {
+      const derivatives = await this.derivativeGenerator!.generate(input);
+      if (derivatives.length !== 1) throw new Error('one derivative expected');
+      const descriptor: Record<string, unknown> = {};
+      for (const derivative of derivatives) {
+        const expected =
+          input.mediaType === 'image'
+            ? 'thumbnail'
+            : input.mediaType === 'audio'
+              ? 'waveform'
+              : 'poster';
+        if (
+          derivative.kind !== expected ||
+          derivative.content.byteLength === 0 ||
+          derivative.content.byteLength > this.maxBytes ||
+          derivative.mimeType !== (expected === 'waveform' ? 'image/png' : 'image/jpeg')
+        ) {
+          throw new Error('invalid derivative');
+        }
+        const key = `${contentKey}.derivatives/${derivative.kind}`;
+        storedKeys.push(key);
+        await this.blobStore.put(key, derivative.content, derivative.mimeType);
+        descriptor[derivative.kind] = {
+          mimeType: derivative.mimeType,
+          sizeBytes: derivative.content.byteLength,
+          sha256: createHash('sha256').update(derivative.content).digest('hex'),
+          contentUrl: `/v1/assets/${assetId}/derivatives/${derivative.kind}`,
+        };
+      }
+      return { derivatives: descriptor, derivativeStatus: 'ready' };
+    } catch {
+      return { derivativeStatus: 'failed' };
+    }
+  }
+
   private async download(
     url: string | undefined,
+    mediaType: MediaType,
     cancellationSignal?: AbortSignal,
-  ): Promise<Buffer | undefined> {
+  ): Promise<{ content: Buffer; mimeType?: string } | undefined> {
     if (!url) return undefined;
     throwIfCancelled(cancellationSignal);
     const parsed = validateRemoteUrl(url, this.allowHttp);
-    await assertPublicResolvedHost(parsed.hostname, this.strictDns, this.lookupHost);
     const controller = new AbortController();
     const cancelDownload = () => controller.abort(cancellationSignal?.reason);
     cancellationSignal?.addEventListener('abort', cancelDownload, { once: true });
     const timeout = setTimeout(() => controller.abort(), this.fetchTimeoutMs);
+    let response: Response | undefined;
     try {
-      const response = await this.fetchImpl(parsed.toString(), {
-        signal: controller.signal,
-        redirect: 'error',
-      });
+      await waitForDownloadStage(
+        assertPublicResolvedHost(parsed.hostname, this.strictDns, this.lookupHost),
+        controller.signal,
+      );
+      throwIfCancelled(cancellationSignal);
+      response = await waitForDownloadStage(
+        Promise.resolve()
+          .then(() =>
+            this.fetchImpl(parsed.toString(), {
+              signal: controller.signal,
+              redirect: 'error',
+            }),
+          )
+          .catch(() => {
+            throw new Error('provider result download transport failed');
+          }),
+        controller.signal,
+      );
       if (!response.ok) throw new Error(`provider result download failed (${response.status})`);
+      const receivedMime = response.headers
+        .get('content-type')
+        ?.split(';', 1)[0]
+        ?.trim()
+        .toLowerCase();
+      const mimeType =
+        receivedMime && receivedMime !== 'application/octet-stream' ? receivedMime : undefined;
+      if (
+        mimeType &&
+        !mimeType.startsWith(`${mediaType}/`) &&
+        !(mediaType === 'text' && mimeType === 'application/json')
+      ) {
+        throw new Error('provider result download media type mismatch');
+      }
       const contentLength = Number(response.headers.get('content-length') ?? 0);
       if (contentLength > this.maxBytes) {
         throw new Error(`provider result exceeds the ${this.maxBytes}-byte limit`);
       }
       if (!response.body || typeof response.body.getReader !== 'function') {
-        const bytes = Buffer.from(await response.arrayBuffer());
-        return bytes;
+        const bytes = Buffer.from(
+          await waitForDownloadStage(response.arrayBuffer(), controller.signal),
+        );
+        return { content: bytes, mimeType };
       }
       const reader = response.body.getReader();
       const chunks: Buffer[] = [];
       let total = 0;
       try {
         while (true) {
-          const next = await reader.read();
+          const next = await waitForDownloadStage(reader.read(), controller.signal);
           if (next.done) break;
           const chunk = Buffer.from(next.value);
           total += chunk.byteLength;
           if (total > this.maxBytes) {
-            await reader.cancel();
             throw new Error(`provider result exceeds the ${this.maxBytes}-byte limit`);
           }
           chunks.push(chunk);
@@ -420,8 +624,10 @@ export class PrismaResultAssetArchiver {
       } finally {
         reader.releaseLock();
       }
-      return Buffer.concat(chunks, total);
+      return { content: Buffer.concat(chunks, total), mimeType };
     } finally {
+      controller.abort();
+      void response?.body?.cancel().catch(() => undefined);
       clearTimeout(timeout);
       cancellationSignal?.removeEventListener('abort', cancelDownload);
     }
@@ -467,12 +673,26 @@ export class PrismaResultAssetArchiver {
     if (!this.metadataExtractor || input.mediaType === 'text') return undefined;
     try {
       const metadata = await this.metadataExtractor.extract(input);
-      return Object.keys(metadata).length > 0 ? metadata : undefined;
+      return { ...metadata, metadataStatus: 'ready' };
     } catch {
-      // Metadata probing is best-effort, matching upload handling in the API.
-      return undefined;
+      return { metadataStatus: 'failed' };
     }
   }
+}
+
+/** 让 DNS、响应头及流读取共享下载截止时间，取消发生后不再等待不响应的适配器。 */
+function waitForDownloadStage<Value>(pending: Promise<Value>, signal: AbortSignal): Promise<Value> {
+  return new Promise<Value>((resolve, reject) => {
+    const abort = () =>
+      reject(
+        Object.assign(new Error('provider result download cancelled or timed out'), {
+          name: 'AbortError',
+        }),
+      );
+    signal.addEventListener('abort', abort, { once: true });
+    pending.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+    if (signal.aborted) abort();
+  });
 }
 
 /** Build a production archiver from the same environment variables as the API. */
@@ -503,6 +723,13 @@ export function createResultAssetArchiverFromEnvironment(): {
           }),
         }
       : {}),
+    ...(process.env.FFMPEG_ENABLED === 'true' || process.env.FFMPEG_PATH
+      ? {
+          derivativeGenerator: new WorkerFfmpegMediaDerivativeGenerator({
+            binary: process.env.FFMPEG_PATH,
+          }),
+        }
+      : {}),
   });
   return {
     resultArchiver: (input) => archiver.archive(input),
@@ -520,7 +747,7 @@ function buildResultMetadata(
   archiveInput: ResultAssetArchiveInput,
 ): Record<string, unknown> {
   return {
-    ...(archiveInput.metadata ?? {}),
+    ...sanitizeParameters(archiveInput.metadata ?? {}),
     generated: true,
     runId: input.runId,
     provider: input.result.provider,
@@ -621,7 +848,7 @@ function sanitizeParameters(parameters: Record<string, unknown>): Record<string,
 function sanitizeJsonValue(value: unknown, depth: number): unknown {
   if (value === null || typeof value === 'boolean') return value;
   if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
-  if (typeof value === 'string') return value.slice(0, 2000);
+  if (typeof value === 'string') return sanitizeExceptionForObservability(value).message;
   if (depth >= 2) return undefined;
   if (Array.isArray(value)) {
     return value
@@ -657,7 +884,7 @@ function extensionFor(mediaType: MediaType, mimeType: string): string {
   if (normalized === 'text/markdown') return 'md';
   if (normalized === 'text/json' || normalized === 'application/json') return 'json';
   const extension = normalized.split('/')[1]?.replace(/^x-/, '');
-  if (extension) {
+  if (extension && /^[a-z0-9.+-]+$/.test(extension)) {
     if (extension === 'mpeg') return mediaType === 'audio' ? 'mp3' : 'mpeg';
     return extension;
   }
@@ -701,8 +928,15 @@ function parseFrameRate(value: string | undefined): number | undefined {
 }
 
 function defaultFfprobeRunner(binary: string, args: string[], timeoutMs: number): Promise<string> {
-  return execFile(binary, args, { timeout: timeoutMs, maxBuffer: 2 * 1024 * 1024 }).then(
+  return execFile(binary, args, {
+    timeout: timeoutMs,
+    maxBuffer: 2 * 1024 * 1024,
+    windowsHide: true,
+  }).then(
     ({ stdout }) => String(stdout),
+    () => {
+      throw new Error('media metadata probe failed or timed out');
+    },
   );
 }
 
@@ -722,6 +956,83 @@ function validateRemoteUrl(value: string, allowHttp: boolean): URL {
     throw new Error('provider result URL points to a private host');
   }
   return parsed;
+}
+
+/** 在建连所用的 DNS 回调内校验全部地址，避免预检查后再次解析导致重绑定；不跟随重定向。 */
+function fetchWithPublicDns(
+  url: URL,
+  signal: AbortSignal | undefined,
+  lookupHost: PublicHostLookup,
+): Promise<Response> {
+  return new Promise<Response>((resolve, reject) => {
+    const request = (url.protocol === 'https:' ? requestHttps : requestHttp)(
+      url,
+      {
+        method: 'GET',
+        signal,
+        lookup(hostname, options, callback) {
+          void lookupHost(hostname, { all: true, verbatim: true }).then(
+            (addresses) => {
+              if (
+                addresses.length === 0 ||
+                addresses.some(({ address }) => !isIP(address) || isPrivateHost(address))
+              ) {
+                callback(new Error('provider result host resolves to a private host'), '', 0);
+              } else if (options.all) {
+                callback(null, addresses);
+              } else {
+                callback(null, addresses[0].address, addresses[0].family);
+              }
+            },
+            () => callback(new Error('provider result host could not be resolved'), '', 0),
+          );
+        },
+      },
+      (response) => {
+        try {
+          const headers = new Headers();
+          for (const [name, value] of Object.entries(response.headers)) {
+            if (Array.isArray(value)) for (const item of value) headers.append(name, item);
+            else if (value !== undefined) headers.set(name, value);
+          }
+          const status = response.statusCode ?? 502;
+          if (status < 200 || status > 599) throw new Error('invalid provider HTTP status');
+          if ([204, 205, 304].includes(status)) {
+            response.resume();
+            resolve(new Response(null, { status, headers }));
+          } else {
+            const encoding = response.headers['content-encoding']?.trim().toLowerCase();
+            const decoder =
+              encoding === 'gzip'
+                ? createGunzip()
+                : encoding === 'deflate'
+                  ? createInflate()
+                  : encoding === 'br'
+                    ? createBrotliDecompress()
+                    : undefined;
+            if (encoding && encoding !== 'identity' && !decoder)
+              throw new Error('unsupported provider HTTP encoding');
+            if (decoder) {
+              headers.delete('content-encoding');
+              headers.delete('content-length');
+              pipeline(response, decoder, () => undefined);
+            }
+            resolve(
+              new Response(Readable.toWeb(decoder ?? response) as ReadableStream<Uint8Array>, {
+                status,
+                headers,
+              }),
+            );
+          }
+        } catch {
+          response.destroy();
+          reject(new Error('provider result response is invalid'));
+        }
+      },
+    );
+    request.on('error', reject);
+    request.end();
+  });
 }
 
 async function assertPublicResolvedHost(
@@ -749,17 +1060,29 @@ function isPrivateHost(hostname: string): boolean {
     const octets = host.split('.').map(Number);
     return (
       octets[0] === 10 ||
+      octets[0] === 0 ||
       octets[0] === 127 ||
+      octets[0] >= 224 ||
+      (octets[0] === 100 && octets[1] >= 64 && octets[1] <= 127) ||
       (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) ||
       (octets[0] === 192 && octets[1] === 168) ||
       (octets[0] === 169 && octets[1] === 254)
     );
   }
   if (version === 6) {
-    if (host.startsWith('::ffff:')) return isPrivateHost(host.slice('::ffff:'.length));
+    if (host.startsWith('::ffff:')) {
+      const mapped = host.slice('::ffff:'.length);
+      if (isIP(mapped) === 4) return isPrivateHost(mapped);
+      const words = mapped.split(':');
+      if (words.length !== 2) return true;
+      const high = Number.parseInt(words[0], 16);
+      const low = Number.parseInt(words[1], 16);
+      return isPrivateHost(`${high >>> 8}.${high & 255}.${low >>> 8}.${low & 255}`);
+    }
     return (
       host === '::' ||
       host === '::1' ||
+      host.startsWith('ff') ||
       host.startsWith('fc') ||
       host.startsWith('fd') ||
       /^fe[89ab]/.test(host)
@@ -777,6 +1100,7 @@ function trimPrefix(prefix: string): string {
 }
 
 function positiveLimit(value: number, name: string): number {
-  if (!Number.isFinite(value) || value <= 0) throw new Error(`${name} must be positive`);
-  return Math.floor(value);
+  if (!Number.isSafeInteger(value) || value <= 0 || value > 2_147_483_647)
+    throw new Error(`${name} must be a positive integer within timer range`);
+  return value;
 }

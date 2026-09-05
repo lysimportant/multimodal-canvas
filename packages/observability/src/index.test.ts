@@ -17,6 +17,67 @@ afterEach(() => {
 });
 
 describe('observability boundary', () => {
+  it('preserves numeric token usage while redacting actual credential tokens', () => {
+    const error = vi.fn();
+    createLoggingObservability({ info: vi.fn(), error }).captureException(new Error('safe'), {
+      'usage.inputTokens': 12,
+      'usage.promptTokens': 8,
+      'auth.token': 'synthetic-secret',
+    });
+    expect(error.mock.calls[0][0]).toMatchObject({
+      'usage.inputTokens': 12,
+      'usage.promptTokens': 8,
+      'auth.token': '[REDACTED]',
+    });
+  });
+  it('isolates throwing loggers and removes signed URLs and user payloads', () => {
+    const bindings: unknown[] = [];
+    const logger = {
+      info(value: unknown) {
+        bindings.push(value);
+        throw new Error('disk failure');
+      },
+      error(value: unknown) {
+        bindings.push(value);
+        throw new Error('disk failure');
+      },
+    };
+    const observability = createLoggingObservability(logger);
+    expect(() => {
+      const span = observability.startSpan('request', {
+        prompt: 'synthetic-user-content',
+        signedUrl:
+          'https://synthetic-user:synthetic-password@cdn.example/image?X-Amz-Signature=synthetic-signature&other=synthetic-query',
+      });
+      span.recordException(new Error('https://cdn.example/?token=synthetic-token'));
+      span.end('ok');
+      observability.captureException(new Error('disk error'));
+    }).not.toThrow();
+    expect(bindings).toHaveLength(3);
+    expect(JSON.stringify(bindings)).not.toMatch(/synthetic-/);
+  });
+
+  it('bounds malformed attributes and repeated exception payloads', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null));
+    const observability = createExportingObservability({
+      otlpEndpoint: 'http://collector.example',
+      fetch: fetchMock,
+    });
+    const span = observability.startSpan('bounded', { count: Number.POSITIVE_INFINITY });
+    for (let index = 0; index < 100; index += 1) {
+      span.setAttribute(`item-${index}`, index);
+      span.recordException(new Error('bounded'));
+    }
+    span.end();
+    span.end();
+    await flushTelemetry();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse(String(fetchMock.mock.calls[0][1].body));
+    const attributes = payload.resourceSpans[0].scopeSpans[0].spans[0].attributes;
+    expect(attributes.length).toBeLessThanOrEqual(96);
+    expect(attributes.find((entry: { key: string }) => entry.key === 'count')).toBeUndefined();
+  });
+
   it('creates a detached redacted error while preserving safe diagnostics and causes', () => {
     const source = new Error(
       'provider rejected Authorization: Bearer synthetic-bearer-fixture while rendering',

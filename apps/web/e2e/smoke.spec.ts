@@ -1239,7 +1239,28 @@ test('四类节点都可以填写提示词、运行并显示对应结果预览',
     await prompt.fill(`Playwright ${mediaType} 生成测试`);
     await expect(prompt).toHaveValue(`Playwright ${mediaType} 生成测试`);
 
+    const audioRunRequest =
+      mediaType === '音频'
+        ? page.waitForRequest(
+            (request) =>
+              request.method() === 'POST' &&
+              /^\/v1\/nodes\/[^/]+\/runs$/.test(new URL(request.url()).pathname),
+          )
+        : undefined;
+    if (mediaType === '音频') {
+      await expect(page.getByRole('button', { name: '生成', exact: true })).toBeDisabled();
+      await page.getByRole('textbox', { name: '音色', exact: true }).fill('synthetic-smoke-voice');
+    }
     await page.getByRole('button', { name: '生成', exact: true }).click();
+    if (audioRunRequest) {
+      const body = (await audioRunRequest).postDataJSON();
+      expect(body.parameters).toMatchObject({
+        voice: 'synthetic-smoke-voice',
+        prompt: 'Playwright 音频 生成测试',
+      });
+      expect(body.parameters).not.toHaveProperty('response_format');
+      expect(body.parameters).not.toHaveProperty('speed');
+    }
 
     await expect(page.getByRole('region', { name: '运行结果' })).toBeVisible();
     await expect(
@@ -1276,6 +1297,236 @@ test('四类节点都可以填写提示词、运行并显示对应结果预览',
         .toBeGreaterThanOrEqual(1);
     }
   }
+});
+
+test('PC 音频参数显式输入、保存恢复并提交，桌面截图无布局或控制台错误', async ({
+  page,
+}, testInfo) => {
+  /** 收集本用例错误及意外外部地址；所有 v1 请求仍由 beforeEach 的 Mock 路由响应。 */
+  const consoleErrors: string[] = [];
+  const pageErrors: string[] = [];
+  const blockedOrigins: string[] = [];
+  page.on('console', (message) => {
+    if (message.type() === 'error') consoleErrors.push(message.text());
+  });
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  await page.route('**/*', async (route) => {
+    const url = new URL(route.request().url());
+    if (
+      ['http:', 'https:'].includes(url.protocol) &&
+      !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
+    ) {
+      blockedOrigins.push(url.origin);
+      await route.abort('blockedbyclient');
+      return;
+    }
+    await route.fallback();
+  });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto(projectPath);
+  await page.getByRole('button', { name: '新建音频生成节点' }).click();
+
+  const editor = page.locator('.node-quick-editor');
+  const voice = editor.getByRole('textbox', { name: '音色', exact: true });
+  const speed = editor.getByRole('spinbutton', { name: '语速', exact: true });
+  const run = editor.getByRole('button', { name: '生成', exact: true });
+  const syntheticVoice = 'synthetic/custom Voice-42';
+  await editor.locator('textarea').fill('Playwright 音频参数保存恢复');
+  await expect(voice).toHaveValue('');
+  await expect(voice).toHaveAttribute('required', '');
+  await expect(speed).toHaveValue('');
+  await expect(editor.getByRole('combobox', { name: '音频格式：未设置' })).toBeVisible();
+  await expect(run).toBeDisabled();
+  await voice.fill(syntheticVoice);
+  await editor.getByRole('combobox', { name: /^音频格式：/ }).hover();
+  await editor.getByRole('option', { name: 'WAV', exact: true }).click();
+  await speed.fill('4.001');
+  await expect(speed).toHaveAttribute('aria-invalid', 'true');
+  await expect(run).toBeDisabled();
+  await speed.fill('0.25');
+  await expect(run).toBeEnabled();
+  await speed.fill('4');
+  await expect(run).toBeEnabled();
+
+  const savedResponse = page.waitForResponse((response) => {
+    if (
+      response.request().method() !== 'PATCH' ||
+      new URL(response.url()).pathname !== `/v1/projects/${project.id}/canvas` ||
+      response.status() !== 200
+    )
+      return false;
+    const canvas = response.request().postDataJSON() as CanvasDocument;
+    return canvas.nodes.some((node) => {
+      const parameters = node.data.parameters;
+      return (
+        node.data.mediaType === 'audio' &&
+        parameters?.voice === syntheticVoice &&
+        parameters.response_format === 'wav' &&
+        parameters.speed === 1.25
+      );
+    });
+  });
+  await speed.fill('1.25');
+  await savedResponse;
+  await page.reload();
+  await page.locator('.flow-generate-node').filter({ hasText: '音频生成节点' }).click();
+  await expect(voice).toHaveValue(syntheticVoice);
+  await expect(editor.getByRole('combobox', { name: '音频格式：WAV' })).toBeVisible();
+  await expect(speed).toHaveValue('1.25');
+  await expect(run).toBeEnabled();
+
+  /** 三个紧凑参数控件必须完整位于桌面和编辑器中，并保持同一行且互不重叠。 */
+  const editorBox = await editor.boundingBox();
+  expect(editorBox).not.toBeNull();
+  const boxes = [];
+  for (const control of [voice, editor.getByRole('combobox', { name: /^音频格式：/ }), speed]) {
+    const box = await control.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.width).toBeGreaterThan(60);
+    expect(box!.height).toBeGreaterThanOrEqual(28);
+    expect(box!.x).toBeGreaterThanOrEqual(Math.max(0, editorBox!.x));
+    expect(box!.y).toBeGreaterThanOrEqual(Math.max(0, editorBox!.y));
+    expect(box!.x + box!.width).toBeLessThanOrEqual(
+      Math.min(1440, editorBox!.x + editorBox!.width),
+    );
+    expect(box!.y + box!.height).toBeLessThanOrEqual(
+      Math.min(1000, editorBox!.y + editorBox!.height),
+    );
+    boxes.push(box!);
+  }
+  for (let index = 1; index < boxes.length; index += 1) {
+    expect(boxes[index].x).toBeGreaterThanOrEqual(boxes[index - 1].x + boxes[index - 1].width);
+    expect(Math.abs(boxes[index].y - boxes[index - 1].y)).toBeLessThanOrEqual(1);
+  }
+  /** 保留可直接查看的 PNG 文件，附件引用文件而不内嵌截图字节。 */
+  const audioScreenshotPath = testInfo.outputPath('audio-desktop.png');
+  await page.screenshot({ path: audioScreenshotPath, fullPage: false, animations: 'disabled' });
+  await testInfo.attach('audio-editor-desktop-1440x1000', {
+    path: audioScreenshotPath,
+    contentType: 'image/png',
+  });
+
+  await voice.fill('   ');
+  await expect(voice).toHaveValue('');
+  await expect(run).toBeDisabled();
+  await voice.fill(syntheticVoice);
+  const submittedRequest = page.waitForRequest(
+    (request) =>
+      request.method() === 'POST' &&
+      /^\/v1\/nodes\/[^/]+\/runs$/.test(new URL(request.url()).pathname),
+  );
+  await run.click();
+  expect((await submittedRequest).postDataJSON().parameters).toEqual({
+    prompt: 'Playwright 音频参数保存恢复',
+    voice: syntheticVoice,
+    response_format: 'wav',
+    speed: 1.25,
+  });
+  await expect(page.getByRole('status').filter({ hasText: '音频生成节点 已完成' })).toBeVisible();
+  await expect(page.locator('.inspector-result audio')).toHaveAttribute('controls', '');
+  expect(blockedOrigins).toEqual([]);
+  expect(pageErrors).toEqual([]);
+  expect(consoleErrors).toEqual([]);
+});
+
+test('PC 视频像素尺寸可保存清空恢复，提交显式宽高且不猜测 legacy alias', async ({
+  page,
+}, testInfo) => {
+  /** 仅使用 beforeEach 的本地 Mock API，保存与运行请求不访问真实 Provider。 */
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => {
+    if (message.type() === 'error') errors.push(message.text());
+  });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto(projectPath);
+  await page.getByRole('button', { name: '新建视频生成节点' }).click();
+  const editor = page.locator('.node-quick-editor');
+  const width = editor.getByRole('spinbutton', { name: '宽度（像素）', exact: true });
+  const height = editor.getByRole('spinbutton', { name: '高度（像素）', exact: true });
+  const run = editor.getByRole('button', { name: '生成', exact: true });
+  await editor.locator('textarea').fill('Playwright 视频像素尺寸');
+  await expect(width).toHaveValue('');
+  await expect(height).toHaveValue('');
+  await expect(run).toBeEnabled();
+  await editor.getByRole('combobox', { name: /^时长（秒）：/ }).hover();
+  await editor.getByRole('option', { name: '8 秒', exact: true }).click();
+  await width.fill('1280.5');
+  await expect(width).toHaveValue('1280.5');
+  await expect(width).toHaveAttribute('aria-invalid', 'true');
+  await expect(run).toBeDisabled();
+  await width.fill('1280');
+  const savedDimensions = page.waitForResponse((response) => {
+    if (
+      response.request().method() !== 'PATCH' ||
+      new URL(response.url()).pathname !== `/v1/projects/${project.id}/canvas` ||
+      response.status() !== 200
+    )
+      return false;
+    const canvas = response.request().postDataJSON() as CanvasDocument;
+    return canvas.nodes.some(
+      (node) =>
+        node.data.mediaType === 'video' &&
+        node.data.parameters?.width === 1280 &&
+        node.data.parameters?.height === 720,
+    );
+  });
+  await height.fill('720');
+  await savedDimensions;
+  await page.reload();
+  await page.locator('.flow-generate-node').filter({ hasText: '视频生成节点' }).click();
+  await expect(width).toHaveValue('1280');
+  await expect(height).toHaveValue('720');
+  await expect(editor.getByRole('combobox', { name: '时长（秒）：8' })).toBeVisible();
+  await expect(editor.getByRole('combobox', { name: '视频清晰度：未设置' })).toBeVisible();
+  await expect(editor.getByRole('button', { name: '视频比例：未设置' })).toBeVisible();
+  await testInfo.attach('video-dimensions-desktop-1440x1000', {
+    body: await page.screenshot({ fullPage: false, animations: 'disabled' }),
+    contentType: 'image/png',
+  });
+
+  const clearedDimensions = page.waitForResponse((response) => {
+    if (
+      response.request().method() !== 'PATCH' ||
+      new URL(response.url()).pathname !== `/v1/projects/${project.id}/canvas` ||
+      response.status() !== 200
+    )
+      return false;
+    const canvas = response.request().postDataJSON() as CanvasDocument;
+    return canvas.nodes.some(
+      (node) =>
+        node.data.mediaType === 'video' &&
+        node.data.parameters?.duration === 8 &&
+        !Object.hasOwn(node.data.parameters, 'width') &&
+        !Object.hasOwn(node.data.parameters, 'height'),
+    );
+  });
+  await width.fill('');
+  await height.fill('');
+  await clearedDimensions;
+  await page.reload();
+  await page.locator('.flow-generate-node').filter({ hasText: '视频生成节点' }).click();
+  await expect(width).toHaveValue('');
+  await expect(height).toHaveValue('');
+  await expect(editor.getByRole('combobox', { name: '时长（秒）：8' })).toBeVisible();
+  await expect(run).toBeEnabled();
+  await width.fill('1920');
+  await height.fill('1080');
+  const submittedRequest = page.waitForRequest(
+    (request) =>
+      request.method() === 'POST' &&
+      /^\/v1\/nodes\/[^/]+\/runs$/.test(new URL(request.url()).pathname),
+  );
+  await run.click();
+  expect((await submittedRequest).postDataJSON().parameters).toEqual({
+    prompt: 'Playwright 视频像素尺寸',
+    duration: 8,
+    width: 1920,
+    height: 1080,
+  });
+  await expect(page.getByRole('status').filter({ hasText: '视频生成节点 已完成' })).toBeVisible();
+  await expect(page.locator('.inspector-result video')).toHaveAttribute('controls', '');
+  expect(errors).toEqual([]);
 });
 
 test('切换 Mock 默认模型后新运行使用新模型', async ({ page }) => {

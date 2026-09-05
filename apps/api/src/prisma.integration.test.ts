@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createCipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { cp, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -8,6 +8,7 @@ import { join } from 'node:path';
 
 import { Prisma, PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
+import { Queue } from 'bullmq';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { CredentialEncryptionKeyring } from '@multimodal-canvas/credential-crypto';
 
@@ -76,6 +77,9 @@ const redisIntegrationDescribe =
   testDatabaseUrl && testRedisUrl && testRedisNamespace ? describe : describe.skip;
 const testS3Config = resolveTestS3Config();
 const minioIntegrationDescribe = testDatabaseUrl && testS3Config ? describe : describe.skip;
+/** 完整恢复验收同时要求三类隔离服务，普通单测不得误连开发环境。 */
+const workflowIntegrationDescribe =
+  testDatabaseUrl && testRedisUrl && testRedisNamespace && testS3Config ? describe : describe.skip;
 
 if (
   testRedisNamespace &&
@@ -971,6 +975,111 @@ integrationDescribe('Prisma stores (isolated PostgreSQL)', () => {
     }
   }, 120_000);
 
+  it('0014 扩展迁移保留旧凭据和撤销墓碑，受控轮换后历史版本仍可恢复', async () => {
+    const databaseName = `mc_migration_test_${randomBytes(12).toString('hex')}`;
+    const adminUrl = withoutSchema(testDatabaseUrl!);
+    const databaseUrl = withDatabase(testDatabaseUrl!, databaseName);
+    const workspace = await createMigrationWorkspace([
+      ...preModelCatalogCredentialMigrations,
+      ...postLifecycleMigrations.slice(0, -1),
+    ]);
+    let created = false;
+    let client: PrismaClient | undefined;
+    try {
+      await createTemporaryDatabase(adminUrl, databaseName);
+      created = true;
+      await runPnpm(
+        ['exec', 'prisma', 'migrate', 'deploy', '--schema', workspace.schemaPath],
+        databaseUrl,
+      );
+      client = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+      const secret = 'synthetic-migration-old-secret';
+      const plaintext = 'synthetic-migration-provider-key';
+      const initializationVector = randomBytes(12);
+      const cipher = createCipheriv(
+        'aes-256-gcm',
+        createHash('sha256').update(secret).digest(),
+        initializationVector,
+      );
+      const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+      const ciphertext = Buffer.concat([
+        initializationVector,
+        cipher.getAuthTag(),
+        encrypted,
+      ]).toString('base64url');
+      const credentialId = randomUUID();
+      const tombstoneId = randomUUID();
+      await client.$executeRaw`
+        INSERT INTO "public"."ai_credentials"
+          ("id", "label", "baseUrl", "encryptedApiKey", "keyFingerprint", "version", "updatedAt")
+        VALUES
+          (${credentialId}::uuid, 'legacy', 'https://newapi.example.test/v1', ${ciphertext}, 'synthetic-fingerprint', 1, '2025-01-01'::timestamp),
+          (${tombstoneId}::uuid, 'revoked', '', '', '', 2, '2025-01-02'::timestamp)
+      `;
+      const historical = await client.$queryRaw`
+        SELECT "id", "baseUrl", "encryptedApiKey", "keyFingerprint", "version", "updatedAt"
+        FROM "public"."ai_credentials" ORDER BY "version"
+      `;
+      await client.$disconnect();
+      await copyMigrations(workspace, ['0014_ai_credential_encryption_key_id']);
+      await runPnpm(
+        ['exec', 'prisma', 'migrate', 'deploy', '--schema', workspace.schemaPath],
+        databaseUrl,
+      );
+      await runPnpm(
+        ['exec', 'prisma', 'migrate', 'deploy', '--schema', workspace.schemaPath],
+        databaseUrl,
+      );
+      client = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+      expect(
+        await client.$queryRaw`
+        SELECT "id", "baseUrl", "encryptedApiKey", "keyFingerprint", "version", "updatedAt"
+        FROM "public"."ai_credentials" ORDER BY "version"
+      `,
+      ).toEqual(historical);
+      expect(
+        (await client.aiCredential.findMany()).every((row) => row.encryptionKeyId === null),
+      ).toBe(true);
+      const currentSecret = 'synthetic-migration-current-secret';
+      vi.stubEnv('AI_CREDENTIAL_ENCRYPTION_KEY_ID', 'migration-current');
+      vi.stubEnv('AI_CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS', JSON.stringify({ legacy: secret }));
+      const store = new PrismaAiSettingsStore(client, currentSecret);
+      expect((await store.get()).configured).toBe(false);
+      expect(await store.getProviderCredentials({ credentialId, credentialVersion: 1 })).toEqual({
+        baseUrl: 'https://newapi.example.test/v1',
+        apiKey: plaintext,
+      });
+      await store.close();
+      vi.stubEnv('AI_CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS', '{}');
+      const restored = new PrismaAiSettingsStore(client, currentSecret);
+      expect((await restored.get()).configured).toBe(false);
+      expect(await restored.getProviderCredentials({ credentialId, credentialVersion: 1 })).toEqual(
+        {
+          baseUrl: 'https://newapi.example.test/v1',
+          apiKey: plaintext,
+        },
+      );
+      await restored.close();
+      expect(
+        (
+          await client.aiCredential.findUniqueOrThrow({ where: { id: credentialId } })
+        ).updatedAt.toISOString(),
+      ).toBe('2025-01-01T00:00:00.000Z');
+      expect(
+        (await client.aiCredential.findUniqueOrThrow({ where: { id: tombstoneId } }))
+          .encryptedApiKey,
+      ).toBe('');
+    } finally {
+      vi.unstubAllEnvs();
+      await client?.$disconnect();
+      try {
+        if (created) await dropTemporaryDatabase(adminUrl, databaseName);
+      } finally {
+        await rm(workspace.rootPath, { recursive: true, force: true });
+      }
+    }
+  }, 120_000);
+
   it('applies 0009 to the pre-credential model catalog without losing legacy rows', async () => {
     const migrationDatabaseName = `mc_migration_test_${randomBytes(12).toString('hex')}`;
     assertTemporaryDatabaseName(migrationDatabaseName);
@@ -1214,6 +1323,132 @@ integrationDescribe('Prisma stores (isolated PostgreSQL)', () => {
       }
       await expect(blobStore.get(key)).resolves.toBeUndefined();
     });
+  });
+
+  workflowIntegrationDescribe('独立 API/Worker 冻结、队列接管与媒体归档', () => {
+    it.each(['text', 'image', 'audio'] as const)(
+      '%s 入队后更新资源仍恢复冻结版本，并保持数据库/队列无临时媒体',
+      async (mediaType) => {
+        const config = testS3Config!;
+        const queueName = `mc-integration-${randomBytes(12).toString('hex')}`;
+        const keyPrefix = `${config.keyPrefix}/${schemaName}/${queueName}`;
+        const fixture = fileURLToPath(
+          new URL('./fixtures/workflow-recovery-process.ts', import.meta.url),
+        );
+        const redisUrl = new URL(testRedisUrl!);
+        const queue = new Queue(queueName, {
+          connection: {
+            host: redisUrl.hostname,
+            port: Number(redisUrl.port || 6379),
+            db: Number(redisUrl.pathname.slice(1) || 0),
+            ...(redisUrl.password ? { password: decodeURIComponent(redisUrl.password) } : {}),
+            ...(redisUrl.protocol === 'rediss:' ? { tls: {} } : {}),
+          },
+        });
+        const environment = {
+          ...process.env,
+          NODE_ENV: 'test',
+          WORKER_PROVIDER: 'mock',
+          RUN_SERVICE: 'memory',
+          API_AUTH_TOKEN: '',
+          API_JWT_SECRET: '',
+          NEW_API_BASE_URL: '',
+          NEW_API_API_KEY: '',
+          DATABASE_URL: '',
+          TEST_DATABASE_URL: withSchema(testDatabaseUrl!, schemaName),
+          TEST_WORKFLOW_QUEUE: queueName,
+          TEST_OUTPUT_MEDIA: mediaType,
+          TEST_S3_PREFIX: keyPrefix,
+        };
+        /** 每个角色启动独立进程；超时强制退出只针对测试子进程。 */
+        const invoke = async (role: string, runId = '') => {
+          const result = await execFileAsync(process.execPath, ['--import', 'tsx', fixture], {
+            cwd: fileURLToPath(new URL('../', import.meta.url)),
+            env: { ...environment, TEST_WORKFLOW_ROLE: role, TEST_RUN_ID: runId },
+            timeout: 100_000,
+            killSignal: 'SIGKILL',
+            windowsHide: true,
+          });
+          return JSON.parse(result.stdout.trim());
+        };
+        const blobStore = new S3BlobStore(config.bucket, {
+          endpoint: config.endpoint,
+          region: config.region,
+          accessKeyId: config.accessKeyId,
+          secretAccessKey: config.secretAccessKey,
+          forcePathStyle: true,
+        });
+        const assets = new PrismaAssetStore(prisma, { blobStore, keyPrefix });
+        let projectId: string | undefined;
+        try {
+          const submitted = await invoke('submit');
+          projectId = submitted.projectId;
+          const queued = await invoke('read', submitted.runId);
+          expect(queued.pid).not.toBe(submitted.pid);
+          expect(queued.run.snapshot.inputs[0].snapshot.data.contentUrl).toContain(
+            '/versions/1/content',
+          );
+          expect(queued.run.snapshot.promptMentions[0].assetVersion).toBe(1);
+          await assets.createVersion(
+            submitted.assetId,
+            { content: Buffer.from('mutable version two') },
+            { projectId },
+          );
+          if (mediaType === 'text') {
+            await expect(invoke('worker-crash', submitted.runId)).rejects.toMatchObject({
+              code: 73,
+            });
+            const interrupted = await queue.getJob(submitted.runId);
+            expect(await interrupted?.getState()).toBe('active');
+            expect(interrupted?.data.providerJob.platformJobId).toBe(
+              `integration-${submitted.runId}`,
+            );
+          }
+          const completed = await invoke('worker', submitted.runId);
+          expect(completed.pid).not.toBe(queued.pid);
+          expect(completed.digest).toBe(
+            createHash('sha256').update('immutable version one').digest('hex'),
+          );
+          expect(completed.result.status).toBe('succeeded');
+          if (mediaType === 'text') {
+            expect(completed.recoveredPlatformJobId).toBe(`integration-${submitted.runId}`);
+          }
+          const resultAsset = completed.result.result.asset;
+          expect(resultAsset.version).toBe(1);
+          const content = await assets.getVersionContent(resultAsset.assetId, 1, { projectId });
+          expect(content?.byteLength).toBeGreaterThan(0);
+          expect(createHash('sha256').update(content!).digest('hex')).toBe(resultAsset.sha256);
+          const finished = await queue.getJob(submitted.runId);
+          expect(await finished?.getState()).toBe('completed');
+          const persisted = JSON.stringify(finished?.data);
+          expect(persisted).not.toContain('data:text/plain');
+          expect(persisted).not.toContain(Buffer.from('immutable version one').toString('base64'));
+          await finished?.remove();
+          const restored = await invoke('read', submitted.runId);
+          expect(restored.run.status).toBe('succeeded');
+          expect(restored.run.result.asset).toMatchObject({
+            assetId: resultAsset.assetId,
+            version: 1,
+          });
+          expect(restored.run.snapshot.promptMentions[0].assetVersion).toBe(1);
+          expect(JSON.stringify(restored.run.snapshot)).not.toContain('data:');
+          expect(await prisma.usageLedger.count({ where: { run: { projectId } } })).toBe(1);
+        } finally {
+          await queue.obliterate({ force: true });
+          await queue.close();
+          if (projectId) {
+            const versions = await prisma.assetVersion.findMany({
+              where: { asset: { projectId } },
+            });
+            for (const version of versions) {
+              expect(version.contentKey.startsWith(`${keyPrefix}/`)).toBe(true);
+              await blobStore.delete(version.contentKey);
+            }
+          }
+        }
+      },
+      120_000,
+    );
   });
 });
 

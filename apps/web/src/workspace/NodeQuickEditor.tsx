@@ -26,6 +26,16 @@ export type NodeMediaParameters = Record<string, unknown> & {
   resolution?: string;
   aspectRatio?: string;
   duration?: number;
+  /** 统一视频协议的宽度，单位像素；可选正安全整数，不从旧分辨率或比例推算。 */
+  width?: number;
+  /** 统一视频协议的高度，单位像素；可选正安全整数，清空仅移除本字段。 */
+  height?: number;
+  /** TTS 音色标识，允许平台自定义非空字符串，必须由用户显式填写。 */
+  voice?: string;
+  /** TTS 输出格式；未设置时不发送该字段，不在前端选择默认格式。 */
+  response_format?: string;
+  /** TTS 语速倍率，有限数值且范围为 0.25 至 4；未设置时省略。 */
+  speed?: number;
 };
 
 export type NodeQuickEditorProps = {
@@ -100,6 +110,18 @@ const aspectRatioDescriptions: Record<string, string> = Object.fromEntries(
   aspectRatioOptions.map((option) => [option.value, option.description ?? '']),
 );
 
+/** Provider 已支持的 TTS 格式，空选项仅用于移除显式配置。 */
+const AUDIO_FORMAT_OPTIONS: MediaOption[] = [
+  { value: '', label: '未设置' },
+  ...['mp3', 'opus', 'aac', 'flac', 'wav', 'pcm'].map((value) => ({
+    value,
+    label: value.toUpperCase(),
+  })),
+];
+
+/** 与 Provider 契约一致的连续语速范围，不将用户值静默截断或量化。 */
+const AUDIO_SPEED_RANGE = { min: 0.25, max: 4 } as const;
+
 /** GPT-5.6 文本模型支持的推理强度，目录缺失时作为兼容回退。 */
 const GPT_56_REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 
@@ -167,6 +189,19 @@ export function NodeQuickEditor({
   const mentionCapability = getMentionCapabilityStatus(node, selectedModel, availableModels);
   const hasPrompt = Boolean(effectivePrompt.trim());
   const hasRunnableParameters = hasPrompt || hasConnectedInput;
+  const invalidVideoDimensions = (['width', 'height'] as const).filter((field) => {
+    const value = parameters[field];
+    return (
+      value !== undefined &&
+      (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0)
+    );
+  });
+  const mediaParameterIssue =
+    node.data.mediaType === 'audio'
+      ? getAudioParameterIssue(parameters)
+      : node.data.mediaType === 'video' && invalidVideoDimensions.length > 0
+        ? '视频宽高必须为正整数像素，且不能超过安全整数范围'
+        : undefined;
 
   const updateParameter = (key: keyof NodeMediaParameters, value: unknown) => {
     if (!onParametersChange) return;
@@ -309,6 +344,126 @@ export function NodeQuickEditor({
         </div>
       )}
 
+      {node.data.mediaType === 'video' && (
+        <div
+          className="node-quick-editor-media-options"
+          data-columns="2"
+          role="group"
+          aria-label="视频像素尺寸"
+        >
+          {(
+            [
+              ['width', '宽度（像素）'],
+              ['height', '高度（像素）'],
+            ] as const
+          ).map(([field, label]) => {
+            const value = parameters[field];
+            return (
+              <label key={field} className="compact-select node-quick-editor-select-group">
+                <span className="compact-select-label">{label}</span>
+                <input
+                  className="compact-select-trigger"
+                  style={{ cursor: 'text' }}
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  max={Number.MAX_SAFE_INTEGER}
+                  step={1}
+                  value={
+                    typeof value === 'number' && Number.isFinite(value)
+                      ? value
+                      : typeof value === 'string'
+                        ? value
+                        : ''
+                  }
+                  placeholder="未设置"
+                  aria-invalid={invalidVideoDimensions.includes(field)}
+                  title={`${label}：正整数，不超过 ${Number.MAX_SAFE_INTEGER}`}
+                  disabled={!onParametersChange}
+                  onChange={(event) =>
+                    updateParameter(
+                      field,
+                      event.currentTarget.value === ''
+                        ? undefined
+                        : event.currentTarget.valueAsNumber,
+                    )
+                  }
+                />
+              </label>
+            );
+          })}
+        </div>
+      )}
+
+      {node.data.mediaType === 'audio' && (
+        <div
+          className="node-quick-editor-media-options"
+          data-columns="3"
+          role="group"
+          aria-label="媒体参数"
+        >
+          <label className="compact-select node-quick-editor-select-group">
+            <span className="compact-select-label">音色</span>
+            <input
+              className="compact-select-trigger"
+              style={{ cursor: 'text' }}
+              type="text"
+              value={typeof parameters.voice === 'string' ? parameters.voice : ''}
+              placeholder="未设置"
+              required
+              aria-invalid={typeof parameters.voice !== 'string' || !parameters.voice.trim()}
+              title="音色（必填）"
+              disabled={!onParametersChange}
+              onChange={(event) =>
+                updateParameter(
+                  'voice',
+                  event.currentTarget.value.trim() ? event.currentTarget.value : undefined,
+                )
+              }
+            />
+          </label>
+          <CompactSelect
+            label="音频格式"
+            value={normalizeCurrentOptionValue(parameters.response_format)}
+            options={getAudioFormatOptions(parameters.response_format)}
+            onChange={(value) => updateParameter('response_format', value)}
+            disabled={!onParametersChange}
+            className="node-quick-editor-select-group"
+            placement="top"
+            openOnHover
+          />
+          <label className="compact-select node-quick-editor-select-group">
+            <span className="compact-select-label">语速</span>
+            <input
+              className="compact-select-trigger"
+              style={{ cursor: 'text' }}
+              type="number"
+              inputMode="decimal"
+              min={AUDIO_SPEED_RANGE.min}
+              max={AUDIO_SPEED_RANGE.max}
+              step="any"
+              value={
+                typeof parameters.speed === 'number' && Number.isFinite(parameters.speed)
+                  ? parameters.speed
+                  : typeof parameters.speed === 'string'
+                    ? parameters.speed
+                    : ''
+              }
+              placeholder="未设置"
+              aria-invalid={parameters.speed !== undefined && !isValidAudioSpeed(parameters.speed)}
+              title="语速范围：0.25 至 4"
+              disabled={!onParametersChange}
+              onChange={(event) =>
+                updateParameter(
+                  'speed',
+                  event.currentTarget.value === '' ? undefined : event.currentTarget.valueAsNumber,
+                )
+              }
+            />
+          </label>
+        </div>
+      )}
+
       <div
         className="node-quick-editor-controls"
         data-has-inference={inferenceOptions.length > 0 ? 'true' : 'false'}
@@ -344,10 +499,10 @@ export function NodeQuickEditor({
                 ? '节点已停用'
                 : !hasRunnableParameters
                   ? '请先填写提示词或连接输入节点'
-                  : '生成'
+                  : (mediaParameterIssue ?? '生成')
           }
           onClick={onRun}
-          disabled={busy || !enabled || !hasRunnableParameters}
+          disabled={busy || !enabled || !hasRunnableParameters || Boolean(mediaParameterIssue)}
         >
           {busy ? (
             <LoaderCircle className="spin" size={16} aria-hidden="true" />
@@ -543,6 +698,48 @@ function readNodeMediaParameters(data: unknown): NodeMediaParameters {
   const candidate = (data as { parameters?: unknown }).parameters;
   if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return {};
   return { ...(candidate as Record<string, unknown>) };
+}
+
+/** 检查已保存的语速；字符串、非有限值和越界值不能作为合法倍率提交。 */
+function isValidAudioSpeed(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    value >= AUDIO_SPEED_RANGE.min &&
+    value <= AUDIO_SPEED_RANGE.max
+  );
+}
+
+/**
+ * 音频生成的前置校验；返回首个需要修正的字段提示，合法时返回 undefined。
+ * 只检查契约，不修改节点或猜测默认值；后端仍负责最终校验。
+ */
+function getAudioParameterIssue(parameters: NodeMediaParameters): string | undefined {
+  if (typeof parameters.voice !== 'string' || !parameters.voice.trim()) return '请先填写音色';
+  if (
+    parameters.response_format !== undefined &&
+    !AUDIO_FORMAT_OPTIONS.some(
+      (option) => option.value && option.value === parameters.response_format,
+    )
+  ) {
+    return '请选择支持的音频格式';
+  }
+  if (parameters.speed !== undefined && !isValidAudioSpeed(parameters.speed)) {
+    return '语速必须为 0.25 至 4 的有限数值';
+  }
+  return undefined;
+}
+
+/** 保留不支持的历史格式供用户发现并修正，不将它替换成菜单首项或静默删除。 */
+function getAudioFormatOptions(value: unknown): MediaOption[] {
+  const current = normalizeCurrentOptionValue(value);
+  if (!current || AUDIO_FORMAT_OPTIONS.some((option) => option.value === current)) {
+    return AUDIO_FORMAT_OPTIONS;
+  }
+  return [
+    ...AUDIO_FORMAT_OPTIONS,
+    { value: current, label: current, description: '已保存，当前不支持', disabled: true },
+  ];
 }
 
 /** 渲染一个统一的向上展开选择菜单。 */

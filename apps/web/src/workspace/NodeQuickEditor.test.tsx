@@ -2,6 +2,7 @@ import '@testing-library/jest-dom/vitest';
 
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { PromptDocument } from '@multimodal-canvas/domain';
@@ -38,6 +39,21 @@ const videoNode = {
   },
 } as AssetFlowNode;
 
+/** 合成 TTS 节点，仅用于本地组件交互，不请求任何 Provider。 */
+const audioNode = {
+  id: 'node_audio',
+  type: 'audio',
+  position: { x: 0, y: 0 },
+  data: {
+    label: '产品旁白',
+    mediaType: 'audio',
+    mode: 'generate',
+    enabled: true,
+    prompt: '介绍产品',
+    modelAlias: 'test-tts',
+  },
+} as AssetFlowNode;
+
 const models: NodeQuickEditorProps['models'] = [
   { id: 'text-model', name: '文字模型', mediaTypes: ['text'] },
   {
@@ -64,6 +80,27 @@ function makeProps(overrides: Partial<NodeQuickEditorProps> = {}): NodeQuickEdit
     onRun: vi.fn(),
     ...overrides,
   };
+}
+
+/** 用任意持久化参数构造音频节点，覆盖合法配置及旧数据的非法类型。 */
+function makeAudioNode(parameters: Record<string, unknown>): AssetFlowNode {
+  return { ...audioNode, data: { ...audioNode.data, parameters } } as AssetFlowNode;
+}
+
+/** 模拟工作台即时回写节点参数，验证连续键入不会被受控输入的重渲染打断。 */
+function StatefulAudioEditor({
+  onParametersChange,
+}: Pick<NodeQuickEditorProps, 'onParametersChange'>) {
+  const [parameters, setParameters] = useState<Record<string, unknown>>({});
+  return (
+    <NodeQuickEditor
+      {...makeProps({ node: makeAudioNode(parameters) })}
+      onParametersChange={(next) => {
+        onParametersChange?.(next);
+        setParameters(next);
+      }}
+    />
+  );
 }
 
 function makeMentionDocument(mention: PromptMentionBlock): PromptDocument {
@@ -580,6 +617,263 @@ describe('NodeQuickEditor', () => {
     });
   });
 
+  it('音频控件保持紧凑布局且没有音色或可选参数的静默默认值', () => {
+    const onParametersChange = vi.fn();
+    const props = makeProps({ node: audioNode, onParametersChange });
+    render(<NodeQuickEditor {...props} />);
+
+    const mediaOptions = screen.getByRole('group', { name: '媒体参数' });
+    expect(mediaOptions).toHaveAttribute('data-columns', '3');
+    expect(screen.getByRole('textbox', { name: '音色' })).toHaveValue('');
+    expect(screen.getByRole('textbox', { name: '音色' })).toBeRequired();
+    expect(screen.getByRole('textbox', { name: '音色' })).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByRole('combobox', { name: '音频格式：未设置' })).toBeInTheDocument();
+    expect(screen.getByRole('spinbutton', { name: '语速' })).toHaveValue(null);
+    expect(screen.getByRole('spinbutton', { name: '语速' })).toHaveAttribute('min', '0.25');
+    expect(screen.getByRole('spinbutton', { name: '语速' })).toHaveAttribute('max', '4');
+    expect(screen.getByRole('spinbutton', { name: '语速' })).toHaveAttribute('step', 'any');
+    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '生成' })).toHaveAttribute('title', '请先填写音色');
+    fireEvent.click(screen.getByRole('button', { name: '生成' }));
+    expect(props.onRun).not.toHaveBeenCalled();
+    expect(onParametersChange).not.toHaveBeenCalled();
+  });
+
+  it('保存并恢复平台自定义音色、格式和连续语速，保留其他参数', async () => {
+    const user = userEvent.setup();
+    const onParametersChange = vi.fn();
+    const props = makeProps({ onParametersChange });
+    const saved = { voice: 'old-voice', providerOption: { preserved: true } };
+    const { rerender, unmount } = render(
+      <NodeQuickEditor {...props} node={makeAudioNode(saved)} />,
+    );
+
+    fireEvent.change(screen.getByRole('textbox', { name: '音色' }), {
+      target: { value: 'platform/custom Voice-42' },
+    });
+    const voiceParameters = onParametersChange.mock.lastCall?.[0];
+    expect(voiceParameters).toEqual({
+      ...saved,
+      voice: 'platform/custom Voice-42',
+    });
+    expect(saved.voice).toBe('old-voice');
+    rerender(<NodeQuickEditor {...props} node={makeAudioNode(voiceParameters)} />);
+
+    const formatGroup = screen.getByText('音频格式').parentElement as HTMLElement;
+    await user.hover(formatGroup);
+    expect(formatGroup).toHaveAttribute('data-placement', 'top');
+    await user.click(within(formatGroup).getByRole('option', { name: 'FLAC' }));
+    const formatParameters = onParametersChange.mock.lastCall?.[0];
+    expect(formatParameters).toEqual({ ...voiceParameters, response_format: 'flac' });
+    rerender(<NodeQuickEditor {...props} node={makeAudioNode(formatParameters)} />);
+
+    fireEvent.change(screen.getByRole('spinbutton', { name: '语速' }), {
+      target: { value: '1.234' },
+    });
+    const savedParameters = onParametersChange.mock.lastCall?.[0];
+    expect(savedParameters).toEqual({ ...formatParameters, speed: 1.234 });
+    unmount();
+    render(
+      <NodeQuickEditor
+        {...props}
+        node={makeAudioNode(JSON.parse(JSON.stringify(savedParameters)))}
+      />,
+    );
+    expect(screen.getByRole('textbox', { name: '音色' })).toHaveValue('platform/custom Voice-42');
+    expect(screen.getByRole('combobox', { name: '音频格式：FLAC' })).toBeInTheDocument();
+    expect(screen.getByRole('spinbutton', { name: '语速' })).toHaveValue(1.234);
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+    expect(onParametersChange).toHaveBeenCalledTimes(3);
+  });
+
+  it('连续键入保留自定义音色中的空格和小数语速，越界后可明确修正', async () => {
+    const user = userEvent.setup();
+    const onParametersChange = vi.fn();
+    render(<StatefulAudioEditor onParametersChange={onParametersChange} />);
+
+    const voice = screen.getByRole('textbox', { name: '音色' });
+    await user.type(voice, 'custom Voice-42');
+    expect(voice).toHaveValue('custom Voice-42');
+    const speed = screen.getByRole('spinbutton', { name: '语速' });
+    await user.type(speed, '0.25');
+    expect(speed).toHaveValue(0.25);
+    expect(onParametersChange).toHaveBeenLastCalledWith({ voice: 'custom Voice-42', speed: 0.25 });
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+
+    fireEvent.change(speed, { target: { value: '4.001' } });
+    expect(speed).toHaveValue(4.001);
+    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+    expect(onParametersChange).toHaveBeenLastCalledWith({ voice: 'custom Voice-42', speed: 4.001 });
+    fireEvent.change(speed, { target: { value: '1.234' } });
+    expect(speed).toHaveValue(1.234);
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+  });
+
+  it.each(['', '   '])('音色输入 %j 会删除参数并阻止生成', (value) => {
+    const onParametersChange = vi.fn();
+    const parameters = { voice: 'custom-voice', response_format: 'wav', speed: 1.25 };
+    const props = makeProps({ onParametersChange });
+    const { rerender } = render(<NodeQuickEditor {...props} node={makeAudioNode(parameters)} />);
+    fireEvent.change(screen.getByRole('textbox', { name: '音色' }), { target: { value } });
+    expect(onParametersChange).toHaveBeenCalledWith({ response_format: 'wav', speed: 1.25 });
+    rerender(
+      <NodeQuickEditor {...props} node={makeAudioNode(onParametersChange.mock.lastCall?.[0])} />,
+    );
+    expect(screen.getByRole('textbox', { name: '音色' })).toHaveValue('');
+    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+  });
+
+  it('可选格式和语速可以清空，不回填默认值且显式音色仍能生成', async () => {
+    const user = userEvent.setup();
+    const onParametersChange = vi.fn();
+    const props = makeProps({ onParametersChange });
+    const { rerender } = render(
+      <NodeQuickEditor
+        {...props}
+        node={makeAudioNode({ voice: 'custom-voice', response_format: 'wav', speed: 2 })}
+      />,
+    );
+    const formatGroup = screen.getByText('音频格式').parentElement as HTMLElement;
+    await user.hover(formatGroup);
+    await user.click(within(formatGroup).getByRole('option', { name: '未设置' }));
+    expect(onParametersChange).toHaveBeenLastCalledWith({ voice: 'custom-voice', speed: 2 });
+    rerender(
+      <NodeQuickEditor {...props} node={makeAudioNode(onParametersChange.mock.lastCall?.[0])} />,
+    );
+    fireEvent.change(screen.getByRole('spinbutton', { name: '语速' }), { target: { value: '' } });
+    expect(onParametersChange).toHaveBeenLastCalledWith({ voice: 'custom-voice' });
+    rerender(
+      <NodeQuickEditor {...props} node={makeAudioNode(onParametersChange.mock.lastCall?.[0])} />,
+    );
+    expect(screen.getByRole('combobox', { name: '音频格式：未设置' })).toBeInTheDocument();
+    expect(screen.getByRole('spinbutton', { name: '语速' })).toHaveValue(null);
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: '生成' }));
+    expect(props.onRun).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['mp3', 'opus', 'aac', 'flac', 'wav', 'pcm'])(
+    '仅提供 Provider 支持的格式并原样保存 %s',
+    async (format) => {
+      const user = userEvent.setup();
+      const onParametersChange = vi.fn();
+      render(
+        <NodeQuickEditor
+          {...makeProps({ onParametersChange, node: makeAudioNode({ voice: 'platform-voice' }) })}
+        />,
+      );
+      const formatGroup = screen.getByText('音频格式').parentElement as HTMLElement;
+      await user.hover(formatGroup);
+      expect(within(formatGroup).getAllByRole('option')).toHaveLength(7);
+      await user.click(within(formatGroup).getByRole('option', { name: format.toUpperCase() }));
+      expect(onParametersChange).toHaveBeenCalledWith({
+        voice: 'platform-voice',
+        response_format: format,
+      });
+    },
+  );
+
+  it.each([0.25, 4])('语速边界 %s 按数值保存且允许生成', (speed) => {
+    const onParametersChange = vi.fn();
+    const props = makeProps({ onParametersChange });
+    const { rerender } = render(
+      <NodeQuickEditor {...props} node={makeAudioNode({ voice: 'custom-voice' })} />,
+    );
+    fireEvent.change(screen.getByRole('spinbutton', { name: '语速' }), {
+      target: { value: String(speed) },
+    });
+    expect(onParametersChange).toHaveBeenCalledWith({ voice: 'custom-voice', speed });
+    rerender(
+      <NodeQuickEditor {...props} node={makeAudioNode(onParametersChange.mock.lastCall?.[0])} />,
+    );
+    expect(screen.getByRole('spinbutton', { name: '语速' })).toBeValid();
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+  });
+
+  it.each([0, -1, 0.249, 4.001, NaN, Infinity, '1', null])(
+    '恢复非法语速 %s 时显式阻止生成，不截断或静默改写',
+    (speed) => {
+      const onParametersChange = vi.fn();
+      render(
+        <NodeQuickEditor
+          {...makeProps({
+            node: makeAudioNode({ voice: 'custom-voice', speed }),
+            onParametersChange,
+          })}
+        />,
+      );
+      expect(screen.getByRole('spinbutton', { name: '语速' })).toHaveAttribute(
+        'aria-invalid',
+        'true',
+      );
+      expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: '生成' })).toHaveAttribute(
+        'title',
+        '语速必须为 0.25 至 4 的有限数值',
+      );
+      expect(onParametersChange).not.toHaveBeenCalled();
+    },
+  );
+
+  it('非法历史音频格式保持可见并阻止生成，用户可以明确修正', async () => {
+    const user = userEvent.setup();
+    const onParametersChange = vi.fn();
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          node: makeAudioNode({ voice: 'custom-voice', response_format: 'wma' }),
+          onParametersChange,
+        })}
+      />,
+    );
+    expect(screen.getByRole('combobox', { name: '音频格式：wma' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '生成' })).toHaveAttribute(
+      'title',
+      '请选择支持的音频格式',
+    );
+    expect(onParametersChange).not.toHaveBeenCalled();
+    const formatGroup = screen.getByText('音频格式').parentElement as HTMLElement;
+    await user.hover(formatGroup);
+    expect(
+      within(formatGroup).getByRole('option', { name: /wma 已保存，当前不支持/ }),
+    ).toBeDisabled();
+    await user.click(within(formatGroup).getByRole('option', { name: 'WAV' }));
+    expect(onParametersChange).toHaveBeenCalledWith({
+      voice: 'custom-voice',
+      response_format: 'wav',
+    });
+  });
+
+  it('音频参数跟随节点切换恢复，且不会出现在其他媒体节点', () => {
+    const onParametersChange = vi.fn();
+    const props = makeProps({ onParametersChange });
+    const { rerender } = render(
+      <NodeQuickEditor
+        {...props}
+        node={makeAudioNode({ voice: 'first-voice', response_format: 'mp3', speed: 0.75 })}
+      />,
+    );
+    rerender(<NodeQuickEditor {...props} node={{ ...audioNode, id: 'second-audio' }} />);
+    expect(screen.getByRole('textbox', { name: '音色' })).toHaveValue('');
+    expect(screen.getByRole('combobox', { name: '音频格式：未设置' })).toBeInTheDocument();
+    expect(screen.getByRole('spinbutton', { name: '语速' })).toHaveValue(null);
+    expect(onParametersChange).not.toHaveBeenCalled();
+    rerender(<NodeQuickEditor {...props} node={imageNode} />);
+    expect(screen.queryByRole('textbox', { name: '音色' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('spinbutton', { name: '语速' })).not.toBeInTheDocument();
+    expect(screen.queryByText('音频格式')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+  });
+
+  it('未提供保存回调时音频控件禁用，不制造无法持久化的编辑', () => {
+    render(<NodeQuickEditor {...makeProps({ node: makeAudioNode({ voice: 'custom-voice' }) })} />);
+    expect(screen.getByRole('textbox', { name: '音色' })).toBeDisabled();
+    expect(screen.getByRole('combobox', { name: '音频格式：未设置' })).toBeDisabled();
+    expect(screen.getByRole('spinbutton', { name: '语速' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+  });
+
   it('为视频节点回传清晰度、比例和秒数，并保留已存尺寸参数', async () => {
     const user = userEvent.setup();
     const onParametersChange = vi.fn();
@@ -709,6 +1003,245 @@ describe('NodeQuickEditor', () => {
       within(durationGroup).getByRole('option', { name: '6 秒', selected: true }),
     ).toBeInTheDocument();
     expect(within(durationGroup).queryByRole('option', { name: '20 秒' })).not.toBeInTheDocument();
+  });
+
+  it('视频像素尺寸可选且没有默认值，不根据已有分辨率或比例推算', () => {
+    const onParametersChange = vi.fn();
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          node: {
+            ...videoNode,
+            data: {
+              ...videoNode.data,
+              parameters: { resolution: '720p', aspectRatio: '16:9', size: '1920x1080' },
+            },
+          } as AssetFlowNode,
+          onParametersChange,
+        })}
+      />,
+    );
+    expect(screen.getByRole('group', { name: '视频像素尺寸' })).toHaveAttribute(
+      'data-columns',
+      '2',
+    );
+    for (const label of ['宽度（像素）', '高度（像素）']) {
+      const input = screen.getByRole('spinbutton', { name: label });
+      expect(input).toHaveValue(null);
+      expect(input).not.toBeRequired();
+      expect(input).toHaveAttribute('min', '1');
+      expect(input).toHaveAttribute('max', String(Number.MAX_SAFE_INTEGER));
+      expect(input).toHaveAttribute('step', '1');
+      expect(input).toHaveAttribute('aria-invalid', 'false');
+    }
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+    expect(onParametersChange).not.toHaveBeenCalled();
+  });
+
+  it('视频宽高按数字保存恢复，完整保留 legacy 和未识别参数', () => {
+    const onParametersChange = vi.fn();
+    const props = makeProps({ onParametersChange });
+    const legacy = {
+      resolution: '720p',
+      aspectRatio: '16:9',
+      size: 'legacy-size',
+      duration: 8,
+      providerOption: { preserved: true },
+    };
+    const { rerender, unmount } = render(
+      <NodeQuickEditor
+        {...props}
+        node={{ ...videoNode, data: { ...videoNode.data, parameters: legacy } } as AssetFlowNode}
+      />,
+    );
+    fireEvent.change(screen.getByRole('spinbutton', { name: '宽度（像素）' }), {
+      target: { value: '1920' },
+    });
+    const widthParameters = onParametersChange.mock.lastCall?.[0];
+    expect(widthParameters).toEqual({ ...legacy, width: 1920 });
+    expect(legacy).not.toHaveProperty('width');
+    rerender(
+      <NodeQuickEditor
+        {...props}
+        node={
+          {
+            ...videoNode,
+            data: { ...videoNode.data, parameters: widthParameters },
+          } as AssetFlowNode
+        }
+      />,
+    );
+    fireEvent.change(screen.getByRole('spinbutton', { name: '高度（像素）' }), {
+      target: { value: '1080' },
+    });
+    const parameters = onParametersChange.mock.lastCall?.[0];
+    expect(parameters).toEqual({ ...legacy, width: 1920, height: 1080 });
+    unmount();
+    render(
+      <NodeQuickEditor
+        {...props}
+        node={
+          {
+            ...videoNode,
+            data: { ...videoNode.data, parameters: JSON.parse(JSON.stringify(parameters)) },
+          } as AssetFlowNode
+        }
+      />,
+    );
+    expect(screen.getByRole('spinbutton', { name: '宽度（像素）' })).toHaveValue(1920);
+    expect(screen.getByRole('spinbutton', { name: '高度（像素）' })).toHaveValue(1080);
+    expect(screen.getByRole('combobox', { name: '视频清晰度：720p' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '视频比例：16:9 · 横屏' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+    expect(onParametersChange).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['width', '宽度（像素）'],
+    ['height', '高度（像素）'],
+  ] as const)('清空视频 %s 仅删除对应字段，不删除另一尺寸或 legacy 参数', (field, label) => {
+    const onParametersChange = vi.fn();
+    const parameters = {
+      width: 1920,
+      height: 1080,
+      resolution: '720p',
+      aspectRatio: '16:9',
+      duration: 8,
+    };
+    const expected: Record<string, unknown> = { ...parameters };
+    delete expected[field];
+    const props = makeProps({ onParametersChange });
+    const { rerender } = render(
+      <NodeQuickEditor
+        {...props}
+        node={{ ...videoNode, data: { ...videoNode.data, parameters } } as AssetFlowNode}
+      />,
+    );
+    fireEvent.change(screen.getByRole('spinbutton', { name: label }), { target: { value: '' } });
+    expect(onParametersChange).toHaveBeenCalledWith(expected);
+    rerender(
+      <NodeQuickEditor
+        {...props}
+        node={{ ...videoNode, data: { ...videoNode.data, parameters: expected } } as AssetFlowNode}
+      />,
+    );
+    expect(screen.getByRole('spinbutton', { name: label })).toHaveValue(null);
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+  });
+
+  it.each([1, Number.MAX_SAFE_INTEGER])(
+    '视频像素边界 %s 是合法整数，不要求宽高必须同时配置',
+    (width) => {
+      render(
+        <NodeQuickEditor
+          {...makeProps({
+            node: {
+              ...videoNode,
+              data: { ...videoNode.data, parameters: { width } },
+            } as AssetFlowNode,
+          })}
+        />,
+      );
+      expect(screen.getByRole('spinbutton', { name: '宽度（像素）' })).toHaveValue(width);
+      expect(screen.getByRole('spinbutton', { name: '宽度（像素）' })).toHaveAttribute(
+        'aria-invalid',
+        'false',
+      );
+      expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+    },
+  );
+
+  it.each(
+    (['width', 'height'] as const).flatMap((field) =>
+      [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, '1280', null].map((value) => ({
+        field,
+        value,
+      })),
+    ),
+  )('非法视频 $field=$value 不会被修正或删除，阻止生成', ({ field, value }) => {
+    const onParametersChange = vi.fn();
+    const props = makeProps({ onParametersChange });
+    render(
+      <NodeQuickEditor
+        {...props}
+        node={
+          {
+            ...videoNode,
+            data: { ...videoNode.data, parameters: { [field]: value } },
+          } as AssetFlowNode
+        }
+      />,
+    );
+    const label = field === 'width' ? '宽度（像素）' : '高度（像素）';
+    expect(screen.getByRole('spinbutton', { name: label })).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '生成' })).toHaveAttribute(
+      'title',
+      '视频宽高必须为正整数像素，且不能超过安全整数范围',
+    );
+    fireEvent.click(screen.getByRole('button', { name: '生成' }));
+    expect(props.onRun).not.toHaveBeenCalled();
+    expect(onParametersChange).not.toHaveBeenCalled();
+  });
+
+  it('输入小数视频尺寸不会取整，明确修改为正整数后才恢复生成', () => {
+    const onParametersChange = vi.fn();
+    const props = makeProps({ node: videoNode, onParametersChange });
+    const { rerender } = render(<NodeQuickEditor {...props} />);
+    fireEvent.change(screen.getByRole('spinbutton', { name: '宽度（像素）' }), {
+      target: { value: '1920.5' },
+    });
+    expect(onParametersChange).toHaveBeenLastCalledWith({ width: 1920.5 });
+    rerender(
+      <NodeQuickEditor
+        {...props}
+        node={
+          {
+            ...videoNode,
+            data: { ...videoNode.data, parameters: { width: 1920.5 } },
+          } as AssetFlowNode
+        }
+      />,
+    );
+    expect(screen.getByRole('spinbutton', { name: '宽度（像素）' })).toHaveValue(1920.5);
+    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+    fireEvent.change(screen.getByRole('spinbutton', { name: '宽度（像素）' }), {
+      target: { value: '1920' },
+    });
+    expect(onParametersChange).toHaveBeenLastCalledWith({ width: 1920 });
+    rerender(
+      <NodeQuickEditor
+        {...props}
+        node={
+          {
+            ...videoNode,
+            data: { ...videoNode.data, parameters: { width: 1920 } },
+          } as AssetFlowNode
+        }
+      />,
+    );
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+  });
+
+  it('切换视频节点不会带入上一节点的像素尺寸，其他媒体不显示宽高输入', () => {
+    const props = makeProps({ onParametersChange: vi.fn() });
+    const { rerender } = render(
+      <NodeQuickEditor
+        {...props}
+        node={
+          {
+            ...videoNode,
+            data: { ...videoNode.data, parameters: { width: 1920, height: 1080 } },
+          } as AssetFlowNode
+        }
+      />,
+    );
+    rerender(<NodeQuickEditor {...props} node={{ ...videoNode, id: 'second-video' }} />);
+    expect(screen.getByRole('spinbutton', { name: '宽度（像素）' })).toHaveValue(null);
+    expect(screen.getByRole('spinbutton', { name: '高度（像素）' })).toHaveValue(null);
+    rerender(<NodeQuickEditor {...props} node={audioNode} />);
+    expect(screen.queryByRole('group', { name: '视频像素尺寸' })).not.toBeInTheDocument();
+    expect(props.onParametersChange).not.toHaveBeenCalled();
   });
 
   it('不会把能力映射中标记为 false 的推理强度显示为可选项', async () => {

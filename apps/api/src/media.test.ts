@@ -1,3 +1,5 @@
+import { access } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -8,6 +10,33 @@ import {
 } from './media';
 
 describe('media metadata extraction', () => {
+  it.each([0, -1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])(
+    'rejects an unsafe subprocess timeout %s',
+    (timeoutMs) => {
+      expect(() => new FfprobeMediaMetadataExtractor({ timeoutMs })).toThrow('timeout');
+      expect(() => new FfmpegMediaDerivativeGenerator({ timeoutMs })).toThrow('timeout');
+    },
+  );
+
+  it('cleans the actual temporary directory after a runner failure', async () => {
+    let directory = '';
+    const extractor = new FfprobeMediaMetadataExtractor({
+      runner: async (_binary, args) => {
+        directory = dirname(args.at(-1)!);
+        await access(args.at(-1)!);
+        expect(args).toEqual(expect.arrayContaining(['-protocol_whitelist', 'file,pipe']));
+        throw new Error('probe failure');
+      },
+    });
+    await expect(
+      extractor.extract({
+        content: Buffer.from('media'),
+        mimeType: 'video/mp4',
+        mediaType: 'video',
+      }),
+    ).rejects.toThrow('probe failure');
+    await expect(access(directory)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
   it('returns an empty metadata object for the no-op extractor', async () => {
     await expect(
       new NoopMediaMetadataExtractor().extract({
@@ -68,6 +97,16 @@ describe('media metadata extraction', () => {
 });
 
 describe('media derivative generation', () => {
+  it('does not report an empty preview as successfully generated', async () => {
+    const generator = new FfmpegMediaDerivativeGenerator({ runner: async () => Buffer.alloc(0) });
+    await expect(
+      generator.generate({
+        content: Buffer.from('media'),
+        mimeType: 'image/png',
+        mediaType: 'image',
+      }),
+    ).rejects.toThrow('output is empty');
+  });
   it('keeps the no-op generator empty when ffmpeg is unavailable', async () => {
     await expect(
       new NoopMediaDerivativeGenerator().generate({

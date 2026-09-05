@@ -19,6 +19,24 @@ function legacyCiphertext(plaintext: string, secret: string): string {
   return Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString('base64url');
 }
 
+/** 为单位测试的 Prisma 替身提供事务锁与数据库时间接口；真实锁由集成测试验证。 */
+function mockSettingsSql() {
+  return {
+    $executeRaw: vi.fn(async () => 0),
+    $queryRaw: vi.fn(async () => [{ updatedAt: new Date() }]),
+  };
+}
+
+/** 将简化存储替身包装为与 Prisma 相同的交互事务调用形状。 */
+function withSettingsTransaction(client: object) {
+  return {
+    ...client,
+    $transaction: vi.fn(async (operation: (transaction: unknown) => Promise<unknown>) =>
+      operation({ ...client, ...mockSettingsSql() }),
+    ),
+  };
+}
+
 afterEach(() => {
   vi.unstubAllEnvs();
 });
@@ -43,7 +61,10 @@ describe('Prisma AI settings encryption', () => {
       aiCredential: { findFirst: vi.fn().mockResolvedValue(null), create },
       modelCatalog: { findMany: vi.fn().mockResolvedValue([]) },
     };
-    const store = new PrismaAiSettingsStore(prisma as never, 'current-encryption-secret');
+    const store = new PrismaAiSettingsStore(
+      withSettingsTransaction(prisma) as never,
+      'current-encryption-secret',
+    );
 
     await store.update({ baseUrl: 'https://rotation.example/v1', apiKey: 'provider-secret' });
 
@@ -763,11 +784,17 @@ describe('New API model catalog normalization', () => {
       defaultModels: null,
       updatedAt: new Date('2026-08-26T00:00:00.000Z'),
     });
-    const create = vi.fn().mockResolvedValue({});
+    const create = vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+      ...data,
+      id: 'synthetic-revoked',
+    }));
     const deleteMany = vi.fn();
     const prisma = {
       aiCredential: { findFirst, create, deleteMany },
       modelCatalog: { findMany: vi.fn().mockResolvedValue([]) },
+      $transaction: vi.fn(async (operation: (transaction: unknown) => Promise<unknown>) =>
+        operation({ aiCredential: { findFirst, create }, ...mockSettingsSql() }),
+      ),
     };
     const store = new PrismaAiSettingsStore(prisma as never, 'test-encryption-secret');
 
@@ -785,6 +812,7 @@ describe('New API model catalog normalization', () => {
         keyFingerprint: '',
         defaultModels: Prisma.JsonNull,
         label: 'revoked',
+        updatedAt: expect.any(Date),
       },
     });
     await expect(store.hasCredential('123e4567-e89b-12d3-a456-426614174013')).resolves.toBe(false);
@@ -802,7 +830,10 @@ describe('New API model catalog normalization', () => {
       },
       modelCatalog: { findMany: vi.fn().mockResolvedValue([]) },
     };
-    const store = new PrismaAiSettingsStore(prisma as never, 'test-encryption-secret');
+    const store = new PrismaAiSettingsStore(
+      withSettingsTransaction(prisma) as never,
+      'test-encryption-secret',
+    );
 
     await expect(
       store.update({ baseUrl: 'https://gateway.example.com/v1', apiKey: 'temporary-key' }),
@@ -843,7 +874,7 @@ describe('New API model catalog normalization', () => {
       keyFingerprint: activeRow.keyFingerprint,
     });
     expect(create).not.toHaveBeenCalled();
-    expect(findFirst).toHaveBeenCalledTimes(1);
+    expect(findFirst).toHaveBeenCalledTimes(2);
   });
 
   it('lists Prisma credential history by unique connection and marks the active row', async () => {
@@ -917,24 +948,31 @@ describe('New API model catalog normalization', () => {
       updatedAt: new Date('2026-08-27T02:00:00.000Z'),
     };
     const createdId = '123e4567-e89b-12d3-a456-426614174032';
-    const create = vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
-      ...data,
-      id: createdId,
-      version: data.version as number,
-      updatedAt: new Date('2026-08-27T05:00:00.000Z'),
-    }));
+    /** 模拟已提交的当前行，让每次读穿缓存都得到实际持久化结果。 */
+    let latestRow: Record<string, unknown> = activeRow;
+    const create = vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+      latestRow = {
+        ...data,
+        id: createdId,
+        version: data.version as number,
+        updatedAt: new Date('2026-08-27T05:00:00.000Z'),
+      };
+      return latestRow;
+    });
     const modelCatalog = {
       findMany: vi.fn().mockResolvedValue([]),
       createMany: vi.fn(),
     };
-    const transaction = { aiCredential: { create }, modelCatalog };
+    const transaction = {
+      aiCredential: { create, findFirst: vi.fn(async () => latestRow) },
+      modelCatalog,
+      ...mockSettingsSql(),
+    };
     const prisma = {
       aiCredential: {
-        findFirst: vi
-          .fn()
-          .mockResolvedValueOnce(activeRow)
-          .mockResolvedValueOnce(historicalRow)
-          .mockResolvedValueOnce(activeRow),
+        findFirst: vi.fn(async (query?: { where?: { id?: string } }) =>
+          query?.where?.id === historicalRow.id ? historicalRow : latestRow,
+        ),
         create,
       },
       modelCatalog,

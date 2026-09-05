@@ -25,6 +25,29 @@ const productionEnvironment: StartupEnvironment = {
 };
 
 describe('API production startup configuration', () => {
+  it.each(['newapi-unified-v1', 'legacy-v1'])('accepts video contract %s', (contract) => {
+    expect(
+      validateApiStartupConfiguration({
+        ...productionEnvironment,
+        NEW_API_VIDEO_CONTRACT: contract,
+      }),
+    ).toEqual([]);
+  });
+
+  it.each(['', 'sora', 'newapi-video-v1', ' legacy-v1'])(
+    'rejects video contract %s',
+    (contract) => {
+      expect(
+        validateApiStartupConfiguration({
+          ...productionEnvironment,
+          NEW_API_VIDEO_CONTRACT: contract,
+        }),
+      ).toContainEqual({
+        variable: 'NEW_API_VIDEO_CONTRACT',
+        message: 'must be "newapi-unified-v1" or "legacy-v1"',
+      });
+    },
+  );
   it('accepts durable production configuration without a database AI credential', () => {
     expect(validateApiStartupConfiguration(productionEnvironment)).toEqual([]);
     expect(() => assertApiStartupConfiguration(productionEnvironment)).not.toThrow();

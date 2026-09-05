@@ -568,18 +568,25 @@ export class AiSettingsStore {
   }
 }
 
-/** PostgreSQL-backed AI settings, credential version, defaults and model catalog. */
+/**
+ * PostgreSQL 设置存储。每次当前状态操作都先读取数据库，撤销提交后开始的操作
+ * 不再使用其他实例的旧缓存；数据库不可用时抛错，不回退到缓存凭据。
+ * 完整的 credentialId/version 仍按不可变历史记录解析，不取消已冻结的任务。
+ * 文件存储不使用此同步机制，仍只支持单 API 进程。
+ */
 export class PrismaAiSettingsStore implements AiSettingsStoreLike {
-  private readonly memory: AiSettingsStore;
+  /** 最近一次完整加载的设置视图，仅在串行操作内部使用。 */
+  private memory: AiSettingsStore;
   private readonly ready: Promise<void>;
   private readonly encryptionSecret: string;
   private readonly credentialKeyring: CredentialEncryptionKeyring;
+  /** 重建视图时保留请求超时、测试注入及共享密钥环配置。 */
+  private readonly memoryOptions: AiSettingsStoreOptions;
   private credentialReference: CredentialReference = {};
-  // Serialize writes in this process so concurrent settings requests cannot
-  // derive the same credential version or persist another request's memory
-  // state. The queue is deliberately kept alive after failures.
+  /** 串行化本实例的刷新与写入，避免读取未持久化状态；失败后仍可继续操作。 */
   private writeQueue: Promise<void> = Promise.resolve();
 
+  /** 使用调用方管理的数据库客户端初始化；缺少稳定加密密钥时立即拒绝启动。 */
   constructor(
     private readonly prisma: PrismaClient,
     encryptionSecret = process.env.AI_CREDENTIAL_ENCRYPTION_KEY,
@@ -595,21 +602,22 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
       ...process.env,
       AI_CREDENTIAL_ENCRYPTION_KEY: encryptionSecret,
     });
-    this.memory = new AiSettingsStore(encryptionSecret, {
+    this.memoryOptions = {
       ...options,
       credentialKeyring: this.credentialKeyring,
-    });
+    };
+    this.memory = new AiSettingsStore(encryptionSecret, this.memoryOptions);
     this.ready = this.load();
   }
 
+  /** 返回数据库最新设置；读取失败时不暴露旧的活动状态。 */
   async get() {
-    await this.ready;
-    return this.memory.get();
+    return this.withLatestSettings(() => this.memory.get());
   }
 
+  /** 基于最新已提交设置合并局部更新，落库失败时撤回本实例的临时变更。 */
   async update(input: UpdateAiSettingsInput) {
-    await this.ready;
-    return this.enqueueWrite(async () => {
+    return this.withLatestSettings(async () => {
       const previous = this.memory.getPersisted();
       const previousReference = this.memory.getCredentialReference();
       const previousStoreReference = { ...this.credentialReference };
@@ -624,8 +632,9 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
         await this.persistCredential(
           sourceCatalogCredentialId,
           previous.baseUrl === next.baseUrl && previous.keyFingerprint === next.keyFingerprint,
+          previous.updatedAt,
         );
-        return result;
+        return this.memory.get();
       } catch (error) {
         // A database outage must not leave this process serving credentials or
         // defaults that were never durably written.
@@ -636,19 +645,20 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
     });
   }
 
+  /** 列出历史连接摘要，活动标记以本次读取的数据库设置为准。 */
   async listCredentials() {
-    await this.ready;
-    await this.writeQueue;
-    const credentials = await this.prisma.aiCredential.findMany({
-      where: { projectId: null },
-      orderBy: [{ updatedAt: 'desc' }, { version: 'desc' }],
+    return this.withLatestSettings(async () => {
+      const credentials = await this.prisma.aiCredential.findMany({
+        where: { projectId: null },
+        orderBy: [{ updatedAt: 'desc' }, { version: 'desc' }],
+      });
+      return summarizeCredentials(credentials, this.credentialReference.credentialId);
     });
-    return summarizeCredentials(credentials, this.credentialReference.credentialId);
   }
 
+  /** 显式重新激活历史连接并保留最新默认模型；目标不存在时返回 undefined。 */
   async activateCredential(credentialId: string) {
-    await this.ready;
-    return this.enqueueWrite(async () => {
+    return this.withLatestSettings(async () => {
       const credential = await this.prisma.aiCredential.findFirst({
         where: { id: credentialId, projectId: null },
       });
@@ -665,8 +675,8 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
       const result = this.memory.update(providerCredentials);
       if (samePersistedSettings(previous, this.memory.getPersisted())) return result;
       try {
-        await this.persistCredential(credential.id);
-        return result;
+        await this.persistCredential(credential.id, false, previous.updatedAt);
+        return this.memory.get();
       } catch (error) {
         this.memory.hydrate(previous, previousReference);
         this.credentialReference = previousStoreReference;
@@ -675,41 +685,60 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
     });
   }
 
+  /** 写入撤销墓碑阻止后续新任务使用凭据，保留历史快照的 id/version 和密文。 */
   async removeCredentials() {
-    await this.ready;
-    return this.enqueueWrite(async () => {
+    return this.withLatestSettings(async () => {
       // Do not delete or zero historical rows: queued/running jobs may refer
       // to the current id/version. Append an empty tombstone version to revoke
       // the active credential while leaving every immutable snapshot resolvable.
-      const current = await this.prisma.aiCredential.findFirst({
-        where: { projectId: null },
-        orderBy: { updatedAt: 'desc' },
-        select: { version: true },
-      });
-      if (current) {
-        await this.prisma.aiCredential.create({
-          data: {
-            projectId: null,
-            ownerId: null,
-            version: current.version + 1,
-            baseUrl: '',
-            encryptedApiKey: '',
-            encryptionKeyId: null,
-            keyFingerprint: '',
-            defaultModels: Prisma.JsonNull,
-            label: 'revoked',
-          },
+      const revoked = await this.prisma.$transaction(async (transaction) => {
+        const updatedAt = await this.lockCredentialWrites(transaction);
+        const current = await transaction.aiCredential.findFirst({
+          where: { projectId: null },
+          orderBy: [{ updatedAt: 'desc' }, { version: 'desc' }],
+          select: { version: true },
         });
-      }
+        if (current) {
+          return transaction.aiCredential.create({
+            data: {
+              projectId: null,
+              ownerId: null,
+              version: current.version + 1,
+              baseUrl: '',
+              encryptedApiKey: '',
+              encryptionKeyId: null,
+              keyFingerprint: '',
+              defaultModels: Prisma.JsonNull,
+              label: 'revoked',
+              updatedAt,
+            },
+          });
+        }
+        return null;
+      });
       this.credentialReference = {};
+      if (revoked) {
+        this.memory.hydrate({
+          baseUrl: '',
+          encryptedApiKey: '',
+          keyFingerprint: '',
+          defaultModels: {},
+          updatedAt: revoked.updatedAt.toISOString(),
+        });
+        return this.memory.get();
+      }
       return this.memory.removeCredentials();
     });
   }
 
+  /** 检查指定凭据是否可用于新任务；当前设置被撤销时历史凭据也不可新选。 */
   async hasCredential(credentialId: string) {
-    await this.ready;
-    await this.writeQueue;
-    if (!(await this.get()).configured) return false;
+    return this.withLatestSettings(() => this.hasLoadedCredential(credentialId));
+  }
+
+  /** 仅在已同步的串行操作中检查可选凭据，避免再次入队造成自等待。 */
+  private async hasLoadedCredential(credentialId: string) {
+    if (!this.memory.get().configured) return false;
     if (credentialId === this.credentialReference.credentialId) {
       return true;
     }
@@ -720,14 +749,14 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
     return Boolean(credential?.baseUrl && credential.encryptedApiKey);
   }
 
+  /** 使用本次读取的活动连接测试上游；已提交的远程撤销会阻止请求发出。 */
   async testConnection() {
-    await this.ready;
-    return this.memory.testConnection();
+    return this.withLatestSettings(() => this.memory.testConnection());
   }
 
+  /** 同步活动状态后刷新指定连接目录；撤销后不能借历史 id 发起新的上游请求。 */
   async refreshModels(credentialId?: string) {
-    await this.ready;
-    return this.enqueueWrite(async () => {
+    return this.withLatestSettings(async () => {
       const selected = await this.resolveModelCredential(credentialId);
       const previousModels = this.memory.listModels(undefined, selected.credentialId);
       const models = await this.memory.refreshModelsForCredential(
@@ -768,66 +797,83 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
     });
   }
 
+  /** 返回数据库最新模型目录和能力覆盖；撤销后的显式历史选择会抛出未找到错误。 */
   async listModels(mediaType?: MediaType, credentialId?: string) {
-    await this.ready;
-    await this.writeQueue;
-    const resolvedCredentialId = credentialId ?? this.credentialReference.credentialId;
-    if (credentialId && !(await this.hasCredential(credentialId))) {
-      throw new AiCredentialNotFoundError(credentialId);
-    }
-    return this.memory.listModels(mediaType, resolvedCredentialId);
-  }
-
-  async resolveModel(mediaType: MediaType, requestedAlias?: string) {
-    await this.ready;
-    return this.memory.resolveModel(mediaType, requestedAlias);
-  }
-
-  async getCredentialReference(credentialId?: string) {
-    await this.ready;
-    await this.writeQueue;
-    if (credentialId && credentialId !== this.credentialReference.credentialId) {
-      if (!(await this.get()).configured) {
+    return this.withLatestSettings(async () => {
+      const resolvedCredentialId = credentialId ?? this.credentialReference.credentialId;
+      if (credentialId && !(await this.hasLoadedCredential(credentialId))) {
         throw new AiCredentialNotFoundError(credentialId);
       }
-      const credential = await this.prisma.aiCredential.findFirst({
-        where: { id: credentialId, projectId: null },
-        select: { id: true, version: true, baseUrl: true, encryptedApiKey: true },
-      });
-      if (!credential?.baseUrl || !credential.encryptedApiKey) {
-        throw new AiCredentialNotFoundError(credentialId);
-      }
-      return { credentialId: credential.id, credentialVersion: credential.version };
-    }
-    return { ...this.credentialReference };
-  }
-
-  async getProviderCredentials(reference?: CredentialReference) {
-    await this.ready;
-    const requested = reference ?? {};
-    if (
-      (!requested.credentialId && !requested.credentialVersion) ||
-      (requested.credentialId === this.credentialReference.credentialId &&
-        requested.credentialVersion === this.credentialReference.credentialVersion)
-    ) {
-      return this.memory.getProviderCredentials();
-    }
-    if (!requested.credentialId || !requested.credentialVersion) return undefined;
-    const historical = await this.prisma.aiCredential.findFirst({
-      where: {
-        id: requested.credentialId,
-        version: requested.credentialVersion,
-        projectId: null,
-      },
+      return this.memory.listModels(mediaType, resolvedCredentialId);
     });
-    if (!historical) return undefined;
-    return this.providerCredentialsForCredential(historical);
   }
 
+  /** 使用最新默认模型、目录和能力覆盖解析别名；不兼容时保持既有错误契约。 */
+  async resolveModel(mediaType: MediaType, requestedAlias?: string) {
+    return this.withLatestSettings(() => this.memory.resolveModel(mediaType, requestedAlias));
+  }
+
+  /** 为新任务选择最新凭据版本；无活动连接时返回空引用，显式历史选择则报错。 */
+  async getCredentialReference(credentialId?: string) {
+    return this.withLatestSettings(async () => {
+      if (credentialId && credentialId !== this.credentialReference.credentialId) {
+        if (!this.memory.get().configured) {
+          throw new AiCredentialNotFoundError(credentialId);
+        }
+        const credential = await this.prisma.aiCredential.findFirst({
+          where: { id: credentialId, projectId: null },
+          select: { id: true, version: true, baseUrl: true, encryptedApiKey: true },
+        });
+        if (!credential?.baseUrl || !credential.encryptedApiKey) {
+          throw new AiCredentialNotFoundError(credentialId);
+        }
+        return { credentialId: credential.id, credentialVersion: credential.version };
+      }
+      return { ...this.credentialReference };
+    });
+  }
+
+  /**
+   * 无引用时读取最新活动凭据；完整引用只按冻结 id/version 查询历史数据库记录。
+   * 部分引用或版本不匹配返回 undefined，不回退当前 Key；读取失败直接抛错。
+   * 返回值含明文，仅供服务端执行器使用，不得用于 HTTP 响应或日志。
+   */
+  async getProviderCredentials(reference?: CredentialReference) {
+    const requested = reference ?? {};
+    if (requested.credentialId === undefined && requested.credentialVersion === undefined) {
+      return this.withLatestSettings(() => this.memory.getProviderCredentials());
+    }
+    if (
+      !requested.credentialId ||
+      !requested.credentialVersion ||
+      !Number.isSafeInteger(requested.credentialVersion) ||
+      requested.credentialVersion < 1
+    )
+      return undefined;
+    await this.ready;
+    return this.enqueueWrite(async () => {
+      const historical = await this.prisma.aiCredential.findFirst({
+        where: {
+          id: requested.credentialId,
+          version: requested.credentialVersion,
+          projectId: null,
+        },
+      });
+      if (!historical) return undefined;
+      return this.providerCredentialsForCredential(historical);
+    });
+  }
+
+  /** 等待初始化和本实例已入队操作；数据库客户端仍由调用方管理。 */
   async close() {
     await this.ready;
+    await this.writeQueue;
   }
 
+  /**
+   * 构造完整的新设置视图后才替换缓存，清除远程已删除的目录和能力覆盖。
+   * 数据库、解密或轮换写回失败时保留错误，不发布半加载状态。
+   */
   private async load() {
     const overrideDelegate = (
       this.prisma as PrismaClient & {
@@ -837,19 +883,23 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
     const [credential, catalog, overrides] = await Promise.all([
       this.prisma.aiCredential.findFirst({
         where: { projectId: null },
-        orderBy: { updatedAt: 'desc' },
+        orderBy: [{ updatedAt: 'desc' }, { version: 'desc' }],
       }),
       this.prisma.modelCatalog.findMany(),
       overrideDelegate?.findMany ? overrideDelegate.findMany() : Promise.resolve([]),
     ]);
-    if (credential?.baseUrl && credential.encryptedApiKey) {
-      await this.providerCredentialsForCredential(credential);
-      this.credentialReference = {
-        credentialId: credential.id,
-        credentialVersion: credential.version,
-      };
+    const memory = new AiSettingsStore(this.encryptionSecret, this.memoryOptions);
+    const reference: CredentialReference = {};
+    if (credential) {
+      if (credential.baseUrl && credential.encryptedApiKey) {
+        await this.providerCredentialsForCredential(credential);
+        Object.assign(reference, {
+          credentialId: credential.id,
+          credentialVersion: credential.version,
+        });
+      }
       const defaults = isDefaultModels(credential.defaultModels) ? credential.defaultModels : {};
-      this.memory.hydrate(
+      memory.hydrate(
         {
           baseUrl: credential.baseUrl,
           encryptedApiKey: credential.encryptedApiKey,
@@ -858,15 +908,10 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
           defaultModels: defaults,
           updatedAt: credential.updatedAt.toISOString(),
         },
-        { credentialId: credential.id, credentialVersion: credential.version },
+        reference,
       );
-    } else {
-      this.credentialReference = {};
-      // A revoked tombstone must override any development-time environment
-      // credentials loaded by the in-memory fallback during construction.
-      if (credential) this.memory.removeCredentials();
     }
-    const activeCredentialId = this.credentialReference.credentialId;
+    const activeCredentialId = reference.credentialId;
     let resolvedCatalog = catalog;
     if (activeCredentialId) {
       const legacyModels = catalog.filter((model) => model.credentialId === null);
@@ -931,86 +976,134 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
       grouped.set(scopeKey, scopedModels);
     }
     for (const [scopeKey, models] of grouped) {
-      this.memory.replaceModels(
+      memory.replaceModels(
         [...models.values()],
         scopeKey === LEGACY_MODEL_CATALOG_KEY ? undefined : scopeKey,
       );
     }
-    this.memory.replaceCapabilityOverrides(normalizeCapabilityOverrides(overrides));
+    memory.replaceCapabilityOverrides(normalizeCapabilityOverrides(overrides));
+    this.memory = memory;
+    this.credentialReference = reference;
   }
 
-  private async persistCredential(sourceCatalogCredentialId?: string, defaultsOnly = false) {
+  /**
+   * 持久化设置并绑定数据库版本；所有更新都校验原活动行与更新时间。
+   * 并发撤销或配置变更导致原视图失效时拒绝写入，不允许把历史行重新排成活动行。
+   */
+  private async persistCredential(
+    sourceCatalogCredentialId: string | undefined,
+    defaultsOnly: boolean,
+    expectedUpdatedAt: string,
+  ) {
     const persisted = this.memory.getPersisted();
-    if (defaultsOnly && this.credentialReference.credentialId) {
-      const update = (
-        this.prisma.aiCredential as unknown as {
-          update?: (args: {
-            where: { id: string };
-            data: { defaultModels: PersistedAiSettings['defaultModels']; updatedAt: Date };
-          }) => Promise<unknown>;
-        }
-      ).update;
-      if (update) {
-        await update({
-          where: { id: this.credentialReference.credentialId },
-          data: { defaultModels: persisted.defaultModels, updatedAt: new Date() },
-        });
-        return;
+    const current = await this.prisma.$transaction(async (transaction) => {
+      const updatedAt = await this.lockCredentialWrites(transaction);
+      const existing = await transaction.aiCredential.findFirst({
+        where: { projectId: null },
+        orderBy: [{ updatedAt: 'desc' }, { version: 'desc' }],
+      });
+      const expectedReference = this.credentialReference;
+      const matchesReference = expectedReference.credentialId
+        ? existing?.id === expectedReference.credentialId &&
+          existing.version === expectedReference.credentialVersion
+        : !existing?.baseUrl || !existing.encryptedApiKey;
+      if (
+        !matchesReference ||
+        (existing && existing.updatedAt.toISOString() !== expectedUpdatedAt)
+      ) {
+        throw new Error('AI settings changed before they could be persisted');
       }
-    }
-    const existing = await this.prisma.aiCredential.findFirst({
-      where: { projectId: null },
-      orderBy: { updatedAt: 'desc' },
-      select: { id: true, version: true },
-    });
-    const data = {
-      label: 'default',
-      baseUrl: persisted.baseUrl,
-      encryptedApiKey: persisted.encryptedApiKey,
-      encryptionKeyId:
-        persisted.encryptionKeyId ??
-        (persisted.encryptedApiKey ? this.credentialKeyring.currentKeyId : null),
-      keyFingerprint: persisted.keyFingerprint,
-      defaultModels: persisted.defaultModels,
-      version: Math.max(
-        existing ? existing.version + 1 : 1,
-        this.memory.getCredentialReference().credentialVersion ?? 1,
-      ),
-      projectId: null,
-      ownerId: null,
-    };
-    const current = sourceCatalogCredentialId
-      ? await this.prisma.$transaction(async (transaction) => {
-          const created = await transaction.aiCredential.create({ data });
-          const sourceModels = await transaction.modelCatalog.findMany({
-            where: { credentialId: sourceCatalogCredentialId },
+      if (
+        defaultsOnly &&
+        this.credentialReference.credentialId &&
+        typeof transaction.aiCredential.update === 'function'
+      ) {
+        if (!existing) {
+          throw new Error('AI settings changed before they could be persisted');
+        }
+        return transaction.aiCredential.update({
+          where: { id: existing.id, version: existing.version, updatedAt: existing.updatedAt },
+          data: { defaultModels: persisted.defaultModels, updatedAt },
+        });
+      }
+      const created = await transaction.aiCredential.create({
+        data: {
+          label: 'default',
+          baseUrl: persisted.baseUrl,
+          encryptedApiKey: persisted.encryptedApiKey,
+          encryptionKeyId:
+            persisted.encryptionKeyId ??
+            (persisted.encryptedApiKey ? this.credentialKeyring.currentKeyId : null),
+          keyFingerprint: persisted.keyFingerprint,
+          defaultModels: persisted.defaultModels,
+          version: Math.max(
+            existing ? existing.version + 1 : 1,
+            this.memory.getCredentialReference().credentialVersion ?? 1,
+          ),
+          projectId: null,
+          ownerId: null,
+          updatedAt,
+        },
+      });
+      if (sourceCatalogCredentialId) {
+        const sourceModels = await transaction.modelCatalog.findMany({
+          where: { credentialId: sourceCatalogCredentialId },
+        });
+        if (sourceModels.length > 0) {
+          await transaction.modelCatalog.createMany({
+            data: sourceModels.map((model) => copyModelCatalogData(model, created.id)),
           });
-          if (sourceModels.length > 0) {
-            await transaction.modelCatalog.createMany({
-              data: sourceModels.map((model) => copyModelCatalogData(model, created.id)),
-            });
-          }
-          return created;
-        })
-      : await this.prisma.aiCredential.create({ data });
+        }
+      }
+      return created;
+    });
     if (current) {
-      this.credentialReference = {
-        credentialId: current.id,
-        credentialVersion: current.version,
-      };
+      this.credentialReference =
+        persisted.baseUrl && persisted.encryptedApiKey
+          ? { credentialId: current.id, credentialVersion: current.version }
+          : {};
       if (sourceCatalogCredentialId) {
         this.memory.copyModels(sourceCatalogCredentialId, current.id);
       }
-      this.memory.hydrate(persisted, this.credentialReference);
+      this.memory.hydrate(
+        { ...persisted, updatedAt: current.updatedAt.toISOString() },
+        this.credentialReference,
+      );
     }
   }
 
+  /**
+   * 创建、默认模型更新和撤销共享事务级表锁，普通 SELECT 仍可读取已提交状态。
+   * 锁仅覆盖设置表的短时数据库操作，不跨 Provider 请求；由事务提交或回滚释放。
+   * 获锁后使用数据库 UTC wall clock，不使用应用时钟或事务开始时间；至少超过
+   * 已存最大时间一毫秒，使旧未来时间和同毫秒并发均不破坏排序或 CAS，无需迁移历史数据。
+   */
+  private async lockCredentialWrites(transaction: Prisma.TransactionClient): Promise<Date> {
+    await transaction.$executeRaw`LOCK TABLE "ai_credentials" IN SHARE ROW EXCLUSIVE MODE`;
+    const timestamps = await transaction.$queryRaw<Array<{ updatedAt: Date }>>`
+      SELECT GREATEST(
+        (clock_timestamp() AT TIME ZONE 'UTC')::timestamp(3),
+        MAX("updatedAt") + interval '1 millisecond'
+      ) AS "updatedAt"
+      FROM "ai_credentials" WHERE "projectId" IS NULL
+    `;
+    const updatedAt = timestamps[0]?.updatedAt;
+    if (!(updatedAt instanceof Date) || !Number.isFinite(updatedAt.getTime())) {
+      throw new Error('AI settings database timestamp is unavailable');
+    }
+    return updatedAt;
+  }
+
+  /** 在已同步的视图内解析模型请求凭据；撤销后拒绝显式历史选择，不影响冻结任务读取。 */
   private async resolveModelCredential(credentialId?: string): Promise<{
     credentialId: string;
     providerCredentials: ProviderCredentials;
   }> {
     const resolvedCredentialId = credentialId ?? this.credentialReference.credentialId;
-    if (!resolvedCredentialId) throw new Error('New API 地址和 Key 尚未配置');
+    if (!this.memory.get().configured || !resolvedCredentialId) {
+      if (credentialId) throw new AiCredentialNotFoundError(credentialId);
+      throw new Error('New API 地址和 Key 尚未配置');
+    }
     if (resolvedCredentialId === this.credentialReference.credentialId) {
       const providerCredentials = this.memory.getProviderCredentials();
       if (providerCredentials) return { credentialId: resolvedCredentialId, providerCredentials };
@@ -1028,6 +1121,19 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
     return { credentialId: resolvedCredentialId, providerCredentials };
   }
 
+  /**
+   * 在同一队列内刷新并消费设置，避免异步刷新覆盖本实例尚未落库的写入。
+   * 每次操作重新读取，不使用 TTL；失败只拒绝本次操作，后续请求可自动恢复。
+   */
+  private async withLatestSettings<T>(operation: () => T | Promise<T>): Promise<T> {
+    await this.ready;
+    return this.enqueueWrite(async () => {
+      await this.load();
+      return operation();
+    });
+  }
+
+  /** 将操作追加到本实例队列并向调用方保留异常，不让失败中断后续操作。 */
   private enqueueWrite<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.writeQueue.then(operation);
     this.writeQueue = result.then(

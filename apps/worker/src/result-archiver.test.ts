@@ -1,3 +1,4 @@
+import { createServer } from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
 import type { PrismaClient } from '@prisma/client';
 import type { ProviderJob, RunResult, RunSnapshot } from '@multimodal-canvas/domain';
@@ -5,6 +6,7 @@ import type { ProviderJob, RunResult, RunSnapshot } from '@multimodal-canvas/dom
 import {
   PrismaResultAssetArchiver,
   WorkerFfprobeMediaMetadataExtractor,
+  WorkerS3BlobStore,
   type ResultBlobStore,
 } from './result-archiver';
 
@@ -45,6 +47,325 @@ const providerJob: ProviderJob = {
 };
 
 describe('PrismaResultAssetArchiver', () => {
+  it('rejects DNS rebinding at the actual socket lookup without connecting to loopback', async () => {
+    let requests = 0;
+    const server = createServer((_request, response) => {
+      requests += 1;
+      response.end('private');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test server did not bind');
+    const lookupHost = vi
+      .fn()
+      .mockResolvedValueOnce([{ address: '8.8.8.8', family: 4 }])
+      .mockResolvedValue([{ address: '127.0.0.1', family: 4 }]);
+    const archiver = new PrismaResultAssetArchiver(
+      fakePrisma(async () => undefined),
+      {
+        blobStore: createBlobStore(),
+        strictDns: true,
+        allowHttp: true,
+        lookupHost,
+        fetchTimeoutMs: 1000,
+      },
+    );
+    try {
+      await expect(
+        archiver.archive({
+          runId: 'dns-rebinding',
+          snapshot,
+          result,
+          providerJob,
+          archiveInput: {
+            mediaType: 'image',
+            mimeType: 'image/png',
+            contentUrl: `http://public-provider.example:${address.port}/private`,
+          },
+        }),
+      ).rejects.toThrow('transport failed');
+      expect(lookupHost).toHaveBeenCalledTimes(2);
+      expect(requests).toBe(0);
+    } finally {
+      const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+      server.closeAllConnections();
+      await closed;
+    }
+  });
+
+  it.each(['put', 'delete'] as const)('bounds a real stalled S3 %s request', async (method) => {
+    const server = createServer((request) => {
+      request.resume();
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test server did not bind');
+    const storage = new WorkerS3BlobStore('media-test', {
+      endpoint: `http://127.0.0.1:${address.port}`,
+      forcePathStyle: true,
+      accessKeyId: 'synthetic-test-user',
+      secretAccessKey: 'synthetic-test-secret',
+      timeoutMs: 100,
+    });
+    try {
+      await expect(
+        method === 'put'
+          ? storage.put('media-test/object', Buffer.from('media'))
+          : storage.delete('media-test/object'),
+      ).rejects.toMatchObject({ name: 'AbortError' });
+    } finally {
+      const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+      server.closeAllConnections();
+      await closed;
+    }
+  });
+
+  it('archives MIME from the HTTP response and diagnoses failed auxiliary processing', async () => {
+    const rows: Record<string, unknown>[] = [];
+    const blob = createBlobStore();
+    const archiver = new PrismaResultAssetArchiver(
+      fakePrisma(async (data) => {
+        rows.push(data);
+      }),
+      {
+        blobStore: blob,
+        fetchImpl: vi
+          .fn<typeof fetch>()
+          .mockResolvedValue(new Response('image', { headers: { 'content-type': 'image/webp' } })),
+        metadataExtractor: {
+          extract: async () => {
+            throw new Error('synthetic-tool-secret');
+          },
+        },
+        derivativeGenerator: {
+          generate: async () => {
+            throw new Error('synthetic-tool-secret');
+          },
+        },
+      },
+    );
+    const archived = await archiver.archive({
+      runId: 'mime-test',
+      snapshot,
+      result,
+      providerJob,
+      archiveInput: {
+        mediaType: 'image',
+        mimeType: 'image/png',
+        contentUrl: 'https://cdn.example/image',
+        metadata: {
+          format:
+            'https://synthetic-user:synthetic-tool-secret@cdn.example/a?signature=synthetic-tool-secret',
+        },
+      },
+    });
+    expect(archived?.mimeType).toBe('image/webp');
+    expect(rows[0].metadata).toMatchObject({
+      metadataStatus: 'failed',
+      derivativeStatus: 'failed',
+    });
+    expect(JSON.stringify(rows.map((row) => row.metadata))).not.toContain('synthetic-tool-secret');
+    expect(blob.puts).toHaveLength(1);
+  });
+
+  it('cancels rejected HTTP response bodies before writing an asset', async () => {
+    for (const responseOptions of [
+      { status: 503 },
+      { headers: { 'content-length': '9999' } },
+      { headers: { 'content-type': 'text/html' } },
+    ] as ResponseInit[]) {
+      const cancel = vi.fn();
+      const blob = createBlobStore();
+      const response = new Response(new ReadableStream({ cancel }), responseOptions);
+      const archiver = new PrismaResultAssetArchiver(
+        fakePrisma(async () => undefined),
+        {
+          blobStore: blob,
+          maxBytes: 10,
+          fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(response),
+        },
+      );
+      await expect(
+        archiver.archive({
+          runId: 'rejected-body',
+          snapshot,
+          result,
+          providerJob,
+          archiveInput: {
+            mediaType: 'image',
+            mimeType: 'image/png',
+            contentUrl: 'https://cdn.example/image',
+          },
+        }),
+      ).rejects.toThrow(/download|limit/);
+      await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+      expect(blob.puts).toHaveLength(0);
+    }
+  });
+
+  it('bounds DNS lookup and prevents a request after cancellation during lookup', async () => {
+    for (const cancelDuringLookup of [false, true]) {
+      const controller = new AbortController();
+      const fetchImpl = vi.fn<typeof fetch>();
+      const archiver = new PrismaResultAssetArchiver(
+        fakePrisma(async () => undefined),
+        {
+          blobStore: createBlobStore(),
+          strictDns: true,
+          fetchTimeoutMs: 20,
+          fetchImpl,
+          lookupHost: async () => {
+            if (cancelDuringLookup) {
+              controller.abort();
+              return [{ address: '8.8.8.8', family: 4 }];
+            }
+            return new Promise(() => undefined);
+          },
+        },
+      );
+      await expect(
+        archiver.archive({
+          runId: 'dns-timeout',
+          snapshot,
+          result,
+          providerJob,
+          signal: controller.signal,
+          archiveInput: {
+            mediaType: 'image',
+            mimeType: 'image/png',
+            contentUrl: 'https://cdn.example/image',
+          },
+        }),
+      ).rejects.toThrow(/cancelled|cancellation|timed out/);
+      expect(fetchImpl).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each([
+    'http://[::ffff:127.0.0.1]/a',
+    'http://[::ffff:a00:1]/a',
+    'http://100.64.0.1/a',
+    'http://0.0.0.1/a',
+  ])('rejects non-public address %s', async (contentUrl) => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const archiver = new PrismaResultAssetArchiver(
+      fakePrisma(async () => undefined),
+      { blobStore: createBlobStore(), fetchImpl },
+    );
+    await expect(
+      archiver.archive({
+        runId: 'private-address',
+        snapshot,
+        result,
+        providerJob,
+        archiveInput: { mediaType: 'image', mimeType: 'image/png', contentUrl },
+      }),
+    ).rejects.toThrow('private host');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('bounds a real HTTP response stalled after headers without leaking signed URL text', async () => {
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'image/png' });
+      response.flushHeaders();
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test server did not bind');
+    const blob = createBlobStore();
+    const archiver = new PrismaResultAssetArchiver(
+      fakePrisma(async () => undefined),
+      {
+        blobStore: blob,
+        fetchTimeoutMs: 150,
+        fetchImpl: (_url, init) => fetch(`http://127.0.0.1:${address.port}`, init),
+      },
+    );
+    try {
+      await expect(
+        archiver.archive({
+          runId: 'stream-timeout',
+          snapshot,
+          result,
+          providerJob,
+          archiveInput: {
+            mediaType: 'image',
+            mimeType: 'image/png',
+            contentUrl: 'https://cdn.example/a?signature=synthetic-signature',
+          },
+        }),
+      ).rejects.toThrow('timed out');
+      expect(blob.puts).toHaveLength(0);
+    } finally {
+      const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+      server.closeAllConnections();
+      await closed;
+    }
+  });
+
+  it('keeps possibly committed blobs when database reconciliation is unavailable', async () => {
+    const blob = createBlobStore();
+    const prisma = fakePrisma(async () => {
+      throw new Error('commit outcome unknown');
+    });
+    Object.assign(prisma, {
+      asset: {
+        findUnique: vi
+          .fn()
+          .mockResolvedValueOnce(null)
+          .mockRejectedValueOnce(new Error('database unavailable')),
+      },
+    });
+    const archiver = new PrismaResultAssetArchiver(prisma, { blobStore: blob });
+    await expect(
+      archiver.archive({
+        runId: 'unknown-commit',
+        snapshot,
+        result,
+        providerJob,
+        archiveInput: {
+          mediaType: 'text',
+          mimeType: 'text/plain',
+          content: Buffer.from('original'),
+        },
+      }),
+    ).rejects.toThrow('commit outcome unknown');
+    expect(blob.puts).toHaveLength(1);
+    expect(blob.deletes).toHaveLength(0);
+  });
+
+  it('cleans both original and derivative after a confirmed failed transaction', async () => {
+    const blob = createBlobStore();
+    const archiver = new PrismaResultAssetArchiver(
+      fakePrisma(async () => {
+        throw new Error('rollback');
+      }),
+      {
+        blobStore: blob,
+        derivativeGenerator: {
+          generate: async () => [
+            { kind: 'thumbnail', mimeType: 'image/jpeg', content: Buffer.from('jpeg') },
+          ],
+        },
+      },
+    );
+    await expect(
+      archiver.archive({
+        runId: 'rollback-derivatives',
+        snapshot,
+        result,
+        providerJob,
+        archiveInput: {
+          mediaType: 'image',
+          mimeType: 'image/png',
+          content: Buffer.from('original'),
+        },
+      }),
+    ).rejects.toThrow('rollback');
+    expect(blob.puts).toHaveLength(2);
+    expect(blob.deletes).toEqual(blob.puts.map((entry) => entry.key));
+  });
+
   it('stores text output and creates an asset version with provenance metadata', async () => {
     const blob = createBlobStore();
     const rows: Record<string, unknown>[] = [];
@@ -268,7 +589,7 @@ describe('PrismaResultAssetArchiver', () => {
     const archiver = new PrismaResultAssetArchiver(prisma, {
       blobStore: blob,
       fetchImpl,
-      metadataExtractor: new WorkerFfprobeMediaMetadataExtractor({ runner }),
+      metadataExtractor: new WorkerFfprobeMediaMetadataExtractor({ binary: 'ffprobe', runner }),
     });
     const videoSnapshot: RunSnapshot = {
       ...snapshot,

@@ -80,6 +80,16 @@ export function validateApiStartupConfiguration(
   }
   validateS3CredentialPair(environment, issues);
 
+  if (
+    environment.NEW_API_VIDEO_CONTRACT !== undefined &&
+    !['newapi-unified-v1', 'legacy-v1'].includes(environment.NEW_API_VIDEO_CONTRACT)
+  ) {
+    issues.push({
+      variable: 'NEW_API_VIDEO_CONTRACT',
+      message: 'must be "newapi-unified-v1" or "legacy-v1"',
+    });
+  }
+
   if (environment.WORKER_PROVIDER !== 'newapi') {
     issues.push({ variable: 'WORKER_PROVIDER', message: 'must be "newapi"' });
   }

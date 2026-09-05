@@ -24,6 +24,55 @@ const productionEnvironment: StartupEnvironment = {
 };
 
 describe('Worker production startup configuration', () => {
+  it('accepts explicit ffmpeg configuration for result derivatives', () => {
+    expect(
+      validateWorkerStartupConfiguration({
+        ...productionEnvironment,
+        FFMPEG_ENABLED: 'true',
+        FFMPEG_PATH: 'ffmpeg',
+      }),
+    ).toEqual([]);
+  });
+
+  it.each([
+    [{ FFMPEG_ENABLED: 'yes' }, 'FFMPEG_ENABLED', 'must be "true" or "false"'],
+    [{ FFMPEG_PATH: ' ' }, 'FFMPEG_PATH', 'must not be empty when configured'],
+    [
+      { FFMPEG_ENABLED: 'false', FFMPEG_PATH: 'ffmpeg' },
+      'FFMPEG_ENABLED',
+      'cannot be "false" when FFMPEG_PATH is configured',
+    ],
+  ])('rejects ambiguous ffmpeg configuration %j', (configuration, variable, message) => {
+    expect(
+      validateWorkerStartupConfiguration({
+        ...productionEnvironment,
+        ...configuration,
+      }),
+    ).toContainEqual({ variable, message });
+  });
+  it.each(['newapi-unified-v1', 'legacy-v1'])('accepts video contract %s', (contract) => {
+    expect(
+      validateWorkerStartupConfiguration({
+        ...productionEnvironment,
+        NEW_API_VIDEO_CONTRACT: contract,
+      }),
+    ).toEqual([]);
+  });
+
+  it.each(['', 'sora', 'newapi-video-v1', ' legacy-v1'])(
+    'rejects video contract %s',
+    (contract) => {
+      expect(
+        validateWorkerStartupConfiguration({
+          ...productionEnvironment,
+          NEW_API_VIDEO_CONTRACT: contract,
+        }),
+      ).toContainEqual({
+        variable: 'NEW_API_VIDEO_CONTRACT',
+        message: 'must be "newapi-unified-v1" or "legacy-v1"',
+      });
+    },
+  );
   it('accepts durable production configuration without a database AI credential', () => {
     expect(validateWorkerStartupConfiguration(productionEnvironment)).toEqual([]);
     expect(() => assertWorkerStartupConfiguration(productionEnvironment)).not.toThrow();
