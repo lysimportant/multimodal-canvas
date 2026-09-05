@@ -1,4 +1,4 @@
-import { AlertTriangle, LoaderCircle, Play, Sparkles } from 'lucide-react';
+import { AlertTriangle, LoaderCircle, Play } from 'lucide-react';
 import { useState, type FocusEvent } from 'react';
 
 import type { Asset, PromptDocument } from '@multimodal-canvas/domain';
@@ -220,16 +220,6 @@ export function NodeQuickEditor({
       aria-label={`${node.data.label}生成设置`}
       onPointerDown={(event) => event.stopPropagation()}
     >
-      <header className="node-quick-editor-header">
-        <span className="node-quick-editor-icon" aria-hidden="true">
-          <Sparkles size={16} />
-        </span>
-        <div className="node-quick-editor-heading">
-          <span>生成设置 · {mediaLabels[node.data.mediaType]}</span>
-          <strong title={node.data.label}>{node.data.label}</strong>
-        </div>
-      </header>
-
       <div className="node-quick-editor-prompt-group">
         <label className="node-quick-editor-field node-quick-editor-prompt">
           <span>提示词</span>
@@ -480,7 +470,11 @@ export function NodeQuickEditor({
         {inferenceOptions.length > 0 && (
           <CompactSelect
             label="推理强度"
-            value={node.data.inferenceStrength}
+            value={
+              node.data.inferenceStrength ??
+              inferenceOptions.find((option) => option.value.toLowerCase() === 'high')?.value ??
+              inferenceOptions[0]?.value
+            }
             options={inferenceOptions}
             onChange={(value) => onInferenceStrengthChange(value)}
             className="node-quick-editor-select-group"

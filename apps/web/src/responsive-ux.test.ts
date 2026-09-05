@@ -84,11 +84,11 @@ describe('responsive UX CSS contracts', () => {
     expect(normalizedCss).toMatch(/\.resource-panel, \.inspector-panel \{[^}]*padding: 86px/);
   });
 
-  it('lets resized nodes grow their preview and removes the bottom palette while editing', () => {
+  it('keeps previews inside user-sized nodes and removes the bottom palette while editing', () => {
     expect(normalizedCss).toMatch(
       /\.flow-asset-node \{[^}]*display: flex;[^}]*flex-direction: column;[^}]*height: 100%;/,
     );
-    expect(normalizedCss).toMatch(/\.flow-node-preview \{[^}]*flex: 1 1 auto;/);
+    expect(normalizedCss).toMatch(/\.flow-node-preview \{[^}]*flex: 1 1 0;[^}]*min-height: 0;/);
     expect(normalizedCss).toMatch(
       /\.canvas-area:has\(\.node-quick-editor\) \.canvas-node-tools \{[^}]*opacity: 0;[^}]*visibility: hidden;/,
     );

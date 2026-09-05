@@ -101,9 +101,9 @@ describe('canvas document conversion', () => {
     expect(flow.nodes[0].data.mimeType).toBe('application/octet-stream');
     expect(flow.nodes[0].width).toBe(280);
     expect(flow.nodes[0].height).toBe(190);
-    expect(flow.nodes[0].style).toMatchObject({ maxWidth: 560, maxHeight: 380 });
+    expect(flow.nodes[0].style).toBeUndefined();
     expect(flow.nodes[1].data.mimeType).toBe('video/mp4');
-    expect(flow.nodes[1].style).toMatchObject({ maxWidth: 360, maxHeight: 332 });
+    expect(flow.nodes[1].style).toBeUndefined();
     expect(flow.edges).toEqual([
       {
         id: 'edge-1',
@@ -116,7 +116,7 @@ describe('canvas document conversion', () => {
     expect(document.nodes[0].data.mimeType).toBeUndefined();
   });
 
-  it('sets a new twofold auto-growth limit after manual resizing and preserves node styles', () => {
+  it('keeps node styles unchanged after content or manual size updates', () => {
     const node = flowNode('resized');
     node.width = 480;
     node.height = 300;
@@ -124,11 +124,7 @@ describe('canvas document conversion', () => {
 
     const limited = withNodeAutoGrowthLimit(node);
 
-    expect(limited.style).toEqual({
-      borderColor: '#18794e',
-      maxWidth: 960,
-      maxHeight: 600,
-    });
+    expect(limited).toBe(node);
     expect(node.style).toEqual({ borderColor: '#18794e' });
   });
 

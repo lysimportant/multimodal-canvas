@@ -1171,18 +1171,14 @@ h2 {
   background: #f2f5f6;
   border-radius: 4px;
   display: flex;
-  flex: 1 1 auto;
+  flex: 1 1 0;
   justify-content: center;
-  min-height: 92px;
+  min-height: 0;
+  max-height: 100%;
   object-fit: cover;
   overflow: hidden;
   min-width: 0;
   width: 100%;
-}
-
-.flow-node-preview.is-initial-size-limited {
-  max-height: 600px;
-  max-width: 800px;
 }
 
 .flow-node-preview-content.asset-preview-image,
@@ -1207,6 +1203,19 @@ h2 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.flow-node-label-input {
+  background: #fff;
+  border: 1px solid #18794e;
+  border-radius: 4px;
+  box-sizing: border-box;
+  color: inherit;
+  font: inherit;
+  min-width: 0;
+  outline: 0;
+  padding: 2px 5px;
+  width: 100%;
 }
 
 .node-quick-toolbar {

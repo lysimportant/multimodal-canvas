@@ -11,7 +11,15 @@ import {
   X,
 } from 'lucide-react';
 import { NodeResizer, type NodeProps } from '@xyflow/react';
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from 'react';
 
 import type { Asset, RunStatus } from '@multimodal-canvas/domain';
 import type { AssetFlowNode } from '../canvas-utils';
@@ -21,6 +29,9 @@ import { mediaIcons, mediaLabels, modeLabels } from './contracts';
 
 export type NodeSelectionHandler = (data: AssetFlowNode['data']) => void;
 export const NodeSelectionContext = createContext<NodeSelectionHandler | null>(null);
+/** 节点名称变更回调；由画布统一负责历史记录和持久化。 */
+export type NodeLabelChangeHandler = (nodeId: string, label: string) => void;
+export const NodeLabelChangeContext = createContext<NodeLabelChangeHandler | null>(null);
 export type NodeResizeHandler = (nodeId: string, width: number, height: number) => void;
 export const NodeResizeContext = createContext<NodeResizeHandler | null>(null);
 export type NodeResizeStartHandler = (nodeId: string) => void;
@@ -34,14 +45,16 @@ type NodePresentationState = 'empty' | 'running' | 'failed' | 'cancelled' | 'pre
 
 export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const selectNode = useContext(NodeSelectionContext);
+  const changeLabel = useContext(NodeLabelChangeContext);
   const resizeNode = useContext(NodeResizeContext);
   const resizeStart = useContext(NodeResizeStartContext);
   const retryNode = useContext(NodeRetryContext);
   const setNodeEnabled = useContext(NodeEnabledContext);
   const [previewLoadState, setPreviewLoadState] = useState<AssetPreviewLoadState | null>(null);
-  const [isInitialPreviewSizeLimited, setIsInitialPreviewSizeLimited] = useState(true);
   const [isRetrying, setIsRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
+  const [editingLabel, setEditingLabel] = useState(false);
+  const [draftLabel, setDraftLabel] = useState(data.label);
   const Icon = mediaIcons[data.mediaType];
   const Resizer = NodeResizer;
   const enabled = data.enabled !== false;
@@ -88,14 +101,34 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
 
   useEffect(() => {
     setPreviewLoadState(null);
-    // 每次切换到新的回显内容，都从受控的首次预览尺寸开始；用户开始调整后再解除限制。
-    setIsInitialPreviewSizeLimited(true);
   }, [previewIdentity]);
 
   useEffect(() => {
     setRetryError(null);
     setIsRetrying(false);
   }, [data.runStatus]);
+
+  useEffect(() => {
+    if (!editingLabel) setDraftLabel(data.label);
+  }, [data.label, editingLabel]);
+
+  const commitLabel = useCallback(() => {
+    const nextLabel = draftLabel.trim();
+    setEditingLabel(false);
+    setDraftLabel(nextLabel || data.label);
+    if (nextLabel && nextLabel !== data.label) changeLabel?.(id, nextLabel);
+  }, [changeLabel, data.label, draftLabel, id]);
+
+  const handleLabelKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      commitLabel();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      setDraftLabel(data.label);
+      setEditingLabel(false);
+    }
+  };
 
   const handleRetry = async () => {
     if (!retryNode || isRetrying) return;
@@ -125,7 +158,6 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
           handleStyle={{ width: 14, height: 14, borderRadius: 3 }}
           lineStyle={{ borderWidth: 2 }}
           onResizeStart={() => {
-            setIsInitialPreviewSizeLimited(false);
             if (resizeStart && id) resizeStart(id);
           }}
           onResizeEnd={(_, params) => {
@@ -182,9 +214,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
         </span>
       </div>
       {presentationState === 'preview' && previewAsset ? (
-        <div
-          className={`flow-node-preview ${isInitialPreviewSizeLimited ? 'is-initial-size-limited' : ''}`}
-        >
+        <div className="flow-node-preview">
           <AssetPreview
             asset={previewAsset}
             className="flow-node-preview-content"
@@ -211,8 +241,28 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
           icon={<Icon size={24} strokeWidth={1.7} aria-hidden="true" />}
         />
       )}
-      <div className="flow-node-label" title={data.label}>
-        {data.label}
+      <div
+        className="flow-node-label"
+        title={editingLabel ? '输入节点名称后按 Enter 保存' : data.label}
+        onDoubleClick={(event) => {
+          event.stopPropagation();
+          if (changeLabel) setEditingLabel(true);
+        }}
+      >
+        {editingLabel ? (
+          <input
+            className="flow-node-label-input nodrag nopan nowheel"
+            aria-label="编辑节点名称"
+            value={draftLabel}
+            autoFocus
+            onChange={(event) => setDraftLabel(event.currentTarget.value)}
+            onBlur={commitLabel}
+            onKeyDown={handleLabelKeyDown}
+            onClick={(event) => event.stopPropagation()}
+          />
+        ) : (
+          data.label
+        )}
       </div>
     </div>
   );

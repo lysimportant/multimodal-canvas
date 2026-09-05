@@ -26,9 +26,6 @@ export type CanvasClipboard = {
 export const DEFAULT_FLOW_NODE_WIDTH = 180;
 /** 节点未被用户缩放时的默认高度，单位为像素。 */
 export const DEFAULT_FLOW_NODE_HEIGHT = 166;
-/** 节点可因内容自动扩张的最大倍数。 */
-export const NODE_AUTO_GROWTH_MULTIPLIER = 2;
-
 const CANVAS_CLIPBOARD_FORMAT = 'multimodal-canvas/clipboard';
 const CANVAS_CLIPBOARD_VERSION = 1;
 
@@ -173,38 +170,21 @@ function isPersistableDimension(value: number | undefined): value is number {
 }
 
 /**
- * 为节点设置基于当前手动尺寸的自动膨胀上限。
+ * 保留历史调用点并返回原节点。
  *
- * React Flow 会通过 ResizeObserver 更新内容的运行时测量尺寸，但不会将该尺寸持久化。
- * 本函数仅限制外层渲染尺寸，避免长内容无限推大节点；用户手动缩放后的 `width` 和
- * `height` 会自然成为新的两倍上限基准。
+ * 节点尺寸完全由 React Flow 的初始尺寸和用户拖拽结果控制，内容回显不会再改变
+ * 外层节点的尺寸，因此这里不再注入 `maxWidth`、`maxHeight` 自动膨胀上限。
  *
- * @param node 需要增加尺寸限制的 React Flow 节点。
- * @returns 保留原有节点数据并带有 `maxWidth`、`maxHeight` 样式的新节点。
+ * @param node 需要保持尺寸不变的 React Flow 节点。
+ * @returns 原节点对象。
  */
 export function withNodeAutoGrowthLimit(node: AssetFlowNode): AssetFlowNode {
-  const width = normalizedNodeDimension(node.width, DEFAULT_FLOW_NODE_WIDTH);
-  const height = normalizedNodeDimension(node.height, DEFAULT_FLOW_NODE_HEIGHT);
-  return {
-    ...node,
-    style: {
-      ...node.style,
-      maxWidth: width * NODE_AUTO_GROWTH_MULTIPLIER,
-      maxHeight: height * NODE_AUTO_GROWTH_MULTIPLIER,
-    },
-  };
+  return node;
 }
 
-/** 在用户开始拖拽尺寸时移除自动上限，允许手动尺寸突破当前限制。 */
+/** 历史兼容调用点：节点始终允许用户通过 React Flow 手动调整尺寸。 */
 export function withoutNodeAutoGrowthLimit(node: AssetFlowNode): AssetFlowNode {
-  if (!node.style) return node;
-  const { maxWidth: _maxWidth, maxHeight: _maxHeight, ...style } = node.style;
-  return { ...node, style };
-}
-
-/** 规范化手动尺寸，防止错误的运行时测量值影响自动膨胀上限。 */
-function normalizedNodeDimension(value: number | undefined, minimum: number): number {
-  return value !== undefined && Number.isFinite(value) ? Math.max(value, minimum) : minimum;
+  return node;
 }
 
 /** Return true when adding source -> target would introduce a directed cycle. */

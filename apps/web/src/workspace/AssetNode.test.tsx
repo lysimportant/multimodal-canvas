@@ -28,6 +28,7 @@ import type { AssetFlowNode } from '../canvas-utils';
 import {
   AssetNode,
   NodeEnabledContext,
+  NodeLabelChangeContext,
   NodeResizeStartContext,
   NodeRetryContext,
 } from './AssetNode';
@@ -53,6 +54,7 @@ function renderNode(
   onEnabled?: (nodeId: string, enabled: boolean) => void,
   onResizeStart?: (nodeId: string) => void,
   selected = false,
+  onLabelChange?: (nodeId: string, label: string) => void,
 ) {
   const props = {
     id: node.id,
@@ -61,11 +63,13 @@ function renderNode(
   } as NodeProps<AssetFlowNode>;
   return render(
     <NodeResizeStartContext.Provider value={onResizeStart ?? null}>
-      <NodeEnabledContext.Provider value={onEnabled ?? null}>
-        <NodeRetryContext.Provider value={onRetry ?? null}>
-          <AssetNode {...props} />
-        </NodeRetryContext.Provider>
-      </NodeEnabledContext.Provider>
+      <NodeLabelChangeContext.Provider value={onLabelChange ?? null}>
+        <NodeEnabledContext.Provider value={onEnabled ?? null}>
+          <NodeRetryContext.Provider value={onRetry ?? null}>
+            <AssetNode {...props} />
+          </NodeRetryContext.Provider>
+        </NodeEnabledContext.Provider>
+      </NodeLabelChangeContext.Provider>
     </NodeResizeStartContext.Provider>,
   );
 }
@@ -76,6 +80,21 @@ afterEach(() => {
 });
 
 describe('AssetNode result presentation', () => {
+  it('双击节点名称后可编辑并保存', async () => {
+    const onLabelChange = vi.fn();
+    const user = userEvent.setup();
+    renderNode(makeNode(), undefined, undefined, undefined, false, onLabelChange);
+
+    await user.dblClick(screen.getByText('文案生成'));
+    const input = screen.getByRole('textbox', { name: '编辑节点名称' });
+    await user.clear(input);
+    await user.type(input, '新的节点名称');
+    await user.keyboard('{Enter}');
+
+    expect(onLabelChange).toHaveBeenCalledWith('node_1', '新的节点名称');
+    expect(screen.queryByRole('textbox', { name: '编辑节点名称' })).not.toBeInTheDocument();
+  });
+
   it('exposes a visible enable toggle and reports the next state', async () => {
     const onEnabled = vi.fn();
     const user = userEvent.setup();
@@ -202,8 +221,7 @@ describe('AssetNode result presentation', () => {
     expect(screen.queryByLabelText('运行成功')).not.toBeInTheDocument();
   });
 
-  it('limits an initial media result to 800 by 600 until resizing begins', () => {
-    const onResizeStart = vi.fn();
+  it('keeps media result previews inside the user-controlled node size', () => {
     const { container } = renderNode(
       makeNode({
         mediaType: 'image',
@@ -216,20 +234,17 @@ describe('AssetNode result presentation', () => {
       }),
       undefined,
       undefined,
-      onResizeStart,
+      undefined,
       true,
     );
 
     const preview = container.querySelector('.flow-node-preview');
-    expect(preview).toHaveClass('is-initial-size-limited');
+    expect(preview).not.toHaveClass('is-initial-size-limited');
 
-    fireEvent.click(screen.getByRole('button', { name: '开始调整尺寸' }));
-
-    expect(onResizeStart).toHaveBeenCalledWith('node_1');
     expect(preview).not.toHaveClass('is-initial-size-limited');
   });
 
-  it('applies the initial preview limit again when a new result arrives', () => {
+  it('does not change preview sizing when a new result arrives', () => {
     const first = makeNode({
       mediaType: 'image',
       runStatus: 'succeeded',
@@ -241,9 +256,8 @@ describe('AssetNode result presentation', () => {
     });
     const view = renderNode(first, undefined, undefined, undefined, true);
     const preview = view.container.querySelector('.flow-node-preview');
-    expect(preview).toHaveClass('is-initial-size-limited');
+    expect(preview).not.toHaveClass('is-initial-size-limited');
 
-    fireEvent.click(screen.getByRole('button', { name: '开始调整尺寸' }));
     expect(preview).not.toHaveClass('is-initial-size-limited');
 
     const next = makeNode({
@@ -265,7 +279,7 @@ describe('AssetNode result presentation', () => {
         <AssetNode {...nextProps} />
       </NodeRetryContext.Provider>,
     );
-    expect(view.container.querySelector('.flow-node-preview')).toHaveClass(
+    expect(view.container.querySelector('.flow-node-preview')).not.toHaveClass(
       'is-initial-size-limited',
     );
   });

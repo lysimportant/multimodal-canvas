@@ -1162,6 +1162,7 @@ function WorkspaceApp({
           ),
           mediaType,
           mode,
+          ...(mediaType === 'text' ? { inferenceStrength: 'high' } : {}),
         },
       }),
     [],
@@ -1492,11 +1493,12 @@ function WorkspaceApp({
   );
 
   const updateSelectedLabel = useCallback(
-    (label: string) => {
-      if (!selectedNode) return;
+    (label: string, nodeId?: string) => {
+      const targetNodeId = nodeId ?? selectedNode?.id;
+      if (!targetNodeId) return;
       rememberHistory();
       canvasDirtyRef.current = true;
-      updateNodeDataAndMarkDownstreamStale(selectedNode.id, (data) => ({ ...data, label }));
+      updateNodeDataAndMarkDownstreamStale(targetNodeId, (data) => ({ ...data, label }));
     },
     [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
   );
@@ -1896,6 +1898,9 @@ function WorkspaceApp({
         const effectivePrompt = nodeSnapshot.data.promptDocument
           ? renderPromptDocument(nodeSnapshot.data.promptDocument).trim()
           : nodeSnapshot.data.prompt?.trim();
+        const effectiveInferenceStrength =
+          nodeSnapshot.data.inferenceStrength ??
+          (nodeSnapshot.data.mediaType === 'text' ? 'high' : undefined);
         const response = await apiFetch(`${API_BASE_URL}/v1/nodes/${nodeSnapshot.id}/runs`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1908,8 +1913,8 @@ function WorkspaceApp({
             parameters: {
               ...(nodeSnapshot.data.parameters ?? {}),
               ...(effectivePrompt ? { prompt: effectivePrompt } : {}),
-              ...(nodeSnapshot.data.inferenceStrength
-                ? { inferenceStrength: nodeSnapshot.data.inferenceStrength }
+              ...(effectiveInferenceStrength
+                ? { inferenceStrength: effectiveInferenceStrength }
                 : {}),
             },
             ...(nodeSnapshot.data.promptDocument
@@ -2586,6 +2591,7 @@ function WorkspaceApp({
             onClearNodeSelection={() => selectCanvasNode(null)}
             onResizeNode={handleResizeNode}
             onResizeStart={handleResizeStart}
+            onNodeLabelChange={updateSelectedLabel}
             onNodeEnabledChange={updateNodeEnabled}
             onRetryNode={retryNodeFromCanvas}
             onPromptDocumentChange={updateSelectedPromptDocument}

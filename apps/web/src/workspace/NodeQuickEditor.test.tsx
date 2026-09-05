@@ -125,8 +125,8 @@ describe('NodeQuickEditor', () => {
     const user = userEvent.setup();
     render(<NodeQuickEditor {...makeProps()} />);
 
-    expect(screen.getByText('生成设置 · 图片')).toBeVisible();
-    expect(screen.getByText('产品主图')).toBeVisible();
+    expect(screen.queryByText('生成设置 · 图片')).not.toBeInTheDocument();
+    expect(screen.queryByText('产品主图')).not.toBeInTheDocument();
 
     const modelGroup = screen.getByText('模型').parentElement as HTMLElement;
     const modelTrigger = within(modelGroup).getByRole('combobox');
@@ -367,6 +367,28 @@ describe('NodeQuickEditor', () => {
     for (const label of labels) {
       expect(within(inferenceGroup).getByRole('option', { name: label })).toBeInTheDocument();
     }
+  });
+
+  it('未设置推理强度时默认选择高', () => {
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          node: {
+            ...imageNode,
+            type: 'text',
+            data: {
+              ...imageNode.data,
+              mediaType: 'text',
+              modelAlias: 'gpt-5.6-sol',
+              inferenceStrength: undefined,
+            },
+          } as AssetFlowNode,
+          models: [],
+        })}
+      />,
+    );
+
+    expect(screen.getByRole('combobox', { name: '推理强度：高' })).toBeInTheDocument();
   });
 
   it('模型目录为空时仍为 GPT-5.6 文字节点提供完整推理强度', async () => {
