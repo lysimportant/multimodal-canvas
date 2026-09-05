@@ -222,7 +222,13 @@ importers:
       '@multimodal-canvas/domain':
         specifier: workspace:*
         version: link:../domain
+      ws:
+        specifier: 8.21.3
+        version: 8.21.3
     devDependencies:
+      '@types/ws':
+        specifier: 8.5.0
+        version: 8.5.0
       vitest:
         specifier: ^3.0.8
         version: 3.2.7(@types/node@22.20.1)(jiti@2.7.0)(jsdom@26.1.0)(lightningcss@1.32.0)(tsx@4.23.12)
@@ -1684,6 +1690,9 @@ packages:
 
   '@types/uuid@9.0.8':
     resolution: {integrity: sha512-jg+97EGIcY9AGHJJRaaPVgetKDsrTgbRjQ5Msgjh/DQKEFl0DtyRr/VCOyD1T2R1MNeWPK/u7JoGhlDZnKBAfA==}
+
+  '@types/ws@8.5.0':
+    resolution: {integrity: sha512-mTClfhq5cuGyW4jthaFuig6Q8OVfB3IRyZfN/9SCyJtiM5H0SubwM89cHoT9UngO6HyUFic88HvT1zSNLNyxWA==}
 
   '@vitejs/plugin-react@4.7.0':
     resolution: {integrity: sha512-gUu9hwfWvvEDBBmgtAowQCojwZmJ5mcLn3aufeCsitijs3+f2NsrPtlAWIR6OPiqljl96GVCUbLe0HyqIpVaoA==}
@@ -4388,6 +4397,10 @@ snapshots:
       csstype: 3.2.3
 
   '@types/uuid@9.0.8': {}
+
+  '@types/ws@8.5.0':
+    dependencies:
+      '@types/node': 22.20.1
 
   '@vitejs/plugin-react@4.7.0(vite@6.4.3(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.12))':
     dependencies:

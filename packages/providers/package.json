@@ -15,9 +15,11 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@multimodal-canvas/domain": "workspace:*"
+    "@multimodal-canvas/domain": "workspace:*",
+    "ws": "8.21.3"
   },
   "devDependencies": {
+    "@types/ws": "8.5.0",
     "vitest": "^3.0.8"
   }
 }

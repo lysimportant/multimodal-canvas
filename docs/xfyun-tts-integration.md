@@ -82,6 +82,20 @@ XFUN_TTS_VOICE=xiaoyan
 
 ## 节点接入约定
 
+Provider 包提供 `XfyunTtsProvider`，Node 端会使用 `ws` 建立支持自定义 `x-api-key` 请求头的连接：
+
+```ts
+import { XfyunTtsProvider } from '@multimodal-canvas/providers';
+
+const provider = new XfyunTtsProvider({
+  appId: process.env.XFUN_TTS_APP_ID!,
+  apiPassword: process.env.XFUN_TTS_API_PASSWORD!,
+  voice: process.env.XFUN_TTS_VOICE ?? 'xiaoyan',
+});
+```
+
+该适配器只负责讯飞 WebSocket 请求和音频结果解析；原有 Sub2/New API Provider 保持不变，Worker 归档器负责将输出写入对象存储。
+
 音频节点应在发送前校验：
 
 - `XFUN_TTS_API_PASSWORD` 已注入；缺失时请求前失败。
@@ -92,6 +106,6 @@ XFUN_TTS_VOICE=xiaoyan
 
 ## 本次验证结果
 
-2026-09-05 已使用 APIPassword 鉴权成功生成“你好啊”：MP3、16 kHz、单声道、4536 字节、0.756 秒。请求和响应证据保存在被 Git 忽略的 `.data` 目录；仓库文档不包含真实密钥。
+2026-09-05 已使用 APIPassword 鉴权成功生成“你好啊”：MP3、16 kHz、单声道、4536 字节、0.756 秒。随后通过 Worker 归档器、Prisma 和隔离 MinIO 完成写入及读回校验，SHA-256 为 `7ae0240e656a6d831a27ef64f8122a2b8f7cd9d4b35cfabee8d3df9b5f56260b`。请求和归档证据保存在被 Git 忽略的 `.data` 目录；仓库文档不包含真实密钥。
 
 由于凭据曾在对话中明文提交，建议在讯飞控制台完成 APISecret、APIKey 和 APIPassword 轮换后，再将新值通过运行时密钥管理注入。

@@ -8,14 +8,17 @@
 
 - [ ] 尚未执行。
 - [~] 已有可复用的实现或证据，仍需完成本文件列出的验收。
+- [x] 本文件列出的验收已完成。
 
 ## P0：测试设施与任务恢复
 
-### [~] P0-ISOLATED-RECOVERY-01 真实供应商视频任务跨进程恢复
+### [x] P0-ISOLATED-RECOVERY-01 真实供应商视频任务跨进程恢复
 
 - 在专用 PostgreSQL、Redis 和对象存储 namespace 中，对真实供应商异步视频任务执行 Worker 崩溃后的接管、查询、下载和归档。
 - 验收任务身份不丢失、不重复创建、不重复记录 usage。
 - 保存一次中断或接管演练的任务身份、命令、报告和归档对象键。
+
+本项已完成一次真实验收：`legacy-v1`、模型 `grok-imagine-video-1.5（按次）`。第一 Worker 在平台任务 ID 持久化后被终止，第二 Worker 接管同一 BullMQ 任务并完成查询、下载和 MinIO 归档；唯一有效创建请求 1 次，usage 未由供应商返回，未估算费用。脱敏报告：`.data/live-video-recovery-20260905.json`。
 
 ## P1：Provider 适配与媒体输入
 
@@ -25,11 +28,13 @@
 - 为确认的契约补充取消、状态、签名、重放、幂等和结果不明的回归测试。
 - 当前仅验证 sub2 的 legacy-v1 创建、查询、内容下载和归档；取消、Webhook 与重试行为必须有独立测试证据。
 
-### [ ] P1-ISOLATED-AUDIO-05 音频与参考输入
+### [~] P1-ISOLATED-AUDIO-05 音频与参考输入
 
 - 确认 TTS 模型、voice、格式和语速组合，完成一次真实音频生成及 Worker、Prisma、对象存储归档。
 - 为多参考图、负面提示、尾帧、音轨、角色绑定、蒙版及其它扩展字段补齐字段映射、拒绝和结果解析测试。
 - 未授权的音频模型、voice 或扩展字段必须在请求前失败。
+
+讯飞 WebSocket TTS 临时适配器已加入 `packages/providers/src/xfyun.ts`，原有 Sub2/New API 适配器保留；已用 `xiaoyan`、MP3、16 kHz、语速 50 完成一次真实生成，并通过 Worker 归档器、Prisma 和隔离 MinIO 读回校验。证据：`.data/xfyun-tts-isolated-20260905.json`。供应商未提供计费字段，保持未知。
 
 ### [~] P1-INPUT-MAPPING-07 角色与扩展字段映射
 
@@ -61,12 +66,12 @@
 - `pwsh -NoProfile -File scripts/verify-isolated.ps1 -Action Test -Project mc-acceptance-test-p0p1`：隔离 PostgreSQL 35 项、Redis 9 项、生产入口 22 项通过；迁移无 pending，schema 无差异。
 - `pwsh -NoProfile -File scripts/verify-media-ops.ps1 ...`：API 媒体/存储 40 项、Worker 归档/输出 35 项、Observability 21 项通过；使用本地 FFmpeg/ffprobe 9.0.1。
 - `pwsh -NoProfile -File scripts/verify-s3-permissions.ps1 -Project mc-acceptance-test-p0p1`：29 项通过，临时用户、策略、bucket 和对象均已精确清理；报告写入 `.data/s3-permissions-0e8686148e4d4531a44c954d5a5a1185.json`。
-- `pnpm --filter @multimodal-canvas/providers test --maxWorkers=1 --minWorkers=1`：266 passed、0 failed、0 skipped；providers typecheck、lint、build 均通过。
+- `pnpm --filter @multimodal-canvas/providers test --maxWorkers=1 --minWorkers=1`：269 passed、0 failed、0 skipped；providers typecheck、lint、build 均通过。
 - `pnpm --filter @multimodal-canvas/domain test --maxWorkers=1 --minWorkers=1`：24 passed；Worker 全量：183 passed。
 
-本轮没有发送任何外部 Provider 请求，也没有修改数据库 schema、依赖或用户数据。上述结果只能关闭本地设施和回归检查点，不能把真实供应商取消、Webhook、幂等/重复计费、跨进程崩溃接管或真实 TTS 音频验收标记为完成。
+本轮没有修改生产数据库或用户数据；真实 Provider 请求仅使用用户授权的测试配置，并保留脱敏证据。此前一次占位 Key 的失败请求未创建平台任务；有效视频创建仅 1 次。真实供应商取消、Webhook、幂等/重复计费契约仍未确认。
 
-下一步仍需用户提供：真实视频任务中断/接管演练授权与查询接口；已确认的 TTS 模型、voice、格式、测试 Key 及单次请求授权；Provider 正式的状态、取消、Webhook 原始签名/编码、时间窗口、幂等范围和重复计费契约。未获得这些输入前，保持 P0-ISOLATED-RECOVERY-01、P1-ADAPTER-CONTRACT-04、P1-ISOLATED-AUDIO-05、P1-INPUT-MAPPING-07 的现有状态，不重复创建可能计费的任务。
+仍需补齐 Provider 正式的状态、取消、Webhook 原始签名/编码、时间窗口、幂等范围和重复计费契约；在此之前 P1-ADAPTER-CONTRACT-04 只保留本地回归证据，不宣称供应商契约已完成。后续请求继续遵守结果不明不重发规则。
 
 ## P2：后置能力
 
