@@ -1999,6 +1999,21 @@ h2 {
   overflow: auto;
 }
 
+/* 快速编辑器保持在节点下方，已引用资源卡片单独浮在节点右侧。 */
+.node-quick-editor .resource-mention-list {
+  background: var(--mc-surface, #ffffff);
+  border: 1px solid var(--mc-border, #d5dfdb);
+  border-radius: 7px;
+  box-shadow: 0 12px 28px rgb(29 46 39 / 14%);
+  left: calc(100% + 16px);
+  max-height: min(260px, 42vh);
+  padding: 7px;
+  position: absolute;
+  top: 0;
+  width: min(360px, 34vw);
+  z-index: 3;
+}
+
 .resource-mention-card {
   align-items: center;
   background: var(--mc-surface-soft, #f7f8fa);
@@ -3694,6 +3709,13 @@ textarea:focus-visible {
    thumb. The full action set is wider than a phone, so it gets the available
    second column while the project context remains on its own row. */
 @media (max-width: 600px) {
+  .node-quick-editor .resource-mention-list {
+    left: auto;
+    position: static;
+    top: auto;
+    width: auto;
+  }
+
   .topbar {
     column-gap: 8px;
     grid-template-columns: 40px minmax(0, 1fr);

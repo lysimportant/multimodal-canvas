@@ -80,8 +80,6 @@ function shouldKeepNativeContextMenu(target: EventTarget | null) {
 
 /** 快速编辑器在桌面画布中的最大宽度，单位为像素。 */
 const QUICK_EDITOR_MAX_WIDTH = 435;
-/** 编辑器停靠节点侧面时保持可用控件布局的最小宽度，单位为像素。 */
-const QUICK_EDITOR_MIN_SIDE_WIDTH = 280;
 /** 快速编辑器与可见画布边界之间的最小距离，单位为像素。 */
 const QUICK_EDITOR_VIEWPORT_MARGIN = 8;
 /** 快速编辑器与选中节点之间的视觉间距，单位为像素。 */
@@ -96,7 +94,7 @@ type QuickEditorLayout = {
   /** 浮层宽度，单位为像素。 */
   width: number;
   /** 浮层相对于选中节点的展开方向。 */
-  placement: 'above' | 'below' | 'left' | 'right';
+  placement: 'below';
   /** 是否已取得可用于显示的首个布局结果。 */
   ready: boolean;
 };
@@ -653,45 +651,11 @@ function QuickEditorOverlay({ node, canvasAreaRef, ...editorProps }: QuickEditor
     let left = getCenteredLeft(width);
 
     let top = canvasTop;
-    let placement: QuickEditorLayout['placement'] = 'below';
+    const placement: QuickEditorLayout['placement'] = 'below';
     if (hasNodeBounds) {
       const belowTop = nodeRect.bottom + QUICK_EDITOR_NODE_GAP;
-      const aboveTop = nodeRect.top - editorHeight - QUICK_EDITOR_NODE_GAP;
-      const fitsBelow = belowTop + editorHeight <= boundedBottom;
-      const fitsAbove = aboveTop >= canvasTop;
       const maxTop = Math.max(canvasTop, boundedBottom - editorHeight);
-      if (fitsBelow) {
-        top = belowTop;
-      } else if (fitsAbove) {
-        top = clampQuickEditorValue(aboveTop, canvasTop, maxTop);
-        placement = 'above';
-      } else {
-        const leftAvailable = nodeRect.left - QUICK_EDITOR_NODE_GAP - canvasLeft;
-        const rightAvailable = boundedRight - nodeRect.right - QUICK_EDITOR_NODE_GAP;
-        const preferLeft = leftAvailable >= rightAvailable;
-        const sideAvailable = Math.max(preferLeft ? leftAvailable : rightAvailable, 0);
-
-        if (sideAvailable >= QUICK_EDITOR_MIN_SIDE_WIDTH) {
-          width = Math.min(QUICK_EDITOR_MAX_WIDTH, sideAvailable);
-          left = preferLeft
-            ? nodeRect.left - QUICK_EDITOR_NODE_GAP - width
-            : nodeRect.right + QUICK_EDITOR_NODE_GAP;
-          top = clampQuickEditorValue(
-            nodeRect.top + nodeRect.height / 2 - editorHeight / 2,
-            canvasTop,
-            maxTop,
-          );
-          placement = preferLeft ? 'left' : 'right';
-        } else {
-          const hasMoreSpaceAbove = nodeRect.top - canvasTop > boundedBottom - nodeRect.bottom;
-          if (hasMoreSpaceAbove) {
-            top = clampQuickEditorValue(aboveTop, canvasTop, maxTop);
-            placement = 'above';
-          } else {
-            top = clampQuickEditorValue(belowTop, canvasTop, maxTop);
-          }
-        }
-      }
+      top = clampQuickEditorValue(belowTop, canvasTop, maxTop);
     }
 
     const nextLayout: QuickEditorLayout = {

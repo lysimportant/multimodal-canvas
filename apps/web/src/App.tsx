@@ -81,7 +81,6 @@ import { isCanvasShortcutTarget } from './keyboard-utils';
 import { isImeKeyboardEvent, useImeDraft } from './ime';
 import { downloadProjectExport, fetchProjectExport, type ProjectExportKind } from './export-utils';
 import { ProjectHub } from './ProjectHub';
-import { TextPromptEditor } from './TextPromptEditor';
 import { CommandPalette, type CommandPaletteCommand } from './CommandPalette';
 import { AppNavigation } from './navigation';
 import {
@@ -100,14 +99,11 @@ import {
   type ProjectSummary,
 } from './query/projects';
 import { appPaths, useAppNavigate, useAppRoute, type AppRoute } from './routing';
-import { AssetPreview, TextResultContent } from './workspace/AssetPreview';
 import { runStatusLabel } from './workspace/AssetNode';
 import { ResourcePanel } from './workspace/ResourcePanel';
-import { RunPanel } from './workspace/RunPanel';
 import { SettingsPanel } from './workspace/SettingsPanel';
 import { WorkflowCanvas } from './workspace/WorkflowCanvas';
 import type { InferenceStrength } from './workspace/NodeQuickEditor';
-import { useRunResultState } from './workspace/useRunResultState';
 import { AppQueryProvider } from './query/client';
 import { useAiCredentialsQuery } from './query/credentials';
 import { useCredentialModelCatalogQueries } from './query/models';
@@ -1371,13 +1367,6 @@ function WorkspaceApp({
     [edges, nodes, rememberHistory, setEdges],
   );
 
-  const selectedAsset = selectedNode
-    ? assets.find((asset) => asset.id === selectedNode.data.assetId)
-    : undefined;
-
-  const selectedRun = selectedNode ? runRecords[selectedNode.id] : undefined;
-  const runResultState = useRunResultState(selectedNode, selectedRun);
-
   const updateNodeDataAndMarkDownstreamStale = useCallback(
     (nodeId: string, update: (data: AssetFlowNode['data']) => AssetFlowNode['data']) => {
       setNodes((current) =>
@@ -1493,80 +1482,12 @@ function WorkspaceApp({
   );
 
   const updateSelectedLabel = useCallback(
-    (label: string, nodeId?: string) => {
-      const targetNodeId = nodeId ?? selectedNode?.id;
-      if (!targetNodeId) return;
+    (nodeId: string, label: string) => {
       rememberHistory();
       canvasDirtyRef.current = true;
-      updateNodeDataAndMarkDownstreamStale(targetNodeId, (data) => ({ ...data, label }));
+      updateNodeDataAndMarkDownstreamStale(nodeId, (data) => ({ ...data, label }));
     },
-    [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
-  );
-
-  const updateSelectedMode = useCallback(
-    (mode: NodeMode) => {
-      if (!selectedNode || selectedNode.data.mode === mode) return;
-      rememberHistory();
-      canvasDirtyRef.current = true;
-      updateNodeDataAndMarkDownstreamStale(selectedNode.id, (data) => ({ ...data, mode }));
-    },
-    [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
-  );
-
-  const normalizeSelectedLabel = useCallback(
-    (value: string) => {
-      if (!selectedNode || value.trim()) return;
-      updateSelectedLabel(
-        `${mediaLabels[selectedNode.data.mediaType]}${modeLabels[selectedNode.data.mode]}节点`,
-      );
-    },
-    [selectedNode, updateSelectedLabel],
-  );
-
-  const copySourcePrompt = useCallback(async (node: AssetFlowNode) => {
-    const value = node.data.promptDocument
-      ? renderPromptDocument(node.data.promptDocument).trim() || node.data.label
-      : node.data.prompt?.trim() || node.data.label;
-    try {
-      if (!window.navigator.clipboard) throw new Error('clipboard unavailable');
-      await window.navigator.clipboard.writeText(value);
-      setNotice({ kind: 'success', message: '来源内容已复制' });
-    } catch {
-      setNotice({ kind: 'error', message: '当前浏览器不允许访问剪贴板' });
-    }
-  }, []);
-
-  const addTransformFromSource = useCallback(
-    (sourceNode: AssetFlowNode) => {
-      const transformNode = createTransformNode(sourceNode.data.mediaType, {
-        x: sourceNode.position.x + 280,
-        y: sourceNode.position.y,
-      });
-      const connection: Connection = {
-        source: sourceNode.id,
-        sourceHandle: `output:${sourceNode.data.mediaType}`,
-        target: transformNode.id,
-        targetHandle: 'input:content',
-      };
-      const validation = validateCanvasConnection(connection, [...nodes, transformNode], edges);
-      if (!validation.ok) {
-        setNotice({ kind: 'error', message: '无法为该来源创建转换节点' });
-        return;
-      }
-      rememberHistory();
-      appendNodesAndSelect([transformNode]);
-      setEdges((current) => [
-        ...current,
-        {
-          ...connection,
-          id: `edge_${connection.source}_${connection.target}_${Date.now()}`,
-          animated: true,
-        },
-      ]);
-      canvasDirtyRef.current = true;
-      setNotice({ kind: 'success', message: '已创建转换节点并接入来源' });
-    },
-    [appendNodesAndSelect, createTransformNode, edges, nodes, rememberHistory, setEdges],
+    [rememberHistory, updateNodeDataAndMarkDownstreamStale],
   );
 
   const updateSelectedInferenceStrength = useCallback(
@@ -1946,27 +1867,6 @@ function WorkspaceApp({
     [pollRun, projectId, saveCanvas, updateNodeRunState],
   );
 
-  const cancelSelectedRun = useCallback(async () => {
-    if (!selectedRun || !selectedNode) return;
-    try {
-      const response = await apiFetch(`${API_BASE_URL}/v1/runs/${selectedRun.id}/cancel`, {
-        method: 'POST',
-      });
-      const result = (await response.json().catch(() => ({}))) as {
-        run?: RunRecord;
-        error?: string;
-      };
-      if (!response.ok || !result.run) throw new Error(result.error ?? '取消运行失败');
-      updateNodeRunState(selectedNode.id, result.run);
-      setNotice({ kind: 'success', message: '已请求取消运行' });
-    } catch (error) {
-      setNotice({
-        kind: 'error',
-        message: error instanceof Error ? error.message : '取消运行失败',
-      });
-    }
-  }, [selectedNode, selectedRun, updateNodeRunState]);
-
   const retryNodeRun = useCallback(
     async (nodeId: string) => {
       const run = runRecordsRef.current[nodeId];
@@ -1994,15 +1894,6 @@ function WorkspaceApp({
     },
     [pollRun, updateNodeRunState],
   );
-
-  const retrySelectedRun = useCallback(async () => {
-    if (!selectedNode) return;
-    try {
-      await retryNodeRun(selectedNode.id);
-    } catch (error) {
-      setNotice({ kind: 'error', message: error instanceof Error ? error.message : '重试失败' });
-    }
-  }, [retryNodeRun, selectedNode]);
 
   const retryNodeFromCanvas = useCallback(
     async (nodeId: string) => {
@@ -2549,9 +2440,7 @@ function WorkspaceApp({
           onSubmit={() => void createProject()}
         />
 
-        <div
-          className={`workspace ${isResourceCollapsed ? 'resource-panel-collapsed' : ''} ${selectedNode ? 'has-inspector' : ''}`}
-        >
+        <div className={`workspace ${isResourceCollapsed ? 'resource-panel-collapsed' : ''}`}>
           <ResourcePanel
             assets={assets}
             collapsed={isResourceCollapsed}
@@ -2623,239 +2512,6 @@ function WorkspaceApp({
             onOpenProjectHub={() => setShowProjectHub(true)}
             background={canvasBackground}
           />
-          {selectedNode && (
-            <aside className="inspector-panel">
-              <div className="panel-heading">
-                <div>
-                  <p className="eyebrow">属性</p>
-                  <h1>节点设置</h1>
-                </div>
-              </div>
-              {selectedNode && selectedAsset && selectedNode.data.mode === 'source' ? (
-                <div className="inspector-content">
-                  <AssetPreview asset={selectedAsset} className="inspector-preview" interactive />
-                  <span className="inspector-type">
-                    {mediaLabels[selectedAsset.mediaType]}来源节点
-                  </span>
-                  <h2 className="inspector-name">{selectedAsset.name}</h2>
-                  <label className="inspector-field inspector-label-field">
-                    <span>节点名称</span>
-                    <ImeInput
-                      aria-label="节点名称"
-                      value={selectedNode.data.label}
-                      identity={selectedNode.id}
-                      onValueChange={updateSelectedLabel}
-                      onValueBlur={normalizeSelectedLabel}
-                      placeholder="给这个来源节点命名"
-                    />
-                  </label>
-                  <label className="inspector-toggle-field">
-                    <input
-                      type="checkbox"
-                      checked={selectedNode.data.enabled !== false}
-                      onChange={(event) => updateSelectedEnabled(event.target.checked)}
-                    />
-                    <span>
-                      <strong>启用节点</strong>
-                      <small>关闭后不作为下游节点的参考输入</small>
-                    </span>
-                  </label>
-                  <label className="inspector-field">
-                    <span>节点模式</span>
-                    <select
-                      aria-label="节点模式"
-                      value={selectedNode.data.mode}
-                      onChange={(event) => updateSelectedMode(event.target.value as NodeMode)}
-                    >
-                      {(Object.keys(modeLabels) as NodeMode[]).map((mode) => (
-                        <option key={mode} value={mode}>
-                          {modeLabels[mode]}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <dl className="inspector-details">
-                    <div>
-                      <dt>资源类型</dt>
-                      <dd>{selectedAsset.mimeType}</dd>
-                    </div>
-                    <div>
-                      <dt>文件大小</dt>
-                      <dd>{formatBytes(selectedAsset.sizeBytes)}</dd>
-                    </div>
-                    <div>
-                      <dt>输入端口</dt>
-                      <dd>content</dd>
-                    </div>
-                  </dl>
-                  <label className="inspector-prompt inspector-source-content">
-                    <span>
-                      {selectedAsset.mediaType === 'text' ? '文本内容' : '来源提示 / 说明'}
-                    </span>
-                    <TextPromptEditor
-                      nodeId={selectedNode.id}
-                      value={selectedNode.data.prompt ?? ''}
-                      promptDocument={selectedNode.data.promptDocument}
-                      assets={assets}
-                      onDocumentChange={updateSelectedPromptDocument}
-                      placeholder={
-                        selectedAsset.mediaType === 'text'
-                          ? '输入来源文本，运行下游节点时会作为参考'
-                          : '补充这份来源的用途、风格或处理要求（可选）'
-                      }
-                    />
-                  </label>
-                  <div className="inspector-source-actions">
-                    <button
-                      type="button"
-                      className="button button-secondary"
-                      onClick={() => void copySourcePrompt(selectedNode)}
-                    >
-                      <FileText size={14} />
-                      复制内容
-                    </button>
-                    <button
-                      type="button"
-                      className="button button-primary"
-                      onClick={() => addTransformFromSource(selectedNode)}
-                    >
-                      <Play size={14} />
-                      创建转换
-                    </button>
-                  </div>
-                </div>
-              ) : selectedNode ? (
-                <div className="inspector-content">
-                  {runResultState.currentContentUrl ? (
-                    <div className="inspector-generate-result-preview" aria-label="运行结果预览">
-                      {selectedNode.data.mediaType === 'text' ? (
-                        <TextResultContent
-                          url={runResultState.currentContentUrl}
-                          editable
-                          onChange={updateSelectedPrompt}
-                        />
-                      ) : (
-                        <AssetPreview
-                          asset={runResultState.currentPreviewAsset}
-                          mode="content"
-                          className="inspector-result-preview"
-                          interactive
-                        />
-                      )}
-                    </div>
-                  ) : (
-                    <div
-                      className={`inspector-generate-icon media-icon media-icon-${selectedNode.data.mediaType}`}
-                    >
-                      {(() => {
-                        const Icon = mediaIcons[selectedNode.data.mediaType];
-                        return <Icon size={26} aria-hidden="true" />;
-                      })()}
-                    </div>
-                  )}
-                  <span className="inspector-type">
-                    {mediaLabels[selectedNode.data.mediaType]}
-                    {modeLabels[selectedNode.data.mode]}节点
-                  </span>
-                  <h2 className="inspector-name">{selectedNode.data.label}</h2>
-                  <label className="inspector-field inspector-label-field">
-                    <span>节点名称</span>
-                    <ImeInput
-                      aria-label="节点名称"
-                      value={selectedNode.data.label}
-                      identity={selectedNode.id}
-                      onValueChange={updateSelectedLabel}
-                      onValueBlur={normalizeSelectedLabel}
-                      placeholder="给这个节点命名"
-                    />
-                  </label>
-                  <label className="inspector-toggle-field">
-                    <input
-                      type="checkbox"
-                      checked={selectedNode.data.enabled !== false}
-                      onChange={(event) => updateSelectedEnabled(event.target.checked)}
-                    />
-                    <span>
-                      <strong>启用节点</strong>
-                      <small>关闭后不参与下游参考；节点自身也不能运行</small>
-                    </span>
-                  </label>
-                  <label className="inspector-field">
-                    <span>节点模式</span>
-                    <select
-                      aria-label="节点模式"
-                      value={selectedNode.data.mode}
-                      onChange={(event) => updateSelectedMode(event.target.value as NodeMode)}
-                    >
-                      {(Object.keys(modeLabels) as NodeMode[]).map((mode) => (
-                        <option key={mode} value={mode}>
-                          {modeLabels[mode]}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <dl className="inspector-details">
-                    <div>
-                      <dt>运行状态</dt>
-                      <dd>{selectedRun ? runStatusLabel(selectedRun.status) : '未运行'}</dd>
-                    </div>
-                    {selectedRun && (
-                      <div>
-                        <dt>进度</dt>
-                        <dd>{selectedRun.progress}%</dd>
-                      </div>
-                    )}
-                    <div>
-                      <dt>参考输入</dt>
-                      <dd>{selectedRun?.snapshot?.inputs?.length ?? 0} 个</dd>
-                    </div>
-                  </dl>
-                  {selectedNode.data.mode === 'source' && (
-                    <>
-                      <label className="inspector-prompt inspector-source-content">
-                        <span>来源内容 / 提示</span>
-                        <TextPromptEditor
-                          nodeId={selectedNode.id}
-                          value={selectedNode.data.prompt ?? ''}
-                          promptDocument={selectedNode.data.promptDocument}
-                          assets={assets}
-                          onDocumentChange={updateSelectedPromptDocument}
-                          placeholder="补充来源内容，供下游节点参考"
-                        />
-                      </label>
-                      <div className="inspector-source-actions">
-                        <button
-                          type="button"
-                          className="button button-secondary"
-                          onClick={() => void copySourcePrompt(selectedNode)}
-                        >
-                          <FileText size={14} />
-                          复制内容
-                        </button>
-                        <button
-                          type="button"
-                          className="button button-primary"
-                          onClick={() => addTransformFromSource(selectedNode)}
-                        >
-                          <Play size={14} />
-                          创建转换
-                        </button>
-                      </div>
-                    </>
-                  )}
-                  <RunPanel
-                    node={selectedNode}
-                    run={selectedRun}
-                    resultState={runResultState}
-                    busy={isRunning}
-                    onCancel={cancelSelectedRun}
-                    onRetry={retrySelectedRun}
-                    onResultEdit={updateSelectedPrompt}
-                  />
-                </div>
-              ) : null}
-            </aside>
-          )}
         </div>
         {showSettings && (
           <SettingsPanel

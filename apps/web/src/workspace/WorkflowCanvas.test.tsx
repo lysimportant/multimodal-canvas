@@ -354,7 +354,7 @@ describe('WorkflowCanvas context menu', () => {
     fireEvent.mouseLeave(canvasNode);
   });
 
-  it('将靠近画布边缘的快速编辑器避开节点缩放控制点', async () => {
+  it('将快速编辑器固定在节点下方并避开画布边缘', async () => {
     const props = createProps({ nodes: [generateNode], selectedNode: null });
     const { rerender } = render(<WorkflowCanvas {...props} />);
     const canvas = screen.getByRole('region', { name: '工作流画布' });
@@ -369,7 +369,7 @@ describe('WorkflowCanvas context menu', () => {
     const overlay = editor.closest<HTMLDivElement>('.quick-editor-overlay');
 
     expect(overlay).not.toBeNull();
-    await waitFor(() => expect(overlay).toHaveAttribute('data-placement', 'above'));
+    await waitFor(() => expect(overlay).toHaveAttribute('data-placement', 'below'));
     expect(overlay).toHaveStyle({ visibility: 'visible' });
     expect(overlay?.closest('.react-flow__node')).toBeNull();
     expect(Number.parseInt(overlay?.style.top ?? '', 10)).toBeLessThan(620);
@@ -381,10 +381,11 @@ describe('WorkflowCanvas context menu', () => {
 
     nodeRect = createMockRect(600, 350, 180, 80);
     canvasNode.style.transform = 'translate(2px)';
-    await waitFor(() => expect(overlay).toHaveAttribute('data-placement', 'left'));
+    await waitFor(() => expect(overlay).toHaveAttribute('data-placement', 'below'));
     const overlayLeft = Number.parseInt(overlay?.style.left ?? '', 10);
     const overlayWidth = Number.parseInt(overlay?.style.width ?? '', 10);
-    expect(overlayLeft + overlayWidth).toBeLessThanOrEqual(nodeRect.left - 16);
+    expect(overlayLeft).toBeGreaterThanOrEqual(80);
+    expect(overlayLeft + overlayWidth).toBeLessThanOrEqual(800);
   });
 
   it('keeps edge animation enabled while leaving selected styling to CSS', () => {

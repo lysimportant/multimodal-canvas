@@ -698,16 +698,15 @@ describe('画布编辑器交互', () => {
   it('节点标题支持中文组合输入，并可作为一次编辑撤销', async () => {
     const { user } = await renderCanvas();
     await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
-    await user.click(findNodeByLabel('文字生成节点')!);
-    const title = screen.getByRole('textbox', { name: '节点名称' });
+    const node = findNodeByLabel('文字生成节点')!;
+    await user.dblClick(within(node).getByText('文字生成节点'));
+    const title = screen.getByRole('textbox', { name: '编辑节点名称' });
 
-    fireEvent.compositionStart(title);
-    fireEvent.change(title, { target: { value: 'zhong wen' } });
-    expect(title).toHaveValue('zhong wen');
-    fireEvent.change(title, { target: { value: '中文标题' } });
-    fireEvent.compositionEnd(title, { data: '中文标题' });
+    await user.clear(title);
+    await user.type(title, '中文标题');
+    await user.keyboard('{Enter}');
     expect(title).toHaveValue('中文标题');
-    expect(findNodeByLabel('中文标题')).toBeTruthy();
+    await waitFor(() => expect(findNodeByLabel('中文标题')).toBeTruthy());
 
     await user.click(screen.getByRole('button', { name: '画布空白' }));
     fireEvent.keyDown(window, { key: 'z', ctrlKey: true });
@@ -723,18 +722,11 @@ describe('画布编辑器交互', () => {
     await user.click(node!);
 
     const quickEditor = screen.getByLabelText('文字生成节点生成设置');
-    const inspector = document.querySelector<HTMLElement>('.inspector-panel');
-    expect(inspector).toBeTruthy();
+    expect(document.querySelector<HTMLElement>('.inspector-panel')).toBeNull();
     expect(within(quickEditor).getByRole('textbox', { name: '提示词' })).toBeVisible();
     expect(within(quickEditor).getByRole('combobox', { name: /^模型：/ })).toBeVisible();
     expect(within(quickEditor).getByRole('combobox', { name: /^推理强度：/ })).toBeVisible();
     expect(within(quickEditor).getByRole('button', { name: '生成' })).toBeVisible();
-    expect(within(inspector!).queryByRole('textbox', { name: '提示词' })).not.toBeInTheDocument();
-    expect(within(inspector!).queryByRole('combobox', { name: /^模型：/ })).not.toBeInTheDocument();
-    expect(
-      within(inspector!).queryByRole('combobox', { name: /^推理强度：/ }),
-    ).not.toBeInTheDocument();
-    expect(within(inspector!).queryByRole('button', { name: '生成' })).not.toBeInTheDocument();
 
     const prompt = within(quickEditor).getByRole('textbox', { name: '提示词' });
     await user.clear(prompt);
@@ -866,7 +858,7 @@ describe('画布编辑器交互', () => {
     expect(window.localStorage.getItem('multimodal-canvas:background')).toBe('blank');
   });
 
-  it('来源节点属性可编辑，并可从 Handle 附近打开属性与创建转换', async () => {
+  it('来源节点不再打开右侧属性栏，并支持直接重命名', async () => {
     const { user } = await renderCanvas();
 
     await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
@@ -875,15 +867,13 @@ describe('画布编辑器交互', () => {
 
     const sourceHandle = handleFor(source!, 'output:image');
     await user.click(sourceHandle);
-    expect(screen.getByRole('textbox', { name: '节点名称' })).toHaveValue('reference.png');
-
-    const prompt = screen.getByRole('textbox', { name: '来源提示 / 说明' });
-    await user.type(prompt, '作为角色参考');
-    expect(prompt).toHaveValue('作为角色参考');
-
-    await user.click(screen.getByRole('button', { name: '创建转换' }));
-    expect(findNodeByLabel('图片转换节点')).toBeTruthy();
-    expect(screen.queryAllByTestId('flow-edge')).toHaveLength(1);
+    expect(document.querySelector<HTMLElement>('.inspector-panel')).toBeNull();
+    await user.dblClick(within(source!).getByText('reference.png'));
+    const title = screen.getByRole('textbox', { name: '编辑节点名称' });
+    await user.clear(title);
+    await user.type(title, '角色参考');
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(findNodeByLabel('角色参考')).toBeTruthy());
   });
 
   it('工具栏可以创建四类转换节点', async () => {
