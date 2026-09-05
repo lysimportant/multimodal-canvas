@@ -87,6 +87,7 @@ import {
   ContactPage,
   HomePage,
   NotFoundPage,
+  PageFrame,
   ProjectCanvasPage,
   SettingsPage,
   WorkspacePage,
@@ -98,7 +99,7 @@ import {
   useProjectsQuery,
   type ProjectSummary,
 } from './query/projects';
-import { appPaths, useAppNavigate, useAppRoute, type AppRoute } from './routing';
+import { AppLink, appPaths, useAppNavigate, useAppRoute, type AppRoute } from './routing';
 import { runStatusLabel } from './workspace/AssetNode';
 import { ResourcePanel } from './workspace/ResourcePanel';
 import { SettingsPanel } from './workspace/SettingsPanel';
@@ -2535,7 +2536,7 @@ function LoginScreen({
 }: {
   apiBaseUrl: string;
   onAuthenticated: (session: StoredAuthSession) => void;
-  /** 仅开发环境提供；缺省时关闭按钮、背景点击和 Escape 均不能跳过认证。 */
+  /** 关闭认证提示并返回公开页面；不授予私有项目或接口的访问权限。 */
   onContinueAnonymous?: () => void;
   returnFocusTo?: HTMLElement | null;
 }) {
@@ -2661,7 +2662,7 @@ function LoginScreen({
   return (
     <div
       ref={backdropRef}
-      className="settings-backdrop"
+      className="settings-backdrop auth-backdrop"
       role="presentation"
       onMouseDown={(event) => {
         if (!busy && event.target === event.currentTarget) onContinueAnonymous?.();
@@ -2772,26 +2773,28 @@ function LoginScreen({
   );
 }
 
+/** 渲染公开页面和受保护的项目路由；创建操作在认证成功后恢复表单。 */
 function RoutedApplication({
   authUser,
   onRequestLogin,
   onLoggedOut,
 }: {
   authUser: AuthUser | null;
-  onRequestLogin: () => void;
+  onRequestLogin: (afterAuthenticated?: () => void) => void;
   onLoggedOut: () => void;
 }) {
   const route = useAppRoute();
   const navigate = useAppNavigate();
   const queryClient = useQueryClient();
-  const projectsQuery = useProjectsQuery(false);
+  const isAuthenticated = Boolean(authUser);
+  const projectsQuery = useProjectsQuery(false, isAuthenticated);
   const scopedProjectId =
     route.id === 'project'
       ? route.projectId
       : route.id === 'settings'
         ? route.projectId
         : undefined;
-  const projectQuery = useProjectQuery(scopedProjectId);
+  const projectQuery = useProjectQuery(isAuthenticated ? scopedProjectId : undefined);
   const [showProjectCreate, setShowProjectCreate] = useState(false);
   const [projectCreateName, setProjectCreateName] = useState('未命名项目');
   const [projectCreateError, setProjectCreateError] = useState('');
@@ -2800,18 +2803,31 @@ function RoutedApplication({
     kind: 'error' | 'success';
     message: string;
   } | null>(null);
-  const projects = projectsQuery.data ?? [];
-  const lastProjectId = localStorage.getItem(PROJECT_STORAGE_KEY);
+  const projects = isAuthenticated ? (projectsQuery.data ?? []) : [];
+  const lastProjectId = isAuthenticated ? localStorage.getItem(PROJECT_STORAGE_KEY) : null;
   const continueProject =
     projects.find((project) => project.id === lastProjectId) ?? projects[0] ?? null;
+
+  useEffect(() => {
+    if (!isAuthenticated) setShowProjectCreate(false);
+  }, [isAuthenticated]);
 
   const openProjectCreate = useCallback(() => {
     setProjectCreateName('未命名项目');
     setProjectCreateError('');
+    if (!getAuthToken()) {
+      onRequestLogin(() => setShowProjectCreate(true));
+      return;
+    }
     setShowProjectCreate(true);
-  }, []);
+  }, [onRequestLogin]);
 
   const createWorkspaceProject = useCallback(async () => {
+    if (!getAuthToken()) {
+      setShowProjectCreate(false);
+      onRequestLogin(() => setShowProjectCreate(true));
+      return;
+    }
     const name = projectCreateName.trim();
     if (!name) {
       setProjectCreateError('请输入项目名称');
@@ -2825,6 +2841,10 @@ function RoutedApplication({
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ name }),
       });
+      if (response.status === 401) {
+        onRequestLogin(() => setShowProjectCreate(true));
+        return;
+      }
       const result = (await response.json().catch(() => ({}))) as {
         project?: ProjectSummary;
         error?: string;
@@ -2843,7 +2863,7 @@ function RoutedApplication({
     } finally {
       setIsCreatingProject(false);
     }
-  }, [navigate, projectCreateName, queryClient]);
+  }, [navigate, onRequestLogin, projectCreateName, queryClient]);
 
   let content;
   if (route.id === 'home') {
@@ -2853,14 +2873,39 @@ function RoutedApplication({
       <WorkspacePage
         projects={projects}
         activeProjectId={lastProjectId}
-        isLoading={projectsQuery.isPending}
-        error={projectsQuery.error instanceof Error ? projectsQuery.error.message : null}
-        onRetry={() => void projectsQuery.refetch()}
+        isLoading={isAuthenticated && projectsQuery.isPending}
+        error={
+          isAuthenticated && projectsQuery.error instanceof Error
+            ? projectsQuery.error.message
+            : null
+        }
+        onRetry={isAuthenticated ? () => void projectsQuery.refetch() : undefined}
         onCreateProject={openProjectCreate}
       />
     );
   } else if (route.id === 'contact') {
     content = <ContactPage />;
+  } else if (!isAuthenticated && (route.id === 'project' || route.id === 'settings')) {
+    content = (
+      <PageFrame route={route}>
+        <section className="mc-project-route-state">
+          <UserCircle size={30} aria-hidden="true" />
+          <h1>请先登录</h1>
+          <p>{route.id === 'project' ? '登录后访问此项目。' : '登录后访问连接与模型设置。'}</p>
+          <div>
+            <button
+              type="button"
+              className="button button-primary"
+              onClick={() => onRequestLogin()}
+            >
+              <UserCircle size={16} aria-hidden="true" />
+              登录
+            </button>
+            <AppLink to={appPaths.workspace}>返回工作台</AppLink>
+          </div>
+        </section>
+      </PageFrame>
+    );
   } else if (route.id === 'settings') {
     const hasProjectContext = Boolean(route.projectId);
     const settingsError =
@@ -2905,7 +2950,7 @@ function RoutedApplication({
             route={route}
             initialProject={projectQuery.data}
             authUser={authUser}
-            onRequestLogin={onRequestLogin}
+            onRequestLogin={() => onRequestLogin()}
             onLoggedOut={onLoggedOut}
             onNavigate={navigate}
           />
@@ -2932,7 +2977,7 @@ function RoutedApplication({
         </div>
       )}
       <ProjectCreateDialog
-        open={showProjectCreate}
+        open={isAuthenticated && showProjectCreate}
         name={projectCreateName}
         error={projectCreateError}
         busy={isCreatingProject}
@@ -2947,54 +2992,80 @@ function RoutedApplication({
   );
 }
 
-/** 根据会话控制应用入口；生产环境未认证时不挂载工作区或发起其数据请求。 */
+/** 公开主页不拦截登录；私有操作按需认证，会话变更时清除旧账户的查询缓存。 */
 function AppContent() {
-  const allowAnonymous = import.meta.env.DEV;
+  const queryClient = useQueryClient();
+  const navigate = useAppNavigate();
+  const route = useAppRoute();
+  const isPrivateRoute = route.id === 'project' || route.id === 'settings';
   const [authSession, setAuthSession] = useState<StoredAuthSession | null>(() => readAuthSession());
-  const [authRequired, setAuthRequired] = useState(() => !allowAnonymous && !authSession);
+  const [authRequired, setAuthRequired] = useState(false);
   const authTriggerRef = useRef<HTMLElement | null>(null);
+  /** 仅保存当前用户操作；关闭登录后丢弃，认证成功后最多执行一次。 */
+  const afterAuthenticatedRef = useRef<(() => void) | undefined>(undefined);
 
   useEffect(() => {
     return setUnauthorizedHandler(() => {
       clearAuthSession();
+      queryClient.clear();
       setAuthSession(null);
-      setAuthRequired(true);
+      // 公开页面的后台校验失败只退回匿名态，不打断主页浏览。
+      if (isPrivateRoute) setAuthRequired(true);
     });
-  }, []);
+  }, [isPrivateRoute, queryClient]);
 
-  const handleAuthenticated = useCallback((session: StoredAuthSession) => {
-    setAuthSession(session);
+  const handleAuthenticated = useCallback(
+    (session: StoredAuthSession) => {
+      queryClient.clear();
+      setAuthSession(session);
+      setAuthRequired(false);
+      const afterAuthenticated = afterAuthenticatedRef.current;
+      afterAuthenticatedRef.current = undefined;
+      afterAuthenticated?.();
+    },
+    [queryClient],
+  );
+
+  const handleRequestLogin = useCallback(
+    (afterAuthenticated?: () => void) => {
+      authTriggerRef.current =
+        document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      afterAuthenticatedRef.current = afterAuthenticated;
+      if (!getAuthToken()) {
+        queryClient.clear();
+        setAuthSession(null);
+      }
+      setAuthRequired(true);
+    },
+    [queryClient],
+  );
+  const handleContinueAnonymous = useCallback(() => {
+    afterAuthenticatedRef.current = undefined;
     setAuthRequired(false);
   }, []);
 
-  const handleRequestLogin = useCallback(() => {
-    authTriggerRef.current =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setAuthRequired(true);
-  }, []);
-  const handleContinueAnonymous = useCallback(() => setAuthRequired(false), []);
-
   const handleLogout = useCallback(() => {
     void logoutWithApi(API_BASE_URL).finally(() => {
+      queryClient.clear();
       setAuthSession(null);
-      setAuthRequired(true);
+      setAuthRequired(false);
+      afterAuthenticatedRef.current = undefined;
+      navigate(appPaths.home);
     });
-  }, []);
+  }, [navigate, queryClient]);
 
   return (
     <>
-      {(allowAnonymous || authSession) && (
-        <RoutedApplication
-          authUser={authSession?.user ?? null}
-          onRequestLogin={handleRequestLogin}
-          onLoggedOut={handleLogout}
-        />
-      )}
+      <RoutedApplication
+        authUser={authSession?.user ?? null}
+        onRequestLogin={handleRequestLogin}
+        onLoggedOut={handleLogout}
+      />
       {authRequired && (
         <LoginScreen
           apiBaseUrl={API_BASE_URL}
           onAuthenticated={handleAuthenticated}
-          onContinueAnonymous={allowAnonymous ? handleContinueAnonymous : undefined}
+          onContinueAnonymous={handleContinueAnonymous}
           returnFocusTo={authTriggerRef.current}
         />
       )}

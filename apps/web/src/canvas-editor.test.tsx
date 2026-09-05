@@ -269,6 +269,7 @@ vi.mock('@xyflow/react', async () => {
 });
 
 import { App } from './App';
+import { clearAuthSession, persistAuthSession } from './auth-client';
 
 class ResizeObserverStub {
   observe() {}
@@ -532,6 +533,20 @@ describe('画布编辑器交互', () => {
   beforeEach(() => {
     window.history.replaceState(null, '', `/projects/${project.id}`);
     window.localStorage.clear();
+    clearAuthSession();
+    // 私有画布测试使用合成有效会话，保留原有业务请求与断言。
+    persistAuthSession({
+      accessToken: 'synthetic-canvas-test-token',
+      tokenType: 'Bearer',
+      expiresIn: 900,
+      expiresAt: new Date(Date.now() + 900_000).toISOString(),
+      user: {
+        id: 'canvas-test-user',
+        email: 'canvas@example.com',
+        role: 'user',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+    });
     clipboardText = '';
     canvas = structuredClone(emptyCanvas);
     projectRuns = [];
@@ -544,6 +559,7 @@ describe('画布编辑器交互', () => {
 
   afterEach(() => {
     cleanup();
+    clearAuthSession();
     window.history.replaceState(null, '', '/');
     if (previousClipboardDescriptor) {
       Object.defineProperty(window.navigator, 'clipboard', previousClipboardDescriptor);

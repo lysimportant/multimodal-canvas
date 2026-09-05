@@ -1,0 +1,29 @@
+# 公开主页与按需登录
+
+更新时间：2026-09-06。
+
+## 目标与边界
+
+- P0：匿名直接进入主页和项目工作台；点击新建项目时才提示登录，取消可返回，登录或注册成功后继续创建表单。
+- 私有项目、设置和后端接口仍要求认证；匿名首屏不发起私有数据请求，不显示旧账户缓存。
+- 仅更新正式 Web 容器；不改数据库、用户数据、服务器认证策略或供应商配置，不调用收费模型。
+- 回滚为上一版本 Web 镜像并重新创建 Web 容器；不停止其他服务、不删除数据卷。
+
+## 检查点
+
+- [x] 基线：`main @ 8de1437`，工作区干净；Node 24.12.0、pnpm 11.19.0；默认 Compose 七项常驻服务 healthy。
+- [x] 修改前 Web 测试：36 个文件、352 项通过，退出 0。
+- [x] 定位：生产入口强制登录且匿名项目列表请求触发 401；禁用查询时还需避免 `isPending` 导致永久加载。
+- [x] 实现公开入口、按需登录、创建续接和私有缓存隔离；公开页面后台 401 只退回匿名，创建 POST 401 不自动重放写入。
+- [x] 认证回归及 lint/typecheck/test/build：Web 389 项通过；API 563 passed / 49 个原有设施 skip；全部命令退出 0。
+- [x] 重建正式 Web 容器、浏览器冒烟、HTTP/HTTPS 验证。
+- [x] Windows/Linux 文档同步、最终 diff 和敏感信息检查。
+- Git 交付以本次中文提交、annotated Tag 和两端远程实际记录为准。
+
+实现检查点：登录/注册后续接表单，关闭登录会丢弃续接意图；匿名不请求项目列表、详情或设置，禁用查询不显示永久 loading。原画布和设置回归仅补合成会话，保留业务断言。桌面截图发现公开导航遮挡登录标题与关闭按钮，已为认证层单独设置 z-index，并将新建弹窗置于导航上方；14 项 CSS 契约通过。
+
+最终运行检查点：正式 Web 镜像已重建并通过 `up -d --no-deps --wait web` 更新，其他六项常驻服务未重启，七项服务均 healthy。浏览器实测主页、匿名工作台、点击创建触发登录、Escape/关闭按钮取消与焦点恢复通过，1280x900 登录及 390x844 注册截图无导航遮挡或表单溢出，控制台无错误。HTTP/HTTPS 返回同一份最终 HTML；`/`、`/health` 为 200，匿名 `/v1/projects` 仍为 401，TLS 使用现有公开 CA 显式验证，未绕过浏览器证书检查或修改系统信任库。
+
+最终测试命令：`pnpm lint`、`pnpm typecheck`、`pnpm test`、`pnpm build` 全部退出 0。`WEB_BASE_URL=http://localhost:8080 pnpm --filter @multimodal-canvas/web exec playwright test -c playwright.config.ts --grep '主页进入|主菜单支持|traps login focus|匿名新建项目'` 在最终正式容器上 4 项通过，涵盖登录后手动提交、Bearer 请求只创建一次并进入画布。API 由测试拦截，未写入真实账户/项目或调用 Provider。日志 `.data/auth-entry-{lint,typecheck,test,build,e2e,docker-build}.log`。
+
+保留原有 Vite 大块构建警告与 API 外部设施 skip；本机 HTTPS 仍使用已有内部 CA，浏览器首次信任与公网域名证书仍按部署文档处理。本次没有数据库或后端 API 迁移。

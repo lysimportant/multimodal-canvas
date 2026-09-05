@@ -24,6 +24,11 @@ describe('responsive UX CSS contracts', () => {
     );
   });
 
+  it('登录与项目创建弹窗覆盖公开页导航，标题和关闭按钮不被遮挡', () => {
+    expect(normalizedCss).toMatch(/\.settings-backdrop\.auth-backdrop \{[^}]*z-index: 110;/);
+    expect(normalizedCss).toMatch(/\.project-create-backdrop \{[^}]*z-index: 100;/);
+  });
+
   it('gives narrow headers a flexible action column', () => {
     expect(normalizedCss).toMatch(
       /@media \(max-width: 600px\)[\s\S]*?\.topbar \{[^}]*grid-template-columns: 40px minmax\(0, 1fr\);/,

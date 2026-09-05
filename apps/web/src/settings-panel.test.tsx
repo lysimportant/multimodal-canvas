@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MediaType, ModelSelection } from '@multimodal-canvas/domain';
 
 import { App } from './App';
+import { clearAuthSession, persistAuthSession } from './auth-client';
 import type { AiCredentialSummary } from './contracts';
 import { createAppQueryClient } from './query/client';
 import {
@@ -206,6 +207,7 @@ async function openSettings() {
 describe('SettingsPanel', () => {
   afterEach(() => {
     cleanup();
+    clearAuthSession();
     window.history.replaceState(null, '', '/');
     vi.unstubAllGlobals();
     useWorkspacePreferences.setState(workspacePreferenceDefaults);
@@ -218,6 +220,20 @@ describe('SettingsPanel', () => {
     window.localStorage.clear();
     useWorkspacePreferences.setState(workspacePreferenceDefaults);
     window.localStorage.clear();
+    clearAuthSession();
+    // 私有设置测试使用合成有效会话，不修改模型、凭据等业务断言。
+    persistAuthSession({
+      accessToken: 'synthetic-settings-test-token',
+      tokenType: 'Bearer',
+      expiresIn: 900,
+      expiresAt: new Date(Date.now() + 900_000).toISOString(),
+      user: {
+        id: 'settings-test-user',
+        email: 'settings@example.com',
+        role: 'user',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+    });
     vi.stubGlobal('ResizeObserver', ResizeObserverStub);
     settings = {
       baseUrl: 'https://newapi.example.com/v1',

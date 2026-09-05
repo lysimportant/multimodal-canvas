@@ -66,10 +66,12 @@ export async function fetchProject(
   return result.project;
 }
 
-export function useProjectsQuery(includeArchived = false) {
+/** 查询项目列表；未认证时传入 enabled=false，避免公开页面触发私有 API。 */
+export function useProjectsQuery(includeArchived = false, enabled = true) {
   return useQuery({
     queryKey: projectQueryKeys.list(includeArchived),
     queryFn: ({ signal }) => fetchProjects({ includeArchived, signal }),
+    enabled,
   });
 }
 

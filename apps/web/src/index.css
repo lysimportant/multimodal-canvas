@@ -268,7 +268,7 @@ input:disabled {
   justify-content: center;
   padding: 20px;
   position: fixed;
-  z-index: 30;
+  z-index: 100;
 }
 
 .project-create-dialog {
@@ -2699,6 +2699,10 @@ h2 {
   position: fixed;
   overscroll-behavior: contain;
   z-index: 50;
+}
+/* 公开页导航层级高于画布工具栏，登录提示必须完整覆盖导航。 */
+.settings-backdrop.auth-backdrop {
+  z-index: 110;
 }
 .settings-panel {
   background: #fff;

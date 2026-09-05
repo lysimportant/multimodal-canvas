@@ -218,6 +218,11 @@ async function mockApi(page: Page) {
     const url = new URL(request.url());
     const path = url.pathname;
 
+    if (request.method() === 'POST' && path === '/v1/auth/logout') {
+      await json(route, { ok: true });
+      return;
+    }
+
     if (request.method() === 'GET' && path === `/v1/projects/${project.id}/events`) {
       await route.fulfill({
         status: 200,
@@ -537,6 +542,20 @@ async function focusCanvas(page: Page) {
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     window.localStorage.clear();
+    // 私有画布验收使用模拟会话；所有 API 均由本文件拦截，不访问真实账户。
+    window.localStorage.setItem(
+      'multimodal-canvas:auth-session',
+      JSON.stringify({
+        accessToken: 'e2e-synthetic-token',
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        user: {
+          id: 'e2e-user',
+          email: 'e2e@example.com',
+          role: 'user',
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+      }),
+    );
   });
   await mockApi(page);
 });
@@ -709,14 +728,18 @@ test('keeps the narrow project menu visible inside the viewport', async ({ page 
 test('traps login focus and restores it to the trigger', async ({ page }) => {
   await page.goto(projectPath);
 
-  const trigger = page.getByRole('button', { name: '登录' });
+  await page.getByRole('button', { name: '退出登录' }).click();
+  await expect(page.getByRole('heading', { level: 1, name: 'Multimodal Canvas' })).toBeVisible();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.getByRole('link', { name: '进入工作台', exact: true }).click();
+  const trigger = page.locator('.mc-workspace-heading').getByRole('button', { name: '新建项目' });
   await trigger.click();
   const dialog = page.getByRole('dialog', { name: '登录工作区' });
   const closeButton = dialog.getByRole('button', { name: '关闭登录' });
   const continueButton = dialog.getByRole('button', { name: '继续匿名使用' });
 
   await expect(dialog).toBeVisible();
-  await expect(page.locator('main.app-shell')).toHaveAttribute('inert', '');
+  await expect(page.locator('.mc-page-shell')).toHaveAttribute('inert', '');
   await expect(closeButton).toBeFocused();
   await page.keyboard.press('Shift+Tab');
   await expect(continueButton).toBeFocused();
@@ -725,6 +748,56 @@ test('traps login focus and restores it to the trigger', async ({ page }) => {
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
   await expect(trigger).toBeFocused();
+});
+
+test('匿名新建项目在登录后恢复表单，显式提交才创建并进入画布', async ({ page }) => {
+  // 登录和创建均命中模拟 API，不创建真实账户或项目。
+  await page.route('**/v1/auth/login', async (route) => {
+    await json(route, {
+      accessToken: 'e2e-synthetic-token',
+      tokenType: 'Bearer',
+      expiresIn: 3600,
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      user: {
+        id: 'e2e-user',
+        email: 'e2e@example.com',
+        role: 'user',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+    });
+  });
+  await page.goto(projectPath);
+  await page.getByRole('button', { name: '退出登录' }).click();
+  await expect(page).toHaveURL('/');
+  /** 记录创建调用，验证认证成功不会自动重放用户写入。 */
+  const projectPosts: Array<{ authorization?: string; body: unknown }> = [];
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname === '/v1/projects' && request.method() === 'POST') {
+      projectPosts.push({
+        authorization: request.headers().authorization,
+        body: request.postDataJSON(),
+      });
+    }
+  });
+  await page.getByRole('link', { name: '进入工作台', exact: true }).click();
+  await page.locator('.mc-workspace-heading').getByRole('button', { name: '新建项目' }).click();
+  const loginDialog = page.getByRole('dialog', { name: '登录工作区' });
+  await expect(loginDialog).toBeVisible();
+  expect(projectPosts).toHaveLength(0);
+  await loginDialog.getByLabel('邮箱').fill('e2e@example.com');
+  await loginDialog.getByLabel('密码').fill('synthetic-test-password');
+  await loginDialog.getByRole('button', { name: '登录', exact: true }).click();
+  const createDialog = page.getByRole('dialog', { name: '新建项目' });
+  await expect(createDialog).toBeVisible();
+  await expect(loginDialog).toHaveCount(0);
+  expect(projectPosts).toHaveLength(0);
+  await createDialog.getByLabel('项目名称').fill(project.name);
+  await createDialog.getByRole('button', { name: '创建项目', exact: true }).click();
+  await expect(page).toHaveURL(projectPath);
+  await expect(page.locator('.react-flow')).toBeVisible();
+  expect(projectPosts).toEqual([
+    { authorization: 'Bearer e2e-synthetic-token', body: { name: project.name } },
+  ]);
 });
 
 test('exports the workflow JSON and result ZIP from the header menu', async ({ page }) => {
