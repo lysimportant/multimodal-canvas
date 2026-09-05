@@ -67,6 +67,9 @@
 - `pwsh -NoProfile -File scripts/verify-media-ops.ps1 ...`：API 媒体/存储 40 项、Worker 归档/输出 35 项、Observability 21 项通过；使用本地 FFmpeg/ffprobe 9.0.1。
 - `pwsh -NoProfile -File scripts/verify-s3-permissions.ps1 -Project mc-acceptance-test-p0p1`：29 项通过，临时用户、策略、bucket 和对象均已精确清理；报告写入 `.data/s3-permissions-0e8686148e4d4531a44c954d5a5a1185.json`。
 - `pnpm --filter @multimodal-canvas/providers test --maxWorkers=1 --minWorkers=1`：269 passed、0 failed、0 skipped；providers typecheck、lint、build 均通过。
+- `pnpm --filter @multimodal-canvas/providers test -- --maxWorkers=1 --minWorkers=1`：270 passed、0 failed、0 skipped；新增轮询取消回归，确认只中止本地请求、不猜测远程 DELETE；providers typecheck、lint、build 均通过。
+- API Vitest 默认固定 `WEB_PORT=5173`，避免根目录 `.env` 的开发端口覆盖 CORS 默认契约；API CORS 回归 9 项及全量 API 测试通过。
+- Webhook 验签已改为保留并校验 `application/json` 原始 UTF-8 字节，新增空格/换行敏感回归；供应商正式签名编码、时间窗口和重放契约仍待确认。
 - `pnpm --filter @multimodal-canvas/domain test --maxWorkers=1 --minWorkers=1`：24 passed；Worker 全量：183 passed。
 
 本轮没有修改生产数据库或用户数据；真实 Provider 请求仅使用用户授权的测试配置，并保留脱敏证据。此前一次占位 Key 的失败请求未创建平台任务；有效视频创建仅 1 次。真实供应商取消、Webhook、幂等/重复计费契约仍未确认。

@@ -480,6 +480,47 @@ describe('New API 官方统一视频合同', () => {
     expect(cancelled).toHaveBeenCalledTimes(1);
   });
 
+  it('轮询期间取消只中止本地请求，不猜测远程取消接口或发送 DELETE', async () => {
+    const controller = new AbortController();
+    let pollStarted!: () => void;
+    const pollReady = new Promise<void>((resolve) => {
+      pollStarted = resolve;
+    });
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (url, init) => {
+      const requestUrl = String(url);
+      if (requestUrl.endsWith('/video/generations')) {
+        return jsonResponse({ task_id: 'task-1', status: 'queued' });
+      }
+      if (requestUrl.endsWith('/video/generations/task-1')) {
+        pollStarted();
+        return await new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            'abort',
+            () => reject(new DOMException('operation aborted', 'AbortError')),
+            { once: true },
+          );
+        });
+      }
+      throw new Error(`unexpected request: ${requestUrl}`);
+    });
+
+    const execution = providerFor(fetchImpl).execute({
+      snapshot: videoSnapshot(),
+      signal: controller.signal,
+      onProviderJob: vi.fn(),
+    });
+    await pollReady;
+    controller.abort();
+
+    await expect(execution).rejects.toMatchObject({
+      code: 'ABORTED',
+      platformJobId: 'task-1',
+      retryable: false,
+    });
+    expect(fetchImpl.mock.calls.map(([, init]) => init?.method)).toEqual(['POST', 'GET']);
+    expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(false);
+  });
+
   it('轮询耗尽保留合同、身份与非终态，不再 POST', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()

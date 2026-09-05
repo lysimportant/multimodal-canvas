@@ -8,6 +8,8 @@ export default defineConfig({
       NODE_ENV: 'test',
       RUN_SERVICE: 'memory',
       WORKER_PROVIDER: 'mock',
+      // 测试默认固定开发端口，避免仓库根目录 .env 的本地端口覆盖 CORS 默认契约。
+      WEB_PORT: '5173',
     },
   },
 });

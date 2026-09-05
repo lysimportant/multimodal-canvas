@@ -972,6 +972,19 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     bodyLimit: bodyLimitBytes,
     logger,
   });
+  // 保留 JSON Webhook 的原始 UTF-8 字节，验签必须针对供应商发送的字节串，
+  // 不能对解析后的对象重新序列化（空格、换行和转义差异都会改变签名）。
+  const rawJsonBodies = new WeakMap<object, Buffer>();
+  app.removeContentTypeParser('application/json');
+  app.addContentTypeParser('application/json', { parseAs: 'string' }, (request, body, done) => {
+    const raw = String(body);
+    rawJsonBodies.set(request, Buffer.from(raw, 'utf8'));
+    try {
+      done(null, JSON.parse(raw));
+    } catch (error) {
+      done(error as Error, undefined);
+    }
+  });
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof RateLimitUnavailableError) {
       request.log.warn({ requestId: request.id }, 'global rate limiter unavailable');
@@ -1349,7 +1362,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       const signature = request.headers['x-newapi-signature'];
       if (
         typeof signature !== 'string' ||
-        !verifyWebhookSignature(request.body, signature, secret)
+        !verifyWebhookSignature(request.body, signature, secret, rawJsonBodies.get(request))
       ) {
         return reply.code(401).send({ error: 'invalid webhook signature' });
       }
@@ -3214,12 +3227,17 @@ function normalizeWebhookProviderStatus(
   return undefined;
 }
 
-function verifyWebhookSignature(payload: unknown, signature: string, secret: string) {
+function verifyWebhookSignature(
+  payload: unknown,
+  signature: string,
+  secret: string,
+  rawBody?: Buffer,
+) {
   const normalized = signature.startsWith('sha256=')
     ? signature.slice('sha256='.length)
     : signature;
   const expected = createHmac('sha256', secret)
-    .update(JSON.stringify(payload ?? {}))
+    .update(rawBody ?? JSON.stringify(payload ?? {}))
     .digest('hex');
   return safeEqual(normalized, expected);
 }

@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it, vi } from 'vitest';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 
 import { MemoryAssetStore } from './assets';
 import { buildApp } from './app';
@@ -2870,6 +2870,32 @@ describe('API development CORS defaults', () => {
       }
     },
   );
+});
+
+describe('New API webhook signature bytes', () => {
+  it('verifies the exact raw JSON bytes before parsing', async () => {
+    vi.stubEnv('NEW_API_WEBHOOK_SECRET', 'synthetic-webhook-secret');
+    const app = buildApp({ logger: false });
+    const rawBody = '{\n  "eventId": "raw-event-1",\n  "taskId": "task-1"\n}\n';
+    const signature = createHmac('sha256', 'synthetic-webhook-secret')
+      .update(Buffer.from(rawBody, 'utf8'))
+      .digest('hex');
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v1/webhooks/newapi',
+        headers: {
+          'content-type': 'application/json',
+          'x-newapi-signature': `sha256=${signature}`,
+        },
+        payload: rawBody,
+      });
+      expect(response.statusCode).toBe(202);
+      expect(response.json()).toMatchObject({ accepted: true, eventId: 'raw-event-1' });
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 async function waitForRun(runId: string, expectedStatus: string) {
