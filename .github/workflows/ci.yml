@@ -82,6 +82,13 @@ jobs:
             --to-schema-datamodel prisma/schema.prisma \
             --exit-code
 
+      - name: 验证 Redis 跨进程全局限流
+        id: rate_limit_integration
+        env:
+          TEST_REDIS_URL: redis://127.0.0.1:6379
+          TEST_REDIS_NAMESPACE: ci-rate-limit-${{ github.run_id }}-${{ github.run_attempt }}
+        run: pnpm --filter @multimodal-canvas/api exec vitest run --config vitest.rate-limit-integration.config.ts
+
       - name: 验证开发 Compose 配置
         id: compose_config
         env:
@@ -158,6 +165,7 @@ jobs:
           TYPECHECK_STATUS: ${{ steps.typecheck.outcome }}
           TEST_STATUS: ${{ steps.test.outcome }}
           INTEGRATION_MIGRATE_STATUS: ${{ steps.integration_migrate.outcome }}
+          RATE_LIMIT_INTEGRATION_STATUS: ${{ steps.rate_limit_integration.outcome }}
           COMPOSE_CONFIG_STATUS: ${{ steps.compose_config.outcome }}
           MINIO_SETUP_STATUS: ${{ steps.minio_setup.outcome }}
           INTEGRATION_TEST_STATUS: ${{ steps.integration_test.outcome }}
@@ -190,6 +198,7 @@ jobs:
             echo "| TypeScript 类型 | $(status_text "$TYPECHECK_STATUS") |"
             echo "| 测试 | $(status_text "$TEST_STATUS") |"
             echo "| 隔离数据库迁移 | $(status_text "$INTEGRATION_MIGRATE_STATUS") |"
+            echo "| Redis 跨进程全局限流 | $(status_text "$RATE_LIMIT_INTEGRATION_STATUS") |"
             echo "| 开发 Compose 配置 | $(status_text "$COMPOSE_CONFIG_STATUS") |"
             echo "| MinIO 初始化与失败场景 | $(status_text "$MINIO_SETUP_STATUS") |"
             echo "| Prisma/Redis/MinIO 集成测试 | $(status_text "$INTEGRATION_TEST_STATUS") |"

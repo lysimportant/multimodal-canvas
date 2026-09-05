@@ -11,31 +11,13 @@ import { PrismaUploadSessionStore } from './upload-sessions';
 import { PrismaRunPersistence } from './run-persistence';
 import { PrismaAuthStore } from './auth-store';
 import { createNewApiRunExecutor } from './newapi-run-executor';
-import Redis from 'ioredis';
-import { FallbackRateLimiter, MemoryRateLimiter, RedisRateLimiter } from './rate-limit';
+import { createApiRateLimiter } from './runtime-rate-limit';
 import { assertApiStartupConfiguration } from './startup-config';
 
 assertApiStartupConfiguration();
 
 const prisma = process.env.DATABASE_URL ? new PrismaClient() : undefined;
-const memoryRateLimiter = new MemoryRateLimiter();
-const redisRateLimitEnabled =
-  process.env.API_RATE_LIMIT_REDIS_ENABLED === 'true' ||
-  (process.env.NODE_ENV === 'production' && process.env.API_RATE_LIMIT_REDIS_ENABLED !== 'false');
-const redisUrl = process.env.REDIS_URL?.trim();
-const redisRateLimitClient =
-  redisRateLimitEnabled && redisUrl
-    ? new Redis(redisUrl, {
-        lazyConnect: true,
-        enableOfflineQueue: false,
-        maxRetriesPerRequest: 1,
-        connectTimeout: 1_000,
-        retryStrategy: (times) => Math.min(1_000, Math.max(100, times * 100)),
-      })
-    : undefined;
-const rateLimiter = redisRateLimitClient
-  ? new FallbackRateLimiter(new RedisRateLimiter(redisRateLimitClient), memoryRateLimiter)
-  : memoryRateLimiter;
+const rateLimiter = await createApiRateLimiter();
 const authStore = prisma ? new PrismaAuthStore(prisma) : undefined;
 const runPersistence = prisma ? new PrismaRunPersistence(prisma) : undefined;
 const providerName = process.env.WORKER_PROVIDER === 'mock' ? 'mock' : 'newapi';

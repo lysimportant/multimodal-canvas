@@ -581,12 +581,14 @@ const envelope = (key: string, schema: unknown) => ({
   additionalProperties: false,
 });
 
+/** REST/SSE 公开契约；全局受限入口的依赖故障与业务错误分别描述。 */
 export const openApiDocument = {
   openapi: '3.1.0',
   info: {
     title: 'Multimodal Canvas API',
     version: '0.1.0',
-    description: 'REST and SSE API for projects, assets, AI settings, and runs.',
+    description:
+      '项目、资源、AI 设置与运行的 REST/SSE API。生产全局限流依赖故障时，登录、注册、SSE 及启用限流的普通 API 返回 503/rate_limit_unavailable，并携带 Retry-After、retryAfterSeconds 和 requestId；额度耗尽仍返回 429。健康检查、Webhook 和已验证的签名资源访问保持独立边界。',
   },
   servers: [{ url: '/' }],
   security: [{ bearerAuth: [] }],
@@ -632,7 +634,7 @@ export const openApiDocument = {
           '201': response('Registered', authTokenSchema),
           '400': response('Invalid request', errorSchema),
           '409': response('Email already registered', errorSchema),
-          '503': response('Authentication unavailable', errorSchema),
+          '503': response('认证或全局限流服务不可用；限流故障附带 Retry-After', errorSchema),
         },
       },
     },
@@ -660,7 +662,7 @@ export const openApiDocument = {
           '200': response('Logged in', authTokenSchema),
           '400': response('Invalid request', errorSchema),
           '401': response('Invalid credentials', errorSchema),
-          '503': response('Authentication unavailable', errorSchema),
+          '503': response('认证或全局限流服务不可用；限流故障附带 Retry-After', errorSchema),
         },
       },
     },
@@ -714,6 +716,7 @@ export const openApiDocument = {
             'Projects',
             envelope('projects', { type: 'array', items: projectSchema }),
           ),
+          '503': { $ref: '#/components/responses/RateLimitUnavailable' },
         },
       },
       post: {
@@ -975,6 +978,7 @@ export const openApiDocument = {
             content: { 'text/event-stream': { schema: { type: 'string' } } },
           },
           '404': response('Project not found', errorSchema),
+          '503': { $ref: '#/components/responses/RateLimitUnavailable' },
         },
       },
     },
@@ -1546,6 +1550,32 @@ export const openApiDocument = {
     },
   },
   components: {
+    responses: {
+      RateLimitUnavailable: {
+        description: '全局限流服务不可用；未消费本机额度，请按 Retry-After 延迟重试',
+        headers: {
+          'Retry-After': {
+            description: '下一次尝试前应等待的正整数秒数',
+            schema: { type: 'integer', minimum: 1 },
+          },
+        },
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['error', 'code', 'retryAfterSeconds', 'requestId'],
+              properties: {
+                error: { type: 'string', const: 'rate limit service unavailable' },
+                code: { type: 'string', const: 'rate_limit_unavailable' },
+                retryAfterSeconds: { type: 'integer', minimum: 1 },
+                requestId: { type: 'string', minLength: 1 },
+              },
+              additionalProperties: false,
+            },
+          },
+        },
+      },
+    },
     securitySchemes: {
       bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'API token' },
     },

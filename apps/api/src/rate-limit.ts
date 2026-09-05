@@ -65,6 +65,11 @@ export class MemoryRateLimiter implements RateLimiter {
     this.buckets.clear();
   }
 
+  /** 释放全部内存计数；可重复调用，不影响其他限流器。 */
+  close(): void {
+    this.clear();
+  }
+
   get size(): number {
     return this.buckets.size;
   }
@@ -168,28 +173,64 @@ export class RedisRateLimiter implements RateLimiter {
   }
 }
 
+/** 主限流器失败后的处理策略、冷却时间和内部错误观察配置。 */
 export type FallbackRateLimiterOptions = {
-  /** Avoid hammering an unavailable Redis instance on every request. */
+  /** 默认 fallback 使用备用限流器；生产调用方应显式选用 closed 拒绝请求。 */
+  failureMode?: 'fallback' | 'closed';
+  /** 失败后的重试间隔，单位毫秒，非负安全整数；默认 30 秒，0 表示立即重试。 */
   failureCooldownMs?: number;
+  /** 返回当前时间的毫秒值；测试可注入时钟控制冷却与恢复。 */
   now?: () => number;
+  /** 仅供内部观察原始错误，不得直接输出到 HTTP；同步抛错不会改变限流策略。 */
   onPrimaryError?: (error: unknown) => void;
 };
 
+/** 限流依赖不可用的公开错误；仅携带固定消息和重试秒数，不保留原始错误或 cause。 */
+export class RateLimitUnavailableError extends Error {
+  /** HTTP Retry-After 可使用的正整数秒数，最小为 1。 */
+  readonly retryAfterSeconds: number;
+
+  /**
+   * 创建可安全返回给 HTTP 层的依赖不可用错误。
+   * @param retryAfterSeconds 向上取整后的重试秒数，默认为 1，必须为正安全整数。
+   * @throws {TypeError} 重试秒数不是正安全整数。
+   */
+  constructor(retryAfterSeconds = 1) {
+    super('Rate limit service unavailable');
+    this.name = 'RateLimitUnavailableError';
+    this.retryAfterSeconds = positiveInteger(retryAfterSeconds, 'retryAfterSeconds');
+  }
+}
+
 /**
- * Uses Redis when available and falls back to the bounded in-memory limiter
- * after a Redis failure. The fallback deliberately remains limiting, rather
- * than failing open during an outage.
+ * 优先使用主限流器，失败后在冷却期内按显式策略处理请求，冷却结束后重试主限流器。
+ * 默认使用备用限流器保持开发兼容；closed 模式始终拒绝故障期间的请求，不消费备用额度。
  */
 export class FallbackRateLimiter implements RateLimiter {
+  /** 主限流器故障时采用的策略。 */
+  private readonly failureMode: 'fallback' | 'closed';
+  /** 每次故障后的冷却时长，单位毫秒。 */
   private readonly failureCooldownMs: number;
+  /** 当前时间来源，单位毫秒。 */
   private readonly now: () => number;
+  /** 下一次允许尝试主限流器的时间，单位毫秒；0 表示未处于冷却期。 */
   private primaryUnavailableUntil = 0;
 
+  /**
+   * 创建支持故障冷却和恢复的组合限流器，不主动访问或消费任一限流器。
+   * @param primary 正常请求使用的主限流器。
+   * @param fallback 仅在 fallback 模式故障期间使用的备用限流器。
+   * @param options 故障策略、冷却时间、时钟和内部错误观察回调。
+   * @throws {TypeError} 冷却时间不是非负安全整数。
+   */
   constructor(
+    /** 主限流器及其可选资源清理接口。 */
     private readonly primary: RateLimiter,
+    /** 备用限流器及其可选资源清理接口。 */
     private readonly fallback: RateLimiter,
     options: FallbackRateLimiterOptions = {},
   ) {
+    this.failureMode = options.failureMode ?? 'fallback';
     this.failureCooldownMs = nonNegativeInteger(
       options.failureCooldownMs ?? 30_000,
       'failureCooldownMs',
@@ -198,11 +239,23 @@ export class FallbackRateLimiter implements RateLimiter {
     this.onPrimaryError = options.onPrimaryError;
   }
 
+  /** 内部错误观察回调；其异常不得越过既定故障处理边界。 */
   private readonly onPrimaryError?: (error: unknown) => void;
 
+  /**
+   * 验证输入后消费主限流额度，失败或冷却期间执行所选故障策略。
+   * @param key 非空客户端标识；验证失败不会访问主、备用限流器或更新冷却状态。
+   * @param options 正整数请求额度及毫秒窗口。
+   * @returns 主限流器或 fallback 模式备用限流器的限流结果。
+   * @throws {TypeError} 输入无效。
+   * @throws {RateLimitUnavailableError} closed 模式下主限流器失败或尚未结束冷却。
+   */
   async consume(key: string, options: RateLimitConsumeOptions): Promise<RateLimitDecision> {
-    if (this.now() < this.primaryUnavailableUntil) {
-      return this.fallback.consume(key, options);
+    validateOptions(options);
+    normalizeKey(key);
+    const remainingMs = this.primaryUnavailableUntil - this.now();
+    if (remainingMs > 0) {
+      return this.consumeWhenUnavailable(key, options, remainingMs);
     }
     try {
       const result = await this.primary.consume(key, options);
@@ -210,14 +263,41 @@ export class FallbackRateLimiter implements RateLimiter {
       return result;
     } catch (error) {
       this.primaryUnavailableUntil = this.now() + this.failureCooldownMs;
-      this.onPrimaryError?.(error);
-      return this.fallback.consume(key, options);
+      try {
+        this.onPrimaryError?.(error);
+      } catch {
+        // 观察回调失败不能泄露错误或改变拒绝请求、备用限流的既定策略。
+      }
+      return this.consumeWhenUnavailable(key, options, this.failureCooldownMs);
     }
   }
 
+  /**
+   * 按故障策略拒绝请求或消费备用额度；closed 不访问备用限流器。
+   * @param key 已验证的客户端标识。
+   * @param options 已验证的限流额度与毫秒窗口。
+   * @param remainingMs 剩余冷却毫秒数；首次故障传入完整冷却时长。
+   * @returns 备用限流器结果。
+   * @throws {RateLimitUnavailableError} closed 模式返回至少 1 秒的向上取整重试时间。
+   */
+  private consumeWhenUnavailable(
+    key: string,
+    options: RateLimitConsumeOptions,
+    remainingMs: number,
+  ): Promise<RateLimitDecision> {
+    if (this.failureMode === 'closed') {
+      throw new RateLimitUnavailableError(Math.max(1, Math.ceil(remainingMs / 1000)));
+    }
+    return this.fallback.consume(key, options);
+  }
+
+  /** 依次清理主、备用限流器；即使主清理失败也清理备用资源，清理异常继续向调用方传播。 */
   async close(): Promise<void> {
-    await this.primary.close?.();
-    await this.fallback.close?.();
+    try {
+      await this.primary.close?.();
+    } finally {
+      await this.fallback.close?.();
+    }
   }
 }
 

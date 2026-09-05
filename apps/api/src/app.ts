@@ -86,7 +86,7 @@ import {
   resolveExportLimits,
 } from './export';
 import { ArchiveError, buildZipArchive } from './export-archive';
-import { MemoryRateLimiter, type RateLimiter } from './rate-limit';
+import { MemoryRateLimiter, RateLimitUnavailableError, type RateLimiter } from './rate-limit';
 import {
   checkResourceMentionCapabilities,
   type ResourceMentionCapabilityDiagnostic,
@@ -973,6 +973,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     logger,
   });
   app.setErrorHandler((error, request, reply) => {
+    if (error instanceof RateLimitUnavailableError) {
+      request.log.warn({ requestId: request.id }, 'global rate limiter unavailable');
+      return reply.header('retry-after', String(error.retryAfterSeconds)).code(503).send({
+        error: 'rate limit service unavailable',
+        code: 'rate_limit_unavailable',
+        retryAfterSeconds: error.retryAfterSeconds,
+        requestId: request.id,
+      });
+    }
     const code = isErrorCode(error) ? error.code : undefined;
     if (code === 'FST_ERR_CTP_BODY_TOO_LARGE') {
       return reply.code(413).send({

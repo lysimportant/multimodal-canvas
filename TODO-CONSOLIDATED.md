@@ -1,6 +1,6 @@
 # 未完成事项合并清单
 
-更新时间：2026-09-04
+更新时间：2026-09-05
 
 本文件合并原 `TODO-NEXT.md`、`TODO-RESOURCE-MENTIONS.md` 和
 `FIX-RESOURCE-MENTIONS.md` 中仍未完成、部分完成、外部依赖或明确暂缓的事项。
@@ -51,7 +51,9 @@
 - 部署环境的告警、外部投递失败隔离和生产配置回滚演练。
 - 凭据加密 key-id、旧密钥 fallback 和重加密迁移。
 
-已知风险：本地文件凭据模式只支持单机单 API 进程；Redis 限流故障时可能退回进程内限流。
+本轮限流修复已完成本地验收：生产 Redis 故障不得退回进程内额度，登录、注册、普通 API 和 SSE 在受限入口返回 `503/rate_limit_unavailable` 和 `Retry-After`；开发环境保留有界内存回退。真实 Redis 独立进程共享窗口、进程重建和前缀隔离均已验证；生产部署演练仍未完成，证据见下方检查点。
+
+已知风险：本地文件凭据模式只支持单机单 API 进程；Redis 不可用时生产受限接口牺牲可用性以保持全局限流边界。真实 TLS/反向代理和生产部署验收仍待完成。
 
 ### `[~]` P0-MEDIA-OPS-03 真实媒体处理与可观测性
 
@@ -164,6 +166,22 @@ Web MVP 和生产链路稳定后再接入 Tauri 桌面壳。
 5. Mock 和静态代码可以证明应用内部闭环，不能证明供应商实际读取媒体或生产环境已经验收。
 
 ## 验证基线
+
+### 2026-09-05 P0-PROD-STARTUP-02 执行检查点
+
+- 目标：关闭生产 Redis 故障时的本机额度回退，验证跨进程共享窗口、重启恢复和 HTTP 故障边界；不扩展到 P1/P2，不接触生产数据。
+- 起点：`main` / `c81411a`，上游 `origin/main`；Node `v24.12.0`、pnpm `11.19.0`、Docker `29.7.2`，依赖已存在，无需安装新包。
+- 工作区：接手时已有密钥轮换、Provider 取消、启动配置及迁移等未提交修改，保留但不混入本轮限流提交。
+- 实现：`apps/api/src/rate-limit.ts`、`runtime-rate-limit.ts`、`app.ts`、`index.ts` 和 `openapi.ts` 完成生产故障关闭、首次连接等待、1 秒命令超时、冷却恢复、HTTP 503 和脱敏诊断；对应测试、独立 Redis 配置及 CI 步骤随同维护。部署影响和回滚见 `docs/production-rate-limiting.md`，无需数据迁移或新增依赖。
+- 恢复记录：最初 `pnpm test` 命中缓存；强制并发重跑遇到 Windows `VirtualAlloc failed` 后，核对工作区并改用低并发重跑通过。集成测试子代理未交付完整文件，主 Agent 停止其执行、检查状态后接手完成，不把等待或缓存作为验收结果。
+- 全量测试：`pnpm exec turbo run test --force --concurrency=1 -- --maxWorkers=1 --minWorkers=1` 通过；追加最终 API `vitest run --maxWorkers=1 --minWorkers=1` 为 400 passed、6 skipped、2 个既有 TODO。其他包 Worker 157、Providers 131、Web 290、Domain 24、Observability 15、Credential Crypto 5、UI 3 passed。普通测试跳过的真实 Redis 场景已单独执行；PostgreSQL/S3 等未配置场景不算通过。
+- 定向与隔离验证：限流模块 42、入口策略 6、HTTP/OpenAPI/真实监听冒烟 8、OpenAPI 引用 6 均通过；专用 `vitest.rate-limit-integration.config.ts` 在本机 Redis 随机测试前缀下 9 passed，缺配置时按预期非零退出。两个独立 Node 进程共享窗口、重建后额度不重置、不同前缀互不影响；无 `FLUSHDB`、数据清理或生产连接。
+- 提交独立性：从暂存区导出的源代码快照重新构建 Domain/Observability/Providers 后，API 类型检查、62 项定向测试和 9 项真实 Redis 验证通过；不依赖接手时未提交的密钥轮换和 Provider 源码修改。
+- 质量与界面：`pnpm exec turbo run lint typecheck build --concurrency=1`、`pnpm format:check`、`git diff --check` 通过；`CI=true WEB_PORT=5187 pnpm test:e2e` 为 20 passed，使用独立测试端口避免复用用户开发服务。
+- 归档：本检查点随 `v0.13.11` 对应限流修复提交归档；提交 ID 可用 `git rev-list -n 1 v0.13.11` 查询，提交说明包含验证与兼容性边界。详细本地输出位于被忽略的 `.data/todo-*.log`，不提交原始环境或连接凭据。
+- 下一步：继续 P0 隔离部署中的 TLS/反向代理、跨实例凭据与队列恢复、告警及回滚演练；缺少授权的真实生产和供应商事项继续保持 `[~]` / `[!]`，本轮不将整个合并清单标为完成。
+
+### 历史已提交基线
 
 - 提交：`06bc654`（`feat: 完善资源提及映射并移除本地收费阻断`），标签：`v0.13.10`。
 - `pnpm test`：API 328 passed/5 skipped、Worker 149、Providers 127、Web 290、Domain 24、Observability 15、UI 3。
