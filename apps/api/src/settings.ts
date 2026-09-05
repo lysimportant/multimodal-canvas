@@ -1,5 +1,9 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
+import {
+  CredentialEncryptionKeyring,
+  createCredentialEncryptionKeyringFromEnvironment,
+} from '@multimodal-canvas/credential-crypto';
 import { mediaTypes, type MediaType, type ModelSelection } from '@multimodal-canvas/domain';
 import { sanitizeExceptionForObservability } from '@multimodal-canvas/observability';
 import { normalizeNewApiBaseUrl } from '@multimodal-canvas/providers';
@@ -46,6 +50,11 @@ export type UpdateAiSettingsInput = {
 };
 
 export type AiSettingsStoreOptions = {
+  /**
+   * 服务端共享的凭据密钥环。未提供时保持单密钥兼容模式，适用于隔离测试和
+   * 不需要跨部署轮换的内存存储。
+   */
+  credentialKeyring?: CredentialEncryptionKeyring;
   /** Injectable for tests; production uses the platform fetch implementation. */
   fetchImpl?: typeof fetch;
   /** Receives a sanitized server-side diagnostic without changing the client error contract. */
@@ -73,6 +82,8 @@ export type ProviderCredentials = {
 export type PersistedAiSettings = {
   baseUrl: string;
   encryptedApiKey: string;
+  /** 仅标识密文使用的部署密钥，不包含密钥材料。 */
+  encryptionKeyId?: string;
   keyFingerprint: string;
   defaultModels: Partial<Record<MediaType, string | ModelSelection>>;
   updatedAt: string;
@@ -134,8 +145,10 @@ const GPT_56_TEXT_MODEL_ALIAS_PATTERN = /^gpt-5\.6(?:$|[-_.])/;
 export class AiSettingsStore {
   private baseUrl = '';
   private encryptedApiKey = '';
+  /** 当前密文的持久化 key-id；旧格式未写入该字段时保留 undefined。 */
+  private encryptionKeyId?: string;
   private keyFingerprint = '';
-  private readonly encryptionKey: Buffer;
+  private readonly credentialKeyring: CredentialEncryptionKeyring;
   private readonly fetchImpl?: typeof fetch;
   private readonly onTestConnectionError?: (error: Error) => void;
   private readonly modelRequestTimeoutMs: number;
@@ -164,7 +177,9 @@ export class AiSettingsStore {
     encryptionSecret = process.env.AI_CREDENTIAL_ENCRYPTION_KEY ?? randomBytes(32).toString('hex'),
     options: AiSettingsStoreOptions = {},
   ) {
-    this.encryptionKey = createHash('sha256').update(encryptionSecret).digest();
+    this.credentialKeyring =
+      options.credentialKeyring ??
+      new CredentialEncryptionKeyring({ currentSecret: encryptionSecret });
     // Resolve the global fetch at request time when no test/deployment
     // override is supplied, so callers can still instrument or stub it.
     this.fetchImpl = options.fetchImpl;
@@ -201,6 +216,9 @@ export class AiSettingsStore {
     return {
       baseUrl: this.baseUrl,
       encryptedApiKey: this.encryptedApiKey,
+      ...(this.encryptedApiKey && this.encryptionKeyId
+        ? { encryptionKeyId: this.encryptionKeyId }
+        : {}),
       keyFingerprint: this.keyFingerprint,
       defaultModels: serializeDefaultModels(this.defaultModels),
       updatedAt: this.updatedAt,
@@ -218,6 +236,7 @@ export class AiSettingsStore {
     }
     this.baseUrl = persisted.baseUrl;
     this.encryptedApiKey = persisted.encryptedApiKey;
+    this.encryptionKeyId = persisted.encryptionKeyId;
     this.keyFingerprint = persisted.keyFingerprint;
     this.defaultModels = normalizeDefaultModels(persisted.defaultModels);
     this.updatedAt = persisted.updatedAt;
@@ -239,11 +258,10 @@ export class AiSettingsStore {
       }
     }
     if (input.apiKey !== undefined) {
-      const currentApiKey = this.encryptedApiKey
-        ? decrypt(this.encryptedApiKey, this.encryptionKey)
-        : undefined;
+      const currentApiKey = this.encryptedApiKey ? this.decryptCurrentApiKey() : undefined;
       if (input.apiKey !== currentApiKey) {
-        this.encryptedApiKey = encrypt(input.apiKey, this.encryptionKey);
+        this.encryptedApiKey = this.credentialKeyring.encrypt(input.apiKey);
+        this.encryptionKeyId = this.credentialKeyring.currentKeyId;
         this.keyFingerprint = fingerprint(input.apiKey);
         changed = true;
         providerCredentialsChanged = true;
@@ -278,14 +296,13 @@ export class AiSettingsStore {
   activateCredential(credentialId: string): AiSettings | undefined {
     const credential = this.credentialRecords.get(credentialId);
     if (!credential) return undefined;
-    const currentApiKey = this.encryptedApiKey
-      ? decrypt(this.encryptedApiKey, this.encryptionKey)
-      : undefined;
+    const currentApiKey = this.encryptedApiKey ? this.decryptCurrentApiKey() : undefined;
     if (credential.baseUrl === this.baseUrl && credential.apiKey === currentApiKey) {
       return this.get();
     }
     this.baseUrl = credential.baseUrl;
-    this.encryptedApiKey = encrypt(credential.apiKey, this.encryptionKey);
+    this.encryptedApiKey = this.credentialKeyring.encrypt(credential.apiKey);
+    this.encryptionKeyId = this.credentialKeyring.currentKeyId;
     this.keyFingerprint = credential.keyFingerprint;
     this.updatedAt = new Date().toISOString();
     this.registerCredential();
@@ -299,6 +316,7 @@ export class AiSettingsStore {
     // reference is cleared, so new runs cannot resolve or use a credential.
     this.baseUrl = '';
     this.encryptedApiKey = '';
+    this.encryptionKeyId = undefined;
     this.keyFingerprint = '';
     this.credentialId = undefined;
     this.credentialVersion = undefined;
@@ -319,7 +337,7 @@ export class AiSettingsStore {
     try {
       const response = await requestModels(
         this.baseUrl,
-        decrypt(this.encryptedApiKey, this.encryptionKey),
+        this.decryptCurrentApiKey(),
         this.fetchImpl,
         this.modelRequestTimeoutMs,
         this.modelRequestMaxAttempts,
@@ -478,8 +496,18 @@ export class AiSettingsStore {
     if (!this.baseUrl || !this.encryptedApiKey) return undefined;
     return {
       baseUrl: this.baseUrl,
-      apiKey: decrypt(this.encryptedApiKey, this.encryptionKey),
+      apiKey: this.decryptCurrentApiKey(),
     };
+  }
+
+  /** 解密内存中的当前凭据，并把旧密文立即升级为当前 key-id 包装。 */
+  private decryptCurrentApiKey(): string {
+    const decrypted = this.credentialKeyring.decrypt(this.encryptedApiKey, this.encryptionKeyId);
+    if (decrypted.needsReencryption) {
+      this.encryptedApiKey = this.credentialKeyring.encrypt(decrypted.plaintext);
+      this.encryptionKeyId = this.credentialKeyring.currentKeyId;
+    }
+    return decrypted.plaintext;
   }
 
   private registerCredential(advanceVersion = true) {
@@ -493,7 +521,7 @@ export class AiSettingsStore {
     }
     const credentials = {
       baseUrl: this.baseUrl,
-      apiKey: decrypt(this.encryptedApiKey, this.encryptionKey),
+      apiKey: this.decryptCurrentApiKey(),
     };
     this.credentialHistory.set(credentialKey(this.getCredentialReference()), credentials);
     this.credentialRecords.set(this.credentialId, {
@@ -545,6 +573,7 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
   private readonly memory: AiSettingsStore;
   private readonly ready: Promise<void>;
   private readonly encryptionSecret: string;
+  private readonly credentialKeyring: CredentialEncryptionKeyring;
   private credentialReference: CredentialReference = {};
   // Serialize writes in this process so concurrent settings requests cannot
   // derive the same credential version or persist another request's memory
@@ -562,7 +591,14 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
       );
     }
     this.encryptionSecret = encryptionSecret;
-    this.memory = new AiSettingsStore(encryptionSecret, options);
+    this.credentialKeyring = createCredentialEncryptionKeyringFromEnvironment({
+      ...process.env,
+      AI_CREDENTIAL_ENCRYPTION_KEY: encryptionSecret,
+    });
+    this.memory = new AiSettingsStore(encryptionSecret, {
+      ...options,
+      credentialKeyring: this.credentialKeyring,
+    });
     this.ready = this.load();
   }
 
@@ -620,18 +656,7 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
         return undefined;
       }
 
-      const snapshot = new AiSettingsStore(this.encryptionSecret);
-      snapshot.hydrate(
-        {
-          baseUrl: credential.baseUrl,
-          encryptedApiKey: credential.encryptedApiKey,
-          keyFingerprint: credential.keyFingerprint,
-          defaultModels: {},
-          updatedAt: credential.updatedAt.toISOString(),
-        },
-        { credentialId: credential.id, credentialVersion: credential.version },
-      );
-      const providerCredentials = snapshot.getProviderCredentials();
+      const providerCredentials = await this.providerCredentialsForCredential(credential);
       if (!providerCredentials) return undefined;
 
       const previous = this.memory.getPersisted();
@@ -669,6 +694,7 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
             version: current.version + 1,
             baseUrl: '',
             encryptedApiKey: '',
+            encryptionKeyId: null,
             keyFingerprint: '',
             defaultModels: Prisma.JsonNull,
             label: 'revoked',
@@ -795,18 +821,7 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
       },
     });
     if (!historical) return undefined;
-    const snapshot = new AiSettingsStore(this.encryptionSecret);
-    snapshot.hydrate(
-      {
-        baseUrl: historical.baseUrl,
-        encryptedApiKey: historical.encryptedApiKey,
-        keyFingerprint: historical.keyFingerprint,
-        defaultModels: isDefaultModels(historical.defaultModels) ? historical.defaultModels : {},
-        updatedAt: historical.updatedAt.toISOString(),
-      },
-      { credentialId: historical.id, credentialVersion: historical.version },
-    );
-    return snapshot.getProviderCredentials();
+    return this.providerCredentialsForCredential(historical);
   }
 
   async close() {
@@ -828,6 +843,7 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
       overrideDelegate?.findMany ? overrideDelegate.findMany() : Promise.resolve([]),
     ]);
     if (credential?.baseUrl && credential.encryptedApiKey) {
+      await this.providerCredentialsForCredential(credential);
       this.credentialReference = {
         credentialId: credential.id,
         credentialVersion: credential.version,
@@ -837,6 +853,7 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
         {
           baseUrl: credential.baseUrl,
           encryptedApiKey: credential.encryptedApiKey,
+          ...(credential.encryptionKeyId ? { encryptionKeyId: credential.encryptionKeyId } : {}),
           keyFingerprint: credential.keyFingerprint,
           defaultModels: defaults,
           updatedAt: credential.updatedAt.toISOString(),
@@ -950,6 +967,9 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
       label: 'default',
       baseUrl: persisted.baseUrl,
       encryptedApiKey: persisted.encryptedApiKey,
+      encryptionKeyId:
+        persisted.encryptionKeyId ??
+        (persisted.encryptedApiKey ? this.credentialKeyring.currentKeyId : null),
       keyFingerprint: persisted.keyFingerprint,
       defaultModels: persisted.defaultModels,
       version: Math.max(
@@ -1003,18 +1023,7 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
       if (credentialId) throw new AiCredentialNotFoundError(credentialId);
       throw new Error('New API 地址和 Key 尚未配置');
     }
-    const snapshot = new AiSettingsStore(this.encryptionSecret);
-    snapshot.hydrate(
-      {
-        baseUrl: credential.baseUrl,
-        encryptedApiKey: credential.encryptedApiKey,
-        keyFingerprint: credential.keyFingerprint,
-        defaultModels: isDefaultModels(credential.defaultModels) ? credential.defaultModels : {},
-        updatedAt: credential.updatedAt.toISOString(),
-      },
-      { credentialId: credential.id, credentialVersion: credential.version },
-    );
-    const providerCredentials = snapshot.getProviderCredentials();
+    const providerCredentials = await this.providerCredentialsForCredential(credential);
     if (!providerCredentials) throw new AiCredentialNotFoundError(resolvedCredentialId);
     return { credentialId: resolvedCredentialId, providerCredentials };
   }
@@ -1026,6 +1035,55 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
       () => undefined,
     );
     return result;
+  }
+
+  /**
+   * 按记录的 key-id 解密历史凭据，并在同一行可更新时逐步迁移到当前 key。
+   *
+   * 读取失败会向上抛出，不会用活动凭据替代历史快照。重加密只改变密文包装，
+   * 不改变 credentialId/version 或活动排序时间。比较读取版本后写回，冲突时
+   * 拒绝本次读取，不覆盖其他实例的新密文，也不返回尚未持久化的凭据。
+   */
+  private async providerCredentialsForCredential(credential: {
+    id: string;
+    baseUrl: string;
+    encryptedApiKey: string;
+    encryptionKeyId?: string | null;
+    version: number;
+    updatedAt: Date;
+  }): Promise<ProviderCredentials | undefined> {
+    if (!credential.baseUrl || !credential.encryptedApiKey) return undefined;
+    const decrypted = this.credentialKeyring.decrypt(
+      credential.encryptedApiKey,
+      credential.encryptionKeyId ?? undefined,
+    );
+    if (decrypted.needsReencryption) {
+      const rotated = this.credentialKeyring.encrypt(decrypted.plaintext);
+      if (typeof this.prisma.aiCredential.update !== 'function') {
+        throw new Error('AI credential rotation requires a durable credential update method');
+      }
+      try {
+        await this.prisma.aiCredential.update({
+          where: {
+            id: credential.id,
+            version: credential.version,
+            encryptedApiKey: credential.encryptedApiKey,
+            encryptionKeyId: credential.encryptionKeyId ?? null,
+            updatedAt: credential.updatedAt,
+          },
+          data: {
+            encryptedApiKey: rotated,
+            encryptionKeyId: this.credentialKeyring.currentKeyId,
+            updatedAt: credential.updatedAt,
+          },
+        });
+      } catch {
+        throw new Error('AI credential rotation could not be persisted');
+      }
+      credential.encryptedApiKey = rotated;
+      credential.encryptionKeyId = this.credentialKeyring.currentKeyId;
+    }
+    return { baseUrl: credential.baseUrl, apiKey: decrypted.plaintext };
   }
 }
 
@@ -1552,19 +1610,4 @@ function normalizeMediaType(value: string): MediaType | undefined {
 
 function fingerprint(value: string) {
   return createHash('sha256').update(value).digest('hex').slice(0, 12);
-}
-
-function encrypt(value: string, key: Buffer) {
-  const iv = randomBytes(12);
-  const cipher = createCipheriv('aes-256-gcm', key, iv);
-  const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return Buffer.concat([iv, tag, encrypted]).toString('base64url');
-}
-
-function decrypt(value: string, key: Buffer) {
-  const payload = Buffer.from(value, 'base64url');
-  const decipher = createDecipheriv('aes-256-gcm', key, payload.subarray(0, 12));
-  decipher.setAuthTag(payload.subarray(12, 28));
-  return Buffer.concat([decipher.update(payload.subarray(28)), decipher.final()]).toString('utf8');
 }

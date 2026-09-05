@@ -1,4 +1,8 @@
-import { createHash, createDecipheriv } from 'node:crypto';
+import { createHash } from 'node:crypto';
+import {
+  createCredentialEncryptionKeyringFromEnvironment,
+  type CredentialEncryptionKeyring,
+} from '@multimodal-canvas/credential-crypto';
 import { PrismaClient, type Prisma, type RunStatus as PrismaRunStatus } from '@prisma/client';
 import {
   providerJobSchema,
@@ -13,7 +17,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3
 
 /** Worker-side Prisma adapter. API creates the row; worker only reconciles lifecycle state. */
 export class WorkerPrismaRunPersistence implements RunPersistence {
-  private readonly encryptionKey?: Buffer;
+  private readonly credentialKeyring?: CredentialEncryptionKeyring;
 
   constructor(
     private readonly prisma: PrismaClient,
@@ -22,7 +26,10 @@ export class WorkerPrismaRunPersistence implements RunPersistence {
     // The API and Worker must share this secret. Never derive a process-local
     // fallback: queued snapshots must remain resumable across restarts.
     if (encryptionSecret?.trim()) {
-      this.encryptionKey = createHash('sha256').update(encryptionSecret).digest();
+      this.credentialKeyring = createCredentialEncryptionKeyringFromEnvironment({
+        ...process.env,
+        AI_CREDENTIAL_ENCRYPTION_KEY: encryptionSecret,
+      });
     }
   }
 
@@ -30,7 +37,11 @@ export class WorkerPrismaRunPersistence implements RunPersistence {
     await this.prisma.$disconnect();
   }
 
-  /** Resolve exactly the encrypted credential captured by a run snapshot. */
+  /**
+   * 按冻结 ID/版本解析凭据，缺少完整引用时返回 undefined。
+   * 重加密保留业务时间及版本，并通过 CAS 避免覆盖其他实例；解密、写回或并发
+   * 冲突均显式失败，不返回未完成持久化的凭据，也不回退到当前活动 Key。
+   */
   async getProviderCredentials(
     reference: WorkerCredentialReference,
   ): Promise<WorkerProviderCredentials | undefined> {
@@ -42,7 +53,7 @@ export class WorkerPrismaRunPersistence implements RunPersistence {
     ) {
       return undefined;
     }
-    if (!this.encryptionKey) {
+    if (!this.credentialKeyring) {
       throw new Error(
         'AI_CREDENTIAL_ENCRYPTION_KEY is required to resolve a run credential snapshot',
       );
@@ -53,13 +64,38 @@ export class WorkerPrismaRunPersistence implements RunPersistence {
         version: reference.credentialVersion,
         projectId: null,
       },
-      select: { baseUrl: true, encryptedApiKey: true },
+      select: { baseUrl: true, encryptedApiKey: true, encryptionKeyId: true, updatedAt: true },
     });
     if (!credential) return undefined;
-    return {
-      baseUrl: credential.baseUrl,
-      apiKey: decryptCredential(credential.encryptedApiKey, this.encryptionKey),
-    };
+    const decrypted = this.credentialKeyring.decrypt(
+      credential.encryptedApiKey,
+      credential.encryptionKeyId ?? undefined,
+    );
+    if (decrypted.needsReencryption) {
+      if (typeof this.prisma.aiCredential.update !== 'function') {
+        throw new Error('AI credential rotation requires a durable credential update method');
+      }
+      const rotated = this.credentialKeyring.encrypt(decrypted.plaintext);
+      try {
+        await this.prisma.aiCredential.update({
+          where: {
+            id: reference.credentialId,
+            version: reference.credentialVersion,
+            encryptedApiKey: credential.encryptedApiKey,
+            encryptionKeyId: credential.encryptionKeyId ?? null,
+            updatedAt: credential.updatedAt,
+          },
+          data: {
+            encryptedApiKey: rotated,
+            encryptionKeyId: this.credentialKeyring.currentKeyId,
+            updatedAt: credential.updatedAt,
+          },
+        });
+      } catch {
+        throw new Error('AI credential rotation could not be persisted');
+      }
+    }
+    return { baseUrl: credential.baseUrl, apiKey: decrypted.plaintext };
   }
 
   async ensureRun(input: {
@@ -283,21 +319,6 @@ export function createWorkerPrismaPersistence(): WorkerPrismaRunPersistence | un
 }
 
 export const createWorkerPersistenceFromEnvironment = createWorkerPrismaPersistence;
-
-function decryptCredential(value: string, key: Buffer): string {
-  try {
-    const payload = Buffer.from(value, 'base64url');
-    if (payload.length < 28) throw new Error('invalid encrypted credential payload');
-    const decipher = createDecipheriv('aes-256-gcm', key, payload.subarray(0, 12));
-    decipher.setAuthTag(payload.subarray(12, 28));
-    return Buffer.concat([decipher.update(payload.subarray(28)), decipher.final()]).toString(
-      'utf8',
-    );
-  } catch {
-    // Keep ciphertext and authentication details out of worker diagnostics.
-    throw new Error('stored AI credential could not be decrypted');
-  }
-}
 
 function toPrismaStatus(status: RunStatus): PrismaRunStatus {
   return status.toUpperCase() as PrismaRunStatus;

@@ -1,3 +1,5 @@
+import { createCipheriv, createHash, randomBytes } from 'node:crypto';
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Prisma } from '@prisma/client';
 
@@ -7,6 +9,15 @@ import {
   normalizeModelsPayload,
   PrismaAiSettingsStore,
 } from './settings';
+
+/** 生成历史单密钥 AES-GCM 载荷，覆盖未记录 encryptionKeyId 的旧快照迁移。 */
+function legacyCiphertext(plaintext: string, secret: string): string {
+  const key = createHash('sha256').update(secret).digest();
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+  return Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString('base64url');
+}
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -19,6 +30,84 @@ describe('Prisma AI settings encryption', () => {
     expect(() => new PrismaAiSettingsStore({} as never)).toThrow(
       'AI_CREDENTIAL_ENCRYPTION_KEY is required',
     );
+  });
+
+  it('writes a key-id with newly persisted credentials without exposing the encryption secret', async () => {
+    vi.stubEnv('AI_CREDENTIAL_ENCRYPTION_KEY_ID', 'current-2026');
+    const create = vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+      ...data,
+      id: '123e4567-e89b-12d3-a456-426614174099',
+      updatedAt: new Date('2026-09-05T00:00:00.000Z'),
+    }));
+    const prisma = {
+      aiCredential: { findFirst: vi.fn().mockResolvedValue(null), create },
+      modelCatalog: { findMany: vi.fn().mockResolvedValue([]) },
+    };
+    const store = new PrismaAiSettingsStore(prisma as never, 'current-encryption-secret');
+
+    await store.update({ baseUrl: 'https://rotation.example/v1', apiKey: 'provider-secret' });
+
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ encryptionKeyId: 'current-2026' }),
+      }),
+    );
+    expect(JSON.stringify(create.mock.calls)).not.toContain('provider-secret');
+  });
+
+  it('rehydrates a legacy Prisma credential through the configured historical key and persists current key-id', async () => {
+    vi.stubEnv('AI_CREDENTIAL_ENCRYPTION_KEY_ID', 'current-2026');
+    vi.stubEnv(
+      'AI_CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS',
+      JSON.stringify({ retired: 'retired-encryption-secret' }),
+    );
+    const legacy = new AiSettingsStore('retired-encryption-secret');
+    legacy.update({ baseUrl: 'https://legacy.example/v1', apiKey: 'legacy-provider-key' });
+    const persisted = legacy.getPersisted();
+    persisted.encryptedApiKey = legacyCiphertext(
+      'legacy-provider-key',
+      'retired-encryption-secret',
+    );
+    delete persisted.encryptionKeyId;
+    const update = vi.fn(async () => undefined);
+    const credential = {
+      id: '123e4567-e89b-12d3-a456-426614174098',
+      version: 1,
+      baseUrl: persisted.baseUrl,
+      encryptedApiKey: persisted.encryptedApiKey,
+      encryptionKeyId: null,
+      keyFingerprint: persisted.keyFingerprint,
+      defaultModels: null,
+      updatedAt: new Date('2026-09-05T00:00:00.000Z'),
+    };
+    const prisma = {
+      aiCredential: { findFirst: vi.fn().mockResolvedValue(credential), update },
+      modelCatalog: { findMany: vi.fn().mockResolvedValue([]) },
+    };
+    const store = new PrismaAiSettingsStore(prisma as never, 'current-encryption-secret');
+
+    await store.get();
+
+    await expect(
+      store.getProviderCredentials({ credentialId: credential.id, credentialVersion: 1 }),
+    ).resolves.toEqual({
+      baseUrl: credential.baseUrl,
+      apiKey: 'legacy-provider-key',
+    });
+    expect(update).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        id: credential.id,
+        version: 1,
+        encryptedApiKey: persisted.encryptedApiKey,
+        encryptionKeyId: null,
+        updatedAt: credential.updatedAt,
+      }),
+      data: expect.objectContaining({
+        encryptionKeyId: 'current-2026',
+        updatedAt: credential.updatedAt,
+      }),
+    });
+    expect(JSON.stringify(update.mock.calls)).not.toContain('legacy-provider-key');
   });
 });
 
@@ -692,6 +781,7 @@ describe('New API model catalog normalization', () => {
         version: 2,
         baseUrl: '',
         encryptedApiKey: '',
+        encryptionKeyId: null,
         keyFingerprint: '',
         defaultModels: Prisma.JsonNull,
         label: 'revoked',

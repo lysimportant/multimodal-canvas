@@ -149,6 +149,33 @@ describe('Worker production startup configuration', () => {
     });
   });
 
+  it('rejects non-loopback plaintext Redis and S3 endpoints in production', () => {
+    const issues = validateWorkerStartupConfiguration({
+      ...productionEnvironment,
+      REDIS_URL: 'redis://cache.example:6379/2',
+      S3_ENDPOINT: 'http://objects.example.com',
+    });
+
+    expect(issues).toContainEqual({
+      variable: 'REDIS_URL',
+      message: 'must use rediss: in production unless the endpoint is loopback',
+    });
+    expect(issues).toContainEqual({
+      variable: 'S3_ENDPOINT',
+      message: 'must use HTTPS in production unless the endpoint is loopback',
+    });
+  });
+
+  it('allows plaintext endpoints only for loopback sidecars', () => {
+    expect(
+      validateWorkerStartupConfiguration({
+        ...productionEnvironment,
+        REDIS_URL: 'redis://127.0.0.2:6379/2',
+        S3_ENDPOINT: 'http://localhost:9000',
+      }),
+    ).toEqual([]);
+  });
+
   it('allows the AWS SDK IAM role chain when no custom S3 endpoint is configured', () => {
     expect(
       validateWorkerStartupConfiguration({
@@ -158,6 +185,44 @@ describe('Worker production startup configuration', () => {
       }),
     ).toEqual([]);
   });
+
+  it('accepts a valid credential key rotation configuration', () => {
+    expect(
+      validateWorkerStartupConfiguration({
+        ...productionEnvironment,
+        AI_CREDENTIAL_ENCRYPTION_KEY_ID: 'current-2026',
+        AI_CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS: JSON.stringify({ 'retired-2025': 'secret' }),
+      }),
+    ).toEqual([]);
+  });
+
+  it.each([
+    [
+      'bad key',
+      undefined,
+      'AI_CREDENTIAL_ENCRYPTION_KEY_ID',
+      'must be a 1-64 character key identifier',
+    ],
+    [undefined, 'not-json', 'AI_CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS', 'must be a JSON object'],
+    [
+      'current',
+      JSON.stringify({ current: 'duplicate' }),
+      'AI_CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS',
+      'must not repeat AI_CREDENTIAL_ENCRYPTION_KEY_ID',
+    ],
+  ])(
+    'rejects invalid credential rotation configuration',
+    (keyId, previousKeys, variable, message) => {
+      const issues = validateWorkerStartupConfiguration({
+        ...productionEnvironment,
+        ...(keyId === undefined ? {} : { AI_CREDENTIAL_ENCRYPTION_KEY_ID: keyId }),
+        ...(previousKeys === undefined
+          ? {}
+          : { AI_CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS: previousKeys }),
+      });
+      expect(issues).toContainEqual({ variable, message });
+    },
+  );
 
   it('accepts explicit positive safe integer New API limits in production', () => {
     const issues = validateWorkerStartupConfiguration({

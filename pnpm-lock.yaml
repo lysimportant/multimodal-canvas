@@ -38,6 +38,9 @@ importers:
       '@fastify/multipart':
         specifier: ^9.2.1
         version: 9.4.0
+      '@multimodal-canvas/credential-crypto':
+        specifier: workspace:*
+        version: link:../../packages/credential-crypto
       '@multimodal-canvas/domain':
         specifier: workspace:*
         version: link:../../packages/domain
@@ -157,6 +160,9 @@ importers:
       '@aws-sdk/client-s3':
         specifier: 3.862.0
         version: 3.862.0
+      '@multimodal-canvas/credential-crypto':
+        specifier: workspace:*
+        version: link:../../packages/credential-crypto
       '@multimodal-canvas/domain':
         specifier: workspace:*
         version: link:../../packages/domain
@@ -182,6 +188,15 @@ importers:
       tsx:
         specifier: ^4.19.3
         version: 4.23.12
+      vitest:
+        specifier: ^3.0.8
+        version: 3.2.7(@types/node@22.20.1)(jiti@2.7.0)(jsdom@26.1.0)(lightningcss@1.32.0)(tsx@4.23.12)
+
+  packages/credential-crypto:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.13.10
+        version: 22.20.1
       vitest:
         specifier: ^3.0.8
         version: 3.2.7(@types/node@22.20.1)(jiti@2.7.0)(jsdom@26.1.0)(lightningcss@1.32.0)(tsx@4.23.12)

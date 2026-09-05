@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildApp } from './app';
 import { FileAiSettingsStore } from './file-ai-settings';
+import { CredentialEncryptionKeyring } from '@multimodal-canvas/credential-crypto';
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -46,6 +47,101 @@ function modelsResponse(id: string, mediaType: 'text' | 'image' | 'video'): Resp
 }
 
 describe('FileAiSettingsStore persistence', () => {
+  it('启动轮换必须写回全部历史密文，移除旧密钥后仍能恢复冻结版本', async () => {
+    await withStorageFixture(async ({ filePath, keyPath }) => {
+      const original = new FileAiSettingsStore({
+        filePath,
+        encryptionKeyFile: keyPath,
+        encryptionSecret: 'synthetic-old-secret',
+        credentialKeyring: new CredentialEncryptionKeyring({
+          currentKeyId: 'old',
+          currentSecret: 'synthetic-old-secret',
+        }),
+      });
+      await original.update({
+        baseUrl: 'https://rotation.example/v1',
+        apiKey: 'synthetic-key-one',
+      });
+      const firstReference = await original.getCredentialReference();
+      await original.update({
+        baseUrl: 'https://rotation.example/v1',
+        apiKey: 'synthetic-key-two',
+      });
+      const secondReference = await original.getCredentialReference();
+      await original.close();
+      const rotated = new FileAiSettingsStore({
+        filePath,
+        encryptionKeyFile: keyPath,
+        encryptionSecret: 'synthetic-new-secret',
+        credentialKeyring: new CredentialEncryptionKeyring({
+          currentKeyId: 'new',
+          currentSecret: 'synthetic-new-secret',
+          previousSecrets: { old: 'synthetic-old-secret' },
+        }),
+      });
+      await rotated.get();
+      const serialized = await readFile(filePath, 'utf8');
+      expect(serialized).not.toContain('mc:v2:old:');
+      expect(serialized).not.toContain('synthetic-key-one');
+      expect(serialized).not.toContain('synthetic-key-two');
+      await rotated.close();
+      const recovered = new FileAiSettingsStore({
+        filePath,
+        encryptionKeyFile: keyPath,
+        encryptionSecret: 'synthetic-new-secret',
+        credentialKeyring: new CredentialEncryptionKeyring({
+          currentKeyId: 'new',
+          currentSecret: 'synthetic-new-secret',
+        }),
+      });
+      await expect(recovered.getProviderCredentials(firstReference)).resolves.toMatchObject({
+        apiKey: 'synthetic-key-one',
+      });
+      await expect(recovered.getProviderCredentials(secondReference)).resolves.toMatchObject({
+        apiKey: 'synthetic-key-two',
+      });
+      expect(await recovered.getCredentialReference()).toEqual(secondReference);
+      await recovered.close();
+    });
+  });
+
+  it('轮换写回失败时拒绝启动并保留原始凭据文件', async () => {
+    await withStorageFixture(async ({ filePath, keyPath }) => {
+      const original = new FileAiSettingsStore({
+        filePath,
+        encryptionKeyFile: keyPath,
+        encryptionSecret: 'synthetic-old-secret',
+        credentialKeyring: new CredentialEncryptionKeyring({
+          currentKeyId: 'old',
+          currentSecret: 'synthetic-old-secret',
+        }),
+      });
+      await original.update({ baseUrl: 'https://rotation.example/v1', apiKey: 'synthetic-key' });
+      await original.close();
+      const before = await readFile(filePath, 'utf8');
+      const persistence = vi
+        .spyOn(FileAiSettingsStore.prototype as unknown as { persist(): Promise<void> }, 'persist')
+        .mockRejectedValueOnce(new Error('synthetic-write-failure'));
+      try {
+        const rotated = new FileAiSettingsStore({
+          filePath,
+          encryptionKeyFile: keyPath,
+          encryptionSecret: 'synthetic-new-secret',
+          credentialKeyring: new CredentialEncryptionKeyring({
+            currentKeyId: 'new',
+            currentSecret: 'synthetic-new-secret',
+            previousSecrets: { old: 'synthetic-old-secret' },
+          }),
+        });
+        await expect(rotated.get()).rejects.toThrow('cannot be decrypted');
+        expect(persistence).toHaveBeenCalledOnce();
+        expect(await readFile(filePath, 'utf8')).toBe(before);
+      } finally {
+        persistence.mockRestore();
+      }
+    });
+  });
+
   it('persists encrypted credentials across restarts without writing the API key into JSON', async () => {
     vi.stubEnv('AI_CREDENTIAL_ENCRYPTION_KEY', '');
     await withStorageFixture(async ({ filePath, keyPath }) => {

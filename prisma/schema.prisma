@@ -322,6 +322,8 @@ model AiCredential {
   label           String
   baseUrl         String
   encryptedApiKey String
+  /// 密文包装所用的部署密钥标识；旧 AES-GCM 行可为空，不包含密钥材料。
+  encryptionKeyId String?
   keyFingerprint  String
   version         Int      @default(1)
   defaultModels   Json?

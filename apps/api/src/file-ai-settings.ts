@@ -2,6 +2,10 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { access, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 
+import {
+  CredentialEncryptionKeyring,
+  createCredentialEncryptionKeyringFromEnvironment,
+} from '@multimodal-canvas/credential-crypto';
 import { mediaTypes, type MediaType, type ModelSelection } from '@multimodal-canvas/domain';
 
 import {
@@ -30,6 +34,8 @@ export type FileAiSettingsStoreOptions = AiSettingsStoreOptions & {
   filePath?: string;
   encryptionKeyFile?: string;
   encryptionSecret?: string;
+  /** 本地测试或受控恢复可注入历史密钥环；生产多实例应使用 Prisma 存储。 */
+  credentialKeyring?: CredentialEncryptionKeyring;
 };
 
 /** 文件内保存的单个不可变凭据版本；API Key 始终为 AES-GCM 密文。 */
@@ -61,10 +67,12 @@ export class FileAiSettingsStore implements AiSettingsStoreLike {
   private readonly filePath: string;
   private readonly encryptionKeyFile: string;
   private readonly requestedEncryptionSecret?: string;
+  private readonly requestedCredentialKeyring?: CredentialEncryptionKeyring;
   private readonly memoryOptions: AiSettingsStoreOptions;
   private readonly ready: Promise<void>;
   private memory?: AiSettingsStore;
   private encryptionSecret = '';
+  private credentialKeyring?: CredentialEncryptionKeyring;
   private activeCredential: CredentialReference = {};
   private credentials = new Map<string, PersistedCredential>();
   private modelCatalogs = new Map<string, ModelCatalogEntry[]>();
@@ -83,6 +91,7 @@ export class FileAiSettingsStore implements AiSettingsStoreLike {
     );
     this.requestedEncryptionSecret =
       options.encryptionSecret?.trim() || process.env.AI_CREDENTIAL_ENCRYPTION_KEY?.trim();
+    this.requestedCredentialKeyring = options.credentialKeyring;
     this.memoryOptions = {
       ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
       ...(options.onTestConnectionError
@@ -290,7 +299,16 @@ export class FileAiSettingsStore implements AiSettingsStoreLike {
 
   private async load(): Promise<void> {
     this.encryptionSecret = await this.resolveEncryptionSecret();
-    this.memory = new AiSettingsStore(this.encryptionSecret, this.memoryOptions);
+    this.credentialKeyring =
+      this.requestedCredentialKeyring ??
+      createCredentialEncryptionKeyringFromEnvironment({
+        ...process.env,
+        AI_CREDENTIAL_ENCRYPTION_KEY: this.encryptionSecret,
+      });
+    this.memory = new AiSettingsStore(this.encryptionSecret, {
+      ...this.memoryOptions,
+      credentialKeyring: this.credentialKeyring,
+    });
     try {
       const raw = await readFile(this.filePath, 'utf8');
       const parsed: unknown = JSON.parse(raw);
@@ -299,7 +317,7 @@ export class FileAiSettingsStore implements AiSettingsStoreLike {
       }
       try {
         this.restore(parsed);
-        this.validateStoredCredentials();
+        await this.validateStoredCredentials();
       } catch {
         throw new Error(
           `local AI credential storage cannot be decrypted with the configured encryption key: ${this.filePath}`,
@@ -414,18 +432,35 @@ export class FileAiSettingsStore implements AiSettingsStoreLike {
   }
 
   private credentialsFor(credential: PersistedCredential): ProviderCredentials | undefined {
-    const snapshot = new AiSettingsStore(this.encryptionSecret, this.memoryOptions);
+    const snapshot = new AiSettingsStore(this.encryptionSecret, {
+      ...this.memoryOptions,
+      credentialKeyring: this.requireKeyring(),
+    });
     snapshot.hydrate(
       {
         baseUrl: credential.baseUrl,
         encryptedApiKey: credential.encryptedApiKey,
+        ...(credential.encryptionKeyId ? { encryptionKeyId: credential.encryptionKeyId } : {}),
         keyFingerprint: credential.keyFingerprint,
         defaultModels: credential.defaultModels,
         updatedAt: credential.updatedAt,
       },
       { credentialId: credential.id, credentialVersion: credential.version },
     );
-    return snapshot.getProviderCredentials();
+    const providerCredentials = snapshot.getProviderCredentials();
+    const persisted = snapshot.getPersisted();
+    if (
+      providerCredentials &&
+      (persisted.encryptedApiKey !== credential.encryptedApiKey ||
+        persisted.encryptionKeyId !== credential.encryptionKeyId)
+    ) {
+      this.credentials.set(credential.id, {
+        ...credential,
+        encryptedApiKey: persisted.encryptedApiKey,
+        ...(persisted.encryptionKeyId ? { encryptionKeyId: persisted.encryptionKeyId } : {}),
+      });
+    }
+    return providerCredentials;
   }
 
   private snapshot(): PersistedFileAiSettingsStore {
@@ -456,7 +491,10 @@ export class FileAiSettingsStore implements AiSettingsStoreLike {
     );
     this.capabilityOverrides = structuredClone(snapshot.capabilityOverrides);
     this.activeCredential = { ...snapshot.activeCredential };
-    this.memory = new AiSettingsStore(this.encryptionSecret, this.memoryOptions);
+    this.memory = new AiSettingsStore(this.encryptionSecret, {
+      ...this.memoryOptions,
+      credentialKeyring: this.requireKeyring(),
+    });
     this.memory.hydrate(snapshot.activeSettings, this.activeCredential);
     for (const [credentialId, models] of this.modelCatalogs) {
       this.memory.replaceModels(models, credentialId);
@@ -470,11 +508,27 @@ export class FileAiSettingsStore implements AiSettingsStoreLike {
    * 不能只校验活动凭据，因为撤销后的历史版本仍可能被冻结任务引用；加密材料错误时
    * 必须在启动阶段失败，而不是让任务运行到一半才失败。
    */
-  private validateStoredCredentials(): void {
+  private async validateStoredCredentials(): Promise<void> {
+    let rotated = false;
     for (const credential of this.credentials.values()) {
+      const beforeCiphertext = credential.encryptedApiKey;
+      const beforeKeyId = credential.encryptionKeyId;
       if (!this.credentialsFor(credential)) {
         throw new Error('stored credential is not configured');
       }
+      const current = this.credentials.get(credential.id);
+      rotated ||=
+        current?.encryptedApiKey !== beforeCiphertext || current?.encryptionKeyId !== beforeKeyId;
+    }
+    if (rotated) {
+      const active = hasCredentialReference(this.activeCredential)
+        ? this.credentials.get(this.activeCredential.credentialId)
+        : undefined;
+      if (active) {
+        this.requireMemory().hydrate(active, this.activeCredential);
+      }
+      // 启动前等待写回，避免旧 key 被撤销后本地历史快照再次不可读。
+      await this.persist();
     }
   }
 
@@ -492,6 +546,14 @@ export class FileAiSettingsStore implements AiSettingsStoreLike {
   private requireMemory(): AiSettingsStore {
     if (!this.memory) throw new Error('local AI settings storage has not finished initializing');
     return this.memory;
+  }
+
+  /** 返回已在初始化阶段确定的密钥环，避免存储恢复时悄悄生成不同的临时密钥。 */
+  private requireKeyring(): CredentialEncryptionKeyring {
+    if (!this.credentialKeyring) {
+      throw new Error('local AI credential keyring has not finished initializing');
+    }
+    return this.credentialKeyring;
   }
 
   private enqueueWrite<T>(operation: () => Promise<T>): Promise<T> {
@@ -524,6 +586,7 @@ function samePersistedSettings(left: PersistedAiSettings, right: PersistedAiSett
   return (
     left.baseUrl === right.baseUrl &&
     left.encryptedApiKey === right.encryptedApiKey &&
+    left.encryptionKeyId === right.encryptionKeyId &&
     left.keyFingerprint === right.keyFingerprint &&
     sameDefaultModels(left.defaultModels, right.defaultModels)
   );
@@ -648,6 +711,8 @@ function isPersistedAiSettings(value: unknown): value is PersistedAiSettings {
     isRecord(value) &&
     typeof value.baseUrl === 'string' &&
     typeof value.encryptedApiKey === 'string' &&
+    (value.encryptionKeyId === undefined ||
+      (typeof value.encryptionKeyId === 'string' && value.encryptionKeyId.trim().length > 0)) &&
     typeof value.keyFingerprint === 'string' &&
     isDefaultModels(value.defaultModels) &&
     typeof value.updatedAt === 'string' &&

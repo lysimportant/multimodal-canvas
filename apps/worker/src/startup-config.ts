@@ -5,6 +5,8 @@ export type StartupConfigurationIssue = {
   message: string;
 };
 
+const ENCRYPTION_KEY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
 const MAX_RESULT_ASSET_BYTES = 50 * 1024 * 1024;
 
 export class StartupConfigurationError extends Error {
@@ -36,6 +38,7 @@ export function validateWorkerStartupConfiguration(
   requireValue(environment, 'S3_BUCKET', issues);
   requireValue(environment, 'S3_REGION', issues);
   const encryptionSecret = environment.AI_CREDENTIAL_ENCRYPTION_KEY?.trim();
+  validateCredentialEncryptionRotationConfiguration(environment, issues);
   // 持久化 Worker 从数据库按快照读取凭据；无完整持久化边界时才允许静态回退。
   const hasDurableCredentialStore = Boolean(databaseUrl && encryptionSecret);
   const newApiBaseUrl = hasDurableCredentialStore
@@ -47,7 +50,12 @@ export function validateWorkerStartupConfiguration(
   requireValue(environment, 'AI_CREDENTIAL_ENCRYPTION_KEY', issues);
 
   if (databaseUrl) validateUrlProtocol(databaseUrl, 'DATABASE_URL', ['postgresql:'], issues);
-  if (redisUrl) validateUrlProtocol(redisUrl, 'REDIS_URL', ['redis:', 'rediss:'], issues);
+  if (redisUrl) {
+    validateUrlProtocol(redisUrl, 'REDIS_URL', ['redis:', 'rediss:'], issues, {
+      requireTlsForNonLoopback: true,
+      secureProtocols: ['rediss:'],
+    });
+  }
   if (newApiBaseUrl) {
     validateUrlProtocol(newApiBaseUrl, 'NEW_API_BASE_URL', ['https:'], issues, {
       rejectUserinfo: true,
@@ -57,7 +65,11 @@ export function validateWorkerStartupConfiguration(
   }
 
   const s3Endpoint = environment.S3_ENDPOINT?.trim();
-  if (s3Endpoint) validateUrlProtocol(s3Endpoint, 'S3_ENDPOINT', ['http:', 'https:'], issues);
+  if (s3Endpoint) {
+    validateUrlProtocol(s3Endpoint, 'S3_ENDPOINT', ['http:', 'https:'], issues, {
+      requireTlsForNonLoopback: true,
+    });
+  }
   validateS3CredentialPair(environment, issues);
 
   if (environment.WORKER_PROVIDER !== 'newapi') {
@@ -124,6 +136,8 @@ function validateUrlProtocol(
     rejectUserinfo?: boolean;
     rejectQuery?: boolean;
     rejectHash?: boolean;
+    requireTlsForNonLoopback?: boolean;
+    secureProtocols?: readonly string[];
   } = {},
 ): void {
   try {
@@ -142,9 +156,42 @@ function validateUrlProtocol(
     if (restrictions.rejectHash && url.hash) {
       issues.push({ variable, message: 'must not include a fragment' });
     }
+    const secureProtocols = restrictions.secureProtocols ?? ['https:'];
+    if (
+      restrictions.requireTlsForNonLoopback &&
+      protocols.includes(url.protocol) &&
+      url.hostname &&
+      !secureProtocols.includes(url.protocol) &&
+      !isLoopbackHostname(url.hostname)
+    ) {
+      const protocolLabel = secureProtocols
+        .map((protocol) => (protocol === 'https:' ? 'HTTPS' : protocol))
+        .join(' or ');
+      issues.push({
+        variable,
+        message: `must use ${protocolLabel} in production unless the endpoint is loopback`,
+      });
+    }
   } catch {
     issues.push({ variable, message: 'must be a valid URL' });
   }
+}
+
+/** 仅允许回环地址使用明文本地依赖，避免把远程凭据经由 HTTP 传输。 */
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '');
+  if (normalized === 'localhost' || normalized === '::1') return true;
+  const octets = normalized.split('.');
+  return (
+    octets.length === 4 &&
+    octets.every(
+      (octet) => /^\d{1,3}$/.test(octet) && Number(octet) >= 0 && Number(octet) <= 255,
+    ) &&
+    octets[0] === '127'
+  );
 }
 
 function validateS3CredentialPair(
@@ -170,6 +217,65 @@ function validateS3CredentialPair(
     variable: 'S3_ACCESS_KEY/S3_SECRET_KEY',
     message: 'must be configured together',
   });
+}
+
+/** 校验 API/Worker 共用的凭据密钥轮换配置，避免 Worker 使用与 API 不兼容的历史 keyring。 */
+function validateCredentialEncryptionRotationConfiguration(
+  environment: StartupEnvironment,
+  issues: StartupConfigurationIssue[],
+): void {
+  const keyId = environment.AI_CREDENTIAL_ENCRYPTION_KEY_ID;
+  if (keyId !== undefined && !ENCRYPTION_KEY_ID_PATTERN.test(keyId.trim())) {
+    issues.push({
+      variable: 'AI_CREDENTIAL_ENCRYPTION_KEY_ID',
+      message: 'must be a 1-64 character key identifier',
+    });
+  }
+  const previous = environment.AI_CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS;
+  if (previous === undefined || !previous.trim()) return;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(previous);
+  } catch {
+    issues.push({
+      variable: 'AI_CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS',
+      message: 'must be a JSON object',
+    });
+    return;
+  }
+  if (!isStringRecord(parsed)) {
+    issues.push({
+      variable: 'AI_CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS',
+      message: 'must be a JSON object with non-empty string values',
+    });
+    return;
+  }
+  const normalizedCurrentKeyId = keyId?.trim() || 'default';
+  for (const [previousKeyId, secret] of Object.entries(parsed)) {
+    if (!ENCRYPTION_KEY_ID_PATTERN.test(previousKeyId) || !secret.trim()) {
+      issues.push({
+        variable: 'AI_CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS',
+        message: 'must use valid key identifiers and non-empty string values',
+      });
+      return;
+    }
+    if (previousKeyId === normalizedCurrentKeyId) {
+      issues.push({
+        variable: 'AI_CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS',
+        message: 'must not repeat AI_CREDENTIAL_ENCRYPTION_KEY_ID',
+      });
+      return;
+    }
+  }
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.values(value).every((entry) => typeof entry === 'string')
+  );
 }
 
 function validatePositiveSafeInteger(

@@ -1,5 +1,5 @@
 import { createCipheriv, createHash, randomBytes } from 'node:crypto';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   databaseRunId,
@@ -11,6 +11,8 @@ import {
 const runId = 'run_worker_usage_1';
 const databaseId = databaseRunId(runId);
 const userId = '123e4567-e89b-12d3-a456-426614174001';
+
+afterEach(() => vi.unstubAllEnvs());
 
 function createPersistence() {
   const prisma = {
@@ -392,7 +394,8 @@ describe('WorkerPrismaRunPersistence credential snapshots', () => {
       baseUrl: 'https://historical.example/v1',
       encryptedApiKey: encrypt('historical-test-key'),
     }));
-    const prisma = { aiCredential: { findFirst } };
+    const update = vi.fn(async () => undefined);
+    const prisma = { aiCredential: { findFirst, update } };
     const persistence = new WorkerPrismaRunPersistence(prisma as never, encryptionSecret);
 
     await expect(
@@ -403,7 +406,85 @@ describe('WorkerPrismaRunPersistence credential snapshots', () => {
     });
     expect(findFirst).toHaveBeenCalledWith({
       where: { id: credentialId, version: 7, projectId: null },
-      select: { baseUrl: true, encryptedApiKey: true },
+      select: { baseUrl: true, encryptedApiKey: true, encryptionKeyId: true, updatedAt: true },
+    });
+    expect(update).toHaveBeenCalledWith({
+      where: expect.objectContaining({ id: credentialId, version: 7 }),
+      data: expect.objectContaining({ encryptionKeyId: 'default' }),
+    });
+  });
+
+  it('re-encrypts a legacy snapshot with the current deployment key before returning it', async () => {
+    vi.stubEnv('AI_CREDENTIAL_ENCRYPTION_KEY_ID', 'current');
+    vi.stubEnv(
+      'AI_CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS',
+      JSON.stringify({ retired: encryptionSecret }),
+    );
+    const findFirst = vi.fn(async () => ({
+      baseUrl: 'https://historical.example/v1',
+      encryptedApiKey: encrypt('historical-test-key'),
+      encryptionKeyId: null,
+    }));
+    const update = vi.fn(async () => undefined);
+    const persistence = new WorkerPrismaRunPersistence(
+      { aiCredential: { findFirst, update } } as never,
+      'current-encryption-secret',
+    );
+
+    await expect(
+      persistence.getProviderCredentials({ credentialId, credentialVersion: 7 }),
+    ).resolves.toEqual({
+      baseUrl: 'https://historical.example/v1',
+      apiKey: 'historical-test-key',
+    });
+    expect(update).toHaveBeenCalledWith({
+      where: expect.objectContaining({ id: credentialId, version: 7 }),
+      data: expect.objectContaining({ encryptionKeyId: 'current' }),
+    });
+    expect(JSON.stringify(update.mock.calls)).not.toContain('historical-test-key');
+  });
+
+  it('fails closed when legacy credential rotation cannot be persisted', async () => {
+    const findFirst = vi.fn(async () => ({
+      baseUrl: 'https://historical.example/v1',
+      encryptedApiKey: encrypt('historical-test-key'),
+    }));
+    const persistence = new WorkerPrismaRunPersistence(
+      { aiCredential: { findFirst } } as never,
+      encryptionSecret,
+    );
+
+    await expect(
+      persistence.getProviderCredentials({ credentialId, credentialVersion: 7 }),
+    ).rejects.toThrow('AI credential rotation requires a durable credential update method');
+  });
+
+  it('并发写回被拒绝时不返回凭据且不泄露底层诊断', async () => {
+    const updatedAt = new Date('2026-09-01T00:00:00.000Z');
+    const ciphertext = encrypt('synthetic-rotation-key');
+    const findFirst = vi.fn(async () => ({
+      baseUrl: 'https://historical.example/v1',
+      encryptedApiKey: ciphertext,
+      encryptionKeyId: null,
+      updatedAt,
+    }));
+    const update = vi.fn().mockRejectedValue(new Error(`sensitive diagnostic ${ciphertext}`));
+    const persistence = new WorkerPrismaRunPersistence(
+      { aiCredential: { findFirst, update } } as never,
+      encryptionSecret,
+    );
+    await expect(
+      persistence.getProviderCredentials({ credentialId, credentialVersion: 7 }),
+    ).rejects.toThrow('AI credential rotation could not be persisted');
+    expect(update).toHaveBeenCalledWith({
+      where: {
+        id: credentialId,
+        version: 7,
+        encryptedApiKey: ciphertext,
+        encryptionKeyId: null,
+        updatedAt,
+      },
+      data: { encryptedApiKey: expect.any(String), encryptionKeyId: 'default', updatedAt },
     });
   });
 

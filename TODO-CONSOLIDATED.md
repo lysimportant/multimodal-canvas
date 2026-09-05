@@ -8,6 +8,8 @@
 
 ## 状态与范围
 
+**总体状态：P0 的 3 项、P1 的 6 项均尚未整体完成。子项测试通过、工作区已有代码或新增提交，都不能替代整项验收。**
+
 - `[~]` 已有实现或部分证据，仍需外部环境、真实 Provider 或生产验收。
 - `[!]` 依赖外部契约、凭据、权限或部署环境，当前无法仅靠本地代码完成。
 - `[>]` 明确暂缓，排在当前 MVP 和生产基础验收之后。
@@ -26,6 +28,9 @@
 - 资源提及编辑器、`@` 搜索、确认/取消、卡片、重复引用、撤销/重做和 PC Web E2E。
 - `PromptDocument`、资源 ID/版本冻结、权限/MIME/大小校验、导入导出和 Mock 闭环。
 - New API Chat Completions 的 `text`、`image_url`、`input_audio`、`video_url` 内容块映射；提及顺序和重复引用保持不变。
+- 共享凭据密钥环已落地：`mc:v2:<key-id>` 密文、历史 key-id/旧 AES-GCM fallback、自动重加密和无法持久化轮换时 fail-closed；API 文件存储、Prisma 存储和 Worker 共用同一实现。
+- `AiCredential.encryptionKeyId` 及迁移 `0014_ai_credential_encryption_key_id` 已加入；新旧密钥恢复、重加密和敏感信息不落日志均有测试证据。
+- API/Worker 生产启动校验已覆盖 Redis/S3 TLS、CORS、端口、媒体工具和凭据密钥轮换配置；配置错误会在接受请求前显式失败。
 - 本地价格/额度阻断已移除；目录价格只作为可选估算元数据，供应商费用只按返回值记录。
 - 提交、类型检查、构建、格式检查、单元测试和 Mock E2E 的当前证据见“验证基线”章节。
 
@@ -44,12 +49,11 @@
 
 ### `[~]` P0-PROD-STARTUP-02 生产启动与安全边界
 
-本地缺配置 fail-closed、认证、限流、媒体工具配置和凭据文件恢复已有测试；仍未完成：
+本地缺配置 fail-closed、认证、限流、媒体工具配置、凭据文件恢复和密钥轮换已有测试；凭据加密 key-id、历史密钥 fallback、旧 AES-GCM 迁移和轮换无法持久化时 fail-closed 已完成，不再作为阻塞项。仍未完成：
 
 - 真实生产模式启动、TLS/反向代理和入口安全配置演练。
-- 跨实例全局限流、跨进程历史凭据恢复和密钥轮换后的旧快照恢复。
+- 跨实例全局限流、生产环境历史凭据恢复和密钥轮换后的跨实例快照演练。
 - 部署环境的告警、外部投递失败隔离和生产配置回滚演练。
-- 凭据加密 key-id、旧密钥 fallback 和重加密迁移。
 
 本轮限流修复已完成本地验收：生产 Redis 故障不得退回进程内额度，登录、注册、普通 API 和 SSE 在受限入口返回 `503/rate_limit_unavailable` 和 `Retry-After`；开发环境保留有界内存回退。真实 Redis 独立进程共享窗口、进程重建和前缀隔离均已验证；生产部署演练仍未完成，证据见下方检查点。
 
@@ -68,6 +72,8 @@ FFmpeg/ffprobe 的本地真实二进制处理和注入式测试已有证据；�
 ## P1：真实 Provider、媒体覆盖与多 Key
 
 ### `[!]` P1-VIDEO-CONTRACT-04 New API 视频完整契约
+
+工作区中的普通请求、视频轮询、受保护下载取消及 `platformJobId` 保留改动仍待独立审核提交；现有单元测试不能证明真实 Provider 已验收。
 
 已有通用 Base URL 下的创建、查询、受保护 content 下载、本地取消/重试、Webhook/HMAC 框架和状态归一化；仍依赖供应商确认：
 
@@ -89,13 +95,15 @@ FFmpeg/ffprobe 的本地真实二进制处理和注入式测试已有证据；�
 
 ### `[~]` P1-MULTIKEY-ROTATION-06 多 Key 轮换与历史恢复
 
-同一 DAG 中多凭据冻结、单进程文件存储重启和重复幂等已有测试；仍未完成：
+同一 DAG 中多凭据冻结、单进程文件存储重启、重复幂等、当前/历史 key-id 解密、旧 AES-GCM 迁移和轮换持久化失败保护已有测试；仍未完成：
 
 - 真实密钥轮换、撤销后的排队任务策略和凭据版本恢复。
 - 多进程/多实例恢复、生产队列恢复和跨实例历史快照读取。
 - 供应商侧多 Key 请求和 `usage` 隔离行为的真实验证。
 
 历史运行只能使用快照冻结的 `credentialId/version`；日志、导出和诊断不得包含原始 Key。
+
+2026-09-05 补充：文件轮换未写回、Prisma 轮换错误更新活动排序、并发旧写覆盖新密文已修复。独立 API/Worker 子进程验证了历史恢复、撤销墓碑和移除旧密钥；真实数据库 CAS 竞争验证通过。这些是隔离持久化证据，不等于供应商多 Key、真实队列任务或生产部署验收；不支持不同 current key-id 实例同时进行自动重加密，受控轮换和回滚边界见 `docs/credential-rotation.md`。
 
 ### `[~]` P1-PROVIDER-ROLES-07 统一端口角色的真实映射
 
@@ -166,6 +174,18 @@ Web MVP 和生产链路稳定后再接入 Tauri 桌面壳。
 5. Mock 和静态代码可以证明应用内部闭环，不能证明供应商实际读取媒体或生产环境已经验收。
 
 ## 验证基线
+
+### 2026-09-05 P0/P1 凭据恢复执行检查点
+
+- 恢复起点：`main` / `424e109`，Node `v24.12.0`、pnpm `11.19.0`、Docker `29.7.2`。接手的凭据轮换代码尚未提交；复查发现文件轮换不写回和数据库轮换可破坏撤销及并发安全，不能沿用“已有实现即完成”的判断。
+- 主要修复：文件启动重加密写回前不放行；Prisma API/Worker 写回保留 `id/version/updatedAt`，使用旧密文/key-id/版本/时间 CAS，失败不返回凭据或底层敏感诊断；拒绝重复历史 key-id，补充 GCM 篡改和 key-id 不匹配测试。
+- 依赖和迁移：共享 credential-crypto workspace 包、API/Worker 依赖、锁文件和既有 `0014_ai_credential_encryption_key_id` 一并验收；`pnpm install --frozen-lockfile` 通过，无新增第三方版本。先备份再迁移，写入 v2 后不能直接回滚到旧解密器，细则见 `docs/credential-rotation.md`。
+- 隔离设施：全新 Compose 项目 `mc-integration-1788571283145`，PostgreSQL/Redis/MinIO 端口 `18432/18379/18900`，与现有开发容器分离；合成凭据仅用于该测试栈。迁移 deploy 成功，schema diff 为零；真实 Prisma/Redis/MinIO 集成 20 passed，包含独立 API/Worker 进程、撤销状态保持和数据库 CAS 竞争。
+- 真实入口冒烟：`NODE_ENV=production` 的 API 与 Worker 启动，健康检查和 `401/200` 授权边界通过；不调用 Provider、未启用媒体工具，不包含 TLS 代理或生产部署验收。
+- 当前验证：低并发强制全量单测通过，API 402 passed / 11 skipped / 2 个既有 TODO，Credential Crypto 7 passed；其他包结果见 `.data/p0p1-all-tests.log`。普通测试跳过的数据库场景另行执行上述 20 项集成；剩余跳过不可算完成。最终质量与界面验证见本轮提交说明。
+- 最终验证：`pnpm exec turbo run lint typecheck build --concurrency=1`、`pnpm format:check` 和 diff 检查通过；桌面 Web Mock E2E 20 passed，追加 Worker 写回失败回归后定向 16 passed。从暂存区导出的独立源码构建通过 API/Worker 类型检查、85 项定向测试和 20 项真实集成，排除对未提交 Provider 代码的依赖。
+- 归档与恢复：本检查点随 `v0.13.12` 对应提交归档，提交 ID 可通过 `git rev-list -n 1 v0.13.12` 查询；原有 Provider 取消两文件保留未提交。仅停止本轮新建的隔离 Compose 项目并保留测试卷，不操作既有开发服务；启动冒烟的 API/Worker 子进程已退出。
+- 下一步仍需编码/验证：运行中实例的设置/撤销缓存同步、冻结媒体跨 API/Worker 恢复、图片音频归档与参考角色映射、生产媒体工具和可观测性故障隔离。外部依赖另列：真实 Provider 契约/隔离凭据/请求授权、TLS 部署、外部追踪与 CI Runner。P0/P1 保持未完成，不因本轮修复改为 `[x]`。
 
 ### 2026-09-05 P0-PROD-STARTUP-02 执行检查点
 

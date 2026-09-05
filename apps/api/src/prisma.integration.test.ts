@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { cp, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -8,7 +8,8 @@ import { join } from 'node:path';
 
 import { Prisma, PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { CredentialEncryptionKeyring } from '@multimodal-canvas/credential-crypto';
 
 import { FileSystemBlobStore, PrismaAssetStore, S3BlobStore } from './assets';
 import { PrismaProjectStore } from './projects';
@@ -175,6 +176,7 @@ const postLifecycleMigrations = [
   '0011_webhook_event_lifecycle',
   '0012_capability_override_credential',
   '0013_fix_capability_override_index_name',
+  '0014_ai_credential_encryption_key_id',
 ] as const;
 
 describe('integration configuration safety', () => {
@@ -247,6 +249,203 @@ describe('integration configuration safety', () => {
     expect(migrationSql).toContain(
       'CREATE INDEX "project_model_defaults_credentialId_idx" ON "public"."project_model_defaults"("credentialId")',
     );
+  });
+});
+
+integrationDescribe('凭据轮换与跨进程恢复（隔离 PostgreSQL）', () => {
+  /** 本组专用随机 schema，只包含合成凭据，不操作主测试或生产表。 */
+  const schemaName = `mc_rotation_test_${randomBytes(12).toString('hex')}`;
+  let prisma: PrismaClient;
+  let scopedDatabaseUrl = '';
+
+  beforeAll(async () => {
+    scopedDatabaseUrl = withSchema(testDatabaseUrl!, schemaName);
+    await runPnpm(
+      ['exec', 'prisma', 'db', 'push', '--schema', prismaSchemaPath, '--skip-generate'],
+      scopedDatabaseUrl,
+    );
+    prisma = new PrismaClient({ datasources: { db: { url: scopedDatabaseUrl } } });
+  });
+
+  afterAll(async () => {
+    if (prisma) {
+      try {
+        await prisma.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
+      } finally {
+        await prisma.$disconnect();
+      }
+    }
+  });
+
+  it.each([
+    { role: 'api', revoked: false },
+    { role: 'worker', revoked: false },
+    { role: 'api', revoked: true },
+    { role: 'worker', revoked: true },
+  ])(
+    '$role 轮换历史凭据不改变活动或撤销状态（revoked=$revoked）',
+    async ({ role, revoked }) => {
+      await prisma.aiCredential.deleteMany();
+      const oldKeyring = new CredentialEncryptionKeyring({
+        currentKeyId: 'old',
+        currentSecret: 'synthetic-old-secret',
+      });
+      const newKeyring = new CredentialEncryptionKeyring({
+        currentKeyId: 'new',
+        currentSecret: 'synthetic-new-secret',
+      });
+      const historicalTime = new Date(Date.now() - 60_000);
+      const historical = await prisma.aiCredential.create({
+        data: {
+          label: 'historical',
+          baseUrl: 'https://historical.example/v1',
+          encryptedApiKey: oldKeyring.encrypt('synthetic-historical-key'),
+          encryptionKeyId: 'old',
+          keyFingerprint: 'synthetic-history',
+          version: 1,
+          updatedAt: historicalTime,
+        },
+      });
+      const active = await prisma.aiCredential.create({
+        data: {
+          label: revoked ? 'revoked' : 'active',
+          baseUrl: revoked ? '' : 'https://active.example/v1',
+          encryptedApiKey: revoked ? '' : newKeyring.encrypt('synthetic-active-key'),
+          encryptionKeyId: revoked ? null : 'new',
+          keyFingerprint: revoked ? '' : 'synthetic-active',
+          version: 2,
+          updatedAt: new Date(Date.now() - 30_000),
+        },
+      });
+      const childEnvironment = {
+        ...process.env,
+        TEST_DATABASE_URL: scopedDatabaseUrl,
+        TEST_CREDENTIAL_ID: historical.id,
+        TEST_CREDENTIAL_VERSION: '1',
+        AI_CREDENTIAL_ENCRYPTION_KEY: 'synthetic-new-secret',
+        AI_CREDENTIAL_ENCRYPTION_KEY_ID: 'new',
+        AI_CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS: JSON.stringify({ old: 'synthetic-old-secret' }),
+      };
+      const fixture = fileURLToPath(
+        new URL('./fixtures/credential-recovery-process.ts', import.meta.url),
+      );
+      const first = await execFileAsync(process.execPath, ['--import', 'tsx', fixture], {
+        cwd: fileURLToPath(new URL('../', import.meta.url)),
+        env: { ...childEnvironment, TEST_CREDENTIAL_ROLE: role },
+        timeout: 15_000,
+        killSignal: 'SIGKILL',
+        windowsHide: true,
+      });
+      const second = await execFileAsync(process.execPath, ['--import', 'tsx', fixture], {
+        cwd: fileURLToPath(new URL('../', import.meta.url)),
+        env: {
+          ...childEnvironment,
+          TEST_CREDENTIAL_ROLE: 'api',
+          AI_CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS: '{}',
+        },
+        timeout: 15_000,
+        killSignal: 'SIGKILL',
+        windowsHide: true,
+      });
+      const recovered = JSON.parse(second.stdout);
+      expect(JSON.parse(first.stdout).pid).not.toBe(recovered.pid);
+      expect(recovered).toMatchObject({
+        digest: createHash('sha256').update('synthetic-historical-key').digest('hex'),
+        configured: !revoked,
+        activeReference: revoked ? {} : { credentialId: active.id, credentialVersion: 2 },
+      });
+      const stored = await prisma.aiCredential.findUniqueOrThrow({ where: { id: historical.id } });
+      expect(stored).toMatchObject({
+        version: 1,
+        encryptionKeyId: 'new',
+        updatedAt: historicalTime,
+      });
+      expect(`${first.stdout}${first.stderr}${second.stdout}${second.stderr}`).not.toContain(
+        'synthetic-historical-key',
+      );
+    },
+    30_000,
+  );
+
+  it('真实数据库 CAS 拒绝迟到实例覆盖新密文且不改变历史版本', async () => {
+    await prisma.aiCredential.deleteMany();
+    const oldKeyring = new CredentialEncryptionKeyring({
+      currentKeyId: 'old',
+      currentSecret: 'synthetic-old-secret',
+    });
+    const row = await prisma.aiCredential.create({
+      data: {
+        label: 'race',
+        baseUrl: 'https://race.example/v1',
+        encryptedApiKey: oldKeyring.encrypt('synthetic-race-key'),
+        encryptionKeyId: 'old',
+        keyFingerprint: 'synthetic-race',
+        version: 7,
+      },
+    });
+    /** 两个屏障固定“旧实例先读，新实例先写”的竞争顺序。 */
+    let releaseWrite!: () => void;
+    let signalRead!: () => void;
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    const readSignal = new Promise<void>((resolve) => {
+      signalRead = resolve;
+    });
+    const delayed = prisma.$extends({
+      query: {
+        aiCredential: {
+          async update({ args, query }) {
+            signalRead();
+            await writeGate;
+            return query(args);
+          },
+        },
+      },
+    });
+    vi.stubEnv(
+      'AI_CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS',
+      JSON.stringify({ old: 'synthetic-old-secret' }),
+    );
+    vi.stubEnv('AI_CREDENTIAL_ENCRYPTION_KEY_ID', 'middle');
+    const middle = new PrismaAiSettingsStore(
+      delayed as unknown as PrismaClient,
+      'synthetic-middle-secret',
+    );
+    const failedRead = expect(middle.get()).rejects.toThrow(
+      'AI credential rotation could not be persisted',
+    );
+    try {
+      await Promise.race([
+        readSignal,
+        failedRead.then(() => {
+          throw new Error('轮换未进入预期写回屏障');
+        }),
+      ]);
+      vi.stubEnv('AI_CREDENTIAL_ENCRYPTION_KEY_ID', 'latest');
+      const latest = new PrismaAiSettingsStore(prisma, 'synthetic-latest-secret');
+      await latest.get();
+      releaseWrite();
+      await failedRead;
+      const stored = await prisma.aiCredential.findUniqueOrThrow({ where: { id: row.id } });
+      expect(stored).toMatchObject({
+        encryptionKeyId: 'latest',
+        version: 7,
+        updatedAt: row.updatedAt,
+      });
+      const latestKeyring = new CredentialEncryptionKeyring({
+        currentKeyId: 'latest',
+        currentSecret: 'synthetic-latest-secret',
+      });
+      expect(latestKeyring.decrypt(stored.encryptedApiKey).plaintext).toBe('synthetic-race-key');
+    } finally {
+      releaseWrite();
+      try {
+        await failedRead;
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    }
   });
 });
 
