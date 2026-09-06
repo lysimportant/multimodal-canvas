@@ -52,10 +52,18 @@ export function useModelCatalogQuery(credentialId?: string) {
   });
 }
 
-export function useCredentialModelCatalogQueries(credentialIds: readonly string[]) {
+/**
+ * 按凭据读取模型目录；未启用时返回空查询，避免普通用户触发平台模型接口。
+ * @param credentialIds 需要读取的凭据 ID；空列表代表当前激活凭据。
+ * @param enabled 是否允许发起平台模型目录请求。
+ */
+export function useCredentialModelCatalogQueries(credentialIds: readonly string[], enabled = true) {
   const uniqueCredentialIds = [...new Set(credentialIds.filter(Boolean))];
-  const scopes: Array<string | undefined> =
-    uniqueCredentialIds.length > 0 ? uniqueCredentialIds : [undefined];
+  const scopes: Array<string | undefined> = !enabled
+    ? []
+    : uniqueCredentialIds.length > 0
+      ? uniqueCredentialIds
+      : [undefined];
   return useQueries({
     queries: scopes.map((credentialId) => ({
       queryKey: modelCatalogQueryKeyFor(credentialId),

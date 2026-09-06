@@ -281,6 +281,36 @@ describe('SettingsPanel', () => {
     );
   });
 
+  it('普通用户打开居中的项目设置对话框，只显示外观设置', async () => {
+    persistAuthSession({
+      accessToken: 'synthetic-ordinary-settings-token',
+      tokenType: 'Bearer',
+      expiresIn: 900,
+      expiresAt: new Date(Date.now() + 900_000).toISOString(),
+      user: {
+        id: 'ordinary-settings-user',
+        email: 'ordinary-settings@example.com',
+        role: 'user',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+    });
+    const actor = userEvent.setup();
+    render(createElement(App));
+
+    await actor.click(await screen.findByRole('button', { name: '打开设置' }));
+    const dialog = await screen.findByRole('dialog', { name: '项目设置' });
+    expect(dialog).toHaveClass('settings-dialog-panel');
+    expect(within(dialog).getByLabelText('界面主题')).toBeVisible();
+    expect(within(dialog).getByLabelText('画布背景')).toBeVisible();
+    expect(within(dialog).queryByLabelText('API Key')).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/v1/settings/ai'))).toBe(
+      false,
+    );
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/v1/models'))).toBe(
+      false,
+    );
+  });
+
   it('saves connection settings and reports a successful connection test', async () => {
     const { dialog, user } = await openSettings();
     const baseUrl = within(dialog).getByLabelText('New API Base URL');

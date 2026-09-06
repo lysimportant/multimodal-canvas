@@ -23,9 +23,11 @@ import {
 } from '../query/credentials';
 import { useCredentialModelCatalogQueries, useRefreshModelCatalog } from '../query/models';
 import { isImeKeyboardEvent, useImeDraft } from '../ime';
+import { useWorkspacePreferences, type CanvasTheme } from '../state/workspace-preferences';
 import {
   API_BASE_URL,
   mediaLabels,
+  type CanvasBackground,
   type AiSettings,
   type ModelEntry,
   type ModelDefaults,
@@ -83,18 +85,44 @@ function activeCredentialId(credentials: AiCredentialSummary[]) {
   return credentials.find((credential) => credential.active)?.id ?? '';
 }
 
+const themeOptions: Array<{ value: CanvasTheme; label: string }> = [
+  { value: 'eye-care', label: '护眼' },
+  { value: 'light', label: '明亮' },
+  { value: 'dark', label: '深色' },
+  { value: 'sepia', label: '暖白' },
+  { value: 'contrast', label: '高对比' },
+];
+
+const backgroundOptions: Array<{ value: CanvasBackground; label: string }> = [
+  { value: 'dots', label: '点' },
+  { value: 'lines', label: '线条' },
+  { value: 'cross', label: '十字' },
+  { value: 'blank', label: '空白' },
+];
+
+/**
+ * 显示平台连接、项目模型和工作区外观设置。
+ * @param projectId 当前项目 ID；为空时仅保存平台级设置。
+ * @param projectName 当前项目名称，用于项目默认模型提示。
+ * @param onClose 关闭对话框或页面时调用。
+ * @param onNotice 向外层转发保存、加载和测试结果。
+ * @param presentation 以居中对话框或独立页面呈现。
+ * @param canManageAiSettings 是否允许读取和修改平台 API Key；普通用户仅显示外观和项目设置。
+ */
 export function SettingsPanel({
   projectId,
   projectName,
   onClose,
   onNotice,
   presentation = 'dialog',
+  canManageAiSettings = true,
 }: {
   projectId: string | null;
   projectName: string;
   onClose: () => void;
   onNotice: (notice: { kind: 'error' | 'success'; message: string }) => void;
   presentation?: 'dialog' | 'page';
+  canManageAiSettings?: boolean;
 }) {
   const [settings, setSettings] = useState<AiSettings>({
     baseUrl: '',
@@ -109,13 +137,18 @@ export function SettingsPanel({
     kind: 'error' | 'success';
     message: string;
   } | null>(null);
+  const canvasTheme = useWorkspacePreferences((state) => state.canvasTheme);
+  const setCanvasTheme = useWorkspacePreferences((state) => state.setCanvasTheme);
+  const canvasBackground = useWorkspacePreferences((state) => state.canvasBackground);
+  const setCanvasBackground = useWorkspacePreferences((state) => state.setCanvasBackground);
   const queryClient = useQueryClient();
-  const credentialsQuery = useAiCredentialsQuery();
+  const credentialsQuery = useAiCredentialsQuery(canManageAiSettings);
   const activateCredentialMutation = useActivateAiCredential();
   const credentials = credentialsQuery.data ?? [];
   const currentCredentialId = activeCredentialId(credentials) || undefined;
   const credentialModelQueries = useCredentialModelCatalogQueries(
-    credentials.map((credential) => credential.id),
+    canManageAiSettings ? credentials.map((credential) => credential.id) : [],
+    canManageAiSettings,
   );
   const refreshModelCatalogMutation = useRefreshModelCatalog();
   const models = useMemo(() => {
@@ -217,6 +250,7 @@ export function SettingsPanel({
   );
 
   useEffect(() => {
+    if (!canManageAiSettings) return;
     const controller = new AbortController();
     const requestVersion = ++settingsRequestVersionRef.current;
     settingsLoadControllerRef.current = controller;
@@ -262,7 +296,7 @@ export function SettingsPanel({
         settingsLoadControllerRef.current = null;
       }
     };
-  }, [getFieldState, reportNotice, setValue]);
+  }, [canManageAiSettings, getFieldState, reportNotice, setValue]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -556,10 +590,10 @@ export function SettingsPanel({
           <p className="eyebrow">设置</p>
           {presentation === 'dialog' ? (
             <DialogTitle asChild>
-              <h1 id="settings-title">AI 连接</h1>
+              <h1 id="settings-title">{canManageAiSettings ? 'AI 连接' : '项目设置'}</h1>
             </DialogTitle>
           ) : (
-            <h2 id="settings-title">AI 连接</h2>
+            <h2 id="settings-title">{canManageAiSettings ? 'AI 连接' : '项目设置'}</h2>
           )}
         </div>
         {presentation === 'dialog' && (
@@ -586,145 +620,193 @@ export function SettingsPanel({
           {panelNotice.message}
         </p>
       )}
+      <section className="settings-appearance" aria-labelledby="settings-appearance-title">
+        <div className="settings-models-heading">
+          <div>
+            <h2 id="settings-appearance-title">工作区外观</h2>
+            <p className="settings-status">主题和画布背景会立即保存到当前浏览器。</p>
+          </div>
+        </div>
+        <div className="settings-appearance-grid">
+          <label className="settings-field">
+            <span>主题</span>
+            <select
+              aria-label="界面主题"
+              value={canvasTheme}
+              onChange={(event) => setCanvasTheme(event.target.value as CanvasTheme)}
+            >
+              {themeOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="settings-field">
+            <span>画布背景</span>
+            <select
+              aria-label="画布背景"
+              value={canvasBackground}
+              onChange={(event) => setCanvasBackground(event.target.value as CanvasBackground)}
+            >
+              {backgroundOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      </section>
       <form
         onKeyDown={(event) => {
           if (event.key === 'Enter' && isImeKeyboardEvent(event)) event.preventDefault();
         }}
-        onSubmit={(event) => void handleSubmit(save)(event)}
+        onSubmit={(event) => {
+          if (!canManageAiSettings) {
+            event.preventDefault();
+            return;
+          }
+          void handleSubmit(save)(event);
+        }}
       >
-        <label className="settings-field">
-          <span>已保存的 API Key</span>
-          <select
-            aria-label="已保存的 API Key"
-            value={activeCredentialId(credentials)}
-            onChange={(event) => void activateCredential(event.target.value)}
-            disabled={busy || credentialsQuery.isLoading || credentials.length === 0}
-          >
-            <option value="">
-              {credentialsQuery.isLoading
-                ? '正在加载凭据'
-                : credentials.length > 0
-                  ? '未激活凭据'
-                  : '暂无已保存凭据'}
-            </option>
-            {credentials.map((credential) => (
-              <option key={credential.id} value={credential.id}>
-                {credential.baseUrl} · {credential.keyFingerprint}
-                {credential.active ? ' · 当前' : ''}
-              </option>
-            ))}
-          </select>
-          {credentialsQuery.isError && (
-            <span className="settings-field-error">凭据列表加载失败，可重新打开设置重试</span>
-          )}
-        </label>
-        <label className="settings-field">
-          <span>New API Base URL</span>
-          <Input
-            id="settings-base-url"
-            aria-invalid={Boolean(formErrors.baseUrl)}
-            aria-describedby={formErrors.baseUrl ? 'settings-base-url-error' : undefined}
-            placeholder="https://newapi.example.com/v1"
-            name={baseUrlField.name}
-            ref={baseUrlField.ref}
-            {...baseUrlImeBinding}
-          />
-          {formErrors.baseUrl && (
-            <span id="settings-base-url-error" className="settings-field-error" role="alert">
-              {formErrors.baseUrl.message}
-            </span>
-          )}
-        </label>
-        <label className="settings-field">
-          <span>API Key</span>
-          <Input
-            id="settings-api-key"
-            aria-invalid={Boolean(formErrors.apiKey)}
-            aria-describedby={formErrors.apiKey ? 'settings-api-key-error' : undefined}
-            type="password"
-            placeholder={
-              settings.keyFingerprint ? `已配置 · ${settings.keyFingerprint}` : '输入服务端 Key'
-            }
-            name={apiKeyField.name}
-            ref={apiKeyField.ref}
-            {...apiKeyImeBinding}
-          />
-          {formErrors.apiKey && (
-            <span id="settings-api-key-error" className="settings-field-error" role="alert">
-              {formErrors.apiKey.message}
-            </span>
-          )}
-        </label>
-        <div className="settings-actions">
-          <Button type="submit" className="button button-primary" disabled={busy}>
-            保存
-          </Button>
-          <Button
-            variant="secondary"
-            className="button button-secondary"
-            onClick={() => void testConnection()}
-            disabled={busy || !settings.configured}
-          >
-            测试连接
-          </Button>
-          <Button
-            variant="secondary"
-            className="button button-secondary"
-            onClick={() => void refreshModels()}
-            disabled={busy || !settings.configured}
-          >
-            刷新模型
-          </Button>
-        </div>
-        <div className="settings-status">
-          {settings.configured ? `已配置 · ${settings.keyFingerprint}` : '未配置'}
-        </div>
-        <div className="settings-models">
-          <h2>平台全局默认</h2>
-          <p className="settings-status">供所有未设置项目覆盖的节点继承。</p>
-          {mediaTypes.map((mediaType) => (
-            <label className="settings-field" key={mediaType}>
-              <span>{mediaLabels[mediaType]}</span>
+        {canManageAiSettings && (
+          <>
+            <label className="settings-field">
+              <span>已保存的 API Key</span>
               <select
-                aria-label={`平台全局默认 · ${mediaLabels[mediaType]}`}
-                value={selectionValue(settings.defaultModels[mediaType])}
-                onChange={(event) =>
-                  void saveGlobalDefault(
-                    mediaType,
-                    selectionValue(selectedModel(event.target.value, models)),
-                  )
-                }
-                disabled={busy}
+                aria-label="已保存的 API Key"
+                value={activeCredentialId(credentials)}
+                onChange={(event) => void activateCredential(event.target.value)}
+                disabled={busy || credentialsQuery.isLoading || credentials.length === 0}
               >
-                <option value="">使用服务端环境默认</option>
-                {settings.defaultModels[mediaType] &&
-                  !models.some(
-                    (model) =>
-                      model.id ===
-                        normalizeSelection(settings.defaultModels[mediaType])?.modelAlias &&
-                      model.credentialId ===
-                        normalizeSelection(settings.defaultModels[mediaType])?.credentialId &&
-                      model.mediaTypes.includes(mediaType),
-                  ) && (
-                    <option value={selectionValue(settings.defaultModels[mediaType])}>
-                      {normalizeSelection(settings.defaultModels[mediaType])?.modelAlias}
-                      （当前不可用）
-                    </option>
-                  )}
-                {models
-                  .filter((model) => model.mediaTypes.includes(mediaType))
-                  .map((model) => (
-                    <option
-                      key={`${model.credentialId ?? 'active'}:${model.id}`}
-                      value={optionValue(model)}
-                    >
-                      {model.name}
-                    </option>
-                  ))}
+                <option value="">
+                  {credentialsQuery.isLoading
+                    ? '正在加载凭据'
+                    : credentials.length > 0
+                      ? '未激活凭据'
+                      : '暂无已保存凭据'}
+                </option>
+                {credentials.map((credential) => (
+                  <option key={credential.id} value={credential.id}>
+                    {credential.baseUrl} · {credential.keyFingerprint}
+                    {credential.active ? ' · 当前' : ''}
+                  </option>
+                ))}
               </select>
+              {credentialsQuery.isError && (
+                <span className="settings-field-error">凭据列表加载失败，可重新打开设置重试</span>
+              )}
             </label>
-          ))}
-        </div>
+            <label className="settings-field">
+              <span>New API Base URL</span>
+              <Input
+                id="settings-base-url"
+                aria-invalid={Boolean(formErrors.baseUrl)}
+                aria-describedby={formErrors.baseUrl ? 'settings-base-url-error' : undefined}
+                placeholder="https://newapi.example.com/v1"
+                name={baseUrlField.name}
+                ref={baseUrlField.ref}
+                {...baseUrlImeBinding}
+              />
+              {formErrors.baseUrl && (
+                <span id="settings-base-url-error" className="settings-field-error" role="alert">
+                  {formErrors.baseUrl.message}
+                </span>
+              )}
+            </label>
+            <label className="settings-field">
+              <span>API Key</span>
+              <Input
+                id="settings-api-key"
+                aria-invalid={Boolean(formErrors.apiKey)}
+                aria-describedby={formErrors.apiKey ? 'settings-api-key-error' : undefined}
+                type="password"
+                placeholder={
+                  settings.keyFingerprint ? `已配置 · ${settings.keyFingerprint}` : '输入服务端 Key'
+                }
+                name={apiKeyField.name}
+                ref={apiKeyField.ref}
+                {...apiKeyImeBinding}
+              />
+              {formErrors.apiKey && (
+                <span id="settings-api-key-error" className="settings-field-error" role="alert">
+                  {formErrors.apiKey.message}
+                </span>
+              )}
+            </label>
+            <div className="settings-actions">
+              <Button type="submit" className="button button-primary" disabled={busy}>
+                保存
+              </Button>
+              <Button
+                variant="secondary"
+                className="button button-secondary"
+                onClick={() => void testConnection()}
+                disabled={busy || !settings.configured}
+              >
+                测试连接
+              </Button>
+              <Button
+                variant="secondary"
+                className="button button-secondary"
+                onClick={() => void refreshModels()}
+                disabled={busy || !settings.configured}
+              >
+                刷新模型
+              </Button>
+            </div>
+            <div className="settings-status">
+              {settings.configured ? `已配置 · ${settings.keyFingerprint}` : '未配置'}
+            </div>
+            <div className="settings-models">
+              <h2>平台全局默认</h2>
+              <p className="settings-status">供所有未设置项目覆盖的节点继承。</p>
+              {mediaTypes.map((mediaType) => (
+                <label className="settings-field" key={mediaType}>
+                  <span>{mediaLabels[mediaType]}</span>
+                  <select
+                    aria-label={`平台全局默认 · ${mediaLabels[mediaType]}`}
+                    value={selectionValue(settings.defaultModels[mediaType])}
+                    onChange={(event) =>
+                      void saveGlobalDefault(
+                        mediaType,
+                        selectionValue(selectedModel(event.target.value, models)),
+                      )
+                    }
+                    disabled={busy}
+                  >
+                    <option value="">使用服务端环境默认</option>
+                    {settings.defaultModels[mediaType] &&
+                      !models.some(
+                        (model) =>
+                          model.id ===
+                            normalizeSelection(settings.defaultModels[mediaType])?.modelAlias &&
+                          model.credentialId ===
+                            normalizeSelection(settings.defaultModels[mediaType])?.credentialId &&
+                          model.mediaTypes.includes(mediaType),
+                      ) && (
+                        <option value={selectionValue(settings.defaultModels[mediaType])}>
+                          {normalizeSelection(settings.defaultModels[mediaType])?.modelAlias}
+                          （当前不可用）
+                        </option>
+                      )}
+                    {models
+                      .filter((model) => model.mediaTypes.includes(mediaType))
+                      .map((model) => (
+                        <option
+                          key={`${model.credentialId ?? 'active'}:${model.id}`}
+                          value={optionValue(model)}
+                        >
+                          {model.name}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+              ))}
+            </div>
+          </>
+        )}
         <div className="settings-models">
           <h2>当前项目默认</h2>
           <p className="settings-status">
@@ -771,15 +853,17 @@ export function SettingsPanel({
             </label>
           ))}
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="settings-delete"
-          onClick={() => void deleteCredentials()}
-          disabled={busy || !settings.configured}
-        >
-          删除凭据
-        </Button>
+        {canManageAiSettings && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="settings-delete"
+            onClick={() => void deleteCredentials()}
+            disabled={busy || !settings.configured}
+          >
+            删除凭据
+          </Button>
+        )}
       </form>
     </>
   );
@@ -799,9 +883,8 @@ export function SettingsPanel({
   return (
     <Dialog modal open onOpenChange={(open) => !open && !busy && onClose()}>
       <DialogContent
-        contained
         overlayClassName="settings-backdrop"
-        className="settings-panel"
+        className="settings-panel settings-dialog-panel"
         aria-busy={busy}
         aria-modal="true"
         aria-labelledby="settings-title"

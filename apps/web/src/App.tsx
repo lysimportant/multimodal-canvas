@@ -398,9 +398,14 @@ function WorkspaceApp({
   const [assets, setAssets] = useState<Asset[]>([]);
   const [showArchived, setShowArchived] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const previousAuthRoleRef = useRef<AuthUser['role'] | null>(authUser?.role ?? null);
   useEffect(() => {
-    if (authUser?.role !== 'admin') setShowSettings(false);
-  }, [authUser?.role]);
+    const previousRole = previousAuthRoleRef.current;
+    if (!authUser || (previousRole === 'admin' && authUser.role !== 'admin')) {
+      setShowSettings(false);
+    }
+    previousAuthRoleRef.current = authUser?.role ?? null;
+  }, [authUser]);
   const [activeFilter, setActiveFilter] = useState<AssetFilter>('all');
   const [query, setQuery] = useState('');
   const [isUploading, setIsUploading] = useState(false);
@@ -411,6 +416,7 @@ function WorkspaceApp({
   const credentialsQuery = useAiCredentialsQuery(authUser?.role === 'admin');
   const credentialModelQueries = useCredentialModelCatalogQueries(
     (credentialsQuery.data ?? []).map((credential) => credential.id),
+    authUser?.role === 'admin',
   );
   const modelCatalog = useMemo(() => {
     const credentials = credentialsQuery.data ?? [];
@@ -2010,8 +2016,7 @@ function WorkspaceApp({
         category: '应用',
         description: '管理 API 连接和默认模型',
         icon: <Settings size={15} aria-hidden="true" />,
-        onSelect: () =>
-          authUser?.role === 'admin' ? setShowSettings(true) : onNavigate(appPaths.profile),
+        onSelect: () => setShowSettings(true),
       },
       {
         id: 'toggle-resource-panel',
@@ -2329,9 +2334,7 @@ function WorkspaceApp({
               className="icon-button"
               aria-label="打开设置"
               title="设置"
-              onClick={() =>
-                authUser?.role === 'admin' ? setShowSettings(true) : onNavigate(appPaths.profile)
-              }
+              onClick={() => setShowSettings(true)}
               ref={settingsTriggerRef}
             >
               <Settings size={16} />
@@ -2545,12 +2548,13 @@ function WorkspaceApp({
             background={canvasBackground}
           />
         </div>
-        {showSettings && authUser?.role === 'admin' && (
+        {showSettings && authUser && (
           <SettingsPanel
             projectId={projectId}
             projectName={projectName}
             onClose={() => setShowSettings(false)}
             onNotice={setNotice}
+            canManageAiSettings={authUser.role === 'admin'}
           />
         )}
       </main>

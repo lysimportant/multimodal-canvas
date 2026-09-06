@@ -41,9 +41,25 @@ describe('账户菜单', () => {
     );
     await actor.click(screen.getByRole('button', { name: '账户菜单' }));
     expect(screen.getByRole('menuitem', { name: '管理后台' })).toHaveAttribute('href', '/admin');
-    await actor.click(screen.getByRole('menuitem', { name: '个人信息' }));
-    expect(window.location.pathname).toBe('/account/profile');
+    expect(screen.getByRole('menuitem', { name: '个人信息' })).toHaveAttribute('target', '_blank');
+    expect(screen.getByRole('menuitem', { name: '个人信息' })).toHaveAttribute(
+      'rel',
+      'noopener noreferrer',
+    );
     expect(logout).not.toHaveBeenCalled();
+  });
+
+  it('鼠标悬停用户图标时显示菜单，离开账户区域后关闭', async () => {
+    const actor = userEvent.setup();
+    render(<AccountMenu user={user} onRequestLogin={vi.fn()} onLogout={vi.fn()} />);
+    const trigger = screen.getByRole('button', { name: '账户菜单' });
+    const container = trigger.parentElement!;
+
+    await actor.hover(trigger);
+    expect(screen.getByRole('menu', { name: '账户操作' })).toBeVisible();
+    await actor.unhover(container);
+    await new Promise((resolve) => window.setTimeout(resolve, 160));
+    expect(screen.queryByRole('menu', { name: '账户操作' })).not.toBeInTheDocument();
   });
 
   it('匿名入口只请求登录，键盘聚焦可操作菜单项目', async () => {

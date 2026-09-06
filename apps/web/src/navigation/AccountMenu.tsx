@@ -19,7 +19,7 @@ import {
   Activity,
 } from 'lucide-react';
 import type { AuthUser } from '../auth-client';
-import { AppLink, appPaths, shouldInterceptAppLink } from '../routing';
+import { AppLink, appPaths } from '../routing';
 import { isImeKeyboardEvent } from '../ime';
 import { usePresence } from './motion';
 import './account-menu.css';
@@ -58,31 +58,50 @@ export type AccountMenuProps = AccountActions & {
 /** 显示账户菜单、个人页面与独立注销命令，支持键盘、点击外部及退出动画。 */
 export function AccountMenu({ user, onRequestLogin, onLogout, onNavigate }: AccountMenuProps) {
   const [open, setOpen] = useState(false);
+  const [openedByClick, setOpenedByClick] = useState(false);
   const present = usePresence(open, 140);
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const closeTimerRef = useRef<number | null>(null);
   const menuId = useId();
+
+  /** 取消悬停离开后的延迟关闭，允许指针经过菜单与按钮之间的间隙。 */
+  const cancelHoverClose = () => {
+    if (closeTimerRef.current === null) return;
+    window.clearTimeout(closeTimerRef.current);
+    closeTimerRef.current = null;
+  };
+
+  /** 延迟关闭悬停菜单，避免指针移动到浮层时因间隙导致菜单闪退。 */
+  const scheduleHoverClose = () => {
+    cancelHoverClose();
+    closeTimerRef.current = window.setTimeout(() => {
+      closeTimerRef.current = null;
+      setOpen(false);
+      setOpenedByClick(false);
+    }, 140);
+  };
 
   /** 关闭菜单并按调用方式恢复焦点，避免干扰链接目标页。 */
   const close = (restoreFocus = false) => {
+    cancelHoverClose();
     setOpen(false);
+    setOpenedByClick(false);
     if (restoreFocus) triggerRef.current?.focus();
   };
 
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: PointerEvent) => {
-      if (event.target instanceof Node && !containerRef.current?.contains(event.target))
-        setOpen(false);
+      if (event.target instanceof Node && !containerRef.current?.contains(event.target)) close();
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (isImeKeyboardEvent(event)) return;
       if (event.key === 'Escape') {
         event.preventDefault();
         event.stopPropagation();
-        setOpen(false);
-        triggerRef.current?.focus();
+        close(true);
         return;
       }
       const items = Array.from(
@@ -107,7 +126,18 @@ export function AccountMenu({ user, onRequestLogin, onLogout, onNavigate }: Acco
     };
   }, [open]);
 
-  useEffect(() => setOpen(false), [user?.id]);
+  useEffect(() => {
+    cancelHoverClose();
+    setOpen(false);
+    setOpenedByClick(false);
+  }, [user?.id]);
+
+  useEffect(
+    () => () => {
+      cancelHoverClose();
+    },
+    [],
+  );
 
   if (!user) {
     return (
@@ -137,8 +167,18 @@ export function AccountMenu({ user, onRequestLogin, onLogout, onNavigate }: Acco
     <div
       ref={containerRef}
       className="mc-account"
+      onMouseEnter={() => {
+        cancelHoverClose();
+        setOpen(true);
+      }}
+      onMouseLeave={scheduleHoverClose}
       onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+        if (
+          event.relatedTarget instanceof Node &&
+          !event.currentTarget.contains(event.relatedTarget)
+        ) {
+          close();
+        }
       }}
     >
       <button
@@ -150,7 +190,13 @@ export function AccountMenu({ user, onRequestLogin, onLogout, onNavigate }: Acco
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={menuId}
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => {
+          cancelHoverClose();
+          setOpenedByClick((value) => {
+            setOpen(!value);
+            return !value;
+          });
+        }}
         onKeyDown={(event) => {
           if (isImeKeyboardEvent(event)) return;
           if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -185,10 +231,12 @@ export function AccountMenu({ user, onRequestLogin, onLogout, onNavigate }: Acco
             <AppLink
               key={href}
               to={href}
+              target="_blank"
+              rel="noopener noreferrer"
               role="menuitem"
               onClick={(event) => {
                 onNavigate?.(href, event);
-                if (shouldInterceptAppLink(event, href, undefined, undefined)) close();
+                if (!event.defaultPrevented) close();
               }}
             >
               <Icon size={16} aria-hidden="true" />
