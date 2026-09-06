@@ -16,8 +16,21 @@ import { createNewApiRunExecutor } from './newapi-run-executor';
 import { createApiRateLimiter } from './runtime-rate-limit';
 import { assertApiStartupConfiguration } from './startup-config';
 import { resolveS3DownloadMode, resolveS3UploadMode } from './upload-transport';
+import { createAccountMailSender } from './account-mail';
+import { readLocalEmailFile } from './local-email';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 assertApiStartupConfiguration();
+
+/** 本地 API 自动读取仓库根目录 email.txt；真实值只停留在 API 进程内存。 */
+const localEmailFile = resolve(dirname(fileURLToPath(import.meta.url)), '../../../email.txt');
+const localEmailEnvironment =
+  process.env.NODE_ENV === 'production' ? {} : await readLocalEmailFile(localEmailFile);
+const accountMailSender = createAccountMailSender({
+  ...process.env,
+  ...localEmailEnvironment,
+});
 
 /** 上传传输方式在客户端初始化前完成校验，proxy 仍使用同一 S3 存储和 TLS 配置。 */
 const s3UploadMode = resolveS3UploadMode(process.env.S3_UPLOAD_MODE);
@@ -115,6 +128,7 @@ const mediaDerivativeGenerator =
     ? new FfmpegMediaDerivativeGenerator({ binary: process.env.FFMPEG_PATH })
     : undefined;
 const app = buildApp({
+  accountMailSender,
   s3DownloadMode,
   runService,
   ...(runExecutor ? { runExecutor } : {}),

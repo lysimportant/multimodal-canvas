@@ -20,9 +20,12 @@
 
 用户提供的 `email.txt` 为 dotenv 格式。必需字段：`EMAIL_HOST`、`EMAIL_PORT`、`EMAIL_SECURE`、`EMAIL_USER`、`EMAIL_PASS`、`EMAIL_FROM`。可选 `EMAIL_PROXY` 使用 HTTP/HTTPS CONNECT；TLS 证书校验始终开启。缺配置、投递失败、等待验证和已激活分别显示，不把创建账户成功当作邮件送达。
 
-Windows 的现有桌面文件可以通过当前终端环境引用，文件内容不复制进仓库：
+本地运行 API 时会自动读取仓库根目录 `email.txt`，不要求设置 `MC_EMAIL_FILE` 或 `EMAIL_*` 环境变量。该文件已加入 `.gitignore` 和 `.dockerignore`，不会进入提交或 Docker 构建上下文；值只在 API 进程内存中交给 Nodemailer，Web bundle 不包含它。生产环境仍使用部署者管理的私有配置文件。
+
+Windows 的现有桌面文件也可以复制到本地仓库根目录后自动读取：
 
 ```powershell
+# 可选：仅在 Compose/生产私有路径不使用根目录文件时设置。
 $env:MC_EMAIL_FILE = Join-Path ([Environment]::GetFolderPath('Desktop')) 'email.txt'
 # 只有邮件链接与实际入口不同时才显式覆盖，例如本机 HTTPS。
 $env:MC_APP_PUBLIC_URL = 'https://localhost:8443'
@@ -34,7 +37,7 @@ Linux 使用部署者管理的私有环境文件路径设置 `MC_EMAIL_FILE`。C
 
 验证码绑定邮箱和用途，10 分钟有效、最多 5 次错误尝试、重发间隔 60 秒，持久化内容为 HMAC 摘要。注册、邀请、换邮箱和重置密码的验证码不可混用。邮件接收器接受发送不等于到达收件箱，管理页使用相应的投递状态描述。
 
-本机实际 SMTP/TLS/认证握手已通过，使用已有系统代理解决 Gmail 直连超时；未发送真实邮件。自动审批曾拒绝“载入真实邮件配置并在后台启动预览服务”，未绕过该拒绝。当前普通预览 API 没有载入真实 SMTP，完整业务验收使用隔离测试邮件接收器。
+本机实际 SMTP/TLS/认证握手已通过，使用已有系统代理解决 Gmail 直连超时；未发送真实邮件。当前本地 API 会读取根目录 `email.txt`，业务验收仍使用隔离测试邮件接收器。自动审批曾拒绝“载入真实邮件配置并在后台启动预览服务”，未绕过该拒绝。
 
 ## 隔离预览
 

@@ -12,3 +12,4 @@
 **/.env.*
 !**/.env.example
 !**/.env.*.example
+email.txt

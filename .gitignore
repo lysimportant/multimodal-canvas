@@ -9,6 +9,7 @@ test-results/
 .env.*
 !.env.example
 !.env.*.example
+email.txt
 
 # Local services and generated files
 prisma/migrations/

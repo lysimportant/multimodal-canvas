@@ -8,7 +8,7 @@
 - 目标：完成 TODO-ADMIN.md 的账户/管理员/用户资源核心流程、通用 UI/UX 和首页动效，最后执行隔离真实接口与浏览器验收。
 - 基线命令：Web auth-client/router/AppNavigation 精准 Vitest 66/66 通过。
 - 现有正式 Compose 七项服务 healthy，入口 8080；现阶段不迁移正式数据库、不删除或转移现有数据。
-- 邮件配置仅从用户桌面 email.txt 读取到进程环境；已确认 EMAIL_HOST/PORT/SECURE/USER/PASS/FROM，未输出实际值或发送邮件。
+- 本地邮件配置从仓库根目录 `email.txt` 自动读取到 API 进程内存；文件未提交或进入镜像，已确认字段格式，不输出实际值或发送邮件。
 
 ## 并行责任
 
@@ -90,3 +90,5 @@
 - [x] 文档、差异、敏感信息和 17 个文档链接复核完成，已准备中文提交、annotated `v0.15.2` 与上游推送。
 
 断点恢复：预览 API3081、Vite5187、静态5188 已按既有隔离配置恢复，正式8080与PG19432未重启。路由/布局23项、请求取消/会话36项、联合认证91项和 Web501项通过。最终动态真实 HTTP/Prisma 浏览器11组、静态构建版 smoke/login29项通过；页面截图在 `.data/auth-page-e2e-settled/` 和 `.data/auth-pages-static-e2e-artifacts/`。第一次真实流程被 Vite HMR 打断后已用静态构建复跑，失败报告仅保留作恢复证据，不计入最终结论。旧侧栏专用CSS已移除。
+
+本地邮件读取续接：桌面 `C:\Users\Sui\Desktop\email.txt` 已复制到仓库根目录 `email.txt`，该文件被 Git/Docker 忽略。非生产 API 入口自动读取并校验白名单字段，值只进入 API 内存；`apps/api/src/local-email.test.ts` 2 项通过。没有把真实值写入源码、日志、提交、bundle 或镜像，也未重启正式服务。
