@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { writeFile } from 'node:fs/promises';
 
 /** 独立首页测试入口，使用真实页面组件和公开本地素材，避免读取用户项目。 */
 async function openHome(page: Page, projectName?: string) {
@@ -133,7 +134,7 @@ test('homepage releases repeated scenes and remains responsive under CPU throttl
   await session.detach();
 });
 
-test('homepage pointer follows mouse, excludes text, and respects live motion preferences', async ({
+test('homepage circular reveal follows mouse over text and respects live motion preferences', async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -143,7 +144,34 @@ test('homepage pointer follows mouse, excludes text, and respects live motion pr
   await page.mouse.move(735, 340);
   await expect(root).toHaveAttribute('data-home-pointer', 'visible');
   await page.getByRole('heading', { level: 1 }).hover();
-  await expect(root).not.toHaveAttribute('data-home-pointer');
+  await expect(root).toHaveAttribute('data-home-pointer', 'visible');
+  const alignment = await page.locator('.mc-home-hero').evaluate((hero) => {
+    const layer = hero.querySelector<HTMLElement>('.mc-home-reveal-layer')!;
+    const ring = hero.querySelector<HTMLElement>('.mc-home-pointer')!.getBoundingClientRect();
+    const bounds = hero.getBoundingClientRect();
+    const baseTitle = hero.querySelector('.mc-home-title')!.getBoundingClientRect();
+    const hiddenTitle = layer.querySelector('.mc-home-title')!.getBoundingClientRect();
+    const x = parseFloat((hero as HTMLElement).style.getPropertyValue('--home-pointer-x'));
+    const y = parseFloat((hero as HTMLElement).style.getPropertyValue('--home-pointer-y'));
+    return {
+      width: ring.width,
+      height: ring.height,
+      offsetX: ring.x + ring.width / 2 - bounds.x - x,
+      offsetY: ring.y + ring.height / 2 - bounds.y - y,
+      titleOffsetX: hiddenTitle.x - baseTitle.x,
+      titleOffsetY: hiddenTitle.y - baseTitle.y,
+      clip: getComputedStyle(layer).clipPath,
+      pointerEvents: getComputedStyle(layer).pointerEvents,
+    };
+  });
+  expect(alignment.width).toBe(264);
+  expect(alignment.height).toBe(264);
+  expect(Math.abs(alignment.offsetX)).toBeLessThan(1);
+  expect(Math.abs(alignment.offsetY)).toBeLessThan(1);
+  expect(Math.abs(alignment.titleOffsetX)).toBeLessThan(1);
+  expect(Math.abs(alignment.titleOffsetY)).toBeLessThan(1);
+  expect(alignment.clip).toContain('circle(132px at');
+  expect(alignment.pointerEvents).toBe('none');
   const button = page.getByRole('link', { name: '进入工作台', exact: true });
   const before = await button.boundingBox();
   await button.hover();
@@ -158,6 +186,84 @@ test('homepage pointer follows mouse, excludes text, and respects live motion pr
   await expect(root).toHaveAttribute('data-home-motion', 'static');
   await page.getByRole('button', { name: '首页动态效果' }).click();
   await expect(root).toHaveAttribute('data-home-motion', 'active');
+});
+
+test('circular reveal exposes hidden pixels only inside the moving lens', async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openHome(page);
+  await page.addStyleTag({
+    content: '.mc-home-experience * { animation: none !important; transition: none !important; }',
+  });
+  await page.locator('.node-image img').evaluate((image: HTMLImageElement) => image.decode());
+  await page.mouse.move(10, 10);
+  const before = await page.screenshot({ path: testInfo.outputPath('home-reveal-base.png') });
+  const reports = [];
+  for (const position of [
+    { name: 'network', x: 755, y: 420 },
+    { name: 'image', x: 1150, y: 425 },
+    { name: 'title', x: 310, y: 335 },
+  ]) {
+    await page.mouse.move(position.x, position.y);
+    await expect(page.locator('.mc-home-experience')).toHaveAttribute(
+      'data-home-pointer',
+      'visible',
+    );
+    const after = await page.screenshot({
+      path: testInfo.outputPath(`home-reveal-${position.name}.png`),
+    });
+    const difference = await page.evaluate(
+      async ({ before, after, x, y }) => {
+        /** 由浏览器标准图片解码和 Canvas API 比较截图，避免额外的 PNG 解析依赖。 */
+        const pixels = async (base64: string) => {
+          const image = new Image();
+          image.src = `data:image/png;base64,${base64}`;
+          await image.decode();
+          const canvas = document.createElement('canvas');
+          canvas.width = image.width;
+          canvas.height = image.height;
+          const context = canvas.getContext('2d')!;
+          context.drawImage(image, 0, 0);
+          return {
+            data: context.getImageData(0, 0, image.width, image.height).data,
+            width: image.width,
+          };
+        };
+        const original = await pixels(before);
+        const revealed = await pixels(after);
+        let inside = 0;
+        let changedInside = 0;
+        let changedOutside = 0;
+        for (let offset = 0; offset < original.data.length; offset += 4) {
+          const pixel = offset / 4;
+          const distance = Math.hypot(
+            (pixel % original.width) - x,
+            Math.floor(pixel / original.width) - y,
+          );
+          const changed = [0, 1, 2].some(
+            (channel) =>
+              Math.abs(original.data[offset + channel] - revealed.data[offset + channel]) > 12,
+          );
+          if (distance < 124) {
+            inside++;
+            if (changed) changedInside++;
+          } else if (distance > 138 && changed) changedOutside++;
+        }
+        return { changedInsideRatio: changedInside / inside, changedOutside };
+      },
+      { before: before.toString('base64'), after: after.toString('base64'), ...position },
+    );
+    expect(difference.changedInsideRatio).toBeGreaterThan(0.35);
+    expect(difference.changedOutside).toBe(0);
+    reports.push({ ...position, ...difference });
+  }
+  const reportPath = testInfo.outputPath('home-reveal-pixels.json');
+  await writeFile(reportPath, JSON.stringify(reports, null, 2));
+  await testInfo.attach('home-reveal-pixels.json', {
+    path: reportPath,
+    contentType: 'application/json',
+  });
 });
 
 test('homepage plays the real local movie, seeks, mutes, pauses offscreen and retries errors', async ({

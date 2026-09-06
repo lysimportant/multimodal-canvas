@@ -85,6 +85,7 @@ import { ProjectHub } from './ProjectHub';
 import { CommandPalette, type CommandPaletteCommand } from './CommandPalette';
 import { AppNavigation } from './navigation';
 import { AccountMenu, AccountProvider } from './navigation/AccountMenu';
+import { usePresence } from './navigation/motion';
 import { ManagementPage } from './management';
 import {
   ContactPage,
@@ -2560,14 +2561,20 @@ function WorkspaceApp({
   );
 }
 
-/** 渲染登录与注册表单；仅提供匿名回调时可关闭，认证失败保留表单并显示错误。 */
+/** 登录退场时长，单位毫秒；与 auth-backdrop 的退出过渡保持一致。 */
+const AUTH_EXIT_DURATION_MS = 220;
+
+/** 保留现有登录侧栏，打开时进场、关闭时禁用交互并等待外层退场卸载。 */
 function LoginScreen({
+  open,
   apiBaseUrl,
   onAuthenticated,
   onContinueAnonymous,
   returnFocusTo,
   onVerificationRequired,
 }: {
+  /** false 表示正在退场，表单与关闭命令均不能再次触发。 */
+  open: boolean;
   apiBaseUrl: string;
   onAuthenticated: (session: StoredAuthSession) => void;
   /** 关闭认证提示并返回公开页面；不授予私有项目或接口的访问权限。 */
@@ -2581,18 +2588,25 @@ function LoginScreen({
   const [displayName, setDisplayName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** 首次绘制后进入可见状态，过渡可在快速开关时从当前位置反向播放。 */
+  const [entered, setEntered] = useState(false);
   const backdropRef = useRef<HTMLDivElement | null>(null);
   const dialogRef = useRef<HTMLElement | null>(null);
   const busyRef = useRef(busy);
-
-  useEffect(() => {
-    busyRef.current = busy;
-  }, [busy]);
+  const openRef = useRef(open);
+  const dismissRef = useRef(onContinueAnonymous);
+  const returnFocusRef = useRef(returnFocusTo);
+  busyRef.current = busy;
+  openRef.current = open;
+  dismissRef.current = onContinueAnonymous;
+  returnFocusRef.current = returnFocusTo;
 
   useEffect(() => {
     const previousFocus =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const backdrop = backdropRef.current;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
     const backgroundSiblings = Array.from(backdrop?.parentElement?.children ?? []).filter(
       (element): element is HTMLElement => element instanceof HTMLElement && element !== backdrop,
     );
@@ -2612,17 +2626,16 @@ function LoginScreen({
           'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
         ) ?? [],
       ).filter((element) => element.getClientRects().length > 0);
-    focusableElements()[0]?.focus();
-
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (
-        onContinueAnonymous &&
-        !busyRef.current &&
-        !isImeKeyboardEvent(event) &&
-        event.key === 'Escape'
-      ) {
+      if (!openRef.current) {
         event.preventDefault();
-        onContinueAnonymous();
+        event.stopImmediatePropagation();
+        return;
+      }
+      if (!isImeKeyboardEvent(event) && event.key === 'Escape') {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (!busyRef.current) dismissRef.current?.();
         return;
       }
       if (event.key !== 'Tab') return;
@@ -2644,21 +2657,48 @@ function LoginScreen({
         first.focus();
       }
     };
-    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('keydown', handleKeyDown, true);
     return () => {
-      document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('keydown', handleKeyDown, true);
+      document.body.style.overflow = previousOverflow;
       backgroundState.forEach(({ element, inert, ariaHidden }) => {
         element.inert = inert;
         if (ariaHidden === null) element.removeAttribute('aria-hidden');
         else element.setAttribute('aria-hidden', ariaHidden);
       });
-      const focusTarget = returnFocusTo?.isConnected ? returnFocusTo : previousFocus;
-      if (focusTarget?.isConnected) focusTarget.focus();
+      const focusTarget = returnFocusRef.current?.isConnected
+        ? returnFocusRef.current
+        : previousFocus;
+      if (focusTarget?.isConnected) focusTarget.focus({ preventScroll: true });
     };
-  }, [onContinueAnonymous, returnFocusTo]);
+  }, []);
+
+  useEffect(() => {
+    if (!open) {
+      setEntered(false);
+      return;
+    }
+    dialogRef.current
+      ?.querySelector<HTMLInputElement>('input[type="email"]')
+      ?.focus({ preventScroll: true });
+    if (!window.matchMedia?.('(prefers-reduced-motion: no-preference)').matches) {
+      setEntered(true);
+      return;
+    }
+    let frame = window.requestAnimationFrame(() => {
+      frame = window.requestAnimationFrame(() => setEntered(true));
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [open]);
+
+  /** 关闭只改变显示意图，动画期间的重复操作与在途认证不能再次触发关闭。 */
+  const dismiss = () => {
+    if (openRef.current && !busyRef.current) onContinueAnonymous?.();
+  };
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (!openRef.current || busyRef.current) return;
     setError(null);
     const normalizedEmail = email.trim();
     if (!normalizedEmail || !password) {
@@ -2669,6 +2709,7 @@ function LoginScreen({
       setError('密码至少需要 8 个字符');
       return;
     }
+    busyRef.current = true;
     setBusy(true);
     try {
       const session =
@@ -2695,6 +2736,7 @@ function LoginScreen({
             : message,
       );
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   };
@@ -2703,17 +2745,20 @@ function LoginScreen({
     <div
       ref={backdropRef}
       className="settings-backdrop auth-backdrop"
+      data-state={open ? (entered ? 'open' : 'entering') : 'closing'}
       role="presentation"
       onMouseDown={(event) => {
-        if (!busy && event.target === event.currentTarget) onContinueAnonymous?.();
+        if (event.target === event.currentTarget) dismiss();
       }}
     >
       <section
         ref={dialogRef}
-        className="settings-panel"
+        className="settings-panel auth-panel"
         role="dialog"
         aria-modal="true"
         aria-labelledby="auth-title"
+        aria-hidden={!open || undefined}
+        inert={!open || undefined}
       >
         <div className="panel-heading">
           <div>
@@ -2728,8 +2773,8 @@ function LoginScreen({
                 className="icon-button"
                 aria-label="关闭登录"
                 title="关闭"
-                disabled={busy}
-                onClick={onContinueAnonymous}
+                disabled={busy || !open}
+                onClick={dismiss}
               >
                 <X size={17} aria-hidden="true" />
               </button>
@@ -2750,7 +2795,12 @@ function LoginScreen({
           {mode === 'register' && (
             <label className="settings-field">
               <span>显示名称（可选）</span>
-              <ImeInput value={displayName} onValueChange={setDisplayName} autoComplete="name" />
+              <ImeInput
+                value={displayName}
+                onValueChange={setDisplayName}
+                autoComplete="name"
+                disabled={busy || !open}
+              />
             </label>
           )}
           <label className="settings-field">
@@ -2761,7 +2811,7 @@ function LoginScreen({
               value={email}
               onValueChange={setEmail}
               autoComplete="email"
-              autoFocus
+              disabled={busy || !open}
             />
           </label>
           <label className="settings-field">
@@ -2773,6 +2823,7 @@ function LoginScreen({
               value={password}
               onValueChange={setPassword}
               autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+              disabled={busy || !open}
             />
           </label>
           {error && (
@@ -2781,14 +2832,14 @@ function LoginScreen({
             </p>
           )}
           <div className="settings-actions">
-            <button type="submit" className="button button-primary" disabled={busy}>
+            <button type="submit" className="button button-primary" disabled={busy || !open}>
               {busy && <LoaderCircle className="spin" size={15} />}
               {busy ? '处理中' : mode === 'login' ? '登录' : '注册'}
             </button>
             <button
               type="button"
               className="button button-secondary"
-              disabled={busy}
+              disabled={busy || !open}
               onClick={() => {
                 setMode((current) => (current === 'login' ? 'register' : 'login'));
                 setError(null);
@@ -2802,8 +2853,8 @@ function LoginScreen({
           <button
             type="button"
             className="settings-delete"
-            disabled={busy}
-            onClick={onContinueAnonymous}
+            disabled={busy || !open}
+            onClick={dismiss}
           >
             继续匿名使用
           </button>
@@ -3083,6 +3134,10 @@ function AppContent() {
     (route.id === 'management' && !['/admin', '/auth/verify'].includes(route.pathname));
   const [authSession, setAuthSession] = useState<StoredAuthSession | null>(() => readAuthSession());
   const [authRequired, setAuthRequired] = useState(false);
+  /** 显示意图关闭后仍保留登录侧栏，完成退场才交还焦点和继续后续流程。 */
+  const authPresent = usePresence(authRequired, AUTH_EXIT_DURATION_MS);
+  const authPresentRef = useRef(authPresent);
+  authPresentRef.current = authPresent;
   const [authNotice, setAuthNotice] = useState<string | null>(null);
   /** 监听回调使用最新身份，续期/资料变更不清空同一用户的项目缓存。 */
   const authSessionRef = useRef(authSession);
@@ -3092,6 +3147,15 @@ function AppContent() {
   const authTriggerRef = useRef<HTMLElement | null>(null);
   /** 仅保存当前用户操作；关闭登录后丢弃，认证成功后最多执行一次。 */
   const afterAuthenticatedRef = useRef<(() => void) | undefined>(undefined);
+  /** 认证成功或转入邮箱验证的后续动作，只在登录层卸载后执行一次。 */
+  const afterAuthDismissRef = useRef<(() => void) | undefined>(undefined);
+
+  useEffect(() => {
+    if (authPresent) return;
+    const afterDismiss = afterAuthDismissRef.current;
+    afterAuthDismissRef.current = undefined;
+    afterDismiss?.();
+  }, [authPresent]);
 
   useEffect(
     () =>
@@ -3135,25 +3199,31 @@ function AppContent() {
       setAuthSession(session);
       setAuthRequired(false);
       setAuthNotice(null);
-      if (route.pathname === appPaths.verify && verificationCompleted) {
-        const purpose = new URLSearchParams(window.location.search).get('purpose');
-        navigate(
-          (purpose === 'email' ? appPaths.security : verificationReturnRef.current) ??
-            (session.user.role === 'admin' ? appPaths.admin : appPaths.workspace),
-        );
-        verificationReturnRef.current = null;
-      }
       const afterAuthenticated = afterAuthenticatedRef.current;
       afterAuthenticatedRef.current = undefined;
-      afterAuthenticated?.();
+      const resume = () => {
+        if (readAuthSession()?.user.id !== session.user.id) return;
+        if (route.pathname === appPaths.verify && verificationCompleted) {
+          const purpose = new URLSearchParams(window.location.search).get('purpose');
+          navigate(
+            (purpose === 'email' ? appPaths.security : verificationReturnRef.current) ??
+              (session.user.role === 'admin' ? appPaths.admin : appPaths.workspace),
+          );
+          verificationReturnRef.current = null;
+        }
+        afterAuthenticated?.();
+      };
+      if (authPresentRef.current) afterAuthDismissRef.current = resume;
+      else resume();
     },
     [navigate, queryClient, route.pathname],
   );
 
   const handleRequestLogin = useCallback(
     (afterAuthenticated?: () => void) => {
-      authTriggerRef.current =
-        document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      if (!trigger?.closest('.auth-backdrop')) authTriggerRef.current = trigger;
+      afterAuthDismissRef.current = undefined;
       afterAuthenticatedRef.current = afterAuthenticated;
       if (!getAuthToken()) {
         queryClient.clear();
@@ -3165,6 +3235,7 @@ function AppContent() {
   );
   const handleContinueAnonymous = useCallback(() => {
     afterAuthenticatedRef.current = undefined;
+    afterAuthDismissRef.current = undefined;
     setAuthRequired(false);
   }, []);
 
@@ -3183,6 +3254,7 @@ function AppContent() {
         setAuthSession(null);
         setAuthRequired(false);
         afterAuthenticatedRef.current = undefined;
+        afterAuthDismissRef.current = undefined;
         navigate(appPaths.home, { transition: false });
       });
   }, [navigate, queryClient]);
@@ -3204,18 +3276,20 @@ function AppContent() {
         onLoggedOut={handleLogout}
         onSessionChanged={(session) => handleAuthenticated(session, true)}
       />
-      {authRequired && (
+      {authPresent && (
         <LoginScreen
+          open={authRequired}
           apiBaseUrl={API_BASE_URL}
           onAuthenticated={handleAuthenticated}
           onContinueAnonymous={handleContinueAnonymous}
           returnFocusTo={authTriggerRef.current}
           onVerificationRequired={(email, deliveryFailed) => {
             verificationReturnRef.current = `${window.location.pathname}${window.location.search}`;
+            afterAuthDismissRef.current = () =>
+              navigate(
+                `${appPaths.verify}?${new URLSearchParams({ email, ...(deliveryFailed ? { delivery: 'failed' } : {}) })}`,
+              );
             setAuthRequired(false);
-            navigate(
-              `${appPaths.verify}?${new URLSearchParams({ email, ...(deliveryFailed ? { delivery: 'failed' } : {}) })}`,
-            );
           }}
         />
       )}

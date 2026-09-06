@@ -741,6 +741,8 @@ test('traps login focus and restores it to the trigger', async ({ page }) => {
 
   await expect(dialog).toBeVisible();
   await expect(page.locator('.mc-page-shell')).toHaveAttribute('inert', '');
+  await expect(dialog.getByRole('textbox', { name: '邮箱', exact: true })).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
   await expect(closeButton).toBeFocused();
   await page.keyboard.press('Shift+Tab');
   await expect(continueButton).toBeFocused();

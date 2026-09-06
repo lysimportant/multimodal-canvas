@@ -54,7 +54,9 @@ describe('HomePage', () => {
       expect(screen.getByText(number)).toBeVisible();
     }
     expect(screen.getByText('field-study.mp4')).toBeVisible();
-    expect(screen.getByText('公开素材 · 独立演示')).toBeVisible();
+    expect(hero.querySelector(':scope > .mc-home-scene-caption')).toHaveTextContent(
+      '公开素材 · 独立演示',
+    );
   });
 
   it('omits the continue action without a project and exposes navigation callbacks', () => {
@@ -67,6 +69,19 @@ describe('HomePage', () => {
     fireEvent.click(screen.getByRole('link', { name: /进入工作台/ }));
     expect(onNavigate).toHaveBeenCalledWith('/workspace', expect.anything());
     expect(window.location.pathname).toBe('/');
+  });
+
+  it('隐藏画面独立存在但不新增读屏标题、链接或可交互入口', () => {
+    const { container } = render(<HomePage />);
+    const reveal = container.querySelector('.mc-home-reveal-layer');
+    expect(reveal).toHaveAttribute('aria-hidden', 'true');
+    expect(reveal).toHaveAttribute('inert');
+    expect(reveal?.querySelector('.mc-home-reveal-field')).not.toBeNull();
+    expect(reveal?.querySelector('image')).toHaveAttribute('href', '/demo/field-study-poster.jpg');
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
+    expect(screen.getAllByRole('link', { name: '进入工作台' })).toHaveLength(1);
+    expect(container.querySelector('.mc-home-pointer')?.children).toHaveLength(0);
+    expect(container.querySelector('.mc-home-scan-x, .mc-home-scan-y')).toBeNull();
   });
 
   it('keeps the poster available after media failure and allows an explicit retry', () => {

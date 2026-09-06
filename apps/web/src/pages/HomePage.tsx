@@ -6,19 +6,20 @@ import {
   FileImage,
   Film,
   Focus,
-  GitBranch,
   Layers3,
   MoveUpRight,
   SlidersHorizontal,
   Sparkles,
   Type,
 } from 'lucide-react';
-import { useState, type MouseEvent } from 'react';
+import { useState } from 'react';
 
 import { AppLink, appPaths, type AppRoute } from '../routing';
 import { HomeDemoMedia } from './HomeDemoMedia';
 import { HomeDemoImage } from './HomeDemoImage';
 import { useHomeMotion } from './HomeMotion';
+import { HomeHeroCopy, type HomeHeroCopyProps } from './HomeHeroCopy';
+import { HomeRevealField } from './HomeRevealField';
 import { PageFrame } from './PageFrame';
 
 import './home-page.css';
@@ -27,29 +28,29 @@ import './home-page.css';
 const homeRoute: AppRoute = { id: 'home', pathname: '/' };
 
 /** 首页入口数据；继续项目只提供现有路由，不创建项目或触发生成。 */
-export type HomePageProps = {
-  /** 最近打开且当前账户有权限访问的项目。 */
-  continueProject?: { id: string; name: string } | null;
-  /** 由应用路由接管的站内导航回调。 */
-  onNavigate?: (href: string, event: MouseEvent<HTMLAnchorElement>) => void;
-};
+export type HomePageProps = Omit<HomeHeroCopyProps, 'reveal'>;
 
 /** 展示公开演示工作流与工作台入口；所有媒体均为本地公开样例。 */
 export function HomePage({ continueProject, onNavigate }: HomePageProps) {
-  const continueHref = continueProject ? appPaths.project(continueProject.id) : null;
   /** 本次页面访问的动效开关；系统减少动态效果设置始终优先。 */
   const [motionEnabled, setMotionEnabled] = useState(true);
   const motionRoot = useHomeMotion(motionEnabled);
+  /** 两层复用同一场景标识和素材说明，圆圈经过边缘文字时仍保持可读。 */
+  const sceneTitle = (
+    <span>
+      <Focus size={14} aria-hidden="true" /> CREATIVE WORKSPACE
+    </span>
+  );
+  const sceneCaption = (
+    <div className="mc-home-scene-caption">
+      <span>演示项目 / FIELD STUDY</span>
+      <span>公开素材 · 独立演示</span>
+    </div>
+  );
 
   return (
     <PageFrame route={homeRoute} onNavigate={onNavigate} mainClassName="mc-home-page">
       <div ref={motionRoot} className="mc-home-experience" data-home-motion="static">
-        <span className="mc-home-pointer" aria-hidden="true">
-          <i />
-          <i />
-          <i />
-          <i />
-        </span>
         <section className="mc-home-hero mc-home-hero-immersive" aria-labelledby="mc-home-title">
           <div className="mc-home-scene-grid" aria-hidden="true">
             {Array.from({ length: 9 }, (_, index) => (
@@ -58,13 +59,9 @@ export function HomePage({ continueProject, onNavigate }: HomePageProps) {
             {Array.from({ length: 5 }, (_, index) => (
               <b key={index} style={{ top: `${(index + 1) * 16.66}%` }} />
             ))}
-            <span className="mc-home-scan-x" />
-            <span className="mc-home-scan-y" />
           </div>
           <div className="mc-home-scene-topline">
-            <span>
-              <Focus size={14} aria-hidden="true" /> CREATIVE WORKSPACE
-            </span>
+            {sceneTitle}
             <div className="mc-home-motion-control">
               <button
                 type="button"
@@ -80,73 +77,7 @@ export function HomePage({ continueProject, onNavigate }: HomePageProps) {
               </span>
             </div>
           </div>
-          <div className="mc-home-hero-copy mc-home-hero-overlay">
-            <p className="mc-home-kicker">
-              <span /> IDEAS, CONNECTED.
-            </p>
-            <h1 id="mc-home-title">
-              Multimodal
-              <br />
-              Canvas
-              <span className="mc-home-title-period" aria-hidden="true">
-                .
-              </span>
-            </h1>
-            <p className="mc-home-lead">
-              灵感有了新的形状。
-              <br />
-              把文字、图像与声音，连接成你的下一部作品。
-            </p>
-            <div className="mc-home-hero-actions">
-              <AppLink
-                className="mc-home-primary-action"
-                to={appPaths.workspace}
-                onClick={(event) => onNavigate?.(appPaths.workspace, event)}
-              >
-                进入工作台 <ArrowRight size={17} aria-hidden="true" />
-              </AppLink>
-              <a className="mc-home-text-action" href="#home-demo-media">
-                查看演示 <ArrowDown size={16} aria-hidden="true" />
-              </a>
-            </div>
-            {continueProject && continueHref && (
-              <AppLink
-                className="mc-home-continue-action"
-                to={continueHref}
-                onClick={(event) => onNavigate?.(continueHref, event)}
-              >
-                <GitBranch size={15} aria-hidden="true" />
-                <span>继续「{continueProject.name}」</span>
-                <ArrowRight size={15} aria-hidden="true" />
-              </AppLink>
-            )}
-            <dl className="mc-home-hero-facts">
-              <div>
-                <dt>
-                  <Type size={14} aria-hidden="true" /> 文字
-                </dt>
-                <dd>构思</dd>
-              </div>
-              <div>
-                <dt>
-                  <FileImage size={14} aria-hidden="true" /> 图像
-                </dt>
-                <dd>定格</dd>
-              </div>
-              <div>
-                <dt>
-                  <AudioLines size={14} aria-hidden="true" /> 音频
-                </dt>
-                <dd>表达</dd>
-              </div>
-              <div>
-                <dt>
-                  <Film size={14} aria-hidden="true" /> 视频
-                </dt>
-                <dd>成片</dd>
-              </div>
-            </dl>
-          </div>
+          <HomeHeroCopy continueProject={continueProject} onNavigate={onNavigate} />
           <div
             className="mc-home-workflow-preview mc-home-workflow-preview-fullbleed"
             aria-label="多模态生成工作流预览"
@@ -200,10 +131,14 @@ export function HomePage({ continueProject, onNavigate }: HomePageProps) {
               <MoveUpRight size={18} aria-hidden="true" />
             </a>
           </div>
-          <div className="mc-home-scene-caption">
-            <span>演示项目 / FIELD STUDY</span>
-            <span>公开素材 · 独立演示</span>
+          {sceneCaption}
+          <div className="mc-home-reveal-layer" aria-hidden="true" inert>
+            <HomeRevealField />
+            <div className="mc-home-scene-topline">{sceneTitle}</div>
+            <HomeHeroCopy continueProject={continueProject} reveal />
+            {sceneCaption}
           </div>
+          <span className="mc-home-pointer" aria-hidden="true" />
         </section>
         <section
           className="mc-home-capabilities mc-page-container"

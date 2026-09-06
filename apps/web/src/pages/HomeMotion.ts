@@ -1,8 +1,8 @@
 import { useEffect, useRef, type RefObject } from 'react';
 
-/** 不应出现自定义指针的位置；文本与媒体保留浏览器本身的交互。 */
+/** 输入、原生媒体和弹层保留自身交互；普通正文也可以揭示隐藏画面。 */
 const pointerExclusion =
-  'input, textarea, select, video, [contenteditable], [role="dialog"], p, h1, h2, h3, figcaption, dt, dd';
+  'input, textarea, select, video, audio, [contenteditable], [role="dialog"], .mc-home-motion-control';
 
 /**
  * 管理首页装饰的生命周期。指针使用单次 RAF 写入 CSS，不随每次移动更新 React 状态。
@@ -99,14 +99,16 @@ export function useHomeMotion(enabled: boolean): RefObject<HTMLDivElement | null
       root.dataset.homeHeroVisible = String(heroVisible);
       if (!active || !fine.matches || !heroVisible) hidePointer();
     };
-    /** 批量写入一次指针位置与局部网格坐标，停止移动后不保留动画循环。 */
+    /** 圆环和隐藏层使用同一局部坐标，滚动或缩放后仍以鼠标为圆心，不持续占用 RAF。 */
     const paintPointer = () => {
       frame = 0;
       if (!pointerInside || !pointer || !hero) return;
-      pointer.style.transform = `translate3d(${pointerX}px, ${pointerY}px, 0)`;
       const bounds = hero.getBoundingClientRect();
-      hero.style.setProperty('--home-pointer-x', `${pointerX - bounds.left}px`);
-      hero.style.setProperty('--home-pointer-y', `${pointerY - bounds.top}px`);
+      const x = pointerX - bounds.left;
+      const y = pointerY - bounds.top;
+      pointer.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+      hero.style.setProperty('--home-pointer-x', `${x}px`);
+      hero.style.setProperty('--home-pointer-y', `${y}px`);
       root.dataset.homePointer = 'visible';
     };
     /** 仅在首页首屏的精细指针上启用；触摸、正文选区和弹层立即退出。 */
@@ -174,6 +176,7 @@ export function useHomeMotion(enabled: boolean): RefObject<HTMLDivElement | null
     document.addEventListener('selectionchange', hidePointer);
     window.addEventListener('blur', hidePointer);
     window.addEventListener('scroll', hidePointer, { passive: true });
+    window.addEventListener('resize', hidePointer);
     root.addEventListener('pointermove', movePointer, { passive: true });
     root.addEventListener('pointerleave', hidePointer);
     root.addEventListener('pointerdown', hidePointer, { passive: true });
@@ -192,6 +195,7 @@ export function useHomeMotion(enabled: boolean): RefObject<HTMLDivElement | null
       document.removeEventListener('selectionchange', hidePointer);
       window.removeEventListener('blur', hidePointer);
       window.removeEventListener('scroll', hidePointer);
+      window.removeEventListener('resize', hidePointer);
       root.removeEventListener('pointermove', movePointer);
       root.removeEventListener('pointerleave', hidePointer);
       root.removeEventListener('pointerdown', hidePointer);

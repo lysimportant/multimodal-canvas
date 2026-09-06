@@ -26,6 +26,7 @@ function MotionFixture({ enabled = true }: { enabled?: boolean }) {
       <section className="mc-home-hero">
         <div data-testid="stage" />
         <p>可选择正文</p>
+        <input aria-label="输入内容" />
         <button type="button">入口</button>
       </section>
     </div>
@@ -79,8 +80,8 @@ describe('首页动态效果生命周期', () => {
     vi.restoreAllMocks();
   });
 
-  it('coalesces pointer work into one frame and removes it on text, touch and window blur', () => {
-    const { getByTestId, getByText } = render(<MotionFixture />);
+  it('合并指针帧，在正文继续显影，并在输入、触摸和失焦时停止', () => {
+    const { getByTestId, getByText, getByLabelText } = render(<MotionFixture />);
     const root = getByTestId('motion-root');
     move(getByTestId('stage'));
     move(getByTestId('stage'));
@@ -94,12 +95,34 @@ describe('首页动态效果生命周期', () => {
       'transform: translate3d(125px, 180px, 0)',
     );
     move(getByText('可选择正文'));
+    expect(root).toHaveAttribute('data-home-pointer', 'visible');
+    expect(frames.size).toBe(1);
+    move(getByLabelText('输入内容'));
     expect(root).not.toHaveAttribute('data-home-pointer');
     move(getByTestId('stage'), 'touch');
     expect(frames.size).toBe(0);
     move(getByTestId('stage'));
     fireEvent.blur(window);
     expect(frames.size).toBe(0);
+  });
+
+  it('圆环与裁剪窗口使用同一首屏局部坐标，改变视口后隐藏旧位置', () => {
+    const { getByTestId } = render(<MotionFixture />);
+    const root = getByTestId('motion-root');
+    const hero = root.querySelector<HTMLElement>('.mc-home-hero')!;
+    vi.spyOn(hero, 'getBoundingClientRect').mockReturnValue({ left: 20, top: 60 } as DOMRect);
+    move(getByTestId('stage'));
+    act(() => {
+      frames.values().next().value?.(0);
+      frames.clear();
+    });
+    expect(root.querySelector('.mc-home-pointer')).toHaveStyle(
+      'transform: translate3d(105px, 120px, 0)',
+    );
+    expect(hero.style.getPropertyValue('--home-pointer-x')).toBe('105px');
+    expect(hero.style.getPropertyValue('--home-pointer-y')).toBe('120px');
+    fireEvent(window, new Event('resize'));
+    expect(root).not.toHaveAttribute('data-home-pointer');
   });
 
   it('responds immediately to system preferences, background state and explicit disabling', () => {
