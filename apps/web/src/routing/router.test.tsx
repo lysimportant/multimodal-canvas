@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ContactPage } from '../pages/ContactPage';
 import { AppLink, AppRouter, navigateApp, shouldInterceptAppLink } from './router';
 import { appPaths, getNavigationSection, parseAppRoute } from './routes';
+import { buildAuthPagePath, readAuthReturnPath } from './auth-navigation';
 
 describe('application route contracts', () => {
   it('parses every supported route and settings project context', () => {
@@ -36,6 +37,52 @@ describe('application route contracts', () => {
     expect(getNavigationSection(parseAppRoute('/projects/project-1'))).toBe('workspace');
     expect(getNavigationSection(parseAppRoute('/contact'))).toBeNull();
     expect(getNavigationSection(parseAppRoute('/not-found'))).toBeNull();
+  });
+
+  it('为登录、注册和验证提供独立路由，并显式解析仅打开表单的创建意图', () => {
+    for (const page of ['login', 'register', 'verify'] as const) {
+      expect(parseAppRoute(`/auth/${page}`)).toEqual({
+        id: 'authentication',
+        pathname: `/auth/${page}`,
+        page,
+      });
+      expect(getNavigationSection(parseAppRoute(`/auth/${page}`))).toBeNull();
+    }
+    expect(parseAppRoute('/workspace?create=1')).toEqual({
+      id: 'workspace',
+      pathname: '/workspace',
+      createProject: true,
+    });
+    expect(parseAppRoute('/auth/missing').id).toBe('not-found');
+  });
+
+  it('保留合法站内登录返回地址，拒绝外链和认证页循环', () => {
+    const loginPath = buildAuthPagePath('login', '/workspace?create=1');
+    expect(readAuthReturnPath(new URL(loginPath, 'http://localhost').search)).toBe(
+      '/workspace?create=1',
+    );
+    expect(buildAuthPagePath('register')).toBe('/auth/register');
+    for (const target of [
+      'https://example.com',
+      '//example.com',
+      '/\\example.com',
+      '/missing',
+      '/auth/login',
+      '/auth/register',
+      '/auth/verify?purpose=register',
+    ]) {
+      expect(readAuthReturnPath(`?${new URLSearchParams({ next: target })}`)).toBe('/workspace');
+    }
+    const emailVerification = '/auth/verify?purpose=email&email=new%40example.test';
+    expect(readAuthReturnPath(`?${new URLSearchParams({ next: emailVerification })}`)).toBe(
+      emailVerification,
+    );
+    expect(readAuthReturnPath('?next=%2Fprojects%2Fexample')).toBe('/projects/example');
+    expect(
+      readAuthReturnPath(
+        `?${new URLSearchParams({ next: '/workspace?create=1&password=secret&code=123456#private' })}`,
+      ),
+    ).toBe('/workspace?create=1');
   });
 });
 

@@ -19,6 +19,7 @@ import {
   type StoredAuthSession,
 } from '../auth-client';
 import { AppLink, navigateApp } from '../routing';
+import { isImeKeyboardEvent } from '../ime';
 import {
   managementRequest,
   persistManagementSession,
@@ -177,19 +178,25 @@ export function BootstrapPage({
   );
 }
 
-/** 通用的激活与密码重置验证码表单；所有验证码仅保存在当前输入框。 */
-function VerificationForm({
+/** 通用激活与密码重置表单；外层页面可传取消信号，所有验证码只保存在输入框。 */
+export function VerificationForm({
   email,
   purpose,
   onSessionChanged,
   onBack,
   initialDeliveryFailed = false,
+  submitLabel,
+  signal,
 }: SessionProps & {
   email: string;
   purpose: 'bootstrap' | 'invite' | 'register' | 'reset' | 'email';
   onBack?: () => void;
   /** 初次注册已保留账户，但邮件投递失败；只允许接续验证或重发。 */
   initialDeliveryFailed?: boolean;
+  /** 独立验证码页面使用统一确认按钮，省略时保留既有管理流程文案。 */
+  submitLabel?: string;
+  /** 页面离开时由外层取消，取消结果不得登录或改变页面。 */
+  signal?: AbortSignal;
 }) {
   const action = useAction(
     initialDeliveryFailed
@@ -197,6 +204,7 @@ function VerificationForm({
       : null,
   );
   const [cooldown, setCooldown] = useState(0);
+  const [verificationEmail, setVerificationEmail] = useState(email);
   useEffect(() => {
     if (cooldown <= 0) return;
     const timer = window.setTimeout(() => setCooldown(cooldown - 1), 1000);
@@ -206,23 +214,38 @@ function VerificationForm({
   /** 原子校验完成后只接续新会话，不自动重放创建项目或收费运行。 */
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (signal?.aborted) return;
     const data = new FormData(event.currentTarget);
     if (needsPassword && password(data, 'password') !== password(data, 'confirmPassword')) {
       action.setNotice({ kind: 'error', text: '两次输入的密码不一致' });
       return;
     }
     void action.execute(async () => {
-      const session = await verifyAccount({
-        email: field(data, 'email'),
-        code: field(data, 'code'),
-        purpose,
-        ...(needsPassword ? { password: password(data, 'password') } : {}),
-      });
-      onSessionChanged(session);
+      try {
+        const input = {
+          email: field(data, 'email'),
+          code: field(data, 'code'),
+          purpose,
+          ...(needsPassword ? { password: password(data, 'password') } : {}),
+        };
+        const session = signal
+          ? await verifyAccount(input, { signal })
+          : await verifyAccount(input);
+        if (!signal?.aborted) onSessionChanged(session);
+      } catch (error) {
+        if (!signal?.aborted) throw error;
+      }
     });
   };
   return (
-    <form className="mg-form" onSubmit={submit}>
+    <form
+      className="mg-form"
+      aria-label="邮箱验证表单"
+      onSubmit={submit}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' && isImeKeyboardEvent(event)) event.preventDefault();
+      }}
+    >
       <label className="mg-field">
         <span>邮箱</span>
         <input
@@ -230,8 +253,10 @@ function VerificationForm({
           type="email"
           autoComplete="email"
           required
-          defaultValue={email}
+          value={verificationEmail}
+          onChange={(event) => setVerificationEmail(event.target.value)}
           readOnly={Boolean(email)}
+          disabled={action.busy || signal?.aborted}
         />
       </label>
       <label className="mg-field">
@@ -246,6 +271,7 @@ function VerificationForm({
           minLength={6}
           maxLength={6}
           autoFocus
+          disabled={action.busy || signal?.aborted}
         />
       </label>
       {needsPassword && (
@@ -257,6 +283,7 @@ function VerificationForm({
             required
             minLength={8}
             maxLength={512}
+            disabled={action.busy || signal?.aborted}
           />
           <span className="mg-field-hint">至少 8 个字符，UTF-8 编码后不超过 512 字节。</span>
           <PasswordField
@@ -266,23 +293,30 @@ function VerificationForm({
             required
             minLength={8}
             maxLength={512}
+            disabled={action.busy || signal?.aborted}
           />
         </>
       )}
       <Notice value={action.notice} />
-      <button className="mg-button is-primary" disabled={action.busy}>
+      <button className="mg-button is-primary" disabled={action.busy || signal?.aborted}>
         <Check size={16} />
         {action.busy
           ? '正在验证'
-          : purpose === 'bootstrap'
-            ? '验证并完成初始化'
-            : purpose === 'reset'
-              ? '验证并设置新密码'
-              : '验证并进入工作台'}
+          : (submitLabel ??
+            (purpose === 'bootstrap'
+              ? '验证并完成初始化'
+              : purpose === 'reset'
+                ? '验证并设置新密码'
+                : '验证并进入工作台'))}
       </button>
       <div className="mg-form-actions">
         {onBack && (
-          <button type="button" className="mg-text-button" disabled={action.busy} onClick={onBack}>
+          <button
+            type="button"
+            className="mg-text-button"
+            disabled={action.busy || signal?.aborted}
+            onClick={onBack}
+          >
             返回修改
           </button>
         )}
@@ -290,30 +324,37 @@ function VerificationForm({
           <button
             type="button"
             className="mg-text-button"
-            disabled={action.busy || cooldown > 0 || !email}
+            disabled={action.busy || cooldown > 0 || !verificationEmail.trim() || signal?.aborted}
             onClick={() => {
               void action.execute(async () => {
-                const result = await managementRequest<DeliveryResult>(
-                  '/auth/verification/resend',
-                  {
-                    method: 'POST',
-                    body: { email, purpose },
-                    public: true,
-                  },
-                );
-                setCooldown(60);
-                if (result.delivery.status !== 'failed' && initialDeliveryFailed) {
-                  const currentUrl = new URL(window.location.href);
-                  currentUrl.searchParams.delete('delivery');
-                  navigateApp(`${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}`, {
-                    replace: true,
-                    state: window.history.state,
+                if (signal?.aborted) return;
+                try {
+                  const result = await managementRequest<DeliveryResult>(
+                    '/auth/verification/resend',
+                    {
+                      method: 'POST',
+                      body: { email: verificationEmail.trim(), purpose },
+                      public: true,
+                      ...(signal ? { signal } : {}),
+                    },
+                  );
+                  if (signal?.aborted) return;
+                  setCooldown(60);
+                  if (result.delivery.status !== 'failed' && initialDeliveryFailed) {
+                    const currentUrl = new URL(window.location.href);
+                    currentUrl.searchParams.delete('delivery');
+                    navigateApp(`${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}`, {
+                      replace: true,
+                      state: window.history.state,
+                    });
+                  }
+                  action.setNotice({
+                    kind: result.delivery.status === 'failed' ? 'error' : 'success',
+                    text: deliveryMessage(result),
                   });
+                } catch (error) {
+                  if (!signal?.aborted) throw error;
                 }
-                action.setNotice({
-                  kind: result.delivery.status === 'failed' ? 'error' : 'success',
-                  text: deliveryMessage(result),
-                });
               });
             }}
           >

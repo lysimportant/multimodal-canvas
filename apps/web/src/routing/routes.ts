@@ -1,11 +1,12 @@
 /** 应用可识别的页面；管理页仍需服务端角色与资源权限校验。 */
 export type AppRoute =
   | { id: 'home'; pathname: '/' }
-  | { id: 'workspace'; pathname: '/workspace' }
+  | { id: 'workspace'; pathname: '/workspace'; createProject?: boolean }
   | { id: 'contact'; pathname: '/contact' }
   | { id: 'settings'; pathname: '/settings'; projectId?: string }
   | { id: 'project'; pathname: string; projectId: string }
   | { id: 'management'; pathname: string }
+  | { id: 'authentication'; pathname: string; page: 'login' | 'register' | 'verify' }
   | { id: 'not-found'; pathname: string };
 
 export type AppNavigationSection = 'home' | 'workspace' | 'settings';
@@ -20,6 +21,8 @@ export const appPaths = {
   security: '/account/security',
   resources: '/resources',
   runs: '/runs',
+  login: '/auth/login',
+  register: '/auth/register',
   verify: '/auth/verify',
   settings(projectId?: string | null) {
     if (!projectId) return '/settings';
@@ -64,17 +67,31 @@ function readLocation(input: string | Pick<Location, 'pathname' | 'search'>) {
 export function parseAppRoute(input: string | Pick<Location, 'pathname' | 'search'>): AppRoute {
   const { pathname, search } = readLocation(input);
   if (pathname === '/') return { id: 'home', pathname: '/' };
-  if (pathname === '/workspace') return { id: 'workspace', pathname };
+  if (pathname === '/workspace')
+    return {
+      id: 'workspace',
+      pathname,
+      ...(new URLSearchParams(search).get('create') === '1' ? { createProject: true } : {}),
+    };
   if (pathname === '/contact') return { id: 'contact', pathname };
+  if (pathname === appPaths.login || pathname === appPaths.register || pathname === appPaths.verify)
+    return {
+      id: 'authentication',
+      pathname,
+      page:
+        pathname === appPaths.login
+          ? 'login'
+          : pathname === appPaths.register
+            ? 'register'
+            : 'verify',
+    };
   const adminUserMatch = pathname.match(/^\/admin\/users\/([^/]+)(?:\/resources)?$/);
   if (adminUserMatch && !decodeProjectId(adminUserMatch[1]!)) return { id: 'not-found', pathname };
   if (
     /^\/admin(?:\/(?:users(?:\/[^/]+(?:\/resources)?)?|resources|runs|audit|system|settings\/email))?$/.test(
       pathname,
     ) ||
-    ['/account/profile', '/account/security', '/resources', '/runs', '/auth/verify'].includes(
-      pathname,
-    )
+    ['/account/profile', '/account/security', '/resources', '/runs'].includes(pathname)
   ) {
     return { id: 'management', pathname };
   }
@@ -98,6 +115,12 @@ export function parseAppRoute(input: string | Pick<Location, 'pathname' | 'searc
 
 export function getNavigationSection(route: AppRoute): AppNavigationSection | null {
   if (route.id === 'project') return 'workspace';
-  if (route.id === 'contact' || route.id === 'not-found' || route.id === 'management') return null;
+  if (
+    route.id === 'contact' ||
+    route.id === 'not-found' ||
+    route.id === 'management' ||
+    route.id === 'authentication'
+  )
+    return null;
   return route.id;
 }

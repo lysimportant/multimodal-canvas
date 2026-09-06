@@ -203,59 +203,93 @@ export class EmailVerificationRequired extends Error {
   }
 }
 
-/** 发送认证请求，202 表示进入邮箱验证；其他失败保留服务端错误上下文。 */
+/** 发送认证请求；外部取消抛 AbortError，十秒超时抛 TimeoutError，迟到结果不提交会话。 */
 async function authRequest(
   baseUrl: string,
   path: string,
   body: Record<string, unknown>,
+  options: { signal?: AbortSignal } = {},
 ): Promise<StoredAuthSession> {
+  if (options.signal?.aborted) throw abortError(options.signal, '认证请求已取消');
   const generation = ++authGeneration;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10_000);
+  /** 首次中断原因固定不变，避免取消被晚到的超时覆盖；提交会话后不再接受取消。 */
+  let interruption: Error | undefined;
+  let committed = false;
+  let rejectInterruption!: (error: Error) => void;
+  const interrupted = new Promise<never>((_resolve, reject) => {
+    rejectInterruption = reject;
+  });
+  const interrupt = (error: Error) => {
+    if (committed || interruption) return;
+    interruption = error;
+    controller.abort(error);
+    rejectInterruption(error);
+  };
+  const onAbort = () => interrupt(abortError(options.signal, '认证请求已取消'));
+  options.signal?.addEventListener('abort', onAbort, { once: true });
+  const timeout = setTimeout(() => {
+    const error = new Error('认证请求超时，请检查连接后重试');
+    error.name = 'TimeoutError';
+    interrupt(error);
+  }, 10_000);
   try {
-    const response = await fetch(`${baseUrl.replace(/\/$/, '')}${path}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    const payload = (await response.json().catch(() => ({}))) as Partial<AuthTokenResponse> & {
-      error?: string;
-      code?: string;
-      delivery?: { status?: string };
-    };
-    if (controller.signal.aborted) throw new Error('认证请求超时，请检查连接后重试');
-    if (generation !== authGeneration) throw new Error('账户状态已改变，请重新操作');
-    if (response.status === 202 || payload.code === 'email_verification_required') {
-      throw new EmailVerificationRequired(
-        String(body.email ?? ''),
-        payload.error,
-        payload.delivery?.status === 'failed',
-      );
-    }
-    if (!response.ok || typeof payload.accessToken !== 'string' || !payload.user)
-      throw new Error(payload.error ?? '认证请求失败');
-    return persistAuthSession(payload as AuthTokenResponse);
+    if (options.signal?.aborted) onAbort();
+    const request = (async () => {
+      if (interruption) throw interruption;
+      const response = await fetch(`${baseUrl.replace(/\/$/, '')}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      if (interruption) throw interruption;
+      const payload = (await response.json().catch(() => ({}))) as Partial<AuthTokenResponse> & {
+        error?: string;
+        code?: string;
+        delivery?: { status?: string };
+      };
+      if (interruption) throw interruption;
+      if (options.signal?.aborted) throw abortError(options.signal, '认证请求已取消');
+      if (generation !== authGeneration) throw new Error('账户状态已改变，请重新操作');
+      if (response.status === 202 || payload.code === 'email_verification_required') {
+        throw new EmailVerificationRequired(
+          String(body.email ?? ''),
+          payload.error,
+          payload.delivery?.status === 'failed',
+        );
+      }
+      if (!response.ok || typeof payload.accessToken !== 'string' || !payload.user)
+        throw new Error(payload.error ?? '认证请求失败');
+      committed = true;
+      return persistAuthSession(payload as AuthTokenResponse);
+    })();
+    return await Promise.race([request, interrupted]);
   } catch (error) {
-    if (controller.signal.aborted) throw new Error('认证请求超时，请检查连接后重试');
+    if (interruption) throw interruption;
     throw error;
   } finally {
     clearTimeout(timeout);
+    options.signal?.removeEventListener('abort', onAbort);
   }
 }
 
+/** 登录并保存最新有效会话；旧两参数调用保持兼容，取消或超时不会清除已有身份。 */
 export function login(
   baseUrl: string,
   input: { email: string; password: string },
+  options: { signal?: AbortSignal } = {},
 ): Promise<StoredAuthSession> {
-  return authRequest(baseUrl, '/v1/auth/login', input);
+  return authRequest(baseUrl, '/v1/auth/login', input, options);
 }
 
+/** 注册并按服务端结果进入验证或保存会话；支持路由离开时取消且不接纳迟到响应。 */
 export function register(
   baseUrl: string,
   input: { email: string; password: string; displayName?: string },
+  options: { signal?: AbortSignal } = {},
 ): Promise<StoredAuthSession> {
-  return authRequest(baseUrl, '/v1/auth/register', input);
+  return authRequest(baseUrl, '/v1/auth/register', input, options);
 }
 
 /** 撤销当前会话并退出本地；请求失败时抛错供界面说明服务端撤销未确认。 */
@@ -358,7 +392,8 @@ const MAX_DEDUPLICATED_EVENTS = 256;
 
 type RetryableEventStreamError = Error & { retryable?: boolean };
 
-function abortError(signal?: AbortSignal): Error {
+/** 构造统一 AbortError；认证可指定文案，事件流沿用默认取消提示。 */
+function abortError(signal?: AbortSignal, message = '事件流已取消'): Error {
   const reason = signal?.reason;
   if (
     typeof DOMException !== 'undefined' &&
@@ -368,9 +403,9 @@ function abortError(signal?: AbortSignal): Error {
     return reason;
   }
   if (typeof DOMException !== 'undefined') {
-    return new DOMException('事件流已取消', 'AbortError');
+    return new DOMException(message, 'AbortError');
   }
-  const error = new Error('事件流已取消');
+  const error = new Error(message);
   error.name = 'AbortError';
   return error;
 }

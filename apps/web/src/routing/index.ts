@@ -15,3 +15,4 @@ export {
   type AppLinkProps,
   type NavigateOptions,
 } from './router';
+export { buildAuthPagePath, readAuthReturnPath } from './auth-navigation';

@@ -99,20 +99,50 @@ export function queryString(values: Record<string, string | number | undefined>)
   return query ? `?${query}` : '';
 }
 
-/** 验证一次性邮箱验证码并持久化新会话，失败不清除现有会话。 */
-export async function verifyAccount(input: {
-  email: string;
-  code: string;
-  purpose: 'bootstrap' | 'invite' | 'register' | 'reset' | 'email';
-  password?: string;
-}): Promise<StoredAuthSession> {
+/** 验证邮箱并保存会话；路由取消抛 AbortError，迟到响应不提交，失败不清除当前身份。 */
+export async function verifyAccount(
+  input: {
+    email: string;
+    code: string;
+    purpose: 'bootstrap' | 'invite' | 'register' | 'reset' | 'email';
+    password?: string;
+  },
+  options: { signal?: AbortSignal } = {},
+): Promise<StoredAuthSession> {
+  if (options.signal?.aborted) throw new DOMException('验证请求已取消', 'AbortError');
   const generation = getAuthSessionGeneration();
-  const response = await managementRequest<AuthTokenResponse>('/auth/verify', {
-    method: 'POST',
-    body: input,
-    public: true,
+  /** 提交前可取消，提交引发的页面卸载不得把成功结果重新判为取消。 */
+  let committed = false;
+  let cancellation: DOMException | undefined;
+  let rejectCancellation!: (error: DOMException) => void;
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    rejectCancellation = reject;
   });
-  return persistManagementSession(response, generation);
+  const onAbort = () => {
+    if (committed || cancellation) return;
+    cancellation = new DOMException('验证请求已取消', 'AbortError');
+    rejectCancellation(cancellation);
+  };
+  options.signal?.addEventListener('abort', onAbort, { once: true });
+  try {
+    if (options.signal?.aborted) onAbort();
+    const request = (async () => {
+      if (cancellation) throw cancellation;
+      const response = await managementRequest<AuthTokenResponse>('/auth/verify', {
+        method: 'POST',
+        body: input,
+        public: true,
+        signal: options.signal,
+      });
+      if (options.signal?.aborted)
+        throw cancellation ?? new DOMException('验证请求已取消', 'AbortError');
+      committed = true;
+      return persistManagementSession(response, generation);
+    })();
+    return await Promise.race([request, cancelled]);
+  } finally {
+    options.signal?.removeEventListener('abort', onAbort);
+  }
 }
 
 /** 请求发出后身份发生变化时拒绝旧响应，避免重新登录或退出被晚到结果覆盖。 */

@@ -24,8 +24,8 @@ describe('responsive UX CSS contracts', () => {
     );
   });
 
-  it('登录与项目创建弹窗覆盖公开页导航，标题和关闭按钮不被遮挡', () => {
-    expect(normalizedCss).toMatch(/\.settings-backdrop\.auth-backdrop \{[^}]*z-index: 110;/);
+  it('项目创建弹窗覆盖公开页导航，独立登录页不保留旧侧栏样式', () => {
+    expect(normalizedCss).not.toContain('.auth-backdrop');
     expect(normalizedCss).toMatch(/\.project-create-backdrop \{[^}]*z-index: 100;/);
   });
 

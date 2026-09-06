@@ -41,7 +41,6 @@ import {
   useRef,
   useState,
   type DragEvent,
-  type FormEvent,
   type InputHTMLAttributes,
   type MouseEvent,
 } from 'react';
@@ -85,8 +84,8 @@ import { ProjectHub } from './ProjectHub';
 import { CommandPalette, type CommandPaletteCommand } from './CommandPalette';
 import { AppNavigation } from './navigation';
 import { AccountMenu, AccountProvider } from './navigation/AccountMenu';
-import { usePresence } from './navigation/motion';
 import { ManagementPage } from './management';
+import { AuthenticationPage } from './authentication/AuthenticationPage';
 import {
   ContactPage,
   HomePage,
@@ -106,6 +105,8 @@ import {
 import {
   AppLink,
   appPaths,
+  buildAuthPagePath,
+  readAuthReturnPath,
   shouldInterceptAppLink,
   useAppNavigate,
   useAppRoute,
@@ -140,16 +141,12 @@ import {
 } from './workspace/contracts';
 import {
   apiFetch,
-  clearAuthSession,
-  EmailVerificationRequired,
   getAuthToken,
-  login as loginWithApi,
   logout as logoutWithApi,
   maintainAuthSession,
   notifyUnauthorized,
   openAuthEventStream,
   readAuthSession,
-  register as registerWithApi,
   setUnauthorizedHandler,
   subscribeAuthSession,
   type AuthUser,
@@ -2561,324 +2558,34 @@ function WorkspaceApp({
   );
 }
 
-/** 登录退场时长，单位毫秒；与 auth-backdrop 的退出过渡保持一致。 */
-const AUTH_EXIT_DURATION_MS = 220;
+/** 登录页可恢复的业务意图，只打开新建表单，不自动提交项目或生成请求。 */
+type LoginRequestOptions = { createProject?: boolean };
 
-/** 保留现有登录侧栏，打开时进场、关闭时禁用交互并等待外层退场卸载。 */
-function LoginScreen({
-  open,
-  apiBaseUrl,
-  onAuthenticated,
-  onContinueAnonymous,
-  returnFocusTo,
-  onVerificationRequired,
-}: {
-  /** false 表示正在退场，表单与关闭命令均不能再次触发。 */
-  open: boolean;
-  apiBaseUrl: string;
-  onAuthenticated: (session: StoredAuthSession) => void;
-  /** 关闭认证提示并返回公开页面；不授予私有项目或接口的访问权限。 */
-  onContinueAnonymous?: () => void;
-  returnFocusTo?: HTMLElement | null;
-  onVerificationRequired: (email: string, deliveryFailed: boolean) => void;
-}) {
-  const [mode, setMode] = useState<'login' | 'register'>('login');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [displayName, setDisplayName] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  /** 首次绘制后进入可见状态，过渡可在快速开关时从当前位置反向播放。 */
-  const [entered, setEntered] = useState(false);
-  const backdropRef = useRef<HTMLDivElement | null>(null);
-  const dialogRef = useRef<HTMLElement | null>(null);
-  const busyRef = useRef(busy);
-  const openRef = useRef(open);
-  const dismissRef = useRef(onContinueAnonymous);
-  const returnFocusRef = useRef(returnFocusTo);
-  busyRef.current = busy;
-  openRef.current = open;
-  dismissRef.current = onContinueAnonymous;
-  returnFocusRef.current = returnFocusTo;
-
-  useEffect(() => {
-    const previousFocus =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const backdrop = backdropRef.current;
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    const backgroundSiblings = Array.from(backdrop?.parentElement?.children ?? []).filter(
-      (element): element is HTMLElement => element instanceof HTMLElement && element !== backdrop,
-    );
-    const backgroundState = backgroundSiblings.map((element) => ({
-      element,
-      inert: element.inert,
-      ariaHidden: element.getAttribute('aria-hidden'),
-    }));
-    backgroundSiblings.forEach((element) => {
-      element.inert = true;
-      element.setAttribute('aria-hidden', 'true');
-    });
-
-    const focusableElements = () =>
-      Array.from(
-        dialogRef.current?.querySelectorAll<HTMLElement>(
-          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-        ) ?? [],
-      ).filter((element) => element.getClientRects().length > 0);
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (!openRef.current) {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        return;
-      }
-      if (!isImeKeyboardEvent(event) && event.key === 'Escape') {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        if (!busyRef.current) dismissRef.current?.();
-        return;
-      }
-      if (event.key !== 'Tab') return;
-      const focusable = focusableElements();
-      if (focusable.length === 0) {
-        event.preventDefault();
-        return;
-      }
-      const first = focusable[0]!;
-      const last = focusable.at(-1)!;
-      if (!dialogRef.current?.contains(document.activeElement)) {
-        event.preventDefault();
-        first.focus();
-      } else if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener('keydown', handleKeyDown, true);
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown, true);
-      document.body.style.overflow = previousOverflow;
-      backgroundState.forEach(({ element, inert, ariaHidden }) => {
-        element.inert = inert;
-        if (ariaHidden === null) element.removeAttribute('aria-hidden');
-        else element.setAttribute('aria-hidden', ariaHidden);
-      });
-      const focusTarget = returnFocusRef.current?.isConnected
-        ? returnFocusRef.current
-        : previousFocus;
-      if (focusTarget?.isConnected) focusTarget.focus({ preventScroll: true });
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!open) {
-      setEntered(false);
-      return;
-    }
-    dialogRef.current
-      ?.querySelector<HTMLInputElement>('input[type="email"]')
-      ?.focus({ preventScroll: true });
-    if (!window.matchMedia?.('(prefers-reduced-motion: no-preference)').matches) {
-      setEntered(true);
-      return;
-    }
-    let frame = window.requestAnimationFrame(() => {
-      frame = window.requestAnimationFrame(() => setEntered(true));
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [open]);
-
-  /** 关闭只改变显示意图，动画期间的重复操作与在途认证不能再次触发关闭。 */
-  const dismiss = () => {
-    if (openRef.current && !busyRef.current) onContinueAnonymous?.();
-  };
-
-  const submit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!openRef.current || busyRef.current) return;
-    setError(null);
-    const normalizedEmail = email.trim();
-    if (!normalizedEmail || !password) {
-      setError('请输入邮箱和密码');
-      return;
-    }
-    if (mode === 'register' && password.length < 8) {
-      setError('密码至少需要 8 个字符');
-      return;
-    }
-    busyRef.current = true;
-    setBusy(true);
-    try {
-      const session =
-        mode === 'login'
-          ? await loginWithApi(apiBaseUrl, { email: normalizedEmail, password })
-          : await registerWithApi(apiBaseUrl, {
-              email: normalizedEmail,
-              password,
-              ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
-            });
-      onAuthenticated(session);
-    } catch (requestError) {
-      if (requestError instanceof EmailVerificationRequired) {
-        setPassword('');
-        onVerificationRequired(requestError.email, requestError.deliveryFailed);
-        return;
-      }
-      const message = requestError instanceof Error ? requestError.message : '认证失败';
-      setError(
-        message === 'invalid email or password'
-          ? '邮箱或密码不正确'
-          : message === 'email is already registered'
-            ? '该邮箱已注册，请直接登录'
-            : message,
-      );
-    } finally {
-      busyRef.current = false;
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div
-      ref={backdropRef}
-      className="settings-backdrop auth-backdrop"
-      data-state={open ? (entered ? 'open' : 'entering') : 'closing'}
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) dismiss();
-      }}
-    >
-      <section
-        ref={dialogRef}
-        className="settings-panel auth-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="auth-title"
-        aria-hidden={!open || undefined}
-        inert={!open || undefined}
-      >
-        <div className="panel-heading">
-          <div>
-            <p className="eyebrow">Multimodal Canvas</p>
-            <h1 id="auth-title">{mode === 'login' ? '登录工作区' : '创建账户'}</h1>
-          </div>
-          <div className="auth-heading-actions">
-            <UserCircle size={22} aria-hidden="true" />
-            {onContinueAnonymous && (
-              <button
-                type="button"
-                className="icon-button"
-                aria-label="关闭登录"
-                title="关闭"
-                disabled={busy || !open}
-                onClick={dismiss}
-              >
-                <X size={17} aria-hidden="true" />
-              </button>
-            )}
-          </div>
-        </div>
-        <p className="settings-status">
-          {mode === 'login'
-            ? '登录后可访问项目、资源和运行记录。'
-            : '注册后请验证邮箱，完成账户激活。'}
-        </p>
-        <form
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && isImeKeyboardEvent(event)) event.preventDefault();
-          }}
-          onSubmit={(event) => void submit(event)}
-        >
-          {mode === 'register' && (
-            <label className="settings-field">
-              <span>显示名称（可选）</span>
-              <ImeInput
-                value={displayName}
-                onValueChange={setDisplayName}
-                autoComplete="name"
-                disabled={busy || !open}
-              />
-            </label>
-          )}
-          <label className="settings-field">
-            <span>邮箱</span>
-            <ImeInput
-              type="email"
-              required
-              value={email}
-              onValueChange={setEmail}
-              autoComplete="email"
-              disabled={busy || !open}
-            />
-          </label>
-          <label className="settings-field">
-            <span>密码</span>
-            <ImeInput
-              type="password"
-              required
-              minLength={mode === 'register' ? 8 : undefined}
-              value={password}
-              onValueChange={setPassword}
-              autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-              disabled={busy || !open}
-            />
-          </label>
-          {error && (
-            <p className="settings-field-error" role="alert">
-              {error}
-            </p>
-          )}
-          <div className="settings-actions">
-            <button type="submit" className="button button-primary" disabled={busy || !open}>
-              {busy && <LoaderCircle className="spin" size={15} />}
-              {busy ? '处理中' : mode === 'login' ? '登录' : '注册'}
-            </button>
-            <button
-              type="button"
-              className="button button-secondary"
-              disabled={busy || !open}
-              onClick={() => {
-                setMode((current) => (current === 'login' ? 'register' : 'login'));
-                setError(null);
-              }}
-            >
-              {mode === 'login' ? '创建账户' : '返回登录'}
-            </button>
-          </div>
-        </form>
-        {onContinueAnonymous && (
-          <button
-            type="button"
-            className="settings-delete"
-            disabled={busy || !open}
-            onClick={dismiss}
-          >
-            继续匿名使用
-          </button>
-        )}
-      </section>
-    </div>
-  );
-}
-
-/** 渲染公开页面和受保护的项目路由；创建操作在认证成功后恢复表单。 */
+/** 渲染独立认证页面、公开页面和受保护项目；创建意图通过受控 URL 接续。 */
 function RoutedApplication({
   authUser,
   onRequestLogin,
   onLoggedOut,
   onSessionChanged,
+  onAuthenticated,
 }: {
   authUser: AuthUser | null;
-  onRequestLogin: (afterAuthenticated?: () => void) => void;
+  onRequestLogin: (options?: LoginRequestOptions) => void;
   onLoggedOut: () => void;
   onSessionChanged: (session: StoredAuthSession) => void;
+  onAuthenticated: (session: StoredAuthSession, source: 'login' | 'verification') => void;
 }) {
   const route = useAppRoute();
   const navigate = useAppNavigate();
   const queryClient = useQueryClient();
+  /** 邮件状态提示变化不重建表单；只有身份、用途或返回目标变化才丢弃当前输入。 */
+  const authenticationParams = new URLSearchParams(window.location.search);
+  const authenticationKey = JSON.stringify([
+    route.id === 'authentication' ? route.page : '',
+    authenticationParams.get('email'),
+    authenticationParams.get('purpose') ?? 'register',
+    readAuthReturnPath(),
+  ]);
   const isAuthenticated = Boolean(authUser);
   const projectsQuery = useProjectsQuery(false, isAuthenticated);
   const scopedProjectId =
@@ -2914,11 +2621,19 @@ function RoutedApplication({
     setShowProjectCreate(true);
   }, []);
 
+  useEffect(() => {
+    if (route.id !== 'workspace' || !route.createProject || !authUser) return;
+    if (projectCreateOwnerId !== authUser.id) setProjectCreateName('未命名项目');
+    setProjectCreateError('');
+    resumeProjectCreate();
+    navigate(appPaths.workspace, { replace: true, transition: false });
+  }, [authUser, navigate, projectCreateOwnerId, resumeProjectCreate, route]);
+
   const openProjectCreate = useCallback(() => {
     setProjectCreateName('未命名项目');
     setProjectCreateError('');
     if (!getAuthToken()) {
-      onRequestLogin(resumeProjectCreate);
+      onRequestLogin({ createProject: true });
       return;
     }
     resumeProjectCreate();
@@ -2927,7 +2642,7 @@ function RoutedApplication({
   const createWorkspaceProject = useCallback(async () => {
     if (!getAuthToken()) {
       setShowProjectCreate(false);
-      onRequestLogin(resumeProjectCreate);
+      onRequestLogin({ createProject: true });
       return;
     }
     const name = projectCreateName.trim();
@@ -2947,7 +2662,7 @@ function RoutedApplication({
       });
       if (response.status === 401) {
         if (!getAuthToken() && window.location.pathname === requestingPath)
-          onRequestLogin(resumeProjectCreate);
+          onRequestLogin({ createProject: true });
         return;
       }
       const result = (await response.json().catch(() => ({}))) as {
@@ -2971,10 +2686,20 @@ function RoutedApplication({
       if (!readAuthSession() || readAuthSession()?.user.id === requestingUserId)
         setIsCreatingProject(false);
     }
-  }, [navigate, onRequestLogin, projectCreateName, queryClient, resumeProjectCreate]);
+  }, [navigate, onRequestLogin, projectCreateName, queryClient]);
 
   let content;
-  if (route.id === 'management') {
+  if (route.id === 'authentication') {
+    content = (
+      <AuthenticationPage
+        key={authenticationKey}
+        page={route.page}
+        authUser={authUser}
+        onAuthenticated={onAuthenticated}
+        onRequestLogin={() => onRequestLogin()}
+      />
+    );
+  } else if (route.id === 'management') {
     content = (
       <ManagementPage
         routePath={route.pathname}
@@ -3128,34 +2853,17 @@ function AppContent() {
   const queryClient = useQueryClient();
   const navigate = useAppNavigate();
   const route = useAppRoute();
+  const authReturnPath = readAuthReturnPath();
+  const verificationPurpose = new URLSearchParams(window.location.search).get('purpose');
   const isPrivateRoute =
     route.id === 'project' ||
     route.id === 'settings' ||
-    (route.id === 'management' && !['/admin', '/auth/verify'].includes(route.pathname));
+    (route.id === 'management' && route.pathname !== '/admin');
   const [authSession, setAuthSession] = useState<StoredAuthSession | null>(() => readAuthSession());
-  const [authRequired, setAuthRequired] = useState(false);
-  /** 显示意图关闭后仍保留登录侧栏，完成退场才交还焦点和继续后续流程。 */
-  const authPresent = usePresence(authRequired, AUTH_EXIT_DURATION_MS);
-  const authPresentRef = useRef(authPresent);
-  authPresentRef.current = authPresent;
   const [authNotice, setAuthNotice] = useState<string | null>(null);
   /** 监听回调使用最新身份，续期/资料变更不清空同一用户的项目缓存。 */
   const authSessionRef = useRef(authSession);
   authSessionRef.current = authSession;
-  /** 注册验证结束后恢复此前页面，秘密和密码不进入 URL。 */
-  const verificationReturnRef = useRef<string | null>(null);
-  const authTriggerRef = useRef<HTMLElement | null>(null);
-  /** 仅保存当前用户操作；关闭登录后丢弃，认证成功后最多执行一次。 */
-  const afterAuthenticatedRef = useRef<(() => void) | undefined>(undefined);
-  /** 认证成功或转入邮箱验证的后续动作，只在登录层卸载后执行一次。 */
-  const afterAuthDismissRef = useRef<(() => void) | undefined>(undefined);
-
-  useEffect(() => {
-    if (authPresent) return;
-    const afterDismiss = afterAuthDismissRef.current;
-    afterAuthDismissRef.current = undefined;
-    afterDismiss?.();
-  }, [authPresent]);
 
   useEffect(
     () =>
@@ -3184,12 +2892,25 @@ function AppContent() {
       queryClient.clear();
       setAuthSession(null);
       // 公开页面的后台校验失败只退回匿名态，不打断主页浏览。
-      if (isPrivateRoute) setAuthRequired(true);
+      if (isPrivateRoute)
+        navigate(
+          buildAuthPagePath('login', `${window.location.pathname}${window.location.search}`),
+          { replace: true, transition: false },
+        );
     });
-  }, [isPrivateRoute, queryClient]);
+  }, [isPrivateRoute, navigate, queryClient]);
+
+  useEffect(() => {
+    if (!authSession || route.id !== 'authentication' || route.page === 'verify') return;
+    navigate(route.page === 'login' ? authReturnPath : appPaths.workspace, {
+      replace: true,
+      transition: false,
+    });
+  }, [authReturnPath, authSession, navigate, route]);
 
   const handleAuthenticated = useCallback(
-    (session: StoredAuthSession, verificationCompleted = false) => {
+    (session: StoredAuthSession, source: 'login' | 'verification' | 'account' = 'account') => {
+      if (readAuthSession()?.user.id !== session.user.id) return;
       if (
         authSessionRef.current?.user.id !== session.user.id ||
         authSessionRef.current?.user.role !== session.user.role
@@ -3197,47 +2918,36 @@ function AppContent() {
         queryClient.clear();
       authSessionRef.current = session;
       setAuthSession(session);
-      setAuthRequired(false);
       setAuthNotice(null);
-      const afterAuthenticated = afterAuthenticatedRef.current;
-      afterAuthenticatedRef.current = undefined;
-      const resume = () => {
-        if (readAuthSession()?.user.id !== session.user.id) return;
-        if (route.pathname === appPaths.verify && verificationCompleted) {
-          const purpose = new URLSearchParams(window.location.search).get('purpose');
-          navigate(
-            (purpose === 'email' ? appPaths.security : verificationReturnRef.current) ??
-              (session.user.role === 'admin' ? appPaths.admin : appPaths.workspace),
-          );
-          verificationReturnRef.current = null;
-        }
-        afterAuthenticated?.();
-      };
-      if (authPresentRef.current) afterAuthDismissRef.current = resume;
-      else resume();
+      if (source === 'account') return;
+      const target =
+        source === 'login'
+          ? authReturnPath
+          : verificationPurpose === 'email'
+            ? appPaths.security
+            : verificationPurpose === 'bootstrap'
+              ? appPaths.admin
+              : appPaths.workspace;
+      navigate(target, { replace: true, transition: false });
     },
-    [navigate, queryClient, route.pathname],
+    [authReturnPath, navigate, queryClient, verificationPurpose],
   );
 
   const handleRequestLogin = useCallback(
-    (afterAuthenticated?: () => void) => {
-      const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      if (!trigger?.closest('.auth-backdrop')) authTriggerRef.current = trigger;
-      afterAuthDismissRef.current = undefined;
-      afterAuthenticatedRef.current = afterAuthenticated;
+    (options?: LoginRequestOptions) => {
       if (!getAuthToken()) {
         queryClient.clear();
         setAuthSession(null);
       }
-      setAuthRequired(true);
+      const next = options?.createProject
+        ? `${appPaths.workspace}?create=1`
+        : route.id === 'home' || route.id === 'workspace' || route.id === 'contact'
+          ? appPaths.workspace
+          : `${window.location.pathname}${window.location.search}`;
+      navigate(buildAuthPagePath('login', next));
     },
-    [queryClient],
+    [navigate, queryClient, route.id],
   );
-  const handleContinueAnonymous = useCallback(() => {
-    afterAuthenticatedRef.current = undefined;
-    afterAuthDismissRef.current = undefined;
-    setAuthRequired(false);
-  }, []);
 
   const handleLogout = useCallback(() => {
     const token = getAuthToken();
@@ -3252,9 +2962,6 @@ function AppContent() {
         if (current && current.accessToken !== token) return;
         queryClient.clear();
         setAuthSession(null);
-        setAuthRequired(false);
-        afterAuthenticatedRef.current = undefined;
-        afterAuthDismissRef.current = undefined;
         navigate(appPaths.home, { transition: false });
       });
   }, [navigate, queryClient]);
@@ -3274,25 +2981,9 @@ function AppContent() {
         authUser={authSession?.user ?? null}
         onRequestLogin={handleRequestLogin}
         onLoggedOut={handleLogout}
-        onSessionChanged={(session) => handleAuthenticated(session, true)}
+        onSessionChanged={(session) => handleAuthenticated(session)}
+        onAuthenticated={handleAuthenticated}
       />
-      {authPresent && (
-        <LoginScreen
-          open={authRequired}
-          apiBaseUrl={API_BASE_URL}
-          onAuthenticated={handleAuthenticated}
-          onContinueAnonymous={handleContinueAnonymous}
-          returnFocusTo={authTriggerRef.current}
-          onVerificationRequired={(email, deliveryFailed) => {
-            verificationReturnRef.current = `${window.location.pathname}${window.location.search}`;
-            afterAuthDismissRef.current = () =>
-              navigate(
-                `${appPaths.verify}?${new URLSearchParams({ email, ...(deliveryFailed ? { delivery: 'failed' } : {}) })}`,
-              );
-            setAuthRequired(false);
-          }}
-        />
-      )}
       {authNotice && (
         <div className="notice notice-error" role="alert">
           <span>{authNotice}</span>

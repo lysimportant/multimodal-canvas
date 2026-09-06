@@ -725,7 +725,7 @@ test('keeps the narrow project menu visible inside the viewport', async ({ page 
   expect(menuBounds!.x + menuBounds!.width).toBeLessThanOrEqual(320);
 });
 
-test('traps login focus and restores it to the trigger', async ({ page }) => {
+test('独立登录页支持键盘和浏览器返回，不锁住工作台焦点', async ({ page }) => {
   await page.goto(projectPath);
 
   await page.getByRole('button', { name: '账户菜单' }).click();
@@ -735,22 +735,20 @@ test('traps login focus and restores it to the trigger', async ({ page }) => {
   await page.getByRole('link', { name: '进入工作台', exact: true }).click();
   const trigger = page.locator('.mc-workspace-heading').getByRole('button', { name: '新建项目' });
   await trigger.click();
-  const dialog = page.getByRole('dialog', { name: '登录工作区' });
-  const closeButton = dialog.getByRole('button', { name: '关闭登录' });
-  const continueButton = dialog.getByRole('button', { name: '继续匿名使用' });
-
-  await expect(dialog).toBeVisible();
-  await expect(page.locator('.mc-page-shell')).toHaveAttribute('inert', '');
-  await expect(dialog.getByRole('textbox', { name: '邮箱', exact: true })).toBeFocused();
-  await page.keyboard.press('Shift+Tab');
-  await expect(closeButton).toBeFocused();
-  await page.keyboard.press('Shift+Tab');
-  await expect(continueButton).toBeFocused();
+  await expect(page.getByRole('heading', { name: '登录工作台' })).toBeVisible();
+  expect(new URL(page.url()).pathname).toBe('/auth/login');
+  expect(new URL(page.url()).searchParams.get('next')).toBe('/workspace?create=1');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.getByLabel('邮箱', { exact: true }).focus();
   await page.keyboard.press('Tab');
-  await expect(closeButton).toBeFocused();
+  await expect(page.getByLabel('密码', { exact: true })).toBeFocused();
   await page.keyboard.press('Escape');
-  await expect(dialog).toHaveCount(0);
-  await expect(trigger).toBeFocused();
+  await expect(page.getByRole('heading', { name: '登录工作台' })).toBeVisible();
+  await page.goBack();
+  await expect(page).toHaveURL('/workspace');
+  await expect(page.getByRole('heading', { name: '项目工作台' })).toBeVisible();
+  await expect(trigger).toBeEnabled();
+  await expect(page.locator('.mc-page-shell')).not.toHaveAttribute('inert');
 });
 
 test('匿名新建项目在登录后恢复表单，显式提交才创建并进入画布', async ({ page }) => {
@@ -785,15 +783,18 @@ test('匿名新建项目在登录后恢复表单，显式提交才创建并进�
   });
   await page.getByRole('link', { name: '进入工作台', exact: true }).click();
   await page.locator('.mc-workspace-heading').getByRole('button', { name: '新建项目' }).click();
-  const loginDialog = page.getByRole('dialog', { name: '登录工作区' });
-  await expect(loginDialog).toBeVisible();
+  const loginHeading = page.getByRole('heading', { name: '登录工作台' });
+  await expect(loginHeading).toBeVisible();
+  expect(new URL(page.url()).pathname).toBe('/auth/login');
+  expect(new URL(page.url()).searchParams.get('next')).toBe('/workspace?create=1');
   expect(projectPosts).toHaveLength(0);
-  await loginDialog.getByLabel('邮箱').fill('e2e@example.com');
-  await loginDialog.getByLabel('密码').fill('synthetic-test-password');
-  await loginDialog.getByRole('button', { name: '登录', exact: true }).click();
+  await page.getByLabel('邮箱', { exact: true }).fill('e2e@example.com');
+  await page.getByLabel('密码', { exact: true }).fill('synthetic-test-password');
+  await page.getByRole('button', { name: '登录', exact: true }).click();
   const createDialog = page.getByRole('dialog', { name: '新建项目' });
   await expect(createDialog).toBeVisible();
-  await expect(loginDialog).toHaveCount(0);
+  await expect(loginHeading).toHaveCount(0);
+  await expect(page).toHaveURL('/workspace');
   expect(projectPosts).toHaveLength(0);
   await createDialog.getByLabel('项目名称').fill(project.name);
   await createDialog.getByRole('button', { name: '创建项目', exact: true }).click();

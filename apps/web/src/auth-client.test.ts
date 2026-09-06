@@ -80,22 +80,22 @@ function projectRequests(method: 'GET' | 'POST') {
   });
 }
 
-/** 在当前认证弹窗提交合成账户；注册时同时填写可选显示名称。 */
+/** 在独立认证页面提交合成账户；确认密码只用于前端校验，不进入 API 请求。 */
 async function submitAuthentication(
   user: ReturnType<typeof userEvent.setup>,
   action: 'login' | 'register' = 'login',
   email = response.user.email,
 ) {
-  const dialog = screen.getByRole('dialog', { name: '登录工作区' });
+  await screen.findByRole('heading', { name: '登录工作台' });
   if (action === 'register') {
-    await user.click(within(dialog).getByRole('button', { name: '创建账户' }));
-    await user.type(within(dialog).getByLabelText('显示名称（可选）'), '认证测试');
+    await user.click(screen.getByRole('link', { name: '创建账户' }));
+    await screen.findByRole('heading', { name: '创建账户' });
+    await user.type(screen.getByLabelText('显示名称（可选）'), '认证测试');
+    await user.type(screen.getByLabelText('确认密码'), 'synthetic-test-password');
   }
-  await user.type(within(dialog).getByLabelText('邮箱'), email);
-  await user.type(within(dialog).getByLabelText('密码'), 'synthetic-test-password');
-  await user.click(
-    within(dialog).getByRole('button', { name: action === 'login' ? '登录' : '注册' }),
-  );
+  await user.type(screen.getByLabelText('邮箱'), email);
+  await user.type(screen.getByLabelText('密码'), 'synthetic-test-password');
+  await user.click(screen.getByRole('button', { name: action === 'login' ? '登录' : '注册' }));
 }
 
 /** 校验匿名工作台为空态，且不会因禁用查询而永久加载或禁用创建入口。 */
@@ -259,8 +259,18 @@ describe.each([{ development: false }, { development: true }])(
         const path = requestPath(input);
         const method = init?.method ?? 'GET';
         if (path === '/v1/projects' && method === 'GET') return jsonResponse({ projects: [] });
-        if ((path === '/v1/auth/login' || path === '/v1/auth/register') && method === 'POST') {
+        if ((path === '/v1/auth/login' || path === '/v1/auth/verify') && method === 'POST') {
           return jsonResponse(response);
+        }
+        if (path === '/v1/auth/register' && method === 'POST') {
+          return jsonResponse(
+            {
+              verificationRequired: true,
+              email: response.user.email,
+              delivery: { id: 'synthetic-register-delivery', status: 'accepted' },
+            },
+            202,
+          );
         }
         throw new Error(`未预期的认证回归请求：${method} ${path}`);
       });
@@ -292,83 +302,122 @@ describe.each([{ development: false }, { development: true }])(
       expect(globalThis.fetch).not.toHaveBeenCalled();
     });
 
-    it.each([0, 1])('匿名工作台的新建入口 %i 只弹登录，不发送项目 POST', async (triggerIndex) => {
-      const user = userEvent.setup();
-      render(createElement(App));
+    it.each([0, 1])(
+      '匿名工作台的新建入口 %i 进入独立登录页，不发送项目 POST',
+      async (triggerIndex) => {
+        const user = userEvent.setup();
+        render(createElement(App));
 
-      expectAnonymousWorkspace();
-      await user.click(screen.getAllByRole('button', { name: '新建项目' })[triggerIndex]!);
+        expectAnonymousWorkspace();
+        await user.click(screen.getAllByRole('button', { name: '新建项目' })[triggerIndex]!);
 
-      expect(screen.getByRole('dialog', { name: '登录工作区' })).toBeVisible();
-      expect(screen.queryByRole('dialog', { name: '新建项目' })).not.toBeInTheDocument();
-      expect(projectRequests('POST')).toHaveLength(0);
-      expect(globalThis.fetch).not.toHaveBeenCalled();
-    });
+        expect(await screen.findByRole('heading', { name: '登录工作台' })).toBeVisible();
+        expect(window.location.pathname).toBe('/auth/login');
+        expect(new URLSearchParams(window.location.search).get('next')).toBe('/workspace?create=1');
+        expect(screen.queryByRole('dialog', { name: '新建项目' })).not.toBeInTheDocument();
+        expect(projectRequests('POST')).toHaveLength(0);
+        expect(globalThis.fetch).not.toHaveBeenCalled();
+      },
+    );
 
-    it.each(['关闭登录', '继续匿名使用', 'backdrop', 'Escape'])(
-      '%s 可取消登录并将焦点恢复至新建入口',
+    it.each(['返回工作台', '浏览器后退'])(
+      '%s 可离开独立登录页，保持匿名且不提交项目',
       async (dismissal) => {
         const user = userEvent.setup();
         render(createElement(App));
         const trigger = screen.getAllByRole('button', { name: '新建项目' })[0]!;
 
         await user.click(trigger);
-        const dialog = screen.getByRole('dialog', { name: '登录工作区' });
-        expect(within(dialog).getByLabelText('邮箱')).toHaveFocus();
-        if (dismissal === 'Escape') {
-          await user.keyboard('{Escape}');
-        } else if (dismissal === 'backdrop') {
-          fireEvent.mouseDown(dialog.closest('.settings-backdrop')!);
+        expect(await screen.findByRole('heading', { name: '登录工作台' })).toBeVisible();
+        if (dismissal === '浏览器后退') {
+          act(() => window.history.back());
         } else {
-          await user.click(within(dialog).getByRole('button', { name: dismissal }));
+          await user.click(screen.getByRole('link', { name: '返回工作台' }));
         }
-
+        await screen.findByRole('heading', { name: '项目工作台' });
         expectAnonymousWorkspace();
-        await waitFor(() => expect(trigger).toHaveFocus());
         expect(readAuthSession()).toBeNull();
         expect(globalThis.fetch).not.toHaveBeenCalled();
       },
     );
 
-    it.each(['login', 'register'] as const)(
-      '%s 成功续接新建表单，不自动创建项目',
-      async (action) => {
-        const user = userEvent.setup();
-        render(createElement(App));
-        await user.click(screen.getAllByRole('button', { name: '新建项目' })[0]!);
+    it('登录成功消费 create 查询并续接新建表单，不自动创建项目', async () => {
+      const user = userEvent.setup();
+      render(createElement(App));
+      await user.click(screen.getAllByRole('button', { name: '新建项目' })[0]!);
 
-        await submitAuthentication(user, action);
+      await submitAuthentication(user);
 
-        const createDialog = await screen.findByRole('dialog', { name: '新建项目' });
-        expect(screen.queryByRole('dialog', { name: '登录工作区' })).not.toBeInTheDocument();
-        expect(within(createDialog).getByLabelText('项目名称')).toHaveValue('未命名项目');
-        expect(readAuthSession()?.user.id).toBe(response.user.id);
-        expect(globalThis.fetch).toHaveBeenCalledWith(
-          expect.stringMatching(new RegExp(`/v1/auth/${action}$`)),
-          expect.objectContaining({
-            method: 'POST',
-            body: JSON.stringify({
-              email: response.user.email,
-              password: 'synthetic-test-password',
-              ...(action === 'register' ? { displayName: '认证测试' } : {}),
-            }),
+      const createDialog = await screen.findByRole('dialog', { name: '新建项目' });
+      expect(screen.queryByRole('heading', { name: '登录工作台' })).not.toBeInTheDocument();
+      expect(window.location.pathname).toBe('/workspace');
+      expect(new URLSearchParams(window.location.search).has('create')).toBe(false);
+      expect(within(createDialog).getByLabelText('项目名称')).toHaveValue('未命名项目');
+      expect(readAuthSession()?.user.id).toBe(response.user.id);
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        expect.stringMatching(/\/v1\/auth\/login$/),
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({
+            email: response.user.email,
+            password: 'synthetic-test-password',
           }),
-        );
-        await waitFor(() => expect(projectRequests('GET')).toHaveLength(1));
-        expect(new Headers(projectRequests('GET')[0]?.[1]?.headers).get('authorization')).toBe(
-          `Bearer ${response.accessToken}`,
-        );
-        expect(projectRequests('POST')).toHaveLength(0);
+        }),
+      );
+      await waitFor(() => expect(projectRequests('GET')).toHaveLength(1));
+      expect(new Headers(projectRequests('GET')[0]?.[1]?.headers).get('authorization')).toBe(
+        `Bearer ${response.accessToken}`,
+      );
+      expect(projectRequests('POST')).toHaveLength(0);
 
-        await user.click(within(createDialog).getByRole('button', { name: '取消' }));
-        expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-        expect(projectRequests('POST')).toHaveLength(0);
-        await user.click(screen.getAllByRole('button', { name: '新建项目' })[0]!);
-        expect(screen.getByRole('dialog', { name: '新建项目' })).toBeVisible();
-        expect(screen.queryByRole('dialog', { name: '登录工作区' })).not.toBeInTheDocument();
-        expect(projectRequests('POST')).toHaveLength(0);
-      },
-    );
+      await user.click(within(createDialog).getByRole('button', { name: '取消' }));
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(projectRequests('POST')).toHaveLength(0);
+      await user.click(screen.getAllByRole('button', { name: '新建项目' })[0]!);
+      expect(screen.getByRole('dialog', { name: '新建项目' })).toBeVisible();
+      expect(screen.queryByRole('heading', { name: '登录工作台' })).not.toBeInTheDocument();
+      expect(projectRequests('POST')).toHaveLength(0);
+    });
+
+    it('注册202后确认验证码直接进入工作台，丢弃新建意图且不自动创建项目', async () => {
+      const user = userEvent.setup();
+      render(createElement(App));
+      await user.click(screen.getAllByRole('button', { name: '新建项目' })[0]!);
+      await submitAuthentication(user, 'register');
+      expect(await screen.findByRole('heading', { name: '验证你的邮箱' })).toBeVisible();
+      expect(window.location.pathname).toBe('/auth/verify');
+      expect(readAuthSession()).toBeNull();
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        expect.stringMatching(/\/v1\/auth\/register$/),
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({
+            email: response.user.email,
+            password: 'synthetic-test-password',
+            displayName: '认证测试',
+          }),
+        }),
+      );
+      await user.type(screen.getByLabelText('邮箱验证码'), '123456');
+      await user.click(screen.getByRole('button', { name: '确认' }));
+      expect(await screen.findByRole('heading', { name: '项目工作台' })).toBeVisible();
+      expect(window.location.pathname).toBe('/workspace');
+      expect(window.location.search).toBe('');
+      expect(screen.queryByRole('dialog', { name: '新建项目' })).not.toBeInTheDocument();
+      expect(readAuthSession()?.user.id).toBe(response.user.id);
+      expect(projectRequests('POST')).toHaveLength(0);
+      const registrationPosts = vi
+        .mocked(globalThis.fetch)
+        .mock.calls.filter(([input]) => requestPath(input) === '/v1/auth/register');
+      expect(registrationPosts).toHaveLength(1);
+      expect(JSON.parse(String(registrationPosts[0]?.[1]?.body))).not.toHaveProperty(
+        'confirmPassword',
+      );
+      await waitFor(() => expect(projectRequests('GET')).toHaveLength(1));
+      expect(new Headers(projectRequests('GET')[0]?.[1]?.headers).get('authorization')).toBe(
+        `Bearer ${response.accessToken}`,
+      );
+    });
 
     it('认证失败保留登录表单，取消后仍可匿名浏览', async () => {
       vi.mocked(globalThis.fetch).mockResolvedValue(
@@ -380,11 +429,11 @@ describe.each([{ development: false }, { development: true }])(
 
       await submitAuthentication(user);
 
-      const dialog = screen.getByRole('dialog', { name: '登录工作区' });
-      expect(await within(dialog).findByRole('alert')).toHaveTextContent('邮箱或密码不正确');
+      expect(await screen.findByRole('alert')).toHaveTextContent('邮箱或密码不正确');
+      expect(window.location.pathname).toBe('/auth/login');
       expect(readAuthSession()).toBeNull();
       expect(projectRequests('POST')).toHaveLength(0);
-      await user.click(within(dialog).getByRole('button', { name: '关闭登录' }));
+      await user.click(screen.getByRole('link', { name: '返回工作台' }));
       expectAnonymousWorkspace();
     });
 
@@ -428,12 +477,13 @@ describe.each([{ development: false }, { development: true }])(
 
       await user.click(screen.getAllByRole('button', { name: '新建项目' })[0]!);
 
-      expect(screen.getByRole('dialog', { name: '登录工作区' })).toBeVisible();
+      expect(await screen.findByRole('heading', { name: '登录工作台' })).toBeVisible();
+      expect(window.location.pathname).toBe('/auth/login');
       expect(screen.queryByRole('dialog', { name: '新建项目' })).not.toBeInTheDocument();
       expect(getAuthToken()).toBeUndefined();
       expect(projectRequests('POST')).toHaveLength(0);
       expect(projectRequests('GET')).toHaveLength(1);
-      await user.keyboard('{Escape}');
+      await user.click(screen.getByRole('link', { name: '返回工作台' }));
       expectAnonymousWorkspace();
     });
 
@@ -450,7 +500,8 @@ describe.each([{ development: false }, { development: true }])(
 
       await user.click(within(createDialog).getByRole('button', { name: '创建项目' }));
 
-      expect(screen.getByRole('dialog', { name: '登录工作区' })).toBeVisible();
+      expect(await screen.findByRole('heading', { name: '登录工作台' })).toBeVisible();
+      expect(new URLSearchParams(window.location.search).get('next')).toBe('/workspace?create=1');
       expect(screen.queryByRole('dialog', { name: '新建项目' })).not.toBeInTheDocument();
       expect(getAuthToken()).toBeUndefined();
       expect(projectRequests('POST')).toHaveLength(0);
@@ -462,7 +513,7 @@ describe.each([{ development: false }, { development: true }])(
     });
 
     it.each(['/projects/private-project', '/settings', '/settings?project=private-project'])(
-      '匿名进入 %s 只显示登录状态，取消登录或返回工作台均不请求私有数据',
+      '匿名进入 %s 只显示登录状态，独立登录页返回也不请求私有数据',
       async (pathname) => {
         window.history.replaceState(null, '', pathname);
         const user = userEvent.setup();
@@ -474,10 +525,11 @@ describe.each([{ development: false }, { development: true }])(
         expect(globalThis.fetch).not.toHaveBeenCalled();
         const trigger = screen.getByRole('button', { name: '登录' });
         await user.click(trigger);
-        expect(screen.getByRole('dialog', { name: '登录工作区' })).toBeVisible();
-        await user.keyboard('{Escape}');
-        expect(screen.getByRole('heading', { name: '请先登录' })).toBeVisible();
-        expect(trigger).toHaveFocus();
+        expect(await screen.findByRole('heading', { name: '登录工作台' })).toBeVisible();
+        expect(window.location.pathname).toBe('/auth/login');
+        expect(new URLSearchParams(window.location.search).get('next')).toBe(pathname);
+        act(() => window.history.back());
+        expect(await screen.findByRole('heading', { name: '请先登录' })).toBeVisible();
         expect(globalThis.fetch).not.toHaveBeenCalled();
 
         await user.click(screen.getByRole('link', { name: '返回工作台' }));
@@ -498,7 +550,7 @@ describe.each([{ development: false }, { development: true }])(
       const user = userEvent.setup();
       render(createElement(App));
       await user.click(screen.getAllByRole('button', { name: '新建项目' })[0]!);
-      await user.keyboard('{Escape}');
+      await user.click(screen.getByRole('link', { name: '返回工作台' }));
       act(() => navigateApp('/projects/private-project'));
       await user.click(screen.getByRole('button', { name: '登录' }));
 
@@ -665,11 +717,11 @@ describe.each([{ development: false }, { development: true }])(
       expect(screen.queryByText(lateProject.name)).not.toBeInTheDocument();
       expect(queryClient.getQueryData(projectQueryKeys.detail(lateProject.id))).toBeUndefined();
       expect(queryClient.getQueryData(projectQueryKeys.list())).not.toContainEqual(lateProject);
-      expect(screen.queryByRole('dialog', { name: '登录工作区' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: '登录工作台' })).not.toBeInTheDocument();
     });
 
     it.each(['/projects/private-project', '/settings?project=private-project'])(
-      '已认证的 %s 返回 401 后可关闭登录并返回公共工作台',
+      '已认证的 %s 返回 401 后进入独立登录页，仍可返回公共工作台',
       async (pathname) => {
         const defaultFetch = vi.mocked(globalThis.fetch).getMockImplementation()!;
         vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
@@ -683,10 +735,9 @@ describe.each([{ development: false }, { development: true }])(
         const user = userEvent.setup();
         render(createElement(App));
 
-        expect(await screen.findByRole('dialog', { name: '登录工作区' })).toBeVisible();
+        expect(await screen.findByRole('heading', { name: '登录工作台' })).toBeVisible();
+        expect(window.location.pathname).toBe('/auth/login');
         expect(readAuthSession()).toBeNull();
-        await user.keyboard('{Escape}');
-        expect(screen.getByRole('heading', { name: '请先登录' })).toBeVisible();
         const requestsBeforeLeaving = vi.mocked(globalThis.fetch).mock.calls.length;
         await user.click(screen.getByRole('link', { name: '返回工作台' }));
         expectAnonymousWorkspace();
@@ -714,7 +765,8 @@ describe.each([{ development: false }, { development: true }])(
 
       await user.click(within(createDialog).getByRole('button', { name: '创建项目' }));
 
-      expect(await screen.findByRole('dialog', { name: '登录工作区' })).toBeVisible();
+      expect(await screen.findByRole('heading', { name: '登录工作台' })).toBeVisible();
+      expect(window.location.pathname).toBe('/auth/login');
       expect(screen.queryByRole('dialog', { name: '新建项目' })).not.toBeInTheDocument();
       expect(readAuthSession()).toBeNull();
       expect(projectRequests('POST')).toHaveLength(1);
