@@ -29,7 +29,7 @@
 - [x] 最终完整画布 23 项冒烟、首页专项 7 项、Web 454 项及节点尺寸/测量回归通过；Git 交付与日志位置见检查点。
 - [ ] 正式部署、真实数据盘点和真实邮件送达验收需具体操作确认；当前预览未载入真实 SMTP。
 
-交接阅读顺序：本文件、[UI/UX 与全站质检清单](docs/admin-ui-ux-review.md)、[首页视觉、动画与鼠标特效 TODO](docs/homepage-ui-motion-todo.md)、[现有认证入口记录](TODO-AUTH-ENTRY.md)、当前 Git 状态及最新验证结果。中断后从最近一次已验证状态继续。
+交接阅读顺序：本文件、[UI/UX 与全站质检清单](docs/admin-ui-ux-review.md)、[首页视觉、动画与鼠标特效 TODO](docs/homepage-ui-motion-todo.md)、[现有认证入口记录](TODO-AUTH-ENTRY.md)、[本地计费与模型广场执行方案](docs/billing-and-model-marketplace-plan.md)、当前 Git 状态及最新验证结果。中断后从最近一次已验证状态继续。
 
 ## 实施前的问题与基础
 
