@@ -401,3 +401,32 @@
     transform: translateX(-18px);
   }
 }
+
+.mc-navigation-overlay[data-state='closed'] {
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .mc-navigation-overlay[data-state='closed'] {
+    animation: mc-navigation-fade-out 180ms ease-in both;
+  }
+  .mc-navigation-overlay[data-state='closed'] .mc-navigation-drawer {
+    animation: mc-navigation-slide-out 180ms ease-in both;
+  }
+}
+@keyframes mc-navigation-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes mc-navigation-slide-out {
+  to {
+    transform: translateX(-22px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mc-app-navigation,
+  .mc-navigation-icon-button {
+    transition: none;
+  }
+}

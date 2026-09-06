@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildApp } from './app';
 import { MemoryAssetStore } from './assets';
-import { signHs256Jwt } from './auth';
+import { MemoryAuthStore } from './auth-store';
+import { AuthService } from './auth-service';
 import { MemoryProjectStore } from './projects';
 import { MemoryRunService } from './runs';
 
@@ -46,9 +47,19 @@ function assetCanvas(assetId: string): CanvasDocument {
   };
 }
 
-function bearerHeaders(ownerId: string) {
-  const token = signHs256Jwt({ sub: ownerId, exp: Math.floor(Date.now() / 1000) + 300 }, jwtSecret);
-  return { authorization: `Bearer ${token}` };
+/** 资源冻结回归使用真实可撤销会话，不依赖已移除的默认无 sid JWT 接入口。 */
+async function authenticatedOwner() {
+  const authStore = new MemoryAuthStore();
+  const auth = new AuthService({ store: authStore, jwtSecret });
+  const session = await auth.register({
+    email: 'freeze-owner@example.test',
+    password: 'synthetic-owner-password',
+  });
+  return {
+    authStore,
+    ownerId: session.user.id,
+    headers: { authorization: `Bearer ${session.accessToken}` },
+  };
 }
 
 describe('run asset version snapshots', () => {
@@ -122,7 +133,7 @@ describe('run asset version snapshots', () => {
 
   it('allows an authenticated owner to freeze a global asset', async () => {
     vi.stubEnv('API_JWT_SECRET', jwtSecret);
-    const ownerId = '123e4567-e89b-42d3-a456-426614174001';
+    const { authStore, ownerId, headers } = await authenticatedOwner();
     const assetStore = new MemoryAssetStore();
     const projectStore = new MemoryProjectStore();
     const project = await projectStore.create({ name: 'Owner project' }, { ownerId });
@@ -136,13 +147,13 @@ describe('run asset version snapshots', () => {
     const listVersions = vi.spyOn(assetStore, 'listVersions');
     await projectStore.updateCanvas(project.id, assetCanvas(asset.id), { ownerId });
     const runService = new MemoryRunService();
-    const app = buildApp({ logger: false, assetStore, projectStore, runService });
+    const app = buildApp({ logger: false, assetStore, projectStore, runService, authStore });
     apps.push(app);
 
     const submitted = await app.inject({
       method: 'POST',
       url: '/v1/nodes/node_target/runs',
-      headers: bearerHeaders(ownerId),
+      headers,
       payload: { projectId: project.id },
     });
 
@@ -190,7 +201,7 @@ describe('run asset version snapshots', () => {
 
   it('rejects missing and unauthorized asset references before queueing', async () => {
     vi.stubEnv('API_JWT_SECRET', jwtSecret);
-    const ownerId = '123e4567-e89b-42d3-a456-426614174002';
+    const { authStore, ownerId, headers } = await authenticatedOwner();
     const otherOwnerId = '123e4567-e89b-42d3-a456-426614174003';
     const assetStore = new MemoryAssetStore();
     const projectStore = new MemoryProjectStore();
@@ -211,9 +222,8 @@ describe('run asset version snapshots', () => {
       mimeType: 'text/plain',
       content: Buffer.from('other owner'),
     });
-    const app = buildApp({ logger: false, assetStore, projectStore });
+    const app = buildApp({ logger: false, assetStore, projectStore, authStore });
     apps.push(app);
-    const headers = bearerHeaders(ownerId);
 
     for (const assetId of [crossProjectAsset.id, otherOwnerAsset.id, 'asset_missing']) {
       const currentCanvas = await projectStore.getCanvas(project.id, { ownerId });

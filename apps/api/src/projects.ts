@@ -15,7 +15,7 @@ import type {
 export type Project = {
   id: string;
   name: string;
-  /** Omitted from legacy unscoped stores and API-token responses. */
+  /** 资源授权与后台分组使用的实际项目所有者；历史无归属项目省略。 */
   ownerId?: string;
   createdAt: string;
   updatedAt: string;
@@ -567,7 +567,7 @@ export class PrismaProjectStore implements ProjectStore {
         ...(scope.ownerId ? { ownerId: scope.ownerId } : {}),
         canvas: { create: {} },
       },
-      select: { id: true, name: true, createdAt: true, updatedAt: true },
+      select: { id: true, ownerId: true, name: true, createdAt: true, updatedAt: true },
     });
     return mapProject(project);
   }
@@ -579,7 +579,14 @@ export class PrismaProjectStore implements ProjectStore {
         ...(options.includeArchived ? {} : { archivedAt: null }),
       },
       orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }, { id: 'desc' }],
-      select: { id: true, name: true, createdAt: true, updatedAt: true, archivedAt: true },
+      select: {
+        id: true,
+        ownerId: true,
+        name: true,
+        createdAt: true,
+        updatedAt: true,
+        archivedAt: true,
+      },
     });
     return projects.map(mapProject);
   }
@@ -589,7 +596,14 @@ export class PrismaProjectStore implements ProjectStore {
       ? await this.prisma.project.findFirst({ where: { id, ownerId: scope.ownerId } })
       : await this.prisma.project.findUnique({
           where: { id },
-          select: { id: true, name: true, createdAt: true, updatedAt: true, archivedAt: true },
+          select: {
+            id: true,
+            ownerId: true,
+            name: true,
+            createdAt: true,
+            updatedAt: true,
+            archivedAt: true,
+          },
         });
     return project ? mapProject(project) : undefined;
   }
@@ -606,7 +620,14 @@ export class PrismaProjectStore implements ProjectStore {
     const updated = await this.prisma.project.update({
       where: { id },
       data: { ...(input.name === undefined ? {} : { name: input.name }) },
-      select: { id: true, name: true, createdAt: true, updatedAt: true, archivedAt: true },
+      select: {
+        id: true,
+        ownerId: true,
+        name: true,
+        createdAt: true,
+        updatedAt: true,
+        archivedAt: true,
+      },
     });
     return mapProject(updated);
   }
@@ -623,7 +644,14 @@ export class PrismaProjectStore implements ProjectStore {
     const updated = await this.prisma.project.update({
       where: { id },
       data: { archivedAt: archived ? new Date() : null },
-      select: { id: true, name: true, createdAt: true, updatedAt: true, archivedAt: true },
+      select: {
+        id: true,
+        ownerId: true,
+        name: true,
+        createdAt: true,
+        updatedAt: true,
+        archivedAt: true,
+      },
     });
     return mapProject(updated);
   }
@@ -683,7 +711,15 @@ export class PrismaProjectStore implements ProjectStore {
             OR: [
               {
                 projectId: id,
-                ...(scope.ownerId ? { ownerId: scope.ownerId } : {}),
+                // 项目身份已经核验；空 owner 历史资源只能随该项目接续，明确属于他人的资源仍拒绝。
+                ...(scope.ownerId
+                  ? {
+                      OR: [
+                        { ownerId: scope.ownerId },
+                        { ownerId: null, project: { ownerId: scope.ownerId } },
+                      ],
+                    }
+                  : {}),
               },
               {
                 projectId: null,
@@ -843,8 +879,10 @@ export class PrismaProjectStore implements ProjectStore {
   }
 }
 
+/** 保留实际项目归属供跨存储授权使用，不以调用者身份伪造 owner。 */
 function mapProject(project: {
   id: string;
+  ownerId?: string | null;
   name: string;
   createdAt: Date;
   updatedAt: Date;
@@ -852,6 +890,7 @@ function mapProject(project: {
 }): Project {
   return {
     id: project.id,
+    ...(project.ownerId ? { ownerId: project.ownerId } : {}),
     name: project.name,
     createdAt: project.createdAt.toISOString(),
     updatedAt: project.updatedAt.toISOString(),

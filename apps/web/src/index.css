@@ -1038,26 +1038,35 @@ h2 {
 
 .flow-node-header {
   flex: 0 0 auto;
-  gap: 7px;
+  flex-wrap: wrap;
+  gap: 4px 7px;
   margin-bottom: 9px;
+}
+
+.flow-node-header > .media-icon {
+  flex: 0 0 24px;
 }
 
 .flow-node-disabled-badge {
   background: #f2e5e3;
   border-radius: 999px;
   color: #9b4035;
+  flex: 0 0 auto;
   font-size: 9px;
   font-weight: 700;
   padding: 2px 6px;
+  white-space: nowrap;
 }
 
 .flow-node-stale-badge {
   background: #fff1d6;
   border-radius: 999px;
   color: #8b5a13;
+  flex: 0 0 auto;
   font-size: 9px;
   font-weight: 700;
   padding: 2px 6px;
+  white-space: nowrap;
 }
 
 .flow-node-enabled-toggle {
@@ -1124,14 +1133,17 @@ h2 {
 
 .flow-node-type {
   color: #4e5a6a;
+  flex: 0 0 auto;
   font-size: 11px;
   font-weight: 650;
+  white-space: nowrap;
 }
 
 .flow-node-mode-badge {
   align-items: center;
   border-radius: 999px;
   display: inline-flex;
+  flex: 0 0 auto;
   font-size: 9px;
   font-weight: 700;
   gap: 3px;
@@ -1159,6 +1171,7 @@ h2 {
   align-items: center;
   color: #18794e;
   display: inline-flex;
+  flex: 0 0 12px;
   margin-left: auto;
 }
 

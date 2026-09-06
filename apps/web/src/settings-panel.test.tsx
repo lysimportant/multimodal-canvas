@@ -12,6 +12,7 @@ import { App } from './App';
 import { clearAuthSession, persistAuthSession } from './auth-client';
 import type { AiCredentialSummary } from './contracts';
 import { createAppQueryClient } from './query/client';
+import { aiCredentialsQueryKey } from './query/credentials';
 import {
   useWorkspacePreferences,
   workspacePreferenceDefaults,
@@ -221,7 +222,7 @@ describe('SettingsPanel', () => {
     useWorkspacePreferences.setState(workspacePreferenceDefaults);
     window.localStorage.clear();
     clearAuthSession();
-    // 私有设置测试使用合成有效会话，不修改模型、凭据等业务断言。
+    // 平台连接与凭据只允许管理员配置；使用合成管理员会话验证原有业务断言。
     persistAuthSession({
       accessToken: 'synthetic-settings-test-token',
       tokenType: 'Bearer',
@@ -230,7 +231,7 @@ describe('SettingsPanel', () => {
       user: {
         id: 'settings-test-user',
         email: 'settings@example.com',
-        role: 'user',
+        role: 'admin',
         createdAt: '2026-01-01T00:00:00.000Z',
       },
     });
@@ -1026,5 +1027,84 @@ describe('SettingsPanel', () => {
 
     expect(screen.getByRole('dialog', { name: 'AI 连接' })).toBeInTheDocument();
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(0);
+  });
+
+  it('晚到的平台保存响应不重填换号后的凭据缓存或继续刷新模型', async () => {
+    const immediateFetch = fetchMock;
+    let resolveSave!: (response: Response) => void;
+    const delayedFetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/v1/settings/ai') && init?.method === 'PATCH')
+        return new Promise<Response>((resolve) => {
+          resolveSave = resolve;
+        });
+      return immediateFetch(input, init);
+    });
+    vi.stubGlobal('fetch', delayedFetch);
+    const client = createAppQueryClient();
+    const notice = vi.fn();
+    const view = render(
+      <QueryClientProvider client={client}>
+        <SettingsPanel
+          projectId={null}
+          projectName="平台全局"
+          onClose={vi.fn()}
+          onNotice={notice}
+        />
+      </QueryClientProvider>,
+    );
+    const dialog = await screen.findByRole('dialog', { name: 'AI 连接' });
+    await waitFor(() =>
+      expect(within(dialog).getByLabelText('New API Base URL')).toHaveValue(settings.baseUrl),
+    );
+    fireEvent.change(within(dialog).getByLabelText('API Key'), {
+      target: { value: 'synthetic-new-key' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(resolveSave).toBeTypeOf('function'));
+    view.unmount();
+    persistAuthSession({
+      accessToken: 'synthetic-new-user-token',
+      tokenType: 'Bearer',
+      expiresIn: 900,
+      expiresAt: new Date(Date.now() + 900_000).toISOString(),
+      user: {
+        id: 'new-ordinary-user',
+        email: 'ordinary@example.test',
+        role: 'user',
+        createdAt: '2026-01-01T00:00:00Z',
+      },
+    });
+    client.clear();
+    await act(async () => {
+      resolveSave(jsonResponse({ settings, credentials }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(client.getQueryData(aiCredentialsQueryKey)).toBeUndefined();
+    expect(
+      delayedFetch.mock.calls.filter(([input]) => String(input).includes('/models/refresh')),
+    ).toHaveLength(0);
+    expect(notice).not.toHaveBeenCalled();
+  });
+
+  it('相同用户被降为普通用户后立即卸载已打开的平台设置', async () => {
+    const { dialog } = await openSettings();
+    expect(dialog).toBeVisible();
+    act(() => {
+      persistAuthSession({
+        accessToken: 'synthetic-settings-test-token',
+        tokenType: 'Bearer',
+        expiresIn: 900,
+        expiresAt: new Date(Date.now() + 900_000).toISOString(),
+        user: {
+          id: 'settings-test-user',
+          email: 'settings@example.com',
+          role: 'user',
+          createdAt: '2026-01-01T00:00:00Z',
+        },
+      });
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'AI 连接' })).not.toBeInTheDocument(),
+    );
   });
 });

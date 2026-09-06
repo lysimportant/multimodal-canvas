@@ -3,29 +3,149 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildApp } from './app';
 import { MemoryAuthStore } from './auth-store';
 import { hashPassword } from './auth-service';
+import { TestAccountMailSender, registerVerifiedTestUser } from './fixtures/account-mail';
+import { signHs256Jwt } from './auth';
 
 afterEach(() => {
   vi.unstubAllEnvs();
 });
 
 describe('authentication routes', () => {
+  it.each(['test', 'production'])(
+    '账户存储在 %s 环境拒绝旧无 sid JWT，显式 userExists 不能绕过',
+    async (environment) => {
+      vi.stubEnv('NODE_ENV', environment);
+      vi.stubEnv('API_AUTH_TOKEN', 'synthetic-service-token');
+      vi.stubEnv('API_JWT_SECRET', 'route-test-secret');
+      const authStore = new MemoryAuthStore();
+      const user = await authStore.createUser({
+        email: 'legacy-route@example.test',
+        passwordHash: await hashPassword('correct password'),
+      });
+      const userExists = vi.fn(async () => true);
+      const app = buildApp({ logger: false, authStore, userExists });
+      const now = Math.floor(Date.now() / 1000);
+      const legacy = signHs256Jwt(
+        { sub: user.id, iat: now, exp: now + 3600, role: 'user' },
+        'route-test-secret',
+      );
+      try {
+        const denied = await app.inject({
+          method: 'GET',
+          url: '/v1/projects',
+          headers: { authorization: `Bearer ${legacy}` },
+        });
+        expect(denied.statusCode).toBe(401);
+        expect(denied.json().code).toBe('session_required');
+        expect(userExists).not.toHaveBeenCalled();
+        const login = await app.inject({
+          method: 'POST',
+          url: '/v1/auth/login',
+          payload: { email: user.email, password: 'correct password' },
+        });
+        expect(login.statusCode).toBe(200);
+        const oldHeaders = { authorization: `Bearer ${login.json().accessToken}` };
+        const changed = await app.inject({
+          method: 'POST',
+          url: '/v1/account/password',
+          headers: oldHeaders,
+          payload: { currentPassword: 'correct password', newPassword: 'replacement password' },
+        });
+        expect(changed.statusCode).toBe(200);
+        expect(
+          (await app.inject({ method: 'GET', url: '/v1/projects', headers: oldHeaders }))
+            .statusCode,
+        ).toBe(401);
+        expect(
+          (
+            await app.inject({
+              method: 'GET',
+              url: '/v1/projects',
+              headers: { authorization: `Bearer ${legacy}` },
+            })
+          ).statusCode,
+        ).toBe(401);
+        expect(
+          (
+            await app.inject({
+              method: 'GET',
+              url: '/v1/projects',
+              headers: { authorization: `Bearer ${changed.json().accessToken}` },
+            })
+          ).statusCode,
+        ).toBe(200);
+        expect(
+          (
+            await app.inject({
+              method: 'GET',
+              url: '/v1/projects',
+              headers: { authorization: 'Bearer synthetic-service-token' },
+            })
+          ).statusCode,
+        ).toBe(200);
+      } finally {
+        await app.close();
+      }
+    },
+  );
+
+  it('无账户存储的显式外部用户适配器仍可接续无 sid JWT，但不能获得管理员设置权限', async () => {
+    vi.stubEnv('NODE_ENV', 'test');
+    vi.stubEnv('API_AUTH_TOKEN', '');
+    vi.stubEnv('API_JWT_SECRET', 'route-test-secret');
+    const userExists = vi.fn(async () => true);
+    const app = buildApp({ logger: false, userExists });
+    const token = signHs256Jwt(
+      {
+        sub: '11111111-1111-4111-8111-111111111111',
+        exp: Math.floor(Date.now() / 1000) + 300,
+        role: 'admin',
+      },
+      'route-test-secret',
+    );
+    try {
+      expect(
+        (
+          await app.inject({
+            method: 'GET',
+            url: '/v1/projects',
+            headers: { authorization: `Bearer ${token}` },
+          })
+        ).statusCode,
+      ).toBe(200);
+      expect(userExists).toHaveBeenCalled();
+      expect(
+        (
+          await app.inject({
+            method: 'GET',
+            url: '/v1/settings/ai',
+            headers: { authorization: `Bearer ${token}` },
+          })
+        ).statusCode,
+      ).toBe(403);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('registers, logs in, resolves the current user, and revokes one session', async () => {
     vi.stubEnv('NODE_ENV', 'test');
     vi.stubEnv('API_AUTH_TOKEN', '');
     vi.stubEnv('API_JWT_SECRET', 'route-test-secret');
-    const app = buildApp({ logger: false, authStore: new MemoryAuthStore() });
+    const mail = new TestAccountMailSender();
+    const app = buildApp({
+      logger: false,
+      authStore: new MemoryAuthStore(),
+      accountMailSender: mail,
+    });
 
     try {
-      const registered = await app.inject({
-        method: 'POST',
-        url: '/v1/auth/register',
-        payload: {
-          email: 'Route.User@Example.com',
-          password: 'correct password',
-          displayName: 'Route User',
-        },
+      const registered = await registerVerifiedTestUser(app, mail, {
+        email: 'Route.User@Example.com',
+        password: 'correct password',
+        displayName: 'Route User',
       });
-      expect(registered.statusCode).toBe(201);
+      expect(registered.statusCode).toBe(200);
       expect(registered.json()).toMatchObject({
         tokenType: 'Bearer',
         user: { email: 'route.user@example.com', displayName: 'Route User', role: 'user' },
@@ -72,13 +192,17 @@ describe('authentication routes', () => {
     vi.stubEnv('NODE_ENV', 'test');
     vi.stubEnv('API_AUTH_TOKEN', '');
     vi.stubEnv('API_JWT_SECRET', 'route-test-secret');
-    const app = buildApp({ logger: false, authStore: new MemoryAuthStore() });
+    const mail = new TestAccountMailSender();
+    const app = buildApp({
+      logger: false,
+      authStore: new MemoryAuthStore(),
+      accountMailSender: mail,
+    });
 
     try {
-      const registration = await app.inject({
-        method: 'POST',
-        url: '/v1/auth/register',
-        payload: { email: 'sessions@example.com', password: 'correct password' },
+      const registration = await registerVerifiedTestUser(app, mail, {
+        email: 'sessions@example.com',
+        password: 'correct password',
       });
       const firstToken = registration.json().accessToken as string;
       const secondLogin = await app.inject({
@@ -147,7 +271,8 @@ describe('authentication routes', () => {
       passwordHash: await hashPassword('correct password'),
       role: 'admin',
     });
-    const app = buildApp({ logger: false, authStore });
+    const mail = new TestAccountMailSender();
+    const app = buildApp({ logger: false, authStore, accountMailSender: mail });
 
     try {
       const adminLogin = await app.inject({
@@ -164,10 +289,9 @@ describe('authentication routes', () => {
       });
       expect(adminSettings.statusCode).toBe(200);
 
-      const regularRegistration = await app.inject({
-        method: 'POST',
-        url: '/v1/auth/register',
-        payload: { email: 'user@example.com', password: 'correct password' },
+      const regularRegistration = await registerVerifiedTestUser(app, mail, {
+        email: 'user@example.com',
+        password: 'correct password',
       });
       const regularToken = regularRegistration.json().accessToken as string;
       const regularSettings = await app.inject({

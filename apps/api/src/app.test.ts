@@ -8,6 +8,7 @@ import { MemoryProjectStore } from './projects';
 import { AiSettingsStore, type ModelCatalogEntry } from './settings';
 import { MemoryRunService } from './runs';
 import { MemoryWebhookEventStore } from './webhooks';
+import { TestAccountMailSender, registerVerifiedTestUser } from './fixtures/account-mail';
 
 const appSettingsStore = new AiSettingsStore('app-test-model-catalog');
 const appModelRefreshedAt = new Date().toISOString();
@@ -466,15 +467,15 @@ describe('asset endpoints', () => {
     vi.stubEnv('API_JWT_SECRET', 'asset-list-query-secret');
     const assetStore = new MemoryAssetStore();
     const authStore = new MemoryAuthStore();
-    const listApp = buildApp({ logger: false, assetStore, authStore });
+    const mail = new TestAccountMailSender();
+    const listApp = buildApp({ logger: false, assetStore, authStore, accountMailSender: mail });
     try {
       const register = async (email: string) => {
-        const response = await listApp.inject({
-          method: 'POST',
-          url: '/v1/auth/register',
-          payload: { email, password: 'strong-password-123' },
+        const response = await registerVerifiedTestUser(listApp, mail, {
+          email,
+          password: 'strong-password-123',
         });
-        expect(response.statusCode).toBe(201);
+        expect(response.statusCode).toBe(200);
         return response.json() as { accessToken: string; user: { id: string } };
       };
       const owner = await register('asset-list-owner@example.test');
@@ -573,15 +574,21 @@ describe('asset endpoints', () => {
     const assetStore = new MemoryAssetStore();
     const projectStore = new MemoryProjectStore();
     const authStore = new MemoryAuthStore();
-    const listApp = buildApp({ logger: false, assetStore, projectStore, authStore });
+    const mail = new TestAccountMailSender();
+    const listApp = buildApp({
+      logger: false,
+      assetStore,
+      projectStore,
+      authStore,
+      accountMailSender: mail,
+    });
     try {
       const register = async (email: string) => {
-        const response = await listApp.inject({
-          method: 'POST',
-          url: '/v1/auth/register',
-          payload: { email, password: 'strong-password-123' },
+        const response = await registerVerifiedTestUser(listApp, mail, {
+          email,
+          password: 'strong-password-123',
         });
-        expect(response.statusCode).toBe(201);
+        expect(response.statusCode).toBe(200);
         return response.json() as { accessToken: string; user: { id: string } };
       };
       const owner = await register('asset-project-owner@example.test');
@@ -914,13 +921,13 @@ describe('asset endpoints', () => {
   it('does not allow a different authenticated user to mint or use an asset URL', async () => {
     vi.stubEnv('API_JWT_SECRET', 'asset-url-test-secret');
     vi.stubEnv('API_AUTH_TOKEN', '');
-    const scopedApp = buildApp({ logger: false });
+    const mail = new TestAccountMailSender();
+    const scopedApp = buildApp({ logger: false, accountMailSender: mail });
     try {
       const register = async (email: string) => {
-        const response = await scopedApp.inject({
-          method: 'POST',
-          url: '/v1/auth/register',
-          payload: { email, password: 'strong-password-123' },
+        const response = await registerVerifiedTestUser(scopedApp, mail, {
+          email,
+          password: 'strong-password-123',
         });
         return response.json().accessToken as string;
       };
@@ -1995,27 +2002,27 @@ describe('T15C credential and model resolution contracts', () => {
     );
     settingsStore.replaceModels([imageModel('shared-image')], credential.id);
     const authRunService = new MemoryRunService();
+    const mail = new TestAccountMailSender();
     const authApp = buildApp({
       logger: false,
       authStore,
       projectStore,
       settingsStore,
       runService: authRunService,
+      accountMailSender: mail,
     });
 
     try {
-      const aliceRegistration = await authApp.inject({
-        method: 'POST',
-        url: '/v1/auth/register',
-        payload: { email: 'alice-t15c@example.test', password: 'alice-password' },
+      const aliceRegistration = await registerVerifiedTestUser(authApp, mail, {
+        email: 'alice-t15c@example.test',
+        password: 'alice-password',
       });
-      const bobRegistration = await authApp.inject({
-        method: 'POST',
-        url: '/v1/auth/register',
-        payload: { email: 'bob-t15c@example.test', password: 'bob-password' },
+      const bobRegistration = await registerVerifiedTestUser(authApp, mail, {
+        email: 'bob-t15c@example.test',
+        password: 'bob-password',
       });
-      expect(aliceRegistration.statusCode).toBe(201);
-      expect(bobRegistration.statusCode).toBe(201);
+      expect(aliceRegistration.statusCode).toBe(200);
+      expect(bobRegistration.statusCode).toBe(200);
       const aliceToken = aliceRegistration.json().accessToken as string;
       const bobToken = bobRegistration.json().accessToken as string;
       const aliceHeaders = { authorization: `Bearer ${aliceToken}` };

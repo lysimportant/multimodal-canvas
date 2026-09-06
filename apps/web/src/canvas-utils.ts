@@ -170,16 +170,21 @@ function isPersistableDimension(value: number | undefined): value is number {
 }
 
 /**
- * 保留历史调用点并返回原节点。
+ * 为新节点及未保存尺寸的旧节点补齐固定初始尺寸。
  *
- * 节点尺寸完全由 React Flow 的初始尺寸和用户拖拽结果控制，内容回显不会再改变
- * 外层节点的尺寸，因此这里不再注入 `maxWidth`、`maxHeight` 自动膨胀上限。
+ * 已有宽高逐项保留，不读取预览内容或 DOM 测量值，不设置自动增长上限。
+ * 这样占位内容切换为真实媒体时不会把无确定高度的弹性预览区压缩为零。
  *
- * @param node 需要保持尺寸不变的 React Flow 节点。
- * @returns 原节点对象。
+ * @param node 新建、恢复或粘贴的 React Flow 节点，宽高单位为像素。
+ * @returns 尺寸齐全时返回原对象，否则返回补齐缺失宽高的副本。
  */
 export function withNodeAutoGrowthLimit(node: AssetFlowNode): AssetFlowNode {
-  return node;
+  if (node.width !== undefined && node.height !== undefined) return node;
+  return {
+    ...node,
+    width: node.width ?? DEFAULT_FLOW_NODE_WIDTH,
+    height: node.height ?? DEFAULT_FLOW_NODE_HEIGHT,
+  };
 }
 
 /** 历史兼容调用点：节点始终允许用户通过 React Flow 手动调整尺寸。 */

@@ -1,0 +1,95 @@
+.mc-account {
+  position: relative;
+  flex: 0 0 34px;
+}
+.mc-account-menu {
+  position: absolute;
+  inset: calc(100% + 9px) 0 auto auto;
+  width: min(256px, calc(100vw - 24px));
+  z-index: 95;
+  background: var(--mc-surface, #fff);
+  border: 1px solid var(--mc-border, #dce2e0);
+  border-radius: 7px;
+  padding: 6px;
+  box-shadow: 0 12px 30px rgb(0 0 0 / 14%);
+  color: var(--mc-text, #202624);
+  transform-origin: top right;
+}
+.mc-account-identity {
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+  border-bottom: 1px solid var(--mc-border, #dce2e0);
+  margin-bottom: 4px;
+}
+.mc-account-identity strong {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.mc-account-identity span {
+  font-size: 12px;
+  color: var(--mc-text-muted, #687386);
+  overflow-wrap: anywhere;
+}
+.mc-account-identity small {
+  font-size: 11px;
+  color: var(--mc-accent, #18794e);
+}
+.mc-account-menu [role='menuitem'] {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  width: 100%;
+  border: 0;
+  border-radius: 4px;
+  padding: 7px 10px;
+  color: inherit;
+  background: transparent;
+  text-decoration: none;
+  font-size: 13px;
+  text-align: left;
+}
+.mc-account-menu [role='menuitem']:hover,
+.mc-account-menu [role='menuitem']:focus-visible {
+  background: var(--mc-surface-soft, #f0f4f2);
+  outline: 2px solid var(--mc-accent, #18794e);
+  outline-offset: -2px;
+}
+.mc-account-menu .mc-account-logout {
+  color: var(--mc-danger, #bd3e46);
+  border-top: 1px solid var(--mc-border, #dce2e0);
+  margin-top: 4px;
+  border-radius: 0;
+}
+.mc-account-menu[data-state='closed'] {
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .mc-account-menu[data-state='open'] {
+    animation: mc-account-enter 140ms ease-out both;
+  }
+  .mc-account-menu[data-state='closed'] {
+    animation: mc-account-exit 140ms ease-in both;
+  }
+}
+@keyframes mc-account-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-5px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes mc-account-exit {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}

@@ -13,9 +13,9 @@
   "dependencies": {
     "@aws-sdk/client-s3": "3.862.0",
     "@aws-sdk/s3-request-presigner": "3.862.0",
-    "@multimodal-canvas/credential-crypto": "workspace:*",
     "@fastify/cors": "^10.0.2",
     "@fastify/multipart": "^9.2.1",
+    "@multimodal-canvas/credential-crypto": "workspace:*",
     "@multimodal-canvas/domain": "workspace:*",
     "@multimodal-canvas/observability": "workspace:*",
     "@multimodal-canvas/providers": "workspace:*",
@@ -24,10 +24,12 @@
     "fastify": "^5.2.1",
     "fflate": "0.8.3",
     "ioredis": "^5.11.1",
+    "nodemailer": "^10.0.0",
     "zod": "3.24.2"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
+    "@types/nodemailer": "^8.0.1",
     "tsx": "^4.19.3",
     "vitest": "^3.0.8"
   }

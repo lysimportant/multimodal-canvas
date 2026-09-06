@@ -13,7 +13,7 @@ import {
   DialogTitle,
   Input,
 } from '@multimodal-canvas/ui';
-import { apiFetch } from '../auth-client';
+import { apiFetch, getAuthSessionGeneration } from '../auth-client';
 import type { AiCredentialSummary } from '../contracts';
 import { aiSettingsFormSchema, type AiSettingsFormValues } from '../forms/ai-settings';
 import {
@@ -170,9 +170,21 @@ export function SettingsPanel({
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const settingsLoadControllerRef = useRef<AbortController | null>(null);
   const settingsRequestVersionRef = useRef(0);
+  /** 面板卸载后不得再向外层通知或恢复敏感缓存。 */
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  /** 续期保持同一代次；换号、退出及权限改变使旧操作失效。 */
+  const isCurrentRequest = (generation: number) =>
+    mountedRef.current && generation === getAuthSessionGeneration();
 
   const reportNotice = useCallback(
     (nextNotice: { kind: 'error' | 'success'; message: string }) => {
+      if (!mountedRef.current) return;
       setPanelNotice(nextNotice);
       onNotice(nextNotice);
     },
@@ -186,7 +198,12 @@ export function SettingsPanel({
   }, []);
 
   const applySettingsAndCredentials = useCallback(
-    async (nextSettings: AiSettings, nextCredentials: AiCredentialSummary[]) => {
+    async (
+      nextSettings: AiSettings,
+      nextCredentials: AiCredentialSummary[],
+      requestGeneration: number,
+    ) => {
+      if (!mountedRef.current || requestGeneration !== getAuthSessionGeneration()) return;
       setSettings(nextSettings);
       setImeResetKey((current) => current + 1);
       reset({
@@ -194,7 +211,7 @@ export function SettingsPanel({
         apiKey: '',
         configured: nextSettings.configured,
       });
-      await replaceAiCredentials(queryClient, nextCredentials);
+      await replaceAiCredentials(queryClient, nextCredentials, requestGeneration);
     },
     [queryClient, reset],
   );
@@ -292,6 +309,7 @@ export function SettingsPanel({
   }, [projectId, reportNotice]);
 
   const save = async ({ baseUrl, apiKey }: AiSettingsFormValues) => {
+    const generation = getAuthSessionGeneration();
     setBusy(true);
     stopSettingsLoad();
     try {
@@ -305,16 +323,20 @@ export function SettingsPanel({
         credentials?: AiCredentialSummary[];
         error?: string;
       };
+      if (!isCurrentRequest(generation)) return;
       if (!response.ok || !result.settings || !result.credentials) {
         throw new Error(result.error ?? '设置保存失败');
       }
-      await applySettingsAndCredentials(result.settings, result.credentials);
+      await applySettingsAndCredentials(result.settings, result.credentials, generation);
+      if (!isCurrentRequest(generation)) return;
       try {
         await refreshModelCatalogMutation.mutateAsync(
           activeCredentialId(result.credentials) || undefined,
         );
+        if (!isCurrentRequest(generation)) return;
         reportNotice({ kind: 'success', message: 'AI 设置已保存，模型列表已自动刷新' });
       } catch (error) {
+        if (!isCurrentRequest(generation)) return;
         reportNotice({
           kind: 'error',
           message: `AI 设置已保存，但模型自动刷新失败：${
@@ -323,58 +345,67 @@ export function SettingsPanel({
         });
       }
     } catch (error) {
+      if (!isCurrentRequest(generation)) return;
       reportNotice({
         kind: 'error',
         message: error instanceof Error ? error.message : '设置保存失败',
       });
     } finally {
-      setBusy(false);
+      if (mountedRef.current) setBusy(false);
     }
   };
 
   const testConnection = async () => {
+    const generation = getAuthSessionGeneration();
     setBusy(true);
     try {
       const response = await apiFetch(`${API_BASE_URL}/v1/settings/ai/test`, { method: 'POST' });
       const result = (await response.json()) as {
         result?: { ok: boolean; modelCount?: number; error?: string };
       };
+      if (!isCurrentRequest(generation)) return;
       if (!result.result?.ok) throw new Error(result.result?.error ?? '连接失败');
       reportNotice({
         kind: 'success',
         message: `连接成功，发现 ${result.result.modelCount ?? 0} 个模型`,
       });
     } catch (error) {
+      if (!isCurrentRequest(generation)) return;
       reportNotice({
         kind: 'error',
         message: error instanceof Error ? error.message : '连接失败',
       });
     } finally {
-      setBusy(false);
+      if (mountedRef.current) setBusy(false);
     }
   };
 
   const refreshModels = async () => {
+    const generation = getAuthSessionGeneration();
     setBusy(true);
     try {
       await refreshModelCatalogMutation.mutateAsync(currentCredentialId);
+      if (!isCurrentRequest(generation)) return;
       reportNotice({ kind: 'success', message: '模型列表已刷新' });
     } catch (error) {
+      if (!isCurrentRequest(generation)) return;
       reportNotice({
         kind: 'error',
         message: error instanceof Error ? error.message : '模型刷新失败',
       });
     } finally {
-      setBusy(false);
+      if (mountedRef.current) setBusy(false);
     }
   };
 
   const activateCredential = async (credentialId: string) => {
     if (!credentialId || credentialId === activeCredentialId(credentials)) return;
+    const generation = getAuthSessionGeneration();
     setBusy(true);
     stopSettingsLoad();
     try {
       const result = await activateCredentialMutation.mutateAsync(credentialId);
+      if (!isCurrentRequest(generation)) return;
       setSettings(result.settings);
       setImeResetKey((current) => current + 1);
       reset({
@@ -384,8 +415,10 @@ export function SettingsPanel({
       });
       try {
         await refreshModelCatalogMutation.mutateAsync(credentialId);
+        if (!isCurrentRequest(generation)) return;
         reportNotice({ kind: 'success', message: '凭据已激活，模型列表已自动刷新' });
       } catch (error) {
+        if (!isCurrentRequest(generation)) return;
         reportNotice({
           kind: 'error',
           message: `凭据已激活，但模型自动刷新失败：${
@@ -394,16 +427,18 @@ export function SettingsPanel({
         });
       }
     } catch (error) {
+      if (!isCurrentRequest(generation)) return;
       reportNotice({
         kind: 'error',
         message: error instanceof Error ? error.message : '凭据激活失败',
       });
     } finally {
-      setBusy(false);
+      if (mountedRef.current) setBusy(false);
     }
   };
 
   const saveGlobalDefault = async (mediaType: MediaType, value: string) => {
+    const generation = getAuthSessionGeneration();
     const selection = parseSelection(value);
     setBusy(true);
     try {
@@ -417,26 +452,30 @@ export function SettingsPanel({
         credentials?: AiCredentialSummary[];
         error?: string;
       };
+      if (!isCurrentRequest(generation)) return;
       if (!response.ok || !result.settings || !result.credentials) {
         throw new Error(result.error ?? '默认模型保存失败');
       }
       setSettings(result.settings);
-      await replaceAiCredentials(queryClient, result.credentials);
+      await replaceAiCredentials(queryClient, result.credentials, generation);
+      if (!isCurrentRequest(generation)) return;
       reportNotice({
         kind: 'success',
         message: `平台全局${mediaLabels[mediaType]}默认模型已更新`,
       });
     } catch (error) {
+      if (!isCurrentRequest(generation)) return;
       reportNotice({
         kind: 'error',
         message: error instanceof Error ? error.message : '默认模型保存失败',
       });
     } finally {
-      setBusy(false);
+      if (mountedRef.current) setBusy(false);
     }
   };
 
   const saveProjectDefault = async (mediaType: MediaType, value: string) => {
+    const generation = getAuthSessionGeneration();
     const selection = parseSelection(value);
     if (!projectId) {
       reportNotice({ kind: 'error', message: '当前项目尚未加载，无法保存项目默认模型' });
@@ -457,6 +496,7 @@ export function SettingsPanel({
         defaults?: ModelDefaults;
         error?: string;
       };
+      if (!isCurrentRequest(generation)) return;
       if (!response.ok || !result.defaults) {
         throw new Error(result.error ?? '项目默认模型保存失败');
       }
@@ -468,16 +508,18 @@ export function SettingsPanel({
           : `${mediaLabels[mediaType]}已改为继承平台全局默认`,
       });
     } catch (error) {
+      if (!isCurrentRequest(generation)) return;
       reportNotice({
         kind: 'error',
         message: error instanceof Error ? error.message : '项目默认模型保存失败',
       });
     } finally {
-      setBusy(false);
+      if (mountedRef.current) setBusy(false);
     }
   };
 
   const deleteCredentials = async () => {
+    const generation = getAuthSessionGeneration();
     setBusy(true);
     try {
       const response = await apiFetch(`${API_BASE_URL}/v1/settings/ai/credentials`, {
@@ -488,19 +530,22 @@ export function SettingsPanel({
         credentials?: AiCredentialSummary[];
         error?: string;
       };
+      if (!isCurrentRequest(generation)) return;
       if (!response.ok || !result.settings || !result.credentials) {
         throw new Error(result.error ?? '凭据删除失败');
       }
       stopSettingsLoad();
-      await applySettingsAndCredentials(result.settings, result.credentials);
+      await applySettingsAndCredentials(result.settings, result.credentials, generation);
+      if (!isCurrentRequest(generation)) return;
       reportNotice({ kind: 'success', message: '凭据已删除' });
     } catch (error) {
+      if (!isCurrentRequest(generation)) return;
       reportNotice({
         kind: 'error',
         message: error instanceof Error ? error.message : '凭据删除失败',
       });
     } finally {
-      setBusy(false);
+      if (mountedRef.current) setBusy(false);
     }
   };
 

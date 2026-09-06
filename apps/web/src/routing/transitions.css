@@ -1,0 +1,34 @@
+@media (prefers-reduced-motion: no-preference) {
+  ::view-transition-old(root) {
+    animation: mc-page-exit 130ms ease-in both;
+  }
+  ::view-transition-new(root) {
+    animation: mc-page-enter 170ms ease-out both;
+  }
+  ::view-transition-group(root) {
+    animation-duration: 170ms;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(root),
+  ::view-transition-new(root),
+  ::view-transition-group(root) {
+    animation: none;
+  }
+}
+@keyframes mc-page-exit {
+  to {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+@keyframes mc-page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}

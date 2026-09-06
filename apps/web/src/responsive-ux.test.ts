@@ -115,6 +115,21 @@ describe('responsive UX CSS contracts', () => {
     );
   });
 
+  it('wraps whole node header badges without splitting labels or shrinking media icons', () => {
+    expect(normalizedCss).toMatch(/\.flow-node-header \{[^}]*flex-wrap: wrap;/);
+    expect(normalizedCss).toMatch(/\.flow-node-header > \.media-icon \{[^}]*flex: 0 0 24px;/);
+    for (const selector of [
+      'flow-node-type',
+      'flow-node-disabled-badge',
+      'flow-node-stale-badge',
+      'flow-node-mode-badge',
+    ]) {
+      expect(normalizedCss).toMatch(
+        new RegExp(`\\.${selector} \\{[^}]*flex: 0 0 auto;[^}]*white-space: nowrap;`),
+      );
+    }
+  });
+
   it('keeps the mobile node palette single-line and touch-scrollable', () => {
     expect(normalizedCss).toMatch(
       /@media \(max-width: 600px\)[\s\S]*?\.canvas-node-tools \{[^}]*flex-wrap: nowrap;[^}]*overflow-x: auto;[^}]*touch-action: pan-x;/,

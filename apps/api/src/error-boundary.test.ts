@@ -46,6 +46,31 @@ function testRunService(listByProject: RunService['listByProject']): RunService 
 }
 
 describe('API error boundary', () => {
+  it.each([
+    '{"apiKey":"synthetic-parser-secret",',
+    '{"name":"synthetic-parser-secret","__proto__":{"polluted":true}}',
+    '{"name":"synthetic-parser-secret","constructor":{"prototype":{"polluted":true}}}',
+  ])('JSON 解析失败返回脱敏 400，原型污染字段同样拒绝', async (payload) => {
+    const app = buildApp({ logger: false });
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        headers: { 'content-type': 'application/json' },
+        payload,
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({
+        code: 'internal_error',
+        requestId: expect.any(String),
+      });
+      expect(response.body).not.toContain('synthetic-parser-secret');
+      expect(Object.prototype).not.toHaveProperty('polluted');
+    } finally {
+      await app.close();
+    }
+  });
+
   it('does not expose an upstream model refresh diagnostic', async () => {
     const diagnosticMarker = 'upstream-model-refresh-internal-diagnostic';
     const settingsStore = new AiSettingsStore('error-boundary-test-secret', {

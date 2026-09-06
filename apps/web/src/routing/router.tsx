@@ -6,14 +6,18 @@ import {
   type MouseEvent,
   type ReactNode,
 } from 'react';
+import { flushSync } from 'react-dom';
 
 import { parseAppRoute, type AppRoute } from './routes';
+import './transitions.css';
 
 const APP_NAVIGATION_EVENT = 'multimodal-canvas:navigation';
 
 export type NavigateOptions = {
   replace?: boolean;
   state?: unknown;
+  /** 注销或其他身份边界切换时关闭旧页快照，立即更新内容。 */
+  transition?: boolean;
 };
 
 function currentLocationSnapshot() {
@@ -44,13 +48,25 @@ function resolveSameOriginHref(to: string) {
   }
 }
 
+/** 同源页面导航；支持原生出入场快照，敏感身份切换可禁用动画。 */
 export function navigateApp(to: string, options: NavigateOptions = {}) {
   if (typeof window === 'undefined') return false;
   const href = resolveSameOriginHref(to);
   if (!href) return false;
   const method = options.replace ? 'replaceState' : 'pushState';
-  window.history[method](options.state ?? null, '', href);
-  window.dispatchEvent(new Event(APP_NAVIGATION_EVENT));
+  const update = () => {
+    window.history[method](options.state ?? null, '', href);
+    window.dispatchEvent(new Event(APP_NAVIGATION_EVENT));
+  };
+  if (
+    options.transition !== false &&
+    typeof document.startViewTransition === 'function' &&
+    window.matchMedia?.('(prefers-reduced-motion: no-preference)').matches
+  ) {
+    const transition = document.startViewTransition(() => flushSync(update));
+    // 快速导航或页面被隐藏会取消快照动画，URL 更新仍由回调完成。
+    void transition.ready.catch(() => undefined);
+  } else update();
   return true;
 }
 

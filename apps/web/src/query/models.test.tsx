@@ -3,6 +3,7 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createAppQueryClient } from './client';
+import { clearAuthSession, persistAuthSession } from '../auth-client';
 import {
   modelCatalogQueryKey,
   modelCatalogQueryKeyFor,
@@ -12,10 +13,53 @@ import {
 
 afterEach(() => {
   cleanup();
+  clearAuthSession();
   vi.unstubAllGlobals();
 });
 
 describe('model catalog query', () => {
+  it('模型刷新晚于换号完成时不重填新账户的目录缓存', async () => {
+    let finish!: (response: Response) => void;
+    const fetcher = vi.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    vi.stubGlobal('fetch', fetcher);
+    const client = createAppQueryClient();
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(() => useRefreshModelCatalog(), { wrapper });
+    let pending!: Promise<unknown>;
+    await act(async () => {
+      pending = result.current.mutateAsync('old-credential').catch((error: unknown) => error);
+    });
+    persistAuthSession({
+      accessToken: 'synthetic-new-account',
+      tokenType: 'Bearer',
+      expiresIn: 900,
+      expiresAt: new Date(Date.now() + 900_000).toISOString(),
+      user: {
+        id: 'new-account',
+        role: 'user',
+        email: 'new@example.test',
+        createdAt: '2026-01-01T00:00:00Z',
+      },
+    });
+    client.clear();
+    await act(async () => {
+      finish(
+        Response.json({
+          models: [{ id: 'private-model', name: 'Private model', mediaTypes: ['text'] }],
+        }),
+      );
+      await pending;
+    });
+    expect(await pending).toBeInstanceOf(Error);
+    expect(client.getQueryData(modelCatalogQueryKeyFor('old-credential'))).toBeUndefined();
+  });
   it('caches the catalog and invalidates it after a manual refresh', async () => {
     const initialModels = [{ id: 'text-v1', name: 'Text V1', mediaTypes: ['text'] }];
     const refreshedModels = [{ id: 'text-v2', name: 'Text V2', mediaTypes: ['text'] }];

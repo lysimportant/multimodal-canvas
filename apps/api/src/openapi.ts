@@ -1,3 +1,5 @@
+import { accountOpenApiPaths, verificationResponseSchema } from './account-openapi';
+
 const errorSchema = {
   type: 'object',
   required: ['error'],
@@ -223,6 +225,11 @@ const projectSchema = {
   required: ['id', 'name', 'createdAt', 'updatedAt'],
   properties: {
     id: { type: 'string' },
+    ownerId: {
+      type: 'string',
+      format: 'uuid',
+      description: '实际项目所有者；无主历史项目省略，不按调用者身份补写。',
+    },
     name: { type: 'string' },
     createdAt: { type: 'string', format: 'date-time' },
     updatedAt: { type: 'string', format: 'date-time' },
@@ -550,13 +557,18 @@ const response = (description: string, schema?: unknown) => ({
 
 const authUserSchema = {
   type: 'object',
-  required: ['id', 'email', 'role', 'createdAt'],
+  required: ['id', 'email', 'role', 'createdAt', 'updatedAt', 'status'],
   properties: {
     id: { type: 'string', format: 'uuid' },
     email: { type: 'string', format: 'email' },
     displayName: { type: 'string' },
     role: { type: 'string', enum: ['user', 'admin'] },
     createdAt: { type: 'string', format: 'date-time' },
+    updatedAt: { type: 'string', format: 'date-time' },
+    status: { type: 'string', enum: ['active', 'pending', 'disabled'] },
+    emailVerifiedAt: { type: 'string', format: 'date-time' },
+    bio: { type: 'string', maxLength: 500 },
+    avatarUrl: { type: 'string', maxLength: 2048 },
   },
   additionalProperties: false,
 } as const;
@@ -600,8 +612,11 @@ export const openApiDocument = {
     { name: 'settings' },
     { name: 'auth' },
     { name: 'webhooks' },
+    { name: 'admin', description: '管理员用户、资源与系统管理' },
+    { name: 'account', description: '个人资料、安全和资源' },
   ],
   paths: {
+    ...accountOpenApiPaths(authUserSchema, authTokenSchema, assetSchema),
     '/health': { get: { tags: ['system'], responses: { '200': response('Healthy') } } },
     '/documentation': {
       get: { tags: ['system'], responses: { '200': response('OpenAPI document') } },
@@ -631,7 +646,7 @@ export const openApiDocument = {
           },
         },
         responses: {
-          '201': response('Registered', authTokenSchema),
+          '202': response('已创建待验证账户；验证完成后才发放业务会话', verificationResponseSchema),
           '400': response('Invalid request', errorSchema),
           '409': response('Email already registered', errorSchema),
           '503': response('认证或全局限流服务不可用；限流故障附带 Retry-After', errorSchema),
@@ -662,6 +677,7 @@ export const openApiDocument = {
           '200': response('Logged in', authTokenSchema),
           '400': response('Invalid request', errorSchema),
           '401': response('Invalid credentials', errorSchema),
+          '403': response('邮箱待验证或账户已禁用', errorSchema),
           '503': response('认证或全局限流服务不可用；限流故障附带 Retry-After', errorSchema),
         },
       },
@@ -1577,7 +1593,13 @@ export const openApiDocument = {
       },
     },
     securitySchemes: {
-      bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'API token' },
+      bearerAuth: {
+        type: 'http',
+        scheme: 'bearer',
+        bearerFormat: 'JWT or API token',
+        description:
+          '账户请求使用登录或邮箱验证签发的含 sid 的可撤销 JWT；旧式无 sid 用户 JWT 需要重新登录。服务 API token 不能进入账户及管理员接口。',
+      },
     },
     parameters: {
       ProjectId: {

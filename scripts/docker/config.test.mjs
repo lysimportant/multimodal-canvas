@@ -34,6 +34,7 @@ const composeEnvironment = {
   MC_HTTP_PORT: '8080',
   MC_VIDEO_CONTRACT: 'newapi-unified-v1',
   MC_PUBLIC_ORIGIN: '',
+  MC_APP_PUBLIC_URL: '',
 };
 /** Docker Compose 自己解析 YAML，避免自行解析字符串或忽略继承后的配置。 */
 const configuration = JSON.parse(
@@ -45,6 +46,7 @@ const configuration = JSON.parse(
 );
 
 test('包含完整应用、持久化设施和一次性初始化', () => {
+  assert.equal(configuration.services.api.environment.APP_PUBLIC_URL, 'http://localhost:8080');
   assert.deepEqual(Object.keys(configuration.services).sort(), [
     'api',
     'initialize',
@@ -176,6 +178,7 @@ test('Linux server profile 使用 HTTPS 来源和独立持久化证书，不改�
     ),
   );
   assert.equal(server.services.api.environment.CORS_ORIGIN, 'https://canvas.example.test');
+  assert.equal(server.services.api.environment.APP_PUBLIC_URL, 'https://canvas.example.test');
   assert.equal(server.services.gateway.environment.MC_DOMAIN, 'canvas.example.test');
   assert.equal(server.services.gateway.restart, 'unless-stopped');
   assert.ok(server.services.gateway.ports.some((port) => port.published === '443'));

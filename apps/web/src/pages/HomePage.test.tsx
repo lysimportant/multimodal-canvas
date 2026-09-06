@@ -20,7 +20,7 @@ describe('HomePage', () => {
     useWorkspacePreferences.setState(workspacePreferenceDefaults);
   });
 
-  it('presents the product, real workflow content, and numbered capabilities', () => {
+  it('presents the product, declared public demo media, and numbered capabilities', () => {
     render(<HomePage continueProject={{ id: 'project / 1', name: '雨夜短片' }} />);
 
     const hero = screen.getByRole('region', { name: 'Multimodal Canvas' });
@@ -36,16 +36,25 @@ describe('HomePage', () => {
     const preview = screen.getByLabelText('多模态生成工作流预览');
     expect(preview).toHaveClass('mc-home-workflow-preview-fullbleed');
     expect(hero).toContainElement(preview);
-    expect(within(preview).getByText(/雨后的未来车站/)).toBeVisible();
-    expect(within(preview).getByLabelText('雨夜车站生成图预览')).toBeVisible();
-    expect(within(preview).getByLabelText('12 秒环境音波形')).toBeVisible();
-    expect(within(preview).getByLabelText('视频时间线')).toBeVisible();
+    expect(within(preview).getByText(/自然观察，微距视角/)).toBeVisible();
+    expect(within(preview).getByRole('img', { name: /自然观察演示素材/ })).toHaveAttribute(
+      'src',
+      '/demo/field-study-poster.jpg',
+    );
+    expect(within(preview).getByRole('link', { name: '查看自然观察演示视频' })).toHaveAttribute(
+      'href',
+      '#home-demo-media',
+    );
+    const video = screen.getByLabelText('自然观察演示视频');
+    expect(video).toHaveAttribute('controls');
+    expect(video).toHaveAttribute('preload', 'metadata');
+    expect(video).not.toHaveAttribute('autoplay');
 
     for (const number of ['01', '02', '03', '04']) {
       expect(screen.getByText(number)).toBeVisible();
     }
-    expect(screen.getByText('station-keyframe.png')).toBeVisible();
-    expect(screen.getByText('platform-shot.mp4')).toBeVisible();
+    expect(screen.getByText('field-study.mp4')).toBeVisible();
+    expect(screen.getByText('公开素材 · 独立演示')).toBeVisible();
   });
 
   it('omits the continue action without a project and exposes navigation callbacks', () => {
@@ -58,5 +67,25 @@ describe('HomePage', () => {
     fireEvent.click(screen.getByRole('link', { name: /进入工作台/ }));
     expect(onNavigate).toHaveBeenCalledWith('/workspace', expect.anything());
     expect(window.location.pathname).toBe('/');
+  });
+
+  it('keeps the poster available after media failure and allows an explicit retry', () => {
+    render(<HomePage />);
+    fireEvent.error(screen.getByLabelText('自然观察演示视频'));
+    expect(screen.getByRole('status')).toHaveTextContent('视频暂时无法播放');
+    expect(screen.getByRole('img', { name: '自然观察视频的参考画面' })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: '重试' }));
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('自然观察演示视频')).toHaveAttribute(
+      'src',
+      '/demo/field-study.mp4',
+    );
+  });
+
+  it('preserves a labelled image placeholder when the public poster cannot load', () => {
+    render(<HomePage />);
+    fireEvent.error(screen.getByRole('img', { name: /自然观察演示素材/ }));
+    expect(screen.getByRole('img', { name: /自然观察演示素材.*暂时无法加载/ })).toBeVisible();
+    expect(screen.getByRole('link', { name: /进入工作台/ })).toHaveAttribute('href', '/workspace');
   });
 });

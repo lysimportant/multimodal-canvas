@@ -33,6 +33,8 @@ import {
 } from '../routing';
 
 import './app-navigation.css';
+import { AccountMenu, useAccountActions } from './AccountMenu';
+import { usePresence } from './motion';
 
 type NavigationItem = {
   id: AppNavigationSection | 'contact';
@@ -243,6 +245,8 @@ export function AppNavigation({
   onNavigate,
 }: AppNavigationProps) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuPresent = usePresence(menuOpen, 180);
+  const account = useAccountActions();
   const [isScrolled, setIsScrolled] = useState(
     () => typeof window !== 'undefined' && window.scrollY > 16,
   );
@@ -382,12 +386,18 @@ export function AppNavigation({
             <ExternalLink size={12} aria-hidden="true" />
           </a>
           <ThemeMenu />
+          {account && !className.includes('mc-canvas-navigation') && (
+            <AccountMenu {...account} onNavigate={onNavigate} />
+          )}
         </div>
       </header>
 
-      {menuOpen && (
+      {menuPresent && (
         <div
           className="mc-navigation-overlay"
+          data-state={menuOpen ? 'open' : 'closed'}
+          aria-hidden={!menuOpen}
+          inert={!menuOpen}
           role="presentation"
           onMouseDown={(event) => {
             if (event.target !== event.currentTarget) return;
@@ -423,30 +433,35 @@ export function AppNavigation({
             </div>
 
             <nav className="mc-navigation-drawer-links" aria-label="菜单导航">
-              {navigationItems.map((item, index) => {
-                const Icon = item.icon;
-                const href = itemHref(item);
-                const isActive =
-                  item.id === activeSection || (item.id === 'contact' && route.id === 'contact');
-                return (
-                  <AppLink
-                    key={item.id}
-                    className={`mc-navigation-drawer-link${isActive ? ' is-active' : ''}`}
-                    to={href}
-                    aria-current={isActive ? 'page' : undefined}
-                    onClick={handleNavigation(href)}
-                  >
-                    <span className="mc-navigation-drawer-index" aria-hidden="true">
-                      {String(index + 1).padStart(2, '0')}
-                    </span>
-                    <Icon size={18} aria-hidden="true" />
-                    <span>
-                      <strong>{item.label}</strong>
-                      <small>{item.description}</small>
-                    </span>
-                  </AppLink>
-                );
-              })}
+              {navigationItems
+                .filter(
+                  (item) =>
+                    item.id !== 'settings' || !account?.user || account.user.role === 'admin',
+                )
+                .map((item, index) => {
+                  const Icon = item.icon;
+                  const href = itemHref(item);
+                  const isActive =
+                    item.id === activeSection || (item.id === 'contact' && route.id === 'contact');
+                  return (
+                    <AppLink
+                      key={item.id}
+                      className={`mc-navigation-drawer-link${isActive ? ' is-active' : ''}`}
+                      to={href}
+                      aria-current={isActive ? 'page' : undefined}
+                      onClick={handleNavigation(href)}
+                    >
+                      <span className="mc-navigation-drawer-index" aria-hidden="true">
+                        {String(index + 1).padStart(2, '0')}
+                      </span>
+                      <Icon size={18} aria-hidden="true" />
+                      <span>
+                        <strong>{item.label}</strong>
+                        <small>{item.description}</small>
+                      </span>
+                    </AppLink>
+                  );
+                })}
             </nav>
 
             <div className="mc-navigation-drawer-footer">

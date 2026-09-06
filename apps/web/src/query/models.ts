@@ -1,6 +1,6 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { apiFetch } from '../auth-client';
+import { apiFetch, getAuthSessionGeneration } from '../auth-client';
 import { API_BASE_URL, type ModelEntry } from '../workspace/contracts';
 
 export const modelCatalogQueryKey = ['model-catalog'] as const;
@@ -68,12 +68,17 @@ export function useRefreshModelCatalog() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: refreshModelCatalog,
-    onSuccess: async (models, credentialId) => {
+    onMutate: () => getAuthSessionGeneration(),
+    onSuccess: async (models, credentialId, requestGeneration) => {
+      if (getAuthSessionGeneration() !== requestGeneration)
+        throw new Error('账户状态已改变，请重新操作');
       const queryKey = modelCatalogQueryKeyFor(credentialId);
       await queryClient.cancelQueries({
         queryKey,
         exact: true,
       });
+      if (getAuthSessionGeneration() !== requestGeneration)
+        throw new Error('账户状态已改变，请重新操作');
       queryClient.setQueryData(queryKey, models);
       await queryClient.invalidateQueries({
         queryKey,

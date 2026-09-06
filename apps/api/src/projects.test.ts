@@ -209,6 +209,7 @@ describe('PrismaProjectStore canvas mapping', () => {
       {
         id: 'project_2',
         name: 'Second',
+        ownerId: 'owner-2',
         createdAt: new Date('2026-08-25T00:00:00.000Z'),
         updatedAt: new Date('2026-08-25T02:00:00.000Z'),
         archivedAt: null,
@@ -216,6 +217,7 @@ describe('PrismaProjectStore canvas mapping', () => {
       {
         id: 'project_1',
         name: 'First',
+        ownerId: 'owner-1',
         createdAt: new Date('2026-08-25T00:00:00.000Z'),
         updatedAt: new Date('2026-08-25T01:00:00.000Z'),
         archivedAt: null,
@@ -224,13 +226,20 @@ describe('PrismaProjectStore canvas mapping', () => {
     const store = new PrismaProjectStore({ project: { findMany } } as never);
 
     await expect(store.list()).resolves.toMatchObject([
-      { id: 'project_2', name: 'Second' },
-      { id: 'project_1', name: 'First' },
+      { id: 'project_2', name: 'Second', ownerId: 'owner-2' },
+      { id: 'project_1', name: 'First', ownerId: 'owner-1' },
     ]);
     expect(findMany).toHaveBeenCalledWith({
       where: { archivedAt: null },
       orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }, { id: 'desc' }],
-      select: { id: true, name: true, createdAt: true, updatedAt: true, archivedAt: true },
+      select: {
+        id: true,
+        ownerId: true,
+        name: true,
+        createdAt: true,
+        updatedAt: true,
+        archivedAt: true,
+      },
     });
   });
 
@@ -283,7 +292,10 @@ describe('PrismaProjectStore canvas mapping', () => {
       where: {
         id: { in: [assetId] },
         OR: [
-          { projectId: 'project-1', ownerId: 'user-1' },
+          {
+            projectId: 'project-1',
+            OR: [{ ownerId: 'user-1' }, { ownerId: null, project: { ownerId: 'user-1' } }],
+          },
           { projectId: null, ownerId: 'user-1' },
         ],
       },

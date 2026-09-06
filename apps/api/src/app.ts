@@ -94,6 +94,10 @@ import {
 import { importWorkflowExport, WorkflowImportError } from './workflow-import';
 import { resolveS3DownloadMode, type S3DownloadMode } from './upload-transport';
 import { resolveApiProxyTrust } from './proxy-trust';
+import { AccountService, accountError } from './account-service';
+import { createAccountMailSender, type AccountMailSender } from './account-mail';
+import { publicAccountPaths, registerAccountRoutes } from './account-routes';
+import { withAssetOwnershipPolicy } from './asset-ownership';
 
 type AppLoggerOptions = {
   level?: string;
@@ -114,7 +118,7 @@ export type BuildAppOptions = {
   runExecutor?: RunExecutor;
   /** Optional result archiver; defaults to the configured asset store. */
   runResultArchiver?: RunResultArchiver;
-  /** Optional backing-store check for JWT subjects in production. */
+  /** 显式外部 JWT 适配器；仅未注入账户存储/认证服务时保留无 sid JWT，账户部署不可借此绕过可撤销会话。 */
   userExists?: (userId: string) => Promise<boolean>;
   logger?: boolean | AppLoggerOptions;
   observability?: Observability;
@@ -129,6 +133,8 @@ export type BuildAppOptions = {
   authStore?: AuthStore;
   /** Injectable authentication service for tests or custom deployments. */
   authService?: AuthService;
+  /** 测试注入邮件替身；生产从受控 EMAIL_* 环境创建 SMTP 发送器。 */
+  accountMailSender?: AccountMailSender;
   /** Shared limiter; defaults to a bounded in-memory fallback. */
   rateLimiter?: RateLimiter;
 };
@@ -987,15 +993,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   // 保留 JSON Webhook 的原始 UTF-8 字节，验签必须针对供应商发送的字节串，
   // 不能对解析后的对象重新序列化（空格、换行和转义差异都会改变签名）。
   const rawJsonBodies = new WeakMap<object, Buffer>();
+  /** 原始字节另存，解析仍复用 Fastify 的脱敏错误与原型污染保护。 */
+  const parseJsonBody = app.getDefaultJsonParser('error', 'error');
   app.removeContentTypeParser('application/json');
   app.addContentTypeParser('application/json', { parseAs: 'string' }, (request, body, done) => {
     const raw = String(body);
     rawJsonBodies.set(request, Buffer.from(raw, 'utf8'));
-    try {
-      done(null, JSON.parse(raw));
-    } catch (error) {
-      done(error as Error, undefined);
-    }
+    parseJsonBody(request, raw, done);
   });
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof RateLimitUnavailableError) {
@@ -1038,8 +1042,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     options.observability ??
     createEnvironmentObservability({ logger: app.log, service: 'multimodal-canvas-api' });
   const requestSpans = new WeakMap<object, ObservabilitySpan>();
-  const assetStore: AssetStore = options.assetStore ?? new MemoryAssetStore();
   const projectStore = options.projectStore ?? new MemoryProjectStore();
+  const assetStore: AssetStore = withAssetOwnershipPolicy(
+    options.assetStore ?? new MemoryAssetStore(),
+    projectStore,
+  );
   const providerName = process.env.WORKER_PROVIDER === 'newapi' ? 'newapi' : 'mock';
   const runService =
     options.runService ??
@@ -1080,6 +1087,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const authService =
     options.authService ??
     (jwtSecret ? new AuthService({ store: authStore, jwtSecret }) : undefined);
+  const accountMailSender = options.accountMailSender ?? createAccountMailSender();
+  const accountService =
+    authService && jwtSecret
+      ? new AccountService({
+          store: authStore,
+          auth: authService,
+          mail: accountMailSender,
+          secret: jwtSecret,
+          setupToken: process.env.ADMIN_SETUP_TOKEN,
+        })
+      : undefined;
   const requireJwtExpiration = process.env.NODE_ENV === 'production';
   const requestPrincipals = new WeakMap<object, AuthPrincipal>();
   const requestSessions = new WeakMap<object, AuthenticatedSession>();
@@ -1157,8 +1175,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const pathname = request.url.split('?')[0];
     if (pathname === '/health' || pathname === '/v1/webhooks/newapi') return;
     const authRoute =
-      pathname === '/v1/auth/register' || pathname === '/v1/auth/login'
-        ? pathname.slice('/v1/auth/'.length)
+      pathname === '/v1/auth/register' ||
+      pathname === '/v1/auth/login' ||
+      publicAccountPaths.has(pathname)
+        ? pathname
         : undefined;
     if (authRoute) {
       const decision = await rateLimiter.consume(`auth:${authRoute}:${request.ip ?? 'unknown'}`, {
@@ -1174,6 +1194,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           requestId: request.id,
         });
       }
+      if (
+        pathname === '/v1/admin/bootstrap/request' &&
+        !process.env.ADMIN_SETUP_TOKEN?.trim() &&
+        !isLoopbackAddress(request.ip)
+      ) {
+        return reply.code(503).send({
+          code: 'setup_token_required',
+          error: '远程初始化必须由部署者配置 ADMIN_SETUP_TOKEN',
+        });
+      }
       return;
     }
     if (request.method === 'GET') {
@@ -1186,6 +1216,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           signedResource,
         );
         if (verified) {
+          if (verified.ownerId && options.authStore) {
+            const owner = await options.authStore.findUserById(verified.ownerId);
+            if (!owner || owner.status !== 'active')
+              return reply.code(401).send({ error: 'invalid or expired access URL' });
+          }
           requestPrincipals.set(request, {
             method: 'anonymous',
             ...(verified.ownerId ? { userId: verified.ownerId } : {}),
@@ -1239,11 +1274,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     // development convenient; it must not count as a production backing store
     // for legacy stateless JWTs. Production callers must inject a real store
     // (or the explicit userExists lookup) before those tokens are accepted.
-    const effectiveUserExists =
-      userExists ??
-      (options.authStore
-        ? async (userId: string) => Boolean(await options.authStore!.findUserById(userId))
-        : undefined);
+    const effectiveUserExists = options.authStore
+      ? async (userId: string) =>
+          (await options.authStore!.findUserById(userId))?.status === 'active'
+      : userExists;
     if (
       result.principal.method === 'jwt' &&
       !result.principal.sessionId &&
@@ -1252,6 +1286,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     ) {
       request.log.error('JWT authentication requires a production user store');
       return reply.code(503).send({ error: 'authentication service unavailable' });
+    }
+    // 自带账户存储只接受可撤销会话；无 sid 兼容仅保留给显式外部身份适配器。
+    if (
+      result.principal.method === 'jwt' &&
+      !result.principal.sessionId &&
+      (options.authStore || options.authService || !options.userExists)
+    ) {
+      return reply.code(401).send({ error: 'authentication required', code: 'session_required' });
     }
     if (result.principal.userId && effectiveUserExists && !requestSessions.has(request)) {
       try {
@@ -1298,6 +1340,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.get('/documentation', async () => openApiDocument);
   app.get('/documentation/json', async () => openApiDocument);
+  registerAccountRoutes(app, {
+    store: authStore,
+    auth: authService,
+    service: accountService,
+    mail: accountMailSender,
+    assets: assetStore,
+    projects: projectStore,
+    runs: runService,
+    sessions: requestSessions,
+  });
 
   app.post('/v1/auth/register', async (request, reply) => {
     if (!authService) {
@@ -1313,8 +1365,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       .safeParse(request.body);
     if (!body.success) return reply.code(400).send({ error: 'invalid authentication input' });
     try {
-      return reply.code(201).send(await authService.register(body.data));
+      if (!accountService)
+        return reply.code(503).send({ error: 'authentication service unavailable' });
+      return reply.code(202).send(await accountService.register(body.data));
     } catch (error) {
+      const mapped = accountError(error);
+      if (mapped) return reply.code(mapped.status).send(mapped.body);
       return sendAuthServiceError(reply, error);
     }
   });
@@ -3056,6 +3112,9 @@ function sendAuthServiceError(
     case 'invalid_token':
     case 'session_revoked':
       return reply.code(401).send({ error: error.message });
+    case 'email_verification_required':
+    case 'account_disabled':
+      return reply.code(403).send({ code: error.code, error: error.message });
   }
 }
 

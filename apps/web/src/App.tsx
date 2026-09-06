@@ -43,6 +43,7 @@ import {
   type DragEvent,
   type FormEvent,
   type InputHTMLAttributes,
+  type MouseEvent,
 } from 'react';
 
 import {
@@ -83,6 +84,8 @@ import { downloadProjectExport, fetchProjectExport, type ProjectExportKind } fro
 import { ProjectHub } from './ProjectHub';
 import { CommandPalette, type CommandPaletteCommand } from './CommandPalette';
 import { AppNavigation } from './navigation';
+import { AccountMenu, AccountProvider } from './navigation/AccountMenu';
+import { ManagementPage } from './management';
 import {
   ContactPage,
   HomePage,
@@ -99,7 +102,14 @@ import {
   useProjectsQuery,
   type ProjectSummary,
 } from './query/projects';
-import { AppLink, appPaths, useAppNavigate, useAppRoute, type AppRoute } from './routing';
+import {
+  AppLink,
+  appPaths,
+  shouldInterceptAppLink,
+  useAppNavigate,
+  useAppRoute,
+  type AppRoute,
+} from './routing';
 import { runStatusLabel } from './workspace/AssetNode';
 import { ResourcePanel } from './workspace/ResourcePanel';
 import { SettingsPanel } from './workspace/SettingsPanel';
@@ -130,14 +140,17 @@ import {
 import {
   apiFetch,
   clearAuthSession,
+  EmailVerificationRequired,
   getAuthToken,
   login as loginWithApi,
   logout as logoutWithApi,
+  maintainAuthSession,
   notifyUnauthorized,
   openAuthEventStream,
   readAuthSession,
   register as registerWithApi,
   setUnauthorizedHandler,
+  subscribeAuthSession,
   type AuthUser,
   type StoredAuthSession,
 } from './auth-client';
@@ -150,8 +163,9 @@ const CANVAS_DRAFT_KEY_PREFIX = 'multimodal-canvas:canvas';
 type CanvasApiDocument = CanvasDocument;
 type LocalCanvasDraft = CanvasDocument;
 
-function canvasDraftKey(projectId: string) {
-  return `${CANVAS_DRAFT_KEY_PREFIX}:${projectId}`;
+/** 本地草稿按当前用户与项目隔离，旧版无归属草稿不自动导入其他账户。 */
+function canvasDraftKey(projectId: string, userId?: string) {
+  return `${CANVAS_DRAFT_KEY_PREFIX}:${userId ?? 'anonymous'}:${projectId}`;
 }
 
 type ImeInputProps = Omit<
@@ -338,7 +352,7 @@ async function uploadAsset(file: File, onProgress: (progress: number) => void) {
     request.onload = () => {
       if (request.status < 200 || request.status >= 300) {
         if (request.status === 401) {
-          notifyUnauthorized();
+          notifyUnauthorized(token ?? null);
         }
         reject(new Error(`${file.name} 上传失败（${request.status}）`));
         return;
@@ -386,6 +400,9 @@ function WorkspaceApp({
   const [assets, setAssets] = useState<Asset[]>([]);
   const [showArchived, setShowArchived] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  useEffect(() => {
+    if (authUser?.role !== 'admin') setShowSettings(false);
+  }, [authUser?.role]);
   const [activeFilter, setActiveFilter] = useState<AssetFilter>('all');
   const [query, setQuery] = useState('');
   const [isUploading, setIsUploading] = useState(false);
@@ -393,7 +410,7 @@ function WorkspaceApp({
   const [notice, setNotice] = useState<{ kind: 'error' | 'success'; message: string } | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const queryClient = useQueryClient();
-  const credentialsQuery = useAiCredentialsQuery();
+  const credentialsQuery = useAiCredentialsQuery(authUser?.role === 'admin');
   const credentialModelQueries = useCredentialModelCatalogQueries(
     (credentialsQuery.data ?? []).map((credential) => credential.id),
   );
@@ -654,15 +671,22 @@ function WorkspaceApp({
 
   const handleNodesChange: OnNodesChange<AssetFlowNode> = useCallback(
     (changes) => {
+      // 初次 DOM 测量不修改画布；只有用户调尺寸的标记才进入保存和撤销历史。
+      const documentChanges = changes.filter(
+        (change) =>
+          change.type !== 'dimensions' || Boolean(change.resizing || change.setAttributes),
+      );
       if (
-        changes.some((change) =>
+        documentChanges.some((change) =>
           ['position', 'dimensions', 'add', 'remove', 'replace'].includes(change.type),
         )
       ) {
         canvasDirtyRef.current = true;
       }
       if (
-        changes.some((change) => ['dimensions', 'add', 'remove', 'replace'].includes(change.type))
+        documentChanges.some((change) =>
+          ['dimensions', 'add', 'remove', 'replace'].includes(change.type),
+        )
       ) {
         rememberHistory();
       }
@@ -902,7 +926,7 @@ function WorkspaceApp({
         try {
           const fallbackProjectId = requestedProjectId ?? localStorage.getItem(PROJECT_STORAGE_KEY);
           const stored = fallbackProjectId
-            ? localStorage.getItem(canvasDraftKey(fallbackProjectId))
+            ? localStorage.getItem(canvasDraftKey(fallbackProjectId, authUser?.id))
             : null;
           if (stored) {
             const parsed = JSON.parse(stored) as LocalCanvasDraft;
@@ -923,7 +947,7 @@ function WorkspaceApp({
         setIsProjectLoading(false);
       }
     },
-    [setEdges, setNodes],
+    [authUser?.id, setEdges, setNodes],
   );
 
   useEffect(() => {
@@ -942,10 +966,10 @@ function WorkspaceApp({
   useEffect(() => {
     if (!isCanvasReady || !projectId) return;
     localStorage.setItem(
-      canvasDraftKey(projectId),
+      canvasDraftKey(projectId, authUser?.id),
       JSON.stringify(toCanvasDocument(nodes, edges, canvasRevision)),
     );
-  }, [canvasRevision, edges, isCanvasReady, nodes, projectId]);
+  }, [authUser?.id, canvasRevision, edges, isCanvasReady, nodes, projectId]);
 
   const saveCanvas = useCallback(async () => {
     if (!projectId) return;
@@ -1021,6 +1045,21 @@ function WorkspaceApp({
       if (saveRequestRef.current === request) saveRequestRef.current = null;
     }
   }, [projectId]);
+
+  /** 离开画布进入账户或导航页前保存编辑，失败时停留并保留本地草稿。 */
+  const handlePageNavigation = (href: string, event: MouseEvent<HTMLAnchorElement>) => {
+    if (!shouldInterceptAppLink(event, href, event.currentTarget.target || undefined, undefined))
+      return;
+    event.preventDefault();
+    void saveCanvas()
+      .then(() => onNavigate(href))
+      .catch((error: unknown) => {
+        setNotice({
+          kind: 'error',
+          message: error instanceof Error ? error.message : '保存失败，暂未离开画布',
+        });
+      });
+  };
 
   const exportProject = useCallback(
     async (kind: ProjectExportKind) => {
@@ -1973,7 +2012,8 @@ function WorkspaceApp({
         category: '应用',
         description: '管理 API 连接和默认模型',
         icon: <Settings size={15} aria-hidden="true" />,
-        onSelect: () => setShowSettings(true),
+        onSelect: () =>
+          authUser?.role === 'admin' ? setShowSettings(true) : onNavigate(appPaths.profile),
       },
       {
         id: 'toggle-resource-panel',
@@ -2026,6 +2066,7 @@ function WorkspaceApp({
     }
     return commands;
   }, [
+    authUser?.role,
     canvasTheme,
     exportProject,
     handleAddGenerateNode,
@@ -2044,7 +2085,12 @@ function WorkspaceApp({
   return (
     <ReactFlowProvider>
       <main className="app-shell" data-theme={canvasTheme}>
-        <AppNavigation route={route} projectId={projectId} className="mc-canvas-navigation" />
+        <AppNavigation
+          route={route}
+          projectId={projectId}
+          className="mc-canvas-navigation"
+          onNavigate={handlePageNavigation}
+        />
         <header className="topbar">
           <div className="project-context">
             <button
@@ -2285,32 +2331,19 @@ function WorkspaceApp({
               className="icon-button"
               aria-label="打开设置"
               title="设置"
-              onClick={() => setShowSettings(true)}
+              onClick={() =>
+                authUser?.role === 'admin' ? setShowSettings(true) : onNavigate(appPaths.profile)
+              }
               ref={settingsTriggerRef}
             >
               <Settings size={16} />
             </button>
-            {authUser ? (
-              <button
-                type="button"
-                className="icon-button"
-                aria-label="退出登录"
-                title={`退出登录（${authUser.displayName ?? authUser.email}）`}
-                onClick={onLoggedOut}
-              >
-                <UserCircle size={16} />
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="icon-button"
-                aria-label="登录"
-                title="登录"
-                onClick={onRequestLogin}
-              >
-                <UserCircle size={16} />
-              </button>
-            )}
+            <AccountMenu
+              user={authUser}
+              onRequestLogin={onRequestLogin}
+              onLogout={onLoggedOut}
+              onNavigate={handlePageNavigation}
+            />
             <div className="export-control">
               <button
                 type="button"
@@ -2514,7 +2547,7 @@ function WorkspaceApp({
             background={canvasBackground}
           />
         </div>
-        {showSettings && (
+        {showSettings && authUser?.role === 'admin' && (
           <SettingsPanel
             projectId={projectId}
             projectName={projectName}
@@ -2533,12 +2566,14 @@ function LoginScreen({
   onAuthenticated,
   onContinueAnonymous,
   returnFocusTo,
+  onVerificationRequired,
 }: {
   apiBaseUrl: string;
   onAuthenticated: (session: StoredAuthSession) => void;
   /** 关闭认证提示并返回公开页面；不授予私有项目或接口的访问权限。 */
   onContinueAnonymous?: () => void;
   returnFocusTo?: HTMLElement | null;
+  onVerificationRequired: (email: string, deliveryFailed: boolean) => void;
 }) {
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [email, setEmail] = useState('');
@@ -2646,6 +2681,11 @@ function LoginScreen({
             });
       onAuthenticated(session);
     } catch (requestError) {
+      if (requestError instanceof EmailVerificationRequired) {
+        setPassword('');
+        onVerificationRequired(requestError.email, requestError.deliveryFailed);
+        return;
+      }
       const message = requestError instanceof Error ? requestError.message : '认证失败';
       setError(
         message === 'invalid email or password'
@@ -2699,7 +2739,7 @@ function LoginScreen({
         <p className="settings-status">
           {mode === 'login'
             ? '登录后可访问项目、资源和运行记录。'
-            : '注册后即可开始创建多模态工作流。'}
+            : '注册后请验证邮箱，完成账户激活。'}
         </p>
         <form
           onKeyDown={(event) => {
@@ -2778,10 +2818,12 @@ function RoutedApplication({
   authUser,
   onRequestLogin,
   onLoggedOut,
+  onSessionChanged,
 }: {
   authUser: AuthUser | null;
   onRequestLogin: (afterAuthenticated?: () => void) => void;
   onLoggedOut: () => void;
+  onSessionChanged: (session: StoredAuthSession) => void;
 }) {
   const route = useAppRoute();
   const navigate = useAppNavigate();
@@ -2799,6 +2841,8 @@ function RoutedApplication({
   const [projectCreateName, setProjectCreateName] = useState('未命名项目');
   const [projectCreateError, setProjectCreateError] = useState('');
   const [isCreatingProject, setIsCreatingProject] = useState(false);
+  /** 表单只对发起或明确续接该操作的用户显示，换号时不回显前一账户的输入。 */
+  const [projectCreateOwnerId, setProjectCreateOwnerId] = useState<string | null>(null);
   const [pageNotice, setPageNotice] = useState<{
     kind: 'error' | 'success';
     message: string;
@@ -2812,20 +2856,27 @@ function RoutedApplication({
     if (!isAuthenticated) setShowProjectCreate(false);
   }, [isAuthenticated]);
 
+  /** 认证成功后显式将尚未提交的创建意图绑定到当前身份。 */
+  const resumeProjectCreate = useCallback(() => {
+    setProjectCreateOwnerId(readAuthSession()?.user.id ?? null);
+    setIsCreatingProject(false);
+    setShowProjectCreate(true);
+  }, []);
+
   const openProjectCreate = useCallback(() => {
     setProjectCreateName('未命名项目');
     setProjectCreateError('');
     if (!getAuthToken()) {
-      onRequestLogin(() => setShowProjectCreate(true));
+      onRequestLogin(resumeProjectCreate);
       return;
     }
-    setShowProjectCreate(true);
-  }, [onRequestLogin]);
+    resumeProjectCreate();
+  }, [onRequestLogin, resumeProjectCreate]);
 
   const createWorkspaceProject = useCallback(async () => {
     if (!getAuthToken()) {
       setShowProjectCreate(false);
-      onRequestLogin(() => setShowProjectCreate(true));
+      onRequestLogin(resumeProjectCreate);
       return;
     }
     const name = projectCreateName.trim();
@@ -2835,6 +2886,8 @@ function RoutedApplication({
     }
     setIsCreatingProject(true);
     setProjectCreateError('');
+    const requestingUserId = readAuthSession()?.user.id;
+    const requestingPath = window.location.pathname;
     try {
       const response = await apiFetch(`${API_BASE_URL}/v1/projects`, {
         method: 'POST',
@@ -2842,13 +2895,15 @@ function RoutedApplication({
         body: JSON.stringify({ name }),
       });
       if (response.status === 401) {
-        onRequestLogin(() => setShowProjectCreate(true));
+        if (!getAuthToken() && window.location.pathname === requestingPath)
+          onRequestLogin(resumeProjectCreate);
         return;
       }
       const result = (await response.json().catch(() => ({}))) as {
         project?: ProjectSummary;
         error?: string;
       };
+      if (readAuthSession()?.user.id !== requestingUserId) return;
       if (!response.ok || !result.project) throw new Error(result.error ?? '项目创建失败');
       queryClient.setQueryData<ProjectSummary[]>(projectQueryKeys.list(false), (current = []) => [
         result.project!,
@@ -2859,14 +2914,25 @@ function RoutedApplication({
       setShowProjectCreate(false);
       navigate(appPaths.project(result.project.id));
     } catch (error) {
-      setProjectCreateError(error instanceof Error ? error.message : '项目创建失败');
+      if (readAuthSession()?.user.id === requestingUserId)
+        setProjectCreateError(error instanceof Error ? error.message : '项目创建失败');
     } finally {
-      setIsCreatingProject(false);
+      if (!readAuthSession() || readAuthSession()?.user.id === requestingUserId)
+        setIsCreatingProject(false);
     }
-  }, [navigate, onRequestLogin, projectCreateName, queryClient]);
+  }, [navigate, onRequestLogin, projectCreateName, queryClient, resumeProjectCreate]);
 
   let content;
-  if (route.id === 'home') {
+  if (route.id === 'management') {
+    content = (
+      <ManagementPage
+        routePath={route.pathname}
+        authUser={authUser}
+        onRequestLogin={() => onRequestLogin()}
+        onSessionChanged={onSessionChanged}
+      />
+    );
+  } else if (route.id === 'home') {
     content = <HomePage continueProject={continueProject} />;
   } else if (route.id === 'workspace') {
     content = (
@@ -2903,6 +2969,18 @@ function RoutedApplication({
             </button>
             <AppLink to={appPaths.workspace}>返回工作台</AppLink>
           </div>
+        </section>
+      </PageFrame>
+    );
+  } else if (route.id === 'settings' && authUser?.role !== 'admin') {
+    content = (
+      <PageFrame route={route}>
+        <section className="mc-project-route-state">
+          <Settings size={30} aria-hidden="true" />
+          <h1>仅管理员可配置模型服务</h1>
+          <p>个人资料与账户安全可在个人中心管理。</p>
+          <AppLink to={appPaths.profile}>进入个人中心</AppLink>
+          <AppLink to={appPaths.workspace}>返回工作台</AppLink>
         </section>
       </PageFrame>
     );
@@ -2952,7 +3030,9 @@ function RoutedApplication({
             authUser={authUser}
             onRequestLogin={() => onRequestLogin()}
             onLoggedOut={onLoggedOut}
-            onNavigate={navigate}
+            onNavigate={(to) => {
+              if (readAuthSession()?.user.id === authUser?.id) navigate(to);
+            }}
           />
         ) : null}
       </ProjectCanvasPage>
@@ -2977,7 +3057,7 @@ function RoutedApplication({
         </div>
       )}
       <ProjectCreateDialog
-        open={isAuthenticated && showProjectCreate}
+        open={isAuthenticated && projectCreateOwnerId === authUser?.id && showProjectCreate}
         name={projectCreateName}
         error={projectCreateError}
         busy={isCreatingProject}
@@ -2997,16 +3077,46 @@ function AppContent() {
   const queryClient = useQueryClient();
   const navigate = useAppNavigate();
   const route = useAppRoute();
-  const isPrivateRoute = route.id === 'project' || route.id === 'settings';
+  const isPrivateRoute =
+    route.id === 'project' ||
+    route.id === 'settings' ||
+    (route.id === 'management' && !['/admin', '/auth/verify'].includes(route.pathname));
   const [authSession, setAuthSession] = useState<StoredAuthSession | null>(() => readAuthSession());
   const [authRequired, setAuthRequired] = useState(false);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
+  /** 监听回调使用最新身份，续期/资料变更不清空同一用户的项目缓存。 */
+  const authSessionRef = useRef(authSession);
+  authSessionRef.current = authSession;
+  /** 注册验证结束后恢复此前页面，秘密和密码不进入 URL。 */
+  const verificationReturnRef = useRef<string | null>(null);
   const authTriggerRef = useRef<HTMLElement | null>(null);
   /** 仅保存当前用户操作；关闭登录后丢弃，认证成功后最多执行一次。 */
   const afterAuthenticatedRef = useRef<(() => void) | undefined>(undefined);
 
+  useEffect(
+    () =>
+      subscribeAuthSession((session) => {
+        if (
+          authSessionRef.current?.user.id !== session?.user.id ||
+          authSessionRef.current?.user.role !== session?.user.role
+        )
+          queryClient.clear();
+        authSessionRef.current = session;
+        setAuthSession(session);
+      }),
+    [queryClient],
+  );
+
+  useEffect(
+    () =>
+      maintainAuthSession(API_BASE_URL, (error) => {
+        setAuthNotice(`${error.message}，当前内容已保留，请检查连接。`);
+      }),
+    [],
+  );
+
   useEffect(() => {
     return setUnauthorizedHandler(() => {
-      clearAuthSession();
       queryClient.clear();
       setAuthSession(null);
       // 公开页面的后台校验失败只退回匿名态，不打断主页浏览。
@@ -3015,15 +3125,29 @@ function AppContent() {
   }, [isPrivateRoute, queryClient]);
 
   const handleAuthenticated = useCallback(
-    (session: StoredAuthSession) => {
-      queryClient.clear();
+    (session: StoredAuthSession, verificationCompleted = false) => {
+      if (
+        authSessionRef.current?.user.id !== session.user.id ||
+        authSessionRef.current?.user.role !== session.user.role
+      )
+        queryClient.clear();
+      authSessionRef.current = session;
       setAuthSession(session);
       setAuthRequired(false);
+      setAuthNotice(null);
+      if (route.pathname === appPaths.verify && verificationCompleted) {
+        const purpose = new URLSearchParams(window.location.search).get('purpose');
+        navigate(
+          (purpose === 'email' ? appPaths.security : verificationReturnRef.current) ??
+            (session.user.role === 'admin' ? appPaths.admin : appPaths.workspace),
+        );
+        verificationReturnRef.current = null;
+      }
       const afterAuthenticated = afterAuthenticatedRef.current;
       afterAuthenticatedRef.current = undefined;
       afterAuthenticated?.();
     },
-    [queryClient],
+    [navigate, queryClient, route.pathname],
   );
 
   const handleRequestLogin = useCallback(
@@ -3045,21 +3169,40 @@ function AppContent() {
   }, []);
 
   const handleLogout = useCallback(() => {
-    void logoutWithApi(API_BASE_URL).finally(() => {
-      queryClient.clear();
-      setAuthSession(null);
-      setAuthRequired(false);
-      afterAuthenticatedRef.current = undefined;
-      navigate(appPaths.home);
-    });
+    const token = getAuthToken();
+    void logoutWithApi(API_BASE_URL)
+      .catch(() => {
+        setAuthNotice(
+          '已退出本机登录，服务端会话撤销未确认；连接恢复后可在账户安全中退出其他会话。',
+        );
+      })
+      .finally(() => {
+        const current = readAuthSession();
+        if (current && current.accessToken !== token) return;
+        queryClient.clear();
+        setAuthSession(null);
+        setAuthRequired(false);
+        afterAuthenticatedRef.current = undefined;
+        navigate(appPaths.home, { transition: false });
+      });
   }, [navigate, queryClient]);
 
+  const accountActions = useMemo(
+    () => ({
+      user: authSession?.user ?? null,
+      onRequestLogin: () => handleRequestLogin(),
+      onLogout: handleLogout,
+    }),
+    [authSession?.user, handleRequestLogin, handleLogout],
+  );
+
   return (
-    <>
+    <AccountProvider value={accountActions}>
       <RoutedApplication
         authUser={authSession?.user ?? null}
         onRequestLogin={handleRequestLogin}
         onLoggedOut={handleLogout}
+        onSessionChanged={(session) => handleAuthenticated(session, true)}
       />
       {authRequired && (
         <LoginScreen
@@ -3067,9 +3210,24 @@ function AppContent() {
           onAuthenticated={handleAuthenticated}
           onContinueAnonymous={handleContinueAnonymous}
           returnFocusTo={authTriggerRef.current}
+          onVerificationRequired={(email, deliveryFailed) => {
+            verificationReturnRef.current = `${window.location.pathname}${window.location.search}`;
+            setAuthRequired(false);
+            navigate(
+              `${appPaths.verify}?${new URLSearchParams({ email, ...(deliveryFailed ? { delivery: 'failed' } : {}) })}`,
+            );
+          }}
         />
       )}
-    </>
+      {authNotice && (
+        <div className="notice notice-error" role="alert">
+          <span>{authNotice}</span>
+          <button type="button" aria-label="关闭账户提示" onClick={() => setAuthNotice(null)}>
+            <X size={14} />
+          </button>
+        </div>
+      )}
+    </AccountProvider>
   );
 }
 

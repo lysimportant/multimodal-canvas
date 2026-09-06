@@ -123,6 +123,8 @@ export interface RunService {
   create(snapshot: RunSnapshot, options?: RunCreateOptions): Promise<RunRecord>;
   get(runId: string): Promise<RunRecord | undefined>;
   listByProject(projectId: string): Promise<RunRecord[]>;
+  /** 检查当前任务后端连接；内存模式明确报告本地服务可用。 */
+  health?(): Promise<void>;
   /** Apply an asynchronous provider callback when the service owns queue state. */
   applyProviderWebhook?(update: ProviderWebhookUpdate): Promise<RunRecord | undefined>;
   retry(runId: string): Promise<RunRecord>;
@@ -524,6 +526,8 @@ function createQueuedRun(
 }
 
 export class MemoryRunService implements RunService {
+  /** 内存任务无需外部队列，当前进程即为执行后端。 */
+  async health(): Promise<void> {}
   private readonly runs = new Map<string, RunRecord>();
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly stepDelayMs: number;
@@ -1215,6 +1219,10 @@ type RunProgress = {
 };
 
 export class BullMqRunService implements RunService {
+  /** 查询实际 Redis 队列计数，避免无项目时误报队列健康。 */
+  async health(): Promise<void> {
+    await this.queue.getJobCounts('active', 'waiting');
+  }
   private readonly queue: Queue<RunJobData>;
   private readonly providerName: RunProviderName;
   private readonly persistence?: Pick<PrismaRunPersistence, 'ensureRun'> &

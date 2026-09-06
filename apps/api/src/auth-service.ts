@@ -49,6 +49,12 @@ export type AuthPublicUser = {
   displayName?: string;
   role: AuthRole;
   createdAt: string;
+  /** 账户是否已验证、禁用及个人资料的公开字段。 */
+  status: AuthUserRecord['status'];
+  updatedAt: string;
+  bio?: string;
+  avatarUrl?: string;
+  emailVerifiedAt?: string;
 };
 
 export type AuthTokenResponse = {
@@ -68,7 +74,13 @@ export type AuthenticatedSession = {
 export class AuthServiceError extends Error {
   constructor(
     public readonly code:
-      'invalid_input' | 'email_taken' | 'invalid_credentials' | 'invalid_token' | 'session_revoked',
+      | 'invalid_input'
+      | 'email_taken'
+      | 'invalid_credentials'
+      | 'invalid_token'
+      | 'session_revoked'
+      | 'email_verification_required'
+      | 'account_disabled',
     message: string,
   ) {
     super(message);
@@ -132,6 +144,10 @@ export class AuthService {
     if (!user || !valid) {
       throw new AuthServiceError('invalid_credentials', 'invalid email or password');
     }
+    if (user.status === 'disabled')
+      throw new AuthServiceError('account_disabled', '账户已禁用，请联系管理员');
+    if (user.status === 'pending')
+      throw new AuthServiceError('email_verification_required', '请先完成邮箱验证');
     return this.issueToken(user);
   }
 
@@ -157,7 +173,8 @@ export class AuthService {
     }
 
     const user = await this.options.store.findUserById(session.userId);
-    if (!user) throw new AuthServiceError('invalid_token', 'invalid access token');
+    if (!user || user.status !== 'active')
+      throw new AuthServiceError('invalid_token', 'invalid access token');
     await this.options.store.touchSession(session.id, now);
     return { user: toPublicUser(user), session, claims: result.claims };
   }
@@ -179,9 +196,30 @@ export class AuthService {
     return this.options.store.revokeAllSessions(userId, new Date(this.now()));
   }
 
-  private async issueToken(user: AuthUserRecord): Promise<AuthTokenResponse> {
+  /** 有效会话可主动续期，绝对期限七天；旧令牌保留到原到期时间以容纳在途请求。 */
+  async refresh(accessToken: string): Promise<AuthTokenResponse> {
+    const current = await this.verifyAccessToken(accessToken);
+    const absoluteExpiresAt =
+      current.session.absoluteExpiresAt ??
+      new Date(current.session.createdAt.getTime() + 7 * 24 * 60 * 60 * 1000);
+    if (absoluteExpiresAt.getTime() <= this.now() + 60_000)
+      throw new AuthServiceError('invalid_token', 'session absolute expiry reached');
+    const user = await this.options.store.findUserById(current.user.id);
+    if (!user) throw new AuthServiceError('invalid_token', 'invalid access token');
+    return this.issueToken(user, absoluteExpiresAt);
+  }
+
+  /** 仅供完成密码或邮箱所有权校验的内部服务签发会话，不接受 HTTP 用户对象。 */
+  async issueToken(
+    user: AuthUserRecord,
+    absoluteExpiresAt = new Date(this.now() + 7 * 24 * 60 * 60 * 1000),
+  ): Promise<AuthTokenResponse> {
+    if (user.status !== 'active')
+      throw new AuthServiceError('invalid_token', 'account is not active');
     const issuedAt = this.now();
-    const expiresAt = new Date(issuedAt + this.accessTokenTtlSeconds * 1000);
+    const expiresAt = new Date(
+      Math.min(issuedAt + this.accessTokenTtlSeconds * 1000, absoluteExpiresAt.getTime()),
+    );
     const sessionId = randomUUID();
     const claims = issueClaims(user, sessionId, issuedAt, this.accessTokenTtlSeconds);
     const accessToken = signHs256Jwt(claims, this.options.jwtSecret);
@@ -190,6 +228,7 @@ export class AuthService {
       userId: user.id,
       tokenHash: sha256(accessToken),
       expiresAt,
+      absoluteExpiresAt,
     });
     return {
       accessToken,
@@ -317,13 +356,19 @@ function equalHash(left: string, right: string): boolean {
   return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
-function toPublicUser(user: AuthUserRecord): AuthPublicUser {
+/** 映射可公开账户资料，永远不包含密码哈希或会话材料。 */
+export function toPublicUser(user: AuthUserRecord): AuthPublicUser {
   return {
     id: user.id,
     email: user.email,
     ...(user.displayName ? { displayName: user.displayName } : {}),
     role: user.role,
     createdAt: user.createdAt.toISOString(),
+    updatedAt: user.updatedAt.toISOString(),
+    status: user.status,
+    ...(user.bio ? { bio: user.bio } : {}),
+    ...(user.avatarUrl ? { avatarUrl: user.avatarUrl } : {}),
+    ...(user.emailVerifiedAt ? { emailVerifiedAt: user.emailVerifiedAt.toISOString() } : {}),
   };
 }
 

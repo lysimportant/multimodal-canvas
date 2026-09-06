@@ -1,9 +1,14 @@
+/** 当前会话可公开的用户资料；不包含密码、验证码或密钥。 */
 export type AuthUser = {
   id: string;
   email: string;
   displayName?: string;
   role: 'user' | 'admin';
   createdAt: string;
+  avatarUrl?: string | null;
+  bio?: string | null;
+  emailVerifiedAt?: string | null;
+  status?: 'active' | 'pending' | 'disabled';
 };
 
 export type AuthTokenResponse = {
@@ -17,6 +22,16 @@ export type AuthTokenResponse = {
 export type StoredAuthSession = Pick<AuthTokenResponse, 'accessToken' | 'expiresAt' | 'user'>;
 
 const STORAGE_KEY = 'multimodal-canvas:auth-session';
+/** 同一标签页的会话通知；身份变化时由应用清除前一用户缓存。 */
+const sessionListeners = new Set<(session: StoredAuthSession | null) => void>();
+/** 登录/退出意图代次，阻止早先认证响应覆盖后来选择的账户。 */
+let authGeneration = 0;
+/** 返回当前认证意图代次，异步账户操作提交结果前必须确认代次未改变。 */
+export function getAuthSessionGeneration(): number {
+  return authGeneration;
+}
+/** 单个会话最多有一个续期请求，防止并发轮换令牌。 */
+let refreshRequest: { token: string; promise: Promise<StoredAuthSession | null> } | null = null;
 let unauthorizedHandler: (() => void) | undefined;
 
 function storage(): Storage | undefined {
@@ -41,17 +56,19 @@ function isAuthSession(value: unknown): value is StoredAuthSession {
   );
 }
 
-/** Reads the persisted session, discarding expired or malformed values. */
+/** 读取有效会话，存储不可用时使用内存；过期或损坏的数据会被丢弃。 */
 export function readAuthSession(): StoredAuthSession | null {
   const store = storage();
-  if (!store) return null;
+  if (!store)
+    return memorySession && Date.parse(memorySession.expiresAt) > Date.now() ? memorySession : null;
   let raw: string | null;
   try {
     raw = store.getItem(STORAGE_KEY);
   } catch {
-    return null;
+    return memorySession && Date.parse(memorySession.expiresAt) > Date.now() ? memorySession : null;
   }
-  if (!raw) return null;
+  if (!raw)
+    return memorySession && Date.parse(memorySession.expiresAt) > Date.now() ? memorySession : null;
   try {
     const parsed: unknown = JSON.parse(raw);
     if (!isAuthSession(parsed) || Date.parse(parsed.expiresAt) <= Date.now()) {
@@ -65,7 +82,11 @@ export function readAuthSession(): StoredAuthSession | null {
   }
 }
 
-export function persistAuthSession(response: AuthTokenResponse): StoredAuthSession {
+/** 持久化已验证的会话并通知页面；存储受限时保留当前标签内存会话。 */
+export function persistAuthSession(
+  response: AuthTokenResponse,
+  options: { renewal?: boolean } = {},
+): StoredAuthSession {
   const session: StoredAuthSession = {
     accessToken: response.accessToken,
     expiresAt: response.expiresAt,
@@ -78,19 +99,47 @@ export function persistAuthSession(response: AuthTokenResponse): StoredAuthSessi
     // Storage can be disabled (for example in private browsing). Keep the
     // in-memory token available through the module fallback below.
   }
+  if (
+    memorySession?.user.id !== session.user.id ||
+    memorySession?.user.role !== session.user.role ||
+    (!options.renewal && (memorySession?.accessToken ?? null) !== session.accessToken)
+  )
+    authGeneration++;
   memorySession = session;
+  sessionListeners.forEach((listener) => listener(session));
   return session;
 }
 
 let memorySession: StoredAuthSession | null = null;
 
+/** 清除当前浏览器会话并通知订阅者；不修改后端用户数据。 */
 export function clearAuthSession(): void {
+  authGeneration++;
   memorySession = null;
   try {
     storage()?.removeItem(STORAGE_KEY);
   } catch {
     // Ignore storage failures; the in-memory session is still cleared.
   }
+  sessionListeners.forEach((listener) => listener(null));
+}
+
+/** 同步当前标签与其他标签的登录、退出及账户资料变化，返回清理函数。 */
+export function subscribeAuthSession(
+  listener: (session: StoredAuthSession | null) => void,
+): () => void {
+  sessionListeners.add(listener);
+  const onStorage = (event: StorageEvent) => {
+    if (event.key !== STORAGE_KEY && event.key !== null) return;
+    authGeneration++;
+    memorySession = null;
+    listener(readAuthSession());
+  };
+  window.addEventListener('storage', onStorage);
+  return () => {
+    sessionListeners.delete(listener);
+    window.removeEventListener('storage', onStorage);
+  };
 }
 
 export function getAuthToken(): string | undefined {
@@ -111,8 +160,10 @@ export function setUnauthorizedHandler(handler: (() => void) | undefined): () =>
   };
 }
 
-/** Clears the local session and notifies the app after a non-fetch request gets a 401. */
-export function notifyUnauthorized(): void {
+/** 仅让发起请求时的会话失效；旧请求的 401 不得注销后来登录的新账户。 */
+export function notifyUnauthorized(expectedToken?: string | null): void {
+  const currentToken = memorySession?.accessToken ?? readAuthSession()?.accessToken ?? null;
+  if (expectedToken !== undefined && expectedToken !== currentToken) return;
   clearAuthSession();
   unauthorizedHandler?.();
 }
@@ -124,36 +175,73 @@ function withAuthHeaders(init?: RequestInit): RequestInit {
   return { ...init, headers };
 }
 
-/** Fetches this application's API and injects the current user's Bearer token. */
+/** 为应用请求添加会话头；401 只清理对应会话，网络错误与 403 保留登录，不重放写请求。 */
 export async function apiFetch(
   input: RequestInfo | URL,
   init?: RequestInit,
   options: { skipUnauthorized?: boolean } = {},
 ): Promise<Response> {
-  const response = await fetch(input, withAuthHeaders(init));
+  const requestInit = withAuthHeaders(init);
+  const authorization = new Headers(requestInit.headers).get('authorization');
+  const requestToken = authorization?.startsWith('Bearer ') ? authorization.slice(7) : null;
+  const response = await fetch(input, requestInit);
   if (response.status === 401 && !options.skipUnauthorized) {
-    notifyUnauthorized();
+    notifyUnauthorized(requestToken);
   }
   return response;
 }
 
+/** 表示账户尚需邮箱验证，调用者应切换验证页而非当作登录成功。 */
+export class EmailVerificationRequired extends Error {
+  constructor(
+    public readonly email: string,
+    message = '请验证邮箱后继续',
+    public readonly deliveryFailed = false,
+  ) {
+    super(message);
+    this.name = 'EmailVerificationRequired';
+  }
+}
+
+/** 发送认证请求，202 表示进入邮箱验证；其他失败保留服务端错误上下文。 */
 async function authRequest(
   baseUrl: string,
   path: string,
   body: Record<string, unknown>,
 ): Promise<StoredAuthSession> {
-  const response = await fetch(`${baseUrl.replace(/\/$/, '')}${path}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const payload = (await response.json().catch(() => ({}))) as Partial<AuthTokenResponse> & {
-    error?: string;
-  };
-  if (!response.ok || typeof payload.accessToken !== 'string' || !payload.user) {
-    throw new Error(payload.error ?? '认证请求失败');
+  const generation = ++authGeneration;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const response = await fetch(`${baseUrl.replace(/\/$/, '')}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const payload = (await response.json().catch(() => ({}))) as Partial<AuthTokenResponse> & {
+      error?: string;
+      code?: string;
+      delivery?: { status?: string };
+    };
+    if (controller.signal.aborted) throw new Error('认证请求超时，请检查连接后重试');
+    if (generation !== authGeneration) throw new Error('账户状态已改变，请重新操作');
+    if (response.status === 202 || payload.code === 'email_verification_required') {
+      throw new EmailVerificationRequired(
+        String(body.email ?? ''),
+        payload.error,
+        payload.delivery?.status === 'failed',
+      );
+    }
+    if (!response.ok || typeof payload.accessToken !== 'string' || !payload.user)
+      throw new Error(payload.error ?? '认证请求失败');
+    return persistAuthSession(payload as AuthTokenResponse);
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error('认证请求超时，请检查连接后重试');
+    throw error;
+  } finally {
+    clearTimeout(timeout);
   }
-  return persistAuthSession(payload as AuthTokenResponse);
 }
 
 export function login(
@@ -170,19 +258,87 @@ export function register(
   return authRequest(baseUrl, '/v1/auth/register', input);
 }
 
+/** 撤销当前会话并退出本地；请求失败时抛错供界面说明服务端撤销未确认。 */
 export async function logout(baseUrl: string): Promise<void> {
   const token = getAuthToken();
+  clearAuthSession();
   try {
     if (token) {
-      await apiFetch(
+      const response = await apiFetch(
         `${baseUrl.replace(/\/$/, '')}/v1/auth/logout`,
-        { method: 'POST' },
+        {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}` },
+          signal: AbortSignal.timeout(10_000),
+        },
         { skipUnauthorized: true },
       );
+      if (!response.ok && response.status !== 401) throw new Error('服务端会话撤销未确认');
     }
   } finally {
-    clearAuthSession();
+    if ((memorySession?.accessToken ?? readAuthSession()?.accessToken) === token)
+      clearAuthSession();
   }
+}
+
+/** 使用当前有效会话续期；并发请求复用一次刷新，旧响应不会覆盖新身份。 */
+export async function refreshAuthSession(baseUrl: string): Promise<StoredAuthSession | null> {
+  const userId = (memorySession ?? readAuthSession())?.user.id;
+  const token = getAuthToken();
+  if (!token) return null;
+  if (refreshRequest?.token === token) return refreshRequest.promise;
+  const generation = authGeneration;
+  const promise = (async () => {
+    const response = await fetch(`${baseUrl.replace(/\/$/, '')}/v1/auth/refresh`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (
+      generation !== authGeneration ||
+      (memorySession?.accessToken ?? readAuthSession()?.accessToken) !== token
+    )
+      return readAuthSession();
+    if (response.status === 401) {
+      notifyUnauthorized(token);
+      return null;
+    }
+    if (!response.ok) throw new Error(`会话续期失败（${response.status}）`);
+    const payload = (await response.json()) as AuthTokenResponse;
+    if (
+      generation !== authGeneration ||
+      (memorySession?.accessToken ?? readAuthSession()?.accessToken) !== token
+    )
+      return readAuthSession();
+    if (!isAuthSession(payload) || payload.user.id !== userId) throw new Error('会话续期响应无效');
+    return persistAuthSession(payload, { renewal: true });
+  })();
+  refreshRequest = { token, promise };
+  try {
+    return await promise;
+  } finally {
+    if (refreshRequest?.promise === promise) refreshRequest = null;
+  }
+}
+
+/** 每 30 秒和窗口恢复焦点时检查续期；到期前一分钟刷新，失败保留会话并通知调用者。 */
+export function maintainAuthSession(baseUrl: string, onError: (error: Error) => void): () => void {
+  let active = true;
+  const check = () => {
+    const session = readAuthSession();
+    if (!session || Date.parse(session.expiresAt) - Date.now() > 60_000) return;
+    void refreshAuthSession(baseUrl).catch((error: unknown) => {
+      if (active) onError(error instanceof Error ? error : new Error('会话续期失败'));
+    });
+  };
+  const interval = window.setInterval(check, 30_000);
+  window.addEventListener('focus', check);
+  check();
+  return () => {
+    active = false;
+    window.clearInterval(interval);
+    window.removeEventListener('focus', check);
+  };
 }
 
 export type AuthEventHandler = (eventName: string, data: string) => void;

@@ -509,6 +509,35 @@ describe.each([{ development: false }, { development: true }])(
       expect(projectRequests('POST')).toHaveLength(0);
     });
 
+    it('注册202邮件失败进入验证页并保留明确提示，不当作登录成功', async () => {
+      const original = vi.mocked(globalThis.fetch).getMockImplementation()!;
+      vi.mocked(globalThis.fetch).mockImplementation((input, init) =>
+        requestPath(input) === '/v1/auth/register'
+          ? Promise.resolve(
+              jsonResponse(
+                {
+                  verificationRequired: true,
+                  email: response.user.email,
+                  delivery: { id: 'synthetic-delivery', status: 'failed' },
+                },
+                202,
+              ),
+            )
+          : original(input, init),
+      );
+      const user = userEvent.setup();
+      render(createElement(App));
+      await user.click(screen.getAllByRole('button', { name: '新建项目' })[0]!);
+      await submitAuthentication(user, 'register');
+      expect(await screen.findByRole('heading', { name: '验证你的邮箱' })).toBeVisible();
+      expect(
+        screen.getByText('账户已保留，但验证邮件发送失败，请检查邮箱后重新发送验证码。'),
+      ).toBeVisible();
+      expect(readAuthSession()).toBeNull();
+      expect(window.location.search).not.toContain('password');
+      expect(projectRequests('POST')).toHaveLength(0);
+    });
+
     it('公共列表 401 清空旧账户缓存且不弹登录，新账户读取期间也不回显旧项目', async () => {
       const oldProject = {
         id: 'old-user-project',
@@ -584,6 +613,59 @@ describe.each([{ development: false }, { development: true }])(
       await user.click(within(createDialog).getByRole('button', { name: '取消' }));
       expect(screen.queryByText(oldProject.name)).not.toBeInTheDocument();
       expect(projectRequests('POST')).toHaveLength(0);
+    });
+
+    it.each([201, 401])('旧账户创建的晚到 %s 不污染新账户缓存、不导航或弹登录', async (status) => {
+      const lateProject = {
+        id: 'late-a-project',
+        name: '仅A可见的晚到项目',
+        createdAt: response.user.createdAt,
+        updatedAt: response.user.createdAt,
+      };
+      let finish!: (value: Response) => void;
+      const pendingResponse = new Promise<Response>((resolve) => {
+        finish = resolve;
+      });
+      const original = vi.mocked(globalThis.fetch).getMockImplementation()!;
+      vi.mocked(globalThis.fetch).mockImplementation((input, init) =>
+        requestPath(input) === '/v1/projects' && init?.method === 'POST'
+          ? pendingResponse
+          : original(input, init),
+      );
+      persistAuthSession(response);
+      const mount = vi.spyOn(QueryClient.prototype, 'mount');
+      const user = userEvent.setup();
+      render(createElement(App));
+      await screen.findByText('还没有项目');
+      await user.click(screen.getAllByRole('button', { name: '新建项目' })[0]!);
+      await user.click(
+        within(screen.getByRole('dialog', { name: '新建项目' })).getByRole('button', {
+          name: '创建项目',
+        }),
+      );
+      const queryClient = mount.mock.contexts[0] as QueryClient;
+      act(() => {
+        persistAuthSession({
+          ...response,
+          accessToken: 'synthetic-user-b-new',
+          user: { ...response.user, id: 'user-b', email: 'b@example.test' },
+        });
+      });
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      await act(async () =>
+        finish(
+          jsonResponse(
+            status === 201 ? { project: lateProject } : { error: 'authentication required' },
+            status,
+          ),
+        ),
+      );
+      expect(readAuthSession()?.user.id).toBe('user-b');
+      expect(window.location.pathname).toBe('/workspace');
+      expect(screen.queryByText(lateProject.name)).not.toBeInTheDocument();
+      expect(queryClient.getQueryData(projectQueryKeys.detail(lateProject.id))).toBeUndefined();
+      expect(queryClient.getQueryData(projectQueryKeys.list())).not.toContainEqual(lateProject);
+      expect(screen.queryByRole('dialog', { name: '登录工作区' })).not.toBeInTheDocument();
     });
 
     it.each(['/projects/private-project', '/settings?project=private-project'])(

@@ -551,7 +551,7 @@ test.beforeEach(async ({ page }) => {
         user: {
           id: 'e2e-user',
           email: 'e2e@example.com',
-          role: 'user',
+          role: 'admin',
           createdAt: '2026-01-01T00:00:00.000Z',
         },
       }),
@@ -565,7 +565,7 @@ test('主页进入工作台和项目深链，并在刷新后恢复画布', async
 
   await expect(page.getByRole('heading', { level: 1, name: 'Multimodal Canvas' })).toBeVisible();
   await expect(page.getByLabel('多模态生成工作流预览')).toBeVisible();
-  await expect(page.getByRole('heading', { name: '从参考输入到可复用产物' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '从第一个想法，到最终画面。' })).toBeVisible();
 
   await page.getByRole('link', { name: '进入工作台', exact: true }).click();
   await expect(page).toHaveURL('/workspace');
@@ -728,7 +728,8 @@ test('keeps the narrow project menu visible inside the viewport', async ({ page 
 test('traps login focus and restores it to the trigger', async ({ page }) => {
   await page.goto(projectPath);
 
-  await page.getByRole('button', { name: '退出登录' }).click();
+  await page.getByRole('button', { name: '账户菜单' }).click();
+  await page.getByRole('menuitem', { name: '退出登录' }).click();
   await expect(page.getByRole('heading', { level: 1, name: 'Multimodal Canvas' })).toBeVisible();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await page.getByRole('link', { name: '进入工作台', exact: true }).click();
@@ -767,7 +768,8 @@ test('匿名新建项目在登录后恢复表单，显式提交才创建并进�
     });
   });
   await page.goto(projectPath);
-  await page.getByRole('button', { name: '退出登录' }).click();
+  await page.getByRole('button', { name: '账户菜单' }).click();
+  await page.getByRole('menuitem', { name: '退出登录' }).click();
   await expect(page).toHaveURL('/');
   /** 记录创建调用，验证认证成功不会自动重放用户写入。 */
   const projectPosts: Array<{ authorization?: string; body: unknown }> = [];
@@ -827,7 +829,7 @@ test('adds a generate node from the canvas toolbar', async ({ page }) => {
   const generatedNode = page.locator('.flow-generate-node');
   await expect(generatedNode).toHaveCount(1);
   await expect(generatedNode).toContainText('文字生成节点');
-  await expect(page.getByRole('heading', { name: '节点设置' })).toBeVisible();
+  await expect(page.getByRole('region', { name: '文字生成节点生成设置' })).toBeVisible();
 });
 
 test('supports theme/sidebar controls, node body connections, and corner resizing', async ({
@@ -1272,14 +1274,27 @@ test('overrides a node model and displays the completed run result', async ({ pa
   await page.getByRole('option', { name: 'Mock Text v2' }).click();
   await expect(page.getByRole('combobox', { name: '模型：Mock Text v2' })).toBeVisible();
 
-  const prompt = page.locator('.node-quick-editor textarea');
+  const prompt = page.getByRole('textbox', { name: '提示词', exact: true });
   await expect(prompt).toBeVisible();
   await prompt.fill('验证模型覆盖后的生成结果');
+  const runResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      /^\/v1\/nodes\/[^/]+\/runs$/.test(new URL(response.url()).pathname),
+  );
   await page.getByRole('button', { name: '生成', exact: true }).click();
-
-  await expect(page.getByRole('region', { name: '运行结果' })).toBeVisible();
-  await expect(page.getByText('Mock 结果已归档')).toBeVisible();
-  await expect(page.getByText('版本 1')).toBeVisible();
+  const completedRun = ((await (await runResponse).json()) as { run: RunRecord }).run;
+  expect(completedRun).toMatchObject({
+    modelAlias: 'mock-text-v2',
+    status: 'succeeded',
+    result: { summary: 'Mock 结果已归档', asset: { version: 1 } },
+  });
+  const resultNode = page.locator('.flow-generate-node');
+  await expect(resultNode.locator('.flow-node-preview')).toBeVisible();
+  await expect(resultNode.locator('.artifact-preview-text-body')).toContainText(
+    '这是根据“验证模型覆盖后的生成结果”生成的真实文本结果。',
+  );
+  await expect(resultNode.getByRole('img', { name: '运行成功' })).toBeVisible();
   await expect(page.getByRole('status').filter({ hasText: '文字生成节点 已完成' })).toBeVisible();
 });
 
@@ -1287,10 +1302,10 @@ test('四类节点都可以填写提示词、运行并显示对应结果预览',
   await page.goto(projectPath);
 
   const mediaCases = [
-    { mediaType: '文字', resultSelector: '.inspector-result .inspector-result-text' },
-    { mediaType: '图片', resultSelector: '.inspector-result img' },
-    { mediaType: '音频', resultSelector: '.inspector-result audio' },
-    { mediaType: '视频', resultSelector: '.inspector-result video' },
+    { mediaType: '文字', resultSelector: '.flow-node-preview .artifact-preview-text-body' },
+    { mediaType: '图片', resultSelector: '.flow-node-preview img' },
+    { mediaType: '音频', resultSelector: '.flow-node-preview audio' },
+    { mediaType: '视频', resultSelector: '.flow-node-preview video' },
   ] as const;
 
   for (const [index, { mediaType, resultSelector }] of mediaCases.entries()) {
@@ -1305,9 +1320,12 @@ test('四类节点都可以填写提示词、运行并显示对应结果预览',
       .filter({ hasText: `${mediaType}生成节点` })
       .last();
     await expect(node).toBeVisible();
-    await expect(page.getByRole('heading', { name: '节点设置' })).toBeVisible();
+    await expect(page.getByRole('region', { name: `${mediaType}生成节点生成设置` })).toBeVisible();
+    /** 内容回显不能改变节点外框；只有用户拖拽允许修改尺寸。 */
+    const initialNodeBounds = await node.boundingBox();
+    expect(initialNodeBounds).not.toBeNull();
 
-    const prompt = page.locator('.node-quick-editor textarea');
+    const prompt = page.getByRole('textbox', { name: '提示词', exact: true });
     await expect(prompt).toBeVisible();
     await prompt.fill(`Playwright ${mediaType} 生成测试`);
     await expect(prompt).toHaveValue(`Playwright ${mediaType} 生成测试`);
@@ -1335,13 +1353,17 @@ test('四类节点都可以填写提示词、运行并显示对应结果预览',
       expect(body.parameters).not.toHaveProperty('speed');
     }
 
-    await expect(page.getByRole('region', { name: '运行结果' })).toBeVisible();
+    await expect(node.getByRole('img', { name: '运行成功' })).toBeVisible();
     await expect(
       page.getByRole('status').filter({ hasText: `${mediaType}生成节点 已完成` }),
     ).toBeVisible();
-    const result = page.locator(resultSelector);
+    const result = node.locator(resultSelector);
     await expect(result).toHaveCount(1);
     await expect(node.locator('.flow-node-preview')).toBeVisible();
+    const completedNodeBounds = await node.boundingBox();
+    expect(completedNodeBounds).not.toBeNull();
+    expect(completedNodeBounds!.width).toBeCloseTo(initialNodeBounds!.width, 1);
+    expect(completedNodeBounds!.height).toBeCloseTo(initialNodeBounds!.height, 1);
 
     if (mediaType === '文字') {
       await expect(result).toContainText('生成的真实文本结果');
@@ -1496,7 +1518,10 @@ test('PC 音频参数显式输入、保存恢复并提交，桌面截图无布�
     speed: 1.25,
   });
   await expect(page.getByRole('status').filter({ hasText: '音频生成节点 已完成' })).toBeVisible();
-  await expect(page.locator('.inspector-result audio')).toHaveAttribute('controls', '');
+  await expect(page.locator('.flow-generate-node .flow-node-preview audio')).toHaveAttribute(
+    'controls',
+    '',
+  );
   expect(blockedOrigins).toEqual([]);
   expect(pageErrors).toEqual([]);
   expect(consoleErrors).toEqual([]);
@@ -1598,7 +1623,10 @@ test('PC 视频像素尺寸可保存清空恢复，提交显式宽高且不猜�
     height: 1080,
   });
   await expect(page.getByRole('status').filter({ hasText: '视频生成节点 已完成' })).toBeVisible();
-  await expect(page.locator('.inspector-result video')).toHaveAttribute('controls', '');
+  await expect(page.locator('.flow-generate-node .flow-node-preview video')).toHaveAttribute(
+    'controls',
+    '',
+  );
   expect(errors).toEqual([]);
 });
 
@@ -1634,14 +1662,18 @@ test('切换 Mock 默认模型后新运行使用新模型', async ({ page }) => 
       /\/v1\/nodes\/[^/]+\/runs$/.test(new URL(response.url()).pathname) &&
       response.request().method() === 'POST',
   );
-  const prompt = page.locator('.node-quick-editor textarea');
+  const prompt = page.getByRole('textbox', { name: '提示词', exact: true });
   await expect(prompt).toBeVisible();
   await prompt.fill('验证默认模型切换后的新运行');
   await page.getByRole('button', { name: '生成', exact: true }).click();
   const run = (await (await runResponse).json()).run as RunRecord;
 
   expect(run.modelAlias).toBe('mock-text-v2');
-  await expect(page.getByRole('region', { name: '运行结果' })).toBeVisible();
+  const resultNode = page.locator('.flow-generate-node');
+  await expect(resultNode.locator('.flow-node-preview')).toBeVisible();
+  await expect(resultNode.locator('.artifact-preview-text-body')).toContainText(
+    '这是根据“验证默认模型切换后的新运行”生成的真实文本结果。',
+  );
   await expect(page.getByRole('status').filter({ hasText: '文字生成节点 已完成' })).toBeVisible();
 });
 
@@ -1650,7 +1682,7 @@ test('允许 Clipboard 权限时可以跨画布页面复制粘贴', async ({ pag
   await grantClipboardPermissions(page);
 
   await page.getByRole('button', { name: '新建文字生成节点' }).click();
-  await expect(page.getByRole('heading', { name: '节点设置' })).toBeVisible();
+  await expect(page.getByRole('region', { name: '文字生成节点生成设置' })).toBeVisible();
   await page.bringToFront();
   await page.keyboard.press('Control+c');
   await expect.poll(() => readSystemClipboard(page)).toContain('multimodal-canvas/clipboard');
@@ -1677,7 +1709,7 @@ test('Clipboard 读取权限被拒绝时回退到内存剪贴板', async ({ page
   await setClipboardPermission(page, 'clipboard-write', 'denied');
 
   await page.getByRole('button', { name: '新建文字生成节点' }).click();
-  await expect(page.getByRole('heading', { name: '节点设置' })).toBeVisible();
+  await expect(page.getByRole('region', { name: '文字生成节点生成设置' })).toBeVisible();
   await page.bringToFront();
   await page.keyboard.press('Control+c');
   await expect(page.locator('.flow-generate-node')).toHaveCount(1);
@@ -1702,7 +1734,7 @@ test('系统剪贴板是非法文本时回退到内存剪贴板', async ({ page 
   await grantClipboardPermissions(page);
 
   await page.getByRole('button', { name: '新建文字生成节点' }).click();
-  await expect(page.getByRole('heading', { name: '节点设置' })).toBeVisible();
+  await expect(page.getByRole('region', { name: '文字生成节点生成设置' })).toBeVisible();
   await page.bringToFront();
   await page.keyboard.press('Control+c');
   await expect.poll(() => readSystemClipboard(page)).toContain('multimodal-canvas/clipboard');

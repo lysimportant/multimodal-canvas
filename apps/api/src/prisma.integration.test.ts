@@ -181,6 +181,8 @@ const postLifecycleMigrations = [
   '0012_capability_override_credential',
   '0013_fix_capability_override_index_name',
   '0014_ai_credential_encryption_key_id',
+  '20260906120000_admin_accounts',
+  '20260906130000_admin_lifecycle',
 ] as const;
 
 describe('integration configuration safety', () => {
@@ -981,7 +983,10 @@ integrationDescribe('Prisma stores (isolated PostgreSQL)', () => {
     const databaseUrl = withDatabase(testDatabaseUrl!, databaseName);
     const workspace = await createMigrationWorkspace([
       ...preModelCatalogCredentialMigrations,
-      ...postLifecycleMigrations.slice(0, -1),
+      ...postLifecycleMigrations.slice(
+        0,
+        postLifecycleMigrations.indexOf('0014_ai_credential_encryption_key_id'),
+      ),
     ]);
     let created = false;
     let client: PrismaClient | undefined;
@@ -1584,7 +1589,8 @@ async function createMigrationWorkspace(migrations: readonly string[]): Promise<
       join(migrationsPath, 'migration_lock.toml'),
     );
     for (const migration of migrations) {
-      if (!/^\d{4}_[a-z0-9_]+$/.test(migration)) {
+      // 同时接受仓库的四位序号和 Prisma 标准十四位时间戳，仍拒绝路径分隔符。
+      if (!/^(?:\d{4}|\d{14})_[a-z0-9_]+$/.test(migration)) {
         throw new Error(`Unsafe migration directory name: ${migration}`);
       }
       await cp(join(prismaMigrationsPath, migration), join(migrationsPath, migration), {
@@ -1603,7 +1609,8 @@ async function copyMigrations(
   migrations: readonly string[],
 ): Promise<void> {
   for (const migration of migrations) {
-    if (!/^\d{4}_[a-z0-9_]+$/.test(migration)) {
+    // 时间戳迁移与旧序号迁移遵循相同的目录边界校验。
+    if (!/^(?:\d{4}|\d{14})_[a-z0-9_]+$/.test(migration)) {
       throw new Error(`Unsafe migration directory name: ${migration}`);
     }
     await cp(

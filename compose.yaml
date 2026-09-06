@@ -166,6 +166,13 @@ services:
 
   api:
     <<: *runtime
+    # 邮件配置只注入 API；文件可位于仓库外，未配置时邮箱相关操作明确失败。
+    env_file:
+      - path: ${MC_EMAIL_FILE:-.data/email.env}
+        required: false
+    environment:
+      <<: *runtime-environment
+      APP_PUBLIC_URL: ${MC_APP_PUBLIC_URL:-${MC_PUBLIC_ORIGIN:-http://localhost:${MC_HTTP_PORT:-8080}}}
     image: multimodal-canvas-api:local
     build:
       context: .

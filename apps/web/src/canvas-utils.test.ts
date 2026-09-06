@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { CanvasDocument } from '@multimodal-canvas/domain';
 
 import {
+  DEFAULT_FLOW_NODE_HEIGHT,
+  DEFAULT_FLOW_NODE_WIDTH,
   fromCanvasDocument,
   markDownstreamNodesStale,
   copyCanvasSelection,
@@ -126,6 +128,70 @@ describe('canvas document conversion', () => {
 
     expect(limited).toBe(node);
     expect(node.style).toEqual({ borderColor: '#18794e' });
+  });
+
+  it('为所有媒体的新节点补齐固定尺寸，运行结果不参与尺寸计算', () => {
+    for (const mediaType of ['text', 'image', 'audio', 'video'] as const) {
+      const input = flowNode(`new-${mediaType}`, mediaType);
+      const initialized = withNodeAutoGrowthLimit(input);
+      expect(initialized).toMatchObject({
+        width: DEFAULT_FLOW_NODE_WIDTH,
+        height: DEFAULT_FLOW_NODE_HEIGHT,
+      });
+      expect(input).not.toHaveProperty('width');
+      expect(input).not.toHaveProperty('height');
+      const completed = {
+        ...initialized,
+        data: {
+          ...initialized.data,
+          prompt: '长文本'.repeat(2_000),
+          resultAsset: { assetId: 'synthetic-result', version: 1 },
+        },
+      };
+      expect(withNodeAutoGrowthLimit(completed)).toBe(completed);
+      expect(completed.width).toBe(DEFAULT_FLOW_NODE_WIDTH);
+      expect(completed.height).toBe(DEFAULT_FLOW_NODE_HEIGHT);
+      expect(completed.style).toBeUndefined();
+    }
+  });
+
+  it('恢复旧节点时逐项补齐缺失尺寸，并原样保留用户拖拽值和输入文档', () => {
+    const document: CanvasDocument = {
+      revision: 2,
+      edges: [],
+      nodes: [
+        {
+          id: 'legacy',
+          type: 'text',
+          position: { x: 0, y: 0 },
+          data: { label: '旧节点', mediaType: 'text', mode: 'source' },
+        },
+        {
+          id: 'width-only',
+          type: 'image',
+          position: { x: 10, y: 10 },
+          width: 487.5,
+          data: { label: '宽度已保存', mediaType: 'image', mode: 'generate' },
+        },
+        {
+          id: 'height-only',
+          type: 'video',
+          position: { x: 20, y: 20 },
+          height: 297.25,
+          data: { label: '高度已保存', mediaType: 'video', mode: 'transform' },
+        },
+      ],
+    };
+    const before = structuredClone(document);
+    const recovered = fromCanvasDocument(document);
+    expect(recovered.nodes.map(({ width, height }) => ({ width, height }))).toEqual([
+      { width: DEFAULT_FLOW_NODE_WIDTH, height: DEFAULT_FLOW_NODE_HEIGHT },
+      { width: 487.5, height: DEFAULT_FLOW_NODE_HEIGHT },
+      { width: DEFAULT_FLOW_NODE_WIDTH, height: 297.25 },
+    ]);
+    const saved = toCanvasDocument(recovered.nodes, recovered.edges, document.revision);
+    expect(fromCanvasDocument(saved).nodes).toEqual(recovered.nodes);
+    expect(document).toEqual(before);
   });
 
   it('persists node data and assigns independent input order per target port', () => {
@@ -283,6 +349,22 @@ describe('clipboard graph transformations', () => {
       }),
     ]);
     expect(pasted.nodes.every((node) => node.selected)).toBe(true);
+    expect(
+      pasted.nodes.every(
+        (node) =>
+          node.width === DEFAULT_FLOW_NODE_WIDTH && node.height === DEFAULT_FLOW_NODE_HEIGHT,
+      ),
+    ).toBe(true);
+  });
+
+  it('粘贴保留用户手动尺寸，不回退到新节点尺寸', () => {
+    const source = { ...flowNode('resized'), width: 620.5, height: 410.25 };
+    const pasted = pasteCanvasClipboard({ nodes: [source], edges: [] }, () => 'copy');
+    expect(pasted.nodes[0]).toMatchObject({ width: 620.5, height: 410.25 });
+    expect(toCanvasDocument(pasted.nodes, [], 1).nodes[0]).toMatchObject({
+      width: 620.5,
+      height: 410.25,
+    });
   });
 
   it('生成粘贴节点的新提及 ID，并保留资源身份与绑定', () => {

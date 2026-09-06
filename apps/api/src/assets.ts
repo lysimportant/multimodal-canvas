@@ -178,6 +178,18 @@ export { FileSystemBlobStore as LocalFileBlobStore };
 
 export type StoredAsset = Asset & { content: Buffer };
 
+/** 后台资源索引包含归属与时间字段；内容字节和对象存储键仍不公开。 */
+export type ManagementAsset = Asset & {
+  ownerId: string | null;
+  projectId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  source: 'upload' | 'generated';
+};
+
+/** 资源权限判定只需归属索引，不应为了鉴权下载内容。 */
+export type AssetOwnership = { ownerId: string | null; projectId: string | null };
+
 export type CreateAssetInput = {
   name: string;
   mediaType: MediaType;
@@ -339,6 +351,10 @@ export type StoredAssetDerivative = {
 export interface AssetStore {
   create(input: CreateAssetInput): Promise<StoredAsset>;
   list(scope?: AssetScope, options?: AssetListOptions): Promise<Asset[]>;
+  /** 管理与个人资源库共享的元数据索引，不读取对象内容。 */
+  listManagement?(scope?: AssetScope): Promise<ManagementAsset[]>;
+  /** 定点读取归属以检查历史资源和项目之间的冲突。 */
+  getOwnership?(id: string): Promise<AssetOwnership | undefined>;
   /** Optional optimized count; callers must fall back to `list` when absent. */
   count?(
     scope?: AssetScope,
@@ -375,6 +391,8 @@ export class MemoryAssetStore implements AssetStore {
   private readonly assets = new Map<string, StoredAsset>();
   private readonly projects = new Map<string, string | undefined>();
   private readonly owners = new Map<string, string | undefined>();
+  /** 内存资源管理索引的真实创建/更新时间，测试与数据库行为保持一致。 */
+  private readonly assetTimes = new Map<string, { createdAt: string; updatedAt: string }>();
   private readonly derivatives = new Map<string, Map<string, StoredAssetDerivative>>();
   private readonly versions = new Map<
     string,
@@ -410,6 +428,7 @@ export class MemoryAssetStore implements AssetStore {
     this.projects.set(id, input.projectId);
     this.owners.set(id, input.ownerId);
     const createdAt = new Date().toISOString();
+    this.assetTimes.set(id, { createdAt, updatedAt: createdAt });
     this.versions.set(
       id,
       new Map([
@@ -440,6 +459,23 @@ export class MemoryAssetStore implements AssetStore {
         withLatestAssetVersion(asset, this.latestVersionFor(asset.id)),
       );
     return paginateAssets(filtered, options);
+  }
+
+  /** 将私有归属索引与资源元数据合并，不返回资源内容。 */
+  async listManagement(scope: AssetScope = {}): Promise<ManagementAsset[]> {
+    return (await this.list(scope)).map((asset) => ({
+      ...asset,
+      ownerId: this.owners.get(asset.id) ?? null,
+      projectId: this.projects.get(asset.id) ?? null,
+      ...this.assetTimes.get(asset.id)!,
+      source: asset.metadata?.runId ? 'generated' : 'upload',
+    }));
+  }
+  /** 返回内存归属索引，不读取内容字节。 */
+  async getOwnership(id: string): Promise<AssetOwnership | undefined> {
+    return this.assets.has(id)
+      ? { ownerId: this.owners.get(id) ?? null, projectId: this.projects.get(id) ?? null }
+      : undefined;
   }
 
   async count(
@@ -493,6 +529,8 @@ export class MemoryAssetStore implements AssetStore {
       metadata: withLatestVersionMetadata(asset.metadata, version),
       content: Buffer.from(input.content),
     });
+    const times = this.assetTimes.get(assetId);
+    if (times) times.updatedAt = new Date().toISOString();
     const { content: _content, ...publicRecord } = record;
     return publicRecord;
   }
@@ -537,6 +575,8 @@ export class MemoryAssetStore implements AssetStore {
       ...(input.tags === undefined ? {} : { tags: input.tags }),
     };
     this.assets.set(id, next);
+    const times = this.assetTimes.get(id);
+    if (times) times.updatedAt = new Date().toISOString();
     return { ...next, content: Buffer.from(next.content) };
   }
 
@@ -553,6 +593,8 @@ export class MemoryAssetStore implements AssetStore {
       ...(archived ? { archivedAt: new Date().toISOString() } : { archivedAt: undefined }),
     };
     this.assets.set(id, next);
+    const times = this.assetTimes.get(id);
+    if (times) times.updatedAt = new Date().toISOString();
     return { ...next, content: Buffer.from(next.content) };
   }
 
@@ -679,6 +721,34 @@ export class PrismaAssetStore implements AssetStore {
       .map((row) => mapAsset(row, this.contentUrl, row.versions?.[0]?.version))
       .filter((asset) => matchesAssetListOptions(asset, options));
     return paginateAssets(assets, options);
+  }
+
+  /** 后台索引只读取数据库元数据，不下载 S3 或本地资源内容。 */
+  async listManagement(scope: AssetScope = {}): Promise<ManagementAsset[]> {
+    const rows = await this.prisma.asset.findMany({
+      where: this.scopeWhere(scope),
+      orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+      include: { versions: { orderBy: { version: 'desc' }, take: 1, select: { version: true } } },
+    });
+    return rows.map((row) => ({
+      ...mapAsset(row, this.contentUrl, row.versions[0]?.version),
+      ownerId: row.ownerId,
+      projectId: row.projectId,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+      source: asRecord(row.metadata)?.runId ? 'generated' : 'upload',
+    }));
+  }
+  /** 从数据库定点读取鉴权字段，不访问对象存储。 */
+  async getOwnership(id: string): Promise<AssetOwnership | undefined> {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id))
+      return undefined;
+    return (
+      (await this.prisma.asset.findUnique({
+        where: { id },
+        select: { ownerId: true, projectId: true },
+      })) ?? undefined
+    );
   }
 
   async count(

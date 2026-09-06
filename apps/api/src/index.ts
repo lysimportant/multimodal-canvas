@@ -11,6 +11,7 @@ import { FfmpegMediaDerivativeGenerator, FfprobeMediaMetadataExtractor } from '.
 import { PrismaUploadSessionStore } from './upload-sessions';
 import { PrismaRunPersistence } from './run-persistence';
 import { PrismaAuthStore } from './auth-store';
+import { FileAuthStore } from './file-auth-store';
 import { createNewApiRunExecutor } from './newapi-run-executor';
 import { createApiRateLimiter } from './runtime-rate-limit';
 import { assertApiStartupConfiguration } from './startup-config';
@@ -24,7 +25,8 @@ const s3UploadMode = resolveS3UploadMode(process.env.S3_UPLOAD_MODE);
 const s3DownloadMode = resolveS3DownloadMode(process.env.S3_DOWNLOAD_MODE);
 const prisma = process.env.DATABASE_URL ? new PrismaClient() : undefined;
 const rateLimiter = await createApiRateLimiter();
-const authStore = prisma ? new PrismaAuthStore(prisma) : undefined;
+const authStore = prisma ? new PrismaAuthStore(prisma) : new FileAuthStore();
+if (authStore instanceof FileAuthStore) await authStore.initialize();
 const runPersistence = prisma ? new PrismaRunPersistence(prisma) : undefined;
 const providerName = process.env.WORKER_PROVIDER === 'mock' ? 'mock' : 'newapi';
 if (!prisma && providerName === 'newapi' && process.env.RUN_SERVICE === 'bullmq') {
@@ -121,7 +123,8 @@ const app = buildApp({
   ...(authStore ? { authStore } : {}),
   ...(prisma
     ? {
-        userExists: async (userId: string) => Boolean(await authStore!.findUserById(userId)),
+        userExists: async (userId: string) =>
+          (await authStore.findUserById(userId))?.status === 'active',
       }
     : {}),
   ...(prisma ? { webhookEventStore: new PrismaWebhookEventStore(prisma) } : {}),
