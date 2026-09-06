@@ -158,7 +158,7 @@ try {
     await page.getByLabel('邮箱验证码').fill(mail.latest(email, 'invite').code);
     await page.getByLabel('新密码', { exact: true }).fill(password);
     await page.getByLabel('确认新密码', { exact: true }).fill(password);
-    await page.getByRole('button', { name: '验证并进入工作台' }).click();
+    await page.getByRole('button', { name: '确认', exact: true }).click();
     await expect(page.getByRole('heading', { name: '项目工作台' })).toBeVisible();
     await page.getByRole('button', { name: '账户菜单' }).click();
     await expect(page.getByRole('menuitem', { name: '管理后台' })).toHaveCount(0);
@@ -166,6 +166,65 @@ try {
     assert.equal((await request(page, 'GET', '/v1/admin/users')).status, 403);
   }
   checks.push('A/B 邮件激活与设置密码；普通用户菜单及管理 API 权限');
+
+  const registered = await newPage();
+  let registrationProjectPosts = 0;
+  registered.on('request', (entry) => {
+    if (entry.method() === 'POST' && new URL(entry.url()).pathname === '/v1/projects')
+      registrationProjectPosts++;
+  });
+  await registered.goto(`${webUrl}/workspace`);
+  await registered.getByRole('button', { name: '新建项目', exact: true }).first().click();
+  await expect(registered).toHaveURL(/\/auth\/login\?/);
+  await expect(registered.getByRole('heading', { name: '登录工作台' })).toBeVisible();
+  await registered.getByRole('link', { name: '创建账户', exact: true }).click();
+  await expect(registered).toHaveURL(/\/auth\/register\?/);
+  await registered.getByLabel('显示名称（可选）').fill('注册验收用户');
+  await registered.getByLabel('邮箱', { exact: true }).fill('registered@example.test');
+  await registered.getByLabel('密码', { exact: true }).fill(password);
+  await registered.getByLabel('确认密码', { exact: true }).fill(password);
+  await registered.getByRole('button', { name: '注册', exact: true }).click();
+  await expect(registered).toHaveURL(/\/auth\/verify\?/);
+  assert.equal(
+    await registered.evaluate(() => localStorage.getItem('multimodal-canvas:auth-session')),
+    null,
+  );
+  assert.equal(new URL(registered.url()).searchParams.has('next'), false);
+  await registered.reload();
+  await expect(registered.getByLabel('邮箱', { exact: true })).toHaveValue(
+    'registered@example.test',
+  );
+  await registered
+    .getByLabel('邮箱验证码')
+    .fill(mail.latest('registered@example.test', 'register').code);
+  await registered.screenshot({
+    path: resolve(evidence, 'registration-verify.png'),
+    fullPage: true,
+  });
+  await registered.getByRole('button', { name: '确认', exact: true }).click();
+  await expect(registered).toHaveURL(`${webUrl}/workspace`);
+  await expect(registered.getByRole('heading', { name: '项目工作台' })).toBeVisible();
+  await expect(registered.getByRole('dialog')).toHaveCount(0);
+  assert.equal(registrationProjectPosts, 0);
+  assert.ok(
+    (await request(registered, 'GET', '/v1/account/profile').then((reply) => reply.json())).user
+      .emailVerifiedAt,
+  );
+  checks.push(
+    '真实登录页到注册页，再到可刷新验证码页；确认激活后回工作台，无提前会话、自动创建或创建弹窗',
+  );
+
+  await registered.getByRole('button', { name: '账户菜单' }).click();
+  await registered.getByRole('menuitem', { name: '退出登录' }).click();
+  await expect(registered.getByRole('button', { name: '登录账户' })).toBeVisible();
+  await registered.goto(`${webUrl}/auth/login?next=%2Fresources`);
+  await registered.getByLabel('邮箱', { exact: true }).fill('registered@example.test');
+  await registered.getByLabel('密码', { exact: true }).fill(password);
+  await registered.getByRole('button', { name: '登录', exact: true }).click();
+  await expect(registered).toHaveURL(`${webUrl}/resources`);
+  assert.equal((await request(registered, 'GET', '/v1/account/profile')).status, 200);
+  assert.equal(registrationProjectPosts, 0);
+  checks.push('已激活账户可通过独立登录页重新登录，受控返回我的资源页，不重放注册或项目创建');
 
   await userA.getByRole('button', { name: '新建项目', exact: true }).first().click();
   const create = userA.getByRole('dialog', { name: '新建项目' });
