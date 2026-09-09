@@ -25,7 +25,7 @@ export type XfyunTtsProviderOptions = {
   appId: string;
   /** APIPassword，作为 x-api-key 请求头发送。 */
   apiPassword: string;
-  /** 发音人，默认 xiaoyan。 */
+  /** 发音人，当前仅开放已取证的 xiaoyan。 */
   voice?: string;
   /** WebSocket 地址，默认官方二进制输出地址。 */
   endpoint?: string;
@@ -64,6 +64,8 @@ export class XfyunTtsProvider {
   constructor(options: XfyunTtsProviderOptions) {
     if (!options.appId.trim()) throw new TypeError('讯飞 appId 不能为空');
     if (!options.apiPassword.trim()) throw new TypeError('讯飞 apiPassword 不能为空');
+    if (options.voice !== undefined && options.voice !== 'xiaoyan')
+      throw new TypeError('讯飞 TTS 当前仅开放已确认音色：xiaoyan');
     const timeoutMs = options.timeoutMs ?? 120_000;
     if (!Number.isInteger(timeoutMs) || timeoutMs <= 0)
       throw new TypeError('timeoutMs 必须为正整数');
@@ -93,16 +95,33 @@ export class XfyunTtsProvider {
     if (!target) throw new XfyunTtsProviderError('run target node is missing from snapshot');
     if (target.data.mediaType !== 'audio')
       throw new XfyunTtsProviderError('XfyunTtsProvider 只能执行音频节点');
+    validateXfyunParameters(snapshot.parameters);
+    if (!['xfyun', 'online-tts'].includes(snapshot.modelAlias))
+      throw new XfyunTtsProviderError('讯飞 TTS 模型未确认');
+    if (snapshot.inputs.length > 1) throw new XfyunTtsProviderError('讯飞 TTS 仅支持一个文本输入');
+    if (
+      snapshot.promptMentions?.length ||
+      target.data.promptDocument?.blocks.some((block) => block.type === 'mention')
+    )
+      throw new XfyunTtsProviderError('讯飞 TTS 不支持资源提及');
+    for (const input of snapshot.inputs) {
+      if (input.role !== 'prompt' && input.role !== 'content')
+        throw new XfyunTtsProviderError(`讯飞 TTS 不支持输入角色：${input.role}`);
+      if (input.snapshot.data.mediaType !== 'text')
+        throw new XfyunTtsProviderError('讯飞 TTS 输入必须是文本');
+    }
     const input = resolveTtsText(
       snapshot,
       target.data.prompt,
       target.data.promptDocument,
       target.data.label,
     );
-    if (!input.trim() || [...input].length > 4096)
-      throw new XfyunTtsProviderError('讯飞 TTS 文本必须为 1 到 4096 个字符');
+    const inputBytes = new TextEncoder().encode(input);
+    if (!input.trim() || inputBytes.byteLength >= 8000)
+      throw new XfyunTtsProviderError('讯飞 TTS 文本 UTF-8 编码后必须小于 8000 字节');
     if (signal?.aborted) throw new XfyunTtsProviderError('讯飞 TTS 请求已取消');
     await reportProgress?.(5);
+    if (signal?.aborted) throw new XfyunTtsProviderError('讯飞 TTS 请求已取消');
     const bytes = await this.synthesize(input, signal);
     await reportProgress?.(100);
     const output = {
@@ -153,7 +172,7 @@ export class XfyunTtsProvider {
         clearTimeout(timer);
         signal?.removeEventListener('abort', onAbort);
         try {
-          socket.close();
+          socket.close(1000);
         } catch {}
         error ? reject(error) : resolve(concatBytes(chunks));
       };
@@ -163,6 +182,7 @@ export class XfyunTtsProvider {
         this.options.timeoutMs,
       );
       socket.onopen = () => {
+        if (settled) return;
         try {
           socket.send(JSON.stringify(payload));
         } catch (error) {
@@ -172,7 +192,9 @@ export class XfyunTtsProvider {
         }
       };
       socket.onmessage = (event) => {
-        messageChain = messageChain.then(() => handleXfyunMessage(event.data, chunks, finish));
+        messageChain = messageChain
+          .then(() => handleXfyunMessage(event.data, chunks, finish))
+          .catch(() => finish(new XfyunTtsProviderError('讯飞 TTS 音频帧格式无效')));
       };
       socket.onerror = () => finish(new XfyunTtsProviderError('讯飞 TTS WebSocket 连接失败'));
       socket.onclose = () => {
@@ -182,6 +204,34 @@ export class XfyunTtsProvider {
       if (signal?.aborted) onAbort();
     });
   }
+}
+
+/**
+ * 校验讯飞临时适配器已取证的参数集合。
+ * 未知参数、未取证音色和格式在建立 WebSocket 前失败，避免产生未授权请求。
+ */
+function validateXfyunParameters(parameters: Record<string, unknown>): void {
+  const allowed = new Set(['prompt', 'input', 'voice', 'speed', 'response_format']);
+  for (const [name, value] of Object.entries(parameters)) {
+    if (value === undefined) continue;
+    if (!allowed.has(name)) throw new XfyunTtsProviderError(`讯飞 TTS 不支持参数：${name}`);
+    if (name === 'prompt' || name === 'input' || name === 'voice') {
+      if (typeof value !== 'string' || !value.trim())
+        throw new XfyunTtsProviderError(`讯飞 TTS 参数 ${name} 必须为非空字符串`);
+    } else if (name === 'response_format') {
+      if (value !== 'mp3') throw new XfyunTtsProviderError('讯飞 TTS 仅支持 mp3 输出');
+    } else if (name === 'speed' && value !== 50) {
+      throw new XfyunTtsProviderError('讯飞 TTS 当前仅开放已确认语速：50');
+    }
+  }
+  if (parameters.voice !== undefined && parameters.voice !== 'xiaoyan')
+    throw new XfyunTtsProviderError('讯飞 TTS 当前仅开放已确认音色：xiaoyan');
+  if (
+    parameters.prompt !== undefined &&
+    parameters.input !== undefined &&
+    parameters.prompt !== parameters.input
+  )
+    throw new XfyunTtsProviderError('讯飞 TTS prompt 与 input 冲突');
 }
 
 /**
@@ -204,20 +254,28 @@ export function createXfyunTtsProviderFromEnvironment(
   });
 }
 
+/** 解析唯一文本来源；参数优先，结构化文档其次，禁止以节点标签代替正文。 */
 function resolveTtsText(
   snapshot: RunSnapshot,
   prompt: string | undefined,
   promptDocument: RunSnapshot['nodes'][number]['data']['promptDocument'],
-  label: string,
+  _label: string,
 ): string {
   const inputs = [...snapshot.inputs].sort((a, b) => a.sortOrder - b.sortOrder);
   const textInput = inputs.find((input) => input.role === 'prompt' || input.role === 'content');
   if (textInput) {
+    if (snapshot.parameters.prompt !== undefined || snapshot.parameters.input !== undefined)
+      throw new XfyunTtsProviderError('讯飞 TTS 连线文本与参数文本冲突');
     const data = textInput.snapshot.data;
     if (data.mediaType !== 'text') throw new XfyunTtsProviderError('讯飞 TTS 输入必须是文本');
-    return data.prompt ?? '';
+    if (data.promptDocument?.blocks.some((block) => block.type === 'mention'))
+      throw new XfyunTtsProviderError('讯飞 TTS 不支持资源提及');
+    return data.promptDocument ? renderPromptDocument(data.promptDocument) : (data.prompt ?? '');
   }
-  return promptDocument ? renderPromptDocument(promptDocument) : (prompt ?? label);
+  return (
+    ((snapshot.parameters.prompt ?? snapshot.parameters.input) as string | undefined) ??
+    (promptDocument ? renderPromptDocument(promptDocument) : (prompt ?? ''))
+  );
 }
 
 async function handleXfyunMessage(

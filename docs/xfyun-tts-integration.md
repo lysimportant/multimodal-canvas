@@ -65,7 +65,7 @@ XFUN_TTS_VOICE=xiaoyan
 - `business.aue`：`lame` 表示 MP3；`raw` 表示 PCM。
 - `business.sfl`：使用 MP3 流式响应时设为 `1`。
 - `business.auf`：`audio/L16;rate=16000` 表示 16 kHz；不填写时默认 16 kHz。
-- `business.vcn`：控制台已开通的发音人；示例使用 `xiaoyan`。
+- `business.vcn`：控制台已开通的发音人；当前适配器仅开放已验收的 `xiaoyan`。
 - `business.speed/volume/pitch`：整数 `0` 到 `100`，示例均为 `50`。
 - `business.tte`：文本编码；中文请求使用 `utf8`。
 - `data.status`：固定为 `2`，表示一次性上传完整文本。
@@ -100,7 +100,7 @@ const provider = new XfyunTtsProvider({
 
 - `XFUN_TTS_API_PASSWORD` 已注入；缺失时请求前失败。
 - `vcn`、格式、采样率和语速在节点参数范围内。
-- UTF-8 文本 Base64 后小于 8000 字节。
+- UTF-8 原始文本编码后小于 8000 字节（适配器在 Base64 前校验）。
 - 仅发送一次 WebSocket 合成请求，保存 `sid`、音频字节数、MIME 类型和 SHA-256。
 - 将 MP3 结果交给现有 Worker/对象存储归档链路，不保存签名 URL 或凭据。
 

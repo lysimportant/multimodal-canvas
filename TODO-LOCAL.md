@@ -1,6 +1,6 @@
 # Local 未完成任务
 
-更新时间：2026-09-05
+更新时间：2026-09-09
 
 本文件只记录开发机、测试容器、等效 CI 和获授权测试 Provider 请求中的实现与验收。
 
@@ -34,7 +34,7 @@
 - 为多参考图、负面提示、尾帧、音轨、角色绑定、蒙版及其它扩展字段补齐字段映射、拒绝和结果解析测试。
 - 未授权的音频模型、voice 或扩展字段必须在请求前失败。
 
-讯飞 WebSocket TTS 临时适配器已加入 `packages/providers/src/xfyun.ts`，原有 Sub2/New API 适配器保留；已用 `xiaoyan`、MP3、16 kHz、语速 50 完成一次真实生成，并通过 Worker 归档器、Prisma 和隔离 MinIO 读回校验。证据：`.data/xfyun-tts-isolated-20260905.json`。供应商未提供计费字段，保持未知。
+讯飞 WebSocket TTS 临时适配器已加入 `packages/providers/src/xfyun.ts`，原有 Sub2/New API 适配器保留；已用 `xiaoyan`、MP3、16 kHz、语速 50 完成一次真实生成，并通过 Worker 归档器、Prisma 和隔离 MinIO 读回校验。适配器现已在建连前拒绝未确认模型、voice、格式、语速、资源提及、非文本输入、重复文本输入和 UTF-8 超限文本；Provider 回归覆盖这些零请求边界。证据：`.data/xfyun-tts-isolated-20260905.json`。供应商未提供计费字段，保持未知。其它音频模型、voice、格式和扩展输入仍未开放。
 
 ### [~] P1-INPUT-MAPPING-07 角色与扩展字段映射
 

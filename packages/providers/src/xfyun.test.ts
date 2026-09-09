@@ -26,6 +26,10 @@ function snapshot(prompt = '你好啊'): RunSnapshot {
     inputs: [],
   };
 }
+
+function snapshotWithParameters(parameters: Record<string, unknown>): RunSnapshot {
+  return { ...snapshot(), parameters };
+}
 class MockSocket implements XfyunWebSocketLike {
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: unknown }) => void) | null = null;
@@ -51,6 +55,10 @@ describe('XfyunTtsProvider', () => {
       }),
     ).toBeInstanceOf(XfyunTtsProvider);
     expect(() => createXfyunTtsProviderFromEnvironment({})).toThrow('XFUN_TTS_APP_ID');
+    expect(
+      () =>
+        new XfyunTtsProvider({ appId: 'app', apiPassword: 'secret', voice: 'unconfirmed-voice' }),
+    ).toThrow('仅开放已确认音色：xiaoyan');
   });
 
   it('sends APIPassword header and collects binary audio frames', async () => {
@@ -97,5 +105,81 @@ describe('XfyunTtsProvider', () => {
     socket2.onopen?.();
     controller2.abort();
     await expect(pending).rejects.toThrow('已取消');
+  });
+
+  it.each([
+    [{ unsupported: true }, '不支持参数：unsupported'],
+    [{ voice: 'ais' }, '仅开放已确认音色：xiaoyan'],
+    [{ response_format: 'wav' }, '仅支持 mp3 输出'],
+    [{ speed: 101 }, '当前仅开放已确认语速：50'],
+  ])('rejects unconfirmed parameters before opening WebSocket', async (parameters, message) => {
+    const factory = vi.fn(() => new MockSocket());
+    await expect(
+      new XfyunTtsProvider({
+        appId: 'app',
+        apiPassword: 'secret',
+        webSocketFactory: factory,
+      }).execute({ snapshot: snapshotWithParameters(parameters) }),
+    ).rejects.toThrow(message);
+    expect(factory).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-text input roles before opening WebSocket', async () => {
+    const factory = vi.fn(() => new MockSocket());
+    const current = snapshotWithParameters({});
+    current.inputs.push({
+      nodeId: 'image',
+      role: 'content',
+      sortOrder: 0,
+      snapshot: {
+        id: 'image',
+        type: 'image',
+        position: { x: 0, y: 0 },
+        data: {
+          label: '图片',
+          mediaType: 'image',
+          mode: 'source',
+          contentUrl: 'data:image/png;base64,AA==',
+        },
+      },
+    });
+    await expect(
+      new XfyunTtsProvider({
+        appId: 'app',
+        apiPassword: 'secret',
+        webSocketFactory: factory,
+      }).execute({
+        snapshot: current,
+      }),
+    ).rejects.toThrow('输入必须是文本');
+    expect(factory).not.toHaveBeenCalled();
+  });
+
+  it('rejects text reaching the documented UTF-8 byte limit before opening WebSocket', async () => {
+    const factory = vi.fn(() => new MockSocket());
+    await expect(
+      new XfyunTtsProvider({
+        appId: 'app',
+        apiPassword: 'secret',
+        webSocketFactory: factory,
+      }).execute({
+        snapshot: snapshot('你'.repeat(2667)),
+      }),
+    ).rejects.toThrow('UTF-8 编码后必须小于 8000 字节');
+    expect(factory).not.toHaveBeenCalled();
+  });
+
+  it('does not send after cancellation before the socket opens', async () => {
+    const socket = new MockSocket();
+    const controller = new AbortController();
+    const pending = new XfyunTtsProvider({
+      appId: 'app',
+      apiPassword: 'secret',
+      webSocketFactory: () => socket,
+    }).execute({ snapshot: snapshot(), signal: controller.signal });
+    controller.abort();
+    await expect(pending).rejects.toThrow('请求已取消');
+    socket.onopen?.();
+    expect(socket.sent).toEqual([]);
   });
 });
