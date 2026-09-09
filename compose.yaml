@@ -168,7 +168,8 @@ services:
     <<: *runtime
     # 邮件配置只注入 API；文件可位于仓库外，未配置时邮箱相关操作明确失败。
     env_file:
-      - path: ${MC_EMAIL_FILE:-.data/email.env}
+      # Windows Docker 默认使用仓库根目录的私有 email.txt；部署时可用 MC_EMAIL_FILE 覆盖。
+      - path: ${MC_EMAIL_FILE:-email.txt}
         required: false
     environment:
       <<: *runtime-environment

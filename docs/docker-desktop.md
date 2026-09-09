@@ -21,6 +21,15 @@ Docker CLI 不在 `PATH` 时，脚本会检查 Docker Desktop 的标准全机和
 
 ## 管理员首次引导
 
+邮件服务配置由 Compose 注入 API。Windows 本地运行默认读取项目根目录的 `email.txt`（dotenv 格式），文件不会复制进镜像或提交 Git；如需放在仓库外，可在启动前设置 `MC_EMAIL_FILE` 为私有配置文件的绝对路径。修改邮件配置后必须重新构建并启动 API：
+
+```powershell
+$env:MC_EMAIL_FILE = 'C:\private\multimodal-email.env'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Action Build
+```
+
+如果使用根目录 `email.txt`，直接运行 `Docker-Start.cmd` 即可读取；已有容器不会自动重新加载文件，配置变更后请使用 `-Action Build`。
+
 1. 首次打开网页直接进入主页，可匿名浏览主页和项目工作台。点击“新建项目”时提示登录，可切换到注册；认证成功后继续填写项目名称，关闭提示则返回浏览。私有项目和设置仍要求登录。注册保持默认普通用户 `USER` 权限，不会因“第一个注册”而自动成为管理员。
 2. 在项目根目录打开 PowerShell，明确指定刚才注册的邮箱。下面的邮箱只是示例，必须替换为你自己的已注册账户：
 

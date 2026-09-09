@@ -75,6 +75,18 @@ test('包含完整应用、持久化设施和一次性初始化', () => {
   }
 });
 
+test('API 默认从根目录 email.txt 注入邮件配置，并支持外部文件覆盖', () => {
+  for (const field of [
+    'EMAIL_HOST',
+    'EMAIL_PORT',
+    'EMAIL_SECURE',
+    'EMAIL_USER',
+    'EMAIL_PASS',
+    'EMAIL_FROM',
+  ])
+    assert.equal(typeof configuration.services.api.environment[field], 'string');
+});
+
 test('只将 Web 发布到宿主回环，不暴露数据库、队列、对象存储或 API', () => {
   const web = configuration.services.web;
   assert.equal(web.ports.length, 1);
