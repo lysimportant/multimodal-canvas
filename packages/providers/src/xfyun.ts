@@ -66,7 +66,7 @@ export class XfyunTtsProvider {
     if (!options.apiPassword.trim()) throw new TypeError('讯飞 apiPassword 不能为空');
     if (options.voice !== undefined && options.voice !== 'xiaoyan')
       throw new TypeError('讯飞 TTS 当前仅开放已确认音色：xiaoyan');
-    const timeoutMs = options.timeoutMs ?? 120_000;
+    const timeoutMs = options.timeoutMs ?? 900_000;
     if (!Number.isInteger(timeoutMs) || timeoutMs <= 0)
       throw new TypeError('timeoutMs 必须为正整数');
     this.options = {

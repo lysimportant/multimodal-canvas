@@ -3381,6 +3381,43 @@ describe('NewApiVideoProvider', () => {
     expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
   });
 
+  it('根据自定义等待时间扩展默认视频轮询，且只提交一次生成', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi.fn<typeof fetch>().mockImplementation(
+        async (_url, init) =>
+          new Response(
+            JSON.stringify(
+              init?.method === 'POST' ? { request_id: 'long-video' } : { status: 'pending' },
+            ),
+            {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            },
+          ),
+      );
+      const provider = new NewApiVideoProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'synthetic-key',
+        fetchImpl,
+        pollIntervalMs: 2_000,
+        timeoutMs: 1_200_000,
+      });
+      const result = expect(
+        provider.execute({ snapshot: videoSnapshot(), onProviderJob: vi.fn() }),
+      ).rejects.toMatchObject({
+        code: 'VIDEO_POLL_TIMEOUT',
+        platformJobId: 'long-video',
+      });
+      await vi.advanceTimersByTimeAsync(1_200_000);
+      await result;
+      expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+      expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'GET')).toHaveLength(195);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('propagates a caller abort through video polling with a non-retryable diagnostic', async () => {
     const controller = new AbortController();
     let pollSignal: AbortSignal | undefined;

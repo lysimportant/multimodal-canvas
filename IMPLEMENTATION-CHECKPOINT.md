@@ -92,3 +92,7 @@
 断点恢复：预览 API3081、Vite5187、静态5188 已按既有隔离配置恢复，正式8080与PG19432未重启。路由/布局23项、请求取消/会话36项、联合认证91项和 Web501项通过。最终动态真实 HTTP/Prisma 浏览器11组、静态构建版 smoke/login29项通过；页面截图在 `.data/auth-page-e2e-settled/` 和 `.data/auth-pages-static-e2e-artifacts/`。第一次真实流程被 Vite HMR 打断后已用静态构建复跑，失败报告仅保留作恢复证据，不计入最终结论。旧侧栏专用CSS已移除。
 
 本地邮件读取续接：桌面 `C:\Users\Sui\Desktop\email.txt` 已复制到仓库根目录 `email.txt`，该文件被 Git/Docker 忽略。非生产 API 入口自动读取并校验白名单字段，值只进入 API 内存；`apps/api/src/local-email.test.ts` 2 项通过。没有把真实值写入源码、日志、提交、bundle 或镜像，也未重启正式服务。
+
+## 2026-09-10 节点编辑器与超时
+
+节点默认尺寸、媒体参数摘要浮层、完整编辑 Dialog、统一配色和自定义超时已实现。全仓 lint/typecheck/test/build 及 26 项画布浏览器冒烟通过；范围、验证日志和恢复信息见 [本次检查点](docs/node-editor-checkpoint.md)，设置持久化与回滚见 [节点超时设置](docs/node-timeout.md)。

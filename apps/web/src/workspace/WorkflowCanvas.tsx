@@ -495,6 +495,21 @@ export function WorkflowCanvas({
           busy={busy}
           canvasAreaRef={canvasAreaRef}
           assets={assets}
+          connectedAssets={edges
+            .filter((edge) => edge.target === quickEditorNode.id)
+            .flatMap((edge) => {
+              const source = nodes.find((node) => node.id === edge.source);
+              if (!source) return [];
+              const assetId = source.data.resultAsset?.assetId ?? source.data.assetId;
+              if (!assetId) return [];
+              return [
+                {
+                  id: assetId,
+                  name: assets.find((asset) => asset.id === assetId)?.name ?? source.data.label,
+                  mediaType: source.data.mediaType,
+                },
+              ];
+            })}
           onPromptChange={
             onPromptChange ? (value) => onPromptChange(value, quickEditorNode.id) : undefined
           }

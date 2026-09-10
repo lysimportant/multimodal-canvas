@@ -47,6 +47,24 @@ function modelsResponse(id: string, mediaType: 'text' | 'image' | 'video'): Resp
 }
 
 describe('FileAiSettingsStore persistence', () => {
+  it('重启后保留节点超时，旧文件缺少字段时使用默认值', async () => {
+    await withStorageFixture(async ({ filePath, keyPath }) => {
+      const options = { filePath, encryptionKeyFile: keyPath };
+      const store = new FileAiSettingsStore(options);
+      await store.update({ timeoutMs: 1_800_000 });
+      await store.close();
+      const reopened = new FileAiSettingsStore(options);
+      expect((await reopened.get()).timeoutMs).toBe(1_800_000);
+      await reopened.close();
+      const data = JSON.parse(await readFile(filePath, 'utf8'));
+      delete data.activeSettings.timeoutMs;
+      await writeFile(filePath, JSON.stringify(data), 'utf8');
+      const legacy = new FileAiSettingsStore(options);
+      expect((await legacy.get()).timeoutMs).toBe(900_000);
+      await legacy.close();
+    });
+  });
+
   it('启动轮换必须写回全部历史密文，移除旧密钥后仍能恢复冻结版本', async () => {
     await withStorageFixture(async ({ filePath, keyPath }) => {
       const original = new FileAiSettingsStore({

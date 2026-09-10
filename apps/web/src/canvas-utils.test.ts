@@ -131,6 +131,9 @@ describe('canvas document conversion', () => {
   });
 
   it('为所有媒体的新节点补齐固定尺寸，运行结果不参与尺寸计算', () => {
+    expect(DEFAULT_FLOW_NODE_WIDTH).toBe(230);
+    expect(DEFAULT_FLOW_NODE_HEIGHT).toBe(216);
+
     for (const mediaType of ['text', 'image', 'audio', 'video'] as const) {
       const input = flowNode(`new-${mediaType}`, mediaType);
       const initialized = withNodeAutoGrowthLimit(input);

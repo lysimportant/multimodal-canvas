@@ -38,6 +38,31 @@ export class WorkerPrismaRunPersistence implements RunPersistence {
   }
 
   /**
+   * 从最新平台设置读取节点超时，兼容未包含扩展字段的旧凭据。
+   * 返回毫秒值；非法持久化数据显式报错，避免静默重置用户配置。
+   */
+  async getProviderTimeoutMs(): Promise<number | undefined> {
+    const settings = await this.prisma.aiCredential.findFirst({
+      where: { projectId: null },
+      orderBy: [{ updatedAt: 'desc' }, { version: 'desc' }],
+      select: { defaultModels: true },
+    });
+    const defaults = settings?.defaultModels;
+    if (!defaults || typeof defaults !== 'object' || Array.isArray(defaults)) return undefined;
+    const timeoutMs = defaults.__timeoutMs;
+    if (timeoutMs === undefined) return undefined;
+    if (
+      typeof timeoutMs !== 'number' ||
+      !Number.isSafeInteger(timeoutMs) ||
+      timeoutMs < 1_000 ||
+      timeoutMs > 2_147_483_647
+    ) {
+      throw new TypeError('Provider timeout must be an integer between 1000 and 2147483647 ms');
+    }
+    return timeoutMs;
+  }
+
+  /**
    * 按冻结 ID/版本解析凭据，缺少完整引用时返回 undefined。
    * 重加密保留业务时间及版本，并通过 CAS 避免覆盖其他实例；解密、写回或并发
    * 冲突均显式失败，不返回未完成持久化的凭据，也不回退到当前活动 Key。

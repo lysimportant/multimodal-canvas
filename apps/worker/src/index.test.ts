@@ -101,6 +101,63 @@ function createBoundaryJob(
 }
 
 describe('worker provider job boundary', () => {
+  it.each([undefined, '2400000'])(
+    '实际 Provider 使用持久化超时并尊重部署覆盖 %s',
+    async (override) => {
+      vi.stubEnv('NEW_API_TIMEOUT_MS', override);
+      const timer = vi.spyOn(globalThis, 'setTimeout');
+      const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(JSON.stringify({ choices: [{ message: { content: 'timeout test' } }] }), {
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+      try {
+        const runId = 'run_timeout_setting';
+        const snapshot = {
+          ...createBoundarySnapshot(),
+          credentialId: 'credential-timeout',
+          credentialVersion: 1,
+        };
+        const job = createBoundaryJob(
+          runId,
+          snapshot,
+          'newapi',
+          createProviderJobRecord(runId, 'newapi'),
+        );
+        bullmqState.job = job;
+        const getProviderTimeoutMs = vi.fn(async () => 1_800_000);
+        createRunWorker({
+          connection: { host: '127.0.0.1', port: 6379 },
+          providerName: 'newapi',
+          stepDelayMs: 0,
+          resultArchiver: async () => ({
+            assetId: 'asset-timeout-test',
+            version: 1,
+            mimeType: 'text/plain',
+          }),
+          persistence: {
+            getProviderCredentials: async () => ({
+              baseUrl: 'https://timeout.example/v1',
+              apiKey: 'synthetic-key',
+            }),
+            getProviderTimeoutMs,
+            async upsertProviderJob() {},
+            async recordUsage() {},
+          },
+        });
+        await expect(bullmqState.processor?.(job)).resolves.toMatchObject({ status: 'succeeded' });
+        expect(getProviderTimeoutMs).toHaveBeenCalledOnce();
+        expect(timer).toHaveBeenCalledWith(expect.any(Function), override ? 2_400_000 : 1_800_000);
+        expect(fetchMock).toHaveBeenCalledOnce();
+      } finally {
+        timer.mockRestore();
+        vi.unstubAllGlobals();
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+
   it('redacts credential-like values from error diagnostics', () => {
     expect(
       serializeWorkerError(

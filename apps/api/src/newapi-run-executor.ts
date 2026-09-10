@@ -8,7 +8,11 @@ import {
   type ProviderExecution,
 } from '@multimodal-canvas/providers';
 
-import type { AiSettingsStoreLike } from './settings';
+import {
+  DEFAULT_PROVIDER_TIMEOUT_MS,
+  normalizeProviderTimeout,
+  type AiSettingsStoreLike,
+} from './settings';
 
 type ProviderExecutor = {
   execute(request: NewApiProviderRequest): Promise<ProviderExecution>;
@@ -20,7 +24,8 @@ export type NewApiRunProviderFactory = {
 };
 
 export type NewApiRunExecutorOptions = {
-  settingsStore: Pick<AiSettingsStoreLike, 'getProviderCredentials'>;
+  settingsStore: Pick<AiSettingsStoreLike, 'getProviderCredentials'> &
+    Partial<Pick<AiSettingsStoreLike, 'get'>>;
   timeoutMs?: number;
   responseMaxBytes?: number;
   videoPollIntervalMs?: number;
@@ -55,10 +60,16 @@ export function createNewApiRunExecutor(options: NewApiRunExecutorOptions) {
     const target = request.snapshot.nodes.find((node) => node.id === request.snapshot.targetNodeId);
     if (!target) throw new Error('run target node is missing from snapshot');
 
+    const configuredTimeout = options.timeoutMs ?? (await options.settingsStore.get?.())?.timeoutMs;
+    const timeoutMs =
+      configuredTimeout === undefined
+        ? undefined
+        : normalizeProviderTimeout(configuredTimeout, DEFAULT_PROVIDER_TIMEOUT_MS);
+
     const sharedOptions: NewApiProviderOptions = {
       baseUrl: credentials.baseUrl,
       apiKey: credentials.apiKey,
-      ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
       ...(options.responseMaxBytes === undefined
         ? {}
         : { maxResponseBytes: options.responseMaxBytes }),

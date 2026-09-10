@@ -23,9 +23,9 @@ export type CanvasClipboard = {
 };
 
 /** 节点未被用户缩放时的默认宽度，单位为像素。 */
-export const DEFAULT_FLOW_NODE_WIDTH = 180;
+export const DEFAULT_FLOW_NODE_WIDTH = 230;
 /** 节点未被用户缩放时的默认高度，单位为像素。 */
-export const DEFAULT_FLOW_NODE_HEIGHT = 166;
+export const DEFAULT_FLOW_NODE_HEIGHT = 216;
 const CANVAS_CLIPBOARD_FORMAT = 'multimodal-canvas/clipboard';
 const CANVAS_CLIPBOARD_VERSION = 1;
 

@@ -8,8 +8,12 @@ export type CanvasViewportBounds = {
 export type FlowPosition = { x: number; y: number };
 export type ScreenToFlowPosition = (position: FlowPosition) => FlowPosition;
 
-export const DEFAULT_NODE_FLOW_WIDTH = 180;
-export const DEFAULT_NODE_FLOW_HEIGHT = 173;
+import { DEFAULT_FLOW_NODE_WIDTH, DEFAULT_FLOW_NODE_HEIGHT } from '../canvas-utils';
+
+/** 创建位置与节点实际默认尺寸共用常量，保持几何中心一致。 */
+export const DEFAULT_NODE_FLOW_WIDTH = DEFAULT_FLOW_NODE_WIDTH;
+/** 创建位置计算使用的默认高度，单位为画布像素。 */
+export const DEFAULT_NODE_FLOW_HEIGHT = DEFAULT_FLOW_NODE_HEIGHT;
 
 export function getCenteredCanvasNodePosition(
   bounds: CanvasViewportBounds,

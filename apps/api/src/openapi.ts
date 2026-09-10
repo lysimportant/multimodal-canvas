@@ -1759,7 +1759,7 @@ export const openApiDocument = {
       },
       AiSettings: {
         type: 'object',
-        required: ['configured', 'baseUrl', 'defaultModels', 'updatedAt'],
+        required: ['configured', 'baseUrl', 'defaultModels', 'timeoutMs', 'updatedAt'],
         properties: {
           configured: { type: 'boolean' },
           baseUrl: {
@@ -1778,6 +1778,14 @@ export const openApiDocument = {
               video: defaultModelValueSchema,
             },
             additionalProperties: false,
+          },
+          timeoutMs: {
+            type: 'integer',
+            minimum: 1000,
+            maximum: 2147483647,
+            default: 900000,
+            description:
+              '节点生成请求超时及默认视频轮询等待预算，单位毫秒；部署 NEW_API_TIMEOUT_MS 优先。',
           },
           updatedAt: { type: 'string', format: 'date-time' },
         },
@@ -1809,6 +1817,13 @@ export const openApiDocument = {
               video: { oneOf: [defaultModelValueSchema, { type: 'null' }] },
             },
             additionalProperties: false,
+          },
+          timeoutMs: {
+            type: 'integer',
+            minimum: 1000,
+            maximum: 2147483647,
+            description:
+              '新开始执行节点的请求超时及视频轮询等待预算，单位毫秒；省略保留现值，显式 900000 恢复默认。',
           },
         },
         additionalProperties: false,

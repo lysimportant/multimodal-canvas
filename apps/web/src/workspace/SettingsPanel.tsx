@@ -34,6 +34,13 @@ import {
   type ModelSelection,
 } from './contracts';
 
+/** 与服务端一致的节点默认超时，单位毫秒。 */
+const DEFAULT_PROVIDER_TIMEOUT_MS = 900_000;
+/** 允许保存的最短节点超时，单位毫秒。 */
+const MIN_PROVIDER_TIMEOUT_MS = 1_000;
+/** Node.js 定时器最大安全等待时间，单位毫秒。 */
+const MAX_PROVIDER_TIMEOUT_MS = 2_147_483_647;
+
 function normalizeSelection(
   value: string | ModelSelection | undefined,
 ): ModelSelection | undefined {
@@ -129,6 +136,9 @@ export function SettingsPanel({
     configured: false,
     defaultModels: {},
   });
+  /** 毫秒输入草稿及修改标记，避免晚到的设置响应覆盖用户输入。 */
+  const [timeoutMs, setTimeoutMs] = useState(String(DEFAULT_PROVIDER_TIMEOUT_MS));
+  const timeoutDirtyRef = useRef(false);
   const [projectDefaults, setProjectDefaults] = useState<ModelDefaults>({});
   const [projectDefaultsLoading, setProjectDefaultsLoading] = useState(Boolean(projectId));
   const [busy, setBusy] = useState(false);
@@ -238,6 +248,8 @@ export function SettingsPanel({
     ) => {
       if (!mountedRef.current || requestGeneration !== getAuthSessionGeneration()) return;
       setSettings(nextSettings);
+      setTimeoutMs(String(nextSettings.timeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS));
+      timeoutDirtyRef.current = false;
       setImeResetKey((current) => current + 1);
       reset({
         baseUrl: nextSettings.baseUrl,
@@ -262,6 +274,9 @@ export function SettingsPanel({
         const result = (await response.json()) as { settings: AiSettings };
         if (!active || requestVersion !== settingsRequestVersionRef.current) return;
         setSettings(result.settings);
+        if (!timeoutDirtyRef.current) {
+          setTimeoutMs(String(result.settings.timeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS));
+        }
         setValue('configured', result.settings.configured, { shouldDirty: false });
         if (!getFieldState('baseUrl').isDirty) {
           setValue('baseUrl', result.settings.baseUrl, { shouldDirty: false });
@@ -346,11 +361,28 @@ export function SettingsPanel({
     const generation = getAuthSessionGeneration();
     setBusy(true);
     stopSettingsLoad();
+    const parsedTimeoutMs = Number(timeoutMs.trim());
+    if (
+      !Number.isSafeInteger(parsedTimeoutMs) ||
+      parsedTimeoutMs < MIN_PROVIDER_TIMEOUT_MS ||
+      parsedTimeoutMs > MAX_PROVIDER_TIMEOUT_MS
+    ) {
+      reportNotice({
+        kind: 'error',
+        message: `超时时间必须是 ${MIN_PROVIDER_TIMEOUT_MS} 至 ${MAX_PROVIDER_TIMEOUT_MS} 之间的整数（毫秒）`,
+      });
+      setBusy(false);
+      return;
+    }
     try {
       const response = await apiFetch(`${API_BASE_URL}/v1/settings/ai`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ baseUrl, ...(apiKey ? { apiKey } : {}) }),
+        body: JSON.stringify({
+          baseUrl,
+          timeoutMs: parsedTimeoutMs,
+          ...(apiKey ? { apiKey } : {}),
+        }),
       });
       const result = (await response.json().catch(() => ({}))) as {
         settings?: AiSettings;
@@ -441,6 +473,8 @@ export function SettingsPanel({
       const result = await activateCredentialMutation.mutateAsync(credentialId);
       if (!isCurrentRequest(generation)) return;
       setSettings(result.settings);
+      setTimeoutMs(String(result.settings.timeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS));
+      timeoutDirtyRef.current = false;
       setImeResetKey((current) => current + 1);
       reset({
         baseUrl: result.settings.baseUrl,
@@ -491,6 +525,9 @@ export function SettingsPanel({
         throw new Error(result.error ?? '默认模型保存失败');
       }
       setSettings(result.settings);
+      if (!timeoutDirtyRef.current) {
+        setTimeoutMs(String(result.settings.timeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS));
+      }
       await replaceAiCredentials(queryClient, result.credentials, generation);
       if (!isCurrentRequest(generation)) return;
       reportNotice({
@@ -734,6 +771,28 @@ export function SettingsPanel({
                   {formErrors.apiKey.message}
                 </span>
               )}
+            </label>
+            <label className="settings-field">
+              <span>节点超时时间（毫秒）</span>
+              <Input
+                id="settings-timeout-ms"
+                aria-label="节点超时时间（毫秒）"
+                type="number"
+                min={MIN_PROVIDER_TIMEOUT_MS}
+                max={MAX_PROVIDER_TIMEOUT_MS}
+                step="1"
+                inputMode="numeric"
+                value={timeoutMs}
+                disabled={busy}
+                onChange={(event) => {
+                  timeoutDirtyRef.current = true;
+                  setTimeoutMs(event.target.value);
+                }}
+              />
+              <span className="settings-status">
+                默认 900000 毫秒（15
+                分钟），用于新开始执行节点的生成请求和视频轮询等待。填回默认值并保存可恢复；部署超时配置优先。
+              </span>
             </label>
             <div className="settings-actions">
               <Button type="submit" className="button button-primary" disabled={busy}>

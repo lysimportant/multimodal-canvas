@@ -280,7 +280,7 @@ export class NewApiProvider {
       throw new TypeError('生产环境 New API Base URL 必须使用 HTTPS');
     }
     this.apiKey = options.apiKey;
-    this.timeoutMs = positiveInteger(options.timeoutMs, 120_000, 'timeoutMs');
+    this.timeoutMs = positiveInteger(options.timeoutMs, 900_000, 'timeoutMs');
     this.maxResponseBytes = positiveInteger(
       options.maxResponseBytes,
       defaultResponseContentLimit,
@@ -619,10 +619,14 @@ export class NewApiVideoProvider {
       throw new TypeError('生产环境 New API Base URL 必须使用 HTTPS');
     }
     this.apiKey = options.apiKey;
-    this.timeoutMs = positiveInteger(options.timeoutMs, 120_000, 'timeoutMs');
+    this.timeoutMs = positiveInteger(options.timeoutMs, 900_000, 'timeoutMs');
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.pollIntervalMs = nonNegativeInteger(options.pollIntervalMs, 2_000, 'pollIntervalMs');
-    this.maxPollAttempts = positiveInteger(options.maxPollAttempts, 120, 'maxPollAttempts');
+    this.maxPollAttempts = positiveInteger(
+      options.maxPollAttempts,
+      defaultVideoPollAttempts(this.timeoutMs, this.pollIntervalMs),
+      'maxPollAttempts',
+    );
     this.maxContentBytes = positiveInteger(
       options.maxContentBytes,
       defaultVideoContentLimit,
@@ -1386,10 +1390,24 @@ function delay(milliseconds: number, signal?: AbortSignal, platformJobId?: strin
   });
 }
 
+/** 根据超时预算和退避间隔计算默认轮询次数；显式次数配置仍优先。 */
+function defaultVideoPollAttempts(timeoutMs: number, pollIntervalMs: number): number {
+  // 零间隔仅用于测试；给出有限次数，避免无限紧密轮询。
+  if (pollIntervalMs === 0) return 120;
+  let remainingMs = timeoutMs;
+  let attempts = 0;
+  for (let multiplier = 1; multiplier <= 3; multiplier += 1) {
+    const count = Math.min(30, Math.ceil(remainingMs / (pollIntervalMs * multiplier)));
+    attempts += count;
+    remainingMs -= count * pollIntervalMs * multiplier;
+    if (remainingMs <= 0) return attempts;
+  }
+  return attempts + Math.ceil(remainingMs / (pollIntervalMs * 4));
+}
+
+/** 每 30 次轮询递增等待间隔，最多为基础间隔的四倍。 */
 function videoPollDelay(baseMilliseconds: number, attempt: number): number {
   if (baseMilliseconds === 0) return 0;
-  // Increase every 30 polls and cap at 4x. With the 2s/120 defaults this
-  // covers about ten minutes without an unbounded sleep interval.
   const multiplier = Math.min(4, 1 + Math.floor((Math.max(1, attempt) - 1) / 30));
   return baseMilliseconds * multiplier;
 }

@@ -133,6 +133,60 @@ describe('Prisma AI settings encryption', () => {
 });
 
 describe('New API model catalog normalization', () => {
+  it('Prisma 超时扩展兼容旧默认模型，保存及恢复后可重新加载', async () => {
+    /** 模拟数据库当前行及单行设置更新，不涉及真实凭据。 */
+    let row = {
+      id: '123e4567-e89b-12d3-a456-426614174077',
+      version: 1,
+      baseUrl: '',
+      encryptedApiKey: '',
+      keyFingerprint: '',
+      encryptionKeyId: null,
+      defaultModels: { text: 'legacy-text' } as Record<string, unknown>,
+      updatedAt: new Date(),
+    };
+    const update = vi.fn(async ({ data }: { data: Partial<typeof row> }) => {
+      row = { ...row, ...data };
+      return row;
+    });
+    const prisma = withSettingsTransaction({
+      aiCredential: { findFirst: vi.fn(async () => row), update, create: update },
+      modelCatalog: { findMany: vi.fn(async () => []) },
+    });
+    const store = new PrismaAiSettingsStore(prisma as never, 'synthetic-timeout-secret');
+    expect((await store.get()).timeoutMs).toBe(900_000);
+    await store.update({ timeoutMs: 1_800_000 });
+    expect(row.defaultModels).toEqual({
+      text: { modelAlias: 'legacy-text' },
+      __timeoutMs: 1_800_000,
+    });
+    const reopened = new PrismaAiSettingsStore(prisma as never, 'synthetic-timeout-secret');
+    expect(await reopened.get()).toMatchObject({
+      timeoutMs: 1_800_000,
+      defaultModels: { text: { modelAlias: 'legacy-text' } },
+    });
+    await reopened.update({ timeoutMs: 900_000 });
+    expect(row.defaultModels).toEqual({ text: { modelAlias: 'legacy-text' } });
+    expect((await store.get()).timeoutMs).toBe(900_000);
+    await reopened.update({ timeoutMs: 1_800_000 });
+    await reopened.removeCredentials();
+    expect((await store.get()).timeoutMs).toBe(1_800_000);
+  });
+
+  it('uses a longer provider timeout by default and validates custom values', () => {
+    const store = new AiSettingsStore('provider-timeout-test');
+
+    expect(store.get().timeoutMs).toBe(900_000);
+    expect(store.update({ timeoutMs: 1_200_000 }).timeoutMs).toBe(1_200_000);
+    expect(() => store.update({ timeoutMs: 999 })).toThrow('Provider timeout');
+    expect(() => store.update({ timeoutMs: 2_147_483_648 })).toThrow('Provider timeout');
+    const previous = store.get();
+    expect(() =>
+      store.update({ baseUrl: 'https://should-not-change.example', timeoutMs: 0 }),
+    ).toThrow('Provider timeout');
+    expect(store.get()).toEqual(previous);
+  });
+
   it('does not bootstrap model aliases from environment variables', () => {
     vi.stubEnv('NEW_API_TEXT_MODEL', ' text-model ');
 

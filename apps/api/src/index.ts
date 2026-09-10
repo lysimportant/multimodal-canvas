@@ -58,7 +58,9 @@ const runExecutor =
         settingsStore,
         videoContract: (process.env.NEW_API_VIDEO_CONTRACT ??
           'newapi-unified-v1') as NewApiVideoContract,
-        timeoutMs: Number(process.env.NEW_API_TIMEOUT_MS ?? 120_000),
+        ...(process.env.NEW_API_TIMEOUT_MS?.trim()
+          ? { timeoutMs: Number(process.env.NEW_API_TIMEOUT_MS) }
+          : {}),
         responseMaxBytes: Number(process.env.NEW_API_MAX_RESPONSE_BYTES ?? 50 * 1024 * 1024),
         ...(process.env.NEW_API_VIDEO_POLL_INTERVAL_MS
           ? { videoPollIntervalMs: Number(process.env.NEW_API_VIDEO_POLL_INTERVAL_MS) }

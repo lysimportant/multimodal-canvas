@@ -14,6 +14,8 @@ export type AiSettings = {
   configured: boolean;
   keyFingerprint?: string;
   defaultModels: Partial<Record<MediaType, string | ModelSelection>>;
+  /** Provider 单次请求超时，单位毫秒。 */
+  timeoutMs: number;
   updatedAt: string;
 };
 
@@ -47,6 +49,8 @@ export type UpdateAiSettingsInput = {
   baseUrl?: string;
   apiKey?: string;
   defaultModels?: Partial<Record<MediaType, string | ModelSelection | null>>;
+  /** Provider 单次请求超时，单位毫秒；范围为 1 秒至 Node 定时器上限。 */
+  timeoutMs?: number;
 };
 
 export type AiSettingsStoreOptions = {
@@ -86,6 +90,8 @@ export type PersistedAiSettings = {
   encryptionKeyId?: string;
   keyFingerprint: string;
   defaultModels: Partial<Record<MediaType, string | ModelSelection>>;
+  /** 节点请求与视频轮询等待预算，单位毫秒；旧存储缺省使用 15 分钟。 */
+  timeoutMs?: number;
   updatedAt: string;
 };
 
@@ -132,6 +138,27 @@ export class AiCredentialNotFoundError extends Error {
 
 const LEGACY_MODEL_CATALOG_KEY = '__legacy__';
 const DEFAULT_MODEL_RESPONSE_BYTES = 50 * 1024 * 1024;
+/** Provider 默认超时，单位毫秒；视频任务需要比短请求更长的等待窗口。 */
+export const DEFAULT_PROVIDER_TIMEOUT_MS = 900_000;
+/** Node.js 定时器支持的最大毫秒数，防止溢出后立即超时。 */
+const MAX_PROVIDER_TIMEOUT_MS = 2_147_483_647;
+
+/** 校验并规范化 Provider 超时，避免无效值关闭超时保护。 */
+export function normalizeProviderTimeout(
+  value: unknown,
+  fallback = DEFAULT_PROVIDER_TIMEOUT_MS,
+): number {
+  const timeoutMs = value === undefined ? fallback : value;
+  if (
+    typeof timeoutMs !== 'number' ||
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs < 1_000 ||
+    timeoutMs > MAX_PROVIDER_TIMEOUT_MS
+  ) {
+    throw new TypeError('Provider timeout must be an integer between 1000 and 2147483647 ms');
+  }
+  return timeoutMs;
+}
 
 /** GPT-5.6 文本模型目前可用的推理强度值，顺序与界面展示顺序保持一致。 */
 const GPT_56_REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
@@ -156,6 +183,8 @@ export class AiSettingsStore {
   private readonly modelRequestRetryDelayMs: number;
   private readonly modelRequestMaxResponseBytes: number;
   private defaultModels: Partial<Record<MediaType, ModelSelection>> = {};
+  /** 当前平台节点超时，单位毫秒；修改后供下一次执行读取。 */
+  private timeoutMs = DEFAULT_PROVIDER_TIMEOUT_MS;
   private readonly modelCatalogs = new Map<string, Map<string, ModelCatalogEntry>>();
   private readonly modelRefreshQueues = new Map<string, Promise<void>>();
   private readonly capabilityOverrides = new Map<string, Record<string, unknown>>();
@@ -208,6 +237,7 @@ export class AiSettingsStore {
       configured: Boolean(this.baseUrl && this.encryptedApiKey),
       ...(this.keyFingerprint ? { keyFingerprint: this.keyFingerprint } : {}),
       defaultModels: serializeDefaultModels(this.defaultModels),
+      timeoutMs: this.timeoutMs,
       updatedAt: this.updatedAt,
     };
   }
@@ -221,6 +251,7 @@ export class AiSettingsStore {
         : {}),
       keyFingerprint: this.keyFingerprint,
       defaultModels: serializeDefaultModels(this.defaultModels),
+      timeoutMs: this.timeoutMs,
       updatedAt: this.updatedAt,
     };
   }
@@ -239,6 +270,7 @@ export class AiSettingsStore {
     this.encryptionKeyId = persisted.encryptionKeyId;
     this.keyFingerprint = persisted.keyFingerprint;
     this.defaultModels = normalizeDefaultModels(persisted.defaultModels);
+    this.timeoutMs = normalizeProviderTimeout(persisted.timeoutMs);
     this.updatedAt = persisted.updatedAt;
     this.credentialId = reference?.credentialId;
     this.credentialVersion = reference?.credentialVersion;
@@ -246,6 +278,9 @@ export class AiSettingsStore {
   }
 
   update(input: UpdateAiSettingsInput): AiSettings {
+    // 先校验可失败字段，防止同一更新中的凭据已变更而超时校验失败。
+    const nextTimeout =
+      input.timeoutMs === undefined ? undefined : normalizeProviderTimeout(input.timeoutMs);
     let changed = false;
     let providerCredentialsChanged = false;
     const previousCredentialId = this.credentialId;
@@ -275,6 +310,13 @@ export class AiSettingsStore {
       }
       if (!sameDefaultModels(next, this.defaultModels)) {
         this.defaultModels = next;
+        changed = true;
+      }
+    }
+    if (nextTimeout !== undefined) {
+      const timeoutMs = nextTimeout;
+      if (timeoutMs !== this.timeoutMs) {
+        this.timeoutMs = timeoutMs;
         changed = true;
       }
     }
@@ -688,6 +730,7 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
   /** 写入撤销墓碑阻止后续新任务使用凭据，保留历史快照的 id/version 和密文。 */
   async removeCredentials() {
     return this.withLatestSettings(async () => {
+      const timeoutMs = this.memory.get().timeoutMs;
       // Do not delete or zero historical rows: queued/running jobs may refer
       // to the current id/version. Append an empty tombstone version to revoke
       // the active credential while leaving every immutable snapshot resolvable.
@@ -708,7 +751,10 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
               encryptedApiKey: '',
               encryptionKeyId: null,
               keyFingerprint: '',
-              defaultModels: Prisma.JsonNull,
+              defaultModels:
+                timeoutMs === DEFAULT_PROVIDER_TIMEOUT_MS
+                  ? Prisma.JsonNull
+                  : { __timeoutMs: timeoutMs },
               label: 'revoked',
               updatedAt,
             },
@@ -723,6 +769,7 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
           encryptedApiKey: '',
           keyFingerprint: '',
           defaultModels: {},
+          timeoutMs,
           updatedAt: revoked.updatedAt.toISOString(),
         });
         return this.memory.get();
@@ -898,14 +945,15 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
           credentialVersion: credential.version,
         });
       }
-      const defaults = isDefaultModels(credential.defaultModels) ? credential.defaultModels : {};
+      const stored = readPersistedDefaults(credential.defaultModels);
       memory.hydrate(
         {
           baseUrl: credential.baseUrl,
           encryptedApiKey: credential.encryptedApiKey,
           ...(credential.encryptionKeyId ? { encryptionKeyId: credential.encryptionKeyId } : {}),
           keyFingerprint: credential.keyFingerprint,
-          defaultModels: defaults,
+          defaultModels: stored.defaultModels,
+          ...(stored.timeoutMs === undefined ? {} : { timeoutMs: stored.timeoutMs }),
           updatedAt: credential.updatedAt.toISOString(),
         },
         reference,
@@ -1023,7 +1071,7 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
         }
         return transaction.aiCredential.update({
           where: { id: existing.id, version: existing.version, updatedAt: existing.updatedAt },
-          data: { defaultModels: persisted.defaultModels, updatedAt },
+          data: { defaultModels: writePersistedDefaults(persisted), updatedAt },
         });
       }
       const created = await transaction.aiCredential.create({
@@ -1035,7 +1083,7 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
             persisted.encryptionKeyId ??
             (persisted.encryptedApiKey ? this.credentialKeyring.currentKeyId : null),
           keyFingerprint: persisted.keyFingerprint,
-          defaultModels: persisted.defaultModels,
+          defaultModels: writePersistedDefaults(persisted),
           version: Math.max(
             existing ? existing.version + 1 : 1,
             this.memory.getCredentialReference().credentialVersion ?? 1,
@@ -1287,6 +1335,7 @@ function samePersistedSettings(left: PersistedAiSettings, right: PersistedAiSett
     left.baseUrl === right.baseUrl &&
     left.encryptedApiKey === right.encryptedApiKey &&
     left.keyFingerprint === right.keyFingerprint &&
+    normalizeProviderTimeout(left.timeoutMs) === normalizeProviderTimeout(right.timeoutMs) &&
     sameDefaultModels(
       normalizeDefaultModels(left.defaultModels),
       normalizeDefaultModels(right.defaultModels),
@@ -1375,6 +1424,30 @@ function isDefaultModels(
         (typeof alias === 'string' || (isRecord(alias) && typeof alias.modelAlias === 'string')),
     )
   );
+}
+
+/** 从凭据 JSON 中读取默认模型与可选超时扩展字段，兼容旧格式。 */
+function readPersistedDefaults(value: unknown): {
+  defaultModels: Partial<Record<MediaType, string | ModelSelection>>;
+  timeoutMs?: number;
+} {
+  if (!isRecord(value)) return { defaultModels: {} };
+  const defaultModels = Object.fromEntries(
+    Object.entries(value).filter(([key]) => key !== '__timeoutMs'),
+  );
+  const timeoutMs =
+    value.__timeoutMs === undefined ? undefined : normalizeProviderTimeout(value.__timeoutMs);
+  return {
+    defaultModels: isDefaultModels(defaultModels) ? defaultModels : {},
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+  };
+}
+
+/** 将超时写入现有默认模型 JSON，默认值保持旧数据形状。 */
+function writePersistedDefaults(value: PersistedAiSettings): Prisma.InputJsonValue {
+  const defaults = { ...value.defaultModels } as Record<string, unknown>;
+  if (value.timeoutMs !== DEFAULT_PROVIDER_TIMEOUT_MS) defaults.__timeoutMs = value.timeoutMs;
+  return defaults as Prisma.InputJsonValue;
 }
 
 async function requestModels(

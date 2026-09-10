@@ -14,6 +14,32 @@ const userId = '123e4567-e89b-12d3-a456-426614174001';
 
 afterEach(() => vi.unstubAllEnvs());
 
+describe('Worker 节点超时设置', () => {
+  it('从当前设置读取超时并兼容旧格式', async () => {
+    const findFirst = vi
+      .fn()
+      .mockResolvedValueOnce({ defaultModels: { text: 'old-model' } })
+      .mockResolvedValueOnce({ defaultModels: { __timeoutMs: 1_800_000 } });
+    const persistence = new WorkerPrismaRunPersistence({ aiCredential: { findFirst } } as never);
+    await expect(persistence.getProviderTimeoutMs()).resolves.toBeUndefined();
+    await expect(persistence.getProviderTimeoutMs()).resolves.toBe(1_800_000);
+    expect(findFirst).toHaveBeenLastCalledWith({
+      where: { projectId: null },
+      orderBy: [{ updatedAt: 'desc' }, { version: 'desc' }],
+      select: { defaultModels: true },
+    });
+  });
+
+  it.each([0, 999, 2_147_483_648, '1800000'])('拒绝非法持久化超时 %s', async (timeoutMs) => {
+    const persistence = new WorkerPrismaRunPersistence({
+      aiCredential: {
+        findFirst: vi.fn().mockResolvedValue({ defaultModels: { __timeoutMs: timeoutMs } }),
+      },
+    } as never);
+    await expect(persistence.getProviderTimeoutMs()).rejects.toThrow('Provider timeout');
+  });
+});
+
 function createPersistence() {
   const prisma = {
     $disconnect: vi.fn(async () => undefined),

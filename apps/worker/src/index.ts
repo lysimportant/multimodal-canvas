@@ -102,6 +102,8 @@ export type WorkerProviderCredentials = {
  * dependency and can still run in tests or local development.
  */
 export type RunPersistence = {
+  /** 读取当前平台节点超时（毫秒）；在开始执行节点时读取，不改写冻结凭据。 */
+  getProviderTimeoutMs?(): Promise<number | undefined>;
   /** Resolve the exact encrypted credential captured in a run snapshot. */
   getProviderCredentials?(
     reference: WorkerCredentialReference,
@@ -297,7 +299,12 @@ export function createRunWorker(options: {
     if (video && options.videoProvider) return options.videoProvider;
     if (options.provider) return options.provider;
     if (persistedCredentials) {
-      const providers = createNewApiProviders(persistedCredentials, cancellationSignal);
+      const configuredTimeout = await options.persistence?.getProviderTimeoutMs?.();
+      const providers = createNewApiProviders(
+        persistedCredentials,
+        cancellationSignal,
+        configuredTimeout,
+      );
       return video ? providers.video : providers.standard;
     }
     const providers = createNewApiProvidersFromEnvironment(cancellationSignal);
@@ -1999,12 +2006,15 @@ function createNewApiProvidersFromEnvironment(cancellationSignal?: AbortSignal):
 function createNewApiProviders(
   credentials: WorkerProviderCredentials,
   cancellationSignal?: AbortSignal,
+  configuredTimeoutMs?: number,
 ): {
   standard: ProviderExecutor;
   video: ProviderExecutor;
 } {
   const { baseUrl, apiKey } = credentials;
-  const timeoutMs = Number(process.env.NEW_API_TIMEOUT_MS ?? 120_000);
+  const timeoutMs = Number(
+    process.env.NEW_API_TIMEOUT_MS?.trim() || configuredTimeoutMs || 900_000,
+  );
   const responseMaxBytes = Number(process.env.NEW_API_MAX_RESPONSE_BYTES ?? 50 * 1024 * 1024);
   const fetchImpl = cancellationSignal ? abortableFetch(cancellationSignal) : undefined;
   const standard = new NewApiProvider({
@@ -2023,7 +2033,9 @@ function createNewApiProviders(
     timeoutMs,
     maxResponseBytes: responseMaxBytes,
     pollIntervalMs: Number(process.env.NEW_API_VIDEO_POLL_INTERVAL_MS ?? 2_000),
-    maxPollAttempts: Number(process.env.NEW_API_VIDEO_MAX_POLL_ATTEMPTS ?? 120),
+    ...(process.env.NEW_API_VIDEO_MAX_POLL_ATTEMPTS?.trim()
+      ? { maxPollAttempts: Number(process.env.NEW_API_VIDEO_MAX_POLL_ATTEMPTS) }
+      : {}),
     maxContentBytes: Number(process.env.NEW_API_VIDEO_MAX_CONTENT_BYTES ?? 50 * 1024 * 1024),
     ...(fetchImpl ? { fetchImpl } : {}),
     requireHttps: process.env.NODE_ENV === 'production',

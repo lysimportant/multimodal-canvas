@@ -11,6 +11,7 @@ import { mediaTypes, type MediaType, type ModelSelection } from '@multimodal-can
 import {
   AiCredentialNotFoundError,
   AiSettingsStore,
+  normalizeProviderTimeout,
   type AiCredentialSummary,
   type AiSettings,
   type AiSettingsStoreLike,
@@ -588,6 +589,7 @@ function samePersistedSettings(left: PersistedAiSettings, right: PersistedAiSett
     left.encryptedApiKey === right.encryptedApiKey &&
     left.encryptionKeyId === right.encryptionKeyId &&
     left.keyFingerprint === right.keyFingerprint &&
+    normalizeProviderTimeout(left.timeoutMs) === normalizeProviderTimeout(right.timeoutMs) &&
     sameDefaultModels(left.defaultModels, right.defaultModels)
   );
 }
@@ -714,6 +716,11 @@ function isPersistedAiSettings(value: unknown): value is PersistedAiSettings {
     (value.encryptionKeyId === undefined ||
       (typeof value.encryptionKeyId === 'string' && value.encryptionKeyId.trim().length > 0)) &&
     typeof value.keyFingerprint === 'string' &&
+    (value.timeoutMs === undefined ||
+      (typeof value.timeoutMs === 'number' &&
+        Number.isSafeInteger(value.timeoutMs) &&
+        value.timeoutMs >= 1_000 &&
+        value.timeoutMs <= 2_147_483_647)) &&
     isDefaultModels(value.defaultModels) &&
     typeof value.updatedAt === 'string' &&
     Number.isFinite(Date.parse(value.updatedAt))

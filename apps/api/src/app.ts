@@ -1517,6 +1517,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           }, 'baseUrl must use HTTPS outside local development')
           .optional(),
         apiKey: z.string().min(1).optional(),
+        timeoutMs: z.number().int().min(1_000).max(2_147_483_647).optional(),
         defaultModels: z
           .object({
             text: z

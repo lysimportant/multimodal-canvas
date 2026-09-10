@@ -1,0 +1,275 @@
+/* 编辑区共用当前主题的中性色，输入框与操作栏形成一张连续的卡片。 */
+.node-quick-editor.node-quick-editor,
+.node-quick-editor-dialog.node-quick-editor-dialog {
+  background: var(--mc-surface);
+  border: 1px solid var(--mc-border);
+  border-radius: 20px;
+  box-shadow: 0 18px 46px var(--mc-shadow);
+  color: var(--mc-text);
+  padding: 16px;
+}
+
+.node-quick-editor.node-quick-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.node-quick-editor[hidden],
+.node-quick-editor-parameter-popover[hidden] {
+  display: none;
+}
+
+:is(.node-quick-editor, .node-quick-editor-dialog) .node-quick-editor-field textarea {
+  background: var(--mc-surface);
+  border-color: transparent;
+  border-radius: 10px;
+  box-shadow: none;
+  color: var(--mc-text);
+  font-size: 13px;
+  line-height: 1.7;
+  min-height: 145px;
+  padding: 8px 4px;
+}
+
+:is(.node-quick-editor, .node-quick-editor-dialog) .node-quick-editor-field textarea:focus-visible {
+  border-color: var(--mc-border-strong);
+  outline: none;
+  box-shadow: none;
+}
+
+:is(.node-quick-editor, .node-quick-editor-dialog) .node-quick-editor-controls {
+  align-items: end;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  position: relative;
+}
+
+.node-quick-editor-controls > .compact-select {
+  flex: 1 1 0;
+}
+
+.node-quick-editor-controls > .compact-select > .compact-select-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+:is(.node-quick-editor, .node-quick-editor-dialog) .compact-select-trigger,
+:is(.node-quick-editor, .node-quick-editor-dialog) .node-quick-editor-option-trigger,
+.node-quick-editor-summary-button,
+.node-quick-editor-expand,
+:is(.node-quick-editor, .node-quick-editor-dialog) .node-quick-editor-run {
+  align-items: center;
+  background: var(--mc-surface-soft);
+  border: 1px solid var(--mc-border);
+  border-radius: 999px;
+  color: var(--mc-text);
+  cursor: pointer;
+  display: inline-flex;
+  gap: 6px;
+  height: 36px;
+  min-width: 0;
+  padding: 0 10px;
+  box-shadow: none;
+  font-size: 11px;
+}
+
+.node-quick-editor-summary-button {
+  flex: 0 1 auto;
+  max-width: 49%;
+}
+
+.node-quick-editor-summary-button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-quick-editor-summary-button svg {
+  flex-shrink: 0;
+}
+
+.node-quick-editor-expand,
+:is(.node-quick-editor, .node-quick-editor-dialog) .node-quick-editor-run {
+  flex: 0 0 36px;
+  justify-content: center;
+  width: 36px;
+  padding: 0;
+}
+
+:is(.node-quick-editor, .node-quick-editor-dialog) :is(button, input).compact-select-trigger:hover,
+:is(.node-quick-editor, .node-quick-editor-dialog) .node-quick-editor-option-trigger:hover,
+.node-quick-editor-summary-button:hover,
+.node-quick-editor-summary-button[aria-expanded='true'],
+.node-quick-editor-expand:hover,
+:is(.node-quick-editor, .node-quick-editor-dialog) .node-quick-editor-run:hover:not(:disabled) {
+  background: var(--mc-surface-muted);
+  border-color: var(--mc-border-strong);
+  color: var(--mc-text-strong);
+}
+
+.node-quick-editor-run:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.node-quick-editor-parameter-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 10px);
+  width: min(365px, 100%);
+  max-height: min(440px, 55dvh);
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 14px;
+  background: var(--mc-surface);
+  border: 1px solid var(--mc-border);
+  border-radius: 14px;
+  box-shadow: 0 12px 30px var(--mc-shadow);
+  z-index: 30;
+}
+
+.node-quick-editor-parameter-heading,
+.node-quick-editor-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.node-quick-editor-parameter-heading {
+  font-size: 12px;
+  margin-bottom: 12px;
+}
+
+.node-quick-editor-parameter-heading button,
+.node-quick-editor-dialog-close {
+  display: inline-flex;
+  padding: 5px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--mc-surface-soft);
+  color: var(--mc-text-muted);
+  cursor: pointer;
+}
+
+.node-quick-editor-media-settings {
+  display: grid;
+  gap: 14px;
+}
+
+.node-quick-editor-parameter-popover
+  .node-quick-editor-media-settings
+  .node-quick-editor-media-options {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* 参数页的下级选项在页内展开，可滚动到最后一项，避免嵌套浮层被裁切。 */
+.node-quick-editor-parameter-popover .compact-select-menu,
+.node-quick-editor-parameter-popover .node-quick-editor-option-popover {
+  position: static;
+  min-width: 0;
+  width: 100%;
+  max-height: 200px;
+  transform: none;
+  box-shadow: none;
+  background: var(--mc-surface);
+  border-color: var(--mc-border);
+}
+
+.node-quick-editor-parameter-popover
+  .node-quick-editor-media-options[data-columns]
+  > .node-quick-editor-option-group:nth-child(n)
+  .node-quick-editor-option-popover {
+  transform: none;
+  left: auto;
+  right: auto;
+}
+
+.node-quick-editor-parameter-popover .node-quick-editor-option-label,
+.node-quick-editor-parameter-popover .node-quick-editor-option-copy small {
+  color: var(--mc-text-muted);
+}
+
+.node-quick-editor-parameter-popover .node-quick-editor-option {
+  background: var(--mc-surface-soft);
+  border-color: var(--mc-border);
+  color: var(--mc-text);
+}
+
+.node-quick-editor-parameter-popover .node-quick-editor-option.is-active {
+  border-color: var(--mc-accent);
+}
+
+.node-quick-editor-parameter-popover
+  .node-quick-editor-option-group[data-open='false']
+  .node-quick-editor-option-popover {
+  display: none;
+}
+
+.node-quick-editor-parameter-issue {
+  color: var(--mc-text-muted);
+  font-size: 11px;
+  margin: 0;
+}
+
+.node-quick-editor-dialog.node-quick-editor-dialog {
+  width: min(860px, calc(100vw - 32px));
+  max-height: calc(100dvh - 40px);
+  z-index: 72;
+}
+
+.node-quick-editor-dialog-backdrop {
+  z-index: 71;
+}
+
+.node-quick-editor-dialog-header {
+  align-items: flex-start;
+}
+
+.node-quick-editor-dialog-header h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.node-quick-editor-references {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+  color: var(--mc-text-muted);
+  font-size: 12px;
+}
+
+.node-quick-editor-references span {
+  padding: 6px 10px;
+  background: var(--mc-surface-soft);
+  border: 1px solid var(--mc-border);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+
+.node-quick-editor-dialog-body {
+  display: grid;
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.node-quick-editor-dialog .node-quick-editor-prompt textarea {
+  min-height: min(360px, 45dvh);
+  max-height: 55dvh;
+  font-size: 15px;
+}
+
+.node-quick-editor-dialog .resource-mention-list {
+  position: static;
+  width: 100%;
+  max-height: 150px;
+  overflow: auto;
+  transform: none;
+}

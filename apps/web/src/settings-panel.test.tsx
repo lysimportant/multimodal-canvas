@@ -26,6 +26,8 @@ class ResizeObserverStub {
 }
 
 type Settings = {
+  /** 用于断言持久化往返的节点超时毫秒数。 */
+  timeoutMs?: number;
   baseUrl: string;
   configured: boolean;
   keyFingerprint?: string;
@@ -105,11 +107,13 @@ function installApiMock() {
     if (url.pathname === '/v1/settings/ai' && method === 'GET') return jsonResponse({ settings });
     if (url.pathname === '/v1/settings/ai' && method === 'PATCH') {
       const body = JSON.parse(String(init?.body ?? '{}')) as {
+        timeoutMs?: number;
         baseUrl?: string;
         apiKey?: string;
         defaultModels?: Partial<Record<MediaType, string | ModelSelection | null>>;
       };
       if (body.baseUrl !== undefined) settings.baseUrl = body.baseUrl;
+      if (body.timeoutMs !== undefined) settings.timeoutMs = body.timeoutMs;
       if (body.apiKey) {
         settings.configured = true;
         settings.keyFingerprint = mockFingerprint(body.apiKey);
@@ -281,6 +285,20 @@ describe('SettingsPanel', () => {
     );
   });
 
+  it('保存自定义超时后可以显式恢复默认值', async () => {
+    settings.timeoutMs = 1_200_000;
+    const { dialog, user } = await openSettings();
+    const timeout = within(dialog).getByLabelText('节点超时时间（毫秒）');
+    expect(timeout).toHaveValue(1_200_000);
+    fireEvent.change(timeout, { target: { value: '1800000' } });
+    await user.click(within(dialog).getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(settings.timeoutMs).toBe(1_800_000));
+    await waitFor(() => expect(timeout).toBeEnabled());
+    fireEvent.change(timeout, { target: { value: '900000' } });
+    await user.click(within(dialog).getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(settings.timeoutMs).toBe(900_000));
+  });
+
   it('普通用户打开居中的项目设置对话框，只显示外观设置', async () => {
     persistAuthSession({
       accessToken: 'synthetic-ordinary-settings-token',
@@ -332,6 +350,7 @@ describe('SettingsPanel', () => {
     expect(JSON.parse(String(saveCall?.[1]?.body))).toEqual({
       baseUrl: 'https://api.example.com/v1',
       apiKey: 'new-secret',
+      timeoutMs: 900_000,
     });
 
     await user.click(within(dialog).getByRole('button', { name: '测试连接' }));
@@ -793,6 +812,7 @@ describe('SettingsPanel', () => {
     );
     expect(JSON.parse(String(saveCall?.[1]?.body))).toEqual({
       baseUrl: 'https://trimmed.example.com/v1',
+      timeoutMs: 900_000,
     });
   });
 
@@ -894,11 +914,14 @@ describe('SettingsPanel', () => {
     const apiKey = within(dialog).getByLabelText('API Key');
     await user.type(baseUrl, 'https://dirty.example.com/v1');
     await user.type(apiKey, 'dirty-key');
+    const timeout = within(dialog).getByLabelText('节点超时时间（毫秒）');
+    fireEvent.change(timeout, { target: { value: '1800000' } });
 
     resolveSettings?.(jsonResponse({ settings }));
     await waitFor(() => expect(settingsSignal).toBeInstanceOf(AbortSignal));
     await waitFor(() => expect(baseUrl).toHaveValue('https://dirty.example.com/v1'));
     expect(apiKey).toHaveValue('dirty-key');
+    expect(timeout).toHaveValue(1_800_000);
 
     await user.keyboard('{Escape}');
     await waitFor(() => expect(settingsSignal?.aborted).toBe(true));

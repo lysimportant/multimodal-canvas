@@ -482,6 +482,8 @@ function WorkspaceApp({
   const saveRequestRef = useRef<Promise<void> | null>(null);
   const refreshedResultAssetKeysRef = useRef(new Set<string>());
   const runRecordsRef = useRef<Record<string, RunRecord>>({});
+  /** 当前画布生命周期的轮询令牌，离开画布时终止后台等待。 */
+  const runPollingLifecycleRef = useRef({ active: true });
   const initializedRef = useRef(false);
   const nodesRef = useRef<AssetFlowNode[]>([]);
   const edgesRef = useRef<FlowEdge[]>([]);
@@ -496,6 +498,14 @@ function WorkspaceApp({
     () => nodes.find((node) => node.id === selectedNodeId) ?? null,
     [nodes, selectedNodeId],
   );
+
+  useEffect(() => {
+    const lifecycle = { active: true };
+    runPollingLifecycleRef.current = lifecycle;
+    return () => {
+      lifecycle.active = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (settingsWasOpenRef.current && !showSettings) settingsTriggerRef.current?.focus();
@@ -1823,7 +1833,9 @@ function WorkspaceApp({
 
   const pollRun = useCallback(
     async (runId: string, nodeId: string) => {
-      for (let attempt = 0; attempt < 120; attempt += 1) {
+      const lifecycle = runPollingLifecycleRef.current;
+      // 服务端控制生成超时；队列等待和自定义长任务不能被浏览器固定次数误判失败。
+      for (let attempt = 0; lifecycle.active; attempt += 1) {
         const run = await fetchRun(runId, nodeId);
         if (['succeeded', 'failed', 'cancelled'].includes(run.status)) return run;
         // SSE normally delivers updates immediately; this REST fallback backs
@@ -1831,7 +1843,7 @@ function WorkspaceApp({
         const delayMs = Math.min(1_000, 250 * 2 ** Math.min(2, Math.floor(attempt / 10)));
         await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
-      throw new Error('运行等待超时');
+      throw new Error('已离开画布，停止等待运行结果');
     },
     [fetchRun],
   );

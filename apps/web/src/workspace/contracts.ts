@@ -34,6 +34,8 @@ export type AiSettings = {
   configured: boolean;
   keyFingerprint?: string;
   defaultModels: ModelDefaults;
+  /** Provider 单次请求超时，单位毫秒；旧服务响应可能不包含该字段。 */
+  timeoutMs?: number;
 };
 
 export type ModelEntry = {

@@ -202,6 +202,26 @@ describe('createNewApiRunExecutor', () => {
     );
   });
 
+  it('reads the current timeout from settings when no environment override is supplied', async () => {
+    const providers = providerFactory();
+    const executor = createNewApiRunExecutor({
+      settingsStore: {
+        getProviderCredentials: () => ({
+          baseUrl: 'https://newapi.example.test/v1',
+          apiKey: 'test-api-key',
+        }),
+        get: () => ({ timeoutMs: 654_321 }) as never,
+      },
+      providerFactory: providers.factory,
+    });
+
+    await executor({ snapshot: snapshot('image') });
+
+    expect(providers.createStandard).toHaveBeenCalledWith(
+      expect.objectContaining({ timeoutMs: 654_321 }),
+    );
+  });
+
   it('resolves the credential version captured in the run snapshot', async () => {
     const providers = providerFactory();
     const getProviderCredentials = vi.fn(() => ({
