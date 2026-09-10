@@ -311,13 +311,7 @@ function validateCorsOrigins(
       issues.push({ variable: 'CORS_ORIGIN', message: 'must not contain an empty origin' });
       continue;
     }
-    if (origin === '*') {
-      issues.push({
-        variable: 'CORS_ORIGIN',
-        message: 'must not include wildcard "*" when credentials are enabled',
-      });
-      continue;
-    }
+    if (origin === '*' || origin.toLowerCase() === 'all') continue;
     try {
       const url = new URL(origin);
       if (url.protocol !== 'https:') {

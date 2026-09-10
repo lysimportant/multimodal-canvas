@@ -133,7 +133,7 @@ describe('API CORS', () => {
     }
   });
 
-  it('never combines a wildcard origin with credentialed CORS', async () => {
+  it('supports an explicit wildcard CORS mode by echoing the request origin', async () => {
     vi.stubEnv('NODE_ENV', 'production');
     vi.stubEnv('CORS_ORIGIN', '*');
     const app = buildApp({ logger: false });
@@ -145,7 +145,10 @@ describe('API CORS', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      expect(response.headers['access-control-allow-origin']).toBeUndefined();
+      expect(response.headers['access-control-allow-origin']).toBe(
+        'https://unexpected.example.com',
+      );
+      expect(response.headers['access-control-allow-credentials']).toBe('true');
     } finally {
       await app.close();
     }

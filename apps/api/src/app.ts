@@ -1112,14 +1112,20 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     parseByteLimit(process.env.API_SSE_MAX_EVENT_BYTES, DEFAULT_SSE_MAX_EVENT_BYTES),
     sseMaxBytes,
   );
-  const corsOrigins = resolveCorsOrigins(
+  const corsConfig = resolveCorsConfig(
     process.env.CORS_ORIGIN,
     process.env.NODE_ENV,
     process.env.WEB_PORT,
   );
 
   app.register(cors, {
-    origin: corsOrigins.length > 0 ? corsOrigins : false,
+    // 使用回显请求 Origin 的方式实现 credentials 下的“允许所有来源”；
+    // 直接返回 * 会被浏览器拒绝，因此由 @fastify/cors 负责安全回显。
+    origin: corsConfig.allowAll
+      ? (origin, callback) => callback(null, origin ?? true)
+      : corsConfig.origins.length > 0
+        ? corsConfig.origins
+        : false,
     credentials: true,
     methods: ['GET', 'HEAD', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
     // Browser downloads need to read the server-provided attachment name.
@@ -3446,6 +3452,19 @@ function parseCorsOrigins(value: string | undefined): string[] {
     .split(',')
     .map((origin) => origin.trim())
     .filter((origin) => origin.length > 0 && origin !== '*');
+}
+
+function resolveCorsConfig(
+  value: string | undefined,
+  nodeEnv: string | undefined,
+  webPortValue?: string,
+): { allowAll: boolean; origins: string[] } {
+  const allowAll = value?.trim().toLowerCase() === '*' || value?.trim().toLowerCase() === 'all';
+  if (allowAll) return { allowAll: true, origins: [] };
+  return {
+    allowAll: false,
+    origins: resolveCorsOrigins(value, nodeEnv, webPortValue),
+  };
 }
 
 function resolveCorsOrigins(
