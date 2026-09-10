@@ -27,6 +27,7 @@ import type { NodeProps } from '@xyflow/react';
 import type { AssetFlowNode } from '../canvas-utils';
 import {
   AssetNode,
+  NodeDeleteContext,
   NodeEnabledContext,
   NodeLabelChangeContext,
   NodeResizeStartContext,
@@ -55,6 +56,7 @@ function renderNode(
   onResizeStart?: (nodeId: string) => void,
   selected = false,
   onLabelChange?: (nodeId: string, label: string) => void,
+  onDelete?: (nodeId: string) => void,
 ) {
   const props = {
     id: node.id,
@@ -66,7 +68,9 @@ function renderNode(
       <NodeLabelChangeContext.Provider value={onLabelChange ?? null}>
         <NodeEnabledContext.Provider value={onEnabled ?? null}>
           <NodeRetryContext.Provider value={onRetry ?? null}>
-            <AssetNode {...props} />
+            <NodeDeleteContext.Provider value={onDelete ?? null}>
+              <AssetNode {...props} />
+            </NodeDeleteContext.Provider>
           </NodeRetryContext.Provider>
         </NodeEnabledContext.Provider>
       </NodeLabelChangeContext.Provider>
@@ -80,6 +84,50 @@ afterEach(() => {
 });
 
 describe('AssetNode result presentation', () => {
+  it('通过顶部名称按钮的键盘交互重命名，Escape 取消草稿', async () => {
+    const onLabelChange = vi.fn();
+    const user = userEvent.setup();
+    renderNode(makeNode(), undefined, undefined, undefined, false, onLabelChange);
+
+    screen.getByRole('button', { name: '重命名节点：文案生成' }).focus();
+    await user.keyboard('{Enter}');
+    const input = screen.getByRole('textbox', { name: '编辑节点名称' });
+    await user.clear(input);
+    await user.type(input, '尚未保存的名称');
+    await user.keyboard('{Escape}');
+
+    expect(onLabelChange).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '重命名节点：文案生成' })).toBeInTheDocument();
+  });
+
+  it.each(['generate', 'transform'] as const)(
+    '将 %s 节点名称和删除操作集中在唯一顶部栏',
+    async (mode) => {
+      const onDelete = vi.fn();
+      const user = userEvent.setup();
+      const { container } = renderNode(
+        makeNode({ mode }),
+        undefined,
+        vi.fn(),
+        undefined,
+        false,
+        vi.fn(),
+        onDelete,
+      );
+
+      const toolbar = screen.getByRole('group', { name: '节点操作：文案生成' });
+      expect(toolbar).toHaveClass('flow-node-floating-controls');
+      expect(toolbar).toContainElement(
+        screen.getByRole('button', { name: '重命名节点：文案生成' }),
+      );
+      expect(toolbar).toContainElement(screen.getByRole('button', { name: '停用节点' }));
+      expect(container.querySelector('.flow-node-placeholder')).not.toContainElement(toolbar);
+      expect(screen.getAllByRole('button', { name: '删除节点：文案生成' })).toHaveLength(1);
+      await user.click(screen.getByRole('button', { name: '删除节点：文案生成' }));
+      expect(onDelete).toHaveBeenCalledExactlyOnceWith('node_1');
+    },
+  );
+
   it('双击节点名称后可编辑并保存', async () => {
     const onLabelChange = vi.fn();
     const user = userEvent.setup();

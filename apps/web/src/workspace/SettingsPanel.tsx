@@ -1,10 +1,9 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useQueryClient } from '@tanstack/react-query';
-import { X } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { LoaderCircle, X } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useController, useForm } from 'react-hook-form';
 
-import { mediaTypes, type MediaType } from '@multimodal-canvas/domain';
 import {
   Button,
   Dialog,
@@ -21,18 +20,10 @@ import {
   useActivateAiCredential,
   useAiCredentialsQuery,
 } from '../query/credentials';
-import { useCredentialModelCatalogQueries, useRefreshModelCatalog } from '../query/models';
+import { useRefreshModelCatalog } from '../query/models';
 import { isImeKeyboardEvent, useImeDraft } from '../ime';
 import { useWorkspacePreferences, type CanvasTheme } from '../state/workspace-preferences';
-import {
-  API_BASE_URL,
-  mediaLabels,
-  type CanvasBackground,
-  type AiSettings,
-  type ModelEntry,
-  type ModelDefaults,
-  type ModelSelection,
-} from './contracts';
+import { API_BASE_URL, type CanvasBackground, type AiSettings } from './contracts';
 
 /** 与服务端一致的节点默认超时，单位毫秒。 */
 const DEFAULT_PROVIDER_TIMEOUT_MS = 900_000;
@@ -41,57 +32,21 @@ const MIN_PROVIDER_TIMEOUT_MS = 1_000;
 /** Node.js 定时器最大安全等待时间，单位毫秒。 */
 const MAX_PROVIDER_TIMEOUT_MS = 2_147_483_647;
 
-function normalizeSelection(
-  value: string | ModelSelection | undefined,
-): ModelSelection | undefined {
-  if (!value) return undefined;
-  return typeof value === 'string' ? { modelAlias: value } : value;
-}
+/** 设置异步动作的可见阶段；保存、切换成功后可继续进入模型刷新阶段。 */
+type SettingsOperation =
+  'save' | 'save-refresh' | 'test' | 'refresh' | 'activate' | 'activate-refresh' | 'delete';
 
-function selectionValue(value: string | ModelSelection | undefined) {
-  const selection = normalizeSelection(value);
-  if (!selection?.modelAlias) return '';
-  return selection.credentialId
-    ? JSON.stringify([selection.credentialId, selection.modelAlias])
-    : selection.modelAlias;
-}
-
-function parseSelection(value: string): ModelSelection | undefined {
-  if (!value) return undefined;
-  try {
-    const parsed = JSON.parse(value) as [string, string];
-    if (Array.isArray(parsed) && parsed.length === 2) {
-      return { modelAlias: parsed[1], ...(parsed[0] ? { credentialId: parsed[0] } : {}) };
-    }
-  } catch {}
-  return { modelAlias: value };
-}
-
-function optionValue(model: { id: string; credentialId?: string }) {
-  return model.credentialId ? JSON.stringify([model.credentialId, model.id]) : model.id;
-}
-
-function selectedModel(value: string, models: Array<{ id: string; credentialId?: string }>) {
-  const parsed = parseSelection(value);
-  if (!parsed) return undefined;
-  const model = models.find(
-    (candidate) =>
-      candidate.id === parsed.modelAlias &&
-      (!parsed.credentialId || candidate.credentialId === parsed.credentialId),
-  );
-  return model
-    ? { modelAlias: model.id, ...(model.credentialId ? { credentialId: model.credentialId } : {}) }
-    : parsed;
-}
-
+/** 判断请求是否因面板关闭或被新操作取代而主动取消。 */
 function isAbortError(error: unknown) {
   return error instanceof Error && error.name === 'AbortError';
 }
 
+/** 返回当前激活凭据 ID；没有激活凭据时返回空字符串。 */
 function activeCredentialId(credentials: AiCredentialSummary[]) {
   return credentials.find((credential) => credential.active)?.id ?? '';
 }
 
+/** 工作区主题选项，修改后立即保存在当前浏览器。 */
 const themeOptions: Array<{ value: CanvasTheme; label: string }> = [
   { value: 'eye-care', label: '护眼' },
   { value: 'light', label: '明亮' },
@@ -100,6 +55,7 @@ const themeOptions: Array<{ value: CanvasTheme; label: string }> = [
   { value: 'contrast', label: '高对比' },
 ];
 
+/** 画布背景选项，修改后立即保存在当前浏览器。 */
 const backgroundOptions: Array<{ value: CanvasBackground; label: string }> = [
   { value: 'dots', label: '点' },
   { value: 'lines', label: '线条' },
@@ -108,24 +64,22 @@ const backgroundOptions: Array<{ value: CanvasBackground; label: string }> = [
 ];
 
 /**
- * 显示平台连接、项目模型和工作区外观设置。
- * @param projectId 当前项目 ID；为空时仅保存平台级设置。
- * @param projectName 当前项目名称，用于项目默认模型提示。
+ * 显示平台连接和工作区外观设置，异步操作期间阻止重复提交并显示当前阶段。
+ * @param projectId 为已有调用方保留的项目 ID；不再读取或修改项目默认模型。
+ * @param projectName 为已有调用方保留的项目名称。
  * @param onClose 关闭对话框或页面时调用。
  * @param onNotice 向外层转发保存、加载和测试结果。
  * @param presentation 以居中对话框或独立页面呈现。
- * @param canManageAiSettings 是否允许读取和修改平台 API Key；普通用户仅显示外观和项目设置。
+ * @param canManageAiSettings 是否允许读取和修改平台 API Key；普通用户仅显示外观设置。
  */
 export function SettingsPanel({
-  projectId,
-  projectName,
   onClose,
   onNotice,
   presentation = 'dialog',
   canManageAiSettings = true,
 }: {
-  projectId: string | null;
-  projectName: string;
+  projectId?: string | null;
+  projectName?: string;
   onClose: () => void;
   onNotice: (notice: { kind: 'error' | 'success'; message: string }) => void;
   presentation?: 'dialog' | 'page';
@@ -139,9 +93,13 @@ export function SettingsPanel({
   /** 毫秒输入草稿及修改标记，避免晚到的设置响应覆盖用户输入。 */
   const [timeoutMs, setTimeoutMs] = useState(String(DEFAULT_PROVIDER_TIMEOUT_MS));
   const timeoutDirtyRef = useRef(false);
-  const [projectDefaults, setProjectDefaults] = useState<ModelDefaults>({});
-  const [projectDefaultsLoading, setProjectDefaultsLoading] = useState(Boolean(projectId));
-  const [busy, setBusy] = useState(false);
+  /** 当前异步动作阶段；自动刷新阶段沿用发起操作，便于在原控件上显示进度。 */
+  const [operation, setOperation] = useState<SettingsOperation | null>(null);
+  /** 同步互斥锁，避免 React 状态提交前的连续点击重复发送请求。 */
+  const operationRef = useRef<SettingsOperation | null>(null);
+  /** 初始设置请求的等待状态；不覆盖允许提前编辑的输入草稿。 */
+  const [settingsLoading, setSettingsLoading] = useState(canManageAiSettings);
+  const busy = operation !== null;
   const [imeResetKey, setImeResetKey] = useState(0);
   const [panelNotice, setPanelNotice] = useState<{
     kind: 'error' | 'success';
@@ -156,30 +114,9 @@ export function SettingsPanel({
   const activateCredentialMutation = useActivateAiCredential();
   const credentials = credentialsQuery.data ?? [];
   const currentCredentialId = activeCredentialId(credentials) || undefined;
-  const credentialModelQueries = useCredentialModelCatalogQueries(
-    canManageAiSettings ? credentials.map((credential) => credential.id) : [],
-    canManageAiSettings,
-  );
   const refreshModelCatalogMutation = useRefreshModelCatalog();
-  const models = useMemo(() => {
-    const catalog = new Map<string, ModelEntry>();
-    for (const query of credentialModelQueries) {
-      for (const model of query.data ?? []) {
-        const key = `${model.credentialId ?? 'active'}\0${model.id}`;
-        const previous = catalog.get(key);
-        if (!previous) {
-          catalog.set(key, model);
-          continue;
-        }
-        catalog.set(key, {
-          ...previous,
-          ...model,
-          mediaTypes: [...new Set([...previous.mediaTypes, ...model.mediaTypes])],
-        });
-      }
-    }
-    return [...catalog.values()];
-  }, [credentialModelQueries]);
+  /** 加载中状态只用于提示；用户仍可提前编辑并保存新连接。 */
+  const loading = canManageAiSettings && (settingsLoading || credentialsQuery.isLoading);
   const {
     control,
     handleSubmit,
@@ -234,12 +171,30 @@ export function SettingsPanel({
     [onNotice],
   );
 
+  /** 同步占用异步操作锁；已有请求执行时拒绝后续提交并保留当前进度。 */
+  const beginOperation = (nextOperation: SettingsOperation) => {
+    if (operationRef.current !== null) return false;
+    operationRef.current = nextOperation;
+    setOperation(nextOperation);
+    setPanelNotice(null);
+    return true;
+  };
+
+  /** 请求结束或失败后释放锁；卸载后不更新 React 状态。 */
+  const finishOperation = () => {
+    operationRef.current = null;
+    if (mountedRef.current) setOperation(null);
+  };
+
+  /** 放弃初始请求，防止旧设置覆盖保存、切换或删除的结果。 */
   const stopSettingsLoad = useCallback(() => {
     settingsRequestVersionRef.current += 1;
     settingsLoadControllerRef.current?.abort();
     settingsLoadControllerRef.current = null;
+    setSettingsLoading(false);
   }, []);
 
+  /** 应用服务器返回的连接与凭据清单，并清除未保存的表单草稿。 */
   const applySettingsAndCredentials = useCallback(
     async (
       nextSettings: AiSettings,
@@ -263,6 +218,7 @@ export function SettingsPanel({
 
   useEffect(() => {
     if (!canManageAiSettings) return;
+    setSettingsLoading(true);
     const controller = new AbortController();
     const requestVersion = ++settingsRequestVersionRef.current;
     settingsLoadControllerRef.current = controller;
@@ -299,6 +255,9 @@ export function SettingsPanel({
         });
       })
       .finally(() => {
+        if (active && requestVersion === settingsRequestVersionRef.current) {
+          setSettingsLoading(false);
+        }
         if (settingsLoadControllerRef.current === controller) {
           settingsLoadControllerRef.current = null;
         }
@@ -313,53 +272,10 @@ export function SettingsPanel({
     };
   }, [canManageAiSettings, getFieldState, reportNotice, setValue]);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    let active = true;
-    setProjectDefaults({});
-    if (!projectId) {
-      setProjectDefaultsLoading(false);
-      return () => {
-        active = false;
-        controller.abort();
-      };
-    }
-
-    setProjectDefaultsLoading(true);
-    void apiFetch(`${API_BASE_URL}/v1/projects/${encodeURIComponent(projectId)}/models/defaults`, {
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        const result = (await response.json().catch(() => ({}))) as {
-          defaults?: ModelDefaults;
-          error?: string;
-        };
-        if (!response.ok || !result.defaults) {
-          throw new Error(result.error ?? '项目默认模型加载失败');
-        }
-        if (!active) return;
-        setProjectDefaults(result.defaults);
-      })
-      .catch((error: unknown) => {
-        if (!active || isAbortError(error)) return;
-        reportNotice({
-          kind: 'error',
-          message: error instanceof Error ? error.message : '项目默认模型加载失败',
-        });
-      })
-      .finally(() => {
-        if (active) setProjectDefaultsLoading(false);
-      });
-
-    return () => {
-      active = false;
-      controller.abort();
-    };
-  }, [projectId, reportNotice]);
-
+  /** 校验并保存连接；成功后持续显示自动刷新进度，失败时保留用户草稿。 */
   const save = async ({ baseUrl, apiKey }: AiSettingsFormValues) => {
+    if (!beginOperation('save')) return;
     const generation = getAuthSessionGeneration();
-    setBusy(true);
     stopSettingsLoad();
     const parsedTimeoutMs = Number(timeoutMs.trim());
     if (
@@ -371,7 +287,7 @@ export function SettingsPanel({
         kind: 'error',
         message: `超时时间必须是 ${MIN_PROVIDER_TIMEOUT_MS} 至 ${MAX_PROVIDER_TIMEOUT_MS} 之间的整数（毫秒）`,
       });
-      setBusy(false);
+      finishOperation();
       return;
     }
     try {
@@ -396,6 +312,7 @@ export function SettingsPanel({
       await applySettingsAndCredentials(result.settings, result.credentials, generation);
       if (!isCurrentRequest(generation)) return;
       try {
+        setOperation('save-refresh');
         await refreshModelCatalogMutation.mutateAsync(
           activeCredentialId(result.credentials) || undefined,
         );
@@ -417,20 +334,24 @@ export function SettingsPanel({
         message: error instanceof Error ? error.message : '设置保存失败',
       });
     } finally {
-      if (mountedRef.current) setBusy(false);
+      finishOperation();
     }
   };
 
+  /** 测试已保存的连接；错误展示在面板中，结束后恢复可操作状态。 */
   const testConnection = async () => {
+    if (!beginOperation('test')) return;
     const generation = getAuthSessionGeneration();
-    setBusy(true);
     try {
       const response = await apiFetch(`${API_BASE_URL}/v1/settings/ai/test`, { method: 'POST' });
-      const result = (await response.json()) as {
+      const result = (await response.json().catch(() => ({}))) as {
         result?: { ok: boolean; modelCount?: number; error?: string };
+        error?: string;
       };
       if (!isCurrentRequest(generation)) return;
-      if (!result.result?.ok) throw new Error(result.result?.error ?? '连接失败');
+      if (!response.ok || !result.result?.ok) {
+        throw new Error(result.error ?? result.result?.error ?? '连接失败');
+      }
       reportNotice({
         kind: 'success',
         message: `连接成功，发现 ${result.result.modelCount ?? 0} 个模型`,
@@ -442,13 +363,14 @@ export function SettingsPanel({
         message: error instanceof Error ? error.message : '连接失败',
       });
     } finally {
-      if (mountedRef.current) setBusy(false);
+      finishOperation();
     }
   };
 
+  /** 手动刷新当前凭据的模型目录，等待期间阻止重复刷新。 */
   const refreshModels = async () => {
+    if (!beginOperation('refresh')) return;
     const generation = getAuthSessionGeneration();
-    setBusy(true);
     try {
       await refreshModelCatalogMutation.mutateAsync(currentCredentialId);
       if (!isCurrentRequest(generation)) return;
@@ -460,14 +382,15 @@ export function SettingsPanel({
         message: error instanceof Error ? error.message : '模型刷新失败',
       });
     } finally {
-      if (mountedRef.current) setBusy(false);
+      finishOperation();
     }
   };
 
+  /** 激活选择的已保存 Key 并刷新其模型；切换失败时保持现有选择。 */
   const activateCredential = async (credentialId: string) => {
     if (!credentialId || credentialId === activeCredentialId(credentials)) return;
+    if (!beginOperation('activate')) return;
     const generation = getAuthSessionGeneration();
-    setBusy(true);
     stopSettingsLoad();
     try {
       const result = await activateCredentialMutation.mutateAsync(credentialId);
@@ -482,6 +405,7 @@ export function SettingsPanel({
         configured: result.settings.configured,
       });
       try {
+        setOperation('activate-refresh');
         await refreshModelCatalogMutation.mutateAsync(credentialId);
         if (!isCurrentRequest(generation)) return;
         reportNotice({ kind: 'success', message: '凭据已激活，模型列表已自动刷新' });
@@ -501,101 +425,19 @@ export function SettingsPanel({
         message: error instanceof Error ? error.message : '凭据激活失败',
       });
     } finally {
-      if (mountedRef.current) setBusy(false);
+      finishOperation();
     }
   };
 
-  const saveGlobalDefault = async (mediaType: MediaType, value: string) => {
+  /** 删除当前激活 Key 并同步服务器清单，保留其他 Key；失败时保留原设置。 */
+  const deleteCredentials = async () => {
+    if (!currentCredentialId || !beginOperation('delete')) return;
     const generation = getAuthSessionGeneration();
-    const selection = parseSelection(value);
-    setBusy(true);
-    try {
-      const response = await apiFetch(`${API_BASE_URL}/v1/settings/ai`, {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ defaultModels: { [mediaType]: selection ?? null } }),
-      });
-      const result = (await response.json().catch(() => ({}))) as {
-        settings?: AiSettings;
-        credentials?: AiCredentialSummary[];
-        error?: string;
-      };
-      if (!isCurrentRequest(generation)) return;
-      if (!response.ok || !result.settings || !result.credentials) {
-        throw new Error(result.error ?? '默认模型保存失败');
-      }
-      setSettings(result.settings);
-      if (!timeoutDirtyRef.current) {
-        setTimeoutMs(String(result.settings.timeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS));
-      }
-      await replaceAiCredentials(queryClient, result.credentials, generation);
-      if (!isCurrentRequest(generation)) return;
-      reportNotice({
-        kind: 'success',
-        message: `平台全局${mediaLabels[mediaType]}默认模型已更新`,
-      });
-    } catch (error) {
-      if (!isCurrentRequest(generation)) return;
-      reportNotice({
-        kind: 'error',
-        message: error instanceof Error ? error.message : '默认模型保存失败',
-      });
-    } finally {
-      if (mountedRef.current) setBusy(false);
-    }
-  };
-
-  const saveProjectDefault = async (mediaType: MediaType, value: string) => {
-    const generation = getAuthSessionGeneration();
-    const selection = parseSelection(value);
-    if (!projectId) {
-      reportNotice({ kind: 'error', message: '当前项目尚未加载，无法保存项目默认模型' });
-      return;
-    }
-
-    setBusy(true);
     try {
       const response = await apiFetch(
-        `${API_BASE_URL}/v1/projects/${encodeURIComponent(projectId)}/models/defaults`,
-        {
-          method: 'PATCH',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ [mediaType]: selection ?? null }),
-        },
+        `${API_BASE_URL}/v1/settings/ai/credentials/${encodeURIComponent(currentCredentialId)}`,
+        { method: 'DELETE' },
       );
-      const result = (await response.json().catch(() => ({}))) as {
-        defaults?: ModelDefaults;
-        error?: string;
-      };
-      if (!isCurrentRequest(generation)) return;
-      if (!response.ok || !result.defaults) {
-        throw new Error(result.error ?? '项目默认模型保存失败');
-      }
-      setProjectDefaults(result.defaults);
-      reportNotice({
-        kind: 'success',
-        message: selection
-          ? `${mediaLabels[mediaType]}项目默认模型已更新`
-          : `${mediaLabels[mediaType]}已改为继承平台全局默认`,
-      });
-    } catch (error) {
-      if (!isCurrentRequest(generation)) return;
-      reportNotice({
-        kind: 'error',
-        message: error instanceof Error ? error.message : '项目默认模型保存失败',
-      });
-    } finally {
-      if (mountedRef.current) setBusy(false);
-    }
-  };
-
-  const deleteCredentials = async () => {
-    const generation = getAuthSessionGeneration();
-    setBusy(true);
-    try {
-      const response = await apiFetch(`${API_BASE_URL}/v1/settings/ai/credentials`, {
-        method: 'DELETE',
-      });
       const result = (await response.json().catch(() => ({}))) as {
         settings?: AiSettings;
         credentials?: AiCredentialSummary[];
@@ -608,7 +450,7 @@ export function SettingsPanel({
       stopSettingsLoad();
       await applySettingsAndCredentials(result.settings, result.credentials, generation);
       if (!isCurrentRequest(generation)) return;
-      reportNotice({ kind: 'success', message: '凭据已删除' });
+      reportNotice({ kind: 'success', message: '当前 Key 已删除' });
     } catch (error) {
       if (!isCurrentRequest(generation)) return;
       reportNotice({
@@ -616,7 +458,7 @@ export function SettingsPanel({
         message: error instanceof Error ? error.message : '凭据删除失败',
       });
     } finally {
-      if (mountedRef.current) setBusy(false);
+      finishOperation();
     }
   };
 
@@ -655,6 +497,11 @@ export function SettingsPanel({
           role={panelNotice.kind === 'error' ? 'alert' : 'status'}
         >
           {panelNotice.message}
+        </p>
+      )}
+      {loading && !busy && (
+        <p className="settings-status" role="status" aria-live="polite">
+          <LoaderCircle className="spin" size={15} aria-hidden="true" /> 正在加载设置
         </p>
       )}
       <section className="settings-appearance" aria-labelledby="settings-appearance-title">
@@ -700,7 +547,7 @@ export function SettingsPanel({
           if (event.key === 'Enter' && isImeKeyboardEvent(event)) event.preventDefault();
         }}
         onSubmit={(event) => {
-          if (!canManageAiSettings) {
+          if (!canManageAiSettings || operationRef.current !== null) {
             event.preventDefault();
             return;
           }
@@ -716,6 +563,7 @@ export function SettingsPanel({
                 value={activeCredentialId(credentials)}
                 onChange={(event) => void activateCredential(event.target.value)}
                 disabled={busy || credentialsQuery.isLoading || credentials.length === 0}
+                aria-busy={operation === 'activate' || operation === 'activate-refresh'}
               >
                 <option value="">
                   {credentialsQuery.isLoading
@@ -731,6 +579,12 @@ export function SettingsPanel({
                   </option>
                 ))}
               </select>
+              {(operation === 'activate' || operation === 'activate-refresh') && (
+                <span className="settings-status" role="status" aria-live="polite">
+                  <LoaderCircle className="spin" size={15} aria-hidden="true" />{' '}
+                  {operation === 'activate' ? '正在切换 Key' : '正在刷新模型'}
+                </span>
+              )}
               {credentialsQuery.isError && (
                 <span className="settings-field-error">凭据列表加载失败，可重新打开设置重试</span>
               )}
@@ -743,6 +597,7 @@ export function SettingsPanel({
                 aria-describedby={formErrors.baseUrl ? 'settings-base-url-error' : undefined}
                 placeholder="https://newapi.example.com/v1"
                 name={baseUrlField.name}
+                disabled={busy}
                 ref={baseUrlField.ref}
                 {...baseUrlImeBinding}
               />
@@ -763,6 +618,7 @@ export function SettingsPanel({
                   settings.keyFingerprint ? `已配置 · ${settings.keyFingerprint}` : '输入服务端 Key'
                 }
                 name={apiKeyField.name}
+                disabled={busy}
                 ref={apiKeyField.ref}
                 {...apiKeyImeBinding}
               />
@@ -795,132 +651,64 @@ export function SettingsPanel({
               </span>
             </label>
             <div className="settings-actions">
-              <Button type="submit" className="button button-primary" disabled={busy}>
-                保存
+              <Button
+                type="submit"
+                className="button button-primary"
+                disabled={busy}
+                aria-busy={operation === 'save' || operation === 'save-refresh'}
+              >
+                {(operation === 'save' || operation === 'save-refresh') && (
+                  <LoaderCircle className="spin" size={15} aria-hidden="true" />
+                )}
+                {operation === 'save'
+                  ? '正在保存'
+                  : operation === 'save-refresh'
+                    ? '正在刷新模型'
+                    : '保存'}
               </Button>
               <Button
                 variant="secondary"
                 className="button button-secondary"
                 onClick={() => void testConnection()}
                 disabled={busy || !settings.configured}
+                aria-busy={operation === 'test'}
               >
-                测试连接
+                {operation === 'test' && (
+                  <LoaderCircle className="spin" size={15} aria-hidden="true" />
+                )}
+                {operation === 'test' ? '正在测试连接' : '测试连接'}
               </Button>
               <Button
                 variant="secondary"
                 className="button button-secondary"
                 onClick={() => void refreshModels()}
                 disabled={busy || !settings.configured}
+                aria-busy={operation === 'refresh'}
               >
-                刷新模型
+                {operation === 'refresh' && (
+                  <LoaderCircle className="spin" size={15} aria-hidden="true" />
+                )}
+                {operation === 'refresh' ? '正在刷新模型' : '刷新模型'}
               </Button>
             </div>
             <div className="settings-status">
               {settings.configured ? `已配置 · ${settings.keyFingerprint}` : '未配置'}
             </div>
-            <div className="settings-models">
-              <h2>平台全局默认</h2>
-              <p className="settings-status">供所有未设置项目覆盖的节点继承。</p>
-              {mediaTypes.map((mediaType) => (
-                <label className="settings-field" key={mediaType}>
-                  <span>{mediaLabels[mediaType]}</span>
-                  <select
-                    aria-label={`平台全局默认 · ${mediaLabels[mediaType]}`}
-                    value={selectionValue(settings.defaultModels[mediaType])}
-                    onChange={(event) =>
-                      void saveGlobalDefault(
-                        mediaType,
-                        selectionValue(selectedModel(event.target.value, models)),
-                      )
-                    }
-                    disabled={busy}
-                  >
-                    <option value="">使用服务端环境默认</option>
-                    {settings.defaultModels[mediaType] &&
-                      !models.some(
-                        (model) =>
-                          model.id ===
-                            normalizeSelection(settings.defaultModels[mediaType])?.modelAlias &&
-                          model.credentialId ===
-                            normalizeSelection(settings.defaultModels[mediaType])?.credentialId &&
-                          model.mediaTypes.includes(mediaType),
-                      ) && (
-                        <option value={selectionValue(settings.defaultModels[mediaType])}>
-                          {normalizeSelection(settings.defaultModels[mediaType])?.modelAlias}
-                          （当前不可用）
-                        </option>
-                      )}
-                    {models
-                      .filter((model) => model.mediaTypes.includes(mediaType))
-                      .map((model) => (
-                        <option
-                          key={`${model.credentialId ?? 'active'}:${model.id}`}
-                          value={optionValue(model)}
-                        >
-                          {model.name}
-                        </option>
-                      ))}
-                  </select>
-                </label>
-              ))}
-            </div>
           </>
         )}
-        <div className="settings-models">
-          <h2>当前项目默认</h2>
-          <p className="settings-status">
-            {projectId ? `${projectName} · 可覆盖平台全局默认` : '当前项目尚未加载'}
-          </p>
-          {mediaTypes.map((mediaType) => (
-            <label className="settings-field" key={mediaType}>
-              <span>{mediaLabels[mediaType]}</span>
-              <select
-                aria-label={`项目默认 · ${mediaLabels[mediaType]}`}
-                value={selectionValue(projectDefaults[mediaType])}
-                onChange={(event) =>
-                  void saveProjectDefault(
-                    mediaType,
-                    selectionValue(selectedModel(event.target.value, models)),
-                  )
-                }
-                disabled={busy || projectDefaultsLoading || !projectId}
-              >
-                <option value="">继承平台全局默认</option>
-                {projectDefaults[mediaType] &&
-                  !models.some(
-                    (model) =>
-                      model.id === normalizeSelection(projectDefaults[mediaType])?.modelAlias &&
-                      model.credentialId ===
-                        normalizeSelection(projectDefaults[mediaType])?.credentialId &&
-                      model.mediaTypes.includes(mediaType),
-                  ) && (
-                    <option value={selectionValue(projectDefaults[mediaType])}>
-                      {normalizeSelection(projectDefaults[mediaType])?.modelAlias}（当前不可用）
-                    </option>
-                  )}
-                {models
-                  .filter((model) => model.mediaTypes.includes(mediaType))
-                  .map((model) => (
-                    <option
-                      key={`${model.credentialId ?? 'active'}:${model.id}`}
-                      value={optionValue(model)}
-                    >
-                      {model.name}
-                    </option>
-                  ))}
-              </select>
-            </label>
-          ))}
-        </div>
         {canManageAiSettings && (
           <Button
             variant="ghost"
             size="sm"
             className="settings-delete"
             onClick={() => void deleteCredentials()}
-            disabled={busy || !settings.configured}
+            disabled={busy || !currentCredentialId}
+            aria-busy={operation === 'delete'}
           >
-            删除凭据
+            {operation === 'delete' && (
+              <LoaderCircle className="spin" size={15} aria-hidden="true" />
+            )}
+            {operation === 'delete' ? '正在删除' : '删除当前 Key'}
           </Button>
         )}
       </form>
@@ -931,7 +719,7 @@ export function SettingsPanel({
     return (
       <section
         className="settings-panel settings-panel-page"
-        aria-busy={busy}
+        aria-busy={busy || loading}
         aria-labelledby="settings-title"
       >
         {settingsContent}
@@ -944,7 +732,7 @@ export function SettingsPanel({
       <DialogContent
         overlayClassName="settings-backdrop"
         className="settings-panel settings-dialog-panel"
-        aria-busy={busy}
+        aria-busy={busy || loading}
         aria-modal="true"
         aria-labelledby="settings-title"
         ref={dialogRef}

@@ -2,8 +2,6 @@ import {
   Background,
   BackgroundVariant,
   Controls,
-  NodeToolbar,
-  Position,
   ReactFlow,
   useReactFlow,
   type Connection,
@@ -11,7 +9,7 @@ import {
   type OnEdgesChange,
   type OnNodesChange,
 } from '@xyflow/react';
-import { FileText, LayoutGrid, Trash2, Upload } from 'lucide-react';
+import { FileText, LayoutGrid, Upload } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import {
   useCallback,
@@ -30,6 +28,7 @@ import type { Asset, MediaType, PromptDocument } from '@multimodal-canvas/domain
 import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
 import {
   NodeResizeContext,
+  NodeDeleteContext,
   NodeResizeStartContext,
   NodeEnabledContext,
   NodeLabelChangeContext,
@@ -405,82 +404,60 @@ export function WorkflowCanvas({
             <NodeLabelChangeContext.Provider value={onNodeLabelChange ?? null}>
               <NodeEnabledContext.Provider value={onNodeEnabledChange}>
                 <NodeRetryContext.Provider value={onRetryNode}>
-                  <ReactFlow
-                    nodes={nodes}
-                    edges={edges}
-                    nodeTypes={nodeTypes}
-                    onNodesChange={onNodesChange}
-                    onEdgesChange={onEdgesChange}
-                    onConnect={onConnect}
-                    onConnectStart={(_event, params) => {
-                      connectionStartRef.current = params;
-                    }}
-                    onConnectEnd={handleConnectEnd}
-                    onNodeDragStart={onNodeDragStart}
-                    onMove={reportCanvasCenter}
-                    onDrop={handleDrop}
-                    onDragOver={(event) => {
-                      event.preventDefault();
-                      event.dataTransfer.dropEffect = 'copy';
-                    }}
-                    onNodeClick={(_, node) => onNodeSelect(node as AssetFlowNode)}
-                    onNodeContextMenu={(event, node) =>
-                      handleNodeContextMenu(event, node as AssetFlowNode)
-                    }
-                    onPaneContextMenu={handlePaneContextMenu}
-                    onPaneClick={() => {
-                      setContextMenu(null);
-                      onClearNodeSelection();
-                    }}
-                    fitView
-                    minZoom={FIT_VIEW_MIN_ZOOM}
-                    fitViewOptions={{ padding: 0.3, maxZoom: 1.1, minZoom: FIT_VIEW_MIN_ZOOM }}
-                    connectionLineStyle={{ stroke: '#18794e', strokeWidth: 2 }}
-                    defaultEdgeOptions={{
-                      animated: true,
-                    }}
-                    proOptions={{ hideAttribution: true }}
-                  >
-                    {background !== 'blank' && (
-                      <Background
-                        color="#cbd5d0"
-                        gap={background === 'lines' ? 28 : 24}
-                        size={background === 'cross' ? 7 : 1.2}
-                        variant={
-                          background === 'lines'
-                            ? BackgroundVariant.Lines
-                            : background === 'cross'
-                              ? BackgroundVariant.Cross
-                              : BackgroundVariant.Dots
-                        }
-                      />
-                    )}
-                    {selectedNode && onDeleteNode && (
-                      <NodeToolbar
-                        nodeId={selectedNode.id}
-                        isVisible
-                        position={Position.Top}
-                        offset={14}
-                        align="end"
-                        className="node-delete-toolbar"
-                      >
-                        <button
-                          type="button"
-                          className="node-delete-button nodrag nopan nowheel"
-                          aria-label={`删除节点：${selectedNode.data.label}`}
-                          title="删除节点"
-                          onPointerDown={(event) => event.stopPropagation()}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            onDeleteNode(selectedNode.id);
-                          }}
-                        >
-                          <Trash2 size={16} strokeWidth={2.2} aria-hidden="true" />
-                        </button>
-                      </NodeToolbar>
-                    )}
-                    <Controls showInteractive={false} position="bottom-right" />
-                  </ReactFlow>
+                  <NodeDeleteContext.Provider value={onDeleteNode ?? null}>
+                    <ReactFlow
+                      nodes={nodes}
+                      edges={edges}
+                      nodeTypes={nodeTypes}
+                      onNodesChange={onNodesChange}
+                      onEdgesChange={onEdgesChange}
+                      onConnect={onConnect}
+                      onConnectStart={(_event, params) => {
+                        connectionStartRef.current = params;
+                      }}
+                      onConnectEnd={handleConnectEnd}
+                      onNodeDragStart={onNodeDragStart}
+                      onMove={reportCanvasCenter}
+                      onDrop={handleDrop}
+                      onDragOver={(event) => {
+                        event.preventDefault();
+                        event.dataTransfer.dropEffect = 'copy';
+                      }}
+                      onNodeClick={(_, node) => onNodeSelect(node as AssetFlowNode)}
+                      onNodeContextMenu={(event, node) =>
+                        handleNodeContextMenu(event, node as AssetFlowNode)
+                      }
+                      onPaneContextMenu={handlePaneContextMenu}
+                      onPaneClick={() => {
+                        setContextMenu(null);
+                        onClearNodeSelection();
+                      }}
+                      fitView
+                      minZoom={FIT_VIEW_MIN_ZOOM}
+                      fitViewOptions={{ padding: 0.3, maxZoom: 1.1, minZoom: FIT_VIEW_MIN_ZOOM }}
+                      connectionLineStyle={{ stroke: '#18794e', strokeWidth: 2 }}
+                      defaultEdgeOptions={{
+                        animated: true,
+                      }}
+                      proOptions={{ hideAttribution: true }}
+                    >
+                      {background !== 'blank' && (
+                        <Background
+                          color="#cbd5d0"
+                          gap={background === 'lines' ? 28 : 24}
+                          size={background === 'cross' ? 7 : 1.2}
+                          variant={
+                            background === 'lines'
+                              ? BackgroundVariant.Lines
+                              : background === 'cross'
+                                ? BackgroundVariant.Cross
+                                : BackgroundVariant.Dots
+                          }
+                        />
+                      )}
+                      <Controls showInteractive={false} position="bottom-right" />
+                    </ReactFlow>
+                  </NodeDeleteContext.Provider>
                 </NodeRetryContext.Provider>
               </NodeEnabledContext.Provider>
             </NodeLabelChangeContext.Provider>

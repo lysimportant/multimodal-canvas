@@ -243,6 +243,53 @@ integrationDescribe('PostgreSQL settings synchronization in long-lived instances
     }
   });
 
+  it('真实数据库指定删除只隐藏选中 Key，重启和重新保存后不复活旧版本', async () => {
+    await writer.update({
+      baseUrl: 'https://deleted.example.test/v1',
+      apiKey: 'synthetic-deleted-key',
+    });
+    const removed = await writer.getCredentialReference();
+    await writer.update({ baseUrl: 'https://kept.example.test/v1', apiKey: 'synthetic-kept-key' });
+    const kept = await writer.getCredentialReference();
+    await writer.activateCredential(removed.credentialId!);
+    const newerRemoved = await writer.getCredentialReference();
+    await writer.removeCredential(newerRemoved.credentialId!);
+    const reopened = new PrismaAiSettingsStore(prisma, encryptionSecret);
+    try {
+      expect(await reopened.get()).toMatchObject({ configured: false });
+      expect(await reopened.listCredentials()).toEqual([
+        expect.objectContaining({ id: kept.credentialId }),
+      ]);
+      for (const reference of [removed, newerRemoved]) {
+        expect(await reopened.activateCredential(reference.credentialId!)).toBeUndefined();
+        expect(await reopened.getProviderCredentials(reference)).toEqual({
+          baseUrl: 'https://deleted.example.test/v1',
+          apiKey: 'synthetic-deleted-key',
+        });
+      }
+      await reopened.activateCredential(kept.credentialId!);
+      expect(await reopened.get()).toMatchObject({
+        configured: true,
+        baseUrl: 'https://kept.example.test/v1',
+      });
+      expect(await reopened.hasCredential(removed.credentialId!)).toBe(false);
+      await expect(reopened.getCredentialReference(removed.credentialId!)).rejects.toThrow(
+        'not found',
+      );
+      await expect(reopened.listModels(undefined, removed.credentialId!)).rejects.toThrow(
+        'not found',
+      );
+      await reopened.update({
+        baseUrl: 'https://deleted.example.test/v1',
+        apiKey: 'synthetic-deleted-key',
+      });
+      expect(await reopened.listCredentials()).toHaveLength(2);
+      expect(await reopened.hasCredential(removed.credentialId!)).toBe(false);
+    } finally {
+      await reopened.close();
+    }
+  });
+
   it('observes updates and revocation in the same already-started process while decrypting frozen versions', async () => {
     const firstKey = `synthetic-first-${randomUUID()}`;
     const secondKey = `synthetic-second-${randomUUID()}`;

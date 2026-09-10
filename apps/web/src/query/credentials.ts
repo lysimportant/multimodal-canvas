@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tansta
 import type { AiCredentialSummary } from '../contracts';
 import { apiFetch, getAuthSessionGeneration } from '../auth-client';
 import { API_BASE_URL, type AiSettings } from '../workspace/contracts';
+import { modelCatalogQueryKey, modelCatalogQueryKeyFor } from './models';
 
 export const aiCredentialsQueryKey = ['ai-credentials'] as const;
 
@@ -50,6 +51,21 @@ export async function replaceAiCredentials(
   await queryClient.cancelQueries({ queryKey: aiCredentialsQueryKey, exact: true });
   if (getAuthSessionGeneration() !== requestGeneration)
     throw new Error('账户状态已改变，请重新操作');
+  const previous = queryClient.getQueryData<AiCredentialSummary[]>(aiCredentialsQueryKey) ?? [];
+  const removed = previous.filter(
+    (entry) => !credentials.some((current) => current.id === entry.id),
+  );
+  const resetFallback =
+    previous.find((entry) => entry.active)?.id !== credentials.find((entry) => entry.active)?.id;
+  for (const queryKey of [
+    ...removed.map((entry) => modelCatalogQueryKeyFor(entry.id)),
+    ...(resetFallback ? [modelCatalogQueryKey] : []),
+  ]) {
+    await queryClient.cancelQueries({ queryKey, exact: true });
+    if (getAuthSessionGeneration() !== requestGeneration)
+      throw new Error('账户状态已改变，请重新操作');
+    queryClient.setQueryData(queryKey, []);
+  }
   queryClient.setQueryData(aiCredentialsQueryKey, credentials);
   await queryClient.invalidateQueries({
     queryKey: aiCredentialsQueryKey,

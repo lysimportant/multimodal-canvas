@@ -128,6 +128,53 @@ afterEach(() => {
 });
 
 describe('Prisma settings synchronization between running instances', () => {
+  it('激活在提交前遇到另一实例删除时拒绝，不能把被删 Key 重新写为活动连接', async () => {
+    const { writer, reader, frozen, prisma } = await warmSettingsInstances();
+    await writer.update({ baseUrl: 'https://kept.example.test/v1', apiKey: 'synthetic-kept-key' });
+    const transaction = prisma.$transaction.getMockImplementation()!;
+    prisma.$transaction.mockImplementationOnce(async (operation) => {
+      await writer.removeCredential(frozen.credentialId!);
+      return transaction(operation);
+    });
+    await expect(reader.activateCredential(frozen.credentialId!)).rejects.toThrow(
+      AiCredentialNotFoundError,
+    );
+    expect(await writer.listCredentials()).toHaveLength(1);
+    expect(await writer.get()).toMatchObject({ baseUrl: 'https://kept.example.test/v1' });
+  });
+  it('指定删除跨实例移除所有同 Key 版本，保留其他连接及精确任务引用', async () => {
+    const { writer, reader, frozen, credentials, createStore } = await warmSettingsInstances();
+    await writer.update({ baseUrl: 'https://kept.example.test/v1', apiKey: 'synthetic-kept-key' });
+    const kept = await writer.getCredentialReference();
+    expect(await writer.removeCredential(frozen.credentialId!)).toMatchObject({
+      configured: true,
+      baseUrl: 'https://kept.example.test/v1',
+    });
+    expect(await reader.listCredentials()).toEqual([
+      expect.objectContaining({ id: kept.credentialId }),
+    ]);
+    expect(await reader.activateCredential(frozen.credentialId!)).toBeUndefined();
+    expect(await reader.hasCredential(frozen.credentialId!)).toBe(false);
+    await expect(reader.getCredentialReference(frozen.credentialId!)).rejects.toThrow(
+      AiCredentialNotFoundError,
+    );
+    await expect(reader.refreshModels(frozen.credentialId!)).rejects.toThrow(
+      AiCredentialNotFoundError,
+    );
+    expect(await reader.getProviderCredentials(frozen)).toEqual({
+      baseUrl: 'https://sync.example/v1',
+      apiKey: 'synthetic-first-key',
+    });
+    expect(credentials.find((row) => row.id === frozen.credentialId)?.label).toBe('deleted');
+    expect(await writer.removeCredential(kept.credentialId!)).toMatchObject({ configured: false });
+    const reopened = createStore();
+    expect(await reopened.listCredentials()).toEqual([]);
+    expect(await reopened.activateCredential(kept.credentialId!)).toBeUndefined();
+    expect(await reopened.get()).toMatchObject({ configured: false });
+    await reopened.update({ baseUrl: 'https://new.example.test/v1', apiKey: 'synthetic-new-key' });
+    expect(await reopened.listCredentials()).toHaveLength(1);
+    expect(await reopened.hasCredential(kept.credentialId!)).toBe(false);
+  });
   it.each([
     'get',
     'hasCredential',

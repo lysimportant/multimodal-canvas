@@ -497,6 +497,16 @@ async function mockApi(page: Page) {
       await json(route, { models: credentialId ? modelsForCredential(credentialId) : [] });
       return;
     }
+    if (request.method() === 'DELETE' && /^\/v1\/settings\/ai\/credentials\/[^/]+$/.test(path)) {
+      const id = path.split('/')[5];
+      const removed = credentials.find((entry) => entry.id === id);
+      if (!removed) return json(route, { error: '凭据不存在' }, 404);
+      credentials = credentials.filter((entry) => entry.id !== id);
+      if (removed.active)
+        settings = { ...settings, baseUrl: '', configured: false, keyFingerprint: undefined };
+      await json(route, { settings, credentials });
+      return;
+    }
     if (request.method() === 'DELETE' && path === '/v1/settings/ai/credentials') {
       settings = { ...settings, baseUrl: '', configured: false, keyFingerprint: undefined };
       credentials = credentials.map((credential) => ({ ...credential, active: false }));
@@ -962,6 +972,112 @@ test('saves AI settings and tests the mocked connection', async ({ page }) => {
   await expect(dialog.getByRole('status')).toContainText('连接成功');
 });
 
+test('设置删除当前 Key 完整移除列表与模型，操作期间显示 loading', async ({ page }, testInfo) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(projectPath);
+  await page.getByRole('button', { name: '打开设置' }).click();
+  const dialog = page.getByRole('dialog', { name: 'AI 连接' });
+  await dialog.getByLabel('New API Base URL').fill('https://delete-smoke.example.test/v1');
+  await dialog.getByRole('textbox', { name: 'API Key' }).fill('synthetic-browser-key');
+  let releaseSave!: () => void;
+  const saveGate = new Promise<void>((resolve) => {
+    releaseSave = resolve;
+  });
+  await page.route('**/v1/settings/ai', async (route) => {
+    if (route.request().method() === 'PATCH') await saveGate;
+    await route.fallback();
+  });
+  await dialog.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(dialog.getByRole('button', { name: '正在保存', exact: true })).toHaveAttribute(
+    'aria-busy',
+    'true',
+  );
+  await expect(dialog.getByRole('button', { name: '关闭设置' })).toBeDisabled();
+  releaseSave();
+  await expect(dialog.getByRole('button', { name: '保存', exact: true })).toBeEnabled();
+  const keys = dialog.getByLabel('已保存的 API Key');
+  await expect(keys.locator('option')).toHaveCount(3);
+  let releaseDelete!: () => void;
+  const deleteGate = new Promise<void>((resolve) => {
+    releaseDelete = resolve;
+  });
+  await page.route('**/v1/settings/ai/credentials/*', async (route) => {
+    if (route.request().method() === 'DELETE') await deleteGate;
+    await route.fallback();
+  });
+  await dialog.getByRole('button', { name: '删除当前 Key', exact: true }).click();
+  await expect(dialog.getByRole('button', { name: '正在删除', exact: true })).toHaveAttribute(
+    'aria-busy',
+    'true',
+  );
+  await page.screenshot({ path: testInfo.outputPath('settings-delete-loading.png') });
+  releaseDelete();
+  await expect(keys.locator('option')).toHaveCount(2);
+  await expect(keys).not.toContainText('delete-smoke');
+  await expect(dialog.getByText('平台全局默认')).toHaveCount(0);
+  await expect(dialog.getByText('当前项目默认')).toHaveCount(0);
+  await keys.selectOption(initialCredential.id);
+  await expect(dialog.getByRole('button', { name: '删除当前 Key', exact: true })).toBeEnabled();
+  await dialog.getByRole('button', { name: '删除当前 Key', exact: true }).click();
+  await expect(keys.locator('option')).toHaveCount(1);
+  await expect(keys).toBeDisabled();
+  await page.screenshot({ path: testInfo.outputPath('settings-all-removed.png') });
+  await dialog.getByRole('button', { name: '关闭设置' }).click();
+  await page.reload();
+  await page.getByRole('button', { name: '打开设置' }).click();
+  await expect(page.getByLabel('已保存的 API Key').locator('option')).toHaveCount(1);
+  expect(errors).toEqual([]);
+});
+
+for (const width of [1440, 1024, 390]) {
+  test(`生成节点无边框与顶部悬浮操作 ${width}`, async ({ page }, testInfo) => {
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
+    await page.goto(projectPath);
+    await page.getByRole('button', { name: '新建图片生成节点' }).click();
+    const node = page.locator('.flow-generate-node');
+    const placeholder = node.locator('.flow-node-placeholder');
+    await expect(placeholder).toBeVisible();
+    const appearance = await node.evaluate((element) => {
+      const style = getComputedStyle(element);
+      const bounds = element.getBoundingClientRect();
+      const controls = element
+        .querySelector('.flow-node-floating-controls')!
+        .getBoundingClientRect();
+      const content = element.querySelector('.flow-node-placeholder')!.getBoundingClientRect();
+      return {
+        border: style.borderTopWidth,
+        shadow: style.boxShadow,
+        padding: style.paddingTop,
+        controlsAbove: controls.bottom <= bounds.top + 1,
+        fillsWidth: Math.abs(content.width - bounds.width) < 2,
+        fillsHeight: Math.abs(content.height - bounds.height) < 2,
+      };
+    });
+    expect(appearance).toEqual({
+      border: '0px',
+      shadow: 'none',
+      padding: '0px',
+      controlsAbove: true,
+      fillsWidth: true,
+      fillsHeight: true,
+    });
+    await page.screenshot({ path: testInfo.outputPath('node-floating-controls.png') });
+    await node.getByRole('button', { name: '停用节点' }).click();
+    await expect(node).toHaveAttribute('aria-disabled', 'true');
+    await node.getByRole('button', { name: '启用节点' }).click();
+    await expect(node).toHaveAttribute('aria-disabled', 'false');
+    await node.getByRole('button', { name: /^删除节点：/ }).click();
+    await expect(page.locator('.flow-generate-node')).toHaveCount(0);
+    await page.getByRole('button', { name: '画布撤销', exact: true }).click();
+    await expect(page.locator('.flow-generate-node')).toHaveCount(1);
+    expect(errors).toEqual([]);
+  });
+}
+
 test('settings are truly modal and contained on desktop and narrow viewports', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 760 });
   await page.goto(projectPath);
@@ -1111,7 +1227,7 @@ test('connects three image references to one video generation node', async ({ pa
   const canvasBox = await page.locator('.canvas-area').boundingBox();
   expect(canvasBox).not.toBeNull();
   if (!canvasBox) return;
-  const videoHeader = await videoNode.locator('.flow-node-header').boundingBox();
+  const videoHeader = await videoNode.locator('.flow-node-placeholder').boundingBox();
   expect(videoHeader).not.toBeNull();
   if (!videoHeader) return;
   await page.mouse.move(
@@ -1174,7 +1290,16 @@ test('connects three image references to one video generation node', async ({ pa
 
   const selectedEdge = page.locator('.react-flow__edge').first();
   await expect(selectedEdge).toHaveClass(/animated/);
-  await selectedEdge.locator('.react-flow__edge-interaction').click();
+  // 多条曲线在目标端交叠，点击靠近来源的可见线段，避免命中其他连接。
+  const edgePoint = await selectedEdge
+    .locator('.react-flow__edge-interaction')
+    .evaluate((element) => {
+      const path = element as SVGPathElement;
+      const point = path.getPointAtLength(path.getTotalLength() * 0.15);
+      const transformed = new DOMPoint(point.x, point.y).matrixTransform(path.getScreenCTM()!);
+      return { x: transformed.x, y: transformed.y };
+    });
+  await page.mouse.click(edgePoint.x, edgePoint.y);
   await expect(selectedEdge).toHaveClass(/selected/);
 
   const selectedEdgeStyles = await selectedEdge.evaluate((edge) => {
@@ -1231,7 +1356,7 @@ test('connects mixed text, image, and audio references to one video generation n
   const canvasBox = await page.locator('.canvas-area').boundingBox();
   expect(canvasBox).not.toBeNull();
   if (!canvasBox) return;
-  const videoHeader = await videoNode.locator('.flow-node-header').boundingBox();
+  const videoHeader = await videoNode.locator('.flow-node-placeholder').boundingBox();
   expect(videoHeader).not.toBeNull();
   if (!videoHeader) return;
 
@@ -1908,7 +2033,7 @@ for (const viewport of [
   });
 }
 
-test('切换 Mock 默认模型后新运行使用新模型', async ({ page }) => {
+test('设置移除默认模型入口，节点自行选择模型后按所选模型运行', async ({ page }) => {
   await page.goto(projectPath);
   await page.getByRole('button', { name: '打开设置' }).click();
 
@@ -1925,16 +2050,13 @@ test('切换 Mock 默认模型后新运行使用新模型', async ({ page }) => 
   await expect(dialog.getByText('已配置 · smoke-fingerprint')).toBeVisible();
   await expect((await refreshResponse).status()).toBe(200);
   await expect(dialog.getByRole('status')).toContainText('模型列表已自动刷新');
-  const textDefault = dialog.getByLabel('平台全局默认 · 文字');
-  await expect(textDefault).toBeVisible();
-  const savedCredentialId = await dialog.getByLabel('已保存的 API Key').inputValue();
-  const mockTextV2Value = JSON.stringify([savedCredentialId, 'mock-text-v2']);
-  await expect(textDefault.locator(`option[value='${mockTextV2Value}']`)).toHaveCount(1);
-  await textDefault.selectOption(mockTextV2Value);
-  await expect(textDefault).toHaveValue(mockTextV2Value);
+  await expect(dialog.getByText('平台全局默认')).toHaveCount(0);
+  await expect(dialog.getByText('当前项目默认')).toHaveCount(0);
   await dialog.getByRole('button', { name: '关闭设置' }).click();
 
   await page.getByRole('button', { name: '新建文字生成节点' }).click();
+  await page.getByRole('combobox', { name: /^模型：/ }).hover();
+  await page.getByRole('option', { name: 'Mock Text v2', exact: true }).first().click();
   const runResponse = page.waitForResponse(
     (response) =>
       /\/v1\/nodes\/[^/]+\/runs$/.test(new URL(response.url()).pathname) &&

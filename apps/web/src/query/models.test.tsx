@@ -3,7 +3,8 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createAppQueryClient } from './client';
-import { clearAuthSession, persistAuthSession } from '../auth-client';
+import { clearAuthSession, persistAuthSession, getAuthSessionGeneration } from '../auth-client';
+import { aiCredentialsQueryKey, replaceAiCredentials } from './credentials';
 import {
   modelCatalogQueryKey,
   modelCatalogQueryKeyFor,
@@ -18,6 +19,59 @@ afterEach(() => {
 });
 
 describe('model catalog query', () => {
+  it('删除 Key 清理其目录和活动回退缓存，同时保留其他 Key 的目录', async () => {
+    const client = createAppQueryClient();
+    const removed = {
+      id: 'deleted',
+      baseUrl: 'https://deleted.test',
+      keyFingerprint: 'hash-deleted',
+      active: true,
+      updatedAt: '2026-09-11',
+    };
+    const kept = { ...removed, id: 'kept', active: false };
+    client.setQueryData(aiCredentialsQueryKey, [removed, kept]);
+    client.setQueryData(modelCatalogQueryKeyFor('deleted'), [{ id: 'old-model' }]);
+    client.setQueryData(modelCatalogQueryKey, [{ id: 'old-model' }]);
+    client.setQueryData(modelCatalogQueryKeyFor('kept'), [{ id: 'kept-model' }]);
+    await replaceAiCredentials(client, [kept], getAuthSessionGeneration());
+    expect(client.getQueryData(modelCatalogQueryKeyFor('deleted'))).toEqual([]);
+    expect(client.getQueryData(modelCatalogQueryKey)).toEqual([]);
+    expect(client.getQueryData(modelCatalogQueryKeyFor('kept'))).toEqual([{ id: 'kept-model' }]);
+    client.clear();
+  });
+
+  it('刷新结果晚于 Key 删除返回时不能复活该 Key 的模型目录', async () => {
+    let finish!: (response: Response) => void;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            finish = resolve;
+          }),
+      ),
+    );
+    const client = createAppQueryClient();
+    client.setQueryData(aiCredentialsQueryKey, [{ id: 'deleted', active: true }]);
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(() => useRefreshModelCatalog(), { wrapper });
+    let pending!: Promise<unknown>;
+    await act(async () => {
+      pending = result.current.mutateAsync('deleted').catch((error: unknown) => error);
+    });
+    await act(async () => {
+      await replaceAiCredentials(client, [], getAuthSessionGeneration());
+    });
+    await act(async () => {
+      finish(Response.json({ models: [{ id: 'stale', name: '旧模型', mediaTypes: ['text'] }] }));
+      await pending;
+    });
+    expect(await pending).toBeInstanceOf(Error);
+    expect(client.getQueryData(modelCatalogQueryKeyFor('deleted'))).toEqual([]);
+    client.clear();
+  });
   it('模型刷新晚于换号完成时不重填新账户的目录缓存', async () => {
     let finish!: (response: Response) => void;
     const fetcher = vi.fn(

@@ -103,6 +103,8 @@ export interface AiSettingsStoreLike {
     credentialId: string,
   ): AiSettings | undefined | Promise<AiSettings | undefined>;
   removeCredentials(): AiSettings | Promise<AiSettings>;
+  /** 删除指定已保存连接；历史任务的精确版本仍可解析，目标不存在时返回 undefined。 */
+  removeCredential(credentialId: string): AiSettings | undefined | Promise<AiSettings | undefined>;
   hasCredential(credentialId: string): boolean | Promise<boolean>;
   testConnection(): Promise<{ ok: boolean; modelCount?: number; error?: string }>;
   refreshModels(credentialId?: string): Promise<ModelCatalogEntry[]>;
@@ -191,6 +193,8 @@ export class AiSettingsStore {
   private credentialId?: string;
   private credentialVersion?: number;
   private readonly credentialHistory = new Map<string, ProviderCredentials>();
+  /** 删除的连接 ID 不得通过尚未完成的目录刷新重新变为可见。 */
+  private readonly deletedCredentialIds = new Set<string>();
   private readonly credentialRecords = new Map<
     string,
     ProviderCredentials & {
@@ -366,6 +370,34 @@ export class AiSettingsStore {
     return this.get();
   }
 
+  /** 移除同一连接的所有可选版本及目录，保留仅供已提交任务使用的历史快照。 */
+  removeCredential(credentialId: string): AiSettings | undefined {
+    const target = this.credentialRecords.get(credentialId);
+    if (!target) return undefined;
+    const removeActive =
+      target.baseUrl === this.baseUrl && target.keyFingerprint === this.keyFingerprint;
+    for (const [id, credential] of this.credentialRecords) {
+      if (
+        credential.baseUrl !== target.baseUrl ||
+        credential.keyFingerprint !== target.keyFingerprint
+      )
+        continue;
+      this.credentialRecords.delete(id);
+      this.deletedCredentialIds.add(id);
+      this.modelCatalogs.delete(modelCatalogKey(id));
+    }
+    if (removeActive) {
+      this.baseUrl = '';
+      this.encryptedApiKey = '';
+      this.encryptionKeyId = undefined;
+      this.keyFingerprint = '';
+      this.credentialId = undefined;
+      this.credentialVersion = undefined;
+    }
+    this.updatedAt = new Date().toISOString();
+    return this.get();
+  }
+
   hasCredential(credentialId: string): boolean {
     if (!this.credentialId || !this.credentialVersion || !this.baseUrl || !this.encryptedApiKey) {
       return false;
@@ -486,6 +518,8 @@ export class AiSettingsStore {
   }
 
   listModels(mediaType?: MediaType, credentialId?: string): ModelCatalogEntry[] {
+    if (credentialId && this.deletedCredentialIds.has(credentialId))
+      throw new AiCredentialNotFoundError(credentialId);
     const catalog =
       this.modelCatalogs.get(modelCatalogKey(credentialId ?? this.credentialId)) ??
       (credentialId === undefined ? this.modelCatalogs.get(LEGACY_MODEL_CATALOG_KEY) : undefined);
@@ -704,7 +738,12 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
       const credential = await this.prisma.aiCredential.findFirst({
         where: { id: credentialId, projectId: null },
       });
-      if (!credential?.baseUrl || !credential.encryptedApiKey || !credential.keyFingerprint) {
+      if (
+        !credential?.baseUrl ||
+        !credential.encryptedApiKey ||
+        !credential.keyFingerprint ||
+        credential.label === 'deleted'
+      ) {
         return undefined;
       }
 
@@ -778,6 +817,72 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
     });
   }
 
+  /**
+   * 原子删除指定连接的全部可选版本；历史密文保留给已提交任务，禁止列表、激活和新任务使用。
+   * 删除活动连接时追加空活动版本，其余已保存 Key 仍可手动切换；失败由数据库事务回滚。
+   */
+  async removeCredential(credentialId: string): Promise<AiSettings | undefined> {
+    return this.withLatestSettings(async () => {
+      const deleted = await this.prisma.$transaction(async (transaction) => {
+        const updatedAt = await this.lockCredentialWrites(transaction);
+        const target = await transaction.aiCredential.findFirst({
+          where: { id: credentialId, projectId: null },
+        });
+        if (!target?.encryptedApiKey || target.label === 'deleted') return false;
+        const current = await transaction.aiCredential.findFirst({
+          where: { projectId: null },
+          orderBy: [{ updatedAt: 'desc' }, { version: 'desc' }],
+        });
+        const versions = await transaction.aiCredential.findMany({
+          where: {
+            projectId: null,
+            baseUrl: target.baseUrl,
+            keyFingerprint: target.keyFingerprint,
+          },
+        });
+        for (const version of versions) {
+          if (
+            version.baseUrl !== target.baseUrl ||
+            version.keyFingerprint !== target.keyFingerprint
+          )
+            continue;
+          // 保留排序时间，避免删除非活动连接时把它误提升为当前配置。
+          await transaction.aiCredential.update({
+            where: { id: version.id },
+            data: { label: 'deleted', updatedAt: version.updatedAt },
+          });
+        }
+        if (
+          current?.baseUrl === target.baseUrl &&
+          current.keyFingerprint === target.keyFingerprint
+        ) {
+          const stored = readPersistedDefaults(current.defaultModels);
+          await transaction.aiCredential.create({
+            data: {
+              projectId: null,
+              ownerId: null,
+              label: 'revoked',
+              version: current.version + 1,
+              baseUrl: '',
+              encryptedApiKey: '',
+              encryptionKeyId: null,
+              keyFingerprint: '',
+              defaultModels:
+                stored.timeoutMs && stored.timeoutMs !== DEFAULT_PROVIDER_TIMEOUT_MS
+                  ? { __timeoutMs: stored.timeoutMs }
+                  : Prisma.JsonNull,
+              updatedAt,
+            },
+          });
+        }
+        return true;
+      });
+      if (!deleted) return undefined;
+      await this.load();
+      return this.memory.get();
+    });
+  }
+
   /** 检查指定凭据是否可用于新任务；当前设置被撤销时历史凭据也不可新选。 */
   async hasCredential(credentialId: string) {
     return this.withLatestSettings(() => this.hasLoadedCredential(credentialId));
@@ -791,9 +896,11 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
     }
     const credential = await this.prisma.aiCredential.findFirst({
       where: { id: credentialId, projectId: null },
-      select: { id: true, baseUrl: true, encryptedApiKey: true },
+      select: { id: true, baseUrl: true, encryptedApiKey: true, label: true },
     });
-    return Boolean(credential?.baseUrl && credential.encryptedApiKey);
+    return Boolean(
+      credential?.baseUrl && credential.encryptedApiKey && credential.label !== 'deleted',
+    );
   }
 
   /** 使用本次读取的活动连接测试上游；已提交的远程撤销会阻止请求发出。 */
@@ -869,9 +976,9 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
         }
         const credential = await this.prisma.aiCredential.findFirst({
           where: { id: credentialId, projectId: null },
-          select: { id: true, version: true, baseUrl: true, encryptedApiKey: true },
+          select: { id: true, version: true, baseUrl: true, encryptedApiKey: true, label: true },
         });
-        if (!credential?.baseUrl || !credential.encryptedApiKey) {
+        if (!credential?.baseUrl || !credential.encryptedApiKey || credential.label === 'deleted') {
           throw new AiCredentialNotFoundError(credentialId);
         }
         return { credentialId: credential.id, credentialVersion: credential.version };
@@ -938,7 +1045,7 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
     const memory = new AiSettingsStore(this.encryptionSecret, this.memoryOptions);
     const reference: CredentialReference = {};
     if (credential) {
-      if (credential.baseUrl && credential.encryptedApiKey) {
+      if (credential.baseUrl && credential.encryptedApiKey && credential.label !== 'deleted') {
         await this.providerCredentialsForCredential(credential);
         Object.assign(reference, {
           credentialId: credential.id,
@@ -948,10 +1055,10 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
       const stored = readPersistedDefaults(credential.defaultModels);
       memory.hydrate(
         {
-          baseUrl: credential.baseUrl,
-          encryptedApiKey: credential.encryptedApiKey,
+          baseUrl: credential.label === 'deleted' ? '' : credential.baseUrl,
+          encryptedApiKey: credential.label === 'deleted' ? '' : credential.encryptedApiKey,
           ...(credential.encryptionKeyId ? { encryptionKeyId: credential.encryptionKeyId } : {}),
-          keyFingerprint: credential.keyFingerprint,
+          keyFingerprint: credential.label === 'deleted' ? '' : credential.keyFingerprint,
           defaultModels: stored.defaultModels,
           ...(stored.timeoutMs === undefined ? {} : { timeoutMs: stored.timeoutMs }),
           updatedAt: credential.updatedAt.toISOString(),
@@ -1046,6 +1153,13 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
     const persisted = this.memory.getPersisted();
     const current = await this.prisma.$transaction(async (transaction) => {
       const updatedAt = await this.lockCredentialWrites(transaction);
+      if (sourceCatalogCredentialId) {
+        const source = await transaction.aiCredential.findFirst({
+          where: { id: sourceCatalogCredentialId, projectId: null },
+        });
+        if (source?.label === 'deleted')
+          throw new AiCredentialNotFoundError(sourceCatalogCredentialId);
+      }
       const existing = await transaction.aiCredential.findFirst({
         where: { projectId: null },
         orderBy: [{ updatedAt: 'desc' }, { version: 'desc' }],
@@ -1160,7 +1274,12 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
     const credential = await this.prisma.aiCredential.findFirst({
       where: { id: resolvedCredentialId, projectId: null },
     });
-    if (!credential?.baseUrl || !credential.encryptedApiKey || !credential.keyFingerprint) {
+    if (
+      !credential?.baseUrl ||
+      !credential.encryptedApiKey ||
+      !credential.keyFingerprint ||
+      credential.label === 'deleted'
+    ) {
       if (credentialId) throw new AiCredentialNotFoundError(credentialId);
       throw new Error('New API 地址和 Key 尚未配置');
     }
@@ -1348,12 +1467,16 @@ function summarizeCredentials(
     id: string;
     baseUrl: string;
     keyFingerprint: string;
+    label?: string;
     updatedAt: string | Date;
   }>,
   activeCredentialId?: string,
 ): AiCredentialSummary[] {
   const sorted = credentials
-    .filter((credential) => credential.baseUrl && credential.keyFingerprint)
+    .filter(
+      (credential) =>
+        credential.baseUrl && credential.keyFingerprint && credential.label !== 'deleted',
+    )
     .map((credential) => ({
       id: credential.id,
       baseUrl: credential.baseUrl,

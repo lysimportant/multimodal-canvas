@@ -56,6 +56,15 @@ const jsonResponse = (body: unknown, status = 200) =>
     headers: { 'content-type': 'application/json' },
   });
 
+/** 构造手动完成的异步请求，用于验证网络等待期间的界面与互斥行为。 */
+function deferredResponse() {
+  let resolve!: (response: Response) => void;
+  const promise = new Promise<Response>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
 function mockFingerprint(value: string) {
   let hash = 0;
   for (const character of value) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
@@ -166,14 +175,17 @@ function installApiMock() {
     if (url.pathname === '/v1/settings/ai/models/refresh' && method === 'POST') {
       return jsonResponse({ models });
     }
-    if (url.pathname === '/v1/settings/ai/credentials' && method === 'DELETE') {
+    const deletion = url.pathname.match(/^\/v1\/settings\/ai\/credentials\/([^/]+)$/);
+    if (deletion && method === 'DELETE') {
+      const selected = credentials.find((credential) => credential.id === deletion[1]);
+      if (!selected) return jsonResponse({ error: 'credential not found' }, 404);
+      credentials = credentials.filter((credential) => credential.id !== selected.id);
       settings = {
         ...settings,
         baseUrl: 'https://reset.example.com/v1',
         configured: false,
         keyFingerprint: undefined,
       };
-      credentials = credentials.map((credential) => ({ ...credential, active: false }));
       return jsonResponse({ settings, credentials });
     }
     const activation = url.pathname.match(/^\/v1\/settings\/ai\/credentials\/([^/]+)\/activate$/);
@@ -285,6 +297,206 @@ describe('SettingsPanel', () => {
     );
   });
 
+  it('移除两级默认模型入口且不再请求默认值或模型目录', async () => {
+    const client = createAppQueryClient();
+    render(
+      <QueryClientProvider client={client}>
+        <SettingsPanel
+          projectId={project.id}
+          projectName={project.name}
+          onClose={vi.fn()}
+          onNotice={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+    await waitFor(() =>
+      expect(screen.getByLabelText('New API Base URL')).toHaveValue(settings.baseUrl),
+    );
+    expect(screen.queryByText('平台全局默认')).not.toBeInTheDocument();
+    expect(screen.queryByText('当前项目默认')).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: /默认/ })).not.toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(([input]) => {
+        const pathname = new URL(String(input), 'http://localhost:3000').pathname;
+        return pathname.includes('/models/defaults') || pathname === '/v1/models';
+      }),
+    ).toBe(false);
+  });
+
+  it('保存和自动刷新分别显示等待状态并阻止重复表单提交', async () => {
+    const immediateFetch = fetchMock;
+    const saveResponse = deferredResponse();
+    const refreshResponse = deferredResponse();
+    const delayedFetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const pathname = new URL(String(input), 'http://localhost:3000').pathname;
+      if (pathname === '/v1/settings/ai' && init?.method === 'PATCH') return saveResponse.promise;
+      if (pathname.endsWith('/models/refresh')) return refreshResponse.promise;
+      return immediateFetch(input, init);
+    });
+    vi.stubGlobal('fetch', delayedFetch);
+    const { dialog } = await openSettings();
+    const form = within(dialog).getByRole('button', { name: '保存' }).closest('form')!;
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+    const saving = await within(dialog).findByRole('button', { name: '正在保存' });
+    expect(saving).toBeDisabled();
+    expect(saving).toHaveAttribute('aria-busy', 'true');
+    expect(saving.querySelector('.spin')).toBeInTheDocument();
+    expect(delayedFetch.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(1);
+
+    await act(async () => saveResponse.resolve(jsonResponse({ settings, credentials })));
+    const refreshing = await within(dialog).findByRole('button', { name: '正在刷新模型' });
+    expect(refreshing).toBeDisabled();
+    expect(refreshing).toHaveAttribute('aria-busy', 'true');
+    expect(refreshing.querySelector('.spin')).toBeInTheDocument();
+    fireEvent.submit(form);
+    await act(async () => refreshResponse.resolve(jsonResponse({ models })));
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: '保存' })).toBeEnabled());
+    expect(dialog).toHaveAttribute('aria-busy', 'false');
+    expect(delayedFetch.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(1);
+    expect(
+      delayedFetch.mock.calls.filter(([input]) => String(input).endsWith('/models/refresh')),
+    ).toHaveLength(1);
+  });
+
+  it.each([
+    ['测试连接', '正在测试连接', '/v1/settings/ai/test', 'POST'],
+    ['刷新模型', '正在刷新模型', '/v1/settings/ai/models/refresh', 'POST'],
+    [
+      '删除当前 Key',
+      '正在删除',
+      '/v1/settings/ai/credentials/123e4567-e89b-12d3-a456-000000000001',
+      'DELETE',
+    ],
+  ])(
+    '%s 等待时显示旋转提示且失败后允许重试并保留当前 Key',
+    async (label, pendingLabel, path, method) => {
+      const immediateFetch = fetchMock;
+      const pending = deferredResponse();
+      const delayedFetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const pathname = new URL(String(input), 'http://localhost:3000').pathname;
+        if (pathname === path && init?.method === method) return pending.promise;
+        return immediateFetch(input, init);
+      });
+      vi.stubGlobal('fetch', delayedFetch);
+      const { dialog } = await openSettings();
+      fireEvent.click(within(dialog).getByRole('button', { name: label }));
+      const waiting = await within(dialog).findByRole('button', { name: pendingLabel });
+      expect(waiting).toHaveAttribute('aria-busy', 'true');
+      expect(waiting.querySelector('.spin')).toBeInTheDocument();
+      expect(waiting).toBeDisabled();
+      fireEvent.click(waiting);
+      expect(
+        delayedFetch.mock.calls.filter(
+          ([input, init]) => String(input).endsWith(path) && init?.method === method,
+        ),
+      ).toHaveLength(1);
+      await act(async () =>
+        pending.resolve(jsonResponse({ error: 'synthetic operation failure' }, 502)),
+      );
+      await waitFor(() =>
+        expect(within(dialog).getByRole('button', { name: label })).toBeEnabled(),
+      );
+      expect(within(dialog).getByRole('alert')).toBeInTheDocument();
+      expect(dialog).toHaveAttribute('aria-busy', 'false');
+      expect(within(dialog).getByRole('combobox', { name: '已保存的 API Key' })).toHaveValue(
+        credentials[0].id,
+      );
+    },
+  );
+
+  it('切换 Key 及其自动刷新阶段有进度且切换失败可重试', async () => {
+    const historicalId = '123e4567-e89b-12d3-a456-000000000002';
+    credentials.push({
+      id: historicalId,
+      baseUrl: 'https://history.example.com/v1',
+      keyFingerprint: 'sha256:history',
+      updatedAt: '2025-12-31T00:00:00.000Z',
+      active: false,
+    });
+    const immediateFetch = fetchMock;
+    let activationResponse = deferredResponse();
+    const refreshResponse = deferredResponse();
+    const delayedFetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const pathname = new URL(String(input), 'http://localhost:3000').pathname;
+      if (pathname.endsWith('/activate')) return activationResponse.promise;
+      if (pathname.endsWith('/models/refresh')) return refreshResponse.promise;
+      return immediateFetch(input, init);
+    });
+    vi.stubGlobal('fetch', delayedFetch);
+    const { dialog } = await openSettings();
+    const select = within(dialog).getByRole('combobox', { name: '已保存的 API Key' });
+    fireEvent.change(select, { target: { value: historicalId } });
+    expect(select).toBeDisabled();
+    expect(select).toHaveAttribute('aria-busy', 'true');
+    expect(within(dialog).getByRole('status')).toHaveTextContent('正在切换 Key');
+    expect(within(dialog).getByRole('status').querySelector('.spin')).toBeInTheDocument();
+    fireEvent.change(select, { target: { value: historicalId } });
+    await act(async () => activationResponse.resolve(jsonResponse({ error: '切换失败' }, 502)));
+    await waitFor(() => expect(select).toBeEnabled());
+    expect(select).toHaveValue(credentials[0].id);
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('切换失败');
+    expect(
+      delayedFetch.mock.calls.filter(([input]) => String(input).endsWith('/activate')),
+    ).toHaveLength(1);
+
+    activationResponse = deferredResponse();
+    fireEvent.change(select, { target: { value: historicalId } });
+    const result = await immediateFetch(
+      `http://localhost:3000/v1/settings/ai/credentials/${historicalId}/activate`,
+      { method: 'POST' },
+    );
+    await act(async () => activationResponse.resolve(result));
+    await waitFor(() =>
+      expect(within(dialog).getByRole('status')).toHaveTextContent('正在刷新模型'),
+    );
+    expect(select).toBeDisabled();
+    await act(async () => refreshResponse.resolve(jsonResponse({ models })));
+    await waitFor(() => expect(select).toBeEnabled());
+    expect(select).toHaveValue(historicalId);
+    expect(select).toHaveAttribute('aria-busy', 'false');
+  });
+
+  it('删除当前 Key 后从列表移除，保留其他 Key 并能继续切换删除', async () => {
+    const deletedId = credentials[0].id;
+    const remainingId = '123e4567-e89b-12d3-a456-000000000002';
+    credentials.push({
+      id: remainingId,
+      baseUrl: 'https://remaining.example.com/v1',
+      keyFingerprint: 'sha256:remaining',
+      updatedAt: '2025-12-31T00:00:00.000Z',
+      active: false,
+    });
+    const { dialog, user } = await openSettings();
+    const select = within(dialog).getByRole('combobox', { name: '已保存的 API Key' });
+    await user.click(within(dialog).getByRole('button', { name: '删除当前 Key' }));
+    await waitFor(() =>
+      expect(within(dialog).getByRole('status')).toHaveTextContent('当前 Key 已删除'),
+    );
+    expect(within(select).queryByRole('option', { name: /old-key/ })).not.toBeInTheDocument();
+    expect(within(select).getByRole('option', { name: /remaining/ })).toBeInTheDocument();
+    expect(select).toHaveValue('');
+    expect(within(dialog).getByLabelText('API Key')).toHaveAttribute(
+      'placeholder',
+      '输入服务端 Key',
+    );
+    await user.selectOptions(select, remainingId);
+    await waitFor(() => expect(select).toBeEnabled());
+    expect(select).toHaveValue(remainingId);
+    await user.click(within(dialog).getByRole('button', { name: '删除当前 Key' }));
+    await waitFor(() => expect(credentials).toHaveLength(0));
+    expect(within(select).getAllByRole('option')).toHaveLength(1);
+    expect(within(select).getByRole('option')).toHaveTextContent('暂无已保存凭据');
+    expect(
+      fetchMock.mock.calls
+        .filter(([input, init]) => init?.method === 'DELETE')
+        .map(([input]) => new URL(String(input)).pathname),
+    ).toEqual([
+      `/v1/settings/ai/credentials/${deletedId}`,
+      `/v1/settings/ai/credentials/${remainingId}`,
+    ]);
+  });
+
   it('保存自定义超时后可以显式恢复默认值', async () => {
     settings.timeoutMs = 1_200_000;
     const { dialog, user } = await openSettings();
@@ -359,15 +571,9 @@ describe('SettingsPanel', () => {
     );
   }, 15_000);
 
-  it('adds and selects a saved key and refreshes model Select options exactly once', async () => {
+  it('adds and selects a saved key and refreshes its models exactly once', async () => {
     models = [{ id: 'text-old', name: '旧文字模型', mediaTypes: ['text'] }];
     const { dialog, user } = await openSettings();
-    const modelSelect = within(dialog).getByRole('combobox', {
-      name: '平台全局默认 · 文字',
-    });
-    await waitFor(() =>
-      expect(within(modelSelect).getByRole('option', { name: '旧文字模型' })).toBeInTheDocument(),
-    );
     models = [{ id: 'text-new', name: '新文字模型', mediaTypes: ['text'] }];
 
     const newKey = 'new-auto-sync-secret';
@@ -383,8 +589,6 @@ describe('SettingsPanel', () => {
     expect(credentialSelect).toHaveValue(credentials.find((credential) => credential.active)?.id);
     expect(within(credentialSelect).getAllByRole('option')).toHaveLength(3);
     expect(credentialSelect).not.toHaveTextContent(newKey);
-    expect(within(modelSelect).getByRole('option', { name: '新文字模型' })).toBeInTheDocument();
-    expect(within(modelSelect).getByRole('option', { name: '旧文字模型' })).toBeInTheDocument();
     expect(
       fetchMock.mock.calls.filter(([input, init]) => {
         const url = new URL(String(input), 'http://localhost:3000');
@@ -444,92 +648,6 @@ describe('SettingsPanel', () => {
     expect(credentials).toHaveLength(1);
   });
 
-  it('distinguishes same-name models by credential and preserves the structured selection', async () => {
-    const historicalId = '123e4567-e89b-12d3-a456-000000000002';
-    credentials.push({
-      id: historicalId,
-      baseUrl: 'https://history.example.com/v1',
-      keyFingerprint: 'sha256:history',
-      updatedAt: '2025-12-31T00:00:00.000Z',
-      active: false,
-    });
-    models = [
-      {
-        id: 'shared-text-model',
-        name: '同名文字模型',
-        mediaTypes: ['text'],
-        credentialId: credentials[0]!.id,
-      },
-      {
-        id: 'shared-text-model',
-        name: '同名文字模型',
-        mediaTypes: ['text'],
-        credentialId: historicalId,
-      },
-    ];
-    settings.defaultModels.text = {
-      modelAlias: 'shared-text-model',
-      credentialId: credentials[0]!.id,
-    };
-
-    const originalFetch = fetchMock;
-    const scopedFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = new URL(String(input), 'http://localhost:3000');
-      if (url.pathname === '/v1/models' && url.searchParams.has('credentialId')) {
-        const credentialId = url.searchParams.get('credentialId');
-        return jsonResponse({
-          models: models.filter((model) => model.credentialId === credentialId),
-        });
-      }
-      return originalFetch(input, init);
-    });
-    vi.stubGlobal('fetch', scopedFetch);
-
-    const { dialog, user } = await openSettings();
-    const modelSelect = within(dialog).getByRole('combobox', {
-      name: '平台全局默认 · 文字',
-    });
-    const historicalSelection = JSON.stringify([historicalId, 'shared-text-model']);
-
-    await waitFor(() =>
-      expect(modelSelect).toHaveValue(JSON.stringify([credentials[0]!.id, 'shared-text-model'])),
-    );
-    expect(within(modelSelect).getAllByRole('option', { name: '同名文字模型' })).toHaveLength(2);
-    await waitFor(() => {
-      const catalogCredentialIds = scopedFetch.mock.calls
-        .map(([input]) => new URL(String(input), 'http://localhost:3000'))
-        .filter((url) => url.pathname === '/v1/models')
-        .map((url) => url.searchParams.get('credentialId'))
-        .filter((credentialId): credentialId is string => Boolean(credentialId));
-      expect(catalogCredentialIds).toEqual(
-        expect.arrayContaining([credentials[0]!.id, historicalId]),
-      );
-    });
-
-    await user.selectOptions(modelSelect, historicalSelection);
-    await waitFor(() =>
-      expect(screen.getByRole('status')).toHaveTextContent('平台全局文字默认模型已更新'),
-    );
-    expect(modelSelect).toHaveValue(historicalSelection);
-    expect(settings.defaultModels.text).toEqual({
-      modelAlias: 'shared-text-model',
-      credentialId: historicalId,
-    });
-    expect(
-      fetchMock.mock.calls.some(
-        ([input, init]) =>
-          String(input).includes('/v1/settings/ai') &&
-          init?.method === 'PATCH' &&
-          init.body ===
-            JSON.stringify({
-              defaultModels: {
-                text: { modelAlias: 'shared-text-model', credentialId: historicalId },
-              },
-            }),
-      ),
-    ).toBe(true);
-  });
-
   it('discards an unsaved credential draft when the dialog is cancelled', async () => {
     const { dialog, user } = await openSettings();
     const originalCredentialId = credentials[0]!.id;
@@ -579,22 +697,13 @@ describe('SettingsPanel', () => {
     ).toHaveLength(1);
   });
 
-  it('refreshes models, saves a media default, and deletes credentials', async () => {
+  it('refreshes models and completely deletes the current credential', async () => {
     const { dialog, user } = await openSettings();
     await user.click(within(dialog).getByRole('button', { name: '刷新模型' }));
 
-    const textModel = within(dialog).getByRole('combobox', { name: '平台全局默认 · 文字' });
     await waitFor(() =>
-      expect(within(textModel).getByRole('option', { name: '文字模型' })).toBeInTheDocument(),
+      expect(within(dialog).getByRole('status')).toHaveTextContent('模型列表已刷新'),
     );
-    await user.selectOptions(textModel, JSON.stringify([credentials[0]!.id, 'text-model']));
-    await waitFor(() =>
-      expect(screen.getByRole('status')).toHaveTextContent('平台全局文字默认模型已更新'),
-    );
-    expect(settings.defaultModels.text).toEqual({
-      modelAlias: 'text-model',
-      credentialId: credentials[0]!.id,
-    });
 
     const baseUrl = within(dialog).getByLabelText('New API Base URL');
     const apiKey = within(dialog).getByLabelText('API Key');
@@ -604,7 +713,7 @@ describe('SettingsPanel', () => {
     await user.click(within(dialog).getByRole('button', { name: '保存' }));
     expect(within(dialog).getByRole('alert')).toHaveTextContent('请输入有效的 HTTP(S) Base URL');
 
-    await user.click(within(dialog).getByRole('button', { name: '删除凭据' }));
+    await user.click(within(dialog).getByRole('button', { name: '删除当前 Key' }));
     await waitFor(() => expect(within(dialog).getByText('未配置')).toBeInTheDocument());
     expect(baseUrl).toHaveValue('https://reset.example.com/v1');
     expect(apiKey).toHaveValue('');
@@ -613,7 +722,7 @@ describe('SettingsPanel', () => {
     expect(within(dialog).getByRole('button', { name: '刷新模型' })).toBeDisabled();
   });
 
-  it('keeps the previous model catalog when automatic refresh fails after saving', async () => {
+  it('reports automatic refresh failure while retaining the saved key', async () => {
     models = [{ id: 'text-stable', name: '稳定文字模型', mediaTypes: ['text'] }];
     const originalFetch = fetchMock;
     const refreshFailureFetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -625,12 +734,6 @@ describe('SettingsPanel', () => {
     });
     vi.stubGlobal('fetch', refreshFailureFetch);
     const { dialog, user } = await openSettings();
-    const modelSelect = within(dialog).getByRole('combobox', {
-      name: '平台全局默认 · 文字',
-    });
-    await waitFor(() =>
-      expect(within(modelSelect).getByRole('option', { name: '稳定文字模型' })).toBeInTheDocument(),
-    );
 
     await user.type(within(dialog).getByLabelText('API Key'), 'saved-before-refresh-failure');
     await user.click(within(dialog).getByRole('button', { name: '保存' }));
@@ -640,7 +743,6 @@ describe('SettingsPanel', () => {
         'AI 设置已保存，但模型自动刷新失败',
       ),
     );
-    expect(within(modelSelect).getAllByRole('option', { name: '稳定文字模型' })).toHaveLength(2);
     expect(within(dialog).getByRole('combobox', { name: '已保存的 API Key' })).toHaveValue(
       credentials.find((credential) => credential.active)?.id,
     );
@@ -653,94 +755,10 @@ describe('SettingsPanel', () => {
     ).toHaveLength(1);
   });
 
-  it('loads, updates, and clears current project model defaults', async () => {
-    projectDefaults.image = {
-      modelAlias: 'image-model',
-      credentialId: credentials[0]!.id,
-    };
-    const { dialog, user } = await openSettings();
-    const imageModel = within(dialog).getByRole('combobox', { name: '项目默认 · 图片' });
-
-    await waitFor(() => expect(imageModel).toBeEnabled());
-    expect(imageModel).toHaveValue(JSON.stringify([credentials[0]!.id, 'image-model']));
-    expect(within(imageModel).getByRole('option', { name: '图片模型' })).toBeInTheDocument();
-    expect(within(imageModel).queryByRole('option', { name: '文字模型' })).not.toBeInTheDocument();
-
-    const textModel = within(dialog).getByRole('combobox', { name: '项目默认 · 文字' });
-    await user.selectOptions(textModel, JSON.stringify([credentials[0]!.id, 'text-model']));
-    await waitFor(() =>
-      expect(screen.getByRole('status')).toHaveTextContent('文字项目默认模型已更新'),
-    );
-    expect(projectDefaults.text).toEqual({
-      modelAlias: 'text-model',
-      credentialId: credentials[0]!.id,
-    });
-    expect(
-      fetchMock.mock.calls.some(
-        ([input, init]) =>
-          String(input).includes(`/v1/projects/${project.id}/models/defaults`) &&
-          init?.method === 'PATCH' &&
-          init.body ===
-            JSON.stringify({
-              text: { modelAlias: 'text-model', credentialId: credentials[0]!.id },
-            }),
-      ),
-    ).toBe(true);
-
-    await user.selectOptions(textModel, '');
-    await waitFor(() =>
-      expect(screen.getByRole('status')).toHaveTextContent('文字已改为继承平台全局默认'),
-    );
-    expect(projectDefaults.text).toBeUndefined();
-    expect(
-      fetchMock.mock.calls.some(
-        ([input, init]) =>
-          String(input).includes(`/v1/projects/${project.id}/models/defaults`) &&
-          init?.method === 'PATCH' &&
-          init.body === JSON.stringify({ text: null }),
-      ),
-    ).toBe(true);
-  });
-
-  it('keeps unavailable global and project model values visible after credential sync', async () => {
-    const originalCredentialId = credentials[0]!.id;
-    settings.defaultModels.text = {
-      modelAlias: 'removed-text-model',
-      credentialId: originalCredentialId,
-    };
-    projectDefaults.image = {
-      modelAlias: 'removed-image-model',
-      credentialId: originalCredentialId,
-    };
-    const { dialog, user } = await openSettings();
-    const globalText = within(dialog).getByRole('combobox', {
-      name: '平台全局默认 · 文字',
-    });
-    const projectImage = within(dialog).getByRole('combobox', { name: '项目默认 · 图片' });
-
-    await waitFor(() => expect(projectImage).toBeEnabled());
-    expect(globalText).toHaveValue(JSON.stringify([originalCredentialId, 'removed-text-model']));
-    expect(projectImage).toHaveValue(JSON.stringify([originalCredentialId, 'removed-image-model']));
-    expect(
-      within(globalText).getByRole('option', { name: 'removed-text-model（当前不可用）' }),
-    ).toBeInTheDocument();
-    expect(
-      within(projectImage).getByRole('option', { name: 'removed-image-model（当前不可用）' }),
-    ).toBeInTheDocument();
-
-    await user.type(within(dialog).getByLabelText('API Key'), 'selection-preserving-secret');
-    await user.click(within(dialog).getByRole('button', { name: '保存' }));
-    await waitFor(() =>
-      expect(within(dialog).getByRole('status')).toHaveTextContent('模型列表已自动刷新'),
-    );
-    expect(globalText).toHaveValue(JSON.stringify([originalCredentialId, 'removed-text-model']));
-    expect(projectImage).toHaveValue(JSON.stringify([originalCredentialId, 'removed-image-model']));
-  });
-
   it('manages dialog focus and restores focus to the settings trigger', async () => {
     const { dialog, user } = await openSettings();
     const closeButton = within(dialog).getByRole('button', { name: '关闭设置' });
-    const deleteButton = within(dialog).getByRole('button', { name: '删除凭据' });
+    const deleteButton = within(dialog).getByRole('button', { name: '删除当前 Key' });
 
     expect(closeButton).toHaveFocus();
     expect(dialog).toHaveAttribute('aria-modal', 'true');
@@ -871,6 +889,9 @@ describe('SettingsPanel', () => {
     render(createElement(App));
     await user.click(await screen.findByRole('button', { name: '打开设置' }));
     const dialog = await screen.findByRole('dialog', { name: 'AI 连接' });
+    expect(dialog).toHaveAttribute('aria-busy', 'true');
+    expect(within(dialog).getByRole('status')).toHaveTextContent('正在加载设置');
+    expect(within(dialog).getByRole('status').querySelector('.spin')).toBeInTheDocument();
     const baseUrl = within(dialog).getByLabelText('New API Base URL');
     await user.type(baseUrl, 'https://saved.example.com/v1');
     await user.type(within(dialog).getByLabelText('API Key'), 'saved-race-secret');
@@ -981,57 +1002,6 @@ describe('SettingsPanel', () => {
     await user.type(apiKey, 'ordinary-key');
     expect(baseUrl).toHaveValue('https://ordinary.example/v1');
     expect(apiKey).toHaveValue('ordinary-key');
-  });
-
-  it('aborts stale project defaults and ignores their response after the project changes', async () => {
-    const immediateFetch = fetchMock;
-    let resolveOldDefaults: ((response: Response) => void) | undefined;
-    let oldDefaultsSignal: AbortSignal | undefined;
-    const delayedFetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      const rawUrl =
-        typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-      const url = new URL(rawUrl, 'http://localhost:3000');
-      if (url.pathname === '/v1/projects/project_old/models/defaults') {
-        oldDefaultsSignal = init?.signal ?? undefined;
-        return new Promise<Response>((resolve) => {
-          resolveOldDefaults = resolve;
-        });
-      }
-      if (url.pathname === '/v1/projects/project_new/models/defaults') {
-        return Promise.resolve(jsonResponse({ defaults: { text: 'text-model' } }));
-      }
-      return immediateFetch(input, init);
-    });
-    vi.stubGlobal('fetch', delayedFetch);
-    const client = createAppQueryClient();
-    const onClose = vi.fn();
-    const onNotice = vi.fn();
-    const renderPanel = (projectId: string, projectName: string) => (
-      <QueryClientProvider client={client}>
-        <SettingsPanel
-          projectId={projectId}
-          projectName={projectName}
-          onClose={onClose}
-          onNotice={onNotice}
-        />
-      </QueryClientProvider>
-    );
-    const view = render(renderPanel('project_old', '旧项目'));
-
-    await waitFor(() => expect(oldDefaultsSignal).toBeInstanceOf(AbortSignal));
-    view.rerender(renderPanel('project_new', '新项目'));
-    const textDefault = await screen.findByRole('combobox', { name: '项目默认 · 文字' });
-    await waitFor(() => expect(textDefault).toBeEnabled());
-    expect(textDefault).toHaveValue('text-model');
-    expect(oldDefaultsSignal?.aborted).toBe(true);
-
-    await act(async () => {
-      resolveOldDefaults?.(jsonResponse({ defaults: {} }));
-      await Promise.resolve();
-    });
-
-    expect(textDefault).toHaveValue('text-model');
-    expect(screen.getByText('新项目 · 可覆盖平台全局默认')).toBeInTheDocument();
   });
 
   it('blocks Escape and outside dismissal while a save is pending', async () => {

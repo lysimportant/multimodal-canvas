@@ -17,6 +17,7 @@ vi.mock('@xyflow/react', async () => {
 
   function ReactFlow({
     nodes,
+    nodeTypes,
     onNodeClick,
     onNodeMouseEnter,
     onNodeMouseLeave,
@@ -29,6 +30,7 @@ vi.mock('@xyflow/react', async () => {
     children,
   }: {
     nodes: AssetFlowNode[];
+    nodeTypes?: Record<string, React.ElementType>;
     defaultEdgeOptions?: { animated?: boolean; style?: Record<string, unknown> };
     onNodeClick?: (event: React.MouseEvent, node: AssetFlowNode) => void;
     onNodeMouseEnter?: (event: React.MouseEvent, node: AssetFlowNode) => void;
@@ -55,21 +57,28 @@ vi.mock('@xyflow/react', async () => {
           onClick={onPaneClick}
           onContextMenu={onPaneContextMenu}
         />
-        {nodes.map((node) => (
-          <div
-            key={node.id}
-            data-testid={`canvas-node-${node.id}`}
-            data-id={node.id}
-            className="react-flow__node"
-            tabIndex={0}
-            onClick={(event) => onNodeClick?.(event, node)}
-            onMouseEnter={(event) => onNodeMouseEnter?.(event, node)}
-            onMouseLeave={(event) => onNodeMouseLeave?.(event, node)}
-            onContextMenu={(event) => onNodeContextMenu?.(event, node)}
-          >
-            {node.data.label}
-          </div>
-        ))}
+        {nodes.map((node) => {
+          const NodeComponent = node.type ? nodeTypes?.[node.type] : undefined;
+          return (
+            <div
+              key={node.id}
+              data-testid={`canvas-node-${node.id}`}
+              data-id={node.id}
+              className="react-flow__node"
+              tabIndex={0}
+              onClick={(event) => onNodeClick?.(event, node)}
+              onMouseEnter={(event) => onNodeMouseEnter?.(event, node)}
+              onMouseLeave={(event) => onNodeMouseLeave?.(event, node)}
+              onContextMenu={(event) => onNodeContextMenu?.(event, node)}
+            >
+              {NodeComponent ? (
+                <NodeComponent id={node.id} data={node.data} selected={node.selected} />
+              ) : (
+                node.data.label
+              )}
+            </div>
+          );
+        })}
         {children}
       </div>
     );

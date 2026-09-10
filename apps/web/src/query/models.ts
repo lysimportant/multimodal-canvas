@@ -2,6 +2,7 @@ import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/rea
 
 import { apiFetch, getAuthSessionGeneration } from '../auth-client';
 import { API_BASE_URL, type ModelEntry } from '../workspace/contracts';
+import type { AiCredentialSummary } from '../contracts';
 
 export const modelCatalogQueryKey = ['model-catalog'] as const;
 
@@ -80,6 +81,9 @@ export function useRefreshModelCatalog() {
     onSuccess: async (models, credentialId, requestGeneration) => {
       if (getAuthSessionGeneration() !== requestGeneration)
         throw new Error('账户状态已改变，请重新操作');
+      const credentials = queryClient.getQueryData<AiCredentialSummary[]>(['ai-credentials']);
+      if (credentialId && credentials && !credentials.some((entry) => entry.id === credentialId))
+        throw new Error('凭据已删除，请选择可用的 API Key');
       const queryKey = modelCatalogQueryKeyFor(credentialId);
       await queryClient.cancelQueries({
         queryKey,
@@ -87,6 +91,15 @@ export function useRefreshModelCatalog() {
       });
       if (getAuthSessionGeneration() !== requestGeneration)
         throw new Error('账户状态已改变，请重新操作');
+      const currentCredentials = queryClient.getQueryData<AiCredentialSummary[]>([
+        'ai-credentials',
+      ]);
+      if (
+        credentialId &&
+        currentCredentials &&
+        !currentCredentials.some((entry) => entry.id === credentialId)
+      )
+        throw new Error('凭据已删除，请选择可用的 API Key');
       queryClient.setQueryData(queryKey, models);
       await queryClient.invalidateQueries({
         queryKey,

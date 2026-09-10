@@ -1651,6 +1651,18 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return { settings, credentials: await settingsStore.listCredentials() };
   });
 
+  app.delete('/v1/settings/ai/credentials/:credentialId', async (request, reply) => {
+    if (!canManagePlatformSettings(requestPrincipals, requestSessions, request)) {
+      return reply.code(403).send({ error: 'platform credential access is not permitted' });
+    }
+    const parsed = z.object({ credentialId: z.string().uuid() }).safeParse(request.params);
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid credential id' });
+    const settings = await settingsStore.removeCredential(parsed.data.credentialId);
+    if (!settings)
+      return reply.code(404).send({ error: 'credential not found', code: 'credential_not_found' });
+    return { settings, credentials: await settingsStore.listCredentials() };
+  });
+
   app.post('/v1/settings/ai/test', async (request, reply) => {
     if (!canManagePlatformSettings(requestPrincipals, requestSessions, request)) {
       return reply.code(403).send({ error: 'platform credential access is not permitted' });

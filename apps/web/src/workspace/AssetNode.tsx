@@ -5,9 +5,8 @@ import {
   LoaderCircle,
   Power,
   RefreshCw,
-  Sparkles,
+  Trash2,
   TriangleAlert,
-  Wand2,
   X,
 } from 'lucide-react';
 import { NodeResizer, type NodeProps } from '@xyflow/react';
@@ -26,6 +25,7 @@ import type { AssetFlowNode } from '../canvas-utils';
 import { NodeHandles } from '../NodeHandles';
 import { AssetPreview, type AssetPreviewLoadState } from './AssetPreview';
 import { mediaIcons, mediaLabels, modeLabels } from './contracts';
+import './asset-node.css';
 
 export type NodeSelectionHandler = (data: AssetFlowNode['data']) => void;
 export const NodeSelectionContext = createContext<NodeSelectionHandler | null>(null);
@@ -40,9 +40,14 @@ export type NodeRetryHandler = (nodeId: string) => void | Promise<void>;
 export const NodeRetryContext = createContext<NodeRetryHandler | null>(null);
 export type NodeEnabledHandler = (nodeId: string, enabled: boolean) => void;
 export const NodeEnabledContext = createContext<NodeEnabledHandler | null>(null);
+/** 删除指定节点；画布负责确认、关联边清理、撤销记录及持久化。 */
+export type NodeDeleteHandler = (nodeId: string) => void;
+/** 供节点顶部操作栏调用画布统一的删除行为。 */
+export const NodeDeleteContext = createContext<NodeDeleteHandler | null>(null);
 
 type NodePresentationState = 'empty' | 'running' | 'failed' | 'cancelled' | 'preview' | 'missing';
 
+/** 展示节点占位或产物；生成与转换节点的控制栏悬浮在内容上方，不参与尺寸计算。 */
 export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const selectNode = useContext(NodeSelectionContext);
   const changeLabel = useContext(NodeLabelChangeContext);
@@ -50,6 +55,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const resizeStart = useContext(NodeResizeStartContext);
   const retryNode = useContext(NodeRetryContext);
   const setNodeEnabled = useContext(NodeEnabledContext);
+  const deleteNode = useContext(NodeDeleteContext);
   const [previewLoadState, setPreviewLoadState] = useState<AssetPreviewLoadState | null>(null);
   const [isRetrying, setIsRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
@@ -58,6 +64,8 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const Icon = mediaIcons[data.mediaType];
   const Resizer = NodeResizer;
   const enabled = data.enabled !== false;
+  /** 生成与转换节点共用仅由内容组成的外观，资源节点保留原卡片。 */
+  const floatingControls = data.mode !== 'source';
   const resultPreviewAsset = data.resultAsset
     ? ({
         id: data.resultAsset.assetId,
@@ -112,6 +120,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
     if (!editingLabel) setDraftLabel(data.label);
   }, [data.label, editingLabel]);
 
+  /** 保存非空名称；空白名称恢复原值，实际修改交给画布记录历史。 */
   const commitLabel = useCallback(() => {
     const nextLabel = draftLabel.trim();
     setEditingLabel(false);
@@ -119,6 +128,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
     if (nextLabel && nextLabel !== data.label) changeLabel?.(id, nextLabel);
   }, [changeLabel, data.label, draftLabel, id]);
 
+  /** Enter 保存名称，Escape 取消本次编辑。 */
   const handleLabelKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Enter') {
       event.preventDefault();
@@ -130,6 +140,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
     }
   };
 
+  /** 提交重试并保留错误；同一节点在提交期间不重复发送请求。 */
   const handleRetry = async () => {
     if (!retryNode || isRetrying) return;
     setIsRetrying(true);
@@ -142,6 +153,47 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
       setIsRetrying(false);
     }
   };
+
+  /** 顶部或资源卡片中的可编辑名称，键盘激活与双击均可开始编辑。 */
+  const nodeLabel = (
+    <div className="flow-node-label" title={data.label}>
+      {editingLabel ? (
+        <input
+          className="flow-node-label-input nodrag nopan nowheel"
+          aria-label="编辑节点名称"
+          placeholder="输入节点名称"
+          value={draftLabel}
+          autoFocus
+          onChange={(event) => setDraftLabel(event.currentTarget.value)}
+          onBlur={commitLabel}
+          onKeyDown={handleLabelKeyDown}
+          onClick={(event) => event.stopPropagation()}
+        />
+      ) : changeLabel ? (
+        <button
+          type="button"
+          className="flow-node-label-button nodrag nopan nowheel"
+          aria-label={`重命名节点：${data.label}`}
+          title="双击或按 Enter 修改节点名称"
+          onDoubleClick={(event) => {
+            event.stopPropagation();
+            setEditingLabel(true);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              event.stopPropagation();
+              setEditingLabel(true);
+            }
+          }}
+        >
+          {data.label}
+        </button>
+      ) : (
+        data.label
+      )}
+    </div>
+  );
 
   return (
     <div
@@ -156,7 +208,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
           minHeight={140}
           color="#18794e"
           handleStyle={{ width: 14, height: 14, borderRadius: 3 }}
-          lineStyle={{ borderWidth: 2 }}
+          lineStyle={{ borderWidth: floatingControls ? 0 : 2 }}
           onResizeStart={() => {
             if (resizeStart && id) resizeStart(id);
           }}
@@ -168,24 +220,37 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
         />
       ) : null}
       <NodeHandles mediaType={data.mediaType} mode={data.mode} />
-      <div className="flow-node-header">
-        <span className={`media-icon media-icon-${data.mediaType}`}>
+      <div
+        className={`flow-node-header${floatingControls ? ' flow-node-floating-controls' : ''}`}
+        role="group"
+        aria-label={`节点操作：${data.label}`}
+        aria-disabled={false}
+      >
+        <span
+          className={`media-icon media-icon-${data.mediaType}`}
+          title={`${mediaLabels[data.mediaType]} · ${modeLabels[data.mode]}`}
+        >
           <Icon size={15} strokeWidth={2} aria-hidden="true" />
         </span>
-        <span className="flow-node-type">{mediaLabels[data.mediaType]}</span>
-        <span
-          className={`flow-node-mode-badge flow-node-mode-${data.mode}`}
-          title={`${modeLabels[data.mode]}模式`}
-        >
-          {data.mode === 'generate' ? (
-            <Sparkles size={10} aria-hidden="true" />
-          ) : data.mode === 'transform' ? (
-            <Wand2 size={10} aria-hidden="true" />
-          ) : null}
-          {modeLabels[data.mode]}
-        </span>
-        {!enabled && <span className="flow-node-disabled-badge">停用</span>}
-        {data.stale && <span className="flow-node-stale-badge">待更新</span>}
+        {floatingControls ? (
+          nodeLabel
+        ) : (
+          <span className="flow-node-type">{mediaLabels[data.mediaType]}</span>
+        )}
+        {!floatingControls && (
+          <span
+            className={`flow-node-mode-badge flow-node-mode-${data.mode}`}
+            title={`${modeLabels[data.mode]}模式`}
+          >
+            {modeLabels[data.mode]}
+          </span>
+        )}
+        {!enabled && !floatingControls && <span className="flow-node-disabled-badge">停用</span>}
+        {data.stale && (
+          <span className="flow-node-stale-badge" title="上游内容已变更，节点待更新">
+            {floatingControls ? <RefreshCw size={11} aria-label="待更新" /> : '待更新'}
+          </span>
+        )}
         {setNodeEnabled ? (
           <button
             type="button"
@@ -212,6 +277,21 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
             }
           />
         </span>
+        {deleteNode ? (
+          <button
+            type="button"
+            className="flow-node-delete-button nodrag nopan nowheel"
+            aria-label={`删除节点：${data.label}`}
+            title="删除节点"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              deleteNode(id);
+            }}
+          >
+            <Trash2 size={13} strokeWidth={2.2} aria-hidden="true" />
+          </button>
+        ) : null}
       </div>
       {presentationState === 'preview' && previewAsset ? (
         <div className="flow-node-preview">
@@ -241,29 +321,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
           icon={<Icon size={24} strokeWidth={1.7} aria-hidden="true" />}
         />
       )}
-      <div
-        className="flow-node-label"
-        title={editingLabel ? '输入节点名称后按 Enter 保存' : data.label}
-        onDoubleClick={(event) => {
-          event.stopPropagation();
-          if (changeLabel) setEditingLabel(true);
-        }}
-      >
-        {editingLabel ? (
-          <input
-            className="flow-node-label-input nodrag nopan nowheel"
-            aria-label="编辑节点名称"
-            value={draftLabel}
-            autoFocus
-            onChange={(event) => setDraftLabel(event.currentTarget.value)}
-            onBlur={commitLabel}
-            onKeyDown={handleLabelKeyDown}
-            onClick={(event) => event.stopPropagation()}
-          />
-        ) : (
-          data.label
-        )}
-      </div>
+      {!floatingControls && nodeLabel}
     </div>
   );
 }

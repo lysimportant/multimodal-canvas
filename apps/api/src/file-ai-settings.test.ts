@@ -47,6 +47,98 @@ function modelsResponse(id: string, mediaType: 'text' | 'image' | 'video'): Resp
 }
 
 describe('FileAiSettingsStore persistence', () => {
+  it('删除落盘失败恢复当前 Key、可选列表及原文件，随后可再次删除', async () => {
+    await withStorageFixture(async ({ filePath, keyPath }) => {
+      const store = new FileAiSettingsStore({ filePath, encryptionKeyFile: keyPath });
+      await store.update({
+        baseUrl: 'https://rollback.example.test/v1',
+        apiKey: 'synthetic-rollback-key',
+      });
+      const reference = await store.getCredentialReference();
+      const before = await readFile(filePath, 'utf8');
+      const persistence = vi
+        .spyOn(store as unknown as { persist(): Promise<void> }, 'persist')
+        .mockRejectedValueOnce(new Error('synthetic-delete-write-failure'));
+      try {
+        await expect(store.removeCredential(reference.credentialId!)).rejects.toThrow(
+          'synthetic-delete-write-failure',
+        );
+        expect(await store.get()).toMatchObject({ configured: true });
+        expect(await store.listCredentials()).toHaveLength(1);
+        expect(await readFile(filePath, 'utf8')).toBe(before);
+      } finally {
+        persistence.mockRestore();
+      }
+      await store.removeCredential(reference.credentialId!);
+      expect(await store.listCredentials()).toEqual([]);
+      await store.close();
+    });
+  });
+  it('删除指定 Key 后重启不再回显或激活，其他 Key 与任务历史版本仍可用', async () => {
+    await withStorageFixture(async ({ filePath, keyPath }) => {
+      const options = { filePath, encryptionKeyFile: keyPath };
+      const store = new FileAiSettingsStore(options);
+      await store.update({
+        baseUrl: 'https://delete.example.test/v1',
+        apiKey: 'synthetic-deleted-key',
+      });
+      const deleted = await store.getCredentialReference();
+      await store.update({ baseUrl: 'https://keep.example.test/v1', apiKey: 'synthetic-kept-key' });
+      const kept = await store.getCredentialReference();
+      expect(await store.removeCredential(deleted.credentialId!)).toMatchObject({
+        configured: true,
+        baseUrl: 'https://keep.example.test/v1',
+      });
+      expect(await store.listCredentials()).toHaveLength(1);
+      await store.close();
+      const reopened = new FileAiSettingsStore(options);
+      expect(await reopened.listCredentials()).toEqual([
+        expect.objectContaining({ id: kept.credentialId }),
+      ]);
+      expect(await reopened.activateCredential(deleted.credentialId!)).toBeUndefined();
+      expect(await reopened.hasCredential(deleted.credentialId!)).toBe(false);
+      await expect(reopened.refreshModels(deleted.credentialId!)).rejects.toThrow('not found');
+      await expect(reopened.getCredentialReference(deleted.credentialId!)).rejects.toThrow(
+        'not found',
+      );
+      expect(await reopened.getProviderCredentials(deleted)).toEqual({
+        baseUrl: 'https://delete.example.test/v1',
+        apiKey: 'synthetic-deleted-key',
+      });
+      expect(await reopened.removeCredential(kept.credentialId!)).toMatchObject({
+        configured: false,
+      });
+      expect(await reopened.listCredentials()).toEqual([]);
+      await reopened.close();
+      const final = new FileAiSettingsStore(options);
+      expect(await final.listCredentials()).toEqual([]);
+      expect(await final.get()).toMatchObject({ configured: false });
+      await final.close();
+    });
+  });
+
+  it('指定 Key 删除 HTTP 校验 ID 且重复删除明确返回 404', async () => {
+    await withStorageFixture(async ({ filePath, keyPath }) => {
+      const store = new FileAiSettingsStore({ filePath, encryptionKeyFile: keyPath });
+      await store.update({ baseUrl: 'https://delete.example.test/v1', apiKey: 'synthetic-key' });
+      const reference = await store.getCredentialReference();
+      const app = buildApp({ logger: false, settingsStore: store });
+      try {
+        const url = `/v1/settings/ai/credentials/${reference.credentialId}`;
+        expect(
+          (await app.inject({ method: 'DELETE', url: '/v1/settings/ai/credentials/invalid' }))
+            .statusCode,
+        ).toBe(400);
+        const response = await app.inject({ method: 'DELETE', url });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toMatchObject({ settings: { configured: false }, credentials: [] });
+        expect(response.body).not.toContain('synthetic-key');
+        expect((await app.inject({ method: 'DELETE', url })).statusCode).toBe(404);
+      } finally {
+        await app.close();
+      }
+    });
+  });
   it('重启后保留节点超时，旧文件缺少字段时使用默认值', async () => {
     await withStorageFixture(async ({ filePath, keyPath }) => {
       const options = { filePath, encryptionKeyFile: keyPath };

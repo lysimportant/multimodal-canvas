@@ -811,6 +811,28 @@ describe('New API model catalog normalization', () => {
     });
   });
 
+  it('删除指定内存 Key 后不再列出或刷新，同名新保存不能恢复旧 ID', async () => {
+    const store = new AiSettingsStore('synthetic-test-secret');
+    store.update({ baseUrl: 'https://delete.example.test/v1', apiKey: 'synthetic-deleted-key' });
+    const reference = store.getCredentialReference();
+    store.update({ baseUrl: 'https://keep.example.test/v1', apiKey: 'synthetic-kept-key' });
+    expect(store.removeCredential(reference.credentialId!)).toMatchObject({ configured: true });
+    expect(store.listCredentials()).toHaveLength(1);
+    expect(store.activateCredential(reference.credentialId!)).toBeUndefined();
+    expect(() => store.listModels(undefined, reference.credentialId!)).toThrow(
+      AiCredentialNotFoundError,
+    );
+    await expect(store.refreshModels(reference.credentialId!)).rejects.toThrow(
+      AiCredentialNotFoundError,
+    );
+    expect(store.getProviderCredentials(reference)).toEqual({
+      baseUrl: 'https://delete.example.test/v1',
+      apiKey: 'synthetic-deleted-key',
+    });
+    store.update({ baseUrl: 'https://delete.example.test/v1', apiKey: 'synthetic-deleted-key' });
+    expect(store.hasCredential(reference.credentialId!)).toBe(false);
+  });
+
   it('revokes the active credential without breaking historical snapshots', () => {
     const store = new AiSettingsStore('test-encryption-secret');
     store.update({ baseUrl: 'https://queued.example.com/v1', apiKey: 'queued-key' });

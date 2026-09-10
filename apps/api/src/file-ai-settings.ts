@@ -43,6 +43,8 @@ export type FileAiSettingsStoreOptions = AiSettingsStoreOptions & {
 type PersistedCredential = PersistedAiSettings & {
   id: string;
   version: number;
+  /** 逻辑删除标记；仅禁止新选择，精确任务快照仍可读取密文。 */
+  deleted?: boolean;
 };
 
 /** 本地 AI 设置文件的版本化结构。 */
@@ -165,7 +167,7 @@ export class FileAiSettingsStore implements AiSettingsStoreLike {
     await this.ready;
     return this.enqueueWrite(async () => {
       const credential = this.credentials.get(credentialId);
-      if (!credential) return undefined;
+      if (!credential || credential.deleted) return undefined;
       const providerCredentials = this.credentialsFor(credential);
       if (!providerCredentials) return undefined;
 
@@ -203,11 +205,44 @@ export class FileAiSettingsStore implements AiSettingsStoreLike {
     });
   }
 
+  /** 删除当前选定连接的所有可选版本；原子落盘失败时恢复此前设置与删除状态。 */
+  async removeCredential(credentialId: string): Promise<AiSettings | undefined> {
+    await this.ready;
+    return this.enqueueWrite(async () => {
+      const target = this.credentials.get(credentialId);
+      if (!target || target.deleted) return undefined;
+      const previous = this.snapshot();
+      try {
+        for (const [id, version] of this.credentials) {
+          if (
+            version.baseUrl !== target.baseUrl ||
+            version.keyFingerprint !== target.keyFingerprint
+          )
+            continue;
+          this.credentials.set(id, { ...version, deleted: true });
+          this.modelCatalogs.delete(id);
+          this.requireMemory().replaceModels([], id);
+        }
+        const active = this.requireMemory().get();
+        if (active.baseUrl === target.baseUrl && active.keyFingerprint === target.keyFingerprint) {
+          this.requireMemory().removeCredentials();
+          this.activeCredential = {};
+        }
+        await this.persist();
+        return this.requireMemory().get();
+      } catch (error) {
+        this.restore(previous);
+        throw error;
+      }
+    });
+  }
+
   /** 判断凭据是否仍可用于新任务；撤销活动凭据后历史版本不能用于新任务。 */
   async hasCredential(credentialId: string): Promise<boolean> {
     await this.ready;
     await this.writeQueue;
-    return this.requireMemory().get().configured && this.credentials.has(credentialId);
+    const credential = this.credentials.get(credentialId);
+    return this.requireMemory().get().configured && Boolean(credential && !credential.deleted);
   }
 
   /** 使用当前活动凭据测试上游模型服务连通性。 */
@@ -267,7 +302,7 @@ export class FileAiSettingsStore implements AiSettingsStoreLike {
       throw new AiCredentialNotFoundError(credentialId);
     }
     const credential = this.credentials.get(credentialId);
-    if (!credential) throw new AiCredentialNotFoundError(credentialId);
+    if (!credential || credential.deleted) throw new AiCredentialNotFoundError(credentialId);
     return { credentialId: credential.id, credentialVersion: credential.version };
   }
 
@@ -424,7 +459,8 @@ export class FileAiSettingsStore implements AiSettingsStoreLike {
       if (providerCredentials) return { credentialId: resolvedCredentialId, providerCredentials };
     }
     const credential = this.credentials.get(resolvedCredentialId);
-    const providerCredentials = credential ? this.credentialsFor(credential) : undefined;
+    const providerCredentials =
+      credential && !credential.deleted ? this.credentialsFor(credential) : undefined;
     if (!providerCredentials) {
       if (credentialId) throw new AiCredentialNotFoundError(credentialId);
       throw new Error('New API 地址和 Key 尚未配置');
@@ -629,7 +665,7 @@ function summarizeCredentials(
   activeCredentialId?: string,
 ): AiCredentialSummary[] {
   const sorted = credentials
-    .filter((credential) => credential.baseUrl && credential.keyFingerprint)
+    .filter((credential) => credential.baseUrl && credential.keyFingerprint && !credential.deleted)
     .map((credential) => ({
       id: credential.id,
       baseUrl: credential.baseUrl,
@@ -696,6 +732,7 @@ function isPersistedFileAiSettingsStore(value: unknown): value is PersistedFileA
 
 function isPersistedCredential(value: unknown): value is PersistedCredential {
   if (!isRecord(value)) return false;
+  if (value.deleted !== undefined && typeof value.deleted !== 'boolean') return false;
   const version = value.version;
   return (
     typeof value.id === 'string' &&

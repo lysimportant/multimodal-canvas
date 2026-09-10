@@ -1430,6 +1430,39 @@ export const openApiDocument = {
         },
       },
     },
+    '/v1/settings/ai/credentials/{credentialId}': {
+      delete: {
+        tags: ['settings'],
+        summary: '删除指定已保存 Key 及其可选历史版本',
+        description:
+          '仅管理员可用。从凭据和模型选择中移除，并禁止再次激活或发起新请求；已提交任务的精确历史版本仍可执行。删除活动连接后清空当前连接，其他 Key 可手动切换。',
+        parameters: [
+          {
+            name: 'credentialId',
+            in: 'path',
+            required: true,
+            schema: { type: 'string', format: 'uuid' },
+          },
+        ],
+        responses: {
+          '200': response('指定凭据已删除', {
+            type: 'object',
+            required: ['settings', 'credentials'],
+            additionalProperties: false,
+            properties: {
+              settings: { $ref: '#/components/schemas/AiSettings' },
+              credentials: {
+                type: 'array',
+                items: { $ref: '#/components/schemas/AiCredentialSummary' },
+              },
+            },
+          }),
+          '400': response('凭据 ID 无效', errorSchema),
+          '403': response('不允许访问平台凭据', errorSchema),
+          '404': response('凭据不存在或已删除', errorSchema),
+        },
+      },
+    },
     '/v1/settings/ai/credentials/{credentialId}/activate': {
       post: {
         tags: ['settings'],
