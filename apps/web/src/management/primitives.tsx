@@ -132,7 +132,12 @@ export function PasswordField({
     <label className="mg-field" htmlFor={id}>
       <span>{label}</span>
       <span className="mg-password">
-        <input {...props} id={id} type={visible ? 'text' : 'password'} />
+        <input
+          {...props}
+          placeholder={props.placeholder ?? `请输入${label}`}
+          id={id}
+          type={visible ? 'text' : 'password'}
+        />
         <button
           type="button"
           className="mg-icon"

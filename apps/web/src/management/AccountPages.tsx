@@ -186,6 +186,7 @@ export function VerificationForm({
   onBack,
   initialDeliveryFailed = false,
   submitLabel,
+  initialCooldown = 0,
   signal,
 }: SessionProps & {
   email: string;
@@ -195,6 +196,8 @@ export function VerificationForm({
   initialDeliveryFailed?: boolean;
   /** 独立验证码页面使用统一确认按钮，省略时保留既有管理流程文案。 */
   submitLabel?: string;
+  /** 刚申请找回后保留 60 秒冷却；直接打开邮件深链时可立即申请重发。 */
+  initialCooldown?: number;
   /** 页面离开时由外层取消，取消结果不得登录或改变页面。 */
   signal?: AbortSignal;
 }) {
@@ -203,7 +206,7 @@ export function VerificationForm({
       ? { kind: 'error', text: '账户已保留，但验证邮件发送失败，请检查邮箱后重新发送验证码。' }
       : null,
   );
-  const [cooldown, setCooldown] = useState(0);
+  const [cooldown, setCooldown] = useState(initialCooldown);
   const [verificationEmail, setVerificationEmail] = useState(email);
   useEffect(() => {
     if (cooldown <= 0) return;
@@ -246,12 +249,21 @@ export function VerificationForm({
         if (event.key === 'Enter' && isImeKeyboardEvent(event)) event.preventDefault();
       }}
     >
+      {purpose === 'reset' && (
+        <Notice
+          value={{
+            kind: 'info',
+            text: '若该邮箱对应可用账户，我们会向它发送验证码。请输入邮件中的验证码并设置新密码。',
+          }}
+        />
+      )}
       <label className="mg-field">
         <span>邮箱</span>
         <input
           name="email"
           type="email"
           autoComplete="email"
+          placeholder="输入接收验证码的邮箱"
           required
           value={verificationEmail}
           onChange={(event) => setVerificationEmail(event.target.value)}
@@ -265,6 +277,7 @@ export function VerificationForm({
           name="code"
           className="mg-code"
           autoComplete="one-time-code"
+          placeholder="输入邮件中的 6 位验证码"
           inputMode="numeric"
           pattern="[0-9]{6}"
           required
@@ -280,6 +293,7 @@ export function VerificationForm({
             name="password"
             label="新密码"
             autoComplete="new-password"
+            placeholder="设置至少 8 个字符的新密码"
             required
             minLength={8}
             maxLength={512}
@@ -290,6 +304,7 @@ export function VerificationForm({
             name="confirmPassword"
             label="确认新密码"
             autoComplete="new-password"
+            placeholder="再次输入新的登录密码"
             required
             minLength={8}
             maxLength={512}
@@ -320,7 +335,7 @@ export function VerificationForm({
             返回修改
           </button>
         )}
-        {purpose !== 'email' && purpose !== 'reset' && (
+        {purpose !== 'email' && (
           <button
             type="button"
             className="mg-text-button"
@@ -329,6 +344,21 @@ export function VerificationForm({
               void action.execute(async () => {
                 if (signal?.aborted) return;
                 try {
+                  if (purpose === 'reset') {
+                    await managementRequest<{ accepted: true }>('/auth/password/reset/request', {
+                      method: 'POST',
+                      body: { email: verificationEmail.trim() },
+                      public: true,
+                      ...(signal ? { signal } : {}),
+                    });
+                    if (signal?.aborted) return;
+                    setCooldown(60);
+                    action.setNotice({
+                      kind: 'success',
+                      text: '申请已受理。若该邮箱对应可用账户，请查收验证码；60 秒内重复申请不会再次发送。',
+                    });
+                    return;
+                  }
                   const result = await managementRequest<DeliveryResult>(
                     '/auth/verification/resend',
                     {

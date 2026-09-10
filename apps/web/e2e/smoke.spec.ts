@@ -95,9 +95,23 @@ async function mockApi(page: Page) {
   const models = [
     { id: 'mock-text', name: 'Mock Text', mediaTypes: ['text'] },
     { id: 'mock-text-v2', name: 'Mock Text v2', mediaTypes: ['text'] },
-    { id: 'mock-image', name: 'Mock Image', mediaTypes: ['image'] },
+    {
+      id: 'mock-image',
+      name: 'Mock Image',
+      mediaTypes: ['image'],
+      capabilities: { qualities: ['1k', '2k', '3k', '4k'], aspectRatios: ['1:1', '16:9', '9:16'] },
+    },
     { id: 'mock-audio', name: 'Mock Audio', mediaTypes: ['audio'] },
-    { id: 'mock-video', name: 'Mock Video', mediaTypes: ['video'] },
+    {
+      id: 'mock-video',
+      name: 'Mock Video',
+      mediaTypes: ['video'],
+      capabilities: {
+        resolutions: ['360p', '480p', '720p', '1080p'],
+        aspectRatios: ['1:1', '16:9', '9:16'],
+        durations: [4, 8, 12],
+      },
+    },
   ];
 
   const assets: Asset[] = [];
@@ -541,7 +555,7 @@ async function focusCanvas(page: Page) {
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
-    window.localStorage.clear();
+    // Playwright 为每个测试创建独立上下文；刷新时保留模型记忆等真实持久化行为。
     // 私有画布验收使用模拟会话；所有 API 均由本文件拦截，不访问真实账户。
     window.localStorage.setItem(
       'multimodal-canvas:auth-session',
@@ -1302,6 +1316,129 @@ test('overrides a node model and displays the completed run result', async ({ pa
   await expect(page.getByRole('status').filter({ hasText: '文字生成节点 已完成' })).toBeVisible();
 });
 
+test('同类型新节点记住模型及凭据，刷新后保持且不同媒体类型互不覆盖', async ({ page }) => {
+  /** 记录浏览器运行错误；业务请求全部由合成 API 响应。 */
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => {
+    if (message.type() === 'error') errors.push(message.text());
+  });
+  await page.goto(projectPath);
+  await page.getByRole('button', { name: '新建文字生成节点' }).click();
+  await page.getByRole('combobox', { name: /^模型：/ }).hover();
+  await page.getByRole('option', { name: 'Mock Text v2', exact: true }).click();
+  await expect(page.getByRole('combobox', { name: '模型：Mock Text v2' })).toBeVisible();
+
+  await focusCanvas(page);
+  await page.getByRole('button', { name: '新建图片生成节点' }).click();
+  await expect(page.getByRole('combobox', { name: /^模型：/ })).not.toHaveAccessibleName(
+    '模型：Mock Text v2',
+  );
+  await page.getByRole('combobox', { name: /^模型：/ }).hover();
+  await page.getByRole('option', { name: 'Mock Image', exact: true }).click();
+  await focusCanvas(page);
+  await page.getByRole('button', { name: '新建文字生成节点' }).click();
+  await expect(page.getByRole('combobox', { name: '模型：Mock Text v2' })).toBeVisible();
+
+  /** 先等待包含模型和来源凭据的画布成功保存，再刷新验证持久化。 */
+  const saved = page.waitForResponse((response) => {
+    if (
+      response.request().method() !== 'PATCH' ||
+      new URL(response.url()).pathname !== `/v1/projects/${project.id}/canvas`
+    )
+      return false;
+    const canvas = response.request().postDataJSON() as CanvasDocument;
+    return canvas.nodes.filter((node) => node.data.modelAlias === 'mock-text-v2').length === 2;
+  });
+  await page.getByRole('textbox', { name: '提示词', exact: true }).fill('刷新后继续使用上次模型');
+  await saved;
+  await page.reload();
+  await page.getByRole('button', { name: '新建文字生成节点' }).click();
+  await expect(page.getByRole('combobox', { name: '模型：Mock Text v2' })).toBeVisible();
+  await page
+    .getByRole('textbox', { name: '提示词', exact: true })
+    .fill('复用的模型用于真实运行参数');
+  const submitted = page.waitForRequest(
+    (request) =>
+      request.method() === 'POST' &&
+      /^\/v1\/nodes\/[^/]+\/runs$/.test(new URL(request.url()).pathname),
+  );
+  await page.getByRole('button', { name: '生成', exact: true }).click();
+  expect((await submitted).postDataJSON()).toMatchObject({
+    modelAlias: 'mock-text-v2',
+    credentialId: initialCredential.id,
+  });
+  await focusCanvas(page);
+  await page.getByRole('button', { name: '新建图片生成节点' }).click();
+  await expect(page.getByRole('combobox', { name: '模型：Mock Image' })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test('模型目录第二个真实选项写入新节点，保存刷新与生成提交保持一致', async ({ page }) => {
+  /** 合成目录的第二项刻意区别于通用回退，验证实际目录而非固定界面文案。 */
+  await page.route('**/v1/models*', (route) =>
+    json(route, {
+      models: [
+        {
+          id: 'mock-video',
+          name: 'Mock Video',
+          credentialId: initialCredential.id,
+          mediaTypes: ['video'],
+          capabilities: {
+            resolutions: ['360p', '720p', '2160p'],
+            aspectRatios: ['1:1', '4:3', '16:9'],
+            durations: [2, 6, 10],
+          },
+        },
+      ],
+    }),
+  );
+  await page.goto(projectPath);
+  await page.getByRole('button', { name: '新建视频生成节点' }).click();
+  await page.getByRole('combobox', { name: /^模型：/ }).hover();
+  await page.getByRole('option', { name: 'Mock Video', exact: true }).click();
+  await focusCanvas(page);
+  await page.getByRole('button', { name: '新建视频生成节点' }).click();
+  const editor = page.locator('.node-quick-editor');
+  await expect(editor.getByRole('button', { name: '媒体参数', exact: true })).toHaveText(
+    '720p · 4:3 · 6s',
+  );
+  const saved = page.waitForResponse((response) => {
+    if (
+      response.request().method() !== 'PATCH' ||
+      new URL(response.url()).pathname !== `/v1/projects/${project.id}/canvas`
+    )
+      return false;
+    const canvas = response.request().postDataJSON() as CanvasDocument;
+    return canvas.nodes.some((node) => node.data.prompt === '目录参数必须保存并用于生成');
+  });
+  await editor
+    .getByRole('textbox', { name: '提示词', exact: true })
+    .fill('目录参数必须保存并用于生成');
+  const savedCanvas = ((await (await saved).json()) as { canvas: CanvasDocument }).canvas;
+  const savedNode = savedCanvas.nodes.at(-1)!;
+  expect(savedNode.data.parameters).toEqual({
+    resolution: '720p',
+    aspectRatio: '4:3',
+    duration: 6,
+  });
+  await page.reload();
+  await page.locator('.flow-generate-node').last().click();
+  await expect(editor.getByRole('button', { name: '媒体参数', exact: true })).toHaveText(
+    '720p · 4:3 · 6s',
+  );
+  const submitted = page.waitForRequest(
+    (request) =>
+      request.method() === 'POST' &&
+      /^\/v1\/nodes\/[^/]+\/runs$/.test(new URL(request.url()).pathname),
+  );
+  await editor.getByRole('button', { name: '生成', exact: true }).click();
+  expect((await submitted).postDataJSON().parameters).toEqual({
+    prompt: '目录参数必须保存并用于生成',
+    ...savedNode.data.parameters,
+  });
+});
+
 test('四类节点都可以填写提示词、运行并显示对应结果预览', async ({ page }) => {
   await page.goto(projectPath);
 
@@ -1343,6 +1480,8 @@ test('四类节点都可以填写提示词、运行并显示对应结果预览',
           )
         : undefined;
     if (mediaType === '音频') {
+      await page.getByRole('combobox', { name: /^模型：/ }).hover();
+      await page.getByRole('option', { name: 'Mock Audio', exact: true }).click();
       await expect(page.getByRole('button', { name: '生成', exact: true })).toBeDisabled();
       await page.getByRole('button', { name: '媒体参数', exact: true }).click();
       await page.getByRole('textbox', { name: '音色', exact: true }).fill('synthetic-smoke-voice');
@@ -1354,7 +1493,7 @@ test('四类节点都可以填写提示词、运行并显示对应结果预览',
         voice: 'synthetic-smoke-voice',
         prompt: 'Playwright 音频 生成测试',
       });
-      expect(body.parameters).not.toHaveProperty('response_format');
+      expect(body.parameters.response_format).toBe('opus');
       expect(body.parameters).not.toHaveProperty('speed');
     }
 
@@ -1425,6 +1564,8 @@ test('PC 音频参数显式输入、保存恢复并提交，桌面截图无布�
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto(projectPath);
   await page.getByRole('button', { name: '新建音频生成节点' }).click();
+  await page.getByRole('combobox', { name: /^模型：/ }).hover();
+  await page.getByRole('option', { name: 'Mock Audio', exact: true }).click();
 
   const editor = page.locator('.node-quick-editor');
   const voice = editor.getByRole('textbox', { name: '音色', exact: true });
@@ -1436,7 +1577,7 @@ test('PC 音频参数显式输入、保存恢复并提交，桌面截图无布�
   await expect(voice).toHaveValue('');
   await expect(voice).toHaveAttribute('required', '');
   await expect(speed).toHaveValue('');
-  await expect(editor.getByRole('combobox', { name: '音频格式：未设置' })).toBeVisible();
+  await expect(editor.getByRole('combobox', { name: '音频格式：OPUS' })).toBeVisible();
   await expect(run).toBeDisabled();
   await voice.fill(syntheticVoice);
   await editor.getByRole('combobox', { name: /^音频格式：/ }).click();
@@ -1477,7 +1618,7 @@ test('PC 音频参数显式输入、保存恢复并提交，桌面截图无布�
   await expect(speed).toHaveValue('1.25');
   await expect(run).toBeEnabled();
 
-  /** 参数页中三个字段纵向排列，避免较长音色或格式挤出编辑器。 */
+  /** 三个音频字段在桌面同行展示，同时保留较长音色的可编辑宽度。 */
   const panel = editor.getByRole('region', { name: '生成参数' });
   const boxes = [];
   for (const control of [voice, editor.getByRole('combobox', { name: /^音频格式：/ }), speed]) {
@@ -1490,6 +1631,10 @@ test('PC 音频参数显式输入、保存恢复并提交，桌面截图无布�
     boxes.push(box!);
   }
   expect(boxes[0].width).toBeCloseTo(boxes[1].width, 0);
+  expect(boxes[0].y).toBeCloseTo(boxes[1].y, 0);
+  expect(boxes[1].y).toBeCloseTo(boxes[2].y, 0);
+  expect(boxes[0].x + boxes[0].width).toBeLessThan(boxes[1].x);
+  expect(boxes[1].x + boxes[1].width).toBeLessThan(boxes[2].x);
   /** 保留可直接查看的 PNG 文件，附件引用文件而不内嵌截图字节。 */
   const audioScreenshotPath = testInfo.outputPath('audio-desktop.png');
   await page.screenshot({ path: audioScreenshotPath, fullPage: false, animations: 'disabled' });
@@ -1536,6 +1681,8 @@ test('PC 视频像素尺寸可保存清空恢复，提交显式宽高且不猜�
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto(projectPath);
   await page.getByRole('button', { name: '新建视频生成节点' }).click();
+  await page.getByRole('combobox', { name: /^模型：/ }).hover();
+  await page.getByRole('option', { name: 'Mock Video', exact: true }).click();
   const editor = page.locator('.node-quick-editor');
   const width = editor.getByRole('spinbutton', { name: '宽度（像素）', exact: true });
   const height = editor.getByRole('spinbutton', { name: '高度（像素）', exact: true });
@@ -1575,8 +1722,8 @@ test('PC 视频像素尺寸可保存清空恢复，提交显式宽高且不猜�
   await expect(width).toHaveValue('1280');
   await expect(height).toHaveValue('720');
   await expect(editor.getByRole('combobox', { name: '时长（秒）：8' })).toBeVisible();
-  await expect(editor.getByRole('combobox', { name: '视频清晰度：未设置' })).toBeVisible();
-  await expect(editor.getByRole('button', { name: '视频比例：未设置' })).toBeVisible();
+  await expect(editor.getByRole('combobox', { name: '视频清晰度：480p' })).toBeVisible();
+  await expect(editor.getByRole('button', { name: '视频比例：16:9' })).toBeVisible();
   await testInfo.attach('video-dimensions-desktop-1440x1000', {
     body: await page.screenshot({ fullPage: false, animations: 'disabled' }),
     contentType: 'image/png',
@@ -1619,6 +1766,8 @@ test('PC 视频像素尺寸可保存清空恢复，提交显式宽高且不猜�
   expect((await submittedRequest).postDataJSON().parameters).toEqual({
     prompt: 'Playwright 视频像素尺寸',
     duration: 8,
+    resolution: '480p',
+    aspectRatio: '16:9',
     width: 1920,
     height: 1080,
   });
@@ -1644,22 +1793,51 @@ for (const viewport of [
     await page.setViewportSize(viewport);
     await page.goto(projectPath);
     await page.getByRole('button', { name: '新建视频生成节点' }).click();
+    await page.getByRole('combobox', { name: /^模型：/ }).hover();
+    await page.getByRole('option', { name: 'Mock Video', exact: true }).click();
     const editor = page.locator('.node-quick-editor');
     await editor.getByRole('textbox', { name: '提示词' }).fill('镜头缓缓掠过山间，晨光照亮林梢。');
     const summary = editor.getByRole('button', { name: '媒体参数', exact: true });
-    await expect(summary).toHaveText(/默认 · 默认 · 默认/);
+    await expect(summary).toHaveText('480p · 16:9 · 8s');
     await expect(editor.getByRole('region', { name: '生成参数' })).toBeHidden();
     const before = await editor.boundingBox();
     await summary.click();
     const panel = editor.getByRole('region', { name: '生成参数' });
     await expect(panel).toBeVisible();
     expect((await editor.boundingBox())!.height).toBeCloseTo(before!.height, 0);
-    await panel.getByRole('combobox', { name: /视频清晰度/ }).click();
+    /** PC 参数首行固定三个字段；基础移动验收只要求不溢出。 */
+    const resolution = panel.getByRole('combobox', { name: /视频清晰度/ });
+    const ratio = panel.getByRole('button', { name: /视频比例：/ });
+    const duration = panel.getByRole('combobox', { name: /时长（秒）/ });
+    const controlBoxes = await Promise.all([
+      resolution.boundingBox(),
+      ratio.boundingBox(),
+      duration.boundingBox(),
+    ]);
+    if (viewport.width >= 1024) {
+      expect(Math.abs(controlBoxes[0]!.y - controlBoxes[1]!.y)).toBeLessThanOrEqual(3);
+      expect(Math.abs(controlBoxes[1]!.y - controlBoxes[2]!.y)).toBeLessThanOrEqual(3);
+      expect(controlBoxes[0]!.x + controlBoxes[0]!.width).toBeLessThan(controlBoxes[1]!.x);
+      expect(controlBoxes[1]!.x + controlBoxes[1]!.width).toBeLessThan(controlBoxes[2]!.x);
+    }
+    await resolution.hover();
+    const resolutionMenu = panel.getByRole('listbox', { name: '视频清晰度' });
+    await expect(resolutionMenu).toBeVisible();
+    /** 鼠标悬停向上展示，菜单无需撑大参数页且可直接点击。 */
+    const menuBox = await resolutionMenu.boundingBox();
+    expect(menuBox!.y + menuBox!.height).toBeLessThanOrEqual(controlBoxes[0]!.y);
+    expect(menuBox!.x).toBeGreaterThanOrEqual(0);
+    expect(menuBox!.x + menuBox!.width).toBeLessThanOrEqual(viewport.width);
+    await page.screenshot({
+      path: testInfo.outputPath('parameters-hover-upward.png'),
+      animations: 'disabled',
+    });
     await panel.getByRole('option', { name: '720p', exact: true }).click();
     await panel.getByRole('button', { name: /视频比例：/ }).click();
     await panel.getByRole('button', { name: /16:9/, exact: false }).last().click();
     await panel.getByRole('combobox', { name: /时长（秒）/ }).click();
     await panel.getByRole('option', { name: '8 秒', exact: true }).click();
+    await page.mouse.move(1, 1);
     await panel.getByRole('button', { name: '收起媒体参数' }).click();
     await expect(summary).toHaveText('720p · 16:9 · 8s');
     for (const theme of ['明亮', '深色']) {
@@ -1674,6 +1852,17 @@ for (const viewport of [
           ),
         )
         .toBe(true);
+      await editor.getByRole('textbox', { name: '提示词' }).focus();
+      /** 鼠标及键盘聚焦不产生提示词输入边框、描边或阴影。 */
+      const promptFrame = await editor.getByRole('textbox', { name: '提示词' }).evaluate((el) => {
+        const style = getComputedStyle(el);
+        return {
+          border: style.borderTopColor,
+          outline: style.outlineStyle,
+          shadow: style.boxShadow,
+        };
+      });
+      expect(promptFrame).toEqual({ border: 'rgba(0, 0, 0, 0)', outline: 'none', shadow: 'none' });
       await page.screenshot({
         path: testInfo.outputPath(`compact-${theme}.png`),
         animations: 'disabled',
@@ -1682,6 +1871,16 @@ for (const viewport of [
       const dialog = page.getByRole('dialog', { name: /视频生成节点 · 编辑设置/ });
       await expect(dialog).toBeVisible();
       await expect(dialog.getByRole('textbox', { name: '提示词' })).toBeFocused();
+      expect(
+        await dialog.getByRole('textbox', { name: '提示词' }).evaluate((el) => {
+          const style = getComputedStyle(el);
+          return {
+            border: style.borderTopColor,
+            outline: style.outlineStyle,
+            shadow: style.boxShadow,
+          };
+        }),
+      ).toEqual({ border: 'rgba(0, 0, 0, 0)', outline: 'none', shadow: 'none' });
       const geometry = await dialog.evaluate((el) => ({
         left: el.getBoundingClientRect().left,
         right: el.getBoundingClientRect().right,

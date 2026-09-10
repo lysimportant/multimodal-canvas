@@ -133,12 +133,33 @@
 .auth-entry-page .mg-form-actions {
   justify-content: space-between;
 }
+.auth-entry-recovery-link {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: -8px;
+  font-size: 13px;
+}
+.auth-entry-recovery-link a {
+  padding-block: 4px;
+  color: var(--mc-accent, #18794e);
+}
+.auth-entry-recovery-link a:hover {
+  text-decoration: underline;
+}
+.auth-entry-description {
+  margin: 0;
+  line-height: 1.7;
+  color: var(--mc-text-muted, #687386);
+}
 .auth-entry-page .mg-notice {
   margin-block: 0;
 }
 .auth-entry-page .mg-code {
   font-size: 22px;
   font-variant-numeric: tabular-nums;
+}
+.auth-entry-page .mg-code::placeholder {
+  font-size: 14px;
 }
 .auth-entry-page button:disabled {
   cursor: not-allowed;

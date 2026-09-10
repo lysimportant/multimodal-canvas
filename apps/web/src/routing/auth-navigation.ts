@@ -35,9 +35,17 @@ export function readAuthReturnPath(search = window.location.search): string {
   return safeAuthReturnPath(new URLSearchParams(search).get('next'));
 }
 
-/** 构建独立登录/注册 URL；只保留受控返回页面，供刷新和浏览器返回时继续访问。 */
-export function buildAuthPagePath(page: 'login' | 'register', next?: string): string {
-  const path = page === 'login' ? appPaths.login : appPaths.register;
+/** 构建登录、注册或找回密码 URL；只保留受控返回页面，不续传密码和验证码。 */
+export function buildAuthPagePath(
+  page: 'login' | 'register' | 'forgot-password',
+  next?: string,
+): string {
+  const path =
+    page === 'login'
+      ? appPaths.login
+      : page === 'register'
+        ? appPaths.register
+        : appPaths.forgotPassword;
   const target = safeAuthReturnPath(next);
   return target === appPaths.workspace ? path : `${path}?${new URLSearchParams({ next: target })}`;
 }

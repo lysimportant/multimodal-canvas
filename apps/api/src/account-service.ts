@@ -425,6 +425,52 @@ export class AccountService {
     );
   }
 
+  /**
+   * 匿名申请邮箱密码重置；未知、待验证、禁用账户及冷却中的请求均返回相同受理结果。
+   * @param emailInput 待找回账户的邮箱，按注册协议校验并规范化。
+   * @returns 通用受理状态，不回显用户、投递记录、验证码或账户存在性。
+   * @throws AccountServiceError 邮件未配置或投递失败时返回服务不可用；存储故障继续上抛。
+   * @remarks 验证码十分钟有效，重发间隔六十秒；密码和现有会话仅在成功验证后改变。
+   */
+  async requestSelfServicePasswordReset(emailInput: string): Promise<{ accepted: true }> {
+    this.requireMail();
+    const email = validateEmail(emailInput);
+    const user = await this.options.store.findUserByEmail(email);
+    if (!user || user.status !== 'active') return { accepted: true };
+    try {
+      const result = await this.requestChallenge(
+        { email, purpose: 'reset', userId: user.id, payload: {} },
+        async (store) => {
+          const current = await this.requireUser(store, user.id);
+          if (current.status !== 'active' || current.email !== email)
+            throw new AccountServiceError('reset_unavailable', '账户状态已改变');
+          await this.audit(
+            store,
+            'account.password.reset.request',
+            undefined,
+            user.id,
+            '匿名申请邮箱密码重置，尚未完成身份验证',
+            user.id,
+          );
+        },
+      );
+      if (result.delivery.status === 'failed')
+        throw new AccountServiceError(
+          'email_delivery_failed',
+          '验证邮件暂时无法发送，请在 60 秒后重试或联系管理员',
+          503,
+        );
+    } catch (error) {
+      if (
+        error instanceof AccountServiceError &&
+        (error.code === 'verification_rate_limited' || error.code === 'reset_unavailable')
+      )
+        return { accepted: true };
+      throw error;
+    }
+    return { accepted: true };
+  }
+
   /** 创建验证码并先持久化挑战及投递记录，发送失败保留可重发的账户。 */
   private async requestChallenge(
     input: Pick<EmailChallengeRecord, 'email' | 'purpose' | 'payload' | 'userId'>,
@@ -500,11 +546,11 @@ export class AccountService {
     if (!user) throw new AccountServiceError('user_not_found', '用户不存在', 404);
     return user;
   }
-  /** 审计与用户修改共享事务，不记录任何敏感字段原值。 */
+  /** 审计与用户修改共享事务；匿名申请不伪造 actorId，也不记录敏感字段原值。 */
   private async audit(
     store: AuthStore,
     action: string,
-    actorId: string,
+    actorId: string | undefined,
     targetId: string,
     summary: string,
     ownerId?: string,

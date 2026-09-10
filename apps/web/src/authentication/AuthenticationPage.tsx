@@ -1,4 +1,4 @@
-/** 独立登录、注册和邮箱验证码页面，与后台共享验证协议而不共享模态外壳。 */
+/** 独立登录、注册、找回密码和邮箱验证码页面，复用服务端邮箱验证协议。 */
 import { ArrowLeft, ArrowRight, KeyRound, LoaderCircle, Mail, UserPlus } from 'lucide-react';
 import { useEffect, useState, type FormEvent, type MouseEvent } from 'react';
 import {
@@ -9,6 +9,7 @@ import {
   type StoredAuthSession,
 } from '../auth-client';
 import { VerificationForm } from '../management/AccountPages';
+import { managementRequest } from '../management/client';
 import { isImeKeyboardEvent } from '../ime';
 import { Notice, PasswordField, useAction } from '../management/primitives';
 import { AppLink, navigateApp, shouldInterceptAppLink } from '../routing';
@@ -19,7 +20,7 @@ import './authentication.css';
 
 /** 认证页面不自行重定向已登录用户，身份和完成目标由应用入口统一处理。 */
 export type AuthenticationPageProps = {
-  page: 'login' | 'register' | 'verify';
+  page: 'login' | 'register' | 'verify' | 'forgot-password';
   authUser: AuthUser | null;
   onAuthenticated: (session: StoredAuthSession, source: 'login' | 'verification') => void;
   onRequestLogin: () => void;
@@ -71,9 +72,11 @@ function AuthenticationContent({
       ? '登录工作台'
       : page === 'register'
         ? '创建账户'
-        : purpose === 'reset'
-          ? '重置账户密码'
-          : '验证你的邮箱';
+        : page === 'forgot-password'
+          ? '找回密码'
+          : purpose === 'reset'
+            ? '重置账户密码'
+            : '验证你的邮箱';
   const next = readAuthReturnPath(window.location.search);
   const oppositePage = page === 'login' ? 'register' : 'login';
   const oppositePath = buildAuthPagePath(oppositePage, next);
@@ -151,17 +154,30 @@ function AuthenticationContent({
                 purpose={purpose}
                 submitLabel="确认"
                 initialDeliveryFailed={params.get('delivery') === 'failed'}
+                initialCooldown={purpose === 'reset' && params.get('requested') === '1' ? 60 : 0}
                 signal={cancellation.signal}
                 onSessionChanged={(session) => {
                   if (!cancellation.signal.aborted) onAuthenticated(session, 'verification');
                 }}
               />
             )
+          ) : page === 'forgot-password' ? (
+            <PasswordRecoveryForm
+              signal={cancellation.signal}
+              onRequested={(email) => {
+                cancellation.cancel();
+                navigateApp(
+                  `/auth/verify?${new URLSearchParams({ email, purpose: 'reset', requested: '1' })}`,
+                );
+              }}
+            />
           ) : (
             <CredentialsForm
               page={page}
               signal={cancellation.signal}
               onAuthenticated={onAuthenticated}
+              forgotPasswordPath={buildAuthPagePath('forgot-password', next)}
+              onBeforeNavigate={beforeNavigate}
               onVerificationRequired={(email, deliveryFailed) => {
                 cancellation.cancel();
                 navigateApp(
@@ -171,8 +187,8 @@ function AuthenticationContent({
             />
           )}
           <footer className="auth-entry-footer">
-            {page === 'verify' ? (
-              <AppLink to={buildAuthPagePath('login')} onClick={beforeNavigate}>
+            {page === 'verify' || page === 'forgot-password' ? (
+              <AppLink to={buildAuthPagePath('login', next)} onClick={beforeNavigate}>
                 <ArrowLeft size={15} />
                 返回登录
               </AppLink>
@@ -198,11 +214,15 @@ function CredentialsForm({
   signal,
   onAuthenticated,
   onVerificationRequired,
+  forgotPasswordPath,
+  onBeforeNavigate,
 }: {
   page: 'login' | 'register';
   signal: AbortSignal;
   onAuthenticated: AuthenticationPageProps['onAuthenticated'];
   onVerificationRequired: (email: string, deliveryFailed: boolean) => void;
+  forgotPasswordPath: string;
+  onBeforeNavigate: (event: MouseEvent<HTMLAnchorElement>) => void;
 }) {
   const action = useAction();
   const isRegister = page === 'register';
@@ -260,6 +280,7 @@ function CredentialsForm({
           <input
             name="displayName"
             autoComplete="nickname"
+            placeholder="填写希望展示的昵称（可选）"
             maxLength={120}
             disabled={action.busy || signal.aborted}
           />
@@ -271,6 +292,7 @@ function CredentialsForm({
           name="email"
           type="email"
           autoComplete="email"
+          placeholder={isRegister ? '输入用于注册和验证的邮箱' : '输入注册时使用的邮箱'}
           required
           maxLength={320}
           autoFocus
@@ -281,11 +303,19 @@ function CredentialsForm({
         name="password"
         label="密码"
         autoComplete={isRegister ? 'new-password' : 'current-password'}
+        placeholder={isRegister ? '设置至少 8 个字符的密码' : '输入账户登录密码'}
         required
         minLength={isRegister ? 8 : undefined}
         maxLength={512}
         disabled={action.busy || signal.aborted}
       />
+      {!isRegister && (
+        <div className="auth-entry-recovery-link">
+          <AppLink to={forgotPasswordPath} onClick={onBeforeNavigate}>
+            忘记密码？
+          </AppLink>
+        </div>
+      )}
       {isRegister && (
         <>
           <span className="mg-field-hint">密码至少需要 8 个字符。</span>
@@ -293,6 +323,7 @@ function CredentialsForm({
             name="confirmPassword"
             label="确认密码"
             autoComplete="new-password"
+            placeholder="再次输入刚设置的密码"
             required
             minLength={8}
             maxLength={512}
@@ -304,6 +335,68 @@ function CredentialsForm({
       <button className="mg-button is-primary" disabled={action.busy || signal.aborted}>
         {action.busy ? <LoaderCircle size={17} className="mg-spin" /> : <ArrowRight size={17} />}
         {action.busy ? '处理中' : isRegister ? '注册' : '登录'}
+      </button>
+    </form>
+  );
+}
+
+/** 公开找回申请仅提交邮箱；通用响应不暴露账户存在性，离开页面后忽略迟到结果。 */
+function PasswordRecoveryForm({
+  signal,
+  onRequested,
+}: {
+  /** 页面切换时立即取消请求，不把验证码或密码留存在浏览器存储。 */
+  signal: AbortSignal;
+  /** 受理后只携带邮箱和重置用途进入验证码页面。 */
+  onRequested: (email: string) => void;
+}) {
+  const action = useAction();
+  /** 每次明确提交只发送一次找回申请；基础设施失败保留当前表单和错误信息。 */
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (signal.aborted) return;
+    const email = String(new FormData(event.currentTarget).get('email') ?? '').trim();
+    void action.execute(async () => {
+      try {
+        await managementRequest<{ accepted: true }>('/auth/password/reset/request', {
+          method: 'POST',
+          body: { email },
+          public: true,
+          signal,
+        });
+        if (!signal.aborted) onRequested(email);
+      } catch (error) {
+        if (!signal.aborted) throw error;
+      }
+    });
+  };
+  return (
+    <form
+      className="mg-form auth-entry-form"
+      aria-label="找回密码表单"
+      onSubmit={submit}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' && isImeKeyboardEvent(event)) event.preventDefault();
+      }}
+    >
+      <p className="auth-entry-description">验证注册邮箱后，即可设置新的登录密码。</p>
+      <label className="mg-field">
+        <span>邮箱</span>
+        <input
+          name="email"
+          type="email"
+          autoComplete="email"
+          placeholder="输入需要找回密码的注册邮箱"
+          required
+          maxLength={320}
+          autoFocus
+          disabled={action.busy || signal.aborted}
+        />
+      </label>
+      <Notice value={action.notice} />
+      <button className="mg-button is-primary" disabled={action.busy || signal.aborted}>
+        {action.busy ? <LoaderCircle size={17} className="mg-spin" /> : <Mail size={17} />}
+        {action.busy ? '正在提交' : '发送验证码'}
       </button>
     </form>
   );

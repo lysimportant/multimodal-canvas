@@ -40,7 +40,7 @@ describe('application route contracts', () => {
   });
 
   it('为登录、注册和验证提供独立路由，并显式解析仅打开表单的创建意图', () => {
-    for (const page of ['login', 'register', 'verify'] as const) {
+    for (const page of ['login', 'register', 'verify', 'forgot-password'] as const) {
       expect(parseAppRoute(`/auth/${page}`)).toEqual({
         id: 'authentication',
         pathname: `/auth/${page}`,
@@ -62,6 +62,9 @@ describe('application route contracts', () => {
       '/workspace?create=1',
     );
     expect(buildAuthPagePath('register')).toBe('/auth/register');
+    expect(buildAuthPagePath('forgot-password', '/workspace?create=1')).toBe(
+      '/auth/forgot-password?next=%2Fworkspace%3Fcreate%3D1',
+    );
     for (const target of [
       'https://example.com',
       '//example.com',
@@ -69,6 +72,7 @@ describe('application route contracts', () => {
       '/missing',
       '/auth/login',
       '/auth/register',
+      '/auth/forgot-password',
       '/auth/verify?purpose=register',
     ]) {
       expect(readAuthReturnPath(`?${new URLSearchParams({ next: target })}`)).toBe('/workspace');

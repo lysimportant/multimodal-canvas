@@ -16,6 +16,7 @@ export const publicAccountPaths = new Set([
   '/v1/admin/bootstrap/request',
   '/v1/auth/verify',
   '/v1/auth/verification/resend',
+  '/v1/auth/password/reset/request',
 ]);
 
 /** 通用分页最大一百条，空值和无效枚举均明确拒绝。 */
@@ -162,6 +163,13 @@ export function registerAccountRoutes(app: FastifyInstance, options: AccountRout
         .strict()
         .parse(request.body);
       return reply.code(202).send(await service().resend(input.email, input.purpose));
+    }),
+  );
+  app.post(
+    '/v1/auth/password/reset/request',
+    handler(async (request, reply) => {
+      const input = z.object({ email: z.string() }).strict().parse(request.body);
+      return reply.code(202).send(await service().requestSelfServicePasswordReset(input.email));
     }),
   );
   app.post(

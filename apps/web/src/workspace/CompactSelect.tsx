@@ -8,6 +8,7 @@ import {
   type FocusEvent,
   type KeyboardEvent,
 } from 'react';
+import { useFloatingParameterMenu } from './use-floating-parameter-menu';
 
 /** 自定义紧凑下拉框的一项，避免依赖浏览器原生 Select 外观。 */
 export type CompactSelectOption = {
@@ -47,6 +48,8 @@ export type CompactSelectProps = {
   ariaLabel?: string;
   /** 是否禁用整个控件。 */
   disabled?: boolean;
+  /** 菜单置于浏览器顶层，避免被生成参数页的滚动容器裁切。 */
+  floating?: boolean;
 };
 
 /**
@@ -67,8 +70,10 @@ export function CompactSelect({
   openOnHover = false,
   ariaLabel,
   disabled = false,
+  floating = false,
 }: CompactSelectProps) {
   const rootRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const openedByHoverRef = useRef(false);
   const reactId = useId();
@@ -88,6 +93,14 @@ export function CompactSelect({
       : selectedOption?.label || '暂无选项';
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(selectedIndex >= 0 ? selectedIndex : 0);
+  /** 浮层与 DOM 归属保持一致，使页内点击和 Dialog 焦点管理仍可正确识别菜单。 */
+  const menuStyle = useFloatingParameterMenu({
+    anchorRef: rootRef,
+    menuRef,
+    enabled: floating,
+    open,
+    placement,
+  });
 
   useEffect(() => {
     if (!open) setActiveIndex(selectedIndex >= 0 ? selectedIndex : 0);
@@ -144,6 +157,7 @@ export function CompactSelect({
     if (event.key === 'Escape') {
       if (open) {
         event.preventDefault();
+        event.stopPropagation();
         openedByHoverRef.current = false;
         setOpen(false);
       }
@@ -219,8 +233,11 @@ export function CompactSelect({
       </button>
       {options.length > 0 && (
         <div
+          ref={menuRef}
           id={listboxId}
           className="compact-select-menu"
+          popover={floating ? 'manual' : undefined}
+          style={menuStyle}
           role="listbox"
           aria-label={`${label}选项`}
           hidden={!open}

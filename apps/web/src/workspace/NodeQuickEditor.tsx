@@ -7,6 +7,7 @@ import { Dialog, DialogClose, DialogContent, DialogTitle } from '@multimodal-can
 import type { AssetFlowNode } from '../canvas-utils';
 import { TextPromptEditor } from '../TextPromptEditor';
 import { CompactSelect } from './CompactSelect';
+import { useFloatingParameterMenu } from './use-floating-parameter-menu';
 import { isImeKeyboardEvent } from '../ime';
 import './node-quick-editor.css';
 import { mediaLabels, type ModelEntry, type ModelSelection } from './contracts';
@@ -35,12 +36,13 @@ export type NodeMediaParameters = Record<string, unknown> & {
   height?: number;
   /** TTS 音色标识，允许平台自定义非空字符串，必须由用户显式填写。 */
   voice?: string;
-  /** TTS 输出格式；未设置时不发送该字段，不在前端选择默认格式。 */
+  /** TTS 输出格式；新建或切换模型时可初始化为支持列表中的第二项，清空后省略。 */
   response_format?: string;
   /** TTS 语速倍率，有限数值且范围为 0.25 至 4；未设置时省略。 */
   speed?: number;
 };
 
+/** 节点提示词、模型与媒体参数编辑器的受控输入和操作回调。 */
 export type NodeQuickEditorProps = {
   node: AssetFlowNode;
   models: ModelEntry[];
@@ -62,6 +64,7 @@ export type NodeQuickEditorProps = {
   onParametersChange?: (value: NodeMediaParameters) => void;
 };
 
+/** 模型声明的选项及其可见说明，保留供应商给出的值和顺序。 */
 type MediaOption = {
   value: string;
   label: string;
@@ -70,6 +73,7 @@ type MediaOption = {
   disabled?: boolean;
 };
 
+/** 可按模型来源分组的媒体选项。 */
 type QuickOption = MediaOption & {
   groupLabel?: string;
 };
@@ -227,7 +231,7 @@ export function NodeQuickEditor({
   });
   const mediaParameterIssue =
     node.data.mediaType === 'audio'
-      ? getAudioParameterIssue(parameters)
+      ? getAudioParameterIssue(parameters, selectedModel)
       : node.data.mediaType === 'video' && invalidVideoDimensions.length > 0
         ? '视频宽高必须为正整数像素，且不能超过安全整数范围'
         : undefined;
@@ -265,16 +269,13 @@ export function NodeQuickEditor({
     inferenceOptions.length > 0 ? (
       <CompactSelect
         label="推理强度"
-        value={
-          node.data.inferenceStrength ??
-          inferenceOptions.find((option) => option.value.toLowerCase() === 'high')?.value ??
-          inferenceOptions[0]?.value
-        }
+        value={node.data.inferenceStrength}
         options={inferenceOptions}
         onChange={onInferenceStrengthChange}
         className="node-quick-editor-select-group"
         placement="top"
         openOnHover
+        floating={node.data.mediaType !== 'text'}
       />
     ) : null;
 
@@ -309,6 +310,8 @@ export function NodeQuickEditor({
             onChange={(value) => updateParameter('quality', value)}
             className="node-quick-editor-select-group"
             placement="top"
+            openOnHover
+            floating
           />
           <QuickOptionMenu
             label="图片比例"
@@ -335,6 +338,8 @@ export function NodeQuickEditor({
               onChange={(value) => updateParameter('resolution', value)}
               className="node-quick-editor-select-group"
               placement="top"
+              openOnHover
+              floating
             />
             <QuickOptionMenu
               label="视频比例"
@@ -350,6 +355,8 @@ export function NodeQuickEditor({
               onChange={(value) => updateParameter('duration', value ? Number(value) : undefined)}
               className="node-quick-editor-select-group"
               placement="top"
+              openOnHover
+              floating
             />
           </div>
           <div
@@ -379,7 +386,7 @@ export function NodeQuickEditor({
                           ? value
                           : ''
                     }
-                    placeholder="未设置"
+                    placeholder={field === 'width' ? '宽度像素（可选）' : '高度像素（可选）'}
                     aria-invalid={invalidVideoDimensions.includes(field)}
                     title={`${label}：正整数，不超过 ${Number.MAX_SAFE_INTEGER}`}
                     disabled={!onParametersChange}
@@ -413,7 +420,7 @@ export function NodeQuickEditor({
               style={{ cursor: 'text' }}
               type="text"
               value={typeof parameters.voice === 'string' ? parameters.voice : ''}
-              placeholder="未设置"
+              placeholder="输入音色 ID"
               required
               aria-invalid={typeof parameters.voice !== 'string' || !parameters.voice.trim()}
               title="音色（必填）"
@@ -429,11 +436,13 @@ export function NodeQuickEditor({
           <CompactSelect
             label="音频格式"
             value={normalizeCurrentOptionValue(parameters.response_format)}
-            options={getAudioFormatOptions(parameters.response_format)}
+            options={getAudioFormatOptions(parameters.response_format, selectedModel)}
             onChange={(value) => updateParameter('response_format', value)}
             disabled={!onParametersChange}
             className="node-quick-editor-select-group"
             placement="top"
+            openOnHover
+            floating
           />
           <label className="compact-select node-quick-editor-select-group">
             <span className="compact-select-label">语速</span>
@@ -452,7 +461,7 @@ export function NodeQuickEditor({
                     ? parameters.speed
                     : ''
               }
-              placeholder="未设置"
+              placeholder="倍率 0.25–4"
               aria-invalid={parameters.speed !== undefined && !isValidAudioSpeed(parameters.speed)}
               title="语速范围：0.25 至 4"
               disabled={!onParametersChange}
@@ -556,7 +565,7 @@ export function NodeQuickEditor({
               <X size={15} aria-hidden="true" />
             </button>
           </div>
-          {mediaParameterEditor}
+          {mediaSettingsOpen && mediaParameterEditor}
         </div>
       )}
       <button
@@ -668,24 +677,27 @@ function getMediaSummary(
   };
   if (mediaType === 'image') {
     return [
-      { label: '清晰度', value: getOptionLabel(parameters.quality, options.quality, '默认') },
-      { label: '比例', value: normalizeCurrentOptionValue(parameters.aspectRatio) || '默认' },
+      { label: '清晰度', value: getOptionLabel(parameters.quality, options.quality, '未设置') },
+      { label: '比例', value: normalizeCurrentOptionValue(parameters.aspectRatio) || '未设置' },
     ];
   }
   if (mediaType === 'video') {
     return [
-      { label: '清晰度', value: getOptionLabel(parameters.resolution, options.resolution, '默认') },
-      { label: '比例', value: normalizeCurrentOptionValue(parameters.aspectRatio) || '默认' },
-      { label: '时长', value: parameters.duration ? `${parameters.duration}s` : '默认' },
+      {
+        label: '清晰度',
+        value: getOptionLabel(parameters.resolution, options.resolution, '未设置'),
+      },
+      { label: '比例', value: normalizeCurrentOptionValue(parameters.aspectRatio) || '未设置' },
+      { label: '时长', value: parameters.duration ? `${parameters.duration}s` : '未设置' },
     ];
   }
   return [
     { label: '音色', value: normalizeCurrentOptionValue(parameters.voice) || '未设置' },
     {
       label: '格式',
-      value: normalizeCurrentOptionValue(parameters.response_format)?.toUpperCase() || '默认',
+      value: normalizeCurrentOptionValue(parameters.response_format)?.toUpperCase() || '未设置',
     },
-    { label: '语速', value: parameters.speed ? `${parameters.speed}x` : '默认' },
+    { label: '语速', value: parameters.speed ? `${parameters.speed}x` : '未设置' },
   ];
 }
 /** 从节点数据中读取媒体参数，并返回可独立修改的浅拷贝。 */
@@ -710,11 +722,14 @@ function isValidAudioSpeed(value: unknown): value is number {
  * 音频生成的前置校验；返回首个需要修正的字段提示，合法时返回 undefined。
  * 只检查契约，不修改节点或猜测默认值；后端仍负责最终校验。
  */
-function getAudioParameterIssue(parameters: NodeMediaParameters): string | undefined {
+function getAudioParameterIssue(
+  parameters: NodeMediaParameters,
+  model?: ModelEntry,
+): string | undefined {
   if (typeof parameters.voice !== 'string' || !parameters.voice.trim()) return '请先填写音色';
   if (
     parameters.response_format !== undefined &&
-    !AUDIO_FORMAT_OPTIONS.some(
+    !getSupportedAudioFormatOptions(model).some(
       (option) => option.value && option.value === parameters.response_format,
     )
   ) {
@@ -727,14 +742,41 @@ function getAudioParameterIssue(parameters: NodeMediaParameters): string | undef
 }
 
 /** 保留不支持的历史格式供用户发现并修正，不将它替换成菜单首项或静默删除。 */
-function getAudioFormatOptions(value: unknown): MediaOption[] {
+function getAudioFormatOptions(value: unknown, model?: ModelEntry): MediaOption[] {
   const current = normalizeCurrentOptionValue(value);
-  if (!current || AUDIO_FORMAT_OPTIONS.some((option) => option.value === current)) {
-    return AUDIO_FORMAT_OPTIONS;
+  const options = getSupportedAudioFormatOptions(model);
+  if (!current || options.some((option) => option.value === current)) {
+    return options;
   }
   return [
-    ...AUDIO_FORMAT_OPTIONS,
+    ...options,
     { value: current, label: current, description: '已保存，当前不支持', disabled: true },
+  ];
+}
+
+/** 优先使用模型声明且 Provider 已支持的音频格式；空枚举表示不支持，不回退。 */
+function getSupportedAudioFormatOptions(model?: ModelEntry): MediaOption[] {
+  const declared = readCapabilityOptions(
+    getCapabilityRoots(model, 'audio'),
+    [
+      'response_format',
+      'response_formats',
+      'responseFormat',
+      'responseFormats',
+      'formats',
+      'audioFormats',
+      'audio_formats',
+    ],
+    'resolution',
+  );
+  if (declared === undefined) return AUDIO_FORMAT_OPTIONS;
+  return [
+    AUDIO_FORMAT_OPTIONS[0],
+    ...declared
+      .filter((option) =>
+        AUDIO_FORMAT_OPTIONS.some((supported) => supported.value === option.value),
+      )
+      .map((option) => ({ ...option, label: option.value.toUpperCase() })),
   ];
 }
 
@@ -765,6 +807,18 @@ function QuickOptionMenu({
       label: '暂无选项',
     };
   const [open, setOpen] = useState(false);
+  /** 保持原有按钮语义，并将比例菜单放入浏览器顶层以避免滚动裁切。 */
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const openedByHoverRef = useRef(false);
+  const menuStyle = useFloatingParameterMenu({
+    anchorRef: rootRef,
+    menuRef,
+    enabled: true,
+    open,
+    placement: 'top',
+  });
   const handleBlur = (event: FocusEvent<HTMLDivElement>) => {
     if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
   };
@@ -772,19 +826,56 @@ function QuickOptionMenu({
 
   return (
     <div
+      ref={rootRef}
       className="node-quick-editor-option-group"
       aria-label={label}
       data-open={open ? 'true' : 'false'}
       data-placement="top"
       onBlur={handleBlur}
+      onMouseEnter={() => {
+        if (!open && options.some((option) => !option.disabled)) {
+          openedByHoverRef.current = true;
+          setOpen(true);
+        }
+      }}
+      onMouseLeave={() => {
+        openedByHoverRef.current = false;
+        setOpen(false);
+      }}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape' && open && !isImeKeyboardEvent(event)) {
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen(false);
+          triggerRef.current?.focus();
+        }
+      }}
     >
       <span className="node-quick-editor-option-label">{label}</span>
       <button
+        ref={triggerRef}
         type="button"
         className="node-quick-editor-option-trigger"
         aria-label={`${label}：${formatTriggerLabel(selectedOption, hasExplicitSelection, options)}`}
         aria-expanded={open}
-        onClick={() => setOpen((current) => !current)}
+        disabled={!options.some((option) => !option.disabled)}
+        onClick={() => {
+          if (openedByHoverRef.current) {
+            openedByHoverRef.current = false;
+            setOpen(true);
+          } else setOpen((current) => !current);
+        }}
+        onKeyDown={(event) => {
+          if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+          event.preventDefault();
+          setOpen(true);
+          requestAnimationFrame(() => {
+            const choices =
+              menuRef.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)');
+            const index = event.key === 'ArrowUp' ? (choices?.length ?? 1) - 1 : 0;
+            choices?.[index]?.focus();
+          });
+        }}
       >
         <span title={formatTriggerLabel(selectedOption, hasExplicitSelection, options)}>
           {formatTriggerLabel(selectedOption, hasExplicitSelection, options)}
@@ -793,7 +884,15 @@ function QuickOptionMenu({
           ▾
         </span>
       </button>
-      <div className="node-quick-editor-option-popover" role="group" aria-label={`${label}选项`}>
+      <div
+        ref={menuRef}
+        className="node-quick-editor-option-popover"
+        role="group"
+        aria-label={`${label}选项`}
+        hidden={!open}
+        popover="manual"
+        style={menuStyle}
+      >
         {options.map((option) => {
           const showGroup = option.groupLabel && option.groupLabel !== previousGroup;
           previousGroup = option.groupLabel;
@@ -808,9 +907,11 @@ function QuickOptionMenu({
                   aspectOptions ? 'node-quick-editor-aspect-option' : ''
                 } ${selectedValue === option.value ? 'is-active' : ''}`}
                 aria-pressed={selectedValue === option.value}
+                disabled={option.disabled}
                 onClick={() => {
                   onChange(option.value);
                   setOpen(false);
+                  triggerRef.current?.focus();
                 }}
                 title={formatOptionLabel(option)}
               >
@@ -834,11 +935,61 @@ function QuickOptionMenu({
   );
 }
 
-/** 返回当前模型的媒体能力，并为没有声明能力的旧目录提供回退选项。 */
+/**
+ * 为新建节点或显式切换模型补齐第二个可用枚举值，只有单项时选唯一项。
+ * 返回可直接写入节点的浅拷贝，不修改输入；已有参数和未知字段全部保留。
+ * 只使用该媒体模型声明的枚举或已确认的 TTS/GPT 契约；没有模型或没有枚举时不造值，
+ * 音色、像素宽高和连续语速必须由用户填写。不得在渲染或加载历史节点时自动调用。
+ */
+export function applyNodeGenerationDefaults(
+  data: AssetFlowNode['data'],
+  model: ModelEntry | undefined,
+): AssetFlowNode['data'] {
+  const mediaType = data.mediaType;
+  const parameters = readNodeMediaParameters(data);
+  if (!model?.mediaTypes.includes(mediaType)) return { ...data, parameters };
+  const options = getMediaOptions(model, mediaType, {}, false);
+  const fields =
+    mediaType === 'image'
+      ? (['quality', 'aspectRatio'] as const)
+      : mediaType === 'video'
+        ? (['resolution', 'aspectRatio', 'duration'] as const)
+        : [];
+  for (const field of fields) {
+    if (parameters[field] !== undefined) continue;
+    const choices =
+      field === 'duration'
+        ? options[field].filter(
+            (option) => Number.isFinite(Number(option.value)) && Number(option.value) > 0,
+          )
+        : options[field];
+    const value = secondAvailableOption(choices);
+    if (value === undefined) continue;
+    if (field === 'duration') parameters.duration = Number(value);
+    else parameters[field] = value;
+  }
+  if (mediaType === 'audio' && parameters.response_format === undefined) {
+    const format = secondAvailableOption(getSupportedAudioFormatOptions(model));
+    if (format !== undefined) parameters.response_format = format;
+  }
+  const inferenceStrength =
+    data.inferenceStrength ??
+    secondAvailableOption(getInferenceStrengthOptions(model, mediaType, model.id, undefined));
+  return { ...data, parameters, ...(inferenceStrength === undefined ? {} : { inferenceStrength }) };
+}
+
+/** 排除空占位和禁用项后返回第二个值；只有一项时返回该项，没有选项时返回 undefined。 */
+function secondAvailableOption(options: readonly MediaOption[]): string | undefined {
+  const available = options.filter((option) => !option.disabled && option.value.trim());
+  return (available[1] ?? available[0])?.value;
+}
+
+/** 返回当前模型的媒体能力；旧目录回退仅供手动选择，不能用于自动写入默认值。 */
 function getMediaOptions(
   model: ModelEntry | undefined,
   mediaType: AssetFlowNode['data']['mediaType'],
   parameters: NodeMediaParameters,
+  allowLegacyFallback = true,
 ) {
   const roots = getCapabilityRoots(model, mediaType);
   const quality = ensureCurrentOption(
@@ -846,7 +997,7 @@ function getMediaOptions(
       roots,
       ['quality', 'qualities', 'imageQuality', 'image_quality', 'resolution', 'resolutions'],
       'quality',
-    ) ?? imageQualityOptions,
+    ) ?? (allowLegacyFallback ? imageQualityOptions : []),
     parameters.quality,
     'quality',
   );
@@ -855,7 +1006,7 @@ function getMediaOptions(
       roots,
       ['resolution', 'resolutions', 'videoResolution', 'video_resolution', 'quality', 'qualities'],
       'resolution',
-    ) ?? videoResolutionOptions,
+    ) ?? (allowLegacyFallback ? videoResolutionOptions : []),
     parameters.resolution,
     'resolution',
   );
@@ -864,7 +1015,7 @@ function getMediaOptions(
       roots,
       ['aspectRatio', 'aspectRatios', 'aspect_ratio', 'aspect_ratios', 'ratios'],
       'aspectRatio',
-    ) ?? aspectRatioOptions,
+    ) ?? (allowLegacyFallback ? aspectRatioOptions : []),
     parameters.aspectRatio,
     'aspectRatio',
   );
@@ -874,7 +1025,7 @@ function getMediaOptions(
       ['duration', 'durations', 'seconds', 'durationSeconds', 'duration_seconds'],
       'duration',
     ) ??
-      [4, 8, 12, 16, 20].map((value) => ({
+      (allowLegacyFallback ? [4, 8, 12, 16, 20] : []).map((value) => ({
         value: String(value),
         label: String(value),
         description: '秒',
@@ -929,6 +1080,7 @@ function getInferenceStrengthOptions(
     'efforts',
   ];
   const declared = readCapabilityOptions(roots, aliases, 'inferenceStrength');
+  if (declared?.length === 0) return ensureCurrentOption([], currentValue, 'inferenceStrength');
   if (declared && declared.length > 0) {
     if (
       supportsGpt56Fallback &&
@@ -1177,10 +1329,24 @@ function readCapabilityOptions(
     for (const alias of aliases) {
       if (root[alias] === undefined || root[alias] === null) continue;
       const options = normalizeRawOptions(root[alias], kind);
-      if (options.length > 0) return options;
+      if (options.length > 0 || isExplicitOptionDeclaration(root[alias])) return options;
     }
   }
   return undefined;
+}
+
+/** 空数组、禁用标记和显式枚举对象也属于目录声明，不能被旧回退列表覆盖。 */
+function isExplicitOptionDeclaration(raw: unknown): boolean {
+  return (
+    Array.isArray(raw) ||
+    raw === false ||
+    (isRecord(raw) &&
+      (raw.disabled === true ||
+        ['enabled', 'supported', 'available'].some((flag) => raw[flag] === false) ||
+        ['values', 'options', 'items', 'enum', 'allowed', 'supported'].some(
+          (key) => raw[key] !== undefined,
+        )))
+  );
 }
 
 /** 将能力字段转换为稳定、去重且保留上游顺序的按钮选项。 */
@@ -1224,6 +1390,11 @@ function collectRawOptions(raw: unknown): RawOption[] {
       .map((value) => ({ value }));
   }
   if (!isRecord(raw)) return [];
+  if (
+    raw.disabled === true ||
+    ['enabled', 'supported', 'available'].some((flag) => raw[flag] === false)
+  )
+    return [];
   if (typeof raw.value === 'string' || typeof raw.value === 'number') {
     return [
       {
@@ -1237,12 +1408,42 @@ function collectRawOptions(raw: unknown): RawOption[] {
     if (raw[key] !== undefined) return collectRawOptions(raw[key]);
   }
   return Object.entries(raw).flatMap(([key, value]) => {
+    if (
+      [
+        'type',
+        'default',
+        'label',
+        'title',
+        'description',
+        'min',
+        'max',
+        'minimum',
+        'maximum',
+        'step',
+        'nullable',
+        'required',
+        'enabled',
+        'supported',
+        'available',
+        'disabled',
+      ].includes(key)
+    )
+      return [];
+    if (
+      isRecord(value) &&
+      (value.disabled === true ||
+        ['enabled', 'supported', 'available'].some((flag) => value[flag] === false))
+    )
+      return [];
+    if (value === true) return [{ value: key }];
     if (typeof value === 'string' || typeof value === 'number') {
       return [{ value: key, label: String(value) }];
     }
     if (
       isRecord(value) &&
-      (typeof value.label === 'string' || typeof value.description === 'string')
+      (typeof value.label === 'string' ||
+        typeof value.description === 'string' ||
+        ['enabled', 'supported', 'available'].some((flag) => value[flag] === true))
     ) {
       return [
         {

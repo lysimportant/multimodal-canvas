@@ -33,7 +33,7 @@
 }
 
 :is(.node-quick-editor, .node-quick-editor-dialog) .node-quick-editor-field textarea:focus-visible {
-  border-color: var(--mc-border-strong);
+  border-color: transparent;
   outline: none;
   box-shadow: none;
 }
@@ -121,7 +121,7 @@
   position: absolute;
   right: 0;
   bottom: calc(100% + 10px);
-  width: min(365px, 100%);
+  width: min(400px, 100%);
   max-height: min(440px, 55dvh);
   overflow: auto;
   overscroll-behavior: contain;
@@ -159,35 +159,26 @@
 
 .node-quick-editor-media-settings {
   display: grid;
-  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 100px), 1fr));
+  align-items: start;
+  gap: 12px 8px;
 }
 
-.node-quick-editor-parameter-popover
-  .node-quick-editor-media-settings
-  .node-quick-editor-media-options {
-  grid-template-columns: minmax(0, 1fr);
+/* 语义分组保留在 DOM，所有参数共用三列网格；窄参数页自动减为两列或一列。 */
+.node-quick-editor-media-settings .node-quick-editor-media-options {
+  display: contents;
 }
 
-/* 参数页的下级选项在页内展开，可滚动到最后一项，避免嵌套浮层被裁切。 */
-.node-quick-editor-parameter-popover .compact-select-menu,
-.node-quick-editor-parameter-popover .node-quick-editor-option-popover {
-  position: static;
-  min-width: 0;
-  width: 100%;
-  max-height: 200px;
-  transform: none;
-  box-shadow: none;
+/* 原生 Popover 位于浏览器顶层，向上展开时不会被参数页的 overflow 裁切。 */
+.node-quick-editor-parameter-popover [popover] {
   background: var(--mc-surface);
   border-color: var(--mc-border);
+  color: var(--mc-text);
+  box-shadow: 0 12px 28px var(--mc-shadow);
 }
 
-.node-quick-editor-parameter-popover
-  .node-quick-editor-media-options[data-columns]
-  > .node-quick-editor-option-group:nth-child(n)
-  .node-quick-editor-option-popover {
-  transform: none;
-  left: auto;
-  right: auto;
+.node-quick-editor-parameter-popover .node-quick-editor-option-popover[hidden] {
+  display: none;
 }
 
 .node-quick-editor-parameter-popover .node-quick-editor-option-label,
@@ -212,6 +203,7 @@
 }
 
 .node-quick-editor-parameter-issue {
+  grid-column: 1 / -1;
   color: var(--mc-text-muted);
   font-size: 11px;
   margin: 0;

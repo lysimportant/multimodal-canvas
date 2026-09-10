@@ -1,8 +1,10 @@
 # 公开主页与按需登录
 
-更新时间：2026-09-06。
+更新时间：2026-09-10。
 
 ## 当前独立页面流程
+
+登录页提供“忘记密码”入口，跳转到 `/auth/forgot-password` 申请邮箱验证码，再进入 `/auth/verify?purpose=reset` 验证并设置新密码。公开申请接口为 `POST /v1/auth/password/reset/request`；沿用既有验证码、限流与密码重置成功后撤销旧会话的规则。完整验证及本次交付记录见 [登录与节点体验检查点](docs/auth-node-experience-checkpoint.md)。
 
 用户在 `b30c38e` 后调整认证交互：`/auth/login`、`/auth/register` 和 `/auth/verify` 是三个独立 URL。登录页通过“创建账户”进入注册页，填写邮箱/密码并提交后进入验证码页，填写邮件中的验证码并点击“确认”后进入 `/workspace`。验证前不签发业务会话，注册验证成功后不自动弹出或提交新建项目。
 

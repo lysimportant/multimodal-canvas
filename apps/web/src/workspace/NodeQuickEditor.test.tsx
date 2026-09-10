@@ -14,7 +14,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { PromptDocument } from '@multimodal-canvas/domain';
 import type { AssetFlowNode } from '../canvas-utils';
-import { NodeQuickEditor, type NodeQuickEditorProps } from './NodeQuickEditor';
+import {
+  applyNodeGenerationDefaults,
+  NodeQuickEditor,
+  type NodeQuickEditorProps,
+} from './NodeQuickEditor';
 
 /** 参数契约测试显式打开参数页，保持原有字段输入与序列化断言。 */
 function render(...args: Parameters<typeof renderRaw>) {
@@ -145,6 +149,79 @@ const imageMention: PromptMentionBlock = {
 afterEach(cleanup);
 
 describe('NodeQuickEditor', () => {
+  it('展示事务中保存的第二项参数，悬停菜单向上定位且 Escape 只关闭当前参数菜单', async () => {
+    const user = userEvent.setup();
+    const catalog: NodeQuickEditorProps['models'] = [
+      {
+        id: 'video-model',
+        name: '视频模型',
+        mediaTypes: ['video'],
+        capabilities: {
+          resolutions: ['480p', '720p'],
+          aspectRatios: ['1:1', '16:9'],
+          durations: [4, 8],
+        },
+      },
+    ];
+    const onParametersChange = vi.fn();
+    const node = {
+      ...videoNode,
+      data: applyNodeGenerationDefaults(
+        { ...videoNode.data, modelAlias: 'video-model' },
+        catalog[0],
+      ),
+    };
+    render(<NodeQuickEditor {...makeProps({ node, models: catalog, onParametersChange })} />);
+    expect(screen.getByRole('button', { name: '媒体参数' })).toHaveTextContent('720p · 16:9 · 8s');
+    const resolution = screen.getByRole('combobox', { name: '视频清晰度：720p' });
+    const root = resolution.parentElement!;
+    vi.spyOn(root, 'getBoundingClientRect').mockReturnValue({
+      top: 500,
+      bottom: 552,
+      left: 200,
+      right: 300,
+      width: 100,
+      height: 52,
+      x: 200,
+      y: 500,
+      toJSON: () => ({}),
+    });
+    await user.hover(root);
+    const menu = screen.getByRole('listbox', { name: '视频清晰度选项' });
+    expect(menu).toHaveAttribute('popover', 'manual');
+    expect(menu.style.bottom).not.toBe('');
+    expect(menu).toHaveStyle({ position: 'fixed' });
+    expect(within(menu).getByRole('option', { name: '720p', selected: true })).toBeInTheDocument();
+    resolution.focus();
+    await user.keyboard('{Escape}');
+    expect(screen.getByRole('region', { name: '生成参数' })).toBeVisible();
+    expect(resolution).toHaveAttribute('aria-expanded', 'false');
+    expect(onParametersChange).not.toHaveBeenCalled();
+  });
+
+  it('比例可用悬停、键盘和点击选择，关闭参数页时移除顶层菜单', async () => {
+    const user = userEvent.setup();
+    const onParametersChange = vi.fn();
+    render(<NodeQuickEditor {...makeProps({ onParametersChange })} />);
+    const trigger = screen.getByRole('button', { name: '图片比例：未设置' });
+    await user.hover(trigger);
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('group', { name: '图片比例选项' })).toHaveAttribute(
+      'popover',
+      'manual',
+    );
+    await user.unhover(trigger);
+    trigger.focus();
+    await user.keyboard('{ArrowDown}');
+    const first = screen.getByRole('button', { name: /1:1/, pressed: true });
+    await waitFor(() => expect(first).toHaveFocus());
+    await user.keyboard('{Enter}');
+    expect(onParametersChange).toHaveBeenCalledWith({ aspectRatio: '1:1' });
+    await user.hover(trigger);
+    await user.click(screen.getByRole('button', { name: '收起媒体参数' }));
+    expect(screen.queryByRole('group', { name: '图片比例选项' })).not.toBeInTheDocument();
+  });
+
   it('只列出当前媒体模型，并保留目录中缺失的当前覆盖值', async () => {
     const user = userEvent.setup();
     render(<NodeQuickEditor {...makeProps()} />);
@@ -387,7 +464,7 @@ describe('NodeQuickEditor', () => {
     }
   });
 
-  it('未设置推理强度时默认选择高', () => {
+  it('历史节点未设置推理强度时保留未设置，不伪装成已保存的高档位', () => {
     render(
       <NodeQuickEditor
         {...makeProps({
@@ -406,7 +483,7 @@ describe('NodeQuickEditor', () => {
       />,
     );
 
-    expect(screen.getByRole('combobox', { name: '推理强度：高' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: '推理强度：未设置' })).toBeInTheDocument();
   });
 
   it('模型目录为空时仍为 GPT-5.6 文字节点提供完整推理强度', async () => {

@@ -64,6 +64,8 @@ async function installSyntheticApi(page: Page) {
         delivery: { id: 'synthetic-delivery', status: 'accepted' },
       };
       status = 202;
+    } else if (path === '/v1/auth/password/reset/request' && request.method() === 'POST') {
+      body = { accepted: true };
     } else {
       errors.push(`未声明的模拟接口：${request.method()} ${path}`);
       body = { error: '此测试不允许访问真实业务接口' };
@@ -76,6 +78,113 @@ async function installSyntheticApi(page: Page) {
   await page.evaluate(() => document.fonts.ready);
   return { writes, errors };
 }
+
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 1024, height: 768 },
+  { width: 390, height: 844 },
+]) {
+  test(`${viewport.width}px忘记密码通过邮箱验证码和新密码恢复账户`, async ({ page }, info) => {
+    await page.setViewportSize(viewport);
+    const { writes, errors } = await installSyntheticApi(page);
+    await openCreateLogin(page);
+    await expect(page.getByLabel('邮箱', { exact: true })).toHaveAttribute('placeholder', /邮箱/);
+    await expect(page.getByLabel('密码', { exact: true })).toHaveAttribute('placeholder', /密码/);
+    await page.getByRole('link', { name: '忘记密码？', exact: true }).click();
+    await expect(page.getByRole('heading', { name: '找回密码', exact: true })).toBeVisible();
+    expect(new URL(page.url()).pathname).toBe('/auth/forgot-password');
+    await expect(page.getByLabel('邮箱', { exact: true })).toBeFocused();
+    await expect(page.getByLabel('邮箱', { exact: true })).toHaveAttribute(
+      'placeholder',
+      /注册邮箱/,
+    );
+    await screenshotSettledPage(page, info, 'password-recovery-request.png');
+    await page.getByLabel('邮箱', { exact: true }).fill(session.user.email);
+    await page.getByRole('button', { name: '发送验证码', exact: true }).click();
+    await expect(page.getByRole('heading', { name: '重置账户密码', exact: true })).toBeVisible();
+    expect(new URL(page.url()).pathname).toBe('/auth/verify');
+    expect(new URL(page.url()).searchParams.get('purpose')).toBe('reset');
+    expect(writes).toEqual([
+      {
+        path: '/v1/auth/password/reset/request',
+        body: { email: session.user.email },
+        authorization: undefined,
+      },
+    ]);
+    expect(
+      await page.evaluate(() => localStorage.getItem('multimodal-canvas:auth-session')),
+    ).toBeNull();
+    await expect(page.getByLabel('邮箱验证码', { exact: true })).toHaveAttribute(
+      'placeholder',
+      /6/,
+    );
+    await expect(page.getByLabel('新密码', { exact: true })).toHaveAttribute('placeholder', /密码/);
+    await expect(page.getByLabel('确认新密码', { exact: true })).toHaveAttribute(
+      'placeholder',
+      /密码/,
+    );
+    await page.getByLabel('邮箱验证码', { exact: true }).fill('123456');
+    await page.getByLabel('新密码', { exact: true }).fill('synthetic-recovered-password');
+    await page.getByLabel('确认新密码', { exact: true }).fill('mismatched-password');
+    await page.getByRole('button', { name: '确认', exact: true }).click();
+    await expect(page.getByRole('alert')).toContainText('不一致');
+    expect(writes).toHaveLength(1);
+    await page.getByLabel('确认新密码', { exact: true }).fill('synthetic-recovered-password');
+    await screenshotSettledPage(page, info, 'password-recovery-verification.png');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+      true,
+    );
+    const persisted = await page.evaluate(() => JSON.stringify([localStorage, sessionStorage]));
+    expect(persisted).not.toContain('synthetic-recovered-password');
+    expect(persisted).not.toContain('123456');
+    expect(page.url()).not.toContain('synthetic-recovered-password');
+    expect(page.url()).not.toContain('123456');
+    await page.getByRole('button', { name: '确认', exact: true }).click();
+    await expect(page).toHaveURL('/workspace');
+    await expect(page.getByRole('button', { name: '账户菜单' })).toBeVisible();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    expect(writes).toHaveLength(2);
+    expect(writes[1]).toEqual({
+      path: '/v1/auth/verify',
+      body: {
+        email: session.user.email,
+        code: '123456',
+        purpose: 'reset',
+        password: 'synthetic-recovered-password',
+      },
+      authorization: undefined,
+    });
+    expect(errors).toEqual([]);
+  });
+}
+
+test('登录凭据被拒绝时显示邮箱或密码错误且保留找回入口，不自动重试 401', async ({ page }) => {
+  const { errors } = await installSyntheticApi(page);
+  /** 只计数明确的登录提交；401 是此用例刻意返回的认证结果。 */
+  const rejectedLogins: unknown[] = [];
+  await page.route('**/v1/auth/login', async (route) => {
+    rejectedLogins.push(route.request().postDataJSON());
+    await route.fulfill({
+      status: 401,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'invalid email or password' }),
+    });
+  });
+  await openCreateLogin(page);
+  await page.getByLabel('邮箱', { exact: true }).fill(session.user.email);
+  await page.getByLabel('密码', { exact: true }).fill('synthetic-invalid-password');
+  await page.getByRole('button', { name: '登录', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveText('邮箱或密码不正确');
+  await expect(page.getByRole('link', { name: '忘记密码？', exact: true })).toBeVisible();
+  expect(new URL(page.url()).pathname).toBe('/auth/login');
+  expect(rejectedLogins).toEqual([
+    { email: session.user.email, password: 'synthetic-invalid-password' },
+  ]);
+  expect(
+    await page.evaluate(() => localStorage.getItem('multimodal-canvas:auth-session')),
+  ).toBeNull();
+  expect(errors.filter((error) => !/Failed to load resource.*401/.test(error))).toEqual([]);
+});
 
 /** 在导航之前启动 RAF 采样，捕获真实页面入场动画。 */
 async function startSampling(page: Page) {

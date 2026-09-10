@@ -333,16 +333,13 @@ describe('API production startup configuration', () => {
     });
   });
 
-  it('rejects wildcard CORS when credentials are enabled', () => {
+  it.each(['*', 'all'])('允许显式配置 %s 跨域模式并由运行时回显请求来源', (origin) => {
     const issues = validateApiStartupConfiguration({
       ...productionEnvironment,
-      CORS_ORIGIN: 'https://canvas.example.com, *',
+      CORS_ORIGIN: `https://canvas.example.com, ${origin}`,
     });
 
-    expect(issues).toContainEqual({
-      variable: 'CORS_ORIGIN',
-      message: 'must not include wildcard "*" when credentials are enabled',
-    });
+    expect(issues.filter((issue) => issue.variable === 'CORS_ORIGIN')).toEqual([]);
   });
 
   it('rejects malformed or insecure production CORS origins', () => {

@@ -259,6 +259,19 @@ export function accountOpenApiPaths(user: unknown, token: unknown, asset: unknow
         ),
       },
     },
+    '/v1/auth/password/reset/request': {
+      post: {
+        ...operation(
+          '申请邮箱密码找回；邮箱符合条件时发送验证码，账户不存在、不可用或处于冷却期也统一受理',
+          object({ accepted: { type: 'boolean', const: true } }, ['accepted']),
+          '202',
+          true,
+        ),
+        description:
+          '仅提交邮箱。验证码十分钟内有效、最多五次验证、六十秒内不重复发信；通过 /v1/auth/verify 提交 reset 用途、验证码和新密码后才修改密码并撤销旧会话。邮件配置和投递失败返回 503，超出共享认证限流返回 429。',
+        requestBody: body({ email }, ['email']),
+      },
+    },
     '/v1/auth/refresh': {
       post: operation('有效会话续期；七天绝对期限不延长，业务请求不自动重放', token),
     },

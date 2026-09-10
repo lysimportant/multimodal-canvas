@@ -4106,6 +4106,16 @@ textarea:focus-visible {
   outline: 0;
 }
 
+/* 提示词编辑区聚焦时保持无边框，避免快速编辑与放大编辑出现额外轮廓。 */
+:is(.node-quick-editor, .node-quick-editor-dialog) .node-quick-editor-prompt textarea,
+:is(.node-quick-editor, .node-quick-editor-dialog)
+  .node-quick-editor-prompt
+  textarea:is(:focus, :focus-visible) {
+  border: 0 solid transparent;
+  outline: none;
+  box-shadow: none;
+}
+
 .search-field input {
   background: transparent;
 }

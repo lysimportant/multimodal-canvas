@@ -6,7 +6,11 @@ export type AppRoute =
   | { id: 'settings'; pathname: '/settings'; projectId?: string }
   | { id: 'project'; pathname: string; projectId: string }
   | { id: 'management'; pathname: string }
-  | { id: 'authentication'; pathname: string; page: 'login' | 'register' | 'verify' }
+  | {
+      id: 'authentication';
+      pathname: string;
+      page: 'login' | 'register' | 'verify' | 'forgot-password';
+    }
   | { id: 'not-found'; pathname: string };
 
 export type AppNavigationSection = 'home' | 'workspace' | 'settings';
@@ -23,6 +27,7 @@ export const appPaths = {
   runs: '/runs',
   login: '/auth/login',
   register: '/auth/register',
+  forgotPassword: '/auth/forgot-password',
   verify: '/auth/verify',
   settings(projectId?: string | null) {
     if (!projectId) return '/settings';
@@ -74,7 +79,12 @@ export function parseAppRoute(input: string | Pick<Location, 'pathname' | 'searc
       ...(new URLSearchParams(search).get('create') === '1' ? { createProject: true } : {}),
     };
   if (pathname === '/contact') return { id: 'contact', pathname };
-  if (pathname === appPaths.login || pathname === appPaths.register || pathname === appPaths.verify)
+  if (
+    pathname === appPaths.login ||
+    pathname === appPaths.register ||
+    pathname === appPaths.verify ||
+    pathname === appPaths.forgotPassword
+  )
     return {
       id: 'authentication',
       pathname,
@@ -83,7 +93,9 @@ export function parseAppRoute(input: string | Pick<Location, 'pathname' | 'searc
           ? 'login'
           : pathname === appPaths.register
             ? 'register'
-            : 'verify',
+            : pathname === appPaths.forgotPassword
+              ? 'forgot-password'
+              : 'verify',
     };
   const adminUserMatch = pathname.match(/^\/admin\/users\/([^/]+)(?:\/resources)?$/);
   if (adminUserMatch && !decodeProjectId(adminUserMatch[1]!)) return { id: 'not-found', pathname };

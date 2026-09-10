@@ -116,7 +116,7 @@ import { runStatusLabel } from './workspace/AssetNode';
 import { ResourcePanel } from './workspace/ResourcePanel';
 import { SettingsPanel } from './workspace/SettingsPanel';
 import { WorkflowCanvas } from './workspace/WorkflowCanvas';
-import type { InferenceStrength } from './workspace/NodeQuickEditor';
+import { applyNodeGenerationDefaults, type InferenceStrength } from './workspace/NodeQuickEditor';
 import { AppQueryProvider } from './query/client';
 import { useAiCredentialsQuery } from './query/credentials';
 import { useCredentialModelCatalogQueries } from './query/models';
@@ -127,6 +127,7 @@ import {
   type RunUpdate,
 } from './run-update-utils';
 import { useWorkspacePreferences, type CanvasTheme } from './state/workspace-preferences';
+import { readNodeModelPreference, writeNodeModelPreference } from './state/node-model-preferences';
 import {
   API_BASE_URL,
   ASSET_DRAG_TYPE,
@@ -412,6 +413,8 @@ function WorkspaceApp({
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [notice, setNotice] = useState<{ kind: 'error' | 'success'; message: string } | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  /** 当前新建操作的偏好读取错误，避免被随后的“节点已添加”通知覆盖。 */
+  const nodePreferenceNoticeRef = useRef<string | null>(null);
   const queryClient = useQueryClient();
   const credentialsQuery = useAiCredentialsQuery(authUser?.role === 'admin');
   const credentialModelQueries = useCredentialModelCatalogQueries(
@@ -1195,27 +1198,48 @@ function WorkspaceApp({
     [],
   );
 
+  /** 在指定画布位置创建操作节点，应用本账户最近模型与明确的枚举初值。 */
   const createOperationNode = useCallback(
     (
       mediaType: MediaType,
       position: { x: number; y: number },
       mode: Exclude<NodeMode, 'source'>,
-    ): AssetFlowNode =>
-      withNodeAutoGrowthLimit({
+    ): AssetFlowNode => {
+      /** 新节点才读取本机模型偏好；加载画布、复制和撤销继续使用原节点数据。 */
+      let selection: ModelSelection | undefined;
+      nodePreferenceNoticeRef.current = null;
+      try {
+        if (authUser)
+          selection = readNodeModelPreference(authUser.id, mediaType, mode, modelCatalog);
+      } catch (error) {
+        nodePreferenceNoticeRef.current =
+          error instanceof Error ? error.message : '无法读取本机模型偏好，请手动选择模型';
+      }
+      const model = modelCatalog.find(
+        (candidate) =>
+          candidate.id === selection?.modelAlias &&
+          candidate.credentialId === selection?.credentialId &&
+          candidate.mediaTypes.includes(mediaType),
+      );
+      return withNodeAutoGrowthLimit({
         id: `node_${mediaType}_${mode}_${crypto.randomUUID()}`,
         type: mediaType,
         position,
-        data: {
-          label: createUniqueNodeLabel(
-            `${mediaLabels[mediaType]}${modeLabels[mode]}节点`,
-            nodesRef.current.map((node) => node.data.label),
-          ),
-          mediaType,
-          mode,
-          ...(mediaType === 'text' ? { inferenceStrength: 'high' } : {}),
-        },
-      }),
-    [],
+        data: applyNodeGenerationDefaults(
+          {
+            label: createUniqueNodeLabel(
+              `${mediaLabels[mediaType]}${modeLabels[mode]}节点`,
+              nodesRef.current.map((node) => node.data.label),
+            ),
+            mediaType,
+            mode,
+            ...selection,
+          },
+          model,
+        ),
+      });
+    },
+    [authUser, modelCatalog],
   );
 
   const createGenerateNode = useCallback(
@@ -1377,7 +1401,11 @@ function WorkspaceApp({
       rememberHistory();
       appendNodesAndSelect([node]);
       canvasDirtyRef.current = true;
-      setNotice({ kind: 'success', message: `${mediaLabels[mediaType]}生成节点已添加` });
+      setNotice(
+        nodePreferenceNoticeRef.current
+          ? { kind: 'error', message: `节点已添加；${nodePreferenceNoticeRef.current}` }
+          : { kind: 'success', message: `${mediaLabels[mediaType]}生成节点已添加` },
+      );
     },
     [appendNodesAndSelect, createGenerateNode, nodes.length, rememberHistory],
   );
@@ -1394,7 +1422,11 @@ function WorkspaceApp({
       rememberHistory();
       appendNodesAndSelect([node]);
       canvasDirtyRef.current = true;
-      setNotice({ kind: 'success', message: `${mediaLabels[mediaType]}转换节点已添加` });
+      setNotice(
+        nodePreferenceNoticeRef.current
+          ? { kind: 'error', message: `节点已添加；${nodePreferenceNoticeRef.current}` }
+          : { kind: 'success', message: `${mediaLabels[mediaType]}转换节点已添加` },
+      );
     },
     [appendNodesAndSelect, createTransformNode, nodes.length, rememberHistory],
   );
@@ -1444,19 +1476,53 @@ function WorkspaceApp({
     [setNodes],
   );
 
+  /** 显式选模型时同时补齐缺失参数并记忆本机偏好；已有节点参数与历史数据保留。 */
   const updateSelectedModel = useCallback(
     ({ modelAlias, credentialId }: ModelSelection, nodeId?: string) => {
       const targetNodeId = nodeId ?? selectedNode?.id;
       if (!targetNodeId) return;
+      const targetNode = nodesRef.current.find((node) => node.id === targetNodeId);
+      if (!targetNode) return;
+      /** 模型来源也参与身份匹配，避免同名模型在不同 Provider 间混用。 */
+      const selection = {
+        modelAlias: modelAlias.trim(),
+        credentialId: modelAlias.trim() && credentialId ? credentialId : undefined,
+      };
+      const model = modelCatalog.find(
+        (candidate) =>
+          candidate.id === selection.modelAlias &&
+          candidate.credentialId === selection.credentialId &&
+          candidate.mediaTypes.includes(targetNode.data.mediaType),
+      );
       rememberHistory();
       canvasDirtyRef.current = true;
-      updateNodeDataAndMarkDownstreamStale(targetNodeId, (data) => ({
-        ...data,
-        modelAlias: modelAlias.trim() || undefined,
-        credentialId: modelAlias.trim() && credentialId ? credentialId : undefined,
-      }));
+      updateNodeDataAndMarkDownstreamStale(targetNodeId, (data) =>
+        applyNodeGenerationDefaults(
+          {
+            ...data,
+            modelAlias: selection.modelAlias || undefined,
+            credentialId: selection.credentialId,
+          },
+          model,
+        ),
+      );
+      if (authUser && targetNode.data.mode !== 'source') {
+        try {
+          writeNodeModelPreference(
+            authUser.id,
+            targetNode.data.mediaType,
+            targetNode.data.mode,
+            selection,
+          );
+        } catch {
+          setNotice({
+            kind: 'error',
+            message: '模型已选择，但无法保存本机偏好；请检查浏览器存储设置',
+          });
+        }
+      }
     },
-    [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
+    [authUser, modelCatalog, rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
   );
 
   const updateNodeEnabled = useCallback(

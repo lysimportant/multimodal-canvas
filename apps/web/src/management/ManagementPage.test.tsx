@@ -436,11 +436,20 @@ describe('邮箱验证与安全操作', () => {
     expect(verifyAccount).not.toHaveBeenCalled();
   });
 
-  it('密码重置不显示服务器不支持的重发按钮', () => {
+  it('密码重置通过匿名找回接口重发验证码并进入冷却', async () => {
     window.history.replaceState(null, '', '/auth/verify?email=reader@example.test&purpose=reset');
+    vi.mocked(managementRequest).mockResolvedValue({ accepted: true });
     renderPage(<VerifyPage authUser={null} onRequestLogin={vi.fn()} onSessionChanged={vi.fn()} />);
     expect(screen.getByLabelText('新密码', { selector: 'input' })).toBeRequired();
-    expect(screen.queryByRole('button', { name: '重新发送验证码' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '重新发送验证码' }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '60 秒后可重发' })).toBeDisabled(),
+    );
+    expect(managementRequest).toHaveBeenCalledWith('/auth/password/reset/request', {
+      method: 'POST',
+      body: { email: 'reader@example.test' },
+      public: true,
+    });
   });
 
   it('当前设备会话没有退出按钮，其他会话可单独撤销', async () => {

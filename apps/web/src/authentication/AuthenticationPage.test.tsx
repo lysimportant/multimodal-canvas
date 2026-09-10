@@ -77,6 +77,129 @@ afterEach(() => {
 });
 
 describe('独立认证页面', () => {
+  it('凭据不匹配显示明确中文错误，并可从登录进入找回密码', async () => {
+    window.history.replaceState(null, '', '/auth/login?next=%2Fworkspace%3Fcreate%3D1');
+    vi.mocked(login).mockRejectedValue(new Error('invalid email or password'));
+    render(<AuthenticationPage {...propsFor('login')} />);
+    expect(screen.getByPlaceholderText('输入注册时使用的邮箱')).toBeVisible();
+    expect(screen.getByPlaceholderText('输入账户登录密码')).toBeVisible();
+    fillCredentials();
+    fireEvent.submit(screen.getByRole('form', { name: '登录表单' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('邮箱或密码不正确');
+    fireEvent.click(screen.getByRole('link', { name: '忘记密码？' }));
+    expect(window.location.pathname).toBe('/auth/forgot-password');
+    expect(new URLSearchParams(window.location.search).get('next')).toBe('/workspace?create=1');
+  });
+
+  it('找回密码只提交邮箱，连续提交不重复发送，受理后进入重置验证页', async () => {
+    const pending = deferred<{ accepted: true }>();
+    vi.mocked(managementRequest).mockReturnValue(pending.promise);
+    render(<AuthenticationPage {...propsFor('forgot-password')} />);
+    expect(screen.getByRole('heading', { name: '找回密码' })).toBeVisible();
+    fireEvent.change(screen.getByPlaceholderText('输入需要找回密码的注册邮箱'), {
+      target: { value: session.user.email },
+    });
+    fireEvent.submit(screen.getByRole('form', { name: '找回密码表单' }));
+    fireEvent.submit(screen.getByRole('form', { name: '找回密码表单' }));
+    expect(managementRequest).toHaveBeenCalledTimes(1);
+    expect(managementRequest).toHaveBeenCalledWith('/auth/password/reset/request', {
+      method: 'POST',
+      body: { email: session.user.email },
+      public: true,
+      signal: expect.any(AbortSignal),
+    });
+    await act(async () => pending.resolve({ accepted: true }));
+    expect(window.location.pathname).toBe('/auth/verify');
+    expect(Object.fromEntries(new URLSearchParams(window.location.search))).toEqual({
+      email: session.user.email,
+      purpose: 'reset',
+      requested: '1',
+    });
+    expect(window.localStorage.length).toBe(0);
+    expect(window.sessionStorage.length).toBe(0);
+  });
+
+  it('找回邮件申请失败保留邮箱与错误，返回登录取消请求并丢弃迟到结果', async () => {
+    vi.mocked(managementRequest).mockRejectedValueOnce(new Error('验证邮件暂时无法发送'));
+    const pending = deferred<{ accepted: true }>();
+    vi.mocked(managementRequest).mockReturnValueOnce(pending.promise);
+    render(<AuthenticationPage {...propsFor('forgot-password')} />);
+    fireEvent.change(screen.getByLabelText('邮箱'), { target: { value: session.user.email } });
+    fireEvent.submit(screen.getByRole('form', { name: '找回密码表单' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('验证邮件暂时无法发送');
+    expect(screen.getByLabelText('邮箱')).toHaveValue(session.user.email);
+    fireEvent.submit(screen.getByRole('form', { name: '找回密码表单' }));
+    const signal = vi.mocked(managementRequest).mock.calls[1]?.[1]?.signal;
+    fireEvent.click(screen.getByRole('link', { name: '返回登录' }));
+    expect(signal?.aborted).toBe(true);
+    await act(async () => pending.resolve({ accepted: true }));
+    expect(window.location.pathname).toBe('/auth/login');
+  });
+
+  it('密码重置校验确认密码，验证失败留在页面，成功只回传新会话', async () => {
+    window.history.replaceState(
+      null,
+      '',
+      `/auth/verify?email=${session.user.email}&purpose=reset&requested=1`,
+    );
+    const props = propsFor('verify');
+    vi.mocked(verifyAccount).mockRejectedValueOnce(new Error('验证码错误或已过期'));
+    vi.mocked(verifyAccount).mockResolvedValue(session);
+    render(<AuthenticationPage {...props} />);
+    expect(screen.getByRole('heading', { name: '重置账户密码' })).toBeVisible();
+    expect(screen.getByRole('button', { name: '60 秒后可重发' })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('邮箱验证码'), { target: { value: '123456' } });
+    fireEvent.change(screen.getByLabelText('新密码'), { target: { value: 'synthetic-password' } });
+    fireEvent.change(screen.getByLabelText('确认新密码'), {
+      target: { value: 'different-password' },
+    });
+    fireEvent.submit(screen.getByRole('form', { name: '邮箱验证表单' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('两次输入的密码不一致');
+    expect(verifyAccount).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText('确认新密码'), {
+      target: { value: 'synthetic-password' },
+    });
+    fireEvent.submit(screen.getByRole('form', { name: '邮箱验证表单' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('验证码错误或已过期');
+    expect(props.onAuthenticated).not.toHaveBeenCalled();
+    fireEvent.submit(screen.getByRole('form', { name: '邮箱验证表单' }));
+    await waitFor(() =>
+      expect(props.onAuthenticated).toHaveBeenCalledWith(session, 'verification'),
+    );
+    expect(verifyAccount).toHaveBeenCalledWith(
+      {
+        email: session.user.email,
+        code: '123456',
+        purpose: 'reset',
+        password: 'synthetic-password',
+      },
+      { signal: expect.any(AbortSignal) },
+    );
+    expect(window.location.search).not.toContain('password');
+    expect(window.localStorage.length).toBe(0);
+    expect(window.sessionStorage.length).toBe(0);
+  });
+
+  it('重置邮件深链可通过匿名找回协议重发，保留已填验证码和密码', async () => {
+    window.history.replaceState(null, '', `/auth/verify?email=${session.user.email}&purpose=reset`);
+    vi.mocked(managementRequest).mockResolvedValue({ accepted: true });
+    render(<AuthenticationPage {...propsFor('verify')} />);
+    fireEvent.change(screen.getByLabelText('邮箱验证码'), { target: { value: '123456' } });
+    fireEvent.change(screen.getByLabelText('新密码'), { target: { value: 'synthetic-password' } });
+    fireEvent.click(screen.getByRole('button', { name: '重新发送验证码' }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '60 秒后可重发' })).toBeDisabled(),
+    );
+    expect(managementRequest).toHaveBeenCalledWith('/auth/password/reset/request', {
+      method: 'POST',
+      body: { email: session.user.email },
+      public: true,
+      signal: expect.any(AbortSignal),
+    });
+    expect(screen.getByLabelText('邮箱验证码')).toHaveValue('123456');
+    expect(screen.getByLabelText('新密码')).toHaveValue('synthetic-password');
+  });
+
   it('注册先校验确认密码，未通过时不发请求', () => {
     render(<AuthenticationPage {...propsFor('register')} />);
     expect(screen.getByRole('heading', { name: '创建账户', level: 1 })).toBeVisible();
