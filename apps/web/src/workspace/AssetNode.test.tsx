@@ -211,12 +211,12 @@ describe('AssetNode result presentation', () => {
     renderNode(
       makeNode({
         runStatus: 'succeeded',
-        resultAsset: { assetId: 'asset_missing', mimeType: 'text/plain' },
+        resultAsset: { assetId: 'remote_missing', mimeType: 'text/plain' },
       }),
       onRetry,
     );
 
-    expect(screen.getByRole('alert')).toHaveTextContent('产物不存在或已失效');
+    expect(await screen.findByRole('alert')).toHaveTextContent('产物不存在或已失效');
     expect(screen.getByLabelText('产物不可用')).toBeInTheDocument();
     expect(screen.queryByLabelText('运行成功')).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '重试生成' }));

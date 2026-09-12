@@ -41,7 +41,7 @@ describe('账户菜单', () => {
     );
     await actor.click(screen.getByRole('button', { name: '账户菜单' }));
     expect(screen.getByRole('menuitem', { name: '管理后台' })).toHaveAttribute('href', '/admin');
-    expect(screen.getByRole('menuitem', { name: '个人信息' })).not.toHaveAttribute('target');
+    expect(screen.getByRole('menuitem', { name: '个人信息' })).toHaveAttribute('target', '_blank');
     expect(logout).not.toHaveBeenCalled();
   });
 

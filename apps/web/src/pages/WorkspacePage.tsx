@@ -1,4 +1,13 @@
-import { AlertTriangle, Archive, ArrowRight, Clock3, FolderOpen, Plus, Search } from 'lucide-react';
+import {
+  AlertTriangle,
+  Archive,
+  ArrowRight,
+  Clock3,
+  FolderOpen,
+  LogIn,
+  Plus,
+  Search,
+} from 'lucide-react';
 import { useMemo, useState, type MouseEvent } from 'react';
 
 import { AppLink, appPaths, type AppRoute } from '../routing';
@@ -18,6 +27,7 @@ export type WorkspacePageProps = {
   missingProjectId?: string | null;
   onRetry?: () => void;
   onCreateProject?: () => void;
+  onRequestLogin?: () => void;
   onSelectProject?: (project: ProjectSummary, event: MouseEvent<HTMLAnchorElement>) => void;
   onNavigate?: (href: string, event: MouseEvent<HTMLAnchorElement>) => void;
 };
@@ -42,6 +52,7 @@ export function WorkspacePage({
   missingProjectId,
   onRetry,
   onCreateProject,
+  onRequestLogin,
   onSelectProject,
   onNavigate,
 }: WorkspacePageProps) {
@@ -69,15 +80,23 @@ export function WorkspacePage({
             <h1>项目工作台</h1>
             <span>集中查看画布、最近更新时间和归档状态。</span>
           </div>
-          <button
-            type="button"
-            className="mc-workspace-create"
-            onClick={onCreateProject}
-            disabled={!onCreateProject || isLoading}
-          >
-            <Plus size={16} aria-hidden="true" />
-            新建项目
-          </button>
+          <div className="mc-workspace-heading-actions">
+            {!onRequestLogin ? null : (
+              <button type="button" className="mc-workspace-login" onClick={onRequestLogin}>
+                <LogIn size={16} aria-hidden="true" />
+                登录
+              </button>
+            )}
+            <button
+              type="button"
+              className="mc-workspace-create"
+              onClick={onCreateProject}
+              disabled={!onCreateProject || isLoading}
+            >
+              <Plus size={16} aria-hidden="true" />
+              新建项目
+            </button>
+          </div>
         </header>
 
         {missingProjectId && (

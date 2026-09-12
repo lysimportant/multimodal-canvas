@@ -107,15 +107,20 @@ function AuthenticationContent({
           </span>
           <strong>Multimodal Canvas</strong>
         </AppLink>
-        <AppLink
-          to="/workspace"
-          className="auth-entry-back"
-          onClick={beforeNavigate}
-          title="返回工作台"
-        >
-          <ArrowLeft size={16} />
-          <span>返回工作台</span>
-        </AppLink>
+        <div className="auth-entry-header-actions">
+          <a className="auth-api-ad" href={API_BASE_URL} target="_blank" rel="noreferrer">
+            API 服务站
+          </a>
+          <AppLink
+            to="/workspace"
+            className="auth-entry-back"
+            onClick={beforeNavigate}
+            title="返回工作台"
+          >
+            <ArrowLeft size={16} />
+            <span>返回工作台</span>
+          </AppLink>
+        </div>
       </header>
       <main className="auth-entry-main">
         <section

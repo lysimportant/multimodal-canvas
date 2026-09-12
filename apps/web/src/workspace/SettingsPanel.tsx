@@ -20,7 +20,7 @@ import {
   useActivateAiCredential,
   useAiCredentialsQuery,
 } from '../query/credentials';
-import { useRefreshModelCatalog } from '../query/models';
+import { useModelCatalogQuery, useRefreshModelCatalog } from '../query/models';
 import { isImeKeyboardEvent, useImeDraft } from '../ime';
 import { useWorkspacePreferences, type CanvasTheme } from '../state/workspace-preferences';
 import { API_BASE_URL, type CanvasBackground, type AiSettings } from './contracts';
@@ -115,6 +115,10 @@ export function SettingsPanel({
   const credentials = credentialsQuery.data ?? [];
   const currentCredentialId = activeCredentialId(credentials) || undefined;
   const refreshModelCatalogMutation = useRefreshModelCatalog();
+  const modelCatalogQuery = useModelCatalogQuery(
+    currentCredentialId,
+    canManageAiSettings && Boolean(currentCredentialId) && settings.configured,
+  );
   /** 加载中状态只用于提示；用户仍可提前编辑并保存新连接。 */
   const loading = canManageAiSettings && (settingsLoading || credentialsQuery.isLoading);
   const {
@@ -684,13 +688,61 @@ export function SettingsPanel({
                 onClick={() => void refreshModels()}
                 disabled={busy || !settings.configured}
                 aria-busy={operation === 'refresh'}
+                aria-label={operation === 'refresh' ? '正在刷新模型' : '刷新模型'}
               >
                 {operation === 'refresh' && (
                   <LoaderCircle className="spin" size={15} aria-hidden="true" />
                 )}
-                {operation === 'refresh' ? '正在刷新模型' : '刷新模型'}
+                {operation === 'refresh' ? '正在获取模型' : '获取模型'}
               </Button>
             </div>
+            <section className="settings-models" aria-labelledby="settings-models-title">
+              <div className="settings-models-heading">
+                <div>
+                  <h2 id="settings-models-title">模型目录</h2>
+                  <p className="settings-status">展示当前 API Key 可用的模型与媒体能力。</p>
+                </div>
+              </div>
+              {modelCatalogQuery.isLoading && (
+                <p className="settings-status" role="status">
+                  正在加载模型目录…
+                </p>
+              )}
+              {modelCatalogQuery.isError && (
+                <p className="settings-field-error" role="alert">
+                  {modelCatalogQuery.error instanceof Error
+                    ? modelCatalogQuery.error.message
+                    : '模型目录加载失败'}
+                </p>
+              )}
+              {!modelCatalogQuery.isLoading && !modelCatalogQuery.isError && (
+                <div className="settings-models-table-wrap">
+                  <table className="settings-models-table">
+                    <thead>
+                      <tr>
+                        <th>模型</th>
+                        <th>支持类型</th>
+                        <th>来源</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(modelCatalogQuery.data ?? []).map((model) => (
+                        <tr key={`${model.credentialId ?? 'current'}:${model.id}`}>
+                          <td>
+                            <code>{model.name || model.id}</code>
+                          </td>
+                          <td>{model.mediaTypes.join('、') || '未声明'}</td>
+                          <td>{model.credentialLabel ?? '当前 API Key'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {(modelCatalogQuery.data ?? []).length === 0 && (
+                    <p className="settings-status">暂无模型，请点击“获取模型”。</p>
+                  )}
+                </div>
+              )}
+            </section>
             <div className="settings-status">
               {settings.configured ? `已配置 · ${settings.keyFingerprint}` : '未配置'}
             </div>

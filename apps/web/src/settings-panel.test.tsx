@@ -297,7 +297,7 @@ describe('SettingsPanel', () => {
     );
   });
 
-  it('移除两级默认模型入口且不再请求默认值或模型目录', async () => {
+  it('移除两级默认模型入口并展示当前凭据模型目录', async () => {
     const client = createAppQueryClient();
     render(
       <QueryClientProvider client={client}>
@@ -318,9 +318,10 @@ describe('SettingsPanel', () => {
     expect(
       fetchMock.mock.calls.some(([input]) => {
         const pathname = new URL(String(input), 'http://localhost:3000').pathname;
-        return pathname.includes('/models/defaults') || pathname === '/v1/models';
+        return pathname.includes('/models/defaults');
       }),
     ).toBe(false);
+    expect(await screen.findByRole('table')).toBeInTheDocument();
   });
 
   it('保存和自动刷新分别显示等待状态并阻止重复表单提交', async () => {

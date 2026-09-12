@@ -11,7 +11,7 @@
 .react-flow__node .flow-asset-node.is-selected,
 .react-flow__node .flow-asset-node:hover {
   border-color: var(--mc-accent);
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--mc-accent) 35%, transparent), 0 1px 3px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
 }
 
 .flow-asset-node > .flow-node-placeholder,
@@ -106,10 +106,10 @@
   color: var(--mc-text-muted);
   display: inline-flex;
   flex: 0 0 24px;
-  height: 24px;
+  height: 32px;
   justify-content: center;
   padding: 0;
-  width: 24px;
+  width: 32px;
 }
 
 .flow-node-upload-feedback {

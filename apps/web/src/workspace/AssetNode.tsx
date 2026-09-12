@@ -561,19 +561,21 @@ function getNodePresentationState(
 
 /**
  * 当公共运行记录仅包含生成资产标识时，构造受保护的 API 路径。
- * 内联或仅有远程地址的结果没有本地资产边界，必须等待供应商 URL。
+ * 内联或仅有远程地址的结果没有本地资产边界，必须等待供应商 URL；
+ * 缺少版本时使用资产最新版本端点，避免成功结果无法回显。
  */
 function getResultAssetContentUrl(assetId: string, version?: number): string {
   if (
     !assetId ||
-    version === undefined ||
     assetId.startsWith('inline_') ||
     assetId.startsWith('remote_')
   ) {
     return '';
   }
   const encodedId = encodeURIComponent(assetId);
-  return `/v1/assets/${encodedId}/versions/${version}/content`;
+  return version === undefined
+    ? `/v1/assets/${encodedId}/content`
+    : `/v1/assets/${encodedId}/versions/${version}/content`;
 }
 
 export function runStatusLabel(status: RunStatus) {

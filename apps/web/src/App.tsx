@@ -2937,6 +2937,7 @@ function RoutedApplication({
         }
         onRetry={isAuthenticated ? () => void projectsQuery.refetch() : undefined}
         onCreateProject={openProjectCreate}
+        onRequestLogin={() => onRequestLogin()}
       />
     );
   } else if (route.id === 'contact') {

@@ -239,6 +239,8 @@ export function AccountMenu({
             <AppLink
               key={href}
               to={appPaths.withProject(href, projectId)}
+              target="_blank"
+              rel="noreferrer"
               role="menuitem"
               onClick={(event) => {
                 const targetHref = appPaths.withProject(href, projectId);

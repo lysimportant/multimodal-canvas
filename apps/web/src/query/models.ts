@@ -46,10 +46,11 @@ export async function refreshModelCatalog(credentialId?: string): Promise<ModelE
   );
 }
 
-export function useModelCatalogQuery(credentialId?: string) {
+export function useModelCatalogQuery(credentialId?: string, enabled = true) {
   return useQuery({
     queryKey: modelCatalogQueryKeyFor(credentialId),
     queryFn: ({ signal }) => fetchModelCatalog(signal, credentialId),
+    enabled,
   });
 }
 

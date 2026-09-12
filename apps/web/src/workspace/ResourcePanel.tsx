@@ -115,6 +115,17 @@ export function ResourcePanel({
         >
           {isUploading ? <LoaderCircle className="spin" size={17} /> : <Plus size={18} />}
         </button>
+        {!collapsed && (
+          <button
+            type="button"
+            className={`icon-button archive-filter-icon ${showArchived ? 'is-active' : ''}`}
+            aria-label={showArchived ? '查看可用资源' : '查看已归档资源'}
+            title={showArchived ? '查看可用资源' : '查看已归档资源'}
+            onClick={onToggleArchived}
+          >
+            <Archive size={18} aria-hidden="true" />
+          </button>
+        )}
         <button
           type="button"
           className="icon-button resource-collapse-button"
@@ -151,16 +162,6 @@ export function ResourcePanel({
             </button>
           )}
         </label>
-      )}
-      {!collapsed && (
-        <button
-          type="button"
-          className={`archive-filter ${showArchived ? 'is-active' : ''}`}
-          onClick={onToggleArchived}
-        >
-          <Archive size={13} aria-hidden="true" />
-          {showArchived ? '查看可用资源' : '查看已归档资源'}
-        </button>
       )}
       {!collapsed && isUploading && uploadProgress !== null && (
         <div className="upload-progress" role="status">

@@ -277,10 +277,6 @@ export function ResourceMentionEditor({
     [assets],
   );
   const query = trigger?.query.trim().toLocaleLowerCase() ?? '';
-  const referencedAssetIds = useMemo(
-    () => new Set(ranges.map((range) => range.mention.assetId)),
-    [ranges],
-  );
   const searchEntries = useMemo(() => {
     if (pendingDropAssetId !== null) {
       const asset = activeAssets.find((candidate) => candidate.id === pendingDropAssetId);
@@ -288,26 +284,22 @@ export function ResourceMentionEditor({
       return [
         {
           asset,
-          group: referencedAssetIds.has(asset.id) ? '已引用' : asset.mediaType,
+          group: asset.mediaType,
         } satisfies SearchEntry,
       ];
     }
     if (!trigger && replaceMentionId === null) return [];
     const filtered = activeAssets.filter((asset) => assetMatchesQuery(asset, query));
     const entries: SearchEntry[] = [];
-    // 已引用资源单独列出，便于重复引用，而不是把重复选择误认为新资源。
-    for (const asset of filtered) {
-      if (referencedAssetIds.has(asset.id)) entries.push({ asset, group: '已引用' });
-    }
     for (const mediaType of ['image', 'video', 'audio', 'text'] as const) {
       for (const asset of filtered) {
-        if (asset.mediaType === mediaType && !referencedAssetIds.has(asset.id)) {
+        if (asset.mediaType === mediaType) {
           entries.push({ asset, group: mediaType });
         }
       }
     }
     return entries;
-  }, [activeAssets, pendingDropAssetId, query, referencedAssetIds, replaceMentionId, trigger]);
+  }, [activeAssets, pendingDropAssetId, query, replaceMentionId, trigger]);
 
   const pickerOpen = Boolean(trigger || replaceMentionId !== null || pendingDropAssetId !== null);
   const pickerId = `resource-mention-picker-${nodeId}`;
@@ -945,7 +937,6 @@ export function ResourceMentionEditor({
                     <span className="resource-mention-option-copy">
                       <strong>{entry.asset.name}</strong>
                       <small>
-                        {entry.group === '已引用' ? '已引用 · ' : ''}
                         {mediaLabels[entry.asset.mediaType]} · {formatBytes(entry.asset.sizeBytes)}{' '}
                         · {formatVersionHint(getAssetVersion(entry.asset))}
                       </small>

@@ -70,6 +70,25 @@
 .auth-entry-back:hover {
   color: var(--mc-accent, #18794e) !important;
 }
+.auth-entry-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 16px;
+}
+.auth-api-ad {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--mc-accent, #18794e);
+  border-radius: 999px;
+  color: var(--mc-accent, #18794e) !important;
+  font-size: 12px;
+  font-weight: 650;
+}
+.auth-api-ad:hover {
+  background: var(--mc-accent-soft, #edf7f2);
+}
 .auth-entry-main {
   display: flex;
   justify-content: center;

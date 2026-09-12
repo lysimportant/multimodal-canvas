@@ -2017,18 +2017,17 @@ h2 {
   overflow: auto;
 }
 
-/* 快速编辑器保持在节点下方，已引用资源卡片单独浮在节点右侧。 */
+/* 已引用资源紧贴提示词顶部展示，避免悬浮在节点右侧遮挡画布。 */
 .node-quick-editor .resource-mention-list {
   background: var(--mc-surface, #ffffff);
   border: 1px solid var(--mc-border, #d5dfdb);
   border-radius: 7px;
   box-shadow: 0 12px 28px rgb(29 46 39 / 14%);
-  left: calc(100% + 16px);
+  left: 0;
   max-height: min(260px, 42vh);
   padding: 7px;
-  position: absolute;
-  top: 0;
-  width: min(360px, 34vw);
+  position: static;
+  width: 100%;
   z-index: 3;
 }
 
@@ -2042,6 +2041,18 @@ h2 {
   grid-template-columns: auto minmax(0, 1fr) auto;
   min-width: 0;
   padding: 6px 7px;
+}
+
+.node-quick-editor .resource-mention-card {
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  padding: 7px;
+}
+
+.node-quick-editor .resource-mention-preview,
+.node-quick-editor .resource-mention-preview.artifact-preview-media-shell {
+  height: 48px;
+  min-width: 48px;
+  width: 48px;
 }
 
 .resource-mention-card.is-missing {
@@ -2818,6 +2829,41 @@ h2 {
   color: #354252;
   font-size: 13px;
   margin: 0;
+}
+.settings-models-table-wrap {
+  border: 1px solid #e3e9e6;
+  border-radius: 8px;
+  margin-top: 12px;
+  max-height: 260px;
+  overflow: auto;
+}
+.settings-models-table {
+  border-collapse: collapse;
+  font-size: 11px;
+  min-width: 100%;
+  text-align: left;
+}
+.settings-models-table th,
+.settings-models-table td {
+  border-bottom: 1px solid #edf0f4;
+  padding: 9px 10px;
+  white-space: nowrap;
+}
+.settings-models-table th {
+  background: #f7faf8;
+  color: #657183;
+  font-size: 10px;
+  font-weight: 700;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.settings-models-table tr:last-child td {
+  border-bottom: 0;
+}
+.settings-models-table code {
+  color: #263342;
+  font-size: 11px;
 }
 .settings-delete {
   background: transparent;
