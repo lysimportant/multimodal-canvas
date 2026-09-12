@@ -709,6 +709,23 @@ h2 {
   width: 20px;
 }
 
+.asset-card-hit {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  flex: 1 1 auto;
+  gap: 10px;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+}
+.asset-card-hit:focus-visible {
+  outline: 2px solid var(--mc-accent, #18794e);
+  outline-offset: 2px;
+}
 .asset-card-copy {
   display: flex;
   flex-direction: column;

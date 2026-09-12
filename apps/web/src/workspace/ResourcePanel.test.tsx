@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest';
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useState } from 'react';
@@ -130,6 +130,24 @@ describe('ResourcePanel search input', () => {
     expect(remove).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole('button', { name: '永久删除 中文参考素材' }));
     expect(remove).toHaveBeenCalledExactlyOnceWith({ ...assets[0], status: 'archived' });
+  });
+
+  it('点击卡片预览打开对话框，添加和删除按钮不会打开', async () => {
+    const user = userEvent.setup();
+    render(<ResourcePanelHarness onQueryCommit={vi.fn()} />);
+    await user.click(screen.getByRole('button', { name: '预览 图片参考' }));
+    expect(screen.getByRole('dialog', { name: '图片参考' })).toBeVisible();
+    expect(screen.getByRole('dialog').querySelector('img')).toHaveAttribute(
+      'src',
+      'https://assets.example/image.png',
+    );
+    await user.click(screen.getByRole('button', { name: '关闭预览' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: '添加 图片参考 到画布' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    fireEvent.dragStart(screen.getByRole('button', { name: '预览 图片参考' }).closest('article')!);
+    fireEvent.click(screen.getByRole('button', { name: '预览 图片参考' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
   it('uses the former title area for the resource selector and actions', () => {

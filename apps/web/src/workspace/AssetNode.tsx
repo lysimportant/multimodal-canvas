@@ -302,7 +302,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
             title={enabled ? '停用节点' : '启用节点'}
             onClick={() => setNodeEnabled(id, !enabled)}
           >
-            <Power size={13} strokeWidth={2.2} aria-hidden="true" />
+            <Power size={18} strokeWidth={2.2} aria-hidden="true" />
           </button>
         ) : null}
         <span
@@ -350,9 +350,9 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
               }}
             >
               {uploadProgress === null ? (
-                <Upload size={13} />
+                <Upload size={18} />
               ) : (
-                <LoaderCircle className="spin" size={13} />
+                <LoaderCircle className="spin" size={18} />
               )}
             </button>
           </>
@@ -369,7 +369,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
               deleteNode(id);
             }}
           >
-            <Trash2 size={13} strokeWidth={2.2} aria-hidden="true" />
+            <Trash2 size={18} strokeWidth={2.2} aria-hidden="true" />
           </button>
         ) : null}
       </div>
@@ -521,20 +521,20 @@ function RunStatusIcon({
   status?: RunStatus;
   artifactState?: AssetPreviewLoadState;
 }) {
-  if (artifactState === 'error') return <X size={12} aria-label="产物加载失败" />;
-  if (artifactState === 'missing') return <TriangleAlert size={12} aria-label="产物不可用" />;
+  if (artifactState === 'error') return <X size={16} aria-label="产物加载失败" />;
+  if (artifactState === 'missing') return <TriangleAlert size={16} aria-label="产物不可用" />;
   if (artifactState === 'loading') {
-    return <LoaderCircle className="spin" size={12} aria-label="产物加载中" />;
+    return <LoaderCircle className="spin" size={16} aria-label="产物加载中" />;
   }
-  if (status === 'succeeded') return <Check size={12} aria-label="运行成功" />;
-  if (status === 'failed' || status === 'cancelled') return <X size={12} aria-label="运行失败" />;
+  if (status === 'succeeded') return <Check size={16} aria-label="运行成功" />;
+  if (status === 'failed' || status === 'cancelled') return <X size={16} aria-label="运行失败" />;
   if (status === 'queued' || status === 'preparing' || status === 'cancel_requested') {
-    return <Clock3 size={12} aria-label="等待运行" />;
+    return <Clock3 size={16} aria-label="等待运行" />;
   }
   if (status === 'running' || status === 'processing') {
-    return <LoaderCircle className="spin" size={12} aria-label="运行中" />;
+    return <LoaderCircle className="spin" size={16} aria-label="运行中" />;
   }
-  return <Circle size={10} aria-label="未运行" />;
+  return <Circle size={14} aria-label="未运行" />;
 }
 
 function getNodePresentationState(
@@ -565,11 +565,7 @@ function getNodePresentationState(
  * 缺少版本时使用资产最新版本端点，避免成功结果无法回显。
  */
 function getResultAssetContentUrl(assetId: string, version?: number): string {
-  if (
-    !assetId ||
-    assetId.startsWith('inline_') ||
-    assetId.startsWith('remote_')
-  ) {
+  if (!assetId || assetId.startsWith('inline_') || assetId.startsWith('remote_')) {
     return '';
   }
   const encodedId = encodeURIComponent(assetId);

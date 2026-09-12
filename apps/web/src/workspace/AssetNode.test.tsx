@@ -123,6 +123,13 @@ describe('AssetNode result presentation', () => {
       expect(toolbar).toContainElement(screen.getByRole('button', { name: '停用节点' }));
       expect(container.querySelector('.flow-node-placeholder')).not.toContainElement(toolbar);
       expect(screen.getAllByRole('button', { name: '删除节点：文案生成' })).toHaveLength(1);
+      expect(screen.getByRole('button', { name: '停用节点' }).querySelector('svg')).toHaveAttribute(
+        'width',
+        '18',
+      );
+      expect(
+        screen.getByRole('button', { name: '删除节点：文案生成' }).querySelector('svg'),
+      ).toHaveAttribute('width', '18');
       await user.click(screen.getByRole('button', { name: '删除节点：文案生成' }));
       expect(onDelete).toHaveBeenCalledExactlyOnceWith('node_1');
     },

@@ -12,14 +12,18 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { useRef, type DragEvent, type RefObject } from 'react';
+import { useRef, useState, type DragEvent, type KeyboardEvent, type RefObject } from 'react';
 
 import type { Asset } from '@multimodal-canvas/domain';
 import { useImeDraft } from '../ime';
-import { AssetPreview } from './AssetPreview';
+import { AssetPreview, AssetViewerDialog } from './AssetPreview';
 import { CompactSelect } from './CompactSelect';
 import { formatBytes, mediaLabels, type AssetFilter } from './contracts';
 
+/**
+ * 项目资源侧栏：搜索、上传、归档，以及点击卡片打开页内预览。
+ * 拖到提示词仍用于引用；放入画布请用添加按钮。
+ */
 export function ResourcePanel({
   assets,
   collapsed,
@@ -63,6 +67,30 @@ export function ResourcePanel({
 }) {
   const localInputRef = useRef<HTMLInputElement>(null);
   const inputRef = uploadInputRef ?? localInputRef;
+  /** 当前正在预览的资源；关闭对话框后清空。 */
+  const [previewAsset, setPreviewAsset] = useState<Asset | null>(null);
+  /** 刚结束 HTML5 拖拽时忽略随后的 click，避免误开预览。 */
+  const draggedRef = useRef(false);
+
+  /**
+   * 打开资源预览；拖拽结束后的残留 click 会被忽略。
+   * @param asset 被点击的资源卡片。
+   */
+  const openPreview = (asset: Asset) => {
+    if (draggedRef.current) return;
+    setPreviewAsset(asset);
+  };
+
+  /**
+   * 键盘激活卡片预览，避免把操作按钮也当成预览热区。
+   * @param event 键盘事件。
+   * @param asset 当前卡片资源。
+   */
+  const handlePreviewKeyDown = (event: KeyboardEvent<HTMLElement>, asset: Asset) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    openPreview(asset);
+  };
   const { bind: queryBinding } = useImeDraft<HTMLInputElement>({
     value: query,
     onCommit: onQueryChange,
@@ -183,19 +211,36 @@ export function ResourcePanel({
               className={`asset-card ${asset.status === 'archived' ? 'is-archived' : ''}`}
               draggable={asset.status !== 'archived'}
               key={asset.id}
-              onDragStart={(event) => onAssetDragStart(event, asset)}
+              onDragStart={(event) => {
+                draggedRef.current = true;
+                onAssetDragStart(event, asset);
+              }}
+              onDragEnd={() => {
+                window.setTimeout(() => {
+                  draggedRef.current = false;
+                }, 50);
+              }}
               title={
                 asset.status === 'archived'
                   ? '已归档资源'
-                  : '拖到提示词中引用，使用添加按钮放入画布'
+                  : '拖到提示词中引用，使用添加按钮放入画布。点击预览。'
               }
             >
-              <AssetPreview asset={asset} className="asset-card-preview" />
-              <div className="asset-card-copy">
-                <strong title={asset.name}>{asset.name}</strong>
-                <span>
-                  {mediaLabels[asset.mediaType]} · {formatBytes(asset.sizeBytes)}
-                </span>
+              <div
+                className="asset-card-hit"
+                role="button"
+                tabIndex={0}
+                aria-label={`预览 ${asset.name}`}
+                onClick={() => openPreview(asset)}
+                onKeyDown={(event) => handlePreviewKeyDown(event, asset)}
+              >
+                <AssetPreview asset={asset} className="asset-card-preview" />
+                <div className="asset-card-copy">
+                  <strong title={asset.name}>{asset.name}</strong>
+                  <span>
+                    {mediaLabels[asset.mediaType]} · {formatBytes(asset.sizeBytes)}
+                  </span>
+                </div>
               </div>
               <div className="asset-card-actions">
                 <button
@@ -268,6 +313,15 @@ export function ResourcePanel({
           )}
         </div>
       )}
+      {previewAsset ? (
+        <AssetViewerDialog
+          asset={previewAsset}
+          open
+          onOpenChange={(open) => {
+            if (!open) setPreviewAsset(null);
+          }}
+        />
+      ) : null}
     </aside>
   );
 }

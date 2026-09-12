@@ -264,6 +264,43 @@ describe('AssetPreview', () => {
     await waitFor(() => expect(onLoadStateChange).toHaveBeenLastCalledWith('ready'));
   });
 
+  it('预览对话框滚轮放大图片，并可重置缩放', async () => {
+    const user = userEvent.setup();
+    render(
+      <AssetPreview
+        asset={makeAsset({
+          name: '城市夜景',
+          mediaType: 'image',
+          mimeType: 'image/png',
+          contentUrl: 'https://assets.example/city.png',
+        })}
+        mode="content"
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: '预览图片：城市夜景' }));
+    const viewer = screen.getByRole('dialog', { name: '城市夜景' });
+    const stage = viewer.querySelector('.artifact-preview-viewer-stage');
+    expect(stage).not.toBeNull();
+    vi.spyOn(stage as HTMLElement, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      top: 0,
+      left: 0,
+      right: 400,
+      bottom: 300,
+      width: 400,
+      height: 300,
+      toJSON: () => ({}),
+    } as DOMRect);
+    fireEvent.wheel(stage as HTMLElement, { deltaY: -100, clientX: 200, clientY: 150 });
+    const layer = viewer.querySelector('.artifact-preview-viewer-transform') as HTMLElement;
+    expect(layer.style.transform).toContain('scale(1.12)');
+    expect(screen.getByRole('button', { name: '重置预览缩放' })).toHaveTextContent('112%');
+    await user.click(screen.getByRole('button', { name: '重置预览缩放' }));
+    expect(layer.style.transform).toBe('translate(0px, 0px) scale(1)');
+    expect(screen.getByRole('button', { name: '重置预览缩放' })).toHaveTextContent('100%');
+  });
+
   it('preserves compact resource-card sizing hooks on the shell and media', () => {
     const { container } = render(
       <AssetPreview

@@ -5,11 +5,13 @@ import {
   Expand,
   FileText,
   LoaderCircle,
+  Minus,
+  Plus,
   RefreshCw,
   TriangleAlert,
   X,
 } from 'lucide-react';
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 
 import type { Asset, MediaType } from '@multimodal-canvas/domain';
 import { Dialog, DialogClose, DialogContent, DialogTitle } from '@multimodal-canvas/ui';
@@ -201,6 +203,270 @@ function CompactArtifactIcon({
   return <FileText className={`asset-preview-text ${className}`} aria-hidden="true" />;
 }
 
+/** 预览缩放下限，避免缩到看不见。 */
+const VIEWER_MIN_SCALE = 0.5;
+/** 预览缩放上限，用于查看局部细节。 */
+const VIEWER_MAX_SCALE = 8;
+/** 每次滚轮或按钮缩放的倍率。 */
+const VIEWER_ZOOM_FACTOR = 1.12;
+
+type ViewerTransform = {
+  scale: number;
+  x: number;
+  y: number;
+};
+
+/** 把缩放限制在预览允许的区间内。 */
+function clampViewerScale(value: number) {
+  return Math.min(VIEWER_MAX_SCALE, Math.max(VIEWER_MIN_SCALE, value));
+}
+
+/**
+ * 在预览舞台内相对光标缩放，并支持拖拽平移。
+ * @param resetKey 资源或对话框身份变化时重置变换。
+ * @param enablePanAtFit 适配比例下是否允许平移；视频在 100% 时交给原生控件。
+ */
+function ZoomableMediaStage({
+  children,
+  resetKey,
+  enablePanAtFit = true,
+}: {
+  children: ReactNode;
+  resetKey: string;
+  enablePanAtFit?: boolean;
+}) {
+  const stageRef = useRef<HTMLDivElement>(null);
+  const [transform, setTransform] = useState<ViewerTransform>({ scale: 1, x: 0, y: 0 });
+  const transformRef = useRef(transform);
+  transformRef.current = transform;
+  const dragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+  } | null>(null);
+  const [panning, setPanning] = useState(false);
+
+  useEffect(() => {
+    setTransform({ scale: 1, x: 0, y: 0 });
+    dragRef.current = null;
+    setPanning(false);
+  }, [resetKey]);
+
+  const zoomAt = useCallback((clientX: number, clientY: number, nextScale: number) => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const clamped = clampViewerScale(nextScale);
+    const current = transformRef.current;
+    if (clamped === current.scale) return;
+    const rect = stage.getBoundingClientRect();
+    const px = clientX - rect.left;
+    const py = clientY - rect.top;
+    const contentX = (px - current.x) / current.scale;
+    const contentY = (py - current.y) / current.scale;
+    setTransform({
+      scale: clamped,
+      x: px - contentX * clamped,
+      y: py - contentY * clamped,
+    });
+  }, []);
+
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const factor = event.deltaY < 0 ? VIEWER_ZOOM_FACTOR : 1 / VIEWER_ZOOM_FACTOR;
+      zoomAt(event.clientX, event.clientY, transformRef.current.scale * factor);
+    };
+    stage.addEventListener('wheel', onWheel, { passive: false });
+    return () => stage.removeEventListener('wheel', onWheel);
+  }, [zoomAt]);
+
+  const zoomFromCenter = (direction: 1 | -1) => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const rect = stage.getBoundingClientRect();
+    const factor = direction > 0 ? VIEWER_ZOOM_FACTOR : 1 / VIEWER_ZOOM_FACTOR;
+    zoomAt(
+      rect.left + rect.width / 2,
+      rect.top + rect.height / 2,
+      transformRef.current.scale * factor,
+    );
+  };
+
+  const resetTransform = () => setTransform({ scale: 1, x: 0, y: 0 });
+  const canPan = enablePanAtFit || transform.scale !== 1;
+
+  return (
+    <>
+      <div className="artifact-preview-viewer-zoom" role="group" aria-label="预览缩放">
+        <button type="button" aria-label="缩小预览" title="缩小" onClick={() => zoomFromCenter(-1)}>
+          <Minus size={15} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          aria-label="重置预览缩放"
+          title="重置为 100%"
+          onClick={resetTransform}
+        >
+          {Math.round(transform.scale * 100)}%
+        </button>
+        <button type="button" aria-label="放大预览" title="放大" onClick={() => zoomFromCenter(1)}>
+          <Plus size={15} aria-hidden="true" />
+        </button>
+      </div>
+      <div
+        ref={stageRef}
+        className={`artifact-preview-viewer-stage${panning ? ' is-panning' : ''}${
+          transform.scale > 1 ? ' is-zoomed' : ''
+        }`}
+        onPointerDown={(event) => {
+          if (event.button !== 0 || !canPan) return;
+          if (
+            transformRef.current.scale === 1 &&
+            (event.target as HTMLElement).closest('video, audio')
+          )
+            return;
+          dragRef.current = {
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            originX: transformRef.current.x,
+            originY: transformRef.current.y,
+          };
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }}
+        onPointerMove={(event) => {
+          const drag = dragRef.current;
+          if (!drag || drag.pointerId !== event.pointerId) return;
+          event.preventDefault();
+          if (!panning) setPanning(true);
+          setTransform({
+            ...transformRef.current,
+            x: drag.originX + event.clientX - drag.startX,
+            y: drag.originY + event.clientY - drag.startY,
+          });
+        }}
+        onPointerUp={(event) => {
+          if (dragRef.current?.pointerId !== event.pointerId) return;
+          dragRef.current = null;
+          setPanning(false);
+        }}
+        onPointerCancel={() => {
+          dragRef.current = null;
+          setPanning(false);
+        }}
+      >
+        <div
+          className="artifact-preview-viewer-transform"
+          style={{
+            transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`,
+          }}
+        >
+          {children}
+        </div>
+      </div>
+    </>
+  );
+}
+
+export type AssetViewerDialogProps = {
+  asset: Asset;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /** 已解析的媒体地址；节点预览可传入，避免重复签名。 */
+  src?: string;
+};
+
+/**
+ * 页内资源预览对话框：图片/视频支持滚轮缩放与拖拽平移。
+ * @param asset 要预览的资源。
+ * @param open 是否打开对话框。
+ * @param onOpenChange 开关变化回调。
+ * @param src 已解析地址；缺省时在对话框内自行解析。
+ */
+export function AssetViewerDialog({ asset, open, onOpenChange, src }: AssetViewerDialogProps) {
+  const kind = resolveArtifactKind(asset);
+  const needsSign = src == null && kind !== 'text';
+  const access = useAuthenticatedAssetUrl(asset, 0, needsSign);
+  const resolvedSrc = src ?? access.url;
+  const viewerTitleId = useId();
+  const resetKey = `${asset.id}:${resolvedSrc}:${open ? 'open' : 'closed'}`;
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      {open && (
+        <DialogContent
+          className={`artifact-preview-viewer overflow-hidden${
+            kind === 'image' || kind === 'video' ? ' is-zoomable' : ''
+          }`}
+          overlayClassName="artifact-preview-viewer-backdrop"
+          aria-labelledby={viewerTitleId}
+          onPointerDown={(event) => event.stopPropagation()}
+          onWheel={(event) => event.stopPropagation()}
+        >
+          <div className="artifact-preview-viewer-header">
+            <DialogTitle id={viewerTitleId}>{asset.name}</DialogTitle>
+            <DialogClose asChild>
+              <button
+                type="button"
+                className="artifact-preview-viewer-close"
+                aria-label="关闭预览"
+                title="关闭"
+              >
+                <X size={17} aria-hidden="true" />
+              </button>
+            </DialogClose>
+          </div>
+          {access.loading ? (
+            <ArtifactState
+              className="artifact-preview-viewer-state"
+              state="loading"
+              message="正在读取产物…"
+            />
+          ) : 'error' in access && access.error ? (
+            <ArtifactState
+              className="artifact-preview-viewer-state"
+              state="error"
+              message={access.error}
+            />
+          ) : !resolvedSrc ? (
+            <ArtifactState
+              className="artifact-preview-viewer-state"
+              state="missing"
+              message="产物不存在或已失效"
+            />
+          ) : kind === 'image' || kind === 'video' ? (
+            <ZoomableMediaStage resetKey={resetKey} enablePanAtFit={kind === 'image'}>
+              {kind === 'image' ? (
+                <img src={resolvedSrc} alt={asset.name} draggable={false} />
+              ) : (
+                <video src={resolvedSrc} controls autoPlay playsInline />
+              )}
+            </ZoomableMediaStage>
+          ) : kind === 'audio' ? (
+            <div className="artifact-preview-viewer-audio">
+              <audio src={resolvedSrc} controls autoPlay />
+            </div>
+          ) : kind === 'text' ? (
+            <TextResultContent url={resolvedSrc} className="artifact-preview-viewer-text" />
+          ) : (
+            <FileArtifactPreview
+              asset={asset}
+              src={resolvedSrc}
+              className="artifact-preview-viewer-file"
+              onRetry={() => onOpenChange(true)}
+            />
+          )}
+        </DialogContent>
+      )}
+    </Dialog>
+  );
+}
+
 /**
  * 节点内图片/视频默认可拖拽；预览改为页内 Dialog，不再打开新标签页。
  * 音频控件需要捕获指针，因此保留 nodrag。
@@ -227,7 +493,6 @@ function MediaArtifactPreview({
   const [attempt, setAttempt] = useState(0);
   const [loadState, setLoadState] = useState<AssetPreviewLoadState>('loading');
   const [viewerOpen, setViewerOpen] = useState(false);
-  const viewerTitleId = useId();
 
   useEffect(() => {
     setLoadState('loading');
@@ -315,35 +580,7 @@ function MediaArtifactPreview({
         </button>
       )}
       {canPreviewInDialog && (
-        <Dialog open={viewerOpen} onOpenChange={setViewerOpen}>
-          {viewerOpen && (
-            <DialogContent
-              className="artifact-preview-viewer"
-              overlayClassName="artifact-preview-viewer-backdrop"
-              aria-labelledby={viewerTitleId}
-              onPointerDown={(event) => event.stopPropagation()}
-            >
-              <div className="artifact-preview-viewer-header">
-                <DialogTitle id={viewerTitleId}>{asset.name}</DialogTitle>
-                <DialogClose asChild>
-                  <button
-                    type="button"
-                    className="artifact-preview-viewer-close"
-                    aria-label="关闭预览"
-                    title="关闭"
-                  >
-                    <X size={17} aria-hidden="true" />
-                  </button>
-                </DialogClose>
-              </div>
-              {kind === 'image' ? (
-                <img src={src} alt={asset.name} draggable={false} />
-              ) : (
-                <video src={src} controls autoPlay playsInline />
-              )}
-            </DialogContent>
-          )}
-        </Dialog>
+        <AssetViewerDialog asset={asset} open={viewerOpen} onOpenChange={setViewerOpen} src={src} />
       )}
       {loadState === 'loading' && (
         <span className="artifact-preview-loading" aria-live="polite">

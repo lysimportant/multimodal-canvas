@@ -40,12 +40,12 @@
   box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
   display: flex;
   flex-wrap: nowrap;
-  gap: 5px;
+  gap: 8px;
   left: 0;
   margin: 0;
-  min-height: 36px;
+  min-height: 44px;
   opacity: 0;
-  padding: 4px 6px;
+  padding: 6px 8px;
   pointer-events: none;
   position: absolute;
   transition: opacity 120ms ease;
@@ -84,7 +84,10 @@
 .flow-node-floating-controls > .flow-node-enabled-toggle {
   border-left: 1px solid var(--mc-border);
   border-radius: 0;
-  padding-left: 6px;
+  flex: 0 0 40px;
+  height: 40px;
+  padding-left: 8px;
+  width: 40px;
 }
 
 .flow-node-label > .flow-node-label-button {
@@ -110,11 +113,11 @@
   border-radius: 4px;
   color: var(--mc-text-muted);
   display: inline-flex;
-  flex: 0 0 24px;
-  height: 32px;
+  flex: 0 0 40px;
+  height: 40px;
   justify-content: center;
   padding: 0;
-  width: 32px;
+  width: 40px;
 }
 
 .flow-node-upload-feedback {
