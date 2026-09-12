@@ -361,6 +361,7 @@ export interface AssetStore {
     options?: Omit<AssetListOptions, 'page' | 'pageSize'>,
   ): Promise<number>;
   get(id: string, scope?: AssetScope): Promise<StoredAsset | undefined>;
+  delete(id: string, scope?: AssetScope): Promise<boolean>;
   createVersion(
     assetId: string,
     input: CreateAssetVersionInput,
@@ -495,6 +496,17 @@ export class MemoryAssetStore implements AssetStore {
           this.latestVersionFor(id),
         )
       : undefined;
+  }
+
+  async delete(id: string, scope: AssetScope = {}): Promise<boolean> {
+    if (!this.assets.has(id) || !this.matchesScope(id, scope)) return false;
+    this.assets.delete(id);
+    this.projects.delete(id);
+    this.owners.delete(id);
+    this.assetTimes.delete(id);
+    this.versions.delete(id);
+    this.derivatives.delete(id);
+    return true;
   }
 
   async createVersion(
@@ -786,6 +798,25 @@ export class PrismaAssetStore implements AssetStore {
       ...mapAsset(row, this.contentUrl, await this.latestVersionFor(id)),
       content,
     };
+  }
+
+  async delete(id: string, scope: AssetScope = {}): Promise<boolean> {
+    const row = await this.prisma.asset.findFirst({
+      where: { id, ...this.scopeWhere(scope) },
+      select: { contentKey: true },
+    });
+    if (!row) return false;
+    const versions = await this.prisma.assetVersion.findMany({
+      where: { assetId: id },
+      select: { contentKey: true },
+    });
+    await this.prisma.asset.delete({ where: { id } });
+    await Promise.all(
+      [row.contentKey, ...versions.map((v) => v.contentKey)].map((key) =>
+        this.blobStore.delete(key).catch(() => undefined),
+      ),
+    );
+    return true;
   }
 
   /** 在项目/所有者范围内读取预览；新键缺失时只读回退旧 S3 键，存储错误不会触发回退。 */

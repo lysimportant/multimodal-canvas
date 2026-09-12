@@ -792,6 +792,11 @@ function WorkspaceApp({
     if (!response.ok || !result.asset) throw new Error(result.error ?? '资源状态更新失败');
     setAssets((current) => current.map((item) => (item.id === asset.id ? result.asset! : item)));
   }, []);
+  const deleteAsset = useCallback(async (asset: Asset) => {
+    const response = await apiFetch(`${API_BASE_URL}/v1/assets/${asset.id}`, { method: 'DELETE' });
+    if (!response.ok) throw new Error('资源永久删除失败');
+    setAssets((current) => current.filter((item) => item.id !== asset.id));
+  }, []);
 
   const refreshProjects = useCallback(async (includeArchived = false) => {
     const query = includeArchived ? '?includeArchived=true' : '';
@@ -2700,6 +2705,7 @@ function WorkspaceApp({
             onAddAsset={handleAddAsset}
             onRenameAsset={handleRenameAsset}
             onArchiveAsset={handleArchiveAsset}
+            onDeleteAsset={(asset) => void deleteAsset(asset)}
             onDrop={(event) => {
               event.preventDefault();
               void uploadFiles(Array.from(event.dataTransfer.files));

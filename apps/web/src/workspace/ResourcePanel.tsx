@@ -55,6 +55,7 @@ export function ResourcePanel({
   onAddAsset: (asset: Asset) => void;
   onRenameAsset: (asset: Asset) => void;
   onArchiveAsset: (asset: Asset) => void;
+  onDeleteAsset?: (asset: Asset) => void;
   onDrop: (event: DragEvent) => void;
   onToggleCollapsed: () => void;
   uploadInputRef?: RefObject<HTMLInputElement | null>;
@@ -205,6 +206,24 @@ export function ResourcePanel({
                 >
                   {asset.status === 'archived' ? <RotateCcw size={15} /> : <SquarePlus size={16} />}
                 </button>
+                {asset.status === 'archived' && (
+                  <button
+                    type="button"
+                    className="asset-add-button asset-delete-button"
+                    aria-label={`永久删除 ${asset.name}`}
+                    title="永久删除资源，删除后无法找回"
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          `资源“${asset.name}”将被永久删除，删除后无法找回。确定继续吗？`,
+                        )
+                      )
+                        onDeleteAsset?.(asset);
+                    }}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                )}
                 <button
                   type="button"
                   className="asset-add-button"

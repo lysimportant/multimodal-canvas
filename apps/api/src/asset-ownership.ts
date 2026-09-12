@@ -46,6 +46,10 @@ export function withAssetOwnershipPolicy(store: AssetStore, projects: ProjectSto
       const resolved = await resolveScope(id, scope);
       return resolved ? store.get(id, resolved) : undefined;
     },
+    async delete(id, scope) {
+      const resolved = await resolveScope(id, scope);
+      return resolved ? store.delete(id, resolved) : false;
+    },
     async createVersion(id, input, scope) {
       const resolved = await resolveScope(id, scope);
       return resolved ? store.createVersion(id, input, resolved) : undefined;

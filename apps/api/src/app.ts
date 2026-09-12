@@ -2914,6 +2914,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return { asset: response };
   });
 
+  app.delete<{ Params: { assetId: string } }>('/v1/assets/:assetId', async (request, reply) => {
+    const deleted = await assetStore.delete(
+      request.params.assetId,
+      assetScope(requestPrincipals, request),
+    );
+    if (!deleted) return reply.code(404).send({ error: 'asset not found' });
+    return reply.code(204).send();
+  });
+
   app.post<{ Params: { assetId: string } }>(
     '/v1/assets/:assetId/archive',
     async (request, reply) => {
