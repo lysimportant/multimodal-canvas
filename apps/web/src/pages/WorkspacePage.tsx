@@ -81,12 +81,6 @@ export function WorkspacePage({
             <span>集中查看画布、最近更新时间和归档状态。</span>
           </div>
           <div className="mc-workspace-heading-actions">
-            {!onRequestLogin ? null : (
-              <button type="button" className="mc-workspace-login" onClick={onRequestLogin}>
-                <LogIn size={16} aria-hidden="true" />
-                登录
-              </button>
-            )}
             <button
               type="button"
               className="mc-workspace-create"
@@ -145,11 +139,21 @@ export function WorkspacePage({
                 ? '创建第一个项目后，即可进入无限画布组织生成工作流。'
                 : '请调整搜索关键词。'}
             </span>
-            {projects.length === 0 && onCreateProject && (
-              <button type="button" onClick={onCreateProject}>
-                <Plus size={15} aria-hidden="true" />
-                新建项目
-              </button>
+            {(onRequestLogin || (projects.length === 0 && onCreateProject)) && (
+              <div className="mc-workspace-state-actions">
+                {onRequestLogin && (
+                  <button type="button" className="mc-workspace-login" onClick={onRequestLogin}>
+                    <LogIn size={16} aria-hidden="true" />
+                    登录
+                  </button>
+                )}
+                {projects.length === 0 && onCreateProject && (
+                  <button type="button" onClick={onCreateProject}>
+                    <Plus size={15} aria-hidden="true" />
+                    新建项目
+                  </button>
+                )}
+              </div>
             )}
           </div>
         ) : (

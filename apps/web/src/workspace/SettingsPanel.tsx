@@ -1,6 +1,6 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useQueryClient } from '@tanstack/react-query';
-import { LoaderCircle, X } from 'lucide-react';
+import { ExternalLink, LoaderCircle, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useController, useForm } from 'react-hook-form';
 
@@ -23,7 +23,12 @@ import {
 import { useModelCatalogQuery, useRefreshModelCatalog } from '../query/models';
 import { isImeKeyboardEvent, useImeDraft } from '../ime';
 import { useWorkspacePreferences, type CanvasTheme } from '../state/workspace-preferences';
-import { API_BASE_URL, type CanvasBackground, type AiSettings } from './contracts';
+import {
+  API_BASE_URL,
+  PUBLIC_API_CATALOG_URL,
+  type CanvasBackground,
+  type AiSettings,
+} from './contracts';
 
 /** 与服务端一致的节点默认超时，单位毫秒。 */
 const DEFAULT_PROVIDER_TIMEOUT_MS = 900_000;
@@ -560,6 +565,17 @@ export function SettingsPanel({
       >
         {canManageAiSettings && (
           <>
+            <div className="settings-api-ad-row">
+              <a
+                className="settings-api-ad"
+                href={PUBLIC_API_CATALOG_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                API获取
+                <ExternalLink size={12} aria-hidden="true" />
+              </a>
+            </div>
             <label className="settings-field">
               <span>已保存的 API Key</span>
               <select

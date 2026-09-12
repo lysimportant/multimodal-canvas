@@ -282,6 +282,13 @@ describe('SettingsPanel', () => {
     expect(screen.queryByRole('dialog', { name: 'AI 连接' })).not.toBeInTheDocument();
   });
 
+  it('项目设置对话框展示与主页相同的 API 获取入口', async () => {
+    const { dialog } = await openSettings();
+    const ad = within(dialog).getByRole('link', { name: 'API获取' });
+    expect(ad).toHaveAttribute('href', 'https://api.lolicon.beer');
+    expect(ad).toHaveAttribute('target', '_blank');
+  });
+
   it('loads settings and shows field validation before saving', async () => {
     const { dialog, user } = await openSettings();
     const baseUrl = within(dialog).getByLabelText('New API Base URL');

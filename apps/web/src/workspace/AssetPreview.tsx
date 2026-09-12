@@ -12,7 +12,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 
 import type { Asset, MediaType } from '@multimodal-canvas/domain';
 import { apiFetch, getAuthToken } from '../auth-client';
-import { resolveUploadUrl } from '../upload-utils';
+import { isApiOriginUrl, resolveUploadUrl } from '../upload-utils';
 import { API_BASE_URL } from './contracts';
 import './artifact-preview.css';
 
@@ -780,15 +780,5 @@ async function writeTextToClipboard(value: string): Promise<void> {
 }
 
 function isApiResultUrl(value: string): boolean {
-  try {
-    const apiUrl = new URL(API_BASE_URL, window.location.href);
-    const resultUrl = new URL(value, window.location.href);
-    const apiPath = apiUrl.pathname.replace(/\/$/, '');
-    return (
-      resultUrl.origin === apiUrl.origin &&
-      (!apiPath || apiPath === '/' || resultUrl.pathname.startsWith(apiPath))
-    );
-  } catch {
-    return false;
-  }
+  return isApiOriginUrl(value, API_BASE_URL, window.location.href);
 }

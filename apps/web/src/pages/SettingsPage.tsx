@@ -5,7 +5,7 @@ import { type AppRoute } from '../routing';
 import { PageFrame } from './PageFrame';
 
 import './settings-page.css';
-import { API_BASE_URL } from '../workspace/contracts';
+import { PUBLIC_API_CATALOG_URL } from '../workspace/contracts';
 
 export type SettingsPageProps = {
   children?: ReactNode;
@@ -54,8 +54,13 @@ export function SettingsPage({
                 : '配置平台连接、凭据状态和全局默认模型。'}
             </span>
           </div>
-          <a className="mc-settings-api-ad" href={API_BASE_URL} target="_blank" rel="noreferrer">
-            API 服务站
+          <a
+            className="mc-settings-api-ad"
+            href={PUBLIC_API_CATALOG_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            API获取
           </a>
         </header>
 

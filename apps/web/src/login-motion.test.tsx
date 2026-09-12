@@ -136,7 +136,7 @@ describe('独立认证页面', () => {
       })),
     );
     const actor = await openCreateLogin();
-    await actor.click(screen.getByRole('link', { name: '返回工作台' }));
+    await actor.click(screen.getByRole('button', { name: '返回上一级' }));
     expect(await screen.findByRole('heading', { name: '项目工作台' })).toBeVisible();
     expect(window.location.pathname).toBe('/workspace');
     expect(document.querySelector('.auth-backdrop')).toBeNull();
@@ -186,7 +186,7 @@ describe('独立认证页面', () => {
     expect(window.location.pathname).toBe('/auth/login');
     expect(screen.getByRole('heading', { name: '登录工作台' })).toBeVisible();
     expect(writes()).toEqual([]);
-    const returnLink = screen.getByRole('link', { name: '返回工作台' });
+    const returnLink = screen.getByRole('button', { name: '返回上一级' });
     returnLink.focus();
     expect(returnLink).toHaveFocus();
   });

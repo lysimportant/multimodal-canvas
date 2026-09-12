@@ -32,7 +32,9 @@ import {
   type AppRoute,
 } from '../routing';
 
+import { PUBLIC_API_CATALOG_URL } from '../workspace/contracts';
 import './app-navigation.css';
+
 import { AccountMenu, useAccountActions } from './AccountMenu';
 import { usePresence } from './motion';
 
@@ -374,7 +376,7 @@ export function AppNavigation({
           </AppLink>
           <a
             className="mc-navigation-header-link"
-            href="https://api.lolicon.beer"
+            href={PUBLIC_API_CATALOG_URL}
             target="_blank"
             rel="noopener noreferrer"
           >

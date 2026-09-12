@@ -66,6 +66,20 @@ describe('WorkspacePage', () => {
     expect(onCreateProject).toHaveBeenCalledTimes(1);
   });
 
+  it('匿名空工作台把登录放在中央新建按钮旁边，而不是标题栏', () => {
+    const onRequestLogin = vi.fn();
+    render(
+      <WorkspacePage projects={[]} onCreateProject={vi.fn()} onRequestLogin={onRequestLogin} />,
+    );
+    const empty = screen.getByText('还没有项目').closest('.mc-workspace-state');
+    expect(empty).not.toBeNull();
+    const login = screen.getByRole('button', { name: '登录' });
+    expect(empty?.contains(login)).toBe(true);
+    expect(document.querySelector('.mc-workspace-heading')?.contains(login)).toBe(false);
+    fireEvent.click(login);
+    expect(onRequestLogin).toHaveBeenCalledTimes(1);
+  });
+
   it('shows project metadata, missing-project feedback, and keeps archived projects closed', () => {
     render(
       <WorkspacePage

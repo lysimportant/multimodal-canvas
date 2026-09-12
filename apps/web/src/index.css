@@ -2774,6 +2774,27 @@ h2 {
   border-left-color: #b0443f;
   color: #8d332f;
 }
+.settings-api-ad-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+.settings-api-ad {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--mc-accent, #18794e);
+  border-radius: 999px;
+  color: var(--mc-accent, #18794e);
+  font-size: 12px;
+  font-weight: 650;
+  text-decoration: none;
+}
+.settings-api-ad:hover {
+  background: var(--mc-accent-soft, #edf7f2);
+}
 .settings-field {
   display: grid;
   gap: 7px;

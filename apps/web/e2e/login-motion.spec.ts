@@ -283,7 +283,7 @@ for (const viewport of [
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
       true,
     );
-    await page.getByRole('link', { name: '返回工作台' }).click();
+    await page.getByRole('button', { name: '返回上一级' }).click();
     await expect(page).toHaveURL('/workspace');
     await expect(page.getByRole('heading', { name: '项目工作台' })).toBeVisible();
     await expect(page.getByRole('dialog')).toHaveCount(0);
@@ -401,7 +401,11 @@ test('减少动态效果时停用认证入场动画，链接导航仍正常', as
   await screenshotSettledPage(page, info, 'reduced-motion-register.png');
   await page.getByRole('link', { name: '返回登录', exact: true }).click();
   await expect(page.getByRole('heading', { name: '登录工作台' })).toBeVisible();
-  await page.getByRole('link', { name: '返回工作台' }).click();
+  await page.getByRole('button', { name: '返回上一级' }).click();
+  await expect(page.getByRole('heading', { name: '创建账户' })).toBeVisible();
+  await page.getByRole('button', { name: '返回上一级' }).click();
+  await expect(page.getByRole('heading', { name: '登录工作台' })).toBeVisible();
+  await page.getByRole('button', { name: '返回上一级' }).click();
   await expect(page).toHaveURL('/workspace');
   await expect(page.getByRole('dialog')).toHaveCount(0);
   expect(writes).toEqual([]);

@@ -320,7 +320,7 @@ describe.each([{ development: false }, { development: true }])(
       },
     );
 
-    it.each(['返回工作台', '浏览器后退'])(
+    it.each(['返回上一级', '浏览器后退'])(
       '%s 可离开独立登录页，保持匿名且不提交项目',
       async (dismissal) => {
         const user = userEvent.setup();
@@ -332,7 +332,7 @@ describe.each([{ development: false }, { development: true }])(
         if (dismissal === '浏览器后退') {
           act(() => window.history.back());
         } else {
-          await user.click(screen.getByRole('link', { name: '返回工作台' }));
+          await user.click(screen.getByRole('button', { name: '返回上一级' }));
         }
         await screen.findByRole('heading', { name: '项目工作台' });
         expectAnonymousWorkspace();
@@ -433,7 +433,7 @@ describe.each([{ development: false }, { development: true }])(
       expect(window.location.pathname).toBe('/auth/login');
       expect(readAuthSession()).toBeNull();
       expect(projectRequests('POST')).toHaveLength(0);
-      await user.click(screen.getByRole('link', { name: '返回工作台' }));
+      await user.click(screen.getByRole('button', { name: '返回上一级' }));
       expectAnonymousWorkspace();
     });
 
@@ -483,7 +483,7 @@ describe.each([{ development: false }, { development: true }])(
       expect(getAuthToken()).toBeUndefined();
       expect(projectRequests('POST')).toHaveLength(0);
       expect(projectRequests('GET')).toHaveLength(1);
-      await user.click(screen.getByRole('link', { name: '返回工作台' }));
+      await user.click(screen.getByRole('button', { name: '返回上一级' }));
       expectAnonymousWorkspace();
     });
 
@@ -550,7 +550,7 @@ describe.each([{ development: false }, { development: true }])(
       const user = userEvent.setup();
       render(createElement(App));
       await user.click(screen.getAllByRole('button', { name: '新建项目' })[0]!);
-      await user.click(screen.getByRole('link', { name: '返回工作台' }));
+      await user.click(screen.getByRole('button', { name: '返回上一级' }));
       act(() => navigateApp('/projects/private-project'));
       await user.click(screen.getByRole('button', { name: '登录' }));
 
@@ -739,7 +739,12 @@ describe.each([{ development: false }, { development: true }])(
         expect(window.location.pathname).toBe('/auth/login');
         expect(readAuthSession()).toBeNull();
         const requestsBeforeLeaving = vi.mocked(globalThis.fetch).mock.calls.length;
-        await user.click(screen.getByRole('link', { name: '返回工作台' }));
+        await user.click(screen.getByRole('button', { name: '返回上一级' }));
+        if (screen.queryByRole('heading', { name: '项目工作台' }) == null) {
+          const workspaceLink = screen.queryByRole('link', { name: '返回工作台' });
+          if (workspaceLink) await user.click(workspaceLink);
+          else act(() => navigateApp('/workspace'));
+        }
         expectAnonymousWorkspace();
         expect(globalThis.fetch).toHaveBeenCalledTimes(requestsBeforeLeaving);
         expect(projectRequests('POST')).toHaveLength(0);

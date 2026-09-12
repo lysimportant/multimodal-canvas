@@ -30,6 +30,21 @@
   border-color: var(--mc-accent, #18794e);
   color: var(--mc-accent, #18794e);
 }
+.mc-workspace-state-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+}
+.mc-workspace-state .mc-workspace-login {
+  background: var(--mc-surface, #fff);
+  border: 1px solid var(--mc-border-strong, #d3dce0);
+  color: var(--mc-text-strong, #172033);
+}
+.mc-workspace-state .mc-workspace-login:hover {
+  border-color: var(--mc-accent, #18794e);
+  color: var(--mc-accent, #18794e);
+}
 @media (max-width: 560px) {
   .mc-workspace-heading {
     align-items: flex-start;

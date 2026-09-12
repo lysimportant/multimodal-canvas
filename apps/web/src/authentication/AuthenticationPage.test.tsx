@@ -77,6 +77,19 @@ afterEach(() => {
 });
 
 describe('独立认证页面', () => {
+  it('返回按钮和图标广告放在主内容，广告指向主页 API 获取地址', () => {
+    render(<AuthenticationPage {...propsFor('login')} />);
+    const back = screen.getByRole('button', { name: '返回上一级' });
+    expect(back.closest('main')).not.toBeNull();
+    expect(document.querySelector('.auth-entry-header')?.contains(back)).toBe(false);
+    const ad = screen.getByRole('link', { name: 'API获取' });
+    expect(ad).toHaveAttribute('href', 'https://api.lolicon.beer');
+    expect(ad).toHaveAttribute('target', '_blank');
+    expect(document.querySelector('.auth-entry-header')?.contains(ad)).toBe(false);
+    const email = screen.getByLabelText('邮箱');
+    expect(ad.compareDocumentPosition(email) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it('凭据不匹配显示明确中文错误，并可从登录进入找回密码', async () => {
     window.history.replaceState(null, '', '/auth/login?next=%2Fworkspace%3Fcreate%3D1');
     vi.mocked(login).mockRejectedValue(new Error('invalid email or password'));

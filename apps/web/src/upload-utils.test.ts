@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildUploadCompletePayload,
   buildUploadInitPayload,
+  isApiOriginUrl,
   resolveCompleteUrl,
   resolveUploadUrl,
   sha256Hex,
@@ -44,5 +45,26 @@ describe('upload protocol helpers', () => {
     expect(resolveCompleteUrl('/v1/assets/uploads/complete', 'https://api.example.test')).toBe(
       'https://api.example.test/v1/assets/uploads/complete',
     );
+  });
+
+  it('空 API 基址把当前站点当作同源 API，不把当前页面路径当成 API 根', () => {
+    const page = 'http://127.0.0.1:8080/projects/demo';
+    expect(isApiOriginUrl('/v1/assets/asset_1/content', '', page)).toBe(true);
+    expect(isApiOriginUrl('/v1/assets/asset_1/versions/2/content', '', page)).toBe(true);
+    expect(isApiOriginUrl('https://cdn.example/result.png', '', page)).toBe(false);
+    expect(
+      isApiOriginUrl(
+        '/v1/assets/asset_1/content',
+        'http://localhost:3000',
+        'http://127.0.0.1:5173/projects/demo',
+      ),
+    ).toBe(false);
+    expect(
+      isApiOriginUrl(
+        'http://localhost:3000/v1/assets/asset_1/content',
+        'http://localhost:3000',
+        'http://127.0.0.1:5173/projects/demo',
+      ),
+    ).toBe(true);
   });
 });

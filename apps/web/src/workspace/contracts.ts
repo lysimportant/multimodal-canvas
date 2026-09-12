@@ -3,6 +3,8 @@ import { AudioLines, FileText, Image as ImageIcon, Video } from 'lucide-react';
 import type { MediaType, NodeMode } from '@multimodal-canvas/domain';
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000';
+/** 主页「API获取」广告地址；登录页和设置共用，不指向当前部署的 API_BASE_URL。 */
+export const PUBLIC_API_CATALOG_URL = 'https://api.lolicon.beer';
 export const ASSET_DRAG_TYPE = 'application/x-multimodal-asset';
 
 export const mediaLabels: Record<MediaType, string> = {

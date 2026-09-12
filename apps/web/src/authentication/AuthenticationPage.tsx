@@ -12,9 +12,9 @@ import { VerificationForm } from '../management/AccountPages';
 import { managementRequest } from '../management/client';
 import { isImeKeyboardEvent } from '../ime';
 import { Notice, PasswordField, useAction } from '../management/primitives';
-import { AppLink, navigateApp, shouldInterceptAppLink } from '../routing';
+import { AppLink, appPaths, navigateApp, shouldInterceptAppLink } from '../routing';
 import { buildAuthPagePath, readAuthReturnPath } from '../routing/auth-navigation';
-import { API_BASE_URL } from '../workspace/contracts';
+import { API_BASE_URL, PUBLIC_API_CATALOG_URL } from '../workspace/contracts';
 import '../management/management.css';
 import './authentication.css';
 
@@ -107,20 +107,6 @@ function AuthenticationContent({
           </span>
           <strong>Multimodal Canvas</strong>
         </AppLink>
-        <div className="auth-entry-header-actions">
-          <a className="auth-api-ad" href={API_BASE_URL} target="_blank" rel="noreferrer">
-            API 服务站
-          </a>
-          <AppLink
-            to="/workspace"
-            className="auth-entry-back"
-            onClick={beforeNavigate}
-            title="返回工作台"
-          >
-            <ArrowLeft size={16} />
-            <span>返回工作台</span>
-          </AppLink>
-        </div>
       </header>
       <main className="auth-entry-main">
         <section
@@ -128,12 +114,35 @@ function AuthenticationContent({
           aria-labelledby="auth-entry-title"
           inert={cancellation.leaving || undefined}
         >
+          <button
+            type="button"
+            className="auth-entry-back"
+            aria-label="返回上一级"
+            title="返回上一级"
+            onClick={() => {
+              cancellation.cancel();
+              if (window.history.length > 1) window.history.back();
+              else navigateApp(appPaths.workspace);
+            }}
+          >
+            <ArrowLeft size={18} aria-hidden="true" />
+          </button>
           <header className="auth-entry-heading">
             <span className="auth-entry-emblem">
               <Icon size={24} aria-hidden="true" />
             </span>
             <h1 id="auth-entry-title">{title}</h1>
           </header>
+          <div className="auth-entry-form-ad">
+            <a
+              className="auth-api-ad"
+              href={PUBLIC_API_CATALOG_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              API获取
+            </a>
+          </div>
           {page === 'verify' ? (
             purpose === 'email' && !authUser ? (
               <div className="auth-entry-login-required">
