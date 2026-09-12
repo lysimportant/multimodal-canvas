@@ -93,6 +93,8 @@ describe('responsive UX CSS contracts', () => {
     expect(normalizedCss).toMatch(
       /\.flow-asset-node \{[^}]*display: flex;[^}]*flex-direction: column;[^}]*height: 100%;/,
     );
+    expect(normalizedCss).not.toMatch(/\.flow-asset-node\.is-selected \{[^}]*0 0 0 3px/);
+    expect(normalizedCss).not.toMatch(/\.flow-asset-node \{[^}]*0 8px 22px/);
     expect(normalizedCss).toMatch(/\.flow-node-preview \{[^}]*flex: 1 1 0;[^}]*min-height: 0;/);
     expect(normalizedCss).toMatch(/\.flow-node-preview \{[^}]*contain: layout paint;/);
     expect(normalizedCss).toMatch(

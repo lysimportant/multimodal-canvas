@@ -90,7 +90,7 @@ async function json(route: Route, body: unknown, status = 200) {
   });
 }
 
-async function mockApi(page: Page) {
+async function mockApi(target: Pick<Page, 'route'>) {
   let settings: AiSettings = {
     baseUrl: initialCredential.baseUrl,
     configured: true,
@@ -234,7 +234,7 @@ async function mockApi(page: Page) {
     return run;
   };
 
-  await page.route('**/v1/**', async (route) => {
+  await target.route('**/v1/**', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const path = url.pathname;
@@ -580,7 +580,7 @@ async function focusCanvas(page: Page) {
 }
 
 test.beforeEach(async ({ page }) => {
-  await page.addInitScript(() => {
+  await page.context().addInitScript(() => {
     // Playwright 为每个测试创建独立上下文；刷新时保留模型记忆等真实持久化行为。
     // 私有画布验收使用模拟会话；所有 API 均由本文件拦截，不访问真实账户。
     window.localStorage.setItem(
@@ -775,6 +775,13 @@ test('桌面六主题节点外壳与短枚举菜单保持尺寸和可点击布�
     .locator('.compact-select-menu[data-layout="grid"]')
     .evaluate((element) => getComputedStyle(element).gridTemplateColumns);
   expect(columns.split(' ')).toHaveLength(3);
+  const chrome = await node.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { shadow: style.boxShadow };
+  });
+  expect(chrome.shadow).not.toMatch(/0px 0px 0px 2px/);
+  expect(chrome.shadow).not.toMatch(/0px 0px 0px 3px/);
+  expect(chrome.shadow).not.toMatch(/8px 22px/);
   for (const theme of ['default', 'light', 'eye-care', 'dark', 'sepia', 'contrast']) {
     await page.evaluate((value) => {
       for (const element of [document.documentElement, document.querySelector('.app-shell')!]) {
@@ -814,7 +821,8 @@ test('资源预览按衍生图加载，筛选不改变返回项目且跨页前�
     metadata: { width: mediaType === 'image' ? 800 : 1200, height: 600 },
   }));
   const contentRequests: string[] = [];
-  await page.route('**/v1/assets/*/content**', async (route) => {
+  await mockApi(page.context());
+  await page.context().route('**/v1/assets/*/content**', async (route) => {
     const url = new URL(route.request().url());
     contentRequests.push(url.pathname + url.search);
     const asset = resourceAssets.find((candidate) => url.pathname.includes(candidate.id))!;
@@ -827,7 +835,7 @@ test('资源预览按衍生图加载，筛选不改变返回项目且跨页前�
       body: asset.mediaType === 'video' ? validWebm : validWav,
     });
   });
-  await page.route('**/v1/account/resources**', async (route) => {
+  await page.context().route('**/v1/account/resources**', async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname.endsWith('/content')) {
       contentRequests.push(url.pathname + url.search);
@@ -854,13 +862,16 @@ test('资源预览按衍生图加载，筛选不改变返回项目且跨页前�
   await page.getByRole('button', { name: '新建文字生成节点' }).click();
   await page.getByRole('textbox', { name: '提示词', exact: true }).fill('离开前必须保存');
   await page.getByRole('button', { name: '账户菜单' }).click();
+  const resourcesPagePromise = page.waitForEvent('popup');
   await page.getByRole('menuitem', { name: '我的资源', exact: true }).click();
-  await expect(page).toHaveURL(/resources\?returnProjectId=project-smoke/);
-  await expect(page.locator('.mg-resource-item')).toHaveCount(4);
-  await expect(page.getByText('这是一段可检查的文本摘录。')).toBeVisible();
+  const resourcesPage = await resourcesPagePromise;
+  await expect(page).toHaveURL(projectPath);
+  await expect(resourcesPage).toHaveURL(/resources\?returnProjectId=project-smoke/);
+  await expect(resourcesPage.locator('.mg-resource-item')).toHaveCount(4);
+  await expect(resourcesPage.getByText('这是一段可检查的文本摘录。')).toBeVisible();
   await expect
     .poll(() =>
-      page
+      resourcesPage
         .locator('.mg-thumbnail img')
         .evaluateAll((images) =>
           images.every((image) => (image as HTMLImageElement).naturalWidth > 0),
@@ -870,19 +881,19 @@ test('资源预览按衍生图加载，筛选不改变返回项目且跨页前�
   expect(contentRequests.some((url) => url.includes('derivative=poster'))).toBe(true);
   expect(contentRequests.some((url) => url.includes('derivative=waveform'))).toBe(true);
   expect(contentRequests.some((url) => /review-(video|audio)\/content$/.test(url))).toBe(false);
-  await page.getByRole('combobox', { name: '所属项目' }).selectOption(project.id);
-  await page.getByRole('combobox', { name: '所属项目' }).selectOption('');
-  const back = page.getByRole('link', { name: /返回项目/ });
+  await resourcesPage.getByRole('combobox', { name: '所属项目' }).selectOption(project.id);
+  await resourcesPage.getByRole('combobox', { name: '所属项目' }).selectOption('');
+  const back = resourcesPage.getByRole('link', { name: /返回项目/ });
   await expect(back).toHaveAttribute('href', projectPath);
-  await page.screenshot({ path: '../../.data/canvas-optimization-review/resources.png' });
-  await page.locator('.mg-resource-item').filter({ hasText: 'image-review' }).click();
-  await expect(page.getByRole('dialog')).toBeVisible();
-  await page.getByRole('button', { name: '下一个资源' }).click();
-  await expect(page.getByRole('dialog').locator('video')).toBeVisible();
-  await page.keyboard.press('Escape');
-  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await resourcesPage.screenshot({ path: '../../.data/canvas-optimization-review/resources.png' });
+  await resourcesPage.locator('.mg-resource-item').filter({ hasText: 'image-review' }).click();
+  await expect(resourcesPage.getByRole('dialog')).toBeVisible();
+  await resourcesPage.getByRole('button', { name: '下一个资源' }).click();
+  await expect(resourcesPage.getByRole('dialog').locator('video')).toBeVisible();
+  await resourcesPage.keyboard.press('Escape');
+  await expect(resourcesPage.getByRole('dialog')).toHaveCount(0);
   await back.click();
-  await expect(page).toHaveURL(projectPath);
+  await expect(resourcesPage).toHaveURL(projectPath);
   await page.locator('.flow-generate-node').click();
   await expect(page.getByRole('textbox', { name: '提示词', exact: true })).toHaveValue(
     '离开前必须保存',

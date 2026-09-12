@@ -1075,15 +1075,45 @@ function WorkspaceApp({
     }
   }, [projectId]);
 
-  /** 离开画布进入账户或导航页前保存编辑，失败时停留并保留本地草稿。 */
+  /**
+   * 离开画布前先保存当前编辑。
+   * 同页导航在保存成功后跳转，失败则停留并保留草稿。
+   * 账户菜单新标签在用户手势内打开空白页，保存成功后再跳转，失败则关闭并留在原画布。
+   */
   const handlePageNavigation = (href: string, event: MouseEvent<HTMLAnchorElement>) => {
-    if (!shouldInterceptAppLink(event, href, event.currentTarget.target || undefined, undefined))
+    const target = event.currentTarget.target || undefined;
+    const opensNewTab = target === '_blank';
+    if (!shouldInterceptAppLink(event, href, opensNewTab ? undefined : target, undefined)) {
       return;
-    event.preventDefault();
+    }
     if (nodeContentLocksRef.current.size > 0) {
+      event.preventDefault();
       setNotice({ kind: 'error', message: '节点内容正在保存，请完成后再离开画布' });
       return;
     }
+    if (opensNewTab) {
+      event.preventDefault();
+      const next = appPaths.withProject(href, projectId);
+      const popup = window.open('about:blank', '_blank');
+      if (popup) popup.opener = null;
+      void saveCanvas()
+        .then(() => {
+          if (popup && !popup.closed) {
+            popup.location.replace(next);
+            return;
+          }
+          onNavigate(next);
+        })
+        .catch((error: unknown) => {
+          popup?.close();
+          setNotice({
+            kind: 'error',
+            message: error instanceof Error ? error.message : '保存失败，暂未离开画布',
+          });
+        });
+      return;
+    }
+    event.preventDefault();
     void saveCanvas()
       .then(() => onNavigate(appPaths.withProject(href, projectId)))
       .catch((error: unknown) => {

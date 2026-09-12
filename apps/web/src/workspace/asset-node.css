@@ -8,10 +8,15 @@
   padding: 0;
 }
 
-.react-flow__node .flow-asset-node.is-selected,
 .react-flow__node .flow-asset-node:hover {
+  border-color: var(--mc-border-strong);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
+}
+
+.react-flow__node .flow-asset-node.is-selected,
+.react-flow__node .flow-asset-node.is-selected:hover {
   border-color: var(--mc-accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--mc-accent) 35%, transparent), 0 1px 3px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
 }
 
 .flow-asset-node > .flow-node-placeholder,
@@ -137,7 +142,9 @@
 }
 
 .flow-node-label-button:focus-visible,
-.flow-node-delete-button:focus-visible {
+.flow-node-delete-button:focus-visible,
+.flow-node-upload-button:focus-visible,
+.flow-node-enabled-toggle:focus-visible {
   outline: 2px solid var(--mc-accent);
   outline-offset: 2px;
 }

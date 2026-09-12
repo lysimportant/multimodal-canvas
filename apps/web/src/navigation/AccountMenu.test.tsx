@@ -58,7 +58,7 @@ describe('账户菜单', () => {
     expect(screen.queryByRole('menu', { name: '账户操作' })).not.toBeInTheDocument();
   });
 
-  it('同页账户跳转携带来源项目并允许保存回调拦截，修饰键保持浏览器行为', () => {
+  it('账户菜单新标签携带来源项目，普通点击仍走保存回调，修饰键保持浏览器行为', () => {
     window.history.replaceState(null, '', '/projects/project-a');
     const navigate = vi.fn((_href, event) => event.preventDefault());
     render(
@@ -73,6 +73,7 @@ describe('账户菜单', () => {
     fireEvent.click(screen.getByRole('button', { name: '账户菜单' }));
     const resources = screen.getByRole('menuitem', { name: '我的资源' });
     expect(resources).toHaveAttribute('href', '/resources?returnProjectId=project-a');
+    expect(resources).toHaveAttribute('target', '_blank');
     fireEvent.click(resources);
     expect(navigate).toHaveBeenCalledWith(
       '/resources?returnProjectId=project-a',

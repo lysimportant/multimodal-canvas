@@ -44,10 +44,12 @@ const assets: Asset[] = [
 function ResourcePanelHarness({
   onQueryCommit,
   onArchive = vi.fn(),
+  onDelete = vi.fn(),
   showArchived = false,
 }: {
   onQueryCommit: (value: string) => void;
   onArchive?: (asset: Asset) => void;
+  onDelete?: (asset: Asset) => void;
   showArchived?: boolean;
 }) {
   const [query, setQuery] = useState('');
@@ -81,6 +83,7 @@ function ResourcePanelHarness({
         onAddAsset={vi.fn()}
         onRenameAsset={vi.fn()}
         onArchiveAsset={onArchive}
+        onDeleteAsset={onDelete}
         onDrop={vi.fn()}
         onToggleCollapsed={vi.fn()}
       />
@@ -94,24 +97,39 @@ describe('ResourcePanel search input', () => {
     vi.restoreAllMocks();
   });
 
-  it('删除需确认，已归档资源只显示恢复入口', async () => {
+  it('删除需确认，已归档资源显示恢复和永久删除', async () => {
     const archive = vi.fn();
+    const remove = vi.fn();
     const confirm = vi
       .spyOn(window, 'confirm')
       .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true)
+      .mockReturnValueOnce(false)
       .mockReturnValueOnce(true);
-    const view = render(<ResourcePanelHarness onQueryCommit={vi.fn()} onArchive={archive} />);
+    const view = render(
+      <ResourcePanelHarness onQueryCommit={vi.fn()} onArchive={archive} onDelete={remove} />,
+    );
     await userEvent.click(screen.getByRole('button', { name: '删除 中文参考素材' }));
     expect(archive).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole('button', { name: '删除 中文参考素材' }));
     expect(archive).toHaveBeenCalledExactlyOnceWith(assets[0]);
     expect(confirm).toHaveBeenCalledTimes(2);
     view.rerender(
-      <ResourcePanelHarness onQueryCommit={vi.fn()} onArchive={archive} showArchived />,
+      <ResourcePanelHarness
+        onQueryCommit={vi.fn()}
+        onArchive={archive}
+        onDelete={remove}
+        showArchived
+      />,
     );
     expect(screen.queryByRole('button', { name: /^删除 / })).toBeNull();
+    expect(screen.getByRole('button', { name: '永久删除 中文参考素材' })).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: '恢复 中文参考素材' }));
     expect(archive).toHaveBeenLastCalledWith({ ...assets[0], status: 'archived' });
+    await userEvent.click(screen.getByRole('button', { name: '永久删除 中文参考素材' }));
+    expect(remove).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: '永久删除 中文参考素材' }));
+    expect(remove).toHaveBeenCalledExactlyOnceWith({ ...assets[0], status: 'archived' });
   });
 
   it('uses the former title area for the resource selector and actions', () => {

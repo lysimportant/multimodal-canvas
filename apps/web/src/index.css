@@ -989,38 +989,36 @@ h2 {
 }
 
 .flow-asset-node {
-  background: #ffffff;
-  border: 1px solid #dce3e7;
-  border-radius: 7px;
-  box-shadow: 0 8px 22px rgb(35 53 45 / 9%);
+  background: var(--mc-surface);
+  border: 1px solid var(--mc-border);
+  border-radius: 8px;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
   display: flex;
   flex-direction: column;
   height: 100%;
-  min-height: 166px;
+  min-height: 0;
   overflow: visible;
-  padding: 10px;
+  padding: 0;
   position: relative;
   min-width: 180px;
   width: 100%;
 }
 
 .flow-asset-node.is-selected {
-  border-color: #18794e;
-  box-shadow:
-    0 0 0 3px rgb(24 121 78 / 14%),
-    0 8px 22px rgb(35 53 45 / 9%);
+  border-color: var(--mc-accent);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
 }
 
 .flow-generate-node {
-  min-height: 148px;
+  min-height: 0;
 }
 
 .flow-node-placeholder {
   align-items: center;
-  background: #f4f6f7;
-  border: 1px dashed #cbd5d1;
+  background: var(--mc-surface-muted);
+  border: 1px dashed var(--mc-border-strong);
   border-radius: 4px;
-  color: #7c8797;
+  color: var(--mc-text-muted);
   display: flex;
   flex-direction: column;
   font-size: 11px;
@@ -1195,16 +1193,11 @@ h2 {
 }
 
 .flow-node-preview-content.asset-preview-image,
-.flow-node-preview-content.asset-preview-video {
+.flow-node-preview-content.asset-preview-video,
+.flow-node-preview-content.asset-preview-audio {
   height: 100%;
   object-fit: cover;
   width: 100%;
-}
-
-.flow-node-preview-content.asset-preview-audio,
-.flow-node-preview-content.asset-preview-text {
-  height: 28px;
-  width: 28px;
 }
 
 .flow-node-label {
@@ -3378,14 +3371,12 @@ h2 {
 }
 
 .flow-asset-node {
-  box-shadow: 0 8px 22px var(--mc-shadow);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
 }
 
 .flow-asset-node.is-selected {
   border-color: var(--mc-accent);
-  box-shadow:
-    0 0 0 3px var(--mc-focus),
-    0 8px 22px var(--mc-shadow);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
 }
 
 .flow-asset-node .react-flow__handle {

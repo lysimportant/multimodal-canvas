@@ -244,10 +244,11 @@ export function AccountMenu({
               role="menuitem"
               onClick={(event) => {
                 const targetHref = appPaths.withProject(href, projectId);
+                // 普通点击交给画布先保存；新标签在保存成功后再跳转。
                 if (shouldInterceptAppLink(event, targetHref, undefined, undefined)) {
                   onNavigate?.(targetHref, event);
                 }
-                if (!event.defaultPrevented) close();
+                close();
               }}
             >
               <Icon size={16} aria-hidden="true" />
