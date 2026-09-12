@@ -2,6 +2,8 @@ import {
   Check,
   Circle,
   Clock3,
+  GripVertical,
+  Info,
   LoaderCircle,
   Power,
   RefreshCw,
@@ -16,6 +18,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useState,
   useRef,
   type KeyboardEvent,
@@ -23,7 +26,9 @@ import {
 } from 'react';
 
 import type { Asset, RunStatus } from '@multimodal-canvas/domain';
+import { Dialog, DialogClose, DialogContent, DialogTitle } from '@multimodal-canvas/ui';
 import type { AssetFlowNode } from '../canvas-utils';
+import { isImeKeyboardEvent } from '../ime';
 import { NodeHandles } from '../NodeHandles';
 import { AssetPreview, type AssetPreviewLoadState } from './AssetPreview';
 import { mediaIcons, mediaLabels, modeLabels } from './contracts';
@@ -74,8 +79,11 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const [previewLoadState, setPreviewLoadState] = useState<AssetPreviewLoadState | null>(null);
   const [isRetrying, setIsRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
-  const [editingLabel, setEditingLabel] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [infoOpen, setInfoOpen] = useState(false);
   const [draftLabel, setDraftLabel] = useState(data.label);
+  const renameTitleId = useId();
+  const infoTitleId = useId();
   const Icon = mediaIcons[data.mediaType];
   const Resizer = NodeResizer;
   const enabled = data.enabled !== false;
@@ -151,27 +159,34 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   }, [data.runStatus]);
 
   useEffect(() => {
-    if (!editingLabel) setDraftLabel(data.label);
-  }, [data.label, editingLabel]);
+    if (!renameOpen) setDraftLabel(data.label);
+  }, [data.label, renameOpen]);
+
+  /** 打开重命名对话框并带上当前名称。 */
+  const openRename = () => {
+    setDraftLabel(data.label);
+    setRenameOpen(true);
+  };
+
+  /** 关闭重命名对话框并丢弃未提交草稿。 */
+  const cancelRename = () => {
+    setDraftLabel(data.label);
+    setRenameOpen(false);
+  };
 
   /** 保存非空名称；空白名称恢复原值，实际修改交给画布记录历史。 */
   const commitLabel = useCallback(() => {
     const nextLabel = draftLabel.trim();
-    setEditingLabel(false);
+    setRenameOpen(false);
     setDraftLabel(nextLabel || data.label);
     if (nextLabel && nextLabel !== data.label) changeLabel?.(id, nextLabel);
   }, [changeLabel, data.label, draftLabel, id]);
 
-  /** Enter 保存名称，Escape 取消本次编辑。 */
-  const handleLabelKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      commitLabel();
-    } else if (event.key === 'Escape') {
-      event.preventDefault();
-      setDraftLabel(data.label);
-      setEditingLabel(false);
-    }
+  /** Enter 保存名称；输入法确认键不提交。 */
+  const handleRenameKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== 'Enter' || isImeKeyboardEvent(event)) return;
+    event.preventDefault();
+    commitLabel();
   };
 
   /** 提交重试并保留错误；同一节点在提交期间不重复发送请求。 */
@@ -188,36 +203,24 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
     }
   };
 
-  /** 顶部或资源卡片中的可编辑名称，键盘激活与双击均可开始编辑。 */
+  /** 悬浮栏左侧名称；点击打开重命名对话框。 */
   const nodeLabel = (
     <div className="flow-node-label" title={data.label}>
-      {editingLabel ? (
-        <input
-          className="flow-node-label-input nodrag nopan nowheel"
-          aria-label="编辑节点名称"
-          placeholder="输入节点名称"
-          value={draftLabel}
-          autoFocus
-          onChange={(event) => setDraftLabel(event.currentTarget.value)}
-          onBlur={commitLabel}
-          onKeyDown={handleLabelKeyDown}
-          onClick={(event) => event.stopPropagation()}
-        />
-      ) : changeLabel ? (
+      {changeLabel ? (
         <button
           type="button"
           className="flow-node-label-button nodrag nopan nowheel"
           aria-label={`重命名节点：${data.label}`}
-          title="双击或按 Enter 修改节点名称"
-          onDoubleClick={(event) => {
+          title="重命名节点"
+          onClick={(event) => {
             event.stopPropagation();
-            setEditingLabel(true);
+            openRename();
           }}
           onKeyDown={(event) => {
             if (event.key === 'Enter' || event.key === ' ') {
               event.preventDefault();
               event.stopPropagation();
-              setEditingLabel(true);
+              openRename();
             }
           }}
         >
@@ -227,6 +230,14 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
         data.label
       )}
     </div>
+  );
+  const statusTooltip = nodeStatusTooltip(
+    data.runStatus,
+    presentationState === 'preview'
+      ? effectivePreviewLoadState
+      : presentationState === 'missing'
+        ? 'missing'
+        : undefined,
   );
 
   return (
@@ -268,6 +279,22 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
         />
       ) : null}
       <NodeHandles mediaType={data.mediaType} mode={data.mode} />
+      {contentHandlers ? (
+        <input
+          ref={inputRef}
+          type="file"
+          hidden
+          aria-label={`上传到节点：${data.label}`}
+          accept={
+            data.mediaType === 'text' ? '.txt,.md,text/plain,text/markdown' : `${data.mediaType}/*`
+          }
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = '';
+            if (file) void uploadFile(file);
+          }}
+        />
+      ) : null}
       <div
         className={`flow-node-header${floatingControls ? ' flow-node-floating-controls' : ''}`}
         role="group"
@@ -288,91 +315,239 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
           </span>
         )}
         {!enabled && !floatingControls && <span className="flow-node-disabled-badge">停用</span>}
-        {data.stale && (
+        {data.stale && !floatingControls && (
           <span className="flow-node-stale-badge" title="上游内容已变更，节点待更新">
-            {floatingControls ? <RefreshCw size={11} aria-label="待更新" /> : '待更新'}
+            待更新
           </span>
         )}
-        {setNodeEnabled ? (
-          <button
-            type="button"
-            className="flow-node-enabled-toggle nodrag nopan nowheel"
-            aria-label={enabled ? '停用节点' : '启用节点'}
-            aria-pressed={enabled}
-            title={enabled ? '停用节点' : '启用节点'}
-            onClick={() => setNodeEnabled(id, !enabled)}
-          >
-            <Power size={18} strokeWidth={2.2} aria-hidden="true" />
-          </button>
-        ) : null}
-        <span
-          className={`flow-node-status ${effectivePreviewLoadState === 'error' || presentationState === 'missing' ? 'is-error' : ''}`}
-        >
-          <RunStatusIcon
-            status={data.runStatus}
-            artifactState={
-              presentationState === 'preview'
-                ? effectivePreviewLoadState
-                : presentationState === 'missing'
-                  ? 'missing'
-                  : undefined
-            }
-          />
-        </span>
-        {contentHandlers && (
-          <>
-            <input
-              ref={inputRef}
-              type="file"
-              hidden
-              aria-label={`上传到节点：${data.label}`}
-              accept={
-                data.mediaType === 'text'
-                  ? '.txt,.md,text/plain,text/markdown'
-                  : `${data.mediaType}/*`
-              }
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                event.target.value = '';
-                if (file) void uploadFile(file);
-              }}
-            />
+        {floatingControls ? (
+          <div className="flow-node-actions">
             <button
               type="button"
-              className="flow-node-upload-button nodrag nopan nowheel"
-              disabled={writingDisabled}
-              aria-label={`上传到节点：${data.label}`}
-              title="上传并替换节点内容"
+              className="flow-node-action-button flow-node-drag-handle"
+              aria-label="拖动移动节点"
+              title="拖动移动节点"
+            >
+              <GripVertical size={18} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className={`flow-node-action-button flow-node-info-button nodrag nopan nowheel${data.stale ? ' is-stale' : ''}`}
+              aria-label="查看节点信息"
+              title={data.stale ? '查看节点信息（待更新）' : '查看节点信息'}
               onPointerDown={(event) => event.stopPropagation()}
               onClick={(event) => {
                 event.stopPropagation();
-                inputRef.current?.click();
+                setInfoOpen(true);
               }}
             >
-              {uploadProgress === null ? (
-                <Upload size={18} />
-              ) : (
-                <LoaderCircle className="spin" size={18} />
-              )}
+              <Info size={18} aria-hidden="true" />
             </button>
+            {setNodeEnabled ? (
+              <button
+                type="button"
+                className="flow-node-action-button flow-node-enabled-toggle nodrag nopan nowheel"
+                aria-label={enabled ? '停用节点' : '启用节点'}
+                aria-pressed={enabled}
+                title={enabled ? '停用节点' : '启用节点'}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setNodeEnabled(id, !enabled);
+                }}
+              >
+                <Power size={18} strokeWidth={2.2} aria-hidden="true" />
+              </button>
+            ) : null}
+            <span
+              className={`flow-node-action-button flow-node-status ${
+                effectivePreviewLoadState === 'error' || presentationState === 'missing'
+                  ? 'is-error'
+                  : ''
+              }`}
+              title={statusTooltip}
+            >
+              <RunStatusIcon
+                status={data.runStatus}
+                artifactState={
+                  presentationState === 'preview'
+                    ? effectivePreviewLoadState
+                    : presentationState === 'missing'
+                      ? 'missing'
+                      : undefined
+                }
+              />
+            </span>
+            {contentHandlers && (
+              <button
+                type="button"
+                className="flow-node-action-button flow-node-upload-button nodrag nopan nowheel"
+                disabled={writingDisabled}
+                aria-label={`上传到节点：${data.label}`}
+                title="上传并替换节点内容"
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  inputRef.current?.click();
+                }}
+              >
+                {uploadProgress === null ? (
+                  <Upload size={18} aria-hidden="true" />
+                ) : (
+                  <LoaderCircle className="spin" size={18} aria-hidden="true" />
+                )}
+              </button>
+            )}
+            {deleteNode ? (
+              <button
+                type="button"
+                className="flow-node-action-button flow-node-delete-button nodrag nopan nowheel"
+                aria-label={`删除节点：${data.label}`}
+                title="删除节点"
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  deleteNode(id);
+                }}
+              >
+                <Trash2 size={18} strokeWidth={2.2} aria-hidden="true" />
+              </button>
+            ) : null}
+          </div>
+        ) : (
+          <>
+            {setNodeEnabled ? (
+              <button
+                type="button"
+                className="flow-node-enabled-toggle nodrag nopan nowheel"
+                aria-label={enabled ? '停用节点' : '启用节点'}
+                aria-pressed={enabled}
+                title={enabled ? '停用节点' : '启用节点'}
+                onClick={() => setNodeEnabled(id, !enabled)}
+              >
+                <Power size={18} strokeWidth={2.2} aria-hidden="true" />
+              </button>
+            ) : null}
+            <span
+              className={`flow-node-status ${effectivePreviewLoadState === 'error' || presentationState === 'missing' ? 'is-error' : ''}`}
+            >
+              <RunStatusIcon
+                status={data.runStatus}
+                artifactState={
+                  presentationState === 'preview'
+                    ? effectivePreviewLoadState
+                    : presentationState === 'missing'
+                      ? 'missing'
+                      : undefined
+                }
+              />
+            </span>
           </>
         )}
-        {deleteNode ? (
-          <button
-            type="button"
-            className="flow-node-delete-button nodrag nopan nowheel"
-            aria-label={`删除节点：${data.label}`}
-            title="删除节点"
-            onPointerDown={(event) => event.stopPropagation()}
-            onClick={(event) => {
-              event.stopPropagation();
-              deleteNode(id);
-            }}
-          >
-            <Trash2 size={18} strokeWidth={2.2} aria-hidden="true" />
-          </button>
-        ) : null}
       </div>
+      <Dialog
+        open={renameOpen}
+        onOpenChange={(open) => {
+          if (open) openRename();
+          else cancelRename();
+        }}
+      >
+        {renameOpen && (
+          <DialogContent
+            className="flow-node-dialog"
+            overlayClassName="flow-node-dialog-backdrop"
+            aria-labelledby={renameTitleId}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <div className="flow-node-dialog-header">
+              <DialogTitle id={renameTitleId}>重命名节点</DialogTitle>
+              <DialogClose asChild>
+                <button
+                  type="button"
+                  className="flow-node-dialog-close"
+                  aria-label="关闭重命名"
+                  title="关闭"
+                >
+                  <X size={17} aria-hidden="true" />
+                </button>
+              </DialogClose>
+            </div>
+            <label className="flow-node-dialog-field">
+              <span>节点名称</span>
+              <input
+                className="flow-node-label-input"
+                aria-label="编辑节点名称"
+                placeholder="输入节点名称"
+                value={draftLabel}
+                autoFocus
+                onChange={(event) => setDraftLabel(event.currentTarget.value)}
+                onKeyDown={handleRenameKeyDown}
+              />
+            </label>
+            <div className="flow-node-dialog-actions">
+              <button type="button" className="flow-node-dialog-secondary" onClick={cancelRename}>
+                取消
+              </button>
+              <button type="button" className="flow-node-dialog-primary" onClick={commitLabel}>
+                保存
+              </button>
+            </div>
+          </DialogContent>
+        )}
+      </Dialog>
+      <Dialog open={infoOpen} onOpenChange={setInfoOpen}>
+        {infoOpen && (
+          <DialogContent
+            className="flow-node-dialog"
+            overlayClassName="flow-node-dialog-backdrop"
+            aria-labelledby={infoTitleId}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <div className="flow-node-dialog-header">
+              <DialogTitle id={infoTitleId}>节点信息</DialogTitle>
+              <DialogClose asChild>
+                <button
+                  type="button"
+                  className="flow-node-dialog-close"
+                  aria-label="关闭节点信息"
+                  title="关闭"
+                >
+                  <X size={17} aria-hidden="true" />
+                </button>
+              </DialogClose>
+            </div>
+            <p className="flow-node-dialog-intro">{nodeIntroduction(data)}</p>
+            <dl className="flow-node-info-list">
+              <div>
+                <dt>名称</dt>
+                <dd>{data.label}</dd>
+              </div>
+              <div>
+                <dt>类型</dt>
+                <dd>{mediaLabels[data.mediaType]}</dd>
+              </div>
+              <div>
+                <dt>模式</dt>
+                <dd>{modeLabels[data.mode]}</dd>
+              </div>
+              <div>
+                <dt>状态</dt>
+                <dd>{enabled ? '已启用' : '已停用'}</dd>
+              </div>
+              <div>
+                <dt>运行</dt>
+                <dd>{data.runStatus ? runStatusLabel(data.runStatus) : '未运行'}</dd>
+              </div>
+              {data.stale ? (
+                <div>
+                  <dt>更新</dt>
+                  <dd>上游已变更，节点待更新</dd>
+                </div>
+              ) : null}
+            </dl>
+          </DialogContent>
+        )}
+      </Dialog>
       {presentationState === 'preview' && previewAsset ? (
         <div className="flow-node-preview">
           <AssetPreview
@@ -512,6 +687,36 @@ function NodeStateContent({
       <span>{emptyLabel}</span>
     </div>
   );
+}
+
+/**
+ * 按节点模式和媒体类型生成简短介绍，供信息对话框展示。
+ * @param data 当前节点数据。
+ * @returns 中文介绍文案。
+ */
+function nodeIntroduction(data: AssetFlowNode['data']): string {
+  const media = mediaLabels[data.mediaType];
+  if (data.mode === 'source') {
+    return `来源${media}节点，把已有${media}素材放入画布，供下游节点引用。`;
+  }
+  if (data.mode === 'generate') {
+    return `生成${media}节点，根据提示词和上游输入生成${media}。`;
+  }
+  return `转换${media}节点，把上游内容转换成${media}。`;
+}
+
+/**
+ * 悬浮栏状态图标的文字提示。
+ * @param status 运行状态。
+ * @param artifactState 产物加载状态。
+ * @returns 提示文案。
+ */
+function nodeStatusTooltip(status?: RunStatus, artifactState?: AssetPreviewLoadState): string {
+  if (artifactState === 'error') return '产物加载失败';
+  if (artifactState === 'missing') return '产物不可用';
+  if (artifactState === 'loading') return '产物加载中';
+  if (!status) return '未运行';
+  return runStatusLabel(status);
 }
 
 function RunStatusIcon({

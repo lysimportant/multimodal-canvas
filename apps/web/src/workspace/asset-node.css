@@ -32,7 +32,7 @@
 
 /* 透明的底部间距连通节点与悬浮栏，鼠标向上移动时操作不会闪退。 */
 .flow-asset-node > .flow-node-header.flow-node-floating-controls {
-  align-items: center;
+  align-items: stretch;
   bottom: calc(100% + 10px);
   background: var(--mc-surface);
   border: 1px solid var(--mc-border);
@@ -40,12 +40,12 @@
   box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
   display: flex;
   flex-wrap: nowrap;
-  gap: 8px;
+  gap: 6px;
   left: 0;
   margin: 0;
   min-height: 44px;
   opacity: 0;
-  padding: 6px 8px;
+  padding: 4px 6px;
   pointer-events: none;
   position: absolute;
   transition: opacity 120ms ease;
@@ -71,38 +71,90 @@
 }
 
 .flow-node-floating-controls > .flow-node-label {
-  flex: 1 1 0;
+  display: flex;
+  flex: 0 0 33.333%;
   margin: 0;
+  max-width: 33.333%;
   min-width: 0;
 }
 
-.flow-node-floating-controls > .flow-node-status,
-.flow-node-floating-controls > .flow-node-enabled-toggle {
-  margin-left: 0;
-}
-
-.flow-node-floating-controls > .flow-node-enabled-toggle {
-  border-left: 1px solid var(--mc-border);
-  border-radius: 0;
-  flex: 0 0 40px;
-  height: 40px;
-  padding-left: 8px;
-  width: 40px;
+.flow-node-floating-controls > .flow-node-actions {
+  display: flex;
+  flex: 1 1 66.667%;
+  gap: 4px;
+  min-width: 0;
 }
 
 .flow-node-label > .flow-node-label-button {
+  align-items: center;
   background: transparent;
   border: 0;
-  border-radius: 3px;
+  border-radius: 4px;
   color: inherit;
-  display: block;
+  display: flex;
   font: inherit;
+  height: 100%;
+  justify-content: flex-start;
+  min-width: 0;
   overflow: hidden;
-  padding: 2px 0;
+  padding: 0 8px;
   text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
   width: 100%;
+}
+
+.flow-node-floating-controls .flow-node-label-button:hover,
+.flow-node-floating-controls .flow-node-action-button:hover,
+.flow-node-floating-controls .flow-node-action-button:focus-visible {
+  background: var(--mc-surface-muted);
+}
+
+.flow-node-floating-controls .flow-node-action-button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--mc-text-muted);
+  display: inline-flex;
+  flex: 1 1 0;
+  height: auto;
+  justify-content: center;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+  width: auto;
+}
+
+.flow-node-floating-controls .flow-node-action-button svg {
+  display: block;
+  flex: 0 0 auto;
+}
+
+.flow-node-floating-controls .flow-node-drag-handle {
+  cursor: grab;
+}
+
+.flow-node-floating-controls .flow-node-drag-handle:active {
+  cursor: grabbing;
+}
+
+.flow-node-floating-controls .flow-node-info-button.is-stale {
+  color: #8b5a13;
+}
+
+.flow-node-floating-controls .flow-node-enabled-toggle {
+  border: 0;
+  border-radius: 4px;
+  flex: 1 1 0;
+  height: auto;
+  padding: 0;
+  width: auto;
+}
+
+.flow-node-floating-controls .flow-node-status {
+  flex: 1 1 0;
+  margin-left: 0;
 }
 
 .flow-node-header > .flow-node-delete-button,
@@ -118,6 +170,13 @@
   justify-content: center;
   padding: 0;
   width: 40px;
+}
+
+.flow-node-floating-controls .flow-node-delete-button,
+.flow-node-floating-controls .flow-node-upload-button {
+  flex: 1 1 0;
+  height: auto;
+  width: auto;
 }
 
 .flow-node-upload-feedback {
@@ -139,17 +198,145 @@
 }
 
 .flow-node-header > .flow-node-delete-button:hover,
-.flow-node-header > .flow-node-delete-button:focus-visible {
+.flow-node-header > .flow-node-delete-button:focus-visible,
+.flow-node-floating-controls .flow-node-delete-button:hover,
+.flow-node-floating-controls .flow-node-delete-button:focus-visible {
   background: var(--mc-surface-muted);
   color: #bf4237;
 }
 
 .flow-node-label-button:focus-visible,
+.flow-node-action-button:focus-visible,
 .flow-node-delete-button:focus-visible,
 .flow-node-upload-button:focus-visible,
-.flow-node-enabled-toggle:focus-visible {
+.flow-node-enabled-toggle:focus-visible,
+.flow-node-dialog-close:focus-visible,
+.flow-node-dialog-primary:focus-visible,
+.flow-node-dialog-secondary:focus-visible {
   outline: 2px solid var(--mc-accent);
   outline-offset: 2px;
+}
+
+.flow-node-dialog-backdrop {
+  background: rgb(15 23 32 / 45%);
+  z-index: 80;
+}
+
+.flow-node-dialog {
+  background: var(--mc-surface, #ffffff);
+  border-color: var(--mc-border, #e2e7eb);
+  color: var(--mc-text, #18212f);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 16px 16px;
+  width: min(420px, calc(100vw - 32px));
+  z-index: 81;
+}
+
+.flow-node-dialog-header {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.flow-node-dialog-header [data-slot='dialog-title'] {
+  font-size: 15px;
+  font-weight: 650;
+  margin: 0;
+}
+
+.flow-node-dialog-close {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--mc-text-muted);
+  display: inline-flex;
+  height: 32px;
+  justify-content: center;
+  padding: 0;
+  width: 32px;
+}
+
+.flow-node-dialog-close:hover {
+  background: var(--mc-surface-muted);
+  color: var(--mc-text);
+}
+
+.flow-node-dialog-field {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.flow-node-dialog-field > span {
+  color: var(--mc-text-muted);
+  font-weight: 650;
+}
+
+.flow-node-dialog-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.flow-node-dialog-primary,
+.flow-node-dialog-secondary {
+  align-items: center;
+  border-radius: 4px;
+  display: inline-flex;
+  font-size: 13px;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 12px;
+}
+
+.flow-node-dialog-secondary {
+  background: transparent;
+  border: 1px solid var(--mc-border-strong, #d3dce0);
+  color: var(--mc-text);
+}
+
+.flow-node-dialog-secondary:hover {
+  background: var(--mc-surface-muted);
+}
+
+.flow-node-dialog-primary {
+  background: var(--mc-text-strong, #172033);
+  border: 1px solid var(--mc-text-strong, #172033);
+  color: var(--mc-surface, #ffffff);
+}
+
+.flow-node-dialog-intro {
+  color: var(--mc-text-muted);
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0;
+}
+
+.flow-node-info-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.flow-node-info-list > div {
+  display: grid;
+  gap: 4px 12px;
+  grid-template-columns: 64px minmax(0, 1fr);
+}
+
+.flow-node-info-list dt {
+  color: var(--mc-text-muted);
+  font-size: 12px;
+}
+
+.flow-node-info-list dd {
+  font-size: 13px;
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 @media (prefers-reduced-motion: reduce) {

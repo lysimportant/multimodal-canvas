@@ -84,19 +84,22 @@ afterEach(() => {
 });
 
 describe('AssetNode result presentation', () => {
-  it('通过顶部名称按钮的键盘交互重命名，Escape 取消草稿', async () => {
+  it('通过顶部名称按钮打开重命名对话框，Escape 取消草稿', async () => {
     const onLabelChange = vi.fn();
     const user = userEvent.setup();
     renderNode(makeNode(), undefined, undefined, undefined, false, onLabelChange);
 
     screen.getByRole('button', { name: '重命名节点：文案生成' }).focus();
     await user.keyboard('{Enter}');
+    const dialog = await screen.findByRole('dialog', { name: '重命名节点' });
     const input = screen.getByRole('textbox', { name: '编辑节点名称' });
+    expect(dialog).toContainElement(input);
     await user.clear(input);
     await user.type(input, '尚未保存的名称');
     await user.keyboard('{Escape}');
 
     expect(onLabelChange).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(screen.getByRole('button', { name: '重命名节点：文案生成' })).toBeInTheDocument();
   });
 
@@ -120,7 +123,24 @@ describe('AssetNode result presentation', () => {
       expect(toolbar).toContainElement(
         screen.getByRole('button', { name: '重命名节点：文案生成' }),
       );
+      expect(toolbar.querySelector('.flow-node-label')).not.toBeNull();
+      expect(toolbar.querySelector('.flow-node-actions')).not.toBeNull();
+      expect(toolbar).toContainElement(screen.getByRole('button', { name: '拖动移动节点' }));
+      expect(toolbar).toContainElement(screen.getByRole('button', { name: '查看节点信息' }));
       expect(toolbar).toContainElement(screen.getByRole('button', { name: '停用节点' }));
+      expect(screen.getByRole('button', { name: '拖动移动节点' })).toHaveAttribute(
+        'title',
+        '拖动移动节点',
+      );
+      expect(screen.getByRole('button', { name: '查看节点信息' })).toHaveAttribute(
+        'title',
+        '查看节点信息',
+      );
+      expect(screen.getByRole('button', { name: '停用节点' })).toHaveAttribute('title', '停用节点');
+      expect(screen.getByRole('button', { name: '删除节点：文案生成' })).toHaveAttribute(
+        'title',
+        '删除节点',
+      );
       expect(container.querySelector('.flow-node-placeholder')).not.toContainElement(toolbar);
       expect(screen.getAllByRole('button', { name: '删除节点：文案生成' })).toHaveLength(1);
       expect(screen.getByRole('button', { name: '停用节点' }).querySelector('svg')).toHaveAttribute(
@@ -135,19 +155,32 @@ describe('AssetNode result presentation', () => {
     },
   );
 
-  it('双击节点名称后可编辑并保存', async () => {
+  it('点击节点名称后在对话框中保存新名称', async () => {
     const onLabelChange = vi.fn();
     const user = userEvent.setup();
     renderNode(makeNode(), undefined, undefined, undefined, false, onLabelChange);
 
-    await user.dblClick(screen.getByText('文案生成'));
-    const input = screen.getByRole('textbox', { name: '编辑节点名称' });
+    await user.click(screen.getByRole('button', { name: '重命名节点：文案生成' }));
+    const input = await screen.findByRole('textbox', { name: '编辑节点名称' });
     await user.clear(input);
     await user.type(input, '新的节点名称');
-    await user.keyboard('{Enter}');
+    await user.click(screen.getByRole('button', { name: '保存' }));
 
     expect(onLabelChange).toHaveBeenCalledWith('node_1', '新的节点名称');
-    expect(screen.queryByRole('textbox', { name: '编辑节点名称' })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  it('信息按钮打开介绍对话框', async () => {
+    const user = userEvent.setup();
+    renderNode(makeNode({ stale: true }), undefined, vi.fn(), undefined, false, vi.fn(), vi.fn());
+
+    await user.click(screen.getByRole('button', { name: '查看节点信息' }));
+    const dialog = await screen.findByRole('dialog', { name: '节点信息' });
+    expect(dialog).toHaveTextContent('生成文字节点，根据提示词和上游输入生成文字。');
+    expect(dialog).toHaveTextContent('文案生成');
+    expect(dialog).toHaveTextContent('上游已变更，节点待更新');
+    await user.click(screen.getByRole('button', { name: '关闭节点信息' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 
   it('exposes a visible enable toggle and reports the next state', async () => {
