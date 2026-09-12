@@ -423,13 +423,14 @@
 }
 
 .flow-node-state-message {
-  display: -webkit-box;
-  line-height: 1.4;
+  display: block;
+  line-height: 1.45;
+  max-height: 8.7em;
   max-width: 100%;
-  overflow: hidden;
+  overflow: auto;
   overflow-wrap: anywhere;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  text-align: left;
+  white-space: pre-wrap;
 }
 
 .flow-node-retry:disabled {

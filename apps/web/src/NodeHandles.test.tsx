@@ -90,7 +90,7 @@ describe('NodeHandles', () => {
     const handlesBySide = new Map(visible.map((handle) => [handle.side, handle]));
 
     expect((['top', 'left', 'bottom'] as const).map((side) => handlesBySide.get(side)?.id)).toEqual(
-      ['input:prompt', 'input:content', 'input:negativePrompt'],
+      ['input:prompt', 'input:firstFrame', 'input:negativePrompt'],
     );
   });
 

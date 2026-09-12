@@ -517,14 +517,7 @@ export class NewApiProvider {
       );
       throwIfProviderSignalAborted(externalSignal);
       if (!response.ok) {
-        const providerError = extractProviderError(payload, [this.apiKey]);
-        const message = providerError.message ?? `New API 请求失败（${response.status}）`;
-        throw new NewApiProviderError(message, {
-          status: response.status,
-          code: providerError.code,
-          requestId: providerError.requestId ?? responseRequestId(response, [this.apiKey]),
-          retryable: isRetryableStatus(response.status),
-        });
+        throw providerResponseError(response, payload, [this.apiKey], '模型调用');
       }
       const bodyRequestId = isRecord(payload)
         ? [payload.request_id, payload.requestId, payload.id]
@@ -755,15 +748,28 @@ export class NewApiVideoProvider {
           contract,
         );
       } catch (error) {
-        // 已受理但响应丢失时无法确认任务身份，必须人工核对，不能按临时故障自动重建。
+        // 已收到明确拒绝（无渠道、参数错误等）时任务未创建，直接展示供应商诊断。
+        if (error instanceof NewApiProviderError && isDefiniteProviderRejection(error)) {
+          throw error;
+        }
+        // 超时/网络/5xx 等可能已受理，禁止自动重建，但仍保留原始失败细节。
         if (!(error instanceof NewApiProviderError) || error.retryable) {
-          throw new NewApiProviderError('New API 视频创建结果未知，请先核对平台任务状态', {
-            status: error instanceof NewApiProviderError ? error.status : undefined,
-            code: 'VIDEO_SUBMISSION_UNKNOWN',
-            requestId: error instanceof NewApiProviderError ? error.requestId : undefined,
-            providerPayload: pendingPayload,
-            retryable: false,
-          });
+          const original =
+            error instanceof NewApiProviderError
+              ? error.message
+              : error instanceof Error
+                ? sanitizeProviderErrorMessage(error.message, [this.apiKey])
+                : '供应商未返回具体错误说明。';
+          throw new NewApiProviderError(
+            `${original} New API 视频创建结果未知，请先核对平台任务状态；因无法确认任务是否已创建，不要立即重复提交。`,
+            {
+              status: error instanceof NewApiProviderError ? error.status : undefined,
+              code: 'VIDEO_SUBMISSION_UNKNOWN',
+              requestId: error instanceof NewApiProviderError ? error.requestId : undefined,
+              providerPayload: pendingPayload,
+              retryable: false,
+            },
+          );
         }
         throw error;
       }
@@ -1142,7 +1148,13 @@ export class NewApiVideoProvider {
               : extractVideoRequestId(payload)
             : undefined,
         );
-        if (!response.ok) throw providerResponseError(response, payload, [this.apiKey]);
+        if (!response.ok)
+          throw providerResponseError(
+            response,
+            payload,
+            [this.apiKey],
+            method === 'POST' ? '视频创建' : '视频查询',
+          );
         if (!isRecord(payload) || isBinaryResponsePayload(payload)) {
           throw new NewApiProviderError('New API 视频响应不是有效 JSON', {
             requestId: responseRequestId(response, [this.apiKey]),
@@ -1180,7 +1192,7 @@ export class NewApiVideoProvider {
         }
         const payload = await readResponsePayload(response, this.maxContentBytes, requestSignal);
         throwIfProviderSignalAborted(externalSignal, platformJobId);
-        if (!response.ok) throw providerResponseError(response, payload, [this.apiKey]);
+        if (!response.ok) throw providerResponseError(response, payload, [this.apiKey], '视频下载');
         if (!isBinaryResponsePayload(payload) || payload.bytes.byteLength === 0) {
           throw new NewApiProviderError('New API 视频下载响应不包含二进制内容', {
             requestId: responseRequestId(response, [this.apiKey]),
@@ -1750,21 +1762,93 @@ function parseVideoPollResult(
   });
 }
 
+/**
+ * 把 HTTP 失败整理成可展示的中文诊断，保留状态码、错误代码、请求 ID 和供应商原文。
+ */
 function providerResponseError(
   response: Response,
   payload: unknown,
   sensitiveValues: readonly string[] = [],
+  action = 'New API 请求',
 ): NewApiProviderError {
   const providerError = extractProviderError(payload, sensitiveValues);
+  const requestId = providerError.requestId ?? responseRequestId(response, sensitiveValues);
+  const definite = isDefiniteProviderRejection({
+    status: response.status,
+    code: providerError.code,
+    message: providerError.message,
+  });
+  const extra = isNoAvailableChannel(providerError.code, providerError.message)
+    ? '当前分组没有可用渠道，请在网关中为该模型配置渠道或更换分组/密钥。'
+    : undefined;
   return new NewApiProviderError(
-    providerError.message ?? `New API 请求失败（${response.status}）`,
+    formatDetailedProviderError({
+      action,
+      status: response.status,
+      code: providerError.code,
+      requestId,
+      providerMessage: providerError.message,
+      extra,
+    }),
     {
       status: response.status,
       code: providerError.code,
-      requestId: providerError.requestId ?? responseRequestId(response, sensitiveValues),
-      retryable: isRetryableStatus(response.status),
+      requestId,
+      providerPayload: sanitizeProviderPayload(isRecord(payload) ? payload : { body: payload }),
+      retryable: definite ? false : isRetryableStatus(response.status),
     },
   );
+}
+
+/**
+ * 网关已明确拒绝请求（无渠道、参数错误、4xx），可以认定任务未创建。
+ */
+function isDefiniteProviderRejection(error: {
+  status?: number;
+  code?: string;
+  message?: string;
+}): boolean {
+  if (isNoAvailableChannel(error.code, error.message)) return true;
+  if (error.code === 'invalid_request_error' || error.code === 'invalid_request') return true;
+  return (
+    error.status !== undefined &&
+    error.status >= 400 &&
+    error.status < 500 &&
+    error.status !== 408 &&
+    error.status !== 425 &&
+    error.status !== 429
+  );
+}
+
+/** 识别 New API “当前分组无渠道”诊断，避免被当成可重试的临时故障。 */
+function isNoAvailableChannel(code?: string, message?: string): boolean {
+  const haystack = `${code ?? ''} ${message ?? ''}`;
+  return /model_not_found/i.test(haystack) || /no available channel/i.test(haystack);
+}
+
+/**
+ * 组装给用户看的失败说明：动作、HTTP 状态、错误代码、供应商原文和请求 ID。
+ */
+function formatDetailedProviderError(options: {
+  action: string;
+  status?: number;
+  code?: string;
+  requestId?: string;
+  providerMessage?: string;
+  extra?: string;
+}): string {
+  const parts = [
+    `${options.action}失败${options.status !== undefined ? `（HTTP ${options.status}）` : ''}。`,
+  ];
+  if (options.code) parts.push(`错误代码：${options.code}。`);
+  parts.push(
+    options.providerMessage
+      ? `供应商返回：${options.providerMessage}`
+      : '供应商未返回具体错误说明。',
+  );
+  if (options.requestId) parts.push(`请求 ID：${options.requestId}。`);
+  if (options.extra) parts.push(options.extra);
+  return parts.join(' ');
 }
 
 function videoJobError(
@@ -1834,7 +1918,7 @@ function normalizeErrorField(value: unknown): string | undefined {
   return nonEmptyString(value) ? value.trim() : undefined;
 }
 
-const maxProviderErrorMessageLength = 512;
+const maxProviderErrorMessageLength = 2_000;
 const redactedProviderErrorValue = '[REDACTED]';
 const maxProviderPayloadDepth = 4;
 const maxProviderPayloadKeys = 64;
@@ -1875,7 +1959,7 @@ function sanitizeProviderPayloadValue(
   if (typeof value === 'string') {
     const normalized = value.trim();
     if (!normalized || /^data:[^,]+,/i.test(normalized)) return undefined;
-    return sanitizeProviderErrorMessage(normalized).slice(0, maxProviderPayloadStringLength);
+    return sanitizeProviderErrorMessage(normalized, [], maxProviderPayloadStringLength);
   }
   if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
   if (typeof value === 'boolean') return value;
@@ -1900,6 +1984,7 @@ function sanitizeProviderPayloadValue(
 function sanitizeProviderErrorMessage(
   value: string,
   sensitiveValues: readonly string[] = [],
+  maxLength = maxProviderErrorMessageLength,
 ): string {
   let message = value.trim() || 'New API 请求失败';
 
@@ -1920,8 +2005,8 @@ function sanitizeProviderErrorMessage(
     .trim();
 
   const truncationSuffix = '... [truncated]';
-  if (message.length <= maxProviderErrorMessageLength) return message;
-  return `${message.slice(0, maxProviderErrorMessageLength - truncationSuffix.length)}${truncationSuffix}`;
+  if (message.length <= maxLength) return message;
+  return `${message.slice(0, maxLength - truncationSuffix.length)}${truncationSuffix}`;
 }
 
 function sanitizeOptionalProviderErrorMessage(
@@ -1937,7 +2022,7 @@ function sanitizeProviderDiagnosticField(
 ): string | undefined {
   const field = normalizeErrorField(value);
   if (!field) return undefined;
-  return sanitizeProviderErrorMessage(field, sensitiveValues) || undefined;
+  return sanitizeProviderErrorMessage(field, sensitiveValues, 512) || undefined;
 }
 
 function redactUrlQueryAndFragment(message: string): string {
@@ -3396,6 +3481,13 @@ function mapVideoInputs(snapshot: RunSnapshot): VideoInputMapping {
   for (const input of orderedRunInputs(snapshot)) {
     // 部分画布布局会把文本默认连接到内容端口，因此将文本内容映射到视频主提示词字段。
     if (input.role === 'prompt' || input.role === 'content') {
+      // 画布左侧默认是内容口；图生视频时把图片内容当作首帧，而不是文字提示词。
+      if (input.snapshot.data.mediaType === 'image') {
+        if (mapping.firstFrame) throw inputRoleCardinalityError('video', 'firstFrame');
+        inputImageUrl(input, 'video');
+        mapping.firstFrame = input;
+        continue;
+      }
       if (mapping.prompt) throw inputRoleCardinalityError('video', 'prompt');
       mapping.prompt = input;
       continue;
@@ -3465,8 +3557,12 @@ function unsupportedInputRoleError(
   role: PortRole,
   detail?: string,
 ): NewApiProviderError {
+  const roleHint =
+    mediaType === 'video' && detail && (role === 'content' || role === 'firstFrame')
+      ? ' 图生视频请把图片连到「首帧」口；提示词请连到「提示词」口或在节点中填写。'
+      : '';
   return new NewApiProviderError(
-    `New API ${mediaType} 不支持该输入角色：${role}${detail ? `（${detail}）` : ''}`,
+    `New API ${mediaType} 不支持该输入角色：${role}${detail ? `（${detail}）` : ''}${roleHint}`,
     { code: 'UNSUPPORTED_INPUT_ROLE', retryable: false },
   );
 }

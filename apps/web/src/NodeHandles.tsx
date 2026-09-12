@@ -31,6 +31,13 @@ const preferredInputRoles: Record<Exclude<NodeHandleSide, 'right'>, PortRole> = 
   left: 'content',
 };
 
+/** 视频左侧默认接首帧，避免把参考图误连到内容口后按提示词解析。 */
+const preferredVideoInputRoles: Record<Exclude<NodeHandleSide, 'right'>, PortRole> = {
+  top: 'prompt',
+  bottom: 'negativePrompt',
+  left: 'firstFrame',
+};
+
 const inputRoleLabels: Record<PortRole, string> = {
   prompt: '提示词',
   negativePrompt: '负面提示词',
@@ -59,12 +66,17 @@ export type NodeHandleLayout = {
   semanticInputRoles: PortRole[];
 };
 
+/**
+ * 为可见锚点分配尚未占用的首选角色，否则退回下一个空闲角色。
+ * @param preferredRoles 当前媒体类型在上/左/下三侧的首选输入角色。
+ */
 function takePreferredRole(
   side: InputHandleSide,
   targetRoles: PortRole[],
   assignedRoles: Set<PortRole>,
+  preferredRoles: Record<Exclude<NodeHandleSide, 'right'>, PortRole>,
 ): PortRole | undefined {
-  const preferredRole = preferredInputRoles[side];
+  const preferredRole = preferredRoles[side];
   if (targetRoles.includes(preferredRole) && !assignedRoles.has(preferredRole)) {
     assignedRoles.add(preferredRole);
     return preferredRole;
@@ -83,9 +95,10 @@ export function getNodeHandleLayout(mediaType: MediaType, mode: NodeMode): NodeH
   const targetRoles = mode === 'source' ? [] : targetPortRolesForMediaType(mediaType);
   const assignedRoles = new Set<PortRole>();
   const sideRoles: Partial<Record<InputHandleSide, PortRole>> = {};
+  const preferredRoles = mediaType === 'video' ? preferredVideoInputRoles : preferredInputRoles;
 
   for (const side of ['top', 'left', 'bottom'] as const) {
-    const role = takePreferredRole(side, targetRoles, assignedRoles);
+    const role = takePreferredRole(side, targetRoles, assignedRoles, preferredRoles);
     if (role) sideRoles[side] = role;
   }
 

@@ -2347,8 +2347,11 @@ describe('NewApiProvider', () => {
       requestId: 'req-overloaded',
       retryable: true,
     });
-    expect((error as NewApiProviderError).message).toHaveLength(512);
+    expect((error as NewApiProviderError).message.length).toBeLessThanOrEqual(2_000);
     expect((error as NewApiProviderError).message).toMatch(/\.\.\. \[truncated\]$/);
+    expect((error as NewApiProviderError).message).toContain('模型调用失败（HTTP 503）');
+    expect((error as NewApiProviderError).message).toContain('错误代码：overloaded');
+    expect((error as NewApiProviderError).message).toContain('供应商返回：');
   });
 
   it('sanitizes structured standard diagnostics from body and response headers', async () => {
@@ -2981,9 +2984,73 @@ describe('NewApiVideoProvider', () => {
     await expect(provider.execute({ snapshot, onProviderJob: vi.fn() })).rejects.toMatchObject({
       code: 'UNSUPPORTED_INPUT_ROLE',
       retryable: false,
-      message: 'New API video 不支持该输入角色：firstFrame（上游媒体类型 text 无法映射为图片）',
+      message:
+        'New API video 不支持该输入角色：firstFrame（上游媒体类型 text 无法映射为图片） 图生视频请把图片连到「首帧」口；提示词请连到「提示词」口或在节点中填写。',
     });
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('maps an image connected to the content port as the video first frame', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: { message: 'temporarily unavailable' } }), {
+        status: 503,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+      pollIntervalMs: 0,
+    });
+    const snapshot = videoSnapshot();
+    snapshot.inputs[0] = { ...snapshot.inputs[0], role: 'content' };
+
+    await expect(provider.execute({ snapshot, onProviderJob: vi.fn() })).rejects.toMatchObject({
+      code: 'VIDEO_SUBMISSION_UNKNOWN',
+    });
+    expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))).toMatchObject({
+      image: { url: 'https://assets.example/first.png' },
+    });
+  });
+
+  it('keeps no-available-channel video errors instead of wrapping them as unknown', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          error: {
+            code: 'model_not_found',
+            message: 'No available channel for model grok-imagine-video-1.5.1 under group 神秘分组',
+            type: 'new_api_error',
+          },
+        }),
+        {
+          status: 503,
+          headers: { 'content-type': 'application/json', 'x-request-id': 'req-no-channel' },
+        },
+      ),
+    );
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+      pollIntervalMs: 0,
+    });
+
+    const error = await provider
+      .execute({ snapshot: videoSnapshot(), onProviderJob: vi.fn() })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      status: 503,
+      code: 'model_not_found',
+      retryable: false,
+    });
+    expect((error as NewApiProviderError).message).toContain('视频创建失败（HTTP 503）');
+    expect((error as NewApiProviderError).message).toContain('No available channel');
+    expect((error as NewApiProviderError).message).toContain('当前分组没有可用渠道');
+    expect((error as NewApiProviderError).message).toContain('req-no-channel');
+    expect((error as NewApiProviderError).code).not.toBe('VIDEO_SUBMISSION_UNKNOWN');
   });
 
   it('sends one idempotent video POST and forbids automatic retry when submission is ambiguous', async () => {
@@ -3005,10 +3072,16 @@ describe('NewApiVideoProvider', () => {
       providerJob: { provider: 'newapi' as const, id: 'provider_job_video_retry' },
     };
 
-    await expect(provider.execute(request)).rejects.toMatchObject({
+    const error = await provider.execute(request).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
       code: 'VIDEO_SUBMISSION_UNKNOWN',
       retryable: false,
     });
+    expect((error as NewApiProviderError).message).toContain('视频创建失败（HTTP 503）');
+    expect((error as NewApiProviderError).message).toContain('temporarily unavailable');
+    expect((error as NewApiProviderError).message).toContain(
+      'New API 视频创建结果未知，请先核对平台任务状态',
+    );
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(fetchImpl).toHaveBeenCalledWith(
@@ -3670,9 +3743,10 @@ describe('NewApiVideoProvider', () => {
 
     expect(error).toBeInstanceOf(NewApiProviderError);
     expect(error).toMatchObject({ code: 'VIDEO_SUBMISSION_UNKNOWN', retryable: false });
-    expect((error as NewApiProviderError).message).toBe(
+    expect((error as NewApiProviderError).message).toContain(
       'New API 视频创建结果未知，请先核对平台任务状态',
     );
+    expect((error as NewApiProviderError).message).toContain('response stream failed');
     expect((error as NewApiProviderError).message).not.toContain(apiKey);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
@@ -3778,6 +3852,6 @@ describe('NewApiVideoProvider', () => {
     expect(error.providerPayload).not.toHaveProperty('outputUrl');
     expect(JSON.stringify(error.providerPayload)).not.toContain('provider-secret');
     expect(JSON.stringify(error.providerPayload)).not.toContain('signature=secret');
-    expect(error.providerPayload?.long).toHaveLength(512);
+    expect(error.providerPayload?.long).toHaveLength(1_000);
   });
 });

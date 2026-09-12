@@ -66,7 +66,7 @@ export function serializeWorkerError(error: unknown): {
   const source = error instanceof Error ? error.message : String(error);
   return {
     ...(error instanceof Error ? { errorName: redactText(error.name) } : {}),
-    errorMessage: redactText(source).slice(0, 512),
+    errorMessage: redactText(source).slice(0, 2_000),
   };
 }
 
