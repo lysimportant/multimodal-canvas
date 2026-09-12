@@ -36,6 +36,7 @@ export function ResourcePanel({
   onAddAsset,
   onRenameAsset,
   onArchiveAsset,
+  onDeleteAsset,
   onDrop,
   onToggleCollapsed,
   uploadInputRef,
