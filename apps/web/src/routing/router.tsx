@@ -1,4 +1,6 @@
 import {
+  createContext,
+  useContext,
   useCallback,
   useMemo,
   useSyncExternalStore,
@@ -8,10 +10,26 @@ import {
 } from 'react';
 import { flushSync } from 'react-dom';
 
-import { parseAppRoute, type AppRoute } from './routes';
+import { appPaths, parseAppRoute, type AppRoute } from './routes';
 import './transitions.css';
 
 const APP_NAVIGATION_EVENT = 'multimodal-canvas:navigation';
+
+/** 管理页子链接共享返回来源，资源筛选等页面参数继续由各链接持有。 */
+const ProjectReturnContext = createContext<string | undefined>(undefined);
+
+/** 向管理子页提供来源项目，仅影响内部 AppLink 的查询参数。 */
+export function ProjectReturnProvider({
+  projectId,
+  children,
+}: {
+  projectId?: string;
+  children: ReactNode;
+}) {
+  return (
+    <ProjectReturnContext.Provider value={projectId}>{children}</ProjectReturnContext.Provider>
+  );
+}
 
 export type NavigateOptions = {
   replace?: boolean;
@@ -118,19 +136,21 @@ export function shouldInterceptAppLink(
 }
 
 export function AppLink({ to, replace, state, onClick, target, download, ...props }: AppLinkProps) {
+  const projectId = useContext(ProjectReturnContext);
+  const href = download ? to : appPaths.withProject(to, projectId);
   return (
     <a
       {...props}
-      href={to}
+      href={href}
       target={target}
       download={download}
       onClick={(event) => {
         onClick?.(event);
-        if (event.defaultPrevented || !shouldInterceptAppLink(event, to, target, download)) {
+        if (event.defaultPrevented || !shouldInterceptAppLink(event, href, target, download)) {
           return;
         }
         event.preventDefault();
-        navigateApp(to, { replace, state });
+        navigateApp(href, { replace, state });
       }}
     />
   );

@@ -1,5 +1,5 @@
 /** 应用可识别的页面；管理页仍需服务端角色与资源权限校验。 */
-export type AppRoute =
+export type AppRoute = (
   | { id: 'home'; pathname: '/' }
   | { id: 'workspace'; pathname: '/workspace'; createProject?: boolean }
   | { id: 'contact'; pathname: '/contact' }
@@ -11,7 +11,8 @@ export type AppRoute =
       pathname: string;
       page: 'login' | 'register' | 'verify' | 'forgot-password';
     }
-  | { id: 'not-found'; pathname: string };
+  | { id: 'not-found'; pathname: string }
+) & { /** 离开画布时的返回来源，独立于页面筛选条件。 */ returnProjectId?: string };
 
 export type AppNavigationSection = 'home' | 'workspace' | 'settings';
 
@@ -37,7 +38,35 @@ export const appPaths = {
   project(projectId: string) {
     return `/projects/${encodeURIComponent(projectId)}`;
   },
+  /** 合并项目返回来源，保留目标链接的筛选、片段和既有查询参数。 */
+  withProject(href: string, projectId?: string | null) {
+    if (!projectId) return href;
+    const base =
+      typeof window === 'undefined' ? 'http://multimodal-canvas.local' : window.location.origin;
+    let url: URL;
+    try {
+      url = new URL(href, base);
+    } catch {
+      return href;
+    }
+    if (url.origin !== base || !['http:', 'https:'].includes(url.protocol)) return href;
+    if (/^\/projects\/[^/]+\/?$/.test(url.pathname)) return href;
+    url.searchParams.set('returnProjectId', projectId);
+    if (url.pathname === '/settings') url.searchParams.set('project', projectId);
+    return `${url.pathname}${url.search}${url.hash}`;
+  },
 } as const;
+
+/** 优先读取显式返回来源，兼容历史 project/projectId 参数；筛选变化不写回来源。 */
+export function readReturnProjectId(search: string): string | undefined {
+  const query = new URLSearchParams(search);
+  const value = (
+    query.get('returnProjectId') ??
+    query.get('project') ??
+    query.get('projectId')
+  )?.trim();
+  return value && value.length <= 100 && !value.includes('/') ? value : undefined;
+}
 
 function normalizePathname(pathname: string) {
   const withLeadingSlash = pathname.startsWith('/') ? pathname : `/${pathname}`;
@@ -69,7 +98,16 @@ function readLocation(input: string | Pick<Location, 'pathname' | 'search'>) {
   };
 }
 
+/** 解析页面与可选返回来源；未携带来源时保持既有路由数据结构。 */
 export function parseAppRoute(input: string | Pick<Location, 'pathname' | 'search'>): AppRoute {
+  const location = readLocation(input);
+  const route = parseRoutePath(location);
+  const returnProjectId = readReturnProjectId(location.search);
+  return returnProjectId ? { ...route, returnProjectId } : route;
+}
+
+/** 按规范化路径解析具体页面，查询参数只用于各页面自身状态。 */
+function parseRoutePath(input: Pick<Location, 'pathname' | 'search'>): AppRoute {
   const { pathname, search } = readLocation(input);
   if (pathname === '/') return { id: 'home', pathname: '/' };
   if (pathname === '/workspace')

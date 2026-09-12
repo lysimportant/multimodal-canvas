@@ -1,16 +1,21 @@
-/* 生成/转换节点只展示内容表面；节点尺寸仍由 React Flow 与显式拖拽维护。 */
-.flow-asset-node.flow-generate-node,
-.flow-asset-node.flow-generate-node.is-selected {
-  background: transparent;
-  border: 0;
+/* 来源与生成节点共用轻量外壳；尺寸仅由显式拖拽维护。 */
+.react-flow__node .flow-asset-node {
+  background: var(--mc-surface);
+  border: 1px solid var(--mc-border);
   border-radius: 8px;
-  box-shadow: none;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
   min-height: 0;
   padding: 0;
 }
 
-.flow-generate-node > .flow-node-placeholder,
-.flow-generate-node > .flow-node-preview {
+.react-flow__node .flow-asset-node.is-selected,
+.react-flow__node .flow-asset-node:hover {
+  border-color: var(--mc-accent);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
+}
+
+.flow-asset-node > .flow-node-placeholder,
+.flow-asset-node > .flow-node-preview {
   border: 0;
   border-radius: 8px;
   contain: layout paint;
@@ -21,9 +26,13 @@
 }
 
 /* 透明的底部间距连通节点与悬浮栏，鼠标向上移动时操作不会闪退。 */
-.flow-generate-node > .flow-node-header.flow-node-floating-controls {
+.flow-asset-node > .flow-node-header.flow-node-floating-controls {
   align-items: center;
-  bottom: 100%;
+  bottom: calc(100% + 10px);
+  background: var(--mc-surface);
+  border: 1px solid var(--mc-border);
+  border-radius: 6px;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
   display: flex;
   flex-wrap: nowrap;
   gap: 5px;
@@ -31,7 +40,7 @@
   margin: 0;
   min-height: 36px;
   opacity: 0;
-  padding: 0 0 10px;
+  padding: 4px 6px;
   pointer-events: none;
   position: absolute;
   transition: opacity 120ms ease;
@@ -39,9 +48,18 @@
   z-index: 6;
 }
 
-.flow-generate-node:hover > .flow-node-floating-controls,
-.flow-generate-node.is-selected > .flow-node-floating-controls,
-.flow-generate-node:focus-within > .flow-node-floating-controls,
+.flow-node-floating-controls::after {
+  content: '';
+  height: 11px;
+  left: 0;
+  position: absolute;
+  top: 100%;
+  width: 100%;
+}
+
+.flow-asset-node:hover > .flow-node-floating-controls,
+.flow-asset-node.is-selected > .flow-node-floating-controls,
+.flow-asset-node:focus-within > .flow-node-floating-controls,
 .react-flow__node:focus-within .flow-node-floating-controls {
   opacity: 1;
   pointer-events: auto;
@@ -56,6 +74,12 @@
 .flow-node-floating-controls > .flow-node-status,
 .flow-node-floating-controls > .flow-node-enabled-toggle {
   margin-left: 0;
+}
+
+.flow-node-floating-controls > .flow-node-enabled-toggle {
+  border-left: 1px solid var(--mc-border);
+  border-radius: 0;
+  padding-left: 6px;
 }
 
 .flow-node-label > .flow-node-label-button {
@@ -73,7 +97,8 @@
   width: 100%;
 }
 
-.flow-node-header > .flow-node-delete-button {
+.flow-node-header > .flow-node-delete-button,
+.flow-node-header > .flow-node-upload-button {
   align-items: center;
   background: transparent;
   border: 0;
@@ -85,6 +110,24 @@
   justify-content: center;
   padding: 0;
   width: 24px;
+}
+
+.flow-node-upload-feedback {
+  background: var(--mc-surface);
+  bottom: 4px;
+  color: var(--mc-text);
+  font-size: 11px;
+  left: 4px;
+  max-height: calc(100% - 8px);
+  overflow: auto;
+  padding: 4px;
+  position: absolute;
+  right: 4px;
+  z-index: 2;
+}
+
+.asset-card-actions > .asset-archive-button:hover {
+  color: #bf4237;
 }
 
 .flow-node-header > .flow-node-delete-button:hover,

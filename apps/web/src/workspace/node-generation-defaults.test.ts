@@ -40,7 +40,7 @@ describe('applyNodeGenerationDefaults', () => {
     expect(configured).toMatchObject({
       prompt: original.prompt,
       parameters: { resolution: '720p', aspectRatio: '16:9', duration: 8 },
-      inferenceStrength: 'medium',
+      inferenceStrength: 'high',
     });
     expect(JSON.parse(JSON.stringify(configured)).parameters.duration).toBe(8);
     expect(original.parameters).toBeUndefined();
@@ -148,11 +148,11 @@ describe('applyNodeGenerationDefaults', () => {
     ).toEqual({});
   });
 
-  it('GPT 已确认推理档位使用第二项，并保留单项目录的声明值', () => {
+  it('GPT 已确认推理档位使用 high，并保留单项目录的声明值', () => {
     expect(
       applyNodeGenerationDefaults(data('text'), { ...model('text'), id: 'gpt-5.6-sol' })
         .inferenceStrength,
-    ).toBe('medium');
+    ).toBe('high');
     expect(
       applyNodeGenerationDefaults(data('text'), model('text', { reasoning_effort: ['xhigh'] }))
         .inferenceStrength,
@@ -161,5 +161,20 @@ describe('applyNodeGenerationDefaults', () => {
       applyNodeGenerationDefaults(data('text'), model('text', { reasoning_effort: [] }))
         .inferenceStrength,
     ).toBeUndefined();
+  });
+
+  it('推理强度按 high、中文高标签、第一可用值依次回退', () => {
+    for (const [options, expected] of [
+      [[{ value: 'custom', label: '高' }, 'high'], 'high'],
+      [['low', { value: 'deep', label: '高' }, 'max'], 'deep'],
+      [[{ value: 'high', disabled: true }, 'low', 'max'], 'low'],
+      [['xhigh', 'ultra'], 'xhigh'],
+      [[], undefined],
+    ] as const) {
+      expect(
+        applyNodeGenerationDefaults(data('text'), model('text', { reasoning_effort: options }))
+          .inferenceStrength,
+      ).toBe(expected);
+    }
   });
 });

@@ -18,7 +18,13 @@ import {
 import { useEffect, useRef, useState } from 'react';
 import type { AuthUser, StoredAuthSession } from '../auth-client';
 import { AccountMenu, useAccountActions } from '../navigation/AccountMenu';
-import { AppLink, navigateApp } from '../routing';
+import {
+  AppLink,
+  appPaths,
+  navigateApp,
+  ProjectReturnProvider,
+  readReturnProjectId,
+} from '../routing';
 import { BootstrapPage, ProfilePage, SecurityPage, VerifyPage } from './AccountPages';
 import { AuditPage, OverviewPage, SystemPage, UserDetailPage, UsersPage } from './AdminPages';
 import { ResourceGroupsPage, ResourcesPage, RunsPage } from './ResourcePages';
@@ -30,6 +36,10 @@ import './management.css';
 export type ManagementPageProps = {
   /** 当前规范化路径，查询字符串由页面按需读取。 */
   routePath: string;
+  /** 显式返回来源；旧链接仍可从查询参数恢复。 */
+  returnProjectId?: string;
+  /** 已加载的项目名称，缺失时按当前账户项目列表补全。 */
+  returnProjectName?: string;
   /** 应用当前身份；变化时旧身份内容立即卸载。 */
   authUser: AuthUser | null;
   /** 进入统一登录流程，保留用户此前所在项目。 */
@@ -153,7 +163,24 @@ function ManagementShell({
   routePath,
   user,
   onSessionChanged,
+  returnProjectId: suppliedReturnProjectId,
+  returnProjectName,
 }: ManagementPageProps & { user: AuthUser }) {
+  /** 来源在管理页内固定，资源所属项目筛选不能覆盖它。 */
+  const [initialReturnProjectId] = useState(() => readReturnProjectId(window.location.search));
+  const returnProjectId = suppliedReturnProjectId ?? initialReturnProjectId;
+  const returnProjects = useQuery({
+    queryKey: ['management', user.id, 'own-projects'],
+    queryFn: ({ signal }) =>
+      managementRequest<{ projects: { id: string; name: string }[] }>(
+        '/projects?includeArchived=true',
+        { signal },
+      ),
+    enabled: Boolean(returnProjectId && !returnProjectName),
+  });
+  const projectName =
+    returnProjectName ??
+    returnProjects.data?.projects?.find((project) => project.id === returnProjectId)?.name;
   const account = useAccountActions();
   const [displayedPath, setDisplayedPath] = useState(routePath);
   const [collapsed, setCollapsed] = useState(false);
@@ -227,136 +254,147 @@ function ManagementShell({
   const isAdmin = routePath.startsWith('/admin');
   const navigation = isAdmin ? adminNavigation : accountNavigation;
   return (
-    <div
-      className={`mg-shell${collapsed ? ' is-collapsed' : ''}${mobileOpen ? ' is-mobile-open' : ''}`}
-    >
-      <a className="mg-skip" href="#mg-main">
-        跳到主要内容
-      </a>
-      <aside
-        ref={sidebarRef}
-        className="mg-sidebar"
-        aria-label={isAdmin ? '后台导航' : '账户导航'}
-        inert={(narrow && !mobileOpen) || undefined}
+    <ProjectReturnProvider projectId={returnProjectId}>
+      <div
+        className={`mg-shell${collapsed ? ' is-collapsed' : ''}${mobileOpen ? ' is-mobile-open' : ''}`}
       >
-        <div className="mg-brand">
-          <span className="mg-brand-mark">
-            <ShieldCheck size={21} />
-          </span>
-          <span>{isAdmin ? '管理工作台' : '个人工作台'}</span>
-          <button
-            className="mg-icon mg-mobile-close"
-            type="button"
-            title="关闭导航"
-            aria-label="关闭导航"
-            onClick={() => setMobileOpen(false)}
-          >
-            <X size={17} />
-          </button>
-        </div>
-        <nav>
-          {navigation.map(({ path, label, icon: Icon }) => {
-            const active =
-              path === '/admin'
-                ? routePath === path
-                : (routePath.startsWith(path) &&
-                    !(path === '/admin/users' && routePath.endsWith('/resources'))) ||
-                  (path === '/admin/resources' &&
-                    /^\/admin\/users\/[^/]+\/resources/.test(routePath));
-            return (
-              <AppLink
-                key={path}
-                to={path}
-                className={active ? 'is-active' : ''}
-                aria-current={active ? 'page' : undefined}
-                title={collapsed ? label : undefined}
-              >
-                <Icon size={19} />
-                <span>{label}</span>
-              </AppLink>
-            );
-          })}
-        </nav>
-        <div className="mg-sidebar-secondary">
-          {isAdmin ? (
-            <AppLink to="/account/profile">
-              <UserRound size={19} />
-              <span>个人中心</span>
-            </AppLink>
-          ) : (
-            user.role === 'admin' && (
-              <AppLink to="/admin">
-                <ShieldCheck size={19} />
-                <span>管理后台</span>
-              </AppLink>
-            )
-          )}
-          <AppLink to="/workspace">
-            <ArrowLeft size={19} />
-            <span>返回工作台</span>
-          </AppLink>
-        </div>
-        <div className="mg-sidebar-user">
-          <UserIdentity name={user.displayName} email={user.email} avatarUrl={user.avatarUrl} />
-        </div>
-      </aside>
-      <div className="mg-sidebar-shade" onClick={() => setMobileOpen(false)} aria-hidden="true" />
-      <div className="mg-workspace" inert={(narrow && mobileOpen) || undefined}>
-        <header className="mg-topbar">
-          <button
-            type="button"
-            className="mg-icon mg-desktop-toggle"
-            title={collapsed ? '展开侧栏' : '收起侧栏'}
-            aria-label={collapsed ? '展开侧栏' : '收起侧栏'}
-            aria-expanded={!collapsed}
-            onClick={() => setCollapsed(!collapsed)}
-          >
-            <PanelLeftClose size={19} />
-          </button>
-          <button
-            ref={mobileTriggerRef}
-            type="button"
-            className="mg-icon mg-mobile-toggle"
-            title="打开导航"
-            aria-label="打开导航"
-            aria-expanded={mobileOpen}
-            onClick={() => setMobileOpen(!mobileOpen)}
-          >
-            <Menu size={19} />
-          </button>
-          <span>{isAdmin ? '后台管理' : '个人中心'}</span>
-          <div className="mg-topbar-end">
-            {account ? (
-              <AccountMenu {...account} />
-            ) : (
-              <AppLink
-                to="/account/profile"
-                className="mg-icon"
-                title="个人信息"
-                aria-label="个人信息"
-              >
-                <UserRound size={19} />
-              </AppLink>
-            )}
-          </div>
-        </header>
-        <main
-          ref={mainRef}
-          tabIndex={-1}
-          id="mg-main"
-          className={`mg-main${leaving ? ' is-leaving' : ''}`}
-          inert={leaving || undefined}
+        <a className="mg-skip" href="#mg-main">
+          跳到主要内容
+        </a>
+        <aside
+          ref={sidebarRef}
+          className="mg-sidebar"
+          aria-label={isAdmin ? '后台导航' : '账户导航'}
+          inert={(narrow && !mobileOpen) || undefined}
         >
-          <div className="mg-page-enter" key={displayedPath}>
-            <ManagementContent
-              path={displayedPath}
-              user={user}
-              onSessionChanged={onSessionChanged}
-            />
+          <div className="mg-brand">
+            <span className="mg-brand-mark">
+              <ShieldCheck size={21} />
+            </span>
+            <span>{isAdmin ? '管理工作台' : '个人工作台'}</span>
+            <button
+              className="mg-icon mg-mobile-close"
+              type="button"
+              title="关闭导航"
+              aria-label="关闭导航"
+              onClick={() => setMobileOpen(false)}
+            >
+              <X size={17} />
+            </button>
           </div>
-        </main>
+          <nav>
+            {navigation.map(({ path, label, icon: Icon }) => {
+              const active =
+                path === '/admin'
+                  ? routePath === path
+                  : (routePath.startsWith(path) &&
+                      !(path === '/admin/users' && routePath.endsWith('/resources'))) ||
+                    (path === '/admin/resources' &&
+                      /^\/admin\/users\/[^/]+\/resources/.test(routePath));
+              return (
+                <AppLink
+                  key={path}
+                  to={path}
+                  className={active ? 'is-active' : ''}
+                  aria-current={active ? 'page' : undefined}
+                  title={collapsed ? label : undefined}
+                >
+                  <Icon size={19} />
+                  <span>{label}</span>
+                </AppLink>
+              );
+            })}
+          </nav>
+          <div className="mg-sidebar-secondary">
+            {isAdmin ? (
+              <AppLink to="/account/profile">
+                <UserRound size={19} />
+                <span>个人中心</span>
+              </AppLink>
+            ) : (
+              user.role === 'admin' && (
+                <AppLink to="/admin">
+                  <ShieldCheck size={19} />
+                  <span>管理后台</span>
+                </AppLink>
+              )
+            )}
+            <AppLink
+              to={returnProjectId ? appPaths.project(returnProjectId) : '/workspace'}
+              title={
+                returnProjectId ? `返回项目${projectName ? `：${projectName}` : ''}` : '返回工作台'
+              }
+            >
+              <ArrowLeft size={19} />
+              <span>
+                {returnProjectId
+                  ? `返回项目${projectName ? `：${projectName}` : ''}`
+                  : '返回工作台'}
+              </span>
+            </AppLink>
+          </div>
+          <div className="mg-sidebar-user">
+            <UserIdentity name={user.displayName} email={user.email} avatarUrl={user.avatarUrl} />
+          </div>
+        </aside>
+        <div className="mg-sidebar-shade" onClick={() => setMobileOpen(false)} aria-hidden="true" />
+        <div className="mg-workspace" inert={(narrow && mobileOpen) || undefined}>
+          <header className="mg-topbar">
+            <button
+              type="button"
+              className="mg-icon mg-desktop-toggle"
+              title={collapsed ? '展开侧栏' : '收起侧栏'}
+              aria-label={collapsed ? '展开侧栏' : '收起侧栏'}
+              aria-expanded={!collapsed}
+              onClick={() => setCollapsed(!collapsed)}
+            >
+              <PanelLeftClose size={19} />
+            </button>
+            <button
+              ref={mobileTriggerRef}
+              type="button"
+              className="mg-icon mg-mobile-toggle"
+              title="打开导航"
+              aria-label="打开导航"
+              aria-expanded={mobileOpen}
+              onClick={() => setMobileOpen(!mobileOpen)}
+            >
+              <Menu size={19} />
+            </button>
+            <span>{isAdmin ? '后台管理' : '个人中心'}</span>
+            <div className="mg-topbar-end">
+              {account ? (
+                <AccountMenu {...account} projectId={returnProjectId} />
+              ) : (
+                <AppLink
+                  to="/account/profile"
+                  className="mg-icon"
+                  title="个人信息"
+                  aria-label="个人信息"
+                >
+                  <UserRound size={19} />
+                </AppLink>
+              )}
+            </div>
+          </header>
+          <main
+            ref={mainRef}
+            tabIndex={-1}
+            id="mg-main"
+            className={`mg-main${leaving ? ' is-leaving' : ''}`}
+            inert={leaving || undefined}
+          >
+            <div className="mg-page-enter" key={displayedPath}>
+              <ManagementContent
+                path={displayedPath}
+                user={user}
+                onSessionChanged={onSessionChanged}
+              />
+            </div>
+          </main>
+        </div>
       </div>
-    </div>
+    </ProjectReturnProvider>
   );
 }
 

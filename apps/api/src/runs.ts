@@ -11,6 +11,7 @@ import {
   runResultSchema,
   runSnapshotSchema,
   type CanvasDocument,
+  type CanvasNode,
   type FrozenPromptMention,
   type MediaType,
   type RunJobData,
@@ -132,11 +133,14 @@ export interface RunService {
   close(): Promise<void>;
 }
 
-/**
- * Return the enabled upstream closure for a target, including the target
- * itself. Keeping this traversal in the API run module makes model freezing
- * and snapshot construction use the same inclusion rules.
- */
+/** 判断节点是否直接提供已有资产；手动输出作为目标显式重跑时仍执行原模型。 */
+export function isRunAssetSource(node: CanvasNode, targetNodeId?: string): boolean {
+  return (
+    node.data.mode === 'source' || (node.data.manualOutput === true && node.id !== targetNodeId)
+  );
+}
+
+/** 返回目标及其启用的上游闭包；已有来源资产截断遍历，供模型、提及和资产冻结共同使用。 */
 export function getRunSnapshotIncludedNodeIds(
   canvas: CanvasDocument,
   targetNodeId: string,
@@ -148,6 +152,8 @@ export function getRunSnapshotIncludedNodeIds(
   while (pendingNodeIds.length > 0) {
     const nodeId = pendingNodeIds.pop();
     if (!nodeId) continue;
+    const node = nodesById.get(nodeId);
+    if (node && isRunAssetSource(node, targetNodeId)) continue;
     for (const edge of canvas.edges) {
       if (edge.targetNodeId !== nodeId || includedNodeIds.has(edge.sourceNodeId)) continue;
       const source = nodesById.get(edge.sourceNodeId);
@@ -204,6 +210,16 @@ export function createRunSnapshot(
     .filter((node) => includedNodeIds.has(node.id))
     .map((node) => {
       const snapshotNode = clone(node);
+      if (node.data.manualOutput && node.id !== targetNodeId) {
+        // 只改不可变执行快照；保存的生成配置保持原样，手动文本不会退回历史提示词。
+        snapshotNode.data.mode = 'source';
+        delete snapshotNode.data.prompt;
+        delete snapshotNode.data.promptDocument;
+        delete snapshotNode.data.modelAlias;
+        delete snapshotNode.data.credentialId;
+        delete snapshotNode.data.parameters;
+        delete snapshotNode.data.inferenceStrength;
+      }
       const modelAlias = options.nodeModelAliases?.[node.id];
       if (modelAlias !== undefined) {
         snapshotNode.data = { ...snapshotNode.data, modelAlias };
@@ -220,7 +236,10 @@ export function createRunSnapshot(
     });
   const snapshotNodesById = new Map(nodes.map((node) => [node.id, node]));
   const edges = canvas.edges.filter(
-    (edge) => includedNodeIds.has(edge.sourceNodeId) && includedNodeIds.has(edge.targetNodeId),
+    (edge) =>
+      includedNodeIds.has(edge.sourceNodeId) &&
+      includedNodeIds.has(edge.targetNodeId) &&
+      snapshotNodesById.get(edge.targetNodeId)?.data.mode !== 'source',
   );
   const inputs = canvas.edges
     .filter((edge) => {

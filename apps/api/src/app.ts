@@ -23,6 +23,7 @@ import {
 import {
   createRunSnapshot,
   getRunSnapshotIncludedNodeIds,
+  isRunAssetSource,
   MemoryRunService,
   RunServiceError,
   type ProviderWebhookUpdate,
@@ -534,7 +535,7 @@ async function resolveRunNodeModels(input: {
     if (
       !includedNodeIds.has(node.id) ||
       node.data.enabled === false ||
-      node.data.mode === 'source'
+      isRunAssetSource(node, input.targetNodeId)
     ) {
       continue;
     }
@@ -708,7 +709,12 @@ async function resolveRunAssetRefs(input: {
   const frozenAssetRefs: Record<string, FrozenRunAssetRef> = {};
   for (const node of input.canvas.nodes) {
     const assetId = node.data.assetId;
-    if (!includedNodeIds.has(node.id) || node.data.enabled === false || !assetId) continue;
+    if (!includedNodeIds.has(node.id) || node.data.enabled === false) continue;
+    if (node.data.manualOutput && node.id === input.targetNodeId) continue;
+    if (node.data.manualOutput && !assetId) {
+      throw new RunAssetFreezeError('asset_unavailable', `节点 ${node.id} 的手动输出缺少资产引用`);
+    }
+    if (!assetId) continue;
     const resolved = await loadAsset(assetId);
     if (resolved.mediaType !== node.data.mediaType) {
       throw new RunAssetFreezeError(
@@ -783,8 +789,8 @@ async function resolvePromptMentionRefs(
   const diagnostics: ResourceMentionDiagnostic[] = [];
   for (const node of input.canvas.nodes) {
     if (includedNodeIds && !includedNodeIds.has(node.id)) continue;
-    // 来源节点的说明文本中的 @ 仅是元数据，不参与 Provider 请求或资源冻结。
-    if (node.data.mode === 'source') continue;
+    // 来源和手动输出的旧提示词仅是配置，明确重跑该节点时才重新校验提及。
+    if (isRunAssetSource(node, input.targetNodeId)) continue;
     const document = node.data.promptDocument;
     if (!document) continue;
     const parsedDocument = promptDocumentSchema.parse(document);
@@ -933,7 +939,7 @@ function validateRunPromptMentionCapabilities(input: {
   for (const [nodeId, mentions] of byNode) {
     if (!included.has(nodeId)) continue;
     const node = input.canvas.nodes.find((candidate) => candidate.id === nodeId);
-    if (!node || node.data.mode === 'source') continue;
+    if (!node || isRunAssetSource(node, input.targetNodeId)) continue;
     const result = checkResourceMentionCapabilities({
       node: { id: node.id, data: { mediaType: node.data.mediaType, mode: node.data.mode } },
       modelAlias: input.nodeModelAliases[nodeId] ?? node.data.modelAlias ?? 'unknown-model',

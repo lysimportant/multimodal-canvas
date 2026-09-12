@@ -19,7 +19,7 @@ import {
   Activity,
 } from 'lucide-react';
 import type { AuthUser } from '../auth-client';
-import { AppLink, appPaths } from '../routing';
+import { AppLink, appPaths, shouldInterceptAppLink } from '../routing';
 import { isImeKeyboardEvent } from '../ime';
 import { usePresence } from './motion';
 import './account-menu.css';
@@ -52,11 +52,19 @@ export function useAccountActions() {
 
 /** 菜单可独立用于画布；导航回调可先保存当前项目再跳转。 */
 export type AccountMenuProps = AccountActions & {
+  /** 当前画布或管理页面的返回项目来源。 */
+  projectId?: string | null;
   onNavigate?: (href: string, event: MouseEvent<HTMLAnchorElement>) => void;
 };
 
 /** 显示账户菜单、个人页面与独立注销命令，支持键盘、点击外部及退出动画。 */
-export function AccountMenu({ user, onRequestLogin, onLogout, onNavigate }: AccountMenuProps) {
+export function AccountMenu({
+  user,
+  onRequestLogin,
+  onLogout,
+  onNavigate,
+  projectId,
+}: AccountMenuProps) {
   const [open, setOpen] = useState(false);
   const [openedByClick, setOpenedByClick] = useState(false);
   const present = usePresence(open, 140);
@@ -230,12 +238,13 @@ export function AccountMenu({ user, onRequestLogin, onLogout, onNavigate }: Acco
           {links.map(({ href, label, icon: Icon }) => (
             <AppLink
               key={href}
-              to={href}
-              target="_blank"
-              rel="noopener noreferrer"
+              to={appPaths.withProject(href, projectId)}
               role="menuitem"
               onClick={(event) => {
-                onNavigate?.(href, event);
+                const targetHref = appPaths.withProject(href, projectId);
+                if (shouldInterceptAppLink(event, targetHref, undefined, undefined)) {
+                  onNavigate?.(targetHref, event);
+                }
                 if (!event.defaultPrevented) close();
               }}
             >

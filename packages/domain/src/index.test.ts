@@ -70,6 +70,36 @@ describe('canvas protocol', () => {
     expect(isCanvasNodeEnabled(document.nodes[0])).toBe(false);
   });
 
+  it('preserves manual output identity without changing the generation mode', () => {
+    const document = canvasDocumentSchema.parse({
+      revision: 2,
+      nodes: [
+        {
+          id: 'manual',
+          type: 'text',
+          position: { x: 0, y: 0 },
+          data: {
+            label: 'Manual text',
+            mediaType: 'text',
+            mode: 'generate',
+            manualOutput: true,
+            manualOutputRunId: 'run_explicit',
+            assetId: 'asset_manual',
+            contentUrl: '/v1/assets/asset_manual/content',
+            mimeType: 'text/plain',
+          },
+        },
+      ],
+      edges: [],
+    });
+    expect(document.nodes[0].data).toMatchObject({
+      mode: 'generate',
+      manualOutput: true,
+      manualOutputRunId: 'run_explicit',
+      assetId: 'asset_manual',
+    });
+  });
+
   it('rejects non-positive or unreasonably large node dimensions', () => {
     const base = {
       revision: 0,

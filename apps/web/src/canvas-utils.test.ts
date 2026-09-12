@@ -4,6 +4,7 @@ import type { CanvasDocument } from '@multimodal-canvas/domain';
 import {
   DEFAULT_FLOW_NODE_HEIGHT,
   DEFAULT_FLOW_NODE_WIDTH,
+  getNewNodeDimensions,
   fromCanvasDocument,
   markDownstreamNodesStale,
   copyCanvasSelection,
@@ -45,6 +46,33 @@ function flowEdge(id: string, source: string, target: string, targetHandle?: str
 }
 
 describe('stale propagation', () => {
+  it('新建媒体尺寸与旧画布恢复分离，手动资源引用可保存和粘贴', () => {
+    expect(getNewNodeDimensions('image')).toEqual({ width: 400, height: 266 });
+    expect(getNewNodeDimensions('video')).toEqual({ width: 400, height: 266 });
+    expect(getNewNodeDimensions('text')).toEqual({ width: 270, height: 246 });
+    expect(getNewNodeDimensions('audio')).toEqual({ width: 270, height: 246 });
+    const legacy = flowNode('legacy', 'image');
+    expect(withNodeAutoGrowthLimit(legacy)).toMatchObject({ width: 230, height: 216 });
+    expect(withNodeAutoGrowthLimit({ ...legacy, width: 315, height: 195 })).toMatchObject({
+      width: 315,
+      height: 195,
+    });
+    const manual = {
+      ...flowNode('manual', 'text', {
+        manualOutput: true,
+        assetId: 'manual-asset',
+        contentUrl: '/v1/assets/manual-asset/content',
+      }),
+      width: 315,
+      height: 195,
+    };
+    const restored = fromCanvasDocument(toCanvasDocument([manual], [], 2)).nodes[0];
+    expect(restored).toMatchObject({
+      width: 315,
+      height: 195,
+      data: { manualOutput: true, assetId: 'manual-asset', mode: 'generate' },
+    });
+  });
   it('marks all downstream nodes without clearing existing results', () => {
     const nodes = [
       flowNode('source'),

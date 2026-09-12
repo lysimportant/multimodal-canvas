@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Asset } from '@multimodal-canvas/domain';
 import { AssetPreview, type AssetPreviewLoadState } from './AssetPreview';
+import { clearAuthSession, persistAuthSession } from '../auth-client';
 
 const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(window.navigator, 'clipboard');
 
@@ -25,6 +26,7 @@ function makeAsset(overrides: Partial<Asset> = {}): Asset {
 
 afterEach(() => {
   cleanup();
+  clearAuthSession();
   vi.unstubAllGlobals();
   if (originalClipboardDescriptor) {
     Object.defineProperty(window.navigator, 'clipboard', originalClipboardDescriptor);
@@ -37,6 +39,139 @@ afterEach(() => {
 });
 
 describe('AssetPreview', () => {
+  /** 合成会话只用于验证签名申请，不读取本机凭据。 */
+  function signIn() {
+    persistAuthSession({
+      accessToken: 'synthetic-preview-test',
+      tokenType: 'Bearer',
+      expiresIn: 3600,
+      expiresAt: new Date(Date.now() + 3600000).toISOString(),
+      user: {
+        id: 'preview-user',
+        email: 'preview@example.test',
+        role: 'user',
+        createdAt: '2026-01-01',
+      },
+    });
+  }
+
+  it('签名失败不请求未鉴权内容，重试相对地址使用 API origin', async () => {
+    signIn();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('{}', { status: 503 }))
+      .mockResolvedValueOnce(
+        Response.json({ url: '/v1/assets/asset_1/content?access_token=synthetic' }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+    const view = render(
+      <AssetPreview
+        asset={makeAsset({
+          mediaType: 'image',
+          mimeType: 'image/png',
+          contentUrl: '/v1/assets/asset_1/versions/2/content',
+        })}
+        mode="content"
+      />,
+    );
+    expect(await screen.findByRole('alert')).toHaveTextContent('503');
+    expect(view.container.querySelector('img')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: '重新加载' }));
+    expect(await screen.findByRole('img')).toHaveAttribute(
+      'src',
+      'http://localhost:3000/v1/assets/asset_1/content?access_token=synthetic',
+    );
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ version: 2 });
+  });
+
+  it('切换资产取消旧签名请求，晚到响应不覆盖新预览，CDN 不请求 Bearer 内容', async () => {
+    signIn();
+    let resolveOld!: (response: Response) => void;
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveOld = resolve;
+          }),
+      )
+      .mockResolvedValueOnce(Response.json({ url: 'https://cdn.example/new.png' }));
+    vi.stubGlobal('fetch', fetchMock);
+    const view = render(
+      <AssetPreview
+        asset={makeAsset({
+          mediaType: 'image',
+          mimeType: 'image/png',
+          contentUrl: '/v1/assets/asset_1/content',
+        })}
+      />,
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    view.rerender(
+      <AssetPreview
+        asset={makeAsset({
+          id: 'new',
+          mediaType: 'image',
+          mimeType: 'image/png',
+          contentUrl: '/v1/assets/new/content',
+        })}
+      />,
+    );
+    expect(await screen.findByRole('img')).toHaveAttribute('src', 'https://cdn.example/new.png');
+    expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(true);
+    resolveOld(Response.json({ url: 'https://cdn.example/old.png' }));
+    await waitFor(() =>
+      expect(screen.getByRole('img')).toHaveAttribute('src', 'https://cdn.example/new.png'),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('文字单击不编辑，双击粘贴换行后失焦保存，失败保留草稿并可重试', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(() => Promise.resolve(new Response('原文'))),
+    );
+    const save = vi.fn().mockRejectedValueOnce(new Error('保存失败')).mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    render(<AssetPreview asset={makeAsset()} mode="content" onTextSave={save} />);
+    const content = await screen.findByLabelText('文字结果');
+    await user.click(content);
+    expect(screen.queryByRole('textbox')).toBeNull();
+    await user.dblClick(content);
+    const editor = screen.getByRole('textbox', { name: '编辑文字结果' });
+    await user.clear(editor);
+    await user.paste('第一行\n第二行');
+    fireEvent.blur(editor);
+    expect(await screen.findByRole('alert')).toHaveTextContent('保存失败');
+    expect(editor).toHaveValue('第一行\n第二行');
+    await user.click(screen.getByRole('button', { name: '重试保存' }));
+    await waitFor(() => expect(screen.queryByRole('textbox')).toBeNull());
+    expect(save).toHaveBeenNthCalledWith(2, '第一行\n第二行');
+  });
+
+  it('文字输入法期间 Escape 不退出，组合结束后 Escape 取消且不冒泡删除快捷键', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('原文')));
+    const save = vi.fn();
+    const parentKey = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <div onKeyDown={parentKey}>
+        <AssetPreview asset={makeAsset()} mode="content" onTextSave={save} />
+      </div>,
+    );
+    await user.dblClick(await screen.findByLabelText('文字结果'));
+    const editor = screen.getByRole('textbox', { name: '编辑文字结果' });
+    fireEvent.compositionStart(editor);
+    fireEvent.change(editor, { target: { value: '中文草稿' } });
+    fireEvent.keyDown(editor, { key: 'Escape', isComposing: true });
+    expect(editor).toBeInTheDocument();
+    fireEvent.compositionEnd(editor);
+    fireEvent.keyDown(editor, { key: 'Delete' });
+    fireEvent.keyDown(editor, { key: 'Escape' });
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(save).not.toHaveBeenCalled();
+    expect(parentKey).not.toHaveBeenCalled();
+  });
   it('renders and copies the real multiline text result', async () => {
     const content = '第一行中文\nSecond line 123 !@#';
     const fetchMock = vi.fn().mockResolvedValue(new Response(content, { status: 200 }));

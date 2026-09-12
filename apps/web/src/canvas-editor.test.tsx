@@ -363,6 +363,10 @@ function installApiMock() {
       return jsonResponse({ models: modelCatalog });
     }
     if (url.pathname === '/v1/assets' && method === 'GET') return jsonResponse({ assets });
+    if (url.pathname.endsWith('/access-url') && method === 'POST')
+      return jsonResponse({
+        url: `${url.pathname.replace('/access-url', '/content')}?access_token=synthetic-unit`,
+      });
     if (url.pathname === '/v1/projects' && method === 'GET') {
       return jsonResponse({ projects: [project] });
     }
@@ -434,7 +438,7 @@ function createRestoredRun(
         : mediaType === 'audio'
           ? 'audio/mpeg'
           : 'text/plain';
-  const contentUrl = `/v1/assets/restored-${node.id}/content`;
+  const contentUrl = `/v1/assets/asset-restored-${node.id}/content`;
   const textContent = options.textContent ?? '这是刷新后从持久化运行记录回显的真实文本。';
   resultContent.set(contentUrl, {
     body: mediaType === 'text' ? textContent : `${mediaType} fixture bytes`,

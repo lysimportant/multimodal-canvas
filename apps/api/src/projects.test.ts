@@ -61,7 +61,16 @@ describe('FileProjectStore persistence', () => {
               id: 'node_text',
               type: 'text',
               position: { x: 12, y: 24 },
-              data: { label: 'Prompt', mediaType: 'text', mode: 'generate' },
+              data: {
+                label: 'Prompt',
+                mediaType: 'text',
+                mode: 'generate',
+                manualOutput: true,
+                manualOutputRunId: 'run_explicit',
+                assetId: 'asset_manual',
+                contentUrl: '/v1/assets/asset_manual/content',
+                mimeType: 'text/plain',
+              },
             },
           ],
           edges: [],
@@ -77,7 +86,20 @@ describe('FileProjectStore persistence', () => {
       });
       await expect(restarted.getCanvas(project.id, { ownerId: 'user-1' })).resolves.toMatchObject({
         revision: 1,
-        nodes: [{ id: 'node_text', data: { label: 'Prompt' } }],
+        nodes: [
+          {
+            id: 'node_text',
+            data: {
+              label: 'Prompt',
+              mode: 'generate',
+              manualOutput: true,
+              manualOutputRunId: 'run_explicit',
+              assetId: 'asset_manual',
+              contentUrl: '/v1/assets/asset_manual/content',
+              mimeType: 'text/plain',
+            },
+          },
+        ],
       });
       await expect(restarted.get(project.id, { ownerId: 'other-user' })).resolves.toBeUndefined();
       await restarted.close();
@@ -107,6 +129,8 @@ describe('PrismaProjectStore canvas mapping', () => {
             mode: 'generate',
             enabled: false,
             stale: true,
+            manualOutput: true,
+            manualOutputRunId: 'run_explicit',
             prompt: 'A detailed mountain landscape',
             promptDocument: {
               version: 1,
@@ -141,6 +165,8 @@ describe('PrismaProjectStore canvas mapping', () => {
         mode: 'generate',
         enabled: false,
         stale: true,
+        manualOutput: true,
+        manualOutputRunId: 'run_explicit',
         prompt: 'A detailed mountain landscape',
         promptDocument: {
           version: 1,

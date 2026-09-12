@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
+import { readFileSync } from 'node:fs';
 import type { Asset, CanvasDocument, ModelSelection, RunRecord } from '@multimodal-canvas/domain';
 
 type Project = {
@@ -70,6 +71,10 @@ function createSilentWav() {
 }
 
 const validWav = createSilentWav();
+/** 仓库内真实示例封面用于视觉验收，不访问外部图片服务。 */
+const reviewPoster = readFileSync(
+  new URL('../public/demo/field-study-poster.jpg', import.meta.url),
+);
 
 const emptyCanvas: CanvasDocument = {
   revision: 0,
@@ -126,6 +131,8 @@ async function mockApi(page: Page) {
     string,
     { name: string; mimeType: string; sizeBytes: number; sha256: string }
   >();
+  /** 上传字节在隔离 Mock 中按会话保存，验证文本修改刷新后的实际内容。 */
+  const uploadedBytes = new Map<string, Buffer>();
   const runs = new Map<string, RunRecord>();
   let currentCanvas: CanvasDocument = structuredClone(emptyCanvas);
   let credentialSequence = 0;
@@ -267,6 +274,7 @@ async function mockApi(page: Page) {
       return;
     }
     if (request.method() === 'PUT' && /^\/v1\/assets\/uploads\/[^/]+\/content$/.test(path)) {
+      uploadedBytes.set(path.split('/')[4], request.postDataBuffer() ?? Buffer.alloc(0));
       await route.fulfill({ status: 200, body: '' });
       return;
     }
@@ -296,9 +304,17 @@ async function mockApi(page: Page) {
         tags: [],
       };
       pendingUploads.delete(uploadId);
+      const bytes = uploadedBytes.get(uploadId);
+      if (bytes)
+        generatedContent.set(asset.contentUrl, { contentType: asset.mimeType, body: bytes });
       assets.unshift(asset);
       await json(route, { asset }, 201);
       return;
+    }
+    if (request.method() === 'POST' && /^\/v1\/assets\/[^/]+\/access-url$/.test(path)) {
+      return json(route, {
+        url: `${path.replace('/access-url', '/content')}?access_token=synthetic-preview`,
+      });
     }
     if (request.method() === 'GET' && /^\/v1\/assets\/[^/]+\/content$/.test(path)) {
       const generated = generatedContent.get(path);
@@ -584,6 +600,295 @@ test.beforeEach(async ({ page }) => {
   await mockApi(page);
 });
 
+test('相对签名产物地址在 API origin 加载且回显不改变节点尺寸', async ({ page }, testInfo) => {
+  const requests: string[] = [];
+  await page.route('**/v1/assets/*/access-url', async (route) => {
+    const assetId = new URL(route.request().url()).pathname.split('/')[3];
+    await json(route, { url: `/v1/assets/${assetId}/content?access_token=synthetic-preview` });
+  });
+  page.on('request', (request) => {
+    if (request.url().includes('access_token=synthetic-preview')) requests.push(request.url());
+  });
+  await page.goto(projectPath);
+  await page.getByRole('button', { name: '新建图片生成节点' }).click();
+  await page.getByRole('textbox', { name: '提示词', exact: true }).fill('签名地址回显验收');
+  const node = page.locator('.flow-generate-node').last();
+  const initial = await node.boundingBox();
+  await page.getByRole('button', { name: '生成', exact: true }).click();
+  await expect.poll(() => requests.length).toBeGreaterThan(0);
+  await testInfo.attach('signed-preview-requests', {
+    body: JSON.stringify(
+      requests.map((url) => url.replace(/access_token=[^&]+/, 'access_token=REDACTED')),
+    ),
+    contentType: 'application/json',
+  });
+  expect(new URL(requests.at(-1)!).origin).toBe('http://localhost:3000');
+  await expect
+    .poll(() => node.locator('img').evaluate((element: HTMLImageElement) => element.naturalWidth))
+    .toBe(1);
+  expect((await node.boundingBox())!.height).toBeCloseTo(initial!.height, 1);
+});
+
+test('当前节点上传、文字双击保存、刷新与重新生成保持输出优先级', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto(projectPath);
+  await page.getByRole('button', { name: '新建文字生成节点' }).click();
+  await page.getByRole('textbox', { name: '提示词', exact: true }).fill('原生成任务');
+  await page.getByRole('button', { name: '生成', exact: true }).click();
+  const node = page.locator('.flow-generate-node');
+  await expect(node.locator('pre')).toContainText('原生成任务');
+  const originalBounds = await node.boundingBox();
+  await node.locator('input[type="file"]').setInputFiles({
+    name: 'manual.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('手动上传正文'),
+  });
+  await expect(node.locator('pre')).toHaveText('手动上传正文');
+  await expect(page.getByText('已保存到项目', { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(node.locator('pre')).toHaveText('手动上传正文');
+  await node.locator('pre').dblclick();
+  const editor = node.getByRole('textbox', { name: '编辑文字结果' });
+  await editor.fill('修改后的第一行\n修改后的第二行');
+  await page.locator('.react-flow__pane').click({ position: { x: 10, y: 10 } });
+  await expect(node.locator('pre')).toHaveText('修改后的第一行\n修改后的第二行');
+  await expect(page.getByText('已保存到项目', { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(node.locator('pre')).toHaveText('修改后的第一行\n修改后的第二行');
+  await expect(node).toHaveCount(1);
+  const stored = await page.evaluate(async () => {
+    const response = await fetch('http://localhost:3000/v1/projects/project-smoke/canvas');
+    return (await response.json()).canvas as CanvasDocument;
+  });
+  expect(stored.nodes[0].data).toMatchObject({
+    mode: 'generate',
+    manualOutput: true,
+    prompt: '原生成任务',
+  });
+  expect(stored.nodes[0]).toMatchObject({ width: 270, height: 246 });
+  expect(originalBounds).not.toBeNull();
+  await node.locator('pre').click();
+  await page.getByRole('button', { name: '生成', exact: true }).click();
+  await expect(node.locator('pre')).toContainText('原生成任务');
+  await expect(page.getByText('已保存到项目', { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(node.locator('pre')).toContainText('原生成任务');
+  expect(errors).toEqual([]);
+});
+
+test('文字保存失败保留草稿且重试不重复上传', async ({ page }) => {
+  await page.goto(projectPath);
+  await page.getByRole('button', { name: '新建文字生成节点' }).click();
+  const node = page.locator('.flow-generate-node');
+  await node
+    .locator('input[type="file"]')
+    .setInputFiles({ name: 'draft.txt', mimeType: 'text/plain', buffer: Buffer.from('原始文本') });
+  await expect(node.locator('pre')).toHaveText('原始文本');
+  await expect(page.getByText('已保存到项目', { exact: true })).toBeVisible();
+  let failSave = true;
+  let uploads = 0;
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && request.url().endsWith('/uploads/init')) uploads++;
+  });
+  await page.route('**/v1/projects/project-smoke/canvas', async (route) => {
+    if (failSave && route.request().method() === 'PATCH')
+      await json(route, { error: '隔离保存失败' }, 503);
+    else await route.fallback();
+  });
+  await node.locator('pre').dblclick();
+  await node.getByRole('textbox', { name: '编辑文字结果' }).fill('失败后保留的正文');
+  await page.locator('.react-flow__pane').click({ position: { x: 10, y: 10 } });
+  await expect(node.getByRole('textbox', { name: '编辑文字结果' })).toHaveValue('失败后保留的正文');
+  await expect(node.getByRole('button', { name: '重试保存' })).toBeVisible();
+  failSave = false;
+  await node.getByRole('button', { name: '重试保存' }).click();
+  await expect(node.locator('pre')).toHaveText('失败后保留的正文');
+  expect(uploads).toBe(1);
+  await page.reload();
+  await expect(node.locator('pre')).toHaveText('失败后保留的正文');
+});
+
+test('上传中禁止生成且删除节点后不会被晚到上传复活', async ({ page }) => {
+  let releaseUpload!: () => void;
+  const delayed = new Promise<void>((resolve) => {
+    releaseUpload = resolve;
+  });
+  await page.route('**/v1/assets/uploads/*/content', async (route) => {
+    await delayed;
+    await route.fallback();
+  });
+  await page.goto(projectPath);
+  await page.getByRole('button', { name: '新建图片生成节点' }).click();
+  const node = page.locator('.flow-generate-node');
+  await page.getByRole('textbox', { name: '提示词', exact: true }).fill('上传期间不可生成');
+  const pending = page.waitForRequest(
+    (request) => request.method() === 'PUT' && request.url().includes('/uploads/'),
+  );
+  await node
+    .locator('input[type="file"]')
+    .setInputFiles({ name: 'late.png', mimeType: 'image/png', buffer: validPng });
+  await pending;
+  // 上传会让生成按钮进入“生成中”状态；两种状态都必须保持不可点击。
+  await expect(page.getByRole('button', { name: /^(生成|生成中)$/ })).toBeDisabled();
+  await node.getByRole('button', { name: /^删除节点：/ }).click();
+  releaseUpload();
+  await expect(page.locator('.asset-card').filter({ hasText: 'late.png' })).toBeVisible();
+  await expect(node).toHaveCount(0);
+});
+
+test('画布保存失败时账户菜单导航停留原项目', async ({ page }) => {
+  await page.goto(projectPath);
+  await page.getByRole('button', { name: '新建文字生成节点' }).click();
+  await page.route('**/v1/projects/project-smoke/canvas', async (route) => {
+    if (route.request().method() === 'PATCH') await json(route, { error: '隔离导航保存失败' }, 503);
+    else await route.fallback();
+  });
+  await page.getByRole('textbox', { name: '提示词', exact: true }).fill('不能丢失的导航前草稿');
+  await page.getByRole('button', { name: '账户菜单' }).click();
+  await page.getByRole('menuitem', { name: '我的资源', exact: true }).click();
+  await expect(page).toHaveURL(projectPath);
+  await expect(page.getByRole('alert')).toContainText('隔离导航保存失败');
+  await expect(page.getByRole('textbox', { name: '提示词', exact: true })).toHaveValue(
+    '不能丢失的导航前草稿',
+  );
+});
+
+test('桌面六主题节点外壳与短枚举菜单保持尺寸和可点击布局', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto(projectPath);
+  await page.getByRole('button', { name: '新建图片生成节点' }).click();
+  const node = page.locator('.flow-generate-node');
+  await node
+    .locator('input[type="file"]')
+    .setInputFiles({ name: 'review.jpg', mimeType: 'image/jpeg', buffer: reviewPoster });
+  await expect
+    .poll(() => node.locator('img').evaluate((image: HTMLImageElement) => image.naturalWidth))
+    .toBeGreaterThan(1);
+  const initial = await node.boundingBox();
+  await page.getByRole('button', { name: '媒体参数', exact: true }).hover();
+  await page.getByRole('combobox', { name: /^图片清晰度：/ }).hover();
+  await expect(page.getByRole('option', { name: '1K', exact: true })).toBeVisible();
+  const columns = await page
+    .locator('.compact-select-menu[data-layout="grid"]')
+    .evaluate((element) => getComputedStyle(element).gridTemplateColumns);
+  expect(columns.split(' ')).toHaveLength(3);
+  for (const theme of ['default', 'light', 'eye-care', 'dark', 'sepia', 'contrast']) {
+    await page.evaluate((value) => {
+      for (const element of [document.documentElement, document.querySelector('.app-shell')!]) {
+        if (value === 'default') element.removeAttribute('data-theme');
+        else element.setAttribute('data-theme', value);
+      }
+    }, theme);
+    await page.screenshot({
+      path: `../../.data/canvas-optimization-review/theme-${theme}.png`,
+      animations: 'disabled',
+    });
+    const bounds = await node.boundingBox();
+    expect(bounds!.height).toBeCloseTo(initial!.height, 1);
+    expect(bounds!.width).toBeCloseTo(initial!.width, 1);
+  }
+  expect(errors).toEqual([]);
+});
+
+test('资源预览按衍生图加载，筛选不改变返回项目且跨页前保存', async ({ page }) => {
+  const resourceAssets = (['image', 'video', 'audio', 'text'] as const).map((mediaType) => ({
+    id: `review-${mediaType}`,
+    name: `${mediaType}-review`,
+    mediaType,
+    mimeType:
+      mediaType === 'text'
+        ? 'text/plain'
+        : `${mediaType}/${mediaType === 'image' ? 'jpeg' : mediaType === 'video' ? 'webm' : 'wav'}`,
+    contentUrl: `/v1/assets/review-${mediaType}/content`,
+    sizeBytes: 2048,
+    status: 'ready',
+    tags: [],
+    ownerId: 'e2e-user',
+    projectId: project.id,
+    createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:00:00Z',
+    source: 'upload',
+    metadata: { width: mediaType === 'image' ? 800 : 1200, height: 600 },
+  }));
+  const contentRequests: string[] = [];
+  await page.route('**/v1/assets/*/content**', async (route) => {
+    const url = new URL(route.request().url());
+    contentRequests.push(url.pathname + url.search);
+    const asset = resourceAssets.find((candidate) => url.pathname.includes(candidate.id))!;
+    if (asset.mediaType === 'text')
+      return route.fulfill({ contentType: 'text/plain', body: '这是一段可检查的文本摘录。' });
+    if (url.searchParams.has('derivative') || asset.mediaType === 'image')
+      return route.fulfill({ contentType: 'image/jpeg', body: reviewPoster });
+    return route.fulfill({
+      contentType: asset.mimeType,
+      body: asset.mediaType === 'video' ? validWebm : validWav,
+    });
+  });
+  await page.route('**/v1/account/resources**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith('/content')) {
+      contentRequests.push(url.pathname + url.search);
+      const asset = resourceAssets.find((candidate) => url.pathname.includes(candidate.id))!;
+      if (asset.mediaType === 'text')
+        return route.fulfill({ contentType: 'text/plain', body: '这是一段可检查的文本摘录。' });
+      if (url.searchParams.has('derivative') || asset.mediaType === 'image')
+        return route.fulfill({ contentType: 'image/jpeg', body: reviewPoster });
+      return route.fulfill({
+        contentType: asset.mimeType,
+        body: asset.mediaType === 'video' ? validWebm : validWav,
+      });
+    }
+    const selected = resourceAssets.find((candidate) => url.pathname.endsWith(candidate.id));
+    await json(
+      route,
+      selected
+        ? { asset: selected, versions: [] }
+        : { assets: resourceAssets, total: 4, page: 1, pageSize: 24 },
+    );
+  });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto(projectPath);
+  await page.getByRole('button', { name: '新建文字生成节点' }).click();
+  await page.getByRole('textbox', { name: '提示词', exact: true }).fill('离开前必须保存');
+  await page.getByRole('button', { name: '账户菜单' }).click();
+  await page.getByRole('menuitem', { name: '我的资源', exact: true }).click();
+  await expect(page).toHaveURL(/resources\?returnProjectId=project-smoke/);
+  await expect(page.locator('.mg-resource-item')).toHaveCount(4);
+  await expect(page.getByText('这是一段可检查的文本摘录。')).toBeVisible();
+  await expect
+    .poll(() =>
+      page
+        .locator('.mg-thumbnail img')
+        .evaluateAll((images) =>
+          images.every((image) => (image as HTMLImageElement).naturalWidth > 0),
+        ),
+    )
+    .toBe(true);
+  expect(contentRequests.some((url) => url.includes('derivative=poster'))).toBe(true);
+  expect(contentRequests.some((url) => url.includes('derivative=waveform'))).toBe(true);
+  expect(contentRequests.some((url) => /review-(video|audio)\/content$/.test(url))).toBe(false);
+  await page.getByRole('combobox', { name: '所属项目' }).selectOption(project.id);
+  await page.getByRole('combobox', { name: '所属项目' }).selectOption('');
+  const back = page.getByRole('link', { name: /返回项目/ });
+  await expect(back).toHaveAttribute('href', projectPath);
+  await page.screenshot({ path: '../../.data/canvas-optimization-review/resources.png' });
+  await page.locator('.mg-resource-item').filter({ hasText: 'image-review' }).click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await page.getByRole('button', { name: '下一个资源' }).click();
+  await expect(page.getByRole('dialog').locator('video')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await back.click();
+  await expect(page).toHaveURL(projectPath);
+  await page.locator('.flow-generate-node').click();
+  await expect(page.getByRole('textbox', { name: '提示词', exact: true })).toHaveValue(
+    '离开前必须保存',
+  );
+});
+
 test('主页进入工作台和项目深链，并在刷新后恢复画布', async ({ page }) => {
   await page.goto('/');
 
@@ -862,13 +1167,14 @@ test('adds a generate node from the canvas toolbar', async ({ page }) => {
 test('supports theme/sidebar controls, node body connections, and corner resizing', async ({
   page,
 }) => {
+  await page.setViewportSize({ width: 1800, height: 1000 });
   await page.goto(projectPath);
 
   await page.getByRole('button', { name: '新建图片生成节点' }).click();
-  await page.locator('input[type="file"]').setInputFiles({
+  await page.locator('.resource-panel input[type="file"]').setInputFiles({
     name: 'body-reference.png',
     mimeType: 'image/png',
-    buffer: Buffer.from('mock image'),
+    buffer: validPng,
   });
   const assetCard = page.locator('.asset-card').filter({ hasText: 'body-reference.png' });
   await expect(assetCard).toBeVisible();
@@ -1032,7 +1338,7 @@ test('设置删除当前 Key 完整移除列表与模型，操作期间显示 lo
 });
 
 for (const width of [1440, 1024, 390]) {
-  test(`生成节点无边框与顶部悬浮操作 ${width}`, async ({ page }, testInfo) => {
+  test(`生成节点轻描边与顶部悬浮操作 ${width}`, async ({ page }, testInfo) => {
     const errors: string[] = [];
     page.on('pageerror', (error) => errors.push(error.message));
     await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
@@ -1053,18 +1359,18 @@ for (const width of [1440, 1024, 390]) {
         shadow: style.boxShadow,
         padding: style.paddingTop,
         controlsAbove: controls.bottom <= bounds.top + 1,
-        fillsWidth: Math.abs(content.width - bounds.width) < 2,
-        fillsHeight: Math.abs(content.height - bounds.height) < 2,
+        fillsWidth: Math.abs(content.width - bounds.width) <= 2.3,
+        fillsHeight: Math.abs(content.height - bounds.height) <= 2.3,
       };
     });
-    expect(appearance).toEqual({
-      border: '0px',
-      shadow: 'none',
+    expect(appearance).toMatchObject({
+      border: '1px',
       padding: '0px',
       controlsAbove: true,
       fillsWidth: true,
       fillsHeight: true,
     });
+    expect(appearance.shadow).not.toBe('none');
     await page.screenshot({ path: testInfo.outputPath('node-floating-controls.png') });
     await node.getByRole('button', { name: '停用节点' }).click();
     await expect(node).toHaveAttribute('aria-disabled', 'true');
@@ -1192,7 +1498,7 @@ test('settings are truly modal and contained on desktop and narrow viewports', a
 test('uploads an asset and drags it into the workflow canvas', async ({ page }) => {
   await page.goto(projectPath);
 
-  await page.locator('input[type="file"]').setInputFiles({
+  await page.locator('.resource-panel input[type="file"]').setInputFiles({
     name: 'story.txt',
     mimeType: 'text/plain',
     buffer: Buffer.from('A short story reference.'),
@@ -1209,13 +1515,14 @@ test('uploads an asset and drags it into the workflow canvas', async ({ page }) 
 });
 
 test('connects three image references to one video generation node', async ({ page }) => {
+  await page.setViewportSize({ width: 1800, height: 1400 });
   await page.goto(projectPath);
 
   for (const name of ['character.png', 'style.png', 'frame.png']) {
-    await page.locator('input[type="file"]').setInputFiles({
+    await page.locator('.resource-panel input[type="file"]').setInputFiles({
       name,
       mimeType: 'image/png',
-      buffer: Buffer.from('mock image'),
+      buffer: validPng,
     });
     await expect(page.locator('.asset-card').filter({ hasText: name })).toBeVisible();
   }
@@ -1235,7 +1542,7 @@ test('connects three image references to one video generation node', async ({ pa
     videoHeader.y + videoHeader.height / 2,
   );
   await page.mouse.down();
-  await page.mouse.move(canvasBox.x + 630, canvasBox.y + 280, { steps: 12 });
+  await page.mouse.move(canvasBox.x + 1100, canvasBox.y + 500, { steps: 12 });
   await page.mouse.up();
   for (const [index, name] of ['character.png', 'style.png', 'frame.png'].entries()) {
     const card = page.locator('.asset-card').filter({ hasText: name });
@@ -1244,7 +1551,7 @@ test('connects three image references to one video generation node', async ({ pa
     if (!cardBox) return;
     await page.mouse.move(cardBox.x + cardBox.width / 2, cardBox.y + cardBox.height / 2);
     await page.mouse.down();
-    await page.mouse.move(canvasBox.x + 170, canvasBox.y + 120 + index * 170, { steps: 12 });
+    await page.mouse.move(canvasBox.x + 100, canvasBox.y + 120 + index * 350, { steps: 12 });
     await page.mouse.up();
     await expect(sourceNodes).toHaveCount(index + 1);
   }
@@ -1295,9 +1602,16 @@ test('connects three image references to one video generation node', async ({ pa
     .locator('.react-flow__edge-interaction')
     .evaluate((element) => {
       const path = element as SVGPathElement;
-      const point = path.getPointAtLength(path.getTotalLength() * 0.15);
-      const transformed = new DOMPoint(point.x, point.y).matrixTransform(path.getScreenCTM()!);
-      return { x: transformed.x, y: transformed.y };
+      for (let index = 1; index < 20; index++) {
+        const point = path.getPointAtLength((path.getTotalLength() * index) / 20);
+        const transformed = new DOMPoint(point.x, point.y).matrixTransform(path.getScreenCTM()!);
+        if (
+          document.elementFromPoint(transformed.x, transformed.y)?.closest('.react-flow__edge') ===
+          path.closest('.react-flow__edge')
+        )
+          return { x: transformed.x, y: transformed.y };
+      }
+      throw new Error('没有可点击的未遮挡连接线段');
     });
   await page.mouse.click(edgePoint.x, edgePoint.y);
   await expect(selectedEdge).toHaveClass(/selected/);
@@ -1345,7 +1659,7 @@ test('connects mixed text, image, and audio references to one video generation n
   ] as const;
 
   for (const reference of references) {
-    await page.locator('input[type="file"]').setInputFiles(reference);
+    await page.locator('.resource-panel input[type="file"]').setInputFiles(reference);
     await expect(page.locator('.asset-card').filter({ hasText: reference.name })).toBeVisible();
   }
 
@@ -1441,7 +1755,7 @@ test('overrides a node model and displays the completed run result', async ({ pa
   await expect(page.getByRole('status').filter({ hasText: '文字生成节点 已完成' })).toBeVisible();
 });
 
-test('同类型新节点记住模型及凭据，刷新后保持且不同媒体类型互不覆盖', async ({ page }) => {
+test('新节点使用目录首项及凭据，历史手动模型刷新保留', async ({ page }) => {
   /** 记录浏览器运行错误；业务请求全部由合成 API 响应。 */
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -1463,7 +1777,7 @@ test('同类型新节点记住模型及凭据，刷新后保持且不同媒体�
   await page.getByRole('option', { name: 'Mock Image', exact: true }).click();
   await focusCanvas(page);
   await page.getByRole('button', { name: '新建文字生成节点' }).click();
-  await expect(page.getByRole('combobox', { name: '模型：Mock Text v2' })).toBeVisible();
+  await expect(page.getByRole('combobox', { name: '模型：Mock Text' })).toBeVisible();
 
   /** 先等待包含模型和来源凭据的画布成功保存，再刷新验证持久化。 */
   const saved = page.waitForResponse((response) => {
@@ -1473,13 +1787,16 @@ test('同类型新节点记住模型及凭据，刷新后保持且不同媒体�
     )
       return false;
     const canvas = response.request().postDataJSON() as CanvasDocument;
-    return canvas.nodes.filter((node) => node.data.modelAlias === 'mock-text-v2').length === 2;
+    return (
+      canvas.nodes.filter((node) => node.data.modelAlias === 'mock-text-v2').length === 1 &&
+      canvas.nodes.some((node) => node.data.modelAlias === 'mock-text')
+    );
   });
-  await page.getByRole('textbox', { name: '提示词', exact: true }).fill('刷新后继续使用上次模型');
+  await page.getByRole('textbox', { name: '提示词', exact: true }).fill('刷新后新建仍选目录首项');
   await saved;
   await page.reload();
   await page.getByRole('button', { name: '新建文字生成节点' }).click();
-  await expect(page.getByRole('combobox', { name: '模型：Mock Text v2' })).toBeVisible();
+  await expect(page.getByRole('combobox', { name: '模型：Mock Text' })).toBeVisible();
   await page
     .getByRole('textbox', { name: '提示词', exact: true })
     .fill('复用的模型用于真实运行参数');
@@ -1490,7 +1807,7 @@ test('同类型新节点记住模型及凭据，刷新后保持且不同媒体�
   );
   await page.getByRole('button', { name: '生成', exact: true }).click();
   expect((await submitted).postDataJSON()).toMatchObject({
-    modelAlias: 'mock-text-v2',
+    modelAlias: 'mock-text',
     credentialId: initialCredential.id,
   });
   await focusCanvas(page);
@@ -1794,9 +2111,7 @@ test('PC 音频参数显式输入、保存恢复并提交，桌面截图无布�
   expect(consoleErrors).toEqual([]);
 });
 
-test('PC 视频像素尺寸可保存清空恢复，提交显式宽高且不猜测 legacy alias', async ({
-  page,
-}, testInfo) => {
+test('PC 视频仅显示清晰度比例时长，新建保存刷新与提交不填像素尺寸', async ({ page }, testInfo) => {
   /** 仅使用 beforeEach 的本地 Mock API，保存与运行请求不访问真实 Provider。 */
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -1814,16 +2129,11 @@ test('PC 视频像素尺寸可保存清空恢复，提交显式宽高且不猜�
   const run = editor.getByRole('button', { name: '生成', exact: true });
   await editor.locator('textarea').fill('Playwright 视频像素尺寸');
   await editor.getByRole('button', { name: '媒体参数', exact: true }).click();
-  await expect(width).toHaveValue('');
-  await expect(height).toHaveValue('');
+  await expect(width).toHaveCount(0);
+  await expect(height).toHaveCount(0);
   await expect(run).toBeEnabled();
   await editor.getByRole('combobox', { name: /^时长（秒）：/ }).click();
   await editor.getByRole('option', { name: '8 秒', exact: true }).click();
-  await width.fill('1280.5');
-  await expect(width).toHaveValue('1280.5');
-  await expect(width).toHaveAttribute('aria-invalid', 'true');
-  await expect(run).toBeDisabled();
-  await width.fill('1280');
   const savedDimensions = page.waitForResponse((response) => {
     if (
       response.request().method() !== 'PATCH' ||
@@ -1835,17 +2145,18 @@ test('PC 视频像素尺寸可保存清空恢复，提交显式宽高且不猜�
     return canvas.nodes.some(
       (node) =>
         node.data.mediaType === 'video' &&
-        node.data.parameters?.width === 1280 &&
-        node.data.parameters?.height === 720,
+        node.data.parameters?.duration === 8 &&
+        node.data.parameters?.width === undefined &&
+        node.data.parameters?.height === undefined,
     );
   });
-  await height.fill('720');
+  await editor.locator('textarea').fill('Playwright 视频参数');
   await savedDimensions;
   await page.reload();
   await page.locator('.flow-generate-node').filter({ hasText: '视频生成节点' }).click();
   await editor.getByRole('button', { name: '媒体参数', exact: true }).click();
-  await expect(width).toHaveValue('1280');
-  await expect(height).toHaveValue('720');
+  await expect(width).toHaveCount(0);
+  await expect(height).toHaveCount(0);
   await expect(editor.getByRole('combobox', { name: '时长（秒）：8' })).toBeVisible();
   await expect(editor.getByRole('combobox', { name: '视频清晰度：480p' })).toBeVisible();
   await expect(editor.getByRole('button', { name: '视频比例：16:9' })).toBeVisible();
@@ -1854,34 +2165,8 @@ test('PC 视频像素尺寸可保存清空恢复，提交显式宽高且不猜�
     contentType: 'image/png',
   });
 
-  const clearedDimensions = page.waitForResponse((response) => {
-    if (
-      response.request().method() !== 'PATCH' ||
-      new URL(response.url()).pathname !== `/v1/projects/${project.id}/canvas` ||
-      response.status() !== 200
-    )
-      return false;
-    const canvas = response.request().postDataJSON() as CanvasDocument;
-    return canvas.nodes.some(
-      (node) =>
-        node.data.mediaType === 'video' &&
-        node.data.parameters?.duration === 8 &&
-        !Object.hasOwn(node.data.parameters, 'width') &&
-        !Object.hasOwn(node.data.parameters, 'height'),
-    );
-  });
-  await width.fill('');
-  await height.fill('');
-  await clearedDimensions;
-  await page.reload();
-  await page.locator('.flow-generate-node').filter({ hasText: '视频生成节点' }).click();
-  await editor.getByRole('button', { name: '媒体参数', exact: true }).click();
-  await expect(width).toHaveValue('');
-  await expect(height).toHaveValue('');
   await expect(editor.getByRole('combobox', { name: '时长（秒）：8' })).toBeVisible();
   await expect(run).toBeEnabled();
-  await width.fill('1920');
-  await height.fill('1080');
   const submittedRequest = page.waitForRequest(
     (request) =>
       request.method() === 'POST' &&
@@ -1889,12 +2174,10 @@ test('PC 视频像素尺寸可保存清空恢复，提交显式宽高且不猜�
   );
   await run.click();
   expect((await submittedRequest).postDataJSON().parameters).toEqual({
-    prompt: 'Playwright 视频像素尺寸',
+    prompt: 'Playwright 视频参数',
     duration: 8,
     resolution: '480p',
     aspectRatio: '16:9',
-    width: 1920,
-    height: 1080,
   });
   await expect(page.getByRole('status').filter({ hasText: '视频生成节点 已完成' })).toBeVisible();
   await expect(page.locator('.flow-generate-node .flow-node-preview video')).toHaveAttribute(

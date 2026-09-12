@@ -20,7 +20,7 @@ import {
   Search,
   Tags,
 } from 'lucide-react';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { apiFetch } from '../auth-client';
 import { AppLink } from '../routing';
 import { API_BASE_URL } from '../workspace/contracts';
@@ -222,6 +222,8 @@ export function ResourcesPage({ userId, ownerId }: { userId: string; ownerId?: s
     enabled: !admin,
   });
   const projects = admin ? owner.data?.projects : ownProjects.data?.projects;
+  /** 详情切换只沿当前筛选页顺序，资源已移出列表时不自动跳到无关项目。 */
+  const selectedIndex = query.data?.assets.findIndex((item) => item.id === selected?.id) ?? -1;
   return (
     <>
       {admin && (
@@ -401,12 +403,11 @@ export function ResourcesPage({ userId, ownerId }: { userId: string; ownerId?: s
               className="mg-resource-item"
               onClick={() => setSelected(asset)}
             >
-              <div className={`mg-resource-preview is-${asset.mediaType}`}>
-                {asset.mediaType === 'image' ? (
-                  <ResourceThumbnail asset={asset} basePath={basePath} />
-                ) : (
-                  <MediaIcon type={asset.mediaType} size={35} />
-                )}
+              <div
+                className={`mg-resource-preview is-${asset.mediaType}`}
+                style={{ aspectRatio: resourceAspectRatio(asset) }}
+              >
+                <ResourceThumbnail asset={asset} basePath={basePath} />
                 <span className="mg-resource-type">{mediaLabels[asset.mediaType]}</span>
               </div>
               <div className="mg-resource-info">
@@ -447,6 +448,9 @@ export function ResourcesPage({ userId, ownerId }: { userId: string; ownerId?: s
           }
           onClose={() => setSelected(null)}
           onChanged={() => void query.refetch()}
+          previous={selectedIndex > 0 ? query.data?.assets[selectedIndex - 1] : undefined}
+          next={selectedIndex >= 0 ? query.data?.assets[selectedIndex + 1] : undefined}
+          onSelect={setSelected}
         />
       )}
     </>
@@ -454,18 +458,44 @@ export function ResourcesPage({ userId, ownerId }: { userId: string; ownerId?: s
 }
 
 /** 字节读取使用 Bearer 鉴权，不把令牌放进图片或下载 URL。 */
-async function fetchResourceBlob(path: string, signal?: AbortSignal): Promise<Blob> {
-  const response = await apiFetch(`${API_BASE_URL.replace(/\/$/, '')}/v1${path}`, { signal });
+async function fetchResourceBlob(
+  path: string,
+  signal?: AbortSignal,
+  maxBytes?: number,
+): Promise<Blob> {
+  const response = await apiFetch(`${API_BASE_URL.replace(/\/$/, '')}/v1${path}`, {
+    signal,
+    ...(maxBytes ? { headers: { Range: `bytes=0-${maxBytes - 1}` } } : {}),
+  });
   if (!response.ok)
     throw new ManagementError(`资源内容读取失败（${response.status}）`, response.status);
   return response.blob();
 }
 
-/** 可见缩略图才发起请求；用户切换或离开页面立即撤销对象 URL。 */
+/** 使用服务端尺寸预留稳定比例；极端长图约束在 1:2 到 2:1，音频采用波形比例。 */
+function resourceAspectRatio(asset: ManagementAsset): number {
+  const width = asset.metadata?.width;
+  const height = asset.metadata?.height;
+  if (
+    typeof width === 'number' &&
+    typeof height === 'number' &&
+    Number.isFinite(width) &&
+    Number.isFinite(height) &&
+    width > 0 &&
+    height > 0
+  ) {
+    return Math.max(0.5, Math.min(2, width / height));
+  }
+  return asset.mediaType === 'audio' ? 2 : asset.mediaType === 'text' ? 1 : 1.6;
+}
+
+/** 可见卡片只读取对应衍生图或前 4 KiB 文本；离开可见区域立即取消并释放 URL。 */
 function ResourceThumbnail({ asset, basePath }: { asset: ManagementAsset; basePath: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
   const [url, setUrl] = useState<string | null>(null);
+  const [text, setText] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
   useEffect(() => {
     if (typeof IntersectionObserver === 'undefined') {
       setVisible(true);
@@ -473,10 +503,7 @@ function ResourceThumbnail({ asset, basePath }: { asset: ManagementAsset; basePa
     }
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
-          setVisible(true);
-          observer.disconnect();
-        }
+        setVisible(entries.some((entry) => entry.isIntersecting));
       },
       { rootMargin: '120px' },
     );
@@ -484,33 +511,78 @@ function ResourceThumbnail({ asset, basePath }: { asset: ManagementAsset; basePa
     return () => observer.disconnect();
   }, []);
   useEffect(() => {
+    setUrl(null);
+    setText(null);
+    setFailed(false);
     if (!visible) return;
+    if (asset.mediaType === 'text' && asset.sizeBytes === 0) {
+      setText('');
+      return;
+    }
     const abort = new AbortController();
     let objectUrl: string | undefined;
+    const derivative =
+      asset.mediaType === 'image'
+        ? 'thumbnail'
+        : asset.mediaType === 'video'
+          ? 'poster'
+          : 'waveform';
     void fetchResourceBlob(
-      `${basePath}/${encodeURIComponent(asset.id)}/content?derivative=thumbnail`,
+      `${basePath}/${encodeURIComponent(asset.id)}/content${asset.mediaType === 'text' ? '' : `?derivative=${derivative}`}`,
       abort.signal,
+      asset.mediaType === 'text' ? 4096 : undefined,
     )
-      .then((blob) => {
+      .then(async (blob) => {
+        if (asset.mediaType === 'text') {
+          const excerpt = await blob.slice(0, 4096).text();
+          if (!abort.signal.aborted) setText(excerpt.slice(0, 700));
+          return;
+        }
         if (!abort.signal.aborted) {
           objectUrl = URL.createObjectURL(blob);
           setUrl(objectUrl);
         }
       })
       .catch(() => {
-        /* 缩略图不可用时保留类型占位，原文件仍可在详情中读取。 */
+        if (!abort.signal.aborted) setFailed(true);
       });
     return () => {
       abort.abort();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [asset.id, basePath, visible]);
+  }, [
+    asset.id,
+    asset.latestVersion,
+    asset.updatedAt,
+    asset.mediaType,
+    asset.sizeBytes,
+    basePath,
+    visible,
+  ]);
   return (
-    <div ref={containerRef} className="mg-thumbnail">
-      {url ? (
-        <img src={url} alt="" loading="lazy" onError={() => setUrl(null)} />
+    <div
+      ref={containerRef}
+      className={`mg-thumbnail${!url && text === null && !failed ? ' is-loading' : ''}`}
+    >
+      {text !== null ? (
+        <p className="mg-resource-excerpt">{text || '空文本'}</p>
+      ) : url ? (
+        <img
+          src={url}
+          alt=""
+          loading="lazy"
+          onError={() => {
+            setUrl(null);
+            setFailed(true);
+          }}
+        />
+      ) : failed ? (
+        <span className="mg-resource-fallback" title="预览不可用，可打开详情重试">
+          <MediaIcon type={asset.mediaType} size={35} />
+          <small>预览不可用</small>
+        </span>
       ) : (
-        <FileImage size={35} />
+        <span className="mg-resource-skeleton" aria-label="正在加载预览" />
       )}
     </div>
   );
@@ -531,6 +603,9 @@ function ResourceModal({
   ownerLabel,
   onClose,
   onChanged,
+  previous,
+  next,
+  onSelect,
 }: {
   asset: ManagementAsset;
   basePath: string;
@@ -538,6 +613,9 @@ function ResourceModal({
   ownerLabel?: string;
   onClose: () => void;
   onChanged: () => void;
+  previous?: ManagementAsset;
+  next?: ManagementAsset;
+  onSelect: (asset: ManagementAsset) => void;
 }) {
   const queryClient = useQueryClient();
   const query = useQuery({
@@ -549,6 +627,38 @@ function ResourceModal({
   const [version, setVersion] = useState('');
   const [confirmArchive, setConfirmArchive] = useState(false);
   const action = useAction();
+  /** 输入框及播放器的方向键保持原生语义，非编辑区域允许逐项切换。 */
+  const handlePreviewKey = useCallback(
+    (event: KeyboardEvent) => {
+      if (
+        action.busy ||
+        confirmArchive ||
+        event.isComposing ||
+        event.defaultPrevented ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.altKey ||
+        event.shiftKey
+      )
+        return;
+      if (
+        event.target instanceof Element &&
+        event.target.closest('input, textarea, select, video, audio, [contenteditable="true"]')
+      )
+        return;
+      const target =
+        event.key === 'ArrowLeft' ? previous : event.key === 'ArrowRight' ? next : undefined;
+      if (target) {
+        event.preventDefault();
+        onSelect(target);
+      }
+    },
+    [action.busy, confirmArchive, previous, next, onSelect],
+  );
+  useEffect(() => {
+    document.addEventListener('keydown', handlePreviewKey);
+    return () => document.removeEventListener('keydown', handlePreviewKey);
+  }, [handlePreviewKey]);
   /** 保存和归档只提交白名单字段，刷新当前用户作用域的服务端数据。 */
   const update = async (body: {
     name?: string;
@@ -565,6 +675,28 @@ function ResourceModal({
   };
   return (
     <Modal title={current.name} onClose={onClose} busy={action.busy}>
+      <div className="mg-resource-navigation" aria-label="资源切换">
+        <button
+          type="button"
+          className="mg-icon"
+          title="上一个资源"
+          aria-label="上一个资源"
+          disabled={!previous || action.busy || confirmArchive}
+          onClick={() => previous && onSelect(previous)}
+        >
+          <ArrowLeft size={18} />
+        </button>
+        <button
+          type="button"
+          className="mg-icon"
+          title="下一个资源"
+          aria-label="下一个资源"
+          disabled={!next || action.busy || confirmArchive}
+          onClick={() => next && onSelect(next)}
+        >
+          <ArrowRight size={18} />
+        </button>
+      </div>
       <div className="mg-resource-detail">
         <section className="mg-media-region">
           <ResourceContent

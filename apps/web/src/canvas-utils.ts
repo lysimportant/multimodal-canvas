@@ -26,6 +26,12 @@ export type CanvasClipboard = {
 export const DEFAULT_FLOW_NODE_WIDTH = 230;
 /** 节点未被用户缩放时的默认高度，单位为像素。 */
 export const DEFAULT_FLOW_NODE_HEIGHT = 216;
+/** 仅供新建入口使用的媒体尺寸；旧画布恢复仍使用历史默认值，单位为画布像素。 */
+export function getNewNodeDimensions(mediaType: MediaType): { width: number; height: number } {
+  return mediaType === 'image' || mediaType === 'video'
+    ? { width: 400, height: 266 }
+    : { width: 270, height: 246 };
+}
 const CANVAS_CLIPBOARD_FORMAT = 'multimodal-canvas/clipboard';
 const CANVAS_CLIPBOARD_VERSION = 1;
 

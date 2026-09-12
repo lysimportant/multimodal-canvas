@@ -41,11 +41,7 @@ describe('账户菜单', () => {
     );
     await actor.click(screen.getByRole('button', { name: '账户菜单' }));
     expect(screen.getByRole('menuitem', { name: '管理后台' })).toHaveAttribute('href', '/admin');
-    expect(screen.getByRole('menuitem', { name: '个人信息' })).toHaveAttribute('target', '_blank');
-    expect(screen.getByRole('menuitem', { name: '个人信息' })).toHaveAttribute(
-      'rel',
-      'noopener noreferrer',
-    );
+    expect(screen.getByRole('menuitem', { name: '个人信息' })).not.toHaveAttribute('target');
     expect(logout).not.toHaveBeenCalled();
   });
 
@@ -60,6 +56,33 @@ describe('账户菜单', () => {
     await actor.unhover(container);
     await new Promise((resolve) => window.setTimeout(resolve, 160));
     expect(screen.queryByRole('menu', { name: '账户操作' })).not.toBeInTheDocument();
+  });
+
+  it('同页账户跳转携带来源项目并允许保存回调拦截，修饰键保持浏览器行为', () => {
+    window.history.replaceState(null, '', '/projects/project-a');
+    const navigate = vi.fn((_href, event) => event.preventDefault());
+    render(
+      <AccountMenu
+        user={user}
+        onRequestLogin={vi.fn()}
+        onLogout={vi.fn()}
+        projectId="project-a"
+        onNavigate={navigate}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: '账户菜单' }));
+    const resources = screen.getByRole('menuitem', { name: '我的资源' });
+    expect(resources).toHaveAttribute('href', '/resources?returnProjectId=project-a');
+    fireEvent.click(resources);
+    expect(navigate).toHaveBeenCalledWith(
+      '/resources?returnProjectId=project-a',
+      expect.anything(),
+    );
+    expect(window.location.pathname).toBe('/projects/project-a');
+    navigate.mockClear();
+    resources.addEventListener('click', (event) => event.preventDefault(), { once: true });
+    fireEvent.click(resources, { ctrlKey: true });
+    expect(navigate).not.toHaveBeenCalled();
   });
 
   it('匿名入口只请求登录，键盘聚焦可操作菜单项目', async () => {

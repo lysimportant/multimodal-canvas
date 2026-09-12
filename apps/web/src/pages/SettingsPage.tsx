@@ -35,6 +35,7 @@ export function SettingsPage({
     <PageFrame
       route={route}
       projectId={projectId}
+      projectName={projectName}
       onNavigate={onNavigate}
       mainClassName="mc-settings-page"
     >

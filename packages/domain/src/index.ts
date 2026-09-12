@@ -296,6 +296,10 @@ export const nodeDataSchema = z.object({
   enabled: z.boolean().optional(),
   /** Downstream output is no longer derived from the current upstream inputs. */
   stale: z.boolean().optional(),
+  /** 手动上传或编辑的资产优先作为下游输入；仅明确重新生成本节点时执行模型。 */
+  manualOutput: z.boolean().optional(),
+  /** 明确重新生成的运行 ID；界面只允许该运行成功后替换手动输出，失败仍保留资产。 */
+  manualOutputRunId: z.string().trim().min(1).optional(),
   prompt: z.string().trim().max(20_000).optional(),
   /** 版本化提示词文档；存在时它是唯一执行来源，旧 prompt 仅作兼容字段。 */
   promptDocument: promptDocumentSchema.optional(),

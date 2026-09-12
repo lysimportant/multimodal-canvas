@@ -256,8 +256,13 @@ export function AppNavigation({
   const drawerRef = useRef<HTMLElement>(null);
   const activeSection = getNavigationSection(route);
 
+  /** 普通导航与账户入口使用同一返回来源，目标页面查询参数保持独立。 */
+  const returnProjectId = projectId ?? route.returnProjectId;
   const itemHref = (item: NavigationItem) =>
-    item.id === 'settings' ? appPaths.settings(projectId) : item.href;
+    appPaths.withProject(
+      item.id === 'settings' ? appPaths.settings(returnProjectId) : item.href,
+      returnProjectId,
+    );
 
   useEffect(() => {
     const handleScroll = () => setIsScrolled(window.scrollY > 16);
@@ -343,9 +348,9 @@ export function AppNavigation({
           </button>
           <AppLink
             className="mc-navigation-brand"
-            to={appPaths.home}
+            to={appPaths.withProject(appPaths.home, returnProjectId)}
             aria-label="Multimodal Canvas 主页"
-            onClick={handleNavigation(appPaths.home)}
+            onClick={handleNavigation(appPaths.withProject(appPaths.home, returnProjectId))}
           >
             <span className="mc-navigation-brand-mark" aria-hidden="true">
               MC
@@ -361,9 +366,9 @@ export function AppNavigation({
           {actions}
           <AppLink
             className={`mc-navigation-header-link${route.id === 'contact' ? ' is-active' : ''}`}
-            to={appPaths.contact}
+            to={appPaths.withProject(appPaths.contact, returnProjectId)}
             aria-current={route.id === 'contact' ? 'page' : undefined}
-            onClick={handleNavigation(appPaths.contact)}
+            onClick={handleNavigation(appPaths.withProject(appPaths.contact, returnProjectId))}
           >
             联系我们
           </AppLink>
@@ -387,7 +392,7 @@ export function AppNavigation({
           </a>
           <ThemeMenu />
           {account && !className.includes('mc-canvas-navigation') && (
-            <AccountMenu {...account} onNavigate={onNavigate} />
+            <AccountMenu {...account} projectId={returnProjectId} onNavigate={onNavigate} />
           )}
         </div>
       </header>

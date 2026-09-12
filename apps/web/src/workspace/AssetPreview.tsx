@@ -25,19 +25,30 @@ export type AssetPreviewProps = {
   interactive?: boolean;
   mode?: AssetPreviewMode;
   onLoadStateChange?: (state: AssetPreviewLoadState) => void;
+  /** 双击编辑后的持久化回调；失败拒绝 Promise，编辑器保留草稿。 */
+  onTextSave?: (text: string) => Promise<void>;
 };
 
 type ArtifactKind = MediaType | 'file';
 
-function useAuthenticatedAssetUrl(asset: Asset, reloadKey: number): string {
+/** 申请受保护产物的签名地址；相对签名按 API 地址解析，失败不降级成未鉴权请求。 */
+function useAuthenticatedAssetUrl(
+  asset: Asset,
+  reloadKey: number,
+  sign = true,
+): { url: string; loading: boolean; error?: string } {
   const fallback = asset.contentUrl ? resolveUploadUrl(asset.contentUrl, API_BASE_URL) : '';
-  const [url, setUrl] = useState(fallback);
+  const protectedAsset =
+    sign &&
+    Boolean(getAuthToken()) &&
+    isApiResultUrl(fallback) &&
+    new URL(fallback, window.location.href).pathname.includes('/v1/assets/');
+  const identity = `${asset.id}:${fallback}:${reloadKey}`;
+  const [resolved, setResolved] = useState<{ identity: string; url: string; error?: string }>();
 
   useEffect(() => {
-    let active = true;
-    setUrl(fallback);
-    const token = getAuthToken();
-    if (!token || !asset.contentUrl.startsWith('/v1/assets/')) return;
+    if (!protectedAsset) return;
+    const abort = new AbortController();
 
     const versionMatch = asset.contentUrl.match(/\/versions\/(\d+)\/content(?:$|\?)/);
     const derivativeMatch = asset.contentUrl.match(
@@ -52,20 +63,32 @@ function useAuthenticatedAssetUrl(asset: Asset, reloadKey: number): string {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
+      signal: abort.signal,
     })
       .then(async (response) => {
         const result = (await response.json().catch(() => ({}))) as { url?: string };
-        if (response.ok && result.url && active) setUrl(result.url);
+        if (!response.ok || !result.url) throw new Error(`产物访问授权失败（${response.status}）`);
+        if (!abort.signal.aborted)
+          setResolved({ identity, url: resolveUploadUrl(result.url, API_BASE_URL) });
       })
-      .catch(() => {
-        // Keep the relative URL as a fallback for anonymous/local development.
+      .catch((reason: unknown) => {
+        if (!abort.signal.aborted)
+          setResolved({
+            identity,
+            url: '',
+            error: reason instanceof Error ? reason.message : '产物访问授权失败',
+          });
       });
     return () => {
-      active = false;
+      abort.abort();
     };
-  }, [asset.contentUrl, asset.id, fallback, reloadKey]);
+  }, [asset.contentUrl, asset.id, identity, protectedAsset]);
 
-  return url;
+  return protectedAsset
+    ? resolved?.identity === identity
+      ? { ...resolved, loading: false }
+      : { url: '', loading: true }
+    : { url: fallback, loading: false };
 }
 
 export function AssetPreview({
@@ -74,12 +97,28 @@ export function AssetPreview({
   interactive = false,
   mode,
   onLoadStateChange,
+  onTextSave,
 }: AssetPreviewProps) {
   const [reloadKey, setReloadKey] = useState(0);
-  const src = useAuthenticatedAssetUrl(asset, reloadKey);
-  const previewMode = mode ?? (interactive ? 'content' : 'compact');
   const kind = resolveArtifactKind(asset);
+  const access = useAuthenticatedAssetUrl(asset, reloadKey, kind !== 'text');
+  const src = access.url;
+  const previewMode = mode ?? (interactive ? 'content' : 'compact');
   const retry = () => setReloadKey((current) => current + 1);
+
+  if (access.loading || ('error' in access && access.error)) {
+    return (
+      <ArtifactState
+        className={className}
+        state={access.loading ? 'loading' : 'error'}
+        message={access.loading ? '正在读取产物…' : access.error!}
+        {...(!access.loading && previewMode === 'content'
+          ? { actionLabel: '重新加载', onAction: retry }
+          : {})}
+        onLoadStateChange={onLoadStateChange}
+      />
+    );
+  }
 
   if (!src) {
     return (
@@ -105,10 +144,11 @@ export function AssetPreview({
   if (kind === 'text') {
     return (
       <TextResultContent
-        key={`${src}:${reloadKey}`}
+        key={reloadKey}
         url={src}
         className={`artifact-preview-text ${className}`}
         copyable
+        onSave={onTextSave}
         onRetry={retry}
         onLoadStateChange={onLoadStateChange}
       />
@@ -329,7 +369,7 @@ function ArtifactState({
   onLoadStateChange,
 }: {
   className?: string;
-  state: 'error' | 'missing';
+  state: 'error' | 'missing' | 'loading';
   message: string;
   actionLabel?: string;
   onAction?: () => void;
@@ -339,9 +379,13 @@ function ArtifactState({
   return (
     <div
       className={`artifact-preview-state artifact-preview-state-${state} ${className}`}
-      role="alert"
+      role={state === 'loading' ? 'status' : 'alert'}
     >
-      <TriangleAlert size={18} aria-hidden="true" />
+      {state === 'loading' ? (
+        <LoaderCircle className="spin" size={18} aria-hidden="true" />
+      ) : (
+        <TriangleAlert size={18} aria-hidden="true" />
+      )}
       <span>{message}</span>
       {actionLabel && onAction ? (
         <button type="button" className="artifact-preview-retry nodrag nopan" onClick={onAction}>
@@ -364,7 +408,13 @@ export function AuthenticatedAssetLink({
   children: ReactNode;
   current?: boolean;
 }) {
-  const href = useAuthenticatedAssetUrl(asset, 0);
+  const { url: href, loading, error } = useAuthenticatedAssetUrl(asset, 0);
+  if (loading || error)
+    return (
+      <span className={className} title={error}>
+        {children}
+      </span>
+    );
   return (
     <a
       className={className}
@@ -384,6 +434,7 @@ export function TextResultContent({
   copyable = true,
   editable = false,
   onChange,
+  onSave,
   onRetry,
   onLoadStateChange,
 }: {
@@ -394,6 +445,8 @@ export function TextResultContent({
   editable?: boolean;
   /** 编辑结果时回传最新文本。 */
   onChange?: (value: string) => void;
+  /** 提交用户草稿并等待持久化完成；失败时保留编辑态与错误。 */
+  onSave?: (value: string) => Promise<void>;
   onRetry?: () => void;
   onLoadStateChange?: (state: AssetPreviewLoadState) => void;
 }) {
@@ -401,6 +454,13 @@ export function TextResultContent({
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  /** 草稿与远端正文分离，Esc 取消不会改写资产。 */
+  const [draft, setDraft] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+  const composingRef = useRef(false);
+  const cancelRef = useRef(false);
   const callbackRef = useRef(onLoadStateChange);
   callbackRef.current = onLoadStateChange;
 
@@ -443,7 +503,7 @@ export function TextResultContent({
   if (!url) {
     return <ArtifactState className={className} state="missing" message="产物不存在或已失效" />;
   }
-  if (error) {
+  if (error && draft === null) {
     return (
       <ArtifactState
         className={className}
@@ -457,7 +517,7 @@ export function TextResultContent({
       />
     );
   }
-  if (content === null) {
+  if (content === null && draft === null) {
     return (
       <p
         className={`artifact-preview-text-pending inspector-result-pending ${className}`}
@@ -471,10 +531,33 @@ export function TextResultContent({
 
   const copyContent = async () => {
     try {
-      await writeTextToClipboard(content);
+      await writeTextToClipboard(draft ?? content ?? '');
       setCopyState('copied');
     } catch {
       setCopyState('failed');
+    }
+  };
+
+  /** 失焦只提交一次，输入法组合及取消引起的失焦不保存。 */
+  const commitDraft = async () => {
+    if (!onSave || draft === null || savingRef.current || composingRef.current || cancelRef.current)
+      return;
+    if (draft === content && !saveError) {
+      setDraft(null);
+      return;
+    }
+    savingRef.current = true;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await onSave(draft);
+      setContent(draft);
+      setDraft(null);
+    } catch (reason) {
+      setSaveError(reason instanceof Error ? reason.message : '文字保存失败');
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
     }
   };
 
@@ -496,10 +579,57 @@ export function TextResultContent({
           </span>
         </div>
       ) : null}
-      {editable ? (
+      {draft !== null ? (
+        <>
+          <textarea
+            autoFocus
+            className="inspector-result-text artifact-preview-text-body artifact-preview-text-editor nodrag nopan nowheel"
+            aria-label="编辑文字结果"
+            value={draft}
+            readOnly={saving}
+            onChange={(event) => setDraft(event.target.value)}
+            onCompositionStart={() => {
+              composingRef.current = true;
+            }}
+            onCompositionEnd={(event) => {
+              composingRef.current = false;
+              if (document.activeElement !== event.currentTarget) void commitDraft();
+            }}
+            onPointerDown={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+              event.stopPropagation();
+              if (
+                event.key === 'Escape' &&
+                !event.nativeEvent.isComposing &&
+                !composingRef.current &&
+                !savingRef.current
+              ) {
+                cancelRef.current = true;
+                setDraft(null);
+                setSaveError(null);
+              }
+            }}
+            onKeyUp={(event) => event.stopPropagation()}
+            onBlur={() => void commitDraft()}
+          />
+          {saving && <span role="status">正在保存…</span>}
+          {saveError && (
+            <div role="alert">
+              {saveError}
+              <button
+                type="button"
+                className="artifact-preview-action"
+                onClick={() => void commitDraft()}
+              >
+                重试保存
+              </button>
+            </div>
+          )}
+        </>
+      ) : editable ? (
         <textarea
           className="inspector-result-text artifact-preview-text-body artifact-preview-text-editor"
-          value={content}
+          value={content ?? ''}
           aria-label="编辑文字结果"
           onChange={(event) => {
             setContent(event.target.value);
@@ -507,7 +637,34 @@ export function TextResultContent({
           }}
         />
       ) : (
-        <pre className="inspector-result-text artifact-preview-text-body">{content}</pre>
+        <pre
+          className="inspector-result-text artifact-preview-text-body"
+          tabIndex={onSave ? 0 : undefined}
+          aria-label={onSave ? '文字结果' : undefined}
+          onDoubleClick={
+            onSave
+              ? (event) => {
+                  event.stopPropagation();
+                  cancelRef.current = false;
+                  setDraft(content);
+                }
+              : undefined
+          }
+          onKeyDown={
+            onSave
+              ? (event) => {
+                  if (event.key === 'Enter' || event.key === 'F2') {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    cancelRef.current = false;
+                    setDraft(content);
+                  }
+                }
+              : undefined
+          }
+        >
+          {content}
+        </pre>
       )}
     </div>
   );

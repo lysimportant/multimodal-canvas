@@ -951,6 +951,8 @@ const nodeDataFields = [
   'mode',
   'enabled',
   'stale',
+  'manualOutput',
+  'manualOutputRunId',
   'prompt',
   'promptDocument',
   'parameters',

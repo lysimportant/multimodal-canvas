@@ -41,7 +41,15 @@ const assets: Asset[] = [
   },
 ];
 
-function ResourcePanelHarness({ onQueryCommit }: { onQueryCommit: (value: string) => void }) {
+function ResourcePanelHarness({
+  onQueryCommit,
+  onArchive = vi.fn(),
+  showArchived = false,
+}: {
+  onQueryCommit: (value: string) => void;
+  onArchive?: (asset: Asset) => void;
+  showArchived?: boolean;
+}) {
   const [query, setQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState<'all' | 'text' | 'image' | 'audio' | 'video'>(
     'all',
@@ -55,9 +63,9 @@ function ResourcePanelHarness({ onQueryCommit }: { onQueryCommit: (value: string
       </button>
       <output data-testid="render-version">{renderVersion}</output>
       <ResourcePanel
-        assets={assets}
+        assets={showArchived ? assets.map((asset) => ({ ...asset, status: 'archived' })) : assets}
         collapsed={false}
-        showArchived={false}
+        showArchived={showArchived}
         activeFilter={activeFilter}
         query={query}
         isUploading={false}
@@ -72,7 +80,7 @@ function ResourcePanelHarness({ onQueryCommit }: { onQueryCommit: (value: string
         onAssetDragStart={vi.fn()}
         onAddAsset={vi.fn()}
         onRenameAsset={vi.fn()}
-        onArchiveAsset={vi.fn()}
+        onArchiveAsset={onArchive}
         onDrop={vi.fn()}
         onToggleCollapsed={vi.fn()}
       />
@@ -81,7 +89,30 @@ function ResourcePanelHarness({ onQueryCommit }: { onQueryCommit: (value: string
 }
 
 describe('ResourcePanel search input', () => {
-  afterEach(() => cleanup());
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it('删除需确认，已归档资源只显示恢复入口', async () => {
+    const archive = vi.fn();
+    const confirm = vi
+      .spyOn(window, 'confirm')
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
+    const view = render(<ResourcePanelHarness onQueryCommit={vi.fn()} onArchive={archive} />);
+    await userEvent.click(screen.getByRole('button', { name: '删除 中文参考素材' }));
+    expect(archive).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: '删除 中文参考素材' }));
+    expect(archive).toHaveBeenCalledExactlyOnceWith(assets[0]);
+    expect(confirm).toHaveBeenCalledTimes(2);
+    view.rerender(
+      <ResourcePanelHarness onQueryCommit={vi.fn()} onArchive={archive} showArchived />,
+    );
+    expect(screen.queryByRole('button', { name: /^删除 / })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: '恢复 中文参考素材' }));
+    expect(archive).toHaveBeenLastCalledWith({ ...assets[0], status: 'archived' });
+  });
 
   it('uses the former title area for the resource selector and actions', () => {
     render(<ResourcePanelHarness onQueryCommit={vi.fn()} />);

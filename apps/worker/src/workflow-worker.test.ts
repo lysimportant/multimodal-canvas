@@ -380,6 +380,82 @@ describe('worker workflow DAG execution', () => {
     });
   });
 
+  it('consumes a normalized manual source without executing or archiving it', async () => {
+    bullmqState.jobs.clear();
+    const runId = '123e4567-e89b-42d3-a456-426614174126';
+    const manualSource = {
+      ...snapshot.nodes[1]!,
+      data: {
+        label: 'Manual draft',
+        mediaType: 'text' as const,
+        mode: 'source' as const,
+        manualOutput: true,
+        assetId: 'asset_manual',
+        contentUrl: '/v1/assets/asset_manual/versions/3/content',
+        mimeType: 'text/plain',
+      },
+    };
+    const submittedSnapshot: RunSnapshot = {
+      ...snapshot,
+      targetNodeId: 'node_image',
+      modelAlias: 'image-model',
+      nodes: [manualSource, snapshot.nodes[3]!],
+      edges: [snapshot.edges[1]!],
+      inputs: [
+        {
+          nodeId: manualSource.id,
+          role: 'prompt',
+          sortOrder: 0,
+          sourceAssetId: 'asset_manual',
+          snapshot: manualSource,
+        },
+      ],
+    };
+    const provider = {
+      execute: vi.fn(async ({ snapshot: nodeSnapshot }: { snapshot: RunSnapshot }) =>
+        createExecution(nodeSnapshot),
+      ),
+    };
+    const resultArchiver = vi.fn(async () => ({
+      assetId: 'generated_image',
+      version: 1,
+      contentUrl: 'https://assets.example/image.png',
+      mimeType: 'image/png',
+    }));
+    const job = createJob({
+      runId,
+      snapshot: submittedSnapshot,
+      attempt: 1,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(runId, 'newapi'),
+      cancelRequested: false,
+    });
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      provider,
+      resultArchiver,
+      stepDelayMs: 0,
+    });
+    const processed = await bullmqState.processor?.(job);
+    expect(processed).toMatchObject({ status: 'succeeded' });
+    expect(provider.execute).toHaveBeenCalledTimes(1);
+    expect(provider.execute.mock.calls[0]?.[0].snapshot.inputs[0]).toMatchObject({
+      sourceAssetId: 'asset_manual',
+      snapshot: {
+        data: {
+          mode: 'source',
+          manualOutput: true,
+          contentUrl: '/v1/assets/asset_manual/versions/3/content',
+        },
+      },
+    });
+    expect(resultArchiver).toHaveBeenCalledTimes(1);
+    expect(
+      workflowNodeState(job.data.workflowState as WorkflowState, manualSource.id)?.result?.provider,
+    ).toBe('source');
+  });
+
   it('keeps later DAG nodes on the submitted snapshot when a provider mutates job data', async () => {
     bullmqState.jobs.clear();
     const runId = '123e4567-e89b-42d3-a456-426614174125';

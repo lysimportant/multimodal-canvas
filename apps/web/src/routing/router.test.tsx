@@ -4,11 +4,35 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { ContactPage } from '../pages/ContactPage';
-import { AppLink, AppRouter, navigateApp, shouldInterceptAppLink } from './router';
+import {
+  AppLink,
+  AppRouter,
+  ProjectReturnProvider,
+  navigateApp,
+  shouldInterceptAppLink,
+} from './router';
 import { appPaths, getNavigationSection, parseAppRoute } from './routes';
 import { buildAuthPagePath, readAuthReturnPath } from './auth-navigation';
 
 describe('application route contracts', () => {
+  it('独立合并返回来源，保留筛选、创建意图和片段，并兼容旧链接', () => {
+    expect(appPaths.withProject('/resources?projectId=filter&tag=a#preview', 'origin')).toBe(
+      '/resources?projectId=filter&tag=a&returnProjectId=origin#preview',
+    );
+    expect(appPaths.withProject('/workspace?create=1', 'origin')).toBe(
+      '/workspace?create=1&returnProjectId=origin',
+    );
+    expect(parseAppRoute('/resources?projectId=filter&returnProjectId=origin')).toMatchObject({
+      returnProjectId: 'origin',
+    });
+    expect(parseAppRoute('/resources?projectId=legacy')).toMatchObject({
+      returnProjectId: 'legacy',
+    });
+    expect(appPaths.withProject('https://example.test/resource', 'origin')).toBe(
+      'https://example.test/resource',
+    );
+    expect(appPaths.withProject('/projects/target', 'origin')).toBe('/projects/target');
+  });
   it('parses every supported route and settings project context', () => {
     expect(parseAppRoute('/')).toEqual({ id: 'home', pathname: '/' });
     expect(parseAppRoute('/workspace/')).toEqual({ id: 'workspace', pathname: '/workspace' });
@@ -17,6 +41,7 @@ describe('application route contracts', () => {
       id: 'settings',
       pathname: '/settings',
       projectId: 'project 1',
+      returnProjectId: 'project 1',
     });
     expect(parseAppRoute('/projects/project%201')).toEqual({
       id: 'project',
@@ -112,6 +137,25 @@ describe('History API router', () => {
   });
 
   afterEach(() => cleanup());
+
+  it('管理子链接继承来源，返回项目使用精确目标地址', () => {
+    render(
+      <ProjectReturnProvider projectId="origin">
+        <AppLink to="/resources?projectId=filter">资源</AppLink>
+        <AppLink to="/projects/origin">返回项目</AppLink>
+      </ProjectReturnProvider>,
+    );
+    expect(screen.getByRole('link', { name: '资源' })).toHaveAttribute(
+      'href',
+      '/resources?projectId=filter&returnProjectId=origin',
+    );
+    expect(screen.getByRole('link', { name: '返回项目' })).toHaveAttribute(
+      'href',
+      '/projects/origin',
+    );
+    fireEvent.click(screen.getByRole('link', { name: '资源' }));
+    expect(window.location.search).toBe('?projectId=filter&returnProjectId=origin');
+  });
 
   it('updates after application navigation and browser back/forward', async () => {
     render(

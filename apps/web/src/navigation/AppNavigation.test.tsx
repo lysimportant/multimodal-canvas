@@ -34,7 +34,7 @@ describe('AppNavigation', () => {
     expect(drawerNavigation.querySelector('a[aria-current="page"]')).toHaveTextContent('工作台');
     expect(drawerNavigation.querySelector('a[href^="/settings"]')).toHaveAttribute(
       'href',
-      '/settings?project=project-1',
+      '/settings?project=project-1&returnProjectId=project-1',
     );
   });
 

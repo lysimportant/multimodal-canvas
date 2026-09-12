@@ -6,6 +6,7 @@ import {
   Power,
   RefreshCw,
   Trash2,
+  Upload,
   TriangleAlert,
   X,
 } from 'lucide-react';
@@ -16,6 +17,7 @@ import {
   useContext,
   useEffect,
   useState,
+  useRef,
   type KeyboardEvent,
   type ReactNode,
 } from 'react';
@@ -44,6 +46,13 @@ export const NodeEnabledContext = createContext<NodeEnabledHandler | null>(null)
 export type NodeDeleteHandler = (nodeId: string) => void;
 /** 供节点顶部操作栏调用画布统一的删除行为。 */
 export const NodeDeleteContext = createContext<NodeDeleteHandler | null>(null);
+/** 手动内容替换交由画布完成上传、历史记录与持久化；失败拒绝 Promise。 */
+export type NodeContentHandlers = {
+  upload: (nodeId: string, file: File, onProgress: (value: number) => void) => Promise<void>;
+  saveText: (nodeId: string, text: string) => Promise<void>;
+};
+/** 节点内容写入能力，只在已加载的项目画布中提供。 */
+export const NodeContentContext = createContext<NodeContentHandlers | null>(null);
 
 type NodePresentationState = 'empty' | 'running' | 'failed' | 'cancelled' | 'preview' | 'missing';
 
@@ -56,6 +65,12 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const retryNode = useContext(NodeRetryContext);
   const setNodeEnabled = useContext(NodeEnabledContext);
   const deleteNode = useContext(NodeDeleteContext);
+  const contentHandlers = useContext(NodeContentContext);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const uploadLock = useRef(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [retryFile, setRetryFile] = useState<File | null>(null);
   const [previewLoadState, setPreviewLoadState] = useState<AssetPreviewLoadState | null>(null);
   const [isRetrying, setIsRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
@@ -64,23 +79,24 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const Icon = mediaIcons[data.mediaType];
   const Resizer = NodeResizer;
   const enabled = data.enabled !== false;
-  /** 生成与转换节点共用仅由内容组成的外观，资源节点保留原卡片。 */
-  const floatingControls = data.mode !== 'source';
-  const resultPreviewAsset = data.resultAsset
-    ? ({
-        id: data.resultAsset.assetId,
-        name: `${data.label}结果`,
-        mediaType: data.mediaType,
-        mimeType: data.resultAsset.mimeType ?? data.mimeType ?? 'application/octet-stream',
-        sizeBytes: data.resultAsset.sizeBytes ?? 0,
-        status: 'ready',
-        // 公共运行记录会省略 contentUrl，但生成资产仍可通过受保护的资产边界访问。
-        contentUrl:
-          data.resultAsset.contentUrl ??
-          getResultAssetContentUrl(data.resultAsset.assetId, data.resultAsset.version),
-        tags: [],
-      } satisfies Asset)
-    : undefined;
+  /** 全部节点共用悬浮操作栏，保持内容区域固定尺寸。 */
+  const floatingControls = true;
+  const resultPreviewAsset =
+    !data.manualOutput && data.resultAsset
+      ? ({
+          id: data.resultAsset.assetId,
+          name: `${data.label}结果`,
+          mediaType: data.mediaType,
+          mimeType: data.resultAsset.mimeType ?? data.mimeType ?? 'application/octet-stream',
+          sizeBytes: data.resultAsset.sizeBytes ?? 0,
+          status: 'ready',
+          // 公共运行记录会省略 contentUrl，但生成资产仍可通过受保护的资产边界访问。
+          contentUrl:
+            data.resultAsset.contentUrl ??
+            getResultAssetContentUrl(data.resultAsset.assetId, data.resultAsset.version),
+          tags: [],
+        } satisfies Asset)
+      : undefined;
   const previewAsset =
     resultPreviewAsset ??
     (data.assetId && data.contentUrl
@@ -99,6 +115,24 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
     ? `${previewAsset.id}:${previewAsset.contentUrl}:${previewAsset.mimeType}`
     : '';
   const presentationState = getNodePresentationState(data, previewAsset);
+  const writingDisabled = presentationState === 'running' || uploadProgress !== null;
+  /** 文件选择和拖放共用同一上传入口，错误保留可重试文件。 */
+  const uploadFile = async (file: File) => {
+    if (!contentHandlers || writingDisabled || uploadLock.current) return;
+    uploadLock.current = true;
+    setRetryFile(file);
+    setUploadProgress(0);
+    setUploadError(null);
+    try {
+      await contentHandlers.upload(id, file, setUploadProgress);
+      setRetryFile(null);
+    } catch (reason) {
+      setUploadError(reason instanceof Error ? reason.message : '上传失败');
+    } finally {
+      uploadLock.current = false;
+      setUploadProgress(null);
+    }
+  };
   const effectivePreviewLoadState = previewAsset?.contentUrl
     ? (previewLoadState ?? 'loading')
     : 'missing';
@@ -200,6 +234,20 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
       className={`flow-asset-node ${data.mode !== 'source' ? 'flow-generate-node' : ''} ${selected ? 'is-selected' : ''} ${enabled ? '' : 'is-disabled'}`}
       aria-disabled={!enabled}
       onClickCapture={() => selectNode?.(data)}
+      onDragOver={(event) => {
+        if (event.dataTransfer.types.includes('Files')) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+      }}
+      onDrop={(event) => {
+        if (event.dataTransfer.files.length) {
+          event.preventDefault();
+          event.stopPropagation();
+          if (event.dataTransfer.files.length !== 1) setUploadError('每次只能替换一个文件');
+          else void uploadFile(event.dataTransfer.files[0]);
+        }
+      }}
     >
       {Resizer ? (
         <Resizer
@@ -226,12 +274,6 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
         aria-label={`节点操作：${data.label}`}
         aria-disabled={false}
       >
-        <span
-          className={`media-icon media-icon-${data.mediaType}`}
-          title={`${mediaLabels[data.mediaType]} · ${modeLabels[data.mode]}`}
-        >
-          <Icon size={15} strokeWidth={2} aria-hidden="true" />
-        </span>
         {floatingControls ? (
           nodeLabel
         ) : (
@@ -277,6 +319,44 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
             }
           />
         </span>
+        {contentHandlers && (
+          <>
+            <input
+              ref={inputRef}
+              type="file"
+              hidden
+              aria-label={`上传到节点：${data.label}`}
+              accept={
+                data.mediaType === 'text'
+                  ? '.txt,.md,text/plain,text/markdown'
+                  : `${data.mediaType}/*`
+              }
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = '';
+                if (file) void uploadFile(file);
+              }}
+            />
+            <button
+              type="button"
+              className="flow-node-upload-button nodrag nopan nowheel"
+              disabled={writingDisabled}
+              aria-label={`上传到节点：${data.label}`}
+              title="上传并替换节点内容"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                inputRef.current?.click();
+              }}
+            >
+              {uploadProgress === null ? (
+                <Upload size={13} />
+              ) : (
+                <LoaderCircle className="spin" size={13} />
+              )}
+            </button>
+          </>
+        )}
         {deleteNode ? (
           <button
             type="button"
@@ -299,6 +379,11 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
             asset={previewAsset}
             className="flow-node-preview-content"
             mode="content"
+            onTextSave={
+              contentHandlers && !writingDisabled
+                ? (text) => contentHandlers.saveText(id, text)
+                : undefined
+            }
             onLoadStateChange={handlePreviewLoadState}
           />
         </div>
@@ -322,6 +407,21 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
         />
       )}
       {!floatingControls && nodeLabel}
+      {uploadProgress !== null && (
+        <span className="flow-node-upload-feedback" role="status">
+          上传 {uploadProgress}%
+        </span>
+      )}
+      {uploadError && (
+        <div className="flow-node-upload-feedback is-error nodrag nopan" role="alert">
+          {uploadError}
+          {retryFile && (
+            <button type="button" onClick={() => void uploadFile(retryFile)}>
+              重试
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -450,6 +550,7 @@ function getNodePresentationState(
   ) {
     return 'running';
   }
+  if (data.manualOutput && previewAsset?.contentUrl) return 'preview';
   if (data.runStatus === 'failed') return 'failed';
   if (data.runStatus === 'cancelled') return 'cancelled';
   if (data.runStatus === 'succeeded' && !previewAsset?.contentUrl) return 'missing';

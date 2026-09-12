@@ -209,6 +209,31 @@
   margin: 0;
 }
 
+/* 短枚举独立于参数面板列数排成三列，长模型名称仍使用单列菜单。 */
+.node-quick-editor-select-group .compact-select-menu[data-layout='grid'] {
+  width: min(264px, calc(100vw - 24px));
+  min-width: 0;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.node-quick-editor-select-group .compact-select-menu[data-layout='grid'] .compact-select-option {
+  min-width: 0;
+  padding: 8px;
+}
+
+.node-quick-editor-select-group
+  .compact-select-menu[data-layout='grid']
+  .compact-select-group-label {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 360px) {
+  .node-quick-editor-select-group .compact-select-menu[data-layout='grid'] {
+    width: min(192px, calc(100vw - 24px));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .node-quick-editor-dialog.node-quick-editor-dialog {
   width: min(860px, calc(100vw - 32px));
   max-height: calc(100dvh - 40px);

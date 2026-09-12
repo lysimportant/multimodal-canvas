@@ -484,6 +484,40 @@ describe('邮箱验证与安全操作', () => {
 });
 
 describe('资源用户分组', () => {
+  it('返回来源与资源筛选独立，管理子页链接继续携带来源并显示项目名', async () => {
+    window.history.replaceState(null, '', '/resources?returnProjectId=origin&projectId=filter');
+    vi.mocked(managementRequest).mockImplementation(async (path) =>
+      path.startsWith('/projects')
+        ? {
+            projects: [
+              { id: 'origin', name: '来源项目' },
+              { id: 'filter', name: '筛选项目' },
+            ],
+          }
+        : { assets: [], total: 0, page: 1, pageSize: 24 },
+    );
+    renderPage(
+      <ManagementPage
+        routePath="/resources"
+        authUser={ordinaryUser}
+        onRequestLogin={vi.fn()}
+        onSessionChanged={vi.fn()}
+      />,
+    );
+    expect(await screen.findByRole('link', { name: '返回项目：来源项目' })).toHaveAttribute(
+      'href',
+      '/projects/origin',
+    );
+    fireEvent.change(screen.getByRole('combobox', { name: '所属项目' }), { target: { value: '' } });
+    expect(screen.getByRole('link', { name: '返回项目：来源项目' })).toHaveAttribute(
+      'href',
+      '/projects/origin',
+    );
+    expect(screen.getByRole('link', { name: '账户安全' })).toHaveAttribute(
+      'href',
+      '/account/security?returnProjectId=origin',
+    );
+  });
   it('后台先展示用户分组及各自资源入口，不请求无范围的全部资源', async () => {
     vi.mocked(managementRequest).mockResolvedValue({
       groups: [

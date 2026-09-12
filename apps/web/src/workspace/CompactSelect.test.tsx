@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest';
 
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -18,6 +18,27 @@ const options: CompactSelectOption[] = [
 afterEach(cleanup);
 
 describe('CompactSelect', () => {
+  it('悬停菜单延时关闭，点击固定后移出保持展开', async () => {
+    const user = userEvent.setup();
+    render(<CompactSelect label="档位" options={options} onChange={vi.fn()} openOnHover />);
+    const trigger = screen.getByRole('combobox');
+    await user.hover(trigger);
+    await user.unhover(trigger);
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    await waitFor(() => expect(trigger).toHaveAttribute('aria-expanded', 'false'));
+    await user.hover(trigger);
+    await user.keyboard('{Escape}');
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    await user.unhover(trigger);
+    await user.hover(trigger);
+    await user.click(trigger);
+    await user.unhover(trigger);
+    await new Promise((resolve) => setTimeout(resolve, 220));
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    await user.keyboard('{Escape}');
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+  });
+
   it('使用紧凑 combobox 展开垂直 listbox，并回传选择值', async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();

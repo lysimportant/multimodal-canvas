@@ -26,9 +26,12 @@ import {
 
 import type { Asset, MediaType, PromptDocument } from '@multimodal-canvas/domain';
 import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
+import { getNewNodeDimensions } from '../canvas-utils';
 import {
   NodeResizeContext,
   NodeDeleteContext,
+  NodeContentContext,
+  type NodeContentHandlers,
   NodeResizeStartContext,
   NodeEnabledContext,
   NodeLabelChangeContext,
@@ -132,6 +135,8 @@ export type WorkflowCanvasProps = {
   onRunNode: (node: AssetFlowNode) => void;
   /** App owns graph history and persistence, so deletion is handed back to it. */
   onDeleteNode?: (nodeId: string) => void;
+  /** 当前节点上传和文本编辑的持久化接口。 */
+  nodeContentHandlers?: NodeContentHandlers;
   onAddGenerateNode: (mediaType: MediaType, position?: { x: number; y: number }) => void;
   onAddTransformNode: (mediaType: MediaType, position?: { x: number; y: number }) => void;
   onCanvasCenterChange: (position: { x: number; y: number }) => void;
@@ -182,6 +187,7 @@ export function WorkflowCanvas({
   onInferenceStrengthChange,
   onRunNode,
   onDeleteNode,
+  nodeContentHandlers,
   onAddGenerateNode,
   onAddTransformNode,
   onCanvasCenterChange,
@@ -202,12 +208,19 @@ export function WorkflowCanvas({
   const [contextMenu, setContextMenu] = useState<CanvasContextMenuTarget | null>(null);
   const quickEditorNode = selectedNode && selectedNode.data.mode !== 'source' ? selectedNode : null;
 
-  const getCanvasNodePosition = useCallback(() => {
-    const canvasArea = canvasAreaRef.current;
-    if (!canvasArea) return undefined;
-    const bounds = canvasArea.getBoundingClientRect();
-    return getCenteredCanvasNodePosition(bounds, screenToFlowPosition);
-  }, [screenToFlowPosition]);
+  const getCanvasNodePosition = useCallback(
+    (mediaType?: MediaType) => {
+      const canvasArea = canvasAreaRef.current;
+      if (!canvasArea) return undefined;
+      const bounds = canvasArea.getBoundingClientRect();
+      return getCenteredCanvasNodePosition(
+        bounds,
+        screenToFlowPosition,
+        mediaType ? getNewNodeDimensions(mediaType) : undefined,
+      );
+    },
+    [screenToFlowPosition],
+  );
 
   const reportCanvasCenter = useCallback(() => {
     const position = getCanvasNodePosition();
@@ -244,12 +257,12 @@ export function WorkflowCanvas({
   }, [reportCanvasCenter]);
 
   const handleAddGenerateNode = useCallback(
-    (mediaType: MediaType) => onAddGenerateNode(mediaType, getCanvasNodePosition()),
+    (mediaType: MediaType) => onAddGenerateNode(mediaType, getCanvasNodePosition(mediaType)),
     [getCanvasNodePosition, onAddGenerateNode],
   );
 
   const handleAddTransformNode = useCallback(
-    (mediaType: MediaType) => onAddTransformNode(mediaType, getCanvasNodePosition()),
+    (mediaType: MediaType) => onAddTransformNode(mediaType, getCanvasNodePosition(mediaType)),
     [getCanvasNodePosition, onAddTransformNode],
   );
 
@@ -405,58 +418,60 @@ export function WorkflowCanvas({
               <NodeEnabledContext.Provider value={onNodeEnabledChange}>
                 <NodeRetryContext.Provider value={onRetryNode}>
                   <NodeDeleteContext.Provider value={onDeleteNode ?? null}>
-                    <ReactFlow
-                      nodes={nodes}
-                      edges={edges}
-                      nodeTypes={nodeTypes}
-                      onNodesChange={onNodesChange}
-                      onEdgesChange={onEdgesChange}
-                      onConnect={onConnect}
-                      onConnectStart={(_event, params) => {
-                        connectionStartRef.current = params;
-                      }}
-                      onConnectEnd={handleConnectEnd}
-                      onNodeDragStart={onNodeDragStart}
-                      onMove={reportCanvasCenter}
-                      onDrop={handleDrop}
-                      onDragOver={(event) => {
-                        event.preventDefault();
-                        event.dataTransfer.dropEffect = 'copy';
-                      }}
-                      onNodeClick={(_, node) => onNodeSelect(node as AssetFlowNode)}
-                      onNodeContextMenu={(event, node) =>
-                        handleNodeContextMenu(event, node as AssetFlowNode)
-                      }
-                      onPaneContextMenu={handlePaneContextMenu}
-                      onPaneClick={() => {
-                        setContextMenu(null);
-                        onClearNodeSelection();
-                      }}
-                      fitView
-                      minZoom={FIT_VIEW_MIN_ZOOM}
-                      fitViewOptions={{ padding: 0.3, maxZoom: 1.1, minZoom: FIT_VIEW_MIN_ZOOM }}
-                      connectionLineStyle={{ stroke: '#18794e', strokeWidth: 2 }}
-                      defaultEdgeOptions={{
-                        animated: true,
-                      }}
-                      proOptions={{ hideAttribution: true }}
-                    >
-                      {background !== 'blank' && (
-                        <Background
-                          color="#cbd5d0"
-                          gap={background === 'lines' ? 28 : 24}
-                          size={background === 'cross' ? 7 : 1.2}
-                          variant={
-                            background === 'lines'
-                              ? BackgroundVariant.Lines
-                              : background === 'cross'
-                                ? BackgroundVariant.Cross
-                                : BackgroundVariant.Dots
-                          }
-                        />
-                      )}
-                      <Controls showInteractive={false} position="bottom-right" />
-                    </ReactFlow>
+                    <NodeContentContext.Provider value={nodeContentHandlers ?? null}>
+                      <ReactFlow
+                        nodes={nodes}
+                        edges={edges}
+                        nodeTypes={nodeTypes}
+                        onNodesChange={onNodesChange}
+                        onEdgesChange={onEdgesChange}
+                        onConnect={onConnect}
+                        onConnectStart={(_event, params) => {
+                          connectionStartRef.current = params;
+                        }}
+                        onConnectEnd={handleConnectEnd}
+                        onNodeDragStart={onNodeDragStart}
+                        onMove={reportCanvasCenter}
+                        onDrop={handleDrop}
+                        onDragOver={(event) => {
+                          event.preventDefault();
+                          event.dataTransfer.dropEffect = 'copy';
+                        }}
+                        onNodeClick={(_, node) => onNodeSelect(node as AssetFlowNode)}
+                        onNodeContextMenu={(event, node) =>
+                          handleNodeContextMenu(event, node as AssetFlowNode)
+                        }
+                        onPaneContextMenu={handlePaneContextMenu}
+                        onPaneClick={() => {
+                          setContextMenu(null);
+                          onClearNodeSelection();
+                        }}
+                        fitView
+                        minZoom={FIT_VIEW_MIN_ZOOM}
+                        fitViewOptions={{ padding: 0.3, maxZoom: 1.1, minZoom: FIT_VIEW_MIN_ZOOM }}
+                        connectionLineStyle={{ stroke: '#18794e', strokeWidth: 2 }}
+                        defaultEdgeOptions={{
+                          animated: true,
+                        }}
+                        proOptions={{ hideAttribution: true }}
+                      >
+                        {background !== 'blank' && (
+                          <Background
+                            color="#cbd5d0"
+                            gap={background === 'lines' ? 28 : 24}
+                            size={background === 'cross' ? 7 : 1.2}
+                            variant={
+                              background === 'lines'
+                                ? BackgroundVariant.Lines
+                                : background === 'cross'
+                                  ? BackgroundVariant.Cross
+                                  : BackgroundVariant.Dots
+                            }
+                          />
+                        )}
+                        <Controls showInteractive={false} position="bottom-right" />
+                      </ReactFlow>
+                    </NodeContentContext.Provider>
                   </NodeDeleteContext.Provider>
                 </NodeRetryContext.Provider>
               </NodeEnabledContext.Provider>

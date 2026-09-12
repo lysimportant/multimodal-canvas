@@ -18,6 +18,7 @@ export const DEFAULT_NODE_FLOW_HEIGHT = DEFAULT_FLOW_NODE_HEIGHT;
 export function getCenteredCanvasNodePosition(
   bounds: CanvasViewportBounds,
   screenToFlowPosition: ScreenToFlowPosition,
+  dimensions = { width: DEFAULT_NODE_FLOW_WIDTH, height: DEFAULT_NODE_FLOW_HEIGHT },
 ): FlowPosition | undefined {
   if (bounds.width <= 0 || bounds.height <= 0) return undefined;
 
@@ -27,7 +28,7 @@ export function getCenteredCanvasNodePosition(
   });
 
   return {
-    x: center.x - DEFAULT_NODE_FLOW_WIDTH / 2,
-    y: center.y - DEFAULT_NODE_FLOW_HEIGHT / 2,
+    x: center.x - dimensions.width / 2,
+    y: center.y - dimensions.height / 2,
   };
 }

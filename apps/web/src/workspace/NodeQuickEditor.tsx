@@ -30,9 +30,9 @@ export type NodeMediaParameters = Record<string, unknown> & {
   resolution?: string;
   aspectRatio?: string;
   duration?: number;
-  /** 统一视频协议的宽度，单位像素；可选正安全整数，不从旧分辨率或比例推算。 */
+  /** 保留历史视频宽度，单位像素；界面不再编辑，新建不初始化。 */
   width?: number;
-  /** 统一视频协议的高度，单位像素；可选正安全整数，清空仅移除本字段。 */
+  /** 保留历史视频高度，单位像素；界面不再编辑，新建不初始化。 */
   height?: number;
   /** TTS 音色标识，允许平台自定义非空字符串，必须由用户显式填写。 */
   voice?: string;
@@ -163,6 +163,43 @@ export function NodeQuickEditor({
   const settingsTriggerRef = useRef<HTMLButtonElement>(null);
   const expandTriggerRef = useRef<HTMLButtonElement>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
+  /** 悬停打开可延时收起；点击或键盘打开后固定至显式关闭。 */
+  const settingsPinnedRef = useRef(false);
+  /** 允许鼠标跨过参数按钮与面板之间的空隙。 */
+  const settingsCloseTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(settingsCloseTimerRef.current), []);
+
+  /** 仅改变展示状态，关闭时取消仍在等待的鼠标离开事件。 */
+  const closeMediaSettings = () => {
+    clearTimeout(settingsCloseTimerRef.current);
+    settingsPinnedRef.current = false;
+    setMediaSettingsOpen(false);
+  };
+  /** 悬停触发器或面板时立即展示，并取消延迟收起。 */
+  const enterMediaSettings = () => {
+    clearTimeout(settingsCloseTimerRef.current);
+    setMediaSettingsOpen(true);
+  };
+  /** 未固定的参数页只在鼠标和键盘焦点均离开后关闭。 */
+  const leaveMediaSettings = () => {
+    clearTimeout(settingsCloseTimerRef.current);
+    if (settingsPinnedRef.current) return;
+    settingsCloseTimerRef.current = setTimeout(() => {
+      if (
+        settingsRef.current?.contains(document.activeElement) ||
+        settingsTriggerRef.current === document.activeElement
+      )
+        return;
+      setMediaSettingsOpen(false);
+    }, 180);
+  };
+  /** Tab 移出整个参数区域时关闭，区域内部移动焦点不影响菜单。 */
+  const blurMediaSettings = (event: FocusEvent<HTMLElement>) => {
+    const next = event.relatedTarget as Node | null;
+    if (!settingsRef.current?.contains(next) && !settingsTriggerRef.current?.contains(next)) {
+      closeMediaSettings();
+    }
+  };
   const settingsId = useId();
   const dialogTitleId = useId();
   /** Dialog 的关闭动画结束前外层控件会重新挂载，随后恢复展开按钮焦点。 */
@@ -183,11 +220,27 @@ export function NodeQuickEditor({
         event.target instanceof Node &&
         !settingsRef.current?.contains(event.target) &&
         !settingsTriggerRef.current?.contains(event.target)
-      )
+      ) {
+        settingsPinnedRef.current = false;
+        clearTimeout(settingsCloseTimerRef.current);
         setMediaSettingsOpen(false);
+      }
+    };
+    /** 悬停时焦点可留在提示词；子菜单展开时优先由子菜单消费 Escape。 */
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || isImeKeyboardEvent(event)) return;
+      if (settingsRef.current?.querySelector('[aria-expanded="true"]')) return;
+      event.preventDefault();
+      settingsPinnedRef.current = false;
+      clearTimeout(settingsCloseTimerRef.current);
+      setMediaSettingsOpen(false);
     };
     document.addEventListener('pointerdown', dismiss);
-    return () => document.removeEventListener('pointerdown', dismiss);
+    document.addEventListener('keydown', dismissOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', dismiss);
+      document.removeEventListener('keydown', dismissOnEscape);
+    };
   }, [mediaSettingsOpen]);
   const currentModel = node.data.modelAlias ?? '';
   const currentCredentialId = node.data.credentialId;
@@ -310,6 +363,7 @@ export function NodeQuickEditor({
             onChange={(value) => updateParameter('quality', value)}
             className="node-quick-editor-select-group"
             placement="top"
+            optionLayout="grid"
             openOnHover
             floating
           />
@@ -338,6 +392,7 @@ export function NodeQuickEditor({
               onChange={(value) => updateParameter('resolution', value)}
               className="node-quick-editor-select-group"
               placement="top"
+              optionLayout="grid"
               openOnHover
               floating
             />
@@ -355,53 +410,10 @@ export function NodeQuickEditor({
               onChange={(value) => updateParameter('duration', value ? Number(value) : undefined)}
               className="node-quick-editor-select-group"
               placement="top"
+              optionLayout="grid"
               openOnHover
               floating
             />
-          </div>
-          <div
-            className="node-quick-editor-media-options"
-            data-columns="2"
-            role="group"
-            aria-label="视频像素尺寸"
-          >
-            {(['width', 'height'] as const).map((field) => {
-              const value = parameters[field];
-              const label = field === 'width' ? '宽度（像素）' : '高度（像素）';
-              return (
-                <label key={field} className="compact-select node-quick-editor-select-group">
-                  <span className="compact-select-label">{label}</span>
-                  <input
-                    className="compact-select-trigger"
-                    style={{ cursor: 'text' }}
-                    type="number"
-                    inputMode="numeric"
-                    min={1}
-                    max={Number.MAX_SAFE_INTEGER}
-                    step={1}
-                    value={
-                      typeof value === 'number' && Number.isFinite(value)
-                        ? value
-                        : typeof value === 'string'
-                          ? value
-                          : ''
-                    }
-                    placeholder={field === 'width' ? '宽度像素（可选）' : '高度像素（可选）'}
-                    aria-invalid={invalidVideoDimensions.includes(field)}
-                    title={`${label}：正整数，不超过 ${Number.MAX_SAFE_INTEGER}`}
-                    disabled={!onParametersChange}
-                    onChange={(event) =>
-                      updateParameter(
-                        field,
-                        event.currentTarget.value === ''
-                          ? undefined
-                          : event.currentTarget.valueAsNumber,
-                      )
-                    }
-                  />
-                </label>
-              );
-            })}
           </div>
         </>
       )}
@@ -492,7 +504,30 @@ export function NodeQuickEditor({
         ref={settingsTriggerRef}
         type="button"
         className="node-quick-editor-summary-button"
-        onClick={() => setMediaSettingsOpen((current) => !current)}
+        onMouseEnter={enterMediaSettings}
+        onMouseLeave={leaveMediaSettings}
+        onBlur={blurMediaSettings}
+        onClick={() => {
+          clearTimeout(settingsCloseTimerRef.current);
+          if (mediaSettingsOpen && settingsPinnedRef.current) closeMediaSettings();
+          else {
+            settingsPinnedRef.current = true;
+            setMediaSettingsOpen(true);
+          }
+        }}
+        onKeyDown={(event) => {
+          if (isImeKeyboardEvent(event)) return;
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            event.stopPropagation();
+            closeMediaSettings();
+          } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault();
+            settingsPinnedRef.current = true;
+            enterMediaSettings();
+            requestAnimationFrame(() => settingsRef.current?.querySelector('button')?.focus());
+          }
+        }}
         aria-expanded={mediaSettingsOpen}
         aria-controls={settingsId}
         aria-label="媒体参数"
@@ -518,7 +553,7 @@ export function NodeQuickEditor({
           aria-label="打开完整编辑器"
           title="放大编辑器"
           onClick={() => {
-            setMediaSettingsOpen(false);
+            closeMediaSettings();
             setExpandedEditorOpen(true);
           }}
         >
@@ -543,11 +578,14 @@ export function NodeQuickEditor({
           hidden={!mediaSettingsOpen}
           role="region"
           aria-label="生成参数"
+          onMouseEnter={enterMediaSettings}
+          onMouseLeave={leaveMediaSettings}
+          onBlur={blurMediaSettings}
           onKeyDown={(event) => {
             if (event.key === 'Escape' && !isImeKeyboardEvent(event)) {
               event.preventDefault();
               event.stopPropagation();
-              setMediaSettingsOpen(false);
+              closeMediaSettings();
               settingsTriggerRef.current?.focus();
             }
           }}
@@ -558,7 +596,7 @@ export function NodeQuickEditor({
               type="button"
               aria-label="收起媒体参数"
               onClick={() => {
-                setMediaSettingsOpen(false);
+                closeMediaSettings();
                 settingsTriggerRef.current?.focus();
               }}
             >
@@ -812,6 +850,22 @@ function QuickOptionMenu({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const openedByHoverRef = useRef(false);
+  /** 比例菜单同样允许跨越浮层间隙，点击与键盘打开后不随鼠标离开收起。 */
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(closeTimerRef.current), []);
+  useEffect(() => {
+    if (!open) return;
+    /** 焦点仍在提示词时，优先关闭当前比例菜单。 */
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || isImeKeyboardEvent(event)) return;
+      event.preventDefault();
+      openedByHoverRef.current = false;
+      clearTimeout(closeTimerRef.current);
+      setOpen(false);
+    };
+    document.addEventListener('keydown', dismissOnEscape);
+    return () => document.removeEventListener('keydown', dismissOnEscape);
+  }, [open]);
   const menuStyle = useFloatingParameterMenu({
     anchorRef: rootRef,
     menuRef,
@@ -833,14 +887,19 @@ function QuickOptionMenu({
       data-placement="top"
       onBlur={handleBlur}
       onMouseEnter={() => {
+        clearTimeout(closeTimerRef.current);
         if (!open && options.some((option) => !option.disabled)) {
           openedByHoverRef.current = true;
           setOpen(true);
         }
       }}
       onMouseLeave={() => {
-        openedByHoverRef.current = false;
-        setOpen(false);
+        if (!openedByHoverRef.current) return;
+        closeTimerRef.current = setTimeout(() => {
+          if (rootRef.current?.contains(document.activeElement)) return;
+          openedByHoverRef.current = false;
+          setOpen(false);
+        }, 180);
       }}
       onKeyDown={(event) => {
         if (event.key === 'Escape' && open && !isImeKeyboardEvent(event)) {
@@ -860,6 +919,7 @@ function QuickOptionMenu({
         aria-expanded={open}
         disabled={!options.some((option) => !option.disabled)}
         onClick={() => {
+          clearTimeout(closeTimerRef.current);
           if (openedByHoverRef.current) {
             openedByHoverRef.current = false;
             setOpen(true);
@@ -868,6 +928,8 @@ function QuickOptionMenu({
         onKeyDown={(event) => {
           if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
           event.preventDefault();
+          openedByHoverRef.current = false;
+          clearTimeout(closeTimerRef.current);
           setOpen(true);
           requestAnimationFrame(() => {
             const choices =
@@ -936,10 +998,10 @@ function QuickOptionMenu({
 }
 
 /**
- * 为新建节点或显式切换模型补齐第二个可用枚举值，只有单项时选唯一项。
+ * 为新建节点或显式切换模型补齐媒体枚举的第二项；推理强度优先 high、标签“高”、首项。
  * 返回可直接写入节点的浅拷贝，不修改输入；已有参数和未知字段全部保留。
  * 只使用该媒体模型声明的枚举或已确认的 TTS/GPT 契约；没有模型或没有枚举时不造值，
- * 音色、像素宽高和连续语速必须由用户填写。不得在渲染或加载历史节点时自动调用。
+ * 音色和连续语速由用户填写，像素宽高仅保留旧值。不得在渲染或加载历史节点时自动调用。
  */
 export function applyNodeGenerationDefaults(
   data: AssetFlowNode['data'],
@@ -974,8 +1036,18 @@ export function applyNodeGenerationDefaults(
   }
   const inferenceStrength =
     data.inferenceStrength ??
-    secondAvailableOption(getInferenceStrengthOptions(model, mediaType, model.id, undefined));
+    preferredInferenceStrength(getInferenceStrengthOptions(model, mediaType, model.id, undefined));
   return { ...data, parameters, ...(inferenceStrength === undefined ? {} : { inferenceStrength }) };
+}
+
+/** 只从可用档位选择 high，其次中文标签“高”，最后目录首项；空目录不造值。 */
+function preferredInferenceStrength(options: readonly MediaOption[]): string | undefined {
+  const available = options.filter((option) => !option.disabled && option.value.trim());
+  return (
+    available.find((option) => option.value === 'high') ??
+    available.find((option) => option.label.trim() === '高') ??
+    available[0]
+  )?.value;
 }
 
 /** 排除空占位和禁用项后返回第二个值；只有一项时返回该项，没有选项时返回 undefined。 */

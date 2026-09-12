@@ -50,6 +50,8 @@ export type CompactSelectProps = {
   disabled?: boolean;
   /** 菜单置于浏览器顶层，避免被生成参数页的滚动容器裁切。 */
   floating?: boolean;
+  /** 短枚举使用多列选项；模型名称等长文本保持默认单列。 */
+  optionLayout?: 'list' | 'grid';
 };
 
 /**
@@ -71,11 +73,14 @@ export function CompactSelect({
   ariaLabel,
   disabled = false,
   floating = false,
+  optionLayout = 'list',
 }: CompactSelectProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const openedByHoverRef = useRef(false);
+  /** 指针跨越触发器与浮层间隙时保留菜单，卸载时取消延迟。 */
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const reactId = useId();
   const listboxId = `compact-select-listbox-${reactId.replace(/:/g, '')}`;
   const optionSignature = options
@@ -93,6 +98,7 @@ export function CompactSelect({
       : selectedOption?.label || '暂无选项';
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(selectedIndex >= 0 ? selectedIndex : 0);
+  useEffect(() => () => clearTimeout(closeTimerRef.current), []);
   /** 浮层与 DOM 归属保持一致，使页内点击和 Dialog 焦点管理仍可正确识别菜单。 */
   const menuStyle = useFloatingParameterMenu({
     anchorRef: rootRef,
@@ -114,11 +120,21 @@ export function CompactSelect({
         setOpen(false);
       }
     };
+    /** 仅悬停打开时焦点可能在别处，也允许 Escape 退出。 */
+    const handleOutsideEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return;
+      event.preventDefault();
+      openedByHoverRef.current = false;
+      clearTimeout(closeTimerRef.current);
+      setOpen(false);
+    };
     document.addEventListener('pointerdown', handleOutsidePointerDown);
     document.addEventListener('mousedown', handleOutsidePointerDown);
+    document.addEventListener('keydown', handleOutsideEscape);
     return () => {
       document.removeEventListener('pointerdown', handleOutsidePointerDown);
       document.removeEventListener('mousedown', handleOutsidePointerDown);
+      document.removeEventListener('keydown', handleOutsideEscape);
     };
   }, [open]);
 
@@ -140,6 +156,8 @@ export function CompactSelect({
 
   const handleKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
     if (disabled) return;
+    openedByHoverRef.current = false;
+    clearTimeout(closeTimerRef.current);
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
       if (!open) setOpen(true);
@@ -192,15 +210,19 @@ export function CompactSelect({
       data-open={open ? 'true' : 'false'}
       data-placement={placement}
       onMouseEnter={() => {
+        clearTimeout(closeTimerRef.current);
         if (openOnHover && !disabled && hasSelectableOptions && !open) {
           openedByHoverRef.current = true;
           setOpen(true);
         }
       }}
       onMouseLeave={() => {
-        if (openOnHover) {
-          openedByHoverRef.current = false;
-          setOpen(false);
+        if (openOnHover && openedByHoverRef.current) {
+          closeTimerRef.current = setTimeout(() => {
+            if (rootRef.current?.contains(document.activeElement)) return;
+            openedByHoverRef.current = false;
+            setOpen(false);
+          }, 180);
         }
       }}
       onBlur={handleBlur}
@@ -219,6 +241,7 @@ export function CompactSelect({
         disabled={disabled || !hasSelectableOptions}
         title={formatOptionLabel(selectedOption) || triggerLabel}
         onClick={() => {
+          clearTimeout(closeTimerRef.current);
           if (openOnHover && openedByHoverRef.current) {
             openedByHoverRef.current = false;
             setOpen(true);
@@ -236,6 +259,7 @@ export function CompactSelect({
           ref={menuRef}
           id={listboxId}
           className="compact-select-menu"
+          data-layout={optionLayout}
           popover={floating ? 'manual' : undefined}
           style={menuStyle}
           role="listbox"

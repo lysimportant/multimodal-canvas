@@ -149,6 +149,65 @@ const imageMention: PromptMentionBlock = {
 afterEach(cleanup);
 
 describe('NodeQuickEditor', () => {
+  it('悬停参数按钮打开面板，跨过间隙仍能点选清晰度，移出后延时关闭', async () => {
+    const user = userEvent.setup();
+    const onParametersChange = vi.fn();
+    renderRaw(<NodeQuickEditor {...makeProps({ node: videoNode, onParametersChange })} />);
+    const trigger = screen.getByRole('button', { name: '媒体参数' });
+    await user.hover(trigger);
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    await user.unhover(trigger);
+    const panel = screen.getByRole('region', { name: '生成参数' });
+    await user.hover(panel);
+    await user.unhover(panel);
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    await waitFor(() => expect(trigger).toHaveAttribute('aria-expanded', 'false'));
+    await user.hover(trigger);
+    await user.hover(screen.getByRole('combobox', { name: '视频清晰度：未设置' }));
+    await user.click(screen.getByRole('option', { name: '360p' }));
+    expect(onParametersChange).toHaveBeenCalledWith({ resolution: '360p' });
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: '视频清晰度：未设置' })).toHaveFocus(),
+    );
+    await user.click(screen.getByRole('textbox', { name: '提示词' }));
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('仅悬停打开时 Escape 也会关闭参数页，不抢走提示词焦点', async () => {
+    const user = userEvent.setup();
+    renderRaw(<NodeQuickEditor {...makeProps()} />);
+    const prompt = screen.getByRole('textbox', { name: '提示词' });
+    prompt.focus();
+    const trigger = screen.getByRole('button', { name: '媒体参数' });
+    await user.hover(trigger);
+    await user.keyboard('{Escape}');
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    expect(prompt).toHaveFocus();
+  });
+
+  it('点击固定参数页，外点与 Esc 关闭，键盘可打开并返回触发器', async () => {
+    const user = userEvent.setup();
+    renderRaw(<NodeQuickEditor {...makeProps()} />);
+    const trigger = screen.getByRole('button', { name: '媒体参数' });
+    await user.hover(trigger);
+    await user.click(trigger);
+    await user.unhover(trigger);
+    await new Promise((resolve) => setTimeout(resolve, 220));
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.pointerDown(document.body);
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    trigger.focus();
+    await user.keyboard('{ArrowDown}');
+    await waitFor(() => expect(screen.getByRole('button', { name: '收起媒体参数' })).toHaveFocus());
+    await user.keyboard('{Escape}');
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    expect(trigger).toHaveFocus();
+    await user.keyboard('{Enter}');
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    await user.keyboard('{Escape}');
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+  });
+
   it('展示事务中保存的第二项参数，悬停菜单向上定位且 Escape 只关闭当前参数菜单', async () => {
     const user = userEvent.setup();
     const catalog: NodeQuickEditorProps['models'] = [
@@ -1175,7 +1234,7 @@ describe('NodeQuickEditor', () => {
     expect(within(durationGroup).queryByRole('option', { name: '20 秒' })).not.toBeInTheDocument();
   });
 
-  it('视频像素尺寸可选且没有默认值，不根据已有分辨率或比例推算', () => {
+  it('视频不展示像素尺寸，也不会根据分辨率和比例写入宽高', () => {
     const onParametersChange = vi.fn();
     render(
       <NodeQuickEditor
@@ -1191,135 +1250,49 @@ describe('NodeQuickEditor', () => {
         })}
       />,
     );
-    expect(screen.getByRole('group', { name: '视频像素尺寸' })).toHaveAttribute(
-      'data-columns',
-      '2',
-    );
-    for (const label of ['宽度（像素）', '高度（像素）']) {
-      const input = screen.getByRole('spinbutton', { name: label });
-      expect(input).toHaveValue(null);
-      expect(input).not.toBeRequired();
-      expect(input).toHaveAttribute('min', '1');
-      expect(input).toHaveAttribute('max', String(Number.MAX_SAFE_INTEGER));
-      expect(input).toHaveAttribute('step', '1');
-      expect(input).toHaveAttribute('aria-invalid', 'false');
-    }
+    expect(screen.queryByRole('group', { name: '视频像素尺寸' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('spinbutton', { name: '宽度（像素）' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('spinbutton', { name: '高度（像素）' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
     expect(onParametersChange).not.toHaveBeenCalled();
   });
 
-  it('视频宽高按数字保存恢复，完整保留 legacy 和未识别参数', () => {
+  it('更新清晰度仍保留历史宽高、legacy 和未知参数，刷新不暴露宽高输入', async () => {
+    const user = userEvent.setup();
     const onParametersChange = vi.fn();
-    const props = makeProps({ onParametersChange });
     const legacy = {
-      resolution: '720p',
-      aspectRatio: '16:9',
-      size: 'legacy-size',
-      duration: 8,
-      providerOption: { preserved: true },
-    };
-    const { rerender, unmount } = render(
-      <NodeQuickEditor
-        {...props}
-        node={{ ...videoNode, data: { ...videoNode.data, parameters: legacy } } as AssetFlowNode}
-      />,
-    );
-    fireEvent.change(screen.getByRole('spinbutton', { name: '宽度（像素）' }), {
-      target: { value: '1920' },
-    });
-    const widthParameters = onParametersChange.mock.lastCall?.[0];
-    expect(widthParameters).toEqual({ ...legacy, width: 1920 });
-    expect(legacy).not.toHaveProperty('width');
-    rerender(
-      <NodeQuickEditor
-        {...props}
-        node={
-          {
-            ...videoNode,
-            data: { ...videoNode.data, parameters: widthParameters },
-          } as AssetFlowNode
-        }
-      />,
-    );
-    fireEvent.change(screen.getByRole('spinbutton', { name: '高度（像素）' }), {
-      target: { value: '1080' },
-    });
-    const parameters = onParametersChange.mock.lastCall?.[0];
-    expect(parameters).toEqual({ ...legacy, width: 1920, height: 1080 });
-    unmount();
-    render(
-      <NodeQuickEditor
-        {...props}
-        node={
-          {
-            ...videoNode,
-            data: { ...videoNode.data, parameters: JSON.parse(JSON.stringify(parameters)) },
-          } as AssetFlowNode
-        }
-      />,
-    );
-    expect(screen.getByRole('spinbutton', { name: '宽度（像素）' })).toHaveValue(1920);
-    expect(screen.getByRole('spinbutton', { name: '高度（像素）' })).toHaveValue(1080);
-    expect(screen.getByRole('combobox', { name: '视频清晰度：720p' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '视频比例：16:9 · 横屏' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
-    expect(onParametersChange).toHaveBeenCalledTimes(2);
-  });
-
-  it.each([
-    ['width', '宽度（像素）'],
-    ['height', '高度（像素）'],
-  ] as const)('清空视频 %s 仅删除对应字段，不删除另一尺寸或 legacy 参数', (field, label) => {
-    const onParametersChange = vi.fn();
-    const parameters = {
       width: 1920,
       height: 1080,
       resolution: '720p',
       aspectRatio: '16:9',
-      duration: 8,
+      size: 'legacy-size',
+      providerOption: { preserved: true },
     };
-    const expected: Record<string, unknown> = { ...parameters };
-    delete expected[field];
-    const props = makeProps({ onParametersChange });
-    const { rerender } = render(
+    const props = makeProps({
+      node: { ...videoNode, data: { ...videoNode.data, parameters: legacy } } as AssetFlowNode,
+      onParametersChange,
+    });
+    const { unmount } = render(<NodeQuickEditor {...props} />);
+    expect(onParametersChange).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('combobox', { name: '视频清晰度：720p' }));
+    const menu = screen.getByRole('listbox', { name: '视频清晰度选项' });
+    expect(menu).toHaveAttribute('data-layout', 'grid');
+    await user.click(within(menu).getByRole('option', { name: '480p' }));
+    expect(onParametersChange).toHaveBeenCalledWith({ ...legacy, resolution: '480p' });
+    expect(legacy.resolution).toBe('720p');
+    const parameters = JSON.parse(JSON.stringify(onParametersChange.mock.lastCall?.[0]));
+    unmount();
+    render(
       <NodeQuickEditor
         {...props}
-        node={{ ...videoNode, data: { ...videoNode.data, parameters } } as AssetFlowNode}
+        node={{ ...videoNode, data: { ...videoNode.data, parameters } }}
       />,
     );
-    fireEvent.change(screen.getByRole('spinbutton', { name: label }), { target: { value: '' } });
-    expect(onParametersChange).toHaveBeenCalledWith(expected);
-    rerender(
-      <NodeQuickEditor
-        {...props}
-        node={{ ...videoNode, data: { ...videoNode.data, parameters: expected } } as AssetFlowNode}
-      />,
-    );
-    expect(screen.getByRole('spinbutton', { name: label })).toHaveValue(null);
-    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+    expect(screen.getByRole('combobox', { name: '视频清晰度：480p' })).toBeInTheDocument();
+    expect(screen.queryByRole('spinbutton', { name: '宽度（像素）' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('spinbutton', { name: '高度（像素）' })).not.toBeInTheDocument();
+    expect(parameters).toEqual({ ...legacy, resolution: '480p' });
   });
-
-  it.each([1, Number.MAX_SAFE_INTEGER])(
-    '视频像素边界 %s 是合法整数，不要求宽高必须同时配置',
-    (width) => {
-      render(
-        <NodeQuickEditor
-          {...makeProps({
-            node: {
-              ...videoNode,
-              data: { ...videoNode.data, parameters: { width } },
-            } as AssetFlowNode,
-          })}
-        />,
-      );
-      expect(screen.getByRole('spinbutton', { name: '宽度（像素）' })).toHaveValue(width);
-      expect(screen.getByRole('spinbutton', { name: '宽度（像素）' })).toHaveAttribute(
-        'aria-invalid',
-        'false',
-      );
-      expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
-    },
-  );
 
   it.each(
     (['width', 'height'] as const).flatMap((field) =>
@@ -1328,7 +1301,7 @@ describe('NodeQuickEditor', () => {
         value,
       })),
     ),
-  )('非法视频 $field=$value 不会被修正或删除，阻止生成', ({ field, value }) => {
+  )('非法历史视频 $field=$value 保留原校验，不会静默修正或删除', ({ field, value }) => {
     const onParametersChange = vi.fn();
     const props = makeProps({ onParametersChange });
     render(
@@ -1342,8 +1315,7 @@ describe('NodeQuickEditor', () => {
         }
       />,
     );
-    const label = field === 'width' ? '宽度（像素）' : '高度（像素）';
-    expect(screen.getByRole('spinbutton', { name: label })).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '生成' })).toHaveAttribute(
       'title',
@@ -1352,66 +1324,6 @@ describe('NodeQuickEditor', () => {
     fireEvent.click(screen.getByRole('button', { name: '生成' }));
     expect(props.onRun).not.toHaveBeenCalled();
     expect(onParametersChange).not.toHaveBeenCalled();
-  });
-
-  it('输入小数视频尺寸不会取整，明确修改为正整数后才恢复生成', () => {
-    const onParametersChange = vi.fn();
-    const props = makeProps({ node: videoNode, onParametersChange });
-    const { rerender } = render(<NodeQuickEditor {...props} />);
-    fireEvent.change(screen.getByRole('spinbutton', { name: '宽度（像素）' }), {
-      target: { value: '1920.5' },
-    });
-    expect(onParametersChange).toHaveBeenLastCalledWith({ width: 1920.5 });
-    rerender(
-      <NodeQuickEditor
-        {...props}
-        node={
-          {
-            ...videoNode,
-            data: { ...videoNode.data, parameters: { width: 1920.5 } },
-          } as AssetFlowNode
-        }
-      />,
-    );
-    expect(screen.getByRole('spinbutton', { name: '宽度（像素）' })).toHaveValue(1920.5);
-    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-    fireEvent.change(screen.getByRole('spinbutton', { name: '宽度（像素）' }), {
-      target: { value: '1920' },
-    });
-    expect(onParametersChange).toHaveBeenLastCalledWith({ width: 1920 });
-    rerender(
-      <NodeQuickEditor
-        {...props}
-        node={
-          {
-            ...videoNode,
-            data: { ...videoNode.data, parameters: { width: 1920 } },
-          } as AssetFlowNode
-        }
-      />,
-    );
-    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
-  });
-
-  it('切换视频节点不会带入上一节点的像素尺寸，其他媒体不显示宽高输入', () => {
-    const props = makeProps({ onParametersChange: vi.fn() });
-    const { rerender } = render(
-      <NodeQuickEditor
-        {...props}
-        node={
-          {
-            ...videoNode,
-            data: { ...videoNode.data, parameters: { width: 1920, height: 1080 } },
-          } as AssetFlowNode
-        }
-      />,
-    );
-    rerender(<NodeQuickEditor {...props} node={{ ...videoNode, id: 'second-video' }} />);
-    expect(screen.getByRole('spinbutton', { name: '宽度（像素）' })).toHaveValue(null);
-    expect(screen.getByRole('spinbutton', { name: '高度（像素）' })).toHaveValue(null);
-    rerender(<NodeQuickEditor {...props} node={audioNode} />);
-    expect(screen.queryByRole('group', { name: '视频像素尺寸' })).not.toBeInTheDocument();
-    expect(props.onParametersChange).not.toHaveBeenCalled();
   });
 
   it('不会把能力映射中标记为 false 的推理强度显示为可选项', async () => {

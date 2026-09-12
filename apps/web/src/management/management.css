@@ -115,6 +115,12 @@
   background: var(--mc-accent-soft, #edf7f2);
   font-weight: 600;
 }
+.mg-sidebar-secondary a span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .mg-sidebar-secondary {
   flex-shrink: 0;
   display: grid;
@@ -936,11 +942,15 @@
   color: var(--mc-text-muted, #687386);
 }
 .mg-resource-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 18px;
+  columns: 4 220px;
+  column-gap: 18px;
 }
 .mg-resource-item {
+  display: inline-block;
+  width: 100%;
+  margin: 0 0 18px;
+  break-inside: avoid;
+  vertical-align: top;
   min-width: 0;
   padding: 0;
   border: 1px solid var(--mc-border, #e2e7eb);
@@ -998,11 +1008,47 @@
   height: 100%;
   display: grid;
   place-items: center;
+  min-height: 0;
+  overflow: hidden;
 }
 .mg-thumbnail img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+.mg-resource-preview.is-audio .mg-thumbnail img {
+  object-fit: contain;
+}
+.mg-resource-excerpt {
+  align-self: stretch;
+  margin: 0;
+  padding: 18px 18px 38px;
+  width: 100%;
+  font-size: 12px;
+  line-height: 1.7;
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: hidden;
+  color: var(--mc-text, #18212f);
+}
+.mg-resource-skeleton {
+  width: 65%;
+  height: 55%;
+  border-radius: 4px;
+  background: var(--mc-border, #dde3e8);
+  opacity: 0.5;
+}
+.mg-resource-fallback {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+}
+.mg-resource-navigation {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 12px;
 }
 .mg-resource-info {
   padding: 13px;
@@ -1264,7 +1310,7 @@
 }
 @media (max-width: 1180px) {
   .mg-resource-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    column-count: 3;
   }
   .mg-main {
     padding: 28px;
@@ -1317,7 +1363,7 @@
     grid-template-columns: minmax(0, 1fr);
   }
   .mg-resource-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-count: 2;
   }
   .mg-owner-row {
     gap: 13px;
@@ -1403,7 +1449,7 @@
     grid-template-columns: 1fr;
   }
   .mg-resource-grid {
-    gap: 12px;
+    column-gap: 12px;
   }
   .mg-resource-detail {
     grid-template-columns: 1fr;

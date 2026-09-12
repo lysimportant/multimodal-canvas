@@ -9,6 +9,7 @@ import {
   Search,
   SquarePlus,
   Upload,
+  Trash2,
   X,
 } from 'lucide-react';
 import { useRef, type DragEvent, type RefObject } from 'react';
@@ -212,6 +213,20 @@ export function ResourcePanel({
                 >
                   <Pencil size={14} />
                 </button>
+                {asset.status !== 'archived' && (
+                  <button
+                    type="button"
+                    className="asset-add-button asset-archive-button"
+                    aria-label={`删除 ${asset.name}`}
+                    title="删除资源（归档）"
+                    onClick={() => {
+                      if (window.confirm(`将“${asset.name}”移入已归档？可在已归档列表恢复。`))
+                        onArchiveAsset(asset);
+                    }}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                )}
               </div>
             </article>
           ))}

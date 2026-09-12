@@ -35,3 +35,29 @@
     padding-inline: 18px;
   }
 }
+.mc-return-project {
+  align-items: center;
+  background: var(--mc-surface);
+  border: 1px solid var(--mc-border);
+  border-radius: 6px;
+  bottom: 16px;
+  color: var(--mc-text);
+  display: flex;
+  gap: 8px;
+  left: 16px;
+  max-width: min(260px, calc(100vw - 32px));
+  padding: 10px 12px;
+  position: fixed;
+  text-decoration: none;
+  z-index: 20;
+}
+
+.mc-return-project span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.has-return-project > .mc-page-main {
+  padding-bottom: 76px;
+}

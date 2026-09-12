@@ -7,7 +7,7 @@ import {
   snapshotFingerprint,
   type RunExecutorRequest,
 } from './runs';
-import { runSnapshotFingerprintMaterial } from '@multimodal-canvas/domain';
+import { runSnapshotFingerprintMaterial, type CanvasDocument } from '@multimodal-canvas/domain';
 import { createHash } from 'node:crypto';
 
 function snapshot() {
@@ -177,6 +177,58 @@ describe('run credential snapshots', () => {
 });
 
 describe('disabled canvas nodes', () => {
+  it('keeps a shared ancestor needed by the target but removes its edge into a manual source', () => {
+    const canvas: CanvasDocument = {
+      revision: 1,
+      nodes: ['ancestor', 'manual', 'target'].map((id) => ({
+        id,
+        type: 'text',
+        position: { x: 0, y: 0 },
+        data: {
+          label: id,
+          mediaType: 'text',
+          mode: 'generate',
+          ...(id === 'manual' ? { manualOutput: true, assetId: 'asset_manual' } : {}),
+        },
+      })),
+      edges: [
+        {
+          id: 'to_manual',
+          sourceNodeId: 'ancestor',
+          sourceHandle: 'output:text',
+          targetNodeId: 'manual',
+          targetHandle: 'input:prompt',
+          order: 0,
+        },
+        {
+          id: 'to_target',
+          sourceNodeId: 'ancestor',
+          sourceHandle: 'output:text',
+          targetNodeId: 'target',
+          targetHandle: 'input:prompt',
+          order: 0,
+        },
+        {
+          id: 'manual_to_target',
+          sourceNodeId: 'manual',
+          sourceHandle: 'output:text',
+          targetNodeId: 'target',
+          targetHandle: 'input:content',
+          order: 1,
+        },
+      ],
+    };
+    const result = createRunSnapshot('project_1', canvas, 'target');
+    expect(result.nodes.map((node) => node.id)).toEqual(['ancestor', 'manual', 'target']);
+    expect(result.edges.map((edge) => edge.id)).toEqual(['to_target', 'manual_to_target']);
+    expect(result.nodes[1].data.mode).toBe('source');
+    expect(canvas.nodes[1].data.mode).toBe('generate');
+    const rerun = createRunSnapshot('project_1', canvas, 'manual');
+    expect(rerun.nodes.map((node) => node.id)).toEqual(['ancestor', 'manual']);
+    expect(rerun.nodes[1].data.mode).toBe('generate');
+    expect(rerun.inputs[0].nodeId).toBe('ancestor');
+  });
+
   it('excludes disabled references and rejects a disabled target', () => {
     const canvas = {
       revision: 1,

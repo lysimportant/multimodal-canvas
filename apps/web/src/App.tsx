@@ -63,6 +63,7 @@ import {
   toCanvasDocument,
   markDownstreamNodesStale,
   withNodeAutoGrowthLimit,
+  getNewNodeDimensions,
   withoutNodeAutoGrowthLimit,
   type CanvasClipboard,
   type AssetFlowNode,
@@ -127,7 +128,7 @@ import {
   type RunUpdate,
 } from './run-update-utils';
 import { useWorkspacePreferences, type CanvasTheme } from './state/workspace-preferences';
-import { readNodeModelPreference, writeNodeModelPreference } from './state/node-model-preferences';
+import { writeNodeModelPreference } from './state/node-model-preferences';
 import {
   API_BASE_URL,
   ASSET_DRAG_TYPE,
@@ -485,6 +486,12 @@ function WorkspaceApp({
   const saveRequestRef = useRef<Promise<void> | null>(null);
   const refreshedResultAssetKeysRef = useRef(new Set<string>());
   const runRecordsRef = useRef<Record<string, RunRecord>>({});
+  /** 同节点写入锁覆盖上传、文本保存和生成提交的异步窗口。 */
+  const nodeContentLocksRef = useRef(new Set<string>());
+  const nodeRunLocksRef = useRef(new Set<string>());
+  const [nodeContentBusy, setNodeContentBusy] = useState(false);
+  /** 保存失败重试复用已上传资源，避免重复创建相同草稿资产。 */
+  const pendingNodeUploadsRef = useRef(new Map<string, { file: File; asset: Asset }>());
   /** 当前画布生命周期的轮询令牌，离开画布时终止后台等待。 */
   const runPollingLifecycleRef = useRef({ active: true });
   const initializedRef = useRef(false);
@@ -1068,8 +1075,12 @@ function WorkspaceApp({
     if (!shouldInterceptAppLink(event, href, event.currentTarget.target || undefined, undefined))
       return;
     event.preventDefault();
+    if (nodeContentLocksRef.current.size > 0) {
+      setNotice({ kind: 'error', message: '节点内容正在保存，请完成后再离开画布' });
+      return;
+    }
     void saveCanvas()
-      .then(() => onNavigate(href))
+      .then(() => onNavigate(appPaths.withProject(href, projectId)))
       .catch((error: unknown) => {
         setNotice({
           kind: 'error',
@@ -1185,6 +1196,7 @@ function WorkspaceApp({
         id: `node_${asset.id}_${crypto.randomUUID()}`,
         type: asset.mediaType,
         position,
+        ...getNewNodeDimensions(asset.mediaType),
         data: {
           label,
           mediaType: asset.mediaType,
@@ -1198,33 +1210,26 @@ function WorkspaceApp({
     [],
   );
 
-  /** 在指定画布位置创建操作节点，应用本账户最近模型与明确的枚举初值。 */
+  /** 在指定画布位置新建操作节点，使用当前媒体目录首项及其凭据和声明的参数。 */
   const createOperationNode = useCallback(
     (
       mediaType: MediaType,
       position: { x: number; y: number },
       mode: Exclude<NodeMode, 'source'>,
     ): AssetFlowNode => {
-      /** 新节点才读取本机模型偏好；加载画布、复制和撤销继续使用原节点数据。 */
-      let selection: ModelSelection | undefined;
       nodePreferenceNoticeRef.current = null;
-      try {
-        if (authUser)
-          selection = readNodeModelPreference(authUser.id, mediaType, mode, modelCatalog);
-      } catch (error) {
-        nodePreferenceNoticeRef.current =
-          error instanceof Error ? error.message : '无法读取本机模型偏好，请手动选择模型';
-      }
-      const model = modelCatalog.find(
-        (candidate) =>
-          candidate.id === selection?.modelAlias &&
-          candidate.credentialId === selection?.credentialId &&
-          candidate.mediaTypes.includes(mediaType),
-      );
+      const model = modelCatalog.find((candidate) => candidate.mediaTypes.includes(mediaType));
+      const selection = model
+        ? {
+            modelAlias: model.id,
+            ...(model.credentialId ? { credentialId: model.credentialId } : {}),
+          }
+        : undefined;
       return withNodeAutoGrowthLimit({
         id: `node_${mediaType}_${mode}_${crypto.randomUUID()}`,
         type: mediaType,
         position,
+        ...getNewNodeDimensions(mediaType),
         data: applyNodeGenerationDefaults(
           {
             label: createUniqueNodeLabel(
@@ -1239,7 +1244,7 @@ function WorkspaceApp({
         ),
       });
     },
-    [authUser, modelCatalog],
+    [modelCatalog],
   );
 
   const createGenerateNode = useCallback(
@@ -1314,6 +1319,94 @@ function WorkspaceApp({
       }
     },
     [appendNodesAndSelect, createNodeForAsset, rememberHistory],
+  );
+
+  /** 将手动文件保存为独立资产并替换当前节点引用，失败保留草稿与已上传资源。 */
+  const uploadToNode = useCallback(
+    async (nodeId: string, originalFile: File, onProgress: (value: number) => void) => {
+      const node = nodesRef.current.find((candidate) => candidate.id === nodeId);
+      if (!node || !projectId) throw new Error('节点或项目已不存在');
+      if (
+        nodeContentLocksRef.current.has(nodeId) ||
+        nodeRunLocksRef.current.has(nodeId) ||
+        ['queued', 'preparing', 'running', 'processing', 'cancel_requested'].includes(
+          node.data.runStatus ?? '',
+        )
+      )
+        throw new Error('节点正在运行或保存，请稍后再试');
+      const textFile = node.data.mediaType === 'text' && /\.(txt|md)$/i.test(originalFile.name);
+      if (!originalFile.type.startsWith(`${node.data.mediaType}/`) && !textFile)
+        throw new Error(`请选择${mediaLabels[node.data.mediaType]}文件`);
+      const file =
+        textFile && !originalFile.type.startsWith('text/')
+          ? new File([originalFile], originalFile.name, { type: 'text/plain' })
+          : originalFile;
+      const lifecycle = runPollingLifecycleRef.current;
+      nodeContentLocksRef.current.add(nodeId);
+      setNodeContentBusy(true);
+      try {
+        const pending = pendingNodeUploadsRef.current.get(nodeId);
+        const asset =
+          pending?.file === originalFile ? pending.asset : await uploadAsset(file, onProgress);
+        pendingNodeUploadsRef.current.set(nodeId, { file: originalFile, asset });
+        if (!lifecycle.active) throw new Error('已离开项目，上传资源已保留在资源库');
+        setAssets((current) =>
+          current.some((entry) => entry.id === asset.id) ? current : [asset, ...current],
+        );
+        const currentNode = nodesRef.current.find((candidate) => candidate.id === nodeId);
+        if (!currentNode) throw new Error('节点已删除，上传资源已保留在资源库');
+        if (currentNode.data.assetId !== asset.id || !currentNode.data.manualOutput) {
+          rememberHistory();
+          const updated = nodesRef.current.map((candidate) =>
+            candidate.id === nodeId
+              ? {
+                  ...candidate,
+                  data: {
+                    ...candidate.data,
+                    assetId: asset.id,
+                    contentUrl: asset.contentUrl,
+                    mimeType: asset.mimeType,
+                    manualOutput: true,
+                    manualOutputRunId: undefined,
+                    resultAsset: undefined,
+                    runStatus: undefined,
+                    runProgress: undefined,
+                    runError: undefined,
+                    stale: false,
+                  },
+                }
+              : candidate,
+          );
+          nodesRef.current = markDownstreamNodesStale(updated, edgesRef.current, [nodeId]);
+          setNodes(nodesRef.current);
+          canvasDirtyRef.current = true;
+        }
+        await saveCanvas();
+        pendingNodeUploadsRef.current.delete(nodeId);
+        onProgress(100);
+      } finally {
+        nodeContentLocksRef.current.delete(nodeId);
+        if (lifecycle.active) setNodeContentBusy(nodeContentLocksRef.current.size > 0);
+      }
+    },
+    [projectId, rememberHistory, saveCanvas, setNodes],
+  );
+
+  /** 正文编辑复用文件上传与保存契约；相同失败草稿重试沿用原文件身份。 */
+  const saveNodeText = useCallback(
+    async (nodeId: string, text: string) => {
+      const pending = pendingNodeUploadsRef.current.get(nodeId);
+      const file =
+        pending && (await pending.file.text()) === text
+          ? pending.file
+          : new File([text], `${nodeId}.txt`, { type: 'text/plain' });
+      await uploadToNode(nodeId, file, () => undefined);
+    },
+    [uploadToNode],
+  );
+  const nodeContentHandlers = useMemo(
+    () => ({ upload: uploadToNode, saveText: saveNodeText }),
+    [uploadToNode, saveNodeText],
   );
 
   const handleCanvasDrop = useCallback(
@@ -1799,7 +1892,7 @@ function WorkspaceApp({
           canvasDirtyRef.current,
         );
         const updated = current.map((node) =>
-          node.id === nodeId
+          node.id === nodeId && (!node.data.manualOutput || node.data.manualOutputRunId === run.id)
             ? {
                 ...node,
                 data: {
@@ -1808,12 +1901,32 @@ function WorkspaceApp({
                   runProgress: run.progress,
                   runError: run.error,
                   resultAsset: hasResultAsset ? run.result?.asset : undefined,
+                  ...(node.data.manualOutput && run.status === 'succeeded' && hasResultAsset
+                    ? { manualOutput: undefined, manualOutputRunId: undefined }
+                    : {}),
                   ...(clearStale ? { stale: false } : {}),
                 },
               }
             : node,
         );
-        return run.status === 'succeeded'
+        if (
+          current.some(
+            (node) =>
+              node.id === nodeId &&
+              node.data.manualOutput &&
+              node.data.manualOutputRunId === run.id,
+          ) &&
+          run.status === 'succeeded' &&
+          hasResultAsset
+        )
+          canvasDirtyRef.current = true;
+        return run.status === 'succeeded' &&
+          !current.some(
+            (node) =>
+              node.id === nodeId &&
+              node.data.manualOutput &&
+              node.data.manualOutputRunId !== run.id,
+          )
           ? markDownstreamNodesStale(updated, edgesRef.current, [nodeId]).map((node) =>
               node.id === nodeId && clearStale
                 ? { ...node, data: { ...node.data, stale: false } }
@@ -1916,6 +2029,10 @@ function WorkspaceApp({
 
   const runNode = useCallback(
     async (node: AssetFlowNode) => {
+      if (nodeContentLocksRef.current.has(node.id) || nodeRunLocksRef.current.has(node.id)) {
+        setNotice({ kind: 'error', message: '节点正在保存或提交，请稍后再试' });
+        return;
+      }
       let nodeSnapshot = nodesRef.current.find((candidate) => candidate.id === node.id) ?? node;
       if (!projectId) {
         setNotice({ kind: 'error', message: '项目尚未连接' });
@@ -1930,6 +2047,7 @@ function WorkspaceApp({
         return;
       }
       setIsRunning(true);
+      nodeRunLocksRef.current.add(node.id);
       setNotice(null);
       try {
         await saveCanvas();
@@ -1970,6 +2088,16 @@ function WorkspaceApp({
           error?: string;
         };
         if (!response.ok || !result.run) throw new Error(result.error ?? '运行提交失败');
+        if (nodeSnapshot.data.manualOutput) {
+          nodesRef.current = nodesRef.current.map((candidate) =>
+            candidate.id === node.id
+              ? { ...candidate, data: { ...candidate.data, manualOutputRunId: result.run!.id } }
+              : candidate,
+          );
+          setNodes(nodesRef.current);
+          canvasDirtyRef.current = true;
+          await saveCanvas();
+        }
         updateNodeRunState(nodeSnapshot.id, result.run);
         const completed = await pollRun(result.run.id, nodeSnapshot.id);
         if (completed.status === 'succeeded') {
@@ -1983,10 +2111,11 @@ function WorkspaceApp({
       } catch (error) {
         setNotice({ kind: 'error', message: error instanceof Error ? error.message : '运行失败' });
       } finally {
+        nodeRunLocksRef.current.delete(node.id);
         setIsRunning(false);
       }
     },
-    [pollRun, projectId, saveCanvas, updateNodeRunState],
+    [pollRun, projectId, saveCanvas, updateNodeRunState, setNodes],
   );
 
   const retryNodeRun = useCallback(
@@ -2418,6 +2547,7 @@ function WorkspaceApp({
               <Settings size={16} />
             </button>
             <AccountMenu
+              projectId={projectId}
               user={authUser}
               onRequestLogin={onRequestLogin}
               onLogout={onLoggedOut}
@@ -2583,7 +2713,7 @@ function WorkspaceApp({
             selectedNode={selectedNode}
             assets={assets}
             models={modelCatalog}
-            busy={isRunning}
+            busy={isRunning || nodeContentBusy}
             onNodesChange={handleNodesChange}
             onEdgesChange={handleEdgesChange}
             onConnect={handleConnect}
@@ -2602,6 +2732,7 @@ function WorkspaceApp({
             onInferenceStrengthChange={updateSelectedInferenceStrength}
             onRunNode={(node) => void runNode(node)}
             onDeleteNode={(nodeId) => deleteCanvasSelection([nodeId])}
+            nodeContentHandlers={nodeContentHandlers}
             onAddGenerateNode={handleAddGenerateNode}
             onAddTransformNode={handleAddTransformNode}
             onCanvasCenterChange={updateCanvasCenterPosition}
@@ -2784,6 +2915,7 @@ function RoutedApplication({
   } else if (route.id === 'management') {
     content = (
       <ManagementPage
+        returnProjectId={route.returnProjectId}
         routePath={route.pathname}
         authUser={authUser}
         onRequestLogin={() => onRequestLogin()}
