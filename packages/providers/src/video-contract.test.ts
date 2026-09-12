@@ -645,3 +645,132 @@ describe('New API 官方统一视频合同', () => {
     }
   });
 });
+
+describe('New API OpenAI /v1/videos 合同', () => {
+  it('接受 newapi-video-v1，拒绝未实现的 sora-v1', () => {
+    expect(() => providerFor(vi.fn(), 'newapi-video-v1')).not.toThrow();
+    expect(
+      () =>
+        new NewApiVideoProvider({
+          baseUrl: 'https://newapi.example/v1',
+          apiKey: 'synthetic-key',
+          videoContract: 'sora-v1' as NewApiVideoContract,
+        }),
+    ).toThrow(/newapi-video-v1/);
+  });
+
+  it('POST /videos，seconds 为字符串，image 为 URL 字符串，完成后走鉴权 content', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            id: 'task-1',
+            object: 'video',
+            model: 'synthetic-video-model',
+            status: 'queued',
+            progress: 0,
+          },
+          { 'x-request-id': 'create-request' },
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          id: 'task-1',
+          object: 'video',
+          status: 'in_progress',
+          progress: '40%',
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          id: 'task-1',
+          object: 'video',
+          status: 'completed',
+          progress: 100,
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(Buffer.from([0, 1, 2, 3]), {
+          status: 200,
+          headers: { 'content-type': 'video/mp4' },
+        }),
+      );
+    const snapshot = videoSnapshot({ duration: 6, resolution: '720p' });
+    snapshot.inputs.push({
+      nodeId: 'frame',
+      role: 'firstFrame',
+      sortOrder: 0,
+      snapshot: {
+        id: 'frame',
+        type: 'image',
+        position: { x: 0, y: 0 },
+        data: {
+          label: '首帧',
+          mediaType: 'image',
+          mode: 'source',
+          contentUrl: 'https://assets.example/frame.png',
+        },
+      },
+    });
+    const result = await providerFor(fetchImpl, 'newapi-video-v1').execute({
+      snapshot,
+      onProviderJob: vi.fn(),
+    });
+    expect(fetchImpl.mock.calls.map(([url, init]) => [String(url), init?.method])).toEqual([
+      ['https://newapi.example/v1/videos', 'POST'],
+      ['https://newapi.example/v1/videos/task-1', 'GET'],
+      ['https://newapi.example/v1/videos/task-1', 'GET'],
+      ['https://newapi.example/v1/videos/task-1/content', 'GET'],
+    ]);
+    expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))).toEqual({
+      model: 'synthetic-video-model',
+      prompt: 'A camera move',
+      duration: 6,
+      seconds: '6',
+      resolution: '720p',
+      image: 'https://assets.example/frame.png',
+    });
+    expect(result.providerJob).toMatchObject({
+      platformJobId: 'task-1',
+      status: 'succeeded',
+      payload: { contract: 'newapi-video-v1', phase: 'completed', requestId: 'create-request' },
+    });
+    expect(result.output).toEqual({
+      mediaType: 'video',
+      kind: 'base64',
+      base64: 'AAECAw==',
+      mimeType: 'video/mp4',
+      format: 'mp4',
+    });
+  });
+
+  it('创建响应优先使用顶层 id，不把关联 request_id 当作任务身份', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          id: 'task-openai',
+          request_id: 'correlation-only',
+          object: 'video',
+          status: 'queued',
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          id: 'task-openai',
+          status: 'completed',
+          video: { url: 'https://cdn.example/out.mp4' },
+        }),
+      );
+    const result = await providerFor(fetchImpl, 'newapi-video-v1').execute({
+      snapshot: videoSnapshot(),
+      onProviderJob: vi.fn(),
+    });
+    expect(fetchImpl.mock.calls.map(([url, init]) => [String(url), init?.method])).toEqual([
+      ['https://newapi.example/v1/videos', 'POST'],
+      ['https://newapi.example/v1/videos/task-openai', 'GET'],
+    ]);
+    expect(result.providerJob?.platformJobId).toBe('task-openai');
+  });
+});

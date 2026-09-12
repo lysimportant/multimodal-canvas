@@ -88,7 +88,7 @@ docker compose -f compose.yaml exec -T api node docker/run.mjs admin your-email@
 
 3. 退出并重新登录，在网页设置中填写供应商 HTTPS 地址、API Key 和模型。Key 加密存入数据库；API / Worker 共用专用卷中的加密密钥，镜像、Compose 和构建日志中不包含真实 Key。
 
-配置只使现有完整功能具备运行条件，不会凭空生成供应商权限。真实模型调用可能计费，必须由操作者明确发起。使用 Sub2API 的 `/v1/videos/generations` 时，按已确认供应商契约设置 `MC_VIDEO_CONTRACT=legacy-v1` 并重新创建 API / Worker；默认 `newapi-unified-v1` 使用 `/v1/video/generations`。历史异步任务保留原冻结契约，不因更新配置重发创建请求。
+配置只使现有完整功能具备运行条件，不会凭空生成供应商权限。真实模型调用可能计费，必须由操作者明确发起。使用 Sub2API 的 `/v1/videos/generations` 时，按已确认供应商契约设置 `MC_VIDEO_CONTRACT=legacy-v1` 并重新创建 API / Worker；默认 `newapi-video-v1` 使用 `/v1/videos`；`newapi-unified-v1` 仍使用 `/v1/video/generations`。历史异步任务保留原冻结契约，不因更新配置重发创建请求。
 
 公开供应商 Webhook 可指向 `https://你的域名/v1/webhooks/newapi`，但必须另外核对供应商正式签名、编码和重放约定。密钥在专用卷中，不能随意重建。未确认的供应商功能和服务器验收继续以 `TODO-SERVER.md` 为准。
 

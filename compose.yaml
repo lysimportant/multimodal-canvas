@@ -24,7 +24,7 @@ x-runtime-environment: &runtime-environment
   S3_DOWNLOAD_MODE: proxy
   FFMPEG_ENABLED: 'true'
   FFPROBE_ENABLED: 'true'
-  NEW_API_VIDEO_CONTRACT: ${MC_VIDEO_CONTRACT:-newapi-unified-v1}
+  NEW_API_VIDEO_CONTRACT: ${MC_VIDEO_CONTRACT:-newapi-video-v1}
   # 本机入口与 API 同源，默认不开放跨域；服务器仅允许显式 HTTPS 来源。
   CORS_ORIGIN: ${MC_PUBLIC_ORIGIN:-}
   API_RATE_LIMIT_REDIS_ENABLED: 'true'

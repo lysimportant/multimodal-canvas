@@ -60,7 +60,9 @@ $page.StatusCode
 
 ### 视频契约的明确差异
 
-`NewApiVideoProvider` 支持显式 `videoContract: 'newapi-unified-v1' | 'legacy-v1'`，构造器默认 `legacy-v1`。API/Worker 已接入 `NEW_API_VIDEO_CONTRACT` 显式配置并传递构造选项；Provider 包自身不读取该环境变量、不自动识别部署协议。
+`NewApiVideoProvider` 支持显式 `videoContract: 'newapi-video-v1' | 'newapi-unified-v1' | 'legacy-v1'`，构造器默认 `legacy-v1`；API/Worker/Docker 默认 `newapi-video-v1`。API/Worker 已接入 `NEW_API_VIDEO_CONTRACT` 显式配置并传递构造选项；Provider 包自身不读取该环境变量、不自动识别部署协议。
+
+`newapi-video-v1` 对应 New API OpenAI 视频：`POST /v1/videos`、`GET /v1/videos/{id}`、完成后 `GET /v1/videos/{id}/content`。创建 JSON 发 `duration` 数字与 `seconds` 字符串；图生视频 `image` 为 URL 字符串。平台任务 ID 优先读取顶层 `id`。这与 Sub2 的 `/v1/videos/generations` 不同。
 
 统一协议使用 `POST /v1/video/generations`，JSON `image` 为字符串，只读取顶层 `task_id` 作为平台任务 ID；查询为 `GET /v1/video/generations/{task_id}`，解析官方状态、`url/format/metadata`。完成响应没有有效 HTTP(S) URL 时失败，绝不回退到 legacy 内容端点。查询 ID 不同、状态或格式未知也明确失败。
 
@@ -99,7 +101,8 @@ const pendingUpdate = {
 | 已有记录                                                      | 恢复行为                                                     |
 | ------------------------------------------------------------- | ------------------------------------------------------------ |
 | `payload.contract=newapi-unified-v1` 且有平台 ID              | 只查询官方统一路径，即使构造器配置 legacy。                  |
-| `payload.contract=legacy-v1` 或 `newapi-video-v1` 且有平台 ID | 只查询旧 `/v1/videos/{id}`，保留原合同标识。                 |
+| `payload.contract=legacy-v1` 且有平台 ID           | 只查询 `/v1/videos/{id}`，保留 Sub2 创建路径标识。                 |
+| `payload.contract=newapi-video-v1` 且有平台 ID     | 只查询 `/v1/videos/{id}`，不回退 `/videos/generations` 或单数统一路径。                 |
 | 有平台 ID 但没有合同                                          | 按 legacy 查询并输出 `contract=legacy-v1`，不能套新协议。    |
 | 无平台 ID 且 `phase=submitting`                               | `VIDEO_SUBMISSION_UNKNOWN`，禁止重放创建；先在供应商侧核对。 |
 | 任何未知合同，包括 `sora-v1`                                  | `VIDEO_CONTRACT_UNSUPPORTED`，零请求。                       |

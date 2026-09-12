@@ -28,7 +28,7 @@ $env:MC_HTTP_PORT = '8088'
 兼容 Windows PowerShell 5.1 和 PowerShell 7。文件使用 UTF-8 BOM，保证 5.1 正确读取中文。
 MC_HTTP_PORT 取当前进程环境变量，默认为 8080，允许 1 至 65535；不写入用户环境配置。
 MC_HTTPS_PORT 默认为 8443，同样允许 1 至 65535；Https 的两个端口必须不同且仅绑定回环地址。
-MC_VIDEO_CONTRACT 可设为 newapi-unified-v1 或 legacy-v1，默认由 Compose 采用 newapi-unified-v1。
+MC_VIDEO_CONTRACT 可设为 newapi-video-v1、newapi-unified-v1 或 legacy-v1，默认由 Compose 采用 newapi-video-v1。
 失败返回退出码 1，成功返回 0。日志只显示到终端，不把凭据或诊断写入仓库文件。
 #>
 [CmdletBinding()]
@@ -318,8 +318,8 @@ try {
     if ($httpsPort -eq $port) { throw 'MC_HTTP_PORT 和 MC_HTTPS_PORT 不能相同；未执行任何容器操作。' }
   }
   $videoContract = [Environment]::GetEnvironmentVariable('MC_VIDEO_CONTRACT', 'Process')
-  if (-not [string]::IsNullOrEmpty($videoContract) -and $videoContract -cnotin @('newapi-unified-v1', 'legacy-v1')) {
-    throw 'MC_VIDEO_CONTRACT 仅允许 newapi-unified-v1 或 legacy-v1；脚本不会自动切换供应商协议。'
+  if (-not [string]::IsNullOrEmpty($videoContract) -and $videoContract -cnotin @('newapi-video-v1', 'newapi-unified-v1', 'legacy-v1')) {
+    throw 'MC_VIDEO_CONTRACT 仅允许 newapi-video-v1、newapi-unified-v1 或 legacy-v1；脚本不会自动切换供应商协议。'
   }
   $webUrl = "http://localhost:$port/"
   if ($Action -eq 'Https') { $webUrl = "https://localhost:$httpsPort/" }

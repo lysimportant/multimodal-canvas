@@ -57,7 +57,7 @@ const runExecutor =
     ? createNewApiRunExecutor({
         settingsStore,
         videoContract: (process.env.NEW_API_VIDEO_CONTRACT ??
-          'newapi-unified-v1') as NewApiVideoContract,
+          'newapi-video-v1') as NewApiVideoContract,
         ...(process.env.NEW_API_TIMEOUT_MS?.trim()
           ? { timeoutMs: Number(process.env.NEW_API_TIMEOUT_MS) }
           : {}),

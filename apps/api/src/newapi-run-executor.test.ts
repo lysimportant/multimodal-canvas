@@ -160,7 +160,7 @@ describe('createNewApiRunExecutor', () => {
       pollIntervalMs: 2500,
       maxPollAttempts: 300,
       maxContentBytes: 12_345,
-      videoContract: 'newapi-unified-v1',
+      videoContract: 'newapi-video-v1',
     });
     expect(providers.videoExecute).toHaveBeenCalledWith({
       snapshot: runSnapshot,

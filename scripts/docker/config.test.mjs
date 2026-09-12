@@ -32,7 +32,7 @@ const composeEnvironment = {
   COMPOSE_PROFILES: '',
   COMPOSE_PROJECT_NAME: 'multimodal-canvas-app',
   MC_HTTP_PORT: '8080',
-  MC_VIDEO_CONTRACT: 'newapi-unified-v1',
+  MC_VIDEO_CONTRACT: 'newapi-video-v1',
   MC_PUBLIC_ORIGIN: '',
   MC_APP_PUBLIC_URL: '',
 };
@@ -64,6 +64,7 @@ test('包含完整应用、持久化设施和一次性初始化', () => {
     assert.equal(environment.NODE_ENV, 'production');
     assert.equal(environment.RUN_SERVICE, 'bullmq');
     assert.equal(environment.WORKER_PROVIDER, 'newapi');
+    assert.equal(environment.NEW_API_VIDEO_CONTRACT, 'newapi-video-v1');
     assert.equal(environment.S3_UPLOAD_MODE, 'proxy');
     assert.equal(environment.S3_DOWNLOAD_MODE, 'proxy');
     assert.equal(environment.API_TRUST_PROXY_HOPS, '1');

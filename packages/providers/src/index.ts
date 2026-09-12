@@ -549,11 +549,23 @@ export class NewApiProvider {
   }
 }
 
-/** 新建视频任务可选择的契约；Sora multipart 尚未实现，禁止隐式兼容。 */
-export type NewApiVideoContract = 'newapi-unified-v1' | 'legacy-v1';
+/** 已实现的新建视频合同；Sora multipart 尚未实现，禁止隐式兼容。 */
+export const NEW_API_VIDEO_CONTRACTS = [
+  'newapi-video-v1',
+  'newapi-unified-v1',
+  'legacy-v1',
+] as const;
 
-/** 历史契约标识保持可读，不将已提交任务迁移到另一条查询路径。 */
-type FrozenVideoContract = NewApiVideoContract | 'newapi-video-v1';
+/** 新建视频任务可选择的契约；默认由 API/Worker 配置，构造器未指定时仍为 legacy-v1。 */
+export type NewApiVideoContract = (typeof NEW_API_VIDEO_CONTRACTS)[number];
+
+/** 历史冻结标识与新建合同相同，避免把已提交任务迁到另一条路径。 */
+type FrozenVideoContract = NewApiVideoContract;
+
+/** 判断环境变量或冻结合同是否属于已实现的视频协议。 */
+export function isNewApiVideoContract(value: unknown): value is NewApiVideoContract {
+  return (NEW_API_VIDEO_CONTRACTS as readonly string[]).includes(String(value));
+}
 
 /** 视频执行选项；构造器默认 legacy，新任务可显式选官方统一协议。 */
 export type NewApiVideoProviderOptions = NewApiProviderOptions & {
@@ -604,8 +616,10 @@ export class NewApiVideoProvider {
   /** 校验连接与轮询配置；不发请求，未知合同直接抛出 TypeError。 */
   constructor(options: NewApiVideoProviderOptions) {
     this.videoContract = options.videoContract ?? 'legacy-v1';
-    if (this.videoContract !== 'legacy-v1' && this.videoContract !== 'newapi-unified-v1') {
-      throw new TypeError('不支持的视频合同；仅允许 legacy-v1 或 newapi-unified-v1');
+    if (!isNewApiVideoContract(this.videoContract)) {
+      throw new TypeError(
+        '不支持的视频合同；仅允许 newapi-video-v1、newapi-unified-v1 或 legacy-v1',
+      );
     }
     this.baseUrl = normalizeNewApiBaseUrl(options.baseUrl);
     if (shouldRequireHttps(options.requireHttps) && !this.baseUrl.startsWith('https://')) {
@@ -662,6 +676,7 @@ export class NewApiVideoProvider {
     validateProviderRoleParameters(snapshot.parameters, 'video');
     const contract = resolveVideoContract(existingProviderJob, this.videoContract);
     const unified = contract === 'newapi-unified-v1';
+    const openaiVideo = contract === 'newapi-video-v1';
     if (unified) validateUnifiedVideoParameters(snapshot.parameters);
     else validateMediaParameters(snapshot.parameters, 'video');
     // 恢复也校验冻结输入，避免绕过创建时禁止的参考角色。
@@ -684,7 +699,7 @@ export class NewApiVideoProvider {
     const idempotencyKey = standardRequestIdempotencyKey(snapshot, existingProviderJob);
 
     let platformJobId = normalizeErrorField(existingProviderJob?.platformJobId);
-    const jobsPath = unified ? '/video/generations' : newApiVideoJobsPath;
+    const jobsPath = videoJobsPath(contract);
     let requestId = sanitizeProviderDiagnosticField(existingProviderJob?.payload?.requestId, [
       this.apiKey,
     ]);
@@ -706,13 +721,21 @@ export class NewApiVideoProvider {
             inputs,
             target.data.promptDocument,
           )
-        : videoPayload(
-            snapshot,
-            target.data.label,
-            target.data.prompt,
-            inputs,
-            target.data.promptDocument,
-          );
+        : openaiVideo
+          ? openaiVideoPayload(
+              snapshot,
+              target.data.label,
+              target.data.prompt,
+              inputs,
+              target.data.promptDocument,
+            )
+          : videoPayload(
+              snapshot,
+              target.data.label,
+              target.data.prompt,
+              inputs,
+              target.data.promptDocument,
+            );
       const pendingPayload = videoJobPayloadSummary(contract, 'submitting', snapshot.modelAlias);
       if (!onProviderJob) {
         throw new NewApiProviderError('创建视频前必须提供合同持久化回调', {
@@ -740,7 +763,7 @@ export class NewApiVideoProvider {
       let submission: { payload: Record<string, unknown>; requestId?: string };
       try {
         submission = await this.requestJson(
-          `${this.baseUrl}${unified ? jobsPath : newApiVideoCreatePath}`,
+          `${this.baseUrl}${videoCreatePath(contract)}`,
           'POST',
           body,
           idempotencyKey,
@@ -773,13 +796,11 @@ export class NewApiVideoProvider {
         }
         throw error;
       }
-      platformJobId = unified
-        ? normalizeErrorField(submission.payload.task_id)
-        : extractVideoRequestId(submission.payload);
+      platformJobId = videoPlatformId(submission.payload, contract);
       requestId = submission.requestId;
       if (!platformJobId) {
         throw new NewApiProviderError(
-          `New API 视频创建响应缺少 ${unified ? 'task_id' : 'request_id'}`,
+          `New API 视频创建响应缺少 ${unified ? 'task_id' : openaiVideo ? 'id' : 'request_id'}`,
           {
             code: 'VIDEO_REQUEST_ID_MISSING',
             requestId: submission.requestId,
@@ -879,7 +900,14 @@ export class NewApiVideoProvider {
           undefined,
           signal,
         );
-        if (unified && normalizeErrorField(statusResponse.payload.task_id) !== platformJobId) {
+        const polledId = videoPlatformId(statusResponse.payload, contract);
+        if (unified && polledId !== platformJobId) {
+          throw new NewApiProviderError('New API 视频查询返回了不同的平台任务身份', {
+            code: 'VIDEO_TASK_ID_MISMATCH',
+            retryable: false,
+          });
+        }
+        if (openaiVideo && polledId && polledId !== platformJobId) {
           throw new NewApiProviderError('New API 视频查询返回了不同的平台任务身份', {
             code: 'VIDEO_TASK_ID_MISMATCH',
             retryable: false,
@@ -1142,11 +1170,7 @@ export class NewApiVideoProvider {
         const payload = await readResponsePayload(response, this.maxResponseBytes, requestSignal);
         throwIfProviderSignalAborted(
           externalSignal,
-          method === 'POST' && isRecord(payload)
-            ? contract === 'newapi-unified-v1'
-              ? normalizeErrorField(payload.task_id)
-              : extractVideoRequestId(payload)
-            : undefined,
+          method === 'POST' && isRecord(payload) ? videoPlatformId(payload, contract) : undefined,
         );
         if (!response.ok)
           throw providerResponseError(
@@ -1445,14 +1469,35 @@ function videoJobPayloadSummary(
   };
 }
 
+/** 返回合同对应的查询/下载路径；统一协议使用单数 video/generations。 */
+function videoJobsPath(contract: FrozenVideoContract): string {
+  return contract === 'newapi-unified-v1' ? '/video/generations' : newApiVideoJobsPath;
+}
+
+/** 返回合同对应的创建路径；OpenAI 视频是 POST /videos，Sub2 才是 /videos/generations。 */
+function videoCreatePath(contract: FrozenVideoContract): string {
+  if (contract === 'newapi-unified-v1') return '/video/generations';
+  if (contract === 'newapi-video-v1') return newApiVideoJobsPath;
+  return newApiVideoCreatePath;
+}
+
+/** 按合同读取平台任务 ID；OpenAI 视频优先 id，统一协议只要顶层 task_id。 */
+function videoPlatformId(
+  payload: Record<string, unknown>,
+  contract: FrozenVideoContract,
+): string | undefined {
+  if (contract === 'newapi-unified-v1') return normalizeErrorField(payload.task_id);
+  if (contract === 'newapi-video-v1') return extractOpenAiVideoId(payload);
+  return extractVideoRequestId(payload);
+}
+
 /** 优先使用冻结合同；无合同老平台 ID 只能沿旧查询路径恢复，未知合同失败关闭。 */
 function resolveVideoContract(
   job: ProviderJobUpdate | undefined,
   selected: NewApiVideoContract,
 ): FrozenVideoContract {
   const frozen = job?.payload?.contract;
-  if (frozen === 'newapi-unified-v1' || frozen === 'legacy-v1' || frozen === 'newapi-video-v1')
-    return frozen;
+  if (isNewApiVideoContract(frozen)) return frozen;
   if (frozen !== undefined)
     throw new NewApiProviderError('已有视频任务的合同无法识别', {
       code: 'VIDEO_CONTRACT_UNSUPPORTED',
@@ -1629,6 +1674,26 @@ function videoPayload(
   return payload;
 }
 
+/**
+ * New API OpenAI 视频创建体：路径为 POST /videos。
+ * duration 用数字（该网关已验证），seconds 用字符串避免 Go 把数字 seconds 反序列化失败；图生视频 image 为 URL 字符串。
+ */
+function openaiVideoPayload(
+  snapshot: RunSnapshot,
+  label: string,
+  nodePrompt?: string,
+  inputs: VideoInputMapping = mapVideoInputs(snapshot),
+  nodePromptDocument?: PromptDocument,
+): Record<string, unknown> {
+  const payload = videoPayload(snapshot, label, nodePrompt, inputs, nodePromptDocument);
+  const duration = payload.duration;
+  if (typeof duration === 'number') payload.seconds = String(duration);
+  if (isRecord(payload.image) && nonEmptyString(payload.image.url)) {
+    payload.image = payload.image.url.trim();
+  }
+  return payload;
+}
+
 /** 将画布中的时长参数规范化为视频接口接受的正整数秒数。 */
 function positiveIntegerParameter(value: unknown): number | undefined {
   if (typeof value === 'number') {
@@ -1645,6 +1710,23 @@ function providerVideoReferenceUrl(value: unknown): string | undefined {
   const dataUrl = parseDataUrl(candidate);
   if (dataUrl?.mimeType.startsWith('image/') && isValidBase64(dataUrl.base64)) return candidate;
   return providerRemoteUrl(candidate);
+}
+
+/** OpenAI /v1/videos 创建与查询以顶层 id 为任务身份，其次才兼容 task_id / request_id。 */
+function extractOpenAiVideoId(payload: Record<string, unknown>): string | undefined {
+  const data = isRecord(payload.data) ? payload.data : undefined;
+  for (const candidate of [
+    payload.id,
+    payload.task_id,
+    data?.id,
+    data?.task_id,
+    payload.request_id,
+    data?.request_id,
+  ]) {
+    const id = normalizeErrorField(candidate);
+    if (id) return id;
+  }
+  return undefined;
 }
 
 function extractVideoRequestId(payload: Record<string, unknown>): string | undefined {
@@ -1665,6 +1747,20 @@ function extractVideoRequestId(payload: Record<string, unknown>): string | undef
     if (id) return id;
   }
   return undefined;
+}
+
+/** 把供应商进度规范成 0-100 的整数；数字小数按比例换算，字符串按百分数或 0-100 原值读取。 */
+function normalizeVideoProgress(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.round(Math.max(0, Math.min(100, value <= 1 ? value * 100 : value)));
+  }
+  if (typeof value === 'string') {
+    const parsed = Number(value.trim().replace(/%$/, ''));
+    if (Number.isFinite(parsed)) {
+      return Math.round(Math.max(0, Math.min(100, parsed)));
+    }
+  }
+  return 0;
 }
 
 function parseVideoPollResult(
@@ -1694,11 +1790,7 @@ function parseVideoPollResult(
       data?.download_url ??
       data?.url,
   );
-  const rawProgress = payload.progress ?? data?.progress;
-  const progress =
-    typeof rawProgress === 'number' && Number.isFinite(rawProgress)
-      ? Math.round(Math.max(0, Math.min(100, rawProgress <= 1 ? rawProgress * 100 : rawProgress)))
-      : 0;
+  const progress = normalizeVideoProgress(payload.progress ?? data?.progress);
   const errorDetails = extractProviderError(payload, sensitiveValues);
   const error =
     errorDetails.message ??

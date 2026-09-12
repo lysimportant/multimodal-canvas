@@ -111,7 +111,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Ac
 | ------------------- | ------------------- | --------------------------------------------------------------------------------- |
 | `MC_HTTP_PORT`      | `8080`              | 仅在本机 `127.0.0.1` 发布的 Web 入口端口。                                        |
 | `MC_HTTPS_PORT`     | `8443`              | 启用 local-https 时的本机 HTTPS 端口；与 HTTP 端口不同，仅绑定 `127.0.0.1`。      |
-| `MC_VIDEO_CONTRACT` | `newapi-unified-v1` | 视频供应商协议，可选 `newapi-unified-v1` 或 `legacy-v1`；应与实际供应商契约匹配。 |
+| `MC_VIDEO_CONTRACT` | `newapi-video-v1` | 视频供应商协议，可选 `newapi-video-v1`、`newapi-unified-v1` 或 `legacy-v1`；应与实际供应商契约匹配。 |
 
 仅在供应商明确使用 legacy-v1 协议时，按实际配置启动：
 

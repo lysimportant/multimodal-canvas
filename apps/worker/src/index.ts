@@ -2028,8 +2028,7 @@ function createNewApiProviders(
   const video = new NewApiVideoProvider({
     baseUrl,
     apiKey,
-    videoContract: (process.env.NEW_API_VIDEO_CONTRACT ??
-      'newapi-unified-v1') as NewApiVideoContract,
+    videoContract: (process.env.NEW_API_VIDEO_CONTRACT ?? 'newapi-video-v1') as NewApiVideoContract,
     timeoutMs,
     maxResponseBytes: responseMaxBytes,
     pollIntervalMs: Number(process.env.NEW_API_VIDEO_POLL_INTERVAL_MS ?? 2_000),

@@ -50,29 +50,29 @@ describe('Worker production startup configuration', () => {
       }),
     ).toContainEqual({ variable, message });
   });
-  it.each(['newapi-unified-v1', 'legacy-v1'])('accepts video contract %s', (contract) => {
-    expect(
-      validateWorkerStartupConfiguration({
-        ...productionEnvironment,
-        NEW_API_VIDEO_CONTRACT: contract,
-      }),
-    ).toEqual([]);
-  });
-
-  it.each(['', 'sora', 'newapi-video-v1', ' legacy-v1'])(
-    'rejects video contract %s',
+  it.each(['newapi-video-v1', 'newapi-unified-v1', 'legacy-v1'])(
+    'accepts video contract %s',
     (contract) => {
       expect(
         validateWorkerStartupConfiguration({
           ...productionEnvironment,
           NEW_API_VIDEO_CONTRACT: contract,
         }),
-      ).toContainEqual({
-        variable: 'NEW_API_VIDEO_CONTRACT',
-        message: 'must be "newapi-unified-v1" or "legacy-v1"',
-      });
+      ).toEqual([]);
     },
   );
+
+  it.each(['', 'sora', 'sora-v1', ' legacy-v1'])('rejects video contract %s', (contract) => {
+    expect(
+      validateWorkerStartupConfiguration({
+        ...productionEnvironment,
+        NEW_API_VIDEO_CONTRACT: contract,
+      }),
+    ).toContainEqual({
+      variable: 'NEW_API_VIDEO_CONTRACT',
+      message: 'must be "newapi-video-v1", "newapi-unified-v1" or "legacy-v1"',
+    });
+  });
   it('accepts durable production configuration without a database AI credential', () => {
     expect(validateWorkerStartupConfiguration(productionEnvironment)).toEqual([]);
     expect(() => assertWorkerStartupConfiguration(productionEnvironment)).not.toThrow();

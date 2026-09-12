@@ -85,11 +85,13 @@ export function validateApiStartupConfiguration(
 
   if (
     environment.NEW_API_VIDEO_CONTRACT !== undefined &&
-    !['newapi-unified-v1', 'legacy-v1'].includes(environment.NEW_API_VIDEO_CONTRACT)
+    !['newapi-video-v1', 'newapi-unified-v1', 'legacy-v1'].includes(
+      environment.NEW_API_VIDEO_CONTRACT,
+    )
   ) {
     issues.push({
       variable: 'NEW_API_VIDEO_CONTRACT',
-      message: 'must be "newapi-unified-v1" or "legacy-v1"',
+      message: 'must be "newapi-video-v1", "newapi-unified-v1" or "legacy-v1"',
     });
   }
 

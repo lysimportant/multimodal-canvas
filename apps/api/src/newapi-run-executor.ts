@@ -31,7 +31,7 @@ export type NewApiRunExecutorOptions = {
   videoPollIntervalMs?: number;
   videoMaxPollAttempts?: number;
   videoMaxContentBytes?: number;
-  /** 新任务的视频协议；历史任务以持久化协议为准。默认使用官方统一接口。 */
+  /** 新任务的视频协议；历史任务以持久化协议为准。默认使用 New API OpenAI /v1/videos（newapi-video-v1）。 */
   videoContract?: NewApiVideoContract;
   requireHttps?: boolean;
   providerFactory?: NewApiRunProviderFactory;
@@ -79,7 +79,7 @@ export function createNewApiRunExecutor(options: NewApiRunExecutorOptions) {
       target.data.mediaType === 'video'
         ? providerFactory.createVideo({
             ...sharedOptions,
-            videoContract: options.videoContract ?? 'newapi-unified-v1',
+            videoContract: options.videoContract ?? 'newapi-video-v1',
             ...(options.videoPollIntervalMs === undefined
               ? {}
               : { pollIntervalMs: options.videoPollIntervalMs }),
