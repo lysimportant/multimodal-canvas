@@ -135,10 +135,17 @@ describe('AssetPreview', () => {
     const user = userEvent.setup();
     render(<AssetPreview asset={makeAsset()} mode="content" onTextSave={save} />);
     const content = await screen.findByLabelText('文字结果');
+    const displayShell = content.closest('.artifact-preview-text-content');
+    expect(displayShell).not.toHaveClass('nodrag');
     await user.click(content);
     expect(screen.queryByRole('textbox')).toBeNull();
     await user.dblClick(content);
     const editor = screen.getByRole('textbox', { name: '编辑文字结果' });
+    expect(editor.closest('.artifact-preview-text-content')).toHaveClass(
+      'nodrag',
+      'nopan',
+      'nowheel',
+    );
     await user.clear(editor);
     await user.paste('第一行\n第二行');
     fireEvent.blur(editor);
@@ -239,10 +246,14 @@ describe('AssetPreview', () => {
 
     const image = screen.getByRole('img', { name: '城市夜景' });
     expect(image).toHaveAttribute('src', 'https://assets.example/city.png');
-    expect(screen.getByRole('link', { name: '查看大图：城市夜景' })).toHaveAttribute(
-      'href',
-      'https://assets.example/city.png',
-    );
+    expect(image).toHaveAttribute('draggable', 'false');
+    expect(screen.queryByRole('link', { name: /查看大图/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '预览图片：城市夜景' }));
+    const viewer = screen.getByRole('dialog', { name: '城市夜景' });
+    expect(viewer).toBeVisible();
+    expect(viewer.querySelector('img')).toHaveAttribute('src', 'https://assets.example/city.png');
+    await user.click(screen.getByRole('button', { name: '关闭预览' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     fireEvent.error(image);
 
     expect(await screen.findByRole('alert')).toHaveTextContent('图片加载失败');
@@ -288,7 +299,13 @@ describe('AssetPreview', () => {
 
     const video = container.querySelector('video');
     expect(video).not.toBeNull();
-    expect(video).toHaveAttribute('controls');
+    expect(video).not.toHaveAttribute('controls');
+    fireEvent.click(screen.getByRole('button', { name: '预览视频：生成结果' }));
+    const viewer = screen.getByRole('dialog', { name: '生成结果' });
+    expect(viewer).toBeVisible();
+    expect(viewer.querySelector('video')).toHaveAttribute('controls');
+    fireEvent.click(screen.getByRole('button', { name: '关闭预览' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(screen.getByText('正在加载视频…')).toBeInTheDocument();
     fireEvent.error(video!);
     expect(await screen.findByRole('alert')).toHaveTextContent('视频加载失败');

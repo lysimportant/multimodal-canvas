@@ -184,7 +184,11 @@ export function ResourcePanel({
               draggable={asset.status !== 'archived'}
               key={asset.id}
               onDragStart={(event) => onAssetDragStart(event, asset)}
-              title={asset.status === 'archived' ? '已归档资源' : '拖入画布创建来源节点'}
+              title={
+                asset.status === 'archived'
+                  ? '已归档资源'
+                  : '拖到提示词中引用，使用添加按钮放入画布'
+              }
             >
               <AssetPreview asset={asset} className="asset-card-preview" />
               <div className="asset-card-copy">

@@ -1506,7 +1506,9 @@ test('settings are truly modal and contained on desktop and narrow viewports', a
   }
 });
 
-test('uploads an asset and drags it into the workflow canvas', async ({ page }) => {
+test('uploads an asset and adds it to the workflow canvas with the add button', async ({
+  page,
+}) => {
   await page.goto(projectPath);
 
   await page.locator('.resource-panel input[type="file"]').setInputFiles({
@@ -1520,7 +1522,9 @@ test('uploads an asset and drags it into the workflow canvas', async ({ page }) 
   await expect(page.getByRole('status').filter({ hasText: '1 个资源已加入项目' })).toBeVisible();
 
   await assetCard.dragTo(page.locator('.canvas-area'));
+  await expect(page.locator('.flow-asset-node')).toHaveCount(0);
 
+  await page.getByRole('button', { name: '添加 story.txt 到画布' }).click();
   await expect(page.locator('.flow-asset-node')).toHaveCount(1);
   await expect(page.locator('.flow-asset-node')).toContainText('story.txt');
 });

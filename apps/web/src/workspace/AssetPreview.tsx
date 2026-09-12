@@ -2,15 +2,17 @@ import {
   AudioLines,
   Copy,
   Download,
-  ExternalLink,
+  Expand,
   FileText,
   LoaderCircle,
   RefreshCw,
   TriangleAlert,
+  X,
 } from 'lucide-react';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 
 import type { Asset, MediaType } from '@multimodal-canvas/domain';
+import { Dialog, DialogClose, DialogContent, DialogTitle } from '@multimodal-canvas/ui';
 import { apiFetch, getAuthToken } from '../auth-client';
 import { isApiOriginUrl, resolveUploadUrl } from '../upload-utils';
 import { API_BASE_URL } from './contracts';
@@ -199,6 +201,10 @@ function CompactArtifactIcon({
   return <FileText className={`asset-preview-text ${className}`} aria-hidden="true" />;
 }
 
+/**
+ * 节点内图片/视频默认可拖拽；预览改为页内 Dialog，不再打开新标签页。
+ * 音频控件需要捕获指针，因此保留 nodrag。
+ */
 function MediaArtifactPreview({
   asset,
   kind,
@@ -220,15 +226,24 @@ function MediaArtifactPreview({
 }) {
   const [attempt, setAttempt] = useState(0);
   const [loadState, setLoadState] = useState<AssetPreviewLoadState>('loading');
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const viewerTitleId = useId();
 
   useEffect(() => {
     setLoadState('loading');
   }, [attempt, src]);
   useReportLoadState(loadState, onLoadStateChange);
 
+  const canPreviewInDialog = allowOpen && (kind === 'image' || kind === 'video');
+  const showInlineControls = controls && !canPreviewInDialog;
   const mediaClassName = `asset-preview-${kind} artifact-preview-media ${className}`;
   const markReady = () => setLoadState('ready');
   const markError = () => setLoadState('error');
+  const openViewer = (event: { preventDefault(): void; stopPropagation(): void }) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setViewerOpen(true);
+  };
   const media =
     kind === 'image' ? (
       <img
@@ -236,19 +251,23 @@ function MediaArtifactPreview({
         className={mediaClassName}
         src={src}
         alt={asset.name}
+        draggable={false}
         onLoad={markReady}
         onError={markError}
+        onClick={canPreviewInDialog ? openViewer : undefined}
       />
     ) : kind === 'video' ? (
       <video
         key={`${src}:${attempt}`}
         className={mediaClassName}
         src={src}
-        muted={!controls}
-        controls={controls}
+        muted
+        controls={showInlineControls}
         preload="metadata"
+        draggable={false}
         onLoadedMetadata={markReady}
         onError={markError}
+        onClick={canPreviewInDialog ? openViewer : undefined}
       />
     ) : (
       <audio
@@ -277,23 +296,54 @@ function MediaArtifactPreview({
     );
   }
 
+  const capturePointer = kind === 'audio' || showInlineControls;
   return (
     <div
-      className={`artifact-preview-media-shell artifact-preview-${kind}-shell ${className} nodrag nopan nowheel`}
+      className={`artifact-preview-media-shell artifact-preview-${kind}-shell ${className}${capturePointer ? ' nodrag nopan nowheel' : ''}`}
     >
-      {kind === 'image' && allowOpen ? (
-        <a
-          className="artifact-preview-image-link"
-          href={src}
-          target="_blank"
-          rel="noreferrer"
-          aria-label={`查看大图：${asset.name}`}
+      {media}
+      {canPreviewInDialog && (
+        <button
+          type="button"
+          className="artifact-preview-open-button nodrag nopan nowheel"
+          aria-label={`预览${mediaKindLabel(kind)}：${asset.name}`}
+          title={`预览${mediaKindLabel(kind)}`}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={openViewer}
         >
-          {media}
-          <ExternalLink className="artifact-preview-open-icon" size={15} aria-hidden="true" />
-        </a>
-      ) : (
-        media
+          <Expand className="artifact-preview-open-icon" size={15} aria-hidden="true" />
+        </button>
+      )}
+      {canPreviewInDialog && (
+        <Dialog open={viewerOpen} onOpenChange={setViewerOpen}>
+          {viewerOpen && (
+            <DialogContent
+              className="artifact-preview-viewer"
+              overlayClassName="artifact-preview-viewer-backdrop"
+              aria-labelledby={viewerTitleId}
+              onPointerDown={(event) => event.stopPropagation()}
+            >
+              <div className="artifact-preview-viewer-header">
+                <DialogTitle id={viewerTitleId}>{asset.name}</DialogTitle>
+                <DialogClose asChild>
+                  <button
+                    type="button"
+                    className="artifact-preview-viewer-close"
+                    aria-label="关闭预览"
+                    title="关闭"
+                  >
+                    <X size={17} aria-hidden="true" />
+                  </button>
+                </DialogClose>
+              </div>
+              {kind === 'image' ? (
+                <img src={src} alt={asset.name} draggable={false} />
+              ) : (
+                <video src={src} controls autoPlay playsInline />
+              )}
+            </DialogContent>
+          )}
+        </Dialog>
       )}
       {loadState === 'loading' && (
         <span className="artifact-preview-loading" aria-live="polite">
@@ -562,7 +612,9 @@ export function TextResultContent({
   };
 
   return (
-    <div className={`artifact-preview-text-content ${className} nodrag nopan nowheel`}>
+    <div
+      className={`artifact-preview-text-content ${className}${draft !== null ? ' nodrag nopan nowheel' : ''}`}
+    >
       {copyable ? (
         <div className="artifact-preview-text-toolbar">
           <button

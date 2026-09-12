@@ -1444,28 +1444,21 @@ function WorkspaceApp({
     [uploadToNode, saveNodeText],
   );
 
+  /**
+   * 画布只接收本地文件上传。资源库拖拽不再复制来源节点，避免误放到画布；
+   * 资源放入画布请用卡片上的添加按钮，拖拽仅用于提示词引用。
+   */
   const handleCanvasDrop = useCallback(
     (files: File[], assetId: string | undefined, position: { x: number; y: number }) => {
-      if (assetId) {
-        const asset = assets.find((item) => item.id === assetId);
-        if (!asset) {
-          setNotice({ kind: 'error', message: '资源已不存在，请刷新资源库' });
-          return;
-        }
-        rememberHistory();
-        const node = createNodeForAsset(asset, position);
-        appendNodesAndSelect([node]);
-        canvasDirtyRef.current = true;
-        return;
-      }
+      if (assetId) return;
       void uploadFiles(files, position);
     },
-    [appendNodesAndSelect, assets, createNodeForAsset, rememberHistory, uploadFiles],
+    [uploadFiles],
   );
 
   const handleAssetDragStart = useCallback((event: DragEvent, asset: Asset) => {
     event.dataTransfer.setData(ASSET_DRAG_TYPE, asset.id);
-    event.dataTransfer.effectAllowed = 'copy';
+    event.dataTransfer.effectAllowed = 'link';
   }, []);
 
   const handleAddAsset = useCallback(
