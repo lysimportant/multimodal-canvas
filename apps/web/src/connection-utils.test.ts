@@ -42,7 +42,7 @@ describe('canvas connection validation', () => {
       source: 'source',
       target: 'target',
       sourceHandle: 'output:image',
-      targetHandle: 'input:character',
+      targetHandle: 'input:firstFrame',
     });
     expect(resolved && validateCanvasConnection(resolved, nodes, [])).toEqual({ ok: true });
     expect(
@@ -61,7 +61,7 @@ describe('canvas connection validation', () => {
         { source: 'source', target: 'target', sourceHandle: null, targetHandle: null },
         nodes,
       ),
-    ).toMatchObject({ sourceHandle: 'output:image', targetHandle: 'input:character' });
+    ).toMatchObject({ sourceHandle: 'output:image', targetHandle: 'input:firstFrame' });
   });
 
   it('resolves visual perimeter anchors but preserves explicit semantic handles', () => {
@@ -76,7 +76,7 @@ describe('canvas connection validation', () => {
         },
         nodes,
       ),
-    ).toMatchObject({ targetHandle: 'input:character' });
+    ).toMatchObject({ targetHandle: 'input:firstFrame' });
 
     expect(
       resolveCanvasConnectionTargetHandle(
@@ -97,6 +97,7 @@ describe('canvas connection validation', () => {
     ['text', 'video', 'input:prompt'],
     ['image', 'image', 'input:content'],
     ['image', 'text', 'input:content'],
+    ['image', 'video', 'input:firstFrame'],
     ['audio', 'text', 'input:transcript'],
     ['audio', 'video', 'input:audioTrack'],
     ['video', 'text', 'input:content'],

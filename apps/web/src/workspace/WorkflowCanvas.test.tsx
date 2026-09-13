@@ -26,13 +26,15 @@ vi.mock('@xyflow/react', async () => {
     onPaneClick,
     onPaneContextMenu,
     defaultEdgeOptions,
+    edgeTypes,
     minZoom,
     fitViewOptions,
     children,
   }: {
     nodes: AssetFlowNode[];
     nodeTypes?: Record<string, React.ElementType>;
-    defaultEdgeOptions?: { animated?: boolean; style?: Record<string, unknown> };
+    edgeTypes?: Record<string, React.ElementType>;
+    defaultEdgeOptions?: { animated?: boolean; type?: string; style?: Record<string, unknown> };
     onNodeClick?: (event: React.MouseEvent, node: AssetFlowNode) => void;
     onNodeMouseEnter?: (event: React.MouseEvent, node: AssetFlowNode) => void;
     onNodeMouseLeave?: (event: React.MouseEvent, node: AssetFlowNode) => void;
@@ -47,6 +49,8 @@ vi.mock('@xyflow/react', async () => {
       <div
         data-testid="react-flow"
         data-default-edge-animated={String(Boolean(defaultEdgeOptions?.animated))}
+        data-default-edge-type={defaultEdgeOptions?.type ?? ''}
+        data-edge-types={Object.keys(edgeTypes ?? {}).join(',')}
         data-default-edge-style={JSON.stringify(defaultEdgeOptions?.style ?? null)}
         data-fit-view-min-zoom={String(minZoom)}
         data-fit-view-options={JSON.stringify(fitViewOptions ?? null)}
@@ -435,11 +439,13 @@ describe('WorkflowCanvas context menu', () => {
     expect(overlayLeft + overlayWidth).toBeLessThanOrEqual(800);
   });
 
-  it('keeps edge animation enabled while leaving selected styling to CSS', () => {
+  it('uses flowing default edges that stay attached to handle centers', () => {
     render(<WorkflowCanvas {...createProps()} />);
 
     const flow = screen.getByTestId('react-flow');
-    expect(flow).toHaveAttribute('data-default-edge-animated', 'true');
+    expect(flow).toHaveAttribute('data-edge-types', 'default');
+    expect(flow).toHaveAttribute('data-default-edge-type', 'default');
+    expect(flow).toHaveAttribute('data-default-edge-animated', 'false');
     expect(flow).toHaveAttribute('data-default-edge-style', 'null');
   });
 

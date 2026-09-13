@@ -1,5 +1,4 @@
 import {
-  Archive,
   LoaderCircle,
   PanelLeftClose,
   PanelLeftOpen,
@@ -153,7 +152,7 @@ export function ResourcePanel({
             title={showArchived ? '查看可用资源' : '查看已归档资源'}
             onClick={onToggleArchived}
           >
-            <Archive size={18} aria-hidden="true" />
+            <Trash2 size={18} aria-hidden="true" />
           </button>
         )}
         <button

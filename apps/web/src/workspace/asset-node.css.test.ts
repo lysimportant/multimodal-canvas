@@ -16,8 +16,11 @@ describe('asset node floating controls CSS contracts', () => {
     );
     expect(normalizedCss).not.toContain('.flow-node-floating-controls > .flow-node-actions');
     expect(normalizedCss).not.toContain('is-spacious');
-    expect(normalizedCss).toContain('transform: scale(var(--flow-node-inverse-zoom, 1));');
-    expect(normalizedCss).toContain('transform-origin: bottom left;');
+    expect(normalizedCss).toContain(
+      'transform: translateX(-50%) scale(var(--flow-node-inverse-zoom, 1));',
+    );
+    expect(normalizedCss).toContain('transform-origin: bottom center;');
+    expect(normalizedCss).toContain('left: 50%;');
     expect(normalizedCss).toContain('width: max-content;');
     expect(normalizedCss).toMatch(
       /\.flow-node-floating-controls \.flow-node-action-button \{[^}]*min-width: 28px;/,

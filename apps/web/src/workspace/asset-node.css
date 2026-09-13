@@ -41,7 +41,7 @@
   display: flex;
   flex-wrap: nowrap;
   gap: 4px;
-  left: 0;
+  left: 50%;
   margin: 0;
   min-height: 44px;
   min-width: calc(100% * var(--flow-node-zoom, 1));
@@ -49,8 +49,8 @@
   padding: 4px 6px;
   pointer-events: none;
   position: absolute;
-  transform: scale(var(--flow-node-inverse-zoom, 1));
-  transform-origin: bottom left;
+  transform: translateX(-50%) scale(var(--flow-node-inverse-zoom, 1));
+  transform-origin: bottom center;
   transition: opacity 120ms ease;
   width: max-content;
   z-index: 6;

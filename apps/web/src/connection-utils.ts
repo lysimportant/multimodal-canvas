@@ -27,7 +27,7 @@ const preferredTargetRoles: Record<MediaType, Record<MediaType, PortRole>> = {
     text: 'content',
     image: 'content',
     audio: 'content',
-    video: 'character',
+    video: 'firstFrame', // 可见左侧锚点，保证参考图连线落到圆点上
   },
   audio: {
     text: 'transcript',

@@ -79,7 +79,7 @@ describe('NodeHandles', () => {
       Array.from(container.querySelectorAll('.flow-node-semantic-handle')).every(
         (handle) =>
           (handle as HTMLElement).style.top.length > 0 &&
-          (handle as HTMLElement).style.left === '-24px' &&
+          (handle as HTMLElement).style.left === '0px' &&
           (handle as HTMLElement).style.transform === 'translate(-50%, -50%)',
       ),
     ).toBe(true);

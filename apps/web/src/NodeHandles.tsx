@@ -133,7 +133,10 @@ type NodeHandlesProps = {
   mode: NodeMode;
 };
 
-/** Render four centered perimeter anchors and hidden role-compatible inputs. */
+/**
+ * 渲染四边居中可见锚点，并把额外语义输入叠在节点边框上，
+ * 避免隐藏锚点外移导致连线停在可见圆点外侧。
+ */
 export function NodeHandles({ mediaType, mode }: NodeHandlesProps) {
   const layout = getNodeHandleLayout(mediaType, mode);
   const targetRoles = mode === 'source' ? [] : targetPortRolesForMediaType(mediaType);
@@ -164,7 +167,7 @@ export function NodeHandles({ mediaType, mode }: NodeHandlesProps) {
           title={inputRoleLabels[role]}
           style={{
             top: `${((targetRoles.indexOf(role) + 1) / (targetRoles.length + 1)) * 100}%`,
-            left: -24,
+            left: 0,
             transform: 'translate(-50%, -50%)',
           }}
           isConnectable

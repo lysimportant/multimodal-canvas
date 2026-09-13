@@ -1200,6 +1200,48 @@ h2 {
   animation-duration: 0.7s;
 }
 
+.canvas-flow-edge-path {
+  stroke: var(--mc-accent);
+  stroke-linecap: round;
+  stroke-width: 2.5;
+}
+
+.canvas-flow-edge-path.is-selected {
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--mc-accent-strong) 58%, transparent));
+  stroke: var(--mc-accent-strong);
+  stroke-width: 4px;
+}
+
+.canvas-flow-edge-meteor {
+  fill: none;
+  pointer-events: none;
+  stroke: #f7ffe8;
+  stroke-dasharray: 10 72;
+  stroke-linecap: round;
+  stroke-width: 2;
+  animation: canvas-flow-meteor 1.6s linear infinite;
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--mc-accent) 80%, #ffffff));
+}
+
+.react-flow__edge.selected .canvas-flow-edge-meteor {
+  animation-duration: 0.9s;
+  stroke-width: 2.5;
+}
+
+@keyframes canvas-flow-meteor {
+  to {
+    stroke-dashoffset: -82;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .canvas-flow-edge-meteor {
+    animation: none;
+    stroke-dasharray: none;
+    opacity: 0.35;
+  }
+}
+
 .flow-node-preview {
   align-items: center;
   background: #f2f5f6;

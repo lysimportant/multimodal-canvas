@@ -43,6 +43,7 @@ import {
   type NodeResizeHandler,
 } from './AssetNode';
 import { CanvasNodeToolbar } from './CanvasNodeToolbar';
+import { FlowingCanvasEdge } from './FlowingCanvasEdge';
 import {
   CanvasContextMenu,
   type CanvasContextMenuCloseReason,
@@ -76,6 +77,8 @@ const NATIVE_CONTEXT_MENU_SELECTOR = [
 
 // Large persisted canvases must be able to fit below React Flow's default 0.5 zoom.
 const FIT_VIEW_MIN_ZOOM = 0.25;
+/** 画布连线使用带流光的默认边。 */
+const canvasEdgeTypes = { default: FlowingCanvasEdge };
 
 function shouldKeepNativeContextMenu(target: EventTarget | null) {
   return target instanceof Element && Boolean(target.closest(NATIVE_CONTEXT_MENU_SELECTOR));
@@ -435,6 +438,7 @@ export function WorkflowCanvas({
                           nodes={nodes}
                           edges={edges}
                           nodeTypes={nodeTypes}
+                          edgeTypes={canvasEdgeTypes}
                           onNodesChange={onNodesChange}
                           onEdgesChange={onEdgesChange}
                           onConnect={onConnect}
@@ -467,7 +471,8 @@ export function WorkflowCanvas({
                           }}
                           connectionLineStyle={{ stroke: '#18794e', strokeWidth: 2 }}
                           defaultEdgeOptions={{
-                            animated: true,
+                            type: 'default',
+                            animated: false,
                           }}
                           proOptions={{ hideAttribution: true }}
                         >
