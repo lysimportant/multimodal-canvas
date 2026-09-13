@@ -117,7 +117,11 @@ import { runStatusLabel } from './workspace/AssetNode';
 import { ResourcePanel } from './workspace/ResourcePanel';
 import { SettingsPanel } from './workspace/SettingsPanel';
 import { WorkflowCanvas } from './workspace/WorkflowCanvas';
-import { applyNodeGenerationDefaults, type InferenceStrength } from './workspace/NodeQuickEditor';
+import {
+  applyNodeGenerationDefaults,
+  resolvePreviousOperationSeed,
+  type InferenceStrength,
+} from './workspace/NodeQuickEditor';
 import { AppQueryProvider } from './query/client';
 import { useAiCredentialsQuery } from './query/credentials';
 import { useCredentialModelCatalogQueries } from './query/models';
@@ -128,7 +132,7 @@ import {
   type RunUpdate,
 } from './run-update-utils';
 import { useWorkspacePreferences, type CanvasTheme } from './state/workspace-preferences';
-import { writeNodeModelPreference } from './state/node-model-preferences';
+import { readNodeModelPreference, writeNodeModelPreference } from './state/node-model-preferences';
 import {
   API_BASE_URL,
   ASSET_DRAG_TYPE,
@@ -1245,7 +1249,7 @@ function WorkspaceApp({
     [],
   );
 
-  /** 在指定画布位置新建操作节点，使用当前媒体目录首项及其凭据和声明的参数。 */
+  /** 在指定画布位置新建操作节点：沿用上一同类节点，否则用本机模型偏好或目录首项，并选中第一项参数。 */
   const createOperationNode = useCallback(
     (
       mediaType: MediaType,
@@ -1253,13 +1257,38 @@ function WorkspaceApp({
       mode: Exclude<NodeMode, 'source'>,
     ): AssetFlowNode => {
       nodePreferenceNoticeRef.current = null;
-      const model = modelCatalog.find((candidate) => candidate.mediaTypes.includes(mediaType));
-      const selection = model
+      const previous = resolvePreviousOperationSeed(nodesRef.current, mediaType, mode);
+      let selection = previous?.modelAlias
         ? {
-            modelAlias: model.id,
-            ...(model.credentialId ? { credentialId: model.credentialId } : {}),
+            modelAlias: previous.modelAlias,
+            ...(previous.credentialId ? { credentialId: previous.credentialId } : {}),
           }
         : undefined;
+      if (!selection && authUser) {
+        try {
+          selection = readNodeModelPreference(authUser.id, mediaType, mode, modelCatalog);
+        } catch (error) {
+          nodePreferenceNoticeRef.current =
+            error instanceof Error ? error.message : '无法读取本机模型偏好';
+        }
+      }
+      const catalogModel = modelCatalog.find((candidate) =>
+        candidate.mediaTypes.includes(mediaType),
+      );
+      if (!selection && catalogModel) {
+        selection = {
+          modelAlias: catalogModel.id,
+          ...(catalogModel.credentialId ? { credentialId: catalogModel.credentialId } : {}),
+        };
+      }
+      const model = selection
+        ? (modelCatalog.find(
+            (candidate) =>
+              candidate.id === selection.modelAlias &&
+              candidate.credentialId === selection.credentialId &&
+              candidate.mediaTypes.includes(mediaType),
+          ) ?? catalogModel)
+        : catalogModel;
       return withNodeAutoGrowthLimit({
         id: `node_${mediaType}_${mode}_${crypto.randomUUID()}`,
         type: mediaType,
@@ -1274,12 +1303,16 @@ function WorkspaceApp({
             mediaType,
             mode,
             ...selection,
+            ...(previous?.parameters ? { parameters: previous.parameters } : {}),
+            ...(previous?.inferenceStrength
+              ? { inferenceStrength: previous.inferenceStrength }
+              : {}),
           },
           model,
         ),
       });
     },
-    [modelCatalog],
+    [authUser, modelCatalog],
   );
 
   const createGenerateNode = useCallback(

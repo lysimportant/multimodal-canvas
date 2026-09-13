@@ -156,7 +156,11 @@ describe('ResourcePanel search input', () => {
     const heading = document.querySelector('.resource-panel-heading');
     expect(heading).toContainElement(screen.getByRole('combobox', { name: '资源类型' }));
     expect(heading).toContainElement(screen.getByRole('button', { name: '上传资源' }));
+    expect(heading).toContainElement(screen.getByRole('button', { name: '查看已归档资源' }));
     expect(heading).toContainElement(screen.getByRole('button', { name: '折叠资源栏' }));
+    expect(
+      heading!.querySelectorAll(':scope > .compact-select, :scope > .icon-button'),
+    ).toHaveLength(4);
     expect(screen.queryByText('资源库')).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: '项目资源' })).not.toBeInTheDocument();
   });

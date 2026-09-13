@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { AssetFlowNode } from '../canvas-utils';
 import type { ModelEntry } from './contracts';
-import { applyNodeGenerationDefaults } from './NodeQuickEditor';
+import { applyNodeGenerationDefaults, resolvePreviousOperationSeed } from './NodeQuickEditor';
 
 /** 构造只包含模型目录声明的测试模型，不请求外部 Provider。 */
 function model(
@@ -24,7 +24,7 @@ function data(mediaType: AssetFlowNode['data']['mediaType']): AssetFlowNode['dat
 }
 
 describe('applyNodeGenerationDefaults', () => {
-  it('只在明确事务中把目录的第二个有效选项写入真实节点参数', () => {
+  it('只在明确事务中把目录的第一个有效选项写入真实节点参数', () => {
     const original = data('video');
     const configured = applyNodeGenerationDefaults(
       original,
@@ -39,10 +39,10 @@ describe('applyNodeGenerationDefaults', () => {
     );
     expect(configured).toMatchObject({
       prompt: original.prompt,
-      parameters: { resolution: '720p', aspectRatio: '16:9', duration: 8 },
+      parameters: { resolution: '360p', aspectRatio: '1:1', duration: 4 },
       inferenceStrength: 'high',
     });
-    expect(JSON.parse(JSON.stringify(configured)).parameters.duration).toBe(8);
+    expect(JSON.parse(JSON.stringify(configured)).parameters.duration).toBe(4);
     expect(original.parameters).toBeUndefined();
   });
 
@@ -61,7 +61,7 @@ describe('applyNodeGenerationDefaults', () => {
         aspectRatios: [{ value: '1:1', available: false }, '16:9'],
       }),
     );
-    expect(configured.parameters).toEqual({ quality: 'ultra', aspectRatio: '16:9' });
+    expect(configured.parameters).toEqual({ quality: 'medium', aspectRatio: '16:9' });
   });
 
   it('已有参数、未知字段与历史推理强度不被默认值覆盖', () => {
@@ -82,7 +82,7 @@ describe('applyNodeGenerationDefaults', () => {
       resolution: 'legacy',
       width: 1920,
       custom: true,
-      duration: 8,
+      duration: 4,
     });
     expect(configured.inferenceStrength).toBe('custom-effort');
     expect(original.parameters).toEqual({ resolution: 'legacy', width: 1920, custom: true });
@@ -114,9 +114,9 @@ describe('applyNodeGenerationDefaults', () => {
     expect(configured.parameters).toEqual({ duration: 10 });
   });
 
-  it('音频仅初始化已确认格式的第二项，保留必填音色与连续语速的输入含义', () => {
+  it('音频仅初始化已确认格式的第一项，保留必填音色与连续语速的输入含义', () => {
     const configured = applyNodeGenerationDefaults(data('audio'), model('audio'));
-    expect(configured.parameters).toEqual({ response_format: 'opus' });
+    expect(configured.parameters).toEqual({ response_format: 'mp3' });
     expect(configured.parameters).not.toHaveProperty('voice');
     expect(configured.parameters).not.toHaveProperty('speed');
   });
@@ -129,7 +129,7 @@ describe('applyNodeGenerationDefaults', () => {
           audio: { response_formats: ['mp3', 'wav'] },
         }),
       ).parameters,
-    ).toEqual({ response_format: 'wav' });
+    ).toEqual({ response_format: 'mp3' });
     expect(
       applyNodeGenerationDefaults(
         data('audio'),
@@ -176,5 +176,47 @@ describe('applyNodeGenerationDefaults', () => {
           .inferenceStrength,
       ).toBe(expected);
     }
+  });
+
+  it('新建节点沿用画布上一个同类节点的模型与参数', () => {
+    const previous = {
+      id: 'node_old',
+      type: 'image',
+      position: { x: 0, y: 0 },
+      data: {
+        ...data('image'),
+        mode: 'generate',
+        modelAlias: 'prev-model',
+        credentialId: 'cred-1',
+        parameters: { quality: '4k', aspectRatio: '9:16' },
+        inferenceStrength: 'medium',
+      },
+    } as const;
+    const seed = resolvePreviousOperationSeed([previous], 'image', 'generate');
+    expect(seed).toEqual({
+      modelAlias: 'prev-model',
+      credentialId: 'cred-1',
+      parameters: { quality: '4k', aspectRatio: '9:16' },
+      inferenceStrength: 'medium',
+    });
+    const configured = applyNodeGenerationDefaults(
+      { ...data('image'), ...seed },
+      model('image', { quality: ['1k', '2k', '4k'], aspectRatios: ['1:1', '9:16'] }),
+    );
+    expect(configured.parameters).toEqual({ quality: '4k', aspectRatio: '9:16' });
+  });
+
+  it('选项文案是默认值时改用实际取值，不把默认值三个字展示给用户', () => {
+    const configured = applyNodeGenerationDefaults(
+      data('image'),
+      model('image', {
+        quality: [
+          { value: '1k', label: '默认值' },
+          { value: '2k', label: '2K' },
+        ],
+        aspectRatios: ['1:1'],
+      }),
+    );
+    expect(configured.parameters).toEqual({ quality: '1k', aspectRatio: '1:1' });
   });
 });

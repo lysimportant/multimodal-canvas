@@ -525,7 +525,11 @@ function flowNodes() {
 }
 
 function findNodeByLabel(label: string) {
-  return flowNodes().find((node) => within(node).queryAllByText(label).length > 0);
+  return flowNodes().find(
+    (node) =>
+      Boolean(within(node).queryByRole('group', { name: `节点操作：${label}` })) ||
+      within(node).queryAllByText(label).length > 0,
+  );
 }
 
 function handleFor(node: HTMLElement, handleId: string) {
@@ -720,7 +724,7 @@ describe('画布编辑器交互', () => {
     const { user } = await renderCanvas();
     await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
     const node = findNodeByLabel('文字生成节点')!;
-    await user.dblClick(within(node).getByText('文字生成节点'));
+    await user.click(within(node).getByRole('button', { name: '重命名节点：文字生成节点' }));
     const title = screen.getByRole('textbox', { name: '编辑节点名称' });
 
     await user.clear(title);
@@ -889,7 +893,7 @@ describe('画布编辑器交互', () => {
     const sourceHandle = handleFor(source!, 'output:image');
     await user.click(sourceHandle);
     expect(document.querySelector<HTMLElement>('.inspector-panel')).toBeNull();
-    await user.dblClick(within(source!).getByText('reference.png'));
+    await user.click(within(source!).getByRole('button', { name: '重命名节点：reference.png' }));
     const title = screen.getByRole('textbox', { name: '编辑节点名称' });
     await user.clear(title);
     await user.type(title, '角色参考');
@@ -923,7 +927,9 @@ describe('画布编辑器交互', () => {
     await user.keyboard('{Control>}v{/Control}');
 
     await waitFor(() => expect(flowNodes()).toHaveLength(2));
-    expect(screen.getAllByText('文字生成节点').length).toBeGreaterThanOrEqual(2);
+    expect(
+      screen.getAllByRole('group', { name: '节点操作：文字生成节点' }).length,
+    ).toBeGreaterThanOrEqual(2);
 
     await user.keyboard('{Delete}');
     await waitFor(() => expect(flowNodes()).toHaveLength(1));

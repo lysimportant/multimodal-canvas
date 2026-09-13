@@ -208,7 +208,7 @@ describe('NodeQuickEditor', () => {
     expect(trigger).toHaveAttribute('aria-expanded', 'false');
   });
 
-  it('展示事务中保存的第二项参数，悬停菜单向上定位且 Escape 只关闭当前参数菜单', async () => {
+  it('展示事务中保存的第一项参数，悬停菜单向上定位且 Escape 只关闭当前参数菜单', async () => {
     const user = userEvent.setup();
     const catalog: NodeQuickEditorProps['models'] = [
       {
@@ -231,8 +231,8 @@ describe('NodeQuickEditor', () => {
       ),
     };
     render(<NodeQuickEditor {...makeProps({ node, models: catalog, onParametersChange })} />);
-    expect(screen.getByRole('button', { name: '媒体参数' })).toHaveTextContent('720p · 16:9 · 8s');
-    const resolution = screen.getByRole('combobox', { name: '视频清晰度：720p' });
+    expect(screen.getByRole('button', { name: '媒体参数' })).toHaveTextContent('480p · 1:1 · 4s');
+    const resolution = screen.getByRole('combobox', { name: '视频清晰度：480p' });
     const root = resolution.parentElement!;
     vi.spyOn(root, 'getBoundingClientRect').mockReturnValue({
       top: 500,
@@ -250,12 +250,37 @@ describe('NodeQuickEditor', () => {
     expect(menu).toHaveAttribute('popover', 'manual');
     expect(menu.style.bottom).not.toBe('');
     expect(menu).toHaveStyle({ position: 'fixed' });
-    expect(within(menu).getByRole('option', { name: '720p', selected: true })).toBeInTheDocument();
+    expect(within(menu).getByRole('option', { name: '480p', selected: true })).toBeInTheDocument();
     resolution.focus();
     await user.keyboard('{Escape}');
     expect(screen.getByRole('region', { name: '生成参数' })).toBeVisible();
     expect(resolution).toHaveAttribute('aria-expanded', 'false');
     expect(onParametersChange).not.toHaveBeenCalled();
+  });
+
+  it('参数选项文案为默认值时触发器显示实际取值', () => {
+    const catalog: NodeQuickEditorProps['models'] = [
+      {
+        id: 'image-model',
+        name: '图片模型',
+        mediaTypes: ['image'],
+        capabilities: {
+          quality: [{ value: '1k', label: '默认值' }, '2k'],
+          aspectRatios: ['1:1'],
+        },
+      },
+    ];
+    const node = {
+      ...imageNode,
+      data: applyNodeGenerationDefaults(
+        { ...imageNode.data, modelAlias: 'image-model' },
+        catalog[0],
+      ),
+    };
+    render(<NodeQuickEditor {...makeProps({ node, models: catalog })} />);
+    expect(screen.queryByText('默认值')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '媒体参数' })).toHaveTextContent('1K');
+    expect(screen.getByRole('combobox', { name: '图片清晰度：1K' })).toBeInTheDocument();
   });
 
   it('比例可用悬停、键盘和点击选择，关闭参数页时移除顶层菜单', async () => {

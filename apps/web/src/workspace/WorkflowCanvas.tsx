@@ -82,7 +82,7 @@ function shouldKeepNativeContextMenu(target: EventTarget | null) {
 }
 
 /** 快速编辑器在桌面画布中的最大宽度，单位为像素。 */
-const QUICK_EDITOR_MAX_WIDTH = 435;
+const QUICK_EDITOR_MAX_WIDTH = 520;
 /** 快速编辑器与可见画布边界之间的最小距离，单位为像素。 */
 const QUICK_EDITOR_VIEWPORT_MARGIN = 8;
 /** 快速编辑器与选中节点之间的视觉间距，单位为像素。 */

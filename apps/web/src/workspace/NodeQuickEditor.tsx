@@ -36,7 +36,7 @@ export type NodeMediaParameters = Record<string, unknown> & {
   height?: number;
   /** TTS 音色标识，允许平台自定义非空字符串，必须由用户显式填写。 */
   voice?: string;
-  /** TTS 输出格式；新建或切换模型时可初始化为支持列表中的第二项，清空后省略。 */
+  /** TTS 输出格式；新建或切换模型时可初始化为支持列表中的第一项，清空后省略。 */
   response_format?: string;
   /** TTS 语速倍率，有限数值且范围为 0.25 至 4；未设置时省略。 */
   speed?: number;
@@ -998,7 +998,7 @@ function QuickOptionMenu({
 }
 
 /**
- * 为新建节点或显式切换模型补齐媒体枚举的第二项；推理强度优先 high、标签“高”、首项。
+ * 为新建节点或显式切换模型补齐媒体枚举的第一项；推理强度优先 high、标签“高”、首项。
  * 返回可直接写入节点的浅拷贝，不修改输入；已有参数和未知字段全部保留。
  * 只使用该媒体模型声明的枚举或已确认的 TTS/GPT 契约；没有模型或没有枚举时不造值，
  * 音色和连续语速由用户填写，像素宽高仅保留旧值。不得在渲染或加载历史节点时自动调用。
@@ -1021,17 +1021,18 @@ export function applyNodeGenerationDefaults(
     if (parameters[field] !== undefined) continue;
     const choices =
       field === 'duration'
-        ? options[field].filter(
-            (option) => Number.isFinite(Number(option.value)) && Number(option.value) > 0,
-          )
+        ? options[field].filter((option) => {
+            const seconds = Number(option.value);
+            return Number.isInteger(seconds) && seconds > 0;
+          })
         : options[field];
-    const value = secondAvailableOption(choices);
+    const value = firstAvailableOption(choices);
     if (value === undefined) continue;
     if (field === 'duration') parameters.duration = Number(value);
     else parameters[field] = value;
   }
   if (mediaType === 'audio' && parameters.response_format === undefined) {
-    const format = secondAvailableOption(getSupportedAudioFormatOptions(model));
+    const format = firstAvailableOption(getSupportedAudioFormatOptions(model));
     if (format !== undefined) parameters.response_format = format;
   }
   const inferenceStrength =
@@ -1050,10 +1051,37 @@ function preferredInferenceStrength(options: readonly MediaOption[]): string | u
   )?.value;
 }
 
-/** 排除空占位和禁用项后返回第二个值；只有一项时返回该项，没有选项时返回 undefined。 */
-function secondAvailableOption(options: readonly MediaOption[]): string | undefined {
-  const available = options.filter((option) => !option.disabled && option.value.trim());
-  return (available[1] ?? available[0])?.value;
+/** 排除空占位和禁用项后返回第一项；没有选项时返回 undefined。 */
+function firstAvailableOption(options: readonly MediaOption[]): string | undefined {
+  return options.find((option) => !option.disabled && option.value.trim())?.value;
+}
+
+/**
+ * 从画布已有同类型操作节点取出最近一次的模型与参数，供新建节点沿用。
+ * @param nodes 当前画布节点，后创建的节点优先。
+ * @param mediaType 新建节点的媒体类型。
+ * @param mode 新建节点的操作模式。
+ * @returns 最近同类型节点的模型、凭据、参数和推理强度；没有可沿用节点时返回 undefined。
+ */
+export function resolvePreviousOperationSeed(
+  nodes: readonly AssetFlowNode[],
+  mediaType: AssetFlowNode['data']['mediaType'],
+  mode: Exclude<AssetFlowNode['data']['mode'], 'source'>,
+):
+  | Pick<AssetFlowNode['data'], 'modelAlias' | 'credentialId' | 'parameters' | 'inferenceStrength'>
+  | undefined {
+  for (let index = nodes.length - 1; index >= 0; index -= 1) {
+    const data = nodes[index]?.data;
+    if (!data || data.mediaType !== mediaType || data.mode !== mode) continue;
+    const parameters = readNodeMediaParameters(data);
+    return {
+      ...(data.modelAlias ? { modelAlias: data.modelAlias } : {}),
+      ...(data.credentialId ? { credentialId: data.credentialId } : {}),
+      ...(Object.keys(parameters).length > 0 ? { parameters } : {}),
+      ...(data.inferenceStrength ? { inferenceStrength: data.inferenceStrength } : {}),
+    };
+  }
+  return undefined;
 }
 
 /** 返回当前模型的媒体能力；旧目录回退仅供手动选择，不能用于自动写入默认值。 */
@@ -1433,10 +1461,17 @@ function normalizeRawOptions(
     const value = item.value.trim();
     if (!value || seen.has(value)) continue;
     seen.add(value);
+    if (value === '默认值') continue;
     const fallbackDescription = kind === 'aspectRatio' ? aspectRatioDescriptions[value] : undefined;
+    const rawDescription = item.description === '默认值' ? undefined : item.description;
     const description =
-      item.description ?? fallbackDescription ?? (kind === 'duration' ? '秒' : undefined);
-    const label = item.label ?? (kind === 'quality' ? value.toUpperCase() : value);
+      rawDescription ?? fallbackDescription ?? (kind === 'duration' ? '秒' : undefined);
+    const label =
+      item.label && item.label !== '默认值'
+        ? item.label
+        : kind === 'quality'
+          ? value.toUpperCase()
+          : value;
     options.push({
       value,
       label,

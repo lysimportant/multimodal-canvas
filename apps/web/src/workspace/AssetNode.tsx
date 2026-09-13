@@ -69,15 +69,12 @@ export const NodeContentContext = createContext<NodeContentHandlers | null>(null
 type NodePresentationState = 'empty' | 'running' | 'failed' | 'cancelled' | 'preview' | 'missing';
 
 /**
- * 悬浮栏图标旁的功能简述；仅在卡片足够宽时显示。
+ * 悬浮栏图标旁的功能简述，始终与图标一起显示。
  * @param children 简短中文功能名。
  */
 function NodeFloatingActionLabel({ children }: { children: ReactNode }) {
   return <span className="flow-node-action-label">{children}</span>;
 }
-
-/** 节点在屏幕上达到该宽度后，悬浮栏在图标旁显示功能简述。单位为 CSS 像素。 */
-const FLOATING_ACTION_LABEL_MIN_WIDTH = 360;
 
 /** 展示节点占位或产物；生成与转换节点的控制栏悬浮在内容上方，不参与尺寸计算。 */
 export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
@@ -91,10 +88,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const setNodeEnabled = useContext(NodeEnabledContext);
   const deleteNode = useContext(NodeDeleteContext);
   const contentHandlers = useContext(NodeContentContext);
-  const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  /** 节点屏幕宽度足够时，在悬浮栏图标旁显示功能简述。 */
-  const [spaciousToolbar, setSpaciousToolbar] = useState(false);
   const uploadLock = useRef(false);
   /** 当前下载请求；切换节点产物或卸载时取消，防止下载过时内容。 */
   const downloadAbort = useRef<AbortController | null>(null);
@@ -155,7 +149,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const writingDisabled = presentationState === 'running' || uploadProgress !== null;
   /** 仅图片和视频提供下载，下载内容始终与当前回显产物一致。 */
   const downloadableMedia = data.mediaType === 'image' || data.mediaType === 'video';
-  /** 抵消画布缩放，让悬浮栏保持屏幕像素大小；宽度随图标收缩，节点变宽时再显示文字。 */
+  /** 抵消画布缩放，让悬浮栏保持屏幕像素大小；宽度随图标和文字收缩。 */
   const floatingControlStyle = {
     '--flow-node-zoom': zoom,
     '--flow-node-inverse-zoom': 1 / zoom,
@@ -203,23 +197,6 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   useEffect(() => {
     if (!renameOpen) setDraftLabel(data.label);
   }, [data.label, renameOpen]);
-
-  /** 按节点当前屏幕宽度决定是否显示图标文字；画布缩放后重新测量。 */
-  useEffect(() => {
-    const host = rootRef.current;
-    if (!host) return;
-    const update = () => {
-      setSpaciousToolbar(host.getBoundingClientRect().width >= FLOATING_ACTION_LABEL_MIN_WIDTH);
-    };
-    update();
-    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(update);
-    observer?.observe(host);
-    window.addEventListener('resize', update);
-    return () => {
-      observer?.disconnect();
-      window.removeEventListener('resize', update);
-    };
-  }, [zoom]);
 
   /** 打开重命名对话框并带上当前名称。 */
   const openRename = () => {
@@ -323,7 +300,6 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
 
   return (
     <div
-      ref={rootRef}
       className={`flow-asset-node ${data.mode !== 'source' ? 'flow-generate-node' : ''} ${selected ? 'is-selected' : ''} ${enabled ? '' : 'is-disabled'}`}
       aria-disabled={!enabled}
       onClickCapture={() => selectNode?.(data)}
@@ -378,7 +354,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
         />
       ) : null}
       <div
-        className={`flow-node-header${floatingControls ? ' flow-node-floating-controls' : ''}${spaciousToolbar ? ' is-spacious' : ''}`}
+        className={`flow-node-header${floatingControls ? ' flow-node-floating-controls' : ''}`}
         style={floatingControlStyle}
         role="group"
         aria-label={`节点操作：${data.label}`}

@@ -112,7 +112,7 @@
   margin: 0;
   min-width: 28px;
   overflow: hidden;
-  padding: 0 4px;
+  padding: 0 6px;
   width: auto;
 }
 
@@ -122,24 +122,11 @@
 }
 
 .flow-node-action-label {
-  display: none;
+  display: inline;
   font-size: 11px;
   font-weight: 650;
   line-height: 1;
-  max-width: 3.6em;
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.flow-node-floating-controls.is-spacious .flow-node-action-label {
-  display: inline;
-}
-
-.flow-node-floating-controls.is-spacious .flow-node-action-button {
-  flex: 1 1 0;
-  min-width: 28px;
-  padding: 0 6px;
 }
 
 .flow-node-floating-controls .flow-node-action-button:disabled {

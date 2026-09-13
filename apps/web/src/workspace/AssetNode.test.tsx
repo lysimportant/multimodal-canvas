@@ -104,21 +104,15 @@ describe('AssetNode result presentation', () => {
     expect(toolbar.style.getPropertyValue('--flow-node-inverse-zoom')).toBe(String(1 / zoom));
   });
 
-  it('节点足够宽时在悬浮栏图标旁显示功能简述', () => {
-    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
-      x: 0,
-      y: 0,
-      top: 0,
-      left: 0,
-      right: 400,
-      bottom: 200,
-      width: 400,
-      height: 200,
-      toJSON: () => ({}),
-    } as DOMRect);
+  it('悬浮栏一开始就同时显示图标和功能简述', () => {
     renderNode(makeNode(), undefined, vi.fn(), undefined, false, vi.fn(), vi.fn());
-    expect(screen.getByRole('group', { name: '节点操作：文案生成' })).toHaveClass('is-spacious');
-    vi.restoreAllMocks();
+    const toolbar = screen.getByRole('group', { name: '节点操作：文案生成' });
+    expect(toolbar).not.toHaveClass('is-spacious');
+    expect(screen.getByRole('button', { name: '重命名节点：文案生成' })).toHaveTextContent(
+      '重命名',
+    );
+    expect(screen.getByRole('button', { name: '拖动移动节点' })).toHaveTextContent('移动');
+    expect(screen.getByRole('button', { name: '查看节点信息' })).toHaveTextContent('信息');
   });
 
   it.each(['image', 'video'] as const)('没有内容的 %s 节点禁用下载按钮', (mediaType) => {
