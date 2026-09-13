@@ -350,7 +350,12 @@ function sanitizeProviderPayload(value: unknown, depth = 0): Record<string, unkn
 }
 
 function sanitizeRunErrorMessage(error: unknown): string {
-  const raw = error instanceof Error ? error.message : 'run execution failed';
+  const raw =
+    error instanceof Error
+      ? error.message
+      : typeof error === 'string' && error.trim()
+        ? error
+        : 'run execution failed';
   return raw
     .replace(
       /(\b"?authorization"?\s*[:=]\s*"?)(?:(bearer|basic|token)(\s+))?[^"',;}\s]+/gi,

@@ -148,6 +148,48 @@ describe('BullMQ run result integrity', () => {
     await service.close();
   });
 
+  it('keeps the worker failedReason string as the run error', async () => {
+    const snapshot = createRunSnapshot(
+      'project_1',
+      {
+        revision: 1,
+        nodes: [
+          {
+            id: 'node_text',
+            type: 'text',
+            position: { x: 0, y: 0 },
+            data: { label: 'Generate', mediaType: 'text', mode: 'generate' },
+          },
+        ],
+        edges: [],
+      },
+      'node_text',
+    );
+    state.job = {
+      id: 'run_failed_reason',
+      data: {
+        runId: 'run_failed_reason',
+        snapshot,
+        attempt: 1,
+        provider: 'newapi',
+        cancelRequested: false,
+      },
+      progress: { status: 'failed', progress: 80, updatedAt: new Date().toISOString() },
+      returnvalue: undefined,
+      failedReason: 'New API 视频任务失败（status=failed, task=task_demo）',
+      timestamp: Date.now(),
+      async getState() {
+        return 'failed';
+      },
+    };
+    const service = new BullMqRunService({ connection: { host: '127.0.0.1', port: 6379 } });
+    await expect(service.get('run_failed_reason')).resolves.toMatchObject({
+      status: 'failed',
+      error: 'New API 视频任务失败（status=failed, task=task_demo）',
+    });
+    await service.close();
+  });
+
   it('recovers an idempotent request when BullMQ rejects a concurrent duplicate add', async () => {
     const snapshot = createRunSnapshot(
       'project_1',

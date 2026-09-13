@@ -3421,6 +3421,52 @@ describe('NewApiVideoProvider', () => {
     expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
   });
 
+  it('explains a failed video poll when the provider omits failure_reason', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: 'task_no_reason',
+            object: 'video',
+            model: 'grok-imagine-video-1.5.1',
+            status: 'queued',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: 'task_no_reason',
+            object: 'video',
+            model: 'grok-imagine-video-1.5.1',
+            status: 'failed',
+            progress: 100,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      );
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      videoContract: 'newapi-video-v1',
+      fetchImpl,
+      pollIntervalMs: 0,
+      maxPollAttempts: 2,
+    });
+
+    await expect(
+      provider.execute({ snapshot: videoSnapshot(), onProviderJob: vi.fn() }),
+    ).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_FAILED',
+      retryable: false,
+      platformJobId: 'task_no_reason',
+      message:
+        'New API 视频任务失败（status=failed, progress=100, model=grok-imagine-video-1.5, task=task_no_reason）。供应商未返回失败原因。',
+    });
+  });
+
   it('bounds polling and reports a retryable timeout', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()

@@ -847,8 +847,7 @@ export class NewApiVideoProvider {
           terminal.progress,
         );
         throw new NewApiProviderError(
-          terminal.error ??
-            `New API 视频任务${terminal.status === 'cancelled' ? '已取消' : '失败'}`,
+          videoTerminalFailureMessage(terminal, platformJobId, snapshot.modelAlias),
           {
             code:
               terminal.status === 'cancelled'
@@ -974,8 +973,7 @@ export class NewApiVideoProvider {
 
       if (lastPoll.status === 'failed' || lastPoll.status === 'cancelled') {
         throw new NewApiProviderError(
-          lastPoll.error ??
-            `New API 视频任务${lastPoll.status === 'cancelled' ? '已取消' : '失败'}`,
+          videoTerminalFailureMessage(lastPoll, platformJobId, snapshot.modelAlias),
           {
             code:
               lastPoll.status === 'cancelled'
@@ -1761,6 +1759,24 @@ function normalizeVideoProgress(value: unknown): number {
     }
   }
   return 0;
+}
+
+function videoTerminalFailureMessage(
+  terminal: { error?: string; status: string; providerStatus?: string; progress?: number },
+  platformJobId: string | undefined,
+  modelAlias: string,
+): string {
+  if (terminal.error) return terminal.error;
+  const kind = terminal.status === 'cancelled' ? '已取消' : '失败';
+  const details = [
+    terminal.providerStatus ? `status=${terminal.providerStatus}` : undefined,
+    terminal.progress !== undefined ? `progress=${terminal.progress}` : undefined,
+    modelAlias ? `model=${modelAlias}` : undefined,
+    platformJobId ? `task=${platformJobId}` : undefined,
+  ].filter((item): item is string => Boolean(item));
+  return details.length > 0
+    ? `New API 视频任务${kind}（${details.join(', ')}）。供应商未返回失败原因。`
+    : `New API 视频任务${kind}`;
 }
 
 function parseVideoPollResult(
