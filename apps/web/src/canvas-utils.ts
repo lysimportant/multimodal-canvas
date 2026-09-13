@@ -32,6 +32,46 @@ export function getNewNodeDimensions(mediaType: MediaType): { width: number; hei
     ? { width: 400, height: 266 }
     : { width: 270, height: 246 };
 }
+
+/** 回显内容适配时的最大宽度，单位为画布像素。 */
+export const NODE_CONTENT_FIT_MAX_WIDTH = 520;
+/** 回显内容适配时的最大高度，单位为画布像素。 */
+export const NODE_CONTENT_FIT_MAX_HEIGHT = 420;
+/** 回显内容适配时的最小宽度，单位为画布像素。 */
+export const NODE_CONTENT_FIT_MIN_WIDTH = 180;
+/** 回显内容适配时的最小高度，单位为画布像素。 */
+export const NODE_CONTENT_FIT_MIN_HEIGHT = 140;
+
+/**
+ * 按媒体原比例计算节点宽高，让回显内容撑满可见区域且不超过上限。
+ * @param naturalWidth 媒体固有宽度，单位为像素。
+ * @param naturalHeight 媒体固有高度，单位为像素。
+ * @returns 画布节点应使用的宽高。
+ */
+export function fitNodeSizeToContent(
+  naturalWidth: number,
+  naturalHeight: number,
+): {
+  width: number;
+  height: number;
+} {
+  if (
+    !Number.isFinite(naturalWidth) ||
+    !Number.isFinite(naturalHeight) ||
+    naturalWidth <= 0 ||
+    naturalHeight <= 0
+  ) {
+    return { width: 400, height: 266 };
+  }
+  const scale = Math.min(
+    NODE_CONTENT_FIT_MAX_WIDTH / naturalWidth,
+    NODE_CONTENT_FIT_MAX_HEIGHT / naturalHeight,
+  );
+  return {
+    width: Math.max(NODE_CONTENT_FIT_MIN_WIDTH, Math.round(naturalWidth * scale)),
+    height: Math.max(NODE_CONTENT_FIT_MIN_HEIGHT, Math.round(naturalHeight * scale)),
+  };
+}
 const CANVAS_CLIPBOARD_FORMAT = 'multimodal-canvas/clipboard';
 const CANVAS_CLIPBOARD_VERSION = 1;
 

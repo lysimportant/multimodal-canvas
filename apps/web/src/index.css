@@ -917,6 +917,88 @@ h2 {
   position: relative;
 }
 
+.appearance-control {
+  pointer-events: auto;
+  position: relative;
+}
+
+.appearance-trigger {
+  align-items: center;
+  background: var(--mc-surface, #fff);
+  border: 1px solid var(--mc-border, #dce3e7);
+  border-radius: 5px;
+  color: var(--mc-text, #18212f);
+  display: inline-flex;
+  gap: 5px;
+  min-height: 30px;
+  padding: 0 8px;
+  white-space: nowrap;
+}
+
+.appearance-trigger span {
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.appearance-trigger:hover,
+.appearance-trigger[aria-expanded='true'] {
+  background: var(--mc-surface-muted, #f0f3f5);
+  color: var(--mc-accent-strong, #12613e);
+}
+
+.appearance-control.is-compact .appearance-trigger {
+  background: var(--mc-surface-muted, #f0f3f5);
+  border-radius: 50%;
+  min-height: 42px;
+  padding: 0;
+}
+
+.appearance-card {
+  background: var(--mc-surface, #ffffff);
+  border: 1px solid var(--mc-border, #e2e7eb);
+  border-radius: 12px;
+  box-shadow: 0 12px 28px var(--mc-shadow, rgb(29 46 39 / 16%));
+  display: grid;
+  gap: 12px;
+  min-width: 196px;
+  padding: 10px;
+  position: absolute;
+  z-index: 40;
+}
+
+.appearance-control[data-placement='top'] .appearance-card {
+  right: 0;
+  top: calc(100% + 8px);
+}
+
+.appearance-control[data-placement='bottom'] .appearance-card {
+  bottom: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.appearance-card-group {
+  display: grid;
+  gap: 4px;
+}
+
+.appearance-card-label {
+  color: var(--mc-text-muted, #687386);
+  font-size: 11px;
+  font-weight: 650;
+  margin: 0;
+}
+
+.appearance-card-options {
+  display: grid;
+  gap: 3px;
+}
+
+.topbar-tool-cluster:has(.appearance-card) {
+  overflow: visible;
+  z-index: 40;
+}
+
 .canvas-node-theme-menu {
   animation: canvas-node-theme-menu-in 180ms ease-out;
   background: var(--mc-surface, #ffffff);
@@ -1059,6 +1141,7 @@ h2 {
 
 .flow-asset-node.is-selected {
   border-color: var(--mc-accent);
+  border-width: 3px;
   box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
 }
 
@@ -3524,6 +3607,7 @@ h2 {
 
 .flow-asset-node.is-selected {
   border-color: var(--mc-accent);
+  border-width: 3px;
   box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
 }
 
@@ -4056,7 +4140,8 @@ textarea:focus-visible {
   overflow: visible;
 }
 
-.canvas-node-tools.is-theme-menu-open {
+.canvas-node-tools.is-theme-menu-open,
+.canvas-node-tools:has(.appearance-card) {
   overflow: visible;
   z-index: 20;
 }

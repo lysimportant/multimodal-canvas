@@ -30,7 +30,7 @@ import {
 
 import type { Asset, RunStatus } from '@multimodal-canvas/domain';
 import { Dialog, DialogClose, DialogContent, DialogTitle } from '@multimodal-canvas/ui';
-import type { AssetFlowNode } from '../canvas-utils';
+import { fitNodeSizeToContent, type AssetFlowNode } from '../canvas-utils';
 import { isImeKeyboardEvent } from '../ime';
 import { NodeHandles } from '../NodeHandles';
 import { AssetPreview, type AssetPreviewLoadState } from './AssetPreview';
@@ -77,7 +77,7 @@ function NodeFloatingActionLabel({ children }: { children: ReactNode }) {
 }
 
 /** 展示节点占位或产物；生成节点的控制栏悬浮在内容上方，不参与尺寸计算。 */
-export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
+export function AssetNode({ id, data, selected, width, height }: NodeProps<AssetFlowNode>) {
   const { zoom } = useViewport();
   const selectNode = useContext(NodeSelectionContext);
   const quickEditorNodeId = useContext(NodeQuickEditorIdContext);
@@ -90,6 +90,8 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const contentHandlers = useContext(NodeContentContext);
   const inputRef = useRef<HTMLInputElement>(null);
   const uploadLock = useRef(false);
+  /** 用户拖拽改过尺寸后，不再用回显内容覆盖宽高。 */
+  const userResizedRef = useRef(false);
   /** 当前下载请求；切换节点产物或卸载时取消，防止下载过时内容。 */
   const downloadAbort = useRef<AbortController | null>(null);
   /** 下载请求状态独立于上传，不阻塞节点内容编辑。 */
@@ -146,6 +148,9 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
     ? `${previewAsset.id}:${previewAsset.contentUrl}:${previewAsset.mimeType}`
     : '';
   const presentationState = getNodePresentationState(data, previewAsset);
+  useEffect(() => {
+    userResizedRef.current = false;
+  }, [previewIdentity]);
   const writingDisabled = presentationState === 'running' || uploadProgress !== null;
   /** 仅图片和视频提供下载，下载内容始终与当前回显产物一致。 */
   const downloadableMedia = data.mediaType === 'image' || data.mediaType === 'video';
@@ -178,6 +183,22 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const handlePreviewLoadState = useCallback((state: AssetPreviewLoadState) => {
     setPreviewLoadState(state);
   }, []);
+  const handleNaturalSize = useCallback(
+    (naturalWidth: number, naturalHeight: number) => {
+      if (userResizedRef.current || !resizeNode || !id) return;
+      const next = fitNodeSizeToContent(naturalWidth, naturalHeight);
+      if (
+        width !== undefined &&
+        height !== undefined &&
+        Math.abs(width - next.width) < 2 &&
+        Math.abs(height - next.height) < 2
+      ) {
+        return;
+      }
+      resizeNode(id, next.width, next.height);
+    },
+    [height, id, resizeNode, width],
+  );
 
   useEffect(() => {
     setPreviewLoadState(null);
@@ -324,9 +345,10 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
           minWidth={180}
           minHeight={140}
           color="#18794e"
-          handleStyle={{ width: 14, height: 14, borderRadius: 3 }}
-          lineStyle={{ borderWidth: floatingControls ? 0 : 2 }}
+          handleStyle={{ width: 18, height: 18, borderRadius: 4 }}
+          lineStyle={{ borderWidth: 2 }}
           onResizeStart={() => {
+            userResizedRef.current = true;
             if (resizeStart && id) resizeStart(id);
           }}
           onResizeEnd={(_, params) => {
@@ -678,6 +700,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
                 : undefined
             }
             onLoadStateChange={handlePreviewLoadState}
+            onNaturalSize={handleNaturalSize}
           />
         </div>
       ) : (

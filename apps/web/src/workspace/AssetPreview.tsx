@@ -35,6 +35,8 @@ export type AssetPreviewProps = {
   /** 是否允许直接点击图片打开预览；节点应在输入编辑器打开后启用，展开按钮始终可用。 */
   mediaClickPreviewEnabled?: boolean;
   onLoadStateChange?: (state: AssetPreviewLoadState) => void;
+  /** 图片或视频固有尺寸就绪后回调，供节点按内容适配宽高。 */
+  onNaturalSize?: (width: number, height: number) => void;
   /** 双击编辑后的持久化回调；失败拒绝 Promise，编辑器保留草稿。 */
   onTextSave?: (text: string) => Promise<void>;
 };
@@ -109,6 +111,7 @@ export function AssetPreview({
   mode,
   mediaClickPreviewEnabled = true,
   onLoadStateChange,
+  onNaturalSize,
   onTextSave,
 }: AssetPreviewProps) {
   const [reloadKey, setReloadKey] = useState(0);
@@ -192,6 +195,7 @@ export function AssetPreview({
       mediaClickPreviewEnabled={mediaClickPreviewEnabled}
       onRetry={retry}
       onLoadStateChange={onLoadStateChange}
+      onNaturalSize={onNaturalSize}
     />
   );
 }
@@ -638,6 +642,7 @@ function MediaArtifactPreview({
   mediaClickPreviewEnabled,
   onRetry,
   onLoadStateChange,
+  onNaturalSize,
 }: {
   asset: Asset;
   kind: 'image' | 'video' | 'audio';
@@ -648,6 +653,7 @@ function MediaArtifactPreview({
   mediaClickPreviewEnabled: boolean;
   onRetry: () => void;
   onLoadStateChange?: (state: AssetPreviewLoadState) => void;
+  onNaturalSize?: (width: number, height: number) => void;
 }) {
   const [attempt, setAttempt] = useState(0);
   const [loadState, setLoadState] = useState<AssetPreviewLoadState>('loading');
@@ -700,7 +706,10 @@ function MediaArtifactPreview({
         src={src}
         alt={asset.name}
         draggable={false}
-        onLoad={markReady}
+        onLoad={(event) => {
+          markReady();
+          onNaturalSize?.(event.currentTarget.naturalWidth, event.currentTarget.naturalHeight);
+        }}
         onError={markError}
         onPointerDown={() => {
           previewGestureEnabled.current = mediaClickPreviewEnabled;
@@ -729,7 +738,10 @@ function MediaArtifactPreview({
         preload="metadata"
         draggable={false}
         playsInline
-        onLoadedMetadata={markReady}
+        onLoadedMetadata={(event) => {
+          markReady();
+          onNaturalSize?.(event.currentTarget.videoWidth, event.currentTarget.videoHeight);
+        }}
         onError={markError}
         onPlay={() => {
           setVideoPlaying(true);

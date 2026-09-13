@@ -5,6 +5,7 @@ import {
   DEFAULT_FLOW_NODE_HEIGHT,
   DEFAULT_FLOW_NODE_WIDTH,
   getNewNodeDimensions,
+  fitNodeSizeToContent,
   fromCanvasDocument,
   markDownstreamNodesStale,
   copyCanvasSelection,
@@ -51,6 +52,8 @@ describe('stale propagation', () => {
     expect(getNewNodeDimensions('video')).toEqual({ width: 400, height: 266 });
     expect(getNewNodeDimensions('text')).toEqual({ width: 270, height: 246 });
     expect(getNewNodeDimensions('audio')).toEqual({ width: 270, height: 246 });
+    expect(fitNodeSizeToContent(1920, 1080)).toEqual({ width: 520, height: 293 });
+    expect(fitNodeSizeToContent(100, 80).width).toBeGreaterThanOrEqual(180);
     const legacy = flowNode('legacy', 'image');
     expect(withNodeAutoGrowthLimit(legacy)).toMatchObject({ width: 230, height: 216 });
     expect(withNodeAutoGrowthLimit({ ...legacy, width: 315, height: 195 })).toMatchObject({

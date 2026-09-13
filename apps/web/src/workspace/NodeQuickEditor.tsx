@@ -381,7 +381,7 @@ export function NodeQuickEditor({
         <>
           <div
             className="node-quick-editor-media-options"
-            data-columns="3"
+            data-columns="2"
             role="group"
             aria-label="媒体参数"
           >
@@ -421,7 +421,7 @@ export function NodeQuickEditor({
       {node.data.mediaType === 'audio' && (
         <div
           className="node-quick-editor-media-options"
-          data-columns="3"
+          data-columns="2"
           role="group"
           aria-label="媒体参数"
         >

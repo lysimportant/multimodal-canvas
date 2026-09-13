@@ -840,7 +840,7 @@ describe('NodeQuickEditor', () => {
     render(<NodeQuickEditor {...props} />);
 
     const mediaOptions = screen.getByRole('group', { name: '媒体参数' });
-    expect(mediaOptions).toHaveAttribute('data-columns', '3');
+    expect(mediaOptions).toHaveAttribute('data-columns', '2');
     expect(screen.getByRole('textbox', { name: '音色' })).toHaveValue('');
     expect(screen.getByRole('textbox', { name: '音色' })).toBeRequired();
     expect(screen.getByRole('textbox', { name: '音色' })).toHaveAttribute('aria-invalid', 'true');
@@ -1115,7 +1115,7 @@ describe('NodeQuickEditor', () => {
     const mediaOptions = screen.getByRole('group', { name: '媒体参数' });
 
     expect(mediaOptions).toHaveClass('node-quick-editor-media-options');
-    expect(mediaOptions).toHaveAttribute('data-columns', '3');
+    expect(mediaOptions).toHaveAttribute('data-columns', '2');
     expect(mediaOptions.querySelectorAll('.node-quick-editor-option-group')).toHaveLength(1);
     expect(screen.queryByText('视频尺寸')).not.toBeInTheDocument();
     expect(resolutionGroup.querySelectorAll('.compact-select-option')).toHaveLength(6);

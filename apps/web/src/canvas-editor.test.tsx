@@ -868,18 +868,13 @@ describe('画布编辑器交互', () => {
   it('画布背景菜单可打开、切换并持久化选择', async () => {
     const { user } = await renderCanvas();
 
-    const trigger = screen.getByRole('button', { name: '选择画布背景' });
+    const trigger = screen.getAllByRole('button', { name: '外观' })[0];
     await user.click(trigger);
 
-    expect(screen.getByRole('menu', { name: '画布背景' })).toBeVisible();
-    expect(screen.getByRole('menuitemradio', { name: '点' })).toHaveAttribute(
-      'aria-checked',
-      'true',
-    );
+    expect(screen.getByRole('dialog', { name: '主题与画布背景' })).toBeVisible();
+    expect(screen.getByRole('button', { name: '点' })).toHaveAttribute('aria-pressed', 'true');
 
-    await user.click(screen.getByRole('menuitemradio', { name: '空白' }));
-    expect(screen.queryByRole('menu', { name: '画布背景' })).not.toBeInTheDocument();
-    expect(trigger).toHaveFocus();
+    await user.click(screen.getByRole('button', { name: '空白' }));
     expect(window.localStorage.getItem('multimodal-canvas:background')).toBe('blank');
   });
 

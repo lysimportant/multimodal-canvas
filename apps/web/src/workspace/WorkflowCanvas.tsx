@@ -157,6 +157,8 @@ export type WorkflowCanvasProps = {
   canvasTheme?: CanvasTheme;
   /** 从底部胶囊切换主题。 */
   onThemeChange?: (theme: CanvasTheme) => void;
+  /** 从底部胶囊切换画布背景。 */
+  onBackgroundChange?: (background: CanvasBackground) => void;
   /** 底部工具栏清空按钮是否可用。 */
   canClearCanvas?: boolean;
   /** 底部工具栏撤销按钮是否可用。 */
@@ -203,6 +205,7 @@ export function WorkflowCanvas({
   onOpenSearch,
   canvasTheme,
   onThemeChange,
+  onBackgroundChange,
   canClearCanvas,
   canUndo,
   canRedo,
@@ -424,6 +427,8 @@ export function WorkflowCanvas({
         onOpenSearch={onOpenSearch}
         canvasTheme={canvasTheme}
         onThemeChange={onThemeChange}
+        canvasBackground={background}
+        onBackgroundChange={onBackgroundChange}
         canClearCanvas={canClearCanvas ?? (nodes.length > 0 || edges.length > 0)}
         canUndo={canUndo}
         canRedo={canRedo}

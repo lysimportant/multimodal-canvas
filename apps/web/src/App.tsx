@@ -116,6 +116,7 @@ import {
 import { runStatusLabel } from './workspace/AssetNode';
 import { ResourcePanel } from './workspace/ResourcePanel';
 import { SettingsPanel } from './workspace/SettingsPanel';
+import { AppearancePicker } from './workspace/AppearancePicker';
 import { WorkflowCanvas } from './workspace/WorkflowCanvas';
 import {
   applyNodeGenerationDefaults,
@@ -141,7 +142,6 @@ import {
   mediaLabels,
   modeLabels,
   type AssetFilter,
-  type CanvasBackground,
   type ModelEntry,
   type ModelSelection,
 } from './workspace/contracts';
@@ -306,13 +306,6 @@ const themeOptions: Array<{ value: CanvasTheme; label: string; swatch: string }>
   { value: 'contrast', label: '高对比', swatch: 'theme-swatch-contrast' },
 ];
 
-const canvasBackgroundOptions: Array<{ value: CanvasBackground; label: string }> = [
-  { value: 'dots', label: '点' },
-  { value: 'lines', label: '线条' },
-  { value: 'cross', label: '十字' },
-  { value: 'blank', label: '空白' },
-];
-
 async function uploadAsset(file: File, onProgress: (progress: number) => void) {
   const content = new Uint8Array(await file.arrayBuffer());
   const sha256 = await sha256Hex(content);
@@ -465,8 +458,6 @@ function WorkspaceApp({
   const setCanvasBackground = useWorkspacePreferences((state) => state.setCanvasBackground);
   const canvasTheme = useWorkspacePreferences((state) => state.canvasTheme);
   const setCanvasTheme = useWorkspacePreferences((state) => state.setCanvasTheme);
-  const [showBackgroundMenu, setShowBackgroundMenu] = useState(false);
-  const [showThemeMenu, setShowThemeMenu] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
@@ -479,8 +470,6 @@ function WorkspaceApp({
   const settingsTriggerRef = useRef<HTMLButtonElement>(null);
   const exportTriggerRef = useRef<HTMLButtonElement>(null);
   const commandPaletteTriggerRef = useRef<HTMLButtonElement>(null);
-  const backgroundTriggerRef = useRef<HTMLButtonElement>(null);
-  const backgroundMenuRef = useRef<HTMLDivElement>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const canvasCenterPositionRef = useRef<{ x: number; y: number } | null>(null);
   const exportMenuWasOpenRef = useRef(false);
@@ -533,50 +522,6 @@ function WorkspaceApp({
     }, 3200);
     return () => window.clearTimeout(timer);
   }, [notice]);
-
-  useEffect(() => {
-    if (!showBackgroundMenu) return;
-    const focusFrame = window.requestAnimationFrame(() => {
-      backgroundMenuRef.current
-        ?.querySelector<HTMLButtonElement>('[role="menuitemradio"][aria-checked="true"]')
-        ?.focus();
-    });
-    const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target;
-      if (
-        target instanceof Element &&
-        !target.closest('.background-control, .canvas-node-background-tool')
-      ) {
-        setShowBackgroundMenu(false);
-      }
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (isImeKeyboardEvent(event)) return;
-      if (event.key === 'Escape') {
-        setShowBackgroundMenu(false);
-        backgroundTriggerRef.current?.focus();
-      }
-    };
-    document.addEventListener('pointerdown', handlePointerDown);
-    document.addEventListener('keydown', handleKeyDown);
-    return () => {
-      window.cancelAnimationFrame(focusFrame);
-      document.removeEventListener('pointerdown', handlePointerDown);
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [showBackgroundMenu]);
-
-  useEffect(() => {
-    if (!showThemeMenu) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target;
-      if (target instanceof Element && !target.closest('.theme-control')) {
-        setShowThemeMenu(false);
-      }
-    };
-    document.addEventListener('pointerdown', handlePointerDown);
-    return () => document.removeEventListener('pointerdown', handlePointerDown);
-  }, [showThemeMenu]);
 
   useEffect(() => {
     if (!showProjects) return;
@@ -2444,131 +2389,13 @@ function WorkspaceApp({
                 <Redo2 size={16} />
               </button>
               <span className="topbar-tool-divider" aria-hidden="true" />
-              <div className="background-control">
-                <button
-                  type="button"
-                  className="topbar-background-picker"
-                  ref={backgroundTriggerRef}
-                  aria-label="选择画布背景"
-                  aria-expanded={showBackgroundMenu}
-                  aria-haspopup="menu"
-                  aria-controls="canvas-background-menu"
-                  title="画布背景"
-                  onClick={() => {
-                    setShowThemeMenu(false);
-                    setShowBackgroundMenu((current) => !current);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-                      event.preventDefault();
-                      setShowThemeMenu(false);
-                      setShowBackgroundMenu(true);
-                    }
-                  }}
-                >
-                  <LayoutGrid size={15} aria-hidden="true" />
-                  <span>背景</span>
-                  <strong>
-                    {canvasBackgroundOptions.find((option) => option.value === canvasBackground)
-                      ?.label ?? '点'}
-                  </strong>
-                  <ChevronDown size={12} aria-hidden="true" />
-                </button>
-                {showBackgroundMenu && (
-                  <div
-                    className="background-menu"
-                    id="canvas-background-menu"
-                    ref={backgroundMenuRef}
-                    role="menu"
-                    aria-label="画布背景"
-                    onKeyDown={(event) => {
-                      const options = Array.from(
-                        event.currentTarget.querySelectorAll<HTMLButtonElement>(
-                          '[role="menuitemradio"]',
-                        ),
-                      );
-                      const currentIndex = options.indexOf(
-                        document.activeElement as HTMLButtonElement,
-                      );
-                      let nextIndex: number | undefined;
-                      if (event.key === 'ArrowDown')
-                        nextIndex = (currentIndex + 1) % options.length;
-                      if (event.key === 'ArrowUp') {
-                        nextIndex = (currentIndex - 1 + options.length) % options.length;
-                      }
-                      if (event.key === 'Home') nextIndex = 0;
-                      if (event.key === 'End') nextIndex = options.length - 1;
-                      if (nextIndex !== undefined) {
-                        event.preventDefault();
-                        options[nextIndex]?.focus();
-                      }
-                    }}
-                  >
-                    {canvasBackgroundOptions.map((option) => (
-                      <button
-                        type="button"
-                        className="background-option"
-                        role="menuitemradio"
-                        aria-checked={canvasBackground === option.value}
-                        key={option.value}
-                        onClick={() => {
-                          setCanvasBackground(option.value);
-                          setShowBackgroundMenu(false);
-                          backgroundTriggerRef.current?.focus();
-                        }}
-                      >
-                        <span
-                          className={`background-swatch background-swatch-${option.value}`}
-                          aria-hidden="true"
-                        />
-                        <span>{option.label}</span>
-                        {canvasBackground === option.value && (
-                          <Check size={14} aria-hidden="true" />
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-              <div className="theme-control">
-                <button
-                  type="button"
-                  className="theme-toggle"
-                  aria-label="切换主题"
-                  aria-expanded={showThemeMenu}
-                  title="主题"
-                  onClick={() => {
-                    setShowBackgroundMenu(false);
-                    setShowThemeMenu((current) => !current);
-                  }}
-                >
-                  <Palette size={16} />
-                  <span className="theme-toggle-label">
-                    {themeOptions.find((option) => option.value === canvasTheme)?.label}
-                  </span>
-                </button>
-                {showThemeMenu && (
-                  <div className="theme-menu" role="listbox" aria-label="界面主题">
-                    {themeOptions.map((option) => (
-                      <button
-                        type="button"
-                        className="theme-option"
-                        role="option"
-                        aria-selected={canvasTheme === option.value}
-                        key={option.value}
-                        onClick={() => {
-                          setCanvasTheme(option.value);
-                          setShowThemeMenu(false);
-                        }}
-                      >
-                        <span className={`theme-swatch ${option.swatch}`} aria-hidden="true" />
-                        {option.label}
-                        {canvasTheme === option.value && <Check size={14} aria-hidden="true" />}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
+              <AppearancePicker
+                placement="top"
+                canvasTheme={canvasTheme}
+                onThemeChange={setCanvasTheme}
+                canvasBackground={canvasBackground}
+                onBackgroundChange={setCanvasBackground}
+              />
             </div>
             <button
               type="button"
@@ -2775,12 +2602,11 @@ function WorkspaceApp({
             onUndoCanvas={undoCanvas}
             onRedoCanvas={redoCanvas}
             onOpenSearch={() => {
-              setShowBackgroundMenu(false);
-              setShowThemeMenu(false);
               setShowCommandPalette(true);
             }}
             canvasTheme={canvasTheme}
             onThemeChange={setCanvasTheme}
+            onBackgroundChange={setCanvasBackground}
             canClearCanvas={nodes.length > 0 || edges.length > 0}
             canUndo={historyRef.current.past.length > 0}
             canRedo={historyRef.current.future.length > 0}

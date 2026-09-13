@@ -83,6 +83,7 @@ describe('workspace modules', () => {
       onRedo: vi.fn(),
       onSearch: vi.fn(),
       onTheme: vi.fn(),
+      onBackground: vi.fn(),
       onFit: vi.fn(),
     };
     render(
@@ -95,6 +96,8 @@ describe('workspace modules', () => {
         onOpenSearch={callbacks.onSearch}
         canvasTheme="eye-care"
         onThemeChange={callbacks.onTheme}
+        canvasBackground="dots"
+        onBackgroundChange={callbacks.onBackground}
         onFitView={callbacks.onFit}
         canClearCanvas={false}
         canUndo={false}
@@ -120,14 +123,15 @@ describe('workspace modules', () => {
     expect(callbacks.onSearch).toHaveBeenCalledTimes(1);
     expect(callbacks.onFit).toHaveBeenCalledTimes(1);
 
-    await user.click(screen.getByRole('button', { name: '切换主题' }));
-    const themeMenu = screen.getByRole('listbox', { name: '界面主题' });
-    expect(themeMenu).toBeVisible();
-    expect(themeMenu).toHaveClass('canvas-node-theme-menu');
-    expect(themeMenu.closest('.canvas-node-theme-control')).not.toBeNull();
-    expect(themeMenu.closest('.canvas-node-tools')).toHaveClass('is-theme-menu-open');
-    await user.click(screen.getByRole('option', { name: '深色' }));
+    await user.click(screen.getByRole('button', { name: '外观' }));
+    const card = screen.getByRole('dialog', { name: '主题与画布背景' });
+    expect(card).toBeVisible();
+    expect(screen.getByRole('group', { name: '界面主题' })).toBeVisible();
+    expect(screen.getByRole('group', { name: '画布背景' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: '深色' }));
     expect(callbacks.onTheme).toHaveBeenCalledWith('dark');
+    await user.click(screen.getByRole('button', { name: '空白' }));
+    expect(callbacks.onBackground).toHaveBeenCalledWith('blank');
     expect(callbacks.onClear).not.toHaveBeenCalled();
     expect(callbacks.onUndo).not.toHaveBeenCalled();
   });

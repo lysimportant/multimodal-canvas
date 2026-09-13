@@ -159,9 +159,9 @@
 
 .node-quick-editor-media-settings {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 100px), 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: start;
-  gap: 12px 8px;
+  gap: 12px 10px;
 }
 
 /* 语义分组保留在 DOM，所有参数共用三列网格；窄参数页自动减为两列或一列。 */
