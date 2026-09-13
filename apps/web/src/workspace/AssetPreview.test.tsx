@@ -281,6 +281,7 @@ describe('AssetPreview', () => {
     );
     await user.click(screen.getByRole('button', { name: '预览图片：城市夜景' }));
     const viewer = screen.getByRole('dialog', { name: '城市夜景' });
+    expect(screen.getByRole('button', { name: '恢复原始大小' })).toBeDisabled();
     const stage = viewer.querySelector('.artifact-preview-viewer-stage');
     expect(stage).not.toBeNull();
     vi.spyOn(stage as HTMLElement, 'getBoundingClientRect').mockReturnValue({
@@ -298,9 +299,11 @@ describe('AssetPreview', () => {
     const layer = viewer.querySelector('.artifact-preview-viewer-transform') as HTMLElement;
     expect(layer.style.transform).toContain('scale(1.12)');
     expect(screen.getByRole('button', { name: '重置预览缩放' })).toHaveTextContent('112%');
-    await user.click(screen.getByRole('button', { name: '重置预览缩放' }));
+    expect(screen.getByRole('button', { name: '恢复原始大小' })).toBeEnabled();
+    await user.click(screen.getByRole('button', { name: '恢复原始大小' }));
     expect(layer.style.transform).toBe('translate(0px, 0px) scale(1)');
     expect(screen.getByRole('button', { name: '重置预览缩放' })).toHaveTextContent('100%');
+    expect(screen.getByRole('button', { name: '恢复原始大小' })).toBeDisabled();
   });
 
   it('图片首次按下后即使节点变为选中也只打开编辑器，再次点击才预览', () => {

@@ -8,6 +8,7 @@ import {
   Minus,
   Plus,
   RefreshCw,
+  RotateCcw,
   TriangleAlert,
   X,
 } from 'lucide-react';
@@ -437,7 +438,10 @@ function ZoomableMediaStage({
     );
   };
 
+  /** 取消缩放和平移，恢复打开预览时的适配大小。 */
   const resetTransform = () => setTransform({ scale: 1, x: 0, y: 0 });
+  /** 是否仍为打开预览时的适配位置；用于禁用恢复原始大小。 */
+  const atOriginalSize = transform.scale === 1 && transform.x === 0 && transform.y === 0;
   const canPan = enablePanAtFit || transform.scale !== 1;
 
   return (
@@ -456,6 +460,17 @@ function ZoomableMediaStage({
         </button>
         <button type="button" aria-label="放大预览" title="放大" onClick={() => zoomFromCenter(1)}>
           <Plus size={15} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className="artifact-preview-viewer-zoom-reset"
+          aria-label="恢复原始大小"
+          title="取消当前缩放，恢复原始大小"
+          disabled={atOriginalSize}
+          onClick={resetTransform}
+        >
+          <RotateCcw size={15} aria-hidden="true" />
+          原始大小
         </button>
       </div>
       <div
