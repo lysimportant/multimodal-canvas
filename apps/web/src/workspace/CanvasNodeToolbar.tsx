@@ -1,7 +1,6 @@
 import { mediaTypes, type MediaType } from '@multimodal-canvas/domain';
 import { Check, Eraser, Maximize2, Palette, Redo2, Search, Undo2, Upload } from 'lucide-react';
 import {
-  Fragment,
   useEffect,
   useRef,
   useState,
@@ -22,11 +21,10 @@ const canvasThemeOptions: Array<{ value: CanvasTheme; label: string; swatch: str
 ];
 
 /**
- * 画布底部的节点创建与常用操作工具栏。
+ * 画布底部工具胶囊。
  *
- * 节点创建按钮始终显示；画布操作按钮由调用方按需传入，以便在独立的
- * 组件测试或嵌入场景中只使用节点创建能力。操作按钮按功能分组，并在组
- * 之间显示分隔线，保持底部胶囊在窄屏下仍可横向滚动。
+ * 左侧「创建节点」固定为媒体类型按钮；其余操作收成「节点组」与「系统组」，
+ * 两组之间用分隔线分开，避免每个按钮单独成组。
  */
 export function CanvasNodeToolbar({
   onAddGenerateNode,
@@ -66,9 +64,12 @@ export function CanvasNodeToolbar({
   /** 当前是否存在可重做的历史记录。 */
   canRedo?: boolean;
 }) {
-  const actionGroups: Array<{ id: string; label: string; content: ReactNode }> = [];
   const themeControlRef = useRef<HTMLDivElement>(null);
   const [themeMenuOpen, setThemeMenuOpen] = useState(false);
+  /** 节点图相关操作：上传、清空、撤销、重做。 */
+  const nodeActions: ReactNode[] = [];
+  /** 工作台系统操作：搜索、主题、适配缩放。 */
+  const systemActions: ReactNode[] = [];
   /** 防止底部按钮点击被 React Flow 解释为画布交互。 */
   const stopCanvasEvent = (event: ReactPointerEvent<HTMLButtonElement>) => {
     event.stopPropagation();
@@ -86,219 +87,213 @@ export function CanvasNodeToolbar({
   }, [themeMenuOpen]);
 
   if (onRequestUpload) {
-    actionGroups.push({
-      id: 'upload',
-      label: '上传资产',
-      content: (
-        <button
-          type="button"
-          className="canvas-node-tool canvas-node-action-tool"
-          aria-label="上传资产"
-          title="上传资产"
-          onPointerDown={stopCanvasEvent}
-          onClick={(event) => {
-            event.stopPropagation();
-            onRequestUpload();
-          }}
-        >
-          <Upload size={16} aria-hidden="true" />
-        </button>
-      ),
-    });
+    nodeActions.push(
+      <button
+        type="button"
+        className="canvas-node-tool canvas-node-action-tool"
+        aria-label="上传资产"
+        title="上传资产"
+        key="upload"
+        onPointerDown={stopCanvasEvent}
+        onClick={(event) => {
+          event.stopPropagation();
+          onRequestUpload();
+        }}
+      >
+        <Upload size={16} aria-hidden="true" />
+      </button>,
+    );
   }
 
   if (onClearCanvas) {
-    actionGroups.push({
-      id: 'clear',
-      label: '清空画布',
-      content: (
-        <button
-          type="button"
-          className="canvas-node-tool canvas-node-action-tool canvas-node-action-destructive"
-          aria-label="清空画布"
-          title={canClearCanvas ? '清空画布' : '画布为空'}
-          onPointerDown={stopCanvasEvent}
-          onClick={(event) => {
-            event.stopPropagation();
-            onClearCanvas();
-          }}
-          disabled={!canClearCanvas}
-        >
-          <Eraser size={16} aria-hidden="true" />
-        </button>
-      ),
-    });
+    nodeActions.push(
+      <button
+        type="button"
+        className="canvas-node-tool canvas-node-action-tool canvas-node-action-destructive"
+        aria-label="清空画布"
+        title={canClearCanvas ? '清空画布' : '画布为空'}
+        key="clear"
+        onPointerDown={stopCanvasEvent}
+        onClick={(event) => {
+          event.stopPropagation();
+          onClearCanvas();
+        }}
+        disabled={!canClearCanvas}
+      >
+        <Eraser size={16} aria-hidden="true" />
+      </button>,
+    );
   }
 
-  if (onUndoCanvas || onRedoCanvas) {
-    actionGroups.push({
-      id: 'history',
-      label: '历史记录',
-      content: (
-        <>
-          {onUndoCanvas && (
-            <button
-              type="button"
-              className="canvas-node-tool canvas-node-action-tool"
-              aria-label="画布撤销"
-              title={canUndo ? '撤销' : '没有可撤销的操作'}
-              onPointerDown={stopCanvasEvent}
-              onClick={(event) => {
-                event.stopPropagation();
-                onUndoCanvas();
-              }}
-              disabled={!canUndo}
-            >
-              <Undo2 size={16} aria-hidden="true" />
-            </button>
-          )}
-          {onRedoCanvas && (
-            <button
-              type="button"
-              className="canvas-node-tool canvas-node-action-tool"
-              aria-label="画布重做"
-              title={canRedo ? '重做' : '没有可重做的操作'}
-              onPointerDown={stopCanvasEvent}
-              onClick={(event) => {
-                event.stopPropagation();
-                onRedoCanvas();
-              }}
-              disabled={!canRedo}
-            >
-              <Redo2 size={16} aria-hidden="true" />
-            </button>
-          )}
-        </>
-      ),
-    });
+  if (onUndoCanvas) {
+    nodeActions.push(
+      <button
+        type="button"
+        className="canvas-node-tool canvas-node-action-tool"
+        aria-label="画布撤销"
+        title={canUndo ? '撤销' : '没有可撤销的操作'}
+        key="undo"
+        onPointerDown={stopCanvasEvent}
+        onClick={(event) => {
+          event.stopPropagation();
+          onUndoCanvas();
+        }}
+        disabled={!canUndo}
+      >
+        <Undo2 size={16} aria-hidden="true" />
+      </button>,
+    );
+  }
+
+  if (onRedoCanvas) {
+    nodeActions.push(
+      <button
+        type="button"
+        className="canvas-node-tool canvas-node-action-tool"
+        aria-label="画布重做"
+        title={canRedo ? '重做' : '没有可重做的操作'}
+        key="redo"
+        onPointerDown={stopCanvasEvent}
+        onClick={(event) => {
+          event.stopPropagation();
+          onRedoCanvas();
+        }}
+        disabled={!canRedo}
+      >
+        <Redo2 size={16} aria-hidden="true" />
+      </button>,
+    );
   }
 
   if (onOpenSearch) {
-    actionGroups.push({
-      id: 'search',
-      label: '搜索',
-      content: (
-        <button
-          type="button"
-          className="canvas-node-tool canvas-node-action-tool"
-          aria-label="搜索"
-          title="搜索"
-          onPointerDown={stopCanvasEvent}
-          onClick={(event) => {
-            event.stopPropagation();
-            onOpenSearch();
-          }}
-        >
-          <Search size={16} aria-hidden="true" />
-        </button>
-      ),
-    });
+    systemActions.push(
+      <button
+        type="button"
+        className="canvas-node-tool canvas-node-action-tool"
+        aria-label="搜索"
+        title="搜索"
+        key="search"
+        onPointerDown={stopCanvasEvent}
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpenSearch();
+        }}
+      >
+        <Search size={16} aria-hidden="true" />
+      </button>,
+    );
   }
 
   if (onThemeChange && canvasTheme) {
-    actionGroups.push({
-      id: 'theme',
-      label: '主题',
-      content: (
-        <div className="canvas-node-theme-control" ref={themeControlRef}>
-          <button
-            type="button"
-            className="canvas-node-tool canvas-node-action-tool canvas-node-theme-tool"
-            aria-label="切换主题"
-            aria-expanded={themeMenuOpen}
-            aria-haspopup="listbox"
-            title="主题"
-            onPointerDown={stopCanvasEvent}
-            onClick={(event) => {
-              event.stopPropagation();
-              setThemeMenuOpen((open) => !open);
-            }}
-          >
-            <Palette size={16} aria-hidden="true" />
-          </button>
-          {themeMenuOpen && (
-            <div className="canvas-node-theme-menu" role="listbox" aria-label="界面主题">
-              {canvasThemeOptions.map((option) => (
-                <button
-                  type="button"
-                  className="theme-option"
-                  role="option"
-                  aria-selected={canvasTheme === option.value}
-                  key={option.value}
-                  onPointerDown={stopCanvasEvent}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onThemeChange(option.value);
-                    setThemeMenuOpen(false);
-                  }}
-                >
-                  <span className={`theme-swatch ${option.swatch}`} aria-hidden="true" />
-                  {option.label}
-                  {canvasTheme === option.value && <Check size={14} aria-hidden="true" />}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      ),
-    });
-  }
-
-  if (onFitView) {
-    actionGroups.push({
-      id: 'fit-view',
-      label: '自动适配缩放',
-      content: (
+    systemActions.push(
+      <div className="canvas-node-theme-control" ref={themeControlRef} key="theme">
         <button
           type="button"
-          className="canvas-node-tool canvas-node-action-tool"
-          aria-label="自动适配缩放"
-          title="自动适配缩放"
+          className="canvas-node-tool canvas-node-action-tool canvas-node-theme-tool"
+          aria-label="切换主题"
+          aria-expanded={themeMenuOpen}
+          aria-haspopup="listbox"
+          title="主题"
           onPointerDown={stopCanvasEvent}
           onClick={(event) => {
             event.stopPropagation();
-            onFitView();
+            setThemeMenuOpen((open) => !open);
           }}
         >
-          <Maximize2 size={16} aria-hidden="true" />
+          <Palette size={16} aria-hidden="true" />
         </button>
-      ),
-    });
+        {themeMenuOpen && (
+          <div className="canvas-node-theme-menu" role="listbox" aria-label="界面主题">
+            {canvasThemeOptions.map((option) => (
+              <button
+                type="button"
+                className="theme-option"
+                role="option"
+                aria-selected={canvasTheme === option.value}
+                key={option.value}
+                onPointerDown={stopCanvasEvent}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onThemeChange(option.value);
+                  setThemeMenuOpen(false);
+                }}
+              >
+                <span className={`theme-swatch ${option.swatch}`} aria-hidden="true" />
+                {option.label}
+                {canvasTheme === option.value && <Check size={14} aria-hidden="true" />}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>,
+    );
+  }
+
+  if (onFitView) {
+    systemActions.push(
+      <button
+        type="button"
+        className="canvas-node-tool canvas-node-action-tool"
+        aria-label="自动适配缩放"
+        title="自动适配缩放"
+        key="fit-view"
+        onPointerDown={stopCanvasEvent}
+        onClick={(event) => {
+          event.stopPropagation();
+          onFitView();
+        }}
+      >
+        <Maximize2 size={16} aria-hidden="true" />
+      </button>,
+    );
   }
 
   return (
     <div
       className={`canvas-node-tools${themeMenuOpen ? ' is-theme-menu-open' : ''}`}
-      aria-label="添加节点"
+      aria-label="画布工具"
     >
-      {mediaTypes.map((mediaType) => {
-        const Icon = mediaIcons[mediaType];
-        return (
-          <div className="canvas-node-tool-group" key={mediaType}>
+      <div className="canvas-node-tool-group" role="group" aria-label="创建节点">
+        {mediaTypes.map((mediaType) => {
+          const Icon = mediaIcons[mediaType];
+          return (
             <button
               type="button"
               className={`canvas-node-tool media-icon-${mediaType}`}
               aria-label={`新建${mediaLabels[mediaType]}生成节点`}
               title={`新建${mediaLabels[mediaType]}生成节点`}
+              key={mediaType}
               onClick={() => onAddGenerateNode(mediaType)}
             >
               <Icon size={14} aria-hidden="true" />
             </button>
-          </div>
-        );
-      })}
-      {actionGroups.map((group) => (
-        <Fragment key={group.id}>
+          );
+        })}
+      </div>
+      {nodeActions.length > 0 ? (
+        <>
           <span className="canvas-node-tool-divider" aria-hidden="true" />
           <div
             className="canvas-node-tool-group canvas-node-action-group"
             role="group"
-            aria-label={group.label}
+            aria-label="节点组"
           >
-            {group.content}
+            {nodeActions}
           </div>
-        </Fragment>
-      ))}
+        </>
+      ) : null}
+      {systemActions.length > 0 ? (
+        <>
+          <span className="canvas-node-tool-divider" aria-hidden="true" />
+          <div
+            className="canvas-node-tool-group canvas-node-action-group"
+            role="group"
+            aria-label="系统组"
+          >
+            {systemActions}
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }

@@ -4048,7 +4048,7 @@ textarea:focus-visible {
   box-shadow: none;
 }
 
-/* 画布底部工具胶囊：节点创建和常用操作按组排列，组间使用细分隔线。 */
+/* 画布底部工具胶囊：创建节点、节点组、系统组三段排列，组间使用分隔线。 */
 .canvas-node-tools {
   align-items: center;
   flex-wrap: nowrap;
@@ -4067,7 +4067,7 @@ textarea:focus-visible {
 }
 
 .canvas-node-action-group {
-  gap: 2px;
+  gap: 4px;
 }
 
 .canvas-node-tool-divider {

@@ -105,7 +105,10 @@ describe('workspace modules', () => {
     expect(screen.getByRole('button', { name: '清空画布' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '画布撤销' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '画布重做' })).toBeEnabled();
-    expect(document.querySelectorAll('.canvas-node-tool-divider')).toHaveLength(6);
+    expect(screen.getByRole('group', { name: '创建节点' })).toBeVisible();
+    expect(screen.getByRole('group', { name: '节点组' })).toBeVisible();
+    expect(screen.getByRole('group', { name: '系统组' })).toBeVisible();
+    expect(document.querySelectorAll('.canvas-node-tool-divider')).toHaveLength(2);
 
     await user.click(screen.getByRole('button', { name: '上传资产' }));
     await user.click(screen.getByRole('button', { name: '画布重做' }));
