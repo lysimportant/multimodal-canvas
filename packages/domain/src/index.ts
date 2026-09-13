@@ -300,6 +300,18 @@ export const frozenPromptMentionSchema = z
   })
   .strip();
 
+/** 视频成功归档后的末帧完成动作。 */
+export const videoCompletionActions = [
+  'none',
+  'preview_final_frame',
+  'create_asset',
+  'append_image_node',
+  'fill_designated_image_node',
+] as const;
+export const videoCompletionActionSchema = z.enum(videoCompletionActions);
+/** 末帧提取策略版本；变更提取算法时递增，以形成新的幂等身份。 */
+export const VIDEO_FINAL_FRAME_POLICY_VERSION = 1;
+
 export const nodeDataSchema = z.object({
   label: z.string().min(1),
   mediaType: mediaTypeSchema,
@@ -331,6 +343,12 @@ export const nodeDataSchema = z.object({
   assetId: z.string().min(1).optional(),
   contentUrl: z.string().min(1).optional(),
   mimeType: z.string().min(1).optional(),
+  /**
+   * 视频成功后的末帧派生动作。缺省或旧节点视为 none，不回补历史任务。
+   */
+  completionAction: videoCompletionActionSchema.optional(),
+  /** 仅 fill_designated_image_node 使用；必须指向仍为空的图片节点。 */
+  completionTargetNodeId: z.string().trim().min(1).optional(),
 });
 
 /** Legacy canvases omit this field; only an explicit false disables a node. */
@@ -616,6 +634,28 @@ function canonicalJsonValue(value: unknown): unknown {
   );
 }
 
+export const videoFinalFrameStatuses = [
+  'skipped',
+  'pending',
+  'processing',
+  'ready',
+  'failed',
+  'conflict',
+] as const;
+export const videoFinalFrameStatusSchema = z.enum(videoFinalFrameStatuses);
+export const runResultFinalFrameSchema = z.object({
+  status: videoFinalFrameStatusSchema,
+  action: videoCompletionActionSchema,
+  actionId: z.string().min(1),
+  policyVersion: z.number().int().positive(),
+  previewUrl: z.string().min(1).optional(),
+  assetId: z.string().min(1).optional(),
+  assetVersion: z.number().int().positive().optional(),
+  nodeId: z.string().min(1).optional(),
+  errorCode: z.string().min(1).optional(),
+  message: z.string().min(1).optional(),
+});
+
 export const runResultSchema = z.object({
   provider: z.string().min(1),
   summary: z.string().min(1),
@@ -628,6 +668,8 @@ export const runResultSchema = z.object({
   providerJob: providerJobSchema.optional(),
   /** Mock/预览可回显已解析的冻结提及；不包含媒体内容或临时 URL。 */
   promptMentions: z.array(frozenPromptMentionSchema).optional(),
+  /** 视频末帧派生结果。缺省表示未执行或动作为 none。失败不得否定视频成功。 */
+  finalFrame: runResultFinalFrameSchema.optional(),
 });
 
 /**
@@ -1085,4 +1127,40 @@ export function precheckVideoGenerationInputs(
     inputSet,
     issues,
   };
+}
+
+export type VideoCompletionAction = z.infer<typeof videoCompletionActionSchema>;
+export type VideoFinalFrameStatus = z.infer<typeof videoFinalFrameStatusSchema>;
+export type RunResultFinalFrame = z.infer<typeof runResultFinalFrameSchema>;
+
+/**
+ * 读取视频节点的完成动作；缺省旧节点视为 none。
+ * @param data 节点 data。
+ * @returns 规范化后的完成动作。
+ */
+export function resolveVideoCompletionAction(
+  data: Pick<NodeData, 'completionAction'> | undefined,
+): VideoCompletionAction {
+  return data?.completionAction ?? 'none';
+}
+
+/**
+ * 为一次视频运行构造稳定的末帧动作身份。
+ * @param input 运行、源节点、动作和可选目标。
+ * @returns 非空 actionId。
+ */
+export function videoFinalFrameActionId(input: {
+  runId: string;
+  sourceNodeId: string;
+  action: VideoCompletionAction;
+  targetNodeId?: string;
+}): string {
+  return [
+    'final-frame',
+    ,
+    input.runId,
+    input.sourceNodeId,
+    input.action,
+    input.targetNodeId ?? 'none',
+  ].join(':');
 }

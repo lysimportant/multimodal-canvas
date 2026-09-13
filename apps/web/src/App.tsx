@@ -52,6 +52,7 @@ import {
   type NodeMode,
   type PromptDocument,
   type RunRecord,
+  type VideoCompletionAction,
   renderPromptDocument,
 } from '@multimodal-canvas/domain';
 import {
@@ -1673,6 +1674,37 @@ function WorkspaceApp({
     [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
   );
 
+  const updateSelectedCompletionAction = useCallback(
+    (completionAction: VideoCompletionAction, nodeId?: string) => {
+      const targetNodeId = nodeId ?? selectedNode?.id;
+      if (!targetNodeId) return;
+      rememberHistory();
+      canvasDirtyRef.current = true;
+      updateNodeDataAndMarkDownstreamStale(targetNodeId, (data) => ({
+        ...data,
+        completionAction,
+        ...(completionAction === 'fill_designated_image_node'
+          ? {}
+          : { completionTargetNodeId: undefined }),
+      }));
+    },
+    [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
+  );
+
+  const updateSelectedCompletionTarget = useCallback(
+    (completionTargetNodeId: string | undefined, nodeId?: string) => {
+      const targetNodeId = nodeId ?? selectedNode?.id;
+      if (!targetNodeId) return;
+      rememberHistory();
+      canvasDirtyRef.current = true;
+      updateNodeDataAndMarkDownstreamStale(targetNodeId, (data) => ({
+        ...data,
+        completionTargetNodeId,
+      }));
+    },
+    [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
+  );
+
   const updateSelectedLabel = useCallback(
     (nodeId: string, label: string) => {
       rememberHistory();
@@ -2590,6 +2622,8 @@ function WorkspaceApp({
             onRetryNode={retryNodeFromCanvas}
             onPromptDocumentChange={updateSelectedPromptDocument}
             onParametersChange={updateSelectedParameters}
+            onCompletionActionChange={updateSelectedCompletionAction}
+            onCompletionTargetNodeIdChange={updateSelectedCompletionTarget}
             onModelChange={updateSelectedModel}
             onInferenceStrengthChange={updateSelectedInferenceStrength}
             onRunNode={(node) => void runNode(node)}

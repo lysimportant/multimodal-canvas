@@ -173,7 +173,7 @@ export type ResultAssetArchiver = (input: {
   archiveInput?: ResultAssetArchiveInput;
   archiveKey?: string;
   signal?: AbortSignal;
-}) => Promise<RunResultAsset | undefined>;
+}) => Promise<(RunResultAsset & { finalFrame?: RunResult['finalFrame'] }) | undefined>;
 
 export function createProviderJobRecord(
   runId: string,
@@ -1242,9 +1242,13 @@ export function createRunWorker(options: {
           }
 
           const completedAt = new Date().toISOString();
+          const { finalFrame, ...resultAsset } = (asset ?? {}) as RunResultAsset & {
+            finalFrame?: RunResult['finalFrame'];
+          };
           const archivedResult = {
             ...executionResult,
-            ...(asset ? { asset } : {}),
+            ...(asset ? { asset: resultAsset.assetId ? resultAsset : asset } : {}),
+            ...(finalFrame ? { finalFrame } : {}),
           } satisfies RunResult;
           const safeArchivedResult = sanitizeProviderJobPayload({ result: archivedResult })?.result;
           const safeUsage = execution.usage?.metadata

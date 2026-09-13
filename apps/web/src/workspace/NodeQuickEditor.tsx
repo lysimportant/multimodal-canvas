@@ -1,7 +1,8 @@
 import { Expand, FileImage, LoaderCircle, Play, SlidersHorizontal, X } from 'lucide-react';
 import { useEffect, useId, useMemo, useRef, useState, type FocusEvent } from 'react';
 
-import type { Asset, PromptDocument } from '@multimodal-canvas/domain';
+import type { Asset, PromptDocument, VideoCompletionAction } from '@multimodal-canvas/domain';
+import { resolveVideoCompletionAction } from '@multimodal-canvas/domain';
 import { renderPromptDocument } from '@multimodal-canvas/domain';
 import { Dialog, DialogClose, DialogContent, DialogTitle } from '@multimodal-canvas/ui';
 import type { AssetFlowNode } from '../canvas-utils';
@@ -62,6 +63,12 @@ export type NodeQuickEditorProps = {
   connectedAssets?: readonly Pick<Asset, 'id' | 'name' | 'mediaType'>[];
   /** 更新节点的媒体参数；未提供时参数控件仍可显示但不会修改父状态。 */
   onParametersChange?: (value: NodeMediaParameters) => void;
+  /** 更新视频完成后的末帧动作。 */
+  onCompletionActionChange?: (value: VideoCompletionAction) => void;
+  /** 指定填充目标图片节点。 */
+  onCompletionTargetNodeIdChange?: (value: string | undefined) => void;
+  /** 可被末帧填充的空图片节点。 */
+  emptyImageNodes?: readonly { id: string; label: string }[];
 };
 
 /** 模型声明的选项及其可见说明，保留供应商给出的值和顺序。 */
@@ -154,6 +161,9 @@ export function NodeQuickEditor({
   hasConnectedInput = false,
   connectedAssets = [],
   onParametersChange,
+  onCompletionActionChange,
+  onCompletionTargetNodeIdChange,
+  emptyImageNodes = [],
 }: NodeQuickEditorProps) {
   /** 参数页只改变展示状态，不修改节点或默认参数。 */
   const [mediaSettingsOpen, setMediaSettingsOpen] = useState(false);
@@ -414,6 +424,39 @@ export function NodeQuickEditor({
               openOnHover
               floating
             />
+            <CompactSelect
+              label="完成后"
+              value={resolveVideoCompletionAction(node.data)}
+              options={[
+                { value: 'none', label: '不提取末帧' },
+                { value: 'preview_final_frame', label: '预览末帧' },
+                { value: 'create_asset', label: '创建末帧图片' },
+                { value: 'append_image_node', label: '追加图片节点' },
+                { value: 'fill_designated_image_node', label: '填入指定空节点' },
+              ]}
+              onChange={(value) =>
+                onCompletionActionChange?.((value || 'none') as VideoCompletionAction)
+              }
+              className="node-quick-editor-select-group"
+              placement="top"
+              openOnHover
+              floating
+            />
+            {resolveVideoCompletionAction(node.data) === 'fill_designated_image_node' ? (
+              <CompactSelect
+                label="填充目标"
+                value={node.data.completionTargetNodeId ?? ''}
+                options={[
+                  { value: '', label: '未指定' },
+                  ...emptyImageNodes.map((item) => ({ value: item.id, label: item.label })),
+                ]}
+                onChange={(value) => onCompletionTargetNodeIdChange?.(value || undefined)}
+                className="node-quick-editor-select-group"
+                placement="top"
+                openOnHover
+                floating
+              />
+            ) : null}
           </div>
         </>
       )}

@@ -24,7 +24,13 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from 'react';
 
-import type { Asset, MediaType, PortRole, PromptDocument } from '@multimodal-canvas/domain';
+import type {
+  Asset,
+  MediaType,
+  PortRole,
+  PromptDocument,
+  VideoCompletionAction,
+} from '@multimodal-canvas/domain';
 import type { CanvasTheme } from '../state/workspace-preferences';
 import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
 import { getNewNodeDimensions } from '../canvas-utils';
@@ -137,6 +143,8 @@ export type WorkflowCanvasProps = {
   onPromptChange?: (value: string, nodeId?: string) => void;
   onPromptDocumentChange?: (document: PromptDocument, nodeId?: string) => void;
   onParametersChange?: (value: Record<string, unknown>, nodeId?: string) => void;
+  onCompletionActionChange?: (value: VideoCompletionAction, nodeId?: string) => void;
+  onCompletionTargetNodeIdChange?: (value: string | undefined, nodeId?: string) => void;
   onModelChange: (value: ModelSelection, nodeId?: string) => void;
   onInferenceStrengthChange: (value: InferenceStrength, nodeId?: string) => void;
   onRunNode: (node: AssetFlowNode) => void;
@@ -193,6 +201,8 @@ export function WorkflowCanvas({
   onPromptChange,
   onPromptDocumentChange,
   onParametersChange,
+  onCompletionActionChange,
+  onCompletionTargetNodeIdChange,
   onModelChange,
   onInferenceStrengthChange,
   onRunNode,
@@ -587,6 +597,26 @@ export function WorkflowCanvas({
               ? (value) => onParametersChange(value, quickEditorNode.id)
               : undefined
           }
+          onCompletionActionChange={
+            onCompletionActionChange
+              ? (value) => onCompletionActionChange(value, quickEditorNode.id)
+              : undefined
+          }
+          onCompletionTargetNodeIdChange={
+            onCompletionTargetNodeIdChange
+              ? (value) => onCompletionTargetNodeIdChange(value, quickEditorNode.id)
+              : undefined
+          }
+          emptyImageNodes={nodes
+            .filter(
+              (item) =>
+                item.id !== quickEditorNode.id &&
+                item.data.mediaType === 'image' &&
+                !item.data.assetId &&
+                !item.data.contentUrl &&
+                !item.data.resultAsset,
+            )
+            .map((item) => ({ id: item.id, label: item.data.label }))}
           onModelChange={(value) => onModelChange(value, quickEditorNode.id)}
           onInferenceStrengthChange={(value) =>
             onInferenceStrengthChange(value, quickEditorNode.id)

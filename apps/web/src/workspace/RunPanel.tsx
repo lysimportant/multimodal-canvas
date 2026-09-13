@@ -112,6 +112,37 @@ export function RunPanel({
             </div>
           )}
           <p className="inspector-result-summary">{run.result.summary}</p>
+          {run.result.finalFrame ? (
+            <div className="inspector-final-frame" aria-label="末帧派生">
+              <span className="inspector-type">末帧</span>
+              <p>
+                {run.result.finalFrame.status === 'ready'
+                  ? '已从成功视频提取最后一帧。'
+                  : run.result.finalFrame.status === 'skipped'
+                    ? '未提取末帧。'
+                    : run.result.finalFrame.status === 'conflict'
+                      ? '末帧资产已保留，但画布写入被拒绝。'
+                      : '视频已成功，末帧派生未完成。'}
+              </p>
+              {run.result.finalFrame.message ? <p>{run.result.finalFrame.message}</p> : null}
+              {run.result.finalFrame.previewUrl ? (
+                <AssetPreview
+                  asset={{
+                    id: run.result.finalFrame.assetId ?? run.result.asset?.assetId ?? 'final-frame',
+                    name: node.data.label + '末帧',
+                    mediaType: 'image',
+                    mimeType: 'image/jpeg',
+                    sizeBytes: 0,
+                    status: 'ready',
+                    contentUrl: run.result.finalFrame.previewUrl,
+                    tags: [],
+                  }}
+                  className="inspector-result-preview"
+                  interactive
+                />
+              ) : null}
+            </div>
+          ) : null}
         </section>
       )}
     </>

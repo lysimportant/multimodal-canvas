@@ -2768,7 +2768,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         .object({
           expiresInSeconds: z.number().int().min(30).max(900).optional(),
           version: z.number().int().min(1).optional(),
-          derivative: z.enum(['thumbnail', 'poster', 'waveform']).optional(),
+          derivative: z.enum(['thumbnail', 'poster', 'waveform', 'final_frame']).optional(),
         })
         .strict()
         .safeParse(request.body ?? {});
@@ -2882,7 +2882,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.get<{ Params: { assetId: string; kind: string } }>(
     '/v1/assets/:assetId/derivatives/:kind',
     async (request, reply) => {
-      if (!['thumbnail', 'poster', 'waveform'].includes(request.params.kind)) {
+      if (!['thumbnail', 'poster', 'waveform', 'final_frame'].includes(request.params.kind)) {
         return reply.code(404).send({ error: 'derivative not found' });
       }
       const derivative = await assetStore.getDerivative(
@@ -3031,7 +3031,7 @@ async function listAssetsForScopes(
 
 type AccessUrlRequest = {
   version?: number;
-  derivative?: 'thumbnail' | 'poster' | 'waveform';
+  derivative?: 'thumbnail' | 'poster' | 'waveform' | 'final_frame';
 };
 
 function accessResource(assetId: string, options: AccessUrlRequest): string {
@@ -3061,9 +3061,8 @@ function assetContentResource(pathname: string): string | undefined {
     const assetId = decodePathSegment(version[1]);
     return assetId ? `asset:${assetId}:version:${version[2]}` : undefined;
   }
-  const derivative = /^\/v1\/assets\/([^/]+)\/derivatives\/(thumbnail|poster|waveform)$/.exec(
-    pathname,
-  );
+  const derivative =
+    /^\/v1\/assets\/([^/]+)\/derivatives\/(thumbnail|poster|waveform|final_frame)$/.exec(pathname);
   if (derivative) {
     const assetId = decodePathSegment(derivative[1]);
     return assetId ? `asset:${assetId}:derivative:${derivative[2]}` : undefined;

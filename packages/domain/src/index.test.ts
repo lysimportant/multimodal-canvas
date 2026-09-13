@@ -14,6 +14,8 @@ import {
   collectVideoInputSet,
   inferVideoOperation,
   precheckVideoGenerationInputs,
+  resolveVideoCompletionAction,
+  canvasNodeSchema,
   promptDocumentSchema,
   renderPromptDocument,
   runJobDataSchema,
@@ -1046,5 +1048,31 @@ describe('video input set', () => {
         message: 'New API video 不支持该输入角色的多个值：firstFrame',
       },
     ]);
+  });
+});
+
+describe('video completion action', () => {
+  it('treats omitted completionAction as none and keeps an explicit preview action', () => {
+    const legacy = canvasNodeSchema.parse({
+      id: 'node_video',
+      type: 'video',
+      position: { x: 0, y: 0 },
+      data: { label: '视频', mediaType: 'video', mode: 'generate' },
+    });
+    expect(resolveVideoCompletionAction(legacy.data)).toBe('none');
+    expect(legacy.data.completionAction).toBeUndefined();
+
+    const configured = canvasNodeSchema.parse({
+      id: 'node_video',
+      type: 'video',
+      position: { x: 0, y: 0 },
+      data: {
+        label: '视频',
+        mediaType: 'video',
+        mode: 'generate',
+        completionAction: 'preview_final_frame',
+      },
+    });
+    expect(resolveVideoCompletionAction(configured.data)).toBe('preview_final_frame');
   });
 });

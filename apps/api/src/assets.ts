@@ -1273,7 +1273,7 @@ function metadataWithDerivatives(
 }
 
 function isSafeDerivativeKind(value: string): boolean {
-  return /^(thumbnail|poster|waveform)$/.test(value);
+  return /^(thumbnail|poster|waveform|final_frame)$/.test(value);
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

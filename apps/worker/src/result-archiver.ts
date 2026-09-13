@@ -17,8 +17,10 @@ import type {
   ProviderJob,
   RunResult,
   RunResultAsset,
+  RunResultFinalFrame,
   RunSnapshot,
 } from '@multimodal-canvas/domain';
+import { applyVideoFinalFrame, type FinalFrameExtractor } from './final-frame.js';
 import { sanitizeExceptionForObservability } from '@multimodal-canvas/observability';
 import type { ResultAssetArchiver } from './index';
 import type { ResultAssetArchiveInput, ProviderOutput } from './result-output';
@@ -302,6 +304,10 @@ export type PrismaResultAssetArchiverOptions = {
   metadataExtractor?: ResultMediaMetadataExtractor;
   /** 可选预览生成器；生产可通过 FFMPEG_ENABLED/FFMPEG_PATH 启用。 */
   derivativeGenerator?: ResultMediaDerivativeGenerator;
+  /** 可选末帧提取器；测试可注入，生产走 FFmpeg。 */
+  finalFrameExtractor?: FinalFrameExtractor;
+  /** 末帧提取使用的 FFmpeg 可执行文件。 */
+  ffmpegBinary?: string;
 };
 
 /**
@@ -323,6 +329,8 @@ export class PrismaResultAssetArchiver {
   private readonly metadataExtractor?: ResultMediaMetadataExtractor;
   /** 预览是辅助归档，失败会记录状态并保留原始结果。 */
   private readonly derivativeGenerator?: ResultMediaDerivativeGenerator;
+  private readonly finalFrameExtractor?: FinalFrameExtractor;
+  private readonly ffmpegBinary?: string;
 
   constructor(
     private readonly prisma: PrismaClient,
@@ -349,6 +357,8 @@ export class PrismaResultAssetArchiver {
         : fetch);
     this.metadataExtractor = options.metadataExtractor;
     this.derivativeGenerator = options.derivativeGenerator;
+    this.finalFrameExtractor = options.finalFrameExtractor;
+    this.ffmpegBinary = options.ffmpegBinary;
   }
 
   async archive(input: {
@@ -361,7 +371,7 @@ export class PrismaResultAssetArchiver {
     archiveInput?: ResultAssetArchiveInput;
     archiveKey?: string;
     signal?: AbortSignal;
-  }): Promise<RunResultAsset | undefined> {
+  }): Promise<(RunResultAsset & { finalFrame?: RunResultFinalFrame }) | undefined> {
     throwIfCancelled(input.signal);
     let archiveInput = input.archiveInput;
     if (!archiveInput) return undefined;
@@ -404,7 +414,7 @@ export class PrismaResultAssetArchiver {
     const metadata = buildResultMetadata(input, enrichedArchiveInput);
     const existing = await this.findExistingArchive(assetId);
     if (existing) {
-      return assertExistingArchiveMatches(existing, {
+      const archived = assertExistingArchiveMatches(existing, {
         assetId,
         projectId: input.snapshot.projectId,
         mediaType: enrichedArchiveInput.mediaType,
@@ -414,6 +424,13 @@ export class PrismaResultAssetArchiver {
         contentKey,
         contentUrl: this.contentUrl(assetId),
       });
+      return this.withFinalFrame(
+        input,
+        archived,
+        content,
+        enrichedArchiveInput.mimeType,
+        contentKey,
+      );
     }
     throwIfCancelled(input.signal);
     const storedKeys = [contentKey];
@@ -498,14 +515,58 @@ export class PrismaResultAssetArchiver {
       throw error;
     }
 
-    return {
-      assetId,
-      version: 1,
-      contentUrl: this.contentUrl(assetId),
-      mimeType: enrichedArchiveInput.mimeType,
-      sizeBytes: content.byteLength,
-      sha256: digest,
-    };
+    return this.withFinalFrame(
+      input,
+      {
+        assetId,
+        version: 1,
+        contentUrl: this.contentUrl(assetId),
+        mimeType: enrichedArchiveInput.mimeType,
+        sizeBytes: content.byteLength,
+        sha256: digest,
+      },
+      content,
+      enrichedArchiveInput.mimeType,
+      contentKey,
+    );
+  }
+
+  /**
+   * 视频归档后附加末帧派生。失败只写入 finalFrame 状态，不改变归档结果。
+   */
+  private async withFinalFrame(
+    input: {
+      runId: string;
+      userId?: string;
+      snapshot: RunSnapshot;
+    },
+    archived: RunResultAsset,
+    content: Buffer,
+    videoMimeType: string,
+    contentKey: string,
+  ): Promise<RunResultAsset & { finalFrame?: RunResultFinalFrame }> {
+    if (
+      input.snapshot.nodes.find((node) => node.id === input.snapshot.targetNodeId)?.data
+        .mediaType !== 'video'
+    ) {
+      return archived;
+    }
+    const finalFrame = await applyVideoFinalFrame({
+      runId: input.runId,
+      userId: input.userId,
+      snapshot: input.snapshot,
+      archived,
+      content,
+      videoMimeType,
+      contentKey,
+      prisma: this.prisma,
+      blobStore: this.blobStore,
+      extractor: this.finalFrameExtractor,
+      ffmpegBinary: this.ffmpegBinary,
+      timeoutMs: 30_000,
+      maxBytes: this.maxBytes,
+    });
+    return { ...archived, finalFrame };
   }
 
   /** 写入与 API 一致的派生描述；任一预览失败只记录固定状态，不泄露工具或存储诊断。 */
@@ -728,6 +789,7 @@ export function createResultAssetArchiverFromEnvironment(): {
           derivativeGenerator: new WorkerFfmpegMediaDerivativeGenerator({
             binary: process.env.FFMPEG_PATH,
           }),
+          ffmpegBinary: process.env.FFMPEG_PATH ?? 'ffmpeg',
         }
       : {}),
   });

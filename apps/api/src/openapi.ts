@@ -1173,7 +1173,10 @@ export const openApiDocument = {
                 properties: {
                   expiresInSeconds: { type: 'integer', minimum: 30, maximum: 900 },
                   version: { type: 'integer', minimum: 1 },
-                  derivative: { type: 'string', enum: ['thumbnail', 'poster', 'waveform'] },
+                  derivative: {
+                    type: 'string',
+                    enum: ['thumbnail', 'poster', 'waveform', 'final_frame'],
+                  },
                 },
                 additionalProperties: false,
               },
@@ -1250,7 +1253,7 @@ export const openApiDocument = {
             name: 'kind',
             in: 'path',
             required: true,
-            schema: { type: 'string', enum: ['thumbnail', 'poster', 'waveform'] },
+            schema: { type: 'string', enum: ['thumbnail', 'poster', 'waveform', 'final_frame'] },
           },
           {
             name: 'access_token',
