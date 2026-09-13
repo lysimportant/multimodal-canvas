@@ -38,12 +38,13 @@ const preferredVideoInputRoles: Record<Exclude<NodeHandleSide, 'right'>, PortRol
   left: 'firstFrame',
 };
 
-const inputRoleLabels: Record<PortRole, string> = {
+export const inputRoleLabels: Record<PortRole, string> = {
   prompt: '提示词',
   negativePrompt: '负面提示词',
   content: '内容',
   style: '风格',
   character: '角色',
+  referenceImage: '通用参考',
   firstFrame: '首帧',
   lastFrame: '尾帧',
   audioTrack: '音轨',

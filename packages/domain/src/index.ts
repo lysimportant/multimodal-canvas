@@ -19,6 +19,7 @@ export const portRoles = [
   'content',
   'style',
   'character',
+  'referenceImage',
   'firstFrame',
   'lastFrame',
   'audioTrack',
@@ -760,6 +761,7 @@ const targetRoleMediaTypes: Record<PortRole, readonly MediaType[]> = {
   content: ['text', 'image', 'audio', 'video'],
   style: ['image'],
   character: ['image'],
+  referenceImage: ['image'],
   firstFrame: ['image'],
   lastFrame: ['image'],
   audioTrack: ['audio'],
@@ -775,6 +777,7 @@ const targetNodePortRoles: Record<MediaType, readonly PortRole[]> = {
     'content',
     'style',
     'character',
+    'referenceImage',
     'firstFrame',
     'lastFrame',
     'mask',
@@ -786,6 +789,7 @@ const targetNodePortRoles: Record<MediaType, readonly PortRole[]> = {
     'content',
     'style',
     'character',
+    'referenceImage',
     'firstFrame',
     'lastFrame',
     'audioTrack',
@@ -852,3 +856,233 @@ export type WorkflowState = z.infer<typeof workflowStateSchema>;
 export type RunRecord = z.infer<typeof runRecordSchema>;
 export type RunJobData = z.infer<typeof runJobDataSchema>;
 export type RunJobResult = z.infer<typeof runJobResultSchema>;
+
+/** 视频规范输入中基数为 0..1 的角色。 */
+export const videoSingletonInputRoles = [
+  'prompt',
+  'negativePrompt',
+  'firstFrame',
+  'lastFrame',
+] as const;
+
+/** 视频规范输入中可重复且必须保序的角色。 */
+export const videoRepeatableInputRoles = ['character', 'style', 'referenceImage'] as const;
+
+/** 图片落到视频节点主体时可供选择的角色。 */
+export const videoImageInputRoles = [
+  'firstFrame',
+  'lastFrame',
+  'character',
+  'style',
+  'referenceImage',
+] as const;
+
+/** 当前已取证、允许发真实视频 POST 的输入角色。 */
+export const confirmedLiveVideoInputRoles = ['prompt', 'firstFrame'] as const;
+
+/** 视频生成场景。用于预检和摘要，不是互斥的节点 mode。 */
+export const videoOperationTypes = [
+  'text_to_video',
+  'image_to_video',
+  'first_last_frame',
+  'reference_guided',
+  'omni_reference',
+] as const;
+
+export type VideoSingletonInputRole = (typeof videoSingletonInputRoles)[number];
+export type VideoRepeatableInputRole = (typeof videoRepeatableInputRoles)[number];
+export type VideoImageInputRole = (typeof videoImageInputRoles)[number];
+export type VideoOperationType = (typeof videoOperationTypes)[number];
+
+/**
+ * 视频节点的规范输入集合。
+ * 单值角色最多一条；可重复角色按连接顺序保存。
+ */
+export type VideoInputSet = {
+  prompt?: RunInputSnapshot;
+  negativePrompt?: RunInputSnapshot;
+  firstFrame?: RunInputSnapshot;
+  lastFrame?: RunInputSnapshot;
+  character: RunInputSnapshot[];
+  style: RunInputSnapshot[];
+  referenceImage: RunInputSnapshot[];
+  content: RunInputSnapshot[];
+  audioTrack: RunInputSnapshot[];
+  transcript: RunInputSnapshot[];
+  mask: RunInputSnapshot[];
+};
+
+/** 视频输入预检问题。代码与 Provider 错误码对齐，便于请求前失败。 */
+export type VideoGenerationIssue = {
+  code:
+    | 'UNSUPPORTED_INPUT_ROLE'
+    | 'INPUT_ROLE_CARDINALITY_UNSUPPORTED'
+    | 'VIDEO_PROMPT_REQUIRED'
+    | 'UNSUPPORTED_INPUT_COMBINATION';
+  role?: PortRole;
+  message: string;
+};
+
+/** 视频输入预检结果，含推断场景和规范输入。 */
+export type VideoGenerationPrecheck = {
+  operation: VideoOperationType;
+  inputSet: VideoInputSet;
+  issues: VideoGenerationIssue[];
+};
+
+/**
+ * 按 sortOrder 与原始下标稳定排序运行输入。
+ * @param inputs 快照中的输入列表。
+ * @returns 排序后的新数组，不修改原列表。
+ */
+export function orderedRunInputs(inputs: readonly RunInputSnapshot[]): RunInputSnapshot[] {
+  return inputs
+    .map((input, index) => ({ input, index }))
+    .sort((left, right) => left.input.sortOrder - right.input.sortOrder || left.index - right.index)
+    .map(({ input }) => input);
+}
+
+function emptyVideoInputSet(): VideoInputSet {
+  return {
+    character: [],
+    style: [],
+    referenceImage: [],
+    content: [],
+    audioTrack: [],
+    transcript: [],
+    mask: [],
+  };
+}
+
+function videoCardinalityIssue(role: PortRole): VideoGenerationIssue {
+  return {
+    code: 'INPUT_ROLE_CARDINALITY_UNSUPPORTED',
+    role,
+    message: `New API video 不支持该输入角色的多个值：${role}`,
+  };
+}
+
+function videoUnsupportedRoleIssue(role: PortRole): VideoGenerationIssue {
+  return {
+    code: 'UNSUPPORTED_INPUT_ROLE',
+    role,
+    message: `New API video 不支持该输入角色：${role}`,
+  };
+}
+
+/**
+ * 把画布/快照输入收成规范 VideoInputSet。
+ * 文本 content 兼容映射为 prompt，图片 content 兼容映射为首帧；视频 content 留在 content 列表供融合预检。
+ * @param inputs 已冻结的运行输入。
+ * @returns 规范集合与收集阶段发现的基数问题。
+ */
+export function collectVideoInputSet(inputs: readonly RunInputSnapshot[]): {
+  inputSet: VideoInputSet;
+  issues: VideoGenerationIssue[];
+} {
+  const inputSet = emptyVideoInputSet();
+  const issues: VideoGenerationIssue[] = [];
+
+  const assignSingleton = (role: VideoSingletonInputRole, input: RunInputSnapshot) => {
+    if (inputSet[role]) {
+      issues.push(videoCardinalityIssue(role));
+      return;
+    }
+    inputSet[role] = input;
+  };
+
+  for (const input of orderedRunInputs(inputs)) {
+    if (
+      input.role === 'prompt' ||
+      (input.role === 'content' && input.snapshot.data.mediaType === 'text')
+    ) {
+      assignSingleton('prompt', input);
+      continue;
+    }
+    if (
+      input.role === 'firstFrame' ||
+      (input.role === 'content' && input.snapshot.data.mediaType === 'image')
+    ) {
+      assignSingleton('firstFrame', input);
+      continue;
+    }
+    if (input.role === 'negativePrompt') {
+      assignSingleton('negativePrompt', input);
+      continue;
+    }
+    if (input.role === 'lastFrame') {
+      assignSingleton('lastFrame', input);
+      continue;
+    }
+    if (input.role === 'character' || input.role === 'style' || input.role === 'referenceImage') {
+      inputSet[input.role].push(input);
+      continue;
+    }
+    if (input.role === 'content') {
+      inputSet.content.push(input);
+      continue;
+    }
+    if (input.role === 'audioTrack' || input.role === 'transcript' || input.role === 'mask') {
+      inputSet[input.role].push(input);
+      continue;
+    }
+    issues.push(videoUnsupportedRoleIssue(input.role));
+  }
+
+  return { inputSet, issues };
+}
+
+/**
+ * 根据规范输入推断视频生成场景。
+ * @param inputSet 已收集的规范输入。
+ * @returns 用于摘要和预检的场景标识。
+ */
+export function inferVideoOperation(inputSet: VideoInputSet): VideoOperationType {
+  const hasVideoOrAudio =
+    inputSet.content.length > 0 || inputSet.audioTrack.length > 0 || inputSet.transcript.length > 0;
+  const referenceCount =
+    Number(inputSet.character.length > 0) +
+    Number(inputSet.style.length > 0) +
+    Number(inputSet.referenceImage.length > 0);
+  if (hasVideoOrAudio || (referenceCount > 0 && (inputSet.firstFrame || inputSet.lastFrame))) {
+    return 'omni_reference';
+  }
+  if (inputSet.character.length || inputSet.style.length || inputSet.referenceImage.length) {
+    return 'reference_guided';
+  }
+  if (inputSet.lastFrame) return 'first_last_frame';
+  if (inputSet.firstFrame) return 'image_to_video';
+  return 'text_to_video';
+}
+
+/**
+ * 对视频规范输入做权威预检。当前真实合同只允许 prompt 和至多一张 firstFrame。
+ * @param inputs 已冻结的运行输入。
+ * @returns 场景、规范集合和请求前必须处理的问题。
+ */
+export function precheckVideoGenerationInputs(
+  inputs: readonly RunInputSnapshot[],
+): VideoGenerationPrecheck {
+  const { inputSet, issues } = collectVideoInputSet(inputs);
+  const confirmed = new Set<PortRole>(confirmedLiveVideoInputRoles);
+
+  const rejectIfPresent = (role: PortRole, present: boolean) => {
+    if (present && !confirmed.has(role)) issues.push(videoUnsupportedRoleIssue(role));
+  };
+
+  rejectIfPresent('negativePrompt', Boolean(inputSet.negativePrompt));
+  rejectIfPresent('lastFrame', Boolean(inputSet.lastFrame));
+  rejectIfPresent('character', inputSet.character.length > 0);
+  rejectIfPresent('style', inputSet.style.length > 0);
+  rejectIfPresent('referenceImage', inputSet.referenceImage.length > 0);
+  rejectIfPresent('content', inputSet.content.length > 0);
+  rejectIfPresent('audioTrack', inputSet.audioTrack.length > 0);
+  rejectIfPresent('transcript', inputSet.transcript.length > 0);
+  rejectIfPresent('mask', inputSet.mask.length > 0);
+
+  return {
+    operation: inferVideoOperation(inputSet),
+    inputSet,
+    issues,
+  };
+}

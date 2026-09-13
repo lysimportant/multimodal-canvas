@@ -559,16 +559,13 @@ describe('worker provider job boundary', () => {
     });
     const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (url, init) => {
       const requestUrl = String(url);
-      if (requestUrl.endsWith('/video/generations')) {
-        return new Response(
-          JSON.stringify({ task_id: 'platform-video-cancel', status: 'queued' }),
-          {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          },
-        );
+      if (requestUrl.endsWith('/v1/videos')) {
+        return new Response(JSON.stringify({ id: 'platform-video-cancel', status: 'queued' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
       }
-      if (requestUrl.endsWith('/video/generations/platform-video-cancel')) {
+      if (requestUrl.endsWith('/v1/videos/platform-video-cancel')) {
         pollSignal = init?.signal ?? undefined;
         markPollStarted?.();
         return new Promise<Response>((_resolve, reject) => {
@@ -582,6 +579,7 @@ describe('worker provider job boundary', () => {
       throw new Error(`unexpected New API request: ${requestUrl}`);
     });
     vi.stubGlobal('fetch', fetchImpl);
+    vi.stubEnv('NEW_API_VIDEO_CONTRACT', 'newapi-video-v1');
     vi.stubEnv('NEW_API_VIDEO_POLL_INTERVAL_MS', '0');
     const job: NonNullable<typeof bullmqState.job> = {
       id: runId,

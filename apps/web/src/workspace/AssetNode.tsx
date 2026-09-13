@@ -14,7 +14,7 @@ import {
   TriangleAlert,
   X,
 } from 'lucide-react';
-import { NodeResizer, useViewport, type NodeProps } from '@xyflow/react';
+import { NodeResizer, useEdges, useViewport, type NodeProps } from '@xyflow/react';
 import {
   createContext,
   useCallback,
@@ -28,11 +28,11 @@ import {
   type CSSProperties,
 } from 'react';
 
-import type { Asset, RunStatus } from '@multimodal-canvas/domain';
+import type { Asset, PortRole, RunStatus } from '@multimodal-canvas/domain';
 import { Dialog, DialogClose, DialogContent, DialogTitle } from '@multimodal-canvas/ui';
 import { fitNodeSizeToContent, type AssetFlowNode } from '../canvas-utils';
 import { isImeKeyboardEvent } from '../ime';
-import { NodeHandles } from '../NodeHandles';
+import { NodeHandles, inputRoleLabels } from '../NodeHandles';
 import { AssetPreview, type AssetPreviewLoadState } from './AssetPreview';
 import { downloadProjectExport } from '../export-utils';
 import { fetchNodeAssetDownload } from './node-asset-download';
@@ -79,6 +79,7 @@ function NodeFloatingActionLabel({ children }: { children: ReactNode }) {
 /** 展示节点占位或产物；生成节点的控制栏悬浮在内容上方，不参与尺寸计算。 */
 export function AssetNode({ id, data, selected, width, height }: NodeProps<AssetFlowNode>) {
   const { zoom } = useViewport();
+  const incomingEdges = useEdges();
   const selectNode = useContext(NodeSelectionContext);
   const quickEditorNodeId = useContext(NodeQuickEditorIdContext);
   const changeLabel = useContext(NodeLabelChangeContext);
@@ -359,6 +360,9 @@ export function AssetNode({ id, data, selected, width, height }: NodeProps<Asset
         />
       ) : null}
       <NodeHandles mediaType={data.mediaType} mode={data.mode} />
+      {data.mediaType === 'video' && data.mode === 'generate' ? (
+        <VideoInputSummary nodeId={id} edges={incomingEdges} />
+      ) : null}
       {contentHandlers ? (
         <input
           ref={inputRef}
@@ -940,6 +944,39 @@ export function runStatusLabel(status: RunStatus) {
     cancelled: '已取消',
   };
   return labels[status];
+}
+
+type IncomingEdge = { target?: string; targetHandle?: string | null };
+
+/**
+ * 视频节点的紧凑输入摘要。绝对定位在预览上方，不参与外部尺寸计算。
+ */
+function VideoInputSummary({ nodeId, edges }: { nodeId: string; edges: IncomingEdge[] }) {
+  const counts = new Map<PortRole, number>();
+  for (const edge of edges) {
+    if (edge.target !== nodeId) continue;
+    const handle = edge.targetHandle ?? '';
+    if (!handle.startsWith('input:')) continue;
+    const role = handle.slice('input:'.length) as PortRole;
+    counts.set(role, (counts.get(role) ?? 0) + 1);
+  }
+  if (counts.size === 0) return null;
+  const chips = [...counts.entries()].map(([role, count]) => ({
+    role,
+    count,
+    label: inputRoleLabels[role] ?? role,
+  }));
+  const total = chips.reduce((sum, chip) => sum + chip.count, 0);
+  return (
+    <div className="flow-node-input-summary" aria-label={`视频输入 ${total} 项`}>
+      {chips.map((chip) => (
+        <span key={chip.role} className="flow-node-input-chip">
+          {chip.label}
+          {chip.count > 1 ? ` ×${chip.count}` : ''}
+        </span>
+      ))}
+    </div>
+  );
 }
 
 export const nodeTypes = {

@@ -66,6 +66,7 @@ describe('NodeHandles', () => {
         'input:content',
         'input:style',
         'input:character',
+        'input:referenceImage',
         'input:firstFrame',
         'input:lastFrame',
         'input:audioTrack',
@@ -74,7 +75,7 @@ describe('NodeHandles', () => {
         'output:video',
       ]),
     );
-    expect(container.querySelectorAll('.flow-node-semantic-handle')).toHaveLength(7);
+    expect(container.querySelectorAll('.flow-node-semantic-handle')).toHaveLength(8);
     expect(
       Array.from(container.querySelectorAll('.flow-node-semantic-handle')).every(
         (handle) =>

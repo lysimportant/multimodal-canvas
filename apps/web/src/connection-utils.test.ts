@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Connection } from '@xyflow/react';
 
 import {
+  needsVideoImageRoleChoice,
   resolveCanvasConnectionTargetHandle,
   validateCanvasConnection,
   validateResolvedCanvasConnection,
@@ -31,41 +32,46 @@ function edge(source: string, target: string, targetHandle = 'input:content'): F
 }
 
 describe('canvas connection validation', () => {
-  it('resolves a body drop to the recommended semantic target role', () => {
+  it('does not silently assign an image dropped on a video node body', () => {
     const nodes = [node('source', 'image'), node('target', 'video')];
-    const resolved = resolveCanvasConnectionTargetHandle(
-      { source: 'source', target: 'target', sourceHandle: 'output:image', targetHandle: null },
-      nodes,
-    );
-
-    expect(resolved).toEqual({
+    const connection = {
       source: 'source',
       target: 'target',
       sourceHandle: 'output:image',
-      targetHandle: 'input:firstFrame',
+      targetHandle: null,
+    };
+
+    expect(needsVideoImageRoleChoice(connection, nodes)).toBe(true);
+    expect(resolveCanvasConnectionTargetHandle(connection, nodes)).toBeUndefined();
+    expect(validateResolvedCanvasConnection(connection, nodes, [])).toEqual({
+      ok: false,
+      reason: 'invalid',
     });
-    expect(resolved && validateCanvasConnection(resolved, nodes, [])).toEqual({ ok: true });
-    expect(
-      validateResolvedCanvasConnection(
-        { source: 'source', target: 'target', sourceHandle: 'output:image', targetHandle: null },
-        nodes,
-        [],
-      ),
-    ).toEqual({ ok: true, connection: resolved });
   });
 
   it('falls back to the source media output when React Flow omits sourceHandle', () => {
-    const nodes = [node('source', 'image'), node('target', 'video')];
+    const nodes = [node('source', 'text'), node('target', 'video')];
     expect(
       resolveCanvasConnectionTargetHandle(
         { source: 'source', target: 'target', sourceHandle: null, targetHandle: null },
         nodes,
       ),
-    ).toMatchObject({ sourceHandle: 'output:image', targetHandle: 'input:firstFrame' });
+    ).toMatchObject({ sourceHandle: 'output:text', targetHandle: 'input:prompt' });
   });
 
-  it('resolves visual perimeter anchors but preserves explicit semantic handles', () => {
+  it('treats visual perimeter drops as role choices and preserves explicit semantic handles', () => {
     const nodes = [node('source', 'image'), node('target', 'video')];
+    expect(
+      needsVideoImageRoleChoice(
+        {
+          source: 'source',
+          target: 'target',
+          sourceHandle: 'output:image',
+          targetHandle: 'visual:left',
+        },
+        nodes,
+      ),
+    ).toBe(true);
     expect(
       resolveCanvasConnectionTargetHandle(
         {
@@ -76,7 +82,7 @@ describe('canvas connection validation', () => {
         },
         nodes,
       ),
-    ).toMatchObject({ targetHandle: 'input:firstFrame' });
+    ).toBeUndefined();
 
     expect(
       resolveCanvasConnectionTargetHandle(
@@ -89,6 +95,17 @@ describe('canvas connection validation', () => {
         nodes,
       ),
     ).toMatchObject({ targetHandle: 'input:character' });
+    expect(
+      resolveCanvasConnectionTargetHandle(
+        {
+          source: 'source',
+          target: 'target',
+          sourceHandle: 'output:image',
+          targetHandle: 'input:referenceImage',
+        },
+        nodes,
+      ),
+    ).toMatchObject({ targetHandle: 'input:referenceImage' });
   });
 
   it.each([
@@ -97,7 +114,6 @@ describe('canvas connection validation', () => {
     ['text', 'video', 'input:prompt'],
     ['image', 'image', 'input:content'],
     ['image', 'text', 'input:content'],
-    ['image', 'video', 'input:firstFrame'],
     ['audio', 'text', 'input:transcript'],
     ['audio', 'video', 'input:audioTrack'],
     ['video', 'text', 'input:content'],

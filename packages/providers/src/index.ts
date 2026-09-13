@@ -8,7 +8,7 @@ import type {
   RunResult,
   RunSnapshot,
 } from '@multimodal-canvas/domain';
-import { renderPromptDocument } from '@multimodal-canvas/domain';
+import { precheckVideoGenerationInputs, renderPromptDocument } from '@multimodal-canvas/domain';
 
 export type ProviderName = 'mock' | 'newapi';
 
@@ -3139,6 +3139,7 @@ const providerRoleParameterKeys = [
   'content',
   'style',
   'character',
+  'referenceImage',
   'firstFrame',
   'lastFrame',
   'audioTrack',
@@ -3569,30 +3570,21 @@ function resolveRequiredVideoPrompt(
 }
 
 function mapVideoInputs(snapshot: RunSnapshot): VideoInputMapping {
-  const mapping: VideoInputMapping = {};
-  for (const input of orderedRunInputs(snapshot)) {
-    // 部分画布布局会把文本默认连接到内容端口，因此将文本内容映射到视频主提示词字段。
-    if (input.role === 'prompt' || input.role === 'content') {
-      // 画布左侧默认是内容口；图生视频时把图片内容当作首帧，而不是文字提示词。
-      if (input.snapshot.data.mediaType === 'image') {
-        if (mapping.firstFrame) throw inputRoleCardinalityError('video', 'firstFrame');
-        inputImageUrl(input, 'video');
-        mapping.firstFrame = input;
-        continue;
-      }
-      if (mapping.prompt) throw inputRoleCardinalityError('video', 'prompt');
-      mapping.prompt = input;
-      continue;
-    }
-    if (input.role === 'firstFrame') {
-      if (mapping.firstFrame) throw inputRoleCardinalityError('video', 'firstFrame');
-      inputImageUrl(input, 'video');
-      mapping.firstFrame = input;
-      continue;
-    }
-    throw unsupportedInputRoleError('video', input.role);
+  const precheck = precheckVideoGenerationInputs(snapshot.inputs);
+  const issue = precheck.issues[0];
+  if (issue) {
+    throw new NewApiProviderError(issue.message, {
+      code: issue.code,
+      retryable: false,
+    });
   }
-  return mapping;
+  if (precheck.inputSet.firstFrame) {
+    inputImageUrl(precheck.inputSet.firstFrame, 'video');
+  }
+  return {
+    prompt: precheck.inputSet.prompt,
+    firstFrame: precheck.inputSet.firstFrame,
+  };
 }
 
 function inputTextValue(

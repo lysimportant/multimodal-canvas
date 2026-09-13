@@ -101,6 +101,7 @@ vi.mock('@xyflow/react', async () => {
     Position: { Top: 'top', Bottom: 'bottom' },
     ReactFlow,
     useViewport: () => ({ x: 0, y: 0, zoom: 1 }),
+    useEdges: () => [],
     useReactFlow: () => ({
       screenToFlowPosition: ({ x, y }: { x: number; y: number }) => ({
         x: x - 100,

@@ -11,6 +11,9 @@ import {
   mediaTypes,
   nodeModes,
   portRoles,
+  collectVideoInputSet,
+  inferVideoOperation,
+  precheckVideoGenerationInputs,
   promptDocumentSchema,
   renderPromptDocument,
   runJobDataSchema,
@@ -24,8 +27,16 @@ describe('canvas protocol', () => {
     expect(mediaTypes).toEqual(['text', 'image', 'audio', 'video']);
     expect(nodeModes).toEqual(['source', 'generate']);
     expect(portRoles).toContain('character');
+    expect(portRoles).toContain('referenceImage');
     expect(targetPortRolesForMediaType('video')).toEqual(
-      expect.arrayContaining(['prompt', 'character', 'firstFrame', 'lastFrame', 'audioTrack']),
+      expect.arrayContaining([
+        'prompt',
+        'character',
+        'referenceImage',
+        'firstFrame',
+        'lastFrame',
+        'audioTrack',
+      ]),
     );
   });
 
@@ -941,5 +952,99 @@ describe('canvas protocol', () => {
     });
 
     expect(parse.success).toBe(false);
+  });
+});
+
+function videoInput(
+  id: string,
+  role: (typeof portRoles)[number],
+  sortOrder: number,
+  mediaType: 'text' | 'image' | 'audio' | 'video' = 'image',
+) {
+  return {
+    nodeId: id,
+    role,
+    sortOrder,
+    snapshot: {
+      id,
+      type: mediaType,
+      position: { x: 0, y: 0 },
+      data: {
+        label: id,
+        mediaType,
+        mode: 'source' as const,
+        ...(mediaType === 'text'
+          ? { prompt: `${role} value` }
+          : { contentUrl: `https://assets.example/${id}` }),
+      },
+    },
+  };
+}
+
+describe('video input set', () => {
+  it('keeps repeatable reference roles in connection order', () => {
+    const { inputSet, issues } = collectVideoInputSet([
+      videoInput('char-b', 'character', 2),
+      videoInput('style-a', 'style', 1),
+      videoInput('ref-c', 'referenceImage', 4),
+      videoInput('char-a', 'character', 0),
+      videoInput('ref-a', 'referenceImage', 3),
+      videoInput('style-b', 'style', 5),
+    ]);
+
+    expect(issues).toEqual([]);
+    expect(inputSet.character.map((input) => input.nodeId)).toEqual(['char-a', 'char-b']);
+    expect(inputSet.style.map((input) => input.nodeId)).toEqual(['style-a', 'style-b']);
+    expect(inputSet.referenceImage.map((input) => input.nodeId)).toEqual(['ref-a', 'ref-c']);
+    expect(inferVideoOperation(inputSet)).toBe('reference_guided');
+  });
+
+  it('maps image content to firstFrame and video content to fusion content', () => {
+    const { inputSet, issues } = collectVideoInputSet([
+      videoInput('prompt', 'prompt', 0, 'text'),
+      videoInput('still', 'content', 1, 'image'),
+      videoInput('clip', 'content', 2, 'video'),
+    ]);
+
+    expect(issues).toEqual([]);
+    expect(inputSet.prompt?.nodeId).toBe('prompt');
+    expect(inputSet.firstFrame?.nodeId).toBe('still');
+    expect(inputSet.content.map((input) => input.nodeId)).toEqual(['clip']);
+    expect(inferVideoOperation(inputSet)).toBe('omni_reference');
+  });
+
+  it('rejects unconfirmed live roles before a provider request would be created', () => {
+    const precheck = precheckVideoGenerationInputs([
+      videoInput('prompt', 'prompt', 0, 'text'),
+      videoInput('first', 'firstFrame', 1),
+      videoInput('last', 'lastFrame', 2),
+      videoInput('hero', 'character', 3),
+      videoInput('look', 'style', 4),
+      videoInput('prop', 'referenceImage', 5),
+    ]);
+
+    expect(precheck.operation).toBe('omni_reference');
+    expect(precheck.inputSet.referenceImage).toHaveLength(1);
+    expect(precheck.issues.map((issue) => issue.role)).toEqual([
+      'lastFrame',
+      'character',
+      'style',
+      'referenceImage',
+    ]);
+    expect(precheck.issues.every((issue) => issue.code === 'UNSUPPORTED_INPUT_ROLE')).toBe(true);
+  });
+
+  it('reports duplicate first frames instead of keeping only the first image', () => {
+    const { issues } = collectVideoInputSet([
+      videoInput('frame-a', 'firstFrame', 0),
+      videoInput('frame-b', 'firstFrame', 1),
+    ]);
+    expect(issues).toEqual([
+      {
+        code: 'INPUT_ROLE_CARDINALITY_UNSUPPORTED',
+        role: 'firstFrame',
+        message: 'New API video 不支持该输入角色的多个值：firstFrame',
+      },
+    ]);
   });
 });

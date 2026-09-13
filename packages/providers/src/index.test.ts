@@ -16,6 +16,7 @@ const allPortRoles = [
   'content',
   'style',
   'character',
+  'referenceImage',
   'firstFrame',
   'lastFrame',
   'audioTrack',
@@ -50,6 +51,7 @@ const inputMediaTypeByRole: Record<PortRole, MediaType> = {
   content: 'text',
   style: 'image',
   character: 'image',
+  referenceImage: 'image',
   firstFrame: 'image',
   lastFrame: 'image',
   audioTrack: 'audio',
@@ -3853,5 +3855,29 @@ describe('NewApiVideoProvider', () => {
     expect(JSON.stringify(error.providerPayload)).not.toContain('provider-secret');
     expect(JSON.stringify(error.providerPayload)).not.toContain('signature=secret');
     expect(error.providerPayload?.long).toHaveLength(1_000);
+  });
+
+  it('keeps fused reference inputs in order and rejects them before creating a paid task', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+      pollIntervalMs: 0,
+    });
+    const snapshot = videoSnapshot();
+    snapshot.inputs.push(
+      providerInput('node_character_a', 'character', 1),
+      providerInput('node_style_a', 'style', 2),
+      providerInput('node_reference_a', 'referenceImage', 3),
+      providerInput('node_character_b', 'character', 4),
+    );
+
+    await expect(provider.execute({ snapshot, onProviderJob: vi.fn() })).rejects.toMatchObject({
+      code: 'UNSUPPORTED_INPUT_ROLE',
+      retryable: false,
+      message: 'New API video 不支持该输入角色：character',
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

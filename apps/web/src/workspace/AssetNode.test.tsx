@@ -10,6 +10,7 @@ const viewportMock = vi.hoisted(() => ({ zoom: 1 }));
 vi.mock('@xyflow/react', async () => {
   return {
     useViewport: () => ({ x: 0, y: 0, zoom: viewportMock.zoom }),
+    useEdges: () => [],
     Handle: () => null,
     NodeResizer: ({
       isVisible,

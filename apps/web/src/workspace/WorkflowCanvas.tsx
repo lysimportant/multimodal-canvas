@@ -24,10 +24,11 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from 'react';
 
-import type { Asset, MediaType, PromptDocument } from '@multimodal-canvas/domain';
+import type { Asset, MediaType, PortRole, PromptDocument } from '@multimodal-canvas/domain';
 import type { CanvasTheme } from '../state/workspace-preferences';
 import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
 import { getNewNodeDimensions } from '../canvas-utils';
+import { needsVideoImageRoleChoice } from '../connection-utils';
 import {
   NodeResizeContext,
   NodeDeleteContext,
@@ -50,6 +51,7 @@ import {
   type CanvasContextMenuCloseReason,
   type CanvasContextMenuTarget,
 } from './CanvasContextMenu';
+import { VideoInputRolePicker, type VideoInputRolePickerTarget } from './VideoInputRolePicker';
 import {
   NodeQuickEditor,
   type InferenceStrength,
@@ -215,6 +217,8 @@ export function WorkflowCanvas({
   const canvasAreaRef = useRef<HTMLElement>(null);
   const connectionStartRef = useRef<OnConnectStartParams | null>(null);
   const [contextMenu, setContextMenu] = useState<CanvasContextMenuTarget | null>(null);
+  const [videoImageRolePicker, setVideoImageRolePicker] =
+    useState<VideoInputRolePickerTarget | null>(null);
   /** 图片节点先进入输入编辑，编辑器打开后再次点击才允许预览。 */
   const quickEditorNode =
     selectedNode && (selectedNode.data.mode !== 'source' || selectedNode.data.mediaType === 'image')
@@ -399,9 +403,46 @@ export function WorkflowCanvas({
               target: targetNodeId,
               targetHandle: null,
             };
+      if (needsVideoImageRoleChoice(connection, nodes)) {
+        setVideoImageRolePicker({
+          connection,
+          clientPosition: { x: point.clientX, y: point.clientY },
+        });
+        return;
+      }
       onConnect(connection);
     },
-    [onConnect],
+    [nodes, onConnect],
+  );
+
+  const handleFlowConnect = useCallback(
+    (connection: Connection) => {
+      if (needsVideoImageRoleChoice(connection, nodes)) {
+        const nodeElement = document.querySelector(
+          `.react-flow__node[data-id="${CSS.escape(connection.target ?? '')}"]`,
+        );
+        const rect = nodeElement?.getBoundingClientRect();
+        setVideoImageRolePicker({
+          connection,
+          clientPosition: rect ? { x: rect.left, y: rect.top + rect.height / 2 } : { x: 24, y: 24 },
+        });
+        return;
+      }
+      onConnect(connection);
+    },
+    [nodes, onConnect],
+  );
+
+  const handleVideoImageRoleSelect = useCallback(
+    (role: PortRole) => {
+      if (!videoImageRolePicker) return;
+      onConnect({
+        ...videoImageRolePicker.connection,
+        targetHandle: `input:${role}`,
+      });
+      setVideoImageRolePicker(null);
+    },
+    [onConnect, videoImageRolePicker],
   );
 
   return (
@@ -450,7 +491,7 @@ export function WorkflowCanvas({
                           connectionLineComponent={FlowingConnectionLine}
                           onNodesChange={onNodesChange}
                           onEdgesChange={onEdgesChange}
-                          onConnect={onConnect}
+                          onConnect={handleFlowConnect}
                           onConnectStart={(_event, params) => {
                             connectionStartRef.current = params;
                           }}
@@ -578,6 +619,13 @@ export function WorkflowCanvas({
             </button>
           </div>
         </div>
+      )}
+      {videoImageRolePicker && (
+        <VideoInputRolePicker
+          target={videoImageRolePicker}
+          onSelect={handleVideoImageRoleSelect}
+          onClose={() => setVideoImageRolePicker(null)}
+        />
       )}
       {contextMenu && (
         <CanvasContextMenu
