@@ -896,17 +896,19 @@ describe('画布编辑器交互', () => {
     await waitFor(() => expect(findNodeByLabel('角色参考')).toBeTruthy());
   });
 
-  it('工具栏可以创建四类转换节点', async () => {
+  it('底部工具栏只创建四类生成节点并支持自动适配缩放', async () => {
     const { user } = await renderCanvas();
 
     for (const mediaType of ['文字', '图片', '音频', '视频']) {
-      await user.click(screen.getByRole('button', { name: `新建${mediaType}转换节点` }));
+      await user.click(screen.getByRole('button', { name: `新建${mediaType}生成节点` }));
     }
 
-    expect(findNodeByLabel('文字转换节点')).toBeTruthy();
-    expect(findNodeByLabel('图片转换节点')).toBeTruthy();
-    expect(findNodeByLabel('音频转换节点')).toBeTruthy();
-    expect(findNodeByLabel('视频转换节点')).toBeTruthy();
+    expect(findNodeByLabel('文字生成节点')).toBeTruthy();
+    expect(findNodeByLabel('图片生成节点')).toBeTruthy();
+    expect(findNodeByLabel('音频生成节点')).toBeTruthy();
+    expect(findNodeByLabel('视频生成节点')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '新建文字转换节点' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '自动适配缩放' }));
   });
 
   it('支持复制粘贴，并能删除选中节点', async () => {

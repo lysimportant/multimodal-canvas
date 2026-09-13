@@ -62,6 +62,42 @@
 .artifact-preview-open-button:hover {
   background: rgb(17 24 39 / 92%);
 }
+.artifact-preview-play-button {
+  align-items: center;
+  background: rgb(15 23 32 / 78%);
+  border: 1px solid rgb(255 255 255 / 68%);
+  border-radius: 999px;
+  color: #ffffff;
+  cursor: pointer;
+  display: inline-flex;
+  height: 48px;
+  justify-content: center;
+  left: 50%;
+  padding: 0;
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  transition:
+    background 120ms ease,
+    transform 120ms ease;
+  width: 48px;
+  z-index: 2;
+}
+.artifact-preview-play-button:hover {
+  background: rgb(15 23 32 / 94%);
+  transform: translate(-50%, -50%) scale(1.06);
+}
+.artifact-preview-play-button:focus-visible {
+  outline: 2px solid var(--mc-accent, #18794e);
+  outline-offset: 3px;
+}
+.artifact-preview-play-icon {
+  border-bottom: 8px solid transparent;
+  border-left: 12px solid #ffffff;
+  border-top: 8px solid transparent;
+  display: block;
+  margin-left: 3px;
+}
 .artifact-preview-viewer-backdrop {
   background: rgb(15 23 32 / 55%);
   z-index: 80;

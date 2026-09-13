@@ -10,6 +10,7 @@ const reactFlowMock = vi.hoisted(() => ({
   getNodesBounds: vi.fn(() => ({ x: 0, y: 0, width: 180, height: 120 })),
   getZoom: vi.fn(() => 1),
   setCenter: vi.fn(),
+  fitView: vi.fn(() => Promise.resolve(true)),
 }));
 
 vi.mock('@xyflow/react', async () => {
@@ -103,6 +104,7 @@ vi.mock('@xyflow/react', async () => {
       getNodesBounds: reactFlowMock.getNodesBounds,
       getZoom: reactFlowMock.getZoom,
       setCenter: reactFlowMock.setCenter,
+      fitView: reactFlowMock.fitView,
     }),
   };
 });
@@ -187,6 +189,7 @@ afterEach(() => {
   reactFlowMock.getNodesBounds.mockClear();
   reactFlowMock.getZoom.mockClear();
   reactFlowMock.setCenter.mockClear();
+  reactFlowMock.fitView.mockClear();
 });
 
 describe('WorkflowCanvas context menu', () => {
@@ -425,6 +428,20 @@ describe('WorkflowCanvas context menu', () => {
     expect(flow).toHaveAttribute('data-fit-view-min-zoom', '0.25');
     expect(JSON.parse(flow.getAttribute('data-fit-view-options') ?? 'null')).toMatchObject({
       minZoom: 0.25,
+    });
+  });
+
+  it('provides a bottom toolbar action that fits the viewport around all nodes', async () => {
+    const user = userEvent.setup();
+    render(<WorkflowCanvas {...createProps({ nodes: [generateNode] })} />);
+
+    await user.click(screen.getByRole('button', { name: '自动适配缩放' }));
+
+    expect(reactFlowMock.fitView).toHaveBeenCalledWith({
+      padding: 0.3,
+      maxZoom: 1.1,
+      minZoom: 0.25,
+      duration: 220,
     });
   });
 });

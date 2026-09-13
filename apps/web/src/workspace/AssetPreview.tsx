@@ -493,9 +493,12 @@ function MediaArtifactPreview({
   const [attempt, setAttempt] = useState(0);
   const [loadState, setLoadState] = useState<AssetPreviewLoadState>('loading');
   const [viewerOpen, setViewerOpen] = useState(false);
+  const [videoPlaying, setVideoPlaying] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
     setLoadState('loading');
+    setVideoPlaying(false);
   }, [attempt, src]);
   useReportLoadState(loadState, onLoadStateChange);
 
@@ -504,6 +507,17 @@ function MediaArtifactPreview({
   const mediaClassName = `asset-preview-${kind} artifact-preview-media ${className}`;
   const markReady = () => setLoadState('ready');
   const markError = () => setLoadState('error');
+  const toggleVideoPlayback = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.paused) {
+      void video.play().catch(() => {
+        // 浏览器策略可能拒绝自动播放，用户仍可使用原生控件启动播放。
+      });
+    } else {
+      video.pause();
+    }
+  };
   const openViewer = (event: { preventDefault(): void; stopPropagation(): void }) => {
     event.preventDefault();
     event.stopPropagation();
@@ -524,15 +538,17 @@ function MediaArtifactPreview({
     ) : kind === 'video' ? (
       <video
         key={`${src}:${attempt}`}
+        ref={videoRef}
         className={mediaClassName}
         src={src}
         muted
-        controls={showInlineControls}
+        controls={controls}
         preload="metadata"
         draggable={false}
         onLoadedMetadata={markReady}
         onError={markError}
-        onClick={canPreviewInDialog ? openViewer : undefined}
+        onPlay={() => setVideoPlaying(true)}
+        onPause={() => setVideoPlaying(false)}
       />
     ) : (
       <audio
@@ -561,12 +577,27 @@ function MediaArtifactPreview({
     );
   }
 
-  const capturePointer = kind === 'audio' || showInlineControls;
+  const capturePointer = kind === 'audio' || showInlineControls || (kind === 'video' && controls);
   return (
     <div
       className={`artifact-preview-media-shell artifact-preview-${kind}-shell ${className}${capturePointer ? ' nodrag nopan nowheel' : ''}`}
     >
       {media}
+      {kind === 'video' && controls && !videoPlaying && loadState === 'ready' && (
+        <button
+          type="button"
+          className="artifact-preview-play-button nodrag nopan nowheel"
+          aria-label="播放视频"
+          title="播放视频"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            toggleVideoPlayback();
+          }}
+        >
+          <span aria-hidden="true" className="artifact-preview-play-icon" />
+        </button>
+      )}
       {canPreviewInDialog && (
         <button
           type="button"

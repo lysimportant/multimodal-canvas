@@ -202,7 +202,7 @@ export function WorkflowCanvas({
   canRedo,
   onOpenProjectHub,
 }: WorkflowCanvasProps) {
-  const { screenToFlowPosition, getNodesBounds, getZoom, setCenter } = useReactFlow();
+  const { screenToFlowPosition, getNodesBounds, getZoom, setCenter, fitView } = useReactFlow();
   const canvasAreaRef = useRef<HTMLElement>(null);
   const connectionStartRef = useRef<OnConnectStartParams | null>(null);
   const [contextMenu, setContextMenu] = useState<CanvasContextMenuTarget | null>(null);
@@ -261,10 +261,16 @@ export function WorkflowCanvas({
     [getCanvasNodePosition, onAddGenerateNode],
   );
 
-  const handleAddTransformNode = useCallback(
-    (mediaType: MediaType) => onAddTransformNode(mediaType, getCanvasNodePosition(mediaType)),
-    [getCanvasNodePosition, onAddTransformNode],
-  );
+  /** 将视口缩放到能完整看到当前画布节点的范围。 */
+  const handleFitView = useCallback(() => {
+    if (typeof fitView !== 'function') return;
+    void fitView({
+      padding: 0.3,
+      maxZoom: 1.1,
+      minZoom: FIT_VIEW_MIN_ZOOM,
+      duration: 220,
+    });
+  }, [fitView]);
 
   const selectNodeByData = useCallback(
     (data: AssetFlowNode['data']) => {
@@ -400,7 +406,7 @@ export function WorkflowCanvas({
     >
       <CanvasNodeToolbar
         onAddGenerateNode={handleAddGenerateNode}
-        onAddTransformNode={handleAddTransformNode}
+        onFitView={handleFitView}
         onRequestUpload={onRequestUpload}
         onClearCanvas={onClearCanvas}
         onUndoCanvas={onUndoCanvas}

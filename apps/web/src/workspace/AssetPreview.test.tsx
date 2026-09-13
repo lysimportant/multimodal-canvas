@@ -336,14 +336,16 @@ describe('AssetPreview', () => {
 
     const video = container.querySelector('video');
     expect(video).not.toBeNull();
-    expect(video).not.toHaveAttribute('controls');
+    expect(video).toHaveAttribute('controls');
+    fireEvent.loadedMetadata(video!);
+    expect(screen.getByRole('button', { name: '播放视频' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '预览视频：生成结果' }));
     const viewer = screen.getByRole('dialog', { name: '生成结果' });
     expect(viewer).toBeVisible();
     expect(viewer.querySelector('video')).toHaveAttribute('controls');
     fireEvent.click(screen.getByRole('button', { name: '关闭预览' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    expect(screen.getByText('正在加载视频…')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '播放视频' })).toBeInTheDocument();
     fireEvent.error(video!);
     expect(await screen.findByRole('alert')).toHaveTextContent('视频加载失败');
     expect(videoStates).toContain('error');

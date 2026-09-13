@@ -1,5 +1,5 @@
 import { mediaTypes, type MediaType } from '@multimodal-canvas/domain';
-import { Eraser, Palette, Redo2, Search, Undo2, Upload } from 'lucide-react';
+import { Eraser, Maximize2, Palette, Redo2, Search, Undo2, Upload } from 'lucide-react';
 import { Fragment, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 
 import { mediaIcons, mediaLabels } from './contracts';
@@ -13,7 +13,7 @@ import { mediaIcons, mediaLabels } from './contracts';
  */
 export function CanvasNodeToolbar({
   onAddGenerateNode,
-  onAddTransformNode,
+  onFitView,
   onRequestUpload,
   onClearCanvas,
   onUndoCanvas,
@@ -25,7 +25,8 @@ export function CanvasNodeToolbar({
   canRedo = true,
 }: {
   onAddGenerateNode: (mediaType: MediaType) => void;
-  onAddTransformNode: (mediaType: MediaType) => void;
+  /** 将画布缩放并平移到能完整看到所有节点的位置。 */
+  onFitView?: () => void;
   /** 打开系统文件选择器并上传资源。 */
   onRequestUpload?: () => void;
   /** 清空当前画布，具体确认与历史记录由 App 负责。 */
@@ -183,6 +184,28 @@ export function CanvasNodeToolbar({
     });
   }
 
+  if (onFitView) {
+    actionGroups.push({
+      id: 'fit-view',
+      label: '自动适配缩放',
+      content: (
+        <button
+          type="button"
+          className="canvas-node-tool canvas-node-action-tool"
+          aria-label="自动适配缩放"
+          title="自动适配缩放"
+          onPointerDown={stopCanvasEvent}
+          onClick={(event) => {
+            event.stopPropagation();
+            onFitView();
+          }}
+        >
+          <Maximize2 size={16} aria-hidden="true" />
+        </button>
+      ),
+    });
+  }
+
   return (
     <div className="canvas-node-tools" aria-label="添加节点">
       {mediaTypes.map((mediaType) => {
@@ -195,15 +218,6 @@ export function CanvasNodeToolbar({
               aria-label={`新建${mediaLabels[mediaType]}生成节点`}
               title={`新建${mediaLabels[mediaType]}生成节点`}
               onClick={() => onAddGenerateNode(mediaType)}
-            >
-              <Icon size={14} aria-hidden="true" />
-            </button>
-            <button
-              type="button"
-              className={`canvas-node-tool canvas-node-tool-transform media-icon-${mediaType}`}
-              aria-label={`新建${mediaLabels[mediaType]}转换节点`}
-              title={`新建${mediaLabels[mediaType]}转换节点`}
-              onClick={() => onAddTransformNode(mediaType)}
             >
               <Icon size={14} aria-hidden="true" />
             </button>

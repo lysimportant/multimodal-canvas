@@ -65,15 +65,13 @@ describe('workspace modules', () => {
   it('keeps the node toolbar independently actionable for every media type', async () => {
     const user = userEvent.setup();
     const onGenerate = vi.fn();
-    const onTransform = vi.fn();
-    render(<CanvasNodeToolbar onAddGenerateNode={onGenerate} onAddTransformNode={onTransform} />);
+    render(<CanvasNodeToolbar onAddGenerateNode={onGenerate} />);
 
-    expect(screen.getAllByRole('button')).toHaveLength(8);
+    expect(screen.getAllByRole('button')).toHaveLength(4);
+    expect(screen.queryByRole('button', { name: '新建视频转换节点' })).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
-    await user.click(screen.getByRole('button', { name: '新建视频转换节点' }));
 
     expect(onGenerate).toHaveBeenCalledWith('image');
-    expect(onTransform).toHaveBeenCalledWith('video');
   });
 
   it('renders grouped canvas actions and forwards their callbacks', async () => {
@@ -85,17 +83,18 @@ describe('workspace modules', () => {
       onRedo: vi.fn(),
       onSearch: vi.fn(),
       onBackground: vi.fn(),
+      onFit: vi.fn(),
     };
     render(
       <CanvasNodeToolbar
         onAddGenerateNode={vi.fn()}
-        onAddTransformNode={vi.fn()}
         onRequestUpload={callbacks.onUpload}
         onClearCanvas={callbacks.onClear}
         onUndoCanvas={callbacks.onUndo}
         onRedoCanvas={callbacks.onRedo}
         onOpenSearch={callbacks.onSearch}
         onOpenBackground={callbacks.onBackground}
+        onFitView={callbacks.onFit}
         canClearCanvas={false}
         canUndo={false}
         canRedo
@@ -105,16 +104,18 @@ describe('workspace modules', () => {
     expect(screen.getByRole('button', { name: '清空画布' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '画布撤销' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '画布重做' })).toBeEnabled();
-    expect(document.querySelectorAll('.canvas-node-tool-divider')).toHaveLength(5);
+    expect(document.querySelectorAll('.canvas-node-tool-divider')).toHaveLength(6);
 
     await user.click(screen.getByRole('button', { name: '上传资产' }));
     await user.click(screen.getByRole('button', { name: '画布重做' }));
     await user.click(screen.getByRole('button', { name: '搜索' }));
     await user.click(screen.getByRole('button', { name: '背景' }));
+    await user.click(screen.getByRole('button', { name: '自动适配缩放' }));
 
     expect(callbacks.onUpload).toHaveBeenCalledTimes(1);
     expect(callbacks.onRedo).toHaveBeenCalledTimes(1);
     expect(callbacks.onSearch).toHaveBeenCalledTimes(1);
+    expect(callbacks.onFit).toHaveBeenCalledTimes(1);
     expect(callbacks.onBackground).toHaveBeenCalledTimes(1);
     expect(callbacks.onClear).not.toHaveBeenCalled();
     expect(callbacks.onUndo).not.toHaveBeenCalled();
