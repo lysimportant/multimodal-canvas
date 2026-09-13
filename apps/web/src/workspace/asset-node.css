@@ -44,7 +44,6 @@
   left: 50%;
   margin: 0;
   min-height: 44px;
-  min-width: calc(100% * var(--flow-node-zoom, 1));
   opacity: 0;
   padding: 4px 6px;
   pointer-events: none;

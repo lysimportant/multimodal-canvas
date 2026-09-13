@@ -525,7 +525,8 @@ describe('AssetPreview', () => {
 
     const video = container.querySelector('video');
     expect(video).not.toBeNull();
-    expect(video).toHaveAttribute('controls');
+    expect(video).not.toHaveAttribute('controls');
+    expect(container.firstElementChild).not.toHaveClass('nodrag');
     fireEvent.loadedMetadata(video!);
     expect(screen.getByRole('button', { name: '播放视频' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '预览视频：生成结果' }));

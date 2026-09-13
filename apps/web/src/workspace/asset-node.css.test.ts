@@ -8,8 +8,9 @@ const normalizedCss = assetNodeCss.replace(/\s+/g, ' ');
 describe('asset node floating controls CSS contracts', () => {
   it('悬浮卡片随图标和文字收缩，不左右分栏且始终显示功能简述', () => {
     expect(normalizedCss).toMatch(
-      /\.flow-asset-node > \.flow-node-header\.flow-node-floating-controls \{[^}]*min-width: calc\(100% \* var\(--flow-node-zoom, 1\)\);/,
+      /\.flow-asset-node > \.flow-node-header\.flow-node-floating-controls \{[^}]*width: max-content;/,
     );
+    expect(normalizedCss).not.toContain('min-width: calc(100% * var(--flow-node-zoom, 1))');
     expect(normalizedCss).not.toContain('min-width: max(250px,');
     expect(normalizedCss).not.toMatch(
       /\.flow-node-floating-controls > \.flow-node-label \{[^}]*width: 100px;/,

@@ -129,6 +129,19 @@ describe('AssetNode result presentation', () => {
     expect(screen.queryByRole('button', { name: /^下载/ })).not.toBeInTheDocument();
   });
 
+  it('视频回显后节点预览不拦截拖拽', () => {
+    const { container } = renderNode(
+      makeNode({
+        mediaType: 'video',
+        mimeType: 'video/mp4',
+        assetId: 'video',
+        contentUrl: 'https://assets.example/video.mp4',
+      }),
+    );
+    expect(container.querySelector('.artifact-preview-video-shell')).not.toHaveClass('nodrag');
+    expect(container.querySelector('video')).not.toHaveAttribute('controls');
+  });
+
   it.each(['generate', 'transform'] as const)(
     '%s 图片节点输入编辑器打开前点击不预览，打开后再次点击才预览',
     async (mode) => {

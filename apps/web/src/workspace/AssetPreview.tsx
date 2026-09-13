@@ -668,6 +668,8 @@ function MediaArtifactPreview({
 
   const canPreviewInDialog = allowOpen && (kind === 'image' || kind === 'video');
   const showInlineControls = controls && !canPreviewInDialog;
+  /** 节点内视频用自定义播放按钮，避免原生控件挡住拖拽。 */
+  const useNativeVideoControls = kind === 'video' && controls && !canPreviewInDialog;
   const mediaClassName = `asset-preview-${kind} artifact-preview-media ${className}`;
   const markReady = () => setLoadState('ready');
   const markError = () => setLoadState('error');
@@ -723,9 +725,10 @@ function MediaArtifactPreview({
         className={mediaClassName}
         src={src}
         muted
-        controls={controls}
+        controls={useNativeVideoControls}
         preload="metadata"
         draggable={false}
+        playsInline
         onLoadedMetadata={markReady}
         onError={markError}
         onPlay={() => {
@@ -761,7 +764,7 @@ function MediaArtifactPreview({
     );
   }
 
-  const capturePointer = kind === 'audio' || showInlineControls || (kind === 'video' && controls);
+  const capturePointer = kind === 'audio' || showInlineControls || useNativeVideoControls;
   return (
     <div
       className={`artifact-preview-media-shell artifact-preview-${kind}-shell ${className}${capturePointer ? ' nodrag nopan nowheel' : ''}`}

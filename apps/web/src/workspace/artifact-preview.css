@@ -283,6 +283,10 @@
   width: 100%;
 }
 
+.flow-node-preview .artifact-preview-video-shell > video {
+  pointer-events: none;
+}
+
 .artifact-preview-audio-shell {
   padding: 10px;
 }

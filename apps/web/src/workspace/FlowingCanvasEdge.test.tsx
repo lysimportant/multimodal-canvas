@@ -20,7 +20,7 @@ import { Position } from '@xyflow/react';
 import { FlowingCanvasEdge } from './FlowingCanvasEdge';
 
 describe('FlowingCanvasEdge', () => {
-  it('把端点收到锚点圆心并绘制流光', () => {
+  it('使用 React Flow 锚点坐标并绘制流光', () => {
     const { container } = render(
       <svg>
         <FlowingCanvasEdge
@@ -39,11 +39,11 @@ describe('FlowingCanvasEdge', () => {
 
     expect(container.querySelector('[data-testid="base-edge"]')).toHaveAttribute(
       'd',
-      'M -9 10 L 109 10',
+      'M 0 10 L 100 10',
     );
     expect(container.querySelector('.canvas-flow-edge-meteor')).toHaveAttribute(
       'd',
-      'M -9 10 L 109 10',
+      'M 0 10 L 100 10',
     );
   });
 });
