@@ -1036,6 +1036,36 @@ describe('video input set', () => {
     expect(precheck.issues.every((issue) => issue.code === 'UNSUPPORTED_INPUT_ROLE')).toBe(true);
   });
 
+  it('allows grok-imagine-video-1.5 last frame and reference images before a real POST', () => {
+    const precheck = precheckVideoGenerationInputs(
+      [
+        videoInput('prompt', 'prompt', 0, 'text'),
+        videoInput('first', 'firstFrame', 1),
+        videoInput('last', 'lastFrame', 2),
+        videoInput('hero', 'character', 3),
+        videoInput('look', 'style', 4),
+        videoInput('prop', 'referenceImage', 5),
+      ],
+      { modelAlias: 'grok-imagine-video-1.5.1', parameters: { resolution: '720p' } },
+    );
+    expect(precheck.operation).toBe('omni_reference');
+    expect(precheck.issues).toEqual([]);
+    expect(precheck.inputSet.referenceImage).toHaveLength(1);
+  });
+
+  it('rejects grok-imagine-video-1.5 reference or last-frame requests above 720p', () => {
+    const precheck = precheckVideoGenerationInputs(
+      [videoInput('prompt', 'prompt', 0, 'text'), videoInput('prop', 'referenceImage', 1)],
+      { modelAlias: 'grok-imagine-video-1.5.1', parameters: { resolution: '1080p' } },
+    );
+    expect(precheck.issues).toEqual([
+      {
+        code: 'UNSUPPORTED_INPUT_COMBINATION',
+        message: 'grok-imagine-video-1.5 的参考图或尾帧合同最高 720p',
+      },
+    ]);
+  });
+
   it('reports duplicate first frames instead of keeping only the first image', () => {
     const { issues } = collectVideoInputSet([
       videoInput('frame-a', 'firstFrame', 0),

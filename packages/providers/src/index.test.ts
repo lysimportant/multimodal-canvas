@@ -41,8 +41,17 @@ const unsupportedStandardRoleCases = (['text', 'image', 'audio'] as const).flatM
     .map((role) => ({ mediaType, role })),
 );
 
+const grok15MappedVideoRoles = [
+  'prompt',
+  'content',
+  'firstFrame',
+  'lastFrame',
+  'character',
+  'style',
+  'referenceImage',
+] as const;
 const unsupportedVideoInputRoles = allPortRoles.filter(
-  (role) => !(role === 'prompt' || role === 'content' || role === 'firstFrame'),
+  (role) => !(grok15MappedVideoRoles as readonly PortRole[]).includes(role),
 );
 
 const inputMediaTypeByRole: Record<PortRole, MediaType> = {
@@ -3903,15 +3912,22 @@ describe('NewApiVideoProvider', () => {
     expect(error.providerPayload?.long).toHaveLength(1_000);
   });
 
-  it('keeps fused reference inputs in order and rejects them before creating a paid task', async () => {
-    const fetchImpl = vi.fn<typeof fetch>();
+  it('sends grok-imagine-video-1.5 reference images in connection order', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: { message: 'temporarily unavailable' } }), {
+        status: 503,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
     const provider = new NewApiVideoProvider({
       baseUrl: 'https://newapi.example.com/v1',
       apiKey: 'server-secret',
+      videoContract: 'newapi-video-v1',
       fetchImpl,
       pollIntervalMs: 0,
     });
     const snapshot = videoSnapshot();
+    snapshot.modelAlias = 'grok-imagine-video-1.5.1';
     snapshot.inputs.push(
       providerInput('node_character_a', 'character', 1),
       providerInput('node_style_a', 'style', 2),
@@ -3920,9 +3936,63 @@ describe('NewApiVideoProvider', () => {
     );
 
     await expect(provider.execute({ snapshot, onProviderJob: vi.fn() })).rejects.toMatchObject({
+      code: 'VIDEO_SUBMISSION_UNKNOWN',
+    });
+    expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))).toMatchObject({
+      model: 'grok-imagine-video-1.5.1',
+      image: 'https://assets.example/first.png',
+      reference_images: [
+        { url: 'https://assets.example/node_character_a.png' },
+        { url: 'https://assets.example/node_style_a.png' },
+        { url: 'https://assets.example/node_reference_a.png' },
+        { url: 'https://assets.example/node_character_b.png' },
+      ],
+    });
+  });
+
+  it('sends grok-imagine-video-1.5 last_frame with the same image shape as first frame', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: { message: 'temporarily unavailable' } }), {
+        status: 503,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      videoContract: 'newapi-video-v1',
+      fetchImpl,
+      pollIntervalMs: 0,
+    });
+    const snapshot = videoSnapshot();
+    snapshot.modelAlias = 'grok-imagine-video-1.5.1';
+    snapshot.inputs.push(providerInput('node_last', 'lastFrame', 1));
+
+    await expect(provider.execute({ snapshot, onProviderJob: vi.fn() })).rejects.toMatchObject({
+      code: 'VIDEO_SUBMISSION_UNKNOWN',
+    });
+    expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))).toMatchObject({
+      image: 'https://assets.example/first.png',
+      last_frame: 'https://assets.example/node_last.png',
+    });
+  });
+
+  it('still rejects referenceImage on models without a confirmed reference contract', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+      pollIntervalMs: 0,
+    });
+    const snapshot = videoSnapshot();
+    snapshot.modelAlias = 'sora-2';
+    snapshot.inputs.push(providerInput('node_reference_a', 'referenceImage', 1));
+
+    await expect(provider.execute({ snapshot, onProviderJob: vi.fn() })).rejects.toMatchObject({
       code: 'UNSUPPORTED_INPUT_ROLE',
       retryable: false,
-      message: 'New API video 不支持该输入角色：character',
+      message: 'New API video 不支持该输入角色：referenceImage',
     });
     expect(fetchImpl).not.toHaveBeenCalled();
   });

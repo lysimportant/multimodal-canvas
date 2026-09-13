@@ -1573,6 +1573,7 @@ function unifiedVideoPayload(
       payload[parameter] = snapshot.parameters[parameter];
   }
   if (inputs.firstFrame) payload.image = inputImageUrl(inputs.firstFrame, 'video');
+  applyGrokImagineVideo15References(payload, inputs, 'string');
   return payload;
 }
 
@@ -1669,6 +1670,7 @@ function videoPayload(
   const aspectRatio = normalizeErrorField(parameters.aspect_ratio ?? parameters.aspectRatio);
   if (aspectRatio) payload.aspect_ratio = aspectRatio;
   if (firstFrameUrl) payload.image = { url: firstFrameUrl };
+  applyGrokImagineVideo15References(payload, inputs, 'object');
   return payload;
 }
 
@@ -1688,6 +1690,9 @@ function openaiVideoPayload(
   if (typeof duration === 'number') payload.seconds = String(duration);
   if (isRecord(payload.image) && nonEmptyString(payload.image.url)) {
     payload.image = payload.image.url.trim();
+  }
+  if (isRecord(payload.last_frame) && nonEmptyString(payload.last_frame.url)) {
+    payload.last_frame = payload.last_frame.url.trim();
   }
   return payload;
 }
@@ -3184,6 +3189,8 @@ type ParsedProviderDataUrl = {
 type VideoInputMapping = {
   prompt?: RunInputSnapshot;
   firstFrame?: RunInputSnapshot;
+  lastFrame?: RunInputSnapshot;
+  referenceImages: RunInputSnapshot[];
 };
 
 /**
@@ -3586,7 +3593,10 @@ function resolveRequiredVideoPrompt(
 }
 
 function mapVideoInputs(snapshot: RunSnapshot): VideoInputMapping {
-  const precheck = precheckVideoGenerationInputs(snapshot.inputs);
+  const precheck = precheckVideoGenerationInputs(snapshot.inputs, {
+    modelAlias: snapshot.modelAlias,
+    parameters: snapshot.parameters,
+  });
   const issue = precheck.issues[0];
   if (issue) {
     throw new NewApiProviderError(issue.message, {
@@ -3597,10 +3607,47 @@ function mapVideoInputs(snapshot: RunSnapshot): VideoInputMapping {
   if (precheck.inputSet.firstFrame) {
     inputImageUrl(precheck.inputSet.firstFrame, 'video');
   }
+  if (precheck.inputSet.lastFrame) {
+    inputImageUrl(precheck.inputSet.lastFrame, 'video');
+  }
+  const referenceImages = [
+    ...precheck.inputSet.character,
+    ...precheck.inputSet.style,
+    ...precheck.inputSet.referenceImage,
+  ].sort(
+    (left, right) => left.sortOrder - right.sortOrder || left.nodeId.localeCompare(right.nodeId),
+  );
+  for (const input of referenceImages) {
+    inputImageUrl(input, 'video');
+  }
   return {
     prompt: precheck.inputSet.prompt,
     firstFrame: precheck.inputSet.firstFrame,
+    lastFrame: precheck.inputSet.lastFrame,
+    referenceImages,
   };
+}
+
+/**
+ * 按 xAI grok-imagine-video-1.5 官方 REST 写入 last_frame 与 reference_images。
+ * @param payload 即将发送的创建体。
+ * @param inputs 已预检的规范输入。
+ * @param imageShape 与该合同首帧字段相同：legacy 用 {url}，OpenAI/统一路径用 URL 字符串；参考图始终用官方 {url}[]。
+ */
+function applyGrokImagineVideo15References(
+  payload: Record<string, unknown>,
+  inputs: VideoInputMapping,
+  imageShape: 'string' | 'object',
+): void {
+  if (inputs.lastFrame) {
+    const url = inputImageUrl(inputs.lastFrame, 'video');
+    payload.last_frame = imageShape === 'string' ? url : { url };
+  }
+  if (inputs.referenceImages.length > 0) {
+    payload.reference_images = inputs.referenceImages.map((input) => ({
+      url: inputImageUrl(input, 'video'),
+    }));
+  }
 }
 
 function inputTextValue(

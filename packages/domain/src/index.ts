@@ -919,8 +919,39 @@ export const videoImageInputRoles = [
   'referenceImage',
 ] as const;
 
-/** 当前已取证、允许发真实视频 POST 的输入角色。 */
+/** 未知模型默认只允许 prompt 和至多一张首帧。 */
 export const confirmedLiveVideoInputRoles = ['prompt', 'firstFrame'] as const;
+
+/** grok-imagine-video-1.5 官方参考图上限。 */
+export const GROK_IMAGINE_VIDEO_15_MAX_REFERENCE_IMAGES = 7;
+
+/** grok-imagine-video-1.5 已文档化的真实输入角色。 */
+export const grokImagineVideo15InputRoles = [
+  'prompt',
+  'firstFrame',
+  'lastFrame',
+  'character',
+  'style',
+  'referenceImage',
+] as const;
+
+/**
+ * 判断模型是否属于 grok-imagine-video-1.5 系列，含 1.5.1 与按次别名。
+ * @param modelAlias 运行快照中的模型 ID。
+ */
+export function isGrokImagineVideo15(modelAlias: string | undefined): boolean {
+  return (modelAlias ?? '').trim().toLowerCase().startsWith('grok-imagine-video-1.5');
+}
+
+/**
+ * 返回该模型当前允许发真实 POST 的输入角色。
+ * @param modelAlias 运行快照中的模型 ID。
+ */
+export function confirmedVideoInputRolesForModel(modelAlias?: string): readonly PortRole[] {
+  return isGrokImagineVideo15(modelAlias)
+    ? grokImagineVideo15InputRoles
+    : confirmedLiveVideoInputRoles;
+}
 
 /** 视频生成场景。用于预检和摘要，不是互斥的节点 mode。 */
 export const videoOperationTypes = [
@@ -1098,15 +1129,17 @@ export function inferVideoOperation(inputSet: VideoInputSet): VideoOperationType
 }
 
 /**
- * 对视频规范输入做权威预检。当前真实合同只允许 prompt 和至多一张 firstFrame。
+ * 对视频规范输入做权威预检。未知模型只允许 prompt 和首帧；grok-imagine-video-1.5 另允许尾帧与参考图。
  * @param inputs 已冻结的运行输入。
+ * @param options 模型与参数，用于按合同开放角色和分辨率限制。
  * @returns 场景、规范集合和请求前必须处理的问题。
  */
 export function precheckVideoGenerationInputs(
   inputs: readonly RunInputSnapshot[],
+  options: { modelAlias?: string; parameters?: Record<string, unknown> } = {},
 ): VideoGenerationPrecheck {
   const { inputSet, issues } = collectVideoInputSet(inputs);
-  const confirmed = new Set<PortRole>(confirmedLiveVideoInputRoles);
+  const confirmed = new Set<PortRole>(confirmedVideoInputRolesForModel(options.modelAlias));
 
   const rejectIfPresent = (role: PortRole, present: boolean) => {
     if (present && !confirmed.has(role)) issues.push(videoUnsupportedRoleIssue(role));
@@ -1121,6 +1154,36 @@ export function precheckVideoGenerationInputs(
   rejectIfPresent('audioTrack', inputSet.audioTrack.length > 0);
   rejectIfPresent('transcript', inputSet.transcript.length > 0);
   rejectIfPresent('mask', inputSet.mask.length > 0);
+
+  const referenceCount =
+    inputSet.character.length + inputSet.style.length + inputSet.referenceImage.length;
+  if (
+    isGrokImagineVideo15(options.modelAlias) &&
+    referenceCount > GROK_IMAGINE_VIDEO_15_MAX_REFERENCE_IMAGES
+  ) {
+    issues.push({
+      code: 'INPUT_ROLE_CARDINALITY_UNSUPPORTED',
+      role: 'referenceImage',
+      message: `New API video 参考图数量超过模型上限 ${GROK_IMAGINE_VIDEO_15_MAX_REFERENCE_IMAGES}`,
+    });
+  }
+
+  const resolution = String(
+    options.parameters?.resolution ??
+      options.parameters?.video_resolution ??
+      options.parameters?.videoResolution ??
+      '',
+  ).toLowerCase();
+  if (
+    isGrokImagineVideo15(options.modelAlias) &&
+    (inputSet.lastFrame || referenceCount > 0) &&
+    /(1080|1440|2160|4k)/.test(resolution)
+  ) {
+    issues.push({
+      code: 'UNSUPPORTED_INPUT_COMBINATION',
+      message: 'grok-imagine-video-1.5 的参考图或尾帧合同最高 720p',
+    });
+  }
 
   return {
     operation: inferVideoOperation(inputSet),
