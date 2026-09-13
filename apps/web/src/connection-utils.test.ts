@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import type { Connection } from '@xyflow/react';
 
 import {
+  buildConnectedGenerateNodeConnection,
+  getConnectionDropCreateGroups,
+  getConnectionDropNodePosition,
   needsVideoImageRoleChoice,
   resolveCanvasConnectionTargetHandle,
   validateCanvasConnection,
@@ -196,5 +199,114 @@ describe('canvas connection validation', () => {
       reason: 'duplicate',
     });
     expect(edges).toHaveLength(2);
+  });
+});
+
+describe('connection drop create options', () => {
+  it('offers image-to-image and video first-frame actions from an image output', () => {
+    const groups = getConnectionDropCreateGroups({
+      node: node('source', 'image'),
+      handleType: 'source',
+      handleId: 'output:image',
+    });
+
+    expect(groups.map((group) => group.mediaType)).toEqual(['image', 'video']);
+    expect(groups[0]?.options.map((option) => option.label)).toEqual(['图生图']);
+    expect(groups[1]?.options.map((option) => [option.label, option.role])).toEqual([
+      ['视频首帧', 'firstFrame'],
+      ['视频尾帧', 'lastFrame'],
+      ['视频角色', 'character'],
+      ['视频风格', 'style'],
+      ['视频参考图', 'referenceImage'],
+    ]);
+  });
+
+  it('offers prompt-driven media nodes from a text output', () => {
+    const groups = getConnectionDropCreateGroups({
+      node: node('prompt', 'text'),
+      handleType: 'source',
+      handleId: 'output:text',
+    });
+
+    expect(groups.flatMap((group) => group.options.map((option) => option.label))).toEqual([
+      '文生文',
+      '文生图',
+      '文生音频',
+      '文生视频',
+    ]);
+  });
+
+  it('only offers image nodes when dragging out of a video first-frame input', () => {
+    const groups = getConnectionDropCreateGroups({
+      node: node('target', 'video'),
+      handleType: 'target',
+      handleId: 'input:firstFrame',
+    });
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.options).toEqual([
+      expect.objectContaining({
+        mediaType: 'image',
+        role: 'firstFrame',
+        label: '创建图片节点',
+      }),
+    ]);
+  });
+
+  it('places downstream nodes at the drop x and upstream nodes to the left', () => {
+    expect(getConnectionDropNodePosition({ x: 220, y: 160 }, 'image', 'source')).toEqual({
+      x: 220,
+      y: 27,
+    });
+    expect(getConnectionDropNodePosition({ x: 220, y: 160 }, 'image', 'target')).toEqual({
+      x: -180,
+      y: 27,
+    });
+  });
+
+  it('builds downstream and upstream connections from a drop-create request', () => {
+    const existing = node('image-1', 'image');
+    expect(
+      buildConnectedGenerateNodeConnection(
+        {
+          mediaType: 'video',
+          position: { x: 10, y: 20 },
+          existingNodeId: existing.id,
+          handleType: 'source',
+          handleId: 'output:image',
+          role: 'firstFrame',
+          label: '视频首帧',
+        },
+        'video-1',
+        existing,
+      ),
+    ).toEqual({
+      source: 'image-1',
+      sourceHandle: 'output:image',
+      target: 'video-1',
+      targetHandle: 'input:firstFrame',
+    });
+
+    const video = node('video-1', 'video');
+    expect(
+      buildConnectedGenerateNodeConnection(
+        {
+          mediaType: 'image',
+          position: { x: 10, y: 20 },
+          existingNodeId: video.id,
+          handleType: 'target',
+          handleId: 'input:firstFrame',
+          role: 'firstFrame',
+          label: '创建图片节点',
+        },
+        'image-2',
+        video,
+      ),
+    ).toEqual({
+      source: 'image-2',
+      sourceHandle: 'output:image',
+      target: 'video-1',
+      targetHandle: 'input:firstFrame',
+    });
   });
 });

@@ -78,7 +78,12 @@ import {
   sha256Hex,
 } from './upload-utils';
 import { createUniqueNodeLabel } from './app-contract-utils';
-import { validateResolvedCanvasConnection, validateCanvasConnection } from './connection-utils';
+import {
+  buildConnectedGenerateNodeConnection,
+  validateResolvedCanvasConnection,
+  validateCanvasConnection,
+  type ConnectedGenerateNodeRequest,
+} from './connection-utils';
 import { isCanvasShortcutTarget } from './keyboard-utils';
 import { isImeKeyboardEvent, useImeDraft } from './ime';
 import { downloadProjectExport, fetchProjectExport, type ProjectExportKind } from './export-utils';
@@ -1504,6 +1509,47 @@ function WorkspaceApp({
     [appendNodesAndSelect, createGenerateNode, nodes.length, rememberHistory],
   );
 
+  /**
+   * 从悬空连线创建生成节点，并在同一次历史记录里连到拖线起点。
+   * @param request 新建节点位置、媒体类型和连线角色。
+   */
+  const handleAddConnectedGenerateNode = useCallback(
+    (request: ConnectedGenerateNodeRequest) => {
+      const existing = nodesRef.current.find((node) => node.id === request.existingNodeId);
+      if (!existing) return;
+      const node = createGenerateNode(request.mediaType, request.position);
+      const connection = buildConnectedGenerateNodeConnection(request, node.id, existing);
+      const validation = validateCanvasConnection(
+        connection,
+        [...nodesRef.current, node],
+        edgesRef.current,
+      );
+      if (!validation.ok) {
+        if (validation.reason === 'cycle') {
+          setNotice({ kind: 'error', message: '不能创建循环依赖' });
+        }
+        return;
+      }
+      rememberHistory();
+      appendNodesAndSelect([node]);
+      setEdges((current) => [
+        ...current,
+        {
+          ...connection,
+          id: `edge_${connection.source}_${connection.target}_${Date.now()}`,
+          animated: true,
+        },
+      ]);
+      canvasDirtyRef.current = true;
+      setNotice(
+        nodePreferenceNoticeRef.current
+          ? { kind: 'error', message: `节点已添加并连线；${nodePreferenceNoticeRef.current}` }
+          : { kind: 'success', message: `${request.label}已创建并连线` },
+      );
+    },
+    [appendNodesAndSelect, createGenerateNode, rememberHistory, setEdges],
+  );
+
   const handleConnect = useCallback(
     (connection: Connection) => {
       const validation = validateResolvedCanvasConnection(connection, nodes, edges);
@@ -2630,6 +2676,7 @@ function WorkspaceApp({
             onDeleteNode={(nodeId) => deleteCanvasSelection([nodeId])}
             nodeContentHandlers={nodeContentHandlers}
             onAddGenerateNode={handleAddGenerateNode}
+            onAddConnectedGenerateNode={handleAddConnectedGenerateNode}
             onCanvasCenterChange={updateCanvasCenterPosition}
             onRequestUpload={() => uploadInputRef.current?.click()}
             onClearCanvas={clearCanvas}

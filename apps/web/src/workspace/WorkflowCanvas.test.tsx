@@ -11,6 +11,11 @@ const reactFlowMock = vi.hoisted(() => ({
   getZoom: vi.fn(() => 1),
   setCenter: vi.fn(),
   fitView: vi.fn(() => Promise.resolve(true)),
+  onConnectStart: undefined as
+    ((event: MouseEvent, params: Record<string, unknown>) => void) | undefined,
+  onConnectEnd: undefined as
+    | ((event: MouseEvent, state: { toHandle?: unknown; toNode?: { id?: string } | null }) => void)
+    | undefined,
 }));
 
 vi.mock('@xyflow/react', async () => {
@@ -25,6 +30,8 @@ vi.mock('@xyflow/react', async () => {
     onNodeContextMenu,
     onPaneClick,
     onPaneContextMenu,
+    onConnectStart,
+    onConnectEnd,
     defaultEdgeOptions,
     edgeTypes,
     minZoom,
@@ -41,10 +48,17 @@ vi.mock('@xyflow/react', async () => {
     onNodeContextMenu?: (event: React.MouseEvent, node: AssetFlowNode) => void;
     onPaneClick?: () => void;
     onPaneContextMenu?: React.MouseEventHandler<HTMLDivElement>;
+    onConnectStart?: (event: MouseEvent, params: Record<string, unknown>) => void;
+    onConnectEnd?: (
+      event: MouseEvent,
+      state: { toHandle?: unknown; toNode?: { id?: string } | null },
+    ) => void;
     minZoom?: number;
     fitViewOptions?: { minZoom?: number };
     children?: React.ReactNode;
   }) {
+    reactFlowMock.onConnectStart = onConnectStart;
+    reactFlowMock.onConnectEnd = onConnectEnd;
     return (
       <div
         data-testid="react-flow"
@@ -182,6 +196,7 @@ function createProps(overrides: Partial<WorkflowCanvasProps> = {}): WorkflowCanv
     onRunNode: vi.fn(),
     onDeleteNode: vi.fn(),
     onAddGenerateNode: vi.fn(),
+    onAddConnectedGenerateNode: vi.fn(),
     onCanvasCenterChange: vi.fn(),
     onRequestUpload: vi.fn(),
     onOpenProjectHub: vi.fn(),
@@ -195,6 +210,9 @@ afterEach(() => {
   reactFlowMock.getZoom.mockClear();
   reactFlowMock.setCenter.mockClear();
   reactFlowMock.fitView.mockClear();
+  reactFlowMock.onConnectStart = undefined;
+  reactFlowMock.onConnectEnd = undefined;
+  vi.restoreAllMocks();
 });
 
 describe('WorkflowCanvas context menu', () => {
@@ -485,5 +503,105 @@ describe('WorkflowCanvas context menu', () => {
       minZoom: 0.25,
       duration: 220,
     });
+  });
+});
+
+describe('WorkflowCanvas connection drop create', () => {
+  function dropConnectionOnPane(
+    node: AssetFlowNode,
+    client = { x: 320, y: 210 },
+    handleType: 'source' | 'target' = 'source',
+    handleId?: string,
+  ) {
+    Object.defineProperty(document, 'elementsFromPoint', {
+      configurable: true,
+      writable: true,
+      value: () => [],
+    });
+    const event = new MouseEvent('mouseup', {
+      bubbles: true,
+      clientX: client.x,
+      clientY: client.y,
+    });
+    reactFlowMock.onConnectStart?.(event, {
+      nodeId: node.id,
+      handleId: handleId ?? `output:${node.data.mediaType}`,
+      handleType,
+    });
+    reactFlowMock.onConnectEnd?.(event, { toHandle: null, toNode: null });
+  }
+
+  it('opens a create menu at the drop point when a line is released on empty canvas', async () => {
+    const user = userEvent.setup();
+    const props = createProps({ nodes: [generateNode] });
+    render(<WorkflowCanvas {...props} />);
+
+    dropConnectionOnPane(generateNode);
+    fireEvent.click(screen.getByTestId('canvas-pane'));
+
+    const menu = await screen.findByRole('menu', { name: '选择要创建的节点' });
+    expect(menu).toHaveStyle({ left: '320px', top: '210px' });
+    expect(screen.getByRole('menuitem', { name: '图生图' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: '视频首帧' })).toBeInTheDocument();
+    expect(props.onConnect).not.toHaveBeenCalled();
+    expect(props.onClearNodeSelection).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('menuitem', { name: '图生图' }));
+    expect(props.onAddConnectedGenerateNode).toHaveBeenCalledWith({
+      mediaType: 'image',
+      position: { x: 220, y: 27 },
+      existingNodeId: generateNode.id,
+      handleType: 'source',
+      handleId: 'output:image',
+      role: 'content',
+      label: '图生图',
+    });
+    expect(screen.queryByRole('menu', { name: '选择要创建的节点' })).not.toBeInTheDocument();
+  });
+
+  it('creates a video node as first frame from an image output drop', async () => {
+    const user = userEvent.setup();
+    const props = createProps({ nodes: [generateNode] });
+    render(<WorkflowCanvas {...props} />);
+
+    dropConnectionOnPane(generateNode, { x: 260, y: 180 });
+    await user.click(await screen.findByRole('menuitem', { name: '视频首帧' }));
+
+    expect(props.onAddConnectedGenerateNode).toHaveBeenCalledWith({
+      mediaType: 'video',
+      position: { x: 160, y: -3 },
+      existingNodeId: generateNode.id,
+      handleType: 'source',
+      handleId: 'output:image',
+      role: 'firstFrame',
+      label: '视频首帧',
+    });
+  });
+
+  it('still connects when the line is released on another node body', () => {
+    const props = createProps({ nodes: [generateNode, sourceNode] });
+    render(<WorkflowCanvas {...props} />);
+    const target = screen.getByTestId(`canvas-node-${sourceNode.id}`);
+    Object.defineProperty(document, 'elementsFromPoint', {
+      configurable: true,
+      writable: true,
+      value: () => [target],
+    });
+
+    const event = new MouseEvent('mouseup', { bubbles: true, clientX: 140, clientY: 120 });
+    reactFlowMock.onConnectStart?.(event, {
+      nodeId: generateNode.id,
+      handleId: 'output:image',
+      handleType: 'source',
+    });
+    reactFlowMock.onConnectEnd?.(event, { toHandle: null, toNode: null });
+
+    expect(props.onConnect).toHaveBeenCalledWith({
+      source: generateNode.id,
+      sourceHandle: 'output:image',
+      target: sourceNode.id,
+      targetHandle: null,
+    });
+    expect(screen.queryByRole('menu', { name: '选择要创建的节点' })).not.toBeInTheDocument();
   });
 });

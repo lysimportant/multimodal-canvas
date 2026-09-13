@@ -5,6 +5,7 @@ import {
   ReactFlow,
   useReactFlow,
   type Connection,
+  type FinalConnectionState,
   type OnConnectStartParams,
   type OnEdgesChange,
   type OnNodesChange,
@@ -34,7 +35,6 @@ import type {
 import type { CanvasTheme } from '../state/workspace-preferences';
 import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
 import { getNewNodeDimensions } from '../canvas-utils';
-import { needsVideoImageRoleChoice } from '../connection-utils';
 import {
   NodeResizeContext,
   NodeDeleteContext,
@@ -64,6 +64,11 @@ import {
   type NodeQuickEditorProps,
 } from './NodeQuickEditor';
 import { getCenteredCanvasNodePosition } from './canvas-position';
+import {
+  getConnectionDropCreateGroups,
+  needsVideoImageRoleChoice,
+  type ConnectedGenerateNodeRequest,
+} from '../connection-utils';
 import {
   ASSET_DRAG_TYPE,
   type CanvasBackground,
@@ -153,6 +158,8 @@ export type WorkflowCanvasProps = {
   /** 当前节点上传和文本编辑的持久化接口。 */
   nodeContentHandlers?: NodeContentHandlers;
   onAddGenerateNode: (mediaType: MediaType, position?: { x: number; y: number }) => void;
+  /** 从悬空连线创建生成节点并立刻连到拖线起点。 */
+  onAddConnectedGenerateNode: (request: ConnectedGenerateNodeRequest) => void;
   onCanvasCenterChange: (position: { x: number; y: number }) => void;
   onRequestUpload: () => void;
   /** 清空画布并由 App 负责确认、历史记录与脏状态。 */
@@ -209,6 +216,7 @@ export function WorkflowCanvas({
   onDeleteNode,
   nodeContentHandlers,
   onAddGenerateNode,
+  onAddConnectedGenerateNode,
   onCanvasCenterChange,
   onRequestUpload,
   onClearCanvas,
@@ -226,6 +234,8 @@ export function WorkflowCanvas({
   const { screenToFlowPosition, getNodesBounds, getZoom, setCenter, fitView } = useReactFlow();
   const canvasAreaRef = useRef<HTMLElement>(null);
   const connectionStartRef = useRef<OnConnectStartParams | null>(null);
+  /** 吞掉拖线松手后紧随而来的 pane click，避免菜单刚弹出就被关掉。 */
+  const suppressPaneClickRef = useRef(false);
   const [contextMenu, setContextMenu] = useState<CanvasContextMenuTarget | null>(null);
   const [videoImageRolePicker, setVideoImageRolePicker] =
     useState<VideoInputRolePickerTarget | null>(null);
@@ -382,47 +392,84 @@ export function WorkflowCanvas({
   );
 
   const handleConnectEnd = useCallback(
-    (event: MouseEvent | TouchEvent, state: { toHandle?: unknown }) => {
+    (event: MouseEvent | TouchEvent, state: FinalConnectionState) => {
       const start = connectionStartRef.current;
       connectionStartRef.current = null;
       if (!start?.nodeId || state.toHandle) return;
+      // Escape 取消连线时 React Flow 仍会触发 onConnectEnd，不能弹出创建菜单。
+      if ('key' in event) return;
 
       const point =
         'changedTouches' in event
           ? event.changedTouches.item(0)
           : { clientX: event.clientX, clientY: event.clientY };
       if (!point) return;
-      const nodeElement = document
-        .elementsFromPoint(point.clientX, point.clientY)
+      const hitElements =
+        typeof document.elementsFromPoint === 'function'
+          ? document.elementsFromPoint(point.clientX, point.clientY)
+          : [];
+      const nodeElement = hitElements
         .map((element) => element.closest<HTMLElement>('.react-flow__node[data-id]'))
         .find(Boolean);
-      const targetNodeId = nodeElement?.dataset.id;
-      if (!targetNodeId || targetNodeId === start.nodeId) return;
+      const targetNodeId =
+        (typeof state.toNode?.id === 'string' ? state.toNode.id : undefined) ??
+        nodeElement?.dataset.id;
 
-      const connection: Connection =
-        start.handleType === 'target'
-          ? {
-              source: targetNodeId,
-              sourceHandle: null,
-              target: start.nodeId,
-              targetHandle: start.handleId,
-            }
-          : {
-              source: start.nodeId,
-              sourceHandle: start.handleId,
-              target: targetNodeId,
-              targetHandle: null,
-            };
-      if (needsVideoImageRoleChoice(connection, nodes)) {
-        setVideoImageRolePicker({
-          connection,
-          clientPosition: { x: point.clientX, y: point.clientY },
-        });
+      if (targetNodeId && targetNodeId !== start.nodeId) {
+        const connection: Connection =
+          start.handleType === 'target'
+            ? {
+                source: targetNodeId,
+                sourceHandle: null,
+                target: start.nodeId,
+                targetHandle: start.handleId,
+              }
+            : {
+                source: start.nodeId,
+                sourceHandle: start.handleId,
+                target: targetNodeId,
+                targetHandle: null,
+              };
+        if (needsVideoImageRoleChoice(connection, nodes)) {
+          setVideoImageRolePicker({
+            connection,
+            clientPosition: { x: point.clientX, y: point.clientY },
+          });
+          return;
+        }
+        onConnect(connection);
         return;
       }
-      onConnect(connection);
+
+      if (targetNodeId === start.nodeId) return;
+
+      const sourceNode = nodes.find((node) => node.id === start.nodeId);
+      if (!sourceNode) return;
+      const handleType = start.handleType === 'target' ? 'target' : 'source';
+      const groups = getConnectionDropCreateGroups({
+        node: sourceNode,
+        handleType,
+        handleId: start.handleId ?? null,
+      });
+      if (groups.length === 0) return;
+
+      suppressPaneClickRef.current = true;
+      window.setTimeout(() => {
+        suppressPaneClickRef.current = false;
+      }, 0);
+      setVideoImageRolePicker(null);
+      setContextMenu({
+        kind: 'connection-drop',
+        clientPosition: { x: point.clientX, y: point.clientY },
+        flowPosition: screenToFlowPosition({ x: point.clientX, y: point.clientY }),
+        sourceNode,
+        handleType,
+        handleId: start.handleId ?? null,
+        groups,
+        returnFocusTo: canvasAreaRef.current,
+      });
     },
-    [nodes, onConnect],
+    [nodes, onConnect, screenToFlowPosition],
   );
 
   const handleFlowConnect = useCallback(
@@ -519,6 +566,10 @@ export function WorkflowCanvas({
                           }
                           onPaneContextMenu={handlePaneContextMenu}
                           onPaneClick={() => {
+                            if (suppressPaneClickRef.current) {
+                              suppressPaneClickRef.current = false;
+                              return;
+                            }
                             setContextMenu(null);
                             onClearNodeSelection();
                           }}
@@ -667,6 +718,7 @@ export function WorkflowCanvas({
           onNodeEnabledChange={onNodeEnabledChange}
           onDeleteNode={(nodeId) => onDeleteNode?.(nodeId)}
           onAddGenerateNode={onAddGenerateNode}
+          onAddConnectedGenerateNode={onAddConnectedGenerateNode}
           onRequestUpload={onRequestUpload}
           onClose={handleContextMenuClose}
         />

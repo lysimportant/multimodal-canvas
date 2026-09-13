@@ -143,10 +143,17 @@ vi.mock('@xyflow/react', async () => {
     onNodeMouseLeave,
     onPaneClick,
     onConnect,
+    onConnectStart,
+    onConnectEnd,
     children,
   }: {
     nodes: Array<{ id: string; type?: string; data: unknown; selected?: boolean }>;
-    edges: Array<{ id: string; source: string; target: string }>;
+    edges: Array<{
+      id: string;
+      source: string;
+      target: string;
+      targetHandle?: string | null;
+    }>;
     nodeTypes: Record<
       string,
       React.ComponentType<{ id: string; data: unknown; selected?: boolean }>
@@ -157,17 +164,35 @@ vi.mock('@xyflow/react', async () => {
     onNodeMouseLeave?: (event: unknown, node: unknown) => void;
     onPaneClick?: () => void;
     onConnect?: (connection: FlowConnection) => void;
+    onConnectStart?: (
+      event: MouseEvent,
+      params: {
+        nodeId: string | null;
+        handleId: string | null;
+        handleType: 'source' | 'target' | null;
+      },
+    ) => void;
+    onConnectEnd?: (
+      event: MouseEvent,
+      state: { toHandle?: unknown; toNode?: { id?: string } | null },
+    ) => void;
     children?: React.ReactNode;
   }) {
     const [pending, setPending] = React.useState<{
       nodeId: string;
       handleId: string | null;
+      handleType: 'source' | 'target';
     } | null>(null);
 
     const connectHandle = React.useCallback(
       (nodeId: string, type: 'source' | 'target', handleId: string | null) => {
         if (!pending) {
-          if (type === 'source') setPending({ nodeId, handleId });
+          onConnectStart?.(new MouseEvent('mousedown'), {
+            nodeId,
+            handleId,
+            handleType: type,
+          });
+          setPending({ nodeId, handleId, handleType: type });
           return;
         }
         if (type === 'target') {
@@ -180,9 +205,14 @@ vi.mock('@xyflow/react', async () => {
           setPending(null);
           return;
         }
-        setPending({ nodeId, handleId });
+        onConnectStart?.(new MouseEvent('mousedown'), {
+          nodeId,
+          handleId,
+          handleType: type,
+        });
+        setPending({ nodeId, handleId, handleType: type });
       },
-      [onConnect, pending],
+      [onConnect, onConnectStart, pending],
     );
 
     return (
@@ -192,7 +222,18 @@ vi.mock('@xyflow/react', async () => {
             type="button"
             className="react-flow__pane"
             aria-label="画布空白"
-            onClick={onPaneClick}
+            onClick={(event) => {
+              if (pending) {
+                Object.defineProperty(document, 'elementsFromPoint', {
+                  configurable: true,
+                  writable: true,
+                  value: () => [],
+                });
+                onConnectEnd?.(event.nativeEvent, { toHandle: null, toNode: null });
+                setPending(null);
+              }
+              onPaneClick?.();
+            }}
           />
           <div className="react-flow__nodes">
             {nodes.map((node) => {
@@ -203,6 +244,7 @@ vi.mock('@xyflow/react', async () => {
                   key={node.id}
                   data-testid="flow-node"
                   data-node-id={node.id}
+                  data-id={node.id}
                   className="react-flow__node"
                   onMouseEnter={(event) => onNodeMouseEnter?.(event, node)}
                   onMouseLeave={(event) => onNodeMouseLeave?.(event, node)}
@@ -235,6 +277,7 @@ vi.mock('@xyflow/react', async () => {
                 data-edge-id={edge.id}
                 data-source={edge.source}
                 data-target={edge.target}
+                data-target-handle={edge.targetHandle ?? ''}
               />
             ))}
           </div>
@@ -1060,5 +1103,47 @@ describe('画布编辑器交互', () => {
     await user.click(handleFor(imageNode, 'input:content'));
     expect(screen.getByRole('alert')).toHaveTextContent('不能创建循环依赖');
     expect(screen.queryAllByTestId('flow-edge')).toHaveLength(1);
+  });
+
+  it('从图片节点拖线到空白处可创建图生图节点并连上内容口', async () => {
+    const { user } = await renderCanvas();
+
+    await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
+    const source = findNodeByLabel('图片生成节点')!;
+    await user.click(handleFor(source, 'output:image'));
+    await user.click(screen.getByRole('button', { name: '画布空白' }));
+
+    expect(await screen.findByRole('menu', { name: '选择要创建的节点' })).toBeInTheDocument();
+    await user.click(screen.getByRole('menuitem', { name: '图生图' }));
+
+    const created = await waitFor(() => {
+      const node = findNodeByLabel('图片生成节点 2');
+      expect(node).toBeTruthy();
+      return node!;
+    });
+    const edge = screen.getByTestId('flow-edge');
+    expect(edge).toHaveAttribute('data-source', source.getAttribute('data-id'));
+    expect(edge).toHaveAttribute('data-target', created.getAttribute('data-id'));
+    expect(edge).toHaveAttribute('data-target-handle', 'input:content');
+  });
+
+  it('从图片节点拖线到空白处可创建视频首帧节点并连线', async () => {
+    const { user } = await renderCanvas();
+
+    await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
+    const source = findNodeByLabel('图片生成节点')!;
+    await user.click(handleFor(source, 'output:image'));
+    await user.click(screen.getByRole('button', { name: '画布空白' }));
+    await user.click(await screen.findByRole('menuitem', { name: '视频首帧' }));
+
+    const created = await waitFor(() => {
+      const node = findNodeByLabel('视频生成节点');
+      expect(node).toBeTruthy();
+      return node!;
+    });
+    const edge = screen.getByTestId('flow-edge');
+    expect(edge).toHaveAttribute('data-source', source.getAttribute('data-id'));
+    expect(edge).toHaveAttribute('data-target', created.getAttribute('data-id'));
+    expect(edge).toHaveAttribute('data-target-handle', 'input:firstFrame');
   });
 });
