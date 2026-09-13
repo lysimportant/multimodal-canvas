@@ -25,6 +25,7 @@ import {
 } from 'react';
 
 import type { Asset, MediaType, PromptDocument } from '@multimodal-canvas/domain';
+import type { CanvasTheme } from '../state/workspace-preferences';
 import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
 import { getNewNodeDimensions } from '../canvas-utils';
 import {
@@ -43,7 +44,7 @@ import {
   type NodeResizeHandler,
 } from './AssetNode';
 import { CanvasNodeToolbar } from './CanvasNodeToolbar';
-import { FlowingCanvasEdge } from './FlowingCanvasEdge';
+import { FlowingCanvasEdge, FlowingConnectionLine } from './FlowingCanvasEdge';
 import {
   CanvasContextMenu,
   type CanvasContextMenuCloseReason,
@@ -153,8 +154,10 @@ export type WorkflowCanvasProps = {
   onRedoCanvas?: () => void;
   /** 打开搜索/命令面板。 */
   onOpenSearch?: () => void;
-  /** 打开画布背景选择器。 */
-  onOpenBackground?: () => void;
+  /** 当前界面主题。 */
+  canvasTheme?: CanvasTheme;
+  /** 从底部胶囊切换主题。 */
+  onThemeChange?: (theme: CanvasTheme) => void;
   /** 底部工具栏清空按钮是否可用。 */
   canClearCanvas?: boolean;
   /** 底部工具栏撤销按钮是否可用。 */
@@ -200,7 +203,8 @@ export function WorkflowCanvas({
   onUndoCanvas,
   onRedoCanvas,
   onOpenSearch,
-  onOpenBackground,
+  canvasTheme,
+  onThemeChange,
   canClearCanvas,
   canUndo,
   canRedo,
@@ -420,7 +424,8 @@ export function WorkflowCanvas({
         onUndoCanvas={onUndoCanvas}
         onRedoCanvas={onRedoCanvas}
         onOpenSearch={onOpenSearch}
-        onOpenBackground={onOpenBackground}
+        canvasTheme={canvasTheme}
+        onThemeChange={onThemeChange}
         canClearCanvas={canClearCanvas ?? (nodes.length > 0 || edges.length > 0)}
         canUndo={canUndo}
         canRedo={canRedo}
@@ -439,6 +444,7 @@ export function WorkflowCanvas({
                           edges={edges}
                           nodeTypes={nodeTypes}
                           edgeTypes={canvasEdgeTypes}
+                          connectionLineComponent={FlowingConnectionLine}
                           onNodesChange={onNodesChange}
                           onEdgesChange={onEdgesChange}
                           onConnect={onConnect}

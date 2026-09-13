@@ -2807,11 +2807,8 @@ function WorkspaceApp({
               setShowThemeMenu(false);
               setShowCommandPalette(true);
             }}
-            onOpenBackground={() => {
-              setShowThemeMenu(false);
-              setShowCommandPalette(false);
-              setShowBackgroundMenu((current) => !current);
-            }}
+            canvasTheme={canvasTheme}
+            onThemeChange={setCanvasTheme}
             canClearCanvas={nodes.length > 0 || edges.length > 0}
             canUndo={historyRef.current.past.length > 0}
             canRedo={historyRef.current.future.length > 0}

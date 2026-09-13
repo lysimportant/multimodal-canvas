@@ -82,7 +82,7 @@ describe('workspace modules', () => {
       onUndo: vi.fn(),
       onRedo: vi.fn(),
       onSearch: vi.fn(),
-      onBackground: vi.fn(),
+      onTheme: vi.fn(),
       onFit: vi.fn(),
     };
     render(
@@ -93,7 +93,8 @@ describe('workspace modules', () => {
         onUndoCanvas={callbacks.onUndo}
         onRedoCanvas={callbacks.onRedo}
         onOpenSearch={callbacks.onSearch}
-        onOpenBackground={callbacks.onBackground}
+        canvasTheme="eye-care"
+        onThemeChange={callbacks.onTheme}
         onFitView={callbacks.onFit}
         canClearCanvas={false}
         canUndo={false}
@@ -109,14 +110,21 @@ describe('workspace modules', () => {
     await user.click(screen.getByRole('button', { name: '上传资产' }));
     await user.click(screen.getByRole('button', { name: '画布重做' }));
     await user.click(screen.getByRole('button', { name: '搜索' }));
-    await user.click(screen.getByRole('button', { name: '背景' }));
     await user.click(screen.getByRole('button', { name: '自动适配缩放' }));
 
     expect(callbacks.onUpload).toHaveBeenCalledTimes(1);
     expect(callbacks.onRedo).toHaveBeenCalledTimes(1);
     expect(callbacks.onSearch).toHaveBeenCalledTimes(1);
     expect(callbacks.onFit).toHaveBeenCalledTimes(1);
-    expect(callbacks.onBackground).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole('button', { name: '切换主题' }));
+    const themeMenu = screen.getByRole('listbox', { name: '界面主题' });
+    expect(themeMenu).toBeVisible();
+    expect(themeMenu).toHaveClass('canvas-node-theme-menu');
+    expect(themeMenu.closest('.canvas-node-theme-control')).not.toBeNull();
+    expect(themeMenu.closest('.canvas-node-tools')).toHaveClass('is-theme-menu-open');
+    await user.click(screen.getByRole('option', { name: '深色' }));
+    expect(callbacks.onTheme).toHaveBeenCalledWith('dark');
     expect(callbacks.onClear).not.toHaveBeenCalled();
     expect(callbacks.onUndo).not.toHaveBeenCalled();
   });

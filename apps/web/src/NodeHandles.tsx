@@ -134,12 +134,11 @@ type NodeHandlesProps = {
 };
 
 /**
- * 渲染四边居中可见锚点，并把额外语义输入叠在节点边框上，
- * 避免隐藏锚点外移导致连线停在可见圆点外侧。
+ * 渲染四边居中可见锚点。额外语义输入叠在左侧可见锚点圆心，
+ * 保证任意角色的连线都吸附到同一个可见圆点，而不是沿边框错位。
  */
 export function NodeHandles({ mediaType, mode }: NodeHandlesProps) {
   const layout = getNodeHandleLayout(mediaType, mode);
-  const targetRoles = mode === 'source' ? [] : targetPortRolesForMediaType(mediaType);
 
   return (
     <>
@@ -165,11 +164,7 @@ export function NodeHandles({ mediaType, mode }: NodeHandlesProps) {
           position={Position.Left}
           id={`input:${role}`}
           title={inputRoleLabels[role]}
-          style={{
-            top: `${((targetRoles.indexOf(role) + 1) / (targetRoles.length + 1)) * 100}%`,
-            left: 0,
-            transform: 'translate(-50%, -50%)',
-          }}
+          style={centeredSideStyles.left}
           isConnectable
         />
       ))}

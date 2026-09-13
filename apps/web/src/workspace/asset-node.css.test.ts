@@ -23,9 +23,12 @@ describe('asset node floating controls CSS contracts', () => {
     expect(normalizedCss).toContain('transform-origin: bottom center;');
     expect(normalizedCss).toContain('left: 50%;');
     expect(normalizedCss).toContain('width: max-content;');
+    expect(normalizedCss).toContain('gap: 12px;');
+    expect(normalizedCss).toContain('padding: 8px 14px;');
     expect(normalizedCss).toMatch(
-      /\.flow-node-floating-controls \.flow-node-action-button \{[^}]*min-width: 28px;/,
+      /\.flow-node-floating-controls \.flow-node-action-button \{[^}]*min-width: max-content;/,
     );
+    expect(normalizedCss).toMatch(/\.flow-node-action-label \{[^}]*font-size: 13px;/);
     expect(normalizedCss).toMatch(/\.flow-node-action-label \{[^}]*display: inline;/);
   });
 });

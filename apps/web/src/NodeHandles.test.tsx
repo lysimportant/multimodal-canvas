@@ -78,7 +78,7 @@ describe('NodeHandles', () => {
     expect(
       Array.from(container.querySelectorAll('.flow-node-semantic-handle')).every(
         (handle) =>
-          (handle as HTMLElement).style.top.length > 0 &&
+          (handle as HTMLElement).style.top === '50%' &&
           (handle as HTMLElement).style.left === '0px' &&
           (handle as HTMLElement).style.transform === 'translate(-50%, -50%)',
       ),
@@ -93,6 +93,30 @@ describe('NodeHandles', () => {
       ['input:prompt', 'input:firstFrame', 'input:negativePrompt'],
     );
   });
+
+  it.each(['text', 'image', 'audio', 'video'] as const)(
+    '%s 节点四边可见锚点都使用同一套居中坐标',
+    (mediaType) => {
+      const { container } = render(<NodeHandles mediaType={mediaType} mode="generate" />);
+      const visible = Array.from(container.querySelectorAll('.flow-node-handle')) as HTMLElement[];
+      expect(visible.map((handle) => handle.getAttribute('data-handle-side'))).toEqual([
+        'top',
+        'right',
+        'bottom',
+        'left',
+      ]);
+      expect(visible.map((handle) => handle.style.transform)).toEqual([
+        'translate(-50%, -50%)',
+        'translate(50%, -50%)',
+        'translate(-50%, 50%)',
+        'translate(-50%, -50%)',
+      ]);
+      expect(visible[0].style.top).toBe('0px');
+      expect(visible[1].style.right).toBe('0px');
+      expect(visible[2].style.bottom).toBe('0px');
+      expect(visible[3].style.left).toBe('0px');
+    },
+  );
 
   it('does not expose connectable input handles on source nodes', () => {
     const { container } = render(<NodeHandles mediaType="image" mode="source" />);

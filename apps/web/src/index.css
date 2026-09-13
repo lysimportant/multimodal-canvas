@@ -7,10 +7,13 @@
     BlinkMacSystemFont,
     'Segoe UI',
     sans-serif;
-  color: #18212f;
-  background: #f7f8fa;
+  color: var(--mc-text, #18212f);
+  background: var(--mc-page-bg, #f7f8fa);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
+  transition:
+    background-color 320ms ease,
+    color 240ms ease;
 }
 
 * {
@@ -20,6 +23,9 @@
 body {
   margin: 0;
   min-height: 100vh;
+  transition:
+    background-color 320ms ease,
+    color 240ms ease;
 }
 
 /* Modal surfaces own the scroll area while they are open. This prevents the
@@ -904,6 +910,41 @@ h2 {
 .canvas-node-tool-group {
   display: inline-flex;
   gap: 4px;
+}
+
+.canvas-node-theme-control {
+  pointer-events: auto;
+  position: relative;
+}
+
+.canvas-node-theme-menu {
+  animation: canvas-node-theme-menu-in 180ms ease-out;
+  background: var(--mc-surface, #ffffff);
+  border: 1px solid var(--mc-border, #e2e7eb);
+  border-radius: 10px;
+  bottom: calc(100% + 10px);
+  box-shadow: 0 12px 28px var(--mc-shadow, rgb(29 46 39 / 16%));
+  display: grid;
+  gap: 3px;
+  left: 50%;
+  min-width: 158px;
+  padding: 6px;
+  pointer-events: auto;
+  position: absolute;
+  transform: translateX(-50%);
+  transform-origin: bottom center;
+  z-index: 30;
+}
+
+@keyframes canvas-node-theme-menu-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(8px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
 }
 
 .canvas-node-tool-transform {
@@ -1902,9 +1943,17 @@ h2 {
   width: 100%;
 }
 
+.react-flow__node-text,
+.react-flow__node-image,
+.react-flow__node-audio,
+.react-flow__node-video {
+  overflow: visible;
+}
+
 .flow-asset-node .react-flow__handle {
   background: #18794e;
   border: 3px solid #ffffff;
+  box-sizing: border-box;
   height: 18px;
   width: 18px;
   z-index: 5;
@@ -3240,8 +3289,10 @@ textarea:focus-visible {
   background: var(--mc-canvas);
   color: var(--mc-text);
   transition:
-    background-color 180ms ease,
-    color 180ms ease;
+    background-color 320ms ease,
+    color 240ms ease,
+    border-color 240ms ease,
+    box-shadow 240ms ease;
 }
 
 .topbar,
@@ -3258,10 +3309,10 @@ textarea:focus-visible {
   border-color: var(--mc-border);
   color: var(--mc-text);
   transition:
-    background-color 180ms ease,
-    color 180ms ease,
-    border-color 180ms ease,
-    box-shadow 180ms ease;
+    background-color 320ms ease,
+    color 240ms ease,
+    border-color 240ms ease,
+    box-shadow 240ms ease;
 }
 
 /* Keep the command bar visually attached to the canvas instead of creating a
@@ -3275,7 +3326,29 @@ textarea:focus-visible {
 
 .canvas-area {
   background: var(--mc-canvas);
-  transition: background-color 180ms ease;
+  transition:
+    background-color 320ms ease,
+    color 240ms ease,
+    border-color 240ms ease,
+    box-shadow 240ms ease;
+}
+
+.app-shell,
+.workspace,
+.resource-panel,
+.mc-app-navigation,
+.canvas-node-tools,
+.flow-asset-node,
+.topbar-tool-cluster,
+.theme-menu,
+.canvas-node-theme-menu,
+.background-menu,
+.notice {
+  transition:
+    background-color 320ms ease,
+    color 240ms ease,
+    border-color 240ms ease,
+    box-shadow 240ms ease;
 }
 
 .brand-mark,
@@ -3994,6 +4067,11 @@ textarea:focus-visible {
   overflow: visible;
 }
 
+.canvas-node-tools.is-theme-menu-open {
+  overflow: visible;
+  z-index: 20;
+}
+
 .canvas-node-tools .canvas-node-tool-group {
   align-items: center;
   flex: 0 0 auto;
@@ -4499,5 +4577,29 @@ textarea:focus-visible {
   .canvas-node-tools .canvas-node-tool,
   .canvas-node-tools .canvas-node-tool-transform {
     flex: 0 0 36px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html,
+  :root,
+  body,
+  .app-shell,
+  .workspace,
+  .resource-panel,
+  .inspector-panel,
+  .mc-app-navigation,
+  .canvas-area,
+  .canvas-node-tools,
+  .flow-asset-node,
+  .topbar-tool-cluster,
+  .theme-menu,
+  .canvas-node-theme-menu,
+  .background-menu,
+  .notice,
+  .node-quick-editor,
+  .react-flow__controls-button {
+    animation: none;
+    transition: none;
   }
 }
