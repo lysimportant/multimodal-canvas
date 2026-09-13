@@ -142,30 +142,27 @@ describe('AssetNode result presentation', () => {
     expect(container.querySelector('video')).not.toHaveAttribute('controls');
   });
 
-  it.each(['generate', 'transform'] as const)(
-    '%s 图片节点输入编辑器打开前点击不预览，打开后再次点击才预览',
-    async (mode) => {
-      const node = makeNode({
-        mediaType: 'image',
-        mode,
-        assetId: 'image',
-        mimeType: 'image/png',
-        contentUrl: 'https://assets.example/image.png',
-      });
-      const view = renderNode(node);
-      await userEvent.click(screen.getByRole('img'));
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-      view.rerender(
-        <NodeQuickEditorIdContext.Provider value={node.id}>
-          <AssetNode
-            {...({ id: node.id, data: node.data, selected: true } as NodeProps<AssetFlowNode>)}
-          />
-        </NodeQuickEditorIdContext.Provider>,
-      );
-      await userEvent.click(screen.getByRole('img'));
-      expect(await screen.findByRole('dialog', { name: '文案生成' })).toBeInTheDocument();
-    },
-  );
+  it('图片节点输入编辑器打开前点击不预览，打开后再次点击才预览', async () => {
+    const node = makeNode({
+      mediaType: 'image',
+      mode: 'generate',
+      assetId: 'image',
+      mimeType: 'image/png',
+      contentUrl: 'https://assets.example/image.png',
+    });
+    const view = renderNode(node);
+    await userEvent.click(screen.getByRole('img'));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    view.rerender(
+      <NodeQuickEditorIdContext.Provider value={node.id}>
+        <AssetNode
+          {...({ id: node.id, data: node.data, selected: true } as NodeProps<AssetFlowNode>)}
+        />
+      </NodeQuickEditorIdContext.Provider>,
+    );
+    await userEvent.click(screen.getByRole('img'));
+    expect(await screen.findByRole('dialog', { name: '文案生成' })).toBeInTheDocument();
+  });
 
   it.each([null, 'another-node'])(
     '多选中的图片不能通过选中状态绕过编辑器：%s',
@@ -356,67 +353,62 @@ describe('AssetNode result presentation', () => {
     expect(screen.getByRole('button', { name: '重命名节点：文案生成' })).toBeInTheDocument();
   });
 
-  it.each(['generate', 'transform'] as const)(
-    '将 %s 节点名称和删除操作集中在唯一顶部栏',
-    async (mode) => {
-      const onDelete = vi.fn();
-      const user = userEvent.setup();
-      const { container } = renderNode(
-        makeNode({ mode }),
-        undefined,
-        vi.fn(),
-        undefined,
-        false,
-        vi.fn(),
-        onDelete,
-      );
+  it('将生成节点名称和删除操作集中在唯一顶部栏', async () => {
+    const onDelete = vi.fn();
+    const user = userEvent.setup();
+    const { container } = renderNode(
+      makeNode({ mode: 'generate' }),
+      undefined,
+      vi.fn(),
+      undefined,
+      false,
+      vi.fn(),
+      onDelete,
+    );
 
-      const toolbar = screen.getByRole('group', { name: '节点操作：文案生成' });
-      expect(toolbar).toHaveClass('flow-node-floating-controls');
-      expect(toolbar).toContainElement(
-        screen.getByRole('button', { name: '重命名节点：文案生成' }),
-      );
-      expect(toolbar.querySelector('.flow-node-label')).toBeNull();
-      expect(toolbar.querySelector('.flow-node-actions')).toBeNull();
-      expect(
-        screen.getByRole('button', { name: '重命名节点：文案生成' }).querySelector('svg'),
-      ).not.toBeNull();
-      expect(screen.getByRole('button', { name: '重命名节点：文案生成' })).toHaveTextContent(
-        '重命名',
-      );
-      expect(toolbar).toContainElement(screen.getByRole('button', { name: '拖动移动节点' }));
-      expect(toolbar).toContainElement(screen.getByRole('button', { name: '查看节点信息' }));
-      expect(toolbar).toContainElement(screen.getByRole('button', { name: '停用节点' }));
-      expect(screen.getByRole('button', { name: '拖动移动节点' })).toHaveTextContent('移动');
-      expect(screen.getByRole('button', { name: '查看节点信息' })).toHaveTextContent('信息');
-      expect(screen.getByRole('button', { name: '停用节点' })).toHaveTextContent('停用');
-      expect(screen.getByRole('button', { name: '删除节点：文案生成' })).toHaveTextContent('删除');
-      expect(screen.getByRole('button', { name: '拖动移动节点' })).toHaveAttribute(
-        'title',
-        '拖动移动节点',
-      );
-      expect(screen.getByRole('button', { name: '查看节点信息' })).toHaveAttribute(
-        'title',
-        '查看节点信息',
-      );
-      expect(screen.getByRole('button', { name: '停用节点' })).toHaveAttribute('title', '停用节点');
-      expect(screen.getByRole('button', { name: '删除节点：文案生成' })).toHaveAttribute(
-        'title',
-        '删除节点',
-      );
-      expect(container.querySelector('.flow-node-placeholder')).not.toContainElement(toolbar);
-      expect(screen.getAllByRole('button', { name: '删除节点：文案生成' })).toHaveLength(1);
-      expect(screen.getByRole('button', { name: '停用节点' }).querySelector('svg')).toHaveAttribute(
-        'width',
-        '18',
-      );
-      expect(
-        screen.getByRole('button', { name: '删除节点：文案生成' }).querySelector('svg'),
-      ).toHaveAttribute('width', '18');
-      await user.click(screen.getByRole('button', { name: '删除节点：文案生成' }));
-      expect(onDelete).toHaveBeenCalledExactlyOnceWith('node_1');
-    },
-  );
+    const toolbar = screen.getByRole('group', { name: '节点操作：文案生成' });
+    expect(toolbar).toHaveClass('flow-node-floating-controls');
+    expect(toolbar).toContainElement(screen.getByRole('button', { name: '重命名节点：文案生成' }));
+    expect(toolbar.querySelector('.flow-node-label')).toBeNull();
+    expect(toolbar.querySelector('.flow-node-actions')).toBeNull();
+    expect(
+      screen.getByRole('button', { name: '重命名节点：文案生成' }).querySelector('svg'),
+    ).not.toBeNull();
+    expect(screen.getByRole('button', { name: '重命名节点：文案生成' })).toHaveTextContent(
+      '重命名',
+    );
+    expect(toolbar).toContainElement(screen.getByRole('button', { name: '拖动移动节点' }));
+    expect(toolbar).toContainElement(screen.getByRole('button', { name: '查看节点信息' }));
+    expect(toolbar).toContainElement(screen.getByRole('button', { name: '停用节点' }));
+    expect(screen.getByRole('button', { name: '拖动移动节点' })).toHaveTextContent('移动');
+    expect(screen.getByRole('button', { name: '查看节点信息' })).toHaveTextContent('信息');
+    expect(screen.getByRole('button', { name: '停用节点' })).toHaveTextContent('停用');
+    expect(screen.getByRole('button', { name: '删除节点：文案生成' })).toHaveTextContent('删除');
+    expect(screen.getByRole('button', { name: '拖动移动节点' })).toHaveAttribute(
+      'title',
+      '拖动移动节点',
+    );
+    expect(screen.getByRole('button', { name: '查看节点信息' })).toHaveAttribute(
+      'title',
+      '查看节点信息',
+    );
+    expect(screen.getByRole('button', { name: '停用节点' })).toHaveAttribute('title', '停用节点');
+    expect(screen.getByRole('button', { name: '删除节点：文案生成' })).toHaveAttribute(
+      'title',
+      '删除节点',
+    );
+    expect(container.querySelector('.flow-node-placeholder')).not.toContainElement(toolbar);
+    expect(screen.getAllByRole('button', { name: '删除节点：文案生成' })).toHaveLength(1);
+    expect(screen.getByRole('button', { name: '停用节点' }).querySelector('svg')).toHaveAttribute(
+      'width',
+      '18',
+    );
+    expect(
+      screen.getByRole('button', { name: '删除节点：文案生成' }).querySelector('svg'),
+    ).toHaveAttribute('width', '18');
+    await user.click(screen.getByRole('button', { name: '删除节点：文案生成' }));
+    expect(onDelete).toHaveBeenCalledExactlyOnceWith('node_1');
+  });
 
   it('点击节点名称后在对话框中保存新名称', async () => {
     const onLabelChange = vi.fn();

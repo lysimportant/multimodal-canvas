@@ -11,12 +11,11 @@ const models: ModelEntry[] = [
 describe('节点模型记忆', () => {
   beforeEach(() => window.localStorage.clear());
 
-  it('保存精确来源并隔离账号、媒体及生成和转换节点', () => {
+  it('保存精确来源并隔离账号与媒体类型', () => {
     const selection = { modelAlias: 'model-a', credentialId: 'provider-a' };
     writeNodeModelPreference('user-a', 'image', 'generate', selection);
     expect(readNodeModelPreference('user-a', 'image', 'generate', models)).toEqual(selection);
     expect(readNodeModelPreference('user-b', 'image', 'generate', models)).toBeUndefined();
-    expect(readNodeModelPreference('user-a', 'image', 'transform', models)).toBeUndefined();
     expect(readNodeModelPreference('user-a', 'text', 'generate', models)).toBeUndefined();
   });
 

@@ -16,7 +16,7 @@ const errorSchema = {
 
 const mediaTypeSchema = { type: 'string', enum: ['text', 'image', 'audio', 'video'] } as const;
 /** 节点执行模式的公开契约。 */
-const nodeModeSchema = { type: 'string', enum: ['source', 'generate', 'transform'] } as const;
+const nodeModeSchema = { type: 'string', enum: ['source', 'generate'] } as const;
 const modelSelectionSchema = {
   type: 'object',
   required: ['modelAlias'],

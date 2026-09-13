@@ -17,7 +17,6 @@ export const mediaLabels: Record<MediaType, string> = {
 export const modeLabels: Record<NodeMode, string> = {
   source: '来源',
   generate: '生成',
-  transform: '转换',
 };
 
 export const mediaIcons: Record<MediaType, typeof FileText> = {

@@ -76,7 +76,7 @@ function NodeFloatingActionLabel({ children }: { children: ReactNode }) {
   return <span className="flow-node-action-label">{children}</span>;
 }
 
-/** 展示节点占位或产物；生成与转换节点的控制栏悬浮在内容上方，不参与尺寸计算。 */
+/** 展示节点占位或产物；生成节点的控制栏悬浮在内容上方，不参与尺寸计算。 */
 export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const { zoom } = useViewport();
   const selectNode = useContext(NodeSelectionContext);
@@ -827,10 +827,7 @@ function nodeIntroduction(data: AssetFlowNode['data']): string {
   if (data.mode === 'source') {
     return `来源${media}节点，把已有${media}素材放入画布，供下游节点引用。`;
   }
-  if (data.mode === 'generate') {
-    return `生成${media}节点，根据提示词和上游输入生成${media}。`;
-  }
-  return `转换${media}节点，把上游内容转换成${media}。`;
+  return `生成${media}节点，根据提示词和上游输入生成${media}。`;
 }
 
 /**

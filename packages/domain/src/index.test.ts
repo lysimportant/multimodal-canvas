@@ -5,6 +5,7 @@ import {
   canonicalRunSnapshotJson,
   canTransitionRunStatus,
   canvasDocumentSchema,
+  nodeModeSchema,
   isCanvasNodeEnabled,
   getEffectivePromptDocument,
   mediaTypes,
@@ -21,11 +22,16 @@ import {
 describe('canvas protocol', () => {
   it('exposes the supported media, modes, and port roles', () => {
     expect(mediaTypes).toEqual(['text', 'image', 'audio', 'video']);
-    expect(nodeModes).toEqual(['source', 'generate', 'transform']);
+    expect(nodeModes).toEqual(['source', 'generate']);
     expect(portRoles).toContain('character');
     expect(targetPortRolesForMediaType('video')).toEqual(
       expect.arrayContaining(['prompt', 'character', 'firstFrame', 'lastFrame', 'audioTrack']),
     );
+  });
+
+  it('把历史转换节点读成生成节点', () => {
+    expect(nodeModeSchema.parse('transform')).toBe('generate');
+    expect(nodeModeSchema.parse('generate')).toBe('generate');
   });
 
   it('validates a minimal canvas document', () => {

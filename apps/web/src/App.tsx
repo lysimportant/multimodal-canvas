@@ -1321,12 +1321,6 @@ function WorkspaceApp({
     [createOperationNode],
   );
 
-  const createTransformNode = useCallback(
-    (mediaType: MediaType, position: { x: number; y: number }) =>
-      createOperationNode(mediaType, position, 'transform'),
-    [createOperationNode],
-  );
-
   const selectCanvasNode = useCallback(
     (nodeId: string | null) => {
       setSelectedNodeId(nodeId);
@@ -1562,27 +1556,6 @@ function WorkspaceApp({
       );
     },
     [appendNodesAndSelect, createGenerateNode, nodes.length, rememberHistory],
-  );
-
-  const handleAddTransformNode = useCallback(
-    (mediaType: MediaType, position?: { x: number; y: number }) => {
-      const column = nodes.length % 3;
-      const row = Math.floor(nodes.length / 3);
-      const nodePosition =
-        position ??
-        canvasCenterPositionRef.current ??
-        ({ x: 100 + column * 250, y: 100 + row * 220 } as const);
-      const node = createTransformNode(mediaType, nodePosition);
-      rememberHistory();
-      appendNodesAndSelect([node]);
-      canvasDirtyRef.current = true;
-      setNotice(
-        nodePreferenceNoticeRef.current
-          ? { kind: 'error', message: `节点已添加；${nodePreferenceNoticeRef.current}` }
-          : { kind: 'success', message: `${mediaLabels[mediaType]}转换节点已添加` },
-      );
-    },
-    [appendNodesAndSelect, createTransformNode, nodes.length, rememberHistory],
   );
 
   const handleConnect = useCallback(
@@ -2100,7 +2073,7 @@ function WorkspaceApp({
         return;
       }
       if (nodeSnapshot.data.mode === 'source') {
-        setNotice({ kind: 'error', message: '来源节点不能直接运行，请选择生成或转换节点' });
+        setNotice({ kind: 'error', message: '来源节点不能直接运行，请选择生成节点' });
         return;
       }
       if (nodeSnapshot.data.enabled === false) {
@@ -2681,7 +2654,7 @@ function WorkspaceApp({
               onClick={() => {
                 if (selectedNode) void runNode(selectedNode);
               }}
-              title={selectedNode ? '运行选中的生成节点' : '先选择生成或转换节点'}
+              title={selectedNode ? '运行选中的生成节点' : '先选择生成节点'}
             >
               {isRunning ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}
               {isRunning ? '运行中' : '运行'}
@@ -2796,7 +2769,6 @@ function WorkspaceApp({
             onDeleteNode={(nodeId) => deleteCanvasSelection([nodeId])}
             nodeContentHandlers={nodeContentHandlers}
             onAddGenerateNode={handleAddGenerateNode}
-            onAddTransformNode={handleAddTransformNode}
             onCanvasCenterChange={updateCanvasCenterPosition}
             onRequestUpload={() => uploadInputRef.current?.click()}
             onClearCanvas={clearCanvas}

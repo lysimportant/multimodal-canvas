@@ -209,7 +209,7 @@ describe('canvas document conversion', () => {
           type: 'video',
           position: { x: 20, y: 20 },
           height: 297.25,
-          data: { label: '高度已保存', mediaType: 'video', mode: 'transform' },
+          data: { label: '高度已保存', mediaType: 'video', mode: 'generate' },
         },
       ],
     };

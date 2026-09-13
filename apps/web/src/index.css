@@ -947,17 +947,6 @@ h2 {
   }
 }
 
-.canvas-node-tool-transform {
-  filter: saturate(0.72);
-  opacity: 0.78;
-}
-
-.canvas-node-tool-transform:hover,
-.canvas-node-tool-transform:focus-visible {
-  filter: saturate(1);
-  opacity: 1;
-}
-
 .canvas-node-tool::before,
 .canvas-node-tool::after {
   opacity: 0;
@@ -4521,8 +4510,7 @@ textarea:focus-visible {
     scroll-padding-inline: 6px;
   }
 
-  .canvas-node-tools .canvas-node-tool,
-  .canvas-node-tools .canvas-node-tool-transform {
+  .canvas-node-tools .canvas-node-tool {
     flex: 0 0 36px;
     height: 36px;
     width: 36px;
@@ -4574,8 +4562,7 @@ textarea:focus-visible {
     min-width: 0;
   }
 
-  .canvas-node-tools .canvas-node-tool,
-  .canvas-node-tools .canvas-node-tool-transform {
+  .canvas-node-tools .canvas-node-tool {
     flex: 0 0 36px;
   }
 }

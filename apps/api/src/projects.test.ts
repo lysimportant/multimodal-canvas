@@ -219,7 +219,7 @@ describe('PrismaProjectStore canvas mapping', () => {
           data: {
             label: 'Legacy column label',
             mediaType: 'text',
-            mode: 'transform',
+            mode: 'generate',
             prompt: 'Keep this prompt',
             stale: true,
             assetId: 'asset-from-column',

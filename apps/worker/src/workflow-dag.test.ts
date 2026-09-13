@@ -31,7 +31,7 @@ const snapshot: RunSnapshot = {
       id: 'node_draft',
       type: 'text' as const,
       position: { x: 200, y: 0 },
-      data: { label: 'Draft', mediaType: 'text' as const, mode: 'transform' as const },
+      data: { label: 'Draft', mediaType: 'text' as const, mode: 'generate' as const },
     },
     {
       id: 'node_style',
@@ -116,7 +116,7 @@ const snapshot: RunSnapshot = {
         id: 'node_draft',
         type: 'text' as const,
         position: { x: 200, y: 0 },
-        data: { label: 'Draft', mediaType: 'text' as const, mode: 'transform' as const },
+        data: { label: 'Draft', mediaType: 'text' as const, mode: 'generate' as const },
       },
     },
     {

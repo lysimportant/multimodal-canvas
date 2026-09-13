@@ -1,7 +1,18 @@
 import { z } from 'zod';
 
 export const mediaTypes = ['text', 'image', 'audio', 'video'] as const;
-export const nodeModes = ['source', 'generate', 'transform'] as const;
+/** 画布节点模式。历史 `transform` 读取时归一为 `generate`，产品不再区分转换节点。 */
+export const nodeModes = ['source', 'generate'] as const;
+
+/**
+ * 把已废弃的转换模式读成生成模式，保证旧画布仍能打开。
+ * @param value 节点 mode 原始值。
+ * @returns 归一后的值；无法识别时原样返回交给 schema 校验。
+ */
+export function normalizeNodeMode(value: unknown): unknown {
+  return value === 'transform' ? 'generate' : value;
+}
+
 export const portRoles = [
   'prompt',
   'negativePrompt',
@@ -21,7 +32,7 @@ export const modelSelectionSchema = z.object({
   modelAlias: z.string().trim().min(1),
   credentialId: z.string().trim().min(1).optional(),
 });
-export const nodeModeSchema = z.enum(nodeModes);
+export const nodeModeSchema = z.preprocess(normalizeNodeMode, z.enum(nodeModes));
 export const portRoleSchema = z.enum(portRoles);
 export const assetStatusSchema = z.enum(assetStatuses);
 

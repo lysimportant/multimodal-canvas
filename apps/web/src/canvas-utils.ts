@@ -379,6 +379,7 @@ function cloneNodeForClipboard(node: AssetFlowNode): AssetFlowNode {
     ...data
   } = cloned.data;
   const safeData = sanitizeClipboardValue(data) as AssetFlowNode['data'];
+  if ((safeData.mode as string) === 'transform') safeData.mode = 'generate';
   if (isRecord(safeData) && safeData.promptDocument !== undefined) {
     const parsed = promptDocumentSchema.safeParse(safeData.promptDocument);
     if (parsed.success) safeData.promptDocument = parsed.data;

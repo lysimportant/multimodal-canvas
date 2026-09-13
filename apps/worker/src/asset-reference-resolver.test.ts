@@ -344,7 +344,7 @@ describe('createRunWorker asset hydration boundary', () => {
     const frozen = Buffer.from('frozen generated result', 'utf8');
     const durableSnapshot = referenceSnapshot({
       assetId: textAssetId,
-      sourceMode: 'transform',
+      sourceMode: 'generate',
       prompt: 'old generation instruction',
     });
     const { repository, blobStore } = fixtures({
@@ -685,7 +685,7 @@ function referenceSnapshot(options: {
   targetMediaType?: 'image' | 'video';
   role?: 'prompt' | 'firstFrame';
   assetId: string;
-  sourceMode?: 'source' | 'transform';
+  sourceMode?: 'source' | 'generate';
   contentUrl?: string | null;
   mimeType?: string;
   prompt?: string;
@@ -707,7 +707,7 @@ function referenceSnapshot(options: {
         : {
             contentUrl: options.contentUrl ?? `/v1/assets/${options.assetId}/versions/1/content`,
           }),
-      ...(options.sourceMode === 'transform' ? { modelAlias: 'source-model' } : {}),
+      ...(options.sourceMode === 'generate' ? { modelAlias: 'source-model' } : {}),
       ...(options.mimeType ? { mimeType: options.mimeType } : {}),
       ...(options.prompt ? { prompt: options.prompt } : {}),
     },

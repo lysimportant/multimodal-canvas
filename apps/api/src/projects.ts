@@ -553,7 +553,6 @@ const mediaTypeToPrisma = {
 const nodeModeToPrisma = {
   source: 'SOURCE',
   generate: 'GENERATE',
-  transform: 'TRANSFORM',
 } as const satisfies Record<NodeMode, string>;
 
 /** PostgreSQL-backed project and canvas store used by the production API entrypoint. */
@@ -1023,7 +1022,8 @@ function fromPrismaMediaType(value: string): MediaType {
 }
 
 function fromPrismaNodeMode(value: string): NodeMode {
-  return value.toLowerCase() as NodeMode;
+  const mode = value.toLowerCase();
+  return (mode === 'transform' ? 'generate' : mode) as NodeMode;
 }
 
 function isUuid(value: string) {

@@ -89,7 +89,7 @@ const snapshot: RunSnapshot = {
       data: {
         label: 'Draft prompt',
         mediaType: 'text',
-        mode: 'transform',
+        mode: 'generate',
         modelAlias: 'text-model',
       },
     },
@@ -183,7 +183,7 @@ const snapshot: RunSnapshot = {
         data: {
           label: 'Draft prompt',
           mediaType: 'text',
-          mode: 'transform',
+          mode: 'generate',
           modelAlias: 'text-model',
         },
       },

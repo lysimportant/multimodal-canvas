@@ -1,4 +1,9 @@
-import type { FrozenPromptMention, MediaType, NodeMode } from '@multimodal-canvas/domain';
+import {
+  nodeModes,
+  type FrozenPromptMention,
+  type MediaType,
+  type NodeMode,
+} from '@multimodal-canvas/domain';
 
 /** 模型目录中与资源提及相关的能力字段。 */
 export type ResourceMentionCapabilities = {
@@ -113,7 +118,7 @@ export function checkResourceMentionCapabilities(input: {
     }
   } else if (!nodeMode && !simulated && input.node.data.mode !== 'generate') {
     // `modes` is optional in older catalogs. Require an explicit declaration
-    // for non-generate modes because transform semantics vary by provider.
+    // for non-generate modes because provider semantics vary by operation.
     for (const mention of input.mentions) {
       issues.push(
         diagnostic(input, mention, {
@@ -333,7 +338,7 @@ function readModes(
   const values = readStrings(record, keys);
   if (!values) return undefined;
   const modes = values.filter((value): value is NodeMode =>
-    ['source', 'generate', 'transform'].includes(value),
+    (nodeModes as readonly string[]).includes(value),
   );
   return modes.length > 0 ? [...new Set(modes)] : undefined;
 }

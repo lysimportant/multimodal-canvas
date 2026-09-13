@@ -390,34 +390,6 @@ describe('NodeQuickEditor', () => {
     expect(screen.queryByText('模型 图片模型 不支持视频提及。')).not.toBeInTheDocument();
   });
 
-  it('transform 模式不再显示能力诊断', () => {
-    render(
-      <NodeQuickEditor
-        {...makeProps({
-          node: {
-            ...imageNode,
-            data: {
-              ...imageNode.data,
-              mode: 'transform',
-              modelAlias: 'transform-model',
-              promptDocument: makeMentionDocument(imageMention),
-            },
-          } as AssetFlowNode,
-          models: [
-            {
-              id: 'transform-model',
-              name: '转换模型',
-              mediaTypes: ['image'],
-              capabilities: { mentionMediaTypes: ['image'] },
-            },
-          ],
-        })}
-      />,
-    );
-
-    expect(screen.queryByText(/未声明 transform 模式的提及能力/)).not.toBeInTheDocument();
-  });
-
   it('资源提及不兼容时不再显示切换建议', () => {
     const onModelChange = vi.fn();
     render(

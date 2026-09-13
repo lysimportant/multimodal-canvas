@@ -221,7 +221,7 @@ describe('responsive UX CSS contracts', () => {
       /@media \(max-width: 340px\)[\s\S]*?\.canvas-node-tools \{[^}]*left: 8px;[^}]*right: 44px;[^}]*scroll-padding-inline: 6px;/,
     );
     expect(normalizedCss).toMatch(
-      /@media \(max-width: 340px\)[\s\S]*?\.canvas-node-tools \.canvas-node-tool,[^}]*\.canvas-node-tools \.canvas-node-tool-transform \{[^}]*flex: 0 0 36px;[^}]*height: 36px;[^}]*width: 36px;/,
+      /@media \(max-width: 340px\)[\s\S]*?\.canvas-node-tools \.canvas-node-tool \{[^}]*flex: 0 0 36px;[^}]*height: 36px;[^}]*width: 36px;/,
     );
   });
 
@@ -250,8 +250,6 @@ describe('responsive UX CSS contracts', () => {
     expect(finalMobileCss).toMatch(
       /\.canvas-node-tools \{[^}]*box-sizing: border-box;[^}]*max-width: calc\(100% - 52px\);[^}]*min-width: 0;/,
     );
-    expect(finalMobileCss).toMatch(
-      /\.canvas-node-tools \.canvas-node-tool,[\s\S]*?\.canvas-node-tools \.canvas-node-tool-transform \{[^}]*flex: 0 0 36px;/,
-    );
+    expect(finalMobileCss).toMatch(/\.canvas-node-tools \.canvas-node-tool \{[^}]*flex: 0 0 36px;/);
   });
 });

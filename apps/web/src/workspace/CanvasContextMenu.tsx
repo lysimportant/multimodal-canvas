@@ -1,13 +1,4 @@
-import {
-  LocateFixed,
-  Play,
-  Power,
-  Sparkles,
-  Trash2,
-  Upload,
-  Wand2,
-  type LucideIcon,
-} from 'lucide-react';
+import { LocateFixed, Play, Power, Sparkles, Trash2, Upload, type LucideIcon } from 'lucide-react';
 import {
   useCallback,
   useEffect,
@@ -50,7 +41,6 @@ type CanvasContextMenuProps = {
   onNodeEnabledChange: (nodeId: string, enabled: boolean) => void;
   onDeleteNode: (nodeId: string) => void;
   onAddGenerateNode: (mediaType: MediaType, position: { x: number; y: number }) => void;
-  onAddTransformNode: (mediaType: MediaType, position: { x: number; y: number }) => void;
   onRequestUpload: () => void;
   onClose: (reason: CanvasContextMenuCloseReason) => void;
 };
@@ -66,7 +56,6 @@ export function CanvasContextMenu({
   onNodeEnabledChange,
   onDeleteNode,
   onAddGenerateNode,
-  onAddTransformNode,
   onRequestUpload,
   onClose,
 }: CanvasContextMenuProps) {
@@ -155,9 +144,6 @@ export function CanvasContextMenu({
         onAddGenerateNode={(mediaType) =>
           runAction(() => onAddGenerateNode(mediaType, target.flowPosition))
         }
-        onAddTransformNode={(mediaType) =>
-          runAction(() => onAddTransformNode(mediaType, target.flowPosition))
-        }
         onRequestUpload={() => runAction(onRequestUpload)}
       />
     );
@@ -230,17 +216,14 @@ function NodeMenuContent({
 
 function CanvasMenuContent({
   onAddGenerateNode,
-  onAddTransformNode,
   onRequestUpload,
 }: {
   onAddGenerateNode: (mediaType: MediaType) => void;
-  onAddTransformNode: (mediaType: MediaType) => void;
   onRequestUpload: () => void;
 }) {
   return (
     <>
       <MenuGroup label="创建生成节点" actionIcon={Sparkles} onSelect={onAddGenerateNode} />
-      <MenuGroup label="创建转换节点" actionIcon={Wand2} onSelect={onAddTransformNode} />
       <div className="canvas-context-menu-group" role="group" aria-label="资源">
         <MenuItem icon={Upload} label="上传资源" onClick={onRequestUpload} />
       </div>
@@ -257,7 +240,6 @@ function MenuGroup({
   actionIcon: LucideIcon;
   onSelect: (mediaType: MediaType) => void;
 }) {
-  const modeLabel = label === '创建生成节点' ? '生成' : '转换';
   return (
     <div className="canvas-context-menu-group" role="group" aria-label={label}>
       <div className="canvas-context-menu-label">
@@ -271,7 +253,7 @@ function MenuGroup({
             <MenuItem
               key={mediaType}
               icon={Icon}
-              label={`创建${mediaLabels[mediaType]}${modeLabel}节点`}
+              label={`创建${mediaLabels[mediaType]}生成节点`}
               compactLabel={mediaLabels[mediaType]}
               onClick={() => onSelect(mediaType)}
             />

@@ -181,7 +181,6 @@ function createProps(overrides: Partial<WorkflowCanvasProps> = {}): WorkflowCanv
     onRunNode: vi.fn(),
     onDeleteNode: vi.fn(),
     onAddGenerateNode: vi.fn(),
-    onAddTransformNode: vi.fn(),
     onCanvasCenterChange: vi.fn(),
     onRequestUpload: vi.fn(),
     onOpenProjectHub: vi.fn(),
@@ -243,8 +242,9 @@ describe('WorkflowCanvas context menu', () => {
     expect(screen.queryByRole('menu', { name: '画布操作' })).not.toBeInTheDocument();
 
     fireEvent.contextMenu(pane, { clientX: 260, clientY: 180 });
-    await user.click(screen.getByRole('menuitem', { name: '创建视频转换节点' }));
-    expect(props.onAddTransformNode).toHaveBeenCalledWith('video', { x: 160, y: 130 });
+    expect(screen.queryByRole('menuitem', { name: '创建视频转换节点' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('menuitem', { name: '创建视频生成节点' }));
+    expect(props.onAddGenerateNode).toHaveBeenCalledWith('video', { x: 160, y: 130 });
 
     fireEvent.contextMenu(pane, { clientX: 260, clientY: 180 });
     await user.click(screen.getByRole('menuitem', { name: '上传资源' }));

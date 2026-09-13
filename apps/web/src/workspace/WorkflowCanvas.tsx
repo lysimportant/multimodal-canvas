@@ -143,7 +143,6 @@ export type WorkflowCanvasProps = {
   /** 当前节点上传和文本编辑的持久化接口。 */
   nodeContentHandlers?: NodeContentHandlers;
   onAddGenerateNode: (mediaType: MediaType, position?: { x: number; y: number }) => void;
-  onAddTransformNode: (mediaType: MediaType, position?: { x: number; y: number }) => void;
   onCanvasCenterChange: (position: { x: number; y: number }) => void;
   onRequestUpload: () => void;
   /** 清空画布并由 App 负责确认、历史记录与脏状态。 */
@@ -196,7 +195,6 @@ export function WorkflowCanvas({
   onDeleteNode,
   nodeContentHandlers,
   onAddGenerateNode,
-  onAddTransformNode,
   onCanvasCenterChange,
   onRequestUpload,
   onClearCanvas,
@@ -586,7 +584,6 @@ export function WorkflowCanvas({
           onNodeEnabledChange={onNodeEnabledChange}
           onDeleteNode={(nodeId) => onDeleteNode?.(nodeId)}
           onAddGenerateNode={onAddGenerateNode}
-          onAddTransformNode={onAddTransformNode}
           onRequestUpload={onRequestUpload}
           onClose={handleContextMenuClose}
         />
@@ -597,7 +594,7 @@ export function WorkflowCanvas({
 
 /** 快速编辑器 portal 所需的节点与画布引用。 */
 type QuickEditorOverlayProps = Omit<NodeQuickEditorProps, 'node'> & {
-  /** 当前选中的生成或转换节点。 */
+  /** 当前选中的生成节点。 */
   node: AssetFlowNode;
   /** 用于约束浮层可见范围的画布容器引用。 */
   canvasAreaRef: RefObject<HTMLElement | null>;

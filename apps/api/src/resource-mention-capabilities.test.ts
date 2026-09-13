@@ -55,7 +55,7 @@ describe('resource mention capability preflight', () => {
   it('validates media, roles, count, mode, and mixed-media combinations', () => {
     const result = checkResourceMentionCapabilities({
       ...base,
-      node: { id: 'node-image', data: { mediaType: 'image', mode: 'transform' } },
+      node: { id: 'node-image', data: { mediaType: 'image', mode: 'generate' } },
       mentions: [
         base.mentions[0],
         {
@@ -72,7 +72,7 @@ describe('resource mention capability preflight', () => {
           semanticRoles: ['style'],
           maxMentions: 1,
           supportsMixedMentions: false,
-          modes: ['generate'],
+          modes: ['source'],
         },
       },
     });
@@ -105,10 +105,10 @@ describe('resource mention capability preflight', () => {
     expect(result).toEqual({ issues: [], simulated: false });
   });
 
-  it('fails closed for transform mentions when modes are omitted', () => {
+  it('fails closed for source-node mentions when modes are omitted', () => {
     const result = checkResourceMentionCapabilities({
       ...base,
-      node: { id: 'node-image', data: { mediaType: 'image', mode: 'transform' } },
+      node: { id: 'node-image', data: { mediaType: 'image', mode: 'source' } },
       model: { capabilities: { mentionMediaTypes: ['image'] } },
     });
     expect(result.issues).toEqual(
