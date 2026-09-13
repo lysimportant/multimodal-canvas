@@ -104,6 +104,23 @@ describe('AssetNode result presentation', () => {
     expect(toolbar.style.getPropertyValue('--flow-node-inverse-zoom')).toBe(String(1 / zoom));
   });
 
+  it('节点足够宽时在悬浮栏图标旁显示功能简述', () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      top: 0,
+      left: 0,
+      right: 400,
+      bottom: 200,
+      width: 400,
+      height: 200,
+      toJSON: () => ({}),
+    } as DOMRect);
+    renderNode(makeNode(), undefined, vi.fn(), undefined, false, vi.fn(), vi.fn());
+    expect(screen.getByRole('group', { name: '节点操作：文案生成' })).toHaveClass('is-spacious');
+    vi.restoreAllMocks();
+  });
+
   it.each(['image', 'video'] as const)('没有内容的 %s 节点禁用下载按钮', (mediaType) => {
     renderNode(makeNode({ mediaType }));
     const button = screen.getByRole('button', {
@@ -352,11 +369,21 @@ describe('AssetNode result presentation', () => {
       expect(toolbar).toContainElement(
         screen.getByRole('button', { name: '重命名节点：文案生成' }),
       );
-      expect(toolbar.querySelector('.flow-node-label')).not.toBeNull();
-      expect(toolbar.querySelector('.flow-node-actions')).not.toBeNull();
+      expect(toolbar.querySelector('.flow-node-label')).toBeNull();
+      expect(toolbar.querySelector('.flow-node-actions')).toBeNull();
+      expect(
+        screen.getByRole('button', { name: '重命名节点：文案生成' }).querySelector('svg'),
+      ).not.toBeNull();
+      expect(screen.getByRole('button', { name: '重命名节点：文案生成' })).toHaveTextContent(
+        '重命名',
+      );
       expect(toolbar).toContainElement(screen.getByRole('button', { name: '拖动移动节点' }));
       expect(toolbar).toContainElement(screen.getByRole('button', { name: '查看节点信息' }));
       expect(toolbar).toContainElement(screen.getByRole('button', { name: '停用节点' }));
+      expect(screen.getByRole('button', { name: '拖动移动节点' })).toHaveTextContent('移动');
+      expect(screen.getByRole('button', { name: '查看节点信息' })).toHaveTextContent('信息');
+      expect(screen.getByRole('button', { name: '停用节点' })).toHaveTextContent('停用');
+      expect(screen.getByRole('button', { name: '删除节点：文案生成' })).toHaveTextContent('删除');
       expect(screen.getByRole('button', { name: '拖动移动节点' })).toHaveAttribute(
         'title',
         '拖动移动节点',

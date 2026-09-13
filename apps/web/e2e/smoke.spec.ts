@@ -661,9 +661,7 @@ async function installPreviewControlsFixture(
   return { asset, body };
 }
 
-test('节点操作改进：文本悬浮卡片在缩小画布后仍至少250px且允许超出节点', async ({
-  page,
-}, testInfo) => {
+test('节点操作改进：文本悬浮卡片随图标收缩并允许超出节点', async ({ page }, testInfo) => {
   await installPreviewControlsFixture(page, 'text');
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(projectPath);
@@ -676,9 +674,9 @@ test('节点操作改进：文本悬浮卡片在缩小画布后仍至少250px且
   await node.hover();
   const controls = node.locator('.flow-node-floating-controls');
   await expect(controls).toBeVisible();
-  await expect
-    .poll(() => controls.evaluate((element) => element.getBoundingClientRect().width))
-    .toBeGreaterThanOrEqual(249.9);
+  await expect(controls.getByRole('button', { name: '重命名节点：预览验收节点' })).toBeVisible();
+  await expect(controls.locator('.flow-node-label')).toHaveCount(0);
+  await expect(controls.locator('.flow-node-actions')).toHaveCount(0);
   const sizes = { node: await node.boundingBox(), controls: await controls.boundingBox() };
   expect(sizes.controls!.width).toBeGreaterThan(sizes.node!.width);
   await page.screenshot({ path: testInfo.outputPath('text-controls-zoomed-out.png') });

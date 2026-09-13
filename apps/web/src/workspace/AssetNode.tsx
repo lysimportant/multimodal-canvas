@@ -6,6 +6,7 @@ import {
   GripVertical,
   Info,
   LoaderCircle,
+  Pencil,
   Power,
   RefreshCw,
   Trash2,
@@ -67,6 +68,17 @@ export const NodeContentContext = createContext<NodeContentHandlers | null>(null
 
 type NodePresentationState = 'empty' | 'running' | 'failed' | 'cancelled' | 'preview' | 'missing';
 
+/**
+ * 悬浮栏图标旁的功能简述；仅在卡片足够宽时显示。
+ * @param children 简短中文功能名。
+ */
+function NodeFloatingActionLabel({ children }: { children: ReactNode }) {
+  return <span className="flow-node-action-label">{children}</span>;
+}
+
+/** 节点在屏幕上达到该宽度后，悬浮栏在图标旁显示功能简述。单位为 CSS 像素。 */
+const FLOATING_ACTION_LABEL_MIN_WIDTH = 360;
+
 /** 展示节点占位或产物；生成与转换节点的控制栏悬浮在内容上方，不参与尺寸计算。 */
 export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const { zoom } = useViewport();
@@ -79,7 +91,10 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const setNodeEnabled = useContext(NodeEnabledContext);
   const deleteNode = useContext(NodeDeleteContext);
   const contentHandlers = useContext(NodeContentContext);
+  const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  /** 节点屏幕宽度足够时，在悬浮栏图标旁显示功能简述。 */
+  const [spaciousToolbar, setSpaciousToolbar] = useState(false);
   const uploadLock = useRef(false);
   /** 当前下载请求；切换节点产物或卸载时取消，防止下载过时内容。 */
   const downloadAbort = useRef<AbortController | null>(null);
@@ -140,7 +155,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const writingDisabled = presentationState === 'running' || uploadProgress !== null;
   /** 仅图片和视频提供下载，下载内容始终与当前回显产物一致。 */
   const downloadableMedia = data.mediaType === 'image' || data.mediaType === 'video';
-  /** 抵消画布缩放，让悬浮栏至少保持 250 个屏幕 CSS 像素，不改变节点尺寸。 */
+  /** 抵消画布缩放，让悬浮栏保持屏幕像素大小；宽度随图标收缩，节点变宽时再显示文字。 */
   const floatingControlStyle = {
     '--flow-node-zoom': zoom,
     '--flow-node-inverse-zoom': 1 / zoom,
@@ -188,6 +203,23 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   useEffect(() => {
     if (!renameOpen) setDraftLabel(data.label);
   }, [data.label, renameOpen]);
+
+  /** 按节点当前屏幕宽度决定是否显示图标文字；画布缩放后重新测量。 */
+  useEffect(() => {
+    const host = rootRef.current;
+    if (!host) return;
+    const update = () => {
+      setSpaciousToolbar(host.getBoundingClientRect().width >= FLOATING_ACTION_LABEL_MIN_WIDTH);
+    };
+    update();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(update);
+    observer?.observe(host);
+    window.addEventListener('resize', update);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', update);
+    };
+  }, [zoom]);
 
   /** 打开重命名对话框并带上当前名称。 */
   const openRename = () => {
@@ -291,6 +323,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
 
   return (
     <div
+      ref={rootRef}
       className={`flow-asset-node ${data.mode !== 'source' ? 'flow-generate-node' : ''} ${selected ? 'is-selected' : ''} ${enabled ? '' : 'is-disabled'}`}
       aria-disabled={!enabled}
       onClickCapture={() => selectNode?.(data)}
@@ -345,33 +378,36 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
         />
       ) : null}
       <div
-        className={`flow-node-header${floatingControls ? ' flow-node-floating-controls' : ''}`}
+        className={`flow-node-header${floatingControls ? ' flow-node-floating-controls' : ''}${spaciousToolbar ? ' is-spacious' : ''}`}
         style={floatingControlStyle}
         role="group"
         aria-label={`节点操作：${data.label}`}
         aria-disabled={false}
       >
         {floatingControls ? (
-          nodeLabel
-        ) : (
-          <span className="flow-node-type">{mediaLabels[data.mediaType]}</span>
-        )}
-        {!floatingControls && (
-          <span
-            className={`flow-node-mode-badge flow-node-mode-${data.mode}`}
-            title={`${modeLabels[data.mode]}模式`}
-          >
-            {modeLabels[data.mode]}
-          </span>
-        )}
-        {!enabled && !floatingControls && <span className="flow-node-disabled-badge">停用</span>}
-        {data.stale && !floatingControls && (
-          <span className="flow-node-stale-badge" title="上游内容已变更，节点待更新">
-            待更新
-          </span>
-        )}
-        {floatingControls ? (
-          <div className="flow-node-actions">
+          <>
+            {changeLabel ? (
+              <button
+                type="button"
+                className="flow-node-action-button flow-node-label-button nodrag nopan nowheel"
+                aria-label={`重命名节点：${data.label}`}
+                title="重命名节点"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  openRename();
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    openRename();
+                  }
+                }}
+              >
+                <Pencil size={18} aria-hidden="true" />
+                <NodeFloatingActionLabel>重命名</NodeFloatingActionLabel>
+              </button>
+            ) : null}
             <button
               type="button"
               className="flow-node-action-button flow-node-drag-handle"
@@ -379,6 +415,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
               title="拖动移动节点"
             >
               <GripVertical size={18} aria-hidden="true" />
+              <NodeFloatingActionLabel>移动</NodeFloatingActionLabel>
             </button>
             <button
               type="button"
@@ -392,6 +429,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
               }}
             >
               <Info size={18} aria-hidden="true" />
+              <NodeFloatingActionLabel>信息</NodeFloatingActionLabel>
             </button>
             {setNodeEnabled ? (
               <button
@@ -407,6 +445,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
                 }}
               >
                 <Power size={18} strokeWidth={2.2} aria-hidden="true" />
+                <NodeFloatingActionLabel>{enabled ? '停用' : '启用'}</NodeFloatingActionLabel>
               </button>
             ) : null}
             <span
@@ -427,6 +466,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
                       : undefined
                 }
               />
+              <NodeFloatingActionLabel>{statusTooltip}</NodeFloatingActionLabel>
             </span>
             {contentHandlers && (
               <button
@@ -446,6 +486,9 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
                 ) : (
                   <LoaderCircle className="spin" size={18} aria-hidden="true" />
                 )}
+                <NodeFloatingActionLabel>
+                  {uploadProgress === null ? '上传' : '上传中'}
+                </NodeFloatingActionLabel>
               </button>
             )}
             {downloadableMedia && (
@@ -473,6 +516,9 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
                 ) : (
                   <Download size={18} aria-hidden="true" />
                 )}
+                <NodeFloatingActionLabel>
+                  {isDownloading ? '下载中' : '下载'}
+                </NodeFloatingActionLabel>
               </button>
             )}
             {deleteNode ? (
@@ -488,10 +534,28 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
                 }}
               >
                 <Trash2 size={18} strokeWidth={2.2} aria-hidden="true" />
+                <NodeFloatingActionLabel>删除</NodeFloatingActionLabel>
               </button>
             ) : null}
-          </div>
+          </>
         ) : (
+          <>
+            <span className="flow-node-type">{mediaLabels[data.mediaType]}</span>
+            <span
+              className={`flow-node-mode-badge flow-node-mode-${data.mode}`}
+              title={`${modeLabels[data.mode]}模式`}
+            >
+              {modeLabels[data.mode]}
+            </span>
+            {!enabled && <span className="flow-node-disabled-badge">停用</span>}
+            {data.stale && (
+              <span className="flow-node-stale-badge" title="上游内容已变更，节点待更新">
+                待更新
+              </span>
+            )}
+          </>
+        )}
+        {floatingControls ? null : (
           <>
             {setNodeEnabled ? (
               <button

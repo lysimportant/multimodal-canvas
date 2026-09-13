@@ -40,11 +40,11 @@
   box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
   display: flex;
   flex-wrap: nowrap;
-  gap: 6px;
+  gap: 4px;
   left: 0;
   margin: 0;
   min-height: 44px;
-  min-width: max(250px, calc(100% * var(--flow-node-zoom, 1)));
+  min-width: calc(100% * var(--flow-node-zoom, 1));
   opacity: 0;
   padding: 4px 6px;
   pointer-events: none;
@@ -71,21 +71,6 @@
 .react-flow__node:focus-within .flow-node-floating-controls {
   opacity: 1;
   pointer-events: auto;
-}
-
-.flow-node-floating-controls > .flow-node-label {
-  display: flex;
-  flex: 1 1 100px;
-  margin: 0;
-  min-width: 76px;
-  width: 100px;
-}
-
-.flow-node-floating-controls > .flow-node-actions {
-  display: flex;
-  flex: 0 0 auto;
-  gap: 4px;
-  min-width: 0;
 }
 
 .flow-node-label > .flow-node-label-button {
@@ -120,18 +105,41 @@
   border-radius: 4px;
   color: var(--mc-text-muted);
   display: inline-flex;
-  flex: 0 0 28px;
+  flex: 0 0 auto;
+  gap: 4px;
   height: auto;
   justify-content: center;
   margin: 0;
   min-width: 28px;
-  padding: 0;
+  overflow: hidden;
+  padding: 0 4px;
   width: auto;
 }
 
 .flow-node-floating-controls .flow-node-action-button svg {
   display: block;
   flex: 0 0 auto;
+}
+
+.flow-node-action-label {
+  display: none;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1;
+  max-width: 3.6em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flow-node-floating-controls.is-spacious .flow-node-action-label {
+  display: inline;
+}
+
+.flow-node-floating-controls.is-spacious .flow-node-action-button {
+  flex: 1 1 0;
+  min-width: 28px;
+  padding: 0 6px;
 }
 
 .flow-node-floating-controls .flow-node-action-button:disabled {
@@ -154,14 +162,12 @@
 .flow-node-floating-controls .flow-node-enabled-toggle {
   border: 0;
   border-radius: 4px;
-  flex: 1 1 0;
   height: auto;
-  padding: 0;
+  margin-left: 0;
   width: auto;
 }
 
 .flow-node-floating-controls .flow-node-status {
-  flex: 1 1 0;
   margin-left: 0;
 }
 
@@ -182,7 +188,6 @@
 
 .flow-node-floating-controls .flow-node-delete-button,
 .flow-node-floating-controls .flow-node-upload-button {
-  flex: 1 1 0;
   height: auto;
   width: auto;
 }
