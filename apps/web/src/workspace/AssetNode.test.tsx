@@ -164,17 +164,42 @@ describe('AssetNode result presentation', () => {
     },
   );
 
-  it('来源图片没有输入编辑器，保持直接点击预览', async () => {
-    renderNode(
-      makeNode({
+  it('来源图片首击打开输入编辑器，再次点击才预览', async () => {
+    const node = {
+      ...makeNode({
         mediaType: 'image',
         mode: 'source',
         assetId: 'image',
         mimeType: 'image/png',
         contentUrl: 'https://assets.example/image.png',
       }),
+      id: 'source-image',
+    };
+    const view = renderNode(node);
+    await userEvent.click(screen.getByRole('img'));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    view.rerender(
+      <NodeQuickEditorIdContext.Provider value={node.id}>
+        <AssetNode
+          {...({ id: node.id, data: node.data, selected: true } as NodeProps<AssetFlowNode>)}
+        />
+      </NodeQuickEditorIdContext.Provider>,
     );
     await userEvent.click(screen.getByRole('img'));
+    expect(await screen.findByRole('dialog', { name: '文案生成' })).toBeInTheDocument();
+  });
+
+  it('来源视频仍保持直接点击预览', async () => {
+    renderNode(
+      makeNode({
+        mediaType: 'video',
+        mode: 'source',
+        assetId: 'video',
+        mimeType: 'video/mp4',
+        contentUrl: 'https://assets.example/video.mp4',
+      }),
+    );
+    await userEvent.click(screen.getByRole('button', { name: '预览视频：文案生成' }));
     expect(await screen.findByRole('dialog', { name: '文案生成' })).toBeInTheDocument();
   });
 

@@ -786,6 +786,18 @@ test('节点操作改进：全选后图片仍先打开输入框再预览', async
   await expect(page.getByRole('dialog')).toBeVisible();
 });
 
+test('节点操作改进：资源图片节点首击输入再次预览', async ({ page }) => {
+  await installPreviewControlsFixture(page, 'image');
+  await page.goto(projectPath);
+  const node = page.locator('.flow-generate-node');
+  await expect(node.locator('img')).toBeVisible();
+  await node.locator('img').click();
+  await expect(page.getByRole('textbox', { name: '提示词', exact: true })).toBeVisible();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await node.locator('img').click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+});
+
 for (const mediaType of ['image', 'video'] as const) {
   test(`节点操作改进：${mediaType}悬浮下载保存原始字节且不打开预览`, async ({ page }, testInfo) => {
     const { body } = await installPreviewControlsFixture(page, mediaType);

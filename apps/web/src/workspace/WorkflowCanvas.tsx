@@ -207,7 +207,11 @@ export function WorkflowCanvas({
   const canvasAreaRef = useRef<HTMLElement>(null);
   const connectionStartRef = useRef<OnConnectStartParams | null>(null);
   const [contextMenu, setContextMenu] = useState<CanvasContextMenuTarget | null>(null);
-  const quickEditorNode = selectedNode && selectedNode.data.mode !== 'source' ? selectedNode : null;
+  /** 图片节点先进入输入编辑，编辑器打开后再次点击才允许预览。 */
+  const quickEditorNode =
+    selectedNode && (selectedNode.data.mode !== 'source' || selectedNode.data.mediaType === 'image')
+      ? selectedNode
+      : null;
 
   const getCanvasNodePosition = useCallback(
     (mediaType?: MediaType) => {

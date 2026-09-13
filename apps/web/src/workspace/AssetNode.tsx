@@ -631,7 +631,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
             asset={previewAsset}
             className="flow-node-preview-content"
             mode="content"
-            mediaClickPreviewEnabled={data.mode === 'source' || quickEditorNodeId === id}
+            mediaClickPreviewEnabled={quickEditorNodeId === id}
             onTextSave={
               contentHandlers && !writingDisabled
                 ? (text) => contentHandlers.saveText(id, text)
