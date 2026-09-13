@@ -265,6 +265,7 @@ vi.mock('@xyflow/react', async () => {
     useEdgesState,
     useNodesState,
     useReactFlow,
+    useViewport: () => ({ x: 0, y: 0, zoom: 1 }),
   };
 });
 

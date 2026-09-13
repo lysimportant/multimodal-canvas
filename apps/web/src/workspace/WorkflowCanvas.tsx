@@ -37,6 +37,7 @@ import {
   NodeLabelChangeContext,
   NodeRetryContext,
   NodeSelectionContext,
+  NodeQuickEditorIdContext,
   nodeTypes,
   type NodeEnabledHandler,
   type NodeResizeHandler,
@@ -425,58 +426,64 @@ export function WorkflowCanvas({
                 <NodeRetryContext.Provider value={onRetryNode}>
                   <NodeDeleteContext.Provider value={onDeleteNode ?? null}>
                     <NodeContentContext.Provider value={nodeContentHandlers ?? null}>
-                      <ReactFlow
-                        nodes={nodes}
-                        edges={edges}
-                        nodeTypes={nodeTypes}
-                        onNodesChange={onNodesChange}
-                        onEdgesChange={onEdgesChange}
-                        onConnect={onConnect}
-                        onConnectStart={(_event, params) => {
-                          connectionStartRef.current = params;
-                        }}
-                        onConnectEnd={handleConnectEnd}
-                        onNodeDragStart={onNodeDragStart}
-                        onMove={reportCanvasCenter}
-                        onDrop={handleDrop}
-                        onDragOver={(event) => {
-                          event.preventDefault();
-                          event.dataTransfer.dropEffect = 'copy';
-                        }}
-                        onNodeClick={(_, node) => onNodeSelect(node as AssetFlowNode)}
-                        onNodeContextMenu={(event, node) =>
-                          handleNodeContextMenu(event, node as AssetFlowNode)
-                        }
-                        onPaneContextMenu={handlePaneContextMenu}
-                        onPaneClick={() => {
-                          setContextMenu(null);
-                          onClearNodeSelection();
-                        }}
-                        fitView
-                        minZoom={FIT_VIEW_MIN_ZOOM}
-                        fitViewOptions={{ padding: 0.3, maxZoom: 1.1, minZoom: FIT_VIEW_MIN_ZOOM }}
-                        connectionLineStyle={{ stroke: '#18794e', strokeWidth: 2 }}
-                        defaultEdgeOptions={{
-                          animated: true,
-                        }}
-                        proOptions={{ hideAttribution: true }}
-                      >
-                        {background !== 'blank' && (
-                          <Background
-                            color="#cbd5d0"
-                            gap={background === 'lines' ? 28 : 24}
-                            size={background === 'cross' ? 7 : 1.2}
-                            variant={
-                              background === 'lines'
-                                ? BackgroundVariant.Lines
-                                : background === 'cross'
-                                  ? BackgroundVariant.Cross
-                                  : BackgroundVariant.Dots
-                            }
-                          />
-                        )}
-                        <Controls showInteractive={false} position="bottom-right" />
-                      </ReactFlow>
+                      <NodeQuickEditorIdContext.Provider value={quickEditorNode?.id ?? null}>
+                        <ReactFlow
+                          nodes={nodes}
+                          edges={edges}
+                          nodeTypes={nodeTypes}
+                          onNodesChange={onNodesChange}
+                          onEdgesChange={onEdgesChange}
+                          onConnect={onConnect}
+                          onConnectStart={(_event, params) => {
+                            connectionStartRef.current = params;
+                          }}
+                          onConnectEnd={handleConnectEnd}
+                          onNodeDragStart={onNodeDragStart}
+                          onMove={reportCanvasCenter}
+                          onDrop={handleDrop}
+                          onDragOver={(event) => {
+                            event.preventDefault();
+                            event.dataTransfer.dropEffect = 'copy';
+                          }}
+                          onNodeClick={(_, node) => onNodeSelect(node as AssetFlowNode)}
+                          onNodeContextMenu={(event, node) =>
+                            handleNodeContextMenu(event, node as AssetFlowNode)
+                          }
+                          onPaneContextMenu={handlePaneContextMenu}
+                          onPaneClick={() => {
+                            setContextMenu(null);
+                            onClearNodeSelection();
+                          }}
+                          fitView
+                          minZoom={FIT_VIEW_MIN_ZOOM}
+                          fitViewOptions={{
+                            padding: 0.3,
+                            maxZoom: 1.1,
+                            minZoom: FIT_VIEW_MIN_ZOOM,
+                          }}
+                          connectionLineStyle={{ stroke: '#18794e', strokeWidth: 2 }}
+                          defaultEdgeOptions={{
+                            animated: true,
+                          }}
+                          proOptions={{ hideAttribution: true }}
+                        >
+                          {background !== 'blank' && (
+                            <Background
+                              color="#cbd5d0"
+                              gap={background === 'lines' ? 28 : 24}
+                              size={background === 'cross' ? 7 : 1.2}
+                              variant={
+                                background === 'lines'
+                                  ? BackgroundVariant.Lines
+                                  : background === 'cross'
+                                    ? BackgroundVariant.Cross
+                                    : BackgroundVariant.Dots
+                              }
+                            />
+                          )}
+                          <Controls showInteractive={false} position="bottom-right" />
+                        </ReactFlow>
+                      </NodeQuickEditorIdContext.Provider>
                     </NodeContentContext.Provider>
                   </NodeDeleteContext.Provider>
                 </NodeRetryContext.Provider>

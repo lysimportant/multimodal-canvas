@@ -5,11 +5,13 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Asset } from '@multimodal-canvas/domain';
-import { AssetPreview, type AssetPreviewLoadState } from './AssetPreview';
+import { AssetPreview, AssetViewerDialog, type AssetPreviewLoadState } from './AssetPreview';
 import { clearAuthSession, persistAuthSession } from '../auth-client';
 
+/** 保存测试前的剪贴板配置，避免不同用例之间泄漏模拟状态。 */
 const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(window.navigator, 'clipboard');
 
+/** 创建独立合成资源，不依赖本机账号或真实网络产物。 */
 function makeAsset(overrides: Partial<Asset> = {}): Asset {
   return {
     id: 'asset_1',
@@ -299,6 +301,190 @@ describe('AssetPreview', () => {
     await user.click(screen.getByRole('button', { name: '重置预览缩放' }));
     expect(layer.style.transform).toBe('translate(0px, 0px) scale(1)');
     expect(screen.getByRole('button', { name: '重置预览缩放' })).toHaveTextContent('100%');
+  });
+
+  it('图片首次按下后即使节点变为选中也只打开编辑器，再次点击才预览', () => {
+    const asset = makeAsset({ mediaType: 'image', mimeType: 'image/png' });
+    const selectNode = vi.fn();
+    const view = render(
+      <div onClick={selectNode}>
+        <AssetPreview asset={asset} mode="content" mediaClickPreviewEnabled={false} />
+      </div>,
+    );
+    const image = screen.getByRole('img');
+    fireEvent.pointerDown(image);
+    view.rerender(
+      <div onClick={selectNode}>
+        <AssetPreview asset={asset} mode="content" mediaClickPreviewEnabled />
+      </div>,
+    );
+    fireEvent.click(image);
+    expect(selectNode).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+    fireEvent.pointerDown(image);
+    fireEvent.click(image);
+    expect(screen.getByRole('dialog')).toBeVisible();
+    expect(selectNode).toHaveBeenCalledTimes(1);
+  });
+
+  it('图片未启用直接点击预览时，显式展开按钮仍可打开预览', async () => {
+    render(
+      <AssetPreview
+        asset={makeAsset({ mediaType: 'image', mimeType: 'image/png' })}
+        mode="content"
+        mediaClickPreviewEnabled={false}
+      />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: '预览图片：生成结果' }));
+    expect(screen.getByRole('dialog')).toBeVisible();
+  });
+
+  it.each([
+    { label: '横图', width: 1920, height: 1080 },
+    { label: '竖图', width: 1080, height: 1920 },
+    { label: '小图', width: 160, height: 90 },
+  ])('$label 预览按原比例适配视口，小图保持原尺寸', ({ width, height }) => {
+    vi.stubGlobal('innerWidth', 1280);
+    vi.stubGlobal('innerHeight', 900);
+    render(
+      <AssetViewerDialog
+        asset={makeAsset({ mediaType: 'image', mimeType: 'image/png' })}
+        open
+        onOpenChange={vi.fn()}
+      />,
+    );
+    const viewer = screen.getByRole('dialog');
+    const image = viewer.querySelector('img')!;
+    Object.defineProperties(image, {
+      naturalWidth: { value: width },
+      naturalHeight: { value: height },
+    });
+    fireEvent.load(image);
+    const stage = viewer.querySelector('.artifact-preview-viewer-stage') as HTMLElement;
+    const shownWidth = Number.parseFloat(stage.style.width);
+    const shownHeight = Number.parseFloat(stage.style.height);
+    expect(shownWidth / shownHeight).toBeCloseTo(width / height);
+    expect(shownWidth).toBeLessThanOrEqual(1222);
+    expect(shownHeight).toBeLessThanOrEqual(796);
+    expect(shownWidth).toBeLessThanOrEqual(width);
+    expect(shownHeight).toBeLessThanOrEqual(height);
+    if (width === 160) {
+      expect(shownWidth).toBe(160);
+      expect(shownHeight).toBe(90);
+    }
+  });
+
+  it('切换资源清除旧尺寸，窗口变化后重新适配当前资源', () => {
+    vi.stubGlobal('innerWidth', 1280);
+    vi.stubGlobal('innerHeight', 900);
+    const view = render(
+      <AssetViewerDialog
+        asset={makeAsset({ mediaType: 'image', mimeType: 'image/png' })}
+        open
+        onOpenChange={vi.fn()}
+      />,
+    );
+    const image = screen.getByRole('dialog').querySelector('img')!;
+    Object.defineProperties(image, {
+      naturalWidth: { value: 1080 },
+      naturalHeight: { value: 1920 },
+    });
+    fireEvent.load(image);
+    expect(
+      (screen.getByRole('dialog').querySelector('.artifact-preview-viewer-stage') as HTMLElement)
+        .style.height,
+    ).toBe('796px');
+    view.rerender(
+      <AssetViewerDialog
+        asset={makeAsset({
+          id: 'small-image',
+          mediaType: 'image',
+          mimeType: 'image/png',
+          contentUrl: 'https://assets.example/small.png',
+        })}
+        open
+        onOpenChange={vi.fn()}
+      />,
+    );
+    const viewer = screen.getByRole('dialog');
+    const nextImage = viewer.querySelector('img')!;
+    const nextStage = viewer.querySelector('.artifact-preview-viewer-stage') as HTMLElement;
+    expect(nextStage.style.height).toBe('');
+    Object.defineProperties(nextImage, {
+      naturalWidth: { value: 180 },
+      naturalHeight: { value: 120 },
+    });
+    fireEvent.load(nextImage);
+    expect(nextStage).toHaveStyle({ width: '180px', height: '120px' });
+    vi.stubGlobal('innerWidth', 400);
+    vi.stubGlobal('innerHeight', 200);
+    fireEvent.resize(window);
+    expect(nextStage).toHaveStyle({ width: '144px', height: '96px' });
+  });
+
+  it('视频预览使用解码尺寸适配并保留原生播放控件', () => {
+    vi.stubGlobal('innerWidth', 1280);
+    vi.stubGlobal('innerHeight', 900);
+    render(
+      <AssetViewerDialog
+        asset={makeAsset({ mediaType: 'video', mimeType: 'video/mp4' })}
+        open
+        onOpenChange={vi.fn()}
+      />,
+    );
+    const viewer = screen.getByRole('dialog');
+    const video = viewer.querySelector('video')!;
+    Object.defineProperties(video, {
+      videoWidth: { value: 1920 },
+      videoHeight: { value: 1080 },
+    });
+    fireEvent.loadedMetadata(video);
+    expect(video).toHaveAttribute('controls');
+    expect(viewer.querySelector('.artifact-preview-viewer-stage')).toHaveStyle({
+      width: '1222px',
+      height: '687.375px',
+    });
+  });
+
+  it('预览尺寸无效或加载失败时给出错误和重新加载入口', async () => {
+    render(
+      <AssetViewerDialog
+        asset={makeAsset({ mediaType: 'image', mimeType: 'image/png' })}
+        open
+        onOpenChange={vi.fn()}
+      />,
+    );
+    fireEvent.load(screen.getByRole('dialog').querySelector('img')!);
+    expect(screen.getByRole('alert')).toHaveTextContent('无法读取图片尺寸');
+    await userEvent.click(screen.getByRole('button', { name: '重新加载预览' }));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    fireEvent.error(screen.getByRole('dialog').querySelector('img')!);
+    expect(screen.getByRole('alert')).toHaveTextContent('图片加载失败');
+    expect(screen.getByRole('button', { name: '重新加载预览' })).toBeInTheDocument();
+  });
+
+  it('节点视频播放拒绝后显示具体原因，再次点击播放可以恢复', async () => {
+    const { container } = render(
+      <AssetPreview
+        asset={makeAsset({ mediaType: 'video', mimeType: 'video/mp4' })}
+        mode="content"
+      />,
+    );
+    const video = container.querySelector('video')!;
+    const play = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('播放权限被浏览器拒绝'))
+      .mockResolvedValueOnce(undefined);
+    Object.defineProperty(video, 'play', { value: play });
+    fireEvent.loadedMetadata(video);
+    await userEvent.click(screen.getByRole('button', { name: '播放视频' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('播放权限被浏览器拒绝');
+    await userEvent.click(screen.getByRole('button', { name: '播放视频' }));
+    expect(play).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    fireEvent.play(video);
+    expect(screen.queryByRole('button', { name: '播放视频' })).not.toBeInTheDocument();
   });
 
   it('preserves compact resource-card sizing hooks on the shell and media', () => {

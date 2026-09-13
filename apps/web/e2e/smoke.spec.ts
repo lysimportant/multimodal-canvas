@@ -600,6 +600,233 @@ test.beforeEach(async ({ page }) => {
   await mockApi(page);
 });
 
+/** 安装单节点媒体夹具，所有读写均由既有 Mock 接管，不访问真实账户或供应商。 */
+async function installPreviewControlsFixture(
+  page: Page,
+  mediaType: 'text' | 'image' | 'video',
+  width = 640,
+  height = 360,
+) {
+  const mimeType =
+    mediaType === 'image' ? 'image/svg+xml' : mediaType === 'video' ? 'video/mp4' : 'text/plain';
+  const body =
+    mediaType === 'image'
+      ? Buffer.from(
+          `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="100%" height="100%" fill="#518575"/><circle cx="${width / 2}" cy="${height / 2}" r="${Math.min(width, height) / 4}" fill="#f6deb0"/></svg>`,
+        )
+      : mediaType === 'video'
+        ? readFileSync(new URL('../public/demo/field-study.mp4', import.meta.url))
+        : Buffer.from('独立的文本节点验收内容');
+  const asset: Asset = {
+    id: 'preview-controls-asset',
+    name: `${mediaType}-original`,
+    mediaType,
+    mimeType,
+    sizeBytes: body.length,
+    status: 'ready',
+    tags: [],
+    contentUrl: '/v1/assets/preview-controls-asset/content',
+  };
+  const canvas: CanvasDocument = {
+    revision: 0,
+    edges: [],
+    nodes: [
+      {
+        id: 'preview-controls-node',
+        type: mediaType,
+        position: { x: 100, y: 120 },
+        width: 180,
+        height: 180,
+        data: {
+          label: '预览验收节点',
+          mediaType,
+          mode: 'generate',
+          enabled: true,
+          assetId: asset.id,
+          contentUrl: asset.contentUrl,
+          mimeType,
+          manualOutput: true,
+        },
+      },
+    ],
+  };
+  await page.route('**/v1/projects/project-smoke/canvas', async (route) => {
+    if (route.request().method() === 'GET') await json(route, { canvas });
+    else await route.fallback();
+  });
+  await page.route('**/v1/assets', async (route) => json(route, { assets: [asset] }));
+  await page.route('**/v1/assets/preview-controls-asset/content**', async (route) => {
+    await route.fulfill({ contentType: mimeType, body });
+  });
+  return { asset, body };
+}
+
+test('节点操作改进：文本悬浮卡片在缩小画布后仍至少250px且允许超出节点', async ({
+  page,
+}, testInfo) => {
+  await installPreviewControlsFixture(page, 'text');
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(projectPath);
+  const node = page.locator('.flow-generate-node');
+  await expect(node.locator('pre')).toBeVisible();
+  await page.locator('.react-flow__controls-zoomout').click({ clickCount: 4 });
+  await expect
+    .poll(() => node.evaluate((element) => element.getBoundingClientRect().width))
+    .toBeLessThan(180);
+  await node.hover();
+  const controls = node.locator('.flow-node-floating-controls');
+  await expect(controls).toBeVisible();
+  await expect
+    .poll(() => controls.evaluate((element) => element.getBoundingClientRect().width))
+    .toBeGreaterThanOrEqual(249.9);
+  const sizes = { node: await node.boundingBox(), controls: await controls.boundingBox() };
+  expect(sizes.controls!.width).toBeGreaterThan(sizes.node!.width);
+  await page.screenshot({ path: testInfo.outputPath('text-controls-zoomed-out.png') });
+  const beforeDrag = await node.boundingBox();
+  const handle = await controls.getByRole('button', { name: '拖动移动节点' }).boundingBox();
+  await page.mouse.move(handle!.x + handle!.width / 2, handle!.y + handle!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(handle!.x + handle!.width / 2 + 80, handle!.y + handle!.height / 2 + 40, {
+    steps: 6,
+  });
+  await page.mouse.up();
+  await expect.poll(async () => (await node.boundingBox())!.x - beforeDrag!.x).toBeGreaterThan(50);
+});
+
+for (const size of [
+  { width: 1600, height: 900, name: '横图' },
+  { width: 900, height: 1600, name: '竖图' },
+  { width: 1200, height: 1200, name: '方图' },
+  { width: 120, height: 80, name: '小图' },
+]) {
+  test(`节点操作改进：${size.name}首击输入再次预览且适配原始比例`, async ({ page }, testInfo) => {
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    page.on('console', (message) => {
+      if (message.type() === 'error') errors.push(message.text());
+    });
+    await installPreviewControlsFixture(page, 'image', size.width, size.height);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(projectPath);
+    const node = page.locator('.flow-generate-node');
+    const inlineImage = node.locator('img');
+    await expect
+      .poll(() => inlineImage.evaluate((element: HTMLImageElement) => element.naturalWidth))
+      .toBe(size.width);
+    const originalBounds = await node.boundingBox();
+    await inlineImage.click();
+    await expect(page.getByRole('textbox', { name: '提示词', exact: true })).toBeVisible();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await inlineImage.click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+    const image = dialog.locator('img');
+    await expect
+      .poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth))
+      .toBe(size.width);
+    await expect
+      .poll(async () => {
+        const box = await image.boundingBox();
+        return Math.abs(box!.width / box!.height - size.width / size.height);
+      })
+      .toBeLessThan(0.02);
+    const imageBounds = await image.boundingBox();
+    expect(imageBounds!.width).toBeLessThanOrEqual(size.width + 1);
+    expect(imageBounds!.height).toBeLessThanOrEqual(size.height + 1);
+    const bounds = await dialog.boundingBox();
+    expect(bounds!.x).toBeGreaterThanOrEqual(0);
+    expect(bounds!.y).toBeGreaterThanOrEqual(0);
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(1441);
+    expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(901);
+    const stageBounds = await dialog.locator('.artifact-preview-viewer-stage').boundingBox();
+    expect(Math.abs(stageBounds!.width - imageBounds!.width)).toBeLessThan(2);
+    expect(Math.abs(stageBounds!.height - imageBounds!.height)).toBeLessThan(2);
+    await page.screenshot({
+      path: testInfo.outputPath(`preview-${size.width}x${size.height}.png`),
+    });
+    await page.setViewportSize({ width: 1024, height: 640 });
+    await expect
+      .poll(async () => {
+        const b = await dialog.boundingBox();
+        return b!.y + b!.height;
+      })
+      .toBeLessThanOrEqual(641);
+    await page.screenshot({ path: testInfo.outputPath('preview-desktop-compact.png') });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect
+      .poll(async () => {
+        const b = await dialog.boundingBox();
+        return b!.x + b!.width;
+      })
+      .toBeLessThanOrEqual(391);
+    await page.screenshot({ path: testInfo.outputPath('preview-narrow.png') });
+    await page.getByRole('button', { name: '关闭预览' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.getByRole('textbox', { name: '提示词', exact: true })).toBeVisible();
+    await page.setViewportSize({ width: 1440, height: 900 });
+    expect((await node.boundingBox())!.width).toBeCloseTo(originalBounds!.width, 1);
+    expect((await node.boundingBox())!.height).toBeCloseTo(originalBounds!.height, 1);
+    expect(errors).toEqual([]);
+  });
+}
+
+test('节点操作改进：全选后图片仍先打开输入框再预览', async ({ page }) => {
+  await installPreviewControlsFixture(page, 'image');
+  await page.goto(projectPath);
+  const node = page.locator('.flow-generate-node');
+  await expect(node.locator('img')).toBeVisible();
+  await focusCanvas(page);
+  await page.keyboard.press('ControlOrMeta+a');
+  await expect(page.locator('.react-flow__node.selected')).toHaveCount(1);
+  await expect(page.getByRole('textbox', { name: '提示词', exact: true })).toHaveCount(0);
+  await node.locator('img').click();
+  await expect(page.getByRole('textbox', { name: '提示词', exact: true })).toBeVisible();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await node.locator('img').click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+});
+
+for (const mediaType of ['image', 'video'] as const) {
+  test(`节点操作改进：${mediaType}悬浮下载保存原始字节且不打开预览`, async ({ page }, testInfo) => {
+    const { body } = await installPreviewControlsFixture(page, mediaType);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(projectPath);
+    const node = page.locator('.flow-generate-node');
+    await expect(node.locator(mediaType === 'image' ? 'img' : 'video')).toBeVisible();
+    await node.hover();
+    const downloadEvent = page.waitForEvent('download');
+    await node.getByRole('button', { name: /^下载/ }).click();
+    const download = await downloadEvent;
+    expect(download.suggestedFilename()).toMatch(mediaType === 'image' ? /\.svg$/ : /\.mp4$/);
+    const saved = testInfo.outputPath(download.suggestedFilename());
+    await download.saveAs(saved);
+    expect(readFileSync(saved).equals(body)).toBe(true);
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    if (mediaType === 'video') {
+      await node.getByRole('button', { name: '播放视频', exact: true }).click();
+      await expect
+        .poll(() => node.locator('video').evaluate((video: HTMLVideoElement) => video.paused))
+        .toBe(false);
+      await node.getByRole('button', { name: /^预览视频/ }).click();
+      const dialog = page.getByRole('dialog');
+      const video = dialog.locator('video');
+      await expect
+        .poll(() => video.evaluate((element: HTMLVideoElement) => element.videoWidth))
+        .toBeGreaterThan(0);
+      const ratio = await video.evaluate(
+        (element: HTMLVideoElement) => element.videoWidth / element.videoHeight,
+      );
+      await expect
+        .poll(async () => {
+          const box = await video.boundingBox();
+          return Math.abs(box!.width / box!.height - ratio);
+        })
+        .toBeLessThan(0.02);
+      await page.screenshot({ path: testInfo.outputPath('video-preview-original-ratio.png') });
+    }
+  });
+}
+
 test('相对签名产物地址在 API origin 加载且回显不改变节点尺寸', async ({ page }, testInfo) => {
   const requests: string[] = [];
   await page.route('**/v1/assets/*/access-url', async (route) => {

@@ -4,8 +4,12 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+/** 用于验证悬浮栏在不同缩放级别下提供反向缩放值。 */
+const viewportMock = vi.hoisted(() => ({ zoom: 1 }));
+
 vi.mock('@xyflow/react', async () => {
   return {
+    useViewport: () => ({ x: 0, y: 0, zoom: viewportMock.zoom }),
     Handle: () => null,
     NodeResizer: ({
       isVisible,
@@ -23,13 +27,19 @@ vi.mock('@xyflow/react', async () => {
   };
 });
 
+vi.mock('./node-asset-download', () => ({ fetchNodeAssetDownload: vi.fn() }));
+vi.mock('../export-utils', () => ({ downloadProjectExport: vi.fn() }));
+
 import type { NodeProps } from '@xyflow/react';
 import type { AssetFlowNode } from '../canvas-utils';
+import { downloadProjectExport } from '../export-utils';
+import { fetchNodeAssetDownload } from './node-asset-download';
 import {
   AssetNode,
   NodeDeleteContext,
   NodeEnabledContext,
   NodeLabelChangeContext,
+  NodeQuickEditorIdContext,
   NodeResizeStartContext,
   NodeRetryContext,
 } from './AssetNode';
@@ -81,9 +91,203 @@ function renderNode(
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.clearAllMocks();
+  viewportMock.zoom = 1;
 });
 
 describe('AssetNode result presentation', () => {
+  it.each([0.25, 0.5, 1, 2])('文本悬浮卡片抵消 %s 倍画布缩放', (zoom) => {
+    viewportMock.zoom = zoom;
+    renderNode(makeNode());
+    const toolbar = screen.getByRole('group', { name: '节点操作：文案生成' });
+    expect(toolbar.style.getPropertyValue('--flow-node-zoom')).toBe(String(zoom));
+    expect(toolbar.style.getPropertyValue('--flow-node-inverse-zoom')).toBe(String(1 / zoom));
+  });
+
+  it.each(['image', 'video'] as const)('没有内容的 %s 节点禁用下载按钮', (mediaType) => {
+    renderNode(makeNode({ mediaType }));
+    const button = screen.getByRole('button', {
+      name: mediaType === 'image' ? '下载图片' : '下载视频',
+    });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute('title', '暂无可下载内容');
+  });
+
+  it.each(['text', 'audio'] as const)('%s 节点不增加下载按钮', (mediaType) => {
+    renderNode(makeNode({ mediaType }));
+    expect(screen.queryByRole('button', { name: /^下载/ })).not.toBeInTheDocument();
+  });
+
+  it.each(['generate', 'transform'] as const)(
+    '%s 图片节点输入编辑器打开前点击不预览，打开后再次点击才预览',
+    async (mode) => {
+      const node = makeNode({
+        mediaType: 'image',
+        mode,
+        assetId: 'image',
+        mimeType: 'image/png',
+        contentUrl: 'https://assets.example/image.png',
+      });
+      const view = renderNode(node);
+      await userEvent.click(screen.getByRole('img'));
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      view.rerender(
+        <NodeQuickEditorIdContext.Provider value={node.id}>
+          <AssetNode
+            {...({ id: node.id, data: node.data, selected: true } as NodeProps<AssetFlowNode>)}
+          />
+        </NodeQuickEditorIdContext.Provider>,
+      );
+      await userEvent.click(screen.getByRole('img'));
+      expect(await screen.findByRole('dialog', { name: '文案生成' })).toBeInTheDocument();
+    },
+  );
+
+  it.each([null, 'another-node'])(
+    '多选中的图片不能通过选中状态绕过编辑器：%s',
+    async (editorId) => {
+      const node = makeNode({
+        mediaType: 'image',
+        assetId: 'image',
+        mimeType: 'image/png',
+        contentUrl: 'https://assets.example/image.png',
+      });
+      render(
+        <NodeQuickEditorIdContext.Provider value={editorId}>
+          <AssetNode
+            {...({ id: node.id, data: node.data, selected: true } as NodeProps<AssetFlowNode>)}
+          />
+        </NodeQuickEditorIdContext.Provider>,
+      );
+      await userEvent.click(screen.getByRole('img'));
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    },
+  );
+
+  it('来源图片没有输入编辑器，保持直接点击预览', async () => {
+    renderNode(
+      makeNode({
+        mediaType: 'image',
+        mode: 'source',
+        assetId: 'image',
+        mimeType: 'image/png',
+        contentUrl: 'https://assets.example/image.png',
+      }),
+    );
+    await userEvent.click(screen.getByRole('img'));
+    expect(await screen.findByRole('dialog', { name: '文案生成' })).toBeInTheDocument();
+  });
+
+  it.each([
+    {
+      label: '来源图片',
+      data: {
+        mode: 'source' as const,
+        mediaType: 'image' as const,
+        assetId: 'source-image',
+        contentUrl: '/v1/assets/source-image/content',
+      },
+      assetId: 'source-image',
+      url: '/v1/assets/source-image/content',
+      buttonName: '下载图片',
+    },
+    {
+      label: '指定结果版本',
+      data: {
+        mediaType: 'video' as const,
+        resultAsset: { assetId: 'result-video', version: 3, mimeType: 'video/mp4' },
+      },
+      assetId: 'result-video',
+      url: '/v1/assets/result-video/versions/3/content',
+      buttonName: '下载视频',
+    },
+    {
+      label: '手动替换内容',
+      data: {
+        mediaType: 'image' as const,
+        manualOutput: true,
+        assetId: 'manual-image',
+        contentUrl: '/v1/assets/manual-image/content',
+        resultAsset: { assetId: 'old-image', version: 1 },
+      },
+      assetId: 'manual-image',
+      url: '/v1/assets/manual-image/content',
+      buttonName: '下载图片',
+    },
+  ])('下载 $label 与当前回显使用相同资产地址', async ({ data, assetId, url, buttonName }) => {
+    const download = { blob: new Blob(['media']), filename: '下载.png' };
+    vi.mocked(fetchNodeAssetDownload).mockResolvedValueOnce(download);
+    renderNode(makeNode(data));
+
+    await userEvent.click(screen.getByRole('button', { name: buttonName }));
+    await waitFor(() => expect(downloadProjectExport).toHaveBeenCalledWith(download));
+    expect(fetchNodeAssetDownload).toHaveBeenCalledWith(
+      expect.objectContaining({ id: assetId, contentUrl: url }),
+      expect.any(AbortSignal),
+    );
+  });
+
+  it('下载失败显示错误并允许重试', async () => {
+    vi.mocked(fetchNodeAssetDownload).mockRejectedValueOnce(new Error('下载失败（403），请重试'));
+    renderNode(
+      makeNode({
+        mediaType: 'image',
+        assetId: 'image',
+        contentUrl: 'https://assets.example/image.png',
+      }),
+    );
+    const button = screen.getByRole('button', { name: '下载图片' });
+    await userEvent.click(button);
+    expect(await screen.findByRole('alert')).toHaveTextContent('下载失败（403），请重试');
+    expect(button).toBeEnabled();
+    expect(downloadProjectExport).not.toHaveBeenCalled();
+
+    vi.mocked(fetchNodeAssetDownload).mockResolvedValueOnce({
+      blob: new Blob(['media']),
+      filename: 'image.png',
+    });
+    await userEvent.click(button);
+    await waitFor(() => expect(downloadProjectExport).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('下载期间防止重复请求，切换结果取消旧下载', async () => {
+    let resolveDownload!: (value: { blob: Blob; filename: string }) => void;
+    vi.mocked(fetchNodeAssetDownload).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveDownload = resolve;
+        }),
+    );
+    const node = makeNode({
+      mediaType: 'video',
+      assetId: 'video',
+      contentUrl: 'https://assets.example/old.mp4',
+    });
+    const view = renderNode(node);
+    const button = screen.getByRole('button', { name: '下载视频' });
+    await userEvent.click(button);
+    expect(button).toBeDisabled();
+    expect(screen.getByRole('status')).toHaveTextContent('正在准备下载');
+    await userEvent.click(button);
+    expect(fetchNodeAssetDownload).toHaveBeenCalledTimes(1);
+    const signal = vi.mocked(fetchNodeAssetDownload).mock.calls[0][1];
+
+    view.rerender(
+      <AssetNode
+        {...({
+          id: node.id,
+          data: { ...node.data, contentUrl: 'https://assets.example/new.mp4' },
+          selected: true,
+        } as NodeProps<AssetFlowNode>)}
+      />,
+    );
+    expect(signal?.aborted).toBe(true);
+    resolveDownload({ blob: new Blob(['old']), filename: 'old.mp4' });
+    await waitFor(() => expect(screen.getByRole('button', { name: '下载视频' })).toBeEnabled());
+    expect(downloadProjectExport).not.toHaveBeenCalled();
+  });
+
   it('通过顶部名称按钮打开重命名对话框，Escape 取消草稿', async () => {
     const onLabelChange = vi.fn();
     const user = userEvent.setup();

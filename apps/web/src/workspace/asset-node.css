@@ -30,10 +30,10 @@
   overflow: hidden;
 }
 
-/* 透明的底部间距连通节点与悬浮栏，鼠标向上移动时操作不会闪退。 */
+/* 反向缩放保持屏幕尺寸；透明底部连通节点与悬浮栏，不参与节点尺寸计算。 */
 .flow-asset-node > .flow-node-header.flow-node-floating-controls {
   align-items: stretch;
-  bottom: calc(100% + 10px);
+  bottom: calc(100% + 10px * var(--flow-node-inverse-zoom, 1));
   background: var(--mc-surface);
   border: 1px solid var(--mc-border);
   border-radius: 6px;
@@ -44,13 +44,15 @@
   left: 0;
   margin: 0;
   min-height: 44px;
-  min-width: 250px;
+  min-width: max(250px, calc(100% * var(--flow-node-zoom, 1)));
   opacity: 0;
   padding: 4px 6px;
   pointer-events: none;
   position: absolute;
+  transform: scale(var(--flow-node-inverse-zoom, 1));
+  transform-origin: bottom left;
   transition: opacity 120ms ease;
-  width: 100%;
+  width: max-content;
   z-index: 6;
 }
 
@@ -73,15 +75,15 @@
 
 .flow-node-floating-controls > .flow-node-label {
   display: flex;
-  flex: 0 0 33.333%;
+  flex: 1 1 100px;
   margin: 0;
-  max-width: 33.333%;
-  min-width: 0;
+  min-width: 76px;
+  width: 100px;
 }
 
 .flow-node-floating-controls > .flow-node-actions {
   display: flex;
-  flex: 1 1 66.667%;
+  flex: 0 0 auto;
   gap: 4px;
   min-width: 0;
 }
@@ -118,11 +120,11 @@
   border-radius: 4px;
   color: var(--mc-text-muted);
   display: inline-flex;
-  flex: 1 1 0;
+  flex: 0 0 28px;
   height: auto;
   justify-content: center;
   margin: 0;
-  min-width: 0;
+  min-width: 28px;
   padding: 0;
   width: auto;
 }
@@ -130,6 +132,11 @@
 .flow-node-floating-controls .flow-node-action-button svg {
   display: block;
   flex: 0 0 auto;
+}
+
+.flow-node-floating-controls .flow-node-action-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .flow-node-floating-controls .flow-node-drag-handle {
@@ -180,7 +187,8 @@
   width: auto;
 }
 
-.flow-node-upload-feedback {
+.flow-node-upload-feedback,
+.flow-node-download-feedback {
   background: var(--mc-surface);
   bottom: 4px;
   color: var(--mc-text);

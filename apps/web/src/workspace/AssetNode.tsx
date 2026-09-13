@@ -2,6 +2,7 @@ import {
   Check,
   Circle,
   Clock3,
+  Download,
   GripVertical,
   Info,
   LoaderCircle,
@@ -12,7 +13,7 @@ import {
   TriangleAlert,
   X,
 } from 'lucide-react';
-import { NodeResizer, type NodeProps } from '@xyflow/react';
+import { NodeResizer, useViewport, type NodeProps } from '@xyflow/react';
 import {
   createContext,
   useCallback,
@@ -23,6 +24,7 @@ import {
   useRef,
   type KeyboardEvent,
   type ReactNode,
+  type CSSProperties,
 } from 'react';
 
 import type { Asset, RunStatus } from '@multimodal-canvas/domain';
@@ -31,11 +33,15 @@ import type { AssetFlowNode } from '../canvas-utils';
 import { isImeKeyboardEvent } from '../ime';
 import { NodeHandles } from '../NodeHandles';
 import { AssetPreview, type AssetPreviewLoadState } from './AssetPreview';
+import { downloadProjectExport } from '../export-utils';
+import { fetchNodeAssetDownload } from './node-asset-download';
 import { mediaIcons, mediaLabels, modeLabels } from './contracts';
 import './asset-node.css';
 
 export type NodeSelectionHandler = (data: AssetFlowNode['data']) => void;
 export const NodeSelectionContext = createContext<NodeSelectionHandler | null>(null);
+/** 当前已打开输入编辑器的节点 ID；框选或全选状态不能代替实际编辑器状态。 */
+export const NodeQuickEditorIdContext = createContext<string | null>(null);
 /** 节点名称变更回调；由画布统一负责历史记录和持久化。 */
 export type NodeLabelChangeHandler = (nodeId: string, label: string) => void;
 export const NodeLabelChangeContext = createContext<NodeLabelChangeHandler | null>(null);
@@ -63,7 +69,9 @@ type NodePresentationState = 'empty' | 'running' | 'failed' | 'cancelled' | 'pre
 
 /** 展示节点占位或产物；生成与转换节点的控制栏悬浮在内容上方，不参与尺寸计算。 */
 export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
+  const { zoom } = useViewport();
   const selectNode = useContext(NodeSelectionContext);
+  const quickEditorNodeId = useContext(NodeQuickEditorIdContext);
   const changeLabel = useContext(NodeLabelChangeContext);
   const resizeNode = useContext(NodeResizeContext);
   const resizeStart = useContext(NodeResizeStartContext);
@@ -73,6 +81,12 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const contentHandlers = useContext(NodeContentContext);
   const inputRef = useRef<HTMLInputElement>(null);
   const uploadLock = useRef(false);
+  /** 当前下载请求；切换节点产物或卸载时取消，防止下载过时内容。 */
+  const downloadAbort = useRef<AbortController | null>(null);
+  /** 下载请求状态独立于上传，不阻塞节点内容编辑。 */
+  const [isDownloading, setIsDownloading] = useState(false);
+  /** 保留下载失败信息，用户可以再次点击下载按钮重试。 */
+  const [downloadError, setDownloadError] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [retryFile, setRetryFile] = useState<File | null>(null);
@@ -124,6 +138,13 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
     : '';
   const presentationState = getNodePresentationState(data, previewAsset);
   const writingDisabled = presentationState === 'running' || uploadProgress !== null;
+  /** 仅图片和视频提供下载，下载内容始终与当前回显产物一致。 */
+  const downloadableMedia = data.mediaType === 'image' || data.mediaType === 'video';
+  /** 抵消画布缩放，让悬浮栏至少保持 250 个屏幕 CSS 像素，不改变节点尺寸。 */
+  const floatingControlStyle = {
+    '--flow-node-zoom': zoom,
+    '--flow-node-inverse-zoom': 1 / zoom,
+  } as CSSProperties;
   /** 文件选择和拖放共用同一上传入口，错误保留可重试文件。 */
   const uploadFile = async (file: File) => {
     if (!contentHandlers || writingDisabled || uploadLock.current) return;
@@ -151,6 +172,12 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
 
   useEffect(() => {
     setPreviewLoadState(null);
+    setDownloadError(null);
+    setIsDownloading(false);
+    return () => {
+      downloadAbort.current?.abort();
+      downloadAbort.current = null;
+    };
   }, [previewIdentity]);
 
   useEffect(() => {
@@ -200,6 +227,28 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
       setRetryError(error instanceof Error ? error.message : '重试提交失败');
     } finally {
       setIsRetrying(false);
+    }
+  };
+
+  /** 拉取当前版本内容并触发浏览器保存；失败显示错误，取消不产生下载。 */
+  const handleDownload = async () => {
+    if (!previewAsset?.contentUrl || downloadAbort.current) return;
+    const abort = new AbortController();
+    downloadAbort.current = abort;
+    setIsDownloading(true);
+    setDownloadError(null);
+    try {
+      const download = await fetchNodeAssetDownload(previewAsset, abort.signal);
+      if (!abort.signal.aborted) downloadProjectExport(download);
+    } catch (reason) {
+      if (!abort.signal.aborted) {
+        setDownloadError(reason instanceof Error ? reason.message : '下载失败，请重试');
+      }
+    } finally {
+      if (downloadAbort.current === abort) {
+        downloadAbort.current = null;
+        setIsDownloading(false);
+      }
     }
   };
 
@@ -297,6 +346,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
       ) : null}
       <div
         className={`flow-node-header${floatingControls ? ' flow-node-floating-controls' : ''}`}
+        style={floatingControlStyle}
         role="group"
         aria-label={`节点操作：${data.label}`}
         aria-disabled={false}
@@ -395,6 +445,33 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
                   <Upload size={18} aria-hidden="true" />
                 ) : (
                   <LoaderCircle className="spin" size={18} aria-hidden="true" />
+                )}
+              </button>
+            )}
+            {downloadableMedia && (
+              <button
+                type="button"
+                className="flow-node-action-button flow-node-download-button nodrag nopan nowheel"
+                disabled={!previewAsset?.contentUrl || isDownloading}
+                aria-label={`下载${mediaLabels[data.mediaType]}`}
+                aria-busy={isDownloading}
+                title={
+                  isDownloading
+                    ? '正在准备下载'
+                    : previewAsset?.contentUrl
+                      ? `下载${mediaLabels[data.mediaType]}`
+                      : '暂无可下载内容'
+                }
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void handleDownload();
+                }}
+              >
+                {isDownloading ? (
+                  <LoaderCircle className="spin" size={18} aria-hidden="true" />
+                ) : (
+                  <Download size={18} aria-hidden="true" />
                 )}
               </button>
             )}
@@ -554,6 +631,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
             asset={previewAsset}
             className="flow-node-preview-content"
             mode="content"
+            mediaClickPreviewEnabled={data.mode === 'source' || quickEditorNodeId === id}
             onTextSave={
               contentHandlers && !writingDisabled
                 ? (text) => contentHandlers.saveText(id, text)
@@ -582,6 +660,16 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
         />
       )}
       {!floatingControls && nodeLabel}
+      {isDownloading && (
+        <span className="flow-node-download-feedback" role="status">
+          正在准备下载…
+        </span>
+      )}
+      {downloadError && (
+        <div className="flow-node-download-feedback is-error nodrag nopan" role="alert">
+          {downloadError}
+        </div>
+      )}
       {uploadProgress !== null && (
         <span className="flow-node-upload-feedback" role="status">
           上传 {uploadProgress}%

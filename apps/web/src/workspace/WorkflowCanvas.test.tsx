@@ -96,6 +96,7 @@ vi.mock('@xyflow/react', async () => {
     ),
     Position: { Top: 'top', Bottom: 'bottom' },
     ReactFlow,
+    useViewport: () => ({ x: 0, y: 0, zoom: 1 }),
     useReactFlow: () => ({
       screenToFlowPosition: ({ x, y }: { x: number; y: number }) => ({
         x: x - 100,
@@ -365,6 +366,40 @@ describe('WorkflowCanvas context menu', () => {
 
     fireEvent.mouseLeave(canvasNode);
   });
+
+  it.each([false, true])(
+    '全选图片的预览依据实际编辑器，其他编辑器打开：%s',
+    async (otherEditorOpen) => {
+      const imageNode: AssetFlowNode = {
+        ...generateNode,
+        selected: true,
+        data: {
+          ...generateNode.data,
+          assetId: 'selected-image',
+          contentUrl: 'https://assets.example/selected.png',
+          mimeType: 'image/png',
+        },
+      };
+      const otherNode: AssetFlowNode = {
+        ...generateNode,
+        id: 'another-selected-node',
+        data: { ...generateNode.data, label: '另一个图片节点' },
+      };
+      const props = createProps({
+        nodes: [imageNode, otherNode],
+        selectedNode: otherEditorOpen ? otherNode : null,
+      });
+      const view = render(<WorkflowCanvas {...props} />);
+      const image = screen.getByRole('img', { name: imageNode.data.label });
+      await userEvent.click(image);
+      expect(props.onNodeSelect).toHaveBeenCalledWith(imageNode);
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      view.rerender(<WorkflowCanvas {...props} selectedNode={imageNode} />);
+      expect(screen.getByRole('region', { name: '图片生成节点生成设置' })).toBeInTheDocument();
+      await userEvent.click(image);
+      expect(screen.getByRole('dialog', { name: imageNode.data.label })).toBeInTheDocument();
+    },
+  );
 
   it('将快速编辑器固定在节点下方并避开画布边缘', async () => {
     const props = createProps({ nodes: [generateNode], selectedNode: null });
