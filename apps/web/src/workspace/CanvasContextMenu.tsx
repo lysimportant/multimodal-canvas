@@ -175,6 +175,7 @@ export function CanvasContextMenu({
               handleId: target.handleId,
               role: option.role,
               label: option.label,
+              videoMode: option.videoMode,
             }),
           )
         }

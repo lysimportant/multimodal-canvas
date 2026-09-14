@@ -1091,6 +1091,30 @@ describe('NodeQuickEditor', () => {
     expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
   });
 
+  it('为视频节点提供生成模式，并回传显式模式', async () => {
+    const user = userEvent.setup();
+    const onVideoModeChange = vi.fn();
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          onVideoModeChange,
+          node: {
+            ...videoNode,
+            data: { ...videoNode.data, videoMode: 'first_frame' },
+          } as AssetFlowNode,
+        })}
+      />,
+    );
+    const modeGroup = screen.getByText('生成模式').parentElement as HTMLElement;
+    expect(within(modeGroup).getByRole('combobox', { name: '生成模式：首帧' })).toBeInTheDocument();
+    await user.click(within(modeGroup).getByRole('combobox'));
+    expect(within(modeGroup).getByRole('option', { name: /文生视频/ })).toBeInTheDocument();
+    expect(within(modeGroup).getByRole('option', { name: /全能参考/ })).toBeInTheDocument();
+    expect(within(modeGroup).getByText('视频编辑').closest('button')).toBeDisabled();
+    await user.click(within(modeGroup).getByRole('option', { name: /全能参考/ }));
+    expect(onVideoModeChange).toHaveBeenCalledWith('omni_reference');
+  });
+
   it('为视频节点回传清晰度、比例和秒数，并保留已存尺寸参数', async () => {
     const user = userEvent.setup();
     const onParametersChange = vi.fn();

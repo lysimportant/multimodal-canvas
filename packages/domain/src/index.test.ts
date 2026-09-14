@@ -16,6 +16,12 @@ import {
   precheckVideoGenerationInputs,
   resolveVideoCompletionAction,
   canvasNodeSchema,
+  displayVideoMode,
+  inferVideoModeFromRoles,
+  isPortConnectionAllowed,
+  targetPortRolesForNode,
+  videoModeCapability,
+  videoModes,
   promptDocumentSchema,
   renderPromptDocument,
   runJobDataSchema,
@@ -1078,6 +1084,167 @@ describe('video input set', () => {
         message: 'New API video 不支持该输入角色的多个值：firstFrame',
       },
     ]);
+  });
+
+  it('keeps omitted videoMode on the legacy allowlist so old canvases still load', () => {
+    const precheck = precheckVideoGenerationInputs(
+      [videoInput('prompt', 'prompt', 0, 'text'), videoInput('first', 'firstFrame', 1)],
+      { modelAlias: 'sora-2' },
+    );
+    expect(precheck.operation).toBe('image_to_video');
+    expect(precheck.issues).toEqual([]);
+  });
+
+  it('maps omni image content to reference images instead of first frame', () => {
+    const { inputSet, issues } = collectVideoInputSet(
+      [
+        videoInput('prompt', 'prompt', 0, 'text'),
+        videoInput('still', 'content', 1, 'image'),
+        videoInput('clip', 'content', 2, 'video'),
+      ],
+      'omni_reference',
+    );
+    expect(issues).toEqual([]);
+    expect(inputSet.firstFrame).toBeUndefined();
+    expect(inputSet.referenceImage.map((input) => input.nodeId)).toEqual(['still']);
+    expect(inputSet.content.map((input) => input.nodeId)).toEqual(['clip']);
+  });
+
+  it('requires first and last frames in first_last_frame mode', () => {
+    const precheck = precheckVideoGenerationInputs(
+      [videoInput('prompt', 'prompt', 0, 'text'), videoInput('first', 'firstFrame', 1)],
+      { modelAlias: 'grok-imagine-video-1.5.1', videoMode: 'first_last_frame' },
+    );
+    expect(precheck.operation).toBe('first_last_frame');
+    expect(precheck.issues).toEqual([
+      {
+        code: 'UNSUPPORTED_INPUT_COMBINATION',
+        role: 'lastFrame',
+        message: '首尾帧模式需要同时连接首帧和尾帧',
+      },
+    ]);
+  });
+
+  it('rejects first frame in omni mode even on grok-imagine-video-1.5', () => {
+    const precheck = precheckVideoGenerationInputs(
+      [
+        videoInput('prompt', 'prompt', 0, 'text'),
+        videoInput('first', 'firstFrame', 1),
+        videoInput('prop', 'referenceImage', 2),
+      ],
+      {
+        modelAlias: 'grok-imagine-video-1.5.1',
+        videoMode: 'omni_reference',
+        parameters: { resolution: '720p' },
+      },
+    );
+    expect(precheck.operation).toBe('omni_reference');
+    expect(precheck.issues.map((issue) => issue.role)).toEqual(['firstFrame']);
+  });
+
+  it('allows grok-imagine-video-1.5 omni reference images without pinning a first frame', () => {
+    const precheck = precheckVideoGenerationInputs(
+      [videoInput('prompt', 'prompt', 0, 'text'), videoInput('prop', 'referenceImage', 1)],
+      {
+        modelAlias: 'grok-imagine-video-1.5.1',
+        videoMode: 'omni_reference',
+        parameters: { resolution: '720p' },
+      },
+    );
+    expect(precheck.issues).toEqual([]);
+    expect(precheck.operation).toBe('omni_reference');
+  });
+
+  it('fail-closes unmapped omni reference on unknown models before a POST', () => {
+    const precheck = precheckVideoGenerationInputs(
+      [videoInput('prompt', 'prompt', 0, 'text'), videoInput('prop', 'referenceImage', 1)],
+      { modelAlias: 'sora-2', videoMode: 'omni_reference' },
+    );
+    expect(precheck.issues).toEqual([
+      {
+        code: 'UNSUPPORTED_INPUT_COMBINATION',
+        message: '该模型的全能参考尚未接通 New API 字段映射，不能发起真实请求',
+      },
+    ]);
+  });
+
+  it('rejects text_to_video media inputs and keeps first_frame required', () => {
+    const textOnly = precheckVideoGenerationInputs(
+      [videoInput('prompt', 'prompt', 0, 'text'), videoInput('first', 'firstFrame', 1)],
+      { videoMode: 'text_to_video' },
+    );
+    expect(textOnly.issues.some((issue) => issue.role === 'firstFrame')).toBe(true);
+
+    const missingFirst = precheckVideoGenerationInputs(
+      [videoInput('prompt', 'prompt', 0, 'text')],
+      { videoMode: 'first_frame' },
+    );
+    expect(missingFirst.issues).toEqual([
+      {
+        code: 'UNSUPPORTED_INPUT_COMBINATION',
+        role: 'firstFrame',
+        message: '首帧模式需要连接一张首帧图',
+      },
+    ]);
+  });
+});
+
+describe('video mode ports', () => {
+  it('exposes the six product modes and infers omitted mode from connected roles', () => {
+    expect(videoModes).toEqual([
+      'text_to_video',
+      'first_frame',
+      'first_last_frame',
+      'omni_reference',
+      'video_edit',
+      'video_extend',
+    ]);
+    expect(inferVideoModeFromRoles(['firstFrame'])).toBe('first_frame');
+    expect(inferVideoModeFromRoles(['lastFrame'])).toBe('first_last_frame');
+    expect(inferVideoModeFromRoles(['referenceImage'])).toBe('omni_reference');
+    expect(displayVideoMode({ videoMode: 'first_frame' }, ['referenceImage'])).toBe('first_frame');
+    expect(videoModeCapability('video_edit').selectable).toBe(false);
+    expect(videoModeCapability('omni_reference', 'grok-imagine-video-1.5').livePost).toBe(true);
+    expect(videoModeCapability('omni_reference', 'minimax-h3').livePost).toBe(false);
+  });
+
+  it('narrows video ports once an explicit mode is saved', () => {
+    const legacy = canvasNodeSchema.parse({
+      id: 'node_video',
+      type: 'video',
+      position: { x: 0, y: 0 },
+      data: { label: '视频', mediaType: 'video', mode: 'generate' },
+    });
+    expect(legacy.data.videoMode).toBeUndefined();
+    expect(targetPortRolesForNode(legacy)).toEqual(
+      expect.arrayContaining(['firstFrame', 'character', 'referenceImage', 'lastFrame']),
+    );
+
+    const omni = canvasNodeSchema.parse({
+      id: 'node_video',
+      type: 'video',
+      position: { x: 0, y: 0 },
+      data: {
+        label: '视频',
+        mediaType: 'video',
+        mode: 'generate',
+        videoMode: 'omni_reference',
+        modelAlias: 'grok-imagine-video-1.5',
+      },
+    });
+    expect(targetPortRolesForNode(omni)).toEqual(
+      expect.arrayContaining(['prompt', 'referenceImage', 'character', 'style']),
+    );
+    expect(targetPortRolesForNode(omni)).not.toContain('firstFrame');
+
+    const image = canvasNodeSchema.parse({
+      id: 'node_image',
+      type: 'image',
+      position: { x: 0, y: 0 },
+      data: { label: '图', mediaType: 'image', mode: 'source' },
+    });
+    expect(isPortConnectionAllowed(image, 'output:image', omni, 'input:referenceImage')).toBe(true);
+    expect(isPortConnectionAllowed(image, 'output:image', omni, 'input:firstFrame')).toBe(false);
   });
 });
 

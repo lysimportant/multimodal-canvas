@@ -1,18 +1,16 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import type { Connection } from '@xyflow/react';
-import { videoImageInputRoles, type PortRole } from '@multimodal-canvas/domain';
+import { videoImageRolesForMode, type PortRole, type VideoMode } from '@multimodal-canvas/domain';
 
-import { inputRoleLabels } from '../NodeHandles';
+import { videoInputRoleLabel } from '../NodeHandles';
 
 const VIEWPORT_PADDING = 8;
 
-const roleHints: Record<(typeof videoImageInputRoles)[number], string> = {
+const roleHints: Partial<Record<PortRole, string>> = {
   firstFrame: '作为视频起始画面',
   lastFrame: '作为视频结束画面',
-  character: '保持人物或主体身份',
-  style: '参考色彩、光影或镜头语言',
-  referenceImage: '产品、场景、道具等通用融合参考',
+  referenceImage: '作为融合参考，不固定首尾帧',
 };
 
 export type VideoInputRolePickerTarget = {
@@ -24,6 +22,7 @@ type VideoInputRolePickerProps = {
   target: VideoInputRolePickerTarget;
   onSelect: (role: PortRole) => void;
   onClose: () => void;
+  videoMode?: VideoMode;
 };
 
 function getEnabledItems(menu: HTMLDivElement | null) {
@@ -34,7 +33,13 @@ function getEnabledItems(menu: HTMLDivElement | null) {
  * 图片落到视频节点主体时的角色选择菜单。
  * 取消或点击外部不创建连线。
  */
-export function VideoInputRolePicker({ target, onSelect, onClose }: VideoInputRolePickerProps) {
+export function VideoInputRolePicker({
+  target,
+  onSelect,
+  onClose,
+  videoMode,
+}: VideoInputRolePickerProps) {
+  const roles = videoImageRolesForMode(videoMode);
   const menuRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState(target.clientPosition);
 
@@ -101,10 +106,12 @@ export function VideoInputRolePicker({ target, onSelect, onClose }: VideoInputRo
     >
       <div className="canvas-context-menu-heading">{'这张图在视频里做什么？'}</div>
       <p className="canvas-context-menu-label">
-        {'未取证的角色仍可连线保存；真实运行前不支持会明确失败。'}
+        {videoMode === 'first_last_frame'
+          ? '首尾帧模式只区分起始画面和结束画面。'
+          : '未取证的角色仍可连线保存；真实运行前不支持会明确失败。'}
       </p>
       <div className="canvas-context-menu-group">
-        {videoImageInputRoles.map((role) => (
+        {roles.map((role) => (
           <button
             key={role}
             type="button"
@@ -113,7 +120,7 @@ export function VideoInputRolePicker({ target, onSelect, onClose }: VideoInputRo
             onClick={() => onSelect(role)}
           >
             <span>
-              {inputRoleLabels[role]}
+              {videoInputRoleLabel(role, videoMode)}
               <small style={{ display: 'block', fontSize: 10, opacity: 0.72 }}>
                 {roleHints[role]}
               </small>

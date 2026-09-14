@@ -31,7 +31,9 @@ import type {
   PortRole,
   PromptDocument,
   VideoCompletionAction,
+  VideoMode,
 } from '@multimodal-canvas/domain';
+import { portRoles } from '@multimodal-canvas/domain';
 import type { CanvasTheme } from '../state/workspace-preferences';
 import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
 import { getNewNodeDimensions } from '../canvas-utils';
@@ -150,6 +152,7 @@ export type WorkflowCanvasProps = {
   onParametersChange?: (value: Record<string, unknown>, nodeId?: string) => void;
   onCompletionActionChange?: (value: VideoCompletionAction, nodeId?: string) => void;
   onCompletionTargetNodeIdChange?: (value: string | undefined, nodeId?: string) => void;
+  onVideoModeChange?: (value: VideoMode, nodeId?: string) => void;
   onModelChange: (value: ModelSelection, nodeId?: string) => void;
   onInferenceStrengthChange: (value: InferenceStrength, nodeId?: string) => void;
   onRunNode: (node: AssetFlowNode) => void;
@@ -210,6 +213,7 @@ export function WorkflowCanvas({
   onParametersChange,
   onCompletionActionChange,
   onCompletionTargetNodeIdChange,
+  onVideoModeChange,
   onModelChange,
   onInferenceStrengthChange,
   onRunNode,
@@ -658,6 +662,16 @@ export function WorkflowCanvas({
               ? (value) => onCompletionTargetNodeIdChange(value, quickEditorNode.id)
               : undefined
           }
+          onVideoModeChange={
+            onVideoModeChange ? (value) => onVideoModeChange(value, quickEditorNode.id) : undefined
+          }
+          connectedInputRoles={edges.flatMap((edge) => {
+            if (edge.target !== quickEditorNode.id || !edge.targetHandle?.startsWith('input:')) {
+              return [];
+            }
+            const role = edge.targetHandle.slice('input:'.length);
+            return portRoles.includes(role as PortRole) ? [role as PortRole] : [];
+          })}
           emptyImageNodes={nodes
             .filter(
               (item) =>
@@ -704,6 +718,9 @@ export function WorkflowCanvas({
       {videoImageRolePicker && (
         <VideoInputRolePicker
           target={videoImageRolePicker}
+          videoMode={
+            nodes.find((node) => node.id === videoImageRolePicker.connection.target)?.data.videoMode
+          }
           onSelect={handleVideoImageRoleSelect}
           onClose={() => setVideoImageRolePicker(null)}
         />

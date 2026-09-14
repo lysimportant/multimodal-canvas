@@ -212,12 +212,12 @@ describe('connection drop create options', () => {
 
     expect(groups.map((group) => group.mediaType)).toEqual(['image', 'video']);
     expect(groups[0]?.options.map((option) => option.label)).toEqual(['图生图']);
-    expect(groups[1]?.options.map((option) => [option.label, option.role])).toEqual([
-      ['视频首帧', 'firstFrame'],
-      ['视频尾帧', 'lastFrame'],
-      ['视频角色', 'character'],
-      ['视频风格', 'style'],
-      ['视频参考图', 'referenceImage'],
+    expect(
+      groups[1]?.options.map((option) => [option.label, option.role, option.videoMode]),
+    ).toEqual([
+      ['视频首帧', 'firstFrame', 'first_frame'],
+      ['视频尾帧', 'lastFrame', 'first_last_frame'],
+      ['全能参考', 'referenceImage', 'omni_reference'],
     ]);
   });
 
@@ -262,6 +262,40 @@ describe('connection drop create options', () => {
       x: -180,
       y: 27,
     });
+  });
+
+  it('auto-assigns first frame and omni reference without a role picker', () => {
+    const firstFrameTarget = node('target', 'video');
+    firstFrameTarget.data = { ...firstFrameTarget.data, videoMode: 'first_frame' };
+    const omniTarget = node('omni', 'video');
+    omniTarget.data = { ...omniTarget.data, videoMode: 'omni_reference' };
+    const lastTarget = node('last', 'video');
+    lastTarget.data = { ...lastTarget.data, videoMode: 'first_last_frame' };
+    const connection = {
+      source: 'source',
+      target: 'target',
+      sourceHandle: 'output:image',
+      targetHandle: null,
+    };
+
+    expect(needsVideoImageRoleChoice(connection, [node('source', 'image'), firstFrameTarget])).toBe(
+      false,
+    );
+    expect(
+      resolveCanvasConnectionTargetHandle(connection, [node('source', 'image'), firstFrameTarget]),
+    ).toMatchObject({ targetHandle: 'input:firstFrame' });
+    expect(
+      resolveCanvasConnectionTargetHandle({ ...connection, target: 'omni' }, [
+        node('source', 'image'),
+        omniTarget,
+      ]),
+    ).toMatchObject({ targetHandle: 'input:referenceImage' });
+    expect(
+      needsVideoImageRoleChoice({ ...connection, target: 'last' }, [
+        node('source', 'image'),
+        lastTarget,
+      ]),
+    ).toBe(true);
   });
 
   it('builds downstream and upstream connections from a drop-create request', () => {

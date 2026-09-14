@@ -2,9 +2,11 @@ import { Handle, Position } from '@xyflow/react';
 import type { CSSProperties } from 'react';
 import {
   targetPortRolesForMediaType,
+  targetPortRolesForVideoMode,
   type MediaType,
   type NodeMode,
   type PortRole,
+  type VideoMode,
 } from '@multimodal-canvas/domain';
 
 export type NodeHandleSide = 'top' | 'right' | 'bottom' | 'left';
@@ -38,19 +40,39 @@ const preferredVideoInputRoles: Record<Exclude<NodeHandleSide, 'right'>, PortRol
   left: 'firstFrame',
 };
 
+const preferredFirstLastVideoInputRoles: Record<Exclude<NodeHandleSide, 'right'>, PortRole> = {
+  top: 'prompt',
+  bottom: 'lastFrame',
+  left: 'firstFrame',
+};
+
 export const inputRoleLabels: Record<PortRole, string> = {
   prompt: '提示词',
   negativePrompt: '负面提示词',
   content: '内容',
   style: '风格',
   character: '角色',
-  referenceImage: '通用参考',
+  referenceImage: '参考图',
   firstFrame: '首帧',
   lastFrame: '尾帧',
   audioTrack: '音轨',
   transcript: '转录',
   mask: '遮罩',
 };
+
+/**
+ * 按视频模式返回端口中文名。全能参考把内容/音轨显示成参考视频/参考音频。
+ * @param role 规范输入角色。
+ * @param videoMode 节点上的显式视频模式。
+ */
+export function videoInputRoleLabel(role: PortRole, videoMode?: VideoMode): string {
+  if (videoMode === 'omni_reference') {
+    if (role === 'content') return '参考视频';
+    if (role === 'audioTrack') return '参考音频';
+    if (role === 'referenceImage') return '参考图';
+  }
+  return inputRoleLabels[role];
+}
 
 type InputHandleSide = Exclude<NodeHandleSide, 'right'>;
 
@@ -65,6 +87,13 @@ export type VisibleNodeHandle = {
 export type NodeHandleLayout = {
   visible: VisibleNodeHandle[];
   semanticInputRoles: PortRole[];
+};
+
+export type NodeHandleLayoutOptions = {
+  /** 视频生成节点的显式模式；缺省保持旧画布全量端口。 */
+  videoMode?: VideoMode;
+  /** 用于按模型收窄全能参考允许的媒体。 */
+  modelAlias?: string;
 };
 
 /**
@@ -88,17 +117,40 @@ function takePreferredRole(
   return fallbackRole;
 }
 
+function preferredRolesForVideoMode(
+  videoMode?: VideoMode,
+): Record<Exclude<NodeHandleSide, 'right'>, PortRole> {
+  if (videoMode === 'first_last_frame') return preferredFirstLastVideoInputRoles;
+  return preferredVideoInputRoles;
+}
+
 /**
  * Keep the four visible anchors stable while preserving every role-specific
  * target handle through the semantic hit layer rendered by NodeHandles.
+ * @param mediaType 节点媒体类型。
+ * @param mode 节点 source/generate。
+ * @param options 视频模式与模型，仅视频生成节点需要。
  */
-export function getNodeHandleLayout(mediaType: MediaType, mode: NodeMode): NodeHandleLayout {
-  const targetRoles = mode === 'source' ? [] : targetPortRolesForMediaType(mediaType);
+export function getNodeHandleLayout(
+  mediaType: MediaType,
+  mode: NodeMode,
+  options: NodeHandleLayoutOptions = {},
+): NodeHandleLayout {
+  const videoMode = mediaType === 'video' && mode !== 'source' ? options.videoMode : undefined;
+  const targetRoles =
+    mode === 'source'
+      ? []
+      : videoMode
+        ? targetPortRolesForVideoMode(videoMode, options.modelAlias)
+        : targetPortRolesForMediaType(mediaType);
   const assignedRoles = new Set<PortRole>();
   const sideRoles: Partial<Record<InputHandleSide, PortRole>> = {};
-  const preferredRoles = mediaType === 'video' ? preferredVideoInputRoles : preferredInputRoles;
+  const preferredRoles =
+    mediaType === 'video' ? preferredRolesForVideoMode(videoMode) : preferredInputRoles;
+  const skipLeftRole = videoMode === 'text_to_video' || videoMode === 'omni_reference';
 
   for (const side of ['top', 'left', 'bottom'] as const) {
+    if (side === 'left' && skipLeftRole) continue;
     const role = takePreferredRole(side, targetRoles, assignedRoles, preferredRoles);
     if (role) sideRoles[side] = role;
   }
@@ -114,12 +166,13 @@ export function getNodeHandleLayout(mediaType: MediaType, mode: NodeMode): NodeH
     }
 
     const role = sideRoles[side];
+    const leftMagnet = side === 'left' && videoMode === 'omni_reference';
     return {
       side,
       type: 'target',
       id: role ? `input:${role}` : `visual:${side}`,
       role,
-      isConnectable: mode !== 'source' && Boolean(role),
+      isConnectable: mode !== 'source' && (Boolean(role) || leftMagnet),
     };
   });
 
@@ -132,14 +185,17 @@ export function getNodeHandleLayout(mediaType: MediaType, mode: NodeMode): NodeH
 type NodeHandlesProps = {
   mediaType: MediaType;
   mode: NodeMode;
+  videoMode?: VideoMode;
+  modelAlias?: string;
 };
 
 /**
  * 渲染四边居中可见锚点。额外语义输入叠在左侧可见锚点圆心，
  * 保证任意角色的连线都吸附到同一个可见圆点，而不是沿边框错位。
+ * 首尾帧把尾帧放在下侧，形成两个可见槽位。
  */
-export function NodeHandles({ mediaType, mode }: NodeHandlesProps) {
-  const layout = getNodeHandleLayout(mediaType, mode);
+export function NodeHandles({ mediaType, mode, videoMode, modelAlias }: NodeHandlesProps) {
+  const layout = getNodeHandleLayout(mediaType, mode, { videoMode, modelAlias });
 
   return (
     <>
@@ -151,7 +207,15 @@ export function NodeHandles({ mediaType, mode }: NodeHandlesProps) {
           type={handle.type}
           position={sidePositions[handle.side]}
           id={handle.id}
-          title={handle.role ? inputRoleLabels[handle.role] : '输出'}
+          title={
+            handle.role
+              ? videoInputRoleLabel(handle.role, videoMode)
+              : handle.side === 'right'
+                ? '输出'
+                : videoMode === 'omni_reference'
+                  ? '参考'
+                  : '输入'
+          }
           style={centeredSideStyles[handle.side]}
           isConnectable={handle.isConnectable}
         />
@@ -164,7 +228,7 @@ export function NodeHandles({ mediaType, mode }: NodeHandlesProps) {
           type="target"
           position={Position.Left}
           id={`input:${role}`}
-          title={inputRoleLabels[role]}
+          title={videoInputRoleLabel(role, videoMode)}
           style={centeredSideStyles.left}
           isConnectable
         />

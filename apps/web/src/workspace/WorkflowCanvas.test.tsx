@@ -575,6 +575,7 @@ describe('WorkflowCanvas connection drop create', () => {
       handleId: 'output:image',
       role: 'firstFrame',
       label: '视频首帧',
+      videoMode: 'first_frame',
     });
   });
 

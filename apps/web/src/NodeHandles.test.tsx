@@ -128,4 +128,43 @@ describe('NodeHandles', () => {
     ).toHaveLength(0);
     expect(container.querySelector('[data-handleid="output:image"]')).toBeInTheDocument();
   });
+
+  it('hides the left first-frame port in text_to_video mode', () => {
+    const { visible, semanticInputRoles } = getNodeHandleLayout('video', 'generate', {
+      videoMode: 'text_to_video',
+    });
+    const handlesBySide = new Map(visible.map((handle) => [handle.side, handle]));
+    expect(handlesBySide.get('left')).toMatchObject({
+      id: 'visual:left',
+      isConnectable: false,
+    });
+    expect(handlesBySide.get('top')?.id).toBe('input:prompt');
+    expect(semanticInputRoles).not.toContain('firstFrame');
+  });
+
+  it('puts last frame on the bottom visible slot in first_last_frame mode', () => {
+    const { visible } = getNodeHandleLayout('video', 'generate', {
+      videoMode: 'first_last_frame',
+    });
+    const handlesBySide = new Map(visible.map((handle) => [handle.side, handle]));
+    expect(handlesBySide.get('left')?.id).toBe('input:firstFrame');
+    expect(handlesBySide.get('bottom')?.id).toBe('input:lastFrame');
+    expect(handlesBySide.get('left')?.isConnectable).toBe(true);
+    expect(handlesBySide.get('bottom')?.isConnectable).toBe(true);
+  });
+
+  it('uses a connectable left magnet for omni references instead of first frame', () => {
+    const { visible, semanticInputRoles } = getNodeHandleLayout('video', 'generate', {
+      videoMode: 'omni_reference',
+      modelAlias: 'grok-imagine-video-1.5',
+    });
+    const handlesBySide = new Map(visible.map((handle) => [handle.side, handle]));
+    expect(handlesBySide.get('left')).toMatchObject({
+      id: 'visual:left',
+      isConnectable: true,
+    });
+    expect(semanticInputRoles).toEqual(expect.arrayContaining(['referenceImage']));
+    expect(semanticInputRoles).not.toContain('firstFrame');
+    expect(semanticInputRoles).not.toContain('content');
+  });
 });

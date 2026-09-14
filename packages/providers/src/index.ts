@@ -3704,9 +3704,11 @@ function resolveRequiredVideoPrompt(
 }
 
 function mapVideoInputs(snapshot: RunSnapshot): VideoInputMapping {
+  const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
   const precheck = precheckVideoGenerationInputs(snapshot.inputs, {
     modelAlias: snapshot.modelAlias,
     parameters: snapshot.parameters,
+    videoMode: target?.data.videoMode,
   });
   const issue = precheck.issues[0];
   if (issue) {

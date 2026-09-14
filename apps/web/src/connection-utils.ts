@@ -3,10 +3,11 @@ import {
   isPortConnectionAllowed,
   mediaTypes,
   portRoles,
-  targetPortRolesForMediaType,
-  videoImageInputRoles,
+  targetPortRolesForNode,
+  videoImageRolesForMode,
   type MediaType,
   type PortRole,
+  type VideoMode,
 } from '@multimodal-canvas/domain';
 
 import {
@@ -59,8 +60,37 @@ export function preferredConnectionTargetRole(
 }
 
 /**
+ * 按视频模式给出主体投放的首选角色。首尾帧有两个图片槽，返回 undefined 以便弹出选择。
+ * @param sourceMediaType 上游媒体。
+ * @param target 目标视频节点。
+ */
+export function preferredVideoConnectionRole(
+  sourceMediaType: MediaType,
+  target: Pick<AssetFlowNode, 'data'>,
+): PortRole | undefined {
+  if (target.data.mediaType !== 'video' || target.data.mode === 'source') return undefined;
+  const videoMode = target.data.videoMode;
+  if (!videoMode) {
+    if (sourceMediaType === 'image') return 'firstFrame';
+    return undefined;
+  }
+  if (sourceMediaType === 'text') return 'prompt';
+  if (videoMode === 'text_to_video') return undefined;
+  if (videoMode === 'first_frame') return sourceMediaType === 'image' ? 'firstFrame' : undefined;
+  if (videoMode === 'first_last_frame') return undefined;
+  if (sourceMediaType === 'image') return 'referenceImage';
+  if (sourceMediaType === 'video') return 'content';
+  if (sourceMediaType === 'audio') return 'audioTrack';
+  return undefined;
+}
+
+function isVideoBodyDropHandle(targetHandle: string | null | undefined): boolean {
+  return !targetHandle || targetHandle === 'target' || targetHandle.startsWith('visual:');
+}
+
+/**
  * 判断这次连线是否是图片落到视频节点主体，因而必须先选角色。
- * 显式 input:* 端口仍直接生效；null / visual / target 视为主体投放。
+ * 显式模式里：首尾帧才弹出首帧/尾帧；其他模式自动落到该模式的唯一图片口。
  * @param connection React Flow 连线。
  * @param nodes 当前画布节点。
  * @returns 需要弹出角色选择时为 true。
@@ -74,12 +104,21 @@ export function needsVideoImageRoleChoice(connection: Connection, nodes: AssetFl
   if (!source || !target) return false;
   if (source.data.mediaType !== 'image' || target.data.mediaType !== 'video') return false;
   if (target.data.mode === 'source') return false;
-  const targetHandle = connection.targetHandle;
-  return !targetHandle || targetHandle === 'target' || targetHandle.startsWith('visual:');
+  if (!isVideoBodyDropHandle(connection.targetHandle)) return false;
+  const roles = videoImageRolesForMode(target.data.videoMode);
+  return roles.length > 1;
 }
 
 /** 图片落到视频主体时可选的规范角色，顺序与选择菜单一致。 */
-export const videoImageRoleChoices: readonly PortRole[] = videoImageInputRoles;
+export const videoImageRoleChoices: readonly PortRole[] = videoImageRolesForMode();
+
+/**
+ * 返回当前视频节点主体投放图片时应弹出的角色列表。
+ * @param videoMode 目标节点的显式模式。
+ */
+export function videoImageRoleChoicesForMode(videoMode?: VideoMode): readonly PortRole[] {
+  return videoImageRolesForMode(videoMode);
+}
 
 /**
  * Resolve a connection dropped on a node body (or on one of the visual
@@ -117,8 +156,10 @@ export function resolveCanvasConnectionTargetHandle(
     return undefined;
   }
 
-  const targetRoles = targetPortRolesForMediaType(target.data.mediaType);
-  const preferredRole = preferredConnectionTargetRole(source.data.mediaType, target.data.mediaType);
+  const targetRoles = targetPortRolesForNode(target);
+  const preferredRole =
+    preferredVideoConnectionRole(source.data.mediaType, target) ??
+    preferredConnectionTargetRole(source.data.mediaType, target.data.mediaType);
   const role = [preferredRole, ...targetRoles].find(
     (candidate, index, candidates) =>
       candidates.indexOf(candidate) === index &&
@@ -197,6 +238,8 @@ export type ConnectionDropCreateOption = {
   label: string;
   /** 辅助说明，描述这条连线的语义。 */
   description: string;
+  /** 新建视频节点时写入的显式生成模式。 */
+  videoMode?: VideoMode;
 };
 
 /** 按目标媒体类型分组后的悬空连线创建选项。 */
@@ -225,6 +268,8 @@ export type ConnectedGenerateNodeRequest = {
   role: PortRole;
   /** 成功提示使用的短标题。 */
   label: string;
+  /** 新建视频节点时写入的显式生成模式。 */
+  videoMode?: VideoMode;
 };
 
 /** 计算悬空连线创建选项时所需的起点信息。 */
@@ -242,6 +287,7 @@ type DropCreateSeed = {
   role: PortRole;
   label: string;
   description: string;
+  videoMode?: VideoMode;
 };
 
 const mediaTypeGroupLabels: Record<MediaType, string> = {
@@ -257,7 +303,7 @@ const portRoleLabels: Record<PortRole, string> = {
   content: '内容',
   style: '风格',
   character: '角色',
-  referenceImage: '通用参考',
+  referenceImage: '参考图',
   firstFrame: '首帧',
   lastFrame: '尾帧',
   audioTrack: '音轨',
@@ -281,31 +327,22 @@ const downstreamDropCreateCatalog: Record<MediaType, readonly DropCreateSeed[]> 
       mediaType: 'video',
       role: 'firstFrame',
       label: '视频首帧',
-      description: '创建视频节点，并以当前输出作为起始画面',
+      description: '创建首帧模式视频节点，并以当前输出作为起始画面',
+      videoMode: 'first_frame',
     },
     {
       mediaType: 'video',
       role: 'lastFrame',
       label: '视频尾帧',
-      description: '创建视频节点，并以当前输出作为结束画面',
-    },
-    {
-      mediaType: 'video',
-      role: 'character',
-      label: '视频角色',
-      description: '创建视频节点，并保持人物或主体身份',
-    },
-    {
-      mediaType: 'video',
-      role: 'style',
-      label: '视频风格',
-      description: '创建视频节点，并参考色彩、光影或镜头语言',
+      description: '创建首尾帧模式视频节点，并以当前输出作为结束画面',
+      videoMode: 'first_last_frame',
     },
     {
       mediaType: 'video',
       role: 'referenceImage',
-      label: '视频参考图',
-      description: '创建视频节点，并作为产品、场景或道具参考',
+      label: '全能参考',
+      description: '创建全能参考视频节点，并以当前输出作为参考图',
+      videoMode: 'omni_reference',
     },
   ],
   text: [
@@ -319,7 +356,8 @@ const downstreamDropCreateCatalog: Record<MediaType, readonly DropCreateSeed[]> 
       mediaType: 'video',
       role: 'prompt',
       label: '文生视频',
-      description: '创建视频节点，并以这段文字作为提示词',
+      description: '创建文生视频节点，并以这段文字作为提示词',
+      videoMode: 'text_to_video',
     },
     {
       mediaType: 'audio',
@@ -338,8 +376,9 @@ const downstreamDropCreateCatalog: Record<MediaType, readonly DropCreateSeed[]> 
     {
       mediaType: 'video',
       role: 'audioTrack',
-      label: '视频音轨',
-      description: '创建视频节点，并以当前输出作为音轨',
+      label: '全能参考',
+      description: '创建全能参考视频节点，并以当前输出作为参考音频',
+      videoMode: 'omni_reference',
     },
     {
       mediaType: 'text',
@@ -358,8 +397,9 @@ const downstreamDropCreateCatalog: Record<MediaType, readonly DropCreateSeed[]> 
     {
       mediaType: 'video',
       role: 'content',
-      label: '视频生视频',
-      description: '创建视频节点，并以当前输出作为内容',
+      label: '全能参考',
+      description: '创建全能参考视频节点，并以当前输出作为参考视频',
+      videoMode: 'omni_reference',
     },
     {
       mediaType: 'image',
@@ -425,7 +465,10 @@ function parseInputPortRole(handleId: string | null): PortRole | undefined {
  * @returns 该媒体类型的默认输入角色。
  */
 function fallbackInputRole(node: AssetFlowNode): PortRole {
-  return node.data.mediaType === 'video' ? 'firstFrame' : 'content';
+  if (node.data.mediaType !== 'video') return 'content';
+  if (node.data.videoMode === 'omni_reference') return 'referenceImage';
+  if (node.data.videoMode === 'text_to_video') return 'prompt';
+  return 'firstFrame';
 }
 
 /**

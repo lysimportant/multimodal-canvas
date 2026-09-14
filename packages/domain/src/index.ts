@@ -4,6 +4,47 @@ export const mediaTypes = ['text', 'image', 'audio', 'video'] as const;
 /** 画布节点模式。历史 `transform` 读取时归一为 `generate`，产品不再区分转换节点。 */
 export const nodeModes = ['source', 'generate'] as const;
 
+/** 视频生成节点的一次运行模式。节点本身不是模式，一次运行只选一种。 */
+export const videoModes = [
+  'text_to_video',
+  'first_frame',
+  'first_last_frame',
+  'omni_reference',
+  'video_edit',
+  'video_extend',
+] as const;
+
+/** 本阶段真正落地的视频模式；编辑和延长只保留枚举与文档。 */
+export const implementedVideoModes = [
+  'text_to_video',
+  'first_frame',
+  'first_last_frame',
+  'omni_reference',
+] as const;
+
+export const videoModeSchema = z.enum(videoModes);
+export type VideoMode = (typeof videoModes)[number];
+
+/** 视频模式的中文名称，供画布选择器和摘要复用。 */
+export const videoModeLabels: Record<VideoMode, string> = {
+  text_to_video: '文生视频',
+  first_frame: '首帧',
+  first_last_frame: '首尾帧',
+  omni_reference: '全能参考',
+  video_edit: '视频编辑',
+  video_extend: '视频延长',
+};
+
+/** 视频模式的短说明，解释该模式吸收哪些输入。 */
+export const videoModeDescriptions: Record<VideoMode, string> = {
+  text_to_video: '只使用提示词生成新视频，不连接图片、视频或音频参考',
+  first_frame: '用一张图固定起始画面，再按提示词生成',
+  first_last_frame: '分别固定起始画面和结束画面',
+  omni_reference: '用参考图、参考视频或参考音频融合生成，不固定首尾帧',
+  video_edit: '按提示词编辑已有视频；本阶段未开放',
+  video_extend: '按提示词延长已有视频；本阶段未开放',
+};
+
 /**
  * 把已废弃的转换模式读成生成模式，保证旧画布仍能打开。
  * @param value 节点 mode 原始值。
@@ -349,6 +390,11 @@ export const nodeDataSchema = z.object({
   completionAction: videoCompletionActionSchema.optional(),
   /** 仅 fill_designated_image_node 使用；必须指向仍为空的图片节点。 */
   completionTargetNodeId: z.string().trim().min(1).optional(),
+  /**
+   * 视频生成模式。缺省表示旧画布：端口保持全量兼容，运行时按连线推断。
+   * 新视频生成节点会写入显式值，一次运行只使用一种模式。
+   */
+  videoMode: videoModeSchema.optional(),
 });
 
 /** Legacy canvases omit this field; only an explicit false disables a node. */
@@ -845,6 +891,205 @@ export function targetPortRolesForMediaType(mediaType: MediaType): PortRole[] {
   return [...targetNodePortRoles[mediaType]];
 }
 
+/** 按模型别名识别视频供应商家族，用于能力矩阵而不是写死字段名。 */
+export type VideoModelFamily =
+  'grok-imagine-video-1.5' | 'grok-imagine-video' | 'minimax-h3' | 'wan' | 'unknown';
+
+/**
+ * 从模型 ID 推断视频家族。未命中时返回 unknown，真实字段仍 fail-closed。
+ * @param modelAlias 运行快照或节点上的模型 ID。
+ */
+export function videoFamilyForModel(modelAlias?: string): VideoModelFamily {
+  const id = (modelAlias ?? '').trim().toLowerCase();
+  if (!id) return 'unknown';
+  if (id.startsWith('grok-imagine-video-1.5')) return 'grok-imagine-video-1.5';
+  if (/^grok[-_]?imagine/.test(id)) return 'grok-imagine-video';
+  if (/^minimax[-_]?h3/.test(id)) return 'minimax-h3';
+  if (id.includes('wan')) return 'wan';
+  return 'unknown';
+}
+
+/** 某个视频模式在指定模型上的画布端口与真实 POST 能力。 */
+export type VideoModeCapability = {
+  /** 画布是否允许选择该模式。 */
+  selectable: boolean;
+  /** 是否允许按已取证合同发真实 POST。 */
+  livePost: boolean;
+  /** 该模式允许连接的输入角色。 */
+  roles: readonly PortRole[];
+  /** 运行前必须出现的角色。 */
+  requiredRoles?: readonly PortRole[];
+  /** 可重复且保序的角色。 */
+  repeatableRoles?: readonly PortRole[];
+  /** 覆盖全局角色媒体约束；缺省沿用 targetRoleMediaTypes。 */
+  roleMediaTypes?: Partial<Record<PortRole, readonly MediaType[]>>;
+  /** 不可选或不能 POST 时的原因。 */
+  reason?: string;
+};
+
+const textToVideoRoles = ['prompt', 'negativePrompt'] as const satisfies readonly PortRole[];
+const firstFrameRoles = [
+  'prompt',
+  'negativePrompt',
+  'firstFrame',
+] as const satisfies readonly PortRole[];
+const firstLastFrameRoles = [
+  'prompt',
+  'negativePrompt',
+  'firstFrame',
+  'lastFrame',
+] as const satisfies readonly PortRole[];
+const omniReferenceRoles = [
+  'prompt',
+  'negativePrompt',
+  'referenceImage',
+  'content',
+  'audioTrack',
+  'character',
+  'style',
+] as const satisfies readonly PortRole[];
+const grokOmniReferenceRoles = [
+  'prompt',
+  'negativePrompt',
+  'referenceImage',
+  'character',
+  'style',
+] as const satisfies readonly PortRole[];
+
+function deferredVideoModeCapability(mode: VideoMode): VideoModeCapability {
+  return {
+    selectable: false,
+    livePost: false,
+    roles: ['prompt', 'content'],
+    reason: `视频模式「${videoModeLabels[mode]}」本阶段未开放`,
+  };
+}
+
+/**
+ * 返回指定模式在该模型上的能力。画布可按 selectable 展示；真实请求看 livePost。
+ * @param mode 节点上的视频模式。
+ * @param modelAlias 运行快照或节点上的模型 ID。
+ */
+export function videoModeCapability(mode: VideoMode, modelAlias?: string): VideoModeCapability {
+  if (mode === 'video_edit' || mode === 'video_extend') return deferredVideoModeCapability(mode);
+  const family = videoFamilyForModel(modelAlias);
+  const grok15 = family === 'grok-imagine-video-1.5';
+  if (mode === 'text_to_video') {
+    return { selectable: true, livePost: true, roles: textToVideoRoles };
+  }
+  if (mode === 'first_frame') {
+    return {
+      selectable: true,
+      livePost: true,
+      roles: firstFrameRoles,
+      requiredRoles: ['firstFrame'],
+    };
+  }
+  if (mode === 'first_last_frame') {
+    return {
+      selectable: true,
+      livePost: grok15,
+      roles: firstLastFrameRoles,
+      requiredRoles: ['firstFrame', 'lastFrame'],
+      reason: grok15 ? undefined : '该模型的首尾帧尚未接通 New API 字段映射，不能发起真实请求',
+    };
+  }
+  if (grok15) {
+    return {
+      selectable: true,
+      livePost: true,
+      roles: grokOmniReferenceRoles,
+      repeatableRoles: ['referenceImage', 'character', 'style'],
+      roleMediaTypes: {
+        referenceImage: ['image'],
+        character: ['image'],
+        style: ['image'],
+      },
+    };
+  }
+  return {
+    selectable: true,
+    livePost: false,
+    roles: omniReferenceRoles,
+    repeatableRoles: ['referenceImage', 'character', 'style', 'content', 'audioTrack'],
+    roleMediaTypes: {
+      referenceImage: ['image'],
+      character: ['image'],
+      style: ['image'],
+      content: ['video'],
+      audioTrack: ['audio'],
+    },
+    reason: '该模型的全能参考尚未接通 New API 字段映射，不能发起真实请求',
+  };
+}
+
+/**
+ * 返回某个视频模式允许的输入角色。
+ * @param mode 视频模式。
+ * @param modelAlias 可选模型 ID，用于收窄全能参考的媒体。
+ */
+export function targetPortRolesForVideoMode(mode: VideoMode, modelAlias?: string): PortRole[] {
+  return [...videoModeCapability(mode, modelAlias).roles];
+}
+
+/**
+ * 按节点当前模式返回可连接角色。旧视频节点没有 videoMode 时保持全量端口。
+ * @param node 目标画布节点。
+ */
+export function targetPortRolesForNode(
+  node:
+    | Pick<CanvasNode, 'data'>
+    | { data: Pick<NodeData, 'mediaType' | 'mode' | 'videoMode' | 'modelAlias'> },
+): PortRole[] {
+  if (node.data.mode === 'source') return [];
+  if (node.data.mediaType !== 'video' || !node.data.videoMode) {
+    return targetPortRolesForMediaType(node.data.mediaType);
+  }
+  return targetPortRolesForVideoMode(node.data.videoMode, node.data.modelAlias);
+}
+
+/**
+ * 判断该模式是否已在本阶段落地。
+ * @param mode 视频模式。
+ */
+export function isImplementedVideoMode(mode: VideoMode): boolean {
+  return (implementedVideoModes as readonly VideoMode[]).includes(mode);
+}
+
+/**
+ * 从已连接角色推断旧画布的视频模式，供选择器回显；不写入节点。
+ * @param roles 当前连到该节点的输入角色。
+ */
+export function inferVideoModeFromRoles(roles: readonly PortRole[]): VideoMode {
+  const set = new Set(roles);
+  if (
+    set.has('character') ||
+    set.has('style') ||
+    set.has('referenceImage') ||
+    set.has('audioTrack') ||
+    set.has('transcript') ||
+    set.has('mask') ||
+    set.has('content')
+  ) {
+    return 'omni_reference';
+  }
+  if (set.has('lastFrame')) return 'first_last_frame';
+  if (set.has('firstFrame')) return 'first_frame';
+  return 'text_to_video';
+}
+
+/**
+ * 返回节点应展示的视频模式：显式值优先，否则按连线推断。
+ * @param data 节点 data。
+ * @param connectedRoles 当前连到该节点的输入角色。
+ */
+export function displayVideoMode(
+  data: Pick<NodeData, 'videoMode'> | undefined,
+  connectedRoles: readonly PortRole[] = [],
+): VideoMode {
+  return data?.videoMode ?? inferVideoModeFromRoles(connectedRoles);
+}
+
 export function isPortConnectionAllowed(
   source: CanvasNode,
   sourceHandle: string,
@@ -864,8 +1109,16 @@ export function isPortConnectionAllowed(
 
   if (sourceMediaType !== source.data.mediaType || !targetRole) return false;
   if (!portRoles.includes(targetRole as PortRole)) return false;
-  if (!targetNodePortRoles[target.data.mediaType].includes(targetRole as PortRole)) return false;
-  return targetRoleMediaTypes[targetRole as PortRole].includes(source.data.mediaType);
+  const allowedRoles = targetPortRolesForNode(target);
+  if (!allowedRoles.includes(targetRole as PortRole)) return false;
+  const capability =
+    target.data.mediaType === 'video' && target.data.videoMode
+      ? videoModeCapability(target.data.videoMode, target.data.modelAlias)
+      : undefined;
+  const allowedMedia =
+    capability?.roleMediaTypes?.[targetRole as PortRole] ??
+    targetRoleMediaTypes[targetRole as PortRole];
+  return allowedMedia.includes(source.data.mediaType);
 }
 
 export type MediaType = z.infer<typeof mediaTypeSchema>;
@@ -910,7 +1163,7 @@ export const videoSingletonInputRoles = [
 /** 视频规范输入中可重复且必须保序的角色。 */
 export const videoRepeatableInputRoles = ['character', 'style', 'referenceImage'] as const;
 
-/** 图片落到视频节点主体时可供选择的角色。 */
+/** 图片落到视频节点主体时可供选择的角色。旧画布未写 videoMode 时仍可弹出。 */
 export const videoImageInputRoles = [
   'firstFrame',
   'lastFrame',
@@ -918,6 +1171,21 @@ export const videoImageInputRoles = [
   'style',
   'referenceImage',
 ] as const;
+
+/**
+ * 返回当前视频模式下，图片落到节点主体时可选的角色。
+ * 显式模式不再把角色/风格当成独立入口；首尾帧只选首帧或尾帧。
+ * @param videoMode 节点上的显式模式；缺省表示旧画布。
+ */
+export function videoImageRolesForMode(videoMode?: VideoMode): readonly PortRole[] {
+  if (videoMode === 'first_frame') return ['firstFrame'];
+  if (videoMode === 'first_last_frame') return ['firstFrame', 'lastFrame'];
+  if (videoMode === 'omni_reference') return ['referenceImage'];
+  if (videoMode === 'text_to_video' || videoMode === 'video_edit' || videoMode === 'video_extend') {
+    return [];
+  }
+  return ['firstFrame', 'lastFrame', 'referenceImage'];
+}
 
 /** 未知模型默认只允许 prompt 和至多一张首帧。 */
 export const confirmedLiveVideoInputRoles = ['prompt', 'firstFrame'] as const;
@@ -940,7 +1208,7 @@ export const grokImagineVideo15InputRoles = [
  * @param modelAlias 运行快照中的模型 ID。
  */
 export function isGrokImagineVideo15(modelAlias: string | undefined): boolean {
-  return (modelAlias ?? '').trim().toLowerCase().startsWith('grok-imagine-video-1.5');
+  return videoFamilyForModel(modelAlias) === 'grok-imagine-video-1.5';
 }
 
 /**
@@ -953,7 +1221,7 @@ export function confirmedVideoInputRolesForModel(modelAlias?: string): readonly 
     : confirmedLiveVideoInputRoles;
 }
 
-/** 视频生成场景。用于预检和摘要，不是互斥的节点 mode。 */
+/** 视频生成场景。用于预检和摘要；显式 videoMode 存在时由模式决定，不再靠连线猜测。 */
 export const videoOperationTypes = [
   'text_to_video',
   'image_to_video',
@@ -966,6 +1234,19 @@ export type VideoSingletonInputRole = (typeof videoSingletonInputRoles)[number];
 export type VideoRepeatableInputRole = (typeof videoRepeatableInputRoles)[number];
 export type VideoImageInputRole = (typeof videoImageInputRoles)[number];
 export type VideoOperationType = (typeof videoOperationTypes)[number];
+
+/**
+ * 把显式视频模式映射为预检摘要使用的场景标识。
+ * @param mode 节点上的视频模式。
+ */
+export function videoModeToOperation(mode: VideoMode): VideoOperationType {
+  if (mode === 'first_frame') return 'image_to_video';
+  if (mode === 'first_last_frame') return 'first_last_frame';
+  if (mode === 'omni_reference' || mode === 'video_edit' || mode === 'video_extend') {
+    return 'omni_reference';
+  }
+  return 'text_to_video';
+}
 
 /**
  * 视频节点的规范输入集合。
@@ -1043,18 +1324,42 @@ function videoUnsupportedRoleIssue(role: PortRole): VideoGenerationIssue {
   };
 }
 
+function videoCombinationIssue(message: string, role?: PortRole): VideoGenerationIssue {
+  return {
+    code: 'UNSUPPORTED_INPUT_COMBINATION',
+    role,
+    message,
+  };
+}
+
+function omniReferenceCount(inputSet: VideoInputSet): number {
+  return (
+    inputSet.character.length +
+    inputSet.style.length +
+    inputSet.referenceImage.length +
+    inputSet.content.length +
+    inputSet.audioTrack.length
+  );
+}
+
 /**
  * 把画布/快照输入收成规范 VideoInputSet。
- * 文本 content 兼容映射为 prompt，图片 content 兼容映射为首帧；视频 content 留在 content 列表供融合预检。
+ * 文本 content 兼容映射为 prompt；全能参考下图片 content 收成参考图、音频 content 收成参考音频。
+ * 其他模式里图片 content 仍兼容映射为首帧，视频 content 留在 content 列表。
  * @param inputs 已冻结的运行输入。
+ * @param videoMode 显式视频模式；缺省保持旧画布兼容映射。
  * @returns 规范集合与收集阶段发现的基数问题。
  */
-export function collectVideoInputSet(inputs: readonly RunInputSnapshot[]): {
+export function collectVideoInputSet(
+  inputs: readonly RunInputSnapshot[],
+  videoMode?: VideoMode,
+): {
   inputSet: VideoInputSet;
   issues: VideoGenerationIssue[];
 } {
   const inputSet = emptyVideoInputSet();
   const issues: VideoGenerationIssue[] = [];
+  const omni = videoMode === 'omni_reference';
 
   const assignSingleton = (role: VideoSingletonInputRole, input: RunInputSnapshot) => {
     if (inputSet[role]) {
@@ -1072,19 +1377,27 @@ export function collectVideoInputSet(inputs: readonly RunInputSnapshot[]): {
       assignSingleton('prompt', input);
       continue;
     }
-    if (
-      input.role === 'firstFrame' ||
-      (input.role === 'content' && input.snapshot.data.mediaType === 'image')
-    ) {
-      assignSingleton('firstFrame', input);
-      continue;
-    }
     if (input.role === 'negativePrompt') {
       assignSingleton('negativePrompt', input);
       continue;
     }
     if (input.role === 'lastFrame') {
       assignSingleton('lastFrame', input);
+      continue;
+    }
+    if (omni && input.role === 'content' && input.snapshot.data.mediaType === 'image') {
+      inputSet.referenceImage.push(input);
+      continue;
+    }
+    if (omni && input.role === 'content' && input.snapshot.data.mediaType === 'audio') {
+      inputSet.audioTrack.push(input);
+      continue;
+    }
+    if (
+      input.role === 'firstFrame' ||
+      (input.role === 'content' && input.snapshot.data.mediaType === 'image')
+    ) {
+      assignSingleton('firstFrame', input);
       continue;
     }
     if (input.role === 'character' || input.role === 'style' || input.role === 'referenceImage') {
@@ -1106,7 +1419,7 @@ export function collectVideoInputSet(inputs: readonly RunInputSnapshot[]): {
 }
 
 /**
- * 根据规范输入推断视频生成场景。
+ * 根据规范输入推断视频生成场景。旧画布未写 videoMode 时使用。
  * @param inputSet 已收集的规范输入。
  * @returns 用于摘要和预检的场景标识。
  */
@@ -1128,65 +1441,126 @@ export function inferVideoOperation(inputSet: VideoInputSet): VideoOperationType
   return 'text_to_video';
 }
 
-/**
- * 对视频规范输入做权威预检。未知模型只允许 prompt 和首帧；grok-imagine-video-1.5 另允许尾帧与参考图。
- * @param inputs 已冻结的运行输入。
- * @param options 模型与参数，用于按合同开放角色和分辨率限制。
- * @returns 场景、规范集合和请求前必须处理的问题。
- */
-export function precheckVideoGenerationInputs(
-  inputs: readonly RunInputSnapshot[],
-  options: { modelAlias?: string; parameters?: Record<string, unknown> } = {},
-): VideoGenerationPrecheck {
-  const { inputSet, issues } = collectVideoInputSet(inputs);
-  const confirmed = new Set<PortRole>(confirmedVideoInputRolesForModel(options.modelAlias));
+function presentVideoRoles(inputSet: VideoInputSet): Array<[PortRole, boolean]> {
+  return [
+    ['negativePrompt', Boolean(inputSet.negativePrompt)],
+    ['firstFrame', Boolean(inputSet.firstFrame)],
+    ['lastFrame', Boolean(inputSet.lastFrame)],
+    ['character', inputSet.character.length > 0],
+    ['style', inputSet.style.length > 0],
+    ['referenceImage', inputSet.referenceImage.length > 0],
+    ['content', inputSet.content.length > 0],
+    ['audioTrack', inputSet.audioTrack.length > 0],
+    ['transcript', inputSet.transcript.length > 0],
+    ['mask', inputSet.mask.length > 0],
+  ];
+}
 
-  const rejectIfPresent = (role: PortRole, present: boolean) => {
-    if (present && !confirmed.has(role)) issues.push(videoUnsupportedRoleIssue(role));
-  };
-
-  rejectIfPresent('negativePrompt', Boolean(inputSet.negativePrompt));
-  rejectIfPresent('lastFrame', Boolean(inputSet.lastFrame));
-  rejectIfPresent('character', inputSet.character.length > 0);
-  rejectIfPresent('style', inputSet.style.length > 0);
-  rejectIfPresent('referenceImage', inputSet.referenceImage.length > 0);
-  rejectIfPresent('content', inputSet.content.length > 0);
-  rejectIfPresent('audioTrack', inputSet.audioTrack.length > 0);
-  rejectIfPresent('transcript', inputSet.transcript.length > 0);
-  rejectIfPresent('mask', inputSet.mask.length > 0);
-
+function applyGrokImagineVideo15Limits(
+  inputSet: VideoInputSet,
+  parameters: Record<string, unknown> | undefined,
+  issues: VideoGenerationIssue[],
+) {
   const referenceCount =
     inputSet.character.length + inputSet.style.length + inputSet.referenceImage.length;
-  if (
-    isGrokImagineVideo15(options.modelAlias) &&
-    referenceCount > GROK_IMAGINE_VIDEO_15_MAX_REFERENCE_IMAGES
-  ) {
+  if (referenceCount > GROK_IMAGINE_VIDEO_15_MAX_REFERENCE_IMAGES) {
     issues.push({
       code: 'INPUT_ROLE_CARDINALITY_UNSUPPORTED',
       role: 'referenceImage',
       message: `New API video 参考图数量超过模型上限 ${GROK_IMAGINE_VIDEO_15_MAX_REFERENCE_IMAGES}`,
     });
   }
-
   const resolution = String(
-    options.parameters?.resolution ??
-      options.parameters?.video_resolution ??
-      options.parameters?.videoResolution ??
-      '',
+    parameters?.resolution ?? parameters?.video_resolution ?? parameters?.videoResolution ?? '',
   ).toLowerCase();
-  if (
-    isGrokImagineVideo15(options.modelAlias) &&
-    (inputSet.lastFrame || referenceCount > 0) &&
-    /(1080|1440|2160|4k)/.test(resolution)
-  ) {
+  if ((inputSet.lastFrame || referenceCount > 0) && /(1080|1440|2160|4k)/.test(resolution)) {
     issues.push({
       code: 'UNSUPPORTED_INPUT_COMBINATION',
       message: 'grok-imagine-video-1.5 的参考图或尾帧合同最高 720p',
     });
   }
+}
+
+/**
+ * 对视频规范输入做权威预检。
+ * 显式 videoMode 按模式互斥检查；旧画布未写模式时沿用角色白名单。
+ * @param inputs 已冻结的运行输入。
+ * @param options 模型、参数和可选的显式视频模式。
+ * @returns 场景、规范集合和请求前必须处理的问题。
+ */
+export function precheckVideoGenerationInputs(
+  inputs: readonly RunInputSnapshot[],
+  options: {
+    modelAlias?: string;
+    parameters?: Record<string, unknown>;
+    videoMode?: VideoMode;
+  } = {},
+): VideoGenerationPrecheck {
+  const { inputSet, issues } = collectVideoInputSet(inputs, options.videoMode);
+  const mode = options.videoMode;
+
+  if (mode) {
+    const capability = videoModeCapability(mode, options.modelAlias);
+    const allowed = new Set<PortRole>(capability.roles);
+    if (!isImplementedVideoMode(mode) || !capability.selectable) {
+      issues.push(
+        videoCombinationIssue(capability.reason ?? `视频模式「${videoModeLabels[mode]}」未开放`),
+      );
+    }
+    for (const [role, present] of presentVideoRoles(inputSet)) {
+      if (present && !allowed.has(role)) issues.push(videoUnsupportedRoleIssue(role));
+    }
+    for (const role of capability.requiredRoles ?? []) {
+      const missing =
+        role === 'firstFrame'
+          ? !inputSet.firstFrame
+          : role === 'lastFrame'
+            ? !inputSet.lastFrame
+            : false;
+      if (missing) {
+        issues.push(
+          videoCombinationIssue(
+            mode === 'first_last_frame'
+              ? '首尾帧模式需要同时连接首帧和尾帧'
+              : '首帧模式需要连接一张首帧图',
+            role,
+          ),
+        );
+      }
+    }
+    if (mode === 'omni_reference' && omniReferenceCount(inputSet) === 0) {
+      issues.push(videoCombinationIssue('全能参考至少需要一张参考图、一段参考视频或一段参考音频'));
+    }
+    if (
+      mode === 'text_to_video' &&
+      (inputSet.firstFrame || inputSet.lastFrame || omniReferenceCount(inputSet) > 0)
+    ) {
+      issues.push(videoCombinationIssue('文生视频不能连接首帧、尾帧或参考素材'));
+    }
+    if (capability.livePost) {
+      const live = new Set<PortRole>(
+        confirmedVideoInputRolesForModel(options.modelAlias).filter((role) => allowed.has(role)),
+      );
+      for (const [role, present] of presentVideoRoles(inputSet)) {
+        if (present && allowed.has(role) && !live.has(role))
+          issues.push(videoUnsupportedRoleIssue(role));
+      }
+    } else if (capability.selectable && isImplementedVideoMode(mode) && capability.reason) {
+      issues.push(videoCombinationIssue(capability.reason));
+    }
+  } else {
+    const confirmed = new Set<PortRole>(confirmedVideoInputRolesForModel(options.modelAlias));
+    for (const [role, present] of presentVideoRoles(inputSet)) {
+      if (present && !confirmed.has(role)) issues.push(videoUnsupportedRoleIssue(role));
+    }
+  }
+
+  if (isGrokImagineVideo15(options.modelAlias)) {
+    applyGrokImagineVideo15Limits(inputSet, options.parameters, issues);
+  }
 
   return {
-    operation: inferVideoOperation(inputSet),
+    operation: mode ? videoModeToOperation(mode) : inferVideoOperation(inputSet),
     inputSet,
     issues,
   };

@@ -4065,6 +4065,62 @@ describe('NewApiVideoProvider', () => {
     });
   });
 
+  it('sends grok-imagine-video-1.5 omni references without a first frame when videoMode is omni', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: { message: 'temporarily unavailable' } }), {
+        status: 503,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      videoContract: 'newapi-video-v1',
+      fetchImpl,
+      pollIntervalMs: 0,
+    });
+    const snapshot = videoSnapshot();
+    snapshot.modelAlias = 'grok-imagine-video-1.5.1';
+    snapshot.nodes = snapshot.nodes.map((node) =>
+      node.id === 'node_video'
+        ? { ...node, data: { ...node.data, videoMode: 'omni_reference' as const } }
+        : node,
+    );
+    snapshot.inputs = [providerInput('node_reference_a', 'referenceImage', 0)];
+
+    await expect(provider.execute({ snapshot, onProviderJob: vi.fn() })).rejects.toMatchObject({
+      code: 'VIDEO_SUBMISSION_UNKNOWN',
+    });
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(body.image).toBeUndefined();
+    expect(body.last_frame).toBeUndefined();
+    expect(body.reference_images).toEqual([{ url: 'https://assets.example/node_reference_a.png' }]);
+  });
+
+  it('rejects first-frame plus omni references when the node is locked to omni mode', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+      pollIntervalMs: 0,
+    });
+    const snapshot = videoSnapshot();
+    snapshot.modelAlias = 'grok-imagine-video-1.5.1';
+    snapshot.nodes = snapshot.nodes.map((node) =>
+      node.id === 'node_video'
+        ? { ...node, data: { ...node.data, videoMode: 'omni_reference' as const } }
+        : node,
+    );
+    snapshot.inputs.push(providerInput('node_reference_a', 'referenceImage', 1));
+
+    await expect(provider.execute({ snapshot, onProviderJob: vi.fn() })).rejects.toMatchObject({
+      code: 'UNSUPPORTED_INPUT_ROLE',
+      message: 'New API video 不支持该输入角色：firstFrame',
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('still rejects referenceImage on models without a confirmed reference contract', async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     const provider = new NewApiVideoProvider({

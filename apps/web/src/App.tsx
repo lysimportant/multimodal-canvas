@@ -53,6 +53,8 @@ import {
   type PromptDocument,
   type RunRecord,
   type VideoCompletionAction,
+  type VideoMode,
+  isPortConnectionAllowed,
   renderPromptDocument,
 } from '@multimodal-canvas/domain';
 import {
@@ -1258,6 +1260,7 @@ function WorkspaceApp({
             ...(previous?.inferenceStrength
               ? { inferenceStrength: previous.inferenceStrength }
               : {}),
+            ...(mediaType === 'video' ? { videoMode: 'text_to_video' as const } : {}),
           },
           model,
         ),
@@ -1518,6 +1521,9 @@ function WorkspaceApp({
       const existing = nodesRef.current.find((node) => node.id === request.existingNodeId);
       if (!existing) return;
       const node = createGenerateNode(request.mediaType, request.position);
+      if (request.mediaType === 'video' && request.videoMode) {
+        node.data = { ...node.data, videoMode: request.videoMode };
+      }
       const connection = buildConnectedGenerateNodeConnection(request, node.id, existing);
       const validation = validateCanvasConnection(
         connection,
@@ -1596,6 +1602,54 @@ function WorkspaceApp({
   );
 
   /** 显式选模型时同时补齐缺失参数并记忆本机偏好；已有节点参数与历史数据保留。 */
+  const pruneIncompatibleTargetEdges = useCallback(
+    (nodeId: string, nextData: AssetFlowNode['data']) => {
+      setEdges((current) =>
+        current.filter((edge) => {
+          if (edge.target !== nodeId) return true;
+          const source = nodesRef.current.find((node) => node.id === edge.source);
+          const target = nodesRef.current.find((node) => node.id === nodeId);
+          if (!source || !target || !edge.sourceHandle || !edge.targetHandle) return false;
+          return isPortConnectionAllowed(
+            {
+              id: source.id,
+              type: source.data.mediaType,
+              position: source.position,
+              data: source.data,
+            },
+            edge.sourceHandle,
+            {
+              id: target.id,
+              type: target.data.mediaType,
+              position: target.position,
+              data: nextData,
+            },
+            edge.targetHandle,
+          );
+        }),
+      );
+    },
+    [setEdges],
+  );
+
+  const updateSelectedVideoMode = useCallback(
+    (videoMode: VideoMode, nodeId?: string) => {
+      const targetNodeId = nodeId ?? selectedNode?.id;
+      if (!targetNodeId) return;
+      rememberHistory();
+      canvasDirtyRef.current = true;
+      updateNodeDataAndMarkDownstreamStale(targetNodeId, (data) => ({ ...data, videoMode }));
+      const current = nodesRef.current.find((node) => node.id === targetNodeId);
+      if (current) pruneIncompatibleTargetEdges(targetNodeId, { ...current.data, videoMode });
+    },
+    [
+      pruneIncompatibleTargetEdges,
+      rememberHistory,
+      selectedNode,
+      updateNodeDataAndMarkDownstreamStale,
+    ],
+  );
+
   const updateSelectedModel = useCallback(
     ({ modelAlias, credentialId }: ModelSelection, nodeId?: string) => {
       const targetNodeId = nodeId ?? selectedNode?.id;
@@ -1615,16 +1669,16 @@ function WorkspaceApp({
       );
       rememberHistory();
       canvasDirtyRef.current = true;
-      updateNodeDataAndMarkDownstreamStale(targetNodeId, (data) =>
-        applyNodeGenerationDefaults(
-          {
-            ...data,
-            modelAlias: selection.modelAlias || undefined,
-            credentialId: selection.credentialId,
-          },
-          model,
-        ),
+      const nextData = applyNodeGenerationDefaults(
+        {
+          ...targetNode.data,
+          modelAlias: selection.modelAlias || undefined,
+          credentialId: selection.credentialId,
+        },
+        model,
       );
+      updateNodeDataAndMarkDownstreamStale(targetNodeId, () => nextData);
+      pruneIncompatibleTargetEdges(targetNodeId, nextData);
       if (authUser && targetNode.data.mode !== 'source') {
         try {
           writeNodeModelPreference(
@@ -1641,7 +1695,14 @@ function WorkspaceApp({
         }
       }
     },
-    [authUser, modelCatalog, rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
+    [
+      authUser,
+      modelCatalog,
+      pruneIncompatibleTargetEdges,
+      rememberHistory,
+      selectedNode,
+      updateNodeDataAndMarkDownstreamStale,
+    ],
   );
 
   const updateNodeEnabled = useCallback(
@@ -2669,6 +2730,7 @@ function WorkspaceApp({
             onPromptDocumentChange={updateSelectedPromptDocument}
             onParametersChange={updateSelectedParameters}
             onCompletionActionChange={updateSelectedCompletionAction}
+            onVideoModeChange={updateSelectedVideoMode}
             onCompletionTargetNodeIdChange={updateSelectedCompletionTarget}
             onModelChange={updateSelectedModel}
             onInferenceStrengthChange={updateSelectedInferenceStrength}

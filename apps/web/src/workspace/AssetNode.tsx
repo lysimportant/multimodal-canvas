@@ -28,11 +28,12 @@ import {
   type CSSProperties,
 } from 'react';
 
-import type { Asset, PortRole, RunStatus } from '@multimodal-canvas/domain';
+import type { Asset, PortRole, RunStatus, VideoMode } from '@multimodal-canvas/domain';
+import { displayVideoMode, videoModeLabels } from '@multimodal-canvas/domain';
 import { Dialog, DialogClose, DialogContent, DialogTitle } from '@multimodal-canvas/ui';
 import { fitNodeSizeToContent, type AssetFlowNode } from '../canvas-utils';
 import { isImeKeyboardEvent } from '../ime';
-import { NodeHandles, inputRoleLabels } from '../NodeHandles';
+import { NodeHandles, videoInputRoleLabel } from '../NodeHandles';
 import { AssetPreview, type AssetPreviewLoadState } from './AssetPreview';
 import { downloadProjectExport } from '../export-utils';
 import { fetchNodeAssetDownload } from './node-asset-download';
@@ -359,9 +360,14 @@ export function AssetNode({ id, data, selected, width, height }: NodeProps<Asset
           }}
         />
       ) : null}
-      <NodeHandles mediaType={data.mediaType} mode={data.mode} />
+      <NodeHandles
+        mediaType={data.mediaType}
+        mode={data.mode}
+        videoMode={data.videoMode}
+        modelAlias={data.modelAlias}
+      />
       {data.mediaType === 'video' && data.mode === 'generate' ? (
-        <VideoInputSummary nodeId={id} edges={incomingEdges} />
+        <VideoInputSummary nodeId={id} edges={incomingEdges} videoMode={data.videoMode} />
       ) : null}
       {contentHandlers ? (
         <input
@@ -951,24 +957,35 @@ type IncomingEdge = { target?: string; targetHandle?: string | null };
 /**
  * 视频节点的紧凑输入摘要。绝对定位在预览上方，不参与外部尺寸计算。
  */
-function VideoInputSummary({ nodeId, edges }: { nodeId: string; edges: IncomingEdge[] }) {
+function VideoInputSummary({
+  nodeId,
+  edges,
+  videoMode,
+}: {
+  nodeId: string;
+  edges: IncomingEdge[];
+  videoMode?: VideoMode;
+}) {
+  const roles: PortRole[] = [];
   const counts = new Map<PortRole, number>();
   for (const edge of edges) {
     if (edge.target !== nodeId) continue;
     const handle = edge.targetHandle ?? '';
     if (!handle.startsWith('input:')) continue;
     const role = handle.slice('input:'.length) as PortRole;
+    roles.push(role);
     counts.set(role, (counts.get(role) ?? 0) + 1);
   }
-  if (counts.size === 0) return null;
+  const resolvedMode = displayVideoMode({ videoMode }, roles);
   const chips = [...counts.entries()].map(([role, count]) => ({
     role,
     count,
-    label: inputRoleLabels[role] ?? role,
+    label: videoInputRoleLabel(role, resolvedMode),
   }));
   const total = chips.reduce((sum, chip) => sum + chip.count, 0);
   return (
     <div className="flow-node-input-summary" aria-label={`视频输入 ${total} 项`}>
+      <span className="flow-node-input-chip">{videoModeLabels[resolvedMode]}</span>
       {chips.map((chip) => (
         <span key={chip.role} className="flow-node-input-chip">
           {chip.label}

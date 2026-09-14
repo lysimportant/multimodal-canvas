@@ -1,8 +1,22 @@
 import { Expand, FileImage, LoaderCircle, Play, SlidersHorizontal, X } from 'lucide-react';
 import { useEffect, useId, useMemo, useRef, useState, type FocusEvent } from 'react';
 
-import type { Asset, PromptDocument, VideoCompletionAction } from '@multimodal-canvas/domain';
-import { resolveVideoCompletionAction } from '@multimodal-canvas/domain';
+import type {
+  Asset,
+  PortRole,
+  PromptDocument,
+  VideoCompletionAction,
+  VideoMode,
+} from '@multimodal-canvas/domain';
+import {
+  displayVideoMode,
+  implementedVideoModes,
+  resolveVideoCompletionAction,
+  videoModeCapability,
+  videoModeDescriptions,
+  videoModeLabels,
+  videoModes,
+} from '@multimodal-canvas/domain';
 import { renderPromptDocument } from '@multimodal-canvas/domain';
 import { Dialog, DialogClose, DialogContent, DialogTitle } from '@multimodal-canvas/ui';
 import type { AssetFlowNode } from '../canvas-utils';
@@ -69,6 +83,10 @@ export type NodeQuickEditorProps = {
   onCompletionTargetNodeIdChange?: (value: string | undefined) => void;
   /** 可被末帧填充的空图片节点。 */
   emptyImageNodes?: readonly { id: string; label: string }[];
+  /** 当前连到该节点的输入角色，用于旧视频节点回显推断出的模式。 */
+  connectedInputRoles?: readonly PortRole[];
+  /** 更新视频生成模式；切换后由父层裁掉不兼容连线。 */
+  onVideoModeChange?: (value: VideoMode) => void;
 };
 
 /** 模型声明的选项及其可见说明，保留供应商给出的值和顺序。 */
@@ -164,6 +182,8 @@ export function NodeQuickEditor({
   onCompletionActionChange,
   onCompletionTargetNodeIdChange,
   emptyImageNodes = [],
+  connectedInputRoles = [],
+  onVideoModeChange,
 }: NodeQuickEditorProps) {
   /** 参数页只改变展示状态，不修改节点或默认参数。 */
   const [mediaSettingsOpen, setMediaSettingsOpen] = useState(false);
@@ -395,6 +415,25 @@ export function NodeQuickEditor({
             role="group"
             aria-label="媒体参数"
           >
+            <CompactSelect
+              label="生成模式"
+              value={displayVideoMode(node.data, connectedInputRoles)}
+              options={videoModes.map((mode) => {
+                const capability = videoModeCapability(mode, node.data.modelAlias);
+                const implemented = (implementedVideoModes as readonly VideoMode[]).includes(mode);
+                return {
+                  value: mode,
+                  label: videoModeLabels[mode],
+                  description: capability.reason ?? videoModeDescriptions[mode],
+                  disabled: !implemented || !capability.selectable,
+                };
+              })}
+              onChange={(value) => onVideoModeChange?.(value as VideoMode)}
+              className="node-quick-editor-select-group"
+              placement="top"
+              openOnHover
+              floating
+            />
             <CompactSelect
               label="视频清晰度"
               value={normalizeCurrentOptionValue(parameters.resolution)}
