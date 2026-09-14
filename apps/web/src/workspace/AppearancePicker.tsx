@@ -2,8 +2,7 @@ import { Check, Palette } from 'lucide-react';
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 
 import type { CanvasBackground } from '../app-contract-utils';
-import type { CanvasTheme } from '../state/workspace-preferences';
-import type { CanvasEdgeStyle } from '../state/workspace-preferences';
+import type { CanvasEdgeStyle, CanvasTheme } from '../state/workspace-preferences';
 
 /** 界面主题选项，顶栏与底部胶囊共用。 */
 export const appearanceThemeOptions: Array<{ value: CanvasTheme; label: string; swatch: string }> =
@@ -48,7 +47,7 @@ type AppearancePickerProps = {
 };
 
 /**
- * 主题与画布背景的合并入口。悬停或点击后弹出卡片，分两组展示可选值。
+ * 主题、画布背景和连接线样式的合并入口。悬停或点击后弹出卡片，三组内容用 Tab 切换。
  */
 export function AppearancePicker({
   canvasTheme,
@@ -63,7 +62,7 @@ export function AppearancePicker({
   const rootRef = useRef<HTMLDivElement>(null);
   const closeTimerRef = useRef<number>(0);
   const [open, setOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<'appearance' | 'edge'>('appearance');
+  const [activeTab, setActiveTab] = useState<'theme' | 'background' | 'edge'>('theme');
   const themeLabel =
     appearanceThemeOptions.find((option) => option.value === canvasTheme)?.label ?? '主题';
   const backgroundLabel =
@@ -108,6 +107,119 @@ export function AppearancePicker({
     event.stopPropagation();
   };
 
+  const tabs = (
+    <div
+      className="appearance-card-tabs"
+      data-position={placement}
+      role="tablist"
+      aria-label="画布外观设置"
+    >
+      {[
+        ['theme', '主题'],
+        ['background', '背景'],
+        ['edge', '连接'],
+      ].map(([value, label]) => (
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === value}
+          className="appearance-card-tab"
+          key={value}
+          onPointerDown={stopCanvasEvent}
+          onClick={(event) => {
+            event.stopPropagation();
+            setActiveTab(value as typeof activeTab);
+          }}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+
+  const content = (
+    <>
+      {activeTab === 'theme' ? (
+        <section className="appearance-card-group" role="group" aria-label="界面主题">
+          <h3 className="appearance-card-label">主题</h3>
+          <div className="appearance-card-options">
+            {appearanceThemeOptions.map((option) => (
+              <button
+                type="button"
+                className="theme-option"
+                key={option.value}
+                aria-pressed={canvasTheme === option.value}
+                onPointerDown={stopCanvasEvent}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onThemeChange(option.value);
+                }}
+              >
+                <span className={`theme-swatch ${option.swatch}`} aria-hidden="true" />
+                {option.label}
+                {canvasTheme === option.value ? <Check size={14} aria-hidden="true" /> : null}
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
+      {activeTab === 'background' ? (
+        <section className="appearance-card-group" role="group" aria-label="画布背景">
+          <h3 className="appearance-card-label">背景</h3>
+          <div className="appearance-card-options">
+            {appearanceBackgroundOptions.map((option) => (
+              <button
+                type="button"
+                className="background-option"
+                key={option.value}
+                aria-pressed={canvasBackground === option.value}
+                onPointerDown={stopCanvasEvent}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onBackgroundChange(option.value);
+                }}
+              >
+                <span
+                  className={`background-swatch background-swatch-${option.value}`}
+                  aria-hidden="true"
+                />
+                <span>{option.label}</span>
+                {canvasBackground === option.value ? <Check size={14} aria-hidden="true" /> : null}
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
+      {activeTab === 'edge' ? (
+        <section className="appearance-card-group" role="group" aria-label="连接线样式">
+          <h3 className="appearance-card-label">连接线样式</h3>
+          <div className="appearance-edge-options">
+            {appearanceEdgeStyleOptions.map((option) => (
+              <button
+                type="button"
+                className={`appearance-edge-option edge-style-sample edge-style-sample-${option.value}`}
+                key={option.value}
+                aria-pressed={canvasEdgeStyle === option.value}
+                onPointerDown={stopCanvasEvent}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onEdgeStyleChange?.(option.value);
+                }}
+              >
+                <span className="appearance-edge-line" aria-hidden="true" />
+                <span>
+                  <strong>{option.label}</strong>
+                  <small>{option.description}</small>
+                </span>
+                {canvasEdgeStyle === option.value ? <Check size={14} aria-hidden="true" /> : null}
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
+    </>
+  );
+
   return (
     <div
       className={`appearance-control${compact ? ' is-compact' : ''}`}
@@ -141,118 +253,12 @@ export function AppearancePicker({
         <div
           className="appearance-card"
           role="dialog"
-          aria-label="主题与画布背景"
+          aria-label="主题、画布背景与连接线"
           onPointerDown={stopCanvasEvent}
         >
-          <div className="appearance-card-tabs" role="tablist" aria-label="画布外观设置">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeTab === 'appearance'}
-              className="appearance-card-tab"
-              onPointerDown={stopCanvasEvent}
-              onClick={(event) => {
-                event.stopPropagation();
-                setActiveTab('appearance');
-              }}
-            >
-              主题与背景
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeTab === 'edge'}
-              className="appearance-card-tab"
-              onPointerDown={stopCanvasEvent}
-              onClick={(event) => {
-                event.stopPropagation();
-                setActiveTab('edge');
-              }}
-            >
-              连线
-            </button>
-          </div>
-          {activeTab === 'appearance' ? (
-            <>
-              <section className="appearance-card-group" role="group" aria-label="界面主题">
-                <h3 className="appearance-card-label">主题</h3>
-                <div className="appearance-card-options">
-                  {appearanceThemeOptions.map((option) => (
-                    <button
-                      type="button"
-                      className="theme-option"
-                      key={option.value}
-                      aria-pressed={canvasTheme === option.value}
-                      onPointerDown={stopCanvasEvent}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onThemeChange(option.value);
-                      }}
-                    >
-                      <span className={`theme-swatch ${option.swatch}`} aria-hidden="true" />
-                      {option.label}
-                      {canvasTheme === option.value ? <Check size={14} aria-hidden="true" /> : null}
-                    </button>
-                  ))}
-                </div>
-              </section>
-              <section className="appearance-card-group" role="group" aria-label="画布背景">
-                <h3 className="appearance-card-label">背景</h3>
-                <div className="appearance-card-options">
-                  {appearanceBackgroundOptions.map((option) => (
-                    <button
-                      type="button"
-                      className="background-option"
-                      key={option.value}
-                      aria-pressed={canvasBackground === option.value}
-                      onPointerDown={stopCanvasEvent}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onBackgroundChange(option.value);
-                      }}
-                    >
-                      <span
-                        className={`background-swatch background-swatch-${option.value}`}
-                        aria-hidden="true"
-                      />
-                      <span>{option.label}</span>
-                      {canvasBackground === option.value ? (
-                        <Check size={14} aria-hidden="true" />
-                      ) : null}
-                    </button>
-                  ))}
-                </div>
-              </section>
-            </>
-          ) : (
-            <section className="appearance-card-group" role="group" aria-label="连接线样式">
-              <h3 className="appearance-card-label">连接线样式</h3>
-              <div className="appearance-edge-options">
-                {appearanceEdgeStyleOptions.map((option) => (
-                  <button
-                    type="button"
-                    className={`appearance-edge-option edge-style-sample edge-style-sample-${option.value}`}
-                    key={option.value}
-                    aria-pressed={canvasEdgeStyle === option.value}
-                    onPointerDown={stopCanvasEvent}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onEdgeStyleChange?.(option.value);
-                    }}
-                  >
-                    <span className="appearance-edge-line" aria-hidden="true" />
-                    <span>
-                      <strong>{option.label}</strong>
-                      <small>{option.description}</small>
-                    </span>
-                    {canvasEdgeStyle === option.value ? (
-                      <Check size={14} aria-hidden="true" />
-                    ) : null}
-                  </button>
-                ))}
-              </div>
-            </section>
-          )}
+          {placement === 'top' ? tabs : null}
+          {content}
+          {placement === 'bottom' ? tabs : null}
         </div>
       ) : null}
     </div>

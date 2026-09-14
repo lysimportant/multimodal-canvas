@@ -915,7 +915,8 @@ describe('画布编辑器交互', () => {
     const trigger = screen.getAllByRole('button', { name: '外观' })[0];
     await user.click(trigger);
 
-    expect(screen.getByRole('dialog', { name: '主题与画布背景' })).toBeVisible();
+    expect(screen.getByRole('dialog', { name: '主题、画布背景与连接线' })).toBeVisible();
+    await user.click(screen.getByRole('tab', { name: '背景' }));
     expect(screen.getByRole('button', { name: '点' })).toHaveAttribute('aria-pressed', 'true');
 
     await user.click(screen.getByRole('button', { name: '空白' }));

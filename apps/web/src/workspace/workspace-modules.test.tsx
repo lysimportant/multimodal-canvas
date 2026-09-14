@@ -127,15 +127,17 @@ describe('workspace modules', () => {
     expect(callbacks.onFit).toHaveBeenCalledTimes(1);
 
     await user.click(screen.getByRole('button', { name: '外观' }));
-    const card = screen.getByRole('dialog', { name: '主题与画布背景' });
+    const card = screen.getByRole('dialog', { name: '主题、画布背景与连接线' });
     expect(card).toBeVisible();
     expect(screen.getByRole('group', { name: '界面主题' })).toBeVisible();
-    expect(screen.getByRole('group', { name: '画布背景' })).toBeVisible();
     await user.click(screen.getByRole('button', { name: '深色' }));
     expect(callbacks.onTheme).toHaveBeenCalledWith('dark');
+    await user.click(screen.getByRole('tab', { name: '背景' }));
+    expect(screen.getByRole('group', { name: '画布背景' })).toBeVisible();
     await user.click(screen.getByRole('button', { name: '空白' }));
     expect(callbacks.onBackground).toHaveBeenCalledWith('blank');
-    await user.click(screen.getByRole('tab', { name: '连线' }));
+    expect(screen.getByRole('tab', { name: '背景' })).toHaveAttribute('aria-selected', 'true');
+    await user.click(screen.getByRole('tab', { name: '连接' }));
     expect(screen.getByRole('group', { name: '连接线样式' })).toBeVisible();
     await user.click(screen.getByRole('button', { name: /脉冲/ }));
     expect(callbacks.onEdgeStyle).toHaveBeenCalledWith('pulse');
