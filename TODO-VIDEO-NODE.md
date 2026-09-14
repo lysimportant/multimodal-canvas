@@ -169,6 +169,7 @@ video generate node
 - [x] 规范输入到供应商字段的映射集中在 Provider，画布不写供应商字段名。
 - [x] 已确认：`prompt` + 可选一张首帧 `image`。
 - [x] grok-imagine-video-1.5 系列：尾帧 `last_frame`；全能参考把参考图（含旧角色/风格连线）并入 `reference_images`（最多 7 张，最高 720p）。显式全能参考不再发送首帧。
+- [x] 全能参考吸收提示词里的图片 `@` 提及为参考图，不再误走聊天资源提及能力预检。
 - [x] 显式 `videoMode` 写入运行快照；H3/Wan3 全能参考与首尾帧在未取证前 fail-closed。
 - [x] 未确认角色 fail-closed：`UNSUPPORTED_INPUT_ROLE` 或更具体的组合错误，不发起 POST。
 - [x] 供应商只支持一张图时，提示上限为 1，不能只发第一张。

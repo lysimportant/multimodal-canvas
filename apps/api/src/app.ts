@@ -45,6 +45,8 @@ import {
   type RunCredentialReference,
   type RunRecord,
   type RunResultAsset,
+  unabsorbedVideoPromptMentionMessage,
+  unabsorbedVideoPromptMentions,
 } from '@multimodal-canvas/domain';
 import { z } from 'zod';
 import {
@@ -940,11 +942,35 @@ function validateRunPromptMentionCapabilities(input: {
     if (!included.has(nodeId)) continue;
     const node = input.canvas.nodes.find((candidate) => candidate.id === nodeId);
     if (!node || isRunAssetSource(node, input.targetNodeId)) continue;
+    const modelAlias = input.nodeModelAliases[nodeId] ?? node.data.modelAlias ?? 'unknown-model';
+    const remaining = unabsorbedVideoPromptMentions(node.data, mentions, modelAlias);
+    if (remaining.length === 0) continue;
+    if (node.data.mediaType === 'video' && node.data.mode === 'generate') {
+      for (const mention of remaining) {
+        diagnostics.push({
+          code: 'RESOURCE_MENTION_MEDIA_UNSUPPORTED',
+          reason: 'media_unsupported',
+          message: unabsorbedVideoPromptMentionMessage(
+            mention.mediaType,
+            node.data.videoMode,
+            modelAlias,
+          ),
+          requestId: input.requestId,
+          nodeId: node.id,
+          mentionId: mention.mentionId,
+          assetId: mention.assetId,
+          mediaType: mention.mediaType,
+          ...(mention.semanticRole ? { semanticRole: mention.semanticRole } : {}),
+          modelAlias,
+        });
+      }
+      continue;
+    }
     const result = checkResourceMentionCapabilities({
       node: { id: node.id, data: { mediaType: node.data.mediaType, mode: node.data.mode } },
-      modelAlias: input.nodeModelAliases[nodeId] ?? node.data.modelAlias ?? 'unknown-model',
+      modelAlias,
       model: input.nodeModels[nodeId],
-      mentions: [...mentions].sort((left, right) => left.blockOrder - right.blockOrder),
+      mentions: [...remaining].sort((left, right) => left.blockOrder - right.blockOrder),
       requestId: input.requestId,
       allowMockPreview: input.allowMockPreview,
     });

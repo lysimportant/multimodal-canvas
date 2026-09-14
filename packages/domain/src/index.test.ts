@@ -22,6 +22,8 @@ import {
   targetPortRolesForNode,
   videoModeCapability,
   videoModes,
+  unabsorbedVideoPromptMentions,
+  videoInputRoleForPromptMention,
   promptDocumentSchema,
   renderPromptDocument,
   runJobDataSchema,
@@ -1245,6 +1247,33 @@ describe('video mode ports', () => {
     });
     expect(isPortConnectionAllowed(image, 'output:image', omni, 'input:referenceImage')).toBe(true);
     expect(isPortConnectionAllowed(image, 'output:image', omni, 'input:firstFrame')).toBe(false);
+  });
+
+  it('absorbs omni prompt image mentions as reference images on grok-imagine-video-1.5', () => {
+    expect(
+      videoInputRoleForPromptMention('image', 'omni_reference', 'grok-imagine-video-1.5.1'),
+    ).toBe('referenceImage');
+    expect(
+      videoInputRoleForPromptMention('video', 'omni_reference', 'grok-imagine-video-1.5.1'),
+    ).toBeUndefined();
+    expect(
+      videoInputRoleForPromptMention('image', 'text_to_video', 'grok-imagine-video-1.5.1'),
+    ).toBe(undefined);
+    const mentions = [
+      { mediaType: 'image' as const, mentionId: 'm-image' },
+      { mediaType: 'video' as const, mentionId: 'm-video' },
+    ];
+    expect(
+      unabsorbedVideoPromptMentions(
+        {
+          mediaType: 'video',
+          mode: 'generate',
+          videoMode: 'omni_reference',
+          modelAlias: 'grok-imagine-video-1.5.1',
+        },
+        mentions,
+      ).map((mention) => mention.mentionId),
+    ).toEqual(['m-video']);
   });
 });
 

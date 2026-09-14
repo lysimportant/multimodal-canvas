@@ -483,4 +483,97 @@ describe('资源提及 HTTP 边界', () => {
     expect(await runService.listByProject(project.id)).toEqual([]);
     expect(JSON.stringify(response.json())).not.toContain('synthetic-resource-mention-key');
   });
+
+  it('全能参考把提示词图片提及收成视频参考，不走聊天提及能力预检', async () => {
+    vi.stubEnv('WORKER_PROVIDER', 'newapi');
+    const assetStore = new MemoryAssetStore();
+    const projectStore = new MemoryProjectStore();
+    const runService = new MemoryRunService({ providerName: 'newapi', stepDelayMs: 0 });
+    const settingsStore = new AiSettingsStore('resource-mention-video-omni');
+    settingsStore.update({
+      baseUrl: 'https://newapi.example.test/v1',
+      apiKey: 'synthetic-resource-mention-key',
+    });
+    const credential = settingsStore.listCredentials()[0];
+    if (!credential) throw new Error('测试凭据创建失败');
+    settingsStore.replaceModels(
+      [
+        {
+          id: 'grok-imagine-video-1.5.1',
+          name: 'Grok video',
+          mediaTypes: ['video'],
+          refreshedAt: new Date().toISOString(),
+        },
+      ],
+      credential.id,
+    );
+    const project = await projectStore.create({ name: '视频全能参考' });
+    const asset = await assetStore.create({
+      projectId: project.id,
+      name: 'product.png',
+      mediaType: 'image',
+      mimeType: 'image/png',
+      content: Buffer.from('image'),
+    });
+    await storeCanvas(projectStore, project.id, {
+      revision: 0,
+      nodes: [
+        {
+          id: 'node-omni-video',
+          type: 'video',
+          position: { x: 0, y: 0 },
+          data: {
+            label: '全能参考',
+            mediaType: 'video',
+            mode: 'generate',
+            videoMode: 'omni_reference',
+            modelAlias: 'grok-imagine-video-1.5.1',
+            credentialId: credential.id,
+            prompt: '保持主体',
+            promptDocument: {
+              version: 1,
+              blocks: [
+                { type: 'text', text: '保持主体' },
+                {
+                  type: 'mention',
+                  mentionId: 'mention-omni',
+                  assetId: asset.id,
+                  assetVersion: 1,
+                  label: asset.name,
+                  mediaType: 'image',
+                },
+              ],
+            },
+          },
+        },
+      ],
+      edges: [],
+    });
+    const executor = vi.fn(async ({ snapshot }: RunExecutorRequest) => ({
+      provider: 'newapi',
+      summary: '不应在本测试执行到 Provider',
+      targetNodeId: snapshot.targetNodeId,
+      mediaType: 'video' as const,
+      inputCount: 0,
+    }));
+    const app = buildApp({
+      logger: false,
+      assetStore,
+      projectStore,
+      runService,
+      runExecutor: executor,
+      settingsStore,
+    });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/nodes/node-omni-video/runs',
+      payload: { projectId: project.id },
+    });
+    expect(response.statusCode).toBe(202);
+    expect(response.json().run.snapshot.promptMentions).toEqual([
+      expect.objectContaining({ mentionId: 'mention-omni', mediaType: 'image' }),
+    ]);
+  });
 });

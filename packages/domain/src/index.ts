@@ -1187,6 +1187,60 @@ export function videoImageRolesForMode(videoMode?: VideoMode): readonly PortRole
   return ['firstFrame', 'lastFrame', 'referenceImage'];
 }
 
+/**
+ * 提示词里的资源提及在当前视频模式下可吸收的输入角色。
+ * 全能参考把图/视频/音频收成参考素材，而不是走聊天多模态提及合同。
+ * @param mediaType 提及的媒体类型。
+ * @param videoMode 节点上的显式视频模式。
+ * @param modelAlias 用于按能力矩阵收窄 Grok 只收图片等约束。
+ */
+export function videoInputRoleForPromptMention(
+  mediaType: MediaType,
+  videoMode: VideoMode | undefined,
+  modelAlias?: string,
+): PortRole | undefined {
+  if (videoMode !== 'omni_reference') return undefined;
+  const roles = new Set(videoModeCapability('omni_reference', modelAlias).roles);
+  if (mediaType === 'image' && roles.has('referenceImage')) return 'referenceImage';
+  if (mediaType === 'video' && roles.has('content')) return 'content';
+  if (mediaType === 'audio' && roles.has('audioTrack')) return 'audioTrack';
+  return undefined;
+}
+
+/**
+ * 返回视频节点提示词中不能被当前模式吸收、仍需单独失败的资源提及。
+ * @param node 目标视频节点的媒体、模式和模型。
+ * @param mentions 该节点上的冻结资源提及。
+ */
+export function unabsorbedVideoPromptMentions<T extends { mediaType: MediaType }>(
+  node: Pick<NodeData, 'mediaType' | 'mode' | 'videoMode' | 'modelAlias'>,
+  mentions: readonly T[],
+  modelAlias = node.modelAlias,
+): T[] {
+  if (node.mediaType !== 'video' || node.mode === 'source') return [...mentions];
+  return mentions.filter(
+    (mention) => !videoInputRoleForPromptMention(mention.mediaType, node.videoMode, modelAlias),
+  );
+}
+
+/**
+ * 视频节点无法吸收提示词资源提及时的说明，避免误用聊天提及能力文案。
+ * @param mentionMediaType 提及媒体。
+ * @param videoMode 当前视频模式。
+ * @param modelAlias 模型 ID。
+ */
+export function unabsorbedVideoPromptMentionMessage(
+  mentionMediaType: MediaType,
+  videoMode: VideoMode | undefined,
+  modelAlias?: string,
+): string {
+  if (videoMode === 'omni_reference') {
+    return `当前模型的全能参考不能吸收提示词里的${mentionMediaType === 'image' ? '图片' : mentionMediaType === 'video' ? '视频' : mentionMediaType === 'audio' ? '音频' : mentionMediaType}提及`;
+  }
+  const modeLabel = videoMode ? videoModeLabels[videoMode] : '当前';
+  return `视频模式「${modeLabel}」不能使用提示词资源提及。全能参考请把素材连到节点，或切换到全能参考`;
+}
+
 /** 未知模型默认只允许 prompt 和至多一张首帧。 */
 export const confirmedLiveVideoInputRoles = ['prompt', 'firstFrame'] as const;
 

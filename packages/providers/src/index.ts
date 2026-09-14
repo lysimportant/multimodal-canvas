@@ -8,7 +8,11 @@ import type {
   RunResult,
   RunSnapshot,
 } from '@multimodal-canvas/domain';
-import { precheckVideoGenerationInputs, renderPromptDocument } from '@multimodal-canvas/domain';
+import {
+  precheckVideoGenerationInputs,
+  renderPromptDocument,
+  videoInputRoleForPromptMention,
+} from '@multimodal-canvas/domain';
 
 export type ProviderName = 'mock' | 'newapi';
 
@@ -696,11 +700,13 @@ export class NewApiVideoProvider {
     if (target.data.mode !== 'generate') {
       throw new NewApiProviderError('当前视频接口仅支持 generate 模式');
     }
+    const absorbedMentionInputs = collectAbsorbedVideoMentionInputs(snapshot, resolvedMentions);
     assertPromptMentionsUnsupported(
       'video',
       snapshot,
       target.data.promptDocument,
       resolvedMentions,
+      new Set(absorbedMentionInputs.map((input) => input.nodeId.slice('mention:'.length))),
     );
     validateProviderRoleParameters(snapshot.parameters, 'video');
     const contract = resolveVideoContract(existingProviderJob, this.videoContract);
@@ -709,7 +715,7 @@ export class NewApiVideoProvider {
     if (unified) validateUnifiedVideoParameters(snapshot.parameters);
     else validateMediaParameters(snapshot.parameters, 'video');
     // 恢复也校验冻结输入，避免绕过创建时禁止的参考角色。
-    const inputs = mapVideoInputs(snapshot);
+    const inputs = mapVideoInputs(snapshot, absorbedMentionInputs);
     // 既有适配器要求明确的视频提示词；恢复任务时也不能用显示标签替代。
     resolveRequiredVideoPrompt(
       snapshot,
@@ -3373,19 +3379,91 @@ function promptDocumentContentParts(
  * 图片、音频和视频生成接口当前只有纯文本主输入（视频另有专用首帧字段）。
  * 对这些端点不能表达的内联提及必须在 HTTP 请求前明确失败，禁止静默丢弃。
  */
+function collectAbsorbedVideoMentionInputs(
+  snapshot: RunSnapshot,
+  resolvedMentions: readonly ResolvedMention[] | undefined,
+): RunInputSnapshot[] {
+  const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
+  if (!target || target.data.mediaType !== 'video') return [];
+  const documentMentions =
+    target.data.promptDocument?.blocks.flatMap((block) =>
+      block.type === 'mention' ? [block] : [],
+    ) ?? [];
+  const resolvedById = new Map(
+    (resolvedMentions ?? [])
+      .filter((mention) => mention.nodeId === snapshot.targetNodeId)
+      .map((mention) => [mention.mentionId, mention]),
+  );
+  const existingAssetIds = new Set(
+    snapshot.inputs
+      .map((input) => input.sourceAssetId)
+      .filter((assetId): assetId is string => Boolean(assetId)),
+  );
+  const inputs: RunInputSnapshot[] = [];
+  for (const [blockOrder, block] of documentMentions.entries()) {
+    const role = videoInputRoleForPromptMention(
+      block.mediaType,
+      target.data.videoMode,
+      snapshot.modelAlias,
+    );
+    if (!role) continue;
+    if (existingAssetIds.has(block.assetId)) continue;
+    const resolved = resolvedById.get(block.mentionId);
+    if (!resolved) {
+      throw promptMentionMappingError(
+        snapshot,
+        {
+          mentionId: block.mentionId,
+          assetId: block.assetId,
+          mediaType: block.mediaType,
+        },
+        'RESOURCE_MENTION_RESOLUTION_MISSING',
+        'Worker 未提供冻结版本内容',
+      );
+    }
+    existingAssetIds.add(block.assetId);
+    inputs.push({
+      nodeId: `mention:${resolved.mentionId}`,
+      role,
+      sortOrder: 10_000 + (resolved.blockOrder ?? blockOrder),
+      sourceAssetId: resolved.assetId,
+      snapshot: {
+        id: `mention:${resolved.mentionId}`,
+        type: resolved.mediaType,
+        position: { x: 0, y: 0 },
+        data: {
+          label: resolved.label,
+          mediaType: resolved.mediaType,
+          mode: 'source',
+          contentUrl: resolved.source.dataUrl,
+          mimeType: resolved.source.mimeType,
+          assetId: resolved.assetId,
+        },
+      },
+    });
+  }
+  return inputs;
+}
+
 function assertPromptMentionsUnsupported(
   mediaType: 'image' | 'audio' | 'video',
   snapshot: RunSnapshot,
   document: PromptDocument | undefined,
   resolvedMentions: readonly ResolvedMention[] | undefined,
+  absorbedMentionIds: ReadonlySet<string> = new Set(),
 ): void {
   const targetNodeId = snapshot.targetNodeId;
-  const documentMentions = document?.blocks.filter((block) => block.type === 'mention') ?? [];
+  const documentMentions =
+    document?.blocks.flatMap((block) =>
+      block.type === 'mention' && !absorbedMentionIds.has(block.mentionId) ? [block] : [],
+    ) ?? [];
   const frozenMentions = (snapshot.promptMentions ?? []).filter(
-    (mention) => (mention.nodeId ?? targetNodeId) === targetNodeId,
+    (mention) =>
+      (mention.nodeId ?? targetNodeId) === targetNodeId &&
+      !absorbedMentionIds.has(mention.mentionId),
   );
   const targetResolved = (resolvedMentions ?? []).filter(
-    (mention) => mention.nodeId === targetNodeId,
+    (mention) => mention.nodeId === targetNodeId && !absorbedMentionIds.has(mention.mentionId),
   );
 
   if (documentMentions.length === 0 && frozenMentions.length === 0 && targetResolved.length === 0) {
@@ -3703,9 +3781,12 @@ function resolveRequiredVideoPrompt(
   return resolveMappedPromptInput(prompt, input, 'video');
 }
 
-function mapVideoInputs(snapshot: RunSnapshot): VideoInputMapping {
+function mapVideoInputs(
+  snapshot: RunSnapshot,
+  extraInputs: readonly RunInputSnapshot[] = [],
+): VideoInputMapping {
   const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
-  const precheck = precheckVideoGenerationInputs(snapshot.inputs, {
+  const precheck = precheckVideoGenerationInputs([...snapshot.inputs, ...extraInputs], {
     modelAlias: snapshot.modelAlias,
     parameters: snapshot.parameters,
     videoMode: target?.data.videoMode,
