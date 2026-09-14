@@ -939,6 +939,7 @@ export function ResourceMentionEditor({
         {dialogItem && (
           <DialogContent
             className="resource-mention-dialog"
+            overlayClassName="resource-mention-dialog-backdrop"
             aria-describedby={undefined}
             onPointerDown={(event) => event.stopPropagation()}
           >

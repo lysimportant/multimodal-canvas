@@ -345,6 +345,8 @@ describe('ResourceMentionEditor', () => {
     );
 
     await user.click(screen.getByRole('button', { name: '预览并命名 产品图' }));
+    expect(globalThis.document.querySelector('.resource-mention-dialog-backdrop')).toBeTruthy();
+    expect(globalThis.document.querySelector('.resource-mention-dialog')).toBeTruthy();
     const nameInput = screen.getByRole('textbox', { name: '资源名称' });
     await user.clear(nameInput);
     await user.type(nameInput, '萧炎');

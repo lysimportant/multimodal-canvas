@@ -2276,10 +2276,19 @@ h2 {
   z-index: 4;
 }
 
+/* 必须高于输入节点浮层 60 和完整编辑 Dialog 72，否则预览会被节点挡住。 */
+.resource-mention-dialog-backdrop.resource-mention-dialog-backdrop {
+  z-index: 90;
+}
+
+.resource-mention-dialog.resource-mention-dialog {
+  z-index: 91;
+}
+
 .resource-mention-dialog-preview {
   margin: 12px 0;
-  max-height: 240px;
-  overflow: hidden;
+  max-height: min(60vh, 520px);
+  overflow: auto;
 }
 
 .resource-mention-dialog-name {
