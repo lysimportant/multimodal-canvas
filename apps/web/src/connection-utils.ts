@@ -275,7 +275,7 @@ const downstreamDropCreateCatalog: Record<MediaType, readonly DropCreateSeed[]> 
       mediaType: 'image',
       role: 'content',
       label: '图生图',
-      description: '创建图片节点，并以当前输出作为内容',
+      description: '创建图片节点，并以当前输出作为要编辑的原图',
     },
     {
       mediaType: 'video',

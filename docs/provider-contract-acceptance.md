@@ -98,14 +98,14 @@ const pendingUpdate = {
 
 创建返回 task_id 后再次等待 `onProviderJob` 持久化 platformJobId 及 `phase: 'submitted'`，再查询。构造器参数只决定尚未冻结的新任务，不覆盖历史记录。
 
-| 已有记录                                                      | 恢复行为                                                     |
-| ------------------------------------------------------------- | ------------------------------------------------------------ |
-| `payload.contract=newapi-unified-v1` 且有平台 ID              | 只查询官方统一路径，即使构造器配置 legacy。                  |
-| `payload.contract=legacy-v1` 且有平台 ID           | 只查询 `/v1/videos/{id}`，保留 Sub2 创建路径标识。                 |
-| `payload.contract=newapi-video-v1` 且有平台 ID     | 只查询 `/v1/videos/{id}`，不回退 `/videos/generations` 或单数统一路径。                 |
-| 有平台 ID 但没有合同                                          | 按 legacy 查询并输出 `contract=legacy-v1`，不能套新协议。    |
-| 无平台 ID 且 `phase=submitting`                               | `VIDEO_SUBMISSION_UNKNOWN`，禁止重放创建；先在供应商侧核对。 |
-| 任何未知合同，包括 `sora-v1`                                  | `VIDEO_CONTRACT_UNSUPPORTED`，零请求。                       |
+| 已有记录                                         | 恢复行为                                                                |
+| ------------------------------------------------ | ----------------------------------------------------------------------- |
+| `payload.contract=newapi-unified-v1` 且有平台 ID | 只查询官方统一路径，即使构造器配置 legacy。                             |
+| `payload.contract=legacy-v1` 且有平台 ID         | 只查询 `/v1/videos/{id}`，保留 Sub2 创建路径标识。                      |
+| `payload.contract=newapi-video-v1` 且有平台 ID   | 只查询 `/v1/videos/{id}`，不回退 `/videos/generations` 或单数统一路径。 |
+| 有平台 ID 但没有合同                             | 按 legacy 查询并输出 `contract=legacy-v1`，不能套新协议。               |
+| 无平台 ID 且 `phase=submitting`                  | `VIDEO_SUBMISSION_UNKNOWN`，禁止重放创建；先在供应商侧核对。            |
+| 任何未知合同，包括 `sora-v1`                     | `VIDEO_CONTRACT_UNSUPPORTED`，零请求。                                  |
 
 无需数据库 schema 迁移：使用现有 payload；上线前保留现有任务记录并备份。配置回滚只影响新任务，不能重写、清空旧 ID 或冻结合同；回滚二进制也必须保留统一合同的恢复能力，不能退回不识别合同的旧代码。合同回调成功但 POST 前崩溃也按结果未知处理，这是避免重复计费的保守边界，不证明供应商已受理。
 
@@ -197,3 +197,4 @@ API/Worker 的显式视频配置接线已完成，对应两组定向测试分别
 2. 讯飞音频的完整真实链路已在隔离环境验收（`xiaoyan`、MP3、16 kHz、语速 50）；其它音频模型、voice、格式和扩展输入仍未开放或验收。
 3. 供应商 Webhook 原始签名、远程取消、幂等期限和作用域、重复请求计费及回调重放规则。稳定 key、429 或网络错误不能证明安全重试。
 4. Sora multipart、多参考角色和其他未确认模型扩展暂不支持；新增映射须有正式契约与定向测试，不能用通用 metadata 代替。
+5. 图生图本地已按官方 [编辑图像](https://apifox.newapi.ai/385320133e0.md) 映射：带图片 `content`/`referenceImage` 时改为 `POST /v1/images/edits` multipart（`image`+`prompt`，可选 `size`）。这只覆盖本地适配器测试，不证明 Helunox/Sub2API 或全部图像模型受理该端点。

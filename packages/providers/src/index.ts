@@ -314,6 +314,16 @@ export class NewApiProvider {
     // 供应商是否识别该键、如何去重及计费尚需契约确认，不能据此自动重试。
     const idempotencyKey = standardRequestIdempotencyKey(snapshot, providerJob);
 
+    const imageRequest =
+      target.data.mediaType === 'image'
+        ? this.imageRequest(
+            snapshot,
+            target.data.label,
+            target.data.prompt,
+            target.data.promptDocument,
+            resolvedMentions,
+          )
+        : undefined;
     const response =
       target.data.mediaType === 'text'
         ? await this.request(
@@ -328,19 +338,8 @@ export class NewApiProvider {
             idempotencyKey,
             signal,
           )
-        : target.data.mediaType === 'image'
-          ? await this.request(
-              '/images/generations',
-              this.imagePayload(
-                snapshot,
-                target.data.label,
-                target.data.prompt,
-                target.data.promptDocument,
-                resolvedMentions,
-              ),
-              idempotencyKey,
-              signal,
-            )
+        : imageRequest
+          ? await this.request(imageRequest.path, imageRequest.body, idempotencyKey, signal)
           : await this.request(
               '/audio/speech',
               this.audioPayload(
@@ -446,20 +445,49 @@ export class NewApiProvider {
     };
   }
 
-  private imagePayload(
+  /**
+   * 文生图走 `/images/generations`；带原图的图生图走官方 `/images/edits`。
+   * @param snapshot 当前运行快照。
+   * @param label 目标节点显示名，提示词缺失时作为回退。
+   * @param nodePrompt 节点上填写的提示词。
+   * @param nodePromptDocument 结构化提示词文档。
+   * @param resolvedMentions 图片接口暂不支持资源提及。
+   * @returns 请求路径和 JSON 或 multipart 请求体。
+   */
+  private imageRequest(
     snapshot: RunSnapshot,
     label: string,
     nodePrompt?: string,
     nodePromptDocument?: PromptDocument,
     resolvedMentions?: readonly ResolvedMention[],
-  ) {
+  ): { path: string; body: Record<string, unknown> | FormData } {
     assertPromptMentionsUnsupported('image', snapshot, nodePromptDocument, resolvedMentions);
-    return {
-      ...providerParameters(snapshot.parameters, 'image'),
-      model: snapshot.modelAlias,
-      prompt: resolveSinglePromptInput(snapshot, label, nodePrompt, 'image', nodePromptDocument),
-      n: 1,
-    };
+    const mapping = mapImageGenerationInputs(snapshot, label, nodePrompt, nodePromptDocument);
+    const parameters = providerParameters(snapshot.parameters, 'image');
+    if (mapping.images.length === 0) {
+      return {
+        path: '/images/generations',
+        body: {
+          ...parameters,
+          model: snapshot.modelAlias,
+          prompt: mapping.prompt,
+          n: 1,
+        },
+      };
+    }
+    if (mapping.images.length > 1) {
+      throw inputRoleCardinalityError('image', mapping.images[0]?.role ?? 'content');
+    }
+    const form = new FormData();
+    form.append('model', snapshot.modelAlias);
+    form.append('prompt', mapping.prompt);
+    form.append('n', '1');
+    if (typeof parameters.size === 'string' && parameters.size.trim()) {
+      form.append('size', parameters.size.trim());
+    }
+    const image = imageFormFile(mapping.images[0]!);
+    form.append('image', image.file, image.filename);
+    return { path: '/images/edits', body: form };
   }
 
   private audioPayload(
@@ -490,22 +518,23 @@ export class NewApiProvider {
   /** 返回内容及脱敏请求关联 ID；同步 completion ID 不属于视频平台任务身份。 */
   private async request(
     path: string,
-    body: Record<string, unknown>,
+    body: Record<string, unknown> | FormData,
     idempotencyKey: string,
     externalSignal?: AbortSignal,
   ): Promise<{ payload: unknown; requestId?: string }> {
     const abortContext = createProviderAbortContext(this.timeoutMs, externalSignal);
     try {
       throwIfProviderSignalAborted(externalSignal);
+      const isForm = body instanceof FormData;
       const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
         method: 'POST',
         redirect: 'error',
         headers: {
           authorization: `Bearer ${this.apiKey}`,
-          'content-type': 'application/json',
           'idempotency-key': idempotencyKey,
+          ...(isForm ? {} : { 'content-type': 'application/json' }),
         },
-        body: JSON.stringify(body),
+        body: isForm ? body : JSON.stringify(body),
         signal: abortContext.signal,
       });
       if (externalSignal?.aborted) discardResponseBody(response);
@@ -3562,6 +3591,88 @@ function resolveSinglePromptInput(
   );
 }
 
+const imageEditSourceRoles = new Set<PortRole>(['content', 'referenceImage']);
+
+type ImageGenerationMapping = {
+  /** 发送给图片接口的主提示词。 */
+  prompt: string;
+  /** 需要作为原图上传的输入，最多一张。 */
+  images: RunInputSnapshot[];
+};
+
+/**
+ * 把图片节点的连线分成提示词、原图和遮罩。
+ * 文字仍走 prompt/content；图片 content/referenceImage 走编辑接口的 image 字段。
+ * @param snapshot 当前运行快照。
+ * @param label 目标节点显示名。
+ * @param nodePrompt 节点提示词。
+ * @param nodePromptDocument 结构化提示词文档。
+ * @returns 已按官方图像契约分组的输入。
+ */
+function mapImageGenerationInputs(
+  snapshot: RunSnapshot,
+  label: string,
+  nodePrompt: string | undefined,
+  nodePromptDocument?: PromptDocument,
+): ImageGenerationMapping {
+  let promptInput: RunInputSnapshot | undefined;
+  const images: RunInputSnapshot[] = [];
+
+  for (const input of orderedRunInputs(snapshot)) {
+    const sourceType = input.snapshot.data.mediaType;
+    if (input.role === 'prompt' || (input.role === 'content' && sourceType === 'text')) {
+      if (promptInput) throw inputRoleCardinalityError('image', 'prompt');
+      promptInput = input;
+      continue;
+    }
+    if (imageEditSourceRoles.has(input.role) && sourceType === 'image') {
+      images.push(input);
+      continue;
+    }
+    if (input.role === 'content') {
+      throw unsupportedInputRoleError(
+        'image',
+        'content',
+        `上游媒体类型 ${sourceType} 无法映射为文字或图片`,
+      );
+    }
+    throw unsupportedInputRoleError('image', input.role);
+  }
+
+  return {
+    prompt: resolveMappedPromptInput(
+      resolvePromptSource(snapshot, label, nodePrompt, 'image', nodePromptDocument),
+      promptInput,
+      'image',
+    ),
+    images,
+  };
+}
+
+/**
+ * 把 Worker 水合后的图片 data URL 编成 edits 接口需要的文件字段。
+ * @param input 原图或遮罩输入。
+ * @returns 带文件名的 File，便于 multipart 带上扩展名。
+ */
+function imageFormFile(input: RunInputSnapshot): { file: File; filename: string } {
+  const contentUrl = input.snapshot.data.contentUrl;
+  if (!nonEmptyString(contentUrl)) {
+    throw inputRoleValueError('image', input.role, '可发送的图片内容');
+  }
+  const parsed = parseDataUrl(contentUrl.trim());
+  if (!parsed) {
+    throw inputRoleValueError('image', input.role, '可发送的图片内容');
+  }
+  const mimeType = validatedMediaMimeType(parsed.mimeType, 'image') ?? 'image/png';
+  const binary = atob(validatedMediaBase64(parsed.base64));
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  const filename = `${input.nodeId}.${formatFromMimeType(mimeType) ?? 'png'}`;
+  return {
+    file: new File([bytes], filename, { type: mimeType }),
+    filename,
+  };
+}
+
 function resolveMappedPromptInput(
   prompt: PromptSource,
   input: RunInputSnapshot | undefined,
@@ -3707,7 +3818,9 @@ function unsupportedInputRoleError(
   const roleHint =
     mediaType === 'video' && detail && (role === 'content' || role === 'firstFrame')
       ? ' 图生视频请把图片连到「首帧」口；提示词请连到「提示词」口或在节点中填写。'
-      : '';
+      : mediaType === 'image' && detail && role === 'content'
+        ? ' 图生图请把图片连到「内容」或「通用参考」口；提示词请连到「提示词」口或在节点中填写。'
+        : '';
   return new NewApiProviderError(
     `New API ${mediaType} 不支持该输入角色：${role}${detail ? `（${detail}）` : ''}${roleHint}`,
     { code: 'UNSUPPORTED_INPUT_ROLE', retryable: false },

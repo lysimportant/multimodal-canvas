@@ -29,7 +29,7 @@ type StandardMediaType = Exclude<MediaType, 'video'>;
 const standardSupportedInputRoles = {
   text: ['prompt', 'content', 'transcript'],
   // 文本节点可通过提示词或内容语义端口连接；两者都映射到接口的主文字字段。
-  image: ['prompt', 'content'],
+  image: ['prompt', 'content', 'referenceImage'],
   audio: ['prompt', 'content'],
 } as const satisfies Record<StandardMediaType, readonly PortRole[]>;
 
@@ -1152,6 +1152,94 @@ describe('NewApiProvider', () => {
     expect(reportProgress).toHaveBeenCalledWith(100);
   });
 
+  it('maps an image content input to the official image edits endpoint', async () => {
+    const png =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ url: 'https://cdn.example/edited.png' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const provider = new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    });
+
+    await provider.execute({
+      snapshot: {
+        ...standardSnapshot('image'),
+        parameters: { size: '1024x1024', prompt: '改成夜景' },
+        inputs: [
+          {
+            nodeId: 'node_source',
+            role: 'content',
+            sortOrder: 0,
+            snapshot: {
+              id: 'node_source',
+              type: 'image',
+              position: { x: 0, y: 0 },
+              data: {
+                label: 'source',
+                mediaType: 'image',
+                mode: 'source',
+                contentUrl: `data:image/png;base64,${png}`,
+                mimeType: 'image/png',
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(url).toBe('https://newapi.example.com/v1/images/edits');
+    expect(init).toEqual(
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          authorization: 'Bearer server-secret',
+        }),
+      }),
+    );
+    expect((init?.headers as Record<string, string>)['content-type']).toBeUndefined();
+    expect(init?.body).toBeInstanceOf(FormData);
+    const form = init?.body as FormData;
+    expect(form.get('model')).toBe('image-v1');
+    expect(form.get('prompt')).toBe('改成夜景');
+    expect(form.get('n')).toBe('1');
+    expect(form.get('size')).toBe('1024x1024');
+    const image = form.get('image');
+    expect(image).toBeInstanceOf(File);
+    expect((image as File).name).toBe('node_source.png');
+    expect((image as File).type).toBe('image/png');
+  });
+
+  it('rejects an image content input that is not a hydrated data URL', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    });
+
+    await expect(
+      provider.execute({
+        snapshot: {
+          ...standardSnapshot('image'),
+          inputs: [providerInputWithMediaType('node_input', 'content', 0, 'image')],
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: 'INPUT_ROLE_VALUE_MISSING',
+      retryable: false,
+      message: 'New API image 输入角色 content 缺少可发送的图片内容',
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('maps one linked prompt to the image prompt field without appending reference labels', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ data: [{ url: 'https://cdn.example/linked.png' }] }), {
@@ -1420,7 +1508,7 @@ describe('NewApiProvider', () => {
         retryable: false,
         message:
           sourceMediaType === 'video' && targetMediaType === 'image' && role === 'content'
-            ? `New API ${targetMediaType} 不支持该输入角色：${role}（上游媒体类型 ${sourceMediaType} 无法映射为文字）`
+            ? `New API ${targetMediaType} 不支持该输入角色：${role}（上游媒体类型 ${sourceMediaType} 无法映射为文字或图片） 图生图请把图片连到「内容」或「通用参考」口；提示词请连到「提示词」口或在节点中填写。`
             : `New API ${targetMediaType} 不支持该输入角色：${role}`,
       });
       expect(fetchImpl).not.toHaveBeenCalled();
