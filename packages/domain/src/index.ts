@@ -319,14 +319,20 @@ export function mentionDisplayName(mention: {
 }
 
 /**
- * 从文件名得到默认可读名，去掉常见后缀。
+ * 从文件名得到默认可读名。
+ * 普通文件会去掉常见后缀；去掉后如果只剩过短或纯数字/符号，则保留原文件名。
+ * 这样 `2.mp4` 不会变成 `2`，避免在提示词里输入数字就被当成资源引用。
  * @param fileName 资源文件名或标签。
  */
 export function defaultResourceDisplayName(fileName: string): string {
   const base = fileName.trim();
   if (!base) return '资源';
   const stripped = base.replace(/\.[A-Za-z0-9]{1,8}$/u, '');
-  return (stripped || base).slice(0, 160);
+  const stem = (stripped || base).trim();
+  if (!stem || stem.length < 2 || /^[\d._-]+$/u.test(stem)) {
+    return base.slice(0, 160);
+  }
+  return stem.slice(0, 160);
 }
 
 /**

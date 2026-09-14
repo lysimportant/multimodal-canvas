@@ -29,6 +29,7 @@ import {
   renderPromptDocument,
   mentionDisplayName,
   uniqueResourceDisplayName,
+  defaultResourceDisplayName,
   runJobDataSchema,
   runSnapshotFingerprintMaterial,
   runSnapshotSchema,
@@ -317,6 +318,11 @@ describe('canvas protocol', () => {
     expect(renderPromptDocument(document)).toBe('把 产品 放在场景中');
     expect(mentionDisplayName({ label: 'hero.png', entityName: '满穗' })).toBe('满穗');
     expect(uniqueResourceDisplayName('满穗.png', ['满穗'])).toBe('满穗2');
+    expect(defaultResourceDisplayName('满穗.png')).toBe('满穗');
+    expect(defaultResourceDisplayName('2.mp4')).toBe('2.mp4');
+    expect(defaultResourceDisplayName('3.txt')).toBe('3.txt');
+    expect(defaultResourceDisplayName('12.png')).toBe('12.png');
+    expect(defaultResourceDisplayName('hero.png')).toBe('hero');
     expect(document.blocks[1]).toMatchObject({
       type: 'mention',
       mentionId: 'mention-product',

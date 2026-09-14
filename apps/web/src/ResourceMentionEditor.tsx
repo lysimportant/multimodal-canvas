@@ -233,12 +233,12 @@ export function ResourceMentionEditor({
       const nextRanges = promotePlaintextResourceNames(
         nextText,
         updateRangesForTextEdit(previousText, nextText, rangesRef.current, edit),
-        collectNamedResourcePool(rangesRef.current, assets, connectedAssets),
+        collectNamedResourcePool(rangesRef.current, connectedAssets),
       );
       commitState(nextText, nextRanges);
       updateTrigger(nextText, caretRef.current, setTrigger);
     },
-    [assets, commitState, connectedAssets],
+    [commitState, connectedAssets],
   );
 
   const ime = useImeDraft<HTMLTextAreaElement>({
@@ -1432,9 +1432,12 @@ function createMentionId(ranges: readonly MentionRange[]): string {
   return `${random}_${suffix}`;
 }
 
+/**
+ * 只收集当前节点已经挂上的名字：已有提及，以及连到本节点的资源。
+ * 不能扫整个项目资产库，否则输入 2、3 会误引用别的节点的 `2.mp4`。
+ */
 function collectNamedResourcePool(
   ranges: readonly MentionRange[],
-  assets: readonly Asset[],
   connectedAssets: readonly Pick<Asset, 'id' | 'name' | 'mediaType'>[],
 ): Array<{
   name: string;
@@ -1463,7 +1466,7 @@ function collectNamedResourcePool(
       assetVersion: range.mention.assetVersion,
     });
   }
-  for (const asset of [...assets, ...connectedAssets]) {
+  for (const asset of connectedAssets) {
     if (pool.some((item) => item.assetId === asset.id)) continue;
     const name = uniqueResourceDisplayName(
       asset.name,
@@ -1479,6 +1482,23 @@ function collectNamedResourcePool(
   return pool;
 }
 
+/**
+ * ASCII 资源名只在独立词边界上绑定，避免输入 12 时命中名为 2 的资源。
+ * 中文名仍按整段匹配，因为提示词里通常没有空格。
+ */
+function canPromoteNameAt(text: string, start: number, end: number, name: string): boolean {
+  if (!name) return false;
+  const asciiName = [...name].every((ch) => ch.charCodeAt(0) <= 127);
+  if (!asciiName) return true;
+  const left = start === 0 ? '' : (text[start - 1] ?? '');
+  const right = end >= text.length ? '' : (text[end] ?? '');
+  const isAsciiWord = (ch: string) => /[A-Za-z0-9_]/u.test(ch);
+  return !isAsciiWord(left) && !isAsciiWord(right);
+}
+
+/**
+ * 把当前节点已绑定的资源名从纯文本提升为提及。只使用本节点资源池。
+ */
 function promotePlaintextResourceNames(
   text: string,
   ranges: readonly MentionRange[],
@@ -1494,7 +1514,7 @@ function promotePlaintextResourceNames(
       if (start < 0) break;
       const end = start + item.name.length;
       const overlap = next.some((range) => start < range.end && end > range.start);
-      if (overlap) {
+      if (overlap || !canPromoteNameAt(text, start, end, item.name)) {
         from = start + 1;
         continue;
       }

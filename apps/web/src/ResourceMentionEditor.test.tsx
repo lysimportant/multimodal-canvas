@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest';
 
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -55,8 +55,81 @@ const textAsset: Asset = {
   metadata: { alias: '采访稿' },
 };
 
+const numberedVideoAsset: Asset = {
+  id: 'asset-two',
+  name: '2.mp4',
+  mediaType: 'video',
+  mimeType: 'video/mp4',
+  sizeBytes: 4096,
+  status: 'ready',
+  contentUrl: '/v1/assets/asset-two/content',
+  tags: [],
+};
+
 describe('ResourceMentionEditor', () => {
   afterEach(cleanup);
+
+  it('does not turn typing 2 or 3 into a project-library mention', async () => {
+    const user = userEvent.setup();
+    const onDocumentChange = vi.fn();
+    render(
+      <ResourceMentionEditor
+        nodeId="node-independent"
+        assets={[numberedVideoAsset, imageAsset]}
+        onDocumentChange={onDocumentChange}
+        ariaLabel="prompt"
+      />,
+    );
+    await user.type(screen.getByRole('textbox', { name: 'prompt' }), '2');
+    expect(onDocumentChange.mock.lastCall?.[0].blocks).toEqual([{ type: 'text', text: '2' }]);
+    expect(screen.queryByRole('button', { name: /删除/ })).not.toBeInTheDocument();
+  });
+
+  it('only auto-binds a name already attached to this node', async () => {
+    const user = userEvent.setup();
+    const onDocumentChange = vi.fn();
+    render(
+      <ResourceMentionEditor
+        nodeId="node-bound"
+        promptDocument={{
+          version: 1,
+          blocks: [
+            {
+              type: 'mention',
+              mentionId: 'mention-mansui',
+              assetId: imageAsset.id,
+              label: imageAsset.name,
+              mediaType: 'image',
+              entityName: 'Mansui',
+            },
+            { type: 'text', text: ' sees ' },
+          ],
+        }}
+        assets={[imageAsset, numberedVideoAsset]}
+        onDocumentChange={onDocumentChange}
+        ariaLabel="prompt"
+      />,
+    );
+    const editor = screen.getByRole('textbox', { name: 'prompt' }) as HTMLTextAreaElement;
+    await user.click(editor);
+    editor.setSelectionRange(editor.value.length, editor.value.length);
+    await user.type(editor, 'Mansui');
+    const document = onDocumentChange.mock.lastCall?.[0] as PromptDocument;
+    expect(document.blocks.filter((block) => block.type === 'mention')).toHaveLength(2);
+    expect(
+      document.blocks.filter((block) => block.type === 'mention').map((block) => block.assetId),
+    ).toEqual([imageAsset.id, imageAsset.id]);
+    await user.type(editor, '2');
+    const afterDigit = onDocumentChange.mock.lastCall?.[0] as PromptDocument;
+    expect(
+      afterDigit.blocks.some((block) => block.type === 'text' && block.text.includes('2')),
+    ).toBe(true);
+    expect(
+      afterDigit.blocks.filter(
+        (block) => block.type === 'mention' && block.assetId === numberedVideoAsset.id,
+      ),
+    ).toEqual([]);
+  });
 
   it('keeps an upload placeholder after every resource is removed', () => {
     render(
@@ -85,16 +158,25 @@ describe('ResourceMentionEditor', () => {
         ariaLabel="提示词"
       />,
     );
+    const editor = screen.getByRole('textbox', { name: '提示词' });
     const file = new File(['png'], '产品图.png', { type: 'image/png' });
-    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const input = editor
+      .closest('.resource-mention-editor')
+      ?.querySelector('input[type="file"]') as HTMLInputElement;
     await user.upload(input, file);
     expect(onUploadResource).toHaveBeenCalledWith(file);
-    expect(onDocumentChange.mock.lastCall?.[0].blocks).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ type: 'mention', assetId: imageAsset.id, entityName: '产品图' }),
-      ]),
-    );
-    expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue('生成 产品图');
+    await waitFor(() => {
+      expect(onDocumentChange.mock.lastCall?.[0].blocks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'mention',
+            assetId: imageAsset.id,
+            entityName: '产品图',
+          }),
+        ]),
+      );
+      expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue('生成 产品图');
+    });
   });
 
   it('shows a hover preview on the hovered mention name, not only the first name', () => {
