@@ -701,13 +701,16 @@ export class NewApiVideoProvider {
     if (target.data.mode !== 'generate') {
       throw new NewApiProviderError('当前视频接口仅支持 generate 模式');
     }
-    const absorbedMentionInputs = collectAbsorbedVideoMentionInputs(snapshot, resolvedMentions);
+    const { inputs: absorbedMentionInputs, absorbedMentionIds } = collectAbsorbedVideoMentionInputs(
+      snapshot,
+      resolvedMentions,
+    );
     assertPromptMentionsUnsupported(
       'video',
       snapshot,
       target.data.promptDocument,
       resolvedMentions,
-      new Set(absorbedMentionInputs.map((input) => input.nodeId.slice('mention:'.length))),
+      absorbedMentionIds,
     );
     validateProviderRoleParameters(snapshot.parameters, 'video');
     const contract = resolveVideoContract(existingProviderJob, this.videoContract);
@@ -3377,15 +3380,20 @@ function promptDocumentContentParts(
 }
 
 /**
- * 图片、音频和视频生成接口当前只有纯文本主输入（视频另有专用首帧字段）。
- * 对这些端点不能表达的内联提及必须在 HTTP 请求前明确失败，禁止静默丢弃。
+ * 把全能参考提示词提及收成视频输入。
+ * 同一张图在提示词里出现多次只发送一次 reference_images，但每次提及都算已吸收，
+ * 避免重复名字被当成聊天内联媒体而 fail-closed。
+ * @param snapshot 运行快照。
+ * @param resolvedMentions Worker 水合后的冻结提及。
+ * @returns 去重后的参考输入，以及全部已吸收的 mentionId。
  */
 function collectAbsorbedVideoMentionInputs(
   snapshot: RunSnapshot,
   resolvedMentions: readonly ResolvedMention[] | undefined,
-): RunInputSnapshot[] {
+): { inputs: RunInputSnapshot[]; absorbedMentionIds: Set<string> } {
+  const empty = { inputs: [] as RunInputSnapshot[], absorbedMentionIds: new Set<string>() };
   const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
-  if (!target || target.data.mediaType !== 'video') return [];
+  if (!target || target.data.mediaType !== 'video') return empty;
   const documentMentions =
     target.data.promptDocument?.blocks.flatMap((block) =>
       block.type === 'mention' ? [block] : [],
@@ -3401,6 +3409,7 @@ function collectAbsorbedVideoMentionInputs(
       .filter((assetId): assetId is string => Boolean(assetId)),
   );
   const inputs: RunInputSnapshot[] = [];
+  const absorbedMentionIds = new Set<string>();
   for (const [blockOrder, block] of documentMentions.entries()) {
     const role = videoInputRoleForPromptMention(
       block.mediaType,
@@ -3408,6 +3417,7 @@ function collectAbsorbedVideoMentionInputs(
       snapshot.modelAlias,
     );
     if (!role) continue;
+    absorbedMentionIds.add(block.mentionId);
     if (existingAssetIds.has(block.assetId)) continue;
     const resolved = resolvedById.get(block.mentionId);
     if (!resolved) {
@@ -3443,7 +3453,7 @@ function collectAbsorbedVideoMentionInputs(
       },
     });
   }
-  return inputs;
+  return { inputs, absorbedMentionIds };
 }
 
 function assertPromptMentionsUnsupported(
