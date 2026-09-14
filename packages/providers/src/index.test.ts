@@ -2939,6 +2939,75 @@ describe('NewApiVideoProvider', () => {
     expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)).image).toBeUndefined();
   });
 
+  it('maps text-to-video prompt image mentions as grok omni reference_images', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: { message: 'temporarily unavailable' } }), {
+        status: 503,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const snapshot = videoSnapshot();
+    snapshot.modelAlias = 'grok-imagine-video-1.5.1';
+    snapshot.inputs = [];
+    snapshot.nodes = snapshot.nodes.map((node) =>
+      node.id === 'node_video'
+        ? {
+            ...node,
+            data: {
+              ...node.data,
+              videoMode: 'text_to_video' as const,
+              promptDocument: {
+                version: 1,
+                blocks: [
+                  { type: 'text', text: 'Keep the product identity' },
+                  {
+                    type: 'mention',
+                    mentionId: 'mention-omni-image',
+                    assetId: 'asset-omni-image',
+                    assetVersion: 1,
+                    label: '产品图',
+                    mediaType: 'image',
+                    mimeType: 'image/png',
+                    contentUrl: 'data:image/png;base64,aW1hZ2U=',
+                  },
+                ],
+              },
+            },
+          }
+        : node,
+    );
+    snapshot.promptMentions = [
+      {
+        nodeId: 'node_video',
+        mentionId: 'mention-omni-image',
+        assetId: 'asset-omni-image',
+        assetVersion: 1,
+        label: '产品图',
+        mediaType: 'image',
+        blockOrder: 1,
+      },
+    ];
+
+    await expect(
+      new NewApiVideoProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        videoContract: 'newapi-video-v1',
+        fetchImpl,
+        pollIntervalMs: 0,
+      }).execute({
+        snapshot,
+        resolvedMentions: resolveProviderMentions(snapshot),
+        onProviderJob: vi.fn(),
+      }),
+    ).rejects.toMatchObject({ code: 'VIDEO_SUBMISSION_UNKNOWN' });
+    expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))).toMatchObject({
+      model: 'grok-imagine-video-1.5.1',
+      prompt: 'Keep the product identity产品图',
+      reference_images: [{ url: 'data:image/png;base64,aW1hZ2U=' }],
+    });
+  });
+
   it('submits once, polls to done, and returns an external video URL', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()

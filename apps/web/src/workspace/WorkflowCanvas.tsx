@@ -149,6 +149,8 @@ export type WorkflowCanvasProps = {
   onRetryNode: (nodeId: string) => void | Promise<void>;
   onPromptChange?: (value: string, nodeId?: string) => void;
   onPromptDocumentChange?: (document: PromptDocument, nodeId?: string) => void;
+  /** 提示词资源条点击上传后，把文件收成项目资源并回写提及。 */
+  onUploadResource?: (file: File) => Promise<Asset>;
   onParametersChange?: (value: Record<string, unknown>, nodeId?: string) => void;
   onCompletionActionChange?: (value: VideoCompletionAction, nodeId?: string) => void;
   onCompletionTargetNodeIdChange?: (value: string | undefined, nodeId?: string) => void;
@@ -210,6 +212,7 @@ export function WorkflowCanvas({
   onRetryNode,
   onPromptChange,
   onPromptDocumentChange,
+  onUploadResource,
   onParametersChange,
   onCompletionActionChange,
   onCompletionTargetNodeIdChange,
@@ -650,6 +653,7 @@ export function WorkflowCanvas({
               ? (document) => onPromptDocumentChange(document, quickEditorNode.id)
               : undefined
           }
+          onUploadResource={onUploadResource}
           onParametersChange={
             onParametersChange
               ? (value) => onParametersChange(value, quickEditorNode.id)

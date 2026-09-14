@@ -1305,6 +1305,23 @@ function WorkspaceApp({
     [setNodes],
   );
 
+  /** 把本地文件收成项目资源，不在画布上新建节点，供提示词资源条引用。 */
+  const uploadProjectAsset = useCallback(async (file: File) => {
+    setIsUploading(true);
+    setUploadProgress(0);
+    try {
+      const asset = await uploadAsset(file, setUploadProgress);
+      setAssets((current) => [asset, ...current]);
+      return asset;
+    } catch (error) {
+      setNotice({ kind: 'error', message: error instanceof Error ? error.message : '上传失败' });
+      throw error;
+    } finally {
+      setIsUploading(false);
+      setUploadProgress(0);
+    }
+  }, []);
+
   const uploadFiles = useCallback(
     async (files: File[], position?: { x: number; y: number }) => {
       if (files.length === 0) return;
@@ -1758,13 +1775,34 @@ function WorkspaceApp({
       rememberHistory();
       canvasDirtyRef.current = true;
       const prompt = renderPromptDocument(document);
+      const current = nodesRef.current.find((node) => node.id === targetNodeId);
+      const hasMentions = document.blocks.some((block) => block.type === 'mention');
+      const promoteOmni =
+        current?.data.mediaType === 'video' &&
+        current.data.mode !== 'source' &&
+        hasMentions &&
+        current.data.videoMode !== 'omni_reference';
       updateNodeDataAndMarkDownstreamStale(targetNodeId, (data) => ({
         ...data,
         prompt: prompt || undefined,
         promptDocument: document,
+        ...(promoteOmni ? { videoMode: 'omni_reference' as const } : {}),
       }));
+      if (promoteOmni && current) {
+        pruneIncompatibleTargetEdges(targetNodeId, {
+          ...current.data,
+          prompt: prompt || undefined,
+          promptDocument: document,
+          videoMode: 'omni_reference',
+        });
+      }
     },
-    [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
+    [
+      pruneIncompatibleTargetEdges,
+      rememberHistory,
+      selectedNode,
+      updateNodeDataAndMarkDownstreamStale,
+    ],
   );
 
   const updateSelectedParameters = useCallback(
@@ -2204,8 +2242,11 @@ function WorkspaceApp({
         const result = (await response.json().catch(() => ({}))) as {
           run?: RunRecord;
           error?: string;
+          issues?: Array<{ message?: string }>;
         };
-        if (!response.ok || !result.run) throw new Error(result.error ?? '运行提交失败');
+        if (!response.ok || !result.run) {
+          throw new Error(result.issues?.[0]?.message ?? result.error ?? '运行提交失败');
+        }
         if (nodeSnapshot.data.manualOutput) {
           nodesRef.current = nodesRef.current.map((candidate) =>
             candidate.id === node.id
@@ -2728,6 +2769,7 @@ function WorkspaceApp({
             onNodeEnabledChange={updateNodeEnabled}
             onRetryNode={retryNodeFromCanvas}
             onPromptDocumentChange={updateSelectedPromptDocument}
+            onUploadResource={uploadProjectAsset}
             onParametersChange={updateSelectedParameters}
             onCompletionActionChange={updateSelectedCompletionAction}
             onVideoModeChange={updateSelectedVideoMode}

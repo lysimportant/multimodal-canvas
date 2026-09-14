@@ -6,6 +6,7 @@ import {
   FileText,
   Image as ImageIcon,
   Link2,
+  Plus,
   Replace,
   Search,
   Trash2,
@@ -19,8 +20,10 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type CSSProperties,
   type DragEvent,
   type KeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
 } from 'react';
 
 import type {
@@ -60,6 +63,8 @@ export type ResourceMentionEditorProps = {
   onChange?: (value: string) => void;
   /** 结构化文档回调；新引用能力应优先使用此回调持久化。 */
   onDocumentChange?: (document: PromptDocument) => void;
+  /** 资源条占位按钮选择本地文件后，把文件收成可引用资源。 */
+  onUploadResource?: (file: File) => Promise<Asset>;
   /** 提及详情按钮的可选回调。 */
   onMentionDetails?: (mention: PromptMention, asset: Asset | undefined) => void;
   placeholder?: string;
@@ -109,6 +114,7 @@ export function ResourceMentionEditor({
   connectedAssets = [],
   onChange,
   onDocumentChange,
+  onUploadResource,
   onMentionDetails,
   placeholder = '输入提示词',
   ariaLabel,
@@ -131,6 +137,9 @@ export function ResourceMentionEditor({
   const rangesRef = useRef<MentionRange[]>(initialRanges);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLDivElement>(null);
+  const highlightRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const caretRef = useRef(initialText.length);
   const [trigger, setTrigger] = useState<{ start: number; query: string } | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -145,6 +154,8 @@ export function ResourceMentionEditor({
   const [resourceDialogId, setResourceDialogId] = useState<string | null>(null);
   const [resourceNameDraft, setResourceNameDraft] = useState('');
   const [hoveredMentionId, setHoveredMentionId] = useState<string | null>(null);
+  const [hoverCardStyle, setHoverCardStyle] = useState<CSSProperties | null>(null);
+  const [uploading, setUploading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [protectedEditMessage, setProtectedEditMessage] = useState<string | null>(null);
   const [draftResetKey, setDraftResetKey] = useState(0);
@@ -406,8 +417,13 @@ export function ResourceMentionEditor({
       }
 
       const input = textareaRef.current;
-      const selectionStart = input?.selectionStart ?? caretRef.current ?? textRef.current.length;
-      const selectionEnd = input?.selectionEnd ?? selectionStart;
+      const editorFocused = Boolean(input && document.activeElement === input);
+      const selectionStart = editorFocused
+        ? (input?.selectionStart ?? caretRef.current)
+        : caretRef.current;
+      const selectionEnd = editorFocused
+        ? (input?.selectionEnd ?? selectionStart)
+        : caretRef.current;
       const activeTrigger = trigger ?? findMentionTrigger(textRef.current, selectionStart);
       const start = activeTrigger?.start ?? selectionStart;
       const end = Math.max(start, selectionEnd);
@@ -448,6 +464,26 @@ export function ResourceMentionEditor({
       });
     },
     [commitState, replaceMentionId, trigger],
+  );
+
+  /** 资源条占位按钮选中本地文件后上传并插入同名提及。 */
+  const handleUploadFiles = useCallback(
+    async (files: readonly File[]) => {
+      if (!onUploadResource || files.length === 0 || disabled) return;
+      setUploading(true);
+      setProtectedEditMessage(null);
+      try {
+        for (const file of files) {
+          const asset = await onUploadResource(file);
+          if (asset) selectMention(asset);
+        }
+      } catch (error) {
+        setProtectedEditMessage(error instanceof Error ? error.message : '资源上传失败');
+      } finally {
+        setUploading(false);
+      }
+    },
+    [disabled, onUploadResource, selectMention],
   );
 
   const removeMention = useCallback(
@@ -632,6 +668,60 @@ export function ResourceMentionEditor({
     ],
   );
 
+  /** 把悬浮预览卡片对齐到当前名字，而不是固定在第一个名字附近。 */
+  const positionHoverCard = useCallback((mentionId: string, token?: Element | null) => {
+    const composer = composerRef.current;
+    const mark =
+      token ?? composer?.querySelector(`.resource-mention-token[data-mention-id="${mentionId}"]`);
+    if (!composer || !(mark instanceof HTMLElement)) {
+      setHoverCardStyle(null);
+      return;
+    }
+    const composerRect = composer.getBoundingClientRect();
+    const tokenRect = mark.getBoundingClientRect();
+    setHoverCardStyle({
+      left: Math.max(0, tokenRect.left - composerRect.left),
+      top: tokenRect.bottom - composerRect.top + 6,
+    });
+  }, []);
+
+  const handleComposerMouseMove = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      const overlay = highlightRef.current;
+      const textarea = textareaRef.current;
+      if (!overlay || !textarea) return;
+      const previousTextarea = textarea.style.pointerEvents;
+      const previousOverlay = overlay.style.pointerEvents;
+      let hit: Element | null = null;
+      textarea.style.pointerEvents = 'none';
+      overlay.style.pointerEvents = 'auto';
+      try {
+        hit =
+          typeof document.elementFromPoint === 'function'
+            ? document.elementFromPoint(event.clientX, event.clientY)
+            : null;
+      } finally {
+        textarea.style.pointerEvents = previousTextarea;
+        overlay.style.pointerEvents = previousOverlay;
+      }
+      const token = hit instanceof Element ? hit.closest('.resource-mention-token') : null;
+      const mentionId = token instanceof HTMLElement ? (token.dataset.mentionId ?? null) : null;
+      if (!mentionId) {
+        setHoveredMentionId(null);
+        setHoverCardStyle(null);
+        return;
+      }
+      setHoveredMentionId(mentionId);
+      positionHoverCard(mentionId, token);
+    },
+    [positionHoverCard],
+  );
+
+  const handleComposerMouseLeave = useCallback(() => {
+    setHoveredMentionId(null);
+    setHoverCardStyle(null);
+  }, []);
+
   const handleSelect = useCallback(() => {
     const input = textareaRef.current;
     if (!input) {
@@ -647,12 +737,16 @@ export function ResourceMentionEditor({
       setTrigger({ start: selected.start, query: '' });
       setActiveIndex(0);
       setHoveredMentionId(selected.mention.mentionId);
+      positionHoverCard(selected.mention.mentionId);
       return;
     }
     const inside = rangesRef.current.find((range) => start > range.start && start < range.end);
-    setHoveredMentionId(inside?.mention.mentionId ?? null);
+    if (inside) {
+      setHoveredMentionId(inside.mention.mentionId);
+      positionHoverCard(inside.mention.mentionId);
+    }
     updateTrigger(textRef.current, caretRef.current, setTrigger);
-  }, []);
+  }, [positionHoverCard]);
 
   const handleKeyUp = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -755,12 +849,7 @@ export function ResourceMentionEditor({
   }, [assets, connectedAssets, mentionRanges]);
 
   const dialogItem = stripItems.find((item) => item.key === resourceDialogId) ?? null;
-  const hoveredRange =
-    mentionRanges.find((range) => range.mention.mentionId === hoveredMentionId) ??
-    mentionRanges.find((range) => {
-      const caret = caretRef.current;
-      return caret > range.start && caret < range.end;
-    });
+  const hoveredRange = mentionRanges.find((range) => range.mention.mentionId === hoveredMentionId);
 
   const renameStripResource = useCallback(
     (mentionId: string, nextName: string) => {
@@ -812,67 +901,90 @@ export function ResourceMentionEditor({
       onDragLeave={() => setDragActive(false)}
       onDrop={handleDrop}
     >
-      {stripItems.length > 0 && (
-        <div className="resource-mention-strip" aria-label="引用资源">
-          {stripItems.map((item) => {
-            const mention = mentionRanges.find(
-              (range) => range.mention.assetId === item.assetId,
-            )?.mention;
-            const unavailableReason = mention
-              ? getMentionUnavailableReason(
-                  mention,
-                  assets.find((asset) => asset.id === item.assetId),
-                )
-              : undefined;
-            return (
-              <div
-                key={item.key}
-                className={`resource-mention-thumb${unavailableReason ? ' is-missing' : ''}`}
-                role="article"
-                data-mention-id={item.mentionId}
-                {...(unavailableReason
-                  ? { 'data-placeholder-reason': unavailableReason.code }
-                  : {})}
+      <div className="resource-mention-strip" aria-label="引用资源">
+        {stripItems.map((item) => {
+          const mention = mentionRanges.find(
+            (range) => range.mention.assetId === item.assetId,
+          )?.mention;
+          const unavailableReason = mention
+            ? getMentionUnavailableReason(
+                mention,
+                assets.find((asset) => asset.id === item.assetId),
+              )
+            : undefined;
+          return (
+            <div
+              key={item.key}
+              className={`resource-mention-thumb${unavailableReason ? ' is-missing' : ''}`}
+              role="article"
+              data-mention-id={item.mentionId}
+              {...(unavailableReason ? { 'data-placeholder-reason': unavailableReason.code } : {})}
+            >
+              <button
+                type="button"
+                className="resource-mention-thumb-main"
+                aria-label={`预览并命名 ${item.name}`}
+                disabled={disabled}
+                onClick={() => {
+                  setResourceDialogId(item.key);
+                  setResourceNameDraft(item.name);
+                }}
               >
-                <button
-                  type="button"
-                  className="resource-mention-thumb-main"
-                  aria-label={`预览并命名 ${item.name}`}
-                  disabled={disabled}
-                  onClick={() => {
-                    setResourceDialogId(item.key);
-                    setResourceNameDraft(item.name);
-                  }}
-                >
-                  {item.asset && 'status' in item.asset && !unavailableReason ? (
-                    <MentionPreview asset={item.asset as Asset} mediaType={item.mediaType} />
-                  ) : (
-                    <MentionMediaIcon mediaType={item.mediaType} />
-                  )}
-                </button>
-                <button
-                  type="button"
-                  className="resource-mention-thumb-delete"
-                  aria-label={`删除 ${item.name}`}
-                  disabled={disabled}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    const ids = rangesRef.current
-                      .filter((range) => range.mention.assetId === item.assetId)
-                      .map((range) => range.mention.mentionId);
-                    for (const mentionId of ids) removeMention(mentionId);
-                  }}
-                >
-                  <X size={11} aria-hidden="true" />
-                </button>
-              </div>
-            );
-          })}
-        </div>
-      )}
+                {item.asset && 'status' in item.asset && !unavailableReason ? (
+                  <MentionPreview asset={item.asset as Asset} mediaType={item.mediaType} />
+                ) : (
+                  <MentionMediaIcon mediaType={item.mediaType} />
+                )}
+              </button>
+              <button
+                type="button"
+                className="resource-mention-thumb-delete"
+                aria-label={`删除 ${item.name}`}
+                disabled={disabled}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  const ids = rangesRef.current
+                    .filter((range) => range.mention.assetId === item.assetId)
+                    .map((range) => range.mention.mentionId);
+                  for (const mentionId of ids) removeMention(mentionId);
+                }}
+              >
+                <X size={11} aria-hidden="true" />
+              </button>
+            </div>
+          );
+        })}
+        <button
+          type="button"
+          className="resource-mention-thumb resource-mention-thumb-add"
+          aria-label="上传引用资源"
+          disabled={disabled || !onUploadResource || uploading}
+          onClick={() => fileInputRef.current?.click()}
+        >
+          <Plus size={16} aria-hidden="true" />
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*,video/*,audio/*"
+          hidden
+          multiple
+          disabled={disabled || !onUploadResource || uploading}
+          onChange={(event) => {
+            const files = Array.from(event.currentTarget.files ?? []);
+            event.currentTarget.value = '';
+            void handleUploadFiles(files);
+          }}
+        />
+      </div>
 
-      <div className="resource-mention-composer">
-        <div className="resource-mention-highlight" aria-hidden="true">
+      <div
+        className="resource-mention-composer"
+        ref={composerRef}
+        onMouseMove={handleComposerMouseMove}
+        onMouseLeave={handleComposerMouseLeave}
+      >
+        <div className="resource-mention-highlight" aria-hidden="true" ref={highlightRef}>
           {renderHighlightedPrompt(text, mentionRanges)}
         </div>
         <textarea
@@ -904,8 +1016,13 @@ export function ResourceMentionEditor({
           disabled={disabled}
           className="resource-mention-textarea"
         />
-        {hoveredRange && (
-          <div className="resource-mention-hover-card" role="tooltip">
+        {hoveredRange && hoverCardStyle && (
+          <div
+            className="resource-mention-hover-card"
+            role="tooltip"
+            style={hoverCardStyle}
+            aria-label={`预览 ${mentionDisplayName(hoveredRange.mention)}`}
+          >
             {assets.find((asset) => asset.id === hoveredRange.mention.assetId) ? (
               <MentionPreview
                 asset={assets.find((asset) => asset.id === hoveredRange.mention.assetId)}
@@ -1419,7 +1536,7 @@ function renderHighlightedPrompt(text: string, ranges: readonly MentionRange[]) 
   }
   return parts.map((part) =>
     part.mention ? (
-      <mark key={part.key} className="resource-mention-token">
+      <mark key={part.key} className="resource-mention-token" data-mention-id={part.key}>
         {part.text}
       </mark>
     ) : (

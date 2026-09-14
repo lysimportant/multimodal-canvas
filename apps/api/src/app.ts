@@ -47,6 +47,7 @@ import {
   type RunResultAsset,
   unabsorbedVideoPromptMentionMessage,
   unabsorbedVideoPromptMentions,
+  videoModeForPromptMentions,
 } from '@multimodal-canvas/domain';
 import { z } from 'zod';
 import {
@@ -277,7 +278,7 @@ type RunNodeModelResolution = {
 
 class ResourceMentionCapabilityError extends Error {
   constructor(public readonly diagnostics: ResourceMentionCapabilityDiagnostic[]) {
-    super('资源提及与当前模型能力不兼容');
+    super(diagnostics[0]?.message ?? '资源提及与当前模型能力不兼容');
   }
 }
 
@@ -945,14 +946,18 @@ function validateRunPromptMentionCapabilities(input: {
     const modelAlias = input.nodeModelAliases[nodeId] ?? node.data.modelAlias ?? 'unknown-model';
     const remaining = unabsorbedVideoPromptMentions(node.data, mentions, modelAlias);
     if (remaining.length === 0) continue;
-    if (node.data.mediaType === 'video' && node.data.mode === 'generate') {
+    if (
+      node.data.mediaType === 'video' &&
+      node.data.mode === 'generate' &&
+      !input.allowMockPreview
+    ) {
       for (const mention of remaining) {
         diagnostics.push({
           code: 'RESOURCE_MENTION_MEDIA_UNSUPPORTED',
           reason: 'media_unsupported',
           message: unabsorbedVideoPromptMentionMessage(
             mention.mediaType,
-            node.data.videoMode,
+            videoModeForPromptMentions(node.data.videoMode, true),
             modelAlias,
           ),
           requestId: input.requestId,

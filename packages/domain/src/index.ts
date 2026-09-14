@@ -1248,6 +1248,21 @@ export function videoImageRolesForMode(videoMode?: VideoMode): readonly PortRole
 }
 
 /**
+ * 提示词一旦带上资源提及，文生视频按全能参考吸收，避免只加了素材却没切模式。
+ * 首帧/首尾帧仍互斥，不会把提示词提及收成参考图。
+ * @param videoMode 节点上的显式视频模式。
+ * @param hasPromptResourceMentions 提示词是否包含资源提及。
+ */
+export function videoModeForPromptMentions(
+  videoMode: VideoMode | undefined,
+  hasPromptResourceMentions: boolean,
+): VideoMode | undefined {
+  if (!hasPromptResourceMentions) return videoMode;
+  if (videoMode === 'text_to_video') return 'omni_reference';
+  return videoMode;
+}
+
+/**
  * 提示词里的资源提及在当前视频模式下可吸收的输入角色。
  * 全能参考把图/视频/音频收成参考素材，而不是走聊天多模态提及合同。
  * @param mediaType 提及的媒体类型。
@@ -1259,7 +1274,8 @@ export function videoInputRoleForPromptMention(
   videoMode: VideoMode | undefined,
   modelAlias?: string,
 ): PortRole | undefined {
-  if (videoMode !== 'omni_reference') return undefined;
+  const mode = videoModeForPromptMentions(videoMode, true);
+  if (mode !== 'omni_reference') return undefined;
   const roles = new Set(videoModeCapability('omni_reference', modelAlias).roles);
   if (mediaType === 'image' && roles.has('referenceImage')) return 'referenceImage';
   if (mediaType === 'video' && roles.has('content')) return 'content';

@@ -32,6 +32,22 @@
   padding: 8px 4px;
 }
 
+:is(.node-quick-editor, .node-quick-editor-dialog)
+  .node-quick-editor-field
+  textarea.resource-mention-textarea {
+  background: transparent;
+  caret-color: var(--mc-text);
+  color: transparent;
+}
+
+:is(.node-quick-editor, .node-quick-editor-dialog)
+  .node-quick-editor-prompt
+  .resource-mention-highlight {
+  font-size: 13px;
+  line-height: 1.7;
+  padding: 8px 4px;
+}
+
 :is(.node-quick-editor, .node-quick-editor-dialog) .node-quick-editor-field textarea:focus-visible {
   border-color: transparent;
   outline: none;
@@ -280,6 +296,10 @@
 .node-quick-editor-dialog .node-quick-editor-prompt textarea {
   min-height: min(360px, 45dvh);
   max-height: 55dvh;
+  font-size: 15px;
+}
+
+.node-quick-editor-dialog .node-quick-editor-prompt .resource-mention-highlight {
   font-size: 15px;
 }
 

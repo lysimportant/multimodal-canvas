@@ -16,6 +16,8 @@ type TextPromptEditorProps = {
     Partial<Pick<Asset, 'contentUrl' | 'mimeType'>>)[];
   /** 结构化文档保存回调。 */
   onDocumentChange?: (document: PromptDocument) => void;
+  /** 提示词资源条点击上传后，把本地文件收成项目资源。 */
+  onUploadResource?: (file: File) => Promise<Asset>;
   /** 查看提及资源详情的可选回调。 */
   onMentionDetails?: (mention: PromptMention, asset: Asset | undefined) => void;
   ariaLabel?: string;
@@ -39,6 +41,7 @@ export function TextPromptEditor({
   assets,
   connectedAssets,
   onDocumentChange,
+  onUploadResource,
   onMentionDetails,
   ariaLabel,
   disabled,
@@ -54,6 +57,7 @@ export function TextPromptEditor({
       // 结构化文档是唯一执行来源；避免新编辑同时触发两个父层更新。
       onChange={onDocumentChange ? undefined : onChange}
       onDocumentChange={onDocumentChange}
+      onUploadResource={onUploadResource}
       onMentionDetails={onMentionDetails}
       placeholder={placeholder}
       ariaLabel={ariaLabel}

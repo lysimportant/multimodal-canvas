@@ -24,6 +24,7 @@ import {
   videoModes,
   unabsorbedVideoPromptMentions,
   videoInputRoleForPromptMention,
+  videoModeForPromptMentions,
   promptDocumentSchema,
   renderPromptDocument,
   mentionDisplayName,
@@ -1260,9 +1261,14 @@ describe('video mode ports', () => {
     expect(
       videoInputRoleForPromptMention('video', 'omni_reference', 'grok-imagine-video-1.5.1'),
     ).toBeUndefined();
+    expect(videoModeForPromptMentions('text_to_video', true)).toBe('omni_reference');
+    expect(videoModeForPromptMentions('first_frame', true)).toBe('first_frame');
     expect(
       videoInputRoleForPromptMention('image', 'text_to_video', 'grok-imagine-video-1.5.1'),
-    ).toBe(undefined);
+    ).toBe('referenceImage');
+    expect(
+      videoInputRoleForPromptMention('image', 'first_frame', 'grok-imagine-video-1.5.1'),
+    ).toBeUndefined();
     const mentions = [
       { mediaType: 'image' as const, mentionId: 'm-image' },
       { mediaType: 'video' as const, mentionId: 'm-video' },
@@ -1273,6 +1279,17 @@ describe('video mode ports', () => {
           mediaType: 'video',
           mode: 'generate',
           videoMode: 'omni_reference',
+          modelAlias: 'grok-imagine-video-1.5.1',
+        },
+        mentions,
+      ).map((mention) => mention.mentionId),
+    ).toEqual(['m-video']);
+    expect(
+      unabsorbedVideoPromptMentions(
+        {
+          mediaType: 'video',
+          mode: 'generate',
+          videoMode: 'text_to_video',
           modelAlias: 'grok-imagine-video-1.5.1',
         },
         mentions,

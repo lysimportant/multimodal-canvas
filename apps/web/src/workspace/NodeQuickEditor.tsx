@@ -66,6 +66,8 @@ export type NodeQuickEditorProps = {
   onPromptChange?: (value: string) => void;
   /** 保存节点的结构化提示词文档。 */
   onPromptDocumentChange?: (document: PromptDocument) => void;
+  /** 提示词资源条点击上传后，把本地文件收成项目资源。 */
+  onUploadResource?: (file: File) => Promise<Asset>;
   /** 当前项目可访问资源，用于提示词中的 `@` 搜索。 */
   assets?: readonly Asset[];
   onModelChange: (value: ModelSelection) => void;
@@ -173,6 +175,7 @@ export function NodeQuickEditor({
   busy,
   onPromptChange,
   onPromptDocumentChange,
+  onUploadResource,
   assets = [],
   onModelChange,
   onInferenceStrengthChange,
@@ -358,6 +361,7 @@ export function NodeQuickEditor({
         ariaLabel="提示词"
         onChange={onPromptDocumentChange ? undefined : onPromptChange}
         onDocumentChange={onPromptDocumentChange}
+        onUploadResource={onUploadResource}
       />
     </label>
   );

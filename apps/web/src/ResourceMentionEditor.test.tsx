@@ -58,6 +58,90 @@ const textAsset: Asset = {
 describe('ResourceMentionEditor', () => {
   afterEach(cleanup);
 
+  it('keeps an upload placeholder after every resource is removed', () => {
+    render(
+      <ResourceMentionEditor
+        nodeId="node-empty"
+        value=""
+        assets={[imageAsset]}
+        ariaLabel="提示词"
+      />,
+    );
+    expect(screen.getByLabelText('引用资源')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '上传引用资源' })).toBeInTheDocument();
+  });
+
+  it('uploads a local file from the strip placeholder and binds the new name', async () => {
+    const user = userEvent.setup();
+    const onDocumentChange = vi.fn();
+    const onUploadResource = vi.fn(async () => imageAsset);
+    render(
+      <ResourceMentionEditor
+        nodeId="node-upload"
+        value="生成 "
+        assets={[]}
+        onDocumentChange={onDocumentChange}
+        onUploadResource={onUploadResource}
+        ariaLabel="提示词"
+      />,
+    );
+    const file = new File(['png'], '产品图.png', { type: 'image/png' });
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await user.upload(input, file);
+    expect(onUploadResource).toHaveBeenCalledWith(file);
+    expect(onDocumentChange.mock.lastCall?.[0].blocks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'mention', assetId: imageAsset.id, entityName: '产品图' }),
+      ]),
+    );
+    expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue('生成 产品图');
+  });
+
+  it('shows a hover preview on the hovered mention name, not only the first name', () => {
+    render(
+      <ResourceMentionEditor
+        nodeId="node-hover"
+        promptDocument={{
+          version: 1,
+          blocks: [
+            {
+              type: 'mention',
+              mentionId: 'mention-image',
+              assetId: imageAsset.id,
+              label: imageAsset.name,
+              mediaType: 'image',
+              entityName: '满穗',
+            },
+            { type: 'text', text: ' 看见 ' },
+            {
+              type: 'mention',
+              mentionId: 'mention-audio',
+              assetId: audioAsset.id,
+              label: audioAsset.name,
+              mediaType: 'audio',
+              entityName: '良爷',
+            },
+          ],
+        }}
+        assets={[imageAsset, audioAsset]}
+        ariaLabel="提示词"
+      />,
+    );
+    const tokens = document.querySelectorAll('.resource-mention-token');
+    expect(tokens).toHaveLength(2);
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => tokens[1] as Element;
+    const composer = screen.getByRole('textbox', { name: '提示词' }).parentElement as HTMLElement;
+    fireEvent.mouseMove(composer, { clientX: 48, clientY: 12 });
+    expect(screen.getByRole('tooltip', { name: '预览 良爷' })).toBeInTheDocument();
+    document.elementFromPoint = () => tokens[0] as Element;
+    fireEvent.mouseMove(composer, { clientX: 12, clientY: 12 });
+    expect(screen.getByRole('tooltip', { name: '预览 满穗' })).toBeInTheDocument();
+    fireEvent.mouseLeave(composer);
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+    document.elementFromPoint = original;
+  });
+
   it('opens @ search and confirms a structured mention with keyboard', async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();
@@ -166,7 +250,9 @@ describe('ResourceMentionEditor', () => {
 
     expect(screen.getByLabelText('引用资源')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '删除 产品图' }));
-    expect(screen.queryByLabelText('引用资源')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('引用资源')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '上传引用资源' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '删除 产品图' })).not.toBeInTheDocument();
     expect(screen.getByRole('textbox')).toHaveValue(' ');
     expect(onDocumentChange.mock.lastCall?.[0].blocks).toEqual([{ type: 'text', text: ' ' }]);
   });

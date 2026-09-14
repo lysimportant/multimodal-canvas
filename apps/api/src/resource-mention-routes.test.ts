@@ -311,7 +311,7 @@ describe('资源提及 HTTP 边界', () => {
           resultAsset!.version!,
           { projectId: project.id },
         );
-        expect(content?.toString('utf8')).toContain('document-text @text-reference');
+        expect(content?.toString('utf8')).toContain('document-text text + text-reference');
         expect(content?.toString('utf8')).not.toContain('legacy-text');
       }
     }
@@ -574,6 +574,100 @@ describe('资源提及 HTTP 边界', () => {
     expect(response.statusCode).toBe(202);
     expect(response.json().run.snapshot.promptMentions).toEqual([
       expect.objectContaining({ mentionId: 'mention-omni', mediaType: 'image' }),
+    ]);
+  });
+
+  it('文生视频节点上的图片提及按全能参考吸收，不再报能力不兼容', async () => {
+    vi.stubEnv('WORKER_PROVIDER', 'newapi');
+    const assetStore = new MemoryAssetStore();
+    const projectStore = new MemoryProjectStore();
+    const runService = new MemoryRunService({ providerName: 'newapi', stepDelayMs: 0 });
+    const settingsStore = new AiSettingsStore('resource-mention-video-text');
+    settingsStore.update({
+      baseUrl: 'https://newapi.example.test/v1',
+      apiKey: 'synthetic-resource-mention-key',
+    });
+    const credential = settingsStore.listCredentials()[0];
+    if (!credential) throw new Error('测试凭据创建失败');
+    settingsStore.replaceModels(
+      [
+        {
+          id: 'grok-imagine-video-1.5.1',
+          name: 'Grok video',
+          mediaTypes: ['video'],
+          refreshedAt: new Date().toISOString(),
+        },
+      ],
+      credential.id,
+    );
+    const project = await projectStore.create({ name: '视频文生提及' });
+    const asset = await assetStore.create({
+      projectId: project.id,
+      name: 'product.png',
+      mediaType: 'image',
+      mimeType: 'image/png',
+      content: Buffer.from('image'),
+    });
+    await storeCanvas(projectStore, project.id, {
+      revision: 0,
+      nodes: [
+        {
+          id: 'node-text-video',
+          type: 'video',
+          position: { x: 0, y: 0 },
+          data: {
+            label: '文生视频',
+            mediaType: 'video',
+            mode: 'generate',
+            videoMode: 'text_to_video',
+            modelAlias: 'grok-imagine-video-1.5.1',
+            credentialId: credential.id,
+            prompt: '保持主体',
+            promptDocument: {
+              version: 1,
+              blocks: [
+                { type: 'text', text: '保持主体' },
+                {
+                  type: 'mention',
+                  mentionId: 'mention-text',
+                  assetId: asset.id,
+                  assetVersion: 1,
+                  label: asset.name,
+                  mediaType: 'image',
+                },
+              ],
+            },
+          },
+        },
+      ],
+      edges: [],
+    });
+    const executor = vi.fn(async ({ snapshot }: RunExecutorRequest) => ({
+      provider: 'newapi',
+      summary: '不应在本测试执行到 Provider',
+      targetNodeId: snapshot.targetNodeId,
+      mediaType: 'video' as const,
+      inputCount: 0,
+    }));
+    const app = buildApp({
+      logger: false,
+      assetStore,
+      projectStore,
+      runService,
+      runExecutor: executor,
+      settingsStore,
+    });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/nodes/node-text-video/runs',
+      payload: { projectId: project.id },
+    });
+    expect(response.statusCode).toBe(202);
+    expect(response.json().error).toBeUndefined();
+    expect(response.json().run.snapshot.promptMentions).toEqual([
+      expect.objectContaining({ mentionId: 'mention-text', mediaType: 'image' }),
     ]);
   });
 });

@@ -12,6 +12,7 @@ import {
   precheckVideoGenerationInputs,
   renderPromptDocument,
   videoInputRoleForPromptMention,
+  videoModeForPromptMentions,
 } from '@multimodal-canvas/domain';
 
 export type ProviderName = 'mock' | 'newapi';
@@ -3781,15 +3782,24 @@ function resolveRequiredVideoPrompt(
   return resolveMappedPromptInput(prompt, input, 'video');
 }
 
+/**
+ * 把画布输入和全能参考吸收的提示词提及收成视频规范输入。
+ * 文生视频节点上的图片提及会按全能参考预检，避免参考图被文生视频规则误拦。
+ * @param snapshot 运行快照。
+ * @param extraInputs 提示词提及吸收出的额外输入。
+ */
 function mapVideoInputs(
   snapshot: RunSnapshot,
   extraInputs: readonly RunInputSnapshot[] = [],
 ): VideoInputMapping {
   const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
+  const absorbedOmni = extraInputs.some((input) =>
+    ['referenceImage', 'character', 'style', 'content', 'audioTrack'].includes(input.role),
+  );
   const precheck = precheckVideoGenerationInputs([...snapshot.inputs, ...extraInputs], {
     modelAlias: snapshot.modelAlias,
     parameters: snapshot.parameters,
-    videoMode: target?.data.videoMode,
+    videoMode: videoModeForPromptMentions(target?.data.videoMode, absorbedOmni),
   });
   const issue = precheck.issues[0];
   if (issue) {
