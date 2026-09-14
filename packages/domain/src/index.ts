@@ -1264,7 +1264,7 @@ export function videoModeForPromptMentions(
   hasPromptResourceMentions: boolean,
 ): VideoMode | undefined {
   if (!hasPromptResourceMentions) return videoMode;
-  if (videoMode === 'text_to_video') return 'omni_reference';
+  if (!videoMode || videoMode === 'text_to_video') return 'omni_reference';
   return videoMode;
 }
 
@@ -1319,8 +1319,8 @@ export function unabsorbedVideoPromptMentionMessage(
   if (videoMode === 'omni_reference') {
     return `当前模型的全能参考不能吸收提示词里的${mentionMediaType === 'image' ? '图片' : mentionMediaType === 'video' ? '视频' : mentionMediaType === 'audio' ? '音频' : mentionMediaType}提及`;
   }
-  const modeLabel = videoMode ? videoModeLabels[videoMode] : '当前';
-  return `视频模式「${modeLabel}」不能使用提示词资源提及。全能参考请把素材连到节点，或切换到全能参考`;
+  const modeLabel = videoMode ? videoModeLabels[videoMode] : '全能参考';
+  return `视频模式「${modeLabel}」不能使用提示词资源提及。请把素材加到当前节点的资源条，或确认已选择全能参考`;
 }
 
 /** 未知模型默认只允许 prompt 和至多一张首帧。 */

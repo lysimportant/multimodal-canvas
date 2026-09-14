@@ -197,35 +197,21 @@ export function NodeQuickEditor({
   const settingsTriggerRef = useRef<HTMLButtonElement>(null);
   const expandTriggerRef = useRef<HTMLButtonElement>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
-  /** 悬停打开可延时收起；点击或键盘打开后固定至显式关闭。 */
+  /** 点击或键盘打开后固定至显式关闭。 */
   const settingsPinnedRef = useRef(false);
-  /** 允许鼠标跨过参数按钮与面板之间的空隙。 */
   const settingsCloseTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(settingsCloseTimerRef.current), []);
 
-  /** 仅改变展示状态，关闭时取消仍在等待的鼠标离开事件。 */
+  /** 仅改变展示状态，关闭时取消仍在等待的定时器。 */
   const closeMediaSettings = () => {
     clearTimeout(settingsCloseTimerRef.current);
     settingsPinnedRef.current = false;
     setMediaSettingsOpen(false);
   };
-  /** 悬停触发器或面板时立即展示，并取消延迟收起。 */
+  /** 点击或键盘打开参数页。 */
   const enterMediaSettings = () => {
     clearTimeout(settingsCloseTimerRef.current);
     setMediaSettingsOpen(true);
-  };
-  /** 未固定的参数页只在鼠标和键盘焦点均离开后关闭。 */
-  const leaveMediaSettings = () => {
-    clearTimeout(settingsCloseTimerRef.current);
-    if (settingsPinnedRef.current) return;
-    settingsCloseTimerRef.current = setTimeout(() => {
-      if (
-        settingsRef.current?.contains(document.activeElement) ||
-        settingsTriggerRef.current === document.activeElement
-      )
-        return;
-      setMediaSettingsOpen(false);
-    }, 180);
   };
   /** Tab 移出整个参数区域时关闭，区域内部移动焦点不影响菜单。 */
   const blurMediaSettings = (event: FocusEvent<HTMLElement>) => {
@@ -344,7 +330,6 @@ export function NodeQuickEditor({
         onChange={onInferenceStrengthChange}
         className="node-quick-editor-select-group"
         placement="top"
-        openOnHover
         floating={node.data.mediaType !== 'text'}
       />
     ) : null;
@@ -383,7 +368,6 @@ export function NodeQuickEditor({
             className="node-quick-editor-select-group"
             placement="top"
             optionLayout="grid"
-            openOnHover
             floating
           />
           <QuickOptionMenu
@@ -420,7 +404,6 @@ export function NodeQuickEditor({
               onChange={(value) => onVideoModeChange?.(value as VideoMode)}
               className="node-quick-editor-select-group"
               placement="top"
-              openOnHover
               floating
             />
             <CompactSelect
@@ -431,7 +414,6 @@ export function NodeQuickEditor({
               className="node-quick-editor-select-group"
               placement="top"
               optionLayout="grid"
-              openOnHover
               floating
             />
             <QuickOptionMenu
@@ -449,7 +431,6 @@ export function NodeQuickEditor({
               className="node-quick-editor-select-group"
               placement="top"
               optionLayout="grid"
-              openOnHover
               floating
             />
             <CompactSelect
@@ -467,7 +448,6 @@ export function NodeQuickEditor({
               }
               className="node-quick-editor-select-group"
               placement="top"
-              openOnHover
               floating
             />
             {resolveVideoCompletionAction(node.data) === 'fill_designated_image_node' ? (
@@ -481,7 +461,6 @@ export function NodeQuickEditor({
                 onChange={(value) => onCompletionTargetNodeIdChange?.(value || undefined)}
                 className="node-quick-editor-select-group"
                 placement="top"
-                openOnHover
                 floating
               />
             ) : null}
@@ -524,7 +503,6 @@ export function NodeQuickEditor({
             disabled={!onParametersChange}
             className="node-quick-editor-select-group"
             placement="top"
-            openOnHover
             floating
           />
           <label className="compact-select node-quick-editor-select-group">
@@ -575,8 +553,6 @@ export function NodeQuickEditor({
         ref={settingsTriggerRef}
         type="button"
         className="node-quick-editor-summary-button"
-        onMouseEnter={enterMediaSettings}
-        onMouseLeave={leaveMediaSettings}
         onBlur={blurMediaSettings}
         onClick={() => {
           clearTimeout(settingsCloseTimerRef.current);
@@ -638,7 +614,6 @@ export function NodeQuickEditor({
         onChange={(value) => onModelChange(parseModelOptionValue(value))}
         className="node-quick-editor-select-group"
         placement="top"
-        openOnHover
       />
       {node.data.mediaType === 'text' ? inferenceEditor : mediaSummary}
       {node.data.mediaType !== 'text' && (
@@ -649,8 +624,6 @@ export function NodeQuickEditor({
           hidden={!mediaSettingsOpen}
           role="region"
           aria-label="生成参数"
-          onMouseEnter={enterMediaSettings}
-          onMouseLeave={leaveMediaSettings}
           onBlur={blurMediaSettings}
           onKeyDown={(event) => {
             if (event.key === 'Escape' && !isImeKeyboardEvent(event)) {
@@ -948,21 +921,6 @@ function QuickOptionMenu({
       data-open={open ? 'true' : 'false'}
       data-placement="top"
       onBlur={handleBlur}
-      onMouseEnter={() => {
-        clearTimeout(closeTimerRef.current);
-        if (!open && options.some((option) => !option.disabled)) {
-          openedByHoverRef.current = true;
-          setOpen(true);
-        }
-      }}
-      onMouseLeave={() => {
-        if (!openedByHoverRef.current) return;
-        closeTimerRef.current = setTimeout(() => {
-          if (rootRef.current?.contains(document.activeElement)) return;
-          openedByHoverRef.current = false;
-          setOpen(false);
-        }, 180);
-      }}
       onKeyDown={(event) => {
         if (event.key === 'Escape' && open && !isImeKeyboardEvent(event)) {
           event.preventDefault();
@@ -982,10 +940,8 @@ function QuickOptionMenu({
         disabled={!options.some((option) => !option.disabled)}
         onClick={() => {
           clearTimeout(closeTimerRef.current);
-          if (openedByHoverRef.current) {
-            openedByHoverRef.current = false;
-            setOpen(true);
-          } else setOpen((current) => !current);
+          openedByHoverRef.current = false;
+          setOpen((current) => !current);
         }}
         onKeyDown={(event) => {
           if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;

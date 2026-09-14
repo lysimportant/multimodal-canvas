@@ -1268,6 +1268,7 @@ describe('video mode ports', () => {
       videoInputRoleForPromptMention('video', 'omni_reference', 'grok-imagine-video-1.5.1'),
     ).toBeUndefined();
     expect(videoModeForPromptMentions('text_to_video', true)).toBe('omni_reference');
+    expect(videoModeForPromptMentions(undefined, true)).toBe('omni_reference');
     expect(videoModeForPromptMentions('first_frame', true)).toBe('first_frame');
     expect(
       videoInputRoleForPromptMention('image', 'text_to_video', 'grok-imagine-video-1.5.1'),
@@ -1296,6 +1297,16 @@ describe('video mode ports', () => {
           mediaType: 'video',
           mode: 'generate',
           videoMode: 'text_to_video',
+          modelAlias: 'grok-imagine-video-1.5.1',
+        },
+        mentions,
+      ).map((mention) => mention.mentionId),
+    ).toEqual(['m-video']);
+    expect(
+      unabsorbedVideoPromptMentions(
+        {
+          mediaType: 'video',
+          mode: 'generate',
           modelAlias: 'grok-imagine-video-1.5.1',
         },
         mentions,

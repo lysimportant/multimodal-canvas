@@ -149,21 +149,16 @@ const imageMention: PromptMentionBlock = {
 afterEach(cleanup);
 
 describe('NodeQuickEditor', () => {
-  it('悬停参数按钮打开面板，跨过间隙仍能点选清晰度，移出后延时关闭', async () => {
+  it('点击参数按钮打开面板，点选清晰度后外点关闭', async () => {
     const user = userEvent.setup();
     const onParametersChange = vi.fn();
     renderRaw(<NodeQuickEditor {...makeProps({ node: videoNode, onParametersChange })} />);
     const trigger = screen.getByRole('button', { name: '媒体参数' });
     await user.hover(trigger);
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    await user.click(trigger);
     expect(trigger).toHaveAttribute('aria-expanded', 'true');
-    await user.unhover(trigger);
-    const panel = screen.getByRole('region', { name: '生成参数' });
-    await user.hover(panel);
-    await user.unhover(panel);
-    expect(trigger).toHaveAttribute('aria-expanded', 'true');
-    await waitFor(() => expect(trigger).toHaveAttribute('aria-expanded', 'false'));
-    await user.hover(trigger);
-    await user.hover(screen.getByRole('combobox', { name: '视频清晰度：未设置' }));
+    await user.click(screen.getByRole('combobox', { name: '视频清晰度：未设置' }));
     await user.click(screen.getByRole('option', { name: '360p' }));
     expect(onParametersChange).toHaveBeenCalledWith({ resolution: '360p' });
     await waitFor(() =>
@@ -173,26 +168,24 @@ describe('NodeQuickEditor', () => {
     expect(trigger).toHaveAttribute('aria-expanded', 'false');
   });
 
-  it('仅悬停打开时 Escape 也会关闭参数页，不抢走提示词焦点', async () => {
+  it('点击打开后 Escape 会关闭参数页，不抢走提示词焦点', async () => {
     const user = userEvent.setup();
     renderRaw(<NodeQuickEditor {...makeProps()} />);
     const prompt = screen.getByRole('textbox', { name: '提示词' });
     prompt.focus();
     const trigger = screen.getByRole('button', { name: '媒体参数' });
-    await user.hover(trigger);
+    await user.click(trigger);
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
     await user.keyboard('{Escape}');
     expect(trigger).toHaveAttribute('aria-expanded', 'false');
-    expect(prompt).toHaveFocus();
+    expect(trigger).toHaveFocus();
   });
 
   it('点击固定参数页，外点与 Esc 关闭，键盘可打开并返回触发器', async () => {
     const user = userEvent.setup();
     renderRaw(<NodeQuickEditor {...makeProps()} />);
     const trigger = screen.getByRole('button', { name: '媒体参数' });
-    await user.hover(trigger);
     await user.click(trigger);
-    await user.unhover(trigger);
-    await new Promise((resolve) => setTimeout(resolve, 220));
     expect(trigger).toHaveAttribute('aria-expanded', 'true');
     fireEvent.pointerDown(document.body);
     expect(trigger).toHaveAttribute('aria-expanded', 'false');
@@ -245,7 +238,7 @@ describe('NodeQuickEditor', () => {
       y: 500,
       toJSON: () => ({}),
     });
-    await user.hover(root);
+    await user.click(resolution);
     const menu = screen.getByRole('listbox', { name: '视频清晰度选项' });
     expect(menu).toHaveAttribute('popover', 'manual');
     expect(menu.style.bottom).not.toBe('');
@@ -288,20 +281,19 @@ describe('NodeQuickEditor', () => {
     const onParametersChange = vi.fn();
     render(<NodeQuickEditor {...makeProps({ onParametersChange })} />);
     const trigger = screen.getByRole('button', { name: '图片比例：未设置' });
-    await user.hover(trigger);
+    await user.click(trigger);
     expect(trigger).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByRole('group', { name: '图片比例选项' })).toHaveAttribute(
       'popover',
       'manual',
     );
-    await user.unhover(trigger);
     trigger.focus();
     await user.keyboard('{ArrowDown}');
     const first = screen.getByRole('button', { name: /1:1/, pressed: true });
     await waitFor(() => expect(first).toHaveFocus());
     await user.keyboard('{Enter}');
     expect(onParametersChange).toHaveBeenCalledWith({ aspectRatio: '1:1' });
-    await user.hover(trigger);
+    await user.click(trigger);
     await user.click(screen.getByRole('button', { name: '收起媒体参数' }));
     expect(screen.queryByRole('group', { name: '图片比例选项' })).not.toBeInTheDocument();
   });
@@ -319,7 +311,7 @@ describe('NodeQuickEditor', () => {
     expect(modelTrigger).toHaveAttribute('aria-expanded', 'false');
     expect(modelTrigger).toHaveTextContent('removed-image-model');
     expect(screen.queryByText('继承项目默认模型')).not.toBeInTheDocument();
-    await user.hover(modelGroup);
+    await user.click(within(modelGroup).getByRole('combobox'));
     expect(within(modelGroup).getByRole('option', { name: '图片模型' })).toBeInTheDocument();
     expect(within(modelGroup).getByRole('option', { name: '多模态模型' })).toBeInTheDocument();
     expect(within(modelGroup).queryByRole('option', { name: '文字模型' })).not.toBeInTheDocument();
@@ -467,17 +459,13 @@ describe('NodeQuickEditor', () => {
     const prompt = screen.getByRole('textbox', { name: '提示词' });
     fireEvent.change(prompt, { target: { value: '柔和棚拍光' } });
     const modelGroup = screen.getByText('模型').parentElement as HTMLElement;
-    const inferenceGroup = screen.getByText('推理强度').parentElement as HTMLElement;
-    await user.hover(modelGroup);
+    await user.click(within(modelGroup).getByRole('combobox'));
     await user.click(within(modelGroup).getByRole('option', { name: '图片模型' }));
-    await user.hover(inferenceGroup);
-    await user.click(within(inferenceGroup).getByRole('option', { name: '轻度' }));
     await user.click(screen.getByRole('button', { name: '生成' }));
     fireEvent.pointerDown(prompt);
 
     expect(props.onPromptChange).toHaveBeenCalledWith('柔和棚拍光');
     expect(props.onModelChange).toHaveBeenCalledWith({ modelAlias: 'image-model' });
-    expect(props.onInferenceStrengthChange).toHaveBeenCalledWith('low');
     expect(props.onRun).toHaveBeenCalledTimes(1);
     expect(onCanvasPointerDown).not.toHaveBeenCalled();
     expect(screen.getByLabelText('产品主图生成设置')).toHaveClass('nodrag', 'nowheel', 'nopan');
@@ -513,7 +501,7 @@ describe('NodeQuickEditor', () => {
     );
 
     const inferenceGroup = screen.getByText('推理强度').parentElement as HTMLElement;
-    await user.hover(inferenceGroup);
+    await user.click(within(inferenceGroup).getByRole('combobox'));
 
     for (const label of labels) {
       expect(within(inferenceGroup).getByRole('option', { name: label })).toBeInTheDocument();
@@ -565,7 +553,7 @@ describe('NodeQuickEditor', () => {
     );
 
     const inferenceGroup = screen.getByText('推理强度').parentElement as HTMLElement;
-    await user.hover(inferenceGroup);
+    await user.click(within(inferenceGroup).getByRole('combobox'));
 
     for (const label of labels) {
       expect(within(inferenceGroup).getByRole('option', { name: label })).toBeInTheDocument();
@@ -594,7 +582,7 @@ describe('NodeQuickEditor', () => {
     );
 
     const inferenceGroup = screen.getByText('推理强度').parentElement as HTMLElement;
-    await user.hover(inferenceGroup);
+    await user.click(within(inferenceGroup).getByRole('combobox'));
 
     for (const label of labels) {
       expect(within(inferenceGroup).getByRole('option', { name: label })).toBeInTheDocument();
@@ -632,7 +620,7 @@ describe('NodeQuickEditor', () => {
     );
 
     const inferenceGroup = screen.getByText('推理强度').parentElement as HTMLElement;
-    await user.hover(inferenceGroup);
+    await user.click(within(inferenceGroup).getByRole('combobox'));
 
     expect(within(inferenceGroup).getByRole('option', { name: '轻度' })).toBeInTheDocument();
     expect(within(inferenceGroup).getByRole('option', { name: 'Ultra' })).toBeInTheDocument();
@@ -669,7 +657,7 @@ describe('NodeQuickEditor', () => {
     );
 
     const inferenceGroup = screen.getByText('推理强度').parentElement as HTMLElement;
-    await user.hover(inferenceGroup);
+    await user.click(within(inferenceGroup).getByRole('combobox'));
 
     expect(within(inferenceGroup).getByRole('option', { name: '轻度' })).toBeInTheDocument();
     expect(within(inferenceGroup).getByRole('option', { name: 'Ultra' })).toBeInTheDocument();
@@ -722,7 +710,7 @@ describe('NodeQuickEditor', () => {
     expect(screen.getByText(chatCredentialLabel)).toBeInTheDocument();
     expect(screen.getByText(imageCredentialLabel)).toBeInTheDocument();
     const modelGroup = screen.getByText('模型').parentElement as HTMLElement;
-    await user.hover(modelGroup);
+    await user.click(within(modelGroup).getByRole('combobox'));
     await user.click(within(modelGroup).getByRole('option', { name: '图片模型' }));
 
     expect(onModelChange).toHaveBeenCalledWith({
@@ -1370,7 +1358,7 @@ describe('NodeQuickEditor', () => {
     );
 
     const inferenceGroup = screen.getByText('推理强度').parentElement as HTMLElement;
-    await user.hover(inferenceGroup);
+    await user.click(within(inferenceGroup).getByRole('combobox'));
 
     expect(
       within(inferenceGroup).getByRole('option', { name: '极高', selected: true }),
@@ -1411,7 +1399,7 @@ describe('NodeQuickEditor', () => {
     );
 
     const inferenceGroup = screen.getByText('推理强度').parentElement as HTMLElement;
-    await user.hover(inferenceGroup);
+    await user.click(within(inferenceGroup).getByRole('combobox'));
 
     expect(
       within(inferenceGroup).getByRole('option', { name: '极高', selected: true }),
