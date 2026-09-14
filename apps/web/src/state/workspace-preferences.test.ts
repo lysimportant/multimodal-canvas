@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   CANVAS_BACKGROUND_KEY,
+  CANVAS_EDGE_STYLE_KEY,
   CANVAS_THEME_KEY,
   RESOURCE_PANEL_COLLAPSED_KEY,
   useWorkspacePreferences,
@@ -20,27 +21,31 @@ describe('workspace preferences store', () => {
     window.localStorage.clear();
   });
 
-  it('persists theme, background, and resource panel state under the existing keys', () => {
+  it('persists theme, background, edge style, and resource panel state under stable keys', () => {
     const state = useWorkspacePreferences.getState();
     state.setCanvasTheme('dark');
     state.setCanvasBackground('blank');
+    state.setCanvasEdgeStyle('pulse');
     state.setResourcePanelCollapsed(true);
 
     expect(window.localStorage.getItem(CANVAS_THEME_KEY)).toBe('dark');
     expect(window.localStorage.getItem(CANVAS_BACKGROUND_KEY)).toBe('blank');
+    expect(window.localStorage.getItem(CANVAS_EDGE_STYLE_KEY)).toBe('pulse');
     expect(window.localStorage.getItem(RESOURCE_PANEL_COLLAPSED_KEY)).toBe('true');
   });
 
-  it('rehydrates persisted values and rejects unsupported theme values', async () => {
+  it('rehydrates persisted values and rejects unsupported appearance values', async () => {
     window.localStorage.setItem(CANVAS_THEME_KEY, 'unsupported');
     window.localStorage.setItem(CANVAS_BACKGROUND_KEY, 'lines');
     window.localStorage.setItem(RESOURCE_PANEL_COLLAPSED_KEY, 'true');
+    window.localStorage.setItem(CANVAS_EDGE_STYLE_KEY, 'unsupported');
 
     await useWorkspacePreferences.persist.rehydrate();
 
     expect(useWorkspacePreferences.getState()).toMatchObject({
       canvasTheme: 'eye-care',
       canvasBackground: 'lines',
+      canvasEdgeStyle: 'flow',
       isResourcePanelCollapsed: true,
     });
   });

@@ -960,10 +960,104 @@ h2 {
   box-shadow: 0 12px 28px var(--mc-shadow, rgb(29 46 39 / 16%));
   display: grid;
   gap: 12px;
-  min-width: 196px;
+  min-width: 214px;
   padding: 10px;
   position: absolute;
   z-index: 40;
+}
+
+.appearance-card-tabs {
+  border-bottom: 1px solid var(--mc-border, #e2e7eb);
+  display: grid;
+  gap: 3px;
+  grid-template-columns: 1fr 1fr;
+  margin: -2px -2px 2px;
+  padding-bottom: 5px;
+}
+
+.appearance-card-tab {
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: var(--mc-text-muted, #687386);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 650;
+  min-height: 28px;
+  padding: 4px 6px;
+}
+
+.appearance-card-tab[aria-selected='true'] {
+  background: var(--mc-surface-muted, #f0f3f5);
+  color: var(--mc-accent-strong, #12613e);
+}
+
+.appearance-edge-options {
+  display: grid;
+  gap: 5px;
+}
+
+.appearance-edge-option {
+  align-items: center;
+  background: var(--mc-surface-muted, #f5f7f8);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: var(--mc-text, #1e2b36);
+  cursor: pointer;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 54px minmax(0, 1fr) auto;
+  min-height: 44px;
+  padding: 6px 8px;
+  text-align: left;
+}
+
+.appearance-edge-option[aria-pressed='true'] {
+  border-color: var(--mc-accent, #18794e);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mc-accent) 18%, transparent);
+}
+
+.appearance-edge-option strong,
+.appearance-edge-option small {
+  display: block;
+}
+
+.appearance-edge-option strong {
+  font-size: 11px;
+}
+
+.appearance-edge-option small {
+  color: var(--mc-text-muted, #687386);
+  font-size: 10px;
+  margin-top: 2px;
+}
+
+.appearance-edge-line {
+  border-top: 2px solid var(--mc-accent, #18794e);
+  display: block;
+  position: relative;
+  width: 48px;
+}
+
+.appearance-edge-line::after {
+  background: var(--mc-accent-strong, #12613e);
+  border-radius: 50%;
+  content: '';
+  height: 6px;
+  position: absolute;
+  right: 12px;
+  top: -4px;
+  width: 6px;
+}
+
+.edge-style-sample-pulse .appearance-edge-line {
+  border-top-style: dashed;
+  border-top-width: 3px;
+}
+
+.edge-style-sample-minimal .appearance-edge-line {
+  border-top-color: var(--mc-text-muted, #687386);
+  border-top-width: 1px;
 }
 
 .appearance-control[data-placement='top'] .appearance-card {
@@ -1336,6 +1430,25 @@ h2 {
   filter: drop-shadow(0 0 6px color-mix(in srgb, var(--mc-accent) 80%, #ffffff));
 }
 
+.canvas-area.edge-style-pulse .canvas-flow-edge-path {
+  stroke-dasharray: 7 5;
+  animation: canvas-flow-pulse 1.8s ease-in-out infinite;
+}
+
+.canvas-area.edge-style-pulse .canvas-flow-edge-meteor {
+  stroke-dasharray: 3 18;
+  animation-duration: 1.1s;
+}
+
+.canvas-area.edge-style-minimal .canvas-flow-edge-path {
+  stroke: color-mix(in srgb, var(--mc-accent) 76%, var(--mc-text-muted));
+  stroke-width: 1.8;
+}
+
+.canvas-area.edge-style-minimal .canvas-flow-edge-meteor {
+  display: none;
+}
+
 .react-flow__edge.selected .canvas-flow-edge-meteor {
   animation-duration: 0.9s;
   stroke-width: 2.5;
@@ -1347,8 +1460,19 @@ h2 {
   }
 }
 
+@keyframes canvas-flow-pulse {
+  0%,
+  100% {
+    opacity: 0.62;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .canvas-flow-edge-meteor {
+  .canvas-flow-edge-meteor,
+  .canvas-area.edge-style-pulse .canvas-flow-edge-path {
     animation: none;
     stroke-dasharray: none;
     opacity: 0.35;

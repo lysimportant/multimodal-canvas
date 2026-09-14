@@ -466,6 +466,8 @@ function WorkspaceApp({
   const setCanvasBackground = useWorkspacePreferences((state) => state.setCanvasBackground);
   const canvasTheme = useWorkspacePreferences((state) => state.canvasTheme);
   const setCanvasTheme = useWorkspacePreferences((state) => state.setCanvasTheme);
+  const canvasEdgeStyle = useWorkspacePreferences((state) => state.canvasEdgeStyle);
+  const setCanvasEdgeStyle = useWorkspacePreferences((state) => state.setCanvasEdgeStyle);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
@@ -2575,6 +2577,8 @@ function WorkspaceApp({
                 onThemeChange={setCanvasTheme}
                 canvasBackground={canvasBackground}
                 onBackgroundChange={setCanvasBackground}
+                canvasEdgeStyle={canvasEdgeStyle}
+                onEdgeStyleChange={setCanvasEdgeStyle}
               />
             </div>
             <button
@@ -2792,6 +2796,8 @@ function WorkspaceApp({
             canvasTheme={canvasTheme}
             onThemeChange={setCanvasTheme}
             onBackgroundChange={setCanvasBackground}
+            edgeStyle={canvasEdgeStyle}
+            onEdgeStyleChange={setCanvasEdgeStyle}
             canClearCanvas={nodes.length > 0 || edges.length > 0}
             canUndo={historyRef.current.past.length > 0}
             canRedo={historyRef.current.future.length > 0}

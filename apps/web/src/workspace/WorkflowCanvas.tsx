@@ -34,7 +34,7 @@ import type {
   VideoMode,
 } from '@multimodal-canvas/domain';
 import { portRoles } from '@multimodal-canvas/domain';
-import type { CanvasTheme } from '../state/workspace-preferences';
+import type { CanvasEdgeStyle, CanvasTheme } from '../state/workspace-preferences';
 import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
 import { getNewNodeDimensions } from '../canvas-utils';
 import {
@@ -181,6 +181,10 @@ export type WorkflowCanvasProps = {
   onThemeChange?: (theme: CanvasTheme) => void;
   /** 从底部胶囊切换画布背景。 */
   onBackgroundChange?: (background: CanvasBackground) => void;
+  /** 当前连接线视觉模式。 */
+  edgeStyle?: CanvasEdgeStyle;
+  /** 从底部外观面板切换连接线视觉模式。 */
+  onEdgeStyleChange?: (style: CanvasEdgeStyle) => void;
   /** 底部工具栏清空按钮是否可用。 */
   canClearCanvas?: boolean;
   /** 底部工具栏撤销按钮是否可用。 */
@@ -233,6 +237,8 @@ export function WorkflowCanvas({
   canvasTheme,
   onThemeChange,
   onBackgroundChange,
+  edgeStyle = 'flow',
+  onEdgeStyleChange,
   canClearCanvas,
   canUndo,
   canRedo,
@@ -512,7 +518,7 @@ export function WorkflowCanvas({
   return (
     <section
       ref={canvasAreaRef}
-      className={`canvas-area${quickEditorNode ? ' has-quick-editor' : ''}`}
+      className={`canvas-area edge-style-${edgeStyle}${quickEditorNode ? ' has-quick-editor' : ''}`}
       aria-label="工作流画布"
       tabIndex={-1}
       // 在捕获阶段拦截 Ctrl+滚轮，避免事件先冒泡到页面触发浏览器缩放；
@@ -534,6 +540,8 @@ export function WorkflowCanvas({
         onThemeChange={onThemeChange}
         canvasBackground={background}
         onBackgroundChange={onBackgroundChange}
+        canvasEdgeStyle={edgeStyle}
+        onEdgeStyleChange={onEdgeStyleChange}
         canClearCanvas={canClearCanvas ?? (nodes.length > 0 || edges.length > 0)}
         canUndo={canUndo}
         canRedo={canRedo}

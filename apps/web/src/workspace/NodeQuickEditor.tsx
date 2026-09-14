@@ -25,6 +25,7 @@ import { CompactSelect } from './CompactSelect';
 import { useFloatingParameterMenu } from './use-floating-parameter-menu';
 import { isImeKeyboardEvent } from '../ime';
 import './node-quick-editor.css';
+import './node-quick-editor-layout.css';
 import { mediaLabels, type ModelEntry, type ModelSelection } from './contracts';
 
 /**
@@ -351,6 +352,29 @@ export function NodeQuickEditor({
     </label>
   );
 
+  /** 视频模式在快速编辑器控制栏常驻，避免用户为切换模式打开参数页。 */
+  const videoModeEditor =
+    node.data.mediaType === 'video' ? (
+      <CompactSelect
+        label="生成模式"
+        value={displayVideoMode(node.data, connectedInputRoles)}
+        options={videoModes.map((mode) => {
+          const capability = videoModeCapability(mode, node.data.modelAlias);
+          const implemented = (implementedVideoModes as readonly VideoMode[]).includes(mode);
+          return {
+            value: mode,
+            label: videoModeLabels[mode],
+            description: capability.reason ?? videoModeDescriptions[mode],
+            disabled: !implemented || !capability.selectable,
+          };
+        })}
+        onChange={(value) => onVideoModeChange?.(value as VideoMode)}
+        className="node-quick-editor-select-group node-quick-editor-video-mode"
+        placement="top"
+        floating
+      />
+    ) : null;
+
   const mediaParameterEditor = (
     <div className="node-quick-editor-media-settings">
       {node.data.mediaType === 'image' && (
@@ -388,24 +412,6 @@ export function NodeQuickEditor({
             role="group"
             aria-label="媒体参数"
           >
-            <CompactSelect
-              label="生成模式"
-              value={displayVideoMode(node.data, connectedInputRoles)}
-              options={videoModes.map((mode) => {
-                const capability = videoModeCapability(mode, node.data.modelAlias);
-                const implemented = (implementedVideoModes as readonly VideoMode[]).includes(mode);
-                return {
-                  value: mode,
-                  label: videoModeLabels[mode],
-                  description: capability.reason ?? videoModeDescriptions[mode],
-                  disabled: !implemented || !capability.selectable,
-                };
-              })}
-              onChange={(value) => onVideoModeChange?.(value as VideoMode)}
-              className="node-quick-editor-select-group"
-              placement="top"
-              floating
-            />
             <CompactSelect
               label="视频清晰度"
               value={normalizeCurrentOptionValue(parameters.resolution)}
@@ -615,6 +621,7 @@ export function NodeQuickEditor({
         className="node-quick-editor-select-group"
         placement="top"
       />
+      {videoModeEditor}
       {node.data.mediaType === 'text' ? inferenceEditor : mediaSummary}
       {node.data.mediaType !== 'text' && (
         <div

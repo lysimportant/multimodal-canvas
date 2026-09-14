@@ -3,7 +3,7 @@ import { Eraser, Maximize2, Redo2, Search, Undo2, Upload } from 'lucide-react';
 import { type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 
 import type { CanvasBackground } from '../app-contract-utils';
-import type { CanvasTheme } from '../state/workspace-preferences';
+import type { CanvasEdgeStyle, CanvasTheme } from '../state/workspace-preferences';
 import { AppearancePicker } from './AppearancePicker';
 import { mediaIcons, mediaLabels } from './contracts';
 
@@ -25,6 +25,8 @@ export function CanvasNodeToolbar({
   onThemeChange,
   canvasBackground,
   onBackgroundChange,
+  canvasEdgeStyle,
+  onEdgeStyleChange,
   canClearCanvas = true,
   canUndo = true,
   canRedo = true,
@@ -50,6 +52,10 @@ export function CanvasNodeToolbar({
   canvasBackground?: CanvasBackground;
   /** 从底部胶囊切换画布背景。 */
   onBackgroundChange?: (background: CanvasBackground) => void;
+  /** 当前连接线视觉模式。 */
+  canvasEdgeStyle?: CanvasEdgeStyle;
+  /** 从外观面板切换连接线视觉模式。 */
+  onEdgeStyleChange?: (style: CanvasEdgeStyle) => void;
   /** 当前是否存在可清空的画布内容。 */
   canClearCanvas?: boolean;
   /** 当前是否存在可撤销的历史记录。 */
@@ -174,6 +180,8 @@ export function CanvasNodeToolbar({
         onThemeChange={onThemeChange}
         canvasBackground={canvasBackground}
         onBackgroundChange={onBackgroundChange}
+        canvasEdgeStyle={canvasEdgeStyle}
+        onEdgeStyleChange={onEdgeStyleChange}
       />,
     );
   }

@@ -84,6 +84,7 @@ describe('workspace modules', () => {
       onSearch: vi.fn(),
       onTheme: vi.fn(),
       onBackground: vi.fn(),
+      onEdgeStyle: vi.fn(),
       onFit: vi.fn(),
     };
     render(
@@ -98,6 +99,8 @@ describe('workspace modules', () => {
         onThemeChange={callbacks.onTheme}
         canvasBackground="dots"
         onBackgroundChange={callbacks.onBackground}
+        canvasEdgeStyle="flow"
+        onEdgeStyleChange={callbacks.onEdgeStyle}
         onFitView={callbacks.onFit}
         canClearCanvas={false}
         canUndo={false}
@@ -132,6 +135,10 @@ describe('workspace modules', () => {
     expect(callbacks.onTheme).toHaveBeenCalledWith('dark');
     await user.click(screen.getByRole('button', { name: '空白' }));
     expect(callbacks.onBackground).toHaveBeenCalledWith('blank');
+    await user.click(screen.getByRole('tab', { name: '连线' }));
+    expect(screen.getByRole('group', { name: '连接线样式' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: /脉冲/ }));
+    expect(callbacks.onEdgeStyle).toHaveBeenCalledWith('pulse');
     expect(callbacks.onClear).not.toHaveBeenCalled();
     expect(callbacks.onUndo).not.toHaveBeenCalled();
   });

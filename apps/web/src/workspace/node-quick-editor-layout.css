@@ -1,0 +1,39 @@
+/* 快速编辑器在桌面端给提示词和视频模式留出稳定空间；内容只在输入区内部滚动。 */
+.quick-editor-overlay > .node-quick-editor {
+  max-width: min(620px, calc(100vw - 32px));
+  width: min(620px, calc(100vw - 32px));
+}
+
+.node-quick-editor .node-quick-editor-prompt textarea {
+  height: 136px;
+  max-height: 136px;
+  min-height: 136px;
+  overflow-y: auto;
+  resize: none;
+}
+
+.node-quick-editor .node-quick-editor-prompt .resource-mention-highlight {
+  height: 136px;
+  max-height: 136px;
+  min-height: 136px;
+  overflow-y: auto;
+}
+
+.node-quick-editor-video-mode {
+  flex: 1 1 0;
+  min-width: 112px;
+}
+
+@media (max-width: 640px) {
+  .quick-editor-overlay > .node-quick-editor {
+    max-width: min(100%, calc(100vw - 24px));
+    width: min(100%, calc(100vw - 24px));
+  }
+
+  .node-quick-editor .node-quick-editor-prompt textarea,
+  .node-quick-editor .node-quick-editor-prompt .resource-mention-highlight {
+    height: 120px;
+    max-height: 120px;
+    min-height: 120px;
+  }
+}

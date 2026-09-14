@@ -1095,6 +1095,7 @@ describe('NodeQuickEditor', () => {
       />,
     );
     const modeGroup = screen.getByText('生成模式').parentElement as HTMLElement;
+    expect(modeGroup.closest('.node-quick-editor-parameter-popover')).toBeNull();
     expect(within(modeGroup).getByRole('combobox', { name: '生成模式：首帧' })).toBeInTheDocument();
     await user.click(within(modeGroup).getByRole('combobox'));
     expect(within(modeGroup).getByRole('option', { name: /文生视频/ })).toBeInTheDocument();
