@@ -820,13 +820,14 @@ describe('NodeQuickEditor', () => {
     expect(trigger).toHaveFocus();
     await user.click(screen.getByRole('button', { name: '打开完整编辑器' }));
     const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByLabelText('引用的文件')).toHaveTextContent('连线参考.png');
-    expect(within(dialog).getByLabelText('引用的文件')).toHaveTextContent('产品图');
+    expect(within(dialog).getByLabelText('引用资源')).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: '预览并命名 产品图' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: '预览并命名 连线参考' })).toBeInTheDocument();
     expect(screen.getAllByRole('textbox', { name: '提示词' })).toHaveLength(1);
     fireEvent.change(within(dialog).getByRole('textbox', { name: '提示词' }), {
-      target: { value: '参考 @产品图 补充说明' },
+      target: { value: '参考 产品图 补充说明' },
     });
-    expect(props.onPromptChange).toHaveBeenCalledWith('参考 @产品图 补充说明');
+    expect(props.onPromptChange).toHaveBeenCalledWith('参考 产品图 补充说明');
     await user.click(within(dialog).getByRole('button', { name: '关闭编辑器' }));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     await waitFor(() =>

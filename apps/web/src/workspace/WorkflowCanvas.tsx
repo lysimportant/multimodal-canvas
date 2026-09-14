@@ -631,11 +631,14 @@ export function WorkflowCanvas({
               if (!source) return [];
               const assetId = source.data.resultAsset?.assetId ?? source.data.assetId;
               if (!assetId) return [];
+              const catalog = assets.find((asset) => asset.id === assetId);
               return [
                 {
                   id: assetId,
-                  name: assets.find((asset) => asset.id === assetId)?.name ?? source.data.label,
+                  name: catalog?.name ?? source.data.label,
                   mediaType: source.data.mediaType,
+                  contentUrl: catalog?.contentUrl ?? source.data.contentUrl ?? '',
+                  mimeType: catalog?.mimeType ?? source.data.mimeType ?? '',
                 },
               ];
             })}

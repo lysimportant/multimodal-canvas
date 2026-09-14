@@ -26,6 +26,8 @@ import {
   videoInputRoleForPromptMention,
   promptDocumentSchema,
   renderPromptDocument,
+  mentionDisplayName,
+  uniqueResourceDisplayName,
   runJobDataSchema,
   runSnapshotFingerprintMaterial,
   runSnapshotSchema,
@@ -311,7 +313,9 @@ describe('canvas protocol', () => {
       ],
     });
 
-    expect(renderPromptDocument(document)).toBe('把 @产品图 放在场景中');
+    expect(renderPromptDocument(document)).toBe('把 产品 放在场景中');
+    expect(mentionDisplayName({ label: 'hero.png', entityName: '满穗' })).toBe('满穗');
+    expect(uniqueResourceDisplayName('满穗.png', ['满穗'])).toBe('满穗2');
     expect(document.blocks[1]).toMatchObject({
       type: 'mention',
       mentionId: 'mention-product',

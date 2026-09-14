@@ -32,9 +32,12 @@ import type {
 } from '@multimodal-canvas/domain';
 import {
   getEffectivePromptDocument,
+  mentionDisplayName,
   promptDocumentSchema,
   renderPromptDocument,
+  uniqueResourceDisplayName,
 } from '@multimodal-canvas/domain';
+import { Dialog, DialogClose, DialogContent, DialogTitle } from '@multimodal-canvas/ui';
 
 import { isImeKeyboardEvent, useImeDraft } from './ime';
 import { AssetPreview } from './workspace/AssetPreview';
@@ -50,6 +53,9 @@ export type ResourceMentionEditorProps = {
   promptDocument?: PromptDocument;
   /** 当前项目中可访问的资源索引。归档资源不会显示为可插入结果。 */
   assets?: readonly Asset[];
+  /** 画布连到当前节点的资源，进入上方资源条。 */
+  connectedAssets?: readonly (Pick<Asset, 'id' | 'name' | 'mediaType'> &
+    Partial<Pick<Asset, 'contentUrl' | 'mimeType'>>)[];
   /** 纯文本兼容回调；始终接收当前文档渲染后的文字。 */
   onChange?: (value: string) => void;
   /** 结构化文档回调；新引用能力应优先使用此回调持久化。 */
@@ -100,6 +106,7 @@ export function ResourceMentionEditor({
   value = '',
   promptDocument,
   assets = [],
+  connectedAssets = [],
   onChange,
   onDocumentChange,
   onMentionDetails,
@@ -135,6 +142,9 @@ export function ResourceMentionEditor({
     semanticRole: '',
     scope: '',
   });
+  const [resourceDialogId, setResourceDialogId] = useState<string | null>(null);
+  const [resourceNameDraft, setResourceNameDraft] = useState('');
+  const [hoveredMentionId, setHoveredMentionId] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [protectedEditMessage, setProtectedEditMessage] = useState<string | null>(null);
   const [draftResetKey, setDraftResetKey] = useState(0);
@@ -202,18 +212,22 @@ export function ResourceMentionEditor({
       if (protectedMention) {
         caretRef.current = protectedMention.end;
         setProtectedEditMessage(
-          `@${protectedMention.mention.label} 是已确认资源，请使用资源卡片删除或替换`,
+          `${mentionDisplayName(protectedMention.mention)} 是已确认资源，请用资源条删除或重新绑定`,
         );
         // useImeDraft 已接收浏览器的新草稿；改变 resetKey 才能权威恢复原文。
         setDraftResetKey((current) => current + 1);
         return;
       }
       setProtectedEditMessage(null);
-      const nextRanges = updateRangesForTextEdit(previousText, nextText, rangesRef.current, edit);
+      const nextRanges = promotePlaintextResourceNames(
+        nextText,
+        updateRangesForTextEdit(previousText, nextText, rangesRef.current, edit),
+        collectNamedResourcePool(rangesRef.current, assets, connectedAssets),
+      );
       commitState(nextText, nextRanges);
       updateTrigger(nextText, caretRef.current, setTrigger);
     },
-    [commitState],
+    [assets, commitState, connectedAssets],
   );
 
   const ime = useImeDraft<HTMLTextAreaElement>({
@@ -351,7 +365,11 @@ export function ResourceMentionEditor({
           ...(assetVersion ? { assetVersion } : {}),
         };
         const previousTokenLength = replacing.end - replacing.start;
-        const nextToken = `@${asset.name}`;
+        const nextToken = mentionDisplayName(previousMention);
+        const nextMentionNamed: PromptMention = {
+          ...nextMention,
+          entityName: nextToken,
+        };
         const delta = nextToken.length - previousTokenLength;
         const nextText =
           `${textRef.current.slice(0, replacing.start)}${nextToken}` +
@@ -360,7 +378,7 @@ export function ResourceMentionEditor({
           if (range.mention.mentionId === replaceMentionId) {
             return {
               ...range,
-              mention: nextMention,
+              mention: nextMentionNamed,
               end: range.start + nextToken.length,
             };
           }
@@ -393,7 +411,7 @@ export function ResourceMentionEditor({
       const activeTrigger = trigger ?? findMentionTrigger(textRef.current, selectionStart);
       const start = activeTrigger?.start ?? selectionStart;
       const end = Math.max(start, selectionEnd);
-      const token = `@${asset.name}`;
+      const token = uniqueResourceDisplayName(asset.name, takenDisplayNames(rangesRef.current));
       const nextText = `${textRef.current.slice(0, start)}${token}${textRef.current.slice(end)}`;
       const editedRanges = updateRangesForTextEdit(textRef.current, nextText, rangesRef.current, {
         editStart: start,
@@ -407,6 +425,7 @@ export function ResourceMentionEditor({
         assetId: asset.id,
         label: asset.name,
         mediaType: asset.mediaType,
+        entityName: token,
         ...(assetVersion ? { assetVersion } : {}),
       };
       const nextStart = start;
@@ -615,7 +634,23 @@ export function ResourceMentionEditor({
 
   const handleSelect = useCallback(() => {
     const input = textareaRef.current;
-    if (input) caretRef.current = input.selectionStart ?? input.value.length;
+    if (!input) {
+      updateTrigger(textRef.current, caretRef.current, setTrigger);
+      return;
+    }
+    const start = input.selectionStart ?? 0;
+    const end = input.selectionEnd ?? start;
+    caretRef.current = start;
+    const selected = rangesRef.current.find((range) => start === range.start && end === range.end);
+    if (selected && start !== end) {
+      setReplaceMentionId(selected.mention.mentionId);
+      setTrigger({ start: selected.start, query: '' });
+      setActiveIndex(0);
+      setHoveredMentionId(selected.mention.mentionId);
+      return;
+    }
+    const inside = rangesRef.current.find((range) => start > range.start && start < range.end);
+    setHoveredMentionId(inside?.mention.mentionId ?? null);
     updateTrigger(textRef.current, caretRef.current, setTrigger);
   }, []);
 
@@ -675,6 +710,100 @@ export function ResourceMentionEditor({
     [ranges],
   );
 
+  const stripItems = useMemo(() => {
+    const items: Array<{
+      key: string;
+      assetId: string;
+      mediaType: (typeof mentionRanges)[number]['mention']['mediaType'];
+      name: string;
+      mentionId?: string;
+      asset?: Pick<Asset, 'id' | 'name' | 'mediaType'> &
+        Partial<Pick<Asset, 'contentUrl' | 'mimeType' | 'status' | 'sizeBytes' | 'tags'>>;
+    }> = [];
+    const seen = new Set<string>();
+    const taken = new Set<string>();
+    for (const range of mentionRanges) {
+      if (seen.has(range.mention.assetId)) continue;
+      seen.add(range.mention.assetId);
+      const name = mentionDisplayName(range.mention);
+      taken.add(name);
+      items.push({
+        key: range.mention.mentionId,
+        assetId: range.mention.assetId,
+        mediaType: range.mention.mediaType,
+        name,
+        mentionId: range.mention.mentionId,
+        asset:
+          assets.find((candidate) => candidate.id === range.mention.assetId) ??
+          connectedAssets.find((candidate) => candidate.id === range.mention.assetId),
+      });
+    }
+    for (const asset of connectedAssets) {
+      if (seen.has(asset.id)) continue;
+      seen.add(asset.id);
+      const name = uniqueResourceDisplayName(asset.name, taken);
+      taken.add(name);
+      items.push({
+        key: `connected:${asset.id}`,
+        assetId: asset.id,
+        mediaType: asset.mediaType,
+        name,
+        asset,
+      });
+    }
+    return items;
+  }, [assets, connectedAssets, mentionRanges]);
+
+  const dialogItem = stripItems.find((item) => item.key === resourceDialogId) ?? null;
+  const hoveredRange =
+    mentionRanges.find((range) => range.mention.mentionId === hoveredMentionId) ??
+    mentionRanges.find((range) => {
+      const caret = caretRef.current;
+      return caret > range.start && caret < range.end;
+    });
+
+  const renameStripResource = useCallback(
+    (mentionId: string, nextName: string) => {
+      const trimmed = nextName.trim();
+      if (!trimmed) return;
+      if (takenDisplayNames(rangesRef.current, mentionId).has(trimmed)) {
+        setProtectedEditMessage('这个名字已被其他资源占用');
+        return;
+      }
+      const target = rangesRef.current.find((range) => range.mention.mentionId === mentionId);
+      if (!target) return;
+      const oldName = mentionDisplayName(target.mention);
+      let nextText = textRef.current;
+      const nextRanges: MentionRange[] = [];
+      let delta = 0;
+      for (const range of [...rangesRef.current].sort((left, right) => left.start - right.start)) {
+        const shifted = {
+          ...range,
+          start: range.start + delta,
+          end: range.end + delta,
+        };
+        const sameAsset = range.mention.assetId === target.mention.assetId;
+        if (!sameAsset) {
+          nextRanges.push(shifted);
+          continue;
+        }
+        nextText = nextText.slice(0, shifted.start) + trimmed + nextText.slice(shifted.end);
+        const sizeDelta = trimmed.length - (shifted.end - shifted.start);
+        nextRanges.push({
+          ...shifted,
+          end: shifted.start + trimmed.length,
+          mention: { ...range.mention, entityName: trimmed },
+        });
+        delta += sizeDelta;
+      }
+      caretRef.current = Math.min(nextText.length, caretRef.current);
+      commitState(nextText, nextRanges);
+      setProtectedEditMessage(null);
+      void oldName;
+    },
+    [commitState],
+  );
+
   return (
     <div
       ref={rootRef}
@@ -683,28 +812,111 @@ export function ResourceMentionEditor({
       onDragLeave={() => setDragActive(false)}
       onDrop={handleDrop}
     >
-      <textarea
-        ref={textareaRef}
-        rows={4}
-        {...ime.bind}
-        onChange={handleTextChange}
-        onKeyDown={handleKeyDown}
-        onSelect={handleSelect}
-        onClick={handleSelect}
-        onKeyUp={handleKeyUp}
-        placeholder={placeholder}
-        aria-label={ariaLabel}
-        aria-autocomplete={pickerOpen ? 'list' : undefined}
-        aria-controls={pickerOpen ? pickerId : undefined}
-        aria-expanded={pickerOpen ? true : undefined}
-        aria-activedescendant={
-          pickerOpen && searchEntries.length > 0
-            ? `${pickerId}-option-${activeIndex % searchEntries.length}`
-            : undefined
-        }
-        disabled={disabled}
-        className="resource-mention-textarea"
-      />
+      {stripItems.length > 0 && (
+        <div className="resource-mention-strip" aria-label="引用资源">
+          {stripItems.map((item) => {
+            const mention = mentionRanges.find(
+              (range) => range.mention.assetId === item.assetId,
+            )?.mention;
+            const unavailableReason = mention
+              ? getMentionUnavailableReason(
+                  mention,
+                  assets.find((asset) => asset.id === item.assetId),
+                )
+              : undefined;
+            return (
+              <div
+                key={item.key}
+                className={`resource-mention-thumb${unavailableReason ? ' is-missing' : ''}`}
+                role="article"
+                data-mention-id={item.mentionId}
+                {...(unavailableReason
+                  ? { 'data-placeholder-reason': unavailableReason.code }
+                  : {})}
+              >
+                <button
+                  type="button"
+                  className="resource-mention-thumb-main"
+                  aria-label={`预览并命名 ${item.name}`}
+                  disabled={disabled}
+                  onClick={() => {
+                    setResourceDialogId(item.key);
+                    setResourceNameDraft(item.name);
+                  }}
+                >
+                  {item.asset && 'status' in item.asset && !unavailableReason ? (
+                    <MentionPreview asset={item.asset as Asset} mediaType={item.mediaType} />
+                  ) : (
+                    <MentionMediaIcon mediaType={item.mediaType} />
+                  )}
+                </button>
+                <button
+                  type="button"
+                  className="resource-mention-thumb-delete"
+                  aria-label={`删除 ${item.name}`}
+                  disabled={disabled}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    const ids = rangesRef.current
+                      .filter((range) => range.mention.assetId === item.assetId)
+                      .map((range) => range.mention.mentionId);
+                    for (const mentionId of ids) removeMention(mentionId);
+                  }}
+                >
+                  <X size={11} aria-hidden="true" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="resource-mention-composer">
+        <div className="resource-mention-highlight" aria-hidden="true">
+          {renderHighlightedPrompt(text, mentionRanges)}
+        </div>
+        <textarea
+          ref={textareaRef}
+          rows={4}
+          {...ime.bind}
+          onChange={handleTextChange}
+          onKeyDown={handleKeyDown}
+          onSelect={handleSelect}
+          onClick={handleSelect}
+          onKeyUp={handleKeyUp}
+          onMouseUp={handleSelect}
+          onScroll={(event) => {
+            const highlight = event.currentTarget.previousElementSibling as HTMLElement | null;
+            if (!highlight) return;
+            highlight.scrollTop = event.currentTarget.scrollTop;
+            highlight.scrollLeft = event.currentTarget.scrollLeft;
+          }}
+          placeholder={placeholder}
+          aria-label={ariaLabel}
+          aria-autocomplete={pickerOpen ? 'list' : undefined}
+          aria-controls={pickerOpen ? pickerId : undefined}
+          aria-expanded={pickerOpen ? true : undefined}
+          aria-activedescendant={
+            pickerOpen && searchEntries.length > 0
+              ? `${pickerId}-option-${activeIndex % searchEntries.length}`
+              : undefined
+          }
+          disabled={disabled}
+          className="resource-mention-textarea"
+        />
+        {hoveredRange && (
+          <div className="resource-mention-hover-card" role="tooltip">
+            {assets.find((asset) => asset.id === hoveredRange.mention.assetId) ? (
+              <MentionPreview
+                asset={assets.find((asset) => asset.id === hoveredRange.mention.assetId)}
+                mediaType={hoveredRange.mention.mediaType}
+              />
+            ) : (
+              <MentionMediaIcon mediaType={hoveredRange.mention.mediaType} />
+            )}
+          </div>
+        )}
+      </div>
 
       {protectedEditMessage && (
         <p className="resource-mention-edit-warning" role="status">
@@ -718,177 +930,57 @@ export function ResourceMentionEditor({
         </p>
       )}
 
-      {mentionRanges.length > 0 && (
-        <div className="resource-mention-list" aria-label="已引用资源">
-          {mentionRanges.map((range, index) => {
-            const asset = assets.find((candidate) => candidate.id === range.mention.assetId);
-            const unavailableReason = getMentionUnavailableReason(range.mention, asset);
-            const bindingOpen = bindingMentionId === range.mention.mentionId;
-            return (
-              <article
-                className={`resource-mention-card${unavailableReason ? ' is-missing' : ''}`}
-                key={range.mention.mentionId}
-                data-mention-id={range.mention.mentionId}
-                {...(unavailableReason
-                  ? { 'data-placeholder-reason': unavailableReason.code }
-                  : {})}
+      <Dialog
+        open={Boolean(dialogItem)}
+        onOpenChange={(open) => {
+          if (!open) setResourceDialogId(null);
+        }}
+      >
+        {dialogItem && (
+          <DialogContent
+            className="resource-mention-dialog"
+            aria-describedby={undefined}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <DialogTitle>资源预览</DialogTitle>
+            <div className="resource-mention-dialog-preview">
+              {dialogItem.asset && 'status' in dialogItem.asset ? (
+                <AssetPreview asset={dialogItem.asset as Asset} mode="content" />
+              ) : (
+                <MentionMediaIcon mediaType={dialogItem.mediaType} />
+              )}
+            </div>
+            <label className="resource-mention-dialog-name">
+              <span>资源名称</span>
+              <input
+                value={resourceNameDraft}
+                onChange={(event) => setResourceNameDraft(event.currentTarget.value)}
+                maxLength={160}
+              />
+            </label>
+            <div className="resource-mention-dialog-actions">
+              <button
+                type="button"
+                className="button button-primary"
+                disabled={disabled || !dialogItem.mentionId}
+                onClick={() => {
+                  if (dialogItem.mentionId) {
+                    renameStripResource(dialogItem.mentionId, resourceNameDraft);
+                  }
+                  setResourceDialogId(null);
+                }}
               >
-                <MentionPreview
-                  asset={unavailableReason ? undefined : asset}
-                  mediaType={range.mention.mediaType}
-                />
-                <div className="resource-mention-card-copy">
-                  <strong title={range.mention.label}>@{range.mention.label}</strong>
-                  <span>
-                    {mediaLabels[range.mention.mediaType]} ·{' '}
-                    {unavailableReason ? unavailableReason.label : formatBytes(asset!.sizeBytes)}
-                    {' · '}
-                    {formatVersionHint(
-                      range.mention.assetVersion ?? (asset && getAssetVersion(asset)),
-                    )}
-                  </span>
-                  {range.mention.binding && (
-                    <small>
-                      {range.mention.binding.entityName ?? ''}
-                      {range.mention.binding.entityName && range.mention.binding.semanticRole
-                        ? ' · '
-                        : ''}
-                      {range.mention.binding.semanticRole ?? ''}
-                    </small>
-                  )}
-                </div>
-                <div className="resource-mention-card-actions">
-                  <button
-                    type="button"
-                    className="icon-button"
-                    aria-label={`上移提及 ${range.mention.label}`}
-                    title="上移提及"
-                    disabled={disabled || index === 0}
-                    onClick={() => moveMention(range.mention.mentionId, -1)}
-                  >
-                    <ArrowUp size={14} aria-hidden="true" />
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-button"
-                    aria-label={`下移提及 ${range.mention.label}`}
-                    title="下移提及"
-                    disabled={disabled || index === mentionRanges.length - 1}
-                    onClick={() => moveMention(range.mention.mentionId, 1)}
-                  >
-                    <ArrowDown size={14} aria-hidden="true" />
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-button"
-                    aria-label={`替换提及 ${range.mention.label}`}
-                    title="替换资源"
-                    disabled={disabled}
-                    onClick={() => {
-                      setReplaceMentionId(range.mention.mentionId);
-                      setTrigger({ start: 0, query: '' });
-                      setActiveIndex(0);
-                    }}
-                  >
-                    <Replace size={14} aria-hidden="true" />
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-button"
-                    aria-label={`绑定角色 ${range.mention.label}`}
-                    title="绑定角色或语义"
-                    disabled={disabled}
-                    onClick={() => openBinding(range)}
-                  >
-                    <Link2 size={14} aria-hidden="true" />
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-button"
-                    aria-label={`查看资源 ${range.mention.label}`}
-                    title="查看资源详情"
-                    onClick={() => onMentionDetails?.(range.mention, asset)}
-                  >
-                    <Search size={14} aria-hidden="true" />
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-button"
-                    aria-label={`删除提及 ${range.mention.label}`}
-                    title="删除提及"
-                    disabled={disabled}
-                    onClick={() => removeMention(range.mention.mentionId)}
-                  >
-                    <Trash2 size={14} aria-hidden="true" />
-                  </button>
-                </div>
-                {bindingOpen && (
-                  <div
-                    className="resource-mention-binding"
-                    role="group"
-                    aria-label="提及绑定"
-                    onKeyDown={(event) => {
-                      if (event.key !== 'Escape') return;
-                      event.preventDefault();
-                      setBindingMentionId(null);
-                    }}
-                  >
-                    <input
-                      aria-label="实体名称"
-                      value={bindingDraft.entityName}
-                      placeholder="实体名称"
-                      onChange={(event) =>
-                        setBindingDraft((current) => ({
-                          ...current,
-                          entityName: event.target.value,
-                        }))
-                      }
-                    />
-                    <input
-                      aria-label="语义角色"
-                      value={bindingDraft.semanticRole}
-                      placeholder="语义角色，例如 characterVoice"
-                      onChange={(event) =>
-                        setBindingDraft((current) => ({
-                          ...current,
-                          semanticRole: event.target.value,
-                        }))
-                      }
-                    />
-                    <select
-                      aria-label="绑定范围"
-                      value={bindingDraft.scope}
-                      onChange={(event) =>
-                        setBindingDraft((current) => ({
-                          ...current,
-                          scope: event.target.value as MentionBindingDraft['scope'],
-                        }))
-                      }
-                    >
-                      <option value="">不指定范围</option>
-                      <option value="local">本地</option>
-                      <option value="node">节点</option>
-                      <option value="scene">场景</option>
-                    </select>
-                    <button type="button" className="button button-primary" onClick={saveBinding}>
-                      <Check size={13} aria-hidden="true" />
-                      确认绑定
-                    </button>
-                    <button
-                      type="button"
-                      className="button button-secondary"
-                      onClick={() => setBindingMentionId(null)}
-                    >
-                      <X size={13} aria-hidden="true" />
-                      取消
-                    </button>
-                  </div>
-                )}
-              </article>
-            );
-          })}
-        </div>
-      )}
+                保存名称
+              </button>
+              <DialogClose asChild>
+                <button type="button" className="button button-secondary">
+                  关闭
+                </button>
+              </DialogClose>
+            </div>
+          </DialogContent>
+        )}
+      </Dialog>
 
       {pickerOpen && (
         <div
@@ -993,7 +1085,7 @@ function rangesFromDocument(document: PromptDocument): MentionRange[] {
       offset += block.text.length;
       continue;
     }
-    const token = `@${block.label}`;
+    const token = mentionDisplayName(block);
     result.push({ mention: block, start: offset, end: offset + token.length });
     offset += token.length;
   }
@@ -1088,7 +1180,7 @@ function normalizeRanges(text: string, ranges: readonly MentionRange[]): Mention
         range.start >= 0 &&
         range.end > range.start &&
         range.end <= text.length &&
-        text.slice(range.start, range.end) === `@${range.mention.label}`,
+        text.slice(range.start, range.end) === mentionDisplayName(range.mention),
     )
     .sort((left, right) => left.start - right.start)
     .filter((range, index, all) => index === 0 || range.start >= all[index - 1].end);
@@ -1220,6 +1312,127 @@ function createMentionId(ranges: readonly MentionRange[]): string {
   let suffix = 2;
   while (occupied.has(`${random}_${suffix}`)) suffix += 1;
   return `${random}_${suffix}`;
+}
+
+function collectNamedResourcePool(
+  ranges: readonly MentionRange[],
+  assets: readonly Asset[],
+  connectedAssets: readonly Pick<Asset, 'id' | 'name' | 'mediaType'>[],
+): Array<{
+  name: string;
+  assetId: string;
+  mediaType: Asset['mediaType'];
+  label: string;
+  assetVersion?: number;
+}> {
+  const pool: Array<{
+    name: string;
+    assetId: string;
+    mediaType: Asset['mediaType'];
+    label: string;
+    assetVersion?: number;
+  }> = [];
+  const seen = new Set<string>();
+  for (const range of ranges) {
+    const name = mentionDisplayName(range.mention);
+    if (seen.has(name)) continue;
+    seen.add(name);
+    pool.push({
+      name,
+      assetId: range.mention.assetId,
+      mediaType: range.mention.mediaType,
+      label: range.mention.label,
+      assetVersion: range.mention.assetVersion,
+    });
+  }
+  for (const asset of [...assets, ...connectedAssets]) {
+    if (pool.some((item) => item.assetId === asset.id)) continue;
+    const name = uniqueResourceDisplayName(
+      asset.name,
+      pool.map((item) => item.name),
+    );
+    pool.push({
+      name,
+      assetId: asset.id,
+      mediaType: asset.mediaType,
+      label: asset.name,
+    });
+  }
+  return pool;
+}
+
+function promotePlaintextResourceNames(
+  text: string,
+  ranges: readonly MentionRange[],
+  pool: ReturnType<typeof collectNamedResourcePool>,
+): MentionRange[] {
+  const next = [...ranges];
+  const names = [...pool].sort((left, right) => right.name.length - left.name.length);
+  for (const item of names) {
+    if (!item.name) continue;
+    let from = 0;
+    while (from <= text.length) {
+      const start = text.indexOf(item.name, from);
+      if (start < 0) break;
+      const end = start + item.name.length;
+      const overlap = next.some((range) => start < range.end && end > range.start);
+      if (overlap) {
+        from = start + 1;
+        continue;
+      }
+      next.push({
+        start,
+        end,
+        mention: {
+          type: 'mention',
+          mentionId: createMentionId(next),
+          assetId: item.assetId,
+          label: item.label,
+          mediaType: item.mediaType,
+          entityName: item.name,
+          ...(item.assetVersion ? { assetVersion: item.assetVersion } : {}),
+        },
+      });
+      from = end;
+    }
+  }
+  return next.sort((left, right) => left.start - right.start);
+}
+
+function renderHighlightedPrompt(text: string, ranges: readonly MentionRange[]) {
+  const parts: Array<{ key: string; text: string; mention?: boolean }> = [];
+  let cursor = 0;
+  for (const range of [...ranges].sort((left, right) => left.start - right.start)) {
+    if (range.start > cursor) {
+      parts.push({ key: `text-${cursor}`, text: text.slice(cursor, range.start) });
+    }
+    parts.push({
+      key: range.mention.mentionId,
+      text: text.slice(range.start, range.end),
+      mention: true,
+    });
+    cursor = range.end;
+  }
+  if (cursor < text.length || parts.length === 0) {
+    parts.push({ key: `text-${cursor}`, text: text.slice(cursor) });
+  }
+  return parts.map((part) =>
+    part.mention ? (
+      <mark key={part.key} className="resource-mention-token">
+        {part.text}
+      </mark>
+    ) : (
+      <span key={part.key}>{part.text}</span>
+    ),
+  );
+}
+
+function takenDisplayNames(ranges: readonly MentionRange[], exceptId?: string): Set<string> {
+  return new Set(
+    ranges
+      .filter((range) => range.mention.mentionId !== exceptId)
+      .map((range) => mentionDisplayName(range.mention)),
+  );
 }
 
 function MentionMediaIcon({ mediaType }: { mediaType: MediaType }) {

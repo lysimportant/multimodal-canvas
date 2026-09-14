@@ -12,6 +12,8 @@ type TextPromptEditorProps = {
   promptDocument?: PromptDocument;
   /** 当前项目资源，用于 `@` 搜索和提及卡片。 */
   assets?: readonly Asset[];
+  connectedAssets?: readonly (Pick<Asset, 'id' | 'name' | 'mediaType'> &
+    Partial<Pick<Asset, 'contentUrl' | 'mimeType'>>)[];
   /** 结构化文档保存回调。 */
   onDocumentChange?: (document: PromptDocument) => void;
   /** 查看提及资源详情的可选回调。 */
@@ -35,6 +37,7 @@ export function TextPromptEditor({
   onChange,
   promptDocument,
   assets,
+  connectedAssets,
   onDocumentChange,
   onMentionDetails,
   ariaLabel,
@@ -47,6 +50,7 @@ export function TextPromptEditor({
       value={value}
       promptDocument={promptDocument}
       assets={assets}
+      connectedAssets={connectedAssets}
       // 结构化文档是唯一执行来源；避免新编辑同时触发两个父层更新。
       onChange={onDocumentChange ? undefined : onChange}
       onDocumentChange={onDocumentChange}

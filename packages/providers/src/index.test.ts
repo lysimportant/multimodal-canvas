@@ -2933,7 +2933,7 @@ describe('NewApiVideoProvider', () => {
     ).rejects.toMatchObject({ code: 'VIDEO_SUBMISSION_UNKNOWN' });
     expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))).toMatchObject({
       model: 'grok-imagine-video-1.5.1',
-      prompt: 'Keep the product identity@产品图',
+      prompt: 'Keep the product identity产品图',
       reference_images: [{ url: 'data:image/png;base64,aW1hZ2U=' }],
     });
     expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)).image).toBeUndefined();

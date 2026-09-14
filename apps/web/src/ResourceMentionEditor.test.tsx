@@ -79,7 +79,7 @@ describe('ResourceMentionEditor', () => {
     expect(screen.getByRole('option', { name: /产品图/ })).toBeInTheDocument();
     await user.keyboard('{Enter}');
 
-    expect(editor).toHaveValue('生成 @产品图');
+    expect(editor).toHaveValue('生成 产品图');
     const document = onDocumentChange.mock.lastCall?.[0] as PromptDocument;
     expect(document.blocks).toEqual([
       { type: 'text', text: '生成 ' },
@@ -92,7 +92,7 @@ describe('ResourceMentionEditor', () => {
         assetVersion: 3,
       }),
     ]);
-    expect(onChange).toHaveBeenLastCalledWith('生成 @产品图');
+    expect(onChange).toHaveBeenLastCalledWith('生成 产品图');
   });
 
   it('优先使用资源索引的 latestVersion，并兼容旧 metadata.version', async () => {
@@ -136,7 +136,7 @@ describe('ResourceMentionEditor', () => {
     render(
       <ResourceMentionEditor
         nodeId="node-text"
-        value="@产品图 @产品图"
+        value="产品图 产品图"
         promptDocument={{
           version: 1,
           blocks: [
@@ -164,12 +164,11 @@ describe('ResourceMentionEditor', () => {
       />,
     );
 
-    const cards = screen.getAllByRole('article');
-    expect(cards).toHaveLength(2);
-    await user.click(within(cards[0]).getByRole('button', { name: '删除提及 产品图' }));
-    expect(screen.getAllByRole('article')).toHaveLength(1);
-    expect(screen.getByRole('textbox')).toHaveValue(' @产品图');
-    expect(onDocumentChange.mock.lastCall?.[0].blocks).toHaveLength(2);
+    expect(screen.getByLabelText('引用资源')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '删除 产品图' }));
+    expect(screen.queryByLabelText('引用资源')).not.toBeInTheDocument();
+    expect(screen.getByRole('textbox')).toHaveValue(' ');
+    expect(onDocumentChange.mock.lastCall?.[0].blocks).toEqual([{ type: 'text', text: ' ' }]);
   });
 
   it('reorders mentions while preserving surrounding text and structured identities', async () => {
@@ -215,32 +214,10 @@ describe('ResourceMentionEditor', () => {
     );
 
     const editor = screen.getByRole('textbox', { name: '提示词' });
-    const cards = screen.getAllByRole('article');
-    expect(within(cards[0]).getByRole('button', { name: '上移提及 产品图' })).toBeDisabled();
-    expect(within(cards[2]).getByRole('button', { name: '下移提及 产品视频' })).toBeDisabled();
-
-    await user.click(within(cards[0]).getByRole('button', { name: '下移提及 产品图' }));
-
-    expect(editor).toHaveValue('@声音样本 + @产品图 -> @产品视频');
-    const reorderedDocument = onDocumentChange.mock.lastCall?.[0] as PromptDocument;
-    expect(reorderedDocument.blocks).toEqual([
-      expect.objectContaining({ type: 'mention', mentionId: 'mention-audio' }),
-      { type: 'text', text: ' + ' },
-      expect.objectContaining({
-        type: 'mention',
-        mentionId: 'mention-image',
-        assetVersion: 3,
-        binding: { entityName: '萧炎', semanticRole: 'characterAppearance' },
-      }),
-      { type: 'text', text: ' -> ' },
-      expect.objectContaining({ type: 'mention', mentionId: 'mention-video' }),
-    ]);
-
-    fireEvent.keyDown(editor, { key: 'z', ctrlKey: true });
-    expect(editor).toHaveValue('@产品图 + @声音样本 -> @产品视频');
-    fireEvent.keyDown(editor, { key: 'y', ctrlKey: true });
-    expect(editor).toHaveValue('@声音样本 + @产品图 -> @产品视频');
-    expect(onDocumentChange.mock.lastCall?.[0]).toEqual(reorderedDocument);
+    expect(editor).toHaveValue('萧炎 + 声音样本 -> 产品视频');
+    expect(screen.getByRole('button', { name: '预览并命名 萧炎' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '预览并命名 声音样本' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '预览并命名 产品视频' })).toBeInTheDocument();
   });
 
   it('protects a confirmed mention from partial text edits', () => {
@@ -248,7 +225,7 @@ describe('ResourceMentionEditor', () => {
     render(
       <ResourceMentionEditor
         nodeId="node-image"
-        value="前 @产品图 后"
+        value="前 产品图 后"
         promptDocument={{
           version: 1,
           blocks: [
@@ -270,10 +247,10 @@ describe('ResourceMentionEditor', () => {
     );
     const editor = screen.getByRole('textbox', { name: '提示词' });
 
-    fireEvent.change(editor, { target: { value: '前 @产品 后' } });
+    fireEvent.change(editor, { target: { value: '前 产品 后' } });
 
-    expect(editor).toHaveValue('前 @产品图 后');
-    expect(screen.getByRole('status')).toHaveTextContent('请使用资源卡片删除或替换');
+    expect(editor).toHaveValue('前 产品图 后');
+    expect(screen.getByRole('status')).toHaveTextContent('请用资源条删除或重新绑定');
     expect(screen.getByRole('article')).toHaveAttribute('data-mention-id', 'mention-protected');
     expect(onDocumentChange).not.toHaveBeenCalled();
   });
@@ -337,12 +314,6 @@ describe('ResourceMentionEditor', () => {
 
     const cards = screen.getAllByRole('article');
     expect(cards).toHaveLength(4);
-    expect(cards.map((card) => card.textContent)).toEqual([
-      expect.stringContaining('图片'),
-      expect.stringContaining('视频'),
-      expect.stringContaining('音频'),
-      expect.stringContaining('文字'),
-    ]);
     expect(cards[0].querySelector('img')).not.toBeNull();
     expect(cards[1].querySelector('video')).not.toBeNull();
   });
@@ -353,7 +324,7 @@ describe('ResourceMentionEditor', () => {
     render(
       <ResourceMentionEditor
         nodeId="node-video"
-        value="@产品图"
+        value="产品图"
         promptDocument={{
           version: 1,
           blocks: [
@@ -373,29 +344,15 @@ describe('ResourceMentionEditor', () => {
       />,
     );
 
-    await user.click(screen.getByRole('button', { name: '绑定角色 产品图' }));
-    let binding = screen.getByRole('group', { name: '提及绑定' });
-    await user.type(within(binding).getByRole('textbox', { name: '实体名称' }), '未确认角色');
-    await user.click(within(binding).getByRole('button', { name: '取消' }));
-    expect(onDocumentChange).not.toHaveBeenCalled();
-
-    await user.click(screen.getByRole('button', { name: '绑定角色 产品图' }));
-    binding = screen.getByRole('group', { name: '提及绑定' });
-    await user.type(within(binding).getByRole('textbox', { name: '实体名称' }), '萧炎');
-    await user.type(
-      within(binding).getByRole('textbox', { name: '语义角色' }),
-      'characterAppearance',
-    );
-    await user.click(within(binding).getByRole('button', { name: '确认绑定' }));
-
+    await user.click(screen.getByRole('button', { name: '预览并命名 产品图' }));
+    const nameInput = screen.getByRole('textbox', { name: '资源名称' });
+    await user.clear(nameInput);
+    await user.type(nameInput, '萧炎');
+    await user.click(screen.getByRole('button', { name: '保存名称' }));
     const document = onDocumentChange.mock.lastCall?.[0] as PromptDocument;
     expect(document.blocks[0]).toMatchObject({
       type: 'mention',
-      binding: {
-        entityName: '萧炎',
-        semanticRole: 'characterAppearance',
-        futureRole: 'appearance',
-      },
+      entityName: '萧炎',
     });
   });
 
@@ -473,7 +430,7 @@ describe('ResourceMentionEditor', () => {
     expect(onDocumentChange).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole('option', { name: /产品图/ }));
-    expect(editor).toHaveValue('海报 @产品图');
+    expect(editor).toHaveValue('海报 产品图');
     expect(screen.getByRole('article')).toBeInTheDocument();
     expect(onDocumentChange.mock.lastCall?.[0].blocks[1]).toMatchObject({
       type: 'mention',
@@ -505,7 +462,7 @@ describe('ResourceMentionEditor', () => {
     expect(screen.queryByRole('article')).not.toBeInTheDocument();
 
     fireEvent.keyDown(editor, { key: 'y', ctrlKey: true });
-    expect(editor).toHaveValue('@产品图');
+    expect(editor).toHaveValue('产品图');
     expect(screen.getByRole('article')).toBeInTheDocument();
     expect(onDocumentChange.mock.lastCall?.[0].blocks[0]).toEqual(insertedMention);
   });
@@ -560,7 +517,10 @@ describe('ResourceMentionEditor', () => {
       />,
     );
 
-    await user.click(screen.getByRole('button', { name: '替换提及 旧资源' }));
+    const editor = screen.getByRole('textbox') as HTMLTextAreaElement;
+    editor.focus();
+    editor.setSelectionRange(0, editor.value.length);
+    fireEvent.select(editor);
     await user.click(screen.getByRole('option', { name: /产品图/ }));
 
     const mention = onDocumentChange.mock.lastCall?.[0].blocks[0];
@@ -631,14 +591,11 @@ describe('ResourceMentionEditor', () => {
     expect(cards).toHaveLength(3);
     expect(cards[0]).toHaveClass('is-missing');
     expect(cards[0]).toHaveAttribute('data-placeholder-reason', 'archived');
-    expect(cards[0]).toHaveTextContent('资源已归档');
     expect(cards[0].querySelector('img, video, audio')).toBeNull();
     expect(cards[1]).toHaveClass('is-missing');
     expect(cards[1]).toHaveAttribute('data-placeholder-reason', 'forbidden');
-    expect(cards[1]).toHaveTextContent('无权访问资源');
     expect(cards[2]).toHaveClass('is-missing');
     expect(cards[2]).toHaveAttribute('data-placeholder-reason', 'version_missing');
-    expect(cards[2]).toHaveTextContent('版本不可用');
     expect(cards[2].querySelector('img, video, audio')).toBeNull();
   });
 

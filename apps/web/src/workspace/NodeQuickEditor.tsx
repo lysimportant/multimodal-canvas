@@ -1,5 +1,5 @@
-import { Expand, FileImage, LoaderCircle, Play, SlidersHorizontal, X } from 'lucide-react';
-import { useEffect, useId, useMemo, useRef, useState, type FocusEvent } from 'react';
+import { Expand, LoaderCircle, Play, SlidersHorizontal, X } from 'lucide-react';
+import { useEffect, useId, useRef, useState, type FocusEvent } from 'react';
 
 import type {
   Asset,
@@ -74,7 +74,8 @@ export type NodeQuickEditorProps = {
   /** 当前节点是否有可供转换/生成的连线输入。 */
   hasConnectedInput?: boolean;
   /** 显式连接到当前节点的输入文件，供完整编辑器展示。 */
-  connectedAssets?: readonly Pick<Asset, 'id' | 'name' | 'mediaType'>[];
+  connectedAssets?: readonly (Pick<Asset, 'id' | 'name' | 'mediaType'> &
+    Partial<Pick<Asset, 'contentUrl' | 'mimeType'>>)[];
   /** 更新节点的媒体参数；未提供时参数控件仍可显示但不会修改父状态。 */
   onParametersChange?: (value: NodeMediaParameters) => void;
   /** 更新视频完成后的末帧动作。 */
@@ -330,23 +331,6 @@ export function NodeQuickEditor({
     onParametersChange(next);
   };
 
-  /** 保留引用顺序及缺失资源名称，不因资源库暂时未加载而隐去引用。 */
-  const referencedAssets = useMemo(() => {
-    const references = new Map(connectedAssets.map((asset) => [asset.id, asset]));
-    for (const block of node.data.promptDocument?.blocks ?? []) {
-      if (block.type !== 'mention') continue;
-      references.set(
-        block.assetId,
-        assets.find((asset) => asset.id === block.assetId) ?? {
-          id: block.assetId,
-          name: block.label,
-          mediaType: block.mediaType,
-        },
-      );
-    }
-    return [...references.values()];
-  }, [assets, connectedAssets, node.data.promptDocument]);
-
   /** 推理强度对文字节点直接显示，对媒体节点收进参数页。 */
   const inferenceEditor =
     inferenceOptions.length > 0 ? (
@@ -369,6 +353,7 @@ export function NodeQuickEditor({
         value={node.data.prompt ?? ''}
         promptDocument={node.data.promptDocument}
         assets={assets}
+        connectedAssets={connectedAssets}
         placeholder="描述你想生成的内容"
         ariaLabel="提示词"
         onChange={onPromptDocumentChange ? undefined : onPromptChange}
@@ -753,15 +738,6 @@ export function NodeQuickEditor({
             <div className="node-quick-editor-dialog-header">
               <div>
                 <DialogTitle id={dialogTitleId}>{node.data.label} · 编辑设置</DialogTitle>
-                <div className="node-quick-editor-references" aria-label="引用的文件">
-                  <FileImage size={15} aria-hidden="true" />
-                  <strong>引用的文件</strong>
-                  {referencedAssets.length > 0 ? (
-                    referencedAssets.map((asset) => <span key={asset.id}>{asset.name}</span>)
-                  ) : (
-                    <span>暂无引用文件</span>
-                  )}
-                </div>
               </div>
               <DialogClose asChild>
                 <button

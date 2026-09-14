@@ -304,14 +304,58 @@ export const promptDocumentSchema = z
  * 将结构化提示词渲染为兼容旧 Provider 的纯文本。
  * 资源身份不会依赖显示名；渲染仅用于旧接口或预览输出。
  */
+/**
+ * 资源在提示词中的显示名。优先用用户命名，否则去掉文件名后缀。
+ * @param mention 提示词资源提及。
+ */
+export function mentionDisplayName(mention: {
+  label: string;
+  entityName?: string;
+  binding?: { entityName?: string };
+}): string {
+  const named = mention.entityName?.trim() || mention.binding?.entityName?.trim();
+  if (named) return named;
+  return defaultResourceDisplayName(mention.label);
+}
+
+/**
+ * 从文件名得到默认可读名，去掉常见后缀。
+ * @param fileName 资源文件名或标签。
+ */
+export function defaultResourceDisplayName(fileName: string): string {
+  const base = fileName.trim();
+  if (!base) return '资源';
+  const stripped = base.replace(/\.[A-Za-z0-9]{1,8}$/u, '');
+  return (stripped || base).slice(0, 160);
+}
+
+/**
+ * 在已占用名字中生成不重复的显示名。
+ * @param fileName 原始文件名。
+ * @param taken 本节点已占用的名字。
+ */
+export function uniqueResourceDisplayName(fileName: string, taken: Iterable<string>): string {
+  const names = new Set(taken);
+  const root = defaultResourceDisplayName(fileName);
+  if (!names.has(root)) return root;
+  let index = 2;
+  while (names.has(`${root}${index}`)) index += 1;
+  return `${root}${index}`;
+}
+
+/**
+ * 将结构化提示词渲染为兼容旧 Provider 的纯文本。
+ * 资源身份不依赖显示名；渲染使用绑定后的名字，不再加 @ 前缀。
+ * @param document 结构化提示词文档。
+ * @returns 按块顺序拼接的纯文本。
+ */
 export function renderPromptDocument(document: PromptDocument): string {
   const parsed = promptDocumentSchema.parse(document);
   return parsed.blocks
-    .map((block) => (block.type === 'text' ? block.text : `@${block.label}`))
+    .map((block) => (block.type === 'text' ? block.text : mentionDisplayName(block)))
     .join('');
 }
 
-/** 返回节点真正的提示词来源，promptDocument 始终优先于旧 prompt。 */
 export function getEffectivePromptDocument(input: {
   prompt?: string;
   promptDocument?: PromptDocument;
@@ -353,6 +397,15 @@ export const videoCompletionActionSchema = z.enum(videoCompletionActions);
 /** 末帧提取策略版本；变更提取算法时递增，以形成新的幂等身份。 */
 export const VIDEO_FINAL_FRAME_POLICY_VERSION = 1;
 
+/** 节点上命名后的参考资源。id 稳定，name 仅作显示与输入别名。 */
+export const nodeResourceRefSchema = z.object({
+  id: z.string().trim().min(1).max(160),
+  assetId: z.string().trim().min(1).max(512),
+  mediaType: mediaTypeSchema,
+  name: z.string().trim().min(1).max(160),
+  assetVersion: z.number().int().positive().optional(),
+});
+
 export const nodeDataSchema = z.object({
   label: z.string().min(1),
   mediaType: mediaTypeSchema,
@@ -368,6 +421,11 @@ export const nodeDataSchema = z.object({
   prompt: z.string().trim().max(20_000).optional(),
   /** 版本化提示词文档；存在时它是唯一执行来源，旧 prompt 仅作兼容字段。 */
   promptDocument: promptDocumentSchema.optional(),
+  /**
+   * 节点参考资源池。名字绑定到 assetId，提示词用名字引用；
+   * 与画布连线和提示词提及共用同一份身份，避免按顺序互换角色。
+   */
+  resourceRefs: z.array(nodeResourceRefSchema).max(40).optional(),
   /**
    * 与节点一同保存的媒体生成参数，例如图片尺寸/清晰度和视频分辨率/时长。
    * 参数由对应 Provider 按已支持的字段映射，未配置时沿用模型默认值。
@@ -1135,6 +1193,8 @@ export type PromptDocument = z.infer<typeof promptDocumentSchema>;
 export type FrozenPromptMention = z.infer<typeof frozenPromptMentionSchema>;
 export type CanvasNode = z.infer<typeof canvasNodeSchema>;
 export type NodeData = z.infer<typeof nodeDataSchema>;
+export type NodeResourceRef = z.infer<typeof nodeResourceRefSchema>;
+
 export type CanvasEdge = z.infer<typeof canvasEdgeSchema>;
 export type CanvasDocument = z.infer<typeof canvasDocumentSchema>;
 export type RunStatus = z.infer<typeof runStatusSchema>;

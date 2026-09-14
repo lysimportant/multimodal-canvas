@@ -1511,6 +1511,13 @@ h2 {
   min-height: 102px;
 }
 
+.node-quick-editor-prompt .resource-mention-highlight,
+.node-quick-editor-dialog .resource-mention-highlight {
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 8px 9px;
+}
+
 .node-quick-editor-field select {
   height: 34px;
   padding: 0 8px;
@@ -2179,7 +2186,119 @@ h2 {
 }
 
 .resource-mention-textarea {
+  background: transparent;
+  caret-color: var(--mc-text, #102018);
+  color: transparent;
   min-width: 0;
+  position: relative;
+  z-index: 1;
+}
+
+.resource-mention-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.resource-mention-thumb {
+  height: 44px;
+  position: relative;
+  width: 44px;
+}
+
+.resource-mention-thumb-main {
+  background: var(--mc-surface-soft, #f7f8fa);
+  border: 1px solid var(--mc-border, #d5dfdb);
+  border-radius: 8px;
+  display: grid;
+  height: 100%;
+  overflow: hidden;
+  padding: 0;
+  place-items: center;
+  width: 100%;
+}
+
+.resource-mention-thumb-delete {
+  align-items: center;
+  background: rgb(16 32 24 / 78%);
+  border: 0;
+  border-radius: 999px;
+  bottom: 2px;
+  color: #fff;
+  display: inline-flex;
+  height: 16px;
+  justify-content: center;
+  padding: 0;
+  position: absolute;
+  right: 2px;
+  width: 16px;
+  z-index: 2;
+}
+
+.resource-mention-composer {
+  position: relative;
+}
+
+.resource-mention-highlight {
+  bottom: 0;
+  color: var(--mc-text, #102018);
+  font: inherit;
+  left: 0;
+  line-height: inherit;
+  overflow: hidden;
+  padding: inherit;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+  top: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.resource-mention-token {
+  background: color-mix(in srgb, var(--mc-accent, #18794e) 16%, white);
+  border-radius: 4px;
+  color: #0f6a45;
+  font-weight: 600;
+}
+
+.resource-mention-hover-card {
+  background: var(--mc-surface, #fff);
+  border: 1px solid var(--mc-border, #d5dfdb);
+  border-radius: 8px;
+  box-shadow: 0 10px 24px rgb(29 46 39 / 16%);
+  left: 8px;
+  overflow: hidden;
+  padding: 6px;
+  position: absolute;
+  top: 8px;
+  width: 96px;
+  z-index: 4;
+}
+
+.resource-mention-dialog-preview {
+  margin: 12px 0;
+  max-height: 240px;
+  overflow: hidden;
+}
+
+.resource-mention-dialog-name {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.resource-mention-dialog-name input {
+  border: 1px solid var(--mc-border, #d5dfdb);
+  border-radius: 6px;
+  height: 34px;
+  padding: 0 8px;
+}
+
+.resource-mention-dialog-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
 }
 
 .resource-mention-edit-warning {
