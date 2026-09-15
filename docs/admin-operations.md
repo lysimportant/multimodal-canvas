@@ -1,6 +1,6 @@
 # 管理后台运行与验收
 
-本次实现使用既有 React、Fastify、Prisma 和资源存储。正式数据和正式容器尚未升级；以下发布步骤是执行说明，不是已经执行的发布记录。当前进度与最终证据以 [实施检查点](../IMPLEMENTATION-CHECKPOINT.md) 为准。
+本次实现使用既有 React、Fastify、Prisma 和资源存储。正式数据和正式容器尚未升级；以下发布步骤是执行说明，不是已经执行的发布记录。当前进度与最终证据以 [实施检查点](https://github.com/lysimportant/multimodal-canvas/blob/c750763925a2fd63988c8a84402dc982a6ec460a/IMPLEMENTATION-CHECKPOINT.md) 为准。
 
 ## 页面与账户
 

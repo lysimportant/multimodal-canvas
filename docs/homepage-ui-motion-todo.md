@@ -1,8 +1,8 @@
 # 首页视觉、鼠标反馈与动效 TODO
 
-更新时间：2026-09-06。状态：**首页实现、专项质检和已登录账户联合验收完成。** 主计划见 [后台与账户 TODO](../TODO-ADMIN.md)，通用规范见 [全站 UI/UX 与质检清单](admin-ui-ux-review.md)，最终日志与 Git 交付依据见 [实施检查点](../IMPLEMENTATION-CHECKPOINT.md)。
+更新时间：2026-09-06。状态：**首页实现、专项质检和已登录账户联合验收完成。** 主计划见 [后台与账户 TODO](../TODO-ADMIN.md)，通用规范见 [全站 UI/UX 与质检清单](admin-ui-ux-review.md)，最终日志与 Git 交付依据见 [实施检查点](https://github.com/lysimportant/multimodal-canvas/blob/c750763925a2fd63988c8a84402dc982a6ec460a/IMPLEMENTATION-CHECKPOINT.md)。
 
-后续认证交互调整：登录侧栏已被 `/auth/login`、`/auth/register`、`/auth/verify` 三个独立页面替换。页面切换保留进出场动画，注册验证码确认后回工作台；下面侧栏 220ms/260ms 的记录仅用于追溯 `v0.15.1`，最新行为见 [独立认证流程](../TODO-AUTH-ENTRY.md)。首页圆形显影效果保持。
+后续认证交互调整：登录侧栏已被 `/auth/login`、`/auth/register`、`/auth/verify` 三个独立页面替换。页面切换保留进出场动画，注册验证码确认后回工作台；下面侧栏 220ms/260ms 的记录仅用于追溯 `v0.15.1`，最新行为见 [独立认证流程](https://github.com/lysimportant/multimodal-canvas/blob/c750763925a2fd63988c8a84402dc982a6ec460a/TODO-AUTH-ENTRY.md)。首页圆形显影效果保持。
 
 ## 本次实现
 
@@ -77,7 +77,7 @@
 
 ## 验证与性能记录
 
-环境：Windows、本地 pnpm workspace，Node 与 pnpm 版本以主任务 `IMPLEMENTATION-CHECKPOINT.md` 基线为准。首页使用项目既有 React、lucide、Vitest 与 Playwright，没有新增依赖。独立开发服务器为 `http://127.0.0.1:5186/`，未修改生产容器。
+环境：Windows、本地 pnpm workspace，Node 与 pnpm 版本以[实施历史记录](https://github.com/lysimportant/multimodal-canvas/blob/c750763925a2fd63988c8a84402dc982a6ec460a/IMPLEMENTATION-CHECKPOINT.md) 基线为准。首页使用项目既有 React、lucide、Vitest 与 Playwright，没有新增依赖。独立开发服务器为 `http://127.0.0.1:5186/`，未修改生产容器。
 
 - 原始基线：既有首页两项单测通过；原实现没有首页 animation/transition/鼠标监听，没有真实图片或视频文件。性能对照采用同一最终页面的静态与动态模式，不把旧版源码审计当作视觉或帧率测量。
 - `pnpm --filter @multimodal-canvas/web exec vitest run src/pages/HomePage.test.tsx src/pages/HomeMotion.test.tsx`：2 个文件，8 项通过。

@@ -2,9 +2,9 @@
 
 更新时间：2026-09-14
 整理基线：`main @ 43c69b6`
-来源：[视频节点任务](TODO-VIDEO-NODE.md)、[本地任务](TODO-LOCAL.md)。
+来源：[视频节点任务历史版本](https://github.com/lysimportant/multimodal-canvas/blob/c750763925a2fd63988c8a84402dc982a6ec460a/TODO-VIDEO-NODE.md)、[本地任务历史版本](https://github.com/lysimportant/multimodal-canvas/blob/c750763925a2fd63988c8a84402dc982a6ec460a/TODO-LOCAL.md)。
 
-本文件仅汇总两份来源文档尚需完成、受阻和后置的任务，不代表本轮已审查实现或重新执行验收。重复事项已合并；来源文档前部旧缺口与后部完成记录冲突时，以较新的完成记录为准。两份来源文档保留作设计与历史证据索引。
+本文件仅汇总两份来源文档尚需完成、受阻和后置的任务，不代表本轮已审查实现或重新执行验收。重复事项已合并；来源文档前部旧缺口与后部完成记录冲突时，以较新的完成记录为准。两份来源文档已从根目录删除，历史内容可通过上方固定版本链接或 `git show c750763:TODO-LOCAL.md`、`git show c750763:TODO-VIDEO-NODE.md` 查阅。
 
 状态：`[ ]` 待完成；`[~]` 已有部分实现或证据，仍需补齐验收。PC Web 核心流程优先，复杂移动端适配后置。下列编号为本汇总文档内的任务标识。
 

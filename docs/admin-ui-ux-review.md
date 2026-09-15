@@ -1,6 +1,6 @@
 # 后台与全站 UI/UX 优化、质检清单
 
-更新时间：2026-09-06。状态：已进入实现及验收；`[x]` 表示本地完成，`[~]` 表示仍含发布或后置部分。主需求见 [后台 TODO](../TODO-ADMIN.md)，首页专项见 [首页视觉、动画与鼠标特效 TODO](homepage-ui-motion-todo.md)，最新结果见 [实施检查点](../IMPLEMENTATION-CHECKPOINT.md)。
+更新时间：2026-09-06。状态：已进入实现及验收；`[x]` 表示本地完成，`[~]` 表示仍含发布或后置部分。主需求见 [后台 TODO](../TODO-ADMIN.md)，首页专项见 [首页视觉、动画与鼠标特效 TODO](homepage-ui-motion-todo.md)，最新结果见 [实施检查点](https://github.com/lysimportant/multimodal-canvas/blob/c750763925a2fd63988c8a84402dc982a6ec460a/IMPLEMENTATION-CHECKPOINT.md)。
 
 UI、UX 分别列出 16 项，每项有独立可观察的验收标准。优先检查 PC 工作台；手机已检查基本表单、导航和布局，更复杂手机画布优化后置。
 

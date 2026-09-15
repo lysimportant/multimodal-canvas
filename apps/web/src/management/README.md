@@ -34,4 +34,4 @@ node src/management/verify-browser.mjs
 
 ## 恢复检查点
 
-本目录独占管理前端实现。中断后先检查根目录 `IMPLEMENTATION-CHECKPOINT.md`、`TODO-ADMIN.md`、Git 状态与接口当前定义 `apps/api/src/account-routes.ts`。查询键包含当前用户和目标用户，用户身份变化时外层必须立即卸载旧内容；不要为了保留动画而延迟权限切换。
+本目录独占管理前端实现。中断后先检查根目录 `TODO-ADMIN.md`、`TODO-CONSOLIDATED.md` 及 `docs/node-settings-cleanup-checkpoint.md`、Git 状态与接口当前定义 `apps/api/src/account-routes.ts`。查询键包含当前用户和目标用户，用户身份变化时外层必须立即卸载旧内容；不要为了保留动画而延迟权限切换。

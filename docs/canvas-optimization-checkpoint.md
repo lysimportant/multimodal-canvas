@@ -4,7 +4,7 @@
 
 - 2026-09-12，`main @ 3d085fe`，上游 `origin/main`；Node v24.12.0、pnpm 11.19.0。
 - 起始已跟踪文件干净；保留 5 个用户未跟踪文件：三个 `.codex-patch*.py`、`compose-config.yaml`、`compose.yaml.full`。
-- 目标与验收见根目录 `节点画布_优化提示词_v2.md`。不操作生产、不发起收费 Provider 请求。
+- 目标与验收见[原画布优化计划](https://github.com/lysimportant/multimodal-canvas/blob/c750763925a2fd63988c8a84402dc982a6ec460a/%E8%8A%82%E7%82%B9%E7%94%BB%E5%B8%83_%E4%BC%98%E5%8C%96%E6%8F%90%E7%A4%BA%E8%AF%8D_v2.md)。不操作生产、不发起收费 Provider 请求。
 
 ## 阶段
 
@@ -21,7 +21,7 @@ Web 基线 47 文件 532 tests 通过；最终 Web 单元测试 544 passed。Dom
 
 ## 复核修正（2026-09-12）
 
-对照 `节点画布_优化提示词_v2.md` 与后续登录/资源/永久删除改动做了逐项复核。已修正：
+对照 [原画布优化计划](https://github.com/lysimportant/multimodal-canvas/blob/c750763925a2fd63988c8a84402dc982a6ec460a/%E8%8A%82%E7%82%B9%E7%94%BB%E5%B8%83_%E4%BC%98%E5%8C%96%E6%8F%90%E7%A4%BA%E8%AF%8D_v2.md) 与后续登录/资源/永久删除改动做了逐项复核。已修正：
 
 - 节点悬停/选中不再使用 2px/3px 光晕或 `0 8px 22px` 重阴影；选中只改边框色。
 - `index.css` 残留的旧白卡片描边、生成节点 min-height 和 28×28 音频预览限制。

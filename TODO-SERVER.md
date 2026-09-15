@@ -16,6 +16,7 @@
 - 验证域名证书、反向代理、入口路由、真实客户端地址传递、HSTS、告警接收端和配置回滚。
 - 验证 Redis 全局限流、TLS、S3、API/Worker 启动和故障关闭行为。
 - 故障演练前记录备份、流量切换窗口、回滚步骤和恢复责任人。
+- 原 TODO-DOCKER 的本机 Compose 实施已完成；实际 Linux 服务器及目标 ARM 架构（如需支持）仍需独立验收，不能由 Windows 本机结果推导通过。部署说明见 [Linux 与 Compose](docs/docker-server.md)、[Windows Docker](docs/docker-desktop.md)。
 
 ### [ ] P0-MEDIA-OPS-03 生产媒体处理与外部可观测性
 

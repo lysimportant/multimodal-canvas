@@ -11,7 +11,7 @@
 - Sub2 视频真实验收返回了任务状态、视频内容和时长，但没有 usage 或费用字段：[`docs/live-provider-acceptance.md`](live-provider-acceptance.md)。
 - Provider 路由、响应、取消、重试和 usage 边界的已知证据见 [`docs/provider-contract-acceptance.md`](provider-contract-acceptance.md)。
 - 管理员、普通用户和配置权限的现有入口见 [`docs/admin-operations.md`](admin-operations.md)；账户基线见 [`TODO-ADMIN.md`](../TODO-ADMIN.md)。
-- 当前未完成事项仍记录在 [`TODO-LOCAL.md`](../TODO-LOCAL.md)；本方案对应其中的上游 usage 展示与对账增强。
+- 当前未完成事项仍记录在 [`TODO-CONSOLIDATED.md`](../TODO-CONSOLIDATED.md)；本方案对应其中的上游 usage 展示与对账增强。
 
 ## 目标与边界
 
@@ -248,4 +248,4 @@ pnpm build
 - 当前尚未确认用户使用的 Helunox/Sub2 部署版本是否向客户端返回费用字段，也未确认其价格配置、倍率和管理 API 权限；这些属于上线前的外部契约验收。
 - 当前方案不承诺 Provider 成本一定可从普通响应 body 计算；真实成本以明确费用或可核对的 Provider usage 为准。
 
-本方案完成后，`TODO-LOCAL.md` 中的 P2 usage 项仍需在实际编码、迁移和验收完成前保持未完成状态。
+本方案完成后，`TODO-CONSOLIDATED.md` 中的 P2-03 项仍需在实际编码、迁移和验收完成前保持未完成状态。

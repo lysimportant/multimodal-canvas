@@ -2,11 +2,11 @@
 
 更新时间：2026-09-06。状态：用户已授权实施；核心功能已落盘，最终质检与正式发布边界见下文。
 
-认证入口最新调整：登录、注册与验证码已改为 `/auth/login`、`/auth/register`、`/auth/verify` 独立页面；注册验证码确认后返回工作台，不自动创建项目。此前登录侧栏的实现记录为历史，当前目标与证据见 [认证入口记录](TODO-AUTH-ENTRY.md) 和 [实施检查点](IMPLEMENTATION-CHECKPOINT.md)。
+认证入口最新调整：登录、注册与验证码已改为 `/auth/login`、`/auth/register`、`/auth/verify` 独立页面；注册验证码确认后返回工作台，不自动创建项目。此前登录侧栏的实现记录为历史，当前目标与证据见 [认证入口记录](https://github.com/lysimportant/multimodal-canvas/blob/c750763925a2fd63988c8a84402dc982a6ec460a/TODO-AUTH-ENTRY.md) 和 [实施检查点](https://github.com/lysimportant/multimodal-canvas/blob/c750763925a2fd63988c8a84402dc982a6ec460a/IMPLEMENTATION-CHECKPOINT.md)。
 
 ## 本轮目标与检查点
 
-本计划最初作为讨论稿提交于 `dd429f2`，随后用户明确要求开始实现。现已实现 `/admin` 首次初始化、账户与邮箱验证、用户和资源管理、首页动效及账户流程修复；完整实施记录见 [检查点](IMPLEMENTATION-CHECKPOINT.md)，配置、迁移与回滚见 [运行说明](docs/admin-operations.md)。正式容器与真实数据尚未升级，不把隔离验收当作正式发布完成。
+本计划最初作为讨论稿提交于 `dd429f2`，随后用户明确要求开始实现。现已实现 `/admin` 首次初始化、账户与邮箱验证、用户和资源管理、首页动效及账户流程修复；完整实施记录见 [检查点](https://github.com/lysimportant/multimodal-canvas/blob/c750763925a2fd63988c8a84402dc982a6ec460a/IMPLEMENTATION-CHECKPOINT.md)，配置、迁移与回滚见 [运行说明](docs/admin-operations.md)。正式容器与真实数据尚未升级，不把隔离验收当作正式发布完成。
 
 - [x] 读取全局 AGENTS.md、现有认证 TODO、部署文档及相关代码；仓库没有 README.md 或额外的项目级 AGENTS.md。
 - [x] 讨论基线：`main @ b9157e1`，实施起点为 `dd429f2`，初始工作区干净；上游 `origin/main`，另配置 `gitee`。
@@ -29,7 +29,7 @@
 - [x] 最终完整画布 23 项冒烟、首页专项 7 项、Web 454 项及节点尺寸/测量回归通过；Git 交付与日志位置见检查点。
 - [ ] 正式部署、真实数据盘点和真实邮件送达验收需具体操作确认；当前预览未载入真实 SMTP。
 
-交接阅读顺序：本文件、[UI/UX 与全站质检清单](docs/admin-ui-ux-review.md)、[首页视觉、动画与鼠标特效 TODO](docs/homepage-ui-motion-todo.md)、[现有认证入口记录](TODO-AUTH-ENTRY.md)、[本地计费与模型广场执行方案](docs/billing-and-model-marketplace-plan.md)、当前 Git 状态及最新验证结果。中断后从最近一次已验证状态继续。
+交接阅读顺序：本文件、[UI/UX 与全站质检清单](docs/admin-ui-ux-review.md)、[首页视觉、动画与鼠标特效 TODO](docs/homepage-ui-motion-todo.md)、[现有认证入口记录](https://github.com/lysimportant/multimodal-canvas/blob/c750763925a2fd63988c8a84402dc982a6ec460a/TODO-AUTH-ENTRY.md)、[本地计费与模型广场执行方案](docs/billing-and-model-marketplace-plan.md)、当前 Git 状态及最新验证结果。中断后从最近一次已验证状态继续。
 
 ## 实施前的问题与基础
 
