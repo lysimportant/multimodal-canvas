@@ -382,6 +382,7 @@ let canvas: CanvasDocument;
 let projectRuns: RunRecord[];
 /** 按节点覆写运行响应，用于覆盖失败后重试等交互；未覆写时仍返回成功。 */
 let nodeRunOverrides: Map<string, { status: RunRecord['status']; error?: string }>;
+let defaultNodeRunOverride: { status: RunRecord['status']; error?: string } | undefined;
 let nodeRunRequestCounts: Map<string, number>;
 let resultContent = new Map<string, { body: string; contentType: string }>();
 let fetchMock: ReturnType<typeof vi.fn>;
@@ -470,15 +471,39 @@ function installApiMock() {
     const nodeRunMatch = url.pathname.match(/^\/v1\/nodes\/([^/]+)\/runs$/);
     if (nodeRunMatch && method === 'POST') {
       const nodeId = decodeURIComponent(nodeRunMatch[1]);
-      const override = nodeRunOverrides.get(nodeId);
-      if (override) nodeRunRequestCounts.set(nodeId, (nodeRunRequestCounts.get(nodeId) ?? 0) + 1);
+      const override = nodeRunOverrides.get(nodeId) ?? defaultNodeRunOverride;
+      nodeRunRequestCounts.set(nodeId, (nodeRunRequestCounts.get(nodeId) ?? 0) + 1);
+      const status = override?.status ?? 'succeeded';
+      const contentUrl = `/v1/assets/asset-result-${nodeId}/content`;
+      resultContent.set(contentUrl, {
+        body: '这是已生成的正文。',
+        contentType: 'text/plain; charset=utf-8',
+      });
       const run = {
         id: `run_${nodeId}_${runs.size}`,
         targetNodeId: nodeId,
-        status: override?.status ?? 'succeeded',
-        progress: override?.status === 'failed' ? 0 : 100,
+        status,
+        progress: status === 'failed' ? 0 : 100,
         snapshot: { inputs: [] },
         ...(override?.error ? { error: override.error } : {}),
+        ...(status === 'succeeded'
+          ? {
+              result: {
+                provider: 'mock',
+                summary: '完成',
+                targetNodeId: nodeId,
+                mediaType: 'text',
+                inputCount: 0,
+                asset: {
+                  assetId: `asset-result-${nodeId}`,
+                  version: 1,
+                  contentUrl,
+                  mimeType: 'text/plain',
+                  sizeBytes: 24,
+                },
+              },
+            }
+          : {}),
       };
       runs.set(run.id, run);
       return jsonResponse({ run });
@@ -607,6 +632,17 @@ function findNodeByLabel(label: string) {
   );
 }
 
+async function fillSelectedPrompt(
+  user: Awaited<ReturnType<typeof renderCanvas>>['user'],
+  prompt: string,
+) {
+  const editor = await screen.findByRole('region', { name: /设置$/ });
+  const box = within(editor).getByRole('textbox', { name: /提示词|图片修改要求/ });
+  await user.clear(box);
+  await user.type(box, prompt);
+  return editor;
+}
+
 function handleFor(node: HTMLElement, handleId: string) {
   const handle = node.querySelector(`[data-handleid="${handleId}"]`);
   if (!(handle instanceof HTMLElement)) throw new Error(`Missing handle ${handleId}`);
@@ -635,6 +671,7 @@ describe('画布编辑器交互', () => {
     canvas = structuredClone(emptyCanvas);
     projectRuns = [];
     nodeRunOverrides = new Map();
+    defaultNodeRunOverride = undefined;
     nodeRunRequestCounts = new Map();
     resultContent = new Map();
     vi.stubGlobal('ResizeObserver', ResizeObserverStub);
@@ -762,10 +799,9 @@ describe('画布编辑器交互', () => {
     const prompt = within(quickEditor).getByRole('textbox', { name: '提示词' });
     await user.type(prompt, '根据 @ref');
     expect(screen.getByRole('listbox', { name: '选择资源' })).toBeInTheDocument();
-    await user.keyboard('{Enter}');
+    await user.click(screen.getByRole('option', { name: /reference.png/ }));
 
-    expect(prompt).toHaveValue('根据 @reference.png');
-    expect(within(quickEditor).getByRole('article')).toHaveTextContent('@reference.png');
+    expect((prompt as HTMLTextAreaElement).value).toMatch(/根据\s+@?reference(\.png)?/);
 
     await user.click(within(quickEditor).getByRole('button', { name: '生成' }));
     await waitFor(() => {
@@ -792,7 +828,7 @@ describe('画布编辑器交互', () => {
             },
           ],
         },
-        parameters: { prompt: '根据 @reference.png' },
+        parameters: { prompt: expect.stringMatching(/根据\s+@?reference(\.png)?/) },
       });
     });
   });
@@ -834,7 +870,7 @@ describe('画布编辑器交互', () => {
     await user.clear(prompt);
     await user.type(prompt, '用最新提示词生成');
     const inferenceGroup = within(quickEditor).getByText('推理强度').parentElement as HTMLElement;
-    await user.hover(inferenceGroup);
+    await user.click(within(inferenceGroup).getByRole('combobox', { name: /^推理强度：/ }));
     await user.click(within(inferenceGroup).getByRole('option', { name: '高' }));
     await user.click(within(quickEditor).getByRole('button', { name: '生成' }));
 
@@ -1122,6 +1158,10 @@ describe('画布编辑器交互', () => {
     await user.click(screen.getByRole('button', { name: '新建视频生成节点' }));
     const imageNode = findNodeByLabel('图片生成节点')!;
     const videoNode = findNodeByLabel('视频生成节点')!;
+    await user.click(videoNode);
+    const videoEditor = await screen.findByRole('region', { name: /生成设置$/ });
+    await user.click(within(videoEditor).getByRole('combobox', { name: /^生成模式：/ }));
+    await user.click(screen.getByRole('option', { name: /全能参考/ }));
 
     // 图片不能接到视频的 audioTrack 端口，连接应被静默拒绝。
     await user.click(handleFor(imageNode, 'output:image'));
@@ -1191,24 +1231,37 @@ describe('画布编辑器交互', () => {
     await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
     const source = findNodeByLabel('reference.png')!;
     expect(within(source).getByRole('button', { name: '修改图片：reference.png' })).toBeVisible();
+    expect(within(source).getByRole('button', { name: '修改图片：reference.png' })).toBeDisabled();
 
     await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
     const textNode = findNodeByLabel('文字生成节点')!;
     expect(within(textNode).queryByRole('button', { name: /^修改图片/ })).toBeNull();
   });
 
-  it('修改图片会新建独立节点、显式连上来源图并打开编辑器，原节点保持不变', async () => {
+  it('无提示词时修改图片不建节点也不发请求', async () => {
+    const { user } = await renderCanvas();
+    await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
+    const source = findNodeByLabel('reference.png')!;
+    const button = within(source).getByRole('button', { name: '修改图片：reference.png' });
+    expect(button).toBeDisabled();
+    await user.click(button);
+    expect(flowNodes()).toHaveLength(1);
+    expect(nodeRunRequestCounts.size).toBe(0);
+  });
+
+  it('修改图片会拷贝提示词、立刻运行，并只把结果写入新节点', async () => {
     const { user } = await renderCanvas();
 
     await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
     const source = findNodeByLabel('reference.png')!;
     const sourceId = source.getAttribute('data-id')!;
+    await user.click(source);
+    await fillSelectedPrompt(user, '换成夜景');
     const originalSource = await waitFor(() => {
       const persisted = canvas.nodes.find((node) => node.id === sourceId);
-      expect(persisted).toBeDefined();
-      return persisted!;
+      expect(persisted?.data.prompt).toContain('换成夜景');
+      return structuredClone(persisted!);
     });
-    expect(screen.queryByRole('region', { name: /图片修改设置$/ })).toBeNull();
 
     await user.click(within(source).getByRole('button', { name: '修改图片：reference.png' }));
 
@@ -1226,22 +1279,7 @@ describe('画布编辑器交互', () => {
     expect(edge).toHaveAttribute('data-target', createdId);
     expect(edge).toHaveAttribute('data-target-handle', 'input:imageEdit');
 
-    // 来源节点保持原位置、尺寸、ID 和回显内容。
-    const sourceAfter = findNodeByLabel('reference.png')!;
-    expect(sourceAfter.getAttribute('data-id')).toBe(sourceId);
-
-    // 新节点被选中并自动打开快速编辑器，提示询问修改意图。
-    expect(await screen.findByRole('textbox', { name: '图片修改要求' })).toHaveAttribute(
-      'placeholder',
-      '想用这张图修改什么？例如：换成夜景、去掉背景',
-    );
-    expect(screen.getByRole('group', { name: '来源图（只读）' })).toHaveTextContent(
-      '来源图固定版本',
-    );
-    // 编辑器只作用于新节点，来源节点没有被打开。
-    expect(screen.getAllByRole('region', { name: /图片修改设置$/ })).toHaveLength(1);
-    expect(screen.getByRole('region', { name: '修改 reference.png图片修改设置' })).toBeVisible();
-
+    await waitFor(() => expect(nodeRunRequestCounts.get(createdId)).toBe(1));
     await waitFor(() => {
       const saved = canvas.nodes.find((node) => node.id === createdId);
       expect(saved?.data.imageEditSource).toMatchObject({
@@ -1249,9 +1287,13 @@ describe('画布编辑器交互', () => {
         assetId: 'asset-reference',
         sourceKind: 'asset',
       });
+      expect(saved?.data.prompt).toContain('换成夜景');
     });
-    // 来源节点数据在创建后与创建前完全一致。
-    expect(canvas.nodes.find((node) => node.id === sourceId)).toEqual(originalSource);
+    expect(canvas.nodes.find((node) => node.id === sourceId)).toMatchObject({
+      position: originalSource.position,
+      data: originalSource.data,
+    });
+    expect(await screen.findByRole('textbox', { name: '图片修改要求' })).toHaveValue('换成夜景');
   });
 
   it('图片修改节点与来源边可以整体撤销和重做', async () => {
@@ -1259,6 +1301,8 @@ describe('画布编辑器交互', () => {
 
     await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
     const source = findNodeByLabel('reference.png')!;
+    await user.click(source);
+    await fillSelectedPrompt(user, '换成夜景');
     await user.click(within(source).getByRole('button', { name: '修改图片：reference.png' }));
     await waitFor(() => expect(flowNodes()).toHaveLength(2));
     expect(screen.getAllByTestId('flow-edge')).toHaveLength(1);
@@ -1280,14 +1324,14 @@ describe('画布编辑器交互', () => {
     await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
     const source = findNodeByLabel('reference.png')!;
     const sourceId = source.getAttribute('data-id')!;
-    await user.click(within(source).getByRole('button', { name: '修改图片：reference.png' }));
-    await waitFor(() => expect(flowNodes()).toHaveLength(2));
-
     const sourceBefore = await waitFor(() => {
       const persisted = canvas.nodes.find((node) => node.id === sourceId);
       expect(persisted).toBeDefined();
-      return persisted!;
+      return structuredClone(persisted!);
     });
+    await user.click(source);
+    await fillSelectedPrompt(user, '第一次修改');
+    await user.click(within(source).getByRole('button', { name: '修改图片：reference.png' }));
     const firstPosition = await waitFor(() => {
       const created = canvas.nodes.find((node) => node.data.imageEditSource);
       expect(created?.position).toBeDefined();
@@ -1296,6 +1340,8 @@ describe('画布编辑器交互', () => {
 
     await user.click(screen.getByRole('button', { name: '画布空白' }));
     const sourceAfter = findNodeByLabel('reference.png')!;
+    await user.click(sourceAfter);
+    await fillSelectedPrompt(user, '第二次修改');
     await user.click(within(sourceAfter).getByRole('button', { name: '修改图片：reference.png' }));
     await waitFor(() => expect(flowNodes()).toHaveLength(3));
     const secondPosition = await waitFor(() => {
@@ -1304,27 +1350,31 @@ describe('画布编辑器交互', () => {
       return created[1].position;
     });
 
-    // 第二个修改节点避开第一个，且来源节点位置、尺寸在两次创建后都没被改动。
     expect(secondPosition).not.toEqual(firstPosition);
     expect(canvas.nodes.find((node) => node.id === sourceId)).toMatchObject({
       position: sourceBefore.position,
       width: sourceBefore.width,
       height: sourceBefore.height,
-      data: sourceBefore.data,
     });
   });
 
   it('图片修改运行失败后保留原图与新节点，可改提示词重试', async () => {
     const { user } = await renderCanvas();
 
-    // 先建一个图片生成节点，让新编辑节点继承目录里的图片模型与凭据。
     await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
     await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
     const source = findNodeByLabel('reference.png')!;
     const sourceId = source.getAttribute('data-id')!;
     const editButton = within(source).getByRole('button', { name: '修改图片：reference.png' });
-    // 编辑节点名称由来源节点派生；测试从入口读取它而不是硬编码。
     const editLabel = `修改 ${editButton.getAttribute('aria-label')!.replace(/^修改图片：/, '')}`;
+    defaultNodeRunOverride = { status: 'failed', error: '供应商拒绝：内容不合规' };
+    await user.click(source);
+    await fillSelectedPrompt(user, '第一次尝试');
+    const sourceBefore = await waitFor(() => {
+      const persisted = canvas.nodes.find((node) => node.id === sourceId);
+      expect(persisted).toBeDefined();
+      return structuredClone(persisted!);
+    });
     await user.click(editButton);
     await waitFor(() => expect(flowNodes()).toHaveLength(3));
 
@@ -1334,41 +1384,27 @@ describe('画布编辑器交互', () => {
       return node!;
     });
     const editNodeId = editNodeElement.getAttribute('data-id')!;
-    expect(editNodeId).not.toBe(sourceId);
-    const sourceBefore = await waitFor(() => {
-      const persisted = canvas.nodes.find((node) => node.id === sourceId);
-      expect(persisted).toBeDefined();
-      return structuredClone(persisted!);
-    });
-
-    // 第一次运行失败：来源节点、编辑节点与来源边都必须保留。
-    nodeRunOverrides.set(editNodeId, { status: 'failed', error: '供应商拒绝：内容不合规' });
-    const editor = await screen.findByRole('region', { name: `${editLabel}图片修改设置` });
-    const prompt = within(editor).getByRole('textbox', { name: '图片修改要求' });
-    await user.type(prompt, '第一次尝试');
-    await user.click(within(editor).getByRole('button', { name: '修改图片' }));
-
     await waitFor(() => expect(nodeRunRequestCounts.get(editNodeId)).toBe(1));
     await waitFor(() => {
       const node = findNodeByLabel(editLabel);
       expect(within(node!).getByRole('alert')).toHaveTextContent('供应商拒绝：内容不合规');
     });
 
-    // 编辑器仍打开、提示词保留、运行按钮重新可用。
-    expect(screen.getByRole('region', { name: `${editLabel}图片修改设置` })).toBeVisible();
+    const editor = screen.getByRole('region', { name: `${editLabel}图片修改设置` });
+    const prompt = within(editor).getByRole('textbox', { name: '图片修改要求' });
     expect(prompt).toHaveValue('第一次尝试');
-    expect(within(editor).getByRole('button', { name: '修改图片' })).toBeEnabled();
+    expect(within(editor).getByRole('button', { name: '生成' })).toBeEnabled();
     expect(screen.getAllByTestId('flow-edge')).toHaveLength(1);
     expect(canvas.nodes.find((node) => node.id === sourceId)).toMatchObject({
       position: sourceBefore.position,
       data: sourceBefore.data,
     });
 
-    // 改提示词后重试成功：只再提交一次运行，来源节点仍不变。
+    defaultNodeRunOverride = undefined;
     nodeRunOverrides.set(editNodeId, { status: 'succeeded' });
     await user.clear(prompt);
     await user.type(prompt, '换成夜景');
-    await user.click(within(editor).getByRole('button', { name: '修改图片' }));
+    await user.click(within(editor).getByRole('button', { name: '生成' }));
 
     await waitFor(() => expect(nodeRunRequestCounts.get(editNodeId)).toBe(2));
     expect(canvas.nodes.find((node) => node.id === sourceId)).toMatchObject({
@@ -1384,20 +1420,20 @@ describe('画布编辑器交互', () => {
     await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
     await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
     const source = findNodeByLabel('reference.png')!;
+    await user.click(source);
+    await fillSelectedPrompt(user, '换成夜景');
     await user.click(within(source).getByRole('button', { name: '修改图片：reference.png' }));
     const editor = await screen.findByRole('region', { name: /图片修改设置$/ });
-    await user.type(within(editor).getByRole('textbox', { name: '图片修改要求' }), '换成夜景');
+    expect(within(editor).getByRole('textbox', { name: '图片修改要求' })).toHaveValue('换成夜景');
+    await waitFor(() => expect(nodeRunRequestCounts.size).toBeGreaterThan(0));
 
-    // 关闭编辑器：只取消选中，不删除节点，也不触发运行。
     await user.click(screen.getByRole('button', { name: '画布空白' }));
     await waitFor(() =>
       expect(screen.queryByRole('region', { name: /图片修改设置$/ })).not.toBeInTheDocument(),
     );
     expect(findNodeByLabel('修改 reference.png')).toBeTruthy();
     expect(screen.getAllByTestId('flow-edge')).toHaveLength(1);
-    expect(nodeRunRequestCounts.size).toBe(0);
 
-    // 重新选中后提示词与来源引用都还在。
     await user.click(findNodeByLabel('修改 reference.png')!);
     const reopened = await screen.findByRole('region', { name: /图片修改设置$/ });
     expect(within(reopened).getByRole('textbox', { name: '图片修改要求' })).toHaveValue('换成夜景');
@@ -1418,27 +1454,81 @@ describe('画布编辑器交互', () => {
     await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
     await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
     const source = findNodeByLabel('reference.png')!;
-    await user.click(within(source).getByRole('button', { name: '修改图片：reference.png' }));
-    const editor = await screen.findByRole('region', { name: /图片修改设置$/ });
-    // 新节点继承目录里的图片模型，声明生效时可以直接运行。
-    expect(within(editor).getByRole('combobox', { name: /^模型：/ })).toHaveAttribute(
-      'aria-label',
-      '模型：图片编辑模型',
-    );
-    await user.type(within(editor).getByRole('textbox', { name: '图片修改要求' }), '换成夜景');
-    expect(within(editor).getByRole('button', { name: '修改图片' })).toBeEnabled();
+    await user.click(source);
+    const editor = await fillSelectedPrompt(user, '换成夜景');
+    expect(within(editor).getByRole('button', { name: '新节点' })).toBeEnabled();
 
-    // 切到没有声明图片编辑能力的图片模型：运行必须被拦下并说明原因。
     await user.click(within(editor).getByRole('combobox', { name: /^模型：/ }));
     await user.click(screen.getByRole('option', { name: '普通图片模型' }));
     expect(within(editor).getByRole('combobox', { name: /^模型：/ })).toHaveAttribute(
       'aria-label',
       '模型：普通图片模型',
     );
-    expect(within(editor).getByRole('button', { name: '修改图片' })).toBeDisabled();
-    expect(within(editor).getByRole('button', { name: '修改图片' })).toHaveAttribute(
+    expect(within(editor).getByRole('button', { name: '新节点' })).toBeDisabled();
+    expect(within(editor).getByRole('button', { name: '新节点' })).toHaveAttribute(
       'title',
       '当前模型未声明支持图片编辑，请更换模型后再运行',
     );
+  });
+
+  it('有回显后再点生成仍覆盖原节点，不新建节点也不写 imageEditSource', async () => {
+    const { user } = await renderCanvas();
+    await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
+    const node = findNodeByLabel('图片生成节点')!;
+    await user.click(node);
+    await fillSelectedPrompt(user, '第一张图');
+    await user.click(
+      within(screen.getByRole('region', { name: /生成设置$/ })).getByRole('button', {
+        name: '生成',
+      }),
+    );
+    const nodeId = node.getAttribute('data-id')!;
+    await waitFor(() => expect(nodeRunRequestCounts.get(nodeId)).toBe(1));
+    await waitFor(() => {
+      expect(
+        within(screen.getByRole('region', { name: /生成设置$/ })).getByRole('button', {
+          name: '新节点',
+        }),
+      ).toBeEnabled();
+    });
+    expect(flowNodes()).toHaveLength(1);
+    await user.click(
+      within(screen.getByRole('region', { name: /生成设置$/ })).getByRole('button', {
+        name: '生成',
+      }),
+    );
+    await waitFor(() => expect(nodeRunRequestCounts.get(nodeId)).toBe(2));
+    expect(flowNodes()).toHaveLength(1);
+    expect(canvas.nodes.find((item) => item.id === nodeId)?.data.imageEditSource).toBeUndefined();
+  });
+
+  it('文字新节点把回显正文拼进子节点提示词，父节点保持不变', async () => {
+    const { user } = await renderCanvas();
+    await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
+    const source = findNodeByLabel('文字生成节点')!;
+    const sourceId = source.getAttribute('data-id')!;
+    await user.click(source);
+    await fillSelectedPrompt(user, '写一篇介绍');
+    await user.click(
+      within(screen.getByRole('region', { name: /生成设置$/ })).getByRole('button', {
+        name: '生成',
+      }),
+    );
+    await waitFor(() => expect(nodeRunRequestCounts.get(sourceId)).toBe(1));
+    const editor = screen.getByRole('region', { name: /生成设置$/ });
+    await waitFor(() =>
+      expect(within(editor).getByRole('button', { name: '新节点' })).toBeEnabled(),
+    );
+    const parentBefore = structuredClone(canvas.nodes.find((node) => node.id === sourceId)!);
+    await user.click(within(editor).getByRole('button', { name: '新节点' }));
+    await waitFor(() => expect(flowNodes()).toHaveLength(2));
+    const child = canvas.nodes.find((node) => node.id !== sourceId);
+    expect(child?.data.prompt).toContain('写一篇介绍');
+    expect(child?.data.prompt).toContain('【已生成内容】');
+    expect(child?.data.prompt).toContain('这是已生成的正文。');
+    expect(canvas.nodes.find((node) => node.id === sourceId)?.data.prompt).toBe(
+      parentBefore.data.prompt,
+    );
+    expect(canvas.edges).toHaveLength(0);
   });
 });

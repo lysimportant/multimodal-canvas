@@ -88,7 +88,10 @@ const models: NodeQuickEditorProps['models'] = [
     id: 'image-model',
     name: '图片模型',
     mediaTypes: ['image'],
-    capabilities: { reasoning_effort: ['low', 'medium', 'high'] },
+    capabilities: {
+      reasoning_effort: ['low', 'medium', 'high'],
+      imageEdit: { supported: true, mimeTypes: ['image/png'] },
+    },
   },
   { id: 'multi-model', name: '多模态模型', mediaTypes: ['text', 'image'] },
 ];
@@ -1408,5 +1411,51 @@ describe('NodeQuickEditor', () => {
     expect(within(inferenceGroup).queryByRole('option', { name: '轻度' })).not.toBeInTheDocument();
     expect(within(inferenceGroup).queryByRole('option', { name: '中' })).not.toBeInTheDocument();
     expect(within(inferenceGroup).queryByRole('option', { name: '高' })).not.toBeInTheDocument();
+  });
+
+  it('无回显只显示生成，有回显才显示新节点', () => {
+    const { rerender } = render(<NodeQuickEditor {...makeProps()} />);
+    expect(screen.getByRole('button', { name: '生成' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: '新节点' })).toBeNull();
+
+    rerender(
+      <NodeQuickEditor
+        {...makeProps({
+          onRunNewNode: vi.fn(),
+          node: {
+            ...imageNode,
+            data: {
+              ...imageNode.data,
+              resultAsset: { assetId: 'asset_result' },
+              modelAlias: 'image-model',
+            },
+          },
+        })}
+      />,
+    );
+    expect(screen.getByRole('button', { name: '生成' })).toBeVisible();
+    expect(screen.getByRole('button', { name: '新节点' })).toBeVisible();
+  });
+
+  it('来源图片节点不显示生成，只显示新节点', () => {
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          onRunNewNode: vi.fn(),
+          node: {
+            ...imageNode,
+            data: {
+              ...imageNode.data,
+              mode: 'source',
+              assetId: 'asset_upload',
+              contentUrl: '/c',
+              modelAlias: 'image-model',
+            },
+          },
+        })}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: '生成' })).toBeNull();
+    expect(screen.getByRole('button', { name: '新节点' })).toBeEnabled();
   });
 });

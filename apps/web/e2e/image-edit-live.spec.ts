@@ -124,21 +124,10 @@ test.describe('真实栈图片编辑验收', () => {
     await page.waitForTimeout(1500);
     const stableSourceBox = await sourceNode.boundingBox();
 
-    await sourceNode.hover();
-    await sourceNode.getByRole('button', { name: `修改图片：${fileName}` }).click();
-
-    const editNode = page.locator('.react-flow__node[data-id^="node_image_generate"]');
-    await expect(editNode).toHaveCount(1, { timeout: 30_000 });
-    await expect(page.locator('.react-flow__edge')).toHaveCount(1);
-
-    const editor = page.getByRole('region', { name: /图片修改设置$/ });
-    await expect(editor).toBeVisible();
-    await expect(editor.getByRole('group', { name: '来源图（只读）' })).toContainText(
-      '来源图固定版本：v1',
-    );
-
-    // 选择操作者授权的模型；CompactSelect 需要先点触发器再点列表项。
-    const modelTrigger = editor.getByRole('combobox', { name: /^模型：/ });
+    await sourceNode.click();
+    const sourceEditor = page.getByRole('region', { name: /生成设置$/ });
+    await expect(sourceEditor).toBeVisible();
+    const modelTrigger = sourceEditor.getByRole('combobox', { name: /^模型：/ });
     await modelTrigger.click();
     const modelList = page.getByRole('listbox').filter({ hasText: modelAlias });
     await expect(modelList).toBeVisible({ timeout: 15_000 });
@@ -147,15 +136,20 @@ test.describe('真实栈图片编辑验收', () => {
       .first()
       .click();
     await expect(modelTrigger).toHaveAttribute('aria-expanded', 'false');
+    await sourceEditor.getByRole('textbox', { name: '提示词' }).fill(prompt);
 
-    const runButton = editor.getByRole('button', { name: '修改图片' });
-    await expect(runButton).toBeDisabled();
-    await editor.getByRole('textbox', { name: '图片修改要求' }).fill(prompt);
-    await expect(runButton).toBeEnabled({ timeout: 15_000 });
-
-    // —— 授权范围内的唯一一次计费 POST ——
+    // —— 授权范围内的唯一一次计费 POST：修改图片与新节点同一路径并立刻运行 ——
     const submittedAt = Date.now();
-    await runButton.click();
+    await sourceNode.getByRole('button', { name: `修改图片：${fileName}` }).click();
+
+    const editNode = page.locator('.react-flow__node[data-id^="node_image_generate"]');
+    await expect(editNode).toHaveCount(1, { timeout: 30_000 });
+    await expect(page.locator('.react-flow__edge')).toHaveCount(1);
+    const editor = page.getByRole('region', { name: /图片修改设置$/ });
+    await expect(editor).toBeVisible();
+    await expect(editor.getByRole('group', { name: '来源图（只读）' })).toContainText(
+      '来源图固定版本：v1',
+    );
 
     await expect.poll(() => runRequests.length, { timeout: 60_000 }).toBeGreaterThanOrEqual(1);
     expect(runRequests).toHaveLength(1);

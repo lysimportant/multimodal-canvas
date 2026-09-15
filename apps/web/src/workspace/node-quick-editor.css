@@ -157,12 +157,31 @@
   flex-shrink: 0;
 }
 
-.node-quick-editor-expand,
-:is(.node-quick-editor, .node-quick-editor-dialog) .node-quick-editor-run {
+.node-quick-editor-expand {
   flex: 0 0 36px;
   justify-content: center;
   width: 36px;
   padding: 0;
+}
+
+.node-quick-editor-run-group {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  min-width: 0;
+}
+
+:is(.node-quick-editor, .node-quick-editor-dialog) .node-quick-editor-run {
+  flex: 0 0 auto;
+  justify-content: center;
+  min-width: 36px;
+  padding: 0 10px;
+  width: auto;
+}
+
+:is(.node-quick-editor, .node-quick-editor-dialog) .node-quick-editor-run-new {
+  background: var(--mc-surface-soft);
+  color: var(--mc-text);
 }
 
 :is(.node-quick-editor, .node-quick-editor-dialog) :is(button, input).compact-select-trigger:hover,

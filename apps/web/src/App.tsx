@@ -54,7 +54,6 @@ import {
   type RunRecord,
   type VideoCompletionAction,
   type VideoMode,
-  isImageEditSourceNode,
   isPortConnectionAllowed,
   renderPromptDocument,
 } from '@multimodal-canvas/domain';
@@ -82,6 +81,17 @@ import {
 } from './upload-utils';
 import { createUniqueNodeLabel } from './app-contract-utils';
 import { getNodePlacementRightOf } from './workspace/canvas-position';
+import {
+  appendGeneratedContentToPrompt,
+  canForkNewNode,
+  createUniqueForkLabel,
+  findReadyFinalFrameImageNode,
+  freezeImageEditSource,
+  inheritedGenerateData,
+  nodeHasPrompt,
+  type NodeRunTarget,
+} from './workspace/fork-generate-node';
+import { fetchNodeEchoText } from './workspace/node-echo-text';
 import {
   buildConnectedGenerateNodeConnection,
   validateResolvedCanvasConnection,
@@ -307,21 +317,6 @@ type CanvasHistorySnapshot = {
   nodes: AssetFlowNode[];
   edges: FlowEdge[];
 };
-
-/**
- * 生成不重名的图片修改节点名称，保留来源节点的可读性。
- * @param sourceLabel 来源图片节点名称。
- * @param nodes 当前画布节点。
- * @returns 形如「修改 原图名」且在画布内唯一的名称。
- */
-function createUniqueImageEditLabel(sourceLabel: string, nodes: readonly AssetFlowNode[]): string {
-  const base = `修改 ${sourceLabel}`.slice(0, 120);
-  const existing = new Set(nodes.map((node) => node.data.label));
-  if (!existing.has(base)) return base;
-  let suffix = 2;
-  while (existing.has(`${base} ${suffix}`)) suffix += 1;
-  return `${base} ${suffix}`;
-}
 
 const themeOptions: Array<{ value: CanvasTheme; label: string; swatch: string }> = [
   { value: 'eye-care', label: '护眼', swatch: 'theme-swatch-eye-care' },
@@ -1604,93 +1599,27 @@ function WorkspaceApp({
   );
 
   /**
-   * 图片节点“修改图片”：新建独立编辑节点并显式连上来源图。
-   *
-   * 来源节点只被读取：不改变它的位置、尺寸、节点 ID、回显内容和资产版本。
-   * 新节点使用全新 ID，写入 `imageEditSource` 冻结来源资产版本，并通过
-   * `input:imageEdit` 角色显式连线；创建失败时不留下半成品节点或边。
-   *
-   * @param sourceNodeId 被修改图片的图片节点 ID。
+   * 把分叉子节点和新建边写入同一条历史记录，并同步 nodesRef 以免立刻运行读到旧画布。
+   * 父节点只取消选中，不改位置、尺寸或产物字段。
+   * @param child 新建的子节点。
+   * @param extraEdges 这次分叉新建的边。
    */
-  const handleCreateImageEditNode = useCallback(
-    (sourceNodeId: string) => {
-      const source = nodesRef.current.find((node) => node.id === sourceNodeId);
-      if (!source) {
-        setNotice({ kind: 'error', message: '图片来源节点已不存在，请重新选择图片节点' });
-        return;
-      }
-      if (!isImageEditSourceNode(source)) {
-        setNotice({ kind: 'error', message: '该节点还没有图片内容，请先上传或生成图片' });
-        return;
-      }
-      const preferredModelNotice = nodePreferenceNoticeRef.current;
-
-      // 冻结来源身份：生成结果用自身资产版本，上传资源在提交时由 API 冻结版本。
-      const resultAsset = source.data.resultAsset;
-      const assetId = resultAsset?.assetId ?? source.data.assetId;
-      if (!assetId) {
-        setNotice({ kind: 'error', message: '该节点还没有图片内容，请先上传或生成图片' });
-        return;
-      }
-      const dimensions = getNewNodeDimensions('image');
-      const position = getNodePlacementRightOf(source, nodesRef.current, dimensions);
-      const editNode = createGenerateNode('image', position, {
-        label: createUniqueImageEditLabel(source.data.label, nodesRef.current),
-        imageEditSource: {
-          sourceNodeId: source.id,
-          assetId,
-          ...(resultAsset?.version !== undefined ? { version: resultAsset.version } : {}),
-          sourceKind: resultAsset ? ('result' as const) : ('asset' as const),
-        },
-      });
-      const connection = buildConnectedGenerateNodeConnection(
-        {
-          mediaType: 'image',
-          position,
-          existingNodeId: source.id,
-          handleType: 'source',
-          handleId: `output:image`,
-          role: 'imageEdit',
-          label: '图片修改节点',
-        },
-        editNode.id,
-        source,
-      );
-      const validation = validateCanvasConnection(
-        connection,
-        [...nodesRef.current, editNode],
-        edgesRef.current,
-      );
-      if (!validation.ok) {
-        setNotice({
-          kind: 'error',
-          message:
-            validation.reason === 'cycle'
-              ? '不能创建循环依赖，修改节点未创建'
-              : '来源图无法连接到修改节点，请重新选择图片节点',
-        });
-        return;
-      }
-      nodePreferenceNoticeRef.current = preferredModelNotice;
-      // 节点与边在同一个历史事务里提交，撤销会同时移除两者。
+  const commitForkGraph = useCallback(
+    (child: AssetFlowNode, extraEdges: FlowEdge[]) => {
       rememberHistory();
-      appendNodesAndSelect([editNode]);
-      setEdges((current) => [
-        ...current,
-        {
-          ...connection,
-          id: `edge_${connection.source}_${connection.target}_${Date.now()}`,
-          animated: true,
-        },
-      ]);
+      const nextNodes = [
+        ...nodesRef.current.map((node) => (node.selected ? { ...node, selected: false } : node)),
+        { ...child, selected: true },
+      ];
+      const nextEdges = [...edgesRef.current, ...extraEdges];
+      nodesRef.current = nextNodes;
+      edgesRef.current = nextEdges;
+      setNodes(nextNodes);
+      setSelectedNodeId(child.id);
+      setEdges(nextEdges);
       canvasDirtyRef.current = true;
-      setNotice(
-        preferredModelNotice
-          ? { kind: 'error', message: `已创建图片修改节点；${preferredModelNotice}` }
-          : { kind: 'success', message: '已创建图片修改节点，请填写想用这张图修改什么' },
-      );
     },
-    [appendNodesAndSelect, createGenerateNode, rememberHistory, setEdges],
+    [rememberHistory, setEdges, setNodes],
   );
 
   const handleConnect = useCallback(
@@ -2304,7 +2233,173 @@ function WorkspaceApp({
   );
 
   const runNode = useCallback(
-    async (node: AssetFlowNode) => {
+    async (node: AssetFlowNode, target: NodeRunTarget = 'sameNode') => {
+      if (target === 'newNode') {
+        const source = nodesRef.current.find((candidate) => candidate.id === node.id) ?? node;
+        if (nodeContentLocksRef.current.has(source.id) || nodeRunLocksRef.current.has(source.id)) {
+          setNotice({ kind: 'error', message: '节点正在保存或提交，请稍后再试' });
+          return;
+        }
+        if (!projectId) {
+          setNotice({ kind: 'error', message: '项目尚未连接' });
+          return;
+        }
+        if (!canForkNewNode(source)) {
+          setNotice({ kind: 'error', message: '当前节点还没有回显，无法创建新节点' });
+          return;
+        }
+        if (!nodeHasPrompt(source.data)) {
+          setNotice({ kind: 'error', message: '请先填写提示词' });
+          return;
+        }
+        if (source.data.enabled === false) {
+          setNotice({ kind: 'error', message: '节点已停用，请先启用后再运行' });
+          return;
+        }
+
+        nodeRunLocksRef.current.add(source.id);
+        try {
+          let promptOverride: Partial<AssetFlowNode['data']> = {};
+          if (source.data.mediaType === 'text') {
+            try {
+              const echoText = await fetchNodeEchoText(source);
+              const appended = appendGeneratedContentToPrompt(source.data, echoText);
+              promptOverride = {
+                prompt: appended.prompt,
+                promptDocument: appended.promptDocument,
+              };
+            } catch (error) {
+              setNotice({
+                kind: 'error',
+                message: error instanceof Error ? error.message : '无法读取当前回显正文',
+              });
+              return;
+            }
+          }
+
+          const mediaType = source.data.mediaType;
+          const dimensions = getNewNodeDimensions(mediaType);
+          const position = getNodePlacementRightOf(source, nodesRef.current, dimensions);
+          const preferredModelNotice = nodePreferenceNoticeRef.current;
+          const extraData: Partial<AssetFlowNode['data']> = {
+            ...inheritedGenerateData(source.data),
+            ...promptOverride,
+            label: createUniqueForkLabel(source.data.label, nodesRef.current),
+          };
+          const extraEdges: FlowEdge[] = [];
+
+          if (mediaType === 'image') {
+            const imageEditSource = freezeImageEditSource(source);
+            if (!imageEditSource) {
+              setNotice({ kind: 'error', message: '该节点还没有图片内容，请先上传或生成图片' });
+              return;
+            }
+            extraData.imageEditSource = imageEditSource;
+          } else if (mediaType === 'video') {
+            extraData.completionAction = 'none';
+            const frameNode = findReadyFinalFrameImageNode(
+              source,
+              nodesRef.current,
+              runRecordsRef.current[source.id],
+            );
+            if (frameNode) extraData.videoMode = 'first_frame';
+            else if (source.data.videoMode) extraData.videoMode = source.data.videoMode;
+          }
+
+          const child = createGenerateNode(mediaType, position, extraData);
+
+          if (mediaType === 'image') {
+            const connection = buildConnectedGenerateNodeConnection(
+              {
+                mediaType: 'image',
+                position,
+                existingNodeId: source.id,
+                handleType: 'source',
+                handleId: 'output:image',
+                role: 'imageEdit',
+                label: '图片修改节点',
+              },
+              child.id,
+              source,
+            );
+            const validation = validateCanvasConnection(
+              connection,
+              [...nodesRef.current, child],
+              edgesRef.current,
+            );
+            if (!validation.ok) {
+              setNotice({
+                kind: 'error',
+                message:
+                  validation.reason === 'cycle'
+                    ? '不能创建循环依赖，修改节点未创建'
+                    : '来源图无法连接到修改节点，请重新选择图片节点',
+              });
+              return;
+            }
+            extraEdges.push({
+              ...connection,
+              id: `edge_${connection.source}_${connection.target}_${Date.now()}`,
+              animated: true,
+            });
+          } else if (mediaType === 'video') {
+            const frameNode = findReadyFinalFrameImageNode(
+              source,
+              nodesRef.current,
+              runRecordsRef.current[source.id],
+            );
+            if (frameNode) {
+              const connection = buildConnectedGenerateNodeConnection(
+                {
+                  mediaType: 'video',
+                  position,
+                  existingNodeId: frameNode.id,
+                  handleType: 'source',
+                  handleId: 'output:image',
+                  role: 'firstFrame',
+                  label: '视频首帧节点',
+                  videoMode: 'first_frame',
+                },
+                child.id,
+                frameNode,
+              );
+              const validation = validateCanvasConnection(
+                connection,
+                [...nodesRef.current, child],
+                edgesRef.current,
+              );
+              if (!validation.ok) {
+                setNotice({
+                  kind: 'error',
+                  message:
+                    validation.reason === 'cycle'
+                      ? '不能创建循环依赖，修改节点未创建'
+                      : '末帧图无法连接到新视频节点',
+                });
+                return;
+              }
+              extraEdges.push({
+                ...connection,
+                id: `edge_${connection.source}_${connection.target}_${Date.now()}`,
+                animated: true,
+              });
+            }
+          }
+
+          nodePreferenceNoticeRef.current = preferredModelNotice;
+          commitForkGraph(child, extraEdges);
+          setNotice(
+            preferredModelNotice
+              ? { kind: 'error', message: `已创建新节点；${preferredModelNotice}` }
+              : { kind: 'success', message: `已创建${child.data.label}并开始生成` },
+          );
+          await runNode(child, 'sameNode');
+        } finally {
+          nodeRunLocksRef.current.delete(source.id);
+        }
+        return;
+      }
+
       if (nodeContentLocksRef.current.has(node.id) || nodeRunLocksRef.current.has(node.id)) {
         setNotice({ kind: 'error', message: '节点正在保存或提交，请稍后再试' });
         return;
@@ -2394,7 +2489,31 @@ function WorkspaceApp({
         setIsRunning(false);
       }
     },
-    [pollRun, projectId, saveCanvas, updateNodeRunState, setNodes],
+    [
+      commitForkGraph,
+      createGenerateNode,
+      pollRun,
+      projectId,
+      saveCanvas,
+      setNodes,
+      updateNodeRunState,
+    ],
+  );
+
+  /**
+   * 图片悬浮栏「修改图片」与图片「新节点」走同一条立刻运行的分叉路径。
+   * @param sourceNodeId 被修改图片的节点 ID。
+   */
+  const handleCreateImageEditNode = useCallback(
+    (sourceNodeId: string) => {
+      const source = nodesRef.current.find((node) => node.id === sourceNodeId);
+      if (!source) {
+        setNotice({ kind: 'error', message: '图片来源节点已不存在，请重新选择图片节点' });
+        return;
+      }
+      void runNode(source, 'newNode');
+    },
+    [runNode],
   );
 
   const retryNodeRun = useCallback(
@@ -2898,7 +3017,7 @@ function WorkspaceApp({
             onCompletionTargetNodeIdChange={updateSelectedCompletionTarget}
             onModelChange={updateSelectedModel}
             onInferenceStrengthChange={updateSelectedInferenceStrength}
-            onRunNode={(node) => void runNode(node)}
+            onRunNode={(node, target) => void runNode(node, target)}
             onDeleteNode={(nodeId) => deleteCanvasSelection([nodeId])}
             nodeContentHandlers={nodeContentHandlers}
             onAddGenerateNode={handleAddGenerateNode}

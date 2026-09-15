@@ -1,4 +1,4 @@
-import { Expand, ImageOff, LoaderCircle, Play, SlidersHorizontal, X } from 'lucide-react';
+import { Expand, GitFork, ImageOff, LoaderCircle, Play, SlidersHorizontal, X } from 'lucide-react';
 import { useEffect, useId, useRef, useState, type FocusEvent } from 'react';
 
 import type {
@@ -22,6 +22,7 @@ import { renderPromptDocument } from '@multimodal-canvas/domain';
 import { Dialog, DialogClose, DialogContent, DialogTitle } from '@multimodal-canvas/ui';
 import type { AssetFlowNode } from '../canvas-utils';
 import { TextPromptEditor } from '../TextPromptEditor';
+import { canForkNewNode, canRunSameNode, nodeHasPrompt } from './fork-generate-node';
 import { CompactSelect } from './CompactSelect';
 import { useFloatingParameterMenu } from './use-floating-parameter-menu';
 import { isImeKeyboardEvent } from '../ime';
@@ -75,6 +76,8 @@ export type NodeQuickEditorProps = {
   onModelChange: (value: ModelSelection) => void;
   onInferenceStrengthChange: (value: InferenceStrength) => void;
   onRun: () => void;
+  /** 有回显时把修改结果写到新建子节点并立刻运行。 */
+  onRunNewNode?: () => void;
   /** 当前节点是否有可供转换/生成的连线输入。 */
   hasConnectedInput?: boolean;
   /** 显式连接到当前节点的输入文件，供完整编辑器展示。 */
@@ -205,6 +208,7 @@ export function NodeQuickEditor({
   onModelChange,
   onInferenceStrengthChange,
   onRun,
+  onRunNewNode,
   hasConnectedInput = false,
   connectedAssets = [],
   onParametersChange,
@@ -721,33 +725,74 @@ export function NodeQuickEditor({
           {mediaSettingsOpen && mediaParameterEditor}
         </div>
       )}
-      <button
-        type="button"
-        className="button button-primary node-quick-editor-run"
-        aria-label={busy ? '生成中' : imageEditSource ? '修改图片' : '生成'}
-        title={
-          busy
-            ? '生成中'
-            : !enabled
-              ? '节点已停用'
-              : (mediaParameterIssue ??
-                (!hasRunnableParameters
-                  ? imageEditPromptRequired
-                    ? '请先填写想用这张图修改什么'
-                    : '请先填写提示词或连接输入节点'
-                  : imageEditSource
-                    ? '开始修改'
-                    : '生成'))
-        }
-        onClick={onRun}
-        disabled={busy || !enabled || !hasRunnableParameters || Boolean(mediaParameterIssue)}
-      >
-        {busy ? (
-          <LoaderCircle className="spin" size={16} aria-hidden="true" />
-        ) : (
-          <Play size={16} aria-hidden="true" />
-        )}
-      </button>
+      <div className="node-quick-editor-run-group">
+        {canRunSameNode(node) ? (
+          <button
+            type="button"
+            className="button button-primary node-quick-editor-run"
+            aria-label={busy ? '生成中' : '生成'}
+            title={
+              busy
+                ? '生成中'
+                : !enabled
+                  ? '节点已停用'
+                  : (mediaParameterIssue ??
+                    (!hasRunnableParameters
+                      ? imageEditPromptRequired
+                        ? '请先填写想用这张图修改什么'
+                        : '请先填写提示词或连接输入节点'
+                      : '生成'))
+            }
+            onClick={onRun}
+            disabled={busy || !enabled || !hasRunnableParameters || Boolean(mediaParameterIssue)}
+          >
+            {busy ? (
+              <LoaderCircle className="spin" size={16} aria-hidden="true" />
+            ) : (
+              <Play size={16} aria-hidden="true" />
+            )}
+            <span>{busy ? '生成中' : '生成'}</span>
+          </button>
+        ) : null}
+        {canForkNewNode(node) ? (
+          <button
+            type="button"
+            className="button node-quick-editor-run node-quick-editor-run-new"
+            aria-label="新节点"
+            title={
+              busy
+                ? '生成中'
+                : !enabled
+                  ? '节点已停用'
+                  : !nodeHasPrompt(node.data)
+                    ? '请先填写提示词'
+                    : node.data.mediaType === 'image' &&
+                        selectedModel &&
+                        !imageEditCapability(selectedModel).declared
+                      ? '当前模型未声明支持图片编辑，请更换模型后再运行'
+                      : mediaParameterIssue && node.data.mediaType === 'image'
+                        ? mediaParameterIssue
+                        : '把修改结果写到新节点'
+            }
+            onClick={() => onRunNewNode?.()}
+            disabled={
+              busy ||
+              !enabled ||
+              !onRunNewNode ||
+              !nodeHasPrompt(node.data) ||
+              Boolean(
+                node.data.mediaType === 'image' &&
+                selectedModel &&
+                !imageEditCapability(selectedModel).declared,
+              ) ||
+              Boolean(mediaParameterIssue && node.data.mediaType === 'image')
+            }
+          >
+            <GitFork size={16} aria-hidden="true" />
+            <span>新节点</span>
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 

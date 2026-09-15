@@ -455,20 +455,36 @@ export function imageEditSourceOf(
   return parsed.success ? parsed.data : undefined;
 }
 
+/** 判断节点是否已有可回显内容的最小数据。 */
+export type NodeEchoData = {
+  mediaType?: MediaType;
+  assetId?: string;
+  contentUrl?: string;
+  resultAsset?: { assetId?: string } | undefined;
+};
+
+/**
+ * 判断节点是否已有可回显的资产或生成结果。
+ * 上传来源和生成结果都算；空节点没有回显。
+ * @param node 待检查的节点或其 data。
+ * @returns 存在 resultAsset.assetId，或同时存在 assetId 与 contentUrl 时为 true。
+ */
+export function nodeHasEcho(node: { data: NodeEchoData } | NodeEchoData): boolean {
+  const data = 'data' in node ? node.data : node;
+  return Boolean(data.resultAsset?.assetId || (data.assetId && data.contentUrl));
+}
+
 /**
  * 判断节点是否是可作为“修改图片”来源的图片节点：必须是图片，且已有可回显的资产。
  * 来源节点本身和已有生成结果的节点都算，但不含没有图片内容的空节点。
+ * @param node 待检查的图片节点。
+ * @returns 图片节点且已有回显时为 true。
  */
 export function isImageEditSourceNode(node: {
-  data: {
-    mediaType: MediaType;
-    assetId?: string;
-    contentUrl?: string;
-    resultAsset?: { assetId?: string } | undefined;
-  };
+  data: NodeEchoData & { mediaType: MediaType };
 }): boolean {
   if (node.data.mediaType !== 'image') return false;
-  return Boolean(node.data.resultAsset?.assetId || (node.data.assetId && node.data.contentUrl));
+  return nodeHasEcho(node);
 }
 
 /**

@@ -37,6 +37,7 @@ import {
   imageEditCapability,
   imageEditSourceOf,
   isImageEditSourceNode,
+  nodeHasEcho,
 } from './index';
 
 describe('canvas protocol', () => {
@@ -164,6 +165,15 @@ describe('canvas protocol', () => {
       expect(
         isImageEditSourceNode({ data: { mediaType: 'video', assetId: 'a', contentUrl: '/c' } }),
       ).toBe(false);
+    });
+
+    it('判断任意媒体类型节点是否已有回显', () => {
+      expect(nodeHasEcho({ mediaType: 'text', resultAsset: { assetId: 't' } })).toBe(true);
+      expect(nodeHasEcho({ data: { mediaType: 'audio', assetId: 'a', contentUrl: '/c' } })).toBe(
+        true,
+      );
+      expect(nodeHasEcho({ mediaType: 'video' })).toBe(false);
+      expect(nodeHasEcho({ assetId: 'a' })).toBe(false);
     });
 
     it('按目录显式声明解析图片编辑能力并在未知时 fail-closed', () => {

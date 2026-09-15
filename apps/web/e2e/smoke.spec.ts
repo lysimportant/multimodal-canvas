@@ -2727,6 +2727,7 @@ async function installImageEditFixture(page: Page) {
           label: '原始图片',
           mediaType: 'image',
           mode: 'generate',
+          prompt: '换成夜景',
           assetId: asset.id,
           contentUrl: asset.contentUrl,
           mimeType,
@@ -2805,24 +2806,16 @@ for (const viewport of [
     await expect(page.locator('.react-flow__node')).toHaveCount(3);
     await expect(page.locator('.react-flow__edge')).toHaveCount(1);
 
-    // 编辑器自动打开并询问修改意图，来源图只读且带固定版本标识。
     const editor = page.getByRole('region', { name: '修改 原始图片图片修改设置' });
     await expect(editor).toBeVisible();
-    await expect(editor.getByRole('textbox', { name: '图片修改要求' })).toHaveAttribute(
-      'placeholder',
-      '想用这张图修改什么？例如：换成夜景、去掉背景',
-    );
+    await expect(editor.getByRole('textbox', { name: '图片修改要求' })).toHaveValue('换成夜景');
     const readOnlySource = editor.getByRole('group', { name: '来源图（只读）' });
     await expect(readOnlySource).toContainText('原始图片');
     await expect(readOnlySource).toContainText('来源图固定版本：v1');
-    const editImageRun = editor.getByRole('button', { name: '修改图片' });
     await expect(readOnlySource.getByRole('img')).toHaveAttribute(
       'src',
       /\/v1\/assets\/image-edit-source-asset\/content/,
     );
-    // 编辑提示词是必填运行条件：空值时禁止提交。
-    await expect(editImageRun).toBeDisabled();
-    await expect(editImageRun).toHaveAttribute('title', '请先填写想用这张图修改什么');
 
     // 原节点位置与尺寸都不变，新节点避开已有节点。
     expect(await sourceNode.boundingBox()).toEqual(sourceBoxBefore);
@@ -2841,10 +2834,6 @@ for (const viewport of [
       expect(overlaps).toBe(false);
     }
 
-    // 提交修改请求：结果只写入新节点，原节点仍显示自己的图片。
-    await editor.getByRole('textbox', { name: '图片修改要求' }).fill('换成夜景');
-    await expect(editImageRun).toBeEnabled();
-    await editImageRun.click();
     await expect(page.getByText('修改 原始图片 已完成')).toBeVisible();
     await expect(editNode.locator('img').first()).toHaveAttribute('src', /\/v1\/assets\/result-/);
     await expect(sourceNode.locator('img').first()).toHaveAttribute(

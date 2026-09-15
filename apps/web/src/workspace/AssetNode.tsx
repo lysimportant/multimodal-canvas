@@ -35,6 +35,7 @@ import {
   isImageEditSourceNode,
   videoModeLabels,
 } from '@multimodal-canvas/domain';
+import { nodeHasPrompt } from './fork-generate-node';
 import { Dialog, DialogClose, DialogContent, DialogTitle } from '@multimodal-canvas/ui';
 import { fitNodeSizeToContent, type AssetFlowNode } from '../canvas-utils';
 import { isImeKeyboardEvent } from '../ime';
@@ -72,8 +73,8 @@ export type NodeContentHandlers = {
 /** 节点内容写入能力，只在已加载的项目画布中提供。 */
 export const NodeContentContext = createContext<NodeContentHandlers | null>(null);
 /**
- * “修改图片”入口。回调只携带来源节点 ID，由画布层新建独立的编辑节点并连线；
- * 来源节点本身不会被转换成可编辑节点。
+ * “修改图片”入口。回调只携带来源节点 ID，由画布层按「新节点」路径立刻图生图；
+ * 来源节点本身不会被覆盖。
  */
 export type NodeImageEditHandler = (nodeId: string) => void;
 export const NodeImageEditContext = createContext<NodeImageEditHandler | null>(null);
@@ -515,12 +516,14 @@ export function AssetNode({ id, data, selected, width, height }: NodeProps<Asset
               <button
                 type="button"
                 className="flow-node-action-button flow-node-edit-image-button nodrag nopan nowheel"
-                disabled={writingDisabled}
+                disabled={writingDisabled || !nodeHasPrompt(data)}
                 aria-label={`修改图片：${data.label}`}
                 title={
                   writingDisabled
                     ? '节点正在运行或保存，请稍后再修改图片'
-                    : '修改图片：新建图片编辑节点，并把这张图作为原图'
+                    : !nodeHasPrompt(data)
+                      ? '请先填写提示词'
+                      : '修改图片：把当前回显作为原图，结果写到新节点'
                 }
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={(event) => {

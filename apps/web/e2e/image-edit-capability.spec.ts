@@ -86,23 +86,25 @@ test.describe('图片编辑能力可见性（只读）', () => {
       .locator('.react-flow__node')
       .filter({ has: page.getByRole('group', { name: `节点操作：${fileName}` }) });
     await expect(sourceNode).toHaveCount(1, { timeout: 30_000 });
-    await sourceNode.hover();
-    await sourceNode.getByRole('button', { name: `修改图片：${fileName}` }).click();
-
-    const editor = page.getByRole('region', { name: /图片修改设置$/ });
+    await sourceNode.click();
+    const editor = page.getByRole('region', { name: /生成设置$/ });
     await expect(editor).toBeVisible({ timeout: 30_000 });
-    await expect(editor.getByRole('combobox', { name: /^模型：/ })).toHaveAttribute(
-      'aria-label',
-      `模型：${modelAlias}`,
-    );
+    const newNodeButton = editor.getByRole('button', { name: '新节点' });
+    await expect(newNodeButton).toBeDisabled();
 
-    const runButton = editor.getByRole('button', { name: '修改图片' });
-    // 空提示词仍然禁止提交。
-    await expect(runButton).toBeDisabled();
-    await editor.getByRole('textbox', { name: '图片修改要求' }).fill('把背景换成夜晚的城市灯光');
-    // 能力声明生效后应可直接运行；这个断言失败就说明声明没有真正对用户可见。
-    await expect(runButton).toBeEnabled({ timeout: 15_000 });
-    await expect(runButton).toHaveAttribute('title', '开始修改');
+    const modelTrigger = editor.getByRole('combobox', { name: /^模型：/ });
+    await modelTrigger.click();
+    const modelList = page.getByRole('listbox').filter({ hasText: modelAlias });
+    await expect(modelList).toBeVisible({ timeout: 15_000 });
+    await modelList
+      .getByRole('option', { name: new RegExp(`^${modelAlias}$`) })
+      .first()
+      .click();
+    await expect(modelTrigger).toHaveAttribute('aria-label', `模型：${modelAlias}`);
+
+    await editor.getByRole('textbox', { name: '提示词' }).fill('把背景换成夜晚的城市灯光');
+    await expect(newNodeButton).toBeEnabled({ timeout: 15_000 });
+    await expect(newNodeButton).toHaveAttribute('title', '把修改结果写到新节点');
 
     // 只读到按钮可用为止：不点击，因此不产生任何上游请求。
     expect(runRequests).toEqual([]);

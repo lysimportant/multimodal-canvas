@@ -37,6 +37,7 @@ import { imageEditSourceOf, portRoles } from '@multimodal-canvas/domain';
 import type { CanvasEdgeStyle, CanvasTheme } from '../state/workspace-preferences';
 import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
 import { getNewNodeDimensions } from '../canvas-utils';
+import type { NodeRunTarget } from './fork-generate-node';
 import {
   NodeResizeContext,
   NodeDeleteContext,
@@ -159,7 +160,7 @@ export type WorkflowCanvasProps = {
   onVideoModeChange?: (value: VideoMode, nodeId?: string) => void;
   onModelChange: (value: ModelSelection, nodeId?: string) => void;
   onInferenceStrengthChange: (value: InferenceStrength, nodeId?: string) => void;
-  onRunNode: (node: AssetFlowNode) => void;
+  onRunNode: (node: AssetFlowNode, target?: NodeRunTarget) => void;
   /** App owns graph history and persistence, so deletion is handed back to it. */
   onDeleteNode?: (nodeId: string) => void;
   /** 当前节点上传和文本编辑的持久化接口。 */
@@ -713,7 +714,8 @@ export function WorkflowCanvas({
             onInferenceStrengthChange(value, quickEditorNode.id)
           }
           hasConnectedInput={edges.some((edge) => edge.target === quickEditorNode.id)}
-          onRun={() => onRunNode(quickEditorNode)}
+          onRun={() => onRunNode(quickEditorNode, 'sameNode')}
+          onRunNewNode={() => onRunNode(quickEditorNode, 'newNode')}
         />
       )}
       {nodes.length === 0 && (
