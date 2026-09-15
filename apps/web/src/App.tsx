@@ -54,6 +54,7 @@ import {
   type RunRecord,
   type VideoCompletionAction,
   type VideoMode,
+  isImageEditSourceNode,
   isPortConnectionAllowed,
   renderPromptDocument,
 } from '@multimodal-canvas/domain';
@@ -80,6 +81,7 @@ import {
   sha256Hex,
 } from './upload-utils';
 import { createUniqueNodeLabel } from './app-contract-utils';
+import { getNodePlacementRightOf } from './workspace/canvas-position';
 import {
   buildConnectedGenerateNodeConnection,
   validateResolvedCanvasConnection,
@@ -305,6 +307,21 @@ type CanvasHistorySnapshot = {
   nodes: AssetFlowNode[];
   edges: FlowEdge[];
 };
+
+/**
+ * 生成不重名的图片修改节点名称，保留来源节点的可读性。
+ * @param sourceLabel 来源图片节点名称。
+ * @param nodes 当前画布节点。
+ * @returns 形如「修改 原图名」且在画布内唯一的名称。
+ */
+function createUniqueImageEditLabel(sourceLabel: string, nodes: readonly AssetFlowNode[]): string {
+  const base = `修改 ${sourceLabel}`.slice(0, 120);
+  const existing = new Set(nodes.map((node) => node.data.label));
+  if (!existing.has(base)) return base;
+  let suffix = 2;
+  while (existing.has(`${base} ${suffix}`)) suffix += 1;
+  return `${base} ${suffix}`;
+}
 
 const themeOptions: Array<{ value: CanvasTheme; label: string; swatch: string }> = [
   { value: 'eye-care', label: '护眼', swatch: 'theme-swatch-eye-care' },
@@ -1204,12 +1221,19 @@ function WorkspaceApp({
     [],
   );
 
-  /** 在指定画布位置新建操作节点：沿用上一同类节点，否则用本机模型偏好或目录首项，并选中第一项参数。 */
+  /**
+   * 在指定画布位置新建操作节点：沿用上一同类节点，否则用本机模型偏好或目录首项，并选中第一项参数。
+   * @param mediaType 新节点媒体类型。
+   * @param position 新节点左上角画布坐标。
+   * @param mode 节点模式；生成流程固定为 generate。
+   * @param dataOverrides 覆盖默认生成的节点数据，例如图片编辑来源引用。
+   */
   const createOperationNode = useCallback(
     (
       mediaType: MediaType,
       position: { x: number; y: number },
       mode: Exclude<NodeMode, 'source'>,
+      dataOverrides?: Partial<AssetFlowNode['data']>,
     ): AssetFlowNode => {
       nodePreferenceNoticeRef.current = null;
       const previous = resolvePreviousOperationSeed(nodesRef.current, mediaType, mode);
@@ -1263,6 +1287,7 @@ function WorkspaceApp({
               ? { inferenceStrength: previous.inferenceStrength }
               : {}),
             ...(mediaType === 'video' ? { videoMode: 'text_to_video' as const } : {}),
+            ...(dataOverrides ?? {}),
           },
           model,
         ),
@@ -1272,8 +1297,11 @@ function WorkspaceApp({
   );
 
   const createGenerateNode = useCallback(
-    (mediaType: MediaType, position: { x: number; y: number }) =>
-      createOperationNode(mediaType, position, 'generate'),
+    (
+      mediaType: MediaType,
+      position: { x: number; y: number },
+      dataOverrides?: Partial<AssetFlowNode['data']>,
+    ) => createOperationNode(mediaType, position, 'generate', dataOverrides),
     [createOperationNode],
   );
 
@@ -1570,6 +1598,96 @@ function WorkspaceApp({
         nodePreferenceNoticeRef.current
           ? { kind: 'error', message: `节点已添加并连线；${nodePreferenceNoticeRef.current}` }
           : { kind: 'success', message: `${request.label}已创建并连线` },
+      );
+    },
+    [appendNodesAndSelect, createGenerateNode, rememberHistory, setEdges],
+  );
+
+  /**
+   * 图片节点“修改图片”：新建独立编辑节点并显式连上来源图。
+   *
+   * 来源节点只被读取：不改变它的位置、尺寸、节点 ID、回显内容和资产版本。
+   * 新节点使用全新 ID，写入 `imageEditSource` 冻结来源资产版本，并通过
+   * `input:imageEdit` 角色显式连线；创建失败时不留下半成品节点或边。
+   *
+   * @param sourceNodeId 被修改图片的图片节点 ID。
+   */
+  const handleCreateImageEditNode = useCallback(
+    (sourceNodeId: string) => {
+      const source = nodesRef.current.find((node) => node.id === sourceNodeId);
+      if (!source) {
+        setNotice({ kind: 'error', message: '图片来源节点已不存在，请重新选择图片节点' });
+        return;
+      }
+      if (!isImageEditSourceNode(source)) {
+        setNotice({ kind: 'error', message: '该节点还没有图片内容，请先上传或生成图片' });
+        return;
+      }
+      const preferredModelNotice = nodePreferenceNoticeRef.current;
+
+      // 冻结来源身份：生成结果用自身资产版本，上传资源在提交时由 API 冻结版本。
+      const resultAsset = source.data.resultAsset;
+      const assetId = resultAsset?.assetId ?? source.data.assetId;
+      if (!assetId) {
+        setNotice({ kind: 'error', message: '该节点还没有图片内容，请先上传或生成图片' });
+        return;
+      }
+      const dimensions = getNewNodeDimensions('image');
+      const position = getNodePlacementRightOf(source, nodesRef.current, dimensions);
+      const editNode = createGenerateNode('image', position, {
+        label: createUniqueImageEditLabel(source.data.label, nodesRef.current),
+        imageEditSource: {
+          sourceNodeId: source.id,
+          assetId,
+          ...(resultAsset?.version !== undefined ? { version: resultAsset.version } : {}),
+          sourceKind: resultAsset ? ('result' as const) : ('asset' as const),
+        },
+      });
+      const connection = buildConnectedGenerateNodeConnection(
+        {
+          mediaType: 'image',
+          position,
+          existingNodeId: source.id,
+          handleType: 'source',
+          handleId: `output:image`,
+          role: 'imageEdit',
+          label: '图片修改节点',
+        },
+        editNode.id,
+        source,
+      );
+      const validation = validateCanvasConnection(
+        connection,
+        [...nodesRef.current, editNode],
+        edgesRef.current,
+      );
+      if (!validation.ok) {
+        setNotice({
+          kind: 'error',
+          message:
+            validation.reason === 'cycle'
+              ? '不能创建循环依赖，修改节点未创建'
+              : '来源图无法连接到修改节点，请重新选择图片节点',
+        });
+        return;
+      }
+      nodePreferenceNoticeRef.current = preferredModelNotice;
+      // 节点与边在同一个历史事务里提交，撤销会同时移除两者。
+      rememberHistory();
+      appendNodesAndSelect([editNode]);
+      setEdges((current) => [
+        ...current,
+        {
+          ...connection,
+          id: `edge_${connection.source}_${connection.target}_${Date.now()}`,
+          animated: true,
+        },
+      ]);
+      canvasDirtyRef.current = true;
+      setNotice(
+        preferredModelNotice
+          ? { kind: 'error', message: `已创建图片修改节点；${preferredModelNotice}` }
+          : { kind: 'success', message: '已创建图片修改节点，请填写想用这张图修改什么' },
       );
     },
     [appendNodesAndSelect, createGenerateNode, rememberHistory, setEdges],
@@ -2784,6 +2902,7 @@ function WorkspaceApp({
             onDeleteNode={(nodeId) => deleteCanvasSelection([nodeId])}
             nodeContentHandlers={nodeContentHandlers}
             onAddGenerateNode={handleAddGenerateNode}
+            onEditImage={handleCreateImageEditNode}
             onAddConnectedGenerateNode={handleAddConnectedGenerateNode}
             onCanvasCenterChange={updateCanvasCenterPosition}
             onRequestUpload={() => uploadInputRef.current?.click()}

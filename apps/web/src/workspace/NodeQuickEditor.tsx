@@ -1,4 +1,4 @@
-import { Expand, LoaderCircle, Play, SlidersHorizontal, X } from 'lucide-react';
+import { Expand, ImageOff, LoaderCircle, Play, SlidersHorizontal, X } from 'lucide-react';
 import { useEffect, useId, useRef, useState, type FocusEvent } from 'react';
 
 import type {
@@ -10,6 +10,7 @@ import type {
 } from '@multimodal-canvas/domain';
 import {
   displayVideoMode,
+  imageEditCapability,
   implementedVideoModes,
   resolveVideoCompletionAction,
   videoModeCapability,
@@ -91,6 +92,29 @@ export type NodeQuickEditorProps = {
   connectedInputRoles?: readonly PortRole[];
   /** 更新视频生成模式；切换后由父层裁掉不兼容连线。 */
   onVideoModeChange?: (value: VideoMode) => void;
+  /**
+   * 图片编辑节点的只读来源图。存在时编辑器显示专用文案与原图缩略图，
+   * 且不允许在此修改来源节点内容。
+   */
+  imageEditSource?: ImageEditSourcePreview;
+};
+
+/** 图片编辑节点上只读展示的来源图身份。 */
+export type ImageEditSourcePreview = {
+  /** 冻结的来源资产 ID。 */
+  assetId: string;
+  /** 来源画布节点 ID，用于说明这张图来自哪个节点。 */
+  sourceNodeId: string;
+  /** 来源节点或资源的显示名。 */
+  name: string;
+  /** 只读缩略图地址；来源不可访问时缺省。 */
+  contentUrl?: string;
+  /** 来源媒体 MIME 类型。 */
+  mimeType?: string;
+  /** 创建编辑节点时已知的资产版本，仅作固定版本标识展示。 */
+  version?: number;
+  /** 来源资产已不可读取或与节点记录不一致，提交前必须阻止运行。 */
+  versionUnavailable?: boolean;
 };
 
 /** 模型声明的选项及其可见说明，保留供应商给出的值和顺序。 */
@@ -189,6 +213,7 @@ export function NodeQuickEditor({
   emptyImageNodes = [],
   connectedInputRoles = [],
   onVideoModeChange,
+  imageEditSource,
 }: NodeQuickEditorProps) {
   /** 参数页只改变展示状态，不修改节点或默认参数。 */
   const [mediaSettingsOpen, setMediaSettingsOpen] = useState(false);
@@ -295,7 +320,11 @@ export function NodeQuickEditor({
     ? renderPromptDocument(node.data.promptDocument)
     : (node.data.prompt ?? '');
   const hasPrompt = Boolean(effectivePrompt.trim());
-  const hasRunnableParameters = hasPrompt || hasConnectedInput;
+  /** 图片编辑必须由用户写明修改意图，不能靠连线输入代替提示词。 */
+  const imageEditPromptRequired = Boolean(imageEditSource);
+  const hasRunnableParameters = imageEditPromptRequired
+    ? hasPrompt
+    : hasPrompt || hasConnectedInput;
   const invalidVideoDimensions = (['width', 'height'] as const).filter((field) => {
     const value = parameters[field];
     return (
@@ -303,12 +332,17 @@ export function NodeQuickEditor({
       (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0)
     );
   });
+  const imageEditSourceIssue = imageEditSource?.versionUnavailable
+    ? '来源图已不可读取或版本已变更，请重新从图片节点创建修改节点'
+    : imageEditSource && !imageEditCapability(selectedModel).declared
+      ? `当前模型未声明支持图片编辑，请更换模型后再运行`
+      : undefined;
   const mediaParameterIssue =
     node.data.mediaType === 'audio'
       ? getAudioParameterIssue(parameters, selectedModel)
       : node.data.mediaType === 'video' && invalidVideoDimensions.length > 0
         ? '视频宽高必须为正整数像素，且不能超过安全整数范围'
-        : undefined;
+        : imageEditSourceIssue;
 
   const updateParameter = (key: keyof NodeMediaParameters, value: unknown) => {
     if (!onParametersChange) return;
@@ -343,14 +377,44 @@ export function NodeQuickEditor({
         promptDocument={node.data.promptDocument}
         assets={assets}
         connectedAssets={connectedAssets}
-        placeholder="描述你想生成的内容"
-        ariaLabel="提示词"
+        placeholder={
+          imageEditSource ? '想用这张图修改什么？例如：换成夜景、去掉背景' : '描述你想生成的内容'
+        }
+        ariaLabel={imageEditSource ? '图片修改要求' : '提示词'}
         onChange={onPromptDocumentChange ? undefined : onPromptChange}
         onDocumentChange={onPromptDocumentChange}
         onUploadResource={onUploadResource}
       />
     </label>
   );
+
+  /** 来源图只读展示：带固定版本标识，且不提供任何编辑来源内容的入口。 */
+  const imageEditSourcePreview = imageEditSource ? (
+    <div className="node-quick-editor-image-edit-source" role="group" aria-label="来源图（只读）">
+      {imageEditSource.contentUrl ? (
+        <img
+          className="node-quick-editor-image-edit-thumb"
+          src={imageEditSource.contentUrl}
+          alt={`来源图：${imageEditSource.name}`}
+        />
+      ) : (
+        <span
+          className="node-quick-editor-image-edit-thumb is-missing"
+          role="img"
+          aria-label={`来源图不可用：${imageEditSource.name}`}
+        >
+          <ImageOff size={18} aria-hidden="true" />
+        </span>
+      )}
+      <span className="node-quick-editor-image-edit-meta">
+        <strong>{imageEditSource.name}</strong>
+        <span>
+          来源图固定版本：
+          {imageEditSource.version ? `v${imageEditSource.version}` : '运行前冻结'}
+        </span>
+      </span>
+    </div>
+  ) : null;
 
   /** 视频模式在快速编辑器控制栏常驻，避免用户为切换模式打开参数页。 */
   const videoModeEditor =
@@ -660,15 +724,20 @@ export function NodeQuickEditor({
       <button
         type="button"
         className="button button-primary node-quick-editor-run"
-        aria-label={busy ? '生成中' : '生成'}
+        aria-label={busy ? '生成中' : imageEditSource ? '修改图片' : '生成'}
         title={
           busy
             ? '生成中'
             : !enabled
               ? '节点已停用'
-              : !hasRunnableParameters
-                ? '请先填写提示词或连接输入节点'
-                : (mediaParameterIssue ?? '生成')
+              : (mediaParameterIssue ??
+                (!hasRunnableParameters
+                  ? imageEditPromptRequired
+                    ? '请先填写想用这张图修改什么'
+                    : '请先填写提示词或连接输入节点'
+                  : imageEditSource
+                    ? '开始修改'
+                    : '生成'))
         }
         onClick={onRun}
         disabled={busy || !enabled || !hasRunnableParameters || Boolean(mediaParameterIssue)}
@@ -686,13 +755,18 @@ export function NodeQuickEditor({
     <>
       <section
         className="node-quick-editor nodrag nowheel nopan"
-        aria-label={`${node.data.label}生成设置`}
+        aria-label={
+          imageEditSource ? `${node.data.label}图片修改设置` : `${node.data.label}生成设置`
+        }
         hidden={expandedEditorOpen}
         onPointerDown={(event) => event.stopPropagation()}
       >
         {!expandedEditorOpen && (
           <>
-            <div className="node-quick-editor-prompt-group">{promptEditor}</div>
+            <div className="node-quick-editor-prompt-group">
+              {imageEditSourcePreview}
+              {promptEditor}
+            </div>
             {controls}
           </>
         )}

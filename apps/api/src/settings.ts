@@ -525,7 +525,16 @@ export class AiSettingsStore {
       (credentialId === undefined ? this.modelCatalogs.get(LEGACY_MODEL_CATALOG_KEY) : undefined);
     return [...(catalog?.values() ?? [])]
       .filter((model) => !mediaType || model.mediaTypes.includes(mediaType))
-      .map((model) => (mediaType ? this.withCapabilityOverride(model, mediaType) : model));
+      .map((model) =>
+        // 不带 mediaType 的目录请求（工作区节点编辑器使用）同样要合并能力覆盖，
+        // 否则“目录显式声明”只在带过滤的请求里可见，客户端会误判为未声明。
+        mediaType
+          ? this.withCapabilityOverride(model, mediaType)
+          : model.mediaTypes.reduce(
+              (current, declared) => this.withCapabilityOverride(current, declared),
+              model,
+            ),
+      );
   }
 
   resolveModel(mediaType: MediaType, requestedAlias?: string): string {

@@ -3,6 +3,7 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { PrismaClient } from '@prisma/client';
 import {
+  imageEditSourceSchema,
   runSnapshotSchema,
   type FrozenPromptMention,
   type MediaType,
@@ -79,10 +80,25 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
       context.userId,
       cache,
     );
+    const imageEditSourceContents = await this.resolveImageEditSources(
+      snapshot,
+      context.userId,
+      cache,
+    );
 
     const parsedSnapshot = runSnapshotSchema.parse({
       ...snapshot,
-      nodes: snapshot.nodes.map((node) => hydratedNodes.get(node.id) ?? node),
+      nodes: snapshot.nodes.map((node) => {
+        const hydrated = hydratedNodes.get(node.id) ?? node;
+        const imageEditContent = imageEditSourceContents.get(node.id);
+        if (!imageEditContent) return hydrated;
+        // 只读来源缩略图/审计字段在 Provider 进程内换成临时内容；
+        // 冻结的 assetId/version 与队列快照都不受影响。
+        return {
+          ...hydrated,
+          data: { ...hydrated.data, contentUrl: imageEditContent.dataUrl },
+        };
+      }),
       inputs: hydratedInputs,
     });
 
@@ -187,6 +203,58 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
       });
     }
     return result;
+  }
+
+  /**
+   * 按冻结的 `imageEditSource.assetId/version` 读取图片编辑来源内容。
+   *
+   * 编辑节点上的来源引用只保存资产身份，这里用运行前冻结的版本号读取不可变
+   * 内容，绝不使用未版本化的最新地址；读取失败时明确报错而不是继续请求。
+   *
+   * @param snapshot 当前运行快照。
+   * @param userId 资源归属用户，用于个人资源库授权。
+   * @param cache 同一资产版本的进程内缓存。
+   * @returns 节点 ID 到已解析内容的映射。
+   */
+  private async resolveImageEditSources(
+    snapshot: RunSnapshot,
+    userId: string | undefined,
+    cache: Map<string, Promise<ResolvedAsset>>,
+  ): Promise<Map<string, ResolvedAsset>> {
+    const contents = new Map<string, ResolvedAsset>();
+    for (const node of snapshot.nodes) {
+      const parsed = imageEditSourceSchema.safeParse(node.data.imageEditSource);
+      if (!parsed.success) continue;
+      const source = parsed.data;
+      const sourceNode = snapshot.nodes.find((candidate) => candidate.id === source.sourceNodeId);
+      if (!sourceNode) {
+        throw new Error(
+          `image edit source node ${source.sourceNodeId} for node ${node.id} is missing`,
+        );
+      }
+      if (sourceNode.data.assetId !== source.assetId) {
+        throw new Error(
+          `image edit source asset does not match node ${source.sourceNodeId} for node ${node.id}`,
+        );
+      }
+      if (!DATABASE_UUID_PATTERN.test(source.assetId)) {
+        throw new Error(`image edit source asset id is invalid for node ${node.id}`);
+      }
+      const parsedUrl = parseRelativeAssetUrl(sourceNode.data.contentUrl);
+      if (!parsedUrl || parsedUrl.assetId !== source.assetId || parsedUrl.version === undefined) {
+        throw new Error(
+          `asset reference ${source.assetId} for node ${node.id} is missing an immutable version`,
+        );
+      }
+      const resolved = await cached(cache, `${source.assetId}:${parsedUrl.version}`, () =>
+        this.loadAsset(snapshot.projectId, userId, source.assetId, parsedUrl.version!),
+      );
+      if (resolved.mediaType !== 'image') {
+        throw new Error(`image edit source for node ${node.id} is not an image asset`);
+      }
+      contents.set(node.id, resolved);
+    }
+    return contents;
   }
 
   private async resolveInput(

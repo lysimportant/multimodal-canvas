@@ -33,7 +33,7 @@ import type {
   VideoCompletionAction,
   VideoMode,
 } from '@multimodal-canvas/domain';
-import { portRoles } from '@multimodal-canvas/domain';
+import { imageEditSourceOf, portRoles } from '@multimodal-canvas/domain';
 import type { CanvasEdgeStyle, CanvasTheme } from '../state/workspace-preferences';
 import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
 import { getNewNodeDimensions } from '../canvas-utils';
@@ -44,6 +44,7 @@ import {
   type NodeContentHandlers,
   NodeResizeStartContext,
   NodeEnabledContext,
+  NodeImageEditContext,
   NodeLabelChangeContext,
   NodeRetryContext,
   NodeSelectionContext,
@@ -62,6 +63,7 @@ import {
 import { VideoInputRolePicker, type VideoInputRolePickerTarget } from './VideoInputRolePicker';
 import {
   NodeQuickEditor,
+  type ImageEditSourcePreview,
   type InferenceStrength,
   type NodeQuickEditorProps,
 } from './NodeQuickEditor';
@@ -163,6 +165,11 @@ export type WorkflowCanvasProps = {
   /** 当前节点上传和文本编辑的持久化接口。 */
   nodeContentHandlers?: NodeContentHandlers;
   onAddGenerateNode: (mediaType: MediaType, position?: { x: number; y: number }) => void;
+  /**
+   * 图片节点“修改图片”：新建独立编辑节点并显式连上来源图。
+   * @param sourceNodeId 被修改图片的来源节点 ID。
+   */
+  onEditImage?: (sourceNodeId: string) => void;
   /** 从悬空连线创建生成节点并立刻连到拖线起点。 */
   onAddConnectedGenerateNode: (request: ConnectedGenerateNodeRequest) => void;
   onCanvasCenterChange: (position: { x: number; y: number }) => void;
@@ -227,6 +234,7 @@ export function WorkflowCanvas({
   onDeleteNode,
   nodeContentHandlers,
   onAddGenerateNode,
+  onEditImage,
   onAddConnectedGenerateNode,
   onCanvasCenterChange,
   onRequestUpload,
@@ -554,71 +562,73 @@ export function WorkflowCanvas({
                 <NodeRetryContext.Provider value={onRetryNode}>
                   <NodeDeleteContext.Provider value={onDeleteNode ?? null}>
                     <NodeContentContext.Provider value={nodeContentHandlers ?? null}>
-                      <NodeQuickEditorIdContext.Provider value={quickEditorNode?.id ?? null}>
-                        <ReactFlow
-                          nodes={nodes}
-                          edges={edges}
-                          nodeTypes={nodeTypes}
-                          edgeTypes={canvasEdgeTypes}
-                          connectionLineComponent={FlowingConnectionLine}
-                          onNodesChange={onNodesChange}
-                          onEdgesChange={onEdgesChange}
-                          onConnect={handleFlowConnect}
-                          onConnectStart={(_event, params) => {
-                            connectionStartRef.current = params;
-                          }}
-                          onConnectEnd={handleConnectEnd}
-                          onNodeDragStart={onNodeDragStart}
-                          onMove={reportCanvasCenter}
-                          onDrop={handleDrop}
-                          onDragOver={(event) => {
-                            event.preventDefault();
-                            event.dataTransfer.dropEffect = 'copy';
-                          }}
-                          onNodeClick={(_, node) => onNodeSelect(node as AssetFlowNode)}
-                          onNodeContextMenu={(event, node) =>
-                            handleNodeContextMenu(event, node as AssetFlowNode)
-                          }
-                          onPaneContextMenu={handlePaneContextMenu}
-                          onPaneClick={() => {
-                            if (suppressPaneClickRef.current) {
-                              suppressPaneClickRef.current = false;
-                              return;
+                      <NodeImageEditContext.Provider value={onEditImage ?? null}>
+                        <NodeQuickEditorIdContext.Provider value={quickEditorNode?.id ?? null}>
+                          <ReactFlow
+                            nodes={nodes}
+                            edges={edges}
+                            nodeTypes={nodeTypes}
+                            edgeTypes={canvasEdgeTypes}
+                            connectionLineComponent={FlowingConnectionLine}
+                            onNodesChange={onNodesChange}
+                            onEdgesChange={onEdgesChange}
+                            onConnect={handleFlowConnect}
+                            onConnectStart={(_event, params) => {
+                              connectionStartRef.current = params;
+                            }}
+                            onConnectEnd={handleConnectEnd}
+                            onNodeDragStart={onNodeDragStart}
+                            onMove={reportCanvasCenter}
+                            onDrop={handleDrop}
+                            onDragOver={(event) => {
+                              event.preventDefault();
+                              event.dataTransfer.dropEffect = 'copy';
+                            }}
+                            onNodeClick={(_, node) => onNodeSelect(node as AssetFlowNode)}
+                            onNodeContextMenu={(event, node) =>
+                              handleNodeContextMenu(event, node as AssetFlowNode)
                             }
-                            setContextMenu(null);
-                            onClearNodeSelection();
-                          }}
-                          fitView
-                          minZoom={FIT_VIEW_MIN_ZOOM}
-                          fitViewOptions={{
-                            padding: 0.3,
-                            maxZoom: 1.1,
-                            minZoom: FIT_VIEW_MIN_ZOOM,
-                          }}
-                          connectionLineStyle={{ stroke: '#18794e', strokeWidth: 2 }}
-                          defaultEdgeOptions={{
-                            type: 'default',
-                            animated: false,
-                          }}
-                          proOptions={{ hideAttribution: true }}
-                        >
-                          {background !== 'blank' && (
-                            <Background
-                              color="#cbd5d0"
-                              gap={background === 'lines' ? 28 : 24}
-                              size={background === 'cross' ? 7 : 1.2}
-                              variant={
-                                background === 'lines'
-                                  ? BackgroundVariant.Lines
-                                  : background === 'cross'
-                                    ? BackgroundVariant.Cross
-                                    : BackgroundVariant.Dots
+                            onPaneContextMenu={handlePaneContextMenu}
+                            onPaneClick={() => {
+                              if (suppressPaneClickRef.current) {
+                                suppressPaneClickRef.current = false;
+                                return;
                               }
-                            />
-                          )}
-                          <Controls showInteractive={false} position="bottom-right" />
-                        </ReactFlow>
-                      </NodeQuickEditorIdContext.Provider>
+                              setContextMenu(null);
+                              onClearNodeSelection();
+                            }}
+                            fitView
+                            minZoom={FIT_VIEW_MIN_ZOOM}
+                            fitViewOptions={{
+                              padding: 0.3,
+                              maxZoom: 1.1,
+                              minZoom: FIT_VIEW_MIN_ZOOM,
+                            }}
+                            connectionLineStyle={{ stroke: '#18794e', strokeWidth: 2 }}
+                            defaultEdgeOptions={{
+                              type: 'default',
+                              animated: false,
+                            }}
+                            proOptions={{ hideAttribution: true }}
+                          >
+                            {background !== 'blank' && (
+                              <Background
+                                color="#cbd5d0"
+                                gap={background === 'lines' ? 28 : 24}
+                                size={background === 'cross' ? 7 : 1.2}
+                                variant={
+                                  background === 'lines'
+                                    ? BackgroundVariant.Lines
+                                    : background === 'cross'
+                                      ? BackgroundVariant.Cross
+                                      : BackgroundVariant.Dots
+                                }
+                              />
+                            )}
+                            <Controls showInteractive={false} position="bottom-right" />
+                          </ReactFlow>
+                        </NodeQuickEditorIdContext.Provider>
+                      </NodeImageEditContext.Provider>
                     </NodeContentContext.Provider>
                   </NodeDeleteContext.Provider>
                 </NodeRetryContext.Provider>
@@ -687,6 +697,7 @@ export function WorkflowCanvas({
             const role = edge.targetHandle.slice('input:'.length);
             return portRoles.includes(role as PortRole) ? [role as PortRole] : [];
           })}
+          imageEditSource={resolveImageEditSourcePreview(quickEditorNode, nodes, assets)}
           emptyImageNodes={nodes
             .filter(
               (item) =>
@@ -757,6 +768,52 @@ export function WorkflowCanvas({
       )}
     </section>
   );
+}
+
+/**
+ * 解析图片编辑节点的只读来源图预览。
+ *
+ * 只读来源节点当前的回显内容，不修改来源节点；节点上保存的冻结版本来自创建
+ * 编辑节点时的来源资产版本，编辑器中只作展示与提交前校验。
+ *
+ * @param node 当前打开的快速编辑器节点。
+ * @param nodes 画布全部节点。
+ * @param assets 当前项目可访问资源，用于补齐资源名和最新版本。
+ * @returns 命中图片编辑语义时的来源描述；普通生成节点返回 undefined。
+ */
+function resolveImageEditSourcePreview(
+  node: AssetFlowNode,
+  nodes: AssetFlowNode[],
+  assets: readonly Asset[],
+): ImageEditSourcePreview | undefined {
+  const source = imageEditSourceOf(node.data);
+  if (!source) return undefined;
+  const sourceNode = nodes.find((candidate) => candidate.id === source.sourceNodeId);
+  const catalogAsset = assets.find((asset) => asset.id === source.assetId);
+  const contentUrl =
+    sourceNode?.data.assetId === source.assetId
+      ? (sourceNode.data.contentUrl ?? catalogAsset?.contentUrl)
+      : catalogAsset?.contentUrl;
+  const resultAsset =
+    sourceNode?.data.resultAsset?.assetId === source.assetId
+      ? sourceNode.data.resultAsset
+      : undefined;
+  const version = source.version ?? resultAsset?.version ?? catalogAsset?.latestVersion;
+  const resolvedContentUrl = contentUrl ?? resultAsset?.contentUrl;
+  const stillMatchesSource = Boolean(
+    sourceNode &&
+    (sourceNode.data.assetId === source.assetId ||
+      sourceNode.data.resultAsset?.assetId === source.assetId),
+  );
+  return {
+    assetId: source.assetId,
+    sourceNodeId: source.sourceNodeId,
+    name: sourceNode?.data.label ?? catalogAsset?.name ?? source.assetId,
+    ...(resolvedContentUrl ? { contentUrl: resolvedContentUrl } : {}),
+    mimeType: sourceNode?.data.mimeType ?? catalogAsset?.mimeType ?? '',
+    ...(version ? { version } : {}),
+    versionUnavailable: !stillMatchesSource && !resultAsset,
+  };
 }
 
 /** 快速编辑器 portal 所需的节点与画布引用。 */

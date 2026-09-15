@@ -12,6 +12,7 @@ import {
   Trash2,
   Upload,
   TriangleAlert,
+  WandSparkles,
   X,
 } from 'lucide-react';
 import { NodeResizer, useEdges, useViewport, type NodeProps } from '@xyflow/react';
@@ -29,7 +30,11 @@ import {
 } from 'react';
 
 import type { Asset, PortRole, RunStatus, VideoMode } from '@multimodal-canvas/domain';
-import { displayVideoMode, videoModeLabels } from '@multimodal-canvas/domain';
+import {
+  displayVideoMode,
+  isImageEditSourceNode,
+  videoModeLabels,
+} from '@multimodal-canvas/domain';
 import { Dialog, DialogClose, DialogContent, DialogTitle } from '@multimodal-canvas/ui';
 import { fitNodeSizeToContent, type AssetFlowNode } from '../canvas-utils';
 import { isImeKeyboardEvent } from '../ime';
@@ -66,6 +71,12 @@ export type NodeContentHandlers = {
 };
 /** 节点内容写入能力，只在已加载的项目画布中提供。 */
 export const NodeContentContext = createContext<NodeContentHandlers | null>(null);
+/**
+ * “修改图片”入口。回调只携带来源节点 ID，由画布层新建独立的编辑节点并连线；
+ * 来源节点本身不会被转换成可编辑节点。
+ */
+export type NodeImageEditHandler = (nodeId: string) => void;
+export const NodeImageEditContext = createContext<NodeImageEditHandler | null>(null);
 
 type NodePresentationState = 'empty' | 'running' | 'failed' | 'cancelled' | 'preview' | 'missing';
 
@@ -90,6 +101,7 @@ export function AssetNode({ id, data, selected, width, height }: NodeProps<Asset
   const setNodeEnabled = useContext(NodeEnabledContext);
   const deleteNode = useContext(NodeDeleteContext);
   const contentHandlers = useContext(NodeContentContext);
+  const editImage = useContext(NodeImageEditContext);
   const inputRef = useRef<HTMLInputElement>(null);
   const uploadLock = useRef(false);
   /** 用户拖拽改过尺寸后，不再用回显内容覆盖宽高。 */
@@ -499,6 +511,29 @@ export function AssetNode({ id, data, selected, width, height }: NodeProps<Asset
                 </NodeFloatingActionLabel>
               </button>
             )}
+            {editImage && isImageEditSourceNode({ data }) ? (
+              <button
+                type="button"
+                className="flow-node-action-button flow-node-edit-image-button nodrag nopan nowheel"
+                disabled={writingDisabled}
+                aria-label={`修改图片：${data.label}`}
+                title={
+                  writingDisabled
+                    ? '节点正在运行或保存，请稍后再修改图片'
+                    : '修改图片：新建图片编辑节点，并把这张图作为原图'
+                }
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  // 与上传一致：运行或保存期间不进入编辑流程，避免半成品节点。
+                  if (writingDisabled) return;
+                  editImage(id);
+                }}
+              >
+                <WandSparkles size={18} aria-hidden="true" />
+                <NodeFloatingActionLabel>修改图片</NodeFloatingActionLabel>
+              </button>
+            ) : null}
             {downloadableMedia && (
               <button
                 type="button"

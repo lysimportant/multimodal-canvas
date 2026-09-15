@@ -192,6 +192,119 @@ describe('StoredAssetReferenceResolver', () => {
     expect(repository.findVersion).toHaveBeenCalledWith(textAssetId, 1);
   });
 
+  it('hydrates the frozen image-edit source version into provider-readable content', async () => {
+    const frozen = Buffer.from('frozen-source-image');
+    const latest = Buffer.from('newer-source-image');
+    const snapshot = referenceSnapshot({
+      sourceMediaType: 'image',
+      targetMediaType: 'image',
+      assetId: imageAssetId,
+      mimeType: 'image/png',
+      contentUrl: `/v1/assets/${imageAssetId}/versions/1/content`,
+      role: 'prompt',
+    });
+    snapshot.targetNodeId = 'node_edit';
+    snapshot.nodes.push({
+      id: 'node_edit',
+      type: 'image',
+      position: { x: 200, y: 0 },
+      data: {
+        label: '修改 Source',
+        mediaType: 'image',
+        mode: 'generate',
+        modelAlias: 'image-edit-v1',
+        imageEditSource: {
+          sourceNodeId: 'node_source',
+          assetId: imageAssetId,
+          version: 1,
+          sourceKind: 'asset',
+        },
+      },
+    });
+    snapshot.edges = [
+      {
+        id: 'edge_source_edit',
+        sourceNodeId: 'node_source',
+        sourceHandle: 'output:image',
+        targetNodeId: 'node_edit',
+        targetHandle: 'input:imageEdit',
+        order: 0,
+      },
+    ];
+    snapshot.inputs = [
+      {
+        nodeId: 'node_source',
+        role: 'imageEdit',
+        sortOrder: 0,
+        sourceAssetId: imageAssetId,
+        snapshot: snapshot.nodes[0]!,
+      },
+    ];
+    const { repository, blobStore } = fixtures({
+      assets: [asset(imageAssetId, 'image', 'image/png', latest, projectId)],
+      versions: [
+        {
+          assetId: imageAssetId,
+          version: 1,
+          sizeBytes: BigInt(frozen.byteLength),
+          contentKey: 'objects/image-v1',
+        },
+        {
+          assetId: imageAssetId,
+          version: 2,
+          sizeBytes: BigInt(latest.byteLength),
+          contentKey: 'objects/image-v2',
+        },
+      ],
+      blobs: { 'objects/image-v1': frozen, 'objects/image-v2': latest },
+    });
+    const resolver = new StoredAssetReferenceResolver(repository, blobStore);
+
+    const hydrated = await resolver.resolve(snapshot);
+
+    expect(repository.findVersion).toHaveBeenCalledWith(imageAssetId, 1);
+    expect(hydrated.inputs[0]?.snapshot.data.contentUrl).toBe(
+      `data:image/png;base64,${frozen.toString('base64')}`,
+    );
+    // 来源节点在进程内也拿到已冻结版本的临时内容，编辑节点不读取最新版本。
+    expect(hydrated.nodes.find((node) => node.id === 'node_source')?.data.contentUrl).toBe(
+      `data:image/png;base64,${frozen.toString('base64')}`,
+    );
+    expect(hydrated.nodes.find((node) => node.id === 'node_edit')?.data.imageEditSource).toEqual({
+      sourceNodeId: 'node_source',
+      assetId: imageAssetId,
+      version: 1,
+      sourceKind: 'asset',
+    });
+    expect(snapshot.nodes.find((node) => node.id === 'node_source')?.data.contentUrl).toBe(
+      `/v1/assets/${imageAssetId}/versions/1/content`,
+    );
+  });
+
+  it('rejects an image-edit source without an immutable version before any read', async () => {
+    const content = Buffer.from('unversioned-source');
+    const snapshot = referenceSnapshot({
+      sourceMediaType: 'image',
+      targetMediaType: 'image',
+      assetId: imageAssetId,
+      mimeType: 'image/png',
+      contentUrl: `/v1/assets/${imageAssetId}/content`,
+    });
+    snapshot.nodes[0]!.data.imageEditSource = {
+      sourceNodeId: 'node_source',
+      assetId: imageAssetId,
+    };
+    const { repository, blobStore } = fixtures({
+      assets: [asset(imageAssetId, 'image', 'image/png', content, projectId)],
+      blobs: { 'objects/image-current': content },
+    });
+
+    await expect(
+      new StoredAssetReferenceResolver(repository, blobStore).resolve(snapshot),
+    ).rejects.toThrow('is missing an immutable version');
+    expect(blobStore.get).not.toHaveBeenCalled();
+  });
+
   it('resolves a relative, explicit image version for a video first frame', async () => {
     const current = Buffer.from('current-image');
     const version = Buffer.from('version-two');

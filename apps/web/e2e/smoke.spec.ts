@@ -104,7 +104,12 @@ async function mockApi(target: Pick<Page, 'route'>) {
       id: 'mock-image',
       name: 'Mock Image',
       mediaTypes: ['image'],
-      capabilities: { qualities: ['1k', '2k', '3k', '4k'], aspectRatios: ['1:1', '16:9', '9:16'] },
+      capabilities: {
+        qualities: ['1k', '2k', '3k', '4k'],
+        aspectRatios: ['1:1', '16:9', '9:16'],
+        // 图片编辑能力必须由目录显式声明；未声明的模型在请求前失败。
+        imageEdit: { supported: true, mimeTypes: ['image/png', 'image/jpeg'] },
+      },
     },
     { id: 'mock-audio', name: 'Mock Audio', mediaTypes: ['audio'] },
     {
@@ -2679,3 +2684,176 @@ test('系统剪贴板是非法文本时回退到内存剪贴板', async ({ page 
 
   await expect(page.locator('.flow-generate-node')).toHaveCount(2);
 });
+
+/**
+ * 安装“修改图片”验收夹具：一个已有回显的图片节点，以及一个正好占住其右侧
+ * 首选位置的空图片节点，用于验证碰撞定位不会重叠。
+ */
+async function installImageEditFixture(page: Page) {
+  const mimeType = 'image/png';
+  const asset: Asset = {
+    id: 'image-edit-source-asset',
+    name: 'source-photo.png',
+    mediaType: 'image',
+    mimeType,
+    sizeBytes: validPng.byteLength,
+    latestVersion: 1,
+    status: 'ready',
+    contentUrl: '/v1/assets/image-edit-source-asset/content',
+    tags: [],
+  };
+  const blockerAsset: Asset = {
+    id: 'image-edit-blocker-asset',
+    name: 'blocker-photo.png',
+    mediaType: 'image',
+    mimeType,
+    sizeBytes: validPng.byteLength,
+    latestVersion: 1,
+    status: 'ready',
+    contentUrl: '/v1/assets/image-edit-blocker-asset/content',
+    tags: [],
+  };
+  const canvas: CanvasDocument = {
+    revision: 0,
+    edges: [],
+    nodes: [
+      {
+        id: 'node-image-source',
+        type: 'image',
+        position: { x: 80, y: 140 },
+        width: 400,
+        height: 266,
+        data: {
+          label: '原始图片',
+          mediaType: 'image',
+          mode: 'generate',
+          assetId: asset.id,
+          contentUrl: asset.contentUrl,
+          mimeType,
+          manualOutput: true,
+          // 来源是已归档的生成结果时，编辑节点在创建时就能冻结明确的资产版本。
+          resultAsset: {
+            assetId: asset.id,
+            version: 1,
+            contentUrl: asset.contentUrl,
+            mimeType,
+            sizeBytes: asset.sizeBytes,
+          },
+        },
+      },
+      {
+        id: 'node-image-blocker',
+        type: 'image',
+        position: { x: 528, y: 140 },
+        width: 400,
+        height: 266,
+        data: {
+          label: '占位图片',
+          mediaType: 'image',
+          mode: 'generate',
+          assetId: blockerAsset.id,
+          contentUrl: blockerAsset.contentUrl,
+          mimeType,
+          manualOutput: true,
+        },
+      },
+    ],
+  };
+  await page.route('**/v1/projects/project-smoke/canvas', async (route) => {
+    if (route.request().method() === 'GET') await json(route, { canvas });
+    else await route.fallback();
+  });
+  await page.route('**/v1/assets', async (route) => json(route, { assets: [asset, blockerAsset] }));
+  await page.route('**/v1/assets/image-edit-source-asset/content**', async (route) => {
+    await route.fulfill({ contentType: mimeType, body: validPng });
+  });
+  await page.route('**/v1/assets/image-edit-blocker-asset/content**', async (route) => {
+    await route.fulfill({ contentType: mimeType, body: validPng });
+  });
+  return { asset, blockerAsset, canvas };
+}
+
+for (const viewport of [
+  { width: 1600, height: 900, name: '桌面宽屏' },
+  { width: 1100, height: 1100, name: '方形画布' },
+]) {
+  test(`修改图片：${viewport.name}新建节点并只把结果写入新节点`, async ({ page }, testInfo) => {
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    page.on('console', (message) => {
+      if (message.type() === 'error') errors.push(message.text());
+    });
+    const fixture = await installImageEditFixture(page);
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await page.goto(projectPath);
+
+    const sourceNode = page.locator('.react-flow__node[data-id="node-image-source"]');
+    const blockerNode = page.locator('.react-flow__node[data-id="node-image-blocker"]');
+    await expect(sourceNode).toBeVisible();
+    const sourceBoxBefore = await sourceNode.boundingBox();
+    const blockerBoxBefore = await blockerNode.boundingBox();
+
+    await sourceNode.hover();
+    await expect(sourceNode.getByRole('button', { name: '修改图片：原始图片' })).toBeVisible();
+    await sourceNode.getByRole('button', { name: '修改图片：原始图片' }).click();
+
+    // 新节点使用全新 ID，画布节点数与显式来源边各增加一项。
+    const editNode = page.locator('.react-flow__node[data-id^="node_image_generate"]');
+    await expect(editNode).toHaveCount(1);
+    await expect(editNode.getByRole('group', { name: '节点操作：修改 原始图片' })).toBeVisible();
+    await expect(editNode).not.toHaveAttribute('data-id', 'node-image-source');
+    await expect(page.locator('.react-flow__node')).toHaveCount(3);
+    await expect(page.locator('.react-flow__edge')).toHaveCount(1);
+
+    // 编辑器自动打开并询问修改意图，来源图只读且带固定版本标识。
+    const editor = page.getByRole('region', { name: '修改 原始图片图片修改设置' });
+    await expect(editor).toBeVisible();
+    await expect(editor.getByRole('textbox', { name: '图片修改要求' })).toHaveAttribute(
+      'placeholder',
+      '想用这张图修改什么？例如：换成夜景、去掉背景',
+    );
+    const readOnlySource = editor.getByRole('group', { name: '来源图（只读）' });
+    await expect(readOnlySource).toContainText('原始图片');
+    await expect(readOnlySource).toContainText('来源图固定版本：v1');
+    const editImageRun = editor.getByRole('button', { name: '修改图片' });
+    await expect(readOnlySource.getByRole('img')).toHaveAttribute(
+      'src',
+      /\/v1\/assets\/image-edit-source-asset\/content/,
+    );
+    // 编辑提示词是必填运行条件：空值时禁止提交。
+    await expect(editImageRun).toBeDisabled();
+    await expect(editImageRun).toHaveAttribute('title', '请先填写想用这张图修改什么');
+
+    // 原节点位置与尺寸都不变，新节点避开已有节点。
+    expect(await sourceNode.boundingBox()).toEqual(sourceBoxBefore);
+    expect(await blockerNode.boundingBox()).toEqual(blockerBoxBefore);
+    const editBox = await editNode.boundingBox();
+    expect(editBox).not.toBeNull();
+    expect(sourceBoxBefore).not.toBeNull();
+    expect(blockerBoxBefore).not.toBeNull();
+    if (editBox && sourceBoxBefore && blockerBoxBefore) {
+      expect(editBox.x).toBeGreaterThan(sourceBoxBefore.x);
+      const overlaps =
+        editBox.x < blockerBoxBefore.x + blockerBoxBefore.width &&
+        blockerBoxBefore.x < editBox.x + editBox.width &&
+        editBox.y < blockerBoxBefore.y + blockerBoxBefore.height &&
+        blockerBoxBefore.y < editBox.y + editBox.height;
+      expect(overlaps).toBe(false);
+    }
+
+    // 提交修改请求：结果只写入新节点，原节点仍显示自己的图片。
+    await editor.getByRole('textbox', { name: '图片修改要求' }).fill('换成夜景');
+    await expect(editImageRun).toBeEnabled();
+    await editImageRun.click();
+    await expect(page.getByText('修改 原始图片 已完成')).toBeVisible();
+    await expect(editNode.locator('img').first()).toHaveAttribute('src', /\/v1\/assets\/result-/);
+    await expect(sourceNode.locator('img').first()).toHaveAttribute(
+      'src',
+      /\/v1\/assets\/image-edit-source-asset\/content/,
+    );
+    expect(await sourceNode.boundingBox()).toEqual(sourceBoxBefore);
+
+    await page.screenshot({ path: testInfo.outputPath(`image-edit-${viewport.name}.png`) });
+    expect(errors).toEqual([]);
+  });
+}

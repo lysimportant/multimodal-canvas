@@ -66,6 +66,54 @@
   flex: 1 1 0;
 }
 
+/* 图片编辑来源只读展示：缩略图与固定版本标识都不提供任何编辑入口。 */
+.node-quick-editor-image-edit-source {
+  align-items: center;
+  background: var(--mc-surface-soft);
+  border: 1px solid var(--mc-border);
+  border-radius: 12px;
+  display: flex;
+  gap: 10px;
+  padding: 8px 10px;
+}
+
+.node-quick-editor-image-edit-source .node-quick-editor-image-edit-thumb {
+  border-radius: 8px;
+  display: block;
+  flex: 0 0 auto;
+  height: 44px;
+  object-fit: cover;
+  width: 44px;
+}
+
+.node-quick-editor-image-edit-source .node-quick-editor-image-edit-thumb.is-missing {
+  align-items: center;
+  background: var(--mc-surface);
+  border: 1px dashed var(--mc-border);
+  color: var(--mc-text-muted);
+  display: flex;
+  justify-content: center;
+}
+
+.node-quick-editor-image-edit-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.node-quick-editor-image-edit-meta strong {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-quick-editor-image-edit-meta span {
+  color: var(--mc-text-muted);
+  font-size: 12px;
+}
+
 .node-quick-editor-controls > .compact-select > .compact-select-label {
   position: absolute;
   width: 1px;

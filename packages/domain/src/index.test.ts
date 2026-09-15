@@ -34,6 +34,9 @@ import {
   runSnapshotFingerprintMaterial,
   runSnapshotSchema,
   targetPortRolesForMediaType,
+  imageEditCapability,
+  imageEditSourceOf,
+  isImageEditSourceNode,
 } from './index';
 
 describe('canvas protocol', () => {
@@ -57,6 +60,142 @@ describe('canvas protocol', () => {
   it('把历史转换节点读成生成节点', () => {
     expect(nodeModeSchema.parse('transform')).toBe('generate');
     expect(nodeModeSchema.parse('generate')).toBe('generate');
+  });
+
+  describe('图片编辑语义', () => {
+    const generateImageNode = (data: Record<string, unknown> = {}) => ({
+      id: 'node_edit',
+      type: 'image',
+      position: { x: 0, y: 0 },
+      data: { label: '修改图', mediaType: 'image', mode: 'generate', ...data },
+    });
+
+    it('校验版本化来源引用并在缺省时兼容旧画布', () => {
+      expect(targetPortRolesForMediaType('image')).toContain('imageEdit');
+      expect(targetPortRolesForMediaType('text')).not.toContain('imageEdit');
+      expect(portRoles).toContain('imageEdit');
+
+      const parsed = canvasNodeSchema.parse(
+        generateImageNode({
+          imageEditSource: {
+            sourceNodeId: 'node_source',
+            assetId: 'asset_1',
+            version: 3,
+            sourceKind: 'result',
+          },
+        }),
+      );
+      expect(parsed.data.imageEditSource).toEqual({
+        sourceNodeId: 'node_source',
+        assetId: 'asset_1',
+        version: 3,
+        sourceKind: 'result',
+      });
+
+      // 旧画布没有编辑字段时仍是普通图片生成节点。
+      const legacy = canvasNodeSchema.parse(generateImageNode());
+      expect(legacy.data.imageEditSource).toBeUndefined();
+      expect(imageEditSourceOf(legacy.data)).toBeUndefined();
+    });
+
+    it('拒绝缺少来源身份或非法版本的编辑字段', () => {
+      expect(
+        canvasNodeSchema.safeParse(
+          generateImageNode({ imageEditSource: { assetId: 'asset_1', version: 1 } }),
+        ).success,
+      ).toBe(false);
+      expect(
+        canvasNodeSchema.safeParse(
+          generateImageNode({ imageEditSource: { sourceNodeId: 'a', assetId: 'b', version: 0 } }),
+        ).success,
+      ).toBe(false);
+      expect(
+        canvasNodeSchema.safeParse(
+          generateImageNode({
+            imageEditSource: { sourceNodeId: 'a', assetId: 'b', version: 1.5 },
+          }),
+        ).success,
+      ).toBe(false);
+      // 读取非法字段时不猜测语义，直接视为普通生成节点。
+      expect(imageEditSourceOf({ imageEditSource: { assetId: 'x' } })).toBeUndefined();
+    });
+
+    it('只允许图片生成节点接收编辑原图，并保持单向输入', () => {
+      const source = canvasNodeSchema.parse({
+        id: 'node_source',
+        type: 'image',
+        position: { x: 0, y: 0 },
+        data: { label: '原图', mediaType: 'image', mode: 'source', assetId: 'asset_1' },
+      });
+      const textSource = canvasNodeSchema.parse({
+        id: 'node_text',
+        type: 'text',
+        position: { x: 0, y: 0 },
+        data: { label: '文字', mediaType: 'text', mode: 'source' },
+      });
+      const editNode = canvasNodeSchema.parse(generateImageNode());
+
+      expect(isPortConnectionAllowed(source, 'output:image', editNode, 'input:imageEdit')).toBe(
+        true,
+      );
+      expect(isPortConnectionAllowed(textSource, 'output:text', editNode, 'input:imageEdit')).toBe(
+        false,
+      );
+
+      const sourceTarget = canvasNodeSchema.parse({
+        id: 'node_other',
+        type: 'image',
+        position: { x: 0, y: 0 },
+        data: { label: '来源', mediaType: 'image', mode: 'source' },
+      });
+      expect(isPortConnectionAllowed(source, 'output:image', sourceTarget, 'input:imageEdit')).toBe(
+        false,
+      );
+    });
+
+    it('判断节点是否已有可修改的图片内容', () => {
+      expect(
+        isImageEditSourceNode({ data: { mediaType: 'image', assetId: 'a', contentUrl: '/c' } }),
+      ).toBe(true);
+      expect(
+        isImageEditSourceNode({ data: { mediaType: 'image', resultAsset: { assetId: 'r' } } }),
+      ).toBe(true);
+      expect(isImageEditSourceNode({ data: { mediaType: 'image' } })).toBe(false);
+      expect(
+        isImageEditSourceNode({ data: { mediaType: 'video', assetId: 'a', contentUrl: '/c' } }),
+      ).toBe(false);
+    });
+
+    it('按目录显式声明解析图片编辑能力并在未知时 fail-closed', () => {
+      expect(imageEditCapability(undefined)).toEqual({ declared: false });
+      expect(imageEditCapability({ capabilities: {} })).toEqual({ declared: false });
+      expect(imageEditCapability({ capabilities: { imageEdit: false } })).toEqual({
+        declared: false,
+      });
+      expect(imageEditCapability({ capabilities: { imageEdit: { supported: false } } })).toEqual({
+        declared: false,
+      });
+      expect(imageEditCapability({ capabilities: { image_edit: true } })).toEqual({
+        declared: true,
+      });
+      expect(
+        imageEditCapability({
+          capabilities: {
+            imageEdit: {
+              supported: true,
+              mimeTypes: ['image/png', 'image/jpeg'],
+              sizes: ['1024x1024'],
+              parameters: ['size', 'quality'],
+            },
+          },
+        }),
+      ).toEqual({
+        declared: true,
+        mimeTypes: ['image/png', 'image/jpeg'],
+        sizes: ['1024x1024'],
+        parameters: ['size', 'quality'],
+      });
+    });
   });
 
   it('validates a minimal canvas document', () => {

@@ -198,6 +198,37 @@ describe('frozen workflow DAG', () => {
     ]);
   });
 
+  it('carries the frozen image-edit capability into every node sub-snapshot', () => {
+    const frozen: RunSnapshot = {
+      ...snapshot,
+      imageEditCapability: {
+        declared: true,
+        mimeTypes: ['image/png'],
+        parameters: ['size'],
+      },
+    };
+
+    const imageSnapshot = createNodeRunSnapshot(
+      frozen,
+      createInitialWorkflowState(frozen),
+      'node_image',
+    );
+
+    // 子快照漏掉这个字段时，Provider 会把已声明的编辑能力当成未声明并拒绝请求。
+    expect(imageSnapshot.imageEditCapability).toEqual({
+      declared: true,
+      mimeTypes: ['image/png'],
+      parameters: ['size'],
+    });
+    // 原始快照不被修改，且副本互不影响。
+    expect(frozen.imageEditCapability).toEqual({
+      declared: true,
+      mimeTypes: ['image/png'],
+      parameters: ['size'],
+    });
+    expect(imageSnapshot).not.toBe(frozen);
+  });
+
   it('requires a frozen model for every provider-backed intermediate node', () => {
     const frozenModels = {
       ...snapshot,

@@ -273,6 +273,11 @@ export function createNodeRunSnapshot(
     ...(promptMentions && promptMentions.length > 0
       ? { promptMentions: promptMentions.map((mention) => structuredClone(mention)) }
       : {}),
+    // 图片编辑能力随提交快照冻结；子快照必须原样继承，否则 Provider 会把
+    // 已经声明的编辑能力当成未声明并在请求前拒绝。
+    ...(snapshot.imageEditCapability
+      ? { imageEditCapability: structuredClone(snapshot.imageEditCapability) }
+      : {}),
   });
 }
 

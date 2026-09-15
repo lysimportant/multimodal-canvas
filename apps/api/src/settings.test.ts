@@ -373,7 +373,7 @@ describe('New API model catalog normalization', () => {
     expect(store.listModels('text')[0]?.capabilities?.reasoning_effort).toEqual(expected);
   });
 
-  it('applies media-specific capability overrides only to filtered models', () => {
+  it('applies media-specific capability overrides to filtered and unfiltered models', () => {
     const store = new AiSettingsStore('test-encryption-secret');
     store.replaceModels([
       {
@@ -392,7 +392,33 @@ describe('New API model catalog normalization', () => {
       base64: true,
       maxSize: '2048x2048',
     });
-    expect(store.listModels()[0]?.capabilities).toEqual({ base64: true });
+    // 工作区节点编辑器请求不带 mediaType 的完整目录；覆盖必须同样可见，
+    // 否则“目录显式声明”的能力会被客户端误判为未声明。
+    expect(store.listModels()[0]?.capabilities).toEqual({
+      base64: true,
+      maxSize: '2048x2048',
+    });
+  });
+
+  it('applies every declared media override when the catalog is requested unfiltered', () => {
+    const store = new AiSettingsStore('test-encryption-secret');
+    store.replaceModels([
+      {
+        id: 'multi-media',
+        name: 'Multi media',
+        mediaTypes: ['image', 'video'],
+        refreshedAt: '2026-08-26T00:00:00.000Z',
+      },
+    ]);
+    store.replaceCapabilityOverrides([
+      { modelAlias: 'multi-media', mediaType: 'image', capabilities: { imageEdit: true } },
+      { modelAlias: 'multi-media', mediaType: 'video', capabilities: { resolutions: ['720p'] } },
+    ]);
+
+    expect(store.listModels()[0]?.capabilities).toEqual({
+      imageEdit: true,
+      resolutions: ['720p'],
+    });
   });
 
   it('isolates capability overrides for same-named models across credentials', () => {

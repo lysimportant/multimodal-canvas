@@ -309,6 +309,7 @@ const portRoleLabels: Record<PortRole, string> = {
   audioTrack: '音轨',
   transcript: '转录',
   mask: '遮罩',
+  imageEdit: '要修改的原图',
 };
 
 /**

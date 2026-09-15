@@ -66,6 +66,11 @@ export const portRoles = [
   'audioTrack',
   'transcript',
   'mask',
+  /**
+   * 图片编辑流程的专用原图输入角色。由“修改图片”入口显式写入，
+   * 只接受图片上游，不靠连接顺序推断编辑意图。
+   */
+  'imageEdit',
 ] as const;
 export const assetStatuses = ['ready', 'archived'] as const;
 
@@ -373,6 +378,16 @@ export function getEffectivePromptDocument(input: {
   };
 }
 
+/** 已写入运行快照的图片编辑能力；缺省表示目录未声明，Provider 必须拒绝编辑请求。 */
+export const frozenImageEditCapabilitySchema = z
+  .object({
+    declared: z.literal(true),
+    mimeTypes: z.array(z.string().trim().min(1)).min(1).optional(),
+    sizes: z.array(z.string().trim().min(1)).min(1).optional(),
+    parameters: z.array(z.string().trim().min(1)).min(1).optional(),
+  })
+  .strip();
+
 /** 已写入运行快照的、带不可变资产版本的资源提及。 */
 export const frozenPromptMentionSchema = z
   .object({
@@ -411,6 +426,127 @@ export const nodeResourceRefSchema = z.object({
   name: z.string().trim().min(1).max(160),
   assetVersion: z.number().int().positive().optional(),
 });
+
+/**
+ * 图片编辑节点上冻结的来源图引用。
+ *
+ * `sourceNodeId` 与 `assetId` 由“修改图片”入口显式写入，编辑节点据此知道自己
+ * 在修改哪一张图。`version` 只在创建时已知（例如来源是生成结果）才写入；从上传
+ * 资源发起时留空，由 API 在排队前解析并冻结到运行快照的不可变版本里，绝不使用
+ * 未版本化的最新 URL。
+ */
+export const imageEditSourceSchema = z
+  .object({
+    sourceNodeId: z.string().trim().min(1).max(160),
+    assetId: z.string().trim().min(1).max(512),
+    version: z.number().int().positive().optional(),
+    /** 来源资产是上传资源还是某个生成结果；旧画布缺省按上传资源处理。 */
+    sourceKind: z.enum(['asset', 'result']).optional(),
+  })
+  .strip();
+
+export type ImageEditSource = z.infer<typeof imageEditSourceSchema>;
+
+/** 读取节点上的图片编辑来源；字段缺失或非法时返回 undefined。 */
+export function imageEditSourceOf(
+  data: { imageEditSource?: unknown } | undefined,
+): ImageEditSource | undefined {
+  const parsed = imageEditSourceSchema.safeParse(data?.imageEditSource);
+  return parsed.success ? parsed.data : undefined;
+}
+
+/**
+ * 判断节点是否是可作为“修改图片”来源的图片节点：必须是图片，且已有可回显的资产。
+ * 来源节点本身和已有生成结果的节点都算，但不含没有图片内容的空节点。
+ */
+export function isImageEditSourceNode(node: {
+  data: {
+    mediaType: MediaType;
+    assetId?: string;
+    contentUrl?: string;
+    resultAsset?: { assetId?: string } | undefined;
+  };
+}): boolean {
+  if (node.data.mediaType !== 'image') return false;
+  return Boolean(node.data.resultAsset?.assetId || (node.data.assetId && node.data.contentUrl));
+}
+
+/**
+ * 模型目录声明的图片编辑能力。
+ *
+ * 目录必须显式声明 `capabilities.imageEdit` 才视为支持：未知能力一律 fail-closed，
+ * 绝不在缺少声明时退回文生图，也不把“模型看起来像图像模型”当作编辑能力。
+ */
+export type ImageEditCapability = {
+  /** 目录是否显式声明支持图片编辑。 */
+  declared: boolean;
+  /** 允许作为编辑原图的 MIME 类型；缺省不额外限制。 */
+  mimeTypes?: readonly string[];
+  /** 允许的尺寸字段值；仅用于诊断展示，实际取值仍由 Provider 校验。 */
+  sizes?: readonly string[];
+  /** 允许的参数字段名；缺省表示不做额外收窄。 */
+  parameters?: readonly string[];
+};
+
+/** 目录中可用于解析图片编辑能力的字段名，兼容供应商的 snake_case 别名。 */
+const imageEditCapabilityKeys = ['imageEdit', 'image_edit', 'supportsImageEdit'] as const;
+
+function readStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const values = value
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return values.length > 0 ? values : undefined;
+}
+
+function isImageEditDeclaration(value: unknown): boolean {
+  if (value === true) return true;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  // 显式 false 表示供应商确认不支持；只有显式 true 或结构化声明才算支持。
+  if (record.supported === false || record.supports === false) return false;
+  return record.supported === true || record.supports === true || Object.keys(record).length > 0;
+}
+
+/**
+ * 从模型目录项解析图片编辑能力。缺省返回未声明，调用方必须据此拒绝请求。
+ * @param model 模型目录项或节点上的模型描述。
+ */
+export function imageEditCapability(
+  model:
+    | {
+        id?: string;
+        modelAlias?: string;
+        capabilities?: Record<string, unknown>;
+      }
+    | undefined,
+): ImageEditCapability {
+  const capabilities = model?.capabilities;
+  if (!capabilities) return { declared: false };
+  for (const key of imageEditCapabilityKeys) {
+    const value = capabilities[key];
+    if (value === undefined || value === null) continue;
+    if (!isImageEditDeclaration(value)) return { declared: false };
+    const record =
+      value && typeof value === 'object' && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : undefined;
+    const mimeTypes = readStringArray(record?.mimeTypes ?? record?.mime_types);
+    const sizes = readStringArray(record?.sizes);
+    const parameters = readStringArray(record?.parameters ?? record?.fields);
+    return {
+      declared: true,
+      ...(mimeTypes ? { mimeTypes } : {}),
+      ...(sizes ? { sizes } : {}),
+      ...(parameters ? { parameters } : {}),
+    };
+  }
+  return { declared: false };
+}
+
+/** 图片编辑能力缺失时的稳定错误码，前端与 API 共用。 */
+export const IMAGE_EDIT_UNSUPPORTED_CODE = 'IMAGE_EDIT_UNSUPPORTED';
 
 export const nodeDataSchema = z.object({
   label: z.string().min(1),
@@ -459,6 +595,11 @@ export const nodeDataSchema = z.object({
    * 新视频生成节点会写入显式值，一次运行只使用一种模式。
    */
   videoMode: videoModeSchema.optional(),
+  /**
+   * 图片编辑语义。由“修改图片”入口写入的版本化来源引用；缺省表示普通图片
+   * 生成节点（旧画布不会被自动推断成编辑节点）。
+   */
+  imageEditSource: imageEditSourceSchema.optional(),
 });
 
 /** Legacy canvases omit this field; only an explicit false disables a node. */
@@ -608,6 +749,11 @@ export const runSnapshotSchema = z
     inputs: z.array(runInputSnapshotSchema),
     /** 按节点保存已冻结的内联提及；旧快照可省略该字段。 */
     promptMentions: z.array(frozenPromptMentionSchema).optional(),
+    /**
+     * 排队前冻结的图片编辑能力。缺省表示目录未声明支持，Provider 必须
+     * 在请求前失败，不能按“有图片输入”推断编辑能力。
+     */
+    imageEditCapability: frozenImageEditCapabilitySchema.optional(),
   })
   .superRefine((snapshot, context) => {
     // Run snapshots can come from a persisted queue payload or a worker
@@ -919,6 +1065,7 @@ const targetRoleMediaTypes: Record<PortRole, readonly MediaType[]> = {
   audioTrack: ['audio'],
   transcript: ['audio'],
   mask: ['image'],
+  imageEdit: ['image'],
 };
 
 const targetNodePortRoles: Record<MediaType, readonly PortRole[]> = {
@@ -933,6 +1080,8 @@ const targetNodePortRoles: Record<MediaType, readonly PortRole[]> = {
     'firstFrame',
     'lastFrame',
     'mask',
+    // 排在最后：可见锚点仍按原顺序分配，编辑原图只增加一个语义输入口。
+    'imageEdit',
   ],
   audio: ['prompt', 'negativePrompt', 'content', 'audioTrack', 'transcript'],
   video: [
@@ -1175,6 +1324,9 @@ export function isPortConnectionAllowed(
   if (!portRoles.includes(targetRole as PortRole)) return false;
   const allowedRoles = targetPortRolesForNode(target);
   if (!allowedRoles.includes(targetRole as PortRole)) return false;
+  // 编辑原图只属于图片生成节点；来源节点通过 mediaType 收窄，
+  // 模式收窄避免把编辑语义挂到来源节点上。
+  if (targetRole === 'imageEdit' && target.data.mode !== 'generate') return false;
   const capability =
     target.data.mediaType === 'video' && target.data.videoMode
       ? videoModeCapability(target.data.videoMode, target.data.modelAlias)
@@ -1197,6 +1349,7 @@ export type PromptTextBlock = z.infer<typeof promptTextBlockSchema>;
 export type PromptBlock = z.infer<typeof promptBlockSchema>;
 export type PromptDocument = z.infer<typeof promptDocumentSchema>;
 export type FrozenPromptMention = z.infer<typeof frozenPromptMentionSchema>;
+export type FrozenImageEditCapability = z.infer<typeof frozenImageEditCapabilitySchema>;
 export type CanvasNode = z.infer<typeof canvasNodeSchema>;
 export type NodeData = z.infer<typeof nodeDataSchema>;
 export type NodeResourceRef = z.infer<typeof nodeResourceRefSchema>;

@@ -3,8 +3,12 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_NODE_FLOW_HEIGHT,
   DEFAULT_NODE_FLOW_WIDTH,
+  NEW_NODE_PLACEMENT_GAP,
   getCenteredCanvasNodePosition,
+  getNodePlacementRightOf,
 } from './canvas-position';
+
+const imageDimensions = { width: 400, height: 266 };
 
 describe('canvas node positioning', () => {
   it('centers the default node in flow coordinates at the current viewport center', () => {
@@ -26,5 +30,54 @@ describe('canvas node positioning', () => {
         y,
       })),
     ).toBeUndefined();
+  });
+});
+
+describe('new node placement', () => {
+  const source = { position: { x: 100, y: 50 }, width: 400, height: 266 };
+
+  it('places the new node to the right of its source with a stable gap', () => {
+    const position = getNodePlacementRightOf(source, [source], imageDimensions);
+
+    expect(position).toEqual({
+      x: 100 + 400 + NEW_NODE_PLACEMENT_GAP,
+      y: 50,
+    });
+  });
+
+  it('searches further right, then below, without changing the source node', () => {
+    const occupied = [
+      source,
+      { position: { x: 548, y: 50 }, width: 400, height: 266 },
+      { position: { x: 996, y: 50 }, width: 400, height: 266 },
+    ];
+
+    expect(getNodePlacementRightOf(source, occupied, imageDimensions)).toEqual({
+      x: 1444,
+      y: 50,
+    });
+
+    const blockedRight = [
+      ...occupied,
+      { position: { x: 1444, y: 50 }, width: 400, height: 266 },
+      { position: { x: 1892, y: 50 }, width: 400, height: 266 },
+    ];
+    // 第一行全部被占用后向下换行，仍然从来源节点右侧的第一列开始找。
+    expect(getNodePlacementRightOf(source, blockedRight, imageDimensions)).toEqual({
+      x: 548,
+      y: 50 + 266 + NEW_NODE_PLACEMENT_GAP,
+    });
+  });
+
+  it('ignores nodes that only touch the gap and treats missing sizes as defaults', () => {
+    const touching = { position: { x: 500, y: 50 }, width: 40, height: 40 };
+    expect(getNodePlacementRightOf(source, [touching], imageDimensions)).toEqual({
+      x: 548,
+      y: 50,
+    });
+
+    const legacyNode = { position: { x: 548, y: 50 } };
+    const position = getNodePlacementRightOf(source, [legacyNode], imageDimensions);
+    expect(position.x).toBeGreaterThan(548);
   });
 });

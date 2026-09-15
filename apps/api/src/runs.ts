@@ -12,6 +12,7 @@ import {
   runSnapshotSchema,
   type CanvasDocument,
   type CanvasNode,
+  type FrozenImageEditCapability,
   type FrozenPromptMention,
   type MediaType,
   type RunJobData,
@@ -189,6 +190,11 @@ export function createRunSnapshot(
     frozenAssetRefs?: Readonly<Record<string, FrozenRunAssetRef>>;
     /** 提交 API 已完成权限和版本校验的内联资源提及。 */
     frozenPromptMentions?: readonly FrozenPromptMention[];
+    /**
+     * 提交 API 已解析的图片编辑能力。缺省表示目录未声明，Provider 必须在
+     * 请求前失败，不能按“存在图片输入”推断编辑能力。
+     */
+    frozenImageEditCapability?: FrozenImageEditCapability;
   } = {},
 ): RunSnapshot {
   const target = canvas.nodes.find((node) => node.id === targetNodeId);
@@ -277,6 +283,9 @@ export function createRunSnapshot(
     inputs,
     ...(options.frozenPromptMentions
       ? { promptMentions: options.frozenPromptMentions.map((mention) => clone(mention)) }
+      : {}),
+    ...(options.frozenImageEditCapability
+      ? { imageEditCapability: clone(options.frozenImageEditCapability) }
       : {}),
   });
 }

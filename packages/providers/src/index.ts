@@ -1,5 +1,6 @@
 import type {
   FrozenPromptMention,
+  ImageEditCapability,
   PromptDocument,
   MediaType,
   PortRole,
@@ -9,6 +10,8 @@ import type {
   RunSnapshot,
 } from '@multimodal-canvas/domain';
 import {
+  IMAGE_EDIT_UNSUPPORTED_CODE,
+  imageEditSourceSchema,
   precheckVideoGenerationInputs,
   renderPromptDocument,
   videoInputRoleForPromptMention,
@@ -470,6 +473,8 @@ export class NewApiProvider {
     const mapping = mapImageGenerationInputs(snapshot, label, nodePrompt, nodePromptDocument);
     const parameters = providerParameters(snapshot.parameters, 'image');
     if (mapping.images.length === 0) {
+      // 声明了图片编辑语义却没有可用原图时，绝不静默退回文生图。
+      assertImageEditSourceInput(snapshot, mapping);
       return {
         path: '/images/generations',
         body: {
@@ -483,14 +488,23 @@ export class NewApiProvider {
     if (mapping.images.length > 1) {
       throw inputRoleCardinalityError('image', mapping.images[0]?.role ?? 'content');
     }
+    const capability = assertImageEditSupported(snapshot, mapping.images[0]!);
     const form = new FormData();
     form.append('model', snapshot.modelAlias);
     form.append('prompt', mapping.prompt);
     form.append('n', '1');
-    if (typeof parameters.size === 'string' && parameters.size.trim()) {
-      form.append('size', parameters.size.trim());
+    for (const [parameter, value] of Object.entries(parameters)) {
+      if (parameter === 'n' || parameter === 'stream') continue;
+      if (capability?.parameters && !capability.parameters.includes(parameter)) {
+        throw new NewApiProviderError(`New API 图片编辑未声明支持参数：${parameter}`, {
+          code: 'IMAGE_EDIT_PARAMETER_UNSUPPORTED',
+          retryable: false,
+        });
+      }
+      const serialized = imageEditFormValue(value);
+      if (serialized !== undefined) form.append(parameter, serialized);
     }
-    const image = imageFormFile(mapping.images[0]!);
+    const image = imageFormFile(mapping.images[0]!, capability?.mimeTypes);
     form.append('image', image.file, image.filename);
     return { path: '/images/edits', body: form };
   }
@@ -3680,7 +3694,82 @@ function resolveSinglePromptInput(
   );
 }
 
-const imageEditSourceRoles = new Set<PortRole>(['content', 'referenceImage']);
+const imageEditSourceRoles = new Set<PortRole>(['imageEdit', 'content', 'referenceImage']);
+
+/**
+ * 规范化 multipart 表单值。图片编辑接口只接受标量和已声明的字符串枚举，
+ * 对象或数组无法表达为单个表单字段，必须在请求前明确失败而不是静默丢弃。
+ * @param value 已通过参数校验的取值。
+ * @returns 可直接写入 FormData 的字符串；显式空值返回 undefined。
+ */
+function imageEditFormValue(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === 'string') return value.trim() ? value : undefined;
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  throw new NewApiProviderError('New API 图片编辑参数必须为标量', {
+    code: 'IMAGE_EDIT_PARAMETER_UNSUPPORTED',
+    retryable: false,
+  });
+}
+
+/**
+ * 请求前校验图片编辑能力。
+ *
+ * 目录必须显式声明 `capabilities.imageEdit`；未声明时返回非重试错误并且零请求，
+ * 不会退回 `/images/generations`，也不会把未声明的图片编辑请求发到供应商。
+ *
+ * @param snapshot 当前运行快照；图片编辑能力随快照冻结。
+ * @param input 作为原图的输入。
+ * @returns 已声明能力；未声明时抛出稳定错误码。
+ */
+function assertImageEditSupported(
+  snapshot: RunSnapshot,
+  input: RunInputSnapshot,
+): ImageEditCapability | undefined {
+  const capability = snapshot.imageEditCapability;
+  if (!capability?.declared) {
+    throw new NewApiProviderError(
+      `New API 模型 ${snapshot.modelAlias} 未声明支持图片编辑，已阻止请求`,
+      { code: IMAGE_EDIT_UNSUPPORTED_CODE, retryable: false },
+    );
+  }
+  const mediaType = input.snapshot.data.mimeType ?? '';
+  if (
+    capability.mimeTypes &&
+    capability.mimeTypes.length > 0 &&
+    mediaType &&
+    !capability.mimeTypes.some((allowed) => allowed.toLowerCase() === mediaType.toLowerCase())
+  ) {
+    throw inputRoleValueError(
+      'image',
+      input.role,
+      `模型仅声明支持 ${capability.mimeTypes.join('、')} 格式的原图`,
+    );
+  }
+  return capability;
+}
+
+/**
+ * 节点声明了图片编辑来源却没有可用的原图输入时拒绝请求。
+ * 这条边界保证编辑语义不会被静默降级为文生图。
+ * @param snapshot 当前运行快照。
+ * @param mapping 已分组的图片输入。
+ */
+function assertImageEditSourceInput(snapshot: RunSnapshot, mapping: ImageGenerationMapping): void {
+  const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
+  const source = imageEditSourceSchema.safeParse(target?.data.imageEditSource);
+  if (!source.success) return;
+  const wired = snapshot.inputs.some(
+    (input) => input.role === 'imageEdit' && input.snapshot.data.mediaType === 'image',
+  );
+  const hasImageInput = wired || mapping.images.length > 0;
+  if (hasImageInput) return;
+  throw new NewApiProviderError('图片编辑节点缺少来源原图输入，已阻止请求而不是退回文生图', {
+    code: 'IMAGE_EDIT_SOURCE_INPUT_MISSING',
+    retryable: false,
+  });
+}
 
 type ImageGenerationMapping = {
   /** 发送给图片接口的主提示词。 */
@@ -3741,9 +3830,13 @@ function mapImageGenerationInputs(
 /**
  * 把 Worker 水合后的图片 data URL 编成 edits 接口需要的文件字段。
  * @param input 原图或遮罩输入。
+ * @param allowedMimeTypes 目录声明的原图格式；缺省时不额外收窄。
  * @returns 带文件名的 File，便于 multipart 带上扩展名。
  */
-function imageFormFile(input: RunInputSnapshot): { file: File; filename: string } {
+function imageFormFile(
+  input: RunInputSnapshot,
+  allowedMimeTypes?: readonly string[],
+): { file: File; filename: string } {
   const contentUrl = input.snapshot.data.contentUrl;
   if (!nonEmptyString(contentUrl)) {
     throw inputRoleValueError('image', input.role, '可发送的图片内容');
@@ -3753,6 +3846,17 @@ function imageFormFile(input: RunInputSnapshot): { file: File; filename: string 
     throw inputRoleValueError('image', input.role, '可发送的图片内容');
   }
   const mimeType = validatedMediaMimeType(parsed.mimeType, 'image') ?? 'image/png';
+  if (
+    allowedMimeTypes &&
+    allowedMimeTypes.length > 0 &&
+    !allowedMimeTypes.some((allowed) => allowed.toLowerCase() === mimeType.toLowerCase())
+  ) {
+    throw inputRoleValueError(
+      'image',
+      input.role,
+      `模型仅声明支持 ${allowedMimeTypes.join('、')} 格式的原图`,
+    );
+  }
   const binary = atob(validatedMediaBase64(parsed.base64));
   const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
   const filename = `${input.nodeId}.${formatFromMimeType(mimeType) ?? 'png'}`;

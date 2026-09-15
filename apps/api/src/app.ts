@@ -35,9 +35,11 @@ import {
 import { databaseRunId, type PrismaRunPersistence } from './run-persistence';
 import {
   canvasDocumentSchema,
+  imageEditSourceSchema,
   mediaTypes,
   promptDocumentSchema,
   type CanvasDocument,
+  type FrozenImageEditCapability,
   type FrozenPromptMention,
   type MediaType,
   type PromptDocument,
@@ -91,6 +93,10 @@ import {
 } from './export';
 import { ArchiveError, buildZipArchive } from './export-archive';
 import { MemoryRateLimiter, RateLimitUnavailableError, type RateLimiter } from './rate-limit';
+import {
+  checkImageEditCapabilities,
+  type ImageEditCapabilityDiagnostic,
+} from './image-edit-capabilities';
 import {
   checkResourceMentionCapabilities,
   type ResourceMentionCapabilityDiagnostic,
@@ -279,6 +285,13 @@ type RunNodeModelResolution = {
 class ResourceMentionCapabilityError extends Error {
   constructor(public readonly diagnostics: ResourceMentionCapabilityDiagnostic[]) {
     super(diagnostics[0]?.message ?? '资源提及与当前模型能力不兼容');
+  }
+}
+
+/** 图片编辑能力预检失败；路由返回 400 稳定错误码且不创建 Run。 */
+class ImageEditCapabilityError extends Error {
+  constructor(public readonly diagnostics: ImageEditCapabilityDiagnostic[]) {
+    super(diagnostics[0]?.message ?? '图片编辑与当前模型能力不兼容');
   }
 }
 
@@ -671,8 +684,19 @@ async function resolveRunAssetRefs(input: {
     ...(input.ownerId ? { ownerId: input.ownerId } : {}),
   };
   const assetCache = new Map<string, Promise<{ ref: FrozenRunAssetRef; mediaType: MediaType }>>();
-  const loadAsset = (assetId: string) => {
-    const cached = assetCache.get(assetId);
+  /**
+   * 解析并缓存一个资产的可冻结版本。
+   *
+   * `pinnedVersion` 来自图片编辑节点冻结的来源引用：用户发起修改时确定的版本
+   * 优先于当前最新版本，来源节点以后产生新版本也不会改变已经创建的编辑运行。
+   * 指定版本不存在时明确失败，不静默回退到最新版本。
+   *
+   * @param assetId 资产 ID。
+   * @param pinnedVersion 运行前冻结的资产版本，缺省使用最新版本。
+   */
+  const loadAsset = (assetId: string, pinnedVersion?: number) => {
+    const cacheKey = `${assetId}@${pinnedVersion ?? 'latest'}`;
+    const cached = assetCache.get(cacheKey);
     if (cached) return cached;
     const pending = (async () => {
       const projectAsset = await input.assetStore.get(assetId, projectAssetScope);
@@ -696,18 +720,31 @@ async function resolveRunAssetRefs(input: {
           `资产 ${assetId} 没有可冻结的版本`,
         );
       }
+      const selected =
+        pinnedVersion === undefined
+          ? latest
+          : versions.find((candidate) => candidate.version === pinnedVersion);
+      if (!selected) {
+        throw new RunAssetFreezeError(
+          'asset_version_unavailable',
+          `资产 ${assetId} 的版本 ${pinnedVersion} 已不可用，无法恢复这次图片编辑`,
+        );
+      }
       return {
         ref: {
           assetId,
-          version: latest.version,
-          contentUrl: `/v1/assets/${encodeURIComponent(assetId)}/versions/${latest.version}/content`,
+          version: selected.version,
+          contentUrl: `/v1/assets/${encodeURIComponent(assetId)}/versions/${selected.version}/content`,
         },
         mediaType: asset.mediaType,
       };
     })();
-    assetCache.set(assetId, pending);
+    assetCache.set(cacheKey, pending);
     return pending;
   };
+
+  const targetNode = input.canvas.nodes.find((node) => node.id === input.targetNodeId);
+  const pinnedSource = readPinnedImageEditSource(targetNode, input.canvas);
 
   const frozenAssetRefs: Record<string, FrozenRunAssetRef> = {};
   for (const node of input.canvas.nodes) {
@@ -718,7 +755,8 @@ async function resolveRunAssetRefs(input: {
       throw new RunAssetFreezeError('asset_unavailable', `节点 ${node.id} 的手动输出缺少资产引用`);
     }
     if (!assetId) continue;
-    const resolved = await loadAsset(assetId);
+    const pinnedVersion = pinnedSource?.sourceNodeId === node.id ? pinnedSource.version : undefined;
+    const resolved = await loadAsset(assetId, pinnedVersion);
     if (resolved.mediaType !== node.data.mediaType) {
       throw new RunAssetFreezeError(
         'asset_unavailable',
@@ -728,6 +766,27 @@ async function resolveRunAssetRefs(input: {
     frozenAssetRefs[node.id] = resolved.ref;
   }
   return frozenAssetRefs;
+}
+
+/**
+ * 读取图片编辑节点冻结的来源版本，供运行前按指定版本冻结来源资产。
+ *
+ * 编辑节点保存的 `sourceNodeId` 必须仍然指向同一个资产：来源节点被替换成
+ * 另一张图时不会按旧版本伪造内容，而是交给能力预检给出可修复的错误。
+ *
+ * @param target 运行目标节点；非图片编辑节点时为 undefined 行为。
+ * @param canvas 当前画布文档。
+ * @returns 需要按指定版本冻结的来源节点与版本；无编辑语义时返回 undefined。
+ */
+export function readPinnedImageEditSource(
+  target: CanvasDocument['nodes'][number] | undefined,
+  canvas: CanvasDocument,
+): { sourceNodeId: string; version: number } | undefined {
+  const parsed = imageEditSourceSchema.safeParse(target?.data.imageEditSource);
+  if (!parsed.success || parsed.data.version === undefined) return undefined;
+  const sourceNode = canvas.nodes.find((node) => node.id === parsed.data.sourceNodeId);
+  if (!sourceNode || sourceNode.data.assetId !== parsed.data.assetId) return undefined;
+  return { sourceNodeId: parsed.data.sourceNodeId, version: parsed.data.version };
 }
 
 const DEFAULT_RESOURCE_MENTION_MAX_BYTES = 50 * 1024 * 1024;
@@ -2467,6 +2526,19 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       if (capabilityDiagnostics.length > 0) {
         throw new ResourceMentionCapabilityError(capabilityDiagnostics);
       }
+      // 图片编辑能力必须在创建 Run 之前确认：目录未声明时不生成 Provider
+      // 请求，也不退回文生图；冻结后的能力随快照进入 Worker 供二次校验。
+      const imageEditCheck = checkImageEditCapabilities({
+        nodes: canvasForRun.nodes,
+        edges: canvasForRun.edges,
+        targetNodeId: request.params.nodeId,
+        modelAlias: modelResolution.targetModelAlias,
+        ...(modelResolution.targetModel ? { model: modelResolution.targetModel } : {}),
+        requestId: request.id,
+      });
+      if (imageEditCheck.issues.length > 0) {
+        throw new ImageEditCapabilityError(imageEditCheck.issues);
+      }
       const credential = modelResolution.nodeCredentialReferences[request.params.nodeId];
       const snapshot = createRunSnapshot(body.projectId, canvasForRun, request.params.nodeId, {
         ...body,
@@ -2477,6 +2549,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           : {}),
         frozenAssetRefs,
         ...(frozenPromptMentions.length > 0 ? { frozenPromptMentions } : {}),
+        ...(imageEditCheck.frozenCapability
+          ? { frozenImageEditCapability: imageEditCheck.frozenCapability }
+          : {}),
         ...(credential ?? {}),
       });
       const headerIdempotencyKey = request.headers['idempotency-key'];
@@ -2535,6 +2610,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           error: error.message,
           code: 'RESOURCE_MENTION_CAPABILITY_UNSUPPORTED',
           requestId: request.id,
+          issues: error.diagnostics,
+        });
+      }
+      if (error instanceof ImageEditCapabilityError) {
+        return reply.code(400).send({
+          error: error.message,
+          code: 'IMAGE_EDIT_UNSUPPORTED',
           issues: error.diagnostics,
         });
       }

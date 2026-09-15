@@ -66,6 +66,7 @@ const inputMediaTypeByRole: Record<PortRole, MediaType> = {
   audioTrack: 'audio',
   transcript: 'text',
   mask: 'image',
+  imageEdit: 'image',
 };
 
 function providerInput(id: string, role: PortRole, sortOrder: number): RunInputSnapshot {
@@ -1170,6 +1171,8 @@ describe('NewApiProvider', () => {
     await provider.execute({
       snapshot: {
         ...standardSnapshot('image'),
+        // 目录必须显式声明图片编辑能力，未声明时会在请求前失败。
+        imageEditCapability: { declared: true },
         parameters: { size: '1024x1024', prompt: '改成夜景' },
         inputs: [
           {
@@ -1229,6 +1232,7 @@ describe('NewApiProvider', () => {
       provider.execute({
         snapshot: {
           ...standardSnapshot('image'),
+          imageEditCapability: { declared: true },
           inputs: [providerInputWithMediaType('node_input', 'content', 0, 'image')],
         },
       }),
@@ -1237,6 +1241,155 @@ describe('NewApiProvider', () => {
       retryable: false,
       message: 'New API image 输入角色 content 缺少可发送的图片内容',
     });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  const editPng =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+  /** 构造一条带原图的图片编辑运行输入。 */
+  function editImageInput(id: string, role: PortRole = 'imageEdit', mimeType = 'image/png') {
+    const input = providerInputWithMediaType(id, role, 0, 'image');
+    return {
+      ...input,
+      snapshot: {
+        ...input.snapshot,
+        data: {
+          ...input.snapshot.data,
+          contentUrl: `data:${mimeType};base64,${editPng}`,
+          mimeType,
+        },
+      },
+    };
+  }
+
+  it('fails closed before any request when the catalog does not declare image edit', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    });
+
+    await expect(
+      provider.execute({
+        snapshot: {
+          ...standardSnapshot('image'),
+          parameters: { prompt: '改成夜景' },
+          inputs: [editImageInput('node_source')],
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: 'IMAGE_EDIT_UNSUPPORTED',
+      retryable: false,
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('refuses to fall back to text-to-image when the edit source input is missing', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    });
+
+    await expect(
+      provider.execute({
+        snapshot: {
+          ...standardSnapshot('image'),
+          nodes: [
+            {
+              id: 'node_image',
+              type: 'image',
+              position: { x: 0, y: 0 },
+              data: {
+                label: '修改图',
+                mediaType: 'image',
+                mode: 'generate',
+                imageEditSource: { sourceNodeId: 'node_source', assetId: 'asset_1' },
+              },
+            },
+          ],
+          parameters: { prompt: '改成夜景' },
+          inputs: [],
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: 'IMAGE_EDIT_SOURCE_INPUT_MISSING',
+      retryable: false,
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('forwards every declared edit parameter and rejects undeclared ones', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ url: 'https://cdn.example/edited.png' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const provider = new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    });
+
+    await provider.execute({
+      snapshot: {
+        ...standardSnapshot('image'),
+        imageEditCapability: {
+          declared: true,
+          mimeTypes: ['image/png'],
+          parameters: ['size', 'quality'],
+        },
+        parameters: { prompt: '改成夜景', size: '1024x1024', quality: 'high' },
+        inputs: [editImageInput('node_source')],
+      },
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const form = fetchImpl.mock.calls[0]?.[1]?.body as FormData;
+    expect(form.get('size')).toBe('1024x1024');
+    expect(form.get('quality')).toBe('high');
+    expect(form.get('image')).toBeInstanceOf(File);
+
+    fetchImpl.mockClear();
+    await expect(
+      provider.execute({
+        snapshot: {
+          ...standardSnapshot('image'),
+          imageEditCapability: {
+            declared: true,
+            mimeTypes: ['image/png'],
+            parameters: ['size'],
+          },
+          parameters: { prompt: '改成夜景', quality: 'high' },
+          inputs: [editImageInput('node_source')],
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'IMAGE_EDIT_PARAMETER_UNSUPPORTED', retryable: false });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('rejects an edit source whose MIME type is outside the declared capability', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    });
+
+    await expect(
+      provider.execute({
+        snapshot: {
+          ...standardSnapshot('image'),
+          imageEditCapability: { declared: true, mimeTypes: ['image/webp'] },
+          parameters: { prompt: '改成夜景' },
+          inputs: [editImageInput('node_source')],
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'INPUT_ROLE_VALUE_MISSING', retryable: false });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
