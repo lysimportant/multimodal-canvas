@@ -14,6 +14,7 @@ import {
   openAuthEventStream,
   persistAuthSession,
   readAuthSession,
+  readStoredAuthSession,
   setUnauthorizedHandler,
   type AuthTokenResponse,
 } from './auth-client';
@@ -171,13 +172,15 @@ describe('auth-client', () => {
     expect(getAuthToken()).toBe('jwt-test-token');
   });
 
-  it('drops expired sessions', () => {
+  it('expired sessions are not live but stay stored for refresh', () => {
     persistAuthSession({
       ...response,
       expiresAt: new Date(Date.now() - 1_000).toISOString(),
     });
     expect(readAuthSession()).toBeNull();
-    expect(localStorage.getItem('multimodal-canvas:auth-session')).toBeNull();
+    expect(getAuthToken()).toBeUndefined();
+    expect(readStoredAuthSession()?.accessToken).toBe(response.accessToken);
+    expect(localStorage.getItem('multimodal-canvas:auth-session')).toContain(response.accessToken);
   });
 
   it('reconnects with exponential backoff and suppresses replayed events', async () => {
@@ -261,6 +264,9 @@ describe.each([{ development: false }, { development: true }])(
         if (path === '/v1/projects' && method === 'GET') return jsonResponse({ projects: [] });
         if ((path === '/v1/auth/login' || path === '/v1/auth/verify') && method === 'POST') {
           return jsonResponse(response);
+        }
+        if (path === '/v1/auth/refresh' && method === 'POST') {
+          return jsonResponse({ error: 'invalid access token' }, 401);
         }
         if (path === '/v1/auth/register' && method === 'POST') {
           return jsonResponse(
@@ -453,18 +459,25 @@ describe.each([{ development: false }, { development: true }])(
     });
 
     it.each(['/workspace', '/projects/private-project'])(
-      '进入 %s 时丢弃已过期会话，不请求私有数据或自动弹登录',
-      (pathname) => {
+      '进入 %s 时过期会话会尝试续期，失败后不请求私有数据',
+      async (pathname) => {
         persistAuthSession({ ...response, expiresAt: new Date(Date.now() - 1_000).toISOString() });
         window.history.replaceState(null, '', pathname);
         render(createElement(App));
 
+        await waitFor(() => expect(readStoredAuthSession()).toBeNull());
         if (pathname === '/workspace') expectAnonymousWorkspace();
-        else expect(screen.getByRole('heading', { name: '请先登录' })).toBeVisible();
+        else expect(screen.getByRole('heading', { name: /请先登录|登录工作台/ })).toBeVisible();
         expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
         expect(readAuthSession()).toBeNull();
         expect(getAuthToken()).toBeUndefined();
-        expect(globalThis.fetch).not.toHaveBeenCalled();
+        expect(
+          vi.mocked(globalThis.fetch).mock.calls.some(([input, init]) => {
+            const path = requestPath(input);
+            return path === '/v1/auth/refresh' && (init?.method ?? 'GET') === 'POST';
+          }),
+        ).toBe(true);
+        expect(projectRequests('GET')).toHaveLength(0);
       },
     );
 

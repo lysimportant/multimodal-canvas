@@ -198,7 +198,7 @@ export class AuthService {
 
   /** 有效会话可主动续期，绝对期限七天；旧令牌保留到原到期时间以容纳在途请求。 */
   async refresh(accessToken: string): Promise<AuthTokenResponse> {
-    const current = await this.verifyAccessToken(accessToken);
+    const current = await this.verifySessionForRefresh(accessToken);
     const absoluteExpiresAt =
       current.session.absoluteExpiresAt ??
       new Date(current.session.createdAt.getTime() + 7 * 24 * 60 * 60 * 1000);
@@ -207,6 +207,33 @@ export class AuthService {
     const user = await this.options.store.findUserById(current.user.id);
     if (!user) throw new AuthServiceError('invalid_token', 'invalid access token');
     return this.issueToken(user, absoluteExpiresAt);
+  }
+
+  /**
+   * 续期只校验签名、会话未撤销和绝对期限。
+   * 访问令牌过期仍可换发，避免后台标签页冻住定时器后无法恢复登录。
+   */
+  private async verifySessionForRefresh(accessToken: string): Promise<AuthenticatedSession> {
+    const result = verifyHs256Jwt(accessToken, this.options.jwtSecret, this.now, false, true);
+    if (!result.ok || !result.claims.sid || !SESSION_ID_PATTERN.test(result.claims.sid)) {
+      throw new AuthServiceError('invalid_token', 'invalid access token');
+    }
+    const session = await this.options.store.findSession(result.claims.sid);
+    if (
+      !session ||
+      session.userId !== result.claims.sub ||
+      session.revokedAt ||
+      !equalHash(session.tokenHash, sha256(accessToken))
+    ) {
+      throw new AuthServiceError(
+        session?.revokedAt ? 'session_revoked' : 'invalid_token',
+        session?.revokedAt ? 'session has been revoked' : 'invalid access token',
+      );
+    }
+    const user = await this.options.store.findUserById(session.userId);
+    if (!user || user.status !== 'active')
+      throw new AuthServiceError('invalid_token', 'invalid access token');
+    return { user: toPublicUser(user), session, claims: result.claims };
   }
 
   /** 仅供完成密码或邮箱所有权校验的内部服务签发会话，不接受 HTTP 用户对象。 */

@@ -91,11 +91,16 @@ export function extractBearerToken(authorization: string | undefined): string | 
   return token || undefined;
 }
 
+/**
+ * 校验 HS256 JWT。
+ * @param ignoreExpiration 为 true 时跳过 exp，仅供会话续期使用。
+ */
 export function verifyHs256Jwt(
   token: string,
   secret: string,
   now: () => number,
   requireExpiration: boolean,
+  ignoreExpiration = false,
 ): JwtVerificationResult {
   const parts = token.split('.');
   if (parts.length !== 3) return { ok: false, reason: 'invalid' };
@@ -126,7 +131,9 @@ export function verifyHs256Jwt(
   const nowSeconds = Math.floor(now() / 1000);
   const expiresAt = numericClaim(payload.exp);
   if (requireExpiration && expiresAt === undefined) return { ok: false, reason: 'invalid' };
-  if (expiresAt !== undefined && nowSeconds >= expiresAt) return { ok: false, reason: 'expired' };
+  if (!ignoreExpiration && expiresAt !== undefined && nowSeconds >= expiresAt) {
+    return { ok: false, reason: 'expired' };
+  }
   const notBefore = numericClaim(payload.nbf);
   if (notBefore !== undefined && nowSeconds < notBefore) {
     return { ok: false, reason: 'not-yet-valid' };

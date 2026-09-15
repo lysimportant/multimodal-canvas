@@ -251,6 +251,20 @@ describe('账户初始化、邮箱验证与敏感状态', () => {
     await expect(auth.refresh(refreshed.accessToken)).rejects.toBeTruthy();
   });
 
+  it('访问令牌过期后仍可在绝对期限内续期', async () => {
+    const { auth, advance } = fixture();
+    const initial = await auth.register({
+      email: 'stale-refresh@example.test',
+      password: 'correct-password',
+    });
+    advance(16 * 60_000);
+    await expect(auth.verifyAccessToken(initial.accessToken)).rejects.toBeTruthy();
+    const refreshed = await auth.refresh(initial.accessToken);
+    await expect(auth.verifyAccessToken(refreshed.accessToken)).resolves.toMatchObject({
+      user: { id: initial.user.id },
+    });
+  });
+
   it('修改密码后撤销尚未消费的重置验证码，旧邮件不能覆盖新密码', async () => {
     const { service, auth, mail } = fixture();
     const current = await auth.register({ email: 'reset@example.test', password: 'old-password' });

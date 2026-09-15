@@ -68,6 +68,43 @@ describe('会话隔离与恢复', () => {
     stop();
   });
 
+  it('标签页重新可见时会续期临近到期的会话', async () => {
+    persistAuthSession({ ...session('a'), expiresAt: new Date(Date.now() + 10_000).toISOString() });
+    const fetcher = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        Response.json({ ...session('a'), accessToken: 'synthetic-initial-renewal' }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({ ...session('a'), accessToken: 'synthetic-visible-renewal' }),
+      );
+    const stop = maintainAuthSession('http://localhost:3000', vi.fn());
+    await vi.waitFor(() => expect(getAuthToken()).toBe('synthetic-initial-renewal'));
+    persistAuthSession({
+      ...session('a'),
+      accessToken: 'synthetic-initial-renewal',
+      expiresAt: new Date(Date.now() + 10_000).toISOString(),
+    });
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.waitFor(() => expect(getAuthToken()).toBe('synthetic-visible-renewal'));
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    stop();
+  });
+
+  it('过期访问令牌仍会尝试续期', async () => {
+    persistAuthSession({ ...session('a'), expiresAt: new Date(Date.now() - 1_000).toISOString() });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      Response.json({
+        ...session('a'),
+        accessToken: 'synthetic-expired-renewal',
+        expiresAt: new Date(Date.now() + 900_000).toISOString(),
+      }),
+    );
+    const stop = maintainAuthSession('http://localhost:3000', vi.fn());
+    await vi.waitFor(() => expect(getAuthToken()).toBe('synthetic-expired-renewal'));
+    stop();
+  });
+
   it('认证连接超时会中止请求并释放调用者忙碌状态', async () => {
     vi.useFakeTimers();
     try {

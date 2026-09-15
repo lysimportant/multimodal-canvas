@@ -22,6 +22,8 @@ export type AuthTokenResponse = {
 export type StoredAuthSession = Pick<AuthTokenResponse, 'accessToken' | 'expiresAt' | 'user'>;
 
 const STORAGE_KEY = 'multimodal-canvas:auth-session';
+/** 到期前这么久就开始续期，避免后台标签冻住 30 秒定时器后错过刷新窗口。 */
+const AUTH_REFRESH_LEAD_MS = 5 * 60 * 1000;
 /** 同一标签页的会话通知；身份变化时由应用清除前一用户缓存。 */
 const sessionListeners = new Set<(session: StoredAuthSession | null) => void>();
 /** 登录/退出意图代次，阻止早先认证响应覆盖后来选择的账户。 */
@@ -56,30 +58,44 @@ function isAuthSession(value: unknown): value is StoredAuthSession {
   );
 }
 
-/** 读取有效会话，存储不可用时使用内存；过期或损坏的数据会被丢弃。 */
-export function readAuthSession(): StoredAuthSession | null {
+function isSessionUnexpired(session: StoredAuthSession): boolean {
+  return Date.parse(session.expiresAt) > Date.now();
+}
+
+/**
+ * 读取本地保存的会话，访问令牌过期也保留。
+ * 后台标签页冻住后续期必须还能拿到旧令牌；损坏数据仍会丢弃。
+ */
+export function readStoredAuthSession(): StoredAuthSession | null {
+  if (memorySession && isAuthSession(memorySession)) return memorySession;
   const store = storage();
-  if (!store)
-    return memorySession && Date.parse(memorySession.expiresAt) > Date.now() ? memorySession : null;
+  if (!store) return null;
   let raw: string | null;
   try {
     raw = store.getItem(STORAGE_KEY);
   } catch {
-    return memorySession && Date.parse(memorySession.expiresAt) > Date.now() ? memorySession : null;
+    return null;
   }
-  if (!raw)
-    return memorySession && Date.parse(memorySession.expiresAt) > Date.now() ? memorySession : null;
+  if (!raw) return null;
   try {
     const parsed: unknown = JSON.parse(raw);
-    if (!isAuthSession(parsed) || Date.parse(parsed.expiresAt) <= Date.now()) {
+    if (!isAuthSession(parsed)) {
       clearAuthSession();
       return null;
     }
+    memorySession = parsed;
     return parsed;
   } catch {
     clearAuthSession();
     return null;
   }
+}
+
+/** 读取尚未过期的会话；过期令牌不算当前登录，但不会立刻清掉本地存储。 */
+export function readAuthSession(): StoredAuthSession | null {
+  const session = readStoredAuthSession();
+  if (!session || !isSessionUnexpired(session)) return null;
+  return session;
 }
 
 /** 持久化已验证的会话并通知页面；存储受限时保留当前标签内存会话。 */
@@ -133,7 +149,7 @@ export function subscribeAuthSession(
     if (event.key !== STORAGE_KEY && event.key !== null) return;
     authGeneration++;
     memorySession = null;
-    listener(readAuthSession());
+    listener(readStoredAuthSession());
   };
   window.addEventListener('storage', onStorage);
   return () => {
@@ -143,13 +159,8 @@ export function subscribeAuthSession(
 }
 
 export function getAuthToken(): string | undefined {
-  const session = memorySession ?? readAuthSession();
-  if (!session) return undefined;
-  if (Date.parse(session.expiresAt) <= Date.now()) {
-    clearAuthSession();
-    return undefined;
-  }
-  memorySession = session;
+  const session = readStoredAuthSession();
+  if (!session || !isSessionUnexpired(session)) return undefined;
   return session.accessToken;
 }
 
@@ -162,7 +173,7 @@ export function setUnauthorizedHandler(handler: (() => void) | undefined): () =>
 
 /** 仅让发起请求时的会话失效；旧请求的 401 不得注销后来登录的新账户。 */
 export function notifyUnauthorized(expectedToken?: string | null): void {
-  const currentToken = memorySession?.accessToken ?? readAuthSession()?.accessToken ?? null;
+  const currentToken = memorySession?.accessToken ?? readStoredAuthSession()?.accessToken ?? null;
   if (expectedToken !== undefined && expectedToken !== currentToken) return;
   clearAuthSession();
   unauthorizedHandler?.();
@@ -175,12 +186,35 @@ function withAuthHeaders(init?: RequestInit): RequestInit {
   return { ...init, headers };
 }
 
+function requestHref(input: RequestInfo | URL): string {
+  if (typeof input === 'string') return input;
+  if (input instanceof URL) return input.href;
+  return input.url;
+}
+
+function authApiBaseUrl(input: RequestInfo | URL): string {
+  try {
+    return new URL(requestHref(input), window.location.href).origin;
+  } catch {
+    return '';
+  }
+}
+
 /** 为应用请求添加会话头；401 只清理对应会话，网络错误与 403 保留登录，不重放写请求。 */
 export async function apiFetch(
   input: RequestInfo | URL,
   init?: RequestInit,
   options: { skipUnauthorized?: boolean } = {},
 ): Promise<Response> {
+  const href = requestHref(input);
+  if (
+    !getAuthToken() &&
+    readStoredAuthSession() &&
+    !/\/v1\/auth\/refresh\/?$/.test(href.split('?')[0] ?? '')
+  ) {
+    const baseUrl = authApiBaseUrl(input);
+    if (baseUrl) await refreshAuthSession(baseUrl).catch(() => null);
+  }
   const requestInit = withAuthHeaders(init);
   const authorization = new Headers(requestInit.headers).get('authorization');
   const requestToken = authorization?.startsWith('Bearer ') ? authorization.slice(7) : null;
@@ -315,10 +349,11 @@ export async function logout(baseUrl: string): Promise<void> {
   }
 }
 
-/** 使用当前有效会话续期；并发请求复用一次刷新，旧响应不会覆盖新身份。 */
+/** 使用当前本地会话续期，访问令牌刚过期也会尝试；并发请求复用一次刷新。 */
 export async function refreshAuthSession(baseUrl: string): Promise<StoredAuthSession | null> {
-  const userId = (memorySession ?? readAuthSession())?.user.id;
-  const token = getAuthToken();
+  const session = readStoredAuthSession();
+  const userId = session?.user.id;
+  const token = session?.accessToken;
   if (!token) return null;
   if (refreshRequest?.token === token) return refreshRequest.promise;
   const generation = authGeneration;
@@ -330,7 +365,7 @@ export async function refreshAuthSession(baseUrl: string): Promise<StoredAuthSes
     });
     if (
       generation !== authGeneration ||
-      (memorySession?.accessToken ?? readAuthSession()?.accessToken) !== token
+      (memorySession?.accessToken ?? readStoredAuthSession()?.accessToken) !== token
     )
       return readAuthSession();
     if (response.status === 401) {
@@ -341,7 +376,7 @@ export async function refreshAuthSession(baseUrl: string): Promise<StoredAuthSes
     const payload = (await response.json()) as AuthTokenResponse;
     if (
       generation !== authGeneration ||
-      (memorySession?.accessToken ?? readAuthSession()?.accessToken) !== token
+      (memorySession?.accessToken ?? readStoredAuthSession()?.accessToken) !== token
     )
       return readAuthSession();
     if (!isAuthSession(payload) || payload.user.id !== userId) throw new Error('会话续期响应无效');
@@ -355,23 +390,31 @@ export async function refreshAuthSession(baseUrl: string): Promise<StoredAuthSes
   }
 }
 
-/** 每 30 秒和窗口恢复焦点时检查续期；到期前一分钟刷新，失败保留会话并通知调用者。 */
+/** 每 30 秒、焦点恢复、标签页重新可见时检查续期；到期前五分钟刷新。 */
 export function maintainAuthSession(baseUrl: string, onError: (error: Error) => void): () => void {
   let active = true;
   const check = () => {
-    const session = readAuthSession();
-    if (!session || Date.parse(session.expiresAt) - Date.now() > 60_000) return;
+    const session = readStoredAuthSession();
+    if (!session) return;
+    if (Date.parse(session.expiresAt) - Date.now() > AUTH_REFRESH_LEAD_MS) return;
     void refreshAuthSession(baseUrl).catch((error: unknown) => {
       if (active) onError(error instanceof Error ? error : new Error('会话续期失败'));
     });
   };
+  const onVisibility = () => {
+    check();
+  };
   const interval = window.setInterval(check, 30_000);
   window.addEventListener('focus', check);
+  window.addEventListener('pageshow', check);
+  document.addEventListener('visibilitychange', onVisibility);
   check();
   return () => {
     active = false;
     window.clearInterval(interval);
     window.removeEventListener('focus', check);
+    window.removeEventListener('pageshow', check);
+    document.removeEventListener('visibilitychange', onVisibility);
   };
 }
 
