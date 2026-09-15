@@ -1,187 +1,210 @@
-# 生成到新节点：覆盖生图与回显后图生图
+# 生成到新节点：覆盖生成与回显后修改
 
 ## 0. 已确认的产品口径
 
-两个按钮，语义不同，不是同一套生成换个落点：
+两个按钮，语义不同：
 
-1. **生成**：走**生图 / 纯生成**。结果写当前节点。空节点第一次生成、以及已有回显后再点「生成」覆盖回显，都走这条。图片供应商是 `/images/generations`。
-2. **新节点**：只在节点**已经有回显资源**时出现。走**修改路径**。图片上这就是现有「修改图片」图生图：当前回显当原图，提示词当修改说明，新建子节点承载结果，父节点回显不动。图片供应商是 `/images/edits`。
+1. **生成**：走各类型**纯生成**，结果写当前节点。空节点第一次、以及已有回显后再点「生成」覆盖回显，都走这条。
+2. **新节点**：只在**已经有回显**时出现，走**修改路径**。当前回显留下来，修改结果写到新建子节点。
 
-「修改图片」不再是第三条用户路径。「新节点」就是修改路径；图片实现复用 `handleCreateImageEditNode` 的来源冻结与 `input:imageEdit` 连线，并带上当前提示词后立刻运行。
+按媒体类型，修改路径不一样：
+
+| 类型 | 「生成」 | 「新节点」（有回显） |
+| --- | --- | --- |
+| 图片 | 生图 `/images/generations` | 图生图 `/images/edits`，当前回显当原图 |
+| 文字 | `/chat/completions` | 没有修改 URL。把**回显正文 + 当前提示词**做成子节点的新提示词，再走 `/chat/completions` |
+| 音频 | `/audio/speech` | 没有修改 URL，也不能把音频当文本。子节点继承提示词和音色参数再 TTS，父节点音频保留 |
+| 视频 | 当前 `videoMode` 的已落地生成合同 | `video_edit` / `video_extend` 未开放，不猜 URL。有现成末帧图则子节点走已落地的首帧模式；否则只带提示词按当前模式再生成到新节点，父视频保留 |
+
+「修改图片」不再是第三条用户路径，与图片「新节点」是同一条图生图。
 
 ---
 
 ## 1. 目标与范围
 
-PC Web 画布，四类节点都按「无回显只能生成；有回显才能选覆盖生成或修改到新节点」。
+PC Web。无回显只能「生成」；有回显才能选覆盖生成或修改到新节点。只有点「新节点」才自动建子节点并立刻运行。
 
-- 无回显：只有「生成」。图片=文生图，文字/音频/视频=各类型纯生成。结果写当前节点。
-- 有回显点「生成」：仍是纯生成，覆盖当前回显。图片不得因此改成图生图。
-- 有回显点「新节点」：走修改路径，当前回显作为新节点的输入来源。图片必须图生图。文字/音频/视频把当前回显按该类型已有入边角色接到子节点，不新造未确认的编辑端点。
-- 只有点「新节点」才会自动建子节点并立刻发请求。添加资源、打开编辑器、改模型/参数、画布加载都不建节点、不发请求。
+不在范围内：移动端专用布局、批量多图、mask、未确认的视频编辑/延长端点、音频转写或 voice-conversion。
 
-移动端专用布局、批量多图、局部蒙版、自动清理分叉列为后置。
+### 1.1 入口
 
-### 1.1 两个按钮与「修改图片」
+| 入口 | 何时出现 | 作用 |
+| --- | --- | --- |
+| 生成 | 生成节点 | 纯生成；有回显则覆盖当前节点 |
+| 新节点 | 已有回显 | 修改路径，结果写新节点 |
+| 修改图片（旧悬浮栏） | 图片已有回显 | 与图片「新节点」同一处理函数 |
 
-| 入口 | 何时出现 | 语义 | 图片供应商路径 | 是否立刻运行 |
-| --- | --- | --- | --- | --- |
-| 生成 | 所有生成节点 | 纯生成；有回显则覆盖 | `/images/generations` | 是 |
-| 新节点 | 已有回显 | 修改路径；图片=图生图 | `/images/edits` | 是 |
-| 修改图片（悬浮栏旧入口） | 图片已有回显 | 与「新节点」同一条修改路径，不另做第三套逻辑 | `/images/edits` | 是（带当前提示词） |
-
-来源图片节点不能原地「生成」，但已有回显，可以出「新节点」走图生图。
+来源图片节点不能原地生成，但有回显时可出「新节点」走图生图。
 
 ---
 
 ## 2. 不可违反的边界
 
-- **「生成」绝不图生图**：现有 `runNodeInPlace` 对当前节点 POST，图片无编辑来源时 Worker 走 `/images/generations`。不得因为当前已有回显就把原地生成改成 edits。既有「结果在原节点 / 节点数不变」冒烟不得改写。
-- **「新节点」才分叉，且走修改**：父节点零写入（回显、`assetId` / `contentUrl` / `resultAsset` / `manualOutput` / `runStatus`、位置、尺寸都不改）。
-- **图片新节点必须是图生图**：子节点全新 ID；`imageEditSource` 指向**被点击节点当前回显**（生成结果用 `resultAsset` 的 assetId+version，`sourceKind: result`；上传来源用 `assetId`，`sourceKind: asset`）；显式边 `output:image` → `input:imageEdit`。来源是当前节点自己的回显，不是父节点更早的编辑源。禁止依赖隐式推断。
-- **子节点不带父节点产物字段**：`assetId`、`contentUrl`、`mimeType`、`resultAsset`、`manualOutput`、`manualOutputRunId`、`runStatus`、`runProgress`、`runError`、`stale`。
-- **提示词要带上**：子节点继承当前提示词 / `promptDocument` / `resourceRefs`、模型、凭据、参数、推理强度。无提示词：两条按钮都禁用；「新节点」不建节点、不发请求。
-- **模型必须声明图片编辑**：图生图在创建 Run 前走现有 `checkImageEditCapabilities`。未声明 `imageEdit` 时 `IMAGE_EDIT_UNSUPPORTED`，零上游请求，不得退回 `/images/generations`。
-- **一次点击一个子节点**。失败后原地重试，不重复建节点。
-- **不自动重试** `524`，不改模型、不换端点。
-- 运行前冻结原图 `assetId + version`。
+- 「生成」不因为已有回显就改成修改合同。图片覆盖仍是 `/images/generations`。既有「结果在原节点」冒烟不改。
+- 「新节点」父节点零写入：回显、`assetId` / `contentUrl` / `resultAsset` / `manualOutput` / `runStatus`、位置、尺寸都不改。
+- 子节点全新 ID，不带父节点产物字段。
+- 无提示词：两条按钮都禁用；「新节点」不建节点、不发请求。文字若读不出回显正文，同样不建节点。
+- 一次点击一个子节点。失败后原地重试。不自动重试 `524`，不换模型、不换端点。
+- 禁止为了「看起来像修改」去打未落地的 URL，尤其是 `video_edit`、`video_extend`、音频编辑或 voice-conversion。
 
 ---
 
-## 3. 用户流程
+## 3. 各类型「新节点」怎么做
 
-### 3.1 回显判定
+### 3.1 图片：图生图
 
-与能否展示产物一致，不看「曾经跑过」：
+当前回显当原图。
 
-- 「新节点」出现条件：当前能展示回显（`resultAsset` 可解析内容，或 `assetId + contentUrl`，含手动输出仍在展示的产物）。
-- 生成节点和已有图片回显的来源节点都可以出「新节点」。
-- 失败但留着旧回显：要出现，这正是保留旧图、把修改结果放到旁边。
-- 空节点、产物缺失：不出现「新节点」。
-- 忙碌或停用：可见但禁用。
+1. 冻结回显资产（结果用 `resultAsset.assetId + version`，`sourceKind: result`；上传用 `assetId`，`sourceKind: asset`）。
+2. 新建图片生成子节点，写入 `imageEditSource.sourceNodeId = 父节点 id`。
+3. 显式边：父 `output:image` → 子 `input:imageEdit`。不要复制父节点旧的编辑边。
+4. 拷贝提示词、模型、参数、`resourceRefs`。
+5. 立刻对子节点 `POST /v1/nodes/{子节点}/runs`。
+6. Worker：`POST {baseUrl}/images/edits`，multipart：`model`、`prompt`、`image`。
+7. 模型必须声明 `capabilities.imageEdit`，否则创建 Run 前失败，零请求，不得退回 generations。
 
-领域层用 `nodeHasEchoPreview(node)`；图片修改来源继续用现有 `isImageEditSourceNode`。
+连续点「新节点」时，下一环的原图是**刚刚被点击节点的当前回显**，不是更早的祖图。
 
-### 3.2 图片主流程
+### 3.2 文字：回显正文拼进新提示词
+
+文字没有 edits URL，修改路径就是把已生成文章当作后续指令的一部分。
+
+1. 读取当前回显正文（结果资产内容，按文本解码）。读失败则提示，不建节点。
+2. 新建文字子节点，继承模型、凭据、推理强度、`resourceRefs`。
+3. 子节点提示词 = 当前提示词 + 分隔 + 回显正文。`promptDocument` 在保留原提及块的前提下**追加一段纯文本**（回显），不要先渲染再整段覆盖，以免丢掉 `@` 资源提及。
+4. 父节点提示词和回显都不改。
+5. 立刻 `POST /v1/nodes/{子节点}/runs`。
+6. Worker：`POST {baseUrl}/chat/completions`，`model` 仍是当前节点 `modelAlias`。
+
+分隔用固定、可见的中文标记，例如：
 
 ```text
-空图片生成节点
-  -> 只有「生成」
-  -> 点「生成」：POST 当前节点 /runs，Worker /images/generations，结果写回当前节点
+<原提示词>
 
-当前图片节点已经有回显
-  -> 「生成」+「新节点」
-  -> 点「生成」：仍 POST 当前节点 /runs，Worker /images/generations，覆盖当前回显
-  -> 点「新节点」
-       · 冻结当前回显为原图
-       · 新建图生图子节点（imageEditSource + input:imageEdit）
-       · 拷贝当前提示词、模型、参数
-       · 立刻对子节点 POST /runs
-       · Worker /images/edits（原图文件 + prompt + model）
-       · 父节点回显不动
-  -> 子节点有回显后，再点它的「新节点」，原图改成这张新图，形成下一环图生图
+【已生成内容】
+<回显正文>
 ```
 
-### 3.3 状态
+不要发明额外 system 角色或隐藏指令。
 
-| 状态 | 生成 | 新节点 |
-| --- | --- | --- |
-| 无回显 | 可见；无提示词则禁用 | 不渲染 |
-| 有回显、无提示词 | 禁用 | 可见但禁用；不建节点 |
-| 图片模型未声明 imageEdit | 仍可生图 | 禁用或提交前失败；零 edits 请求 |
-| 分叉成功 | — | 子节点回显新图；提示「`<子节点名>` 已完成」 |
-| 分叉后运行失败 | — | 父节点不变；子节点可原地重试 |
-| 建节点失败 | — | 回滚节点和边 |
+### 3.3 音频：没有修改合同，同配置再 TTS 到新节点
+
+当前音频合同是 `POST {baseUrl}/audio/speech`，入参是文本 `input`（提示词）和音色等参数，**不能把回显音频当文件或当文本送进去**。提示词提及音频也会被现有门禁拦住。
+
+本期「新节点」只能做到：
+
+1. 新建音频子节点。
+2. 继承提示词、`promptDocument`、音色/格式/语速等 `parameters`、模型、凭据。
+3. 不把父节点音频资产拷到子节点，也不新建「音频编辑」边。
+4. 立刻对子节点跑 `/audio/speech`。
+5. 父节点音频回显保留。
+
+这不是改这段音频，是**同一套 TTS 配置再出一条**，避免父节点被覆盖。真正的音频编辑要等有确认合同再换，不能猜 URL。
+
+### 3.4 视频：不打未开放的编辑/延长
+
+领域里已有 `video_edit`、`video_extend` 枚举，但 `livePost: false`，TODO 也写明未独立确认端点之前不准猜。本期「新节点」只用已经能 POST 的模式。
+
+**优先（真正用上这次结果）：** 父节点这次视频**已经有现成末帧图**（`completionAction` 已派生，或画布上已有对应末帧图片节点）。
+
+1. 子节点 `videoMode = first_frame`。
+2. 末帧图 → `input:firstFrame`。
+3. 拷贝提示词、模型、视频参数、凭据。
+4. 立刻跑已落地的首帧/图生视频合同。
+5. 父视频不动。
+6. **这次点击里不抽帧**。默认末帧动作仍是 `none`，不为了分叉去新建派生资产。
+
+**否则（没有末帧图）：**
+
+1. 子节点继承当前 `videoMode`、提示词、模型、参数。
+2. 不把父视频接到子节点：`text_to_video` 禁止参考；接成参考会改变模式。
+3. 立刻按该模式再生成到新节点。常见情况是再走文生视频。
+4. 父视频回显保留。
+
+这档是**无视频编辑合同时的降级**，不是改这段视频。等 P2 确认 `video_edit` / `video_extend` 的方法、URL、字段后，有回显的视频「新节点」应改走那条，而不是继续文生一条。
+
+不要为了分叉把 `text_to_video` 偷偷改成 `omni_reference` 再挂上原视频。
 
 ---
 
-## 4. 数据与字段
+## 4. 子节点字段
 
-不给节点增加结果落点字段。落点由点了哪个按钮决定。
+不增加 `resultTarget` 画布字段。
 
-### 4.1 图片「新节点」子节点
-
-| 类别 | 字段 |
-| --- | --- |
-| 继承 | mediaType=image、mode=generate、modelAlias、credentialId、parameters、inferenceStrength、prompt / promptDocument、resourceRefs |
-| 不继承 | 产物与运行态；也**不复制**父节点旧的 imageEditSource |
-| 新写入 | 新 id、label（沿用 `createUniqueImageEditLabel`）、imageEditSource.sourceNodeId=父节点 id、assetId=父节点当前回显资产、已知则带 version、sourceKind=result 或 asset |
-
-入边：只新建一条父 → 子的 `input:imageEdit`。不要把父节点自己的旧编辑边再复制一份，否则会变成改更早的原图，而不是改当前回显。
-
-文字/音频/视频「新节点」：子节点继承提示词与模型参数，并把父节点当前回显按现有角色接到子节点；禁止为了连线去猜未落地的编辑 URL。
+| 类型 | 继承 | 新写入 | 入边 |
+| --- | --- | --- | --- |
+| 图片 | 提示词、模型、参数、resourceRefs | 新 id、图生图 label、指向**当前回显**的 imageEditSource | 仅新建 `input:imageEdit` |
+| 文字 | 模型、推理强度、resourceRefs | 新 id、拼好的 prompt / promptDocument | 不把父文字当 content 边重复接入（正文已进提示词） |
+| 音频 | 提示词、音色参数、模型 | 新 id | 无音频编辑边 |
+| 视频 | 提示词、模型、参数；无末帧时继承 videoMode | 新 id；有末帧时 videoMode=first_frame | 有末帧则 `input:firstFrame`；否则不接父视频 |
 
 ---
 
 ## 5. 前端实施
 
-### 5.1 分发
-
-- `runNode(node, 'sameNode')` → `runNodeInPlace(node)`。键盘 R、命令面板、「生成」、右键「开始生成」都走这里。
-- `runNode(node, 'newNode')` → 必须 `nodeHasEchoPreview`；图片还必须 `isImageEditSourceNode`。然后 `runNodeAsNewChild(parent)`。
-- `runNodeAsNewChild` 对图片复用「修改图片」建节点逻辑（冻结回显、`imageEditSource`、`input:imageEdit`、碰撞避让、同一次历史事务），再拷贝提示词，立刻 `runNodeInPlace(child)`。
-- 悬浮栏「修改图片」改为调用同一条 `runNodeAsNewChild`，不要再留一套只建空节点、不运行的逻辑。
-
-### 5.2 界面
-
-- 快速编辑器：无回显一个「生成」；有回显加次按钮，可访问名称「生成到新节点」或「修改到新节点」，可见文案可用「新节点」。
-- 图片有回显时主按钮仍叫「生成」（生图覆盖）；次按钮才是图生图。
-- 节点悬浮栏不要同时摆「修改图片」和「新节点」两套入口；保留一个，都进修改路径。
-- 右键：有回显时在「开始生成」下加「生成到新节点」。
+- `runNode(node, 'sameNode')` → 原地纯生成。键盘 R、命令面板、「生成」、右键「开始生成」。
+- `runNode(node, 'newNode')` → 必须有回显，再按媒体类型走 3.1–3.4。
+- 图片复用修改图片的冻结与连线，加上当前提示词后立刻运行。悬浮栏「修改图片」调用同一函数。
+- 文字在建节点前读回显正文；读失败整次回滚。
+- 快速编辑器：无回显只有「生成」；有回显加「新节点」。不要两个都做成无文字播放图标。
+- 悬浮栏不要同时摆「修改图片」和「新节点」。
 
 ---
 
-## 6. 运行与 URL
+## 6. 应用与供应商 URL
 
-浏览器始终：
+浏览器一律：
 
 - `POST {API_BASE_URL}/v1/nodes/{nodeId}/runs`
-- 覆盖生图：`nodeId` = 当前节点
-- 新节点图生图：`nodeId` = 新建子节点
+- 「生成」：当前节点 ID
+- 「新节点」：子节点 ID
 - 本地默认 `http://localhost:3000`
 - 随后 `GET {API_BASE_URL}/v1/runs/{runId}`
 
-Worker（New API，凭据 baseUrl 空路径会补 `/v1`）：
+Worker（`baseUrl` 空路径补 `/v1`），`model` 都是节点当前 `modelAlias`：
 
-- 生图：「生成」按钮 → `POST {baseUrl}/images/generations`，JSON：`model`、`prompt`、`n: 1`、节点参数
-- 图生图：「新节点」按钮 → `POST {baseUrl}/images/edits`，multipart：`model`、`prompt`、`image` 原图文件、已声明参数
-- `model` 都是当前节点已选 `modelAlias`，不换模型。图生图额外要求目录 `capabilities.imageEdit`
+| 按钮 | 图片 | 文字 | 音频 | 视频 |
+| --- | --- | --- | --- | --- |
+| 生成 | `{baseUrl}/images/generations` | `{baseUrl}/chat/completions` | `{baseUrl}/audio/speech` | 现有视频创建合同（如 `/videos` 或 `/videos/generations`，按冻结合同，不新猜） |
+| 新节点 | `{baseUrl}/images/edits` | `{baseUrl}/chat/completions` | `{baseUrl}/audio/speech` | 有末帧：已落地首帧合同；无末帧：与当前模式相同的生成合同。**禁止**未开放的编辑/延长 URL |
 
 ---
 
 ## 7. 兼容
 
-- 旧画布零迁移。「生成」仍覆盖当前节点且仍是生图。
+- 旧画布零迁移。「生成」仍覆盖且仍是纯生成。
 - 不新增画布字段。
-- 撤销一次去掉该次分叉的节点和 `input:imageEdit` 边。
-- 既有空节点生图冒烟保持。把「修改图片」从「只建空节点」改成立刻运行，是本任务对旧入口的有意合并；相关测试要改成与「新节点」同一条断言，而不是保留两套产品逻辑。
+- 撤销一次去掉该次分叉的节点和新建的边。
+- 「修改图片」从「只建空节点」改为与「新节点」立刻运行，测试按同一条路径改，不保留两套逻辑。
 
 ---
 
 ## 8. 测试
 
-- `nodeHasEchoPreview`、`isImageEditSourceNode`。
-- 空图片节点：没有「新节点」；点「生成」0 新节点，请求落到当前节点。
-- 有回显点「生成」：0 新节点，父节点回显被覆盖；不得出现 `imageEditSource` 新写入。
-- 有回显点「新节点」：+1 节点、+1 条 `input:imageEdit`、父子 ID 不同、子节点 `imageEditSource.sourceNodeId` 为父节点、资产为父节点当前回显、恰好 1 次 `POST /v1/nodes/{子节点}/runs`、请求体含提示词。
-- 父节点字段深比较不变。
-- 连续两环：孙节点的原图是子节点回显，不是祖父那张。
-- 模型未声明 `imageEdit`：新节点按钮禁用或提交前失败，fetch 次数为 0。
-- 无提示词：不建节点、0 请求。
-- Playwright：保留四类节点「点生成结果在原节点」。新增「有回显点新节点，图片走修改路径，原图还在父节点」。
+- 空节点没有「新节点」；「生成」0 新节点。
+- 有回显点「生成」：0 新节点，回显被覆盖；图片不得新写 `imageEditSource`。
+- 图片「新节点」：+1 节点、+1 条 `input:imageEdit`、来源是父节点当前回显、1 次子节点 `/runs`。模型未声明 imageEdit 则 0 上游请求。
+- 文字「新节点」：子节点 prompt 含原提示词和回显正文；父节点 prompt 与回显不变；请求走 chat/completions。回显读失败则 0 新节点。
+- 音频「新节点」：子节点无父音频资产；参数含同一音色；请求走 speech；父音频仍在。
+- 视频「新节点」：有末帧则子节点 first_frame 且带 firstFrame 边；无末帧则不接父视频、不抽帧、不出现 video_edit。
+- 连续图片两环：孙节点原图是子节点回显。
+- Playwright：保留四类「点生成结果在原节点」。新增有回显点新节点的分类型用例。
 
 ---
 
 ## 9. 后置
 
-- 连续图生图会增加节点，本期只靠撤销和手动删除。
-- 多原图、mask、视频专用编辑端点未确认前不猜 URL。
-- 不要把「生成」缺省改成新节点，也不要给旧画布补 resultTarget=newNode。
+- 视频编辑/延长：独立确认方法、URL、字段后再把视频「新节点」切过去。
+- 音频编辑 / 转写后再 TTS：有合同再换，不在 speech 上假装改音频。
+- 连续分叉只靠撤销和手动删除。
+- 不要给旧画布补默认 newNode。
 
 ## 10. 已否决
 
-- 有回显点「新节点」仍走 `/images/generations`（与本次口径相反）。
-- 「生成」和「新节点」生成语义等价、只换写入节点。
-- 把所有「生成」默认改成分叉。
-- 「修改图片」继续作为不自动运行的第三条路径。
-- 图生图子节点复制父节点旧 `imageEditSource`，去改更早的原图而不是当前回显。
+- 图片「新节点」走 `/images/generations`。
+- 「生成」和「新节点」语义等价、只换写入节点。
+- 所有「生成」默认分叉。
+- 「修改图片」继续只建空节点、不运行。
+- 图生图复制父节点旧 imageEditSource，去改祖图。
+- 为视频「新节点」调用未开放的 video_edit / video_extend，或把 text_to_video 偷偷改成全能参考。
+- 把音频回显当文本拼进 speech 的 input，或猜音频编辑 URL。
