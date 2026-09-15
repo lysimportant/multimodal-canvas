@@ -237,12 +237,7 @@ function NodeMenuContent({
       </div>
       <div className="canvas-context-menu-group" role="group" aria-label="节点操作">
         <MenuItem icon={LocateFixed} label="定位并居中节点" onClick={onCenter} />
-        <MenuItem
-          icon={Play}
-          label="开始生成"
-          disabled={node.data.mode === 'source' || !enabled || busy}
-          onClick={onRun}
-        />
+        <MenuItem icon={Play} label="开始生成" disabled={!enabled || busy} onClick={onRun} />
         <MenuItem
           icon={Power}
           label={enabled ? '停用节点' : '启用节点'}

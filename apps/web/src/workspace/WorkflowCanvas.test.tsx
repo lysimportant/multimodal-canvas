@@ -279,7 +279,10 @@ describe('WorkflowCanvas context menu', () => {
     fireEvent.contextMenu(source, { clientX: 140, clientY: 120 });
 
     expect(props.onNodeSelect).toHaveBeenCalledWith(sourceNode);
-    expect(screen.getByRole('menuitem', { name: '开始生成' })).toBeDisabled();
+    expect(screen.getByRole('menuitem', { name: '开始生成' })).toBeEnabled();
+    await user.click(screen.getByRole('menuitem', { name: '开始生成' }));
+    expect(props.onRunNode).toHaveBeenCalledWith(sourceNode);
+    fireEvent.contextMenu(source, { clientX: 140, clientY: 120 });
     await user.click(screen.getByRole('menuitem', { name: '停用节点' }));
     expect(props.onNodeEnabledChange).toHaveBeenCalledWith(sourceNode.id, false);
 

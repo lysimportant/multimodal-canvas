@@ -1232,6 +1232,9 @@ describe('画布编辑器交互', () => {
     const source = findNodeByLabel('reference.png')!;
     expect(within(source).getByRole('button', { name: '修改图片：reference.png' })).toBeVisible();
     expect(within(source).getByRole('button', { name: '修改图片：reference.png' })).toBeDisabled();
+    await user.click(source);
+    const sourceEditor = await screen.findByRole('region', { name: /生成设置$/ });
+    expect(within(sourceEditor).getByRole('button', { name: '生成' })).toBeVisible();
 
     await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
     const textNode = findNodeByLabel('文字生成节点')!;

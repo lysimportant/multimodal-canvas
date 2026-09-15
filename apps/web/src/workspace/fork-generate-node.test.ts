@@ -32,13 +32,13 @@ function imageNode(
 }
 
 describe('fork-generate-node', () => {
-  it('空节点不能分叉，来源节点不能原地生成', () => {
+  it('空节点不能分叉，来源节点也可以点生成', () => {
     const empty = imageNode();
     expect(canForkNewNode(empty)).toBe(false);
     expect(canRunSameNode(empty)).toBe(true);
     expect(
       canRunSameNode(imageNode({ data: { mode: 'source', assetId: 'a', contentUrl: '/c' } })),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       canForkNewNode(imageNode({ data: { mode: 'source', assetId: 'a', contentUrl: '/c' } })),
     ).toBe(true);

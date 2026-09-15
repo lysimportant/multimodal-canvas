@@ -39,12 +39,12 @@ export function nodeHasPrompt(data: { prompt?: string; promptDocument?: PromptDo
 }
 
 /**
- * 判断节点是否可以点「生成」原地运行。
- * 来源节点不能原地生成。
+ * 判断节点是否可以点「生成」写回当前节点。
+ * 从资产添加的独立来源节点也算；运行时会先提升为 generate，不覆盖未提交的资产身份。
  * @param node 当前节点。
  */
-export function canRunSameNode(node: AssetFlowNode): boolean {
-  return node.data.mode !== 'source';
+export function canRunSameNode(_node: AssetFlowNode): boolean {
+  return true;
 }
 
 /**

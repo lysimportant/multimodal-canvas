@@ -1300,6 +1300,37 @@ function WorkspaceApp({
     [createOperationNode],
   );
 
+  /**
+   * 资产来源节点不能直接 POST /runs。提升为 generate 并保留当前回显，
+   * 这样独立节点也可以点「生成」把结果写回自己。
+   * @param source 当前来源节点。
+   * @returns 同一 ID 的可运行节点。
+   */
+  const promoteSourceNodeToGenerate = useCallback(
+    (source: AssetFlowNode): AssetFlowNode => {
+      if (source.data.mode !== 'source') return source;
+      const template = createGenerateNode(source.data.mediaType, source.position, {
+        ...inheritedGenerateData(source.data),
+        label: source.data.label,
+        ...(source.data.assetId ? { assetId: source.data.assetId } : {}),
+        ...(source.data.contentUrl ? { contentUrl: source.data.contentUrl } : {}),
+        ...(source.data.mimeType ? { mimeType: source.data.mimeType } : {}),
+        manualOutput: true,
+      });
+      const promoted: AssetFlowNode = {
+        ...source,
+        data: template.data,
+      };
+      rememberHistory();
+      const next = nodesRef.current.map((node) => (node.id === source.id ? promoted : node));
+      nodesRef.current = next;
+      setNodes(next);
+      canvasDirtyRef.current = true;
+      return promoted;
+    },
+    [createGenerateNode, rememberHistory, setNodes],
+  );
+
   const selectCanvasNode = useCallback(
     (nodeId: string | null) => {
       setSelectedNodeId(nodeId);
@@ -2410,8 +2441,7 @@ function WorkspaceApp({
         return;
       }
       if (nodeSnapshot.data.mode === 'source') {
-        setNotice({ kind: 'error', message: '来源节点不能直接运行，请选择生成节点' });
-        return;
+        nodeSnapshot = promoteSourceNodeToGenerate(nodeSnapshot);
       }
       if (nodeSnapshot.data.enabled === false) {
         setNotice({ kind: 'error', message: '节点已停用，请先启用后再运行' });
@@ -2493,6 +2523,7 @@ function WorkspaceApp({
       commitForkGraph,
       createGenerateNode,
       pollRun,
+      promoteSourceNodeToGenerate,
       projectId,
       saveCanvas,
       setNodes,
@@ -2660,7 +2691,7 @@ function WorkspaceApp({
       });
     });
 
-    if (selectedNode && selectedNode.data.mode !== 'source') {
+    if (selectedNode) {
       commands.unshift({
         id: 'run-selected-node',
         label: `运行「${selectedNode.data.label}」`,
@@ -2893,16 +2924,11 @@ function WorkspaceApp({
             <button
               type="button"
               className="button button-primary"
-              disabled={
-                !selectedNode ||
-                selectedNode.data.mode === 'source' ||
-                selectedNode.data.enabled === false ||
-                isRunning
-              }
+              disabled={!selectedNode || selectedNode.data.enabled === false || isRunning}
               onClick={() => {
                 if (selectedNode) void runNode(selectedNode);
               }}
-              title={selectedNode ? '运行选中的生成节点' : '先选择生成节点'}
+              title={selectedNode ? '运行选中的节点' : '先选择要运行的节点'}
             >
               {isRunning ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}
               {isRunning ? '运行中' : '运行'}

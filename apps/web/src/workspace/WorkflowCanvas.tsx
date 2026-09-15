@@ -261,11 +261,8 @@ export function WorkflowCanvas({
   const [contextMenu, setContextMenu] = useState<CanvasContextMenuTarget | null>(null);
   const [videoImageRolePicker, setVideoImageRolePicker] =
     useState<VideoInputRolePickerTarget | null>(null);
-  /** 图片节点先进入输入编辑，编辑器打开后再次点击才允许预览。 */
-  const quickEditorNode =
-    selectedNode && (selectedNode.data.mode !== 'source' || selectedNode.data.mediaType === 'image')
-      ? selectedNode
-      : null;
+  /** 选中节点进入输入编辑；资产来源节点同样可以填写提示词并生成。 */
+  const quickEditorNode = selectedNode;
 
   const getCanvasNodePosition = useCallback(
     (mediaType?: MediaType) => {

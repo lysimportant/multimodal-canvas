@@ -1437,7 +1437,7 @@ describe('NodeQuickEditor', () => {
     expect(screen.getByRole('button', { name: '新节点' })).toBeVisible();
   });
 
-  it('来源图片节点不显示生成，只显示新节点', () => {
+  it('来源图片节点同时显示生成和新节点', () => {
     render(
       <NodeQuickEditor
         {...makeProps({
@@ -1455,7 +1455,7 @@ describe('NodeQuickEditor', () => {
         })}
       />,
     );
-    expect(screen.queryByRole('button', { name: '生成' })).toBeNull();
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
     expect(screen.getByRole('button', { name: '新节点' })).toBeEnabled();
   });
 });
