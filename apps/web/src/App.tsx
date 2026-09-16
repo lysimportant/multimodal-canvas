@@ -184,6 +184,10 @@ import '@xyflow/react/dist/style.css';
 
 const PROJECT_STORAGE_KEY = 'multimodal-canvas:project-id';
 const CANVAS_DRAFT_KEY_PREFIX = 'multimodal-canvas:canvas';
+/** 新分叉节点短暂抬升，避免被邻近节点挡住。 */
+const FORK_NODE_Z_INDEX = 8;
+/** 分叉节点抬升持续时长，单位毫秒。 */
+const FORK_NODE_ELEVATION_MS = 4000;
 
 type CanvasApiDocument = CanvasDocument;
 type LocalCanvasDraft = CanvasDocument;
@@ -512,6 +516,8 @@ function WorkspaceApp({
   const runPollingLifecycleRef = useRef({ active: true });
   const initializedRef = useRef(false);
   const nodesRef = useRef<AssetFlowNode[]>([]);
+  /** 分叉节点抬升定时器，按节点 ID 记录，避免重复叠加。 */
+  const forkElevationTimersRef = useRef(new Map<string, number>());
   const edgesRef = useRef<FlowEdge[]>([]);
   const historyRef = useRef<{ past: CanvasHistorySnapshot[]; future: CanvasHistorySnapshot[] }>({
     past: [],
@@ -1632,16 +1638,17 @@ function WorkspaceApp({
 
   /**
    * 把分叉子节点和新建边写入同一条历史记录，并同步 nodesRef 以免立刻运行读到旧画布。
-   * 父节点只取消选中，不改位置、尺寸或产物字段。
+   * 父节点只取消选中，不改位置、尺寸或产物字段。新节点短暂抬升层级，避免被邻近节点挡住。
    * @param child 新建的子节点。
    * @param extraEdges 这次分叉新建的边。
    */
   const commitForkGraph = useCallback(
     (child: AssetFlowNode, extraEdges: FlowEdge[]) => {
       rememberHistory();
+      const elevatedChild = { ...child, selected: true, zIndex: FORK_NODE_Z_INDEX };
       const nextNodes = [
         ...nodesRef.current.map((node) => (node.selected ? { ...node, selected: false } : node)),
-        { ...child, selected: true },
+        elevatedChild,
       ];
       const nextEdges = [...edgesRef.current, ...extraEdges];
       nodesRef.current = nextNodes;
@@ -1650,6 +1657,21 @@ function WorkspaceApp({
       setSelectedNodeId(child.id);
       setEdges(nextEdges);
       canvasDirtyRef.current = true;
+      const existingTimer = forkElevationTimersRef.current.get(child.id);
+      if (existingTimer) window.clearTimeout(existingTimer);
+      const timer = window.setTimeout(() => {
+        forkElevationTimersRef.current.delete(child.id);
+        setNodes((current) => {
+          const next = current.map((node) =>
+            node.id === child.id && node.zIndex === FORK_NODE_Z_INDEX
+              ? { ...node, zIndex: undefined }
+              : node,
+          );
+          nodesRef.current = next;
+          return next;
+        });
+      }, FORK_NODE_ELEVATION_MS);
+      forkElevationTimersRef.current.set(child.id, timer);
     },
     [rememberHistory, setEdges, setNodes],
   );

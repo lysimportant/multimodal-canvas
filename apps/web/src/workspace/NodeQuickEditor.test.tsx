@@ -14,6 +14,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { PromptDocument } from '@multimodal-canvas/domain';
 import { clearAuthSession, persistAuthSession } from '../auth-client';
+import {
+  useWorkspacePreferences,
+  workspacePreferenceDefaults,
+} from '../state/workspace-preferences';
 import type { AssetFlowNode } from '../canvas-utils';
 import {
   applyNodeGenerationDefaults,
@@ -154,6 +158,8 @@ afterEach(() => {
   cleanup();
   clearAuthSession();
   vi.unstubAllGlobals();
+  useWorkspacePreferences.setState(workspacePreferenceDefaults);
+  window.localStorage.clear();
 });
 
 describe('NodeQuickEditor', () => {
@@ -1485,9 +1491,12 @@ describe('NodeQuickEditor', () => {
         Response.json({ url: '/v1/assets/asset_source/content?access_token=signed' }),
       );
     vi.stubGlobal('fetch', fetchMock);
+    const onFocusImageEditSource = vi.fn();
+    const user = userEvent.setup();
     render(
       <NodeQuickEditor
         {...makeProps({
+          onFocusImageEditSource,
           imageEditSource: {
             assetId: 'asset_source',
             sourceNodeId: 'node_parent',
@@ -1509,6 +1518,17 @@ describe('NodeQuickEditor', () => {
       );
     });
     expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/access-url'))).toBe(true);
+    await user.click(within(card).getByRole('button', { name: '原图' }));
+    expect(onFocusImageEditSource).toHaveBeenCalledWith('node_parent');
+    await user.click(within(card).getByRole('img'));
+    expect(await screen.findByRole('dialog', { name: '原图' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: '关闭预览' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: '原图' })).not.toBeInTheDocument(),
+    );
+    await user.click(screen.getByRole('button', { name: '隐藏来源图' }));
+    expect(screen.queryByRole('group', { name: '来源图（只读）' })).not.toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: '显示来源图' })).not.toBeChecked();
   });
 
   it('来源图片节点同时显示生成和新节点', () => {

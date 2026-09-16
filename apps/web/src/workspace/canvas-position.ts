@@ -34,14 +34,13 @@ export function getCenteredCanvasNodePosition(
 }
 
 /** 新节点与已有节点之间保留的最小间距，单位为画布像素。 */
-export const NEW_NODE_PLACEMENT_GAP = 48;
+export const NEW_NODE_PLACEMENT_GAP = 16;
 /**
  * 每一行向右尝试的最大列数。
  *
- * 超过该范围仍被占用时改为向下换行，避免为了躲开一个节点而把新节点放到
- * 很远的位置，也保证搜索必然结束。
+ * 右侧第一格被占用就向下换行，保持新节点挨着父节点，而不是一路向右排开。
  */
-export const NEW_NODE_PLACEMENT_MAX_COLUMNS = 4;
+export const NEW_NODE_PLACEMENT_MAX_COLUMNS = 1;
 /** 向下寻找空位的最大行数，避免异常画布导致死循环。 */
 const NEW_NODE_PLACEMENT_MAX_ROWS = 200;
 

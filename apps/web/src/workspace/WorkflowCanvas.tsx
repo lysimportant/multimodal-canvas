@@ -680,6 +680,10 @@ export function WorkflowCanvas({
             return portRoles.includes(role as PortRole) ? [role as PortRole] : [];
           })}
           imageEditSource={resolveImageEditSourcePreview(quickEditorNode, nodes, assets)}
+          onFocusImageEditSource={(sourceNodeId) => {
+            const source = nodes.find((candidate) => candidate.id === sourceNodeId);
+            if (source) handleCenterNode(source);
+          }}
           emptyImageNodes={nodes
             .filter(
               (item) =>

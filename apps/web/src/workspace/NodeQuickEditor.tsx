@@ -1,4 +1,13 @@
-import { Expand, GitFork, ImageOff, LoaderCircle, Play, SlidersHorizontal, X } from 'lucide-react';
+import {
+  Expand,
+  EyeOff,
+  GitFork,
+  ImageOff,
+  LoaderCircle,
+  Play,
+  SlidersHorizontal,
+  X,
+} from 'lucide-react';
 import { useEffect, useId, useRef, useState, type FocusEvent } from 'react';
 
 import type {
@@ -28,6 +37,7 @@ import {
   imageEditSourcePreviewAsset,
   type ImageEditSourcePreview,
 } from './image-edit-source-preview';
+import { useWorkspacePreferences } from '../state/workspace-preferences';
 import { CompactSelect } from './CompactSelect';
 import { useFloatingParameterMenu } from './use-floating-parameter-menu';
 import { isImeKeyboardEvent } from '../ime';
@@ -105,6 +115,11 @@ export type NodeQuickEditorProps = {
    * 且不允许在此修改来源节点内容。
    */
   imageEditSource?: ImageEditSourcePreview;
+  /**
+   * 点击来源图名称时定位到来源节点。
+   * @param sourceNodeId 来源画布节点 ID。
+   */
+  onFocusImageEditSource?: (sourceNodeId: string) => void;
 };
 
 /** 图片编辑节点上只读展示的来源图身份。 */
@@ -208,7 +223,12 @@ export function NodeQuickEditor({
   connectedInputRoles = [],
   onVideoModeChange,
   imageEditSource,
+  onFocusImageEditSource,
 }: NodeQuickEditorProps) {
+  const showImageEditSourceCard = useWorkspacePreferences((state) => state.showImageEditSourceCard);
+  const setShowImageEditSourceCard = useWorkspacePreferences(
+    (state) => state.setShowImageEditSourceCard,
+  );
   /** 参数页只改变展示状态，不修改节点或默认参数。 */
   const [mediaSettingsOpen, setMediaSettingsOpen] = useState(false);
   /** 同一节点在快速面板和 Dialog 之间共用父层保存的文档。 */
@@ -382,38 +402,55 @@ export function NodeQuickEditor({
     </label>
   );
 
-  /** 来源图只读展示：走 AssetPreview 签名，不把未鉴权内容地址塞进 img。 */
+  /** 来源图只读展示：点击缩略图预览，点击名称定位到来源节点。 */
   const sourcePreviewAsset = imageEditSource
     ? imageEditSourcePreviewAsset(imageEditSource)
     : undefined;
-  const imageEditSourcePreview = imageEditSource ? (
-    <div className="node-quick-editor-image-edit-source" role="group" aria-label="来源图（只读）">
-      {sourcePreviewAsset ? (
-        <AssetPreview
-          asset={sourcePreviewAsset}
-          mode="compact"
-          interactive={false}
-          mediaClickPreviewEnabled={false}
-          className="node-quick-editor-image-edit-thumb"
-        />
-      ) : (
-        <span
-          className="node-quick-editor-image-edit-thumb is-missing"
-          role="img"
-          aria-label={`来源图不可用：${imageEditSource.name}`}
+  const imageEditSourcePreview =
+    imageEditSource && showImageEditSourceCard ? (
+      <div className="node-quick-editor-image-edit-source" role="group" aria-label="来源图（只读）">
+        {sourcePreviewAsset ? (
+          <AssetPreview
+            asset={sourcePreviewAsset}
+            mode="compact"
+            interactive={false}
+            allowOpen
+            mediaClickPreviewEnabled
+            className="node-quick-editor-image-edit-thumb"
+          />
+        ) : (
+          <span
+            className="node-quick-editor-image-edit-thumb is-missing"
+            role="img"
+            aria-label={`来源图不可用：${imageEditSource.name}`}
+          >
+            <ImageOff size={18} aria-hidden="true" />
+          </span>
+        )}
+        <span className="node-quick-editor-image-edit-meta">
+          <button
+            type="button"
+            className="node-quick-editor-image-edit-name nodrag nopan"
+            onClick={() => onFocusImageEditSource?.(imageEditSource.sourceNodeId)}
+          >
+            {imageEditSource.name}
+          </button>
+          <span>
+            来源图固定版本：
+            {imageEditSource.version ? `v${imageEditSource.version}` : '运行前冻结'}
+          </span>
+        </span>
+        <button
+          type="button"
+          className="node-quick-editor-image-edit-hide nodrag nopan"
+          aria-label="隐藏来源图"
+          title="隐藏来源图"
+          onClick={() => setShowImageEditSourceCard(false)}
         >
-          <ImageOff size={18} aria-hidden="true" />
-        </span>
-      )}
-      <span className="node-quick-editor-image-edit-meta">
-        <strong>{imageEditSource.name}</strong>
-        <span>
-          来源图固定版本：
-          {imageEditSource.version ? `v${imageEditSource.version}` : '运行前冻结'}
-        </span>
-      </span>
-    </div>
-  ) : null;
+          <EyeOff size={15} aria-hidden="true" />
+        </button>
+      </div>
+    ) : null;
 
   /** 视频模式在快速编辑器控制栏常驻，避免用户为切换模式打开参数页。 */
   const videoModeEditor =
@@ -440,6 +477,17 @@ export function NodeQuickEditor({
 
   const mediaParameterEditor = (
     <div className="node-quick-editor-media-settings">
+      {imageEditSource ? (
+        <label className="node-quick-editor-source-card-toggle">
+          <input
+            type="checkbox"
+            checked={showImageEditSourceCard}
+            onChange={(event) => setShowImageEditSourceCard(event.target.checked)}
+            aria-label="显示来源图"
+          />
+          显示来源图
+        </label>
+      ) : null}
       {node.data.mediaType === 'image' && (
         <div
           className="node-quick-editor-media-options"

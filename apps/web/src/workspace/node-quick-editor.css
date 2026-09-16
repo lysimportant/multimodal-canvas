@@ -77,6 +77,16 @@
   padding: 8px 10px;
 }
 
+.node-quick-editor-image-edit-source .node-quick-editor-image-edit-thumb {
+  cursor: zoom-in;
+}
+
+.node-quick-editor-image-edit-source
+  .node-quick-editor-image-edit-thumb
+  .artifact-preview-open-button {
+  display: none;
+}
+
 .node-quick-editor-image-edit-source .node-quick-editor-image-edit-thumb,
 .node-quick-editor-image-edit-source
   .node-quick-editor-image-edit-thumb.artifact-preview-media-shell {
@@ -113,9 +123,58 @@
 
 .node-quick-editor-image-edit-meta {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 2px;
   min-width: 0;
+}
+
+.node-quick-editor-image-edit-name {
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  overflow: hidden;
+  padding: 0;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-quick-editor-image-edit-name:hover,
+.node-quick-editor-image-edit-name:focus-visible {
+  text-decoration: underline;
+}
+
+.node-quick-editor-image-edit-hide {
+  align-items: center;
+  background: none;
+  border: 0;
+  border-radius: 8px;
+  color: var(--mc-text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 28px;
+  justify-content: center;
+  padding: 0;
+  width: 28px;
+}
+
+.node-quick-editor-image-edit-hide:hover,
+.node-quick-editor-image-edit-hide:focus-visible {
+  background: var(--mc-surface);
+  color: var(--mc-text);
+}
+
+.node-quick-editor-source-card-toggle {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
 }
 
 .node-quick-editor-image-edit-meta strong {

@@ -45,39 +45,29 @@ describe('new node placement', () => {
     });
   });
 
-  it('searches further right, then below, without changing the source node', () => {
-    const occupied = [
-      source,
-      { position: { x: 548, y: 50 }, width: 400, height: 266 },
-      { position: { x: 996, y: 50 }, width: 400, height: 266 },
-    ];
+  it('wraps below the source when the immediate right slot is taken', () => {
+    const startX = 100 + 400 + NEW_NODE_PLACEMENT_GAP;
+    const occupied = [source, { position: { x: startX, y: 50 }, width: 400, height: 266 }];
 
     expect(getNodePlacementRightOf(source, occupied, imageDimensions)).toEqual({
-      x: 1444,
-      y: 50,
-    });
-
-    const blockedRight = [
-      ...occupied,
-      { position: { x: 1444, y: 50 }, width: 400, height: 266 },
-      { position: { x: 1892, y: 50 }, width: 400, height: 266 },
-    ];
-    // 第一行全部被占用后向下换行，仍然从来源节点右侧的第一列开始找。
-    expect(getNodePlacementRightOf(source, blockedRight, imageDimensions)).toEqual({
-      x: 548,
+      x: startX,
       y: 50 + 266 + NEW_NODE_PLACEMENT_GAP,
     });
   });
 
   it('ignores nodes that only touch the gap and treats missing sizes as defaults', () => {
-    const touching = { position: { x: 500, y: 50 }, width: 40, height: 40 };
+    const startX = 100 + 400 + NEW_NODE_PLACEMENT_GAP;
+    const touching = { position: { x: 500, y: 50 }, width: NEW_NODE_PLACEMENT_GAP, height: 40 };
     expect(getNodePlacementRightOf(source, [touching], imageDimensions)).toEqual({
-      x: 548,
+      x: startX,
       y: 50,
     });
 
-    const legacyNode = { position: { x: 548, y: 50 } };
+    const legacyNode = { position: { x: startX, y: 50 } };
     const position = getNodePlacementRightOf(source, [legacyNode], imageDimensions);
-    expect(position.x).toBeGreaterThan(548);
+    expect(position).toEqual({
+      x: startX,
+      y: 50 + 266 + NEW_NODE_PLACEMENT_GAP,
+    });
   });
 });

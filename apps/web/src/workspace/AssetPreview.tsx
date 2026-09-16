@@ -34,6 +34,8 @@ export type AssetPreviewProps = {
   mode?: AssetPreviewMode;
   /** 是否允许直接点击图片打开预览；节点应在输入编辑器打开后启用，展开按钮始终可用。 */
   mediaClickPreviewEnabled?: boolean;
+  /** 覆盖默认点开行为；紧凑缩略图也可打开大图预览。 */
+  allowOpen?: boolean;
   onLoadStateChange?: (state: AssetPreviewLoadState) => void;
   /** 图片或视频固有尺寸就绪后回调，供节点按内容适配宽高。 */
   onNaturalSize?: (width: number, height: number) => void;
@@ -110,6 +112,7 @@ export function AssetPreview({
   interactive = false,
   mode,
   mediaClickPreviewEnabled = true,
+  allowOpen,
   onLoadStateChange,
   onNaturalSize,
   onTextSave,
@@ -191,7 +194,7 @@ export function AssetPreview({
       src={src}
       className={className}
       controls={interactive || previewMode === 'content'}
-      allowOpen={previewMode === 'content'}
+      allowOpen={allowOpen ?? previewMode === 'content'}
       mediaClickPreviewEnabled={mediaClickPreviewEnabled}
       onRetry={retry}
       onLoadStateChange={onLoadStateChange}

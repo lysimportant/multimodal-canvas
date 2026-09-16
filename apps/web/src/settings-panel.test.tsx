@@ -540,6 +540,7 @@ describe('SettingsPanel', () => {
     expect(dialog).toHaveClass('settings-dialog-panel');
     expect(within(dialog).getByLabelText('界面主题')).toBeVisible();
     expect(within(dialog).getByLabelText('画布背景')).toBeVisible();
+    expect(within(dialog).getByLabelText('图片修改来源图')).toBeVisible();
     expect(within(dialog).queryByLabelText('API Key')).not.toBeInTheDocument();
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/v1/settings/ai'))).toBe(
       false,

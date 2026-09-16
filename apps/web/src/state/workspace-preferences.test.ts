@@ -4,6 +4,7 @@ import {
   CANVAS_BACKGROUND_KEY,
   CANVAS_EDGE_STYLE_KEY,
   CANVAS_THEME_KEY,
+  IMAGE_EDIT_SOURCE_CARD_KEY,
   RESOURCE_PANEL_COLLAPSED_KEY,
   useWorkspacePreferences,
   workspacePreferenceDefaults,
@@ -27,11 +28,13 @@ describe('workspace preferences store', () => {
     state.setCanvasBackground('blank');
     state.setCanvasEdgeStyle('pulse');
     state.setResourcePanelCollapsed(true);
+    state.setShowImageEditSourceCard(false);
 
     expect(window.localStorage.getItem(CANVAS_THEME_KEY)).toBe('dark');
     expect(window.localStorage.getItem(CANVAS_BACKGROUND_KEY)).toBe('blank');
     expect(window.localStorage.getItem(CANVAS_EDGE_STYLE_KEY)).toBe('pulse');
     expect(window.localStorage.getItem(RESOURCE_PANEL_COLLAPSED_KEY)).toBe('true');
+    expect(window.localStorage.getItem(IMAGE_EDIT_SOURCE_CARD_KEY)).toBe('false');
   });
 
   it('rehydrates persisted values and rejects unsupported appearance values', async () => {
@@ -47,6 +50,7 @@ describe('workspace preferences store', () => {
       canvasBackground: 'lines',
       canvasEdgeStyle: 'flow',
       isResourcePanelCollapsed: true,
+      showImageEditSourceCard: true,
     });
   });
 });

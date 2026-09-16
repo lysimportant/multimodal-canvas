@@ -111,6 +111,10 @@ export function SettingsPanel({
     message: string;
   } | null>(null);
   const canvasTheme = useWorkspacePreferences((state) => state.canvasTheme);
+  const showImageEditSourceCard = useWorkspacePreferences((state) => state.showImageEditSourceCard);
+  const setShowImageEditSourceCard = useWorkspacePreferences(
+    (state) => state.setShowImageEditSourceCard,
+  );
   const setCanvasTheme = useWorkspacePreferences((state) => state.setCanvasTheme);
   const canvasBackground = useWorkspacePreferences((state) => state.canvasBackground);
   const setCanvasBackground = useWorkspacePreferences((state) => state.setCanvasBackground);
@@ -517,7 +521,7 @@ export function SettingsPanel({
         <div className="settings-models-heading">
           <div>
             <h2 id="settings-appearance-title">工作区外观</h2>
-            <p className="settings-status">主题和画布背景会立即保存到当前浏览器。</p>
+            <p className="settings-status">主题、画布背景和来源图显示会立即保存到当前浏览器。</p>
           </div>
         </div>
         <div className="settings-appearance-grid">
@@ -547,6 +551,17 @@ export function SettingsPanel({
                   {option.label}
                 </option>
               ))}
+            </select>
+          </label>
+          <label className="settings-field">
+            <span>图片修改来源图</span>
+            <select
+              aria-label="图片修改来源图"
+              value={showImageEditSourceCard ? 'show' : 'hide'}
+              onChange={(event) => setShowImageEditSourceCard(event.target.value === 'show')}
+            >
+              <option value="show">显示</option>
+              <option value="hide">隐藏</option>
             </select>
           </label>
         </div>
