@@ -85,6 +85,7 @@ import {
   appendGeneratedContentToPrompt,
   canForkNewNode,
   createUniqueForkLabel,
+  forkNeedsSourcePrompt,
   findReadyFinalFrameImageNode,
   freezeImageEditSource,
   inheritedGenerateData,
@@ -2279,7 +2280,7 @@ function WorkspaceApp({
           setNotice({ kind: 'error', message: '当前节点还没有回显，无法创建新节点' });
           return;
         }
-        if (!nodeHasPrompt(source.data)) {
+        if (forkNeedsSourcePrompt(source) && !nodeHasPrompt(source.data)) {
           setNotice({ kind: 'error', message: '请先填写提示词' });
           return;
         }
@@ -2419,12 +2420,15 @@ function WorkspaceApp({
 
           nodePreferenceNoticeRef.current = preferredModelNotice;
           commitForkGraph(child, extraEdges);
+          const shouldRunNow = nodeHasPrompt(child.data);
           setNotice(
             preferredModelNotice
               ? { kind: 'error', message: `已创建新节点；${preferredModelNotice}` }
-              : { kind: 'success', message: `已创建${child.data.label}并开始生成` },
+              : shouldRunNow
+                ? { kind: 'success', message: `已创建${child.data.label}并开始生成` }
+                : { kind: 'success', message: `已创建${child.data.label}，请填写提示词` },
           );
-          await runNode(child, 'sameNode');
+          if (shouldRunNow) await runNode(child, 'sameNode');
         } finally {
           nodeRunLocksRef.current.delete(source.id);
         }

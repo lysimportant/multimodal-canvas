@@ -57,18 +57,24 @@ export function canForkNewNode(node: AssetFlowNode): boolean {
 }
 
 /**
- * 子节点从父节点继承的生成配置，不含产物字段。
+ * 判断分叉是否必须先有父节点提示词。
+ * 文字要把回显拼进新提示词；图片/音频/视频的提示词由用户在子节点填写。
+ * @param node 被点击的节点。
+ */
+export function forkNeedsSourcePrompt(node: AssetFlowNode): boolean {
+  return node.data.mediaType === 'text';
+}
+
+/**
+ * 子节点从父节点继承的生成配置，不含产物字段和提示词。
  * @param data 父节点 data。
  * @returns 可写入 createGenerateNode 的覆盖字段。
  */
 export function inheritedGenerateData(data: AssetFlowNode['data']): Partial<AssetFlowNode['data']> {
   return {
-    ...(data.prompt !== undefined ? { prompt: data.prompt } : {}),
-    ...(data.promptDocument ? { promptDocument: structuredClone(data.promptDocument) } : {}),
     ...(data.modelAlias ? { modelAlias: data.modelAlias } : {}),
     ...(data.credentialId ? { credentialId: data.credentialId } : {}),
     ...(data.parameters ? { parameters: structuredClone(data.parameters) } : {}),
-    ...(data.resourceRefs ? { resourceRefs: structuredClone(data.resourceRefs) } : {}),
     ...(data.inferenceStrength ? { inferenceStrength: data.inferenceStrength } : {}),
   };
 }

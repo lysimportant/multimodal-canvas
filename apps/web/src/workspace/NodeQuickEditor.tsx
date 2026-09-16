@@ -22,7 +22,12 @@ import { renderPromptDocument } from '@multimodal-canvas/domain';
 import { Dialog, DialogClose, DialogContent, DialogTitle } from '@multimodal-canvas/ui';
 import type { AssetFlowNode } from '../canvas-utils';
 import { TextPromptEditor } from '../TextPromptEditor';
-import { canForkNewNode, canRunSameNode, nodeHasPrompt } from './fork-generate-node';
+import {
+  canForkNewNode,
+  canRunSameNode,
+  forkNeedsSourcePrompt,
+  nodeHasPrompt,
+} from './fork-generate-node';
 import { CompactSelect } from './CompactSelect';
 import { useFloatingParameterMenu } from './use-floating-parameter-menu';
 import { isImeKeyboardEvent } from '../ime';
@@ -764,7 +769,7 @@ export function NodeQuickEditor({
                 ? '生成中'
                 : !enabled
                   ? '节点已停用'
-                  : !nodeHasPrompt(node.data)
+                  : forkNeedsSourcePrompt(node) && !nodeHasPrompt(node.data)
                     ? '请先填写提示词'
                     : node.data.mediaType === 'image' &&
                         selectedModel &&
@@ -779,7 +784,7 @@ export function NodeQuickEditor({
               busy ||
               !enabled ||
               !onRunNewNode ||
-              !nodeHasPrompt(node.data) ||
+              (forkNeedsSourcePrompt(node) && !nodeHasPrompt(node.data)) ||
               Boolean(
                 node.data.mediaType === 'image' &&
                 selectedModel &&

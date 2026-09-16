@@ -49,7 +49,7 @@ describe('fork-generate-node', () => {
     expect(nodeHasPrompt({ prompt: '夜景' })).toBe(true);
   });
 
-  it('继承提示词、模型和参数，不带产物字段', () => {
+  it('继承模型和参数，不带提示词和产物字段', () => {
     const inherited = inheritedGenerateData({
       label: '产品主图',
       mediaType: 'image',
@@ -65,12 +65,14 @@ describe('fork-generate-node', () => {
       contentUrl: '/old',
     } as AssetFlowNode['data']);
     expect(inherited).toMatchObject({
-      prompt: '白色背景',
       modelAlias: 'image-edit-model',
       credentialId: 'cred_1',
       parameters: { quality: '2k' },
       inferenceStrength: 'high',
     });
+    expect(inherited).not.toHaveProperty('prompt');
+    expect(inherited).not.toHaveProperty('promptDocument');
+    expect(inherited).not.toHaveProperty('resourceRefs');
     expect(inherited).not.toHaveProperty('resultAsset');
     expect(inherited).not.toHaveProperty('assetId');
     expect(inherited).not.toHaveProperty('contentUrl');

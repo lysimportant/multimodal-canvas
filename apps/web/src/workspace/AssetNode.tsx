@@ -35,7 +35,6 @@ import {
   isImageEditSourceNode,
   videoModeLabels,
 } from '@multimodal-canvas/domain';
-import { nodeHasPrompt } from './fork-generate-node';
 import { Dialog, DialogClose, DialogContent, DialogTitle } from '@multimodal-canvas/ui';
 import { fitNodeSizeToContent, type AssetFlowNode } from '../canvas-utils';
 import { isImeKeyboardEvent } from '../ime';
@@ -516,14 +515,12 @@ export function AssetNode({ id, data, selected, width, height }: NodeProps<Asset
               <button
                 type="button"
                 className="flow-node-action-button flow-node-edit-image-button nodrag nopan nowheel"
-                disabled={writingDisabled || !nodeHasPrompt(data)}
+                disabled={writingDisabled}
                 aria-label={`修改图片：${data.label}`}
                 title={
                   writingDisabled
                     ? '节点正在运行或保存，请稍后再修改图片'
-                    : !nodeHasPrompt(data)
-                      ? '请先填写提示词'
-                      : '修改图片：把当前回显作为原图，结果写到新节点'
+                    : '修改图片：把当前回显作为原图，结果写到新节点'
                 }
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={(event) => {
