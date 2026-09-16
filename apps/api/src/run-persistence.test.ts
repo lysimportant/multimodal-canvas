@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { PrismaClient } from '@prisma/client';
+import { nodeTimingDuration } from '@multimodal-canvas/domain';
 
 import {
   databaseRunId,
@@ -691,5 +694,329 @@ describe('PrismaRunPersistence', () => {
   it('recognizes only PostgreSQL UUID-shaped identifiers', () => {
     expect(isPrismaUuid(runId)).toBe(true);
     expect(isPrismaUuid('run_idem_abc123')).toBe(false);
+  });
+});
+
+const runSnapshot = {
+  projectId: '123e4567-e89b-12d3-a456-426614174010',
+  canvasRevision: 3,
+  targetNodeId: 'node_image',
+  modelAlias: 'grok-image-1',
+  parameters: {},
+  submittedAt: '2026-09-17T10:00:00.000Z',
+  nodes: [
+    {
+      id: 'node_image',
+      type: 'image' as const,
+      position: { x: 0, y: 0 },
+      data: { label: 'Image', mediaType: 'image' as const, mode: 'generate' as const },
+    },
+  ],
+  edges: [],
+  inputs: [],
+};
+
+/** 请求提示词记录的持久化行形状，与 Worker 写入的列一致。 */
+function requestPromptRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: '223e4567-e89b-42d3-a456-426614174050',
+    runId: databaseRunId('run_prompt_1'),
+    requestRunId: 'run_prompt_1',
+    nodeId: 'node_image',
+    attempt: 1,
+    requestIdentity: 'POST /images/generations#1',
+    schemaVersion: 1,
+    provider: 'newapi',
+    modelAlias: 'grok-image-1',
+    credentialId: null,
+    credentialVersion: null,
+    mediaType: 'IMAGE',
+    format: 'plain',
+    parts: [{ order: 0, text: '月白布衫，青裙' }],
+    negativeText: null,
+    resources: [
+      {
+        assetId: 'asset_source',
+        assetVersion: 2,
+        role: 'imageEdit',
+        sortOrder: 0,
+        mediaType: 'image',
+      },
+    ],
+    sendStatus: 'sent',
+    assetId: 'asset_result',
+    assetVersion: 3,
+    summary: '整体为素雅的古风配色。',
+    summarySource: 'manual',
+    createdAt: new Date('2026-09-17T10:00:00.000Z'),
+    updatedAt: new Date('2026-09-17T10:00:04.000Z'),
+    ...overrides,
+  };
+}
+
+function createRequestPromptPersistence(rows: unknown[]) {
+  const prisma = {
+    run: {
+      findUnique: vi.fn(async () => ({
+        id: databaseRunId('run_prompt_1'),
+        projectId: runSnapshot.projectId,
+        userId: null,
+        status: 'SUCCEEDED',
+        modelAlias: 'grok-image-1',
+        snapshot: runSnapshot,
+        result: null,
+        attempt: 1,
+        retryOf: null,
+        idempotencyKey: null,
+        error: null,
+        nodeTimings: {
+          node_image: {
+            nodeId: 'node_image',
+            queuedAt: '2026-09-17T10:00:00.100Z',
+            startedAt: '2026-09-17T10:00:00.500Z',
+            finishedAt: '2026-09-17T10:00:03.500Z',
+            outcome: 'succeeded',
+          },
+          node_ghost: { nodeId: 'node_other', startedAt: 'not-a-time' },
+        },
+        createdAt: new Date('2026-09-17T10:00:00.000Z'),
+        updatedAt: new Date('2026-09-17T10:00:05.000Z'),
+        providerJobs: [],
+      })),
+      findMany: vi.fn(async () => rows),
+      upsert: vi.fn(async (args) => args.create),
+      update: vi.fn(async (args) => args.data),
+    },
+    providerJob: { upsert: vi.fn(), findUnique: vi.fn() },
+    usageLedger: { create: vi.fn(), upsert: vi.fn() },
+    runRequestPrompt: {
+      findMany: vi.fn(async () => rows),
+      findFirst: vi.fn(
+        async (args: { where: { id: string; runId: string } }) =>
+          rows.find(
+            (row) =>
+              (row as { id: string }).id === args.where.id &&
+              (row as { runId: string }).runId === args.where.runId,
+          ) ?? null,
+      ),
+    },
+  };
+  return { prisma, persistence: new PrismaRunPersistence(prisma as never) };
+}
+
+describe('PrismaRunPersistence 请求提示词与节点时间读取', () => {
+  it('占位行不泄露正文，摘要只携带 ID 与计数', async () => {
+    const { persistence } = createRequestPromptPersistence([requestPromptRow()]);
+
+    const summaries = await persistence.listRequestPromptRecords('run_prompt_1');
+
+    expect(summaries).toEqual([
+      {
+        id: '223e4567-e89b-42d3-a456-426614174050',
+        runId: 'run_prompt_1',
+        nodeId: 'node_image',
+        attempt: 1,
+        requestIdentity: 'POST /images/generations#1',
+        provider: 'newapi',
+        modelAlias: 'grok-image-1',
+        mediaType: 'image',
+        format: 'plain',
+        sendStatus: 'sent',
+        partCount: 1,
+        resourceCount: 1,
+        createdAt: '2026-09-17T10:00:00.000Z',
+        assetId: 'asset_result',
+        assetVersion: 3,
+        summary: '整体为素雅的古风配色。',
+        summarySource: 'manual',
+      },
+    ]);
+    // 列表只带摘要与计数，真实请求文本绝不出现。
+    expect(JSON.stringify(summaries)).not.toContain('月白布衫，青裙');
+    expect(JSON.stringify(summaries)).not.toContain('parts');
+  });
+
+  it('按记录 ID 读取完整请求文本，并限定在该次运行内', async () => {
+    const { persistence } = createRequestPromptPersistence([requestPromptRow()]);
+
+    await expect(
+      persistence.getRequestPromptRecord('run_prompt_1', '223e4567-e89b-42d3-a456-426614174050'),
+    ).resolves.toMatchObject({
+      runId: 'run_prompt_1',
+      nodeId: 'node_image',
+      format: 'plain',
+      parts: [{ order: 0, text: '月白布衫，青裙' }],
+      resources: [{ assetId: 'asset_source', assetVersion: 2, sortOrder: 0 }],
+      sendStatus: 'sent',
+      assetId: 'asset_result',
+      assetVersion: 3,
+    });
+    // 同一次运行之外的读取与非法 ID 都不会返回记录。
+    await expect(
+      persistence.getRequestPromptRecord('run_other', '223e4567-e89b-42d3-a456-426614174050'),
+    ).resolves.toBeUndefined();
+    await expect(
+      persistence.getRequestPromptRecord('run_prompt_1', 'not-a-uuid'),
+    ).resolves.toBeUndefined();
+  });
+
+  it('返回节点时间并丢弃损坏条目，不会因此丢掉整条运行记录', async () => {
+    const { persistence } = createRequestPromptPersistence([]);
+
+    const restored = await persistence.getRun('run_prompt_1');
+
+    expect(restored?.nodeTimings).toEqual({
+      node_image: {
+        nodeId: 'node_image',
+        queuedAt: '2026-09-17T10:00:00.100Z',
+        startedAt: '2026-09-17T10:00:00.500Z',
+        finishedAt: '2026-09-17T10:00:03.500Z',
+        outcome: 'succeeded',
+      },
+    });
+    expect(restored?.status).toBe('succeeded');
+  });
+
+  it('结构损坏的请求记录行被跳过，不产生半截摘要', async () => {
+    const { persistence } = createRequestPromptPersistence([
+      requestPromptRow({ parts: 'not-an-array' }),
+      requestPromptRow({ id: '323e4567-e89b-42d3-a456-426614174051', nodeId: 'node_video' }),
+    ]);
+
+    const summaries = await persistence.listRequestPromptRecords('run_prompt_1');
+
+    expect(summaries.map((summary) => summary.nodeId)).toEqual(['node_video']);
+  });
+});
+
+/**
+ * 这些检查只对文档化的临时 scratch 库运行：非 scratch 连接一律跳过，绝不把
+ * Prisma 写入指向真实数据库。
+ */
+const scratchDatabaseUrl = process.env.DATABASE_URL?.trim() ?? '';
+const scratchDatabasePattern =
+  /^postgres(?:ql)?:\/\/scratch:scratch@(?:127\.0\.0\.1|localhost):55432\/scratch(?:\?|$)/;
+const scratchDescribe = scratchDatabasePattern.test(scratchDatabaseUrl) ? describe : describe.skip;
+
+scratchDescribe('PrismaRunPersistence against the scratch database', () => {
+  const prisma = new PrismaClient();
+  const persistence = new PrismaRunPersistence(prisma);
+  const projectId = randomUUID();
+  const runId = randomUUID();
+  const otherRunId = randomUUID();
+  const recordId = randomUUID();
+  const otherRecordId = randomUUID();
+
+  beforeAll(async () => {
+    await prisma.project.create({ data: { id: projectId, name: 'run prompt persistence' } });
+    for (const id of [runId, otherRunId]) {
+      await prisma.run.create({
+        data: {
+          id,
+          projectId,
+          status: 'SUCCEEDED',
+          modelAlias: 'grok-image-1',
+          attempt: 1,
+          snapshot: { ...runSnapshot, projectId, targetNodeId: 'node_image' },
+          parameters: {},
+        },
+      });
+    }
+    await prisma.run.update({
+      where: { id: runId },
+      data: {
+        nodeTimings: {
+          node_image: {
+            nodeId: 'node_image',
+            queuedAt: '2026-09-17T10:00:00.100Z',
+            startedAt: '2026-09-17T10:00:00.500Z',
+            requestStartedAt: '2026-09-17T10:00:00.600Z',
+            requestFinishedAt: '2026-09-17T10:00:03.000Z',
+            finishedAt: '2026-09-17T10:00:03.500Z',
+            outcome: 'succeeded',
+          },
+        },
+      },
+    });
+    await prisma.runRequestPrompt.create({
+      data: {
+        id: recordId,
+        runId,
+        requestRunId: runId,
+        nodeId: 'node_image',
+        attempt: 1,
+        requestIdentity: 'POST /images/generations#1',
+        schemaVersion: 1,
+        provider: 'newapi',
+        modelAlias: 'grok-image-1',
+        mediaType: 'IMAGE',
+        format: 'plain',
+        parts: [{ order: 0, text: '月白布衫，青裙' }],
+        resources: [],
+        sendStatus: 'sent',
+        assetId: 'asset_result',
+        assetVersion: 3,
+        createdAt: new Date('2026-09-17T10:00:00.000Z'),
+      },
+    });
+    await prisma.runRequestPrompt.create({
+      data: {
+        id: otherRecordId,
+        runId: otherRunId,
+        requestRunId: otherRunId,
+        nodeId: 'node_image',
+        attempt: 1,
+        requestIdentity: 'POST /images/generations#1',
+        schemaVersion: 1,
+        provider: 'newapi',
+        modelAlias: 'grok-image-1',
+        mediaType: 'IMAGE',
+        format: 'plain',
+        parts: [{ order: 0, text: '另一个运行的提示词' }],
+        resources: [],
+        sendStatus: 'pending',
+        createdAt: new Date('2026-09-17T10:01:00.000Z'),
+      },
+    });
+  });
+
+  afterAll(async () => {
+    await prisma.project.delete({ where: { id: projectId } });
+    await prisma.$disconnect();
+  });
+
+  it('迁移后的表可读写，列表不带正文、完整文本按需读取', async () => {
+    const summaries = await persistence.listRequestPromptRecords(runId);
+
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({
+      id: recordId,
+      runId,
+      nodeId: 'node_image',
+      sendStatus: 'sent',
+      partCount: 1,
+      assetId: 'asset_result',
+      assetVersion: 3,
+    });
+    expect(JSON.stringify(summaries)).not.toContain('月白布衫');
+    // 其它运行的记录不会出现在本次运行的列表中。
+    expect(summaries.map((summary) => summary.id)).not.toContain(otherRecordId);
+
+    await expect(persistence.getRequestPromptRecord(runId, recordId)).resolves.toMatchObject({
+      runId,
+      parts: [{ order: 0, text: '月白布衫，青裙' }],
+    });
+    await expect(persistence.getRequestPromptRecord(runId, otherRecordId)).resolves.toBeUndefined();
+  });
+
+  it('从数据库读回节点时间并保持 nodeTimingDuration 的口径', async () => {
+    const restored = await persistence.getRun(runId);
+
+    const timing = restored?.nodeTimings?.node_image;
+    expect(timing).toMatchObject({ outcome: 'succeeded' });
+    expect(nodeTimingDuration(timing!, Date.parse('2026-09-17T10:05:00.000Z'))).toEqual({
+      availability: 'recorded',
+      milliseconds: 3_000,
+    });
   });
 });

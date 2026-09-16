@@ -1,4 +1,4 @@
-import { createCipheriv, createHash, randomBytes } from 'node:crypto';
+import { createCipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Prisma } from '@prisma/client';
@@ -1103,5 +1103,405 @@ describe('New API model catalog normalization', () => {
       },
     });
     expect(JSON.stringify(create.mock.calls[0]?.[0])).not.toContain('history-key');
+  });
+});
+
+/** 合成设置行：只保存测试用密文，不包含真实 Key。 */
+type SyntheticCredentialRow = {
+  id: string;
+  projectId: string | null;
+  ownerId: string | null;
+  label: string;
+  baseUrl: string;
+  encryptedApiKey: string;
+  encryptionKeyId: string | null;
+  keyFingerprint: string;
+  version: number;
+  defaultModels: unknown;
+  updatedAt: Date;
+};
+
+/**
+ * 覆盖设置存储实际查询形状的内存替身：按 where 过滤，按 updatedAt/version 排序。
+ * 它用于验证独立凭据行不参与“最新行即活动连接”的选择，不连接真实数据库。
+ */
+function createSyntheticSettingsDatabase() {
+  const rows: SyntheticCredentialRow[] = [];
+  let clock = Date.parse('2026-09-05T00:00:00.000Z');
+  type Query = {
+    where?: Record<string, unknown>;
+    orderBy?: Array<Record<string, 'asc' | 'desc'>>;
+  };
+  const matches = (row: SyntheticCredentialRow, where: Record<string, unknown> = {}) => {
+    if (where.id !== undefined && row.id !== where.id) return false;
+    if (where.projectId !== undefined && row.projectId !== where.projectId) return false;
+    if (where.baseUrl !== undefined && row.baseUrl !== where.baseUrl) return false;
+    if (where.keyFingerprint !== undefined && row.keyFingerprint !== where.keyFingerprint)
+      return false;
+    if (where.version !== undefined && row.version !== where.version) return false;
+    const labelFilter = where.label as { not?: string; notIn?: string[] } | undefined;
+    if (labelFilter?.not !== undefined && row.label === labelFilter.not) return false;
+    if (labelFilter?.notIn?.includes(row.label)) return false;
+    return true;
+  };
+  const sortValue = (row: SyntheticCredentialRow, field: string) =>
+    field === 'updatedAt' ? row.updatedAt.getTime() : row.version;
+  const select = (query?: Query) =>
+    [...rows.filter((row) => matches(row, query?.where))]
+      .sort((left, right) => {
+        for (const clause of query?.orderBy ?? []) {
+          const [field, direction] = Object.entries(clause)[0] as [string, 'asc' | 'desc'];
+          const difference = sortValue(right, field) - sortValue(left, field);
+          if (difference !== 0) return direction === 'desc' ? difference : -difference;
+        }
+        return 0;
+      })
+      .map((row) => structuredClone(row));
+  const findFirst = vi.fn(async (query?: Query) => select(query)[0] ?? null);
+  const findMany = vi.fn(async (query?: Query) => select(query));
+  const create = vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+    const stored =
+      data.defaultModels === Prisma.JsonNull || data.defaultModels === Prisma.DbNull
+        ? null
+        : (data.defaultModels ?? null);
+    const row: SyntheticCredentialRow = {
+      id: randomUUID(),
+      projectId: null,
+      ownerId: null,
+      label: 'default',
+      baseUrl: '',
+      encryptedApiKey: '',
+      encryptionKeyId: null,
+      keyFingerprint: '',
+      version: 1,
+      ...(data as Partial<SyntheticCredentialRow>),
+      defaultModels: stored,
+      updatedAt: (data.updatedAt as Date | undefined) ?? new Date(++clock),
+    };
+    rows.push(row);
+    return structuredClone(row);
+  });
+  const update = vi.fn(
+    async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
+      const row = rows.find((entry) => entry.id === where.id);
+      if (!row) throw new Error('synthetic credential row not found');
+      Object.assign(row, data);
+      return structuredClone(row);
+    },
+  );
+  const transaction = {
+    aiCredential: { findFirst, findMany, create, update },
+    modelCatalog: { findMany: vi.fn(async () => []) },
+    $executeRaw: vi.fn(async () => 0),
+    $queryRaw: vi.fn(async () => [{ updatedAt: new Date(++clock) }]),
+  };
+  const prisma = {
+    ...transaction,
+    $transaction: vi.fn(async (operation: (client: typeof transaction) => Promise<unknown>) =>
+      operation(transaction),
+    ),
+  };
+  return { prisma, rows };
+}
+
+describe('独立凭据与按凭据类型默认模型', () => {
+  it('新增独立内存凭据不改变活动连接，并可按 ID 使用自己的目录', async () => {
+    const refreshedAt = new Date().toISOString();
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      Response.json({ data: [{ id: 'independent-image', mediaType: 'image' }] }),
+    );
+    const store = new AiSettingsStore('independent-memory-secret', {
+      fetchImpl,
+      modelRequestMaxAttempts: 1,
+    });
+    store.update({
+      baseUrl: 'https://active.example.test/v1',
+      apiKey: 'synthetic-active-key',
+      defaultModels: { text: 'active-text' },
+    });
+    const activeReference = store.getCredentialReference();
+    const activeView = store.get();
+    store.replaceModels(
+      [
+        {
+          id: 'active-text',
+          name: 'Active text',
+          mediaTypes: ['text'],
+          refreshedAt,
+        },
+      ],
+      activeReference.credentialId,
+    );
+
+    const created = store.update({
+      baseUrl: 'https://independent.example.test/v1',
+      apiKey: 'synthetic-independent-key',
+      activate: false,
+    });
+    const { createdCredentialId, ...unchangedView } = created;
+
+    expect(createdCredentialId).toBeTruthy();
+    expect(unchangedView).toEqual(activeView);
+    expect(store.getCredentialReference()).toEqual(activeReference);
+    expect(store.get()).toEqual(activeView);
+
+    const credentials = store.listCredentials();
+    expect(credentials).toHaveLength(2);
+    const independent = credentials.find((entry) => entry.id === createdCredentialId);
+    expect(independent).toMatchObject({
+      baseUrl: 'https://independent.example.test/v1',
+      active: false,
+    });
+    // 没有配置过的凭据不生成推断默认值。
+    expect(independent?.defaultModels).toBeUndefined();
+    expect(credentials.find((entry) => entry.active)?.id).toBe(activeReference.credentialId);
+
+    const independentReference = store.getCredentialReference(createdCredentialId!);
+    expect(store.hasCredential(createdCredentialId!)).toBe(true);
+    expect(store.listModels(undefined, createdCredentialId)).toEqual([]);
+
+    await store.refreshModels(createdCredentialId!);
+    expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({
+      headers: { authorization: 'Bearer synthetic-independent-key' },
+    });
+    expect(store.listModels('image', createdCredentialId).map((model) => model.id)).toEqual([
+      'independent-image',
+    ]);
+    expect(store.listModels('image', activeReference.credentialId)).toEqual([]);
+    expect(store.get()).toEqual(activeView);
+    expect(store.getProviderCredentials(independentReference)).toEqual({
+      baseUrl: 'https://independent.example.test/v1',
+      apiKey: 'synthetic-independent-key',
+    });
+  });
+
+  it('相同地址与 Key 重复保存复用同一独立凭据 ID', () => {
+    const store = new AiSettingsStore('independent-dedupe-secret');
+    store.update({ baseUrl: 'https://active.example.test/v1', apiKey: 'synthetic-active-key' });
+    const input = {
+      baseUrl: 'https://independent.example.test/v1',
+      apiKey: 'synthetic-independent-key',
+      activate: false,
+    };
+
+    const first = store.update(input).createdCredentialId;
+    const second = store.update(input).createdCredentialId;
+
+    expect(first).toBeTruthy();
+    expect(second).toBe(first);
+    expect(store.listCredentials()).toHaveLength(2);
+    expect(store.update({ apiKey: 'synthetic-later-key' }).createdCredentialId).toBeUndefined();
+  });
+
+  it('按凭据读写类型默认模型，未知 ID 返回 undefined 且不混合另一凭据', () => {
+    const store = new AiSettingsStore('credential-defaults-secret');
+    store.update({ baseUrl: 'https://active.example.test/v1', apiKey: 'synthetic-active-key' });
+    const activeId = store.getCredentialReference().credentialId!;
+    const independentId = store.update({
+      baseUrl: 'https://independent.example.test/v1',
+      apiKey: 'synthetic-independent-key',
+      activate: false,
+    }).createdCredentialId!;
+
+    expect(
+      store.updateCredentialDefaults(independentId, {
+        image: { modelAlias: 'shared-image', credentialId: independentId },
+        text: 'independent-text',
+      }),
+    ).toBeDefined();
+
+    expect(
+      store.listCredentials().find((entry) => entry.id === independentId)?.defaultModels,
+    ).toEqual({
+      image: { modelAlias: 'shared-image', credentialId: independentId },
+      text: { modelAlias: 'independent-text' },
+    });
+    // 全局默认模型不因独立凭据的默认值改变。
+    expect(store.get().defaultModels).toEqual({});
+
+    expect(
+      store.updateCredentialDefaults(activeId, {
+        image: { modelAlias: 'shared-image', credentialId: activeId },
+      }),
+    ).toBeDefined();
+    expect(store.get().defaultModels).toEqual({
+      image: { modelAlias: 'shared-image', credentialId: activeId },
+    });
+    expect(store.listCredentials().find((entry) => entry.id === activeId)?.defaultModels).toEqual({
+      image: { modelAlias: 'shared-image', credentialId: activeId },
+    });
+
+    // 同名模型在两个凭据中保持各自的归属，互不覆盖。
+    expect(
+      store.listCredentials().find((entry) => entry.id === independentId)?.defaultModels?.image,
+    ).toEqual({ modelAlias: 'shared-image', credentialId: independentId });
+
+    expect(store.updateCredentialDefaults(independentId, { text: null })).toBeDefined();
+    expect(
+      store.listCredentials().find((entry) => entry.id === independentId)?.defaultModels,
+    ).toEqual({ image: { modelAlias: 'shared-image', credentialId: independentId } });
+
+    expect(
+      store.updateCredentialDefaults('123e4567-e89b-12d3-a456-426614174099', { text: 'missing' }),
+    ).toBeUndefined();
+  });
+
+  it('删除被默认模型引用的 Key 后保持失效状态，不回退到另一个 Key', () => {
+    const store = new AiSettingsStore('credential-delete-secret');
+    store.update({ baseUrl: 'https://deleted.example.test/v1', apiKey: 'synthetic-deleted-key' });
+    const deletedId = store.getCredentialReference().credentialId!;
+    store.updateCredentialDefaults(deletedId, {
+      image: { modelAlias: 'deleted-image', credentialId: deletedId },
+    });
+    const keptId = store.update({
+      baseUrl: 'https://kept.example.test/v1',
+      apiKey: 'synthetic-kept-key',
+      activate: false,
+    }).createdCredentialId!;
+
+    const removed = store.removeCredential(deletedId);
+
+    expect(removed).toMatchObject({
+      configured: false,
+      baseUrl: '',
+      // 默认值保持指向已删除的 ID，不静默改写为另一个 Key。
+      defaultModels: { image: { modelAlias: 'deleted-image', credentialId: deletedId } },
+    });
+    expect(removed?.keyFingerprint).toBeUndefined();
+    expect(store.listCredentials()).toEqual([
+      expect.objectContaining({ id: keptId, active: false }),
+    ]);
+    expect(store.hasCredential(deletedId)).toBe(false);
+    expect(store.hasCredential(keptId)).toBe(false);
+    expect(() => store.listModels(undefined, deletedId)).toThrow(AiCredentialNotFoundError);
+    expect(store.activateCredential(deletedId)).toBeUndefined();
+    expect(store.updateCredentialDefaults(deletedId, { text: 'deleted-text' })).toBeUndefined();
+    expect(store.getProviderCredentials()).toBeUndefined();
+  });
+
+  it('Prisma 独立凭据以非活动行持久化并保留活动引用', async () => {
+    const database = createSyntheticSettingsDatabase();
+    const writer = new PrismaAiSettingsStore(database.prisma as never, 'independent-prisma-secret');
+    await writer.update({
+      baseUrl: 'https://active.example.test/v1',
+      apiKey: 'synthetic-active-key',
+    });
+    const activeReference = await writer.getCredentialReference();
+    const activeView = await writer.get();
+
+    const created = await writer.update({
+      baseUrl: 'https://independent.example.test/v1',
+      apiKey: 'synthetic-independent-key',
+      activate: false,
+    });
+
+    expect(created.createdCredentialId).toBeTruthy();
+    const { createdCredentialId, ...unchangedView } = created;
+    expect(unchangedView).toEqual(activeView);
+    expect(await writer.getCredentialReference()).toEqual(activeReference);
+
+    const row = database.rows.find((entry) => entry.id === createdCredentialId);
+    expect(row).toMatchObject({
+      label: 'independent',
+      baseUrl: 'https://independent.example.test/v1',
+      version: 2,
+    });
+    // 只有密文进入数据库，明文 Key 不出现在任何持久化字段里。
+    expect(JSON.stringify(row)).not.toContain('synthetic-independent-key');
+
+    const reopened = new PrismaAiSettingsStore(
+      database.prisma as never,
+      'independent-prisma-secret',
+    );
+    const summaries = await reopened.listCredentials();
+    expect(summaries).toHaveLength(2);
+    expect(summaries.find((entry) => entry.id === activeReference.credentialId)).toMatchObject({
+      active: true,
+    });
+    expect(summaries.find((entry) => entry.id === createdCredentialId)).toMatchObject({
+      baseUrl: 'https://independent.example.test/v1',
+      active: false,
+    });
+    // 新建独立行不能让重启后的实例把它当成活动连接。
+    expect(await reopened.getCredentialReference()).toEqual(activeReference);
+    expect(await reopened.get()).toEqual(activeView);
+    expect(await reopened.hasCredential(createdCredentialId!)).toBe(true);
+    const independentReference = await writer.getCredentialReference(createdCredentialId!);
+    await expect(reopened.getProviderCredentials(independentReference)).resolves.toEqual({
+      baseUrl: 'https://independent.example.test/v1',
+      apiKey: 'synthetic-independent-key',
+    });
+
+    await expect(
+      reopened.updateCredentialDefaults(createdCredentialId!, {
+        image: { modelAlias: 'independent-image', credentialId: createdCredentialId },
+      }),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: createdCredentialId,
+          defaultModels: {
+            image: { modelAlias: 'independent-image', credentialId: createdCredentialId },
+          },
+        }),
+      ]),
+    );
+    // 非活动凭据的默认模型不进入全局设置视图。
+    expect(await reopened.get()).toEqual(activeView);
+    await expect(
+      reopened.updateCredentialDefaults('123e4567-e89b-12d3-a456-426614174099', {
+        text: 'missing',
+      }),
+    ).resolves.toBeUndefined();
+    await expect(writer.update({ timeoutMs: 1_200_000 })).resolves.toMatchObject({
+      timeoutMs: 1_200_000,
+    });
+  });
+
+  it('Prisma 删除独立凭据不撤销活动连接，删除活动连接也不回退到独立凭据', async () => {
+    const database = createSyntheticSettingsDatabase();
+    const store = new PrismaAiSettingsStore(database.prisma as never, 'independent-remove-secret');
+    await store.update({
+      baseUrl: 'https://active.example.test/v1',
+      apiKey: 'synthetic-active-key',
+    });
+    const activeReference = await store.getCredentialReference();
+    const activeView = await store.get();
+    const createdCredentialId = (
+      await store.update({
+        baseUrl: 'https://independent.example.test/v1',
+        apiKey: 'synthetic-independent-key',
+        activate: false,
+      })
+    ).createdCredentialId!;
+
+    // 删除独立凭据只标记该连接，不追加撤销墓碑，也不改变活动连接。
+    await expect(store.removeCredential(createdCredentialId)).resolves.toEqual(activeView);
+    expect(await store.getCredentialReference()).toEqual(activeReference);
+    await expect(store.hasCredential(createdCredentialId)).resolves.toBe(false);
+    // 独立行使用专用删除标记，否则它会重新进入“最新行即活动连接”的候选范围。
+    expect(database.rows.find((row) => row.id === createdCredentialId)?.label).toBe(
+      'independent-deleted',
+    );
+    expect(database.rows.some((row) => row.label === 'revoked')).toBe(false);
+    expect((await store.listCredentials()).map((entry) => entry.id)).toEqual([
+      activeReference.credentialId,
+    ]);
+
+    // 删除活动连接后，仍保存的独立凭据不会被自动选中。
+    const kept = await store.update({
+      baseUrl: 'https://kept.example.test/v1',
+      apiKey: 'synthetic-kept-key',
+      activate: false,
+    });
+    await expect(store.removeCredential(activeReference.credentialId!)).resolves.toMatchObject({
+      configured: false,
+      baseUrl: '',
+    });
+    expect(await store.getCredentialReference()).toEqual({});
+    await expect(store.hasCredential(kept.createdCredentialId!)).resolves.toBe(false);
+    expect((await store.listCredentials()).map((entry) => entry.id)).toEqual([
+      kept.createdCredentialId,
+    ]);
   });
 });

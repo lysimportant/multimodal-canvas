@@ -1517,12 +1517,18 @@ test('saves AI settings and tests the mocked connection', async ({ page }) => {
     }
   });
   await expect(dialog).toBeVisible();
+  // 宽版设置把内容分成四类；连接表单在「连接与 Key」分类下。
+  await dialog.getByRole('tab', { name: '连接与 Key' }).click();
   await dialog.getByLabel('New API Base URL').fill('https://mock.newapi.local/v1');
   await dialog.getByRole('textbox', { name: 'API Key' }).fill('playwright-smoke-key');
   await dialog.getByRole('button', { name: '保存' }).click();
 
   await expect((await automaticRefresh).status()).toBe(200);
-  await expect(dialog.getByText('已配置 · smoke-fingerprint')).toBeVisible();
+  // 已配置状态显示在密钥输入框的占位提示里，不从服务端回显已保存密钥。
+  await expect(dialog.getByRole('textbox', { name: 'API Key' })).toHaveAttribute(
+    'placeholder',
+    '已配置 · smoke-fingerprint',
+  );
   const credentialSelect = dialog.getByLabel('已保存的 API Key');
   await expect(credentialSelect).toHaveValue('credential-1');
   await expect(credentialSelect.locator('option', { hasText: 'smoke-fingerprint' })).toHaveCount(1);

@@ -303,6 +303,24 @@ pnpm --filter @multimodal-canvas/web exec vitest run src/workspace/AssetNode.tes
 
 当前只完成计划准备，以下阶段全部未开始。阶段执行顺序是依赖顺序，不是固定工期承诺。
 
+### 9.1 阶段 A 已冻结的合同（实施记录）
+
+以下字段与权限决定已落到领域包与数据库迁移，作为后续阶段的实现依据。
+
+| 合同           | 位置                                                                                                     | 决定                                                                                                                     |
+| -------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| 生成说明记录   | `REQUEST_PROMPT_SCHEMA_VERSION`、`requestPromptRecordSchema`                                             | 版本化记录，身份为 `runId + nodeId + attempt + requestIdentity`；结果身份 `assetId + assetVersion` 归档后补写            |
+| 请求文本结构   | `requestPromptPartSchema`、`requestPromptFormatSchema`                                                   | `plain` 单块与 `messages` 有序角色消息两种格式；复制文本用 `renderRequestPromptText` 保留角色分隔                        |
+| 参考资源       | `requestPromptResourceSchema`                                                                            | 只存资产身份、版本、角色与顺序；不存 base64、签名 URL 或媒体二进制                                                       |
+| 发送状态       | `requestPromptSendStatusSchema`                                                                          | `pending`（发送前持久化）/`sent`/`failed`/`unknown`；不确定状态不触发自动重发                                            |
+| 提示词读取结果 | `NodePromptView`、`requestPromptOrigins`                                                                 | `request` / `input-snapshot` / `none` 三态；历史记录只显示“历史输入快照，未记录最终请求”，不回填                         |
+| 计时记录       | `nodeTimingSchema`、`nodeTimingDuration`、`formatNodeDuration`                                           | 服务端 UTC 时间戳；终态耗时 `finishedAt - startedAt`；时间顺序异常返回 `invalid`，缺时间返回 `unrecorded`，绝不显示 0 秒 |
+| 运行记录扩展   | `runRecordSchema.nodeTimings`、`Run.nodeTimings`（迁移 `20260916120000_canvas_groups_run_node_timings`） | 按节点存生命周期时间，旧记录保持 NULL                                                                                    |
+| 分组布局       | `canvasGroupSchema`、`canvasDocumentSchema.groups`、`Canvas.groups`（同一迁移）                          | 组只表达布局，不进入 DAG；成员必须存在且最多属于一个组；尺寸下限 `CANVAS_GROUP_MIN_SIZE`                                 |
+| 空节点判定     | `apps/web/src/workspace/empty-node-rules.ts`                                                             | 纯函数；无法确定资源或运行状态时保留；`nodeHasEcho` 不参与该判定                                                         |
+
+迁移已在本机隔离 PostgreSQL 16 容器上完整应用，`prisma migrate diff` 复核为空迁移（无残留漂移），旧数据不回填。
+
 | 阶段          | 等级  | 交付与依赖                                                     | 关闭条件                                                        |
 | ------------- | ----- | -------------------------------------------------------------- | --------------------------------------------------------------- |
 | A：冻结合同   | P0    | 请求记录、计时、配置继承、分组存储、空节点规则；选择摘要策略   | 字段与权限有依据，迁移/备份/回滚可执行，关键反例转成测试清单    |

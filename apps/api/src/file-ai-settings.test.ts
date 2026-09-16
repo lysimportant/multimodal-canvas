@@ -117,6 +117,85 @@ describe('FileAiSettingsStore persistence', () => {
     });
   });
 
+  it('新增独立 Key 不激活全局连接，重启后仍按 ID 保留自己的类型默认', async () => {
+    await withStorageFixture(async ({ filePath, keyPath }) => {
+      const options = { filePath, encryptionKeyFile: keyPath };
+      const store = new FileAiSettingsStore(options);
+      const independentKey = 'synthetic-independent-key';
+      await store.update({
+        baseUrl: 'https://active.example.test/v1',
+        apiKey: 'synthetic-active-key',
+      });
+      const activeReference = await store.getCredentialReference();
+      const activeView = await store.get();
+
+      const created = await store.update({
+        baseUrl: 'https://independent.example.test/v1',
+        apiKey: independentKey,
+        activate: false,
+      });
+      const { createdCredentialId, ...unchangedView } = created;
+      expect(createdCredentialId).toBeTruthy();
+      expect(unchangedView).toEqual(activeView);
+      expect(await store.getCredentialReference()).toEqual(activeReference);
+
+      // 重复保存同一地址与 Key 复用现有凭据，不产生第二条记录。
+      const repeated = await store.update({
+        baseUrl: 'https://independent.example.test/v1',
+        apiKey: independentKey,
+        activate: false,
+      });
+      expect(repeated.createdCredentialId).toBe(createdCredentialId);
+
+      const summaries = await store.listCredentials();
+      expect(summaries).toHaveLength(2);
+      expect(summaries.find((entry) => entry.id === createdCredentialId)).toMatchObject({
+        baseUrl: 'https://independent.example.test/v1',
+        active: false,
+      });
+      // 没有配置过类型默认的凭据不生成推断默认值。
+      expect(
+        summaries.find((entry) => entry.id === createdCredentialId)?.defaultModels,
+      ).toBeUndefined();
+
+      await store.updateCredentialDefaults(createdCredentialId!, {
+        image: { modelAlias: 'independent-image', credentialId: createdCredentialId },
+      });
+      expect(
+        await store.updateCredentialDefaults('123e4567-e89b-12d3-a456-426614174099', {
+          image: 'missing',
+        }),
+      ).toBeUndefined();
+      expect(await store.get()).toEqual(activeView);
+      await store.close();
+
+      expect(await readFile(filePath, 'utf8')).not.toContain(independentKey);
+
+      const reopened = new FileAiSettingsStore(options);
+      const restored = await reopened.listCredentials();
+      expect(restored).toHaveLength(2);
+      expect(restored.find((entry) => entry.id === createdCredentialId)).toMatchObject({
+        active: false,
+        defaultModels: {
+          image: { modelAlias: 'independent-image', credentialId: createdCredentialId },
+        },
+      });
+      expect(restored.find((entry) => entry.active)?.id).toBe(activeReference.credentialId);
+      expect(await reopened.get()).toEqual(activeView);
+      expect(await reopened.getProviderCredentials(activeReference)).toEqual({
+        baseUrl: 'https://active.example.test/v1',
+        apiKey: 'synthetic-active-key',
+      });
+      const cleared = await reopened.updateCredentialDefaults(createdCredentialId!, {
+        image: null,
+      });
+      expect(
+        cleared?.find((entry) => entry.id === createdCredentialId)?.defaultModels,
+      ).toBeUndefined();
+      await reopened.close();
+    });
+  });
+
   it('指定 Key 删除 HTTP 校验 ID 且重复删除明确返回 404', async () => {
     await withStorageFixture(async ({ filePath, keyPath }) => {
       const store = new FileAiSettingsStore({ filePath, encryptionKeyFile: keyPath });

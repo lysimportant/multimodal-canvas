@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { MediaType, PortRole, RunInputSnapshot, RunSnapshot } from '@multimodal-canvas/domain';
+import {
+  REQUEST_PROMPT_SCHEMA_VERSION,
+  type MediaType,
+  type PortRole,
+  type RequestPromptRecord,
+  type RunInputSnapshot,
+  type RunSnapshot,
+} from '@multimodal-canvas/domain';
 
 import {
   MockProvider,
@@ -2717,6 +2724,381 @@ describe('NewApiProvider', () => {
     });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
+
+  /** 收集 Provider 在发送前交给 Worker 的请求记录。 */
+  function collectRequestPrompts(records: RequestPromptRecord[]) {
+    return (record: RequestPromptRecord) => {
+      records.push(record);
+    };
+  }
+
+  it('records the messages actually posted for a multi-input text run', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const records: RequestPromptRecord[] = [];
+    const snapshot = textSnapshot();
+    snapshot.inputs = [
+      providerInput('node_transcript', 'transcript', 2),
+      providerInput('node_prompt', 'prompt', 0),
+      providerInput('node_content', 'content', 1),
+    ];
+
+    await new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    }).execute({
+      snapshot,
+      runId: 'run-text',
+      attempt: 2,
+      onRequestPrompt: collectRequestPrompts(records),
+    });
+
+    const payload = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as {
+      messages: Array<{ role: string; name?: string; content: string }>;
+    };
+    expect(payload.messages).toEqual([
+      { role: 'user', name: 'canvas_prompt', content: 'prompt value' },
+      { role: 'user', name: 'canvas_content', content: 'content value' },
+      { role: 'user', name: 'canvas_transcript', content: 'transcript value' },
+    ]);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toEqual({
+      schemaVersion: REQUEST_PROMPT_SCHEMA_VERSION,
+      runId: 'run-text',
+      nodeId: 'node_text',
+      attempt: 2,
+      requestIdentity: 'POST /chat/completions#1',
+      provider: 'newapi',
+      modelAlias: 'text-v1',
+      mediaType: 'text',
+      format: 'messages',
+      parts: [
+        { order: 0, role: 'user', name: 'canvas_prompt', text: 'prompt value' },
+        { order: 1, role: 'user', name: 'canvas_content', text: 'content value' },
+        { order: 2, role: 'user', name: 'canvas_transcript', text: 'transcript value' },
+      ],
+      resources: [],
+      sendStatus: 'pending',
+      createdAt: expect.any(String),
+    });
+    expect(new Date(records[0]?.createdAt ?? '').toISOString()).toBe(records[0]?.createdAt);
+  });
+
+  it('records the sent text of a prompt document together with image identity only', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const records: RequestPromptRecord[] = [];
+    const snapshot = textSnapshot();
+    snapshot.nodes[0].data.promptDocument = {
+      version: 1,
+      blocks: [
+        { type: 'text', text: '把背景改成' },
+        {
+          type: 'mention',
+          mentionId: 'mention-image',
+          assetId: 'asset-image',
+          assetVersion: 2,
+          label: '产品图',
+          mediaType: 'image',
+          mimeType: 'image/png',
+          contentUrl: 'data:image/png;base64,aW1hZ2U=',
+        },
+        { type: 'text', text: '的颜色' },
+      ],
+    } as unknown as NonNullable<RunSnapshot['nodes'][number]['data']['promptDocument']>;
+    snapshot.promptMentions = [
+      {
+        nodeId: 'node_text',
+        mentionId: 'mention-image',
+        assetId: 'asset-image',
+        assetVersion: 2,
+        label: '产品图',
+        mediaType: 'image',
+        blockOrder: 1,
+      },
+    ];
+
+    await new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    }).execute({
+      snapshot,
+      resolvedMentions: resolveProviderMentions(snapshot),
+      runId: 'run-text',
+      attempt: 1,
+      onRequestPrompt: collectRequestPrompts(records),
+    });
+
+    const payload = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as {
+      messages: Array<{ content: unknown }>;
+    };
+    expect(payload.messages[0]?.content).toEqual([
+      { type: 'text', text: '把背景改成' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,aW1hZ2U=' } },
+      { type: 'text', text: '的颜色' },
+    ]);
+    expect(records[0]?.parts).toEqual([{ order: 0, role: 'user', text: '把背景改成的颜色' }]);
+    expect(records[0]?.resources).toEqual([
+      {
+        assetId: 'asset-image',
+        assetVersion: 2,
+        role: 'referenceImage',
+        sortOrder: 0,
+        mediaType: 'image',
+      },
+    ]);
+    expect(JSON.stringify(records[0])).not.toMatch(/base64|data:image|aW1hZ2U=/);
+  });
+
+  it('records one plain part equal to the posted text-to-image prompt', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ url: 'https://cdn.example/image.png' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const records: RequestPromptRecord[] = [];
+    const snapshot = standardSnapshot('image');
+    snapshot.parameters = { size: '1024x1024', prompt: 'A neon portrait' };
+    snapshot.credentialId = 'cred-image';
+    snapshot.credentialVersion = 4;
+    snapshot.nodeCredentialReferences = {
+      node_image: { credentialId: 'cred-image', credentialVersion: 4 },
+    };
+
+    await new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    }).execute({
+      snapshot,
+      runId: 'run-image',
+      attempt: 1,
+      onRequestPrompt: collectRequestPrompts(records),
+    });
+
+    const payload = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as Record<
+      string,
+      unknown
+    >;
+    expect(payload).toEqual({
+      size: '1024x1024',
+      model: 'image-v1',
+      prompt: 'A neon portrait',
+      n: 1,
+    });
+    expect(records[0]).toMatchObject({
+      provider: 'newapi',
+      modelAlias: 'image-v1',
+      credentialId: 'cred-image',
+      credentialVersion: 4,
+      mediaType: 'image',
+      format: 'plain',
+      requestIdentity: 'POST /images/generations#1',
+      parts: [{ order: 0, text: 'A neon portrait' }],
+      resources: [],
+      sendStatus: 'pending',
+    });
+    expect(records[0]?.parts[0]?.text).toBe(payload.prompt);
+  });
+
+  it('records the multipart prompt and the source image identity of an image edit', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ url: 'https://cdn.example/edited.png' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const records: RequestPromptRecord[] = [];
+    const snapshot = standardSnapshot('image');
+    snapshot.imageEditCapability = { declared: true };
+    snapshot.parameters = { prompt: '改成夜景' };
+    snapshot.nodes[0].data.imageEditSource = {
+      sourceNodeId: 'node_source',
+      assetId: 'asset-source',
+      version: 3,
+    };
+    snapshot.inputs = [{ ...editImageInput('node_source'), sourceAssetId: 'asset-source' }];
+
+    await new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    }).execute({
+      snapshot,
+      runId: 'run-image',
+      attempt: 1,
+      onRequestPrompt: collectRequestPrompts(records),
+    });
+
+    const [url, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(url).toBe('https://newapi.example.com/v1/images/edits');
+    const form = init?.body as FormData;
+    expect(form.get('prompt')).toBe('改成夜景');
+    expect(records[0]?.parts).toEqual([{ order: 0, text: form.get('prompt') }]);
+    expect(records[0]?.resources).toEqual([
+      {
+        assetId: 'asset-source',
+        assetVersion: 3,
+        role: 'imageEdit',
+        sortOrder: 0,
+        mediaType: 'image',
+      },
+    ]);
+    expect(records[0]).toMatchObject({
+      format: 'plain',
+      mediaType: 'image',
+      requestIdentity: 'POST /images/edits#1',
+    });
+    expect(JSON.stringify(records[0])).not.toMatch(/base64|data:image/);
+  });
+
+  it('records the audio input string actually posted', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(new Uint8Array([0, 1, 2, 3]), {
+        status: 200,
+        headers: { 'content-type': 'audio/mpeg' },
+      }),
+    );
+    const records: RequestPromptRecord[] = [];
+    const snapshot = standardSnapshot('audio');
+    snapshot.parameters = { input: 'say hello', response_format: 'mp3', voice: 'alloy' };
+    // 旧快照没有单节点引用，只写根级凭据；记录必须沿用同一来源的两个字段。
+    snapshot.credentialId = 'cred-audio';
+    snapshot.credentialVersion = 2;
+
+    await new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    }).execute({
+      snapshot,
+      runId: 'run-audio',
+      attempt: 1,
+      onRequestPrompt: collectRequestPrompts(records),
+    });
+
+    const payload = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as Record<
+      string,
+      unknown
+    >;
+    expect(payload.input).toBe('say hello');
+    expect(records[0]).toMatchObject({
+      provider: 'newapi',
+      credentialId: 'cred-audio',
+      credentialVersion: 2,
+      mediaType: 'audio',
+      format: 'plain',
+      requestIdentity: 'POST /audio/speech#1',
+      parts: [{ order: 0, text: 'say hello' }],
+      resources: [],
+      sendStatus: 'pending',
+    });
+    expect(records[0]?.parts[0]?.text).toBe(payload.input);
+  });
+
+  it('never writes inline media, credentials, or authorization into a record', async () => {
+    const apiKey = syntheticApiKey('prompt-record');
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const records: RequestPromptRecord[] = [];
+    const snapshot = textSnapshot();
+    snapshot.nodes[0].data.promptDocument = {
+      version: 1,
+      blocks: [
+        { type: 'text', text: '看图 ' },
+        {
+          type: 'mention',
+          mentionId: 'mention-image',
+          assetId: 'asset-image',
+          assetVersion: 2,
+          label: '产品图',
+          mediaType: 'image',
+          mimeType: 'image/png',
+          contentUrl: 'data:image/png;base64,aW1hZ2U=',
+        },
+      ],
+    } as unknown as NonNullable<RunSnapshot['nodes'][number]['data']['promptDocument']>;
+    snapshot.promptMentions = [
+      {
+        nodeId: 'node_text',
+        mentionId: 'mention-image',
+        assetId: 'asset-image',
+        assetVersion: 2,
+        label: '产品图',
+        mediaType: 'image',
+        blockOrder: 1,
+      },
+    ];
+
+    await new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey,
+      fetchImpl,
+    }).execute({
+      snapshot,
+      resolvedMentions: resolveProviderMentions(snapshot),
+      runId: 'run-text',
+      attempt: 1,
+      onRequestPrompt: collectRequestPrompts(records),
+    });
+
+    expect(String(fetchImpl.mock.calls[0]?.[1]?.body)).toContain('data:image/png;base64');
+    expect(records).toHaveLength(1);
+    const serialized = JSON.stringify(records);
+    expect(serialized).not.toMatch(/base64|data:|authorization|Bearer/i);
+    expect(serialized).not.toContain(apiKey);
+  });
+
+  it('aborts before the request when prompt persistence fails', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const failure = new Error('prompt store unavailable');
+
+    await expect(
+      new NewApiProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+      }).execute({
+        snapshot: textSnapshot(),
+        runId: 'run-text',
+        attempt: 1,
+        onRequestPrompt: () => {
+          throw failure;
+        },
+      }),
+    ).rejects.toBe(failure);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('refuses to record without the run identity supplied by the Worker', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const onRequestPrompt = vi.fn();
+
+    await expect(
+      new NewApiProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+      }).execute({ snapshot: textSnapshot(), attempt: 1, onRequestPrompt }),
+    ).rejects.toThrow('需要 Worker 提供 runId');
+    expect(onRequestPrompt).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 });
 
 describe('NewApiVideoProvider', () => {
@@ -4511,6 +4893,152 @@ describe('NewApiVideoProvider', () => {
       retryable: false,
       message: 'New API video 不支持该输入角色：referenceImage',
     });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  /** 收集视频创建前交给 Worker 的请求记录。 */
+  function collectVideoPrompts(records: RequestPromptRecord[]) {
+    return (record: RequestPromptRecord) => {
+      records.push(record);
+    };
+  }
+
+  it('records the create prompt once and no negative text that was never sent', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ request_id: 'prompt-video' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ status: 'done', video: { url: 'https://cdn.example/prompt.mp4' } }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      );
+    const records: RequestPromptRecord[] = [];
+    const snapshot = videoSnapshot();
+    snapshot.inputs = [];
+
+    await new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+      pollIntervalMs: 0,
+      maxPollAttempts: 1,
+    }).execute({
+      snapshot,
+      onProviderJob: vi.fn(),
+      runId: 'run-video',
+      attempt: 1,
+      onRequestPrompt: collectVideoPrompts(records),
+    });
+
+    const createBody = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as Record<
+      string,
+      unknown
+    >;
+    expect(createBody).toEqual({
+      model: 'grok-imagine-video-1.5',
+      prompt: 'Animate the scene',
+      duration: 8,
+      resolution: '720p',
+      aspect_ratio: '16:9',
+    });
+    expect(createBody.negative_prompt).toBeUndefined();
+    expect(createBody.negativePrompt).toBeUndefined();
+    // 创建一次加一次状态查询，但只有创建请求产生记录。
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toEqual({
+      schemaVersion: REQUEST_PROMPT_SCHEMA_VERSION,
+      runId: 'run-video',
+      nodeId: 'node_video',
+      attempt: 1,
+      requestIdentity: 'POST /videos/generations#1',
+      provider: 'newapi',
+      modelAlias: 'grok-imagine-video-1.5',
+      mediaType: 'video',
+      format: 'plain',
+      parts: [{ order: 0, text: 'Animate the scene' }],
+      resources: [],
+      sendStatus: 'pending',
+      createdAt: expect.any(String),
+    });
+    expect(records[0]?.parts[0]?.text).toBe(createBody.prompt);
+    expect(records[0]?.negativeText).toBeUndefined();
+  });
+
+  it('records the reference images actually written into the create body', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ request_id: 'reference-video' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ status: 'done', video: { url: 'https://cdn.example/reference.mp4' } }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      );
+    const records: RequestPromptRecord[] = [];
+    const snapshot = videoSnapshot();
+    snapshot.inputs = [{ ...snapshot.inputs[0]!, sourceAssetId: 'asset-first-frame' }];
+
+    await new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+      pollIntervalMs: 0,
+      maxPollAttempts: 1,
+    }).execute({
+      snapshot,
+      onProviderJob: vi.fn(),
+      runId: 'run-video',
+      attempt: 1,
+      onRequestPrompt: collectVideoPrompts(records),
+    });
+
+    const createBody = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as Record<
+      string,
+      unknown
+    >;
+    expect(createBody.image).toEqual({ url: 'https://assets.example/first.png' });
+    expect(records[0]?.parts).toEqual([{ order: 0, text: createBody.prompt }]);
+    expect(records[0]?.resources).toEqual([
+      { assetId: 'asset-first-frame', role: 'firstFrame', sortOrder: 0, mediaType: 'image' },
+    ]);
+    // 参考资源只留身份，不保存供应商 URL 或媒体内容。
+    expect(JSON.stringify(records)).not.toContain('assets.example');
+  });
+
+  it('does not persist a contract or submit when prompt persistence fails', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const onProviderJob = vi.fn();
+    const failure = new Error('prompt store unavailable');
+
+    await expect(
+      new NewApiVideoProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+        pollIntervalMs: 0,
+      }).execute({
+        snapshot: videoSnapshot(),
+        onProviderJob,
+        runId: 'run-video',
+        attempt: 1,
+        onRequestPrompt: () => {
+          throw failure;
+        },
+      }),
+    ).rejects.toBe(failure);
+    expect(onProviderJob).not.toHaveBeenCalled();
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

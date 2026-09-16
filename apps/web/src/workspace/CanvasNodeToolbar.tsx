@@ -1,10 +1,12 @@
 import { mediaTypes, type MediaType } from '@multimodal-canvas/domain';
-import { Eraser, Maximize2, Redo2, Search, Undo2, Upload } from 'lucide-react';
+import { Group, Maximize2, Redo2, Search, Undo2, Upload } from 'lucide-react';
 import { type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 
 import type { CanvasBackground } from '../app-contract-utils';
-import type { CanvasEdgeStyle, CanvasTheme } from '../state/workspace-preferences';
+import type { CanvasTheme } from '../state/workspace-preferences';
+import type { CanvasEdgeEffect, CanvasEdgePathStyle } from './canvas-edge-appearance';
 import { AppearancePicker } from './AppearancePicker';
+import { ClearCanvasMenu, type ClearActionCounts } from './ClearCanvasMenu';
 import { mediaIcons, mediaLabels } from './contracts';
 
 /**
@@ -18,6 +20,9 @@ export function CanvasNodeToolbar({
   onFitView,
   onRequestUpload,
   onClearCanvas,
+  onClearEmptyNodes,
+  clearCounts,
+  onCreateGroup,
   onUndoCanvas,
   onRedoCanvas,
   onOpenSearch,
@@ -25,8 +30,10 @@ export function CanvasNodeToolbar({
   onThemeChange,
   canvasBackground,
   onBackgroundChange,
-  canvasEdgeStyle,
-  onEdgeStyleChange,
+  canvasEdgePathStyle,
+  onEdgePathStyleChange,
+  canvasEdgeEffect,
+  onEdgeEffectChange,
   canClearCanvas = true,
   canUndo = true,
   canRedo = true,
@@ -38,6 +45,12 @@ export function CanvasNodeToolbar({
   onRequestUpload?: () => void;
   /** 清空当前画布，具体确认与历史记录由 App 负责。 */
   onClearCanvas?: () => void;
+  /** 只清理内容为空的提示词节点，具体确认与历史记录由 App 负责。 */
+  onClearEmptyNodes?: () => void;
+  /** 两个清空动作的候选数量，用于显示与禁用判断。 */
+  clearCounts?: ClearActionCounts;
+  /** 按当前选区或视口中心创建布局区域组。 */
+  onCreateGroup?: () => void;
   /** 撤销最近一次画布修改。 */
   onUndoCanvas?: () => void;
   /** 重做最近一次撤销的画布修改。 */
@@ -52,10 +65,14 @@ export function CanvasNodeToolbar({
   canvasBackground?: CanvasBackground;
   /** 从底部胶囊切换画布背景。 */
   onBackgroundChange?: (background: CanvasBackground) => void;
-  /** 当前连接线视觉模式。 */
-  canvasEdgeStyle?: CanvasEdgeStyle;
-  /** 从外观面板切换连接线视觉模式。 */
-  onEdgeStyleChange?: (style: CanvasEdgeStyle) => void;
+  /** 当前连接线路径形态。 */
+  canvasEdgePathStyle?: CanvasEdgePathStyle;
+  /** 从外观面板切换连接线路径形态。 */
+  onEdgePathStyleChange?: (pathStyle: CanvasEdgePathStyle) => void;
+  /** 当前连接线动态特效。 */
+  canvasEdgeEffect?: CanvasEdgeEffect;
+  /** 从外观面板切换连接线动态特效。 */
+  onEdgeEffectChange?: (effect: CanvasEdgeEffect) => void;
   /** 当前是否存在可清空的画布内容。 */
   canClearCanvas?: boolean;
   /** 当前是否存在可撤销的历史记录。 */
@@ -91,23 +108,40 @@ export function CanvasNodeToolbar({
     );
   }
 
-  if (onClearCanvas) {
+  if (onCreateGroup) {
     nodeActions.push(
       <button
         type="button"
-        className="canvas-node-tool canvas-node-action-tool canvas-node-action-destructive"
-        aria-label="清空画布"
-        title={canClearCanvas ? '清空画布' : '画布为空'}
-        key="clear"
+        className="canvas-node-tool canvas-node-action-tool"
+        aria-label="新建分组"
+        title="新建分组（有选中节点时包围选区）"
+        key="group"
         onPointerDown={stopCanvasEvent}
         onClick={(event) => {
           event.stopPropagation();
-          onClearCanvas();
+          onCreateGroup();
         }}
-        disabled={!canClearCanvas}
       >
-        <Eraser size={16} aria-hidden="true" />
+        <Group size={16} aria-hidden="true" />
       </button>,
+    );
+  }
+
+  if (onClearCanvas) {
+    nodeActions.push(
+      <ClearCanvasMenu
+        key="clear"
+        counts={
+          clearCounts ??
+          // 没有候选数量时按不可清理处理：调用方的 canClearCanvas 只在
+          // 未提供数量时生效，避免出现“按钮可用但没有动作”的状态。
+          (canClearCanvas
+            ? { nodes: 1, edges: 0, groups: 0, emptyNodes: 0, emptyNodeEdges: 0 }
+            : { nodes: 0, edges: 0, groups: 0, emptyNodes: 0, emptyNodeEdges: 0 })
+        }
+        onClearCanvas={onClearCanvas}
+        onClearEmptyNodes={onClearEmptyNodes ?? onClearCanvas}
+      />,
     );
   }
 
@@ -180,8 +214,10 @@ export function CanvasNodeToolbar({
         onThemeChange={onThemeChange}
         canvasBackground={canvasBackground}
         onBackgroundChange={onBackgroundChange}
-        canvasEdgeStyle={canvasEdgeStyle}
-        onEdgeStyleChange={onEdgeStyleChange}
+        canvasEdgePathStyle={canvasEdgePathStyle}
+        onEdgePathStyleChange={onEdgePathStyleChange}
+        canvasEdgeEffect={canvasEdgeEffect}
+        onEdgeEffectChange={onEdgeEffectChange}
       />,
     );
   }

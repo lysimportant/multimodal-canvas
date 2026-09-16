@@ -1,9 +1,13 @@
 import { Job, Queue, Worker, type ConnectionOptions } from 'bullmq';
 import {
+  requestPromptRecordSchema,
   runJobDataSchema,
   runResultSchema,
   frozenPromptMentionSchema,
+  type NodeTiming,
   type ProviderJob,
+  type RequestPromptRecord,
+  type RequestPromptSendStatus,
   type RunResult,
   type RunResultAsset,
   type RunSnapshot,
@@ -34,6 +38,7 @@ import {
 } from '@multimodal-canvas/observability';
 import { createWorkerPersistenceFromEnvironment, databaseRunId } from './prisma-persistence';
 import { createResultAssetArchiverFromEnvironment } from './result-archiver';
+import { mergeNodeTimings } from './node-timings';
 import {
   createAssetReferenceResolverFromEnvironment,
   type AssetReferenceResolver,
@@ -91,6 +96,21 @@ export type WorkerCredentialReference = {
   credentialVersion?: number;
 };
 
+/** 一次请求记录的身份；与 `requestPromptRecordKey` 的输入一致。 */
+export type RequestPromptRecordIdentity = Pick<
+  RequestPromptRecord,
+  'runId' | 'nodeId' | 'attempt' | 'requestIdentity'
+>;
+
+/** 请求提示词记录可观测的发送终态；`pending` 由 Provider 在发送前写入。 */
+export type ObservableRequestPromptSendStatus = Exclude<RequestPromptSendStatus, 'pending'>;
+
+/** 归档完成后绑定到请求记录上的结果身份。 */
+export type RequestPromptResultBinding = {
+  assetId: string;
+  assetVersion: number;
+};
+
 export type WorkerProviderCredentials = {
   baseUrl: string;
   apiKey: string;
@@ -125,8 +145,33 @@ export type RunPersistence = {
     providerJob?: ProviderJob;
     result?: RunResult;
     error?: string;
+    /**
+     * 本次执行累计的节点生命周期时间。写入必须单调：同一字段只保留最早时刻，
+     * 迟到的重复事件既不能让时间倒退，也不能延长已经结束的耗时。
+     */
+    nodeTimings?: Record<string, NodeTiming>;
   }): Promise<unknown>;
   upsertProviderJob(input: { runId: string; providerJob: ProviderJob }): Promise<unknown>;
+  /**
+   * 请求发送前以 `requestPromptRecordKey` 幂等落库最终请求文本。
+   *
+   * 同一键重放不新增行，也不用旧数据覆盖已落库的状态；结果身份只在归档完成后
+   * 通过 `recordRequestPromptOutcome` 补写。写入失败必须让调用方放弃本次请求，
+   * 避免出现已计费却无法追溯的结果。
+   */
+  upsertRequestPromptRecord?(input: { record: RequestPromptRecord }): Promise<unknown>;
+  /**
+   * 写入本次请求可观测的终态：发送状态，以及归档后的结果身份。
+   *
+   * 只允许 `pending` → 终态；已落库的终态不会被迟到或重复的事件改写，结果身份
+   * 只在缺失时补写一次。`unknown` 表示发送结果不确定，不得据此自动重发创建请求。
+   */
+  recordRequestPromptOutcome?(input: {
+    identity: RequestPromptRecordIdentity;
+    sendStatus: ObservableRequestPromptSendStatus;
+    assetId?: string;
+    assetVersion?: number;
+  }): Promise<unknown>;
   /** Resolve the last durable provider job for a failed/cancelled retry source. */
   findProviderJobByRunId?(runId: string): Promise<ProviderJob | undefined>;
   /** Resolve every durable asynchronous task for a DAG retry source. */
@@ -226,6 +271,52 @@ export function normalizeProviderExecution(
     return { ...value, ...(output ? { output } : {}) };
   }
   return { result: value as RunResult };
+}
+
+/** 网关可能已经收到请求的可重试状态：不构成“明确拒绝”。 */
+const RETRYABLE_REJECTION_STATUSES = new Set([408, 425, 429]);
+
+/** 只接受可用的 HTTP 状态码；缺失或非法值按“无法判定”处理。 */
+function usableHttpStatus(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 100 && value <= 599
+    ? value
+    : undefined;
+}
+
+/**
+ * 判定一次已留存请求可观测的发送终态。
+ *
+ * Provider 调用返回后请求确定为 `sent`；抛错时只有拿到明确证据才判定终态：
+ * 携带平台任务 ID 说明创建请求已经送达并成功；只有网关明确拒绝本次请求
+ * （4xx，且排除 408/425/429 这类可重试状态）才判定为 `failed`。5xx 与
+ * 408/425/429 都可能是网关在 POST 之后才失败，超时、网络中断、本地取消和无法
+ * 识别的错误形态同理，一律记为 `unknown`；不确定状态绝不允许触发自动重发创建
+ * 请求（本函数只产出诊断状态，没有任何调用方据此重试）。
+ *
+ * 判定口径镜像 `packages/providers/src/index.ts` 里未导出的
+ * `isDefiniteProviderRejection`（providers 包不导出该函数），改动时必须同步。
+ * 这里比它更保守一点：不带可用 HTTP 状态码的错误即使携带 `model_not_found`、
+ * `invalid_request_error` 之类的代码也不判为失败，因为没有响应证据就无法排除
+ * 计费已经发生，而 `unknown` 是唯一不会引发重发的结论。
+ *
+ * @param error Provider 调用抛出的错误。
+ * @returns `sent`、`failed` 或 `unknown`。
+ */
+export function requestPromptSendStatusForFailure(
+  error: unknown,
+): ObservableRequestPromptSendStatus {
+  if (!isRecord(error)) return 'unknown';
+  if (typeof error.platformJobId === 'string' && error.platformJobId.trim()) return 'sent';
+  const status = usableHttpStatus(error.status);
+  if (
+    status !== undefined &&
+    status >= 400 &&
+    status < 500 &&
+    !RETRYABLE_REJECTION_STATUSES.has(status)
+  ) {
+    return 'failed';
+  }
+  return 'unknown';
 }
 
 function snapshotForProvider(snapshot: RunSnapshot, provider: string): RunSnapshot {
@@ -529,6 +620,7 @@ export function createRunWorker(options: {
         result?: RunResult,
         error?: string,
         strict = false,
+        nodeTimingsForRun?: Record<string, NodeTiming>,
       ) => {
         if (!options.persistence?.updateRun || !databaseRunId) return;
         try {
@@ -538,6 +630,7 @@ export function createRunWorker(options: {
             ...(providerJob ? { providerJob } : {}),
             ...(result ? { result } : {}),
             ...(error ? { error } : {}),
+            ...(nodeTimingsForRun ? { nodeTimings: nodeTimingsForRun } : {}),
           });
         } catch (persistenceError) {
           runLogger.warn(
@@ -602,6 +695,84 @@ export function createRunWorker(options: {
           throw error;
         }
       };
+      /**
+       * 请求发送前留存最终请求文本。计费请求必须可追溯：留存失败时放弃发送，
+       * 由调用方抛出并让节点失败，而不是产生无法核对的费用。
+       */
+      const persistRequestPromptRecordStrict = async (record: RequestPromptRecord) => {
+        const persistence = options.persistence;
+        if (!persistence?.upsertRequestPromptRecord) {
+          throw new Error('request prompt persistence is not configured for this worker');
+        }
+        try {
+          await persistence.upsertRequestPromptRecord({ record });
+        } catch (error) {
+          runLogger.error(
+            {
+              ...serializeWorkerError(error),
+              workflowNodeId: record.nodeId,
+              requestIdentity: record.requestIdentity,
+            },
+            'request prompt persistence failed',
+          );
+          options.onPersistenceError?.(error);
+          throw error;
+        }
+      };
+      /**
+       * 写入请求可观测的发送终态。此处只在返回后记录真实状态，不阻止已经发生的
+       * 请求；失败时保留 Provider 已写入的 `pending`，表示发送结果尚未确认。
+       */
+      const recordRequestPromptOutcome = async (
+        identity: RequestPromptRecordIdentity,
+        sendStatus: ObservableRequestPromptSendStatus,
+      ) => {
+        const persistence = options.persistence;
+        if (!persistence?.recordRequestPromptOutcome) return;
+        try {
+          await persistence.recordRequestPromptOutcome({ identity, sendStatus });
+        } catch (error) {
+          runLogger.warn(
+            {
+              ...serializeWorkerError(error),
+              workflowNodeId: identity.nodeId,
+              requestIdentity: identity.requestIdentity,
+            },
+            'request prompt send status persistence failed',
+          );
+          options.onPersistenceError?.(error);
+        }
+      };
+      /**
+       * 归档完成后把结果身份绑定到本次节点执行的请求记录。绑定失败会阻止把
+       * 结果标记为成功，避免出现没有生成说明的可展示结果。
+       */
+      const bindRequestPromptResultStrict = async (
+        identity: RequestPromptRecordIdentity,
+        binding: RequestPromptResultBinding,
+      ) => {
+        const persistence = options.persistence;
+        if (!persistence?.recordRequestPromptOutcome) return;
+        try {
+          await persistence.recordRequestPromptOutcome({
+            identity,
+            sendStatus: 'sent',
+            assetId: binding.assetId,
+            assetVersion: binding.assetVersion,
+          });
+        } catch (error) {
+          runLogger.error(
+            {
+              ...serializeWorkerError(error),
+              workflowNodeId: identity.nodeId,
+              requestIdentity: identity.requestIdentity,
+            },
+            'request prompt result binding failed',
+          );
+          options.onPersistenceError?.(error);
+          throw error;
+        }
+      };
       const initialProviderJobBase = sanitizeProviderJobRecord({
         ...(immutableProviderJob ??
           createProviderJobRecord(initialData.runId, initialData.provider)),
@@ -626,6 +797,9 @@ export function createRunWorker(options: {
         (initialData.retryOf ? undefined : immutableData.workflowState) ?? recoveredWorkflowState,
       );
       const executionOrder = workflowExecutionOrder(executionSnapshot);
+      // 节点进入待执行状态的时刻只在本进程记录，等它真正开始执行时再落库：
+      // 从未执行的节点不会留下任何时间条目，界面显示「未记录」。
+      const queuedAtByNode = new Map<string, string>();
       for (const node of executionOrder) {
         if (node.data.mode === 'source') continue;
         const currentState = workflowNodeState(workflowState, node.id);
@@ -737,6 +911,7 @@ export function createRunWorker(options: {
           status: 'pending',
           providerJob,
         });
+        queuedAtByNode.set(node.id, new Date().toISOString());
       }
       const targetWorkflowProviderJob =
         workflowNodeState(workflowState, executionSnapshot.targetNodeId)?.providerJob ??
@@ -749,6 +924,17 @@ export function createRunWorker(options: {
       });
       await persistProviderJob(targetWorkflowProviderJob);
 
+      // 本次进程累计的节点生命周期时间：只保留每个字段最早的时刻，重放、轮询和
+      // Worker 重启都不会重置开始时间，也不会移动已经写入的终态时间。
+      let nodeTimings: Record<string, NodeTiming> = {};
+      const recordNodeTiming = (event: NodeTiming) => {
+        nodeTimings = mergeNodeTimings(nodeTimings, { [event.nodeId]: event });
+      };
+      const flushNodeTimings = () =>
+        Object.keys(nodeTimings).length > 0 ? nodeTimings : undefined;
+      // 本次节点执行已留存的请求记录；结果归档后只绑定这些记录，绝不把目标节点
+      // 的提示词附给上游结果。
+      let activeRequestPrompts: RequestPromptRecord[] = [];
       const update = async (status: RunStatus, progress: number) => {
         if (await isCancellationRequested(queue, job.id)) {
           return false;
@@ -817,6 +1003,16 @@ export function createRunWorker(options: {
         };
         let nextWorkflowState =
           data.workflowState ?? createInitialWorkflowState(executionSnapshot, providerJob);
+        // 取消前仍处于执行中的节点必须有取消终态，否则界面会一直按运行中累计时间。
+        const cancelledNodeIds = new Set(
+          nextWorkflowState.nodes
+            .filter((state) => state.status === 'running')
+            .map((state) => state.nodeId),
+        );
+        if (activeNodeId) cancelledNodeIds.add(activeNodeId);
+        for (const nodeId of cancelledNodeIds) {
+          recordNodeTiming({ nodeId, finishedAt: updatedAt, outcome: 'cancelled' });
+        }
         const targetState = workflowNodeState(nextWorkflowState, executionSnapshot.targetNodeId);
         if (targetState) {
           nextWorkflowState = replaceWorkflowNodeState(nextWorkflowState, {
@@ -857,7 +1053,7 @@ export function createRunWorker(options: {
         await job.updateData({ ...data, providerJob, workflowState: nextWorkflowState });
         if (cancelledActiveProviderJob) await persistProviderJob(cancelledActiveProviderJob);
         await persistProviderJob(providerJob);
-        await persistRun('cancelled', providerJob);
+        await persistRun('cancelled', providerJob, undefined, undefined, false, flushNodeTimings());
         await job.updateProgress({
           status: 'cancelled',
           progress,
@@ -966,6 +1162,14 @@ export function createRunWorker(options: {
           };
           activeNodeId = node.id;
           activeProviderJob = providerJob;
+          // 节点真正开始执行：开始时间只写一次，重放与轮询不会重置它；排队时间
+          // 取自节点进入待执行状态的时刻。
+          const queuedAt = queuedAtByNode.get(node.id);
+          recordNodeTiming({
+            nodeId: node.id,
+            ...(queuedAt ? { queuedAt } : {}),
+            startedAt: now,
+          });
           currentWorkflowState = replaceWorkflowNodeState(currentWorkflowState, {
             nodeId: node.id,
             status: 'running',
@@ -982,7 +1186,14 @@ export function createRunWorker(options: {
           // New API calls. Losing it before a paid request would make a retry
           // unable to prove idempotency, so this boundary is fail-closed.
           await persistProviderJobStrict(providerJob);
-          await persistRun('processing', providerJob);
+          await persistRun(
+            'processing',
+            providerJob,
+            undefined,
+            undefined,
+            false,
+            flushNodeTimings(),
+          );
 
           const provider =
             currentData.provider === 'newapi'
@@ -1008,6 +1219,37 @@ export function createRunWorker(options: {
             node.data.mediaType === 'video' || !requestProviderJobId
               ? providerJob
               : { ...providerJob, id: requestProviderJobId };
+          activeRequestPrompts = [];
+          // 有持久化边界时，Provider 必须在真正发送前把最终请求文本交给 Worker
+          // 落库；回调抛错会阻止本次请求，避免已计费但无法追溯。没有持久化适配器
+          // 的本地运行（未配置 DATABASE_URL，例如 mock 或本地 newapi 调试）不传
+          // 该回调，Provider 按其合同跳过记录：这是有意的兼容行为，不是留存失败。
+          const captureRequestPrompt = options.persistence
+            ? async (record: RequestPromptRecord) => {
+                const parsed = requestPromptRecordSchema.safeParse(record);
+                if (!parsed.success) {
+                  throw new Error(
+                    `provider returned an invalid request prompt record for node ${node.id}`,
+                  );
+                }
+                if (parsed.data.nodeId !== node.id) {
+                  throw new Error(
+                    `request prompt record does not belong to workflow node ${node.id}`,
+                  );
+                }
+                await persistRequestPromptRecordStrict(parsed.data);
+                activeRequestPrompts.push(parsed.data);
+              }
+            : undefined;
+          recordNodeTiming({ nodeId: node.id, requestStartedAt: new Date().toISOString() });
+          await persistRun(
+            'processing',
+            activeProviderJob ?? providerJob,
+            undefined,
+            undefined,
+            false,
+            flushNodeTimings(),
+          );
           const execution = normalizeProviderExecution(
             await executeProviderWithCancellation(
               provider,
@@ -1016,6 +1258,13 @@ export function createRunWorker(options: {
                 ...(resolvedMentions?.length ? { resolvedMentions } : {}),
                 providerJob: providerRequestJob,
                 signal: cancellationSignal,
+                ...(captureRequestPrompt
+                  ? {
+                      onRequestPrompt: captureRequestPrompt,
+                      runId: currentData.runId,
+                      attempt: currentData.attempt,
+                    }
+                  : {}),
                 onProviderJob: async (update) => {
                   if (cancellationSignal.aborted) return;
                   const callbackData = readJobData();
@@ -1063,6 +1312,14 @@ export function createRunWorker(options: {
                       : merged.status === 'cancelled'
                         ? 'cancelled'
                         : 'running';
+                  if (callbackNodeStatus !== 'running') {
+                    // 供应商回调已经把节点带到终态：终态时间与标签只在这里写一次。
+                    recordNodeTiming({
+                      nodeId: node.id,
+                      finishedAt: merged.updatedAt,
+                      outcome: callbackNodeStatus,
+                    });
+                  }
                   callbackWorkflowState = replaceWorkflowNodeState(callbackWorkflowState, {
                     nodeId: node.id,
                     status: callbackNodeStatus,
@@ -1084,6 +1341,10 @@ export function createRunWorker(options: {
                         ? 'cancelled'
                         : 'processing',
                     merged,
+                    undefined,
+                    undefined,
+                    false,
+                    flushNodeTimings(),
                   );
                   Object.assign(providerJob, merged);
                 },
@@ -1144,6 +1405,20 @@ export function createRunWorker(options: {
             ),
           );
 
+          // 供应商调用已经返回：本次请求确定为已发送，请求阶段到此结束。该结论
+          // 与随后的取消判断无关，因此先如实写入发送终态。
+          for (const prompt of activeRequestPrompts) {
+            await recordRequestPromptOutcome(prompt, 'sent');
+          }
+          recordNodeTiming({ nodeId: node.id, requestFinishedAt: new Date().toISOString() });
+          await persistRun(
+            'processing',
+            activeProviderJob ?? providerJob,
+            undefined,
+            undefined,
+            false,
+            flushNodeTimings(),
+          );
           // Provider calls can outlive cancellation requests. Never archive a
           // late response over a cancelled workflow.
           if (await isCancellationRequested(queue, job.id)) {
@@ -1240,6 +1515,14 @@ export function createRunWorker(options: {
           if (!asset || !asset.version) {
             throw new Error(`result archiver did not return a versioned asset for ${node.id}`);
           }
+          // 归档完成后才绑定结果身份：只绑定本次节点执行留存的记录，失败的结果
+          // 不会留下编造的绑定。
+          for (const prompt of activeRequestPrompts) {
+            await bindRequestPromptResultStrict(prompt, {
+              assetId: asset.assetId,
+              assetVersion: asset.version,
+            });
+          }
 
           const completedAt = new Date().toISOString();
           const { finalFrame, ...resultAsset } = (asset ?? {}) as RunResultAsset & {
@@ -1295,7 +1578,15 @@ export function createRunWorker(options: {
               : { providerJob: completedData.providerJob }),
           });
           await persistProviderJob(completedProviderJob);
-          await persistRun('processing', completedProviderJob);
+          recordNodeTiming({ nodeId: node.id, finishedAt: completedAt, outcome: 'succeeded' });
+          await persistRun(
+            'processing',
+            completedProviderJob,
+            undefined,
+            undefined,
+            false,
+            flushNodeTimings(),
+          );
           currentOverallProgress = Math.max(
             currentOverallProgress,
             Math.min(99, 80 + Math.round(((nodeIndex + 1) / providerNodeCount) * 19)),
@@ -1386,6 +1677,10 @@ export function createRunWorker(options: {
         };
       } catch (rawError) {
         if (cancellationSignal.aborted || (await isCancellationRequested(queue, job.id))) {
+          // 取消可能发生在创建请求的 POST 之后：发送结果不确定，绝不据此自动重发。
+          for (const prompt of activeRequestPrompts) {
+            await recordRequestPromptOutcome(prompt, 'unknown');
+          }
           return markCancelled(currentOverallProgress, activeNodeId, activeProviderJob);
         }
         const error = redactTransientAssetData(rawError);
@@ -1399,6 +1694,17 @@ export function createRunWorker(options: {
           failedData.workflowState ??
           createInitialWorkflowState(executionSnapshot, failedData.providerJob);
         const failedNodeState = workflowNodeState(failedWorkflowState, failedNodeId);
+        // 已经进入执行（工作流状态为 running）的节点失败时同样要有终态时间与
+        // 标签；从未执行的节点不会留下任何时间条目。
+        if (failedNodeState?.status === 'running') {
+          recordNodeTiming({ nodeId: failedNodeId, finishedAt: failedAt, outcome: 'failed' });
+        }
+        // 供应商调用本身失败时如实记录可观测的发送终态。已经写入终态的记录不会
+        // 被改写（归档或用量失败不影响请求已经送达的事实）。
+        const failedSendStatus = requestPromptSendStatusForFailure(error);
+        for (const prompt of activeRequestPrompts) {
+          await recordRequestPromptOutcome(prompt, failedSendStatus);
+        }
         const failedNodeProviderJobBase =
           activeProviderJob ??
           failedNodeState?.providerJob ??
@@ -1454,7 +1760,14 @@ export function createRunWorker(options: {
         if (rootProviderJob.id !== failedProviderJob.id) {
           await persistProviderJob(rootProviderJob);
         }
-        await persistRun('failed', rootProviderJob, undefined, errorMessage);
+        await persistRun(
+          'failed',
+          rootProviderJob,
+          undefined,
+          errorMessage,
+          false,
+          flushNodeTimings(),
+        );
         runLogger.error(
           { ...serializeWorkerError(error), status: 'failed', workflowNodeId: failedNodeId },
           'workflow run failed',

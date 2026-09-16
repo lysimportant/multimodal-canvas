@@ -248,6 +248,18 @@ const projectModelDefaultsSchema = {
   additionalProperties: false,
 } as const;
 
+/** 类型默认模型的局部更新；显式 `null` 清除该媒体类型，省略表示保留。 */
+const defaultModelUpdateSchema = {
+  type: 'object',
+  properties: {
+    text: { oneOf: [defaultModelValueSchema, { type: 'null' }] },
+    image: { oneOf: [defaultModelValueSchema, { type: 'null' }] },
+    audio: { oneOf: [defaultModelValueSchema, { type: 'null' }] },
+    video: { oneOf: [defaultModelValueSchema, { type: 'null' }] },
+  },
+  additionalProperties: false,
+} as const;
+
 const nodeSchema = {
   type: 'object',
   required: ['id', 'type', 'position', 'data'],
@@ -544,8 +556,136 @@ const runSchema = {
     result: runResultSchema,
     error: { type: 'string' },
     retryOf: { type: 'string' },
+    /** 按节点记录的服务端 UTC 生命周期时间；旧运行缺省，界面显示“未记录”。 */
+    nodeTimings: {
+      type: 'object',
+      additionalProperties: {
+        type: 'object',
+        required: ['nodeId'],
+        properties: {
+          nodeId: { type: 'string' },
+          queuedAt: { type: 'string', format: 'date-time' },
+          startedAt: { type: 'string', format: 'date-time' },
+          finishedAt: { type: 'string', format: 'date-time' },
+          outcome: { type: 'string', enum: ['succeeded', 'failed', 'cancelled'] },
+          requestStartedAt: { type: 'string', format: 'date-time' },
+          requestFinishedAt: { type: 'string', format: 'date-time' },
+        },
+        additionalProperties: false,
+      },
+    },
     createdAt: { type: 'string', format: 'date-time' },
     updatedAt: { type: 'string', format: 'date-time' },
+  },
+  additionalProperties: false,
+} as const;
+
+/** 请求提示词记录的列表摘要；绝不包含按发送顺序排列的请求正文。 */
+const runRequestPromptSummarySchema = {
+  type: 'object',
+  required: [
+    'id',
+    'runId',
+    'nodeId',
+    'attempt',
+    'requestIdentity',
+    'provider',
+    'modelAlias',
+    'mediaType',
+    'format',
+    'sendStatus',
+    'partCount',
+    'resourceCount',
+    'createdAt',
+  ],
+  properties: {
+    id: { type: 'string', format: 'uuid' },
+    runId: { type: 'string' },
+    nodeId: { type: 'string' },
+    attempt: { type: 'integer', minimum: 1 },
+    requestIdentity: { type: 'string' },
+    provider: { type: 'string' },
+    modelAlias: { type: 'string' },
+    mediaType: { type: 'string', enum: ['text', 'image', 'audio', 'video'] },
+    format: { type: 'string', enum: ['plain', 'messages'] },
+    sendStatus: { type: 'string', enum: ['pending', 'sent', 'failed', 'unknown'] },
+    partCount: { type: 'integer', minimum: 0 },
+    resourceCount: { type: 'integer', minimum: 0 },
+    createdAt: { type: 'string', format: 'date-time' },
+    assetId: { type: 'string' },
+    assetVersion: { type: 'integer', minimum: 1 },
+    summary: { type: 'string' },
+    summarySource: { type: 'string', enum: ['manual', 'local', 'model'] },
+  },
+  additionalProperties: false,
+} as const;
+
+/** 按需读取的完整请求提示词记录；只保存请求身份与文本，不含原始 HTTP body。 */
+const runRequestPromptRecordSchema = {
+  type: 'object',
+  required: [
+    'schemaVersion',
+    'runId',
+    'nodeId',
+    'attempt',
+    'requestIdentity',
+    'provider',
+    'modelAlias',
+    'mediaType',
+    'format',
+    'parts',
+    'resources',
+    'sendStatus',
+    'createdAt',
+  ],
+  properties: {
+    schemaVersion: { type: 'integer', minimum: 1 },
+    runId: { type: 'string' },
+    nodeId: { type: 'string' },
+    attempt: { type: 'integer', minimum: 1 },
+    requestIdentity: { type: 'string' },
+    provider: { type: 'string' },
+    modelAlias: { type: 'string' },
+    credentialId: { type: 'string' },
+    credentialVersion: { type: 'integer', minimum: 1 },
+    mediaType: { type: 'string', enum: ['text', 'image', 'audio', 'video'] },
+    format: { type: 'string', enum: ['plain', 'messages'] },
+    parts: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['order', 'text'],
+        properties: {
+          order: { type: 'integer', minimum: 0 },
+          role: { type: 'string' },
+          name: { type: 'string' },
+          text: { type: 'string' },
+        },
+        additionalProperties: false,
+      },
+    },
+    negativeText: { type: 'string' },
+    resources: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['role', 'sortOrder'],
+        properties: {
+          assetId: { type: 'string' },
+          assetVersion: { type: 'integer', minimum: 1 },
+          role: { type: 'string' },
+          sortOrder: { type: 'integer', minimum: 0 },
+          mediaType: { type: 'string', enum: ['text', 'image', 'audio', 'video'] },
+        },
+        additionalProperties: false,
+      },
+    },
+    sendStatus: { type: 'string', enum: ['pending', 'sent', 'failed', 'unknown'] },
+    createdAt: { type: 'string', format: 'date-time' },
+    assetId: { type: 'string' },
+    assetVersion: { type: 'integer', minimum: 1 },
+    summary: { type: 'string' },
+    summarySource: { type: 'string', enum: ['manual', 'local', 'model'] },
   },
   additionalProperties: false,
 } as const;
@@ -1360,6 +1500,48 @@ export const openApiDocument = {
         },
       },
     },
+    '/v1/runs/{runId}/request-prompts': {
+      get: {
+        tags: ['runs'],
+        description: '列出该次运行留存的请求提示词摘要；不返回请求正文。',
+        parameters: [{ $ref: '#/components/parameters/RunId' }],
+        responses: {
+          '200': response('Request prompt summaries without prompt text', {
+            type: 'object',
+            required: ['records'],
+            properties: {
+              records: {
+                type: 'array',
+                items: { $ref: '#/components/schemas/RunRequestPromptSummary' },
+              },
+            },
+          }),
+          '404': response('Not found', errorSchema),
+        },
+      },
+    },
+    '/v1/runs/{runId}/request-prompts/{recordId}': {
+      get: {
+        tags: ['runs'],
+        description: '按记录 ID 读取完整请求提示词，权限沿用所属项目的运行读取边界。',
+        parameters: [
+          { $ref: '#/components/parameters/RunId' },
+          {
+            name: 'recordId',
+            in: 'path',
+            required: true,
+            schema: { type: 'string', format: 'uuid' },
+          },
+        ],
+        responses: {
+          '200': response(
+            'Full request prompt record',
+            envelope('record', runRequestPromptRecordSchema),
+          ),
+          '404': response('Not found', errorSchema),
+        },
+      },
+    },
     '/v1/settings/ai': {
       get: {
         tags: ['settings'],
@@ -1388,6 +1570,12 @@ export const openApiDocument = {
               credentials: {
                 type: 'array',
                 items: { $ref: '#/components/schemas/AiCredentialSummary' },
+              },
+              createdCredentialId: {
+                type: 'string',
+                format: 'uuid',
+                description:
+                  '仅在 activate=false 新增或复用独立凭据时返回；活动连接与全局默认模型不变。',
               },
             },
             additionalProperties: false,
@@ -1492,6 +1680,45 @@ export const openApiDocument = {
           }),
           '400': response('Invalid credential id', errorSchema),
           '404': response('Credential not found', errorSchema),
+        },
+      },
+    },
+    '/v1/settings/ai/credentials/{credentialId}/defaults': {
+      patch: {
+        tags: ['settings'],
+        summary: '更新单个已保存 Key 自身的类型默认模型',
+        description:
+          '仅管理员可用。只更新该凭据自己的类型默认模型，不激活该连接、不改变当前活动连接和全局默认模型；' +
+          '模型必须来自该凭据的模型目录并保持同一凭据组合。显式 null 清除对应媒体类型。',
+        parameters: [
+          {
+            name: 'credentialId',
+            in: 'path',
+            required: true,
+            schema: { type: 'string', format: 'uuid' },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': { schema: defaultModelUpdateSchema },
+          },
+        },
+        responses: {
+          '200': response('该凭据的类型默认模型已更新', {
+            type: 'object',
+            required: ['credentials'],
+            properties: {
+              credentials: {
+                type: 'array',
+                items: { $ref: '#/components/schemas/AiCredentialSummary' },
+              },
+            },
+            additionalProperties: false,
+          }),
+          '400': response('凭据 ID、请求体或模型选择无效', errorSchema),
+          '403': response('不允许访问平台凭据', errorSchema),
+          '404': response('凭据不存在或已删除', errorSchema),
         },
       },
     },
@@ -1771,6 +1998,8 @@ export const openApiDocument = {
       WorkflowImportResponse: workflowImportResponseSchema,
       WorkflowImportError: workflowImportErrorSchema,
       Run: runSchema,
+      RunRequestPromptSummary: runRequestPromptSummarySchema,
+      RunRequestPromptRecord: runRequestPromptRecordSchema,
       UploadInitialization: {
         type: 'object',
         required: ['uploadId', 'uploadUrl', 'completeUrl', 'expiresAt'],
@@ -1836,6 +2065,11 @@ export const openApiDocument = {
           keyFingerprint: { type: 'string', minLength: 1 },
           updatedAt: { type: 'string', format: 'date-time' },
           active: { type: 'boolean' },
+          defaultModels: {
+            ...projectModelDefaultsSchema,
+            description:
+              '该凭据自身已持久化的类型默认模型；从未配置过的凭据省略该字段，不生成推断默认值。',
+          },
         },
         additionalProperties: false,
       },
@@ -1844,22 +2078,20 @@ export const openApiDocument = {
         properties: {
           baseUrl: { type: 'string', format: 'uri' },
           apiKey: { type: 'string', minLength: 1, writeOnly: true },
-          defaultModels: {
-            type: 'object',
-            properties: {
-              text: { oneOf: [defaultModelValueSchema, { type: 'null' }] },
-              image: { oneOf: [defaultModelValueSchema, { type: 'null' }] },
-              audio: { oneOf: [defaultModelValueSchema, { type: 'null' }] },
-              video: { oneOf: [defaultModelValueSchema, { type: 'null' }] },
-            },
-            additionalProperties: false,
-          },
+          defaultModels: defaultModelUpdateSchema,
           timeoutMs: {
             type: 'integer',
             minimum: 1000,
             maximum: 2147483647,
             description:
               '新开始执行节点的请求超时及视频轮询等待预算，单位毫秒；省略保留现值，显式 900000 恢复默认。',
+          },
+          activate: {
+            type: 'boolean',
+            default: true,
+            description:
+              '是否把本次 Key 设为全局活动连接。false 时只新增不激活的独立凭据并返回 createdCredentialId，' +
+              '活动连接的 ID、版本、地址、指纹和默认模型保持不变；该模式不接受 defaultModels 和 timeoutMs。',
           },
         },
         additionalProperties: false,

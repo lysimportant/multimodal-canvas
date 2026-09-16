@@ -134,8 +134,9 @@ export type BuildAppOptions = {
   observability?: Observability;
   settingsStore?: AiSettingsStoreLike;
   webhookEventStore?: WebhookEventStore;
-  /** Optional durable lifecycle persistence for provider callbacks. */
-  runPersistence?: Pick<PrismaRunPersistence, 'upsertProviderJob' | 'updateRun'>;
+  /** Optional durable lifecycle persistence for provider callbacks and prompt records. */
+  runPersistence?: Pick<PrismaRunPersistence, 'upsertProviderJob' | 'updateRun'> &
+    Partial<Pick<PrismaRunPersistence, 'listRequestPromptRecords' | 'getRequestPromptRecord'>>;
   mediaMetadataExtractor?: MediaMetadataExtractor;
   mediaDerivativeGenerator?: MediaDerivativeGenerator;
   uploadSessionStore?: UploadSessionStore;
@@ -263,6 +264,8 @@ type PublicRunFields = {
   result?: PublicRunResult;
   error?: string;
   retryOf?: string;
+  /** 按节点记录的服务端 UTC 生命周期时间；旧运行缺省，界面显示“未记录”。 */
+  nodeTimings?: NonNullable<RunRecord['nodeTimings']>;
   createdAt: string;
   updatedAt: string;
 };
@@ -333,6 +336,28 @@ class ResourceMentionFreezeError extends Error {
   }
 }
 
+/** 类型默认模型的单个媒体类型取值；`null` 表示清除该类型。 */
+const defaultModelSelectionSchema = z
+  .union([
+    z.string().min(1),
+    z
+      .object({
+        modelAlias: z.string().min(1),
+        credentialId: z.string().min(1).optional(),
+      })
+      .strict(),
+  ])
+  .nullable()
+  .optional();
+
+/** 文字/图片/音频/视频四个媒体类型的类型默认模型局部更新。 */
+const defaultModelsSchema = z.object({
+  text: defaultModelSelectionSchema,
+  image: defaultModelSelectionSchema,
+  audio: defaultModelSelectionSchema,
+  video: defaultModelSelectionSchema,
+});
+
 /**
  * Validate project defaults before touching the project store. A default can
  * be a legacy unbound alias, but a bound selection must point at a usable
@@ -346,8 +371,13 @@ async function validateProjectModelDefaults(input: {
   allowVirtualMockModels: boolean;
   requireCredentialReferences: boolean;
   unboundCredentialScope?: 'all' | 'active';
+  /** 限定时，所有默认模型都必须属于该凭据自己的目录，禁止绑定其他凭据。 */
+  credentialScope?: string;
 }): Promise<void> {
   const credentials = await Promise.resolve(input.settingsStore.listCredentials());
+  if (input.credentialScope && !credentials.some((entry) => entry.id === input.credentialScope)) {
+    throw new AiCredentialNotFoundError(input.credentialScope);
+  }
   const catalogCache = new Map<string, Promise<ModelCatalogEntry[]>>();
   const getCatalog = (mediaType: MediaType, credentialId?: string) => {
     const key = `${credentialId ?? 'active'}\0${mediaType}`;
@@ -381,6 +411,9 @@ async function validateProjectModelDefaults(input: {
     }
 
     if (credentialId) {
+      if (input.credentialScope && credentialId !== input.credentialScope) {
+        throw new AiSettingsError('model_unavailable', `模型 ${alias} 不能绑定到其他 API Key`);
+      }
       if (!(await Promise.resolve(input.settingsStore.hasCredential(credentialId)))) {
         throw new AiCredentialNotFoundError(credentialId);
       }
@@ -399,6 +432,26 @@ async function validateProjectModelDefaults(input: {
       }
       if (input.requireCredentialReferences) {
         await requireCredentialReference(input.settingsStore, credentialId, alias);
+      }
+      continue;
+    }
+
+    if (input.credentialScope) {
+      const catalog = await getCatalog(mediaType, input.credentialScope);
+      const model = catalog.find(
+        (candidate) =>
+          candidate.id === alias &&
+          candidate.mediaTypes.includes(mediaType) &&
+          (!candidate.credentialId || candidate.credentialId === input.credentialScope),
+      );
+      if (!model) {
+        throw new AiSettingsError(
+          'model_unavailable',
+          `模型 ${alias} 不支持 ${mediaType} 媒体类型或不在该 API Key 的模型目录中`,
+        );
+      }
+      if (input.requireCredentialReferences) {
+        await requireCredentialReference(input.settingsStore, input.credentialScope, alias);
       }
       continue;
     }
@@ -1620,60 +1673,20 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           .optional(),
         apiKey: z.string().min(1).optional(),
         timeoutMs: z.number().int().min(1_000).max(2_147_483_647).optional(),
-        defaultModels: z
-          .object({
-            text: z
-              .union([
-                z.string().min(1),
-                z
-                  .object({
-                    modelAlias: z.string().min(1),
-                    credentialId: z.string().min(1).optional(),
-                  })
-                  .strict(),
-              ])
-              .nullable()
-              .optional(),
-            image: z
-              .union([
-                z.string().min(1),
-                z
-                  .object({
-                    modelAlias: z.string().min(1),
-                    credentialId: z.string().min(1).optional(),
-                  })
-                  .strict(),
-              ])
-              .nullable()
-              .optional(),
-            audio: z
-              .union([
-                z.string().min(1),
-                z
-                  .object({
-                    modelAlias: z.string().min(1),
-                    credentialId: z.string().min(1).optional(),
-                  })
-                  .strict(),
-              ])
-              .nullable()
-              .optional(),
-            video: z
-              .union([
-                z.string().min(1),
-                z
-                  .object({
-                    modelAlias: z.string().min(1),
-                    credentialId: z.string().min(1).optional(),
-                  })
-                  .strict(),
-              ])
-              .nullable()
-              .optional(),
-          })
-          .optional(),
+        defaultModels: defaultModelsSchema.optional(),
+        activate: z.boolean().optional(),
       })
       .strict()
+      .refine((value) => value.activate !== false || Boolean(value.apiKey), {
+        message: 'activate: false requires apiKey',
+        path: ['apiKey'],
+      })
+      .refine(
+        (value) =>
+          value.activate !== false ||
+          (value.defaultModels === undefined && value.timeoutMs === undefined),
+        { message: 'activate: false only creates an independent credential', path: ['activate'] },
+      )
       .safeParse(request.body);
     if (!result.success) return reply.code(400).send({ error: 'invalid AI settings' });
     try {
@@ -1689,7 +1702,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       if (
         defaults &&
         hasUnboundDefault &&
-        (result.data.baseUrl !== undefined || result.data.apiKey !== undefined)
+        (result.data.baseUrl !== undefined || result.data.apiKey !== undefined) &&
+        result.data.activate !== false
       ) {
         throw new AiSettingsError(
           'model_unavailable',
@@ -1706,7 +1720,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         });
       }
       const settings = await settingsStore.update(result.data);
-      return { settings, credentials: await settingsStore.listCredentials() };
+      const { createdCredentialId, ...settingsView } = settings;
+      return {
+        settings: settingsView,
+        credentials: await settingsStore.listCredentials(),
+        ...(createdCredentialId ? { createdCredentialId } : {}),
+      };
     } catch (error) {
       if (error instanceof AiCredentialNotFoundError) {
         return reply.code(404).send({ error: 'credential not found', code: error.code });
@@ -1758,6 +1777,48 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       return reply.code(404).send({ error: 'credential not found', code: 'credential_not_found' });
     return { settings, credentials: await settingsStore.listCredentials() };
   });
+
+  app.patch<{ Params: { credentialId: string } }>(
+    '/v1/settings/ai/credentials/:credentialId/defaults',
+    async (request, reply) => {
+      if (!canManagePlatformSettings(requestPrincipals, requestSessions, request)) {
+        return reply.code(403).send({ error: 'platform credential access is not permitted' });
+      }
+      const params = z.object({ credentialId: z.string().uuid() }).safeParse(request.params);
+      if (!params.success) return reply.code(400).send({ error: 'invalid credential id' });
+      const body = defaultModelsSchema.strict().safeParse(request.body);
+      if (!body.success)
+        return reply.code(400).send({ error: 'invalid credential model defaults' });
+      try {
+        // 默认模型必须来自该凭据自己的目录，避免出现模型 A 配 Key B 的组合。
+        await validateProjectModelDefaults({
+          settingsStore,
+          defaults: body.data as UpdateProjectModelDefaultsInput,
+          allowVirtualMockModels: providerName === 'mock' && process.env.NODE_ENV !== 'production',
+          requireCredentialReferences: providerName === 'newapi',
+          credentialScope: params.data.credentialId,
+        });
+        const credentials = await settingsStore.updateCredentialDefaults(
+          params.data.credentialId,
+          body.data,
+        );
+        if (!credentials) {
+          return reply
+            .code(404)
+            .send({ error: 'credential not found', code: 'credential_not_found' });
+        }
+        return { credentials };
+      } catch (error) {
+        if (error instanceof AiCredentialNotFoundError) {
+          return reply.code(404).send({ error: 'credential not found', code: error.code });
+        }
+        if (error instanceof AiSettingsError) {
+          return reply.code(400).send({ error: error.message, code: error.code });
+        }
+        throw error;
+      }
+    },
+  );
 
   app.post('/v1/settings/ai/test', async (request, reply) => {
     if (!canManagePlatformSettings(requestPrincipals, requestSessions, request)) {
@@ -2633,6 +2694,43 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return { run: toPublicRunRecord(run) };
   });
 
+  /**
+   * 列出一次运行的请求提示词摘要。
+   *
+   * 只返回记录 ID、节点身份、发送状态与计数，绝不返回请求正文；完整文本必须
+   * 通过下方单条读取接口按需获取。权限沿用运行读接口的项目边界。
+   */
+  app.get<{ Params: { runId: string } }>(
+    '/v1/runs/:runId/request-prompts',
+    async (request, reply) => {
+      const run = await runService.get(request.params.runId);
+      if (!run) return reply.code(404).send({ error: 'run not found' });
+      if (!(await projectStore.get(run.projectId, projectScope(requestPrincipals, request)))) {
+        return reply.code(404).send({ error: 'run not found' });
+      }
+      const records = (await options.runPersistence?.listRequestPromptRecords?.(run.id)) ?? [];
+      return { records };
+    },
+  );
+
+  /** 按记录 ID 读取完整请求文本；没有持久化存储或记录不存在时返回 404。 */
+  app.get<{ Params: { runId: string; recordId: string } }>(
+    '/v1/runs/:runId/request-prompts/:recordId',
+    async (request, reply) => {
+      const run = await runService.get(request.params.runId);
+      if (!run) return reply.code(404).send({ error: 'run not found' });
+      if (!(await projectStore.get(run.projectId, projectScope(requestPrincipals, request)))) {
+        return reply.code(404).send({ error: 'run not found' });
+      }
+      const record = await options.runPersistence?.getRequestPromptRecord?.(
+        run.id,
+        request.params.recordId,
+      );
+      if (!record) return reply.code(404).send({ error: 'request prompt record not found' });
+      return { record };
+    },
+  );
+
   app.post<{ Params: { runId: string } }>('/v1/runs/:runId/retry', async (request, reply) => {
     try {
       const previous = await runService.get(request.params.runId);
@@ -3498,6 +3596,7 @@ function toPublicRunRecord(run: RunRecord): PublicRunRecord {
       : {}),
     ...(run.error ? { error: toPublicRunError(run.error) } : {}),
     ...(run.retryOf ? { retryOf: run.retryOf } : {}),
+    ...(run.nodeTimings ? { nodeTimings: run.nodeTimings } : {}),
     createdAt: run.createdAt,
     updatedAt: run.updatedAt,
   };

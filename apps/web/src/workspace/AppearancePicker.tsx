@@ -2,7 +2,15 @@ import { Check, Palette } from 'lucide-react';
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 
 import type { CanvasBackground } from '../app-contract-utils';
-import type { CanvasEdgeStyle, CanvasTheme } from '../state/workspace-preferences';
+import type { CanvasTheme } from '../state/workspace-preferences';
+import {
+  CANVAS_EDGE_PREVIEW_VIEW_BOX,
+  canvasEdgeAppearanceDefaults,
+  canvasEdgePreviewPath,
+  edgeEffectOverlayClassName,
+  type CanvasEdgeEffect,
+  type CanvasEdgePathStyle,
+} from './canvas-edge-appearance';
 
 /** 界面主题选项，顶栏与底部胶囊共用。 */
 export const appearanceThemeOptions: Array<{ value: CanvasTheme; label: string; swatch: string }> =
@@ -22,24 +30,76 @@ export const appearanceBackgroundOptions: Array<{ value: CanvasBackground; label
   { value: 'blank', label: '空白' },
 ];
 
-/** 连线视觉模式，使用短标签保持底部外观面板紧凑。 */
-export const appearanceEdgeStyleOptions: Array<{
-  value: CanvasEdgeStyle;
+/** 连接线路径形态选项；与特效互不影响，使用短标签保持外观面板紧凑。 */
+export const appearanceEdgePathOptions: Array<{
+  value: CanvasEdgePathStyle;
   label: string;
   description: string;
 }> = [
-  { value: 'flow', label: '流光', description: '动态流光' },
-  { value: 'pulse', label: '脉冲', description: '节奏脉冲' },
-  { value: 'minimal', label: '简洁', description: '静态细线' },
+  { value: 'bezier', label: '标准曲线', description: '当前贝塞尔形态' },
+  { value: 'gentle', label: '轻弧曲线', description: '曲率更低' },
+  { value: 'smoothstep', label: '圆角折线', description: '圆润转角' },
+  { value: 'step', label: '直角折线', description: '直角走线' },
+  { value: 'straight', label: '直线', description: '两端直连' },
 ];
+
+/** 连接线动态特效选项；`none` 保留基础路径完全静止。 */
+export const appearanceEdgeEffectOptions: Array<{
+  value: CanvasEdgeEffect;
+  label: string;
+  description: string;
+}> = [
+  { value: 'meteor', label: '流光', description: '短亮线行进' },
+  { value: 'marching', label: '虚线行进', description: '虚线沿向移动' },
+  { value: 'cruiser', label: '单点巡航', description: '单点循环' },
+  { value: 'multi', label: '多点流动', description: '多点间隔' },
+  { value: 'breathe', label: '呼吸脉冲', description: '亮度起伏' },
+  { value: 'none', label: '无特效', description: '完全静止' },
+];
+
+/**
+ * 连接线小预览：与画布共用同一套路径求解和特效类名，预览即最终形态。
+ * @param props.pathStyle 路径形态。
+ * @param props.effect 动态特效。
+ * @returns 固定视框内的预览路径。
+ */
+function CanvasEdgePreview({
+  pathStyle,
+  effect,
+}: {
+  pathStyle: CanvasEdgePathStyle;
+  effect: CanvasEdgeEffect;
+}) {
+  const path = canvasEdgePreviewPath(pathStyle);
+  const overlayClassName = edgeEffectOverlayClassName(effect);
+  return (
+    <svg
+      className="appearance-edge-preview"
+      viewBox={CANVAS_EDGE_PREVIEW_VIEW_BOX}
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path
+        d={path}
+        className={`canvas-flow-edge-path${
+          effect === 'marching' ? ' canvas-edge-effect-marching' : ''
+        }`}
+        fill="none"
+      />
+      {overlayClassName ? <path d={path} className={overlayClassName} fill="none" /> : null}
+    </svg>
+  );
+}
 
 type AppearancePickerProps = {
   canvasTheme: CanvasTheme;
   onThemeChange: (theme: CanvasTheme) => void;
   canvasBackground: CanvasBackground;
   onBackgroundChange: (background: CanvasBackground) => void;
-  canvasEdgeStyle?: CanvasEdgeStyle;
-  onEdgeStyleChange?: (style: CanvasEdgeStyle) => void;
+  canvasEdgePathStyle?: CanvasEdgePathStyle;
+  onEdgePathStyleChange?: (pathStyle: CanvasEdgePathStyle) => void;
+  canvasEdgeEffect?: CanvasEdgeEffect;
+  onEdgeEffectChange?: (effect: CanvasEdgeEffect) => void;
   /** 顶栏向下展开，底部胶囊向上展开。 */
   placement: 'top' | 'bottom';
   /** 底部胶囊使用圆形工具按钮。 */
@@ -54,8 +114,10 @@ export function AppearancePicker({
   onThemeChange,
   canvasBackground,
   onBackgroundChange,
-  canvasEdgeStyle = 'flow',
-  onEdgeStyleChange,
+  canvasEdgePathStyle = canvasEdgeAppearanceDefaults.pathStyle,
+  onEdgePathStyleChange,
+  canvasEdgeEffect = canvasEdgeAppearanceDefaults.effect,
+  onEdgeEffectChange,
   placement,
   compact = false,
 }: AppearancePickerProps) {
@@ -191,30 +253,71 @@ export function AppearancePicker({
         </section>
       ) : null}
       {activeTab === 'edge' ? (
-        <section className="appearance-card-group" role="group" aria-label="连接线样式">
-          <h3 className="appearance-card-label">连接线样式</h3>
-          <div className="appearance-edge-options">
-            {appearanceEdgeStyleOptions.map((option) => (
-              <button
-                type="button"
-                className={`appearance-edge-option edge-style-sample edge-style-sample-${option.value}`}
-                key={option.value}
-                aria-pressed={canvasEdgeStyle === option.value}
-                onPointerDown={stopCanvasEvent}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onEdgeStyleChange?.(option.value);
-                }}
-              >
-                <span className="appearance-edge-line" aria-hidden="true" />
-                <span>
-                  <strong>{option.label}</strong>
-                  <small>{option.description}</small>
-                </span>
-                {canvasEdgeStyle === option.value ? <Check size={14} aria-hidden="true" /> : null}
-              </button>
-            ))}
-          </div>
+        <section className="appearance-edge-tab">
+          <section className="appearance-card-group" role="group" aria-label="连接线路径">
+            <h3 className="appearance-card-label">路径形态</h3>
+            <div className="appearance-edge-options">
+              {appearanceEdgePathOptions.map((option) => (
+                <button
+                  type="button"
+                  className="appearance-edge-option"
+                  key={option.value}
+                  data-edge-path-style={option.value}
+                  aria-pressed={canvasEdgePathStyle === option.value}
+                  title={`${option.label}：${option.description}`}
+                  onPointerDown={stopCanvasEvent}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onEdgePathStyleChange?.(option.value);
+                  }}
+                >
+                  <CanvasEdgePreview pathStyle={option.value} effect={canvasEdgeEffect} />
+                  <span className="appearance-edge-option-label">
+                    <strong>{option.label}</strong>
+                    <small>{option.description}</small>
+                  </span>
+                  {canvasEdgePathStyle === option.value ? (
+                    <Check size={14} aria-hidden="true" />
+                  ) : null}
+                </button>
+              ))}
+            </div>
+          </section>
+          <section className="appearance-card-group" role="group" aria-label="连接线特效">
+            <h3 className="appearance-card-label">动态特效</h3>
+            <div className="appearance-edge-options">
+              {appearanceEdgeEffectOptions.map((option) => (
+                <button
+                  type="button"
+                  className="appearance-edge-option"
+                  key={option.value}
+                  data-edge-effect={option.value}
+                  aria-pressed={canvasEdgeEffect === option.value}
+                  title={`${option.label}：${option.description}`}
+                  onPointerDown={stopCanvasEvent}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onEdgeEffectChange?.(option.value);
+                  }}
+                >
+                  <CanvasEdgePreview pathStyle={canvasEdgePathStyle} effect={option.value} />
+                  <span className="appearance-edge-option-label">
+                    <strong>{option.label}</strong>
+                    <small>{option.description}</small>
+                  </span>
+                  {canvasEdgeEffect === option.value ? (
+                    <Check size={14} aria-hidden="true" />
+                  ) : null}
+                </button>
+              ))}
+            </div>
+          </section>
+          <section className="appearance-card-group" role="group" aria-label="连接线组合预览">
+            <h3 className="appearance-card-label">最终效果</h3>
+            <div className="appearance-edge-combined">
+              <CanvasEdgePreview pathStyle={canvasEdgePathStyle} effect={canvasEdgeEffect} />
+            </div>
+          </section>
         </section>
       ) : null}
     </>

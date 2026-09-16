@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  nodeTimingDuration,
   runSnapshotFingerprintMaterial,
+  type MediaType,
+  type NodeTiming,
+  type RequestPromptRecord,
   type RunJobData,
   type RunSnapshot,
   type WorkflowState,
@@ -39,7 +43,7 @@ vi.mock('bullmq', () => {
   return { Job, Queue, Worker };
 });
 
-import { createProviderJobRecord, createRunWorker } from './index';
+import { createProviderJobRecord, createRunWorker, type WorkerProviderRequest } from './index';
 import {
   createInitialWorkflowState,
   replaceWorkflowNodeState,
@@ -1629,5 +1633,785 @@ describe('worker workflow DAG execution', () => {
     expect(workflowNodeState(job.data.workflowState as WorkflowState, 'node_draft')?.result).toBe(
       undefined,
     );
+  });
+});
+
+/** 构造 Provider 在发送前交出的请求记录，只覆盖被断言的字段。 */
+function providerRequestPrompt(input: {
+  runId: string;
+  nodeId: string;
+  attempt?: number;
+  mediaType?: MediaType;
+  requestIdentity?: string;
+  text?: string;
+}): RequestPromptRecord {
+  return {
+    schemaVersion: 1,
+    runId: input.runId,
+    nodeId: input.nodeId,
+    attempt: input.attempt ?? 1,
+    requestIdentity: input.requestIdentity ?? 'POST /chat/completions#1',
+    provider: 'newapi',
+    modelAlias: 'text-model',
+    mediaType: input.mediaType ?? 'text',
+    format: 'plain',
+    parts: [{ order: 0, text: input.text ?? `prompt for ${input.nodeId}` }],
+    resources: [],
+    sendStatus: 'pending',
+    createdAt: '2026-09-17T00:00:00.000Z',
+  };
+}
+
+describe('worker request prompt retention', () => {
+  it('retains the final request before sending and binds the archived result', async () => {
+    bullmqState.jobs.clear();
+    const runId = '123e4567-e89b-42d3-a456-426614174130';
+    const textSnapshot = createTextSnapshot();
+    const events: string[] = [];
+    const job = createJob({
+      runId,
+      snapshot: textSnapshot,
+      attempt: 1,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(runId, 'newapi'),
+      cancelRequested: false,
+    });
+
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      stepDelayMs: 0,
+      provider: {
+        async execute(request) {
+          await request.onRequestPrompt?.(
+            providerRequestPrompt({
+              runId: request.runId ?? runId,
+              nodeId: request.snapshot.targetNodeId,
+              attempt: request.attempt,
+              text: '写一段开头',
+            }),
+          );
+          // 只有留存成功之后才会真正发出请求。
+          events.push(`send:${request.snapshot.targetNodeId}`);
+          return createExecution(request.snapshot);
+        },
+      },
+      resultArchiver: async ({ snapshot: nodeSnapshot }) => ({
+        assetId: `asset_${nodeSnapshot.targetNodeId}`,
+        version: 1,
+        mimeType: 'text/plain',
+      }),
+      persistence: {
+        getProviderCredentials: getTestProviderCredentials,
+        async upsertProviderJob() {},
+        async recordUsage() {},
+        async updateRun() {},
+        async upsertRequestPromptRecord({ record }) {
+          expect(record.sendStatus).toBe('pending');
+          expect(record.parts).toEqual([{ order: 0, text: '写一段开头' }]);
+          events.push(`retain:${record.nodeId}`);
+        },
+        async recordRequestPromptOutcome({ identity, sendStatus, assetId, assetVersion }) {
+          events.push(
+            sendStatus === 'sent' && assetId
+              ? `bind:${identity.nodeId}:${assetId}@${assetVersion}`
+              : `outcome:${identity.nodeId}:${sendStatus}`,
+          );
+        },
+      },
+    });
+
+    await expect(bullmqState.processor?.(job)).resolves.toMatchObject({ status: 'succeeded' });
+    expect(events).toEqual([
+      'retain:node_draft',
+      'send:node_draft',
+      'outcome:node_draft:sent',
+      'bind:node_draft:asset_node_draft@1',
+    ]);
+  });
+
+  it('fails the node without sending when the request prompt cannot be persisted', async () => {
+    bullmqState.jobs.clear();
+    const runId = '123e4567-e89b-42d3-a456-426614174131';
+    const events: string[] = [];
+    const statuses: string[] = [];
+    const job = createJob({
+      runId,
+      snapshot: createTextSnapshot(),
+      attempt: 1,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(runId, 'newapi'),
+      cancelRequested: false,
+    });
+
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      stepDelayMs: 0,
+      provider: {
+        async execute(request) {
+          await request.onRequestPrompt?.(
+            providerRequestPrompt({ runId: request.runId ?? runId, nodeId: 'node_draft' }),
+          );
+          events.push('send');
+          return createExecution(request.snapshot);
+        },
+      },
+      resultArchiver: async () => ({ assetId: 'asset_unused', version: 1 }),
+      persistence: {
+        getProviderCredentials: getTestProviderCredentials,
+        async upsertProviderJob() {},
+        async recordUsage() {},
+        async updateRun(input) {
+          statuses.push(input.status);
+        },
+        async upsertRequestPromptRecord() {
+          throw new Error('request prompt store unavailable');
+        },
+        async recordRequestPromptOutcome({ sendStatus }) {
+          events.push(`outcome:${sendStatus}`);
+        },
+      },
+    });
+
+    await expect(bullmqState.processor?.(job)).rejects.toThrow('request prompt store unavailable');
+    expect(events).toEqual([]);
+    expect(statuses).toContain('failed');
+    expect(workflowNodeState(job.data.workflowState as WorkflowState, 'node_draft')?.status).toBe(
+      'failed',
+    );
+  });
+
+  it('refuses a request prompt record that belongs to another node', async () => {
+    bullmqState.jobs.clear();
+    const runId = '123e4567-e89b-42d3-a456-426614174132';
+    const events: string[] = [];
+    const job = createJob({
+      runId,
+      snapshot: createTextSnapshot(),
+      attempt: 1,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(runId, 'newapi'),
+      cancelRequested: false,
+    });
+
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      stepDelayMs: 0,
+      provider: {
+        async execute(request) {
+          await request.onRequestPrompt?.(
+            providerRequestPrompt({ runId: request.runId ?? runId, nodeId: 'node_prompt' }),
+          );
+          events.push('send');
+          return createExecution(request.snapshot);
+        },
+      },
+      resultArchiver: async () => ({ assetId: 'asset_unused', version: 1 }),
+      persistence: {
+        getProviderCredentials: getTestProviderCredentials,
+        async upsertProviderJob() {},
+        async recordUsage() {},
+        async updateRun() {},
+        async upsertRequestPromptRecord({ record }) {
+          events.push(`retain:${record.nodeId}`);
+        },
+      },
+    });
+
+    await expect(bullmqState.processor?.(job)).rejects.toThrow(
+      'request prompt record does not belong to workflow node node_draft',
+    );
+    expect(events).toEqual([]);
+  });
+
+  it('binds each archived result to the record of its own node execution', async () => {
+    bullmqState.jobs.clear();
+    const runId = '123e4567-e89b-42d3-a456-426614174133';
+    const bindings: Array<{ nodeId: string; assetId?: string; assetVersion?: number }> = [];
+    const job = createJob({
+      runId,
+      snapshot,
+      attempt: 1,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(runId, 'newapi'),
+      cancelRequested: false,
+    });
+    const emitPrompt = async (request: {
+      runId?: string;
+      attempt?: number;
+      snapshot: RunSnapshot;
+      onRequestPrompt?: (record: RequestPromptRecord) => Promise<void>;
+    }) => {
+      await request.onRequestPrompt?.(
+        providerRequestPrompt({
+          runId: request.runId ?? runId,
+          nodeId: request.snapshot.targetNodeId,
+          attempt: request.attempt,
+          mediaType: request.snapshot.nodes.find(
+            (node) => node.id === request.snapshot.targetNodeId,
+          )?.data.mediaType,
+          text: `prompt for ${request.snapshot.targetNodeId}`,
+        }),
+      );
+      return createExecution(request.snapshot);
+    };
+
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      stepDelayMs: 0,
+      provider: { execute: emitPrompt },
+      videoProvider: { execute: emitPrompt },
+      resultArchiver: async ({ snapshot: nodeSnapshot }) => ({
+        assetId: `asset_${nodeSnapshot.targetNodeId}`,
+        version: 3,
+        mimeType: 'application/octet-stream',
+      }),
+      persistence: {
+        getProviderCredentials: getTestProviderCredentials,
+        async upsertProviderJob() {},
+        async recordUsage() {},
+        async updateRun() {},
+        async upsertRequestPromptRecord() {},
+        async recordRequestPromptOutcome({ identity, assetId, assetVersion }) {
+          bindings.push({
+            nodeId: identity.nodeId,
+            ...(assetId ? { assetId } : {}),
+            ...(assetVersion ? { assetVersion } : {}),
+          });
+        },
+      },
+    });
+
+    await expect(bullmqState.processor?.(job)).resolves.toMatchObject({ status: 'succeeded' });
+    const boundAssets = new Map(
+      bindings
+        .filter((binding) => binding.assetId)
+        .map((binding) => [binding.nodeId, `${binding.assetId}@${binding.assetVersion}`]),
+    );
+    expect([...boundAssets.entries()].sort()).toEqual([
+      ['node_draft', 'asset_node_draft@3'],
+      ['node_image', 'asset_node_image@3'],
+      ['node_video', 'asset_node_video@3'],
+    ]);
+    // 源节点不执行，也没有任何请求记录被绑定到它的结果上。
+    expect(boundAssets.has('node_prompt')).toBe(false);
+    expect(boundAssets.has('node_style')).toBe(false);
+  });
+
+  it('reports the observable send status when the provider call fails', async () => {
+    bullmqState.jobs.clear();
+    const runId = '123e4567-e89b-42d3-a456-426614174134';
+    const textSnapshot = createTextSnapshot();
+    const statuses: string[] = [];
+    const job = createJob({
+      runId,
+      snapshot: textSnapshot,
+      attempt: 1,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(runId, 'newapi'),
+      cancelRequested: false,
+    });
+
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      stepDelayMs: 0,
+      provider: {
+        async execute(request) {
+          await request.onRequestPrompt?.(
+            providerRequestPrompt({ runId: request.runId ?? runId, nodeId: 'node_draft' }),
+          );
+          throw Object.assign(new Error('upstream rejected the request'), { status: 422 });
+        },
+      },
+      resultArchiver: async () => ({ assetId: 'asset_unused', version: 1 }),
+      persistence: {
+        getProviderCredentials: getTestProviderCredentials,
+        async upsertProviderJob() {},
+        async recordUsage() {},
+        async updateRun() {},
+        async upsertRequestPromptRecord() {},
+        async recordRequestPromptOutcome(input) {
+          statuses.push(input.sendStatus);
+          expect(input.assetId).toBeUndefined();
+          expect(input.assetVersion).toBeUndefined();
+        },
+      },
+    });
+
+    await expect(bullmqState.processor?.(job)).rejects.toThrow('upstream rejected the request');
+    // 供应商明确拒绝了请求：可以判定为失败，且不产生任何结果绑定。
+    expect(statuses).toEqual(['failed']);
+  });
+
+  /**
+   * 运行一次“Provider 已留存请求、随后失败”的场景。
+   *
+   * 返回可观测的发送终态、留存次数与 Provider 调用次数，用于确认失败分类不会
+   * 让创建请求被重发。
+   */
+  async function runProviderFailureScenario(input: { runId: string; failure: unknown }) {
+    bullmqState.jobs.clear();
+    const retained: string[] = [];
+    const statuses: string[] = [];
+    const job = createJob({
+      runId: input.runId,
+      snapshot: createTextSnapshot(),
+      attempt: 1,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(input.runId, 'newapi'),
+      cancelRequested: false,
+    });
+    const execute = vi.fn(async (request: WorkerProviderRequest) => {
+      await request.onRequestPrompt?.(
+        providerRequestPrompt({ runId: request.runId ?? input.runId, nodeId: 'node_draft' }),
+      );
+      throw input.failure;
+    });
+
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      stepDelayMs: 0,
+      provider: { execute },
+      resultArchiver: async () => ({ assetId: 'asset_unused', version: 1 }),
+      persistence: {
+        getProviderCredentials: getTestProviderCredentials,
+        async upsertProviderJob() {},
+        async recordUsage() {},
+        async updateRun() {},
+        async upsertRequestPromptRecord({ record }) {
+          retained.push(record.nodeId);
+        },
+        async recordRequestPromptOutcome({ sendStatus }) {
+          statuses.push(sendStatus);
+        },
+      },
+    });
+
+    await expect(bullmqState.processor?.(job)).rejects.toBe(input.failure);
+    return {
+      statuses,
+      retained,
+      executeCalls: execute.mock.calls.length,
+      nodeStatus: workflowNodeState(job.data.workflowState as WorkflowState, 'node_draft')?.status,
+    };
+  }
+
+  it.each([
+    [400, 'failed', '123e4567-e89b-42d3-a456-426614174150'],
+    [422, 'failed', '123e4567-e89b-42d3-a456-426614174151'],
+    [500, 'unknown', '123e4567-e89b-42d3-a456-426614174152'],
+    [502, 'unknown', '123e4567-e89b-42d3-a456-426614174153'],
+    [504, 'unknown', '123e4567-e89b-42d3-a456-426614174154'],
+    [429, 'unknown', '123e4567-e89b-42d3-a456-426614174155'],
+    [408, 'unknown', '123e4567-e89b-42d3-a456-426614174156'],
+  ] as const)(
+    '把创建请求的 HTTP %s 归类为 %s，且不会重发创建请求',
+    async (status, expected, runId) => {
+      const scenario = await runProviderFailureScenario({
+        runId,
+        failure: Object.assign(new Error(`gateway responded ${status}`), { status }),
+      });
+
+      expect(scenario.statuses).toEqual([expected]);
+      // 每次运行只留存并发送一次创建请求：失败分类不产生重发或第二条记录。
+      expect(scenario.retained).toEqual(['node_draft']);
+      expect(scenario.executeCalls).toBe(1);
+      expect(scenario.nodeStatus).toBe('failed');
+    },
+  );
+
+  it.each([
+    [
+      '超时',
+      Object.assign(new Error('gateway timed out'), { code: 'TIMEOUT', retryable: true }),
+      '123e4567-e89b-42d3-a456-426614174160',
+    ],
+    [
+      '本地取消',
+      Object.assign(new Error('aborted'), { name: 'AbortError' }),
+      '123e4567-e89b-42d3-a456-426614174161',
+    ],
+  ] as const)(
+    '把创建请求的%s归类为 unknown，且不会重发创建请求',
+    async (_label, failure, runId) => {
+      const scenario = await runProviderFailureScenario({ runId, failure });
+
+      expect(scenario.statuses).toEqual(['unknown']);
+      expect(scenario.retained).toEqual(['node_draft']);
+      expect(scenario.executeCalls).toBe(1);
+      expect(scenario.nodeStatus).toBe('failed');
+    },
+  );
+
+  it('keeps a returned request marked as sent when a late response is discarded', async () => {
+    bullmqState.jobs.clear();
+    const runId = '123e4567-e89b-42d3-a456-426614174136';
+    const outcomes: Array<{ sendStatus: string; assetId?: string }> = [];
+    const resultArchiver = vi.fn();
+    const job = createJob({
+      runId,
+      snapshot: createTextSnapshot(),
+      attempt: 1,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(runId, 'newapi'),
+      cancelRequested: false,
+    });
+
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      stepDelayMs: 0,
+      provider: {
+        async execute(request) {
+          await request.onRequestPrompt?.(
+            providerRequestPrompt({ runId: request.runId ?? runId, nodeId: 'node_draft' }),
+          );
+          job.data.cancelRequested = true;
+          return createExecution(request.snapshot);
+        },
+      },
+      resultArchiver,
+      persistence: {
+        getProviderCredentials: getTestProviderCredentials,
+        async upsertProviderJob() {},
+        async recordUsage() {},
+        async updateRun() {},
+        async upsertRequestPromptRecord() {},
+        async recordRequestPromptOutcome({ sendStatus, assetId }) {
+          outcomes.push({ sendStatus, ...(assetId ? { assetId } : {}) });
+        },
+      },
+    });
+
+    await expect(bullmqState.processor?.(job)).resolves.toMatchObject({ status: 'cancelled' });
+    // 请求确实已经送达，但迟到的结果被丢弃，因此不产生结果绑定。
+    expect(outcomes).toEqual([{ sendStatus: 'sent' }]);
+    expect(resultArchiver).not.toHaveBeenCalled();
+  });
+
+  it('keeps an indeterminate send status instead of claiming failure', async () => {
+    bullmqState.jobs.clear();
+    const runId = '123e4567-e89b-42d3-a456-426614174135';
+    const textSnapshot = createTextSnapshot();
+    const statuses: string[] = [];
+    const job = createJob({
+      runId,
+      snapshot: textSnapshot,
+      attempt: 1,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(runId, 'newapi'),
+      cancelRequested: false,
+    });
+
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      stepDelayMs: 0,
+      provider: {
+        async execute(request) {
+          await request.onRequestPrompt?.(
+            providerRequestPrompt({ runId: request.runId ?? runId, nodeId: 'node_draft' }),
+          );
+          throw Object.assign(new Error('network reset while posting'), { code: 'NETWORK_ERROR' });
+        },
+      },
+      resultArchiver: async () => ({ assetId: 'asset_unused', version: 1 }),
+      persistence: {
+        getProviderCredentials: getTestProviderCredentials,
+        async upsertProviderJob() {},
+        async recordUsage() {},
+        async updateRun() {},
+        async upsertRequestPromptRecord() {},
+        async recordRequestPromptOutcome({ sendStatus }) {
+          statuses.push(sendStatus);
+        },
+      },
+    });
+
+    await expect(bullmqState.processor?.(job)).rejects.toThrow('network reset while posting');
+    // POST 之后的网络中断无法判断请求是否已经计费，绝不据此重发创建请求。
+    expect(statuses).toEqual(['unknown']);
+  });
+});
+
+describe('worker node timings', () => {
+  it('keeps the run snapshot fingerprint byte-identical for a fixed snapshot', () => {
+    const baselineSnapshot: RunSnapshot = {
+      projectId: '123e4567-e89b-42d3-a456-426614174100',
+      canvasRevision: 11,
+      targetNodeId: 'node_target',
+      modelAlias: 'image-default',
+      credentialId: '123e4567-e89b-42d3-a456-426614174199',
+      credentialVersion: 2,
+      parameters: { bytes: 'aGVsbG8=', nested: { list: [1, 'two', false] } },
+      submittedAt: '2026-09-17T00:00:00.000Z',
+      nodes: [
+        {
+          id: 'node_source',
+          type: 'image',
+          position: { x: 0, y: 0 },
+          data: {
+            label: 'Source',
+            mediaType: 'image',
+            mode: 'source',
+            assetId: 'asset_source',
+            contentUrl: 'https://assets.example/source.png',
+            mimeType: 'image/png',
+          },
+        },
+        {
+          id: 'node_target',
+          type: 'text',
+          position: { x: 240, y: 0 },
+          data: {
+            label: 'Target',
+            mediaType: 'text',
+            mode: 'generate',
+            prompt: '写一段开头',
+            modelAlias: 'text-model',
+          },
+        },
+      ],
+      edges: [
+        {
+          id: 'edge_source_target',
+          sourceNodeId: 'node_source',
+          sourceHandle: 'output:image',
+          targetNodeId: 'node_target',
+          targetHandle: 'input:content',
+          order: 0,
+        },
+      ],
+      inputs: [
+        {
+          nodeId: 'node_source',
+          role: 'content',
+          sortOrder: 0,
+          sourceAssetId: 'asset_source',
+          snapshot: {
+            id: 'node_source',
+            type: 'image',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Source',
+              mediaType: 'image',
+              mode: 'source',
+              assetId: 'asset_source',
+              contentUrl: 'https://assets.example/source.png',
+              mimeType: 'image/png',
+            },
+          },
+        },
+      ],
+    };
+
+    // 固定期望值取自本次改动之前的实现：新增字段绝不能进入快照指纹。
+    expect(workflowSnapshotFingerprint(baselineSnapshot)).toBe(
+      '920140f9ed2f7a6cd011fd32714283a99c4e0d1ee8870beea42ba6c87db1a286',
+    );
+    expect(workflowSnapshotFingerprintV1(baselineSnapshot)).toBe(
+      '0c92c3e0598ef5039c25fe7d811a58e67d563fd7b45e18a13d8a3370ce4f8b62',
+    );
+    expect(
+      createHash('sha256').update(runSnapshotFingerprintMaterial(baselineSnapshot)).digest('hex'),
+    ).toBe('920140f9ed2f7a6cd011fd32714283a99c4e0d1ee8870beea42ba6c87db1a286');
+  });
+
+  it('records lifecycle timings for executed nodes only', async () => {
+    bullmqState.jobs.clear();
+    const runId = '123e4567-e89b-42d3-a456-426614174140';
+    const timingWrites: Array<Record<string, NodeTiming>> = [];
+    const job = createJob({
+      runId,
+      snapshot,
+      attempt: 1,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(runId, 'newapi'),
+      cancelRequested: false,
+    });
+    const standardProvider = {
+      async execute(request: {
+        snapshot: RunSnapshot;
+        onRequestPrompt?: (record: RequestPromptRecord) => Promise<void>;
+        runId?: string;
+        attempt?: number;
+      }) {
+        if (request.snapshot.targetNodeId === 'node_image') {
+          throw Object.assign(new Error('provider rejected the image'), { status: 400 });
+        }
+        await request.onRequestPrompt?.(
+          providerRequestPrompt({
+            runId: request.runId ?? runId,
+            nodeId: request.snapshot.targetNodeId,
+            attempt: request.attempt,
+          }),
+        );
+        return createExecution(request.snapshot);
+      },
+    };
+
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      stepDelayMs: 0,
+      provider: standardProvider,
+      videoProvider: { execute: standardProvider.execute },
+      resultArchiver: async ({ snapshot: nodeSnapshot }) => ({
+        assetId: `asset_${nodeSnapshot.targetNodeId}`,
+        version: 1,
+        mimeType: 'text/plain',
+      }),
+      persistence: {
+        getProviderCredentials: getTestProviderCredentials,
+        async upsertProviderJob() {},
+        async recordUsage() {},
+        async upsertRequestPromptRecord() {},
+        async recordRequestPromptOutcome() {},
+        async updateRun(input) {
+          if (input.nodeTimings) timingWrites.push(structuredClone(input.nodeTimings));
+        },
+      },
+    });
+
+    await expect(bullmqState.processor?.(job)).rejects.toThrow('provider rejected the image');
+
+    const lastWrite = timingWrites.at(-1);
+    expect(Object.keys(lastWrite ?? {}).sort()).toEqual(['node_draft', 'node_image']);
+    expect(lastWrite?.node_draft).toMatchObject({
+      nodeId: 'node_draft',
+      outcome: 'succeeded',
+    });
+    expect(lastWrite?.node_image).toMatchObject({ nodeId: 'node_image', outcome: 'failed' });
+    // 未执行的视频节点没有任何时间条目，界面显示“未记录”而不是 0。
+    expect(timingWrites.every((write) => !('node_video' in write))).toBe(true);
+
+    const draft = lastWrite?.node_draft as NodeTiming;
+    for (const field of [
+      'queuedAt',
+      'startedAt',
+      'requestStartedAt',
+      'requestFinishedAt',
+      'finishedAt',
+    ] as const) {
+      expect(Number.isNaN(Date.parse(draft[field] ?? ''))).toBe(false);
+    }
+    // 开始时间只在第一次写入时出现，之后的写入不会重置它。
+    const startedAtValues = new Set(
+      timingWrites.map((write) => write.node_draft?.startedAt).filter(Boolean),
+    );
+    expect(startedAtValues.size).toBe(1);
+    expect(nodeTimingDuration(draft, Date.parse('2026-09-17T00:05:00.000Z'))).toMatchObject({
+      availability: 'recorded',
+    });
+    // 请求失败时没有取得可用结果，因此不写请求结束时间。
+    expect(lastWrite?.node_image?.requestFinishedAt).toBeUndefined();
+    expect(lastWrite?.node_image?.finishedAt).toBeTruthy();
+  });
+
+  it('gives a cancelled node a terminal timing and leaves unstarted nodes unrecorded', async () => {
+    bullmqState.jobs.clear();
+    const runId = '123e4567-e89b-42d3-a456-426614174141';
+    const timingWrites: Array<Record<string, NodeTiming>> = [];
+    const outcomes: string[] = [];
+    const job = createJob({
+      runId,
+      snapshot: createTextSnapshot(),
+      attempt: 1,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(runId, 'newapi'),
+      cancelRequested: false,
+    });
+    let providerStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      providerStarted = resolve;
+    });
+
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      stepDelayMs: 0,
+      cancellationPollMs: 1,
+      provider: {
+        async execute(request) {
+          await request.onRequestPrompt?.(
+            providerRequestPrompt({ runId: request.runId ?? runId, nodeId: 'node_draft' }),
+          );
+          providerStarted?.();
+          return new Promise((_resolve, reject) => {
+            request.signal?.addEventListener(
+              'abort',
+              () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+              { once: true },
+            );
+          });
+        },
+      },
+      resultArchiver: async () => ({ assetId: 'asset_unused', version: 1 }),
+      persistence: {
+        getProviderCredentials: getTestProviderCredentials,
+        async upsertProviderJob() {},
+        async recordUsage() {},
+        async upsertRequestPromptRecord() {},
+        async recordRequestPromptOutcome({ sendStatus }) {
+          outcomes.push(sendStatus);
+        },
+        async updateRun(input) {
+          if (input.nodeTimings) timingWrites.push(structuredClone(input.nodeTimings));
+        },
+      },
+    });
+
+    const processing = bullmqState.processor?.(job);
+    await started;
+    job.data.cancelRequested = true;
+
+    await expect(processing).resolves.toMatchObject({ status: 'cancelled' });
+    const lastWrite = timingWrites.at(-1);
+    expect(lastWrite?.node_draft).toMatchObject({
+      nodeId: 'node_draft',
+      outcome: 'cancelled',
+    });
+    expect(lastWrite?.node_draft?.startedAt).toBeTruthy();
+    expect(lastWrite?.node_draft?.finishedAt).toBeTruthy();
+    expect(Object.keys(lastWrite ?? {})).toEqual(['node_draft']);
+    // POST 之后的取消无法判断请求是否已经计费。
+    expect(outcomes).toEqual(['unknown']);
+  });
+
+  it('leaves no timing entry when the run is cancelled before any node starts', async () => {
+    bullmqState.jobs.clear();
+    const runId = '123e4567-e89b-42d3-a456-426614174142';
+    const timingWrites: Array<Record<string, NodeTiming>> = [];
+    const job = createJob({
+      runId,
+      snapshot: createTextSnapshot(),
+      attempt: 1,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(runId, 'newapi'),
+      cancelRequested: true,
+    });
+
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      stepDelayMs: 0,
+      provider: { execute: vi.fn() },
+      persistence: {
+        getProviderCredentials: getTestProviderCredentials,
+        async upsertProviderJob() {},
+        async recordUsage() {},
+        async updateRun(input) {
+          if (input.nodeTimings) timingWrites.push(structuredClone(input.nodeTimings));
+        },
+      },
+    });
+
+    await expect(bullmqState.processor?.(job)).resolves.toMatchObject({ status: 'cancelled' });
+    expect(timingWrites).toEqual([]);
   });
 });

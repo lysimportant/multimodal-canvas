@@ -48,9 +48,11 @@ import {
 import {
   type Asset,
   type CanvasDocument,
+  type CanvasGroup,
   type MediaType,
   type NodeMode,
   type PromptDocument,
+  type RequestPromptRecord,
   type RunRecord,
   type VideoCompletionAction,
   type VideoMode,
@@ -68,6 +70,14 @@ import {
   withNodeAutoGrowthLimit,
   getNewNodeDimensions,
   withoutNodeAutoGrowthLimit,
+  assignNodeToGroup,
+  createCanvasGroup,
+  nodeCenter,
+  normalizeCanvasGroups,
+  pruneGroupMembers,
+  resizeCanvasGroup,
+  resolveDropTargetGroup,
+  translateGroup,
   type CanvasClipboard,
   type AssetFlowNode,
   type FlowEdge,
@@ -93,6 +103,17 @@ import {
   type NodeRunTarget,
 } from './workspace/fork-generate-node';
 import { fetchNodeEchoText } from './workspace/node-echo-text';
+import {
+  collectEmptyNodeCandidates,
+  hasRetainedResult,
+  isActiveRunStatus,
+  type EmptyNodeRuntimeState,
+} from './workspace/empty-node-rules';
+import type { ClearActionCounts } from './workspace/ClearCanvasMenu';
+import {
+  RequestPromptDialog,
+  type RequestPromptDialogState,
+} from './workspace/RequestPromptDialog';
 import {
   buildConnectedGenerateNodeConnection,
   validateResolvedCanvasConnection,
@@ -321,7 +342,69 @@ function ProjectCreateDialog({
 type CanvasHistorySnapshot = {
   nodes: AssetFlowNode[];
   edges: FlowEdge[];
+  /** 组只属于画布布局，与节点、边一起进入同一条撤销记录。 */
+  groups: CanvasGroup[];
 };
+
+/**
+ * 生成“清空画布”确认框的作用范围描述。
+ *
+ * 数量为 0 的部分不写进文案，避免出现“0 个组”这样的噪音。
+ *
+ * @param nodes 当前画布节点。
+ * @param edges 当前画布连线。
+ * @param groups 当前画布分组。
+ * @returns 例如「4 个节点、3 条连线和 1 个分组」。
+ */
+function describeClearCanvasScope(
+  nodes: readonly AssetFlowNode[],
+  edges: readonly FlowEdge[],
+  groups: readonly CanvasGroup[],
+): string {
+  const parts: string[] = [];
+  if (nodes.length > 0) parts.push(`${nodes.length} 个节点`);
+  if (edges.length > 0) parts.push(`${edges.length} 条连线`);
+  if (groups.length > 0) parts.push(`${groups.length} 个分组`);
+  return parts.length > 0 ? parts.join('、') : '当前内容';
+}
+
+/**
+ * 构造空节点判定所需的运行状态视图。
+ *
+ * 判定必须看到节点自身以外的信息，否则会误删用户内容：有效上游输入来自画布
+ * 连线，运行状态来自持久化运行记录，尚未回填的运行记录则标记为待查询并保留。
+ * 候选数量预览与真正执行共用这一份构造函数，保证两者一致。
+ *
+ * @param input 画布节点、连线、运行记录与各类进行中锁。
+ * @returns 按节点查询运行状态的函数。
+ */
+function buildEmptyNodeRuntimeState(input: {
+  nodes: readonly AssetFlowNode[];
+  edges: readonly FlowEdge[];
+  runRecords: Record<string, RunRecord>;
+  /** 本轮会话尚未回填运行记录的节点；状态未知时先保留。 */
+  pendingUpdateNodeIds: ReadonlySet<string>;
+  contentLocks: ReadonlySet<string>;
+  runLocks: ReadonlySet<string>;
+}): (node: AssetFlowNode) => EmptyNodeRuntimeState {
+  const nodesById = new Map(input.nodes.map((node) => [node.id, node]));
+  const upstreamTargets = new Set<string>();
+  for (const edge of input.edges) {
+    // 只有仍然存在且启用的上游节点才算有效输入。
+    const source = nodesById.get(edge.source);
+    if (source && source.data.enabled !== false) upstreamTargets.add(edge.target);
+  }
+  return (node) => {
+    const run = input.runRecords[node.id];
+    return {
+      busy: input.contentLocks.has(node.id),
+      hasActiveRun: isActiveRunStatus(run?.status) || input.runLocks.has(node.id),
+      hasRetainedOutput: Boolean(node.data.resultAsset?.assetId) || hasRetainedResult(run?.result),
+      hasUpstreamInput: upstreamTargets.has(node.id),
+      pendingLookup: input.pendingUpdateNodeIds.has(node.id),
+    };
+  };
+}
 
 const themeOptions: Array<{ value: CanvasTheme; label: string; swatch: string }> = [
   { value: 'eye-care', label: '护眼', swatch: 'theme-swatch-eye-care' },
@@ -483,8 +566,10 @@ function WorkspaceApp({
   const setCanvasBackground = useWorkspacePreferences((state) => state.setCanvasBackground);
   const canvasTheme = useWorkspacePreferences((state) => state.canvasTheme);
   const setCanvasTheme = useWorkspacePreferences((state) => state.setCanvasTheme);
-  const canvasEdgeStyle = useWorkspacePreferences((state) => state.canvasEdgeStyle);
-  const setCanvasEdgeStyle = useWorkspacePreferences((state) => state.setCanvasEdgeStyle);
+  const canvasEdgePathStyle = useWorkspacePreferences((state) => state.canvasEdgePathStyle);
+  const setCanvasEdgePathStyle = useWorkspacePreferences((state) => state.setCanvasEdgePathStyle);
+  const canvasEdgeEffect = useWorkspacePreferences((state) => state.canvasEdgeEffect);
+  const setCanvasEdgeEffect = useWorkspacePreferences((state) => state.setCanvasEdgeEffect);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
@@ -519,6 +604,7 @@ function WorkspaceApp({
   /** 分叉节点抬升定时器，按节点 ID 记录，避免重复叠加。 */
   const forkElevationTimersRef = useRef(new Map<string, number>());
   const edgesRef = useRef<FlowEdge[]>([]);
+  const groupsRef = useRef<CanvasGroup[]>([]);
   const historyRef = useRef<{ past: CanvasHistorySnapshot[]; future: CanvasHistorySnapshot[] }>({
     past: [],
     future: [],
@@ -526,6 +612,18 @@ function WorkspaceApp({
   const clipboardRef = useRef<CanvasClipboard | null>(null);
   const [nodes, setNodes, applyNodesChange] = useNodesState<AssetFlowNode>([]);
   const [edges, setEdges, applyEdgesChange] = useEdgesState<FlowEdge>([]);
+  /** 画布布局区域；不进入运行 DAG，也不出现在模型与生成请求中。 */
+  const [groups, setGroups] = useState<CanvasGroup[]>([]);
+  /** 当前选中的组，用于显示重命名与解散操作。 */
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  /** 拖拽节点时预高亮的落点组。 */
+  const [dropTargetGroupId, setDropTargetGroupId] = useState<string | null>(null);
+  /** 本轮会话已开始回填、但运行记录尚未写入的节点；状态未知时保留。 */
+  const pendingRunUpdateRef = useRef(new Set<string>());
+  /** 生成提示词 Dialog 的当前节点与读取状态。 */
+  const [promptDialog, setPromptDialog] = useState<
+    { nodeId: string; state: RequestPromptDialogState } | undefined
+  >(undefined);
   const selectedNode = useMemo(
     () => nodes.find((node) => node.id === selectedNodeId) ?? null,
     [nodes, selectedNodeId],
@@ -615,12 +713,14 @@ function WorkspaceApp({
   useEffect(() => {
     nodesRef.current = nodes;
     edgesRef.current = edges;
-  }, [edges, nodes]);
+    groupsRef.current = groups;
+  }, [edges, groups, nodes]);
 
   const rememberHistory = useCallback(() => {
     const current: CanvasHistorySnapshot = {
       nodes: structuredClone(nodesRef.current),
       edges: structuredClone(edgesRef.current),
+      groups: structuredClone(groupsRef.current),
     };
     const past = historyRef.current.past;
     const previous = past[past.length - 1];
@@ -635,9 +735,11 @@ function WorkspaceApp({
     history.future.push({
       nodes: structuredClone(nodesRef.current),
       edges: structuredClone(edgesRef.current),
+      groups: structuredClone(groupsRef.current),
     });
     setNodes(structuredClone(previous.nodes));
     setEdges(structuredClone(previous.edges));
+    setGroups(structuredClone(previous.groups));
     canvasDirtyRef.current = true;
   }, [setEdges, setNodes]);
 
@@ -648,28 +750,219 @@ function WorkspaceApp({
     history.past.push({
       nodes: structuredClone(nodesRef.current),
       edges: structuredClone(edgesRef.current),
+      groups: structuredClone(groupsRef.current),
     });
     setNodes(structuredClone(next.nodes));
     setEdges(structuredClone(next.edges));
+    setGroups(structuredClone(next.groups));
     canvasDirtyRef.current = true;
   }, [setEdges, setNodes]);
 
   /**
-   * 清空当前画布中的节点与连线。
+   * 清空当前画布中的节点、连线与组。
    *
    * 清空属于可逆的画布编辑操作：执行前要求用户确认，并将当前快照写入
-   * 历史记录，因此仍可通过撤销恢复；项目资源库中的资产不会被删除。
+   * 历史记录，因此仍可通过撤销恢复；项目资源库中的资产、资产版本、生成说明、
+   * 运行记录与 Key 都不受影响，也不会额外发起供应商取消或重试。
    */
   const clearCanvas = useCallback(() => {
-    if (nodesRef.current.length === 0 && edgesRef.current.length === 0) return;
-    if (!window.confirm('确定清空当前画布吗？画布资源不会删除，且可以通过撤销恢复。')) return;
+    if (
+      nodesRef.current.length === 0 &&
+      edgesRef.current.length === 0 &&
+      groupsRef.current.length === 0
+    ) {
+      return;
+    }
+    const counts = describeClearCanvasScope(nodesRef.current, edgesRef.current, groupsRef.current);
+    if (
+      !window.confirm(`确定清空当前画布吗？将移除${counts}。画布资源不会删除，且可以通过撤销恢复。`)
+    )
+      return;
     rememberHistory();
     setNodes([]);
     setEdges([]);
+    setGroups([]);
     setSelectedNodeId(null);
+    setSelectedGroupId(null);
+    setDropTargetGroupId(null);
     canvasDirtyRef.current = true;
     setNotice({ kind: 'success', message: '画布已清空，可通过撤销恢复' });
   }, [rememberHistory, setEdges, setNodes]);
+
+  /**
+   * 只清理内容为空的提示词节点。
+   *
+   * 候选由 `collectEmptyNodeCandidates` 计算：已填写提示词、已绑定资源、有保留
+   * 结果、有有效输入或有进行中操作的节点都会保留。删除范围是候选节点、与之
+   * 相连的边以及组内的成员引用，组本身（空组）保留；整个清理是一次历史事务。
+   */
+  const clearEmptyNodes = useCallback(() => {
+    const { candidateIds } = collectEmptyNodeCandidates(
+      nodesRef.current,
+      buildEmptyNodeRuntimeState({
+        edges: edgesRef.current,
+        nodes: nodesRef.current,
+        runRecords: runRecordsRef.current,
+        pendingUpdateNodeIds: pendingRunUpdateRef.current,
+        contentLocks: nodeContentLocksRef.current,
+        runLocks: nodeRunLocksRef.current,
+      }),
+    );
+    if (candidateIds.length === 0) return;
+    const removable = new Set(candidateIds);
+    const removedEdges = edgesRef.current.filter(
+      (edge) => removable.has(edge.source) || removable.has(edge.target),
+    );
+    if (
+      !window.confirm(
+        `确定清空空节点吗？将移除 ${candidateIds.length} 个空节点` +
+          `${removedEdges.length > 0 ? `和 ${removedEdges.length} 条关联连线` : ''}。` +
+          '已填写提示词、已绑定资源或有生成结果的节点会保留，且本次清理可以撤销。',
+      )
+    ) {
+      return;
+    }
+    rememberHistory();
+    const remainingNodes = nodesRef.current.filter((node) => !removable.has(node.id));
+    setNodes(remainingNodes);
+    setEdges(
+      edgesRef.current.filter((edge) => !removable.has(edge.source) && !removable.has(edge.target)),
+    );
+    // 成员被移除后同步组内引用，空组本身保留。
+    setGroups(
+      pruneGroupMembers(
+        groupsRef.current,
+        remainingNodes.map((node) => node.id),
+      ),
+    );
+    setSelectedNodeId((current) => (current && removable.has(current) ? null : current));
+    canvasDirtyRef.current = true;
+    setNotice({
+      kind: 'success',
+      message: `已清理 ${candidateIds.length} 个空节点，可通过撤销恢复`,
+    });
+  }, [rememberHistory, setEdges, setNodes]);
+
+  /**
+   * 清空菜单的候选数量。
+   *
+   * 与真正执行共用同一份空节点规则与同一份运行状态视图，因此预览数字和实际
+   * 删除范围一致。
+   */
+  const clearCounts = useMemo((): ClearActionCounts => {
+    const { candidateIds } = collectEmptyNodeCandidates(
+      nodes,
+      buildEmptyNodeRuntimeState({
+        edges,
+        nodes,
+        runRecords: runRecordsRef.current,
+        pendingUpdateNodeIds: pendingRunUpdateRef.current,
+        contentLocks: nodeContentLocksRef.current,
+        runLocks: nodeRunLocksRef.current,
+      }),
+    );
+    const removable = new Set(candidateIds);
+    return {
+      nodes: nodes.length,
+      edges: edges.length,
+      groups: groups.length,
+      emptyNodes: candidateIds.length,
+      emptyNodeEdges: edges.filter(
+        (edge) => removable.has(edge.source) || removable.has(edge.target),
+      ).length,
+    };
+  }, [edges, nodes, groups, runRecords]);
+
+  /**
+   * 创建布局区域。
+   *
+   * 有选中节点时包围选区，没有选区时在视口中心附近创建固定尺寸空组。
+   * 组只表达布局，不新增生成调用，也不改变节点输入输出语义。
+   */
+  const createGroupFromSelection = useCallback(() => {
+    const selected = nodesRef.current.filter((node) => node.selected);
+    const center = canvasCenterPositionRef.current;
+    const group = createCanvasGroup({
+      id: `group_${crypto.randomUUID()}`,
+      name: `组 ${groupsRef.current.length + 1}`,
+      ...(selected.length > 0 ? { selectedNodes: selected } : {}),
+      ...(center ? { fallbackCenter: center } : {}),
+    });
+    rememberHistory();
+    setGroups(
+      normalizeCanvasGroups(
+        [...groupsRef.current, group],
+        nodesRef.current.map((n) => n.id),
+      ),
+    );
+    setSelectedGroupId(group.id);
+    canvasDirtyRef.current = true;
+    setNotice({
+      kind: 'success',
+      message: selected.length > 0 ? `已把 ${selected.length} 个节点放入新组` : '已创建空组',
+    });
+  }, [rememberHistory]);
+
+  /** 整组移动：组与成员使用同一位移，成员之间保持相对位置。 */
+  const translateGroupBy = useCallback(
+    (groupId: string, delta: { x: number; y: number }) => {
+      const moved = translateGroup({
+        groups: groupsRef.current,
+        nodes: nodesRef.current,
+        groupId,
+        delta,
+      });
+      if (!moved) return;
+      setGroups(moved.groups);
+      setNodes(moved.nodes);
+      canvasDirtyRef.current = true;
+    },
+    [setNodes],
+  );
+
+  /** 调整组外框：不缩放成员，且不会把成员挤出组。 */
+  const resizeGroupTo = useCallback(
+    (
+      groupId: string,
+      size: { width: number; height: number; position?: { x: number; y: number } },
+    ) => {
+      setGroups((current) =>
+        current.map((group) => {
+          if (group.id !== groupId) return group;
+          const repositioned = size.position ? { ...group, position: size.position } : group;
+          return resizeCanvasGroup(repositioned, nodesRef.current, size);
+        }),
+      );
+      canvasDirtyRef.current = true;
+    },
+    [],
+  );
+
+  /** 重命名组；空名称由组件层过滤，这里只写入合法值。 */
+  const renameGroup = useCallback(
+    (groupId: string, name: string) => {
+      const trimmed = name.trim();
+      if (!trimmed) return;
+      rememberHistory();
+      setGroups((current) =>
+        current.map((group) => (group.id === groupId ? { ...group, name: trimmed } : group)),
+      );
+      canvasDirtyRef.current = true;
+    },
+    [rememberHistory],
+  );
+
+  /** 解散组只移除区域，保留成员、坐标与连线。 */
+  const dissolveGroup = useCallback(
+    (groupId: string) => {
+      rememberHistory();
+      setGroups((current) => current.filter((group) => group.id !== groupId));
+      setSelectedGroupId((current) => (current === groupId ? null : current));
+      canvasDirtyRef.current = true;
+      setNotice({ kind: 'success', message: '已解散分组，成员与连线保留' });
+    },
+    [rememberHistory],
+  );
 
   const handleNodesChange: OnNodesChange<AssetFlowNode> = useCallback(
     (changes) => {
@@ -701,6 +994,37 @@ function WorkspaceApp({
     rememberHistory();
     canvasDirtyRef.current = true;
   }, [rememberHistory]);
+
+  /**
+   * 拖拽过程中预高亮落点组。
+   *
+   * 使用节点中心判定，与松手后的落地规则完全一致，避免预览与实际归属不一致。
+   */
+  const handleNodeDrag = useCallback((_event: unknown, node: AssetFlowNode) => {
+    const target = resolveDropTargetGroup(groupsRef.current, nodeCenter(node));
+    setDropTargetGroupId((current) =>
+      current === (target?.id ?? null) ? current : (target?.id ?? null),
+    );
+  }, []);
+
+  /**
+   * 松手后按节点中心决定入组或解除归属。
+   *
+   * 一次拖拽只能归属一个组，且只在实际归属变化时新增一条历史记录；中间的
+   * 拖拽帧不写历史。
+   */
+  const handleNodeDragStop = useCallback(
+    (_event: unknown, node: AssetFlowNode) => {
+      setDropTargetGroupId(null);
+      const target = resolveDropTargetGroup(groupsRef.current, nodeCenter(node));
+      const next = assignNodeToGroup(groupsRef.current, node.id, target?.id);
+      if (next === groupsRef.current) return;
+      rememberHistory();
+      setGroups(next);
+      canvasDirtyRef.current = true;
+    },
+    [rememberHistory],
+  );
 
   const handleResizeNode = useCallback(
     (nodeId: string, width: number, height: number) => {
@@ -910,6 +1234,8 @@ function WorkspaceApp({
         const flowCanvas = fromCanvasDocument(result.canvas);
         setNodes(flowCanvas.nodes);
         setEdges(flowCanvas.edges);
+        setGroups(flowCanvas.groups);
+        setSelectedGroupId(null);
         setSelectedNodeId(null);
         runRecordsRef.current = {};
         setRunRecords({});
@@ -942,6 +1268,7 @@ function WorkspaceApp({
             const flowCanvas = fromCanvasDocument(parsed);
             setNodes(flowCanvas.nodes);
             setEdges(flowCanvas.edges);
+            setGroups(flowCanvas.groups);
             historyRef.current = { past: [], future: [] };
             canvasDirtyRef.current = false;
             setSaveState('本地草稿已恢复');
@@ -974,9 +1301,9 @@ function WorkspaceApp({
     if (!isCanvasReady || !projectId) return;
     localStorage.setItem(
       canvasDraftKey(projectId, authUser?.id),
-      JSON.stringify(toCanvasDocument(nodes, edges, canvasRevision)),
+      JSON.stringify(toCanvasDocument(nodes, edges, canvasRevision, groups)),
     );
-  }, [authUser?.id, canvasRevision, edges, isCanvasReady, nodes, projectId]);
+  }, [authUser?.id, canvasRevision, edges, groups, isCanvasReady, nodes, projectId]);
 
   const saveCanvas = useCallback(async () => {
     if (!projectId) return;
@@ -985,9 +1312,19 @@ function WorkspaceApp({
     const request = (async () => {
       const snapshotNodes = structuredClone(nodesRef.current);
       const snapshotEdges = structuredClone(edgesRef.current);
-      const snapshot = JSON.stringify({ nodes: snapshotNodes, edges: snapshotEdges });
+      const snapshotGroups = structuredClone(groupsRef.current);
+      const snapshot = JSON.stringify({
+        nodes: snapshotNodes,
+        edges: snapshotEdges,
+        groups: snapshotGroups,
+      });
       setSaveState('保存中');
-      const document = toCanvasDocument(snapshotNodes, snapshotEdges, canvasRevisionRef.current);
+      const document = toCanvasDocument(
+        snapshotNodes,
+        snapshotEdges,
+        canvasRevisionRef.current,
+        snapshotGroups,
+      );
       const response = await apiFetch(`${API_BASE_URL}/v1/projects/${projectId}/canvas`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
@@ -1016,6 +1353,7 @@ function WorkspaceApp({
           snapshotNodes,
           snapshotEdges,
           latestResult.canvas.revision,
+          snapshotGroups,
         );
         const retryResponse = await apiFetch(`${API_BASE_URL}/v1/projects/${projectId}/canvas`, {
           method: 'PATCH',
@@ -1031,7 +1369,13 @@ function WorkspaceApp({
         }
         canvasRevisionRef.current = retryResult.canvas.revision;
         setCanvasRevision(retryResult.canvas.revision);
-        if (JSON.stringify({ nodes: nodesRef.current, edges: edgesRef.current }) === snapshot) {
+        if (
+          JSON.stringify({
+            nodes: nodesRef.current,
+            edges: edgesRef.current,
+            groups: groupsRef.current,
+          }) === snapshot
+        ) {
           canvasDirtyRef.current = false;
         }
         setSaveState('已保存到项目');
@@ -1040,7 +1384,13 @@ function WorkspaceApp({
       if (!response.ok || !result.canvas) throw new Error(result.error ?? '画布保存失败');
       canvasRevisionRef.current = result.canvas.revision;
       setCanvasRevision(result.canvas.revision);
-      if (JSON.stringify({ nodes: nodesRef.current, edges: edgesRef.current }) === snapshot) {
+      if (
+        JSON.stringify({
+          nodes: nodesRef.current,
+          edges: edgesRef.current,
+          groups: groupsRef.current,
+        }) === snapshot
+      ) {
         canvasDirtyRef.current = false;
       }
       setSaveState('已保存到项目');
@@ -2100,10 +2450,23 @@ function WorkspaceApp({
               data: { ...node.data, contentUrl: asset.contentUrl, mimeType: asset.mimeType },
             };
           });
-          setNodes((current) => [
-            ...current.map((node) => ({ ...node, selected: false })),
-            ...hydratedNodes,
-          ]);
+          setNodes((current) => {
+            const next = [
+              ...current.map((node) => ({ ...node, selected: false })),
+              ...hydratedNodes,
+            ];
+            // 整组复制会重建组与成员 ID；只复制部分成员时剪贴板不携带悬空归属。
+            const pastedGroups = pasted.groups ?? [];
+            if (pastedGroups.length > 0) {
+              setGroups((currentGroups) =>
+                normalizeCanvasGroups(
+                  [...currentGroups, ...pastedGroups],
+                  next.map((node) => node.id),
+                ),
+              );
+            }
+            return next;
+          });
           setEdges((current) => [...current, ...pasted.edges]);
           setSelectedNodeId(hydratedNodes[0]?.id ?? null);
           canvasDirtyRef.current = true;
@@ -2134,6 +2497,7 @@ function WorkspaceApp({
       const run = mergeRunUpdate(currentRun, incoming);
       if (!run) return;
       runRecordsRef.current = { ...runRecordsRef.current, [nodeId]: run };
+      pendingRunUpdateRef.current.delete(nodeId);
       setRunRecords(runRecordsRef.current);
       const resultAsset = run.status === 'succeeded' ? run.result?.asset : undefined;
       const resultAssetKey = resultAsset
@@ -2159,6 +2523,8 @@ function WorkspaceApp({
                   runStatus: run.status,
                   runProgress: run.progress,
                   runError: run.error,
+                  // 耗时跟随当前展示的结果版本：终态后冻结，运行中由共享时钟递增。
+                  nodeTiming: run.nodeTimings?.[nodeId],
                   resultAsset: hasResultAsset ? run.result?.asset : undefined,
                   ...(node.data.manualOutput && run.status === 'succeeded' && hasResultAsset
                     ? { manualOutput: undefined, manualOutputRunId: undefined }
@@ -2221,6 +2587,57 @@ function WorkspaceApp({
     };
   }, [projectId, updateNodeRunState]);
 
+  /**
+   * 打开节点的只读「生成提示词」Dialog。
+   *
+   * 只读取该节点本次执行真正发送的请求记录：有记录时按记录展示，只有冻结输入
+   * 时明确显示“历史输入快照，未记录最终请求”，没有任何记录时显示未记录。
+   * 不从文件名、当前编辑框或其它节点推测内容。
+   *
+   * @param nodeId 目标节点 ID。
+   */
+  const openRequestPrompt = useCallback(async (nodeId: string) => {
+    const show = (state: RequestPromptDialogState) => setPromptDialog({ nodeId, state });
+    show({ status: 'loading' });
+    const run = runRecordsRef.current[nodeId];
+    const runId = run?.id;
+    if (!runId) {
+      show({ status: 'missing' });
+      return;
+    }
+    try {
+      const response = await apiFetch(
+        `${API_BASE_URL}/v1/runs/${encodeURIComponent(runId)}/request-prompts?nodeId=${encodeURIComponent(nodeId)}`,
+      );
+      const result = (await response.json().catch(() => ({}))) as {
+        records?: Array<{ id: string }>;
+        error?: string;
+      };
+      if (!response.ok) throw new Error(result.error ?? '生成说明加载失败');
+      const recordId = result.records?.[0]?.id;
+      if (!recordId) {
+        show({ status: 'missing' });
+        return;
+      }
+      const detail = await apiFetch(
+        `${API_BASE_URL}/v1/runs/${encodeURIComponent(runId)}/request-prompts/${encodeURIComponent(recordId)}`,
+      );
+      const detailResult = (await detail.json().catch(() => ({}))) as {
+        record?: RequestPromptRecord;
+        error?: string;
+      };
+      if (!detail.ok || !detailResult.record) {
+        throw new Error(detailResult.error ?? '生成说明加载失败');
+      }
+      show({ status: 'ready', record: detailResult.record });
+    } catch (error) {
+      show({
+        status: 'failed',
+        message: error instanceof Error ? error.message : '生成说明加载失败',
+      });
+    }
+  }, []);
+
   const fetchRun = useCallback(
     async (runId: string, nodeId: string) => {
       const response = await apiFetch(`${API_BASE_URL}/v1/runs/${runId}`);
@@ -2255,6 +2672,9 @@ function WorkspaceApp({
           if (!active) break;
           updateNodeRunState(run.targetNodeId, run);
         }
+        // 已拿到快照：尚未出现在记录里的节点不再是“待查询”，而是确实没有运行记录。
+        pendingRunUpdateRef.current.clear();
+        setRunRecords((current) => ({ ...current }));
       })
       .catch((error: unknown) => {
         if (active) {
@@ -2879,8 +3299,10 @@ function WorkspaceApp({
                 onThemeChange={setCanvasTheme}
                 canvasBackground={canvasBackground}
                 onBackgroundChange={setCanvasBackground}
-                canvasEdgeStyle={canvasEdgeStyle}
-                onEdgeStyleChange={setCanvasEdgeStyle}
+                canvasEdgePathStyle={canvasEdgePathStyle}
+                onEdgePathStyleChange={setCanvasEdgePathStyle}
+                canvasEdgeEffect={canvasEdgeEffect}
+                onEdgeEffectChange={setCanvasEdgeEffect}
               />
             </div>
             <button
@@ -3012,6 +3434,15 @@ function WorkspaceApp({
           restoreFocusRef={commandPaletteTriggerRef}
         />
 
+        {promptDialog ? (
+          <RequestPromptDialog
+            state={promptDialog.state}
+            triggerId={`node-prompt-trigger-${promptDialog.nodeId}`}
+            onClose={() => setPromptDialog(undefined)}
+            onRetry={() => void openRequestPrompt(promptDialog.nodeId)}
+          />
+        ) : null}
+
         <ProjectCreateDialog
           open={showProjectCreate}
           name={projectCreateName}
@@ -3083,9 +3514,24 @@ function WorkspaceApp({
             onAddGenerateNode={handleAddGenerateNode}
             onEditImage={handleCreateImageEditNode}
             onAddConnectedGenerateNode={handleAddConnectedGenerateNode}
+            onOpenRequestPrompt={(nodeId) => void openRequestPrompt(nodeId)}
             onCanvasCenterChange={updateCanvasCenterPosition}
             onRequestUpload={() => uploadInputRef.current?.click()}
             onClearCanvas={clearCanvas}
+            onClearEmptyNodes={clearEmptyNodes}
+            clearCounts={clearCounts}
+            groups={groups}
+            selectedGroupId={selectedGroupId}
+            dropTargetGroupId={dropTargetGroupId}
+            onSelectGroup={(groupId) => setSelectedGroupId(groupId ?? null)}
+            onCreateGroup={createGroupFromSelection}
+            onRenameGroup={renameGroup}
+            onDissolveGroup={dissolveGroup}
+            onTranslateGroup={translateGroupBy}
+            onResizeGroup={resizeGroupTo}
+            onGroupInteractionStart={rememberHistory}
+            onNodeDrag={handleNodeDrag}
+            onNodeDragStop={handleNodeDragStop}
             onUndoCanvas={undoCanvas}
             onRedoCanvas={redoCanvas}
             onOpenSearch={() => {
@@ -3094,8 +3540,10 @@ function WorkspaceApp({
             canvasTheme={canvasTheme}
             onThemeChange={setCanvasTheme}
             onBackgroundChange={setCanvasBackground}
-            edgeStyle={canvasEdgeStyle}
-            onEdgeStyleChange={setCanvasEdgeStyle}
+            edgePathStyle={canvasEdgePathStyle}
+            onEdgePathStyleChange={setCanvasEdgePathStyle}
+            edgeEffect={canvasEdgeEffect}
+            onEdgeEffectChange={setCanvasEdgeEffect}
             canClearCanvas={nodes.length > 0 || edges.length > 0}
             canUndo={historyRef.current.past.length > 0}
             canRedo={historyRef.current.future.length > 0}

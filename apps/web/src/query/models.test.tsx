@@ -114,6 +114,38 @@ describe('model catalog query', () => {
     expect(await pending).toBeInstanceOf(Error);
     expect(client.getQueryData(modelCatalogQueryKeyFor('old-credential'))).toBeUndefined();
   });
+  it('新增独立凭据不切换活动目录缓存，也不预填新凭据的目录', async () => {
+    const client = createAppQueryClient();
+    const active = {
+      id: 'active-credential',
+      baseUrl: 'https://active.test',
+      keyFingerprint: 'hash-active',
+      active: true,
+      updatedAt: '2026-09-11',
+    };
+    const independent = {
+      id: 'independent-credential',
+      baseUrl: 'https://independent.test',
+      keyFingerprint: 'hash-independent',
+      active: false,
+      updatedAt: '2026-09-12',
+    };
+    client.setQueryData(aiCredentialsQueryKey, [active]);
+    client.setQueryData(modelCatalogQueryKeyFor(active.id), [{ id: 'active-model' }]);
+    client.setQueryData(modelCatalogQueryKey, [{ id: 'active-model' }]);
+
+    await replaceAiCredentials(client, [active, independent], getAuthSessionGeneration());
+
+    expect(client.getQueryData(aiCredentialsQueryKey)).toEqual([active, independent]);
+    expect(client.getQueryData(modelCatalogQueryKeyFor(active.id))).toEqual([
+      { id: 'active-model' },
+    ]);
+    expect(client.getQueryData(modelCatalogQueryKey)).toEqual([{ id: 'active-model' }]);
+    // 新凭据没有自己的目录，必须按 ID 单独读取，不能复用活动目录。
+    expect(client.getQueryData(modelCatalogQueryKeyFor(independent.id))).toBeUndefined();
+    client.clear();
+  });
+
   it('caches the catalog and invalidates it after a manual refresh', async () => {
     const initialModels = [{ id: 'text-v1', name: 'Text V1', mediaTypes: ['text'] }];
     const refreshedModels = [{ id: 'text-v2', name: 'Text V2', mediaTypes: ['text'] }];

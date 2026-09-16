@@ -163,6 +163,8 @@ model Canvas {
   id        String   @id @default(uuid()) @db.Uuid
   projectId String   @unique @db.Uuid
   revision  Int      @default(0)
+  /// 布局区域列表。组只表达画布布局，不进入运行 DAG；旧画布为 NULL。
+  groups    Json?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -295,6 +297,8 @@ model Run {
   snapshot          Json
   parameters        Json?
   result            Json?
+  /// 按节点记录的执行生命周期时间；旧运行记录为 NULL，界面显示未记录。
+  nodeTimings       Json?
   attempt           Int       @default(1)
   retryOf           String?   @db.Uuid
   idempotencyKey    String?
@@ -304,11 +308,12 @@ model Run {
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
-  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  user         User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
-  inputs       RunInput[]
-  providerJobs ProviderJob[]
-  usageLedger  UsageLedger[]
+  project        Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user           User?              @relation(fields: [userId], references: [id], onDelete: SetNull)
+  inputs         RunInput[]
+  providerJobs   ProviderJob[]
+  usageLedger    UsageLedger[]
+  requestPrompts RunRequestPrompt[]
 
   @@unique([projectId, idempotencyKey])
   @@index([projectId, createdAt])
@@ -350,6 +355,52 @@ model ProviderJob {
   @@unique([provider, platformJobId])
   @@index([runId])
   @@map("provider_jobs")
+}
+
+/// 一次请求真正发送的提示词记录。请求文本属于用户内容：runId 关联到 Run 的
+/// 项目/用户权限边界，列表只读摘要、完整文本按需读取。不保存原始 HTTP body、
+/// base64、临时签名 URL 或媒体二进制；也绝不写入日志或错误消息。
+model RunRequestPrompt {
+  id                String    @id @default(uuid()) @db.Uuid
+  /// 数据库 Run.id；用于沿用运行的项目/用户权限边界与级联删除。
+  runId             String    @db.Uuid
+  /// 记录自身的运行身份，与 requestPromptRecordKey 的 runId 一致；外部运行标识
+  /// 不是 UUID，必须单独保留才能复现记录身份。
+  requestRunId      String
+  nodeId            String
+  attempt           Int
+  requestIdentity   String
+  schemaVersion     Int       @default(1)
+  provider          String
+  modelAlias        String
+  /// 冻结构建的凭据标识（非明文 Key）；旧记录可为空。
+  credentialId      String?
+  credentialVersion Int?
+  mediaType         MediaType
+  /// 'plain' | 'messages'，与 requestPromptFormatSchema 一致。
+  format            String
+  /// 按实际发送顺序排列的文本块：[{ order, role?, name?, text }]。
+  parts             Json
+  negativeText      String?
+  /// 参考资源身份：[{ assetId?, assetVersion?, role, sortOrder, mediaType? }]。
+  resources         Json
+  /// 'pending' | 'sent' | 'failed' | 'unknown'，与 requestPromptSendStatusSchema 一致。
+  sendStatus        String
+  /// 归档完成后写入的结果身份；缺失表示本次请求没有产出可展示的资产版本。
+  assetId           String?
+  assetVersion      Int?
+  summary           String?
+  summarySource     String?
+  createdAt         DateTime
+  updatedAt         DateTime  @default(now()) @updatedAt
+
+  run Run @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([requestRunId, nodeId, attempt, requestIdentity])
+  @@index([runId, createdAt])
+  @@index([runId, nodeId])
+  @@index([assetId])
+  @@map("run_request_prompts")
 }
 
 model UsageLedger {

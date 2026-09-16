@@ -3,9 +3,10 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 
 import { Prisma, PrismaClient } from '@prisma/client';
-import { nodeDataSchema } from '@multimodal-canvas/domain';
+import { canvasGroupSchema, nodeDataSchema } from '@multimodal-canvas/domain';
 import type {
   CanvasDocument,
+  CanvasGroup,
   CanvasNode,
   MediaType,
   ModelSelection,
@@ -738,7 +739,12 @@ export class PrismaProjectStore implements ProjectStore {
 
       const updated = await transaction.canvas.updateMany({
         where: { id: canvas.id, revision: document.revision },
-        data: { revision: { increment: 1 } },
+        data: {
+          revision: { increment: 1 },
+          // 组与节点、边在同一次 revision 事务里写入，避免任一存储路径静默丢组。
+          // 不带 groups 字段的旧客户端保存会把该列清空，因此客户端必须显式发送。
+          groups: (document.groups ?? []) as Prisma.InputJsonValue,
+        },
       });
       if (updated.count !== 1) {
         throw new ProjectStoreError(
@@ -899,6 +905,7 @@ function mapProject(project: {
 
 function mapCanvas(canvas: {
   revision: number;
+  groups?: unknown;
   nodes: Array<{
     id: string;
     type: string;
@@ -941,7 +948,23 @@ function mapCanvas(canvas: {
       targetHandle: edge.targetHandle,
       order: edge.sortOrder,
     })),
+    ...(readStoredGroups(canvas.groups) ?? {}),
   };
+}
+
+/**
+ * 读取持久化的组布局。
+ *
+ * 旧画布该列为 NULL，读取时返回 undefined，让文档保持“没有 groups 字段”的
+ * 旧形态；列内容损坏时同样不抛出，避免单个坏字段让整个画布无法打开。
+ *
+ * @param value 数据库中的 `groups` 列。
+ * @returns 合法的组列表，或 undefined 表示按空组处理。
+ */
+function readStoredGroups(value: unknown): { groups: CanvasGroup[] } | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const parsed = canvasGroupSchema.array().safeParse(value);
+  return parsed.success ? { groups: parsed.data } : undefined;
 }
 
 const nodeDataFields = [

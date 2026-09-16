@@ -5,6 +5,10 @@ import type {
   MediaType,
   PortRole,
   ProviderJob,
+  RequestPromptFormat,
+  RequestPromptPart,
+  RequestPromptRecord,
+  RequestPromptResource,
   RunInputSnapshot,
   RunResult,
   RunSnapshot,
@@ -14,6 +18,7 @@ import {
   imageEditSourceSchema,
   precheckVideoGenerationInputs,
   renderPromptDocument,
+  REQUEST_PROMPT_SCHEMA_VERSION,
   videoInputRoleForPromptMention,
   videoModeForPromptMentions,
 } from '@multimodal-canvas/domain';
@@ -49,11 +54,26 @@ export const mockProviderCapabilities: ProviderCapability[] = [
   { mediaType: 'video', supportsAsync: true },
 ];
 
+/**
+ * Worker 在真正发送请求前持久化最终请求文本；抛错必须阻止请求。
+ *
+ * Provider 只按即将发送的请求体构造记录，并把 `sendStatus` 置为 `pending`
+ * （已留存、尚未确认发送结果）；发送结果与结果资产绑定由 Worker 写入，
+ * Provider 不回写已落库记录。
+ */
+export type RequestPromptCapture = (record: RequestPromptRecord) => Promise<void> | void;
+
 export type MockProviderRequest = {
   snapshot: RunSnapshot;
   /** Worker 在进程内解析的资源内容；真实适配器只能按正式供应商契约消费。 */
   resolvedMentions?: readonly ResolvedMention[];
   reportProgress?: (progress: number) => Promise<void> | void;
+  /** 本次运行的持久化身份；提供 onRequestPrompt 时必填，Provider 不伪造。 */
+  runId?: string;
+  /** 本次节点执行次数，从 1 开始；缺省按 1 记录。 */
+  attempt?: number;
+  /** Worker 在真正发送请求前持久化最终请求文本；抛错必须阻止请求。 */
+  onRequestPrompt?: RequestPromptCapture;
 };
 
 export class MockProvider {
@@ -134,6 +154,96 @@ export type NewApiProviderRequest = MockProviderRequest & {
   /** 新视频 POST 前必须持久化合同，创建后持久化平台 ID；失败时停止执行，不自动重试。 */
   onProviderJob?: (providerJob: ProviderJobUpdate) => Promise<void> | void;
 };
+
+/** 一次请求真正发送的文本内容；由各组装的请求体直接派生，不重新渲染提示词。 */
+type RequestPromptPayload = {
+  format: RequestPromptFormat;
+  /** 按发送顺序排列的文本块；纯文本请求只有一项。 */
+  parts: RequestPromptPart[];
+  resources: RequestPromptResource[];
+  /** 真正写入请求体的负向内容；未发送时省略。 */
+  negativeText?: string;
+};
+
+/** 请求记录输入：请求身份、媒体类型和从请求体派生的文本。 */
+export type RequestPromptCaptureInput = RequestPromptPayload & {
+  snapshot: RunSnapshot;
+  /** 实际发起请求的 Provider 标识。 */
+  provider: 'newapi' | 'xfyun';
+  mediaType: MediaType;
+  /** 同一 attempt 内的请求身份，由请求路径与序号组成。 */
+  requestIdentity: string;
+  /** Worker 提供的持久化回调；缺省时不产生记录。 */
+  onRequestPrompt?: RequestPromptCapture;
+  /** Worker 提供的运行身份；提供回调时必填，Provider 不伪造。 */
+  runId?: string;
+  /** Worker 提供的节点执行次数，从 1 开始；缺省按 1 记录。 */
+  attempt?: number;
+};
+
+/**
+ * 在真正发送前把最终请求文本交给 Worker 持久化。
+ *
+ * 记录直接来自即将发送的请求体：`sendStatus` 固定为 `pending`，表示“已留存、
+ * 尚未确认发送结果”。发送后的终态与结果资产绑定由 Worker 按自身持久化结果
+ * 写入，Provider 不提供发送后的回写入口。
+ *
+ * @param input 请求身份与已派生的文本块；未提供 `onRequestPrompt` 时不产生记录。
+ * @throws {TypeError} 提供了持久化回调却缺少 `runId`，或 `attempt` 不是正整数。
+ * @throws 持久化回调自身的错误原样向上抛出，调用方必须放弃本次请求。
+ */
+export async function reportRequestPrompt(input: RequestPromptCaptureInput): Promise<void> {
+  const onRequestPrompt = input.onRequestPrompt;
+  if (!onRequestPrompt) return;
+  const runId = input.runId?.trim();
+  if (!runId) throw new TypeError('请求提示词记录缺少运行身份：需要 Worker 提供 runId');
+  const attempt = input.attempt ?? 1;
+  if (!Number.isSafeInteger(attempt) || attempt <= 0) {
+    throw new TypeError('请求提示词记录的 attempt 必须为正整数');
+  }
+  await onRequestPrompt({
+    schemaVersion: REQUEST_PROMPT_SCHEMA_VERSION,
+    runId,
+    nodeId: input.snapshot.targetNodeId,
+    attempt,
+    requestIdentity: input.requestIdentity,
+    provider: input.provider,
+    modelAlias: input.snapshot.modelAlias,
+    ...frozenCredentialReference(input.snapshot),
+    mediaType: input.mediaType,
+    format: input.format,
+    parts: input.parts,
+    ...(input.negativeText ? { negativeText: input.negativeText } : {}),
+    resources: input.resources,
+    sendStatus: 'pending',
+    createdAt: new Date().toISOString(),
+  });
+}
+
+/**
+ * 读取目标节点冻结的凭据引用。
+ *
+ * 单节点引用优先：快照为每个 provider 节点冻结 `nodeCredentialReferences`；
+ * 只有旧快照缺少该字段时才退回根级引用。两个字段始终取自同一来源，
+ * 不混合成“凭证 A + 版本 B”的组合。
+ */
+function frozenCredentialReference(snapshot: RunSnapshot): {
+  credentialId?: string;
+  credentialVersion?: number;
+} {
+  const nodeReference = snapshot.nodeCredentialReferences?.[snapshot.targetNodeId];
+  if (nodeReference) {
+    return {
+      credentialId: nodeReference.credentialId,
+      credentialVersion: nodeReference.credentialVersion,
+    };
+  }
+  if (!snapshot.credentialId) return {};
+  return {
+    credentialId: snapshot.credentialId,
+    ...(snapshot.credentialVersion ? { credentialVersion: snapshot.credentialVersion } : {}),
+  };
+}
 
 /**
  * Provider-neutral representation of a generated payload.
@@ -272,6 +382,18 @@ export class NewApiProviderError extends Error {
 }
 
 /**
+ * 图片请求的组装结果。
+ *
+ * `sourceImages` 是作为原图实际写入请求体的冻结输入，只用于记录资产身份，
+ * 不含任何媒体内容。
+ */
+type ImageProviderRequest = {
+  path: string;
+  body: Record<string, unknown> | FormData;
+  sourceImages: RunInputSnapshot[];
+};
+
+/**
  * 将通用快照映射为 New API 文本、图片或音频请求。
  * 视频由 NewApiVideoProvider 按显式冻结合同独立处理。
  */
@@ -303,6 +425,9 @@ export class NewApiProvider {
     providerJob,
     resolvedMentions,
     signal,
+    runId,
+    attempt,
+    onRequestPrompt,
   }: NewApiProviderRequest): Promise<ProviderExecution<StandardProviderOutput>> {
     throwIfProviderSignalAborted(signal);
     const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
@@ -332,34 +457,63 @@ export class NewApiProvider {
             resolvedMentions,
           )
         : undefined;
-    const response =
-      target.data.mediaType === 'text'
-        ? await this.request(
-            '/chat/completions',
-            this.textPayload(
-              snapshot,
-              target.data.label,
-              target.data.prompt,
-              target.data.promptDocument,
-              resolvedMentions,
-            ),
-            idempotencyKey,
-            signal,
-          )
-        : imageRequest
-          ? await this.request(imageRequest.path, imageRequest.body, idempotencyKey, signal)
-          : await this.request(
-              '/audio/speech',
-              this.audioPayload(
-                snapshot,
-                target.data.label,
-                target.data.prompt,
-                target.data.promptDocument,
-                resolvedMentions,
-              ),
-              idempotencyKey,
-              signal,
-            );
+    // 请求体只组装一次：请求记录与真实发送必须取自同一份结果，不重新渲染提示词。
+    let plan: {
+      path: string;
+      body: Record<string, unknown> | FormData;
+      prompt: RequestPromptPayload;
+    };
+    if (target.data.mediaType === 'text') {
+      const body = this.textPayload(
+        snapshot,
+        target.data.label,
+        target.data.prompt,
+        target.data.promptDocument,
+        resolvedMentions,
+      );
+      plan = {
+        path: '/chat/completions',
+        body,
+        prompt: { format: 'messages', ...textRequestPromptCapture(snapshot, body.messages) },
+      };
+    } else if (imageRequest) {
+      plan = {
+        path: imageRequest.path,
+        body: imageRequest.body,
+        prompt: {
+          format: 'plain',
+          parts: [{ order: 0, text: sentPromptText(imageRequest.body) }],
+          resources: imagePromptResources(snapshot, imageRequest.sourceImages),
+        },
+      };
+    } else {
+      const body = this.audioPayload(
+        snapshot,
+        target.data.label,
+        target.data.prompt,
+        target.data.promptDocument,
+        resolvedMentions,
+      );
+      plan = {
+        path: '/audio/speech',
+        body,
+        prompt: { format: 'plain', parts: [{ order: 0, text: body.input }], resources: [] },
+      };
+    }
+    // 未接线时不增加等待点，保持原有的同步推进到时序。
+    if (onRequestPrompt) {
+      await reportRequestPrompt({
+        snapshot,
+        provider: 'newapi',
+        mediaType: target.data.mediaType,
+        requestIdentity: `POST ${plan.path}#1`,
+        onRequestPrompt,
+        runId,
+        attempt,
+        ...plan.prompt,
+      });
+    }
+    const response = await this.request(plan.path, plan.body, idempotencyKey, signal);
     const output =
       target.data.mediaType === 'text'
         ? parseTextOutput(response.payload)
@@ -460,7 +614,7 @@ export class NewApiProvider {
    * @param nodePrompt 节点上填写的提示词。
    * @param nodePromptDocument 结构化提示词文档。
    * @param resolvedMentions 图片接口暂不支持资源提及。
-   * @returns 请求路径和 JSON 或 multipart 请求体。
+   * @returns 请求路径、JSON 或 multipart 请求体，以及作为原图发送的输入。
    */
   private imageRequest(
     snapshot: RunSnapshot,
@@ -468,7 +622,7 @@ export class NewApiProvider {
     nodePrompt?: string,
     nodePromptDocument?: PromptDocument,
     resolvedMentions?: readonly ResolvedMention[],
-  ): { path: string; body: Record<string, unknown> | FormData } {
+  ): ImageProviderRequest {
     assertPromptMentionsUnsupported('image', snapshot, nodePromptDocument, resolvedMentions);
     const mapping = mapImageGenerationInputs(snapshot, label, nodePrompt, nodePromptDocument);
     const parameters = providerParameters(snapshot.parameters, 'image');
@@ -483,6 +637,7 @@ export class NewApiProvider {
           prompt: mapping.prompt,
           n: 1,
         },
+        sourceImages: mapping.images,
       };
     }
     if (mapping.images.length > 1) {
@@ -506,7 +661,7 @@ export class NewApiProvider {
     }
     const image = imageFormFile(mapping.images[0]!, capability?.mimeTypes);
     form.append('image', image.file, image.filename);
-    return { path: '/images/edits', body: form };
+    return { path: '/images/edits', body: form, sourceImages: mapping.images };
   }
 
   private audioPayload(
@@ -702,6 +857,9 @@ export class NewApiVideoProvider {
     onProviderJob,
     resolvedMentions,
     signal,
+    runId,
+    attempt,
+    onRequestPrompt,
   }: NewApiProviderRequest): Promise<ProviderExecution<VideoProviderOutput>> {
     throwIfProviderSignalAborted(
       signal,
@@ -790,6 +948,25 @@ export class NewApiVideoProvider {
               target.data.promptDocument,
             );
       const pendingPayload = videoJobPayloadSummary(contract, 'submitting', snapshot.modelAlias);
+      // 记录必须先于合同落盘：记录失败时不写 submitting 标记，避免留下
+      // 与供应商无法核对的任务状态。两者都在创建 POST 之前完成。
+      // 未接线时不增加等待点，保持原有的同步推进到时序。
+      if (onRequestPrompt) {
+        await reportRequestPrompt({
+          snapshot,
+          provider: 'newapi',
+          mediaType: 'video',
+          requestIdentity: `POST ${videoCreatePath(contract)}#1`,
+          onRequestPrompt,
+          runId,
+          attempt,
+          format: 'plain',
+          parts: [{ order: 0, text: sentPromptText(body) }],
+          resources: videoPromptResources(body, inputs),
+          // 只有真正写入创建体的负向字段才进入记录，画布上的编辑值不参与。
+          negativeText: normalizeErrorField(body.negative_prompt ?? body.negativePrompt),
+        });
+      }
       if (!onProviderJob) {
         throw new NewApiProviderError('创建视频前必须提供合同持久化回调', {
           code: 'VIDEO_CONTRACT_PERSISTENCE_REQUIRED',
@@ -2960,6 +3137,140 @@ async function readResponseBytes(
     });
   }
   return bytes;
+}
+
+/**
+ * 读取即将发送的请求体里的主提示词字段。
+ *
+ * Provider 自己组装的请求体一定包含该字段；缺失说明组装与记录逻辑不一致，
+ * 必须在发送前明确失败，而不是记录一个推测值。
+ */
+function sentPromptText(body: Record<string, unknown> | FormData): string {
+  const value = body instanceof FormData ? body.get('prompt') : body.prompt;
+  if (typeof value !== 'string') throw new TypeError('New API 请求体缺少可记录的提示词字段');
+  return value;
+}
+
+/** 聊天消息里的内联媒体；文本块不占用资源身份。 */
+type ChatMediaPart = Exclude<ChatContentPart, { type: 'text' }>;
+
+/**
+ * 聊天消息里的内联媒体在端口语义上最接近的引用角色。
+ * 消息本身没有画布端口，这里只按供应商内容类型归类，不改变实际发送字段。
+ */
+function chatMediaPartRole(part: ChatMediaPart): PortRole {
+  if (part.type === 'image_url') return 'referenceImage';
+  if (part.type === 'input_audio') return 'audioTrack';
+  return 'content';
+}
+
+/**
+ * 从实际发送的 Chat Completions 消息派生请求文本。
+ *
+ * 一条消息对应一个文本块，顺序即消息顺序；数组内容只拼接 `type: 'text'` 块，
+ * 内联媒体按发送顺序对应目标节点冻结的提示词提及，只保留资产身份与版本。
+ */
+function textRequestPromptCapture(
+  snapshot: RunSnapshot,
+  messages: readonly {
+    role: 'user';
+    name?: string;
+    content: string | ChatContentPart[];
+  }[],
+): { parts: RequestPromptPart[]; resources: RequestPromptResource[] } {
+  const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
+  const mentions =
+    target?.data.promptDocument?.blocks.filter((block) => block.type === 'mention') ?? [];
+  const parts: RequestPromptPart[] = [];
+  const resources: RequestPromptResource[] = [];
+  let mentionIndex = 0;
+  messages.forEach((message, order) => {
+    const content = message.content;
+    parts.push({
+      order,
+      role: message.role,
+      ...(message.name ? { name: message.name } : {}),
+      text: Array.isArray(content)
+        ? content.map((part) => (part.type === 'text' ? part.text : '')).join('')
+        : content,
+    });
+    if (!Array.isArray(content)) return;
+    for (const part of content) {
+      if (part.type === 'text') continue;
+      const mention = mentions[mentionIndex];
+      mentionIndex += 1;
+      if (!mention) continue;
+      resources.push({
+        assetId: mention.assetId,
+        ...(mention.assetVersion ? { assetVersion: mention.assetVersion } : {}),
+        role: chatMediaPartRole(part),
+        sortOrder: resources.length,
+        mediaType: mention.mediaType,
+      });
+    }
+  });
+  return { parts, resources };
+}
+
+/**
+ * 把实际发送的原图记录为参考资源身份。
+ *
+ * 只保存快照里已冻结的资产 ID 与版本；输入缺少资产身份时保留角色与顺序，
+ * 绝不从 data URL、文件名或节点当前编辑状态推断身份。
+ */
+function imagePromptResources(
+  snapshot: RunSnapshot,
+  images: readonly RunInputSnapshot[],
+): RequestPromptResource[] {
+  const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
+  const editSource = imageEditSourceSchema.safeParse(target?.data.imageEditSource);
+  return images.map((input, sortOrder) => {
+    const assetId = input.sourceAssetId ?? input.snapshot.data.assetId;
+    const editVersion =
+      assetId && editSource.success && editSource.data.assetId === assetId
+        ? editSource.data.version
+        : undefined;
+    const referenceVersion = assetId
+      ? target?.data.resourceRefs?.find((reference) => reference.assetId === assetId)?.assetVersion
+      : undefined;
+    const assetVersion = editVersion ?? referenceVersion;
+    return {
+      ...(assetId ? { assetId } : {}),
+      ...(assetVersion ? { assetVersion } : {}),
+      role: input.role,
+      sortOrder,
+      mediaType: 'image',
+    };
+  });
+}
+
+/**
+ * 把视频创建体里真正携带的图片记录为参考资源身份。
+ *
+ * 只记录请求体实际出现的首帧、尾帧与参考图字段；被预检丢弃或未映射的输入
+ * 不会因为出现在快照里就被写进记录。
+ */
+function videoPromptResources(
+  body: Record<string, unknown>,
+  inputs: VideoInputMapping,
+): RequestPromptResource[] {
+  const resources: RequestPromptResource[] = [];
+  const add = (input: RunInputSnapshot | undefined) => {
+    if (!input) return;
+    const assetId = input.sourceAssetId ?? input.snapshot.data.assetId;
+    resources.push({
+      ...(assetId ? { assetId } : {}),
+      role: input.role,
+      sortOrder: resources.length,
+      mediaType: 'image',
+    });
+  };
+  if (body.image !== undefined) add(inputs.firstFrame);
+  if (body.last_frame !== undefined) add(inputs.lastFrame);
+  if (Array.isArray(body.reference_images) && body.reference_images.length > 0) {
+    for (const input of inputs.referenceImages) add(input);
+  }
+  return resources;
 }
 
 /**

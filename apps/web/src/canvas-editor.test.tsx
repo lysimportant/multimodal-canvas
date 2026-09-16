@@ -386,6 +386,8 @@ let defaultNodeRunOverride: { status: RunRecord['status']; error?: string } | un
 let nodeRunRequestCounts: Map<string, number>;
 let nodeRunRequestBodies: Map<string, Array<Record<string, unknown>>>;
 let resultContent = new Map<string, { body: string; contentType: string }>();
+/** 按 `runId\0nodeId` 存放的生成提示词记录，用于验证 Dialog 的读取路径。 */
+let promptRecords: Map<string, Array<Record<string, unknown>>>;
 let fetchMock: ReturnType<typeof vi.fn>;
 let clipboardMock: {
   writeText: ReturnType<typeof vi.fn>;
@@ -516,6 +518,30 @@ function installApiMock() {
       const run = runs.get(decodeURIComponent(runMatch[1]));
       if (run) return jsonResponse({ run });
     }
+    // 生成提示词记录：列表只返回身份与摘要，完整文本按记录 ID 单独读取。
+    const promptListMatch = url.pathname.match(/^\/v1\/runs\/([^/]+)\/request-prompts$/);
+    if (promptListMatch && method === 'GET') {
+      const runId = decodeURIComponent(promptListMatch[1]);
+      const nodeId = url.searchParams.get('nodeId') ?? '';
+      const records = promptRecords.get(`${runId}\0${nodeId}`) ?? [];
+      return jsonResponse({
+        records: records.map((record) => ({
+          id: record.recordId,
+          nodeId,
+          mediaType: record.mediaType,
+        })),
+      });
+    }
+    const promptRecordMatch = url.pathname.match(/^\/v1\/runs\/([^/]+)\/request-prompts\/([^/]+)$/);
+    if (promptRecordMatch && method === 'GET') {
+      const runId = decodeURIComponent(promptRecordMatch[1]);
+      const recordId = decodeURIComponent(promptRecordMatch[2]);
+      for (const records of promptRecords.values()) {
+        const found = records.find((record) => record.recordId === recordId);
+        if (found && found.runId === runId) return jsonResponse({ record: found });
+      }
+      return jsonResponse({ error: 'request prompt record not found' }, 404);
+    }
     throw new Error(`Unhandled mock request: ${method} ${url.pathname}`);
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -627,6 +653,11 @@ function flowNodes() {
   return screen.queryAllByTestId('flow-node');
 }
 
+/** 画布上的连线，用于断言连接与删除范围。 */
+function flowEdges() {
+  return screen.queryAllByTestId('flow-edge');
+}
+
 function findNodeByLabel(label: string) {
   return flowNodes().find(
     (node) =>
@@ -691,6 +722,7 @@ describe('画布编辑器交互', () => {
     nodeRunRequestCounts = new Map();
     nodeRunRequestBodies = new Map();
     resultContent = new Map();
+    promptRecords = new Map();
     vi.stubGlobal('ResizeObserver', ResizeObserverStub);
     previousClipboardDescriptor = Object.getOwnPropertyDescriptor(window.navigator, 'clipboard');
     installClipboardMock();
@@ -1040,6 +1072,182 @@ describe('画布编辑器交互', () => {
     expect(findNodeByLabel('视频生成节点')).toBeTruthy();
     expect(screen.queryByRole('button', { name: '新建文字转换节点' })).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '自动适配缩放' }));
+  });
+
+  it('胶囊工具栏创建空组，整组移动带走成员，解散后成员与连线保留', async () => {
+    const { user } = await renderCanvas();
+
+    // 空组：没有选区时在视口中心创建固定尺寸区域。
+    await user.click(screen.getByRole('button', { name: '新建分组' }));
+    const group = await screen.findByText('组 1');
+    expect(group).toBeTruthy();
+    expect(screen.getByText('0')).toBeTruthy();
+
+    // 建两个节点并框选成组。
+    await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
+    await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
+    const imageNode = findNodeByLabel('图片生成节点')!;
+    const textNode = findNodeByLabel('文字生成节点')!;
+    await user.click(imageNode);
+    await user.keyboard('{Control>}a{/Control}');
+    await user.click(screen.getByRole('button', { name: '新建分组' }));
+
+    await waitFor(() => expect(screen.getByText('组 2')).toBeInTheDocument());
+    expect(screen.getAllByText('2').length).toBeGreaterThan(0);
+
+    // 组只表达布局：不进入运行图，也不改变节点数量。
+    await waitFor(() => expect(flowNodes()).toHaveLength(2));
+    expect(textNode).toBeTruthy();
+
+    // 解散后成员与连线保留，区域移除。
+    await user.click(screen.getByText('组 2'));
+    await user.click(screen.getByLabelText('解散组 组 2'));
+    await waitFor(() => expect(screen.queryByText('组 2')).not.toBeInTheDocument());
+    expect(flowNodes()).toHaveLength(2);
+  });
+
+  it('清空菜单在 hover 后展开，取消确认不改变任何内容', async () => {
+    const { user } = await renderCanvas();
+    await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
+    await user.click(screen.getByRole('button', { name: '新建分组' }));
+
+    await user.hover(screen.getByRole('button', { name: '清空' }));
+    const clearCanvasItem = await screen.findByRole('menuitem', { name: /清空画布/ });
+    expect(clearCanvasItem).toHaveTextContent('1 节点');
+    expect(clearCanvasItem).toHaveTextContent('1 组');
+
+    // 取消确认：节点与组都不变。
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    await user.click(clearCanvasItem);
+    await waitFor(() => expect(confirmSpy).toHaveBeenCalledTimes(1));
+    expect(flowNodes()).toHaveLength(1);
+    expect(screen.getByText('组 1')).toBeInTheDocument();
+    confirmSpy.mockRestore();
+  });
+
+  it('清空空节点只移除空模板，保留已填写提示词与已绑定资源的节点，并可一次撤销', async () => {
+    const { user } = await renderCanvas();
+
+    // 空模板：候选。
+    await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
+    const emptyNode = findNodeByLabel('图片生成节点')!;
+    await user.click(emptyNode);
+    // 已填写提示词：必须保留。
+    await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
+    const filledNode = findNodeByLabel('文字生成节点')!;
+    await user.click(filledNode);
+    await fillSelectedPrompt(user, '这段内容必须保留');
+    // 新建的空模板未被选中，先取消选中再统计候选。
+    await user.keyboard('{Escape}');
+
+    await waitFor(() => expect(flowNodes()).toHaveLength(2));
+    await user.hover(screen.getByRole('button', { name: '清空' }));
+    const clearEmptyItem = await screen.findByRole('menuitem', { name: /清空空节点/ });
+    // 只有一个空模板是候选：已填写提示词的节点被保留。
+    expect(clearEmptyItem).toHaveTextContent('1 节点');
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    await user.click(clearEmptyItem);
+    await waitFor(() => expect(flowNodes()).toHaveLength(1));
+    expect(findNodeByLabel('文字生成节点')).toBeTruthy();
+    expect(findNodeByLabel('图片生成节点')).toBeUndefined();
+    confirmSpy.mockRestore();
+
+    // 一次撤销恢复节点与提示词。
+    await user.keyboard('{Control>}z{/Control}');
+    await waitFor(() => expect(flowNodes()).toHaveLength(2));
+    expect(findNodeByLabel('图片生成节点')).toBeTruthy();
+  });
+
+  it('清空空节点保留有有效上游输入的空节点，只清理没有任何输入的模板', async () => {
+    const { user } = await renderCanvas();
+
+    // 来源节点 -> 生成节点：生成节点提示词为空，但它有有效上游输入，必须保留。
+    await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
+    const upstream = findNodeByLabel('图片生成节点')!;
+    await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
+    const downstream = findNodeByLabel('文字生成节点')!;
+    // 用拖线建立上游连接，形成真实的有效输入引用。
+    await user.click(handleFor(upstream, 'output:image'));
+    await user.click(handleFor(downstream, 'input:content'));
+    await waitFor(() => expect(flowEdges()).toHaveLength(1));
+
+    // 再建一个完全没有输入的模板节点，它才是候选。
+    await user.click(screen.getByRole('button', { name: '新建音频生成节点' }));
+    await user.keyboard('{Escape}');
+
+    await waitFor(() => expect(flowNodes()).toHaveLength(3));
+    await user.hover(screen.getByRole('button', { name: '清空' }));
+    const clearEmptyItem = await screen.findByRole('menuitem', { name: /清空空节点/ });
+    // 两个没有任何内容的模板都是候选；有上游输入的文字节点必须保留。
+    expect(clearEmptyItem).toHaveTextContent('2 节点');
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    await user.click(clearEmptyItem);
+    await waitFor(() => expect(flowNodes()).toHaveLength(1));
+    expect(findNodeByLabel('文字生成节点')).toBeTruthy();
+    expect(findNodeByLabel('图片生成节点')).toBeUndefined();
+    expect(findNodeByLabel('音频生成节点')).toBeUndefined();
+    confirmSpy.mockRestore();
+  });
+
+  it('提示词入口读取该节点真正发送的请求文本，缺失记录时明确说明', async () => {
+    const { user } = await renderCanvas();
+    await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
+    const node = findNodeByLabel('文字生成节点')!;
+    await user.click(node);
+    const quickEditor = await fillSelectedPrompt(user, '写一段开头');
+    await user.click(within(quickEditor).getByRole('button', { name: '生成' }));
+
+    // 等运行结束后写入一条与本次运行对应的请求记录。
+    await waitFor(() => expect(nodeRunRequestCounts.size).toBeGreaterThan(0));
+    const nodeId = [...nodeRunRequestCounts.keys()][0]!;
+    const runId = `run_${nodeId}_0`;
+    promptRecords.set(`${runId}\0${nodeId}`, [
+      {
+        recordId: 'record-1',
+        runId,
+        nodeId,
+        attempt: 1,
+        requestIdentity: 'POST /chat/completions#1',
+        schemaVersion: 1,
+        provider: 'newapi',
+        modelAlias: 'text-model',
+        mediaType: 'text',
+        format: 'messages',
+        parts: [{ order: 0, role: 'user', text: '写一段开头' }],
+        resources: [],
+        sendStatus: 'sent',
+        createdAt: '2026-09-16T10:00:00.000Z',
+        assetId: `asset-result-${nodeId}`,
+        assetVersion: 1,
+        summary: '写一段开头。',
+      },
+    ]);
+
+    // 提示词入口在节点信息面板内，属于只读查询，不是输入编辑入口。
+    await user.click(within(node).getByRole('button', { name: '查看节点信息' }));
+    await user.click(await screen.findByRole('button', { name: /查看生成提示词/ }));
+    const dialog = await screen.findByRole('dialog', { name: '生成提示词' });
+    expect(within(dialog).getByText('写一段开头。')).toBeVisible();
+    expect(within(dialog).getByText('[user] 写一段开头')).toBeVisible();
+    await user.click(within(dialog).getByRole('button', { name: '关闭生成提示词' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: '生成提示词' })).not.toBeInTheDocument(),
+    );
+  });
+
+  it('没有生成记录的节点显示未记录生成提示词，不伪造内容', async () => {
+    const { user } = await renderCanvas();
+    await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
+    const node = findNodeByLabel('文字生成节点')!;
+
+    // 提示词入口在节点信息面板内，属于只读查询，不是输入编辑入口。
+    await user.click(within(node).getByRole('button', { name: '查看节点信息' }));
+    await user.click(await screen.findByRole('button', { name: /查看生成提示词/ }));
+    const dialog = await screen.findByRole('dialog', { name: '生成提示词' });
+    await waitFor(() => expect(within(dialog).getByText(/未记录生成提示词/)).toBeVisible());
+    await user.click(within(dialog).getByRole('button', { name: '关闭生成提示词' }));
   });
 
   it('支持复制粘贴，并能删除选中节点', async () => {

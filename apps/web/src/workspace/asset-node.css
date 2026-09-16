@@ -151,6 +151,25 @@
   color: #8b5a13;
 }
 
+/* 节点信息里的耗时行与提示词入口：只读展示，不参与浮动控制栏布局。 */
+.flow-node-info-list .node-duration-badge {
+  font-size: 12px;
+}
+
+.flow-node-prompt-link {
+  align-items: center;
+  background: none;
+  border: 0;
+  color: var(--mc-accent-strong, #12613e);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-size: 11px;
+  gap: 4px;
+  padding: 0;
+  text-decoration: underline;
+}
+
 .flow-node-floating-controls .flow-node-enabled-toggle {
   border: 0;
   border-radius: 4px;

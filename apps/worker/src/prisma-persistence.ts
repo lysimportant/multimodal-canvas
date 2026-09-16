@@ -3,17 +3,43 @@ import {
   createCredentialEncryptionKeyringFromEnvironment,
   type CredentialEncryptionKeyring,
 } from '@multimodal-canvas/credential-crypto';
-import { PrismaClient, type Prisma, type RunStatus as PrismaRunStatus } from '@prisma/client';
+import {
+  PrismaClient,
+  type MediaType as PrismaMediaType,
+  type Prisma,
+  type RunStatus as PrismaRunStatus,
+} from '@prisma/client';
 import {
   providerJobSchema,
+  requestPromptRecordKey,
+  requestPromptRecordSchema,
+  type NodeTiming,
   type ProviderJob,
+  type RequestPromptRecord,
   type RunResult,
   type RunSnapshot,
   type RunStatus,
 } from '@multimodal-canvas/domain';
-import type { RunPersistence, WorkerCredentialReference, WorkerProviderCredentials } from './index';
+import { mergeNodeTimings, parseStoredNodeTimings } from './node-timings';
+import type {
+  ObservableRequestPromptSendStatus,
+  RequestPromptRecordIdentity,
+  RunPersistence,
+  WorkerCredentialReference,
+  WorkerProviderCredentials,
+} from './index';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+/**
+ * 独立凭据的行标记，必须与 API 设置存储保持一致；它们不是全局活动连接。
+ *
+ * PostgreSQL 存储把「最新行」当作活动连接，而独立凭据按构造总是最新行并且
+ * `defaultModels` 为 NULL。读取平台设置时必须显式排除这些行，否则节点超时等
+ * 平台配置会静默退回默认值。
+ */
+const INDEPENDENT_CREDENTIAL_LABELS = ['independent', 'independent-deleted'];
+/** 活动连接行的稳定排序：更新时间优先，同毫秒用版本号决胜。 */
+const ACTIVE_CREDENTIAL_ORDER_BY = [{ updatedAt: 'desc' as const }, { version: 'desc' as const }];
 
 /** Worker-side Prisma adapter. API creates the row; worker only reconciles lifecycle state. */
 export class WorkerPrismaRunPersistence implements RunPersistence {
@@ -38,13 +64,14 @@ export class WorkerPrismaRunPersistence implements RunPersistence {
   }
 
   /**
-   * 从最新平台设置读取节点超时，兼容未包含扩展字段的旧凭据。
-   * 返回毫秒值；非法持久化数据显式报错，避免静默重置用户配置。
+   * 从最新的活动连接读取节点超时，兼容未包含扩展字段的旧凭据。
+   * 独立凭据行不参与平台设置选择；返回毫秒值，非法持久化数据显式报错，
+   * 避免静默重置用户配置。
    */
   async getProviderTimeoutMs(): Promise<number | undefined> {
     const settings = await this.prisma.aiCredential.findFirst({
-      where: { projectId: null },
-      orderBy: [{ updatedAt: 'desc' }, { version: 'desc' }],
+      where: { projectId: null, label: { notIn: INDEPENDENT_CREDENTIAL_LABELS } },
+      orderBy: ACTIVE_CREDENTIAL_ORDER_BY,
       select: { defaultModels: true },
     });
     const defaults = settings?.defaultModels;
@@ -171,13 +198,101 @@ export class WorkerPrismaRunPersistence implements RunPersistence {
     providerJob?: ProviderJob;
     result?: RunResult;
     error?: string;
+    nodeTimings?: Record<string, NodeTiming>;
   }) {
-    return this.prisma.run.update({
-      where: { id: databaseRunId(input.runId) },
+    const runId = databaseRunId(input.runId);
+    const data = {
+      status: toPrismaStatus(input.status),
+      ...(input.result ? { result: input.result as Prisma.InputJsonValue } : {}),
+      ...(input.error ? { error: { message: input.error } as Prisma.InputJsonValue } : {}),
+    };
+    if (!input.nodeTimings) {
+      return this.prisma.run.update({ where: { id: runId }, data });
+    }
+    // 时间写入必须单调：在同一事务里锁定 Run 行后再按「最早时刻优先」合并，
+    // 迟到的重复事件既不能让时间倒退，也不能延长已经结束的耗时。
+    return this.prisma.$transaction(async (transaction) => {
+      await transaction.$queryRaw`SELECT "id" FROM "runs" WHERE "id" = ${runId}::uuid FOR UPDATE`;
+      const current = await transaction.run.findUnique({
+        where: { id: runId },
+        select: { nodeTimings: true },
+      });
+      const nodeTimings = mergeNodeTimings(
+        parseStoredNodeTimings(current?.nodeTimings),
+        input.nodeTimings ?? {},
+      );
+      return transaction.run.update({
+        where: { id: runId },
+        data: { ...data, nodeTimings: nodeTimings as Prisma.InputJsonValue },
+      });
+    });
+  }
+
+  /**
+   * 请求发送前落库最终请求文本。
+   *
+   * 记录身份为 `requestPromptRecordKey`（runId + nodeId + attempt + requestIdentity），
+   * 主键由该身份派生，因此重放不会新增行，也不会用旧数据覆盖已经存在的记录；
+   * 并发创建冲突时读取已存在的行返回，同样不覆盖。
+   *
+   * @param input.record Provider 在真正发送前构造的请求记录，`sendStatus` 为 `pending`。
+   * @returns 已落库的记录行。
+   * @throws 运行身份不是可解析的数据库 Run.id 之外的 Prisma 写入错误原样抛出。
+   */
+  async upsertRequestPromptRecord(input: { record: RequestPromptRecord }) {
+    const record = requestPromptRecordSchema.parse(input.record);
+    const id = stableRequestPromptRecordId(record);
+    const existing = await this.prisma.runRequestPrompt.findUnique({ where: { id } });
+    if (existing) return existing;
+    try {
+      return await this.prisma.runRequestPrompt.create({
+        data: requestPromptRecordRowData(record, id),
+      });
+    } catch (error) {
+      if (!isPrismaUniqueConstraintError(error)) throw error;
+      const concurrent = await this.prisma.runRequestPrompt.findUnique({ where: { id } });
+      if (!concurrent) throw error;
+      return concurrent;
+    }
+  }
+
+  /**
+   * 写入请求可观测的发送终态与归档后的结果身份。
+   *
+   * 发送状态只允许 `pending` → 终态，已落库的终态不会被迟到或重复的事件改写；
+   * 结果身份只在尚未绑定时补写一次，且必须与发送状态一起提交。记录不存在时
+   * 返回 `undefined`（Provider 未留存就不能伪造终态）。
+   *
+   * @param input.identity 记录身份，与 `requestPromptRecordKey` 的输入一致。
+   * @param input.sendStatus 本次可观测的发送终态。
+   * @param input.assetId 归档完成后的结果资产 ID。
+   * @param input.assetVersion 归档完成后的结果资产版本。
+   * @returns 更新后的记录行；记录不存在时为 undefined。
+   */
+  async recordRequestPromptOutcome(input: {
+    identity: RequestPromptRecordIdentity;
+    sendStatus: ObservableRequestPromptSendStatus;
+    assetId?: string;
+    assetVersion?: number;
+  }) {
+    const id = stableRequestPromptRecordId(input.identity);
+    const existing = await this.prisma.runRequestPrompt.findUnique({ where: { id } });
+    if (!existing) return undefined;
+    const sendStatus = existing.sendStatus === 'pending' ? input.sendStatus : existing.sendStatus;
+    // 结果身份只绑定一次，并且必须与具体版本一起写入，绝不留下未知版本的引用。
+    const binding =
+      existing.assetId !== null
+        ? { assetId: existing.assetId, assetVersion: existing.assetVersion }
+        : input.assetId && input.assetVersion
+          ? { assetId: input.assetId, assetVersion: input.assetVersion }
+          : { assetId: null, assetVersion: null };
+    if (sendStatus === existing.sendStatus && binding.assetId === existing.assetId) return existing;
+    return this.prisma.runRequestPrompt.update({
+      where: { id },
       data: {
-        status: toPrismaStatus(input.status),
-        ...(input.result ? { result: input.result as Prisma.InputJsonValue } : {}),
-        ...(input.error ? { error: { message: input.error } as Prisma.InputJsonValue } : {}),
+        sendStatus,
+        assetId: binding.assetId,
+        assetVersion: binding.assetVersion,
       },
     });
   }
@@ -336,6 +451,47 @@ function isPrismaUniqueConstraintError(error: unknown): boolean {
     'code' in error &&
     (error as { code?: unknown }).code === 'P2002'
   );
+}
+
+/** 记录身份派生的稳定主键；重放命中同一行，不会产生重复记录。 */
+export function stableRequestPromptRecordId(
+  identity: Pick<RequestPromptRecord, 'runId' | 'nodeId' | 'attempt' | 'requestIdentity'>,
+): string {
+  const digest = createHash('sha256')
+    .update(`multimodal-canvas:run-request-prompt:${requestPromptRecordKey(identity)}`)
+    .digest('hex');
+  return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
+}
+
+/** 把 Domain 记录映射为独立记录的列值；请求文本之外的字段不落库。 */
+function requestPromptRecordRowData(
+  record: RequestPromptRecord,
+  id: string,
+): Prisma.RunRequestPromptUncheckedCreateInput {
+  return {
+    id,
+    runId: databaseRunId(record.runId),
+    requestRunId: record.runId,
+    nodeId: record.nodeId,
+    attempt: record.attempt,
+    requestIdentity: record.requestIdentity,
+    schemaVersion: record.schemaVersion,
+    provider: record.provider,
+    modelAlias: record.modelAlias,
+    credentialId: record.credentialId ?? null,
+    credentialVersion: record.credentialVersion ?? null,
+    mediaType: toPrismaMediaType(record.mediaType),
+    format: record.format,
+    parts: record.parts as unknown as Prisma.InputJsonValue,
+    negativeText: record.negativeText ?? null,
+    resources: record.resources as unknown as Prisma.InputJsonValue,
+    sendStatus: record.sendStatus,
+    createdAt: new Date(record.createdAt),
+  };
+}
+
+function toPrismaMediaType(mediaType: RequestPromptRecord['mediaType']): PrismaMediaType {
+  return mediaType.toUpperCase() as PrismaMediaType;
 }
 
 export function createWorkerPrismaPersistence(): WorkerPrismaRunPersistence | undefined {

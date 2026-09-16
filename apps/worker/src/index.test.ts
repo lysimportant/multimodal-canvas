@@ -37,11 +37,13 @@ import {
   createProviderJobRecord,
   createRunWorker,
   normalizeProviderExecution,
+  requestPromptSendStatusForFailure,
   resolveDatabaseRunId,
   sanitizeProviderJobPayload,
 } from './index';
-import { serializeWorkerError } from './logger';
+import { serializeWorkerError, type WorkerLogger } from './logger';
 import { workflowSnapshotFingerprint, workflowSnapshotFingerprintV1 } from './workflow-dag';
+import type { RequestPromptRecord } from '@multimodal-canvas/domain';
 
 const result = {
   provider: 'mock',
@@ -127,6 +129,8 @@ describe('worker provider job boundary', () => {
         );
         bullmqState.job = job;
         const getProviderTimeoutMs = vi.fn(async () => 1_800_000);
+        const requestPrompts: RequestPromptRecord[] = [];
+        const promptOutcomes: Array<{ sendStatus: string; assetId?: string }> = [];
         createRunWorker({
           connection: { host: '127.0.0.1', port: 6379 },
           providerName: 'newapi',
@@ -144,12 +148,37 @@ describe('worker provider job boundary', () => {
             getProviderTimeoutMs,
             async upsertProviderJob() {},
             async recordUsage() {},
+            async upsertRequestPromptRecord({ record }) {
+              requestPrompts.push(record);
+            },
+            async recordRequestPromptOutcome({ sendStatus, assetId }) {
+              promptOutcomes.push({ sendStatus, ...(assetId ? { assetId } : {}) });
+            },
           },
         });
         await expect(bullmqState.processor?.(job)).resolves.toMatchObject({ status: 'succeeded' });
         expect(getProviderTimeoutMs).toHaveBeenCalledOnce();
         expect(timer).toHaveBeenCalledWith(expect.any(Function), override ? 2_400_000 : 1_800_000);
         expect(fetchMock).toHaveBeenCalledOnce();
+        // 真实 Provider 组装出的请求必须逐项留存在发送之前，并且只在调用返回后
+        // 才标记为已发送、在归档完成后绑定结果身份。
+        expect(requestPrompts).toHaveLength(1);
+        expect(requestPrompts[0]).toMatchObject({
+          runId,
+          nodeId: 'node_boundary',
+          attempt: 1,
+          provider: 'newapi',
+          modelAlias: 'text-model',
+          mediaType: 'text',
+          format: 'messages',
+          parts: [{ order: 0, role: 'user', text: 'Boundary text' }],
+          resources: [],
+          sendStatus: 'pending',
+        });
+        expect(promptOutcomes).toEqual([
+          { sendStatus: 'sent' },
+          { sendStatus: 'sent', assetId: 'asset-timeout-test' },
+        ]);
       } finally {
         timer.mockRestore();
         vi.unstubAllGlobals();
@@ -170,6 +199,123 @@ describe('worker provider job boundary', () => {
     expect(serializeWorkerError(new Error('apiKey=secret-key')).errorMessage).not.toContain(
       'secret-key',
     );
+  });
+
+  it('derives the observable send status from evidence only', () => {
+    // 已经拿到平台任务 ID：创建请求确实送达并成功。
+    expect(requestPromptSendStatusForFailure({ platformJobId: 'platform-1' })).toBe('sent');
+    expect(requestPromptSendStatusForFailure({ platformJobId: ' platform-1 ' })).toBe('sent');
+    // 只有网关明确拒绝本次请求（4xx，排除可重试状态）才算失败。
+    expect(requestPromptSendStatusForFailure({ status: 400 })).toBe('failed');
+    expect(requestPromptSendStatusForFailure({ status: 401 })).toBe('failed');
+    expect(requestPromptSendStatusForFailure({ status: 422 })).toBe('failed');
+    // 5xx 与 408/425/429 都可能是 POST 之后才失败，不能当成明确拒绝。
+    for (const status of [500, 502, 503, 504, 408, 425, 429]) {
+      expect(requestPromptSendStatusForFailure({ status })).toBe('unknown');
+    }
+    // 超时、网络中断、取消与未知错误形态同理。
+    expect(requestPromptSendStatusForFailure({ code: 'TIMEOUT', retryable: true })).toBe('unknown');
+    expect(requestPromptSendStatusForFailure({ name: 'AbortError' })).toBe('unknown');
+    expect(requestPromptSendStatusForFailure(new Error('aborted'))).toBe('unknown');
+    expect(requestPromptSendStatusForFailure(undefined)).toBe('unknown');
+    // 没有响应证据时，即使带有明确的供应商错误代码也保持不确定。
+    expect(requestPromptSendStatusForFailure({ code: 'model_not_found' })).toBe('unknown');
+    expect(requestPromptSendStatusForFailure({ code: 'invalid_request_error' })).toBe('unknown');
+    for (const status of [0, 99, 600, '502', Number.NaN]) {
+      expect(requestPromptSendStatusForFailure({ status })).toBe('unknown');
+    }
+  });
+
+  it('never writes request prompt text into worker logs', async () => {
+    const promptText = '月白布衫，青裙，发髻松一缕，袖口有薄面灰';
+    let logCheckOutcomeCalls = 0;
+    const logEntries: string[] = [];
+    const testLogger: WorkerLogger = {
+      child: () => testLogger,
+      debug: (bindings, message) => logEntries.push(JSON.stringify([bindings, message])),
+      info: (bindings, message) => logEntries.push(JSON.stringify([bindings, message])),
+      warn: (bindings, message) => logEntries.push(JSON.stringify([bindings, message])),
+      error: (bindings, message) => logEntries.push(JSON.stringify([bindings, message])),
+    };
+    const runId = '123e4567-e89b-42d3-a456-426614174030';
+    const credentialSnapshot = {
+      ...createBoundarySnapshot(),
+      credentialId: '123e4567-e89b-42d3-a456-426614174031',
+      credentialVersion: 1,
+    };
+    const job = createBoundaryJob(
+      runId,
+      credentialSnapshot,
+      'newapi',
+      createProviderJobRecord(runId, 'newapi'),
+    );
+    bullmqState.job = job;
+
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      stepDelayMs: 0,
+      logger: testLogger,
+      provider: {
+        async execute(request) {
+          await request.onRequestPrompt?.({
+            schemaVersion: 1,
+            runId: request.runId ?? runId,
+            nodeId: request.snapshot.targetNodeId,
+            attempt: request.attempt ?? 1,
+            requestIdentity: 'POST /chat/completions#1',
+            provider: 'newapi',
+            modelAlias: 'text-model',
+            mediaType: 'text',
+            format: 'plain',
+            parts: [{ order: 0, text: promptText }],
+            resources: [],
+            sendStatus: 'pending',
+            createdAt: '2026-09-17T00:00:00.000Z',
+          });
+          return {
+            result: {
+              provider: 'newapi',
+              summary: 'prompt log check',
+              targetNodeId: request.snapshot.targetNodeId,
+              mediaType: 'text' as const,
+              inputCount: request.snapshot.inputs.length,
+            },
+            output: {
+              mediaType: 'text' as const,
+              kind: 'text' as const,
+              text: 'archivable prompt log result',
+              mimeType: 'text/plain',
+              format: 'txt',
+            },
+          };
+        },
+      },
+      resultArchiver: async () => ({ assetId: 'asset_log_check', version: 1 }),
+      persistence: {
+        getProviderCredentials: async () => ({
+          baseUrl: 'https://log-check.example/v1',
+          apiKey: 'synthetic-key',
+        }),
+        async upsertRequestPromptRecord() {},
+        async recordRequestPromptOutcome() {
+          // 第一次终态写入失败会走告警路径：日志里只能出现身份，不能出现提示词正文。
+          if (logCheckOutcomeCalls++ === 0) throw new Error('prompt outcome store unavailable');
+        },
+        async upsertProviderJob() {},
+        async recordUsage() {},
+        async updateRun() {},
+      },
+    });
+
+    await expect(bullmqState.processor?.(job)).resolves.toMatchObject({ status: 'succeeded' });
+    const logged = logEntries.join('\n');
+    expect(logEntries.length).toBeGreaterThan(0);
+    // 告警只携带身份（节点与请求身份），绝不携带提示词正文或凭据。
+    expect(logged).toContain('request prompt send status persistence failed');
+    expect(logged).toContain('node_boundary');
+    expect(logged).not.toContain(promptText);
+    expect(logged).not.toContain('synthetic-key');
   });
 
   it('creates a stable local provider job record', () => {
@@ -635,6 +781,8 @@ describe('worker provider job boundary', () => {
           },
           async upsertProviderJob() {},
           async recordUsage() {},
+          async upsertRequestPromptRecord() {},
+          async recordRequestPromptOutcome() {},
         },
         resultArchiver,
       });

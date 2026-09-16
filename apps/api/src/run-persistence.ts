@@ -1,11 +1,17 @@
 import { createHash } from 'node:crypto';
 
 import {
+  nodeTimingSchema,
   providerJobSchema,
+  requestPromptRecordSchema,
   runRecordSchema,
   runResultSchema,
   runSnapshotSchema,
+  type NodeTiming,
   type ProviderJob,
+  type RequestPromptFormat,
+  type RequestPromptRecord,
+  type RequestPromptSendStatus,
   type RunRecord,
   type RunResult,
   type RunSnapshot,
@@ -85,7 +91,40 @@ export type UsageLedgerPersistenceInput = {
   metadata?: Record<string, unknown>;
 };
 
-type PersistenceClient = Pick<PrismaClient, 'run' | 'providerJob' | 'usageLedger'>;
+/**
+ * 请求提示词记录的列表摘要。
+ *
+ * 列表与 SSE 只携带必要摘要或记录 ID：完整请求文本必须通过
+ * {@link PrismaRunPersistence.getRequestPromptRecord} 按需读取。
+ */
+export type RunRequestPromptSummary = {
+  /** 记录 ID，用于按需读取完整请求文本。 */
+  id: string;
+  /** 记录自身的运行身份，与运行读接口使用的外部标识一致。 */
+  runId: string;
+  nodeId: string;
+  attempt: number;
+  requestIdentity: string;
+  provider: string;
+  modelAlias: string;
+  mediaType: RequestPromptRecord['mediaType'];
+  format: RequestPromptFormat;
+  sendStatus: RequestPromptSendStatus;
+  /** 文本块数量；正文不在列表中出现。 */
+  partCount: number;
+  /** 参考资源数量；资源身份只在完整记录中返回。 */
+  resourceCount: number;
+  createdAt: string;
+  assetId?: string;
+  assetVersion?: number;
+  summary?: string;
+  summarySource?: RequestPromptRecord['summarySource'];
+};
+
+type PersistenceClient = Pick<
+  PrismaClient,
+  'run' | 'providerJob' | 'usageLedger' | 'runRequestPrompt'
+>;
 
 /**
  * Minimal persistence boundary for provider jobs and usage records.
@@ -144,6 +183,54 @@ export class PrismaRunPersistence {
       const record = persistedRunToRecord(row);
       return record ? [record] : [];
     });
+  }
+
+  /**
+   * 列出某次运行留存的请求提示词摘要。
+   *
+   * 结果不含请求正文，只携带记录 ID、节点身份、发送状态与计数；完整请求文本
+   * 通过 {@link getRequestPromptRecord} 按需读取。调用方必须先按运行所属项目
+   * 完成权限校验，与其它运行读接口一致。
+   *
+   * @param runId 外部运行标识或数据库 Run.id，两者都会映射到同一行。
+   * @returns 按创建时间、节点、attempt 与请求身份排序的摘要列表。
+   */
+  async listRequestPromptRecords(runId: string): Promise<RunRequestPromptSummary[]> {
+    const rows = await this.prisma.runRequestPrompt.findMany({
+      where: { runId: databaseRunId(runId) },
+      orderBy: [
+        { createdAt: 'asc' },
+        { nodeId: 'asc' },
+        { attempt: 'asc' },
+        { requestIdentity: 'asc' },
+      ],
+    });
+    return rows.flatMap((row) => {
+      const record = persistedRequestPromptRecord(row);
+      const id = isRecord(row) && typeof row.id === 'string' ? row.id : undefined;
+      return record && id ? [requestPromptSummary(id, record)] : [];
+    });
+  }
+
+  /**
+   * 按记录 ID 读取完整请求提示词。
+   *
+   * 查询同时限定记录 ID 与运行，因此调用方只能读到它有权读取的那次运行的记录；
+   * 记录 ID 非法或不属于该运行时返回 undefined。
+   *
+   * @param runId 外部运行标识或数据库 Run.id。
+   * @param recordId 记录 ID，来自摘要列表。
+   * @returns 完整记录（含按发送顺序排列的文本块）；不存在时为 undefined。
+   */
+  async getRequestPromptRecord(
+    runId: string,
+    recordId: string,
+  ): Promise<RequestPromptRecord | undefined> {
+    if (!isPrismaUuid(recordId)) return undefined;
+    const row = await this.prisma.runRequestPrompt.findFirst({
+      where: { id: recordId, runId: databaseRunId(runId) },
+    });
+    return row ? persistedRequestPromptRecord(row) : undefined;
   }
 
   /**
@@ -341,6 +428,7 @@ function persistedRunToRecord(row: unknown, externalRunId?: string): RunRecord |
   if (!createdAt || !updatedAt) return undefined;
   const error = persistedError(row.error);
   const progress = providerJob?.progress ?? (isTerminalRunStatus(status) ? 100 : 0);
+  const nodeTimings = persistedNodeTimings(row.nodeTimings);
   const candidate = {
     id: externalRunId ?? row.id,
     ...(typeof row.userId === 'string' ? { userId: row.userId } : {}),
@@ -359,11 +447,84 @@ function persistedRunToRecord(row: unknown, externalRunId?: string): RunRecord |
       : {}),
     ...(error ? { error } : {}),
     ...(typeof row.retryOf === 'string' ? { retryOf: row.retryOf } : {}),
+    ...(nodeTimings ? { nodeTimings } : {}),
     createdAt,
     updatedAt,
   };
   const parsed = runRecordSchema.safeParse(candidate);
   return parsed.success ? parsed.data : undefined;
+}
+
+/**
+ * 解析运行行上的节点时间。
+ *
+ * 只保留结构合法且键与 `nodeId` 一致的条目：损坏或历史数据按缺失处理，界面显示
+ * 「未记录」，既不会显示 0 秒，也不会因为一个坏条目丢掉整条运行记录。
+ */
+function persistedNodeTimings(value: unknown): Record<string, NodeTiming> | undefined {
+  if (!isRecord(value)) return undefined;
+  const timings: Record<string, NodeTiming> = {};
+  for (const [nodeId, candidate] of Object.entries(value)) {
+    const timing = nodeTimingSchema.safeParse(candidate);
+    if (!timing.success || timing.data.nodeId !== nodeId) continue;
+    timings[nodeId] = timing.data;
+  }
+  return Object.keys(timings).length > 0 ? timings : undefined;
+}
+
+/** 把独立记录行还原为 Domain 记录；结构非法时返回 undefined。 */
+function persistedRequestPromptRecord(row: unknown): RequestPromptRecord | undefined {
+  if (!isRecord(row)) return undefined;
+  const createdAt = toIsoDate(row.createdAt);
+  if (!createdAt) return undefined;
+  const parsed = requestPromptRecordSchema.safeParse({
+    schemaVersion: row.schemaVersion,
+    runId: row.requestRunId,
+    nodeId: row.nodeId,
+    attempt: row.attempt,
+    requestIdentity: row.requestIdentity,
+    provider: row.provider,
+    modelAlias: row.modelAlias,
+    ...(typeof row.credentialId === 'string' ? { credentialId: row.credentialId } : {}),
+    ...(typeof row.credentialVersion === 'number'
+      ? { credentialVersion: row.credentialVersion }
+      : {}),
+    mediaType: typeof row.mediaType === 'string' ? row.mediaType.toLowerCase() : row.mediaType,
+    format: row.format,
+    parts: row.parts,
+    ...(typeof row.negativeText === 'string' ? { negativeText: row.negativeText } : {}),
+    resources: row.resources,
+    sendStatus: row.sendStatus,
+    createdAt,
+    ...(typeof row.assetId === 'string' ? { assetId: row.assetId } : {}),
+    ...(typeof row.assetVersion === 'number' ? { assetVersion: row.assetVersion } : {}),
+    ...(typeof row.summary === 'string' ? { summary: row.summary } : {}),
+    ...(typeof row.summarySource === 'string' ? { summarySource: row.summarySource } : {}),
+  });
+  return parsed.success ? parsed.data : undefined;
+}
+
+/** 从完整记录派生列表摘要；正文与资源身份不进入摘要。 */
+function requestPromptSummary(id: string, record: RequestPromptRecord): RunRequestPromptSummary {
+  return {
+    id,
+    runId: record.runId,
+    nodeId: record.nodeId,
+    attempt: record.attempt,
+    requestIdentity: record.requestIdentity,
+    provider: record.provider,
+    modelAlias: record.modelAlias,
+    mediaType: record.mediaType,
+    format: record.format,
+    sendStatus: record.sendStatus,
+    partCount: record.parts.length,
+    resourceCount: record.resources.length,
+    createdAt: record.createdAt,
+    ...(record.assetId ? { assetId: record.assetId } : {}),
+    ...(record.assetVersion ? { assetVersion: record.assetVersion } : {}),
+    ...(record.summary ? { summary: record.summary } : {}),
+    ...(record.summarySource ? { summarySource: record.summarySource } : {}),
+  };
 }
 
 function persistedProviderJob(value: unknown): ProviderJob | undefined {

@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { RunSnapshot } from '@multimodal-canvas/domain';
+import {
+  REQUEST_PROMPT_SCHEMA_VERSION,
+  type RequestPromptRecord,
+  type RunSnapshot,
+} from '@multimodal-canvas/domain';
 import {
   createXfyunTtsProviderFromEnvironment,
   XfyunTtsProvider,
@@ -181,5 +185,82 @@ describe('XfyunTtsProvider', () => {
     await expect(pending).rejects.toThrow('请求已取消');
     socket.onopen?.();
     expect(socket.sent).toEqual([]);
+  });
+
+  /** 让 execute 推进到 WebSocket 已建立但尚未发送的位置。 */
+  async function waitForSocketOpen(socket: MockSocket): Promise<void> {
+    for (let attempt = 0; attempt < 10 && !socket.onopen; attempt += 1) {
+      await Promise.resolve();
+    }
+    expect(socket.onopen).toBeTypeOf('function');
+  }
+
+  it('records the exact synthesized text before the WebSocket frame is sent', async () => {
+    const socket = new MockSocket();
+    const factory = vi.fn(() => socket);
+    const records: RequestPromptRecord[] = [];
+    const pending = new XfyunTtsProvider({
+      appId: 'app',
+      apiPassword: 'secret',
+      webSocketFactory: factory,
+    }).execute({
+      snapshot: snapshot('你好啊'),
+      runId: 'run-tts',
+      attempt: 1,
+      onRequestPrompt: (record) => {
+        records.push(record);
+      },
+    });
+    await waitForSocketOpen(socket);
+    socket.onopen?.();
+
+    const request = JSON.parse(socket.sent[0] ?? '{}') as { data: { text: string } };
+    expect(Buffer.from(request.data.text, 'base64').toString('utf8')).toBe('你好啊');
+    expect(records).toEqual([
+      {
+        schemaVersion: REQUEST_PROMPT_SCHEMA_VERSION,
+        runId: 'run-tts',
+        nodeId: 'audio',
+        attempt: 1,
+        requestIdentity: 'WS /v2/tts#1',
+        provider: 'xfyun',
+        modelAlias: 'xfyun',
+        mediaType: 'audio',
+        format: 'plain',
+        parts: [{ order: 0, text: '你好啊' }],
+        resources: [],
+        sendStatus: 'pending',
+        createdAt: expect.any(String),
+      },
+    ]);
+    expect(Buffer.from(request.data.text, 'base64').toString('utf8')).toBe(
+      records[0]?.parts[0]?.text,
+    );
+    expect(JSON.stringify(records)).not.toContain('secret');
+
+    socket.onmessage?.({ data: new Uint8Array([1, 2, 3]) });
+    socket.onmessage?.({ data: JSON.stringify({ code: 0, data: { status: 2 } }) });
+    await expect(pending).resolves.toMatchObject({ output: { kind: 'base64', base64: 'AQID' } });
+  });
+
+  it('does not open the WebSocket when prompt persistence fails', async () => {
+    const factory = vi.fn(() => new MockSocket());
+    const failure = new Error('prompt store unavailable');
+
+    await expect(
+      new XfyunTtsProvider({
+        appId: 'app',
+        apiPassword: 'secret',
+        webSocketFactory: factory,
+      }).execute({
+        snapshot: snapshot(),
+        runId: 'run-tts',
+        attempt: 1,
+        onRequestPrompt: () => {
+          throw failure;
+        },
+      }),
+    ).rejects.toBe(failure);
+    expect(factory).not.toHaveBeenCalled();
   });
 });

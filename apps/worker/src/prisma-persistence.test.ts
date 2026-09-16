@@ -1,8 +1,12 @@
-import { createCipheriv, createHash, randomBytes } from 'node:crypto';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createCipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
+import { afterEach, beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
+import { PrismaClient } from '@prisma/client';
+
+import { nodeTimingDuration, type RequestPromptRecord } from '@multimodal-canvas/domain';
 
 import {
   databaseRunId,
+  stableRequestPromptRecordId,
   stableUsageLedgerId,
   stableUsageLedgerIdempotencyKey,
   WorkerPrismaRunPersistence,
@@ -24,10 +28,53 @@ describe('Worker 节点超时设置', () => {
     await expect(persistence.getProviderTimeoutMs()).resolves.toBeUndefined();
     await expect(persistence.getProviderTimeoutMs()).resolves.toBe(1_800_000);
     expect(findFirst).toHaveBeenLastCalledWith({
-      where: { projectId: null },
+      // 独立凭据行按构造是最新行且 defaultModels 为 NULL，必须排除在平台设置之外。
+      where: {
+        projectId: null,
+        label: { notIn: ['independent', 'independent-deleted'] },
+      },
       orderBy: [{ updatedAt: 'desc' }, { version: 'desc' }],
       select: { defaultModels: true },
     });
+  });
+
+  it('最新的独立凭据行不会让平台超时退回默认值', async () => {
+    // 内存行集按持久化行的排序与过滤语义回答查询：先排除独立凭据，再取最新行。
+    const rows = [
+      {
+        label: 'platform',
+        version: 3,
+        updatedAt: new Date('2026-09-16T10:00:00.000Z'),
+        defaultModels: { __timeoutMs: 1_800_000 },
+      },
+      {
+        label: 'independent',
+        version: 9,
+        updatedAt: new Date('2026-09-17T10:00:00.000Z'),
+        defaultModels: null,
+      },
+      {
+        label: 'independent-deleted',
+        version: 10,
+        updatedAt: new Date('2026-09-17T11:00:00.000Z'),
+        defaultModels: null,
+      },
+    ];
+    const findFirst = vi.fn(async (args: { where: { label?: { notIn?: string[] } } }) => {
+      const excluded = args.where.label?.notIn ?? [];
+      return (
+        rows
+          .filter((row) => !excluded.includes(row.label))
+          .sort(
+            (left, right) =>
+              right.updatedAt.getTime() - left.updatedAt.getTime() || right.version - left.version,
+          )[0] ?? null
+      );
+    });
+    const persistence = new WorkerPrismaRunPersistence({ aiCredential: { findFirst } } as never);
+
+    await expect(persistence.getProviderTimeoutMs()).resolves.toBe(1_800_000);
+    expect(findFirst).toHaveBeenCalledTimes(1);
   });
 
   it.each([0, 999, 2_147_483_648, '1800000'])('拒绝非法持久化超时 %s', async (timeoutMs) => {
@@ -536,5 +583,543 @@ describe('WorkerPrismaRunPersistence credential snapshots', () => {
       persistence.getProviderCredentials({ credentialId, credentialVersion: 1 }),
     ).rejects.toThrow('AI_CREDENTIAL_ENCRYPTION_KEY');
     expect(findFirst).not.toHaveBeenCalled();
+  });
+});
+
+/** 请求提示词记录的可控内存存储，复现主键幂等、列默认值与状态单调写入。 */
+function createRequestPromptStore() {
+  const rows = new Map<string, Record<string, unknown>>();
+  const create = vi.fn(async (args: { data: Record<string, unknown> }) => {
+    // Prisma 会为未提供的可空列写入 NULL，内存存储必须保持同样的列形状。
+    const row = {
+      assetId: null,
+      assetVersion: null,
+      summary: null,
+      summarySource: null,
+      ...args.data,
+    };
+    rows.set(String(args.data.id), row);
+    return row;
+  });
+  const update = vi.fn(async (args: { where: { id: string }; data: Record<string, unknown> }) => {
+    const next = { ...rows.get(args.where.id), ...args.data };
+    rows.set(args.where.id, next);
+    return next;
+  });
+  const prisma = {
+    runRequestPrompt: {
+      findUnique: vi.fn(async (args: { where: { id: string } }) => rows.get(args.where.id) ?? null),
+      create,
+      update,
+    },
+  };
+  return { rows, create, update, persistence: new WorkerPrismaRunPersistence(prisma as never) };
+}
+
+function requestPromptRecord(overrides: Partial<RequestPromptRecord> = {}): RequestPromptRecord {
+  return {
+    schemaVersion: 1,
+    runId,
+    nodeId: 'node_image',
+    attempt: 1,
+    requestIdentity: 'POST /images/generations#1',
+    provider: 'newapi',
+    modelAlias: 'grok-image-1',
+    credentialId: '123e4567-e89b-12d3-a456-426614174012',
+    credentialVersion: 3,
+    mediaType: 'image',
+    format: 'plain',
+    parts: [{ order: 0, text: '月白布衫，青裙' }],
+    resources: [
+      {
+        assetId: 'asset_source',
+        assetVersion: 2,
+        role: 'imageEdit',
+        sortOrder: 0,
+        mediaType: 'image',
+      },
+    ],
+    sendStatus: 'pending',
+    createdAt: '2026-09-17T10:00:00.000Z',
+    ...overrides,
+  };
+}
+
+describe('WorkerPrismaRunPersistence 请求提示词记录', () => {
+  it('发送前按记录身份落库，只保存身份与文本字段', async () => {
+    const { persistence, create } = createRequestPromptStore();
+    const record = requestPromptRecord();
+
+    const stored = await persistence.upsertRequestPromptRecord({ record });
+
+    const data = create.mock.calls[0]?.[0]?.data;
+    expect(data).toMatchObject({
+      id: stableRequestPromptRecordId(record),
+      runId: databaseId,
+      requestRunId: runId,
+      nodeId: 'node_image',
+      attempt: 1,
+      requestIdentity: 'POST /images/generations#1',
+      schemaVersion: 1,
+      provider: 'newapi',
+      modelAlias: 'grok-image-1',
+      credentialId: '123e4567-e89b-12d3-a456-426614174012',
+      credentialVersion: 3,
+      mediaType: 'IMAGE',
+      format: 'plain',
+      parts: [{ order: 0, text: '月白布衫，青裙' }],
+      negativeText: null,
+      resources: [
+        {
+          assetId: 'asset_source',
+          assetVersion: 2,
+          role: 'imageEdit',
+          sortOrder: 0,
+          mediaType: 'image',
+        },
+      ],
+      sendStatus: 'pending',
+      createdAt: new Date('2026-09-17T10:00:00.000Z'),
+    });
+    // 结果身份只有在归档完成后才补写，发送前保持未绑定。
+    expect(stored).toMatchObject({ assetId: null, assetVersion: null });
+    // 原始 HTTP body、base64 与签名 URL 不会成为列值。
+    expect(Object.keys(data ?? {})).not.toEqual(
+      expect.arrayContaining(['body', 'requestBody', 'contentUrl', 'dataUrl']),
+    );
+  });
+
+  it('同一身份键重放不新增行、不覆盖已落库状态', async () => {
+    const { persistence, create, update, rows } = createRequestPromptStore();
+    const record = requestPromptRecord();
+
+    const first = await persistence.upsertRequestPromptRecord({ record });
+    await persistence.recordRequestPromptOutcome({
+      identity: record,
+      sendStatus: 'sent',
+      assetId: 'asset_result',
+      assetVersion: 4,
+    });
+    const replayed = await persistence.upsertRequestPromptRecord({
+      record: { ...record, sendStatus: 'pending', parts: [{ order: 0, text: '被改写的文本' }] },
+    });
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(update).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ sendStatus: 'pending' }) }),
+    );
+    expect(replayed).toMatchObject({
+      sendStatus: 'sent',
+      assetId: 'asset_result',
+      assetVersion: 4,
+    });
+    expect(first).toMatchObject({ sendStatus: 'pending' });
+    expect(rows.get(stableRequestPromptRecordId(record))).toMatchObject({
+      parts: [{ order: 0, text: '月白布衫，青裙' }],
+      sendStatus: 'sent',
+    });
+  });
+
+  it('并发创建冲突时读取既有行，不产生第二条记录', async () => {
+    const existing = { id: stableRequestPromptRecordId(requestPromptRecord()), sendStatus: 'sent' };
+    const create = vi.fn().mockRejectedValue(Object.assign(new Error('unique'), { code: 'P2002' }));
+    const findUnique = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(existing);
+    const persistence = new WorkerPrismaRunPersistence({
+      runRequestPrompt: { findUnique, create, update: vi.fn() },
+    } as never);
+
+    await expect(
+      persistence.upsertRequestPromptRecord({ record: requestPromptRecord() }),
+    ).resolves.toEqual(existing);
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it('第二个 attempt 与同一次执行的不同节点产生独立记录', async () => {
+    const { persistence, create } = createRequestPromptStore();
+
+    await persistence.upsertRequestPromptRecord({ record: requestPromptRecord() });
+    await persistence.upsertRequestPromptRecord({ record: requestPromptRecord({ attempt: 2 }) });
+    await persistence.upsertRequestPromptRecord({
+      record: requestPromptRecord({ nodeId: 'node_upstream' }),
+    });
+
+    const ids = create.mock.calls.map((call) => String(call[0]?.data.id));
+    expect(new Set(ids).size).toBe(3);
+    expect(ids).toEqual([
+      stableRequestPromptRecordId(requestPromptRecord()),
+      stableRequestPromptRecordId(requestPromptRecord({ attempt: 2 })),
+      stableRequestPromptRecordId(requestPromptRecord({ nodeId: 'node_upstream' })),
+    ]);
+  });
+
+  it('只把 pending 推进到可观测终态，迟到的重复事件不改写终态', async () => {
+    const { persistence } = createRequestPromptStore();
+    const record = requestPromptRecord();
+    await persistence.upsertRequestPromptRecord({ record });
+
+    await persistence.recordRequestPromptOutcome({ identity: record, sendStatus: 'sent' });
+    await persistence.recordRequestPromptOutcome({ identity: record, sendStatus: 'unknown' });
+
+    const stored = await persistence.upsertRequestPromptRecord({ record });
+    expect(stored).toMatchObject({ sendStatus: 'sent' });
+  });
+
+  it('归档后把结果身份绑定到本次执行的记录，且只绑定一次', async () => {
+    const { persistence } = createRequestPromptStore();
+    const record = requestPromptRecord();
+    await persistence.upsertRequestPromptRecord({ record });
+
+    await persistence.recordRequestPromptOutcome({
+      identity: record,
+      sendStatus: 'sent',
+      assetId: 'asset_result_v1',
+      assetVersion: 2,
+    });
+    await persistence.recordRequestPromptOutcome({
+      identity: record,
+      sendStatus: 'sent',
+      assetId: 'asset_other',
+      assetVersion: 9,
+    });
+
+    await expect(persistence.upsertRequestPromptRecord({ record })).resolves.toMatchObject({
+      sendStatus: 'sent',
+      assetId: 'asset_result_v1',
+      assetVersion: 2,
+    });
+  });
+
+  it('缺少结果版本时不写入孤立的结果 ID，也不伪造记录', async () => {
+    const { persistence } = createRequestPromptStore();
+    const record = requestPromptRecord();
+    await persistence.upsertRequestPromptRecord({ record });
+
+    await persistence.recordRequestPromptOutcome({
+      identity: record,
+      sendStatus: 'sent',
+      assetId: 'asset_without_version',
+    });
+    expect(await persistence.upsertRequestPromptRecord({ record })).toMatchObject({
+      assetId: null,
+      assetVersion: null,
+      sendStatus: 'sent',
+    });
+    await expect(
+      persistence.recordRequestPromptOutcome({
+        identity: { ...record, nodeId: 'node_never_stored' },
+        sendStatus: 'failed',
+      }),
+    ).resolves.toBeUndefined();
+  });
+});
+
+/** 可控的 Run 行存储，复现 nodeTimings 单调合并的读写路径。 */
+function createRunTimingStore(initialTimings?: unknown) {
+  const state = { nodeTimings: initialTimings ?? null } as Record<string, unknown>;
+  const update = vi.fn(async (args: { data: Record<string, unknown> }) => {
+    Object.assign(state, args.data);
+    return state;
+  });
+  const findUnique = vi.fn(async () => ({ nodeTimings: state.nodeTimings }));
+  const queryRaw = vi.fn(async () => []);
+  const prisma = {
+    run: { findUnique, update },
+    $transaction: vi.fn(async (run: (tx: unknown) => Promise<unknown>) =>
+      run({ $queryRaw: queryRaw, run: { findUnique, update } }),
+    ),
+  };
+  return {
+    state,
+    update,
+    findUnique,
+    prisma,
+    persistence: new WorkerPrismaRunPersistence(prisma as never),
+  };
+}
+
+describe('WorkerPrismaRunPersistence 节点时间单调写入', () => {
+  it('写入开始时间并保持状态字段不变', async () => {
+    const { persistence, update, prisma } = createRunTimingStore();
+
+    await persistence.updateRun({
+      runId,
+      status: 'processing',
+      nodeTimings: {
+        node_image: {
+          nodeId: 'node_image',
+          queuedAt: '2026-09-17T10:00:00.000Z',
+          startedAt: '2026-09-17T10:00:01.000Z',
+        },
+      },
+    });
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledWith({
+      where: { id: databaseId },
+      data: {
+        status: 'PROCESSING',
+        nodeTimings: {
+          node_image: {
+            nodeId: 'node_image',
+            queuedAt: '2026-09-17T10:00:00.000Z',
+            startedAt: '2026-09-17T10:00:01.000Z',
+          },
+        },
+      },
+    });
+  });
+
+  it('重放不会重置开始时间，重复终态事件不会移动终态时间', async () => {
+    const { persistence, state } = createRunTimingStore();
+
+    await persistence.updateRun({
+      runId,
+      status: 'processing',
+      nodeTimings: {
+        node_image: {
+          nodeId: 'node_image',
+          queuedAt: '2026-09-17T10:00:00.000Z',
+          startedAt: '2026-09-17T10:00:01.000Z',
+        },
+      },
+    });
+    await persistence.updateRun({
+      runId,
+      status: 'processing',
+      nodeTimings: {
+        node_image: {
+          nodeId: 'node_image',
+          startedAt: '2026-09-17T10:00:09.000Z',
+          finishedAt: '2026-09-17T10:00:12.400Z',
+          outcome: 'succeeded',
+        },
+      },
+    });
+    await persistence.updateRun({
+      runId,
+      status: 'processing',
+      nodeTimings: {
+        node_image: {
+          nodeId: 'node_image',
+          startedAt: '2026-09-17T10:05:00.000Z',
+          finishedAt: '2026-09-17T10:05:30.000Z',
+          outcome: 'cancelled',
+        },
+      },
+    });
+
+    expect((state.nodeTimings as Record<string, unknown>).node_image).toEqual({
+      nodeId: 'node_image',
+      queuedAt: '2026-09-17T10:00:00.000Z',
+      startedAt: '2026-09-17T10:00:01.000Z',
+      finishedAt: '2026-09-17T10:00:12.400Z',
+      outcome: 'succeeded',
+    });
+    const timing = (state.nodeTimings as Record<string, { startedAt: string; finishedAt: string }>)
+      .node_image;
+    expect(nodeTimingDuration(timing as never, Date.parse('2026-09-17T10:06:00.000Z'))).toEqual({
+      availability: 'recorded',
+      milliseconds: 11_400,
+    });
+  });
+
+  it('只保留合法条目，损坏的持久化时间不会丢弃整个时间表', async () => {
+    const { persistence, state } = createRunTimingStore({
+      node_broken: { nodeId: 'other_node', startedAt: 'not-a-time' },
+      node_kept: {
+        nodeId: 'node_kept',
+        startedAt: '2026-09-17T10:00:01.000Z',
+        finishedAt: '2026-09-17T10:00:02.500Z',
+        outcome: 'succeeded',
+      },
+    });
+
+    await persistence.updateRun({
+      runId,
+      status: 'processing',
+      nodeTimings: {
+        node_new: { nodeId: 'node_new', startedAt: '2026-09-17T10:00:03.000Z' },
+      },
+    });
+
+    expect(state.nodeTimings).toEqual({
+      node_kept: {
+        nodeId: 'node_kept',
+        startedAt: '2026-09-17T10:00:01.000Z',
+        finishedAt: '2026-09-17T10:00:02.500Z',
+        outcome: 'succeeded',
+      },
+      node_new: { nodeId: 'node_new', startedAt: '2026-09-17T10:00:03.000Z' },
+    });
+  });
+});
+
+/**
+ * 这些检查只对文档化的临时 scratch 库运行：非 scratch 连接一律跳过，绝不把
+ * Prisma 写入指向真实数据库。
+ */
+const scratchDatabaseUrl = process.env.DATABASE_URL?.trim() ?? '';
+const scratchDatabasePattern =
+  /^postgres(?:ql)?:\/\/scratch:scratch@(?:127\.0\.0\.1|localhost):55432\/scratch(?:\?|$)/;
+const scratchDescribe = scratchDatabasePattern.test(scratchDatabaseUrl) ? describe : describe.skip;
+
+scratchDescribe('WorkerPrismaRunPersistence against the scratch database', () => {
+  const prisma = new PrismaClient();
+  const persistence = new WorkerPrismaRunPersistence(prisma);
+  const projectId = randomUUID();
+  const externalRunId = `run_${randomUUID()}`;
+  const runRowId = databaseRunId(externalRunId);
+  const snapshot = {
+    projectId,
+    canvasRevision: 1,
+    targetNodeId: 'node_image',
+    modelAlias: 'grok-image-1',
+    parameters: {},
+    submittedAt: '2026-09-17T10:00:00.000Z',
+    nodes: [
+      {
+        id: 'node_image',
+        type: 'image',
+        position: { x: 0, y: 0 },
+        data: { label: 'Image', mediaType: 'image', mode: 'generate' },
+      },
+    ],
+    edges: [],
+    inputs: [],
+  };
+
+  beforeAll(async () => {
+    await prisma.project.create({ data: { id: projectId, name: 'worker prompt persistence' } });
+    await prisma.run.create({
+      data: {
+        id: runRowId,
+        projectId,
+        status: 'PROCESSING',
+        modelAlias: 'grok-image-1',
+        attempt: 1,
+        snapshot,
+        parameters: {},
+      },
+    });
+  });
+
+  afterAll(async () => {
+    await prisma.project.delete({ where: { id: projectId } });
+    await prisma.$disconnect();
+  });
+
+  it('按身份键落库请求文本并在重放时保持既有状态', async () => {
+    const record = requestPromptRecord({
+      runId: externalRunId,
+      parts: [{ order: 0, text: '月白布衫，青裙，袖口有薄面灰' }],
+    });
+
+    await persistence.upsertRequestPromptRecord({ record });
+    // 重放（含被改写的内容）不得新增行，也不得覆盖已落库的正文。
+    await persistence.upsertRequestPromptRecord({
+      record: { ...record, parts: [{ order: 0, text: '被改写的文本' }] },
+    });
+
+    const rows = await prisma.runRequestPrompt.findMany({ where: { runId: runRowId } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: stableRequestPromptRecordId(record),
+      requestRunId: externalRunId,
+      nodeId: 'node_image',
+      attempt: 1,
+      mediaType: 'IMAGE',
+      sendStatus: 'pending',
+      assetId: null,
+      assetVersion: null,
+    });
+    expect(rows[0]?.parts).toEqual([{ order: 0, text: '月白布衫，青裙，袖口有薄面灰' }]);
+  });
+
+  it('只写入一次发送终态与结果身份，且按 attempt 与节点区分记录', async () => {
+    const record = requestPromptRecord({ runId: externalRunId });
+    await persistence.upsertRequestPromptRecord({ record });
+    await persistence.recordRequestPromptOutcome({
+      identity: record,
+      sendStatus: 'sent',
+      assetId: 'asset_result_v1',
+      assetVersion: 2,
+    });
+    await persistence.recordRequestPromptOutcome({
+      identity: record,
+      sendStatus: 'unknown',
+      assetId: 'asset_other',
+      assetVersion: 9,
+    });
+    // 第二次 attempt 是独立记录，不受第一次的绑定影响。
+    await persistence.upsertRequestPromptRecord({ record: { ...record, attempt: 2 } });
+
+    const rows = await prisma.runRequestPrompt.findMany({
+      where: { runId: runRowId },
+      orderBy: [{ attempt: 'asc' }],
+    });
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      attempt: 1,
+      sendStatus: 'sent',
+      assetId: 'asset_result_v1',
+      assetVersion: 2,
+    });
+    expect(rows[1]).toMatchObject({ attempt: 2, sendStatus: 'pending', assetId: null });
+  });
+
+  it('在数据库里按最早时刻合并节点时间', async () => {
+    await persistence.updateRun({
+      runId: externalRunId,
+      status: 'processing',
+      nodeTimings: {
+        node_image: {
+          nodeId: 'node_image',
+          queuedAt: '2026-09-17T10:00:00.100Z',
+          startedAt: '2026-09-17T10:00:01.000Z',
+        },
+      },
+    });
+    await persistence.updateRun({
+      runId: externalRunId,
+      status: 'processing',
+      nodeTimings: {
+        node_image: {
+          nodeId: 'node_image',
+          startedAt: '2026-09-17T10:00:09.000Z',
+          finishedAt: '2026-09-17T10:00:12.400Z',
+          outcome: 'succeeded',
+        },
+      },
+    });
+    // 迟到或重复的终态事件不能移动已经写入的时间。
+    await persistence.updateRun({
+      runId: externalRunId,
+      status: 'processing',
+      nodeTimings: {
+        node_image: {
+          nodeId: 'node_image',
+          startedAt: '2026-09-17T10:05:00.000Z',
+          finishedAt: '2026-09-17T10:05:30.000Z',
+          outcome: 'cancelled',
+        },
+      },
+    });
+
+    const row = await prisma.run.findUnique({
+      where: { id: runRowId },
+      select: { nodeTimings: true },
+    });
+    const timings = row?.nodeTimings as Record<string, Record<string, string>> | null;
+    expect(timings?.node_image).toEqual({
+      nodeId: 'node_image',
+      queuedAt: '2026-09-17T10:00:00.100Z',
+      startedAt: '2026-09-17T10:00:01.000Z',
+      finishedAt: '2026-09-17T10:00:12.400Z',
+      outcome: 'succeeded',
+    });
+    expect(nodeTimingDuration(timings?.node_image as never, Date.now())).toEqual({
+      availability: 'recorded',
+      milliseconds: 11_400,
+    });
   });
 });

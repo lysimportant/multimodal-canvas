@@ -168,11 +168,37 @@ describe('OpenAPI endpoint', () => {
     expect(
       response.json().paths['/v1/settings/ai/credentials/{credentialId}/activate'].post,
     ).toBeDefined();
+    expect(
+      response.json().paths['/v1/settings/ai/credentials/{credentialId}/defaults'].patch,
+    ).toBeDefined();
+    expect(
+      response.json().components.schemas.AiCredentialSummary.properties.defaultModels,
+    ).toMatchObject({ additionalProperties: false });
+    expect(response.json().components.schemas.AiSettingsPatch.properties.activate).toMatchObject({
+      type: 'boolean',
+      default: true,
+    });
     expect(response.json().paths['/v1/runs/{runId/retry}']).toBeUndefined();
+
+    // 请求提示词只通过摘要列表 + 按需读取暴露，两者都必须被文档化。
+    expect(
+      response.json().paths['/v1/runs/{runId}/request-prompts'].get.responses['200'],
+    ).toBeDefined();
+    expect(response.json().paths['/v1/runs/{runId}/request-prompts/{recordId}'].get).toBeDefined();
+    expect(
+      response.json().components.schemas.RunRequestPromptSummary.properties.parts,
+    ).toBeUndefined();
+    expect(
+      response.json().components.schemas.RunRequestPromptRecord.properties.parts,
+    ).toBeDefined();
 
     const runSchema = response.json().components.schemas.Run;
     expect(runSchema.additionalProperties).toBe(false);
     expect(runSchema.properties.providerJob).toBeUndefined();
+    expect(runSchema.properties.nodeTimings).toMatchObject({
+      type: 'object',
+      additionalProperties: { additionalProperties: false },
+    });
     expect(runSchema.properties.snapshot).toMatchObject({
       required: ['canvasRevision', 'inputCount', 'inputs'],
       additionalProperties: false,
@@ -322,6 +348,235 @@ describe('AI settings endpoints', () => {
       expect(current.json().settings.defaultModels).toEqual({
         image: { modelAlias: 'platform-image', credentialId },
       });
+    } finally {
+      await settingsApp.close();
+    }
+  });
+
+  it('新增独立 Key 不切换全局连接，并可按凭据读写类型默认模型', async () => {
+    const activeKey = 'synthetic-active-key';
+    const independentKey = 'synthetic-independent-key';
+    const secondIndependentKey = 'synthetic-independent-two-key';
+    const fetchImpl = vi.fn<typeof fetch>(async (_input, init) => {
+      const authorization = new Headers(init?.headers).get('authorization');
+      const models =
+        authorization === `Bearer ${activeKey}`
+          ? [{ id: 'active-text', mediaType: 'text' }]
+          : [{ id: 'shared-image', mediaType: 'image' }];
+      return Response.json({ data: models });
+    });
+    const settingsStore = new AiSettingsStore('independent-route-secret', {
+      fetchImpl,
+      modelRequestMaxAttempts: 1,
+    });
+    const settingsApp = buildApp({ logger: false, settingsStore });
+    const responses: string[] = [];
+    const inject = async (options: {
+      method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+      url: string;
+      payload?: Record<string, unknown>;
+    }) => {
+      const response = await settingsApp.inject(options);
+      responses.push(response.body);
+      return response;
+    };
+    try {
+      const activeSave = await inject({
+        method: 'PATCH',
+        url: '/v1/settings/ai',
+        payload: { baseUrl: 'https://active.example.test/v1', apiKey: activeKey },
+      });
+      expect(activeSave.statusCode).toBe(200);
+      const activeId = activeSave.json().credentials[0].id as string;
+      const activeView = activeSave.json().settings;
+      expect(
+        (
+          await inject({
+            method: 'POST',
+            url: '/v1/settings/ai/models/refresh',
+            payload: { credentialId: activeId },
+          })
+        ).statusCode,
+      ).toBe(200);
+
+      const created = await inject({
+        method: 'PATCH',
+        url: '/v1/settings/ai',
+        payload: {
+          baseUrl: 'https://independent.example.test/v1',
+          apiKey: independentKey,
+          activate: false,
+        },
+      });
+      expect(created.statusCode).toBe(200);
+      const createdCredentialId = created.json().createdCredentialId as string;
+      expect(createdCredentialId).toEqual(expect.any(String));
+      // 活动连接视图保持逐字段不变，独立凭据只是新增摘要。
+      expect(created.json().settings).toEqual(activeView);
+      expect(created.json().credentials).toHaveLength(2);
+      expect(
+        created.json().credentials.find((item: { id: string }) => item.id === createdCredentialId),
+      ).toMatchObject({ baseUrl: 'https://independent.example.test/v1', active: false });
+      expect(
+        created.json().credentials.find((item: { id: string }) => item.id === activeId),
+      ).toMatchObject({ active: true });
+      expect((await inject({ method: 'GET', url: '/v1/settings/ai' })).json().settings).toEqual(
+        activeView,
+      );
+
+      // 被删除的活动默认模型引用不会被静默改写为独立凭据。
+      const independentRefresh = await inject({
+        method: 'POST',
+        url: '/v1/settings/ai/models/refresh',
+        payload: { credentialId: createdCredentialId },
+      });
+      expect(independentRefresh.statusCode).toBe(200);
+      expect(independentRefresh.json().models).toEqual([
+        expect.objectContaining({ id: 'shared-image', credentialId: createdCredentialId }),
+      ]);
+      expect(fetchImpl.mock.calls[1]?.[1]).toMatchObject({
+        headers: { authorization: `Bearer ${independentKey}` },
+      });
+
+      const independentCatalog = await inject({
+        method: 'GET',
+        url: `/v1/models?credentialId=${createdCredentialId}&mediaType=image`,
+      });
+      expect(independentCatalog.json().models).toEqual([
+        expect.objectContaining({ id: 'shared-image' }),
+      ]);
+      // 活动连接的目录没有被独立凭据的刷新影响。
+      expect(
+        (await inject({ method: 'GET', url: '/v1/models?mediaType=image' })).json().models,
+      ).toEqual([]);
+      expect(
+        (await inject({ method: 'GET', url: '/v1/models?mediaType=text' })).json().models,
+      ).toEqual([expect.objectContaining({ id: 'active-text' })]);
+
+      const defaults = await inject({
+        method: 'PATCH',
+        url: `/v1/settings/ai/credentials/${createdCredentialId}/defaults`,
+        payload: { image: 'shared-image' },
+      });
+      expect(defaults.statusCode).toBe(200);
+      expect(defaults.json().credentials).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: createdCredentialId,
+            defaultModels: { image: { modelAlias: 'shared-image' } },
+          }),
+          expect.objectContaining({ id: activeId, active: true }),
+        ]),
+      );
+      expect((await inject({ method: 'GET', url: '/v1/settings/ai' })).json().settings).toEqual(
+        activeView,
+      );
+
+      // 第二个独立凭据暴露同名模型，两个凭据各自保留自己的默认值。
+      const second = await inject({
+        method: 'PATCH',
+        url: '/v1/settings/ai',
+        payload: {
+          baseUrl: 'https://independent-two.example.test/v1',
+          apiKey: secondIndependentKey,
+          activate: false,
+        },
+      });
+      const secondId = second.json().createdCredentialId as string;
+      await inject({
+        method: 'POST',
+        url: '/v1/settings/ai/models/refresh',
+        payload: { credentialId: secondId },
+      });
+      const secondDefaults = await inject({
+        method: 'PATCH',
+        url: `/v1/settings/ai/credentials/${secondId}/defaults`,
+        payload: { image: { modelAlias: 'shared-image', credentialId: secondId } },
+      });
+      expect(secondDefaults.statusCode).toBe(200);
+      const sharedOwners = secondDefaults
+        .json()
+        .credentials.filter(
+          (item: { defaultModels?: { image?: { modelAlias: string } } }) =>
+            item.defaultModels?.image?.modelAlias === 'shared-image',
+        )
+        .map((item: { id: string }) => item.id);
+      expect(sharedOwners.sort()).toEqual([createdCredentialId, secondId].sort());
+      expect(
+        secondDefaults
+          .json()
+          .credentials.find((item: { id: string }) => item.id === createdCredentialId)
+          .defaultModels,
+      ).toEqual({ image: { modelAlias: 'shared-image' } });
+
+      // 未知凭据、无效请求体和跨凭据模型都必须被拒绝。
+      expect(
+        (
+          await inject({
+            method: 'PATCH',
+            url: '/v1/settings/ai/credentials/123e4567-e89b-12d3-a456-426614174099/defaults',
+            payload: { text: 'active-text' },
+          })
+        ).statusCode,
+      ).toBe(404);
+      expect(
+        (
+          await inject({
+            method: 'PATCH',
+            url: `/v1/settings/ai/credentials/${createdCredentialId}/defaults`,
+            payload: { unknown: 'shared-image' },
+          })
+        ).statusCode,
+      ).toBe(400);
+      expect(
+        (
+          await inject({
+            method: 'PATCH',
+            url: `/v1/settings/ai/credentials/${createdCredentialId}/defaults`,
+            payload: { image: 42 },
+          })
+        ).statusCode,
+      ).toBe(400);
+      const foreignModel = await inject({
+        method: 'PATCH',
+        url: `/v1/settings/ai/credentials/${createdCredentialId}/defaults`,
+        payload: { text: 'active-text' },
+      });
+      expect(foreignModel.statusCode).toBe(400);
+      expect(foreignModel.json()).toMatchObject({ code: 'model_unavailable' });
+      const foreignCredential = await inject({
+        method: 'PATCH',
+        url: `/v1/settings/ai/credentials/${createdCredentialId}/defaults`,
+        payload: { image: { modelAlias: 'shared-image', credentialId: secondId } },
+      });
+      expect(foreignCredential.statusCode).toBe(400);
+      expect(foreignCredential.json()).toMatchObject({ code: 'model_unavailable' });
+      expect(
+        (
+          await inject({
+            method: 'PATCH',
+            url: '/v1/settings/ai',
+            payload: { baseUrl: 'https://independent-three.example.test/v1', activate: false },
+          })
+        ).statusCode,
+      ).toBe(400);
+      expect(
+        (
+          await inject({
+            method: 'PATCH',
+            url: '/v1/settings/ai',
+            payload: {
+              apiKey: 'synthetic-independent-three-key',
+              activate: false,
+              defaultModels: { image: 'shared-image' },
+            },
+          })
+        ).statusCode,
+      ).toBe(400);
+
+      expect(responses.join('\n')).not.toContain(activeKey);
+      expect(responses.join('\n')).not.toContain(independentKey);
+      expect(responses.join('\n')).not.toContain(secondIndependentKey);
     } finally {
       await settingsApp.close();
     }
@@ -1582,6 +1837,139 @@ describe('workflow import HTTP contract', () => {
       });
     } finally {
       await importApp.close();
+    }
+  });
+});
+
+describe('run request prompt endpoints', () => {
+  it('serves summaries without prompt text and reads the full record on demand', async () => {
+    const runService = new MemoryRunService({ stepDelayMs: 0 });
+    const fullRecordId = '223e4567-e89b-42d3-a456-426614174050';
+    const fullRecord = {
+      schemaVersion: 1,
+      runId: 'run_prompt_view',
+      nodeId: 'node_prompt_view',
+      attempt: 1,
+      requestIdentity: 'POST /chat/completions#1',
+      provider: 'newapi',
+      modelAlias: 'text-model',
+      mediaType: 'text' as const,
+      format: 'messages' as const,
+      parts: [{ order: 0, role: 'user' as const, text: '写一段开头' }],
+      resources: [],
+      sendStatus: 'sent' as const,
+      createdAt: '2026-09-17T10:00:00.000Z',
+    };
+    const summary = {
+      id: fullRecordId,
+      runId: fullRecord.runId,
+      nodeId: fullRecord.nodeId,
+      attempt: 1,
+      requestIdentity: fullRecord.requestIdentity,
+      provider: 'newapi',
+      modelAlias: 'text-model',
+      mediaType: 'text' as const,
+      format: 'messages' as const,
+      sendStatus: 'sent' as const,
+      partCount: 1,
+      resourceCount: 0,
+      createdAt: fullRecord.createdAt,
+      summary: '一段开场白。',
+    };
+    const runPersistence = {
+      upsertProviderJob: vi.fn(),
+      updateRun: vi.fn(),
+      listRequestPromptRecords: vi.fn(async () => [summary]),
+      getRequestPromptRecord: vi.fn(async (_runId: string, recordId: string) =>
+        recordId === fullRecordId ? fullRecord : undefined,
+      ),
+    };
+    const app = buildApp({ logger: false, runService, runPersistence });
+    const originalGet = runService.get.bind(runService);
+    const nodeTimings = {
+      node_prompt_view: {
+        nodeId: 'node_prompt_view',
+        queuedAt: '2026-09-17T10:00:00.100Z',
+        startedAt: '2026-09-17T10:00:00.500Z',
+        finishedAt: '2026-09-17T10:00:03.500Z',
+        outcome: 'succeeded' as const,
+      },
+    };
+    vi.spyOn(runService, 'get').mockImplementation(async (runId: string) => {
+      const run = await originalGet(runId);
+      return run ? { ...run, nodeTimings } : undefined;
+    });
+
+    try {
+      const project = await app.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        payload: { name: 'Prompt view' },
+      });
+      const projectId = project.json().project.id as string;
+      await app.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${projectId}/canvas`,
+        payload: {
+          revision: 0,
+          nodes: [
+            {
+              id: 'node_prompt_view',
+              type: 'text',
+              position: { x: 0, y: 0 },
+              data: { label: 'Generate', mediaType: 'text', mode: 'generate' },
+            },
+          ],
+          edges: [],
+        },
+      });
+      const submit = await app.inject({
+        method: 'POST',
+        url: '/v1/nodes/node_prompt_view/runs',
+        payload: { projectId },
+      });
+      const runId = submit.json().run.id as string;
+
+      const list = await app.inject({
+        method: 'GET',
+        url: `/v1/runs/${runId}/request-prompts`,
+      });
+      expect(list.statusCode).toBe(200);
+      expect(list.json().records).toEqual([summary]);
+      expect(list.body).not.toContain('写一段开头');
+
+      const full = await app.inject({
+        method: 'GET',
+        url: `/v1/runs/${runId}/request-prompts/${fullRecordId}`,
+      });
+      expect(full.statusCode).toBe(200);
+      expect(full.json().record).toMatchObject({
+        nodeId: 'node_prompt_view',
+        parts: [{ order: 0, role: 'user', text: '写一段开头' }],
+      });
+
+      const missing = await app.inject({
+        method: 'GET',
+        url: `/v1/runs/${runId}/request-prompts/323e4567-e89b-42d3-a456-426614174051`,
+      });
+      expect(missing.statusCode).toBe(404);
+      expect(missing.json()).toEqual({ error: 'request prompt record not found' });
+
+      // 运行读取接口返回节点时间，但不包含任何提示词正文。
+      const run = await app.inject({ method: 'GET', url: `/v1/runs/${runId}` });
+      expect(run.statusCode).toBe(200);
+      expect(run.json().run.nodeTimings).toEqual(nodeTimings);
+      expect(run.body).not.toContain('写一段开头');
+
+      const unknownRun = await app.inject({
+        method: 'GET',
+        url: '/v1/runs/run_missing/request-prompts',
+      });
+      expect(unknownRun.statusCode).toBe(404);
+      expect(unknownRun.json()).toEqual({ error: 'run not found' });
+    } finally {
+      await app.close();
+      await runService.close();
     }
   });
 });

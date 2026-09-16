@@ -1,5 +1,6 @@
 import { renderPromptDocument } from '@multimodal-canvas/domain';
 import type { RunResult, RunSnapshot } from '@multimodal-canvas/domain';
+import { reportRequestPrompt } from './index.js';
 import type { MockProviderRequest, ProviderExecution, ProviderUsage } from './index.js';
 import WebSocket from 'ws';
 
@@ -50,6 +51,9 @@ export class XfyunTtsProviderError extends Error {
 
 const defaultXfyunEndpoint = 'wss://tts-api.xfyun.cn/v2/tts?output_proto=binary';
 
+/** 讯飞一次执行只发送一帧合成文本，请求身份固定为 WebSocket 合成路径。 */
+const xfyunRequestIdentity = 'WS /v2/tts#1';
+
 /**
  * 通过讯飞 WebSocket 在线合成 MP3 音频。
  * 请求只发送一次，收到 status=2 后返回拼接的二进制帧；取消或超时会关闭本地连接。
@@ -82,6 +86,9 @@ export class XfyunTtsProvider {
     snapshot,
     reportProgress,
     signal,
+    runId,
+    attempt,
+    onRequestPrompt,
   }: MockProviderRequest & { signal?: AbortSignal }): Promise<
     ProviderExecution<{
       mediaType: 'audio';
@@ -122,6 +129,22 @@ export class XfyunTtsProvider {
     if (signal?.aborted) throw new XfyunTtsProviderError('讯飞 TTS 请求已取消');
     await reportProgress?.(5);
     if (signal?.aborted) throw new XfyunTtsProviderError('讯飞 TTS 请求已取消');
+    // 记录的是真正写入 data.text 的同一份文本；失败时连 WebSocket 都不建立。
+    // 未接线时不增加等待点，保持原有的发送时序。
+    if (onRequestPrompt) {
+      await reportRequestPrompt({
+        snapshot,
+        provider: 'xfyun',
+        mediaType: 'audio',
+        requestIdentity: xfyunRequestIdentity,
+        onRequestPrompt,
+        runId,
+        attempt,
+        format: 'plain',
+        parts: [{ order: 0, text: input }],
+        resources: [],
+      });
+    }
     const bytes = await this.synthesize(input, signal);
     await reportProgress?.(100);
     const output = {

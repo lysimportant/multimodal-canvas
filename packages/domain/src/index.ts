@@ -455,6 +455,211 @@ export function imageEditSourceOf(
   return parsed.success ? parsed.data : undefined;
 }
 
+/** 生成说明记录的 schema 版本；结构变化时必须递增，供旧记录显式降级。 */
+export const REQUEST_PROMPT_SCHEMA_VERSION = 1;
+/** 请求文本块的格式版本，区分纯文本与有序角色消息。 */
+export const requestPromptFormats = ['plain', 'messages'] as const;
+export const requestPromptFormatSchema = z.enum(requestPromptFormats);
+
+/**
+ * 本次请求真正发送出去的一条文本内容。
+ *
+ * `role` 与 `name` 只反映供应商消息契约里实际存在的字段，不是前端为了显示而
+ * 补的角色；纯文本请求使用 `plain` 格式并省略 `role`。
+ */
+export const requestPromptPartSchema = z.object({
+  /** 文本在本格式中的发送顺序，最小为 0，同一记录内必须唯一。 */
+  order: z.number().int().nonnegative(),
+  role: z.string().trim().min(1).max(64).optional(),
+  /** Chat Completions 的 `name` 字段，用于保留画布上的输入身份。 */
+  name: z.string().trim().min(1).max(160).optional(),
+  text: z.string().max(200_000),
+});
+
+/**
+ * 参考资源的身份与用途。只保存资产身份、版本、角色和顺序；
+ * 不保存 base64、临时签名 URL 或任何媒体二进制。
+ */
+export const requestPromptResourceSchema = z.object({
+  assetId: z.string().trim().min(1).max(512).optional(),
+  assetVersion: z.number().int().positive().optional(),
+  role: portRoleSchema,
+  sortOrder: z.number().int().nonnegative(),
+  mediaType: mediaTypeSchema.optional(),
+});
+
+/** 发送请求前后的状态；不确定状态不得触发自动重发。 */
+export const requestPromptSendStatuses = ['pending', 'sent', 'failed', 'unknown'] as const;
+export const requestPromptSendStatusSchema = z.enum(requestPromptSendStatuses);
+
+/**
+ * 一次已提交请求最终发送的提示词快照。
+ *
+ * 记录身份是 `runId + nodeId + attempt + requestIdentity`：一个 DAG 内每个实际
+ * 执行的节点各留存一份，绝不把目标节点的提示词附给上游结果。结果身份
+ * （`assetId + assetVersion`）在归档完成后由 Worker 补写；缺失表示该请求没有
+ * 产出可展示的资产版本，而不是回退到节点上当前编辑框的内容。
+ */
+export const requestPromptRecordSchema = z.object({
+  schemaVersion: z.number().int().positive(),
+  runId: z.string().min(1).max(512),
+  nodeId: z.string().min(1).max(160),
+  attempt: z.number().int().positive(),
+  /** 同一 attempt 内可能发生多次请求；身份由 Provider 请求路径与序号组成。 */
+  requestIdentity: z.string().trim().min(1).max(200),
+  provider: z.string().min(1).max(64),
+  modelAlias: z.string().min(1).max(512),
+  credentialId: z.string().min(1).max(512).optional(),
+  credentialVersion: z.number().int().positive().optional(),
+  mediaType: mediaTypeSchema,
+  format: requestPromptFormatSchema,
+  /** 按实际发送顺序排列的文本块；纯图片 prompt 只有一项。 */
+  parts: z.array(requestPromptPartSchema),
+  /** 真正发送出去的负向内容；未发送时留空，不回填节点上的编辑值。 */
+  negativeText: z.string().max(20_000).optional(),
+  resources: z.array(requestPromptResourceSchema),
+  sendStatus: requestPromptSendStatusSchema,
+  createdAt: z.string().datetime(),
+  /** 归档完成后写入的结果身份。 */
+  assetId: z.string().min(1).max(512).optional(),
+  assetVersion: z.number().int().positive().optional(),
+  /** 生成方式与状态；用户修改摘要不会改写真实请求文本。 */
+  summary: z.string().max(2_000).optional(),
+  summarySource: z.enum(['manual', 'local', 'model']).optional(),
+});
+
+export type RequestPromptPart = z.infer<typeof requestPromptPartSchema>;
+export type RequestPromptResource = z.infer<typeof requestPromptResourceSchema>;
+export type RequestPromptRecord = z.infer<typeof requestPromptRecordSchema>;
+export type RequestPromptFormat = z.infer<typeof requestPromptFormatSchema>;
+export type RequestPromptSendStatus = z.infer<typeof requestPromptSendStatusSchema>;
+
+/** 记录身份键，用于去重和按节点读取，不包含任何提示词内容。 */
+export function requestPromptRecordKey(
+  record: Pick<RequestPromptRecord, 'runId' | 'nodeId' | 'attempt' | 'requestIdentity'>,
+): string {
+  return `${record.runId}\0${record.nodeId}\0${record.attempt}\0${record.requestIdentity}`;
+}
+
+/** 多条消息结果复制时使用的稳定角色分隔前缀。 */
+export function requestPromptPartPrefix(part: Pick<RequestPromptPart, 'role' | 'name'>): string {
+  if (!part.role) return '';
+  return part.name ? `[${part.role}:${part.name}] ` : `[${part.role}] `;
+}
+
+/**
+ * 渲染可复制的完整提示词文本。多消息结果保留角色与顺序，纯文本请求
+ * 只返回实际发送的字符串，不额外拼接标签。
+ *
+ * @param record 已持久化的请求提示词记录。
+ * @returns 可直接写入剪贴板的文本。
+ */
+export function renderRequestPromptText(
+  record: Pick<RequestPromptRecord, 'format' | 'parts'>,
+): string {
+  const ordered = [...record.parts].sort((left, right) => left.order - right.order);
+  if (record.format === 'plain') return ordered.map((part) => part.text).join('\n');
+  return ordered.map((part) => `${requestPromptPartPrefix(part)}${part.text}`).join('\n');
+}
+
+/** 请求提示词记录的数据来源；历史运行没有留存记录时显式区分。 */
+export const requestPromptOrigins = ['request', 'input-snapshot', 'none'] as const;
+
+/**
+ * 节点当前提示词的读取结果。
+ *
+ * `request` 表示有真实请求记录；`input-snapshot` 表示只有冻结输入，界面必须显示
+ * “历史输入快照，未记录最终请求”，不得无证据回填成真实请求；`none` 表示没有
+ * 任何可展示的生成说明（例如纯输入节点或导入资产）。
+ */
+export type NodePromptView =
+  | { origin: 'request'; record: RequestPromptRecord }
+  | {
+      origin: 'input-snapshot';
+      runId: string;
+      nodeId: string;
+      submittedAt: string;
+      modelAlias: string;
+      parts: RequestPromptPart[];
+    }
+  | { origin: 'none'; reason: 'no-record' | 'loading-failed' };
+
+/** 一次节点执行的生命周期时间记录，所有时间戳为服务端 UTC。 */
+export const nodeTimingSchema = z.object({
+  nodeId: z.string().min(1).max(160),
+  /** 本节点进入待执行状态的时刻，包含依赖等待。 */
+  queuedAt: z.string().datetime().optional(),
+  /** 本节点真正开始执行的时刻；写入后不因轮询或 Worker 重启重置。 */
+  startedAt: z.string().datetime().optional(),
+  /** 终态时刻，只写入一次；取消与失败同样有终态。 */
+  finishedAt: z.string().datetime().optional(),
+  /** 终态性质，决定界面如何描述本次耗时。 */
+  outcome: z.enum(['succeeded', 'failed', 'cancelled']).optional(),
+  /** 发起供应商请求的时刻，用于拆出请求阶段耗时。 */
+  requestStartedAt: z.string().datetime().optional(),
+  /** 取得可用结果的时刻。 */
+  requestFinishedAt: z.string().datetime().optional(),
+});
+
+export type NodeTiming = z.infer<typeof nodeTimingSchema>;
+
+/** 耗时的可用性；时间顺序异常时显式标记不可用，绝不算出负数。 */
+export type NodeTimingDuration =
+  | { availability: 'recorded'; milliseconds: number }
+  | { availability: 'running'; milliseconds: number; since: 'queuedAt' | 'startedAt' }
+  | { availability: 'unrecorded' }
+  | { availability: 'invalid'; reason: 'out-of-order' | 'future' };
+
+/**
+ * 计算一个节点本次执行的耗时。
+ *
+ * 口径为 `finishedAt - startedAt`，包含本节点准备输入、供应商处理、轮询及结果
+ * 归档；未执行完成时按服务端已记录的开始时间返回运行中的递增基准。缺少时间戳
+ * 时返回 `unrecorded`，时间顺序异常时返回 `invalid`，不返回 0 秒或推测值。
+ *
+ * @param timing 该节点的生命周期时间记录。
+ * @param now 当前服务端时间，单位毫秒；仅用于计算运行中的已用时间。
+ * @returns 耗时可用性或具体毫秒数。
+ */
+export function nodeTimingDuration(timing: NodeTiming, now: number): NodeTimingDuration {
+  const started = parseTimingInstant(timing.startedAt);
+  const finished = parseTimingInstant(timing.finishedAt);
+  if (started !== undefined && finished !== undefined) {
+    if (finished < started) return { availability: 'invalid', reason: 'out-of-order' };
+    return { availability: 'recorded', milliseconds: finished - started };
+  }
+  if (finished !== undefined && started === undefined) return { availability: 'unrecorded' };
+  if (started === undefined) return { availability: 'unrecorded' };
+  if (started > now) return { availability: 'invalid', reason: 'future' };
+  return { availability: 'running', milliseconds: now - started, since: 'startedAt' };
+}
+
+/**
+ * 格式化耗时用于悬浮卡片显示。短耗时保留一位小数的秒，长耗时使用
+ * 「分 秒」中文格式，单位为毫秒。
+ *
+ * @param milliseconds 非负毫秒数。
+ * @returns 例如 `12.4 s`、`1.2 分` 或 `2 分 08 秒`。
+ */
+export function formatNodeDuration(milliseconds: number): string {
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return '';
+  if (milliseconds < 60_000) return `${(milliseconds / 1000).toFixed(1)} s`;
+  const totalSeconds = Math.round(milliseconds / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes >= 60) {
+    const hours = Math.floor(minutes / 60);
+    return `${hours} 小时 ${String(minutes % 60).padStart(2, '0')} 分`;
+  }
+  return seconds === 0 ? `${minutes} 分` : `${minutes} 分 ${String(seconds).padStart(2, '0')} 秒`;
+}
+
+function parseTimingInstant(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 /** 判断节点是否已有可回显内容的最小数据。 */
 export type NodeEchoData = {
   mediaType?: MediaType;
@@ -642,11 +847,40 @@ export const canvasEdgeSchema = z.object({
   order: z.number().int().nonnegative(),
 });
 
+/** 组区域允许的最小边长，单位为画布像素。 */
+export const CANVAS_GROUP_MIN_SIZE = 120;
+/** 组区域允许的最大边长，单位为画布像素。 */
+export const CANVAS_GROUP_MAX_SIZE = 10_000;
+
+/** 单个组允许的成员数量上限；超出时规范化阶段会截断而不是写出非法文档。 */
+export const CANVAS_GROUP_NODE_LIMIT = 500;
+
+/**
+ * 画布布局区域。
+ *
+ * 组只表达画布布局，不是第五种媒体类型：它不进入运行 DAG，没有输入输出端口，
+ * 也不出现在模型选择或资源生成请求中。`nodeIds` 是成员节点身份，节点本身仍以
+ * 画布绝对坐标持久化，视图层转换到组内相对坐标只发生在渲染边界。
+ */
+export const canvasGroupSchema = z.object({
+  id: z.string().min(1).max(160),
+  name: z.string().trim().min(1).max(160),
+  position: z.object({ x: z.number().finite(), y: z.number().finite() }),
+  width: z.number().finite().min(CANVAS_GROUP_MIN_SIZE).max(CANVAS_GROUP_MAX_SIZE),
+  height: z.number().finite().min(CANVAS_GROUP_MIN_SIZE).max(CANVAS_GROUP_MAX_SIZE),
+  /** 成员节点 ID；一个节点最多属于一个组，首版禁止嵌套与循环归属。 */
+  nodeIds: z.array(z.string().min(1)).max(CANVAS_GROUP_NODE_LIMIT),
+});
+
+export type CanvasGroup = z.infer<typeof canvasGroupSchema>;
+
 export const canvasDocumentSchema = z
   .object({
     revision: z.number().int().nonnegative(),
     nodes: z.array(canvasNodeSchema),
     edges: z.array(canvasEdgeSchema),
+    /** 旧画布缺省按空组列表读取；不写入组字段时不改变既有内容。 */
+    groups: z.array(canvasGroupSchema).optional(),
   })
   .superRefine((document, context) => {
     const nodeIds = new Set<string>();
@@ -730,6 +964,51 @@ export const canvasDocumentSchema = z
         break;
       }
     }
+
+    // 组只校验布局归属：成员必须存在且只能属于一个组。组不参与连通性、
+    // 端口或环检测，因此这里不做任何图结构推断。
+    const groupIds = new Set<string>();
+    const memberGroupId = new Map<string, string>();
+    document.groups?.forEach((group, index) => {
+      if (groupIds.has(group.id)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `duplicate group id: ${group.id}`,
+          path: ['groups', index, 'id'],
+        });
+      }
+      groupIds.add(group.id);
+
+      const members = new Set<string>();
+      group.nodeIds.forEach((nodeId, memberIndex) => {
+        if (members.has(nodeId)) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `duplicate group member: ${nodeId}`,
+            path: ['groups', index, 'nodeIds', memberIndex],
+          });
+        }
+        members.add(nodeId);
+        if (!nodeIds.has(nodeId)) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'group references a missing node',
+            path: ['groups', index, 'nodeIds', memberIndex],
+          });
+          return;
+        }
+        const existing = memberGroupId.get(nodeId);
+        if (existing !== undefined) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `node ${nodeId} already belongs to group ${existing}`,
+            path: ['groups', index, 'nodeIds', memberIndex],
+          });
+          return;
+        }
+        memberGroupId.set(nodeId, group.id);
+      });
+    });
   });
 
 export const runInputSnapshotSchema = z.object({
@@ -1000,6 +1279,11 @@ export const runRecordSchema = z.object({
   idempotencyKey: z.string().trim().min(1).max(200).optional(),
   error: z.string().min(1).optional(),
   retryOf: z.string().min(1).optional(),
+  /**
+   * 按节点记录的本次执行生命周期时间。旧运行记录缺省为空，
+   * 界面显示“未记录”，不根据 createdAt/updatedAt 反推。
+   */
+  nodeTimings: z.record(nodeTimingSchema).optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });

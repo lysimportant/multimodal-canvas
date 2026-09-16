@@ -392,7 +392,8 @@ describe('Prisma settings synchronization between running instances', () => {
     for (const credential of credentials) credential.updatedAt = new Date('2026-09-05T00:00:00Z');
     await expect(reader.getProviderCredentials()).resolves.toBeUndefined();
     expect(prisma.aiCredential.findFirst).toHaveBeenLastCalledWith({
-      where: { projectId: null },
+      // 独立凭据行（含已删除的独立行）不参与“最新行即活动连接”的选择。
+      where: { projectId: null, label: { notIn: ['independent', 'independent-deleted'] } },
       orderBy: [{ updatedAt: 'desc' }, { version: 'desc' }],
     });
   });

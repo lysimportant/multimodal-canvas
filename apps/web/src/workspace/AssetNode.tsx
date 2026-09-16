@@ -3,6 +3,7 @@ import {
   Circle,
   Clock3,
   Download,
+  FileText,
   GripVertical,
   Info,
   LoaderCircle,
@@ -44,6 +45,7 @@ import { AssetPreview, type AssetPreviewLoadState } from './AssetPreview';
 import { downloadProjectExport } from '../export-utils';
 import { fetchNodeAssetDownload } from './node-asset-download';
 import { mediaIcons, mediaLabels, modeLabels } from './contracts';
+import { NodeDurationBadge, useSharedNodeClock } from './NodeDurationBadge';
 import './asset-node.css';
 
 export type NodeSelectionHandler = (data: AssetFlowNode['data']) => void;
@@ -78,6 +80,14 @@ export const NodeContentContext = createContext<NodeContentHandlers | null>(null
  */
 export type NodeImageEditHandler = (nodeId: string) => void;
 export const NodeImageEditContext = createContext<NodeImageEditHandler | null>(null);
+/**
+ * 打开节点的只读「生成提示词」入口。
+ *
+ * 与节点输入编辑入口分开：它只展示该节点本次执行真正发送的请求文本，
+ * 不修改节点内容，也不触发拖拽、重命名或媒体预览。
+ */
+export type NodePromptHandler = (nodeId: string) => void;
+export const NodePromptContext = createContext<NodePromptHandler | null>(null);
 
 type NodePresentationState = 'empty' | 'running' | 'failed' | 'cancelled' | 'preview' | 'missing';
 
@@ -89,10 +99,30 @@ function NodeFloatingActionLabel({ children }: { children: ReactNode }) {
   return <span className="flow-node-action-label">{children}</span>;
 }
 
+/**
+ * 节点是否处于进行中的运行状态。
+ *
+ * 只有这些节点需要递增显示已用时间，因此共享时钟按此订阅。
+ *
+ * @param status 节点当前运行状态。
+ * @returns 排队、准备、运行、处理或取消请求中时为 true。
+ */
+function isNodeRunning(status: RunStatus | undefined): boolean {
+  return (
+    status === 'queued' ||
+    status === 'preparing' ||
+    status === 'running' ||
+    status === 'processing' ||
+    status === 'cancel_requested'
+  );
+}
+
 /** 展示节点占位或产物；生成节点的控制栏悬浮在内容上方，不参与尺寸计算。 */
 export function AssetNode({ id, data, selected, width, height }: NodeProps<AssetFlowNode>) {
   const { zoom } = useViewport();
   const incomingEdges = useEdges();
+  // 只有运行中的节点需要递增计时；静态节点共用同一份共享时钟但不创建定时器。
+  const durationNow = useSharedNodeClock(isNodeRunning(data.runStatus));
   const selectNode = useContext(NodeSelectionContext);
   const quickEditorNodeId = useContext(NodeQuickEditorIdContext);
   const changeLabel = useContext(NodeLabelChangeContext);
@@ -103,6 +133,7 @@ export function AssetNode({ id, data, selected, width, height }: NodeProps<Asset
   const deleteNode = useContext(NodeDeleteContext);
   const contentHandlers = useContext(NodeContentContext);
   const editImage = useContext(NodeImageEditContext);
+  const openPrompt = useContext(NodePromptContext);
   const inputRef = useRef<HTMLInputElement>(null);
   const uploadLock = useRef(false);
   /** 用户拖拽改过尺寸后，不再用回显内容覆盖宽高。 */
@@ -725,6 +756,39 @@ export function AssetNode({ id, data, selected, width, height }: NodeProps<Asset
                 <dt>运行</dt>
                 <dd>{data.runStatus ? runStatusLabel(data.runStatus) : '未运行'}</dd>
               </div>
+              <div>
+                <dt>耗时</dt>
+                <dd>
+                  <NodeDurationBadge
+                    {...(data.nodeTiming ? { timing: data.nodeTiming } : {})}
+                    now={durationNow}
+                    running={isNodeRunning(data.runStatus)}
+                  />
+                </dd>
+              </div>
+              {openPrompt ? (
+                <div>
+                  <dt>提示词</dt>
+                  <dd>
+                    <button
+                      type="button"
+                      id={`node-prompt-trigger-${id}`}
+                      className="flow-node-prompt-link"
+                      aria-label={`查看生成提示词：${data.label}`}
+                      title="查看该节点此次生成真正发送的请求文本"
+                      onClick={() => {
+                        // 先收起节点信息面板：它会把文档其余部分标记为不可交互，
+                        // 与随后打开的只读 Dialog 叠加时会互相挡住指针事件。
+                        setInfoOpen(false);
+                        openPrompt(id);
+                      }}
+                    >
+                      <FileText size={13} aria-hidden="true" />
+                      查看生成提示词
+                    </button>
+                  </dd>
+                </div>
+              ) : null}
               {data.stale ? (
                 <div>
                   <dt>更新</dt>

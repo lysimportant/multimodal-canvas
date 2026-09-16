@@ -29,6 +29,7 @@ vi.mock('bullmq', () => {
 });
 
 import { BullMqRunService, createIdempotentRunId, createRunSnapshot } from './runs';
+import { databaseRunId } from './run-persistence';
 
 afterEach(() => {
   state.job = undefined;
@@ -103,6 +104,227 @@ describe('BullMQ run result integrity', () => {
 
     await expect(service.get(durableRun.id)).resolves.toEqual(durableRun);
     expect(persistence.getRun).toHaveBeenCalledWith(durableRun.id);
+    await service.close();
+  });
+
+  it('fills queue-backed run reads with durable node timings', async () => {
+    const snapshot = createRunSnapshot(
+      'project_1',
+      {
+        revision: 4,
+        nodes: [
+          {
+            id: 'node_text',
+            type: 'text',
+            position: { x: 0, y: 0 },
+            data: { label: 'Generate', mediaType: 'text', mode: 'generate' },
+          },
+        ],
+        edges: [],
+      },
+      'node_text',
+    );
+    state.job = {
+      id: 'run_timings',
+      data: {
+        runId: 'run_timings',
+        snapshot,
+        attempt: 1,
+        provider: 'newapi',
+        cancelRequested: false,
+      },
+      progress: { status: 'processing', progress: 80, updatedAt: '2026-09-17T10:00:05.000Z' },
+      timestamp: Date.parse('2026-09-17T10:00:00.000Z'),
+      async getState() {
+        return 'active';
+      },
+    };
+    const nodeTimings = {
+      node_text: {
+        nodeId: 'node_text',
+        queuedAt: '2026-09-17T10:00:00.500Z',
+        startedAt: '2026-09-17T10:00:01.000Z',
+      },
+    };
+    const persistence = {
+      ensureRun: vi.fn(async () => undefined),
+      getRun: vi.fn(async () => ({
+        id: 'run_timings',
+        projectId: snapshot.projectId,
+        targetNodeId: 'node_text',
+        status: 'processing' as const,
+        progress: 80,
+        attempt: 1,
+        provider: 'newapi',
+        modelAlias: snapshot.modelAlias,
+        snapshot,
+        nodeTimings,
+        createdAt: '2026-09-17T10:00:00.000Z',
+        updatedAt: '2026-09-17T10:00:05.000Z',
+      })),
+    };
+    const service = new BullMqRunService({
+      connection: { host: '127.0.0.1', port: 6379 },
+      persistence: persistence as never,
+    });
+
+    await expect(service.get('run_timings')).resolves.toMatchObject({
+      id: 'run_timings',
+      status: 'processing',
+      nodeTimings,
+    });
+    expect(persistence.getRun).toHaveBeenCalledWith('run_timings');
+    await service.close();
+  });
+
+  it('keeps persisted node timings in project run lists used by the Web client', async () => {
+    const snapshot = createRunSnapshot(
+      'project_1',
+      {
+        revision: 5,
+        nodes: [
+          {
+            id: 'node_text',
+            type: 'text',
+            position: { x: 0, y: 0 },
+            data: { label: 'Generate', mediaType: 'text', mode: 'generate' },
+          },
+        ],
+        edges: [],
+      },
+      'node_text',
+    );
+    const runId = 'run_list_timings';
+    const nodeTimings = {
+      node_text: {
+        nodeId: 'node_text',
+        queuedAt: '2026-09-17T10:00:00.500Z',
+        startedAt: '2026-09-17T10:00:01.000Z',
+        finishedAt: '2026-09-17T10:00:03.500Z',
+        outcome: 'succeeded' as const,
+      },
+    };
+    state.getJobs = vi.fn(async () => [
+      {
+        id: runId,
+        data: { runId, snapshot, attempt: 1, provider: 'newapi', cancelRequested: false },
+        progress: { status: 'processing', progress: 90, updatedAt: '2026-09-17T10:00:03.000Z' },
+        returnvalue: undefined,
+        timestamp: Date.parse('2026-09-17T10:00:00.000Z'),
+        async getState() {
+          return 'active';
+        },
+      },
+    ]);
+    const persistence = {
+      ensureRun: vi.fn(async () => undefined),
+      listRunsByProject: vi.fn(async () => [
+        {
+          id: databaseRunId(runId),
+          projectId: snapshot.projectId,
+          targetNodeId: 'node_text',
+          status: 'processing' as const,
+          progress: 80,
+          attempt: 1,
+          provider: 'newapi',
+          modelAlias: snapshot.modelAlias,
+          snapshot,
+          nodeTimings,
+          createdAt: '2026-09-17T10:00:00.000Z',
+          updatedAt: '2026-09-17T10:00:03.000Z',
+        },
+      ]),
+    };
+    const service = new BullMqRunService({
+      connection: { host: '127.0.0.1', port: 6379 },
+      persistence: persistence as never,
+    });
+
+    const runs = await service.listByProject('project_1');
+
+    // 项目列表与 SSE 都走这条路径：队列记录必须带上只写入数据库的节点时间，
+    // 同时保留队列自己的实时状态与进度，且不重复返回持久化行。
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      id: runId,
+      status: 'processing',
+      progress: 90,
+      nodeTimings,
+    });
+    expect(persistence.listRunsByProject).toHaveBeenCalledWith('project_1');
+    await service.close();
+  });
+
+  it('lets a queue-backed run keep its live fields while durable-only fields survive', async () => {
+    const snapshot = createRunSnapshot(
+      'project_1',
+      {
+        revision: 6,
+        nodes: [
+          {
+            id: 'node_text',
+            type: 'text',
+            position: { x: 0, y: 0 },
+            data: { label: 'Generate', mediaType: 'text', mode: 'generate' },
+          },
+        ],
+        edges: [],
+      },
+      'node_text',
+    );
+    const runId = 'run_merge_fields';
+    const nodeTimings = {
+      node_text: { nodeId: 'node_text', startedAt: '2026-09-17T10:00:01.000Z' },
+    };
+    state.getJobs = vi.fn(async () => [
+      {
+        id: runId,
+        data: { runId, snapshot, attempt: 1, provider: 'newapi', cancelRequested: false },
+        progress: { status: 'running', progress: 45, updatedAt: '2026-09-17T10:00:02.000Z' },
+        returnvalue: undefined,
+        timestamp: Date.parse('2026-09-17T10:00:00.000Z'),
+        async getState() {
+          return 'active';
+        },
+      },
+    ]);
+    // 持久化行故意更旧：它只能补写队列记录缺失的字段，不能覆盖实时状态。
+    const persistence = {
+      ensureRun: vi.fn(async () => undefined),
+      listRunsByProject: vi.fn(async () => [
+        {
+          id: databaseRunId(runId),
+          userId: '123e4567-e89b-42d3-a456-426614174001',
+          projectId: snapshot.projectId,
+          targetNodeId: 'node_text',
+          status: 'queued' as const,
+          progress: 0,
+          attempt: 1,
+          provider: 'newapi',
+          modelAlias: snapshot.modelAlias,
+          snapshot,
+          nodeTimings,
+          createdAt: '2026-09-17T10:00:00.000Z',
+          updatedAt: '2026-09-17T10:00:00.500Z',
+        },
+      ]),
+    };
+    const service = new BullMqRunService({
+      connection: { host: '127.0.0.1', port: 6379 },
+      persistence: persistence as never,
+    });
+
+    const runs = await service.listByProject('project_1');
+
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      id: runId,
+      status: 'running',
+      progress: 45,
+      updatedAt: '2026-09-17T10:00:02.000Z',
+      userId: '123e4567-e89b-42d3-a456-426614174001',
+      nodeTimings,
+    });
     await service.close();
   });
 

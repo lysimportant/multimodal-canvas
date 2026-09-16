@@ -11,17 +11,21 @@ import { mediaTypes, type MediaType, type ModelSelection } from '@multimodal-can
 import {
   AiCredentialNotFoundError,
   AiSettingsStore,
+  applyCredentialDefaults,
   normalizeProviderTimeout,
+  resolveIndependentCredentialInput,
   type AiCredentialSummary,
   type AiSettings,
   type AiSettingsStoreLike,
   type AiSettingsStoreOptions,
+  type AiSettingsUpdateResult,
   type CredentialReference,
   type ModelCapabilityOverride,
   type ModelCatalogEntry,
   type PersistedAiSettings,
   type ProviderCredentials,
   type UpdateAiSettingsInput,
+  type UpdateCredentialDefaultsInput,
 } from './settings';
 
 /**
@@ -123,9 +127,10 @@ export class FileAiSettingsStore implements AiSettingsStoreLike {
   }
 
   /** 更新设置并在成功后持久化；落盘失败会恢复变更前的内存状态。 */
-  async update(input: UpdateAiSettingsInput): Promise<AiSettings> {
+  async update(input: UpdateAiSettingsInput): Promise<AiSettingsUpdateResult> {
     await this.ready;
     return this.enqueueWrite(async () => {
+      if (input.activate === false) return this.createIndependentCredential(input);
       const previous = this.snapshot();
       const memory = this.requireMemory();
       const previousSettings = memory.getPersisted();
@@ -159,6 +164,95 @@ export class FileAiSettingsStore implements AiSettingsStoreLike {
   async listCredentials(): Promise<AiCredentialSummary[]> {
     await this.ready;
     await this.writeQueue;
+    return this.currentSummaries();
+  }
+
+  /**
+   * 更新指定凭据自身的类型默认模型，不改变当前活动连接和该连接的版本。
+   * 目标为活动凭据时复用既有全局默认设置流程，其他凭据只写自己的记录。
+   *
+   * @returns 更新后的凭据摘要列表；目标不存在或已删除时返回 `undefined`。
+   */
+  async updateCredentialDefaults(
+    credentialId: string,
+    defaults: UpdateCredentialDefaultsInput,
+  ): Promise<AiCredentialSummary[] | undefined> {
+    await this.ready;
+    return this.enqueueWrite(async () => {
+      const previous = this.snapshot();
+      try {
+        if (credentialId === this.activeCredential.credentialId) {
+          const updated = this.requireMemory().updateCredentialDefaults(credentialId, defaults);
+          if (!updated) return undefined;
+          this.updateActiveCredential();
+          await this.persist();
+          return this.currentSummaries();
+        }
+        const record = this.credentials.get(credentialId);
+        if (!record || record.deleted) return undefined;
+        const next = applyCredentialDefaults(
+          normalizeModelDefaults(record.defaultModels),
+          defaults,
+        );
+        this.credentials.set(credentialId, {
+          ...record,
+          defaultModels: next,
+          updatedAt: new Date().toISOString(),
+        });
+        await this.persist();
+        return this.currentSummaries();
+      } catch (error) {
+        this.restore(previous);
+        throw error;
+      }
+    });
+  }
+
+  /**
+   * 新增一条不激活的独立凭据记录并写入本地文件。
+   *
+   * 相同地址与 Key 已保存时复用现有记录；活动连接引用与全局默认模型保持不变。
+   *
+   * @throws TypeError `apiKey`/`baseUrl` 无法确定或同时请求全局变更时抛出。
+   */
+  private async createIndependentCredential(
+    input: UpdateAiSettingsInput,
+  ): Promise<AiSettingsUpdateResult> {
+    const resolved = resolveIndependentCredentialInput(input, this.requireMemory().get().baseUrl);
+    const existing = [...this.credentials.values()].find(
+      (credential) =>
+        !credential.deleted &&
+        credential.baseUrl === resolved.baseUrl &&
+        credential.keyFingerprint === resolved.keyFingerprint,
+    );
+    if (existing) {
+      return { ...this.requireMemory().get(), createdCredentialId: existing.id };
+    }
+
+    const previous = this.snapshot();
+    try {
+      const keyring = this.requireKeyring();
+      const credential: PersistedCredential = {
+        id: randomUUID(),
+        version: this.nextCredentialVersion(),
+        baseUrl: resolved.baseUrl,
+        encryptedApiKey: keyring.encrypt(resolved.apiKey),
+        encryptionKeyId: keyring.currentKeyId,
+        keyFingerprint: resolved.keyFingerprint,
+        defaultModels: {},
+        updatedAt: new Date().toISOString(),
+      };
+      this.credentials.set(credential.id, credential);
+      await this.persist();
+      return { ...this.requireMemory().get(), createdCredentialId: credential.id };
+    } catch (error) {
+      this.restore(previous);
+      throw error;
+    }
+  }
+
+  /** 读取内存中的凭据摘要，调用方必须已经等待写入队列。 */
+  private currentSummaries(): AiCredentialSummary[] {
     return summarizeCredentials([...this.credentials.values()], this.activeCredential.credentialId);
   }
 
@@ -656,6 +750,20 @@ function normalizeModelSelection(
       };
 }
 
+/** 把落盘的类型默认模型规范化为完整选择对象，并忽略未知媒体类型。 */
+function normalizeModelDefaults(
+  defaults: Partial<Record<MediaType, string | ModelSelection>> | undefined,
+): Partial<Record<MediaType, ModelSelection>> {
+  return Object.fromEntries(
+    Object.entries(defaults ?? {}).flatMap(([mediaType, selection]) => {
+      const normalized = normalizeModelSelection(selection);
+      return mediaTypes.includes(mediaType as MediaType) && normalized
+        ? [[mediaType, normalized]]
+        : [];
+    }),
+  ) as Partial<Record<MediaType, ModelSelection>>;
+}
+
 function cloneModels(models: ModelCatalogEntry[]): ModelCatalogEntry[] {
   return structuredClone(models);
 }
@@ -666,12 +774,16 @@ function summarizeCredentials(
 ): AiCredentialSummary[] {
   const sorted = credentials
     .filter((credential) => credential.baseUrl && credential.keyFingerprint && !credential.deleted)
-    .map((credential) => ({
-      id: credential.id,
-      baseUrl: credential.baseUrl,
-      keyFingerprint: credential.keyFingerprint,
-      updatedAt: credential.updatedAt,
-    }))
+    .map((credential) => {
+      const defaultModels = normalizeModelDefaults(credential.defaultModels);
+      return {
+        id: credential.id,
+        baseUrl: credential.baseUrl,
+        keyFingerprint: credential.keyFingerprint,
+        updatedAt: credential.updatedAt,
+        ...(Object.keys(defaultModels).length > 0 ? { defaultModels } : {}),
+      };
+    })
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   const deduplicated = new Map<string, (typeof sorted)[number]>();
   for (const credential of sorted) {

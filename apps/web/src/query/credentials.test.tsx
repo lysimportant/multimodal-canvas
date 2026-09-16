@@ -4,10 +4,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { clearAuthSession, persistAuthSession } from '../auth-client';
 import { createAppQueryClient } from './client';
+import { modelCatalogQueryKey, modelCatalogQueryKeyFor } from './models';
 import {
   aiCredentialsQueryKey,
   useActivateAiCredential,
   useAiCredentialsQuery,
+  useCreateIndependentAiCredential,
 } from './credentials';
 
 /** 为不同权限场景创建独立合成会话。 */
@@ -87,6 +89,99 @@ describe('平台凭据缓存的身份边界', () => {
         Response.json({
           settings: { configured: true, baseUrl: credentials[0].baseUrl, defaultModels: {} },
           credentials,
+        }),
+      );
+      await pending;
+    });
+    expect(await pending).toBeInstanceOf(Error);
+    expect(client.getQueryData(aiCredentialsQueryKey)).toBeUndefined();
+  });
+});
+
+describe('独立凭据创建', () => {
+  it('以 activate:false 保存，不切换活动连接也不改动其目录缓存', async () => {
+    const independent = {
+      id: 'synthetic-independent',
+      baseUrl: 'https://independent.example.test/v1',
+      keyFingerprint: 'synthetic-independent-fingerprint',
+      active: false,
+      updatedAt: '2026-01-02T00:00:00Z',
+    };
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      Response.json({
+        settings: { configured: true, baseUrl: credentials[0].baseUrl, defaultModels: {} },
+        credentials: [...credentials, independent],
+        createdCredentialId: independent.id,
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const client = createAppQueryClient();
+    client.setQueryData(aiCredentialsQueryKey, credentials);
+    client.setQueryData(modelCatalogQueryKeyFor(credentials[0].id), [{ id: 'active-model' }]);
+    client.setQueryData(modelCatalogQueryKey, [{ id: 'active-model' }]);
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(() => useCreateIndependentAiCredential(), { wrapper });
+
+    let created: { credentialId: string } | undefined;
+    await act(async () => {
+      created = await result.current.mutateAsync({
+        baseUrl: independent.baseUrl,
+        apiKey: 'synthetic-independent-key',
+      });
+    });
+
+    expect(created?.credentialId).toBe(independent.id);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      baseUrl: independent.baseUrl,
+      apiKey: 'synthetic-independent-key',
+      activate: false,
+    });
+    expect(client.getQueryData(aiCredentialsQueryKey)).toEqual([...credentials, independent]);
+    // 活动凭据未变化，其按 ID 的目录缓存与默认回退缓存都必须保留。
+    expect(client.getQueryData(modelCatalogQueryKeyFor(credentials[0].id))).toEqual([
+      { id: 'active-model' },
+    ]);
+    expect(client.getQueryData(modelCatalogQueryKey)).toEqual([{ id: 'active-model' }]);
+    // 新凭据的目录只能按自己的 ID 读取，创建过程不会写入任何目录缓存。
+    expect(client.getQueryData(modelCatalogQueryKeyFor(independent.id))).toBeUndefined();
+    client.clear();
+  });
+
+  it('独立凭据创建的晚到响应不能写入新账户缓存', async () => {
+    const client = createAppQueryClient();
+    let finish!: (response: Response) => void;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            finish = resolve;
+          }),
+      ),
+    );
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(() => useCreateIndependentAiCredential(), { wrapper });
+    let pending!: Promise<unknown>;
+    await act(async () => {
+      pending = result.current
+        .mutateAsync({ apiKey: 'synthetic-independent-key' })
+        .catch((error: unknown) => error);
+    });
+    switchAccount('ordinary-b', 'user');
+    client.clear();
+    await act(async () => {
+      finish(
+        Response.json({
+          settings: { configured: true, baseUrl: credentials[0].baseUrl, defaultModels: {} },
+          credentials: [
+            ...credentials,
+            { ...credentials[0], id: 'late-independent', active: false },
+          ],
+          createdCredentialId: 'late-independent',
         }),
       );
       await pending;

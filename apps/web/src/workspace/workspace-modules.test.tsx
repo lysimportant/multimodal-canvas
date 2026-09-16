@@ -84,7 +84,8 @@ describe('workspace modules', () => {
       onSearch: vi.fn(),
       onTheme: vi.fn(),
       onBackground: vi.fn(),
-      onEdgeStyle: vi.fn(),
+      onEdgePathStyle: vi.fn(),
+      onEdgeEffect: vi.fn(),
       onFit: vi.fn(),
     };
     render(
@@ -99,8 +100,10 @@ describe('workspace modules', () => {
         onThemeChange={callbacks.onTheme}
         canvasBackground="dots"
         onBackgroundChange={callbacks.onBackground}
-        canvasEdgeStyle="flow"
-        onEdgeStyleChange={callbacks.onEdgeStyle}
+        canvasEdgePathStyle="bezier"
+        onEdgePathStyleChange={callbacks.onEdgePathStyle}
+        canvasEdgeEffect="meteor"
+        onEdgeEffectChange={callbacks.onEdgeEffect}
         onFitView={callbacks.onFit}
         canClearCanvas={false}
         canUndo={false}
@@ -108,7 +111,7 @@ describe('workspace modules', () => {
       />,
     );
 
-    expect(screen.getByRole('button', { name: '清空画布' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '清空' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '画布撤销' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '画布重做' })).toBeEnabled();
     expect(screen.getByRole('group', { name: '创建节点' })).toBeVisible();
@@ -138,9 +141,20 @@ describe('workspace modules', () => {
     expect(callbacks.onBackground).toHaveBeenCalledWith('blank');
     expect(screen.getByRole('tab', { name: '背景' })).toHaveAttribute('aria-selected', 'true');
     await user.click(screen.getByRole('tab', { name: '连接' }));
-    expect(screen.getByRole('group', { name: '连接线样式' })).toBeVisible();
-    await user.click(screen.getByRole('button', { name: /脉冲/ }));
-    expect(callbacks.onEdgeStyle).toHaveBeenCalledWith('pulse');
+    expect(screen.getByRole('group', { name: '连接线路径' })).toBeVisible();
+    expect(screen.getByRole('group', { name: '连接线特效' })).toBeVisible();
+    expect(screen.getByRole('group', { name: '连接线组合预览' })).toBeVisible();
+    expect(document.querySelectorAll('.appearance-edge-option')).toHaveLength(11);
+    expect(document.querySelectorAll('[data-edge-path-style]')).toHaveLength(5);
+    expect(document.querySelectorAll('[data-edge-effect]')).toHaveLength(6);
+    // 每个选项与最终组合预览都使用真实路径预览，不是示意色块。
+    expect(document.querySelectorAll('.appearance-edge-preview')).toHaveLength(12);
+    await user.click(screen.getByRole('button', { name: /圆角折线/ }));
+    expect(callbacks.onEdgePathStyle).toHaveBeenCalledWith('smoothstep');
+    expect(callbacks.onEdgeEffect).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: /单点巡航/ }));
+    expect(callbacks.onEdgeEffect).toHaveBeenCalledWith('cruiser');
+    expect(callbacks.onEdgePathStyle).toHaveBeenCalledTimes(1);
     expect(callbacks.onClear).not.toHaveBeenCalled();
     expect(callbacks.onUndo).not.toHaveBeenCalled();
   });

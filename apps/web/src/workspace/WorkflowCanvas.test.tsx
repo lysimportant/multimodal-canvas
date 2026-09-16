@@ -461,7 +461,7 @@ describe('WorkflowCanvas context menu', () => {
     expect(overlayLeft + overlayWidth).toBeLessThanOrEqual(800);
   });
 
-  it('uses flowing default edges that stay attached to handle centers', () => {
+  it('uses the appearance-driven default edge without forcing animation', () => {
     render(<WorkflowCanvas {...createProps()} />);
 
     const flow = screen.getByTestId('react-flow');
@@ -469,6 +469,21 @@ describe('WorkflowCanvas context menu', () => {
     expect(flow).toHaveAttribute('data-default-edge-type', 'default');
     expect(flow).toHaveAttribute('data-default-edge-animated', 'false');
     expect(flow).toHaveAttribute('data-default-edge-style', 'null');
+  });
+
+  it('把连接线路径形态与动态特效分别标记在画布区域上', () => {
+    const props = createProps({ edgePathStyle: 'smoothstep', edgeEffect: 'cruiser' });
+    const { rerender } = render(<WorkflowCanvas {...props} />);
+    const canvas = screen.getByRole('region', { name: '工作流画布' });
+
+    expect(canvas).toHaveAttribute('data-edge-path-style', 'smoothstep');
+    expect(canvas).toHaveAttribute('data-edge-effect', 'cruiser');
+
+    rerender(<WorkflowCanvas {...props} edgePathStyle="straight" />);
+
+    // 只改路径形态不能重置特效。
+    expect(canvas).toHaveAttribute('data-edge-path-style', 'straight');
+    expect(canvas).toHaveAttribute('data-edge-effect', 'cruiser');
   });
 
   it('prevents browser page zoom for Ctrl+wheel events on the canvas', () => {

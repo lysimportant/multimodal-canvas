@@ -1299,8 +1299,12 @@ export class BullMqRunService implements RunService {
 
   async get(runId: string): Promise<RunRecord | undefined> {
     const job = await this.queue.getJob(runId);
-    if (job) return this.toRunRecord(job);
-    return this.persistence?.getRun?.(runId);
+    if (!job) return this.persistence?.getRun?.(runId);
+    const record = await this.toRunRecord(job);
+    // 节点时间只写入 runs.nodeTimings：队列负载里没有该字段，因此读取队列记录时
+    // 必须从持久化行补齐，否则界面在运行期间永远看不到节点耗时。
+    const durable = record.nodeTimings ? undefined : await this.persistence?.getRun?.(runId);
+    return this.withDurableRunFields(record, durable);
   }
 
   async listByProject(projectId: string): Promise<RunRecord[]> {
@@ -1319,14 +1323,39 @@ export class BullMqRunService implements RunService {
     );
     const durableRuns = (await this.persistence?.listRunsByProject?.(projectId)) ?? [];
     const durableByDatabaseId = new Map(durableRuns.map((run) => [run.id, run]));
-    for (const run of queueRuns) {
-      durableByDatabaseId.delete(databaseRunId(run.id));
-    }
-    return [...durableByDatabaseId.values(), ...queueRuns].sort((left, right) =>
+    // 项目列表与 SSE 都走这里：队列记录是运行中的生命周期真相，但补上持久化行
+    // 独有的字段后才能看到节点耗时；补写过的运行不再单独返回持久化行。
+    const mergedQueueRuns = queueRuns.map((run) => {
+      const durableId = databaseRunId(run.id);
+      const durable = durableByDatabaseId.get(durableId);
+      if (!durable) return run;
+      durableByDatabaseId.delete(durableId);
+      return this.withDurableRunFields(run, durable);
+    });
+    return [...durableByDatabaseId.values(), ...mergedQueueRuns].sort((left, right) =>
       left.createdAt === right.createdAt
         ? left.id.localeCompare(right.id)
         : left.createdAt.localeCompare(right.createdAt),
     );
+  }
+
+  /**
+   * 用持久化行补齐队列记录缺少的只读字段。
+   *
+   * 队列负载不携带只写入数据库的字段：按节点的 `nodeTimings` 只存在于
+   * `runs.nodeTimings`，可选的 `userId` 也可能不在队列数据里。合并只填空缺，
+   * 绝不用持久化值覆盖队列值，因此运行中的状态、进度与结果不会被旧行改写。
+   * 以后新增同类字段时必须在这里显式补写。
+   */
+  private withDurableRunFields(record: RunRecord, durable: RunRecord | undefined): RunRecord {
+    if (!durable) return record;
+    return {
+      ...record,
+      ...(record.userId === undefined && durable.userId ? { userId: durable.userId } : {}),
+      ...(record.nodeTimings === undefined && durable.nodeTimings
+        ? { nodeTimings: durable.nodeTimings }
+        : {}),
+    };
   }
 
   async applyProviderWebhook(update: ProviderWebhookUpdate): Promise<RunRecord | undefined> {
@@ -1588,6 +1617,8 @@ export class BullMqRunService implements RunService {
     const providerJob: ProviderJob | undefined = completed?.success
       ? normalizeCompleteProviderJob(completed.data.providerJob)
       : normalizeCompleteProviderJob(data.providerJob);
+    // 队列负载里没有 `nodeTimings`（只写入 `runs.nodeTimings`），这里保持纯队列
+    // 映射；调用方用 `withDurableRunFields` 从持久化行补齐。
     return {
       id: data.runId,
       ...(data.userId ? { userId: data.userId } : {}),

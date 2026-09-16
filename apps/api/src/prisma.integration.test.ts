@@ -183,6 +183,10 @@ const postLifecycleMigrations = [
   '0014_ai_credential_encryption_key_id',
   '20260906120000_admin_accounts',
   '20260906130000_admin_lifecycle',
+  // 画布分组布局与按节点计时，以及请求提示词记录。列表必须覆盖全部后续迁移，
+  // 否则临时库停在旧结构，末尾的整库结构比对会报出真实存在的差异。
+  '20260916120000_canvas_groups_run_node_timings',
+  '20260917120000_run_request_prompts',
 ] as const;
 
 describe('integration configuration safety', () => {
@@ -452,6 +456,71 @@ integrationDescribe('凭据轮换与跨进程恢复（隔离 PostgreSQL）', () 
         vi.unstubAllEnvs();
       }
     }
+  });
+
+  it('新增独立凭据持久化为非活动行，重启实例后仍按 ID 可解析', async () => {
+    await prisma.aiCredential.deleteMany();
+    const settingsSecret = 'synthetic-independent-secret';
+    const writer = new PrismaAiSettingsStore(prisma, settingsSecret);
+    await writer.update({
+      baseUrl: 'https://active.integration.test/v1',
+      apiKey: 'synthetic-active-key',
+    });
+    const activeReference = await writer.getCredentialReference();
+    const activeView = await writer.get();
+
+    const created = await writer.update({
+      baseUrl: 'https://independent.integration.test/v1',
+      apiKey: 'synthetic-independent-key',
+      activate: false,
+    });
+    const createdCredentialId = created.createdCredentialId;
+    expect(createdCredentialId).toBeTruthy();
+    const { createdCredentialId: _createdId, ...unchangedView } = created;
+    expect(unchangedView).toEqual(activeView);
+    expect(await writer.getCredentialReference()).toEqual(activeReference);
+
+    const row = await prisma.aiCredential.findUniqueOrThrow({
+      where: { id: createdCredentialId! },
+    });
+    expect(row).toMatchObject({
+      label: 'independent',
+      baseUrl: 'https://independent.integration.test/v1',
+      version: 2,
+    });
+    expect(row.encryptedApiKey).not.toContain('synthetic-independent-key');
+    await writer.close?.();
+
+    // 新实例只从数据库恢复：独立行不能顶替活动连接，且必须仍可按 ID 解析。
+    const reopened = new PrismaAiSettingsStore(prisma, settingsSecret);
+    const summaries = await reopened.listCredentials();
+    expect(summaries.find((entry) => entry.id === activeReference.credentialId)).toMatchObject({
+      active: true,
+    });
+    expect(summaries.find((entry) => entry.id === createdCredentialId)).toMatchObject({
+      baseUrl: 'https://independent.integration.test/v1',
+      active: false,
+    });
+    expect(await reopened.getCredentialReference()).toEqual(activeReference);
+    expect(await reopened.get()).toEqual(activeView);
+    expect(await reopened.hasCredential(createdCredentialId!)).toBe(true);
+    const independentReference = await reopened.getCredentialReference(createdCredentialId!);
+    await expect(reopened.getProviderCredentials(independentReference)).resolves.toEqual({
+      baseUrl: 'https://independent.integration.test/v1',
+      apiKey: 'synthetic-independent-key',
+    });
+
+    const updated = await reopened.updateCredentialDefaults(createdCredentialId!, {
+      image: { modelAlias: 'independent-image', credentialId: createdCredentialId },
+    });
+    expect(updated?.find((entry) => entry.id === createdCredentialId)?.defaultModels).toEqual({
+      image: { modelAlias: 'independent-image', credentialId: createdCredentialId },
+    });
+    expect(await reopened.get()).toEqual(activeView);
+    await expect(
+      reopened.updateCredentialDefaults(randomUUID(), { text: 'missing-model' }),
+    ).resolves.toBeUndefined();
+    await reopened.close?.();
   });
 });
 

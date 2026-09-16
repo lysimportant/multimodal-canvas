@@ -25,6 +25,8 @@ export type AiCredentialSummary = {
   keyFingerprint: string;
   updatedAt: string;
   active: boolean;
+  /** 该凭据自身已持久化的类型默认模型；从未配置过的凭据不返回该字段。 */
+  defaultModels?: Partial<Record<MediaType, string | ModelSelection>>;
 };
 
 export type ModelCatalogEntry = {
@@ -51,6 +53,22 @@ export type UpdateAiSettingsInput = {
   defaultModels?: Partial<Record<MediaType, string | ModelSelection | null>>;
   /** Provider 单次请求超时，单位毫秒；范围为 1 秒至 Node 定时器上限。 */
   timeoutMs?: number;
+  /**
+   * 是否把本次 `baseUrl`/`apiKey` 设为全局活动连接，缺省 `true`，保持既有调用行为。
+   * 传 `false` 时只新增一条不激活的独立凭据并返回其 ID，活动连接的 ID、版本、地址、
+   * 指纹和类型默认模型保持不变；该模式不接受 `defaultModels` 和 `timeoutMs`。
+   */
+  activate?: boolean;
+};
+
+/** 单个凭据自身的类型默认模型；`null` 或空串清除该媒体类型。 */
+export type UpdateCredentialDefaultsInput = Partial<
+  Record<MediaType, string | ModelSelection | null>
+>;
+
+/** 设置更新结果；`createdCredentialId` 仅在 `activate: false` 新增独立凭据时返回。 */
+export type AiSettingsUpdateResult = AiSettings & {
+  createdCredentialId?: string;
 };
 
 export type AiSettingsStoreOptions = {
@@ -97,8 +115,20 @@ export type PersistedAiSettings = {
 
 export interface AiSettingsStoreLike {
   get(): AiSettings | Promise<AiSettings>;
-  update(input: UpdateAiSettingsInput): AiSettings | Promise<AiSettings>;
+  update(input: UpdateAiSettingsInput): AiSettingsUpdateResult | Promise<AiSettingsUpdateResult>;
   listCredentials(): AiCredentialSummary[] | Promise<AiCredentialSummary[]>;
+  /**
+   * 更新指定凭据自身的类型默认模型，不改变当前活动连接和该连接的版本。
+   * 活动凭据同时更新全局默认视图，其他凭据只写自己的记录。
+   *
+   * @param credentialId 目标凭据 ID，必须来自凭据摘要列表。
+   * @param defaults 按媒体类型的局部更新；`null` 或空串清除该类型。
+   * @returns 更新后的凭据摘要列表；目标不存在或已删除时返回 `undefined`。
+   */
+  updateCredentialDefaults(
+    credentialId: string,
+    defaults: UpdateCredentialDefaultsInput,
+  ): AiCredentialSummary[] | undefined | Promise<AiCredentialSummary[] | undefined>;
   activateCredential(
     credentialId: string,
   ): AiSettings | undefined | Promise<AiSettings | undefined>;
@@ -139,6 +169,25 @@ export class AiCredentialNotFoundError extends Error {
 }
 
 const LEGACY_MODEL_CATALOG_KEY = '__legacy__';
+/**
+ * 独立凭据的行标记：它只供指定类型默认或单个节点使用，不是全局活动连接。
+ * 由于 PostgreSQL 存储把“最新行”当作活动连接，独立行必须显式排除在该选择之外。
+ */
+const INDEPENDENT_CREDENTIAL_LABEL = 'independent';
+/**
+ * 已删除的独立凭据行标记。它保留独立行“不参与活动选择”的语义，同时和普通删除
+ * 一样不再出现在凭据列表中；若改写为 `deleted`，该行会重新进入活动行的候选范围。
+ */
+const INDEPENDENT_DELETED_CREDENTIAL_LABEL = 'independent-deleted';
+/** 活动连接行（含撤销墓碑）的查询条件；独立凭据行不参与活动选择。 */
+const activeCredentialWhere = {
+  projectId: null,
+  label: {
+    notIn: [INDEPENDENT_CREDENTIAL_LABEL, INDEPENDENT_DELETED_CREDENTIAL_LABEL],
+  },
+};
+/** 活动连接行的稳定排序：更新时间优先，同毫秒用版本号决胜。 */
+const activeCredentialOrderBy = [{ updatedAt: 'desc' as const }, { version: 'desc' as const }];
 const DEFAULT_MODEL_RESPONSE_BYTES = 50 * 1024 * 1024;
 /** Provider 默认超时，单位毫秒；视频任务需要比短请求更长的等待窗口。 */
 export const DEFAULT_PROVIDER_TIMEOUT_MS = 900_000;
@@ -202,6 +251,8 @@ export class AiSettingsStore {
       version: number;
       keyFingerprint: string;
       updatedAt: string;
+      /** 该凭据自身的类型默认模型；活动凭据与全局默认视图保持一致。 */
+      defaultModels: Partial<Record<MediaType, ModelSelection>>;
     }
   >();
   private updatedAt = new Date().toISOString();
@@ -281,10 +332,11 @@ export class AiSettingsStore {
     this.registerCredential(false);
   }
 
-  update(input: UpdateAiSettingsInput): AiSettings {
+  update(input: UpdateAiSettingsInput): AiSettingsUpdateResult {
     // 先校验可失败字段，防止同一更新中的凭据已变更而超时校验失败。
     const nextTimeout =
       input.timeoutMs === undefined ? undefined : normalizeProviderTimeout(input.timeoutMs);
+    if (input.activate === false) return this.createIndependentCredential(input);
     let changed = false;
     let providerCredentialsChanged = false;
     const previousCredentialId = this.credentialId;
@@ -331,12 +383,43 @@ export class AiSettingsStore {
     }
     if (!providerCredentialsChanged && previousCredentialId && this.credentialId) {
       this.copyModels(previousCredentialId, this.credentialId);
+      this.recordActiveCredentialDefaults();
     }
     return this.get();
   }
 
   listCredentials(): AiCredentialSummary[] {
     return summarizeCredentials([...this.credentialRecords.values()], this.credentialId);
+  }
+
+  /**
+   * 更新指定凭据自身的类型默认模型，不改变当前活动连接。
+   * 目标为活动凭据时走既有全局默认模型流程，其他凭据只写自己的记录。
+   *
+   * @param credentialId 目标凭据 ID。
+   * @param defaults 按媒体类型的局部更新；`null` 或空串清除该类型。
+   * @returns 更新后的凭据摘要列表；目标不存在时返回 `undefined`。
+   */
+  updateCredentialDefaults(
+    credentialId: string,
+    defaults: UpdateCredentialDefaultsInput,
+  ): AiCredentialSummary[] | undefined {
+    const record = this.credentialRecords.get(credentialId);
+    if (!record) return undefined;
+    if (credentialId === this.credentialId) {
+      this.update({ defaultModels: defaults });
+      return this.listCredentials();
+    }
+    const next = applyCredentialDefaults(record.defaultModels, defaults);
+    if (!sameDefaultModels(next, record.defaultModels)) {
+      // 只更新该凭据自身的时间戳，避免非活动变更改动全局设置的更新时间。
+      this.credentialRecords.set(credentialId, {
+        ...record,
+        defaultModels: next,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+    return this.listCredentials();
   }
 
   activateCredential(credentialId: string): AiSettings | undefined {
@@ -599,7 +682,7 @@ export class AiSettingsStore {
     if (!this.baseUrl || !this.encryptedApiKey) return;
     if (advanceVersion) {
       this.credentialId = randomUUID();
-      this.credentialVersion = (this.credentialVersion ?? 0) + 1;
+      this.credentialVersion = this.nextCredentialVersion();
     } else {
       this.credentialId ??= randomUUID();
       this.credentialVersion ??= 1;
@@ -615,7 +698,67 @@ export class AiSettingsStore {
       version: this.credentialVersion,
       keyFingerprint: this.keyFingerprint,
       updatedAt: this.updatedAt,
+      defaultModels: cloneDefaultModels(this.defaultModels),
     });
+  }
+
+  /** 返回本存储统一递增的凭据版本，避免独立凭据与活动凭据出现重复版本号。 */
+  private nextCredentialVersion(): number {
+    return (
+      Math.max(
+        this.credentialVersion ?? 0,
+        ...[...this.credentialRecords.values()].map((credential) => credential.version),
+      ) + 1
+    );
+  }
+
+  /** 把活动默认模型同步到当前凭据记录，保证凭据摘要与全局设置视图一致。 */
+  private recordActiveCredentialDefaults() {
+    if (!this.credentialId) return;
+    const record = this.credentialRecords.get(this.credentialId);
+    if (!record) return;
+    this.credentialRecords.set(this.credentialId, {
+      ...record,
+      defaultModels: cloneDefaultModels(this.defaultModels),
+      updatedAt: this.updatedAt,
+    });
+  }
+
+  /**
+   * 新增一条不激活的独立凭据记录并返回其 ID。
+   *
+   * 活动连接的 ID、版本、地址、指纹和类型默认模型保持不变；相同地址与 Key 已保存时
+   * 复用现有记录，使重复提交不会产生多条等价凭据。
+   *
+   * @param input 设置更新输入，必须带 `activate: false` 和 `apiKey`。
+   * @returns 未变更的活动设置视图，并附带新凭据或复用凭据的 ID。
+   * @throws TypeError `apiKey`/`baseUrl` 无法确定或同时请求全局变更时抛出。
+   */
+  private createIndependentCredential(input: UpdateAiSettingsInput): AiSettingsUpdateResult {
+    const resolved = resolveIndependentCredentialInput(input, this.baseUrl);
+    const existing = [...this.credentialRecords.values()].find(
+      (credential) =>
+        credential.baseUrl === resolved.baseUrl &&
+        credential.keyFingerprint === resolved.keyFingerprint,
+    );
+    if (existing) return { ...this.get(), createdCredentialId: existing.id };
+
+    const id = randomUUID();
+    const version = this.nextCredentialVersion();
+    const credentials = { baseUrl: resolved.baseUrl, apiKey: resolved.apiKey };
+    this.credentialRecords.set(id, {
+      ...credentials,
+      id,
+      version,
+      keyFingerprint: resolved.keyFingerprint,
+      updatedAt: new Date().toISOString(),
+      defaultModels: {},
+    });
+    this.credentialHistory.set(
+      credentialKey({ credentialId: id, credentialVersion: version }),
+      credentials,
+    );
+    return { ...this.get(), createdCredentialId: id };
   }
 
   private withCapabilityOverride(model: ModelCatalogEntry, mediaType: MediaType) {
@@ -702,43 +845,139 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
 
   /** 基于最新已提交设置合并局部更新，落库失败时撤回本实例的临时变更。 */
   async update(input: UpdateAiSettingsInput) {
-    return this.withLatestSettings(async () => {
-      const previous = this.memory.getPersisted();
-      const previousReference = this.memory.getCredentialReference();
-      const previousStoreReference = { ...this.credentialReference };
-      const result = this.memory.update(input);
-      if (samePersistedSettings(previous, this.memory.getPersisted())) return result;
-      try {
-        const next = this.memory.getPersisted();
-        const sourceCatalogCredentialId =
-          previous.baseUrl === next.baseUrl && previous.keyFingerprint === next.keyFingerprint
-            ? previousStoreReference.credentialId
-            : undefined;
-        await this.persistCredential(
-          sourceCatalogCredentialId,
-          previous.baseUrl === next.baseUrl && previous.keyFingerprint === next.keyFingerprint,
-          previous.updatedAt,
-        );
-        return this.memory.get();
-      } catch (error) {
-        // A database outage must not leave this process serving credentials or
-        // defaults that were never durably written.
-        this.memory.hydrate(previous, previousReference);
-        this.credentialReference = previousStoreReference;
-        throw error;
-      }
-    });
+    return this.withLatestSettings(() => this.applyUpdate(input));
   }
 
   /** 列出历史连接摘要，活动标记以本次读取的数据库设置为准。 */
   async listCredentials() {
+    return this.withLatestSettings(() => this.loadCredentialSummaries());
+  }
+
+  /**
+   * 更新指定凭据自身的类型默认模型，不改变当前活动连接。
+   * 目标为活动凭据时复用全局默认写入路径，其他凭据只更新自己的行。
+   *
+   * @returns 更新后的凭据摘要列表；目标不存在或已删除时返回 `undefined`。
+   */
+  async updateCredentialDefaults(credentialId: string, defaults: UpdateCredentialDefaultsInput) {
     return this.withLatestSettings(async () => {
-      const credentials = await this.prisma.aiCredential.findMany({
-        where: { projectId: null },
-        orderBy: [{ updatedAt: 'desc' }, { version: 'desc' }],
+      if (credentialId === this.credentialReference.credentialId) {
+        await this.applyUpdate({ defaultModels: defaults });
+        return this.loadCredentialSummaries();
+      }
+      const updated = await this.prisma.$transaction(async (transaction) => {
+        const updatedAt = await this.lockCredentialWrites(transaction);
+        const target = await transaction.aiCredential.findFirst({
+          where: { id: credentialId, projectId: null },
+        });
+        if (!target?.baseUrl || !target.encryptedApiKey || isDeletedCredentialLabel(target.label))
+          return false;
+        const stored = readPersistedDefaults(target.defaultModels);
+        const next = applyCredentialDefaults(
+          normalizeDefaultModels(stored.defaultModels),
+          defaults,
+        );
+        await transaction.aiCredential.update({
+          where: { id: target.id, version: target.version, updatedAt: target.updatedAt },
+          data: {
+            defaultModels: writePersistedDefaults({
+              defaultModels: next,
+              ...(stored.timeoutMs === undefined ? {} : { timeoutMs: stored.timeoutMs }),
+            }),
+            updatedAt,
+          },
+        });
+        return true;
       });
-      return summarizeCredentials(credentials, this.credentialReference.credentialId);
+      if (!updated) return undefined;
+      return this.loadCredentialSummaries();
     });
+  }
+
+  /** 返回数据库中的全部平台凭据摘要；独立凭据同样以持久化默认模型列出。 */
+  private async loadCredentialSummaries() {
+    const credentials = await this.prisma.aiCredential.findMany({
+      where: { projectId: null },
+      orderBy: activeCredentialOrderBy,
+    });
+    return summarizeCredentials(credentials, this.credentialReference.credentialId);
+  }
+
+  /** 合并局部设置更新；`activate: false` 时新增不激活的独立凭据行。 */
+  private async applyUpdate(input: UpdateAiSettingsInput): Promise<AiSettingsUpdateResult> {
+    if (input.activate === false) return this.createIndependentCredential(input);
+    const previous = this.memory.getPersisted();
+    const previousReference = this.memory.getCredentialReference();
+    const previousStoreReference = { ...this.credentialReference };
+    const result = this.memory.update(input);
+    if (samePersistedSettings(previous, this.memory.getPersisted())) return result;
+    try {
+      const next = this.memory.getPersisted();
+      const sourceCatalogCredentialId =
+        previous.baseUrl === next.baseUrl && previous.keyFingerprint === next.keyFingerprint
+          ? previousStoreReference.credentialId
+          : undefined;
+      await this.persistCredential(
+        sourceCatalogCredentialId,
+        previous.baseUrl === next.baseUrl && previous.keyFingerprint === next.keyFingerprint,
+        previous.updatedAt,
+      );
+      return this.memory.get();
+    } catch (error) {
+      // A database outage must not leave this process serving credentials or
+      // defaults that were never durably written.
+      this.memory.hydrate(previous, previousReference);
+      this.credentialReference = previousStoreReference;
+      throw error;
+    }
+  }
+
+  /**
+   * 新增一条不激活的独立凭据行并返回其 ID；地址与 Key 已保存时复用现有行。
+   *
+   * 独立行带独立标记，不参与“最新行即活动连接”的选择，因此活动连接引用、版本、
+   * 地址、指纹和默认模型都不会变化。Key 明文只进入现有加密存储。
+   */
+  private async createIndependentCredential(
+    input: UpdateAiSettingsInput,
+  ): Promise<AiSettingsUpdateResult> {
+    const resolved = resolveIndependentCredentialInput(input, this.memory.get().baseUrl);
+    const existing = await this.prisma.aiCredential.findFirst({
+      where: {
+        projectId: null,
+        baseUrl: resolved.baseUrl,
+        keyFingerprint: resolved.keyFingerprint,
+        label: {
+          notIn: [INDEPENDENT_DELETED_CREDENTIAL_LABEL, 'deleted'],
+        },
+      },
+      orderBy: activeCredentialOrderBy,
+    });
+    if (existing) return { ...this.memory.get(), createdCredentialId: existing.id };
+
+    const created = await this.prisma.$transaction(async (transaction) => {
+      const updatedAt = await this.lockCredentialWrites(transaction);
+      const newest = await transaction.aiCredential.findFirst({
+        where: { projectId: null },
+        orderBy: [{ version: 'desc' }],
+        select: { version: true },
+      });
+      return transaction.aiCredential.create({
+        data: {
+          projectId: null,
+          ownerId: null,
+          label: INDEPENDENT_CREDENTIAL_LABEL,
+          baseUrl: resolved.baseUrl,
+          encryptedApiKey: this.credentialKeyring.encrypt(resolved.apiKey),
+          encryptionKeyId: this.credentialKeyring.currentKeyId,
+          keyFingerprint: resolved.keyFingerprint,
+          defaultModels: Prisma.JsonNull,
+          version: (newest?.version ?? 0) + 1,
+          updatedAt,
+        },
+      });
+    });
+    return { ...this.memory.get(), createdCredentialId: created.id };
   }
 
   /** 显式重新激活历史连接并保留最新默认模型；目标不存在时返回 undefined。 */
@@ -751,7 +990,7 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
         !credential?.baseUrl ||
         !credential.encryptedApiKey ||
         !credential.keyFingerprint ||
-        credential.label === 'deleted'
+        isDeletedCredentialLabel(credential.label)
       ) {
         return undefined;
       }
@@ -785,8 +1024,8 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
       const revoked = await this.prisma.$transaction(async (transaction) => {
         const updatedAt = await this.lockCredentialWrites(transaction);
         const current = await transaction.aiCredential.findFirst({
-          where: { projectId: null },
-          orderBy: [{ updatedAt: 'desc' }, { version: 'desc' }],
+          where: activeCredentialWhere,
+          orderBy: activeCredentialOrderBy,
           select: { version: true },
         });
         if (current) {
@@ -837,10 +1076,10 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
         const target = await transaction.aiCredential.findFirst({
           where: { id: credentialId, projectId: null },
         });
-        if (!target?.encryptedApiKey || target.label === 'deleted') return false;
+        if (!target?.encryptedApiKey || isDeletedCredentialLabel(target.label)) return false;
         const current = await transaction.aiCredential.findFirst({
-          where: { projectId: null },
-          orderBy: [{ updatedAt: 'desc' }, { version: 'desc' }],
+          where: activeCredentialWhere,
+          orderBy: activeCredentialOrderBy,
         });
         const versions = await transaction.aiCredential.findMany({
           where: {
@@ -858,7 +1097,10 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
           // 保留排序时间，避免删除非活动连接时把它误提升为当前配置。
           await transaction.aiCredential.update({
             where: { id: version.id },
-            data: { label: 'deleted', updatedAt: version.updatedAt },
+            data: {
+              label: deletedCredentialLabel(version.label),
+              updatedAt: version.updatedAt,
+            },
           });
         }
         if (
@@ -908,7 +1150,9 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
       select: { id: true, baseUrl: true, encryptedApiKey: true, label: true },
     });
     return Boolean(
-      credential?.baseUrl && credential.encryptedApiKey && credential.label !== 'deleted',
+      credential?.baseUrl &&
+      credential.encryptedApiKey &&
+      !isDeletedCredentialLabel(credential.label),
     );
   }
 
@@ -987,7 +1231,11 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
           where: { id: credentialId, projectId: null },
           select: { id: true, version: true, baseUrl: true, encryptedApiKey: true, label: true },
         });
-        if (!credential?.baseUrl || !credential.encryptedApiKey || credential.label === 'deleted') {
+        if (
+          !credential?.baseUrl ||
+          !credential.encryptedApiKey ||
+          isDeletedCredentialLabel(credential.label)
+        ) {
           throw new AiCredentialNotFoundError(credentialId);
         }
         return { credentialId: credential.id, credentialVersion: credential.version };
@@ -1045,8 +1293,8 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
     ).modelCapabilityOverride;
     const [credential, catalog, overrides] = await Promise.all([
       this.prisma.aiCredential.findFirst({
-        where: { projectId: null },
-        orderBy: [{ updatedAt: 'desc' }, { version: 'desc' }],
+        where: activeCredentialWhere,
+        orderBy: activeCredentialOrderBy,
       }),
       this.prisma.modelCatalog.findMany(),
       overrideDelegate?.findMany ? overrideDelegate.findMany() : Promise.resolve([]),
@@ -1166,12 +1414,12 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
         const source = await transaction.aiCredential.findFirst({
           where: { id: sourceCatalogCredentialId, projectId: null },
         });
-        if (source?.label === 'deleted')
+        if (isDeletedCredentialLabel(source?.label))
           throw new AiCredentialNotFoundError(sourceCatalogCredentialId);
       }
       const existing = await transaction.aiCredential.findFirst({
-        where: { projectId: null },
-        orderBy: [{ updatedAt: 'desc' }, { version: 'desc' }],
+        where: activeCredentialWhere,
+        orderBy: activeCredentialOrderBy,
       });
       const expectedReference = this.credentialReference;
       const matchesReference = expectedReference.credentialId
@@ -1287,7 +1535,7 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
       !credential?.baseUrl ||
       !credential.encryptedApiKey ||
       !credential.keyFingerprint ||
-      credential.label === 'deleted'
+      isDeletedCredentialLabel(credential.label)
     ) {
       if (credentialId) throw new AiCredentialNotFoundError(credentialId);
       throw new Error('New API 地址和 Key 尚未配置');
@@ -1409,6 +1657,17 @@ function credentialKey(reference: CredentialReference): string {
   return `${reference.credentialId ?? ''}:${reference.credentialVersion ?? ''}`;
 }
 
+/** 判断行标记是否代表已删除的凭据；普通删除和已删除的独立凭据都不可再用。 */
+function isDeletedCredentialLabel(label: string | null | undefined): boolean {
+  return label === 'deleted' || label === INDEPENDENT_DELETED_CREDENTIAL_LABEL;
+}
+
+/** 返回删除凭据后的行标记；独立凭据保留“不参与活动选择”的语义。 */
+function deletedCredentialLabel(label: string): string {
+  if (label === INDEPENDENT_CREDENTIAL_LABEL) return INDEPENDENT_DELETED_CREDENTIAL_LABEL;
+  return isDeletedCredentialLabel(label) ? label : 'deleted';
+}
+
 function modelCatalogKey(credentialId: string | undefined): string {
   return credentialId ?? LEGACY_MODEL_CATALOG_KEY;
 }
@@ -1450,6 +1709,51 @@ function cloneDefaultModels(
   return normalizeDefaultModels(value);
 }
 
+/**
+ * 在现有类型默认上应用局部更新；`null` 或空串删除该媒体类型。
+ *
+ * @param current 该凭据当前已保存的类型默认模型。
+ * @param input 按媒体类型的局部更新；未知媒体类型会被忽略。
+ * @returns 新的类型默认模型，不修改入参。
+ */
+export function applyCredentialDefaults(
+  current: Partial<Record<MediaType, ModelSelection>>,
+  input: UpdateCredentialDefaultsInput,
+): Partial<Record<MediaType, ModelSelection>> {
+  const next = { ...current };
+  for (const [mediaType, selection] of Object.entries(input)) {
+    if (!mediaTypes.includes(mediaType as MediaType)) continue;
+    if (selection === null || selection === '') delete next[mediaType as MediaType];
+    else if (selection !== undefined)
+      next[mediaType as MediaType] = normalizeModelSelection(selection);
+  }
+  return next;
+}
+
+/**
+ * 校验并解析“新增不激活独立凭据”的输入。
+ *
+ * @param input 设置更新输入；`activate` 必须为 `false`。
+ * @param fallbackBaseUrl `baseUrl` 缺省时复用的当前活动地址。
+ * @returns 规范化后的基础地址、Key 明文和指纹；Key 明文只允许进入加密存储。
+ * @throws TypeError `apiKey` 缺失、地址无法确定，或同时请求默认模型/超时时抛出。
+ */
+export function resolveIndependentCredentialInput(
+  input: UpdateAiSettingsInput,
+  fallbackBaseUrl: string,
+): { baseUrl: string; apiKey: string; keyFingerprint: string } {
+  if (input.defaultModels !== undefined || input.timeoutMs !== undefined) {
+    throw new TypeError(
+      'independent AI credential creation cannot change default models or timeout',
+    );
+  }
+  const apiKey = input.apiKey;
+  if (!apiKey) throw new TypeError('independent AI credential creation requires an apiKey');
+  const baseUrl = (input.baseUrl ?? fallbackBaseUrl).replace(/\/$/, '');
+  if (!baseUrl) throw new TypeError('independent AI credential creation requires a baseUrl');
+  return { baseUrl, apiKey, keyFingerprint: fingerprint(apiKey) };
+}
+
 function serializeDefaultModels(
   value: Partial<Record<MediaType, ModelSelection>>,
 ): Partial<Record<MediaType, ModelSelection>> {
@@ -1478,23 +1782,32 @@ function summarizeCredentials(
     keyFingerprint: string;
     label?: string;
     updatedAt: string | Date;
+    defaultModels?: unknown;
   }>,
   activeCredentialId?: string,
 ): AiCredentialSummary[] {
   const sorted = credentials
     .filter(
       (credential) =>
-        credential.baseUrl && credential.keyFingerprint && credential.label !== 'deleted',
+        credential.baseUrl &&
+        credential.keyFingerprint &&
+        !isDeletedCredentialLabel(credential.label),
     )
-    .map((credential) => ({
-      id: credential.id,
-      baseUrl: credential.baseUrl,
-      keyFingerprint: credential.keyFingerprint,
-      updatedAt:
-        credential.updatedAt instanceof Date
-          ? credential.updatedAt.toISOString()
-          : credential.updatedAt,
-    }))
+    .map((credential) => {
+      const defaultModels = normalizeDefaultModels(
+        readPersistedDefaults(credential.defaultModels).defaultModels,
+      );
+      return {
+        id: credential.id,
+        baseUrl: credential.baseUrl,
+        keyFingerprint: credential.keyFingerprint,
+        updatedAt:
+          credential.updatedAt instanceof Date
+            ? credential.updatedAt.toISOString()
+            : credential.updatedAt,
+        ...(Object.keys(defaultModels).length > 0 ? { defaultModels } : {}),
+      };
+    })
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   const deduplicated = new Map<string, (typeof sorted)[number]>();
   for (const credential of sorted) {
@@ -1576,9 +1889,14 @@ function readPersistedDefaults(value: unknown): {
 }
 
 /** 将超时写入现有默认模型 JSON，默认值保持旧数据形状。 */
-function writePersistedDefaults(value: PersistedAiSettings): Prisma.InputJsonValue {
+function writePersistedDefaults(value: {
+  defaultModels: Partial<Record<MediaType, string | ModelSelection>>;
+  timeoutMs?: number;
+}): Prisma.InputJsonValue {
   const defaults = { ...value.defaultModels } as Record<string, unknown>;
-  if (value.timeoutMs !== DEFAULT_PROVIDER_TIMEOUT_MS) defaults.__timeoutMs = value.timeoutMs;
+  if (value.timeoutMs !== undefined && value.timeoutMs !== DEFAULT_PROVIDER_TIMEOUT_MS) {
+    defaults.__timeoutMs = value.timeoutMs;
+  }
   return defaults as Prisma.InputJsonValue;
 }
 
@@ -1919,6 +2237,7 @@ function normalizeMediaType(value: string): MediaType | undefined {
   return undefined;
 }
 
-function fingerprint(value: string) {
+/** 计算 Key 指纹，仅用于识别相同连接；不可逆且不包含密钥材料。 */
+export function fingerprint(value: string) {
   return createHash('sha256').update(value).digest('hex').slice(0, 12);
 }

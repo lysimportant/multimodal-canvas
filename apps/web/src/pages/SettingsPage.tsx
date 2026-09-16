@@ -17,6 +17,12 @@ export type SettingsPageProps = {
   onNavigate?: (href: string, event: MouseEvent<HTMLAnchorElement>) => void;
 };
 
+/**
+ * 独立设置页的外框：负责路由骨架、项目加载与错误状态。
+ *
+ * 面板内容由 `SettingsPanel` 以 `presentation="page"` 注入，与对话框共用同一个内容组件，
+ * 因此两处的分类、表单与凭据逻辑不会分叉。
+ */
 export function SettingsPage({
   children,
   projectId,
