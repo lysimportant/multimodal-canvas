@@ -72,7 +72,8 @@ export interface ProjectStore {
 
 export class ProjectStoreError extends Error {
   constructor(
-    public readonly code: 'not_found' | 'revision_conflict' | 'invalid_asset',
+    public readonly code:
+      'not_found' | 'revision_conflict' | 'invalid_asset' | 'incompatible_canvas',
     message: string,
     public readonly revision?: number,
   ) {
@@ -178,6 +179,7 @@ export class MemoryProjectStore implements ProjectStore {
         project.canvas.revision,
       );
     }
+    assertCanvasGroupsPreserved(project.canvas.groups, document);
 
     const nextCanvas: CanvasDocument = {
       ...document,
@@ -344,6 +346,7 @@ export class FileProjectStore implements ProjectStore {
         project.canvas.revision,
       );
     }
+    assertCanvasGroupsPreserved(project.canvas.groups, document);
 
     const nextCanvas: CanvasDocument = {
       ...structuredClone(document),
@@ -687,7 +690,7 @@ export class PrismaProjectStore implements ProjectStore {
       }
       const canvas = await transaction.canvas.findUnique({
         where: { projectId: id },
-        select: { id: true, revision: true },
+        select: { id: true, revision: true, groups: true },
       });
       if (!canvas) throw new ProjectStoreError('not_found', 'project not found');
       if (canvas.revision !== document.revision) {
@@ -697,6 +700,7 @@ export class PrismaProjectStore implements ProjectStore {
           canvas.revision,
         );
       }
+      assertCanvasGroupsPreserved(readStoredGroups(canvas.groups)?.groups, document);
 
       const assetIds = [
         ...new Set(document.nodes.map((node) => node.data.assetId).filter(Boolean)),
@@ -742,7 +746,7 @@ export class PrismaProjectStore implements ProjectStore {
         data: {
           revision: { increment: 1 },
           // 组与节点、边在同一次 revision 事务里写入，避免任一存储路径静默丢组。
-          // 不带 groups 字段的旧客户端保存会把该列清空，因此客户端必须显式发送。
+          // 已有分组时拒绝省略 groups 的旧客户端；显式空数组表示解除全部分组。
           groups: (document.groups ?? []) as Prisma.InputJsonValue,
         },
       });
@@ -881,6 +885,20 @@ export class PrismaProjectStore implements ProjectStore {
 
   async close(): Promise<void> {
     await this.prisma.$disconnect();
+  }
+}
+
+/** 已有分组时拒绝不支持 groups 的保存请求；显式空数组仍可解除分组。 */
+function assertCanvasGroupsPreserved(
+  storedGroups: CanvasGroup[] | undefined,
+  document: CanvasDocument,
+): void {
+  if (storedGroups?.length && document.groups === undefined) {
+    throw new ProjectStoreError(
+      'incompatible_canvas',
+      'canvas groups must be included when saving a grouped canvas',
+      document.revision,
+    );
   }
 }
 

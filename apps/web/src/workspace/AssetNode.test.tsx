@@ -6,11 +6,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 /** 用于验证悬浮栏在不同缩放级别下提供反向缩放值。 */
 const viewportMock = vi.hoisted(() => ({ zoom: 1 }));
+const updateNodeInternalsMock = vi.hoisted(() => vi.fn());
 
 vi.mock('@xyflow/react', async () => {
   return {
     useViewport: () => ({ x: 0, y: 0, zoom: viewportMock.zoom }),
     useEdges: () => [],
+    useUpdateNodeInternals: () => updateNodeInternalsMock,
     Handle: () => null,
     NodeResizer: ({
       isVisible,

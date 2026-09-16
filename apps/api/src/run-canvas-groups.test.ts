@@ -132,4 +132,53 @@ describe('canvas groups never enter the run DAG', () => {
     await projectStore.updateCanvas(project.id, groupedCanvas(layoutGroup));
     expect((await projectStore.getCanvas(project.id))?.groups).toEqual(layoutGroup);
   });
+
+  it('拒绝省略分组的旧客户端保存，显式清空分组时保留媒体节点', async () => {
+    const projectStore = new MemoryProjectStore();
+    const project = await projectStore.create({ name: '旧客户端兼容' });
+    const saved = await projectStore.updateCanvas(project.id, groupedCanvas(layoutGroup));
+    const app = buildApp({ logger: false, projectStore });
+    apps.push(app);
+
+    const oldClient = await app.inject({
+      method: 'PATCH',
+      url: `/v1/projects/${project.id}/canvas`,
+      payload: { ...groupedCanvas(undefined), revision: saved.revision },
+    });
+    expect(oldClient.statusCode).toBe(409);
+    expect(oldClient.json()).toMatchObject({ code: 'incompatible_canvas' });
+    expect(await projectStore.getCanvas(project.id)).toEqual(saved);
+
+    const ungroup = await app.inject({
+      method: 'PATCH',
+      url: `/v1/projects/${project.id}/canvas`,
+      payload: { ...saved, groups: [] },
+    });
+    expect(ungroup.statusCode).toBe(200);
+    expect(ungroup.json().canvas.groups).toEqual([]);
+    expect(ungroup.json().canvas.nodes).toEqual(saved.nodes);
+  });
+
+  it('导入旧工作流时显式解除目标分组并保留导入节点', async () => {
+    const projectStore = new MemoryProjectStore();
+    const project = await projectStore.create({ name: '导入兼容' });
+    const saved = await projectStore.updateCanvas(project.id, groupedCanvas(layoutGroup));
+    const app = buildApp({ logger: false, projectStore });
+    apps.push(app);
+    const exported = await app.inject({
+      method: 'GET',
+      url: `/v1/projects/${project.id}/export/workflow`,
+    });
+    expect(exported.statusCode).toBe(200);
+    const legacy = exported.json();
+    delete legacy.canvas.groups;
+    const imported = await app.inject({
+      method: 'POST',
+      url: `/v1/projects/${project.id}/import/workflow`,
+      payload: { workflow: legacy, expectedRevision: saved.revision },
+    });
+    expect(imported.statusCode).toBe(200);
+    expect((await projectStore.getCanvas(project.id))?.groups).toEqual([]);
+    expect((await projectStore.getCanvas(project.id))?.nodes).toEqual(saved.nodes);
+  });
 });

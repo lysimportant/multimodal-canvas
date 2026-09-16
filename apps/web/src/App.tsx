@@ -913,6 +913,8 @@ function WorkspaceApp({
         delta,
       });
       if (!moved) return;
+      groupsRef.current = moved.groups;
+      nodesRef.current = moved.nodes;
       setGroups(moved.groups);
       setNodes(moved.nodes);
       canvasDirtyRef.current = true;
@@ -2409,7 +2411,12 @@ function WorkspaceApp({
         return;
       }
       if (command && key === 'c') {
-        const clipboard = copyCanvasSelection(nodesRef.current, edgesRef.current, selectedNode?.id);
+        const clipboard = copyCanvasSelection(
+          nodesRef.current,
+          edgesRef.current,
+          selectedNode?.id,
+          groupsRef.current,
+        );
         if (clipboard.nodes.length === 0) return;
         event.preventDefault();
         clipboardRef.current = clipboard;

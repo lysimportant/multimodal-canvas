@@ -6,6 +6,79 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { FileProjectStore, MemoryProjectStore, PrismaProjectStore } from './projects';
 
+/** 不含成员的区域组，避免持久化兼容性测试依赖生成或资产数据。 */
+const storedGroups = [
+  {
+    id: 'group_scene',
+    name: '场景',
+    position: { x: 10, y: 20 },
+    width: 480,
+    height: 320,
+    nodeIds: [],
+  },
+];
+
+describe('canvas group persistence compatibility', () => {
+  it.each(['memory', 'file'] as const)('protects existing groups in the %s store', async (mode) => {
+    const directory = await mkdtemp(join(tmpdir(), 'multimodal-groups-'));
+    const filePath = join(directory, 'projects.json');
+    const store = mode === 'memory' ? new MemoryProjectStore() : new FileProjectStore({ filePath });
+    try {
+      const project = await store.create({ name: '分组兼容' });
+      const saved = await store.updateCanvas(project.id, {
+        revision: 0,
+        nodes: [],
+        edges: [],
+        groups: storedGroups,
+      });
+      const restored = mode === 'file' ? new FileProjectStore({ filePath }) : store;
+      await expect(restored.getCanvas(project.id)).resolves.toMatchObject({ groups: storedGroups });
+      await expect(
+        restored.updateCanvas(project.id, {
+          revision: saved.revision,
+          nodes: [],
+          edges: [],
+        }),
+      ).rejects.toMatchObject({ code: 'incompatible_canvas' });
+      await expect(restored.getCanvas(project.id)).resolves.toEqual(saved);
+      await expect(
+        restored.updateCanvas(project.id, {
+          revision: saved.revision,
+          nodes: [],
+          edges: [],
+          groups: [],
+        }),
+      ).resolves.toMatchObject({ revision: 2, groups: [] });
+      if (restored instanceof FileProjectStore) await restored.close();
+    } finally {
+      if (store instanceof FileProjectStore) await store.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects an old client before modifying persisted nodes or groups', async () => {
+    const updateMany = vi.fn();
+    const transaction = {
+      canvas: {
+        findUnique: vi.fn(async () => ({ id: 'canvas-1', revision: 4, groups: storedGroups })),
+        updateMany,
+      },
+    };
+    const store = new PrismaProjectStore({
+      $transaction: async (callback: (client: typeof transaction) => unknown) =>
+        callback(transaction),
+    } as never);
+    await expect(
+      store.updateCanvas('project-1', {
+        revision: 4,
+        nodes: [],
+        edges: [],
+      }),
+    ).rejects.toMatchObject({ code: 'incompatible_canvas' });
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+});
+
 describe('MemoryProjectStore listing', () => {
   it('returns project summaries in updatedAt descending order', async () => {
     const store = new MemoryProjectStore();

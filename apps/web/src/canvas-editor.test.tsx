@@ -310,6 +310,7 @@ vi.mock('@xyflow/react', async () => {
     useReactFlow,
     useViewport: () => ({ x: 0, y: 0, zoom: 1 }),
     useEdges: () => [],
+    useUpdateNodeInternals: () => React.useCallback(() => {}, []),
   };
 });
 
@@ -1104,6 +1105,36 @@ describe('画布编辑器交互', () => {
     await user.click(screen.getByLabelText('解散组 组 2'));
     await waitFor(() => expect(screen.queryByText('组 2')).not.toBeInTheDocument());
     expect(flowNodes()).toHaveLength(2);
+  });
+
+  it('整组复制粘贴保留区域并重建成员身份，撤销后恢复原组', async () => {
+    const { user } = await renderCanvas();
+    await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
+    await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
+    fireEvent.keyDown(window, { key: 'a', ctrlKey: true });
+    await user.click(screen.getByRole('button', { name: '新建分组' }));
+    await waitFor(() => expect(document.querySelectorAll('.canvas-group')).toHaveLength(1));
+
+    fireEvent.keyDown(window, { key: 'c', ctrlKey: true });
+    await waitFor(() => expect(clipboardMock.writeText).toHaveBeenCalledTimes(1));
+    const copied = JSON.parse(clipboardMock.getText());
+    expect(copied.groups).toHaveLength(1);
+    expect(copied.groups[0].nodeIds).toHaveLength(2);
+
+    fireEvent.keyDown(window, { key: 'v', ctrlKey: true });
+    await waitFor(() => expect(flowNodes()).toHaveLength(4));
+    expect(document.querySelectorAll('.canvas-group')).toHaveLength(2);
+    fireEvent.keyDown(window, { key: 's', ctrlKey: true });
+    await waitFor(() => expect(canvas.groups).toHaveLength(2));
+    const [original, pasted] = canvas.groups!;
+    expect(pasted!.id).not.toBe(original!.id);
+    expect(pasted!.nodeIds).toHaveLength(2);
+    expect(pasted!.nodeIds.every((id) => !original!.nodeIds.includes(id))).toBe(true);
+    expect(pasted!.nodeIds.every((id) => canvas.nodes.some((node) => node.id === id))).toBe(true);
+
+    fireEvent.keyDown(window, { key: 'z', ctrlKey: true });
+    await waitFor(() => expect(flowNodes()).toHaveLength(2));
+    expect(document.querySelectorAll('.canvas-group')).toHaveLength(1);
   });
 
   it('清空菜单在 hover 后展开，取消确认不改变任何内容', async () => {

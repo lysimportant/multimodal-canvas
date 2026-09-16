@@ -667,6 +667,7 @@ export function WorkflowCanvas({
                                 {...(onGroupInteractionStart ? { onGroupInteractionStart } : {})}
                               />
                               <ReactFlow
+                                style={{ zIndex: 'auto' }}
                                 nodes={nodes}
                                 edges={edges}
                                 nodeTypes={nodeTypes}

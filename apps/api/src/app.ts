@@ -2058,6 +2058,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         // 以目标当前 revision 为乐观锁基线。
         const rebasedCanvas: CanvasDocument = {
           ...imported.canvas,
+          groups: imported.canvas.groups ?? [],
           revision: currentCanvas.revision,
         };
         const canvas = await projectStore.updateCanvas(
@@ -2446,6 +2447,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         );
         return { canvas };
       } catch (error) {
+        if (error instanceof ProjectStoreError && error.code === 'incompatible_canvas') {
+          return reply.code(409).send({ error: error.message, code: error.code });
+        }
         if (error instanceof ProjectStoreError && error.code === 'revision_conflict') {
           return reply.code(409).send({ error: error.message, revision: error.revision });
         }

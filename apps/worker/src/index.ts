@@ -102,6 +102,14 @@ export type RequestPromptRecordIdentity = Pick<
   'runId' | 'nodeId' | 'attempt' | 'requestIdentity'
 >;
 
+/** 可持久化的请求身份；队列和供应商任务中不携带提示词正文。 */
+const requestPromptIdentitySchema = requestPromptRecordSchema.pick({
+  runId: true,
+  nodeId: true,
+  attempt: true,
+  requestIdentity: true,
+});
+
 /** 请求提示词记录可观测的发送终态；`pending` 由 Provider 在发送前写入。 */
 export type ObservableRequestPromptSendStatus = Exclude<RequestPromptSendStatus, 'pending'>;
 
@@ -850,6 +858,12 @@ export function createRunWorker(options: {
         });
         if (isVersionedWorkflowResultForNode(cachedResult, node)) {
           const cachedProviderJob = cachedCandidate ?? currentState?.providerJob;
+          for (const identity of storedRequestPromptIdentities(cachedProviderJob, node.id)) {
+            await bindRequestPromptResultStrict(identity, {
+              assetId: cachedResult.asset!.assetId,
+              assetVersion: cachedResult.asset!.version!,
+            });
+          }
           const completedProviderJob: ProviderJob = {
             ...localProviderJob,
             ...(cachedProviderJob?.platformJobId
@@ -934,7 +948,7 @@ export function createRunWorker(options: {
         Object.keys(nodeTimings).length > 0 ? nodeTimings : undefined;
       // 本次节点执行已留存的请求记录；结果归档后只绑定这些记录，绝不把目标节点
       // 的提示词附给上游结果。
-      let activeRequestPrompts: RequestPromptRecord[] = [];
+      let activeRequestPrompts: RequestPromptRecordIdentity[] = [];
       const update = async (status: RunStatus, progress: number) => {
         if (await isCancellationRequested(queue, job.id)) {
           return false;
@@ -1219,7 +1233,9 @@ export function createRunWorker(options: {
             node.data.mediaType === 'video' || !requestProviderJobId
               ? providerJob
               : { ...providerJob, id: requestProviderJobId };
-          activeRequestPrompts = [];
+          activeRequestPrompts = canResumeProviderJob(existingNodeProviderJob)
+            ? storedRequestPromptIdentities(existingNodeProviderJob, node.id)
+            : [];
           // 有持久化边界时，Provider 必须在真正发送前把最终请求文本交给 Worker
           // 落库；回调抛错会阻止本次请求，避免已计费但无法追溯。没有持久化适配器
           // 的本地运行（未配置 DATABASE_URL，例如 mock 或本地 newapi 调试）不传
@@ -1232,13 +1248,43 @@ export function createRunWorker(options: {
                     `provider returned an invalid request prompt record for node ${node.id}`,
                   );
                 }
-                if (parsed.data.nodeId !== node.id) {
+                if (
+                  parsed.data.nodeId !== node.id ||
+                  parsed.data.runId !== currentData.runId ||
+                  parsed.data.attempt !== currentData.attempt
+                ) {
                   throw new Error(
                     `request prompt record does not belong to workflow node ${node.id}`,
                   );
                 }
                 await persistRequestPromptRecordStrict(parsed.data);
-                activeRequestPrompts.push(parsed.data);
+                activeRequestPrompts.push(requestPromptIdentitySchema.parse(parsed.data));
+                // 恢复异步任务时不会再次组装创建请求，因此必须在发送前保存原请求身份。
+                const retainedProviderJob: ProviderJob = {
+                  ...(activeProviderJob ?? providerJob),
+                  payload: workflowProviderPayload(
+                    node.id,
+                    {
+                      ...((activeProviderJob ?? providerJob).payload ?? {}),
+                      requestPromptRecords: activeRequestPrompts,
+                    },
+                    snapshotFingerprint,
+                  ),
+                };
+                activeProviderJob = retainedProviderJob;
+                const retainedData = readJobData();
+                const retainedWorkflowState = replaceWorkflowNodeState(
+                  retainedData.workflowState ?? currentWorkflowState,
+                  { nodeId: node.id, status: 'running', providerJob: retainedProviderJob },
+                );
+                await job.updateData({
+                  ...retainedData,
+                  workflowState: retainedWorkflowState,
+                  ...(node.id === executionSnapshot.targetNodeId
+                    ? { providerJob: retainedProviderJob }
+                    : {}),
+                });
+                await persistProviderJobStrict(retainedProviderJob);
               }
             : undefined;
           recordNodeTiming({ nodeId: node.id, requestStartedAt: new Date().toISOString() });
@@ -1295,6 +1341,7 @@ export function createRunWorker(options: {
                         : {
                             ...(currentNodeProviderJob.payload ?? {}),
                             ...rawPayload,
+                            requestPromptRecords: activeRequestPrompts,
                             ...(workflowRequestProviderJobId(currentNodeProviderJob)
                               ? {
                                   requestProviderJobId:
@@ -1463,6 +1510,7 @@ export function createRunWorker(options: {
               {
                 ...((activeProviderJob ?? providerJob).payload ?? {}),
                 ...(safeProviderMetadataPayload ?? {}),
+                requestPromptRecords: activeRequestPrompts,
                 ...(requestProviderJobId ? { requestProviderJobId } : {}),
               },
               snapshotFingerprint,
@@ -1515,15 +1563,6 @@ export function createRunWorker(options: {
           if (!asset || !asset.version) {
             throw new Error(`result archiver did not return a versioned asset for ${node.id}`);
           }
-          // 归档完成后才绑定结果身份：只绑定本次节点执行留存的记录，失败的结果
-          // 不会留下编造的绑定。
-          for (const prompt of activeRequestPrompts) {
-            await bindRequestPromptResultStrict(prompt, {
-              assetId: asset.assetId,
-              assetVersion: asset.version,
-            });
-          }
-
           const completedAt = new Date().toISOString();
           const { finalFrame, ...resultAsset } = (asset ?? {}) as RunResultAsset & {
             finalFrame?: RunResult['finalFrame'];
@@ -1544,19 +1583,43 @@ export function createRunWorker(options: {
           if (execution.usage) {
             await persistUsageStrict(execution.usage, executionProviderJob, requestProviderJobId);
           }
-          const completedProviderJob: ProviderJob = {
+          // 先保留已归档结果和原请求身份；绑定补写失败后只恢复这份结果，不再请求生成。
+          const archivedProviderJob: ProviderJob = {
             ...executionProviderJob,
-            status: 'succeeded',
-            progress: 100,
             payload: workflowProviderPayload(
               node.id,
               {
                 ...(executionProviderJob.payload ?? {}),
                 ...(safeUsage ?? {}),
                 ...(safeArchivedResult ? { result: safeArchivedResult } : {}),
+                requestPromptRecords: activeRequestPrompts,
               },
               snapshotFingerprint,
             ),
+          };
+          activeProviderJob = archivedProviderJob;
+          const archivedData = readJobData();
+          await job.updateData({
+            ...archivedData,
+            workflowState: replaceWorkflowNodeState(
+              archivedData.workflowState ?? latestWorkflowState,
+              { nodeId: node.id, status: 'running', providerJob: archivedProviderJob },
+            ),
+            ...(node.id === executionSnapshot.targetNodeId
+              ? { providerJob: archivedProviderJob }
+              : {}),
+          });
+          await persistProviderJobStrict(archivedProviderJob);
+          for (const prompt of activeRequestPrompts) {
+            await bindRequestPromptResultStrict(prompt, {
+              assetId: asset.assetId,
+              assetVersion: asset.version,
+            });
+          }
+          const completedProviderJob: ProviderJob = {
+            ...archivedProviderJob,
+            status: 'succeeded',
+            progress: 100,
             updatedAt: completedAt,
           };
           activeProviderJob = completedProviderJob;
@@ -1844,6 +1907,7 @@ export function sanitizeProviderJobPayload(value: unknown): Record<string, unkno
     'attempt',
     'workflowNodeId',
     'requestProviderJobId',
+    'requestPromptRecords',
     'snapshotFingerprint',
     'error',
     'statusResponse',
@@ -1852,6 +1916,11 @@ export function sanitizeProviderJobPayload(value: unknown): Record<string, unkno
   ]);
   for (const [key, raw] of Object.entries(value)) {
     if (!allowed.has(key)) continue;
+    if (key === 'requestPromptRecords') {
+      const identities = requestPromptIdentitySchema.array().safeParse(raw);
+      if (identities.success) output.requestPromptRecords = identities.data;
+      continue;
+    }
     if (key === 'result') {
       const result = sanitizeProviderResult(raw);
       if (result) output.result = result;
@@ -1946,6 +2015,20 @@ function workflowProviderPayload(
       ? { snapshotFingerprint: snapshotFingerprint ?? inheritedFingerprint }
       : {}),
   };
+}
+
+/** 读取恢复任务保存的原请求身份；跨节点记录拒绝绑定，旧任务缺省返回空列表。 */
+function storedRequestPromptIdentities(
+  providerJob: ProviderJob | undefined,
+  nodeId: string,
+): RequestPromptRecordIdentity[] {
+  const identities = requestPromptIdentitySchema
+    .array()
+    .parse(providerJob?.payload?.requestPromptRecords ?? []);
+  if (identities.some((identity) => identity.nodeId !== nodeId)) {
+    throw new Error(`request prompt recovery does not belong to workflow node ${nodeId}`);
+  }
+  return identities;
 }
 
 type SnapshotFingerprints = {

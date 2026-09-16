@@ -20,7 +20,7 @@ type CanvasGroupLayerProps = {
   onSelectGroup?: (groupId: string | undefined) => void;
   onRenameGroup?: (groupId: string, name: string) => void;
   onDissolveGroup?: (groupId: string) => void;
-  /** 组标题条拖拽产生的位移，单位为画布像素。 */
+  /** 组标题条相对上一指针事件的位移，单位为画布像素。 */
   onTranslateGroup?: (groupId: string, delta: { x: number; y: number }) => void;
   /** 组外框尺寸变化，单位为画布像素；左上角/右上角拖动同时给出新的原点。 */
   onResizeGroup?: (
@@ -74,6 +74,8 @@ export function CanvasGroupLayer({
       const deltaX = (event.clientX - drag.startClientX) / viewport.zoom;
       const deltaY = (event.clientY - drag.startClientY) / viewport.zoom;
       if (drag.kind === 'move') {
+        drag.startClientX = event.clientX;
+        drag.startClientY = event.clientY;
         onTranslateGroup?.(drag.groupId, { x: deltaX, y: deltaY });
         return;
       }

@@ -955,16 +955,25 @@ describe('WorkerPrismaRunPersistence 节点时间单调写入', () => {
 });
 
 /**
- * 这些检查只对文档化的临时 scratch 库运行：非 scratch 连接一律跳过，绝不把
- * Prisma 写入指向真实数据库。
+ * 接受显式确认隔离的 TEST_DATABASE_URL，兼容原有本机 scratch 库；不使用生产连接。
  */
-const scratchDatabaseUrl = process.env.DATABASE_URL?.trim() ?? '';
 const scratchDatabasePattern =
   /^postgres(?:ql)?:\/\/scratch:scratch@(?:127\.0\.0\.1|localhost):55432\/scratch(?:\?|$)/;
-const scratchDescribe = scratchDatabasePattern.test(scratchDatabaseUrl) ? describe : describe.skip;
+const isolatedDatabaseUrl = process.env.TEST_DATABASE_URL?.trim();
+if (isolatedDatabaseUrl && process.env.TEST_DATABASE_CONFIRMED_ISOLATED !== 'true') {
+  throw new Error('TEST_DATABASE_URL requires TEST_DATABASE_CONFIRMED_ISOLATED=true');
+}
+const scratchDatabaseUrl =
+  isolatedDatabaseUrl ??
+  (scratchDatabasePattern.test(process.env.DATABASE_URL ?? '')
+    ? process.env.DATABASE_URL
+    : undefined);
+const scratchDescribe = scratchDatabaseUrl ? describe : describe.skip;
 
 scratchDescribe('WorkerPrismaRunPersistence against the scratch database', () => {
-  const prisma = new PrismaClient();
+  const prisma = new PrismaClient(
+    scratchDatabaseUrl ? { datasources: { db: { url: scratchDatabaseUrl } } } : undefined,
+  );
   const persistence = new WorkerPrismaRunPersistence(prisma);
   const projectId = randomUUID();
   const externalRunId = `run_${randomUUID()}`;

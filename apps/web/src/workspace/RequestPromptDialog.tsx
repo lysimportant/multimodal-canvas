@@ -1,8 +1,8 @@
 import type { RequestPromptRecord } from '@multimodal-canvas/domain';
 import { renderRequestPromptText } from '@multimodal-canvas/domain';
+import { Dialog, DialogContent, DialogTitle } from '@multimodal-canvas/ui';
 import { Check, Copy, Loader2, RefreshCw, X } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { useState } from 'react';
 
 /** 复制动作的短暂反馈状态。 */
 type CopyState = 'idle' | 'copied' | 'failed';
@@ -39,45 +39,8 @@ export function RequestPromptDialog({
   onClose,
   onRetry,
 }: RequestPromptDialogProps) {
-  const dialogRef = useRef<HTMLDivElement>(null);
-  const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [summaryCopy, setSummaryCopy] = useState<CopyState>('idle');
   const [promptCopy, setPromptCopy] = useState<CopyState>('idle');
-
-  useEffect(() => {
-    closeButtonRef.current?.focus();
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.stopPropagation();
-        onClose();
-        return;
-      }
-      if (event.key !== 'Tab') return;
-      // 焦点圈定在 Dialog 内：首尾元素之间循环。
-      const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-      );
-      if (!focusable || focusable.length === 0) return;
-      const first = focusable[0]!;
-      const last = focusable[focusable.length - 1]!;
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
-  useEffect(() => {
-    // 关闭后把焦点还给触发按钮，键盘用户不会丢失位置。
-    return () => {
-      if (triggerId) window.setTimeout(() => document.getElementById(triggerId)?.focus(), 0);
-    };
-  }, [triggerId]);
 
   const copy = async (text: string, setState: (state: CopyState) => void) => {
     try {
@@ -94,25 +57,32 @@ export function RequestPromptDialog({
   const fullPrompt = record ? renderRequestPromptText(record) : '';
   const summary = record?.summary ?? '';
 
-  // 入口位于节点信息面板内。信息面板打开时会把文档其余部分标记为不可交互，
-  // 因此这里渲染到 document.body 之外，避免被该面板的模态区域吞掉指针事件。
-  return createPortal(
-    <div className="request-prompt-backdrop" role="presentation" onMouseDown={onClose}>
-      <div
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+    >
+      <DialogContent
         className="request-prompt-dialog"
-        role="dialog"
-        aria-modal="true"
+        overlayClassName="request-prompt-backdrop"
         aria-label="生成提示词"
-        ref={dialogRef}
-        onMouseDown={(event) => event.stopPropagation()}
+        aria-describedby={undefined}
+        onCloseAutoFocus={(event) => {
+          const trigger = triggerId ? document.getElementById(triggerId) : null;
+          if (trigger) {
+            event.preventDefault();
+            trigger.focus();
+          }
+        }}
       >
         <header className="request-prompt-header">
-          <h2>生成提示词</h2>
+          <DialogTitle>生成提示词</DialogTitle>
           <button
             type="button"
             className="request-prompt-close"
             aria-label="关闭生成提示词"
-            ref={closeButtonRef}
             onClick={onClose}
           >
             <X size={16} aria-hidden="true" />
@@ -239,8 +209,7 @@ export function RequestPromptDialog({
             </>
           ) : null}
         </div>
-      </div>
-    </div>,
-    document.body,
+      </DialogContent>
+    </Dialog>
   );
 }

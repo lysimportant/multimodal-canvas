@@ -267,6 +267,8 @@ describe.skipIf(!configuration)('隔离 HTTPS 代理到真实生产模式 API', 
       API_HOST: '127.0.0.1',
       API_PORT: String(apiPort),
       API_AUTH_TOKEN: bearerToken,
+      // Prisma 导入时会读取根 .env；显式空值阻止本机 JWT 配置进入隔离子进程。
+      API_JWT_SECRET: '',
       API_BODY_LIMIT_BYTES: '256',
       CORS_ORIGIN: 'https://console.example.test',
       AI_CREDENTIAL_ENCRYPTION_KEY: randomUUID(),

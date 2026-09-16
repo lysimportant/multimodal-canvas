@@ -144,6 +144,8 @@ describe('CanvasGroupLayer', () => {
     dispatchWindowPointer('pointermove', 40, 20);
     expect(onGroupInteractionStart).toHaveBeenCalledTimes(1);
     expect(onTranslateGroup).toHaveBeenCalledWith('g1', { x: 80, y: 40 });
+    dispatchWindowPointer('pointermove', 70, 45);
+    expect(onTranslateGroup).toHaveBeenLastCalledWith('g1', { x: 60, y: 50 });
 
     dispatchWindowPointer('pointerup');
     onTranslateGroup.mockClear();
@@ -194,6 +196,10 @@ describe('CanvasGroupLayer', () => {
     expect(css).toMatch(/\.canvas-group-header \{[^}]*pointer-events: auto;/);
     expect(css).toMatch(/\.canvas-group-handle \{[^}]*pointer-events: auto;/);
     expect(css).toMatch(/\.canvas-group-hint \{[^}]*pointer-events: none;/);
-    expect(css).toMatch(/\.canvas-group-layer \{[^}]*z-index: 1;/);
+    const groupLevel = Number(css.match(/\.canvas-group-layer \{[^}]*z-index: (\d+);/)?.[1]);
+    const nodeLevel = Number(
+      css.match(/\.canvas-area \.react-flow__viewport \{[^}]*z-index: (\d+);/)?.[1],
+    );
+    expect(groupLevel).toBeLessThan(nodeLevel);
   });
 });

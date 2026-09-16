@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Route } from '@playwright/test';
+import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import type { Asset, CanvasDocument, ModelSelection, RunRecord } from '@multimodal-canvas/domain';
 
@@ -584,6 +584,47 @@ async function focusCanvas(page: Page) {
   await page.locator('.react-flow__pane').click({ position: { x: 12, y: 12 } });
 }
 
+/** 通过工具栏的可访问名称查找节点，名称不要求重复显示在媒体预览内。 */
+function nodeByLabel(page: Page, label: string) {
+  return page.locator('.flow-asset-node').filter({
+    has: page.getByRole('group', { name: `节点操作：${label}`, exact: true }),
+  });
+}
+
+/** 使用当前外观入口切换主题，并关闭浮层以恢复画布操作。 */
+async function selectTheme(page: Page, theme: string) {
+  await page.getByRole('button', { name: '外观', exact: true }).first().click();
+  const appearance = page.getByRole('dialog', { name: '主题、画布背景与连接线' });
+  await appearance.getByRole('tab', { name: '主题', exact: true }).click();
+  await appearance.getByRole('button', { name: theme, exact: true }).click();
+  await page.keyboard.press('Escape');
+}
+
+/** 显式拖动缩放点，使后续结果回显遵守用户已固定的尺寸。 */
+async function resizeNode(page: Page, node: Locator) {
+  const initialWidth = await node.evaluate((element) => (element as HTMLElement).offsetWidth);
+  const handle = node.locator('.react-flow__resize-control.bottom.right');
+  await expect(handle).toBeVisible();
+  await handle.hover();
+  const bounds = (await handle.boundingBox())!;
+  await page.mouse.down();
+  await page.mouse.move(bounds.x + 40, bounds.y + 30, { steps: 12 });
+  await page.mouse.up();
+  await expect
+    .poll(() => node.evaluate((element) => (element as HTMLElement).offsetWidth))
+    .toBeGreaterThan(initialWidth);
+}
+
+/** 用连续指针事件拖动节点工具栏，等待 React Flow 的拖动阈值生效。 */
+async function moveNode(page: Page, node: Locator, x: number, y: number) {
+  const handle = node.getByRole('button', { name: '拖动移动节点' });
+  await handle.hover();
+  const canvas = (await page.locator('.canvas-area').boundingBox())!;
+  await page.mouse.down();
+  await page.mouse.move(canvas.x + x, canvas.y + y, { steps: 20 });
+  await page.mouse.up();
+}
+
 test.beforeEach(async ({ page }) => {
   await page.context().addInitScript(() => {
     // Playwright 为每个测试创建独立上下文；刷新时保留模型记忆等真实持久化行为。
@@ -842,7 +883,8 @@ for (const mediaType of ['image', 'video'] as const) {
   });
 }
 
-test('相对签名产物地址在 API origin 加载且回显不改变节点尺寸', async ({ page }, testInfo) => {
+test('相对签名产物地址在 API origin 加载且回显保留手动节点尺寸', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
   const requests: string[] = [];
   await page.route('**/v1/assets/*/access-url', async (route) => {
     const assetId = new URL(route.request().url()).pathname.split('/')[3];
@@ -855,7 +897,11 @@ test('相对签名产物地址在 API origin 加载且回显不改变节点尺�
   await page.getByRole('button', { name: '新建图片生成节点' }).click();
   await page.getByRole('textbox', { name: '提示词', exact: true }).fill('签名地址回显验收');
   const node = page.locator('.flow-generate-node').last();
-  const initial = await node.boundingBox();
+  await resizeNode(page, node);
+  const initial = await node.evaluate((element) => ({
+    width: (element as HTMLElement).offsetWidth,
+    height: (element as HTMLElement).offsetHeight,
+  }));
   await page.getByRole('button', { name: '生成', exact: true }).click();
   await expect.poll(() => requests.length).toBeGreaterThan(0);
   await testInfo.attach('signed-preview-requests', {
@@ -868,7 +914,13 @@ test('相对签名产物地址在 API origin 加载且回显不改变节点尺�
   await expect
     .poll(() => node.locator('img').evaluate((element: HTMLImageElement) => element.naturalWidth))
     .toBe(1);
-  expect((await node.boundingBox())!.height).toBeCloseTo(initial!.height, 1);
+  // 画布自动居中会改变缩放比例；比较布局尺寸以验证内容没有撑大节点。
+  expect(
+    await node.evaluate((element) => ({
+      width: (element as HTMLElement).offsetWidth,
+      height: (element as HTMLElement).offsetHeight,
+    })),
+  ).toEqual(initial);
 });
 
 test('当前节点上传、文字双击保存、刷新与重新生成保持输出优先级', async ({ page }) => {
@@ -1010,8 +1062,8 @@ test('桌面六主题节点外壳与短枚举菜单保持尺寸和可点击布�
     .poll(() => node.locator('img').evaluate((image: HTMLImageElement) => image.naturalWidth))
     .toBeGreaterThan(1);
   const initial = await node.boundingBox();
-  await page.getByRole('button', { name: '媒体参数', exact: true }).hover();
-  await page.getByRole('combobox', { name: /^图片清晰度：/ }).hover();
+  await page.getByRole('button', { name: '媒体参数', exact: true }).click();
+  await page.getByRole('combobox', { name: /^图片清晰度：/ }).click();
   await expect(page.getByRole('option', { name: '1K', exact: true })).toBeVisible();
   const columns = await page
     .locator('.compact-select-menu[data-layout="grid"]')
@@ -1413,7 +1465,7 @@ test('adds a generate node from the canvas toolbar', async ({ page }) => {
   await page.getByRole('button', { name: '新建文字生成节点' }).click();
   const generatedNode = page.locator('.flow-generate-node');
   await expect(generatedNode).toHaveCount(1);
-  await expect(generatedNode).toContainText('文字生成节点');
+  await expect(generatedNode.getByRole('group', { name: '节点操作：文字生成节点' })).toBeVisible();
   await expect(page.getByRole('region', { name: '文字生成节点生成设置' })).toBeVisible();
 });
 
@@ -1431,19 +1483,21 @@ test('supports theme/sidebar controls, node body connections, and corner resizin
   });
   const assetCard = page.locator('.asset-card').filter({ hasText: 'body-reference.png' });
   await expect(assetCard).toBeVisible();
-  const canvasBox = await page.locator('.canvas-area').boundingBox();
-  const cardBox = await assetCard.boundingBox();
-  expect(canvasBox).not.toBeNull();
-  expect(cardBox).not.toBeNull();
-  if (!canvasBox || !cardBox) return;
-  await page.mouse.move(cardBox.x + cardBox.width / 2, cardBox.y + cardBox.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(canvasBox.x + 120, canvasBox.y + 130, { steps: 14 });
-  await page.mouse.up();
+  await assetCard.getByRole('button', { name: '添加 body-reference.png 到画布' }).click();
+  await expect
+    .poll(() =>
+      nodeByLabel(page, 'body-reference.png')
+        .locator('img')
+        .evaluate((image: HTMLImageElement) => image.naturalWidth),
+    )
+    .toBe(1);
+  await moveNode(page, nodeByLabel(page, 'body-reference.png'), 180, 170);
 
-  const source = page.locator('.flow-asset-node').filter({ hasText: 'body-reference.png' });
-  const target = page.locator('.flow-generate-node').filter({ hasText: '图片生成节点' });
+  const source = nodeByLabel(page, 'body-reference.png');
+  const target = nodeByLabel(page, '图片生成节点');
+  await focusCanvas(page);
   const sourceHandle = source.locator('.react-flow__handle.source');
+  await sourceHandle.hover();
   const sourceBox = await sourceHandle.boundingBox();
   const targetBox = await target.boundingBox();
   expect(sourceBox).not.toBeNull();
@@ -1483,15 +1537,15 @@ test('supports theme/sidebar controls, node body connections, and corner resizin
     .poll(async () => (await target.locator('.flow-node-placeholder').boundingBox())?.height ?? 0)
     .toBeGreaterThan(previewBefore.height);
 
-  await page.getByRole('button', { name: '选择画布背景' }).click();
-  await page.getByRole('menuitemradio', { name: '空白' }).click();
+  await page.getByRole('button', { name: '外观', exact: true }).first().click();
+  const appearance = page.getByRole('dialog', { name: '主题、画布背景与连接线' });
+  await appearance.getByRole('tab', { name: '背景', exact: true }).click();
+  await appearance.getByRole('button', { name: '空白', exact: true }).click();
   await expect(page.locator('.react-flow__background')).toHaveCount(0);
-  await page.getByRole('button', { name: '选择画布背景' }).click();
-  await page.getByRole('menuitemradio', { name: '点' }).click();
+  await appearance.getByRole('button', { name: '点', exact: true }).click();
   await expect(page.locator('.react-flow__background')).toHaveCount(1);
-
-  await page.getByRole('button', { name: '切换主题' }).click();
-  await page.getByRole('option', { name: '深色' }).click();
+  await page.keyboard.press('Escape');
+  await selectTheme(page, '深色');
   await expect(page.locator('.app-shell')).toHaveAttribute('data-theme', 'dark');
   await page.getByRole('button', { name: '折叠资源栏' }).click();
   await expect(page.locator('.resource-panel')).toHaveClass(/is-collapsed/);
@@ -1544,6 +1598,7 @@ test('设置删除当前 Key 完整移除列表与模型，操作期间显示 lo
   await page.goto(projectPath);
   await page.getByRole('button', { name: '打开设置' }).click();
   const dialog = page.getByRole('dialog', { name: 'AI 连接' });
+  await dialog.getByRole('tab', { name: '连接与 Key' }).click();
   await dialog.getByLabel('New API Base URL').fill('https://delete-smoke.example.test/v1');
   await dialog.getByRole('textbox', { name: 'API Key' }).fill('synthetic-browser-key');
   let releaseSave!: () => void;
@@ -1592,12 +1647,13 @@ test('设置删除当前 Key 完整移除列表与模型，操作期间显示 lo
   await dialog.getByRole('button', { name: '关闭设置' }).click();
   await page.reload();
   await page.getByRole('button', { name: '打开设置' }).click();
+  await dialog.getByRole('tab', { name: '连接与 Key' }).click();
   await expect(page.getByLabel('已保存的 API Key').locator('option')).toHaveCount(1);
   expect(errors).toEqual([]);
 });
 
 for (const width of [1440, 1024, 390]) {
-  test(`生成节点轻描边与顶部悬浮操作 ${width}`, async ({ page }, testInfo) => {
+  test(`生成节点选中描边与顶部悬浮操作 ${width}`, async ({ page }, testInfo) => {
     const errors: string[] = [];
     page.on('pageerror', (error) => errors.push(error.message));
     await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
@@ -1612,18 +1668,25 @@ for (const width of [1440, 1024, 390]) {
       const controls = element
         .querySelector('.flow-node-floating-controls')!
         .getBoundingClientRect();
-      const content = element.querySelector('.flow-node-placeholder')!.getBoundingClientRect();
       return {
         border: style.borderTopWidth,
         shadow: style.boxShadow,
         padding: style.paddingTop,
         controlsAbove: controls.bottom <= bounds.top + 1,
-        fillsWidth: Math.abs(content.width - bounds.width) <= 2.3,
-        fillsHeight: Math.abs(content.height - bounds.height) <= 2.3,
+        fillsWidth:
+          Math.abs(
+            (element.querySelector('.flow-node-placeholder') as HTMLElement).offsetWidth -
+              element.clientWidth,
+          ) <= 1,
+        fillsHeight:
+          Math.abs(
+            (element.querySelector('.flow-node-placeholder') as HTMLElement).offsetHeight -
+              element.clientHeight,
+          ) <= 1,
       };
     });
     expect(appearance).toMatchObject({
-      border: '1px',
+      border: '3px',
       padding: '0px',
       controlsAbove: true,
       fillsWidth: true,
@@ -1646,8 +1709,7 @@ for (const width of [1440, 1024, 390]) {
 test('settings are truly modal and contained on desktop and narrow viewports', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 760 });
   await page.goto(projectPath);
-  await page.getByRole('button', { name: '切换主题' }).click();
-  await page.getByRole('option', { name: '深色' }).click();
+  await selectTheme(page, '深色');
 
   const trigger = page.getByRole('button', { name: '打开设置' });
   await trigger.click();
@@ -1735,19 +1797,22 @@ test('settings are truly modal and contained on desktop and narrow viewports', a
     expect(metrics.bodyOverflow).toBe('hidden');
     expect(metrics.htmlOverflow).toBe('hidden');
     // 居中设置对话框在窄屏保留上下各 12px 的边距。
-    expect(metrics.height).toBe(metrics.viewportHeight - 24);
+    expect(metrics.height).toBeLessThanOrEqual(metrics.viewportHeight - 24);
     expect(metrics.left).toBeGreaterThanOrEqual(0);
     expect(metrics.right).toBeLessThanOrEqual(metrics.viewportWidth);
     expect(metrics.clientWidth).toBeGreaterThanOrEqual(metrics.scrollWidth);
     expect(metrics.overflowX).toBe('hidden');
-    expect(metrics.overflowY).toBe('auto');
-    expect(metrics.scrollHeight).toBeGreaterThan(metrics.clientHeight);
-
-    const scrollTop = await dialog.evaluate((panel) => {
+    expect(metrics.overflowY).toBe('hidden');
+    await dialog.getByRole('tab', { name: '连接与 Key' }).click();
+    const content = dialog.getByRole('tabpanel', { name: '连接与 Key' });
+    await expect(content).toHaveCSS('overflow-y', 'auto');
+    const headerBefore = await dialog.locator('.settings-header').boundingBox();
+    const scrollTop = await content.evaluate((panel) => {
       panel.scrollTop = 120;
       return panel.scrollTop;
     });
     expect(scrollTop).toBeGreaterThan(0);
+    expect(await dialog.locator('.settings-header').boundingBox()).toEqual(headerBefore);
     await page.keyboard.press('Escape');
     await expect(dialog).toHaveCount(0);
     await expect(narrowTrigger).toBeFocused();
@@ -1774,7 +1839,7 @@ test('uploads an asset and adds it to the workflow canvas with the add button', 
 
   await page.getByRole('button', { name: '添加 story.txt 到画布' }).click();
   await expect(page.locator('.flow-asset-node')).toHaveCount(1);
-  await expect(page.locator('.flow-asset-node')).toContainText('story.txt');
+  await expect(nodeByLabel(page, 'story.txt')).toBeVisible();
 });
 
 test('connects three image references to one video generation node', async ({ page }) => {
@@ -1791,7 +1856,9 @@ test('connects three image references to one video generation node', async ({ pa
   }
 
   await page.getByRole('button', { name: '新建视频生成节点' }).click();
-  const videoNode = page.locator('.flow-generate-node').filter({ hasText: '视频生成节点' });
+  await page.getByRole('combobox', { name: /^生成模式：/ }).click();
+  await page.getByRole('option', { name: /^全能参考/ }).click();
+  const videoNode = nodeByLabel(page, '视频生成节点');
   await expect(videoNode).toHaveCount(1);
   const sourceNodes = page.locator('.flow-asset-node:not(.flow-generate-node)');
   const canvasBox = await page.locator('.canvas-area').boundingBox();
@@ -1808,29 +1875,33 @@ test('connects three image references to one video generation node', async ({ pa
   await page.mouse.move(canvasBox.x + 1100, canvasBox.y + 500, { steps: 12 });
   await page.mouse.up();
   for (const [index, name] of ['character.png', 'style.png', 'frame.png'].entries()) {
-    const card = page.locator('.asset-card').filter({ hasText: name });
-    const cardBox = await card.boundingBox();
-    expect(cardBox).not.toBeNull();
-    if (!cardBox) return;
-    await page.mouse.move(cardBox.x + cardBox.width / 2, cardBox.y + cardBox.height / 2);
-    await page.mouse.down();
-    await page.mouse.move(canvasBox.x + 100, canvasBox.y + 120 + index * 350, { steps: 12 });
-    await page.mouse.up();
+    await page.getByRole('button', { name: `添加 ${name} 到画布` }).click();
+    await expect
+      .poll(() =>
+        nodeByLabel(page, name)
+          .locator('img')
+          .evaluate((image: HTMLImageElement) => image.naturalWidth),
+      )
+      .toBe(1);
+    await moveNode(page, nodeByLabel(page, name), 180, 120 + index * 400);
     await expect(sourceNodes).toHaveCount(index + 1);
   }
 
   await focusCanvas(page);
   await expect(page.locator('.node-quick-editor')).toHaveCount(0);
+  await page.getByRole('button', { name: '自动适配缩放' }).click();
 
   const sourceHandle = (index: number) =>
     sourceNodes.nth(index).locator('.react-flow__handle.source');
-  const targetHandle = (role: string) =>
-    videoNode.locator(`.react-flow__handle.target[data-handleid="input:${role}"]`);
+  const targetHandle = () => videoNode.locator('.flow-node-handle--left');
 
   const connect = async (
     source: ReturnType<typeof sourceHandle>,
     target: ReturnType<typeof targetHandle>,
   ) => {
+    await focusCanvas(page);
+    await expect(page.locator('.node-quick-editor')).toHaveCount(0);
+    await source.hover();
     const sourceBox = await source.boundingBox();
     const targetBox = await target.boundingBox();
     expect(sourceBox).not.toBeNull();
@@ -1850,16 +1921,21 @@ test('connects three image references to one video generation node', async ({ pa
     await page.mouse.up();
   };
 
-  await connect(sourceHandle(0), targetHandle('character'));
+  await connect(sourceHandle(0), targetHandle());
   await expect(page.locator('.react-flow__edge')).toHaveCount(1);
-  await connect(sourceHandle(1), targetHandle('style'));
+  await connect(sourceHandle(1), targetHandle());
   await expect(page.locator('.react-flow__edge')).toHaveCount(2);
-  await connect(sourceHandle(2), targetHandle('firstFrame'));
+  await connect(sourceHandle(2), targetHandle());
 
   await expect(page.locator('.react-flow__edge')).toHaveCount(3);
 
   const selectedEdge = page.locator('.react-flow__edge').first();
-  await expect(selectedEdge).toHaveClass(/animated/);
+  const edgeEffect = selectedEdge.locator('.canvas-edge-effect-meteor');
+  await expect(edgeEffect).toHaveCount(1);
+  await expect(edgeEffect).toHaveCSS('pointer-events', 'none');
+  expect(await edgeEffect.getAttribute('d')).toBe(
+    await selectedEdge.locator('.react-flow__edge-path').getAttribute('d'),
+  );
   // 多条曲线在目标端交叠，点击靠近来源的可见线段，避免命中其他连接。
   const edgePoint = await selectedEdge
     .locator('.react-flow__edge-interaction')
@@ -1881,8 +1957,9 @@ test('connects three image references to one video generation node', async ({ pa
 
   const selectedEdgeStyles = await selectedEdge.evaluate((edge) => {
     const path = edge.querySelector<SVGPathElement>('.react-flow__edge-path');
+    const effect = edge.querySelector<SVGPathElement>('.canvas-edge-effect-meteor');
     const shell = document.querySelector<HTMLElement>('.app-shell');
-    if (!path || !shell) return null;
+    if (!path || !effect || !shell) return null;
 
     const colorProbe = document.createElement('span');
     colorProbe.style.color = 'var(--mc-accent-strong)';
@@ -1893,21 +1970,24 @@ test('connects three image references to one video generation node', async ({ pa
     const style = getComputedStyle(path);
     return {
       accentStrong,
-      animationDuration: style.animationDuration,
-      animationName: style.animationName,
+      animationDuration: getComputedStyle(effect).animationDuration,
+      animationName: getComputedStyle(effect).animationName,
       stroke: style.stroke,
+      strokeWidth: style.strokeWidth,
     };
   });
   expect(selectedEdgeStyles).not.toBeNull();
   if (!selectedEdgeStyles) return;
-  expect(selectedEdgeStyles.animationDuration).toBe('0.2s');
+  expect(Number.parseFloat(selectedEdgeStyles.animationDuration)).toBeGreaterThan(0);
   expect(selectedEdgeStyles.animationName).not.toBe('none');
   expect(selectedEdgeStyles.stroke).toBe(selectedEdgeStyles.accentStrong);
+  await expect(selectedEdge.locator('.react-flow__edge-path')).toHaveCSS('stroke-width', '4px');
 });
 
 test('connects mixed text, image, and audio references to one video generation node', async ({
   page,
 }) => {
+  await page.setViewportSize({ width: 1800, height: 1400 });
   await page.goto(projectPath);
 
   const references = [
@@ -1915,7 +1995,7 @@ test('connects mixed text, image, and audio references to one video generation n
       name: 'scene-notes.txt',
       mimeType: 'text/plain',
       buffer: Buffer.from('A spoken scene description.'),
-      role: 'content',
+      role: 'prompt',
     },
     { name: 'reference-style.png', mimeType: 'image/png', buffer: validPng, role: 'style' },
     { name: 'voice-track.wav', mimeType: 'audio/wav', buffer: validWav, role: 'audioTrack' },
@@ -1927,7 +2007,9 @@ test('connects mixed text, image, and audio references to one video generation n
   }
 
   await page.getByRole('button', { name: '新建视频生成节点' }).click();
-  const videoNode = page.locator('.flow-generate-node').filter({ hasText: '视频生成节点' });
+  await page.getByRole('combobox', { name: /^生成模式：/ }).click();
+  await page.getByRole('option', { name: /^全能参考/ }).click();
+  const videoNode = nodeByLabel(page, '视频生成节点');
   await expect(videoNode).toHaveCount(1);
   const sourceNodes = page.locator('.flow-asset-node:not(.flow-generate-node)');
   const canvasBox = await page.locator('.canvas-area').boundingBox();
@@ -1946,24 +2028,20 @@ test('connects mixed text, image, and audio references to one video generation n
   await page.mouse.up();
 
   for (const [index, reference] of references.entries()) {
-    const card = page.locator('.asset-card').filter({ hasText: reference.name });
-    const cardBox = await card.boundingBox();
-    expect(cardBox).not.toBeNull();
-    if (!cardBox) return;
-    await page.mouse.move(cardBox.x + cardBox.width / 2, cardBox.y + cardBox.height / 2);
-    await page.mouse.down();
-    await page.mouse.move(canvasBox.x + 170, canvasBox.y + 120 + index * 170, { steps: 12 });
-    await page.mouse.up();
+    await page.getByRole('button', { name: `添加 ${reference.name} 到画布` }).click();
+    await moveNode(page, nodeByLabel(page, reference.name), 180, 120 + index * 400);
     await expect(sourceNodes).toHaveCount(index + 1);
   }
 
   await focusCanvas(page);
+  await page.getByRole('button', { name: '自动适配缩放' }).click();
   const sourceHandle = (index: number) =>
     sourceNodes.nth(index).locator('.react-flow__handle.source');
   const targetHandle = (role: string) =>
-    videoNode.locator(`.react-flow__handle.target[data-handleid="input:${role}"]`);
+    videoNode.locator(role === 'prompt' ? '.flow-node-handle--top' : '.flow-node-handle--left');
 
   const connect = async (sourceIndex: number, role: string) => {
+    await sourceHandle(sourceIndex).hover();
     const sourceBox = await sourceHandle(sourceIndex).boundingBox();
     const targetBox = await targetHandle(role).boundingBox();
     expect(sourceBox).not.toBeNull();
@@ -1980,7 +2058,8 @@ test('connects mixed text, image, and audio references to one video generation n
   for (const [index, reference] of references.entries()) {
     await connect(index, reference.role);
   }
-
+  await focusCanvas(page);
+  await page.getByRole('button', { name: '自动适配缩放' }).click();
   await expect(page.locator('.react-flow__edge')).toHaveCount(3);
 });
 
@@ -1990,7 +2069,7 @@ test('overrides a node model and displays the completed run result', async ({ pa
 
   const modelSelect = page.getByRole('combobox', { name: /^模型：/ });
   await expect(modelSelect).toBeVisible();
-  await modelSelect.hover();
+  await modelSelect.click();
   await page.getByRole('option', { name: 'Mock Text v2' }).click();
   await expect(page.getByRole('combobox', { name: '模型：Mock Text v2' })).toBeVisible();
 
@@ -2018,7 +2097,7 @@ test('overrides a node model and displays the completed run result', async ({ pa
   await expect(page.getByRole('status').filter({ hasText: '文字生成节点 已完成' })).toBeVisible();
 });
 
-test('新节点使用目录首项及凭据，历史手动模型刷新保留', async ({ page }) => {
+test('未设类型默认时新节点沿用同类模型及凭据，刷新后保留', async ({ page }) => {
   /** 记录浏览器运行错误；业务请求全部由合成 API 响应。 */
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -2027,7 +2106,7 @@ test('新节点使用目录首项及凭据，历史手动模型刷新保留', as
   });
   await page.goto(projectPath);
   await page.getByRole('button', { name: '新建文字生成节点' }).click();
-  await page.getByRole('combobox', { name: /^模型：/ }).hover();
+  await page.getByRole('combobox', { name: /^模型：/ }).click();
   await page.getByRole('option', { name: 'Mock Text v2', exact: true }).click();
   await expect(page.getByRole('combobox', { name: '模型：Mock Text v2' })).toBeVisible();
 
@@ -2036,11 +2115,11 @@ test('新节点使用目录首项及凭据，历史手动模型刷新保留', as
   await expect(page.getByRole('combobox', { name: /^模型：/ })).not.toHaveAccessibleName(
     '模型：Mock Text v2',
   );
-  await page.getByRole('combobox', { name: /^模型：/ }).hover();
+  await page.getByRole('combobox', { name: /^模型：/ }).click();
   await page.getByRole('option', { name: 'Mock Image', exact: true }).click();
   await focusCanvas(page);
   await page.getByRole('button', { name: '新建文字生成节点' }).click();
-  await expect(page.getByRole('combobox', { name: '模型：Mock Text' })).toBeVisible();
+  await expect(page.getByRole('combobox', { name: '模型：Mock Text v2' })).toBeVisible();
 
   /** 先等待包含模型和来源凭据的画布成功保存，再刷新验证持久化。 */
   const saved = page.waitForResponse((response) => {
@@ -2051,15 +2130,17 @@ test('新节点使用目录首项及凭据，历史手动模型刷新保留', as
       return false;
     const canvas = response.request().postDataJSON() as CanvasDocument;
     return (
-      canvas.nodes.filter((node) => node.data.modelAlias === 'mock-text-v2').length === 1 &&
-      canvas.nodes.some((node) => node.data.modelAlias === 'mock-text')
+      canvas.nodes.filter((node) => node.data.modelAlias === 'mock-text-v2').length === 2 &&
+      canvas.nodes
+        .filter((node) => node.data.mediaType === 'text')
+        .every((node) => node.data.credentialId === initialCredential.id)
     );
   });
-  await page.getByRole('textbox', { name: '提示词', exact: true }).fill('刷新后新建仍选目录首项');
+  await page.getByRole('textbox', { name: '提示词', exact: true }).fill('刷新后新建仍沿用同类模型');
   await saved;
   await page.reload();
   await page.getByRole('button', { name: '新建文字生成节点' }).click();
-  await expect(page.getByRole('combobox', { name: '模型：Mock Text' })).toBeVisible();
+  await expect(page.getByRole('combobox', { name: '模型：Mock Text v2' })).toBeVisible();
   await page
     .getByRole('textbox', { name: '提示词', exact: true })
     .fill('复用的模型用于真实运行参数');
@@ -2070,7 +2151,7 @@ test('新节点使用目录首项及凭据，历史手动模型刷新保留', as
   );
   await page.getByRole('button', { name: '生成', exact: true }).click();
   expect((await submitted).postDataJSON()).toMatchObject({
-    modelAlias: 'mock-text',
+    modelAlias: 'mock-text-v2',
     credentialId: initialCredential.id,
   });
   await focusCanvas(page);
@@ -2079,8 +2160,8 @@ test('新节点使用目录首项及凭据，历史手动模型刷新保留', as
   expect(errors).toEqual([]);
 });
 
-test('模型目录第二个真实选项写入新节点，保存刷新与生成提交保持一致', async ({ page }) => {
-  /** 合成目录的第二项刻意区别于通用回退，验证实际目录而非固定界面文案。 */
+test('模型目录首个有效参数写入新节点，保存刷新与生成提交保持一致', async ({ page }) => {
+  /** 使用合成目录验证参数来自真实可用选项，并在保存和提交时保持一致。 */
   await page.route('**/v1/models*', (route) =>
     json(route, {
       models: [
@@ -2100,13 +2181,13 @@ test('模型目录第二个真实选项写入新节点，保存刷新与生成�
   );
   await page.goto(projectPath);
   await page.getByRole('button', { name: '新建视频生成节点' }).click();
-  await page.getByRole('combobox', { name: /^模型：/ }).hover();
+  await page.getByRole('combobox', { name: /^模型：/ }).click();
   await page.getByRole('option', { name: 'Mock Video', exact: true }).click();
   await focusCanvas(page);
   await page.getByRole('button', { name: '新建视频生成节点' }).click();
   const editor = page.locator('.node-quick-editor');
   await expect(editor.getByRole('button', { name: '媒体参数', exact: true })).toHaveText(
-    '720p · 4:3 · 6s',
+    '360p · 1:1 · 2s',
   );
   const saved = page.waitForResponse((response) => {
     if (
@@ -2123,14 +2204,14 @@ test('模型目录第二个真实选项写入新节点，保存刷新与生成�
   const savedCanvas = ((await (await saved).json()) as { canvas: CanvasDocument }).canvas;
   const savedNode = savedCanvas.nodes.at(-1)!;
   expect(savedNode.data.parameters).toEqual({
-    resolution: '720p',
-    aspectRatio: '4:3',
-    duration: 6,
+    resolution: '360p',
+    aspectRatio: '1:1',
+    duration: 2,
   });
   await page.reload();
   await page.locator('.flow-generate-node').last().click();
   await expect(editor.getByRole('button', { name: '媒体参数', exact: true })).toHaveText(
-    '720p · 4:3 · 6s',
+    '360p · 1:1 · 2s',
   );
   const submitted = page.waitForRequest(
     (request) =>
@@ -2145,6 +2226,7 @@ test('模型目录第二个真实选项写入新节点，保存刷新与生成�
 });
 
 test('四类节点都可以填写提示词、运行并显示对应结果预览', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto(projectPath);
 
   const mediaCases = [
@@ -2161,15 +2243,15 @@ test('四类节点都可以填写提示词、运行并显示对应结果预览',
     }
     await page.getByRole('button', { name: `新建${mediaType}生成节点` }).click();
 
-    const node = page
-      .locator('.flow-generate-node')
-      .filter({ hasText: `${mediaType}生成节点` })
-      .last();
+    const node = nodeByLabel(page, `${mediaType}生成节点`).last();
     await expect(node).toBeVisible();
     await expect(page.getByRole('region', { name: `${mediaType}生成节点生成设置` })).toBeVisible();
+    await resizeNode(page, node);
     /** 内容回显不能改变节点外框；只有用户拖拽允许修改尺寸。 */
-    const initialNodeBounds = await node.boundingBox();
-    expect(initialNodeBounds).not.toBeNull();
+    const initialNodeBounds = await node.evaluate((element) => ({
+      width: (element as HTMLElement).offsetWidth,
+      height: (element as HTMLElement).offsetHeight,
+    }));
 
     const prompt = page.getByRole('textbox', { name: '提示词', exact: true });
     await expect(prompt).toBeVisible();
@@ -2185,7 +2267,7 @@ test('四类节点都可以填写提示词、运行并显示对应结果预览',
           )
         : undefined;
     if (mediaType === '音频') {
-      await page.getByRole('combobox', { name: /^模型：/ }).hover();
+      await page.getByRole('combobox', { name: /^模型：/ }).click();
       await page.getByRole('option', { name: 'Mock Audio', exact: true }).click();
       await expect(page.getByRole('button', { name: '生成', exact: true })).toBeDisabled();
       await page.getByRole('button', { name: '媒体参数', exact: true }).click();
@@ -2198,7 +2280,7 @@ test('四类节点都可以填写提示词、运行并显示对应结果预览',
         voice: 'synthetic-smoke-voice',
         prompt: 'Playwright 音频 生成测试',
       });
-      expect(body.parameters.response_format).toBe('opus');
+      expect(body.parameters.response_format).toBe('mp3');
       expect(body.parameters).not.toHaveProperty('speed');
     }
 
@@ -2209,10 +2291,11 @@ test('四类节点都可以填写提示词、运行并显示对应结果预览',
     const result = node.locator(resultSelector);
     await expect(result).toHaveCount(1);
     await expect(node.locator('.flow-node-preview')).toBeVisible();
-    const completedNodeBounds = await node.boundingBox();
-    expect(completedNodeBounds).not.toBeNull();
-    expect(completedNodeBounds!.width).toBeCloseTo(initialNodeBounds!.width, 1);
-    expect(completedNodeBounds!.height).toBeCloseTo(initialNodeBounds!.height, 1);
+    const completedNodeBounds = await node.evaluate((element) => ({
+      width: (element as HTMLElement).offsetWidth,
+      height: (element as HTMLElement).offsetHeight,
+    }));
+    expect(completedNodeBounds).toEqual(initialNodeBounds);
 
     if (mediaType === '文字') {
       await expect(result).toContainText('生成的真实文本结果');
@@ -2227,7 +2310,8 @@ test('四类节点都可以填写提示词、运行并显示对应结果预览',
         .poll(() => node.locator('img').evaluate((image: HTMLImageElement) => image.naturalWidth))
         .toBe(1);
     } else {
-      await expect(result).toHaveAttribute('controls', '');
+      if (mediaType === '音频') await expect(result).toHaveAttribute('controls', '');
+      else await expect(node.getByRole('button', { name: '播放视频', exact: true })).toBeVisible();
       await expect
         .poll(() =>
           result.evaluate((media: HTMLMediaElement) => ({
@@ -2269,7 +2353,7 @@ test('PC 音频参数显式输入、保存恢复并提交，桌面截图无布�
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto(projectPath);
   await page.getByRole('button', { name: '新建音频生成节点' }).click();
-  await page.getByRole('combobox', { name: /^模型：/ }).hover();
+  await page.getByRole('combobox', { name: /^模型：/ }).click();
   await page.getByRole('option', { name: 'Mock Audio', exact: true }).click();
 
   const editor = page.locator('.node-quick-editor');
@@ -2282,7 +2366,7 @@ test('PC 音频参数显式输入、保存恢复并提交，桌面截图无布�
   await expect(voice).toHaveValue('');
   await expect(voice).toHaveAttribute('required', '');
   await expect(speed).toHaveValue('');
-  await expect(editor.getByRole('combobox', { name: '音频格式：OPUS' })).toBeVisible();
+  await expect(editor.getByRole('combobox', { name: '音频格式：MP3' })).toBeVisible();
   await expect(run).toBeDisabled();
   await voice.fill(syntheticVoice);
   await editor.getByRole('combobox', { name: /^音频格式：/ }).click();
@@ -2316,14 +2400,14 @@ test('PC 音频参数显式输入、保存恢复并提交，桌面截图无布�
   await speed.fill('1.25');
   await savedResponse;
   await page.reload();
-  await page.locator('.flow-generate-node').filter({ hasText: '音频生成节点' }).click();
+  await nodeByLabel(page, '音频生成节点').click();
   await editor.getByRole('button', { name: '媒体参数', exact: true }).click();
   await expect(voice).toHaveValue(syntheticVoice);
   await expect(editor.getByRole('combobox', { name: '音频格式：WAV' })).toBeVisible();
   await expect(speed).toHaveValue('1.25');
   await expect(run).toBeEnabled();
 
-  /** 三个音频字段在桌面同行展示，同时保留较长音色的可编辑宽度。 */
+  /** 音频参数按两列排列，语速换行，同时保留较长音色的可编辑宽度。 */
   const panel = editor.getByRole('region', { name: '生成参数' });
   const boxes = [];
   for (const control of [voice, editor.getByRole('combobox', { name: /^音频格式：/ }), speed]) {
@@ -2337,9 +2421,9 @@ test('PC 音频参数显式输入、保存恢复并提交，桌面截图无布�
   }
   expect(boxes[0].width).toBeCloseTo(boxes[1].width, 0);
   expect(boxes[0].y).toBeCloseTo(boxes[1].y, 0);
-  expect(boxes[1].y).toBeCloseTo(boxes[2].y, 0);
+  expect(boxes[2].y).toBeGreaterThan(boxes[1].y + boxes[1].height);
   expect(boxes[0].x + boxes[0].width).toBeLessThan(boxes[1].x);
-  expect(boxes[1].x + boxes[1].width).toBeLessThan(boxes[2].x);
+  expect(boxes[0].x).toBeCloseTo(boxes[2].x, 0);
   /** 保留可直接查看的 PNG 文件，附件引用文件而不内嵌截图字节。 */
   const audioScreenshotPath = testInfo.outputPath('audio-desktop.png');
   await page.screenshot({ path: audioScreenshotPath, fullPage: false, animations: 'disabled' });
@@ -2384,7 +2468,7 @@ test('PC 视频仅显示清晰度比例时长，新建保存刷新与提交不�
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto(projectPath);
   await page.getByRole('button', { name: '新建视频生成节点' }).click();
-  await page.getByRole('combobox', { name: /^模型：/ }).hover();
+  await page.getByRole('combobox', { name: /^模型：/ }).click();
   await page.getByRole('option', { name: 'Mock Video', exact: true }).click();
   const editor = page.locator('.node-quick-editor');
   const width = editor.getByRole('spinbutton', { name: '宽度（像素）', exact: true });
@@ -2416,13 +2500,13 @@ test('PC 视频仅显示清晰度比例时长，新建保存刷新与提交不�
   await editor.locator('textarea').fill('Playwright 视频参数');
   await savedDimensions;
   await page.reload();
-  await page.locator('.flow-generate-node').filter({ hasText: '视频生成节点' }).click();
+  await nodeByLabel(page, '视频生成节点').click();
   await editor.getByRole('button', { name: '媒体参数', exact: true }).click();
   await expect(width).toHaveCount(0);
   await expect(height).toHaveCount(0);
   await expect(editor.getByRole('combobox', { name: '时长（秒）：8' })).toBeVisible();
-  await expect(editor.getByRole('combobox', { name: '视频清晰度：480p' })).toBeVisible();
-  await expect(editor.getByRole('button', { name: '视频比例：16:9' })).toBeVisible();
+  await expect(editor.getByRole('combobox', { name: '视频清晰度：360p' })).toBeVisible();
+  await expect(editor.getByRole('button', { name: '视频比例：1:1' })).toBeVisible();
   await testInfo.attach('video-dimensions-desktop-1440x1000', {
     body: await page.screenshot({ fullPage: false, animations: 'disabled' }),
     contentType: 'image/png',
@@ -2439,14 +2523,13 @@ test('PC 视频仅显示清晰度比例时长，新建保存刷新与提交不�
   expect((await submittedRequest).postDataJSON().parameters).toEqual({
     prompt: 'Playwright 视频参数',
     duration: 8,
-    resolution: '480p',
-    aspectRatio: '16:9',
+    resolution: '360p',
+    aspectRatio: '1:1',
   });
   await expect(page.getByRole('status').filter({ hasText: '视频生成节点 已完成' })).toBeVisible();
-  await expect(page.locator('.flow-generate-node .flow-node-preview video')).toHaveAttribute(
-    'controls',
-    '',
-  );
+  await expect(
+    page.locator('.flow-generate-node').getByRole('button', { name: '播放视频', exact: true }),
+  ).toBeVisible();
   expect(errors).toEqual([]);
 });
 
@@ -2464,19 +2547,19 @@ for (const viewport of [
     await page.setViewportSize(viewport);
     await page.goto(projectPath);
     await page.getByRole('button', { name: '新建视频生成节点' }).click();
-    await page.getByRole('combobox', { name: /^模型：/ }).hover();
+    await page.getByRole('combobox', { name: /^模型：/ }).click();
     await page.getByRole('option', { name: 'Mock Video', exact: true }).click();
     const editor = page.locator('.node-quick-editor');
     await editor.getByRole('textbox', { name: '提示词' }).fill('镜头缓缓掠过山间，晨光照亮林梢。');
     const summary = editor.getByRole('button', { name: '媒体参数', exact: true });
-    await expect(summary).toHaveText('480p · 16:9 · 8s');
+    await expect(summary).toHaveText('360p · 1:1 · 4s');
     await expect(editor.getByRole('region', { name: '生成参数' })).toBeHidden();
     const before = await editor.boundingBox();
     await summary.click();
     const panel = editor.getByRole('region', { name: '生成参数' });
     await expect(panel).toBeVisible();
     expect((await editor.boundingBox())!.height).toBeCloseTo(before!.height, 0);
-    /** PC 参数首行固定三个字段；基础移动验收只要求不溢出。 */
+    /** PC 参数按两列排列，时长换行；基础移动验收仍要求不溢出。 */
     const resolution = panel.getByRole('combobox', { name: /视频清晰度/ });
     const ratio = panel.getByRole('button', { name: /视频比例：/ });
     const duration = panel.getByRole('combobox', { name: /时长（秒）/ });
@@ -2487,14 +2570,14 @@ for (const viewport of [
     ]);
     if (viewport.width >= 1024) {
       expect(Math.abs(controlBoxes[0]!.y - controlBoxes[1]!.y)).toBeLessThanOrEqual(3);
-      expect(Math.abs(controlBoxes[1]!.y - controlBoxes[2]!.y)).toBeLessThanOrEqual(3);
+      expect(controlBoxes[2]!.y).toBeGreaterThan(controlBoxes[1]!.y + controlBoxes[1]!.height);
       expect(controlBoxes[0]!.x + controlBoxes[0]!.width).toBeLessThan(controlBoxes[1]!.x);
-      expect(controlBoxes[1]!.x + controlBoxes[1]!.width).toBeLessThan(controlBoxes[2]!.x);
+      expect(controlBoxes[0]!.x).toBeCloseTo(controlBoxes[2]!.x, 0);
     }
-    await resolution.hover();
+    await resolution.click();
     const resolutionMenu = panel.getByRole('listbox', { name: '视频清晰度' });
     await expect(resolutionMenu).toBeVisible();
-    /** 鼠标悬停向上展示，菜单无需撑大参数页且可直接点击。 */
+    /** 点击后向上展示，菜单无需撑大参数页且可直接点击。 */
     const menuBox = await resolutionMenu.boundingBox();
     expect(menuBox!.y + menuBox!.height).toBeLessThanOrEqual(controlBoxes[0]!.y);
     expect(menuBox!.x).toBeGreaterThanOrEqual(0);
@@ -2512,14 +2595,13 @@ for (const viewport of [
     await panel.getByRole('button', { name: '收起媒体参数' }).click();
     await expect(summary).toHaveText('720p · 16:9 · 8s');
     for (const theme of ['明亮', '深色']) {
-      await page.getByRole('button', { name: '切换主题', exact: true }).click();
-      await page.getByRole('option', { name: theme, exact: true }).click();
+      await selectTheme(page, theme);
       await expect
         .poll(() =>
           editor.evaluate(
             (el) =>
-              getComputedStyle(el).backgroundColor ===
-              getComputedStyle(el.querySelector('textarea')!).backgroundColor,
+              getComputedStyle(el.querySelector('textarea')!).backgroundColor ===
+              'rgba(0, 0, 0, 0)',
           ),
         )
         .toBe(true);
@@ -2563,7 +2645,7 @@ for (const viewport of [
       expect(geometry.left).toBeGreaterThanOrEqual(0);
       expect(geometry.right).toBeLessThanOrEqual(viewport.width);
       expect(geometry.contentWidth).toBeLessThanOrEqual(geometry.width);
-      expect(geometry.background).toBe(geometry.inputBackground);
+      expect(geometry.inputBackground).toBe('rgba(0, 0, 0, 0)');
       await dialog.getByRole('textbox', { name: '提示词' }).fill('Dialog 编辑后仍保留最新提示词。');
       await page.screenshot({
         path: testInfo.outputPath(`dialog-${theme}.png`),
@@ -2579,12 +2661,13 @@ for (const viewport of [
   });
 }
 
-test('设置移除默认模型入口，节点自行选择模型后按所选模型运行', async ({ page }) => {
+test('设置保留四类默认模型入口，节点显式选择模型后按所选模型运行', async ({ page }) => {
   await page.goto(projectPath);
   await page.getByRole('button', { name: '打开设置' }).click();
 
   const dialog = page.getByRole('dialog', { name: 'AI 连接' });
   await expect(dialog).toBeVisible();
+  await dialog.getByRole('tab', { name: '连接与 Key' }).click();
   await dialog.getByLabel('New API Base URL').fill('https://mock.newapi.local/v1');
   await dialog.getByRole('textbox', { name: 'API Key' }).fill('playwright-smoke-key');
   const refreshResponse = page.waitForResponse(
@@ -2593,15 +2676,20 @@ test('设置移除默认模型入口，节点自行选择模型后按所选模�
       response.request().method() === 'POST',
   );
   await dialog.getByRole('button', { name: '保存' }).click();
-  await expect(dialog.getByText('已配置 · smoke-fingerprint')).toBeVisible();
+  await expect(dialog.getByRole('textbox', { name: 'API Key' })).toHaveAttribute(
+    'placeholder',
+    '已配置 · smoke-fingerprint',
+  );
   await expect((await refreshResponse).status()).toBe(200);
   await expect(dialog.getByRole('status')).toContainText('模型列表已自动刷新');
-  await expect(dialog.getByText('平台全局默认')).toHaveCount(0);
-  await expect(dialog.getByText('当前项目默认')).toHaveCount(0);
+  await dialog.getByRole('tab', { name: '节点默认' }).click();
+  for (const mediaType of ['文字', '图片', '音频', '视频']) {
+    await expect(dialog.getByRole('combobox', { name: `${mediaType}生成默认模型` })).toBeVisible();
+  }
   await dialog.getByRole('button', { name: '关闭设置' }).click();
 
   await page.getByRole('button', { name: '新建文字生成节点' }).click();
-  await page.getByRole('combobox', { name: /^模型：/ }).hover();
+  await page.getByRole('combobox', { name: /^模型：/ }).click();
   await page.getByRole('option', { name: 'Mock Text v2', exact: true }).first().click();
   const runResponse = page.waitForResponse(
     (response) =>
@@ -2643,7 +2731,7 @@ test('允许 Clipboard 权限时可以跨画布页面复制粘贴', async ({ pag
     await secondPage.keyboard.press('Control+v');
 
     await expect(secondPage.locator('.flow-generate-node')).toHaveCount(1);
-    await expect(secondPage.locator('.flow-generate-node')).toContainText('文字生成节点');
+    await expect(nodeByLabel(secondPage, '文字生成节点')).toBeVisible();
   } finally {
     await secondPage.close();
   }

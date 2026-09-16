@@ -4,6 +4,7 @@ import {
   runSnapshotFingerprintMaterial,
   type MediaType,
   type NodeTiming,
+  type ProviderJob,
   type RequestPromptRecord,
   type RunJobData,
   type RunSnapshot,
@@ -1663,6 +1664,200 @@ function providerRequestPrompt(input: {
 }
 
 describe('worker request prompt retention', () => {
+  it('binds the original request after resuming a platform task without another creation', async () => {
+    bullmqState.jobs.clear();
+    const originalRunId = '123e4567-e89b-42d3-a456-426614174162';
+    const retryRunId = '123e4567-e89b-42d3-a456-426614174163';
+    let creations = 0;
+    const bindings: unknown[] = [];
+    const execute = vi.fn(async (request: WorkerProviderRequest) => {
+      if (!request.providerJob?.platformJobId) {
+        await request.onRequestPrompt?.(
+          providerRequestPrompt({
+            runId: request.runId ?? originalRunId,
+            nodeId: 'node_draft',
+            attempt: request.attempt,
+          }),
+        );
+        creations += 1;
+        await request.onProviderJob?.({
+          provider: 'newapi',
+          platformJobId: 'platform-retained',
+          status: 'running',
+          payload: {
+            requestPromptRecords: [
+              {
+                runId: retryRunId,
+                nodeId: 'node_draft',
+                attempt: 99,
+                requestIdentity: 'provider-supplied-identity',
+              },
+            ],
+          },
+        });
+        throw Object.assign(new Error('polling connection interrupted'), {
+          platformJobId: 'platform-retained',
+        });
+      }
+      return createExecution(request.snapshot);
+    });
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      stepDelayMs: 0,
+      provider: { execute },
+      resultArchiver: async () => ({ assetId: 'asset_resumed', version: 1 }),
+      persistence: {
+        getProviderCredentials: getTestProviderCredentials,
+        async upsertProviderJob() {},
+        async recordUsage() {},
+        async updateRun() {},
+        async upsertRequestPromptRecord() {},
+        async recordRequestPromptOutcome(input) {
+          if (input.assetId) bindings.push(input);
+        },
+      },
+    });
+    const original = createJob({
+      runId: originalRunId,
+      snapshot: createTextSnapshot(),
+      attempt: 1,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(originalRunId, 'newapi'),
+      cancelRequested: false,
+    });
+    await expect(bullmqState.processor?.(original)).rejects.toThrow(
+      'polling connection interrupted',
+    );
+    const retry = createJob({
+      runId: retryRunId,
+      retryOf: originalRunId,
+      snapshot: createTextSnapshot(),
+      attempt: 2,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(retryRunId, 'newapi'),
+      cancelRequested: false,
+    });
+    await expect(bullmqState.processor?.(retry)).resolves.toMatchObject({ status: 'succeeded' });
+    expect(creations).toBe(1);
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(bindings).toEqual([
+      {
+        identity: {
+          runId: originalRunId,
+          nodeId: 'node_draft',
+          attempt: 1,
+          requestIdentity: 'POST /chat/completions#1',
+        },
+        sendStatus: 'sent',
+        assetId: 'asset_resumed',
+        assetVersion: 1,
+      },
+    ]);
+  });
+
+  it.each(['queue', 'database'] as const)(
+    'repairs result binding after a failure from %s recovery without repeating generation',
+    async (recoverySource) => {
+      bullmqState.jobs.clear();
+      const originalRunId = '123e4567-e89b-42d3-a456-426614174160';
+      const retryRunId = '123e4567-e89b-42d3-a456-426614174161';
+      const textSnapshot = createTextSnapshot();
+      const persistedJobs = new Map<string, ProviderJob>();
+      const successfulBindings: unknown[] = [];
+      let bindingUnavailable = true;
+      const execute = vi.fn(async (request: WorkerProviderRequest) => {
+        await request.onRequestPrompt?.(
+          providerRequestPrompt({
+            runId: request.runId ?? originalRunId,
+            nodeId: request.snapshot.targetNodeId,
+            attempt: request.attempt,
+          }),
+        );
+        return createExecution(request.snapshot);
+      });
+      const resultArchiver = vi.fn(async () => ({
+        assetId: 'asset_retained_result',
+        version: 3,
+        mimeType: 'text/plain',
+      }));
+      createRunWorker({
+        connection: { host: '127.0.0.1', port: 6379 },
+        providerName: 'newapi',
+        stepDelayMs: 0,
+        provider: { execute },
+        resultArchiver,
+        persistence: {
+          getProviderCredentials: getTestProviderCredentials,
+          async upsertProviderJob({ runId, providerJob }) {
+            persistedJobs.set(runId, structuredClone(providerJob));
+          },
+          async findProviderJobsByRunId(runId) {
+            const providerJob = persistedJobs.get(runId);
+            return providerJob ? [providerJob] : [];
+          },
+          async recordUsage() {},
+          async updateRun() {},
+          async upsertRequestPromptRecord() {},
+          async recordRequestPromptOutcome(input) {
+            if (!input.assetId) return;
+            if (bindingUnavailable) throw new Error('result binding unavailable');
+            successfulBindings.push(input);
+          },
+        },
+      });
+      const original = createJob({
+        runId: originalRunId,
+        snapshot: textSnapshot,
+        attempt: 1,
+        provider: 'newapi',
+        providerJob: createProviderJobRecord(originalRunId, 'newapi'),
+        cancelRequested: false,
+      });
+      await expect(bullmqState.processor?.(original)).rejects.toThrow('result binding unavailable');
+      expect(persistedJobs.get(originalRunId)?.payload).toMatchObject({
+        result: { asset: { assetId: 'asset_retained_result', version: 3 } },
+        requestPromptRecords: [{ runId: originalRunId, nodeId: 'node_draft', attempt: 1 }],
+      });
+      expect(JSON.stringify(persistedJobs.get(originalRunId)?.payload)).not.toContain(
+        'prompt for node_draft',
+      );
+      if (recoverySource === 'database') bullmqState.jobs.clear();
+      const retry = createJob({
+        runId: retryRunId,
+        retryOf: originalRunId,
+        snapshot: textSnapshot,
+        attempt: 2,
+        provider: 'newapi',
+        providerJob: createProviderJobRecord(retryRunId, 'newapi'),
+        cancelRequested: false,
+      });
+      await expect(bullmqState.processor?.(retry)).rejects.toThrow('result binding unavailable');
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(resultArchiver).toHaveBeenCalledTimes(1);
+      bindingUnavailable = false;
+      await expect(bullmqState.processor?.(retry)).resolves.toMatchObject({
+        status: 'succeeded',
+        result: { asset: { assetId: 'asset_retained_result', version: 3 } },
+      });
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(resultArchiver).toHaveBeenCalledTimes(1);
+      expect(successfulBindings).toEqual([
+        {
+          identity: {
+            runId: originalRunId,
+            nodeId: 'node_draft',
+            attempt: 1,
+            requestIdentity: 'POST /chat/completions#1',
+          },
+          sendStatus: 'sent',
+          assetId: 'asset_retained_result',
+          assetVersion: 3,
+        },
+      ]);
+    },
+  );
+
   it('retains the final request before sending and binds the archived result', async () => {
     bullmqState.jobs.clear();
     const runId = '123e4567-e89b-42d3-a456-426614174130';

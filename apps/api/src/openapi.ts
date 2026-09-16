@@ -960,6 +960,8 @@ export const openApiDocument = {
       },
       patch: {
         tags: ['projects'],
+        description:
+          '保存画布；已有分组时必须显式提交 groups，省略时返回 409 incompatible_canvas。空数组表示解除全部分组。',
         parameters: [{ $ref: '#/components/parameters/ProjectId' }],
         requestBody: {
           required: true,
@@ -973,7 +975,7 @@ export const openApiDocument = {
           '200': response('Canvas saved', envelope('canvas', canvasSchema)),
           '400': response('Invalid canvas', errorSchema),
           '404': response('Project not found', errorSchema),
-          '409': response('Revision conflict', errorSchema),
+          '409': response('Revision conflict or incompatible canvas groups', errorSchema),
         },
       },
     },

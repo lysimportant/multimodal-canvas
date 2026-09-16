@@ -16,7 +16,13 @@ import {
   WandSparkles,
   X,
 } from 'lucide-react';
-import { NodeResizer, useEdges, useViewport, type NodeProps } from '@xyflow/react';
+import {
+  NodeResizer,
+  useEdges,
+  useUpdateNodeInternals,
+  useViewport,
+  type NodeProps,
+} from '@xyflow/react';
 import {
   createContext,
   useCallback,
@@ -38,7 +44,7 @@ import {
 } from '@multimodal-canvas/domain';
 import { Dialog, DialogClose, DialogContent, DialogTitle } from '@multimodal-canvas/ui';
 import { nodeHasPrompt } from './fork-generate-node';
-import { fitNodeSizeToContent, type AssetFlowNode } from '../canvas-utils';
+import type { AssetFlowNode } from '../canvas-utils';
 import { isImeKeyboardEvent } from '../ime';
 import { NodeHandles, videoInputRoleLabel } from '../NodeHandles';
 import { AssetPreview, type AssetPreviewLoadState } from './AssetPreview';
@@ -118,9 +124,14 @@ function isNodeRunning(status: RunStatus | undefined): boolean {
 }
 
 /** 展示节点占位或产物；生成节点的控制栏悬浮在内容上方，不参与尺寸计算。 */
-export function AssetNode({ id, data, selected, width, height }: NodeProps<AssetFlowNode>) {
+export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const { zoom } = useViewport();
   const incomingEdges = useEdges();
+  const updateNodeInternals = useUpdateNodeInternals();
+  // 模式或模型变化会增删语义端口，必须重新测量才能显示已有连线。
+  useEffect(() => {
+    updateNodeInternals(id);
+  }, [data.mediaType, data.mode, data.videoMode, data.modelAlias, id, updateNodeInternals]);
   // 只有运行中的节点需要递增计时；静态节点共用同一份共享时钟但不创建定时器。
   const durationNow = useSharedNodeClock(isNodeRunning(data.runStatus));
   const selectNode = useContext(NodeSelectionContext);
@@ -136,8 +147,6 @@ export function AssetNode({ id, data, selected, width, height }: NodeProps<Asset
   const openPrompt = useContext(NodePromptContext);
   const inputRef = useRef<HTMLInputElement>(null);
   const uploadLock = useRef(false);
-  /** 用户拖拽改过尺寸后，不再用回显内容覆盖宽高。 */
-  const userResizedRef = useRef(false);
   /** 当前下载请求；切换节点产物或卸载时取消，防止下载过时内容。 */
   const downloadAbort = useRef<AbortController | null>(null);
   /** 下载请求状态独立于上传，不阻塞节点内容编辑。 */
@@ -194,9 +203,6 @@ export function AssetNode({ id, data, selected, width, height }: NodeProps<Asset
     ? `${previewAsset.id}:${previewAsset.contentUrl}:${previewAsset.mimeType}`
     : '';
   const presentationState = getNodePresentationState(data, previewAsset);
-  useEffect(() => {
-    userResizedRef.current = false;
-  }, [previewIdentity]);
   const writingDisabled = presentationState === 'running' || uploadProgress !== null;
   /** 仅图片和视频提供下载，下载内容始终与当前回显产物一致。 */
   const downloadableMedia = data.mediaType === 'image' || data.mediaType === 'video';
@@ -229,22 +235,6 @@ export function AssetNode({ id, data, selected, width, height }: NodeProps<Asset
   const handlePreviewLoadState = useCallback((state: AssetPreviewLoadState) => {
     setPreviewLoadState(state);
   }, []);
-  const handleNaturalSize = useCallback(
-    (naturalWidth: number, naturalHeight: number) => {
-      if (userResizedRef.current || !resizeNode || !id) return;
-      const next = fitNodeSizeToContent(naturalWidth, naturalHeight);
-      if (
-        width !== undefined &&
-        height !== undefined &&
-        Math.abs(width - next.width) < 2 &&
-        Math.abs(height - next.height) < 2
-      ) {
-        return;
-      }
-      resizeNode(id, next.width, next.height);
-    },
-    [height, id, resizeNode, width],
-  );
 
   useEffect(() => {
     setPreviewLoadState(null);
@@ -394,7 +384,6 @@ export function AssetNode({ id, data, selected, width, height }: NodeProps<Asset
           handleStyle={{ width: 18, height: 18, borderRadius: 4 }}
           lineStyle={{ borderWidth: 2 }}
           onResizeStart={() => {
-            userResizedRef.current = true;
             if (resizeStart && id) resizeStart(id);
           }}
           onResizeEnd={(_, params) => {
@@ -777,9 +766,6 @@ export function AssetNode({ id, data, selected, width, height }: NodeProps<Asset
                       aria-label={`查看生成提示词：${data.label}`}
                       title="查看该节点此次生成真正发送的请求文本"
                       onClick={() => {
-                        // 先收起节点信息面板：它会把文档其余部分标记为不可交互，
-                        // 与随后打开的只读 Dialog 叠加时会互相挡住指针事件。
-                        setInfoOpen(false);
                         openPrompt(id);
                       }}
                     >
@@ -812,7 +798,6 @@ export function AssetNode({ id, data, selected, width, height }: NodeProps<Asset
                 : undefined
             }
             onLoadStateChange={handlePreviewLoadState}
-            onNaturalSize={handleNaturalSize}
           />
         </div>
       ) : (

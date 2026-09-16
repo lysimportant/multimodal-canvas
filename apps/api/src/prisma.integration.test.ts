@@ -569,6 +569,52 @@ integrationDescribe('Prisma stores (isolated PostgreSQL)', () => {
     if (blobRoot) await rm(blobRoot, { recursive: true, force: true });
   });
 
+  it('分组在客户端重建后保留，旧客户端不能省略已有分组', async () => {
+    const store = new PrismaProjectStore(prisma);
+    const project = await store.create({ name: '分组存储恢复' });
+    const groups = [
+      {
+        id: 'group_scene',
+        name: '场景',
+        position: { x: -40, y: -40 },
+        width: 640,
+        height: 480,
+        nodeIds: ['node_group_member'],
+      },
+    ];
+    const saved = await store.updateCanvas(project.id, {
+      revision: 0,
+      nodes: [
+        {
+          id: 'node_group_member',
+          type: 'text',
+          position: { x: 10, y: 20 },
+          data: { label: '组内节点', mediaType: 'text', mode: 'generate' },
+        },
+      ],
+      edges: [],
+      groups,
+    });
+    const reopenedClient = new PrismaClient({ datasources: { db: { url: scopedDatabaseUrl } } });
+    try {
+      const reopened = new PrismaProjectStore(reopenedClient);
+      await expect(reopened.getCanvas(project.id)).resolves.toEqual(saved);
+      const { groups: _groups, ...oldClientDocument } = saved;
+      await expect(reopened.updateCanvas(project.id, oldClientDocument)).rejects.toMatchObject({
+        code: 'incompatible_canvas',
+      });
+      await expect(reopened.getCanvas(project.id)).resolves.toEqual(saved);
+      await reopened.updateCanvas(project.id, { ...saved, groups: [] });
+      await expect(reopened.getCanvas(project.id)).resolves.toEqual({
+        ...saved,
+        revision: 2,
+        groups: [],
+      });
+    } finally {
+      await reopenedClient.$disconnect();
+    }
+  });
+
   it('persists projects/assets/settings across client restart and isolates assets by project', async () => {
     const projectStore = new PrismaProjectStore(prisma);
     const projectA = await projectStore.create({ name: `Integration A ${schemaName}` });
