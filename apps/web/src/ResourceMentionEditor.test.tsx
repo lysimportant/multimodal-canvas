@@ -795,4 +795,27 @@ describe('ResourceMentionEditor', () => {
     expect(screen.getByText('音频')).toBeInTheDocument();
     expect(screen.getByText('文字')).toBeInTheDocument();
   });
+
+  it('预览连线资源时不要求目录 status，点击能看到内容', async () => {
+    const user = userEvent.setup();
+    render(
+      <ResourceMentionEditor
+        nodeId="node-edit"
+        assets={[]}
+        connectedAssets={[
+          {
+            id: 'asset_result',
+            name: '父节点结果',
+            mediaType: 'image',
+            mimeType: 'image/png',
+            contentUrl: '/v1/assets/asset_result/versions/2/content',
+          },
+        ]}
+        ariaLabel="提示词"
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: '预览并命名 父节点结果' }));
+    expect(screen.getByRole('dialog', { name: '资源预览' })).toBeVisible();
+    expect(screen.getByRole('img')).toBeInTheDocument();
+  });
 });

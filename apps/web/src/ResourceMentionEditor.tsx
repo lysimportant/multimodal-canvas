@@ -906,11 +906,9 @@ export function ResourceMentionEditor({
           const mention = mentionRanges.find(
             (range) => range.mention.assetId === item.assetId,
           )?.mention;
+          const resolvedAsset = assets.find((asset) => asset.id === item.assetId) ?? item.asset;
           const unavailableReason = mention
-            ? getMentionUnavailableReason(
-                mention,
-                assets.find((asset) => asset.id === item.assetId),
-              )
+            ? getMentionUnavailableReason(mention, resolvedAsset as Asset | undefined)
             : undefined;
           return (
             <div
@@ -930,8 +928,8 @@ export function ResourceMentionEditor({
                   setResourceNameDraft(item.name);
                 }}
               >
-                {item.asset && 'status' in item.asset && !unavailableReason ? (
-                  <MentionPreview asset={item.asset as Asset} mediaType={item.mediaType} />
+                {canPreviewMentionAsset(resolvedAsset) && !unavailableReason ? (
+                  <MentionPreview asset={resolvedAsset as Asset} mediaType={item.mediaType} />
                 ) : (
                   <MentionMediaIcon mediaType={item.mediaType} />
                 )}
@@ -1062,7 +1060,7 @@ export function ResourceMentionEditor({
           >
             <DialogTitle>资源预览</DialogTitle>
             <div className="resource-mention-dialog-preview">
-              {dialogItem.asset && 'status' in dialogItem.asset ? (
+              {canPreviewMentionAsset(dialogItem.asset) ? (
                 <AssetPreview asset={dialogItem.asset as Asset} mode="content" />
               ) : (
                 <MentionMediaIcon mediaType={dialogItem.mediaType} />
@@ -1393,6 +1391,17 @@ function getAssetVersion(asset: Asset): number | undefined {
  * @param asset 当前资源索引中的资产；缺失时传入 `undefined`。
  * @returns 占位诊断代码和面向用户的状态文案；资源可用时返回 `undefined`。
  */
+function canPreviewMentionAsset(
+  asset:
+    | (Pick<Asset, 'id' | 'name' | 'mediaType'> &
+        Partial<Pick<Asset, 'contentUrl' | 'mimeType' | 'status'>>)
+    | undefined,
+): boolean {
+  if (!asset) return false;
+  if (asset.status === 'archived') return false;
+  return Boolean(asset.contentUrl) || asset.status === 'ready';
+}
+
 function getMentionUnavailableReason(
   mention: PromptMention,
   asset: Asset | undefined,

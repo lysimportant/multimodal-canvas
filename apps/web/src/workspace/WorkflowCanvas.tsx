@@ -37,6 +37,7 @@ import { imageEditSourceOf, portRoles } from '@multimodal-canvas/domain';
 import type { CanvasEdgeStyle, CanvasTheme } from '../state/workspace-preferences';
 import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
 import { getNewNodeDimensions } from '../canvas-utils';
+import { collectConnectedPromptAssets } from './connected-prompt-assets';
 import type { NodeRunTarget } from './fork-generate-node';
 import {
   NodeResizeContext,
@@ -643,24 +644,7 @@ export function WorkflowCanvas({
           busy={busy}
           canvasAreaRef={canvasAreaRef}
           assets={assets}
-          connectedAssets={edges
-            .filter((edge) => edge.target === quickEditorNode.id)
-            .flatMap((edge) => {
-              const source = nodes.find((node) => node.id === edge.source);
-              if (!source) return [];
-              const assetId = source.data.resultAsset?.assetId ?? source.data.assetId;
-              if (!assetId) return [];
-              const catalog = assets.find((asset) => asset.id === assetId);
-              return [
-                {
-                  id: assetId,
-                  name: catalog?.name ?? source.data.label,
-                  mediaType: source.data.mediaType,
-                  contentUrl: catalog?.contentUrl ?? source.data.contentUrl ?? '',
-                  mimeType: catalog?.mimeType ?? source.data.mimeType ?? '',
-                },
-              ];
-            })}
+          connectedAssets={collectConnectedPromptAssets(quickEditorNode.id, nodes, edges, assets)}
           onPromptChange={
             onPromptChange ? (value) => onPromptChange(value, quickEditorNode.id) : undefined
           }
