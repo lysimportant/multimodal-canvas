@@ -1317,6 +1317,14 @@ describe('画布编辑器交互', () => {
       data: originalSource.data,
     });
     expect(await screen.findByRole('textbox', { name: '图片修改要求' })).toHaveValue('');
+    const sourceCard = screen.getByRole('group', { name: '来源图（只读）' });
+    expect(sourceCard).toHaveTextContent('reference.png');
+    await waitFor(() => {
+      expect(within(sourceCard).getByRole('img')).toHaveAttribute(
+        'src',
+        expect.stringContaining('access_token=synthetic-unit'),
+      );
+    });
   });
 
   it('图片修改节点与来源边可以整体撤销和重做', async () => {

@@ -22,7 +22,12 @@ import { renderPromptDocument } from '@multimodal-canvas/domain';
 import { Dialog, DialogClose, DialogContent, DialogTitle } from '@multimodal-canvas/ui';
 import type { AssetFlowNode } from '../canvas-utils';
 import { TextPromptEditor } from '../TextPromptEditor';
+import { AssetPreview } from './AssetPreview';
 import { canForkNewNode, canRunSameNode, nodeHasPrompt } from './fork-generate-node';
+import {
+  imageEditSourcePreviewAsset,
+  type ImageEditSourcePreview,
+} from './image-edit-source-preview';
 import { CompactSelect } from './CompactSelect';
 import { useFloatingParameterMenu } from './use-floating-parameter-menu';
 import { isImeKeyboardEvent } from '../ime';
@@ -103,22 +108,7 @@ export type NodeQuickEditorProps = {
 };
 
 /** 图片编辑节点上只读展示的来源图身份。 */
-export type ImageEditSourcePreview = {
-  /** 冻结的来源资产 ID。 */
-  assetId: string;
-  /** 来源画布节点 ID，用于说明这张图来自哪个节点。 */
-  sourceNodeId: string;
-  /** 来源节点或资源的显示名。 */
-  name: string;
-  /** 只读缩略图地址；来源不可访问时缺省。 */
-  contentUrl?: string;
-  /** 来源媒体 MIME 类型。 */
-  mimeType?: string;
-  /** 创建编辑节点时已知的资产版本，仅作固定版本标识展示。 */
-  version?: number;
-  /** 来源资产已不可读取或与节点记录不一致，提交前必须阻止运行。 */
-  versionUnavailable?: boolean;
-};
+export type { ImageEditSourcePreview } from './image-edit-source-preview';
 
 /** 模型声明的选项及其可见说明，保留供应商给出的值和顺序。 */
 type MediaOption = {
@@ -392,14 +382,19 @@ export function NodeQuickEditor({
     </label>
   );
 
-  /** 来源图只读展示：带固定版本标识，且不提供任何编辑来源内容的入口。 */
+  /** 来源图只读展示：走 AssetPreview 签名，不把未鉴权内容地址塞进 img。 */
+  const sourcePreviewAsset = imageEditSource
+    ? imageEditSourcePreviewAsset(imageEditSource)
+    : undefined;
   const imageEditSourcePreview = imageEditSource ? (
     <div className="node-quick-editor-image-edit-source" role="group" aria-label="来源图（只读）">
-      {imageEditSource.contentUrl ? (
-        <img
+      {sourcePreviewAsset ? (
+        <AssetPreview
+          asset={sourcePreviewAsset}
+          mode="compact"
+          interactive={false}
+          mediaClickPreviewEnabled={false}
           className="node-quick-editor-image-edit-thumb"
-          src={imageEditSource.contentUrl}
-          alt={`来源图：${imageEditSource.name}`}
         />
       ) : (
         <span

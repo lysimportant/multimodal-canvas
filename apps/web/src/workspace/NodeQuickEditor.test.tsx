@@ -13,6 +13,7 @@ import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { PromptDocument } from '@multimodal-canvas/domain';
+import { clearAuthSession, persistAuthSession } from '../auth-client';
 import type { AssetFlowNode } from '../canvas-utils';
 import {
   applyNodeGenerationDefaults,
@@ -149,7 +150,11 @@ const imageMention: PromptMentionBlock = {
   mediaType: 'image',
 };
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  clearAuthSession();
+  vi.unstubAllGlobals();
+});
 
 describe('NodeQuickEditor', () => {
   it('点击参数按钮打开面板，点选清晰度后外点关闭', async () => {
@@ -1459,6 +1464,51 @@ describe('NodeQuickEditor', () => {
       'title',
       '请先填写提示词',
     );
+  });
+
+  it('来源图预览走签名地址，不把未鉴权内容塞进 img', async () => {
+    persistAuthSession({
+      accessToken: 'synthetic-editor-test',
+      tokenType: 'Bearer',
+      expiresIn: 3600,
+      expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+      user: {
+        id: 'editor-user',
+        email: 'editor@example.test',
+        role: 'user',
+        createdAt: '2026-01-01',
+      },
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        Response.json({ url: '/v1/assets/asset_source/content?access_token=signed' }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          imageEditSource: {
+            assetId: 'asset_source',
+            sourceNodeId: 'node_parent',
+            name: '原图',
+            contentUrl: '/v1/assets/asset_source/content',
+            mimeType: 'image/png',
+            version: 1,
+          },
+        })}
+      />,
+    );
+    const card = screen.getByRole('group', { name: '来源图（只读）' });
+    expect(card).toHaveTextContent('原图');
+    expect(card).toHaveTextContent('来源图固定版本：v1');
+    await waitFor(() => {
+      expect(within(card).getByRole('img')).toHaveAttribute(
+        'src',
+        expect.stringContaining('access_token=signed'),
+      );
+    });
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/access-url'))).toBe(true);
   });
 
   it('来源图片节点同时显示生成和新节点', () => {

@@ -77,13 +77,29 @@
   padding: 8px 10px;
 }
 
-.node-quick-editor-image-edit-source .node-quick-editor-image-edit-thumb {
+.node-quick-editor-image-edit-source .node-quick-editor-image-edit-thumb,
+.node-quick-editor-image-edit-source
+  .node-quick-editor-image-edit-thumb.artifact-preview-media-shell {
+  align-items: center;
   border-radius: 8px;
-  display: block;
+  display: flex;
   flex: 0 0 auto;
   height: 44px;
-  object-fit: cover;
+  justify-content: center;
+  overflow: hidden;
   width: 44px;
+}
+
+.node-quick-editor-image-edit-source .node-quick-editor-image-edit-thumb .artifact-preview-media,
+.node-quick-editor-image-edit-source .node-quick-editor-image-edit-thumb img {
+  height: 100%;
+  object-fit: cover;
+  width: 100%;
+}
+
+.node-quick-editor-image-edit-source .node-quick-editor-image-edit-thumb .artifact-preview-loading {
+  font-size: 0;
+  padding: 0;
 }
 
 .node-quick-editor-image-edit-source .node-quick-editor-image-edit-thumb.is-missing {

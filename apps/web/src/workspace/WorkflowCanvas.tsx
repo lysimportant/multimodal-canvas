@@ -33,11 +33,12 @@ import type {
   VideoCompletionAction,
   VideoMode,
 } from '@multimodal-canvas/domain';
-import { imageEditSourceOf, portRoles } from '@multimodal-canvas/domain';
+import { portRoles } from '@multimodal-canvas/domain';
 import type { CanvasEdgeStyle, CanvasTheme } from '../state/workspace-preferences';
 import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
 import { getNewNodeDimensions } from '../canvas-utils';
 import { collectConnectedPromptAssets } from './connected-prompt-assets';
+import { resolveImageEditSourcePreview } from './image-edit-source-preview';
 import type { NodeRunTarget } from './fork-generate-node';
 import {
   NodeResizeContext,
@@ -65,7 +66,6 @@ import {
 import { VideoInputRolePicker, type VideoInputRolePickerTarget } from './VideoInputRolePicker';
 import {
   NodeQuickEditor,
-  type ImageEditSourcePreview,
   type InferenceStrength,
   type NodeQuickEditorProps,
 } from './NodeQuickEditor';
@@ -751,52 +751,6 @@ export function WorkflowCanvas({
       )}
     </section>
   );
-}
-
-/**
- * 解析图片编辑节点的只读来源图预览。
- *
- * 只读来源节点当前的回显内容，不修改来源节点；节点上保存的冻结版本来自创建
- * 编辑节点时的来源资产版本，编辑器中只作展示与提交前校验。
- *
- * @param node 当前打开的快速编辑器节点。
- * @param nodes 画布全部节点。
- * @param assets 当前项目可访问资源，用于补齐资源名和最新版本。
- * @returns 命中图片编辑语义时的来源描述；普通生成节点返回 undefined。
- */
-function resolveImageEditSourcePreview(
-  node: AssetFlowNode,
-  nodes: AssetFlowNode[],
-  assets: readonly Asset[],
-): ImageEditSourcePreview | undefined {
-  const source = imageEditSourceOf(node.data);
-  if (!source) return undefined;
-  const sourceNode = nodes.find((candidate) => candidate.id === source.sourceNodeId);
-  const catalogAsset = assets.find((asset) => asset.id === source.assetId);
-  const contentUrl =
-    sourceNode?.data.assetId === source.assetId
-      ? (sourceNode.data.contentUrl ?? catalogAsset?.contentUrl)
-      : catalogAsset?.contentUrl;
-  const resultAsset =
-    sourceNode?.data.resultAsset?.assetId === source.assetId
-      ? sourceNode.data.resultAsset
-      : undefined;
-  const version = source.version ?? resultAsset?.version ?? catalogAsset?.latestVersion;
-  const resolvedContentUrl = contentUrl ?? resultAsset?.contentUrl;
-  const stillMatchesSource = Boolean(
-    sourceNode &&
-    (sourceNode.data.assetId === source.assetId ||
-      sourceNode.data.resultAsset?.assetId === source.assetId),
-  );
-  return {
-    assetId: source.assetId,
-    sourceNodeId: source.sourceNodeId,
-    name: sourceNode?.data.label ?? catalogAsset?.name ?? source.assetId,
-    ...(resolvedContentUrl ? { contentUrl: resolvedContentUrl } : {}),
-    mimeType: sourceNode?.data.mimeType ?? catalogAsset?.mimeType ?? '',
-    ...(version ? { version } : {}),
-    versionUnavailable: !stillMatchesSource && !resultAsset,
-  };
 }
 
 /** 快速编辑器 portal 所需的节点与画布引用。 */
