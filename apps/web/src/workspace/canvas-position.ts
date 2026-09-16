@@ -34,7 +34,7 @@ export function getCenteredCanvasNodePosition(
 }
 
 /** 新节点与已有节点之间保留的最小间距，单位为画布像素。 */
-export const NEW_NODE_PLACEMENT_GAP = 16;
+export const NEW_NODE_PLACEMENT_GAP = 22;
 /**
  * 每一行向右尝试的最大列数。
  *
