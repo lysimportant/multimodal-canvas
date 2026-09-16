@@ -85,11 +85,11 @@ import {
   appendGeneratedContentToPrompt,
   canForkNewNode,
   createUniqueForkLabel,
-  forkNeedsSourcePrompt,
   findReadyFinalFrameImageNode,
   freezeImageEditSource,
   inheritedGenerateData,
   nodeHasPrompt,
+  type NodeRunPromptOverride,
   type NodeRunTarget,
 } from './workspace/fork-generate-node';
 import { fetchNodeEchoText } from './workspace/node-echo-text';
@@ -2264,8 +2264,18 @@ function WorkspaceApp({
     [fetchRun],
   );
 
+  /**
+   * 提交节点运行。`sameNode` 原地生成；`newNode` 建子节点并把当前提示词只放进请求体。
+   * @param node 被点击的节点。
+   * @param target 写入目标。
+   * @param promptOverride 仅用于本次 POST 的提示词，不写回节点 data。
+   */
   const runNode = useCallback(
-    async (node: AssetFlowNode, target: NodeRunTarget = 'sameNode') => {
+    async (
+      node: AssetFlowNode,
+      target: NodeRunTarget = 'sameNode',
+      promptOverride?: NodeRunPromptOverride,
+    ) => {
       if (target === 'newNode') {
         const source = nodesRef.current.find((candidate) => candidate.id === node.id) ?? node;
         if (nodeContentLocksRef.current.has(source.id) || nodeRunLocksRef.current.has(source.id)) {
@@ -2280,7 +2290,7 @@ function WorkspaceApp({
           setNotice({ kind: 'error', message: '当前节点还没有回显，无法创建新节点' });
           return;
         }
-        if (forkNeedsSourcePrompt(source) && !nodeHasPrompt(source.data)) {
+        if (!nodeHasPrompt(source.data)) {
           setNotice({ kind: 'error', message: '请先填写提示词' });
           return;
         }
@@ -2291,15 +2301,16 @@ function WorkspaceApp({
 
         nodeRunLocksRef.current.add(source.id);
         try {
-          let promptOverride: Partial<AssetFlowNode['data']> = {};
+          let runPromptOverride: NodeRunPromptOverride = {
+            ...(source.data.prompt !== undefined ? { prompt: source.data.prompt } : {}),
+            ...(source.data.promptDocument
+              ? { promptDocument: structuredClone(source.data.promptDocument) }
+              : {}),
+          };
           if (source.data.mediaType === 'text') {
             try {
               const echoText = await fetchNodeEchoText(source);
-              const appended = appendGeneratedContentToPrompt(source.data, echoText);
-              promptOverride = {
-                prompt: appended.prompt,
-                promptDocument: appended.promptDocument,
-              };
+              runPromptOverride = appendGeneratedContentToPrompt(source.data, echoText);
             } catch (error) {
               setNotice({
                 kind: 'error',
@@ -2315,7 +2326,6 @@ function WorkspaceApp({
           const preferredModelNotice = nodePreferenceNoticeRef.current;
           const extraData: Partial<AssetFlowNode['data']> = {
             ...inheritedGenerateData(source.data),
-            ...promptOverride,
             label: createUniqueForkLabel(source.data.label, nodesRef.current),
           };
           const extraEdges: FlowEdge[] = [];
@@ -2420,15 +2430,12 @@ function WorkspaceApp({
 
           nodePreferenceNoticeRef.current = preferredModelNotice;
           commitForkGraph(child, extraEdges);
-          const shouldRunNow = nodeHasPrompt(child.data);
           setNotice(
             preferredModelNotice
               ? { kind: 'error', message: `已创建新节点；${preferredModelNotice}` }
-              : shouldRunNow
-                ? { kind: 'success', message: `已创建${child.data.label}并开始生成` }
-                : { kind: 'success', message: `已创建${child.data.label}，请填写提示词` },
+              : { kind: 'success', message: `已创建${child.data.label}并开始生成` },
           );
-          if (shouldRunNow) await runNode(child, 'sameNode');
+          await runNode(child, 'sameNode', runPromptOverride);
         } finally {
           nodeRunLocksRef.current.delete(source.id);
         }
@@ -2461,9 +2468,12 @@ function WorkspaceApp({
         // canvas snapshot so an immediate click never sends stale parameters.
         nodeSnapshot =
           nodesRef.current.find((candidate) => candidate.id === node.id) ?? nodeSnapshot;
-        const effectivePrompt = nodeSnapshot.data.promptDocument
-          ? renderPromptDocument(nodeSnapshot.data.promptDocument).trim()
-          : nodeSnapshot.data.prompt?.trim();
+        const promptDocument = promptOverride?.promptDocument ?? nodeSnapshot.data.promptDocument;
+        const effectivePrompt = (
+          promptDocument
+            ? renderPromptDocument(promptDocument)
+            : (promptOverride?.prompt ?? nodeSnapshot.data.prompt)
+        )?.trim();
         const effectiveInferenceStrength =
           nodeSnapshot.data.inferenceStrength ??
           (nodeSnapshot.data.mediaType === 'text' ? 'high' : undefined);
@@ -2483,9 +2493,7 @@ function WorkspaceApp({
                 ? { inferenceStrength: effectiveInferenceStrength }
                 : {}),
             },
-            ...(nodeSnapshot.data.promptDocument
-              ? { promptDocument: nodeSnapshot.data.promptDocument }
-              : {}),
+            ...(promptDocument ? { promptDocument } : {}),
           }),
         });
         const result = (await response.json().catch(() => ({}))) as {

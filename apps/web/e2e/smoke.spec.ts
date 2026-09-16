@@ -2727,6 +2727,7 @@ async function installImageEditFixture(page: Page) {
           label: '原始图片',
           mediaType: 'image',
           mode: 'generate',
+          prompt: '换成夜景',
           assetId: asset.id,
           contentUrl: asset.contentUrl,
           mimeType,
@@ -2808,8 +2809,6 @@ for (const viewport of [
     const editor = page.getByRole('region', { name: '修改 原始图片图片修改设置' });
     await expect(editor).toBeVisible();
     await expect(editor.getByRole('textbox', { name: '图片修改要求' })).toHaveValue('');
-    await editor.getByRole('textbox', { name: '图片修改要求' }).fill('换成夜景');
-    await editor.getByRole('button', { name: '生成' }).click();
     const readOnlySource = editor.getByRole('group', { name: '来源图（只读）' });
     await expect(readOnlySource).toContainText('原始图片');
     await expect(readOnlySource).toContainText('来源图固定版本：v1');

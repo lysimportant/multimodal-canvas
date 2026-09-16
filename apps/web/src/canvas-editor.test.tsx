@@ -384,6 +384,7 @@ let projectRuns: RunRecord[];
 let nodeRunOverrides: Map<string, { status: RunRecord['status']; error?: string }>;
 let defaultNodeRunOverride: { status: RunRecord['status']; error?: string } | undefined;
 let nodeRunRequestCounts: Map<string, number>;
+let nodeRunRequestBodies: Map<string, Array<Record<string, unknown>>>;
 let resultContent = new Map<string, { body: string; contentType: string }>();
 let fetchMock: ReturnType<typeof vi.fn>;
 let clipboardMock: {
@@ -473,6 +474,8 @@ function installApiMock() {
       const nodeId = decodeURIComponent(nodeRunMatch[1]);
       const override = nodeRunOverrides.get(nodeId) ?? defaultNodeRunOverride;
       nodeRunRequestCounts.set(nodeId, (nodeRunRequestCounts.get(nodeId) ?? 0) + 1);
+      const payload = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      nodeRunRequestBodies.set(nodeId, [...(nodeRunRequestBodies.get(nodeId) ?? []), payload]);
       const status = override?.status ?? 'succeeded';
       const contentUrl = `/v1/assets/asset-result-${nodeId}/content`;
       resultContent.set(contentUrl, {
@@ -643,6 +646,19 @@ async function fillSelectedPrompt(
   return editor;
 }
 
+/** 读取某节点最近一次 /runs POST 体。 */
+function lastNodeRunBody(nodeId: string): Record<string, unknown> {
+  const bodies = nodeRunRequestBodies.get(nodeId) ?? [];
+  expect(bodies.length).toBeGreaterThan(0);
+  return bodies.at(-1)!;
+}
+
+/** 读取运行请求里的提示词。 */
+function runPromptOf(nodeId: string): string {
+  const parameters = lastNodeRunBody(nodeId).parameters as { prompt?: string } | undefined;
+  return parameters?.prompt ?? '';
+}
+
 function handleFor(node: HTMLElement, handleId: string) {
   const handle = node.querySelector(`[data-handleid="${handleId}"]`);
   if (!(handle instanceof HTMLElement)) throw new Error(`Missing handle ${handleId}`);
@@ -673,6 +689,7 @@ describe('画布编辑器交互', () => {
     nodeRunOverrides = new Map();
     defaultNodeRunOverride = undefined;
     nodeRunRequestCounts = new Map();
+    nodeRunRequestBodies = new Map();
     resultContent = new Map();
     vi.stubGlobal('ResizeObserver', ResizeObserverStub);
     previousClipboardDescriptor = Object.getOwnPropertyDescriptor(window.navigator, 'clipboard');
@@ -1231,7 +1248,7 @@ describe('画布编辑器交互', () => {
     await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
     const source = findNodeByLabel('reference.png')!;
     expect(within(source).getByRole('button', { name: '修改图片：reference.png' })).toBeVisible();
-    expect(within(source).getByRole('button', { name: '修改图片：reference.png' })).toBeEnabled();
+    expect(within(source).getByRole('button', { name: '修改图片：reference.png' })).toBeDisabled();
     await user.click(source);
     const sourceEditor = await screen.findByRole('region', { name: /生成设置$/ });
     expect(within(sourceEditor).getByRole('button', { name: '生成' })).toBeVisible();
@@ -1241,21 +1258,18 @@ describe('画布编辑器交互', () => {
     expect(within(textNode).queryByRole('button', { name: /^修改图片/ })).toBeNull();
   });
 
-  it('无提示词时修改图片会建空节点，但不发请求', async () => {
+  it('无提示词时修改图片不建节点也不发请求', async () => {
     const { user } = await renderCanvas();
     await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
     const source = findNodeByLabel('reference.png')!;
     const button = within(source).getByRole('button', { name: '修改图片：reference.png' });
-    expect(button).toBeEnabled();
+    expect(button).toBeDisabled();
     await user.click(button);
-    await waitFor(() => expect(flowNodes()).toHaveLength(2));
-    const created = canvas.nodes.find((node) => node.data.imageEditSource);
-    expect(created?.data.prompt).toBeUndefined();
-    expect(created?.data.promptDocument).toBeUndefined();
+    expect(flowNodes()).toHaveLength(1);
     expect(nodeRunRequestCounts.size).toBe(0);
   });
 
-  it('修改图片不复制提示词、不立刻运行，结果只写入新节点', async () => {
+  it('修改图片不复制提示词，但立刻用父提示词发请求，结果只写入新节点', async () => {
     const { user } = await renderCanvas();
 
     await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
@@ -1285,7 +1299,8 @@ describe('画布编辑器交互', () => {
     expect(edge).toHaveAttribute('data-target', createdId);
     expect(edge).toHaveAttribute('data-target-handle', 'input:imageEdit');
 
-    expect(nodeRunRequestCounts.size).toBe(0);
+    await waitFor(() => expect(nodeRunRequestCounts.get(createdId)).toBe(1));
+    expect(runPromptOf(createdId)).toContain('换成夜景');
     await waitFor(() => {
       const saved = canvas.nodes.find((node) => node.id === createdId);
       expect(saved?.data.imageEditSource).toMatchObject({
@@ -1294,6 +1309,8 @@ describe('画布编辑器交互', () => {
         sourceKind: 'asset',
       });
       expect(saved?.data.prompt).toBeUndefined();
+      expect(saved?.data.promptDocument).toBeUndefined();
+      expect(saved?.data.resourceRefs).toBeUndefined();
     });
     expect(canvas.nodes.find((node) => node.id === sourceId)).toMatchObject({
       position: originalSource.position,
@@ -1307,6 +1324,8 @@ describe('画布编辑器交互', () => {
 
     await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
     const source = findNodeByLabel('reference.png')!;
+    await user.click(source);
+    await fillSelectedPrompt(user, '换成夜景');
     await user.click(within(source).getByRole('button', { name: '修改图片：reference.png' }));
     await waitFor(() => expect(flowNodes()).toHaveLength(2));
     expect(screen.getAllByTestId('flow-edge')).toHaveLength(1);
@@ -1372,6 +1391,8 @@ describe('画布编辑器交互', () => {
     const editButton = within(source).getByRole('button', { name: '修改图片：reference.png' });
     const editLabel = `修改 ${editButton.getAttribute('aria-label')!.replace(/^修改图片：/, '')}`;
     defaultNodeRunOverride = { status: 'failed', error: '供应商拒绝：内容不合规' };
+    await user.click(source);
+    await fillSelectedPrompt(user, '第一次尝试');
     const sourceBefore = await waitFor(() => {
       const persisted = canvas.nodes.find((node) => node.id === sourceId);
       expect(persisted).toBeDefined();
@@ -1386,18 +1407,17 @@ describe('画布编辑器交互', () => {
       return node!;
     });
     const editNodeId = editNodeElement.getAttribute('data-id')!;
-    const editor = screen.getByRole('region', { name: `${editLabel}图片修改设置` });
-    const prompt = within(editor).getByRole('textbox', { name: '图片修改要求' });
-    expect(prompt).toHaveValue('');
-    await user.type(prompt, '第一次尝试');
-    await user.click(within(editor).getByRole('button', { name: '生成' }));
     await waitFor(() => expect(nodeRunRequestCounts.get(editNodeId)).toBe(1));
+    expect(runPromptOf(editNodeId)).toContain('第一次尝试');
     await waitFor(() => {
       const node = findNodeByLabel(editLabel);
       expect(within(node!).getByRole('alert')).toHaveTextContent('供应商拒绝：内容不合规');
     });
-    expect(prompt).toHaveValue('第一次尝试');
-    expect(within(editor).getByRole('button', { name: '生成' })).toBeEnabled();
+
+    const editor = screen.getByRole('region', { name: `${editLabel}图片修改设置` });
+    const prompt = within(editor).getByRole('textbox', { name: '图片修改要求' });
+    expect(prompt).toHaveValue('');
+    expect(within(editor).getByRole('button', { name: '生成' })).toBeDisabled();
     expect(screen.getAllByTestId('flow-edge')).toHaveLength(1);
     expect(canvas.nodes.find((node) => node.id === sourceId)).toMatchObject({
       position: sourceBefore.position,
@@ -1424,12 +1444,12 @@ describe('画布编辑器交互', () => {
     await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
     await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
     const source = findNodeByLabel('reference.png')!;
+    await user.click(source);
+    await fillSelectedPrompt(user, '换成夜景');
     await user.click(within(source).getByRole('button', { name: '修改图片：reference.png' }));
     const editor = await screen.findByRole('region', { name: /图片修改设置$/ });
-    const prompt = within(editor).getByRole('textbox', { name: '图片修改要求' });
-    expect(prompt).toHaveValue('');
-    await user.type(prompt, '换成夜景');
-    expect(nodeRunRequestCounts.size).toBe(0);
+    expect(within(editor).getByRole('textbox', { name: '图片修改要求' })).toHaveValue('');
+    await waitFor(() => expect(nodeRunRequestCounts.size).toBeGreaterThan(0));
 
     await user.click(screen.getByRole('button', { name: '画布空白' }));
     await waitFor(() =>
@@ -1440,7 +1460,7 @@ describe('画布编辑器交互', () => {
 
     await user.click(findNodeByLabel('修改 reference.png')!);
     const reopened = await screen.findByRole('region', { name: /图片修改设置$/ });
-    expect(within(reopened).getByRole('textbox', { name: '图片修改要求' })).toHaveValue('换成夜景');
+    expect(within(reopened).getByRole('textbox', { name: '图片修改要求' })).toHaveValue('');
     const reopenedNode = await waitFor(() => {
       const node = canvas.nodes.find((entry) => entry.data.imageEditSource);
       expect(node).toBeDefined();
@@ -1459,7 +1479,7 @@ describe('画布编辑器交互', () => {
     await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
     const source = findNodeByLabel('reference.png')!;
     await user.click(source);
-    const editor = await screen.findByRole('region', { name: /生成设置$/ });
+    const editor = await fillSelectedPrompt(user, '换成夜景');
     expect(within(editor).getByRole('button', { name: '新节点' })).toBeEnabled();
 
     await user.click(within(editor).getByRole('combobox', { name: /^模型：/ }));
@@ -1506,7 +1526,7 @@ describe('画布编辑器交互', () => {
     expect(canvas.nodes.find((item) => item.id === nodeId)?.data.imageEditSource).toBeUndefined();
   });
 
-  it('文字新节点把回显正文拼进子节点提示词，父节点保持不变', async () => {
+  it('文字新节点不复制提示词，请求里带上原提示词和回显正文', async () => {
     const { user } = await renderCanvas();
     await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
     const source = findNodeByLabel('文字生成节点')!;
@@ -1527,9 +1547,13 @@ describe('画布编辑器交互', () => {
     await user.click(within(editor).getByRole('button', { name: '新节点' }));
     await waitFor(() => expect(flowNodes()).toHaveLength(2));
     const child = canvas.nodes.find((node) => node.id !== sourceId);
-    expect(child?.data.prompt).toContain('写一篇介绍');
-    expect(child?.data.prompt).toContain('【已生成内容】');
-    expect(child?.data.prompt).toContain('这是已生成的正文。');
+    expect(child).toBeDefined();
+    await waitFor(() => expect(nodeRunRequestCounts.get(child!.id)).toBe(1));
+    expect(child?.data.prompt).toBeUndefined();
+    expect(child?.data.promptDocument).toBeUndefined();
+    expect(runPromptOf(child!.id)).toContain('写一篇介绍');
+    expect(runPromptOf(child!.id)).toContain('【已生成内容】');
+    expect(runPromptOf(child!.id)).toContain('这是已生成的正文。');
     expect(canvas.nodes.find((node) => node.id === sourceId)?.data.prompt).toBe(
       parentBefore.data.prompt,
     );

@@ -90,7 +90,7 @@ test.describe('图片编辑能力可见性（只读）', () => {
     const editor = page.getByRole('region', { name: /生成设置$/ });
     await expect(editor).toBeVisible({ timeout: 30_000 });
     const newNodeButton = editor.getByRole('button', { name: '新节点' });
-    await expect(newNodeButton).toBeEnabled();
+    await expect(newNodeButton).toBeDisabled();
 
     const modelTrigger = editor.getByRole('combobox', { name: /^模型：/ });
     await modelTrigger.click();
@@ -102,6 +102,8 @@ test.describe('图片编辑能力可见性（只读）', () => {
       .click();
     await expect(modelTrigger).toHaveAttribute('aria-label', `模型：${modelAlias}`);
 
+    await editor.getByRole('textbox', { name: '提示词' }).fill('把背景换成夜晚的城市灯光');
+    await expect(newNodeButton).toBeEnabled({ timeout: 15_000 });
     await expect(newNodeButton).toHaveAttribute('title', '把修改结果写到新节点');
 
     // 只读到按钮可用为止：不点击，因此不产生任何上游请求。

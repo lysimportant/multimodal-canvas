@@ -16,6 +16,14 @@ import type { AssetFlowNode } from '../canvas-utils';
 /** 运行写入目标：原地覆盖或修改到新建子节点。 */
 export type NodeRunTarget = 'sameNode' | 'newNode';
 
+/** 仅用于本次运行 POST 的提示词，不写入节点 data。 */
+export type NodeRunPromptOverride = {
+  /** 纯文本提示词；没有文档时使用。 */
+  prompt?: string;
+  /** 结构化提示词文档，存在时优先于纯文本。 */
+  promptDocument?: PromptDocument;
+};
+
 /** 文字修改路径里插入回显正文的可见分隔标记。 */
 export const GENERATED_CONTENT_MARKER = '【已生成内容】';
 
@@ -57,16 +65,7 @@ export function canForkNewNode(node: AssetFlowNode): boolean {
 }
 
 /**
- * 判断分叉是否必须先有父节点提示词。
- * 文字要把回显拼进新提示词；图片/音频/视频的提示词由用户在子节点填写。
- * @param node 被点击的节点。
- */
-export function forkNeedsSourcePrompt(node: AssetFlowNode): boolean {
-  return node.data.mediaType === 'text';
-}
-
-/**
- * 子节点从父节点继承的生成配置，不含产物字段和提示词。
+ * 子节点从父节点继承的生成配置，不含产物字段、提示词和资源引用。
  * @param data 父节点 data。
  * @returns 可写入 createGenerateNode 的覆盖字段。
  */

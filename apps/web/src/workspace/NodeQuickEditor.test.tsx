@@ -1437,6 +1437,30 @@ describe('NodeQuickEditor', () => {
     expect(screen.getByRole('button', { name: '新节点' })).toBeVisible();
   });
 
+  it('无提示词时新节点禁用', () => {
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          onRunNewNode: vi.fn(),
+          node: {
+            ...imageNode,
+            data: {
+              ...imageNode.data,
+              prompt: undefined,
+              resultAsset: { assetId: 'asset_result' },
+              modelAlias: 'image-model',
+            },
+          },
+        })}
+      />,
+    );
+    expect(screen.getByRole('button', { name: '新节点' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '新节点' })).toHaveAttribute(
+      'title',
+      '请先填写提示词',
+    );
+  });
+
   it('来源图片节点同时显示生成和新节点', () => {
     render(
       <NodeQuickEditor
