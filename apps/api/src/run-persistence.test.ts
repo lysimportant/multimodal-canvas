@@ -48,6 +48,77 @@ function createPersistence() {
 }
 
 describe('PrismaRunPersistence', () => {
+  it('持久反推回读保留精确资源身份、长提示词和幂等键，不要求结果资产', async () => {
+    const { prisma, persistence } = createPersistence();
+    const createdAt = new Date('2026-09-17T00:00:00.000Z');
+    const projectId = '123e4567-e89b-12d3-a456-426614174010';
+    const result = {
+      provider: 'newapi',
+      summary: '分析完成',
+      targetNodeId: 'analysis',
+      mediaType: 'text' as const,
+      inputCount: 1,
+      reversePrompt: { summary: '资源摘要', prompt: '详细提示词。'.repeat(1000) },
+    };
+    await persistence.updateRun({ runId, status: 'succeeded', result });
+    expect(prisma.run.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ result }) }),
+    );
+    prisma.run.findUnique.mockResolvedValue({
+      id: runId,
+      projectId,
+      userId: null,
+      status: 'SUCCEEDED',
+      modelAlias: 'text-model',
+      result,
+      snapshot: {
+        projectId,
+        canvasRevision: 0,
+        targetNodeId: 'analysis',
+        modelAlias: 'text-model',
+        parameters: {},
+        submittedAt: createdAt.toISOString(),
+        nodes: [
+          {
+            id: 'analysis',
+            type: 'text',
+            position: { x: 0, y: 0 },
+            data: { label: '反推', mediaType: 'text', mode: 'generate' },
+          },
+        ],
+        edges: [],
+        inputs: [],
+        reversePrompt: { assetId: 'asset_source', assetVersion: 2, automatic: true },
+        promptMentions: [
+          {
+            mentionId: 'source',
+            assetId: 'asset_source',
+            assetVersion: 2,
+            mediaType: 'image',
+            label: '资源',
+            blockOrder: 0,
+          },
+        ],
+      },
+      attempt: 1,
+      retryOf: null,
+      idempotencyKey: 'reverse-prompt:auto:stable',
+      error: null,
+      createdAt,
+      updatedAt: createdAt,
+      providerJobs: [],
+    });
+    const restored = await persistence.getRun(runId);
+    expect(restored).toMatchObject({
+      id: runId,
+      status: 'succeeded',
+      idempotencyKey: 'reverse-prompt:auto:stable',
+      snapshot: { reversePrompt: { assetId: 'asset_source', assetVersion: 2, automatic: true } },
+      result,
+    });
+    expect(restored?.result?.asset).toBeUndefined();
+  });
+
   it('restores a run by durable provider job identity', async () => {
     const { prisma, persistence } = createPersistence();
     const projectId = '123e4567-e89b-12d3-a456-426614174010';

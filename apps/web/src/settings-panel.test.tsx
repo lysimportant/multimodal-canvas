@@ -450,7 +450,13 @@ describe('SettingsPanel', () => {
       within(dialog)
         .getAllByRole('tab')
         .map((tab) => tab.textContent),
-    ).toEqual(['总览', '节点默认', '连接与 Key', '画布外观']);
+    ).toEqual(['总览', '节点默认', '连接与 Key', '自动化', '画布外观']);
+
+    await user.click(within(dialog).getByRole('tab', { name: '自动化' }));
+    const toggle = within(dialog).getByRole('switch', { name: '自动反推提示词' });
+    expect(toggle).not.toBeChecked();
+    await user.click(toggle);
+    expect(useWorkspacePreferences.getState().autoReversePrompt).toBe(true);
 
     await user.click(within(dialog).getByRole('tab', { name: '总览' }));
     expect(within(dialog).getByRole('tabpanel', { name: '总览' })).toHaveTextContent('平台连接');

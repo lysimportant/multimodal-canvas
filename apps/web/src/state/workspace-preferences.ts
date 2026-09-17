@@ -15,6 +15,8 @@ export const CANVAS_EDGE_PATH_STYLE_KEY = 'multimodal-canvas:edge-path-style';
 export const CANVAS_EDGE_EFFECT_KEY = 'multimodal-canvas:edge-effect';
 export const RESOURCE_PANEL_COLLAPSED_KEY = 'multimodal-canvas:resource-panel-collapsed';
 export const IMAGE_EDIT_SOURCE_CARD_KEY = 'multimodal-canvas:image-edit-source-card';
+/** 自动反推为显式开启的浏览器偏好，旧版本没有该键时关闭。 */
+export const AUTO_REVERSE_PROMPT_KEY = 'multimodal-canvas:auto-reverse-prompt';
 
 const PERSISTENCE_KEY = 'multimodal-canvas:workspace-preferences';
 
@@ -30,6 +32,8 @@ type PreferenceValues = {
   isResourcePanelCollapsed: boolean;
   /** 图片修改节点是否显示只读来源图卡片，默认显示。 */
   showImageEditSourceCard: boolean;
+  /** 资源成功回显后是否自动反推提示词；默认关闭。 */
+  autoReversePrompt: boolean;
 };
 
 type ValueUpdater<T> = T | ((current: T) => T);
@@ -41,6 +45,8 @@ export type WorkspacePreferencesState = PreferenceValues & {
   setCanvasEdgeEffect: (effect: CanvasEdgeEffect) => void;
   setResourcePanelCollapsed: (collapsed: ValueUpdater<boolean>) => void;
   setShowImageEditSourceCard: (visible: ValueUpdater<boolean>) => void;
+  /** 切换后持久化，不回溯提交当前画布的历史资源。 */
+  setAutoReversePrompt: (enabled: boolean) => void;
 };
 
 export const workspacePreferenceDefaults: PreferenceValues = {
@@ -50,6 +56,7 @@ export const workspacePreferenceDefaults: PreferenceValues = {
   canvasEdgeEffect: 'meteor',
   isResourcePanelCollapsed: false,
   showImageEditSourceCard: true,
+  autoReversePrompt: false,
 };
 
 const canvasBackgrounds: CanvasBackground[] = ['dots', 'lines', 'cross', 'blank'];
@@ -103,6 +110,7 @@ function parsePreferences(storage: Storage): PreferenceValues | null {
   const rawLegacyEdgeStyle = storage.getItem(CANVAS_EDGE_STYLE_KEY);
   const rawCollapsed = storage.getItem(RESOURCE_PANEL_COLLAPSED_KEY);
   const rawSourceCard = storage.getItem(IMAGE_EDIT_SOURCE_CARD_KEY);
+  const rawAutoReversePrompt = storage.getItem(AUTO_REVERSE_PROMPT_KEY);
   if (
     rawBackground === null &&
     rawTheme === null &&
@@ -110,7 +118,8 @@ function parsePreferences(storage: Storage): PreferenceValues | null {
     rawEffect === null &&
     rawLegacyEdgeStyle === null &&
     rawCollapsed === null &&
-    rawSourceCard === null
+    rawSourceCard === null &&
+    rawAutoReversePrompt === null
   )
     return null;
 
@@ -133,6 +142,7 @@ function parsePreferences(storage: Storage): PreferenceValues | null {
       : (migrated?.canvasEdgeEffect ?? workspacePreferenceDefaults.canvasEdgeEffect),
     isResourcePanelCollapsed: rawCollapsed === 'true',
     showImageEditSourceCard: rawSourceCard !== 'false',
+    autoReversePrompt: rawAutoReversePrompt === 'true',
   };
 }
 
@@ -156,6 +166,7 @@ const preferenceStorage: StateStorage = {
       storage.removeItem(CANVAS_EDGE_STYLE_KEY);
       storage.setItem(RESOURCE_PANEL_COLLAPSED_KEY, String(state.isResourcePanelCollapsed));
       storage.setItem(IMAGE_EDIT_SOURCE_CARD_KEY, String(state.showImageEditSourceCard));
+      storage.setItem(AUTO_REVERSE_PROMPT_KEY, String(state.autoReversePrompt));
     } catch {
       // Ignore malformed persistence writes; the in-memory preferences remain usable.
     }
@@ -169,6 +180,7 @@ const preferenceStorage: StateStorage = {
     storage?.removeItem(CANVAS_EDGE_STYLE_KEY);
     storage?.removeItem(RESOURCE_PANEL_COLLAPSED_KEY);
     storage?.removeItem(IMAGE_EDIT_SOURCE_CARD_KEY);
+    storage?.removeItem(AUTO_REVERSE_PROMPT_KEY);
   },
 };
 
@@ -190,6 +202,7 @@ export const useWorkspacePreferences = create<WorkspacePreferencesState>()(
           showImageEditSourceCard:
             typeof visible === 'function' ? visible(state.showImageEditSourceCard) : visible,
         })),
+      setAutoReversePrompt: (autoReversePrompt) => set({ autoReversePrompt }),
     }),
     {
       name: PERSISTENCE_KEY,
@@ -201,6 +214,7 @@ export const useWorkspacePreferences = create<WorkspacePreferencesState>()(
         canvasEdgeEffect,
         isResourcePanelCollapsed,
         showImageEditSourceCard,
+        autoReversePrompt,
       }) => ({
         canvasBackground,
         canvasTheme,
@@ -208,6 +222,7 @@ export const useWorkspacePreferences = create<WorkspacePreferencesState>()(
         canvasEdgeEffect,
         isResourcePanelCollapsed,
         showImageEditSourceCard,
+        autoReversePrompt,
       }),
     },
   ),

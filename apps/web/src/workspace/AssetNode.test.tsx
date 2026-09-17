@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest';
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -42,9 +42,11 @@ import {
   NodeDeleteContext,
   NodeEnabledContext,
   NodeLabelChangeContext,
+  NodePromptContext,
   NodeQuickEditorIdContext,
   NodeResizeStartContext,
   NodeRetryContext,
+  NodeSelectionContext,
 } from './AssetNode';
 
 function makeNode(overrides: Partial<AssetFlowNode['data']> = {}): AssetFlowNode {
@@ -113,10 +115,14 @@ describe('AssetNode result presentation', () => {
       },
     });
     const view = renderNode(base);
+    const toolbar = screen.getByRole('group', { name: '节点操作：文案生成' });
+    expect(within(toolbar).getByText('12.4 s')).toBeInTheDocument();
+    expect(within(toolbar).getByText('当前执行')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: '查看节点信息' }));
-    expect(screen.getByText('结果耗时')).toBeInTheDocument();
-    expect(screen.getByText('12.4 s')).toBeInTheDocument();
-    expect(screen.getByText('当前执行')).toBeInTheDocument();
+    const info = within(screen.getByRole('dialog', { name: '节点信息' }));
+    expect(info.getByText('结果耗时')).toBeInTheDocument();
+    expect(info.getByText('12.4 s')).toBeInTheDocument();
+    expect(info.getByText('当前执行')).toBeInTheDocument();
     view.rerender(
       <AssetNode
         {...({
@@ -128,7 +134,9 @@ describe('AssetNode result presentation', () => {
     );
     await userEvent.click(screen.getByRole('button', { name: '查看节点信息' }));
     expect(screen.queryByText('12.4 s')).not.toBeInTheDocument();
-    expect(screen.getByText('未记录')).toBeInTheDocument();
+    expect(
+      within(screen.getByRole('dialog', { name: '节点信息' })).getByText('未记录'),
+    ).toBeInTheDocument();
   });
 
   it('新生成失败仍展示旧结果，同时在信息面板保留失败原因和旧结果耗时', async () => {
@@ -158,19 +166,57 @@ describe('AssetNode result presentation', () => {
     expect(screen.getByLabelText('运行失败')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: '查看节点信息' }));
     expect(screen.getByRole('alert')).toHaveTextContent('供应商超时，未重发请求');
-    expect(screen.getByText('12.4 s')).toBeInTheDocument();
+    expect(
+      within(screen.getByRole('dialog', { name: '节点信息' })).getByText('12.4 s'),
+    ).toBeInTheDocument();
   });
 
-  it('未展开信息面板的运行节点不订阅执行时钟', () => {
+  it('未展示的运行节点不订阅执行时钟，悬浮后开始并在离开后释放', () => {
     const interval = vi.spyOn(window, 'setInterval');
-    renderNode(
+    const clearInterval = vi.spyOn(window, 'clearInterval');
+    const { container } = renderNode(
       makeNode({
         runStatus: 'running',
         nodeTiming: { nodeId: 'node_1', startedAt: new Date().toISOString() },
       }),
     );
     expect(interval).not.toHaveBeenCalled();
+    fireEvent.mouseEnter(container.querySelector('.flow-asset-node')!);
+    expect(interval).toHaveBeenCalledTimes(1);
+    fireEvent.mouseLeave(container.querySelector('.flow-asset-node')!);
+    expect(clearInterval).toHaveBeenCalledTimes(1);
     interval.mockRestore();
+    clearInterval.mockRestore();
+  });
+
+  it('悬浮卡片直接打开提示词，不打开输入编辑器，信息面板仍保留同一入口', async () => {
+    const openPrompt = vi.fn();
+    const selectNode = vi.fn();
+    const node = makeNode();
+    render(
+      <NodePromptContext.Provider value={openPrompt}>
+        <NodeSelectionContext.Provider value={selectNode}>
+          <AssetNode {...({ id: node.id, data: node.data } as NodeProps<AssetFlowNode>)} />
+        </NodeSelectionContext.Provider>
+      </NodePromptContext.Provider>,
+    );
+    const toolbar = screen.getByRole('group', { name: '节点操作：文案生成' });
+    await userEvent.click(
+      within(toolbar).getByRole('button', { name: '查看生成提示词：文案生成' }),
+    );
+    expect(openPrompt).toHaveBeenLastCalledWith(node.id);
+    expect(selectNode).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(within(toolbar).getByLabelText('节点生成耗时')).toHaveTextContent('未记录');
+
+    await userEvent.click(screen.getByRole('button', { name: '查看节点信息' }));
+    await userEvent.click(
+      within(screen.getByRole('dialog', { name: '节点信息' })).getByRole('button', {
+        name: '查看生成提示词：文案生成',
+      }),
+    );
+    expect(openPrompt).toHaveBeenCalledTimes(2);
+    expect(document.querySelectorAll(`#node-prompt-trigger-${node.id}`)).toHaveLength(1);
   });
 
   it.each([0.25, 0.5, 1, 2])('文本悬浮卡片抵消 %s 倍画布缩放', (zoom) => {

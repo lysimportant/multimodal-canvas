@@ -25,6 +25,7 @@ import {
   type KeyboardEvent,
   type MouseEvent as ReactMouseEvent,
 } from 'react';
+import { createPortal } from 'react-dom';
 
 import type {
   Asset,
@@ -45,6 +46,7 @@ import { Dialog, DialogClose, DialogContent, DialogTitle } from '@multimodal-can
 import { isImeKeyboardEvent, useImeDraft } from './ime';
 import { AssetPreview } from './workspace/AssetPreview';
 import { ASSET_DRAG_TYPE, formatBytes, mediaLabels } from './workspace/contracts';
+import './resource-mention-hover.css';
 
 /** 编辑器可接收的资源提及文档变更。 */
 export type ResourceMentionEditorProps = {
@@ -668,20 +670,37 @@ export function ResourceMentionEditor({
     ],
   );
 
-  /** 把悬浮预览卡片对齐到当前名字，而不是固定在第一个名字附近。 */
+  /** 按名字的屏幕坐标摆放预览，并在视口边缘翻转或收缩，避免被编辑器裁切。 */
   const positionHoverCard = useCallback((mentionId: string, token?: Element | null) => {
     const composer = composerRef.current;
     const mark =
-      token ?? composer?.querySelector(`.resource-mention-token[data-mention-id="${mentionId}"]`);
+      token ??
+      Array.from(composer?.querySelectorAll<HTMLElement>('.resource-mention-token') ?? []).find(
+        (element) => element.dataset.mentionId === mentionId,
+      );
     if (!composer || !(mark instanceof HTMLElement)) {
       setHoverCardStyle(null);
       return;
     }
-    const composerRect = composer.getBoundingClientRect();
     const tokenRect = mark.getBoundingClientRect();
+    const margin = 12;
+    const gap = 8;
+    const width = Math.min(280, Math.max(0, window.innerWidth - margin * 2));
+    const height = Math.min(210, Math.max(0, window.innerHeight - margin * 2));
+    const below = tokenRect.bottom + gap;
+    const top =
+      below + height <= window.innerHeight - margin ? below : tokenRect.top - height - gap;
     setHoverCardStyle({
-      left: Math.max(0, tokenRect.left - composerRect.left),
-      top: tokenRect.bottom - composerRect.top + 6,
+      left: Math.max(
+        margin,
+        Math.min(
+          tokenRect.left + tokenRect.width / 2 - width / 2,
+          window.innerWidth - width - margin,
+        ),
+      ),
+      top: Math.max(margin, Math.min(top, window.innerHeight - height - margin)),
+      width,
+      height,
     });
   }, []);
 
@@ -721,6 +740,16 @@ export function ResourceMentionEditor({
     setHoveredMentionId(null);
     setHoverCardStyle(null);
   }, []);
+
+  useEffect(() => {
+    if (!hoveredMentionId) return;
+    window.addEventListener('resize', handleComposerMouseLeave);
+    document.addEventListener('scroll', handleComposerMouseLeave, true);
+    return () => {
+      window.removeEventListener('resize', handleComposerMouseLeave);
+      document.removeEventListener('scroll', handleComposerMouseLeave, true);
+    };
+  }, [handleComposerMouseLeave, hoveredMentionId]);
 
   const handleSelect = useCallback(() => {
     const input = textareaRef.current;
@@ -850,6 +879,10 @@ export function ResourceMentionEditor({
 
   const dialogItem = stripItems.find((item) => item.key === resourceDialogId) ?? null;
   const hoveredRange = mentionRanges.find((range) => range.mention.mentionId === hoveredMentionId);
+  const hoveredAsset = hoveredRange
+    ? (assets.find((asset) => asset.id === hoveredRange.mention.assetId) ??
+      connectedAssets.find((asset) => asset.id === hoveredRange.mention.assetId))
+    : undefined;
 
   const renameStripResource = useCallback(
     (mentionId: string, nextName: string) => {
@@ -1014,23 +1047,31 @@ export function ResourceMentionEditor({
           disabled={disabled}
           className="resource-mention-textarea"
         />
-        {hoveredRange && hoverCardStyle && (
-          <div
-            className="resource-mention-hover-card"
-            role="tooltip"
-            style={hoverCardStyle}
-            aria-label={`预览 ${mentionDisplayName(hoveredRange.mention)}`}
-          >
-            {assets.find((asset) => asset.id === hoveredRange.mention.assetId) ? (
-              <MentionPreview
-                asset={assets.find((asset) => asset.id === hoveredRange.mention.assetId)}
-                mediaType={hoveredRange.mention.mediaType}
-              />
-            ) : (
-              <MentionMediaIcon mediaType={hoveredRange.mention.mediaType} />
-            )}
-          </div>
-        )}
+        {hoveredRange &&
+          hoverCardStyle &&
+          createPortal(
+            <div
+              className="resource-mention-hover-card resource-mention-hover-card-expanded"
+              role="tooltip"
+              style={hoverCardStyle}
+              aria-label={`预览 ${mentionDisplayName(hoveredRange.mention)}`}
+            >
+              {canPreviewMentionAsset(hoveredAsset) &&
+              !getMentionUnavailableReason(
+                hoveredRange.mention,
+                hoveredAsset as Asset | undefined,
+              ) ? (
+                <AssetPreview
+                  asset={hoveredAsset as Asset}
+                  mode="compact"
+                  className="resource-mention-hover-preview"
+                />
+              ) : (
+                <MentionMediaIcon mediaType={hoveredRange.mention.mediaType} />
+              )}
+            </div>,
+            document.body,
+          )}
       </div>
 
       {protectedEditMessage && (

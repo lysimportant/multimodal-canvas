@@ -1,4 +1,21 @@
-import { LocateFixed, Play, Power, Sparkles, Trash2, Upload, type LucideIcon } from 'lucide-react';
+import {
+  CopyPlus,
+  Eraser,
+  FileText,
+  Group,
+  LocateFixed,
+  Maximize2,
+  Play,
+  Power,
+  Redo2,
+  Search,
+  Sparkles,
+  Trash2,
+  Undo2,
+  Upload,
+  WandSparkles,
+  type LucideIcon,
+} from 'lucide-react';
 import {
   useCallback,
   useEffect,
@@ -6,11 +23,10 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
-  type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
 
-import { mediaTypes, type MediaType } from '@multimodal-canvas/domain';
+import { isImageEditSourceNode, mediaTypes, type MediaType } from '@multimodal-canvas/domain';
 import type { AssetFlowNode } from '../canvas-utils';
 import {
   getConnectionDropNodePosition,
@@ -19,9 +35,12 @@ import {
   type ConnectionDropCreateOption,
 } from '../connection-utils';
 import { mediaIcons, mediaLabels } from './contracts';
+import { nodeHasPrompt, type NodeRunTarget } from './fork-generate-node';
+import type { ClearActionCounts } from './ClearCanvasMenu';
 
 import './canvas-context-menu.css';
 
+/** 右键菜单的来源上下文；坐标与返回焦点共同冻结到本次打开时。 */
 export type CanvasContextMenuTarget =
   | {
       kind: 'canvas';
@@ -46,13 +65,14 @@ export type CanvasContextMenuTarget =
       returnFocusTo: HTMLElement | null;
     };
 
+/** 区分操作、键盘取消和外部点击，供画布决定是否恢复焦点。 */
 export type CanvasContextMenuCloseReason = 'action' | 'escape' | 'outside';
 
 type CanvasContextMenuProps = {
   target: CanvasContextMenuTarget;
   busy: boolean;
   canDeleteNode: boolean;
-  onRunNode: (node: AssetFlowNode) => void;
+  onRunNode: (node: AssetFlowNode, target?: NodeRunTarget) => void;
   onCenterNode: (node: AssetFlowNode) => void;
   onNodeEnabledChange: (nodeId: string, enabled: boolean) => void;
   onDeleteNode: (nodeId: string) => void;
@@ -60,11 +80,29 @@ type CanvasContextMenuProps = {
   /** 悬空连线松手后创建节点并立刻连上。 */
   onAddConnectedGenerateNode: (request: ConnectedGenerateNodeRequest) => void;
   onRequestUpload: () => void;
+  /** 打开当前节点的提示词记录与资源分析。 */
+  onOpenRequestPrompt?: (nodeId: string) => void;
+  /** 复用当前图片作为编辑来源并生成到新节点。 */
+  onEditImage?: (nodeId: string) => void;
+  /** 按已有选区或视口中心创建组。 */
+  onCreateGroup?: () => void;
+  onUndoCanvas?: () => void;
+  onRedoCanvas?: () => void;
+  onClearCanvas?: () => void;
+  onClearEmptyNodes?: () => void;
+  onFitView?: () => void;
+  onOpenSearch?: () => void;
+  canUndo?: boolean;
+  canRedo?: boolean;
+  canClearCanvas?: boolean;
+  clearCounts?: ClearActionCounts;
   onClose: (reason: CanvasContextMenuCloseReason) => void;
 };
 
+/** 固定菜单与浏览器边缘之间的最小间距，单位为像素。 */
 const VIEWPORT_PADDING = 8;
 
+/** 按当前节点或画布上下文提供纵向菜单，操作复用画布的历史与确认逻辑。 */
 export function CanvasContextMenu({
   target,
   busy,
@@ -76,24 +114,45 @@ export function CanvasContextMenu({
   onAddGenerateNode,
   onAddConnectedGenerateNode,
   onRequestUpload,
+  onOpenRequestPrompt,
+  onEditImage,
+  onCreateGroup,
+  onUndoCanvas,
+  onRedoCanvas,
+  onClearCanvas,
+  onClearEmptyNodes,
+  onFitView,
+  onOpenSearch,
+  canUndo = true,
+  canRedo = true,
+  canClearCanvas = false,
+  clearCounts,
   onClose,
 }: CanvasContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState(target.clientPosition);
 
   useLayoutEffect(() => {
-    const menu = menuRef.current;
-    if (!menu) return;
-    const bounds = menu.getBoundingClientRect();
-    const maxLeft = Math.max(VIEWPORT_PADDING, window.innerWidth - bounds.width - VIEWPORT_PADDING);
-    const maxTop = Math.max(
-      VIEWPORT_PADDING,
-      window.innerHeight - bounds.height - VIEWPORT_PADDING,
-    );
-    setPosition({
-      x: Math.max(VIEWPORT_PADDING, Math.min(target.clientPosition.x, maxLeft)),
-      y: Math.max(VIEWPORT_PADDING, Math.min(target.clientPosition.y, maxTop)),
-    });
+    const updatePosition = () => {
+      const menu = menuRef.current;
+      if (!menu) return;
+      const bounds = menu.getBoundingClientRect();
+      const maxLeft = Math.max(
+        VIEWPORT_PADDING,
+        window.innerWidth - bounds.width - VIEWPORT_PADDING,
+      );
+      const maxTop = Math.max(
+        VIEWPORT_PADDING,
+        window.innerHeight - bounds.height - VIEWPORT_PADDING,
+      );
+      setPosition({
+        x: Math.max(VIEWPORT_PADDING, Math.min(target.clientPosition.x, maxLeft)),
+        y: Math.max(VIEWPORT_PADDING, Math.min(target.clientPosition.y, maxTop)),
+      });
+    };
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    return () => window.removeEventListener('resize', updatePosition);
   }, [target]);
 
   useLayoutEffect(() => {
@@ -142,7 +201,7 @@ export function CanvasContextMenu({
     if (event.key === 'End') nextIndex = items.length - 1;
     if (nextIndex === undefined) return;
     event.preventDefault();
-    items[nextIndex]?.focus({ preventScroll: true });
+    items[nextIndex]?.focus();
   };
 
   const content =
@@ -152,6 +211,14 @@ export function CanvasContextMenu({
         busy={busy}
         canDeleteNode={canDeleteNode}
         onRun={() => runAction(() => onRunNode(target.node))}
+        onRunNewNode={() => runAction(() => onRunNode(target.node, 'newNode'))}
+        onOpenRequestPrompt={
+          onOpenRequestPrompt
+            ? () => runAction(() => onOpenRequestPrompt(target.node.id))
+            : undefined
+        }
+        onEditImage={onEditImage ? () => runAction(() => onEditImage(target.node.id)) : undefined}
+        onCreateGroup={onCreateGroup ? () => runAction(onCreateGroup) : undefined}
         onCenter={() => runAction(() => onCenterNode(target.node))}
         onToggleEnabled={() =>
           runAction(() => onNodeEnabledChange(target.node.id, target.node.data.enabled === false))
@@ -186,6 +253,17 @@ export function CanvasContextMenu({
           runAction(() => onAddGenerateNode(mediaType, target.flowPosition))
         }
         onRequestUpload={() => runAction(onRequestUpload)}
+        onCreateGroup={onCreateGroup ? () => runAction(onCreateGroup) : undefined}
+        onUndoCanvas={onUndoCanvas ? () => runAction(onUndoCanvas) : undefined}
+        onRedoCanvas={onRedoCanvas ? () => runAction(onRedoCanvas) : undefined}
+        onClearCanvas={onClearCanvas ? () => runAction(onClearCanvas) : undefined}
+        onClearEmptyNodes={onClearEmptyNodes ? () => runAction(onClearEmptyNodes) : undefined}
+        onFitView={onFitView ? () => runAction(onFitView) : undefined}
+        onOpenSearch={onOpenSearch ? () => runAction(onOpenSearch) : undefined}
+        canUndo={canUndo}
+        canRedo={canRedo}
+        canClearCanvas={canClearCanvas}
+        clearCounts={clearCounts}
       />
     );
 
@@ -212,11 +290,16 @@ export function CanvasContextMenu({
   );
 }
 
+/** 节点菜单沿用当前运行状态；查看记录不受生成中的状态限制。 */
 function NodeMenuContent({
   node,
   busy,
   canDeleteNode,
   onRun,
+  onRunNewNode,
+  onOpenRequestPrompt,
+  onEditImage,
+  onCreateGroup,
   onCenter,
   onToggleEnabled,
   onDelete,
@@ -225,19 +308,53 @@ function NodeMenuContent({
   busy: boolean;
   canDeleteNode: boolean;
   onRun: () => void;
+  onRunNewNode: () => void;
+  onOpenRequestPrompt?: () => void;
+  onEditImage?: () => void;
+  onCreateGroup?: () => void;
   onCenter: () => void;
   onToggleEnabled: () => void;
   onDelete: () => void;
 }) {
   const enabled = node.data.enabled !== false;
+  const running = ['queued', 'preparing', 'running', 'processing', 'cancel_requested'].includes(
+    node.data.runStatus ?? '',
+  );
   return (
     <>
       <div className="canvas-context-menu-heading" title={node.data.label}>
         {node.data.label}
       </div>
       <div className="canvas-context-menu-group" role="group" aria-label="节点操作">
+        <MenuItem
+          icon={Play}
+          label="开始生成"
+          disabled={!enabled || busy || running}
+          onClick={onRun}
+        />
+        <MenuItem
+          icon={CopyPlus}
+          label="生成到新节点"
+          disabled={!enabled || busy || running}
+          onClick={onRunNewNode}
+        />
+        {onOpenRequestPrompt ? (
+          <MenuItem icon={FileText} label="提示词" onClick={onOpenRequestPrompt} />
+        ) : null}
+        {onEditImage && isImageEditSourceNode(node) ? (
+          <MenuItem
+            icon={WandSparkles}
+            label="修改图片"
+            disabled={busy || running || !nodeHasPrompt(node.data)}
+            onClick={onEditImage}
+          />
+        ) : null}
+      </div>
+      <div className="canvas-context-menu-group" role="group" aria-label="节点布局">
         <MenuItem icon={LocateFixed} label="定位并居中节点" onClick={onCenter} />
-        <MenuItem icon={Play} label="开始生成" disabled={!enabled || busy} onClick={onRun} />
+        {onCreateGroup ? (
+          <MenuItem icon={Group} label="为选中节点创建分组" onClick={onCreateGroup} />
+        ) : null}
         <MenuItem
           icon={Power}
           label={enabled ? '停用节点' : '启用节点'}
@@ -257,19 +374,84 @@ function NodeMenuContent({
   );
 }
 
+/** 画布菜单仅展示已经接入的操作，并按历史与候选数量禁用不可执行项。 */
 function CanvasMenuContent({
   onAddGenerateNode,
   onRequestUpload,
+  onCreateGroup,
+  onUndoCanvas,
+  onRedoCanvas,
+  onClearCanvas,
+  onClearEmptyNodes,
+  onFitView,
+  onOpenSearch,
+  canUndo,
+  canRedo,
+  canClearCanvas,
+  clearCounts,
 }: {
   onAddGenerateNode: (mediaType: MediaType) => void;
   onRequestUpload: () => void;
-}) {
+} & Pick<
+  CanvasContextMenuProps,
+  | 'onCreateGroup'
+  | 'onUndoCanvas'
+  | 'onRedoCanvas'
+  | 'onClearCanvas'
+  | 'onClearEmptyNodes'
+  | 'onFitView'
+  | 'onOpenSearch'
+  | 'canUndo'
+  | 'canRedo'
+  | 'canClearCanvas'
+  | 'clearCounts'
+>) {
   return (
     <>
       <MenuGroup label="创建生成节点" actionIcon={Sparkles} onSelect={onAddGenerateNode} />
       <div className="canvas-context-menu-group" role="group" aria-label="资源">
         <MenuItem icon={Upload} label="上传资源" onClick={onRequestUpload} />
+        {onCreateGroup ? <MenuItem icon={Group} label="新建分组" onClick={onCreateGroup} /> : null}
       </div>
+      {onUndoCanvas || onRedoCanvas ? (
+        <div className="canvas-context-menu-group" role="group" aria-label="画布历史">
+          {onUndoCanvas ? (
+            <MenuItem icon={Undo2} label="撤销" disabled={!canUndo} onClick={onUndoCanvas} />
+          ) : null}
+          {onRedoCanvas ? (
+            <MenuItem icon={Redo2} label="重做" disabled={!canRedo} onClick={onRedoCanvas} />
+          ) : null}
+        </div>
+      ) : null}
+      {onFitView || onOpenSearch ? (
+        <div className="canvas-context-menu-group" role="group" aria-label="画布视图">
+          {onFitView ? (
+            <MenuItem icon={Maximize2} label="自动适配缩放" onClick={onFitView} />
+          ) : null}
+          {onOpenSearch ? <MenuItem icon={Search} label="搜索" onClick={onOpenSearch} /> : null}
+        </div>
+      ) : null}
+      {onClearCanvas || onClearEmptyNodes ? (
+        <div className="canvas-context-menu-group" role="group" aria-label="清理画布">
+          {onClearEmptyNodes ? (
+            <MenuItem
+              icon={Eraser}
+              label="清理空节点"
+              disabled={!clearCounts?.emptyNodes}
+              onClick={onClearEmptyNodes}
+            />
+          ) : null}
+          {onClearCanvas ? (
+            <MenuItem
+              icon={Trash2}
+              label="清空画布"
+              disabled={!canClearCanvas}
+              danger
+              onClick={onClearCanvas}
+            />
+          ) : null}
+        </div>
+      ) : null}
     </>
   );
 }
@@ -325,6 +507,7 @@ function ConnectionDropMenuContent({
   );
 }
 
+/** 四类媒体按单列呈现，保持键盘导航顺序与视觉顺序一致。 */
 function MenuGroup({
   label,
   actionIcon: ActionIcon,
@@ -340,7 +523,7 @@ function MenuGroup({
         <ActionIcon size={12} aria-hidden="true" />
         {label}
       </div>
-      <div className="canvas-context-menu-grid">
+      <div className="canvas-context-menu-list">
         {mediaTypes.map((mediaType) => {
           const Icon = mediaIcons[mediaType];
           return (
@@ -348,7 +531,6 @@ function MenuGroup({
               key={mediaType}
               icon={Icon}
               label={`创建${mediaLabels[mediaType]}生成节点`}
-              compactLabel={mediaLabels[mediaType]}
               onClick={() => onSelect(mediaType)}
             />
           );
@@ -358,10 +540,10 @@ function MenuGroup({
   );
 }
 
+/** 单个菜单命令，禁用状态不进入方向键焦点序列。 */
 function MenuItem({
   icon: Icon,
   label,
-  compactLabel,
   description,
   disabled = false,
   danger = false,
@@ -369,7 +551,6 @@ function MenuItem({
 }: {
   icon: LucideIcon;
   label: string;
-  compactLabel?: ReactNode;
   description?: string;
   disabled?: boolean;
   danger?: boolean;
@@ -378,7 +559,7 @@ function MenuItem({
   return (
     <button
       type="button"
-      className={`canvas-context-menu-item${compactLabel ? ' is-compact' : ''}${danger ? ' is-danger' : ''}`}
+      className={`canvas-context-menu-item${danger ? ' is-danger' : ''}`}
       role="menuitem"
       aria-label={label}
       title={disabled ? `${label}当前不可用` : (description ?? label)}
@@ -387,7 +568,7 @@ function MenuItem({
     >
       <Icon size={15} strokeWidth={2} aria-hidden="true" />
       <span className={description ? 'canvas-context-menu-item-copy' : undefined}>
-        <span>{compactLabel ?? label}</span>
+        <span>{label}</span>
         {description ? (
           <small className="canvas-context-menu-item-desc">{description}</small>
         ) : null}
@@ -396,6 +577,7 @@ function MenuItem({
   );
 }
 
+/** 获取当前可聚焦菜单项；尚未挂载时返回空列表。 */
 function getEnabledMenuItems(menu: HTMLDivElement | null) {
   if (!menu) return [];
   return Array.from(menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)'));

@@ -34,6 +34,25 @@ export function nodeEchoContentUrl(node: AssetFlowNode): string | undefined {
   return undefined;
 }
 
+/** 读取当前展示资源的明确版本；来源/手动节点优先解析版本 URL，缺省才由调用方查最新。 */
+export function nodeEchoAssetVersion(node: AssetFlowNode): number | undefined {
+  const result = node.data.manualOutput ? undefined : node.data.resultAsset;
+  if (result?.version) return result.version;
+  const assetId = result?.assetId ?? node.data.assetId;
+  const contentUrl = result?.contentUrl ?? node.data.contentUrl;
+  if (!assetId || !contentUrl) return undefined;
+  try {
+    const url = new URL(contentUrl, new URL(API_BASE_URL || '/', window.location.href));
+    const prefix = `/v1/assets/${encodeURIComponent(assetId)}/versions/`;
+    if (!url.pathname.startsWith(prefix)) return undefined;
+    const match = url.pathname.slice(prefix.length).match(/^(\d+)\/content$/);
+    const version = match ? Number(match[1]) : NaN;
+    return Number.isSafeInteger(version) && version > 0 ? version : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * 下载并按 UTF-8 解码当前回显正文。
  * 读失败或正文为空时抛出错误，调用方不得建节点。

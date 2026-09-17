@@ -5,7 +5,7 @@
   box-shadow: 0 16px 38px var(--mc-shadow, rgb(29 46 39 / 18%));
   color: var(--mc-text, #18212f);
   max-height: calc(100vh - 16px);
-  min-width: 248px;
+  min-width: min(248px, calc(100vw - 16px));
   overflow-y: auto;
   padding: 6px;
   position: fixed;
@@ -39,10 +39,10 @@
   padding: 4px 8px 6px;
 }
 
-.canvas-context-menu-grid {
-  display: grid;
+.canvas-context-menu-list {
+  display: flex;
+  flex-direction: column;
   gap: 3px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .canvas-context-menu-item {
@@ -90,14 +90,13 @@
   color: #912018;
 }
 
-.canvas-context-menu-item.is-compact {
-  flex-direction: column;
-  font-size: 10px;
-  gap: 4px;
-  justify-content: center;
+.canvas-context-menu-item > svg {
+  flex-shrink: 0;
+}
+
+.canvas-context-menu-item > span {
   min-width: 0;
-  padding: 7px 3px;
-  text-align: center;
+  overflow-wrap: anywhere;
 }
 
 @media (prefers-reduced-motion: reduce) {

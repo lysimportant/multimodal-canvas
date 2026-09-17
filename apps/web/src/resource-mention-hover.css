@@ -1,0 +1,50 @@
+/* 名称悬浮预览独立于资源条缩略图，固定在视口内，不改变编辑器或节点大小。 */
+.resource-mention-hover-card.resource-mention-hover-card-expanded {
+  align-items: center;
+  box-sizing: border-box;
+  display: flex;
+  justify-content: center;
+  padding: 8px;
+  position: fixed;
+  z-index: 100;
+}
+
+.resource-mention-hover-card-expanded .resource-mention-hover-preview {
+  align-items: center;
+  background: var(--mc-surface-muted, #f0f3f5);
+  border-radius: 4px;
+  display: flex;
+  height: 100%;
+  justify-content: center;
+  margin: 0;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  width: 100%;
+}
+
+.resource-mention-hover-card-expanded .resource-mention-hover-preview .artifact-preview-media {
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+  width: 100%;
+}
+
+.resource-mention-hover-card-expanded > .resource-mention-media-icon {
+  align-items: center;
+  flex-basis: 64px;
+  height: 64px;
+  justify-content: center;
+  width: 64px;
+}
+
+.resource-mention-hover-card-expanded > .resource-mention-media-icon svg {
+  height: 32px;
+  width: 32px;
+}
+
+.resource-mention-hover-card-expanded > svg.resource-mention-hover-preview {
+  height: 64px;
+  padding: 12px;
+  width: 64px;
+}

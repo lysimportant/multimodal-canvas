@@ -218,10 +218,56 @@ describe('ResourceMentionEditor', () => {
     expect(screen.getByRole('tooltip', { name: '预览 良爷' })).toBeInTheDocument();
     document.elementFromPoint = () => tokens[0] as Element;
     fireEvent.mouseMove(composer, { clientX: 12, clientY: 12 });
-    expect(screen.getByRole('tooltip', { name: '预览 满穗' })).toBeInTheDocument();
+    const preview = screen.getByRole('tooltip', { name: '预览 满穗' });
+    expect(preview).toHaveStyle({ width: '280px', height: '210px' });
+    expect(preview.parentElement).toBe(document.body);
+    expect(preview.querySelector('.resource-mention-hover-preview img')).toBeInTheDocument();
     fireEvent.mouseLeave(composer);
     expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
     document.elementFromPoint = original;
+  });
+
+  it('扩大后的资源预览在视口底部翻到名称上方，滚动时关闭', () => {
+    render(
+      <ResourceMentionEditor
+        nodeId="node-edge-hover"
+        promptDocument={{
+          version: 1,
+          blocks: [
+            {
+              type: 'mention',
+              mentionId: 'mention-image',
+              assetId: imageAsset.id,
+              label: imageAsset.name,
+              mediaType: 'image',
+            },
+          ],
+        }}
+        assets={[imageAsset]}
+        ariaLabel="提示词"
+      />,
+    );
+    const token = document.querySelector('.resource-mention-token')!;
+    const tokenRect = new DOMRect(window.innerWidth - 60, window.innerHeight - 40, 48, 20);
+    const bounds = vi.spyOn(token, 'getBoundingClientRect').mockReturnValue(tokenRect);
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => token;
+    try {
+      fireEvent.mouseMove(screen.getByRole('textbox', { name: '提示词' }).parentElement!, {
+        clientX: tokenRect.left + 4,
+        clientY: tokenRect.top + 4,
+      });
+      const preview = screen.getByRole('tooltip', { name: '预览 产品图' });
+      expect(preview).toHaveStyle({
+        left: `${window.innerWidth - 280 - 12}px`,
+        top: `${tokenRect.top - 210 - 8}px`,
+      });
+      fireEvent.scroll(document);
+      expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+    } finally {
+      document.elementFromPoint = original;
+      bounds.mockRestore();
+    }
   });
 
   it('opens @ search and confirms a structured mention with keyboard', async () => {

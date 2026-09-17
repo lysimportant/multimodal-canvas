@@ -159,8 +159,12 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const [retryError, setRetryError] = useState<string | null>(null);
   const [renameOpen, setRenameOpen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
-  // 只有正在展示的活动计时订阅共享时钟，静态节点和关闭的信息面板不创建定时器。
-  const durationNow = useSharedNodeClock(infoOpen && isNodeRunning(data.runStatus));
+  const [hovered, setHovered] = useState(false);
+  const [focusWithin, setFocusWithin] = useState(false);
+  // 仅可见悬浮卡片或信息面板中的活动计时订阅共享时钟。
+  const durationNow = useSharedNodeClock(
+    (infoOpen || hovered || focusWithin || Boolean(selected)) && isNodeRunning(data.runStatus),
+  );
   const [draftLabel, setDraftLabel] = useState(data.label);
   const renameTitleId = useId();
   const infoTitleId = useId();
@@ -366,7 +370,18 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
     <div
       className={`flow-asset-node ${data.mode !== 'source' ? 'flow-generate-node' : ''} ${selected ? 'is-selected' : ''} ${enabled ? '' : 'is-disabled'}`}
       aria-disabled={!enabled}
-      onClickCapture={() => selectNode?.(data)}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocusCapture={() => setFocusWithin(true)}
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          setFocusWithin(false);
+        }
+      }}
+      onClickCapture={(event) => {
+        if ((event.target as Element).closest('.flow-node-prompt-button')) return;
+        selectNode?.(data);
+      }}
       onDragOver={(event) => {
         if (event.dataTransfer.types.includes('Files')) {
           event.preventDefault();
@@ -434,6 +449,43 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
       >
         {floatingControls ? (
           <>
+            <div className="flow-node-floating-summary">
+              {openPrompt ? (
+                <button
+                  type="button"
+                  id={`node-prompt-trigger-${id}`}
+                  className="flow-node-action-button flow-node-prompt-button nodrag nopan nowheel"
+                  aria-label={`查看生成提示词：${data.label}`}
+                  title="查看生成提示词"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    openPrompt(id);
+                  }}
+                >
+                  <FileText size={18} aria-hidden="true" />
+                  <NodeFloatingActionLabel>提示词</NodeFloatingActionLabel>
+                </button>
+              ) : null}
+              <span className="flow-node-floating-duration" aria-label="节点生成耗时">
+                <span>{previewAsset ? '结果耗时' : '耗时'}</span>
+                <NodeDurationBadge
+                  {...(displayedTiming ? { timing: displayedTiming } : {})}
+                  now={durationNow}
+                  running={!previewAsset && isNodeRunning(data.runStatus)}
+                />
+              </span>
+              {previewAsset && isNodeRunning(data.runStatus) ? (
+                <span className="flow-node-floating-duration" aria-label="当前执行耗时">
+                  <span>当前执行</span>
+                  <NodeDurationBadge
+                    {...(data.nodeTiming ? { timing: data.nodeTiming } : {})}
+                    now={durationNow}
+                    running
+                  />
+                </span>
+              ) : null}
+            </div>
             {changeLabel ? (
               <button
                 type="button"
@@ -768,7 +820,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
                   <dd>
                     <button
                       type="button"
-                      id={`node-prompt-trigger-${id}`}
+                      id={`node-prompt-info-trigger-${id}`}
                       className="flow-node-prompt-link"
                       aria-label={`查看生成提示词：${data.label}`}
                       title="查看该节点此次生成真正发送的请求文本"

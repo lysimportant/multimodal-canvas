@@ -1035,6 +1035,35 @@ export const runCredentialReferenceSchema = z.object({
   credentialVersion: z.number().int().positive(),
 });
 
+/** 独立资源分析的冻结身份；自动任务按项目、资产和版本去重，不属于画布节点。 */
+export const reversePromptSourceSchema = z.object({
+  assetId: z.string().min(1).max(512),
+  assetVersion: z.number().int().positive(),
+  automatic: z.boolean(),
+});
+
+/** 反推得到的描述，不代表恢复出的原始生成请求；长度限制以字符数计。 */
+export const reversePromptResultSchema = z.object({
+  summary: z.string().trim().min(1).max(2_000),
+  prompt: z.string().trim().min(1).max(20_000),
+});
+
+/**
+ * 解析模型返回的反推 JSON，兼容单个 Markdown JSON 围栏。
+ * @param text Provider 返回的完整文字输出。
+ * @returns 已验证且去除多余字段的摘要和详细提示词。
+ * @throws JSON、字段或长度不正确时抛出固定错误，不把供应商原文写入错误日志。
+ */
+export function parseReversePromptOutput(text: string): z.infer<typeof reversePromptResultSchema> {
+  try {
+    const trimmed = text.trim();
+    const fenced = /^```(?:json)?\s*\n([\s\S]*?)\n```$/i.exec(trimmed);
+    return reversePromptResultSchema.parse(JSON.parse(fenced?.[1] ?? trimmed));
+  } catch {
+    throw new Error('反推结果格式无效：模型必须返回包含 summary 和 prompt 的 JSON 对象');
+  }
+}
+
 export const runSnapshotSchema = z
   .object({
     projectId: z.string().min(1),
@@ -1059,6 +1088,8 @@ export const runSnapshotSchema = z
     imageEditCapability: frozenImageEditCapabilitySchema.optional(),
     /** 按执行节点冻结的图片编辑限制，避免不同模型的输入约束相互覆盖。 */
     nodeImageEditCapabilities: z.record(frozenImageEditCapabilitySchema).optional(),
+    /** 独立反推任务标记；缺省保持普通生成和归档行为，不传入供应商参数。 */
+    reversePrompt: reversePromptSourceSchema.optional(),
   })
   .superRefine((snapshot, context) => {
     // Run snapshots can come from a persisted queue payload or a worker
@@ -1082,6 +1113,26 @@ export const runSnapshotSchema = z
     }
 
     const nodeIds = new Set(snapshot.nodes.map((node) => node.id));
+    if (snapshot.reversePrompt) {
+      const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
+      const mention = snapshot.promptMentions?.[0];
+      if (
+        snapshot.nodes.length !== 1 ||
+        snapshot.edges.length !== 0 ||
+        snapshot.inputs.length !== 0 ||
+        target?.data.mediaType !== 'text' ||
+        target.data.mode !== 'generate' ||
+        snapshot.promptMentions?.length !== 1 ||
+        mention?.assetId !== snapshot.reversePrompt.assetId ||
+        mention.assetVersion !== snapshot.reversePrompt.assetVersion
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: '反推任务必须是引用指定资源版本的独立文字分析',
+          path: ['reversePrompt'],
+        });
+      }
+    }
     for (const nodeId of Object.keys(snapshot.nodeImageEditCapabilities ?? {})) {
       const node = snapshot.nodes.find((candidate) => candidate.id === nodeId);
       if (!node || node.data.mediaType !== 'image' || node.data.mode !== 'generate') {
@@ -1241,6 +1292,8 @@ export const runResultSchema = z.object({
   promptMentions: z.array(frozenPromptMentionSchema).optional(),
   /** 视频末帧派生结果。缺省表示未执行或动作为 none。失败不得否定视频成功。 */
   finalFrame: runResultFinalFrameSchema.optional(),
+  /** 独立反推的结构化结果；存入 Run，不创建资源版本或冒充真实提示词。 */
+  reversePrompt: reversePromptResultSchema.optional(),
 });
 
 /**
@@ -1322,6 +1375,13 @@ export const runJobDataSchema = z
     cancelRequested: z.boolean().default(false),
   })
   .superRefine((job, context) => {
+    if (job.snapshot.reversePrompt && (job.retryOf || job.attempt !== 1)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: '反推任务只允许明确新建，不能通过普通运行重试再次调用',
+        path: ['attempt'],
+      });
+    }
     const nodesById = new Map(job.snapshot.nodes.map((node) => [node.id, node]));
     job.workflowState?.nodes.forEach((state, index) => {
       const node = nodesById.get(state.nodeId);

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Job, Queue, type ConnectionOptions } from 'bullmq';
 import {
   canTransitionRunStatus,
+  parseReversePromptOutput,
   portRoleSchema,
   renderPromptDocument,
   runJobDataSchema,
@@ -762,6 +763,9 @@ export class MemoryRunService implements RunService, RequestPromptStore {
 
   async retry(runId: string): Promise<RunRecord> {
     const previous = this.require(runId);
+    if (previous.snapshot.reversePrompt) {
+      throw new RunServiceError('invalid_state', '请在反推提示词窗口中明确发起新的分析');
+    }
     if (previous.status !== 'failed' && previous.status !== 'cancelled') {
       throw new RunServiceError('invalid_state', 'only failed or cancelled runs can be retried');
     }
@@ -905,21 +909,33 @@ export class MemoryRunService implements RunService, RequestPromptStore {
 
       let result = runResultSchema.parse(execution.result);
       const output = normalizeRunOutput(execution.output, result.mediaType);
-      const archivedAsset = await this.resultArchiver?.({
-        run: clone(run),
-        result,
-        ...(output ? { output } : {}),
-      });
+      if (run.snapshot.reversePrompt) {
+        if (!output || result.mediaType !== 'text') {
+          throw new Error('反推任务没有返回文字内容');
+        }
+        const { asset: _asset, ...analysisResult } = result;
+        result = runResultSchema.parse({
+          ...analysisResult,
+          reversePrompt: parseReversePromptOutput(output.content.toString('utf8')),
+        });
+      }
+      const archivedAsset = run.snapshot.reversePrompt
+        ? undefined
+        : await this.resultArchiver?.({
+            run: clone(run),
+            result,
+            ...(output ? { output } : {}),
+          });
       if (archivedAsset) {
         result = runResultSchema.parse({
           ...result,
           asset: runResultAssetSchema.parse(archivedAsset),
         });
-      } else if (!result.asset && output) {
+      } else if (!run.snapshot.reversePrompt && !result.asset && output) {
         // Keep direct MemoryRunService consumers useful even when no storage
         // adapter is supplied (the app composition root provides one).
         result = runResultSchema.parse({ ...result, asset: inlineResultAsset(output) });
-      } else if (!result.asset) {
+      } else if (!run.snapshot.reversePrompt && !result.asset) {
         const remoteUrl = safeOutputUrl(execution.output);
         if (remoteUrl) {
           const mediaType = execution.output?.mediaType ?? result.mediaType;
@@ -1586,6 +1602,9 @@ export class BullMqRunService implements RunService {
   async retry(runId: string): Promise<RunRecord> {
     const previous = await this.get(runId);
     if (!previous) throw new RunServiceError('not_found', 'run not found');
+    if (previous.snapshot.reversePrompt) {
+      throw new RunServiceError('invalid_state', '请在反推提示词窗口中明确发起新的分析');
+    }
     if (previous.status !== 'failed' && previous.status !== 'cancelled') {
       throw new RunServiceError('invalid_state', 'only failed or cancelled runs can be retried');
     }

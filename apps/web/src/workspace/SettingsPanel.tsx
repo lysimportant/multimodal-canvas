@@ -44,6 +44,7 @@ import {
 } from '../settings-utils';
 import { useWorkspacePreferences, type CanvasTheme } from '../state/workspace-preferences';
 import { appearanceEdgeEffectOptions, appearanceEdgePathOptions } from './AppearancePicker';
+import './settings-automation.css';
 import {
   API_BASE_URL,
   PUBLIC_API_CATALOG_URL,
@@ -72,6 +73,7 @@ const settingsCategories = [
   { id: 'overview' as const, label: '总览' },
   { id: 'defaults' as const, label: '节点默认' },
   { id: 'connections' as const, label: '连接与 Key' },
+  { id: 'automation' as const, label: '自动化' },
   { id: 'appearance' as const, label: '画布外观' },
 ];
 
@@ -147,7 +149,7 @@ function toModelDefaults(value: ModelDefaults | undefined): ModelDefaults {
 /**
  * 显示平台连接、类型默认模型和工作区外观设置。
  *
- * 宽版布局由左侧分类导航（总览 / 节点默认 / 连接与 Key / 画布外观）和右侧独立滚动内容组成，
+ * 左侧分类导航覆盖总览、节点默认、连接、自动化与外观，右侧内容独立滚动，
  * 标题、状态提示与底部保存区固定不动。对话框和独立设置页共用同一个内容组件。
  *
  * @param projectId 当前项目 ID；为空时只允许编辑平台全局范围。
@@ -155,7 +157,7 @@ function toModelDefaults(value: ModelDefaults | undefined): ModelDefaults {
  * @param onClose 关闭对话框或离开独立设置页时调用。
  * @param onNotice 向外层转发保存、加载和测试结果。
  * @param presentation 以居中对话框或独立页面呈现。
- * @param canManageAiSettings 是否允许读取和修改平台 API Key；普通用户仅显示外观设置。
+ * @param canManageAiSettings 是否允许读取和修改平台 API Key；普通用户可使用本机外观与自动化偏好。
  */
 export function SettingsPanel({
   projectId,
@@ -208,6 +210,8 @@ export function SettingsPanel({
   const [draftResetKey, setDraftResetKey] = useState(0);
   const rowOperationRef = useRef<RowOperation>(null);
   const canvasTheme = useWorkspacePreferences((state) => state.canvasTheme);
+  const autoReversePrompt = useWorkspacePreferences((state) => state.autoReversePrompt);
+  const setAutoReversePrompt = useWorkspacePreferences((state) => state.setAutoReversePrompt);
   const showImageEditSourceCard = useWorkspacePreferences((state) => state.showImageEditSourceCard);
   const setShowImageEditSourceCard = useWorkspacePreferences(
     (state) => state.setShowImageEditSourceCard,
@@ -1709,6 +1713,25 @@ export function SettingsPanel({
                   平台连接与凭据只允许管理员配置；普通账号可以在这里查看为什么看不到可用配置。
                 </p>
               </div>
+            </section>
+          )}
+          {category === 'automation' && (
+            <section className="settings-section" aria-labelledby="settings-automation-title">
+              <div className="settings-section-heading">
+                <h2 id="settings-automation-title">自动化</h2>
+              </div>
+              <label className="settings-toggle-row">
+                <span>自动反推提示词</span>
+                <input
+                  type="checkbox"
+                  role="switch"
+                  checked={autoReversePrompt}
+                  onChange={(event) => setAutoReversePrompt(event.target.checked)}
+                />
+              </label>
+              <p className="settings-status">
+                使用文字默认模型，每个新资源版本会产生一次额外模型调用。
+              </p>
             </section>
           )}
           {category === 'appearance' && (

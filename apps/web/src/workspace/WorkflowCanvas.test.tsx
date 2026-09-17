@@ -336,7 +336,7 @@ describe('WorkflowCanvas context menu', () => {
     await user.keyboard('{ArrowDown}');
     expect(screen.getByRole('menuitem', { name: '创建图片生成节点' })).toHaveFocus();
     await user.keyboard('{End}');
-    expect(screen.getByRole('menuitem', { name: '上传资源' })).toHaveFocus();
+    expect(screen.getByRole('menuitem', { name: '自动适配缩放' })).toHaveFocus();
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('menu', { name: '画布操作' })).not.toBeInTheDocument();
     await waitFor(() => expect(pane).toHaveFocus());
@@ -354,6 +354,121 @@ describe('WorkflowCanvas context menu', () => {
     await user.click(screen.getByRole('button', { name: '删除节点：图片生成节点' }));
 
     expect(props.onDeleteNode).toHaveBeenCalledWith(generateNode.id);
+  });
+
+  it('将新节点生成、提示词和图片编辑交回现有画布操作', async () => {
+    const user = userEvent.setup();
+    const node = {
+      ...generateNode,
+      data: {
+        ...generateNode.data,
+        prompt: '编辑原图',
+        assetId: 'image-1',
+        contentUrl: '/image.png',
+      },
+    };
+    const props = createProps({
+      nodes: [node],
+      onOpenRequestPrompt: vi.fn(),
+      onEditImage: vi.fn(),
+      onCreateGroup: vi.fn(),
+    });
+    render(<WorkflowCanvas {...props} />);
+    const target = screen.getByTestId(`canvas-node-${node.id}`);
+    fireEvent.contextMenu(target);
+    await user.click(screen.getByRole('menuitem', { name: '生成到新节点' }));
+    expect(props.onRunNode).toHaveBeenCalledWith(node, 'newNode');
+    fireEvent.contextMenu(target);
+    await user.click(screen.getByRole('menuitem', { name: '提示词' }));
+    expect(props.onOpenRequestPrompt).toHaveBeenCalledWith(node.id);
+    fireEvent.contextMenu(target);
+    await user.click(screen.getByRole('menuitem', { name: '修改图片' }));
+    expect(props.onEditImage).toHaveBeenCalledWith(node.id);
+    fireEvent.contextMenu(target);
+    await user.click(screen.getByRole('menuitem', { name: '为选中节点创建分组' }));
+    expect(props.onCreateGroup).toHaveBeenCalledTimes(1);
+  });
+
+  it('运行中的节点禁用生成与图片编辑，仍可查看提示词', () => {
+    const node = {
+      ...generateNode,
+      data: {
+        ...generateNode.data,
+        prompt: '编辑原图',
+        resultAsset: { assetId: 'image-1' },
+        runStatus: 'running',
+      },
+    } as AssetFlowNode;
+    const props = createProps({
+      nodes: [node],
+      onOpenRequestPrompt: vi.fn(),
+      onEditImage: vi.fn(),
+    });
+    render(<WorkflowCanvas {...props} />);
+    fireEvent.contextMenu(screen.getByTestId(`canvas-node-${node.id}`));
+    expect(screen.getByRole('menuitem', { name: '开始生成' })).toBeDisabled();
+    expect(screen.getByRole('menuitem', { name: '生成到新节点' })).toBeDisabled();
+    expect(screen.getByRole('menuitem', { name: '修改图片' })).toBeDisabled();
+    expect(screen.getByRole('menuitem', { name: '提示词' })).toBeEnabled();
+  });
+
+  it('画布菜单包含分组、历史、视图和清理操作，遵循现有可用状态', async () => {
+    const user = userEvent.setup();
+    const props = createProps({
+      onCreateGroup: vi.fn(),
+      onUndoCanvas: vi.fn(),
+      onRedoCanvas: vi.fn(),
+      onOpenSearch: vi.fn(),
+      onClearCanvas: vi.fn(),
+      onClearEmptyNodes: vi.fn(),
+      canUndo: true,
+      canRedo: false,
+      canClearCanvas: true,
+      clearCounts: { nodes: 2, edges: 0, groups: 1, emptyNodes: 1, emptyNodeEdges: 0 },
+    });
+    render(<WorkflowCanvas {...props} />);
+    const pane = screen.getByTestId('canvas-pane');
+    fireEvent.contextMenu(pane);
+    expect(screen.getByRole('menuitem', { name: '重做' })).toBeDisabled();
+    for (const [name, callback] of [
+      ['新建分组', props.onCreateGroup],
+      ['撤销', props.onUndoCanvas],
+      ['搜索', props.onOpenSearch],
+      ['清理空节点', props.onClearEmptyNodes],
+      ['清空画布', props.onClearCanvas],
+    ] as const) {
+      fireEvent.contextMenu(pane);
+      await user.click(screen.getByRole('menuitem', { name }));
+      expect(callback).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole('menu', { name: '画布操作' })).not.toBeInTheDocument();
+    }
+  });
+
+  it('较长菜单在视口边缘打开时仍完整位于可见区域', () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      return this.classList.contains('canvas-context-menu')
+        ? createMockRect(0, 0, 280, 600)
+        : createMockRect(0, 0, 0, 0);
+    });
+    render(<WorkflowCanvas {...createProps()} />);
+    fireEvent.contextMenu(screen.getByTestId('canvas-pane'), {
+      clientX: window.innerWidth,
+      clientY: window.innerHeight,
+    });
+    expect(screen.getByRole('menu', { name: '画布操作' })).toHaveStyle({
+      left: `${window.innerWidth - 288}px`,
+      top: `${window.innerHeight - 608}px`,
+    });
+    vi.stubGlobal('innerWidth', 900);
+    vi.stubGlobal('innerHeight', 700);
+    fireEvent(window, new Event('resize'));
+    expect(screen.getByRole('menu', { name: '画布操作' })).toHaveStyle({
+      left: '612px',
+      top: '92px',
+    });
+    vi.unstubAllGlobals();
   });
 
   it('shows the quick editor after clicking a node and scopes edits to the selected node', async () => {

@@ -102,9 +102,11 @@ import {
   type NodeRunPromptOverride,
   type NodeRunTarget,
 } from './workspace/fork-generate-node';
-import { fetchNodeEchoText } from './workspace/node-echo-text';
+import { fetchNodeEchoText, nodeEchoAssetVersion } from './workspace/node-echo-text';
 import { fetchAssetVersions } from './result-versions';
 import { fetchAssetRequestPrompt, saveRequestPromptSummary } from './request-prompts';
+import { ReversePromptPanel } from './workspace/ReversePromptPanel';
+import { useAutomaticReversePrompt } from './workspace/useAutomaticReversePrompt';
 import {
   collectEmptyNodeCandidates,
   hasRetainedResult,
@@ -169,7 +171,7 @@ import {
 } from './workspace/NodeQuickEditor';
 import { AppQueryProvider } from './query/client';
 import { useAiCredentialsQuery } from './query/credentials';
-import { useCredentialModelCatalogQueries } from './query/models';
+import { useCredentialModelCatalogQueries, useModelCatalogQuery } from './query/models';
 import { findCredentialDefaultEntry, resolveMediaDefault } from './settings-utils';
 import {
   mergeRunUpdate,
@@ -558,6 +560,9 @@ function WorkspaceApp({
   const [isRunning, setIsRunning] = useState(false);
   const [saveState, setSaveState] = useState('准备就绪');
   const [projectId, setProjectId] = useState<string | null>(null);
+  const automaticallyReversePrompt = useAutomaticReversePrompt(projectId, authUser?.id, (message) =>
+    setNotice({ kind: 'error', message }),
+  );
   const defaultsQuery = useQuery({
     queryKey: ['node-model-defaults', authUser?.id, authUser?.role, projectId],
     enabled: Boolean(authUser && projectId),
@@ -653,9 +658,21 @@ function WorkspaceApp({
   const pendingRunUpdateRef = useRef(new Set<string>());
   /** 生成提示词 Dialog 的当前节点与读取状态。 */
   const [promptDialog, setPromptDialog] = useState<
-    | { nodeId: string; assetId?: string; version?: number; state: RequestPromptDialogState }
+    | {
+        nodeId: string;
+        assetId?: string;
+        version?: number;
+        triggerId?: string;
+        state: RequestPromptDialogState;
+      }
     | undefined
   >(undefined);
+  const publicTextModelsQuery = useModelCatalogQuery(
+    undefined,
+    Boolean(promptDialog && authUser && authUser.role !== 'admin'),
+  );
+  const reversePromptModels =
+    authUser?.role === 'admin' ? modelCatalog : (publicTextModelsQuery.data ?? []);
   /** 防止关闭、切换节点或版本后的异步响应重新打开旧说明。 */
   const promptRequestRef = useRef(0);
   const selectedNode = useMemo(
@@ -1827,8 +1844,16 @@ function WorkspaceApp({
         ...newNodes.map((node) => ({ ...node, selected: node.id === selectedId })),
       ]);
       setSelectedNodeId(selectedId);
+      for (const node of newNodes) {
+        if (node.data.assetId && node.data.contentUrl)
+          automaticallyReversePrompt({
+            assetId: node.data.assetId,
+            version: nodeEchoAssetVersion(node),
+            label: node.data.label,
+          });
+      }
     },
-    [setNodes],
+    [automaticallyReversePrompt, setNodes],
   );
 
   /** 把本地文件收成项目资源，不在画布上新建节点，供提示词资源条引用。 */
@@ -1943,12 +1968,17 @@ function WorkspaceApp({
         await saveCanvas();
         pendingNodeUploadsRef.current.delete(nodeId);
         onProgress(100);
+        automaticallyReversePrompt({
+          assetId: asset.id,
+          version: asset.latestVersion,
+          label: currentNode.data.label,
+        });
       } finally {
         nodeContentLocksRef.current.delete(nodeId);
         if (lifecycle.active) setNodeContentBusy(nodeContentLocksRef.current.size > 0);
       }
     },
-    [projectId, rememberHistory, saveCanvas, setNodes],
+    [automaticallyReversePrompt, projectId, rememberHistory, saveCanvas, setNodes],
   );
 
   /** 正文编辑复用文件上传与保存契约；相同失败草稿重试沿用原文件身份。 */
@@ -2618,7 +2648,7 @@ function WorkspaceApp({
   ]);
 
   const updateNodeRunState = useCallback(
-    (nodeId: string, incoming: RunUpdate) => {
+    (nodeId: string, incoming: RunUpdate, origin: 'live' | 'restore' | 'submitted' = 'live') => {
       const currentRun = runRecordsRef.current[nodeId];
       if (!shouldApplyRunUpdate(currentRun, incoming)) return;
       const run = mergeRunUpdate(currentRun, incoming);
@@ -2627,6 +2657,21 @@ function WorkspaceApp({
       pendingRunUpdateRef.current.delete(nodeId);
       setRunRecords(runRecordsRef.current);
       const resultAsset = run.status === 'succeeded' ? run.result?.asset : undefined;
+      const targetNode = nodesRef.current.find((node) => node.id === nodeId);
+      if (
+        resultAsset &&
+        origin !== 'restore' &&
+        targetNode &&
+        (!targetNode.data.manualOutput || targetNode.data.manualOutputRunId === run.id) &&
+        (origin === 'submitted' ||
+          (currentRun?.id === run.id && isActiveRunStatus(currentRun.status)))
+      ) {
+        automaticallyReversePrompt({
+          assetId: resultAsset.assetId,
+          version: resultAsset.version,
+          label: targetNode.data.label,
+        });
+      }
       const resultAssetKey = resultAsset
         ? `${resultAsset.assetId}:${resultAsset.version ?? 0}:${resultAsset.contentUrl ?? ''}`
         : undefined;
@@ -2687,7 +2732,7 @@ function WorkspaceApp({
           : updated;
       });
     },
-    [loadAssets, setNodes],
+    [automaticallyReversePrompt, loadAssets, setNodes],
   );
 
   useEffect(() => {
@@ -2723,13 +2768,17 @@ function WorkspaceApp({
    */
   const openRequestPrompt = useCallback(async (nodeId: string) => {
     const requestId = ++promptRequestRef.current;
+    const triggerId =
+      document.activeElement?.id === `node-prompt-info-trigger-${nodeId}`
+        ? `node-prompt-info-trigger-${nodeId}`
+        : `node-prompt-trigger-${nodeId}`;
     const node = nodesRef.current.find((candidate) => candidate.id === nodeId);
     const result = node?.data.manualOutput ? undefined : node?.data.resultAsset;
     const assetId = result?.assetId ?? node?.data.assetId;
-    let version = result?.version;
+    let version = node ? nodeEchoAssetVersion(node) : undefined;
     const show = (state: RequestPromptDialogState) => {
       if (requestId === promptRequestRef.current)
-        setPromptDialog({ nodeId, assetId, version, state });
+        setPromptDialog({ nodeId, assetId, version, triggerId, state });
     };
     show({ status: 'loading' });
     if (!assetId) {
@@ -2803,7 +2852,7 @@ function WorkspaceApp({
           left.createdAt.localeCompare(right.createdAt),
         )) {
           if (!active) break;
-          updateNodeRunState(run.targetNodeId, run);
+          updateNodeRunState(run.targetNodeId, run, 'restore');
         }
         // 已拿到快照：尚未出现在记录里的节点不再是“待查询”，而是确实没有运行记录。
         pendingRunUpdateRef.current.clear();
@@ -3089,7 +3138,7 @@ function WorkspaceApp({
           canvasDirtyRef.current = true;
           await saveCanvas();
         }
-        updateNodeRunState(nodeSnapshot.id, result.run);
+        updateNodeRunState(nodeSnapshot.id, result.run, 'submitted');
         const completed = await pollRun(result.run.id, nodeSnapshot.id);
         if (completed.status === 'succeeded') {
           setNotice({ kind: 'success', message: `${nodeSnapshot.data.label} 已完成` });
@@ -3149,7 +3198,7 @@ function WorkspaceApp({
           error?: string;
         };
         if (!response.ok || !result.run) throw new Error(result.error ?? '重试提交失败');
-        updateNodeRunState(nodeId, result.run);
+        updateNodeRunState(nodeId, result.run, 'submitted');
         const completed = await pollRun(result.run.id, nodeId);
         if (completed.status !== 'succeeded') {
           throw new Error(completed.error ?? runStatusLabel(completed.status));
@@ -3570,7 +3619,21 @@ function WorkspaceApp({
         {promptDialog ? (
           <RequestPromptDialog
             state={promptDialog.state}
-            triggerId={`node-prompt-trigger-${promptDialog.nodeId}`}
+            reversePromptActions={
+              projectId && authUser && promptDialog.assetId && promptDialog.version ? (
+                <ReversePromptPanel
+                  key={`${authUser.id}:${projectId}:${promptDialog.assetId}:${promptDialog.version}`}
+                  userId={authUser.id}
+                  target={{
+                    projectId,
+                    assetId: promptDialog.assetId,
+                    version: promptDialog.version,
+                  }}
+                  models={reversePromptModels}
+                />
+              ) : undefined
+            }
+            triggerId={promptDialog.triggerId}
             onClose={() => {
               promptRequestRef.current += 1;
               setPromptDialog(undefined);

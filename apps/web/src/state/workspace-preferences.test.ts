@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  AUTO_REVERSE_PROMPT_KEY,
   CANVAS_BACKGROUND_KEY,
   CANVAS_EDGE_EFFECT_KEY,
   CANVAS_EDGE_PATH_STYLE_KEY,
@@ -30,6 +31,19 @@ describe('workspace preferences store', () => {
   afterEach(() => {
     useWorkspacePreferences.setState(workspacePreferenceDefaults);
     window.localStorage.clear();
+  });
+
+  it('自动反推默认关闭，仅显式 true 开启且可持久恢复', async () => {
+    expect(useWorkspacePreferences.getState().autoReversePrompt).toBe(false);
+    window.localStorage.setItem(AUTO_REVERSE_PROMPT_KEY, 'yes');
+    await useWorkspacePreferences.persist.rehydrate();
+    expect(useWorkspacePreferences.getState().autoReversePrompt).toBe(false);
+    useWorkspacePreferences.getState().setAutoReversePrompt(true);
+    expect(window.localStorage.getItem(AUTO_REVERSE_PROMPT_KEY)).toBe('true');
+    await useWorkspacePreferences.persist.rehydrate();
+    expect(useWorkspacePreferences.getState().autoReversePrompt).toBe(true);
+    useWorkspacePreferences.getState().setAutoReversePrompt(false);
+    expect(window.localStorage.getItem(AUTO_REVERSE_PROMPT_KEY)).toBe('false');
   });
 
   it('persists theme, background, edge path, edge effect and resource panel state under stable keys', () => {

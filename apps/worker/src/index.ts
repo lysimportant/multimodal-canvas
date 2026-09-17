@@ -1,6 +1,8 @@
 import { Job, Queue, Worker, type ConnectionOptions } from 'bullmq';
 import {
   requestPromptRecordSchema,
+  parseReversePromptOutput,
+  reversePromptResultSchema,
   runJobDataSchema,
   runResultSchema,
   frozenPromptMentionSchema,
@@ -808,12 +810,14 @@ export function createRunWorker(options: {
       // 节点进入待执行状态的时刻只在本进程记录，等它真正开始执行时再落库：
       // 从未执行的节点不会留下任何时间条目，界面显示「未记录」。
       const queuedAtByNode = new Map<string, string>();
+      /** 反推请求结果不确定时只允许显式新建，队列重放不能再次收费。 */
+      const uncertainReversePromptNodes = new Set<string>();
       for (const node of executionOrder) {
         if (node.data.mode === 'source') continue;
         const currentState = workflowNodeState(workflowState, node.id);
         if (
           currentState?.status === 'succeeded' &&
-          isVersionedWorkflowResultForNode(currentState.result, node)
+          isCompletedWorkflowResultForNode(currentState.result, node, executionSnapshot)
         ) {
           continue;
         }
@@ -856,9 +860,11 @@ export function createRunWorker(options: {
           recovered: recoveredForNode,
           fallback: localProviderJob,
         });
-        if (isVersionedWorkflowResultForNode(cachedResult, node)) {
+        if (isCompletedWorkflowResultForNode(cachedResult, node, executionSnapshot)) {
           const cachedProviderJob = cachedCandidate ?? currentState?.providerJob;
-          for (const identity of storedRequestPromptIdentities(cachedProviderJob, node.id)) {
+          for (const identity of cachedResult.asset?.version
+            ? storedRequestPromptIdentities(cachedProviderJob, node.id)
+            : []) {
             await bindRequestPromptResultStrict(identity, {
               assetId: cachedResult.asset!.assetId,
               assetVersion: cachedResult.asset!.version!,
@@ -888,6 +894,21 @@ export function createRunWorker(options: {
             providerJob: completedProviderJob,
             result: cachedResult,
           });
+          continue;
+        }
+
+        if (
+          executionSnapshot.reversePrompt &&
+          ((currentState && currentState.status !== 'pending') ||
+            providerCandidates.some(
+              (candidate) =>
+                storedRequestPromptIdentities(candidate, node.id).length > 0 ||
+                ['submitted', 'running', 'succeeded', 'failed', 'cancelled'].includes(
+                  candidate.status,
+                ),
+            ))
+        ) {
+          uncertainReversePromptNodes.add(node.id);
           continue;
         }
 
@@ -1120,9 +1141,12 @@ export function createRunWorker(options: {
           }
           if (
             nodeState.status === 'succeeded' &&
-            isVersionedWorkflowResultForNode(nodeState.result, node)
+            isCompletedWorkflowResultForNode(nodeState.result, node, executionSnapshot)
           ) {
             continue;
+          }
+          if (uncertainReversePromptNodes.has(node.id)) {
+            throw new Error('反推请求已发送或发送状态不确定，请在反推提示词窗口明确发起新的分析');
           }
 
           for (const edge of executionSnapshot.edges.filter(
@@ -1496,7 +1520,10 @@ export function createRunWorker(options: {
           if (!output || !archiveInput) {
             throw new Error(`provider returned no archivable output for workflow node ${node.id}`);
           }
-          if (!options.resultArchiver) {
+          const reversePrompt = executionSnapshot.reversePrompt
+            ? parseReversePromptOutput(output.kind === 'text' ? output.text : '')
+            : undefined;
+          if (!reversePrompt && !options.resultArchiver) {
             throw new Error(`result archiver is required for workflow node ${node.id}`);
           }
           const rawProviderMetadata: Partial<ProviderJob> = execution.providerJob ?? {};
@@ -1546,30 +1573,32 @@ export function createRunWorker(options: {
           });
           await persistProviderJob(executionProviderJob);
           await persistRun('processing', executionProviderJob);
-          const asset = await executeWithCancellation(
-            () =>
-              options.resultArchiver!({
-                runId: currentData.runId,
-                ...(currentData.userId ? { userId: currentData.userId } : {}),
-                snapshot: nodeSnapshot,
-                result: executionResult,
-                providerJob: executionProviderJob,
-                output,
-                archiveInput,
-                signal: cancellationSignal,
-                archiveKey: createArchiveKey(
-                  executionSnapshot,
-                  node.id,
-                  requestProviderJobId,
-                  executionProviderJob,
-                ),
-              }),
-            cancellationSignal,
-          );
+          const asset = reversePrompt
+            ? undefined
+            : await executeWithCancellation(
+                () =>
+                  options.resultArchiver!({
+                    runId: currentData.runId,
+                    ...(currentData.userId ? { userId: currentData.userId } : {}),
+                    snapshot: nodeSnapshot,
+                    result: executionResult,
+                    providerJob: executionProviderJob,
+                    output,
+                    archiveInput,
+                    signal: cancellationSignal,
+                    archiveKey: createArchiveKey(
+                      executionSnapshot,
+                      node.id,
+                      requestProviderJobId,
+                      executionProviderJob,
+                    ),
+                  }),
+                cancellationSignal,
+              );
           if (await isCancellationRequested(queue, job.id)) {
             return markCancelled(currentOverallProgress, node.id, executionProviderJob);
           }
-          if (!asset || !asset.version) {
+          if (!reversePrompt && (!asset || !asset.version)) {
             throw new Error(`result archiver did not return a versioned asset for ${node.id}`);
           }
           const completedAt = new Date().toISOString();
@@ -1578,6 +1607,7 @@ export function createRunWorker(options: {
           };
           const archivedResult = {
             ...executionResult,
+            ...(reversePrompt ? { asset: undefined, reversePrompt } : {}),
             ...(asset ? { asset: resultAsset.assetId ? resultAsset : asset } : {}),
             ...(finalFrame ? { finalFrame } : {}),
           } satisfies RunResult;
@@ -1619,10 +1649,10 @@ export function createRunWorker(options: {
               : {}),
           });
           await persistProviderJobStrict(archivedProviderJob);
-          for (const prompt of activeRequestPrompts) {
+          for (const prompt of asset?.version ? activeRequestPrompts : []) {
             await bindRequestPromptResultStrict(prompt, {
-              assetId: asset.assetId,
-              assetVersion: asset.version,
+              assetId: asset!.assetId,
+              assetVersion: asset!.version!,
             });
           }
           const completedProviderJob: ProviderJob = {
@@ -1689,7 +1719,7 @@ export function createRunWorker(options: {
         if (
           !finalTarget ||
           (finalTarget.data.mode !== 'source' &&
-            !isVersionedWorkflowResultForNode(finalResult, finalTarget))
+            !isCompletedWorkflowResultForNode(finalResult, finalTarget, executionSnapshot))
         ) {
           throw new Error('workflow target completed without a versioned result asset');
         }
@@ -1997,16 +2027,17 @@ function withWorkflowAssetVersions(
   };
 }
 
-function isVersionedWorkflowResultForNode(
+/** 普通生成要求版本化资产，独立反推要求已解析的描述，均必须匹配当前节点。 */
+function isCompletedWorkflowResultForNode(
   result: RunResult | undefined,
   node: RunSnapshot['nodes'][number],
+  snapshot: RunSnapshot,
 ): result is RunResult {
   return Boolean(
     result &&
     result.targetNodeId === node.id &&
     result.mediaType === node.data.mediaType &&
-    result.asset?.assetId &&
-    result.asset.version,
+    (snapshot.reversePrompt ? result.reversePrompt : result.asset?.assetId && result.asset.version),
   );
 }
 
@@ -2270,6 +2301,9 @@ function sanitizeProviderResult(value: unknown): Record<string, unknown> | undef
       .filter((mention): mention is NonNullable<typeof mention> => mention !== undefined);
     if (mentions.length > 0) output.promptMentions = mentions;
   }
+  // 反推文字本身是持久结果，保留完整字段以便恢复时跳过已收费的分析请求。
+  const reversePrompt = reversePromptResultSchema.safeParse(value.reversePrompt);
+  if (reversePrompt.success) output.reversePrompt = reversePrompt.data;
   return Object.keys(output).length > 0 ? output : undefined;
 }
 

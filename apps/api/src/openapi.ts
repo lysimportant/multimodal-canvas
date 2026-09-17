@@ -29,6 +29,35 @@ const modelSelectionSchema = {
 const defaultModelValueSchema = {
   oneOf: [{ type: 'string', minLength: 1 }, modelSelectionSchema],
 } as const;
+/** 精确资源版本的一次独立分析；文本只表示反推结果，不代表原始生成请求。 */
+const reversePromptAnalysisSchema = {
+  type: 'object',
+  required: [
+    'runId',
+    'assetId',
+    'assetVersion',
+    'status',
+    'automatic',
+    'modelAlias',
+    'createdAt',
+    'updatedAt',
+  ],
+  properties: {
+    runId: { type: 'string' },
+    assetId: { type: 'string' },
+    assetVersion: { type: 'integer', minimum: 1 },
+    status: { type: 'string', enum: ['queued', 'running', 'succeeded', 'failed', 'cancelled'] },
+    automatic: { type: 'boolean' },
+    modelAlias: { type: 'string' },
+    credentialId: { type: 'string' },
+    summary: { type: 'string', maxLength: 2000 },
+    prompt: { type: 'string', maxLength: 20000 },
+    error: { type: 'string' },
+    createdAt: { type: 'string', format: 'date-time' },
+    updatedAt: { type: 'string', format: 'date-time' },
+  },
+  additionalProperties: false,
+} as const;
 const assetSchema = {
   type: 'object',
   required: ['id', 'name', 'mediaType', 'mimeType', 'sizeBytes', 'status', 'contentUrl', 'tags'],
@@ -1360,6 +1389,81 @@ export const openApiDocument = {
             additionalProperties: false,
           }),
           '404': response('Asset not found', errorSchema),
+        },
+      },
+    },
+    '/v1/assets/{assetId}/versions/{version}/reverse-prompts': {
+      get: {
+        tags: ['assets'],
+        summary: '读取指定资源版本的独立反推任务；查询不会调用模型',
+        parameters: [
+          { $ref: '#/components/parameters/AssetId' },
+          { name: 'version', in: 'path', required: true, schema: { type: 'integer', minimum: 1 } },
+          {
+            name: 'projectId',
+            in: 'query',
+            required: true,
+            schema: { type: 'string', minLength: 1 },
+          },
+          {
+            name: 'runId',
+            in: 'query',
+            required: false,
+            schema: { type: 'string', minLength: 1 },
+            description: '轮询指定分析；省略时返回最近一次分析。',
+          },
+        ],
+        responses: {
+          '200': response('分析任务；没有记录时 analysis 为 null', {
+            type: 'object',
+            required: ['analysis'],
+            additionalProperties: false,
+            properties: {
+              analysis: { anyOf: [reversePromptAnalysisSchema, { type: 'null' }] },
+              defaultModel: modelSelectionSchema,
+            },
+          }),
+          '400': response('项目或版本参数无效', errorSchema),
+          '404': response('项目、资源版本或任务不存在或无权访问', errorSchema),
+        },
+      },
+      post: {
+        tags: ['assets'],
+        summary: '提交独立反推；默认文字模型含凭据，成功结果不归档为新资源',
+        description:
+          'automatic=true 按项目、资源与版本复用已有任何状态的分析。手动相同 idempotencyKey 或仍有运行中的分析时复用任务；失败后必须明确新建分析，普通 Run retry 不适用。',
+        parameters: [
+          { $ref: '#/components/parameters/AssetId' },
+          { name: 'version', in: 'path', required: true, schema: { type: 'integer', minimum: 1 } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['projectId'],
+                additionalProperties: false,
+                properties: {
+                  projectId: { type: 'string', minLength: 1, maxLength: 512 },
+                  modelAlias: { type: 'string', minLength: 1, maxLength: 160 },
+                  credentialId: { type: 'string', format: 'uuid' },
+                  idempotencyKey: { type: 'string', minLength: 1, maxLength: 200 },
+                  automatic: { type: 'boolean', default: false },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '202': response(
+            '新建或复用的分析任务',
+            envelope('analysis', reversePromptAnalysisSchema),
+          ),
+          '400': response('模型、资源版本、归档、大小或显式能力限制不满足', errorSchema),
+          '404': response('项目、资源版本或凭据不存在或无权访问', errorSchema),
+          '409': response('幂等身份冲突', errorSchema),
+          '429': response('项目运行配额已满', errorSchema),
         },
       },
     },

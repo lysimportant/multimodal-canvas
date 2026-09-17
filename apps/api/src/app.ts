@@ -44,6 +44,7 @@ import {
   mediaTypes,
   promptDocumentSchema,
   renderPromptDocument,
+  runSnapshotSchema,
   type CanvasDocument,
   type FrozenImageEditCapability,
   type FrozenPromptMention,
@@ -114,6 +115,14 @@ import { AccountService, accountError } from './account-service';
 import { createAccountMailSender, type AccountMailSender } from './account-mail';
 import { publicAccountPaths, registerAccountRoutes } from './account-routes';
 import { withAssetOwnershipPolicy } from './asset-ownership';
+import {
+  createReversePromptCanvas,
+  isReversePromptRun,
+  publicReversePromptAnalysis,
+  REVERSE_PROMPT_NODE_ID,
+  resolveReversePromptDefault,
+  reversePromptIdempotencyKey,
+} from './reverse-prompts';
 
 type AppLoggerOptions = {
   level?: string;
@@ -214,6 +223,17 @@ const runRequestBodySchema = z.object({
   // bounded while retaining the domain schema and its diagnostics.
   promptDocument: z.unknown().optional(),
 });
+
+/** 独立资源反推提交；自动触发由服务端按资源版本生成幂等键。 */
+const reversePromptBodySchema = z
+  .object({
+    projectId: z.string().trim().min(1).max(512),
+    modelAlias: z.string().trim().min(1).max(160).optional(),
+    credentialId: z.string().uuid().optional(),
+    idempotencyKey: z.string().trim().min(1).max(200).optional(),
+    automatic: z.boolean().default(false),
+  })
+  .strict();
 
 function serializeRequestForLog(request: FastifyRequest): Record<string, unknown> {
   return {
@@ -2015,7 +2035,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       const canvas = await projectStore.getCanvas(projectId, scope);
       if (!canvas) return reply.code(404).send({ error: 'project canvas not found' });
       const runs = (await runService.listByProject(projectId)).filter(
-        (run) => run.projectId === projectId,
+        (run) => run.projectId === projectId && !run.snapshot.reversePrompt,
       );
       const modelDefaults = await projectStore.getModelDefaults(projectId, scope);
       const workflow = createWorkflowExport({
@@ -2162,7 +2182,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
       try {
         const runs = (await runService.listByProject(projectId)).filter(
-          (run) => run.projectId === projectId,
+          (run) => run.projectId === projectId && !run.snapshot.reversePrompt,
         );
         const modelDefaults = await projectStore.getModelDefaults(projectId, scope);
         const prepared = await prepareResultsExport({
@@ -2327,7 +2347,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       const project = await projectStore.get(projectId, projectScope(requestPrincipals, request));
       if (!project) return reply.code(404).send({ error: 'project not found' });
 
-      return { runs: (await runService.listByProject(projectId)).map(toPublicRunRecord) };
+      return {
+        runs: (await runService.listByProject(projectId))
+          .filter((run) => !run.snapshot.reversePrompt)
+          .map(toPublicRunRecord),
+      };
     },
   );
 
@@ -2424,6 +2448,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         try {
           const runs = await runService.listByProject(projectId);
           for (const run of runs) {
+            if (run.snapshot.reversePrompt) continue;
             const publicRun = toPublicRunEvent(run);
             const serialized = JSON.stringify(publicRun);
             if (lastSeen.get(run.id) === serialized) continue;
@@ -2499,6 +2524,222 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
             code: 'RESOURCE_MENTION_FREEZE_FAILED',
             requestId: request.id,
             issues: error.diagnostics,
+          });
+        }
+        throw error;
+      }
+    },
+  );
+
+  /** 按已授权资源的精确版本读取分析；runId 用于轮询指定任务，缺省返回最新一次。 */
+  app.get<{ Params: { assetId: string; version: string } }>(
+    '/v1/assets/:assetId/versions/:version/reverse-prompts',
+    async (request, reply) => {
+      const query = z
+        .object({
+          projectId: z.string().trim().min(1).max(512),
+          runId: z.string().min(1).max(200).optional(),
+        })
+        .safeParse(request.query);
+      const version = Number(request.params.version);
+      if (
+        !query.success ||
+        !/^\d+$/.test(request.params.version) ||
+        !Number.isSafeInteger(version) ||
+        version < 1
+      ) {
+        return reply.code(400).send({ error: 'invalid reverse prompt query' });
+      }
+      const { projectId, runId } = query.data;
+      const project = await projectStore.get(projectId, projectScope(requestPrincipals, request));
+      if (!project) return reply.code(404).send({ error: 'project not found' });
+      const scope: AssetScope = { projectId };
+      const projectAsset = await assetStore.get(request.params.assetId, scope);
+      const effectiveScope: AssetScope = projectAsset
+        ? scope
+        : { ...assetScope(requestPrincipals, request), projectId: null };
+      const asset = projectAsset ?? (await assetStore.get(request.params.assetId, effectiveScope));
+      if (
+        !asset ||
+        !(await assetStore.listVersions(asset.id, effectiveScope)).some(
+          (entry) => entry.version === version,
+        )
+      ) {
+        return reply.code(404).send({ error: 'asset version not found' });
+      }
+      const runs = runId
+        ? [await runService.get(runId)].filter((run): run is RunRecord => Boolean(run))
+        : await runService.listByProject(projectId);
+      const run = runs
+        .filter((candidate) => isReversePromptRun(candidate, projectId, asset.id, version))
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+        .at(0);
+      if (runId && !run) return reply.code(404).send({ error: 'reverse prompt run not found' });
+      const defaultModel = await resolveReversePromptDefault(settingsStore);
+      return {
+        analysis: run ? publicReversePromptAnalysis(run) : null,
+        ...(defaultModel ? { defaultModel } : {}),
+      };
+    },
+  );
+
+  /** 冻结资源、文字模型和凭据后提交独立分析；结果留在 Run，不修改原资源或画布。 */
+  app.post<{ Params: { assetId: string; version: string } }>(
+    '/v1/assets/:assetId/versions/:version/reverse-prompts',
+    async (request, reply) => {
+      const parsed = reversePromptBodySchema.safeParse(request.body);
+      const version = Number(request.params.version);
+      if (
+        !parsed.success ||
+        !/^\d+$/.test(request.params.version) ||
+        !Number.isSafeInteger(version) ||
+        version < 1
+      ) {
+        return reply.code(400).send({ error: 'invalid reverse prompt request' });
+      }
+      const body = parsed.data;
+      const principal = requestPrincipals.get(request);
+      const project = await projectStore.get(
+        body.projectId,
+        projectScope(requestPrincipals, request),
+      );
+      if (!project) return reply.code(404).send({ error: 'project not found' });
+      if (project.archivedAt) return reply.code(400).send({ error: '已归档项目不能反推提示词' });
+      const scope: AssetScope = { projectId: body.projectId };
+      const projectAsset = await assetStore.get(request.params.assetId, scope);
+      const effectiveScope: AssetScope = projectAsset
+        ? scope
+        : { ...assetScope(requestPrincipals, request), projectId: null };
+      const asset = projectAsset ?? (await assetStore.get(request.params.assetId, effectiveScope));
+      if (
+        !asset ||
+        !(await assetStore.listVersions(asset.id, effectiveScope)).some(
+          (entry) => entry.version === version,
+        )
+      ) {
+        return reply.code(404).send({ error: 'asset version not found' });
+      }
+      if (asset.status === 'archived')
+        return reply.code(400).send({ error: '已归档资源不能反推提示词' });
+      const headerKey = request.headers['idempotency-key'];
+      const idempotencyKey = reversePromptIdempotencyKey({
+        assetId: asset.id,
+        assetVersion: version,
+        automatic: body.automatic,
+        requestKey:
+          typeof headerKey === 'string' ? headerKey : (body.idempotencyKey ?? randomUUID()),
+      });
+      const projectRuns = await runService.listByProject(body.projectId);
+      const existing = projectRuns
+        .filter(
+          (run) =>
+            isReversePromptRun(run, body.projectId, asset.id, version) &&
+            (body.automatic ||
+              run.idempotencyKey === idempotencyKey ||
+              ['queued', 'preparing', 'running', 'processing', 'cancel_requested'].includes(
+                run.status,
+              )),
+        )
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+        .at(0);
+      if (existing)
+        return reply.code(202).send({ analysis: publicReversePromptAnalysis(existing) });
+      if (
+        maxActiveRunsPerProject !== undefined &&
+        projectRuns.filter((run) =>
+          ['queued', 'preparing', 'running', 'processing', 'cancel_requested'].includes(run.status),
+        ).length >= maxActiveRunsPerProject
+      ) {
+        return reply.code(429).send({ error: 'project run quota exceeded', retryAfterSeconds: 30 });
+      }
+      try {
+        if (body.credentialId && !(await settingsStore.hasCredential(body.credentialId))) {
+          return reply.code(404).send({ error: 'credential not found' });
+        }
+        const selected: ModelSelection | undefined = body.modelAlias
+          ? {
+              modelAlias: body.modelAlias,
+              ...(body.credentialId ? { credentialId: body.credentialId } : {}),
+            }
+          : await resolveReversePromptDefault(settingsStore);
+        if (!selected) throw new AiSettingsError('model_unavailable', '未配置可用的文字模型');
+        if (
+          body.credentialId &&
+          selected.credentialId &&
+          body.credentialId !== selected.credentialId
+        ) {
+          throw new AiSettingsError('model_unavailable', '文字默认模型的凭据与指定 API Key 不一致');
+        }
+        const canvas = createReversePromptCanvas({
+          assetId: asset.id,
+          assetVersion: version,
+          mediaType: asset.mediaType,
+        });
+        const resolution = await resolveRunNodeModels({
+          settingsStore,
+          canvas,
+          targetNodeId: REVERSE_PROMPT_NODE_ID,
+          requestModelAlias: selected.modelAlias,
+          credentialId: body.credentialId ?? selected.credentialId,
+          allowVirtualMockModels: providerName === 'mock' && process.env.NODE_ENV !== 'production',
+          requireCredentialReferences: providerName === 'newapi',
+        });
+        const frozenPromptMentions = await resolvePromptMentionRefs({
+          assetStore,
+          canvas,
+          targetNodeId: REVERSE_PROMPT_NODE_ID,
+          projectId: body.projectId,
+          ...(principal?.userId ? { ownerId: principal.userId } : {}),
+          requestId: request.id,
+        });
+        const issues = validateRunPromptMentionCapabilities({
+          canvas,
+          targetNodeId: REVERSE_PROMPT_NODE_ID,
+          frozenPromptMentions,
+          nodeModelAliases: resolution.nodeModelAliases,
+          nodeModels: resolution.nodeModels,
+          requestId: request.id,
+          allowMockPreview: providerName === 'mock' && process.env.NODE_ENV !== 'production',
+        });
+        if (issues.length > 0) throw new ResourceMentionCapabilityError(issues);
+        const snapshot = runSnapshotSchema.parse({
+          ...createRunSnapshot(body.projectId, canvas, REVERSE_PROMPT_NODE_ID, {
+            modelAlias: resolution.targetModelAlias,
+            nodeModelAliases: resolution.nodeModelAliases,
+            ...(Object.keys(resolution.nodeCredentialReferences).length > 0
+              ? { nodeCredentialReferences: resolution.nodeCredentialReferences }
+              : {}),
+            ...(resolution.nodeCredentialReferences[REVERSE_PROMPT_NODE_ID] ?? {}),
+            frozenPromptMentions,
+          }),
+          reversePrompt: { assetId: asset.id, assetVersion: version, automatic: body.automatic },
+        });
+        const run = await runService.create(snapshot, {
+          idempotencyKey,
+          ...(principal?.userId ? { userId: principal.userId } : {}),
+        });
+        return reply.code(202).send({ analysis: publicReversePromptAnalysis(run) });
+      } catch (error) {
+        if (error instanceof AiSettingsError)
+          return reply.code(400).send({ error: error.message, code: error.code });
+        if (error instanceof AiCredentialNotFoundError)
+          return reply.code(404).send({ error: 'credential not found', code: error.code });
+        if (error instanceof RunServiceError)
+          return reply
+            .code(error.code === 'idempotency_conflict' ? 409 : 400)
+            .send({ error: error.message });
+        if (
+          error instanceof ResourceMentionFreezeError ||
+          error instanceof ResourceMentionCapabilityError
+        ) {
+          return reply.code(400).send({
+            error: error.message,
+            code:
+              error instanceof ResourceMentionFreezeError
+                ? 'RESOURCE_MENTION_FREEZE_FAILED'
+                : 'RESOURCE_MENTION_CAPABILITY_UNSUPPORTED',
+            issues: error.diagnostics,
+            requestId: request.id,
           });
         }
         throw error;
@@ -2795,6 +3036,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         !(await projectStore.get(previous.projectId, projectScope(requestPrincipals, request)))
       ) {
         return reply.code(404).send({ error: 'run not found' });
+      }
+      if (previous.snapshot.reversePrompt) {
+        return reply.code(409).send({ error: '请在反推提示词窗口中明确发起新的分析' });
       }
       const run = await runService.retry(request.params.runId);
       return reply.code(202).send({ run: toPublicRunRecord(run) });

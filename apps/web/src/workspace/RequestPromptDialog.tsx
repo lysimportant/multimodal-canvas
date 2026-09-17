@@ -31,6 +31,8 @@ type RequestPromptDialogProps = {
   onSaveSummary?: (summary: string) => Promise<void>;
   /** 资产版本选择及预览入口；由资源历史面板提供。 */
   versionActions?: ReactNode;
+  /** 当前资源的模型选择、反推操作与分析结果；独立于真实请求记录。 */
+  reversePromptActions?: ReactNode;
 };
 
 /** 摘要建议长度上限，超出时给出提示但不截断真实内容。 */
@@ -51,6 +53,7 @@ export function RequestPromptDialog({
   onRetry,
   onSaveSummary,
   versionActions,
+  reversePromptActions,
 }: RequestPromptDialogProps) {
   const [summaryCopy, setSummaryCopy] = useState<CopyState>('idle');
   const [promptCopy, setPromptCopy] = useState<CopyState>('idle');
@@ -138,6 +141,7 @@ export function RequestPromptDialog({
         </header>
         <div className="request-prompt-body">
           {versionActions}
+          {reversePromptActions}
           {state.status === 'loading' ? (
             <p className="request-prompt-status" role="status">
               <Loader2 size={14} aria-hidden="true" /> 正在读取生成说明…
@@ -166,6 +170,9 @@ export function RequestPromptDialog({
           ) : null}
           {record ? (
             <>
+              {reversePromptActions ? (
+                <h3 className="request-prompt-record-heading">原始生成记录</h3>
+              ) : null}
               <section className="request-prompt-block" aria-label="整体摘要">
                 <div className="request-prompt-block-head">
                   <h3>整体摘要</h3>

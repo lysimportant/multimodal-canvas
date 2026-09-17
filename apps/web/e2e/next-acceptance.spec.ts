@@ -220,6 +220,12 @@ async function installFixture(page: Page) {
       }
       return json(route, { defaults });
     }
+    if (path.endsWith('/reverse-prompts') && method === 'GET') {
+      return json(route, {
+        analysis: null,
+        defaultModel: { modelAlias: 'text-model', credentialId: 'active-credential' },
+      });
+    }
     if (path.includes('/request-prompts')) {
       const assetId = path.startsWith('/v1/assets/') ? path.split('/')[3]! : 'acceptance-text';
       const record = records.get(assetId);
@@ -547,8 +553,9 @@ test('提示词与耗时：旧结果只读长文本、双复制、焦点及刷�
   const nodeBox = await node.boundingBox();
   await node.hover();
   await node.getByRole('button', { name: '查看节点信息' }).click();
-  await expect(page.locator('.node-duration-badge')).toHaveText('12.4 s');
-  const trigger = page.getByRole('button', { name: /查看生成提示词/ });
+  const info = page.getByRole('dialog', { name: '节点信息', exact: true });
+  await expect(info.locator('.node-duration-badge')).toHaveText('12.4 s');
+  const trigger = info.getByRole('button', { name: /查看生成提示词/ });
   await trigger.click();
   const dialog = page.getByRole('dialog', { name: '生成提示词' });
   await expect(dialog.locator('.request-prompt-text')).toHaveText(`[user] ${promptText}`);
@@ -570,7 +577,7 @@ test('提示词与耗时：旧结果只读长文本、双复制、焦点及刷�
   await page.reload({ waitUntil: 'domcontentloaded' });
   await node.hover();
   await node.getByRole('button', { name: '查看节点信息' }).click();
-  await expect(page.locator('.node-duration-badge')).toHaveText('12.4 s');
+  await expect(info.locator('.node-duration-badge')).toHaveText('12.4 s');
   expect(fixture.errors).toEqual([]);
 });
 

@@ -258,6 +258,7 @@ export function createNodeRunSnapshot(
     ...(credentialReference ? { nodeCredentialReferences: { [nodeId]: credentialReference } } : {}),
     parameters,
     submittedAt: snapshot.submittedAt,
+    ...(snapshot.reversePrompt ? { reversePrompt: snapshot.reversePrompt } : {}),
     // One upstream node may intentionally fill more than one role. Keep each
     // edge/input entry while storing the canvas node only once.
     nodes: [...sourceById.values(), target],

@@ -279,6 +279,117 @@ function createTextSnapshot(): RunSnapshot {
 }
 
 describe('worker workflow DAG execution', () => {
+  it('将独立反推结果留在 Run，并在重新处理队列任务时复用结果而不归档或重发', async () => {
+    bullmqState.jobs.clear();
+    const runId = '123e4567-e89b-42d3-a456-426614174181';
+    const base = createTextSnapshot();
+    const analysisSnapshot: RunSnapshot = {
+      ...base,
+      nodes: base.nodes.filter((node) => node.id === base.targetNodeId),
+      edges: [],
+      inputs: [],
+      reversePrompt: { assetId: 'asset_image', assetVersion: 3, automatic: true },
+      promptMentions: [
+        {
+          nodeId: base.targetNodeId,
+          mentionId: 'source',
+          assetId: 'asset_image',
+          assetVersion: 3,
+          mediaType: 'image',
+          label: 'Resource',
+          blockOrder: 0,
+        },
+      ],
+    };
+    const details = { summary: '红色立方体', prompt: '详细描述。'.repeat(500) };
+    const provider = {
+      execute: vi.fn(async ({ snapshot }: WorkerProviderRequest) => ({
+        ...createExecution(snapshot),
+        output: {
+          mediaType: 'text' as const,
+          kind: 'text' as const,
+          text: JSON.stringify(details),
+          mimeType: 'text/plain',
+        },
+      })),
+    };
+    const archiver = vi.fn(async () => {
+      throw new Error('反推不应调用资源归档');
+    });
+    const job = createJob({
+      runId,
+      snapshot: analysisSnapshot,
+      attempt: 1,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(runId, 'newapi'),
+      cancelRequested: false,
+    });
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      provider,
+      stepDelayMs: 0,
+      resultArchiver: archiver,
+    });
+    const result = await bullmqState.processor?.(job);
+    expect(result).toMatchObject({ status: 'succeeded', result: { reversePrompt: details } });
+    expect((result as { result: { asset?: unknown } }).result.asset).toBeUndefined();
+    expect(provider.execute.mock.calls[0]?.[0].snapshot.reversePrompt).toEqual(
+      analysisSnapshot.reversePrompt,
+    );
+    expect(archiver).not.toHaveBeenCalled();
+    // 只保留可持久化 ProviderJob，验证跨 Worker 恢复仍有完整分析结果。
+    delete job.data.workflowState;
+    await expect(bullmqState.processor?.(job)).resolves.toMatchObject({
+      status: 'succeeded',
+      result: { reversePrompt: details },
+    });
+    expect(provider.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('反推输出缺失 JSON 字段时明确失败，不把普通文字或无效结果当成功', async () => {
+    bullmqState.jobs.clear();
+    const runId = '123e4567-e89b-42d3-a456-426614174182';
+    const base = createTextSnapshot();
+    const analysisSnapshot: RunSnapshot = {
+      ...base,
+      nodes: base.nodes.filter((node) => node.id === base.targetNodeId),
+      edges: [],
+      inputs: [],
+      reversePrompt: { assetId: 'asset_image', assetVersion: 1, automatic: false },
+      promptMentions: [
+        {
+          mentionId: 'source',
+          assetId: 'asset_image',
+          assetVersion: 1,
+          mediaType: 'image',
+          label: 'Resource',
+          blockOrder: 0,
+        },
+      ],
+    };
+    const provider = {
+      execute: vi.fn(async ({ snapshot }: WorkerProviderRequest) => createExecution(snapshot)),
+    };
+    const job = createJob({
+      runId,
+      snapshot: analysisSnapshot,
+      attempt: 1,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(runId, 'newapi'),
+      cancelRequested: false,
+    });
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      provider,
+      stepDelayMs: 0,
+    });
+    await expect(bullmqState.processor?.(job)).rejects.toThrow('反推结果格式无效');
+    await expect(bullmqState.processor?.(job)).rejects.toThrow('反推请求已发送或发送状态不确定');
+    expect(provider.execute).toHaveBeenCalledTimes(1);
+  });
+
   it('hashes the same shared v2 fingerprint material as the API', () => {
     const expected = createHash('sha256')
       .update(runSnapshotFingerprintMaterial(snapshot))

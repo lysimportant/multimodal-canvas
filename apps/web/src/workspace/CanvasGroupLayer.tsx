@@ -1,6 +1,18 @@
-import type { CanvasGroup } from '@multimodal-canvas/domain';
-import { Type, Trash2, Ungroup } from 'lucide-react';
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { mediaTypes, type CanvasGroup } from '@multimodal-canvas/domain';
+import { Group, Type, Trash2, Ungroup } from 'lucide-react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
+import { createPortal } from 'react-dom';
+
+import type { AssetFlowNode } from '../canvas-utils';
+import { mediaIcons, mediaLabels } from './contracts';
+
+import './canvas-group-hover-card.css';
 
 /**
  * 组区域在画布视口中的渲染位置。
@@ -10,8 +22,11 @@ import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } f
  */
 export type CanvasGroupViewport = { x: number; y: number; zoom: number };
 
+/** 组展示数据与画布持有的布局操作。 */
 type CanvasGroupLayerProps = {
   groups: readonly CanvasGroup[];
+  /** 画布节点用于统计组成员的媒体类型，不改变成员归属。 */
+  nodes?: readonly AssetFlowNode[];
   viewport: CanvasGroupViewport;
   /** 当前正在拖拽节点时预高亮的组。 */
   dropTargetGroupId?: string;
@@ -31,6 +46,7 @@ type CanvasGroupLayerProps = {
   onGroupInteractionStart?: () => void;
 };
 
+/** 单次指针交互的起点及外框快照，移动增量会在每次事件后更新。 */
 type DragState = {
   kind: 'move' | 'resize';
   groupId: string;
@@ -42,6 +58,10 @@ type DragState = {
   corner?: 'se' | 'sw' | 'ne' | 'nw';
   originX: number;
   originY: number;
+  /** 发起拖动的指针，避免第二根手指改变当前交互。 */
+  pointerId: number;
+  /** 越过位移阈值后才记录历史，单击选择不产生空撤销步骤。 */
+  started: boolean;
 };
 
 /**
@@ -53,6 +73,7 @@ type DragState = {
  */
 export function CanvasGroupLayer({
   groups,
+  nodes = [],
   viewport,
   dropTargetGroupId,
   selectedGroupId,
@@ -66,11 +87,38 @@ export function CanvasGroupLayer({
   const dragRef = useRef<DragState | undefined>(undefined);
   const [editingGroupId, setEditingGroupId] = useState<string | undefined>(undefined);
   const [draftName, setDraftName] = useState('');
+  const [hoveredGroup, setHoveredGroup] = useState<{ groupId: string; anchor: HTMLElement }>();
+  const hoverCloseTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  /** 允许指针从标题移动到悬浮卡片，短暂跨越间隙时不关闭。 */
+  const keepHoverCardOpen = () => {
+    if (hoverCloseTimer.current !== undefined) clearTimeout(hoverCloseTimer.current);
+    hoverCloseTimer.current = undefined;
+  };
+  /** 指针与焦点均离开后延迟关闭，便于点击卡片中的组操作。 */
+  const closeHoverCardLater = () => {
+    keepHoverCardOpen();
+    hoverCloseTimer.current = setTimeout(() => setHoveredGroup(undefined), 120);
+  };
+
+  useEffect(
+    () => () => {
+      if (hoverCloseTimer.current !== undefined) clearTimeout(hoverCloseTimer.current);
+    },
+    [],
+  );
 
   useEffect(() => {
     const onMove = (event: PointerEvent) => {
       const drag = dragRef.current;
-      if (!drag) return;
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      if (!drag.started) {
+        if (Math.hypot(event.clientX - drag.startClientX, event.clientY - drag.startClientY) < 3)
+          return;
+        drag.started = true;
+        onGroupInteractionStart?.();
+        setHoveredGroup(undefined);
+      }
       const deltaX = (event.clientX - drag.startClientX) / viewport.zoom;
       const deltaY = (event.clientY - drag.startClientY) / viewport.zoom;
       if (drag.kind === 'move') {
@@ -97,30 +145,37 @@ export function CanvasGroupLayer({
           : {}),
       });
     };
-    const onUp = () => {
+    const onUp = (event: PointerEvent) => {
+      if (dragRef.current?.pointerId !== event.pointerId) return;
+      dragRef.current = undefined;
+    };
+    const onBlur = () => {
       dragRef.current = undefined;
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
     window.addEventListener('pointercancel', onUp);
+    window.addEventListener('blur', onBlur);
     return () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
       window.removeEventListener('pointercancel', onUp);
+      window.removeEventListener('blur', onBlur);
     };
-  }, [onResizeGroup, onTranslateGroup, viewport.zoom]);
+  }, [onGroupInteractionStart, onResizeGroup, onTranslateGroup, viewport.zoom]);
 
   if (groups.length === 0) return null;
 
+  /** 左键按下仅选中并记录起点，实际移动越过阈值后才写入历史。 */
   const startDrag = (
     event: ReactPointerEvent<HTMLElement>,
     group: CanvasGroup,
     kind: DragState['kind'],
     corner?: DragState['corner'],
   ) => {
+    if (event.button !== 0) return;
     event.stopPropagation();
-    event.preventDefault();
-    onGroupInteractionStart?.();
+    if (kind === 'resize') event.preventDefault();
     onSelectGroup?.(group.id);
     dragRef.current = {
       kind,
@@ -131,10 +186,21 @@ export function CanvasGroupLayer({
       originHeight: group.height,
       originX: group.position.x,
       originY: group.position.y,
+      pointerId: event.pointerId,
+      started: false,
       ...(corner ? { corner } : {}),
     };
   };
 
+  /** 打开重命名输入框时收起悬浮卡片，保持输入焦点。 */
+  const startRename = (group: CanvasGroup) => {
+    keepHoverCardOpen();
+    setHoveredGroup(undefined);
+    setDraftName(group.name);
+    setEditingGroupId(group.id);
+  };
+
+  /** 提交有效且变更后的组名，空名称只退出编辑。 */
   const commitRename = (group: CanvasGroup) => {
     const next = draftName.trim();
     setEditingGroupId(undefined);
@@ -169,6 +235,23 @@ export function CanvasGroupLayer({
             <div
               className="canvas-group-header"
               onPointerDown={(event) => startDrag(event, group, 'move')}
+              onPointerEnter={(event) => {
+                keepHoverCardOpen();
+                if (!dragRef.current && editingGroupId !== group.id) {
+                  setHoveredGroup({ groupId: group.id, anchor: event.currentTarget });
+                }
+              }}
+              onPointerLeave={closeHoverCardLater}
+              onFocus={(event) => {
+                keepHoverCardOpen();
+                if (editingGroupId !== group.id) {
+                  setHoveredGroup({ groupId: group.id, anchor: event.currentTarget });
+                }
+              }}
+              onBlur={closeHoverCardLater}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') setHoveredGroup(undefined);
+              }}
             >
               {editingGroupId === group.id ? (
                 <input
@@ -189,11 +272,8 @@ export function CanvasGroupLayer({
                   type="button"
                   className="canvas-group-name"
                   title="双击重命名"
-                  onPointerDown={(event) => event.stopPropagation()}
-                  onDoubleClick={() => {
-                    setDraftName(group.name);
-                    setEditingGroupId(group.id);
-                  }}
+                  onClick={() => onSelectGroup?.(group.id)}
+                  onDoubleClick={() => startRename(group)}
                 >
                   <Type size={12} aria-hidden="true" />
                   <span>{group.name}</span>
@@ -208,10 +288,7 @@ export function CanvasGroupLayer({
                     aria-label={`重命名组 ${group.name}`}
                     title="重命名"
                     onPointerDown={(event) => event.stopPropagation()}
-                    onClick={() => {
-                      setDraftName(group.name);
-                      setEditingGroupId(group.id);
-                    }}
+                    onClick={() => startRename(group)}
                   >
                     <Type size={12} aria-hidden="true" />
                   </button>
@@ -247,6 +324,150 @@ export function CanvasGroupLayer({
           </div>
         );
       })}
+      {hoveredGroup && groups.some((group) => group.id === hoveredGroup.groupId) ? (
+        <CanvasGroupHoverCard
+          group={groups.find((group) => group.id === hoveredGroup.groupId)!}
+          nodes={nodes}
+          anchor={hoveredGroup.anchor}
+          viewport={viewport}
+          onEnter={keepHoverCardOpen}
+          onLeave={closeHoverCardLater}
+          onClose={() => setHoveredGroup(undefined)}
+          onRename={onRenameGroup ? startRename : undefined}
+          onDissolve={
+            onDissolveGroup
+              ? (groupId) => {
+                  setHoveredGroup(undefined);
+                  onDissolveGroup(groupId);
+                }
+              : undefined
+          }
+        />
+      ) : null}
     </div>
+  );
+}
+
+/**
+ * 组标题的悬浮信息与常用操作；使用 portal，避免被媒体节点层或组边界裁切。
+ * @param group 当前组；成员类型以 nodes 中仍存在的节点为准。
+ * @param anchor 标题元素，用于视口内定位；不会改变画布或节点尺寸。
+ */
+function CanvasGroupHoverCard({
+  group,
+  nodes,
+  anchor,
+  viewport,
+  onEnter,
+  onLeave,
+  onClose,
+  onRename,
+  onDissolve,
+}: {
+  group: CanvasGroup;
+  nodes: readonly AssetFlowNode[];
+  anchor: HTMLElement;
+  viewport: CanvasGroupViewport;
+  onEnter: () => void;
+  onLeave: () => void;
+  onClose: () => void;
+  onRename?: (group: CanvasGroup) => void;
+  onDissolve?: (groupId: string) => void;
+}) {
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState({ left: 0, top: 0 });
+  const members = nodes.filter((node) => group.nodeIds.includes(node.id));
+
+  useLayoutEffect(() => {
+    const updatePosition = () => {
+      const bounds = anchor.getBoundingClientRect();
+      const card = cardRef.current?.getBoundingClientRect();
+      if (!card) return;
+      const preferredTop = bounds.top - card.height - 6;
+      setPosition({
+        left: Math.max(8, Math.min(bounds.left, window.innerWidth - card.width - 8)),
+        top: Math.max(
+          8,
+          Math.min(
+            preferredTop >= 8 ? preferredTop : bounds.bottom + 6,
+            window.innerHeight - card.height - 8,
+          ),
+        ),
+      });
+    };
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [anchor, group, nodes, viewport]);
+
+  return createPortal(
+    <div
+      ref={cardRef}
+      className="canvas-group-hover-card"
+      role="region"
+      aria-label={`${group.name}分组信息`}
+      style={position}
+      onPointerEnter={onEnter}
+      onPointerLeave={onLeave}
+      onFocus={onEnter}
+      onBlur={onLeave}
+      onPointerDown={(event) => event.stopPropagation()}
+      onKeyDown={(event) => {
+        if (event.key !== 'Escape') return;
+        event.stopPropagation();
+        anchor.querySelector<HTMLButtonElement>('.canvas-group-name')?.focus();
+        onClose();
+      }}
+    >
+      <div className="canvas-group-hover-heading">
+        <Group size={15} aria-hidden="true" />
+        <strong>{group.name}</strong>
+        <span>{group.nodeIds.length} 个节点</span>
+      </div>
+      <div className="canvas-group-hover-members">
+        {mediaTypes.map((mediaType) => {
+          const count = members.filter((node) => node.data.mediaType === mediaType).length;
+          if (!count) return null;
+          const Icon = mediaIcons[mediaType];
+          return (
+            <span key={mediaType}>
+              <Icon size={14} aria-hidden="true" />
+              {mediaLabels[mediaType]}
+              <b>{count}</b>
+            </span>
+          );
+        })}
+        {group.nodeIds.length === 0 ? <span>暂无成员</span> : null}
+      </div>
+      {onRename || onDissolve ? (
+        <div className="canvas-group-hover-actions">
+          {onRename ? (
+            <button
+              type="button"
+              aria-label="重命名此组"
+              title="重命名"
+              onClick={() => onRename(group)}
+            >
+              <Type size={14} aria-hidden="true" />
+            </button>
+          ) : null}
+          {onDissolve ? (
+            <button
+              type="button"
+              aria-label="解散此组"
+              title="解散组（保留成员）"
+              onClick={() => onDissolve(group.id)}
+            >
+              <Ungroup size={14} aria-hidden="true" />
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </div>,
+    document.body,
   );
 }

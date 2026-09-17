@@ -483,6 +483,13 @@ export function WorkflowCanvas({
       setContextMenu(null);
       if (reason === 'outside') return;
       window.setTimeout(() => {
+        // 菜单操作打开 Dialog 后，保留新浮层的焦点，避免覆盖其初始聚焦。
+        if (
+          document.activeElement instanceof HTMLElement &&
+          document.activeElement !== document.body
+        ) {
+          return;
+        }
         const focusTarget = returnFocusTo?.isConnected ? returnFocusTo : canvasAreaRef.current;
         focusTarget?.focus({ preventScroll: true });
       }, 0);
@@ -654,6 +661,7 @@ export function WorkflowCanvas({
                               {/* 组区域层在 React Flow 之下：只显示布局，不遮挡端口、连线与节点交互。 */}
                               <CanvasGroupLayer
                                 groups={groups}
+                                nodes={nodes}
                                 viewport={viewport}
                                 {...(dropTargetGroupId ? { dropTargetGroupId } : {})}
                                 {...(selectedGroupId ? { selectedGroupId } : {})}
@@ -866,6 +874,21 @@ export function WorkflowCanvas({
           onAddGenerateNode={onAddGenerateNode}
           onAddConnectedGenerateNode={onAddConnectedGenerateNode}
           onRequestUpload={onRequestUpload}
+          onOpenRequestPrompt={onOpenRequestPrompt}
+          onEditImage={onEditImage}
+          onCreateGroup={onCreateGroup}
+          onUndoCanvas={onUndoCanvas}
+          onRedoCanvas={onRedoCanvas}
+          onClearCanvas={onClearCanvas}
+          onClearEmptyNodes={onClearEmptyNodes}
+          clearCounts={clearCounts}
+          canClearCanvas={
+            canClearCanvas ?? (nodes.length > 0 || edges.length > 0 || groups.length > 0)
+          }
+          canUndo={canUndo}
+          canRedo={canRedo}
+          onFitView={handleFitView}
+          onOpenSearch={onOpenSearch}
           onClose={handleContextMenuClose}
         />
       )}

@@ -1,6 +1,8 @@
 # 下一阶段：节点信息、设置与画布交互增强计划
 
-当前任务：统一取消资源能力声明缺失时的拦截，补齐文字节点图片连线。范围、验收与检查点见 [资源输入兼容](docs/resource-input-compatibility.md)。
+当前任务：完善节点悬浮信息、反推提示词、资源预览、竖向右键菜单与组移动。范围、验收与检查点见 [节点交互与反推提示词](docs/node-interaction-reverse-prompt.md)。
+
+前序资源输入兼容检查点见 [资源输入兼容](docs/resource-input-compatibility.md)。
 
 图片引用兼容后续任务：用户已授权取消图片流程的强制声明限制，并接通资源引用到 `edits`。当前执行状态、边界及回滚说明见 [图片引用与编辑兼容](docs/image-reference-compatibility.md)。
 
