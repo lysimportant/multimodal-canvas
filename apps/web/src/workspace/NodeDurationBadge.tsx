@@ -66,6 +66,8 @@ export function useSharedNodeClock(enabled: boolean): number {
 
 type NodeDurationBadgeProps = {
   timing?: NodeTiming;
+  /** 可选的耗时说明，显示在时钟图标后；缺省只显示时长。 */
+  label?: string;
   /** 服务端参考时间，单位毫秒；由共享时钟提供。 */
   now: number;
   /** 外部已知的运行状态，用于没有终态时间时判断是否仍在运行。 */
@@ -78,11 +80,12 @@ type NodeDurationBadgeProps = {
  * 未执行或缺少时间戳的节点显示“未记录”；时间顺序异常时标记不可用；
  * 运行中显示已用时间与进行中状态，完成后冻结为终态耗时。
  */
-export function NodeDurationBadge({ timing, now, running = false }: NodeDurationBadgeProps) {
+export function NodeDurationBadge({ timing, label, now, running = false }: NodeDurationBadgeProps) {
+  const durationLabel = label ? <span>{label}</span> : null;
   if (!timing) {
     return (
       <span className="node-duration-badge is-unrecorded" title="未记录生成耗时">
-        <Clock size={11} aria-hidden="true" /> 未记录
+        <Clock size={11} aria-hidden="true" /> {durationLabel} 未记录
       </span>
     );
   }
@@ -90,7 +93,7 @@ export function NodeDurationBadge({ timing, now, running = false }: NodeDuration
   if (duration.availability === 'unrecorded' || (duration.availability === 'running' && !running)) {
     return (
       <span className="node-duration-badge is-unrecorded" title="未记录生成耗时">
-        <Clock size={11} aria-hidden="true" /> 未记录
+        <Clock size={11} aria-hidden="true" /> {durationLabel} 未记录
       </span>
     );
   }
@@ -104,7 +107,7 @@ export function NodeDurationBadge({ timing, now, running = false }: NodeDuration
             : '服务端时间戳晚于当前时间，耗时不可用'
         }
       >
-        <Clock size={11} aria-hidden="true" /> 耗时不可用
+        <Clock size={11} aria-hidden="true" /> {durationLabel} 耗时不可用
       </span>
     );
   }
@@ -112,18 +115,20 @@ export function NodeDurationBadge({ timing, now, running = false }: NodeDuration
     return (
       <span className="node-duration-badge is-running" title="本节点正在执行">
         <Loader2 size={11} aria-hidden="true" className="node-duration-spinner" />
+        {durationLabel}
         {formatNodeDuration(duration.milliseconds)}
       </span>
     );
   }
-  const label =
+  const outcomeLabel =
     timing.outcome === 'failed' ? '失败耗时' : timing.outcome === 'cancelled' ? '取消耗时' : '耗时';
   return (
     <span
       className={`node-duration-badge${running ? ' is-running' : ''}`}
-      title={`${label} ${formatNodeDuration(duration.milliseconds)}`}
+      title={`${outcomeLabel} ${formatNodeDuration(duration.milliseconds)}`}
     >
-      <Clock size={11} aria-hidden="true" /> {formatNodeDuration(duration.milliseconds)}
+      <Clock size={11} aria-hidden="true" /> {durationLabel}{' '}
+      {formatNodeDuration(duration.milliseconds)}
     </span>
   );
 }

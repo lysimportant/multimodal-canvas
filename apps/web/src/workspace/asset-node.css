@@ -59,6 +59,12 @@
   z-index: 6;
 }
 
+@media (min-width: 1280px) {
+  .flow-asset-node > .flow-node-header.flow-node-floating-controls {
+    max-width: min(1040px, calc(100vw - 32px));
+  }
+}
+
 .flow-node-floating-controls::after {
   content: '';
   height: 11px;
@@ -68,35 +74,17 @@
   width: 100%;
 }
 
-.flow-node-floating-summary {
-  align-items: center;
-  border-bottom: 1px solid var(--mc-border);
-  display: flex;
-  flex: 1 0 100%;
-  flex-wrap: wrap;
-  gap: 8px 16px;
-  min-width: 0;
-  padding-bottom: 8px;
-}
-
-.flow-node-floating-controls .flow-node-floating-summary .flow-node-prompt-button {
-  color: var(--mc-accent-strong, #12613e);
-  min-height: 28px;
-}
-
-.flow-node-floating-duration {
-  align-items: center;
-  color: var(--mc-text-muted);
-  display: inline-flex;
-  font-size: 12px;
-  gap: 6px;
-  min-height: 28px;
-  white-space: nowrap;
-}
-
 .flow-node-floating-duration .node-duration-badge {
-  font-size: 12px;
+  font-size: 13px;
   font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  gap: 8px;
+  line-height: 1.2;
+}
+
+.flow-node-floating-duration .node-duration-badge svg {
+  height: 18px;
+  width: 18px;
 }
 
 .flow-asset-node:hover > .flow-node-floating-controls,

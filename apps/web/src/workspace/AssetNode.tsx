@@ -449,43 +449,6 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
       >
         {floatingControls ? (
           <>
-            <div className="flow-node-floating-summary">
-              {openPrompt ? (
-                <button
-                  type="button"
-                  id={`node-prompt-trigger-${id}`}
-                  className="flow-node-action-button flow-node-prompt-button nodrag nopan nowheel"
-                  aria-label={`查看生成提示词：${data.label}`}
-                  title="查看生成提示词"
-                  onPointerDown={(event) => event.stopPropagation()}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    openPrompt(id);
-                  }}
-                >
-                  <FileText size={18} aria-hidden="true" />
-                  <NodeFloatingActionLabel>提示词</NodeFloatingActionLabel>
-                </button>
-              ) : null}
-              <span className="flow-node-floating-duration" aria-label="节点生成耗时">
-                <span>{previewAsset ? '结果耗时' : '耗时'}</span>
-                <NodeDurationBadge
-                  {...(displayedTiming ? { timing: displayedTiming } : {})}
-                  now={durationNow}
-                  running={!previewAsset && isNodeRunning(data.runStatus)}
-                />
-              </span>
-              {previewAsset && isNodeRunning(data.runStatus) ? (
-                <span className="flow-node-floating-duration" aria-label="当前执行耗时">
-                  <span>当前执行</span>
-                  <NodeDurationBadge
-                    {...(data.nodeTiming ? { timing: data.nodeTiming } : {})}
-                    now={durationNow}
-                    running
-                  />
-                </span>
-              ) : null}
-            </div>
             {changeLabel ? (
               <button
                 type="button"
@@ -531,6 +494,47 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
               <Info size={18} aria-hidden="true" />
               <NodeFloatingActionLabel>信息</NodeFloatingActionLabel>
             </button>
+            {openPrompt ? (
+              <button
+                type="button"
+                id={`node-prompt-trigger-${id}`}
+                className="flow-node-action-button flow-node-prompt-button nodrag nopan nowheel"
+                aria-label={`查看生成提示词：${data.label}`}
+                title="查看生成提示词"
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  openPrompt(id);
+                }}
+              >
+                <FileText size={18} aria-hidden="true" />
+                <NodeFloatingActionLabel>提示词</NodeFloatingActionLabel>
+              </button>
+            ) : null}
+            <span
+              className="flow-node-action-button flow-node-floating-duration nodrag nopan nowheel"
+              aria-label="节点生成耗时"
+            >
+              <NodeDurationBadge
+                {...(displayedTiming ? { timing: displayedTiming } : {})}
+                label={previewAsset ? '结果耗时' : '耗时'}
+                now={durationNow}
+                running={!previewAsset && isNodeRunning(data.runStatus)}
+              />
+            </span>
+            {previewAsset && isNodeRunning(data.runStatus) ? (
+              <span
+                className="flow-node-action-button flow-node-floating-duration nodrag nopan nowheel"
+                aria-label="当前执行耗时"
+              >
+                <NodeDurationBadge
+                  {...(data.nodeTiming ? { timing: data.nodeTiming } : {})}
+                  label="当前执行"
+                  now={durationNow}
+                  running
+                />
+              </span>
+            ) : null}
             {setNodeEnabled ? (
               <button
                 type="button"

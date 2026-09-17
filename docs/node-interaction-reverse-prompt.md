@@ -52,3 +52,17 @@
 - 新增浏览器专项：反推 9、悬浮预览 3、组与菜单 5。包含模型默认和同名凭据、开关持久化、上传/排队/即时完成、历史重放、v1 显示而最新 v2、断网后同键恢复、50/100/200% 组移动等场景。
 - 联合浏览器验收覆盖 87 项，使用端口 5187、单 Worker，所有外部 API 由合成路由接管。首轮 79 项通过，8 项因旧夹具缺少新 GET 路由和单一耗时选择器失效而失败；同步夹具并补信息入口焦点恢复后，受影响的 `next-acceptance.spec.ts` 全部 16 项通过，87 项均已有通过证据。新旧 Dialog 入口、复制、刷新、明暗主题及 1366/1440/1920 桌面布局均覆盖。
 - 日志位于 `test-results/node-interaction-{lint,typecheck,test,build,browser,browser-recheck,web-build}.log`，截图在 `test-results/node-interaction-browser/` 与 `test-results/node-interaction-browser-recheck/`，不提交生成产物。最后差异检查通过，任务文件凭据模式扫描未发现真实密钥。
+
+## 悬浮操作栏布局调整（2026-09-17）
+
+- P2 局部 UI 调整，起点 `codex/generate-to-new-node @ 52b78c9`；Node v24.12.0、pnpm 11.19.0，依赖已安装。
+- 验收：提示词入口和耗时并入现有按钮区，取消独占行与分隔线，统一图标、字号和间距；信息 Dialog、反推调用和节点尺寸保持原有行为。
+- 不涉及 API、数据格式或依赖变更；不调用真实供应商。原有用户修改 `docs/resource-input-compatibility.md` 保留。
+- [x] 读取当前实现与检查点；`pnpm --filter @multimodal-canvas/web exec vitest run src/workspace/AssetNode.test.tsx --reporter=dot` 基线 39 项通过。
+- [x] 取消提示词和耗时的独立摘要行，移入“信息”旁的现有按钮区；图标统一为 18px、文字为 13px。耗时仍区分结果与当前执行。
+- [x] 桌面宽度允许整排显示；窄窗口在同一按钮区自然换行。悬浮栏继续反向缩放，不改变节点尺寸。
+- [x] `pnpm --filter @multimodal-canvas/web lint`、`typecheck`、`build` 通过；`exec vitest run --reporter=dot` 共 67 文件、892 项通过。最终 CSS 调整后样式专项 1 项和构建再次通过。
+- [x] `WEB_PORT=5187 pnpm --filter @multimodal-canvas/web exec playwright test e2e/node-hover-preview.spec.ts --workers=1 --output=../../test-results/node-toolbar-inline-browser` 共 3 项通过，覆盖 1366×900、1920×1080、1024×768；已检查截图、弹窗入口、节点尺寸和浏览器错误。
+- [x] 原 5184 前端 HTTP 200；差异检查及任务文件密钥/调试代码扫描通过。构建仍有既存的主包体积提示。
+
+实现与验收完成，Git 交付目标为 `origin/codex/generate-to-new-node`。本次为小范围 UI 修复，不新增 Tag；精确提交和远端核验见本轮交接。
