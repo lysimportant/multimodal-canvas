@@ -14,7 +14,6 @@ import type {
   RunSnapshot,
 } from '@multimodal-canvas/domain';
 import {
-  IMAGE_EDIT_UNSUPPORTED_CODE,
   imageEditSourceSchema,
   precheckVideoGenerationInputs,
   renderPromptDocument,
@@ -390,7 +389,7 @@ export class NewApiProviderError extends Error {
 type ImageProviderRequest = {
   path: string;
   body: Record<string, unknown> | FormData;
-  sourceImages: RunInputSnapshot[];
+  sourceImages: ImageSourceInput[];
 };
 
 /**
@@ -483,7 +482,7 @@ export class NewApiProvider {
         prompt: {
           format: 'plain',
           parts: [{ order: 0, text: sentPromptText(imageRequest.body) }],
-          resources: imagePromptResources(snapshot, imageRequest.sourceImages),
+          resources: imagePromptResources(imageRequest.sourceImages),
         },
       };
     } else {
@@ -613,7 +612,7 @@ export class NewApiProvider {
    * @param label 目标节点显示名，提示词缺失时作为回退。
    * @param nodePrompt 节点上填写的提示词。
    * @param nodePromptDocument 结构化提示词文档。
-   * @param resolvedMentions 图片接口暂不支持资源提及。
+   * @param resolvedMentions Worker 水合的冻结图片提及，作为 edits 原图上传。
    * @returns 请求路径、JSON 或 multipart 请求体，以及作为原图发送的输入。
    */
   private imageRequest(
@@ -623,8 +622,13 @@ export class NewApiProvider {
     nodePromptDocument?: PromptDocument,
     resolvedMentions?: readonly ResolvedMention[],
   ): ImageProviderRequest {
-    assertPromptMentionsUnsupported('image', snapshot, nodePromptDocument, resolvedMentions);
-    const mapping = mapImageGenerationInputs(snapshot, label, nodePrompt, nodePromptDocument);
+    const mapping = mapImageGenerationInputs(
+      snapshot,
+      label,
+      nodePrompt,
+      nodePromptDocument,
+      resolvedMentions,
+    );
     const parameters = providerParameters(snapshot.parameters, 'image');
     if (mapping.images.length === 0) {
       // 声明了图片编辑语义却没有可用原图时，绝不静默退回文生图。
@@ -641,7 +645,10 @@ export class NewApiProvider {
       };
     }
     if (mapping.images.length > 1) {
-      throw inputRoleCardinalityError('image', mapping.images[0]?.role ?? 'content');
+      throw new NewApiProviderError('当前图片编辑一次最多支持 1 张不同图片或版本，请保留一张原图', {
+        code: 'INPUT_ROLE_CARDINALITY_UNSUPPORTED',
+        retryable: false,
+      });
     }
     const capability = assertImageEditSupported(snapshot, mapping.images[0]!);
     const form = new FormData();
@@ -3218,22 +3225,10 @@ function textRequestPromptCapture(
  * 只保存快照里已冻结的资产 ID 与版本；输入缺少资产身份时保留角色与顺序，
  * 绝不从 data URL、文件名或节点当前编辑状态推断身份。
  */
-function imagePromptResources(
-  snapshot: RunSnapshot,
-  images: readonly RunInputSnapshot[],
-): RequestPromptResource[] {
-  const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
-  const editSource = imageEditSourceSchema.safeParse(target?.data.imageEditSource);
+function imagePromptResources(images: readonly ImageSourceInput[]): RequestPromptResource[] {
   return images.map((input, sortOrder) => {
     const assetId = input.sourceAssetId ?? input.snapshot.data.assetId;
-    const editVersion =
-      assetId && editSource.success && editSource.data.assetId === assetId
-        ? editSource.data.version
-        : undefined;
-    const referenceVersion = assetId
-      ? target?.data.resourceRefs?.find((reference) => reference.assetId === assetId)?.assetVersion
-      : undefined;
-    const assetVersion = editVersion ?? referenceVersion;
+    const assetVersion = input.assetVersion;
     return {
       ...(assetId ? { assetId } : {}),
       ...(assetVersion ? { assetVersion } : {}),
@@ -4027,24 +4022,18 @@ function imageEditFormValue(value: unknown): string | undefined {
 /**
  * 请求前校验图片编辑能力。
  *
- * 目录必须显式声明 `capabilities.imageEdit`；未声明时返回非重试错误并且零请求，
- * 不会退回 `/images/generations`，也不会把未声明的图片编辑请求发到供应商。
+ * 能力声明可省略；已冻结的格式和参数约束仍然生效。
  *
  * @param snapshot 当前运行快照；图片编辑能力随快照冻结。
  * @param input 作为原图的输入。
- * @returns 已声明能力；未声明时抛出稳定错误码。
+ * @returns 已冻结能力，未声明时返回 undefined；格式不符合声明时抛错。
  */
 function assertImageEditSupported(
   snapshot: RunSnapshot,
   input: RunInputSnapshot,
 ): ImageEditCapability | undefined {
   const capability = snapshot.imageEditCapability;
-  if (!capability?.declared) {
-    throw new NewApiProviderError(
-      `New API 模型 ${snapshot.modelAlias} 未声明支持图片编辑，已阻止请求`,
-      { code: IMAGE_EDIT_UNSUPPORTED_CODE, retryable: false },
-    );
-  }
+  if (!capability) return undefined;
   const mediaType = input.snapshot.data.mimeType ?? '';
   if (
     capability.mimeTypes &&
@@ -4082,20 +4071,28 @@ function assertImageEditSourceInput(snapshot: RunSnapshot, mapping: ImageGenerat
   });
 }
 
+/** Provider 内部原图输入；版本只来自冻结快照，不增加持久化字段。 */
+type ImageSourceInput = RunInputSnapshot & {
+  /** 已冻结的资产版本；旧连线快照可能没有版本，不据此推断为当前版本。 */
+  assetVersion?: number;
+};
+
+/** 图片接口发送的文字和已按资产版本去重的原图。 */
 type ImageGenerationMapping = {
   /** 发送给图片接口的主提示词。 */
   prompt: string;
   /** 需要作为原图上传的输入，最多一张。 */
-  images: RunInputSnapshot[];
+  images: ImageSourceInput[];
 };
 
 /**
- * 把图片节点的连线分成提示词、原图和遮罩。
- * 文字仍走 prompt/content；图片 content/referenceImage 走编辑接口的 image 字段。
+ * 把图片节点的连线和资源提及分成提示词、原图。
+ * 图片连线和图片提及共用 edits 的 image 字段，按冻结资产版本去重。
  * @param snapshot 当前运行快照。
  * @param label 目标节点显示名。
  * @param nodePrompt 节点提示词。
  * @param nodePromptDocument 结构化提示词文档。
+ * @param resolvedMentions Worker 水合的冻结资源内容。
  * @returns 已按官方图像契约分组的输入。
  */
 function mapImageGenerationInputs(
@@ -4103,9 +4100,12 @@ function mapImageGenerationInputs(
   label: string,
   nodePrompt: string | undefined,
   nodePromptDocument?: PromptDocument,
+  resolvedMentions?: readonly ResolvedMention[],
 ): ImageGenerationMapping {
   let promptInput: RunInputSnapshot | undefined;
-  const images: RunInputSnapshot[] = [];
+  const images: ImageSourceInput[] = [];
+  const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
+  const editSource = imageEditSourceSchema.safeParse(target?.data.imageEditSource);
 
   for (const input of orderedRunInputs(snapshot)) {
     const sourceType = input.snapshot.data.mediaType;
@@ -4115,7 +4115,16 @@ function mapImageGenerationInputs(
       continue;
     }
     if (imageEditSourceRoles.has(input.role) && sourceType === 'image') {
-      images.push(input);
+      const assetId = input.sourceAssetId ?? input.snapshot.data.assetId;
+      const editVersion =
+        assetId &&
+        editSource.success &&
+        editSource.data.assetId === assetId &&
+        editSource.data.sourceNodeId === input.nodeId
+          ? editSource.data.version
+          : undefined;
+      // 资源池版本不绑定连线来源节点，不能用来推断该连线实际读取的版本。
+      images.push({ ...input, assetVersion: editVersion });
       continue;
     }
     if (input.role === 'content') {
@@ -4128,14 +4137,163 @@ function mapImageGenerationInputs(
     throw unsupportedInputRoleError('image', input.role);
   }
 
+  images.push(...imageMentionInputs(snapshot, nodePromptDocument, resolvedMentions));
+  const uniqueImages: ImageSourceInput[] = [];
+  const imagesByVersion = new Map<string, ImageSourceInput>();
+  for (const input of images) {
+    const assetId = input.sourceAssetId ?? input.snapshot.data.assetId;
+    const key = assetId && input.assetVersion ? `${assetId}\0${input.assetVersion}` : undefined;
+    const previous = key ? imagesByVersion.get(key) : undefined;
+    if (previous) {
+      if (
+        previous.snapshot.data.contentUrl !== input.snapshot.data.contentUrl ||
+        previous.snapshot.data.mimeType !== input.snapshot.data.mimeType
+      ) {
+        throw new NewApiProviderError('图片编辑的同一冻结资产版本包含不一致的原图内容', {
+          code: 'INPUT_ROLE_VALUE_MISSING',
+          retryable: false,
+        });
+      }
+      continue;
+    }
+    if (key) imagesByVersion.set(key, input);
+    uniqueImages.push(input);
+  }
+
   return {
     prompt: resolveMappedPromptInput(
       resolvePromptSource(snapshot, label, nodePrompt, 'image', nodePromptDocument),
       promptInput,
       'image',
     ),
-    images,
+    images: uniqueImages,
   };
+}
+
+/**
+ * 将目标节点的图片提及转换为 edits 原图，保持冻结身份与文档一一对应。
+ * @param snapshot 含冻结提及身份的运行快照。
+ * @param document 目标节点的结构化提示词；文字顺序仍由原文档渲染。
+ * @param resolvedMentions Worker 按冻结版本读取的进程内内容。
+ * @returns 按提及顺序排列的图片输入，后续与连线统一去重。
+ * @throws 非图片提及、缺失水合、重复身份、孤儿内容或冻结身份不一致时阻止请求。
+ */
+function imageMentionInputs(
+  snapshot: RunSnapshot,
+  document: PromptDocument | undefined,
+  resolvedMentions: readonly ResolvedMention[] | undefined,
+): ImageSourceInput[] {
+  const targetNodeId = snapshot.targetNodeId;
+  const frozenById = new Map<string, FrozenPromptMention>();
+  const resolvedById = new Map<string, ResolvedMention>();
+  for (const frozen of snapshot.promptMentions ?? []) {
+    if ((frozen.nodeId ?? targetNodeId) !== targetNodeId) continue;
+    if (frozenById.has(frozen.mentionId)) {
+      throw promptMentionMappingError(
+        snapshot,
+        frozen,
+        'RESOURCE_MENTION_RESOLUTION_INVALID',
+        '同一提及包含多个冻结身份',
+      );
+    }
+    frozenById.set(frozen.mentionId, frozen);
+  }
+  for (const resolved of resolvedMentions ?? []) {
+    if (resolved.nodeId !== targetNodeId) continue;
+    if (resolvedById.has(resolved.mentionId)) {
+      throw promptMentionMappingError(
+        snapshot,
+        resolved,
+        'RESOURCE_MENTION_RESOLUTION_INVALID',
+        '同一提及被解析了多个内容',
+      );
+    }
+    resolvedById.set(resolved.mentionId, resolved);
+  }
+  const seen = new Set<string>();
+  const inputs: ImageSourceInput[] = [];
+  for (const [blockOrder, block] of (document?.blocks ?? []).entries()) {
+    if (block.type === 'text') continue;
+    if (seen.has(block.mentionId)) {
+      throw promptMentionMappingError(
+        snapshot,
+        block,
+        'RESOURCE_MENTION_RESOLUTION_INVALID',
+        '提示词包含重复的提及身份',
+      );
+    }
+    seen.add(block.mentionId);
+    const frozen = frozenById.get(block.mentionId);
+    const resolved = resolvedById.get(block.mentionId);
+    if (!frozen || !resolved) {
+      throw promptMentionMappingError(
+        snapshot,
+        block,
+        'RESOURCE_MENTION_RESOLUTION_MISSING',
+        'Worker 未提供冻结版本内容',
+      );
+    }
+    if (
+      frozen.assetId !== block.assetId ||
+      frozen.mediaType !== block.mediaType ||
+      (block.assetVersion !== undefined && frozen.assetVersion !== block.assetVersion) ||
+      resolved.assetId !== frozen.assetId ||
+      resolved.assetVersion !== frozen.assetVersion ||
+      resolved.mediaType !== frozen.mediaType ||
+      (frozen.blockOrder !== undefined && frozen.blockOrder !== blockOrder) ||
+      (resolved.blockOrder !== undefined && resolved.blockOrder !== blockOrder)
+    ) {
+      throw promptMentionMappingError(
+        snapshot,
+        resolved,
+        'RESOURCE_MENTION_RESOLUTION_INVALID',
+        '冻结身份与提示词块或水合内容不一致',
+      );
+    }
+    if (resolved.mediaType !== 'image') {
+      throw promptMentionMappingError(
+        snapshot,
+        resolved,
+        'RESOURCE_MENTION_PROVIDER_MAPPING_UNSUPPORTED',
+        'New API 图片编辑只支持图片资源提及',
+      );
+    }
+    // 复用媒体 URL/MIME 校验，标签仅供提示词引用，不替代二进制图片。
+    mentionContentPart(snapshot, resolved);
+    const nodeId = `mention:${resolved.mentionId}`;
+    inputs.push({
+      nodeId,
+      role: 'imageEdit',
+      sortOrder: blockOrder,
+      sourceAssetId: frozen.assetId,
+      assetVersion: frozen.assetVersion,
+      snapshot: {
+        id: nodeId,
+        type: 'image',
+        position: { x: 0, y: 0 },
+        data: {
+          label: frozen.label,
+          mediaType: 'image',
+          mode: 'source',
+          assetId: frozen.assetId,
+          contentUrl: resolved.source.dataUrl,
+          mimeType: resolved.source.mimeType,
+        },
+      },
+    });
+  }
+  const orphaned = [...frozenById.values(), ...resolvedById.values()].find(
+    (mention) => !seen.has(mention.mentionId),
+  );
+  if (orphaned) {
+    throw promptMentionMappingError(
+      snapshot,
+      orphaned,
+      'RESOURCE_MENTION_RESOLUTION_INVALID',
+      '冻结提及不在目标节点提示词文档中',
+    );
+  }
+  return inputs;
 }
 
 /**

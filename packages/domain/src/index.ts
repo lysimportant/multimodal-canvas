@@ -378,7 +378,7 @@ export function getEffectivePromptDocument(input: {
   };
 }
 
-/** 已写入运行快照的图片编辑能力；缺省表示目录未声明，Provider 必须拒绝编辑请求。 */
+/** 已写入运行快照的图片编辑限制；缺省表示兼容接口不额外收窄编辑输入。 */
 export const frozenImageEditCapabilitySchema = z
   .object({
     declared: z.literal(true),
@@ -695,12 +695,14 @@ export function isImageEditSourceNode(node: {
 /**
  * 模型目录声明的图片编辑能力。
  *
- * 目录必须显式声明 `capabilities.imageEdit` 才视为支持：未知能力一律 fail-closed，
- * 绝不在缺少声明时退回文生图，也不把“模型看起来像图像模型”当作编辑能力。
+ * 区分声明支持、明确禁用与能力未知。兼容图片编辑接口允许未知能力，
+ * 明确禁用时仍应拒绝；有原图的请求不能退回文生图。
  */
 export type ImageEditCapability = {
   /** 目录是否显式声明支持图片编辑。 */
   declared: boolean;
+  /** 目录明确声明不支持图片编辑；缺省仅表示未确认禁用。 */
+  unsupported?: true;
   /** 允许作为编辑原图的 MIME 类型；缺省不额外限制。 */
   mimeTypes?: readonly string[];
   /** 允许的尺寸字段值；仅用于诊断展示，实际取值仍由 Provider 校验。 */
@@ -712,6 +714,7 @@ export type ImageEditCapability = {
 /** 目录中可用于解析图片编辑能力的字段名，兼容供应商的 snake_case 别名。 */
 const imageEditCapabilityKeys = ['imageEdit', 'image_edit', 'supportsImageEdit'] as const;
 
+/** 读取目录中的非空字符串列表，忽略无效项。 */
 function readStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const values = value
@@ -721,6 +724,7 @@ function readStringArray(value: unknown): string[] | undefined {
   return values.length > 0 ? values : undefined;
 }
 
+/** 判断能力字段是否包含支持编辑的布尔值或结构化约束。 */
 function isImageEditDeclaration(value: unknown): boolean {
   if (value === true) return true;
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -731,8 +735,9 @@ function isImageEditDeclaration(value: unknown): boolean {
 }
 
 /**
- * 从模型目录项解析图片编辑能力。缺省返回未声明，调用方必须据此拒绝请求。
+ * 从模型目录项解析图片编辑能力，不把字段缺失当成明确禁用。
  * @param model 模型目录项或节点上的模型描述。
+ * @returns 声明状态、明确禁用标记及可选输入限制；不发起请求。
  */
 export function imageEditCapability(
   model:
@@ -748,11 +753,14 @@ export function imageEditCapability(
   for (const key of imageEditCapabilityKeys) {
     const value = capabilities[key];
     if (value === undefined || value === null) continue;
-    if (!isImageEditDeclaration(value)) return { declared: false };
     const record =
       value && typeof value === 'object' && !Array.isArray(value)
         ? (value as Record<string, unknown>)
         : undefined;
+    if (value === false || record?.supported === false || record?.supports === false) {
+      return { declared: false, unsupported: true };
+    }
+    if (!isImageEditDeclaration(value)) return { declared: false };
     const mimeTypes = readStringArray(record?.mimeTypes ?? record?.mime_types);
     const sizes = readStringArray(record?.sizes);
     const parameters = readStringArray(record?.parameters ?? record?.fields);
@@ -766,7 +774,7 @@ export function imageEditCapability(
   return { declared: false };
 }
 
-/** 图片编辑能力缺失时的稳定错误码，前端与 API 共用。 */
+/** 图片编辑被明确禁用或输入不符合约束时的稳定错误码，前端与 API 共用。 */
 export const IMAGE_EDIT_UNSUPPORTED_CODE = 'IMAGE_EDIT_UNSUPPORTED';
 
 export const nodeDataSchema = z.object({
@@ -1044,11 +1052,10 @@ export const runSnapshotSchema = z
     inputs: z.array(runInputSnapshotSchema),
     /** 按节点保存已冻结的内联提及；旧快照可省略该字段。 */
     promptMentions: z.array(frozenPromptMentionSchema).optional(),
-    /**
-     * 排队前冻结的图片编辑能力。缺省表示目录未声明支持，Provider 必须
-     * 在请求前失败，不能按“有图片输入”推断编辑能力。
-     */
+    /** 运行目标的图片编辑限制，兼容未按节点存储能力的旧快照。 */
     imageEditCapability: frozenImageEditCapabilitySchema.optional(),
+    /** 按执行节点冻结的图片编辑限制，避免不同模型的输入约束相互覆盖。 */
+    nodeImageEditCapabilities: z.record(frozenImageEditCapabilitySchema).optional(),
   })
   .superRefine((snapshot, context) => {
     // Run snapshots can come from a persisted queue payload or a worker
@@ -1072,6 +1079,16 @@ export const runSnapshotSchema = z
     }
 
     const nodeIds = new Set(snapshot.nodes.map((node) => node.id));
+    for (const nodeId of Object.keys(snapshot.nodeImageEditCapabilities ?? {})) {
+      const node = snapshot.nodes.find((candidate) => candidate.id === nodeId);
+      if (!node || node.data.mediaType !== 'image' || node.data.mode !== 'generate') {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: '图片编辑限制必须关联快照中的图片生成节点',
+          path: ['nodeImageEditCapabilities', nodeId],
+        });
+      }
+    }
     for (const [nodeId, reference] of Object.entries(snapshot.nodeCredentialReferences ?? {})) {
       if (!nodeIds.has(nodeId)) {
         context.addIssue({

@@ -20,6 +20,7 @@ import {
   type ProjectStore,
   type UpdateProjectModelDefaultsInput,
 } from './projects';
+import { withLocalImageReferences } from './local-image-references';
 import {
   createRunSnapshot,
   getRunSnapshotIncludedNodeIds,
@@ -1201,18 +1202,35 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     options.assetStore ?? new MemoryAssetStore(),
     projectStore,
   );
-  const providerName = process.env.WORKER_PROVIDER === 'newapi' ? 'newapi' : 'mock';
+  const providerName =
+    options.runService instanceof MemoryRunService
+      ? options.runService.getProviderName()
+      : process.env.WORKER_PROVIDER === 'newapi'
+        ? 'newapi'
+        : 'mock';
+  const runExecutor =
+    options.runExecutor && providerName === 'newapi'
+      ? withLocalImageReferences(
+          options.runExecutor,
+          assetStore,
+          projectStore,
+          parseByteLimit(
+            process.env.RESOURCE_MENTION_MAX_BYTES,
+            DEFAULT_RESOURCE_MENTION_MAX_BYTES,
+          ),
+        )
+      : options.runExecutor;
   const runService =
     options.runService ??
     new MemoryRunService({
       providerName,
-      ...(options.runExecutor ? { executor: options.runExecutor } : {}),
+      ...(runExecutor ? { executor: runExecutor } : {}),
       resultArchiver: options.runResultArchiver ?? createAssetResultArchiver(assetStore),
     });
   // Callers sometimes provide a pre-built MemoryRunService so they can tune
   // timing/provider state. Still honor an explicitly injected executor.
-  if (options.runService instanceof MemoryRunService && options.runExecutor) {
-    options.runService.setExecutor(options.runExecutor);
+  if (options.runService instanceof MemoryRunService && runExecutor) {
+    options.runService.setExecutor(runExecutor);
   }
   if (runService instanceof MemoryRunService) {
     if (options.runResultArchiver || !runService.hasResultArchiver()) {
@@ -2603,19 +2621,36 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       if (capabilityDiagnostics.length > 0) {
         throw new ResourceMentionCapabilityError(capabilityDiagnostics);
       }
-      // 图片编辑能力必须在创建 Run 之前确认：目录未声明时不生成 Provider
-      // 请求，也不退回文生图；冻结后的能力随快照进入 Worker 供二次校验。
-      const imageEditCheck = checkImageEditCapabilities({
-        nodes: canvasForRun.nodes,
-        edges: canvasForRun.edges,
-        targetNodeId: request.params.nodeId,
-        modelAlias: modelResolution.targetModelAlias,
-        ...(modelResolution.targetModel ? { model: modelResolution.targetModel } : {}),
-        requestId: request.id,
-      });
-      if (imageEditCheck.issues.length > 0) {
-        throw new ImageEditCapabilityError(imageEditCheck.issues);
+      // 各执行节点只使用自己的模型编辑限制；字段缺失允许兼容接口处理，
+      // 明确禁用仍在排队前拒绝。资产来源节点不触发 Provider 能力判断。
+      const includedNodeIds = getRunSnapshotIncludedNodeIds(canvasForRun, request.params.nodeId);
+      const includedEdges = canvasForRun.edges.filter(
+        (edge) => includedNodeIds.has(edge.sourceNodeId) && includedNodeIds.has(edge.targetNodeId),
+      );
+      const frozenNodeImageEditCapabilities: Record<string, FrozenImageEditCapability> = {};
+      for (const node of canvasForRun.nodes) {
+        if (!includedNodeIds.has(node.id) || isRunAssetSource(node, request.params.nodeId))
+          continue;
+        const imageEditCheck = checkImageEditCapabilities({
+          nodes: canvasForRun.nodes,
+          edges: includedEdges,
+          targetNodeId: node.id,
+          modelAlias:
+            modelResolution.nodeModelAliases[node.id] ?? node.data.modelAlias ?? 'unknown-model',
+          model: modelResolution.nodeModels[node.id],
+          mentions: frozenPromptMentions.filter(
+            (mention) => (mention.nodeId ?? request.params.nodeId) === node.id,
+          ),
+          requestId: request.id,
+        });
+        if (imageEditCheck.issues.length > 0) {
+          throw new ImageEditCapabilityError(imageEditCheck.issues);
+        }
+        if (imageEditCheck.frozenCapability) {
+          frozenNodeImageEditCapabilities[node.id] = imageEditCheck.frozenCapability;
+        }
       }
+      const targetImageEditCapability = frozenNodeImageEditCapabilities[request.params.nodeId];
       const credential = modelResolution.nodeCredentialReferences[request.params.nodeId];
       const snapshot = createRunSnapshot(body.projectId, canvasForRun, request.params.nodeId, {
         ...body,
@@ -2626,9 +2661,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           : {}),
         frozenAssetRefs,
         ...(frozenPromptMentions.length > 0 ? { frozenPromptMentions } : {}),
-        ...(imageEditCheck.frozenCapability
-          ? { frozenImageEditCapability: imageEditCheck.frozenCapability }
+        ...(targetImageEditCapability
+          ? { frozenImageEditCapability: targetImageEditCapability }
           : {}),
+        frozenNodeImageEditCapabilities,
         ...(credential ?? {}),
       });
       const headerIdempotencyKey = request.headers['idempotency-key'];

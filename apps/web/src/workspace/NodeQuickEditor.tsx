@@ -346,10 +346,19 @@ export function NodeQuickEditor({
       (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0)
     );
   });
+  /** 资源提及和原图连线都需要编辑接口；缺少目录声明不阻止提交。 */
+  const hasImageEditInput =
+    node.data.mediaType === 'image' &&
+    (Boolean(imageEditSource) ||
+      Boolean(
+        node.data.promptDocument?.blocks.some(
+          (block) => block.type === 'mention' && block.mediaType === 'image',
+        ),
+      ));
   const imageEditSourceIssue = imageEditSource?.versionUnavailable
     ? '来源图已不可读取或版本已变更，请重新从图片节点创建修改节点'
-    : imageEditSource && !imageEditCapability(selectedModel).declared
-      ? `当前模型未声明支持图片编辑，请更换模型后再运行`
+    : hasImageEditInput && imageEditCapability(selectedModel).unsupported
+      ? '当前模型明确不支持图片编辑，请更换模型后再运行'
       : undefined;
   const mediaParameterIssue =
     node.data.mediaType === 'audio'
@@ -811,8 +820,8 @@ export function NodeQuickEditor({
                     ? '请先填写提示词'
                     : node.data.mediaType === 'image' &&
                         selectedModel &&
-                        !imageEditCapability(selectedModel).declared
-                      ? '当前模型未声明支持图片编辑，请更换模型后再运行'
+                        imageEditCapability(selectedModel).unsupported
+                      ? '当前模型明确不支持图片编辑，请更换模型后再运行'
                       : mediaParameterIssue && node.data.mediaType === 'image'
                         ? mediaParameterIssue
                         : '把修改结果写到新节点'
@@ -826,7 +835,7 @@ export function NodeQuickEditor({
               Boolean(
                 node.data.mediaType === 'image' &&
                 selectedModel &&
-                !imageEditCapability(selectedModel).declared,
+                imageEditCapability(selectedModel).unsupported,
               ) ||
               Boolean(mediaParameterIssue && node.data.mediaType === 'image')
             }

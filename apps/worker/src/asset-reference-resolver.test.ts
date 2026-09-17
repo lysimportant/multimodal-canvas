@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RunSnapshot } from '@multimodal-canvas/domain';
+import { NewApiProvider } from '@multimodal-canvas/providers';
 import type {
   AssetReferenceBlobStore,
   AssetReferenceRepository,
@@ -635,7 +636,7 @@ describe('createRunWorker asset hydration boundary', () => {
     });
   });
 
-  it('passes provider-neutral resolved mentions without persisting their content', async () => {
+  it('无能力声明的图片引用按冻结版本水合后发送 edits，媒体内容不进入任务存储', async () => {
     const content = Buffer.from('resolved image bytes');
     const durableSnapshot = promptMentionSnapshot({
       assetId: imageAssetId,
@@ -657,6 +658,16 @@ describe('createRunWorker asset hydration boundary', () => {
     });
     const resolver = new StoredAssetReferenceResolver(repository, blobStore);
     let providerMentions: unknown;
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        Response.json({ data: [{ b64_json: Buffer.from('generated image').toString('base64') }] }),
+      );
+    const provider = new NewApiProvider({
+      baseUrl: 'https://newapi.example.test/v1',
+      apiKey: 'synthetic-test-key',
+      fetchImpl,
+    });
     const job: StubJob = {
       id: projectId,
       data: {
@@ -664,7 +675,7 @@ describe('createRunWorker asset hydration boundary', () => {
         userId,
         snapshot: durableSnapshot,
         attempt: 1,
-        provider: 'mock',
+        provider: 'newapi',
         cancelRequested: false,
       },
       async updateData(data) {
@@ -678,24 +689,11 @@ describe('createRunWorker asset hydration boundary', () => {
       connection: { host: '127.0.0.1', port: 6379 },
       stepDelayMs: 0,
       assetReferenceResolver: resolver,
+      providerName: 'newapi',
       provider: {
         async execute(request) {
           providerMentions = request.resolvedMentions;
-          return {
-            result: {
-              provider: 'mock',
-              summary: 'generated',
-              targetNodeId: 'node_target',
-              mediaType: 'image' as const,
-              inputCount: 0,
-            },
-            output: {
-              mediaType: 'image' as const,
-              kind: 'url' as const,
-              url: 'https://assets.example/generated.png',
-              mimeType: 'image/png',
-            },
-          };
+          return provider.execute(request);
         },
       },
       resultArchiver: async () => ({
@@ -721,6 +719,12 @@ describe('createRunWorker asset hydration boundary', () => {
         },
       },
     ]);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchImpl.mock.calls[0]!;
+    expect(url).toBe('https://newapi.example.test/v1/images/edits');
+    const form = init!.body as FormData;
+    expect(Buffer.from(await (form.get('image') as File).arrayBuffer())).toEqual(content);
+    expect(repository.findVersion).toHaveBeenCalledWith(imageAssetId, 2);
     expect(JSON.stringify(job.data)).not.toContain(content.toString('base64'));
   });
 

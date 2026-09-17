@@ -662,6 +662,8 @@ function MediaArtifactPreview({
   const [loadState, setLoadState] = useState<AssetPreviewLoadState>('loading');
   const [viewerOpen, setViewerOpen] = useState(false);
   const [videoPlaying, setVideoPlaying] = useState(false);
+  /** 缓存图片可能在 effect 前完成加载，复核元素状态以免重新盖上加载遮罩。 */
+  const imageRef = useRef<HTMLImageElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   /** 记录按下时是否已打开节点编辑器，避免选中节点的同步更新吞掉第一次点击。 */
   const previewGestureEnabled = useRef<boolean | null>(null);
@@ -669,10 +671,11 @@ function MediaArtifactPreview({
   const [playbackError, setPlaybackError] = useState<string>();
 
   useEffect(() => {
-    setLoadState('loading');
+    const image = kind === 'image' ? imageRef.current : null;
+    setLoadState(image?.complete ? (image.naturalWidth > 0 ? 'ready' : 'error') : 'loading');
     setVideoPlaying(false);
     setPlaybackError(undefined);
-  }, [attempt, src]);
+  }, [attempt, kind, src]);
   useReportLoadState(loadState, onLoadStateChange);
 
   const canPreviewInDialog = allowOpen && (kind === 'image' || kind === 'video');
@@ -705,6 +708,7 @@ function MediaArtifactPreview({
     kind === 'image' ? (
       <img
         key={`${src}:${attempt}`}
+        ref={imageRef}
         className={mediaClassName}
         src={src}
         alt={asset.name}

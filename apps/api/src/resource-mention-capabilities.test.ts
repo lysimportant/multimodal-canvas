@@ -21,8 +21,21 @@ const base = {
 };
 
 describe('resource mention capability preflight', () => {
-  it('fails closed with per-mention diagnostics when the model declaration is missing', () => {
-    const result = checkResourceMentionCapabilities(base);
+  it('图片生成缺少能力声明时允许图片引用', () => {
+    expect(checkResourceMentionCapabilities(base)).toEqual({ issues: [], simulated: false });
+    expect(checkResourceMentionCapabilities({ ...base, model: { mediaTypes: ['image'] } })).toEqual(
+      {
+        issues: [],
+        simulated: false,
+      },
+    );
+  });
+
+  it('其他媒体节点能力未知时仍返回逐项诊断', () => {
+    const result = checkResourceMentionCapabilities({
+      ...base,
+      node: { id: 'node-image', data: { mediaType: 'text', mode: 'generate' } },
+    });
     expect(result.simulated).toBe(false);
     expect(result.issues).toMatchObject([
       {
@@ -35,6 +48,52 @@ describe('resource mention capability preflight', () => {
     ]);
     expect(JSON.stringify(result)).not.toContain('data:');
   });
+
+  it('其他媒体保持空声明的旧兼容语义', () => {
+    const result = checkResourceMentionCapabilities({
+      ...base,
+      node: { id: 'node-text', data: { mediaType: 'text', mode: 'generate' } },
+      model: { capabilities: { mentionMediaTypes: [], modes: [], maxMentions: 0 } },
+      allowMockPreview: true,
+    });
+    expect(result).toEqual({ issues: [], simulated: true });
+  });
+
+  it('图片引用的角色和数量声明缺省时允许兼容编辑接口处理', () => {
+    const result = checkResourceMentionCapabilities({
+      ...base,
+      model: { mediaTypes: ['image'] },
+      mentions: [
+        { ...base.mentions[0], semanticRole: 'reference' },
+        { ...base.mentions[0], mentionId: 'm-second', assetId: 'asset-second' },
+      ],
+    });
+    expect(result).toEqual({ issues: [], simulated: false });
+  });
+
+  it.each([
+    { capabilities: { mentionMediaTypes: ['text'] }, code: 'RESOURCE_MENTION_MEDIA_UNSUPPORTED' },
+    { capabilities: { mentionMediaTypes: [] }, code: 'RESOURCE_MENTION_MEDIA_UNSUPPORTED' },
+    { capabilities: { maxMentions: 0 }, code: 'RESOURCE_MENTION_COUNT_EXCEEDED' },
+    { capabilities: { modes: [] }, code: 'RESOURCE_MENTION_MODE_UNSUPPORTED' },
+  ])('图片兼容路径仍遵守显式限制 $code', ({ capabilities, code }) => {
+    const result = checkResourceMentionCapabilities({ ...base, model: { capabilities } });
+    expect(result.issues).toEqual([expect.objectContaining({ code })]);
+  });
+
+  it.each(['text', 'audio', 'video'] as const)(
+    '图片生成不把 %s 提及当作图片编辑输入',
+    (mediaType) => {
+      const result = checkResourceMentionCapabilities({
+        ...base,
+        model: { capabilities: { mentionMediaTypes: [mediaType] } },
+        mentions: [{ ...base.mentions[0], mediaType }],
+      });
+      expect(result.issues).toEqual([
+        expect.objectContaining({ code: 'RESOURCE_MENTION_MEDIA_UNSUPPORTED' }),
+      ]);
+    },
+  );
 
   it('allows explicitly marked mock preview when capability is unknown', () => {
     expect(checkResourceMentionCapabilities({ ...base, allowMockPreview: true })).toEqual({

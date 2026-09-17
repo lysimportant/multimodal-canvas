@@ -176,15 +176,24 @@ describe('canvas protocol', () => {
       expect(nodeHasEcho({ assetId: 'a' })).toBe(false);
     });
 
-    it('按目录显式声明解析图片编辑能力并在未知时 fail-closed', () => {
+    it('区分图片编辑能力未知、明确禁用和正向限制', () => {
       expect(imageEditCapability(undefined)).toEqual({ declared: false });
       expect(imageEditCapability({ capabilities: {} })).toEqual({ declared: false });
       expect(imageEditCapability({ capabilities: { imageEdit: false } })).toEqual({
         declared: false,
+        unsupported: true,
       });
       expect(imageEditCapability({ capabilities: { imageEdit: { supported: false } } })).toEqual({
         declared: false,
+        unsupported: true,
       });
+      expect(
+        imageEditCapability({ capabilities: { supportsImageEdit: { supports: false } } }),
+      ).toEqual({
+        declared: false,
+        unsupported: true,
+      });
+      expect(imageEditCapability({ capabilities: { imageEdit: {} } })).toEqual({ declared: false });
       expect(imageEditCapability({ capabilities: { image_edit: true } })).toEqual({
         declared: true,
       });
@@ -772,6 +781,22 @@ describe('canvas protocol', () => {
     });
 
     expect(snapshot.canvasRevision).toBe(3);
+    expect(
+      runSnapshotSchema.parse({
+        ...snapshot,
+        nodeImageEditCapabilities: { node_image: { declared: true, mimeTypes: ['image/png'] } },
+      }).nodeImageEditCapabilities,
+    ).toEqual({
+      node_image: { declared: true, mimeTypes: ['image/png'] },
+    });
+    for (const nodeId of ['node_missing', 'node_prompt']) {
+      expect(
+        runSnapshotSchema.safeParse({
+          ...snapshot,
+          nodeImageEditCapabilities: { [nodeId]: { declared: true } },
+        }).success,
+      ).toBe(false);
+    }
     expect(canTransitionRunStatus('queued', 'preparing')).toBe(true);
     expect(canTransitionRunStatus('succeeded', 'running')).toBe(false);
   });

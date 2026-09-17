@@ -242,6 +242,10 @@ export function createNodeRunSnapshot(
   const promptMentions = snapshot.promptMentions?.filter((mention) =>
     mention.nodeId ? mention.nodeId === nodeId : nodeId === snapshot.targetNodeId,
   );
+  /** 每个模型只使用自己的编辑限制；旧快照的单项能力仅属于原目标节点。 */
+  const imageEditCapability =
+    snapshot.nodeImageEditCapabilities?.[nodeId] ??
+    (nodeId === snapshot.targetNodeId ? snapshot.imageEditCapability : undefined);
 
   return runSnapshotSchema.parse({
     projectId: snapshot.projectId,
@@ -273,11 +277,7 @@ export function createNodeRunSnapshot(
     ...(promptMentions && promptMentions.length > 0
       ? { promptMentions: promptMentions.map((mention) => structuredClone(mention)) }
       : {}),
-    // 图片编辑能力随提交快照冻结；子快照必须原样继承，否则 Provider 会把
-    // 已经声明的编辑能力当成未声明并在请求前拒绝。
-    ...(snapshot.imageEditCapability
-      ? { imageEditCapability: structuredClone(snapshot.imageEditCapability) }
-      : {}),
+    ...(imageEditCapability ? { imageEditCapability: structuredClone(imageEditCapability) } : {}),
   });
 }
 

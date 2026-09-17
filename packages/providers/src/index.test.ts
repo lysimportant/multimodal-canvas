@@ -15,6 +15,7 @@ import {
   NewApiVideoProvider,
   normalizeNewApiBaseUrl,
   resolveProviderMentions,
+  type ResolvedMention,
 } from './index';
 
 const allPortRoles = [
@@ -813,17 +814,17 @@ describe('NewApiProvider', () => {
   });
 
   it.each([
-    { targetMediaType: 'image' as const, mentionMediaType: 'image' as const },
+    { targetMediaType: 'image' as const, mentionMediaType: 'text' as const },
+    { targetMediaType: 'image' as const, mentionMediaType: 'audio' as const },
+    { targetMediaType: 'image' as const, mentionMediaType: 'video' as const },
     { targetMediaType: 'audio' as const, mentionMediaType: 'audio' as const },
   ])(
     'rejects a $mentionMediaType mention on the $targetMediaType generation endpoint before POST',
     async ({ targetMediaType, mentionMediaType }) => {
       const fetchImpl = vi.fn<typeof fetch>();
       const snapshot = standardSnapshot(targetMediaType);
-      const dataUrl =
-        mentionMediaType === 'image'
-          ? 'data:image/png;base64,aW1hZ2U='
-          : 'data:audio/wav;base64,YXVkaW8=';
+      const mimeType = mentionMediaType === 'text' ? 'text/plain' : `${mentionMediaType}/wav`;
+      const dataUrl = `data:${mimeType};base64,YXVkaW8=`;
       snapshot.nodes[0].data.promptDocument = {
         version: 1,
         blocks: [
@@ -834,7 +835,7 @@ describe('NewApiProvider', () => {
             assetVersion: 1,
             label: mentionMediaType,
             mediaType: mentionMediaType,
-            mimeType: mentionMediaType === 'image' ? 'image/png' : 'audio/wav',
+            mimeType,
             contentUrl: dataUrl,
           },
         ],
@@ -1178,7 +1179,6 @@ describe('NewApiProvider', () => {
     await provider.execute({
       snapshot: {
         ...standardSnapshot('image'),
-        // 目录必须显式声明图片编辑能力，未声明时会在请求前失败。
         imageEditCapability: { declared: true },
         parameters: { size: '1024x1024', prompt: '改成夜景' },
         inputs: [
@@ -1270,27 +1270,419 @@ describe('NewApiProvider', () => {
     };
   }
 
-  it('fails closed before any request when the catalog does not declare image edit', async () => {
+  /** 构造已水合的图片提及快照；每条提及保留独立 ID 和冻结资产版本。 */
+  function imageMentionSnapshot(
+    sources: { assetId: string; assetVersion: number }[] = [
+      { assetId: 'asset-photo', assetVersion: 3 },
+    ],
+  ): RunSnapshot {
+    const snapshot = standardSnapshot('image');
+    const mentions = sources.map((source, index) => ({
+      ...source,
+      nodeId: snapshot.targetNodeId,
+      mentionId: `mention-photo-${index}`,
+      mediaType: 'image' as const,
+      label: `Photo ${index + 1}`,
+      blockOrder: 1 + index * 2,
+    }));
+    snapshot.promptMentions = mentions;
+    snapshot.nodes[0].data.promptDocument = {
+      version: 1,
+      blocks: [
+        { type: 'text', text: 'Restyle ' },
+        ...mentions.flatMap((mention) => [
+          {
+            type: 'mention',
+            ...mention,
+            mimeType: 'image/png',
+            contentUrl: `data:image/png;base64,${editPng}`,
+          },
+          { type: 'text', text: ' with warm light. ' },
+        ]),
+      ],
+    } as unknown as NonNullable<RunSnapshot['nodes'][number]['data']['promptDocument']>;
+    return snapshot;
+  }
+
+  it('uploads an undeclared image mention as exact edits bytes and records frozen identity', async () => {
+    const snapshot = imageMentionSnapshot();
+    snapshot.modelAlias = 'gpt-image-2.5-sunburst';
+    snapshot.parameters = { quality: 'high' };
+    const records: RequestPromptRecord[] = [];
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ url: 'https://cdn.example/edited.png' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    await new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    }).execute({
+      snapshot,
+      resolvedMentions: resolveProviderMentions(snapshot),
+      runId: 'run-mentioned-image',
+      onRequestPrompt: (record) => {
+        records.push(record);
+      },
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchImpl.mock.calls[0]!;
+    expect(url).toBe('https://newapi.example.com/v1/images/edits');
+    const body = init!.body as FormData;
+    expect(body.get('model')).toBe('gpt-image-2.5-sunburst');
+    expect(body.get('prompt')).toBe('Restyle Photo 1 with warm light. ');
+    expect(body.get('quality')).toBe('high');
+    expect(body.getAll('image')).toHaveLength(1);
+    const image = body.get('image') as File;
+    expect(image.type).toBe('image/png');
+    expect(new Uint8Array(await image.arrayBuffer())).toEqual(
+      Uint8Array.from(atob(editPng), (character) => character.charCodeAt(0)),
+    );
+    expect(records[0]).toMatchObject({
+      requestIdentity: 'POST /images/edits#1',
+      parts: [{ order: 0, text: 'Restyle Photo 1 with warm light. ' }],
+      resources: [
+        {
+          assetId: 'asset-photo',
+          assetVersion: 3,
+          role: 'imageEdit',
+          sortOrder: 0,
+          mediaType: 'image',
+        },
+      ],
+    });
+    expect(JSON.stringify(records)).not.toMatch(/base64|data:image|server-secret/);
+  });
+
+  it('uploads one image for repeated mentions and a linked source of the same frozen version', async () => {
+    const snapshot = imageMentionSnapshot([
+      { assetId: 'asset-photo', assetVersion: 3 },
+      { assetId: 'asset-photo', assetVersion: 3 },
+    ]);
+    snapshot.nodes[0].data.imageEditSource = {
+      sourceNodeId: 'source',
+      assetId: 'asset-photo',
+      version: 3,
+    };
+    snapshot.inputs = [{ ...editImageInput('source'), sourceAssetId: 'asset-photo' }];
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ url: 'https://cdn.example/edited.png' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    await new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    }).execute({
+      snapshot,
+      resolvedMentions: resolveProviderMentions(snapshot),
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const body = fetchImpl.mock.calls[0]![1]!.body as FormData;
+    expect(body.getAll('image')).toHaveLength(1);
+    expect(body.get('prompt')).toBe('Restyle Photo 1 with warm light. Photo 2 with warm light. ');
+  });
+
+  it.each([
+    [
+      { assetId: 'asset-photo', assetVersion: 3 },
+      { assetId: 'asset-other', assetVersion: 3 },
+    ],
+    [
+      { assetId: 'asset-photo', assetVersion: 3 },
+      { assetId: 'asset-photo', assetVersion: 4 },
+    ],
+  ])('rejects multiple distinct images or versions before POST (%j, %j)', async (first, second) => {
+    const snapshot = imageMentionSnapshot([first, second]);
     const fetchImpl = vi.fn<typeof fetch>();
+    await expect(
+      new NewApiProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+      }).execute({
+        snapshot,
+        resolvedMentions: resolveProviderMentions(snapshot),
+      }),
+    ).rejects.toMatchObject({ code: 'INPUT_ROLE_CARDINALITY_UNSUPPORTED', retryable: false });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('does not merge a second linked source with the edit source solely by asset and bytes', async () => {
+    const snapshot = standardSnapshot('image');
+    snapshot.nodes[0]!.data.imageEditSource = {
+      sourceNodeId: 'source-v3',
+      assetId: 'asset-photo',
+      version: 3,
+    };
+    snapshot.inputs = [
+      { ...editImageInput('source-v3'), sourceAssetId: 'asset-photo' },
+      { ...editImageInput('source-unknown-version', 'content'), sourceAssetId: 'asset-photo' },
+    ];
+    const fetchImpl = vi.fn<typeof fetch>();
+    await expect(
+      new NewApiProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+      }).execute({ snapshot }),
+    ).rejects.toMatchObject({ code: 'INPUT_ROLE_CARDINALITY_UNSUPPORTED', retryable: false });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('does not use a resource pool version to merge a linked image with a frozen mention', async () => {
+    const snapshot = imageMentionSnapshot();
+    snapshot.nodes[0]!.data.resourceRefs = [
+      {
+        id: 'ref-photo',
+        assetId: 'asset-photo',
+        assetVersion: 3,
+        name: 'Photo',
+        mediaType: 'image',
+      },
+    ];
+    snapshot.inputs = [
+      { ...editImageInput('source-unknown-version', 'content'), sourceAssetId: 'asset-photo' },
+    ];
+    const fetchImpl = vi.fn<typeof fetch>();
+    await expect(
+      new NewApiProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+      }).execute({ snapshot, resolvedMentions: resolveProviderMentions(snapshot) }),
+    ).rejects.toMatchObject({ code: 'INPUT_ROLE_CARDINALITY_UNSUPPORTED', retryable: false });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('does not record a resource pool version as the linked image version', async () => {
+    const snapshot = standardSnapshot('image');
+    snapshot.nodes[0]!.data.resourceRefs = [
+      {
+        id: 'ref-photo',
+        assetId: 'asset-photo',
+        assetVersion: 3,
+        name: 'Photo',
+        mediaType: 'image',
+      },
+    ];
+    snapshot.inputs = [
+      { ...editImageInput('source-unknown-version', 'content'), sourceAssetId: 'asset-photo' },
+    ];
+    const records: RequestPromptRecord[] = [];
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ url: 'https://cdn.example/edited.png' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    await new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    }).execute({
+      snapshot,
+      runId: 'run-unknown-source-version',
+      onRequestPrompt: (record) => {
+        records.push(record);
+      },
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(records[0]!.resources).toEqual([
+      { assetId: 'asset-photo', role: 'content', sortOrder: 0, mediaType: 'image' },
+    ]);
+  });
+
+  it.each<{
+    name: string;
+    mutate: (snapshot: RunSnapshot, resolved: ResolvedMention[]) => void;
+    code: string;
+  }>([
+    {
+      name: 'missing hydration',
+      mutate: (_snapshot, resolved) => {
+        resolved.length = 0;
+      },
+      code: 'RESOURCE_MENTION_RESOLUTION_MISSING',
+    },
+    {
+      name: 'missing frozen identity',
+      mutate: (snapshot) => {
+        snapshot.promptMentions = [];
+      },
+      code: 'RESOURCE_MENTION_RESOLUTION_MISSING',
+    },
+    {
+      name: 'wrong resolved version',
+      mutate: (_snapshot, resolved) => {
+        resolved[0]!.assetVersion = 4;
+      },
+      code: 'RESOURCE_MENTION_RESOLUTION_INVALID',
+    },
+    {
+      name: 'wrong frozen version',
+      mutate: (snapshot) => {
+        snapshot.promptMentions![0]!.assetVersion = 4;
+      },
+      code: 'RESOURCE_MENTION_RESOLUTION_INVALID',
+    },
+    {
+      name: 'wrong asset',
+      mutate: (_snapshot, resolved) => {
+        resolved[0]!.assetId = 'asset-other';
+      },
+      code: 'RESOURCE_MENTION_RESOLUTION_INVALID',
+    },
+    {
+      name: 'wrong node',
+      mutate: (_snapshot, resolved) => {
+        resolved[0]!.nodeId = 'node-other';
+      },
+      code: 'RESOURCE_MENTION_RESOLUTION_MISSING',
+    },
+    {
+      name: 'wrong media type',
+      mutate: (_snapshot, resolved) => {
+        resolved[0]!.mediaType = 'video';
+      },
+      code: 'RESOURCE_MENTION_RESOLUTION_INVALID',
+    },
+    {
+      name: 'duplicate hydration',
+      mutate: (_snapshot, resolved) => {
+        resolved.push({ ...resolved[0]! });
+      },
+      code: 'RESOURCE_MENTION_RESOLUTION_INVALID',
+    },
+    {
+      name: 'duplicate frozen identity',
+      mutate: (snapshot) => {
+        snapshot.promptMentions!.push({ ...snapshot.promptMentions![0]! });
+      },
+      code: 'RESOURCE_MENTION_RESOLUTION_INVALID',
+    },
+    {
+      name: 'orphaned frozen mention',
+      mutate: (snapshot) => {
+        snapshot.nodes[0]!.data.promptDocument = {
+          version: 1,
+          blocks: [{ type: 'text', text: 'No image' }],
+        };
+      },
+      code: 'RESOURCE_MENTION_RESOLUTION_INVALID',
+    },
+    {
+      name: 'orphaned hydration',
+      mutate: (_snapshot, resolved) => {
+        resolved.push({ ...resolved[0]!, mentionId: 'orphan' });
+      },
+      code: 'RESOURCE_MENTION_RESOLUTION_INVALID',
+    },
+    {
+      name: 'MIME mismatch',
+      mutate: (_snapshot, resolved) => {
+        resolved[0]!.source.mimeType = 'image/jpeg';
+      },
+      code: 'RESOURCE_MENTION_PROVIDER_MAPPING_INVALID',
+    },
+    {
+      name: 'remote URL instead of hydrated bytes',
+      mutate: (_snapshot, resolved) => {
+        resolved[0]!.source.dataUrl = 'https://assets.example/photo.png';
+      },
+      code: 'RESOURCE_MENTION_PROVIDER_MAPPING_INVALID',
+    },
+  ])('rejects $name for image mentions before any request', async ({ mutate, code }) => {
+    const snapshot = imageMentionSnapshot();
+    const resolved = resolveProviderMentions(snapshot);
+    mutate(snapshot, resolved);
+    const fetchImpl = vi.fn<typeof fetch>();
+    await expect(
+      new NewApiProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+      }).execute({ snapshot, resolvedMentions: resolved }),
+    ).rejects.toMatchObject({ code, retryable: false });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('rejects conflicting content for repeated mentions of one frozen asset version', async () => {
+    const snapshot = imageMentionSnapshot([
+      { assetId: 'asset-photo', assetVersion: 3 },
+      { assetId: 'asset-photo', assetVersion: 3 },
+    ]);
+    const resolved = resolveProviderMentions(snapshot);
+    resolved[1]!.source.dataUrl = 'data:image/png;base64,b3RoZXI=';
+    const fetchImpl = vi.fn<typeof fetch>();
+    await expect(
+      new NewApiProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+      }).execute({ snapshot, resolvedMentions: resolved }),
+    ).rejects.toMatchObject({ code: 'INPUT_ROLE_VALUE_MISSING', retryable: false });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('preserves edits rejection without retrying or falling back to generations', async () => {
+    const snapshot = imageMentionSnapshot();
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: { message: 'edits unavailable for this model', code: 'unsupported_model' },
+        }),
+        {
+          status: 400,
+          headers: { 'content-type': 'application/json', 'x-request-id': 'req-edit-rejected' },
+        },
+      ),
+    );
+    await expect(
+      new NewApiProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+      }).execute({ snapshot, resolvedMentions: resolveProviderMentions(snapshot) }),
+    ).rejects.toMatchObject({
+      status: 400,
+      code: 'unsupported_model',
+      requestId: 'req-edit-rejected',
+      retryable: false,
+      message: expect.stringContaining('edits unavailable for this model'),
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0]![0]).toBe('https://newapi.example.com/v1/images/edits');
+  });
+
+  it('sends linked image edits when the catalog omits image edit capability', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ url: 'https://cdn.example/edited.png' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
     const provider = new NewApiProvider({
       baseUrl: 'https://newapi.example.com/v1',
       apiKey: 'server-secret',
       fetchImpl,
     });
 
-    await expect(
-      provider.execute({
-        snapshot: {
-          ...standardSnapshot('image'),
-          parameters: { prompt: '改成夜景' },
-          inputs: [editImageInput('node_source')],
-        },
-      }),
-    ).rejects.toMatchObject({
-      code: 'IMAGE_EDIT_UNSUPPORTED',
-      retryable: false,
+    await provider.execute({
+      snapshot: {
+        ...standardSnapshot('image'),
+        parameters: { prompt: '改成夜景' },
+        inputs: [editImageInput('node_source')],
+      },
     });
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://newapi.example.com/v1/images/edits');
+    expect((fetchImpl.mock.calls[0]?.[1]?.body as FormData).get('image')).toBeInstanceOf(File);
   });
 
   it('refuses to fall back to text-to-image when the edit source input is missing', async () => {

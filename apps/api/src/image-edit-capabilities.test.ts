@@ -38,7 +38,7 @@ describe('图片编辑能力预检', () => {
     expect(check.frozenCapability).toBeUndefined();
   });
 
-  it('目录未声明图片编辑时 fail-closed 并给出稳定错误码', () => {
+  it('目录未声明图片编辑时允许兼容接口处理并保留来源校验', () => {
     const nodes = [
       imageNode('node_source', { mode: 'source', assetId: 'asset_1', contentUrl: '/c' }),
       imageNode('node_edit', {
@@ -54,15 +54,7 @@ describe('图片编辑能力预检', () => {
       requestId: 'req_2',
     });
 
-    expect(check.issues.map((issue) => issue.code)).toEqual(['IMAGE_EDIT_CAPABILITY_UNKNOWN']);
-    expect(check.issues[0]).toMatchObject({
-      reason: 'capability_unknown',
-      nodeId: 'node_edit',
-      modelAlias: 'image-v1',
-      requestId: 'req_2',
-      sourceNodeId: 'node_source',
-      assetId: 'asset_1',
-    });
+    expect(check.issues).toEqual([]);
     expect(check.frozenCapability).toBeUndefined();
   });
 
@@ -93,11 +85,11 @@ describe('图片编辑能力预检', () => {
     });
   });
 
-  it('显式 false 或缺少 supported 的声明不算支持', () => {
+  it('显式 false 仍阻止图片编辑', () => {
     for (const capabilities of [
       { imageEdit: false },
       { imageEdit: { supported: false } },
-      { imageEdit: {} },
+      { imageEdit: { supports: false } },
     ]) {
       const check = checkImageEditCapabilities({
         nodes: [
@@ -113,8 +105,52 @@ describe('图片编辑能力预检', () => {
         requestId: 'req_4',
       });
 
-      expect(check.issues[0]?.code).toBe('IMAGE_EDIT_CAPABILITY_UNKNOWN');
+      expect(check.issues[0]?.code).toBe('IMAGE_EDIT_CAPABILITY_UNSUPPORTED');
     }
+  });
+
+  it.each(['input:content', 'input:referenceImage'])(
+    '图片 %s 连线也检查明确禁用',
+    (targetHandle) => {
+      const check = checkImageEditCapabilities({
+        nodes: [
+          imageNode('node_source', { mode: 'source', assetId: 'asset_1', contentUrl: '/c' }),
+          imageNode('node_edit'),
+        ],
+        edges: [{ ...editEdge, targetHandle }],
+        targetNodeId: 'node_edit',
+        modelAlias: 'image-v1',
+        model: { capabilities: { imageEdit: false } },
+        requestId: 'req_ref',
+      });
+      expect(check.issues.map((issue) => issue.code)).toEqual([
+        'IMAGE_EDIT_CAPABILITY_UNSUPPORTED',
+      ]);
+    },
+  );
+
+  it('只有图片提及的新节点仍冻结编辑限制，不要求原图连线', () => {
+    const check = checkImageEditCapabilities({
+      nodes: [imageNode('node_edit')],
+      edges: [],
+      targetNodeId: 'node_edit',
+      modelAlias: 'image-v1',
+      model: supportedModel,
+      requestId: 'req_mention',
+      mentions: [
+        {
+          nodeId: 'node_edit',
+          mentionId: 'm1',
+          assetId: 'asset_1',
+          assetVersion: 1,
+          mediaType: 'image',
+          label: '原图',
+          blockOrder: 0,
+        },
+      ],
+    });
+    expect(check.issues).toEqual([]);
+    expect(check.frozenCapability).toEqual({ declared: true, mimeTypes: ['image/png'] });
   });
 
   it('来源节点被删除、换成非图片或换图时给出可修复诊断', () => {

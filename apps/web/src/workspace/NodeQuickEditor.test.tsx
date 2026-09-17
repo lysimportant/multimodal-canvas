@@ -363,6 +363,90 @@ describe('NodeQuickEditor', () => {
 
     expect(screen.queryByText('当前模型的资源提及能力需要确认')).not.toBeInTheDocument();
     expect(screen.queryByText(/未声明可引用的资源媒体类型/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+  });
+
+  it('明确禁用编辑的模型阻止图片引用，但仍允许纯文生图', () => {
+    const props = makeProps({
+      node: {
+        ...imageNode,
+        data: {
+          ...imageNode.data,
+          modelAlias: 'image-model',
+          promptDocument: makeMentionDocument(imageMention),
+        },
+      } as AssetFlowNode,
+      models: [
+        {
+          id: 'image-model',
+          name: '图片模型',
+          mediaTypes: ['image'],
+          capabilities: { imageEdit: false },
+        },
+      ],
+    });
+    const { rerender } = render(<NodeQuickEditor {...props} />);
+    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '生成' })).toHaveAttribute(
+      'title',
+      '当前模型明确不支持图片编辑，请更换模型后再运行',
+    );
+    rerender(
+      <NodeQuickEditor
+        {...props}
+        node={{ ...props.node, data: { ...props.node.data, promptDocument: undefined } }}
+      />,
+    );
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+    rerender(
+      <NodeQuickEditor
+        {...props}
+        node={{ ...props.node, type: 'text', data: { ...props.node.data, mediaType: 'text' } }}
+        models={[
+          {
+            id: 'image-model',
+            name: '多模态模型',
+            mediaTypes: ['text', 'image'],
+            capabilities: { imageEdit: false },
+          },
+        ]}
+      />,
+    );
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+  });
+
+  it('生成新节点只拒绝明确禁用编辑的模型，不要求能力声明', async () => {
+    const onRunNewNode = vi.fn();
+    const props = makeProps({
+      onRunNewNode,
+      node: {
+        ...imageNode,
+        data: {
+          ...imageNode.data,
+          assetId: 'asset_result',
+          contentUrl: '/v1/assets/asset_result/content',
+          modelAlias: 'image-model',
+        },
+      },
+      models: [
+        {
+          id: 'image-model',
+          name: '图片模型',
+          mediaTypes: ['image'],
+          capabilities: { imageEdit: { supported: false } },
+        },
+      ],
+    });
+    const { rerender } = render(<NodeQuickEditor {...props} />);
+    expect(screen.getByRole('button', { name: '新节点' })).toBeDisabled();
+    rerender(
+      <NodeQuickEditor
+        {...props}
+        models={[{ id: 'image-model', name: '图片模型', mediaTypes: ['image'] }]}
+      />,
+    );
+    await userEvent.setup().click(screen.getByRole('button', { name: '新节点' }));
+    expect(onRunNewNode).toHaveBeenCalledOnce();
   });
 
   it('资源提及时不再显示媒体能力诊断', () => {

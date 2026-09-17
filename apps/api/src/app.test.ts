@@ -2979,7 +2979,30 @@ describe('webhook and run idempotency boundaries', () => {
       upsertProviderJob: vi.fn(),
       updateRun: vi.fn(),
     };
-    const webhookApp = buildApp({ logger: false, runService, webhookEventStore, runPersistence });
+    const settingsStore = new AiSettingsStore('synthetic-webhook-settings');
+    settingsStore.update({
+      baseUrl: 'https://newapi.example.test/v1',
+      apiKey: 'synthetic-webhook-key',
+    });
+    const credentialId = settingsStore.listCredentials()[0]!.id;
+    settingsStore.replaceModels(
+      [
+        {
+          id: 'video-model',
+          name: 'Video model',
+          mediaTypes: ['video'],
+          refreshedAt: appModelRefreshedAt,
+        },
+      ],
+      credentialId,
+    );
+    const webhookApp = buildApp({
+      logger: false,
+      runService,
+      webhookEventStore,
+      runPersistence,
+      settingsStore,
+    });
 
     try {
       const project = await webhookApp.inject({
@@ -2998,7 +3021,13 @@ describe('webhook and run idempotency boundaries', () => {
               id: 'node_webhook_app',
               type: 'video',
               position: { x: 0, y: 0 },
-              data: { label: 'Video', mediaType: 'video', mode: 'generate' },
+              data: {
+                label: 'Video',
+                mediaType: 'video',
+                mode: 'generate',
+                modelAlias: 'video-model',
+                credentialId,
+              },
             },
           ],
           edges: [],

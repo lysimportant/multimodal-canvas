@@ -107,7 +107,7 @@ async function mockApi(target: Pick<Page, 'route'>) {
       capabilities: {
         qualities: ['1k', '2k', '3k', '4k'],
         aspectRatios: ['1:1', '16:9', '9:16'],
-        // 图片编辑能力必须由目录显式声明；未声明的模型在请求前失败。
+        // 已声明的格式约束继续参与图片编辑校验。
         imageEdit: { supported: true, mimeTypes: ['image/png', 'image/jpeg'] },
       },
     },
@@ -554,6 +554,187 @@ async function mockApi(target: Pick<Page, 'route'>) {
     await json(route, {});
   });
 }
+
+/** 覆盖图片目录，分别模拟没有扩展声明及明确不支持 edits 的兼容模型。 */
+async function installImageCompatibilityModels(page: Page) {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => {
+    if (message.type() === 'error') errors.push(message.text());
+  });
+  await page.route('**/v1/models**', async (route) => {
+    if (new URL(route.request().url()).pathname !== '/v1/models') return route.fallback();
+    return json(route, {
+      models: [
+        {
+          id: 'gpt-image-2.5-sunburst',
+          name: 'gpt-image-2.5-sunburst',
+          mediaTypes: ['image'],
+          credentialId: initialCredential.id,
+        },
+        {
+          id: 'image-edit-disabled',
+          name: 'image-edit-disabled',
+          mediaTypes: ['image'],
+          credentialId: initialCredential.id,
+          capabilities: { imageEdit: { supported: false } },
+        },
+      ],
+    });
+  });
+  return errors;
+}
+
+test('图片引用兼容：无能力声明时提交一次并在刷新后保留资源身份', async ({ page }, testInfo) => {
+  const errors = await installImageCompatibilityModels(page);
+  const reference: Asset = {
+    id: 'compatibility-reference',
+    name: 'kitten-reference.png',
+    mediaType: 'image',
+    mimeType: 'image/png',
+    sizeBytes: validPng.byteLength,
+    latestVersion: 3,
+    status: 'ready',
+    contentUrl: '/v1/assets/compatibility-reference/content',
+    tags: [],
+  };
+  await page.route(/\/v1\/assets(?:\?.*)?$/, (route) => json(route, { assets: [reference] }));
+  await page.route('**/v1/assets/compatibility-reference/content**', (route) =>
+    route.fulfill({ contentType: 'image/png', body: validPng }),
+  );
+  const requests: Array<Record<string, unknown>> = [];
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && /\/v1\/nodes\/[^/]+\/runs$/.test(request.url())) {
+      requests.push(request.postDataJSON());
+    }
+  });
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await page.goto(projectPath);
+  await page.getByRole('button', { name: '新建图片生成节点' }).click();
+  const editor = page.getByRole('region', { name: '图片生成节点生成设置' });
+  const model = editor.getByRole('combobox', { name: /^模型：/ });
+  await model.click();
+  await page.getByRole('option', { name: 'gpt-image-2.5-sunburst', exact: true }).click();
+  const prompt = editor.getByRole('textbox', { name: '提示词' });
+  await prompt.fill('Change the background to a sunny garden. @kitten');
+  await page.getByRole('option', { name: /kitten-reference.png/ }).click();
+  await expect(editor.getByRole('button', { name: '预览并命名 kitten-reference' })).toBeVisible();
+
+  // 明确否定仍拦截资源引用；切回缺声明的模型后可直接提交。
+  await model.click();
+  await page.getByRole('option', { name: 'image-edit-disabled', exact: true }).click();
+  const generate = editor.getByRole('button', { name: '生成', exact: true });
+  await expect(generate).toBeDisabled();
+  await expect(generate).toHaveAttribute('title', '当前模型明确不支持图片编辑，请更换模型后再运行');
+  await model.click();
+  await page.getByRole('option', { name: 'gpt-image-2.5-sunburst', exact: true }).click();
+  await expect(generate).toBeEnabled();
+  await generate.click();
+  await expect(page.getByText('图片生成节点 已完成', { exact: true })).toBeVisible();
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toMatchObject({
+    modelAlias: 'gpt-image-2.5-sunburst',
+    promptDocument: {
+      version: 1,
+      blocks: [
+        { type: 'text', text: 'Change the background to a sunny garden. ' },
+        {
+          type: 'mention',
+          mentionId: expect.any(String),
+          assetId: reference.id,
+          assetVersion: 3,
+          label: reference.name,
+          mediaType: 'image',
+        },
+      ],
+    },
+  });
+
+  const restoredCanvas = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'GET' &&
+      new URL(response.url()).pathname === '/v1/projects/project-smoke/canvas',
+  );
+  await page.reload();
+  const node = nodeByLabel(page, '图片生成节点');
+  await expect(node.locator('img').first()).toHaveAttribute('src', /\/v1\/assets\/result-/);
+  await node.click({ position: { x: 5, y: 5 } });
+  await expect(prompt).toHaveValue('Change the background to a sunny garden. kitten-reference');
+  await expect(editor.getByRole('button', { name: '预览并命名 kitten-reference' })).toBeVisible();
+  const saved = ((await (await restoredCanvas).json()) as { canvas: CanvasDocument }).canvas;
+  expect(saved.nodes[0]?.data.promptDocument).toEqual(requests[0]?.promptDocument);
+  expect(requests).toHaveLength(1);
+  await expect
+    .poll(() =>
+      editor
+        .locator('.resource-mention-preview img')
+        .first()
+        .evaluate((element: HTMLImageElement) => ({
+          complete: element.complete,
+          naturalWidth: element.naturalWidth,
+        })),
+    )
+    .toEqual({ complete: true, naturalWidth: 1 });
+  await expect(editor.locator('.artifact-preview-loading')).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath('image-mention-restored.png') });
+  expect(errors).toEqual([]);
+});
+
+test('图片引用兼容：修改入口和编辑节点允许缺声明模型并保留明确禁用', async ({ page }, testInfo) => {
+  const errors = await installImageCompatibilityModels(page);
+  await installImageEditFixture(page);
+  const requests: Array<Record<string, unknown>> = [];
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && /\/v1\/nodes\/[^/]+\/runs$/.test(request.url())) {
+      requests.push(request.postDataJSON());
+    }
+  });
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await page.goto(projectPath);
+  const source = page.locator('.react-flow__node[data-id="node-image-source"]');
+  await source.click();
+  const sourceEditor = page.getByRole('region', { name: '原始图片生成设置' });
+  const sourceModel = sourceEditor.getByRole('combobox', { name: /^模型：/ });
+  await sourceModel.click();
+  await page.getByRole('option', { name: 'image-edit-disabled', exact: true }).click();
+  await expect(sourceEditor.getByRole('button', { name: '新节点', exact: true })).toBeDisabled();
+  await sourceModel.click();
+  await page.getByRole('option', { name: 'gpt-image-2.5-sunburst', exact: true }).click();
+  const newNode = sourceEditor.getByRole('button', { name: '新节点', exact: true });
+  await expect(newNode).toBeEnabled();
+  await newNode.click();
+  await expect(page.getByText('修改 原始图片 已完成', { exact: true })).toBeVisible();
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toMatchObject({ modelAlias: 'gpt-image-2.5-sunburst' });
+  await expect(source.locator('img').first()).toHaveAttribute('src', /image-edit-source-asset/);
+
+  const editor = page.getByRole('region', { name: '修改 原始图片图片修改设置' });
+  await editor.getByRole('textbox', { name: '图片修改要求' }).fill('Make the light softer.');
+  const model = editor.getByRole('combobox', { name: /^模型：/ });
+  await model.click();
+  await page.getByRole('option', { name: 'image-edit-disabled', exact: true }).click();
+  const generate = editor.getByRole('button', { name: '生成', exact: true });
+  await expect(generate).toBeDisabled();
+  await expect(generate).toHaveAttribute('title', '当前模型明确不支持图片编辑，请更换模型后再运行');
+  await model.click();
+  await page.getByRole('option', { name: 'gpt-image-2.5-sunburst', exact: true }).click();
+  await expect(generate).toBeEnabled();
+  expect(requests).toHaveLength(1);
+  await expect
+    .poll(() =>
+      editor
+        .getByRole('group', { name: '来源图（只读）' })
+        .getByRole('img')
+        .evaluate((element: HTMLImageElement) => ({
+          complete: element.complete,
+          naturalWidth: element.naturalWidth,
+        })),
+    )
+    .toEqual({ complete: true, naturalWidth: 1 });
+  await expect(editor.locator('.artifact-preview-loading')).toHaveCount(0);
+  await editor.screenshot({ path: testInfo.outputPath('image-edit-optional-capabilities.png') });
+  expect(errors).toEqual([]);
+});
 
 const clipboardPermissions = ['clipboard-read', 'clipboard-write'] as const;
 

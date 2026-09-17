@@ -2014,7 +2014,7 @@ describe('画布编辑器交互', () => {
     });
   });
 
-  it('模型未声明图片编辑能力时阻止运行并说明原因', async () => {
+  it('模型未声明图片编辑能力时仍可把修改结果生成到新节点', async () => {
     const { user } = await renderCanvas();
 
     await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
@@ -2030,11 +2030,17 @@ describe('画布编辑器交互', () => {
       'aria-label',
       '模型：普通图片模型',
     );
-    expect(within(editor).getByRole('button', { name: '新节点' })).toBeDisabled();
+    expect(within(editor).getByRole('button', { name: '新节点' })).toBeEnabled();
     expect(within(editor).getByRole('button', { name: '新节点' })).toHaveAttribute(
       'title',
-      '当前模型未声明支持图片编辑，请更换模型后再运行',
+      '把修改结果写到新节点',
     );
+    await user.click(within(editor).getByRole('button', { name: '新节点' }));
+    await waitFor(() => {
+      const child = canvas.nodes.find((node) => node.data.imageEditSource);
+      expect(child).toBeDefined();
+      expect(nodeRunRequestCounts.get(child!.id)).toBe(1);
+    });
   });
 
   it('有回显后再点生成仍覆盖原节点，不新建节点也不写 imageEditSource', async () => {

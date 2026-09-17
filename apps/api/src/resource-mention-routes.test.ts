@@ -381,108 +381,174 @@ describe('资源提及 HTTP 边界', () => {
     expect(submitted.json().run.snapshot.promptMentions).toBeUndefined();
   });
 
-  it('真实 Provider 能力未知时在创建运行和调用 executor 前 fail-closed', async () => {
-    vi.stubEnv('WORKER_PROVIDER', 'newapi');
-    const assetStore = new MemoryAssetStore();
-    const projectStore = new MemoryProjectStore();
-    const runService = new MemoryRunService({ providerName: 'newapi', stepDelayMs: 0 });
-    const settingsStore = new AiSettingsStore('resource-mention-real-preflight');
-    settingsStore.update({
-      baseUrl: 'https://newapi.example.test/v1',
-      apiKey: 'synthetic-resource-mention-key',
-    });
-    const credential = settingsStore.listCredentials()[0];
-    if (!credential) throw new Error('测试凭据创建失败');
-    settingsStore.replaceModels(
-      [
-        {
-          id: 'real-image',
-          name: 'Real image',
-          mediaTypes: ['image'],
-          refreshedAt: new Date().toISOString(),
-        },
-      ],
-      credential.id,
-    );
-    const project = await projectStore.create({ name: '真实能力预检' });
-    const asset = await assetStore.create({
-      projectId: project.id,
-      name: 'reference.png',
-      mediaType: 'image',
-      mimeType: 'image/png',
-      content: Buffer.from('image'),
-    });
-    await storeCanvas(projectStore, project.id, {
-      revision: 0,
-      nodes: [
-        {
-          id: 'node-real-image',
-          type: 'image',
-          position: { x: 0, y: 0 },
-          data: {
-            label: '真实图片',
-            mediaType: 'image',
-            mode: 'generate',
-            modelAlias: 'real-image',
-            credentialId: credential.id,
-            promptDocument: {
-              version: 1,
-              blocks: [
-                {
-                  type: 'mention',
-                  mentionId: 'mention-real',
-                  assetId: asset.id,
-                  assetVersion: 1,
-                  label: asset.name,
-                  mediaType: 'image',
-                },
-              ],
+  it.each<{
+    name: string;
+    capabilities?: Record<string, unknown>;
+    mentionMediaType?: MediaType;
+    foreignAsset?: boolean;
+    assetVersion?: number;
+    status: number;
+    issueCode?: string;
+  }>([
+    { name: '无能力声明时进入图片执行链路', status: 202 },
+    {
+      name: '有编辑限制时冻结限制',
+      capabilities: { imageEdit: { supported: true, mimeTypes: ['image/png'] } },
+      status: 202,
+    },
+    {
+      name: '明确禁用编辑时阻止排队',
+      capabilities: { imageEdit: false },
+      status: 400,
+      issueCode: 'IMAGE_EDIT_CAPABILITY_UNSUPPORTED',
+    },
+    {
+      name: '明确排除图片引用时阻止排队',
+      capabilities: { mentionMediaTypes: ['text'] },
+      status: 400,
+      issueCode: 'RESOURCE_MENTION_MEDIA_UNSUPPORTED',
+    },
+    {
+      name: '非图片提及不能进入编辑链路',
+      mentionMediaType: 'text',
+      capabilities: { mentionMediaTypes: ['text'] },
+      status: 400,
+      issueCode: 'RESOURCE_MENTION_MEDIA_UNSUPPORTED',
+    },
+    {
+      name: '其他项目的图片仍被权限校验拒绝',
+      foreignAsset: true,
+      status: 400,
+      issueCode: 'RESOURCE_MENTION_FORBIDDEN',
+    },
+    {
+      name: '引用版本不存在时不回退最新版本',
+      assetVersion: 99,
+      status: 400,
+      issueCode: 'RESOURCE_MENTION_VERSION_MISSING',
+    },
+  ])(
+    '真实 Provider 图片引用：$name',
+    async ({
+      capabilities,
+      mentionMediaType = 'image',
+      foreignAsset,
+      assetVersion = 1,
+      status,
+      issueCode,
+    }) => {
+      vi.stubEnv('WORKER_PROVIDER', 'newapi');
+      const assetStore = new MemoryAssetStore();
+      const projectStore = new MemoryProjectStore();
+      const runService = new MemoryRunService({ providerName: 'newapi', stepDelayMs: 0 });
+      const settingsStore = new AiSettingsStore('resource-mention-real-preflight');
+      settingsStore.update({
+        baseUrl: 'https://newapi.example.test/v1',
+        apiKey: 'synthetic-resource-mention-key',
+      });
+      const credential = settingsStore.listCredentials()[0];
+      if (!credential) throw new Error('测试凭据创建失败');
+      settingsStore.replaceModels(
+        [
+          {
+            id: 'real-image',
+            name: 'Real image',
+            mediaTypes: ['image'],
+            ...(capabilities ? { capabilities } : {}),
+            refreshedAt: new Date().toISOString(),
+          },
+        ],
+        credential.id,
+      );
+      const project = await projectStore.create({ name: '真实能力预检' });
+      const asset = await assetStore.create({
+        projectId: foreignAsset ? 'another-project' : project.id,
+        name: 'reference.png',
+        mediaType: mentionMediaType,
+        mimeType: mentionMediaType === 'text' ? 'text/plain' : 'image/png',
+        content: Buffer.from('image'),
+      });
+      await assetStore.createVersion(asset.id, { content: Buffer.from('new-version') });
+      await storeCanvas(projectStore, project.id, {
+        revision: 0,
+        nodes: [
+          {
+            id: 'node-real-image',
+            type: 'image',
+            position: { x: 0, y: 0 },
+            data: {
+              label: '真实图片',
+              mediaType: 'image',
+              mode: 'generate',
+              modelAlias: 'real-image',
+              credentialId: credential.id,
+              promptDocument: {
+                version: 1,
+                blocks: [
+                  {
+                    type: 'mention',
+                    mentionId: 'mention-real',
+                    assetId: asset.id,
+                    assetVersion,
+                    label: asset.name,
+                    mediaType: mentionMediaType,
+                  },
+                ],
+              },
             },
           },
-        },
-      ],
-      edges: [],
-    });
-    const executor = vi.fn(async ({ snapshot }: RunExecutorRequest) => ({
-      provider: 'newapi',
-      summary: '不应执行',
-      targetNodeId: snapshot.targetNodeId,
-      mediaType: 'image' as const,
-      inputCount: 0,
-    }));
-    const app = buildApp({
-      logger: false,
-      assetStore,
-      projectStore,
-      runService,
-      runExecutor: executor,
-      settingsStore,
-    });
-    apps.push(app);
+        ],
+        edges: [],
+      });
+      const executor = vi.fn(async ({ snapshot }: RunExecutorRequest) => ({
+        provider: 'newapi',
+        summary: '合成图片引用执行',
+        targetNodeId: snapshot.targetNodeId,
+        mediaType: 'image' as const,
+        inputCount: 0,
+      }));
+      const app = buildApp({
+        logger: false,
+        assetStore,
+        projectStore,
+        runService,
+        runExecutor: executor,
+        settingsStore,
+      });
+      apps.push(app);
 
-    const response = await app.inject({
-      method: 'POST',
-      url: '/v1/nodes/node-real-image/runs',
-      payload: { projectId: project.id },
-    });
-    expect(response.statusCode).toBe(400);
-    expect(response.json()).toMatchObject({
-      code: 'RESOURCE_MENTION_CAPABILITY_UNSUPPORTED',
-      issues: [
-        {
-          code: 'RESOURCE_MENTION_CAPABILITY_UNKNOWN',
-          nodeId: 'node-real-image',
-          mentionId: 'mention-real',
-          assetId: asset.id,
-          mediaType: 'image',
-          modelAlias: 'real-image',
-        },
-      ],
-    });
-    expect(executor).not.toHaveBeenCalled();
-    expect(await runService.listByProject(project.id)).toEqual([]);
-    expect(JSON.stringify(response.json())).not.toContain('synthetic-resource-mention-key');
-  });
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v1/nodes/node-real-image/runs',
+        payload: { projectId: project.id },
+      });
+      expect(response.statusCode).toBe(status);
+      if (status === 202) {
+        const run = await waitForRun(runService, response.json().run.id, 'succeeded');
+        expect(executor).toHaveBeenCalledOnce();
+        expect(run.snapshot.promptMentions).toEqual([
+          expect.objectContaining({
+            nodeId: 'node-real-image',
+            assetId: asset.id,
+            assetVersion: 1,
+            mediaType: 'image',
+          }),
+        ]);
+        expect(run.snapshot.nodeImageEditCapabilities).toEqual(
+          capabilities
+            ? { 'node-real-image': { declared: true, mimeTypes: ['image/png'] } }
+            : undefined,
+        );
+      } else {
+        expect(response.json().issues).toEqual(
+          expect.arrayContaining([expect.objectContaining({ code: issueCode })]),
+        );
+        expect(executor).not.toHaveBeenCalled();
+        expect(await runService.listByProject(project.id)).toEqual([]);
+      }
+      expect(JSON.stringify(response.json())).not.toContain('synthetic-resource-mention-key');
+    },
+  );
 
   it('全能参考把提示词图片提及收成视频参考，不走聊天提及能力预检', async () => {
     vi.stubEnv('WORKER_PROVIDER', 'newapi');

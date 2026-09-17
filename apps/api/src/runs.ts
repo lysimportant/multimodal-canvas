@@ -35,7 +35,7 @@ import {
   type PrismaRunPersistence,
   type RequestPromptStore,
 } from './run-persistence';
-import type { RequestPromptCapture } from '@multimodal-canvas/providers';
+import type { RequestPromptCapture, ResolvedMention } from '@multimodal-canvas/providers';
 
 // A tiny 1-second fragmented H.264 MP4 keeps the default provider useful in
 // local development without pretending that arbitrary text is a playable
@@ -100,6 +100,12 @@ export type ProviderWebhookUpdate = {
 
 export type RunExecutorRequest = {
   snapshot: RunSnapshot;
+  /** 运行提交者，用于本地执行前重新验证个人资源归属；不发给供应商。 */
+  userId?: string;
+  /** 仅进程内传递的已读取图片内容，不写入运行快照。 */
+  resolvedMentions?: readonly ResolvedMention[];
+  /** 检查读取原图期间的取消状态，发送前必须停止已取消运行。 */
+  isCancelled?: () => boolean;
   /** 由内存运行服务提供的真实运行身份，供 Provider 发送前留存请求。 */
   runId?: string;
   attempt?: number;
@@ -187,6 +193,15 @@ export type FrozenRunAssetRef = {
   contentUrl: string;
 };
 
+/**
+ * 将目标及其依赖冻结成可排队执行的快照，不修改画布。
+ * @param projectId 已授权的项目 ID。
+ * @param canvas 提交时画布，资产版本和模型由 options 中的服务端解析结果覆盖。
+ * @param targetNodeId 要执行的非来源节点 ID。
+ * @param options 已验证的模型、凭据、资产、提及及按节点编辑限制。
+ * @returns 与后续画布变更隔离的运行快照。
+ * @throws 目标不存在、被禁用、是来源节点，或快照不满足领域契约时失败。
+ */
 export function createRunSnapshot(
   projectId: string,
   canvas: CanvasDocument,
@@ -204,11 +219,10 @@ export function createRunSnapshot(
     frozenAssetRefs?: Readonly<Record<string, FrozenRunAssetRef>>;
     /** 提交 API 已完成权限和版本校验的内联资源提及。 */
     frozenPromptMentions?: readonly FrozenPromptMention[];
-    /**
-     * 提交 API 已解析的图片编辑能力。缺省表示目录未声明，Provider 必须在
-     * 请求前失败，不能按“存在图片输入”推断编辑能力。
-     */
+    /** 目标节点的目录编辑限制；缺省时兼容接口不额外收窄输入。 */
     frozenImageEditCapability?: FrozenImageEditCapability;
+    /** 按执行节点解析的编辑限制；未声明能力的节点不生成默认条目。 */
+    frozenNodeImageEditCapabilities?: Readonly<Record<string, FrozenImageEditCapability>>;
   } = {},
 ): RunSnapshot {
   const target = canvas.nodes.find((node) => node.id === targetNodeId);
@@ -300,6 +314,10 @@ export function createRunSnapshot(
       : {}),
     ...(options.frozenImageEditCapability
       ? { imageEditCapability: clone(options.frozenImageEditCapability) }
+      : {}),
+    ...(options.frozenNodeImageEditCapabilities &&
+    Object.keys(options.frozenNodeImageEditCapabilities).length > 0
+      ? { nodeImageEditCapabilities: clone(options.frozenNodeImageEditCapabilities) }
       : {}),
   });
 }
@@ -623,6 +641,11 @@ export class MemoryRunService implements RunService, RequestPromptStore {
     this.executor = executor;
   }
 
+  /** 返回实际运行供应商，供 API 预检与进程内资源读取保持同一模式。 */
+  getProviderName(): RunProviderName {
+    return this.providerName;
+  }
+
   /** Allows the composition root to attach storage after constructing a service. */
   setResultArchiver(resultArchiver: RunResultArchiver | undefined) {
     this.resultArchiver = resultArchiver;
@@ -836,6 +859,8 @@ export class MemoryRunService implements RunService, RequestPromptStore {
       const execution = normalizeRunExecution(
         await executeRunExecutor(this.executor, {
           snapshot: clone(run.snapshot),
+          ...(run.userId ? { userId: run.userId } : {}),
+          isCancelled: () => run.status === 'cancel_requested' || run.status === 'cancelled',
           runId: run.id,
           attempt: run.attempt,
           onRequestPrompt: async (input) => {
@@ -919,8 +944,8 @@ export class MemoryRunService implements RunService, RequestPromptStore {
       }
       this.transition(run, 'succeeded', 100, result);
     } catch (error) {
-      if (isCancellationRequested(run)) {
-        this.transition(run, 'cancelled', run.progress);
+      if (['cancel_requested', 'cancelled'].includes(run.status)) {
+        if (!['cancelled'].includes(run.status)) this.transition(run, 'cancelled', run.progress);
         return;
       }
       this.fail(run, error);

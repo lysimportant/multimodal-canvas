@@ -198,13 +198,19 @@ describe('frozen workflow DAG', () => {
     ]);
   });
 
-  it('carries the frozen image-edit capability into every node sub-snapshot', () => {
+  it('按节点继承图片编辑限制，不把目标模型的限制传给其它模型', () => {
     const frozen: RunSnapshot = {
       ...snapshot,
       imageEditCapability: {
         declared: true,
-        mimeTypes: ['image/png'],
-        parameters: ['size'],
+        mimeTypes: ['image/jpeg'],
+      },
+      nodeImageEditCapabilities: {
+        node_image: {
+          declared: true,
+          mimeTypes: ['image/png'],
+          parameters: ['size'],
+        },
       },
     };
 
@@ -214,7 +220,6 @@ describe('frozen workflow DAG', () => {
       'node_image',
     );
 
-    // 子快照漏掉这个字段时，Provider 会把已声明的编辑能力当成未声明并拒绝请求。
     expect(imageSnapshot.imageEditCapability).toEqual({
       declared: true,
       mimeTypes: ['image/png'],
@@ -223,10 +228,23 @@ describe('frozen workflow DAG', () => {
     // 原始快照不被修改，且副本互不影响。
     expect(frozen.imageEditCapability).toEqual({
       declared: true,
-      mimeTypes: ['image/png'],
-      parameters: ['size'],
+      mimeTypes: ['image/jpeg'],
     });
+    imageSnapshot.imageEditCapability!.mimeTypes![0] = 'image/webp';
+    expect(frozen.nodeImageEditCapabilities?.node_image.mimeTypes).toEqual(['image/png']);
     expect(imageSnapshot).not.toBe(frozen);
+  });
+
+  it('旧快照的编辑能力仅回退给原目标节点，其他节点缺声明时不冒用', () => {
+    const frozen: RunSnapshot = {
+      ...snapshot,
+      imageEditCapability: { declared: true, mimeTypes: ['image/png'] },
+    };
+    const state = createInitialWorkflowState(frozen);
+    expect(createNodeRunSnapshot(frozen, state, 'node_image').imageEditCapability).toBeUndefined();
+    expect(createNodeRunSnapshot(frozen, state, 'node_video').imageEditCapability).toEqual(
+      frozen.imageEditCapability,
+    );
   });
 
   it('requires a frozen model for every provider-backed intermediate node', () => {

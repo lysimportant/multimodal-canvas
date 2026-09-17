@@ -230,6 +230,36 @@ describe('AssetPreview', () => {
     expect(states.at(-1)).toBe('ready');
   });
 
+  it('缓存图片已解码时不重置为加载中，换图后重新等待加载事件', () => {
+    const complete = vi.spyOn(HTMLImageElement.prototype, 'complete', 'get').mockReturnValue(true);
+    const width = vi.spyOn(HTMLImageElement.prototype, 'naturalWidth', 'get').mockReturnValue(1);
+    const onLoadStateChange = vi.fn();
+    const asset = makeAsset({
+      mediaType: 'image',
+      mimeType: 'image/png',
+      contentUrl: 'https://assets.example/cached.png',
+    });
+    try {
+      const view = render(<AssetPreview asset={asset} onLoadStateChange={onLoadStateChange} />);
+      expect(onLoadStateChange).toHaveBeenLastCalledWith('ready');
+      expect(view.container.querySelector('.artifact-preview-loading')).toBeNull();
+      complete.mockReturnValue(false);
+      view.rerender(
+        <AssetPreview
+          asset={{ ...asset, contentUrl: 'https://assets.example/new.png' }}
+          onLoadStateChange={onLoadStateChange}
+        />,
+      );
+      expect(onLoadStateChange).toHaveBeenLastCalledWith('loading');
+      expect(view.container.querySelector('.artifact-preview-loading')).not.toBeNull();
+      fireEvent.load(screen.getByRole('img'));
+      expect(onLoadStateChange).toHaveBeenLastCalledWith('ready');
+    } finally {
+      complete.mockRestore();
+      width.mockRestore();
+    }
+  });
+
   it('opens a real image and exposes image load errors', async () => {
     const onLoadStateChange = vi.fn();
     const user = userEvent.setup();
