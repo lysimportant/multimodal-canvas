@@ -1942,6 +1942,32 @@ describe('画布编辑器交互', () => {
     expect(nodeRunRequestCounts.size).toBe(0);
   });
 
+  it('卸载画布后取消所有分叉节点的延迟层级更新', async () => {
+    const { user } = await renderCanvas();
+    await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
+    const source = findNodeByLabel('reference.png')!;
+    const edit = within(source).getByRole('button', { name: '修改图片：reference.png' });
+    const timerWindow: Window = window;
+    const scheduled = vi.spyOn(timerWindow, 'setTimeout');
+    const cancelled = vi.spyOn(timerWindow, 'clearTimeout');
+    try {
+      fireEvent.click(edit);
+      fireEvent.click(edit);
+      expect(flowNodes()).toHaveLength(3);
+      const forkTimers = scheduled.mock.calls.flatMap(([, delay], index) =>
+        delay === 4000 ? [scheduled.mock.results[index]!.value] : [],
+      );
+      expect(forkTimers).toHaveLength(2);
+      cancelled.mockClear();
+      cleanup();
+      for (const timer of forkTimers) expect(cancelled).toHaveBeenCalledWith(timer);
+    } finally {
+      cleanup();
+      scheduled.mockRestore();
+      cancelled.mockRestore();
+    }
+  });
+
   it('修改图片不复制提示词或自动运行，手动生成后结果只写入新节点', async () => {
     const { user } = await renderCanvas();
 

@@ -378,13 +378,15 @@ export function getEffectivePromptDocument(input: {
   };
 }
 
-/** 已写入运行快照的图片编辑限制；缺省表示兼容接口不额外收窄编辑输入。 */
+/** 已写入运行快照的图片编辑限制；旧快照缺省图片上限时按实际模型解析。 */
 export const frozenImageEditCapabilitySchema = z
   .object({
     declared: z.literal(true),
     mimeTypes: z.array(z.string().trim().min(1)).min(1).optional(),
     sizes: z.array(z.string().trim().min(1)).min(1).optional(),
     parameters: z.array(z.string().trim().min(1)).min(1).optional(),
+    /** 单次编辑允许的图片张数；旧快照缺省时按模型默认值解析。 */
+    maxImages: z.number().int().positive().optional(),
   })
   .strip();
 
@@ -700,7 +702,37 @@ export type ImageEditCapability = {
   sizes?: readonly string[];
   /** 允许的参数字段名；缺省表示不做额外收窄。 */
   parameters?: readonly string[];
+  /** 目录声明的单次编辑图片上限；实际请求还受本地 16 张上限约束。 */
+  maxImages?: number;
+  /** 已声明的图片上限不是正整数，调用方必须拒绝，不能回退到更宽松的默认值。 */
+  invalidMaxImages?: true;
 };
+
+/** GPT Image 编辑接口单次输入最多 16 张图片；兼容模型也不超过此本地上限。 */
+export const IMAGE_EDIT_MAX_IMAGES = 16;
+
+/**
+ * 解析图片编辑输入上限，显式目录限制优先于模型族默认值。
+ * @param modelAlias 实际供应商模型 ID；GPT Image 官方族默认 16 张，其它模型默认 1 张。
+ * @param capability 可选的已声明上限；更小值生效，更大值收窄到 16 张。
+ * @returns 单次允许的图片张数，范围为 1 至 16。
+ * @throws RangeError 显式 maxImages 不是有限正整数。
+ */
+export function resolveImageEditMaxImages(
+  modelAlias: string,
+  capability?: { maxImages?: number },
+): number {
+  const maxImages = capability?.maxImages;
+  if (maxImages !== undefined) {
+    if (!Number.isInteger(maxImages) || maxImages < 1) {
+      throw new RangeError('图片编辑 maxImages 必须为正整数');
+    }
+    return Math.min(maxImages, IMAGE_EDIT_MAX_IMAGES);
+  }
+  return /^gpt-image-.+$/i.test(modelAlias) || modelAlias.toLowerCase() === 'chatgpt-image-latest'
+    ? IMAGE_EDIT_MAX_IMAGES
+    : 1;
+}
 
 /** 目录中可用于解析图片编辑能力的字段名，兼容供应商的 snake_case 别名。 */
 const imageEditCapabilityKeys = ['imageEdit', 'image_edit', 'supportsImageEdit'] as const;
@@ -755,11 +787,26 @@ export function imageEditCapability(
     const mimeTypes = readStringArray(record?.mimeTypes ?? record?.mime_types);
     const sizes = readStringArray(record?.sizes);
     const parameters = readStringArray(record?.parameters ?? record?.fields);
+    const hasMaxImages = Boolean(
+      record && (Object.hasOwn(record, 'maxImages') || Object.hasOwn(record, 'max_images')),
+    );
+    const maxImages = record
+      ? Object.hasOwn(record, 'maxImages')
+        ? record.maxImages
+        : record.max_images
+      : undefined;
+    const validMaxImages =
+      typeof maxImages === 'number' && Number.isInteger(maxImages) && maxImages > 0;
     return {
       declared: true,
       ...(mimeTypes ? { mimeTypes } : {}),
       ...(sizes ? { sizes } : {}),
       ...(parameters ? { parameters } : {}),
+      ...(hasMaxImages
+        ? validMaxImages
+          ? { maxImages }
+          : { invalidMaxImages: true as const }
+        : {}),
     };
   }
   return { declared: false };

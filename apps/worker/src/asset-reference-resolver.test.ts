@@ -474,6 +474,165 @@ describe('StoredAssetReferenceResolver', () => {
 });
 
 describe('createRunWorker asset hydration boundary', () => {
+  it.each(['mentions', 'link-and-mentions'])(
+    '多图 %s 水合后按顺序提交 image[]，不同冻结版本保留且所有 job 更新均不含字节',
+    async (kind) => {
+      const firstVersion = Buffer.from('worker-frozen-image-version-one');
+      const secondVersion = Buffer.from('worker-frozen-image-version-two');
+      const otherImage = Buffer.from('worker-another-frozen-image');
+      const otherImageId = '123e4567-e89b-42d3-a456-426614174712';
+      const references = [
+        { assetId: imageAssetId, assetVersion: 2 },
+        { assetId: otherImageId, assetVersion: 1 },
+        { assetId: imageAssetId, assetVersion: 1 },
+        { assetId: imageAssetId, assetVersion: 2 },
+      ];
+      const durableSnapshot = promptMentionSnapshot({
+        ...references[0]!,
+        label: '参考图',
+        mediaType: 'image',
+      });
+      durableSnapshot.modelAlias = 'gpt-image-1';
+      const mentionReferences = kind === 'link-and-mentions' ? references.slice(1) : references;
+      const blocks = mentionReferences.map((reference, index) => ({
+        type: 'mention' as const,
+        mentionId: `image-reference-${index}`,
+        ...reference,
+        label: `参考图 ${index + 1}`,
+        mediaType: 'image' as const,
+      }));
+      durableSnapshot.nodes[0]!.data.promptDocument = {
+        version: 1,
+        blocks: [{ type: 'text', text: 'Combine these images in order.' }, ...blocks],
+      };
+      durableSnapshot.promptMentions = blocks.map(
+        ({ mentionId, assetId, assetVersion, mediaType, label }, index) => ({
+          mentionId,
+          assetId,
+          assetVersion,
+          mediaType,
+          label,
+          nodeId: 'node_target',
+          blockOrder: index + 1,
+        }),
+      );
+      if (kind === 'link-and-mentions') {
+        const linked = referenceSnapshot({
+          sourceMediaType: 'image',
+          targetMediaType: 'image',
+          role: 'referenceImage',
+          assetId: imageAssetId,
+          mimeType: 'image/png',
+          contentUrl: `/v1/assets/${imageAssetId}/versions/2/content`,
+        });
+        durableSnapshot.inputs = linked.inputs;
+        durableSnapshot.inputs[0]!.sourceAssetVersion = 2;
+        durableSnapshot.edges = linked.edges;
+        durableSnapshot.nodes.unshift(linked.nodes[0]!);
+      }
+      const originalSnapshot = structuredClone(durableSnapshot);
+      const { repository, blobStore } = fixtures({
+        assets: [
+          asset(imageAssetId, 'image', 'image/png', Buffer.from('latest-image-bytes'), projectId),
+          asset(otherImageId, 'image', 'image/png', Buffer.from('latest-other-bytes'), projectId),
+        ],
+        versions: [
+          {
+            assetId: imageAssetId,
+            version: 1,
+            sizeBytes: BigInt(firstVersion.byteLength),
+            contentKey: 'objects/frozen-first-v1',
+          },
+          {
+            assetId: imageAssetId,
+            version: 2,
+            sizeBytes: BigInt(secondVersion.byteLength),
+            contentKey: 'objects/frozen-first-v2',
+          },
+          {
+            assetId: otherImageId,
+            version: 1,
+            sizeBytes: BigInt(otherImage.byteLength),
+            contentKey: 'objects/frozen-other-v1',
+          },
+        ],
+        blobs: {
+          'objects/frozen-first-v1': firstVersion,
+          'objects/frozen-first-v2': secondVersion,
+          'objects/frozen-other-v1': otherImage,
+        },
+      });
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(
+          Response.json({ data: [{ b64_json: Buffer.from('combined image').toString('base64') }] }),
+        );
+      const jobUpdates: unknown[] = [];
+      const job: StubJob = {
+        id: projectId,
+        data: {
+          runId: projectId,
+          userId,
+          snapshot: durableSnapshot,
+          attempt: 1,
+          provider: 'newapi',
+          cancelRequested: false,
+        },
+        async updateData(data) {
+          jobUpdates.push(structuredClone(data));
+          this.data = data;
+        },
+        async updateProgress() {},
+      };
+      bullmqState.job = job;
+      createRunWorker({
+        connection: { host: '127.0.0.1', port: 6379 },
+        stepDelayMs: 0,
+        providerName: 'newapi',
+        provider: new NewApiProvider({
+          baseUrl: 'https://newapi.example.test/v1',
+          apiKey: 'synthetic-test-key',
+          fetchImpl,
+        }),
+        assetReferenceResolver: new StoredAssetReferenceResolver(repository, blobStore),
+        resultArchiver: async () => ({
+          assetId: 'asset_multiple_image_result',
+          version: 1,
+          mimeType: 'image/png',
+        }),
+      });
+
+      await bullmqState.processor?.(job);
+
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      const [url, init] = fetchImpl.mock.calls[0]!;
+      expect(url).toBe('https://newapi.example.test/v1/images/edits');
+      const form = init!.body as FormData;
+      expect(form.getAll('image')).toEqual([]);
+      expect(form.getAll('image[]')).toHaveLength(3);
+      expect(
+        await Promise.all(
+          form
+            .getAll('image[]')
+            .map(async (file) => Buffer.from(await (file as File).arrayBuffer())),
+        ),
+      ).toEqual([secondVersion, otherImage, firstVersion]);
+      expect(repository.findVersion).toHaveBeenCalledTimes(3);
+      expect(repository.findVersion).toHaveBeenCalledWith(imageAssetId, 1);
+      expect(repository.findVersion).toHaveBeenCalledWith(imageAssetId, 2);
+      expect(repository.findVersion).toHaveBeenCalledWith(otherImageId, 1);
+      expect(blobStore.get).toHaveBeenCalledTimes(3);
+      expect(durableSnapshot).toEqual(originalSnapshot);
+      expect(job.data.snapshot).toEqual(originalSnapshot);
+      expect(jobUpdates.length).toBeGreaterThan(0);
+      const durable = JSON.stringify([job.data, ...jobUpdates]);
+      expect(durable).not.toContain('data:image/');
+      for (const content of [firstVersion, secondVersion, otherImage]) {
+        expect(durable).not.toContain(content.toString('base64'));
+      }
+    },
+  );
+
   it.each(
     (['read-next-resource', 'capture-prompt'] as const).flatMap((phase) =>
       (['archived', 'revoked', 'deleted'] as const).map((change) => ({ phase, change })),
@@ -1036,7 +1195,7 @@ describe('createRunWorker asset hydration boundary', () => {
 function referenceSnapshot(options: {
   sourceMediaType?: 'text' | 'image';
   targetMediaType?: 'text' | 'image' | 'video';
-  role?: 'prompt' | 'firstFrame' | 'content';
+  role?: 'prompt' | 'firstFrame' | 'content' | 'referenceImage';
   assetId: string;
   sourceMode?: 'source' | 'generate';
   contentUrl?: string | null;

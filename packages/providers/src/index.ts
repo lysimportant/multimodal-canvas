@@ -17,6 +17,7 @@ import {
   imageEditSourceSchema,
   precheckVideoGenerationInputs,
   renderPromptDocument,
+  resolveImageEditMaxImages,
   REQUEST_PROMPT_SCHEMA_VERSION,
   videoInputRoleForPromptMention,
   videoModeForPromptMentions,
@@ -644,13 +645,14 @@ export class NewApiProvider {
         sourceImages: mapping.images,
       };
     }
-    if (mapping.images.length > 1) {
-      throw new NewApiProviderError('当前图片编辑一次最多支持 1 张不同图片或版本，请保留一张原图', {
-        code: 'INPUT_ROLE_CARDINALITY_UNSUPPORTED',
-        retryable: false,
-      });
+    const maxImages = resolveImageEditMaxImages(snapshot.modelAlias, snapshot.imageEditCapability);
+    if (mapping.images.length > maxImages) {
+      throw new NewApiProviderError(
+        `当前模型图片编辑一次最多支持 ${maxImages} 张不同图片或版本，当前为 ${mapping.images.length} 张`,
+        { code: 'INPUT_ROLE_CARDINALITY_UNSUPPORTED', retryable: false },
+      );
     }
-    const capability = assertImageEditSupported(snapshot, mapping.images[0]!);
+    const capability = snapshot.imageEditCapability;
     const form = new FormData();
     form.append('model', snapshot.modelAlias);
     form.append('prompt', mapping.prompt);
@@ -666,8 +668,13 @@ export class NewApiProvider {
       const serialized = imageEditFormValue(value);
       if (serialized !== undefined) form.append(parameter, serialized);
     }
-    const image = imageFormFile(mapping.images[0]!, capability?.mimeTypes);
-    form.append('image', image.file, image.filename);
+    // 单图保留既有字段；多图按官方 edits 合同重复提交 image[]，不改变输出数量 n。
+    const field = mapping.images.length === 1 ? 'image' : 'image[]';
+    for (const input of mapping.images) {
+      assertImageEditSupported(snapshot, input);
+      const image = imageFormFile(input, capability?.mimeTypes);
+      form.append(field, image.file, image.filename);
+    }
     return { path: '/images/edits', body: form, sourceImages: mapping.images };
   }
 
@@ -4103,13 +4110,13 @@ type ImageSourceInput = RunInputSnapshot & {
 type ImageGenerationMapping = {
   /** 发送给图片接口的主提示词。 */
   prompt: string;
-  /** 需要作为原图上传的输入，最多一张。 */
+  /** 去重后按连线、提及顺序上传的原图，发送前校验模型数量上限。 */
   images: ImageSourceInput[];
 };
 
 /**
  * 把图片节点的连线和资源提及分成提示词、原图。
- * 图片连线和图片提及共用 edits 的 image 字段，按冻结资产版本去重。
+ * 图片连线和图片提及共同作为 edits 原图，按冻结资产版本去重。
  * @param snapshot 当前运行快照。
  * @param label 目标节点显示名。
  * @param nodePrompt 节点提示词。
@@ -4145,8 +4152,18 @@ function mapImageGenerationInputs(
         editSource.data.sourceNodeId === input.nodeId
           ? editSource.data.version
           : undefined;
-      // 资源池版本不绑定连线来源节点，不能用来推断该连线实际读取的版本。
-      images.push({ ...input, assetVersion: editVersion });
+      if (
+        input.sourceAssetVersion !== undefined &&
+        editVersion !== undefined &&
+        input.sourceAssetVersion !== editVersion
+      ) {
+        throw new NewApiProviderError('图片编辑来源版本与连线冻结版本不一致', {
+          code: 'INPUT_ROLE_VALUE_MISSING',
+          retryable: false,
+        });
+      }
+      // 只使用实际读取的冻结版本；资源池展示版本不能用于推断连线内容。
+      images.push({ ...input, assetVersion: input.sourceAssetVersion ?? editVersion });
       continue;
     }
     if (input.role === 'content') {

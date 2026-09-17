@@ -662,7 +662,7 @@ describe('资源提及 HTTP 边界', () => {
         ]);
         expect(run.snapshot.nodeImageEditCapabilities).toEqual(
           capabilities
-            ? { 'node-real-image': { declared: true, mimeTypes: ['image/png'] } }
+            ? { 'node-real-image': { declared: true, maxImages: 1, mimeTypes: ['image/png'] } }
             : undefined,
         );
       } else {

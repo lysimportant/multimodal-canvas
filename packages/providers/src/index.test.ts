@@ -1358,6 +1358,207 @@ describe('NewApiProvider', () => {
     expect(JSON.stringify(records)).not.toMatch(/base64|data:image|server-secret/);
   });
 
+  it.each([
+    { model: 'gpt-image-1.5', count: 2 },
+    { model: 'gpt-image-2.5-sunburst', count: 16 },
+    { model: 'custom-image', count: 3, maxImages: 3 },
+  ])(
+    'uploads $count reference images in one edits request for $model',
+    async ({ model, count, maxImages }) => {
+      const snapshot = imageMentionSnapshot(
+        Array.from({ length: count }, (_, index) => ({
+          assetId: `asset-${index}`,
+          assetVersion: index + 1,
+        })),
+      );
+      snapshot.modelAlias = model;
+      if (maxImages) snapshot.imageEditCapability = { declared: true, maxImages };
+      const records: RequestPromptRecord[] = [];
+      const resolved = resolveProviderMentions(snapshot);
+      resolved.forEach((mention, index) => {
+        mention.source.dataUrl = `data:image/png;base64,${btoa(`reference-${index}`)}`;
+      });
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(JSON.stringify({ data: [{ url: 'https://cdn.example/edited.png' }] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+      await new NewApiProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+      }).execute({
+        snapshot,
+        resolvedMentions: resolved,
+        runId: 'run-multiple-images',
+        onRequestPrompt: (record) => {
+          records.push(record);
+        },
+      });
+
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchImpl.mock.calls[0]!;
+      expect(url).toBe('https://newapi.example.com/v1/images/edits');
+      const form = init!.body as FormData;
+      expect(form.get('model')).toBe(model);
+      expect(form.get('n')).toBe('1');
+      expect(form.has('image')).toBe(false);
+      const files = form.getAll('image[]') as File[];
+      expect(files).toHaveLength(count);
+      expect(await Promise.all(files.map((file) => file.text()))).toEqual(
+        Array.from({ length: count }, (_, index) => `reference-${index}`),
+      );
+      expect(records[0]!.resources).toEqual(
+        Array.from({ length: count }, (_, index) => ({
+          assetId: `asset-${index}`,
+          assetVersion: index + 1,
+          role: 'imageEdit',
+          sortOrder: index,
+          mediaType: 'image',
+        })),
+      );
+      expect(JSON.stringify(records)).not.toMatch(/base64|data:image|server-secret|reference-0/);
+    },
+  );
+
+  it('deduplicates frozen linked versions before appending distinct mention versions in order', async () => {
+    const snapshot = imageMentionSnapshot([
+      { assetId: 'asset-photo', assetVersion: 3 },
+      { assetId: 'asset-photo', assetVersion: 4 },
+    ]);
+    snapshot.modelAlias = 'gpt-image-1';
+    snapshot.imageEditCapability = { declared: true, maxImages: 3 };
+    snapshot.inputs = [
+      {
+        ...editImageInput('second'),
+        sourceAssetId: 'asset-photo',
+        sourceAssetVersion: 3,
+        sortOrder: 2,
+      },
+      {
+        ...editImageInput('first'),
+        sourceAssetId: 'asset-other',
+        sourceAssetVersion: 1,
+        sortOrder: 1,
+      },
+    ];
+    const records: RequestPromptRecord[] = [];
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ url: 'https://cdn.example/edited.png' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    await new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    }).execute({
+      snapshot,
+      resolvedMentions: resolveProviderMentions(snapshot),
+      runId: 'run-ordered-images',
+      onRequestPrompt: (record) => {
+        records.push(record);
+      },
+    });
+    const form = fetchImpl.mock.calls[0]![1]!.body as FormData;
+    expect(form.getAll('image[]')).toHaveLength(3);
+    expect((form.getAll('image[]') as File[]).slice(0, 2).map((file) => file.name)).toEqual([
+      'first.png',
+      'second.png',
+    ]);
+    expect(
+      records[0]!.resources.map(({ assetId, assetVersion }) => ({ assetId, assetVersion })),
+    ).toEqual([
+      { assetId: 'asset-other', assetVersion: 1 },
+      { assetId: 'asset-photo', assetVersion: 3 },
+      { assetId: 'asset-photo', assetVersion: 4 },
+    ]);
+  });
+
+  it.each([
+    { model: 'gpt-image-1.5', count: 17, maxImages: undefined, limit: 16 },
+    { model: 'gpt-image-1.5', count: 2, maxImages: 1, limit: 1 },
+    { model: 'custom-image', count: 4, maxImages: 3, limit: 3 },
+  ])(
+    'rejects $count images above the limit $limit before POST',
+    async ({ model, count, maxImages, limit }) => {
+      const snapshot = imageMentionSnapshot(
+        Array.from({ length: count }, (_, index) => ({
+          assetId: `asset-${index}`,
+          assetVersion: 1,
+        })),
+      );
+      snapshot.modelAlias = model;
+      if (maxImages) snapshot.imageEditCapability = { declared: true, maxImages };
+      const fetchImpl = vi.fn<typeof fetch>();
+      await expect(
+        new NewApiProvider({
+          baseUrl: 'https://newapi.example.com/v1',
+          apiKey: 'server-secret',
+          fetchImpl,
+        }).execute({ snapshot, resolvedMentions: resolveProviderMentions(snapshot) }),
+      ).rejects.toMatchObject({
+        code: 'INPUT_ROLE_CARDINALITY_UNSUPPORTED',
+        retryable: false,
+        message: expect.stringContaining(`最多支持 ${limit} 张`),
+      });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['invalid-bytes', 'unsupported-mime'])(
+    'validates every reference image before POST: %s',
+    async (failure) => {
+      const snapshot = standardSnapshot('image');
+      snapshot.modelAlias = 'gpt-image-1.5';
+      snapshot.imageEditCapability = { declared: true, mimeTypes: ['image/png'] };
+      snapshot.inputs = [editImageInput('first'), editImageInput('second')];
+      if (failure === 'invalid-bytes') {
+        snapshot.inputs[1]!.snapshot.data.contentUrl = 'data:image/png;base64,%%%';
+      } else {
+        snapshot.inputs[1] = editImageInput('second', 'referenceImage', 'image/jpeg');
+      }
+      const fetchImpl = vi.fn<typeof fetch>();
+      await expect(
+        new NewApiProvider({
+          baseUrl: 'https://newapi.example.com/v1',
+          apiKey: 'server-secret',
+          fetchImpl,
+        }).execute({ snapshot }),
+      ).rejects.toMatchObject({
+        code:
+          failure === 'invalid-bytes'
+            ? 'PROVIDER_OUTPUT_BASE64_INVALID'
+            : 'INPUT_ROLE_VALUE_MISSING',
+        retryable: false,
+      });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects conflicting frozen edit-source and linked versions before POST', async () => {
+    const snapshot = standardSnapshot('image');
+    snapshot.nodes[0]!.data.imageEditSource = {
+      sourceNodeId: 'source',
+      assetId: 'asset-photo',
+      version: 3,
+    };
+    snapshot.inputs = [
+      { ...editImageInput('source'), sourceAssetId: 'asset-photo', sourceAssetVersion: 4 },
+    ];
+    const fetchImpl = vi.fn<typeof fetch>();
+    await expect(
+      new NewApiProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+      }).execute({ snapshot }),
+    ).rejects.toMatchObject({ code: 'INPUT_ROLE_VALUE_MISSING', retryable: false });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('uploads one image for repeated mentions and a linked source of the same frozen version', async () => {
     const snapshot = imageMentionSnapshot([
       { assetId: 'asset-photo', assetVersion: 3 },

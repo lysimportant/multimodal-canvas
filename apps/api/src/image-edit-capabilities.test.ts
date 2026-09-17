@@ -76,6 +76,7 @@ describe('图片编辑能力预检', () => {
     expect(check.issues).toEqual([]);
     expect(check.frozenCapability).toEqual({
       declared: true,
+      maxImages: 1,
       mimeTypes: ['image/png'],
     });
     expect(check.source).toEqual({
@@ -150,7 +151,76 @@ describe('图片编辑能力预检', () => {
       ],
     });
     expect(check.issues).toEqual([]);
-    expect(check.frozenCapability).toEqual({ declared: true, mimeTypes: ['image/png'] });
+    expect(check.frozenCapability).toEqual({
+      declared: true,
+      maxImages: 1,
+      mimeTypes: ['image/png'],
+    });
+  });
+
+  it.each([
+    ['gpt-image-1', undefined, 16],
+    ['image-compatible', 4, 4],
+    ['gpt-image-1', 2, 2],
+    ['image-compatible', 32, 16],
+  ] as const)('冻结 %s 的有效图片上限', (modelAlias, maxImages, expected) => {
+    const check = checkImageEditCapabilities({
+      nodes: [imageNode('node_source'), imageNode('node_edit')],
+      edges: [{ ...editEdge, targetHandle: 'input:referenceImage' }],
+      targetNodeId: 'node_edit',
+      modelAlias,
+      model: {
+        limitations: {
+          image_edit: {
+            supported: true,
+            ...(maxImages !== undefined ? { max_images: maxImages } : {}),
+          },
+        },
+      },
+      requestId: 'req_multi',
+    });
+    expect(check.issues).toEqual([]);
+    expect(check.frozenCapability).toEqual({ declared: true, maxImages: expected });
+  });
+
+  it.each([0, -1, 1.5, '4', null, undefined])('非法目录上限 %j 不回退到模型默认值', (maxImages) => {
+    const check = checkImageEditCapabilities({
+      nodes: [imageNode('node_source'), imageNode('node_edit')],
+      edges: [editEdge],
+      targetNodeId: 'node_edit',
+      modelAlias: 'gpt-image-1',
+      model: { capabilities: { imageEdit: { maxImages } } },
+      requestId: 'req_invalid',
+    });
+    expect(check.issues).toEqual([
+      expect.objectContaining({
+        code: 'IMAGE_EDIT_CAPABILITY_INVALID',
+        reason: 'capability_invalid',
+      }),
+    ]);
+    expect(check.frozenCapability).toBeUndefined();
+  });
+
+  it('预检只冻结限制，不按提及次数误判重复资产或不同版本的实际图片数量', () => {
+    const check = checkImageEditCapabilities({
+      nodes: [imageNode('node_edit')],
+      edges: [],
+      targetNodeId: 'node_edit',
+      modelAlias: 'gpt-image-1',
+      model: { capabilities: { imageEdit: { maxImages: 1 } } },
+      requestId: 'req_repeat',
+      mentions: Array.from({ length: 17 }, (_, index) => ({
+        nodeId: 'node_edit',
+        mentionId: `mention_${index}`,
+        assetId: 'same_asset',
+        assetVersion: (index % 2) + 1,
+        mediaType: 'image' as const,
+        label: '参考图片',
+        blockOrder: index,
+      })),
+    });
+    expect(check.issues).toEqual([]);
+    expect(check.frozenCapability).toEqual({ declared: true, maxImages: 1 });
   });
 
   it('来源节点被删除、换成非图片或换图时给出可修复诊断', () => {

@@ -36,6 +36,154 @@ afterEach(async () => {
 });
 
 describe('本地图片执行与 Provider 适配器', () => {
+  it('HTTP 多图提及按文档顺序发送 image[]，保留不同历史版本并去重同版本', async () => {
+    const assetStore = new MemoryAssetStore();
+    const projectStore = new MemoryProjectStore();
+    const authStore = new MemoryAuthStore();
+    const auth = new AuthService({
+      store: authStore,
+      jwtSecret: 'synthetic-local-image-jwt-secret',
+    });
+    const session = await auth.register({
+      email: 'multiple-images@example.test',
+      password: 'synthetic-test-password',
+    });
+    const ownerId = session.user.id;
+    const project = await projectStore.create({ name: '冻结多图引用' }, { ownerId });
+    const firstVersion = Buffer.from('first-image-version-one');
+    const secondVersion = Buffer.from('first-image-version-two');
+    const otherImage = Buffer.from('second-image-version-one');
+    const first = await assetStore.create({
+      ownerId,
+      name: 'first.png',
+      mediaType: 'image',
+      mimeType: 'image/png',
+      content: firstVersion,
+    });
+    await assetStore.createVersion(first.id, { content: secondVersion });
+    const second = await assetStore.create({
+      ownerId,
+      name: 'second.png',
+      mediaType: 'image',
+      mimeType: 'image/png',
+      content: otherImage,
+    });
+    const settingsStore = new AiSettingsStore('local-multiple-images');
+    settingsStore.update({
+      baseUrl: 'https://newapi.example.test/v1',
+      apiKey: 'synthetic-local-image-key',
+    });
+    const credential = settingsStore.listCredentials()[0]!;
+    settingsStore.replaceModels(
+      [
+        {
+          id: 'gpt-image-1',
+          name: 'GPT Image',
+          mediaTypes: ['image'],
+          refreshedAt: new Date().toISOString(),
+        },
+      ],
+      credential.id,
+    );
+    const references = [
+      { assetId: first.id, assetVersion: 2 },
+      { assetId: second.id, assetVersion: 1 },
+      { assetId: first.id, assetVersion: 1 },
+      { assetId: first.id, assetVersion: 2 },
+    ];
+    const canvas: CanvasDocument = {
+      revision: 0,
+      nodes: [
+        {
+          id: 'image-target',
+          type: 'image',
+          position: { x: 0, y: 0 },
+          data: {
+            label: '多图组合',
+            mediaType: 'image',
+            mode: 'generate',
+            modelAlias: 'gpt-image-1',
+            credentialId: credential.id,
+            promptDocument: {
+              version: 1,
+              blocks: [
+                { type: 'text', text: 'Combine these reference images in order.' },
+                ...references.map((reference, index) => ({
+                  type: 'mention' as const,
+                  mentionId: `reference-${index}`,
+                  ...reference,
+                  label: `参考图 ${index + 1}`,
+                  mediaType: 'image' as const,
+                })),
+              ],
+            },
+          },
+        },
+      ],
+      edges: [],
+    };
+    await projectStore.updateCanvas(project.id, canvas);
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        Response.json({ data: [{ b64_json: Buffer.from('combined-output').toString('base64') }] }),
+      );
+    const executor = createNewApiRunExecutor({
+      settingsStore,
+      providerFactory: {
+        createStandard: (options) => new NewApiProvider({ ...options, fetchImpl }),
+        createVideo: (options) => new NewApiVideoProvider({ ...options, fetchImpl }),
+      },
+    });
+    const runService = new MemoryRunService({ providerName: 'newapi', stepDelayMs: 5 });
+    const app = buildApp({
+      logger: false,
+      assetStore,
+      projectStore,
+      settingsStore,
+      runService,
+      runExecutor: executor,
+      authStore,
+    });
+    apps.push(app);
+    const reader = vi.spyOn(assetStore, 'getVersionContent');
+    const submitted = await app.inject({
+      method: 'POST',
+      url: '/v1/nodes/image-target/runs',
+      payload: { projectId: project.id },
+      headers: { authorization: `Bearer ${session.accessToken}` },
+    });
+    expect(submitted.statusCode, submitted.body).toBe(202);
+    await assetStore.createVersion(first.id, { content: Buffer.from('later-first-version') });
+    await assetStore.createVersion(second.id, { content: Buffer.from('later-second-version') });
+    const run = await waitForRun(runService, submitted.json().run.id);
+    expect(run.status, JSON.stringify(run.error)).toBe('succeeded');
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    const [url, init] = fetchImpl.mock.calls[0]!;
+    expect(url).toBe('https://newapi.example.test/v1/images/edits');
+    const form = init!.body as FormData;
+    expect(form.getAll('image')).toEqual([]);
+    expect(form.getAll('image[]')).toHaveLength(3);
+    expect(
+      await Promise.all(
+        form.getAll('image[]').map(async (file) => Buffer.from(await (file as File).arrayBuffer())),
+      ),
+    ).toEqual([secondVersion, otherImage, firstVersion]);
+    expect(form.get('model')).toBe('gpt-image-1');
+    expect(form.get('n')).toBe('1');
+    expect(reader.mock.calls.map(([assetId, version]) => ({ assetId, version }))).toEqual(
+      references.map(({ assetId, assetVersion }) => ({ assetId, version: assetVersion })),
+    );
+    expect(
+      run.snapshot.promptMentions?.map(({ assetId, assetVersion }) => ({ assetId, assetVersion })),
+    ).toEqual(references);
+    const durable = JSON.stringify({ run, canvas: await projectStore.getCanvas(project.id) });
+    expect(durable).not.toContain('data:image/');
+    for (const content of [firstVersion, secondVersion, otherImage]) {
+      expect(durable).not.toContain(content.toString('base64'));
+    }
+  });
+
   it.each([
     { kind: 'mention', outcome: 'success' },
     { kind: 'mention-without-env', outcome: 'success' },

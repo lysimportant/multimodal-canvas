@@ -689,6 +689,8 @@ function WorkspaceApp({
     runPollingLifecycleRef.current = lifecycle;
     return () => {
       lifecycle.active = false;
+      for (const timer of forkElevationTimersRef.current.values()) window.clearTimeout(timer);
+      forkElevationTimersRef.current.clear();
     };
   }, []);
 

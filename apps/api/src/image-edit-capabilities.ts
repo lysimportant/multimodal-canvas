@@ -1,6 +1,7 @@
 import {
   imageEditCapability,
   imageEditSourceSchema,
+  resolveImageEditMaxImages,
   type FrozenImageEditCapability,
   type FrozenPromptMention,
   type ImageEditSource,
@@ -17,6 +18,7 @@ import {
 
 /** 图片编辑预检的失败原因。 */
 export type ImageEditFailureReason =
+  | 'capability_invalid'
   | 'capability_unsupported'
   | 'mime_unsupported'
   | 'source_node_missing'
@@ -27,6 +29,7 @@ export type ImageEditFailureReason =
 /** 预检返回的单项诊断；只包含节点与资产身份，不含媒体内容或 URL。 */
 export type ImageEditCapabilityDiagnostic = {
   code:
+    | 'IMAGE_EDIT_CAPABILITY_INVALID'
     | 'IMAGE_EDIT_CAPABILITY_UNSUPPORTED'
     | 'IMAGE_EDIT_MIME_UNSUPPORTED'
     | 'IMAGE_EDIT_SOURCE_NODE_MISSING'
@@ -126,7 +129,16 @@ export function checkImageEditCapabilities(input: {
 
   const issues: ImageEditCapabilityDiagnostic[] = [];
   const capability = resolveImageEditCapability(input.model);
-  const frozenCapability = toFrozenCapability(capability);
+  const frozenCapability = toFrozenCapability(input.modelAlias, capability);
+  if (capability.invalidMaxImages) {
+    issues.push(
+      diagnostic(input, source, {
+        code: 'IMAGE_EDIT_CAPABILITY_INVALID',
+        reason: 'capability_invalid',
+        message: `模型 ${input.modelAlias} 的图片编辑 maxImages 声明必须为正整数`,
+      }),
+    );
+  }
   if (capability.unsupported) {
     issues.push(
       diagnostic(input, source, {
@@ -212,11 +224,13 @@ function mergeCapabilityRecords(
 
 /** 仅冻结已声明的编辑限制，未知能力保持缺省以兼容旧模型目录。 */
 function toFrozenCapability(
+  modelAlias: string,
   capability: ReturnType<typeof imageEditCapability>,
 ): FrozenImageEditCapability | undefined {
-  if (!capability.declared) return undefined;
+  if (!capability.declared || capability.invalidMaxImages) return undefined;
   return {
     declared: true,
+    maxImages: resolveImageEditMaxImages(modelAlias, capability),
     ...(capability.mimeTypes ? { mimeTypes: [...capability.mimeTypes] } : {}),
     ...(capability.sizes ? { sizes: [...capability.sizes] } : {}),
     ...(capability.parameters ? { parameters: [...capability.parameters] } : {}),
