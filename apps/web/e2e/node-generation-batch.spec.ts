@@ -1,6 +1,6 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
-import { readFileSync } from 'node:fs';
-import type { Asset, CanvasDocument, RunRecord } from '@multimodal-canvas/domain';
+import { readFileSync, writeFileSync } from 'node:fs';
+import type { Asset, CanvasDocument, PromptDocument, RunRecord } from '@multimodal-canvas/domain';
 import { canvasDocumentSchema } from '@multimodal-canvas/domain';
 
 /** 所有运行都由路由夹具生成，不连接真实供应商。 */
@@ -80,9 +80,13 @@ function makeCanvas(mediaType: 'image' | 'video'): CanvasDocument {
   });
 }
 
-/** 安装可持久化画布与独立运行结果，记录页面错误及未声明接口。 */
-async function installFixture(page: Page, mediaType: 'image' | 'video' = 'image') {
-  let canvas = makeCanvas(mediaType);
+/** 安装指定或默认画布与独立运行结果，记录页面错误及未声明接口。 */
+async function installFixture(
+  page: Page,
+  mediaType: 'image' | 'video' = 'image',
+  initialCanvas: CanvasDocument = makeCanvas(mediaType),
+) {
+  let canvas = structuredClone(initialCanvas);
   const submissions: Submission[] = [];
   const runs = new Map<string, RunRecord>();
   const assets: Asset[] = [];
@@ -332,6 +336,96 @@ for (const count of [1, 2, 3]) {
     expect(fixture.errors).toEqual([]);
   });
 }
+
+test('图片新节点只自动引用最新结果，保留文字要求且不丢弃用户后续显式引用', async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  const initialCanvas = makeCanvas('image');
+  initialCanvas.edges = [];
+  const fixture = await installFixture(page, 'image', initialCanvas);
+  const root = page.locator('.react-flow__node[data-id="generation-root"]');
+  await root.click();
+  const editor = page.getByRole('region', { name: '待生成节点生成设置' });
+  const instruction = 'Keep the desk and change the lighting to sunset.';
+  await editor
+    .getByRole('textbox', { name: '提示词', exact: true })
+    .fill(`${instruction} @参考图片`);
+  await page.getByRole('option', { name: /参考图片/ }).click();
+  await editor.getByRole('button', { name: '生成', exact: true }).click();
+  await expect(page.getByText('待生成节点 已完成', { exact: true })).toBeVisible();
+  expect(fixture.submissions).toHaveLength(1);
+  const parentPromptDocument = structuredClone(
+    fixture.submissions[0]!.body.promptDocument as PromptDocument,
+  );
+  expect(parentPromptDocument.blocks).toContainEqual(
+    expect.objectContaining({ type: 'mention', assetId: 'reference-image' }),
+  );
+  expect(fixture.canvas().edges).toEqual([]);
+  const latestImage = [...fixture.runs.values()][0]!.result!.asset!;
+  await expect(root.locator('img')).toHaveAttribute('src', new RegExp(latestImage.assetId));
+
+  await editor.getByRole('button', { name: '新节点', exact: true }).click();
+  await expect(page.getByText('修改 待生成节点 已完成', { exact: true })).toBeVisible();
+  expect(fixture.submissions).toHaveLength(2);
+  const forkRequest = fixture.submissions[1]!;
+  const child = fixture.canvas().nodes.find((node) => node.id === forkRequest.nodeId)!;
+  writeFileSync(
+    testInfo.outputPath('image-fork-request.json'),
+    JSON.stringify({ parentPromptDocument, latestImage, forkRequest, child }, null, 2),
+  );
+  expect(child.id).not.toBe('generation-root');
+  expect(child.data.imageEditSource).toMatchObject({
+    sourceNodeId: 'generation-root',
+    assetId: latestImage.assetId,
+    version: latestImage.version,
+    sourceKind: 'result',
+  });
+  expect(fixture.canvas().edges.filter((edge) => edge.targetNodeId === child.id)).toEqual([
+    expect.objectContaining({ sourceNodeId: 'generation-root', targetHandle: 'input:imageEdit' }),
+  ]);
+  expect((forkRequest.body.promptDocument as PromptDocument | undefined)?.blocks ?? []).not.toEqual(
+    expect.arrayContaining([expect.objectContaining({ type: 'mention' })]),
+  );
+  expect(forkRequest.body.parameters).toMatchObject({ prompt: instruction });
+  expect(child.data.promptDocument).toBeUndefined();
+  expect(child.data.resourceRefs ?? []).toEqual([]);
+  expect(
+    fixture.canvas().nodes.find((node) => node.id === 'generation-root')!.data.promptDocument,
+  ).toEqual(parentPromptDocument);
+  const childEditor = page.getByRole('region', { name: '修改 待生成节点图片修改设置' });
+  await page.locator('.react-flow__pane').click({ position: { x: 12, y: 12 } });
+  await page.getByRole('button', { name: '自动适配缩放', exact: true }).click();
+  const childNode = page.locator(`.react-flow__node[data-id="${child.id}"]`);
+  await expect(childNode).toBeInViewport({ ratio: 1 });
+  await childNode.click();
+  await page.screenshot({ path: testInfo.outputPath('fork-latest-image-only.png') });
+
+  // 这里只检查显式提及仍提交到 API，不用合成成功响应宣称真实供应商支持多图编辑。
+  await childEditor
+    .getByRole('textbox', { name: '图片修改要求', exact: true })
+    .fill('Use the original colors as an additional reference. @参考图片');
+  await page.getByRole('option', { name: /参考图片/ }).click();
+  await childEditor.getByRole('button', { name: '生成', exact: true }).click();
+  await expect.poll(() => fixture.submissions.length).toBe(3);
+  await expect(page.getByText('修改 待生成节点 已完成', { exact: true })).toBeVisible();
+  const explicitRequest = fixture.submissions[2]!;
+  expect(explicitRequest.nodeId).toBe(child.id);
+  expect((explicitRequest.body.promptDocument as PromptDocument).blocks).toContainEqual(
+    expect.objectContaining({ type: 'mention', assetId: 'reference-image' }),
+  );
+  await save(page);
+  await page.reload();
+  await expect(page.locator('.react-flow__node')).toHaveCount(3);
+  const savedChild = fixture.canvas().nodes.find((node) => node.id === child.id)!;
+  expect(savedChild.data.imageEditSource?.assetId).toBe(latestImage.assetId);
+  expect(savedChild.data.promptDocument).toEqual(explicitRequest.body.promptDocument);
+  expect(
+    fixture.canvas().nodes.find((node) => node.id === 'generation-root')!.data.promptDocument,
+  ).toEqual(parentPromptDocument);
+  expect(fixture.submissions).toHaveLength(3);
+  expect(fixture.errors).toEqual([]);
+});
 
 test('视频 15 秒预设和自定义秒数只在手动生成时提交', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1600, height: 1000 });

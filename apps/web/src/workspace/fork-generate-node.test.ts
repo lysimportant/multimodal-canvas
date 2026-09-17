@@ -10,6 +10,7 @@ import {
   createUniqueForkLabel,
   findReadyFinalFrameImageNode,
   freezeImageEditSource,
+  imageForkPromptOverride,
   inheritedGenerateData,
   nodeHasPrompt,
 } from './fork-generate-node';
@@ -76,6 +77,71 @@ describe('fork-generate-node', () => {
     expect(inherited).not.toHaveProperty('resultAsset');
     expect(inherited).not.toHaveProperty('assetId');
     expect(inherited).not.toHaveProperty('contentUrl');
+  });
+
+  it('图片分叉只清理图片提及，保留文字和其他类型引用且不修改父文档', () => {
+    const document: PromptDocument = {
+      version: 1,
+      blocks: [
+        { type: 'text', text: 'Keep the composition. ' },
+        {
+          type: 'mention',
+          mentionId: 'old-image',
+          assetId: 'image-a',
+          assetVersion: 2,
+          label: 'reference.png',
+          mediaType: 'image',
+        },
+        { type: 'text', text: '\nFollow the notes: ' },
+        {
+          type: 'mention',
+          mentionId: 'notes',
+          assetId: 'notes-asset',
+          label: 'notes.txt',
+          mediaType: 'text',
+        },
+      ],
+    };
+    const original = structuredClone(document);
+    const result = imageForkPromptOverride({ prompt: 'stale fallback', promptDocument: document });
+    expect(result.promptDocument?.blocks).toEqual([
+      original.blocks[0],
+      original.blocks[2],
+      original.blocks[3],
+    ]);
+    expect(result.prompt).toBe('Keep the composition. \nFollow the notes: notes');
+    expect(document).toEqual(original);
+    expect(result.promptDocument?.blocks[2]).not.toBe(document.blocks[3]);
+  });
+
+  it('仅有图片提及时返回合法空文档，不回退父节点的旧提示词', () => {
+    const result = imageForkPromptOverride({
+      prompt: 'reference',
+      promptDocument: {
+        version: 1,
+        blocks: [
+          {
+            type: 'mention',
+            mentionId: 'old-image',
+            assetId: 'image-a',
+            label: 'reference.png',
+            mediaType: 'image',
+          },
+        ],
+      },
+    });
+    expect(result).toEqual({
+      prompt: '',
+      promptDocument: { version: 1, blocks: [{ type: 'text', text: '' }] },
+    });
+    expect(nodeHasPrompt(result)).toBe(false);
+  });
+
+  it('纯文本图片要求原样保留，不把普通 @ 字符猜成资源引用', () => {
+    expect(imageForkPromptOverride({ prompt: 'Paint the sign @home.' })).toEqual({
+      prompt: 'Paint the sign @home.',
+    });
+    expect(imageForkPromptOverride({})).toEqual({});
   });
 
   it('冻结生成结果用 result 版本，上传资源不写 version', () => {

@@ -2197,6 +2197,72 @@ describe('画布编辑器交互', () => {
     });
   });
 
+  it.each([true, false])('图片新节点清理旧参考图并检查剩余文字要求：%s', async (hasText) => {
+    const parent: CanvasDocument['nodes'][number] = {
+      id: 'image-with-reference',
+      type: 'image',
+      position: { x: 0, y: 0 },
+      data: {
+        label: '图片结果',
+        mediaType: 'image',
+        mode: 'generate',
+        modelAlias: 'image-edit-model',
+        credentialId: credentialSummary.id,
+        promptDocument: {
+          version: 1,
+          blocks: [
+            { type: 'text', text: hasText ? 'Keep the composition. ' : '' },
+            {
+              type: 'mention',
+              mentionId: 'old-reference',
+              assetId: 'asset-reference',
+              assetVersion: 1,
+              label: 'reference.png',
+              mediaType: 'image',
+            },
+          ],
+        },
+      },
+    };
+    canvas.nodes = [parent];
+    projectRuns = [createRestoredRun(parent)];
+    const originalDocument = structuredClone(parent.data.promptDocument);
+    const { user } = await renderCanvas();
+    await user.click(findNodeByLabel('图片结果')!);
+    const editor = screen.getByRole('region', { name: '图片结果生成设置' });
+    const fork = within(editor).getByRole('button', { name: '新节点' });
+    await waitFor(() => expect(fork).toBeEnabled());
+    await user.click(fork);
+    if (hasText) {
+      const child = await waitFor(() => {
+        const node = canvas.nodes.find((candidate) => candidate.id !== parent.id);
+        expect(node).toBeDefined();
+        expect(nodeRunRequestCounts.get(node!.id)).toBe(1);
+        return node!;
+      });
+      expect(lastNodeRunBody(child.id).promptDocument).toEqual({
+        version: 1,
+        blocks: [{ type: 'text', text: 'Keep the composition. ' }],
+      });
+      expect(runPromptOf(child.id)).toBe('Keep the composition.');
+      expect(child.data.imageEditSource).toMatchObject({
+        sourceNodeId: parent.id,
+        assetId: `asset-restored-${parent.id}`,
+        version: 1,
+      });
+      expect(child.data.promptDocument).toBeUndefined();
+      expect(canvas.edges).toHaveLength(1);
+      expect(canvas.edges[0]).toMatchObject({ sourceNodeId: parent.id, targetNodeId: child.id });
+    } else {
+      await screen.findByText('请先填写图片修改要求，再生成到新节点');
+      expect(flowNodes()).toHaveLength(1);
+      expect(nodeRunRequestCounts.size).toBe(0);
+    }
+    expect(canvas.nodes.find((node) => node.id === parent.id)?.data.promptDocument).toEqual(
+      originalDocument,
+    );
+  });
+
   it('有回显后再点生成仍覆盖原节点，不新建节点也不写 imageEditSource', async () => {
     const { user } = await renderCanvas();
     await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));

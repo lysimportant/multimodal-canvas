@@ -100,6 +100,7 @@ import {
   createUniqueForkLabel,
   findReadyFinalFrameImageNode,
   freezeImageEditSource,
+  imageForkPromptOverride,
   inheritedGenerateData,
   nodeHasPrompt,
   type NodeRunPromptOverride,
@@ -2995,7 +2996,13 @@ function WorkspaceApp({
               ? { promptDocument: structuredClone(source.data.promptDocument) }
               : {}),
           };
-          if (source.data.mediaType === 'text') {
+          if (source.data.mediaType === 'image') {
+            runPromptOverride = imageForkPromptOverride(source.data);
+            if (!nodeHasPrompt(runPromptOverride)) {
+              setNotice({ kind: 'error', message: '请先填写图片修改要求，再生成到新节点' });
+              return;
+            }
+          } else if (source.data.mediaType === 'text') {
             try {
               const echoText = await fetchNodeEchoText(source);
               runPromptOverride = appendGeneratedContentToPrompt(source.data, echoText);

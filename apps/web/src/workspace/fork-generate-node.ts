@@ -80,6 +80,27 @@ export function inheritedGenerateData(data: AssetFlowNode['data']): Partial<Asse
 }
 
 /**
+ * 图片分叉的本次提示词保留文字和非图片提及，移除父节点自动继承的图片提及。
+ * 当前结果图由 imageEditSource 单独冻结；不修改父节点或过滤子节点后续主动添加的引用。
+ * @param source 父节点提示词；纯文本中的普通 @ 字符不当作资源身份解析。
+ * @returns 独立的请求提示词；移除全部图片后保留合法空文档，由调用方阻止空要求运行。
+ * @throws 结构化提示词不符合文档协议时抛出校验错误。
+ */
+export function imageForkPromptOverride(source: NodeRunPromptOverride): NodeRunPromptOverride {
+  if (!source.promptDocument) {
+    return source.prompt !== undefined ? { prompt: source.prompt } : {};
+  }
+  const promptDocument = structuredClone(source.promptDocument);
+  promptDocument.blocks = promptDocument.blocks.filter(
+    (block) => block.type !== 'mention' || block.mediaType !== 'image',
+  );
+  if (promptDocument.blocks.length === 0) {
+    promptDocument.blocks.push({ type: 'text', text: '' });
+  }
+  return { prompt: renderPromptDocument(promptDocument), promptDocument };
+}
+
+/**
  * 冻结当前节点回显，作为图生图原图。
  * 生成结果写入 version 与 sourceKind=result；上传资源只写 assetId。
  * @param source 被点击的图片节点。
