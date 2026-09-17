@@ -1019,11 +1019,14 @@ export const canvasDocumentSchema = z
     });
   });
 
+/** 单条冻结连线输入；可选版本用于水合后保留来源身份，旧快照仍从冻结 URL 解析。 */
 export const runInputSnapshotSchema = z.object({
   nodeId: z.string().min(1),
   role: portRoleSchema,
   sortOrder: z.number().int().nonnegative(),
   sourceAssetId: z.string().min(1).optional(),
+  /** 已冻结的资产版本，必须与来源资产 URL 对应；缺省不表示使用最新版。 */
+  sourceAssetVersion: z.number().int().positive().optional(),
   snapshot: canvasNodeSchema,
 });
 
@@ -1787,7 +1790,7 @@ export function unabsorbedVideoPromptMentionMessage(
   modelAlias?: string,
 ): string {
   if (videoMode === 'omni_reference') {
-    return `当前模型的全能参考不能吸收提示词里的${mentionMediaType === 'image' ? '图片' : mentionMediaType === 'video' ? '视频' : mentionMediaType === 'audio' ? '音频' : mentionMediaType}提及`;
+    return `当前项目尚未接通模型 ${modelAlias ?? 'unknown-model'} 的全能参考${mentionMediaType === 'image' ? '图片' : mentionMediaType === 'video' ? '视频' : mentionMediaType === 'audio' ? '音频' : mentionMediaType}提及映射`;
   }
   const modeLabel = videoMode ? videoModeLabels[videoMode] : '全能参考';
   return `视频模式「${modeLabel}」不能使用提示词资源提及。请把素材加到当前节点的资源条，或确认已选择全能参考`;

@@ -15,7 +15,7 @@ export type ResourceMentionCapabilities = {
   modes?: readonly NodeMode[];
 };
 
-/** 能力预检返回的单项诊断。诊断只包含资源身份，不包含媒体内容或 URL。 */
+/** 能力预检诊断只含资源身份；UNKNOWN 保留以兼容旧响应类型，新预检不再生成。 */
 export type ResourceMentionCapabilityDiagnostic = {
   code:
     | 'RESOURCE_MENTION_CAPABILITY_UNKNOWN'
@@ -41,7 +41,7 @@ export type ResourceMentionCapabilityDiagnostic = {
     | 'mode_unsupported';
 };
 
-/** 能力预检结果；Mock 预览允许未知能力，但会显式标记为模拟路径。 */
+/** 能力预检结果；缺省声明不阻断，Mock 请求仍显式标记为模拟路径。 */
 export type ResourceMentionCapabilityCheck = {
   issues: ResourceMentionCapabilityDiagnostic[];
   simulated: boolean;
@@ -66,8 +66,8 @@ export type ResourceMentionCapabilityModel = {
 /**
  * 按节点媒体类型、模式、模型和提及组合执行资源能力预检。
  *
- * 图片生成的图片提及交给兼容编辑接口，缺失能力字段不阻断；其他真实
- * Provider 提及仍需要能力声明。所有已声明限制继续生效，不读取资产或发起请求。
+ * 缺少能力字段不推断为不支持；仅检查明确声明的限制及图片接口映射边界。
+ * 各 Provider 继续校验实际输入，不在此读取资产或发起请求。
  * @param input 节点模式、模型目录、已冻结提及及是否为 Mock 预览。
  * @returns 不含媒体内容的逐项诊断与模拟路径标记。
  */
@@ -88,15 +88,9 @@ export function checkResourceMentionCapabilities(input: {
   );
   const imageGeneration =
     input.node.data.mediaType === 'image' && input.node.data.mode === 'generate';
-  const parsed = parseCapabilities(modelCapabilities, imageGeneration);
-  // 只要调用方明确处于 Mock/预览路径，就把未声明字段视为“模拟未知”；
-  // 已明确声明的不支持媒体、角色或数量限制仍然继续校验。
+  const parsed = parseCapabilities(modelCapabilities);
   const simulated = input.allowMockPreview;
   const issues: ResourceMentionCapabilityDiagnostic[] = [];
-  /** 图片编辑只吸收图片提及，其他媒体仍需按原有能力边界校验。 */
-  const compatibleImageMention = (mention: FrozenPromptMention): boolean =>
-    imageGeneration && mention.mediaType === 'image';
-
   if (imageGeneration && !simulated) {
     for (const mention of input.mentions) {
       if (mention.mediaType === 'image') continue;
@@ -104,26 +98,10 @@ export function checkResourceMentionCapabilities(input: {
         diagnostic(input, mention, {
           code: 'RESOURCE_MENTION_MEDIA_UNSUPPORTED',
           reason: 'media_unsupported',
-          message: `图片生成暂不支持 ${mention.mediaType} 类型资源提及`,
+          message: `当前项目的图片生成适配器尚未接通 ${mention.mediaType} 类型资源提及`,
         }),
       );
     }
-  }
-
-  if (!input.model || !modelCapabilities || !hasAnyCapabilityDeclaration(parsed)) {
-    if (!simulated) {
-      for (const mention of input.mentions) {
-        if (compatibleImageMention(mention)) continue;
-        issues.push(
-          diagnostic(input, mention, {
-            code: 'RESOURCE_MENTION_CAPABILITY_UNKNOWN',
-            reason: 'capability_unknown',
-            message: `模型 ${input.modelAlias} 未声明节点 ${input.node.id} 的资源提及能力`,
-          }),
-        );
-      }
-    }
-    return { issues, simulated };
   }
 
   const nodeMode = parsed.modes;
@@ -134,17 +112,6 @@ export function checkResourceMentionCapabilities(input: {
           code: 'RESOURCE_MENTION_MODE_UNSUPPORTED',
           reason: 'mode_unsupported',
           message: `模型 ${input.modelAlias} 不支持 ${input.node.data.mode} 模式下的资源提及`,
-        }),
-      );
-    }
-  } else if (!nodeMode && !simulated && input.node.data.mode !== 'generate') {
-    // 旧目录可以省略 modes；非生成操作的 Provider 语义不同，仍要求显式声明。
-    for (const mention of input.mentions) {
-      issues.push(
-        diagnostic(input, mention, {
-          code: 'RESOURCE_MENTION_CAPABILITY_UNKNOWN',
-          reason: 'capability_unknown',
-          message: `模型 ${input.modelAlias} 未声明 ${input.node.data.mode} 模式的资源提及能力`,
         }),
       );
     }
@@ -161,17 +128,6 @@ export function checkResourceMentionCapabilities(input: {
         }),
       );
     }
-  } else if (!simulated) {
-    for (const mention of input.mentions) {
-      if (compatibleImageMention(mention)) continue;
-      issues.push(
-        diagnostic(input, mention, {
-          code: 'RESOURCE_MENTION_CAPABILITY_UNKNOWN',
-          reason: 'capability_unknown',
-          message: `模型 ${input.modelAlias} 未声明可引用的资源媒体类型`,
-        }),
-      );
-    }
   }
 
   if (parsed.semanticRoles) {
@@ -182,17 +138,6 @@ export function checkResourceMentionCapabilities(input: {
           code: 'RESOURCE_MENTION_ROLE_UNSUPPORTED',
           reason: 'role_unsupported',
           message: `模型 ${input.modelAlias} 不支持语义角色 ${mention.semanticRole}`,
-        }),
-      );
-    }
-  } else if (!simulated && input.mentions.some((mention) => mention.semanticRole)) {
-    for (const mention of input.mentions) {
-      if (!mention.semanticRole || compatibleImageMention(mention)) continue;
-      issues.push(
-        diagnostic(input, mention, {
-          code: 'RESOURCE_MENTION_CAPABILITY_UNKNOWN',
-          reason: 'capability_unknown',
-          message: `模型 ${input.modelAlias} 未声明语义角色能力`,
         }),
       );
     }
@@ -208,44 +153,18 @@ export function checkResourceMentionCapabilities(input: {
         }),
       );
     }
-  } else if (!simulated && parsed.maxMentions === undefined) {
-    // 图片编辑由适配器校验输入数量；其他接口多次提及仍要求目录声明上限。
-    if (input.mentions.length > 1) {
-      for (const mention of input.mentions) {
-        if (compatibleImageMention(mention)) continue;
-        issues.push(
-          diagnostic(input, mention, {
-            code: 'RESOURCE_MENTION_CAPABILITY_UNKNOWN',
-            reason: 'capability_unknown',
-            message: `模型 ${input.modelAlias} 未声明资源提及数量上限`,
-          }),
-        );
-      }
-    }
   }
 
   const distinctMediaTypes = new Set(input.mentions.map((mention) => mention.mediaType));
-  if (distinctMediaTypes.size > 1) {
-    if (parsed.supportsMixedMentions === false) {
-      for (const mention of input.mentions) {
-        issues.push(
-          diagnostic(input, mention, {
-            code: 'RESOURCE_MENTION_MIXED_UNSUPPORTED',
-            reason: 'mixed_unsupported',
-            message: `模型 ${input.modelAlias} 不支持混合媒体资源提及`,
-          }),
-        );
-      }
-    } else if (parsed.supportsMixedMentions === undefined && !simulated) {
-      for (const mention of input.mentions) {
-        issues.push(
-          diagnostic(input, mention, {
-            code: 'RESOURCE_MENTION_CAPABILITY_UNKNOWN',
-            reason: 'capability_unknown',
-            message: `模型 ${input.modelAlias} 未声明混合媒体资源提及能力`,
-          }),
-        );
-      }
+  if (distinctMediaTypes.size > 1 && parsed.supportsMixedMentions === false) {
+    for (const mention of input.mentions) {
+      issues.push(
+        diagnostic(input, mention, {
+          code: 'RESOURCE_MENTION_MIXED_UNSUPPORTED',
+          reason: 'mixed_unsupported',
+          message: `模型 ${input.modelAlias} 不支持混合媒体资源提及`,
+        }),
+      );
     }
   }
 
@@ -280,10 +199,9 @@ function mergeCapabilityRecords(
   return { ...(limitations ?? {}), ...(capabilities ?? {}), ...(mediaTypes ?? {}) };
 }
 
-/** 解析能力字段别名；仅图片兼容路径把显式空值视为禁用，其他媒体保持旧解析语义。 */
+/** 解析可选声明及其别名，显式空列表与零上限仍表示禁用。 */
 function parseCapabilities(
   value: Record<string, unknown> | undefined,
-  imageGeneration: boolean,
 ): ResourceMentionCapabilities {
   if (!value) return {};
   return {
@@ -298,38 +216,23 @@ function parseCapabilities(
         'referenceMediaTypes',
         'reference_media_types',
       ],
-      imageGeneration,
+      true,
     ),
-    semanticRoles: readStrings(
-      value,
-      ['semanticRoles', 'semantic_roles', 'mentionSemanticRoles', 'mention_semantic_roles'],
-      imageGeneration,
-    ),
-    maxMentions: readMentionLimit(
-      value,
-      ['maxMentions', 'max_mentions', 'maxReferences'],
-      imageGeneration,
-    ),
+    semanticRoles: readStrings(value, [
+      'semanticRoles',
+      'semantic_roles',
+      'mentionSemanticRoles',
+      'mention_semantic_roles',
+    ]),
+    maxMentions: readMentionLimit(value, ['maxMentions', 'max_mentions', 'maxReferences']),
     supportsMixedMentions: readBoolean(value, [
       'supportsMixedMentions',
       'supports_mixed_mentions',
       'mixedMentions',
       'mixed_mentions',
     ]),
-    modes: readModes(value, ['modes', 'supportedModes', 'supported_modes'], imageGeneration),
+    modes: readModes(value, ['modes', 'supportedModes', 'supported_modes']),
   };
-}
-
-/** 判断目录是否提供任何可用能力字段。 */
-function hasAnyCapabilityDeclaration(value: ResourceMentionCapabilities): boolean {
-  return Boolean(
-    value.mediaTypes ||
-    value.mentionMediaTypes ||
-    value.semanticRoles ||
-    value.maxMentions !== undefined ||
-    value.supportsMixedMentions !== undefined ||
-    value.modes,
-  );
 }
 
 /** 读取媒体列表；preserveEmpty 为 true 时保留显式空数组的禁用语义。 */
@@ -353,11 +256,10 @@ function readMediaTypes(
   return undefined;
 }
 
-/** 读取字符串声明；图片路径保留显式空数组，其他媒体仍将空值视为缺省。 */
+/** 读取字符串声明，保留显式空数组的禁用语义。 */
 function readStrings(
   record: Record<string, unknown>,
   keys: readonly string[],
-  preserveEmpty = false,
 ): string[] | undefined {
   for (const key of keys) {
     const raw = record[key];
@@ -365,7 +267,7 @@ function readStrings(
     const values = raw.filter(
       (item): item is string => typeof item === 'string' && item.trim().length > 0,
     );
-    return values.length > 0 || (preserveEmpty && raw.length === 0)
+    return values.length > 0 || raw.length === 0
       ? [...new Set(values.map((item) => item.trim()))]
       : undefined;
   }
@@ -376,9 +278,8 @@ function readStrings(
 function readModes(
   record: Record<string, unknown>,
   keys: readonly string[],
-  preserveEmpty: boolean,
 ): NodeMode[] | undefined {
-  const values = readStrings(record, keys, preserveEmpty);
+  const values = readStrings(record, keys);
   if (!values) return undefined;
   const modes = values.filter((value): value is NodeMode =>
     (nodeModes as readonly string[]).includes(value),
@@ -386,16 +287,14 @@ function readModes(
   return modes.length > 0 || values.length === 0 ? [...new Set(modes)] : undefined;
 }
 
-/** 读取资源数量上限；图片路径中的零表示明确禁用资源输入。 */
+/** 读取资源数量上限；零表示明确禁用资源输入。 */
 function readMentionLimit(
   record: Record<string, unknown>,
   keys: readonly string[],
-  allowZero: boolean,
 ): number | undefined {
   for (const key of keys) {
     const raw = record[key];
-    if (typeof raw === 'number' && Number.isSafeInteger(raw) && raw >= (allowZero ? 0 : 1))
-      return raw;
+    if (typeof raw === 'number' && Number.isSafeInteger(raw) && raw >= 0) return raw;
   }
   return undefined;
 }

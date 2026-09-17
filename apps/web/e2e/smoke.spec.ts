@@ -736,6 +736,175 @@ test('图片引用兼容：修改入口和编辑节点允许缺声明模型并�
   expect(errors).toEqual([]);
 });
 
+/** 文字模型不提供自定义提及声明，图片内容与运行结果均由隔离路由返回。 */
+async function installTextImageCompatibilityFixture(page: Page) {
+  const errors: string[] = [];
+  const requests: Array<Record<string, unknown>> = [];
+  const savedCanvases: CanvasDocument[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => {
+    if (message.type() === 'error') errors.push(message.text());
+  });
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() === 'POST' && /^\/v1\/nodes\/[^/]+\/runs$/.test(path)) {
+      requests.push(request.postDataJSON());
+    }
+    if (request.method() === 'PATCH' && path === `/v1/projects/${project.id}/canvas`) {
+      savedCanvases.push(request.postDataJSON() as CanvasDocument);
+    }
+  });
+  const reference: Asset = {
+    id: 'text-image-reference',
+    name: 'kitten-reference.png',
+    mediaType: 'image',
+    mimeType: 'image/png',
+    sizeBytes: validPng.byteLength,
+    latestVersion: 3,
+    status: 'ready',
+    contentUrl: '/v1/assets/text-image-reference/content',
+    tags: [],
+  };
+  await page.route('**/v1/models**', (route) =>
+    json(route, {
+      models: [
+        {
+          id: 'gpt-5.5',
+          name: 'gpt-5.5',
+          mediaTypes: ['text'],
+          credentialId: initialCredential.id,
+        },
+      ],
+    }),
+  );
+  await page.route(/\/v1\/assets(?:\?.*)?$/, (route) => json(route, { assets: [reference] }));
+  await page.route('**/v1/assets/text-image-reference/content**', (route) =>
+    route.fulfill({ contentType: reference.mimeType, body: validPng }),
+  );
+  return { errors, requests, savedCanvases, reference };
+}
+
+test('文字图片兼容：无能力声明时提交图片提及并恢复冻结资源身份', async ({ page }, testInfo) => {
+  const { errors, requests, reference } = await installTextImageCompatibilityFixture(page);
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await page.goto(projectPath);
+  await page.getByRole('button', { name: '新建文字生成节点' }).click();
+  const editor = page.getByRole('region', { name: '文字生成节点生成设置' });
+  await editor.getByRole('combobox', { name: /^模型：/ }).click();
+  await page.getByRole('option', { name: 'gpt-5.5', exact: true }).click();
+  const prompt = editor.getByRole('textbox', { name: '提示词' });
+  await prompt.fill('Describe this image. @kitten');
+  await page.getByRole('option', { name: /kitten-reference.png/ }).click();
+  await expect(editor.getByRole('button', { name: '预览并命名 kitten-reference' })).toBeVisible();
+  const generate = editor.getByRole('button', { name: '生成', exact: true });
+  await expect(generate).toBeEnabled();
+  await generate.click();
+  await expect(page.getByText('文字生成节点 已完成', { exact: true })).toBeVisible();
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toMatchObject({
+    modelAlias: 'gpt-5.5',
+    credentialId: initialCredential.id,
+    promptDocument: {
+      version: 1,
+      blocks: [
+        { type: 'text', text: 'Describe this image. ' },
+        {
+          type: 'mention',
+          mentionId: expect.any(String),
+          assetId: reference.id,
+          assetVersion: 3,
+          mediaType: 'image',
+          label: reference.name,
+        },
+      ],
+    },
+  });
+  const restoredCanvas = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'GET' &&
+      new URL(response.url()).pathname === `/v1/projects/${project.id}/canvas`,
+  );
+  await page.reload();
+  const node = nodeByLabel(page, '文字生成节点');
+  await expect(node.locator('.artifact-preview-text-body')).toBeVisible();
+  await node.click({ position: { x: 5, y: 5 } });
+  await expect(prompt).toHaveValue('Describe this image. kitten-reference');
+  const saved = ((await (await restoredCanvas).json()) as { canvas: CanvasDocument }).canvas;
+  expect(saved.nodes[0]?.data.promptDocument).toEqual(requests[0]?.promptDocument);
+  expect(requests).toHaveLength(1);
+  await page.screenshot({ path: testInfo.outputPath('text-image-mention-restored.png') });
+  expect(errors).toEqual([]);
+});
+
+test('文字图片兼容：拖拽图片到文字内容口后单次提交并保留原图', async ({ page }, testInfo) => {
+  const { errors, requests, savedCanvases, reference } =
+    await installTextImageCompatibilityFixture(page);
+  await page.setViewportSize({ width: 1800, height: 1100 });
+  await page.goto(projectPath);
+  await page.getByRole('button', { name: '新建文字生成节点' }).click();
+  const target = nodeByLabel(page, '文字生成节点');
+  const targetId = await target.locator('xpath=..').getAttribute('data-id');
+  const editor = page.getByRole('region', { name: '文字生成节点生成设置' });
+  await editor.getByRole('combobox', { name: /^模型：/ }).click();
+  await page.getByRole('option', { name: 'gpt-5.5', exact: true }).click();
+  await editor.getByRole('textbox', { name: '提示词' }).fill('Describe the connected image.');
+  await page.getByRole('button', { name: `添加 ${reference.name} 到画布` }).click();
+  const source = nodeByLabel(page, reference.name);
+  await expect
+    .poll(() => source.locator('img').evaluate((img: HTMLImageElement) => img.naturalWidth))
+    .toBe(1);
+  await moveNode(page, source, 180, 170);
+  await focusCanvas(page);
+  const sourceHandle = source.locator('.react-flow__handle.source');
+  const targetHandle = target.locator('.react-flow__handle[data-handleid="input:content"]');
+  await sourceHandle.hover();
+  const sourceBox = (await sourceHandle.boundingBox())!;
+  const targetBox = (await targetHandle.boundingBox())!;
+  expect(sourceBox).not.toBeNull();
+  expect(targetBox).not.toBeNull();
+  await page.mouse.move(sourceBox.x + sourceBox.width / 2, sourceBox.y + sourceBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(targetBox.x + targetBox.width / 2, targetBox.y + targetBox.height / 2, {
+    steps: 20,
+  });
+  await page.mouse.up();
+  await expect(page.locator('.react-flow__edge')).toHaveCount(1);
+  await target.click();
+  await expect(editor.getByRole('button', { name: '预览并命名 kitten-reference' })).toBeVisible();
+  const generate = editor.getByRole('button', { name: '生成', exact: true });
+  await expect(generate).toBeEnabled();
+  await generate.click();
+  await expect(page.getByText('文字生成节点 已完成', { exact: true })).toBeVisible();
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toMatchObject({
+    modelAlias: 'gpt-5.5',
+    credentialId: initialCredential.id,
+    parameters: { prompt: 'Describe the connected image.' },
+  });
+  const saved = savedCanvases.at(-1)!;
+  const sourceNode = saved.nodes.find((node) => node.data.assetId === reference.id)!;
+  expect(sourceNode.data).toMatchObject({
+    assetId: reference.id,
+    mediaType: 'image',
+    mode: 'source',
+  });
+  expect(saved.edges).toEqual([
+    expect.objectContaining({
+      sourceNodeId: sourceNode.id,
+      sourceHandle: 'output:image',
+      targetNodeId: targetId,
+      targetHandle: 'input:content',
+    }),
+  ]);
+  await expect(source.locator('img')).toHaveAttribute(
+    'src',
+    /\/v1\/assets\/text-image-reference\/content/,
+  );
+  await expect(target.locator('.artifact-preview-text-body')).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('text-image-connected.png') });
+  expect(errors).toEqual([]);
+});
+
 const clipboardPermissions = ['clipboard-read', 'clipboard-write'] as const;
 
 async function grantClipboardPermissions(page: Page) {

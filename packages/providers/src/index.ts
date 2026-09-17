@@ -573,7 +573,7 @@ export class NewApiProvider {
       return {
         role: 'user' as const,
         name,
-        content: inputTextValue(input, 'text'),
+        content: chatInputContent(input),
       };
     });
 
@@ -3175,7 +3175,7 @@ function chatMediaPartRole(part: ChatMediaPart): PortRole {
  * 从实际发送的 Chat Completions 消息派生请求文本。
  *
  * 一条消息对应一个文本块，顺序即消息顺序；数组内容只拼接 `type: 'text'` 块，
- * 内联媒体按发送顺序对应目标节点冻结的提示词提及，只保留资产身份与版本。
+ * 提示词媒体与连线媒体分别按实际发送顺序对应冻结输入，只保留资产身份与版本。
  */
 function textRequestPromptCapture(
   snapshot: RunSnapshot,
@@ -3187,11 +3187,16 @@ function textRequestPromptCapture(
 ): { parts: RequestPromptPart[]; resources: RequestPromptResource[] } {
   const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
   const mentions =
-    target?.data.promptDocument?.blocks.filter((block) => block.type === 'mention') ?? [];
+    target?.data.promptDocument?.blocks.filter(
+      (block) => block.type === 'mention' && block.mediaType !== 'text',
+    ) ?? [];
+  const inputs = orderedRunInputs(snapshot);
   const parts: RequestPromptPart[] = [];
   const resources: RequestPromptResource[] = [];
   let mentionIndex = 0;
+  let inputIndex = 0;
   messages.forEach((message, order) => {
+    const input = message.name ? inputs[inputIndex++] : undefined;
     const content = message.content;
     parts.push({
       order,
@@ -3204,12 +3209,29 @@ function textRequestPromptCapture(
     if (!Array.isArray(content)) return;
     for (const part of content) {
       if (part.type === 'text') continue;
+      if (input) {
+        const assetId = input.sourceAssetId ?? input.snapshot.data.assetId;
+        resources.push({
+          ...(assetId ? { assetId } : {}),
+          ...(input.sourceAssetVersion ? { assetVersion: input.sourceAssetVersion } : {}),
+          role: input.role,
+          sortOrder: resources.length,
+          mediaType: input.snapshot.data.mediaType,
+        });
+        continue;
+      }
       const mention = mentions[mentionIndex];
       mentionIndex += 1;
-      if (!mention) continue;
+      if (!mention || mention.type !== 'mention') continue;
+      const frozen = snapshot.promptMentions?.find(
+        (candidate) =>
+          (candidate.nodeId ?? snapshot.targetNodeId) === snapshot.targetNodeId &&
+          candidate.mentionId === mention.mentionId,
+      );
+      const assetVersion = frozen?.assetVersion ?? mention.assetVersion;
       resources.push({
         assetId: mention.assetId,
-        ...(mention.assetVersion ? { assetVersion: mention.assetVersion } : {}),
+        ...(assetVersion ? { assetVersion } : {}),
         role: chatMediaPartRole(part),
         sortOrder: resources.length,
         mediaType: mention.mediaType,
@@ -3819,7 +3841,7 @@ function assertPromptMentionsUnsupported(
     snapshot,
     firstIdentity,
     'RESOURCE_MENTION_PROVIDER_MAPPING_UNSUPPORTED',
-    `New API ${mediaType} 端点仅支持纯文本提示词，无法表达内联媒体提及`,
+    `当前项目尚未接通 New API ${mediaType} 的这种资源提及输入映射`,
   );
 }
 
@@ -4255,7 +4277,7 @@ function imageMentionInputs(
         snapshot,
         resolved,
         'RESOURCE_MENTION_PROVIDER_MAPPING_UNSUPPORTED',
-        'New API 图片编辑只支持图片资源提及',
+        `当前项目尚未接通 New API image 的 ${block.mediaType} 资源提及输入映射`,
       );
     }
     // 复用媒体 URL/MIME 校验，标签仅供提示词引用，不替代二进制图片。
@@ -4453,6 +4475,39 @@ function inputTextValue(
   const inlineText = inlineTextContent(input.snapshot.data.contentUrl);
   if (inlineText) return inlineText;
   throw inputRoleValueError(targetMediaType, input.role, '可发送的文字内容');
+}
+
+/**
+ * 将文字节点的连线内容映射为聊天消息，图片只能来自执行器已水合的数据。
+ * @param input 保留画布角色和顺序的运行输入；图片仅允许连接 content 端口。
+ * @returns 纯文本字符串或携带真实图片数据的 image_url 内容块。
+ * @throws 未接通的媒体/角色或无效图片在发出请求前失败，不获取外部 URL。
+ */
+function chatInputContent(input: RunInputSnapshot): string | ChatContentPart[] {
+  const data = input.snapshot.data;
+  if (data.mediaType === 'text') return inputTextValue(input, 'text');
+  if (data.mediaType !== 'image' || input.role !== 'content') {
+    throw new NewApiProviderError(
+      `当前项目 New API 文字适配器尚未接通 ${data.mediaType} 到 ${input.role} 的连线输入映射`,
+      { code: 'UNSUPPORTED_INPUT_ROLE', retryable: false },
+    );
+  }
+  const dataUrl = nonEmptyString(data.contentUrl) ? data.contentUrl.trim() : undefined;
+  const parsed = dataUrl ? parseDataUrl(dataUrl) : undefined;
+  const mimeType = normalizedMimeType(data.mimeType);
+  if (
+    !dataUrl ||
+    !parsed ||
+    !mimeType?.startsWith('image/') ||
+    parsed.mimeType !== mimeType ||
+    !isValidBase64(parsed.base64)
+  ) {
+    throw new NewApiProviderError(
+      '文字节点的图片连线缺少有效的已水合图片数据，或数据 URL 与资源 MIME 类型不一致',
+      { code: 'INPUT_MEDIA_INVALID', retryable: false },
+    );
+  }
+  return [{ type: 'image_url', image_url: { url: dataUrl } }];
 }
 
 function inputImageUrl(input: RunInputSnapshot, targetMediaType: 'video'): string {

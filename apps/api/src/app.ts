@@ -20,7 +20,7 @@ import {
   type ProjectStore,
   type UpdateProjectModelDefaultsInput,
 } from './projects';
-import { withLocalImageReferences } from './local-image-references';
+import { withLocalResourceReferences } from './local-resource-references';
 import {
   createRunSnapshot,
   getRunSnapshotIncludedNodeIds,
@@ -1062,10 +1062,20 @@ function validateRunPromptMentionCapabilities(input: {
     const node = input.canvas.nodes.find((candidate) => candidate.id === nodeId);
     if (!node || isRunAssetSource(node, input.targetNodeId)) continue;
     const modelAlias = input.nodeModelAliases[nodeId] ?? node.data.modelAlias ?? 'unknown-model';
+    const result = checkResourceMentionCapabilities({
+      node: { id: node.id, data: { mediaType: node.data.mediaType, mode: node.data.mode } },
+      modelAlias,
+      model: input.nodeModels[nodeId],
+      mentions: [...mentions].sort((left, right) => left.blockOrder - right.blockOrder),
+      requestId: input.requestId,
+      allowMockPreview: input.allowMockPreview,
+    });
+    diagnostics.push(...result.issues);
+    if (result.issues.length > 0) continue;
     const remaining = unabsorbedVideoPromptMentions(node.data, mentions, modelAlias);
     if (remaining.length === 0) continue;
     if (
-      node.data.mediaType === 'video' &&
+      (node.data.mediaType === 'video' || node.data.mediaType === 'audio') &&
       node.data.mode === 'generate' &&
       !input.allowMockPreview
     ) {
@@ -1073,11 +1083,14 @@ function validateRunPromptMentionCapabilities(input: {
         diagnostics.push({
           code: 'RESOURCE_MENTION_MEDIA_UNSUPPORTED',
           reason: 'media_unsupported',
-          message: unabsorbedVideoPromptMentionMessage(
-            mention.mediaType,
-            videoModeForPromptMentions(node.data.videoMode, true),
-            modelAlias,
-          ),
+          message:
+            node.data.mediaType === 'audio'
+              ? '当前项目的音频生成适配器仅接通文本朗读，尚未接通资源提及输入'
+              : unabsorbedVideoPromptMentionMessage(
+                  mention.mediaType,
+                  videoModeForPromptMentions(node.data.videoMode, true),
+                  modelAlias,
+                ),
           requestId: input.requestId,
           nodeId: node.id,
           mentionId: mention.mentionId,
@@ -1089,15 +1102,6 @@ function validateRunPromptMentionCapabilities(input: {
       }
       continue;
     }
-    const result = checkResourceMentionCapabilities({
-      node: { id: node.id, data: { mediaType: node.data.mediaType, mode: node.data.mode } },
-      modelAlias,
-      model: input.nodeModels[nodeId],
-      mentions: [...remaining].sort((left, right) => left.blockOrder - right.blockOrder),
-      requestId: input.requestId,
-      allowMockPreview: input.allowMockPreview,
-    });
-    diagnostics.push(...result.issues);
   }
   return diagnostics;
 }
@@ -1210,7 +1214,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         : 'mock';
   const runExecutor =
     options.runExecutor && providerName === 'newapi'
-      ? withLocalImageReferences(
+      ? withLocalResourceReferences(
           options.runExecutor,
           assetStore,
           projectStore,

@@ -861,6 +861,7 @@ describe('NewApiProvider', () => {
       ).rejects.toMatchObject({
         code: 'RESOURCE_MENTION_PROVIDER_MAPPING_UNSUPPORTED',
         retryable: false,
+        message: expect.stringContaining(`当前项目尚未接通 New API ${targetMediaType}`),
       });
       expect(fetchImpl).not.toHaveBeenCalled();
     },
@@ -2067,8 +2068,8 @@ describe('NewApiProvider', () => {
     },
   );
 
-  it.each(['image', 'audio', 'video'] as const)(
-    'rejects $sourceMediaType content when text mapping requires text input',
+  it.each(['audio', 'video'] as const)(
+    'rejects an unimplemented $sourceMediaType linked content mapping before a text request',
     async (sourceMediaType) => {
       const fetchImpl = vi.fn<typeof fetch>();
       const provider = new NewApiProvider({
@@ -2087,11 +2088,251 @@ describe('NewApiProvider', () => {
       ).rejects.toMatchObject({
         code: 'UNSUPPORTED_INPUT_ROLE',
         retryable: false,
-        message: `New API text 不支持该输入角色：content（上游媒体类型 ${sourceMediaType} 无法映射为文字）`,
+        message: `当前项目 New API 文字适配器尚未接通 ${sourceMediaType} 到 content 的连线输入映射`,
       });
       expect(fetchImpl).not.toHaveBeenCalled();
     },
   );
+
+  it('sends linked images and text in sorted named messages without dropping image bytes', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const snapshot = textSnapshot();
+    const firstImage: RunInputSnapshot = editImageInput('first-image', 'content');
+    firstImage.sourceAssetId = 'asset-first';
+    firstImage.sourceAssetVersion = 4;
+    firstImage.snapshot.data.prompt = 'Source generation prompt must not replace image bytes.';
+    const secondImage = editImageInput('second-image', 'content');
+    secondImage.sourceAssetId = 'asset-second';
+    secondImage.sortOrder = 2;
+    snapshot.inputs = [
+      secondImage,
+      textInput('text-input', 'prompt', 1, 'Compare the images.'),
+      firstImage,
+    ];
+    const records: RequestPromptRecord[] = [];
+
+    await new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    }).execute({
+      snapshot,
+      runId: 'run-linked-images',
+      onRequestPrompt: collectRequestPrompts(records),
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://newapi.example.com/v1/chat/completions');
+    const payload = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(payload.messages).toEqual([
+      {
+        role: 'user',
+        name: 'canvas_content',
+        content: [{ type: 'image_url', image_url: { url: firstImage.snapshot.data.contentUrl } }],
+      },
+      { role: 'user', name: 'canvas_prompt', content: 'Compare the images.' },
+      {
+        role: 'user',
+        name: 'canvas_content',
+        content: [{ type: 'image_url', image_url: { url: secondImage.snapshot.data.contentUrl } }],
+      },
+    ]);
+    expect(records[0]?.parts).toEqual([
+      { order: 0, role: 'user', name: 'canvas_content', text: '' },
+      { order: 1, role: 'user', name: 'canvas_prompt', text: 'Compare the images.' },
+      { order: 2, role: 'user', name: 'canvas_content', text: '' },
+    ]);
+    expect(records[0]?.resources).toEqual([
+      {
+        assetId: 'asset-first',
+        assetVersion: 4,
+        role: 'content',
+        sortOrder: 0,
+        mediaType: 'image',
+      },
+      { assetId: 'asset-second', role: 'content', sortOrder: 1, mediaType: 'image' },
+    ]);
+    expect(JSON.stringify(records)).not.toMatch(/data:image|base64|iVBOR/);
+  });
+
+  it('records prompt media and linked images separately after a text mention', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const snapshot = textSnapshot();
+    const linkedImage = editImageInput('linked-image', 'content');
+    linkedImage.sourceAssetId = 'asset-linked';
+    snapshot.inputs = [linkedImage];
+    snapshot.nodes[0].data.promptDocument = {
+      version: 1,
+      blocks: [
+        {
+          type: 'mention',
+          mentionId: 'text-mention',
+          assetId: 'asset-text',
+          label: 'Text',
+          mediaType: 'text',
+        },
+        {
+          type: 'mention',
+          mentionId: 'image-mention',
+          assetId: 'asset-mentioned',
+          label: 'Image',
+          mediaType: 'image',
+        },
+      ],
+    };
+    snapshot.promptMentions = [
+      {
+        nodeId: snapshot.targetNodeId,
+        mentionId: 'text-mention',
+        assetId: 'asset-text',
+        assetVersion: 2,
+        label: 'Text',
+        mediaType: 'text',
+        blockOrder: 0,
+      },
+      {
+        nodeId: snapshot.targetNodeId,
+        mentionId: 'image-mention',
+        assetId: 'asset-mentioned',
+        assetVersion: 3,
+        label: 'Image',
+        mediaType: 'image',
+        blockOrder: 1,
+      },
+    ];
+    const resolvedMentions: ResolvedMention[] = snapshot.promptMentions.map((mention) => ({
+      ...mention,
+      nodeId: snapshot.targetNodeId,
+      source:
+        mention.mediaType === 'text'
+          ? {
+              kind: 'data-url',
+              dataUrl: 'data:text/plain;base64,Q29tcGFyZS4=',
+              mimeType: 'text/plain',
+            }
+          : {
+              kind: 'data-url',
+              dataUrl: linkedImage.snapshot.data.contentUrl,
+              mimeType: 'image/png',
+            },
+    }));
+    const records: RequestPromptRecord[] = [];
+
+    await new NewApiProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+    }).execute({
+      snapshot,
+      resolvedMentions,
+      runId: 'run-mentioned-linked',
+      onRequestPrompt: collectRequestPrompts(records),
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(records[0]?.parts).toEqual([
+      { order: 0, role: 'user', text: 'Compare.' },
+      { order: 1, role: 'user', name: 'canvas_content', text: '' },
+    ]);
+    expect(records[0]?.resources).toEqual([
+      {
+        assetId: 'asset-mentioned',
+        assetVersion: 3,
+        role: 'referenceImage',
+        sortOrder: 0,
+        mediaType: 'image',
+      },
+      { assetId: 'asset-linked', role: 'content', sortOrder: 1, mediaType: 'image' },
+    ]);
+    expect(JSON.stringify(records)).not.toMatch(/data:image|base64|iVBOR/);
+  });
+
+  it.each([
+    { name: 'remote URL', contentUrl: 'https://assets.example/image.png', mimeType: 'image/png' },
+    {
+      name: 'unhydrated asset URL',
+      contentUrl: '/api/assets/asset-image/content',
+      mimeType: 'image/png',
+    },
+    { name: 'invalid base64', contentUrl: 'data:image/png;base64,%%%', mimeType: 'image/png' },
+    { name: 'empty base64', contentUrl: 'data:image/png;base64,', mimeType: 'image/png' },
+    { name: 'missing MIME', contentUrl: 'data:image/png;base64,aW1hZ2U=', mimeType: undefined },
+    {
+      name: 'mismatching MIME',
+      contentUrl: 'data:image/png;base64,aW1hZ2U=',
+      mimeType: 'image/jpeg',
+    },
+    {
+      name: 'wrong media MIME',
+      contentUrl: 'data:text/plain;base64,aW1hZ2U=',
+      mimeType: 'text/plain',
+    },
+  ])(
+    'rejects linked image $name before any request or prompt recording',
+    async ({ contentUrl, mimeType }) => {
+      const fetchImpl = vi.fn<typeof fetch>();
+      const onRequestPrompt = vi.fn();
+      const input = editImageInput('invalid-image', 'content');
+      const snapshot = textSnapshot();
+      snapshot.inputs = [
+        {
+          ...input,
+          snapshot: { ...input.snapshot, data: { ...input.snapshot.data, contentUrl, mimeType } },
+        },
+      ];
+
+      await expect(
+        new NewApiProvider({
+          baseUrl: 'https://newapi.example.com/v1',
+          apiKey: 'server-secret',
+          fetchImpl,
+        }).execute({ snapshot, runId: 'run-invalid-image', onRequestPrompt }),
+      ).rejects.toMatchObject({
+        code: 'INPUT_MEDIA_INVALID',
+        retryable: false,
+      });
+
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(onRequestPrompt).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not resend or strip a linked image after a provider rejection', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: { message: 'Image input rejected', code: 'unsupported_image' },
+        }),
+        { status: 400, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    const snapshot = textSnapshot();
+    const input = editImageInput('rejected-image', 'content');
+    snapshot.inputs = [input];
+
+    await expect(
+      new NewApiProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+      }).execute({ snapshot }),
+    ).rejects.toMatchObject({ status: 400, retryable: false });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)).messages[0]?.content).toEqual([
+      { type: 'image_url', image_url: { url: input.snapshot.data.contentUrl } },
+    ]);
+  });
 
   it.each(['text', 'image', 'audio'] as const)(
     'rejects role-shaped parameters for $mediaType before sending a generation request',
@@ -3792,6 +4033,7 @@ describe('NewApiVideoProvider', () => {
     ).rejects.toMatchObject({
       code: 'RESOURCE_MENTION_PROVIDER_MAPPING_UNSUPPORTED',
       retryable: false,
+      message: expect.stringContaining('当前项目尚未接通 New API video'),
     });
     expect(fetchImpl).not.toHaveBeenCalled();
   });

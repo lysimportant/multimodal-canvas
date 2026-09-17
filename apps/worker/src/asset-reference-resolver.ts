@@ -46,6 +46,8 @@ export interface AssetReferenceBlobStore {
 
 export interface AssetReferenceResolver {
   resolve(snapshot: RunSnapshot, context?: { userId?: string }): Promise<RunSnapshot>;
+  /** 发送前复核已解析资源的当前归属与归档状态，不重新读取文件；旧注入实现可省略。 */
+  assertAccessible?(snapshot: RunSnapshot, context?: { userId?: string }): Promise<void>;
 }
 
 type ParsedAssetUrl = { assetId: string; version?: number };
@@ -106,7 +108,7 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
     // the durable schema parse so they cannot be serialized back into queue or
     // persistence payloads, while preserving any separately hydrated input
     // fields on a node that also owns inline mentions.
-    return {
+    const resolvedSnapshot: RunSnapshot = {
       ...parsedSnapshot,
       nodes: parsedSnapshot.nodes.map((node) => {
         const promptNode = promptMentionNodes.get(node.id);
@@ -118,6 +120,30 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
         };
       }),
     };
+    await this.assertAccessible(resolvedSnapshot, context);
+    return resolvedSnapshot;
+  }
+
+  /**
+   * 重新核验整次水合读取过的资源，避免读取后续资源期间前项已归档或权限已撤销。
+   * @param snapshot 已水合的进程内快照；身份来自连线、冻结提及与图片编辑来源。
+   * @param context 当前运行的用户身份，个人资源按同一身份复核。
+   * @throws 任一资源消失、归档或归属不再匹配时阻止发送，不重读文件内容。
+   */
+  async assertAccessible(snapshot: RunSnapshot, context: { userId?: string } = {}): Promise<void> {
+    const assetIds = new Set<string>();
+    for (const input of snapshot.inputs) {
+      const assetId = input.sourceAssetId ?? input.snapshot.data.assetId;
+      if (assetId) assetIds.add(assetId);
+    }
+    for (const mention of snapshot.promptMentions ?? []) assetIds.add(mention.assetId);
+    for (const node of snapshot.nodes) {
+      const source = imageEditSourceSchema.safeParse(node.data.imageEditSource);
+      if (source.success) assetIds.add(source.data.assetId);
+    }
+    for (const assetId of assetIds) {
+      await this.requireAccessibleAsset(snapshot.projectId, context.userId, assetId);
+    }
   }
 
   /**
@@ -291,6 +317,9 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
     }
 
     const version = parsedUrl.version;
+    if (input.sourceAssetVersion !== undefined && input.sourceAssetVersion !== version) {
+      throw new Error(`asset reference ${assetId} version does not match its frozen input`);
+    }
     const cacheKey = `${assetId}:${version}`;
     const resolved = await cached(cache, cacheKey, () =>
       this.loadAsset(projectId, userId, assetId, version),
@@ -300,6 +329,7 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
     return {
       ...input,
       sourceAssetId: assetId,
+      sourceAssetVersion: version,
       snapshot: {
         ...input.snapshot,
         data: {
@@ -319,17 +349,7 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
     assetId: string,
     version: number,
   ): Promise<ResolvedAsset> {
-    const asset = await this.repository.findAsset(assetId);
-    if (!asset) throw new Error(`asset reference ${assetId} was not found`);
-    const sameProject = asset.projectId === projectId;
-    const accessibleGlobalAsset =
-      asset.projectId === null && userId !== undefined && asset.ownerId === userId;
-    if (!sameProject && !accessibleGlobalAsset) {
-      throw new Error(`asset reference ${assetId} does not belong to the run project`);
-    }
-    if (asset.status === 'archived') {
-      throw new Error(`asset reference ${assetId} is archived`);
-    }
+    const asset = await this.requireAccessibleAsset(projectId, userId, assetId);
     assertMimeMatchesMediaType(asset.mimeType, asset.mediaType, assetId);
 
     const selected = await this.repository.findVersion(assetId, version);
@@ -364,6 +384,26 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
       mimeType,
       dataUrl: `data:${providerMimeType};base64,${content.toString('base64')}`,
     };
+  }
+
+  /** 按运行项目或个人归属校验资源仍存在且未归档，返回当前元数据供读取与发送前共用。 */
+  private async requireAccessibleAsset(
+    projectId: string,
+    userId: string | undefined,
+    assetId: string,
+  ): Promise<StoredAssetReference> {
+    const asset = await this.repository.findAsset(assetId);
+    if (!asset) throw new Error(`asset reference ${assetId} was not found`);
+    const sameProject = asset.projectId === projectId;
+    const accessibleGlobalAsset =
+      asset.projectId === null && userId !== undefined && asset.ownerId === userId;
+    if (!sameProject && !accessibleGlobalAsset) {
+      throw new Error(`asset reference ${assetId} does not belong to the run project`);
+    }
+    if (asset.status === 'archived') {
+      throw new Error(`asset reference ${assetId} is archived`);
+    }
+    return asset;
   }
 }
 

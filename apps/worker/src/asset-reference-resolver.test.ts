@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { RunSnapshot } from '@multimodal-canvas/domain';
+import type { MediaType, RunSnapshot } from '@multimodal-canvas/domain';
 import { NewApiProvider } from '@multimodal-canvas/providers';
 import type {
   AssetReferenceBlobStore,
@@ -187,10 +187,31 @@ describe('StoredAssetReferenceResolver', () => {
     expect(hydrated.nodes[0]?.data.contentUrl).toBe(hydrated.inputs[0]?.snapshot.data.contentUrl);
     expect(hydrated.nodes[0]?.data.mimeType).toBe('text/markdown');
     expect(hydrated.nodes[0]?.data.prompt).toBeUndefined();
+    expect(hydrated.inputs[0]?.sourceAssetVersion).toBe(1);
     expect(snapshot.inputs[0]?.snapshot.data.contentUrl).toBe(
       `/v1/assets/${textAssetId}/versions/1/content`,
     );
     expect(repository.findVersion).toHaveBeenCalledWith(textAssetId, 1);
+  });
+
+  it('拒绝连线版本字段与冻结地址不一致，避免请求记录误指另一版本', async () => {
+    const content = Buffer.from('frozen-image');
+    const snapshot = referenceSnapshot({
+      sourceMediaType: 'image',
+      targetMediaType: 'text',
+      role: 'content',
+      assetId: imageAssetId,
+    });
+    snapshot.inputs[0]!.sourceAssetVersion = 2;
+    const { repository, blobStore } = fixtures({
+      assets: [asset(imageAssetId, 'image', 'image/png', content, projectId)],
+      blobs: { 'objects/image-current': content },
+    });
+
+    await expect(
+      new StoredAssetReferenceResolver(repository, blobStore).resolve(snapshot),
+    ).rejects.toThrow('version does not match its frozen input');
+    expect(blobStore.get).not.toHaveBeenCalled();
   });
 
   it('hydrates the frozen image-edit source version into provider-readable content', async () => {
@@ -453,6 +474,221 @@ describe('StoredAssetReferenceResolver', () => {
 });
 
 describe('createRunWorker asset hydration boundary', () => {
+  it.each(
+    (['read-next-resource', 'capture-prompt'] as const).flatMap((phase) =>
+      (['archived', 'revoked', 'deleted'] as const).map((change) => ({ phase, change })),
+    ),
+  )(
+    '在 $phase 期间资源 $change 时不发出 Provider 请求，也不重读文件',
+    async ({ phase, change }) => {
+      const image = Buffer.from('private frozen image');
+      const text = Buffer.from('Compare the image.');
+      const privateAsset = asset(imageAssetId, 'image', 'image/png', image, null, userId);
+      const textAsset = asset(textAssetId, 'text', 'text/plain', text, projectId);
+      const durableSnapshot = referenceSnapshot({
+        sourceMediaType: 'image',
+        targetMediaType: 'text',
+        role: 'content',
+        assetId: imageAssetId,
+        mimeType: 'image/png',
+      });
+      durableSnapshot.credentialId = userId;
+      durableSnapshot.credentialVersion = 1;
+      const mention = {
+        nodeId: 'node_target',
+        mentionId: 'document',
+        assetId: textAssetId,
+        assetVersion: 1,
+        mediaType: 'text' as const,
+        label: 'Document',
+        blockOrder: 0,
+      };
+      durableSnapshot.promptMentions = [mention];
+      durableSnapshot.nodes.find((node) => node.id === 'node_target')!.data.promptDocument = {
+        version: 1,
+        blocks: [{ type: 'mention', ...mention }],
+      };
+      const { repository, blobStore } = fixtures({
+        assets: [privateAsset, textAsset],
+        blobs: { 'objects/image-current': image, 'objects/text-current': text },
+      });
+      let changed = false;
+      repository.findAsset.mockImplementation(async (id) => {
+        if (id !== imageAssetId) return id === textAssetId ? textAsset : undefined;
+        if (!changed) return privateAsset;
+        if (change === 'deleted') return undefined;
+        return change === 'archived'
+          ? { ...privateAsset, status: 'archived' }
+          : { ...privateAsset, ownerId: otherUserId };
+      });
+      blobStore.get.mockImplementation(async (key) => {
+        if (key === 'objects/text-current') {
+          if (phase === 'read-next-resource') changed = true;
+          return text;
+        }
+        return key === 'objects/image-current' ? image : undefined;
+      });
+      const capture = vi.fn(async () => {
+        if (phase === 'capture-prompt') changed = true;
+      });
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(
+          Response.json({ choices: [{ message: { content: 'Unexpected request' } }] }),
+        );
+      const job: StubJob = {
+        id: projectId,
+        data: {
+          runId: projectId,
+          userId,
+          snapshot: durableSnapshot,
+          attempt: 1,
+          provider: 'newapi',
+          cancelRequested: false,
+        },
+        async updateData(data) {
+          this.data = data;
+        },
+        async updateProgress() {},
+      };
+      bullmqState.job = job;
+      createRunWorker({
+        connection: { host: '127.0.0.1', port: 6379 },
+        stepDelayMs: 0,
+        providerName: 'newapi',
+        provider: new NewApiProvider({
+          baseUrl: 'https://newapi.example.test/v1',
+          apiKey: 'synthetic-test-key',
+          fetchImpl,
+        }),
+        assetReferenceResolver: new StoredAssetReferenceResolver(repository, blobStore),
+        persistence: {
+          async getProviderCredentials() {
+            return { baseUrl: 'https://newapi.example.test/v1', apiKey: 'synthetic-test-key' };
+          },
+          upsertRequestPromptRecord: capture,
+          async recordRequestPromptOutcome() {},
+          async upsertProviderJob() {},
+          async recordUsage() {},
+          async updateRun() {},
+        },
+        resultArchiver: async () => ({
+          assetId: 'asset_text_target',
+          version: 1,
+          mimeType: 'text/plain',
+        }),
+      });
+
+      await expect(bullmqState.processor?.(job)).rejects.toThrow(
+        change === 'archived'
+          ? 'is archived'
+          : change === 'revoked'
+            ? 'does not belong to the run project'
+            : 'was not found',
+      );
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(capture).toHaveBeenCalledTimes(phase === 'capture-prompt' ? 1 : 0);
+      expect(blobStore.get).toHaveBeenCalledTimes(2);
+      expect(repository.findVersion).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(job.data)).not.toContain(image.toString('base64'));
+    },
+  );
+
+  it.each([
+    { mediaType: 'text', mimeType: 'text/markdown', kind: 'mention' },
+    { mediaType: 'image', mimeType: 'image/png', kind: 'mention' },
+    { mediaType: 'audio', mimeType: 'audio/wav', kind: 'mention' },
+    { mediaType: 'video', mimeType: 'video/mp4', kind: 'mention' },
+    { mediaType: 'image', mimeType: 'image/png', kind: 'link' },
+  ] as const)(
+    '文字目标的 $mediaType $kind 将冻结内容送入聊天接口',
+    async ({ mediaType, mimeType, kind }) => {
+      const content = Buffer.from(`frozen-${mediaType}-reference`);
+      const durableSnapshot =
+        kind === 'mention'
+          ? promptMentionSnapshot({
+              assetId: imageAssetId,
+              assetVersion: 2,
+              label: '参考素材',
+              mediaType,
+            })
+          : referenceSnapshot({
+              sourceMediaType: 'image',
+              targetMediaType: 'text',
+              role: 'content',
+              assetId: imageAssetId,
+              mimeType,
+              contentUrl: `/v1/assets/${imageAssetId}/versions/2/content`,
+            });
+      const target = durableSnapshot.nodes.find((node) => node.id === 'node_target')!;
+      target.type = 'text';
+      target.data.mediaType = 'text';
+      target.data.prompt = 'Describe this resource.';
+      const { repository, blobStore } = fixtures({
+        assets: [
+          asset(imageAssetId, mediaType, mimeType, Buffer.from('current-version'), projectId),
+        ],
+        versions: [
+          {
+            assetId: imageAssetId,
+            version: 2,
+            sizeBytes: BigInt(content.byteLength),
+            contentKey: 'objects/frozen-v2',
+          },
+        ],
+        blobs: { 'objects/frozen-v2': content },
+      });
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(Response.json({ choices: [{ message: { content: 'ACCEPTANCE_OK' } }] }));
+      const provider = new NewApiProvider({
+        baseUrl: 'https://newapi.example.test/v1',
+        apiKey: 'synthetic-test-key',
+        fetchImpl,
+      });
+      const job: StubJob = {
+        id: projectId,
+        data: {
+          runId: projectId,
+          userId,
+          snapshot: durableSnapshot,
+          attempt: 1,
+          provider: 'newapi',
+          cancelRequested: false,
+        },
+        async updateData(data) {
+          this.data = data;
+        },
+        async updateProgress() {},
+      };
+      bullmqState.job = job;
+      createRunWorker({
+        connection: { host: '127.0.0.1', port: 6379 },
+        stepDelayMs: 0,
+        assetReferenceResolver: new StoredAssetReferenceResolver(repository, blobStore),
+        providerName: 'newapi',
+        provider,
+        resultArchiver: async () => ({
+          assetId: 'asset_text_target',
+          version: 1,
+          mimeType: 'text/plain',
+        }),
+      });
+
+      await bullmqState.processor?.(job);
+
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://newapi.example.test/v1/chat/completions');
+      const body = JSON.parse(fetchImpl.mock.calls[0]?.[1]?.body as string);
+      expect(JSON.stringify(body.messages)).toContain(
+        mediaType === 'text' ? content.toString('utf8') : content.toString('base64'),
+      );
+      expect(repository.findVersion).toHaveBeenCalledWith(imageAssetId, 2);
+      expect(JSON.stringify(job.data)).not.toContain(content.toString('base64'));
+      expect(JSON.stringify(job.data)).not.toContain('data:image/');
+    },
+  );
+
   it('uses the frozen asset version when a completed upstream node is recovered', async () => {
     const current = Buffer.from('newer mutable content', 'utf8');
     const frozen = Buffer.from('frozen generated result', 'utf8');
@@ -799,8 +1035,8 @@ describe('createRunWorker asset hydration boundary', () => {
 
 function referenceSnapshot(options: {
   sourceMediaType?: 'text' | 'image';
-  targetMediaType?: 'image' | 'video';
-  role?: 'prompt' | 'firstFrame';
+  targetMediaType?: 'text' | 'image' | 'video';
+  role?: 'prompt' | 'firstFrame' | 'content';
   assetId: string;
   sourceMode?: 'source' | 'generate';
   contentUrl?: string | null;
@@ -873,7 +1109,7 @@ function promptMentionSnapshot(options: {
   assetId: string;
   assetVersion: number;
   label: string;
-  mediaType: 'image';
+  mediaType: MediaType;
   repeat?: boolean;
 }): RunSnapshot {
   const blocks = [
@@ -938,7 +1174,7 @@ function promptMentionSnapshot(options: {
 
 function asset(
   id: string,
-  mediaType: 'text' | 'image',
+  mediaType: MediaType,
   mimeType: string,
   content: Buffer,
   ownerProjectId: string | null,

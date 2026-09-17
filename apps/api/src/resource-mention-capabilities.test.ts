@@ -31,32 +31,71 @@ describe('resource mention capability preflight', () => {
     );
   });
 
-  it('其他媒体节点能力未知时仍返回逐项诊断', () => {
+  it.each(['text', 'audio', 'video'] as const)('其他 %s 节点缺省声明不再阻断', (mediaType) => {
     const result = checkResourceMentionCapabilities({
       ...base,
-      node: { id: 'node-image', data: { mediaType: 'text', mode: 'generate' } },
+      node: { id: 'node-target', data: { mediaType, mode: 'generate' } },
     });
-    expect(result.simulated).toBe(false);
-    expect(result.issues).toMatchObject([
-      {
-        code: 'RESOURCE_MENTION_CAPABILITY_UNKNOWN',
-        mentionId: 'm-image',
-        assetId: 'asset-image',
-        nodeId: 'node-image',
-        modelAlias: 'image-v1',
-      },
-    ]);
+    expect(result).toEqual({ issues: [], simulated: false });
     expect(JSON.stringify(result)).not.toContain('data:');
   });
 
-  it('其他媒体保持空声明的旧兼容语义', () => {
+  it('文字节点的显式空列表和零上限在 Mock 中同样生效', () => {
     const result = checkResourceMentionCapabilities({
       ...base,
       node: { id: 'node-text', data: { mediaType: 'text', mode: 'generate' } },
       model: { capabilities: { mentionMediaTypes: [], modes: [], maxMentions: 0 } },
       allowMockPreview: true,
     });
-    expect(result).toEqual({ issues: [], simulated: true });
+    expect(result.simulated).toBe(true);
+    expect(result.issues.map((issue) => issue.code)).toEqual([
+      'RESOURCE_MENTION_MODE_UNSUPPORTED',
+      'RESOURCE_MENTION_MEDIA_UNSUPPORTED',
+      'RESOURCE_MENTION_COUNT_EXCEEDED',
+    ]);
+  });
+
+  it.each([
+    undefined,
+    { mediaTypes: ['text'] as const },
+    { capabilities: { modes: ['generate'] } },
+  ])('文字节点多次混合引用缺省数量、角色和媒体声明时仍放行', (model) => {
+    const result = checkResourceMentionCapabilities({
+      ...base,
+      node: { id: 'node-text', data: { mediaType: 'text', mode: 'generate' } },
+      model,
+      mentions: [
+        { ...base.mentions[0], semanticRole: 'reference' },
+        { ...base.mentions[0], mentionId: 'm-audio', mediaType: 'audio', blockOrder: 2 },
+        { ...base.mentions[0], mentionId: 'm-text', mediaType: 'text', blockOrder: 3 },
+      ],
+    });
+    expect(result).toEqual({ issues: [], simulated: false });
+  });
+
+  it('文字节点仍遵守明确的角色、混合媒体和引用数量限制', () => {
+    const result = checkResourceMentionCapabilities({
+      ...base,
+      node: { id: 'node-text', data: { mediaType: 'text', mode: 'generate' } },
+      model: {
+        capabilities: {
+          mention_media_types: ['image', 'audio'],
+          semantic_roles: [],
+          max_mentions: 1,
+          supports_mixed_mentions: false,
+        },
+      },
+      mentions: [
+        { ...base.mentions[0], semanticRole: 'reference' },
+        { ...base.mentions[0], mentionId: 'm-audio', mediaType: 'audio', blockOrder: 2 },
+      ],
+    });
+    expect(result.issues.map((issue) => issue.code)).toEqual([
+      'RESOURCE_MENTION_ROLE_UNSUPPORTED',
+      'RESOURCE_MENTION_COUNT_EXCEEDED',
+      'RESOURCE_MENTION_MIXED_UNSUPPORTED',
+      'RESOURCE_MENTION_MIXED_UNSUPPORTED',
+    ]);
   });
 
   it('图片引用的角色和数量声明缺省时允许兼容编辑接口处理', () => {
@@ -164,20 +203,12 @@ describe('resource mention capability preflight', () => {
     expect(result).toEqual({ issues: [], simulated: false });
   });
 
-  it('fails closed for source-node mentions when modes are omitted', () => {
+  it('模式声明缺省时不再推断为禁用', () => {
     const result = checkResourceMentionCapabilities({
       ...base,
       node: { id: 'node-image', data: { mediaType: 'image', mode: 'source' } },
       model: { capabilities: { mentionMediaTypes: ['image'] } },
     });
-    expect(result.issues).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          code: 'RESOURCE_MENTION_CAPABILITY_UNKNOWN',
-          reason: 'capability_unknown',
-          mentionId: 'm-image',
-        }),
-      ]),
-    );
+    expect(result.issues).toEqual([]);
   });
 });

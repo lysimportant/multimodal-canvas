@@ -110,7 +110,7 @@ export class XfyunTtsProvider {
       snapshot.promptMentions?.length ||
       target.data.promptDocument?.blocks.some((block) => block.type === 'mention')
     )
-      throw new XfyunTtsProviderError('讯飞 TTS 不支持资源提及');
+      throw new XfyunTtsProviderError('当前项目尚未接通讯飞 TTS 的资源提及输入映射');
     for (const input of snapshot.inputs) {
       if (input.role !== 'prompt' && input.role !== 'content')
         throw new XfyunTtsProviderError(`讯飞 TTS 不支持输入角色：${input.role}`);
@@ -292,7 +292,7 @@ function resolveTtsText(
     const data = textInput.snapshot.data;
     if (data.mediaType !== 'text') throw new XfyunTtsProviderError('讯飞 TTS 输入必须是文本');
     if (data.promptDocument?.blocks.some((block) => block.type === 'mention'))
-      throw new XfyunTtsProviderError('讯飞 TTS 不支持资源提及');
+      throw new XfyunTtsProviderError('当前项目尚未接通讯飞 TTS 的资源提及输入映射');
     return data.promptDocument ? renderPromptDocument(data.promptDocument) : (data.prompt ?? '');
   }
   return (

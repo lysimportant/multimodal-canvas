@@ -47,6 +47,132 @@ async function waitForRun(
 }
 
 describe('资源提及 HTTP 边界', () => {
+  it.each<{
+    name: string;
+    mediaType: MediaType;
+    modelAlias: string;
+    capabilities?: Record<string, unknown>;
+    expectedMessage: string;
+  }>([
+    {
+      name: '文字节点明确禁用图片引用',
+      mediaType: 'text',
+      modelAlias: 'text-model',
+      capabilities: { mentionMediaTypes: [] },
+      expectedMessage: '不支持 image 类型资源提及',
+    },
+    {
+      name: '视频参考图已映射也不能绕过明确禁用',
+      mediaType: 'video',
+      modelAlias: 'grok-imagine-video-1.5.1',
+      capabilities: { mentionMediaTypes: [] },
+      expectedMessage: '不支持 image 类型资源提及',
+    },
+    {
+      name: '音频缺省声明仍准确提示适配未接通',
+      mediaType: 'audio',
+      modelAlias: 'tts-model',
+      expectedMessage: '当前项目的音频生成适配器',
+    },
+  ])(
+    '$name 在创建运行前拒绝且不调用 Provider',
+    async ({ mediaType, modelAlias, capabilities, expectedMessage }) => {
+      const assetStore = new MemoryAssetStore();
+      const projectStore = new MemoryProjectStore();
+      const runService = new MemoryRunService({ providerName: 'newapi', stepDelayMs: 0 });
+      const settingsStore = new AiSettingsStore('resource-declared-limits');
+      settingsStore.update({
+        baseUrl: 'https://newapi.example.test/v1',
+        apiKey: 'synthetic-resource-limits-key',
+      });
+      const credential = settingsStore.listCredentials()[0]!;
+      settingsStore.replaceModels(
+        [
+          {
+            id: modelAlias,
+            name: modelAlias,
+            mediaTypes: [mediaType],
+            ...(capabilities ? { capabilities } : {}),
+            refreshedAt: new Date().toISOString(),
+          },
+        ],
+        credential.id,
+      );
+      const project = await projectStore.create({ name: '声明与适配边界' });
+      const asset = await assetStore.create({
+        projectId: project.id,
+        name: 'reference.png',
+        mediaType: 'image',
+        mimeType: 'image/png',
+        content: Buffer.from('synthetic-image'),
+      });
+      await storeCanvas(projectStore, project.id, {
+        revision: 0,
+        nodes: [
+          {
+            id: 'target',
+            type: mediaType,
+            position: { x: 0, y: 0 },
+            data: {
+              label: '目标',
+              mediaType,
+              mode: 'generate',
+              modelAlias,
+              credentialId: credential.id,
+              ...(mediaType === 'video' ? { videoMode: 'omni_reference' as const } : {}),
+              promptDocument: {
+                version: 1,
+                blocks: [
+                  {
+                    type: 'mention',
+                    mentionId: 'reference',
+                    assetId: asset.id,
+                    assetVersion: 1,
+                    label: asset.name,
+                    mediaType: 'image',
+                  },
+                ],
+              },
+            },
+          },
+        ],
+        edges: [],
+      });
+      const executor = vi.fn(async ({ snapshot }: RunExecutorRequest) => ({
+        provider: 'newapi',
+        summary: '不应执行',
+        targetNodeId: snapshot.targetNodeId,
+        mediaType,
+        inputCount: 0,
+      }));
+      const app = buildApp({
+        logger: false,
+        assetStore,
+        projectStore,
+        runService,
+        runExecutor: executor,
+        settingsStore,
+      });
+      apps.push(app);
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v1/nodes/target/runs',
+        payload: { projectId: project.id },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().code).toBe('RESOURCE_MENTION_CAPABILITY_UNSUPPORTED');
+      expect(response.json().issues).toEqual([
+        expect.objectContaining({
+          code: 'RESOURCE_MENTION_MEDIA_UNSUPPORTED',
+          message: expect.stringContaining(expectedMessage),
+        }),
+      ]);
+      expect(JSON.stringify(response.json())).not.toContain('未声明');
+      expect(executor).not.toHaveBeenCalled();
+      expect(await runService.listByProject(project.id)).toEqual([]);
+    },
+  );
+
   it('在保存和运行时聚合全部冻结错误，并且不会调用 Provider', async () => {
     vi.stubEnv('RESOURCE_MENTION_MAX_BYTES', '3');
     const assetStore = new MemoryAssetStore();

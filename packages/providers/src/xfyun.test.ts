@@ -50,6 +50,33 @@ class MockSocket implements XfyunWebSocketLike {
 }
 
 describe('XfyunTtsProvider', () => {
+  it('identifies unsupported mention mapping as a local adapter gap before opening a socket', async () => {
+    const factory = vi.fn(() => new MockSocket());
+    const runSnapshot = snapshot();
+    runSnapshot.nodes[0]!.data.promptDocument = {
+      version: 1,
+      blocks: [
+        {
+          type: 'mention',
+          mentionId: 'voice',
+          assetId: 'voice-asset',
+          label: 'Voice',
+          mediaType: 'audio',
+        },
+      ],
+    };
+
+    await expect(
+      new XfyunTtsProvider({
+        appId: 'app',
+        apiPassword: 'secret',
+        webSocketFactory: factory,
+      }).execute({ snapshot: runSnapshot }),
+    ).rejects.toThrow('当前项目尚未接通讯飞 TTS 的资源提及输入映射');
+
+    expect(factory).not.toHaveBeenCalled();
+  });
+
   it('creates from explicit runtime environment variables', () => {
     expect(
       createXfyunTtsProviderFromEnvironment({

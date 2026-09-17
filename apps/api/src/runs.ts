@@ -102,9 +102,9 @@ export type RunExecutorRequest = {
   snapshot: RunSnapshot;
   /** 运行提交者，用于本地执行前重新验证个人资源归属；不发给供应商。 */
   userId?: string;
-  /** 仅进程内传递的已读取图片内容，不写入运行快照。 */
+  /** 仅进程内传递的已读取资源内容，不写入运行快照。 */
   resolvedMentions?: readonly ResolvedMention[];
-  /** 检查读取原图期间的取消状态，发送前必须停止已取消运行。 */
+  /** 检查读取资源期间的取消状态，发送前必须停止已取消运行。 */
   isCancelled?: () => boolean;
   /** 由内存运行服务提供的真实运行身份，供 Provider 发送前留存请求。 */
   runId?: string;
@@ -290,6 +290,9 @@ export function createRunSnapshot(
         role: portRoleSchema.parse(edge.targetHandle.slice('input:'.length)),
         sortOrder: edge.order,
         sourceAssetId: snapshotSource.data.assetId,
+        ...(options.frozenAssetRefs?.[source.id]
+          ? { sourceAssetVersion: options.frozenAssetRefs[source.id]!.version }
+          : {}),
         snapshot: clone(snapshotSource),
       };
     });

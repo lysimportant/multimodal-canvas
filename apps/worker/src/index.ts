@@ -1285,6 +1285,11 @@ export function createRunWorker(options: {
                     : {}),
                 });
                 await persistProviderJobStrict(retainedProviderJob);
+                // 提示词落库期间资源可能已撤销；发送前只复核权限与归档，不重复读取内容。
+                await options.assetReferenceResolver?.assertAccessible?.(
+                  providerSnapshot,
+                  currentData.userId ? { userId: currentData.userId } : undefined,
+                );
               }
             : undefined;
           recordNodeTiming({ nodeId: node.id, requestStartedAt: new Date().toISOString() });
@@ -1295,6 +1300,10 @@ export function createRunWorker(options: {
             undefined,
             false,
             flushNodeTimings(),
+          );
+          await options.assetReferenceResolver?.assertAccessible?.(
+            providerSnapshot,
+            currentData.userId ? { userId: currentData.userId } : undefined,
           );
           const execution = normalizeProviderExecution(
             await executeProviderWithCancellation(
