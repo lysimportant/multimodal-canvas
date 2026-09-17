@@ -56,6 +56,8 @@ import {
   type VideoCompletionAction,
   type VideoMode,
   isPortConnectionAllowed,
+  getNodeGenerationCount,
+  isValidGenerationCount,
   renderPromptDocument,
 } from '@multimodal-canvas/domain';
 import {
@@ -91,6 +93,7 @@ import {
 } from './upload-utils';
 import { createUniqueNodeLabel } from './app-contract-utils';
 import { getNodePlacementRightOf } from './workspace/canvas-position';
+import { createGenerationBatch } from './workspace/generation-batch';
 import {
   appendGeneratedContentToPrompt,
   canForkNewNode,
@@ -962,6 +965,19 @@ function WorkspaceApp({
     };
   }, [edges, nodes, groups, runRecords]);
 
+  /** 组选中与节点编辑互斥；成员关系保留，用于整组移动和复制。 */
+  const selectCanvasGroup = useCallback(
+    (groupId?: string) => {
+      setSelectedGroupId(groupId ?? null);
+      if (!groupId) return;
+      setSelectedNodeId(null);
+      setNodes((current) =>
+        current.map((node) => (node.selected ? { ...node, selected: false } : node)),
+      );
+    },
+    [setNodes],
+  );
+
   /**
    * 创建布局区域。
    *
@@ -984,13 +1000,13 @@ function WorkspaceApp({
         nodesRef.current.map((n) => n.id),
       ),
     );
-    setSelectedGroupId(group.id);
+    selectCanvasGroup(group.id);
     canvasDirtyRef.current = true;
     setNotice({
       kind: 'success',
       message: selected.length > 0 ? `已把 ${selected.length} 个节点放入新组` : '已创建空组',
     });
-  }, [rememberHistory]);
+  }, [rememberHistory, selectCanvasGroup]);
 
   /** 整组移动：组与成员使用同一位移，成员之间保持相对位置。 */
   const translateGroupBy = useCallback(
@@ -1057,6 +1073,9 @@ function WorkspaceApp({
 
   const handleNodesChange: OnNodesChange<AssetFlowNode> = useCallback(
     (changes) => {
+      if (changes.some((change) => change.type === 'select' && change.selected)) {
+        setSelectedGroupId(null);
+      }
       // 初次 DOM 测量不修改画布；只有用户调尺寸的标记才进入保存和撤销历史。
       const documentChanges = changes.filter(
         (change) =>
@@ -1657,6 +1676,7 @@ function WorkspaceApp({
           label,
           mediaType: asset.mediaType,
           mode: 'source',
+          generationCount: useWorkspacePreferences.getState().defaultGenerationCount,
           assetId: asset.id,
           contentUrl: asset.contentUrl,
           mimeType: asset.mimeType,
@@ -1752,6 +1772,7 @@ function WorkspaceApp({
             ),
             mediaType,
             mode,
+            generationCount: useWorkspacePreferences.getState().defaultGenerationCount,
             ...selection,
             ...(previous?.parameters &&
             previous.modelAlias === selection?.modelAlias &&
@@ -1799,6 +1820,10 @@ function WorkspaceApp({
       const template = createGenerateNode(source.data.mediaType, source.position, {
         ...inheritedGenerateData(source.data),
         label: source.data.label,
+        generationCount: getNodeGenerationCount(source.data),
+        ...(source.data.prompt !== undefined ? { prompt: source.data.prompt } : {}),
+        ...(source.data.promptDocument ? { promptDocument: source.data.promptDocument } : {}),
+        ...(source.data.resourceRefs ? { resourceRefs: source.data.resourceRefs } : {}),
         ...(source.data.assetId ? { assetId: source.data.assetId } : {}),
         ...(source.data.contentUrl ? { contentUrl: source.data.contentUrl } : {}),
         ...(source.data.mimeType ? { mimeType: source.data.mimeType } : {}),
@@ -1820,6 +1845,7 @@ function WorkspaceApp({
 
   const selectCanvasNode = useCallback(
     (nodeId: string | null) => {
+      setSelectedGroupId(null);
       setSelectedNodeId(nodeId);
       setNodes((current) => {
         let changed = false;
@@ -1838,6 +1864,7 @@ function WorkspaceApp({
   const appendNodesAndSelect = useCallback(
     (newNodes: AssetFlowNode[]) => {
       if (newNodes.length === 0) return;
+      setSelectedGroupId(null);
       const selectedId = newNodes[newNodes.length - 1].id;
       setNodes((current) => [
         ...current.map((node) => (node.selected ? { ...node, selected: false } : node)),
@@ -2139,6 +2166,7 @@ function WorkspaceApp({
   const commitForkGraph = useCallback(
     (child: AssetFlowNode, extraEdges: FlowEdge[], parentId: string) => {
       rememberHistory();
+      setSelectedGroupId(null);
       const elevatedChild = { ...child, selected: true, zIndex: FORK_NODE_Z_INDEX };
       const nextNodes = [
         ...nodesRef.current.map((node) => (node.selected ? { ...node, selected: false } : node)),
@@ -2424,6 +2452,34 @@ function WorkspaceApp({
     [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
   );
 
+  /** 保存节点的批量数量；非法值保留在编辑器中，不进入画布和运行请求。 */
+  const updateSelectedGenerationCount = useCallback(
+    (generationCount: number, nodeId?: string) => {
+      const targetNodeId = nodeId ?? selectedNode?.id;
+      if (!targetNodeId || !isValidGenerationCount(generationCount)) return;
+      rememberHistory();
+      canvasDirtyRef.current = true;
+      updateNodeDataAndMarkDownstreamStale(targetNodeId, (data) => ({ ...data, generationCount }));
+    },
+    [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
+  );
+
+  /** 只更新卡牌展示状态，保持节点尺寸及生成结果不变，并支持保存与撤销。 */
+  const updateBatchExpanded = useCallback(
+    (rootNodeId: string, expanded: boolean) => {
+      rememberHistory();
+      const next = nodesRef.current.map((node) =>
+        node.id === rootNodeId
+          ? { ...node, data: { ...node.data, generationBatchExpanded: expanded } }
+          : node,
+      );
+      nodesRef.current = next;
+      setNodes(next);
+      canvasDirtyRef.current = true;
+    },
+    [rememberHistory, setNodes],
+  );
+
   const updateSelectedCompletionAction = useCallback(
     (completionAction: VideoCompletionAction, nodeId?: string) => {
       const targetNodeId = nodeId ?? selectedNode?.id;
@@ -2561,8 +2617,14 @@ function WorkspaceApp({
         return;
       }
       if (command && key === 'c') {
+        const selectedGroup = groupsRef.current.find((group) => group.id === selectedGroupId);
         const clipboard = copyCanvasSelection(
-          nodesRef.current,
+          selectedGroup
+            ? nodesRef.current.map((node) => ({
+                ...node,
+                selected: selectedGroup.nodeIds.includes(node.id),
+              }))
+            : nodesRef.current,
           edgesRef.current,
           selectedNode?.id,
           groupsRef.current,
@@ -2625,6 +2687,7 @@ function WorkspaceApp({
             return next;
           });
           setEdges((current) => [...current, ...pasted.edges]);
+          setSelectedGroupId(null);
           setSelectedNodeId(hydratedNodes[0]?.id ?? null);
           canvasDirtyRef.current = true;
         })();
@@ -2642,6 +2705,7 @@ function WorkspaceApp({
     rememberHistory,
     saveCanvas,
     selectedNode,
+    selectedGroupId,
     setEdges,
     setNodes,
     undoCanvas,
@@ -3062,6 +3126,7 @@ function WorkspaceApp({
           await runNode(child, 'sameNode', runPromptOverride);
         } finally {
           nodeRunLocksRef.current.delete(source.id);
+          setIsRunning(nodeRunLocksRef.current.size > 0);
         }
         return;
       }
@@ -3082,77 +3147,152 @@ function WorkspaceApp({
         setNotice({ kind: 'error', message: '节点已停用，请先启用后再运行' });
         return;
       }
+      try {
+        getNodeGenerationCount(nodeSnapshot.data);
+      } catch (error) {
+        setNotice({ kind: 'error', message: (error as Error).message });
+        return;
+      }
       setIsRunning(true);
       nodeRunLocksRef.current.add(node.id);
       setNotice(null);
+      let targets = [nodeSnapshot];
+      const batchLifecycle = runPollingLifecycleRef.current;
+      const submitted: Array<{ node: AssetFlowNode; run: RunRecord }> = [];
+      let submissionError: string | undefined;
       try {
-        await saveCanvas();
-        // Quick-editor input handlers update the canvas before a new render has
-        // necessarily refreshed the selected-node closure. Submit the saved
-        // canvas snapshot so an immediate click never sends stale parameters.
-        nodeSnapshot =
-          nodesRef.current.find((candidate) => candidate.id === node.id) ?? nodeSnapshot;
-        const promptDocument = promptOverride?.promptDocument ?? nodeSnapshot.data.promptDocument;
-        const effectivePrompt = (
-          promptDocument
-            ? renderPromptDocument(promptDocument)
-            : (promptOverride?.prompt ?? nodeSnapshot.data.prompt)
-        )?.trim();
-        const effectiveInferenceStrength =
-          nodeSnapshot.data.inferenceStrength ??
-          (nodeSnapshot.data.mediaType === 'text' ? 'high' : undefined);
-        const response = await apiFetch(`${API_BASE_URL}/v1/nodes/${nodeSnapshot.id}/runs`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            projectId,
-            ...(nodeSnapshot.data.modelAlias ? { modelAlias: nodeSnapshot.data.modelAlias } : {}),
-            ...(nodeSnapshot.data.credentialId
-              ? { credentialId: nodeSnapshot.data.credentialId }
-              : {}),
-            parameters: {
-              ...(nodeSnapshot.data.parameters ?? {}),
-              ...(effectivePrompt ? { prompt: effectivePrompt } : {}),
-              ...(effectiveInferenceStrength
-                ? { inferenceStrength: effectiveInferenceStrength }
-                : {}),
-            },
-            ...(promptDocument ? { promptDocument } : {}),
-          }),
-        });
-        const result = (await response.json().catch(() => ({}))) as {
-          run?: RunRecord;
-          error?: string;
-          issues?: Array<{ message?: string }>;
-        };
-        if (!response.ok || !result.run) {
-          throw new Error(result.issues?.[0]?.message ?? result.error ?? '运行提交失败');
-        }
-        if (nodeSnapshot.data.manualOutput) {
-          nodesRef.current = nodesRef.current.map((candidate) =>
-            candidate.id === node.id
-              ? { ...candidate, data: { ...candidate.data, manualOutputRunId: result.run!.id } }
-              : candidate,
-          );
-          setNodes(nodesRef.current);
+        const batch = createGenerationBatch(nodeSnapshot, nodesRef.current, edgesRef.current);
+        targets = batch.targets;
+        if (targets.length > 1) {
+          rememberHistory();
+          nodesRef.current = batch.nodes;
+          edgesRef.current = batch.edges;
+          setNodes(batch.nodes);
+          setEdges(batch.edges);
+          const sourceGroup = groupsRef.current.find((group) => group.nodeIds.includes(node.id));
+          if (sourceGroup) {
+            let nextGroups = groupsRef.current;
+            for (const sibling of targets.slice(1)) {
+              nextGroups = assignNodeToGroup(nextGroups, sibling.id, sourceGroup.id).map((group) =>
+                group.id === sourceGroup.id ? expandGroupToFitNode(group, sibling) : group,
+              );
+            }
+            groupsRef.current = nextGroups;
+            setGroups(nextGroups);
+          }
           canvasDirtyRef.current = true;
-          await saveCanvas();
+          for (const targetNode of targets) nodeRunLocksRef.current.add(targetNode.id);
         }
-        updateNodeRunState(nodeSnapshot.id, result.run, 'submitted');
-        const completed = await pollRun(result.run.id, nodeSnapshot.id);
-        if (completed.status === 'succeeded') {
-          setNotice({ kind: 'success', message: `${nodeSnapshot.data.label} 已完成` });
-        } else {
-          setNotice({
-            kind: 'error',
-            message: completed.error ?? runStatusLabel(completed.status),
-          });
+        await saveCanvas();
+        // 每份只发送一次创建请求；中途拒绝或断网时停止后续提交，已取得运行 ID 的任务继续跟踪。
+        for (const targetNode of targets) {
+          if (!batchLifecycle.active || batchLifecycle !== runPollingLifecycleRef.current) {
+            submissionError = '已离开画布，停止提交剩余任务';
+            break;
+          }
+          try {
+            const currentTarget = nodesRef.current.find(
+              (candidate) => candidate.id === targetNode.id,
+            );
+            // 删除发起节点后，即使其余卡牌仍在，也不能继续创建新运行。
+            if (!currentTarget || !nodesRef.current.some((candidate) => candidate.id === node.id)) {
+              throw new Error('生成节点已移除，停止提交剩余任务');
+            }
+            nodeSnapshot = currentTarget;
+            const promptDocument =
+              promptOverride?.promptDocument ?? nodeSnapshot.data.promptDocument;
+            const effectivePrompt = (
+              promptDocument
+                ? renderPromptDocument(promptDocument)
+                : (promptOverride?.prompt ?? nodeSnapshot.data.prompt)
+            )?.trim();
+            const effectiveInferenceStrength =
+              nodeSnapshot.data.inferenceStrength ??
+              (nodeSnapshot.data.mediaType === 'text' ? 'high' : undefined);
+            const response = await apiFetch(`${API_BASE_URL}/v1/nodes/${nodeSnapshot.id}/runs`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                projectId,
+                ...(nodeSnapshot.data.modelAlias
+                  ? { modelAlias: nodeSnapshot.data.modelAlias }
+                  : {}),
+                ...(nodeSnapshot.data.credentialId
+                  ? { credentialId: nodeSnapshot.data.credentialId }
+                  : {}),
+                parameters: {
+                  ...(nodeSnapshot.data.parameters ?? {}),
+                  ...(effectivePrompt ? { prompt: effectivePrompt } : {}),
+                  ...(effectiveInferenceStrength
+                    ? { inferenceStrength: effectiveInferenceStrength }
+                    : {}),
+                },
+                ...(promptDocument ? { promptDocument } : {}),
+              }),
+            });
+            const result = (await response.json().catch(() => ({}))) as {
+              run?: RunRecord;
+              error?: string;
+              issues?: Array<{ message?: string }>;
+            };
+            if (!response.ok || !result.run) {
+              throw new Error(result.issues?.[0]?.message ?? result.error ?? '运行提交失败');
+            }
+            submitted.push({ node: nodeSnapshot, run: result.run });
+            if (nodeSnapshot.data.manualOutput) {
+              nodesRef.current = nodesRef.current.map((candidate) =>
+                candidate.id === nodeSnapshot.id
+                  ? { ...candidate, data: { ...candidate.data, manualOutputRunId: result.run!.id } }
+                  : candidate,
+              );
+              setNodes(nodesRef.current);
+              canvasDirtyRef.current = true;
+              await saveCanvas();
+            }
+            updateNodeRunState(nodeSnapshot.id, result.run, 'submitted');
+          } catch (error) {
+            submissionError = error instanceof Error ? error.message : '运行提交失败';
+            break;
+          }
         }
+        const completed = await Promise.allSettled(
+          submitted.map((entry) => pollRun(entry.run.id, entry.node.id)),
+        );
+        const succeeded = completed.filter(
+          (entry) => entry.status === 'fulfilled' && entry.value.status === 'succeeded',
+        ).length;
+        const failed = completed.find(
+          (entry) => entry.status === 'rejected' || entry.value.status !== 'succeeded',
+        );
+        const errorMessage =
+          submissionError ??
+          (failed?.status === 'rejected'
+            ? failed.reason instanceof Error
+              ? failed.reason.message
+              : '运行状态加载失败'
+            : (failed?.value.error ?? (failed ? runStatusLabel(failed.value.status) : undefined)));
+        setNotice(
+          errorMessage
+            ? {
+                kind: 'error',
+                message:
+                  targets.length > 1
+                    ? `已完成 ${succeeded}/${targets.length} 份；${errorMessage}${submitted.length < targets.length ? '；已停止后续提交，请先核对运行记录' : ''}`
+                    : errorMessage,
+              }
+            : {
+                kind: 'success',
+                message:
+                  targets.length > 1
+                    ? `已完成 ${succeeded} 份生成`
+                    : `${nodeSnapshot.data.label} 已完成`,
+              },
+        );
       } catch (error) {
         setNotice({ kind: 'error', message: error instanceof Error ? error.message : '运行失败' });
       } finally {
-        nodeRunLocksRef.current.delete(node.id);
-        setIsRunning(false);
+        for (const targetNode of targets) nodeRunLocksRef.current.delete(targetNode.id);
+        setIsRunning(nodeRunLocksRef.current.size > 0);
       }
     },
     [
@@ -3161,15 +3301,17 @@ function WorkspaceApp({
       pollRun,
       promoteSourceNodeToGenerate,
       projectId,
+      rememberHistory,
       saveCanvas,
+      setEdges,
       setNodes,
       updateNodeRunState,
     ],
   );
 
   /**
-   * 图片悬浮栏「修改图片」与图片「新节点」走同一条立刻运行的分叉路径。
-   * @param sourceNodeId 被修改图片的节点 ID。
+   * 图片悬浮栏「修改图片」只创建带原图引用的草稿，选中后等待用户手动生成。
+   * @param sourceNodeId 被引用的图片节点 ID；来源缺失或正忙时提示错误，不创建节点。
    */
   const handleCreateImageEditNode = useCallback(
     (sourceNodeId: string) => {
@@ -3178,9 +3320,66 @@ function WorkspaceApp({
         setNotice({ kind: 'error', message: '图片来源节点已不存在，请重新选择图片节点' });
         return;
       }
-      void runNode(source, 'newNode');
+      if (nodeContentLocksRef.current.has(source.id) || nodeRunLocksRef.current.has(source.id)) {
+        setNotice({ kind: 'error', message: '节点正在保存或提交，请稍后再试' });
+        return;
+      }
+      if (!projectId) {
+        setNotice({ kind: 'error', message: '项目尚未连接' });
+        return;
+      }
+      const imageEditSource = freezeImageEditSource(source);
+      if (!imageEditSource) {
+        setNotice({ kind: 'error', message: '该节点还没有图片内容，请先上传或生成图片' });
+        return;
+      }
+      const dimensions = getNewNodeDimensions('image');
+      const position = getNodePlacementRightOf(source, nodesRef.current, dimensions);
+      const child = createGenerateNode('image', position, {
+        ...inheritedGenerateData(source.data),
+        label: createUniqueForkLabel(source.data.label, nodesRef.current),
+        imageEditSource,
+      });
+      const connection = buildConnectedGenerateNodeConnection(
+        {
+          mediaType: 'image',
+          position,
+          existingNodeId: source.id,
+          handleType: 'source',
+          handleId: 'output:image',
+          role: 'imageEdit',
+          label: '图片修改节点',
+        },
+        child.id,
+        source,
+      );
+      const validation = validateCanvasConnection(
+        connection,
+        [...nodesRef.current, child],
+        edgesRef.current,
+      );
+      if (!validation.ok) {
+        setNotice({ kind: 'error', message: '来源图无法连接到修改节点，请重新选择图片节点' });
+        return;
+      }
+      commitForkGraph(
+        child,
+        [
+          {
+            ...connection,
+            id: `edge_${connection.source}_${connection.target}_${Date.now()}`,
+            animated: true,
+          },
+        ],
+        source.id,
+      );
+      setNotice(
+        nodePreferenceNoticeRef.current
+          ? { kind: 'error', message: `已创建新节点；${nodePreferenceNoticeRef.current}` }
+          : { kind: 'success', message: `已创建${child.data.label}` },
+      );
     },
-    [runNode],
+    [commitForkGraph, createGenerateNode, projectId],
   );
 
   const retryNodeRun = useCallback(
@@ -3725,6 +3924,8 @@ function WorkspaceApp({
             onPromptDocumentChange={updateSelectedPromptDocument}
             onUploadResource={uploadProjectAsset}
             onParametersChange={updateSelectedParameters}
+            onGenerationCountChange={updateSelectedGenerationCount}
+            onBatchExpandedChange={updateBatchExpanded}
             onCompletionActionChange={updateSelectedCompletionAction}
             onVideoModeChange={updateSelectedVideoMode}
             onCompletionTargetNodeIdChange={updateSelectedCompletionTarget}
@@ -3745,7 +3946,7 @@ function WorkspaceApp({
             groups={groups}
             selectedGroupId={selectedGroupId}
             dropTargetGroupId={dropTargetGroupId}
-            onSelectGroup={(groupId) => setSelectedGroupId(groupId ?? null)}
+            onSelectGroup={selectCanvasGroup}
             onCreateGroup={createGroupFromSelection}
             onRenameGroup={renameGroup}
             onDissolveGroup={dissolveGroup}

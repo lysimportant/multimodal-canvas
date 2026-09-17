@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist, type StateStorage } from 'zustand/middleware';
+import { DEFAULT_GENERATION_COUNT, isValidGenerationCount } from '@multimodal-canvas/domain';
 
 import type { CanvasBackground } from '../workspace/contracts';
 import type { CanvasEdgeEffect, CanvasEdgePathStyle } from '../workspace/canvas-edge-appearance';
@@ -17,6 +18,8 @@ export const RESOURCE_PANEL_COLLAPSED_KEY = 'multimodal-canvas:resource-panel-co
 export const IMAGE_EDIT_SOURCE_CARD_KEY = 'multimodal-canvas:image-edit-source-card';
 /** 自动反推为显式开启的浏览器偏好，旧版本没有该键时关闭。 */
 export const AUTO_REVERSE_PROMPT_KEY = 'multimodal-canvas:auto-reverse-prompt';
+/** 新建节点的默认生成数量，仅保存在当前浏览器，不追溯修改已有节点。 */
+export const DEFAULT_GENERATION_COUNT_KEY = 'multimodal-canvas:default-generation-count';
 
 const PERSISTENCE_KEY = 'multimodal-canvas:workspace-preferences';
 
@@ -34,6 +37,8 @@ type PreferenceValues = {
   showImageEditSourceCard: boolean;
   /** 资源成功回显后是否自动反推提示词；默认关闭。 */
   autoReversePrompt: boolean;
+  /** 新建生成节点的数量，范围为 1 至 20；历史节点缺省仍按 1 份执行。 */
+  defaultGenerationCount: number;
 };
 
 type ValueUpdater<T> = T | ((current: T) => T);
@@ -47,6 +52,8 @@ export type WorkspacePreferencesState = PreferenceValues & {
   setShowImageEditSourceCard: (visible: ValueUpdater<boolean>) => void;
   /** 切换后持久化，不回溯提交当前画布的历史资源。 */
   setAutoReversePrompt: (enabled: boolean) => void;
+  /** 保存有效的默认数量；非法值抛出 RangeError，不修改当前偏好。 */
+  setDefaultGenerationCount: (count: number) => void;
 };
 
 export const workspacePreferenceDefaults: PreferenceValues = {
@@ -57,6 +64,7 @@ export const workspacePreferenceDefaults: PreferenceValues = {
   isResourcePanelCollapsed: false,
   showImageEditSourceCard: true,
   autoReversePrompt: false,
+  defaultGenerationCount: DEFAULT_GENERATION_COUNT,
 };
 
 const canvasBackgrounds: CanvasBackground[] = ['dots', 'lines', 'cross', 'blank'];
@@ -111,6 +119,7 @@ function parsePreferences(storage: Storage): PreferenceValues | null {
   const rawCollapsed = storage.getItem(RESOURCE_PANEL_COLLAPSED_KEY);
   const rawSourceCard = storage.getItem(IMAGE_EDIT_SOURCE_CARD_KEY);
   const rawAutoReversePrompt = storage.getItem(AUTO_REVERSE_PROMPT_KEY);
+  const rawGenerationCount = storage.getItem(DEFAULT_GENERATION_COUNT_KEY);
   if (
     rawBackground === null &&
     rawTheme === null &&
@@ -119,7 +128,8 @@ function parsePreferences(storage: Storage): PreferenceValues | null {
     rawLegacyEdgeStyle === null &&
     rawCollapsed === null &&
     rawSourceCard === null &&
-    rawAutoReversePrompt === null
+    rawAutoReversePrompt === null &&
+    rawGenerationCount === null
   )
     return null;
 
@@ -143,6 +153,9 @@ function parsePreferences(storage: Storage): PreferenceValues | null {
     isResourcePanelCollapsed: rawCollapsed === 'true',
     showImageEditSourceCard: rawSourceCard !== 'false',
     autoReversePrompt: rawAutoReversePrompt === 'true',
+    defaultGenerationCount: isValidGenerationCount(Number(rawGenerationCount))
+      ? Number(rawGenerationCount)
+      : workspacePreferenceDefaults.defaultGenerationCount,
   };
 }
 
@@ -167,6 +180,7 @@ const preferenceStorage: StateStorage = {
       storage.setItem(RESOURCE_PANEL_COLLAPSED_KEY, String(state.isResourcePanelCollapsed));
       storage.setItem(IMAGE_EDIT_SOURCE_CARD_KEY, String(state.showImageEditSourceCard));
       storage.setItem(AUTO_REVERSE_PROMPT_KEY, String(state.autoReversePrompt));
+      storage.setItem(DEFAULT_GENERATION_COUNT_KEY, String(state.defaultGenerationCount));
     } catch {
       // Ignore malformed persistence writes; the in-memory preferences remain usable.
     }
@@ -181,6 +195,7 @@ const preferenceStorage: StateStorage = {
     storage?.removeItem(RESOURCE_PANEL_COLLAPSED_KEY);
     storage?.removeItem(IMAGE_EDIT_SOURCE_CARD_KEY);
     storage?.removeItem(AUTO_REVERSE_PROMPT_KEY);
+    storage?.removeItem(DEFAULT_GENERATION_COUNT_KEY);
   },
 };
 
@@ -203,6 +218,12 @@ export const useWorkspacePreferences = create<WorkspacePreferencesState>()(
             typeof visible === 'function' ? visible(state.showImageEditSourceCard) : visible,
         })),
       setAutoReversePrompt: (autoReversePrompt) => set({ autoReversePrompt }),
+      setDefaultGenerationCount: (defaultGenerationCount) => {
+        if (!isValidGenerationCount(defaultGenerationCount)) {
+          throw new RangeError('默认生成数量必须为 1 至 20 的整数');
+        }
+        set({ defaultGenerationCount });
+      },
     }),
     {
       name: PERSISTENCE_KEY,
@@ -215,6 +236,7 @@ export const useWorkspacePreferences = create<WorkspacePreferencesState>()(
         isResourcePanelCollapsed,
         showImageEditSourceCard,
         autoReversePrompt,
+        defaultGenerationCount,
       }) => ({
         canvasBackground,
         canvasTheme,
@@ -223,6 +245,7 @@ export const useWorkspacePreferences = create<WorkspacePreferencesState>()(
         isResourcePanelCollapsed,
         showImageEditSourceCard,
         autoReversePrompt,
+        defaultGenerationCount,
       }),
     },
   ),

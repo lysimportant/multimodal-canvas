@@ -3224,6 +3224,12 @@ for (const viewport of [
 ]) {
   test(`修改图片：${viewport.name}新建节点并只把结果写入新节点`, async ({ page }, testInfo) => {
     const errors: string[] = [];
+    const runRequests: string[] = [];
+    page.on('request', (request) => {
+      if (request.method() === 'POST' && /\/v1\/nodes\/[^/]+\/runs$/.test(request.url())) {
+        runRequests.push(request.url());
+      }
+    });
     page.on('pageerror', (error) => errors.push(error.message));
     page.on('console', (message) => {
       if (message.type() === 'error') errors.push(message.text());
@@ -3253,6 +3259,7 @@ for (const viewport of [
     const editor = page.getByRole('region', { name: '修改 原始图片图片修改设置' });
     await expect(editor).toBeVisible();
     await expect(editor.getByRole('textbox', { name: '图片修改要求' })).toHaveValue('');
+    await expect(editor.getByRole('button', { name: '生成', exact: true })).toBeDisabled();
     const readOnlySource = editor.getByRole('group', { name: '来源图（只读）' });
     await expect(readOnlySource).toContainText('原始图片');
     await expect(readOnlySource).toContainText('来源图固定版本：v1');
@@ -3278,7 +3285,11 @@ for (const viewport of [
       expect(overlaps).toBe(false);
     }
 
+    expect(runRequests).toHaveLength(0);
+    await editor.getByRole('textbox', { name: '图片修改要求' }).fill('换成夜景');
+    await editor.getByRole('button', { name: '生成', exact: true }).click();
     await expect(page.getByText('修改 原始图片 已完成')).toBeVisible();
+    expect(runRequests).toHaveLength(1);
     await expect(editNode.locator('img').first()).toHaveAttribute('src', /\/v1\/assets\/result-/);
     await expect(sourceNode.locator('img').first()).toHaveAttribute(
       'src',

@@ -116,12 +116,14 @@ describe('AssetNode result presentation', () => {
     });
     const view = renderNode(base);
     const toolbar = screen.getByRole('group', { name: '节点操作：文案生成' });
-    expect(within(toolbar).getByText('12.4 s')).toBeInTheDocument();
+    expect(within(toolbar).getByText('12.4秒')).toBeInTheDocument();
+    expect(within(toolbar).getByText('耗时')).toBeInTheDocument();
+    expect(within(toolbar).queryByText('结果耗时')).not.toBeInTheDocument();
     expect(within(toolbar).getByText('当前执行')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: '查看节点信息' }));
     const info = within(screen.getByRole('dialog', { name: '节点信息' }));
-    expect(info.getByText('结果耗时')).toBeInTheDocument();
-    expect(info.getByText('12.4 s')).toBeInTheDocument();
+    expect(info.getByText('耗时')).toBeInTheDocument();
+    expect(info.getByText('12.4秒')).toBeInTheDocument();
     expect(info.getByText('当前执行')).toBeInTheDocument();
     view.rerender(
       <AssetNode
@@ -133,7 +135,7 @@ describe('AssetNode result presentation', () => {
       />,
     );
     await userEvent.click(screen.getByRole('button', { name: '查看节点信息' }));
-    expect(screen.queryByText('12.4 s')).not.toBeInTheDocument();
+    expect(screen.queryByText('12.4秒')).not.toBeInTheDocument();
     expect(
       within(screen.getByRole('dialog', { name: '节点信息' })).getByText('未记录'),
     ).toBeInTheDocument();
@@ -167,7 +169,7 @@ describe('AssetNode result presentation', () => {
     await userEvent.click(screen.getByRole('button', { name: '查看节点信息' }));
     expect(screen.getByRole('alert')).toHaveTextContent('供应商超时，未重发请求');
     expect(
-      within(screen.getByRole('dialog', { name: '节点信息' })).getByText('12.4 s'),
+      within(screen.getByRole('dialog', { name: '节点信息' })).getByText('12.4秒'),
     ).toBeInTheDocument();
   });
 
@@ -225,6 +227,42 @@ describe('AssetNode result presentation', () => {
     const toolbar = screen.getByRole('group', { name: '节点操作：文案生成' });
     expect(toolbar.style.getPropertyValue('--flow-node-zoom')).toBe(String(zoom));
     expect(toolbar.style.getPropertyValue('--flow-node-inverse-zoom')).toBe(String(1 / zoom));
+  });
+
+  it('悬浮栏超出画布左上角时只平移操作栏，不写入节点尺寸', () => {
+    const node = makeNode();
+    const view = render(
+      <div className="react-flow">
+        <div className="react-flow__node">
+          <AssetNode {...({ id: node.id, data: node.data } as NodeProps<AssetFlowNode>)} />
+        </div>
+      </div>,
+    );
+    const canvas = view.container.querySelector('.react-flow')!;
+    const asset = view.container.querySelector<HTMLElement>('.flow-asset-node')!;
+    const toolbar = screen.getByRole('group', { name: '节点操作：文案生成' });
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
+      left: 260,
+      top: 50,
+      right: 1366,
+      bottom: 900,
+      width: 1106,
+      height: 850,
+    } as DOMRect);
+    vi.spyOn(toolbar, 'getBoundingClientRect').mockReturnValue({
+      left: 140,
+      top: 30,
+      right: 940,
+      bottom: 76,
+      width: 800,
+      height: 46,
+    } as DOMRect);
+    fireEvent.mouseEnter(asset);
+    expect(toolbar.style.getPropertyValue('--flow-node-toolbar-shift-x')).toBe('128px');
+    expect(toolbar.style.getPropertyValue('--flow-node-toolbar-shift-y')).toBe('28px');
+    expect(toolbar.style.getPropertyValue('--flow-node-toolbar-max-width')).toBe('1090px');
+    expect(asset.style.width).toBe('');
+    expect(asset.style.height).toBe('');
   });
 
   it('悬浮栏一开始就同时显示图标和功能简述', () => {

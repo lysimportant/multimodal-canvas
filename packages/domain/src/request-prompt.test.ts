@@ -152,11 +152,12 @@ describe('node timing contract', () => {
     ).toEqual({ availability: 'invalid', reason: 'future' });
   });
 
-  it('短耗时与长耗时使用不同格式，非法输入不产生文本', () => {
-    expect(formatNodeDuration(12_400)).toBe('12.4 s');
-    expect(formatNodeDuration(999)).toBe('1.0 s');
-    expect(formatNodeDuration(128_000)).toBe('2 分 08 秒');
-    expect(formatNodeDuration(120_000)).toBe('2 分');
+  it('所有耗时统一使用秒数，非法输入不产生文本', () => {
+    expect(formatNodeDuration(12_400)).toBe('12.4秒');
+    expect(formatNodeDuration(999)).toBe('1秒');
+    expect(formatNodeDuration(128_000)).toBe('128秒');
+    expect(formatNodeDuration(120_000)).toBe('120秒');
+    expect(formatNodeDuration(3_600_000)).toBe('3600秒');
     expect(formatNodeDuration(-1)).toBe('');
     expect(formatNodeDuration(Number.NaN)).toBe('');
   });

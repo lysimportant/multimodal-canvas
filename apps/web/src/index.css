@@ -1,5 +1,4 @@
-/* 画布布局区域层：整层不接收指针事件，只有标题条与调整手柄可交互，
-   因此组的层级低于媒体节点且不会遮挡端口与连线。 */
+/* 画布布局区域层：仅组的范围接收指针事件，节点和连线位于上层。 */
 .canvas-group-layer {
   inset: 0;
   overflow: hidden;
@@ -9,7 +8,17 @@
 }
 
 /* 让空白拖拽层、分组和节点共用层叠上下文，节点悬浮栏始终位于组标题上方。 */
+.canvas-area > .react-flow {
+  /* 覆盖 React Flow 根元素的内联 z-index: 0，使节点与分组共用层叠上下文。 */
+  z-index: auto !important;
+}
+
 .canvas-area .react-flow__renderer {
+  z-index: auto;
+}
+
+/* 解除 pane 的层叠隔离，让节点与端口高于可拖动的分组背景。 */
+.canvas-area .react-flow__pane {
   z-index: auto;
 }
 
@@ -89,34 +98,6 @@
   padding: 2px 6px;
 }
 
-.canvas-group-actions {
-  display: inline-flex;
-  gap: 4px;
-}
-
-.canvas-group-action {
-  align-items: center;
-  background: var(--mc-surface, #ffffff);
-  border: 1px solid var(--mc-border, #e2e7eb);
-  border-radius: 6px;
-  color: var(--mc-text-muted, #687386);
-  cursor: pointer;
-  display: inline-flex;
-  height: 20px;
-  justify-content: center;
-  padding: 0;
-  width: 20px;
-}
-
-.canvas-group-action:hover {
-  color: var(--mc-text, #18212f);
-}
-
-.canvas-group-action-destructive:hover {
-  border-color: #d64545;
-  color: #d64545;
-}
-
 .canvas-group-handle {
   background: var(--mc-surface, #ffffff);
   border: 1.5px solid var(--mc-accent-strong, #12613e);
@@ -150,20 +131,6 @@
   bottom: -5px;
   cursor: nwse-resize;
   right: -5px;
-}
-
-/* 组提示只作为静态说明，不参与命中测试，避免遮挡成员节点操作。 */
-.canvas-group-hint {
-  align-items: center;
-  bottom: 6px;
-  color: var(--mc-text-muted, #687386);
-  display: inline-flex;
-  font-size: 10px;
-  gap: 4px;
-  opacity: 0.75;
-  pointer-events: none;
-  position: absolute;
-  right: 10px;
 }
 
 /* 生成提示词 Dialog：标题与关闭按钮固定，正文独立滚动，长词与长 URL
@@ -2611,7 +2578,8 @@ h2 {
   box-sizing: border-box;
   height: 18px;
   width: 18px;
-  z-index: 5;
+  /* 端口优先于悬浮栏的透明跨距区域，确保组内和组外都能拖线。 */
+  z-index: 7;
 }
 
 /* Role-specific inputs remain connectable without adding extra visible dots. */
@@ -2624,7 +2592,7 @@ h2 {
 }
 
 .flow-asset-node .flow-node-handle {
-  z-index: 5;
+  z-index: 7;
 }
 
 .flow-asset-node .react-flow__handle:hover {

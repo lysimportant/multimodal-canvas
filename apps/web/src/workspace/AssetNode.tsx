@@ -1,4 +1,6 @@
 import {
+  ArrowDownLeft,
+  ArrowUpRight,
   Check,
   Circle,
   Clock3,
@@ -29,6 +31,7 @@ import {
   useContext,
   useEffect,
   useId,
+  useLayoutEffect,
   useState,
   useRef,
   type KeyboardEvent,
@@ -43,7 +46,6 @@ import {
   videoModeLabels,
 } from '@multimodal-canvas/domain';
 import { Dialog, DialogClose, DialogContent, DialogTitle } from '@multimodal-canvas/ui';
-import { nodeHasPrompt } from './fork-generate-node';
 import type { AssetFlowNode } from '../canvas-utils';
 import { isImeKeyboardEvent } from '../ime';
 import { NodeHandles, videoInputRoleLabel } from '../NodeHandles';
@@ -52,6 +54,7 @@ import { downloadProjectExport } from '../export-utils';
 import { fetchNodeAssetDownload } from './node-asset-download';
 import { mediaIcons, mediaLabels, modeLabels } from './contracts';
 import { NodeDurationBadge, useSharedNodeClock } from './NodeDurationBadge';
+import { GenerationBatchViewContext } from './generation-batch-view';
 import './asset-node.css';
 
 export type NodeSelectionHandler = (data: AssetFlowNode['data']) => void;
@@ -81,8 +84,8 @@ export type NodeContentHandlers = {
 /** 节点内容写入能力，只在已加载的项目画布中提供。 */
 export const NodeContentContext = createContext<NodeContentHandlers | null>(null);
 /**
- * “修改图片”入口。回调只携带来源节点 ID，由画布层按「新节点」路径立刻图生图；
- * 来源节点本身不会被覆盖。
+ * “修改图片”入口。回调携带来源节点 ID，由画布层创建引用当前图片的草稿节点；
+ * 用户手动生成前不提交运行，来源节点本身不会被覆盖。
  */
 export type NodeImageEditHandler = (nodeId: string) => void;
 export const NodeImageEditContext = createContext<NodeImageEditHandler | null>(null);
@@ -143,7 +146,10 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const contentHandlers = useContext(NodeContentContext);
   const editImage = useContext(NodeImageEditContext);
   const openPrompt = useContext(NodePromptContext);
+  const batchContext = useContext(GenerationBatchViewContext);
+  const batchView = batchContext.views.get(id);
   const inputRef = useRef<HTMLInputElement>(null);
+  const floatingControlsRef = useRef<HTMLDivElement>(null);
   const uploadLock = useRef(false);
   /** 当前下载请求；切换节点产物或卸载时取消，防止下载过时内容。 */
   const downloadAbort = useRef<AbortController | null>(null);
@@ -161,6 +167,46 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const [infoOpen, setInfoOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
   const [focusWithin, setFocusWithin] = useState(false);
+  useLayoutEffect(() => {
+    if ((!hovered && !focusWithin && !selected) || batchView?.hidden) return;
+    const controls = floatingControlsRef.current;
+    const canvas = controls?.closest('.react-flow');
+    const node = controls?.closest('.react-flow__node');
+    if (!controls || !canvas || !node) return;
+
+    /** 按屏幕像素约束悬浮栏，位移经反向缩放后不改变节点尺寸。 */
+    const constrainControls = () => {
+      const canvasBounds = canvas.getBoundingClientRect();
+      controls.style.setProperty(
+        '--flow-node-toolbar-max-width',
+        `${Math.max(1, canvasBounds.width - 16)}px`,
+      );
+      controls.style.setProperty('--flow-node-toolbar-shift-x', '0px');
+      controls.style.setProperty('--flow-node-toolbar-shift-y', '0px');
+      const bounds = controls.getBoundingClientRect();
+      const left = Math.max(
+        canvasBounds.left + 8,
+        Math.min(bounds.left, canvasBounds.right - bounds.width - 8),
+      );
+      const top = Math.max(
+        canvasBounds.top + 8,
+        Math.min(bounds.top, canvasBounds.bottom - bounds.height - 8),
+      );
+      controls.style.setProperty('--flow-node-toolbar-shift-x', `${left - bounds.left}px`);
+      controls.style.setProperty('--flow-node-toolbar-shift-y', `${top - bounds.top}px`);
+    };
+    constrainControls();
+    const observer =
+      typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(constrainControls);
+    observer?.observe(canvas);
+    observer?.observe(controls);
+    observer?.observe(node);
+    node.addEventListener('transitionend', constrainControls);
+    return () => {
+      observer?.disconnect();
+      node.removeEventListener('transitionend', constrainControls);
+    };
+  });
   // 仅可见悬浮卡片或信息面板中的活动计时订阅共享时钟。
   const durationNow = useSharedNodeClock(
     (infoOpen || hovered || focusWithin || Boolean(selected)) && isNodeRunning(data.runStatus),
@@ -370,6 +416,8 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
     <div
       className={`flow-asset-node ${data.mode !== 'source' ? 'flow-generate-node' : ''} ${selected ? 'is-selected' : ''} ${enabled ? '' : 'is-disabled'}`}
       aria-disabled={!enabled}
+      inert={batchView?.hidden || undefined}
+      data-batch-root={batchView?.rootNodeId}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       onFocusCapture={() => setFocusWithin(true)}
@@ -379,7 +427,8 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
         }
       }}
       onClickCapture={(event) => {
-        if ((event.target as Element).closest('.flow-node-prompt-button')) return;
+        if ((event.target as Element).closest('.flow-node-prompt-button, .flow-node-batch-toggle'))
+          return;
         selectNode?.(data);
       }}
       onDragOver={(event) => {
@@ -397,6 +446,30 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
         }
       }}
     >
+      {batchView?.rootNodeId === id && batchContext.onExpandedChange ? (
+        <button
+          type="button"
+          className="flow-node-batch-toggle nodrag nopan nowheel"
+          aria-label={
+            batchView.expanded
+              ? `收起 ${batchView.count} 个生成结果`
+              : `展开 ${batchView.count} 个生成结果`
+          }
+          aria-expanded={batchView.expanded}
+          title={batchView.expanded ? '收起全部结果' : '展开全部结果'}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            batchContext.onExpandedChange?.(id, !batchView.expanded);
+          }}
+        >
+          {batchView.expanded ? (
+            <ArrowDownLeft size={18} aria-hidden="true" />
+          ) : (
+            <ArrowUpRight size={18} aria-hidden="true" />
+          )}
+        </button>
+      ) : null}
       {Resizer ? (
         <Resizer
           isVisible={Boolean(selected)}
@@ -441,6 +514,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
         />
       ) : null}
       <div
+        ref={floatingControlsRef}
         className={`flow-node-header${floatingControls ? ' flow-node-floating-controls' : ''}`}
         style={floatingControlStyle}
         role="group"
@@ -517,7 +591,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
             >
               <NodeDurationBadge
                 {...(displayedTiming ? { timing: displayedTiming } : {})}
-                label={previewAsset ? '结果耗时' : '耗时'}
+                label="耗时"
                 now={durationNow}
                 running={!previewAsset && isNodeRunning(data.runStatus)}
               />
@@ -590,14 +664,12 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
               <button
                 type="button"
                 className="flow-node-action-button flow-node-edit-image-button nodrag nopan nowheel"
-                disabled={writingDisabled || !nodeHasPrompt(data)}
+                disabled={writingDisabled}
                 aria-label={`修改图片：${data.label}`}
                 title={
                   writingDisabled
                     ? '节点正在运行或保存，请稍后再修改图片'
-                    : !nodeHasPrompt(data)
-                      ? '请先填写提示词'
-                      : '修改图片：把当前回显作为原图，结果写到新节点'
+                    : '修改图片：引用当前图片到新节点'
                 }
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={(event) => {
@@ -797,7 +869,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
                 </div>
               ) : null}
               <div>
-                <dt>{previewAsset ? '结果耗时' : '耗时'}</dt>
+                <dt>耗时</dt>
                 <dd>
                   <NodeDurationBadge
                     {...(displayedTiming ? { timing: displayedTiming } : {})}

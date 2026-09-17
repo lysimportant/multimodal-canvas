@@ -246,6 +246,45 @@
   min-width: 0;
 }
 
+.node-quick-editor-generation-count {
+  align-items: center;
+  background: var(--mc-surface-soft);
+  border: 1px solid var(--mc-border);
+  border-radius: 8px;
+  color: var(--mc-text-muted);
+  display: flex;
+  flex: 0 0 78px;
+  font-size: 11px;
+  gap: 3px;
+  height: 36px;
+  padding: 0 7px;
+  width: 78px;
+}
+
+.node-quick-editor-generation-count input {
+  background: transparent;
+  border: 0;
+  color: var(--mc-text);
+  font: inherit;
+  height: 30px;
+  min-width: 0;
+  padding: 0;
+  width: 36px;
+}
+
+.node-quick-editor-generation-count:focus-within {
+  border-color: var(--mc-accent);
+}
+
+.node-quick-editor-generation-count:has(input[aria-invalid='true']) {
+  border-color: var(--mc-danger, #b42318);
+}
+
+:is(.node-quick-editor, .node-quick-editor-dialog) .node-quick-editor-number-input {
+  cursor: text;
+  width: 100%;
+}
+
 :is(.node-quick-editor, .node-quick-editor-dialog) .node-quick-editor-run {
   flex: 0 0 auto;
   justify-content: center;

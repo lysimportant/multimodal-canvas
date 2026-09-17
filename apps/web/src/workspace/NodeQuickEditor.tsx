@@ -18,9 +18,12 @@ import type {
   VideoMode,
 } from '@multimodal-canvas/domain';
 import {
+  DEFAULT_GENERATION_COUNT,
+  GENERATION_COUNT_MAX,
   displayVideoMode,
   imageEditCapability,
   implementedVideoModes,
+  isValidGenerationCount,
   resolveVideoCompletionAction,
   videoModeCapability,
   videoModeDescriptions,
@@ -100,6 +103,8 @@ export type NodeQuickEditorProps = {
     Partial<Pick<Asset, 'contentUrl' | 'mimeType'>>)[];
   /** 更新节点的媒体参数；未提供时参数控件仍可显示但不会修改父状态。 */
   onParametersChange?: (value: NodeMediaParameters) => void;
+  /** 保存本次操作的生成份数，范围为 1 至 20；不作为 Provider 参数发送。 */
+  onGenerationCountChange?: (value: number) => void;
   /** 更新视频完成后的末帧动作。 */
   onCompletionActionChange?: (value: VideoCompletionAction) => void;
   /** 指定填充目标图片节点。 */
@@ -217,6 +222,7 @@ export function NodeQuickEditor({
   hasConnectedInput = false,
   connectedAssets = [],
   onParametersChange,
+  onGenerationCountChange,
   onCompletionActionChange,
   onCompletionTargetNodeIdChange,
   emptyImageNodes = [],
@@ -322,6 +328,29 @@ export function NodeQuickEditor({
     currentModelIsMissing,
   );
   const parameters = readNodeMediaParameters(node.data);
+  /** 无效输入只留在当前草稿，修正前不改写已保存数量，也不能发起运行。 */
+  const [generationCountDraft, setGenerationCountDraft] = useState(
+    String(node.data.generationCount ?? DEFAULT_GENERATION_COUNT),
+  );
+  /** 自定义时长允许清空；空值保留供应商默认语义，非空值只接受正整数秒。 */
+  const [durationDraft, setDurationDraft] = useState(
+    parameters.duration === undefined ? '' : String(parameters.duration),
+  );
+  useEffect(() => {
+    setGenerationCountDraft(String(node.data.generationCount ?? DEFAULT_GENERATION_COUNT));
+  }, [node.id, node.data.generationCount]);
+  useEffect(() => {
+    setDurationDraft(parameters.duration === undefined ? '' : String(parameters.duration));
+  }, [node.id, parameters.duration]);
+  const generationCountIssue = isValidGenerationCount(Number(generationCountDraft))
+    ? undefined
+    : `生成数量必须为 1 至 ${GENERATION_COUNT_MAX} 的整数`;
+  const durationIssue =
+    node.data.mediaType === 'video' &&
+    durationDraft !== '' &&
+    (!Number.isSafeInteger(Number(durationDraft)) || Number(durationDraft) <= 0)
+      ? '视频时长必须为正整数秒，且不能超过安全整数范围'
+      : undefined;
   const mediaOptions = getMediaOptions(selectedModel, node.data.mediaType, parameters);
   const inferenceOptions = getInferenceStrengthOptions(
     selectedModel,
@@ -361,11 +390,12 @@ export function NodeQuickEditor({
       ? '当前模型明确不支持图片编辑，请更换模型后再运行'
       : undefined;
   const mediaParameterIssue =
-    node.data.mediaType === 'audio'
+    durationIssue ??
+    (node.data.mediaType === 'audio'
       ? getAudioParameterIssue(parameters, selectedModel)
       : node.data.mediaType === 'video' && invalidVideoDimensions.length > 0
         ? '视频宽高必须为正整数像素，且不能超过安全整数范围'
-        : imageEditSourceIssue;
+        : imageEditSourceIssue);
 
   const updateParameter = (key: keyof NodeMediaParameters, value: unknown) => {
     if (!onParametersChange) return;
@@ -553,12 +583,38 @@ export function NodeQuickEditor({
               label="时长（秒）"
               value={normalizeCurrentOptionValue(parameters.duration)}
               options={mediaOptions.duration}
-              onChange={(value) => updateParameter('duration', value ? Number(value) : undefined)}
+              onChange={(value) => {
+                setDurationDraft(value);
+                updateParameter('duration', value ? Number(value) : undefined);
+              }}
               className="node-quick-editor-select-group"
               placement="top"
               optionLayout="grid"
               floating
             />
+            <label className="compact-select node-quick-editor-select-group">
+              <span className="compact-select-label">自定义秒数</span>
+              <input
+                className="compact-select-trigger node-quick-editor-number-input"
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={Number.MAX_SAFE_INTEGER}
+                step={1}
+                value={durationDraft}
+                placeholder="输入秒数"
+                aria-invalid={Boolean(durationIssue)}
+                disabled={!onParametersChange}
+                onChange={(event) => {
+                  const value = event.currentTarget.value;
+                  setDurationDraft(value);
+                  if (value === '') updateParameter('duration', undefined);
+                  else if (Number.isSafeInteger(Number(value)) && Number(value) > 0) {
+                    updateParameter('duration', Number(value));
+                  }
+                }}
+              />
+            </label>
             <CompactSelect
               label="完成后"
               value={resolveVideoCompletionAction(node.data)}
@@ -778,6 +834,27 @@ export function NodeQuickEditor({
         </div>
       )}
       <div className="node-quick-editor-run-group">
+        <label className="node-quick-editor-generation-count" title="本次生成数量">
+          <span>数量</span>
+          <input
+            type="number"
+            inputMode="numeric"
+            aria-label="生成数量"
+            min={1}
+            max={GENERATION_COUNT_MAX}
+            step={1}
+            value={generationCountDraft}
+            aria-invalid={Boolean(generationCountIssue)}
+            disabled={busy || !onGenerationCountChange}
+            onChange={(event) => {
+              const value = event.currentTarget.value;
+              setGenerationCountDraft(value);
+              if (isValidGenerationCount(Number(value))) {
+                onGenerationCountChange?.(Number(value));
+              }
+            }}
+          />
+        </label>
         {canRunSameNode(node) ? (
           <button
             type="button"
@@ -788,7 +865,8 @@ export function NodeQuickEditor({
                 ? '生成中'
                 : !enabled
                   ? '节点已停用'
-                  : (mediaParameterIssue ??
+                  : (generationCountIssue ??
+                    mediaParameterIssue ??
                     (!hasRunnableParameters
                       ? imageEditPromptRequired
                         ? '请先填写想用这张图修改什么'
@@ -796,7 +874,12 @@ export function NodeQuickEditor({
                       : '生成'))
             }
             onClick={onRun}
-            disabled={busy || !enabled || !hasRunnableParameters || Boolean(mediaParameterIssue)}
+            disabled={
+              busy ||
+              !enabled ||
+              !hasRunnableParameters ||
+              Boolean(generationCountIssue || mediaParameterIssue)
+            }
           >
             {busy ? (
               <LoaderCircle className="spin" size={16} aria-hidden="true" />
@@ -816,21 +899,24 @@ export function NodeQuickEditor({
                 ? '生成中'
                 : !enabled
                   ? '节点已停用'
-                  : !nodeHasPrompt(node.data)
-                    ? '请先填写提示词'
-                    : node.data.mediaType === 'image' &&
-                        selectedModel &&
-                        imageEditCapability(selectedModel).unsupported
-                      ? '当前模型明确不支持图片编辑，请更换模型后再运行'
-                      : mediaParameterIssue && node.data.mediaType === 'image'
-                        ? mediaParameterIssue
-                        : '把修改结果写到新节点'
+                  : generationCountIssue || durationIssue
+                    ? (generationCountIssue ?? durationIssue)
+                    : !nodeHasPrompt(node.data)
+                      ? '请先填写提示词'
+                      : node.data.mediaType === 'image' &&
+                          selectedModel &&
+                          imageEditCapability(selectedModel).unsupported
+                        ? '当前模型明确不支持图片编辑，请更换模型后再运行'
+                        : mediaParameterIssue && node.data.mediaType === 'image'
+                          ? mediaParameterIssue
+                          : '把修改结果写到新节点'
             }
             onClick={() => onRunNewNode?.()}
             disabled={
               busy ||
               !enabled ||
               !onRunNewNode ||
+              Boolean(generationCountIssue || durationIssue) ||
               !nodeHasPrompt(node.data) ||
               Boolean(
                 node.data.mediaType === 'image' &&
@@ -865,6 +951,11 @@ export function NodeQuickEditor({
               {promptEditor}
             </div>
             {controls}
+            {generationCountIssue && (
+              <p className="node-quick-editor-parameter-issue" role="status">
+                {generationCountIssue}
+              </p>
+            )}
           </>
         )}
       </section>
@@ -908,6 +999,11 @@ export function NodeQuickEditor({
             <div className="node-quick-editor-dialog-body">
               <div className="node-quick-editor-prompt-group">{promptEditor}</div>
               {controls}
+              {generationCountIssue && (
+                <p className="node-quick-editor-parameter-issue" role="status">
+                  {generationCountIssue}
+                </p>
+              )}
             </div>
           </DialogContent>
         )}
@@ -1321,7 +1417,7 @@ function getMediaOptions(
       ['duration', 'durations', 'seconds', 'durationSeconds', 'duration_seconds'],
       'duration',
     ) ??
-      (allowLegacyFallback ? [4, 8, 12, 16, 20] : []).map((value) => ({
+      (allowLegacyFallback ? [4, 8, 12, 15, 20] : []).map((value) => ({
         value: String(value),
         label: String(value),
         description: '秒',

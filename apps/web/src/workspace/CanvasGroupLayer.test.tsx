@@ -112,7 +112,7 @@ describe('CanvasGroupLayer', () => {
     expect(onRenameGroup).not.toHaveBeenCalled();
   });
 
-  it('选中后才显示解散与缩放手柄，解散不删除成员', async () => {
+  it('选中后显示悬浮操作与缩放手柄，解散不删除成员', async () => {
     const onDissolveGroup = vi.fn();
     const { container, rerender } = render(
       <CanvasGroupLayer
@@ -132,8 +132,39 @@ describe('CanvasGroupLayer', () => {
       />,
     );
     expect(container.querySelectorAll('.canvas-group-handle')).toHaveLength(4);
+    expect(screen.getByRole('region', { name: '场景 A分组信息' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^场景 A/ })).toHaveAttribute('aria-pressed', 'true');
     screen.getByLabelText('解散组 场景 A').click();
     expect(onDissolveGroup).toHaveBeenCalledWith('g1');
+  });
+
+  it('组内空白区域可选中并拖动，超过阈值后才捕获指针', () => {
+    const onTranslateGroup = vi.fn();
+    const onSelectGroup = vi.fn();
+    const { container } = render(
+      <CanvasGroupLayer
+        groups={[group()]}
+        viewport={{ x: 0, y: 0, zoom: 0.5 }}
+        onTranslateGroup={onTranslateGroup}
+        onSelectGroup={onSelectGroup}
+      />,
+    );
+    const area = container.querySelector<HTMLElement>('.canvas-group')!;
+    const setPointerCapture = vi.fn();
+    const releasePointerCapture = vi.fn();
+    Object.assign(area, {
+      setPointerCapture,
+      hasPointerCapture: () => true,
+      releasePointerCapture,
+    });
+    dispatchPointer(area, 120, 140, 2);
+    expect(onSelectGroup).toHaveBeenCalledWith('g1');
+    expect(setPointerCapture).not.toHaveBeenCalled();
+    dispatchWindowPointer('pointermove', 150, 160, 2);
+    expect(setPointerCapture).toHaveBeenCalledWith(2);
+    expect(onTranslateGroup).toHaveBeenCalledWith('g1', { x: 60, y: 40 });
+    dispatchWindowPointer('pointerup', 150, 160, 2);
+    expect(releasePointerCapture).toHaveBeenCalledWith(2);
   });
 
   it('拖拽标题条按画布像素给出位移，缩放视口下位移同样按比例换算', async () => {
@@ -279,16 +310,38 @@ describe('CanvasGroupLayer', () => {
     expect(card).toHaveTextContent('3 个节点');
     expect(within(card).getByText('文字').parentElement).toHaveTextContent('文字1');
     expect(within(card).getByText('图片').parentElement).toHaveTextContent('图片2');
-    expect(within(card).queryByText('视频')).not.toBeInTheDocument();
-    await user.click(within(card).getByRole('button', { name: '重命名此组' }));
+    expect(within(card).getByText('视频').parentElement).toHaveTextContent('视频0');
+    expect(within(card).getByText('音频').parentElement).toHaveTextContent('音频0');
+    await user.click(within(card).getByRole('button', { name: '重命名组 场景 A' }));
     const input = screen.getByRole('textbox', { name: '组名称' });
     await user.clear(input);
     await user.type(input, '分镜组{Enter}');
     expect(onRenameGroup).toHaveBeenCalledWith('g1', '分镜组');
     await user.hover(screen.getByRole('button', { name: /场景 A/ }));
-    await user.click(screen.getByRole('button', { name: '解散此组' }));
+    await user.click(screen.getByRole('button', { name: '解散组 场景 A' }));
     expect(onDissolveGroup).toHaveBeenCalledWith('g1');
     expect(screen.queryByRole('region', { name: '场景 A分组信息' })).not.toBeInTheDocument();
+  });
+
+  it('悬浮栏的拖动手柄移动整组，操作按钮不触发拖动', async () => {
+    const onTranslateGroup = vi.fn();
+    render(
+      <CanvasGroupLayer
+        groups={[group()]}
+        viewport={{ x: 0, y: 0, zoom: 1 }}
+        selectedGroupId="g1"
+        onTranslateGroup={onTranslateGroup}
+        onRenameGroup={vi.fn()}
+      />,
+    );
+    dispatchPointer(screen.getByRole('button', { name: '拖动组 场景 A' }), 10, 10);
+    dispatchWindowPointer('pointermove', 50, 40);
+    expect(onTranslateGroup).toHaveBeenCalledWith('g1', { x: 40, y: 30 });
+    dispatchWindowPointer('pointerup', 50, 40);
+    onTranslateGroup.mockClear();
+    dispatchPointer(screen.getByRole('button', { name: '重命名组 场景 A' }), 10, 10);
+    dispatchWindowPointer('pointermove', 50, 40);
+    expect(onTranslateGroup).not.toHaveBeenCalled();
   });
 
   it('键盘聚焦组名时显示空组信息，Escape 关闭卡片', async () => {
@@ -318,12 +371,17 @@ describe('CanvasGroupLayer', () => {
     expect(onTranslateGroup).toHaveBeenCalledTimes(1);
   });
 
-  it('CSS 保证区域层不接收指针事件、手柄与标题条可交互', () => {
+  it('CSS 保证组内空白区域可交互，组仍位于节点与连线下方', () => {
     const css = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf8').replace(/\s+/g, ' ');
     expect(css).toMatch(/\.canvas-group-layer \{[^}]*pointer-events: none;/);
     expect(css).toMatch(/\.canvas-group-header \{[^}]*pointer-events: auto;/);
     expect(css).toMatch(/\.canvas-group-handle \{[^}]*pointer-events: auto;/);
-    expect(css).toMatch(/\.canvas-group-hint \{[^}]*pointer-events: none;/);
+    const groupCss = readFileSync(
+      resolve(process.cwd(), 'src/workspace/canvas-group-hover-card.css'),
+      'utf8',
+    ).replace(/\s+/g, ' ');
+    expect(groupCss).toMatch(/\.canvas-group-layer \.canvas-group \{[^}]*pointer-events: auto;/);
+    expect(groupCss).toMatch(/\.canvas-group-layer \.canvas-group \{[^}]*touch-action: none;/);
     const groupLevel = Number(css.match(/\.canvas-group-layer \{[^}]*z-index: (\d+);/)?.[1]);
     const nodeLevel = Number(
       css.match(/\.canvas-area \.react-flow__viewport \{[^}]*z-index: (\d+);/)?.[1],

@@ -554,7 +554,7 @@ test('提示词与耗时：旧结果只读长文本、双复制、焦点及刷�
   await node.hover();
   await node.getByRole('button', { name: '查看节点信息' }).click();
   const info = page.getByRole('dialog', { name: '节点信息', exact: true });
-  await expect(info.locator('.node-duration-badge')).toHaveText('12.4 s');
+  await expect(info.locator('.node-duration-badge')).toHaveText('12.4秒');
   const trigger = info.getByRole('button', { name: /查看生成提示词/ });
   await trigger.click();
   const dialog = page.getByRole('dialog', { name: '生成提示词' });
@@ -577,7 +577,7 @@ test('提示词与耗时：旧结果只读长文本、双复制、焦点及刷�
   await page.reload({ waitUntil: 'domcontentloaded' });
   await node.hover();
   await node.getByRole('button', { name: '查看节点信息' }).click();
-  await expect(info.locator('.node-duration-badge')).toHaveText('12.4 s');
+  await expect(info.locator('.node-duration-badge')).toHaveText('12.4秒');
   expect(fixture.errors).toEqual([]);
 });
 
@@ -660,7 +660,7 @@ test('联合流程：独立连接与类型默认、生成、摘要、分组、�
   await page.getByRole('button', { name: /查看生成提示词/ }).click();
   const prompt = page.getByRole('dialog', { name: '生成提示词' });
   await expect(prompt.locator('.request-prompt-text')).toHaveText(`[user] ${submittedPrompt}`);
-  await expect(prompt.locator('.node-duration-badge')).toHaveText('12.4 s');
+  await expect(prompt.locator('.node-duration-badge')).toHaveText('12.4秒');
   await prompt.getByRole('button', { name: '添加摘要', exact: true }).click();
   const summary = '窗边笔记上的阳光，保持原始场景。';
   await prompt.getByRole('textbox', { name: '摘要正文' }).fill(summary);
@@ -700,7 +700,7 @@ test('联合流程：独立连接与类型默认、生成、摘要、分组、�
   await node.getByRole('button', { name: '查看节点信息' }).click();
   await page.getByRole('button', { name: /查看生成提示词/ }).click();
   await expect(prompt.locator('.request-prompt-summary')).toHaveText(summary);
-  await expect(prompt.locator('.node-duration-badge')).toHaveText('12.4 s');
+  await expect(prompt.locator('.node-duration-badge')).toHaveText('12.4秒');
   expect(fixture.canvas().groups).toEqual(saved.groups);
   expect(fixture.credentials.find((entry) => entry.active)?.id).toBe('active-credential');
   expect(fixture.errors).toEqual([]);
@@ -753,7 +753,7 @@ test('资源历史：删除原节点后按精确版本切换提示词、摘要�
   await expect(prompt.locator('.request-prompt-text')).toHaveText(
     '[user] Second immutable version prompt.',
   );
-  await expect(prompt.locator('.node-duration-badge')).toHaveText('26.0 s');
+  await expect(prompt.locator('.node-duration-badge')).toHaveText('26秒');
   await prompt.getByRole('button', { name: '编辑摘要', exact: true }).click();
   await prompt.getByRole('textbox', { name: '摘要正文' }).fill('预览期间保留的未保存草稿');
   await prompt.getByRole('button', { name: '预览此版本', exact: true }).click();
@@ -767,7 +767,7 @@ test('资源历史：删除原节点后按精确版本切换提示词、摘要�
   await prompt.getByRole('button', { name: '取消', exact: true }).click();
   await prompt.getByRole('combobox', { name: '结果版本' }).selectOption('1');
   await expect(prompt.locator('.request-prompt-text')).toHaveText(`[user] ${promptText}`);
-  await expect(prompt.locator('.node-duration-badge')).toHaveText('12.4 s');
+  await expect(prompt.locator('.node-duration-badge')).toHaveText('12.4秒');
   await prompt.getByRole('button', { name: '编辑摘要', exact: true }).click();
   await prompt.getByRole('textbox', { name: '摘要正文' }).fill('第一版独立保存的摘要');
   await prompt.getByRole('button', { name: '保存摘要', exact: true }).click();
@@ -799,6 +799,29 @@ for (const zoom of [0.25, 1, 2]) {
       await page.mouse.up();
     }
     const group = page.locator('.canvas-group');
+    if (zoom === 0.25) {
+      const header = group.locator('.canvas-group-header');
+      const headerBounds = (await header.boundingBox())!;
+      const memberBounds = (await page
+        .locator('.react-flow__node[data-id="generated-text"]')
+        .boundingBox())!;
+      expect(headerBounds.y + headerBounds.height).toBeLessThan(memberBounds.y);
+      const hit = await header.evaluate((element) => {
+        const bounds = element.getBoundingClientRect();
+        return Boolean(
+          document
+            .elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)
+            ?.closest('.canvas-group-header'),
+        );
+      });
+      expect(hit).toBe(true);
+      await group.locator('.canvas-group-name').focus();
+      const card = page.getByRole('region', { name: '创作资料分组信息' });
+      await expect(card).toBeVisible();
+      await expect(card).toContainText('2 个节点');
+      expect((await card.boundingBox())!.height).toBeGreaterThanOrEqual(46);
+      await page.screenshot({ path: testInfo.outputPath('group-25-accessible-header.png') });
+    }
     await drag(page, group.locator('.canvas-group-header'), 20, 15);
     await save(page);
     const moved = structuredClone(fixture.canvas());

@@ -192,7 +192,7 @@ describe('RequestPromptDialog', () => {
     );
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
     expect(screen.getByText('asset-1 · v1')).toBeInTheDocument();
-    expect(screen.getByText('4.5 s')).toBeInTheDocument();
+    expect(screen.getByText('4.5秒')).toBeInTheDocument();
     expect(onSaveSummary).not.toHaveBeenCalled();
   });
 
@@ -289,7 +289,7 @@ describe('NodeDurationBadge', () => {
         now={Date.parse('2026-09-16T10:05:00.000Z')}
       />,
     );
-    expect(screen.getByText('12.4 s')).toBeInTheDocument();
+    expect(screen.getByText('12.4秒')).toBeInTheDocument();
 
     rerender(
       <NodeDurationBadge
@@ -302,8 +302,8 @@ describe('NodeDurationBadge', () => {
         now={Date.parse('2026-09-16T10:05:00.000Z')}
       />,
     );
-    expect(screen.getByText('2 分 08 秒')).toBeInTheDocument();
-    expect(screen.getByTitle('失败耗时 2 分 08 秒')).toBeInTheDocument();
+    expect(screen.getByText('128秒')).toBeInTheDocument();
+    expect(screen.getByTitle('失败耗时 128秒')).toBeInTheDocument();
   });
 
   it('运行中显示已用时间，长时间显示不改变文本结构', () => {
@@ -314,7 +314,7 @@ describe('NodeDurationBadge', () => {
         running
       />,
     );
-    expect(screen.getByText('3.2 s')).toBeInTheDocument();
+    expect(screen.getByText('3.2秒')).toBeInTheDocument();
     expect(document.querySelector('.node-duration-badge.is-running')).not.toBeNull();
   });
 
@@ -324,7 +324,7 @@ describe('NodeDurationBadge', () => {
 
     rerender(<NodeDurationBadge timing={{ nodeId: 'node-1' }} now={Date.now()} />);
     expect(screen.getByText('未记录')).toBeInTheDocument();
-    expect(screen.queryByText('0.0 s')).not.toBeInTheDocument();
+    expect(screen.queryByText('0秒')).not.toBeInTheDocument();
   });
 
   it('已结束的结果缺少终态时间时不冒充仍在执行', () => {

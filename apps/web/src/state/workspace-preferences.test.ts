@@ -7,6 +7,7 @@ import {
   CANVAS_EDGE_PATH_STYLE_KEY,
   CANVAS_EDGE_STYLE_KEY,
   CANVAS_THEME_KEY,
+  DEFAULT_GENERATION_COUNT_KEY,
   IMAGE_EDIT_SOURCE_CARD_KEY,
   RESOURCE_PANEL_COLLAPSED_KEY,
   canvasEdgeStyleMigration,
@@ -31,6 +32,29 @@ describe('workspace preferences store', () => {
   afterEach(() => {
     useWorkspacePreferences.setState(workspacePreferenceDefaults);
     window.localStorage.clear();
+  });
+
+  it('默认生成一份，显式数量可以持久化恢复', async () => {
+    expect(useWorkspacePreferences.getState().defaultGenerationCount).toBe(1);
+    useWorkspacePreferences.getState().setDefaultGenerationCount(3);
+    expect(window.localStorage.getItem(DEFAULT_GENERATION_COUNT_KEY)).toBe('3');
+    await useWorkspacePreferences.persist.rehydrate();
+    expect(useWorkspacePreferences.getState().defaultGenerationCount).toBe(3);
+  });
+
+  it.each(['0', '-1', '1.5', '21', 'NaN', ''])('非法数量偏好 %s 恢复为一份', async (value) => {
+    window.localStorage.setItem(DEFAULT_GENERATION_COUNT_KEY, value);
+    await useWorkspacePreferences.persist.rehydrate();
+    expect(useWorkspacePreferences.getState().defaultGenerationCount).toBe(1);
+  });
+
+  it('拒绝写入非法默认数量，保留之前的偏好', () => {
+    useWorkspacePreferences.getState().setDefaultGenerationCount(3);
+    expect(() => useWorkspacePreferences.getState().setDefaultGenerationCount(0)).toThrow(
+      RangeError,
+    );
+    expect(useWorkspacePreferences.getState().defaultGenerationCount).toBe(3);
+    expect(window.localStorage.getItem(DEFAULT_GENERATION_COUNT_KEY)).toBe('3');
   });
 
   it('自动反推默认关闭，仅显式 true 开启且可持久恢复', async () => {

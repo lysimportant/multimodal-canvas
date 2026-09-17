@@ -136,10 +136,7 @@ test.describe('真实栈图片编辑验收', () => {
       .first()
       .click();
     await expect(modelTrigger).toHaveAttribute('aria-expanded', 'false');
-    await sourceEditor.getByRole('textbox', { name: '提示词' }).fill(prompt);
-
-    // —— 授权范围内的唯一一次计费 POST：修改图片与新节点同一路径并立刻运行 ——
-    const submittedAt = Date.now();
+    // 这里只创建原图引用，填写新节点的修改要求后才执行唯一一次计费 POST。
     await sourceNode.getByRole('button', { name: `修改图片：${fileName}` }).click();
     const editNode = page.locator('.react-flow__node[data-id^="node_image_generate"]');
     await expect(editNode).toHaveCount(1, { timeout: 30_000 });
@@ -150,6 +147,10 @@ test.describe('真实栈图片编辑验收', () => {
       '来源图固定版本：v1',
     );
     await expect(editor.getByRole('textbox', { name: '图片修改要求' })).toHaveValue('');
+    expect(runRequests).toHaveLength(0);
+    await editor.getByRole('textbox', { name: '图片修改要求' }).fill(prompt);
+    const submittedAt = Date.now();
+    await editor.getByRole('button', { name: '生成', exact: true }).click();
 
     await expect.poll(() => runRequests.length, { timeout: 60_000 }).toBeGreaterThanOrEqual(1);
     expect(runRequests).toHaveLength(1);

@@ -1,0 +1,404 @@
+import { expect, test, type Page, type Route } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+import type { Asset, CanvasDocument, RunRecord } from '@multimodal-canvas/domain';
+import { canvasDocumentSchema } from '@multimodal-canvas/domain';
+
+/** 所有运行都由路由夹具生成，不连接真实供应商。 */
+const project = {
+  id: 'node-generation-batch',
+  name: '批量生成集成验收',
+  createdAt: '2026-09-18T00:00:00.000Z',
+  updatedAt: '2026-09-18T00:00:00.000Z',
+};
+/** 本地真实位图与视频使验收同时检查结果媒体的加载。 */
+const poster = readFileSync(new URL('../public/demo/field-study-poster.jpg', import.meta.url));
+const video = readFileSync(new URL('../public/demo/field-study.mp4', import.meta.url));
+
+/** 记录每次创建请求的目标与原始参数，便于确认没有额外提交。 */
+type Submission = { nodeId: string; body: Record<string, unknown> };
+
+/** 返回合成 JSON 合同，状态码默认为成功。 */
+async function json(route: Route, value: unknown, status = 200) {
+  await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) });
+}
+
+/** 构造待生成节点；图片包含一条上游输入，视频保持文字生视频模式。 */
+function makeCanvas(mediaType: 'image' | 'video'): CanvasDocument {
+  return canvasDocumentSchema.parse({
+    revision: 1,
+    nodes: [
+      ...(mediaType === 'image'
+        ? [
+            {
+              id: 'input-image',
+              type: 'image' as const,
+              position: { x: 140, y: 230 },
+              width: 260,
+              height: 180,
+              data: {
+                label: '参考图片',
+                mediaType: 'image' as const,
+                mode: 'source' as const,
+                assetId: 'reference-image',
+                mimeType: 'image/jpeg',
+                contentUrl: '/v1/assets/reference-image/content',
+              },
+            },
+          ]
+        : []),
+      {
+        id: 'generation-root',
+        type: mediaType,
+        position: { x: 500, y: 230 },
+        width: 300,
+        height: 220,
+        data: {
+          label: '待生成节点',
+          mediaType,
+          mode: 'generate',
+          enabled: true,
+          prompt: 'Show a desk beside a bright window.',
+          modelAlias: `mock-${mediaType}`,
+          credentialId: 'batch-credential',
+          ...(mediaType === 'video' ? { videoMode: 'text_to_video' as const } : {}),
+        },
+      },
+    ],
+    edges:
+      mediaType === 'image'
+        ? [
+            {
+              id: 'reference-edge',
+              sourceNodeId: 'input-image',
+              targetNodeId: 'generation-root',
+              sourceHandle: 'output:image',
+              targetHandle: 'input:content',
+              order: 0,
+            },
+          ]
+        : [],
+  });
+}
+
+/** 安装可持久化画布与独立运行结果，记录页面错误及未声明接口。 */
+async function installFixture(page: Page, mediaType: 'image' | 'video' = 'image') {
+  let canvas = makeCanvas(mediaType);
+  const submissions: Submission[] = [];
+  const runs = new Map<string, RunRecord>();
+  const assets: Asset[] = [];
+  const errors: string[] = [];
+  if (mediaType === 'image') {
+    assets.push({
+      id: 'reference-image',
+      name: '参考图片',
+      mediaType: 'image',
+      mimeType: 'image/jpeg',
+      sizeBytes: poster.byteLength,
+      status: 'ready',
+      latestVersion: 1,
+      contentUrl: '/v1/assets/reference-image/content',
+      tags: [],
+    });
+  }
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => {
+    if (message.type() === 'error') errors.push(message.text());
+  });
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      'multimodal-canvas:auth-session',
+      JSON.stringify({
+        accessToken: 'synthetic-generation-batch',
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        user: {
+          id: 'batch-user',
+          email: 'batch@example.test',
+          role: 'admin',
+          createdAt: '2026-09-18T00:00:00.000Z',
+        },
+      }),
+    );
+  });
+  await page.route('**/v1/**', async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/events'))
+      return route.fulfill({ contentType: 'text/event-stream', body: ': ready\n\n' });
+    if (path === '/v1/projects') return json(route, { projects: [project] });
+    if (path === `/v1/projects/${project.id}`) return json(route, { project });
+    if (path.endsWith('/canvas')) {
+      if (request.method() === 'PATCH')
+        canvas = { ...request.postDataJSON(), revision: canvas.revision + 1 };
+      return json(route, { canvas });
+    }
+    if (path.endsWith('/models/defaults')) return json(route, { defaults: {} });
+    if (request.method() === 'POST' && /^\/v1\/nodes\/[^/]+\/runs$/.test(path)) {
+      const nodeId = path.split('/')[3]!;
+      const body = request.postDataJSON() as Record<string, unknown>;
+      submissions.push({ nodeId, body });
+      const node = canvas.nodes.find((entry) => entry.id === nodeId)!;
+      const assetId = `result-${submissions.length}-${nodeId}`;
+      const contentUrl = `/v1/assets/${assetId}/content`;
+      const mimeType = node.data.mediaType === 'video' ? 'video/mp4' : 'image/jpeg';
+      const sizeBytes = node.data.mediaType === 'video' ? video.byteLength : poster.byteLength;
+      assets.push({
+        id: assetId,
+        name: `独立结果 ${submissions.length}`,
+        mediaType: node.data.mediaType,
+        mimeType,
+        sizeBytes,
+        status: 'ready',
+        latestVersion: 1,
+        contentUrl,
+        tags: [],
+      });
+      const run: RunRecord = {
+        id: `run-${submissions.length}`,
+        projectId: project.id,
+        targetNodeId: nodeId,
+        status: 'succeeded',
+        progress: 100,
+        attempt: 1,
+        provider: 'mock',
+        modelAlias: `mock-${node.data.mediaType}`,
+        snapshot: {
+          projectId: project.id,
+          targetNodeId: nodeId,
+          canvasRevision: canvas.revision,
+          modelAlias: `mock-${node.data.mediaType}`,
+          parameters: body.parameters as Record<string, unknown>,
+          submittedAt: project.createdAt,
+          nodes: canvas.nodes,
+          edges: canvas.edges,
+          inputs: [],
+        },
+        result: {
+          provider: 'mock',
+          summary: `独立结果 ${submissions.length}`,
+          targetNodeId: nodeId,
+          mediaType: node.data.mediaType,
+          inputCount: canvas.edges.filter((edge) => edge.targetNodeId === nodeId).length,
+          asset: { assetId, version: 1, contentUrl, mimeType, sizeBytes },
+        },
+        createdAt: project.createdAt,
+        updatedAt: project.updatedAt,
+      };
+      runs.set(run.id, run);
+      return json(route, { run }, 202);
+    }
+    if (path === `/v1/projects/${project.id}/runs`)
+      return json(route, { runs: [...runs.values()] });
+    if (/^\/v1\/runs\/[^/]+$/.test(path))
+      return json(route, { run: runs.get(path.split('/')[3]!) });
+    if (path === '/v1/assets') return json(route, { assets });
+    if (path.endsWith('/reverse-prompts')) return json(route, { analysis: null });
+    if (path.includes('/request-prompts')) return json(route, { records: [] });
+    if (path.endsWith('/access-url'))
+      return json(route, { url: path.replace('/access-url', '/content') });
+    if (path.endsWith('/content')) {
+      const asset = assets.find((entry) => path.includes(`/${entry.id}/`));
+      return route.fulfill({
+        contentType: asset?.mimeType ?? 'image/jpeg',
+        body: asset?.mediaType === 'video' ? video : poster,
+      });
+    }
+    if (path === '/v1/settings/ai/credentials')
+      return json(route, {
+        credentials: [
+          {
+            id: 'batch-credential',
+            version: 1,
+            baseUrl: 'https://mock.example.test',
+            keyFingerprint: 'synthetic-batch',
+            active: true,
+            createdAt: project.createdAt,
+            defaultModels: { image: 'mock-image', video: 'mock-video' },
+          },
+        ],
+      });
+    if (path === '/v1/settings/ai')
+      return json(route, {
+        settings: {
+          baseUrl: 'https://mock.example.test',
+          configured: true,
+          defaultModels: { image: 'mock-image', video: 'mock-video' },
+        },
+      });
+    if (path === '/v1/models')
+      return json(route, {
+        models: ['image', 'video'].map((type) => ({
+          id: `mock-${type}`,
+          name: `Mock ${type}`,
+          mediaTypes: [type],
+          credentialId: 'batch-credential',
+        })),
+      });
+    errors.push(`未声明的 Mock 接口：${request.method()} ${path}`);
+    return route.fulfill({ status: 404, body: '未声明的验收接口' });
+  });
+  await page.goto(`/projects/${project.id}`);
+  await expect(page.locator('.react-flow__node[data-id="generation-root"]')).toBeVisible();
+  return { errors, submissions, runs, canvas: () => canvas };
+}
+
+/** 等待保存或已恢复状态；无画布变更的单次运行由运行记录在刷新后恢复。 */
+async function save(page: Page) {
+  await page.keyboard.press('Control+s');
+  await expect(page.getByRole('status', { name: /已保存|已从项目恢复/ })).toBeVisible();
+}
+
+for (const count of [1, 2, 3]) {
+  test(`数量 ${count} 只提交 ${count} 次，独立结果与输入边可保存刷新`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    const fixture = await installFixture(page);
+    const root = page.locator('.react-flow__node[data-id="generation-root"]');
+    await root.click();
+    const editor = page.getByRole('region', { name: '待生成节点生成设置' });
+    await editor.getByRole('spinbutton', { name: '生成数量' }).fill(String(count));
+    expect(fixture.submissions).toHaveLength(0);
+    await editor.getByRole('button', { name: '生成', exact: true }).click();
+    await expect(
+      page.getByText(count === 1 ? '待生成节点 已完成' : `已完成 ${count} 份生成`, { exact: true }),
+    ).toBeVisible();
+    expect(fixture.submissions).toHaveLength(count);
+    expect(new Set(fixture.submissions.map((entry) => entry.nodeId)).size).toBe(count);
+    expect(new Set([...fixture.runs.values()].map((run) => run.result!.asset!.assetId)).size).toBe(
+      count,
+    );
+    await expect(page.locator('.react-flow__node')).toHaveCount(count + 1);
+    for (const submission of fixture.submissions) {
+      expect(submission.body).toMatchObject({
+        projectId: project.id,
+        modelAlias: 'mock-image',
+        credentialId: 'batch-credential',
+        parameters: { prompt: 'Show a desk beside a bright window.' },
+      });
+      expect(submission.body.parameters).not.toHaveProperty('generationCount');
+      expect(submission.body.parameters).not.toHaveProperty('generationBatch');
+    }
+    if (count > 1) {
+      const toggle = root.getByRole('button', { name: `展开 ${count} 个生成结果` });
+      await expect(toggle).toBeVisible();
+      await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+      await expect(page.locator('.is-generation-batch-hidden')).toHaveCount(count - 1);
+      const bounds = (await root.boundingBox())!;
+      const toggleBounds = (await toggle.boundingBox())!;
+      expect(toggleBounds.x).toBeGreaterThan(bounds.x + bounds.width / 2);
+      expect(toggleBounds.y).toBeLessThan(bounds.y + bounds.height / 2);
+      await page.screenshot({ path: testInfo.outputPath(`generated-${count}-collapsed.png`) });
+      await toggle.click();
+      await expect(page.locator('.is-generation-batch-hidden')).toHaveCount(0);
+      await expect(root.getByRole('button', { name: `收起 ${count} 个生成结果` })).toBeVisible();
+    } else {
+      await expect(root.locator('.flow-node-batch-toggle')).toHaveCount(0);
+    }
+    for (const submission of fixture.submissions) {
+      const node = page.locator(`.react-flow__node[data-id="${submission.nodeId}"]`);
+      const preview = node.locator('img');
+      await expect(preview).toBeVisible();
+      await expect
+        .poll(() => preview.evaluate((image) => (image as HTMLImageElement).naturalWidth))
+        .toBeGreaterThan(0);
+    }
+    await save(page);
+    const saved = structuredClone(fixture.canvas());
+    expect(saved.edges).toHaveLength(count);
+    for (const submission of fixture.submissions) {
+      expect(saved.edges.find((edge) => edge.targetNodeId === submission.nodeId)).toMatchObject({
+        sourceNodeId: 'input-image',
+        sourceHandle: 'output:image',
+        targetHandle: 'input:content',
+        order: 0,
+      });
+    }
+    await page.reload();
+    await expect(page.locator('.react-flow__node')).toHaveCount(count + 1);
+    for (const submission of fixture.submissions) {
+      await expect(
+        page.locator(`.react-flow__node[data-id="${submission.nodeId}"] img`),
+      ).toBeVisible();
+    }
+    if (count > 1) {
+      await root.getByRole('button', { name: `收起 ${count} 个生成结果` }).click();
+      await expect(page.locator('.is-generation-batch-hidden')).toHaveCount(count - 1);
+      await save(page);
+      await page.reload();
+      await expect(root.getByRole('button', { name: `展开 ${count} 个生成结果` })).toBeVisible();
+    }
+    expect(fixture.submissions).toHaveLength(count);
+    expect(fixture.canvas().edges).toEqual(saved.edges);
+    expect(fixture.errors).toEqual([]);
+  });
+}
+
+test('视频 15 秒预设和自定义秒数只在手动生成时提交', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  const fixture = await installFixture(page, 'video');
+  const root = page.locator('.react-flow__node[data-id="generation-root"]');
+  await root.click();
+  const editor = page.getByRole('region', { name: '待生成节点生成设置' });
+  await editor.getByRole('button', { name: '媒体参数', exact: true }).click();
+  await page.getByRole('combobox', { name: /^时长（秒）：/ }).click();
+  await expect(page.getByRole('option', { name: '16 秒', exact: true })).toHaveCount(0);
+  await page.getByRole('option', { name: '15 秒', exact: true }).click();
+  const seconds = page.getByRole('spinbutton', { name: '自定义秒数' });
+  await expect(seconds).toHaveValue('15');
+  expect(fixture.submissions).toHaveLength(0);
+  await editor.getByRole('button', { name: '生成', exact: true }).click();
+  await expect(page.getByText('待生成节点 已完成', { exact: true })).toBeVisible();
+  expect(fixture.submissions).toHaveLength(1);
+  expect(fixture.submissions[0]!.body.parameters).toMatchObject({ duration: 15 });
+  await editor.getByRole('button', { name: '媒体参数', exact: true }).click();
+  await seconds.fill('0');
+  await expect(seconds).toHaveAttribute('aria-invalid', 'true');
+  await expect(editor.getByRole('button', { name: '生成', exact: true })).toBeDisabled();
+  await seconds.fill('17');
+  await expect(seconds).toHaveAttribute('aria-invalid', 'false');
+  expect(fixture.submissions).toHaveLength(1);
+  await page.screenshot({ path: testInfo.outputPath('video-custom-seconds.png') });
+  await editor.getByRole('button', { name: '生成', exact: true }).click();
+  await expect.poll(() => fixture.submissions.length).toBe(2);
+  await expect(page.getByText('待生成节点 已完成', { exact: true })).toBeVisible();
+  expect(fixture.submissions[1]!.body.parameters).toMatchObject({ duration: 17 });
+  await expect
+    .poll(() => root.locator('video').evaluate((element) => element.readyState))
+    .toBeGreaterThan(0);
+  await save(page);
+  await page.reload();
+  await root.click();
+  await editor.getByRole('button', { name: '媒体参数', exact: true }).click();
+  await expect(seconds).toHaveValue('17');
+  expect(fixture.submissions).toHaveLength(2);
+  expect(fixture.errors).toEqual([]);
+});
+
+test('设置默认数量仅作用于新建节点，已有节点仍为一份', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  const fixture = await installFixture(page);
+  await page.getByRole('button', { name: '打开设置', exact: true }).click();
+  const settings = page.getByRole('dialog', { name: 'AI 连接', exact: true });
+  await settings.getByRole('tab', { name: '节点默认', exact: true }).click();
+  await settings.getByRole('spinbutton', { name: '默认生成数量' }).fill('3');
+  await page.screenshot({ path: testInfo.outputPath('default-generation-count.png') });
+  await page.keyboard.press('Escape');
+  await page.locator('.react-flow__node[data-id="generation-root"]').click();
+  await expect(page.getByRole('spinbutton', { name: '生成数量' })).toHaveValue('1');
+  await page.locator('.react-flow__pane').click({ position: { x: 12, y: 12 } });
+  await page.getByRole('button', { name: '新建图片生成节点' }).click();
+  await expect(page.getByRole('spinbutton', { name: '生成数量' })).toHaveValue('3');
+  await save(page);
+  const created = fixture
+    .canvas()
+    .nodes.find((node) => !['generation-root', 'input-image'].includes(node.id))!;
+  expect(created.data.generationCount).toBe(3);
+  expect(
+    fixture.canvas().nodes.find((node) => node.id === 'generation-root')!.data.generationCount,
+  ).toBeUndefined();
+  await page.reload();
+  await page.getByRole('button', { name: '新建图片生成节点' }).click();
+  await expect(page.getByRole('spinbutton', { name: '生成数量' })).toHaveValue('3');
+  expect(fixture.submissions).toHaveLength(0);
+  expect(fixture.errors).toEqual([]);
+});

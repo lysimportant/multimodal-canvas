@@ -562,6 +562,22 @@ describe('SettingsPanel', () => {
     expect(mediaRow(panel, 'image')).toHaveAttribute('data-expanded', 'true');
   });
 
+  it('节点默认数量立即持久化，非法草稿不覆盖最后保存的数量', async () => {
+    const { dialog } = await openSettings();
+    const panel = await openNodeDefaults(dialog);
+    const input = within(panel).getByRole('spinbutton', { name: '默认生成数量' });
+    expect(input).toHaveValue(1);
+    fireEvent.change(input, { target: { value: '4' } });
+    expect(useWorkspacePreferences.getState().defaultGenerationCount).toBe(4);
+    fireEvent.change(input, { target: { value: '0' } });
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(useWorkspacePreferences.getState().defaultGenerationCount).toBe(4);
+    fireEvent.change(input, { target: { value: '3' } });
+    expect(input).toHaveAttribute('aria-invalid', 'false');
+    await useWorkspacePreferences.persist.rehydrate();
+    expect(useWorkspacePreferences.getState().defaultGenerationCount).toBe(3);
+  });
+
   it('全局 / 当前项目范围切换明确标注正在编辑的范围', async () => {
     settings.defaultModels = { text: 'text-model' };
     const { dialog, user } = await openSettings();

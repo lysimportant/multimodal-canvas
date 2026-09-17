@@ -1034,6 +1034,136 @@ describe('画布编辑器交互', () => {
     });
   });
 
+  it('数量为 3 时分别运行并保存卡牌归属，展开状态可以持久化', async () => {
+    const { user } = await renderCanvas();
+    await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
+    const editor = await fillSelectedPrompt(user, 'Create three independent drafts.');
+    const quantity = within(editor).getByRole('spinbutton', { name: '生成数量' });
+    expect(quantity).toHaveValue(1);
+    fireEvent.change(quantity, { target: { value: '3' } });
+    await user.click(within(editor).getByRole('button', { name: '生成' }));
+    await screen.findByText('已完成 3 份生成');
+    expect(flowNodes()).toHaveLength(3);
+    expect(nodeRunRequestCounts.size).toBe(3);
+    expect([...nodeRunRequestCounts.values()]).toEqual([1, 1, 1]);
+    const root = canvas.nodes.find((node) => node.data.generationBatch?.index === 0)!;
+    expect(root.data.generationCount).toBe(3);
+    expect(root.data.generationBatchExpanded).toBe(false);
+    for (const node of canvas.nodes) {
+      expect(node.data.generationBatch?.rootNodeId).toBe(root.id);
+      expect(runPromptOf(node.id)).toBe('Create three independent drafts.');
+      expect(lastNodeRunBody(node.id).parameters).not.toHaveProperty('generationCount');
+    }
+    await user.click(screen.getByRole('button', { name: /展开.*结果/ }));
+    fireEvent.keyDown(window, { key: 's', ctrlKey: true });
+    await waitFor(() =>
+      expect(canvas.nodes.find((node) => node.id === root.id)?.data.generationBatchExpanded).toBe(
+        true,
+      ),
+    );
+    expect(within(editor).getByRole('button', { name: '生成' })).toBeEnabled();
+  });
+
+  it('批量提交断网后停止后续 POST，保留已提交结果且不自动重试', async () => {
+    const { user } = await renderCanvas();
+    await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
+    const editor = await fillSelectedPrompt(user, 'Create independent drafts.');
+    fireEvent.change(within(editor).getByRole('spinbutton', { name: '生成数量' }), {
+      target: { value: '3' },
+    });
+    const originalFetch = fetchMock.getMockImplementation()!;
+    let attempts = 0;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).match(/\/nodes\/[^/]+\/runs$/) && init?.method === 'POST') {
+        attempts += 1;
+        if (attempts === 2) throw new TypeError('Network disconnected');
+      }
+      return originalFetch(input, init);
+    });
+    await user.click(within(editor).getByRole('button', { name: '生成' }));
+    await screen.findByText(/已完成 1\/3 份.*已停止后续提交/);
+    expect(attempts).toBe(2);
+    expect(nodeRunRequestCounts.size).toBe(1);
+    expect(flowNodes()).toHaveLength(3);
+    expect(within(editor).getByRole('button', { name: '生成' })).toBeEnabled();
+  });
+
+  it('批量首份请求等待期间撤销新增节点，不再提交已移除的后续份数', async () => {
+    const { user } = await renderCanvas();
+    await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
+    const editor = await fillSelectedPrompt(user, 'Create independent drafts.');
+    fireEvent.change(within(editor).getByRole('spinbutton', { name: '生成数量' }), {
+      target: { value: '3' },
+    });
+    const originalFetch = fetchMock.getMockImplementation()!;
+    let releaseFirst!: () => void;
+    const firstRequest = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let attempts = 0;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).match(/\/nodes\/[^/]+\/runs$/) && init?.method === 'POST') {
+        attempts += 1;
+        if (attempts === 1) await firstRequest;
+      }
+      return originalFetch(input, init);
+    });
+    await user.click(within(editor).getByRole('button', { name: '生成' }));
+    await waitFor(() => expect(attempts).toBe(1));
+    expect(flowNodes()).toHaveLength(3);
+    await user.click(screen.getByRole('button', { name: '画布空白' }));
+    fireEvent.keyDown(window, { key: 'z', ctrlKey: true });
+    await waitFor(() => expect(flowNodes()).toHaveLength(1));
+    await act(async () => {
+      releaseFirst();
+    });
+    await screen.findByText(/已完成 1\/3 份.*生成节点已移除/);
+    expect(attempts).toBe(1);
+    expect(nodeRunRequestCounts.size).toBe(1);
+    expect(flowNodes()).toHaveLength(1);
+  });
+
+  it('批量首份请求等待期间删除首节点，保留兄弟节点但停止后续提交', async () => {
+    const { user } = await renderCanvas();
+    await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
+    const editor = await fillSelectedPrompt(user, 'Create independent drafts.');
+    fireEvent.change(within(editor).getByRole('spinbutton', { name: '生成数量' }), {
+      target: { value: '3' },
+    });
+    const originalFetch = fetchMock.getMockImplementation()!;
+    let releaseFirst!: () => void;
+    const firstResponse = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let attempts = 0;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const response = await originalFetch(input, init);
+      if (String(input).match(/\/nodes\/[^/]+\/runs$/) && init?.method === 'POST') {
+        attempts += 1;
+        if (attempts === 1) await firstResponse;
+      }
+      return response;
+    });
+    await user.click(within(editor).getByRole('button', { name: '生成' }));
+    await waitFor(() => expect(attempts).toBe(1));
+    const root = canvas.nodes.find((node) => node.data.generationBatch?.index === 0)!;
+    expect(flowNodes()).toHaveLength(3);
+    await user.click(screen.getByRole('button', { name: '删除节点：文字生成节点' }));
+    await waitFor(() => expect(flowNodes()).toHaveLength(2));
+    await act(async () => {
+      releaseFirst();
+    });
+    await screen.findByText(/已完成 1\/3 份.*生成节点已移除/);
+    expect(attempts).toBe(1);
+    expect(nodeRunRequestCounts.size).toBe(1);
+    expect(nodeRunRequestCounts.get(root.id)).toBe(1);
+    expect(
+      fetchMock.mock.calls.some(([input]) => String(input).endsWith(`/v1/runs/run_${root.id}_0`)),
+    ).toBe(true);
+    expect(flowNodes()).toHaveLength(2);
+    expect(findNodeByLabel('文字生成节点')).toBeUndefined();
+  });
+
   it('重新进入同一项目时通过持久化运行记录回填文本、图片和视频产物', async () => {
     const { user } = await renderCanvas();
 
@@ -1178,8 +1308,8 @@ describe('画布编辑器交互', () => {
     await restored.user.click(within(restoredNode).getByRole('button', { name: '查看节点信息' }));
     const info = await screen.findByRole('dialog', { name: '节点信息' });
     expect(within(info).getByRole('alert')).toHaveTextContent('新请求失败，旧结果保留');
-    expect(within(info).getByText('12.4 s')).toBeVisible();
-    expect(within(info).queryByText('3.0 s')).not.toBeInTheDocument();
+    expect(within(info).getByText('12.4秒')).toBeVisible();
+    expect(within(info).queryByText('3秒')).not.toBeInTheDocument();
     await restored.user.click(within(info).getByRole('button', { name: /查看生成提示词/ }));
     const dialog = await screen.findByRole('dialog', { name: '生成提示词' });
     expect(await within(dialog).findByText('旧结果的生成摘要')).toBeVisible();
@@ -1245,9 +1375,9 @@ describe('画布编辑器交互', () => {
 
     // 空组：没有选区时在视口中心创建固定尺寸区域。
     await user.click(screen.getByRole('button', { name: '新建分组' }));
-    const group = await screen.findByText('组 1');
+    const group = await screen.findByRole('button', { name: /^组 1/ });
     expect(group).toBeTruthy();
-    expect(screen.getByText('0')).toBeTruthy();
+    expect(within(group).getByText('0')).toBeTruthy();
 
     // 建两个节点并框选成组。
     await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
@@ -1258,7 +1388,7 @@ describe('画布编辑器交互', () => {
     await user.keyboard('{Control>}a{/Control}');
     await user.click(screen.getByRole('button', { name: '新建分组' }));
 
-    await waitFor(() => expect(screen.getByText('组 2')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: /^组 2/ })).toBeInTheDocument());
     expect(screen.getAllByText('2').length).toBeGreaterThan(0);
 
     // 组只表达布局：不进入运行图，也不改变节点数量。
@@ -1266,9 +1396,11 @@ describe('画布编辑器交互', () => {
     expect(textNode).toBeTruthy();
 
     // 解散后成员与连线保留，区域移除。
-    await user.click(screen.getByText('组 2'));
+    await user.click(screen.getByRole('button', { name: /^组 2/ }));
     await user.click(screen.getByLabelText('解散组 组 2'));
-    await waitFor(() => expect(screen.queryByText('组 2')).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: /^组 2/ })).not.toBeInTheDocument(),
+    );
     expect(flowNodes()).toHaveLength(2);
   });
 
@@ -1317,7 +1449,7 @@ describe('画布编辑器交互', () => {
     await user.click(clearCanvasItem);
     await waitFor(() => expect(confirmSpy).toHaveBeenCalledTimes(1));
     expect(flowNodes()).toHaveLength(1);
-    expect(screen.getByText('组 1')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^组 1/ })).toBeInTheDocument();
     confirmSpy.mockRestore();
   });
 
@@ -1782,7 +1914,7 @@ describe('画布编辑器交互', () => {
     await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
     const source = findNodeByLabel('reference.png')!;
     expect(within(source).getByRole('button', { name: '修改图片：reference.png' })).toBeVisible();
-    expect(within(source).getByRole('button', { name: '修改图片：reference.png' })).toBeDisabled();
+    expect(within(source).getByRole('button', { name: '修改图片：reference.png' })).toBeEnabled();
     await user.click(source);
     const sourceEditor = await screen.findByRole('region', { name: /生成设置$/ });
     expect(within(sourceEditor).getByRole('button', { name: '生成' })).toBeVisible();
@@ -1792,18 +1924,25 @@ describe('画布编辑器交互', () => {
     expect(within(textNode).queryByRole('button', { name: /^修改图片/ })).toBeNull();
   });
 
-  it('无提示词时修改图片不建节点也不发请求', async () => {
+  it('无提示词时修改图片只创建引用草稿，不发运行请求', async () => {
     const { user } = await renderCanvas();
     await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
     const source = findNodeByLabel('reference.png')!;
     const button = within(source).getByRole('button', { name: '修改图片：reference.png' });
-    expect(button).toBeDisabled();
+    expect(button).toBeEnabled();
     await user.click(button);
-    expect(flowNodes()).toHaveLength(1);
+    await waitFor(() => expect(flowNodes()).toHaveLength(2));
+    expect(screen.getByTestId('flow-edge')).toHaveAttribute(
+      'data-target-handle',
+      'input:imageEdit',
+    );
+    const editor = await screen.findByRole('region', { name: /图片修改设置$/ });
+    expect(within(editor).getByRole('textbox', { name: '图片修改要求' })).toHaveValue('');
+    expect(within(editor).getByRole('button', { name: '生成' })).toBeDisabled();
     expect(nodeRunRequestCounts.size).toBe(0);
   });
 
-  it('修改图片不复制提示词，但立刻用父提示词发请求，结果只写入新节点', async () => {
+  it('修改图片不复制提示词或自动运行，手动生成后结果只写入新节点', async () => {
     const { user } = await renderCanvas();
 
     await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
@@ -1833,8 +1972,7 @@ describe('画布编辑器交互', () => {
     expect(edge).toHaveAttribute('data-target', createdId);
     expect(edge).toHaveAttribute('data-target-handle', 'input:imageEdit');
 
-    await waitFor(() => expect(nodeRunRequestCounts.get(createdId)).toBe(1));
-    expect(runPromptOf(createdId)).toContain('换成夜景');
+    expect(nodeRunRequestCounts.size).toBe(0);
     await waitFor(() => {
       const saved = canvas.nodes.find((node) => node.id === createdId);
       expect(saved?.data.imageEditSource).toMatchObject({
@@ -1858,6 +1996,17 @@ describe('画布编辑器交互', () => {
         'src',
         expect.stringContaining('access_token=synthetic-unit'),
       );
+    });
+    const editor = screen.getByRole('region', { name: /图片修改设置$/ });
+    await user.type(within(editor).getByRole('textbox', { name: '图片修改要求' }), '改成水彩风格');
+    await user.click(within(editor).getByRole('button', { name: '生成' }));
+    await waitFor(() => expect(nodeRunRequestCounts.get(createdId)).toBe(1));
+    expect(nodeRunRequestCounts.get(sourceId)).toBeUndefined();
+    expect(runPromptOf(createdId)).toContain('改成水彩风格');
+    expect(runPromptOf(createdId)).not.toContain('换成夜景');
+    expect(canvas.nodes.find((node) => node.id === sourceId)).toMatchObject({
+      position: originalSource.position,
+      data: originalSource.data,
     });
   });
 
@@ -1949,6 +2098,13 @@ describe('画布编辑器交互', () => {
       return node!;
     });
     const editNodeId = editNodeElement.getAttribute('data-id')!;
+    const editor = screen.getByRole('region', { name: `${editLabel}图片修改设置` });
+    const prompt = within(editor).getByRole('textbox', { name: '图片修改要求' });
+    expect(prompt).toHaveValue('');
+    expect(nodeRunRequestCounts.size).toBe(0);
+    expect(within(editor).getByRole('button', { name: '生成' })).toBeDisabled();
+    await user.type(prompt, '第一次尝试');
+    await user.click(within(editor).getByRole('button', { name: '生成' }));
     await waitFor(() => expect(nodeRunRequestCounts.get(editNodeId)).toBe(1));
     expect(runPromptOf(editNodeId)).toContain('第一次尝试');
     await waitFor(() => {
@@ -1956,10 +2112,8 @@ describe('画布编辑器交互', () => {
       expect(within(node!).getByRole('alert')).toHaveTextContent('供应商拒绝：内容不合规');
     });
 
-    const editor = screen.getByRole('region', { name: `${editLabel}图片修改设置` });
-    const prompt = within(editor).getByRole('textbox', { name: '图片修改要求' });
-    expect(prompt).toHaveValue('');
-    expect(within(editor).getByRole('button', { name: '生成' })).toBeDisabled();
+    expect(prompt).toHaveValue('第一次尝试');
+    expect(within(editor).getByRole('button', { name: '生成' })).toBeEnabled();
     expect(screen.getAllByTestId('flow-edge')).toHaveLength(1);
     expect(canvas.nodes.find((node) => node.id === sourceId)).toMatchObject({
       position: sourceBefore.position,
@@ -1991,7 +2145,7 @@ describe('画布编辑器交互', () => {
     await user.click(within(source).getByRole('button', { name: '修改图片：reference.png' }));
     const editor = await screen.findByRole('region', { name: /图片修改设置$/ });
     expect(within(editor).getByRole('textbox', { name: '图片修改要求' })).toHaveValue('');
-    await waitFor(() => expect(nodeRunRequestCounts.size).toBeGreaterThan(0));
+    expect(nodeRunRequestCounts.size).toBe(0);
 
     await user.click(screen.getByRole('button', { name: '画布空白' }));
     await waitFor(() =>

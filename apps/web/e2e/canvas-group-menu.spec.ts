@@ -161,7 +161,7 @@ for (const zoom of [0.5, 1, 2]) {
     const card = page.getByRole('region', { name: '素材组分组信息' });
     await expect(card).toBeVisible();
     await expect(card).toContainText('2 个节点');
-    await expect(card.locator('.canvas-group-hover-members')).toHaveText('文字1图片1');
+    await expect(card.locator('.canvas-group-hover-members')).toHaveText('文字1图片1音频0视频0');
     await page.screenshot({ path: testInfo.outputPath(`group-card-${zoom}.png`) });
     await drag(page, name, 40, 30);
     await save(page);
@@ -191,6 +191,105 @@ for (const zoom of [0.5, 1, 2]) {
     expect(fixture.errors).toEqual([]);
   });
 }
+
+test('组内空白与悬浮栏可拖动，成员和端口仍可交互，解散保留成员', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  const fixture = await installFixture(page);
+  const group = page.locator('.canvas-group[data-group-id="example-group"]');
+  const before = (await group.boundingBox())!;
+  const zoom = await page
+    .locator('.react-flow__viewport')
+    .evaluate((element) => new DOMMatrix(getComputedStyle(element).transform).a);
+  const point = { x: before.x + before.width / 2, y: before.y + before.height / 2 };
+  const hit = await page.evaluate(
+    ({ x, y }) =>
+      document.elementFromPoint(x, y)?.closest('.canvas-group')?.getAttribute('data-group-id'),
+    point,
+  );
+  expect(hit).toBe('example-group');
+  await drag(page, group, 40, 30);
+  await expect(group).toHaveClass(/is-selected/);
+  await expect(group.locator('.canvas-group-name')).toHaveAttribute('aria-pressed', 'true');
+  const card = page.getByRole('region', { name: '素材组分组信息' });
+  await expect(card).toBeVisible();
+  await page.mouse.move(1870, 960);
+  await expect(card).toBeVisible();
+  await drag(page, card.getByRole('button', { name: '拖动组 素材组' }), 20, 10);
+  await save(page);
+  const moved = fixture.canvas();
+  expect(moved.groups![0]!.position.x).toBeCloseTo(130 + 60 / zoom, 1);
+  expect(moved.groups![0]!.position.y).toBeCloseTo(120 + 40 / zoom, 1);
+  for (const id of ['text-member', 'image-member']) {
+    const initial = initialCanvas.nodes.find((node) => node.id === id)!;
+    const node = moved.nodes.find((node) => node.id === id)!;
+    expect(node.position.x).toBeCloseTo(initial.position.x + 60 / zoom, 1);
+    expect(node.position.y).toBeCloseTo(initial.position.y + 40 / zoom, 1);
+  }
+  const text = page.locator('.react-flow__node[data-id="text-member"]');
+  await text.click();
+  await expect(text).toHaveClass(/selected/);
+  await expect(group).not.toHaveClass(/is-selected/);
+  await expect(group.locator('.canvas-group-name')).toHaveAttribute('aria-pressed', 'false');
+  const port = text.locator('.react-flow__handle').first();
+  const portHit = await port.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    const target = document.elementFromPoint(
+      bounds.x + bounds.width / 2,
+      bounds.y + bounds.height / 2,
+    );
+    return {
+      isHandle: Boolean(target?.closest('.react-flow__handle')),
+      target: target?.className,
+      layers: [
+        '.react-flow',
+        '.react-flow__renderer',
+        '.react-flow__pane',
+        '.react-flow__viewport',
+      ].map((selector) => {
+        const layer = document.querySelector(selector)!;
+        return { selector, zIndex: getComputedStyle(layer).zIndex };
+      }),
+    };
+  });
+  expect(portHit.isHandle, JSON.stringify(portHit)).toBe(true);
+  const output = (await text.locator('.react-flow__handle.source').boundingBox())!;
+  const input = (await page
+    .locator('.react-flow__node[data-id="image-member"] .flow-node-handle--top')
+    .boundingBox())!;
+  await page.mouse.move(output.x + output.width / 2, output.y + output.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(input.x + input.width / 2, input.y + input.height / 2, { steps: 8 });
+  await page.mouse.up();
+  await expect(page.locator('.react-flow__edge')).toHaveCount(1);
+  await save(page);
+  expect(fixture.canvas().edges[0]).toMatchObject({
+    sourceNodeId: 'text-member',
+    targetNodeId: 'image-member',
+    targetHandle: 'input:prompt',
+  });
+  const selectableArea = (await group.boundingBox())!;
+  await group.click({
+    position: { x: selectableArea.width - 14, y: selectableArea.height - 14 },
+  });
+  await expect(group).toHaveClass(/is-selected/);
+  await expect(text).not.toHaveClass(/selected/);
+  await expect(page.getByRole('region', { name: '文字成员生成设置' })).toHaveCount(0);
+  await drag(page, group.locator('.canvas-group-handle-se'), 35, 25);
+  await save(page);
+  expect(fixture.canvas().groups![0]!.width).toBeCloseTo(580 + 35 / zoom, 1);
+  expect(fixture.canvas().groups![0]!.height).toBeCloseTo(270 + 25 / zoom, 1);
+  expect(fixture.canvas().nodes.map((node) => node.position)).toEqual(
+    moved.nodes.map((node) => node.position),
+  );
+  await page.screenshot({ path: testInfo.outputPath('group-blank-drag-and-toolbar.png') });
+  await card.getByRole('button', { name: '解散组 素材组' }).click();
+  await expect(group).toHaveCount(0);
+  await expect(page.locator('.react-flow__node')).toHaveCount(3);
+  await save(page);
+  expect(fixture.canvas().groups).toEqual([]);
+  expect(fixture.canvas().edges).toHaveLength(1);
+  expect(fixture.errors).toEqual([]);
+});
 
 for (const viewport of [
   { width: 1366, height: 900 },

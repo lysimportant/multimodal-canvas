@@ -635,23 +635,14 @@ export function nodeTimingDuration(timing: NodeTiming, now: number): NodeTimingD
 }
 
 /**
- * 格式化耗时用于悬浮卡片显示。短耗时保留一位小数的秒，长耗时使用
- * 「分 秒」中文格式，单位为毫秒。
+ * 格式化节点耗时，统一使用秒并至多保留一位小数，不转为分或小时。
  *
  * @param milliseconds 非负毫秒数。
- * @returns 例如 `12.4 s`、`1.2 分` 或 `2 分 08 秒`。
+ * @returns 例如 `12.4秒`、`120秒`；无效或负数输入返回空字符串。
  */
 export function formatNodeDuration(milliseconds: number): string {
   if (!Number.isFinite(milliseconds) || milliseconds < 0) return '';
-  if (milliseconds < 60_000) return `${(milliseconds / 1000).toFixed(1)} s`;
-  const totalSeconds = Math.round(milliseconds / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  if (minutes >= 60) {
-    const hours = Math.floor(minutes / 60);
-    return `${hours} 小时 ${String(minutes % 60).padStart(2, '0')} 分`;
-  }
-  return seconds === 0 ? `${minutes} 分` : `${minutes} 分 ${String(seconds).padStart(2, '0')} 秒`;
+  return `${Number((milliseconds / 1000).toFixed(1))}秒`;
 }
 
 function parseTimingInstant(value: string | undefined): number | undefined {
@@ -777,6 +768,36 @@ export function imageEditCapability(
 /** 图片编辑被明确禁用或输入不符合约束时的稳定错误码，前端与 API 共用。 */
 export const IMAGE_EDIT_UNSUPPORTED_CODE = 'IMAGE_EDIT_UNSUPPORTED';
 
+/** 单次节点批量生成的产品上限；每份输出分别执行，不代表 Provider 的批量能力。 */
+export const GENERATION_COUNT_MAX = 20;
+
+/** 未显式设置数量的历史节点始终只生成一份，避免修改偏好扩大已有任务。 */
+export const DEFAULT_GENERATION_COUNT = 1;
+
+/** 判断生成数量是否为 1 至产品上限之间的整数，不截断或四舍五入用户输入。 */
+export function isValidGenerationCount(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= DEFAULT_GENERATION_COUNT &&
+    value <= GENERATION_COUNT_MAX
+  );
+}
+
+/**
+ * 读取节点的单次生成数量；旧节点缺省为 1，非法显式值不得启动生成。
+ * @param data 节点数据，数量是本地任务编排字段，不发送给 Provider。
+ * @returns 本次操作应生成的份数，范围为 1 至 20。
+ * @throws RangeError 显式数量不是范围内的整数。
+ */
+export function getNodeGenerationCount(data: { generationCount?: unknown }): number {
+  if (data.generationCount === undefined) return DEFAULT_GENERATION_COUNT;
+  if (!isValidGenerationCount(data.generationCount)) {
+    throw new RangeError(`生成数量必须为 1 至 ${GENERATION_COUNT_MAX} 的整数`);
+  }
+  return data.generationCount;
+}
+
 export const nodeDataSchema = z.object({
   label: z.string().min(1),
   mediaType: mediaTypeSchema,
@@ -802,6 +823,21 @@ export const nodeDataSchema = z.object({
    * 参数由对应 Provider 按已支持的字段映射，未配置时沿用模型默认值。
    */
   parameters: z.record(z.unknown()).optional(),
+  /** 单次操作生成的份数，缺省为 1；仅用于任务编排，不写入 Provider 参数。 */
+  generationCount: z.number().int().min(1).max(GENERATION_COUNT_MAX).optional(),
+  /** 批量结果所属卡牌组，仅用于画布展示编排，不参与 Provider 参数或生成数量计算。 */
+  generationBatch: z
+    .object({
+      /** 同一批生成结果共享的非空分组标识。 */
+      id: z.string().min(1),
+      /** 批次起始节点标识，用于关联画布上的卡牌组。 */
+      rootNodeId: z.string().min(1),
+      /** 结果在批次内的零起始序号。 */
+      index: z.number().int().min(0),
+    })
+    .optional(),
+  /** 批量卡牌组是否展开；缺省由画布采用收起状态，仅用于展示编排。 */
+  generationBatchExpanded: z.boolean().optional(),
   /**
    * 模型支持的推理强度标识。不同模型的能力名称可能不同（例如
    * `low`、`high`、`xhigh` 或 `max`），因此只校验为非空字符串。

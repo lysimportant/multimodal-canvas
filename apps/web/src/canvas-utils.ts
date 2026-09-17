@@ -762,7 +762,7 @@ export function pasteCanvasClipboard(
       id,
       selected: true,
       position: { x: node.position.x + offset, y: node.position.y + offset },
-      data: remapPromptMentionIds(node.data, createId),
+      data: remapPromptMentionIds(structuredClone(node.data), createId),
     });
   });
   const edges = clipboard.edges.map((edge) => ({
@@ -771,6 +771,25 @@ export function pasteCanvasClipboard(
     source: idMap.get(edge.source) ?? edge.source,
     target: idMap.get(edge.target) ?? edge.target,
   }));
+  // 粘贴批次使用新的身份；未复制首节点的零散成员必须独立显示。
+  const batchIds = new Map<string, string>();
+  for (const node of nodes) {
+    const batch = node.data.generationBatch;
+    if (!batch) continue;
+    const rootNodeId = idMap.get(batch.rootNodeId);
+    if (!rootNodeId) {
+      delete node.data.generationBatch;
+      delete node.data.generationBatchExpanded;
+      continue;
+    }
+    const key = `${batch.id}:${batch.rootNodeId}`;
+    let id = batchIds.get(key);
+    if (!id) {
+      id = `batch_copy_${createId()}`;
+      batchIds.set(key, id);
+    }
+    node.data.generationBatch = { ...batch, id, rootNodeId };
+  }
   // 整组复制重建组与成员 ID，位置与成员节点保持同一位移。
   const groups = (clipboard.groups ?? []).map((group) => ({
     ...structuredClone(group),

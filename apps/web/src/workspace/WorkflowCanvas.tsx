@@ -43,6 +43,11 @@ import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
 import { getNewNodeDimensions } from '../canvas-utils';
 import { collectConnectedPromptAssets } from './connected-prompt-assets';
 import { resolveImageEditSourcePreview } from './image-edit-source-preview';
+import {
+  GenerationBatchViewContext,
+  projectGenerationBatches,
+  reconcileGenerationBatchChanges,
+} from './generation-batch-view';
 import type { NodeRunTarget } from './fork-generate-node';
 import type { ClearActionCounts } from './ClearCanvasMenu';
 import { CanvasGroupLayer } from './CanvasGroupLayer';
@@ -149,6 +154,8 @@ export type WorkflowCanvasProps = {
   busy: boolean;
   background: CanvasBackground;
   onNodesChange: OnNodesChange<AssetFlowNode>;
+  /** 批量结果首节点的展开状态，由 App 负责历史记录和持久化。 */
+  onBatchExpandedChange?: (rootNodeId: string, expanded: boolean) => void;
   onEdgesChange: OnEdgesChange<FlowEdge>;
   onConnect: (connection: Connection) => void;
   onNodeDragStart: () => void;
@@ -174,6 +181,8 @@ export type WorkflowCanvasProps = {
   /** 提示词资源条点击上传后，把文件收成项目资源并回写提及。 */
   onUploadResource?: (file: File) => Promise<Asset>;
   onParametersChange?: (value: Record<string, unknown>, nodeId?: string) => void;
+  /** 每次生成的独立结果数量，不进入供应商 parameters。 */
+  onGenerationCountChange?: (value: number, nodeId?: string) => void;
   onCompletionActionChange?: (value: VideoCompletionAction, nodeId?: string) => void;
   onCompletionTargetNodeIdChange?: (value: string | undefined, nodeId?: string) => void;
   onVideoModeChange?: (value: VideoMode, nodeId?: string) => void;
@@ -259,6 +268,7 @@ export function WorkflowCanvas({
   busy,
   background,
   onNodesChange,
+  onBatchExpandedChange,
   onEdgesChange,
   onConnect,
   onNodeDragStart,
@@ -276,6 +286,7 @@ export function WorkflowCanvas({
   onPromptDocumentChange,
   onUploadResource,
   onParametersChange,
+  onGenerationCountChange,
   onCompletionActionChange,
   onCompletionTargetNodeIdChange,
   onVideoModeChange,
@@ -328,8 +339,21 @@ export function WorkflowCanvas({
   const [contextMenu, setContextMenu] = useState<CanvasContextMenuTarget | null>(null);
   const [videoImageRolePicker, setVideoImageRolePicker] =
     useState<VideoInputRolePickerTarget | null>(null);
-  /** 选中节点进入输入编辑；资产来源节点同样可以填写提示词并生成。 */
-  const quickEditorNode = selectedNode;
+  /** 批量折叠只投影显示坐标，不修改真实节点与连线。 */
+  const batchProjection = useMemo(() => projectGenerationBatches(nodes, edges), [nodes, edges]);
+  const batchContext = useMemo(
+    () => ({ views: batchProjection.views, onExpandedChange: onBatchExpandedChange }),
+    [batchProjection.views, onBatchExpandedChange],
+  );
+  /** 收起后的后方卡牌不能继续显示输入编辑器。 */
+  const quickEditorNode =
+    selectedNode && !batchProjection.views.get(selectedNode.id)?.hidden ? selectedNode : null;
+  /** React Flow 只接收显示坐标；历史记录和保存始终接收真实坐标。 */
+  const handleNodesChange = useCallback<OnNodesChange<AssetFlowNode>>(
+    (changes) =>
+      onNodesChange(reconcileGenerationBatchChanges(changes, nodes, batchProjection.views)),
+    [batchProjection.views, nodes, onNodesChange],
+  );
   /** 连接线外观；路径形态与特效互相独立，选择任一都不会重置另一个。 */
   const edgeAppearance = useMemo<CanvasEdgeAppearance>(
     () => ({ pathStyle: edgePathStyle, effect: edgeEffect }),
@@ -657,98 +681,100 @@ export function WorkflowCanvas({
                       <NodeImageEditContext.Provider value={onEditImage ?? null}>
                         <NodePromptContext.Provider value={onOpenRequestPrompt ?? null}>
                           <NodeQuickEditorIdContext.Provider value={quickEditorNode?.id ?? null}>
-                            <CanvasEdgeAppearanceProvider appearance={edgeAppearance}>
-                              {/* 组区域层在 React Flow 之下：只显示布局，不遮挡端口、连线与节点交互。 */}
-                              <CanvasGroupLayer
-                                groups={groups}
-                                nodes={nodes}
-                                viewport={viewport}
-                                {...(dropTargetGroupId ? { dropTargetGroupId } : {})}
-                                {...(selectedGroupId ? { selectedGroupId } : {})}
-                                {...(onSelectGroup
-                                  ? { onSelectGroup: (id) => onSelectGroup(id) }
-                                  : {})}
-                                {...(onRenameGroup ? { onRenameGroup } : {})}
-                                {...(onDissolveGroup ? { onDissolveGroup } : {})}
-                                {...(onTranslateGroup ? { onTranslateGroup } : {})}
-                                {...(onResizeGroup ? { onResizeGroup } : {})}
-                                {...(onGroupInteractionStart ? { onGroupInteractionStart } : {})}
-                              />
-                              <ReactFlow
-                                style={{ zIndex: 'auto' }}
-                                nodes={nodes}
-                                edges={edges}
-                                nodeTypes={nodeTypes}
-                                edgeTypes={canvasEdgeTypes}
-                                connectionLineComponent={connectionLineComponent}
-                                onNodesChange={onNodesChange}
-                                onEdgesChange={onEdgesChange}
-                                onConnect={handleFlowConnect}
-                                onConnectStart={(_event, params) => {
-                                  connectionStartRef.current = params;
-                                }}
-                                onConnectEnd={handleConnectEnd}
-                                onNodeDragStart={onNodeDragStart}
-                                onNodeDrag={
-                                  onNodeDrag
-                                    ? (event, node) => onNodeDrag(event, node as AssetFlowNode)
-                                    : undefined
-                                }
-                                onNodeDragStop={
-                                  onNodeDragStop
-                                    ? (event, node) => onNodeDragStop(event, node as AssetFlowNode)
-                                    : undefined
-                                }
-                                onMove={reportCanvasCenter}
-                                onDrop={handleDrop}
-                                onDragOver={(event) => {
-                                  event.preventDefault();
-                                  event.dataTransfer.dropEffect = 'copy';
-                                }}
-                                onNodeClick={(_, node) => onNodeSelect(node as AssetFlowNode)}
-                                onNodeContextMenu={(event, node) =>
-                                  handleNodeContextMenu(event, node as AssetFlowNode)
-                                }
-                                onPaneContextMenu={handlePaneContextMenu}
-                                onPaneClick={() => {
-                                  if (suppressPaneClickRef.current) {
-                                    suppressPaneClickRef.current = false;
-                                    return;
+                            <GenerationBatchViewContext.Provider value={batchContext}>
+                              <CanvasEdgeAppearanceProvider appearance={edgeAppearance}>
+                                {/* 组空白区域可选中、拖动，端口、连线与节点仍在组上层交互。 */}
+                                <CanvasGroupLayer
+                                  groups={groups}
+                                  nodes={nodes}
+                                  viewport={viewport}
+                                  {...(dropTargetGroupId ? { dropTargetGroupId } : {})}
+                                  {...(selectedGroupId ? { selectedGroupId } : {})}
+                                  {...(onSelectGroup
+                                    ? { onSelectGroup: (id) => onSelectGroup(id) }
+                                    : {})}
+                                  {...(onRenameGroup ? { onRenameGroup } : {})}
+                                  {...(onDissolveGroup ? { onDissolveGroup } : {})}
+                                  {...(onTranslateGroup ? { onTranslateGroup } : {})}
+                                  {...(onResizeGroup ? { onResizeGroup } : {})}
+                                  {...(onGroupInteractionStart ? { onGroupInteractionStart } : {})}
+                                />
+                                <ReactFlow
+                                  nodes={batchProjection.nodes}
+                                  edges={batchProjection.edges}
+                                  nodeTypes={nodeTypes}
+                                  edgeTypes={canvasEdgeTypes}
+                                  connectionLineComponent={connectionLineComponent}
+                                  onNodesChange={handleNodesChange}
+                                  onEdgesChange={onEdgesChange}
+                                  onConnect={handleFlowConnect}
+                                  onConnectStart={(_event, params) => {
+                                    connectionStartRef.current = params;
+                                  }}
+                                  onConnectEnd={handleConnectEnd}
+                                  onNodeDragStart={onNodeDragStart}
+                                  onNodeDrag={
+                                    onNodeDrag
+                                      ? (event, node) => onNodeDrag(event, node as AssetFlowNode)
+                                      : undefined
                                   }
-                                  setContextMenu(null);
-                                  onClearNodeSelection();
-                                }}
-                                fitView
-                                minZoom={FIT_VIEW_MIN_ZOOM}
-                                fitViewOptions={{
-                                  padding: 0.3,
-                                  maxZoom: 1.1,
-                                  minZoom: FIT_VIEW_MIN_ZOOM,
-                                }}
-                                connectionLineStyle={{ stroke: '#18794e', strokeWidth: 2 }}
-                                defaultEdgeOptions={{
-                                  type: 'default',
-                                  animated: false,
-                                }}
-                                proOptions={{ hideAttribution: true }}
-                              >
-                                {background !== 'blank' && (
-                                  <Background
-                                    color="#cbd5d0"
-                                    gap={background === 'lines' ? 28 : 24}
-                                    size={background === 'cross' ? 7 : 1.2}
-                                    variant={
-                                      background === 'lines'
-                                        ? BackgroundVariant.Lines
-                                        : background === 'cross'
-                                          ? BackgroundVariant.Cross
-                                          : BackgroundVariant.Dots
+                                  onNodeDragStop={
+                                    onNodeDragStop
+                                      ? (event, node) =>
+                                          onNodeDragStop(event, node as AssetFlowNode)
+                                      : undefined
+                                  }
+                                  onMove={reportCanvasCenter}
+                                  onDrop={handleDrop}
+                                  onDragOver={(event) => {
+                                    event.preventDefault();
+                                    event.dataTransfer.dropEffect = 'copy';
+                                  }}
+                                  onNodeClick={(_, node) => onNodeSelect(node as AssetFlowNode)}
+                                  onNodeContextMenu={(event, node) =>
+                                    handleNodeContextMenu(event, node as AssetFlowNode)
+                                  }
+                                  onPaneContextMenu={handlePaneContextMenu}
+                                  onPaneClick={() => {
+                                    if (suppressPaneClickRef.current) {
+                                      suppressPaneClickRef.current = false;
+                                      return;
                                     }
-                                  />
-                                )}
-                                <Controls showInteractive={false} position="bottom-right" />
-                              </ReactFlow>
-                            </CanvasEdgeAppearanceProvider>
+                                    setContextMenu(null);
+                                    onClearNodeSelection();
+                                  }}
+                                  fitView
+                                  minZoom={FIT_VIEW_MIN_ZOOM}
+                                  fitViewOptions={{
+                                    padding: 0.3,
+                                    maxZoom: 1.1,
+                                    minZoom: FIT_VIEW_MIN_ZOOM,
+                                  }}
+                                  connectionLineStyle={{ stroke: '#18794e', strokeWidth: 2 }}
+                                  defaultEdgeOptions={{
+                                    type: 'default',
+                                    animated: false,
+                                  }}
+                                  proOptions={{ hideAttribution: true }}
+                                >
+                                  {background !== 'blank' && (
+                                    <Background
+                                      color="#cbd5d0"
+                                      gap={background === 'lines' ? 28 : 24}
+                                      size={background === 'cross' ? 7 : 1.2}
+                                      variant={
+                                        background === 'lines'
+                                          ? BackgroundVariant.Lines
+                                          : background === 'cross'
+                                            ? BackgroundVariant.Cross
+                                            : BackgroundVariant.Dots
+                                      }
+                                    />
+                                  )}
+                                  <Controls showInteractive={false} position="bottom-right" />
+                                </ReactFlow>
+                              </CanvasEdgeAppearanceProvider>
+                            </GenerationBatchViewContext.Provider>
                           </NodeQuickEditorIdContext.Provider>
                         </NodePromptContext.Provider>
                       </NodeImageEditContext.Provider>
@@ -781,6 +807,11 @@ export function WorkflowCanvas({
           onParametersChange={
             onParametersChange
               ? (value) => onParametersChange(value, quickEditorNode.id)
+              : undefined
+          }
+          onGenerationCountChange={
+            onGenerationCountChange
+              ? (value) => onGenerationCountChange(value, quickEditorNode.id)
               : undefined
           }
           onCompletionActionChange={

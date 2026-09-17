@@ -13,6 +13,7 @@ import {
   Input,
 } from '@multimodal-canvas/ui';
 import type { MediaType, ModelSelection } from '@multimodal-canvas/domain';
+import { GENERATION_COUNT_MAX, isValidGenerationCount } from '@multimodal-canvas/domain';
 import { apiFetch, getAuthSessionGeneration } from '../auth-client';
 import type { AiCredentialSummary } from '../contracts';
 import { mediaIcons, mediaLabels } from './contracts';
@@ -212,6 +213,20 @@ export function SettingsPanel({
   const canvasTheme = useWorkspacePreferences((state) => state.canvasTheme);
   const autoReversePrompt = useWorkspacePreferences((state) => state.autoReversePrompt);
   const setAutoReversePrompt = useWorkspacePreferences((state) => state.setAutoReversePrompt);
+  const defaultGenerationCount = useWorkspacePreferences((state) => state.defaultGenerationCount);
+  const setDefaultGenerationCount = useWorkspacePreferences(
+    (state) => state.setDefaultGenerationCount,
+  );
+  /** 数量草稿保留输入过程；只有合法整数立即保存到浏览器偏好。 */
+  const [defaultGenerationCountDraft, setDefaultGenerationCountDraft] = useState(
+    String(defaultGenerationCount),
+  );
+  useEffect(() => {
+    setDefaultGenerationCountDraft(String(defaultGenerationCount));
+  }, [defaultGenerationCount]);
+  const defaultGenerationCountInvalid = !isValidGenerationCount(
+    Number(defaultGenerationCountDraft),
+  );
   const showImageEditSourceCard = useWorkspacePreferences((state) => state.showImageEditSourceCard);
   const setShowImageEditSourceCard = useWorkspacePreferences(
     (state) => state.setShowImageEditSourceCard,
@@ -1249,6 +1264,30 @@ export function SettingsPanel({
                   单节点显式配置 &gt; 项目类型默认 &gt; 全局类型默认。
                 </p>
               </div>
+              <label className="settings-field settings-generation-count-field">
+                <span>默认生成数量</span>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  max={GENERATION_COUNT_MAX}
+                  step={1}
+                  value={defaultGenerationCountDraft}
+                  aria-invalid={defaultGenerationCountInvalid}
+                  onChange={(event) => {
+                    const value = event.currentTarget.value;
+                    setDefaultGenerationCountDraft(value);
+                    if (isValidGenerationCount(Number(value))) {
+                      setDefaultGenerationCount(Number(value));
+                    }
+                  }}
+                />
+              </label>
+              {defaultGenerationCountInvalid && (
+                <p className="settings-field-error" role="status">
+                  默认生成数量必须为 1 至 {GENERATION_COUNT_MAX} 的整数
+                </p>
+              )}
               <div className="settings-scope" role="group" aria-label="默认模型编辑范围">
                 <Button
                   type="button"

@@ -229,7 +229,7 @@ for (const viewport of [
     const before = await node.boundingBox();
     await node.hover();
     const toolbar = node.getByRole('group', { name: '节点操作：图片结果' });
-    await expect(toolbar.getByText('12.4 s')).toBeVisible();
+    await expect(toolbar.getByText('12.4秒')).toBeVisible();
     const trigger = toolbar.getByRole('button', { name: '查看生成提示词：图片结果' });
     await expect(trigger).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath('node-toolbar.png') });
@@ -241,7 +241,7 @@ for (const viewport of [
     await prompt.getByRole('button', { name: '关闭生成提示词' }).click();
     await toolbar.getByRole('button', { name: '查看节点信息' }).click();
     const info = page.getByRole('dialog', { name: '节点信息', exact: true });
-    await expect(info.getByText('12.4 s')).toBeVisible();
+    await expect(info.getByText('12.4秒')).toBeVisible();
     await expect(info.getByRole('button', { name: '查看生成提示词：图片结果' })).toBeVisible();
     await info.getByRole('button', { name: '关闭节点信息' }).click();
 

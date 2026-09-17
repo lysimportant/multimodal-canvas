@@ -163,6 +163,77 @@ afterEach(() => {
 });
 
 describe('NodeQuickEditor', () => {
+  it.each(['text', 'image', 'audio', 'video'] as const)(
+    '%s 节点显示独立生成数量，历史节点默认一份且不使用新的全局偏好',
+    (mediaType) => {
+      useWorkspacePreferences.getState().setDefaultGenerationCount(3);
+      const onGenerationCountChange = vi.fn();
+      const onParametersChange = vi.fn();
+      renderRaw(
+        <NodeQuickEditor
+          {...makeProps({
+            node: { ...imageNode, type: mediaType, data: { ...imageNode.data, mediaType } },
+            onGenerationCountChange,
+            onParametersChange,
+          })}
+        />,
+      );
+      const input = screen.getByRole('spinbutton', { name: '生成数量' });
+      expect(input).toHaveValue(1);
+      fireEvent.change(input, { target: { value: '2' } });
+      expect(onGenerationCountChange).toHaveBeenCalledWith(2);
+      expect(onParametersChange).not.toHaveBeenCalled();
+    },
+  );
+
+  it('非法数量只保留草稿并阻止运行，修正后恢复可运行状态', () => {
+    const onGenerationCountChange = vi.fn();
+    renderRaw(<NodeQuickEditor {...makeProps({ onGenerationCountChange })} />);
+    const input = screen.getByRole('spinbutton', { name: '生成数量' });
+    for (const value of ['', '0', '-1', '1.5', '21']) {
+      fireEvent.change(input, { target: { value } });
+      expect(input).toHaveAttribute('aria-invalid', 'true');
+      expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+    }
+    expect(onGenerationCountChange).not.toHaveBeenCalled();
+    fireEvent.change(input, { target: { value: '3' } });
+    expect(onGenerationCountChange).toHaveBeenCalledWith(3);
+    expect(input).toHaveAttribute('aria-invalid', 'false');
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+  });
+
+  it('视频快捷时长包含 15 秒，自定义秒数保留其他参数且拒绝非正整数', async () => {
+    const user = userEvent.setup();
+    const onParametersChange = vi.fn();
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          node: { ...videoNode, data: { ...videoNode.data, parameters: { resolution: '720p' } } },
+          onParametersChange,
+        })}
+      />,
+    );
+    const duration = screen.getByRole('spinbutton', { name: '自定义秒数' });
+    const trigger = screen.getByRole('combobox', { name: '时长（秒）：未设置' });
+    await user.click(trigger);
+    expect(screen.getByRole('option', { name: '15 秒' })).toBeVisible();
+    expect(screen.queryByRole('option', { name: '16 秒' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('option', { name: '15 秒' }));
+    expect(onParametersChange).toHaveBeenLastCalledWith({ resolution: '720p', duration: 15 });
+    expect(duration).toHaveValue(15);
+    fireEvent.change(duration, { target: { value: '17' } });
+    expect(onParametersChange).toHaveBeenLastCalledWith({ resolution: '720p', duration: 17 });
+    for (const value of ['0', '-1', '1.5', String(Number.MAX_SAFE_INTEGER + 1)]) {
+      fireEvent.change(duration, { target: { value } });
+      expect(duration).toHaveAttribute('aria-invalid', 'true');
+      expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+    }
+    expect(onParametersChange).toHaveBeenCalledTimes(2);
+    fireEvent.change(duration, { target: { value: '' } });
+    expect(onParametersChange).toHaveBeenLastCalledWith({ resolution: '720p' });
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+  });
+
   it('点击参数按钮打开面板，点选清晰度后外点关闭', async () => {
     const user = userEvent.setup();
     const onParametersChange = vi.fn();
@@ -1424,7 +1495,8 @@ describe('NodeQuickEditor', () => {
         }
       />,
     );
-    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
+    expect(screen.queryByRole('spinbutton', { name: '宽度（像素）' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('spinbutton', { name: '高度（像素）' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '生成' })).toHaveAttribute(
       'title',

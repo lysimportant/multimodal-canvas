@@ -1,5 +1,17 @@
-.canvas-group .canvas-group-header {
+.canvas-group-layer .canvas-group {
+  cursor: grab;
+  pointer-events: auto;
+  touch-action: none;
   user-select: none;
+}
+
+.canvas-group-layer .canvas-group:active {
+  cursor: grabbing;
+}
+
+/* 标题随画布缩放，避免低倍率下固定屏幕高度侵入成员节点的端口和命中范围。 */
+.canvas-group .canvas-group-header {
+  transform-origin: top left;
 }
 
 .canvas-group .canvas-group-name {
@@ -12,24 +24,29 @@
 }
 
 .canvas-group .canvas-group-name > svg,
-.canvas-group .canvas-group-name > small,
-.canvas-group .canvas-group-actions {
+.canvas-group .canvas-group-name > small {
   flex-shrink: 0;
 }
 
 .canvas-group-hover-card {
+  align-items: center;
   background: var(--mc-surface, #fff);
-  border: 1px solid var(--mc-border-strong, #d3dce0);
-  border-radius: 7px;
-  box-shadow: 0 10px 28px var(--mc-shadow, rgb(29 46 39 / 18%));
+  border: 1px solid var(--mc-border, #e2e7eb);
+  border-radius: 6px;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
   color: var(--mc-text, #18212f);
+  display: flex;
+  flex-wrap: wrap;
   font-size: 12px;
+  gap: 10px;
   max-height: calc(100vh - 16px);
+  max-width: calc(100vw - 16px);
+  min-height: 46px;
   overflow: auto;
-  padding: 10px;
+  padding: 8px 12px;
   pointer-events: auto;
   position: fixed;
-  width: min(264px, calc(100vw - 16px));
+  width: max-content;
   z-index: 74;
 }
 
@@ -37,11 +54,12 @@
   align-items: center;
   display: flex;
   gap: 7px;
+  min-width: 0;
 }
 
 .canvas-group-hover-heading > strong {
-  flex: 1;
   font-size: 12px;
+  max-width: 160px;
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -53,50 +71,65 @@
 }
 
 .canvas-group-hover-members {
-  display: grid;
-  gap: 8px 16px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  margin-top: 10px;
+  border-left: 1px solid var(--mc-border, #e2e7eb);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding-left: 10px;
 }
 
 .canvas-group-hover-members > span {
   align-items: center;
   color: var(--mc-text-muted, #687386);
   display: flex;
-  gap: 6px;
+  gap: 5px;
+  white-space: nowrap;
 }
 
 .canvas-group-hover-members b {
   color: var(--mc-text, #18212f);
+  font-variant-numeric: tabular-nums;
   font-weight: 600;
-  margin-left: auto;
 }
 
 .canvas-group-hover-actions {
-  border-top: 1px solid var(--mc-border, #e2e7eb);
+  border-left: 1px solid var(--mc-border, #e2e7eb);
   display: flex;
   gap: 6px;
-  justify-content: flex-end;
-  margin-top: 10px;
-  padding-top: 8px;
+  padding-left: 10px;
 }
 
-.canvas-group-hover-actions button {
+.canvas-group-hover-card button {
   align-items: center;
   background: transparent;
-  border: 1px solid var(--mc-border, #e2e7eb);
-  border-radius: 5px;
+  border: 0;
+  border-radius: 4px;
   color: var(--mc-text-muted, #687386);
   cursor: pointer;
   display: inline-flex;
+  flex-shrink: 0;
+  font: inherit;
+  font-weight: 650;
+  gap: 6px;
   height: 28px;
   justify-content: center;
-  padding: 0;
-  width: 28px;
+  padding: 0 6px;
+  white-space: nowrap;
 }
 
-.canvas-group-hover-actions button:hover,
-.canvas-group-hover-actions button:focus-visible {
-  background: var(--mc-accent-soft, #edf7f2);
+.canvas-group-hover-card .canvas-group-hover-drag {
+  cursor: grab;
+  padding: 0;
+  touch-action: none;
+  width: 24px;
+}
+
+.canvas-group-hover-card .canvas-group-hover-drag:active {
+  cursor: grabbing;
+}
+
+.canvas-group-hover-card button:hover,
+.canvas-group-hover-card button:focus-visible {
+  background: var(--mc-surface-muted, #f3f6f4);
   color: var(--mc-accent-strong, #12613e);
 }

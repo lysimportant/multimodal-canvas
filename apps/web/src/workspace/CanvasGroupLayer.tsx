@@ -1,5 +1,5 @@
 import { mediaTypes, type CanvasGroup } from '@multimodal-canvas/domain';
-import { Group, Type, Trash2, Ungroup } from 'lucide-react';
+import { GripVertical, Group, Type, Ungroup } from 'lucide-react';
 import {
   useEffect,
   useLayoutEffect,
@@ -30,12 +30,12 @@ type CanvasGroupLayerProps = {
   viewport: CanvasGroupViewport;
   /** 当前正在拖拽节点时预高亮的组。 */
   dropTargetGroupId?: string;
-  /** 当前选中的组，用于显示操作按钮。 */
+  /** 当前选中的组，用于保持悬浮卡片并显示调整手柄。 */
   selectedGroupId?: string;
   onSelectGroup?: (groupId: string | undefined) => void;
   onRenameGroup?: (groupId: string, name: string) => void;
   onDissolveGroup?: (groupId: string) => void;
-  /** 组标题条相对上一指针事件的位移，单位为画布像素。 */
+  /** 组拖动相对上一指针事件的位移，单位为画布像素。 */
   onTranslateGroup?: (groupId: string, delta: { x: number; y: number }) => void;
   /** 组外框尺寸变化，单位为画布像素；左上角/右上角拖动同时给出新的原点。 */
   onResizeGroup?: (
@@ -62,14 +62,15 @@ type DragState = {
   pointerId: number;
   /** 越过位移阈值后才记录历史，单击选择不产生空撤销步骤。 */
   started: boolean;
+  /** 保持拖动期间的指针归属，移出组范围后仍能继续移动。 */
+  captureTarget: HTMLElement;
 };
 
 /**
  * 画布布局区域层。
  *
- * 组是画布布局，不是第五种媒体节点：这里只渲染区域、标题条与调整手柄，
- * 不提供输入输出端口，也不参与连线或运行。整层使用 `pointer-events: none`，
- * 只有标题条与手柄接收指针事件，避免遮挡端口与连线。
+ * 组是画布布局，不是第五种媒体节点，不参与连线或运行。
+ * 空白区域与标题均可选中、拖动；节点和连线保持在组上层并优先接收指针事件。
  */
 export function CanvasGroupLayer({
   groups,
@@ -85,6 +86,7 @@ export function CanvasGroupLayer({
   onGroupInteractionStart,
 }: CanvasGroupLayerProps) {
   const dragRef = useRef<DragState | undefined>(undefined);
+  const groupElementsRef = useRef(new Map<string, HTMLDivElement>());
   const [editingGroupId, setEditingGroupId] = useState<string | undefined>(undefined);
   const [draftName, setDraftName] = useState('');
   const [hoveredGroup, setHoveredGroup] = useState<{ groupId: string; anchor: HTMLElement }>();
@@ -98,8 +100,25 @@ export function CanvasGroupLayer({
   /** 指针与焦点均离开后延迟关闭，便于点击卡片中的组操作。 */
   const closeHoverCardLater = () => {
     keepHoverCardOpen();
-    hoverCloseTimer.current = setTimeout(() => setHoveredGroup(undefined), 120);
+    hoverCloseTimer.current = setTimeout(() => {
+      const anchor = selectedGroupId ? groupElementsRef.current.get(selectedGroupId) : undefined;
+      setHoveredGroup(
+        selectedGroupId && anchor && editingGroupId !== selectedGroupId
+          ? { groupId: selectedGroupId, anchor }
+          : undefined,
+      );
+    }, 120);
   };
+
+  useLayoutEffect(() => {
+    keepHoverCardOpen();
+    const anchor = selectedGroupId ? groupElementsRef.current.get(selectedGroupId) : undefined;
+    setHoveredGroup(
+      selectedGroupId && anchor && editingGroupId !== selectedGroupId
+        ? { groupId: selectedGroupId, anchor }
+        : undefined,
+    );
+  }, [editingGroupId, selectedGroupId]);
 
   useEffect(
     () => () => {
@@ -116,8 +135,8 @@ export function CanvasGroupLayer({
         if (Math.hypot(event.clientX - drag.startClientX, event.clientY - drag.startClientY) < 3)
           return;
         drag.started = true;
+        drag.captureTarget.setPointerCapture?.(drag.pointerId);
         onGroupInteractionStart?.();
-        setHoveredGroup(undefined);
       }
       const deltaX = (event.clientX - drag.startClientX) / viewport.zoom;
       const deltaY = (event.clientY - drag.startClientY) / viewport.zoom;
@@ -146,10 +165,18 @@ export function CanvasGroupLayer({
       });
     };
     const onUp = (event: PointerEvent) => {
-      if (dragRef.current?.pointerId !== event.pointerId) return;
+      const drag = dragRef.current;
+      if (drag?.pointerId !== event.pointerId) return;
+      if (drag.captureTarget.hasPointerCapture?.(drag.pointerId)) {
+        drag.captureTarget.releasePointerCapture(drag.pointerId);
+      }
       dragRef.current = undefined;
     };
     const onBlur = () => {
+      const drag = dragRef.current;
+      if (drag?.captureTarget.hasPointerCapture?.(drag.pointerId)) {
+        drag.captureTarget.releasePointerCapture(drag.pointerId);
+      }
       dragRef.current = undefined;
     };
     window.addEventListener('pointermove', onMove);
@@ -173,7 +200,8 @@ export function CanvasGroupLayer({
     kind: DragState['kind'],
     corner?: DragState['corner'],
   ) => {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || (dragRef.current && dragRef.current.pointerId !== event.pointerId))
+      return;
     event.stopPropagation();
     if (kind === 'resize') event.preventDefault();
     onSelectGroup?.(group.id);
@@ -188,6 +216,7 @@ export function CanvasGroupLayer({
       originY: group.position.y,
       pointerId: event.pointerId,
       started: false,
+      captureTarget: event.currentTarget,
       ...(corner ? { corner } : {}),
     };
   };
@@ -196,6 +225,7 @@ export function CanvasGroupLayer({
   const startRename = (group: CanvasGroup) => {
     keepHoverCardOpen();
     setHoveredGroup(undefined);
+    onSelectGroup?.(group.id);
     setDraftName(group.name);
     setEditingGroupId(group.id);
   };
@@ -216,6 +246,10 @@ export function CanvasGroupLayer({
         return (
           <div
             key={group.id}
+            ref={(element) => {
+              if (element) groupElementsRef.current.set(group.id, element);
+              else groupElementsRef.current.delete(group.id);
+            }}
             className={`canvas-group${selected ? ' is-selected' : ''}${
               isDropTarget ? ' is-drop-target' : ''
             }`}
@@ -227,31 +261,28 @@ export function CanvasGroupLayer({
               width: group.width * viewport.zoom,
               height: group.height * viewport.zoom,
             }}
-            onPointerDown={(event) => {
-              event.stopPropagation();
-              onSelectGroup?.(group.id);
+            onPointerDown={(event) => startDrag(event, group, 'move')}
+            onPointerEnter={(event) => {
+              keepHoverCardOpen();
+              if (!dragRef.current && editingGroupId !== group.id) {
+                setHoveredGroup({ groupId: group.id, anchor: event.currentTarget });
+              }
+            }}
+            onPointerLeave={closeHoverCardLater}
+            onFocus={(event) => {
+              keepHoverCardOpen();
+              if (editingGroupId !== group.id) {
+                setHoveredGroup({ groupId: group.id, anchor: event.currentTarget });
+              }
+            }}
+            onBlur={closeHoverCardLater}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') setHoveredGroup(undefined);
             }}
           >
             <div
               className="canvas-group-header"
-              onPointerDown={(event) => startDrag(event, group, 'move')}
-              onPointerEnter={(event) => {
-                keepHoverCardOpen();
-                if (!dragRef.current && editingGroupId !== group.id) {
-                  setHoveredGroup({ groupId: group.id, anchor: event.currentTarget });
-                }
-              }}
-              onPointerLeave={closeHoverCardLater}
-              onFocus={(event) => {
-                keepHoverCardOpen();
-                if (editingGroupId !== group.id) {
-                  setHoveredGroup({ groupId: group.id, anchor: event.currentTarget });
-                }
-              }}
-              onBlur={closeHoverCardLater}
-              onKeyDown={(event) => {
-                if (event.key === 'Escape') setHoveredGroup(undefined);
-              }}
+              style={{ width: group.width, transform: `scale(${viewport.zoom})` }}
             >
               {editingGroupId === group.id ? (
                 <input
@@ -271,39 +302,16 @@ export function CanvasGroupLayer({
                 <button
                   type="button"
                   className="canvas-group-name"
-                  title="双击重命名"
+                  title="拖动组，双击重命名"
+                  aria-pressed={selected}
                   onClick={() => onSelectGroup?.(group.id)}
                   onDoubleClick={() => startRename(group)}
                 >
-                  <Type size={12} aria-hidden="true" />
+                  <Group size={12} aria-hidden="true" />
                   <span>{group.name}</span>
                   <small>{group.nodeIds.length}</small>
                 </button>
               )}
-              {selected ? (
-                <span className="canvas-group-actions">
-                  <button
-                    type="button"
-                    className="canvas-group-action"
-                    aria-label={`重命名组 ${group.name}`}
-                    title="重命名"
-                    onPointerDown={(event) => event.stopPropagation()}
-                    onClick={() => startRename(group)}
-                  >
-                    <Type size={12} aria-hidden="true" />
-                  </button>
-                  <button
-                    type="button"
-                    className="canvas-group-action canvas-group-action-destructive"
-                    aria-label={`解散组 ${group.name}`}
-                    title="解散组（保留成员）"
-                    onPointerDown={(event) => event.stopPropagation()}
-                    onClick={() => onDissolveGroup?.(group.id)}
-                  >
-                    <Ungroup size={12} aria-hidden="true" />
-                  </button>
-                </span>
-              ) : null}
             </div>
             {selected ? (
               <>
@@ -316,9 +324,6 @@ export function CanvasGroupLayer({
                     onPointerDown={(event) => startDrag(event, group, 'resize', corner)}
                   />
                 ))}
-                <span className="canvas-group-hint" aria-hidden="true">
-                  <Trash2 size={10} /> 解散保留成员
-                </span>
               </>
             ) : null}
           </div>
@@ -333,6 +338,7 @@ export function CanvasGroupLayer({
           onEnter={keepHoverCardOpen}
           onLeave={closeHoverCardLater}
           onClose={() => setHoveredGroup(undefined)}
+          onDrag={(event, group) => startDrag(event, group, 'move')}
           onRename={onRenameGroup ? startRename : undefined}
           onDissolve={
             onDissolveGroup
@@ -349,9 +355,9 @@ export function CanvasGroupLayer({
 }
 
 /**
- * 组标题的悬浮信息与常用操作；使用 portal，避免被媒体节点层或组边界裁切。
+ * 组的悬浮信息与常用操作；使用 portal，避免被媒体节点层或组边界裁切。
  * @param group 当前组；成员类型以 nodes 中仍存在的节点为准。
- * @param anchor 标题元素，用于视口内定位；不会改变画布或节点尺寸。
+ * @param anchor 组元素，用于视口内定位；不会改变画布或节点尺寸。
  */
 function CanvasGroupHoverCard({
   group,
@@ -361,6 +367,7 @@ function CanvasGroupHoverCard({
   onEnter,
   onLeave,
   onClose,
+  onDrag,
   onRename,
   onDissolve,
 }: {
@@ -371,6 +378,7 @@ function CanvasGroupHoverCard({
   onEnter: () => void;
   onLeave: () => void;
   onClose: () => void;
+  onDrag: (event: ReactPointerEvent<HTMLElement>, group: CanvasGroup) => void;
   onRename?: (group: CanvasGroup) => void;
   onDissolve?: (groupId: string) => void;
 }) {
@@ -385,7 +393,13 @@ function CanvasGroupHoverCard({
       if (!card) return;
       const preferredTop = bounds.top - card.height - 6;
       setPosition({
-        left: Math.max(8, Math.min(bounds.left, window.innerWidth - card.width - 8)),
+        left: Math.max(
+          8,
+          Math.min(
+            bounds.left + bounds.width / 2 - card.width / 2,
+            window.innerWidth - card.width - 8,
+          ),
+        ),
         top: Math.max(
           8,
           Math.min(
@@ -423,6 +437,15 @@ function CanvasGroupHoverCard({
         onClose();
       }}
     >
+      <button
+        type="button"
+        className="canvas-group-hover-drag"
+        aria-label={`拖动组 ${group.name}`}
+        title="拖动整组"
+        onPointerDown={(event) => onDrag(event, group)}
+      >
+        <GripVertical size={18} aria-hidden="true" />
+      </button>
       <div className="canvas-group-hover-heading">
         <Group size={15} aria-hidden="true" />
         <strong>{group.name}</strong>
@@ -431,7 +454,6 @@ function CanvasGroupHoverCard({
       <div className="canvas-group-hover-members">
         {mediaTypes.map((mediaType) => {
           const count = members.filter((node) => node.data.mediaType === mediaType).length;
-          if (!count) return null;
           const Icon = mediaIcons[mediaType];
           return (
             <span key={mediaType}>
@@ -448,21 +470,23 @@ function CanvasGroupHoverCard({
           {onRename ? (
             <button
               type="button"
-              aria-label="重命名此组"
+              aria-label={`重命名组 ${group.name}`}
               title="重命名"
               onClick={() => onRename(group)}
             >
               <Type size={14} aria-hidden="true" />
+              <span>重命名</span>
             </button>
           ) : null}
           {onDissolve ? (
             <button
               type="button"
-              aria-label="解散此组"
+              aria-label={`解散组 ${group.name}`}
               title="解散组（保留成员）"
               onClick={() => onDissolve(group.id)}
             >
               <Ungroup size={14} aria-hidden="true" />
+              <span>解散</span>
             </button>
           ) : null}
         </div>
