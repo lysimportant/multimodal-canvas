@@ -1,5 +1,6 @@
 import {
   LoaderCircle,
+  History,
   PanelLeftClose,
   PanelLeftOpen,
   Pencil,
@@ -16,6 +17,7 @@ import { useRef, useState, type DragEvent, type KeyboardEvent, type RefObject } 
 import type { Asset } from '@multimodal-canvas/domain';
 import { useImeDraft } from '../ime';
 import { AssetPreview, AssetViewerDialog } from './AssetPreview';
+import { AssetGenerationHistory } from './AssetGenerationHistory';
 import { CompactSelect } from './CompactSelect';
 import { formatBytes, mediaLabels, type AssetFilter } from './contracts';
 
@@ -68,6 +70,8 @@ export function ResourcePanel({
   const inputRef = uploadInputRef ?? localInputRef;
   /** 当前正在预览的资源；关闭对话框后清空。 */
   const [previewAsset, setPreviewAsset] = useState<Asset | null>(null);
+  /** 版本历史独立于原节点，资源保留时仍可读取生成说明。 */
+  const [historyAsset, setHistoryAsset] = useState<Asset | null>(null);
   /** 刚结束 HTML5 拖拽时忽略随后的 click，避免误开预览。 */
   const draggedRef = useRef(false);
 
@@ -244,6 +248,16 @@ export function ResourcePanel({
               <div className="asset-card-actions">
                 <button
                   type="button"
+                  id={`asset-history-${asset.id}`}
+                  className="asset-add-button"
+                  aria-label={`生成记录 ${asset.name}`}
+                  title="生成记录"
+                  onClick={() => setHistoryAsset(asset)}
+                >
+                  <History size={14} />
+                </button>
+                <button
+                  type="button"
                   className="asset-add-button"
                   aria-label={
                     asset.status === 'archived' ? `恢复 ${asset.name}` : `添加 ${asset.name} 到画布`
@@ -319,6 +333,13 @@ export function ResourcePanel({
           onOpenChange={(open) => {
             if (!open) setPreviewAsset(null);
           }}
+        />
+      ) : null}
+      {historyAsset ? (
+        <AssetGenerationHistory
+          key={historyAsset.id}
+          asset={historyAsset}
+          onClose={() => setHistoryAsset(null)}
         />
       ) : null}
     </aside>

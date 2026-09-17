@@ -32,12 +32,17 @@ import {
   type RunResultArchiver,
   type RunService,
 } from './runs';
-import { databaseRunId, type PrismaRunPersistence } from './run-persistence';
+import {
+  databaseRunId,
+  type PrismaRunPersistence,
+  type RequestPromptStore,
+} from './run-persistence';
 import {
   canvasDocumentSchema,
   imageEditSourceSchema,
   mediaTypes,
   promptDocumentSchema,
+  renderPromptDocument,
   type CanvasDocument,
   type FrozenImageEditCapability,
   type FrozenPromptMention,
@@ -136,7 +141,7 @@ export type BuildAppOptions = {
   webhookEventStore?: WebhookEventStore;
   /** Optional durable lifecycle persistence for provider callbacks and prompt records. */
   runPersistence?: Pick<PrismaRunPersistence, 'upsertProviderJob' | 'updateRun'> &
-    Partial<Pick<PrismaRunPersistence, 'listRequestPromptRecords' | 'getRequestPromptRecord'>>;
+    Partial<RequestPromptStore>;
   mediaMetadataExtractor?: MediaMetadataExtractor;
   mediaDerivativeGenerator?: MediaDerivativeGenerator;
   uploadSessionStore?: UploadSessionStore;
@@ -1216,6 +1221,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       );
     }
   }
+  const requestPromptStore: Partial<RequestPromptStore> =
+    options.runPersistence ?? (runService instanceof MemoryRunService ? runService : {});
   const userExists = options.userExists;
   const settingsStore: AiSettingsStoreLike = options.settingsStore ?? new AiSettingsStore();
   const webhookEventStore: WebhookEventStore =
@@ -1280,10 +1287,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     // Browser downloads need to read the server-provided attachment name.
     // These are metadata headers only; credentials remain in the body/auth
     // boundary and are never exposed here.
-    exposedHeaders: ['content-disposition', 'content-length'],
+    exposedHeaders: ['content-disposition', 'content-length', 'x-server-time'],
   });
   app.register(multipart, {
     limits: { files: 1, fileSize: MAX_UPLOAD_BYTES },
+  });
+  app.addHook('onSend', async (_request, reply, payload) => {
+    reply.header('x-server-time', new Date().toISOString());
+    return payload;
   });
   app.addHook('onRequest', async (request) => {
     requestSpans.set(
@@ -2318,6 +2329,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         'cache-control': 'no-cache, no-transform',
         connection: 'keep-alive',
         'content-type': 'text/event-stream; charset=utf-8',
+        'x-server-time': new Date().toISOString(),
         'x-accel-buffering': 'no',
       });
 
@@ -2712,7 +2724,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       if (!(await projectStore.get(run.projectId, projectScope(requestPrincipals, request)))) {
         return reply.code(404).send({ error: 'run not found' });
       }
-      const records = (await options.runPersistence?.listRequestPromptRecords?.(run.id)) ?? [];
+      const records = (await requestPromptStore.listRequestPromptRecords?.(run.id)) ?? [];
       return { records };
     },
   );
@@ -2726,7 +2738,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       if (!(await projectStore.get(run.projectId, projectScope(requestPrincipals, request)))) {
         return reply.code(404).send({ error: 'run not found' });
       }
-      const record = await options.runPersistence?.getRequestPromptRecord?.(
+      const record = await requestPromptStore.getRequestPromptRecord?.(
         run.id,
         request.params.recordId,
       );
@@ -3072,6 +3084,91 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           contentUrl: `/v1/assets/${request.params.assetId}/versions/${version.version}/content`,
         })),
       };
+    },
+  );
+
+  app.get<{ Params: { assetId: string; version: string } }>(
+    '/v1/assets/:assetId/versions/:version/request-prompts',
+    async (request, reply) => {
+      const version = Number(request.params.version);
+      if (!/^\d+$/.test(request.params.version) || !Number.isSafeInteger(version) || version < 1) {
+        return reply.code(400).send({ error: 'invalid asset version' });
+      }
+      const scope = assetScope(requestPrincipals, request);
+      const asset = await assetStore.get(request.params.assetId, scope);
+      const assetVersion = asset
+        ? (await assetStore.listVersions(asset.id, scope)).find(
+            (entry) => entry.version === version,
+          )
+        : undefined;
+      if (!asset || !assetVersion) {
+        return reply.code(404).send({ error: 'asset version not found' });
+      }
+      const records =
+        (await requestPromptStore.listAssetRequestPromptRecords?.(asset.id, version)) ?? [];
+      const record = records.at(-1);
+      const historicalRunId = assetVersion.metadata?.runId;
+      const run = record
+        ? await runService.get(record.runId)
+        : typeof historicalRunId === 'string'
+          ? await runService.get(historicalRunId)
+          : undefined;
+      const historicalNode =
+        !record &&
+        run?.result?.asset?.assetId === asset.id &&
+        run.result.asset.version === version &&
+        (await projectStore.get(run.projectId, projectScope(requestPrincipals, request)))
+          ? run.snapshot.nodes.find((node) => node.id === run.targetNodeId)
+          : undefined;
+      const historicalText = historicalNode?.data.promptDocument
+        ? renderPromptDocument(historicalNode.data.promptDocument)
+        : historicalNode?.data.prompt;
+      const timingNodeId = record?.nodeId ?? historicalNode?.id;
+      const timing = timingNodeId ? run?.nodeTimings?.[timingNodeId] : undefined;
+      return {
+        records,
+        ...(historicalText
+          ? { inputSnapshot: { text: historicalText, nodeId: historicalNode!.id, runId: run!.id } }
+          : {}),
+        ...(timing ? { timing } : {}),
+        ...((record || historicalNode) && run?.nodeTimings ? { nodeTimings: run.nodeTimings } : {}),
+      };
+    },
+  );
+
+  /** 仅编辑资产版本的手动摘要；原始请求文本与结果身份不可由客户端覆盖。 */
+  app.patch<{ Params: { assetId: string; version: string; recordId: string } }>(
+    '/v1/assets/:assetId/versions/:version/request-prompts/:recordId',
+    async (request, reply) => {
+      const version = Number(request.params.version);
+      const body = z
+        .object({ summary: z.string().max(2_000) })
+        .strict()
+        .safeParse(request.body);
+      if (
+        !body.success ||
+        !/^\d+$/.test(request.params.version) ||
+        !Number.isSafeInteger(version) ||
+        version < 1
+      ) {
+        return reply.code(400).send({ error: 'invalid request prompt summary' });
+      }
+      const scope = assetScope(requestPrincipals, request);
+      const asset = await assetStore.get(request.params.assetId, scope);
+      if (
+        !asset ||
+        !(await assetStore.listVersions(asset.id, scope)).some((entry) => entry.version === version)
+      ) {
+        return reply.code(404).send({ error: 'asset version not found' });
+      }
+      const record = await requestPromptStore.updateAssetRequestPromptSummary?.(
+        asset.id,
+        version,
+        request.params.recordId,
+        body.data.summary,
+      );
+      if (!record) return reply.code(404).send({ error: 'request prompt record not found' });
+      return { record };
     },
   );
 

@@ -103,6 +103,9 @@ async function json(route: Route, body: unknown, status = 200) {
 /** 安装最小 API 合同，保存后的画布及设置在同一浏览器测试内可刷新恢复。 */
 async function installFixture(page: Page) {
   let canvas = structuredClone(initialCanvas);
+  const records = new Map<string, RequestPromptRecord>([
+    ['acceptance-text', structuredClone(promptRecord)],
+  ]);
   let defaults: Record<string, unknown> = {};
   const writes: Array<{ path: string; body: Record<string, unknown> }> = [];
   const errors: string[] = [];
@@ -173,6 +176,8 @@ async function installFixture(page: Page) {
     createdAt: project.createdAt,
     updatedAt: '2026-09-16T10:00:12.400Z',
   };
+  const runs = new Map<string, unknown>([[run.id, run]]);
+  const timings = new Map([[promptRecord.assetId!, run.nodeTimings['generated-text']]]);
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => {
     if (message.type() === 'error') errors.push(message.text());
@@ -215,12 +220,64 @@ async function installFixture(page: Page) {
       }
       return json(route, { defaults });
     }
-    if (path.endsWith('/request-prompts/prompt-record'))
-      return json(route, { record: promptRecord });
-    if (path.endsWith('/request-prompts'))
-      return json(route, { records: [{ id: 'prompt-record', ...promptRecord }] });
-    if (path === `/v1/projects/${project.id}/runs`) return json(route, { runs: [run] });
-    if (path === `/v1/runs/${run.id}`) return json(route, { run });
+    if (path.includes('/request-prompts')) {
+      const assetId = path.startsWith('/v1/assets/') ? path.split('/')[3]! : 'acceptance-text';
+      const record = records.get(assetId);
+      if (!record) return json(route, { records: [] });
+      if (method === 'PATCH') {
+        const summary = request.postDataJSON().summary as string;
+        record.summary = summary;
+        record.summarySource = 'manual';
+      }
+      return path.endsWith('/prompt-record')
+        ? json(route, { record })
+        : json(route, {
+            records: [{ id: 'prompt-record', ...record }],
+            timing: timings.get(assetId),
+          });
+    }
+    if (method === 'POST' && /^\/v1\/nodes\/[^/]+\/runs$/.test(path)) {
+      const nodeId = path.split('/')[3]!;
+      const body = request.postDataJSON();
+      const node = canvas.nodes.find((entry) => entry.id === nodeId)!;
+      const assetId = `generated-${nodeId}`;
+      const timing = { ...run.nodeTimings['generated-text'], nodeId };
+      const generatedRun = {
+        ...run,
+        id: `run-${nodeId}`,
+        targetNodeId: nodeId,
+        modelAlias: body.modelAlias,
+        snapshot: {
+          ...run.snapshot,
+          targetNodeId: nodeId,
+          modelAlias: body.modelAlias,
+          nodes: canvas.nodes,
+          edges: canvas.edges,
+        },
+        result: {
+          ...run.result,
+          targetNodeId: nodeId,
+          asset: { ...run.result.asset, assetId, contentUrl: `/v1/assets/${assetId}/content` },
+        },
+        nodeTimings: { [nodeId]: timing },
+      };
+      records.set(assetId, {
+        ...promptRecord,
+        runId: generatedRun.id,
+        nodeId,
+        assetId,
+        modelAlias: body.modelAlias,
+        parts: [{ order: 0, role: 'user', text: node.data.prompt ?? '' }],
+        summary: undefined,
+      });
+      timings.set(assetId, timing);
+      runs.set(generatedRun.id, generatedRun);
+      return json(route, { run: generatedRun }, 202);
+    }
+    if (path === `/v1/projects/${project.id}/runs`)
+      return json(route, { runs: [...runs.values()] });
+    if (/^\/v1\/runs\/[^/]+$/.test(path))
+      return json(route, { run: runs.get(path.split('/')[3]!) });
     if (path === '/v1/assets')
       return json(route, {
         assets: [
@@ -238,12 +295,29 @@ async function installFixture(page: Page) {
       });
     if (path.endsWith('/access-url'))
       return json(route, { url: path.replace('/access-url', '/content') });
-    if (path === '/v1/assets/acceptance-text/content')
+    if (/^\/v1\/assets\/[^/]+\/content$/.test(path))
       return route.fulfill({
         contentType: 'text/plain',
         body: '午后的阳光落在打开的笔记上。\n这份结果对应旧提示词和 12.4 秒耗时。',
       });
-    if (path.endsWith('/versions')) return json(route, { versions: [] });
+    if (path.endsWith('/versions')) {
+      const assetId = path.split('/')[3]!;
+      return json(route, {
+        versions: records.has(assetId)
+          ? [
+              {
+                id: `${assetId}-version-1`,
+                assetId,
+                version: 1,
+                sizeBytes: 200,
+                createdAt: project.createdAt,
+                contentUrl: `/v1/assets/${assetId}/content?version=1`,
+                metadata: { nodeTiming: timings.get(assetId) },
+              },
+            ]
+          : [],
+      });
+    }
     if (path === '/v1/settings/ai/credentials') return json(route, { credentials });
     if (/\/credentials\/[^/]+\/defaults$/.test(path)) {
       const credential = credentials.find((entry) => entry.id === path.split('/')[5]);
@@ -285,7 +359,15 @@ async function installFixture(page: Page) {
     errors.push(`未声明的 Mock 接口：${method} ${path}`);
     return json(route, { error: '未声明的验收接口' }, 404);
   });
-  return { errors, writes, credentials, settings, canvas: () => canvas, defaults: () => defaults };
+  return {
+    errors,
+    writes,
+    credentials,
+    records,
+    settings,
+    canvas: () => canvas,
+    defaults: () => defaults,
+  };
 }
 
 /** 打开当前项目并等待画布完成首屏恢复。 */
@@ -311,6 +393,30 @@ async function drag(page: Page, locator: Locator, dx: number, dy: number) {
 async function save(page: Page) {
   await page.keyboard.press('Control+s');
   await expect(page.getByRole('status', { name: /已保存/ })).toBeVisible();
+}
+
+/** 通过画布滚轮缩放到指定比例，保持组中心的屏幕锚点不变。 */
+async function zoomCanvas(page: Page, target: number) {
+  const pane = page.locator('.react-flow__pane');
+  const group = await page.locator('.canvas-group').first().boundingBox();
+  const current = await page
+    .locator('.react-flow__viewport')
+    .evaluate((element) => new DOMMatrix(getComputedStyle(element).transform).a);
+  await pane.dispatchEvent('wheel', {
+    deltaY: -Math.log2(target / current) / 0.002,
+    deltaMode: 0,
+    clientX: group!.x + group!.width / 2,
+    clientY: group!.y + group!.height / 2,
+    bubbles: true,
+    cancelable: true,
+  });
+  await expect
+    .poll(() =>
+      page
+        .locator('.react-flow__viewport')
+        .evaluate((element) => new DOMMatrix(getComputedStyle(element).transform).a),
+    )
+    .toBeCloseTo(target, 2);
 }
 
 /** 按 WCAG 相对亮度核对正文；透明背景沿 DOM 向上查找实际底色。 */
@@ -499,6 +605,221 @@ test('连线：五种路径与六种特效独立切换并在刷新后恢复', as
     .toBe('none');
   expect(fixture.errors).toEqual([]);
 });
+
+test('联合流程：独立连接与类型默认、生成、摘要、分组、清理、撤销及刷新', async ({ page }) => {
+  const fixture = await installFixture(page);
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  await openCanvas(page);
+  await page.getByRole('button', { name: '新建分组', exact: true }).click();
+  await expect(page.locator('.canvas-group')).toHaveCount(2);
+  await page.getByRole('button', { name: '打开设置', exact: true }).click();
+  const settings = page.getByRole('dialog', { name: 'AI 连接', exact: true });
+  await settings.getByRole('tab', { name: '节点默认', exact: true }).click();
+  await settings.getByRole('button', { name: '当前项目', exact: true }).click();
+  await settings.getByRole('combobox', { name: '文字生成默认模型' }).fill('mock-text');
+  await page.keyboard.press('Enter');
+  await expect.poll(() => fixture.defaults().text).toBeTruthy();
+  await settings.getByRole('button', { name: '配置图片生成连接' }).click();
+  await settings
+    .getByRole('textbox', { name: '图片生成独立连接 Base URL' })
+    .fill('https://independent.example.test/v1');
+  await settings
+    .getByRole('textbox', { name: '图片生成独立连接 Key', exact: true })
+    .fill('synthetic-independent-key');
+  await settings.getByRole('button', { name: '保存连接', exact: true }).click();
+  await expect.poll(() => fixture.credentials.length).toBe(2);
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: '新建文字生成节点' }).click();
+  await expect(page.getByRole('combobox', { name: '模型：Mock text' })).toBeVisible();
+  const submittedPrompt = 'Summarize the scene: sunlight on a notebook beside the window.';
+  await page.getByRole('textbox', { name: '提示词', exact: true }).fill(submittedPrompt);
+  const response = page.waitForResponse(
+    (entry) =>
+      entry.request().method() === 'POST' &&
+      /\/v1\/nodes\/[^/]+\/runs$/.test(new URL(entry.url()).pathname),
+  );
+  await page.getByRole('button', { name: '生成', exact: true }).click();
+  const created = await (await response).json();
+  expect(fixture.writes.find((entry) => entry.path.endsWith('/runs'))?.body).toMatchObject({
+    modelAlias: 'mock-text',
+    credentialId: 'active-credential',
+  });
+  const node = page.locator(`.react-flow__node[data-id="${created.run.targetNodeId}"]`);
+  await expect(node.getByRole('img', { name: '运行成功' })).toBeVisible();
+  await page.locator('.react-flow__pane').click({ position: { x: 12, y: 12 } });
+  await node.hover();
+  await node.getByRole('button', { name: '查看节点信息' }).click();
+  await page.getByRole('button', { name: /查看生成提示词/ }).click();
+  const prompt = page.getByRole('dialog', { name: '生成提示词' });
+  await expect(prompt.locator('.request-prompt-text')).toHaveText(`[user] ${submittedPrompt}`);
+  await expect(prompt.locator('.node-duration-badge')).toHaveText('12.4 s');
+  await prompt.getByRole('button', { name: '添加摘要', exact: true }).click();
+  const summary = '窗边笔记上的阳光，保持原始场景。';
+  await prompt.getByRole('textbox', { name: '摘要正文' }).fill(summary);
+  await prompt.getByRole('button', { name: '保存摘要', exact: true }).click();
+  await expect(prompt.locator('.request-prompt-summary')).toHaveText(summary);
+  await prompt.getByRole('button', { name: '复制摘要', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(summary);
+  await prompt.getByRole('button', { name: '复制完整提示词', exact: true }).click();
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toBe(`[user] ${submittedPrompt}`);
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('Escape');
+  await page.locator('.react-flow__pane').click({ position: { x: 12, y: 12 } });
+  await drag(
+    page,
+    page.locator('.canvas-group[data-group-id="acceptance-group"] .canvas-group-header'),
+    30,
+    20,
+  );
+  await page.getByRole('button', { name: '清空', exact: true }).hover();
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.getByRole('menuitem', { name: /清空空节点/ }).click();
+  await expect(page.locator('.react-flow__node')).toHaveCount(3);
+  await page.getByRole('button', { name: '画布撤销', exact: true }).click();
+  await expect(page.locator('.react-flow__node')).toHaveCount(4);
+  await save(page);
+  const saved = structuredClone(fixture.canvas());
+  expect(saved.nodes.find((entry) => entry.id === created.run.targetNodeId)?.data).toMatchObject({
+    modelAlias: 'mock-text',
+    credentialId: 'active-credential',
+  });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await expect(page.locator('.react-flow__node')).toHaveCount(4);
+  await expect(page.locator('.canvas-group')).toHaveCount(2);
+  await node.hover();
+  await node.getByRole('button', { name: '查看节点信息' }).click();
+  await page.getByRole('button', { name: /查看生成提示词/ }).click();
+  await expect(prompt.locator('.request-prompt-summary')).toHaveText(summary);
+  await expect(prompt.locator('.node-duration-badge')).toHaveText('12.4 s');
+  expect(fixture.canvas().groups).toEqual(saved.groups);
+  expect(fixture.credentials.find((entry) => entry.active)?.id).toBe('active-credential');
+  expect(fixture.errors).toEqual([]);
+});
+
+test('资源历史：删除原节点后按精确版本切换提示词、摘要、耗时与预览', async ({ page }, testInfo) => {
+  const fixture = await installFixture(page);
+  const versionTwo: RequestPromptRecord = {
+    ...promptRecord,
+    runId: 'second-run',
+    assetVersion: 2,
+    summary: '第二版摘要',
+    parts: [{ order: 0, role: 'user', text: 'Second immutable version prompt.' }],
+  };
+  await page.route('**/v1/assets/acceptance-text/versions', (route) =>
+    json(route, {
+      versions: [1, 2].map((version) => ({
+        id: `version-${version}`,
+        assetId: 'acceptance-text',
+        version,
+        sizeBytes: 200,
+        createdAt: project.createdAt,
+        contentUrl: `/v1/assets/acceptance-text/content?version=${version}`,
+      })),
+    }),
+  );
+  await page.route('**/v1/assets/acceptance-text/versions/2/request-prompts', (route) =>
+    json(route, {
+      records: [{ id: 'prompt-record-two', ...versionTwo }],
+      timing: {
+        nodeId: 'generated-text',
+        startedAt: project.createdAt,
+        finishedAt: '2026-09-16T10:00:26.000Z',
+        outcome: 'succeeded',
+      },
+    }),
+  );
+  await page.route('**/v1/assets/acceptance-text/content?version=2', (route) =>
+    route.fulfill({ contentType: 'text/plain', body: 'Second immutable result.' }),
+  );
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openCanvas(page);
+  const node = page.locator('.react-flow__node[data-id="generated-text"]');
+  await node.hover();
+  await node.getByRole('button', { name: '删除节点：已生成文字', exact: true }).click();
+  await expect(node).toHaveCount(0);
+  await page.getByRole('button', { name: '生成记录 已生成文字.txt', exact: true }).click();
+  const prompt = page.getByRole('dialog', { name: '生成提示词' });
+  await expect(prompt.getByRole('combobox', { name: '结果版本' })).toHaveValue('2');
+  await expect(prompt.locator('.request-prompt-text')).toHaveText(
+    '[user] Second immutable version prompt.',
+  );
+  await expect(prompt.locator('.node-duration-badge')).toHaveText('26.0 s');
+  await prompt.getByRole('button', { name: '编辑摘要', exact: true }).click();
+  await prompt.getByRole('textbox', { name: '摘要正文' }).fill('预览期间保留的未保存草稿');
+  await prompt.getByRole('button', { name: '预览此版本', exact: true }).click();
+  const preview = page.getByRole('dialog', { name: '已生成文字.txt', exact: true });
+  await expect(preview).toContainText('Second immutable result.');
+  await page.screenshot({ path: testInfo.outputPath('asset-history-preview.png') });
+  await preview.getByRole('button', { name: '关闭预览', exact: true }).click();
+  await expect(prompt.getByRole('textbox', { name: '摘要正文' })).toHaveValue(
+    '预览期间保留的未保存草稿',
+  );
+  await prompt.getByRole('button', { name: '取消', exact: true }).click();
+  await prompt.getByRole('combobox', { name: '结果版本' }).selectOption('1');
+  await expect(prompt.locator('.request-prompt-text')).toHaveText(`[user] ${promptText}`);
+  await expect(prompt.locator('.node-duration-badge')).toHaveText('12.4 s');
+  await prompt.getByRole('button', { name: '编辑摘要', exact: true }).click();
+  await prompt.getByRole('textbox', { name: '摘要正文' }).fill('第一版独立保存的摘要');
+  await prompt.getByRole('button', { name: '保存摘要', exact: true }).click();
+  await expect(prompt.locator('.request-prompt-summary')).toHaveText('第一版独立保存的摘要');
+  await prompt.getByRole('combobox', { name: '结果版本' }).selectOption('2');
+  await expect(prompt.locator('.request-prompt-summary')).toHaveText('第二版摘要');
+  await page.keyboard.press('Escape');
+  await save(page);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await expect(page.locator('.react-flow__node')).toHaveCount(2);
+  await page.getByRole('button', { name: '生成记录 已生成文字.txt', exact: true }).click();
+  await prompt.getByRole('combobox', { name: '结果版本' }).selectOption('1');
+  await expect(prompt.locator('.request-prompt-summary')).toHaveText('第一版独立保存的摘要');
+  await page.screenshot({ path: testInfo.outputPath('asset-history-restored.png') });
+  expect(fixture.errors).toEqual([]);
+});
+
+for (const zoom of [0.25, 1, 2]) {
+  test(`分组缩放往返：${zoom * 100}% 移动、缩放、撤销、保存及刷新`, async ({ page }, testInfo) => {
+    const fixture = await installFixture(page);
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    await openCanvas(page);
+    await zoomCanvas(page, zoom);
+    if (zoom === 2) {
+      const pane = (await page.locator('.react-flow__pane').boundingBox())!;
+      await page.mouse.move(pane.x + 160, pane.y + 80);
+      await page.mouse.down();
+      await page.mouse.move(pane.x + 60, pane.y + 80, { steps: 6 });
+      await page.mouse.up();
+    }
+    const group = page.locator('.canvas-group');
+    await drag(page, group.locator('.canvas-group-header'), 20, 15);
+    await save(page);
+    const moved = structuredClone(fixture.canvas());
+    expect(moved.nodes[0]!.position.x).toBeCloseTo(100 + 20 / zoom, 1);
+    expect(moved.nodes[0]!.position.y).toBeCloseTo(140 + 15 / zoom, 1);
+    await drag(page, group.locator('[data-corner="se"]'), 20, 15);
+    await save(page);
+    expect(fixture.canvas().groups![0]!.width).toBeCloseTo(moved.groups![0]!.width + 20 / zoom, 1);
+    expect(fixture.canvas().nodes.map((entry) => entry.position)).toEqual(
+      moved.nodes.map((entry) => entry.position),
+    );
+    await page.screenshot({ path: testInfo.outputPath(`group-${zoom * 100}.png`) });
+    await page.getByRole('button', { name: '画布撤销', exact: true }).click();
+    await save(page);
+    expect(fixture.canvas().groups).toEqual(moved.groups);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await expect(page.locator('.canvas-group')).toHaveCount(1);
+    await expect
+      .poll(() =>
+        page
+          .locator('.react-flow__node[data-id="generated-text"]')
+          .evaluate((element) => new DOMMatrix(getComputedStyle(element).transform).m41),
+      )
+      .toBeCloseTo(moved.nodes[0]!.position.x, 1);
+    expect(fixture.canvas().groups![0]!.nodeIds).toEqual(['generated-text', 'filled-text']);
+    expect(fixture.errors).toEqual([]);
+  });
+}
 
 for (const viewport of [
   { width: 1366, height: 768 },

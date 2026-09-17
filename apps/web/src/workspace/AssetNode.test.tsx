@@ -99,6 +99,80 @@ afterEach(() => {
 });
 
 describe('AssetNode result presentation', () => {
+  it('旧结果与新执行分别显示计时，手动版本不继承旧生成耗时', async () => {
+    const base = makeNode({
+      assetId: 'asset-1',
+      contentUrl: '/v1/assets/asset-1/versions/1/content',
+      runStatus: 'running',
+      nodeTiming: { nodeId: 'node_1', startedAt: new Date(Date.now() - 2_000).toISOString() },
+      resultTiming: {
+        nodeId: 'node_1',
+        startedAt: '2026-09-16T10:00:00.000Z',
+        finishedAt: '2026-09-16T10:00:12.400Z',
+        outcome: 'succeeded',
+      },
+    });
+    const view = renderNode(base);
+    await userEvent.click(screen.getByRole('button', { name: '查看节点信息' }));
+    expect(screen.getByText('结果耗时')).toBeInTheDocument();
+    expect(screen.getByText('12.4 s')).toBeInTheDocument();
+    expect(screen.getByText('当前执行')).toBeInTheDocument();
+    view.rerender(
+      <AssetNode
+        {...({
+          id: base.id,
+          data: { ...base.data, manualOutput: true },
+          selected: false,
+        } as NodeProps<AssetFlowNode>)}
+      />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: '查看节点信息' }));
+    expect(screen.queryByText('12.4 s')).not.toBeInTheDocument();
+    expect(screen.getByText('未记录')).toBeInTheDocument();
+  });
+
+  it('新生成失败仍展示旧结果，同时在信息面板保留失败原因和旧结果耗时', async () => {
+    const { container } = renderNode(
+      makeNode({
+        mediaType: 'image',
+        runStatus: 'failed',
+        runError: '供应商超时，未重发请求',
+        resultAsset: {
+          assetId: 'old-image',
+          version: 1,
+          contentUrl: 'https://example.test/old.png',
+          mimeType: 'image/png',
+        },
+        resultTiming: {
+          nodeId: 'node_1',
+          startedAt: '2026-09-17T00:00:00.000Z',
+          finishedAt: '2026-09-17T00:00:12.400Z',
+          outcome: 'succeeded',
+        },
+      }),
+    );
+    expect(container.querySelector('.flow-node-preview img')).toHaveAttribute(
+      'src',
+      'https://example.test/old.png',
+    );
+    expect(screen.getByLabelText('运行失败')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: '查看节点信息' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('供应商超时，未重发请求');
+    expect(screen.getByText('12.4 s')).toBeInTheDocument();
+  });
+
+  it('未展开信息面板的运行节点不订阅执行时钟', () => {
+    const interval = vi.spyOn(window, 'setInterval');
+    renderNode(
+      makeNode({
+        runStatus: 'running',
+        nodeTiming: { nodeId: 'node_1', startedAt: new Date().toISOString() },
+      }),
+    );
+    expect(interval).not.toHaveBeenCalled();
+    interval.mockRestore();
+  });
+
   it.each([0.25, 0.5, 1, 2])('文本悬浮卡片抵消 %s 倍画布缩放', (zoom) => {
     viewportMock.zoom = zoom;
     renderNode(makeNode());

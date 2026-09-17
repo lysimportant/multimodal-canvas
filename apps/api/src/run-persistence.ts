@@ -121,6 +121,25 @@ export type RunRequestPromptSummary = {
   summarySource?: RequestPromptRecord['summarySource'];
 };
 
+/** 按资产版本读取的完整记录；稳定 ID 仅用于摘要编辑，不改变请求身份。 */
+export type AssetRequestPromptRecord = RequestPromptRecord & { id: string };
+
+/** 请求记录的公共读取与摘要写入边界；调用前必须校验运行或资产权限。 */
+export interface RequestPromptStore {
+  listRequestPromptRecords(runId: string): Promise<RunRequestPromptSummary[]>;
+  getRequestPromptRecord(runId: string, recordId: string): Promise<RequestPromptRecord | undefined>;
+  listAssetRequestPromptRecords(
+    assetId: string,
+    assetVersion: number,
+  ): Promise<AssetRequestPromptRecord[]>;
+  updateAssetRequestPromptSummary(
+    assetId: string,
+    assetVersion: number,
+    recordId: string,
+    summary: string,
+  ): Promise<RequestPromptRecord | undefined>;
+}
+
 type PersistenceClient = Pick<
   PrismaClient,
   'run' | 'providerJob' | 'usageLedger' | 'runRequestPrompt'
@@ -229,6 +248,41 @@ export class PrismaRunPersistence {
     if (!isPrismaUuid(recordId)) return undefined;
     const row = await this.prisma.runRequestPrompt.findFirst({
       where: { id: recordId, runId: databaseRunId(runId) },
+    });
+    return row ? persistedRequestPromptRecord(row) : undefined;
+  }
+
+  /** 按归档资产的精确版本读取，删除画布节点不会影响记录；没有绑定记录时返回空数组。 */
+  async listAssetRequestPromptRecords(
+    assetId: string,
+    assetVersion: number,
+  ): Promise<AssetRequestPromptRecord[]> {
+    const rows = await this.prisma.runRequestPrompt.findMany({
+      where: { assetId, assetVersion },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+    return rows.flatMap((row) => {
+      const record = persistedRequestPromptRecord(row);
+      return record ? [{ ...record, id: row.id }] : [];
+    });
+  }
+
+  /** 只修改指定资产版本的手动摘要；并发结果绑定不会被旧摘要提交覆盖。 */
+  async updateAssetRequestPromptSummary(
+    assetId: string,
+    assetVersion: number,
+    recordId: string,
+    summary: string,
+  ): Promise<RequestPromptRecord | undefined> {
+    if (!isPrismaUuid(recordId)) return undefined;
+    const validated = requestPromptRecordSchema.shape.summary.unwrap().parse(summary);
+    const updated = await this.prisma.runRequestPrompt.updateMany({
+      where: { id: recordId, assetId, assetVersion },
+      data: { summary: validated, summarySource: 'manual' },
+    });
+    if (updated.count === 0) return undefined;
+    const row = await this.prisma.runRequestPrompt.findFirst({
+      where: { id: recordId, assetId, assetVersion },
     });
     return row ? persistedRequestPromptRecord(row) : undefined;
   }
@@ -505,7 +559,10 @@ function persistedRequestPromptRecord(row: unknown): RequestPromptRecord | undef
 }
 
 /** 从完整记录派生列表摘要；正文与资源身份不进入摘要。 */
-function requestPromptSummary(id: string, record: RequestPromptRecord): RunRequestPromptSummary {
+export function requestPromptSummary(
+  id: string,
+  record: RequestPromptRecord,
+): RunRequestPromptSummary {
   return {
     id,
     runId: record.runId,

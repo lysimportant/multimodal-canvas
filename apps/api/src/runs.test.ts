@@ -151,6 +151,146 @@ describe('run idempotency', () => {
   });
 });
 
+describe('memory request prompt capture', () => {
+  it.each([
+    { name: '400 rejection', fields: { status: 400 }, expected: 'failed' },
+    { name: '403 rejection', fields: { status: 403 }, expected: 'failed' },
+    { name: '408 timeout', fields: { status: 408 }, expected: 'unknown' },
+    { name: '425 retryable rejection', fields: { status: 425 }, expected: 'unknown' },
+    { name: '429 rate limit', fields: { status: 429 }, expected: 'unknown' },
+    { name: '502 upstream failure', fields: { status: 502 }, expected: 'unknown' },
+    { name: 'network interruption', fields: {}, expected: 'unknown' },
+    { name: 'invalid HTTP status', fields: { status: '400' }, expected: 'unknown' },
+    {
+      name: 'confirmed platform task',
+      fields: { status: 400, platformJobId: 'task_accepted' },
+      expected: 'sent',
+    },
+  ])(
+    'records $expected for $name without binding a failed result',
+    async ({ fields, expected }) => {
+      const service = new MemoryRunService({
+        stepDelayMs: 0,
+        executor: async (request) => {
+          await request.onRequestPrompt?.({
+            schemaVersion: 1,
+            runId: request.runId!,
+            nodeId: request.snapshot.targetNodeId,
+            attempt: request.attempt!,
+            requestIdentity: 'POST /chat/completions#1',
+            provider: 'newapi',
+            modelAlias: request.snapshot.modelAlias,
+            mediaType: 'text',
+            format: 'plain',
+            parts: [{ order: 0, text: 'Submitted text' }],
+            resources: [],
+            sendStatus: 'pending',
+            createdAt: new Date().toISOString(),
+          });
+          throw Object.assign(new Error('synthetic provider failure'), fields);
+        },
+      });
+      try {
+        const run = await service.create(snapshot());
+        expect((await waitForTerminalRun(service, run.id)).status).toBe('failed');
+        const records = await service.listRequestPromptRecords(run.id);
+        expect(records).toMatchObject([{ sendStatus: expected }]);
+        expect(records[0]?.assetId).toBeUndefined();
+      } finally {
+        await service.close();
+      }
+    },
+  );
+
+  it('captures final provider fields before execution and binds only the archived result', async () => {
+    let requests = 0;
+    const service = new MemoryRunService({
+      stepDelayMs: 0,
+      executor: async (request) => {
+        await request.onRequestPrompt?.({
+          schemaVersion: 1,
+          runId: request.runId!,
+          nodeId: request.snapshot.targetNodeId,
+          attempt: request.attempt!,
+          requestIdentity: 'POST /chat/completions#1',
+          provider: 'newapi',
+          modelAlias: request.snapshot.modelAlias,
+          mediaType: 'text',
+          format: 'messages',
+          parts: [{ order: 0, role: 'user', text: 'Final provider-composed text' }],
+          resources: [],
+          sendStatus: 'pending',
+          createdAt: new Date().toISOString(),
+        });
+        requests += 1;
+        expect(await service.listRequestPromptRecords(request.runId!)).toMatchObject([
+          { sendStatus: 'pending' },
+        ]);
+        return {
+          result: {
+            provider: 'newapi',
+            summary: 'done',
+            targetNodeId: request.snapshot.targetNodeId,
+            mediaType: 'text',
+            inputCount: 0,
+          },
+          output: { text: 'result', mimeType: 'text/plain' },
+        };
+      },
+      resultArchiver: async () => ({ assetId: 'captured_asset', version: 4 }),
+    });
+    try {
+      const submitted = await service.create(snapshot());
+      expect((await waitForTerminalRun(service, submitted.id)).status).toBe('succeeded');
+      const records = await service.listAssetRequestPromptRecords('captured_asset', 4);
+      expect(records).toMatchObject([
+        { sendStatus: 'sent', parts: [{ text: 'Final provider-composed text' }] },
+      ]);
+      expect(requests).toBe(1);
+      records[0]!.parts[0]!.text = 'mutated caller copy';
+      expect(
+        (await service.getRequestPromptRecord(submitted.id, records[0]!.id))?.parts[0]?.text,
+      ).toBe('Final provider-composed text');
+    } finally {
+      await service.close();
+    }
+  });
+
+  it('rejects mismatched identities before the provider request can run', async () => {
+    let requests = 0;
+    const service = new MemoryRunService({
+      stepDelayMs: 0,
+      executor: async (request) => {
+        await request.onRequestPrompt?.({
+          schemaVersion: 1,
+          runId: 'other-run',
+          nodeId: request.snapshot.targetNodeId,
+          attempt: request.attempt!,
+          requestIdentity: 'POST /chat/completions#1',
+          provider: 'newapi',
+          modelAlias: request.snapshot.modelAlias,
+          mediaType: 'text',
+          format: 'plain',
+          parts: [{ order: 0, text: 'not sent' }],
+          resources: [],
+          sendStatus: 'pending',
+          createdAt: new Date().toISOString(),
+        });
+        requests += 1;
+        throw new Error('unreachable');
+      },
+    });
+    try {
+      const run = await service.create(snapshot());
+      expect((await waitForTerminalRun(service, run.id)).status).toBe('failed');
+      expect(requests).toBe(0);
+      expect(await service.listRequestPromptRecords(run.id)).toEqual([]);
+    } finally {
+      await service.close();
+    }
+  });
+});
+
 describe('run credential snapshots', () => {
   it('stores only the credential reference and version', () => {
     const result = createRunSnapshot(

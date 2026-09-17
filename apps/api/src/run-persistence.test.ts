@@ -805,6 +805,49 @@ function createRequestPromptPersistence(rows: unknown[]) {
 }
 
 describe('PrismaRunPersistence 请求提示词与节点时间读取', () => {
+  it('资产版本查询明确限定版本，摘要写入只改摘要且拒绝其他版本', async () => {
+    let row = requestPromptRow();
+    const runRequestPrompt = {
+      findMany: vi.fn(async () => [row]),
+      findFirst: vi.fn(async () => row),
+      updateMany: vi.fn(async ({ where, data }) => {
+        if (
+          where.id !== row.id ||
+          where.assetId !== row.assetId ||
+          where.assetVersion !== row.assetVersion
+        )
+          return { count: 0 };
+        row = { ...row, ...data };
+        return { count: 1 };
+      }),
+    };
+    const persistence = new PrismaRunPersistence({ runRequestPrompt } as never);
+    const records = await persistence.listAssetRequestPromptRecords('asset_result', 3);
+    expect(runRequestPrompt.findMany).toHaveBeenCalledWith({
+      where: { assetId: 'asset_result', assetVersion: 3 },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+    expect(records[0]).toMatchObject({ id: row.id, assetVersion: 3, parts: row.parts });
+    const saved = await persistence.updateAssetRequestPromptSummary(
+      'asset_result',
+      3,
+      row.id,
+      '手动概括主体、衣着和场景',
+    );
+    expect(saved).toMatchObject({
+      summary: '手动概括主体、衣着和场景',
+      summarySource: 'manual',
+      parts: row.parts,
+    });
+    expect(runRequestPrompt.updateMany.mock.calls[0]?.[0].data).toEqual({
+      summary: '手动概括主体、衣着和场景',
+      summarySource: 'manual',
+    });
+    await expect(
+      persistence.updateAssetRequestPromptSummary('asset_result', 2, row.id, 'wrong'),
+    ).resolves.toBeUndefined();
+  });
+
   it('占位行不泄露正文，摘要只携带 ID 与计数', async () => {
     const { persistence } = createRequestPromptPersistence([requestPromptRow()]);
 
@@ -1027,5 +1070,28 @@ scratchDescribe('PrismaRunPersistence against the scratch database', () => {
       availability: 'recorded',
       milliseconds: 3_000,
     });
+  });
+
+  it('按真实数据库中的资产版本读取并保存摘要，不改写冻结文本', async () => {
+    const records = await persistence.listAssetRequestPromptRecords('asset_result', 3);
+    expect(records.map((record) => record.id)).toContain(recordId);
+    await expect(persistence.listAssetRequestPromptRecords('asset_result', 2)).resolves.toEqual([]);
+    const updated = await persistence.updateAssetRequestPromptSummary(
+      'asset_result',
+      3,
+      recordId,
+      '手动保存的生成摘要',
+    );
+    expect(updated).toMatchObject({
+      summary: '手动保存的生成摘要',
+      summarySource: 'manual',
+      parts: [{ order: 0, text: '月白布衫，青裙' }],
+    });
+    await expect(
+      persistence.updateAssetRequestPromptSummary('asset_result', 2, recordId, '错误版本'),
+    ).resolves.toBeUndefined();
+    expect((await persistence.getRequestPromptRecord(runId, recordId))?.summary).toBe(
+      '手动保存的生成摘要',
+    );
   });
 });

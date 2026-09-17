@@ -1,8 +1,9 @@
 import '@testing-library/jest-dom/vitest';
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createContext, createElement } from 'react';
+import { flushSync } from 'react-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Asset, CanvasDocument, RunRecord } from '@multimodal-canvas/domain';
@@ -315,6 +316,7 @@ vi.mock('@xyflow/react', async () => {
 });
 
 import { App } from './App';
+import * as authClient from './auth-client';
 import { clearAuthSession, persistAuthSession } from './auth-client';
 
 class ResizeObserverStub {
@@ -381,6 +383,9 @@ const jsonResponse = (body: unknown, status = 200) =>
 
 let canvas: CanvasDocument;
 let projectRuns: RunRecord[];
+/** 当前测试的项目与全局模型默认值，独立于节点和浏览器偏好。 */
+let projectModelDefaults: Record<string, unknown>;
+let globalModelDefaults: Record<string, unknown>;
 /** 按节点覆写运行响应，用于覆盖失败后重试等交互；未覆写时仍返回成功。 */
 let nodeRunOverrides: Map<string, { status: RunRecord['status']; error?: string }>;
 let defaultNodeRunOverride: { status: RunRecord['status']; error?: string } | undefined;
@@ -436,6 +441,30 @@ function installApiMock() {
     if (url.pathname === '/v1/models' && method === 'GET') {
       return jsonResponse({ models: modelCatalog });
     }
+    if (url.pathname === '/v1/settings/ai' && method === 'GET')
+      return jsonResponse({
+        settings: {
+          baseUrl: 'https://example.test',
+          configured: true,
+          defaultModels: globalModelDefaults,
+        },
+      });
+    if (url.pathname.endsWith('/models/defaults') && method === 'GET')
+      return jsonResponse({ defaults: projectModelDefaults });
+    const assetPrompts = url.pathname.match(
+      /^\/v1\/assets\/([^/]+)\/versions\/(\d+)\/request-prompts$/,
+    );
+    if (assetPrompts && method === 'GET')
+      return jsonResponse({
+        records: [...promptRecords.values()]
+          .flat()
+          .filter(
+            (record) =>
+              record.assetId === decodeURIComponent(assetPrompts[1]!) &&
+              record.assetVersion === Number(assetPrompts[2]),
+          )
+          .map((record) => ({ ...record, id: record.recordId })),
+      });
     if (url.pathname === '/v1/settings/ai/credentials' && method === 'GET') {
       // 目录是按凭据查询的；没有凭据时 modelCatalog 为空，节点拿不到模型。
       return jsonResponse({ credentials: [credentialSummary] });
@@ -639,6 +668,18 @@ function projectRunRequestCount() {
   }).length;
 }
 
+/** 捕获项目 SSE 订阅，测试可发布运行事件而不依赖轮询计时或真实供应商。 */
+function captureRunEvents() {
+  let onEvent: Parameters<typeof authClient.openAuthEventStream>[1] | undefined;
+  vi.spyOn(authClient, 'openAuthEventStream').mockImplementation(async (_input, callback) => {
+    onEvent = callback;
+  });
+  return (run: RunRecord) => {
+    if (!onEvent) throw new Error('项目运行事件尚未订阅');
+    onEvent('run.updated', JSON.stringify(run));
+  };
+}
+
 async function renderCanvas() {
   const user = userEvent.setup();
   // userEvent installs its own Clipboard stub; replace it with the test spy
@@ -718,6 +759,8 @@ describe('画布编辑器交互', () => {
     clipboardText = '';
     canvas = structuredClone(emptyCanvas);
     projectRuns = [];
+    projectModelDefaults = {};
+    globalModelDefaults = {};
     nodeRunOverrides = new Map();
     defaultNodeRunOverride = undefined;
     nodeRunRequestCounts = new Map();
@@ -732,6 +775,7 @@ describe('画布编辑器交互', () => {
 
   afterEach(() => {
     cleanup();
+    vi.restoreAllMocks();
     clearAuthSession();
     window.history.replaceState(null, '', '/');
     if (previousClipboardDescriptor) {
@@ -743,6 +787,51 @@ describe('画布编辑器交互', () => {
       });
     }
     vi.unstubAllGlobals();
+  });
+
+  it('新节点优先继承项目默认的模型与凭据，不复制旧模型参数', async () => {
+    projectModelDefaults = {
+      image: { modelAlias: 'image-plain-model', credentialId: credentialSummary.id },
+    };
+    globalModelDefaults = {
+      image: { modelAlias: 'image-edit-model', credentialId: credentialSummary.id },
+    };
+    canvas = {
+      revision: 1,
+      edges: [],
+      nodes: [
+        {
+          id: 'old-image',
+          type: 'image',
+          position: { x: 0, y: 0 },
+          data: {
+            label: '旧图片节点',
+            mode: 'generate',
+            mediaType: 'image',
+            modelAlias: 'image-edit-model',
+            parameters: { legacyOption: true },
+          },
+        },
+      ],
+    };
+    const { user } = await renderCanvas();
+    await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
+    await waitFor(() => expect(canvas.nodes).toHaveLength(2));
+    const created = canvas.nodes.find((node) => node.id !== 'old-image')!;
+    expect(created.data.modelAlias).toBe('image-plain-model');
+    expect(created.data.credentialId).toBe(credentialSummary.id);
+    expect(created.data.parameters).not.toHaveProperty('legacyOption');
+  });
+
+  it('未设置项目默认时继承全局类型默认', async () => {
+    globalModelDefaults = {
+      image: { modelAlias: 'image-plain-model', credentialId: credentialSummary.id },
+    };
+    const { user } = await renderCanvas();
+    await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
+    await waitFor(() => expect(canvas.nodes).toHaveLength(1));
+    expect(canvas.nodes[0]!.data.modelAlias).toBe('image-plain-model');
+    expect(canvas.nodes[0]!.data.credentialId).toBe(credentialSummary.id);
   });
 
   it('在根路径显示主页且不会自动创建项目', async () => {
@@ -1028,6 +1117,82 @@ describe('画布编辑器交互', () => {
     expect(within(missingNode).queryByLabelText('运行成功')).not.toBeInTheDocument();
   });
 
+  it('恢复倒序运行记录时保留旧成功结果及其提示词和耗时，同时显示新失败', async () => {
+    const { user } = await renderCanvas();
+    await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
+    await waitFor(() => expect(canvas.nodes).toHaveLength(1));
+    const node = persistedNode('text');
+    const failed = createRestoredRun(node, { status: 'failed', error: '新请求失败，旧结果保留' });
+    failed.id = 'run-new-failed';
+    failed.createdAt = '2026-08-28T08:01:00.000Z';
+    failed.updatedAt = '2026-08-28T08:01:03.000Z';
+    failed.nodeTimings = {
+      [node.id]: {
+        nodeId: node.id,
+        startedAt: failed.createdAt,
+        finishedAt: failed.updatedAt,
+        outcome: 'failed',
+      },
+    };
+    const succeeded = createRestoredRun(node, { textContent: '旧版本的成功正文' });
+    succeeded.nodeTimings = {
+      [node.id]: {
+        nodeId: node.id,
+        startedAt: succeeded.createdAt,
+        finishedAt: '2026-08-28T08:00:12.400Z',
+        outcome: 'succeeded',
+      },
+    };
+    projectRuns = [failed, succeeded];
+    promptRecords.set(`${succeeded.id}\0${node.id}`, [
+      {
+        recordId: 'record-old-result',
+        runId: succeeded.id,
+        nodeId: node.id,
+        attempt: 1,
+        requestIdentity: 'POST /chat/completions#1',
+        schemaVersion: 1,
+        provider: 'newapi',
+        modelAlias: 'text-model',
+        mediaType: 'text',
+        format: 'messages',
+        parts: [{ order: 0, role: 'user', text: '旧版本实际发送的请求' }],
+        resources: [],
+        sendStatus: 'sent',
+        createdAt: succeeded.createdAt,
+        assetId: succeeded.result!.asset!.assetId,
+        assetVersion: 1,
+        summary: '旧结果的生成摘要',
+      },
+    ]);
+
+    cleanup();
+    fetchMock.mockClear();
+    const restored = await renderCanvas();
+    const restoredNode = await waitFor(() => {
+      const current = findNodeByLabel('文字生成节点')!;
+      expect(within(current).getByText('旧版本的成功正文')).toBeVisible();
+      expect(within(current).getByLabelText('运行失败')).toBeInTheDocument();
+      return current;
+    });
+    await restored.user.click(within(restoredNode).getByRole('button', { name: '查看节点信息' }));
+    const info = await screen.findByRole('dialog', { name: '节点信息' });
+    expect(within(info).getByRole('alert')).toHaveTextContent('新请求失败，旧结果保留');
+    expect(within(info).getByText('12.4 s')).toBeVisible();
+    expect(within(info).queryByText('3.0 s')).not.toBeInTheDocument();
+    await restored.user.click(within(info).getByRole('button', { name: /查看生成提示词/ }));
+    const dialog = await screen.findByRole('dialog', { name: '生成提示词' });
+    expect(await within(dialog).findByText('旧结果的生成摘要')).toBeVisible();
+    expect(within(dialog).getByText('[user] 旧版本实际发送的请求')).toBeVisible();
+    expect(
+      fetchMock.mock.calls.some(([input]) =>
+        String(input).includes(
+          `/assets/${succeeded.result!.asset!.assetId}/versions/1/request-prompts`,
+        ),
+      ),
+    ).toBe(true);
+  });
+
   it('画布背景菜单可打开、切换并持久化选择', async () => {
     const { user } = await renderCanvas();
 
@@ -1154,6 +1319,136 @@ describe('画布编辑器交互', () => {
     expect(flowNodes()).toHaveLength(1);
     expect(screen.getByText('组 1')).toBeInTheDocument();
     confirmSpy.mockRestore();
+  });
+
+  it('清空确认说明在途任务继续执行，迟到完成事件只刷新资源而不复活节点', async () => {
+    const emitRun = captureRunEvents();
+    const { user } = await renderCanvas();
+    await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
+    await waitFor(() => expect(canvas.nodes).toHaveLength(1));
+    const node = persistedNode('text');
+    const running = createRestoredRun(node, { status: 'running', includeAsset: false });
+    act(() => emitRun(running));
+    await user.hover(screen.getByRole('button', { name: '清空' }));
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    await user.click(await screen.findByRole('menuitem', { name: /清空画布/ }));
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('当前有 1 个在途任务'));
+    expect(confirmSpy).toHaveBeenCalledWith(
+      expect.stringContaining('清空后仍会继续执行，结果保留在资源库'),
+    );
+    expect(flowNodes()).toHaveLength(0);
+    expect(screen.queryByRole('region', { name: /设置$/ })).not.toBeInTheDocument();
+    const requestsBeforeCompletion = fetchMock.mock.calls.length;
+
+    const completed = createRestoredRun(node);
+    completed.updatedAt = '2026-08-28T08:00:15.000Z';
+    await act(async () => emitRun(completed));
+    await waitFor(() => expect(canvas.nodes).toHaveLength(0));
+    expect(flowNodes()).toHaveLength(0);
+    expect(
+      fetchMock.mock.calls
+        .slice(requestsBeforeCompletion)
+        .some(([input]) => /\/v1\/assets(?:\?|$)/.test(String(input))),
+    ).toBe(true);
+    expect(nodeRunRequestCounts.size).toBe(0);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/cancel'))).toBe(false);
+  });
+
+  it.each(['提示词', '运行'] as const)(
+    '清空确认期间%s状态改变时保留节点，并重新确认剩余数量',
+    async (change) => {
+      const emitRun = captureRunEvents();
+      const { user } = await renderCanvas();
+      await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
+      await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
+      const changingNode = findNodeByLabel('文字生成节点')!;
+      await user.click(changingNode);
+      const prompt = screen.getByRole('textbox', { name: '提示词' });
+      await waitFor(() => expect(canvas.nodes).toHaveLength(2));
+      const running = createRestoredRun(persistedNode('text'), {
+        status: 'running',
+        includeAsset: false,
+      });
+      await user.hover(screen.getByRole('button', { name: '清空' }));
+      const clearEmpty = await screen.findByRole('menuitem', { name: /清空空节点/ });
+      expect(clearEmpty).toHaveTextContent('2 节点');
+      const confirmSpy = vi
+        .spyOn(window, 'confirm')
+        .mockImplementationOnce(() => {
+          flushSync(() => {
+            if (change === '提示词')
+              fireEvent.change(prompt, { target: { value: '确认期间新增的内容' } });
+            else emitRun(running);
+          });
+          return true;
+        })
+        .mockReturnValue(true);
+
+      await user.click(clearEmpty);
+      expect(confirmSpy).toHaveBeenCalledTimes(2);
+      expect(confirmSpy.mock.calls[0]?.[0]).toContain('2 个空节点');
+      expect(confirmSpy.mock.calls[1]?.[0]).toContain('节点状态已变化');
+      expect(confirmSpy.mock.calls[1]?.[0]).toContain('1 个空节点');
+      expect(flowNodes()).toHaveLength(1);
+      expect(findNodeByLabel('文字生成节点')).toBeTruthy();
+      expect(findNodeByLabel('图片生成节点')).toBeUndefined();
+      if (change === '提示词') expect(prompt).toHaveValue('确认期间新增的内容');
+      fireEvent.keyDown(window, { key: 'z', ctrlKey: true });
+      await waitFor(() => expect(flowNodes()).toHaveLength(2));
+      if (change === '提示词')
+        expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue('确认期间新增的内容');
+    },
+  );
+
+  it('清空空节点时关闭被删除节点的提示词窗口和快速编辑器', async () => {
+    const { user } = await renderCanvas();
+    await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
+    const node = findNodeByLabel('文字生成节点')!;
+    await user.click(node);
+    expect(screen.getByRole('region', { name: /设置$/ })).toBeVisible();
+    const clearButton = screen.getByRole('button', { name: '清空' });
+    await user.click(within(node).getByRole('button', { name: '查看节点信息' }));
+    await user.click(await screen.findByRole('button', { name: /查看生成提示词/ }));
+    expect(await screen.findByRole('dialog', { name: '生成提示词' })).toBeVisible();
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    fireEvent.click(clearButton);
+    fireEvent.click(screen.getByRole('menuitem', { name: /清空空节点/, hidden: true }));
+    expect(flowNodes()).toHaveLength(0);
+    expect(screen.queryByRole('dialog', { name: '生成提示词' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: /设置$/ })).not.toBeInTheDocument();
+  });
+
+  it('清空画布关闭加载中的提示词窗口，迟到查询响应不能重新打开', async () => {
+    const { user } = await renderCanvas();
+    await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
+    const node = findNodeByLabel('文字生成节点')!;
+    await user.click(node);
+    const editor = await fillSelectedPrompt(user, '生成旧结果');
+    await user.click(within(editor).getByRole('button', { name: '生成' }));
+    await waitFor(() => expect(within(node).getByText('这是已生成的正文。')).toBeVisible());
+    const apiImplementation = fetchMock.getMockImplementation()!;
+    let resolvePrompt: ((response: Response) => void) | undefined;
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/request-prompts')) {
+        return new Promise<Response>((resolve) => {
+          resolvePrompt = resolve;
+        });
+      }
+      return apiImplementation(input, init);
+    });
+    const clearButton = screen.getByRole('button', { name: '清空' });
+    await user.click(within(node).getByRole('button', { name: '查看节点信息' }));
+    await user.click(await screen.findByRole('button', { name: /查看生成提示词/ }));
+    await waitFor(() => expect(resolvePrompt).toBeDefined());
+    expect(await screen.findByRole('dialog', { name: '生成提示词' })).toBeVisible();
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    fireEvent.click(clearButton);
+    fireEvent.click(screen.getByRole('menuitem', { name: /清空画布/, hidden: true }));
+    expect(flowNodes()).toHaveLength(0);
+    expect(screen.queryByRole('dialog', { name: '生成提示词' })).not.toBeInTheDocument();
+    await act(async () => resolvePrompt!(jsonResponse({ records: [] })));
+    expect(screen.queryByRole('dialog', { name: '生成提示词' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: /设置$/ })).not.toBeInTheDocument();
   });
 
   it('清空空节点只移除空模板，保留已填写提示词与已绑定资源的节点，并可一次撤销', async () => {
@@ -1779,6 +2074,8 @@ describe('画布编辑器交互', () => {
     const source = findNodeByLabel('文字生成节点')!;
     const sourceId = source.getAttribute('data-id')!;
     await user.click(source);
+    await user.click(screen.getByRole('button', { name: '新建分组' }));
+    await user.click(source);
     await fillSelectedPrompt(user, '写一篇介绍');
     await user.click(
       within(screen.getByRole('region', { name: /生成设置$/ })).getByRole('button', {
@@ -1805,5 +2102,10 @@ describe('画布编辑器交互', () => {
       parentBefore.data.prompt,
     );
     expect(canvas.edges).toHaveLength(0);
+    expect(canvas.groups?.[0]?.nodeIds).toEqual(expect.arrayContaining([sourceId, child!.id]));
+    const group = canvas.groups![0]!;
+    expect(group.position.x + group.width).toBeGreaterThanOrEqual(
+      child!.position.x + (child!.width ?? 0),
+    );
   });
 });

@@ -599,7 +599,7 @@ const runRequestPromptSummarySchema = {
     'createdAt',
   ],
   properties: {
-    id: { type: 'string', format: 'uuid' },
+    id: { type: 'string', description: '请求记录的不透明身份，内存和数据库存储均可返回。' },
     runId: { type: 'string' },
     nodeId: { type: 'string' },
     attempt: { type: 'integer', minimum: 1 },
@@ -692,6 +692,12 @@ const runRequestPromptRecordSchema = {
 
 const response = (description: string, schema?: unknown) => ({
   description,
+  headers: {
+    'X-Server-Time': {
+      description: '响应发送时的服务端 UTC 时间，用于客户端运行计时校正',
+      schema: { type: 'string', format: 'date-time' },
+    },
+  },
   ...(schema ? { content: { 'application/json': { schema } } } : {}),
 });
 
@@ -1357,6 +1363,83 @@ export const openApiDocument = {
         },
       },
     },
+    '/v1/assets/{assetId}/versions/{version}/request-prompts': {
+      get: {
+        tags: ['assets'],
+        summary: '读取指定资产版本的生成请求记录，不依赖原画布节点',
+        parameters: [
+          { $ref: '#/components/parameters/AssetId' },
+          { name: 'version', in: 'path', required: true, schema: { type: 'integer', minimum: 1 } },
+        ],
+        responses: {
+          '200': response('完整请求记录与对应节点时间；导入或手动版本的 records 为空', {
+            type: 'object',
+            required: ['records'],
+            properties: {
+              records: {
+                type: 'array',
+                items: {
+                  ...runRequestPromptRecordSchema,
+                  required: [...runRequestPromptRecordSchema.required, 'id'],
+                  properties: {
+                    ...runRequestPromptRecordSchema.properties,
+                    id: { type: 'string' },
+                  },
+                },
+              },
+              timing: { $ref: '#/components/schemas/NodeTiming' },
+              inputSnapshot: {
+                type: 'object',
+                required: ['text', 'nodeId', 'runId'],
+                properties: {
+                  text: { type: 'string' },
+                  nodeId: { type: 'string' },
+                  runId: { type: 'string' },
+                },
+                additionalProperties: false,
+                description: '仅有冻结输入时返回，不能标为最终发送文本。',
+              },
+              nodeTimings: {
+                type: 'object',
+                additionalProperties: { $ref: '#/components/schemas/NodeTiming' },
+              },
+            },
+            additionalProperties: false,
+          }),
+          '400': response('资产版本无效', errorSchema),
+          '404': response('资产版本不存在或无权访问', errorSchema),
+        },
+      },
+    },
+    '/v1/assets/{assetId}/versions/{version}/request-prompts/{recordId}': {
+      patch: {
+        tags: ['assets'],
+        summary: '保存手动摘要，不修改真实请求文本或结果归属',
+        parameters: [
+          { $ref: '#/components/parameters/AssetId' },
+          { name: 'version', in: 'path', required: true, schema: { type: 'integer', minimum: 1 } },
+          { name: 'recordId', in: 'path', required: true, schema: { type: 'string' } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['summary'],
+                properties: { summary: { type: 'string', maxLength: 2000 } },
+                additionalProperties: false,
+              },
+            },
+          },
+        },
+        responses: {
+          '200': response('已保存摘要', envelope('record', runRequestPromptRecordSchema)),
+          '400': response('摘要或版本无效', errorSchema),
+          '404': response('资产版本或请求记录不存在或无权访问', errorSchema),
+        },
+      },
+    },
     '/v1/assets/{assetId}/versions/{version}/content': {
       get: {
         tags: ['assets'],
@@ -1532,7 +1615,7 @@ export const openApiDocument = {
             name: 'recordId',
             in: 'path',
             required: true,
-            schema: { type: 'string', format: 'uuid' },
+            schema: { type: 'string' },
           },
         ],
         responses: {
@@ -2000,6 +2083,7 @@ export const openApiDocument = {
       WorkflowImportResponse: workflowImportResponseSchema,
       WorkflowImportError: workflowImportErrorSchema,
       Run: runSchema,
+      NodeTiming: runSchema.properties.nodeTimings.additionalProperties,
       RunRequestPromptSummary: runRequestPromptSummarySchema,
       RunRequestPromptRecord: runRequestPromptRecordSchema,
       UploadInitialization: {

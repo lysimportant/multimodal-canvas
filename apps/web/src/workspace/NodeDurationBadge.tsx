@@ -3,6 +3,7 @@ import { Clock, Loader2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 import { formatNodeDuration, nodeTimingDuration } from '@multimodal-canvas/domain';
+import { serverClockNow } from '../server-clock';
 
 /** 运行中耗时的刷新间隔，单位毫秒；终态不再刷新。 */
 export const NODE_DURATION_TICK_MS = 1000;
@@ -17,20 +18,27 @@ export const NODE_DURATION_TICK_MS = 1000;
 const clockSubscribers = new Set<(now: number) => void>();
 let clockTimer: number | undefined;
 
+/** 页面可见时向正在展示的执行计时发布一次服务端参考时间。 */
 function publishClockTick() {
   if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-  const now = Date.now();
+  const now = serverClockNow();
   for (const subscriber of clockSubscribers) subscriber(now);
 }
 
+/** 添加活动计时订阅，并在最后一个订阅者离开时释放定时器与可见性监听。 */
 function subscribeNodeClock(subscriber: (now: number) => void): () => void {
   clockSubscribers.add(subscriber);
-  clockTimer ??= window.setInterval(publishClockTick, NODE_DURATION_TICK_MS);
+  subscriber(serverClockNow());
+  if (clockTimer === undefined) {
+    clockTimer = window.setInterval(publishClockTick, NODE_DURATION_TICK_MS);
+    document.addEventListener('visibilitychange', publishClockTick);
+  }
   return () => {
     clockSubscribers.delete(subscriber);
     if (clockSubscribers.size === 0 && clockTimer !== undefined) {
       window.clearInterval(clockTimer);
       clockTimer = undefined;
+      document.removeEventListener('visibilitychange', publishClockTick);
     }
   };
 }
@@ -42,12 +50,12 @@ function subscribeNodeClock(subscriber: (now: number) => void): () => void {
  * @returns 当前服务端参考时间，单位毫秒。
  */
 export function useSharedNodeClock(enabled: boolean): number {
-  const [now, setNow] = useState(() => Date.now());
+  const [now, setNow] = useState(serverClockNow);
 
   useEffect(() => {
     if (!enabled) {
       // 停止计时时同步一次，避免下次启用时从一个过期基准继续。
-      setNow(Date.now());
+      setNow(serverClockNow());
       return;
     }
     return subscribeNodeClock(setNow);
@@ -79,7 +87,7 @@ export function NodeDurationBadge({ timing, now, running = false }: NodeDuration
     );
   }
   const duration = nodeTimingDuration(timing, now);
-  if (duration.availability === 'unrecorded') {
+  if (duration.availability === 'unrecorded' || (duration.availability === 'running' && !running)) {
     return (
       <span className="node-duration-badge is-unrecorded" title="未记录生成耗时">
         <Clock size={11} aria-hidden="true" /> 未记录

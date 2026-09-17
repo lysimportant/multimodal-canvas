@@ -20,6 +20,7 @@ import {
 } from './auth-client';
 import { projectQueryKeys } from './query/projects';
 import { navigateApp } from './routing';
+import { serverClockNow } from './server-clock';
 
 /** 仅用于本地模拟请求的合成会话，不包含真实账户或凭据。 */
 const response: AuthTokenResponse = {
@@ -117,6 +118,17 @@ describe('auth-client', () => {
     localStorage.clear();
     clearAuthSession();
     vi.restoreAllMocks();
+  });
+
+  it('应用请求读取服务端时间头并校准共享计时', async () => {
+    const serverTime = '2026-09-17T10:00:00.000Z';
+    const monotonic = vi.spyOn(performance, 'now').mockReturnValue(1_000);
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      monotonic.mockReturnValue(1_200);
+      return new Response('{}', { headers: { 'x-server-time': serverTime } });
+    });
+    await apiFetch('/v1/projects');
+    expect(serverClockNow()).toBe(Date.parse(serverTime) + 100);
   });
 
   afterEach(() => {

@@ -7,6 +7,8 @@ import {
   runJobDataSchema,
   runJobResultSchema,
   providerJobSchema,
+  requestPromptRecordKey,
+  requestPromptRecordSchema,
   runResultAssetSchema,
   runResultSchema,
   runSnapshotSchema,
@@ -23,9 +25,17 @@ import {
   type RunCredentialReference,
   type RunSnapshot,
   type RunStatus,
+  type RequestPromptRecord,
   runSnapshotFingerprintMaterial,
 } from '@multimodal-canvas/domain';
-import { databaseRunId, type PrismaRunPersistence } from './run-persistence';
+import {
+  databaseRunId,
+  requestPromptSummary,
+  type AssetRequestPromptRecord,
+  type PrismaRunPersistence,
+  type RequestPromptStore,
+} from './run-persistence';
+import type { RequestPromptCapture } from '@multimodal-canvas/providers';
 
 // A tiny 1-second fragmented H.264 MP4 keeps the default provider useful in
 // local development without pretending that arbitrary text is a playable
@@ -90,6 +100,10 @@ export type ProviderWebhookUpdate = {
 
 export type RunExecutorRequest = {
   snapshot: RunSnapshot;
+  /** 由内存运行服务提供的真实运行身份，供 Provider 发送前留存请求。 */
+  runId?: string;
+  attempt?: number;
+  onRequestPrompt?: RequestPromptCapture;
   /** Existing asynchronous task identity; providers must resume it without POSTing again. */
   providerJob?: RunProviderJobUpdate;
   reportProgress?: (progress: number) => Promise<void> | void;
@@ -292,6 +306,20 @@ export function createRunSnapshot(
 
 function clone<T>(value: T): T {
   return structuredClone(value);
+}
+
+/** 根据供应商响应证据区分明确拒绝与发送结果未知；与 Worker 使用相同口径，不据此重发。 */
+function requestPromptFailureStatus(error: unknown): 'sent' | 'failed' | 'unknown' {
+  if (!isRecord(error)) return 'unknown';
+  if (typeof error.platformJobId === 'string' && error.platformJobId.trim()) return 'sent';
+  const status = error.status;
+  return typeof status === 'number' &&
+    Number.isInteger(status) &&
+    status >= 400 &&
+    status < 500 &&
+    ![408, 425, 429].includes(status)
+    ? 'failed'
+    : 'unknown';
 }
 
 function mergeProviderJob(current: ProviderJob, update: RunProviderJobUpdate): ProviderJob {
@@ -558,10 +586,11 @@ function createQueuedRun(
   };
 }
 
-export class MemoryRunService implements RunService {
+export class MemoryRunService implements RunService, RequestPromptStore {
   /** 内存任务无需外部队列，当前进程即为执行后端。 */
   async health(): Promise<void> {}
   private readonly runs = new Map<string, RunRecord>();
+  private readonly requestPrompts = new Map<string, AssetRequestPromptRecord>();
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly stepDelayMs: number;
   private readonly providerName: RunProviderName;
@@ -628,6 +657,7 @@ export class MemoryRunService implements RunService {
       undefined,
     );
     this.runs.set(run.id, run);
+    run.nodeTimings = { [run.targetNodeId]: { nodeId: run.targetNodeId, queuedAt: run.createdAt } };
     if (idempotencyKey) {
       this.idempotency.set(idempotencyMapKey(snapshot.projectId, idempotencyKey), {
         runId: run.id,
@@ -648,6 +678,47 @@ export class MemoryRunService implements RunService {
       .filter((run) => run.projectId === projectId)
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
       .map(clone);
+  }
+
+  /** 返回内存运行的记录摘要；请求正文只由详情接口按需返回。 */
+  async listRequestPromptRecords(runId: string) {
+    return [...this.requestPrompts.values()]
+      .filter((record) => record.runId === runId)
+      .map((record) => requestPromptSummary(record.id, record));
+  }
+
+  /** 按运行与记录身份读取副本，调用方不能修改冻结文本。 */
+  async getRequestPromptRecord(
+    runId: string,
+    recordId: string,
+  ): Promise<RequestPromptRecord | undefined> {
+    const record = this.requestPrompts.get(recordId);
+    return record?.runId === runId ? requestPromptRecordSchema.parse(clone(record)) : undefined;
+  }
+
+  /** 按归档版本读取内存请求记录；画布节点删除不影响保留的资产说明。 */
+  async listAssetRequestPromptRecords(
+    assetId: string,
+    assetVersion: number,
+  ): Promise<AssetRequestPromptRecord[]> {
+    return [...this.requestPrompts.values()]
+      .filter((record) => record.assetId === assetId && record.assetVersion === assetVersion)
+      .map(clone);
+  }
+
+  /** 手动摘要与冻结请求文本分开存储；版本或记录不匹配时拒绝修改。 */
+  async updateAssetRequestPromptSummary(
+    assetId: string,
+    assetVersion: number,
+    recordId: string,
+    summary: string,
+  ): Promise<RequestPromptRecord | undefined> {
+    const record = this.requestPrompts.get(recordId);
+    if (!record || record.assetId !== assetId || record.assetVersion !== assetVersion)
+      return undefined;
+    record.summary = requestPromptRecordSchema.shape.summary.unwrap().parse(summary);
+    record.summarySource = 'manual';
+    return requestPromptRecordSchema.parse(clone(record));
   }
 
   async applyProviderWebhook(update: ProviderWebhookUpdate): Promise<RunRecord | undefined> {
@@ -685,6 +756,7 @@ export class MemoryRunService implements RunService {
       previous.providerJob,
     );
     this.runs.set(run.id, run);
+    run.nodeTimings = { [run.targetNodeId]: { nodeId: run.targetNodeId, queuedAt: run.createdAt } };
     this.idempotency.set(mapKey, {
       runId: run.id,
       fingerprint: snapshotFingerprint(previous.snapshot),
@@ -764,6 +836,23 @@ export class MemoryRunService implements RunService {
       const execution = normalizeRunExecution(
         await executeRunExecutor(this.executor, {
           snapshot: clone(run.snapshot),
+          runId: run.id,
+          attempt: run.attempt,
+          onRequestPrompt: async (input) => {
+            const record = requestPromptRecordSchema.parse(input);
+            if (
+              record.runId !== run.id ||
+              record.nodeId !== run.targetNodeId ||
+              record.attempt !== run.attempt
+            ) {
+              throw new Error('request prompt identity does not match the active run');
+            }
+            const id = createHash('sha256').update(requestPromptRecordKey(record)).digest('hex');
+            if (!this.requestPrompts.has(id)) this.requestPrompts.set(id, { ...clone(record), id });
+            const timing = run.nodeTimings?.[run.targetNodeId];
+            if (timing && !timing.requestStartedAt)
+              timing.requestStartedAt = new Date().toISOString();
+          },
           providerJob: run.providerJob ? clone(run.providerJob) : undefined,
           reportProgress: (progress) => this.reportProgress(run, progress),
           onProviderJob: (update) => {
@@ -773,6 +862,11 @@ export class MemoryRunService implements RunService {
           },
         }),
       );
+      for (const record of this.requestPrompts.values()) {
+        if (record.runId === run.id && record.sendStatus === 'pending') record.sendStatus = 'sent';
+      }
+      const timing = run.nodeTimings?.[run.targetNodeId];
+      if (timing) timing.requestFinishedAt ??= new Date().toISOString();
       if (isCancellationRequested(run)) {
         this.transition(run, 'cancelled', run.progress);
         return;
@@ -816,6 +910,13 @@ export class MemoryRunService implements RunService {
       if (run.providerJob && !result.providerJob) {
         result = runResultSchema.parse({ ...result, providerJob: run.providerJob });
       }
+      if (result.asset?.version) {
+        for (const record of this.requestPrompts.values()) {
+          if (record.runId !== run.id || record.assetId) continue;
+          record.assetId = result.asset.assetId;
+          record.assetVersion = result.asset.version;
+        }
+      }
       this.transition(run, 'succeeded', 100, result);
     } catch (error) {
       if (isCancellationRequested(run)) {
@@ -840,6 +941,11 @@ export class MemoryRunService implements RunService {
   }
 
   private fail(run: RunRecord, error: unknown) {
+    const sendStatus = requestPromptFailureStatus(error);
+    for (const record of this.requestPrompts.values()) {
+      if (record.runId === run.id && record.sendStatus === 'pending')
+        record.sendStatus = sendStatus;
+    }
     const message = sanitizeRunErrorMessage(error);
     attachProviderErrorToRun(run, error);
     if (canTransitionRunStatus(run.status, 'failed')) {
@@ -863,6 +969,20 @@ export class MemoryRunService implements RunService {
     run.status = status;
     run.progress = progress;
     run.updatedAt = new Date().toISOString();
+    const timing = run.nodeTimings?.[run.targetNodeId];
+    if (timing) {
+      if (status === 'preparing') timing.startedAt ??= run.updatedAt;
+      if (status === 'succeeded' || status === 'failed' || status === 'cancelled') {
+        timing.finishedAt ??= run.updatedAt;
+        timing.outcome ??= status;
+      }
+    }
+    if (status === 'cancelled') {
+      for (const record of this.requestPrompts.values()) {
+        if (record.runId === run.id && record.sendStatus === 'pending')
+          record.sendStatus = 'unknown';
+      }
+    }
     if (run.providerJob) {
       run.providerJob = {
         ...run.providerJob,
@@ -892,6 +1012,9 @@ export class MemoryRunService implements RunService {
 async function mockRunExecutor({
   snapshot,
   reportProgress,
+  runId,
+  attempt,
+  onRequestPrompt,
 }: RunExecutorRequest): Promise<RunExecution> {
   const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
   if (!target) throw new Error('run target node is missing from snapshot');
@@ -899,11 +1022,28 @@ async function mockRunExecutor({
 
   const mediaType = target.data.mediaType;
   const label = target.data.label.trim() || 'Untitled output';
+  const prompt = target.data.promptDocument
+    ? renderPromptDocument(target.data.promptDocument).trim()
+    : (target.data.prompt?.trim() ?? '');
+  if (onRequestPrompt && runId) {
+    await onRequestPrompt({
+      schemaVersion: 1,
+      runId,
+      nodeId: snapshot.targetNodeId,
+      attempt: attempt ?? 1,
+      provider: 'mock',
+      modelAlias: snapshot.modelAlias,
+      mediaType,
+      requestIdentity: 'mock/execute#1',
+      format: 'plain',
+      parts: [{ order: 0, text: prompt }],
+      resources: [],
+      sendStatus: 'pending',
+      createdAt: new Date().toISOString(),
+    });
+  }
   let output: RunExecutionOutput;
   if (mediaType === 'text') {
-    const prompt = target.data.promptDocument
-      ? renderPromptDocument(target.data.promptDocument).trim()
-      : target.data.prompt?.trim();
     const text = prompt ? `Mock output for ${label}\n${prompt}` : `Mock output for ${label}`;
     output = { mediaType, kind: 'text', text, mimeType: 'text/plain', format: 'txt' };
   } else if (mediaType === 'image') {

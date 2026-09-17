@@ -115,6 +115,87 @@ describe('RequestPromptDialog', () => {
     expect(screen.getByRole('button', { name: '复制完整提示词' })).toBeEnabled();
   });
 
+  it('添加摘要只提交摘要草稿，完整真实请求文本仍只读且可复制', async () => {
+    const onSaveSummary = vi.fn().mockResolvedValue(undefined);
+    const original = record({ summary: undefined });
+    render(
+      <RequestPromptDialog
+        state={{ status: 'ready', record: original }}
+        onClose={vi.fn()}
+        onSaveSummary={onSaveSummary}
+      />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: '添加摘要' }));
+    const editor = screen.getByRole('textbox', { name: '摘要正文' });
+    expect(editor).toHaveFocus();
+    await userEvent.type(editor, '素雅的古风人物着装。');
+    await userEvent.click(screen.getByRole('button', { name: '保存摘要' }));
+    await waitFor(() => expect(onSaveSummary).toHaveBeenCalledWith('素雅的古风人物着装。'));
+    await waitFor(() => expect(screen.queryByRole('textbox')).not.toBeInTheDocument());
+    expect(document.querySelector('.request-prompt-text')).toHaveTextContent('月白布衫，青裙');
+    expect(original.parts).toEqual([{ order: 0, text: '月白布衫，青裙' }]);
+  });
+
+  it('编辑失败保留草稿并允许重试，取消不会保存', async () => {
+    const onSaveSummary = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('网络中断'))
+      .mockResolvedValue(undefined);
+    render(
+      <RequestPromptDialog
+        state={{ status: 'ready', record: record() }}
+        onClose={vi.fn()}
+        onSaveSummary={onSaveSummary}
+      />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: '编辑摘要' }));
+    const editor = screen.getByRole('textbox', { name: '摘要正文' });
+    await userEvent.clear(editor);
+    await userEvent.type(editor, '新摘要');
+    await userEvent.click(screen.getByRole('button', { name: '保存摘要' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('网络中断');
+    expect(editor).toHaveValue('新摘要');
+    await userEvent.click(screen.getByRole('button', { name: '保存摘要' }));
+    await waitFor(() => expect(screen.queryByRole('textbox')).not.toBeInTheDocument());
+    expect(onSaveSummary).toHaveBeenCalledTimes(2);
+    await userEvent.click(screen.getByRole('button', { name: '编辑摘要' }));
+    await userEvent.click(screen.getByRole('button', { name: '取消' }));
+    expect(onSaveSummary).toHaveBeenCalledTimes(2);
+  });
+
+  it('切换资产记录重置草稿并显示对应结果耗时', async () => {
+    const onSaveSummary = vi.fn();
+    const view = render(
+      <RequestPromptDialog
+        state={{ status: 'ready', record: record() }}
+        onClose={vi.fn()}
+        onSaveSummary={onSaveSummary}
+      />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: '编辑摘要' }));
+    await userEvent.type(screen.getByRole('textbox', { name: '摘要正文' }), '未保存');
+    view.rerender(
+      <RequestPromptDialog
+        state={{
+          status: 'ready',
+          record: record({ runId: 'older-run', assetVersion: 1 }),
+          timing: {
+            nodeId: 'node-1',
+            startedAt: '2026-09-16T10:00:00.000Z',
+            finishedAt: '2026-09-16T10:00:04.500Z',
+            outcome: 'succeeded',
+          },
+        }}
+        onClose={vi.fn()}
+        onSaveSummary={onSaveSummary}
+      />,
+    );
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+    expect(screen.getByText('asset-1 · v1')).toBeInTheDocument();
+    expect(screen.getByText('4.5 s')).toBeInTheDocument();
+    expect(onSaveSummary).not.toHaveBeenCalled();
+  });
+
   it('模型、生成时间与结果版本显示在紧凑信息行', () => {
     render(<RequestPromptDialog state={{ status: 'ready', record: record() }} onClose={vi.fn()} />);
     expect(screen.getByText('grok-image-1')).toBeInTheDocument();
@@ -244,6 +325,17 @@ describe('NodeDurationBadge', () => {
     rerender(<NodeDurationBadge timing={{ nodeId: 'node-1' }} now={Date.now()} />);
     expect(screen.getByText('未记录')).toBeInTheDocument();
     expect(screen.queryByText('0.0 s')).not.toBeInTheDocument();
+  });
+
+  it('已结束的结果缺少终态时间时不冒充仍在执行', () => {
+    render(
+      <NodeDurationBadge
+        timing={{ nodeId: 'node-1', startedAt: '2026-09-16T10:00:00.000Z' }}
+        now={Date.parse('2026-09-16T10:05:00.000Z')}
+      />,
+    );
+    expect(screen.getByText('未记录')).toBeInTheDocument();
+    expect(document.querySelector('.node-duration-spinner')).not.toBeInTheDocument();
   });
 
   it('时间顺序异常标记不可用，避免负数', () => {

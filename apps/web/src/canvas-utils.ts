@@ -28,6 +28,8 @@ export type FlowNodeData = CanvasDocument['nodes'][number]['data'] & {
    * 因此不会写入画布文档，也不会进入运行快照。
    */
   nodeTiming?: NodeTiming;
+  /** 当前展示结果版本的执行时间；与正在运行的新任务独立，不写入画布或剪贴板。 */
+  resultTiming?: NodeTiming;
   /** Runtime-only output metadata; never persist generated results into the canvas. */
   resultAsset?: RunResultAsset;
 };
@@ -241,6 +243,7 @@ export function toCanvasDocument(
         runProgress: _runProgress,
         runError: _runError,
         nodeTiming: _nodeTiming,
+        resultTiming: _resultTiming,
         resultAsset: _resultAsset,
         modelAlias,
         ...savedData
@@ -858,6 +861,7 @@ function cloneNodeForClipboard(node: AssetFlowNode): AssetFlowNode {
     runProgress: _runProgress,
     runError: _runError,
     nodeTiming: _nodeTiming,
+    resultTiming: _resultTiming,
     resultAsset: _resultAsset,
     ...data
   } = cloned.data;

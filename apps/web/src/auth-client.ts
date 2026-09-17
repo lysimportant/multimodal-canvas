@@ -1,3 +1,5 @@
+import { synchronizeServerClock } from './server-clock';
+
 /** 当前会话可公开的用户资料；不包含密码、验证码或密钥。 */
 export type AuthUser = {
   id: string;
@@ -218,7 +220,9 @@ export async function apiFetch(
   const requestInit = withAuthHeaders(init);
   const authorization = new Headers(requestInit.headers).get('authorization');
   const requestToken = authorization?.startsWith('Bearer ') ? authorization.slice(7) : null;
+  const requestStartedAt = performance.now();
   const response = await fetch(input, requestInit);
+  synchronizeServerClock(response.headers?.get('x-server-time') ?? null, requestStartedAt);
   if (response.status === 401 && !options.skipUnauthorized) {
     notifyUnauthorized(requestToken);
   }

@@ -33,7 +33,7 @@ import {
   type OnEdgesChange,
   type OnNodesChange,
 } from '@xyflow/react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   useCallback,
   useEffect,
@@ -52,7 +52,6 @@ import {
   type MediaType,
   type NodeMode,
   type PromptDocument,
-  type RequestPromptRecord,
   type RunRecord,
   type VideoCompletionAction,
   type VideoMode,
@@ -71,6 +70,7 @@ import {
   getNewNodeDimensions,
   withoutNodeAutoGrowthLimit,
   assignNodeToGroup,
+  expandGroupToFitNode,
   createCanvasGroup,
   nodeCenter,
   normalizeCanvasGroups,
@@ -103,6 +103,8 @@ import {
   type NodeRunTarget,
 } from './workspace/fork-generate-node';
 import { fetchNodeEchoText } from './workspace/node-echo-text';
+import { fetchAssetVersions } from './result-versions';
+import { fetchAssetRequestPrompt, saveRequestPromptSummary } from './request-prompts';
 import {
   collectEmptyNodeCandidates,
   hasRetainedResult,
@@ -168,6 +170,7 @@ import {
 import { AppQueryProvider } from './query/client';
 import { useAiCredentialsQuery } from './query/credentials';
 import { useCredentialModelCatalogQueries } from './query/models';
+import { findCredentialDefaultEntry, resolveMediaDefault } from './settings-utils';
 import {
   mergeRunUpdate,
   shouldApplyRunUpdate,
@@ -186,6 +189,8 @@ import {
   type AssetFilter,
   type ModelEntry,
   type ModelSelection,
+  type AiSettings,
+  type ModelDefaults,
 } from './workspace/contracts';
 import {
   apiFetch,
@@ -553,6 +558,32 @@ function WorkspaceApp({
   const [isRunning, setIsRunning] = useState(false);
   const [saveState, setSaveState] = useState('准备就绪');
   const [projectId, setProjectId] = useState<string | null>(null);
+  const defaultsQuery = useQuery({
+    queryKey: ['node-model-defaults', authUser?.id, authUser?.role, projectId],
+    enabled: Boolean(authUser && projectId),
+    queryFn: async ({ signal }): Promise<{ global: ModelDefaults; project: ModelDefaults }> => {
+      const [globalResponse, projectResponse] = await Promise.all([
+        authUser?.role === 'admin'
+          ? apiFetch(`${API_BASE_URL}/v1/settings/ai`, { signal })
+          : Promise.resolve(null),
+        apiFetch(`${API_BASE_URL}/v1/projects/${encodeURIComponent(projectId!)}/models/defaults`, {
+          signal,
+        }),
+      ]);
+      const global: { settings?: AiSettings; error?: string } = globalResponse
+        ? await globalResponse.json()
+        : {};
+      const project = (await projectResponse.json()) as {
+        defaults?: ModelDefaults;
+        error?: string;
+      };
+      if (globalResponse && (!globalResponse.ok || !global.settings))
+        throw new Error(global.error ?? '全局默认模型加载失败');
+      if (!projectResponse.ok || !project.defaults)
+        throw new Error(project.error ?? '项目默认模型加载失败');
+      return { global: global.settings?.defaultModels ?? {}, project: project.defaults };
+    },
+  });
   const [projectName, setProjectName] = useState('未命名项目');
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [showProjects, setShowProjects] = useState(false);
@@ -622,8 +653,11 @@ function WorkspaceApp({
   const pendingRunUpdateRef = useRef(new Set<string>());
   /** 生成提示词 Dialog 的当前节点与读取状态。 */
   const [promptDialog, setPromptDialog] = useState<
-    { nodeId: string; state: RequestPromptDialogState } | undefined
+    | { nodeId: string; assetId?: string; version?: number; state: RequestPromptDialogState }
+    | undefined
   >(undefined);
+  /** 防止关闭、切换节点或版本后的异步响应重新打开旧说明。 */
+  const promptRequestRef = useRef(0);
   const selectedNode = useMemo(
     () => nodes.find((node) => node.id === selectedNodeId) ?? null,
     [nodes, selectedNodeId],
@@ -774,17 +808,29 @@ function WorkspaceApp({
       return;
     }
     const counts = describeClearCanvasScope(nodesRef.current, edgesRef.current, groupsRef.current);
+    const activeRuns = new Set(
+      Object.values(runRecordsRef.current)
+        .filter((run) => isActiveRunStatus(run.status))
+        .map((run) => run.id),
+    ).size;
     if (
-      !window.confirm(`确定清空当前画布吗？将移除${counts}。画布资源不会删除，且可以通过撤销恢复。`)
+      !window.confirm(
+        `确定清空当前画布吗？将移除${counts}。当前有 ${activeRuns} 个在途任务，清空后仍会继续执行，结果保留在资源库。画布资源不会删除，且可以通过撤销恢复。`,
+      )
     )
       return;
     rememberHistory();
+    nodesRef.current = [];
+    edgesRef.current = [];
+    groupsRef.current = [];
     setNodes([]);
     setEdges([]);
     setGroups([]);
     setSelectedNodeId(null);
     setSelectedGroupId(null);
     setDropTargetGroupId(null);
+    promptRequestRef.current += 1;
+    setPromptDialog(undefined);
     canvasDirtyRef.current = true;
     setNotice({ kind: 'success', message: '画布已清空，可通过撤销恢复' });
   }, [rememberHistory, setEdges, setNodes]);
@@ -797,51 +843,77 @@ function WorkspaceApp({
    * 相连的边以及组内的成员引用，组本身（空组）保留；整个清理是一次历史事务。
    */
   const clearEmptyNodes = useCallback(() => {
-    const { candidateIds } = collectEmptyNodeCandidates(
-      nodesRef.current,
-      buildEmptyNodeRuntimeState({
-        edges: edgesRef.current,
-        nodes: nodesRef.current,
-        runRecords: runRecordsRef.current,
-        pendingUpdateNodeIds: pendingRunUpdateRef.current,
-        contentLocks: nodeContentLocksRef.current,
-        runLocks: nodeRunLocksRef.current,
-      }),
-    );
+    /** 每轮确认后重新读取实时状态，避免异步运行或输入使候选失效。 */
+    const currentCandidateIds = () =>
+      collectEmptyNodeCandidates(
+        nodesRef.current,
+        buildEmptyNodeRuntimeState({
+          edges: edgesRef.current,
+          nodes: nodesRef.current,
+          runRecords: runRecordsRef.current,
+          pendingUpdateNodeIds: pendingRunUpdateRef.current,
+          contentLocks: nodeContentLocksRef.current,
+          runLocks: nodeRunLocksRef.current,
+        }),
+      ).candidateIds;
+    const candidateIds = currentCandidateIds();
     if (candidateIds.length === 0) return;
-    const removable = new Set(candidateIds);
-    const removedEdges = edgesRef.current.filter(
-      (edge) => removable.has(edge.source) || removable.has(edge.target),
-    );
-    if (
-      !window.confirm(
-        `确定清空空节点吗？将移除 ${candidateIds.length} 个空节点` +
-          `${removedEdges.length > 0 ? `和 ${removedEdges.length} 条关联连线` : ''}。` +
-          '已填写提示词、已绑定资源或有生成结果的节点会保留，且本次清理可以撤销。',
+    let removable = new Set(candidateIds);
+    let changed = false;
+    while (removable.size > 0) {
+      const removedEdgeCount = edgesRef.current.filter(
+        (edge) => removable.has(edge.source) || removable.has(edge.target),
+      ).length;
+      if (
+        !window.confirm(
+          `${changed ? '节点状态已变化，请确认更新后的范围。' : ''}确定清空空节点吗？将移除 ${removable.size} 个空节点` +
+            `${removedEdgeCount > 0 ? `和 ${removedEdgeCount} 条关联连线` : ''}。` +
+            '已填写提示词、已绑定资源或有生成结果的节点会保留，且本次清理可以撤销。',
+        )
       )
-    ) {
+        return;
+      const latest = new Set(currentCandidateIds().filter((id) => removable.has(id)));
+      const latestEdgeCount = edgesRef.current.filter(
+        (edge) => latest.has(edge.source) || latest.has(edge.target),
+      ).length;
+      const stable = latest.size === removable.size && latestEdgeCount === removedEdgeCount;
+      removable = latest;
+      if (stable) break;
+      changed = true;
+    }
+    if (removable.size === 0) {
+      setNotice({
+        kind: 'success',
+        message: '节点状态已变化，当前有 0 个可清理的空节点，未移除任何内容',
+      });
       return;
     }
     rememberHistory();
     const remainingNodes = nodesRef.current.filter((node) => !removable.has(node.id));
+    const remainingEdges = edgesRef.current.filter(
+      (edge) => !removable.has(edge.source) && !removable.has(edge.target),
+    );
+    const remainingGroups = pruneGroupMembers(
+      groupsRef.current,
+      remainingNodes.map((node) => node.id),
+    );
+    nodesRef.current = remainingNodes;
+    edgesRef.current = remainingEdges;
+    groupsRef.current = remainingGroups;
     setNodes(remainingNodes);
-    setEdges(
-      edgesRef.current.filter((edge) => !removable.has(edge.source) && !removable.has(edge.target)),
-    );
-    // 成员被移除后同步组内引用，空组本身保留。
-    setGroups(
-      pruneGroupMembers(
-        groupsRef.current,
-        remainingNodes.map((node) => node.id),
-      ),
-    );
+    setEdges(remainingEdges);
+    setGroups(remainingGroups);
     setSelectedNodeId((current) => (current && removable.has(current) ? null : current));
+    if (promptDialog && removable.has(promptDialog.nodeId)) {
+      promptRequestRef.current += 1;
+      setPromptDialog(undefined);
+    }
     canvasDirtyRef.current = true;
     setNotice({
       kind: 'success',
-      message: `已清理 ${candidateIds.length} 个空节点，可通过撤销恢复`,
+      message: `已清理 ${removable.size} 个空节点，可通过撤销恢复`,
     });
-  }, [rememberHistory, setEdges, setNodes]);
+  }, [promptDialog, rememberHistory, setEdges, setNodes]);
 
   /**
    * 清空菜单的候选数量。
@@ -1241,6 +1313,8 @@ function WorkspaceApp({
         setSelectedNodeId(null);
         runRecordsRef.current = {};
         setRunRecords({});
+        promptRequestRef.current += 1;
+        setPromptDialog(undefined);
         refreshedResultAssetKeysRef.current.clear();
         setIsRunning(false);
         historyRef.current = { past: [], future: [] };
@@ -1576,7 +1650,7 @@ function WorkspaceApp({
   );
 
   /**
-   * 在指定画布位置新建操作节点：沿用上一同类节点，否则用本机模型偏好或目录首项，并选中第一项参数。
+   * 新建节点优先继承项目和类型默认；未配置默认时沿用同类节点或本机偏好。
    * @param mediaType 新节点媒体类型。
    * @param position 新节点左上角画布坐标。
    * @param mode 节点模式；生成流程固定为 generate。
@@ -1591,13 +1665,39 @@ function WorkspaceApp({
     ): AssetFlowNode => {
       nodePreferenceNoticeRef.current = null;
       const previous = resolvePreviousOperationSeed(nodesRef.current, mediaType, mode);
-      let selection = previous?.modelAlias
+      const credentials = credentialsQuery.data ?? [];
+      const bound = findCredentialDefaultEntry(credentials, mediaType);
+      const resolved = resolveMediaDefault(mediaType, {
+        projectDefaults: defaultsQuery.data?.project ?? {},
+        globalDefaults: bound
+          ? { [mediaType]: bound.selection }
+          : (defaultsQuery.data?.global ?? {}),
+        credentials,
+        activeCredentialId: credentials.find((credential) => credential.active)?.id,
+      });
+      const configuredSelection =
+        defaultsQuery.data?.project[mediaType] ??
+        bound?.selection ??
+        defaultsQuery.data?.global[mediaType];
+      const mayUsePreference = defaultsQuery.isSuccess && authUser?.role === 'admin';
+      if (defaultsQuery.error)
+        nodePreferenceNoticeRef.current = '默认模型加载失败，生成时将由服务端解析默认配置';
+      let selection: ModelSelection | undefined = resolved.modelAlias
         ? {
-            modelAlias: previous.modelAlias,
-            ...(previous.credentialId ? { credentialId: previous.credentialId } : {}),
+            modelAlias: resolved.modelAlias,
+            credentialId:
+              resolved.credentialId ??
+              (typeof configuredSelection === 'object'
+                ? configuredSelection.credentialId
+                : undefined),
           }
-        : undefined;
-      if (!selection && authUser) {
+        : mayUsePreference && previous?.modelAlias
+          ? {
+              modelAlias: previous.modelAlias,
+              ...(previous.credentialId ? { credentialId: previous.credentialId } : {}),
+            }
+          : undefined;
+      if (!selection && authUser && mayUsePreference) {
         try {
           selection = readNodeModelPreference(authUser.id, mediaType, mode, modelCatalog);
         } catch (error) {
@@ -1608,20 +1708,20 @@ function WorkspaceApp({
       const catalogModel = modelCatalog.find((candidate) =>
         candidate.mediaTypes.includes(mediaType),
       );
-      if (!selection && catalogModel) {
+      if (!selection && catalogModel && mayUsePreference) {
         selection = {
           modelAlias: catalogModel.id,
           ...(catalogModel.credentialId ? { credentialId: catalogModel.credentialId } : {}),
         };
       }
       const model = selection
-        ? (modelCatalog.find(
+        ? modelCatalog.find(
             (candidate) =>
               candidate.id === selection.modelAlias &&
               candidate.credentialId === selection.credentialId &&
               candidate.mediaTypes.includes(mediaType),
-          ) ?? catalogModel)
-        : catalogModel;
+          )
+        : undefined;
       return withNodeAutoGrowthLimit({
         id: `node_${mediaType}_${mode}_${crypto.randomUUID()}`,
         type: mediaType,
@@ -1636,7 +1736,11 @@ function WorkspaceApp({
             mediaType,
             mode,
             ...selection,
-            ...(previous?.parameters ? { parameters: previous.parameters } : {}),
+            ...(previous?.parameters &&
+            previous.modelAlias === selection?.modelAlias &&
+            previous.credentialId === selection?.credentialId
+              ? { parameters: previous.parameters }
+              : {}),
             ...(previous?.inferenceStrength
               ? { inferenceStrength: previous.inferenceStrength }
               : {}),
@@ -1647,7 +1751,14 @@ function WorkspaceApp({
         ),
       });
     },
-    [authUser, modelCatalog],
+    [
+      authUser,
+      modelCatalog,
+      credentialsQuery.data,
+      defaultsQuery.data,
+      defaultsQuery.isSuccess,
+      defaultsQuery.error,
+    ],
   );
 
   const createGenerateNode = useCallback(
@@ -1993,9 +2104,10 @@ function WorkspaceApp({
    * 父节点只取消选中，不改位置、尺寸或产物字段。新节点短暂抬升层级，避免被邻近节点挡住。
    * @param child 新建的子节点。
    * @param extraEdges 这次分叉新建的边。
+   * @param parentId 来源节点 ID；子节点继承其分组，区域扩展与节点创建共用一次撤销。
    */
   const commitForkGraph = useCallback(
-    (child: AssetFlowNode, extraEdges: FlowEdge[]) => {
+    (child: AssetFlowNode, extraEdges: FlowEdge[], parentId: string) => {
       rememberHistory();
       const elevatedChild = { ...child, selected: true, zIndex: FORK_NODE_Z_INDEX };
       const nextNodes = [
@@ -2003,9 +2115,17 @@ function WorkspaceApp({
         elevatedChild,
       ];
       const nextEdges = [...edgesRef.current, ...extraEdges];
+      const sourceGroup = groupsRef.current.find((group) => group.nodeIds.includes(parentId));
+      const nextGroups = sourceGroup
+        ? assignNodeToGroup(groupsRef.current, child.id, sourceGroup.id).map((group) =>
+            group.id === sourceGroup.id ? expandGroupToFitNode(group, elevatedChild) : group,
+          )
+        : groupsRef.current;
       nodesRef.current = nextNodes;
       edgesRef.current = nextEdges;
+      groupsRef.current = nextGroups;
       setNodes(nextNodes);
+      setGroups(nextGroups);
       setSelectedNodeId(child.id);
       setEdges(nextEdges);
       canvasDirtyRef.current = true;
@@ -2530,9 +2650,9 @@ function WorkspaceApp({
                   runStatus: run.status,
                   runProgress: run.progress,
                   runError: run.error,
-                  // 耗时跟随当前展示的结果版本：终态后冻结，运行中由共享时钟递增。
                   nodeTiming: run.nodeTimings?.[nodeId],
-                  resultAsset: hasResultAsset ? run.result?.asset : undefined,
+                  resultAsset: resultAsset ?? node.data.resultAsset,
+                  resultTiming: resultAsset ? run.nodeTimings?.[nodeId] : node.data.resultTiming,
                   ...(node.data.manualOutput && run.status === 'succeeded' && hasResultAsset
                     ? { manualOutput: undefined, manualOutputRunId: undefined }
                     : {}),
@@ -2597,46 +2717,50 @@ function WorkspaceApp({
   /**
    * 打开节点的只读「生成提示词」Dialog。
    *
-   * 只读取该节点本次执行真正发送的请求记录：有记录时按记录展示，只有冻结输入
-   * 时明确显示“历史输入快照，未记录最终请求”，没有任何记录时显示未记录。
-   * 不从文件名、当前编辑框或其它节点推测内容。
+   * 只查询当前展示的资产版本；新任务尚未成功时仍读取旧结果，不回退到最新运行。
    *
    * @param nodeId 目标节点 ID。
    */
   const openRequestPrompt = useCallback(async (nodeId: string) => {
-    const show = (state: RequestPromptDialogState) => setPromptDialog({ nodeId, state });
+    const requestId = ++promptRequestRef.current;
+    const node = nodesRef.current.find((candidate) => candidate.id === nodeId);
+    const result = node?.data.manualOutput ? undefined : node?.data.resultAsset;
+    const assetId = result?.assetId ?? node?.data.assetId;
+    let version = result?.version;
+    const show = (state: RequestPromptDialogState) => {
+      if (requestId === promptRequestRef.current)
+        setPromptDialog({ nodeId, assetId, version, state });
+    };
     show({ status: 'loading' });
-    const run = runRecordsRef.current[nodeId];
-    const runId = run?.id;
-    if (!runId) {
-      show({ status: 'missing' });
+    if (!assetId) {
+      const historical = runRecordsRef.current[nodeId]?.snapshot.nodes?.find(
+        (candidate) => candidate.id === nodeId,
+      );
+      const data = historical?.data ?? node?.data;
+      const text = data?.promptDocument ? renderPromptDocument(data.promptDocument) : data?.prompt;
+      show(
+        text ? { status: 'input', text, historical: Boolean(historical) } : { status: 'missing' },
+      );
       return;
     }
     try {
-      const response = await apiFetch(
-        `${API_BASE_URL}/v1/runs/${encodeURIComponent(runId)}/request-prompts?nodeId=${encodeURIComponent(nodeId)}`,
-      );
-      const result = (await response.json().catch(() => ({}))) as {
-        records?: Array<{ id: string }>;
-        error?: string;
-      };
-      if (!response.ok) throw new Error(result.error ?? '生成说明加载失败');
-      const recordId = result.records?.[0]?.id;
-      if (!recordId) {
-        show({ status: 'missing' });
+      version ??= (await fetchAssetVersions(assetId, API_BASE_URL, apiFetch)).at(-1)?.version;
+      if (!version) throw new Error('结果版本未记录');
+      const result = await fetchAssetRequestPrompt(assetId, version, API_BASE_URL);
+      if (!result.record) {
+        show(
+          result.inputSnapshot
+            ? { status: 'input', historical: true, text: result.inputSnapshot.text }
+            : { status: 'missing' },
+        );
         return;
       }
-      const detail = await apiFetch(
-        `${API_BASE_URL}/v1/runs/${encodeURIComponent(runId)}/request-prompts/${encodeURIComponent(recordId)}`,
-      );
-      const detailResult = (await detail.json().catch(() => ({}))) as {
-        record?: RequestPromptRecord;
-        error?: string;
-      };
-      if (!detail.ok || !detailResult.record) {
-        throw new Error(detailResult.error ?? '生成说明加载失败');
-      }
-      show({ status: 'ready', record: detailResult.record });
+      show({
+        status: 'ready',
+        record: result.record,
+        recordId: result.recordId,
+        timing: result.timing,
+      });
     } catch (error) {
       show({
         status: 'failed',
@@ -2675,7 +2799,9 @@ function WorkspaceApp({
           throw new Error(result.error ?? '运行记录加载失败');
         }
         if (!active) return;
-        for (const run of result.runs) {
+        for (const run of [...result.runs].sort((left, right) =>
+          left.createdAt.localeCompare(right.createdAt),
+        )) {
           if (!active) break;
           updateNodeRunState(run.targetNodeId, run);
         }
@@ -2878,7 +3004,7 @@ function WorkspaceApp({
           }
 
           nodePreferenceNoticeRef.current = preferredModelNotice;
-          commitForkGraph(child, extraEdges);
+          commitForkGraph(child, extraEdges, source.id);
           setNotice(
             preferredModelNotice
               ? { kind: 'error', message: `已创建新节点；${preferredModelNotice}` }
@@ -3445,8 +3571,34 @@ function WorkspaceApp({
           <RequestPromptDialog
             state={promptDialog.state}
             triggerId={`node-prompt-trigger-${promptDialog.nodeId}`}
-            onClose={() => setPromptDialog(undefined)}
+            onClose={() => {
+              promptRequestRef.current += 1;
+              setPromptDialog(undefined);
+            }}
             onRetry={() => void openRequestPrompt(promptDialog.nodeId)}
+            onSaveSummary={
+              promptDialog.assetId &&
+              promptDialog.version &&
+              promptDialog.state.status === 'ready' &&
+              promptDialog.state.recordId
+                ? async (summary) => {
+                    const current = promptDialog;
+                    if (current.state.status !== 'ready' || !current.state.recordId) return;
+                    const record = await saveRequestPromptSummary(
+                      current.assetId!,
+                      current.version!,
+                      current.state.recordId,
+                      summary,
+                      API_BASE_URL,
+                    );
+                    setPromptDialog((dialog) =>
+                      dialog === current
+                        ? { ...current, state: { ...current.state, status: 'ready', record } }
+                        : dialog,
+                    );
+                  }
+                : undefined
+            }
           />
         ) : null}
 
@@ -3562,7 +3714,10 @@ function WorkspaceApp({
           <SettingsPanel
             projectId={projectId}
             projectName={projectName}
-            onClose={() => setShowSettings(false)}
+            onClose={() => {
+              setShowSettings(false);
+              void defaultsQuery.refetch();
+            }}
             onNotice={setNotice}
             canManageAiSettings={authUser.role === 'admin'}
           />
