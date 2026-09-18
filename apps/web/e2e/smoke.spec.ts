@@ -2114,6 +2114,12 @@ test('settings are truly modal and contained on desktop and narrow viewports', a
 
   await trigger.click();
   dialog = page.getByRole('dialog', { name: 'AI 连接' });
+  await dialog.getByRole('tab', { name: '节点默认' }).click();
+  await dialog.getByRole('button', { name: '查看模型来源解析顺序' }).first().focus();
+  await expect(dialog.getByRole('tooltip')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('tooltip')).toHaveCount(0);
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
   await expect(trigger).toBeFocused();

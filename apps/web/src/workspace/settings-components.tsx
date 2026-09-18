@@ -1,4 +1,5 @@
 import { useId, useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
+import { Info } from 'lucide-react';
 
 import { Button, Input } from '@multimodal-canvas/ui';
 
@@ -56,7 +57,7 @@ export function SettingsOperationStatuses({
 /**
  * 渲染模型来源摘要；引用的 Key 已被删除时显示失效状态而不是换用其他 Key。
  * @param props.sourceLabel 来源层级标签，例如「继承自项目」。
- * @param props.hint 解析顺序说明。
+ * @param props.hint 解析顺序说明；仅在辅助提示获得 hover 或 focus 时显示。
  * @param props.credentialLabel 提供该模型的凭据地址与指纹。
  * @param props.invalidReason 失效原因；存在时整行标记为失效。
  */
@@ -71,9 +72,56 @@ export function SettingsSourceSummary({
   credentialLabel?: string;
   invalidReason?: string;
 }) {
+  const hintId = `settings-source-hint-${useId().replace(/:/g, '')}`;
+  const [hintHovered, setHintHovered] = useState(false);
+  const [hintFocused, setHintFocused] = useState(false);
+  const hintVisible = hintHovered || hintFocused;
+
+  useEffect(() => {
+    if (!hintVisible) return;
+    /** 在 Dialog 的 document 捕获监听前关闭提示，保留设置窗口和草稿。 */
+    const dismissHint = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      setHintHovered(false);
+      setHintFocused(false);
+    };
+    window.addEventListener('keydown', dismissHint, true);
+    return () => window.removeEventListener('keydown', dismissHint, true);
+  }, [hintVisible]);
+
   return (
     <span className="settings-source" data-invalid={invalidReason ? 'true' : 'false'}>
-      <span className="settings-source-label">{sourceLabel}</span>
+      <span className="settings-source-heading">
+        <span className="settings-source-label">{sourceLabel}</span>
+        <span
+          className="settings-source-help"
+          onPointerEnter={() => setHintHovered(true)}
+          onPointerLeave={() => setHintHovered(false)}
+        >
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="settings-source-help-trigger"
+            aria-label="查看模型来源解析顺序"
+            aria-describedby={hintId}
+            onFocus={() => setHintFocused(true)}
+            onBlur={() => setHintFocused(false)}
+          >
+            <Info size={13} aria-hidden="true" />
+          </Button>
+          <span
+            className="settings-source-hint settings-source-tooltip"
+            id={hintId}
+            role="tooltip"
+            hidden={!hintVisible}
+          >
+            {hint}
+          </span>
+        </span>
+      </span>
       {invalidReason === 'credential-missing' ? (
         <span className="settings-source-invalid" role="alert">
           已失效：引用的 Key 已被删除，请重新选择连接
@@ -84,8 +132,11 @@ export function SettingsSourceSummary({
           已失效：模型不在该 Key 的模型目录中
         </span>
       ) : null}
-      {credentialLabel ? <span className="settings-source-key">{credentialLabel}</span> : null}
-      <span className="settings-source-hint">{hint}</span>
+      {credentialLabel ? (
+        <span className="settings-source-key" title={credentialLabel}>
+          {credentialLabel}
+        </span>
+      ) : null}
     </span>
   );
 }

@@ -1,88 +1,82 @@
+/* 独立设置页沿用项目主题，范围提示与分类导航各占一层。 */
 .mc-settings-page {
-  padding-bottom: 72px;
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    'Microsoft YaHei',
+    sans-serif;
+  padding-bottom: 32px;
+  letter-spacing: 0;
+}
+
+.mc-settings-page > .mc-page-container {
+  max-width: 1400px;
+  padding-inline: 32px;
 }
 
 .mc-settings-heading {
   align-items: center;
-  border-bottom: 1px solid var(--mc-border-strong, #d3dce0);
+  border-bottom: 1px solid var(--mc-border);
   display: flex;
-  gap: 16px;
-  padding: 58px 0 30px;
-}
-.mc-settings-api-ad {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  min-height: 32px;
-  padding: 0 11px;
-  border: 1px solid var(--mc-accent, #18794e);
-  border-radius: 999px;
-  color: var(--mc-accent, #18794e);
-  font-size: 12px;
-  font-weight: 650;
-  text-decoration: none;
-}
-.mc-settings-api-ad:hover {
-  background: var(--mc-accent-soft, #edf7f2);
+  gap: 14px;
+  padding: 28px 0 24px;
 }
 
 .mc-settings-heading-icon {
   align-items: center;
-  background: var(--mc-text-strong, #172033);
-  color: var(--mc-surface, #ffffff);
+  color: var(--mc-accent-strong);
   display: flex;
-  flex: 0 0 44px;
-  height: 44px;
+  flex: 0 0 40px;
+  height: 40px;
   justify-content: center;
-  width: 44px;
 }
 
-.mc-settings-layout {
-  align-items: start;
-  display: grid;
-  gap: 38px;
-  grid-template-columns: 210px minmax(0, 1fr);
-  padding-top: 30px;
-}
-
-.mc-settings-layout > aside {
-  border-top: 2px solid var(--mc-text-strong, #172033);
-  display: grid;
-  gap: 8px;
-  padding-top: 14px;
-}
-
-.mc-settings-layout > aside strong {
-  color: var(--mc-text-strong, #172033);
-  font-size: 12px;
-  margin-bottom: 4px;
-}
-
-.mc-settings-layout > aside > span {
-  border-left: 2px solid transparent;
-  color: var(--mc-text-muted, #687386);
-  font-size: 11px;
-  padding: 7px 9px;
-}
-
-.mc-settings-layout > aside > span.is-active {
-  background: var(--mc-surface-soft, #f7f8fa);
-  border-left-color: var(--mc-accent, #18794e);
-  color: var(--mc-text-strong, #172033);
-  font-weight: 700;
-}
-
-.mc-settings-layout > aside small {
-  border-top: 1px solid var(--mc-border, #e2e7eb);
-  color: var(--mc-text-faint, #8993a3);
-  font-size: 10px;
-  line-height: 1.6;
-  margin-top: 8px;
-  padding-top: 12px;
-}
-
+.mc-settings-heading-copy,
+.mc-settings-layout,
 .mc-settings-content {
   min-width: 0;
+}
+
+.mc-settings-page .mc-settings-heading h1 {
+  font-size: 26px;
+  font-weight: 650;
+  letter-spacing: 0;
+  line-height: 1.3;
+  margin: 0;
+}
+
+.mc-settings-page .mc-settings-context {
+  color: var(--mc-text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.mc-settings-api-ad {
+  align-items: center;
+  border: 1px solid var(--mc-border-strong);
+  border-radius: 6px;
+  color: var(--mc-text);
+  display: inline-flex;
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 600;
+  gap: 6px;
+  margin-left: auto;
+  min-height: 36px;
+  padding: 0 12px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.mc-settings-api-ad:hover {
+  background: var(--mc-surface-muted);
+  border-color: var(--mc-accent);
+  color: var(--mc-accent-strong);
 }
 
 .mc-settings-content > .settings-panel {
@@ -98,51 +92,508 @@
   width: 100%;
 }
 
-.mc-settings-page button:focus-visible,
-.mc-settings-page a:focus-visible,
-.mc-settings-page input:focus-visible,
-.mc-settings-page select:focus-visible {
-  outline: 2px solid var(--mc-accent, #18794e);
-  outline-offset: 2px;
+.mc-settings-page .settings-header {
+  align-items: center;
+  border-color: var(--mc-border);
+  min-height: 52px;
+  padding: 12px 0;
+}
+
+/* 外框已有页面标题，内层标题继续作为面板的可访问名称。 */
+.mc-settings-page .settings-header-copy > .eyebrow,
+.mc-settings-page #settings-title {
+  clip-path: inset(50%);
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
+.mc-settings-page .settings-header-status,
+.mc-settings-page .settings-save-state {
+  color: var(--mc-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.mc-settings-page .settings-body {
+  grid-template-columns: 184px minmax(0, 1fr);
+  min-height: 560px;
+}
+
+.mc-settings-page .settings-rail {
+  border-color: var(--mc-border);
+  overflow: visible;
+  padding: 24px 16px 24px 0;
+}
+
+.mc-settings-page .settings-rail-tabs {
+  gap: 4px;
+  position: sticky;
+  top: 88px;
+}
+
+.mc-settings-page .settings-rail-tab {
+  color: var(--mc-text-muted);
+  font-size: 14px;
+  line-height: 20px;
+  min-height: 40px;
+  padding: 10px 12px;
+  white-space: nowrap;
+}
+
+.mc-settings-page .settings-rail-tab:hover {
+  background: var(--mc-surface-muted);
+  color: var(--mc-text);
+}
+
+.mc-settings-page .settings-rail-tab[aria-selected='true'] {
+  background: var(--mc-accent-soft);
+  color: var(--mc-accent-strong);
+}
+
+.mc-settings-page .settings-rail-scope {
+  display: none;
+}
+
+.mc-settings-page .settings-content {
+  overflow: visible;
+  padding: 28px 0 32px 32px;
+}
+
+.mc-settings-page .settings-section-heading h2 {
+  color: var(--mc-text-strong);
+  font-size: 18px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.mc-settings-page .settings-status {
+  color: var(--mc-text-muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.mc-settings-page .settings-field > span:not(.settings-field-error),
+.mc-settings-page .settings-field-label {
+  color: var(--mc-text-muted);
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.mc-settings-page .settings-field input,
+.mc-settings-page .settings-field select {
+  background: var(--mc-surface);
+  border-color: var(--mc-border-strong);
+  border-radius: 6px;
+  font-size: 14px;
+  min-height: 40px;
+}
+
+.mc-settings-page input::placeholder {
+  color: var(--mc-text-muted);
+  opacity: 1;
+}
+
+.mc-settings-page
+  :is(
+    .settings-field-error,
+    .settings-source-invalid,
+    .settings-op-status.is-error,
+    .settings-inline-notice.is-error,
+    .settings-delete
+  ),
+.mc-settings-page .settings-source[data-invalid='true'] .settings-source-label {
+  color: #a62f30;
+}
+
+.mc-settings-page .settings-op-status.is-success {
+  color: var(--mc-accent-strong);
+}
+
+.mc-settings-page .settings-scope {
+  border-color: var(--mc-border);
+  gap: 6px;
+  margin-top: 20px;
+  padding-bottom: 16px;
+}
+
+.mc-settings-page .settings-scope .settings-status {
+  margin-left: 8px;
+}
+
+.mc-settings-page .settings-scope button,
+.mc-settings-page .settings-default-actions button[aria-expanded] {
+  background: var(--mc-surface);
+  border-color: var(--mc-border-strong);
+  color: var(--mc-text);
+}
+
+.mc-settings-page .settings-default-actions button:not([aria-expanded]) {
+  color: var(--mc-text-muted);
+}
+
+.mc-settings-page .settings-scope button:hover:not(:disabled),
+.mc-settings-page .settings-default-actions button:hover:not(:disabled) {
+  background: var(--mc-surface-muted);
+}
+
+.mc-settings-page .settings-scope button[aria-pressed='true'] {
+  background: var(--mc-accent);
+  border-color: var(--mc-accent);
+  color: #ffffff;
+}
+
+.mc-settings-page .settings-scope button[aria-pressed='true']:hover:not(:disabled) {
+  background: var(--mc-accent-strong);
+}
+
+.mc-settings-page .settings-section:has(#settings-defaults-title) {
+  display: grid;
+  column-gap: 24px;
+  grid-template-columns: 180px minmax(0, 1fr);
+}
+.mc-settings-page
+  .settings-section:has(#settings-defaults-title)
+  > :is(.settings-section-heading, .settings-default-rows, .settings-field-error) {
+  grid-column: 1 / -1;
+}
+.mc-settings-page .settings-generation-count-field {
+  margin-block: 20px;
+}
+.mc-settings-page .settings-section:has(#settings-defaults-title) > .settings-scope {
+  align-self: end;
+  border: 0;
+  margin-block: 20px;
+  padding: 0;
+}
+.mc-settings-page .settings-default-rows {
+  border-top: 1px solid var(--mc-border);
+}
+
+.mc-settings-page .settings-default-row {
+  border-color: var(--mc-border);
+}
+
+.mc-settings-page .settings-default-row[data-expanded='true'] {
+  background: transparent;
+}
+
+.mc-settings-page .settings-default-main {
+  column-gap: 20px;
+  grid-template-columns: 100px minmax(240px, 1.2fr) minmax(200px, 1fr) 118px;
+  padding: 16px 0;
+}
+
+.mc-settings-page .settings-default-type {
+  color: var(--mc-text-strong);
+  font-size: 13px;
+  gap: 8px;
+  padding-top: 27px;
+}
+
+.mc-settings-page .settings-model-input {
+  font-size: 14px !important;
+  min-height: 40px !important;
+}
+
+.mc-settings-page .settings-default-source {
+  gap: 8px;
+}
+
+.mc-settings-page .settings-source-choices {
+  gap: 6px 12px;
+}
+
+.mc-settings-page .settings-source-option {
+  color: var(--mc-text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.mc-settings-page .settings-source-option input {
+  accent-color: var(--mc-accent);
+  flex-shrink: 0;
+}
+
+.mc-settings-page .settings-source-key {
+  color: var(--mc-text-muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mc-settings-page .settings-default-actions {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 23px;
+}
+
+.mc-settings-page .settings-default-connection {
+  background: var(--mc-surface-soft);
+  border-left-width: 2px;
+  gap: 16px;
+  margin: 0 0 22px 120px;
+  padding: 16px 18px;
+}
+
+.mc-settings-page .settings-key-input > input {
+  min-width: 0;
+}
+
+.mc-settings-page .settings-actions {
+  gap: 8px;
+}
+
+/* 页内操作栏位于内容之上，层级低于应用导航及弹层。 */
+.mc-settings-page .settings-footer {
+  background: var(--mc-page-bg);
+  border-color: var(--mc-border);
+  bottom: 0;
+  min-height: 68px;
+  padding: 14px 0 14px 216px;
+  position: sticky;
+  z-index: 2;
+}
+
+.mc-settings-page button {
+  white-space: nowrap;
+}
+
+.mc-settings-page .button {
+  border-radius: 6px;
+  font-size: 13px;
+  min-height: 36px;
+}
+
+.mc-settings-page .settings-overview,
+.mc-settings-page .settings-overview .settings-row,
+.mc-settings-page .settings-models,
+.mc-settings-page .settings-models-table-wrap,
+.mc-settings-page .settings-models-table :is(th, td) {
+  border-color: var(--mc-border);
+}
+
+.mc-settings-page .settings-overview .settings-row {
+  align-items: center;
+  grid-template-columns: 168px minmax(0, 1fr);
+  padding-block: 16px;
+}
+
+.mc-settings-page .settings-overview dt,
+.mc-settings-page .settings-overview dd {
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.mc-settings-page .settings-section:has(#settings-connections-title) {
+  column-gap: 24px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.mc-settings-page
+  .settings-section:has(#settings-connections-title)
+  > :is(
+    .settings-section-heading,
+    .settings-field:first-of-type,
+    .settings-field:last-of-type,
+    .settings-actions,
+    .settings-models
+  ) {
+  grid-column: 1 / -1;
+}
+.mc-settings-page
+  .settings-section:has(#settings-connections-title)
+  > .settings-field:last-of-type {
+  max-width: 720px;
+}
+.mc-settings-page .settings-api-ad-row {
+  display: none;
+}
+
+.mc-settings-page .settings-models-heading h2 {
+  color: var(--mc-text-strong);
+  font-size: 15px;
+}
+
+.mc-settings-page .settings-models-table th {
+  background: var(--mc-surface-soft);
+  color: var(--mc-text-muted);
+  font-size: 12px;
+}
+
+.mc-settings-page .settings-models-table td,
+.mc-settings-page .settings-models-table code {
+  color: var(--mc-text);
+  font-size: 12px;
+}
+
+.mc-settings-page .settings-models-table-wrap > .settings-status {
+  margin: 0;
+  padding: 20px 12px;
+}
+
+.mc-settings-page .settings-appearance-grid {
+  gap: 8px 24px;
+  max-width: 800px;
+}
+
+.mc-settings-state {
+  align-content: center;
+  align-items: start;
+  display: grid;
+  gap: 12px;
+  min-height: 360px;
+  padding: 32px;
+}
+
+.mc-settings-state > span {
+  color: var(--mc-text-muted);
+  font-size: 14px;
+}
+
+.mc-settings-loading-bar {
+  background: var(--mc-surface-muted);
+  border-radius: 6px;
+  height: 12px;
+  max-width: 360px;
+  width: 60%;
+}
+
+.mc-settings-state > button {
+  align-items: center;
+  background: var(--mc-surface);
+  border: 1px solid var(--mc-border-strong);
+  border-radius: 6px;
+  color: var(--mc-text);
+  display: inline-flex;
+  gap: 6px;
+  justify-self: start;
+  min-height: 36px;
+  padding: 0 12px;
+}
+
+.mc-settings-page :is(button, a, input, select):focus-visible {
+  outline: 2px solid var(--mc-accent-strong);
+  outline-offset: 3px;
+}
+
+[data-theme='dark']
+  .mc-settings-page
+  :is(.button-primary, .settings-scope button[aria-pressed='true']) {
+  color: var(--mc-page-bg);
+}
+
+[data-theme='dark']
+  .mc-settings-page
+  :is(
+    .settings-field-error,
+    .settings-source-invalid,
+    .settings-delete,
+    .settings-op-status.is-error,
+    .settings-inline-notice.is-error
+  ),
+[data-theme='dark'] .mc-settings-page .settings-source[data-invalid='true'] .settings-source-label {
+  color: #f2a5a5;
+}
+
+@media (max-width: 1150px) {
+  .mc-settings-page .settings-body {
+    grid-template-columns: 160px minmax(0, 1fr);
+  }
+  .mc-settings-page .settings-content {
+    padding-left: 24px;
+  }
+  .mc-settings-page .settings-default-main {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 118px;
+    row-gap: 16px;
+  }
+  .mc-settings-page .settings-default-type {
+    grid-column: 1 / -1;
+    padding-top: 0;
+  }
+  .mc-settings-page .settings-default-connection {
+    margin-left: 0;
+  }
+  .mc-settings-page .settings-footer {
+    padding-left: 184px;
+  }
 }
 
 @media (max-width: 760px) {
-  .mc-settings-layout {
-    gap: 24px;
+  .mc-settings-page > .mc-page-container {
+    padding-inline: 20px;
+  }
+  .mc-settings-page .settings-body {
     grid-template-columns: minmax(0, 1fr);
+    min-height: 0;
   }
-
-  .mc-settings-layout > aside {
-    grid-template-columns: auto 1fr 1fr;
+  .mc-settings-page .settings-rail {
+    border-right: 0;
+    border-bottom: 1px solid var(--mc-border);
+    padding: 12px 0;
   }
-
-  .mc-settings-layout > aside small {
+  .mc-settings-page .settings-rail-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    position: static;
+  }
+  .mc-settings-page .settings-rail-tab {
+    font-size: 13px;
+    min-height: 36px;
+    padding: 8px 10px;
+  }
+  .mc-settings-page .settings-content {
+    padding: 24px 0;
+  }
+  .mc-settings-page .settings-default-main {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .mc-settings-page .settings-default-actions {
+    flex-direction: row;
     grid-column: 1 / -1;
+    justify-content: flex-start;
+    padding-top: 0;
+  }
+  .mc-settings-page .settings-footer {
+    padding-left: 0;
   }
 }
 
 @media (max-width: 520px) {
   .mc-settings-heading {
     align-items: flex-start;
-    padding-top: 42px;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding-block: 24px;
   }
-
-  .mc-settings-heading h1 {
-    font-size: 28px;
-  }
-
   .mc-settings-heading-icon {
-    flex-basis: 38px;
-    height: 38px;
-    width: 38px;
+    display: none;
   }
-
-  .mc-settings-layout > aside {
-    grid-template-columns: 1fr 1fr;
+  .mc-settings-page .mc-settings-heading h1 {
+    font-size: 22px;
   }
-
-  .mc-settings-layout > aside strong,
-  .mc-settings-layout > aside small {
-    grid-column: 1 / -1;
+  .mc-settings-page .settings-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .mc-settings-page .settings-default-main,
+  .mc-settings-page .settings-default-connection,
+  .mc-settings-page .settings-appearance-grid,
+  .mc-settings-page .settings-section:has(#settings-connections-title),
+  .mc-settings-page .settings-section:has(#settings-defaults-title) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .mc-settings-page .settings-overview .settings-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .mc-settings-page .settings-scope .settings-status {
+    flex-basis: 100%;
+    margin-left: 0;
   }
 }

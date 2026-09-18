@@ -586,7 +586,7 @@ describe('SettingsPanel', () => {
     const globalScope = within(panel).getByRole('button', { name: '全局' });
     const projectScope = within(panel).getByRole('button', { name: '当前项目' });
     expect(globalScope).toHaveAttribute('aria-pressed', 'true');
-    expect(panel).toHaveTextContent('正在编辑：平台全局类型默认（写入当前活动凭据）');
+    expect(panel).toHaveTextContent('正在编辑：平台全局类型默认');
 
     await user.click(projectScope);
     expect(projectScope).toHaveAttribute('aria-pressed', 'true');
@@ -1334,7 +1334,7 @@ describe('SettingsPanel', () => {
 
   it.each([
     ['测试连接', '正在测试连接', '/v1/settings/ai/test', 'POST'],
-    ['刷新模型', '正在刷新模型', '/v1/settings/ai/models/refresh', 'POST'],
+    ['获取模型', '正在获取模型', '/v1/settings/ai/models/refresh', 'POST'],
     [
       '删除当前 Key',
       '正在删除',
@@ -1675,7 +1675,7 @@ describe('SettingsPanel', () => {
 
   it('refreshes models and completely deletes the current credential', async () => {
     const { dialog, user } = await openSettings();
-    await user.click(within(dialog).getByRole('button', { name: '刷新模型' }));
+    await user.click(within(dialog).getByRole('button', { name: '获取模型' }));
 
     await waitFor(() =>
       expect(within(dialog).getByRole('status')).toHaveTextContent('模型列表已刷新'),
@@ -1695,7 +1695,7 @@ describe('SettingsPanel', () => {
     expect(apiKey).toHaveValue('');
     expect(within(dialog).queryByText('请输入有效的 HTTP(S) Base URL')).not.toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: '测试连接' })).toBeDisabled();
-    expect(within(dialog).getByRole('button', { name: '刷新模型' })).toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: '获取模型' })).toBeDisabled();
   });
 
   it('reports automatic refresh failure while retaining the saved key', async () => {
@@ -1722,7 +1722,7 @@ describe('SettingsPanel', () => {
     expect(within(dialog).getByRole('combobox', { name: '已保存的 API Key' })).toHaveValue(
       credentials.find((credential) => credential.active)?.id,
     );
-    expect(within(dialog).getByRole('button', { name: '刷新模型' })).toBeEnabled();
+    expect(within(dialog).getByRole('button', { name: '获取模型' })).toBeEnabled();
     expect(
       refreshFailureFetch.mock.calls.filter(([input, init]) => {
         const url = new URL(String(input), 'http://localhost:3000');

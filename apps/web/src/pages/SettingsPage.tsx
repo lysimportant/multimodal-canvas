@@ -1,4 +1,4 @@
-import { AlertTriangle, RotateCcw, Settings2 } from 'lucide-react';
+import { AlertTriangle, ArrowUpRight, RotateCcw, Settings2 } from 'lucide-react';
 import type { MouseEvent, ReactNode } from 'react';
 
 import { type AppRoute } from '../routing';
@@ -7,6 +7,7 @@ import { PageFrame } from './PageFrame';
 import './settings-page.css';
 import { PUBLIC_API_CATALOG_URL } from '../workspace/contracts';
 
+/** 设置页外框的项目上下文、加载状态和重试入口。 */
 export type SettingsPageProps = {
   children?: ReactNode;
   projectId?: string | null;
@@ -51,14 +52,11 @@ export function SettingsPage({
           <div className="mc-settings-heading-icon" aria-hidden="true">
             <Settings2 size={21} />
           </div>
-          <div>
-            <p>SETTINGS</p>
+          <div className="mc-settings-heading-copy">
             <h1>连接与模型设置</h1>
-            <span>
-              {projectId
-                ? `当前上下文：${projectName ?? projectId}`
-                : '配置平台连接、凭据状态和全局默认模型。'}
-            </span>
+            <p className="mc-settings-context" aria-label="设置范围">
+              {projectId ? `当前上下文：${projectName ?? projectId}` : '平台全局'}
+            </p>
           </div>
           <a
             className="mc-settings-api-ad"
@@ -67,17 +65,11 @@ export function SettingsPage({
             rel="noopener noreferrer"
           >
             API获取
+            <ArrowUpRight size={15} aria-hidden="true" />
           </a>
         </header>
 
         <div className="mc-settings-layout">
-          <aside aria-label="设置范围">
-            <strong>设置范围</strong>
-            <span className={!projectId ? 'is-active' : ''}>平台全局</span>
-            <span className={projectId ? 'is-active' : ''}>当前项目</span>
-            <small>项目默认模型可以覆盖平台全局值，节点仍可单独覆盖。</small>
-          </aside>
-
           <section className="mc-settings-content" aria-label="AI 设置内容" aria-busy={isLoading}>
             {isLoading ? (
               <div className="mc-settings-state" role="status" aria-live="polite">

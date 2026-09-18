@@ -1183,6 +1183,27 @@ export function SettingsPanel({
             role="tablist"
             aria-label="设置分类"
             aria-orientation="vertical"
+            onKeyDown={(event) => {
+              const tabs = [
+                ...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]'),
+              ];
+              const index = tabs.indexOf(event.target as HTMLButtonElement);
+              if (index < 0) return;
+              const nextIndex =
+                event.key === 'Home'
+                  ? 0
+                  : event.key === 'End'
+                    ? tabs.length - 1
+                    : event.key === 'ArrowDown' || event.key === 'ArrowRight'
+                      ? (index + 1) % tabs.length
+                      : event.key === 'ArrowUp' || event.key === 'ArrowLeft'
+                        ? (index + tabs.length - 1) % tabs.length
+                        : undefined;
+              if (nextIndex === undefined) return;
+              event.preventDefault();
+              tabs[nextIndex]?.focus();
+              tabs[nextIndex]?.click();
+            }}
           >
             {settingsCategories.map((entry) => (
               <button
@@ -1275,10 +1296,6 @@ export function SettingsPanel({
             <section className="settings-section" aria-labelledby="settings-defaults-title">
               <div className="settings-section-heading">
                 <h2 id="settings-defaults-title">节点默认</h2>
-                <p className="settings-status">
-                  新建生成节点时优先使用这里的类型默认；解析顺序为 本次运行显式配置 &gt;
-                  单节点显式配置 &gt; 项目类型默认 &gt; 全局类型默认。
-                </p>
               </div>
               <label className="settings-field settings-generation-count-field">
                 <span>默认生成数量</span>
@@ -1328,7 +1345,7 @@ export function SettingsPanel({
                 </Button>
                 <span className="settings-status">
                   {scope === 'global'
-                    ? '正在编辑：平台全局类型默认（写入当前活动凭据）'
+                    ? '正在编辑：平台全局类型默认'
                     : `正在编辑：${projectName ?? projectId} 的项目覆盖`}
                 </span>
               </div>
@@ -1766,7 +1783,6 @@ export function SettingsPanel({
                   onClick={() => void refreshModels()}
                   disabled={busy || !settings.configured}
                   aria-busy={operation === 'refresh'}
-                  aria-label={operation === 'refresh' ? '正在刷新模型' : '刷新模型'}
                 >
                   {operation === 'refresh' && (
                     <LoaderCircle className="spin" size={15} aria-hidden="true" />

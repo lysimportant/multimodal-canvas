@@ -4074,6 +4074,56 @@ h2 {
   font-size: 11px;
   font-weight: 600;
 }
+/* 来源解析仅在 hover 或键盘聚焦时展开，错误提示始终保留在摘要中。 */
+.settings-source-heading {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+.settings-source-help {
+  display: inline-flex;
+  position: relative;
+}
+.settings-source-help-trigger {
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--mc-text-muted);
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+  width: 24px;
+}
+.settings-source-help-trigger:hover {
+  background: var(--mc-surface-muted);
+  color: var(--mc-text);
+}
+.settings-source-tooltip {
+  background: var(--mc-surface);
+  border: 1px solid var(--mc-border-strong);
+  border-radius: 6px;
+  bottom: 100%;
+  box-shadow: 0 4px 16px var(--mc-shadow);
+  color: var(--mc-text);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.6;
+  max-width: calc(100vw - 96px);
+  padding: 10px 12px;
+  position: absolute;
+  right: 0;
+  width: 280px;
+  z-index: 3;
+}
+.settings-source-tooltip[hidden] {
+  display: none;
+}
+@media (max-width: 760px) {
+  .settings-source-tooltip {
+    left: 0;
+    right: auto;
+  }
+}
 .settings-default-actions {
   align-items: center;
   display: flex;
