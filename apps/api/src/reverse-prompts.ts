@@ -51,10 +51,22 @@ const REVERSE_PROMPT_INSTRUCTION = [
   'Do not invent hidden details or claim to recover the original generation prompt.',
   'Return only a JSON object with exactly two non-empty string fields: "summary" and "prompt".',
   'Write both values in Simplified Chinese. Keep summary under 2000 characters and prompt under 20000 characters.',
-  'Resource to analyze:',
 ].join('\n');
 
-/** 构造不写回用户画布的单节点分析文档，只引用服务端已授权的精确资源版本。 */
+/** 图片摘要优先提炼可见角色妆造；无角色时才描述场景，详细提示词仍覆盖完整画面。 */
+const IMAGE_SUMMARY_INSTRUCTION = [
+  'For this image, apply the following rules only to "summary"; keep "prompt" a detailed recreation of the full image, including its background and composition.',
+  'First check whether any character is visible, including photographed people, illustrated or stylized characters, and partially visible figures.',
+  'If one or more characters are visible, "summary" must describe only their visible appearance and styling.',
+  'Prioritize clothing pieces, colors and fabrics, hairstyle, makeup, accessories, and distinctive wear, stains or other small personal details. Include visible facial or physical traits when useful.',
+  'Exclude backgrounds, scenery, surrounding objects, lighting and composition from this character-focused summary. Worn or held personal items may be included as part of the character styling.',
+  'Use concise, concrete descriptive phrases rather than a general scene introduction. Example of phrasing only: "月白布衫，青裙，发髻松一缕，袖口有薄面灰，右腕旧红绳。" Never copy these example details unless they are actually visible.',
+  'When multiple characters are visible, prioritize the main character and briefly distinguish other prominent characters by visible styling; do not merge their details.',
+  'Only when no character is visible, summarize the overall scene, main objects, their appearance and spatial relationships instead.',
+  'Describe only supported visible details; omit obscured or uncertain clothing, makeup and accessories rather than inventing them. Do not infer identities or backstories.',
+].join('\n');
+
+/** 构造只引用已授权资源版本的分析文档；图片附加角色优先摘要规则，不写回用户画布。 */
 export function createReversePromptCanvas(input: {
   assetId: string;
   assetVersion: number;
@@ -74,7 +86,14 @@ export function createReversePromptCanvas(input: {
           promptDocument: {
             version: 1,
             blocks: [
-              { type: 'text', text: REVERSE_PROMPT_INSTRUCTION },
+              {
+                type: 'text',
+                text: [
+                  REVERSE_PROMPT_INSTRUCTION,
+                  ...(input.mediaType === 'image' ? [IMAGE_SUMMARY_INSTRUCTION] : []),
+                  'Resource to analyze:',
+                ].join('\n'),
+              },
               {
                 type: 'mention',
                 mentionId: 'reverse_prompt_resource',

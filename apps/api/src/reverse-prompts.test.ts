@@ -12,6 +12,11 @@ const reverseResult = {
   summary: '白色背景中的红色立方体。',
   prompt: '在纯白背景中心放置一个红色立方体，柔和侧光、清晰边缘，正面构图。',
 };
+/** 合成 Provider 返回的角色优先结果；仅验证结果透传，不代表真实视觉理解验收。 */
+const characterReverseResult = {
+  summary: '月白布衫，青裙，发髻松一缕，袖口有薄面灰，右腕旧红绳。',
+  prompt: '角色穿着月白布衫和青裙，身后是青灰色石墙与木窗，柔和侧光，完整构图。',
+};
 
 /** 创建带版本化图片和两个文字模型的隔离 API。 */
 async function fixture(output = JSON.stringify(reverseResult), providerFetch?: typeof fetch) {
@@ -370,11 +375,13 @@ describe('资源反推提示词 API', () => {
     expect(ctx.executor).toHaveBeenCalledTimes(1);
   });
 
-  it('真实 Provider 映射发送图片字节与英文分析指令，保留分析请求记录但不绑定原图', async () => {
+  it('真实 Provider 映射发送图片字节与角色优先英文指令，原样保留合成分析结果', async () => {
     const fetcher = vi.fn<typeof fetch>(
       async () =>
         new Response(
-          JSON.stringify({ choices: [{ message: { content: JSON.stringify(reverseResult) } }] }),
+          JSON.stringify({
+            choices: [{ message: { content: JSON.stringify(characterReverseResult) } }],
+          }),
           { status: 200, headers: { 'content-type': 'application/json' } },
         ),
     );
@@ -395,9 +402,29 @@ describe('资源反推提示词 API', () => {
     expect(init?.method).toBe('POST');
     const payload = JSON.parse(String(init?.body));
     expect(payload.model).toBe('alpha-text');
+    const request = ctx.executor.mock.calls[0]![0];
+    const target = request.snapshot.nodes.find((node) => node.id === request.snapshot.targetNodeId);
+    const frozenText = target?.data.promptDocument?.blocks.find((block) => block.type === 'text');
+    expect(frozenText?.type).toBe('text');
+    if (frozenText?.type !== 'text') throw new Error('反推快照缺少冻结的文字指令');
+    expect(frozenText.text).toContain(
+      'If one or more characters are visible, "summary" must describe only their visible appearance and styling.',
+    );
+    expect(frozenText.text).toContain(
+      'Exclude backgrounds, scenery, surrounding objects, lighting and composition from this character-focused summary.',
+    );
+    expect(frozenText.text).toContain(
+      'Only when no character is visible, summarize the overall scene, main objects, their appearance and spatial relationships instead.',
+    );
     expect(payload.messages[0].content).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ type: 'text', text: expect.stringContaining('untrusted data') }),
+        expect.objectContaining({
+          type: 'text',
+          text: expect.stringContaining(
+            'If one or more characters are visible, "summary" must describe only their visible appearance and styling.',
+          ),
+        }),
         {
           type: 'image_url',
           image_url: {
@@ -406,6 +433,16 @@ describe('资源反推提示词 API', () => {
         },
       ]),
     );
+    const read = await ctx.app.inject({
+      method: 'GET',
+      url: `${ctx.url}?projectId=${ctx.project.id}&runId=${runId}`,
+    });
+    expect(read.json().analysis).toMatchObject({
+      ...characterReverseResult,
+      assetId: ctx.asset.id,
+      assetVersion: 1,
+      status: 'succeeded',
+    });
     const prompts = await ctx.app.inject({
       method: 'GET',
       url: `/v1/runs/${runId}/request-prompts`,
