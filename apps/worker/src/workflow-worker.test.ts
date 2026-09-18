@@ -991,7 +991,7 @@ describe('worker workflow DAG execution', () => {
     expect(job.data.providerJob).toMatchObject({ status: 'failed' });
   });
 
-  it('reuses completed predecessor nodes and resumes its target platform task', async () => {
+  it('resumes a known video task without re-reading POST-only frozen assets', async () => {
     bullmqState.jobs.clear();
     const runId = '123e4567-e89b-42d3-a456-426614174103';
     const predecessorRunId = '123e4567-e89b-42d3-a456-426614174104';
@@ -1060,6 +1060,14 @@ describe('worker workflow DAG execution', () => {
       cancelRequested: false,
     });
     const standardProvider = { execute: vi.fn() };
+    const assetResolve = vi.fn(async () => {
+      throw new Error('frozen asset bytes are unavailable');
+    });
+    const assertAccessible = vi.fn(async () => {
+      throw new Error('frozen asset authorization is unavailable');
+    });
+    const createPosts = vi.fn();
+    const statusGets = vi.fn();
     const videoRequests: Array<{
       snapshot: RunSnapshot;
       providerJob?: { id?: string; platformJobId?: string };
@@ -1070,10 +1078,16 @@ describe('worker workflow DAG execution', () => {
       provider: standardProvider,
       videoProvider: {
         async execute(request) {
+          if (!request.providerJob?.platformJobId) {
+            createPosts();
+            throw new Error('video recovery attempted a second POST');
+          }
+          statusGets(request.providerJob.platformJobId);
           videoRequests.push(request);
           return createExecution(request.snapshot);
         },
       },
+      assetReferenceResolver: { resolve: assetResolve, assertAccessible },
       stepDelayMs: 0,
       resultArchiver: async () => ({
         assetId: 'asset_video_resumed',
@@ -1086,6 +1100,11 @@ describe('worker workflow DAG execution', () => {
     await bullmqState.processor?.(job);
 
     expect(standardProvider.execute).not.toHaveBeenCalled();
+    expect(assetResolve).not.toHaveBeenCalled();
+    expect(assertAccessible).not.toHaveBeenCalled();
+    expect(createPosts).not.toHaveBeenCalled();
+    expect(statusGets).toHaveBeenCalledOnce();
+    expect(statusGets).toHaveBeenCalledWith('platform-video-existing');
     expect(videoRequests).toHaveLength(1);
     expect(videoRequests[0]).toMatchObject({
       providerJob: {

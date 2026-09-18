@@ -477,3 +477,32 @@ pnpm --filter @multimodal-canvas/web test:e2e
 本轮没有依赖升级或数据库迁移；回滚先备份请求记录与项目数据，保留资产版本。新接口为增量扩展，旧端仍可读原记录；内存预览按进程生命周期保存数据。工作流/结果导出沿用现有格式，不导出这次新增的说明查询结果或手动摘要，导入不会伪造请求记录。
 
 预览入口 `http://127.0.0.1:5184`，独立 Mock API `http://127.0.0.1:19301`。最近检查日志为 `test-results/next-completion-{lint,typecheck,tests,build,postgres,e2e}.log`，真实调用证据为 `test-results/next-live-provider.json`，不含凭据。交付 Tag 使用 `v2026.09.17-six-feature-completion`；分支与远程核验在最终交接中记录。阶段 B/G 的真实供应商条件保持未关闭，不能把本地通过认定为全面验收完成。
+
+## 15. 2026-09-19 官方视频模式修复检查点
+
+P1：接通官方 MiniMax-H3、Wan3、Seedance 2.x 的已确认视频模式、资源提及和 New API 插件字段，消除只允许 Grok 1.5 全能参考的错误边界。基线为 `codex/generate-to-new-node @ 97d11ef`，跟踪 `origin/codex/generate-to-new-node`；Node 24.12.0、pnpm 11.19.0，本地依赖已安装。用户已有 `docs/resource-input-compatibility.md` 修改保留且不纳入本次提交。
+
+- [x] 确认用户节点为 `MiniMax-H3` 全能参考，包含两张图片提及；错误发生在 Provider POST 前，没有平台任务 ID。
+- [x] Domain 基线 131 项、Provider 基线 354 项通过。
+- [x] 对照 New API 官方 hailuo/alibaba/doubao 插件和缓存的官方协议，核对模型、模式、角色、数量与媒体地址要求。
+- [x] 接通 Domain 能力、Provider 映射、Worker 冻结资源 URL 传输；初版 28 组创建体经本地 New API 插件解码及构建校验通过，没有外部请求。
+- [x] 初版全量 lint、typecheck、test、Docker 构建和四个官方模型页面冒烟通过；页面无控制台错误，已检查截图。
+- [x] 已提交视频按可信平台 ID 恢复，跳过只用于 POST 的素材读取、签名及原素材访问复核，保留 run/provider/credential/fingerprint 校验；Provider 395 项、Worker 285 项通过（Worker 另有 3 项设施跳过）。
+- [x] 对齐官方比例约束：Wan3/Seedance 文生支持 adaptive，Seedance 2.5 帧模式要求原图比例，2.0 编辑/延长允许显式比例；Moon 同名模型纯文兼容已补回。
+- [x] 最终 `pnpm lint`、`pnpm typecheck`、`WEB_PORT=5173 pnpm test` 通过；Domain 150、Provider 395、Worker 285、Web 1098、API 867 项通过，API/Worker 分别 67/3 项设施跳过，不计为外部验收。
+- [x] Seedance 清晰度菜单按标准版、fast、mini、2.5 分别约束，覆盖旧参数拒绝、手动修正和新节点入口；编辑器与默认值专项 116 项通过。
+- [x] `docker compose --progress plain build api worker web` 通过，最后的清晰度修正另行重建 Web；本地 API、Worker、Web 已更新，六个 Compose 服务全部 healthy，8080 健康接口和用户项目页面均返回 200。
+- [x] `WEB_BASE_URL=http://127.0.0.1:8080 pnpm --filter @multimodal-canvas/web exec playwright test e2e/smoke.spec.ts --grep '官方视频模式|PC 视频仅显示清晰度比例时长' --workers=1` 共 5 项通过，包含 Seedance 2.5 首尾帧自动比例保存；已检查截图，无页面或控制台错误，所有业务请求均由 Mock 响应。
+- [x] 差异空白和凭据模式检查通过，用户文档 SHA256 与任务开始时一致。
+
+兼容与回滚：保留现有 Grok、未知模型校验和已提交任务恢复合同，不改变数据库、用户画布、凭据或资产。新增的外网对象存储地址只用于受控版本资源的临时签名，不落入运行记录。回滚使用本次之前的代码/镜像并保留数据卷。范围不含生产部署、付费生成或未经确认的模型能力；Mock 通过不代替真实上游验收。Seedance 2.5 编辑的自动时长需要同时修复网关插件中的合法 `-1` 转换，不能放宽宿主通用计费边界。
+
+网关配套修复位于 `D:\newapi`：基线 `main @ a5c691028`，上游 `fork/main`；Doubao 1.0.3 在解码时把合法 `-1` 转为内部标记，构建官方请求时恢复，Seedance 2.5 按 30 秒、2.0 按 15 秒保守预留并使用返回的实际 usage 结算。Moon 1.0.1 在 OpenAI Video 入口规范同名模型的纯文本 metadata，保持旧文生请求兼容，未扩大 Moon 参考模式。未改宿主通用计费边界、数据库或依赖；`go test -mod=readonly ./plugins ./pkg/jsplugin ./relay/channel/task/jsplugin -count=1 -timeout=180s`、Go 全模块构建和插件格式检查通过。
+
+网关提交 `142b654a4`（Doubao，Tag `v1.0.0-rc.37.custom.5`）、`38dbb951d`（Moon，Tag `v1.0.0-rc.37.custom.6`）已推送 `https://github.com/lysimportant/forknewapi.git` 的 `main` 并核验远程 SHA，工作区干净。远端运行实例仍需要更新插件，生产部署不在本轮范围；不能把 Git 推送视为在线插件已生效。最新跨仓库映射校验为 28 组官方模式加 4 组 Moon 纯文合同，合计 32 组通过。
+
+当前用户 H3 节点仍保留原 `720p` 设置；官方 H3 仅支持 `768P`、`2K`，界面已补选项与明确提示，未替用户改写画布。本地 Compose 暂无公网对象存储 endpoint，H3 图片参考可直接使用 data URL；Wan/Seedance 的 URL-only 输入保留明确配置提示，不能宣称已通过外部拉取验收。
+
+本轮复用了锁文件中的 AWS presigner 3.862.0，仅新增 Worker 的直接依赖声明。更新前 API、Worker、Web 镜像已分别保留 `before-official-video-20260919` 标签，回滚时保留原数据卷，不重建或迁移数据库。最终检查日志为 `test-results/official-video-final-{lint,typecheck,tests,web-build}.log`，浏览器日志与截图为 `test-results/official-video-e2e-live.log`、`test-results/official-video-e2e-live/`。
+
+本轮交付使用 `origin/codex/generate-to-new-node` 和 annotated Tag `v2026.09.19-official-video-modes`；提交前只暂存本任务文件，排除用户原有的 `docs/resource-input-compatibility.md`。提交 SHA、Tag 和推送后的远程引用核验结果在任务交接中记录。后续仅继续已列明的公网素材配置、线上插件更新及获准后的真实上游验收，不能重发已有任务或将本地通过视为外部完成。

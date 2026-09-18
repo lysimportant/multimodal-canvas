@@ -167,4 +167,25 @@ describe('NodeHandles', () => {
     expect(semanticInputRoles).not.toContain('firstFrame');
     expect(semanticInputRoles).not.toContain('content');
   });
+
+  it.each(['omni_reference', 'video_edit', 'video_extend'] as const)(
+    '%s keeps reference media on the left and reserves the bottom only for a supported negative prompt',
+    (videoMode) => {
+      for (const modelAlias of ['wan3.0-video', 'doubao-seedance-2-5-260628']) {
+        const layout = getNodeHandleLayout('video', 'generate', { videoMode, modelAlias });
+        expect(layout.visible.find((handle) => handle.side === 'left')).toMatchObject({
+          id: 'visual:left',
+          isConnectable: true,
+        });
+        expect(layout.semanticInputRoles).toEqual(
+          expect.arrayContaining(['referenceImage', 'content', 'audioTrack']),
+        );
+        expect(layout.visible.find((handle) => handle.side === 'bottom')).toMatchObject(
+          modelAlias.startsWith('wan')
+            ? { id: 'input:negativePrompt', isConnectable: true }
+            : { id: 'visual:bottom', isConnectable: false },
+        );
+      }
+    },
+  );
 });

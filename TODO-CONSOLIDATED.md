@@ -25,7 +25,8 @@
 来源：TODO-LOCAL 的 `P1-INPUT-MAPPING-07`、`P1-ISOLATED-AUDIO-05`；TODO-VIDEO-NODE 第 1、8、10、11 节。
 
 - 按 Provider、模型、合同整理 `negativePrompt`、`lastFrame`、`audioTrack`、`style`、`character`、`mask`、多参考图与其它扩展输入的字段、适用范围和样例响应。
-- 补齐 MiniMax H3、Wan3、即梦及其它拟接入模型的首尾帧、全能参考、视频/音频融合字段取证；未确认前不开放对应 `livePost`。
+- MiniMax-H3、Wan3.0 与 Seedance 2.0/2.5 的官方首尾帧及多媒体参考已完成插件字段映射；Wan3/Seedance 编辑、延长按已确认版本开放。仍需补齐其它拟接入模型的正式字段取证，以及各模型真实上游验收，不能把本地映射测试视为供应商验收。
+- 为 Wan3 视频/音频与 Seedance 视频参考配置可外部访问同一冻结对象的 `MC_S3_PROVIDER_ENDPOINT`，验收短期签名 URL 的外部 GET；Seedance 自动时长要求网关使用已修复的 Doubao 1.0.3 插件。
 - 对已确认字段补齐序列化、响应解析、数量/组合边界和未知字段拒绝测试。现有 Grok 1.5 尾帧与参考图映射不重复列为待实现项。
 - 明确各模型重复端口上限，取产品、模型、供应商限制的最小值；来源文档中的示例配额不能当成确认值。
 

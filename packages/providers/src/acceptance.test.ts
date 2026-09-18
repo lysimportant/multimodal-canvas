@@ -583,7 +583,7 @@ describe('Provider 本地契约验收', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])('冻结首帧内容损坏时拒绝创建或恢复：resume=%s', async (resume) => {
+  it('冻结首帧内容损坏时拒绝创建新任务', async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     const provider = new NewApiVideoProvider({
       baseUrl: 'https://newapi.example/v1',
@@ -609,14 +609,10 @@ describe('Provider 本地契约验收', () => {
         },
       },
     ];
-    await expect(
-      provider.execute({
-        snapshot,
-        ...(resume
-          ? { providerJob: { provider: 'newapi' as const, platformJobId: 'known-job' } }
-          : {}),
-      }),
-    ).rejects.toMatchObject({ code: 'INPUT_ROLE_VALUE_MISSING', retryable: false });
+    await expect(provider.execute({ snapshot })).rejects.toMatchObject({
+      code: 'INPUT_ROLE_VALUE_MISSING',
+      retryable: false,
+    });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 

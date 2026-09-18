@@ -18,6 +18,8 @@ x-runtime-environment: &runtime-environment
   RUN_QUEUE_NAME: canvas-production
   WORKER_PROVIDER: newapi
   S3_ENDPOINT: https://minio:9000
+  # 仅为 URL-only Provider 参考素材签名；必须公开 HTTPS 访问同一 bucket/key。
+  S3_PROVIDER_ENDPOINT: ${MC_S3_PROVIDER_ENDPOINT:-}
   S3_BUCKET: canvas
   S3_REGION: us-east-1
   S3_UPLOAD_MODE: proxy

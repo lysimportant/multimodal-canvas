@@ -975,6 +975,39 @@ describe('画布编辑器交互', () => {
     });
   });
 
+  it.each(['video_edit', 'video_extend'] as const)(
+    '添加提示词参考素材后保留 %s 模式与参数',
+    async (videoMode) => {
+      canvas.nodes = [
+        {
+          id: 'video-reference-mode',
+          type: 'video',
+          position: { x: 0, y: 0 },
+          data: {
+            label: '视频参考模式',
+            mediaType: 'video',
+            mode: 'generate',
+            videoMode,
+            modelAlias: 'doubao-seedance-2-5-260628',
+            parameters: { duration: videoMode === 'video_edit' ? -1 : 8, aspectRatio: 'adaptive' },
+          },
+        },
+      ];
+      const { user } = await renderCanvas();
+      await user.click(findNodeByLabel('视频参考模式')!);
+      const editor = screen.getByLabelText('视频参考模式生成设置');
+      await user.type(within(editor).getByRole('textbox', { name: '提示词' }), 'Use @ref');
+      await user.click(screen.getByRole('option', { name: /reference.png/ }));
+      await waitFor(() => {
+        expect(
+          canvas.nodes[0]?.data.promptDocument?.blocks.some((block) => block.type === 'mention'),
+        ).toBe(true);
+        expect(canvas.nodes[0]?.data.videoMode).toBe(videoMode);
+        expect(canvas.nodes[0]?.data.parameters?.aspectRatio).toBe('adaptive');
+      });
+    },
+  );
+
   it('节点标题支持中文组合输入，并可作为一次编辑撤销', async () => {
     const { user } = await renderCanvas();
     await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));

@@ -20,6 +20,9 @@ import {
   inferVideoModeFromRoles,
   isPortConnectionAllowed,
   targetPortRolesForNode,
+  implementedVideoModes,
+  videoFamilyForModel,
+  videoImageRolesForMode,
   videoModeCapability,
   videoModes,
   unabsorbedVideoPromptMentions,
@@ -1229,7 +1232,7 @@ describe('video input set', () => {
     expect(precheck.issues.every((issue) => issue.code === 'UNSUPPORTED_INPUT_ROLE')).toBe(true);
   });
 
-  it('allows grok-imagine-video-1.5 last frame and reference images before a real POST', () => {
+  it('keeps legacy Grok frame and reference requests compatible without an explicit mode', () => {
     const precheck = precheckVideoGenerationInputs(
       [
         videoInput('prompt', 'prompt', 0, 'text'),
@@ -1374,9 +1377,251 @@ describe('video input set', () => {
       },
     ]);
   });
+
+  it.each([
+    'minimax-h3',
+    'wan3.0-video',
+    'wan3.0-video-prime',
+    'doubao-seedance-2-0-fast-260128',
+    'doubao-seedance-2-5-260628',
+  ])('supports all four generation modes for official model %s', (modelAlias) => {
+    const cases = [
+      {
+        mode: 'text_to_video' as const,
+        inputs: [videoInput('prompt', 'prompt', 0, 'text')],
+      },
+      {
+        mode: 'first_frame' as const,
+        inputs: [videoInput('prompt', 'prompt', 0, 'text'), videoInput('first', 'firstFrame', 1)],
+      },
+      {
+        mode: 'first_last_frame' as const,
+        inputs: [
+          videoInput('prompt', 'prompt', 0, 'text'),
+          videoInput('first', 'firstFrame', 1),
+          videoInput('last', 'lastFrame', 2),
+        ],
+      },
+      {
+        mode: 'omni_reference' as const,
+        inputs: [
+          videoInput('prompt', 'prompt', 0, 'text'),
+          videoInput('hero', 'character', 1),
+          videoInput('look', 'style', 2),
+          videoInput('prop', 'referenceImage', 3),
+          videoInput('clip', 'content', 4, 'video'),
+          videoInput('sound', 'audioTrack', 5, 'audio'),
+        ],
+      },
+    ];
+
+    for (const { mode, inputs } of cases) {
+      const precheck = precheckVideoGenerationInputs(inputs, { modelAlias, videoMode: mode });
+      expect(precheck.issues, `${modelAlias} ${mode}`).toEqual([]);
+    }
+  });
+
+  it.each(['wan3.0-video', 'doubao-seedance-2-0-260128', 'doubao-seedance-2-5-260628'])(
+    'supports edit and extend references for official model %s',
+    (modelAlias) => {
+      for (const videoMode of ['video_edit', 'video_extend'] as const) {
+        const precheck = precheckVideoGenerationInputs(
+          [
+            videoInput('prompt', 'prompt', 0, 'text'),
+            videoInput('still', 'content', 1),
+            videoInput('clip', 'content', 2, 'video'),
+            videoInput('sound', 'content', 3, 'audio'),
+          ],
+          { modelAlias, videoMode },
+        );
+        expect(precheck.issues, `${modelAlias} ${videoMode}`).toEqual([]);
+        expect(precheck.inputSet.referenceImage.map((input) => input.nodeId)).toEqual(['still']);
+        expect(precheck.inputSet.content.map((input) => input.nodeId)).toEqual(['clip']);
+        expect(precheck.inputSet.audioTrack.map((input) => input.nodeId)).toEqual(['sound']);
+      }
+    },
+  );
+
+  it('requires a source video for edit and extend and keeps H3 unavailable', () => {
+    for (const videoMode of ['video_edit', 'video_extend'] as const) {
+      const missingVideo = precheckVideoGenerationInputs(
+        [videoInput('prompt', 'prompt', 0, 'text'), videoInput('still', 'referenceImage', 1)],
+        { modelAlias: 'wan3.0-video', videoMode },
+      );
+      expect(missingVideo.issues).toEqual([
+        {
+          code: 'UNSUPPORTED_INPUT_COMBINATION',
+          role: 'content',
+          message:
+            videoMode === 'video_edit'
+              ? '视频编辑模式需要连接一段待编辑视频'
+              : '视频延长模式需要连接一段待延长视频',
+        },
+      ]);
+
+      const h3 = precheckVideoGenerationInputs(
+        [videoInput('prompt', 'prompt', 0, 'text'), videoInput('clip', 'content', 1, 'video')],
+        { modelAlias: 'minimax-h3', videoMode },
+      );
+      expect(h3.issues).toEqual([
+        {
+          code: 'UNSUPPORTED_INPUT_COMBINATION',
+          message: `该模型尚无「${videoMode === 'video_edit' ? '视频编辑' : '视频延长'}」的正式字段映射，不能发起真实请求`,
+        },
+      ]);
+    }
+  });
+
+  it('only allows Wan3 negative prompts among the newly mapped official families', () => {
+    const inputs = [
+      videoInput('prompt', 'prompt', 0, 'text'),
+      videoInput('negative', 'negativePrompt', 1, 'text'),
+    ];
+    expect(
+      precheckVideoGenerationInputs(inputs, {
+        modelAlias: 'wan3.0-video-prime',
+        videoMode: 'text_to_video',
+      }).issues,
+    ).toEqual([]);
+    for (const modelAlias of [
+      'minimax-h3',
+      'doubao-seedance-2-0-mini-260615',
+      'doubao-seedance-2-5-260628',
+    ]) {
+      expect(
+        precheckVideoGenerationInputs(inputs, { modelAlias, videoMode: 'text_to_video' }).issues,
+      ).toEqual([
+        {
+          code: 'UNSUPPORTED_INPUT_ROLE',
+          role: 'negativePrompt',
+          message: 'New API video 不支持该输入角色：negativePrompt',
+        },
+      ]);
+    }
+  });
+
+  it.each([
+    ['minimax-h3', 9, 3, 3],
+    ['wan3.0-video', 10, 5, 5],
+    ['doubao-seedance-2-0-fast-260128', 9, 3, 3],
+    ['doubao-seedance-2-5-260628', 30, 10, 10],
+  ] as const)(
+    'enforces reference count limits for %s',
+    (modelAlias, imageLimit, videoLimit, audioLimit) => {
+      const inputs = [
+        videoInput('prompt', 'prompt', 0, 'text'),
+        ...Array.from({ length: imageLimit + 1 }, (_, index) =>
+          videoInput(`image-${index}`, 'referenceImage', index + 1),
+        ),
+        ...Array.from({ length: videoLimit + 1 }, (_, index) =>
+          videoInput(`video-${index}`, 'content', imageLimit + index + 2, 'video'),
+        ),
+        ...Array.from({ length: audioLimit + 1 }, (_, index) =>
+          videoInput(`audio-${index}`, 'audioTrack', imageLimit + videoLimit + index + 3, 'audio'),
+        ),
+      ];
+      const { issues } = precheckVideoGenerationInputs(inputs, {
+        modelAlias,
+        videoMode: 'omni_reference',
+      });
+      expect(issues.map((issue) => issue.role)).toEqual([
+        'referenceImage',
+        'content',
+        'audioTrack',
+      ]);
+      expect(issues.every((issue) => issue.code === 'INPUT_ROLE_CARDINALITY_UNSUPPORTED')).toBe(
+        true,
+      );
+    },
+  );
+
+  it('rejects Seedance 2.0 audio-only reference and allows it on Seedance 2.5', () => {
+    const inputs = [
+      videoInput('prompt', 'prompt', 0, 'text'),
+      videoInput('sound', 'audioTrack', 1, 'audio'),
+    ];
+    expect(
+      precheckVideoGenerationInputs(inputs, {
+        modelAlias: 'doubao-seedance-2-0-260128',
+        videoMode: 'omni_reference',
+      }).issues,
+    ).toEqual([
+      {
+        code: 'UNSUPPORTED_INPUT_COMBINATION',
+        message: 'Seedance 2.0 不支持只用参考音频生成视频',
+      },
+    ]);
+    expect(
+      precheckVideoGenerationInputs(inputs, {
+        modelAlias: 'doubao-seedance-2-5-260628',
+        videoMode: 'omni_reference',
+      }).issues,
+    ).toEqual([]);
+  });
+
+  it('rejects role media mismatches before provider serialization', () => {
+    const { issues } = precheckVideoGenerationInputs(
+      [
+        videoInput('prompt', 'prompt', 0, 'text'),
+        videoInput('bad-image', 'referenceImage', 1, 'video'),
+        videoInput('bad-audio', 'audioTrack', 2, 'video'),
+      ],
+      { modelAlias: 'minimax-h3', videoMode: 'omni_reference' },
+    );
+    expect(issues).toEqual([
+      {
+        code: 'UNSUPPORTED_INPUT_COMBINATION',
+        role: 'referenceImage',
+        message: '视频输入角色 referenceImage 不接受 video 媒体',
+      },
+      {
+        code: 'UNSUPPORTED_INPUT_COMBINATION',
+        role: 'audioTrack',
+        message: '视频输入角色 audioTrack 不接受 video 媒体',
+      },
+    ]);
+  });
+
+  it('keeps mapped legacy nodes working but rejects legacy frame/reference mixing', () => {
+    const references = [
+      videoInput('prompt', 'prompt', 0, 'text'),
+      videoInput('prop', 'referenceImage', 1),
+      videoInput('clip', 'content', 2, 'video'),
+      videoInput('sound', 'audioTrack', 3, 'audio'),
+    ];
+    expect(precheckVideoGenerationInputs(references, { modelAlias: 'minimax-h3' }).issues).toEqual(
+      [],
+    );
+    expect(
+      precheckVideoGenerationInputs([...references, videoInput('first', 'firstFrame', 4)], {
+        modelAlias: 'minimax-h3',
+      }).issues,
+    ).toEqual([
+      {
+        code: 'UNSUPPORTED_INPUT_COMBINATION',
+        message: '首帧或尾帧不能与参考图、参考视频或参考音频混用',
+      },
+    ]);
+  });
 });
 
 describe('video mode ports', () => {
+  it('recognizes only confirmed official model families', () => {
+    expect(videoFamilyForModel('MiniMax-H3')).toBe('minimax-h3');
+    expect(videoFamilyForModel('minimax_h3-1080p')).toBe('unknown');
+    expect(videoFamilyForModel('wan3.0-video')).toBe('wan3');
+    expect(videoFamilyForModel('wan3.0-video-prime')).toBe('wan3');
+    expect(videoFamilyForModel('wan2.6-video')).toBe('wan');
+    expect(videoFamilyForModel('doubao-seedance-2-0-260128')).toBe('seedance-2');
+    expect(videoFamilyForModel('doubao-seedance-2-0-fast-260128')).toBe('seedance-2');
+    expect(videoFamilyForModel('doubao-seedance-2-0-mini-260615')).toBe('seedance-2');
+    expect(videoFamilyForModel('doubao-seedance-2-5-260628')).toBe('seedance-2.5');
+    expect(videoFamilyForModel('doubao-seedance-2-0-mini-260128')).toBe('unknown');
+    expect(videoFamilyForModel('doubao-seedance-2-5-pro-260901')).toBe('unknown');
+    expect(videoFamilyForModel('doubao-seedance-2-5')).toBe('unknown');
+    expect(videoFamilyForModel('doubao-seedance-1-5-pro')).toBe('unknown');
+  });
+
   it('exposes the six product modes and infers omitted mode from connected roles', () => {
     expect(videoModes).toEqual([
       'text_to_video',
@@ -1390,9 +1635,11 @@ describe('video mode ports', () => {
     expect(inferVideoModeFromRoles(['lastFrame'])).toBe('first_last_frame');
     expect(inferVideoModeFromRoles(['referenceImage'])).toBe('omni_reference');
     expect(displayVideoMode({ videoMode: 'first_frame' }, ['referenceImage'])).toBe('first_frame');
+    expect(implementedVideoModes).toEqual(videoModes);
     expect(videoModeCapability('video_edit').selectable).toBe(false);
+    expect(videoModeCapability('video_edit', 'wan3.0-video').selectable).toBe(true);
     expect(videoModeCapability('omni_reference', 'grok-imagine-video-1.5').livePost).toBe(true);
-    expect(videoModeCapability('omni_reference', 'minimax-h3').livePost).toBe(false);
+    expect(videoModeCapability('omni_reference', 'minimax-h3').livePost).toBe(true);
   });
 
   it('narrows video ports once an explicit mode is saved', () => {
@@ -1486,6 +1733,28 @@ describe('video mode ports', () => {
         mentions,
       ).map((mention) => mention.mentionId),
     ).toEqual(['m-video']);
+  });
+
+  it('absorbs official reference media mentions for omni, edit, and extend modes', () => {
+    for (const modelAlias of [
+      'minimax-h3',
+      'wan3.0-video',
+      'doubao-seedance-2-0-fast-260128',
+      'doubao-seedance-2-5-260628',
+    ]) {
+      for (const videoMode of ['omni_reference', 'video_edit', 'video_extend'] as const) {
+        const capability = videoModeCapability(videoMode, modelAlias);
+        if (!capability.selectable) continue;
+        expect(videoInputRoleForPromptMention('image', videoMode, modelAlias)).toBe(
+          'referenceImage',
+        );
+        expect(videoInputRoleForPromptMention('video', videoMode, modelAlias)).toBe('content');
+        expect(videoInputRoleForPromptMention('audio', videoMode, modelAlias)).toBe('audioTrack');
+      }
+    }
+    expect(videoInputRoleForPromptMention('video', 'video_edit', 'minimax-h3')).toBeUndefined();
+    expect(videoImageRolesForMode('video_edit')).toEqual(['referenceImage']);
+    expect(videoImageRolesForMode('video_extend')).toEqual(['referenceImage']);
   });
 });
 

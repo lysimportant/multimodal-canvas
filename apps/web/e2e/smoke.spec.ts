@@ -2818,6 +2818,93 @@ test('PC 音频参数显式输入、保存恢复并提交，桌面截图无布�
   expect(consoleErrors).toEqual([]);
 });
 
+for (const model of [
+  'MiniMax-H3',
+  'wan3.0-video',
+  'doubao-seedance-2-0-260128',
+  'doubao-seedance-2-5-260628',
+]) {
+  test(`官方视频模式 ${model} 可选择并保存正确参数`, async ({ page }, testInfo) => {
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    page.on('console', (message) => {
+      if (message.type() === 'error') errors.push(message.text());
+    });
+    await page.route('**/v1/models*', (route) =>
+      json(route, {
+        models: [
+          {
+            id: model,
+            name: model,
+            credentialId: initialCredential.id,
+            mediaTypes: ['video'],
+          },
+        ],
+      }),
+    );
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto(projectPath);
+    await page.getByRole('button', { name: '新建视频生成节点' }).click();
+    await page.getByRole('combobox', { name: /^模型：/ }).click();
+    await page.getByRole('option', { name: model, exact: true }).click();
+    const editor = page.locator('.node-quick-editor');
+    await editor.getByRole('combobox', { name: /^生成模式：/ }).click();
+    for (const label of ['文生视频', '首帧', '首尾帧', '全能参考']) {
+      await expect(page.getByRole('option', { name: new RegExp(`^${label} `) })).toBeEnabled();
+    }
+    await page.getByRole('option', { name: /^全能参考 / }).click();
+    await expect(editor.getByRole('combobox', { name: '生成模式：全能参考' })).toBeVisible();
+    await editor.getByRole('button', { name: '媒体参数', exact: true }).click();
+    if (model === 'MiniMax-H3') {
+      await editor.getByRole('combobox', { name: /^视频清晰度：/ }).click();
+      await expect(page.getByRole('option', { name: '768P', exact: true })).toBeVisible();
+      await page.getByRole('option', { name: '768P', exact: true }).click();
+    } else {
+      if (model.includes('2-5')) {
+        await editor.getByRole('combobox', { name: /^生成模式：/ }).click();
+        const savedFrames = page.waitForResponse(
+          (response) =>
+            response.request().method() === 'PATCH' &&
+            new URL(response.url()).pathname === `/v1/projects/${project.id}/canvas` &&
+            (response.request().postDataJSON() as CanvasDocument).nodes.some(
+              (node) => node.data.videoMode === 'first_last_frame',
+            ),
+        );
+        await page.getByRole('option', { name: /^首尾帧 / }).click();
+        const framesCanvas = ((await (await savedFrames).json()) as { canvas: CanvasDocument })
+          .canvas;
+        expect(framesCanvas.nodes.at(-1)?.data.parameters?.aspectRatio).toBe('adaptive');
+      }
+      await editor.getByRole('combobox', { name: /^生成模式：/ }).click();
+      const nextMode = model.includes('2-5') ? 'video_edit' : 'video_extend';
+      const saved = page.waitForResponse(
+        (response) =>
+          response.request().method() === 'PATCH' &&
+          new URL(response.url()).pathname === `/v1/projects/${project.id}/canvas` &&
+          (response.request().postDataJSON() as CanvasDocument).nodes.some(
+            (node) => node.data.videoMode === nextMode,
+          ),
+      );
+      await page
+        .getByRole('option', {
+          name: nextMode === 'video_edit' ? /^视频编辑 / : /^视频延长 /,
+        })
+        .click();
+      const canvas = ((await (await saved).json()) as { canvas: CanvasDocument }).canvas;
+      expect(canvas.nodes.at(-1)?.data.parameters?.aspectRatio).toBe('adaptive');
+      if (nextMode === 'video_edit')
+        expect(canvas.nodes.at(-1)?.data.parameters?.duration).toBe(-1);
+    }
+    const screenshotPath = testInfo.outputPath('official-video-mode.png');
+    await page.screenshot({ path: screenshotPath, animations: 'disabled' });
+    await testInfo.attach('official-video-mode', {
+      path: screenshotPath,
+      contentType: 'image/png',
+    });
+    expect(errors).toEqual([]);
+  });
+}
+
 test('PC 视频仅显示清晰度比例时长，新建保存刷新与提交不填像素尺寸', async ({ page }, testInfo) => {
   /** 仅使用 beforeEach 的本地 Mock API，保存与运行请求不访问真实 Provider。 */
   const errors: string[] = [];

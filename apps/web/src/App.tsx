@@ -2427,7 +2427,7 @@ function WorkspaceApp({
         current?.data.mediaType === 'video' &&
         current.data.mode !== 'source' &&
         hasMentions &&
-        current.data.videoMode !== 'omni_reference';
+        !['omni_reference', 'video_edit', 'video_extend'].includes(current.data.videoMode ?? '');
       updateNodeDataAndMarkDownstreamStale(targetNodeId, (data) => ({
         ...data,
         prompt: prompt || undefined,

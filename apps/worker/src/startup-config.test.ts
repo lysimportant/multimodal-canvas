@@ -198,6 +198,49 @@ describe('Worker production startup configuration', () => {
     });
   });
 
+  it('accepts an explicit public HTTPS object endpoint for provider asset reads', () => {
+    expect(
+      validateWorkerStartupConfiguration({
+        ...productionEnvironment,
+        S3_PROVIDER_ENDPOINT: 'https://objects.example.com',
+      }),
+    ).toEqual([]);
+  });
+
+  it('accepts a public IPv6 object endpoint for provider asset reads', () => {
+    expect(
+      validateWorkerStartupConfiguration({
+        ...productionEnvironment,
+        S3_PROVIDER_ENDPOINT: 'https://[2606:4700:4700::1111]',
+      }),
+    ).toEqual([]);
+  });
+
+  it.each([
+    'http://objects.example.com',
+    'https://localhost:9000',
+    'https://minio:9000',
+    'https://10.0.0.8',
+    'https://192.168.1.8',
+    'https://192.0.2.1',
+    'https://198.51.100.1',
+    'https://203.0.113.1',
+    'https://[2001:db8::1]',
+    'https://user:password@objects.example.com',
+    'https://objects.example.com?token=secret',
+    'https://objects.example.com#fragment',
+  ])('rejects non-public provider object endpoint %s', (endpoint) => {
+    expect(
+      validateWorkerStartupConfiguration({
+        ...productionEnvironment,
+        S3_PROVIDER_ENDPOINT: endpoint,
+      }),
+    ).toContainEqual({
+      variable: 'S3_PROVIDER_ENDPOINT',
+      message: 'must be a public HTTPS URL without credentials, query parameters or a fragment',
+    });
+  });
+
   it('rejects non-loopback plaintext Redis and S3 endpoints in production', () => {
     const issues = validateWorkerStartupConfiguration({
       ...productionEnvironment,

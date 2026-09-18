@@ -1376,7 +1376,11 @@ describe('NewApiProvider', () => {
       const records: RequestPromptRecord[] = [];
       const resolved = resolveProviderMentions(snapshot);
       resolved.forEach((mention, index) => {
-        mention.source.dataUrl = `data:image/png;base64,${btoa(`reference-${index}`)}`;
+        mention.source = {
+          kind: 'data-url',
+          mimeType: mention.source.mimeType,
+          dataUrl: `data:image/png;base64,${btoa(`reference-${index}`)}`,
+        };
       });
       const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
         new Response(JSON.stringify({ data: [{ url: 'https://cdn.example/edited.png' }] }), {
@@ -1795,7 +1799,11 @@ describe('NewApiProvider', () => {
     {
       name: 'remote URL instead of hydrated bytes',
       mutate: (_snapshot, resolved) => {
-        resolved[0]!.source.dataUrl = 'https://assets.example/photo.png';
+        resolved[0]!.source = {
+          kind: 'data-url',
+          mimeType: 'image/png',
+          dataUrl: 'https://assets.example/photo.png',
+        };
       },
       code: 'RESOURCE_MENTION_PROVIDER_MAPPING_INVALID',
     },
@@ -1820,7 +1828,11 @@ describe('NewApiProvider', () => {
       { assetId: 'asset-photo', assetVersion: 3 },
     ]);
     const resolved = resolveProviderMentions(snapshot);
-    resolved[1]!.source.dataUrl = 'data:image/png;base64,b3RoZXI=';
+    resolved[1]!.source = {
+      kind: 'data-url',
+      mimeType: 'image/png',
+      dataUrl: 'data:image/png;base64,b3RoZXI=',
+    };
     const fetchImpl = vi.fn<typeof fetch>();
     await expect(
       new NewApiProvider({
@@ -4869,7 +4881,7 @@ describe('NewApiVideoProvider', () => {
   });
 
   it.each(unsupportedVideoInputRoles)(
-    'rejects unsupported video role %s before creating or resuming a paid task',
+    'rejects unsupported video role %s before creating a paid task',
     async (role) => {
       const fetchImpl = vi.fn<typeof fetch>();
       const provider = new NewApiVideoProvider({
@@ -4884,12 +4896,7 @@ describe('NewApiVideoProvider', () => {
       await expect(
         provider.execute({
           snapshot,
-          providerJob: {
-            provider: 'newapi',
-            platformJobId: 'must-not-resume',
-            status: 'submitted',
-            progress: 10,
-          },
+          onProviderJob: vi.fn(),
         }),
       ).rejects.toMatchObject({
         code: 'UNSUPPORTED_INPUT_ROLE',
@@ -4900,7 +4907,7 @@ describe('NewApiVideoProvider', () => {
     },
   );
 
-  it('rejects role-shaped video parameters before creating or resuming a paid task', async () => {
+  it('rejects role-shaped video parameters before creating a paid task', async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     const provider = new NewApiVideoProvider({
       baseUrl: 'https://newapi.example.com/v1',
@@ -4917,12 +4924,7 @@ describe('NewApiVideoProvider', () => {
       await expect(
         provider.execute({
           snapshot,
-          providerJob: {
-            provider: 'newapi',
-            platformJobId: 'must-not-resume',
-            status: 'submitted',
-            progress: 10,
-          },
+          onProviderJob: vi.fn(),
         }),
       ).rejects.toMatchObject({
         code: 'UNSUPPORTED_INPUT_ROLE',
@@ -5515,58 +5517,96 @@ describe('NewApiVideoProvider', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it('resumes an existing platform job without issuing another POST', async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          status: 'done',
-          video: { url: 'https://cdn.example/resumed.mp4' },
+  it.each([
+    { model: 'grok-imagine-video-1.5', contract: 'newapi-video-v1' },
+    { model: 'MiniMax-H3', contract: 'legacy-v1' },
+    { model: 'wan3.0-video', contract: 'newapi-video-v1' },
+    { model: 'doubao-seedance-2-5-260628', contract: 'newapi-video-v1' },
+  ] as const)(
+    'resumes an existing $model $contract job without hydrating inputs or another POST',
+    async ({ model, contract }) => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            status: 'done',
+            video: { url: 'https://cdn.example/resumed.mp4' },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      );
+      const onProviderJob = vi.fn();
+      const provider = new NewApiVideoProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+        pollIntervalMs: 0,
+        maxPollAttempts: 1,
+      });
+      const snapshot = { ...videoSnapshot(), modelAlias: model };
+      snapshot.inputs[0].snapshot.data.contentUrl = undefined;
+      const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId)!;
+      target.data.promptDocument = {
+        version: 1,
+        blocks: [
+          { type: 'text', text: 'Animate ' },
+          {
+            type: 'mention',
+            mentionId: 'archived-reference',
+            assetId: 'archived-image',
+            assetVersion: 2,
+            mediaType: 'image',
+            label: 'Archived image',
+          },
+        ],
+      };
+      snapshot.promptMentions = [
+        {
+          nodeId: target.id,
+          mentionId: 'archived-reference',
+          assetId: 'archived-image',
+          assetVersion: 2,
+          mediaType: 'image',
+          label: 'Archived image',
+          blockOrder: 1,
+        },
+      ];
+      const onRequestPrompt = vi.fn();
+      const execution = await provider.execute({
+        snapshot,
+        providerJob: {
+          provider: 'newapi',
+          platformJobId: 'already-created',
+          status: 'submitted',
+          progress: 35,
+          payload: { contract, phase: 'submitted' },
+        },
+        onProviderJob,
+        onRequestPrompt,
+      });
+
+      expect(onRequestPrompt).not.toHaveBeenCalled();
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(fetchImpl).toHaveBeenCalledWith(
+        'https://newapi.example.com/v1/videos/already-created',
+        expect.objectContaining({ method: 'GET' }),
+      );
+      expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+      expect(execution.output).toMatchObject({
+        mediaType: 'video',
+        kind: 'url',
+        url: 'https://cdn.example/resumed.mp4',
+      });
+      expect(onProviderJob).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          platformJobId: 'already-created',
+          status: 'submitted',
+          progress: 35,
+          payload: expect.objectContaining({ phase: 'resumed' }),
         }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      ),
-    );
-    const onProviderJob = vi.fn();
-    const provider = new NewApiVideoProvider({
-      baseUrl: 'https://newapi.example.com/v1',
-      apiKey: 'server-secret',
-      fetchImpl,
-      pollIntervalMs: 0,
-      maxPollAttempts: 1,
-    });
-
-    const execution = await provider.execute({
-      snapshot: videoSnapshot(),
-      providerJob: {
-        provider: 'newapi',
-        platformJobId: 'already-created',
-        status: 'submitted',
-        progress: 35,
-        payload: { contract: 'newapi-video-v1', phase: 'submitted' },
-      },
-      onProviderJob,
-    });
-
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(fetchImpl).toHaveBeenCalledWith(
-      'https://newapi.example.com/v1/videos/already-created',
-      expect.objectContaining({ method: 'GET' }),
-    );
-    expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
-    expect(execution.output).toMatchObject({
-      mediaType: 'video',
-      kind: 'url',
-      url: 'https://cdn.example/resumed.mp4',
-    });
-    expect(onProviderJob).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        platformJobId: 'already-created',
-        status: 'submitted',
-        progress: 35,
-        payload: expect.objectContaining({ phase: 'resumed' }),
-      }),
-    );
-  });
+      );
+    },
+  );
 
   it('bounds and sanitizes structured provider payloads on errors', () => {
     const error = new NewApiProviderError('provider failed', {
@@ -5729,6 +5769,300 @@ describe('NewApiVideoProvider', () => {
       message: 'New API video 不支持该输入角色：referenceImage',
     });
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  /** 通过隔离的创建/查询响应检查官方插件请求，不调用上游或下载素材。 */
+  async function submitOfficialVideo(snapshot: RunSnapshot, records: RequestPromptRecord[] = []) {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ id: 'official-task', status: 'queued' })),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: 'official-task',
+            status: 'completed',
+            video: { url: 'https://cdn.example/official.mp4' },
+          }),
+        ),
+      );
+    const execution = await new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'test-secret',
+      videoContract: 'newapi-video-v1',
+      fetchImpl,
+      pollIntervalMs: 0,
+      maxPollAttempts: 1,
+    }).execute({
+      snapshot,
+      resolvedMentions: resolveProviderMentions(snapshot),
+      onProviderJob: vi.fn(),
+      runId: 'run-official',
+      onRequestPrompt: (record) => {
+        records.push(record);
+      },
+    });
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://newapi.example.com/v1/videos');
+    expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    return { body: JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)), execution };
+  }
+
+  it.each(
+    [
+      'MiniMax-H3',
+      'wan3.0-video',
+      'wan3.0-video-prime',
+      'doubao-seedance-2-0-260128',
+      'doubao-seedance-2-5-260628',
+    ].flatMap((model) =>
+      (['text_to_video', 'first_frame', 'first_last_frame', 'omni_reference'] as const).map(
+        (mode) => ({ model, mode }),
+      ),
+    ),
+  )('maps official $model $mode with exact media roles', async ({ model, mode }) => {
+    const snapshot = videoSnapshot();
+    snapshot.modelAlias = model;
+    const ratio =
+      model.includes('2-5') && (mode === 'first_frame' || mode === 'first_last_frame')
+        ? 'adaptive'
+        : '16:9';
+    snapshot.parameters = {
+      duration: 8,
+      resolution: model === 'MiniMax-H3' ? '768p' : '720p',
+      aspectRatio: ratio,
+    };
+    snapshot.nodes[1]!.data.videoMode = mode;
+    snapshot.inputs =
+      mode === 'text_to_video'
+        ? []
+        : mode === 'omni_reference'
+          ? [
+              providerInput('reference', 'referenceImage', 0),
+              providerInput('voice', 'audioTrack', 2),
+            ]
+          : [providerInput('first', 'firstFrame', 0)];
+    if (mode === 'first_last_frame') snapshot.inputs.push(providerInput('last', 'lastFrame', 1));
+    if (mode === 'omni_reference') {
+      const video = providerInput('clip', 'content', 1);
+      video.snapshot.data = {
+        label: 'Clip',
+        mode: 'source',
+        mediaType: 'video',
+        contentUrl: 'https://assets.example/clip.mp4',
+        mimeType: 'video/mp4',
+      };
+      snapshot.inputs.push(video);
+    }
+    snapshot.inputs.forEach((input, index) => {
+      input.sourceAssetId = `asset-${index}`;
+      input.sourceAssetVersion = index + 1;
+    });
+    const records: RequestPromptRecord[] = [];
+    const { body } = await submitOfficialVideo(snapshot, records);
+    expect(body).toMatchObject({ model, prompt: 'Animate the scene', seconds: '8', duration: 8 });
+    const roles =
+      mode === 'text_to_video'
+        ? []
+        : mode === 'first_frame'
+          ? ['first_frame']
+          : mode === 'first_last_frame'
+            ? ['first_frame', 'last_frame']
+            : ['reference_image', 'reference_video', 'reference_audio'];
+    if (model.startsWith('wan')) {
+      expect(body.metadata.input.media.map((item: { type: string }) => item.type)).toEqual(roles);
+      expect(body).toMatchObject({ resolution: '720P', ratio: '16:9' });
+      expect(
+        body.metadata.input.media.every((item: { url: unknown }) => typeof item.url === 'string'),
+      ).toBe(true);
+    } else {
+      const media = body.metadata.content.filter((item: { type: string }) => item.type !== 'text');
+      expect(media.map((item: { role: string }) => item.role)).toEqual(roles);
+      expect(
+        media.every((item: Record<string, any>) => typeof item[item.type]?.url === 'string'),
+      ).toBe(true);
+      expect(body.metadata).toMatchObject({
+        resolution: model === 'MiniMax-H3' ? '768P' : '720p',
+        ratio,
+      });
+    }
+    expect(body.image).toBeUndefined();
+    expect(body.reference_images).toBeUndefined();
+    expect(records[0]?.resources).toEqual(
+      [...snapshot.inputs]
+        .sort((a, b) => a.sortOrder - b.sortOrder)
+        .map((input, sortOrder) => ({
+          assetId: input.sourceAssetId,
+          assetVersion: input.sourceAssetVersion,
+          role: input.role,
+          sortOrder,
+          mediaType: input.snapshot.data.mediaType,
+        })),
+    );
+    expect(JSON.stringify(records)).not.toContain('https://');
+  });
+
+  it('sends both H3 image mentions with their frozen versions instead of applying the Grok guard', async () => {
+    const snapshot = videoSnapshot();
+    snapshot.modelAlias = 'MiniMax-H3';
+    snapshot.parameters = { duration: 5, resolution: '768P' };
+    snapshot.inputs = [];
+    const mentions = [1, 2].map((version) => ({
+      type: 'mention' as const,
+      mentionId: `mention-${version}`,
+      assetId: 'asset-photo',
+      assetVersion: version,
+      label: `Photo ${version}`,
+      mediaType: 'image' as const,
+      mimeType: 'image/png',
+      contentUrl: `data:image/png;base64,${btoa(`image-${version}`)}`,
+    }));
+    snapshot.nodes[1]!.data = {
+      ...snapshot.nodes[1]!.data,
+      videoMode: 'omni_reference',
+      promptDocument: {
+        version: 1,
+        blocks: [{ type: 'text', text: 'Animate these photos ' }, ...mentions],
+      },
+    };
+    snapshot.promptMentions = mentions.map((mention, blockOrder) => ({
+      ...mention,
+      nodeId: 'node_video',
+      blockOrder: blockOrder + 1,
+    }));
+    const records: RequestPromptRecord[] = [];
+    const { body } = await submitOfficialVideo(snapshot, records);
+    expect(body.metadata.content).toEqual([
+      { type: 'text', text: 'Animate these photos Photo 1Photo 2' },
+      ...mentions.map((mention) => ({
+        type: 'image_url',
+        role: 'reference_image',
+        image_url: { url: mention.contentUrl },
+      })),
+    ]);
+    expect(records[0]?.resources.map((resource) => resource.assetVersion)).toEqual([1, 2]);
+    expect(JSON.stringify(records)).not.toContain('base64');
+  });
+
+  it.each(
+    ['wan3.0-video', 'doubao-seedance-2-0-260128', 'doubao-seedance-2-5-260628'].flatMap((model) =>
+      (['video_edit', 'video_extend'] as const).map((mode) => ({ model, mode })),
+    ),
+  )(
+    'maps $model $mode without inventing another model version task type',
+    async ({ model, mode }) => {
+      const snapshot = videoSnapshot();
+      snapshot.modelAlias = model;
+      snapshot.parameters = {
+        duration: model.includes('2-5') && mode === 'video_edit' ? -1 : 8,
+        aspectRatio: model.includes('2-0') ? '16:9' : 'adaptive',
+      };
+      snapshot.nodes[1]!.data.videoMode = mode;
+      const input = providerInput('clip', 'content', 0);
+      input.snapshot.data = {
+        label: 'Clip',
+        mediaType: 'video',
+        mode: 'source',
+        contentUrl: 'https://assets.example/clip.mp4',
+        mimeType: 'video/mp4',
+      };
+      snapshot.inputs = [input];
+      const { body } = await submitOfficialVideo(snapshot);
+      if (model.includes('2-5'))
+        expect(body.metadata.omni_reference_task_type).toBe(
+          mode === 'video_edit' ? 'edit' : 'extend',
+        );
+      else expect(body.metadata.omni_reference_task_type).toBeUndefined();
+      expect(body.seconds).toBe(String(snapshot.parameters.duration));
+      if (model.includes('2-0')) expect(body.metadata.ratio).toBe('16:9');
+    },
+  );
+
+  it.each(['wan3.0-video', 'doubao-seedance-2-0-260128', 'doubao-seedance-2-5-260628'])(
+    '%s accepts adaptive text-to-video without visual references',
+    async (model) => {
+      const snapshot = videoSnapshot();
+      snapshot.modelAlias = model;
+      snapshot.parameters = { duration: 8, aspectRatio: 'adaptive' };
+      snapshot.nodes[1]!.data.videoMode = 'text_to_video';
+      snapshot.inputs = [];
+      const { body } = await submitOfficialVideo(snapshot);
+      expect(model.startsWith('wan') ? body.ratio : body.metadata.ratio).toBe('adaptive');
+    },
+  );
+
+  it.each([
+    { model: 'MiniMax-H3', parameters: { resolution: '720p' } },
+    { model: 'MiniMax-H3', parameters: { duration: 16 } },
+    { model: 'wan3.0-video', parameters: { aspectRatio: '21:9' } },
+    { model: 'doubao-seedance-2-0-fast-260128', parameters: { resolution: '1080p' } },
+    { model: 'doubao-seedance-2-5-260628', parameters: { aspectRatio: '16:9' } },
+  ])(
+    '$model rejects unsupported frame parameters before POST: $parameters',
+    async ({ model, parameters }) => {
+      const snapshot = videoSnapshot();
+      snapshot.modelAlias = model;
+      snapshot.parameters = { ...parameters };
+      snapshot.nodes[1]!.data.videoMode = 'first_frame';
+      const fetchImpl = vi.fn<typeof fetch>();
+      await expect(
+        new NewApiVideoProvider({
+          baseUrl: 'https://newapi.example/v1',
+          apiKey: 'test-secret',
+          videoContract: 'newapi-video-v1',
+          fetchImpl,
+        }).execute({ snapshot, onProviderJob: vi.fn() }),
+      ).rejects.toMatchObject({ code: 'INVALID_PROVIDER_PARAMETER', retryable: false });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { model: 'wan3.0-video', mediaType: 'video' as const, role: 'content' as const },
+    { model: 'wan3.0-video', mediaType: 'audio' as const, role: 'audioTrack' as const },
+    { model: 'doubao-seedance-2-0-260128', mediaType: 'video' as const, role: 'content' as const },
+  ])(
+    'rejects $model $mediaType data URLs before POST when the official contract requires a public URL',
+    async ({ model, mediaType, role }) => {
+      const snapshot = videoSnapshot();
+      snapshot.modelAlias = model;
+      snapshot.nodes[1]!.data.videoMode = 'omni_reference';
+      const input = providerInput('media', role, 1);
+      input.snapshot.data = {
+        label: 'Reference',
+        mediaType,
+        mode: 'source',
+        contentUrl: `data:${mediaType}/mp4;base64,bWVkaWE=`,
+        mimeType: `${mediaType}/mp4`,
+      };
+      snapshot.inputs = [providerInput('reference', 'referenceImage', 0), input];
+      const fetchImpl = vi.fn<typeof fetch>();
+      await expect(
+        new NewApiVideoProvider({
+          baseUrl: 'https://newapi.example/v1',
+          apiKey: 'test-secret',
+          videoContract: 'newapi-video-v1',
+          fetchImpl,
+        }).execute({ snapshot, onProviderJob: vi.fn() }),
+      ).rejects.toMatchObject({ code: 'VIDEO_REFERENCE_PUBLIC_URL_REQUIRED' });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  it('preserves Wan negative prompt and automatic duration in the plugin contract', async () => {
+    const snapshot = videoSnapshot();
+    snapshot.modelAlias = 'wan3.0-video';
+    snapshot.parameters = { duration: -1 };
+    snapshot.nodes[1]!.data.videoMode = 'text_to_video';
+    snapshot.inputs = [providerInput('negative', 'negativePrompt', 0)];
+    const records: RequestPromptRecord[] = [];
+    const { body } = await submitOfficialVideo(snapshot, records);
+    expect(body).toMatchObject({
+      seconds: '-1',
+      duration: -1,
+      metadata: { input: { negative_prompt: 'negativePrompt value' } },
+    });
+    expect(records[0]?.negativeText).toBe('negativePrompt value');
   });
 
   /** 收集视频创建前交给 Worker 的请求记录。 */

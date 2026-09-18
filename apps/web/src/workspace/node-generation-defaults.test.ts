@@ -114,6 +114,25 @@ describe('applyNodeGenerationDefaults', () => {
     expect(configured.parameters).toEqual({ duration: 10 });
   });
 
+  it('MiniMax H3 在目录缺项时使用官方默认，并清理其他家族的自动参数', () => {
+    const original = {
+      ...data('video'),
+      modelAlias: 'minimax-h3',
+      parameters: { duration: -1, aspectRatio: 'adaptive', custom: true },
+    };
+    const configured = applyNodeGenerationDefaults(original, {
+      id: 'minimax-h3',
+      name: 'MiniMax H3',
+      mediaTypes: ['video'],
+    });
+    expect(configured.parameters).toEqual({ custom: true, resolution: '768p', duration: 4 });
+    expect(original.parameters).toEqual({
+      duration: -1,
+      aspectRatio: 'adaptive',
+      custom: true,
+    });
+  });
+
   it('音频仅初始化已确认格式的第一项，保留必填音色与连续语速的输入含义', () => {
     const configured = applyNodeGenerationDefaults(data('audio'), model('audio'));
     expect(configured.parameters).toEqual({ response_format: 'mp3' });

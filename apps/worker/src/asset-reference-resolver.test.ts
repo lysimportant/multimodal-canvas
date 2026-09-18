@@ -40,7 +40,10 @@ vi.mock('bullmq', () => {
   return { Job, Queue, Worker };
 });
 
-import { StoredAssetReferenceResolver } from './asset-reference-resolver';
+import {
+  S3AssetReferenceBlobStore,
+  StoredAssetReferenceResolver,
+} from './asset-reference-resolver';
 import { createRunWorker } from './index';
 
 const projectId = '123e4567-e89b-42d3-a456-426614174700';
@@ -56,6 +59,282 @@ beforeEach(() => {
 });
 
 describe('StoredAssetReferenceResolver', () => {
+  it('signs the frozen object key against the explicit public provider endpoint', async () => {
+    const blobStore = new S3AssetReferenceBlobStore('canvas', {
+      endpoint: 'https://minio:9000',
+      providerEndpoint: 'https://objects.example.com',
+      region: 'us-east-1',
+      accessKeyId: 'synthetic-access-key',
+      secretAccessKey: 'synthetic-secret-key',
+      forcePathStyle: true,
+    });
+
+    try {
+      const signed = new URL(
+        await blobStore.createProviderGetUrl('assets/video/v2-frozen', {
+          expiresIn: 3_600,
+          contentType: 'video/mp4',
+        }),
+      );
+
+      expect(signed.protocol).toBe('https:');
+      expect(signed.host).toBe('objects.example.com');
+      expect(signed.pathname).toBe('/canvas/assets/video/v2-frozen');
+      expect(signed.searchParams.get('X-Amz-Expires')).toBe('3600');
+      expect(signed.searchParams.get('response-content-type')).toBe('video/mp4');
+      expect(signed.searchParams.get('X-Amz-Signature')).toMatch(/^[a-f0-9]{64}$/);
+    } finally {
+      await blobStore.close();
+    }
+  });
+
+  it.each([
+    { modelAlias: 'wan3.0-video', mediaType: 'video' as const, role: 'content' as const },
+    { modelAlias: 'wan3.0-video-prime', mediaType: 'audio' as const, role: 'audioTrack' as const },
+    {
+      modelAlias: 'doubao-seedance-2-0-mini-260615',
+      mediaType: 'video' as const,
+      role: 'content' as const,
+    },
+    {
+      modelAlias: 'doubao-seedance-2-5-260628',
+      mediaType: 'video' as const,
+      role: 'content' as const,
+    },
+  ])(
+    'hydrates $modelAlias $mediaType input as one transient signed URL',
+    async ({ modelAlias, mediaType, role }) => {
+      const content = Buffer.from(`frozen-${modelAlias}-${mediaType}`);
+      const snapshot = referenceSnapshot({
+        sourceMediaType: mediaType,
+        targetMediaType: 'video',
+        role,
+        assetId: imageAssetId,
+        mimeType: `${mediaType}/${mediaType === 'video' ? 'mp4' : 'wav'}`,
+        modelAlias,
+      });
+      const original = structuredClone(snapshot);
+      const { repository, blobStore } = fixtures({
+        assets: [
+          asset(
+            imageAssetId,
+            mediaType,
+            `${mediaType}/${mediaType === 'video' ? 'mp4' : 'wav'}`,
+            content,
+            projectId,
+          ),
+        ],
+        versions: [
+          {
+            assetId: imageAssetId,
+            version: 1,
+            sizeBytes: BigInt(content.byteLength),
+            contentKey: `objects/${mediaType}-frozen-v1`,
+          },
+        ],
+        blobs: { [`objects/${mediaType}-frozen-v1`]: content },
+      });
+      const createProviderGetUrl = vi.fn(async () =>
+        Promise.resolve(
+          `https://objects.example.com/canvas/objects/${mediaType}-frozen-v1?X-Amz-Signature=secret`,
+        ),
+      );
+      blobStore.createProviderGetUrl = createProviderGetUrl;
+
+      const hydrated = await new StoredAssetReferenceResolver(repository, blobStore).resolve(
+        snapshot,
+      );
+
+      expect(hydrated.inputs[0]?.snapshot.data.contentUrl).toMatch(
+        /^https:\/\/objects\.example\.com\//,
+      );
+      expect(createProviderGetUrl).toHaveBeenCalledOnce();
+      expect(createProviderGetUrl).toHaveBeenCalledWith(`objects/${mediaType}-frozen-v1`, {
+        expiresIn: 3_600,
+        contentType: `${mediaType}/${mediaType === 'video' ? 'mp4' : 'wav'}`,
+      });
+      expect(blobStore.get).toHaveBeenCalledWith(
+        `objects/${mediaType}-frozen-v1`,
+        content.byteLength + 1,
+      );
+      expect(snapshot).toEqual(original);
+      expect(JSON.stringify(snapshot)).not.toContain('X-Amz-Signature');
+    },
+  );
+
+  it.each([
+    { modelAlias: 'MiniMax-H3', mediaType: 'video' as const },
+    { modelAlias: 'MiniMax-H3', mediaType: 'audio' as const },
+    { modelAlias: 'wan3.0-video', mediaType: 'image' as const },
+    { modelAlias: 'doubao-seedance-2-0-260128', mediaType: 'audio' as const },
+  ])('keeps $modelAlias $mediaType references as data URLs', async ({ modelAlias, mediaType }) => {
+    const content = Buffer.from(`inline-${modelAlias}-${mediaType}`);
+    const mimeType = `${mediaType}/${mediaType === 'video' ? 'mp4' : mediaType === 'audio' ? 'wav' : 'png'}`;
+    const snapshot = promptMentionSnapshot({
+      assetId: imageAssetId,
+      assetVersion: 2,
+      label: '参考素材',
+      mediaType,
+      modelAlias,
+      targetMediaType: 'video',
+    });
+    const { repository, blobStore } = fixtures({
+      assets: [asset(imageAssetId, mediaType, mimeType, content, projectId)],
+      versions: [
+        {
+          assetId: imageAssetId,
+          version: 2,
+          sizeBytes: BigInt(content.byteLength),
+          contentKey: 'objects/inline-v2',
+        },
+      ],
+      blobs: { 'objects/inline-v2': content },
+    });
+    const createProviderGetUrl = vi.fn(async () => 'https://objects.example.com/unexpected');
+    blobStore.createProviderGetUrl = createProviderGetUrl;
+
+    const hydrated = await new StoredAssetReferenceResolver(repository, blobStore).resolve(
+      snapshot,
+    );
+    const mention = hydrated.nodes[0]?.data.promptDocument?.blocks.find(
+      (block) => block.type === 'mention',
+    );
+
+    expect(mention).toMatchObject({
+      contentUrl: `data:${mimeType};base64,${content.toString('base64')}`,
+    });
+    expect(createProviderGetUrl).not.toHaveBeenCalled();
+  });
+
+  it('uses the actual DAG mention node model when choosing reference transport', async () => {
+    const content = Buffer.from('frozen H3 reference video');
+    const snapshot = promptMentionSnapshot({
+      assetId: imageAssetId,
+      assetVersion: 2,
+      label: 'H3 参考视频',
+      mediaType: 'video',
+      modelAlias: 'wan3.0-video',
+      targetMediaType: 'video',
+    });
+    const mentionNode = {
+      ...snapshot.nodes[0]!,
+      id: 'node_h3',
+      data: { ...snapshot.nodes[0]!.data, modelAlias: 'MiniMax-H3' },
+    };
+    const finalTarget = {
+      id: 'node_final',
+      type: 'video' as const,
+      position: { x: 400, y: 0 },
+      data: {
+        label: 'Final Wan target',
+        mediaType: 'video' as const,
+        mode: 'generate' as const,
+        modelAlias: 'wan3.0-video',
+        videoMode: 'text_to_video' as const,
+      },
+    };
+    snapshot.nodes = [mentionNode, finalTarget];
+    snapshot.targetNodeId = finalTarget.id;
+    snapshot.promptMentions = snapshot.promptMentions?.map((mention) => ({
+      ...mention,
+      nodeId: mentionNode.id,
+    }));
+    const { repository, blobStore } = fixtures({
+      assets: [asset(imageAssetId, 'video', 'video/mp4', content, projectId)],
+      versions: [
+        {
+          assetId: imageAssetId,
+          version: 2,
+          sizeBytes: BigInt(content.byteLength),
+          contentKey: 'objects/h3-video-v2',
+        },
+      ],
+      blobs: { 'objects/h3-video-v2': content },
+    });
+    const createProviderGetUrl = vi.fn(async () => 'https://objects.example.com/unexpected');
+    blobStore.createProviderGetUrl = createProviderGetUrl;
+
+    const hydrated = await new StoredAssetReferenceResolver(repository, blobStore).resolve(
+      snapshot,
+    );
+    const mention = hydrated.nodes
+      .find((node) => node.id === mentionNode.id)
+      ?.data.promptDocument?.blocks.find((block) => block.type === 'mention');
+
+    expect(mention && Reflect.get(mention, 'contentUrl')).toBe(
+      `data:video/mp4;base64,${content.toString('base64')}`,
+    );
+    expect(createProviderGetUrl).not.toHaveBeenCalled();
+  });
+
+  it('reuses one signed URL for repeated frozen Seedance video mentions', async () => {
+    const content = Buffer.from('frozen seedance reference video');
+    const snapshot = promptMentionSnapshot({
+      assetId: imageAssetId,
+      assetVersion: 2,
+      label: '参考视频',
+      mediaType: 'video',
+      repeat: true,
+      modelAlias: 'doubao-seedance-2-5-260628',
+      targetMediaType: 'video',
+    });
+    const original = structuredClone(snapshot);
+    const { repository, blobStore } = fixtures({
+      assets: [asset(imageAssetId, 'video', 'video/mp4', content, projectId)],
+      versions: [
+        {
+          assetId: imageAssetId,
+          version: 2,
+          sizeBytes: BigInt(content.byteLength),
+          contentKey: 'objects/seedance-video-v2',
+        },
+      ],
+      blobs: { 'objects/seedance-video-v2': content },
+    });
+    const providerUrl =
+      'https://objects.example.com/canvas/objects/seedance-video-v2?X-Amz-Signature=secret';
+    const createProviderGetUrl = vi.fn(async () => providerUrl);
+    blobStore.createProviderGetUrl = createProviderGetUrl;
+
+    const hydrated = await new StoredAssetReferenceResolver(repository, blobStore).resolve(
+      snapshot,
+    );
+    const mentions = hydrated.nodes[0]?.data.promptDocument?.blocks.filter(
+      (block) => block.type === 'mention',
+    );
+
+    expect(mentions).toHaveLength(2);
+    expect(mentions?.map((mention) => Reflect.get(mention, 'contentUrl'))).toEqual([
+      providerUrl,
+      providerUrl,
+    ]);
+    expect(blobStore.get).toHaveBeenCalledOnce();
+    expect(createProviderGetUrl).toHaveBeenCalledOnce();
+    expect(snapshot).toEqual(original);
+    expect(JSON.stringify(snapshot)).not.toContain('X-Amz-Signature');
+  });
+
+  it('fails before provider execution when a URL-only frozen input has no public signer', async () => {
+    const content = Buffer.from('wan reference video');
+    const snapshot = referenceSnapshot({
+      sourceMediaType: 'video',
+      targetMediaType: 'video',
+      role: 'content',
+      assetId: imageAssetId,
+      mimeType: 'video/mp4',
+      modelAlias: 'wan3.0-video',
+    });
+    const { repository, blobStore } = fixtures({
+      assets: [asset(imageAssetId, 'video', 'video/mp4', content, projectId)],
+      blobs: { 'objects/video-current': content },
+    });
+
+    await expect(
+      new StoredAssetReferenceResolver(repository, blobStore).resolve(snapshot),
+    ).rejects.toThrow('configure S3_PROVIDER_ENDPOINT');
+    expect(blobStore.get).toHaveBeenCalledOnce();
+  });
+
   it('hydrates frozen inline prompt mentions in memory without mutating the durable snapshot', async () => {
     const content = Buffer.from('frozen image bytes');
     const snapshot = promptMentionSnapshot({
@@ -1190,17 +1469,96 @@ describe('createRunWorker asset hydration boundary', () => {
     expect(JSON.stringify(loggedErrors)).toContain('[REDACTED_ASSET_DATA]');
     expect(JSON.stringify(persistedRuns)).toContain('[REDACTED_ASSET_DATA]');
   });
+
+  it('redacts a transient signed asset URL from job state, logs and persisted errors', async () => {
+    const content = Buffer.from('provider-readable frozen video');
+    const durableSnapshot = referenceSnapshot({
+      sourceMediaType: 'video',
+      targetMediaType: 'video',
+      role: 'content',
+      assetId: imageAssetId,
+      mimeType: 'video/mp4',
+      modelAlias: 'wan3.0-video',
+    });
+    const { repository, blobStore } = fixtures({
+      assets: [asset(imageAssetId, 'video', 'video/mp4', content, projectId)],
+      blobs: { 'objects/video-current': content },
+    });
+    const signedUrl =
+      'https://objects.example.com/canvas/objects/video-current?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=never-persist-this-signature';
+    blobStore.createProviderGetUrl = vi.fn(async () => signedUrl);
+    const loggedErrors: unknown[] = [];
+    const persistedRuns: unknown[] = [];
+    const logger = {
+      child() {
+        return this;
+      },
+      debug() {},
+      info() {},
+      warn() {},
+      error(bindings: unknown) {
+        loggedErrors.push(bindings);
+      },
+    };
+    const job: StubJob = {
+      id: projectId,
+      data: {
+        runId: projectId,
+        snapshot: durableSnapshot,
+        attempt: 1,
+        provider: 'mock',
+        cancelRequested: false,
+      },
+      async updateData(data) {
+        this.data = data;
+      },
+      async updateProgress() {},
+    };
+    bullmqState.job = job;
+
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      stepDelayMs: 0,
+      logger,
+      assetReferenceResolver: new StoredAssetReferenceResolver(repository, blobStore),
+      persistence: {
+        async upsertProviderJob() {},
+        async recordUsage() {},
+        async updateRun(input) {
+          persistedRuns.push(input);
+        },
+      },
+      provider: {
+        async execute(request) {
+          throw new Error(
+            `provider echoed ${request.snapshot.inputs[0]?.snapshot.data.contentUrl}`,
+          );
+        },
+      },
+    });
+
+    await expect(bullmqState.processor?.(job)).rejects.toThrow('[REDACTED_ASSET_URL]');
+
+    for (const value of [job.data, loggedErrors, persistedRuns]) {
+      const serialized = JSON.stringify(value);
+      expect(serialized).not.toContain('never-persist-this-signature');
+      expect(serialized).not.toContain('X-Amz-Signature');
+    }
+    expect(JSON.stringify(loggedErrors)).toContain('[REDACTED_ASSET_URL]');
+    expect(JSON.stringify(persistedRuns)).toContain('[REDACTED_ASSET_URL]');
+  });
 });
 
 function referenceSnapshot(options: {
-  sourceMediaType?: 'text' | 'image';
+  sourceMediaType?: MediaType;
   targetMediaType?: 'text' | 'image' | 'video';
-  role?: 'prompt' | 'firstFrame' | 'content' | 'referenceImage';
+  role?: 'prompt' | 'firstFrame' | 'content' | 'referenceImage' | 'audioTrack';
   assetId: string;
   sourceMode?: 'source' | 'generate';
   contentUrl?: string | null;
   mimeType?: string;
   prompt?: string;
+  modelAlias?: string;
 }): RunSnapshot {
   const sourceMediaType = options.sourceMediaType ?? 'text';
   const targetMediaType = options.targetMediaType ?? 'image';
@@ -1232,13 +1590,19 @@ function referenceSnapshot(options: {
       label: 'Target',
       mediaType: targetMediaType,
       mode: 'generate' as const,
+      ...(targetMediaType === 'video'
+        ? {
+            videoMode:
+              role === 'firstFrame' ? ('first_frame' as const) : ('omni_reference' as const),
+          }
+        : {}),
     },
   };
   return {
     projectId,
     canvasRevision: 1,
     targetNodeId: target.id,
-    modelAlias: 'target-model',
+    modelAlias: options.modelAlias ?? 'target-model',
     parameters: {},
     submittedAt: '2026-08-27T00:00:00.000Z',
     nodes: [source, target],
@@ -1270,6 +1634,8 @@ function promptMentionSnapshot(options: {
   label: string;
   mediaType: MediaType;
   repeat?: boolean;
+  modelAlias?: string;
+  targetMediaType?: 'image' | 'video';
 }): RunSnapshot {
   const blocks = [
     { type: 'text' as const, text: '请使用 ' },
@@ -1295,14 +1661,16 @@ function promptMentionSnapshot(options: {
         ]
       : []),
   ];
+  const targetMediaType = options.targetMediaType ?? 'image';
   const target = {
     id: 'node_target',
-    type: 'image' as const,
+    type: targetMediaType,
     position: { x: 200, y: 0 },
     data: {
       label: 'Target',
-      mediaType: 'image' as const,
+      mediaType: targetMediaType,
       mode: 'generate' as const,
+      ...(targetMediaType === 'video' ? { videoMode: 'omni_reference' as const } : {}),
       promptDocument: { version: 1 as const, blocks },
     },
   };
@@ -1321,7 +1689,7 @@ function promptMentionSnapshot(options: {
     projectId,
     canvasRevision: 1,
     targetNodeId: target.id,
-    modelAlias: 'target-model',
+    modelAlias: options.modelAlias ?? 'target-model',
     parameters: {},
     submittedAt: '2026-08-27T00:00:00.000Z',
     nodes: [target],

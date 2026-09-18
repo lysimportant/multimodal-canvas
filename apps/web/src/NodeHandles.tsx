@@ -62,12 +62,16 @@ export const inputRoleLabels: Record<PortRole, string> = {
 };
 
 /**
- * 按视频模式返回端口中文名。全能参考把内容/音轨显示成参考视频/参考音频。
+ * 按视频模式返回端口中文名。参考、编辑和延长模式显示参考视频/参考音频。
  * @param role 规范输入角色。
  * @param videoMode 节点上的显式视频模式。
  */
 export function videoInputRoleLabel(role: PortRole, videoMode?: VideoMode): string {
-  if (videoMode === 'omni_reference') {
+  if (
+    videoMode === 'omni_reference' ||
+    videoMode === 'video_edit' ||
+    videoMode === 'video_extend'
+  ) {
     if (role === 'content') return '参考视频';
     if (role === 'audioTrack') return '参考音频';
     if (role === 'referenceImage') return '参考图';
@@ -148,10 +152,14 @@ export function getNodeHandleLayout(
   const sideRoles: Partial<Record<InputHandleSide, PortRole>> = {};
   const preferredRoles =
     mediaType === 'video' ? preferredRolesForVideoMode(videoMode) : preferredInputRoles;
-  const skipLeftRole = videoMode === 'text_to_video' || videoMode === 'omni_reference';
+  const referenceMode =
+    videoMode === 'omni_reference' || videoMode === 'video_edit' || videoMode === 'video_extend';
+  const skipLeftRole = videoMode === 'text_to_video' || referenceMode;
 
   for (const side of ['top', 'left', 'bottom'] as const) {
     if (side === 'left' && skipLeftRole) continue;
+    // 参考素材共用左侧磁吸入口；没有负向提示词时，底部不能抢占参考角色。
+    if (side === 'bottom' && referenceMode && !targetRoles.includes('negativePrompt')) continue;
     const role = takePreferredRole(side, targetRoles, assignedRoles, preferredRoles);
     if (role) sideRoles[side] = role;
   }
@@ -167,7 +175,7 @@ export function getNodeHandleLayout(
     }
 
     const role = sideRoles[side];
-    const leftMagnet = side === 'left' && videoMode === 'omni_reference';
+    const leftMagnet = side === 'left' && referenceMode;
     return {
       side,
       type: 'target',
@@ -213,7 +221,9 @@ export function NodeHandles({ mediaType, mode, videoMode, modelAlias }: NodeHand
               ? videoInputRoleLabel(handle.role, videoMode)
               : handle.side === 'right'
                 ? '输出'
-                : videoMode === 'omni_reference'
+                : videoMode === 'omni_reference' ||
+                    videoMode === 'video_edit' ||
+                    videoMode === 'video_extend'
                   ? '参考'
                   : '输入'
           }

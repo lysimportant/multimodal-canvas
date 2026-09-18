@@ -20,6 +20,7 @@ import {
   resolveImageEditMaxImages,
   REQUEST_PROMPT_SCHEMA_VERSION,
   videoInputRoleForPromptMention,
+  videoFamilyForModel,
   videoModeForPromptMentions,
 } from '@multimodal-canvas/domain';
 
@@ -35,11 +36,9 @@ export type ResolvedMention = FrozenPromptMention & {
   /** 新快照始终提供明确节点 ID；旧快照在解析时补为目标节点。 */
   nodeId: string;
   /** 当前 Worker 已读取并校验的不可变资产版本内容。 */
-  source: {
-    kind: 'data-url';
-    mimeType: string;
-    dataUrl: string;
-  };
+  source:
+    | { kind: 'data-url'; mimeType: string; dataUrl: string }
+    | { kind: 'remote-url'; mimeType: string; url: string };
 };
 
 export type ProviderCapability = {
@@ -887,42 +886,15 @@ export class NewApiVideoProvider {
     if (target.data.mode !== 'generate') {
       throw new NewApiProviderError('当前视频接口仅支持 generate 模式');
     }
-    const { inputs: absorbedMentionInputs, absorbedMentionIds } = collectAbsorbedVideoMentionInputs(
-      snapshot,
-      resolvedMentions,
-    );
-    assertPromptMentionsUnsupported(
-      'video',
-      snapshot,
-      target.data.promptDocument,
-      resolvedMentions,
-      absorbedMentionIds,
-    );
-    validateProviderRoleParameters(snapshot.parameters, 'video');
-    const contract = resolveVideoContract(existingProviderJob, this.videoContract);
-    const unified = contract === 'newapi-unified-v1';
-    const openaiVideo = contract === 'newapi-video-v1';
-    if (unified) validateUnifiedVideoParameters(snapshot.parameters);
-    else validateMediaParameters(snapshot.parameters, 'video');
-    // 恢复也校验冻结输入，避免绕过创建时禁止的参考角色。
-    const inputs = mapVideoInputs(snapshot, absorbedMentionInputs);
-    // 既有适配器要求明确的视频提示词；恢复任务时也不能用显示标签替代。
-    resolveRequiredVideoPrompt(
-      snapshot,
-      target.data.label,
-      target.data.prompt,
-      inputs.prompt,
-      target.data.promptDocument,
-    );
-
     if (existingProviderJob && existingProviderJob.provider !== 'newapi') {
       throw new NewApiProviderError('已有平台任务与 New API Provider 不匹配', {
         code: 'VIDEO_PROVIDER_MISMATCH',
         retryable: false,
       });
     }
-    const idempotencyKey = standardRequestIdempotencyKey(snapshot, existingProviderJob);
-
+    const contract = resolveVideoContract(existingProviderJob, this.videoContract);
+    const unified = contract === 'newapi-unified-v1';
+    const openaiVideo = contract === 'newapi-video-v1';
     let platformJobId = normalizeErrorField(existingProviderJob?.platformJobId);
     const jobsPath = videoJobsPath(contract);
     let requestId = sanitizeProviderDiagnosticField(existingProviderJob?.payload?.requestId, [
@@ -938,6 +910,30 @@ export class NewApiVideoProvider {
           retryable: false,
         });
       }
+      // 已受理任务只按冻结合同查询；原素材失效或新增参数校验不得阻断取回结果。
+      const { inputs: absorbedMentionInputs, absorbedMentionIds } =
+        collectAbsorbedVideoMentionInputs(snapshot, resolvedMentions);
+      assertPromptMentionsUnsupported(
+        'video',
+        snapshot,
+        target.data.promptDocument,
+        resolvedMentions,
+        absorbedMentionIds,
+      );
+      validateProviderRoleParameters(snapshot.parameters, 'video');
+      const family = videoFamilyForModel(snapshot.modelAlias);
+      const official = ['minimax-h3', 'wan3', 'seedance-2', 'seedance-2.5'].includes(family);
+      if (official && !openaiVideo) {
+        throw new NewApiProviderError(
+          '该官方模型使用 New API /v1/videos 插件协议，请选择 OpenAI 视频合同',
+          { code: 'VIDEO_CONTRACT_UNSUPPORTED', retryable: false },
+        );
+      }
+      if (unified) validateUnifiedVideoParameters(snapshot.parameters);
+      else
+        validateMediaParameters(snapshot.parameters, 'video', official && family !== 'minimax-h3');
+      const inputs = mapVideoInputs(snapshot, absorbedMentionInputs);
+      const idempotencyKey = standardRequestIdempotencyKey(snapshot, existingProviderJob);
       const body = unified
         ? unifiedVideoPayload(
             snapshot,
@@ -978,7 +974,13 @@ export class NewApiVideoProvider {
           parts: [{ order: 0, text: sentPromptText(body) }],
           resources: videoPromptResources(body, inputs),
           // 只有真正写入创建体的负向字段才进入记录，画布上的编辑值不参与。
-          negativeText: normalizeErrorField(body.negative_prompt ?? body.negativePrompt),
+          negativeText: normalizeErrorField(
+            body.negative_prompt ??
+              body.negativePrompt ??
+              (isRecord(body.metadata) && isRecord(body.metadata.input)
+                ? body.metadata.input.negative_prompt
+                : undefined),
+          ),
         });
       }
       if (!onProviderJob) {
@@ -1929,6 +1931,13 @@ function openaiVideoPayload(
   inputs: VideoInputMapping = mapVideoInputs(snapshot),
   nodePromptDocument?: PromptDocument,
 ): Record<string, unknown> {
+  if (
+    ['minimax-h3', 'wan3', 'seedance-2', 'seedance-2.5'].includes(
+      videoFamilyForModel(snapshot.modelAlias),
+    )
+  ) {
+    return officialVideoPayload(snapshot, label, nodePrompt, inputs, nodePromptDocument);
+  }
   const payload = videoPayload(snapshot, label, nodePrompt, inputs, nodePromptDocument);
   const duration = payload.duration;
   if (typeof duration === 'number') payload.seconds = String(duration);
@@ -1939,6 +1948,197 @@ function openaiVideoPayload(
     payload.last_frame = payload.last_frame.url.trim();
   }
   return payload;
+}
+
+/**
+ * 将官方视频输入映射到 New API 任务插件协议；未知参数和不合法组合在 POST 前失败。
+ * H3/Seedance 使用 metadata.content，Wan3 使用 metadata.input.media；角色不会互相降级。
+ */
+function officialVideoPayload(
+  snapshot: RunSnapshot,
+  label: string,
+  prompt: string | undefined,
+  inputs: VideoInputMapping,
+  document?: PromptDocument,
+): Record<string, unknown> {
+  const family = videoFamilyForModel(snapshot.modelAlias);
+  const parameters = snapshot.parameters;
+  for (const key of [
+    'size',
+    'video_size',
+    'videoSize',
+    'quality',
+    'video_quality',
+    'videoQuality',
+  ]) {
+    if (parameters[key] !== undefined) throw unsupportedProviderParameter('video', key);
+  }
+  const resolvedPrompt = resolveRequiredVideoPrompt(
+    snapshot,
+    label,
+    prompt,
+    inputs.prompt,
+    document,
+  );
+  const rawDuration = parameters.duration ?? parameters.seconds ?? parameters.durationSeconds;
+  const duration = rawDuration === undefined ? undefined : Number(rawDuration);
+  const minimum = family === 'wan3' ? 2 : 4;
+  const maximum = family === 'wan3' || family === 'seedance-2.5' ? 30 : 15;
+  if (
+    duration !== undefined &&
+    !(duration === -1 && family !== 'minimax-h3') &&
+    (!Number.isSafeInteger(duration) || duration < minimum || duration > maximum)
+  ) {
+    throw invalidProviderParameter(
+      'video',
+      'duration',
+      `必须为 ${minimum} 到 ${maximum} 的整数秒数${family === 'minimax-h3' ? '' : '，或 -1（自动）'}`,
+    );
+  }
+  const rawResolution = normalizeErrorField(
+    parameters.resolution ?? parameters.video_resolution ?? parameters.videoResolution,
+  );
+  const resolution = (rawResolution ?? (family === 'minimax-h3' ? '768P' : '720P')).toUpperCase();
+  const resolutions =
+    family === 'minimax-h3'
+      ? ['768P', '2K']
+      : family === 'seedance-2' && !/-(?:fast|mini)-/.test(snapshot.modelAlias ?? '')
+        ? ['480P', '720P', '1080P', '4K']
+        : family === 'seedance-2'
+          ? ['480P', '720P']
+          : ['480P', '720P', '1080P'];
+  if (!resolutions.includes(resolution)) {
+    throw invalidProviderParameter('video', 'resolution', `必须为 ${resolutions.join('、')}`);
+  }
+  const visual = Boolean(
+    inputs.firstFrame || inputs.referenceImages.length || inputs.referenceVideos.length,
+  );
+  const ratio =
+    normalizeErrorField(parameters.aspect_ratio ?? parameters.aspectRatio) ??
+    (visual ? 'adaptive' : '16:9');
+  const ratios = ['adaptive', '16:9', '4:3', '1:1', '3:4', '9:16'];
+  if (family !== 'wan3') ratios.push('21:9');
+  if (!ratios.includes(ratio) || (family === 'minimax-h3' && ratio === 'adaptive' && !visual)) {
+    throw invalidProviderParameter(
+      'video',
+      'aspectRatio',
+      `必须为 ${ratios.join('、')}${family === 'minimax-h3' ? '；adaptive 需要图片或视频参考' : ''}`,
+    );
+  }
+  const mode = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId)?.data.videoMode;
+  const requiresAdaptiveRatio =
+    (family === 'wan3' && mode === 'video_extend') ||
+    (family === 'seedance-2.5' &&
+      (inputs.firstFrame || inputs.lastFrame || mode === 'video_edit' || mode === 'video_extend'));
+  if (requiresAdaptiveRatio && ratio !== 'adaptive') {
+    throw invalidProviderParameter(
+      'video',
+      'aspectRatio',
+      '该模型的当前模式必须选择 adaptive（跟随原素材比例）',
+    );
+  }
+  if (
+    family === 'seedance-2.5' &&
+    mode === 'video_edit' &&
+    (duration !== -1 || ratio !== 'adaptive')
+  ) {
+    throw invalidProviderParameter(
+      'video',
+      'duration/aspectRatio',
+      'Seedance 2.5 视频编辑需要 -1（自动时长）和 adaptive（跟随原视频）',
+    );
+  }
+  const media = orderedVideoMedia(inputs).map((input) => {
+    const mediaType = input.snapshot.data.mediaType;
+    const role =
+      input.role === 'firstFrame'
+        ? 'first_frame'
+        : input.role === 'lastFrame'
+          ? 'last_frame'
+          : `reference_${mediaType}`;
+    const url = officialVideoReferenceUrl(input, family);
+    return family === 'wan3'
+      ? { type: role, url }
+      : { type: `${mediaType}_url`, role, [`${mediaType}_url`]: { url } };
+  });
+  const payload: Record<string, unknown> = { model: snapshot.modelAlias, prompt: resolvedPrompt };
+  if (duration !== undefined) {
+    payload.seconds = String(duration);
+    payload.duration = duration;
+  }
+  if (family === 'wan3') {
+    const input: Record<string, unknown> = { media };
+    if (inputs.negativePrompt)
+      input.negative_prompt = inputTextValue(inputs.negativePrompt, 'video');
+    payload.metadata = { input };
+    payload.resolution = resolution;
+    payload.ratio = ratio;
+  } else {
+    const metadata: Record<string, unknown> = {
+      content: [{ type: 'text', text: resolvedPrompt }, ...media],
+      resolution: family === 'minimax-h3' ? resolution : resolution.toLowerCase(),
+      ratio,
+    };
+    if (
+      family === 'seedance-2.5' &&
+      ['omni_reference', 'video_edit', 'video_extend'].includes(mode ?? '')
+    ) {
+      metadata.omni_reference_task_type =
+        mode === 'video_edit' ? 'edit' : mode === 'video_extend' ? 'extend' : 'reference';
+    }
+    payload.metadata = metadata;
+  }
+  return payload;
+}
+
+/** 按冻结输入顺序收集实际发送的帧和参考媒体，供请求与脱敏记录共用。 */
+function orderedVideoMedia(inputs: VideoInputMapping): RunInputSnapshot[] {
+  return [
+    inputs.firstFrame,
+    inputs.lastFrame,
+    ...inputs.referenceImages,
+    ...inputs.referenceVideos,
+    ...inputs.referenceAudios,
+  ]
+    .filter((input): input is RunInputSnapshot => input !== undefined)
+    .sort(
+      (left, right) => left.sortOrder - right.sortOrder || left.nodeId.localeCompare(right.nodeId),
+    );
+}
+
+/** 校验官方参考素材的媒体类型与传输方式；URL 由 Worker 按冻结版本提供。 */
+function officialVideoReferenceUrl(input: RunInputSnapshot, family: string): string {
+  const data = input.snapshot.data;
+  const value = normalizeErrorField(data.contentUrl);
+  const parsed = value ? parseDataUrl(value) : undefined;
+  const mimeType = normalizedMimeType(data.mimeType);
+  if (parsed) {
+    if (
+      !parsed.mimeType.startsWith(`${data.mediaType}/`) ||
+      !isValidBase64(parsed.base64) ||
+      (mimeType && mimeType !== parsed.mimeType)
+    ) {
+      throw inputRoleValueError('video', input.role, '与媒体类型匹配的有效内容');
+    }
+    if (
+      (family === 'wan3' && data.mediaType !== 'image') ||
+      (family.startsWith('seedance-') && data.mediaType === 'video')
+    ) {
+      throw new NewApiProviderError(
+        '该官方模型的参考视频或音频需要外部可访问的素材地址，请配置 S3_PROVIDER_ENDPOINT',
+        {
+          code: 'VIDEO_REFERENCE_PUBLIC_URL_REQUIRED',
+          retryable: false,
+        },
+      );
+    }
+    return value!;
+  }
+  const remote = value ? providerRemoteUrl(value) : undefined;
+  if (!remote || (mimeType && !mimeType.startsWith(`${data.mediaType}/`))) {
+    throw inputRoleValueError('video', input.role, '与媒体类型匹配的有效地址');
+  }
+  return remote;
 }
 
 /** 将画布中的时长参数规范化为视频接口接受的正整数秒数。 */
@@ -3269,9 +3469,9 @@ function imagePromptResources(images: readonly ImageSourceInput[]): RequestPromp
 }
 
 /**
- * 把视频创建体里真正携带的图片记录为参考资源身份。
+ * 把视频创建体里真正携带的媒体记录为参考资源身份。
  *
- * 只记录请求体实际出现的首帧、尾帧与参考图字段；被预检丢弃或未映射的输入
+ * 只记录请求体实际出现的帧、参考图片、视频和音频；被预检丢弃或未映射的输入
  * 不会因为出现在快照里就被写进记录。
  */
 function videoPromptResources(
@@ -3284,11 +3484,20 @@ function videoPromptResources(
     const assetId = input.sourceAssetId ?? input.snapshot.data.assetId;
     resources.push({
       ...(assetId ? { assetId } : {}),
+      ...(input.sourceAssetVersion ? { assetVersion: input.sourceAssetVersion } : {}),
       role: input.role,
       sortOrder: resources.length,
-      mediaType: 'image',
+      mediaType: input.snapshot.data.mediaType,
     });
   };
+  if (
+    isRecord(body.metadata) &&
+    (Array.isArray(body.metadata.content) ||
+      (isRecord(body.metadata.input) && Array.isArray(body.metadata.input.media)))
+  ) {
+    for (const input of orderedVideoMedia(inputs)) add(input);
+    return resources;
+  }
   if (body.image !== undefined) add(inputs.firstFrame);
   if (body.last_frame !== undefined) add(inputs.lastFrame);
   if (Array.isArray(body.reference_images) && body.reference_images.length > 0) {
@@ -3465,6 +3674,7 @@ function invalidProviderParameter(
 function validateMediaParameters(
   parameters: Record<string, unknown>,
   mediaType: 'image' | 'audio' | 'video',
+  automaticVideoDuration = false,
 ): void {
   for (const [parameter, value] of Object.entries(parameters)) {
     if (value === undefined) continue;
@@ -3480,7 +3690,10 @@ function validateMediaParameters(
         throw invalidProviderParameter(mediaType, parameter, '必须为 0.25 到 4 的有限数值');
       }
     } else if (['duration', 'seconds', 'durationSeconds'].includes(parameter)) {
-      if (positiveIntegerParameter(value) === undefined)
+      if (
+        !(automaticVideoDuration && (value === -1 || value === '-1')) &&
+        positiveIntegerParameter(value) === undefined
+      )
         throw invalidProviderParameter(mediaType, parameter, '必须为正整数秒数');
     } else if (!nonEmptyString(value)) {
       throw invalidProviderParameter(mediaType, parameter, '必须为非空字符串');
@@ -3535,7 +3748,7 @@ function validateMediaParameters(
       .filter((alias) => parameters[alias] !== undefined)
       .map((alias) =>
         alias === 'duration' || alias === 'seconds' || alias === 'durationSeconds'
-          ? positiveIntegerParameter(parameters[alias])
+          ? Number(parameters[alias])
           : String(parameters[alias]).trim(),
       );
     if (new Set(values).size > 1)
@@ -3576,9 +3789,12 @@ type ParsedProviderDataUrl = {
 
 type VideoInputMapping = {
   prompt?: RunInputSnapshot;
+  negativePrompt?: RunInputSnapshot;
   firstFrame?: RunInputSnapshot;
   lastFrame?: RunInputSnapshot;
   referenceImages: RunInputSnapshot[];
+  referenceVideos: RunInputSnapshot[];
+  referenceAudios: RunInputSnapshot[];
 };
 
 /**
@@ -3646,7 +3862,10 @@ export function resolveProviderMentions(snapshot: RunSnapshot): ResolvedMention[
     const dataUrl = nonEmptyString(hydratedBlock.contentUrl)
       ? hydratedBlock.contentUrl.trim()
       : undefined;
-    if (!mimeType || !dataUrl?.startsWith('data:')) {
+    const remoteUrl = dataUrl ? providerRemoteUrl(dataUrl) : undefined;
+    const videoReference =
+      node.data.mediaType === 'video' && ['video', 'audio'].includes(frozen.mediaType);
+    if (!mimeType || (!dataUrl?.startsWith('data:') && !(videoReference && remoteUrl))) {
       throw new Error(
         `resolved prompt mention ${frozen.mentionId} has no provider-readable content`,
       );
@@ -3654,7 +3873,9 @@ export function resolveProviderMentions(snapshot: RunSnapshot): ResolvedMention[
     return {
       ...frozen,
       nodeId,
-      source: { kind: 'data-url', mimeType, dataUrl },
+      source: remoteUrl
+        ? { kind: 'remote-url' as const, mimeType, url: remoteUrl }
+        : { kind: 'data-url' as const, mimeType, dataUrl: dataUrl! },
     };
   });
 }
@@ -3730,8 +3951,8 @@ function promptDocumentContentParts(
 
 /**
  * 把全能参考提示词提及收成视频输入。
- * 同一张图在提示词里出现多次只发送一次 reference_images，但每次提及都算已吸收，
- * 避免重复名字被当成聊天内联媒体而 fail-closed。
+ * 同一资产版本和角色重复出现时只发送一次，每次提及都算已吸收。
+ * 不同版本保持独立，不能把旧版本参考误换成当前版本。
  * @param snapshot 运行快照。
  * @param resolvedMentions Worker 水合后的冻结提及。
  * @returns 去重后的参考输入，以及全部已吸收的 mentionId。
@@ -3752,10 +3973,10 @@ function collectAbsorbedVideoMentionInputs(
       .filter((mention) => mention.nodeId === snapshot.targetNodeId)
       .map((mention) => [mention.mentionId, mention]),
   );
-  const existingAssetIds = new Set(
+  const existingReferences = new Set(
     snapshot.inputs
-      .map((input) => input.sourceAssetId)
-      .filter((assetId): assetId is string => Boolean(assetId)),
+      .filter((input) => input.sourceAssetId)
+      .map((input) => `${input.sourceAssetId}:${input.sourceAssetVersion ?? ''}:${input.role}`),
   );
   const inputs: RunInputSnapshot[] = [];
   const absorbedMentionIds = new Set<string>();
@@ -3767,7 +3988,6 @@ function collectAbsorbedVideoMentionInputs(
     );
     if (!role) continue;
     absorbedMentionIds.add(block.mentionId);
-    if (existingAssetIds.has(block.assetId)) continue;
     const resolved = resolvedById.get(block.mentionId);
     if (!resolved) {
       throw promptMentionMappingError(
@@ -3781,12 +4001,27 @@ function collectAbsorbedVideoMentionInputs(
         'Worker 未提供冻结版本内容',
       );
     }
-    existingAssetIds.add(block.assetId);
+    if (
+      resolved.assetId !== block.assetId ||
+      resolved.mediaType !== block.mediaType ||
+      (block.assetVersion !== undefined && resolved.assetVersion !== block.assetVersion)
+    ) {
+      throw promptMentionMappingError(
+        snapshot,
+        resolved,
+        'RESOURCE_MENTION_RESOLUTION_INVALID',
+        '冻结身份与提示词块不一致',
+      );
+    }
+    const referenceKey = `${resolved.assetId}:${resolved.assetVersion}:${role}`;
+    if (existingReferences.has(referenceKey)) continue;
+    existingReferences.add(referenceKey);
     inputs.push({
       nodeId: `mention:${resolved.mentionId}`,
       role,
       sortOrder: 10_000 + (resolved.blockOrder ?? blockOrder),
       sourceAssetId: resolved.assetId,
+      sourceAssetVersion: resolved.assetVersion,
       snapshot: {
         id: `mention:${resolved.mentionId}`,
         type: resolved.mediaType,
@@ -3795,7 +4030,8 @@ function collectAbsorbedVideoMentionInputs(
           label: resolved.label,
           mediaType: resolved.mediaType,
           mode: 'source',
-          contentUrl: resolved.source.dataUrl,
+          contentUrl:
+            resolved.source.kind === 'data-url' ? resolved.source.dataUrl : resolved.source.url,
           mimeType: resolved.source.mimeType,
           assetId: resolved.assetId,
         },
@@ -3853,6 +4089,14 @@ function assertPromptMentionsUnsupported(
 }
 
 function mentionContentPart(snapshot: RunSnapshot, mention: ResolvedMention): ChatContentPart {
+  if (mention.source.kind !== 'data-url') {
+    throw promptMentionMappingError(
+      snapshot,
+      mention,
+      'RESOURCE_MENTION_PROVIDER_MAPPING_UNSUPPORTED',
+      '该接口需要 Worker 提供媒体内容，不能使用视频专用临时地址',
+    );
+  }
   const dataUrl = parseProviderDataUrl(mention.source.dataUrl);
   const declaredMimeType = normalizedMimeType(mention.source.mimeType);
   const providerTextMime =
@@ -4315,7 +4559,7 @@ function imageMentionInputs(
           mediaType: 'image',
           mode: 'source',
           assetId: frozen.assetId,
-          contentUrl: resolved.source.dataUrl,
+          contentUrl: resolved.source.kind === 'data-url' ? resolved.source.dataUrl : undefined,
           mimeType: resolved.source.mimeType,
         },
       },
@@ -4448,9 +4692,12 @@ function mapVideoInputs(
   }
   return {
     prompt: precheck.inputSet.prompt,
+    negativePrompt: precheck.inputSet.negativePrompt,
     firstFrame: precheck.inputSet.firstFrame,
     lastFrame: precheck.inputSet.lastFrame,
     referenceImages,
+    referenceVideos: precheck.inputSet.content,
+    referenceAudios: precheck.inputSet.audioTrack,
   };
 }
 

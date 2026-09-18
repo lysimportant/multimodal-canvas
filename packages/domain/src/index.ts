@@ -16,12 +16,14 @@ export const videoModes = [
   'video_extend',
 ] as const;
 
-/** 本阶段真正落地的视频模式；编辑和延长只保留枚举与文档。 */
+/** 已落地的视频模式；具体模型能否选择由 videoModeCapability 决定。 */
 export const implementedVideoModes = [
   'text_to_video',
   'first_frame',
   'first_last_frame',
   'omni_reference',
+  'video_edit',
+  'video_extend',
 ] as const;
 
 export const videoModeSchema = z.enum(videoModes);
@@ -43,8 +45,8 @@ export const videoModeDescriptions: Record<VideoMode, string> = {
   first_frame: '用一张图固定起始画面，再按提示词生成',
   first_last_frame: '分别固定起始画面和结束画面',
   omni_reference: '用参考图、参考视频或参考音频融合生成，不固定首尾帧',
-  video_edit: '按提示词编辑已有视频；本阶段未开放',
-  video_extend: '按提示词延长已有视频；本阶段未开放',
+  video_edit: '用参考素材和提示词编辑一段已有视频',
+  video_extend: '用参考素材和提示词延长一段已有视频',
 };
 
 /**
@@ -1614,7 +1616,14 @@ export function targetPortRolesForMediaType(mediaType: MediaType): PortRole[] {
 
 /** 按模型别名识别视频供应商家族，用于能力矩阵而不是写死字段名。 */
 export type VideoModelFamily =
-  'grok-imagine-video-1.5' | 'grok-imagine-video' | 'minimax-h3' | 'wan' | 'unknown';
+  | 'grok-imagine-video-1.5'
+  | 'grok-imagine-video'
+  | 'minimax-h3'
+  | 'wan3'
+  | 'seedance-2'
+  | 'seedance-2.5'
+  | 'wan'
+  | 'unknown';
 
 /**
  * 从模型 ID 推断视频家族。未命中时返回 unknown，真实字段仍 fail-closed。
@@ -1625,7 +1634,16 @@ export function videoFamilyForModel(modelAlias?: string): VideoModelFamily {
   if (!id) return 'unknown';
   if (id.startsWith('grok-imagine-video-1.5')) return 'grok-imagine-video-1.5';
   if (/^grok[-_]?imagine/.test(id)) return 'grok-imagine-video';
-  if (/^minimax[-_]?h3/.test(id)) return 'minimax-h3';
+  if (id === 'minimax-h3') return 'minimax-h3';
+  if (id === 'wan3.0-video' || id === 'wan3.0-video-prime') return 'wan3';
+  if (id === 'doubao-seedance-2-5-260628') return 'seedance-2.5';
+  if (
+    id === 'doubao-seedance-2-0-260128' ||
+    id === 'doubao-seedance-2-0-fast-260128' ||
+    id === 'doubao-seedance-2-0-mini-260615'
+  ) {
+    return 'seedance-2';
+  }
   if (id.includes('wan')) return 'wan';
   return 'unknown';
 }
@@ -1648,19 +1666,37 @@ export type VideoModeCapability = {
   reason?: string;
 };
 
-const textToVideoRoles = ['prompt', 'negativePrompt'] as const satisfies readonly PortRole[];
-const firstFrameRoles = [
+const textToVideoRoles = ['prompt'] as const satisfies readonly PortRole[];
+const textToVideoWithNegativeRoles = [
+  'prompt',
+  'negativePrompt',
+] as const satisfies readonly PortRole[];
+const firstFrameRoles = ['prompt', 'firstFrame'] as const satisfies readonly PortRole[];
+const firstFrameWithNegativeRoles = [
   'prompt',
   'negativePrompt',
   'firstFrame',
 ] as const satisfies readonly PortRole[];
 const firstLastFrameRoles = [
   'prompt',
+  'firstFrame',
+  'lastFrame',
+] as const satisfies readonly PortRole[];
+const firstLastFrameWithNegativeRoles = [
+  'prompt',
   'negativePrompt',
   'firstFrame',
   'lastFrame',
 ] as const satisfies readonly PortRole[];
 const omniReferenceRoles = [
+  'prompt',
+  'referenceImage',
+  'content',
+  'audioTrack',
+  'character',
+  'style',
+] as const satisfies readonly PortRole[];
+const omniReferenceWithNegativeRoles = [
   'prompt',
   'negativePrompt',
   'referenceImage',
@@ -1671,10 +1707,25 @@ const omniReferenceRoles = [
 ] as const satisfies readonly PortRole[];
 const grokOmniReferenceRoles = [
   'prompt',
-  'negativePrompt',
   'referenceImage',
   'character',
   'style',
+] as const satisfies readonly PortRole[];
+
+const referenceRoleMediaTypes = {
+  referenceImage: ['image'],
+  character: ['image'],
+  style: ['image'],
+  content: ['video'],
+  audioTrack: ['audio'],
+} as const satisfies Partial<Record<PortRole, readonly MediaType[]>>;
+
+const referenceRepeatableRoles = [
+  'referenceImage',
+  'character',
+  'style',
+  'content',
+  'audioTrack',
 ] as const satisfies readonly PortRole[];
 
 function deferredVideoModeCapability(mode: VideoMode): VideoModeCapability {
@@ -1682,7 +1733,7 @@ function deferredVideoModeCapability(mode: VideoMode): VideoModeCapability {
     selectable: false,
     livePost: false,
     roles: ['prompt', 'content'],
-    reason: `视频模式「${videoModeLabels[mode]}」本阶段未开放`,
+    reason: `该模型尚无「${videoModeLabels[mode]}」的正式字段映射，不能发起真实请求`,
   };
 }
 
@@ -1692,27 +1743,46 @@ function deferredVideoModeCapability(mode: VideoMode): VideoModeCapability {
  * @param modelAlias 运行快照或节点上的模型 ID。
  */
 export function videoModeCapability(mode: VideoMode, modelAlias?: string): VideoModeCapability {
-  if (mode === 'video_edit' || mode === 'video_extend') return deferredVideoModeCapability(mode);
   const family = videoFamilyForModel(modelAlias);
   const grok15 = family === 'grok-imagine-video-1.5';
+  const wan3 = family === 'wan3';
+  const mappedReferenceFamily =
+    family === 'minimax-h3' || wan3 || family === 'seedance-2' || family === 'seedance-2.5';
+  const supportsEditOrExtend = wan3 || family === 'seedance-2' || family === 'seedance-2.5';
+  if (mode === 'video_edit' || mode === 'video_extend') {
+    if (!supportsEditOrExtend) return deferredVideoModeCapability(mode);
+    return {
+      selectable: true,
+      livePost: true,
+      roles: wan3 ? omniReferenceWithNegativeRoles : omniReferenceRoles,
+      requiredRoles: ['content'],
+      repeatableRoles: referenceRepeatableRoles,
+      roleMediaTypes: referenceRoleMediaTypes,
+    };
+  }
   if (mode === 'text_to_video') {
-    return { selectable: true, livePost: true, roles: textToVideoRoles };
+    return {
+      selectable: true,
+      livePost: true,
+      roles: wan3 ? textToVideoWithNegativeRoles : textToVideoRoles,
+    };
   }
   if (mode === 'first_frame') {
     return {
       selectable: true,
       livePost: true,
-      roles: firstFrameRoles,
+      roles: wan3 ? firstFrameWithNegativeRoles : firstFrameRoles,
       requiredRoles: ['firstFrame'],
     };
   }
   if (mode === 'first_last_frame') {
+    const livePost = grok15 || mappedReferenceFamily;
     return {
       selectable: true,
-      livePost: grok15,
-      roles: firstLastFrameRoles,
+      livePost,
+      roles: wan3 ? firstLastFrameWithNegativeRoles : firstLastFrameRoles,
       requiredRoles: ['firstFrame', 'lastFrame'],
-      reason: grok15 ? undefined : '该模型的首尾帧尚未接通 New API 字段映射，不能发起真实请求',
+      reason: livePost ? undefined : '该模型的首尾帧尚未接通 New API 字段映射，不能发起真实请求',
     };
   }
   if (grok15) {
@@ -1721,25 +1791,24 @@ export function videoModeCapability(mode: VideoMode, modelAlias?: string): Video
       livePost: true,
       roles: grokOmniReferenceRoles,
       repeatableRoles: ['referenceImage', 'character', 'style'],
-      roleMediaTypes: {
-        referenceImage: ['image'],
-        character: ['image'],
-        style: ['image'],
-      },
+      roleMediaTypes: referenceRoleMediaTypes,
+    };
+  }
+  if (mappedReferenceFamily) {
+    return {
+      selectable: true,
+      livePost: true,
+      roles: wan3 ? omniReferenceWithNegativeRoles : omniReferenceRoles,
+      repeatableRoles: referenceRepeatableRoles,
+      roleMediaTypes: referenceRoleMediaTypes,
     };
   }
   return {
     selectable: true,
     livePost: false,
     roles: omniReferenceRoles,
-    repeatableRoles: ['referenceImage', 'character', 'style', 'content', 'audioTrack'],
-    roleMediaTypes: {
-      referenceImage: ['image'],
-      character: ['image'],
-      style: ['image'],
-      content: ['video'],
-      audioTrack: ['audio'],
-    },
+    repeatableRoles: referenceRepeatableRoles,
+    roleMediaTypes: referenceRoleMediaTypes,
     reason: '该模型的全能参考尚未接通 New API 字段映射，不能发起真实请求',
   };
 }
@@ -1907,10 +1976,14 @@ export const videoImageInputRoles = [
 export function videoImageRolesForMode(videoMode?: VideoMode): readonly PortRole[] {
   if (videoMode === 'first_frame') return ['firstFrame'];
   if (videoMode === 'first_last_frame') return ['firstFrame', 'lastFrame'];
-  if (videoMode === 'omni_reference') return ['referenceImage'];
-  if (videoMode === 'text_to_video' || videoMode === 'video_edit' || videoMode === 'video_extend') {
-    return [];
+  if (
+    videoMode === 'omni_reference' ||
+    videoMode === 'video_edit' ||
+    videoMode === 'video_extend'
+  ) {
+    return ['referenceImage'];
   }
+  if (videoMode === 'text_to_video') return [];
   return ['firstFrame', 'lastFrame', 'referenceImage'];
 }
 
@@ -1931,7 +2004,7 @@ export function videoModeForPromptMentions(
 
 /**
  * 提示词里的资源提及在当前视频模式下可吸收的输入角色。
- * 全能参考把图/视频/音频收成参考素材，而不是走聊天多模态提及合同。
+ * 全能参考、编辑和延长把图/视频/音频收成参考素材，而不是走聊天多模态提及合同。
  * @param mediaType 提及的媒体类型。
  * @param videoMode 节点上的显式视频模式。
  * @param modelAlias 用于按能力矩阵收窄 Grok 只收图片等约束。
@@ -1942,8 +2015,12 @@ export function videoInputRoleForPromptMention(
   modelAlias?: string,
 ): PortRole | undefined {
   const mode = videoModeForPromptMentions(videoMode, true);
-  if (mode !== 'omni_reference') return undefined;
-  const roles = new Set(videoModeCapability('omni_reference', modelAlias).roles);
+  if (mode !== 'omni_reference' && mode !== 'video_edit' && mode !== 'video_extend') {
+    return undefined;
+  }
+  const capability = videoModeCapability(mode, modelAlias);
+  if (!capability.selectable) return undefined;
+  const roles = new Set(capability.roles);
   if (mediaType === 'image' && roles.has('referenceImage')) return 'referenceImage';
   if (mediaType === 'video' && roles.has('content')) return 'content';
   if (mediaType === 'audio' && roles.has('audioTrack')) return 'audioTrack';
@@ -1977,8 +2054,12 @@ export function unabsorbedVideoPromptMentionMessage(
   videoMode: VideoMode | undefined,
   modelAlias?: string,
 ): string {
-  if (videoMode === 'omni_reference') {
-    return `当前项目尚未接通模型 ${modelAlias ?? 'unknown-model'} 的全能参考${mentionMediaType === 'image' ? '图片' : mentionMediaType === 'video' ? '视频' : mentionMediaType === 'audio' ? '音频' : mentionMediaType}提及映射`;
+  if (
+    videoMode === 'omni_reference' ||
+    videoMode === 'video_edit' ||
+    videoMode === 'video_extend'
+  ) {
+    return `当前项目尚未接通模型 ${modelAlias ?? 'unknown-model'} 的${videoModeLabels[videoMode]}${mentionMediaType === 'image' ? '图片' : mentionMediaType === 'video' ? '视频' : mentionMediaType === 'audio' ? '音频' : mentionMediaType}提及映射`;
   }
   const modeLabel = videoMode ? videoModeLabels[videoMode] : '全能参考';
   return `视频模式「${modeLabel}」不能使用提示词资源提及。请把素材加到当前节点的资源条，或确认已选择全能参考`;
@@ -2000,6 +2081,24 @@ export const grokImagineVideo15InputRoles = [
   'referenceImage',
 ] as const;
 
+/** H3、Wan3 与 Seedance 2.x 已确认的参考输入角色。 */
+export const referenceVideoInputRoles = [
+  'prompt',
+  'firstFrame',
+  'lastFrame',
+  'character',
+  'style',
+  'referenceImage',
+  'content',
+  'audioTrack',
+] as const;
+
+/** Wan3 在通用参考角色之外还支持负向提示词。 */
+export const wan3VideoInputRoles = [
+  ...referenceVideoInputRoles,
+  'negativePrompt',
+] as const satisfies readonly PortRole[];
+
 /**
  * 判断模型是否属于 grok-imagine-video-1.5 系列，含 1.5.1 与按次别名。
  * @param modelAlias 运行快照中的模型 ID。
@@ -2013,9 +2112,13 @@ export function isGrokImagineVideo15(modelAlias: string | undefined): boolean {
  * @param modelAlias 运行快照中的模型 ID。
  */
 export function confirmedVideoInputRolesForModel(modelAlias?: string): readonly PortRole[] {
-  return isGrokImagineVideo15(modelAlias)
-    ? grokImagineVideo15InputRoles
-    : confirmedLiveVideoInputRoles;
+  const family = videoFamilyForModel(modelAlias);
+  if (family === 'grok-imagine-video-1.5') return grokImagineVideo15InputRoles;
+  if (family === 'wan3') return wan3VideoInputRoles;
+  if (family === 'minimax-h3' || family === 'seedance-2' || family === 'seedance-2.5') {
+    return referenceVideoInputRoles;
+  }
+  return confirmedLiveVideoInputRoles;
 }
 
 /** 视频生成场景。用于预检和摘要；显式 videoMode 存在时由模式决定，不再靠连线猜测。 */
@@ -2141,7 +2244,7 @@ function omniReferenceCount(inputSet: VideoInputSet): number {
 
 /**
  * 把画布/快照输入收成规范 VideoInputSet。
- * 文本 content 兼容映射为 prompt；全能参考下图片 content 收成参考图、音频 content 收成参考音频。
+ * 文本 content 兼容映射为 prompt；参考、编辑和延长模式下，图片 content 收成参考图、音频 content 收成参考音频。
  * 其他模式里图片 content 仍兼容映射为首帧，视频 content 留在 content 列表。
  * @param inputs 已冻结的运行输入。
  * @param videoMode 显式视频模式；缺省保持旧画布兼容映射。
@@ -2156,7 +2259,8 @@ export function collectVideoInputSet(
 } {
   const inputSet = emptyVideoInputSet();
   const issues: VideoGenerationIssue[] = [];
-  const omni = videoMode === 'omni_reference';
+  const referenceMode =
+    videoMode === 'omni_reference' || videoMode === 'video_edit' || videoMode === 'video_extend';
 
   const assignSingleton = (role: VideoSingletonInputRole, input: RunInputSnapshot) => {
     if (inputSet[role]) {
@@ -2182,11 +2286,11 @@ export function collectVideoInputSet(
       assignSingleton('lastFrame', input);
       continue;
     }
-    if (omni && input.role === 'content' && input.snapshot.data.mediaType === 'image') {
+    if (referenceMode && input.role === 'content' && input.snapshot.data.mediaType === 'image') {
       inputSet.referenceImage.push(input);
       continue;
     }
-    if (omni && input.role === 'content' && input.snapshot.data.mediaType === 'audio') {
+    if (referenceMode && input.role === 'content' && input.snapshot.data.mediaType === 'audio') {
       inputSet.audioTrack.push(input);
       continue;
     }
@@ -2253,6 +2357,31 @@ function presentVideoRoles(inputSet: VideoInputSet): Array<[PortRole, boolean]> 
   ];
 }
 
+/** 将单值或多值角色统一为输入列表，供模式必填与媒体类型校验使用。 */
+function videoInputsForRole(inputSet: VideoInputSet, role: PortRole): RunInputSnapshot[] {
+  if (
+    role === 'prompt' ||
+    role === 'negativePrompt' ||
+    role === 'firstFrame' ||
+    role === 'lastFrame'
+  ) {
+    const input = inputSet[role];
+    return input ? [input] : [];
+  }
+  if (
+    role === 'character' ||
+    role === 'style' ||
+    role === 'referenceImage' ||
+    role === 'content' ||
+    role === 'audioTrack' ||
+    role === 'transcript' ||
+    role === 'mask'
+  ) {
+    return inputSet[role];
+  }
+  return [];
+}
+
 function applyGrokImagineVideo15Limits(
   inputSet: VideoInputSet,
   parameters: Record<string, unknown> | undefined,
@@ -2278,6 +2407,53 @@ function applyGrokImagineVideo15Limits(
   }
 }
 
+/** 按已确认的官方模型限制检查参考数量和纯音频组合，向预检结果追加错误。 */
+function applyReferenceFamilyLimits(
+  family: VideoModelFamily,
+  inputSet: VideoInputSet,
+  mode: VideoMode | undefined,
+  issues: VideoGenerationIssue[],
+) {
+  const limits =
+    family === 'minimax-h3' || family === 'seedance-2'
+      ? { images: 9, videos: 3, audios: 3 }
+      : family === 'wan3'
+        ? { images: 10, videos: 5, audios: 5 }
+        : family === 'seedance-2.5'
+          ? { images: 30, videos: 10, audios: 10 }
+          : undefined;
+  if (!limits) return;
+
+  const imageCount =
+    inputSet.character.length + inputSet.style.length + inputSet.referenceImage.length;
+  const counts = [
+    ['referenceImage', imageCount, limits.images, '参考图'],
+    ['content', inputSet.content.length, limits.videos, '参考视频'],
+    ['audioTrack', inputSet.audioTrack.length, limits.audios, '参考音频'],
+  ] as const;
+  for (const [role, count, limit, label] of counts) {
+    if (count > limit) {
+      issues.push({
+        code: 'INPUT_ROLE_CARDINALITY_UNSUPPORTED',
+        role,
+        message: `New API video ${label}数量超过模型上限 ${limit}`,
+      });
+    }
+  }
+
+  const referenceMode =
+    !mode || mode === 'omni_reference' || mode === 'video_edit' || mode === 'video_extend';
+  if (
+    family === 'seedance-2' &&
+    referenceMode &&
+    inputSet.audioTrack.length > 0 &&
+    imageCount === 0 &&
+    inputSet.content.length === 0
+  ) {
+    issues.push(videoCombinationIssue('Seedance 2.0 不支持只用参考音频生成视频'));
+  }
+}
+
 /**
  * 对视频规范输入做权威预检。
  * 显式 videoMode 按模式互斥检查；旧画布未写模式时沿用角色白名单。
@@ -2295,6 +2471,7 @@ export function precheckVideoGenerationInputs(
 ): VideoGenerationPrecheck {
   const { inputSet, issues } = collectVideoInputSet(inputs, options.videoMode);
   const mode = options.videoMode;
+  const family = videoFamilyForModel(options.modelAlias);
 
   if (mode) {
     const capability = videoModeCapability(mode, options.modelAlias);
@@ -2307,22 +2484,31 @@ export function precheckVideoGenerationInputs(
     for (const [role, present] of presentVideoRoles(inputSet)) {
       if (present && !allowed.has(role)) issues.push(videoUnsupportedRoleIssue(role));
     }
+    for (const role of capability.roles) {
+      const allowedMedia = capability.roleMediaTypes?.[role] ?? targetRoleMediaTypes[role];
+      for (const input of videoInputsForRole(inputSet, role)) {
+        if (!allowedMedia.includes(input.snapshot.data.mediaType)) {
+          issues.push(
+            videoCombinationIssue(
+              `视频输入角色 ${role} 不接受 ${input.snapshot.data.mediaType} 媒体`,
+              role,
+            ),
+          );
+        }
+      }
+    }
     for (const role of capability.requiredRoles ?? []) {
-      const missing =
-        role === 'firstFrame'
-          ? !inputSet.firstFrame
-          : role === 'lastFrame'
-            ? !inputSet.lastFrame
-            : false;
+      const missing = videoInputsForRole(inputSet, role).length === 0;
       if (missing) {
-        issues.push(
-          videoCombinationIssue(
-            mode === 'first_last_frame'
-              ? '首尾帧模式需要同时连接首帧和尾帧'
-              : '首帧模式需要连接一张首帧图',
-            role,
-          ),
-        );
+        const message =
+          mode === 'first_last_frame'
+            ? '首尾帧模式需要同时连接首帧和尾帧'
+            : mode === 'first_frame'
+              ? '首帧模式需要连接一张首帧图'
+              : mode === 'video_edit'
+                ? '视频编辑模式需要连接一段待编辑视频'
+                : '视频延长模式需要连接一段待延长视频';
+        issues.push(videoCombinationIssue(message, role));
       }
     }
     if (mode === 'omni_reference' && omniReferenceCount(inputSet) === 0) {
@@ -2350,11 +2536,22 @@ export function precheckVideoGenerationInputs(
     for (const [role, present] of presentVideoRoles(inputSet)) {
       if (present && !confirmed.has(role)) issues.push(videoUnsupportedRoleIssue(role));
     }
+    if (
+      (family === 'minimax-h3' ||
+        family === 'wan3' ||
+        family === 'seedance-2' ||
+        family === 'seedance-2.5') &&
+      (inputSet.firstFrame || inputSet.lastFrame) &&
+      omniReferenceCount(inputSet) > 0
+    ) {
+      issues.push(videoCombinationIssue('首帧或尾帧不能与参考图、参考视频或参考音频混用'));
+    }
   }
 
-  if (isGrokImagineVideo15(options.modelAlias)) {
+  if (family === 'grok-imagine-video-1.5') {
     applyGrokImagineVideo15Limits(inputSet, options.parameters, issues);
   }
+  applyReferenceFamilyLimits(family, inputSet, mode, issues);
 
   return {
     operation: mode ? videoModeToOperation(mode) : inferVideoOperation(inputSet),

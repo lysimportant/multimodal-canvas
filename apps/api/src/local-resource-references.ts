@@ -80,7 +80,7 @@ export function withLocalResourceReferences(
       version: number,
       mediaType: MediaType,
       declaredMimeType?: string,
-    ): Promise<ResolvedMention['source']> => {
+    ): Promise<Extract<ResolvedMention['source'], { kind: 'data-url' }>> => {
       const projectScope: AssetScope = {
         projectId: request.snapshot.projectId,
         ...(request.userId ? { ownerId: request.userId } : {}),

@@ -1250,14 +1250,22 @@ export function createRunWorker(options: {
           const assetResolver = nodeSnapshot.promptOptimization
             ? undefined
             : options.assetReferenceResolver;
-          const providerSnapshot = assetResolver
-            ? await assetResolver.resolve(
-                withWorkflowAssetVersions(nodeSnapshot, currentWorkflowState),
+          // 已提交的视频任务只按已验证的平台 ID 继续查询；原素材水合与可访问性
+          // 复核仅服务创建 POST，恢复时重复执行会让已付费任务因素材变化而无法收尾。
+          const resumeSubmittedVideo =
+            node.data.mediaType === 'video' && canResumeProviderJob(existingNodeProviderJob);
+          const requestAssetResolver = resumeSubmittedVideo ? undefined : assetResolver;
+          const versionedNodeSnapshot = assetResolver
+            ? withWorkflowAssetVersions(nodeSnapshot, currentWorkflowState)
+            : nodeSnapshot;
+          const providerSnapshot = requestAssetResolver
+            ? await requestAssetResolver.resolve(
+                versionedNodeSnapshot,
                 currentData.userId ? { userId: currentData.userId } : undefined,
               )
-            : nodeSnapshot;
+            : versionedNodeSnapshot;
           const resolvedMentions =
-            assetResolver && providerSnapshot.promptMentions?.length
+            requestAssetResolver && providerSnapshot.promptMentions?.length
               ? resolveProviderMentions(providerSnapshot)
               : undefined;
           const requestProviderJobId = workflowRequestProviderJobId(providerJob);
@@ -1318,7 +1326,7 @@ export function createRunWorker(options: {
                 });
                 await persistProviderJobStrict(retainedProviderJob);
                 // 提示词落库期间资源可能已撤销；发送前只复核权限与归档，不重复读取内容。
-                await assetResolver?.assertAccessible?.(
+                await requestAssetResolver?.assertAccessible?.(
                   providerSnapshot,
                   currentData.userId ? { userId: currentData.userId } : undefined,
                 );
@@ -1333,7 +1341,7 @@ export function createRunWorker(options: {
             false,
             flushNodeTimings(),
           );
-          await assetResolver?.assertAccessible?.(
+          await requestAssetResolver?.assertAccessible?.(
             providerSnapshot,
             currentData.userId ? { userId: currentData.userId } : undefined,
           );
@@ -2017,12 +2025,18 @@ export function sanitizeProviderJobPayload(value: unknown): Record<string, unkno
 
 function redactTransientAssetData(error: unknown): unknown {
   const redact = (value: string) =>
-    value.replace(
-      /data:[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+;base64,[a-z0-9+/=_-]+/gi,
-      '[REDACTED_ASSET_DATA]',
-    );
+    value
+      .replace(
+        /data:[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+;base64,[a-z0-9+/=_-]+/gi,
+        '[REDACTED_ASSET_DATA]',
+      )
+      .replace(
+        /https:\/\/[^\s"'<>]*[?&]X-Amz-Signature=[^&\s"'<>]+[^\s"'<>]*/gi,
+        '[REDACTED_ASSET_URL]',
+      );
   if (error instanceof Error) {
     error.message = redact(error.message);
+    if (error.stack) error.stack = redact(error.stack);
     return error;
   }
   return typeof error === 'string' ? redact(error) : error;

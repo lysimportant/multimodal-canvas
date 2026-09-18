@@ -1,17 +1,21 @@
 import { open } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { PrismaClient } from '@prisma/client';
 import {
   imageEditSourceSchema,
   runSnapshotSchema,
+  videoFamilyForModel,
   type FrozenPromptMention,
   type MediaType,
   type RunInputSnapshot,
   type RunSnapshot,
 } from '@multimodal-canvas/domain';
+import { normalizeProviderAssetEndpoint } from './startup-config.js';
 
 const DEFAULT_MAX_BYTES = 50 * 1024 * 1024;
+const PROVIDER_ASSET_URL_EXPIRES_SECONDS = 60 * 60;
 const DATABASE_UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -41,6 +45,11 @@ export interface AssetReferenceRepository {
 
 export interface AssetReferenceBlobStore {
   get(key: string, readLimitBytes: number): Promise<Buffer | undefined>;
+  /** 为 Provider 生成只读短期 URL；未配置公网对象端点的存储可省略。 */
+  createProviderGetUrl?(
+    key: string,
+    options: { expiresIn: number; contentType: string },
+  ): Promise<string>;
   close?(): Promise<void>;
 }
 
@@ -69,9 +78,10 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
 
   async resolve(snapshot: RunSnapshot, context: { userId?: string } = {}): Promise<RunSnapshot> {
     const cache = new Map<string, Promise<ResolvedAsset>>();
+    const providerUrlCache = new Map<string, Promise<string>>();
     const hydratedInputs = await Promise.all(
       snapshot.inputs.map((input) =>
-        this.resolveInput(snapshot.projectId, context.userId, input, cache),
+        this.resolveInput(snapshot, context.userId, input, cache, providerUrlCache),
       ),
     );
     const hydratedNodes = new Map(
@@ -81,6 +91,7 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
       snapshot,
       context.userId,
       cache,
+      providerUrlCache,
     );
     const imageEditSourceContents = await this.resolveImageEditSources(
       snapshot,
@@ -157,6 +168,7 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
     snapshot: RunSnapshot,
     userId: string | undefined,
     cache: Map<string, Promise<ResolvedAsset>>,
+    providerUrlCache: Map<string, Promise<string>>,
   ): Promise<Map<string, RunSnapshot['nodes'][number]>> {
     if (!snapshot.promptMentions || snapshot.promptMentions.length === 0) return new Map();
 
@@ -191,7 +203,15 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
           this.loadAsset(snapshot.projectId, userId, mention.assetId, mention.assetVersion),
         );
         assertPromptMentionMetadata(mention, resolved, nodeId);
-        hydrated.set(`${nodeId}\0${mentionId}`, resolved);
+        hydrated.set(`${nodeId}\0${mentionId}`, {
+          ...resolved,
+          providerContentUrl: await this.providerContentUrl(
+            snapshot,
+            nodeId,
+            resolved,
+            providerUrlCache,
+          ),
+        });
       }
       for (const block of document.blocks) {
         if (block.type === 'mention' && !mentions.has(block.mentionId)) {
@@ -216,7 +236,7 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
         return {
           ...block,
           assetVersion: mention.assetVersion,
-          contentUrl: resolved.dataUrl,
+          contentUrl: resolved.providerContentUrl ?? resolved.dataUrl,
           mimeType: resolved.mimeType,
         };
       });
@@ -284,14 +304,15 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
   }
 
   private async resolveInput(
-    projectId: string,
+    snapshot: RunSnapshot,
     userId: string | undefined,
     input: RunInputSnapshot,
     cache: Map<string, Promise<ResolvedAsset>>,
+    providerUrlCache: Map<string, Promise<string>>,
   ): Promise<RunInputSnapshot> {
-    const contentUrl = input.snapshot.data.contentUrl;
-    const parsedUrl = parseRelativeAssetUrl(contentUrl);
-    if (isRelativeUrl(contentUrl) && !parsedUrl) {
+    const inputContentUrl = input.snapshot.data.contentUrl;
+    const parsedUrl = parseRelativeAssetUrl(inputContentUrl);
+    if (isRelativeUrl(inputContentUrl) && !parsedUrl) {
       throw new Error(`asset reference URL is not supported for node ${input.nodeId}`);
     }
 
@@ -322,9 +343,15 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
     }
     const cacheKey = `${assetId}:${version}`;
     const resolved = await cached(cache, cacheKey, () =>
-      this.loadAsset(projectId, userId, assetId, version),
+      this.loadAsset(snapshot.projectId, userId, assetId, version),
     );
     assertInputMetadata(input, resolved);
+    const providerContentUrl = await this.providerContentUrl(
+      snapshot,
+      snapshot.targetNodeId,
+      resolved,
+      providerUrlCache,
+    );
 
     return {
       ...input,
@@ -336,11 +363,38 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
           ...input.snapshot.data,
           assetId,
           mimeType: resolved.mimeType,
-          contentUrl: resolved.dataUrl,
+          contentUrl: providerContentUrl,
           ...(resolved.mediaType === 'text' ? { prompt: undefined } : {}),
         },
       },
     };
+  }
+
+  /**
+   * 仅为官方明确要求 HTTP(S) 的视频参考素材生成短期 URL。
+   * 图片和支持 data URL 的模型继续走内存内容，避免扩大外部可读面。
+   */
+  private async providerContentUrl(
+    snapshot: RunSnapshot,
+    consumerNodeId: string,
+    resolved: ResolvedAsset,
+    cache: Map<string, Promise<string>>,
+  ): Promise<string> {
+    if (!requiresProviderAssetUrl(snapshot, consumerNodeId, resolved.mediaType)) {
+      return resolved.dataUrl;
+    }
+    const signer = this.blobStore.createProviderGetUrl;
+    if (!signer) {
+      throw new Error(
+        `asset reference ${resolved.assetId} requires a public signed URL; configure S3_PROVIDER_ENDPOINT for this video model`,
+      );
+    }
+    return cached(cache, resolved.contentKey, () =>
+      signer.call(this.blobStore, resolved.contentKey, {
+        expiresIn: PROVIDER_ASSET_URL_EXPIRES_SECONDS,
+        contentType: resolved.mimeType,
+      }),
+    );
   }
 
   private async loadAsset(
@@ -382,6 +436,7 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
       version,
       mediaType: asset.mediaType,
       mimeType,
+      contentKey: selected.contentKey,
       dataUrl: `data:${providerMimeType};base64,${content.toString('base64')}`,
     };
   }
@@ -412,7 +467,9 @@ type ResolvedAsset = {
   version: number;
   mediaType: MediaType;
   mimeType: string;
+  contentKey: string;
   dataUrl: string;
+  providerContentUrl?: string;
 };
 
 class PrismaAssetReferenceRepository implements AssetReferenceRepository {
@@ -487,8 +544,10 @@ class FileAssetReferenceBlobStore implements AssetReferenceBlobStore {
   }
 }
 
-class S3AssetReferenceBlobStore implements AssetReferenceBlobStore {
+/** S3 资源读取器；可用独立公网 endpoint 为 Provider 签发同一对象的短期 URL。 */
+export class S3AssetReferenceBlobStore implements AssetReferenceBlobStore {
   private readonly client: S3Client;
+  private readonly providerClient?: S3Client;
 
   constructor(
     private readonly bucket: string,
@@ -498,22 +557,34 @@ class S3AssetReferenceBlobStore implements AssetReferenceBlobStore {
       accessKeyId?: string;
       secretAccessKey?: string;
       forcePathStyle?: boolean;
+      providerEndpoint?: string;
     } = {},
   ) {
     if (!bucket.trim()) throw new Error('S3 bucket is required');
-    this.client = new S3Client({
-      region: options.region ?? 'us-east-1',
-      ...(options.endpoint ? { endpoint: options.endpoint } : {}),
-      ...(options.forcePathStyle === undefined ? {} : { forcePathStyle: options.forcePathStyle }),
-      ...(options.accessKeyId && options.secretAccessKey
+    const credentials =
+      options.accessKeyId && options.secretAccessKey
         ? {
             credentials: {
               accessKeyId: options.accessKeyId,
               secretAccessKey: options.secretAccessKey,
             },
           }
-        : {}),
+        : {};
+    const shared = {
+      region: options.region ?? 'us-east-1',
+      ...(options.forcePathStyle === undefined ? {} : { forcePathStyle: options.forcePathStyle }),
+      ...credentials,
+    };
+    this.client = new S3Client({
+      ...shared,
+      ...(options.endpoint ? { endpoint: options.endpoint } : {}),
     });
+    const providerEndpoint = options.providerEndpoint
+      ? normalizeProviderAssetEndpoint(options.providerEndpoint)
+      : undefined;
+    this.providerClient = providerEndpoint
+      ? new S3Client({ ...shared, endpoint: providerEndpoint })
+      : undefined;
   }
 
   async get(key: string, readLimitBytes: number): Promise<Buffer | undefined> {
@@ -543,8 +614,28 @@ class S3AssetReferenceBlobStore implements AssetReferenceBlobStore {
     }
   }
 
+  /** 为同一 bucket/key 生成一小时以内的 Provider 只读 URL，不改写已签名 Host。 */
+  async createProviderGetUrl(
+    key: string,
+    options: { expiresIn: number; contentType: string },
+  ): Promise<string> {
+    if (!this.providerClient) {
+      throw new Error('S3_PROVIDER_ENDPOINT is required for provider-readable asset URLs');
+    }
+    return getSignedUrl(
+      this.providerClient,
+      new GetObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        ResponseContentType: options.contentType,
+      }),
+      { expiresIn: options.expiresIn },
+    );
+  }
+
   async close(): Promise<void> {
     this.client.destroy();
+    this.providerClient?.destroy();
   }
 }
 
@@ -564,6 +655,7 @@ export function createAssetReferenceResolverFromEnvironment(): {
         accessKeyId: process.env.S3_ACCESS_KEY,
         secretAccessKey: process.env.S3_SECRET_KEY,
         forcePathStyle: Boolean(process.env.S3_ENDPOINT),
+        providerEndpoint: process.env.S3_PROVIDER_ENDPOINT?.trim() || undefined,
       })
     : new FileAssetReferenceBlobStore(process.env.ASSET_STORAGE_ROOT ?? '.data/assets');
   const resolver = new StoredAssetReferenceResolver(
@@ -608,6 +700,28 @@ function parseRelativeAssetUrl(value: string | undefined): ParsedAssetUrl | unde
 
 function isRelativeUrl(value: string | undefined): value is string {
   return typeof value === 'string' && value.trim().startsWith('/');
+}
+
+/**
+ * 判断冻结素材是否必须由上游通过 HTTP(S) 拉取。
+ * 仅列出已确认的精确模型家族，未知或旧模型继续沿用原 data URL 行为。
+ */
+function requiresProviderAssetUrl(
+  snapshot: RunSnapshot,
+  consumerNodeId: string,
+  mediaType: MediaType,
+): boolean {
+  const consumer = snapshot.nodes.find((node) => node.id === consumerNodeId);
+  if (consumer?.data.mediaType !== 'video') return false;
+  const modelAlias =
+    consumerNodeId === snapshot.targetNodeId
+      ? snapshot.modelAlias
+      : consumer.data.modelAlias?.trim();
+  if (!modelAlias) return false;
+  const family = videoFamilyForModel(modelAlias);
+  if (family === 'wan3') return mediaType === 'video' || mediaType === 'audio';
+  if (family === 'seedance-2' || family === 'seedance-2.5') return mediaType === 'video';
+  return false;
 }
 
 function assertInputMetadata(input: RunInputSnapshot, resolved: ResolvedAsset): void {
@@ -673,11 +787,11 @@ function normalizeMimeType(value: string): string {
   return normalized;
 }
 
-async function cached(
-  cache: Map<string, Promise<ResolvedAsset>>,
+async function cached<T>(
+  cache: Map<string, Promise<T>>,
   key: string,
-  load: () => Promise<ResolvedAsset>,
-): Promise<ResolvedAsset> {
+  load: () => Promise<T>,
+): Promise<T> {
   const existing = cache.get(key);
   if (existing) return existing;
   const pending = load();
