@@ -18,6 +18,8 @@ export type CompactSelectOption = {
   label: string;
   /** 可选的补充说明，展示在选项标题下方。 */
   description?: string;
+  /** 仅在该项悬停或键盘聚焦时显示的用途提示。 */
+  tooltip?: string;
   /** 模型来源等分组标题。 */
   groupLabel?: string;
   /** 禁用该项但仍保留在列表中。 */
@@ -86,7 +88,8 @@ export function CompactSelect({
   const optionSignature = options
     .map((option) => `${option.value}:${option.disabled ? '1' : '0'}`)
     .join('|');
-  const explicitIndex = value ? options.findIndex((option) => option.value === value) : -1;
+  const explicitIndex =
+    value !== undefined ? options.findIndex((option) => option.value === value) : -1;
   const selectedIndex = explicitIndex >= 0 ? explicitIndex : findFirstEnabledIndex(options);
   const selectedOption = selectedIndex >= 0 ? options[selectedIndex] : undefined;
   const hasExplicitSelection = explicitIndex >= 0;
@@ -98,6 +101,9 @@ export function CompactSelect({
       : selectedOption?.label || '暂无选项';
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(selectedIndex >= 0 ? selectedIndex : 0);
+  const [tipIndex, setTipIndex] = useState<number>();
+  const tooltipId = `${listboxId}-tooltip`;
+  const tooltip = open && tipIndex !== undefined ? options[tipIndex]?.tooltip : undefined;
   useEffect(() => () => clearTimeout(closeTimerRef.current), []);
   /** 浮层与 DOM 归属保持一致，使页内点击和 Dialog 焦点管理仍可正确识别菜单。 */
   const menuStyle = useFloatingParameterMenu({
@@ -109,8 +115,19 @@ export function CompactSelect({
   });
 
   useEffect(() => {
-    if (!open) setActiveIndex(selectedIndex >= 0 ? selectedIndex : 0);
+    if (!open) {
+      setActiveIndex(selectedIndex >= 0 ? selectedIndex : 0);
+      setTipIndex(undefined);
+    }
   }, [open, optionSignature, selectedIndex]);
+
+  useEffect(() => {
+    if (open) {
+      document.getElementById(`${listboxId}-option-${activeIndex}`)?.scrollIntoView?.({
+        block: 'nearest',
+      });
+    }
+  }, [activeIndex, listboxId, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -151,7 +168,10 @@ export function CompactSelect({
     if (options.length === 0) return;
     const start = activeIndex >= 0 ? activeIndex : selectedIndex;
     const next = findNextEnabledIndex(options, start, direction);
-    if (next >= 0) setActiveIndex(next);
+    if (next >= 0) {
+      setActiveIndex(next);
+      setTipIndex(next);
+    }
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
@@ -168,7 +188,10 @@ export function CompactSelect({
       event.preventDefault();
       const next =
         event.key === 'Home' ? findFirstEnabledIndex(options) : findLastEnabledIndex(options);
-      if (next >= 0) setActiveIndex(next);
+      if (next >= 0) {
+        setActiveIndex(next);
+        setTipIndex(next);
+      }
       if (!open) setOpen(true);
       return;
     }
@@ -184,6 +207,7 @@ export function CompactSelect({
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
       if (!open) {
+        setTipIndex(activeIndex);
         setOpen(true);
         return;
       }
@@ -238,6 +262,7 @@ export function CompactSelect({
         aria-haspopup="listbox"
         aria-controls={listboxId}
         aria-activedescendant={activeDescendant}
+        aria-describedby={tooltip ? tooltipId : undefined}
         disabled={disabled || !hasSelectableOptions}
         title={formatOptionLabel(selectedOption) || triggerLabel}
         onClick={() => {
@@ -260,47 +285,75 @@ export function CompactSelect({
           id={listboxId}
           className="compact-select-menu"
           data-layout={optionLayout}
+          data-tooltips={options.some((option) => option.tooltip) ? 'true' : undefined}
           popover={floating ? 'manual' : undefined}
           style={menuStyle}
           role="listbox"
           aria-label={`${label}选项`}
           hidden={!open}
           onMouseDown={(event) => event.preventDefault()}
+          onMouseLeave={(event) => {
+            if (
+              !(event.relatedTarget instanceof Node) ||
+              !event.currentTarget.contains(event.relatedTarget)
+            ) {
+              setTipIndex(undefined);
+            }
+          }}
         >
-          {options.map((option, index) => {
-            const showGroup = option.groupLabel && option.groupLabel !== previousGroup;
-            previousGroup = option.groupLabel;
-            return (
-              <Fragment key={`${option.groupLabel ?? ''}:${option.value}:${index}`}>
-                {showGroup && (
-                  <span className="compact-select-group-label" role="presentation">
-                    {option.groupLabel}
-                  </span>
-                )}
-                <button
-                  id={`${listboxId}-option-${index}`}
-                  type="button"
-                  role="option"
-                  className="compact-select-option"
-                  aria-selected={index === selectedIndex}
-                  aria-disabled={option.disabled || undefined}
-                  data-active={index === activeIndex ? 'true' : 'false'}
-                  disabled={option.disabled}
-                  title={formatOptionLabel(option)}
-                  onMouseEnter={() => setActiveIndex(index)}
-                  onClick={() => selectOption(option, index)}
-                >
-                  <span className="compact-select-option-copy">
-                    <strong>{option.label}</strong>
-                    {option.description && <small>{option.description}</small>}
-                  </span>
-                  {index === selectedIndex && (
-                    <Check className="compact-select-option-check" size={14} aria-hidden="true" />
+          <div className="compact-select-options">
+            {options.map((option, index) => {
+              const showGroup = option.groupLabel && option.groupLabel !== previousGroup;
+              previousGroup = option.groupLabel;
+              return (
+                <Fragment key={`${option.groupLabel ?? ''}:${option.value}:${index}`}>
+                  {showGroup && (
+                    <span className="compact-select-group-label" role="presentation">
+                      {option.groupLabel}
+                    </span>
                   )}
-                </button>
-              </Fragment>
-            );
-          })}
+                  <button
+                    id={`${listboxId}-option-${index}`}
+                    type="button"
+                    role="option"
+                    className="compact-select-option"
+                    aria-selected={index === selectedIndex}
+                    aria-disabled={option.disabled || undefined}
+                    aria-describedby={tooltip && tipIndex === index ? tooltipId : undefined}
+                    data-active={index === activeIndex ? 'true' : 'false'}
+                    disabled={option.disabled}
+                    title={formatOptionLabel(option)}
+                    onMouseEnter={() => {
+                      setActiveIndex(index);
+                      setTipIndex(index);
+                    }}
+                    onFocus={() => {
+                      setActiveIndex(index);
+                      setTipIndex(index);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Tab') return;
+                      handleKeyDown(event);
+                    }}
+                    onClick={() => selectOption(option, index)}
+                  >
+                    <span className="compact-select-option-copy">
+                      <strong>{option.label}</strong>
+                      {option.description && <small>{option.description}</small>}
+                    </span>
+                    {index === selectedIndex && (
+                      <Check className="compact-select-option-check" size={14} aria-hidden="true" />
+                    )}
+                  </button>
+                </Fragment>
+              );
+            })}
+          </div>
+          {tooltip && (
+            <div id={tooltipId} className="compact-select-option-tooltip" role="tooltip">
+              {tooltip}
+            </div>
+          )}
         </div>
       )}
     </div>

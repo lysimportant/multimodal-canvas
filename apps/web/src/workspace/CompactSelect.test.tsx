@@ -18,6 +18,53 @@ const options: CompactSelectOption[] = [
 afterEach(cleanup);
 
 describe('CompactSelect', () => {
+  it('分类选项的用途仅在悬停或键盘焦点时显示，Escape 关闭提示', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <CompactSelect
+        label="Skill"
+        options={[
+          {
+            value: 'character',
+            label: '人物',
+            groupLabel: '人物与场景',
+            tooltip: '描述人物外观和服装',
+          },
+          { value: 'scene', label: '场景', groupLabel: '人物与场景', tooltip: '描述空间布局' },
+          { value: 'story', label: '小说', groupLabel: '文字创作', tooltip: '组织叙事结构' },
+        ]}
+        onChange={onChange}
+      />,
+    );
+    const trigger = screen.getByRole('combobox');
+    await user.click(trigger);
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+    expect(screen.getAllByText('人物与场景')).toHaveLength(1);
+    expect(screen.getByText('文字创作')).toBeVisible();
+    const character = screen.getByRole('option', { name: '人物' });
+    await user.hover(character);
+    expect(screen.getByRole('tooltip')).toHaveTextContent('描述人物外观和服装');
+    expect(character).toHaveAccessibleDescription('描述人物外观和服装');
+    const tooltip = screen.getByRole('tooltip');
+    fireEvent.mouseOut(character, { relatedTarget: tooltip });
+    fireEvent.mouseOver(tooltip, { relatedTarget: character });
+    expect(screen.getByRole('tooltip')).toHaveTextContent('描述人物外观和服装');
+    fireEvent.mouseOut(tooltip, { relatedTarget: null });
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+    trigger.focus();
+    await user.keyboard('{End}');
+    expect(screen.getByRole('tooltip')).toHaveTextContent('组织叙事结构');
+    expect(trigger).toHaveAccessibleDescription('组织叙事结构');
+    await user.keyboard('{Enter}');
+    expect(onChange).toHaveBeenCalledWith('story');
+    await user.click(trigger);
+    fireEvent.focus(character);
+    expect(screen.getByRole('tooltip')).toHaveTextContent('描述人物外观和服装');
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+  });
+
   it('悬停菜单延时关闭，点击固定后移出保持展开', async () => {
     const user = userEvent.setup();
     render(<CompactSelect label="档位" options={options} onChange={vi.fn()} openOnHover />);

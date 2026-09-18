@@ -1,0 +1,432 @@
+.skill-workbench-backdrop,
+.skill-workbench-confirm-backdrop {
+  background: rgb(15 23 33 / 42%);
+  inset: 0;
+  position: fixed;
+  z-index: 84;
+}
+
+.skill-workbench {
+  background: var(--mc-surface, #fff);
+  border: 1px solid var(--mc-border, #e2e7eb);
+  border-radius: 8px;
+  color: var(--mc-text, #18212f);
+  display: flex;
+  flex-direction: column;
+  height: min(740px, calc(100dvh - 40px));
+  max-height: calc(100dvh - 40px);
+  max-width: calc(100vw - 32px);
+  overflow: hidden;
+  padding: 0;
+  width: 1000px;
+  z-index: 85;
+}
+
+.skill-workbench-header,
+.skill-editor-toolbar {
+  align-items: center;
+  display: flex;
+  flex-shrink: 0;
+  gap: 12px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.skill-workbench-header {
+  border-bottom: 1px solid var(--mc-border, #e2e7eb);
+  padding: 12px 16px;
+}
+
+.skill-workbench-header h2 {
+  font-size: 16px;
+  margin: 0;
+}
+
+.skill-workbench-actions {
+  align-items: center;
+  display: flex;
+  flex-shrink: 0;
+  gap: 4px;
+}
+
+.skill-action-wrap {
+  display: inline-flex;
+  position: relative;
+}
+
+.skill-action {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--mc-text-muted, #687386);
+  cursor: pointer;
+  display: inline-flex;
+  height: 32px;
+  justify-content: center;
+  padding: 0;
+  width: 32px;
+}
+
+.skill-action:hover:not(:disabled) {
+  background: var(--mc-surface-muted, #f0f3f5);
+  color: var(--mc-text, #18212f);
+}
+
+.skill-action:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+.skill-action-tip {
+  background: var(--mc-text, #18212f);
+  border-radius: 4px;
+  color: var(--mc-surface, #fff);
+  font-size: 11px;
+  opacity: 0;
+  padding: 5px 8px;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 5px);
+  visibility: hidden;
+  white-space: nowrap;
+  z-index: 2;
+}
+
+.skill-action-wrap:hover .skill-action-tip,
+.skill-action-wrap:focus-within .skill-action-tip {
+  opacity: 1;
+  visibility: visible;
+}
+
+.skill-workbench-body {
+  display: grid;
+  flex: 1;
+  grid-template-columns: 300px minmax(0, 1fr);
+  min-height: 0;
+}
+
+.skill-library {
+  border-right: 1px solid var(--mc-border, #e2e7eb);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.skill-library-filters {
+  display: grid;
+  flex-shrink: 0;
+  gap: 8px;
+  padding: 14px 12px 8px;
+}
+
+.skill-search {
+  align-items: center;
+  display: flex;
+  position: relative;
+}
+
+.skill-search > svg {
+  color: var(--mc-text-muted, #687386);
+  left: 10px;
+  position: absolute;
+}
+
+.skill-workbench input:not([type='checkbox']),
+.skill-workbench textarea,
+.skill-workbench select {
+  background: var(--mc-surface, #fff);
+  border: 1px solid var(--mc-border-strong, #d3dce0);
+  border-radius: 5px;
+  box-sizing: border-box;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.65;
+  min-width: 0;
+  padding: 7px 9px;
+  width: 100%;
+}
+
+.skill-workbench .skill-search input {
+  padding-left: 32px;
+}
+
+.skill-workbench textarea {
+  resize: vertical;
+}
+
+.skill-workbench input[readonly],
+.skill-workbench textarea[readonly] {
+  background: var(--mc-surface-soft, #f7f8fa);
+}
+
+.skill-workbench :is(button, input, textarea, select):focus-visible,
+.skill-workbench-confirm button:focus-visible {
+  outline: 2px solid var(--mc-accent, #18794e);
+  outline-offset: 2px;
+}
+
+.skill-library-count,
+.skill-library-meta,
+.skill-library-description,
+.skill-editor-heading > span {
+  color: var(--mc-text-muted, #687386);
+  font-size: 11px;
+}
+
+.skill-library-list {
+  list-style: none;
+  margin: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 0 8px;
+}
+
+.skill-library-item {
+  background: transparent;
+  border: 0;
+  border-left: 3px solid transparent;
+  color: inherit;
+  cursor: pointer;
+  display: grid;
+  font: inherit;
+  gap: 5px;
+  padding: 10px 12px 10px 9px;
+  text-align: left;
+  width: 100%;
+}
+
+.skill-library-item:hover:not(:disabled) {
+  background: var(--mc-surface-soft, #f7f8fa);
+}
+
+.skill-library-item[aria-pressed='true'] {
+  background: var(--mc-accent-soft, #edf7f2);
+  border-left-color: var(--mc-accent, #18794e);
+}
+
+.skill-library-name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.skill-library-meta {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  overflow-wrap: anywhere;
+}
+
+.skill-kind {
+  color: var(--mc-text-muted, #687386);
+  font-weight: 600;
+}
+
+.skill-kind.is-custom {
+  color: var(--mc-accent, #18794e);
+}
+
+.skill-library-description {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-height: 1.6;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.skill-library-empty {
+  color: var(--mc-text-muted, #687386);
+  font-size: 12px;
+  padding: 0 12px;
+}
+
+.skill-editor-unavailable {
+  color: var(--mc-text-muted, #687386);
+  font-size: 13px;
+  margin: auto;
+}
+
+.skill-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  overflow: auto;
+  padding: 14px 20px 20px;
+}
+
+.skill-editor-heading {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.skill-editor-heading h3 {
+  font-size: 14px;
+  margin: 0 0 3px;
+}
+
+.skill-editor-form {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.skill-editor-form label {
+  display: grid;
+  font-size: 12px;
+  gap: 6px;
+  min-width: 0;
+}
+
+.skill-editor-fields {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.7fr);
+}
+
+.skill-editor-form .skill-enabled {
+  align-items: center;
+  display: flex;
+  gap: 7px;
+  width: fit-content;
+}
+
+.skill-enabled input {
+  accent-color: var(--mc-accent, #18794e);
+  height: 15px;
+  margin: 0;
+  width: 15px;
+}
+
+.skill-editor-form .skill-instruction {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+}
+
+.skill-instruction textarea {
+  flex: 1;
+  min-height: 200px;
+}
+
+.skill-workbench-footer {
+  border-top: 1px solid var(--mc-border, #e2e7eb);
+  color: var(--mc-text-muted, #687386);
+  flex-shrink: 0;
+  font-size: 12px;
+  min-height: 39px;
+  padding: 10px 16px;
+}
+
+.skill-workbench-footer p {
+  align-items: center;
+  display: flex;
+  gap: 7px;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.skill-workbench-footer [role='alert'],
+.skill-workbench .is-danger:not(:disabled),
+.skill-workbench-confirm .is-danger {
+  color: var(--mc-danger, #c13b46);
+}
+
+.skill-workbench-confirm-backdrop {
+  z-index: 86;
+}
+
+.skill-workbench-confirm {
+  background: var(--mc-surface, #fff);
+  border-color: var(--mc-border, #e2e7eb);
+  border-radius: 8px;
+  color: var(--mc-text, #18212f);
+  max-width: calc(100vw - 32px);
+  overflow-wrap: anywhere;
+  width: 420px;
+  z-index: 87;
+}
+
+.skill-confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 20px;
+}
+
+.skill-confirm-actions button {
+  background: var(--mc-surface, #fff);
+  border: 1px solid var(--mc-border-strong, #d3dce0);
+  border-radius: 5px;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 8px 12px;
+}
+
+.skill-spinner {
+  animation: skill-spin 1s linear infinite;
+}
+
+@keyframes skill-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skill-spinner {
+    animation: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .skill-workbench-body {
+    grid-template-columns: 230px minmax(0, 1fr);
+  }
+  .skill-editor {
+    padding: 12px;
+  }
+  .skill-editor-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 540px) {
+  .skill-workbench-body {
+    display: flex;
+    flex-direction: column;
+    overflow: auto;
+  }
+  .skill-library {
+    border-bottom: 1px solid var(--mc-border, #e2e7eb);
+    border-right: 0;
+    flex: 0 0 230px;
+  }
+  .skill-library-filters {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .skill-library-count {
+    grid-column: 1 / -1;
+  }
+  .skill-editor {
+    flex-shrink: 0;
+    overflow: visible;
+  }
+  .skill-editor-fields {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .skill-workbench-header {
+    padding: 10px 12px;
+  }
+}

@@ -1950,10 +1950,13 @@ h2 {
   overflow: visible;
   pointer-events: auto;
   position: fixed;
-  z-index: 60;
+  z-index: 19;
 }
 
 .quick-editor-overlay > .node-quick-editor {
+  max-height: var(--quick-editor-max-height, calc(100dvh - 16px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
   max-width: 100%;
   width: 100%;
 }
@@ -2304,6 +2307,47 @@ h2 {
 .compact-select-option-check {
   color: #18794e;
   flex: 0 0 auto;
+}
+
+.compact-select-options {
+  display: contents;
+}
+
+.compact-select-menu[data-tooltips='true'] {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.compact-select-menu[data-tooltips='true'][hidden] {
+  display: none;
+}
+
+.compact-select-menu[data-tooltips='true'] .compact-select-options {
+  display: grid;
+  gap: 4px;
+  min-height: 64px;
+  overflow-y: auto;
+}
+
+.compact-select-option-tooltip {
+  flex-shrink: 1;
+  min-height: 0;
+  max-height: 120px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 8px 10px;
+  border: 1px solid var(--mc-border-strong);
+  border-radius: 6px;
+  background: var(--mc-surface);
+  color: var(--mc-text);
+  box-shadow: 0 3px 10px var(--mc-shadow);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  pointer-events: auto;
 }
 
 .node-quick-editor-option-group {

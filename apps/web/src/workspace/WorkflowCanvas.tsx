@@ -138,13 +138,25 @@ type QuickEditorLayout = {
   top: number;
   /** 浮层宽度，单位为像素。 */
   width: number;
+  /** 可见画布的最大可用高度，单位为像素；超长编辑器内部滚动。 */
+  maxHeight: number;
   /** 浮层相对于选中节点的展开方向。 */
-  placement: 'below';
+  placement: 'below' | 'above' | 'left' | 'right';
   /** 是否已取得可用于显示的首个布局结果。 */
   ready: boolean;
 };
 
 export type WorkflowCanvasProps = {
+  /** 当前项目用于创建独立 Skill 优化任务。 */
+  projectId?: string;
+  /** 由用户级目录提供的内置与自定义技能。 */
+  promptSkills?: NodeQuickEditorProps['promptSkills'];
+  /** 技能工作台可从画布工具栏或节点编辑器打开。 */
+  onOpenSkillWorkbench?: () => void;
+  /** 技能目录不可用的错误。 */
+  skillLibraryError?: string;
+  /** 首次目录读取中，不允许清空或替换已有选择。 */
+  skillLibraryLoading?: boolean;
   nodes: AssetFlowNode[];
   edges: FlowEdge[];
   selectedNode: AssetFlowNode | null;
@@ -178,6 +190,8 @@ export type WorkflowCanvasProps = {
   onRetryNode: (nodeId: string) => void | Promise<void>;
   onPromptChange?: (value: string, nodeId?: string) => void;
   onPromptDocumentChange?: (document: PromptDocument, nodeId?: string) => void;
+  /** 保存目标节点的技能选择，不触发生成。 */
+  onPromptSkillChange?: (skillId: string | undefined, nodeId?: string) => void;
   /** 提示词资源条点击上传后，把文件收成项目资源并回写提及。 */
   onUploadResource?: (file: File) => Promise<Asset>;
   onParametersChange?: (value: Record<string, unknown>, nodeId?: string) => void;
@@ -260,6 +274,11 @@ export type WorkflowCanvasProps = {
 };
 
 export function WorkflowCanvas({
+  projectId,
+  promptSkills,
+  onOpenSkillWorkbench,
+  skillLibraryError,
+  skillLibraryLoading,
   nodes,
   edges,
   selectedNode,
@@ -284,6 +303,7 @@ export function WorkflowCanvas({
   onRetryNode,
   onPromptChange,
   onPromptDocumentChange,
+  onPromptSkillChange,
   onUploadResource,
   onParametersChange,
   onGenerationCountChange,
@@ -648,6 +668,7 @@ export function WorkflowCanvas({
       }}
     >
       <CanvasNodeToolbar
+        onOpenSkillWorkbench={onOpenSkillWorkbench}
         onAddGenerateNode={handleAddGenerateNode}
         onFitView={handleFitView}
         onRequestUpload={onRequestUpload}
@@ -789,6 +810,11 @@ export function WorkflowCanvas({
       {quickEditorNode && (
         <QuickEditorOverlay
           key={quickEditorNode.id}
+          projectId={projectId}
+          promptSkills={promptSkills}
+          onOpenSkillWorkbench={onOpenSkillWorkbench}
+          skillLibraryError={skillLibraryError}
+          skillLibraryLoading={skillLibraryLoading}
           node={quickEditorNode}
           models={models}
           busy={busy}
@@ -804,6 +830,9 @@ export function WorkflowCanvas({
               : undefined
           }
           onUploadResource={onUploadResource}
+          onPromptSkillChange={
+            onPromptSkillChange ? (id) => onPromptSkillChange(id, quickEditorNode.id) : undefined
+          }
           onParametersChange={
             onParametersChange
               ? (value) => onParametersChange(value, quickEditorNode.id)
@@ -949,6 +978,7 @@ function QuickEditorOverlay({ node, canvasAreaRef, ...editorProps }: QuickEditor
     left: QUICK_EDITOR_VIEWPORT_MARGIN,
     top: QUICK_EDITOR_VIEWPORT_MARGIN,
     width: QUICK_EDITOR_MAX_WIDTH,
+    maxHeight: 420,
     placement: 'below',
     ready: false,
   });
@@ -989,9 +1019,14 @@ function QuickEditorOverlay({ node, canvasAreaRef, ...editorProps }: QuickEditor
           canvasRect.right - QUICK_EDITOR_VIEWPORT_MARGIN,
         )
       : viewportWidth - QUICK_EDITOR_VIEWPORT_MARGIN;
-    const canvasTop = hasCanvasBounds
-      ? Math.max(QUICK_EDITOR_VIEWPORT_MARGIN, canvasRect.top + QUICK_EDITOR_VIEWPORT_MARGIN)
-      : QUICK_EDITOR_VIEWPORT_MARGIN;
+    const topbarBottom =
+      canvas.closest('.app-shell')?.querySelector('.topbar')?.getBoundingClientRect().bottom ?? 0;
+    const canvasTop = Math.max(
+      topbarBottom + QUICK_EDITOR_VIEWPORT_MARGIN,
+      hasCanvasBounds
+        ? canvasRect.top + QUICK_EDITOR_VIEWPORT_MARGIN
+        : QUICK_EDITOR_VIEWPORT_MARGIN,
+    );
     const canvasBottom = hasCanvasBounds
       ? Math.min(
           viewportHeight - QUICK_EDITOR_VIEWPORT_MARGIN,
@@ -1000,9 +1035,8 @@ function QuickEditorOverlay({ node, canvasAreaRef, ...editorProps }: QuickEditor
       : viewportHeight - QUICK_EDITOR_VIEWPORT_MARGIN;
     const boundedRight = Math.max(canvasLeft, canvasRight);
     const boundedBottom = Math.max(canvasTop, canvasBottom);
+    let maxHeight = Math.max(1, boundedBottom - canvasTop);
     let width = Math.min(QUICK_EDITOR_MAX_WIDTH, Math.max(1, boundedRight - canvasLeft));
-    const overlayRect = overlay.getBoundingClientRect();
-    const editorHeight = overlayRect.height > 0 ? overlayRect.height : 420;
     const nodeRect = nodeElement.getBoundingClientRect();
     const hasNodeBounds = nodeRect.width > 0 && nodeRect.height > 0;
     const nodeCenter = hasNodeBounds
@@ -1018,17 +1052,65 @@ function QuickEditorOverlay({ node, canvasAreaRef, ...editorProps }: QuickEditor
     let left = getCenteredLeft(width);
 
     let top = canvasTop;
-    const placement: QuickEditorLayout['placement'] = 'below';
+    let placement: QuickEditorLayout['placement'] = 'below';
     if (hasNodeBounds) {
-      const belowTop = nodeRect.bottom + QUICK_EDITOR_NODE_GAP;
-      const maxTop = Math.max(canvasTop, boundedBottom - editorHeight);
-      top = clampQuickEditorValue(belowTop, canvasTop, maxTop);
+      // 候选区域只取节点外侧，不以编辑器当前高度回推位置，避免增高或滚动时跳动。
+      const belowTop = Math.max(canvasTop, nodeRect.bottom + QUICK_EDITOR_NODE_GAP);
+      const aboveBottom = Math.min(boundedBottom, nodeRect.top - 64);
+      const rightLeft = Math.max(canvasLeft, nodeRect.right + QUICK_EDITOR_NODE_GAP);
+      const leftRight = Math.min(boundedRight, nodeRect.left - QUICK_EDITOR_NODE_GAP);
+      const below = {
+        placement: 'below' as const,
+        left,
+        top: belowTop,
+        width,
+        maxHeight: boundedBottom - belowTop,
+      };
+      // 上方为节点工具栏额外预留空间；侧面保留端口与缩放手柄间距。
+      const above = {
+        placement: 'above' as const,
+        left,
+        top: canvasTop,
+        width,
+        maxHeight: aboveBottom - canvasTop,
+      };
+      const right = {
+        placement: 'right' as const,
+        left: rightLeft,
+        top: canvasTop,
+        width: Math.min(width, boundedRight - rightLeft),
+        maxHeight,
+      };
+      const sideWidth = Math.min(width, leftRight - canvasLeft);
+      const leftSide = {
+        placement: 'left' as const,
+        left: leftRight - sideWidth,
+        top: canvasTop,
+        width: sideWidth,
+        maxHeight,
+      };
+      const candidates = [below, above, right, leftSide].filter(
+        (area) => area.width > 0 && area.maxHeight > 0,
+      );
+      const usable = candidates.filter((area) => area.width >= Math.min(360, width));
+      const chosen =
+        usable.find((area) => area.maxHeight >= 400) ??
+        usable.sort((a, b) => b.maxHeight - a.maxHeight)[0] ??
+        candidates.sort((a, b) => b.width * b.maxHeight - a.width * a.maxHeight)[0];
+      if (chosen) {
+        ({ left, top, width, maxHeight, placement } = chosen);
+      } else {
+        // 节点完全占满视口时没有不遮挡的浮层区域，缩放或平移后会重新测量。
+        setLayout((current) => (current.ready ? { ...current, ready: false } : current));
+        return;
+      }
     }
 
     const nextLayout: QuickEditorLayout = {
       left: Math.round(left),
       top: Math.round(top),
       width: Math.round(width),
+      maxHeight: Math.floor(maxHeight),
       placement,
       ready: true,
     };
@@ -1036,6 +1118,7 @@ function QuickEditorOverlay({ node, canvasAreaRef, ...editorProps }: QuickEditor
       current.left === nextLayout.left &&
       current.top === nextLayout.top &&
       current.width === nextLayout.width &&
+      current.maxHeight === nextLayout.maxHeight &&
       current.placement === nextLayout.placement &&
       current.ready === nextLayout.ready
         ? current
@@ -1092,11 +1175,12 @@ function QuickEditorOverlay({ node, canvasAreaRef, ...editorProps }: QuickEditor
 
   if (!portalHost) return null;
 
-  const style: CSSProperties = {
+  const style: CSSProperties & { '--quick-editor-max-height': string } = {
     left: `${layout.left}px`,
     top: `${layout.top}px`,
     visibility: layout.ready ? 'visible' : 'hidden',
     width: `${layout.width}px`,
+    '--quick-editor-max-height': `${layout.maxHeight}px`,
   };
 
   return createPortal(

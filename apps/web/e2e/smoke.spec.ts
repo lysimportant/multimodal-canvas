@@ -425,6 +425,10 @@ async function mockApi(target: Pick<Page, 'route'>) {
       await json(route, { error: '项目不存在' }, 404);
       return;
     }
+    if (request.method() === 'GET' && path === '/v1/prompt-skills') {
+      await json(route, { skills: [] });
+      return;
+    }
     if (request.method() === 'GET' && path === '/v1/models') {
       const credentialId =
         url.searchParams.get('credentialId') ??

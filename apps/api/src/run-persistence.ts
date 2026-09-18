@@ -48,6 +48,8 @@ export type ProviderJobPersistenceInput = {
   /** Database Run.id, not the BullMQ/API run identifier. */
   runId: string;
   providerJob: ProviderJob;
+  /** 发布队列前只补建，不覆盖并发 Worker 已写入的执行状态。 */
+  createOnly?: boolean;
 };
 
 export type EnsureRunPersistenceInput = {
@@ -64,6 +66,8 @@ export type EnsureRunPersistenceInput = {
   costCurrency?: string;
   providerJob?: ProviderJob;
   error?: string;
+  /** API 幂等发布仅补建快照，不把已有运行回退为 queued。 */
+  createOnly?: boolean;
 };
 
 export type UpdateRunPersistenceInput = {
@@ -291,6 +295,7 @@ export class PrismaRunPersistence {
    * Create the immutable run snapshot and its ordered input rows before the
    * BullMQ job is published. Repeated calls only update mutable lifecycle
    * fields, so retries and worker restarts cannot duplicate RunInput records.
+   * createOnly 用于队列发布：已有行保持不变，避免并发请求回退 Worker 状态。
    */
   async ensureRun(input: EnsureRunPersistenceInput) {
     const runId = databaseRunId(input.runId);
@@ -340,15 +345,17 @@ export class PrismaRunPersistence {
     return this.prisma.run.upsert({
       where: { id: runId },
       create: { id: runId, ...data },
-      update: {
-        status,
-        attempt,
-        ...(cost !== undefined ? { cost } : {}),
-        ...(costCurrency ? { costCurrency } : {}),
-        ...(input.retryOf ? { retryOf: databaseRunId(input.retryOf) } : {}),
-        ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
-        ...(errorMessage ? { error: { message: errorMessage } as Prisma.InputJsonValue } : {}),
-      },
+      update: input.createOnly
+        ? {}
+        : {
+            status,
+            attempt,
+            ...(cost !== undefined ? { cost } : {}),
+            ...(costCurrency ? { costCurrency } : {}),
+            ...(input.retryOf ? { retryOf: databaseRunId(input.retryOf) } : {}),
+            ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
+            ...(errorMessage ? { error: { message: errorMessage } as Prisma.InputJsonValue } : {}),
+          },
     });
   }
 
@@ -391,15 +398,17 @@ export class PrismaRunPersistence {
     };
 
     const create = { id, ...data };
-    const update = {
-      runId: data.runId,
-      provider: data.provider,
-      ...(data.platformJobId !== undefined ? { platformJobId: data.platformJobId } : {}),
-      status: data.status,
-      progress: data.progress,
-      ...(data.payload !== undefined ? { payload: data.payload } : {}),
-      updatedAt: data.updatedAt,
-    };
+    const update = input.createOnly
+      ? {}
+      : {
+          runId: data.runId,
+          provider: data.provider,
+          ...(data.platformJobId !== undefined ? { platformJobId: data.platformJobId } : {}),
+          status: data.status,
+          progress: data.progress,
+          ...(data.payload !== undefined ? { payload: data.payload } : {}),
+          updatedAt: data.updatedAt,
+        };
     try {
       // A provider callback first enriches the local queued row. Looking up by
       // the local identity prevents a second INSERT with the same primary key.

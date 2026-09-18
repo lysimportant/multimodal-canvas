@@ -543,7 +543,7 @@ describe('WorkflowCanvas context menu', () => {
     },
   );
 
-  it('将快速编辑器固定在节点下方并避开画布边缘', async () => {
+  it('根据节点四周空间布局编辑器，不能向上挤进节点或超出画布', async () => {
     const props = createProps({ nodes: [generateNode], selectedNode: null });
     const { rerender } = render(<WorkflowCanvas {...props} />);
     const canvas = screen.getByRole('region', { name: '工作流画布' });
@@ -558,10 +558,13 @@ describe('WorkflowCanvas context menu', () => {
     const overlay = editor.closest<HTMLDivElement>('.quick-editor-overlay');
 
     expect(overlay).not.toBeNull();
-    await waitFor(() => expect(overlay).toHaveAttribute('data-placement', 'below'));
+    await waitFor(() => expect(overlay).toHaveAttribute('data-placement', 'above'));
     expect(overlay).toHaveStyle({ visibility: 'visible' });
     expect(overlay?.closest('.react-flow__node')).toBeNull();
-    expect(Number.parseInt(overlay?.style.top ?? '', 10)).toBeLessThan(620);
+    expect(
+      Number.parseInt(overlay?.style.top ?? '', 10) +
+        Number.parseInt(overlay?.style.getPropertyValue('--quick-editor-max-height') ?? '', 10),
+    ).toBeLessThanOrEqual(620 - 64);
 
     nodeRect = createMockRect(380, 150, 180, 80);
     canvasNode.style.transform = 'translate(1px)';
@@ -570,11 +573,12 @@ describe('WorkflowCanvas context menu', () => {
 
     nodeRect = createMockRect(600, 350, 180, 80);
     canvasNode.style.transform = 'translate(2px)';
-    await waitFor(() => expect(overlay).toHaveAttribute('data-placement', 'below'));
+    await waitFor(() => expect(overlay).toHaveAttribute('data-placement', 'left'));
     const overlayLeft = Number.parseInt(overlay?.style.left ?? '', 10);
     const overlayWidth = Number.parseInt(overlay?.style.width ?? '', 10);
     expect(overlayLeft).toBeGreaterThanOrEqual(80);
     expect(overlayLeft + overlayWidth).toBeLessThanOrEqual(800);
+    expect(overlayLeft + overlayWidth).toBeLessThanOrEqual(nodeRect.left - 16);
   });
 
   it('uses the appearance-driven default edge without forcing animation', () => {

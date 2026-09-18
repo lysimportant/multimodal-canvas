@@ -1,7 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
-import { nodeTimingDuration } from '@multimodal-canvas/domain';
+import {
+  createPromptOptimizationCanvas,
+  nodeTimingDuration,
+  PROMPT_OPTIMIZATION_NODE_ID,
+  PROMPT_SKILLS,
+  type PromptDocument,
+} from '@multimodal-canvas/domain';
 
 import {
   databaseRunId,
@@ -48,6 +54,120 @@ function createPersistence() {
 }
 
 describe('PrismaRunPersistence', () => {
+  it('Skill 队列发布的补建写入不会回退已有运行或 Provider 状态', async () => {
+    const { prisma, persistence } = createPersistence();
+    const input: PromptDocument = { version: 1, blocks: [{ type: 'text', text: '章节写作' }] };
+    const skill = PROMPT_SKILLS[0]!;
+    const canvas = createPromptOptimizationCanvas({ skillId: skill.id, input, mediaType: 'text' });
+    const snapshot = {
+      projectId: '123e4567-e89b-12d3-a456-426614174010',
+      canvasRevision: 0,
+      targetNodeId: PROMPT_OPTIMIZATION_NODE_ID,
+      modelAlias: 'mock-text',
+      parameters: {},
+      submittedAt: new Date().toISOString(),
+      nodes: canvas.nodes,
+      edges: [],
+      inputs: [],
+      promptOptimization: {
+        nodeId: 'source',
+        skillId: skill.id,
+        skillVersion: skill.version,
+        input,
+      },
+    };
+    await persistence.ensureRun({ runId, snapshot, createOnly: true });
+    expect(prisma.run.upsert).toHaveBeenCalledWith(expect.objectContaining({ update: {} }));
+    await persistence.upsertProviderJob({ runId, providerJob, createOnly: true });
+    expect(prisma.providerJob.upsert).toHaveBeenCalledWith(expect.objectContaining({ update: {} }));
+  });
+
+  it('持久优化回读保留冻结指令、原始引用及完整结果，不依赖资产', async () => {
+    const { prisma, persistence } = createPersistence();
+    const input: PromptDocument = {
+      version: 1,
+      blocks: [
+        { type: 'text', text: '参考 ' },
+        {
+          type: 'mention',
+          mentionId: 'ref',
+          assetId: 'asset-unresolved',
+          assetVersion: 2,
+          mediaType: 'image',
+          label: '角色',
+        },
+      ],
+    };
+    const skill = PROMPT_SKILLS[0]!;
+    const canvas = createPromptOptimizationCanvas({ skillId: skill.id, input, mediaType: 'image' });
+    const createdAt = new Date('2026-09-18T00:00:00.000Z');
+    const snapshot = {
+      projectId: '123e4567-e89b-12d3-a456-426614174010',
+      canvasRevision: 0,
+      targetNodeId: PROMPT_OPTIMIZATION_NODE_ID,
+      modelAlias: 'text-model',
+      parameters: {},
+      submittedAt: createdAt.toISOString(),
+      nodes: canvas.nodes,
+      edges: [],
+      inputs: [],
+      promptOptimization: {
+        nodeId: 'unsaved',
+        skillId: skill.id,
+        skillVersion: skill.version,
+        instruction: skill.instruction,
+        input,
+      },
+    };
+    const result = {
+      provider: 'newapi',
+      summary: '优化完成',
+      targetNodeId: PROMPT_OPTIMIZATION_NODE_ID,
+      mediaType: 'text' as const,
+      inputCount: 0,
+      promptOptimization: {
+        promptDocument: {
+          ...input,
+          blocks: [...input.blocks, { type: 'text' as const, text: '详细构图。'.repeat(1000) }],
+        },
+      },
+    };
+    await persistence.ensureRun({ runId, snapshot, idempotencyKey: 'prompt-optimization:frozen' });
+    expect(prisma.run.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ snapshot, idempotencyKey: 'prompt-optimization:frozen' }),
+      }),
+    );
+    await persistence.updateRun({ runId, status: 'succeeded', result });
+    expect(prisma.run.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ result }) }),
+    );
+    prisma.run.findUnique.mockResolvedValue({
+      id: runId,
+      projectId: snapshot.projectId,
+      userId: null,
+      status: 'SUCCEEDED',
+      modelAlias: 'text-model',
+      result,
+      snapshot,
+      attempt: 1,
+      retryOf: null,
+      idempotencyKey: 'prompt-optimization:frozen',
+      error: null,
+      createdAt,
+      updatedAt: createdAt,
+      providerJobs: [],
+    });
+    const restored = await persistence.getRun(runId);
+    expect(restored).toMatchObject({
+      status: 'succeeded',
+      snapshot: { promptOptimization: snapshot.promptOptimization },
+      result,
+      idempotencyKey: 'prompt-optimization:frozen',
+    });
+    expect(restored?.result?.asset).toBeUndefined();
+  });
+
   it('持久反推回读保留精确资源身份、长提示词和幂等键，不要求结果资产', async () => {
     const { prisma, persistence } = createPersistence();
     const createdAt = new Date('2026-09-17T00:00:00.000Z');
@@ -1106,6 +1226,20 @@ scratchDescribe('PrismaRunPersistence against the scratch database', () => {
   afterAll(async () => {
     await prisma.project.delete({ where: { id: projectId } });
     await prisma.$disconnect();
+  });
+
+  it('真实数据库补建不会把已有终态运行或 Provider 状态回退', async () => {
+    const frozen = { ...runSnapshot, projectId, targetNodeId: 'node_image' };
+    await persistence.ensureRun({ runId, snapshot: frozen, status: 'queued', createOnly: true });
+    expect((await persistence.getRun(runId))?.status).toBe('succeeded');
+    const provider = { ...providerJob, id: `skill-${randomUUID()}`, status: 'running' as const };
+    await persistence.upsertProviderJob({ runId, providerJob: provider });
+    await persistence.upsertProviderJob({
+      runId,
+      providerJob: { ...provider, status: 'queued', progress: 0 },
+      createOnly: true,
+    });
+    expect((await persistence.getRun(runId))?.providerJob?.status).toBe('running');
   });
 
   it('迁移后的表可读写，列表不带正文、完整文本按需读取', async () => {

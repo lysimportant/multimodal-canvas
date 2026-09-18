@@ -9,7 +9,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
 import {
   apiFetch,
+  AuthSessionChangedError,
   clearAuthSession,
+  getAuthSessionGeneration,
   getAuthToken,
   openAuthEventStream,
   persistAuthSession,
@@ -193,6 +195,55 @@ describe('auth-client', () => {
     expect(getAuthToken()).toBeUndefined();
     expect(readStoredAuthSession()?.accessToken).toBe(response.accessToken);
     expect(localStorage.getItem('multimodal-canvas:auth-session')).toContain(response.accessToken);
+  });
+
+  it('显式绑定已失效身份时，在续期或发送前拒绝请求', async () => {
+    persistAuthSession(response);
+    const expectedAuthGeneration = getAuthSessionGeneration();
+    clearAuthSession();
+    const fetcher = vi.spyOn(globalThis, 'fetch');
+    await expect(
+      apiFetch('/v1/projects', { method: 'POST' }, { expectedAuthGeneration }),
+    ).rejects.toBeInstanceOf(AuthSessionChangedError);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('身份约束允许同一账户正常续期，再用新令牌发送一次请求', async () => {
+    persistAuthSession({ ...response, expiresAt: new Date(Date.now() - 1_000).toISOString() });
+    const expectedAuthGeneration = getAuthSessionGeneration();
+    const renewed = { ...response, accessToken: 'synthetic-renewed-token' };
+    const fetcher = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse(renewed))
+      .mockResolvedValueOnce(jsonResponse({ projects: [] }));
+    await expect(
+      apiFetch('http://localhost:3000/v1/projects', undefined, { expectedAuthGeneration }),
+    ).resolves.toMatchObject({ status: 200 });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(new Headers(fetcher.mock.calls[1]?.[1]?.headers).get('authorization')).toBe(
+      `Bearer ${renewed.accessToken}`,
+    );
+    expect(getAuthSessionGeneration()).toBe(expectedAuthGeneration);
+  });
+
+  it.each([true, false])('响应期间退出账户：身份约束=%s，默认调用合同不变', async (guarded) => {
+    persistAuthSession(response);
+    let finish!: (value: Response) => void;
+    vi.spyOn(globalThis, 'fetch').mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const pending = apiFetch(
+      '/v1/projects',
+      undefined,
+      guarded ? { expectedAuthGeneration: getAuthSessionGeneration() } : undefined,
+    );
+    clearAuthSession();
+    const result = jsonResponse({ projects: [] });
+    finish(result);
+    if (guarded) await expect(pending).rejects.toBeInstanceOf(AuthSessionChangedError);
+    else await expect(pending).resolves.toBe(result);
   });
 
   it('reconnects with exponential backoff and suppresses replayed events', async () => {

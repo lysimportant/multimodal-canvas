@@ -1,5 +1,7 @@
 # 下一阶段：节点信息、设置与画布交互增强计划
 
+已完成 P1：全节点提示词 Skill、16 项内置预设（含小说创作）与用户级 Skill 工作台 CRUD；本地验收、数据兼容、生产迁移和后置项见 [节点提示词 Skill](docs/prompt-skills-checkpoint.md)。真实 Provider 优化效果尚未验收。
+
 当前任务：完善节点悬浮信息、反推提示词、资源预览、竖向右键菜单与组移动。范围、验收与检查点见 [节点交互与反推提示词](docs/node-interaction-reverse-prompt.md)。
 
 前序资源输入兼容检查点见 [资源输入兼容](docs/resource-input-compatibility.md)。

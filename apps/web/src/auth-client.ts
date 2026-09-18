@@ -202,12 +202,38 @@ function authApiBaseUrl(input: RequestInfo | URL): string {
   }
 }
 
-/** 为应用请求添加会话头；401 只清理对应会话，网络错误与 403 保留登录，不重放写请求。 */
+/** 请求所属账户已改变；调用方不得把该请求重放到当前账户或接纳旧响应。 */
+export class AuthSessionChangedError extends Error {
+  /** 不包含账户资料或令牌；消息可直接展示。 */
+  constructor() {
+    super('账户状态已改变，请重新操作');
+    this.name = 'AuthSessionChangedError';
+  }
+}
+
+/**
+ * 为应用请求添加会话头；401 只清理对应会话，网络错误与 403 保留登录，不重放写请求。
+ * @param options 省略身份代次时保持默认行为；指定后在续期前后及响应返回时校验。
+ * @throws AuthSessionChangedError 指定的身份代次已失效，禁止发送或返回旧账户请求。
+ */
 export async function apiFetch(
   input: RequestInfo | URL,
   init?: RequestInit,
-  options: { skipUnauthorized?: boolean } = {},
+  options: {
+    skipUnauthorized?: boolean;
+    /** 发起操作时的 getAuthSessionGeneration()；正常令牌续期不改变此代次。 */
+    expectedAuthGeneration?: number;
+  } = {},
 ): Promise<Response> {
+  /** 同步校验与发送之间不等待，防止续期期间切换账户后使用新账户令牌。 */
+  function assertRequestSession() {
+    if (
+      options.expectedAuthGeneration !== undefined &&
+      options.expectedAuthGeneration !== getAuthSessionGeneration()
+    )
+      throw new AuthSessionChangedError();
+  }
+  assertRequestSession();
   const href = requestHref(input);
   if (
     !getAuthToken() &&
@@ -217,11 +243,13 @@ export async function apiFetch(
     const baseUrl = authApiBaseUrl(input);
     if (baseUrl) await refreshAuthSession(baseUrl).catch(() => null);
   }
+  assertRequestSession();
   const requestInit = withAuthHeaders(init);
   const authorization = new Headers(requestInit.headers).get('authorization');
   const requestToken = authorization?.startsWith('Bearer ') ? authorization.slice(7) : null;
   const requestStartedAt = performance.now();
   const response = await fetch(input, requestInit);
+  assertRequestSession();
   synchronizeServerClock(response.headers?.get('x-server-time') ?? null, requestStartedAt);
   if (response.status === 401 && !options.skipUnauthorized) {
     notifyUnauthorized(requestToken);

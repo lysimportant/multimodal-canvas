@@ -190,6 +190,7 @@ async function installPerformanceFixture(page: Page) {
     if (path === '/v1/settings/ai')
       return send({ settings: { configured: false, defaultModels: {} }, credentials: [] });
     if (path === '/v1/models') return send({ models: [] });
+    if (path === '/v1/prompt-skills') return send({ skills: [] });
     errors.push(`未声明的接口: ${path}`);
     return route.fulfill({ status: 404, contentType: 'application/json', body: '{}' });
   });

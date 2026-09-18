@@ -438,6 +438,9 @@ function installApiMock() {
     const url = new URL(rawUrl, 'http://localhost:3000');
     const method = init?.method?.toUpperCase() ?? 'GET';
 
+    if (url.pathname === '/v1/prompt-skills' && method === 'GET')
+      return jsonResponse({ skills: [] });
+
     if (url.pathname === '/v1/models' && method === 'GET') {
       return jsonResponse({ models: modelCatalog });
     }

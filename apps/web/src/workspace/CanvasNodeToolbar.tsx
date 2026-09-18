@@ -1,5 +1,5 @@
 import { mediaTypes, type MediaType } from '@multimodal-canvas/domain';
-import { Group, Maximize2, Redo2, Search, Undo2, Upload } from 'lucide-react';
+import { Group, Maximize2, Redo2, Search, Undo2, Upload, WandSparkles } from 'lucide-react';
 import { type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 
 import type { CanvasBackground } from '../app-contract-utils';
@@ -16,6 +16,7 @@ import { mediaIcons, mediaLabels } from './contracts';
  * 两组之间用分隔线分开，避免每个按钮单独成组。
  */
 export function CanvasNodeToolbar({
+  onOpenSkillWorkbench,
   onAddGenerateNode,
   onFitView,
   onRequestUpload,
@@ -38,6 +39,8 @@ export function CanvasNodeToolbar({
   canUndo = true,
   canRedo = true,
 }: {
+  /** 打开所有节点共用的用户技能工作台。 */
+  onOpenSkillWorkbench?: () => void;
   onAddGenerateNode: (mediaType: MediaType) => void;
   /** 将画布缩放并平移到能完整看到所有节点的位置。 */
   onFitView?: () => void;
@@ -84,6 +87,23 @@ export function CanvasNodeToolbar({
   const nodeActions: ReactNode[] = [];
   /** 工作台系统操作：搜索、外观、适配缩放。 */
   const systemActions: ReactNode[] = [];
+  if (onOpenSkillWorkbench)
+    systemActions.push(
+      <button
+        type="button"
+        className="canvas-node-tool canvas-node-action-tool"
+        aria-label="技能工作台"
+        title="技能工作台"
+        key="skills"
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpenSkillWorkbench();
+        }}
+      >
+        <WandSparkles size={16} aria-hidden="true" />
+      </button>,
+    );
   /** 防止底部按钮点击被 React Flow 解释为画布交互。 */
   const stopCanvasEvent = (event: ReactPointerEvent<HTMLButtonElement>) => {
     event.stopPropagation();

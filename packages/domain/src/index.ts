@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+export * from './prompt-skills.js';
+
 export const mediaTypes = ['text', 'image', 'audio', 'video'] as const;
 /** 画布节点模式。历史 `transform` 读取时归一为 `generate`，产品不再区分转换节点。 */
 export const nodeModes = ['source', 'generate'] as const;
@@ -860,6 +862,8 @@ export const nodeDataSchema = z.object({
   prompt: z.string().trim().max(20_000).optional(),
   /** 版本化提示词文档；存在时它是唯一执行来源，旧 prompt 仅作兼容字段。 */
   promptDocument: promptDocumentSchema.optional(),
+  /** 节点选中的提示词技能；仅显式优化时使用，普通生成不自动执行。 */
+  promptSkillId: z.string().trim().min(1).max(80).optional(),
   /**
    * 节点参考资源池。名字绑定到 assetId，提示词用名字引用；
    * 与画布连线和提示词提及共用同一份身份，避免按顺序互换角色。
@@ -1173,6 +1177,17 @@ export const runSnapshotSchema = z
     nodeImageEditCapabilities: z.record(frozenImageEditCapabilitySchema).optional(),
     /** 独立反推任务标记；缺省保持普通生成和归档行为，不传入供应商参数。 */
     reversePrompt: reversePromptSourceSchema.optional(),
+    /** 独立 Skill 优化的来源与版本；冻结原始文档用于恢复资源提及。 */
+    promptOptimization: z
+      .object({
+        nodeId: z.string().min(1),
+        skillId: z.string().min(1).max(80),
+        skillVersion: z.string().min(1),
+        /** 冻结实际执行的技能规则；后续编辑或删除不改变历史任务。 */
+        instruction: z.string().min(1).max(12_000).optional(),
+        input: promptDocumentSchema,
+      })
+      .optional(),
   })
   .superRefine((snapshot, context) => {
     // Run snapshots can come from a persisted queue payload or a worker
@@ -1196,6 +1211,27 @@ export const runSnapshotSchema = z
     }
 
     const nodeIds = new Set(snapshot.nodes.map((node) => node.id));
+    if (snapshot.promptOptimization) {
+      const target = snapshot.nodes[0];
+      if (
+        snapshot.reversePrompt ||
+        snapshot.nodes.length !== 1 ||
+        snapshot.edges.length !== 0 ||
+        snapshot.inputs.length !== 0 ||
+        (snapshot.promptMentions?.length ?? 0) !== 0 ||
+        target?.id !== 'prompt_skill_optimization' ||
+        snapshot.targetNodeId !== target.id ||
+        target.data.mediaType !== 'text' ||
+        target.data.mode !== 'generate' ||
+        target.data.promptDocument?.blocks.some((block) => block.type === 'mention')
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Skill 优化必须是无媒体输入的独立文字任务',
+          path: ['promptOptimization'],
+        });
+      }
+    }
     if (snapshot.reversePrompt) {
       const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
       const mention = snapshot.promptMentions?.[0];
@@ -1377,6 +1413,8 @@ export const runResultSchema = z.object({
   finalFrame: runResultFinalFrameSchema.optional(),
   /** 独立反推的结构化结果；存入 Run，不创建资源版本或冒充真实提示词。 */
   reversePrompt: reversePromptResultSchema.optional(),
+  /** Skill 优化只保存候选提示词，不创建图片、文本资产或覆盖用户节点。 */
+  promptOptimization: z.object({ promptDocument: promptDocumentSchema }).optional(),
 });
 
 /**
@@ -1458,6 +1496,13 @@ export const runJobDataSchema = z
     cancelRequested: z.boolean().default(false),
   })
   .superRefine((job, context) => {
+    if (job.snapshot.promptOptimization && (job.retryOf || job.attempt !== 1)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Skill 优化请通过原提交身份查询，不能使用普通运行重试',
+        path: ['attempt'],
+      });
+    }
     if (job.snapshot.reversePrompt && (job.retryOf || job.attempt !== 1)) {
       context.addIssue({
         code: z.ZodIssueCode.custom,

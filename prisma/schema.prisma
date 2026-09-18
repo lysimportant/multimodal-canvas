@@ -503,6 +503,28 @@ model ProjectModelDefault {
   @@map("project_model_defaults")
 }
 
+/// 用户跨项目共享的 Skill 库；内置项仅保存启用覆盖，无用户外键以支持本地身份。
+model PromptSkillRecord {
+  /// 认证 principal.userId；仅关闭认证的本地开发允许 __local__。
+  ownerId     String
+  /// 内置目录 ID 或服务器生成的 custom_UUID，客户端不得指定新 ID。
+  id          String
+  builtin     Boolean  @default(false)
+  enabled     Boolean  @default(true)
+  /// 从 1 递增；更新和删除必须原子匹配调用方的当前修订号。
+  revision    Int      @default(1)
+  /// 内置项的定义字段均为 NULL，始终使用应用随版本发布的目录。
+  name        String?
+  category    String?
+  description String?
+  instruction String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
+
+  @@id([ownerId, id])
+  @@map("prompt_skills")
+}
+
 model WebhookEvent {
   id                       String    @id @default(uuid()) @db.Uuid
   eventId                  String    @unique

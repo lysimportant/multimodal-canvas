@@ -40,9 +40,11 @@ import {
 } from './run-persistence';
 import {
   canvasDocumentSchema,
+  createPromptOptimizationCanvas,
   imageEditSourceSchema,
   mediaTypes,
   promptDocumentSchema,
+  PROMPT_OPTIMIZATION_NODE_ID,
   renderPromptDocument,
   runSnapshotSchema,
   type CanvasDocument,
@@ -123,6 +125,13 @@ import {
   resolveReversePromptDefault,
   reversePromptIdempotencyKey,
 } from './reverse-prompts';
+import { promptOptimizationIdempotencyKey, publicPromptOptimization } from './prompt-optimizations';
+import {
+  MemoryPromptSkillStore,
+  PromptSkillStoreError,
+  type PromptSkillStore,
+} from './prompt-skill-store';
+import { registerPromptSkillRoutes } from './prompt-skill-routes';
 
 type AppLoggerOptions = {
   level?: string;
@@ -148,6 +157,8 @@ export type BuildAppOptions = {
   logger?: boolean | AppLoggerOptions;
   observability?: Observability;
   settingsStore?: AiSettingsStoreLike;
+  /** 当前用户可用的内置与自定义 Skill；测试默认使用内存存储。 */
+  promptSkillStore?: PromptSkillStore;
   webhookEventStore?: WebhookEventStore;
   /** Optional durable lifecycle persistence for provider callbacks and prompt records. */
   runPersistence?: Pick<PrismaRunPersistence, 'upsertProviderJob' | 'updateRun'> &
@@ -232,6 +243,20 @@ const reversePromptBodySchema = z
     credentialId: z.string().uuid().optional(),
     idempotencyKey: z.string().trim().min(1).max(200).optional(),
     automatic: z.boolean().default(false),
+  })
+  .strict();
+
+/** 优化未保存的提示词；引用只作为占位符，不授权读取资源内容。 */
+const promptOptimizationBodySchema = z
+  .object({
+    nodeId: z.string().trim().min(1).max(512),
+    skillId: z.string().trim().min(1).max(160),
+    skillVersion: z.string().trim().min(1).max(160).optional(),
+    mediaType: z.enum(['text', 'image', 'audio', 'video']),
+    promptDocument: z.unknown(),
+    idempotencyKey: z.string().trim().min(1).max(200),
+    modelAlias: z.string().trim().min(1).max(160).optional(),
+    credentialId: z.string().uuid().optional(),
   })
   .strict();
 
@@ -1267,6 +1292,28 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     options.runPersistence ?? (runService instanceof MemoryRunService ? runService : {});
   const userExists = options.userExists;
   const settingsStore: AiSettingsStoreLike = options.settingsStore ?? new AiSettingsStore();
+  const promptSkillStore = options.promptSkillStore ?? new MemoryPromptSkillStore();
+  /** 仅串行化当前 API 实例内同项目的 Skill 提交；不持有锁等待模型执行。 */
+  const promptOptimizationQueues = new Map<string, Promise<void>>();
+  /** 查重、Skill 校验、配额检查与创建在同一队列中完成；失败不阻塞后续请求。 */
+  function enqueuePromptOptimization<T>(
+    projectId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous = promptOptimizationQueues.get(projectId) ?? Promise.resolve();
+    const result = previous.then(operation);
+    const settled = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    promptOptimizationQueues.set(projectId, settled);
+    void settled.finally(() => {
+      if (promptOptimizationQueues.get(projectId) === settled) {
+        promptOptimizationQueues.delete(projectId);
+      }
+    });
+    return result;
+  }
   const webhookEventStore: WebhookEventStore =
     options.webhookEventStore ?? new MemoryWebhookEventStore();
   const mediaMetadataExtractor = options.mediaMetadataExtractor ?? new NoopMediaMetadataExtractor();
@@ -1548,6 +1595,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.get('/documentation', async () => openApiDocument);
   app.get('/documentation/json', async () => openApiDocument);
+  /** 只有未启用认证的本地实例使用公共目录；服务令牌不代表任何用户。 */
+  const promptSkillOwnerId = (request: FastifyRequest): string => {
+    const userId = requestPrincipals.get(request)?.userId;
+    if (userId) return userId;
+    if (!authToken && !jwtSecret && process.env.NODE_ENV !== 'production') return '__local__';
+    throw new PromptSkillStoreError('authentication_required', 'Skill 操作需要用户身份', 403);
+  };
+  registerPromptSkillRoutes(app, { store: promptSkillStore, ownerId: promptSkillOwnerId });
+
   registerAccountRoutes(app, {
     store: authStore,
     auth: authService,
@@ -2035,7 +2091,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       const canvas = await projectStore.getCanvas(projectId, scope);
       if (!canvas) return reply.code(404).send({ error: 'project canvas not found' });
       const runs = (await runService.listByProject(projectId)).filter(
-        (run) => run.projectId === projectId && !run.snapshot.reversePrompt,
+        (run) =>
+          run.projectId === projectId &&
+          !run.snapshot.reversePrompt &&
+          !run.snapshot.promptOptimization,
       );
       const modelDefaults = await projectStore.getModelDefaults(projectId, scope);
       const workflow = createWorkflowExport({
@@ -2182,7 +2241,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
       try {
         const runs = (await runService.listByProject(projectId)).filter(
-          (run) => run.projectId === projectId && !run.snapshot.reversePrompt,
+          (run) =>
+            run.projectId === projectId &&
+            !run.snapshot.reversePrompt &&
+            !run.snapshot.promptOptimization,
         );
         const modelDefaults = await projectStore.getModelDefaults(projectId, scope);
         const prepared = await prepareResultsExport({
@@ -2349,7 +2411,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
       return {
         runs: (await runService.listByProject(projectId))
-          .filter((run) => !run.snapshot.reversePrompt)
+          .filter((run) => !run.snapshot.reversePrompt && !run.snapshot.promptOptimization)
           .map(toPublicRunRecord),
       };
     },
@@ -2448,7 +2510,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         try {
           const runs = await runService.listByProject(projectId);
           for (const run of runs) {
-            if (run.snapshot.reversePrompt) continue;
+            if (run.snapshot.reversePrompt || run.snapshot.promptOptimization) continue;
             const publicRun = toPublicRunEvent(run);
             const serialized = JSON.stringify(publicRun);
             if (lastSeen.get(run.id) === serialized) continue;
@@ -2747,6 +2809,207 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     },
   );
 
+  /** 只读取指定项目的独立优化结果；普通生成与其他项目任务均不可冒用。 */
+  app.get<{ Params: { projectId: string; runId: string } }>(
+    '/v1/projects/:projectId/prompt-optimizations/:runId',
+    async (request, reply) => {
+      const { projectId, runId } = request.params;
+      const project = await projectStore.get(projectId, projectScope(requestPrincipals, request));
+      if (!project) return reply.code(404).send({ error: 'project not found' });
+      const run = await runService.get(runId);
+      if (!run || run.projectId !== projectId || !run.snapshot.promptOptimization) {
+        return reply.code(404).send({ error: 'prompt optimization not found' });
+      }
+      return { optimization: publicPromptOptimization(run) };
+    },
+  );
+
+  /** 冻结 Skill、原始文档和文字模型；仅向 Provider 发送文本与占位符。 */
+  app.post<{ Params: { projectId: string } }>(
+    '/v1/projects/:projectId/prompt-optimizations',
+    async (request, reply) => {
+      const parsed = promptOptimizationBodySchema.safeParse(request.body);
+      if (!parsed.success)
+        return reply.code(400).send({ error: 'invalid prompt optimization request' });
+      const prompt = promptDocumentSchema.safeParse(parsed.data.promptDocument);
+      if (!prompt.success)
+        return reply.code(400).send({ error: 'invalid prompt optimization document' });
+      const body = { ...parsed.data, promptDocument: prompt.data };
+      const { projectId } = request.params;
+      const project = await projectStore.get(projectId, projectScope(requestPrincipals, request));
+      if (!project) return reply.code(404).send({ error: 'project not found' });
+      if (project.archivedAt) return reply.code(400).send({ error: '已归档项目不能优化提示词' });
+      const ownerId = promptSkillOwnerId(request);
+      if (!body.promptDocument.blocks.some((block) => block.type === 'text' && block.text.trim())) {
+        return reply.code(400).send({ error: '提示词必须包含需要优化的文字' });
+      }
+      const targetNodeId = PROMPT_OPTIMIZATION_NODE_ID;
+      const idempotencyKey = promptOptimizationIdempotencyKey(body.idempotencyKey);
+      return enqueuePromptOptimization(projectId, async () => {
+        try {
+          const projectRuns = await runService.listByProject(projectId);
+          const existing = projectRuns.find((run) => run.idempotencyKey === idempotencyKey);
+          if (existing) {
+            const source = existing.snapshot.promptOptimization;
+            const frozenPrompt = existing.snapshot.nodes.find((node) => node.id === targetNodeId)
+              ?.data.promptDocument;
+            // 同键复用冻结 Skill，后续编辑、停用或删除不改变已提交任务的身份。
+            let expectedPrompt: PromptDocument | undefined;
+            if (source?.instruction) {
+              try {
+                expectedPrompt = createPromptOptimizationCanvas({
+                  skillId: source.skillId,
+                  skill: {
+                    id: source.skillId,
+                    version: source.skillVersion,
+                    instruction: source.instruction,
+                    name: '',
+                    category: '',
+                    description: '',
+                  },
+                  input: body.promptDocument,
+                  mediaType: body.mediaType,
+                }).nodes[0]?.data.promptDocument;
+              } catch {
+                return reply.code(409).send({
+                  code: 'idempotency_conflict',
+                  error: 'idempotency key was used for a different optimization',
+                });
+              }
+            }
+            if (
+              existing.projectId !== projectId ||
+              !source ||
+              source.nodeId !== body.nodeId ||
+              source.skillId !== body.skillId ||
+              JSON.stringify(source.input) !== JSON.stringify(body.promptDocument) ||
+              (expectedPrompt && JSON.stringify(frozenPrompt) !== JSON.stringify(expectedPrompt)) ||
+              (body.modelAlias && body.modelAlias !== existing.modelAlias) ||
+              (body.credentialId && body.credentialId !== existing.snapshot.credentialId)
+            ) {
+              return reply.code(409).send({
+                code: 'idempotency_conflict',
+                error: 'idempotency key was used for a different optimization',
+              });
+            }
+            if (body.skillVersion && body.skillVersion !== source.skillVersion)
+              return reply.code(409).send({
+                code: 'idempotency_conflict',
+                error: '幂等键已用于另一个 Skill 版本，请恢复原任务',
+              });
+            // 补发是否安全由 Run 服务判断；恢复只能使用已提交的冻结身份。
+            const run =
+              existing.status === 'queued'
+                ? await runService.create(existing.snapshot, {
+                    idempotencyKey: existing.idempotencyKey,
+                    userId: existing.userId,
+                  })
+                : existing;
+            return reply.code(202).send({ optimization: publicPromptOptimization(run) });
+          }
+          const skill = await promptSkillStore.get(ownerId, body.skillId);
+          if (!skill || skill.enabled === false)
+            return reply.code(400).send({ error: 'unknown or disabled prompt skill' });
+          if (body.skillVersion && body.skillVersion !== skill.version)
+            return reply.code(409).send({
+              code: 'PROMPT_SKILL_VERSION_CONFLICT',
+              error: 'Skill 版本已变化，请刷新后重新发起优化',
+            });
+          let canvas: CanvasDocument;
+          try {
+            canvas = createPromptOptimizationCanvas({
+              skillId: skill.id,
+              skill,
+              input: body.promptDocument,
+              mediaType: body.mediaType,
+            });
+          } catch {
+            return reply.code(400).send({ error: '提示词无法优化，请检查内容或缩短后重试' });
+          }
+          if (
+            maxActiveRunsPerProject !== undefined &&
+            projectRuns.filter((run) =>
+              ['queued', 'preparing', 'running', 'processing', 'cancel_requested'].includes(
+                run.status,
+              ),
+            ).length >= maxActiveRunsPerProject
+          ) {
+            return reply
+              .code(429)
+              .send({ error: 'project run quota exceeded', retryAfterSeconds: 30 });
+          }
+          if (body.credentialId && !(await settingsStore.hasCredential(body.credentialId)))
+            return reply.code(404).send({ error: 'credential not found' });
+          const selected: ModelSelection | undefined = body.modelAlias
+            ? {
+                modelAlias: body.modelAlias,
+                ...(body.credentialId ? { credentialId: body.credentialId } : {}),
+              }
+            : await resolveReversePromptDefault(settingsStore);
+          if (!selected) throw new AiSettingsError('model_unavailable', '未配置可用的文字模型');
+          if (
+            body.credentialId &&
+            selected.credentialId &&
+            body.credentialId !== selected.credentialId
+          )
+            throw new AiSettingsError(
+              'model_unavailable',
+              '文字默认模型的凭据与指定 API Key 不一致',
+            );
+          const resolution = await resolveRunNodeModels({
+            settingsStore,
+            canvas,
+            targetNodeId,
+            requestModelAlias: selected.modelAlias,
+            credentialId: body.credentialId ?? selected.credentialId,
+            allowVirtualMockModels:
+              providerName === 'mock' && process.env.NODE_ENV !== 'production',
+            requireCredentialReferences: providerName === 'newapi',
+          });
+          const snapshot = runSnapshotSchema.parse({
+            ...createRunSnapshot(projectId, canvas, targetNodeId, {
+              modelAlias: resolution.targetModelAlias,
+              nodeModelAliases: resolution.nodeModelAliases,
+              ...(Object.keys(resolution.nodeCredentialReferences).length > 0
+                ? { nodeCredentialReferences: resolution.nodeCredentialReferences }
+                : {}),
+              ...(resolution.nodeCredentialReferences[targetNodeId] ?? {}),
+            }),
+            promptOptimization: {
+              nodeId: body.nodeId,
+              skillId: skill.id,
+              skillVersion: skill.version,
+              instruction: skill.instruction,
+              input: body.promptDocument,
+            },
+          });
+          const principal = requestPrincipals.get(request);
+          const run = await runService.create(snapshot, {
+            idempotencyKey,
+            ...(principal?.userId ? { userId: principal.userId } : {}),
+          });
+          return reply.code(202).send({ optimization: publicPromptOptimization(run) });
+        } catch (error) {
+          if (error instanceof AiSettingsError)
+            return reply.code(400).send({ error: error.message, code: error.code });
+          if (error instanceof AiCredentialNotFoundError)
+            return reply.code(404).send({ error: 'credential not found', code: error.code });
+          if (error instanceof RunServiceError)
+            return reply
+              .code(error.code === 'idempotency_conflict' ? 409 : 400)
+              .send({ error: error.message, code: error.code });
+          request.log.error(
+            { err: sanitizeExceptionForObservability(error) },
+            'prompt optimization submission failed',
+          );
+          return reply
+            .code(503)
+            .send({ error: '暂时无法提交提示词优化，请稍后使用相同幂等键重试' });
+        }
+      });
+    },
+  );
+
   app.post<{ Params: { nodeId: string } }>('/v1/nodes/:nodeId/runs', async (request, reply) => {
     const parsedBody = runRequestBodySchema.safeParse(request.body);
     if (!parsedBody.success) {
@@ -3039,6 +3302,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       }
       if (previous.snapshot.reversePrompt) {
         return reply.code(409).send({ error: '请在反推提示词窗口中明确发起新的分析' });
+      }
+      if (previous.snapshot.promptOptimization) {
+        return reply.code(409).send({ error: '请在提示词优化窗口中明确发起新的优化' });
       }
       const run = await runService.retry(request.params.runId);
       return reply.code(202).send({ run: toPublicRunRecord(run) });
@@ -3553,6 +3819,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     await runService.close();
     await (projectStore as ProjectStore).close?.();
     await settingsStore.close?.();
+    await promptSkillStore.close?.();
     await webhookEventStore.close?.();
     await authStore.close?.();
     await rateLimiter.close?.();

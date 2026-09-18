@@ -57,13 +57,15 @@
 :is(.node-quick-editor, .node-quick-editor-dialog) .node-quick-editor-controls {
   align-items: end;
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   min-width: 0;
   position: relative;
 }
 
 .node-quick-editor-controls > .compact-select {
-  flex: 1 1 0;
+  flex: 1 1 140px;
+  min-width: min(140px, 100%);
 }
 
 /* 图片编辑来源只读展示：缩略图与固定版本标识都不提供任何编辑入口。 */

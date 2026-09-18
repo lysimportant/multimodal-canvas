@@ -72,6 +72,7 @@ export function canForkNewNode(node: AssetFlowNode): boolean {
 export function inheritedGenerateData(data: AssetFlowNode['data']): Partial<AssetFlowNode['data']> {
   return {
     ...(data.generationCount !== undefined ? { generationCount: data.generationCount } : {}),
+    ...(data.promptSkillId ? { promptSkillId: data.promptSkillId } : {}),
     ...(data.modelAlias ? { modelAlias: data.modelAlias } : {}),
     ...(data.credentialId ? { credentialId: data.credentialId } : {}),
     ...(data.parameters ? { parameters: structuredClone(data.parameters) } : {}),

@@ -1,10 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   nodeTimingDuration,
+  createMockPromptOptimizationOutput,
+  createPromptOptimizationCanvas,
+  parsePromptOptimizationOutput,
+  PROMPT_OPTIMIZATION_NODE_ID,
+  PROMPT_SKILLS,
   runSnapshotFingerprintMaterial,
   type MediaType,
   type NodeTiming,
   type ProviderJob,
+  type PromptDocument,
   type RequestPromptRecord,
   type RunJobData,
   type RunSnapshot,
@@ -279,6 +285,217 @@ function createTextSnapshot(): RunSnapshot {
 }
 
 describe('worker workflow DAG execution', () => {
+  it('独立 Skill 优化保存完整引用和长结果，无媒体读取与归档，恢复后不重发', async () => {
+    bullmqState.jobs.clear();
+    const runId = '123e4567-e89b-42d3-a456-426614174191';
+    const input: PromptDocument = {
+      version: 1,
+      blocks: [
+        { type: 'text', text: '参考人物 ' },
+        {
+          type: 'mention',
+          mentionId: 'reference',
+          assetId: 'not-uploaded',
+          assetVersion: 3,
+          mediaType: 'image',
+          label: '人物',
+        },
+        { type: 'text', text: ' 绘制近景。'.repeat(400) },
+      ],
+    };
+    const skill = PROMPT_SKILLS[0]!;
+    const canvas = createPromptOptimizationCanvas({ skillId: skill.id, input, mediaType: 'image' });
+    const optimizationSnapshot: RunSnapshot = {
+      ...createTextSnapshot(),
+      nodes: canvas.nodes,
+      edges: [],
+      inputs: [],
+      targetNodeId: PROMPT_OPTIMIZATION_NODE_ID,
+      promptOptimization: {
+        nodeId: 'unsaved-node',
+        skillId: skill.id,
+        skillVersion: skill.version,
+        input,
+      },
+    };
+    const output = createMockPromptOptimizationOutput(input);
+    const expected = parsePromptOptimizationOutput(output, input);
+    const provider = {
+      execute: vi.fn(async ({ snapshot }: WorkerProviderRequest) => ({
+        ...createExecution(snapshot),
+        output: {
+          mediaType: 'text' as const,
+          kind: 'text' as const,
+          text: output,
+          mimeType: 'text/plain',
+        },
+      })),
+    };
+    const archiver = vi.fn();
+    const resolver = { resolve: vi.fn(), assertAccessible: vi.fn() };
+    const updates: unknown[] = [];
+    const job = createJob({
+      runId,
+      snapshot: optimizationSnapshot,
+      attempt: 1,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(runId, 'newapi'),
+      cancelRequested: false,
+    });
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      provider,
+      stepDelayMs: 0,
+      resultArchiver: archiver,
+      assetReferenceResolver: resolver,
+      persistence: {
+        getProviderCredentials: getTestProviderCredentials,
+        async upsertProviderJob() {},
+        async recordUsage() {},
+        async updateRun(update) {
+          updates.push(update);
+        },
+      },
+    });
+    const result = await bullmqState.processor?.(job);
+    expect(result).toMatchObject({ status: 'succeeded', result: { promptOptimization: expected } });
+    expect((result as { result: { asset?: unknown } }).result.asset).toBeUndefined();
+    expect(updates).toContainEqual(
+      expect.objectContaining({
+        status: 'succeeded',
+        result: expect.objectContaining({ promptOptimization: expected }),
+      }),
+    );
+    expect(provider.execute.mock.calls[0]?.[0].snapshot.promptOptimization).toEqual(
+      optimizationSnapshot.promptOptimization,
+    );
+    expect(provider.execute.mock.calls[0]?.[0].resolvedMentions).toBeUndefined();
+    expect(archiver).not.toHaveBeenCalled();
+    expect(resolver.resolve).not.toHaveBeenCalled();
+    expect(resolver.assertAccessible).not.toHaveBeenCalled();
+    delete job.data.workflowState;
+    await expect(bullmqState.processor?.(job)).resolves.toMatchObject({
+      status: 'succeeded',
+      result: { promptOptimization: expected },
+    });
+    expect(provider.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['not JSON', '{"prompt":"引用已丢失"}', '{"prompt":123}'])(
+    'Skill 输出格式或引用损坏后重放不再次请求：%s',
+    async (text) => {
+      bullmqState.jobs.clear();
+      const runId = '123e4567-e89b-42d3-a456-426614174192';
+      const input: PromptDocument = {
+        version: 1,
+        blocks: [
+          { type: 'text', text: '参考 ' },
+          {
+            type: 'mention',
+            mentionId: 'ref',
+            assetId: 'not-uploaded',
+            assetVersion: 1,
+            mediaType: 'image',
+            label: '参考',
+          },
+        ],
+      };
+      const skill = PROMPT_SKILLS[0]!;
+      const canvas = createPromptOptimizationCanvas({
+        skillId: skill.id,
+        input,
+        mediaType: 'image',
+      });
+      const optimizationSnapshot: RunSnapshot = {
+        ...createTextSnapshot(),
+        nodes: canvas.nodes,
+        edges: [],
+        inputs: [],
+        targetNodeId: PROMPT_OPTIMIZATION_NODE_ID,
+        promptOptimization: {
+          nodeId: 'unsaved-node',
+          skillId: skill.id,
+          skillVersion: skill.version,
+          input,
+        },
+      };
+      const provider = {
+        execute: vi.fn(async ({ snapshot }: WorkerProviderRequest) => ({
+          ...createExecution(snapshot),
+          output: {
+            kind: 'text' as const,
+            mediaType: 'text' as const,
+            text,
+            mimeType: 'text/plain',
+          },
+        })),
+      };
+      const archiver = vi.fn();
+      const job = createJob({
+        runId,
+        snapshot: optimizationSnapshot,
+        attempt: 1,
+        provider: 'newapi',
+        providerJob: createProviderJobRecord(runId, 'newapi'),
+        cancelRequested: false,
+      });
+      createRunWorker({
+        connection: { host: '127.0.0.1', port: 6379 },
+        providerName: 'newapi',
+        provider,
+        stepDelayMs: 0,
+        resultArchiver: archiver,
+      });
+      await expect(bullmqState.processor?.(job)).rejects.toThrow('Skill');
+      await expect(bullmqState.processor?.(job)).rejects.toThrow('优化请求已发送或发送状态不确定');
+      expect(provider.execute).toHaveBeenCalledTimes(1);
+      expect(archiver).not.toHaveBeenCalled();
+    },
+  );
+
+  it('内置 Mock 返回明确模拟优化文档，无需结果归档器', async () => {
+    bullmqState.jobs.clear();
+    const runId = '123e4567-e89b-42d3-a456-426614174193';
+    const input: PromptDocument = { version: 1, blocks: [{ type: 'text', text: '优化人物近景' }] };
+    const skill = PROMPT_SKILLS[0]!;
+    const canvas = createPromptOptimizationCanvas({ skillId: skill.id, input, mediaType: 'image' });
+    const optimizationSnapshot: RunSnapshot = {
+      ...createTextSnapshot(),
+      nodes: canvas.nodes,
+      edges: [],
+      inputs: [],
+      targetNodeId: PROMPT_OPTIMIZATION_NODE_ID,
+      promptOptimization: {
+        nodeId: 'unsaved-node',
+        skillId: skill.id,
+        skillVersion: skill.version,
+        input,
+      },
+    };
+    const job = createJob({
+      runId,
+      snapshot: optimizationSnapshot,
+      attempt: 1,
+      provider: 'mock',
+      providerJob: createProviderJobRecord(runId, 'mock'),
+      cancelRequested: false,
+    });
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'mock',
+      stepDelayMs: 0,
+    });
+    const result = await bullmqState.processor?.(job);
+    expect(result).toMatchObject({ status: 'succeeded', result: { simulated: true } });
+    expect(result).toMatchObject({ result: { promptOptimization: { promptDocument: input } } });
+    delete job.data.workflowState;
+    await expect(bullmqState.processor?.(job)).resolves.toMatchObject({
+      status: 'succeeded',
+      result: { simulated: true },
+    });
+  });
+
   it('将独立反推结果留在 Run，并在重新处理队列任务时复用结果而不归档或重发', async () => {
     bullmqState.jobs.clear();
     const runId = '123e4567-e89b-42d3-a456-426614174181';

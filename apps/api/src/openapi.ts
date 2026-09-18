@@ -1,4 +1,5 @@
 import { accountOpenApiPaths, verificationResponseSchema } from './account-openapi';
+import { promptSkillOpenApiPaths } from './prompt-skill-openapi';
 
 const errorSchema = {
   type: 'object',
@@ -55,6 +56,27 @@ const reversePromptAnalysisSchema = {
     error: { type: 'string' },
     createdAt: { type: 'string', format: 'date-time' },
     updatedAt: { type: 'string', format: 'date-time' },
+  },
+  additionalProperties: false,
+} as const;
+/** 一次独立 Skill 优化；结果只供用户预览采用，不生成资产。 */
+const promptOptimizationSchema = {
+  type: 'object',
+  required: ['runId', 'nodeId', 'skillId', 'skillVersion', 'status', 'modelAlias'],
+  properties: {
+    runId: { type: 'string' },
+    nodeId: { type: 'string' },
+    skillId: { type: 'string' },
+    skillVersion: { type: 'string' },
+    simulated: {
+      type: 'boolean',
+      description: '明确标识模拟结果；Mock 仅保留原文，不代表模型优化。',
+    },
+    status: { type: 'string', enum: ['queued', 'running', 'succeeded', 'failed', 'cancelled'] },
+    modelAlias: { type: 'string' },
+    credentialId: { type: 'string', format: 'uuid' },
+    promptDocument: { $ref: '#/components/schemas/PromptDocument' },
+    error: { type: 'string' },
   },
   additionalProperties: false,
 } as const;
@@ -313,6 +335,7 @@ const nodeSchema = {
         stale: { type: 'boolean' },
         prompt: { type: 'string', maxLength: 20000 },
         promptDocument: { $ref: '#/components/schemas/PromptDocument' },
+        promptSkillId: { type: 'string', minLength: 1, maxLength: 80 },
         parameters: { type: 'object', additionalProperties: true },
         inferenceStrength: { type: 'string', minLength: 1 },
         assetId: { type: 'string' },
@@ -535,6 +558,12 @@ const runResultSchema = {
       description: '结果是否来自明确标记的 Mock/预览路径。',
     },
     asset: runResultAssetSchema,
+    promptOptimization: {
+      type: 'object',
+      required: ['promptDocument'],
+      properties: { promptDocument: { $ref: '#/components/schemas/PromptDocument' } },
+      additionalProperties: false,
+    },
     promptMentions: {
       type: 'array',
       items: { $ref: '#/components/schemas/FrozenPromptMention' },
@@ -792,6 +821,7 @@ export const openApiDocument = {
   ],
   paths: {
     ...accountOpenApiPaths(authUserSchema, authTokenSchema, assetSchema),
+    ...promptSkillOpenApiPaths(),
     '/health': { get: { tags: ['system'], responses: { '200': response('Healthy') } } },
     '/documentation': {
       get: { tags: ['system'], responses: { '200': response('OpenAPI document') } },
@@ -1389,6 +1419,67 @@ export const openApiDocument = {
             additionalProperties: false,
           }),
           '404': response('Asset not found', errorSchema),
+        },
+      },
+    },
+    '/v1/projects/{projectId}/prompt-optimizations': {
+      post: {
+        tags: ['runs'],
+        summary: '独立优化未保存的提示词，冻结默认文字模型与凭据',
+        description:
+          '需要项目访问权限。只发送文本与稳定资源占位符，原始文档保存在 Run 快照。相同幂等键复用已提交任务，包括失败结果；输入或显式模型变化返回 409。不会归档资产或修改画布，通用 retry 不适用。',
+        parameters: [{ $ref: '#/components/parameters/ProjectId' }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['nodeId', 'skillId', 'mediaType', 'promptDocument', 'idempotencyKey'],
+                additionalProperties: false,
+                properties: {
+                  nodeId: { type: 'string', minLength: 1, maxLength: 512 },
+                  skillId: { type: 'string', minLength: 1, maxLength: 160 },
+                  skillVersion: {
+                    type: 'string',
+                    minLength: 1,
+                    maxLength: 160,
+                    description:
+                      '选择时的版本；新任务不匹配则返回 409/PROMPT_SKILL_VERSION_CONFLICT，已有任务不匹配返回 409/idempotency_conflict。省略时使用提交时的版本。',
+                  },
+                  mediaType: mediaTypeSchema,
+                  promptDocument: { $ref: '#/components/schemas/PromptDocument' },
+                  idempotencyKey: { type: 'string', minLength: 1, maxLength: 200 },
+                  modelAlias: { type: 'string', minLength: 1, maxLength: 160 },
+                  credentialId: { type: 'string', format: 'uuid' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '202': response('新建或复用优化任务', envelope('optimization', promptOptimizationSchema)),
+          '400': response('输入、Skill、模型或项目归档状态无效', errorSchema),
+          '401': response('未认证', errorSchema),
+          '404': response('项目或凭据不存在或无权访问', errorSchema),
+          '409': response('幂等身份冲突', errorSchema),
+          '429': response('项目运行配额已满', errorSchema),
+          '503': response('暂时无法提交，可使用相同幂等键重试', errorSchema),
+        },
+      },
+    },
+    '/v1/projects/{projectId}/prompt-optimizations/{runId}': {
+      get: {
+        tags: ['runs'],
+        summary: '读取项目独立优化结果；查询不会调用模型',
+        parameters: [
+          { $ref: '#/components/parameters/ProjectId' },
+          { $ref: '#/components/parameters/RunId' },
+        ],
+        responses: {
+          '200': response('优化状态与有效结果', envelope('optimization', promptOptimizationSchema)),
+          '401': response('未认证', errorSchema),
+          '404': response('项目或优化任务不存在或无权访问', errorSchema),
         },
       },
     },

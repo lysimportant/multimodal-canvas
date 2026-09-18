@@ -102,6 +102,7 @@ async function installFixture(page: Page) {
   });
   await page.route('**/v1/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
+    if (path === '/v1/prompt-skills') return json(route, { skills: [] });
     if (path.endsWith('/events')) {
       return route.fulfill({ contentType: 'text/event-stream', body: ': ready\n\n' });
     }

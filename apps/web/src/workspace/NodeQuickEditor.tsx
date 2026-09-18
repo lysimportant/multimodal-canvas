@@ -14,6 +14,7 @@ import type {
   Asset,
   PortRole,
   PromptDocument,
+  PromptSkill,
   VideoCompletionAction,
   VideoMode,
 } from '@multimodal-canvas/domain';
@@ -42,6 +43,7 @@ import {
 } from './image-edit-source-preview';
 import { useWorkspacePreferences } from '../state/workspace-preferences';
 import { CompactSelect } from './CompactSelect';
+import { PromptSkillPanel } from './PromptSkillPanel';
 import { useFloatingParameterMenu } from './use-floating-parameter-menu';
 import { isImeKeyboardEvent } from '../ime';
 import './node-quick-editor.css';
@@ -81,6 +83,18 @@ export type NodeMediaParameters = Record<string, unknown> & {
 /** 节点提示词、模型与媒体参数编辑器的受控输入和操作回调。 */
 export type NodeQuickEditorProps = {
   node: AssetFlowNode;
+  /** 优化任务所属项目；未加载项目时只允许选择技能，不发起请求。 */
+  projectId?: string;
+  /** 当前用户共用目录；包含内置及自定义技能。 */
+  promptSkills?: readonly PromptSkill[];
+  /** 打开技能管理工作台。 */
+  onOpenSkillWorkbench?: () => void;
+  /** 目录加载状态错误时阻止提交，避免使用旧的自定义定义。 */
+  skillLibraryError?: string;
+  /** 目录读取中保留已保存的选择，不能将尚未返回的技能视为已删除。 */
+  skillLibraryLoading?: boolean;
+  /** 保存节点选择的技能，清空表示不使用。 */
+  onPromptSkillChange?: (skillId: string | undefined) => void;
   models: ModelEntry[];
   busy: boolean;
   /** 旧纯文本提示词回调；有结构化回调时可省略。 */
@@ -209,6 +223,12 @@ const GPT_56_TEXT_MODEL_ALIAS_PATTERN = /^gpt-5\.6(?:$|[-_.])/;
 /** 渲染选中生成节点的紧凑编辑器。 */
 export function NodeQuickEditor({
   node,
+  projectId,
+  promptSkills,
+  onOpenSkillWorkbench,
+  skillLibraryError,
+  skillLibraryLoading,
+  onPromptSkillChange,
   models,
   busy,
   onPromptChange,
@@ -267,6 +287,14 @@ export function NodeQuickEditor({
     }
   };
   const settingsId = useId();
+  /** 参数页与模型菜单同处浏览器顶层，不受编辑器最大高度滚动容器裁切。 */
+  const settingsStyle = useFloatingParameterMenu({
+    anchorRef: settingsTriggerRef,
+    menuRef: settingsRef,
+    enabled: node.data.mediaType !== 'text',
+    open: mediaSettingsOpen,
+    placement: 'top',
+  });
   const dialogTitleId = useId();
   /** Dialog 的关闭动画结束前外层控件会重新挂载，随后恢复展开按钮焦点。 */
   const wasExpandedRef = useRef(false);
@@ -418,7 +446,7 @@ export function NodeQuickEditor({
         onChange={onInferenceStrengthChange}
         className="node-quick-editor-select-group"
         placement="top"
-        floating={node.data.mediaType !== 'text'}
+        floating
       />
     ) : null;
 
@@ -439,6 +467,32 @@ export function NodeQuickEditor({
         onUploadResource={onUploadResource}
       />
     </label>
+  );
+
+  /** 与提示词编辑器共用结构化文档，采用时走现有历史和保存回调。 */
+  const skillPanel = (
+    <PromptSkillPanel
+      nodeId={node.id}
+      projectId={projectId}
+      mediaType={node.data.mediaType}
+      promptDocument={
+        node.data.promptDocument ?? {
+          version: 1,
+          blocks: [{ type: 'text', text: node.data.prompt ?? '' }],
+        }
+      }
+      skillId={node.data.promptSkillId}
+      skills={promptSkills}
+      skillsLoading={skillLibraryLoading}
+      onOpenWorkbench={onOpenSkillWorkbench}
+      models={models}
+      disabled={busy || !onPromptSkillChange || Boolean(skillLibraryError)}
+      onSkillChange={(id) => onPromptSkillChange?.(id)}
+      onApply={(document) => {
+        if (onPromptDocumentChange) onPromptDocumentChange(document);
+        else onPromptChange?.(renderPromptDocument(document));
+      }}
+    />
   );
 
   /** 来源图只读展示：点击缩略图预览，点击名称定位到来源节点。 */
@@ -796,6 +850,7 @@ export function NodeQuickEditor({
         onChange={(value) => onModelChange(parseModelOptionValue(value))}
         className="node-quick-editor-select-group"
         placement="top"
+        floating
       />
       {videoModeEditor}
       {node.data.mediaType === 'text' ? inferenceEditor : mediaSummary}
@@ -804,6 +859,8 @@ export function NodeQuickEditor({
           ref={settingsRef}
           id={settingsId}
           className="node-quick-editor-parameter-popover"
+          popover="manual"
+          style={settingsStyle}
           hidden={!mediaSettingsOpen}
           role="region"
           aria-label="生成参数"
@@ -949,6 +1006,12 @@ export function NodeQuickEditor({
             <div className="node-quick-editor-prompt-group">
               {imageEditSourcePreview}
               {promptEditor}
+              {skillPanel}
+              {skillLibraryError ? (
+                <p className="node-quick-editor-parameter-issue" role="alert">
+                  {skillLibraryError}
+                </p>
+              ) : null}
             </div>
             {controls}
             {generationCountIssue && (
@@ -997,7 +1060,15 @@ export function NodeQuickEditor({
               </DialogClose>
             </div>
             <div className="node-quick-editor-dialog-body">
-              <div className="node-quick-editor-prompt-group">{promptEditor}</div>
+              <div className="node-quick-editor-prompt-group">
+                {promptEditor}
+                {skillPanel}
+                {skillLibraryError ? (
+                  <p className="node-quick-editor-parameter-issue" role="alert">
+                    {skillLibraryError}
+                  </p>
+                ) : null}
+              </div>
               {controls}
               {generationCountIssue && (
                 <p className="node-quick-editor-parameter-issue" role="status">

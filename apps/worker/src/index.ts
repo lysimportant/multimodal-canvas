@@ -2,6 +2,9 @@ import { Job, Queue, Worker, type ConnectionOptions } from 'bullmq';
 import {
   requestPromptRecordSchema,
   parseReversePromptOutput,
+  createMockPromptOptimizationOutput,
+  parsePromptOptimizationOutput,
+  promptDocumentSchema,
   reversePromptResultSchema,
   runJobDataSchema,
   runResultSchema,
@@ -898,7 +901,7 @@ export function createRunWorker(options: {
         }
 
         if (
-          executionSnapshot.reversePrompt &&
+          (executionSnapshot.reversePrompt || executionSnapshot.promptOptimization) &&
           ((currentState && currentState.status !== 'pending') ||
             providerCandidates.some(
               (candidate) =>
@@ -1146,6 +1149,8 @@ export function createRunWorker(options: {
             continue;
           }
           if (uncertainReversePromptNodes.has(node.id)) {
+            if (executionSnapshot.promptOptimization)
+              throw new Error('优化请求已发送或发送状态不确定，请在提示词优化窗口明确发起新的优化');
             throw new Error('反推请求已发送或发送状态不确定，请在反推提示词窗口明确发起新的分析');
           }
 
@@ -1242,14 +1247,17 @@ export function createRunWorker(options: {
                 )
               : (options.provider ?? mockProvider);
           if (!provider) throw new Error('New API provider is not configured for this worker');
-          const providerSnapshot = options.assetReferenceResolver
-            ? await options.assetReferenceResolver.resolve(
+          const assetResolver = nodeSnapshot.promptOptimization
+            ? undefined
+            : options.assetReferenceResolver;
+          const providerSnapshot = assetResolver
+            ? await assetResolver.resolve(
                 withWorkflowAssetVersions(nodeSnapshot, currentWorkflowState),
                 currentData.userId ? { userId: currentData.userId } : undefined,
               )
             : nodeSnapshot;
           const resolvedMentions =
-            options.assetReferenceResolver && providerSnapshot.promptMentions?.length
+            assetResolver && providerSnapshot.promptMentions?.length
               ? resolveProviderMentions(providerSnapshot)
               : undefined;
           const requestProviderJobId = workflowRequestProviderJobId(providerJob);
@@ -1310,7 +1318,7 @@ export function createRunWorker(options: {
                 });
                 await persistProviderJobStrict(retainedProviderJob);
                 // 提示词落库期间资源可能已撤销；发送前只复核权限与归档，不重复读取内容。
-                await options.assetReferenceResolver?.assertAccessible?.(
+                await assetResolver?.assertAccessible?.(
                   providerSnapshot,
                   currentData.userId ? { userId: currentData.userId } : undefined,
                 );
@@ -1325,7 +1333,7 @@ export function createRunWorker(options: {
             false,
             flushNodeTimings(),
           );
-          await options.assetReferenceResolver?.assertAccessible?.(
+          await assetResolver?.assertAccessible?.(
             providerSnapshot,
             currentData.userId ? { userId: currentData.userId } : undefined,
           );
@@ -1511,8 +1519,19 @@ export function createRunWorker(options: {
           ) {
             throw new Error(`provider returned a result for the wrong workflow node: ${node.id}`);
           }
-          const output = execution.output
-            ? normalizeProviderOutput(execution.output, executionResult.mediaType)
+          const effectiveOutput =
+            executionSnapshot.promptOptimization && currentData.provider === 'mock'
+              ? {
+                  kind: 'text' as const,
+                  mediaType: 'text' as const,
+                  text: createMockPromptOptimizationOutput(
+                    executionSnapshot.promptOptimization.input,
+                  ),
+                  mimeType: 'text/plain',
+                }
+              : execution.output;
+          const output = effectiveOutput
+            ? normalizeProviderOutput(effectiveOutput, executionResult.mediaType)
             : undefined;
           const archiveInput = output
             ? providerOutputToArchiveInput(output, executionResult.mediaType)
@@ -1523,7 +1542,14 @@ export function createRunWorker(options: {
           const reversePrompt = executionSnapshot.reversePrompt
             ? parseReversePromptOutput(output.kind === 'text' ? output.text : '')
             : undefined;
-          if (!reversePrompt && !options.resultArchiver) {
+          const promptOptimization = executionSnapshot.promptOptimization
+            ? parsePromptOptimizationOutput(
+                output.kind === 'text' ? output.text : '',
+                executionSnapshot.promptOptimization.input,
+              )
+            : undefined;
+          const independent = Boolean(reversePrompt || promptOptimization);
+          if (!independent && !options.resultArchiver) {
             throw new Error(`result archiver is required for workflow node ${node.id}`);
           }
           const rawProviderMetadata: Partial<ProviderJob> = execution.providerJob ?? {};
@@ -1573,7 +1599,7 @@ export function createRunWorker(options: {
           });
           await persistProviderJob(executionProviderJob);
           await persistRun('processing', executionProviderJob);
-          const asset = reversePrompt
+          const asset = independent
             ? undefined
             : await executeWithCancellation(
                 () =>
@@ -1598,7 +1624,7 @@ export function createRunWorker(options: {
           if (await isCancellationRequested(queue, job.id)) {
             return markCancelled(currentOverallProgress, node.id, executionProviderJob);
           }
-          if (!reversePrompt && (!asset || !asset.version)) {
+          if (!independent && (!asset || !asset.version)) {
             throw new Error(`result archiver did not return a versioned asset for ${node.id}`);
           }
           const completedAt = new Date().toISOString();
@@ -1608,6 +1634,14 @@ export function createRunWorker(options: {
           const archivedResult = {
             ...executionResult,
             ...(reversePrompt ? { asset: undefined, reversePrompt } : {}),
+            ...(promptOptimization
+              ? {
+                  asset: undefined,
+                  finalFrame: undefined,
+                  promptOptimization,
+                  ...(currentData.provider === 'mock' ? { simulated: true } : {}),
+                }
+              : {}),
             ...(asset ? { asset: resultAsset.assetId ? resultAsset : asset } : {}),
             ...(finalFrame ? { finalFrame } : {}),
           } satisfies RunResult;
@@ -2027,7 +2061,7 @@ function withWorkflowAssetVersions(
   };
 }
 
-/** 普通生成要求版本化资产，独立反推要求已解析的描述，均必须匹配当前节点。 */
+/** 普通生成要求版本化资产，独立分析或优化要求已解析结果，均必须匹配当前节点。 */
 function isCompletedWorkflowResultForNode(
   result: RunResult | undefined,
   node: RunSnapshot['nodes'][number],
@@ -2037,7 +2071,11 @@ function isCompletedWorkflowResultForNode(
     result &&
     result.targetNodeId === node.id &&
     result.mediaType === node.data.mediaType &&
-    (snapshot.reversePrompt ? result.reversePrompt : result.asset?.assetId && result.asset.version),
+    (snapshot.promptOptimization
+      ? result.promptOptimization
+      : snapshot.reversePrompt
+        ? result.reversePrompt
+        : result.asset?.assetId && result.asset.version),
   );
 }
 
@@ -2304,6 +2342,12 @@ function sanitizeProviderResult(value: unknown): Record<string, unknown> | undef
   // 反推文字本身是持久结果，保留完整字段以便恢复时跳过已收费的分析请求。
   const reversePrompt = reversePromptResultSchema.safeParse(value.reversePrompt);
   if (reversePrompt.success) output.reversePrompt = reversePrompt.data;
+  // 保留完整优化文档，队列恢复时复用已付费结果，不重发模型请求。
+  if (isRecord(value.promptOptimization)) {
+    const prompt = promptDocumentSchema.safeParse(value.promptOptimization.promptDocument);
+    if (prompt.success) output.promptOptimization = { promptDocument: prompt.data };
+  }
+  if (typeof value.simulated === 'boolean') output.simulated = value.simulated;
   return Object.keys(output).length > 0 ? output : undefined;
 }
 

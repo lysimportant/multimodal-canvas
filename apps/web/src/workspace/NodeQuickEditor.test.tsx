@@ -163,6 +163,52 @@ afterEach(() => {
 });
 
 describe('NodeQuickEditor', () => {
+  it('模型、文字推理和媒体参数使用顶层浮层，不被编辑器滚动区域裁切', async () => {
+    const user = userEvent.setup();
+    const view = renderRaw(<NodeQuickEditor {...makeProps()} />);
+    await user.click(screen.getByRole('combobox', { name: /^模型：/ }));
+    expect(screen.getByRole('listbox', { name: '模型选项' })).toHaveAttribute('popover', 'manual');
+    await user.keyboard('{Escape}');
+    await user.click(screen.getByRole('button', { name: '媒体参数' }));
+    expect(screen.getByRole('region', { name: '生成参数' })).toHaveAttribute('popover', 'manual');
+    view.rerender(
+      <NodeQuickEditor
+        {...makeProps({
+          node: {
+            ...imageNode,
+            type: 'text',
+            data: { ...imageNode.data, mediaType: 'text', modelAlias: 'text-model' },
+          },
+        })}
+      />,
+    );
+    await user.click(screen.getByRole('combobox', { name: /^推理强度：/ }));
+    expect(screen.getByRole('listbox', { name: '推理强度选项' })).toHaveAttribute(
+      'popover',
+      'manual',
+    );
+  });
+  it('目录加载只禁用 Skill，保留原媒体生成入口与当前选择', async () => {
+    const user = userEvent.setup();
+    const inputs = makeProps({
+      projectId: 'project-a',
+      node: { ...imageNode, data: { ...imageNode.data, promptSkillId: 'character' } },
+      promptSkills: [],
+      skillLibraryLoading: true,
+      onPromptSkillChange: vi.fn(),
+    });
+    renderRaw(<NodeQuickEditor {...inputs} />);
+    expect(screen.getByRole('combobox', { name: '提示词 Skill' })).toBeDisabled();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '优化提示词' })).toBeDisabled();
+    const run = screen.getByRole('button', { name: '生成' });
+    expect(run).toBeEnabled();
+    await user.click(run);
+    expect(inputs.onRun).toHaveBeenCalledOnce();
+    await user.click(screen.getByRole('button', { name: '打开完整编辑器' }));
+    expect(screen.getByRole('combobox', { name: '提示词 Skill' })).toBeDisabled();
+    expect(inputs.onPromptSkillChange).not.toHaveBeenCalled();
+  });
   it.each(['text', 'image', 'audio', 'video'] as const)(
     '%s 节点显示独立生成数量，历史节点默认一份且不使用新的全局偏好',
     (mediaType) => {

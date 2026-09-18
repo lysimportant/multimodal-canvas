@@ -34,6 +34,8 @@ import {
   type OnNodesChange,
 } from '@xyflow/react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { SkillWorkbench } from './workspace/SkillWorkbench';
+import { fetchSkillLibrary } from './skill-library';
 import {
   useCallback,
   useEffect,
@@ -530,6 +532,14 @@ function WorkspaceApp({
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [notice, setNotice] = useState<{ kind: 'error' | 'success'; message: string } | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  /** Skill 库以用户隔离并由所有节点共用，目录读取不会触发模型。 */
+  const [showSkillWorkbench, setShowSkillWorkbench] = useState(false);
+  const skillLibraryQuery = useQuery({
+    queryKey: ['prompt-skills', authUser?.id],
+    enabled: Boolean(authUser && (selectedNodeId || showSkillWorkbench)),
+    queryFn: ({ signal }) => fetchSkillLibrary(signal),
+    retry: false,
+  });
   /** 当前新建操作的偏好读取错误，避免被随后的“节点已添加”通知覆盖。 */
   const nodePreferenceNoticeRef = useRef<string | null>(null);
   const queryClient = useQueryClient();
@@ -673,7 +683,7 @@ function WorkspaceApp({
   >(undefined);
   const publicTextModelsQuery = useModelCatalogQuery(
     undefined,
-    Boolean(promptDialog && authUser && authUser.role !== 'admin'),
+    Boolean((promptDialog || selectedNodeId) && authUser && authUser.role !== 'admin'),
   );
   const reversePromptModels =
     authUser?.role === 'admin' ? modelCatalog : (publicTextModelsQuery.data ?? []);
@@ -2455,6 +2465,23 @@ function WorkspaceApp({
     [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
   );
 
+  /** 仅保存 Skill 选择；实际提示词未改变时不把已有产物标记为过期。 */
+  const updateSelectedPromptSkill = useCallback(
+    (promptSkillId: string | undefined, nodeId?: string) => {
+      const targetNodeId = nodeId ?? selectedNode?.id;
+      const current = nodesRef.current.find((node) => node.id === targetNodeId);
+      if (!current || current.data.promptSkillId === promptSkillId) return;
+      rememberHistory();
+      const next = nodesRef.current.map((node) =>
+        node.id === targetNodeId ? { ...node, data: { ...node.data, promptSkillId } } : node,
+      );
+      nodesRef.current = next;
+      setNodes(next);
+      canvasDirtyRef.current = true;
+    },
+    [rememberHistory, selectedNode, setNodes],
+  );
+
   /** 保存节点的批量数量；非法值保留在编辑器中，不进入画布和运行请求。 */
   const updateSelectedGenerationCount = useCallback(
     (generationCount: number, nodeId?: string) => {
@@ -3911,12 +3938,28 @@ function WorkspaceApp({
             onToggleCollapsed={() => setIsResourceCollapsed((current) => !current)}
             uploadInputRef={uploadInputRef}
           />
+          <SkillWorkbench
+            open={showSkillWorkbench}
+            onOpenChange={setShowSkillWorkbench}
+            onChanged={() => {
+              void queryClient.invalidateQueries({ queryKey: ['prompt-skills', authUser?.id] });
+            }}
+          />
           <WorkflowCanvas
+            projectId={projectId ?? undefined}
+            promptSkills={skillLibraryQuery.data ?? []}
+            skillLibraryLoading={skillLibraryQuery.isPending}
+            skillLibraryError={
+              skillLibraryQuery.error
+                ? `Skill 目录读取失败：${skillLibraryQuery.error.message}`
+                : undefined
+            }
+            onOpenSkillWorkbench={() => setShowSkillWorkbench(true)}
             nodes={nodes}
             edges={edges}
             selectedNode={selectedNode}
             assets={assets}
-            models={modelCatalog}
+            models={reversePromptModels}
             busy={isRunning || nodeContentBusy}
             onNodesChange={handleNodesChange}
             onEdgesChange={handleEdgesChange}
@@ -3931,6 +3974,7 @@ function WorkspaceApp({
             onNodeEnabledChange={updateNodeEnabled}
             onRetryNode={retryNodeFromCanvas}
             onPromptDocumentChange={updateSelectedPromptDocument}
+            onPromptSkillChange={updateSelectedPromptSkill}
             onUploadResource={uploadProjectAsset}
             onParametersChange={updateSelectedParameters}
             onGenerationCountChange={updateSelectedGenerationCount}

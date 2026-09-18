@@ -186,6 +186,7 @@ async function installFixture(
     const url = new URL(request.url());
     const path = url.pathname;
     const method = request.method();
+    if (path === '/v1/prompt-skills') return json(route, { skills: [] });
     if (path.endsWith('/events')) {
       eventRequests += 1;
       return route.fulfill({

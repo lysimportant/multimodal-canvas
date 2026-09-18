@@ -30,6 +30,13 @@ vi.mock('bullmq', () => {
 
 import { BullMqRunService, createIdempotentRunId, createRunSnapshot } from './runs';
 import { databaseRunId } from './run-persistence';
+import {
+  createPromptOptimizationCanvas,
+  PROMPT_OPTIMIZATION_NODE_ID,
+  PROMPT_SKILLS,
+  type PromptDocument,
+  type RunRecord,
+} from '@multimodal-canvas/domain';
 
 afterEach(() => {
   state.job = undefined;
@@ -40,6 +47,287 @@ afterEach(() => {
 });
 
 describe('BullMQ run result integrity', () => {
+  it('Skill 并发补建遇到不同冻结快照时，在发布前拒绝', async () => {
+    const input: PromptDocument = { version: 1, blocks: [{ type: 'text', text: '场景要求' }] };
+    const skill = PROMPT_SKILLS[0]!;
+    const snapshot = {
+      ...createRunSnapshot(
+        'project_1',
+        createPromptOptimizationCanvas({ skillId: skill.id, input, mediaType: 'image' }),
+        PROMPT_OPTIMIZATION_NODE_ID,
+      ),
+      promptOptimization: {
+        nodeId: 'source',
+        skillId: skill.id,
+        skillVersion: skill.version,
+        input,
+      },
+    };
+    const service = new BullMqRunService({
+      connection: { host: '127.0.0.1', port: 6379 },
+      persistence: {
+        getRun: vi.fn(async () => undefined),
+        ensureRun: vi.fn(async () => ({ snapshot: { ...snapshot, modelAlias: 'another-model' } })),
+      } as never,
+    });
+    state.add = vi.fn();
+    await expect(
+      service.create(snapshot, { idempotencyKey: 'concurrent-skill' }),
+    ).rejects.toMatchObject({ code: 'idempotency_conflict' });
+    expect(state.add).not.toHaveBeenCalled();
+    await service.close();
+  });
+
+  it('Skill 发布失败后同键补发原任务，不重置数据库或重复有效任务', async () => {
+    const input: PromptDocument = { version: 1, blocks: [{ type: 'text', text: '完善场景' }] };
+    const skill = PROMPT_SKILLS[0]!;
+    const snapshot = {
+      ...createRunSnapshot(
+        'project_1',
+        createPromptOptimizationCanvas({ skillId: skill.id, input, mediaType: 'image' }),
+        PROMPT_OPTIMIZATION_NODE_ID,
+      ),
+      promptOptimization: {
+        nodeId: 'source',
+        skillId: skill.id,
+        skillVersion: skill.version,
+        input,
+      },
+    };
+    let durable: RunRecord | undefined;
+    const persistence = {
+      getRun: vi.fn(async () => durable),
+      ensureRun: vi.fn(async (request) => {
+        durable = {
+          id: request.runId,
+          projectId: snapshot.projectId,
+          targetNodeId: snapshot.targetNodeId,
+          modelAlias: snapshot.modelAlias,
+          snapshot,
+          idempotencyKey: request.idempotencyKey,
+          status: 'queued',
+          progress: 0,
+          attempt: 1,
+          provider: 'newapi',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+      upsertProviderJob: vi.fn(async ({ providerJob }) => {
+        durable!.providerJob = providerJob;
+      }),
+    };
+    state.add = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('synthetic Redis disconnect'))
+      .mockImplementation(async (_name, data, options) => {
+        state.job ??= {
+          id: options.jobId,
+          data,
+          timestamp: Date.now(),
+          progress: 0,
+          getState: async () => 'waiting',
+        };
+        return state.job;
+      });
+    const service = new BullMqRunService({
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      persistence: persistence as never,
+    });
+    await expect(service.create(snapshot, { idempotencyKey: 'skill-recovery' })).rejects.toThrow(
+      'disconnect',
+    );
+    expect(durable?.status).toBe('queued');
+    const recovered = await service.create(snapshot, { idempotencyKey: 'skill-recovery' });
+    expect(recovered.id).toBe(durable!.id);
+    expect(recovered.snapshot).toEqual(snapshot);
+    expect(recovered.provider).toBe('newapi');
+    await service.create(snapshot, { idempotencyKey: 'skill-recovery' });
+    expect(state.add).toHaveBeenCalledTimes(2);
+    expect(persistence.ensureRun).toHaveBeenCalledTimes(1);
+    expect(persistence.upsertProviderJob).toHaveBeenCalledTimes(1);
+    await service.close();
+  });
+
+  it.each([undefined, 'synthetic-credential'])(
+    'Skill Provider 身份未落库时禁止补发，不凭凭据升级执行模式：%s',
+    async (credentialId) => {
+      const input: PromptDocument = { version: 1, blocks: [{ type: 'text', text: '完善场景' }] };
+      const skill = PROMPT_SKILLS[0]!;
+      const snapshot = {
+        ...createRunSnapshot(
+          'project_1',
+          createPromptOptimizationCanvas({ skillId: skill.id, input, mediaType: 'image' }),
+          PROMPT_OPTIMIZATION_NODE_ID,
+        ),
+        ...(credentialId ? { credentialId } : {}),
+        promptOptimization: {
+          nodeId: 'source',
+          skillId: skill.id,
+          skillVersion: skill.version,
+          input,
+        },
+      };
+      let durable: RunRecord | undefined;
+      const persistence = {
+        getRun: vi.fn(async () => durable),
+        ensureRun: vi.fn(async (request) => {
+          durable = {
+            id: request.runId,
+            projectId: snapshot.projectId,
+            targetNodeId: snapshot.targetNodeId,
+            modelAlias: snapshot.modelAlias,
+            snapshot,
+            idempotencyKey: request.idempotencyKey,
+            status: 'queued',
+            progress: 0,
+            attempt: 1,
+            provider: 'mock',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          };
+        }),
+        upsertProviderJob: vi.fn(async () => {
+          throw new Error('synthetic ProviderJob persistence failure');
+        }),
+      };
+      state.add = vi.fn();
+      const service = new BullMqRunService({
+        connection: { host: '127.0.0.1', port: 6379 },
+        providerName: 'mock',
+        persistence: persistence as never,
+      });
+      await expect(
+        service.create(snapshot, { idempotencyKey: 'missing-provider' }),
+      ).rejects.toThrow('ProviderJob persistence failure');
+      await expect(
+        service.create(snapshot, { idempotencyKey: 'missing-provider' }),
+      ).rejects.toMatchObject({
+        code: 'invalid_state',
+        message: '优化任务缺少可靠的 Provider 身份，无法自动补发',
+      });
+      expect(state.add).not.toHaveBeenCalled();
+      expect(persistence.ensureRun).toHaveBeenCalledTimes(1);
+      expect(persistence.upsertProviderJob).toHaveBeenCalledTimes(1);
+      await service.close();
+    },
+  );
+
+  it.each(['succeeded', 'failed', 'cancelled', 'processing', 'provider-started', 'node-started'])(
+    'Skill 队列丢失后不重发已执行或终态任务：%s',
+    async (condition) => {
+      const input: PromptDocument = { version: 1, blocks: [{ type: 'text', text: '完善场景' }] };
+      const skill = PROMPT_SKILLS[0]!;
+      const snapshot = {
+        ...createRunSnapshot(
+          'project_1',
+          createPromptOptimizationCanvas({ skillId: skill.id, input, mediaType: 'image' }),
+          PROMPT_OPTIMIZATION_NODE_ID,
+        ),
+        promptOptimization: {
+          nodeId: 'source',
+          skillId: skill.id,
+          skillVersion: skill.version,
+          input,
+        },
+      };
+      const now = new Date().toISOString();
+      const durable: RunRecord = {
+        id: createIdempotentRunId(snapshot.projectId, 'skill-existing'),
+        projectId: snapshot.projectId,
+        targetNodeId: snapshot.targetNodeId,
+        modelAlias: snapshot.modelAlias,
+        snapshot,
+        idempotencyKey: 'skill-existing',
+        status: condition.endsWith('started') ? 'queued' : (condition as RunRecord['status']),
+        progress: 0,
+        attempt: 1,
+        provider: 'newapi',
+        createdAt: now,
+        updatedAt: now,
+        ...(condition === 'provider-started'
+          ? {
+              providerJob: {
+                id: 'provider_started',
+                provider: 'newapi',
+                status: 'running' as const,
+                progress: 0,
+                createdAt: now,
+                updatedAt: now,
+              },
+            }
+          : {}),
+        ...(condition === 'node-started'
+          ? {
+              nodeTimings: {
+                [snapshot.targetNodeId]: { nodeId: snapshot.targetNodeId, startedAt: now },
+              },
+            }
+          : {}),
+      };
+      const persistence = {
+        getRun: vi.fn(async () => durable),
+        ensureRun: vi.fn(),
+        upsertProviderJob: vi.fn(),
+      };
+      state.add = vi.fn();
+      const service = new BullMqRunService({
+        connection: { host: '127.0.0.1', port: 6379 },
+        persistence,
+      });
+      expect(await service.create(snapshot, { idempotencyKey: 'skill-existing' })).toEqual(durable);
+      await expect(
+        service.create(
+          { ...snapshot, modelAlias: 'changed' },
+          { idempotencyKey: 'skill-existing' },
+        ),
+      ).rejects.toMatchObject({ code: 'idempotency_conflict' });
+      expect(state.add).not.toHaveBeenCalled();
+      expect(persistence.ensureRun).not.toHaveBeenCalled();
+      expect(persistence.upsertProviderJob).not.toHaveBeenCalled();
+      await service.close();
+    },
+  );
+
+  it('队列过期后仍从持久记录读取独立优化并拒绝通用重试', async () => {
+    const input: PromptDocument = { version: 1, blocks: [{ type: 'text', text: '人物近景' }] };
+    const skill = PROMPT_SKILLS[0]!;
+    const canvas = createPromptOptimizationCanvas({ skillId: skill.id, input, mediaType: 'image' });
+    const snapshot = {
+      ...createRunSnapshot('project_1', canvas, PROMPT_OPTIMIZATION_NODE_ID),
+      promptOptimization: {
+        nodeId: 'unsaved',
+        skillId: skill.id,
+        skillVersion: skill.version,
+        input,
+      },
+    };
+    const durableRun = {
+      id: 'run_optimization',
+      projectId: snapshot.projectId,
+      targetNodeId: snapshot.targetNodeId,
+      status: 'failed' as const,
+      progress: 80,
+      attempt: 1,
+      provider: 'newapi',
+      modelAlias: snapshot.modelAlias,
+      snapshot,
+      createdAt: '2026-09-18T00:00:00.000Z',
+      updatedAt: '2026-09-18T00:01:00.000Z',
+    };
+    state.getJob = vi.fn(async () => undefined);
+    state.add = vi.fn();
+    const service = new BullMqRunService({
+      connection: { host: '127.0.0.1', port: 6379 },
+      persistence: { getRun: vi.fn(async () => durableRun) } as never,
+    });
+    await expect(service.get(durableRun.id)).resolves.toEqual(durableRun);
+    await expect(service.retry(durableRun.id)).rejects.toThrow('提示词优化窗口');
+    expect(state.add).not.toHaveBeenCalled();
+    await service.close();
+  });
+
   it('uses the configured queue name and preserves the default when omitted', async () => {
     const configured = new BullMqRunService({
       connection: { host: '127.0.0.1', port: 6379 },

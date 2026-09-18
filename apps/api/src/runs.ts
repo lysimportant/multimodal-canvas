@@ -2,6 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Job, Queue, type ConnectionOptions } from 'bullmq';
 import {
   canTransitionRunStatus,
+  createMockPromptOptimizationOutput,
+  parsePromptOptimizationOutput,
   parseReversePromptOutput,
   portRoleSchema,
   renderPromptDocument,
@@ -763,6 +765,9 @@ export class MemoryRunService implements RunService, RequestPromptStore {
 
   async retry(runId: string): Promise<RunRecord> {
     const previous = this.require(runId);
+    if (previous.snapshot.promptOptimization) {
+      throw new RunServiceError('invalid_state', '请在提示词优化窗口中明确发起新的优化');
+    }
     if (previous.snapshot.reversePrompt) {
       throw new RunServiceError('invalid_state', '请在反推提示词窗口中明确发起新的分析');
     }
@@ -909,6 +914,21 @@ export class MemoryRunService implements RunService, RequestPromptStore {
 
       let result = runResultSchema.parse(execution.result);
       const output = normalizeRunOutput(execution.output, result.mediaType);
+      const independent = Boolean(run.snapshot.reversePrompt || run.snapshot.promptOptimization);
+      if (run.snapshot.promptOptimization) {
+        if (!output || result.mediaType !== 'text' || result.targetNodeId !== run.targetNodeId) {
+          throw new Error('提示词优化任务没有返回有效文字内容');
+        }
+        const { asset: _asset, finalFrame: _finalFrame, ...optimizationResult } = result;
+        result = runResultSchema.parse({
+          ...optimizationResult,
+          ...(run.provider === 'mock' ? { simulated: true } : {}),
+          promptOptimization: parsePromptOptimizationOutput(
+            output.content.toString('utf8'),
+            run.snapshot.promptOptimization.input,
+          ),
+        });
+      }
       if (run.snapshot.reversePrompt) {
         if (!output || result.mediaType !== 'text') {
           throw new Error('反推任务没有返回文字内容');
@@ -919,7 +939,7 @@ export class MemoryRunService implements RunService, RequestPromptStore {
           reversePrompt: parseReversePromptOutput(output.content.toString('utf8')),
         });
       }
-      const archivedAsset = run.snapshot.reversePrompt
+      const archivedAsset = independent
         ? undefined
         : await this.resultArchiver?.({
             run: clone(run),
@@ -931,11 +951,11 @@ export class MemoryRunService implements RunService, RequestPromptStore {
           ...result,
           asset: runResultAssetSchema.parse(archivedAsset),
         });
-      } else if (!run.snapshot.reversePrompt && !result.asset && output) {
+      } else if (!independent && !result.asset && output) {
         // Keep direct MemoryRunService consumers useful even when no storage
         // adapter is supplied (the app composition root provides one).
         result = runResultSchema.parse({ ...result, asset: inlineResultAsset(output) });
-      } else if (!run.snapshot.reversePrompt && !result.asset) {
+      } else if (!independent && !result.asset) {
         const remoteUrl = safeOutputUrl(execution.output);
         if (remoteUrl) {
           const mediaType = execution.output?.mediaType ?? result.mediaType;
@@ -1087,7 +1107,14 @@ async function mockRunExecutor({
     });
   }
   let output: RunExecutionOutput;
-  if (mediaType === 'text') {
+  if (snapshot.promptOptimization) {
+    output = {
+      mediaType: 'text',
+      kind: 'text',
+      text: createMockPromptOptimizationOutput(snapshot.promptOptimization.input),
+      mimeType: 'text/plain',
+    };
+  } else if (mediaType === 'text') {
     const text = prompt ? `Mock output for ${label}\n${prompt}` : `Mock output for ${label}`;
     output = { mediaType, kind: 'text', text, mimeType: 'text/plain', format: 'txt' };
   } else if (mediaType === 'image') {
@@ -1602,6 +1629,9 @@ export class BullMqRunService implements RunService {
   async retry(runId: string): Promise<RunRecord> {
     const previous = await this.get(runId);
     if (!previous) throw new RunServiceError('not_found', 'run not found');
+    if (previous.snapshot.promptOptimization) {
+      throw new RunServiceError('invalid_state', '请在提示词优化窗口中明确发起新的优化');
+    }
     if (previous.snapshot.reversePrompt) {
       throw new RunServiceError('invalid_state', '请在反推提示词窗口中明确发起新的分析');
     }
@@ -1681,6 +1711,40 @@ export class BullMqRunService implements RunService {
       // database record back to `queued` for a harmless repeated request.
       return this.toRunRecord(existing);
     }
+    // Skill 的数据库行可能已提交而 Redis 发布失败；只恢复尚未执行的同一任务。
+    const durable =
+      snapshot.promptOptimization && idempotencyKey
+        ? await this.persistence?.getRun?.(runId)
+        : undefined;
+    if (durable) {
+      if (
+        snapshotFingerprint(durable.snapshot) !== snapshotFingerprint(snapshot) ||
+        durable.idempotencyKey !== idempotencyKey ||
+        durable.userId !== userId
+      )
+        throw new RunServiceError('idempotency_conflict', 'Skill 任务与已持久化的请求不一致');
+      if (
+        durable.status !== 'queued' ||
+        durable.result ||
+        durable.error ||
+        durable.attempt !== 1 ||
+        (durable.providerJob &&
+          (durable.providerJob.status !== 'queued' ||
+            durable.providerJob.platformJobId ||
+            durable.providerJob.progress > 0 ||
+            durable.providerJob.payload)) ||
+        Object.values(durable.nodeTimings ?? {}).some((timing) => timing.startedAt)
+      )
+        return durable;
+      snapshot = durable.snapshot;
+      // 凭据不代表执行模式；Provider 身份未落库时禁止猜测并发起可能收费的请求。
+      if (!durable.providerJob || !['mock', 'newapi'].includes(durable.providerJob.provider))
+        throw new RunServiceError(
+          'invalid_state',
+          '优化任务缺少可靠的 Provider 身份，无法自动补发',
+        );
+      providerName = durable.providerJob.provider === 'newapi' ? 'newapi' : 'mock';
+    }
     const now = new Date().toISOString();
     const data = runJobDataSchema.parse({
       runId,
@@ -1691,26 +1755,43 @@ export class BullMqRunService implements RunService {
       ...(estimatedCost ? { estimatedCost } : {}),
       retryOf,
       idempotencyKey,
-      providerJob: createProviderJob(runId, providerName, now, previousProviderJob),
+      providerJob:
+        durable?.providerJob ?? createProviderJob(runId, providerName, now, previousProviderJob),
       cancelRequested: false,
     });
     // Persist the immutable snapshot before publishing the queue message. If
     // PostgreSQL is unavailable, fail the request instead of creating a job
     // whose run history cannot be recovered after a restart.
-    await this.persistence?.ensureRun({
-      runId,
-      snapshot,
-      status: 'queued',
-      attempt,
-      provider: providerName,
-      ...(userId ? { userId } : {}),
-      ...(estimatedCost
-        ? { cost: estimatedCost.amount, costCurrency: estimatedCost.currency }
-        : {}),
-      retryOf,
-      idempotencyKey,
-      providerJob: data.providerJob,
-    });
+    if (!durable) {
+      const persisted = await this.persistence?.ensureRun({
+        runId,
+        snapshot,
+        ...(snapshot.promptOptimization ? { createOnly: true } : {}),
+        status: 'queued',
+        attempt,
+        provider: providerName,
+        ...(userId ? { userId } : {}),
+        ...(estimatedCost
+          ? { cost: estimatedCost.amount, costCurrency: estimatedCost.currency }
+          : {}),
+        retryOf,
+        idempotencyKey,
+        providerJob: data.providerJob,
+      });
+      if (snapshot.promptOptimization && persisted) {
+        const frozen = runSnapshotSchema.safeParse(persisted.snapshot);
+        if (!frozen.success || snapshotFingerprint(frozen.data) !== snapshotFingerprint(snapshot))
+          throw new RunServiceError('idempotency_conflict', 'Skill 任务与已持久化的请求不一致');
+      }
+    }
+    if (snapshot.promptOptimization && !durable?.providerJob && data.providerJob) {
+      // 在首次发布前持久化 Provider 身份；恢复不得覆写 Worker 已记录的执行状态。
+      await this.persistence?.upsertProviderJob?.({
+        runId: databaseRunId(runId),
+        providerJob: data.providerJob,
+        createOnly: true,
+      });
+    }
     let job: Job<RunJobData>;
     try {
       job = await this.queue.add('run', data, {

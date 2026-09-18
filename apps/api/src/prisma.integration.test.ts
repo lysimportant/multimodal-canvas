@@ -187,6 +187,7 @@ const postLifecycleMigrations = [
   // 否则临时库停在旧结构，末尾的整库结构比对会报出真实存在的差异。
   '20260916120000_canvas_groups_run_node_timings',
   '20260917120000_run_request_prompts',
+  '20260918090000_prompt_skills',
 ] as const;
 
 describe('integration configuration safety', () => {
