@@ -559,7 +559,7 @@ describe('WorkflowCanvas context menu', () => {
 
     expect(overlay).not.toBeNull();
     await waitFor(() => expect(overlay).toHaveAttribute('data-placement', 'above'));
-    expect(overlay).toHaveStyle({ visibility: 'visible' });
+    expect(overlay).toHaveStyle({ visibility: 'visible', width: '570px', left: '185px' });
     expect(overlay?.closest('.react-flow__node')).toBeNull();
     expect(
       Number.parseInt(overlay?.style.top ?? '', 10) +
@@ -569,6 +569,7 @@ describe('WorkflowCanvas context menu', () => {
     nodeRect = createMockRect(380, 150, 180, 80);
     canvasNode.style.transform = 'translate(1px)';
     await waitFor(() => expect(overlay).toHaveAttribute('data-placement', 'below'));
+    expect(overlay).toHaveStyle({ width: '570px', left: '185px' });
     expect(Number.parseInt(overlay?.style.top ?? '', 10)).toBeGreaterThan(230);
 
     nodeRect = createMockRect(600, 350, 180, 80);
@@ -576,10 +577,57 @@ describe('WorkflowCanvas context menu', () => {
     await waitFor(() => expect(overlay).toHaveAttribute('data-placement', 'left'));
     const overlayLeft = Number.parseInt(overlay?.style.left ?? '', 10);
     const overlayWidth = Number.parseInt(overlay?.style.width ?? '', 10);
-    expect(overlayLeft).toBeGreaterThanOrEqual(80);
-    expect(overlayLeft + overlayWidth).toBeLessThanOrEqual(800);
+    expect(overlayWidth).toBe(496);
+    expect(overlayLeft).toBeGreaterThanOrEqual(88);
+    expect(overlayLeft + overlayWidth).toBeLessThanOrEqual(792);
     expect(overlayLeft + overlayWidth).toBeLessThanOrEqual(nodeRect.left - 16);
+
+    nodeRect = createMockRect(180, 350, 180, 80);
+    canvasNode.style.transform = 'translate(3px)';
+    await waitFor(() => expect(overlay).toHaveAttribute('data-placement', 'right'));
+    expect(overlay).toHaveStyle({ left: '376px', width: '416px' });
+    expect(Number.parseInt(overlay?.style.left ?? '', 10)).toBeGreaterThanOrEqual(
+      nodeRect.right + 16,
+    );
   });
+
+  it.each([
+    { name: '窄画布', viewportWidth: 1024, canvasLeft: 120, canvasWidth: 480, width: 464 },
+    { name: '窄视口', viewportWidth: 560, canvasLeft: 0, canvasWidth: 900, width: 544 },
+  ])(
+    '在$name内收缩 570px 编辑器并保留边距，空间恢复后重新加宽',
+    async ({ viewportWidth, canvasLeft, canvasWidth, width }) => {
+      const innerWidth = vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(viewportWidth);
+      vi.spyOn(document.documentElement, 'clientWidth', 'get').mockReturnValue(viewportWidth);
+      const props = createProps({ nodes: [generateNode], selectedNode: null });
+      const { rerender } = render(<WorkflowCanvas {...props} />);
+      const canvas = screen.getByRole('region', { name: '工作流画布' });
+      const canvasNode = screen.getByTestId(`canvas-node-${generateNode.id}`);
+      const bounds = vi
+        .spyOn(canvas, 'getBoundingClientRect')
+        .mockReturnValue(createMockRect(canvasLeft, 90, canvasWidth, 620));
+      vi.spyOn(canvasNode, 'getBoundingClientRect').mockReturnValue(
+        createMockRect(200, 150, 180, 80),
+      );
+      rerender(<WorkflowCanvas {...props} selectedNode={generateNode} />);
+
+      const editor = await screen.findByRole('region', { name: '图片生成节点生成设置' });
+      const overlay = editor.closest<HTMLDivElement>('.quick-editor-overlay');
+      expect(overlay).toHaveAttribute('data-placement', 'below');
+      expect(overlay).toHaveStyle({ visibility: 'visible', width: `${width}px` });
+      const left = Number.parseInt(overlay?.style.left ?? '', 10);
+      expect(left).toBeGreaterThanOrEqual(canvasLeft + 8);
+      expect(left + width).toBeLessThanOrEqual(
+        Math.min(viewportWidth, canvasLeft + canvasWidth) - 8,
+      );
+      expect(Number.parseInt(overlay?.style.top ?? '', 10)).toBeGreaterThanOrEqual(230 + 16);
+
+      innerWidth.mockReturnValue(1024);
+      bounds.mockReturnValue(createMockRect(0, 90, 900, 620));
+      fireEvent(window, new Event('resize'));
+      await waitFor(() => expect(overlay).toHaveStyle({ width: '570px' }));
+    },
+  );
 
   it('uses the appearance-driven default edge without forcing animation', () => {
     render(<WorkflowCanvas {...createProps()} />);

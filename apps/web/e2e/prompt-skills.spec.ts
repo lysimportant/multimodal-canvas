@@ -229,12 +229,24 @@ for (const mediaType of ['text', 'image', 'audio', 'video'] as const) {
     const fixture = await installFixture(page, mediaType);
     await page.goto(`/projects/${project.id}`);
     const panel = await editor(page);
+    const trigger = panel.getByRole('button', { name: 'Skill 配置', exact: true });
+    const settings = panel.getByRole('group', { name: 'Skill 配置', exact: true });
     const select = panel.getByRole('combobox', { name: '提示词 Skill', exact: true });
+    await expect(trigger).toHaveText('Skill');
+    await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    await expect(settings).toBeHidden();
+    await expect(select).toBeHidden();
+    await expect(panel.getByRole('combobox', { name: '优化模型', exact: true })).toBeHidden();
+    await expect(panel.getByRole('button', { name: '技能工作台', exact: true })).toBeHidden();
+    await expect(panel.getByRole('button', { name: '优化提示词', exact: true })).toBeHidden();
+    await trigger.hover();
+    await expect(settings).toBeVisible();
     await select.click();
     await expect(page.getByRole('option', { name: '生成人物', exact: true })).toBeVisible();
     await expect(page.getByRole('option', { name: '生成场景', exact: true })).toBeVisible();
     const novel = page.getByRole('option', { name: '小说正文创作', exact: true });
     await novel.hover();
+    await expect(settings).toBeVisible();
     await expect(
       page.getByRole('tooltip').filter({
         hasText: PROMPT_SKILLS.find((skill) => skill.id === 'novel-draft')!.description,
@@ -247,11 +259,106 @@ for (const mediaType of ['text', 'image', 'audio', 'video'] as const) {
   });
 }
 
+test('PC Skill 配置悬停展开、离开收起，点击固定后可用 Escape 或外点关闭', async ({
+  page,
+}, testInfo) => {
+  const fixture = await installFixture(page);
+  await page.goto(`/projects/${project.id}`);
+  const panel = await editor(page);
+  const trigger = panel.getByRole('button', { name: 'Skill 配置', exact: true });
+  const settings = panel.getByRole('group', { name: 'Skill 配置', exact: true });
+  for (const viewport of [
+    { width: 1366, height: 768 },
+    { width: 1440, height: 900 },
+    { width: 1920, height: 1080 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await expect(settings).toBeHidden();
+    if (viewport.width === 1920) {
+      await expect.poll(async () => (await panel.boundingBox())?.width).toBe(570);
+    }
+    await page.screenshot({ path: testInfo.outputPath(`skill-collapsed-${viewport.width}.png`) });
+    await trigger.hover();
+    await settings.hover();
+    await expect(settings).toBeInViewport({ ratio: 1 });
+    await expect(
+      settings.getByRole('combobox', { name: '提示词 Skill', exact: true }),
+    ).toBeVisible();
+    await expect(settings.getByRole('combobox', { name: '优化模型', exact: true })).toBeVisible();
+    await expect(settings.getByRole('button', { name: '技能工作台', exact: true })).toBeVisible();
+    await expect(settings.getByRole('button', { name: '优化提示词', exact: true })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath(`skill-hover-${viewport.width}.png`) });
+    await page.mouse.move(0, 0);
+    await expect(settings).toBeHidden();
+  }
+  await trigger.click();
+  await page.mouse.move(0, 0);
+  await expect(trigger).toHaveAttribute('aria-expanded', 'true');
+  await settings.getByRole('combobox', { name: '提示词 Skill', exact: true }).click();
+  const menu = page.getByRole('listbox', { name: 'Skill选项', exact: true });
+  await menu.getByRole('option', { name: '生成人物', exact: true }).hover();
+  await expect(settings).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(menu).toBeHidden();
+  await expect(settings).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(settings).toBeHidden();
+  await expect(trigger).toBeFocused();
+  await trigger.click();
+  const bounds = await panel.boundingBox();
+  if (!bounds) throw new Error('未找到编辑器边界');
+  await page.mouse.click(bounds.x + bounds.width - 6, bounds.y + bounds.height - 6);
+  await expect(settings).toBeHidden();
+  await trigger.click();
+  await page.mouse.click(0, 0);
+  await expect(settings).toBeHidden();
+  expect(fixture.submissions).toHaveLength(0);
+  expect(fixture.errors).toEqual([]);
+});
+
+test('完整编辑器内 Escape 依次关闭 Skill 子菜单和配置，保持 Dialog 打开', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const fixture = await installFixture(page);
+  await page.goto(`/projects/${project.id}`);
+  const panel = await editor(page);
+  await panel.getByRole('button', { name: '打开完整编辑器' }).click();
+  const expanded = page.getByRole('dialog', { name: '创作节点 · 编辑设置' });
+  const trigger = expanded.getByRole('button', { name: 'Skill 配置', exact: true });
+  const settings = expanded.getByRole('group', { name: 'Skill 配置', exact: true });
+  await expect(expanded).toBeVisible();
+  await expect(settings).toBeHidden();
+  const prompt = expanded.getByRole('textbox', { name: '提示词', exact: true });
+  await prompt.focus();
+  await trigger.hover();
+  await page.keyboard.press('Escape');
+  await expect(settings).toBeHidden();
+  await expect(expanded).toBeVisible();
+  await expect(prompt).toBeFocused();
+  await trigger.click();
+  await expect(settings).toBeVisible();
+  const select = settings.getByRole('combobox', { name: '提示词 Skill', exact: true });
+  await select.click();
+  const menu = page.getByRole('listbox', { name: 'Skill选项', exact: true });
+  await expect(menu).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(expanded).toBeVisible();
+  await expect(menu).toBeHidden();
+  await expect(settings).toBeVisible();
+  await expect(select).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(expanded).toBeVisible();
+  await expect(settings).toBeHidden();
+  await expect(trigger).toBeFocused();
+  expect(fixture.submissions).toHaveLength(0);
+  expect(fixture.errors).toEqual([]);
+});
+
 test('优化预览显式应用、资源不变、选择与结果可保存重载', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   const fixture = await installFixture(page);
   await page.goto(`/projects/${project.id}`);
   const panel = await editor(page);
+  await panel.getByRole('button', { name: 'Skill 配置', exact: true }).click();
   await panel.getByRole('combobox', { name: '提示词 Skill', exact: true }).click();
   await page.getByRole('option', { name: '生成人物', exact: true }).click();
   await panel.getByRole('button', { name: '优化提示词', exact: true }).click();
@@ -261,9 +368,16 @@ test('优化预览显式应用、资源不变、选择与结果可保存重载',
   );
   expect(fixture.submissions).toHaveLength(1);
   expect(fixture.submissions[0]!.promptDocument).toEqual(original);
+  await panel.getByRole('textbox', { name: '优化文字 1', exact: true }).fill('尚未应用的角色 ');
+  await expect(panel.getByRole('group', { name: 'Skill 配置', exact: true })).toBeHidden();
+  await expect(panel.getByRole('group', { name: '优化预览', exact: true })).toBeVisible();
   await panel.getByRole('button', { name: '打开完整编辑器' }).click();
   const expanded = page.getByRole('dialog', { name: '创作节点 · 编辑设置' });
   await expect(expanded.getByRole('group', { name: '优化预览' })).toBeVisible();
+  await expect(expanded.getByRole('group', { name: 'Skill 配置', exact: true })).toBeHidden();
+  await expect(expanded.getByRole('textbox', { name: '优化文字 1' })).toHaveValue(
+    '尚未应用的角色 ',
+  );
   await expanded.getByRole('textbox', { name: '优化文字 1' }).fill('优化后：庭院晨光，保持角色 ');
   await page.screenshot({ path: testInfo.outputPath('skill-preview-desktop.png') });
   await expanded.getByRole('button', { name: '应用', exact: true }).click();
@@ -281,6 +395,7 @@ test('优化预览显式应用、资源不变、选择与结果可保存重载',
   ).toEqual(original.blocks.filter((block) => block.type === 'mention'));
   await page.reload();
   const restored = await editor(page);
+  await restored.getByRole('button', { name: 'Skill 配置', exact: true }).click();
   await expect(restored.getByRole('combobox', { name: '提示词 Skill', exact: true })).toContainText(
     '生成人物',
   );
@@ -296,6 +411,7 @@ test('原文变化后旧预览不可覆盖，丢弃不调用生成', async ({ pa
   fixture.hold(true);
   await page.goto(`/projects/${project.id}`);
   const panel = await editor(page);
+  await panel.getByRole('button', { name: 'Skill 配置', exact: true }).click();
   await panel.getByRole('combobox', { name: '提示词 Skill', exact: true }).click();
   await page.getByRole('option', { name: '小说章纲规划', exact: true }).click();
   await panel.getByRole('button', { name: '优化提示词', exact: true }).click();
@@ -328,6 +444,7 @@ test('目录加载期间保留已存选择，不能误清空，完成后仍可�
   try {
     await page.goto(`/projects/${project.id}`);
     const panel = await editor(page);
+    await panel.getByRole('button', { name: 'Skill 配置', exact: true }).click();
     const select = panel.getByRole('combobox', { name: '提示词 Skill', exact: true });
     await expect(select).toBeDisabled();
     await expect(select).toContainText('目录加载中');
@@ -343,8 +460,10 @@ test('目录加载期间保留已存选择，不能误清空，完成后仍可�
     await expect.poll(() => fixture.canvas().revision).toBeGreaterThan(1);
     expect(fixture.canvas().nodes[0]!.data.promptSkillId).toBe('character');
     await page.reload();
+    const restored = await editor(page);
+    await restored.getByRole('button', { name: 'Skill 配置', exact: true }).click();
     await expect(
-      (await editor(page)).getByRole('combobox', { name: '提示词 Skill', exact: true }),
+      restored.getByRole('combobox', { name: '提示词 Skill', exact: true }),
     ).toContainText('生成人物');
     expect(fixture.submissions).toHaveLength(0);
     expect(fixture.errors).toEqual([]);
@@ -358,6 +477,7 @@ test('优化预览内 Ctrl+S 到达全局保存且不触发浏览器另存', asy
   fixture.canvas().nodes[0]!.data.promptSkillId = 'character';
   await page.goto(`/projects/${project.id}`);
   const panel = await editor(page);
+  await panel.getByRole('button', { name: 'Skill 配置', exact: true }).click();
   await panel.getByRole('button', { name: '优化提示词', exact: true }).click();
   const preview = panel.getByRole('textbox', { name: '优化文字 1', exact: true });
   await expect(preview).toBeVisible();
@@ -396,6 +516,7 @@ test('长用途说明不挤没选项，鼠标和键盘都可继续选择', async
   });
   await page.goto(`/projects/${project.id}`);
   const panel = await editor(page);
+  await panel.getByRole('button', { name: 'Skill 配置', exact: true }).click();
   const select = panel.getByRole('combobox', { name: '提示词 Skill', exact: true });
   await select.click();
   const option = page.getByRole('option', { name: '长说明技能', exact: true });
@@ -450,6 +571,7 @@ test('PC 小视口多引用长预览与过期提示不遮挡原生成控件', as
   await page.setViewportSize({ width: 1366, height: 768 });
   await page.goto(`/projects/${project.id}`);
   const panel = await editor(page);
+  await panel.getByRole('button', { name: 'Skill 配置', exact: true }).click();
   await panel.getByRole('button', { name: '优化提示词', exact: true }).click();
   await expect(panel.getByRole('button', { name: '应用', exact: true })).toBeEnabled();
   await panel.getByRole('textbox', { name: '提示词', exact: true }).press('Control+End');
@@ -524,6 +646,7 @@ test('已确认的资源-only成功结果允许手动重新优化且保留原文
   );
   await page.goto(`/projects/${project.id}`);
   const panel = await editor(page);
+  await panel.getByRole('button', { name: 'Skill 配置', exact: true }).click();
   await panel.getByRole('button', { name: '优化提示词', exact: true }).click();
   await expect(panel.getByRole('alert')).toContainText('缺少提示词文字');
   await expect(panel.getByRole('button', { name: '优化提示词', exact: true })).toBeEnabled();
@@ -540,6 +663,7 @@ test('工作台增改查复制启停删除，所有节点同步目录', async ({
   const fixture = await installFixture(page);
   await page.goto(`/projects/${project.id}`);
   const panel = await editor(page);
+  await panel.getByRole('button', { name: 'Skill 配置', exact: true }).click();
   await panel.getByRole('button', { name: '技能工作台', exact: true }).click();
   const workbench = page.getByRole('dialog', { name: 'Skill 工作台', exact: true });
   await expect(workbench.getByRole('textbox', { name: '指令', exact: true })).toHaveAttribute(
@@ -589,6 +713,7 @@ test('工作台增改查复制启停删除，所有节点同步目录', async ({
     workbench.getByRole('button', { name: '悬疑节奏修订（副本）', exact: true }),
   ).toHaveCount(0);
   await workbench.getByRole('button', { name: '关闭 Skill 工作台' }).click();
+  await panel.getByRole('button', { name: 'Skill 配置', exact: true }).click();
   await panel.getByRole('combobox', { name: '提示词 Skill', exact: true }).click();
   await page.getByRole('option', { name: '悬疑节奏修订', exact: true }).click();
   await expect(panel.getByRole('combobox', { name: '提示词 Skill', exact: true })).toContainText(

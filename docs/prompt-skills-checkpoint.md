@@ -58,6 +58,21 @@ Skill 保存稳定 ID 和版本，源自 `G:/novel-studio/doument-canvas` 的漫
 
 正式数据库部署需先备份，再执行 `pnpm exec prisma migrate deploy`；本轮仅验收隔离库。无数据库时 `.data/prompt-skills.json` 按 API 工作目录保存，仅支持单进程，不适用生产多实例。Skill 提交的项目级并发保护限同一 API 实例；跨实例严格运行配额仍需数据库/分布式原子准入，不属于本轮共享库 CRUD 的保证。真实 Provider 效果与费用未验收，未发送新的收费请求。原有 Vite 大包警告保留；手机适配后置。
 
+## 2026-09-18 配置收纳（完成）
+
+- P1：Skill 分类、优化模型、工作台入口和优化命令收进 Skill 按钮的悬停浮层，点击可固定；关闭不影响任务或结果预览。
+- 输入框宽度由 520px 增加到 570px，保持画布边界限制和节点四周避让。仅改 PC Web UI，不变更接口、存储或收费调用。
+- 起点 `bf08188`，分支 `codex/generate-to-new-node`；Node v24.12.0、pnpm 11.19.0，本地依赖齐全。原有用户修改 `docs/resource-input-compatibility.md` 不纳入任务。
+- 基线：`pnpm --filter @multimodal-canvas/web exec vitest run src/workspace/PromptSkillPanel.test.tsx src/workspace/NodeQuickEditor.test.tsx --reporter=dot`，2 文件 / 116 项通过。
+- 已完成浮层及宽度实现；配置关闭会卸载嵌套菜单，但保留模型选择、待确认请求及可编辑预览。修复窄视口宽度计算，正常空间为 570px，空间不足时保留 8px 边距和节点避让。
+- 首轮全仓 lint / typecheck / test / build 通过，Web 1058 项；首次浏览器专项 12/14 通过，发现 Dialog 捕获 Escape 提前关闭及禁用按钮失焦漏收起。已补焦点监听与 Dialog 关闭防护，并加入回归。
+- 最新命令：`pnpm --filter @multimodal-canvas/web test:e2e prompt-skills.spec.ts --workers=2 --output=../../test-results/skill-popover-e2e-fixed --reporter=line`，14/14 通过。三种 PC 尺寸截图已复查，1920px 视口验证实际编辑器宽度为 570px，页面/控制台错误零。
+- 开发启动 5173 无冲突，首页 HTTP 200；验收结束后停止本轮开发进程。重新启动沿用上文命令和 `http://127.0.0.1:5173/workspace`，未启动真实 Provider 或修改数据库。
+- 全量浏览器首轮 127 通过、3 条件跳过、2 中断：组拖动用例 Chromium 启动超时；四类媒体用例被补充测试文件触发的 Vite 重载打断。后续验收冻结源码与测试文件，仅重跑幂等检查。最后补上捕获阶段外部点击，保证编辑器阻止指针冒泡时空白区域也可关闭配置。
+- 冻结后全仓 `pnpm lint` / `pnpm typecheck` / `pnpm test` / `pnpm build` 全部通过，Web 1060 项；未变化模块使用 Turbo 缓存。API 66、Worker 3 条件用例仍跳过。最终浏览器复验 18/18 通过，包含全部 14 条 Skill 用例、两条中断用例和两条入口回归；日志为 `test-results/skill-popover-*-release.log`。结合全量首轮，129 条浏览器用例均获得通过记录，原有 3 条条件跳过不变。
+- 三种 PC 尺寸无配置裁切，完整 Dialog 与嵌套菜单依次关闭，模型/预览/任务身份不丢失。已复查 diff、格式和密钥/调试代码模式，无新增依赖或迁移；保留原有 Vite 大包警告和真实 Provider 效果未验收的限制。
+- 交付目标 `origin/codex/generate-to-new-node`，Tag `v2026.09.18-skill-popover`；仅包含本轮 Web UI、测试与检查点。回退本轮 UI 提交即可恢复旧布局，不影响既有 Skill 数据和提示词。
+
 ## 后置
 
 - 跨 API 实例及普通生成/Skill 混合竞争的严格运行配额原子准入。

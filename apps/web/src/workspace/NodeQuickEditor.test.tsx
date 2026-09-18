@@ -198,6 +198,7 @@ describe('NodeQuickEditor', () => {
       onPromptSkillChange: vi.fn(),
     });
     renderRaw(<NodeQuickEditor {...inputs} />);
+    await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
     expect(screen.getByRole('combobox', { name: '提示词 Skill' })).toBeDisabled();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '优化提示词' })).toBeDisabled();
@@ -206,9 +207,62 @@ describe('NodeQuickEditor', () => {
     await user.click(run);
     expect(inputs.onRun).toHaveBeenCalledOnce();
     await user.click(screen.getByRole('button', { name: '打开完整编辑器' }));
+    await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
     expect(screen.getByRole('combobox', { name: '提示词 Skill' })).toBeDisabled();
     expect(inputs.onPromptSkillChange).not.toHaveBeenCalled();
   });
+
+  it('快捷与完整编辑器的 Skill 默认收起，展开后共用原配置入口', async () => {
+    const user = userEvent.setup();
+    const fetcher = vi.fn();
+    vi.stubGlobal('fetch', fetcher);
+    const inputs = makeProps({
+      projectId: 'project-a',
+      onPromptSkillChange: vi.fn(),
+      onOpenSkillWorkbench: vi.fn(),
+    });
+    renderRaw(<NodeQuickEditor {...inputs} />);
+    expect(screen.getByRole('button', { name: 'Skill 配置' })).toHaveTextContent(/^Skill$/);
+    expect(screen.queryByRole('combobox', { name: '提示词 Skill' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: '优化模型' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '技能工作台' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '优化提示词' })).not.toBeInTheDocument();
+    await user.hover(screen.getByRole('button', { name: 'Skill 配置' }));
+    const settings = screen.getByRole('group', { name: 'Skill 配置' });
+    expect(settings).toHaveAttribute('popover', 'manual');
+    expect(within(settings).getByRole('combobox', { name: '提示词 Skill' })).toBeVisible();
+    expect(within(settings).getByRole('combobox', { name: '优化模型' })).toBeVisible();
+    await user.click(within(settings).getByRole('button', { name: '技能工作台' }));
+    expect(inputs.onOpenSkillWorkbench).toHaveBeenCalledOnce();
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+
+    await user.click(screen.getByRole('button', { name: '打开完整编辑器' }));
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('button', { name: 'Skill 配置' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    expect(within(dialog).queryByRole('group', { name: 'Skill 配置' })).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'Skill 配置' }));
+    const expanded = within(dialog).getByRole('group', { name: 'Skill 配置' });
+    await user.click(within(expanded).getByRole('combobox', { name: '提示词 Skill' }));
+    await user.click(screen.getByRole('option', { name: '生成人物' }));
+    expect(inputs.onPromptSkillChange).toHaveBeenCalledWith('character');
+    await user.click(within(expanded).getByRole('combobox', { name: '提示词 Skill' }));
+    await user.keyboard('{Escape}');
+    expect(dialog).toBeVisible();
+    expect(screen.queryByRole('listbox', { name: 'Skill选项' })).not.toBeInTheDocument();
+    expect(expanded).toBeVisible();
+    await user.keyboard('{Escape}');
+    expect(dialog).toBeVisible();
+    expect(within(dialog).queryByRole('group', { name: 'Skill 配置' })).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'Skill 配置' }));
+    await user.click(within(dialog).getByRole('textbox', { name: '提示词' }));
+    expect(within(dialog).queryByRole('group', { name: 'Skill 配置' })).not.toBeInTheDocument();
+    expect(dialog).toBeVisible();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it.each(['text', 'image', 'audio', 'video'] as const)(
     '%s 节点显示独立生成数量，历史节点默认一份且不使用新的全局偏好',
     (mediaType) => {

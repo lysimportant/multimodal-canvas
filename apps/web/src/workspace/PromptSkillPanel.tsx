@@ -24,6 +24,7 @@ import {
   type PromptOptimizationRequest,
 } from '../prompt-skills';
 import { CompactSelect, type CompactSelectOption } from './CompactSelect';
+import { PromptSkillSettings } from './PromptSkillSettings';
 import { API_BASE_URL, type ModelEntry } from './contracts';
 import './prompt-skill-panel.css';
 
@@ -332,34 +333,49 @@ function PromptSkillPanelSession({
         event.stopPropagation();
       }}
     >
-      <div className="prompt-skill-controls">
-        <CompactSelect
-          label="Skill"
-          ariaLabel="提示词 Skill"
-          value={skillId && !skillAvailable ? undefined : (skillId ?? '')}
-          options={skillOptions}
-          onChange={(id) => onSkillChange(id || undefined)}
-          placeholder={
-            skillsLoading ? 'Skill 目录加载中' : skillId ? 'Skill 不可用' : '不使用 Skill'
-          }
-          disabled={disabled || skillsLoading}
-          floating
-          placement="top"
-        />
-        {onOpenWorkbench && (
-          <span className="prompt-skill-workbench">
-            <button
-              type="button"
-              className="button button-secondary"
-              aria-label="技能工作台"
-              onClick={onOpenWorkbench}
-            >
-              <Settings2 size={15} aria-hidden="true" />
-            </button>
-            <span className="prompt-skill-workbench-tip" role="tooltip">
-              技能工作台
+      <PromptSkillSettings selected={!!skillId}>
+        <div className="prompt-skill-controls">
+          <CompactSelect
+            label="Skill"
+            ariaLabel="提示词 Skill"
+            value={skillId && !skillAvailable ? undefined : (skillId ?? '')}
+            options={skillOptions}
+            onChange={(id) => onSkillChange(id || undefined)}
+            placeholder={
+              skillsLoading ? 'Skill 目录加载中' : skillId ? 'Skill 不可用' : '不使用 Skill'
+            }
+            disabled={disabled || skillsLoading}
+            floating
+            placement="top"
+          />
+          {onOpenWorkbench && (
+            <span className="prompt-skill-workbench">
+              <button
+                type="button"
+                className="button button-secondary"
+                aria-label="技能工作台"
+                title="技能工作台"
+                onClick={onOpenWorkbench}
+              >
+                <Settings2 size={15} aria-hidden="true" />
+              </button>
+              <span className="prompt-skill-workbench-tip" role="tooltip">
+                技能工作台
+              </span>
             </span>
-          </span>
+          )}
+        </div>
+        {textModels.length > 0 && (
+          <CompactSelect
+            label="优化模型"
+            ariaLabel="优化模型"
+            value={modelKey}
+            options={modelOptions}
+            onChange={setModelKey}
+            disabled={disabled || busy || !!pending}
+            floating
+            placement="top"
+          />
         )}
         <button
           type="button"
@@ -383,19 +399,7 @@ function PromptSkillPanelSession({
           )}
           {busy ? '优化中' : '优化提示词'}
         </button>
-      </div>
-      {textModels.length > 0 && (
-        <CompactSelect
-          label="优化模型"
-          ariaLabel="优化模型"
-          value={modelKey}
-          options={modelOptions}
-          onChange={setModelKey}
-          disabled={disabled || busy || !!pending}
-          floating
-          placement="top"
-        />
-      )}
+      </PromptSkillSettings>
       {!projectId && <p className="prompt-skill-status">保存项目后可优化提示词</p>}
       {skillsLoading && (
         <p className="prompt-skill-status" role="status">

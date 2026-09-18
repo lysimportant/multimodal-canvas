@@ -1040,7 +1040,14 @@ export function NodeQuickEditor({
               expandTriggerRef.current?.focus();
             }}
             onEscapeKeyDown={(event) => {
-              if (isImeKeyboardEvent(event)) event.preventDefault();
+              // Radix 在捕获阶段处理 Escape，先让展开的 Skill 配置消费它。
+              if (
+                isImeKeyboardEvent(event) ||
+                document.querySelector(
+                  '.node-quick-editor-dialog .prompt-skill-trigger[aria-expanded="true"]',
+                )
+              )
+                event.preventDefault();
             }}
             onPointerDown={(event) => event.stopPropagation()}
           >

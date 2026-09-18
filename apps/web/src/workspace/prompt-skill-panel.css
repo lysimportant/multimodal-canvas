@@ -14,9 +14,64 @@
   min-width: 0;
 }
 
+.prompt-skill-settings {
+  width: max-content;
+  max-width: 100%;
+}
+
+.prompt-skill-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--mc-text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.prompt-skill-trigger[data-selected],
+.prompt-skill-trigger:hover,
+.prompt-skill-trigger[aria-expanded='true'] {
+  background: var(--mc-surface-soft);
+  color: var(--mc-text);
+}
+
+.prompt-skill-trigger:focus-visible {
+  outline: 2px solid var(--mc-accent);
+  outline-offset: 2px;
+}
+
+.prompt-skill-settings-popover {
+  box-sizing: border-box;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--mc-border);
+  border-radius: 8px;
+  background: var(--mc-surface);
+  color: var(--mc-text);
+  font-size: 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 14%);
+}
+
+.prompt-skill-settings-popover[hidden] {
+  display: none;
+}
+
 .prompt-skill-controls > .compact-select {
-  flex: 1 1 150px;
+  flex: 1 1 190px;
   min-width: 0;
+}
+
+.prompt-skill-optimize {
+  width: 100%;
 }
 
 .prompt-skill-panel .button {
@@ -127,9 +182,8 @@
 .prompt-skill-workbench-tip {
   display: none;
   position: absolute;
-  bottom: calc(100% + 6px);
-  left: 50%;
-  transform: translateX(-50%);
+  top: calc(100% + 6px);
+  right: 0;
   z-index: 2;
   white-space: nowrap;
   padding: 5px 8px;

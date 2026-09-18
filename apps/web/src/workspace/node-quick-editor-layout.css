@@ -1,7 +1,7 @@
 /* 快速编辑器在桌面端给提示词和视频模式留出稳定空间；内容只在输入区内部滚动。 */
 .quick-editor-overlay > .node-quick-editor {
-  max-width: min(620px, calc(100vw - 32px));
-  width: min(620px, calc(100vw - 32px));
+  max-width: 100%;
+  width: 100%;
 }
 
 .node-quick-editor .node-quick-editor-prompt textarea {
