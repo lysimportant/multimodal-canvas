@@ -49,6 +49,8 @@ type PersistedCredential = PersistedAiSettings & {
   version: number;
   /** 逻辑删除标记；仅禁止新选择，精确任务快照仍可读取密文。 */
   deleted?: boolean;
+  /** 独立连接不依赖全局活动 Key；旧记录缺省保持原有全局历史语义。 */
+  independent?: boolean;
 };
 
 /** 本地 AI 设置文件的版本化结构。 */
@@ -211,7 +213,7 @@ export class FileAiSettingsStore implements AiSettingsStoreLike {
   /**
    * 新增一条不激活的独立凭据记录并写入本地文件。
    *
-   * 相同地址与 Key 已保存时复用现有记录；活动连接引用与全局默认模型保持不变。
+   * 相同地址与 Key 的独立记录复用摘要中的版本；全局历史、活动引用和默认模型保持不变。
    *
    * @throws TypeError `apiKey`/`baseUrl` 无法确定或同时请求全局变更时抛出。
    */
@@ -219,13 +221,14 @@ export class FileAiSettingsStore implements AiSettingsStoreLike {
     input: UpdateAiSettingsInput,
   ): Promise<AiSettingsUpdateResult> {
     const resolved = resolveIndependentCredentialInput(input, this.requireMemory().get().baseUrl);
-    const existing = [...this.credentials.values()].find(
+    const summary = this.currentSummaries().find(
       (credential) =>
-        !credential.deleted &&
+        this.credentials.get(credential.id)?.independent &&
         credential.baseUrl === resolved.baseUrl &&
         credential.keyFingerprint === resolved.keyFingerprint,
     );
-    if (existing) {
+    const existing = summary ? this.credentials.get(summary.id) : undefined;
+    if (existing?.independent) {
       return { ...this.requireMemory().get(), createdCredentialId: existing.id };
     }
 
@@ -240,6 +243,7 @@ export class FileAiSettingsStore implements AiSettingsStoreLike {
         encryptionKeyId: keyring.currentKeyId,
         keyFingerprint: resolved.keyFingerprint,
         defaultModels: {},
+        independent: true,
         updatedAt: new Date().toISOString(),
       };
       this.credentials.set(credential.id, credential);
@@ -331,12 +335,21 @@ export class FileAiSettingsStore implements AiSettingsStoreLike {
     });
   }
 
-  /** 判断凭据是否仍可用于新任务；撤销活动凭据后历史版本不能用于新任务。 */
+  /** 判断显式连接是否可用于新任务；独立连接不依赖全局活动 Key。 */
   async hasCredential(credentialId: string): Promise<boolean> {
     await this.ready;
     await this.writeQueue;
+    return this.hasLoadedCredential(credentialId);
+  }
+
+  /** 在写入队列内部复用可用性检查，避免等待当前操作自身。 */
+  private hasLoadedCredential(credentialId: string): boolean {
     const credential = this.credentials.get(credentialId);
-    return this.requireMemory().get().configured && Boolean(credential && !credential.deleted);
+    return Boolean(
+      credential &&
+      !credential.deleted &&
+      (credential.independent || this.requireMemory().get().configured),
+    );
   }
 
   /** 使用当前活动凭据测试上游模型服务连通性。 */
@@ -392,7 +405,7 @@ export class FileAiSettingsStore implements AiSettingsStoreLike {
     if (!credentialId || credentialId === this.activeCredential.credentialId) {
       return { ...this.activeCredential };
     }
-    if (!this.requireMemory().get().configured) {
+    if (!this.hasLoadedCredential(credentialId)) {
       throw new AiCredentialNotFoundError(credentialId);
     }
     const credential = this.credentials.get(credentialId);
@@ -554,7 +567,9 @@ export class FileAiSettingsStore implements AiSettingsStoreLike {
     }
     const credential = this.credentials.get(resolvedCredentialId);
     const providerCredentials =
-      credential && !credential.deleted ? this.credentialsFor(credential) : undefined;
+      credential && this.hasLoadedCredential(resolvedCredentialId)
+        ? this.credentialsFor(credential)
+        : undefined;
     if (!providerCredentials) {
       if (credentialId) throw new AiCredentialNotFoundError(credentialId);
       throw new Error('New API 地址和 Key 尚未配置');
@@ -768,6 +783,7 @@ function cloneModels(models: ModelCatalogEntry[]): ModelCatalogEntry[] {
   return structuredClone(models);
 }
 
+/** 按用途保留独立连接和当前活动连接，同一地址与 Key 的其他全局历史不重复列出。 */
 function summarizeCredentials(
   credentials: PersistedCredential[],
   activeCredentialId?: string,
@@ -780,6 +796,7 @@ function summarizeCredentials(
         id: credential.id,
         baseUrl: credential.baseUrl,
         keyFingerprint: credential.keyFingerprint,
+        independent: credential.independent === true,
         updatedAt: credential.updatedAt,
         ...(Object.keys(defaultModels).length > 0 ? { defaultModels } : {}),
       };
@@ -787,13 +804,22 @@ function summarizeCredentials(
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   const deduplicated = new Map<string, (typeof sorted)[number]>();
   for (const credential of sorted) {
-    const key = `${credential.baseUrl}\0${credential.keyFingerprint}`;
+    const key = `${credential.baseUrl}\0${credential.keyFingerprint}\0${credential.independent}`;
     if (!deduplicated.has(key) || credential.id === activeCredentialId) {
       deduplicated.set(key, credential);
     }
   }
   return [...deduplicated.values()]
-    .map((credential) => ({ ...credential, active: credential.id === activeCredentialId }))
+    .filter(
+      (credential) =>
+        credential.independent ||
+        credential.id === activeCredentialId ||
+        !deduplicated.has(`${credential.baseUrl}\0${credential.keyFingerprint}\0true`),
+    )
+    .map(({ independent: _independent, ...credential }) => ({
+      ...credential,
+      active: credential.id === activeCredentialId,
+    }))
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
@@ -845,6 +871,7 @@ function isPersistedFileAiSettingsStore(value: unknown): value is PersistedFileA
 function isPersistedCredential(value: unknown): value is PersistedCredential {
   if (!isRecord(value)) return false;
   if (value.deleted !== undefined && typeof value.deleted !== 'boolean') return false;
+  if (value.independent !== undefined && typeof value.independent !== 'boolean') return false;
   const version = value.version;
   return (
     typeof value.id === 'string' &&

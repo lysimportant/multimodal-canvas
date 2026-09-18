@@ -45,6 +45,7 @@ afterEach(async () => {
 
 describe('本地文字资源到 Chat Completions', () => {
   it.each([
+    { kind: 'mention', mediaType: 'text', outcome: 'independent-success' },
     { kind: 'mention', mediaType: 'text', outcome: 'success' },
     { kind: 'mention', mediaType: 'image', outcome: 'success' },
     { kind: 'mention', mediaType: 'audio', outcome: 'success' },
@@ -92,8 +93,13 @@ describe('本地文字资源到 Chat Completions', () => {
     settingsStore.update({
       baseUrl: 'https://newapi.example.test/v1',
       apiKey: 'synthetic-local-text-key',
+      ...(outcome === 'independent-success' ? { activate: false } : {}),
     });
     const credential = settingsStore.listCredentials()[0]!;
+    if (outcome === 'independent-success') {
+      expect(settingsStore.get().configured).toBe(false);
+      expect(credential.active).toBe(false);
+    }
     settingsStore.replaceModels(
       [
         {
@@ -255,7 +261,11 @@ describe('本地文字资源到 Chat Completions', () => {
         snapshot: { data: { contentUrl: `/v1/assets/${asset.id}/versions/1/content` } },
       });
     }
-    if (outcome !== 'success' && outcome !== 'provider-rejected') {
+    if (
+      outcome !== 'success' &&
+      outcome !== 'independent-success' &&
+      outcome !== 'provider-rejected'
+    ) {
       expect(run.status, JSON.stringify(run.error)).toBe(
         outcome === 'cancelled' ? 'cancelled' : 'failed',
       );

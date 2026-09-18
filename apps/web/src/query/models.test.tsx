@@ -6,6 +6,8 @@ import { createAppQueryClient } from './client';
 import { clearAuthSession, persistAuthSession, getAuthSessionGeneration } from '../auth-client';
 import { aiCredentialsQueryKey, replaceAiCredentials } from './credentials';
 import {
+  fetchModelCatalog,
+  refreshModelCatalog,
   modelCatalogQueryKey,
   modelCatalogQueryKeyFor,
   useModelCatalogQuery,
@@ -19,6 +21,18 @@ afterEach(() => {
 });
 
 describe('model catalog query', () => {
+  it.each(['read', 'refresh'])('%s 缺失凭据时给出明确中文恢复提示', async (operation) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(Response.json({ error: 'credential not found' }, { status: 404 })),
+    );
+    const request =
+      operation === 'read'
+        ? fetchModelCatalog(undefined, 'missing')
+        : refreshModelCatalog('missing');
+    await expect(request).rejects.toThrow('连接凭据不存在或已删除，请重新保存连接后再刷新模型');
+  });
+
   it('删除 Key 清理其目录和活动回退缓存，同时保留其他 Key 的目录', async () => {
     const client = createAppQueryClient();
     const removed = {

@@ -459,6 +459,50 @@ integrationDescribe('凭据轮换与跨进程恢复（隔离 PostgreSQL）', () 
     }
   });
 
+  it('首次独立凭据无全局 Key 时立即刷新目录，另一实例可读取并解析', async () => {
+    await prisma.aiCredential.deleteMany();
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      Response.json({ data: [{ id: 'independent-text', mediaType: 'text' }] }),
+    );
+    const secret = 'synthetic-first-independent';
+    const writer = new PrismaAiSettingsStore(prisma, secret, { fetchImpl });
+    const reader = new PrismaAiSettingsStore(prisma, secret, { fetchImpl });
+    expect((await reader.get()).configured).toBe(false);
+    try {
+      const id = (
+        await writer.update({
+          baseUrl: 'https://independent.integration.test',
+          apiKey: 'synthetic-first-key',
+          activate: false,
+        })
+      ).createdCredentialId!;
+      expect(await reader.refreshModels(id)).toEqual([
+        expect.objectContaining({ id: 'independent-text', credentialId: id }),
+      ]);
+      expect(await writer.listModels('text', id)).toHaveLength(1);
+      expect(await reader.hasCredential(id)).toBe(true);
+      const reference = await reader.getCredentialReference(id);
+      expect(await reader.getProviderCredentials(reference)).toMatchObject({
+        apiKey: 'synthetic-first-key',
+      });
+      await writer.updateCredentialDefaults(id, {
+        text: { modelAlias: 'independent-text', credentialId: id },
+      });
+      expect((await reader.listCredentials())[0]?.defaultModels).toEqual({
+        text: { modelAlias: 'independent-text', credentialId: id },
+      });
+      expect(await reader.getCredentialReference()).toEqual({});
+      expect((await reader.get()).configured).toBe(false);
+      await writer.removeCredential(id);
+      expect(await reader.hasCredential(id)).toBe(false);
+      await expect(reader.refreshModels(id)).rejects.toThrow('not found');
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    } finally {
+      await writer.close();
+      await reader.close();
+    }
+  });
+
   it('新增独立凭据持久化为非活动行，重启实例后仍按 ID 可解析', async () => {
     await prisma.aiCredential.deleteMany();
     const settingsSecret = 'synthetic-independent-secret';

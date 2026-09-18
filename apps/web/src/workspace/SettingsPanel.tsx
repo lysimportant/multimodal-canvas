@@ -198,6 +198,10 @@ export function SettingsPanel({
   const [category, setCategory] = useState<SettingsCategory>('connections');
   /** 类型默认模型的编辑范围；没有项目上下文时只保留全局。 */
   const [scope, setScope] = useState<SettingsScope>('global');
+  /** 已保存但尚未绑定模型的连接；按编辑范围和媒体类型保留，刷新失败或收起编辑器不丢失。 */
+  const [pendingCredentials, setPendingCredentials] = useState<
+    Record<SettingsScope, Partial<Record<MediaType, string>>>
+  >({ global: {}, project: {} });
   const [projectDefaults, setProjectDefaults] = useState<ModelDefaults>({});
   const [defaultsLoading, setDefaultsLoading] = useState(false);
   const [defaultsError, setDefaultsError] = useState<string | null>(null);
@@ -709,11 +713,14 @@ export function SettingsPanel({
             ? resolved.credentialId
             : undefined;
         const rowCredentialId = explicitCredentialId ?? boundCredentialId ?? resolvedCredentialId;
+        const pendingCredentialId = pendingCredentials[scope][mediaType];
         return {
           mediaType,
           resolved,
           explicitCredentialId: rowCredentialId,
-          scopeCredentialId: rowCredentialId ?? resolved.credentialId ?? currentCredentialId,
+          pendingCredentialId,
+          scopeCredentialId:
+            pendingCredentialId ?? rowCredentialId ?? resolved.credentialId ?? currentCredentialId,
           /**
            * 当前范围是否写了显式覆盖。只有项目范围才存在「上一层」，
            * 全局范围本身就是默认值层，因此它的值不算覆盖。
@@ -738,6 +745,7 @@ export function SettingsPanel({
       credentials,
       currentCredentialId,
       projectDefaults,
+      pendingCredentials,
       scope,
       settings.defaultModels,
     ],
@@ -791,22 +799,21 @@ export function SettingsPanel({
     videoCatalogQuery.data,
   ]);
 
-  /**
-   * 取某一行应展示的候选模型。
-   *
-   * 来源凭据优先；它自己的目录尚未返回时回落到活动凭据目录，
-   * 这样刚改绑连接的那一行不会突然清空候选，也不会误换模型。
-   */
+  /** 只展示该行所选凭据的目录；目录未加载或为空时不借用其他连接的模型。 */
   const modelsForRow = useCallback(
-    (credentialId?: string) => {
-      const own = credentialId ? modelsByCredential.get(credentialId) : undefined;
-      const active = currentCredentialId ? modelsByCredential.get(currentCredentialId) : undefined;
-      if (!credentialId) return active ?? [];
-      if (own && own.length > 0) return own;
-      return active ?? own ?? [];
-    },
-    [currentCredentialId, modelsByCredential],
+    (credentialId?: string) => (credentialId ? (modelsByCredential.get(credentialId) ?? []) : []),
+    [modelsByCredential],
   );
+
+  /** 保留或清除当前范围的待绑定连接；仅保存 ID，不持有已提交的 Key。 */
+  const selectPendingCredential = (mediaType: MediaType, credentialId?: string) => {
+    setPendingCredentials((current) => {
+      const next = { ...current[scope] };
+      if (credentialId) next[mediaType] = credentialId;
+      else delete next[mediaType];
+      return { ...current, [scope]: next };
+    });
+  };
 
   /** 打开某一行的连接配置；默认沿用该行当前生效的地址。 */
   const configureConnection = (mediaType: MediaType, credentialId?: string) => {
@@ -819,6 +826,16 @@ export function SettingsPanel({
     const credential = findCredential(credentials, credentialId);
     setExpandedType(mediaType);
     setDraft(emptyDraft(credential?.baseUrl ?? settings.baseUrl));
+    setDraftResetKey((current) => current + 1);
+    setConnectionStatus(undefined);
+    setRefreshStatus(undefined);
+  };
+
+  /** 取消当前行的独立连接编辑，只丢弃未提交草稿，不影响已保存连接。 */
+  const cancelConnectionConfiguration = () => {
+    if (rowOperation !== null) return;
+    setExpandedType(null);
+    setDraft(emptyDraft(''));
     setDraftResetKey((current) => current + 1);
     setConnectionStatus(undefined);
     setRefreshStatus(undefined);
@@ -879,6 +896,7 @@ export function SettingsPanel({
           applyGlobalDefaults(updated?.defaultModels ?? {});
         }
       }
+      selectPendingCredential(mediaType);
       const writtenCredential = findCredential(credentials, credentialId);
       reportNotice({
         kind: 'success',
@@ -916,20 +934,15 @@ export function SettingsPanel({
   };
 
   /**
-   * 把某一行的类型默认改绑到指定凭据（`undefined` 表示当前活动连接）。
+   * 选择某一行待绑定的凭据目录（`undefined` 表示恢复当前来源）。
    *
-   * 只有已经解析出模型 ID 时才允许改绑，避免写出「有 Key 没有模型」的半成品状态。
+   * 等待用户从该目录确认模型后再保存默认值，避免把旧连接的模型写到新连接。
    *
    * @param mediaType 需要改绑的媒体类型。
    * @param credentialId 目标凭据 ID。
    */
-  const bindRowCredential = async (mediaType: MediaType, credentialId: string | undefined) => {
-    const modelAlias = rows.find((row) => row.mediaType === mediaType)?.resolved.modelAlias;
-    if (!modelAlias) {
-      reportNotice({ kind: 'error', message: '请先选择模型，再决定使用哪个连接' });
-      return;
-    }
-    await persistDefault(mediaType, modelAlias, credentialId);
+  const bindRowCredential = (mediaType: MediaType, credentialId: string | undefined) => {
+    selectPendingCredential(mediaType, credentialId);
   };
 
   /**
@@ -972,6 +985,7 @@ export function SettingsPanel({
         const updated = nextCredentials.find((entry) => entry.id === currentCredentialId);
         applyGlobalDefaults(updated?.defaultModels ?? {});
       }
+      selectPendingCredential(mediaType);
       setExpandedType((current) => (current === mediaType ? null : current));
       reportNotice({
         kind: 'success',
@@ -989,10 +1003,10 @@ export function SettingsPanel({
   };
 
   /**
-   * 保存展开行的独立连接，随后绑定该类型默认并刷新它的模型目录。
+   * 保存展开行的独立连接 ID，刷新该目录后只沿用仍支持当前媒体类型的原模型。
    *
    * 创建独立凭据不会切换全局活动连接；保存结果与随后的模型刷新结果分别记录，
-   * 刷新失败时保留草稿与已保存连接。
+   * 刷新或绑定失败时保留 ID 供重试与选模，保存成功即清空 Key，不自动选择其他模型。
    */
   const saveIndependentConnection = async (mediaType: MediaType) => {
     const baseUrl = draft.baseUrl.trim();
@@ -1016,21 +1030,52 @@ export function SettingsPanel({
     const generation = getAuthSessionGeneration();
     setConnectionStatus(undefined);
     setRefreshStatus(undefined);
-    /**
-     * 在创建凭据之前取出当前解析到的模型：新凭据加入后该行会改为引用它，
-     * 而它的目录此时还是空的，之后再取就会丢失要绑定的模型 ID。
-     */
+    /** 只尝试沿用保存前的模型；必须由新目录确认模型 ID、媒体类型及凭据来源。 */
     const boundAlias = rows.find((row) => row.mediaType === mediaType)?.resolved.modelAlias;
-    let createdCredentialId: string | undefined;
     try {
       const created = await createIndependentCredentialMutation.mutateAsync({
         ...(baseUrl ? { baseUrl } : {}),
         apiKey,
       });
       if (!isCurrentRequest(generation)) return;
-      createdCredentialId = created.credentialId;
+      const createdCredentialId = created.credentialId;
+      selectPendingCredential(mediaType, createdCredentialId);
       setDraft((current) => ({ ...current, apiKey: '', revealKey: false, submitted: true }));
       setDraftResetKey((current) => current + 1);
+      setConnectionStatus({
+        kind: 'success',
+        message: '连接已保存为独立凭据，未切换全局活动连接',
+      });
+      rowOperationRef.current = 'refreshing';
+      setRowOperation('refreshing');
+      let refreshedModels: ModelEntry[];
+      try {
+        refreshedModels = await refreshModelCatalogMutation.mutateAsync(createdCredentialId);
+        if (!isCurrentRequest(generation)) return;
+        setRefreshStatus({ kind: 'success', message: '模型列表已刷新' });
+      } catch (error) {
+        if (!isCurrentRequest(generation)) return;
+        setRefreshStatus({
+          kind: 'error',
+          message: `刷新失败：${
+            error instanceof Error ? error.message : '上游暂不可用'
+          }。连接已保存，可直接重试刷新，无需重新输入 Key`,
+        });
+        return;
+      }
+      if (
+        boundAlias &&
+        refreshedModels.some(
+          (model) =>
+            model.id === boundAlias &&
+            model.credentialId === createdCredentialId &&
+            model.mediaTypes.includes(mediaType),
+        )
+      ) {
+        rowOperationRef.current = 'saving';
+        setRowOperation('saving');
+        await saveDefaultForType(mediaType, boundAlias, createdCredentialId);
+      }
     } catch (error) {
       if (!isCurrentRequest(generation)) return;
       setConnectionStatus({
@@ -1041,40 +1086,11 @@ export function SettingsPanel({
     } finally {
       finishRowOperation();
     }
-    if (boundAlias) {
-      if (!beginRowOperation('saving')) return;
-      try {
-        await saveDefaultForType(mediaType, boundAlias, createdCredentialId);
-      } finally {
-        finishRowOperation();
-      }
-    }
-    if (!isCurrentRequest(generation)) return;
-    setConnectionStatus({
-      kind: 'success',
-      message: '连接已保存为独立凭据，未切换全局活动连接',
-    });
-    if (!beginRowOperation('refreshing')) return;
-    try {
-      await refreshModelCatalogMutation.mutateAsync(createdCredentialId);
-      if (!isCurrentRequest(generation)) return;
-      setRefreshStatus({ kind: 'success', message: '模型列表已刷新' });
-    } catch (error) {
-      if (!isCurrentRequest(generation)) return;
-      setRefreshStatus({
-        kind: 'error',
-        message: `刷新失败：${
-          error instanceof Error ? error.message : '上游暂不可用'
-        }。连接已保存，草稿保留，可稍后重试`,
-      });
-    } finally {
-      finishRowOperation();
-    }
   };
 
   /** 只用该凭据自己的 ID 刷新模型目录，等待期间不切换全局 Key。 */
   const refreshRowModels = async (credentialId?: string) => {
-    const targetCredentialId = credentialId ?? currentCredentialId;
+    const targetCredentialId = credentialId;
     if (!targetCredentialId) {
       setRefreshStatus({ kind: 'error', message: '请先保存连接再刷新模型' });
       return;
@@ -1294,6 +1310,7 @@ export function SettingsPanel({
                   variant={scope === 'global' ? 'default' : 'secondary'}
                   size="sm"
                   aria-pressed={scope === 'global'}
+                  disabled={busy || rowOperation !== null}
                   onClick={() => setScope('global')}
                 >
                   全局
@@ -1303,7 +1320,7 @@ export function SettingsPanel({
                   variant={scope === 'project' ? 'default' : 'secondary'}
                   size="sm"
                   aria-pressed={scope === 'project'}
-                  disabled={!projectId}
+                  disabled={!projectId || busy || rowOperation !== null}
                   title={projectId ? undefined : '没有项目上下文时只能编辑平台全局默认'}
                   onClick={() => setScope('project')}
                 >
@@ -1321,11 +1338,12 @@ export function SettingsPanel({
                 </p>
               )}
               <ul className="settings-default-rows">
-                {rows.map((row) => {
+                {rows.map((row, rowIndex) => {
                   const Icon = mediaIcons[row.mediaType];
                   const expanded = expandedType === row.mediaType;
                   /** 该行绑定到哪个凭据：显式引用优先，否则是解析结果里的来源凭据。 */
                   const rowCredentialId = row.scopeCredentialId;
+                  const selectedCredentialId = row.pendingCredentialId ?? row.explicitCredentialId;
                   const choices = modelChoicesForMediaType(
                     modelsForRow(rowCredentialId),
                     row.mediaType,
@@ -1347,15 +1365,40 @@ export function SettingsPanel({
                         <label className="settings-field settings-default-model">
                           <span>默认模型</span>
                           <SettingsModelPicker
+                            key={rowCredentialId ?? 'unconfigured'}
                             ariaLabel={`${mediaDefaultLabels[row.mediaType]}默认模型`}
-                            value={row.resolved.modelAlias}
+                            value={row.pendingCredentialId ? undefined : row.resolved.modelAlias}
                             choices={choices}
                             invalid={Boolean(row.resolved.invalidReason)}
-                            disabled={!canManageAiSettings || defaultsLoading}
+                            disabled={
+                              !canManageAiSettings ||
+                              defaultsLoading ||
+                              busy ||
+                              rowOperation !== null
+                            }
                             onCommit={(modelAlias, credentialId) => {
-                              void persistDefault(row.mediaType, modelAlias, credentialId);
+                              if (
+                                row.pendingCredentialId &&
+                                !choices.some((choice) => choice.value === modelAlias)
+                              ) {
+                                reportNotice({
+                                  kind: 'error',
+                                  message: '请选择该连接目录中支持当前类型的模型',
+                                });
+                                return;
+                              }
+                              void persistDefault(
+                                row.mediaType,
+                                modelAlias,
+                                credentialId ?? row.pendingCredentialId ?? row.explicitCredentialId,
+                              );
                             }}
                           />
+                          {rowCatalogQueries[rowIndex]?.error ? (
+                            <span className="settings-field-error" role="alert">
+                              {rowCatalogQueries[rowIndex]?.error?.message}
+                            </span>
+                          ) : null}
                         </label>
                         <span className="settings-default-source">
                           <span
@@ -1374,39 +1417,58 @@ export function SettingsPanel({
                                 type="radio"
                                 name={`settings-source-${row.mediaType}`}
                                 aria-label={`${mediaDefaultLabels[row.mediaType]}凭据来源：继承`}
-                                checked={!row.explicitCredentialId}
+                                checked={!selectedCredentialId && !expanded}
                                 disabled={
                                   !canManageAiSettings ||
                                   rowOperation !== null ||
-                                  (scope === 'global'
-                                    ? !row.explicitCredentialId
-                                    : !row.hasOverride)
+                                  (!row.pendingCredentialId &&
+                                    (scope === 'global'
+                                      ? !row.explicitCredentialId
+                                      : !row.hasOverride))
                                 }
-                                onChange={() => void restoreInheritance(row.mediaType)}
+                                onChange={() =>
+                                  row.pendingCredentialId
+                                    ? selectPendingCredential(row.mediaType)
+                                    : void restoreInheritance(row.mediaType)
+                                }
                               />
                               继承
                             </label>
-                            {credentials.map((credential) => (
-                              <label className="settings-source-option" key={credential.id}>
-                                <input
-                                  type="radio"
-                                  name={`settings-source-${row.mediaType}`}
-                                  aria-label={`${mediaDefaultLabels[row.mediaType]}凭据来源：已保存连接 ${credential.keyFingerprint}`}
-                                  checked={row.explicitCredentialId === credential.id}
-                                  disabled={!canManageAiSettings || rowOperation !== null}
-                                  onChange={() =>
-                                    void bindRowCredential(row.mediaType, credential.id)
-                                  }
-                                />
-                                已保存连接 · {credential.keyFingerprint}
-                              </label>
-                            ))}
+                            {credentials.map((credential) => {
+                              const sameConnection = credentials.some(
+                                (other) =>
+                                  other.id !== credential.id &&
+                                  other.baseUrl === credential.baseUrl &&
+                                  other.keyFingerprint === credential.keyFingerprint,
+                              );
+                              const sourceSuffix = sameConnection
+                                ? credential.active
+                                  ? '（当前全局）'
+                                  : '（独立连接）'
+                                : '';
+                              return (
+                                <label className="settings-source-option" key={credential.id}>
+                                  <input
+                                    type="radio"
+                                    name={`settings-source-${row.mediaType}`}
+                                    aria-label={`${mediaDefaultLabels[row.mediaType]}凭据来源：已保存连接 ${credential.keyFingerprint}${sourceSuffix}`}
+                                    checked={selectedCredentialId === credential.id}
+                                    disabled={!canManageAiSettings || rowOperation !== null}
+                                    onChange={() =>
+                                      void bindRowCredential(row.mediaType, credential.id)
+                                    }
+                                  />
+                                  已保存连接 · {credential.keyFingerprint}
+                                  {sourceSuffix}
+                                </label>
+                              );
+                            })}
                             <label className="settings-source-option">
                               <input
                                 type="radio"
                                 name={`settings-source-${row.mediaType}`}
                                 aria-label={`${mediaDefaultLabels[row.mediaType]}凭据来源：独立连接`}
-                                checked={expanded && !row.explicitCredentialId}
+                                checked={expanded && !selectedCredentialId}
                                 disabled={!canManageAiSettings || rowOperation !== null}
                                 onChange={() => configureConnection(row.mediaType)}
                               />
@@ -1414,10 +1476,18 @@ export function SettingsPanel({
                             </label>
                           </span>
                           <SettingsSourceSummary
-                            sourceLabel={mediaDefaultSourceLabel(row.resolved, {
-                              hasOverride: row.hasOverride,
-                            })}
-                            hint={mediaDefaultSourceHint(row.resolved)}
+                            sourceLabel={
+                              row.pendingCredentialId
+                                ? '连接已保存，待选择模型'
+                                : mediaDefaultSourceLabel(row.resolved, {
+                                    hasOverride: row.hasOverride,
+                                  })
+                            }
+                            hint={
+                              row.pendingCredentialId
+                                ? '选择模型后生效'
+                                : mediaDefaultSourceHint(row.resolved)
+                            }
                             {...(sourceCredential
                               ? { credentialLabel: credentialSourceLabel(sourceCredential) }
                               : {})}
@@ -1435,9 +1505,7 @@ export function SettingsPanel({
                             aria-label={`配置${mediaDefaultLabels[row.mediaType]}连接`}
                             title={`配置${mediaDefaultLabels[row.mediaType]}连接`}
                             disabled={!canManageAiSettings || rowOperation !== null}
-                            onClick={() =>
-                              configureConnection(row.mediaType, row.resolved.credentialId)
-                            }
+                            onClick={() => configureConnection(row.mediaType, rowCredentialId)}
                           >
                             <Link2 size={14} aria-hidden="true" />
                             配置连接
@@ -1473,7 +1541,9 @@ export function SettingsPanel({
                             <span>Base URL</span>
                             <Input
                               aria-label={`${mediaDefaultLabels[row.mediaType]}独立连接 Base URL`}
-                              placeholder={settings.baseUrl || 'https://newapi.example.com/v1'}
+                              placeholder={
+                                settings.baseUrl || 'https://api.example.com（自动补 /v1）'
+                              }
                               disabled={rowOperation !== null}
                               {...draftBaseUrlImeBinding}
                             />
@@ -1521,13 +1591,26 @@ export function SettingsPanel({
                             </Button>
                             <Button
                               type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="button button-secondary"
+                              disabled={rowOperation !== null}
+                              aria-label={`取消配置${mediaDefaultLabels[row.mediaType]}连接`}
+                              title={`取消配置${mediaDefaultLabels[row.mediaType]}连接`}
+                              onClick={cancelConnectionConfiguration}
+                            >
+                              <X size={14} aria-hidden="true" />
+                              取消
+                            </Button>
+                            <Button
+                              type="button"
                               variant="secondary"
                               className="button button-secondary"
-                              disabled={rowOperation !== null || !row.resolved.credentialId}
+                              disabled={rowOperation !== null || !rowCredentialId}
                               aria-busy={rowOperation === 'refreshing'}
                               aria-label={`刷新${mediaDefaultLabels[row.mediaType]}连接模型`}
                               title={`刷新${mediaDefaultLabels[row.mediaType]}连接模型`}
-                              onClick={() => void refreshRowModels(row.resolved.credentialId)}
+                              onClick={() => void refreshRowModels(rowCredentialId)}
                             >
                               {rowOperation === 'refreshing' && (
                                 <LoaderCircle className="spin" size={15} aria-hidden="true" />

@@ -253,6 +253,8 @@ export class AiSettingsStore {
       updatedAt: string;
       /** 该凭据自身的类型默认模型；活动凭据与全局默认视图保持一致。 */
       defaultModels: Partial<Record<MediaType, ModelSelection>>;
+      /** 独立连接可在没有全局活动 Key 时显式选择。 */
+      independent?: boolean;
     }
   >();
   private updatedAt = new Date().toISOString();
@@ -440,9 +442,7 @@ export class AiSettingsStore {
   }
 
   removeCredentials(): AiSettings {
-    // Keep immutable historical versions so queued/running snapshots can
-    // finish with the credential captured at submission time. The active
-    // reference is cleared, so new runs cannot resolve or use a credential.
+    // 清空全局活动引用，但保留不可变历史供已提交任务执行；独立连接仍须显式选择。
     this.baseUrl = '';
     this.encryptedApiKey = '';
     this.encryptionKeyId = undefined;
@@ -481,11 +481,10 @@ export class AiSettingsStore {
     return this.get();
   }
 
+  /** 判断显式连接能否用于新任务；独立连接不依赖全局配置，撤销的全局历史仍不可选。 */
   hasCredential(credentialId: string): boolean {
-    if (!this.credentialId || !this.credentialVersion || !this.baseUrl || !this.encryptedApiKey) {
-      return false;
-    }
-    return this.credentialRecords.has(credentialId);
+    const credential = this.credentialRecords.get(credentialId);
+    return Boolean(credential && (credential.independent || this.get().configured));
   }
 
   async testConnection(): Promise<{ ok: boolean; modelCount?: number; error?: string }> {
@@ -518,7 +517,8 @@ export class AiSettingsStore {
     const credential = resolvedCredentialId
       ? this.credentialRecords.get(resolvedCredentialId)
       : undefined;
-    if (credentialId && !credential) throw new AiCredentialNotFoundError(credentialId);
+    if (credentialId && !this.hasCredential(credentialId))
+      throw new AiCredentialNotFoundError(credentialId);
     const providerCredentials = credential
       ? { baseUrl: credential.baseUrl, apiKey: credential.apiKey }
       : this.getProviderCredentials();
@@ -635,7 +635,7 @@ export class AiSettingsStore {
 
   getCredentialReference(credentialId?: string): CredentialReference {
     if (credentialId) {
-      if (!this.credentialId || !this.credentialVersion || !this.baseUrl || !this.encryptedApiKey) {
+      if (!this.hasCredential(credentialId)) {
         throw new AiCredentialNotFoundError(credentialId);
       }
       const credential = this.credentialRecords.get(credentialId);
@@ -727,8 +727,8 @@ export class AiSettingsStore {
   /**
    * 新增一条不激活的独立凭据记录并返回其 ID。
    *
-   * 活动连接的 ID、版本、地址、指纹和类型默认模型保持不变；相同地址与 Key 已保存时
-   * 复用现有记录，使重复提交不会产生多条等价凭据。
+   * 活动连接的 ID、版本、地址、指纹和类型默认模型保持不变；只复用相同地址与 Key 的
+   * 独立记录，全局历史保留原有用途及冻结引用。
    *
    * @param input 设置更新输入，必须带 `activate: false` 和 `apiKey`。
    * @returns 未变更的活动设置视图，并附带新凭据或复用凭据的 ID。
@@ -738,6 +738,7 @@ export class AiSettingsStore {
     const resolved = resolveIndependentCredentialInput(input, this.baseUrl);
     const existing = [...this.credentialRecords.values()].find(
       (credential) =>
+        credential.independent &&
         credential.baseUrl === resolved.baseUrl &&
         credential.keyFingerprint === resolved.keyFingerprint,
     );
@@ -753,6 +754,7 @@ export class AiSettingsStore {
       keyFingerprint: resolved.keyFingerprint,
       updatedAt: new Date().toISOString(),
       defaultModels: {},
+      independent: true,
     });
     this.credentialHistory.set(
       credentialKey({ credentialId: id, credentialVersion: version }),
@@ -933,10 +935,9 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
   }
 
   /**
-   * 新增一条不激活的独立凭据行并返回其 ID；地址与 Key 已保存时复用现有行。
+   * 新增一条不激活的独立凭据行并返回其 ID；只复用同地址与 Key 的独立行。
    *
-   * 独立行带独立标记，不参与“最新行即活动连接”的选择，因此活动连接引用、版本、
-   * 地址、指纹和默认模型都不会变化。Key 明文只进入现有加密存储。
+   * 独立行不参与活动选择，全局活动引用、版本、密文及默认模型保持不变。
    */
   private async createIndependentCredential(
     input: UpdateAiSettingsInput,
@@ -947,9 +948,7 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
         projectId: null,
         baseUrl: resolved.baseUrl,
         keyFingerprint: resolved.keyFingerprint,
-        label: {
-          notIn: [INDEPENDENT_DELETED_CREDENTIAL_LABEL, 'deleted'],
-        },
+        label: INDEPENDENT_CREDENTIAL_LABEL,
       },
       orderBy: activeCredentialOrderBy,
     });
@@ -1134,14 +1133,13 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
     });
   }
 
-  /** 检查指定凭据是否可用于新任务；当前设置被撤销时历史凭据也不可新选。 */
+  /** 检查指定凭据是否可用于新任务；独立连接不依赖活动连接，撤销的全局历史仍不可选。 */
   async hasCredential(credentialId: string) {
     return this.withLatestSettings(() => this.hasLoadedCredential(credentialId));
   }
 
   /** 仅在已同步的串行操作中检查可选凭据，避免再次入队造成自等待。 */
   private async hasLoadedCredential(credentialId: string) {
-    if (!this.memory.get().configured) return false;
     if (credentialId === this.credentialReference.credentialId) {
       return true;
     }
@@ -1152,6 +1150,7 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
     return Boolean(
       credential?.baseUrl &&
       credential.encryptedApiKey &&
+      (this.memory.get().configured || credential.label === INDEPENDENT_CREDENTIAL_LABEL) &&
       !isDeletedCredentialLabel(credential.label),
     );
   }
@@ -1220,13 +1219,10 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
     return this.withLatestSettings(() => this.memory.resolveModel(mediaType, requestedAlias));
   }
 
-  /** 为新任务选择最新凭据版本；无活动连接时返回空引用，显式历史选择则报错。 */
+  /** 为新任务选择凭据版本；无活动连接时仍可显式选择独立连接，撤销或删除的历史选择报错。 */
   async getCredentialReference(credentialId?: string) {
     return this.withLatestSettings(async () => {
       if (credentialId && credentialId !== this.credentialReference.credentialId) {
-        if (!this.memory.get().configured) {
-          throw new AiCredentialNotFoundError(credentialId);
-        }
         const credential = await this.prisma.aiCredential.findFirst({
           where: { id: credentialId, projectId: null },
           select: { id: true, version: true, baseUrl: true, encryptedApiKey: true, label: true },
@@ -1234,6 +1230,7 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
         if (
           !credential?.baseUrl ||
           !credential.encryptedApiKey ||
+          (!this.memory.get().configured && credential.label !== INDEPENDENT_CREDENTIAL_LABEL) ||
           isDeletedCredentialLabel(credential.label)
         ) {
           throw new AiCredentialNotFoundError(credentialId);
@@ -1519,7 +1516,7 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
     providerCredentials: ProviderCredentials;
   }> {
     const resolvedCredentialId = credentialId ?? this.credentialReference.credentialId;
-    if (!this.memory.get().configured || !resolvedCredentialId) {
+    if (!resolvedCredentialId) {
       if (credentialId) throw new AiCredentialNotFoundError(credentialId);
       throw new Error('New API 地址和 Key 尚未配置');
     }
@@ -1535,6 +1532,7 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
       !credential?.baseUrl ||
       !credential.encryptedApiKey ||
       !credential.keyFingerprint ||
+      (!this.memory.get().configured && credential.label !== INDEPENDENT_CREDENTIAL_LABEL) ||
       isDeletedCredentialLabel(credential.label)
     ) {
       if (credentialId) throw new AiCredentialNotFoundError(credentialId);
@@ -1775,12 +1773,14 @@ function samePersistedSettings(left: PersistedAiSettings, right: PersistedAiSett
   );
 }
 
+/** 同连接优先独立记录并保留当前活动行；隐藏其他全局历史，不向 API 返回内部用途标记。 */
 function summarizeCredentials(
   credentials: Array<{
     id: string;
     baseUrl: string;
     keyFingerprint: string;
     label?: string;
+    independent?: boolean;
     updatedAt: string | Date;
     defaultModels?: unknown;
   }>,
@@ -1801,6 +1801,8 @@ function summarizeCredentials(
         id: credential.id,
         baseUrl: credential.baseUrl,
         keyFingerprint: credential.keyFingerprint,
+        independent:
+          credential.independent === true || credential.label === INDEPENDENT_CREDENTIAL_LABEL,
         updatedAt:
           credential.updatedAt instanceof Date
             ? credential.updatedAt.toISOString()
@@ -1812,12 +1814,20 @@ function summarizeCredentials(
   const deduplicated = new Map<string, (typeof sorted)[number]>();
   for (const credential of sorted) {
     const key = `${credential.baseUrl}\0${credential.keyFingerprint}`;
-    if (!deduplicated.has(key) || credential.id === activeCredentialId) {
+    const existing = deduplicated.get(key);
+    if (
+      !existing ||
+      (credential.independent && !existing.independent) ||
+      (!existing.independent && credential.id === activeCredentialId)
+    ) {
       deduplicated.set(key, credential);
     }
   }
-  return [...deduplicated.values()]
-    .map((credential) => ({
+  const visible = [...deduplicated.values()];
+  const active = sorted.find((credential) => credential.id === activeCredentialId);
+  if (active && !visible.some((credential) => credential.id === active.id)) visible.push(active);
+  return visible
+    .map(({ independent: _independent, ...credential }) => ({
       ...credential,
       active: credential.id === activeCredentialId,
     }))

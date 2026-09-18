@@ -10,6 +10,14 @@ export function modelCatalogQueryKeyFor(credentialId?: string) {
   return credentialId ? ([...modelCatalogQueryKey, credentialId] as const) : modelCatalogQueryKey;
 }
 
+/** 将服务端的缺失凭据错误转为可操作的中文提示，其他错误保留原有上下文。 */
+function catalogErrorMessage(error: string | undefined, fallback: string): string {
+  return error?.trim().toLowerCase() === 'credential not found'
+    ? '连接凭据不存在或已删除，请重新保存连接后再刷新模型'
+    : (error ?? fallback);
+}
+
+/** 按凭据 ID 读取模型目录；缺失凭据或加载失败时抛出错误，signal 可取消请求。 */
 export async function fetchModelCatalog(
   signal?: AbortSignal,
   credentialId?: string,
@@ -20,12 +28,14 @@ export async function fetchModelCatalog(
     models?: ModelEntry[];
     error?: string;
   };
-  if (!response.ok || !result.models) throw new Error(result.error ?? '模型列表加载失败');
+  if (!response.ok || !result.models)
+    throw new Error(catalogErrorMessage(result.error, '模型列表加载失败'));
   return result.models.map((model) =>
     credentialId && !model.credentialId ? { ...model, credentialId } : model,
   );
 }
 
+/** 刷新指定凭据的目录并返回带来源的模型；省略 ID 时刷新活动连接，失败时抛出错误。 */
 export async function refreshModelCatalog(credentialId?: string): Promise<ModelEntry[]> {
   const response = await apiFetch(`${API_BASE_URL}/v1/settings/ai/models/refresh`, {
     method: 'POST',
@@ -40,7 +50,8 @@ export async function refreshModelCatalog(credentialId?: string): Promise<ModelE
     models?: ModelEntry[];
     error?: string;
   };
-  if (!response.ok || !result.models) throw new Error(result.error ?? '模型刷新失败');
+  if (!response.ok || !result.models)
+    throw new Error(catalogErrorMessage(result.error, '模型刷新失败'));
   return result.models.map((model) =>
     credentialId && !model.credentialId ? { ...model, credentialId } : model,
   );

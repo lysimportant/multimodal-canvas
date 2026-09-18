@@ -2,6 +2,8 @@ import { createCipheriv, createHash, randomBytes, randomUUID } from 'node:crypto
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Prisma } from '@prisma/client';
+import type { ModelCatalog } from '@prisma/client';
+import { buildApp } from './app';
 
 import {
   AiCredentialNotFoundError,
@@ -1127,6 +1129,7 @@ type SyntheticCredentialRow = {
  */
 function createSyntheticSettingsDatabase() {
   const rows: SyntheticCredentialRow[] = [];
+  const catalog: ModelCatalog[] = [];
   let clock = Date.parse('2026-09-05T00:00:00.000Z');
   type Query = {
     where?: Record<string, unknown>;
@@ -1139,6 +1142,7 @@ function createSyntheticSettingsDatabase() {
     if (where.keyFingerprint !== undefined && row.keyFingerprint !== where.keyFingerprint)
       return false;
     if (where.version !== undefined && row.version !== where.version) return false;
+    if (typeof where.label === 'string' && row.label !== where.label) return false;
     const labelFilter = where.label as { not?: string; notIn?: string[] } | undefined;
     if (labelFilter?.not !== undefined && row.label === labelFilter.not) return false;
     if (labelFilter?.notIn?.includes(row.label)) return false;
@@ -1191,7 +1195,17 @@ function createSyntheticSettingsDatabase() {
   );
   const transaction = {
     aiCredential: { findFirst, findMany, create, update },
-    modelCatalog: { findMany: vi.fn(async () => []) },
+    modelCatalog: {
+      findMany: vi.fn(async () => structuredClone(catalog)),
+      deleteMany: vi.fn(async ({ where }: { where: { credentialId: string } }) => {
+        for (let index = catalog.length - 1; index >= 0; index -= 1) {
+          if (catalog[index]?.credentialId === where.credentialId) catalog.splice(index, 1);
+        }
+      }),
+      createMany: vi.fn(async ({ data }: { data: ModelCatalog[] }) => {
+        catalog.push(...structuredClone(data));
+      }),
+    },
     $executeRaw: vi.fn(async () => 0),
     $queryRaw: vi.fn(async () => [{ updatedAt: new Date(++clock) }]),
   };
@@ -1205,6 +1219,222 @@ function createSyntheticSettingsDatabase() {
 }
 
 describe('独立凭据与按凭据类型默认模型', () => {
+  it.each([
+    { kind: 'memory', source: '历史全局', switchGlobal: true },
+    { kind: 'prisma', source: '历史全局', switchGlobal: true },
+    { kind: 'memory', source: '当前活动', switchGlobal: false },
+    { kind: 'prisma', source: '当前活动', switchGlobal: false },
+  ])(
+    '$kind 将$source连接独立保存后不依赖全局，重复保存及冻结引用保持稳定',
+    async ({ kind, switchGlobal }) => {
+      const database = createSyntheticSettingsDatabase();
+      const secret = 'synthetic-independent-reuse-secret';
+      const fetchImpl = vi.fn<typeof fetch>(async () =>
+        Response.json({ data: [{ id: 'independent-text', mediaType: 'text' }] }),
+      );
+      const options = { fetchImpl, modelRequestMaxAttempts: 1 };
+      const store =
+        kind === 'memory'
+          ? new AiSettingsStore(secret, options)
+          : new PrismaAiSettingsStore(database.prisma as never, secret, options);
+      const connectionA = { baseUrl: 'https://a.example.test', apiKey: 'synthetic-a-key' };
+      try {
+        await store.update(connectionA);
+        const frozenA = await store.getCredentialReference();
+        const frozenRow = structuredClone(
+          database.rows.find((row) => row.id === frozenA.credentialId),
+        );
+        if (switchGlobal) {
+          await store.update({ baseUrl: 'https://b.example.test', apiKey: 'synthetic-b-key' });
+          await store.update(connectionA);
+          await store.update({ baseUrl: 'https://b.example.test', apiKey: 'synthetic-b-key' });
+        }
+        const activeBefore = await store.getCredentialReference();
+        const settingsBefore = await store.get();
+        const { createdCredentialId, ...settingsAfter } = await store.update({
+          ...connectionA,
+          activate: false,
+        });
+        expect(createdCredentialId).toBeTruthy();
+        expect(createdCredentialId).not.toBe(frozenA.credentialId);
+        expect(settingsAfter).toEqual(settingsBefore);
+        expect(await store.getCredentialReference()).toEqual(activeBefore);
+        expect(await store.getProviderCredentials(frozenA)).toEqual(connectionA);
+        if (kind === 'prisma') {
+          expect(database.rows.find((row) => row.id === frozenA.credentialId)).toEqual(frozenRow);
+        }
+        const independentReference = await store.getCredentialReference(createdCredentialId!);
+        expect(await store.listCredentials()).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ id: createdCredentialId, active: false }),
+            expect.objectContaining({ id: activeBefore.credentialId, active: true }),
+          ]),
+        );
+        expect(await store.listCredentials()).toHaveLength(2);
+        expect(await store.listCredentials()).not.toEqual(
+          expect.arrayContaining([expect.objectContaining({ independent: true })]),
+        );
+        await store.updateCredentialDefaults(createdCredentialId!, {
+          text: { modelAlias: 'independent-text', credentialId: createdCredentialId },
+        });
+        expect(await store.get()).toEqual(settingsBefore);
+        expect(await store.getCredentialReference()).toEqual(activeBefore);
+
+        // 全局记录更新晚于独立记录时，重复提交仍须找到独立 ID，不能被全局记录遮蔽。
+        await store.update({ defaultModels: { text: 'updated-global-text' } });
+        const activeAfterDefaults = await store.getCredentialReference();
+        const settingsAfterDefaults = await store.get();
+        expect((await store.update({ ...connectionA, activate: false })).createdCredentialId).toBe(
+          createdCredentialId,
+        );
+        expect(await store.get()).toEqual(settingsAfterDefaults);
+        expect(await store.getCredentialReference()).toEqual(activeAfterDefaults);
+        expect(await store.getCredentialReference(createdCredentialId!)).toEqual(
+          independentReference,
+        );
+        expect(
+          (await store.listCredentials()).filter(
+            (credential) => credential.id === createdCredentialId,
+          ),
+        ).toHaveLength(1);
+        expect(await store.listCredentials()).toHaveLength(2);
+        if (kind === 'prisma') {
+          expect(database.rows.find((row) => row.id === frozenA.credentialId)).toMatchObject({
+            id: frozenRow!.id,
+            version: frozenRow!.version,
+            baseUrl: frozenRow!.baseUrl,
+            encryptedApiKey: frozenRow!.encryptedApiKey,
+            encryptionKeyId: frozenRow!.encryptionKeyId,
+            label: frozenRow!.label,
+          });
+          expect(database.rows.filter((row) => row.label === 'independent')).toHaveLength(1);
+        }
+
+        if (switchGlobal) await store.removeCredential(activeAfterDefaults.credentialId!);
+        else await store.removeCredentials();
+        expect((await store.get()).configured).toBe(false);
+        expect(await store.getCredentialReference()).toEqual({});
+        expect(await store.hasCredential(createdCredentialId!)).toBe(true);
+        expect(await store.getCredentialReference(createdCredentialId!)).toEqual(
+          independentReference,
+        );
+        expect(await store.hasCredential(frozenA.credentialId!)).toBe(false);
+        expect((await store.listCredentials()).map((credential) => credential.id)).toEqual([
+          createdCredentialId,
+        ]);
+        expect(await store.getProviderCredentials(frozenA)).toEqual(connectionA);
+        expect(await store.refreshModels(createdCredentialId!)).toEqual([
+          expect.objectContaining({ id: 'independent-text', credentialId: createdCredentialId }),
+        ]);
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+        expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({
+          headers: { authorization: 'Bearer synthetic-a-key' },
+        });
+        expect(JSON.stringify(await store.listCredentials())).not.toContain(connectionA.apiKey);
+        if (kind === 'prisma') {
+          const reopened = new PrismaAiSettingsStore(database.prisma as never, secret, options);
+          try {
+            expect(await reopened.getCredentialReference()).toEqual({});
+            expect(await reopened.getCredentialReference(createdCredentialId!)).toEqual(
+              independentReference,
+            );
+            expect(await reopened.getProviderCredentials(frozenA)).toEqual(connectionA);
+          } finally {
+            await reopened.close();
+          }
+        }
+        await store.removeCredential(createdCredentialId!);
+        expect(await store.hasCredential(createdCredentialId!)).toBe(false);
+        await expect(store.refreshModels(createdCredentialId!)).rejects.toThrow(
+          AiCredentialNotFoundError,
+        );
+        expect(await store.getProviderCredentials(independentReference)).toEqual(connectionA);
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+      } finally {
+        if (store instanceof PrismaAiSettingsStore) await store.close();
+      }
+    },
+  );
+
+  it.each(['memory', 'prisma'])(
+    '%s 首次独立连接可立即刷新、保存模型并冻结凭据，不激活全局',
+    async (kind) => {
+      const database = createSyntheticSettingsDatabase();
+      const fetchImpl = vi.fn<typeof fetch>(async () =>
+        Response.json({ data: [{ id: 'independent-text', mediaType: 'text' }] }),
+      );
+      const options = { fetchImpl, modelRequestMaxAttempts: 1 };
+      const store =
+        kind === 'memory'
+          ? new AiSettingsStore('synthetic-first-independent', options)
+          : new PrismaAiSettingsStore(
+              database.prisma as never,
+              'synthetic-first-independent',
+              options,
+            );
+      const app = buildApp({ logger: false, settingsStore: store });
+      try {
+        const created = await app.inject({
+          method: 'PATCH',
+          url: '/v1/settings/ai',
+          payload: {
+            baseUrl: 'https://first.example.test',
+            apiKey: 'synthetic-first-key',
+            activate: false,
+          },
+        });
+        expect(created.statusCode).toBe(200);
+        const id = created.json().createdCredentialId as string;
+        expect(created.json().settings.configured).toBe(false);
+        expect(created.json().credentials).toEqual([
+          expect.objectContaining({ id, active: false }),
+        ]);
+        const refresh = await app.inject({
+          method: 'POST',
+          url: '/v1/settings/ai/models/refresh',
+          payload: { credentialId: id },
+        });
+        expect(refresh.statusCode, refresh.body).toBe(200);
+        const models = await app.inject({ method: 'GET', url: `/v1/models?credentialId=${id}` });
+        expect(models.statusCode, models.body).toBe(200);
+        expect(models.json().models).toEqual([
+          expect.objectContaining({ id: 'independent-text', credentialId: id }),
+        ]);
+        const defaults = await app.inject({
+          method: 'PATCH',
+          url: `/v1/settings/ai/credentials/${id}/defaults`,
+          payload: { text: { modelAlias: 'independent-text', credentialId: id } },
+        });
+        expect(defaults.statusCode, defaults.body).toBe(200);
+        const reference = await store.getCredentialReference(id);
+        expect(await store.getProviderCredentials(reference)).toMatchObject({
+          apiKey: 'synthetic-first-key',
+        });
+        expect(await store.getCredentialReference()).toEqual({});
+        expect((await store.get()).configured).toBe(false);
+        if (kind === 'prisma') {
+          const reopened = new PrismaAiSettingsStore(
+            database.prisma as never,
+            'synthetic-first-independent',
+            options,
+          );
+          expect(await reopened.hasCredential(id)).toBe(true);
+          expect(await reopened.getCredentialReference(id)).toEqual(reference);
+          expect(await reopened.listModels('text', id)).toHaveLength(1);
+          await reopened.close();
+        }
+        for (const response of [created, refresh, models, defaults])
+          expect(response.body).not.toContain('synthetic-first-key');
+        await store.removeCredential(id);
+        expect(await store.hasCredential(id)).toBe(false);
+        await expect(store.refreshModels(id)).rejects.toThrow(AiCredentialNotFoundError);
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+      } finally {
+        await app.close();
+      }
+    },
+  );
+
   it('新增独立内存凭据不改变活动连接，并可按 ID 使用自己的目录', async () => {
     const refreshedAt = new Date().toISOString();
     const fetchImpl = vi.fn<typeof fetch>(async () =>
@@ -1372,7 +1602,7 @@ describe('独立凭据与按凭据类型默认模型', () => {
       expect.objectContaining({ id: keptId, active: false }),
     ]);
     expect(store.hasCredential(deletedId)).toBe(false);
-    expect(store.hasCredential(keptId)).toBe(false);
+    expect(store.hasCredential(keptId)).toBe(true);
     expect(() => store.listModels(undefined, deletedId)).toThrow(AiCredentialNotFoundError);
     expect(store.activateCredential(deletedId)).toBeUndefined();
     expect(store.updateCredentialDefaults(deletedId, { text: 'deleted-text' })).toBeUndefined();
@@ -1499,7 +1729,7 @@ describe('独立凭据与按凭据类型默认模型', () => {
       baseUrl: '',
     });
     expect(await store.getCredentialReference()).toEqual({});
-    await expect(store.hasCredential(kept.createdCredentialId!)).resolves.toBe(false);
+    await expect(store.hasCredential(kept.createdCredentialId!)).resolves.toBe(true);
     expect((await store.listCredentials()).map((entry) => entry.id)).toEqual([
       kept.createdCredentialId,
     ]);

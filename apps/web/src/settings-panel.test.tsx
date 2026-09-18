@@ -638,7 +638,7 @@ describe('SettingsPanel', () => {
   it('全局范围保存独立连接的类型默认写到该凭据且不改动活动 Key', async () => {
     const independentId = '123e4567-e89b-12d3-a456-000000000021';
     const activeId = credentials[0]!.id;
-    // 该行已经有全局默认，因此改绑连接时保留同一个模型 ID。
+    // 旧模型不在独立目录中，先选连接再确认新模型，不能提前写入旧模型。
     settings.defaultModels = { text: 'text-model', image: 'image-model' };
     credentials.push({
       id: independentId,
@@ -666,19 +666,20 @@ describe('SettingsPanel', () => {
       }),
     );
 
+    // 独立连接自己的目录提供候选模型，来源标注为该连接。
+    expect(modelInput(panel, 'image')).toHaveValue('');
+    expect(
+      credentials.find((credential) => credential.id === independentId)?.defaultModels,
+    ).toBeUndefined();
+    fireEvent.change(modelInput(panel, 'image'), { target: { value: 'image-only-b' } });
+    fireEvent.blur(modelInput(panel, 'image'));
     await waitFor(() =>
       expect(
-        fetchMock.mock.calls.filter(([input]) => {
-          const url = new URL(String(input), 'http://localhost:3000');
-          return url.pathname === `/v1/settings/ai/credentials/${independentId}/defaults`;
-        }),
-      ).toHaveLength(1),
-    );
-    // 独立连接自己的目录提供候选模型，来源标注为该连接。
-    await waitFor(() =>
-      expect(modelOptionTexts(panel, 'image')).toEqual([
-        '独立图片模型 · https://independent.example.com/v1 · sha256:independent',
-      ]),
+        credentials.find((credential) => credential.id === independentId)?.defaultModels?.image,
+      ).toEqual({
+        modelAlias: 'image-only-b',
+        credentialId: independentId,
+      }),
     );
     await waitFor(() =>
       expect(modelOptionTexts(panel, 'image')).toEqual([
@@ -799,10 +800,22 @@ describe('SettingsPanel', () => {
     // 已保存的独立凭据绑定到该类型默认，草稿里的 Key 立即清空。
     const created = credentials.find((credential) => !credential.active);
     expect(created).toBeDefined();
-    expect(projectDefaults.text).toEqual({
-      modelAlias: 'text-model',
-      credentialId: created!.id,
-    });
+    await waitFor(() =>
+      expect(projectDefaults.text).toEqual({
+        modelAlias: 'text-model',
+        credentialId: created!.id,
+      }),
+    );
+    const refreshIndex = fetchMock.mock.calls.findIndex(
+      ([input, init]) => String(input).endsWith('/models/refresh') && init?.method === 'POST',
+    );
+    const bindingIndex = fetchMock.mock.calls.findIndex(
+      ([input, init]) =>
+        String(input).endsWith(`/projects/${project.id}/models/defaults`) &&
+        init?.method === 'PATCH',
+    );
+    expect(refreshIndex).toBeGreaterThan(-1);
+    expect(bindingIndex).toBeGreaterThan(refreshIndex);
     expect(draftInputs(row).apiKey).toHaveValue('');
     // 当前范围是项目，所以该行显示为节点独立，并且选中刚保存的独立连接。
     expect(row).toHaveTextContent('节点独立');
@@ -820,14 +833,46 @@ describe('SettingsPanel', () => {
     expect(row).not.toHaveTextContent('synthetic-independent-key');
   });
 
-  it('保存连接成功但刷新模型失败时分别显示两个状态并保留草稿', async () => {
+  it('取消节点独立连接配置时丢弃 URL 和 Key 草稿且不发送保存请求', async () => {
+    const { dialog } = await openSettingsPanel();
+    const panel = await openNodeDefaults(dialog);
+    const row = mediaRow(panel, 'text');
+    fireEvent.click(configureConnectionButton(row));
+
+    const { baseUrl, apiKey } = draftInputs(row);
+    fireEvent.change(baseUrl, { target: { value: 'https://draft.example.com' } });
+    fireEvent.change(apiKey, { target: { value: 'unsaved-node-key' } });
+    expect(baseUrl).toHaveValue('https://draft.example.com');
+    expect(apiKey).toHaveValue('unsaved-node-key');
+
+    fireEvent.click(within(row).getByRole('button', { name: '取消配置文字生成连接' }));
+
+    await waitFor(() => expect(row.querySelector('.settings-default-connection')).toBeNull());
+    expect(fetchMock.mock.calls).not.toEqual(
+      expect.arrayContaining([
+        expect.arrayContaining([
+          expect.stringContaining('/v1/settings/ai'),
+          expect.objectContaining({ method: 'PATCH' }),
+        ]),
+      ]),
+    );
+    fireEvent.click(configureConnectionButton(row));
+    expect(draftInputs(row).baseUrl).toHaveValue(settings.baseUrl);
+    expect(draftInputs(row).apiKey).toHaveValue('');
+  });
+
+  it('保存后刷新失败保留新连接，取消重开后仍重试该 ID 并可选择其模型', async () => {
     const activeId = credentials[0]!.id;
     settings.defaultModels = { text: 'text-model' };
     const immediateFetch = fetchMock;
+    let failRefresh = true;
+    const attemptedIds: string[] = [];
     const failingRefresh = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const pathname = new URL(String(input), 'http://localhost:3000').pathname;
       if (pathname === '/v1/settings/ai/models/refresh' && init?.method === 'POST') {
-        return Promise.resolve(jsonResponse({ error: 'provider delayed' }, 502));
+        const { credentialId } = JSON.parse(String(init.body)) as { credentialId: string };
+        attemptedIds.push(credentialId);
+        if (failRefresh) return Promise.resolve(jsonResponse({ error: 'provider delayed' }, 502));
       }
       return immediateFetch(input, init);
     });
@@ -845,11 +890,16 @@ describe('SettingsPanel', () => {
     await waitFor(() => expect(within(row).getByText(/连接已保存为独立凭据/)).toBeInTheDocument());
     await waitFor(() => expect(within(row).getByText(/刷新失败：/)).toBeInTheDocument());
     expect(within(row).getByText(/连接已保存为独立凭据/)).toBeInTheDocument();
-    expect(row).toHaveTextContent('连接已保存，草稿保留，可稍后重试');
-    // 连接已保存，草稿仍在，状态互相独立。
+    expect(row).toHaveTextContent('连接已保存，可直接重试刷新，无需重新输入 Key');
+    // 刷新失败没有提前写入旧模型，Key 已清空，连接仍可供后续选模。
     expect(credentials.filter((credential) => !credential.active)).toHaveLength(1);
     expect(credentials.find((credential) => credential.active)?.id).toBe(activeId);
     expect(draftInputs(row).baseUrl).toHaveValue(settings.baseUrl);
+    expect(draftInputs(row).apiKey).toHaveValue('');
+    expect(projectDefaults.text).toBeUndefined();
+    expect(modelInput(panel, 'text')).toHaveValue('');
+    const createdId = credentials.find((credential) => !credential.active)!.id;
+    expect(attemptedIds).toEqual([createdId]);
     expect(
       failingRefresh.mock.calls.filter(
         ([input, init]) =>
@@ -857,7 +907,156 @@ describe('SettingsPanel', () => {
             '/v1/settings/ai/models/refresh' && init?.method === 'POST',
       ),
     ).toHaveLength(1);
+    fireEvent.click(within(row).getByRole('button', { name: '取消配置文字生成连接' }));
+    fireEvent.click(configureConnectionButton(row));
+    expect(draftInputs(row).apiKey).toHaveValue('');
+    failRefresh = false;
+    modelsByCredential[createdId] = [
+      { id: 'independent-text', name: '独立文字模型', mediaTypes: ['text'] },
+    ];
+    fireEvent.click(within(row).getByRole('button', { name: '刷新文字生成连接模型' }));
+    await waitFor(() => expect(within(row).getByText(/模型列表已刷新/)).toBeVisible());
+    expect(attemptedIds).toEqual([createdId, createdId]);
+    expect(modelOptionTexts(panel, 'text')).toHaveLength(1);
+    expect(modelOptionTexts(panel, 'text')[0]).toContain('独立文字模型');
+    expect(projectDefaults.text).toBeUndefined();
+    fireEvent.change(modelInput(panel, 'text'), { target: { value: 'independent-text' } });
+    fireEvent.blur(modelInput(panel, 'text'));
+    await waitFor(() =>
+      expect(projectDefaults.text).toEqual({
+        modelAlias: 'independent-text',
+        credentialId: createdId,
+      }),
+    );
+    expect(independentRequests).toHaveLength(1);
+    expect(credentials.find((credential) => credential.active)?.id).toBe(activeId);
+    expect(row).not.toHaveTextContent('synthetic-refresh-failure-key');
   });
+
+  it.each(['全局', '当前项目'])(
+    '无活动连接及原模型时可保存独立连接并在%s选择模型',
+    async (scopeLabel) => {
+      settings = { baseUrl: '', configured: false, defaultModels: {} };
+      credentials = [];
+      models = [{ id: 'standalone-text', name: '独立文字模型', mediaTypes: ['text'] }];
+      const { dialog } = await openSettingsPanel();
+      const panel = await openNodeDefaults(dialog);
+      fireEvent.click(within(panel).getByRole('button', { name: scopeLabel }));
+      const row = mediaRow(panel, 'text');
+      fireEvent.click(configureConnectionButton(row));
+      fireEvent.change(draftInputs(row).baseUrl, {
+        target: { value: 'https://independent.example.test/v1' },
+      });
+      fireEvent.change(draftInputs(row).apiKey, { target: { value: 'synthetic-standalone-key' } });
+      fireEvent.click(within(row).getByRole('button', { name: '保存连接' }));
+      await waitFor(() => expect(within(row).getByText(/模型列表已刷新/)).toBeVisible());
+      const created = credentials[0]!;
+      expect(created.active).toBe(false);
+      expect(settings.configured).toBe(false);
+      expect(refreshCalls).toEqual([created.id]);
+      expect(modelInput(panel, 'text')).toHaveValue('');
+      expect(modelOptionTexts(panel, 'text')).toEqual([
+        `独立文字模型 · https://independent.example.test/v1 · ${created.keyFingerprint}`,
+      ]);
+      expect(created.defaultModels).toBeUndefined();
+      expect(projectDefaults.text).toBeUndefined();
+      expect(draftInputs(row).apiKey).toHaveValue('');
+      fireEvent.change(modelInput(panel, 'text'), { target: { value: 'standalone-text' } });
+      fireEvent.blur(modelInput(panel, 'text'));
+      await waitFor(() =>
+        expect(
+          scopeLabel === '全局' ? credentials[0]?.defaultModels?.text : projectDefaults.text,
+        ).toEqual({
+          modelAlias: 'standalone-text',
+          credentialId: created.id,
+        }),
+      );
+      expect(independentRequests).toHaveLength(1);
+      expect(row).not.toHaveTextContent('synthetic-standalone-key');
+    },
+  );
+
+  it.each<{ label: string; catalog: Model[] }>([
+    {
+      label: '新目录没有旧模型',
+      catalog: [{ id: 'other-text', name: '其他文字模型', mediaTypes: ['text'] }],
+    },
+    {
+      label: '同名模型不支持该媒体类型',
+      catalog: [{ id: 'text-model', name: '同名图片模型', mediaTypes: ['image'] }],
+    },
+    { label: '新目录为空', catalog: [] },
+  ])('$label 时不绑定旧模型或随机模型，也不回落到活动目录', async ({ catalog }) => {
+    settings.defaultModels = { text: 'text-model' };
+    const createdId = '123e4567-e89b-12d3-a456-000000000002';
+    modelsByCredential[createdId] = catalog;
+    const { dialog } = await openSettingsPanel();
+    const panel = await openNodeDefaults(dialog);
+    fireEvent.click(within(panel).getByRole('button', { name: '当前项目' }));
+    const row = mediaRow(panel, 'text');
+    fireEvent.click(configureConnectionButton(row));
+    fireEvent.change(draftInputs(row).apiKey, { target: { value: 'synthetic-new-catalog-key' } });
+    fireEvent.click(within(row).getByRole('button', { name: '保存连接' }));
+    await waitFor(() => expect(within(row).getByText(/模型列表已刷新/)).toBeVisible());
+    expect(refreshCalls).toEqual([createdId]);
+    expect(projectDefaults.text).toBeUndefined();
+    expect(modelInput(panel, 'text')).toHaveValue('');
+    expect(modelOptionTexts(panel, 'text')).toHaveLength(
+      catalog.filter((model) => model.mediaTypes.includes('text')).length,
+    );
+    expect(modelOptionTexts(panel, 'text').join('')).not.toContain('sha256:old-key');
+    fireEvent.change(modelInput(panel, 'text'), { target: { value: 'text-model' } });
+    fireEvent.blur(modelInput(panel, 'text'));
+    await waitFor(() => expect(dialog).toHaveTextContent('请选择该连接目录中支持当前类型的模型'));
+    expect(projectDefaults.text).toBeUndefined();
+  });
+
+  it.each([false, true])(
+    '已保存但无模型的连接可重新选中并加载自己的目录，同全局 Key：%s',
+    async (sameKey) => {
+      const independentId = '123e4567-e89b-12d3-a456-000000000099';
+      const active = credentials[0]!;
+      const keyFingerprint = sameKey ? active.keyFingerprint : 'sha256:unbound';
+      credentials.push({
+        id: independentId,
+        baseUrl: sameKey ? active.baseUrl : 'https://independent.example.test/v1',
+        keyFingerprint,
+        updatedAt: '2026-09-18T00:00:00Z',
+        active: false,
+      });
+      modelsByCredential[independentId] = [
+        { id: 'unbound-text', name: '待绑定文字模型', mediaTypes: ['text'] },
+      ];
+      const { dialog } = await openSettingsPanel();
+      const panel = await openNodeDefaults(dialog);
+      const row = mediaRow(panel, 'text');
+      if (sameKey) {
+        expect(
+          within(row).getByRole('radio', {
+            name: `文字生成凭据来源：已保存连接 ${keyFingerprint}（当前全局）`,
+          }),
+        ).toBeVisible();
+      }
+      fireEvent.click(
+        within(row).getByRole('radio', {
+          name: `文字生成凭据来源：已保存连接 ${keyFingerprint}${sameKey ? '（独立连接）' : ''}`,
+        }),
+      );
+      await waitFor(() => expect(modelOptionTexts(panel, 'text')[0]).toContain('待绑定文字模型'));
+      expect(modelInput(panel, 'text')).toHaveValue('');
+      fireEvent.change(modelInput(panel, 'text'), { target: { value: 'unbound-text' } });
+      fireEvent.blur(modelInput(panel, 'text'));
+      await waitFor(() =>
+        expect(
+          credentials.find((credential) => credential.id === independentId)?.defaultModels?.text,
+        ).toEqual({
+          modelAlias: 'unbound-text',
+          credentialId: independentId,
+        }),
+      );
+      expect(independentRequests).toHaveLength(0);
+    },
+  );
 
   it('独立凭据的模型列表按该凭据 ID 读取与刷新，不切换全局 Key', async () => {
     const independentId = '123e4567-e89b-12d3-a456-000000000011';

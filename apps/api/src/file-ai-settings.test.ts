@@ -47,6 +47,201 @@ function modelsResponse(id: string, mediaType: 'text' | 'image' | 'video'): Resp
 }
 
 describe('FileAiSettingsStore persistence', () => {
+  it('首次独立连接在无全局 Key 时可刷新、解析和重启恢复', async () => {
+    await withStorageFixture(async ({ filePath, keyPath }) => {
+      const fetchImpl = vi.fn<typeof fetch>(async () => modelsResponse('first-text', 'text'));
+      const options = { filePath, encryptionKeyFile: keyPath, fetchImpl };
+      const store = new FileAiSettingsStore(options);
+      const created = await store.update({
+        baseUrl: 'https://first.example.test',
+        apiKey: 'synthetic-first-key',
+        activate: false,
+      });
+      const id = created.createdCredentialId!;
+      expect(created.configured).toBe(false);
+      expect(await store.hasCredential(id)).toBe(true);
+      expect(await store.refreshModels(id)).toEqual([
+        expect.objectContaining({ id: 'first-text', credentialId: id }),
+      ]);
+      await store.close();
+      const reopened = new FileAiSettingsStore(options);
+      const reference = await reopened.getCredentialReference(id);
+      expect(await reopened.getProviderCredentials(reference)).toMatchObject({
+        apiKey: 'synthetic-first-key',
+      });
+      expect(await reopened.listModels('text', id)).toHaveLength(1);
+      expect(await reopened.getCredentialReference()).toEqual({});
+      expect((await reopened.get()).configured).toBe(false);
+      await reopened.removeCredential(id);
+      expect(await reopened.hasCredential(id)).toBe(false);
+      await expect(reopened.refreshModels(id)).rejects.toThrow('not found');
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(await readFile(filePath, 'utf8')).not.toContain('synthetic-first-key');
+      await reopened.close();
+    });
+  });
+
+  it('旧文件重新提交相同 Key 后确认独立用途，恢复失败不改原文件', async () => {
+    await withStorageFixture(async ({ filePath, keyPath }) => {
+      const options = { filePath, encryptionKeyFile: keyPath };
+      const store = new FileAiSettingsStore(options);
+      const input = {
+        baseUrl: 'https://legacy.example.test',
+        apiKey: 'synthetic-legacy-key',
+        activate: false,
+      };
+      const id = (await store.update(input)).createdCredentialId!;
+      await store.close();
+      const legacy = JSON.parse(await readFile(filePath, 'utf8'));
+      delete legacy.credentials[0].independent;
+      await writeFile(filePath, JSON.stringify(legacy));
+      const before = await readFile(filePath, 'utf8');
+      const reopened = new FileAiSettingsStore(options);
+      expect(await reopened.hasCredential(id)).toBe(false);
+      const persistence = vi
+        .spyOn(reopened as unknown as { persist(): Promise<void> }, 'persist')
+        .mockRejectedValueOnce(new Error('synthetic-write-failure'));
+      await expect(reopened.update(input)).rejects.toThrow('synthetic-write-failure');
+      expect(await reopened.hasCredential(id)).toBe(false);
+      expect(await readFile(filePath, 'utf8')).toBe(before);
+      persistence.mockRestore();
+      const independentId = (await reopened.update(input)).createdCredentialId!;
+      expect(independentId).not.toBe(id);
+      expect(await reopened.hasCredential(independentId)).toBe(true);
+      expect(await reopened.hasCredential(id)).toBe(false);
+      await reopened.close();
+      const restored = new FileAiSettingsStore(options);
+      expect(await restored.hasCredential(independentId)).toBe(true);
+      expect((await restored.listCredentials()).map((entry) => entry.id)).toEqual([independentId]);
+      await restored.close();
+    });
+  });
+
+  it('全局连接存在时重复保存历史 Key 为独立连接，删除全局后仍可使用', async () => {
+    await withStorageFixture(async ({ filePath, keyPath }) => {
+      const input = { baseUrl: 'https://history.example.test', apiKey: 'synthetic-history-key' };
+      const options = { filePath, encryptionKeyFile: keyPath };
+      const store = new FileAiSettingsStore(options);
+      await store.update(input);
+      const frozen = await store.getCredentialReference();
+      await store.update({
+        baseUrl: 'https://active.example.test',
+        apiKey: 'synthetic-active-key',
+      });
+      const active = await store.getCredentialReference();
+      const id = (await store.update({ ...input, activate: false })).createdCredentialId!;
+      expect(id).not.toBe(frozen.credentialId);
+      const independent = await store.getCredentialReference(id);
+      expect(await store.getCredentialReference()).toEqual(active);
+      await store.removeCredential(active.credentialId!);
+      expect(await store.hasCredential(id)).toBe(true);
+      expect(await store.getCredentialReference(id)).toEqual(independent);
+      expect(await store.hasCredential(frozen.credentialId!)).toBe(false);
+      expect(await store.getProviderCredentials(frozen)).toMatchObject({ apiKey: input.apiKey });
+      await store.close();
+      const reopened = new FileAiSettingsStore(options);
+      expect(await reopened.hasCredential(id)).toBe(true);
+      expect(await reopened.getCredentialReference()).toEqual({});
+      await reopened.close();
+    });
+  });
+
+  it('同一活动 Key 独立保存后修改全局默认，独立引用和摘要保持可用', async () => {
+    await withStorageFixture(async ({ filePath, keyPath }) => {
+      const input = { baseUrl: 'https://active.example.test', apiKey: 'synthetic-active-key' };
+      const store = new FileAiSettingsStore({ filePath, encryptionKeyFile: keyPath });
+      await store.update(input);
+      const active = await store.getCredentialReference();
+      const id = (await store.update({ ...input, activate: false })).createdCredentialId!;
+      expect(id).not.toBe(active.credentialId);
+      const independent = await store.getCredentialReference(id);
+      expect(await store.getCredentialReference()).toEqual(active);
+      await store.updateCredentialDefaults(active.credentialId!, {
+        text: { modelAlias: 'synthetic-text', credentialId: active.credentialId! },
+      });
+      expect((await store.update({ ...input, activate: false })).createdCredentialId).toBe(id);
+      expect(await store.listCredentials()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id, active: false }),
+          expect.objectContaining({ id: active.credentialId, active: true }),
+        ]),
+      );
+      await store.removeCredentials();
+      expect(await store.hasCredential(id)).toBe(true);
+      expect(await store.getCredentialReference(id)).toEqual(independent);
+      expect((await store.listCredentials()).map((entry) => entry.id)).toEqual([id]);
+      expect(await store.getProviderCredentials(active)).toMatchObject({ apiKey: input.apiKey });
+      await store.close();
+    });
+  });
+
+  it('旧文件存在同 Key 的多个版本时，独立保存返回摘要中的可用 ID', async () => {
+    await withStorageFixture(async ({ filePath, keyPath }) => {
+      const input = { baseUrl: 'https://legacy.example.test', apiKey: 'synthetic-legacy-key' };
+      const options = { filePath, encryptionKeyFile: keyPath };
+      const store = new FileAiSettingsStore(options);
+      await store.update(input);
+      const oldest = await store.getCredentialReference();
+      await store.update({ baseUrl: 'https://other.example.test', apiKey: 'synthetic-other-key' });
+      await store.update(input);
+      const latest = await store.getCredentialReference();
+      await store.removeCredentials();
+      await store.close();
+      const legacy = JSON.parse(await readFile(filePath, 'utf8'));
+      for (const [index, credential] of legacy.credentials.entries()) {
+        delete credential.independent;
+        credential.updatedAt = new Date(Date.UTC(2026, 0, 1, index)).toISOString();
+      }
+      await writeFile(filePath, JSON.stringify(legacy));
+      const reopened = new FileAiSettingsStore(options);
+      const id = (await reopened.update({ ...input, activate: false })).createdCredentialId!;
+      expect(id).not.toBe(latest.credentialId);
+      expect(id).not.toBe(oldest.credentialId);
+      expect(await reopened.listCredentials()).toContainEqual(expect.objectContaining({ id }));
+      expect(await reopened.hasCredential(id)).toBe(true);
+      expect(await reopened.hasCredential(oldest.credentialId!)).toBe(false);
+      expect(await reopened.hasCredential(latest.credentialId!)).toBe(false);
+      expect(await reopened.getCredentialReference(id)).toMatchObject({ credentialId: id });
+      expect((await reopened.update({ ...input, activate: false })).createdCredentialId).toBe(id);
+      expect(
+        (await reopened.listCredentials()).filter((entry) => entry.baseUrl === input.baseUrl),
+      ).toEqual([expect.objectContaining({ id })]);
+      expect(await reopened.getProviderCredentials(oldest)).toMatchObject({ apiKey: input.apiKey });
+      await reopened.close();
+    });
+  });
+
+  it('撤销全局历史后独立连接仍可显式使用，历史仅允许已冻结任务读取', async () => {
+    await withStorageFixture(async ({ filePath, keyPath }) => {
+      const fetchImpl = vi.fn<typeof fetch>(async () => modelsResponse('independent-text', 'text'));
+      const store = new FileAiSettingsStore({ filePath, encryptionKeyFile: keyPath, fetchImpl });
+      await store.update({
+        baseUrl: 'https://active.example.test',
+        apiKey: 'synthetic-active-key',
+      });
+      const frozen = await store.getCredentialReference();
+      const id = (
+        await store.update({
+          baseUrl: 'https://independent.example.test',
+          apiKey: 'synthetic-independent-key',
+          activate: false,
+        })
+      ).createdCredentialId!;
+      await store.removeCredentials();
+      expect(await store.hasCredential(frozen.credentialId!)).toBe(false);
+      await expect(store.refreshModels(frozen.credentialId)).rejects.toThrow('not found');
+      await expect(store.getCredentialReference(frozen.credentialId)).rejects.toThrow('not found');
+      expect(await store.getProviderCredentials(frozen)).toMatchObject({
+        apiKey: 'synthetic-active-key',
+      });
+      expect(await store.hasCredential(id)).toBe(true);
+      expect(await store.refreshModels(id)).toHaveLength(1);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(await store.getCredentialReference()).toEqual({});
+      await store.close();
+    });
+  });
+
   it('删除落盘失败恢复当前 Key、可选列表及原文件，随后可再次删除', async () => {
     await withStorageFixture(async ({ filePath, keyPath }) => {
       const store = new FileAiSettingsStore({ filePath, encryptionKeyFile: keyPath });
