@@ -63,11 +63,35 @@ type Binding = {
   verificationEvidence: string;
   verifiedAt: string;
 };
-/** 已规范候选明确保持未验证状态。 */
-type Candidate = { id: string; name: string; mediaTypes: MediaType[] };
+/** 同步来源决定目录读取合同，通用模型与 New API 定价快照分别保存。 */
+type CatalogSourceType = 'models' | 'newapi_pricing';
+/** 上游原始参考价仅供管理员核对，不换汇、不执行表达式或生成平台售价。 */
+type PricingReference = {
+  source: 'newapi_pricing';
+  quotaType?: 0 | 1;
+  modelPrice?: { amount: string; currency: 'USD'; unit: 'per_call' };
+  ratios: Array<{ name: string; value: string }>;
+  groups: Array<{ name: string; ratio?: string; description?: string }>;
+  billingMode?: string;
+  expression?: string;
+  pricingVersion?: string;
+  incomplete?: true;
+};
+/** 已规范候选明确保持未验证状态；端点声明不代表已验证能力。 */
+type Candidate = {
+  id: string;
+  name: string;
+  mediaTypes: MediaType[];
+  description?: string;
+  vendorName?: string;
+  tags?: string[];
+  endpointTypes?: string[];
+  pricingReference?: PricingReference;
+};
 /** 同步状态失败时仍可能保留之前候选，缺失列表不自动删除商品。 */
 type CatalogSync = {
   id: string;
+  sourceType: CatalogSourceType;
   status: string;
   candidates: Candidate[];
   missing: string[];
@@ -393,24 +417,67 @@ function SyncModelsModal({
 }) {
   const action = useAction();
   const [credentialId, setCredentialId] = useState(credentials[0]?.id ?? '');
+  const [sourceType, setSourceType] = useState<CatalogSourceType>('models');
   const [selected, setSelected] = useState<string[]>([]);
   const [imported, setImported] = useState<string[]>([]);
-  const [mediaType, setMediaType] = useState<MediaType>('text');
+  const [search, setSearch] = useState('');
+  const [mediaType, setMediaType] = useState<MediaType | ''>('text');
   const query = useQuery({
-    queryKey: ['management', userId, 'model-sync', credentialId],
+    queryKey: ['management', userId, 'model-sync', credentialId, sourceType],
     enabled: Boolean(credentialId),
     queryFn: ({ signal }) =>
       managementRequest<{ sync: CatalogSync | null }>(
-        `/admin/model-marketplace/sync?credentialId=${encodeURIComponent(credentialId)}`,
+        `/admin/model-marketplace/sync${queryString({ credentialId, sourceType })}`,
         { signal },
       ),
   });
   const sync = query.data?.sync;
+  const searchText = search.trim().toLocaleLowerCase();
+  const candidates = (sync?.candidates ?? []).filter((candidate) =>
+    [
+      candidate.id,
+      candidate.name,
+      candidate.description,
+      candidate.vendorName,
+      ...(candidate.tags ?? []),
+      ...(candidate.endpointTypes ?? []),
+    ].some((value) => value?.toLocaleLowerCase().includes(searchText)),
+  );
+  const selectableIds = candidates
+    .filter((candidate) => !imported.includes(candidate.id))
+    .map((candidate) => candidate.id);
+  /** 来源或连接变更后清空批次，避免旧来源的选择、类型和反馈混入新目录。 */
+  const resetSelection = (nextSource: CatalogSourceType) => {
+    setSelected([]);
+    setImported([]);
+    setSearch('');
+    setMediaType(nextSource === 'newapi_pricing' ? '' : 'text');
+    action.setNotice(null);
+  };
   return (
     <Modal title="同步候选并导入草稿" onClose={onClose} busy={action.busy}>
-      <div className="mp-form">
+      <div className="mp-form mp-sync-form">
         <Notice value={action.notice} />
         <QueryState error={credentialError} />
+        <label className="mg-field">
+          <span>目录来源</span>
+          <select
+            aria-label="目录来源"
+            value={sourceType}
+            disabled={action.busy}
+            onChange={(event) => {
+              const nextSource = event.target.value as CatalogSourceType;
+              setSourceType(nextSource);
+              resetSelection(nextSource);
+            }}
+          >
+            <option value="models">通用模型目录</option>
+            <option value="newapi_pricing">New API 定价目录</option>
+          </select>
+          {sourceType === 'newapi_pricing' && (
+            <small>读取此连接的公开定价目录；上游参考价保留美元，平台人民币售价另行设置。</small>
+          )}
+        </label>
         <label className="mg-field">
           <span>来源连接</span>
           <select
@@ -418,8 +485,7 @@ function SyncModelsModal({
             disabled={action.busy}
             onChange={(event) => {
               setCredentialId(event.target.value);
-              setSelected([]);
-              setImported([]);
+              resetSelection(sourceType);
             }}
           >
             <option value="">请选择已保存的连接</option>
@@ -443,7 +509,7 @@ function SyncModelsModal({
             void action.execute(async () => {
               const result = await managementRequest<{ sync: CatalogSync }>(
                 '/admin/model-marketplace/sync',
-                { method: 'POST', body: { credentialId } },
+                { method: 'POST', body: { credentialId, sourceType } },
               );
               setSelected([]);
               await query.refetch();
@@ -473,55 +539,123 @@ function SyncModelsModal({
                   本次目录缺少 {sync.missing.length} 个旧模型，已有平台模型继续保留。
                 </p>
               )}
+              <div className="mp-actions">
+                <label className="mg-search">
+                  <Search size={16} />
+                  <input
+                    aria-label="搜索候选模型"
+                    placeholder="搜索名称、供应商或标签"
+                    value={search}
+                    disabled={action.busy}
+                    onChange={(event) => setSearch(event.target.value)}
+                  />
+                </label>
+                <button
+                  className="mg-button"
+                  type="button"
+                  disabled={
+                    action.busy ||
+                    sync.status !== 'succeeded' ||
+                    selectableIds.every((id) => selected.includes(id))
+                  }
+                  onClick={() =>
+                    setSelected((current) => [...new Set([...current, ...selectableIds])])
+                  }
+                >
+                  全选当前结果
+                </button>
+                <button
+                  className="mg-button"
+                  type="button"
+                  disabled={action.busy || selected.length === 0}
+                  onClick={() => setSelected([])}
+                >
+                  清空选择
+                </button>
+              </div>
+              <p className="mg-muted" role="status">
+                当前显示 {candidates.length} 个候选 · 已选 {selected.length} 个
+              </p>
               <div className="mp-candidates">
-                {sync.candidates.map((candidate) => (
-                  <label className="mp-choice" key={candidate.id}>
-                    <input
-                      type="checkbox"
-                      disabled={
-                        action.busy ||
-                        imported.includes(candidate.id) ||
-                        sync.status !== 'succeeded'
-                      }
-                      checked={selected.includes(candidate.id)}
-                      onChange={(event) =>
-                        setSelected(
-                          event.target.checked
-                            ? [...selected, candidate.id]
-                            : selected.filter((id) => id !== candidate.id),
-                        )
-                      }
-                    />
-                    <span>
-                      <strong>{candidate.name}</strong>
-                      <small>
-                        {candidate.id}
-                        {imported.includes(candidate.id) ? ' · 已导入' : ''}
-                      </small>
-                    </span>
-                  </label>
+                {candidates.length === 0 && (
+                  <p className="mg-muted">没有符合搜索条件的候选模型。</p>
+                )}
+                {candidates.map((candidate) => (
+                  <article
+                    className="mp-candidate"
+                    key={candidate.id}
+                    aria-label={`候选模型 ${candidate.id}`}
+                  >
+                    <label className="mp-choice">
+                      <input
+                        type="checkbox"
+                        aria-label={`选择 ${candidate.id}`}
+                        disabled={
+                          action.busy ||
+                          imported.includes(candidate.id) ||
+                          sync.status !== 'succeeded'
+                        }
+                        checked={selected.includes(candidate.id)}
+                        onChange={(event) =>
+                          setSelected(
+                            event.target.checked
+                              ? [...selected, candidate.id]
+                              : selected.filter((id) => id !== candidate.id),
+                          )
+                        }
+                      />
+                      <span>
+                        <strong>{candidate.name}</strong>
+                        <small>
+                          {candidate.id}
+                          {imported.includes(candidate.id) ? ' · 已导入' : ''}
+                        </small>
+                      </span>
+                    </label>
+                    <div className="mp-candidate-info">
+                      {candidate.description && <p>{candidate.description}</p>}
+                      {candidate.vendorName && <p>供应商：{candidate.vendorName}</p>}
+                      {!!candidate.tags?.length && <p>标签：{candidate.tags.join(' · ')}</p>}
+                      {!!candidate.endpointTypes?.length && (
+                        <p>上游声明端点：{candidate.endpointTypes.join(' · ')}</p>
+                      )}
+                      {candidate.pricingReference && (
+                        <CandidatePricingDetails reference={candidate.pricingReference} />
+                      )}
+                    </div>
+                  </article>
                 ))}
               </div>
               <label className="mg-field">
                 <span>导入后的媒体类型</span>
                 <select
+                  aria-label="导入后的媒体类型"
                   value={mediaType}
-                  onChange={(event) => setMediaType(event.target.value as MediaType)}
+                  disabled={action.busy}
+                  onChange={(event) => setMediaType(event.target.value as MediaType | '')}
                 >
+                  {sourceType === 'newapi_pricing' && (
+                    <option value="">请选择本批模型的媒体类型</option>
+                  )}
                   {Object.entries(mediaLabels).map(([value, label]) => (
                     <option value={value} key={value}>
                       {label}
                     </option>
                   ))}
                 </select>
-                <small>请按真实调用合同确认；候选名称和类型推断不代表已验证能力。</small>
+                <small>
+                  本批所选模型使用同一类型。请按真实调用合同确认，名称和端点声明不代表已验证能力。
+                </small>
               </label>
               <button
                 className="mg-button is-primary"
                 type="button"
-                disabled={action.busy || selected.length === 0 || sync.status !== 'succeeded'}
+                disabled={
+                  action.busy || selected.length === 0 || !mediaType || sync.status !== 'succeeded'
+                }
                 onClick={() =>
                   void action.execute(async () => {
+                    if (!mediaType) throw new Error('请先确认本批模型的媒体类型');
                     for (const id of selected) {
                       await managementRequest('/admin/model-marketplace/models', {
                         method: 'POST',
@@ -541,6 +675,79 @@ function SyncModelsModal({
         </QueryState>
       </div>
     </Modal>
+  );
+}
+
+/** 展示原始目录参考数据；金额和分组大小写原样保留，表达式仅作为文本显示。 */
+function CandidatePricingDetails({ reference }: { reference: PricingReference }) {
+  return (
+    <details className="mp-pricing-reference">
+      <summary>上游参考价格 · USD</summary>
+      <p>目录价格和分组用于参考，实际费用以所用 Key 和上游账单为准。</p>
+      {reference.incomplete && <p>插件计费参考不完整，需到上游核实。</p>}
+      <dl>
+        {reference.expression || reference.billingMode || reference.incomplete ? (
+          <div>
+            <dt>目录计费方式</dt>
+            <dd>
+              {reference.expression
+                ? '表达式'
+                : reference.incomplete
+                  ? '插件计费'
+                  : reference.billingMode}
+            </dd>
+          </div>
+        ) : reference.quotaType !== undefined ? (
+          <div>
+            <dt>目录计费方式</dt>
+            <dd>{reference.quotaType === 1 ? '按次' : 'Token 倍率'}</dd>
+          </div>
+        ) : null}
+        {reference.modelPrice && (
+          <div>
+            <dt>目录基础价</dt>
+            <dd>{reference.modelPrice.amount} USD / 次</dd>
+          </div>
+        )}
+        {reference.billingMode && (
+          <div>
+            <dt>计费模式</dt>
+            <dd>{reference.billingMode}</dd>
+          </div>
+        )}
+        {reference.ratios.map((ratio) => (
+          <div key={ratio.name}>
+            <dt>{ratio.name}</dt>
+            <dd>{ratio.value}</dd>
+          </div>
+        ))}
+        {reference.groups.map((group) => (
+          <div key={group.name}>
+            <dt>分组 {group.name}</dt>
+            <dd>
+              倍率：{group.ratio ?? '未提供'}
+              {group.description ? ` · ${group.description}` : ''}
+            </dd>
+          </div>
+        ))}
+        {reference.pricingVersion && (
+          <div>
+            <dt>来源版本标记</dt>
+            <dd>{reference.pricingVersion}</dd>
+          </div>
+        )}
+      </dl>
+      {!!reference.ratios.length &&
+        (reference.expression || reference.billingMode || reference.incomplete) && (
+          <p>上述倍率是目录原始字段，实际计费还需结合上游表达式或插件规则核实。</p>
+        )}
+      {reference.expression && (
+        <>
+          <p>上游计费表达式（仅展示）</p>
+          <pre className="mp-evidence">{reference.expression}</pre>
+        </>
+      )}
+    </details>
   );
 }
 

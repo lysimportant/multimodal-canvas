@@ -2,6 +2,27 @@
 
 更新时间：2026-09-19。状态：核心实现、隔离 PC Web 和全部补丁后的完整检查已通过，已具备本轮代码交付条件；尚未启用生产收费，外部合同、支付和运维上线条件继续保留。
 
+## New API 目录联动追加任务
+
+用户在上一轮交付后授权从自己的 New API 定价页同步模型，保留现有广场。当前状态：P1 实现、完整检查和真实公开目录浏览器验收已通过。管理员可从已保存连接同步公开定价目录、查看原始参考价并选择导入草稿，同时保留人工模型、人民币售价、绑定和历史；不自动发布、自动换汇或根据网页价格扣款。
+
+- 起点 `4ec9167`，分支 `codex/generate-to-new-node`；上一轮提交和标签 `v2026.09.19-platform-billing` 已通过远端分支、附注标签及解引用核验。当前原有修改仍仅为 `docs/resource-input-compatibility.md`，继续排除。
+- 运行时沿用 Node `24.12.0`、pnpm `11.19.0`，依赖已就绪，无新外部依赖。基线为下文第一轮最终 3,094 项通过及完整 lint/typecheck/build；追加功能后的完整检查共 3,117 项通过。
+- `D:/newapi` 为干净的 `main @ 0e4680ad4`，仅只读核对 `AGENTS.md`、`README.md`、路由、pricing 服务和前端单位规则。当前 origin 指向 `QuantumNous/new-api`；本次无需修改或推送该仓库。
+- 匿名 `GET https://api.lolicon.beer/api/pricing` 返回 200、33 个模型，其中 20 个含计费表达式。`/pricing` 是网页，实际同步使用结构化接口。公开结果只反映访客可见范围，不能证明某个调用 Key 的权限或完整模型能力。
+- 影响范围为 Canvas 管理 API、来源快照 JSON 和同步导入界面；数据库表无迁移。新来源以带 `sourceType` 的 JSON 保存，兼容读取历史数组；来源隔离，失败保留同来源快照。回滚优先关闭新来源；已写入包装快照后仍需使用兼容两种 JSON 的版本，不能直接降级到只识别数组的旧同步服务，也不删除模型或改写账单。
+- 主代理负责合同、文档、集成与交付；API 子代理负责解析/同步/来源隔离/OpenAPI，模型广场子代理负责来源选择和参考价展示。两者文件范围不交叉。
+
+最终验证：
+
+- `pnpm lint` 9/9、`pnpm typecheck` 15/15、`pnpm test` 15/15、`pnpm build` 9/9 和 `pnpm build:runtime` 全部通过，证据为 `.data/billing-implementation/newapi-{lint,typecheck,test,build,runtime}.log`。工作区 3,109 项加 runtime 8 项，共 3,117 通过；117 skipped、另 5 pending 不计通过。Web 仍有既有大包提示。
+- API 定向 43 项、PC Web 管理页 12 项通过；`newapi-pricing-integration.log` 记录真实隔离 PostgreSQL/Redis 13 项通过，包括旧数组、同连接两来源、失败/空列表、重复同步不改人工数据、较新 pricing 不掩盖模型能力冲突。原始响应和展开后 JSON 均限制五 MiB，插件计费不完整时省略旧固定价，表达式只显示文本。
+- `newapi-browser-result.json` 与 `newapi-browser.log` 记录最新运行包真实匿名同步 33 个候选、导入 `gpt-image-2` 为未绑定/未定价草稿、再次同步、原有 4 个模型完全不变、来源隔离及管理员权限。生成 POST 为 0，页面错误、控制台错误及失败响应均为空；1440×1000 截图 `newapi-sync.png` 已检查。验收仅对隔离库写入草稿，现有应用数据库和真实 Key 未使用。
+- `newapi-existing-billing-browser.log` 再次确认既有广场、报价取消、余额不变、成本依据及账户切换正常，执行 POST 仍为 0，页面/控制台/失败响应记录均为空。
+- 图形验收脚本前两次因标签精确匹配和重复文本选择器失败，修正脚本后通过；未更改产品逻辑，也未产生失败生成请求。原用户文档 SHA256 仍为 `56B2C9D2BFB09DCC56720769B9CE12AED4877A29090DEDFBADD2F1FC5B3AA2A7`，`D:/newapi` 工作区仍干净。
+
+追加交付使用当前分支和附注标签 `v2026.09.19-newapi-model-sync`；远端分支、标签与解引用核验回执在 `.data/billing-implementation/newapi-git-delivery.json`。后续如需自动调价、定时同步、双向管理或认证目录，应另按实际合同实施；本轮没有建立计划任务。
+
 ## 目标与范围
 
 按[方案](billing-and-model-marketplace-plan.md)实施统一平台服务端计费。用户已确认结算币种为人民币 `CNY`；上游成本保留原币种，首期不自动换汇。独立平台模型、版本化调用绑定与价格、钱包事务、各提交入口及 PC Web 广场/后台/账单已接通，当前以最终验收结果决定交付状态。真实支付、生产迁移和付费 Provider 验收不在当前自动执行范围。

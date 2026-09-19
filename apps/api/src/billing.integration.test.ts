@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, type Prisma } from '@prisma/client';
 import { PrismaBillingService } from '@multimodal-canvas/billing';
 import { Queue } from 'bullmq';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -76,6 +76,8 @@ integrationDescribe('人民币报价、钱包及 outbox（隔离 PostgreSQL + Re
       );
     throw new Error('账务验收禁止真实 Provider 请求');
   });
+  /** 公开定价传输独立注入；不借用带 Key 的模型目录传输。 */
+  const pricingFetch = vi.fn<typeof fetch>(async () => Response.json({ success: true, data: [] }));
 
   beforeAll(async () => {
     vi.stubEnv('API_JWT_SECRET', 'synthetic-billing-integration-secret');
@@ -114,7 +116,7 @@ integrationDescribe('人民币报价、钱包及 outbox（隔离 PostgreSQL + Re
     });
     credentialId = connection.createdCredentialId!;
     credentialVersion = (await settings.getCredentialReference(credentialId)).credentialVersion!;
-    marketplace = new PrismaModelMarketplace(prisma, settings);
+    marketplace = new PrismaModelMarketplace(prisma, settings, { pricingFetchImpl: pricingFetch });
     billing = new PrismaBillingService(prisma);
     projects = new PrismaProjectStore(prisma);
     const persistence = new PrismaRunPersistence(prisma);
@@ -302,6 +304,161 @@ integrationDescribe('人民币报价、钱包及 outbox（隔离 PostgreSQL + Re
     expect(response.statusCode, response.body).toBe(200);
     return response.json().quote as { id: string; capNanos: string; items: unknown[] };
   }
+
+  it('公开定价与模型目录快照在隔离 schema 内分离，兼容旧数组且同步不改人工数据', async () => {
+    const ctx = await fixture('pricing-source');
+    const before = await prisma.platformModel.findUniqueOrThrow({ where: { id: ctx.modelId } });
+    const pricingCount = await prisma.pricingVersion.count({
+      where: { platformModelId: ctx.modelId },
+    });
+    const bindingCount = await prisma.modelBinding.count({
+      where: { platformModelId: ctx.modelId },
+    });
+    const legacy = await prisma.modelCatalogSync.create({
+      data: {
+        credentialId,
+        status: 'succeeded',
+        candidates: [
+          {
+            id: 'legacy-only',
+            name: '旧数组模型',
+            mediaTypes: ['text'],
+            capabilities: {},
+            limitations: {},
+            refreshedAt: new Date().toISOString(),
+            verification: 'unverified',
+          },
+        ],
+        missing: [],
+        createdBy: adminId,
+      },
+    });
+    const path = `/v1/admin/model-marketplace/sync?credentialId=${credentialId}`;
+    const legacyRead = await app.inject({ url: path, headers: adminHeaders });
+    expect(legacyRead.statusCode, legacyRead.body).toBe(200);
+    expect(legacyRead.json().sync).toMatchObject({ id: legacy.id, sourceType: 'models' });
+    expect(
+      (await app.inject({ url: `${path}&sourceType=newapi_pricing`, headers: adminHeaders })).json()
+        .sync,
+    ).toBeNull();
+    const input = {
+      success: true,
+      data: [
+        {
+          model_name: 'NewAPI-Exact（按次）',
+          quota_type: 1,
+          model_price: 0.125,
+          description: '上游说明',
+          supported_endpoint_types: ['openai'],
+        },
+      ],
+    };
+    pricingFetch.mockImplementation(async () => Response.json(input));
+    const providerCalls = providerFetch.mock.calls.length;
+    /** 通过公开管理路由同步并验证真实 SQL 根据连接和来源选中快照。 */
+    const syncPricing = async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v1/admin/model-marketplace/sync',
+        headers: adminHeaders,
+        payload: { credentialId, sourceType: 'newapi_pricing' },
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      return response.json().sync;
+    };
+    const first = await syncPricing();
+    const repeated = await syncPricing();
+    expect(first).toMatchObject({
+      sourceType: 'newapi_pricing',
+      status: 'succeeded',
+      missing: [],
+      candidates: [{ id: 'NewAPI-Exact（按次）', mediaTypes: [], capabilities: {} }],
+    });
+    expect(repeated.missing).toEqual([]);
+    expect((await app.inject({ url: path, headers: adminHeaders })).json().sync.id).toBe(legacy.id);
+    expect(
+      (await app.inject({ url: `${path}&sourceType=newapi_pricing`, headers: adminHeaders })).json()
+        .sync.id,
+    ).toBe(repeated.id);
+    const stored = await prisma.modelCatalogSync.findUniqueOrThrow({ where: { id: repeated.id } });
+    expect(stored.candidates).toMatchObject({
+      sourceType: 'newapi_pricing',
+      candidates: [{ id: 'NewAPI-Exact（按次）' }],
+    });
+    pricingFetch.mockRejectedValueOnce(new Error('synthetic failure'));
+    expect(await syncPricing()).toMatchObject({
+      sourceType: 'newapi_pricing',
+      status: 'failed',
+      candidates: [{ id: 'NewAPI-Exact（按次）' }],
+      missing: [],
+    });
+    pricingFetch.mockImplementation(async () => Response.json({ success: true, data: [] }));
+    expect(await syncPricing()).toMatchObject({
+      sourceType: 'newapi_pricing',
+      status: 'succeeded',
+      candidates: [],
+      missing: ['NewAPI-Exact（按次）'],
+    });
+    expect((await app.inject({ url: path, headers: adminHeaders })).json().sync.id).toBe(legacy.id);
+    expect(providerFetch.mock.calls).toHaveLength(providerCalls);
+    expect(await prisma.platformModel.findUniqueOrThrow({ where: { id: ctx.modelId } })).toEqual(
+      before,
+    );
+    expect(await prisma.pricingVersion.count({ where: { platformModelId: ctx.modelId } })).toBe(
+      pricingCount,
+    );
+    expect(await prisma.modelBinding.count({ where: { platformModelId: ctx.modelId } })).toBe(
+      bindingCount,
+    );
+    const draftResponse = await app.inject({
+      method: 'POST',
+      url: '/v1/admin/model-marketplace/models',
+      headers: adminHeaders,
+      payload: {
+        source: { syncId: first.id, upstreamModelId: 'NewAPI-Exact（按次）' },
+        mediaType: 'video',
+        name: '人工商品名称',
+      },
+    });
+    expect(draftResponse.statusCode, draftResponse.body).toBe(201);
+    expect(draftResponse.json().model).toMatchObject({
+      name: '人工商品名称',
+      description: '上游说明',
+      status: 'draft',
+      activeBindingId: null,
+      activePricingVersionId: null,
+    });
+    const conflict = await prisma.modelCatalogSync.create({
+      data: {
+        credentialId,
+        status: 'succeeded',
+        candidates: {
+          sourceType: 'models',
+          candidates: [
+            {
+              id: 'manual-only-model（按次）',
+              name: 'conflict',
+              mediaTypes: ['text'],
+              capabilities: { mediaTypes: ['image'] },
+              limitations: {},
+            },
+          ],
+        } as Prisma.InputJsonValue,
+        missing: [],
+        createdBy: adminId,
+      },
+    });
+    await syncPricing();
+    await expect(marketplace.resolvePublishedModel(ctx.modelId)).rejects.toMatchObject({
+      code: 'binding_needs_review',
+    });
+    // 仅让自己的合成冲突早于验证时刻，避免影响同连接后续用例；来源记录仍保留。
+    await prisma.modelCatalogSync.update({
+      where: { id: conflict.id },
+      data: { createdAt: new Date('2000-01-01T00:00:00Z') },
+    });
+    await expect(marketplace.resolvePublishedModel(ctx.modelId)).resolves.toBeDefined();
+  }, 20_000);
 
   it('人工模型→人民币报价→额度→Run/冻结/outbox，重复确认只产生一次财务动作', async () => {
     const ctx = await fixture('atomic');

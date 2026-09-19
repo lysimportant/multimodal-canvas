@@ -39,6 +39,27 @@ function propertyNames(schema: any, seen = new Set<string>()): Set<string> {
 }
 
 describe('计费与模型广场 OpenAPI 合同', () => {
+  it('公开定价来源与管理员参考字段明确，公开商品不包含来源价格', () => {
+    const operation = document.paths['/v1/admin/model-marketplace/sync'];
+    expect(
+      operation.post.requestBody.content['application/json'].schema.properties.sourceType,
+    ).toMatchObject({ enum: ['models', 'newapi_pricing'], default: 'models' });
+    expect(operation.get.parameters.map((item: { name: string }) => item.name)).toEqual([
+      'credentialId',
+      'sourceType',
+    ]);
+    expect(operation.post.description).toContain('不等于当前 Key 可调用目录');
+    const sync = document.components.schemas!.ModelCatalogSync;
+    expect(sync.properties.sourceType.enum).toEqual(['models', 'newapi_pricing']);
+    expect(sync.properties.candidates.items.properties.pricingReference.$ref).toBe(
+      '#/components/schemas/NewApiPricingReference',
+    );
+    const reference = document.components.schemas!.NewApiPricingReference;
+    expect(reference.additionalProperties).toBe(false);
+    expect(reference.properties.expression.maxLength).toBe(8000);
+    const publicResponse = document.paths['/v1/model-marketplace'].get.responses['200'];
+    expect(propertyNames(publicResponse).has('pricingReference')).toBe(false);
+  });
   it('实际 marketplace 和账务每个路由均出现在文档中，管理权限明确要求真实会话', async () => {
     for (const file of ['model-marketplace-routes.ts', 'billing-routes.ts']) {
       const source = await readFile(new URL(`./${file}`, import.meta.url), 'utf8');

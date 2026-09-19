@@ -22,6 +22,8 @@ const uuid = { type: 'string', format: 'uuid' };
 const dateTime = { type: 'string', format: 'date-time' };
 /** 展示用媒体类型使用小写，保持与画布合同一致。 */
 const mediaType = { type: 'string', enum: ['text', 'image', 'audio', 'video'] };
+/** 老客户端缺省读取 models，New API 公开定价必须显式选择，两个来源互不覆盖。 */
+const sourceType = { type: 'string', enum: ['models', 'newapi_pricing'], default: 'models' };
 /** 公布的计费单位不等于所有适配器目前都能完成可信计量。 */
 const units = ['per_call', 'per_image', 'per_second', 'per_token', 'per_character'];
 /** 每个子调用的可交付数量边界，不表示工作流节点数或批次数。 */
@@ -533,9 +535,55 @@ export const billingOpenApiSchemas = {
     createdBy: uuid,
     createdAt: dateTime,
   }),
+  NewApiPricingReference: object(
+    {
+      source: { type: 'string', const: 'newapi_pricing' },
+      quotaType: { type: 'integer', enum: [0, 1] },
+      modelPrice: object({
+        amount: { type: 'string', maxLength: 100 },
+        currency: { type: 'string', const: 'USD' },
+        unit: { type: 'string', const: 'per_call' },
+      }),
+      ratios: {
+        type: 'array',
+        maxItems: 7,
+        items: object({ name: { type: 'string' }, value: { type: 'string', maxLength: 100 } }),
+      },
+      groups: {
+        type: 'array',
+        maxItems: 256,
+        items: object(
+          {
+            name: { type: 'string', maxLength: 160 },
+            ratio: { type: 'string', maxLength: 100 },
+            description: { type: 'string', maxLength: 500 },
+          },
+          ['name'],
+        ),
+      },
+      billingMode: { type: 'string', maxLength: 80 },
+      expression: {
+        type: 'string',
+        maxLength: 8000,
+        description: '有界纯文本，只供管理员查阅，绝不执行或转为平台定价。',
+      },
+      pricingVersion: {
+        type: 'string',
+        maxLength: 160,
+        description: '上游原始文本，不作为 ETag 或内容变化判断依据。',
+      },
+      incomplete: {
+        type: 'boolean',
+        const: true,
+        description: '存在未解析的插件计费，须到上游核实；不展示旧 model_price。',
+      },
+    },
+    ['source', 'ratios', 'groups'],
+  ),
   ModelCatalogSync: object({
     id: uuid,
     credentialId: uuid,
+    sourceType,
     status: { type: 'string', enum: ['succeeded', 'failed'] },
     candidates: {
       type: 'array',
@@ -543,6 +591,16 @@ export const billingOpenApiSchemas = {
         {
           id: { type: 'string' },
           name: { type: 'string' },
+          description: { type: 'string', maxLength: 4000 },
+          vendorName: { type: 'string', maxLength: 160 },
+          tags: { type: 'array', maxItems: 256, items: { type: 'string', maxLength: 80 } },
+          endpointTypes: {
+            type: 'array',
+            maxItems: 256,
+            items: { type: 'string', maxLength: 80 },
+            description: '上游端点类型原文，仅来源参考，不代表媒体能力或可执行合同。',
+          },
+          pricingReference: ref('NewApiPricingReference'),
           mediaTypes: { type: 'array', items: mediaType },
           capabilities: metadata,
           limitations: metadata,
@@ -848,7 +906,7 @@ export function billingOpenApiPaths() {
     '/v1/admin/model-marketplace/sync': {
       get: {
         ...operation('管理员读取连接最近的候选同步结果', true),
-        parameters: [query('credentialId', uuid, true)],
+        parameters: [query('credentialId', uuid, true), query('sourceType', sourceType)],
         responses: {
           '200': response(
             '最近同步；从未同步时 sync 为 null',
@@ -861,9 +919,9 @@ export function billingOpenApiPaths() {
         ...operation(
           '管理员同步上游候选目录',
           true,
-          '只同步 ID、名称和上游明确声明的信息。供应商价格仅作为原币种参考。不会覆盖人工模型、价格、发布状态或删除缺失商品；同步失败返回 200 且 sync.status=failed，保留上次候选。',
+          '来源 models 为已选连接的模型目录；newapi_pricing 从保存地址匿名 GET 固定 /api/pricing，不使用 Key、不会解密或发送 Authorization。公开定价不等于当前 Key 可调用目录，媒体类型和能力待管理员核实。供应商价格仅作原币种参考，倍率不换算、表达式不执行；表达式或插件计费时不展示旧固定 model_price。来源互相隔离，旧数组快照归属 models；成功空目录及失败也保留来源。不会覆盖人工名称、描述、绑定、价格、默认模型或发布状态；同步失败返回 200 且 sync.status=failed，保留同来源上次候选。',
         ),
-        requestBody: body(object({ credentialId: uuid })),
+        requestBody: body(object({ credentialId: uuid, sourceType }, ['credentialId'])),
         responses: {
           '200': response(
             '同步结果与缺失候选；成功或失败均保存来源快照',

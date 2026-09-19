@@ -14,6 +14,11 @@ import {
 } from '@prisma/client';
 import { z } from 'zod';
 import {
+  NewApiPricingError,
+  requestNewApiPricing,
+  type NewApiPricingReference,
+} from './newapi-pricing';
+import {
   AiCredentialNotFoundError,
   type AiSettingsStoreLike,
   type ModelCatalogEntry,
@@ -43,6 +48,15 @@ export const marketplaceContractSchema = z.enum([
 ]);
 /** API 的 Zod 运行时独立校验媒体枚举，避免跨工作区 Zod 次版本类型混用。 */
 const mediaTypeSchema = z.enum(mediaTypes);
+/** 来源显式隔离；旧调用和旧数组快照继续归属 models。 */
+export const marketplaceSourceTypeSchema = z.enum(['models', 'newapi_pricing']);
+/** 同步来源决定读取端点，不允许客户端提交任意 URL。 */
+export type MarketplaceSourceType = z.infer<typeof marketplaceSourceTypeSchema>;
+/** 对外保留候选数组，数据库中的 JSON 包装不进入路由响应。 */
+export type MarketplaceSyncDto = Omit<ModelCatalogSync, 'candidates'> & {
+  sourceType: MarketplaceSourceType;
+  candidates: MarketplaceCandidate[];
+};
 /** 共享账务规则负责业务校验，本地桥接仅传递结果与脱敏错误路径。 */
 const marketplaceRuleSchema = z.unknown().transform((value, context): BillingPriceRule => {
   const result = billingPriceRuleSchema.safeParse(value);
@@ -74,7 +88,7 @@ const metadataSchema = z.record(z.unknown()).superRefine((value, context) => {
 export const createMarketplaceModelSchema = z
   .object({
     name: z.string().trim().min(1).max(160).optional(),
-    description: z.string().max(4_000).default(''),
+    description: z.string().max(4_000).optional(),
     mediaType: mediaTypeSchema,
     specifications: metadataSchema.default({}),
     sortOrder: z.number().int().min(-1_000_000).max(1_000_000).default(0),
@@ -197,8 +211,15 @@ export interface ModelMarketplace {
     pageSize: number,
   ): Promise<MarketplacePage<PricingVersion>>;
   createPricing(input: unknown, actorId: string): Promise<PricingVersion>;
-  sync(credentialId: string, actorId: string): Promise<ModelCatalogSync>;
-  getSync(credentialId: string): Promise<ModelCatalogSync | null>;
+  sync(
+    credentialId: string,
+    actorId: string,
+    sourceType?: MarketplaceSourceType,
+  ): Promise<MarketplaceSyncDto>;
+  getSync(
+    credentialId: string,
+    sourceType?: MarketplaceSourceType,
+  ): Promise<MarketplaceSyncDto | null>;
   resolvePublishedModel(id: string): Promise<ResolvedMarketplaceModel>;
   resolveLegacyModel(
     modelAlias: string,
@@ -223,6 +244,7 @@ export class PrismaModelMarketplace implements ModelMarketplace {
   constructor(
     private readonly prisma: PrismaClient,
     private readonly settings: AiSettingsStoreLike,
+    private readonly options: { pricingFetchImpl?: typeof fetch } = {},
   ) {}
 
   /** 返回已发布商品，连接停用时仍展示商品身份及不可用状态。 */
@@ -251,6 +273,7 @@ export class PrismaModelMarketplace implements ModelMarketplace {
     const parsed = createMarketplaceModelSchema.parse(input);
     z.string().uuid().parse(actorId);
     let sourceName: string | undefined;
+    let sourceDescription: string | undefined;
     if (parsed.source) {
       const sync = await this.prisma.modelCatalogSync.findUnique({
         where: { id: parsed.source.syncId },
@@ -262,11 +285,12 @@ export class PrismaModelMarketplace implements ModelMarketplace {
         throw new ModelMarketplaceError('candidate_not_found', '候选来源不存在或同步未成功', 404);
       }
       sourceName = z.string().trim().min(1).max(160).parse(candidate.name);
+      sourceDescription = candidate.description;
     }
     const model = await this.prisma.platformModel.create({
       data: {
         name: parsed.name ?? sourceName!,
-        description: parsed.description,
+        description: parsed.description ?? sourceDescription ?? '',
         mediaType: toDatabaseMediaType(parsed.mediaType),
         specifications: parsed.specifications as Prisma.InputJsonValue,
         sortOrder: parsed.sortOrder,
@@ -443,51 +467,109 @@ export class PrismaModelMarketplace implements ModelMarketplace {
    * 只刷新指定连接的候选缓存并追加来源证据，永不写人工模型或售价。
    * 失败返回 failed 快照及稳定错误码，保留前次候选，不保存上游错误正文。
    */
-  async sync(credentialId: string, actorId: string): Promise<ModelCatalogSync> {
+  async sync(
+    credentialId: string,
+    actorId: string,
+    sourceType: MarketplaceSourceType = 'models',
+  ): Promise<MarketplaceSyncDto> {
     z.string().uuid().parse(credentialId);
     z.string().uuid().parse(actorId);
-    await this.assertCredential(credentialId);
-    const previous = await this.prisma.modelCatalogSync.findFirst({
-      where: { credentialId, status: 'succeeded' },
-      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-    });
+    marketplaceSourceTypeSchema.parse(sourceType);
+    const pricingBaseUrl =
+      sourceType === 'newapi_pricing' ? await this.pricingBaseUrl(credentialId) : undefined;
+    if (sourceType === 'models') await this.assertCredential(credentialId);
+    const previous = await this.findSync(credentialId, sourceType, 'succeeded');
     const existing = previous
       ? readCandidates(previous.candidates)
-      : sanitizeCandidates(await this.settings.listModels(undefined, credentialId));
+      : sourceType === 'models'
+        ? sanitizeCandidates(await this.settings.listModels(undefined, credentialId))
+        : [];
     let candidates: MarketplaceCandidate[];
     try {
-      candidates = sanitizeCandidates(await this.settings.refreshModels(credentialId));
-    } catch {
-      return this.prisma.modelCatalogSync.create({
-        data: {
-          credentialId,
-          status: 'failed',
-          candidates: existing as unknown as Prisma.InputJsonValue,
-          missing: [],
-          errorCode: 'upstream_catalog_unavailable',
-          createdBy: actorId,
-        },
-      });
+      candidates =
+        sourceType === 'newapi_pricing'
+          ? await requestNewApiPricing(pricingBaseUrl!, {
+              fetchImpl: this.options.pricingFetchImpl,
+            })
+          : sanitizeCandidates(await this.settings.refreshModels(credentialId));
+    } catch (error) {
+      return syncView(
+        await this.prisma.modelCatalogSync.create({
+          data: {
+            credentialId,
+            status: 'failed',
+            candidates: { sourceType, candidates: existing } as unknown as Prisma.InputJsonValue,
+            missing: [],
+            errorCode:
+              sourceType === 'newapi_pricing'
+                ? error instanceof NewApiPricingError
+                  ? error.code
+                  : 'upstream_pricing_unavailable'
+                : 'upstream_catalog_unavailable',
+            createdBy: actorId,
+          },
+        }),
+      );
     }
     const present = new Set(candidates.map((item) => item.id));
-    return this.prisma.modelCatalogSync.create({
-      data: {
-        credentialId,
-        status: 'succeeded',
-        candidates: candidates as unknown as Prisma.InputJsonValue,
-        missing: existing.filter((item) => !present.has(item.id)).map((item) => item.id),
-        createdBy: actorId,
-      },
-    });
+    return syncView(
+      await this.prisma.modelCatalogSync.create({
+        data: {
+          credentialId,
+          status: 'succeeded',
+          candidates: { sourceType, candidates } as unknown as Prisma.InputJsonValue,
+          missing: existing.filter((item) => !present.has(item.id)).map((item) => item.id),
+          createdBy: actorId,
+        },
+      }),
+    );
   }
 
   /** 管理员重开页面可读取最近同步状态，包括失败后保留的候选。 */
-  async getSync(credentialId: string): Promise<ModelCatalogSync | null> {
+  async getSync(
+    credentialId: string,
+    sourceType: MarketplaceSourceType = 'models',
+  ): Promise<MarketplaceSyncDto | null> {
     z.string().uuid().parse(credentialId);
-    return this.prisma.modelCatalogSync.findFirst({
-      where: { credentialId },
-      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    marketplaceSourceTypeSchema.parse(sourceType);
+    const row = await this.findSync(credentialId, sourceType);
+    return row ? syncView(row) : null;
+  }
+
+  /** 公开定价只读连接地址，不调用会解密凭据的设置存储，也不改变连接和默认模型。 */
+  private async pricingBaseUrl(credentialId: string): Promise<string> {
+    const credential = await this.prisma.aiCredential.findUnique({
+      where: { id: credentialId },
+      select: { baseUrl: true, label: true, projectId: true },
     });
+    if (
+      !credential?.baseUrl ||
+      credential.projectId ||
+      ['deleted', 'independent-deleted', 'revoked'].includes(credential.label)
+    )
+      throw new ModelMarketplaceError('binding_unavailable', '模型连接已停用或不可用', 409);
+    return credential.baseUrl;
+  }
+
+  /** JSON 来源在数据库内过滤，无回溯页数上限；旧数组只匹配 models，空候选仍保留来源。 */
+  private async findSync(
+    credentialId: string,
+    sourceType: MarketplaceSourceType,
+    status?: 'succeeded',
+    createdAfter?: Date,
+    database: MarketplaceDatabase = this.prisma,
+  ): Promise<ModelCatalogSync | null> {
+    const rows = await database.$queryRaw<ModelCatalogSync[]>(Prisma.sql`
+      SELECT id, "credentialId", status, candidates, missing, "errorCode", "createdBy", "createdAt"
+      FROM model_catalog_syncs
+      WHERE "credentialId" = ${credentialId}::uuid
+        AND (candidates->>'sourceType' = ${sourceType}
+          OR (${sourceType} = 'models' AND jsonb_typeof(candidates) = 'array'))
+        ${status ? Prisma.sql`AND status = ${status}` : Prisma.empty}
+        ${createdAfter ? Prisma.sql`AND "createdAt" > ${createdAfter}` : Prisma.empty}
+      ORDER BY "createdAt" DESC, id DESC LIMIT 1
+    `);
+    return rows[0] ?? null;
   }
 
   /**
@@ -693,14 +775,13 @@ export class PrismaModelMarketplace implements ModelMarketplace {
     ) {
       throw new ModelMarketplaceError('binding_unverified', '模型调用能力尚未验证', 409);
     }
-    const source = await database.modelCatalogSync.findFirst({
-      where: {
-        credentialId: binding.credentialId,
-        status: 'succeeded',
-        createdAt: { gt: binding.verifiedAt },
-      },
-      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-    });
+    const source = await this.findSync(
+      binding.credentialId,
+      'models',
+      'succeeded',
+      binding.verifiedAt,
+      database,
+    );
     const candidate = readCandidates(source?.candidates).find(
       (item) => item.id === binding.upstreamModelId,
     );
@@ -719,13 +800,18 @@ export class PrismaModelMarketplace implements ModelMarketplace {
 }
 
 /** 候选仅作为未验证来源；价格明确为供应商参考，不得直接作为平台售价。 */
-type MarketplaceCandidate = {
+export type MarketplaceCandidate = {
   id: string;
   name: string;
+  description?: string;
+  vendorName?: string;
+  tags?: string[];
+  endpointTypes?: string[];
   mediaTypes: MediaType[];
   capabilities: Record<string, unknown>;
   limitations: Record<string, unknown>;
   providerDeclaredPrice?: Record<string, unknown>;
+  pricingReference?: NewApiPricingReference;
   refreshedAt: string;
   verification: 'unverified';
 };
@@ -922,8 +1008,17 @@ function providerPriceMetadata(price: Record<string, unknown>): Record<string, u
 }
 /** 只读取本服务写入的规范候选；错误形状不会被当成来源证据。 */
 function readCandidates(value: unknown): MarketplaceCandidate[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((item): item is MarketplaceCandidate =>
+  const candidates = Array.isArray(value)
+    ? value
+    : value &&
+        typeof value === 'object' &&
+        'sourceType' in value &&
+        marketplaceSourceTypeSchema.safeParse(value.sourceType).success &&
+        'candidates' in value
+      ? value.candidates
+      : [];
+  if (!Array.isArray(candidates)) return [];
+  return candidates.filter((item): item is MarketplaceCandidate =>
     Boolean(
       item &&
       typeof item === 'object' &&
@@ -932,6 +1027,18 @@ function readCandidates(value: unknown): MarketplaceCandidate[] {
       Array.isArray(item.mediaTypes),
     ),
   );
+}
+/** 旧数组和新 JSON 包装统一为管理员 DTO，不把持久化内部包装泄漏给旧客户端。 */
+function syncView(row: ModelCatalogSync): MarketplaceSyncDto {
+  const stored = row.candidates;
+  const sourceType =
+    !Array.isArray(stored) &&
+    stored &&
+    typeof stored === 'object' &&
+    stored.sourceType === 'newapi_pricing'
+      ? 'newapi_pricing'
+      : 'models';
+  return { ...row, sourceType, candidates: readCandidates(stored) };
 }
 /** 对明确重叠字段检查能力变化；新字段和缺失字段没有足够证据判为冲突。 */
 function hasConflict(verified: unknown, latest: unknown): boolean {

@@ -4,6 +4,7 @@ import type { AuthenticatedSession } from './auth-service';
 import {
   ModelMarketplaceError,
   marketplaceListSchema,
+  marketplaceSourceTypeSchema,
   type ModelMarketplace,
 } from './model-marketplace';
 
@@ -17,7 +18,12 @@ const modelPathSchema = z.object({ id: z.string().uuid() }).strict();
 /** 版本列表固定按单个商品分页，不允许无界导出全部定价。 */
 const versionListSchema = marketplaceListSchema.pick({ page: true, pageSize: true }).strict();
 /** 同步连接由管理员明确指定，不回退到另一条活动连接。 */
-const syncSchema = z.object({ credentialId: z.string().uuid() }).strict();
+const syncSchema = z
+  .object({
+    credentialId: z.string().uuid(),
+    sourceType: marketplaceSourceTypeSchema.default('models'),
+  })
+  .strict();
 
 /**
  * 注册公开商品目录与管理员模型、绑定、价格和候选同步路由。
@@ -145,16 +151,16 @@ export function registerModelMarketplaceRoutes(
     '/v1/admin/model-marketplace/sync',
     handler(async (request) => {
       session(request, true);
-      const { credentialId } = syncSchema.parse(request.query);
-      return { sync: await service().getSync(credentialId) };
+      const { credentialId, sourceType } = syncSchema.parse(request.query);
+      return { sync: await service().getSync(credentialId, sourceType) };
     }),
   );
   app.post(
     '/v1/admin/model-marketplace/sync',
     handler(async (request) => {
       const current = session(request, true);
-      const { credentialId } = syncSchema.parse(request.body);
-      return { sync: await service().sync(credentialId, current.user.id) };
+      const { credentialId, sourceType } = syncSchema.parse(request.body);
+      return { sync: await service().sync(credentialId, current.user.id, sourceType) };
     }),
   );
 }

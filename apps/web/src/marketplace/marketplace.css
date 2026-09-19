@@ -70,6 +70,41 @@
   overflow: auto;
   padding: 4px;
 }
+.mp-sync-form {
+  width: min(720px, calc(100vw - 90px));
+  min-width: 0;
+}
+.mp-candidate {
+  min-width: 0;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--mc-border, #e2e7eb);
+}
+.mp-candidate-info {
+  margin-left: 24px;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  color: var(--mc-text-muted, #687386);
+}
+.mp-candidate-info p {
+  margin: 6px 0;
+}
+.mp-pricing-reference {
+  margin-top: 10px;
+}
+.mp-pricing-reference dl {
+  display: grid;
+  gap: 6px;
+}
+.mp-pricing-reference dl > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  gap: 12px;
+}
+.mp-pricing-reference dd {
+  margin: 0;
+  color: var(--mc-text, #18212f);
+}
 .mp-tabs {
   display: flex;
   gap: 5px;

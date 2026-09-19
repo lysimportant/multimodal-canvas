@@ -172,35 +172,333 @@ describe('平台模型后台', () => {
     expect(screen.getByRole('button', { name: '暂停模型' })).toBeEnabled();
   });
 
-  it('首次同步为空可操作；失败保留候选并显示明确错误', async () => {
-    let sync: unknown = null;
+  it.each(['models', 'newapi_pricing'])(
+    '%s 首次同步为空可操作；失败保留候选并显示明确错误',
+    async (sourceType) => {
+      let sync: unknown = null;
+      vi.mocked(managementRequest).mockImplementation(async (path, options) => {
+        if (path === '/settings/ai/credentials') return { credentials: [credential] };
+        if (path.startsWith('/admin/model-marketplace/models'))
+          return { items: [], total: 0, page: 1, pageSize: 20 };
+        if (path === '/admin/model-marketplace/sync' && options?.method === 'POST') {
+          sync = {
+            id: 'sync-1',
+            sourceType,
+            status: 'failed',
+            candidates: [{ id: 'old-model', name: '旧候选', mediaTypes: ['image'] }],
+            missing: [],
+            createdAt: '2026-01-01T00:00:00Z',
+          };
+          return { sync };
+        }
+        if (path.startsWith('/admin/model-marketplace/sync?')) return { sync };
+        throw new Error(`Unexpected request: ${path}`);
+      });
+      renderPage(<AdminModelsPage userId={userId} />);
+      await waitFor(() =>
+        expect(managementRequest).toHaveBeenCalledWith(
+          '/settings/ai/credentials',
+          expect.anything(),
+        ),
+      );
+      fireEvent.click(screen.getByRole('button', { name: '同步导入' }));
+      fireEvent.change(screen.getByLabelText('目录来源'), { target: { value: sourceType } });
+      expect(
+        await screen.findByText('此连接尚未同步。同步后选择需要导入的平台模型。'),
+      ).toBeVisible();
+      fireEvent.click(screen.getByRole('button', { name: '同步此连接' }));
+      expect(await screen.findByRole('alert')).toHaveTextContent('上游目录同步失败');
+      expect(screen.getByText('旧候选')).toBeVisible();
+      expect(screen.getByRole('checkbox')).toBeDisabled();
+      expect(screen.getByRole('button', { name: '全选当前结果' })).toBeDisabled();
+      expect(managementRequest).toHaveBeenCalledWith('/admin/model-marketplace/sync', {
+        method: 'POST',
+        body: { credentialId: credential.id, sourceType },
+      });
+    },
+  );
+
+  it('目录缓存按来源和连接分开，切换时清空选择并发送对应的同步来源', async () => {
+    const otherCredential = {
+      ...credential,
+      id: 'other-connection',
+      baseUrl: 'https://other.invalid/v1',
+    };
+    /** 两种目录复用相同模型 ID，用于验证来源隔离而非仅凭名称区分。 */
+    const snapshot = (sourceType: string, credentialId: string) => ({
+      id: `${sourceType}-${credentialId}`,
+      sourceType,
+      status: 'succeeded',
+      candidates: [
+        {
+          id: 'Exact-ID',
+          name:
+            sourceType === 'models'
+              ? '通用候选'
+              : credentialId === credential.id
+                ? '定价候选'
+                : '第二连接候选',
+          mediaTypes: [],
+        },
+      ],
+      missing: [],
+      createdAt: '2026-01-01T00:00:00Z',
+    });
     vi.mocked(managementRequest).mockImplementation(async (path, options) => {
+      if (path === '/settings/ai/credentials')
+        return { credentials: [credential, otherCredential] };
+      if (path.startsWith('/admin/model-marketplace/models'))
+        return { items: [], total: 0, page: 1, pageSize: 20 };
+      if (path.startsWith('/admin/model-marketplace/sync?')) {
+        const params = new URL(path, 'https://synthetic.invalid').searchParams;
+        return { sync: snapshot(params.get('sourceType')!, params.get('credentialId')!) };
+      }
+      if (path === '/admin/model-marketplace/sync' && options?.method === 'POST') {
+        const body = options.body as { sourceType: string; credentialId: string };
+        return { sync: snapshot(body.sourceType, body.credentialId) };
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const { client } = renderPage(<AdminModelsPage userId={userId} />);
+    await waitFor(() =>
+      expect(client.getQueryData(['management', userId, 'model-credentials'])).toBeDefined(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: '同步导入' }));
+    expect(await screen.findByText('通用候选')).toBeVisible();
+    expect(screen.getByLabelText('目录来源')).toHaveValue('models');
+    fireEvent.click(screen.getByRole('checkbox', { name: '选择 Exact-ID' }));
+    expect(screen.getByRole('button', { name: '导入所选 1 个模型' })).toBeEnabled();
+    fireEvent.change(screen.getByLabelText('目录来源'), { target: { value: 'newapi_pricing' } });
+    expect(await screen.findByText('定价候选')).toBeVisible();
+    expect(screen.queryByText('通用候选')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('导入后的媒体类型')).toHaveValue('');
+    expect(screen.getByRole('checkbox')).not.toBeChecked();
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.change(screen.getByLabelText('导入后的媒体类型'), { target: { value: 'image' } });
+    fireEvent.change(screen.getByLabelText('来源连接'), { target: { value: otherCredential.id } });
+    expect(await screen.findByText('第二连接候选')).toBeVisible();
+    expect(screen.getByRole('checkbox')).not.toBeChecked();
+    expect(screen.getByLabelText('导入后的媒体类型')).toHaveValue('');
+    fireEvent.click(screen.getByRole('button', { name: '同步此连接' }));
+    expect(await screen.findByText('候选目录已更新，尚未上架任何模型')).toBeVisible();
+    expect(managementRequest).toHaveBeenCalledWith('/admin/model-marketplace/sync', {
+      method: 'POST',
+      body: { credentialId: otherCredential.id, sourceType: 'newapi_pricing' },
+    });
+    fireEvent.change(screen.getByLabelText('来源连接'), { target: { value: credential.id } });
+    expect(await screen.findByText('定价候选')).toBeVisible();
+    expect(screen.getByRole('checkbox')).not.toBeChecked();
+    fireEvent.change(screen.getByLabelText('目录来源'), { target: { value: 'models' } });
+    expect(await screen.findByText('通用候选')).toBeVisible();
+    expect(screen.getByRole('checkbox')).not.toBeChecked();
+    expect(screen.getByLabelText('导入后的媒体类型')).toHaveValue('text');
+    expect(
+      client
+        .getQueryCache()
+        .findAll({ queryKey: ['management', userId, 'model-sync'] })
+        .map((query) => query.queryKey),
+    ).toEqual([
+      ['management', userId, 'model-sync', credential.id, 'models'],
+      ['management', userId, 'model-sync', credential.id, 'newapi_pricing'],
+      ['management', userId, 'model-sync', otherCredential.id, 'newapi_pricing'],
+    ]);
+  });
+
+  it('New API 候选按搜索批量导入，精确 ID 与媒体类型以外不提交参考价格', async () => {
+    const candidates = [
+      {
+        id: 'Exact-Video（按次）',
+        name: '画面 A',
+        description: '生成画面',
+        vendorName: '供应商甲',
+        tags: ['视频'],
+        endpointTypes: ['video'],
+      },
+      {
+        id: 'exact-video（按次）',
+        name: '画面 B',
+        description: '备用画面',
+        vendorName: '供应商乙',
+        tags: ['视频'],
+        endpointTypes: ['video'],
+      },
+      {
+        id: 'text-model',
+        name: '文字模型',
+        description: '文本摘要',
+        vendorName: '供应商乙',
+        tags: ['文本'],
+        endpointTypes: ['openai'],
+      },
+    ];
+    vi.mocked(managementRequest).mockImplementation(async (path, options) => {
+      if (path === '/settings/ai/credentials') return { credentials: [credential] };
+      if (path === '/admin/model-marketplace/models' && options?.method === 'POST')
+        return { model: initialModel };
+      if (path.startsWith('/admin/model-marketplace/models'))
+        return { items: [], total: 0, page: 1, pageSize: 20 };
+      if (path.startsWith('/admin/model-marketplace/sync?')) {
+        const sourceType = new URL(path, 'https://synthetic.invalid').searchParams.get(
+          'sourceType',
+        );
+        return {
+          sync:
+            sourceType === 'models'
+              ? null
+              : {
+                  id: 'newapi-sync',
+                  sourceType,
+                  status: 'succeeded',
+                  missing: [],
+                  createdAt: '2026-01-01T00:00:00Z',
+                  candidates: candidates.map((candidate) => ({ ...candidate, mediaTypes: [] })),
+                },
+        };
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const { client } = renderPage(<AdminModelsPage userId={userId} />);
+    await waitFor(() =>
+      expect(client.getQueryData(['management', userId, 'model-credentials'])).toBeDefined(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: '同步导入' }));
+    fireEvent.change(screen.getByLabelText('目录来源'), { target: { value: 'newapi_pricing' } });
+    expect(await screen.findByText('画面 A')).toBeVisible();
+    fireEvent.change(screen.getByLabelText('搜索候选模型'), { target: { value: '视频' } });
+    expect(screen.getAllByRole('checkbox')).toHaveLength(2);
+    expect(screen.queryByText('文字模型')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '全选当前结果' }));
+    expect(screen.getByRole('button', { name: '导入所选 2 个模型' })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('导入后的媒体类型'), { target: { value: 'video' } });
+    fireEvent.click(screen.getByRole('button', { name: '导入所选 2 个模型' }));
+    expect(await screen.findByText('所选模型已导入为草稿')).toBeVisible();
+    const imports = vi
+      .mocked(managementRequest)
+      .mock.calls.filter(
+        ([path, options]) =>
+          path === '/admin/model-marketplace/models' && options?.method === 'POST',
+      );
+    expect(imports.map(([, options]) => options?.body)).toEqual([
+      {
+        source: { syncId: 'newapi-sync', upstreamModelId: 'Exact-Video（按次）' },
+        mediaType: 'video',
+      },
+      {
+        source: { syncId: 'newapi-sync', upstreamModelId: 'exact-video（按次）' },
+        mediaType: 'video',
+      },
+    ]);
+    expect(
+      screen.getAllByRole('checkbox').every((checkbox) => (checkbox as HTMLInputElement).disabled),
+    ).toBe(true);
+    expect(screen.getByRole('button', { name: '全选当前结果' })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('搜索候选模型'), { target: { value: '文本摘要' } });
+    expect(screen.getByRole('checkbox')).toHaveAccessibleName('选择 text-model');
+    fireEvent.click(screen.getByRole('button', { name: '全选当前结果' }));
+    fireEvent.click(screen.getByRole('button', { name: '清空选择' }));
+    expect(screen.getByRole('checkbox')).not.toBeChecked();
+  });
+
+  it('原币种参考详情默认折叠，保留零价、分组大小写与纯文本表达式', async () => {
+    const expression = '<script>throw new Error("unsafe")</script> u("seconds") * 0.4';
+    vi.mocked(managementRequest).mockImplementation(async (path) => {
       if (path === '/settings/ai/credentials') return { credentials: [credential] };
       if (path.startsWith('/admin/model-marketplace/models'))
         return { items: [], total: 0, page: 1, pageSize: 20 };
-      if (path === '/admin/model-marketplace/sync' && options?.method === 'POST') {
-        sync = {
-          id: 'sync-1',
-          status: 'failed',
-          candidates: [{ id: 'old-model', name: '旧候选', mediaTypes: ['image'] }],
-          missing: [],
-          createdAt: '2026-01-01T00:00:00Z',
+      if (path.includes('sourceType=models')) return { sync: null };
+      if (path.startsWith('/admin/model-marketplace/sync?'))
+        return {
+          sync: {
+            id: 'reference-sync',
+            sourceType: 'newapi_pricing',
+            status: 'succeeded',
+            missing: [],
+            createdAt: '2026-01-01T00:00:00Z',
+            candidates: [
+              {
+                id: 'reference-zero',
+                name: '零价目录项',
+                description: '仅保存目录原始信息',
+                vendorName: '测试供应商',
+                tags: ['测试'],
+                endpointTypes: ['task'],
+                mediaTypes: [],
+                pricingReference: {
+                  source: 'newapi_pricing',
+                  quotaType: 1,
+                  modelPrice: { amount: '0', currency: 'USD', unit: 'per_call' },
+                  ratios: [{ name: 'cache_ratio', value: '0' }],
+                  groups: [
+                    { name: 'VIP', ratio: '0', description: '测试大写组' },
+                    { name: 'vip', ratio: '1', description: '测试小写组' },
+                  ],
+                  pricingVersion: 'legacy-marker',
+                },
+              },
+              {
+                id: 'reference-expression',
+                name: '表达式目录项',
+                mediaTypes: [],
+                pricingReference: {
+                  source: 'newapi_pricing',
+                  quotaType: 0,
+                  ratios: [],
+                  groups: [],
+                  billingMode: 'tiered_expr',
+                  expression,
+                },
+              },
+              {
+                id: 'reference-plugin',
+                name: '插件计费目录项',
+                mediaTypes: [],
+                pricingReference: {
+                  source: 'newapi_pricing',
+                  ratios: [],
+                  groups: [],
+                  incomplete: true,
+                },
+              },
+            ],
+          },
         };
-        return { sync };
-      }
-      if (path.startsWith('/admin/model-marketplace/sync?')) return { sync };
       throw new Error(`Unexpected request: ${path}`);
     });
-    renderPage(<AdminModelsPage userId={userId} />);
+    const { client } = renderPage(<AdminModelsPage userId={userId} />);
     await waitFor(() =>
-      expect(managementRequest).toHaveBeenCalledWith('/settings/ai/credentials', expect.anything()),
+      expect(client.getQueryData(['management', userId, 'model-credentials'])).toBeDefined(),
     );
     fireEvent.click(screen.getByRole('button', { name: '同步导入' }));
-    expect(await screen.findByText('此连接尚未同步。同步后选择需要导入的平台模型。')).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: '同步此连接' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('上游目录同步失败');
-    expect(screen.getByText('旧候选')).toBeVisible();
-    expect(screen.getByRole('checkbox')).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('目录来源'), { target: { value: 'newapi_pricing' } });
+    const zero = await screen.findByRole('article', { name: '候选模型 reference-zero' });
+    expect(within(zero).getByText('供应商：测试供应商')).toBeVisible();
+    expect(within(zero).getByText('标签：测试')).toBeVisible();
+    expect(within(zero).getByText('上游声明端点：task')).toBeVisible();
+    const summary = within(zero).getByText('上游参考价格 · USD');
+    expect(summary.closest('details')).not.toHaveAttribute('open');
+    fireEvent.click(summary);
+    expect(within(zero).getByText('0 USD / 次')).toBeVisible();
+    expect(within(zero).getByText('cache_ratio').nextElementSibling).toHaveTextContent('0');
+    expect(within(zero).getByText('分组 VIP').nextElementSibling).toHaveTextContent(
+      '倍率：0 · 测试大写组',
+    );
+    expect(within(zero).getByText('分组 vip').nextElementSibling).toHaveTextContent(
+      '倍率：1 · 测试小写组',
+    );
+    const expressionItem = screen.getByRole('article', { name: '候选模型 reference-expression' });
+    fireEvent.click(within(expressionItem).getByText('上游参考价格 · USD'));
+    expect(within(expressionItem).getByText(expression)).toBeVisible();
+    expect(within(expressionItem).getByText('目录计费方式').nextElementSibling).toHaveTextContent(
+      '表达式',
+    );
+    expect(within(expressionItem).queryByText('Token 倍率')).not.toBeInTheDocument();
+    expect(expressionItem.querySelector('script')).toBeNull();
+    expect(within(expressionItem).queryByText(/USD \/ 次/)).not.toBeInTheDocument();
+    const pluginItem = screen.getByRole('article', { name: '候选模型 reference-plugin' });
+    fireEvent.click(within(pluginItem).getByText('上游参考价格 · USD'));
+    expect(within(pluginItem).getByText('插件计费参考不完整，需到上游核实。')).toBeVisible();
+    expect(within(pluginItem).queryByText(/USD \/ 次/)).not.toBeInTheDocument();
+    expect(screen.getByText(/平台人民币售价另行设置/)).toBeVisible();
   });
 });
 

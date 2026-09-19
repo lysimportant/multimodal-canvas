@@ -90,7 +90,7 @@ PC Web 优先，入口与目录共用一份平台模型数据：
 
 ### 同步导入
 
-同步请求使用管理员指定连接的模型目录接口；OpenAI 兼容连接通常为 `/v1/models`。同步结果先进入候选列表，管理员勾选导入后建立 `draft` 平台模型，不把每次刷新得到的全部模型直接上架。
+同步请求使用管理员指定连接的模型目录接口；OpenAI 兼容连接通常为 `/v1/models`。New API 定价目录联动作为新增来源接入，现有广场、通用目录和手工建模继续保留。同步结果先进入候选列表，管理员勾选导入后建立 `draft` 平台模型，不把每次刷新得到的全部模型直接上架。
 
 | 上游数据                 | 保存与使用规则                                                                                 |
 | ------------------------ | ---------------------------------------------------------------------------------------------- |
@@ -102,6 +102,18 @@ PC Web 优先，入口与目录共用一份平台模型数据：
 后续同步只更新上游来源数据及变更提示，保留人工名称、介绍、能力修正、平台价格和发布状态。已发布能力与上游新证据冲突时标记待复核并暂停不兼容的新调用，不能静默扩展能力。单次刷新失败保留上次目录并显示过期状态；成功刷新后缺失的条目标记待核实，不自动删除平台模型、手工模型或调用历史。
 
 `/v1/models` 不保证返回完整能力或费用，也不保证覆盖可通过精确 ID 调用的全部模型。目录是否出现与实际可调用性分别验证；确认绑定失效时，模型保留并显示暂不可用。
+
+#### New API 定价目录
+
+用户确认的来源是 `https://api.lolicon.beer/pricing`。该地址是展示页，结构化同步使用同站点 `GET /api/pricing`；2026-09-19 匿名读取成功，返回 33 个模型，其中 20 个含计费表达式。已对照本地 `D:/newapi @ 0e4680ad4` 的 `controller/pricing.go`、`model/pricing.go` 和前端价格规则；首版无需改动 New API。
+
+- 管理员在“同步导入”选择“New API 定价目录”和已保存连接。服务端从连接地址派生固定目录路径，保留部署前缀，移除尾部 `/v1`；不接受任意请求地址，不转发 API Key、用户会话或 Cookie，不跟随重定向。
+- 同步精确 `model_name`、说明、厂商、标签、端点声明和上游定价参考。分组名称保留大小写，例如 `claude_MAX` 与 `claude_max` 分别记录。来源 JSON 按 `sourceType` 区分 `models` 与 `newapi_pricing`，旧数组兼容读为 `models`；同一连接的两类目录互不覆盖或混算缺失项。
+- `quota_type=1` 的 `model_price` 是上游 USD/次参考，仍可能受到分组和参数影响；Token 倍率保持原值。`tiered_expr`、任务表达式和插件计费不能简化成固定售价，表达式仅作有界文本展示，不执行、不转为人民币规则。New API 页面所选 CNY、充值折扣和汇率不构成平台售价。
+- 公开目录反映访客可见分组，不是当前调用 Key 的可用清单。`supported_endpoint_types` 也不能证明视觉输入、视频协议或具体能力；候选保持未验证，绑定、人民币价格和发布仍由管理员确认。顶层 `pricing_version` 是上游声明，不能当作价格内容变更的可靠版本号。
+- 首次导入可采用来源说明建立草稿；后续同步只更新候选快照，不修改人工模型、价格版本、调用绑定或历史账单。页面搜索和批量选择服务于草稿导入；缺少可核实计量的收费规则仍遵守平台原有提交限制。
+
+本节实现与真实公开目录的隔离浏览器验收已完成，最新证据见[实施检查点](billing-implementation-checkpoint.md#new-api-目录联动追加任务)。认证受限的 New API 定价页、自动调价/发布、双向写回、跨站账户钱包合并和后台定时同步不在首版范围；后续如需接入，再依据实际权限与定价策略确认合同。
 
 ### 手动新建和手动定价
 
@@ -249,7 +261,7 @@ Provider 成本另用 `unknown`、`pending_reconciliation`、`confirmed`、`disp
 
 以下接口已实现并登记 OpenAPI，均使用真实管理员会话；服务 Token 和客户端自报角色没有钱包或模型管理权限：
 
-- `POST /v1/admin/model-marketplace/sync`：刷新指定连接的候选目录，返回候选、缺失列表和同步结果，不修改平台模型售价；
+- `POST /v1/admin/model-marketplace/sync`：刷新指定连接的候选目录，`sourceType` 为 `models`（缺省）或 `newapi_pricing`，返回候选、缺失列表和同步结果，不修改平台模型售价；
 - `GET/POST /v1/admin/model-marketplace/models`、`GET /v1/admin/model-marketplace/models/:id`：查询模型及详情、从候选目录选中导入或手动新建草稿；
 - `PATCH /v1/admin/model-marketplace/models/:id`：修改展示信息、规格、排序及人工发布状态；
 - `GET/POST /v1/admin/model-marketplace/models/:id/bindings`：维护调用绑定版本和验证结果，显式启用兼容绑定；验证动作默认只做配置检查，真实生成单独授权；
@@ -257,7 +269,7 @@ Provider 成本另用 `unknown`、`pending_reconciliation`、`confirmed`、`disp
 - `GET /v1/admin/wallets/:userId`、`POST /v1/admin/wallets/:userId/adjust`：查看余额和人工额度调整，要求原因、幂等键和审计；
 - `GET /v1/admin/charge-items`：分页查询收费项及原币种成本摘要，支持按 `runId` 精确筛选，每页 50 条；
 - `GET /v1/admin/charge-items/:id`：使用一致读事务查询收费、交付计量、成本事实、独立裁决和全部状态的核实事项；历次账务审计按 `historyPage` 每页 50 条返回；
-- `GET /v1/admin/model-marketplace/sync`：查询指定连接最近同步结果及保留候选；
+- `GET /v1/admin/model-marketplace/sync`：按连接及 `sourceType` 查询同来源最近同步结果及保留候选；
 - `GET /v1/admin/reconciliation`、`POST /v1/admin/reconciliation/:id/resolve`：查询待核实事项，原子确认原币种成本或释放执行冻结；`worker_recovery` 需恢复原 Run，`settlement_conflict` 需核对原消费并另行退款，两者不能通过这两个裁决动作关闭；
 - `POST /v1/admin/charge-items/:id/refund`：按收费项追加退款流水，累计退款不超过原消费，记录操作者、依据和幂等键。
 

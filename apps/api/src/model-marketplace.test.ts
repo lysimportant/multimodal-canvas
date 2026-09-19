@@ -146,6 +146,7 @@ function fixture() {
         }),
       ),
     },
+    $queryRaw: vi.fn(async (): Promise<ModelCatalogSync[]> => []),
     $transaction: vi.fn(async (operation: (transaction: unknown) => Promise<unknown>) =>
       operation(database),
     ),
@@ -158,11 +159,15 @@ function fixture() {
     listModels: vi.fn(async () => []),
     refreshModels: vi.fn(async () => []),
   };
+  const pricingFetch = vi
+    .fn<typeof fetch>()
+    .mockResolvedValue(Response.json({ success: true, data: [] }));
   const service = new PrismaModelMarketplace(
     database as unknown as PrismaClient,
     settings as unknown as AiSettingsStoreLike,
+    { pricingFetchImpl: pricingFetch },
   );
-  return { service, database, settings, rows, published };
+  return { service, database, settings, rows, published, pricingFetch };
 }
 
 /** 一次成功的来源快照，只包含候选字段，不具备发布权限。 */
@@ -347,7 +352,7 @@ describe('PrismaModelMarketplace', () => {
         capabilities: { mediaTypes: ['image'] },
       },
     ]);
-    database.modelCatalogSync.findFirst.mockResolvedValue(prior);
+    database.$queryRaw.mockResolvedValue([prior]);
     const success = await service.sync(rows.binding.credentialId, actorId);
     expect(success).toMatchObject({ status: 'succeeded', missing: [rows.binding.upstreamModelId] });
     settings.refreshModels.mockRejectedValue(
@@ -367,7 +372,7 @@ describe('PrismaModelMarketplace', () => {
 
   it('新的明确能力冲突暂停新调用，模型缺失本身不证明已下架', async () => {
     const { service, database, rows } = fixture();
-    database.modelCatalogSync.findFirst.mockResolvedValue(
+    database.$queryRaw.mockResolvedValue([
       snapshot(rows.binding.credentialId, [
         {
           id: rows.binding.upstreamModelId,
@@ -376,17 +381,101 @@ describe('PrismaModelMarketplace', () => {
           capabilities: { sizes: ['512x512'] },
         },
       ]),
-    );
+    ]);
     await expect(service.resolvePublishedModel(rows.model.id)).rejects.toMatchObject({
       code: 'binding_needs_review',
     });
     expect(
       (await service.listPublished(marketplaceListSchema.parse({}))).items[0]?.availability,
     ).toBe('needs_review');
-    database.modelCatalogSync.findFirst.mockResolvedValue(snapshot(rows.binding.credentialId, []));
+    database.$queryRaw.mockResolvedValue([snapshot(rows.binding.credentialId, [])]);
     await expect(service.resolvePublishedModel(rows.model.id)).resolves.toMatchObject({
       model: { id: rows.model.id },
     });
+  });
+
+  it('公开定价只读取保存地址，重复同步不解密、不刷新 Key 目录、不改模型售价', async () => {
+    const { service, database, settings, pricingFetch, rows } = fixture();
+    const input = {
+      success: true,
+      data: [
+        {
+          model_name: 'Exact-NewAPI（按次）',
+          description: '来源描述',
+          quota_type: 1,
+          model_price: 0.2,
+          supported_endpoint_types: ['openai'],
+        },
+      ],
+    };
+    pricingFetch.mockImplementation(async () => Response.json(input));
+    const first = await service.sync(rows.binding.credentialId, actorId, 'newapi_pricing');
+    await service.sync(rows.binding.credentialId, actorId, 'newapi_pricing');
+    expect(first).toMatchObject({
+      sourceType: 'newapi_pricing',
+      status: 'succeeded',
+      candidates: [
+        {
+          id: 'Exact-NewAPI（按次）',
+          description: '来源描述',
+          mediaTypes: [],
+          capabilities: {},
+          verification: 'unverified',
+        },
+      ],
+    });
+    expect(database.aiCredential.findUnique).toHaveBeenCalledWith({
+      where: { id: rows.binding.credentialId },
+      select: { baseUrl: true, label: true, projectId: true },
+    });
+    for (const method of Object.values(settings)) expect(method).not.toHaveBeenCalled();
+    expect(database.platformModel.update).not.toHaveBeenCalled();
+    expect(database.platformModel.create).not.toHaveBeenCalled();
+    expect(database.pricingVersion.create).not.toHaveBeenCalled();
+    expect(database.modelBinding.create).not.toHaveBeenCalled();
+    const stored = database.modelCatalogSync.create.mock.calls[0]![0].data;
+    expect(stored.candidates).toMatchObject({
+      sourceType: 'newapi_pricing',
+      candidates: first.candidates,
+    });
+    expect(database.$queryRaw.mock.calls[0]).toBeDefined();
+  });
+
+  it('公开定价失败与空列表保持来源，来源描述只在新草稿未显式填写时使用', async () => {
+    const { service, database, pricingFetch, rows } = fixture();
+    const previous = snapshot(rows.binding.credentialId, []);
+    previous.candidates = {
+      sourceType: 'newapi_pricing',
+      candidates: [{ id: 'source', name: '来源名称', description: '来源描述', mediaTypes: [] }],
+    };
+    database.$queryRaw.mockResolvedValue([previous]);
+    pricingFetch.mockRejectedValue(new Error('Bearer synthetic-private-failure'));
+    const failed = await service.sync(rows.binding.credentialId, actorId, 'newapi_pricing');
+    expect(failed).toMatchObject({
+      sourceType: 'newapi_pricing',
+      status: 'failed',
+      candidates: [{ id: 'source' }],
+      errorCode: 'upstream_pricing_unavailable',
+    });
+    expect(JSON.stringify(failed)).not.toContain('synthetic-private-failure');
+    pricingFetch.mockResolvedValue(Response.json({ success: true, data: [] }));
+    expect(await service.sync(rows.binding.credentialId, actorId, 'newapi_pricing')).toMatchObject({
+      sourceType: 'newapi_pricing',
+      candidates: [],
+      missing: ['source'],
+    });
+    database.modelCatalogSync.findUnique.mockResolvedValue(previous);
+    const source = { syncId: previous.id, upstreamModelId: 'source' };
+    expect(await service.createModel({ source, mediaType: 'video' }, actorId)).toMatchObject({
+      description: '来源描述',
+      status: 'draft',
+    });
+    expect(
+      await service.createModel(
+        { source, mediaType: 'video', name: '人工名称', description: '' },
+        actorId,
+      ),
+    ).toMatchObject({ name: '人工名称', description: '' });
   });
 
   it('旧模型别名只允许唯一精确匹配，同名商品歧义拒绝', async () => {

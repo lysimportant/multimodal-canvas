@@ -142,7 +142,34 @@ describe('model marketplace routes', () => {
       payload: { credentialId },
     });
     expect(sync.statusCode).toBe(200);
-    expect(service.sync).toHaveBeenCalledWith(credentialId, actorId);
+    expect(service.sync).toHaveBeenCalledWith(credentialId, actorId, 'models');
+    const pricing = await app.inject({
+      method: 'POST',
+      url: '/v1/admin/model-marketplace/sync',
+      headers,
+      payload: { credentialId, sourceType: 'newapi_pricing' },
+    });
+    expect(pricing.statusCode).toBe(200);
+    expect(service.sync).toHaveBeenCalledWith(credentialId, actorId, 'newapi_pricing');
+    expect(
+      (
+        await app.inject({
+          url: `/v1/admin/model-marketplace/sync?credentialId=${credentialId}&sourceType=newapi_pricing`,
+          headers,
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(service.getSync).toHaveBeenCalledWith(credentialId, 'newapi_pricing');
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/v1/admin/model-marketplace/sync',
+          headers,
+          payload: { credentialId, sourceType: 'other', url: 'https://synthetic.invalid' },
+        })
+      ).statusCode,
+    ).toBe(400);
     expect(
       (
         await app.inject({
