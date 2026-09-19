@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 export * from './prompt-skills.js';
+export * from './billing.js';
 
 export const mediaTypes = ['text', 'image', 'audio', 'video'] as const;
 /** 画布节点模式。历史 `transform` 读取时归一为 `generate`，产品不再区分转换节点。 */
@@ -81,6 +82,8 @@ export const assetStatuses = ['ready', 'archived'] as const;
 export const mediaTypeSchema = z.enum(mediaTypes);
 export const modelSelectionSchema = z.object({
   modelAlias: z.string().trim().min(1),
+  /** 平台模型稳定身份；更换调用绑定不会改变已保存的画布选择。 */
+  platformModelId: z.string().uuid().optional(),
   credentialId: z.string().trim().min(1).optional(),
 });
 export const nodeModeSchema = z.preprocess(normalizeNodeMode, z.enum(nodeModes));
@@ -899,6 +902,8 @@ export const nodeDataSchema = z.object({
    */
   inferenceStrength: z.string().trim().min(1).optional(),
   modelAlias: z.string().trim().min(1).optional(),
+  /** 独立于上游模型名称和连接的商品身份。 */
+  platformModelId: z.string().uuid().optional(),
   /** Credential selected with the model. Omitted keeps legacy active-credential behavior. */
   credentialId: z.string().trim().min(1).optional(),
   assetId: z.string().min(1).optional(),
@@ -1170,6 +1175,17 @@ export const runSnapshotSchema = z
      * Omitted legacy snapshots continue to use the root credential reference.
      */
     nodeCredentialReferences: z.record(runCredentialReferenceSchema).optional(),
+    /** 按真实执行节点冻结平台身份、绑定及价格；历史无账务运行可以省略。 */
+    billingBindings: z
+      .record(
+        z.object({
+          platformModelId: z.string().uuid(),
+          bindingId: z.string().uuid(),
+          pricingVersionId: z.string().uuid(),
+          contract: z.string().min(1),
+        }),
+      )
+      .optional(),
     parameters: z.record(z.unknown()),
     submittedAt: z.string().datetime(),
     nodes: z.array(canvasNodeSchema).min(1),

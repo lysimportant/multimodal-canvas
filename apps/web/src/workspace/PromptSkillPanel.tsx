@@ -10,6 +10,7 @@ import { Check, LoaderCircle, RotateCw, Settings2, Square, WandSparkles, X } fro
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 
 import { readStoredAuthSession, subscribeAuthSession } from '../auth-client';
+import { QuoteCancelledError } from '../marketplace/quote-client';
 import {
   clearPendingPromptOptimization,
   fetchPromptOptimization,
@@ -122,7 +123,8 @@ function PromptSkillPanelSession({
     ...textModels.map((model) => ({
       value: modelIdentity(model),
       label: model.name,
-      groupLabel: model.credentialLabel ?? '文字模型',
+      groupLabel: model.platformModelId ? '平台文字模型' : (model.credentialLabel ?? '文字模型'),
+      disabled: Boolean(model.availability && model.availability !== 'available'),
     })),
   ];
   const draft = pending?.draft;
@@ -190,7 +192,11 @@ function PromptSkillPanelSession({
           current = {
             ...current,
             runId: result.runId,
-            model: { modelAlias: result.modelAlias, credentialId: result.credentialId },
+            model: {
+              modelAlias: result.modelAlias,
+              credentialId: result.credentialId,
+              platformModelId: result.platformModelId,
+            },
             result,
             draft: result.status === 'succeeded' ? result.promptDocument : undefined,
           };
@@ -208,6 +214,7 @@ function PromptSkillPanelSession({
       } catch (cause) {
         if (controller.signal.aborted) return;
         if (
+          cause instanceof QuoteCancelledError ||
           cause instanceof PromptOptimizationResultError ||
           (!current.runId &&
             cause instanceof PromptOptimizationRequestError &&
@@ -270,7 +277,12 @@ function PromptSkillPanelSession({
         void execute(saved);
         return;
       }
-      if (modelKey !== 'default' && !selectedModel) throw new Error('所选文字模型已不可用');
+      if (
+        modelKey !== 'default' &&
+        (!selectedModel ||
+          (selectedModel.availability && selectedModel.availability !== 'available'))
+      )
+        throw new Error('所选文字模型已不可用');
       const request: PromptOptimizationRequest = {
         projectId,
         nodeId,
@@ -280,7 +292,11 @@ function PromptSkillPanelSession({
         promptDocument: promptDocumentSchema.parse(promptDocument),
         idempotencyKey: crypto.randomUUID(),
         ...(selectedModel
-          ? { modelAlias: selectedModel.id, credentialId: selectedModel.credentialId }
+          ? {
+              modelAlias: selectedModel.id,
+              credentialId: selectedModel.credentialId,
+              platformModelId: selectedModel.platformModelId,
+            }
           : {}),
       };
       savePendingPromptOptimization(storageKey, { request });
@@ -528,7 +544,11 @@ function PromptSkillPanelSession({
 
 /** 模型与凭据共同构成选项身份，同名模型不会串连接。 */
 function modelIdentity(model: ModelEntry): string {
-  return JSON.stringify([model.id, model.credentialId ?? null]);
+  return JSON.stringify(
+    model.platformModelId
+      ? ['platform', model.platformModelId]
+      : [model.id, model.credentialId ?? null],
+  );
 }
 
 /** 比较冻结原文与当前输入；模型选择不改变原始文档身份。 */

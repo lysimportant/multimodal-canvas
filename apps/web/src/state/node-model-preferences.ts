@@ -30,19 +30,27 @@ export function readNodeModelPreference(
     throw new Error('本机模型偏好格式损坏，请重新选择模型');
   }
   if (!stored || typeof stored !== 'object') return undefined;
-  const { modelAlias, credentialId } = stored as Partial<ModelSelection>;
+  const { modelAlias, credentialId, platformModelId } = stored as Partial<ModelSelection>;
   if (
     typeof modelAlias !== 'string' ||
-    (credentialId !== undefined && typeof credentialId !== 'string')
+    (credentialId !== undefined && typeof credentialId !== 'string') ||
+    (platformModelId !== undefined && (typeof platformModelId !== 'string' || !platformModelId))
   )
     return undefined;
-  return models.some(
+  const current = models.find(
     (model) =>
-      model.id === modelAlias &&
-      model.credentialId === credentialId &&
-      model.mediaTypes.includes(mediaType),
-  )
-    ? { modelAlias, ...(credentialId ? { credentialId } : {}) }
+      (platformModelId
+        ? model.platformModelId === platformModelId
+        : !model.platformModelId &&
+          model.id === modelAlias &&
+          model.credentialId === credentialId) && model.mediaTypes.includes(mediaType),
+  );
+  return current
+    ? {
+        modelAlias: current.id,
+        ...(current.platformModelId ? { platformModelId: current.platformModelId } : {}),
+        ...(current.credentialId ? { credentialId: current.credentialId } : {}),
+      }
     : undefined;
 }
 
@@ -66,6 +74,7 @@ export function writeNodeModelPreference(
     key,
     JSON.stringify({
       modelAlias,
+      ...(selection.platformModelId ? { platformModelId: selection.platformModelId } : {}),
       ...(selection.credentialId ? { credentialId: selection.credentialId } : {}),
     }),
   );

@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, Copy, Loader2, RefreshCw, ScanText } from 'lucide-react';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import {
   fetchReversePrompt,
@@ -11,6 +11,7 @@ import {
   type ReversePromptTarget,
 } from '../reverse-prompts';
 import { API_BASE_URL, type ModelEntry, type ModelSelection } from './contracts';
+import { QuoteCancelledError, QuoteRequestError } from '../marketplace/quote-client';
 import {
   clearPendingReversePrompt,
   pendingReversePromptKey,
@@ -44,6 +45,8 @@ export function ReversePromptPanel({ target, userId, models }: ReversePromptPane
   });
   const submission = useRef(initialSubmission.pending);
   const submittingRef = useRef(false);
+  const requestController = useRef<AbortController | undefined>(undefined);
+  useEffect(() => () => requestController.current?.abort(), [storageKey]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(initialSubmission.error);
   const [selection, setSelection] = useState<ModelSelection>();
@@ -64,8 +67,11 @@ export function ReversePromptPanel({ target, userId, models }: ReversePromptPane
   const modelValue = model ? reversePromptModelKey(model) : '';
   const hasSelectedModel = textModels.some(
     (entry) =>
-      reversePromptModelKey({ modelAlias: entry.id, credentialId: entry.credentialId }) ===
-      modelValue,
+      reversePromptModelKey({
+        modelAlias: entry.id,
+        credentialId: entry.credentialId,
+        platformModelId: entry.platformModelId,
+      }) === modelValue,
   );
 
   /** 显式提交仅发送一次 POST，成功后查询该次任务；失败保留幂等身份。 */
@@ -79,6 +85,8 @@ export function ReversePromptPanel({ target, userId, models }: ReversePromptPane
     )
       return;
     submittingRef.current = true;
+    const controller = new AbortController();
+    requestController.current = controller;
     setBusy(true);
     setError(undefined);
     try {
@@ -90,7 +98,9 @@ export function ReversePromptPanel({ target, userId, models }: ReversePromptPane
       const result = await submitReversePrompt(target, API_BASE_URL, {
         idempotencyKey: submission.current.key,
         model: submission.current.model,
+        signal: controller.signal,
       });
+      if (controller.signal.aborted) return;
       pinnedRunId.current = result.runId;
       await queryClient.cancelQueries({ queryKey, exact: true });
       queryClient.setQueryData<ReversePromptState>(queryKey, (current) => ({
@@ -100,12 +110,19 @@ export function ReversePromptPanel({ target, userId, models }: ReversePromptPane
       clearPendingReversePrompt(storageKey, submission.current.key);
       submission.current = undefined;
     } catch (cause) {
-      if (cause instanceof ReversePromptRequestError && cause.status >= 400 && cause.status < 500) {
+      if (
+        cause instanceof QuoteCancelledError ||
+        ((cause instanceof ReversePromptRequestError || cause instanceof QuoteRequestError) &&
+          cause.status >= 400 &&
+          cause.status < 500)
+      ) {
         if (submission.current) clearPendingReversePrompt(storageKey, submission.current.key);
         submission.current = undefined;
       }
+      if (controller.signal.aborted) return;
       setError(cause instanceof Error ? cause.message : '反推提示词提交失败');
     } finally {
+      if (requestController.current === controller) requestController.current = undefined;
       submittingRef.current = false;
       setBusy(false);
     }
@@ -136,10 +153,15 @@ export function ReversePromptPanel({ target, userId, models }: ReversePromptPane
                   reversePromptModelKey({
                     modelAlias: entry.id,
                     credentialId: entry.credentialId,
+                    platformModelId: entry.platformModelId,
                   }) === event.target.value,
               );
               if (selected)
-                setSelection({ modelAlias: selected.id, credentialId: selected.credentialId });
+                setSelection({
+                  modelAlias: selected.id,
+                  credentialId: selected.credentialId,
+                  platformModelId: selected.platformModelId,
+                });
             }}
           >
             {!model ? <option value="">默认文字模型</option> : null}
@@ -150,9 +172,14 @@ export function ReversePromptPanel({ target, userId, models }: ReversePromptPane
               const key = reversePromptModelKey({
                 modelAlias: entry.id,
                 credentialId: entry.credentialId,
+                platformModelId: entry.platformModelId,
               });
               return (
-                <option key={key} value={key}>
+                <option
+                  key={key}
+                  value={key}
+                  disabled={Boolean(entry.availability && entry.availability !== 'available')}
+                >
                   {entry.name || entry.id}
                   {entry.credentialLabel ? ` · ${entry.credentialLabel}` : ''}
                 </option>

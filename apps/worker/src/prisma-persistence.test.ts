@@ -18,6 +18,36 @@ const userId = '123e4567-e89b-12d3-a456-426614174001';
 
 afterEach(() => vi.unstubAllEnvs());
 
+describe('Worker 持久取消意图', () => {
+  it('outbox 取消即使 Run 被写回处理中也仍然有效', async () => {
+    const run = { findUnique: vi.fn(async () => ({ status: 'PROCESSING' })) };
+    const runOutbox = { findUnique: vi.fn(async () => ({ payload: { cancelRequested: true } })) };
+    const persistence = new WorkerPrismaRunPersistence({ run, runOutbox } as never);
+    await expect(persistence.isCancellationRequested(runId)).resolves.toBe(true);
+    expect(runOutbox.findUnique).toHaveBeenCalledWith({
+      where: { runId },
+      select: { payload: true },
+    });
+    expect(run.findUnique).toHaveBeenCalledWith({
+      where: { id: databaseId },
+      select: { status: true },
+    });
+  });
+
+  it.each(['CANCEL_REQUESTED', 'CANCELLED', 'PROCESSING'])(
+    '兼容无 outbox 的历史任务状态 %s',
+    async (status) => {
+      const persistence = new WorkerPrismaRunPersistence({
+        run: { findUnique: vi.fn(async () => ({ status })) },
+        runOutbox: { findUnique: vi.fn(async () => null) },
+      } as never);
+      await expect(persistence.isCancellationRequested(runId)).resolves.toBe(
+        status !== 'PROCESSING',
+      );
+    },
+  );
+});
+
 describe('Worker 节点超时设置', () => {
   it('从当前设置读取超时并兼容旧格式', async () => {
     const findFirst = vi

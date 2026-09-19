@@ -1,104 +1,56 @@
-import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
+import { act, cleanup, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
-import {
-  fetchReversePrompt,
-  submitReversePrompt,
-  type ReversePromptAnalysis,
-} from '../reverse-prompts';
-import { fetchAssetVersions } from '../result-versions';
 import { useWorkspacePreferences } from '../state/workspace-preferences';
 import { useAutomaticReversePrompt } from './useAutomaticReversePrompt';
 
-vi.mock('../reverse-prompts', () => ({
-  fetchReversePrompt: vi.fn(),
-  submitReversePrompt: vi.fn(),
-}));
-vi.mock('../result-versions', () => ({ fetchAssetVersions: vi.fn() }));
-/** 成功回显的资源事件与独立反推结果。 */
+/** 合成资源事件，不触发真实反推或计费。 */
 const resource = { assetId: 'a', version: 2, label: '图片' };
-const result: ReversePromptAnalysis = {
-  runId: 'r',
-  assetId: 'a',
-  assetVersion: 2,
-  status: 'succeeded',
-  modelAlias: 'text',
-  summary: '摘要',
-  prompt: '内容',
-};
-beforeEach(() => {
-  useWorkspacePreferences.setState({ autoReversePrompt: false });
-  vi.mocked(submitReversePrompt).mockResolvedValue(result);
-});
+beforeEach(() => useWorkspacePreferences.setState({ autoReversePrompt: false }));
 afterEach(() => {
   cleanup();
-  vi.clearAllMocks();
-  useWorkspacePreferences.setState({ autoReversePrompt: false });
+  vi.unstubAllGlobals();
 });
 
-describe('自动反推触发', () => {
-  it('默认关闭；开启后不回溯提交，只处理新事件并去重', async () => {
-    const hook = renderHook(() => useAutomaticReversePrompt('p', 'u', vi.fn()));
+describe('新资源反推提醒', () => {
+  it('默认关闭；开启后只提醒新事件，每个版本只提醒一次且不发请求', () => {
+    const fetcher = vi.fn();
+    vi.stubGlobal('fetch', fetcher);
+    const notify = vi.fn();
+    const hook = renderHook(() => useAutomaticReversePrompt('p', 'u', notify));
     act(() => hook.result.current(resource));
-    expect(submitReversePrompt).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
     act(() => useWorkspacePreferences.getState().setAutoReversePrompt(true));
-    expect(submitReversePrompt).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
     act(() => {
       hook.result.current(resource);
       hook.result.current(resource);
     });
-    await waitFor(() => expect(submitReversePrompt).toHaveBeenCalledTimes(1));
-    expect(vi.mocked(submitReversePrompt).mock.calls[0]![2]).toMatchObject({
-      automatic: true,
-      idempotencyKey: 'automatic:a:2',
-    });
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith(
+      '图片：反推需要确认费用，请在资源反推面板选择模型并确认报价',
+    );
+    act(() => hook.result.current({ ...resource, version: 3 }));
+    expect(notify).toHaveBeenCalledTimes(2);
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
-  it('POST 结果未知后显示错误，重复事件不重发', async () => {
+  it('切换项目或卸载后忽略旧回调，关闭提醒立即生效', () => {
     useWorkspacePreferences.setState({ autoReversePrompt: true });
-    vi.mocked(submitReversePrompt).mockRejectedValue(new Error('网络中断'));
-    const onError = vi.fn();
-    const hook = renderHook(() => useAutomaticReversePrompt('p', 'u', onError));
-    act(() => hook.result.current(resource));
-    await waitFor(() => expect(onError).toHaveBeenCalledWith('图片：自动反推失败，网络中断'));
-    act(() => hook.result.current(resource));
-    expect(submitReversePrompt).toHaveBeenCalledTimes(1);
-    expect(fetchReversePrompt).not.toHaveBeenCalled();
-  });
-
-  it('切换项目后旧上传或运行回调不能提交到旧项目', () => {
-    useWorkspacePreferences.setState({ autoReversePrompt: true });
-    const hook = renderHook(({ projectId }) => useAutomaticReversePrompt(projectId, 'u', vi.fn()), {
+    const notify = vi.fn();
+    const hook = renderHook(({ projectId }) => useAutomaticReversePrompt(projectId, 'u', notify), {
       initialProps: { projectId: 'p1' },
     });
     const previous = hook.result.current;
     hook.rerender({ projectId: 'p2' });
     act(() => previous(resource));
-    expect(submitReversePrompt).not.toHaveBeenCalled();
-  });
-
-  it('查询版本时关闭开关或离开项目，不再提交', async () => {
+    expect(notify).not.toHaveBeenCalled();
+    act(() => useWorkspacePreferences.getState().setAutoReversePrompt(false));
+    act(() => hook.result.current(resource));
+    expect(notify).not.toHaveBeenCalled();
     useWorkspacePreferences.setState({ autoReversePrompt: true });
-    let resolve!: (value: Awaited<ReturnType<typeof fetchAssetVersions>>) => void;
-    vi.mocked(fetchAssetVersions).mockImplementation(
-      () =>
-        new Promise((complete) => {
-          resolve = complete;
-        }),
-    );
-    const hook = renderHook(() => useAutomaticReversePrompt('p', 'u', vi.fn()));
-    act(() => hook.result.current({ assetId: 'a', label: '图片' }));
-    useWorkspacePreferences.setState({ autoReversePrompt: false });
-    await act(async () =>
-      resolve([{ version: 2 } as Awaited<ReturnType<typeof fetchAssetVersions>>[number]]),
-    );
-    expect(submitReversePrompt).not.toHaveBeenCalled();
-    useWorkspacePreferences.setState({ autoReversePrompt: true });
-    act(() => hook.result.current({ assetId: 'b', label: '图片' }));
+    const current = hook.result.current;
     hook.unmount();
-    await act(async () =>
-      resolve([{ version: 2 } as Awaited<ReturnType<typeof fetchAssetVersions>>[number]]),
-    );
-    expect(submitReversePrompt).not.toHaveBeenCalled();
+    act(() => current(resource));
+    expect(notify).not.toHaveBeenCalled();
   });
 });

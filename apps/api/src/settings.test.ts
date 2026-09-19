@@ -1019,6 +1019,7 @@ describe('New API model catalog normalization', () => {
       {
         id: activeId,
         baseUrl: 'https://active.example.com/v1',
+        version: 3,
         keyFingerprint: active.keyFingerprint,
         updatedAt: '2026-08-27T03:00:00.000Z',
         active: true,

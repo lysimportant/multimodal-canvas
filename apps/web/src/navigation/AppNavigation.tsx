@@ -3,6 +3,7 @@ import {
   ExternalLink,
   Home,
   LayoutGrid,
+  Boxes,
   Mail,
   Menu,
   Palette,
@@ -60,6 +61,13 @@ const navigationItems: NavigationItem[] = [
     description: '管理项目并进入画布',
     href: appPaths.workspace,
     icon: LayoutGrid,
+  },
+  {
+    id: 'models',
+    label: '模型广场',
+    description: '查看模型能力和人民币价格',
+    href: appPaths.models,
+    icon: Boxes,
   },
   {
     id: 'contact',

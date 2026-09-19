@@ -206,8 +206,11 @@ describe('资源反推提示词 API', () => {
     expect(response.statusCode).toBe(202);
     expect(response.json().analysis).toMatchObject({
       modelAlias: 'independent-text',
-      credentialId,
     });
+    expect(response.json().analysis).not.toHaveProperty('credentialId');
+    expect((await ctx.runService.get(response.json().analysis.runId))?.snapshot.credentialId).toBe(
+      credentialId,
+    );
     await vi.waitFor(async () =>
       expect((await ctx.runService.get(response.json().analysis.runId))?.status).toBe('succeeded'),
     );
@@ -341,6 +344,7 @@ describe('资源反推提示词 API', () => {
       analysis: null,
       defaultModel: { modelAlias: 'alpha-text' },
     });
+    expect(empty.json().defaultModel).not.toHaveProperty('credentialId');
     const started = await ctx.app.inject({
       method: 'POST',
       url: ctx.url,
@@ -482,13 +486,17 @@ describe('资源反推提示词 API', () => {
     });
     expect(read.json()).toEqual({
       analysis: null,
-      defaultModel: { modelAlias: 'bound-text', credentialId },
+      defaultModel: { modelAlias: 'bound-text' },
     });
+    expect(read.json().defaultModel).not.toHaveProperty('credentialId');
     const start = await ctx.app.inject({
       method: 'POST',
       url: ctx.url,
       payload: { projectId: ctx.project.id },
     });
     expect(start.json().analysis).toMatchObject(read.json().defaultModel);
+    expect((await ctx.runService.get(start.json().analysis.runId))?.snapshot.credentialId).toBe(
+      credentialId,
+    );
   });
 });

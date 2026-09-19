@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Job, Queue, type ConnectionOptions } from 'bullmq';
+import { BillingError, type PrismaBillingService } from '@multimodal-canvas/billing';
+import type { Prisma } from '@prisma/client';
 import {
   canTransitionRunStatus,
   createMockPromptOptimizationOutput,
@@ -35,7 +37,7 @@ import {
   databaseRunId,
   requestPromptSummary,
   type AssetRequestPromptRecord,
-  type PrismaRunPersistence,
+  PrismaRunPersistence,
   type RequestPromptStore,
 } from './run-persistence';
 import type { RequestPromptCapture, ResolvedMention } from '@multimodal-canvas/providers';
@@ -51,6 +53,8 @@ const MOCK_VIDEO_MP4 = Buffer.from(MOCK_VIDEO_MP4_BASE64, 'base64');
 export const RUN_QUEUE_NAME = 'multimodal-canvas-runs';
 export type RunProviderName = 'mock' | 'newapi';
 export type RunCreateOptions = {
+  /** 用户明确接受的服务端报价；正式计费提交必须提供。 */
+  quoteId?: string;
   idempotencyKey?: string;
   userId?: string;
   estimatedCost?: { amount: string | number; currency: string };
@@ -152,7 +156,7 @@ export interface RunService {
   health?(): Promise<void>;
   /** Apply an asynchronous provider callback when the service owns queue state. */
   applyProviderWebhook?(update: ProviderWebhookUpdate): Promise<RunRecord | undefined>;
-  retry(runId: string): Promise<RunRecord>;
+  retry(runId: string, options?: RunCreateOptions): Promise<RunRecord>;
   cancel(runId: string): Promise<RunRecord>;
   close(): Promise<void>;
 }
@@ -1476,6 +1480,7 @@ export class BullMqRunService implements RunService {
   }
   private readonly queue: Queue<RunJobData>;
   private readonly providerName: RunProviderName;
+  private readonly billing?: PrismaBillingService;
   private readonly persistence?: Pick<PrismaRunPersistence, 'ensureRun'> &
     Partial<
       Pick<
@@ -1488,6 +1493,7 @@ export class BullMqRunService implements RunService {
     connection: ConnectionOptions;
     queueName?: string;
     providerName?: RunProviderName;
+    billing?: PrismaBillingService;
     persistence?: Pick<PrismaRunPersistence, 'ensureRun'> &
       Partial<
         Pick<
@@ -1501,6 +1507,7 @@ export class BullMqRunService implements RunService {
     });
     this.providerName = options.providerName ?? 'mock';
     this.persistence = options.persistence;
+    this.billing = options.billing;
   }
 
   async create(snapshot: RunSnapshot, options: RunCreateOptions = {}): Promise<RunRecord> {
@@ -1512,10 +1519,13 @@ export class BullMqRunService implements RunService {
       normalizeIdempotencyKey(options.idempotencyKey),
       options.userId,
       options.estimatedCost,
+      undefined,
+      options.quoteId,
     );
   }
 
   async get(runId: string): Promise<RunRecord | undefined> {
+    if (this.billing) runId = await this.billing.resolveRunId(runId);
     const job = await this.queue.getJob(runId);
     if (!job) return this.persistence?.getRun?.(runId);
     const record = await this.toRunRecord(job);
@@ -1540,7 +1550,7 @@ export class BullMqRunService implements RunService {
         .map((job) => this.toRunRecord(job)),
     );
     const durableRuns = (await this.persistence?.listRunsByProject?.(projectId)) ?? [];
-    const durableByDatabaseId = new Map(durableRuns.map((run) => [run.id, run]));
+    const durableByDatabaseId = new Map(durableRuns.map((run) => [databaseRunId(run.id), run]));
     // 项目列表与 SSE 都走这里：队列记录是运行中的生命周期真相，但补上持久化行
     // 独有的字段后才能看到节点耗时；补写过的运行不再单独返回持久化行。
     const mergedQueueRuns = queueRuns.map((run) => {
@@ -1550,7 +1560,12 @@ export class BullMqRunService implements RunService {
       durableByDatabaseId.delete(durableId);
       return this.withDurableRunFields(run, durable);
     });
-    return [...durableByDatabaseId.values(), ...mergedQueueRuns].sort((left, right) =>
+    const remainingDurable = await Promise.all(
+      [...durableByDatabaseId.values()].map(async (run) =>
+        this.billing ? { ...run, id: await this.billing.resolveRunId(run.id) } : run,
+      ),
+    );
+    return [...remainingDurable, ...mergedQueueRuns].sort((left, right) =>
       left.createdAt === right.createdAt
         ? left.id.localeCompare(right.id)
         : left.createdAt.localeCompare(right.createdAt),
@@ -1633,7 +1648,7 @@ export class BullMqRunService implements RunService {
     return undefined;
   }
 
-  async retry(runId: string): Promise<RunRecord> {
+  async retry(runId: string, options: RunCreateOptions = {}): Promise<RunRecord> {
     const previous = await this.get(runId);
     if (!previous) throw new RunServiceError('not_found', 'run not found');
     if (previous.snapshot.promptOptimization) {
@@ -1644,6 +1659,48 @@ export class BullMqRunService implements RunService {
     }
     if (previous.status !== 'failed' && previous.status !== 'cancelled') {
       throw new RunServiceError('invalid_state', 'only failed or cancelled runs can be retried');
+    }
+    if (this.billing) {
+      if (!options.quoteId || options.userId !== previous.userId)
+        throw new BillingError('quote_required', '重试需要重新确认报价', 402);
+      const previousCharge = await this.billing.prisma.runCharge.findUnique({
+        where: { runId: previous.id },
+        include: { items: true },
+      });
+      if (
+        previousCharge?.items.some(
+          (item) =>
+            ['HELD', 'PENDING_VERIFICATION'].includes(item.status) ||
+            (item.executionState !== 'unsent' && item.status !== 'RELEASED'),
+        )
+      )
+        throw new BillingError(
+          'retry_requires_review',
+          '原调用仍有待核实或已交付内容，请先处理原账单',
+        );
+      if (!previousCharge && canResumeProviderJob(previous.providerJob))
+        throw new BillingError('retry_requires_review', '历史上游任务仍可恢复，请先核实原调用');
+      const quote = await this.billing.prisma.billingQuote.findFirst({
+        where: { id: options.quoteId, payerId: options.userId },
+      });
+      if (!quote) throw new BillingError('quote_not_found', '报价不存在', 404);
+      const quotedSnapshot = runSnapshotSchema.parse(quote.snapshot);
+      if (
+        quotedSnapshot.projectId !== previous.projectId ||
+        quotedSnapshot.targetNodeId !== previous.targetNodeId
+      )
+        throw new BillingError('quote_changed', '重试报价不属于当前任务');
+      return this.enqueue(
+        quotedSnapshot,
+        previous.attempt + 1,
+        previous.id,
+        previous.provider === 'newapi' ? 'newapi' : 'mock',
+        `retry:${options.quoteId}`,
+        options.userId,
+        undefined,
+        undefined,
+        options.quoteId,
+      );
     }
     return this.enqueue(
       previous.snapshot,
@@ -1658,6 +1715,23 @@ export class BullMqRunService implements RunService {
   }
 
   async cancel(runId: string): Promise<RunRecord> {
+    if (this.billing) {
+      runId = await this.billing.resolveRunId(runId);
+      const durable = await this.persistence?.getRun?.(runId);
+      if (!durable) throw new RunServiceError('not_found', 'run not found');
+      if (['succeeded', 'failed', 'cancelled'].includes(durable.status))
+        throw new RunServiceError('invalid_state', 'completed runs cannot be cancelled');
+      // 先持久化取消意图，再读取队列；投递与取消交错时 Worker 也能从数据库核实。
+      const outbox = await this.billing.prisma.runOutbox.findUnique({ where: { runId } });
+      if (outbox) {
+        const payload = runJobDataSchema.parse(outbox.payload);
+        await this.billing.prisma.runOutbox.update({
+          where: { id: outbox.id },
+          data: { payload: { ...payload, cancelRequested: true } as Prisma.InputJsonValue },
+        });
+      }
+      await this.persistence?.updateRun?.({ runId, status: 'cancel_requested' });
+    }
     const job = await this.queue.getJob(runId);
     if (!job) {
       const durable = await this.persistence?.getRun?.(runId);
@@ -1700,13 +1774,20 @@ export class BullMqRunService implements RunService {
     userId?: string,
     estimatedCost?: { amount: string | number; currency: string },
     previousProviderJob?: ProviderJob,
+    quoteId?: string,
   ) {
+    if (this.billing && (!quoteId || !userId))
+      throw new BillingError('quote_required', '请先登录并确认有效报价', 402);
     const runId = idempotencyKey
       ? createIdempotentRunId(snapshot.projectId, idempotencyKey)
-      : `run_${randomUUID()}`;
+      : quoteId
+        ? `run_${quoteId}`
+        : `run_${randomUUID()}`;
     const existing = await this.queue.getJob(runId);
     if (existing) {
       const existingData = runJobDataSchema.parse(existing.data);
+      if (this.billing && existingData.userId !== userId)
+        throw new BillingError('idempotency_conflict', '请求身份已被另一付款账户使用');
       if (snapshotFingerprint(existingData.snapshot) !== snapshotFingerprint(snapshot)) {
         throw new RunServiceError(
           'idempotency_conflict',
@@ -1766,6 +1847,54 @@ export class BullMqRunService implements RunService {
         durable?.providerJob ?? createProviderJob(runId, providerName, now, previousProviderJob),
       cancelRequested: false,
     });
+    if (this.billing && quoteId && userId) {
+      await this.billing.commitSubmission(
+        {
+          payerId: userId,
+          quoteId,
+          runId,
+          snapshot,
+          payload: data as Prisma.InputJsonValue,
+          queueName: this.queue.name,
+        },
+        async (transaction) => {
+          const persistence = new PrismaRunPersistence(transaction);
+          await persistence.ensureRun({
+            runId,
+            snapshot,
+            createOnly: true,
+            status: 'queued',
+            attempt,
+            provider: providerName,
+            userId,
+            retryOf,
+            idempotencyKey,
+            providerJob: data.providerJob,
+          });
+          if (data.providerJob)
+            await persistence.upsertProviderJob({
+              runId: databaseRunId(runId),
+              providerJob: data.providerJob,
+              createOnly: true,
+            });
+        },
+      );
+      // 队列故障只留下 outbox，HTTP 可恢复原任务；后台派发不重新冻结。
+      try {
+        await this.dispatchOutbox();
+      } catch {
+        /* 持久化待投递项保留给定时派发器。 */
+      }
+      const queued = await this.queue.getJob(runId).catch(() => undefined);
+      if (queued) return this.toRunRecord(queued);
+      const committed = await this.persistence?.getRun?.(runId);
+      if (committed) return { ...committed, id: runId };
+      throw new BillingError(
+        'run_persistence_unavailable',
+        '任务已受理，暂时无法读取，请通过报价身份恢复',
+        503,
+      );
+    }
     // Persist the immutable snapshot before publishing the queue message. If
     // PostgreSQL is unavailable, fail the request instead of creating a job
     // whose run history cannot be recovered after a restart.
@@ -1838,6 +1967,70 @@ export class BullMqRunService implements RunService {
       }
     }
     return this.toRunRecord(job);
+  }
+
+  /** 发布已提交的账务 outbox；相同 runId 在 BullMQ 中只创建一次任务。 */
+  async dispatchOutbox(): Promise<void> {
+    if (!this.billing) return;
+    const pending = await this.billing.prisma.runOutbox.findMany({
+      where: { publishedAt: null, queueName: this.queue.name },
+      orderBy: { createdAt: 'asc' },
+      take: 50,
+    });
+    for (const entry of pending) {
+      const data = runJobDataSchema.parse(entry.payload);
+      try {
+        const existing = await this.queue.getJob(entry.runId);
+        if (
+          existing &&
+          snapshotFingerprint(runJobDataSchema.parse(existing.data).snapshot) !==
+            snapshotFingerprint(data.snapshot)
+        )
+          throw new Error('outbox snapshot conflict');
+        const durable = await this.persistence?.getRun?.(entry.runId);
+        if (durable?.status === 'cancel_requested' || durable?.status === 'cancelled')
+          data.cancelRequested = true;
+        if (
+          existing &&
+          data.cancelRequested &&
+          !runJobDataSchema.parse(existing.data).cancelRequested
+        )
+          await existing.updateData({
+            ...runJobDataSchema.parse(existing.data),
+            cancelRequested: true,
+          });
+        if (!existing)
+          await this.queue.add('run', data, {
+            jobId: entry.runId,
+            // 使用同一运行恢复已归档结果与账务；Worker 的发送标记阻止重复生成。
+            attempts: 3,
+            backoff: { type: 'exponential', delay: 2_000 },
+            removeOnComplete: false,
+            removeOnFail: false,
+          });
+        const latest = await this.billing.prisma.runOutbox.findUniqueOrThrow({
+          where: { id: entry.id },
+        });
+        if (runJobDataSchema.parse(latest.payload).cancelRequested) {
+          const published = await this.queue.getJob(entry.runId);
+          if (published)
+            await published.updateData({
+              ...runJobDataSchema.parse(published.data),
+              cancelRequested: true,
+            });
+        }
+        await this.billing.prisma.runOutbox.update({
+          where: { id: entry.id },
+          data: { publishedAt: new Date(), attempts: { increment: 1 }, lastError: null },
+        });
+      } catch (error) {
+        await this.billing.prisma.runOutbox.update({
+          where: { id: entry.id },
+          data: { attempts: { increment: 1 }, lastError: 'queue_publish_failed' },
+        });
+        throw error;
+      }
+    }
   }
 
   private async toRunRecord(job: Job<RunJobData>): Promise<RunRecord> {

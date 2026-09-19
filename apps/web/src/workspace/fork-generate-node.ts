@@ -74,6 +74,7 @@ export function inheritedGenerateData(data: AssetFlowNode['data']): Partial<Asse
     ...(data.generationCount !== undefined ? { generationCount: data.generationCount } : {}),
     ...(data.promptSkillId ? { promptSkillId: data.promptSkillId } : {}),
     ...(data.modelAlias ? { modelAlias: data.modelAlias } : {}),
+    ...(data.platformModelId ? { platformModelId: data.platformModelId } : {}),
     ...(data.credentialId ? { credentialId: data.credentialId } : {}),
     ...(data.parameters ? { parameters: structuredClone(data.parameters) } : {}),
     ...(data.inferenceStrength ? { inferenceStrength: data.inferenceStrength } : {}),

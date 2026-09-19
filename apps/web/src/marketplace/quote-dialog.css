@@ -1,0 +1,78 @@
+.billing-quote-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: #0009;
+}
+.billing-quote-dialog {
+  width: min(560px, 100%);
+  max-height: 85vh;
+  overflow: auto;
+  border: 1px solid var(--mc-border, #d5dfdb);
+  border-radius: 14px;
+  padding: 28px;
+  color: var(--mc-text, #18212f);
+  background: var(--mc-surface, #fff);
+  box-shadow: 0 24px 80px #0006;
+}
+.billing-quote-dialog h2 {
+  margin: 0 0 12px;
+  font-size: 22px;
+}
+.billing-quote-dialog p {
+  color: var(--mc-text-muted, #687386);
+  line-height: 1.6;
+}
+.billing-quote-items {
+  max-height: 240px;
+  overflow: auto;
+  margin: 20px 0;
+}
+.billing-quote-items > div,
+.billing-quote-dialog dl > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--mc-border, #d5dfdb);
+}
+.billing-quote-items small {
+  display: block;
+  color: var(--mc-text-muted, #687386);
+  margin-top: 4px;
+}
+.billing-quote-items strong {
+  white-space: nowrap;
+}
+.billing-quote-dialog dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+.billing-quote-note {
+  font-size: 12px;
+}
+.billing-quote-dialog footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 22px;
+}
+.billing-quote-dialog button {
+  padding: 10px 14px;
+  border: 1px solid var(--mc-border, #d5dfdb);
+  border-radius: 7px;
+  background: var(--mc-surface-soft, #f7f8fa);
+  color: var(--mc-text, #18212f);
+  cursor: pointer;
+}
+.billing-quote-dialog button:last-child {
+  background: var(--mc-accent, #18794e);
+  color: #fff;
+}
+.billing-quote-dialog button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

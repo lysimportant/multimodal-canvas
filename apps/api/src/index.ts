@@ -1,6 +1,8 @@
 import { buildApp } from './app';
 import { FilePromptSkillStore, PrismaPromptSkillStore } from './prompt-skill-store';
 import { PrismaClient } from '@prisma/client';
+import { PrismaBillingService } from '@multimodal-canvas/billing';
+import { PrismaModelMarketplace } from './model-marketplace';
 import type { NewApiVideoContract } from '@multimodal-canvas/providers';
 import { FileSystemBlobStore, MemoryAssetStore, PrismaAssetStore, S3BlobStore } from './assets';
 import { FileProjectStore, PrismaProjectStore } from './projects';
@@ -81,6 +83,14 @@ const runExecutor =
 const useMemoryRunService =
   process.env.RUN_SERVICE === 'memory' ||
   (process.env.NODE_ENV !== 'production' && process.env.RUN_SERVICE !== 'bullmq');
+if (providerName === 'newapi' && (!prisma || useMemoryRunService)) {
+  throw new Error(
+    '正式模型调用要求 DATABASE_URL 与 RUN_SERVICE=bullmq，以保证报价、冻结和恢复持久化',
+  );
+}
+/** 数据库模式统一使用平台钱包，内存模式只用于明确的 Mock。 */
+const billing = prisma && !useMemoryRunService ? new PrismaBillingService(prisma) : undefined;
+const marketplace = prisma ? new PrismaModelMarketplace(prisma, settingsStore) : undefined;
 const runService = useMemoryRunService
   ? new MemoryRunService({
       providerName,
@@ -93,6 +103,7 @@ const runService = useMemoryRunService
         : {}),
       providerName,
       ...(runPersistence ? { persistence: runPersistence } : {}),
+      ...(billing ? { billing } : {}),
     });
 // Keep local projects across API restarts when PostgreSQL is not configured.
 // Tests that call buildApp() directly still receive the isolated in-memory
@@ -134,6 +145,8 @@ const mediaDerivativeGenerator =
     ? new FfmpegMediaDerivativeGenerator({ binary: process.env.FFMPEG_PATH })
     : undefined;
 const app = buildApp({
+  ...(billing ? { billing } : {}),
+  ...(marketplace ? { marketplace } : {}),
   promptSkillStore,
   accountMailSender,
   s3DownloadMode,
@@ -155,6 +168,25 @@ const app = buildApp({
   ...(mediaMetadataExtractor ? { mediaMetadataExtractor } : {}),
   ...(mediaDerivativeGenerator ? { mediaDerivativeGenerator } : {}),
   rateLimiter,
+});
+/** 只恢复已原子受理的 outbox；失败保留记录，后续按相同任务身份重投。 */
+let dispatching = false;
+const outboxTimer =
+  runService instanceof BullMqRunService && billing
+    ? setInterval(() => {
+        if (dispatching) return;
+        dispatching = true;
+        void runService
+          .dispatchOutbox()
+          .catch(() => app.log.warn({ code: 'outbox_publish_failed' }, '账务任务等待队列恢复'))
+          .finally(() => {
+            dispatching = false;
+          });
+      }, 5_000)
+    : undefined;
+outboxTimer?.unref();
+app.addHook('onClose', async () => {
+  if (outboxTimer) clearInterval(outboxTimer);
 });
 const port = Number(process.env.API_PORT ?? 3000);
 const host =

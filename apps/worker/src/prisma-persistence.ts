@@ -46,7 +46,8 @@ export class WorkerPrismaRunPersistence implements RunPersistence {
   private readonly credentialKeyring?: CredentialEncryptionKeyring;
 
   constructor(
-    private readonly prisma: PrismaClient,
+    /** Worker 账务与运行持久化共用连接；调用方不得替换客户端。 */
+    public readonly prisma: PrismaClient,
     encryptionSecret = process.env.AI_CREDENTIAL_ENCRYPTION_KEY,
   ) {
     // The API and Worker must share this secret. Never derive a process-local
@@ -61,6 +62,23 @@ export class WorkerPrismaRunPersistence implements RunPersistence {
 
   async close() {
     await this.prisma.$disconnect();
+  }
+
+  /** outbox 取消意图不随生命周期更新消失；历史任务同时读取 Run 取消状态。 */
+  async isCancellationRequested(runId: string): Promise<boolean> {
+    const [outbox, run] = await Promise.all([
+      this.prisma.runOutbox.findUnique({ where: { runId }, select: { payload: true } }),
+      this.prisma.run.findUnique({ where: { id: databaseRunId(runId) }, select: { status: true } }),
+    ]);
+    const payload = outbox?.payload;
+    return Boolean(
+      (payload &&
+        typeof payload === 'object' &&
+        !Array.isArray(payload) &&
+        payload.cancelRequested === true) ||
+      run?.status === 'CANCEL_REQUESTED' ||
+      run?.status === 'CANCELLED',
+    );
   }
 
   /**

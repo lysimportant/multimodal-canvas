@@ -63,6 +63,7 @@ model User {
   aiCredentials  AiCredential[]
   usageLedger    UsageLedger[]
   authSessions   AuthSession[]
+  wallet         Wallet?
 
   @@map("users")
 }
@@ -446,6 +447,7 @@ model AiCredential {
   models               ModelCatalog[]
   capabilityOverrides  ModelCapabilityOverride[]
   projectModelDefaults ProjectModelDefault[]
+  platformBindings     ModelBinding[]
 
   @@index([projectId])
   @@map("ai_credentials")
@@ -491,6 +493,8 @@ model ProjectModelDefault {
   projectId    String    @db.Uuid
   mediaType    MediaType
   modelAlias   String
+  /// 平台身份跨 API 更换保留；空值的旧引用提交前必须唯一映射。
+  platformModelId String? @db.Uuid
   credentialId String?   @db.Uuid
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
@@ -501,6 +505,256 @@ model ProjectModelDefault {
   @@unique([projectId, mediaType])
   @@index([credentialId])
   @@map("project_model_defaults")
+}
+
+/// 独立的平台商品身份；同步候选目录或更换连接不会删除人工字段、价格和历史引用。
+model PlatformModel {
+  id                     String   @id @default(uuid()) @db.Uuid
+  name                   String
+  description            String   @default("")
+  mediaType              MediaType
+  specifications         Json     @default("{}")
+  status                 String   @default("draft")
+  sortOrder              Int      @default(0)
+  sourceSyncId           String?  @db.Uuid
+  sourceModelId          String?
+  activeBindingId        String?  @unique @db.Uuid
+  activePricingVersionId String?  @unique @db.Uuid
+  createdBy              String?  @db.Uuid
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  activeBinding ModelBinding? @relation("ActiveModelBinding", fields: [activeBindingId], references: [id], onDelete: Restrict)
+  activePrice PricingVersion? @relation("ActiveModelPrice", fields: [activePricingVersionId], references: [id], onDelete: Restrict)
+  bindings ModelBinding[] @relation("PlatformBindings")
+  prices PricingVersion[] @relation("PlatformPrices")
+
+  @@index([status, mediaType, sortOrder])
+  @@map("platform_models")
+}
+
+/// 不可变调用绑定；凭据、精确模型 ID、合同及能力验证证据随修订号冻结。
+model ModelBinding {
+  id                   String   @id @default(uuid()) @db.Uuid
+  platformModelId      String   @db.Uuid
+  revision             Int
+  credentialId         String   @db.Uuid
+  credentialVersion    Int
+  upstreamModelId      String
+  contract             String
+  capabilities         Json     @default("{}")
+  limitations          Json     @default("{}")
+  verificationEvidence String
+  verifiedAt           DateTime
+  createdBy            String   @db.Uuid
+  createdAt            DateTime @default(now())
+
+  model PlatformModel @relation("PlatformBindings", fields: [platformModelId], references: [id], onDelete: Restrict)
+  activeFor PlatformModel? @relation("ActiveModelBinding")
+  credential AiCredential @relation(fields: [credentialId], references: [id], onDelete: Restrict)
+
+  @@unique([platformModelId, revision])
+  @@index([credentialId])
+  @@map("model_bindings")
+}
+
+/// 不可变人民币售价版本；rule 中金额均为十亿分之一元的整数字符串。
+model PricingVersion {
+  id              String   @id @default(uuid()) @db.Uuid
+  platformModelId String   @db.Uuid
+  revision        Int
+  currency        String   @default("CNY")
+  rule            Json
+  effectiveAt     DateTime @default(now())
+  createdBy       String   @db.Uuid
+  createdAt       DateTime @default(now())
+
+  model PlatformModel @relation("PlatformPrices", fields: [platformModelId], references: [id], onDelete: Restrict)
+  activeFor PlatformModel? @relation("ActiveModelPrice")
+
+  @@unique([platformModelId, revision])
+  @@map("pricing_versions")
+}
+
+/// 钱包快照与追加流水同事务更新；金额单位为 10^-9 CNY，不使用浮点金额。
+model Wallet {
+  id             String   @id @default(uuid()) @db.Uuid
+  userId         String   @unique @db.Uuid
+  currency       String   @default("CNY")
+  availableNanos Decimal  @default(0) @db.Decimal(38, 0)
+  heldNanos      Decimal  @default(0) @db.Decimal(38, 0)
+  version        Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  entries WalletEntry[]
+
+  @@map("wallets")
+}
+
+/// 只追加的财务动作；同一幂等键必须具有相同动作、金额、关联对象和操作者。
+model WalletEntry {
+  id                  String   @id @default(uuid()) @db.Uuid
+  walletId            String   @db.Uuid
+  kind                String
+  availableDeltaNanos Decimal  @db.Decimal(38, 0)
+  heldDeltaNanos      Decimal  @db.Decimal(38, 0)
+  availableAfterNanos Decimal  @db.Decimal(38, 0)
+  heldAfterNanos      Decimal  @db.Decimal(38, 0)
+  idempotencyKey      String   @unique
+  runId               String?
+  chargeItemId        String?  @db.Uuid
+  relatedEntryId      String?  @db.Uuid
+  actorId             String?  @db.Uuid
+  reason              String
+  createdAt           DateTime @default(now())
+
+  wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Restrict)
+
+  @@index([walletId, createdAt])
+  @@index([chargeItemId])
+  @@map("wallet_entries")
+}
+
+/// 服务端生成、付款人和执行快照绑定的短期报价；消费后仅能恢复原 Run。
+model BillingQuote {
+  id            String   @id @default(uuid()) @db.Uuid
+  payerId       String   @db.Uuid
+  requestHash   String
+  snapshot      Json
+  items         Json
+  maximumNanos  Decimal  @db.Decimal(38, 0)
+  expiresAt     DateTime
+  consumedRunId String?  @unique
+  createdAt     DateTime @default(now())
+
+  @@index([payerId, createdAt])
+  @@index([expiresAt])
+  @@map("billing_quotes")
+}
+
+/// 运行账单汇总；runId 使用队列稳定身份，不随运行历史清理级联删除财务记录。
+model RunCharge {
+  id            String   @id @default(uuid()) @db.Uuid
+  runId         String   @unique
+  payerId       String   @db.Uuid
+  quoteId       String   @unique @db.Uuid
+  requestHash   String
+  maximumNanos  Decimal  @db.Decimal(38, 0)
+  createdAt     DateTime @default(now())
+
+  items ChargeItem[]
+
+  @@index([payerId, createdAt])
+  @@map("run_charges")
+}
+
+/// 每个实际逻辑子调用的冻结与交付证据；释放或退款后不允许迟到结果重新扣费。
+model ChargeItem {
+  id                 String   @id @default(uuid()) @db.Uuid
+  runChargeId        String   @db.Uuid
+  nodeId             String
+  executionIdentity  String   @unique
+  platformModelId    String   @db.Uuid
+  bindingId          String   @db.Uuid
+  pricingVersionId   String   @db.Uuid
+  pricingRule        Json
+  quoteInput         Json
+  maximumNanos       Decimal  @db.Decimal(38, 0)
+  settledNanos       Decimal  @default(0) @db.Decimal(38, 0)
+  refundedNanos      Decimal  @default(0) @db.Decimal(38, 0)
+  status             String   @default("HELD")
+  executionState     String   @default("unsent")
+  providerRequestId  String?
+  deliveryEvidence   Json?
+  usage              Json?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  charge RunCharge @relation(fields: [runChargeId], references: [id], onDelete: Restrict)
+  providerCost ProviderCost?
+
+  @@unique([runChargeId, nodeId])
+  @@index([status, updatedAt])
+  @@map("charge_items")
+}
+
+/// 上游原币种成本独立于用户结算；未知成本不能伪记为零或触发生成重放。
+model ProviderCost {
+  id             String   @id @default(uuid()) @db.Uuid
+  chargeItemId   String   @unique @db.Uuid
+  status         String   @default("unknown")
+  amount         Decimal? @db.Decimal(38, 12)
+  currency       String?
+  source         String?
+  evidence       Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  item ChargeItem @relation(fields: [chargeItemId], references: [id], onDelete: Restrict)
+
+  @@index([status, updatedAt])
+  @@map("provider_costs")
+}
+
+/// 待核实事项只经明确证据或人工决策关闭；到期用于升级处理，不自动退款或重发。
+model ReconciliationItem {
+  id           String   @id @default(uuid()) @db.Uuid
+  chargeItemId String   @db.Uuid
+  kind         String
+  reason       String
+  status       String   @default("open")
+  dueAt        DateTime
+  resolution   String?
+  resolvedBy   String?  @db.Uuid
+  resolvedAt   DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([chargeItemId, kind])
+  @@index([status, dueAt])
+  @@map("reconciliation_items")
+}
+
+/// 与 Run、报价消费和冻结一起提交；重复投递始终使用相同 jobId。
+model RunOutbox {
+  id          String   @id @default(uuid()) @db.Uuid
+  runId       String   @unique
+  /// 队列命名空间随提交冻结，避免不同部署共享数据库时互相抢投。
+  queueName   String
+  payload     Json
+  publishedAt DateTime?
+  attempts    Int      @default(0)
+  lastError   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([publishedAt, createdAt])
+  @@map("run_outbox")
+}
+
+/// 同步候选的独立证据；失败保留上次候选，不覆盖人工商品和售价。
+model ModelCatalogSync {
+  id           String   @id @default(uuid()) @db.Uuid
+  credentialId String   @db.Uuid
+  status       String
+  candidates   Json
+  missing      Json
+  errorCode    String?
+  createdBy    String   @db.Uuid
+  createdAt    DateTime @default(now())
+
+  @@index([credentialId, createdAt])
+  @@map("model_catalog_syncs")
+}
+
+/// 切换时刻用于识别迁移前的无账务历史运行，之后的新调用必须有冻结记录。
+model BillingActivation {
+  id        String   @id @default("singleton")
+  createdAt DateTime @default(now())
+
+  @@map("billing_activation")
 }
 
 /// 用户跨项目共享的 Skill 库；内置项仅保存启用覆盖，无用户外键以支持本地身份。

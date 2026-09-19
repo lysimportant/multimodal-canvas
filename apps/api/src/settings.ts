@@ -21,6 +21,8 @@ export type AiSettings = {
 
 export type AiCredentialSummary = {
   id: string;
+  /** 管理员建立不可变绑定时使用的当前凭据修订号。 */
+  version?: number;
   baseUrl: string;
   keyFingerprint: string;
   updatedAt: string;
@@ -1677,7 +1679,8 @@ function sameDefaultModels(
   return mediaTypes.every(
     (mediaType) =>
       left[mediaType]?.modelAlias === right[mediaType]?.modelAlias &&
-      left[mediaType]?.credentialId === right[mediaType]?.credentialId,
+      left[mediaType]?.credentialId === right[mediaType]?.credentialId &&
+      left[mediaType]?.platformModelId === right[mediaType]?.platformModelId,
   );
 }
 
@@ -1685,6 +1688,7 @@ function normalizeModelSelection(value: string | ModelSelection): ModelSelection
   if (typeof value === 'string') return { modelAlias: value.trim() };
   return {
     modelAlias: value.modelAlias.trim(),
+    ...(value.platformModelId ? { platformModelId: value.platformModelId } : {}),
     ...(value.credentialId ? { credentialId: value.credentialId } : {}),
   };
 }
@@ -1777,6 +1781,7 @@ function samePersistedSettings(left: PersistedAiSettings, right: PersistedAiSett
 function summarizeCredentials(
   credentials: Array<{
     id: string;
+    version?: number;
     baseUrl: string;
     keyFingerprint: string;
     label?: string;
@@ -1801,6 +1806,7 @@ function summarizeCredentials(
         id: credential.id,
         baseUrl: credential.baseUrl,
         keyFingerprint: credential.keyFingerprint,
+        version: credential.version,
         independent:
           credential.independent === true || credential.label === INDEPENDENT_CREDENTIAL_LABEL,
         updatedAt:

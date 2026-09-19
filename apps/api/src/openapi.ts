@@ -1,5 +1,14 @@
 import { accountOpenApiPaths, verificationResponseSchema } from './account-openapi';
 import { promptSkillOpenApiPaths } from './prompt-skill-openapi';
+import {
+  billingOpenApiPaths,
+  billingOpenApiSchemas,
+  billingQuoteResponse,
+  billingSubmissionDescription,
+  billingSubmissionErrors,
+  billingSubmissionProperties,
+  platformModelSelectionProperty,
+} from './billing-openapi';
 
 const errorSchema = {
   type: 'object',
@@ -23,6 +32,7 @@ const modelSelectionSchema = {
   required: ['modelAlias'],
   properties: {
     modelAlias: { type: 'string', minLength: 1 },
+    platformModelId: platformModelSelectionProperty,
     credentialId: { type: 'string', format: 'uuid' },
   },
   additionalProperties: false,
@@ -50,7 +60,7 @@ const reversePromptAnalysisSchema = {
     status: { type: 'string', enum: ['queued', 'running', 'succeeded', 'failed', 'cancelled'] },
     automatic: { type: 'boolean' },
     modelAlias: { type: 'string' },
-    credentialId: { type: 'string' },
+    platformModelId: platformModelSelectionProperty,
     summary: { type: 'string', maxLength: 2000 },
     prompt: { type: 'string', maxLength: 20000 },
     error: { type: 'string' },
@@ -74,7 +84,7 @@ const promptOptimizationSchema = {
     },
     status: { type: 'string', enum: ['queued', 'running', 'succeeded', 'failed', 'cancelled'] },
     modelAlias: { type: 'string' },
-    credentialId: { type: 'string', format: 'uuid' },
+    platformModelId: platformModelSelectionProperty,
     promptDocument: { $ref: '#/components/schemas/PromptDocument' },
     error: { type: 'string' },
   },
@@ -300,6 +310,43 @@ const projectModelDefaultsSchema = {
   additionalProperties: false,
 } as const;
 
+/** 服务端完成精确解析后供画布使用的默认值；未映射项保留原身份，不含连接引用。 */
+const resolvedModelSelectionSchema = {
+  type: 'object',
+  required: ['modelAlias'],
+  properties: {
+    modelAlias: { type: 'string' },
+    platformModelId: platformModelSelectionProperty,
+  },
+  additionalProperties: false,
+} as const;
+/** 仅配置的媒体类型出现在解析视图中；未配置时不自动采用广场首个商品。 */
+const resolvedModelDefaultsSchema = {
+  type: 'object',
+  properties: {
+    text: resolvedModelSelectionSchema,
+    image: resolvedModelSelectionSchema,
+    audio: resolvedModelSelectionSchema,
+    video: resolvedModelSelectionSchema,
+  },
+  additionalProperties: false,
+  description:
+    '启用平台模型服务时返回。已有平台 ID 优先，否则由服务端按原 alias、连接和媒体类型唯一解析；成功返回当前 alias 和稳定 ID，失败保留原 alias/已存 ID，不选择其他商品。始终省略内部 credentialId。',
+} as const;
+/** 项目管理视图兼容旧设置面板；普通账户响应中的 defaults 同样裁剪内部连接字段。 */
+const projectModelDefaultsResponseSchema = {
+  type: 'object',
+  required: ['defaults'],
+  properties: {
+    defaults: {
+      ...projectModelDefaultsSchema,
+      description: '项目原始默认值；仅有平台设置管理权限的调用者可见内部 credentialId。',
+    },
+    resolvedDefaults: { $ref: '#/components/schemas/ResolvedModelDefaults' },
+  },
+  additionalProperties: false,
+} as const;
+
 /** 类型默认模型的局部更新；显式 `null` 清除该媒体类型，省略表示保留。 */
 const defaultModelUpdateSchema = {
   type: 'object',
@@ -341,6 +388,7 @@ const nodeSchema = {
         inferenceStrength: { type: 'string', minLength: 1 },
         assetId: { type: 'string' },
         modelAlias: { type: 'string' },
+        platformModelId: platformModelSelectionProperty,
         credentialId: { type: 'string', format: 'uuid' },
         contentUrl: { type: 'string' },
         mimeType: { type: 'string' },
@@ -819,10 +867,13 @@ export const openApiDocument = {
     { name: 'webhooks' },
     { name: 'admin', description: '管理员用户、资源与系统管理' },
     { name: 'account', description: '个人资料、安全和资源' },
+    { name: 'billing', description: '平台模型、人民币报价、钱包及个人账单' },
+    { name: 'billing-admin', description: '平台模型与价格版本、额度调整和账务核实' },
   ],
   paths: {
     ...accountOpenApiPaths(authUserSchema, authTokenSchema, assetSchema),
     ...promptSkillOpenApiPaths(),
+    ...billingOpenApiPaths(),
     '/health': { get: { tags: ['system'], responses: { '200': response('Healthy') } } },
     '/documentation': {
       get: { tags: ['system'], responses: { '200': response('OpenAPI document') } },
@@ -1114,17 +1165,18 @@ export const openApiDocument = {
     '/v1/projects/{projectId}/models/defaults': {
       get: {
         tags: ['projects'],
+        description:
+          '需要项目访问权限。defaults 保留原设置形状，普通账户响应省略内部连接；启用模型广场时额外返回 resolvedDefaults，供画布保存稳定平台身份。',
         parameters: [{ $ref: '#/components/parameters/ProjectId' }],
         responses: {
-          '200': response(
-            'Project model defaults',
-            envelope('defaults', projectModelDefaultsSchema),
-          ),
+          '200': response('Project model defaults', projectModelDefaultsResponseSchema),
           '404': response('Project not found', errorSchema),
         },
       },
       patch: {
         tags: ['projects'],
+        description:
+          '只更新显式提供的媒体类型。响应与 GET 一致，公开字段不包含内部连接，resolvedDefaults 由服务端按精确身份解析。',
         parameters: [{ $ref: '#/components/parameters/ProjectId' }],
         requestBody: {
           required: true,
@@ -1168,10 +1220,7 @@ export const openApiDocument = {
           },
         },
         responses: {
-          '200': response(
-            'Project model defaults updated',
-            envelope('defaults', projectModelDefaultsSchema),
-          ),
+          '200': response('Project model defaults updated', projectModelDefaultsResponseSchema),
           '400': response('Invalid project model defaults', errorSchema),
           '404': response('Project not found', errorSchema),
         },
@@ -1427,8 +1476,7 @@ export const openApiDocument = {
       post: {
         tags: ['runs'],
         summary: '独立优化未保存的提示词，冻结默认文字模型与凭据',
-        description:
-          '需要项目访问权限。只发送文本与稳定资源占位符，原始文档保存在 Run 快照。相同幂等键复用已提交任务，包括失败结果；输入或显式模型变化返回 409。不会归档资产或修改画布，通用 retry 不适用。',
+        description: `${billingSubmissionDescription}需要项目访问权限。只发送文本与稳定资源占位符，原始文档保存在 Run 快照。相同幂等键复用已提交任务，包括失败结果；quoteOnly 请求也可能返回 202/optimization，此时直接恢复原任务，不再提交。输入或显式模型变化返回 409。不会归档资产或修改画布，通用 retry 不适用。`,
         parameters: [{ $ref: '#/components/parameters/ProjectId' }],
         requestBody: {
           required: true,
@@ -1451,6 +1499,8 @@ export const openApiDocument = {
                   mediaType: mediaTypeSchema,
                   promptDocument: { $ref: '#/components/schemas/PromptDocument' },
                   idempotencyKey: { type: 'string', minLength: 1, maxLength: 200 },
+                  platformModelId: platformModelSelectionProperty,
+                  ...billingSubmissionProperties,
                   modelAlias: { type: 'string', minLength: 1, maxLength: 160 },
                   credentialId: { type: 'string', format: 'uuid' },
                 },
@@ -1459,11 +1509,16 @@ export const openApiDocument = {
           },
         },
         responses: {
+          ...billingSubmissionErrors,
+          '200': billingQuoteResponse,
           '202': response('新建或复用优化任务', envelope('optimization', promptOptimizationSchema)),
           '400': response('输入、Skill、模型或项目归档状态无效', errorSchema),
           '401': response('未认证', errorSchema),
           '404': response('项目或凭据不存在或无权访问', errorSchema),
-          '409': response('幂等身份冲突', errorSchema),
+          '409': response(
+            '幂等身份、Skill 版本或报价冲突；缺少、过期、参数/售价变化需重新确认',
+            errorSchema,
+          ),
           '429': response('项目运行配额已满', errorSchema),
           '503': response('暂时无法提交，可使用相同幂等键重试', errorSchema),
         },
@@ -1512,7 +1567,11 @@ export const openApiDocument = {
             additionalProperties: false,
             properties: {
               analysis: { anyOf: [reversePromptAnalysisSchema, { type: 'null' }] },
-              defaultModel: modelSelectionSchema,
+              defaultModel: {
+                ...resolvedModelSelectionSchema,
+                description:
+                  '采用与独立文字任务相同的当前默认选择；平台模式由服务端精确解析稳定 ID，无法映射时保留原 alias，始终不返回内部连接。',
+              },
             },
           }),
           '400': response('项目或版本参数无效', errorSchema),
@@ -1522,8 +1581,7 @@ export const openApiDocument = {
       post: {
         tags: ['assets'],
         summary: '提交独立反推；默认文字模型含凭据，成功结果不归档为新资源',
-        description:
-          'automatic=true 按项目、资源与版本复用已有任何状态的分析。手动相同 idempotencyKey 或仍有运行中的分析时复用任务；失败后必须明确新建分析，普通 Run retry 不适用。',
+        description: `${billingSubmissionDescription}automatic=true 按项目、资源与版本复用已有任何状态的分析。手动相同 idempotencyKey 或仍有运行中的分析时复用任务；quoteOnly 请求也可能返回 202/analysis，此时直接恢复已有任务，不再提交。失败后必须明确新建分析，普通 Run retry 不适用。`,
         parameters: [
           { $ref: '#/components/parameters/AssetId' },
           { name: 'version', in: 'path', required: true, schema: { type: 'integer', minimum: 1 } },
@@ -1538,6 +1596,8 @@ export const openApiDocument = {
                 additionalProperties: false,
                 properties: {
                   projectId: { type: 'string', minLength: 1, maxLength: 512 },
+                  platformModelId: platformModelSelectionProperty,
+                  ...billingSubmissionProperties,
                   modelAlias: { type: 'string', minLength: 1, maxLength: 160 },
                   credentialId: { type: 'string', format: 'uuid' },
                   idempotencyKey: { type: 'string', minLength: 1, maxLength: 200 },
@@ -1548,13 +1608,15 @@ export const openApiDocument = {
           },
         },
         responses: {
+          ...billingSubmissionErrors,
+          '200': billingQuoteResponse,
           '202': response(
             '新建或复用的分析任务',
             envelope('analysis', reversePromptAnalysisSchema),
           ),
           '400': response('模型、资源版本、归档、大小或显式能力限制不满足', errorSchema),
           '404': response('项目、资源版本或凭据不存在或无权访问', errorSchema),
-          '409': response('幂等身份冲突', errorSchema),
+          '409': response('幂等身份或报价冲突；缺少、过期、参数/售价变化需重新确认', errorSchema),
           '429': response('项目运行配额已满', errorSchema),
         },
       },
@@ -1716,6 +1778,8 @@ export const openApiDocument = {
     '/v1/nodes/{nodeId}/runs': {
       post: {
         tags: ['runs'],
+        summary: '对单节点及其实际工作流子调用报价或确认运行',
+        description: billingSubmissionDescription,
         parameters: [
           { $ref: '#/components/parameters/NodeId' },
           { $ref: '#/components/parameters/IdempotencyKey' },
@@ -1729,6 +1793,8 @@ export const openApiDocument = {
                 required: ['projectId'],
                 properties: {
                   projectId: { type: 'string', minLength: 1 },
+                  platformModelId: platformModelSelectionProperty,
+                  ...billingSubmissionProperties,
                   modelAlias: { type: 'string', minLength: 1, maxLength: 160 },
                   credentialId: { type: 'string', format: 'uuid' },
                   idempotencyKey: { type: 'string', minLength: 1, maxLength: 200 },
@@ -1741,11 +1807,16 @@ export const openApiDocument = {
           },
         },
         responses: {
-          '202': response('Run queued', envelope('run', runSchema)),
+          ...billingSubmissionErrors,
+          '200': billingQuoteResponse,
+          '202': response(
+            '已原子受理或复用原任务；队列故障时由持久 outbox 稍后投递',
+            envelope('run', runSchema),
+          ),
           '400': response('Invalid request', errorSchema),
           '403': response('Credential selection is not permitted', errorSchema),
           '404': response('Not found', errorSchema),
-          '409': response('Idempotency conflict', errorSchema),
+          '409': response('幂等身份或报价冲突；缺少、过期、模型/参数变化需重新确认', errorSchema),
         },
       },
     },
@@ -1762,11 +1833,28 @@ export const openApiDocument = {
     '/v1/runs/{runId}/retry': {
       post: {
         tags: ['runs'],
+        summary: '对明确失败或取消的普通运行重新报价并显式重试',
+        description: `${billingSubmissionDescription}按当前有效平台绑定与价格重新确认。原收费项仍冻结、已交付或执行结果未知时禁止再次付费发送；反推和优化须在各自入口明确新建。恢复原队列消息不是新收费重试。`,
         parameters: [{ $ref: '#/components/parameters/RunId' }],
+        requestBody: {
+          required: false,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: billingSubmissionProperties,
+                additionalProperties: false,
+              },
+            },
+          },
+        },
         responses: {
-          '202': response('Retry queued', envelope('run', runSchema)),
+          ...billingSubmissionErrors,
+          '200': billingQuoteResponse,
+          '202': response('已确认的新重试任务，冻结新的授权上限', envelope('run', runSchema)),
+          '400': response('无效报价参数', errorSchema),
           '404': response('Not found', errorSchema),
-          '409': response('Run cannot be retried', errorSchema),
+          '409': response('运行不可重试、原请求待核实、报价缺失/过期/变化或身份冲突', errorSchema),
         },
       },
     },
@@ -1826,11 +1914,18 @@ export const openApiDocument = {
     '/v1/settings/ai': {
       get: {
         tags: ['settings'],
+        description:
+          '保留平台连接管理权限。settings 是当前活动设置的原管理视图；启用模型广场时，顶层 resolvedDefaults 提供相同当前默认值的公开平台身份，不扫描其他连接或自动取首个商品。',
         responses: {
-          '200': response(
-            'AI settings without secrets',
-            envelope('settings', { $ref: '#/components/schemas/AiSettings' }),
-          ),
+          '200': response('AI settings without secrets', {
+            type: 'object',
+            required: ['settings'],
+            properties: {
+              settings: { $ref: '#/components/schemas/AiSettings' },
+              resolvedDefaults: { $ref: '#/components/schemas/ResolvedModelDefaults' },
+            },
+            additionalProperties: false,
+          }),
           '403': response('Credential access is not permitted', errorSchema),
         },
       },
@@ -2059,6 +2154,9 @@ export const openApiDocument = {
     '/v1/models': {
       get: {
         tags: ['settings'],
+        summary: '读取管理员上游候选目录',
+        description:
+          '所有查询都要求平台设置管理权限，省略 credentialId 不会开放目录。普通用户读取 /v1/model-marketplace 的已发布平台商品；此管理接口仍保留连接引用和上游参考价格。',
         parameters: [
           { $ref: '#/components/parameters/CredentialIdQuery' },
           { $ref: '#/components/parameters/MediaTypeQuery' },
@@ -2071,7 +2169,7 @@ export const openApiDocument = {
             },
           }),
           '400': response('Invalid media type', errorSchema),
-          '403': response('Credential access is not permitted', errorSchema),
+          '403': response('Platform settings management permission is required', errorSchema),
           '404': response('Credential not found', errorSchema),
         },
       },
@@ -2245,6 +2343,10 @@ export const openApiDocument = {
       },
     },
     schemas: {
+      ...billingOpenApiSchemas,
+      ModelSelection: modelSelectionSchema,
+      ReversePromptAnalysis: reversePromptAnalysisSchema,
+      PromptOptimization: promptOptimizationSchema,
       Asset: assetSchema,
       AssetVersion: {
         type: 'object',
@@ -2264,6 +2366,7 @@ export const openApiDocument = {
       Project: projectSchema,
       Canvas: canvasSchema,
       ProjectModelDefaults: projectModelDefaultsSchema,
+      ResolvedModelDefaults: resolvedModelDefaultsSchema,
       MentionBinding: mentionBindingSchema,
       PromptMention: promptMentionSchema,
       PromptTextBlock: promptTextBlockSchema,

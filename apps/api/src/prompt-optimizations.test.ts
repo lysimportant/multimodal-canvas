@@ -730,9 +730,10 @@ describe('独立 Skill 提示词优化 API', () => {
     expect(start.statusCode, start.body).toBe(202);
     expect(start.json().optimization).toMatchObject({
       modelAlias: 'independent-text',
-      credentialId,
     });
+    expect(start.json().optimization).not.toHaveProperty('credentialId');
     const runId = start.json().optimization.runId;
+    expect((await ctx.runService.get(runId))?.snapshot.credentialId).toBe(credentialId);
     await vi.waitFor(async () =>
       expect((await ctx.runService.get(runId))?.status).toBe('succeeded'),
     );

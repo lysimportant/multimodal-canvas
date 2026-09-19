@@ -1,4 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
+import {
+  acceptTestQuotes,
+  withTestQuoteTransport,
+  TEST_QUOTE_ID,
+} from './marketplace/quote-test-fixture';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { fetchReversePrompt, reversePromptModelKey, submitReversePrompt } from './reverse-prompts';
 
@@ -15,7 +20,46 @@ const analysis = {
   prompt: '详细内容',
 };
 
+let releaseQuoteConfirmation: (() => void) | undefined;
+beforeEach(() => {
+  releaseQuoteConfirmation = acceptTestQuotes();
+});
+afterEach(() => releaseQuoteConfirmation?.());
+
 describe('资源反推客户端', () => {
+  it('平台模型切换上游后保留商品身份，不提交旧连接和别名', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json({
+        analysis: { ...analysis, modelAlias: 'new-alias', platformModelId: 'product-a' },
+      }),
+    );
+    const result = await submitReversePrompt(target, '', {
+      model: {
+        modelAlias: 'old-alias',
+        credentialId: 'old-provider',
+        platformModelId: 'product-a',
+      },
+      idempotencyKey: 'stable-key',
+      fetcher: withTestQuoteTransport(fetcher),
+    });
+    expect(result.platformModelId).toBe('product-a');
+    expect(JSON.parse(String(fetcher.mock.calls[0]![1]?.body))).toMatchObject({
+      platformModelId: 'product-a',
+    });
+    expect(JSON.parse(String(fetcher.mock.calls[0]![1]?.body))).not.toHaveProperty('modelAlias');
+    const wrong = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        Response.json({ analysis: { ...analysis, platformModelId: 'other-product' } }),
+      );
+    await expect(
+      submitReversePrompt(target, '', {
+        model: { modelAlias: 'old-alias', platformModelId: 'product-a' },
+        idempotencyKey: 'stable-key',
+        fetcher: withTestQuoteTransport(wrong),
+      }),
+    ).rejects.toThrow('平台模型身份不一致');
+  });
   it('使用服务端默认模型的精确凭据身份', async () => {
     const defaultModel = { modelAlias: 'text-a', credentialId: 'key-b' };
     const fetcher = vi
@@ -31,7 +75,7 @@ describe('资源反推客户端', () => {
     const fetcher = vi.fn<typeof fetch>().mockRejectedValue(new Error('connection lost'));
     await expect(
       submitReversePrompt(target, 'http://api.test', {
-        fetcher,
+        fetcher: withTestQuoteTransport(fetcher),
         idempotencyKey: 'stable-key',
         model: { modelAlias: 'exact-model', credentialId: 'key-b' },
       }),
@@ -46,6 +90,7 @@ describe('资源反推客户端', () => {
       credentialId: 'key-b',
       automatic: false,
       idempotencyKey: 'stable-key',
+      quoteId: TEST_QUOTE_ID,
     });
   });
 

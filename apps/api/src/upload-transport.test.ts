@@ -17,6 +17,7 @@ const entryMocks = vi.hoisted(() => ({
       }) => unknown
     >(),
   listen: vi.fn(async () => ''),
+  closeHooks: [] as Array<() => Promise<void>>,
   createPrisma: vi.fn(),
   createRateLimiter: vi.fn(async () => ({})),
   createQueue: vi.fn(),
@@ -90,7 +91,11 @@ beforeEach(() => {
   vi.resetModules();
   vi.clearAllMocks();
   for (const [name, value] of Object.entries(productionEnvironment)) vi.stubEnv(name, value);
-  entryMocks.buildApp.mockReturnValue({ listen: entryMocks.listen, log: { error: vi.fn() } });
+  entryMocks.buildApp.mockReturnValue({
+    listen: entryMocks.listen,
+    log: { error: vi.fn() },
+    addHook: (_name: string, hook: () => Promise<void>) => entryMocks.closeHooks.push(hook),
+  });
   entryMocks.prisma.uploadSession.findFirst.mockResolvedValue({
     uploadId: 'upload-test',
     name: 'sample.png',
@@ -108,7 +113,8 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => {
+afterEach(async () => {
+  for (const close of entryMocks.closeHooks.splice(0)) await close();
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   vi.resetModules();

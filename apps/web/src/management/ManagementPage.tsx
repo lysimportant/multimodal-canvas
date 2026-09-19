@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   Database,
   LayoutDashboard,
+  Library,
   Mail,
   Menu,
   PanelLeftClose,
@@ -12,6 +13,7 @@ import {
   ShieldCheck,
   UserRound,
   Users,
+  Wallet,
   X,
   type LucideIcon,
 } from 'lucide-react';
@@ -30,6 +32,9 @@ import { AuditPage, OverviewPage, SystemPage, UserDetailPage, UsersPage } from '
 import { ResourceGroupsPage, ResourcesPage, RunsPage } from './ResourcePages';
 import { managementRequest, type BootstrapStatus } from './client';
 import { QueryState, UserIdentity } from './primitives';
+import { AdminModelsPage } from '../marketplace/AdminModelsPage';
+import { AdminBillingPage } from '../marketplace/AdminBillingPage';
+import { BillingPage } from '../marketplace/BillingPage';
 import './management.css';
 
 /** 管理页面与应用统一认证入口的边界。 */
@@ -55,6 +60,8 @@ type ManagementNav = { path: string; label: string; icon: LucideIcon };
 const adminNavigation: ManagementNav[] = [
   { path: '/admin', label: '管理概览', icon: LayoutDashboard },
   { path: '/admin/users', label: '用户管理', icon: Users },
+  { path: '/admin/models', label: '模型管理', icon: Library },
+  { path: '/admin/billing', label: '账务管理', icon: Wallet },
   { path: '/admin/resources', label: '用户资源', icon: Database },
   { path: '/admin/runs', label: '全站任务', icon: Activity },
   { path: '/admin/audit', label: '操作记录', icon: ShieldCheck },
@@ -66,6 +73,7 @@ const adminNavigation: ManagementNav[] = [
 const accountNavigation: ManagementNav[] = [
   { path: '/account/profile', label: '个人信息', icon: UserRound },
   { path: '/account/security', label: '账户安全', icon: ShieldCheck },
+  { path: '/account/billing', label: '余额与账单', icon: Wallet },
   { path: '/resources', label: '我的资源', icon: Database },
   { path: '/runs', label: '我的任务', icon: Activity },
 ];
@@ -402,6 +410,9 @@ function ManagementShell({
 function ManagementContent({ path, user, onSessionChanged }: SessionPropsForContent) {
   if (path === '/admin') return <OverviewPage userId={user.id} />;
   if (path === '/admin/users') return <UsersPage userId={user.id} />;
+  if (path === '/admin/models') return <AdminModelsPage userId={user.id} />;
+  if (path === '/admin/billing') return <AdminBillingPage userId={user.id} />;
+  if (path === '/account/billing') return <BillingPage userId={user.id} />;
   if (path === '/admin/resources') return <ResourceGroupsPage userId={user.id} />;
   if (path === '/admin/audit') return <AuditPage userId={user.id} />;
   if (path === '/admin/system' || path === '/admin/settings/email')

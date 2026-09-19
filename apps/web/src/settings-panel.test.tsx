@@ -453,7 +453,9 @@ describe('SettingsPanel', () => {
     ).toEqual(['总览', '节点默认', '连接与 Key', '自动化', '画布外观']);
 
     await user.click(within(dialog).getByRole('tab', { name: '自动化' }));
-    const toggle = within(dialog).getByRole('switch', { name: '自动反推提示词' });
+    expect(within(dialog).getByRole('tabpanel', { name: '自动化' })).toHaveTextContent('确认');
+    expect(within(dialog).queryByRole('switch', { name: '自动反推提示词' })).toBeNull();
+    const toggle = within(dialog).getByRole('switch', { name: '新资源反推提醒' });
     expect(toggle).not.toBeChecked();
     await user.click(toggle);
     expect(useWorkspacePreferences.getState().autoReversePrompt).toBe(true);
@@ -671,6 +673,11 @@ describe('SettingsPanel', () => {
     expect(
       credentials.find((credential) => credential.id === independentId)?.defaultModels,
     ).toBeUndefined();
+    await waitFor(() =>
+      expect(modelOptionTexts(panel, 'image')).toEqual([
+        '独立图片模型 · https://independent.example.com/v1 · sha256:independent',
+      ]),
+    );
     fireEvent.change(modelInput(panel, 'image'), { target: { value: 'image-only-b' } });
     fireEvent.blur(modelInput(panel, 'image'));
     await waitFor(() =>

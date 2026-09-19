@@ -230,7 +230,7 @@ async function main(): Promise<void> {
               inputCount: request.snapshot.inputs.length,
             },
             output,
-            usage: { amount: '0', metadata: { synthetic: true } },
+            usage: { amount: '0', currency: 'USD', metadata: { synthetic: true } },
           };
         },
       },

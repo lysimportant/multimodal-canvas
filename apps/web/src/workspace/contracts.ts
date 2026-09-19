@@ -41,6 +41,8 @@ export type AiSettings = {
 
 export type ModelEntry = {
   id: string;
+  /** 平台商品身份；更换上游连接不改变该值，id 继续保留精确模型字符串。 */
+  platformModelId?: string;
   name: string;
   mediaTypes: MediaType[];
   credentialId?: string;
@@ -51,10 +53,13 @@ export type ModelEntry = {
   limitations?: Record<string, unknown>;
   /** 模型价格信息，仅随目录透传，不参与节点参数选择。 */
   price?: Record<string, unknown>;
+  availability?: 'available' | 'unavailable' | 'needs_review';
+  pricing?: import('@multimodal-canvas/domain').MarketplacePricing | null;
 };
 
 export type ModelSelection = {
   modelAlias: string;
+  platformModelId?: string;
   credentialId?: string;
 };
 

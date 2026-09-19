@@ -50,7 +50,12 @@ vi.mock('bullmq', () => {
   return { Job, Queue, Worker };
 });
 
-import { createProviderJobRecord, createRunWorker, type WorkerProviderRequest } from './index';
+import {
+  createProviderJobRecord,
+  createRunWorker,
+  type RunPersistence,
+  type WorkerProviderRequest,
+} from './index';
 import {
   createInitialWorkflowState,
   replaceWorkflowNodeState,
@@ -1127,7 +1132,7 @@ describe('worker workflow DAG execution', () => {
     });
   });
 
-  it('reuses completed upstream work and request identity after intermediate cancellation', async () => {
+  it('retains upstream work and reported cost without replaying an intermediate cancelled response', async () => {
     bullmqState.jobs.clear();
     const predecessorRunId = '123e4567-e89b-42d3-a456-426614174111';
     const runId = '123e4567-e89b-42d3-a456-426614174112';
@@ -1187,7 +1192,7 @@ describe('worker workflow DAG execution', () => {
       'node_image',
     ]);
     expect(firstVideoProvider.execute).not.toHaveBeenCalled();
-    expect(usageRecords).toHaveLength(0);
+    expect(usageRecords).toHaveLength(1);
     const predecessorState = predecessor.data.workflowState as WorkflowState;
     expect(workflowNodeState(predecessorState, 'node_draft')?.status).toBe('succeeded');
     expect(workflowNodeState(predecessorState, 'node_image')?.status).toBe('cancelled');
@@ -1231,26 +1236,18 @@ describe('worker workflow DAG execution', () => {
       }),
     });
 
-    await expect(bullmqState.processor?.(retry)).resolves.toMatchObject({ status: 'succeeded' });
+    await expect(bullmqState.processor?.(retry)).rejects.toThrow('等待核实；禁止重新生成');
 
-    expect(retryRequests).toEqual([
-      {
-        nodeId: 'node_image',
-        providerJobId: `provider_job_${predecessorRunId}_node_image`,
-      },
-    ]);
-    expect(firstAttemptRequests[1]?.providerJobId).toBe(retryRequests[0]?.providerJobId);
-    expect(videoProvider.execute).toHaveBeenCalledOnce();
+    expect(retryRequests).toEqual([]);
+    expect(videoProvider.execute).not.toHaveBeenCalled();
     expect(usageRecords).toEqual([
       expect.objectContaining({
         providerJobId: `provider_job_${predecessorRunId}_node_image`,
       }),
     ]);
-    expect(
-      (retry.data.workflowState as WorkflowState).nodes.every(
-        (nodeState) => nodeState.status === 'succeeded',
-      ),
-    ).toBe(true);
+    expect(workflowNodeState(retry.data.workflowState as WorkflowState, 'node_draft')?.status).toBe(
+      'succeeded',
+    );
   });
 
   it('fails before a paid request when its pre-submit provider job cannot be persisted', async () => {
@@ -1338,59 +1335,316 @@ describe('worker workflow DAG execution', () => {
     expect(provider.execute).toHaveBeenCalledOnce();
   });
 
-  it('uses the same archive identity when usage persistence forces a provider replay', async () => {
+  it.each(['queue', 'database', 'database-retry'] as const)(
+    'repairs provider cost from %s after a worker restart without repeating generation',
+    async (recoverySource) => {
+      bullmqState.jobs.clear();
+      const runId = '123e4567-e89b-42d3-a456-426614174119';
+      const retryRunId = '123e4567-e89b-42d3-a456-426614174170';
+      const textSnapshot = createTextSnapshot();
+      const persistedJobs = new Map<string, ProviderJob>();
+      let rejectUsage = true;
+      const submission: RunJobData = {
+        runId,
+        snapshot: textSnapshot,
+        attempt: 1,
+        provider: 'newapi',
+        providerJob: createProviderJobRecord(runId, 'newapi'),
+        cancelRequested: false,
+      };
+      const job = createJob(structuredClone(submission));
+      const execute = vi.fn(async (request: WorkerProviderRequest) => ({
+        ...createExecution(request.snapshot),
+        usage: {
+          amount: '1.000001',
+          currency: 'USD',
+          metadata: {
+            requestId: 'request_usage_recovery',
+            total_tokens: 30,
+            signed_url: 'https://provider.example/result?secret=synthetic',
+            api_key: 'synthetic-do-not-persist',
+          },
+        },
+      }));
+      const recordUsage = vi.fn<RunPersistence['recordUsage']>(async (input) => {
+        expect(persistedJobs.get(runId)?.payload).toMatchObject({
+          result: { asset: { assetId: 'asset_usage_replay', version: 1 } },
+          deliveryState: 'archived',
+        });
+        expect(input).toEqual({
+          runId,
+          providerJobId: `provider_job_${runId}`,
+          kind: 'generation',
+          amount: '1.000001',
+          currency: 'USD',
+          metadata: { requestId: 'request_usage_recovery', total_tokens: 30 },
+        });
+        if (rejectUsage) throw new Error('usage database unavailable');
+      });
+      const persistence: RunPersistence = {
+        getProviderCredentials: getTestProviderCredentials,
+        async upsertProviderJob({ runId: persistedRunId, providerJob }) {
+          persistedJobs.set(persistedRunId, structuredClone(providerJob));
+        },
+        ...(recoverySource === 'queue'
+          ? {}
+          : {
+              async findProviderJobsByRunId(sourceRunId: string) {
+                const persistedJob = persistedJobs.get(sourceRunId);
+                return persistedJob ? [structuredClone(persistedJob)] : [];
+              },
+            }),
+        recordUsage,
+      };
+      const resultArchiver = vi.fn(async () => ({
+        assetId: 'asset_usage_replay',
+        version: 1,
+        mimeType: 'text/plain',
+      }));
+      const options: Parameters<typeof createRunWorker>[0] = {
+        connection: { host: '127.0.0.1', port: 6379 },
+        providerName: 'newapi',
+        provider: { execute },
+        stepDelayMs: 0,
+        persistence,
+        resultArchiver,
+      };
+      createRunWorker(options);
+
+      await expect(bullmqState.processor?.(job)).rejects.toThrow('usage database unavailable');
+      expect(persistedJobs.get(runId)?.payload).toMatchObject({
+        reportedUsage: { amount: '1.000001', currency: 'USD', runId },
+        usageStatus: 'pending',
+      });
+      expect(JSON.stringify(persistedJobs.get(runId)?.payload)).not.toContain('synthetic');
+      const retainedData = structuredClone(job.data) as unknown as RunJobData;
+      bullmqState.jobs.clear();
+      createRunWorker(options);
+      const recovered = createJob(
+        recoverySource === 'queue'
+          ? retainedData
+          : recoverySource === 'database'
+            ? structuredClone(submission)
+            : {
+                ...structuredClone(submission),
+                runId: retryRunId,
+                retryOf: runId,
+                attempt: 2,
+                providerJob: createProviderJobRecord(retryRunId, 'newapi'),
+              },
+      );
+      await expect(bullmqState.processor?.(recovered)).rejects.toThrow(
+        'usage database unavailable',
+      );
+      expect(execute).toHaveBeenCalledOnce();
+      rejectUsage = false;
+      await expect(bullmqState.processor?.(recovered)).resolves.toMatchObject({
+        status: 'succeeded',
+        result: { asset: { assetId: 'asset_usage_replay', version: 1 } },
+      });
+
+      expect(execute).toHaveBeenCalledOnce();
+      expect(resultArchiver).toHaveBeenCalledOnce();
+      expect(recordUsage).toHaveBeenCalledTimes(3);
+      await expect(bullmqState.processor?.(recovered)).resolves.toMatchObject({
+        status: 'succeeded',
+      });
+      expect(execute).toHaveBeenCalledOnce();
+      expect(recordUsage).toHaveBeenCalledTimes(3);
+    },
+  );
+
+  it('recovers an intermediate charged result before continuing the remaining DAG', async () => {
     bullmqState.jobs.clear();
-    const runId = '123e4567-e89b-42d3-a456-426614174119';
-    const textSnapshot = createTextSnapshot();
-    const providerJobIds: Array<string | undefined> = [];
-    const archiveKeys: Array<string | undefined> = [];
+    const runId = '123e4567-e89b-42d3-a456-426614174171';
+    const persistedJobs = new Map<string, ProviderJob>();
+    const completedUsage: string[] = [];
     let rejectUsage = true;
+    const execute = vi.fn(async (request: WorkerProviderRequest) => ({
+      ...createExecution(request.snapshot),
+      ...(request.snapshot.targetNodeId === 'node_image'
+        ? { usage: { amount: '0.250000', currency: 'USD' } }
+        : {}),
+    }));
+    const submission: RunJobData = {
+      runId,
+      snapshot,
+      attempt: 1,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(runId, 'newapi'),
+      cancelRequested: false,
+    };
+    const options: Parameters<typeof createRunWorker>[0] = {
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      provider: { execute },
+      videoProvider: { execute },
+      stepDelayMs: 0,
+      persistence: {
+        getProviderCredentials: getTestProviderCredentials,
+        async upsertProviderJob({ providerJob }) {
+          persistedJobs.set(providerJob.id, structuredClone(providerJob));
+        },
+        async findProviderJobsByRunId() {
+          return structuredClone([...persistedJobs.values()]);
+        },
+        async recordUsage(input) {
+          if (rejectUsage) throw new Error('intermediate usage unavailable');
+          completedUsage.push(input.providerJobId!);
+        },
+      },
+      resultArchiver: async ({ snapshot: nodeSnapshot }) => ({
+        assetId: `asset_${nodeSnapshot.targetNodeId}_recovered`,
+        version: 1,
+        mimeType:
+          nodeSnapshot.targetNodeId === 'node_draft'
+            ? 'text/plain'
+            : nodeSnapshot.targetNodeId === 'node_image'
+              ? 'image/png'
+              : 'video/mp4',
+      }),
+    };
+    createRunWorker(options);
+    const job = createJob(structuredClone(submission));
+    await expect(bullmqState.processor?.(job)).rejects.toThrow('intermediate usage unavailable');
+    expect(execute.mock.calls.map(([request]) => request.snapshot.targetNodeId)).toEqual([
+      'node_draft',
+      'node_image',
+    ]);
+    bullmqState.jobs.clear();
+    rejectUsage = false;
+    createRunWorker(options);
+    const recovered = createJob(structuredClone(submission));
+    await expect(bullmqState.processor?.(recovered)).resolves.toMatchObject({
+      status: 'succeeded',
+    });
+    expect(execute.mock.calls.map(([request]) => request.snapshot.targetNodeId)).toEqual([
+      'node_draft',
+      'node_image',
+      'node_video',
+    ]);
+    expect(completedUsage).toEqual([`provider_job_${runId}_node_image`]);
+    expect(execute.mock.calls.at(-1)?.[0].snapshot.inputs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ sourceAssetId: 'asset_node_image_recovered' }),
+      ]),
+    );
+  });
+
+  it('does not regenerate a received synchronous result when archiving failed', async () => {
+    bullmqState.jobs.clear();
+    const runId = '123e4567-e89b-42d3-a456-426614174172';
+    const execute = vi.fn(async (request: WorkerProviderRequest) =>
+      createExecution(request.snapshot),
+    );
+    const resultArchiver = vi.fn(async () => {
+      throw new Error('archive unavailable');
+    });
+    const options: Parameters<typeof createRunWorker>[0] = {
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      provider: { execute },
+      stepDelayMs: 0,
+      resultArchiver,
+    };
+    createRunWorker(options);
     const job = createJob({
       runId,
-      snapshot: textSnapshot,
+      snapshot: createTextSnapshot(),
       attempt: 1,
       provider: 'newapi',
       providerJob: createProviderJobRecord(runId, 'newapi'),
       cancelRequested: false,
     });
+    await expect(bullmqState.processor?.(job)).rejects.toThrow('archive unavailable');
+    createRunWorker(options);
+    await expect(bullmqState.processor?.(job)).rejects.toThrow('等待核实；禁止重新生成');
+    expect(execute).toHaveBeenCalledOnce();
+    expect(resultArchiver).toHaveBeenCalledOnce();
+  });
+
+  it.each(['result', 'usage'] as const)(
+    'keeps a delivered request pending when its saved %s evidence is incomplete',
+    async (missingEvidence) => {
+      bullmqState.jobs.clear();
+      const runId = '123e4567-e89b-42d3-a456-426614174173';
+      const textSnapshot = createTextSnapshot();
+      const execute = vi.fn();
+      const recordUsage = vi.fn();
+      const providerJob: ProviderJob = {
+        ...createProviderJobRecord(runId, 'newapi', 'failed', 95),
+        payload: {
+          workflowNodeId: 'node_draft',
+          snapshotFingerprint: workflowSnapshotFingerprint(textSnapshot),
+          requestProviderJobId: `provider_job_${runId}`,
+          deliveryState: 'archived',
+          usageStatus: 'pending',
+          ...(missingEvidence === 'usage'
+            ? {
+                result: {
+                  ...createExecution(textSnapshot).result,
+                  asset: { assetId: 'asset_retained', version: 1, mimeType: 'text/plain' },
+                },
+              }
+            : { reportedUsage: { amount: '1.00', currency: 'USD', runId } }),
+        },
+      };
+      createRunWorker({
+        connection: { host: '127.0.0.1', port: 6379 },
+        providerName: 'newapi',
+        provider: { execute },
+        stepDelayMs: 0,
+        persistence: {
+          getProviderCredentials: getTestProviderCredentials,
+          async upsertProviderJob() {},
+          async findProviderJobsByRunId() {
+            return [providerJob];
+          },
+          recordUsage,
+        },
+      });
+      const job = createJob({
+        runId,
+        snapshot: textSnapshot,
+        attempt: 1,
+        provider: 'newapi',
+        providerJob: createProviderJobRecord(runId, 'newapi'),
+        cancelRequested: false,
+      });
+      await expect(bullmqState.processor?.(job)).rejects.toThrow('等待核实；禁止重新生成');
+      expect(execute).not.toHaveBeenCalled();
+      expect(recordUsage).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not submit a paid request when persisted recovery evidence cannot be read', async () => {
+    bullmqState.jobs.clear();
+    const runId = '123e4567-e89b-42d3-a456-426614174174';
+    const execute = vi.fn();
     createRunWorker({
       connection: { host: '127.0.0.1', port: 6379 },
       providerName: 'newapi',
-      provider: {
-        async execute(request) {
-          providerJobIds.push(request.providerJob?.id);
-          return {
-            ...createExecution(request.snapshot),
-            usage: { amount: '1.00', currency: 'USD' },
-          };
-        },
-      },
+      provider: { execute },
       stepDelayMs: 0,
       persistence: {
         getProviderCredentials: getTestProviderCredentials,
         async upsertProviderJob() {},
-        async recordUsage() {
-          if (rejectUsage) {
-            rejectUsage = false;
-            throw new Error('usage database unavailable');
-          }
+        async recordUsage() {},
+        async findProviderJobsByRunId() {
+          throw new Error('recovery database unavailable');
         },
       },
-      onPersistenceError(error) {
-        throw error;
-      },
-      resultArchiver: async (input) => {
-        archiveKeys.push(input.archiveKey);
-        return { assetId: 'asset_usage_replay', version: 1, mimeType: 'text/plain' };
-      },
     });
-
-    await expect(bullmqState.processor?.(job)).rejects.toThrow('usage database unavailable');
-    await expect(bullmqState.processor?.(job)).resolves.toMatchObject({ status: 'succeeded' });
-
-    expect(providerJobIds).toEqual([`provider_job_${runId}`, `provider_job_${runId}`]);
-    expect(archiveKeys).toHaveLength(2);
-    expect(archiveKeys[0]).toBe(archiveKeys[1]);
+    const job = createJob({
+      runId,
+      snapshot: createTextSnapshot(),
+      attempt: 1,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(runId, 'newapi'),
+      cancelRequested: false,
+    });
+    await expect(bullmqState.processor?.(job)).rejects.toThrow('recovery database unavailable');
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it('keeps the original synchronous request identity and usage key across a retry', async () => {

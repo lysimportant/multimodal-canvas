@@ -188,6 +188,9 @@ const postLifecycleMigrations = [
   '20260916120000_canvas_groups_run_node_timings',
   '20260917120000_run_request_prompts',
   '20260918090000_prompt_skills',
+  '20260919090000_platform_billing',
+  '20260919093000_platform_model_defaults',
+  '20260919100000_billing_outbox_queue',
 ] as const;
 
 describe('integration configuration safety', () => {
@@ -792,13 +795,16 @@ integrationDescribe('Prisma stores (isolated PostgreSQL)', () => {
                 AND created_columns.table_name = tables.table_name
                 AND created_columns.column_name = 'createdAt'
             )
-            OR NOT EXISTS (
+            OR (tables.table_name NOT IN (
+              'pricing_versions', 'wallet_entries', 'run_charges', 'billing_quotes',
+              'model_bindings', 'model_catalog_syncs', 'billing_activation'
+            ) AND NOT EXISTS (
               SELECT 1
               FROM information_schema.columns AS updated_columns
               WHERE updated_columns.table_schema = tables.table_schema
                 AND updated_columns.table_name = tables.table_name
                 AND updated_columns.column_name = 'updatedAt'
-            )
+            ))
           )
       `,
     );

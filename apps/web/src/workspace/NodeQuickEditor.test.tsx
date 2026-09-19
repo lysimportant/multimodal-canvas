@@ -163,6 +163,81 @@ afterEach(() => {
 });
 
 describe('NodeQuickEditor', () => {
+  it('同名平台商品保留独立身份，旧节点能显示更换上游后的原商品', async () => {
+    const user = userEvent.setup();
+    const onModelChange = vi.fn();
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          node: {
+            ...imageNode,
+            data: { ...imageNode.data, platformModelId: 'product-b', modelAlias: 'old-alias' },
+          },
+          models: [
+            {
+              id: 'new-alias',
+              platformModelId: 'product-a',
+              name: '平台 A',
+              mediaTypes: ['image'],
+              availability: 'available',
+            },
+            {
+              id: 'new-alias',
+              platformModelId: 'product-b',
+              name: '平台 B',
+              mediaTypes: ['image'],
+              availability: 'available',
+            },
+            {
+              id: 'new-alias',
+              platformModelId: 'product-review',
+              name: '待确认商品',
+              mediaTypes: ['image'],
+              availability: 'needs_review',
+            },
+          ],
+          onModelChange,
+        })}
+      />,
+    );
+    await user.click(screen.getByRole('combobox', { name: '模型：平台 B' }));
+    expect(screen.getByRole('option', { name: /待确认商品/ })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+    await user.click(screen.getByRole('option', { name: '平台 A' }));
+    expect(onModelChange).toHaveBeenCalledWith({
+      platformModelId: 'product-a',
+      modelAlias: 'new-alias',
+    });
+  });
+
+  it('已选平台商品不可用时禁用生成按钮，不静默改选同名模型', () => {
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          node: {
+            ...imageNode,
+            data: { ...imageNode.data, platformModelId: 'product-b', modelAlias: 'same-alias' },
+          },
+          models: [
+            {
+              id: 'same-alias',
+              platformModelId: 'product-a',
+              name: '其他商品',
+              mediaTypes: ['image'],
+              availability: 'available',
+            },
+          ],
+        })}
+      />,
+    );
+    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '生成' })).toHaveAttribute(
+      'title',
+      '当前平台模型已下架，请选择其他模型',
+    );
+  });
   it('模型、文字推理和媒体参数使用顶层浮层，不被编辑器滚动区域裁切', async () => {
     const user = userEvent.setup();
     const view = renderRaw(<NodeQuickEditor {...makeProps()} />);

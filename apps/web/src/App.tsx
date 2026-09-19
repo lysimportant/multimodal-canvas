@@ -113,6 +113,10 @@ import { fetchAssetVersions } from './result-versions';
 import { fetchAssetRequestPrompt, saveRequestPromptSummary } from './request-prompts';
 import { ReversePromptPanel } from './workspace/ReversePromptPanel';
 import { useAutomaticReversePrompt } from './workspace/useAutomaticReversePrompt';
+import { ModelsPage } from './marketplace/ModelsPage';
+import { QuoteDialog } from './marketplace/QuoteDialog';
+import { confirmQuotedRequests, submitQuotedRequest } from './marketplace/quote-client';
+import { serverClockNow } from './server-clock';
 import {
   collectEmptyNodeCandidates,
   hasRetainedResult,
@@ -177,7 +181,7 @@ import {
 } from './workspace/NodeQuickEditor';
 import { AppQueryProvider } from './query/client';
 import { useAiCredentialsQuery } from './query/credentials';
-import { useCredentialModelCatalogQueries, useModelCatalogQuery } from './query/models';
+import { usePlatformModelCatalogQuery } from './query/models';
 import { findCredentialDefaultEntry, resolveMediaDefault } from './settings-utils';
 import {
   mergeRunUpdate,
@@ -195,7 +199,6 @@ import {
   mediaLabels,
   modeLabels,
   type AssetFilter,
-  type ModelEntry,
   type ModelSelection,
   type AiSettings,
   type ModelDefaults,
@@ -544,32 +547,8 @@ function WorkspaceApp({
   const nodePreferenceNoticeRef = useRef<string | null>(null);
   const queryClient = useQueryClient();
   const credentialsQuery = useAiCredentialsQuery(authUser?.role === 'admin');
-  const credentialModelQueries = useCredentialModelCatalogQueries(
-    (credentialsQuery.data ?? []).map((credential) => credential.id),
-    authUser?.role === 'admin',
-  );
-  const modelCatalog = useMemo(() => {
-    const credentials = credentialsQuery.data ?? [];
-    const credentialLabels = new Map(
-      credentials.map((credential) => [
-        credential.id,
-        `${credential.baseUrl} · ${credential.keyFingerprint}`,
-      ]),
-    );
-    const catalog = new Map<string, ModelEntry>();
-    for (const queryResult of credentialModelQueries) {
-      for (const model of queryResult.data ?? []) {
-        const key = `${model.credentialId ?? 'active'}\0${model.id}`;
-        catalog.set(key, {
-          ...model,
-          ...(model.credentialId
-            ? { credentialLabel: credentialLabels.get(model.credentialId) ?? model.credentialLabel }
-            : {}),
-        });
-      }
-    }
-    return [...catalog.values()];
-  }, [credentialModelQueries, credentialsQuery.data]);
+  const platformModelsQuery = usePlatformModelCatalogQuery(authUser?.id);
+  const modelCatalog = platformModelsQuery.data ?? [];
   const [runRecords, setRunRecords] = useState<Record<string, RunRecord>>({});
   const [isRunning, setIsRunning] = useState(false);
   const [saveState, setSaveState] = useState('准备就绪');
@@ -580,7 +559,9 @@ function WorkspaceApp({
   const defaultsQuery = useQuery({
     queryKey: ['node-model-defaults', authUser?.id, authUser?.role, projectId],
     enabled: Boolean(authUser && projectId),
-    queryFn: async ({ signal }): Promise<{ global: ModelDefaults; project: ModelDefaults }> => {
+    queryFn: async ({
+      signal,
+    }): Promise<{ global: ModelDefaults; project: ModelDefaults; platformMode: boolean }> => {
       const [globalResponse, projectResponse] = await Promise.all([
         authUser?.role === 'admin'
           ? apiFetch(`${API_BASE_URL}/v1/settings/ai`, { signal })
@@ -589,18 +570,23 @@ function WorkspaceApp({
           signal,
         }),
       ]);
-      const global: { settings?: AiSettings; error?: string } = globalResponse
-        ? await globalResponse.json()
-        : {};
+      const global: { settings?: AiSettings; resolvedDefaults?: ModelDefaults; error?: string } =
+        globalResponse ? await globalResponse.json() : {};
       const project = (await projectResponse.json()) as {
         defaults?: ModelDefaults;
+        resolvedDefaults?: ModelDefaults;
         error?: string;
       };
       if (globalResponse && (!globalResponse.ok || !global.settings))
         throw new Error(global.error ?? '全局默认模型加载失败');
       if (!projectResponse.ok || !project.defaults)
         throw new Error(project.error ?? '项目默认模型加载失败');
-      return { global: global.settings?.defaultModels ?? {}, project: project.defaults };
+      return {
+        global: global.resolvedDefaults ?? global.settings?.defaultModels ?? {},
+        project: project.resolvedDefaults ?? project.defaults,
+        platformMode:
+          global.resolvedDefaults !== undefined || project.resolvedDefaults !== undefined,
+      };
     },
   });
   const [projectName, setProjectName] = useState('未命名项目');
@@ -681,12 +667,7 @@ function WorkspaceApp({
       }
     | undefined
   >(undefined);
-  const publicTextModelsQuery = useModelCatalogQuery(
-    undefined,
-    Boolean((promptDialog || selectedNodeId) && authUser && authUser.role !== 'admin'),
-  );
-  const reversePromptModels =
-    authUser?.role === 'admin' ? modelCatalog : (publicTextModelsQuery.data ?? []);
+  const reversePromptModels = modelCatalog;
   /** 防止关闭、切换节点或版本后的异步响应重新打开旧说明。 */
   const promptRequestRef = useRef(0);
   const selectedNode = useMemo(
@@ -1716,7 +1697,12 @@ function WorkspaceApp({
       nodePreferenceNoticeRef.current = null;
       const previous = resolvePreviousOperationSeed(nodesRef.current, mediaType, mode);
       const credentials = credentialsQuery.data ?? [];
-      const bound = findCredentialDefaultEntry(credentials, mediaType);
+      const configuredGlobal = defaultsQuery.data?.global[mediaType];
+      const bound =
+        defaultsQuery.data?.platformMode ||
+        (typeof configuredGlobal === 'object' && configuredGlobal.platformModelId)
+          ? undefined
+          : findCredentialDefaultEntry(credentials, mediaType);
       const resolved = resolveMediaDefault(mediaType, {
         projectDefaults: defaultsQuery.data?.project ?? {},
         globalDefaults: bound
@@ -1729,12 +1715,15 @@ function WorkspaceApp({
         defaultsQuery.data?.project[mediaType] ??
         bound?.selection ??
         defaultsQuery.data?.global[mediaType];
-      const mayUsePreference = defaultsQuery.isSuccess && authUser?.role === 'admin';
+      const mayUsePreference = Boolean(authUser && platformModelsQuery.isSuccess);
       if (defaultsQuery.error)
         nodePreferenceNoticeRef.current = '默认模型加载失败，生成时将由服务端解析默认配置';
       let selection: ModelSelection | undefined = resolved.modelAlias
         ? {
             modelAlias: resolved.modelAlias,
+            ...(typeof configuredSelection === 'object' && configuredSelection.platformModelId
+              ? { platformModelId: configuredSelection.platformModelId }
+              : {}),
             credentialId:
               resolved.credentialId ??
               (typeof configuredSelection === 'object'
@@ -1744,9 +1733,17 @@ function WorkspaceApp({
         : mayUsePreference && previous?.modelAlias
           ? {
               modelAlias: previous.modelAlias,
+              ...(previous.platformModelId ? { platformModelId: previous.platformModelId } : {}),
               ...(previous.credentialId ? { credentialId: previous.credentialId } : {}),
             }
           : undefined;
+      if (
+        selection &&
+        !selection.platformModelId &&
+        modelCatalog.some((model) => model.platformModelId)
+      ) {
+        nodePreferenceNoticeRef.current = '旧默认模型尚未对应已上架商品，请选择平台模型';
+      }
       if (!selection && authUser && mayUsePreference) {
         try {
           selection = readNodeModelPreference(authUser.id, mediaType, mode, modelCatalog);
@@ -1755,20 +1752,27 @@ function WorkspaceApp({
             error instanceof Error ? error.message : '无法读取本机模型偏好';
         }
       }
-      const catalogModel = modelCatalog.find((candidate) =>
-        candidate.mediaTypes.includes(mediaType),
+      const catalogModel = modelCatalog.find(
+        (candidate) =>
+          candidate.mediaTypes.includes(mediaType) &&
+          (!candidate.availability || candidate.availability === 'available'),
       );
       if (!selection && catalogModel && mayUsePreference) {
         selection = {
           modelAlias: catalogModel.id,
+          ...(catalogModel.platformModelId
+            ? { platformModelId: catalogModel.platformModelId }
+            : {}),
           ...(catalogModel.credentialId ? { credentialId: catalogModel.credentialId } : {}),
         };
       }
       const model = selection
         ? modelCatalog.find(
             (candidate) =>
-              candidate.id === selection.modelAlias &&
-              candidate.credentialId === selection.credentialId &&
+              (selection.platformModelId
+                ? candidate.platformModelId === selection.platformModelId
+                : candidate.id === selection.modelAlias &&
+                  candidate.credentialId === selection.credentialId) &&
               candidate.mediaTypes.includes(mediaType),
           )
         : undefined;
@@ -1789,6 +1793,7 @@ function WorkspaceApp({
             ...selection,
             ...(previous?.parameters &&
             previous.modelAlias === selection?.modelAlias &&
+            previous.platformModelId === selection?.platformModelId &&
             previous.credentialId === selection?.credentialId
               ? { parameters: previous.parameters }
               : {}),
@@ -1805,6 +1810,7 @@ function WorkspaceApp({
     [
       authUser,
       modelCatalog,
+      platformModelsQuery.isSuccess,
       credentialsQuery.data,
       defaultsQuery.data,
       defaultsQuery.isSuccess,
@@ -2314,7 +2320,7 @@ function WorkspaceApp({
   );
 
   const updateSelectedModel = useCallback(
-    ({ modelAlias, credentialId }: ModelSelection, nodeId?: string) => {
+    ({ modelAlias, credentialId, platformModelId }: ModelSelection, nodeId?: string) => {
       const targetNodeId = nodeId ?? selectedNode?.id;
       if (!targetNodeId) return;
       const targetNode = nodesRef.current.find((node) => node.id === targetNodeId);
@@ -2322,12 +2328,15 @@ function WorkspaceApp({
       /** 模型来源也参与身份匹配，避免同名模型在不同 Provider 间混用。 */
       const selection = {
         modelAlias: modelAlias.trim(),
+        platformModelId,
         credentialId: modelAlias.trim() && credentialId ? credentialId : undefined,
       };
       const model = modelCatalog.find(
         (candidate) =>
-          candidate.id === selection.modelAlias &&
-          candidate.credentialId === selection.credentialId &&
+          (selection.platformModelId
+            ? candidate.platformModelId === selection.platformModelId
+            : candidate.id === selection.modelAlias &&
+              candidate.credentialId === selection.credentialId) &&
           candidate.mediaTypes.includes(targetNode.data.mediaType),
       );
       rememberHistory();
@@ -2336,6 +2345,7 @@ function WorkspaceApp({
         {
           ...targetNode.data,
           modelAlias: selection.modelAlias || undefined,
+          platformModelId: selection.platformModelId,
           credentialId: selection.credentialId,
         },
         model,
@@ -3220,8 +3230,42 @@ function WorkspaceApp({
           for (const targetNode of targets) nodeRunLocksRef.current.add(targetNode.id);
         }
         await saveCanvas();
+        const plannedRequests = targets.map((target) => {
+          const promptDocument = promptOverride?.promptDocument ?? target.data.promptDocument;
+          const prompt = (
+            promptDocument
+              ? renderPromptDocument(promptDocument)
+              : (promptOverride?.prompt ?? target.data.prompt)
+          )?.trim();
+          const inferenceStrength =
+            target.data.inferenceStrength ??
+            (target.data.mediaType === 'text' ? 'high' : undefined);
+          return {
+            path: `/v1/nodes/${target.id}/runs`,
+            body: {
+              projectId,
+              ...(target.data.platformModelId
+                ? { platformModelId: target.data.platformModelId }
+                : target.data.modelAlias
+                  ? {
+                      modelAlias: target.data.modelAlias,
+                      ...(target.data.credentialId
+                        ? { credentialId: target.data.credentialId }
+                        : {}),
+                    }
+                  : {}),
+              parameters: {
+                ...(target.data.parameters ?? {}),
+                ...(prompt ? { prompt } : {}),
+                ...(inferenceStrength ? { inferenceStrength } : {}),
+              },
+              ...(promptDocument ? { promptDocument } : {}),
+            },
+          };
+        });
+        const confirmedRequests = await confirmQuotedRequests(API_BASE_URL, plannedRequests);
         // 每份只发送一次创建请求；中途拒绝或断网时停止后续提交，已取得运行 ID 的任务继续跟踪。
-        for (const targetNode of targets) {
+        for (const [targetIndex, targetNode] of targets.entries()) {
           if (!batchLifecycle.active || batchLifecycle !== runPollingLifecycleRef.current) {
             submissionError = '已离开画布，停止提交剩余任务';
             break;
@@ -3235,37 +3279,21 @@ function WorkspaceApp({
               throw new Error('生成节点已移除，停止提交剩余任务');
             }
             nodeSnapshot = currentTarget;
-            const promptDocument =
-              promptOverride?.promptDocument ?? nodeSnapshot.data.promptDocument;
-            const effectivePrompt = (
-              promptDocument
-                ? renderPromptDocument(promptDocument)
-                : (promptOverride?.prompt ?? nodeSnapshot.data.prompt)
-            )?.trim();
-            const effectiveInferenceStrength =
-              nodeSnapshot.data.inferenceStrength ??
-              (nodeSnapshot.data.mediaType === 'text' ? 'high' : undefined);
-            const response = await apiFetch(`${API_BASE_URL}/v1/nodes/${nodeSnapshot.id}/runs`, {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                projectId,
-                ...(nodeSnapshot.data.modelAlias
-                  ? { modelAlias: nodeSnapshot.data.modelAlias }
-                  : {}),
-                ...(nodeSnapshot.data.credentialId
-                  ? { credentialId: nodeSnapshot.data.credentialId }
-                  : {}),
-                parameters: {
-                  ...(nodeSnapshot.data.parameters ?? {}),
-                  ...(effectivePrompt ? { prompt: effectivePrompt } : {}),
-                  ...(effectiveInferenceStrength
-                    ? { inferenceStrength: effectiveInferenceStrength }
-                    : {}),
-                },
-                ...(promptDocument ? { promptDocument } : {}),
-              }),
-            });
+            const confirmed = confirmedRequests[targetIndex]!;
+            if (Date.parse(confirmed.expiresAt) <= serverClockNow())
+              throw new Error('报价已过期，剩余任务未提交，请重新确认费用');
+            const response = await apiFetch(
+              `${API_BASE_URL}${confirmed.path}`,
+              {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  ...confirmed.body,
+                  quoteId: confirmed.quoteId,
+                }),
+              },
+              { expectedAuthGeneration: confirmed.authGeneration },
+            );
             const result = (await response.json().catch(() => ({}))) as {
               run?: RunRecord;
               error?: string;
@@ -3425,8 +3453,9 @@ function WorkspaceApp({
       if (!run || !node) throw new Error('没有可重试的运行记录');
       setIsRunning(true);
       try {
-        const response = await apiFetch(`${API_BASE_URL}/v1/runs/${run.id}/retry`, {
-          method: 'POST',
+        const response = await submitQuotedRequest(API_BASE_URL, {
+          path: `/v1/runs/${run.id}/retry`,
+          body: {},
         });
         const result = (await response.json().catch(() => ({}))) as {
           run?: RunRecord;
@@ -4195,6 +4224,10 @@ function RoutedApplication({
         onSessionChanged={onSessionChanged}
       />
     );
+  } else if (route.id === 'models') {
+    content = (
+      <ModelsPage key={authUser?.id ?? 'guest'} user={authUser} onLogin={() => onRequestLogin()} />
+    );
   } else if (route.id === 'home') {
     content = <HomePage continueProject={continueProject} />;
   } else if (route.id === 'workspace') {
@@ -4465,6 +4498,7 @@ function AppContent() {
 
   return (
     <AccountProvider value={accountActions}>
+      <QuoteDialog ownerId={authSession?.user.id} />
       <RoutedApplication
         authUser={authSession?.user ?? null}
         onRequestLogin={handleRequestLogin}

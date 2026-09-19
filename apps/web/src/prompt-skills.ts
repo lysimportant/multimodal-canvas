@@ -2,6 +2,7 @@ import { promptDocumentSchema, type PromptDocument } from '@multimodal-canvas/do
 import { z } from 'zod';
 
 import { apiFetch, AuthSessionChangedError, getAuthSessionGeneration } from './auth-client';
+import { QuoteRequestError, submitQuotedRequest } from './marketplace/quote-client';
 
 /** 通过公共解析器保留完整文档约束，避免跨包嵌套 Zod 泛型超出推导深度。 */
 const documentSchema = z.unknown().transform((value, context): PromptDocument => {
@@ -25,12 +26,13 @@ const optimizationRequestSchema = z.object({
   idempotencyKey: z.string().min(1),
   modelAlias: z.string().min(1).optional(),
   credentialId: z.string().min(1).optional(),
+  platformModelId: z.string().min(1).optional(),
 });
 
 /** 完整优化请求快照，重试必须沿用全部字段和幂等键。 */
 export type PromptOptimizationRequest = z.infer<typeof optimizationRequestSchema>;
 
-/** 服务端返回的任务状态；成功文档另行校验提及身份与非空文字。 */
+/** 公开任务状态；credentialId 只兼容旧响应，当前服务端省略。成功文档另行校验提及身份与非空文字。 */
 const optimizationSchema = z.object({
   runId: z.string().min(1),
   nodeId: z.string().min(1),
@@ -39,6 +41,7 @@ const optimizationSchema = z.object({
   status: z.enum(['queued', 'running', 'succeeded', 'failed', 'cancelled']),
   modelAlias: z.string().min(1),
   credentialId: z.string().min(1).optional(),
+  platformModelId: z.string().min(1).optional(),
   promptDocument: documentSchema.optional(),
   error: z.string().optional(),
   simulated: z.boolean().optional(),
@@ -52,7 +55,11 @@ const pendingOptimizationSchema = z.object({
   request: optimizationRequestSchema,
   runId: z.string().min(1).optional(),
   model: z
-    .object({ modelAlias: z.string().min(1), credentialId: z.string().optional() })
+    .object({
+      modelAlias: z.string().min(1),
+      credentialId: z.string().optional(),
+      platformModelId: z.string().optional(),
+    })
     .optional(),
   draft: documentSchema.optional(),
   result: optimizationSchema.optional(),
@@ -157,10 +164,17 @@ async function readOptimization(
     result.skillId !== request.skillId ||
     result.skillVersion !== request.skillVersion ||
     (runId !== undefined && result.runId !== runId) ||
-    (request.modelAlias !== undefined && result.modelAlias !== request.modelAlias) ||
-    (request.credentialId !== undefined && result.credentialId !== request.credentialId) ||
+    (request.platformModelId !== undefined
+      ? result.platformModelId !== request.platformModelId
+      : (request.modelAlias !== undefined && result.modelAlias !== request.modelAlias) ||
+        (request.credentialId !== undefined &&
+          result.credentialId !== undefined &&
+          result.credentialId !== request.credentialId)) ||
     (model !== undefined &&
-      (result.modelAlias !== model.modelAlias || result.credentialId !== model.credentialId))
+      (model.platformModelId
+        ? result.platformModelId !== model.platformModelId
+        : result.modelAlias !== model.modelAlias ||
+          (result.credentialId !== undefined && result.credentialId !== model.credentialId)))
   )
     throw new Error('提示词优化任务身份不一致');
   if (result.status === 'succeeded') {
@@ -197,14 +211,24 @@ export async function submitPromptOptimization(
   const parsed = optimizationRequestSchema.parse(request);
   if (parsed.credentialId && !parsed.modelAlias) throw new Error('指定连接时必须同时指定文字模型');
   const { projectId, ...body } = parsed;
+  if (body.platformModelId) {
+    delete body.modelAlias;
+    delete body.credentialId;
+  }
   const fetcher =
     options.fetcher ?? ((input, init) => apiFetch(input, init, { expectedAuthGeneration }));
-  const response = await fetcher(optimizationUrl(projectId, apiBaseUrl), {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    signal: options.signal,
-    body: JSON.stringify(body),
-  });
+  let response: Response;
+  try {
+    response = await submitQuotedRequest(
+      apiBaseUrl,
+      { path: optimizationUrl(projectId, ''), body },
+      { fetcher, signal: options.signal },
+    );
+  } catch (error) {
+    if (error instanceof QuoteRequestError)
+      throw new PromptOptimizationRequestError(error.message, error.status, error.code);
+    throw error;
+  }
   return readOptimization(response, parsed, expectedAuthGeneration);
 }
 

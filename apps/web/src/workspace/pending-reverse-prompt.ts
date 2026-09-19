@@ -6,7 +6,11 @@ import type { ReversePromptTarget } from '../reverse-prompts';
 const pendingReversePromptSchema = z.object({
   key: z.string().min(1),
   model: z
-    .object({ modelAlias: z.string().min(1), credentialId: z.string().optional() })
+    .object({
+      modelAlias: z.string().min(1),
+      credentialId: z.string().optional(),
+      platformModelId: z.string().optional(),
+    })
     .optional(),
 });
 

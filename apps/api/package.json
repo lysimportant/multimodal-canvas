@@ -15,6 +15,7 @@
     "@aws-sdk/s3-request-presigner": "3.862.0",
     "@fastify/cors": "^10.0.2",
     "@fastify/multipart": "^9.2.1",
+    "@multimodal-canvas/billing": "workspace:*",
     "@multimodal-canvas/credential-crypto": "workspace:*",
     "@multimodal-canvas/domain": "workspace:*",
     "@multimodal-canvas/observability": "workspace:*",

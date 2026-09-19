@@ -438,17 +438,42 @@ export function NodeQuickEditor({
       document.removeEventListener('keydown', dismissOnEscape);
     };
   }, [mediaSettingsOpen]);
-  const currentModel = node.data.modelAlias ?? '';
+  const storedModelAlias = node.data.modelAlias ?? '';
   const currentCredentialId = node.data.credentialId;
+  const currentPlatformModelId = node.data.platformModelId;
   const availableModels = models.filter((model) => model.mediaTypes.includes(node.data.mediaType));
-  const selectedModel = findSelectedModel(availableModels, currentModel, currentCredentialId);
+  const selectedModel = findSelectedModel(
+    availableModels,
+    storedModelAlias,
+    currentCredentialId,
+    currentPlatformModelId,
+  );
+  const currentModel =
+    currentPlatformModelId && selectedModel ? selectedModel.id : storedModelAlias;
+  const modelIssue = currentPlatformModelId
+    ? !selectedModel
+      ? '当前平台模型已下架，请选择其他模型'
+      : selectedModel.availability && selectedModel.availability !== 'available'
+        ? '当前平台模型暂不可用，请选择其他模型'
+        : undefined
+    : availableModels.some((model) => model.platformModelId)
+      ? '请先选择平台模型'
+      : undefined;
   const currentModelIsMissing =
     Boolean(currentModel) &&
-    !availableModels.some(
-      (model) => model.id === currentModel && model.credentialId === currentCredentialId,
+    !availableModels.some((model) =>
+      currentPlatformModelId
+        ? model.platformModelId === currentPlatformModelId
+        : !model.platformModelId &&
+          model.id === currentModel &&
+          model.credentialId === currentCredentialId,
     );
   const currentModelValue = currentModel
-    ? modelOptionValue({ modelAlias: currentModel, credentialId: currentCredentialId })
+    ? modelOptionValue({
+        modelAlias: currentModel,
+        credentialId: currentCredentialId,
+        platformModelId: currentPlatformModelId,
+      })
     : '';
   const modelOptions = buildModelOptions(
     availableModels,
@@ -1179,7 +1204,8 @@ export function NodeQuickEditor({
                 ? '生成中'
                 : !enabled
                   ? '节点已停用'
-                  : (generationCountIssue ??
+                  : (modelIssue ??
+                    generationCountIssue ??
                     mediaParameterIssue ??
                     (!hasRunnableParameters
                       ? imageEditPromptRequired
@@ -1192,7 +1218,7 @@ export function NodeQuickEditor({
               busy ||
               !enabled ||
               !hasRunnableParameters ||
-              Boolean(generationCountIssue || mediaParameterIssue)
+              Boolean(modelIssue || generationCountIssue || mediaParameterIssue)
             }
           >
             {busy ? (
@@ -1213,12 +1239,14 @@ export function NodeQuickEditor({
                 ? '生成中'
                 : !enabled
                   ? '节点已停用'
-                  : generationCountIssue ||
+                  : modelIssue ||
+                      generationCountIssue ||
                       durationIssue ||
                       resolutionIssue ||
                       aspectRatioIssue ||
                       videoContractParameterIssue
-                    ? (generationCountIssue ??
+                    ? (modelIssue ??
+                      generationCountIssue ??
                       durationIssue ??
                       resolutionIssue ??
                       aspectRatioIssue ??
@@ -1239,6 +1267,7 @@ export function NodeQuickEditor({
               !enabled ||
               !onRunNewNode ||
               Boolean(
+                modelIssue ||
                 generationCountIssue ||
                 durationIssue ||
                 resolutionIssue ||
@@ -1730,7 +1759,10 @@ export function resolvePreviousOperationSeed(
   mediaType: AssetFlowNode['data']['mediaType'],
   mode: Exclude<AssetFlowNode['data']['mode'], 'source'>,
 ):
-  | Pick<AssetFlowNode['data'], 'modelAlias' | 'credentialId' | 'parameters' | 'inferenceStrength'>
+  | Pick<
+      AssetFlowNode['data'],
+      'modelAlias' | 'credentialId' | 'platformModelId' | 'parameters' | 'inferenceStrength'
+    >
   | undefined {
   for (let index = nodes.length - 1; index >= 0; index -= 1) {
     const data = nodes[index]?.data;
@@ -1738,6 +1770,7 @@ export function resolvePreviousOperationSeed(
     const parameters = readNodeMediaParameters(data);
     return {
       ...(data.modelAlias ? { modelAlias: data.modelAlias } : {}),
+      ...(data.platformModelId ? { platformModelId: data.platformModelId } : {}),
       ...(data.credentialId ? { credentialId: data.credentialId } : {}),
       ...(Object.keys(parameters).length > 0 ? { parameters } : {}),
       ...(data.inferenceStrength ? { inferenceStrength: data.inferenceStrength } : {}),
@@ -2115,8 +2148,18 @@ function buildModelOptions(
   for (const group of groupModelsByCredential(models)) {
     for (const model of group.models) {
       options.push({
-        value: modelOptionValue({ modelAlias: model.id, credentialId: model.credentialId }),
+        value: modelOptionValue({
+          modelAlias: model.id,
+          credentialId: model.credentialId,
+          platformModelId: model.platformModelId,
+        }),
         label: model.name,
+        ...(model.availability && model.availability !== 'available'
+          ? {
+              disabled: true,
+              description: model.availability === 'needs_review' ? '待管理员确认' : '暂不可用',
+            }
+          : {}),
         groupLabel: group.label,
       });
     }
@@ -2129,10 +2172,14 @@ function findSelectedModel(
   models: ModelEntry[],
   modelAlias: string,
   credentialId: string | undefined,
+  platformModelId?: string,
 ): ModelEntry | undefined {
   return (
-    models.find((model) => model.id === modelAlias && model.credentialId === credentialId) ??
-    models[0]
+    models.find((model) =>
+      platformModelId
+        ? model.platformModelId === platformModelId
+        : !model.platformModelId && model.id === modelAlias && model.credentialId === credentialId,
+    ) ?? (!modelAlias ? models[0] : undefined)
   );
 }
 
@@ -2373,6 +2420,8 @@ function formatTriggerLabel(
 /** 将模型与凭据绑定编码为菜单可用的稳定值。 */
 function modelOptionValue(selection: ModelSelection) {
   if (!selection.modelAlias) return '';
+  if (selection.platformModelId)
+    return JSON.stringify(['platform', selection.platformModelId, selection.modelAlias]);
   return JSON.stringify([selection.credentialId ?? '', selection.modelAlias]);
 }
 
@@ -2381,6 +2430,14 @@ function parseModelOptionValue(value: string): ModelSelection {
   if (!value) return { modelAlias: '' };
   try {
     const parsed = JSON.parse(value) as unknown;
+    if (
+      Array.isArray(parsed) &&
+      parsed.length === 3 &&
+      parsed[0] === 'platform' &&
+      typeof parsed[1] === 'string' &&
+      typeof parsed[2] === 'string'
+    )
+      return { platformModelId: parsed[1], modelAlias: parsed[2] };
     if (
       Array.isArray(parsed) &&
       parsed.length === 2 &&
@@ -2403,11 +2460,11 @@ function parseModelOptionValue(value: string): ModelSelection {
 function groupModelsByCredential(models: ModelEntry[]) {
   const groups = new Map<string, { id: string; label: string; models: ModelEntry[] }>();
   for (const model of models) {
-    const id = model.credentialId ?? 'active';
+    const id = model.platformModelId ? 'platform' : (model.credentialId ?? 'active');
     const group = groups.get(id) ?? {
       id,
       label:
-        model.credentialLabel ??
+        (model.platformModelId ? '平台模型' : model.credentialLabel) ??
         (model.credentialId ? `API Key · ${model.credentialId.slice(0, 8)}` : '当前 API Key'),
       models: [],
     };

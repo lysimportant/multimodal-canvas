@@ -1859,7 +1859,7 @@ export function SettingsPanel({
                 <h2 id="settings-automation-title">自动化</h2>
               </div>
               <label className="settings-toggle-row">
-                <span>自动反推提示词</span>
+                <span>新资源反推提醒</span>
                 <input
                   type="checkbox"
                   role="switch"
@@ -1868,7 +1868,7 @@ export function SettingsPanel({
                 />
               </label>
               <p className="settings-status">
-                使用文字默认模型，每个新资源版本会产生一次额外模型调用。
+                新资源准备好后提示反推入口；选择文字模型并确认费用后才会调用。
               </p>
             </section>
           )}

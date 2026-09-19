@@ -11,6 +11,38 @@ const models: ModelEntry[] = [
 describe('节点模型记忆', () => {
   beforeEach(() => window.localStorage.clear());
 
+  it('同名商品按平台 ID 区分，更换上游后仍恢复原商品和新别名', () => {
+    writeNodeModelPreference('user-a', 'image', 'generate', {
+      platformModelId: 'product-b',
+      modelAlias: 'same-alias',
+    });
+    const catalog: ModelEntry[] = [
+      { id: 'same-alias', platformModelId: 'product-a', name: '商品 A', mediaTypes: ['image'] },
+      {
+        id: 'new-upstream-alias',
+        platformModelId: 'product-b',
+        name: '商品 B',
+        mediaTypes: ['image'],
+      },
+    ];
+    expect(readNodeModelPreference('user-a', 'image', 'generate', catalog)).toEqual({
+      platformModelId: 'product-b',
+      modelAlias: 'new-upstream-alias',
+    });
+    expect(
+      readNodeModelPreference('user-a', 'image', 'generate', catalog.slice(0, 1)),
+    ).toBeUndefined();
+  });
+
+  it('旧别名偏好不能自动绑定同名平台商品', () => {
+    writeNodeModelPreference('user-a', 'image', 'generate', { modelAlias: 'same-alias' });
+    expect(
+      readNodeModelPreference('user-a', 'image', 'generate', [
+        { id: 'same-alias', platformModelId: 'product-a', name: '商品 A', mediaTypes: ['image'] },
+      ]),
+    ).toBeUndefined();
+  });
+
   it('保存精确来源并隔离账号与媒体类型', () => {
     const selection = { modelAlias: 'model-a', credentialId: 'provider-a' };
     writeNodeModelPreference('user-a', 'image', 'generate', selection);

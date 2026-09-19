@@ -3,6 +3,23 @@ import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/rea
 import { apiFetch, getAuthSessionGeneration } from '../auth-client';
 import { API_BASE_URL, type ModelEntry } from '../workspace/contracts';
 import type { AiCredentialSummary } from '../contracts';
+import { fetchMarketplace, marketplaceSelection } from '../marketplace/client';
+
+/** 节点只读取已上架平台商品，分页合并保留每个稳定商品身份。 */
+export function usePlatformModelCatalogQuery(ownerId?: string) {
+  return useQuery({
+    queryKey: ['platform-model-catalog', ownerId],
+    enabled: Boolean(ownerId),
+    queryFn: async ({ signal }) => {
+      const items: ModelEntry[] = [];
+      for (let page = 1; ; page += 1) {
+        const result = await fetchMarketplace({ page, signal });
+        items.push(...result.items.map(marketplaceSelection));
+        if (!result.items.length || items.length >= result.total) return items;
+      }
+    },
+  });
+}
 
 export const modelCatalogQueryKey = ['model-catalog'] as const;
 

@@ -132,6 +132,17 @@ import {
   type PromptSkillStore,
 } from './prompt-skill-store';
 import { registerPromptSkillRoutes } from './prompt-skill-routes';
+import { BillingError, type PrismaBillingService } from '@multimodal-canvas/billing';
+import { ModelMarketplaceError, type ModelMarketplace } from './model-marketplace';
+import { registerModelMarketplaceRoutes } from './model-marketplace-routes';
+import { registerBillingRoutes } from './billing-routes';
+import {
+  freezeRunBillingModels,
+  prepareBillingSubmission,
+  type BillingSubmissionFields,
+  type RunBillingModels,
+} from './billing-submission';
+import { projectModelDefaultsResponse, resolvePublicModelDefaults } from './model-defaults-public';
 
 type AppLoggerOptions = {
   level?: string;
@@ -148,6 +159,10 @@ export type BuildAppOptions = {
   s3DownloadMode?: S3DownloadMode;
   projectStore?: ProjectStore;
   runService?: RunService;
+  /** 持久化人民币账务；正式执行必须使用已确认报价，内存 Mock 可省略。 */
+  billing?: PrismaBillingService;
+  /** 平台模型独立于上游候选目录，负责验证当前调用绑定和发布价格。 */
+  marketplace?: ModelMarketplace;
   /** Provider-like executor for an in-memory/local run service. */
   runExecutor?: RunExecutor;
   /** Optional result archiver; defaults to the configured asset store. */
@@ -215,8 +230,9 @@ const assetListQuerySchema = z.object({
     .optional(),
 });
 
-type RunRequestBody = {
+type RunRequestBody = BillingSubmissionFields & {
   projectId: string;
+  platformModelId?: string;
   modelAlias?: string;
   credentialId?: string;
   idempotencyKey?: string;
@@ -226,6 +242,9 @@ type RunRequestBody = {
 
 const runRequestBodySchema = z.object({
   projectId: z.string().min(1),
+  platformModelId: z.string().uuid().optional(),
+  quoteOnly: z.boolean().optional(),
+  quoteId: z.string().uuid().optional(),
   modelAlias: z.string().trim().min(1).max(160).optional(),
   credentialId: z.string().uuid().optional(),
   idempotencyKey: z.string().trim().min(1).max(200).optional(),
@@ -239,6 +258,9 @@ const runRequestBodySchema = z.object({
 const reversePromptBodySchema = z
   .object({
     projectId: z.string().trim().min(1).max(512),
+    platformModelId: z.string().uuid().optional(),
+    quoteOnly: z.boolean().optional(),
+    quoteId: z.string().uuid().optional(),
     modelAlias: z.string().trim().min(1).max(160).optional(),
     credentialId: z.string().uuid().optional(),
     idempotencyKey: z.string().trim().min(1).max(200).optional(),
@@ -255,10 +277,20 @@ const promptOptimizationBodySchema = z
     mediaType: z.enum(['text', 'image', 'audio', 'video']),
     promptDocument: z.unknown(),
     idempotencyKey: z.string().trim().min(1).max(200),
+    platformModelId: z.string().uuid().optional(),
+    quoteOnly: z.boolean().optional(),
+    quoteId: z.string().uuid().optional(),
     modelAlias: z.string().trim().min(1).max(160).optional(),
     credentialId: z.string().uuid().optional(),
   })
   .strict();
+
+/** 报价只能进入会创建收费子调用的固定路由，不接受查询串、跳转或通用 API 代理。 */
+function isBillingSubmissionPath(path: string): boolean {
+  return /^\/v1\/(?:nodes\/[^/?#]+\/runs|assets\/[^/?#]+\/versions\/\d+\/reverse-prompts|projects\/[^/?#]+\/prompt-optimizations|runs\/[^/?#]+\/retry)$/.test(
+    path,
+  );
+}
 
 function serializeRequestForLog(request: FastifyRequest): Record<string, unknown> {
   return {
@@ -334,6 +366,8 @@ type RunNodeModelResolution = {
   targetModel?: ModelCatalogEntry;
   /** 每个可执行节点实际解析到的模型，供提交前能力预检使用。 */
   nodeModels: Record<string, ModelCatalogEntry | undefined>;
+  /** 已发布平台模型的内部版本，仅用于快照与报价。 */
+  billingModels: RunBillingModels;
 };
 
 class ResourceMentionCapabilityError extends Error {
@@ -394,6 +428,7 @@ const defaultModelSelectionSchema = z
     z
       .object({
         modelAlias: z.string().min(1),
+        platformModelId: z.string().uuid().optional(),
         credentialId: z.string().min(1).optional(),
       })
       .strict(),
@@ -418,6 +453,7 @@ const defaultModelsSchema = z.object({
  */
 async function validateProjectModelDefaults(input: {
   settingsStore: AiSettingsStoreLike;
+  marketplace?: ModelMarketplace;
   defaults: UpdateProjectModelDefaultsInput;
   allowVirtualMockModels: boolean;
   requireCredentialReferences: boolean;
@@ -447,6 +483,14 @@ async function validateProjectModelDefaults(input: {
     const selection = typeof configured === 'string' ? { modelAlias: configured } : configured;
     const alias = selection.modelAlias.trim();
     const credentialId = selection.credentialId?.trim();
+    if (input.marketplace) {
+      const resolved = selection.platformModelId
+        ? await input.marketplace.resolvePublishedModel(selection.platformModelId)
+        : await input.marketplace.resolveLegacyModel(alias, credentialId, mediaType);
+      if (resolved.model.mediaType.toLowerCase() !== mediaType)
+        throw new ModelMarketplaceError('model_media_mismatch', '默认模型与媒体类型不一致');
+      continue;
+    }
     if (!alias) {
       throw new AiSettingsError('model_unavailable', `未配置可用的 ${mediaType} 项目默认模型`);
     }
@@ -592,6 +636,22 @@ async function requireCredentialReference(
   }
 }
 
+/** 独立文字任务优先使用已配置平台默认；未设置时只从已发布可用商品选择，不扫描候选目录。 */
+async function resolveTextSubmissionModel(
+  settingsStore: AiSettingsStoreLike,
+  marketplace?: ModelMarketplace,
+): Promise<ModelSelection | undefined> {
+  if (!marketplace) return resolveReversePromptDefault(settingsStore);
+  const settings = await settingsStore.get();
+  const configured = settings.defaultModels.text;
+  if (configured) return typeof configured === 'string' ? { modelAlias: configured } : configured;
+  const page = await marketplace.listPublished({ page: 1, pageSize: 100, mediaType: 'text' });
+  const model = page.items.find((entry) => entry.availability === 'available');
+  return model
+    ? { platformModelId: model.id, modelAlias: model.modelAlias ?? model.name }
+    : undefined;
+}
+
 /**
  * Resolve and validate every executable node in a run's upstream closure at
  * submission time. The resulting aliases are passed into the immutable run
@@ -599,9 +659,11 @@ async function requireCredentialReference(
  */
 async function resolveRunNodeModels(input: {
   settingsStore: AiSettingsStoreLike;
+  marketplace?: ModelMarketplace;
   canvas: CanvasDocument;
   targetNodeId: string;
   requestModelAlias?: string;
+  platformModelId?: string;
   credentialId?: string;
   projectDefaults?: ProjectModelDefaults;
   allowVirtualMockModels: boolean;
@@ -649,6 +711,7 @@ async function resolveRunNodeModels(input: {
   const nodeModelAliases: Record<string, string> = {};
   const nodeCredentialReferences: Record<string, RunCredentialReference> = {};
   const nodeModels: Record<string, ModelCatalogEntry | undefined> = {};
+  const billingModels: RunBillingModels = {};
   let targetModel: ModelCatalogEntry | undefined;
 
   for (const node of input.canvas.nodes) {
@@ -665,10 +728,17 @@ async function resolveRunNodeModels(input: {
       node.id === input.targetNodeId ? runCredentialId : node.data.credentialId;
     const requestedAlias = node.id === input.targetNodeId ? input.requestModelAlias : undefined;
     const configured = [
-      requestedAlias ? { modelAlias: requestedAlias, credentialId: nodeCredentialId } : undefined,
-      node.data.modelAlias
+      requestedAlias || (node.id === input.targetNodeId && input.platformModelId)
+        ? {
+            modelAlias: requestedAlias,
+            platformModelId: input.platformModelId ?? node.data.platformModelId,
+            credentialId: nodeCredentialId,
+          }
+        : undefined,
+      node.data.modelAlias || node.data.platformModelId
         ? {
             modelAlias: node.data.modelAlias,
+            ...(node.data.platformModelId ? { platformModelId: node.data.platformModelId } : {}),
             ...(node.data.credentialId ? { credentialId: node.data.credentialId } : {}),
           }
         : undefined,
@@ -683,6 +753,43 @@ async function resolveRunNodeModels(input: {
         ? { modelAlias: `mock-${mediaType}` }
         : undefined;
     const alias = selected?.modelAlias?.trim();
+    if (input.marketplace) {
+      if (!selected?.platformModelId && !alias)
+        throw new ModelMarketplaceError(
+          'model_unavailable',
+          `节点 ${node.id} 未选择已发布平台模型`,
+        );
+      const resolved = selected?.platformModelId
+        ? await input.marketplace.resolvePublishedModel(selected.platformModelId)
+        : await input.marketplace.resolveLegacyModel(
+            alias!,
+            nodeCredentialId ?? selected?.credentialId,
+            mediaType,
+          );
+      if (resolved.model.mediaType.toLowerCase() !== mediaType)
+        throw new ModelMarketplaceError(
+          'model_media_mismatch',
+          `平台模型与节点 ${node.id} 的媒体类型不一致`,
+        );
+      const model: ModelCatalogEntry = {
+        id: resolved.binding.upstreamModelId,
+        name: resolved.model.name,
+        mediaTypes: [mediaType],
+        credentialId: resolved.binding.credentialId,
+        capabilities: resolved.binding.capabilities as Record<string, unknown>,
+        limitations: resolved.binding.limitations as Record<string, unknown>,
+        refreshedAt: resolved.binding.verifiedAt.toISOString(),
+      };
+      billingModels[node.id] = resolved;
+      nodeModelAliases[node.id] = resolved.binding.upstreamModelId;
+      nodeModels[node.id] = model;
+      nodeCredentialReferences[node.id] = {
+        credentialId: resolved.binding.credentialId,
+        credentialVersion: resolved.binding.credentialVersion,
+      };
+      if (node.id === input.targetNodeId) targetModel = model;
+      continue;
+    }
     if (!alias) {
       throw new AiSettingsError(
         'model_unavailable',
@@ -768,6 +875,7 @@ async function resolveRunNodeModels(input: {
     nodeModelAliases,
     nodeCredentialReferences,
     nodeModels,
+    billingModels,
     ...(targetModel ? { targetModel } : {}),
   };
 }
@@ -1219,6 +1327,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     parseJsonBody(request, raw, done);
   });
   app.setErrorHandler((error, request, reply) => {
+    if (error instanceof BillingError || error instanceof ModelMarketplaceError)
+      return reply.code(error.status).send({ code: error.code, error: error.message });
     if (error instanceof RateLimitUnavailableError) {
       request.log.warn({ requestId: request.id }, 'global rate limiter unavailable');
       return reply.header('retry-after', String(error.retryAfterSeconds)).code(503).send({
@@ -1627,6 +1737,58 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     runs: runService,
     sessions: requestSessions,
   });
+  registerModelMarketplaceRoutes(app, {
+    marketplace: options.marketplace,
+    sessions: requestSessions,
+  });
+  registerBillingRoutes(app, { billing: options.billing, sessions: requestSessions });
+
+  /** 只有真实账户可以确认计费；同键恢复也不能借服务令牌或匿名请求读到账务身份。 */
+  app.addHook('preHandler', async (request) => {
+    if (
+      options.billing &&
+      request.method === 'POST' &&
+      isBillingSubmissionPath(request.url.split('?')[0]!) &&
+      !requestSessions.has(request)
+    )
+      throw new BillingError('authentication_required', '计费操作需要登录账户', 401);
+    if (
+      options.billing &&
+      !options.marketplace &&
+      request.method === 'POST' &&
+      isBillingSubmissionPath(request.url.split('?')[0]!)
+    )
+      throw new BillingError('marketplace_unavailable', '平台模型服务尚未配置', 503);
+  });
+
+  /** 报价复用完整提交预检，只允许固定生成入口，不能转发任意 API 或外部 URL。 */
+  app.post('/v1/billing/quotes', async (request, reply) => {
+    if (!requestSessions.has(request))
+      throw new BillingError('authentication_required', '请先登录后报价', 401);
+    if (!options.billing)
+      throw new BillingError('billing_unavailable', '平台计费服务尚未配置', 503);
+    const parsed = z
+      .object({
+        path: z.string().max(1024).refine(isBillingSubmissionPath),
+        body: z.record(z.unknown()),
+      })
+      .strict()
+      .safeParse(request.body);
+    if (!parsed.success)
+      throw new BillingError('invalid_quote_request', '报价目标必须为已支持的生成提交入口', 400);
+    const { quoteId: _quoteId, ...body } = parsed.data.body;
+    const response = await app.inject({
+      method: 'POST',
+      url: parsed.data.path,
+      headers: { authorization: request.headers.authorization! },
+      payload: { ...body, quoteOnly: true },
+    });
+    return reply
+      .code(response.statusCode)
+      .header('cache-control', 'no-store')
+      .type('application/json')
+      .send(response.body);
+  });
 
   app.post('/v1/auth/register', async (request, reply) => {
     if (!authService) {
@@ -1776,7 +1938,18 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (!canManagePlatformSettings(requestPrincipals, requestSessions, request)) {
       return reply.code(403).send({ error: 'platform credential access is not permitted' });
     }
-    return { settings: await settingsStore.get() };
+    const settings = await settingsStore.get();
+    return {
+      settings,
+      ...(options.marketplace
+        ? {
+            resolvedDefaults: await resolvePublicModelDefaults(
+              settings.defaultModels,
+              options.marketplace,
+            ),
+          }
+        : {}),
+    };
   });
 
   app.patch('/v1/settings/ai', async (request, reply) => {
@@ -1835,6 +2008,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       if (defaults) {
         await validateProjectModelDefaults({
           settingsStore,
+          marketplace: options.marketplace,
           defaults,
           allowVirtualMockModels: providerName === 'mock' && process.env.NODE_ENV !== 'production',
           requireCredentialReferences: providerName === 'newapi',
@@ -1915,6 +2089,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         // 默认模型必须来自该凭据自己的目录，避免出现模型 A 配 Key B 的组合。
         await validateProjectModelDefaults({
           settingsStore,
+          marketplace: options.marketplace,
           defaults: body.data as UpdateProjectModelDefaultsInput,
           allowVirtualMockModels: providerName === 'mock' && process.env.NODE_ENV !== 'production',
           requireCredentialReferences: providerName === 'newapi',
@@ -1985,10 +2160,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         })
         .safeParse(request.query);
       if (!query.success) return reply.code(400).send({ error: 'invalid model query' });
-      if (
-        query.data.credentialId &&
-        !canManagePlatformSettings(requestPrincipals, requestSessions, request)
-      ) {
+      if (!canManagePlatformSettings(requestPrincipals, requestSessions, request)) {
         return reply.code(403).send({ error: 'platform credential access is not permitted' });
       }
       if (
@@ -2172,6 +2344,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         if (imported.modelDefaults) {
           await validateProjectModelDefaults({
             settingsStore,
+            marketplace: options.marketplace,
             defaults: imported.modelDefaults as UpdateProjectModelDefaultsInput,
             allowVirtualMockModels:
               providerName === 'mock' && process.env.NODE_ENV !== 'production',
@@ -2321,7 +2494,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         projectScope(requestPrincipals, request),
       );
       if (!defaults) return reply.code(404).send({ error: 'project not found' });
-      return { defaults };
+      return projectModelDefaultsResponse({
+        defaults,
+        marketplace: options.marketplace,
+        canManageSettings: canManagePlatformSettings(requestPrincipals, requestSessions, request),
+      });
     },
   );
 
@@ -2336,6 +2513,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
               z
                 .object({
                   modelAlias: z.string().trim().min(1),
+                  platformModelId: z.string().uuid().optional(),
                   credentialId: z.string().trim().min(1).optional(),
                 })
                 .strict(),
@@ -2348,6 +2526,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
               z
                 .object({
                   modelAlias: z.string().trim().min(1),
+                  platformModelId: z.string().uuid().optional(),
                   credentialId: z.string().trim().min(1).optional(),
                 })
                 .strict(),
@@ -2360,6 +2539,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
               z
                 .object({
                   modelAlias: z.string().trim().min(1),
+                  platformModelId: z.string().uuid().optional(),
                   credentialId: z.string().trim().min(1).optional(),
                 })
                 .strict(),
@@ -2372,6 +2552,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
               z
                 .object({
                   modelAlias: z.string().trim().min(1),
+                  platformModelId: z.string().uuid().optional(),
                   credentialId: z.string().trim().min(1).optional(),
                 })
                 .strict(),
@@ -2390,6 +2571,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       try {
         await validateProjectModelDefaults({
           settingsStore,
+          marketplace: options.marketplace,
           defaults: result.data as UpdateProjectModelDefaultsInput,
           allowVirtualMockModels: providerName === 'mock' && process.env.NODE_ENV !== 'production',
           requireCredentialReferences: providerName === 'newapi',
@@ -2399,7 +2581,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           result.data as UpdateProjectModelDefaultsInput,
           scope,
         );
-        return { defaults };
+        return projectModelDefaultsResponse({
+          defaults,
+          marketplace: options.marketplace,
+          canManageSettings: canManagePlatformSettings(requestPrincipals, requestSessions, request),
+        });
       } catch (error) {
         if (error instanceof ProjectStoreError && error.code === 'not_found') {
           return reply.code(404).send({ error: error.message });
@@ -2650,7 +2836,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
         .at(0);
       if (runId && !run) return reply.code(404).send({ error: 'reverse prompt run not found' });
-      const defaultModel = await resolveReversePromptDefault(settingsStore);
+      const selectedDefault = await resolveTextSubmissionModel(settingsStore, options.marketplace);
+      const defaultModel = selectedDefault
+        ? options.marketplace
+          ? (await resolvePublicModelDefaults({ text: selectedDefault }, options.marketplace)).text
+          : { modelAlias: selectedDefault.modelAlias }
+        : undefined;
       return {
         analysis: run ? publicReversePromptAnalysis(run) : null,
         ...(defaultModel ? { defaultModel } : {}),
@@ -2728,7 +2919,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         return reply.code(429).send({ error: 'project run quota exceeded', retryAfterSeconds: 30 });
       }
       try {
-        if (body.credentialId && !(await settingsStore.hasCredential(body.credentialId))) {
+        if (
+          !options.marketplace &&
+          body.credentialId &&
+          !(await settingsStore.hasCredential(body.credentialId))
+        ) {
           return reply.code(404).send({ error: 'credential not found' });
         }
         const selected: ModelSelection | undefined = body.modelAlias
@@ -2736,11 +2931,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
               modelAlias: body.modelAlias,
               ...(body.credentialId ? { credentialId: body.credentialId } : {}),
             }
-          : await resolveReversePromptDefault(settingsStore);
-        if (!selected) throw new AiSettingsError('model_unavailable', '未配置可用的文字模型');
+          : body.platformModelId
+            ? undefined
+            : await resolveTextSubmissionModel(settingsStore, options.marketplace);
+        if (!selected && !body.platformModelId)
+          throw new AiSettingsError('model_unavailable', '未配置可用的文字模型');
         if (
+          !body.platformModelId &&
           body.credentialId &&
-          selected.credentialId &&
+          selected?.credentialId &&
           body.credentialId !== selected.credentialId
         ) {
           throw new AiSettingsError('model_unavailable', '文字默认模型的凭据与指定 API Key 不一致');
@@ -2752,10 +2951,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         });
         const resolution = await resolveRunNodeModels({
           settingsStore,
+          marketplace: options.marketplace,
           canvas,
           targetNodeId: REVERSE_PROMPT_NODE_ID,
-          requestModelAlias: selected.modelAlias,
-          credentialId: body.credentialId ?? selected.credentialId,
+          platformModelId: body.platformModelId ?? selected?.platformModelId,
+          requestModelAlias: selected?.modelAlias,
+          credentialId: body.credentialId ?? selected?.credentialId,
           allowVirtualMockModels: providerName === 'mock' && process.env.NODE_ENV !== 'production',
           requireCredentialReferences: providerName === 'newapi',
         });
@@ -2777,7 +2978,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           allowMockPreview: providerName === 'mock' && process.env.NODE_ENV !== 'production',
         });
         if (issues.length > 0) throw new ResourceMentionCapabilityError(issues);
-        const snapshot = runSnapshotSchema.parse({
+        let snapshot = runSnapshotSchema.parse({
           ...createRunSnapshot(body.projectId, canvas, REVERSE_PROMPT_NODE_ID, {
             modelAlias: resolution.targetModelAlias,
             nodeModelAliases: resolution.nodeModelAliases,
@@ -2789,8 +2990,19 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           }),
           reversePrompt: { assetId: asset.id, assetVersion: version, automatic: body.automatic },
         });
+        if (options.marketplace)
+          snapshot = freezeRunBillingModels(snapshot, resolution.billingModels);
+        const quote = await prepareBillingSubmission({
+          billing: options.billing,
+          session: requestSessions.get(request),
+          fields: body,
+          snapshot,
+          models: resolution.billingModels,
+        });
+        if (quote) return reply.header('cache-control', 'no-store').send({ quote });
         const run = await runService.create(snapshot, {
           idempotencyKey,
+          ...(body.quoteId ? { quoteId: body.quoteId } : {}),
           ...(principal?.userId ? { userId: principal.userId } : {}),
         });
         return reply.code(202).send({ analysis: publicReversePromptAnalysis(run) });
@@ -2898,7 +3110,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
               JSON.stringify(source.input) !== JSON.stringify(body.promptDocument) ||
               (expectedPrompt && JSON.stringify(frozenPrompt) !== JSON.stringify(expectedPrompt)) ||
               (body.modelAlias && body.modelAlias !== existing.modelAlias) ||
-              (body.credentialId && body.credentialId !== existing.snapshot.credentialId)
+              (body.credentialId && body.credentialId !== existing.snapshot.credentialId) ||
+              (body.platformModelId &&
+                body.platformModelId !==
+                  existing.snapshot.billingBindings?.[targetNodeId]?.platformModelId)
             ) {
               return reply.code(409).send({
                 code: 'idempotency_conflict',
@@ -2912,7 +3127,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
               });
             // 补发是否安全由 Run 服务判断；恢复只能使用已提交的冻结身份。
             const run =
-              existing.status === 'queued'
+              existing.status === 'queued' && !options.billing
                 ? await runService.create(existing.snapshot, {
                     idempotencyKey: existing.idempotencyKey,
                     userId: existing.userId,
@@ -2951,18 +3166,26 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
               .code(429)
               .send({ error: 'project run quota exceeded', retryAfterSeconds: 30 });
           }
-          if (body.credentialId && !(await settingsStore.hasCredential(body.credentialId)))
+          if (
+            !options.marketplace &&
+            body.credentialId &&
+            !(await settingsStore.hasCredential(body.credentialId))
+          )
             return reply.code(404).send({ error: 'credential not found' });
           const selected: ModelSelection | undefined = body.modelAlias
             ? {
                 modelAlias: body.modelAlias,
                 ...(body.credentialId ? { credentialId: body.credentialId } : {}),
               }
-            : await resolveReversePromptDefault(settingsStore);
-          if (!selected) throw new AiSettingsError('model_unavailable', '未配置可用的文字模型');
+            : body.platformModelId
+              ? undefined
+              : await resolveTextSubmissionModel(settingsStore, options.marketplace);
+          if (!selected && !body.platformModelId)
+            throw new AiSettingsError('model_unavailable', '未配置可用的文字模型');
           if (
+            !body.platformModelId &&
             body.credentialId &&
-            selected.credentialId &&
+            selected?.credentialId &&
             body.credentialId !== selected.credentialId
           )
             throw new AiSettingsError(
@@ -2971,15 +3194,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
             );
           const resolution = await resolveRunNodeModels({
             settingsStore,
+            marketplace: options.marketplace,
             canvas,
             targetNodeId,
-            requestModelAlias: selected.modelAlias,
-            credentialId: body.credentialId ?? selected.credentialId,
+            platformModelId: body.platformModelId ?? selected?.platformModelId,
+            requestModelAlias: selected?.modelAlias,
+            credentialId: body.credentialId ?? selected?.credentialId,
             allowVirtualMockModels:
               providerName === 'mock' && process.env.NODE_ENV !== 'production',
             requireCredentialReferences: providerName === 'newapi',
           });
-          const snapshot = runSnapshotSchema.parse({
+          let snapshot = runSnapshotSchema.parse({
             ...createRunSnapshot(projectId, canvas, targetNodeId, {
               modelAlias: resolution.targetModelAlias,
               nodeModelAliases: resolution.nodeModelAliases,
@@ -2997,12 +3222,24 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
             },
           });
           const principal = requestPrincipals.get(request);
+          if (options.marketplace)
+            snapshot = freezeRunBillingModels(snapshot, resolution.billingModels);
+          const quote = await prepareBillingSubmission({
+            billing: options.billing,
+            session: requestSessions.get(request),
+            fields: body,
+            snapshot,
+            models: resolution.billingModels,
+          });
+          if (quote) return reply.header('cache-control', 'no-store').send({ quote });
           const run = await runService.create(snapshot, {
             idempotencyKey,
+            ...(body.quoteId ? { quoteId: body.quoteId } : {}),
             ...(principal?.userId ? { userId: principal.userId } : {}),
           });
           return reply.code(202).send({ optimization: publicPromptOptimization(run) });
         } catch (error) {
+          if (error instanceof BillingError || error instanceof ModelMarketplaceError) throw error;
           if (error instanceof AiSettingsError)
             return reply.code(400).send({ error: error.message, code: error.code });
           if (error instanceof AiCredentialNotFoundError)
@@ -3040,6 +3277,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     }
     const body: RunRequestBody = {
       projectId: parsedBody.data.projectId,
+      ...(parsedBody.data.platformModelId
+        ? { platformModelId: parsedBody.data.platformModelId }
+        : {}),
+      ...(parsedBody.data.quoteId ? { quoteId: parsedBody.data.quoteId } : {}),
+      ...(parsedBody.data.quoteOnly ? { quoteOnly: true } : {}),
       ...(parsedBody.data.modelAlias ? { modelAlias: parsedBody.data.modelAlias } : {}),
       ...(parsedBody.data.credentialId ? { credentialId: parsedBody.data.credentialId } : {}),
       ...(parsedBody.data.idempotencyKey ? { idempotencyKey: parsedBody.data.idempotencyKey } : {}),
@@ -3051,7 +3293,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     // Running with an already configured credential does not expose or mutate
     // its secret. Regular project users may select the credential bound to a
     // node, while listing, activating and editing credentials remains admin-only.
-    if (body.credentialId && !(await settingsStore.hasCredential(body.credentialId))) {
+    if (
+      !options.marketplace &&
+      body.credentialId &&
+      !(await settingsStore.hasCredential(body.credentialId))
+    ) {
       return reply.code(404).send({ error: 'credential not found' });
     }
     const canvas = await projectStore.getCanvas(body.projectId, scope);
@@ -3090,8 +3336,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       const projectDefaults = await projectStore.getModelDefaults(body.projectId, scope);
       const modelResolution = await resolveRunNodeModels({
         settingsStore,
+        marketplace: options.marketplace,
         canvas: canvasForRun,
         targetNodeId: request.params.nodeId,
+        platformModelId: body.platformModelId,
         ...(body.modelAlias ? { requestModelAlias: body.modelAlias } : {}),
         ...(body.credentialId ? { credentialId: body.credentialId } : {}),
         ...(projectDefaults ? { projectDefaults } : {}),
@@ -3173,7 +3421,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       }
       const targetImageEditCapability = frozenNodeImageEditCapabilities[request.params.nodeId];
       const credential = modelResolution.nodeCredentialReferences[request.params.nodeId];
-      const snapshot = createRunSnapshot(body.projectId, canvasForRun, request.params.nodeId, {
+      let snapshot = createRunSnapshot(body.projectId, canvasForRun, request.params.nodeId, {
         ...body,
         modelAlias: modelResolution.targetModelAlias,
         nodeModelAliases: modelResolution.nodeModelAliases,
@@ -3188,10 +3436,21 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         frozenNodeImageEditCapabilities,
         ...(credential ?? {}),
       });
+      if (options.marketplace)
+        snapshot = freezeRunBillingModels(snapshot, modelResolution.billingModels);
+      const quote = await prepareBillingSubmission({
+        billing: options.billing,
+        session: requestSessions.get(request),
+        fields: body,
+        snapshot,
+        models: modelResolution.billingModels,
+      });
+      if (quote) return reply.header('cache-control', 'no-store').send({ quote });
       const headerIdempotencyKey = request.headers['idempotency-key'];
       const idempotencyKey =
         typeof headerIdempotencyKey === 'string' ? headerIdempotencyKey : body.idempotencyKey;
       const run = await runService.create(snapshot, {
+        ...(body.quoteId ? { quoteId: body.quoteId } : {}),
         ...(idempotencyKey ? { idempotencyKey } : {}),
         ...(principal?.userId ? { userId: principal.userId } : {}),
         ...(estimatedCost
@@ -3306,6 +3565,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.post<{ Params: { runId: string } }>('/v1/runs/:runId/retry', async (request, reply) => {
     try {
+      const fields = z
+        .object({ quoteOnly: z.boolean().optional(), quoteId: z.string().uuid().optional() })
+        .strict()
+        .safeParse(request.body ?? {});
+      if (!fields.success)
+        throw new BillingError('invalid_quote_request', '重试仅接受报价身份或重新报价', 400);
+      if (!options.billing && (fields.data.quoteOnly || fields.data.quoteId))
+        throw new BillingError('billing_unavailable', '平台计费服务尚未配置', 503);
       const previous = await runService.get(request.params.runId);
       if (
         !previous ||
@@ -3319,7 +3586,90 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       if (previous.snapshot.promptOptimization) {
         return reply.code(409).send({ error: '请在提示词优化窗口中明确发起新的优化' });
       }
-      const run = await runService.retry(request.params.runId);
+      if (options.billing) {
+        if (!['failed', 'cancelled'].includes(previous.status))
+          throw new BillingError(
+            'retry_not_allowed',
+            '只有已结束且明确失败的任务可以重新报价',
+            409,
+          );
+        const resolution = await resolveRunNodeModels({
+          settingsStore,
+          marketplace: options.marketplace,
+          canvas: {
+            revision: previous.snapshot.canvasRevision,
+            nodes: previous.snapshot.nodes,
+            edges: previous.snapshot.edges,
+          },
+          targetNodeId: previous.snapshot.targetNodeId,
+          allowVirtualMockModels: false,
+          requireCredentialReferences: true,
+        });
+        const canvas = {
+          revision: previous.snapshot.canvasRevision,
+          nodes: previous.snapshot.nodes,
+          edges: previous.snapshot.edges,
+        };
+        const mentionIssues = validateRunPromptMentionCapabilities({
+          canvas,
+          targetNodeId: previous.snapshot.targetNodeId,
+          frozenPromptMentions: previous.snapshot.promptMentions ?? [],
+          nodeModelAliases: resolution.nodeModelAliases,
+          nodeModels: resolution.nodeModels,
+          requestId: request.id,
+          allowMockPreview: false,
+        });
+        if (mentionIssues.length)
+          throw new BillingError(
+            'binding_capability_changed',
+            '当前模型绑定不再支持原运行的资源输入，请检查模型后重新发起',
+            409,
+          );
+        const capabilities: Record<string, FrozenImageEditCapability> = {};
+        for (const node of previous.snapshot.nodes) {
+          if (node.data.mode === 'source' || node.data.enabled === false) continue;
+          const check = checkImageEditCapabilities({
+            nodes: canvas.nodes,
+            edges: canvas.edges,
+            targetNodeId: node.id,
+            modelAlias: resolution.nodeModelAliases[node.id]!,
+            model: resolution.nodeModels[node.id],
+            mentions: (previous.snapshot.promptMentions ?? []).filter(
+              (mention) => (mention.nodeId ?? previous.targetNodeId) === node.id,
+            ),
+            requestId: request.id,
+          });
+          if (check.issues.length)
+            throw new BillingError(
+              'binding_capability_changed',
+              '当前模型绑定不再支持原运行的图片编辑输入',
+              409,
+            );
+          if (check.frozenCapability) capabilities[node.id] = check.frozenCapability;
+        }
+        const snapshot = freezeRunBillingModels(
+          {
+            ...previous.snapshot,
+            imageEditCapability: capabilities[previous.targetNodeId],
+            nodeImageEditCapabilities: Object.keys(capabilities).length ? capabilities : undefined,
+          },
+          resolution.billingModels,
+        );
+        const quote = await prepareBillingSubmission({
+          billing: options.billing,
+          session: requestSessions.get(request),
+          fields: fields.data,
+          snapshot,
+          models: resolution.billingModels,
+        });
+        if (quote) return reply.header('cache-control', 'no-store').send({ quote });
+      }
+      const run = await runService.retry(request.params.runId, {
+        ...(fields.data.quoteId ? { quoteId: fields.data.quoteId } : {}),
+        ...(requestSessions.get(request)?.user.id
+          ? { userId: requestSessions.get(request)!.user.id }
+          : {}),
+      });
       return reply.code(202).send({ run: toPublicRunRecord(run) });
     } catch (error) {
       if (error instanceof RunServiceError) {

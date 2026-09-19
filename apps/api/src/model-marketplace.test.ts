@@ -1,0 +1,484 @@
+import { randomUUID } from 'node:crypto';
+import type {
+  ModelBinding,
+  ModelCatalogSync,
+  PlatformModel,
+  PricingVersion,
+  PrismaClient,
+} from '@prisma/client';
+import { describe, expect, it, vi } from 'vitest';
+import { AiCredentialNotFoundError, type AiSettingsStoreLike } from './settings';
+import {
+  PrismaModelMarketplace,
+  createMarketplaceBindingSchema,
+  createMarketplaceModelSchema,
+  createMarketplacePricingSchema,
+  marketplaceListSchema,
+} from './model-marketplace';
+
+/** 所有测试身份均为合成 UUID，不访问真实连接或数据库。 */
+const actorId = '11111111-1111-4111-8111-111111111111';
+/** 确定性时间早于本次创建及验证，用于检查版本切换和同步冲突。 */
+const past = new Date('2025-01-01T00:00:00.000Z');
+/** 显式发布的单次微额人民币价格。 */
+const rule = { unit: 'per_call', meteringSource: 'fixed', unitPriceNanos: '1000' } as const;
+
+/** 数据库返回的已发布模型、当前绑定和当前价格。 */
+function records() {
+  const id = randomUUID();
+  const binding: ModelBinding = {
+    id: randomUUID(),
+    platformModelId: id,
+    revision: 1,
+    credentialId: randomUUID(),
+    credentialVersion: 1,
+    upstreamModelId: 'Exact-Model（按次）',
+    contract: 'openai-images',
+    capabilities: { mediaTypes: ['image'], sizes: ['1024x1024'] },
+    limitations: { maxImages: 1 },
+    verificationEvidence: '隔离合同用例确认',
+    verifiedAt: past,
+    createdBy: actorId,
+    createdAt: past,
+  };
+  const pricing: PricingVersion = {
+    id: randomUUID(),
+    platformModelId: id,
+    revision: 1,
+    currency: 'CNY',
+    rule,
+    effectiveAt: past,
+    createdBy: actorId,
+    createdAt: past,
+  };
+  const model: PlatformModel = {
+    id,
+    name: '人工商品名称',
+    description: '保留人工说明',
+    mediaType: 'IMAGE',
+    specifications: { sizes: ['1024x1024'] },
+    status: 'published',
+    sortOrder: 0,
+    activeBindingId: binding.id,
+    activePricingVersionId: pricing.id,
+    sourceSyncId: null,
+    sourceModelId: null,
+    createdBy: actorId,
+    createdAt: past,
+    updatedAt: past,
+  };
+  return { model, binding, pricing };
+}
+
+/** Prisma 委托替身保留参数观测；业务规则测试不模拟 SQL 并发或迁移成功。 */
+function fixture() {
+  const rows = records();
+  let currentModel = rows.model;
+  let currentBinding = rows.binding;
+  let currentPricing = rows.pricing;
+  const published = () => ({
+    ...currentModel,
+    activeBinding: currentModel.activeBindingId ? currentBinding : null,
+    activePrice: currentModel.activePricingVersionId ? currentPricing : null,
+  });
+  const database = {
+    platformModel: {
+      findUnique: vi.fn(async () => published()),
+      findMany: vi.fn(async () => [published()]),
+      count: vi.fn(async () => 1),
+      create: vi.fn(async ({ data }: { data: Partial<PlatformModel> }) => {
+        currentModel = {
+          ...currentModel,
+          activeBindingId: null,
+          activePricingVersionId: null,
+          ...data,
+          sourceSyncId: data.sourceSyncId ?? null,
+          sourceModelId: data.sourceModelId ?? null,
+        };
+        return published();
+      }),
+      update: vi.fn(async ({ data }: { data: Partial<PlatformModel> }) => {
+        currentModel = { ...currentModel, ...data };
+        return published();
+      }),
+    },
+    modelBinding: {
+      findUnique: vi.fn(async () => currentBinding),
+      findFirst: vi.fn(async () => currentBinding),
+      findMany: vi.fn(async () => [currentBinding]),
+      count: vi.fn(async () => 1),
+      create: vi.fn(async ({ data }: { data: Omit<ModelBinding, 'id' | 'createdAt'> }) => {
+        currentBinding = { ...data, id: randomUUID(), createdAt: new Date() };
+        return currentBinding;
+      }),
+    },
+    pricingVersion: {
+      findUnique: vi.fn(async () => currentPricing),
+      findFirst: vi.fn(async () => currentPricing),
+      findMany: vi.fn(async () => [currentPricing]),
+      count: vi.fn(async () => 1),
+      create: vi.fn(async ({ data }: { data: Omit<PricingVersion, 'id' | 'createdAt'> }) => {
+        currentPricing = { ...data, id: randomUUID(), createdAt: new Date() };
+        return currentPricing;
+      }),
+    },
+    aiCredential: {
+      findUnique: vi.fn(async () => ({
+        label: 'independent',
+        version: 1,
+        baseUrl: 'https://synthetic.invalid/v1',
+        encryptedApiKey: 'synthetic-encrypted-key',
+      })),
+    },
+    modelCatalogSync: {
+      findUnique: vi.fn(async (): Promise<ModelCatalogSync | null> => null),
+      findFirst: vi.fn(async (): Promise<ModelCatalogSync | null> => null),
+      create: vi.fn(
+        async ({
+          data,
+        }: {
+          data: Omit<ModelCatalogSync, 'id' | 'createdAt' | 'errorCode'> & { errorCode?: string };
+        }) => ({
+          ...data,
+          errorCode: data.errorCode ?? null,
+          id: randomUUID(),
+          createdAt: new Date(),
+        }),
+      ),
+    },
+    $transaction: vi.fn(async (operation: (transaction: unknown) => Promise<unknown>) =>
+      operation(database),
+    ),
+  };
+  const settings = {
+    getCredentialReference: vi.fn(async (credentialId: string) => ({
+      credentialId,
+      credentialVersion: 1,
+    })),
+    listModels: vi.fn(async () => []),
+    refreshModels: vi.fn(async () => []),
+  };
+  const service = new PrismaModelMarketplace(
+    database as unknown as PrismaClient,
+    settings as unknown as AiSettingsStoreLike,
+  );
+  return { service, database, settings, rows, published };
+}
+
+/** 一次成功的来源快照，只包含候选字段，不具备发布权限。 */
+function snapshot(credentialId: string, candidates: unknown[]): ModelCatalogSync {
+  return {
+    id: randomUUID(),
+    credentialId,
+    status: 'succeeded',
+    candidates: candidates as ModelCatalogSync['candidates'],
+    missing: [],
+    errorCode: null,
+    createdBy: actorId,
+    createdAt: new Date(),
+  };
+}
+
+describe('PrismaModelMarketplace', () => {
+  it('公开目录过滤草稿并递归剔除内部凭据、成本和管理地址', async () => {
+    const { service, database, rows } = fixture();
+    rows.binding.capabilities = {
+      mediaTypes: ['image'],
+      credentialId: rows.binding.credentialId,
+      internalUrl: 'https://synthetic.invalid/admin',
+      cost: '900',
+      imageEdit: { supported: true, baseUrl: 'https://synthetic.invalid' },
+    };
+    const page = await service.listPublished(marketplaceListSchema.parse({}));
+    expect(database.platformModel.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { status: 'published' }, take: 30 }),
+    );
+    expect(page.items[0]).toMatchObject({
+      id: rows.model.id,
+      modelAlias: 'Exact-Model（按次）',
+      availability: 'available',
+      pricing: { currency: 'CNY', rule: { unitPriceNanos: '1000' } },
+      capabilities: { mediaTypes: ['image'], imageEdit: { supported: true } },
+    });
+    const encoded = JSON.stringify(page);
+    for (const secret of [
+      'credentialId',
+      'encryptedApiKey',
+      'synthetic.invalid',
+      'verificationEvidence',
+      'cost',
+    ])
+      expect(encoded).not.toContain(secret);
+  });
+
+  it('没有候选目录也可手工建立草稿，未定价不能上架', async () => {
+    const { service, database, settings } = fixture();
+    const draft = await service.createModel({ name: '手工图像模型', mediaType: 'image' }, actorId);
+    expect(draft).toMatchObject({ name: '手工图像模型', status: 'draft', sourceSyncId: null });
+    expect(settings.refreshModels).not.toHaveBeenCalled();
+    expect(database.modelCatalogSync.findUnique).not.toHaveBeenCalled();
+    await expect(service.updateModel(draft.id, { status: 'published' })).rejects.toMatchObject({
+      code: 'model_setup_incomplete',
+    });
+  });
+
+  it('候选导入只创建草稿名称来源，不自动导入售价或能力', async () => {
+    const { service, database, rows } = fixture();
+    const sync = snapshot(rows.binding.credentialId, [
+      {
+        id: 'Selected-ID',
+        name: '上游名称',
+        mediaTypes: ['image'],
+        capabilities: { mediaTypes: ['image'] },
+        providerDeclaredPrice: { amount: 20, currency: 'USD' },
+      },
+    ]);
+    database.modelCatalogSync.findUnique.mockResolvedValue(sync);
+    const model = await service.createModel(
+      {
+        source: { syncId: sync.id, upstreamModelId: 'Selected-ID' },
+        mediaType: 'image',
+        name: '人工改名',
+      },
+      actorId,
+    );
+    expect(model).toMatchObject({
+      name: '人工改名',
+      status: 'draft',
+      sourceSyncId: sync.id,
+      sourceModelId: 'Selected-ID',
+      activeBindingId: null,
+      activePricingVersionId: null,
+      capabilities: {},
+    });
+    expect(database.modelBinding.create).not.toHaveBeenCalled();
+    expect(database.pricingVersion.create).not.toHaveBeenCalled();
+  });
+
+  it('更换 API 追加不可变绑定，商品 ID、旧绑定与售价保留', async () => {
+    const { service, database, rows } = fixture();
+    const before = structuredClone(rows.binding);
+    const nextCredentialId = randomUUID();
+    const binding = await service.createBinding(
+      rows.model.id,
+      {
+        credentialId: nextCredentialId,
+        credentialVersion: 1,
+        upstreamModelId: 'Replacement-Exact-ID',
+        contract: 'openai-images',
+        capabilities: { mediaTypes: ['image'] },
+        verificationEvidence: '管理员已经验证替代合同',
+        activate: true,
+      },
+      actorId,
+    );
+    const resolved = await service.resolvePublishedModel(rows.model.id);
+    expect(binding.revision).toBe(2);
+    expect(binding.id).not.toBe(before.id);
+    expect(rows.binding).toEqual(before);
+    expect(resolved.model.id).toBe(rows.model.id);
+    expect(resolved.pricing.id).toBe(rows.pricing.id);
+    expect(resolved.binding).toMatchObject({
+      credentialId: nextCredentialId,
+      upstreamModelId: 'Replacement-Exact-ID',
+    });
+    expect(database.$transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: 'Serializable',
+    });
+  });
+
+  it('禁止跨模型绑定、跨模型价格以及不兼容合同', async () => {
+    const { service, rows } = fixture();
+    rows.binding.platformModelId = randomUUID();
+    await expect(
+      service.updateModel(rows.model.id, { activeBindingId: rows.binding.id }),
+    ).rejects.toMatchObject({ code: 'model_version_mismatch' });
+    rows.binding.platformModelId = rows.model.id;
+    rows.pricing.platformModelId = randomUUID();
+    await expect(
+      service.updateModel(rows.model.id, { activePricingVersionId: rows.pricing.id }),
+    ).rejects.toMatchObject({ code: 'model_version_mismatch' });
+    await expect(
+      service.createBinding(
+        rows.model.id,
+        {
+          credentialId: rows.binding.credentialId,
+          credentialVersion: 1,
+          upstreamModelId: rows.binding.upstreamModelId,
+          contract: 'openai-chat-completions',
+          capabilities: { mediaTypes: ['image'] },
+          verificationEvidence: '合成验证依据',
+        },
+        actorId,
+      ),
+    ).rejects.toMatchObject({ code: 'binding_contract_mismatch' });
+  });
+
+  it('停用连接或凭据版本变化后禁止新调用，目录仍保留模型与价格', async () => {
+    const { service, settings, rows } = fixture();
+    settings.getCredentialReference.mockRejectedValue(
+      new AiCredentialNotFoundError(rows.binding.credentialId),
+    );
+    await expect(service.resolvePublishedModel(rows.model.id)).rejects.toMatchObject({
+      code: 'binding_unavailable',
+    });
+    const page = await service.listPublished(marketplaceListSchema.parse({}));
+    expect(page.items[0]).toMatchObject({
+      id: rows.model.id,
+      availability: 'unavailable',
+      pricing: { id: rows.pricing.id },
+    });
+    settings.getCredentialReference.mockResolvedValue({
+      credentialId: rows.binding.credentialId,
+      credentialVersion: 2,
+    });
+    await expect(service.resolvePublishedModel(rows.model.id)).rejects.toMatchObject({
+      code: 'binding_version_changed',
+    });
+  });
+
+  it('同步成功后的模型缺失和同步失败都保留人工字段及售价', async () => {
+    const { service, settings, database, rows } = fixture();
+    const prior = snapshot(rows.binding.credentialId, [
+      {
+        id: rows.binding.upstreamModelId,
+        name: '旧目录名称',
+        mediaTypes: ['image'],
+        capabilities: { mediaTypes: ['image'] },
+      },
+    ]);
+    database.modelCatalogSync.findFirst.mockResolvedValue(prior);
+    const success = await service.sync(rows.binding.credentialId, actorId);
+    expect(success).toMatchObject({ status: 'succeeded', missing: [rows.binding.upstreamModelId] });
+    settings.refreshModels.mockRejectedValue(
+      new Error('Bearer synthetic-private-value https://synthetic.invalid'),
+    );
+    const failed = await service.sync(rows.binding.credentialId, actorId);
+    expect(failed).toMatchObject({
+      status: 'failed',
+      candidates: prior.candidates,
+      errorCode: 'upstream_catalog_unavailable',
+    });
+    expect(JSON.stringify(failed)).not.toContain('synthetic-private-value');
+    expect(database.platformModel.update).not.toHaveBeenCalled();
+    expect(database.pricingVersion.create).not.toHaveBeenCalled();
+    expect((await service.resolvePublishedModel(rows.model.id)).model.name).toBe('人工商品名称');
+  });
+
+  it('新的明确能力冲突暂停新调用，模型缺失本身不证明已下架', async () => {
+    const { service, database, rows } = fixture();
+    database.modelCatalogSync.findFirst.mockResolvedValue(
+      snapshot(rows.binding.credentialId, [
+        {
+          id: rows.binding.upstreamModelId,
+          name: '来源名称',
+          mediaTypes: ['image'],
+          capabilities: { sizes: ['512x512'] },
+        },
+      ]),
+    );
+    await expect(service.resolvePublishedModel(rows.model.id)).rejects.toMatchObject({
+      code: 'binding_needs_review',
+    });
+    expect(
+      (await service.listPublished(marketplaceListSchema.parse({}))).items[0]?.availability,
+    ).toBe('needs_review');
+    database.modelCatalogSync.findFirst.mockResolvedValue(snapshot(rows.binding.credentialId, []));
+    await expect(service.resolvePublishedModel(rows.model.id)).resolves.toMatchObject({
+      model: { id: rows.model.id },
+    });
+  });
+
+  it('旧模型别名只允许唯一精确匹配，同名商品歧义拒绝', async () => {
+    const { service, database, rows, published } = fixture();
+    await expect(
+      service.resolveLegacyModel(rows.binding.upstreamModelId, rows.binding.credentialId, 'image'),
+    ).resolves.toMatchObject({ model: { id: rows.model.id } });
+    expect(database.platformModel.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        take: 2,
+        where: expect.objectContaining({
+          activeBinding: {
+            is: {
+              upstreamModelId: rows.binding.upstreamModelId,
+              credentialId: rows.binding.credentialId,
+            },
+          },
+        }),
+      }),
+    );
+    database.platformModel.findMany.mockResolvedValue([
+      published(),
+      { ...published(), id: randomUUID() },
+    ]);
+    await expect(service.resolveLegacyModel(rows.binding.upstreamModelId)).rejects.toMatchObject({
+      code: 'model_selection_ambiguous',
+    });
+  });
+
+  it('人民币定价追加版本，显式零价格允许，未来价格不能立即启用', async () => {
+    const { service, database, rows } = fixture();
+    const previous = structuredClone(rows.pricing);
+    const free = await service.createPricing(
+      { platformModelId: rows.model.id, rule: { ...rule, unitPriceNanos: '0' }, activate: true },
+      actorId,
+    );
+    expect(free).toMatchObject({ revision: 2, currency: 'CNY', rule: { unitPriceNanos: '0' } });
+    expect(rows.pricing).toEqual(previous);
+    expect(database.platformModel.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { activePricingVersionId: free.id } }),
+    );
+    await expect(
+      service.createPricing(
+        {
+          platformModelId: rows.model.id,
+          rule,
+          effectiveAt: '2100-01-01T00:00:00.000Z',
+          activate: true,
+        },
+        actorId,
+      ),
+    ).rejects.toMatchObject({ code: 'pricing_not_effective' });
+  });
+
+  it('缺少单价、浮点金额、内部元数据、未知字段和无界分页都明确拒绝', () => {
+    expect(
+      createMarketplacePricingSchema.safeParse({
+        platformModelId: randomUUID(),
+        rule: { unit: 'per_call', meteringSource: 'fixed' },
+      }).success,
+    ).toBe(false);
+    expect(
+      createMarketplacePricingSchema.safeParse({
+        platformModelId: randomUUID(),
+        rule: { ...rule, unitPriceNanos: 0.5 },
+      }).success,
+    ).toBe(false);
+    expect(
+      createMarketplacePricingSchema.safeParse({
+        platformModelId: randomUUID(),
+        rule,
+        currency: 'USD',
+      }).success,
+    ).toBe(false);
+    expect(
+      createMarketplaceModelSchema.safeParse({
+        name: '模型',
+        mediaType: 'image',
+        specifications: { parameters: { apiKey: 'private' } },
+      }).success,
+    ).toBe(false);
+    expect(
+      createMarketplaceModelSchema.safeParse({
+        name: '模型',
+        mediaType: 'image',
+        status: 'published',
+      }).success,
+    ).toBe(false);
+    expect(
+      createMarketplaceBindingSchema.safeParse({ ...records().binding, capabilities: {} }).success,
+    ).toBe(false);
+    expect(marketplaceListSchema.safeParse({ pageSize: 101 }).success).toBe(false);
+    expect(marketplaceListSchema.safeParse({ ownerId: actorId }).success).toBe(false);
+  });
+});
