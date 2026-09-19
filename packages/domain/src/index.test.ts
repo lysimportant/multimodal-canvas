@@ -773,6 +773,7 @@ describe('canvas protocol', () => {
           nodeId: 'node_prompt',
           role: 'prompt',
           sortOrder: 0,
+          sourceDurationSeconds: 3.5,
           snapshot: {
             id: 'node_prompt',
             type: 'text',
@@ -784,6 +785,15 @@ describe('canvas protocol', () => {
     });
 
     expect(snapshot.canvasRevision).toBe(3);
+    expect(snapshot.inputs[0]?.sourceDurationSeconds).toBe(3.5);
+    for (const sourceDurationSeconds of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(
+        runSnapshotSchema.safeParse({
+          ...snapshot,
+          inputs: [{ ...snapshot.inputs[0], sourceDurationSeconds }],
+        }).success,
+      ).toBe(false);
+    }
     expect(
       runSnapshotSchema.parse({
         ...snapshot,
@@ -836,6 +846,7 @@ describe('canvas protocol', () => {
           assetId: 'asset-image',
           assetVersion: 2,
           mediaType: 'image',
+          durationSeconds: 4.25,
           label: '产品图',
           blockOrder: 1,
           binding: { entityName: '产品', semanticRole: 'appearance' },
@@ -852,6 +863,15 @@ describe('canvas protocol', () => {
       ],
     });
     expect(frozen.promptMentions?.map((mention) => mention.mentionId)).toEqual(['m-1', 'm-2']);
+    expect(frozen.promptMentions?.[0]?.durationSeconds).toBe(4.25);
+    for (const durationSeconds of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(
+        runSnapshotSchema.safeParse({
+          ...base,
+          promptMentions: [{ ...frozen.promptMentions![0], durationSeconds }],
+        }).success,
+      ).toBe(false);
+    }
     expect(
       runSnapshotSchema.safeParse({
         ...base,
@@ -1606,8 +1626,11 @@ describe('video input set', () => {
 });
 
 describe('video mode ports', () => {
-  it('recognizes only confirmed official model families', () => {
+  it('distinguishes exact H3 providers and recognizes only confirmed model families', () => {
+    expect(videoFamilyForModel('minimax-h3')).toBe('moon-minimax-h3');
     expect(videoFamilyForModel('MiniMax-H3')).toBe('minimax-h3');
+    expect(videoFamilyForModel('MINIMAX-H3')).toBe('unknown');
+    expect(videoFamilyForModel('Minimax-H3')).toBe('unknown');
     expect(videoFamilyForModel('minimax_h3-1080p')).toBe('unknown');
     expect(videoFamilyForModel('wan3.0-video')).toBe('wan3');
     expect(videoFamilyForModel('wan3.0-video-prime')).toBe('wan3');
@@ -1615,6 +1638,9 @@ describe('video mode ports', () => {
     expect(videoFamilyForModel('doubao-seedance-2-0-260128')).toBe('seedance-2');
     expect(videoFamilyForModel('doubao-seedance-2-0-fast-260128')).toBe('seedance-2');
     expect(videoFamilyForModel('doubao-seedance-2-0-mini-260615')).toBe('seedance-2');
+    expect(videoFamilyForModel('seedance-2-0-official')).toBe('seedance-2');
+    expect(videoFamilyForModel('seedance-2-0-fast-official')).toBe('seedance-2');
+    expect(videoFamilyForModel('seedance-2-0-mini-official')).toBe('seedance-2');
     expect(videoFamilyForModel('doubao-seedance-2-5-260628')).toBe('seedance-2.5');
     expect(videoFamilyForModel('doubao-seedance-2-0-mini-260128')).toBe('unknown');
     expect(videoFamilyForModel('doubao-seedance-2-5-pro-260901')).toBe('unknown');
@@ -1640,6 +1666,15 @@ describe('video mode ports', () => {
     expect(videoModeCapability('video_edit', 'wan3.0-video').selectable).toBe(true);
     expect(videoModeCapability('omni_reference', 'grok-imagine-video-1.5').livePost).toBe(true);
     expect(videoModeCapability('omni_reference', 'minimax-h3').livePost).toBe(true);
+    expect(videoModeCapability('omni_reference', 'MiniMax-H3').livePost).toBe(true);
+    for (const model of [
+      'seedance-2-0-official',
+      'seedance-2-0-fast-official',
+      'seedance-2-0-mini-official',
+    ]) {
+      expect(videoModeCapability('video_edit', model).livePost).toBe(true);
+      expect(videoModeCapability('video_extend', model).livePost).toBe(true);
+    }
   });
 
   it('narrows video ports once an explicit mode is saved', () => {
@@ -1735,12 +1770,16 @@ describe('video mode ports', () => {
     ).toEqual(['m-video']);
   });
 
-  it('absorbs official reference media mentions for omni, edit, and extend modes', () => {
+  it('absorbs confirmed reference media mentions for omni, edit, and extend modes', () => {
     for (const modelAlias of [
       'minimax-h3',
+      'MiniMax-H3',
       'wan3.0-video',
       'doubao-seedance-2-0-fast-260128',
       'doubao-seedance-2-5-260628',
+      'seedance-2-0-official',
+      'seedance-2-0-fast-official',
+      'seedance-2-0-mini-official',
     ]) {
       for (const videoMode of ['omni_reference', 'video_edit', 'video_extend'] as const) {
         const capability = videoModeCapability(videoMode, modelAlias);

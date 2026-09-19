@@ -36,6 +36,8 @@ export type StoredAssetVersionReference = {
   version: number;
   sizeBytes: bigint;
   contentKey: string;
+  /** 选中不可变版本的正有限视频时长；不得从当前 Asset 元数据取得。 */
+  durationSeconds?: number;
 };
 
 export interface AssetReferenceRepository {
@@ -353,10 +355,18 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
       providerUrlCache,
     );
 
+    const frozenDurationSeconds =
+      input.sourceAssetVersion === version ? input.sourceDurationSeconds : undefined;
+    const { sourceDurationSeconds: _staleDurationSeconds, ...inputWithoutDuration } = input;
     return {
-      ...input,
+      ...inputWithoutDuration,
       sourceAssetId: assetId,
       sourceAssetVersion: version,
+      ...(frozenDurationSeconds !== undefined
+        ? { sourceDurationSeconds: frozenDurationSeconds }
+        : resolved.durationSeconds !== undefined
+          ? { sourceDurationSeconds: resolved.durationSeconds }
+          : {}),
       snapshot: {
         ...input.snapshot,
         data: {
@@ -371,8 +381,8 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
   }
 
   /**
-   * 仅为官方明确要求 HTTP(S) 的视频参考素材生成短期 URL。
-   * 图片和支持 data URL 的模型继续走内存内容，避免扩大外部可读面。
+   * 按模型和媒体类型选择短期 URL 或内存 data URL。preferred 仅在存储明确
+   * 提供签名能力时使用 URL；required 缺少该能力时在 Provider 请求前失败。
    */
   private async providerContentUrl(
     snapshot: RunSnapshot,
@@ -380,11 +390,11 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
     resolved: ResolvedAsset,
     cache: Map<string, Promise<string>>,
   ): Promise<string> {
-    if (!requiresProviderAssetUrl(snapshot, consumerNodeId, resolved.mediaType)) {
-      return resolved.dataUrl;
-    }
+    const policy = providerAssetUrlPolicy(snapshot, consumerNodeId, resolved.mediaType);
+    if (policy === 'data') return resolved.dataUrl;
     const signer = this.blobStore.createProviderGetUrl;
     if (!signer) {
+      if (policy === 'preferred') return resolved.dataUrl;
       throw new Error(
         `asset reference ${resolved.assetId} requires a public signed URL; configure S3_PROVIDER_ENDPOINT for this video model`,
       );
@@ -438,6 +448,9 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
       mimeType,
       contentKey: selected.contentKey,
       dataUrl: `data:${providerMimeType};base64,${content.toString('base64')}`,
+      ...(asset.mediaType === 'video' && selected.durationSeconds !== undefined
+        ? { durationSeconds: selected.durationSeconds }
+        : {}),
     };
   }
 
@@ -469,6 +482,7 @@ type ResolvedAsset = {
   mimeType: string;
   contentKey: string;
   dataUrl: string;
+  durationSeconds?: number;
   providerContentUrl?: string;
 };
 
@@ -504,9 +518,17 @@ class PrismaAssetReferenceRepository implements AssetReferenceRepository {
   ): Promise<StoredAssetVersionReference | undefined> {
     const row = await this.prisma.assetVersion.findUnique({
       where: { assetId_version: { assetId, version } },
-      select: { assetId: true, version: true, sizeBytes: true, contentKey: true },
+      select: { assetId: true, version: true, sizeBytes: true, contentKey: true, metadata: true },
     });
-    return row ?? undefined;
+    if (!row) return undefined;
+    const durationSeconds = assetVersionDurationSeconds(row.metadata);
+    return {
+      assetId: row.assetId,
+      version: row.version,
+      sizeBytes: row.sizeBytes,
+      contentKey: row.contentKey,
+      ...(durationSeconds !== undefined ? { durationSeconds } : {}),
+    };
   }
 }
 
@@ -548,6 +570,11 @@ class FileAssetReferenceBlobStore implements AssetReferenceBlobStore {
 export class S3AssetReferenceBlobStore implements AssetReferenceBlobStore {
   private readonly client: S3Client;
   private readonly providerClient?: S3Client;
+  /** 仅在配置公网 Provider endpoint 时暴露签名能力。 */
+  readonly createProviderGetUrl?: (
+    key: string,
+    options: { expiresIn: number; contentType: string },
+  ) => Promise<string>;
 
   constructor(
     private readonly bucket: string,
@@ -582,9 +609,20 @@ export class S3AssetReferenceBlobStore implements AssetReferenceBlobStore {
     const providerEndpoint = options.providerEndpoint
       ? normalizeProviderAssetEndpoint(options.providerEndpoint)
       : undefined;
-    this.providerClient = providerEndpoint
-      ? new S3Client({ ...shared, endpoint: providerEndpoint })
-      : undefined;
+    if (providerEndpoint) {
+      const providerClient = new S3Client({ ...shared, endpoint: providerEndpoint });
+      this.providerClient = providerClient;
+      this.createProviderGetUrl = async (key, signingOptions) =>
+        getSignedUrl(
+          providerClient,
+          new GetObjectCommand({
+            Bucket: this.bucket,
+            Key: key,
+            ResponseContentType: signingOptions.contentType,
+          }),
+          { expiresIn: signingOptions.expiresIn },
+        );
+    }
   }
 
   async get(key: string, readLimitBytes: number): Promise<Buffer | undefined> {
@@ -612,25 +650,6 @@ export class S3AssetReferenceBlobStore implements AssetReferenceBlobStore {
       if (isS3NotFound(error)) return undefined;
       throw error;
     }
-  }
-
-  /** 为同一 bucket/key 生成一小时以内的 Provider 只读 URL，不改写已签名 Host。 */
-  async createProviderGetUrl(
-    key: string,
-    options: { expiresIn: number; contentType: string },
-  ): Promise<string> {
-    if (!this.providerClient) {
-      throw new Error('S3_PROVIDER_ENDPOINT is required for provider-readable asset URLs');
-    }
-    return getSignedUrl(
-      this.providerClient,
-      new GetObjectCommand({
-        Bucket: this.bucket,
-        Key: key,
-        ResponseContentType: options.contentType,
-      }),
-      { expiresIn: options.expiresIn },
-    );
   }
 
   async close(): Promise<void> {
@@ -703,25 +722,54 @@ function isRelativeUrl(value: string | undefined): value is string {
 }
 
 /**
- * 判断冻结素材是否必须由上游通过 HTTP(S) 拉取。
- * 仅列出已确认的精确模型家族，未知或旧模型继续沿用原 data URL 行为。
+ * 返回冻结媒体的上游传输策略。官方模型优先短期签名 URL；其中已确认不接受
+ * data URL 的组合保持强制签名。文字内容始终留在进程内，不扩大外部可读面。
  */
-function requiresProviderAssetUrl(
+function providerAssetUrlPolicy(
   snapshot: RunSnapshot,
   consumerNodeId: string,
   mediaType: MediaType,
-): boolean {
+): 'data' | 'preferred' | 'required' {
   const consumer = snapshot.nodes.find((node) => node.id === consumerNodeId);
-  if (consumer?.data.mediaType !== 'video') return false;
+  if (consumer?.data.mediaType !== 'video' || mediaType === 'text') return 'data';
   const modelAlias =
     consumerNodeId === snapshot.targetNodeId
       ? snapshot.modelAlias
       : consumer.data.modelAlias?.trim();
-  if (!modelAlias) return false;
+  if (!modelAlias) return 'data';
+  if (
+    modelAlias === 'seedance-2-0-official' ||
+    modelAlias === 'seedance-2-0-fast-official' ||
+    modelAlias === 'seedance-2-0-mini-official'
+  ) {
+    return 'required';
+  }
   const family = videoFamilyForModel(modelAlias);
-  if (family === 'wan3') return mediaType === 'video' || mediaType === 'audio';
-  if (family === 'seedance-2' || family === 'seedance-2.5') return mediaType === 'video';
-  return false;
+  if (family === 'moon-minimax-h3') return 'required';
+  if (family === 'wan3' && (mediaType === 'video' || mediaType === 'audio')) return 'required';
+  if ((family === 'seedance-2' || family === 'seedance-2.5') && mediaType === 'video') {
+    return 'required';
+  }
+  if (
+    family === 'minimax-h3' ||
+    family === 'wan3' ||
+    family === 'seedance-2' ||
+    family === 'seedance-2.5'
+  ) {
+    return 'preferred';
+  }
+  return 'data';
+}
+
+/** 只读取选中 AssetVersion 元数据中的正有限时长。 */
+function assetVersionDurationSeconds(metadata: unknown): number | undefined {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return undefined;
+  const durationSeconds = Reflect.get(metadata, 'durationSeconds');
+  return typeof durationSeconds === 'number' &&
+    Number.isFinite(durationSeconds) &&
+    durationSeconds > 0
+    ? durationSeconds
+    : undefined;
 }
 
 function assertInputMetadata(input: RunInputSnapshot, resolved: ResolvedAsset): void {

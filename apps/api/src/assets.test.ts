@@ -194,10 +194,14 @@ describe('PrismaAssetStore', () => {
       mimeType: 'text/plain',
       content: Buffer.from('hello'),
       tags: ['prompt'],
+      metadata: { durationSeconds: 4.5 },
     });
     expect(created.id).toMatch(/^[0-9a-f-]{36}$/);
     expect(created.sha256).toBe('2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824');
-    expect(created).toMatchObject({ latestVersion: 1, metadata: { version: 1 } });
+    expect(created).toMatchObject({
+      latestVersion: 1,
+      metadata: { durationSeconds: 4.5, version: 1 },
+    });
     expect(await blobStore.get(`assets/${created.id}/v1`)).toEqual(Buffer.from('hello'));
 
     expect((await store.list())[0]).toMatchObject({ id: created.id, name: 'prompt.txt' });
@@ -209,13 +213,19 @@ describe('PrismaAssetStore', () => {
     });
     expect(version).toMatchObject({ assetId: created.id, version: 2, sizeBytes: 8 });
     expect(await store.getVersionContent(created.id, 2)).toEqual(Buffer.from('hello v2'));
-    expect(await store.listVersions(created.id)).toHaveLength(2);
+    expect(await store.listVersions(created.id)).toEqual([
+      expect.objectContaining({ version: 1, metadata: { durationSeconds: 4.5 } }),
+      expect.objectContaining({ version: 2, metadata: { sourceRunId: 'run-1' } }),
+    ]);
     expect(await store.get(created.id)).toMatchObject({
       latestVersion: 2,
-      metadata: { version: 2 },
+      metadata: { durationSeconds: 4.5, version: 2 },
     });
     expect(await store.list()).toEqual([
-      expect.objectContaining({ latestVersion: 2, metadata: { version: 2 } }),
+      expect.objectContaining({
+        latestVersion: 2,
+        metadata: { durationSeconds: 4.5, version: 2 },
+      }),
     ]);
 
     expect((await store.setArchived(created.id, true))?.status).toBe('archived');

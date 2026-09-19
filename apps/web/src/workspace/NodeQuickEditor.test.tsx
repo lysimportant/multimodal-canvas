@@ -1415,6 +1415,33 @@ describe('NodeQuickEditor', () => {
     expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
   });
 
+  it('切换 Moon Seedance 视频编辑时显式保存自动时长和原视频比例', async () => {
+    const user = userEvent.setup();
+    const onVideoModeChange = vi.fn();
+    const onParametersChange = vi.fn();
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          onVideoModeChange,
+          onParametersChange,
+          node: {
+            ...videoNode,
+            data: {
+              ...videoNode.data,
+              modelAlias: 'seedance-2-0-official',
+              videoMode: 'text_to_video',
+              parameters: { duration: 8, aspectRatio: '16:9' },
+            },
+          } as AssetFlowNode,
+        })}
+      />,
+    );
+    await user.click(screen.getByRole('combobox', { name: '生成模式：文生视频' }));
+    await user.click(screen.getByRole('option', { name: /视频编辑/ }));
+    expect(onParametersChange).toHaveBeenCalledWith({ duration: -1, aspectRatio: 'adaptive' });
+    expect(onVideoModeChange).toHaveBeenCalledWith('video_edit');
+  });
+
   it.each(['首帧', '首尾帧'])('切换 Seedance 2.5 %s 时保存原图比例', async (label) => {
     const user = userEvent.setup();
     const onParametersChange = vi.fn();
@@ -1511,7 +1538,33 @@ describe('NodeQuickEditor', () => {
     },
   );
 
-  it.each(['wan3.0-video', 'doubao-seedance-2-0-fast-260128', 'doubao-seedance-2-5-260628'])(
+  it('Wan3 保留 -1 自动时长和 adaptive 比例', async () => {
+    const user = userEvent.setup();
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          onParametersChange: vi.fn(),
+          node: {
+            ...videoNode,
+            data: {
+              ...videoNode.data,
+              modelAlias: 'wan3.0-video',
+              videoMode: 'text_to_video',
+              parameters: { duration: -1, resolution: '720p', aspectRatio: 'adaptive' },
+            },
+          } as AssetFlowNode,
+        })}
+      />,
+    );
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+    expect(screen.getByRole('spinbutton', { name: '自定义秒数（-1 为自动）' })).toHaveValue(-1);
+    expect(screen.getByRole('button', { name: /视频比例：自动比例/ })).toBeInTheDocument();
+    const durationGroup = screen.getByText('时长（秒）').parentElement as HTMLElement;
+    await user.click(within(durationGroup).getByRole('combobox'));
+    expect(within(durationGroup).getByRole('option', { name: /^自动 / })).toBeEnabled();
+  });
+
+  it.each(['wan3.0-video', 'seedance-2-0-fast-official', 'doubao-seedance-2-5-260628'])(
     '切换 %s 视频延长时显式沿用原视频比例',
     async (modelAlias) => {
       const user = userEvent.setup();
@@ -1541,6 +1594,33 @@ describe('NodeQuickEditor', () => {
       expect(onVideoModeChange).toHaveBeenCalledWith('video_extend');
     },
   );
+
+  it('Doubao Seedance 2.0 切换延长时保留可手动指定的比例', async () => {
+    const user = userEvent.setup();
+    const onVideoModeChange = vi.fn();
+    const onParametersChange = vi.fn();
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          onVideoModeChange,
+          onParametersChange,
+          node: {
+            ...videoNode,
+            data: {
+              ...videoNode.data,
+              modelAlias: 'doubao-seedance-2-0-260128',
+              videoMode: 'text_to_video',
+              parameters: { duration: 8, aspectRatio: '16:9' },
+            },
+          } as AssetFlowNode,
+        })}
+      />,
+    );
+    await user.click(screen.getByRole('combobox', { name: '生成模式：文生视频' }));
+    await user.click(screen.getByRole('option', { name: /视频延长/ }));
+    expect(onParametersChange).not.toHaveBeenCalled();
+    expect(onVideoModeChange).toHaveBeenCalledWith('video_extend');
+  });
 
   it('离开 Seedance 2.5 编辑模式时恢复目录中的普通时长和比例', async () => {
     const user = userEvent.setup();
@@ -1581,7 +1661,7 @@ describe('NodeQuickEditor', () => {
     expect(onVideoModeChange).toHaveBeenCalledWith('text_to_video');
   });
 
-  it('MiniMax H3 只提供官方清晰度并标出旧 720p 参数', async () => {
+  it('官方 MiniMax-H3 只提供官方清晰度并标出旧 720p 参数', async () => {
     const user = userEvent.setup();
     const onParametersChange = vi.fn();
     render(
@@ -1592,7 +1672,7 @@ describe('NodeQuickEditor', () => {
             ...videoNode,
             data: {
               ...videoNode.data,
-              modelAlias: 'minimax-h3',
+              modelAlias: 'MiniMax-H3',
               videoMode: 'text_to_video',
               parameters: { duration: 15, resolution: '720p', aspectRatio: '16:9' },
             },
@@ -1625,6 +1705,74 @@ describe('NodeQuickEditor', () => {
     expect(durationGroup).not.toHaveTextContent('20秒');
   });
 
+  it('Moon 小写 minimax-h3 文生视频只提供普通档位并拒绝 adaptive 比例', async () => {
+    const user = userEvent.setup();
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          onParametersChange: vi.fn(),
+          node: {
+            ...videoNode,
+            data: {
+              ...videoNode.data,
+              modelAlias: 'minimax-h3',
+              videoMode: 'text_to_video',
+              parameters: { duration: 15, resolution: '2k', aspectRatio: 'adaptive' },
+            },
+          } as AssetFlowNode,
+        })}
+      />,
+    );
+    expect(screen.getByRole('button', { name: '生成' })).toHaveAttribute(
+      'title',
+      'Moon MiniMax H3 文生视频清晰度仅支持 480P、768P 或 1080P',
+    );
+    const resolutionGroup = screen.getByText('视频清晰度').parentElement as HTMLElement;
+    await user.click(within(resolutionGroup).getByRole('combobox'));
+    for (const label of ['480P', '768P', '1080P']) {
+      expect(within(resolutionGroup).getByRole('option', { name: label })).toBeEnabled();
+    }
+    expect(
+      within(resolutionGroup).getByRole('option', { name: /2k.*当前模型不支持/i }),
+    ).toBeDisabled();
+    expect(within(resolutionGroup).queryByRole('option', { name: '4K' })).not.toBeInTheDocument();
+    await user.keyboard('{Escape}');
+
+    await user.click(screen.getByRole('button', { name: /^视频比例：adaptive/ }));
+    for (const ratio of ['16:9', '9:16', '1:1', '2:3', '3:2', '3:4', '4:3', '21:9']) {
+      expect(screen.getByRole('button', { name: new RegExp(`^${ratio}`) })).toBeEnabled();
+    }
+    expect(screen.getByRole('button', { name: /^adaptive.*当前模型不支持/ })).toBeDisabled();
+  });
+
+  it('Moon 小写 minimax-h3 参考模式开放 2K 与 4K 并保留固定比例', async () => {
+    const user = userEvent.setup();
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          onParametersChange: vi.fn(),
+          node: {
+            ...videoNode,
+            data: {
+              ...videoNode.data,
+              modelAlias: 'minimax-h3',
+              videoMode: 'omni_reference',
+              parameters: { duration: 15, resolution: '4k', aspectRatio: '2:3' },
+            },
+          } as AssetFlowNode,
+        })}
+      />,
+    );
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+    const resolutionGroup = screen.getByText('视频清晰度').parentElement as HTMLElement;
+    await user.click(within(resolutionGroup).getByRole('combobox'));
+    for (const label of ['480P', '768P', '1080P', '2K', '4K']) {
+      expect(within(resolutionGroup).getByRole('option', { name: label })).toBeEnabled();
+    }
+    expect(within(resolutionGroup).getAllByRole('option')).toHaveLength(5);
+    expect(screen.getByText('时长（秒）').parentElement).not.toHaveTextContent('20秒');
+  });
+
   it.each([
     {
       model: 'doubao-seedance-2-0-260128',
@@ -1643,6 +1791,24 @@ describe('NodeQuickEditor', () => {
       supported: ['480P', '720P'],
       invalid: '1080p',
       selected: '720p',
+    },
+    {
+      model: 'seedance-2-0-mini-official',
+      supported: ['480P', '720P'],
+      invalid: '1080p',
+      selected: '720p',
+    },
+    {
+      model: 'seedance-2-0-fast-official',
+      supported: ['480P', '720P'],
+      invalid: '1080p',
+      selected: '720p',
+    },
+    {
+      model: 'seedance-2-0-official',
+      supported: ['480P', '720P', '1080P', '4K'],
+      invalid: '360p',
+      selected: '1080p',
     },
     {
       model: 'doubao-seedance-2-5-260628',

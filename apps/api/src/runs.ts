@@ -194,6 +194,8 @@ export type FrozenRunAssetRef = {
   assetId: string;
   version: number;
   contentUrl: string;
+  /** 选中视频版本的探测时长；缺省时不得从可变资产元数据推断。 */
+  durationSeconds?: number;
 };
 
 /**
@@ -294,7 +296,12 @@ export function createRunSnapshot(
         sortOrder: edge.order,
         sourceAssetId: snapshotSource.data.assetId,
         ...(options.frozenAssetRefs?.[source.id]
-          ? { sourceAssetVersion: options.frozenAssetRefs[source.id]!.version }
+          ? {
+              sourceAssetVersion: options.frozenAssetRefs[source.id]!.version,
+              ...(options.frozenAssetRefs[source.id]!.durationSeconds !== undefined
+                ? { sourceDurationSeconds: options.frozenAssetRefs[source.id]!.durationSeconds }
+                : {}),
+            }
           : {}),
         snapshot: clone(snapshotSource),
       };

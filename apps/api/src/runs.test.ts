@@ -314,6 +314,64 @@ describe('run credential snapshots', () => {
     expect(result).toMatchObject({ credentialId: 'credential_1', credentialVersion: 3 });
     expect(JSON.stringify(result)).not.toContain('apiKey');
   });
+
+  it('copies the selected video version duration into the connected input identity', () => {
+    const result = createRunSnapshot(
+      'project_video_duration',
+      {
+        revision: 1,
+        nodes: [
+          {
+            id: 'source_video',
+            type: 'video',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Source video',
+              mediaType: 'video',
+              mode: 'source',
+              assetId: 'asset_video',
+              contentUrl: '/v1/assets/asset_video/content',
+              mimeType: 'video/mp4',
+            },
+          },
+          {
+            id: 'target_text',
+            type: 'text',
+            position: { x: 200, y: 0 },
+            data: { label: 'Describe', mediaType: 'text', mode: 'generate' },
+          },
+        ],
+        edges: [
+          {
+            id: 'source_to_target',
+            sourceNodeId: 'source_video',
+            sourceHandle: 'output:video',
+            targetNodeId: 'target_text',
+            targetHandle: 'input:content',
+            order: 0,
+          },
+        ],
+      },
+      'target_text',
+      {
+        frozenAssetRefs: {
+          source_video: {
+            assetId: 'asset_video',
+            version: 3,
+            contentUrl: '/v1/assets/asset_video/versions/3/content',
+            durationSeconds: 6.25,
+          },
+        },
+      },
+    );
+
+    expect(result.inputs[0]).toMatchObject({
+      sourceAssetId: 'asset_video',
+      sourceAssetVersion: 3,
+      sourceDurationSeconds: 6.25,
+    });
+    expect(result.inputs[0]?.snapshot.data).not.toHaveProperty('durationSeconds');
+  });
 });
 
 describe('disabled canvas nodes', () => {

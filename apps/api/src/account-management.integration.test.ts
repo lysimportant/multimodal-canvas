@@ -162,13 +162,17 @@ integration('PostgreSQL 管理员初始化和账户资源持久化', () => {
     const asset = await assets.create({
       ownerId: user.id,
       projectId: project.id,
-      name: '生成文本',
-      mediaType: 'text',
-      mimeType: 'text/plain',
+      name: '生成视频',
+      mediaType: 'video',
+      mimeType: 'video/mp4',
       content: Buffer.from('第一版'),
-      metadata: { runId: 'synthetic-run' },
+      metadata: { runId: 'synthetic-run', durationSeconds: 4.5 },
     });
-    await assets.createVersion(asset.id, { content: Buffer.from('第二版') }, { ownerId: user.id });
+    await assets.createVersion(
+      asset.id,
+      { content: Buffer.from('第二版'), metadata: { durationSeconds: 9.25 } },
+      { ownerId: user.id },
+    );
     const reopened = new PrismaAssetStore(prisma, {
       blobStore: new FileSystemBlobStore(directory),
     });
@@ -183,6 +187,16 @@ integration('PostgreSQL 管理员初始化和账户资源持久化', () => {
     expect((await reopened.getVersionContent(asset.id, 1, { ownerId: user.id }))!.toString()).toBe(
       '第一版',
     );
+    expect(await reopened.listVersions(asset.id, { ownerId: user.id })).toEqual([
+      expect.objectContaining({
+        version: 1,
+        metadata: expect.objectContaining({ durationSeconds: 4.5 }),
+      }),
+      expect.objectContaining({
+        version: 2,
+        metadata: expect.objectContaining({ durationSeconds: 9.25 }),
+      }),
+    ]);
     expect(
       await reopened.get(asset.id, { ownerId: '22222222-2222-4222-8222-222222222222' }),
     ).toBeUndefined();

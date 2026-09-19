@@ -268,11 +268,28 @@ export function createNodeRunSnapshot(
       const source = sourceById.get(edge.sourceNodeId);
       if (!source)
         throw new Error(`workflow input node is missing from state: ${edge.sourceNodeId}`);
+      const role = portRoleSchema.parse(edge.targetHandle.slice('input:'.length));
+      const frozenInput =
+        nodeId === snapshot.targetNodeId && nodesById.get(source.id)?.data.mode === 'source'
+          ? snapshot.inputs.find(
+              (input) =>
+                input.nodeId === source.id &&
+                input.role === role &&
+                input.sortOrder === edge.order &&
+                input.sourceAssetId === source.data.assetId,
+            )
+          : undefined;
       return {
         nodeId: source.id,
-        role: portRoleSchema.parse(edge.targetHandle.slice('input:'.length)),
+        role,
         sortOrder: edge.order,
         ...(source.data.assetId ? { sourceAssetId: source.data.assetId } : {}),
+        ...(frozenInput?.sourceAssetVersion !== undefined
+          ? { sourceAssetVersion: frozenInput.sourceAssetVersion }
+          : {}),
+        ...(frozenInput?.sourceDurationSeconds !== undefined
+          ? { sourceDurationSeconds: frozenInput.sourceDurationSeconds }
+          : {}),
         snapshot: source,
       };
     }),

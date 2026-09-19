@@ -5771,7 +5771,7 @@ describe('NewApiVideoProvider', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  /** 通过隔离的创建/查询响应检查官方插件请求，不调用上游或下载素材。 */
+  /** 通过隔离的创建/查询响应检查已确认插件请求，不调用上游或下载素材。 */
   async function submitOfficialVideo(snapshot: RunSnapshot, records: RequestPromptRecord[] = []) {
     const fetchImpl = vi
       .fn<typeof fetch>()
@@ -5810,26 +5810,31 @@ describe('NewApiVideoProvider', () => {
 
   it.each(
     [
+      'minimax-h3',
       'MiniMax-H3',
       'wan3.0-video',
       'wan3.0-video-prime',
       'doubao-seedance-2-0-260128',
+      'seedance-2-0-official',
+      'seedance-2-0-fast-official',
+      'seedance-2-0-mini-official',
       'doubao-seedance-2-5-260628',
     ].flatMap((model) =>
       (['text_to_video', 'first_frame', 'first_last_frame', 'omni_reference'] as const).map(
         (mode) => ({ model, mode }),
       ),
     ),
-  )('maps official $model $mode with exact media roles', async ({ model, mode }) => {
+  )('maps $model $mode through the confirmed plugin contract', async ({ model, mode }) => {
     const snapshot = videoSnapshot();
     snapshot.modelAlias = model;
+    const h3 = model === 'minimax-h3' || model === 'MiniMax-H3';
     const ratio =
       model.includes('2-5') && (mode === 'first_frame' || mode === 'first_last_frame')
         ? 'adaptive'
         : '16:9';
     snapshot.parameters = {
       duration: 8,
-      resolution: model === 'MiniMax-H3' ? '768p' : '720p',
+      resolution: h3 ? '768p' : '720p',
       aspectRatio: ratio,
     };
     snapshot.nodes[1]!.data.videoMode = mode;
@@ -5872,6 +5877,7 @@ describe('NewApiVideoProvider', () => {
     if (model.startsWith('wan')) {
       expect(body.metadata.input.media.map((item: { type: string }) => item.type)).toEqual(roles);
       expect(body).toMatchObject({ resolution: '720P', ratio: '16:9' });
+      expect(body.aspect_ratio).toBeUndefined();
       expect(
         body.metadata.input.media.every((item: { url: unknown }) => typeof item.url === 'string'),
       ).toBe(true);
@@ -5882,7 +5888,7 @@ describe('NewApiVideoProvider', () => {
         media.every((item: Record<string, any>) => typeof item[item.type]?.url === 'string'),
       ).toBe(true);
       expect(body.metadata).toMatchObject({
-        resolution: model === 'MiniMax-H3' ? '768P' : '720p',
+        resolution: h3 ? '768P' : '720p',
         ratio,
       });
     }
@@ -5900,6 +5906,128 @@ describe('NewApiVideoProvider', () => {
         })),
     );
     expect(JSON.stringify(records)).not.toContain('https://');
+  });
+
+  it('serializes frozen Wan reference-video durations as an ordered metadata sidecar', async () => {
+    const snapshot = videoSnapshot();
+    snapshot.modelAlias = 'wan3.0-video';
+    snapshot.nodes[1]!.data.videoMode = 'omni_reference';
+    const laterVideo = providerInput('later-video', 'content', 3);
+    laterVideo.sourceDurationSeconds = 7.25;
+    laterVideo.snapshot.data = {
+      label: 'Later video',
+      mediaType: 'video',
+      mode: 'source',
+      contentUrl: 'https://assets.example/later.mp4',
+      mimeType: 'video/mp4',
+    };
+    const earlierVideo = providerInput('earlier-video', 'content', 1);
+    earlierVideo.sourceDurationSeconds = 4.5;
+    earlierVideo.snapshot.data = {
+      label: 'Earlier video',
+      mediaType: 'video',
+      mode: 'source',
+      contentUrl: 'https://assets.example/earlier.mp4',
+      mimeType: 'video/mp4',
+    };
+    snapshot.inputs = [
+      laterVideo,
+      providerInput('reference-image', 'referenceImage', 2),
+      earlierVideo,
+    ];
+
+    const { body } = await submitOfficialVideo(snapshot);
+
+    expect(body.metadata.reference_video_durations).toEqual([4.5, 7.25]);
+    expect(body.metadata.input.media.map((item: { type: string }) => item.type)).toEqual([
+      'reference_video',
+      'reference_image',
+      'reference_video',
+    ]);
+    expect(body.metadata.input).not.toHaveProperty('reference_video_durations');
+    expect(
+      body.metadata.input.media.every(
+        (item: Record<string, unknown>) =>
+          !('duration' in item) && !('sourceDurationSeconds' in item),
+      ),
+    ).toBe(true);
+  });
+
+  it('omits the entire Wan duration sidecar when one reference video lacks frozen duration', async () => {
+    const snapshot = videoSnapshot();
+    snapshot.modelAlias = 'wan3.0-video';
+    snapshot.nodes[1]!.data.videoMode = 'omni_reference';
+    const withDuration = providerInput('known-video', 'content', 0);
+    withDuration.sourceDurationSeconds = 6.5;
+    withDuration.snapshot.data = {
+      label: 'Known video',
+      mediaType: 'video',
+      mode: 'source',
+      contentUrl: 'https://assets.example/known.mp4',
+      mimeType: 'video/mp4',
+    };
+    const withoutDuration = providerInput('legacy-video', 'content', 1);
+    withoutDuration.snapshot.data = {
+      label: 'Legacy video',
+      mediaType: 'video',
+      mode: 'source',
+      contentUrl: 'https://assets.example/legacy.mp4',
+      mimeType: 'video/mp4',
+    };
+    snapshot.inputs = [withDuration, withoutDuration];
+
+    const { body } = await submitOfficialVideo(snapshot);
+
+    expect(body.metadata).not.toHaveProperty('reference_video_durations');
+    expect(body.metadata.input).toEqual({
+      media: [
+        { type: 'reference_video', url: 'https://assets.example/known.mp4' },
+        { type: 'reference_video', url: 'https://assets.example/legacy.mp4' },
+      ],
+    });
+  });
+
+  it('copies a frozen video-mention duration into the Wan metadata sidecar', async () => {
+    const snapshot = videoSnapshot();
+    snapshot.modelAlias = 'wan3.0-video';
+    const mention = {
+      type: 'mention' as const,
+      mentionId: 'mention-video',
+      assetId: 'asset-video',
+      assetVersion: 3,
+      label: 'Reference video',
+      mediaType: 'video' as const,
+      mimeType: 'video/mp4',
+      contentUrl: 'https://assets.example/frozen-video.mp4',
+    };
+    snapshot.nodes[1]!.data = {
+      ...snapshot.nodes[1]!.data,
+      videoMode: 'omni_reference',
+      promptDocument: {
+        version: 1,
+        blocks: [{ type: 'text', text: 'Animate this clip ' }, mention],
+      },
+    };
+    snapshot.inputs = [];
+    snapshot.promptMentions = [
+      {
+        nodeId: 'node_video',
+        mentionId: 'mention-video',
+        assetId: 'asset-video',
+        assetVersion: 3,
+        label: 'Reference video',
+        mediaType: 'video',
+        durationSeconds: 8.75,
+        blockOrder: 1,
+      },
+    ];
+
+    const { body } = await submitOfficialVideo(snapshot);
+
+    expect(body.metadata.reference_video_durations).toEqual([8.75]);
+    expect(body.metadata.input.media).toEqual([
+      { type: 'reference_video', url: 'https://assets.example/frozen-video.mp4' },
+    ]);
   });
 
   it('sends both H3 image mentions with their frozen versions instead of applying the Grok guard', async () => {
@@ -5945,7 +6073,14 @@ describe('NewApiVideoProvider', () => {
   });
 
   it.each(
-    ['wan3.0-video', 'doubao-seedance-2-0-260128', 'doubao-seedance-2-5-260628'].flatMap((model) =>
+    [
+      'wan3.0-video',
+      'doubao-seedance-2-0-260128',
+      'doubao-seedance-2-5-260628',
+      'seedance-2-0-official',
+      'seedance-2-0-fast-official',
+      'seedance-2-0-mini-official',
+    ].flatMap((model) =>
       (['video_edit', 'video_extend'] as const).map((mode) => ({ model, mode })),
     ),
   )(
@@ -5953,9 +6088,15 @@ describe('NewApiVideoProvider', () => {
     async ({ model, mode }) => {
       const snapshot = videoSnapshot();
       snapshot.modelAlias = model;
+      const moonSeedance = model.startsWith('seedance-2-0-');
       snapshot.parameters = {
-        duration: model.includes('2-5') && mode === 'video_edit' ? -1 : 8,
-        aspectRatio: model.includes('2-0') ? '16:9' : 'adaptive',
+        duration: (model.includes('2-5') || moonSeedance) && mode === 'video_edit' ? -1 : 8,
+        aspectRatio:
+          model.includes('2-5') || moonSeedance
+            ? 'adaptive'
+            : model.includes('2-0')
+              ? '16:9'
+              : 'adaptive',
       };
       snapshot.nodes[1]!.data.videoMode = mode;
       const input = providerInput('clip', 'content', 0);
@@ -5968,13 +6109,52 @@ describe('NewApiVideoProvider', () => {
       };
       snapshot.inputs = [input];
       const { body } = await submitOfficialVideo(snapshot);
-      if (model.includes('2-5'))
+      if (model.includes('2-5') || moonSeedance)
         expect(body.metadata.omni_reference_task_type).toBe(
           mode === 'video_edit' ? 'edit' : 'extend',
         );
       else expect(body.metadata.omni_reference_task_type).toBeUndefined();
       expect(body.seconds).toBe(String(snapshot.parameters.duration));
-      if (model.includes('2-0')) expect(body.metadata.ratio).toBe('16:9');
+      expect(model.startsWith('wan') ? body.ratio : body.metadata.ratio).toBe(
+        moonSeedance ? 'adaptive' : snapshot.parameters.aspectRatio,
+      );
+    },
+  );
+
+  it.each(
+    ['seedance-2-0-official', 'seedance-2-0-fast-official', 'seedance-2-0-mini-official'].flatMap(
+      (model) => [
+        { model, mode: 'video_edit' as const, duration: 8, aspectRatio: 'adaptive' },
+        { model, mode: 'video_extend' as const, duration: 8, aspectRatio: '16:9' },
+      ],
+    ),
+  )(
+    'rejects Moon $model $mode when automatic duration or adaptive ratio is missing',
+    async ({ model, mode, duration, aspectRatio }) => {
+      const snapshot = videoSnapshot();
+      snapshot.modelAlias = model;
+      snapshot.parameters = { duration, aspectRatio };
+      snapshot.nodes[1]!.data.videoMode = mode;
+      const video = providerInput('clip', 'content', 0);
+      video.snapshot.data = {
+        label: 'Clip',
+        mediaType: 'video',
+        mode: 'source',
+        contentUrl: 'https://assets.example/clip.mp4',
+        mimeType: 'video/mp4',
+      };
+      snapshot.inputs = [video];
+      const fetchImpl = vi.fn<typeof fetch>();
+
+      await expect(
+        new NewApiVideoProvider({
+          baseUrl: 'https://newapi.example/v1',
+          apiKey: 'test-secret',
+          videoContract: 'newapi-video-v1',
+          fetchImpl,
+        }).execute({ snapshot, onProviderJob: vi.fn() }),
+      ).rejects.toMatchObject({ code: 'INVALID_PROVIDER_PARAMETER', retryable: false });
+      expect(fetchImpl).not.toHaveBeenCalled();
     },
   );
 
@@ -5994,6 +6174,7 @@ describe('NewApiVideoProvider', () => {
   it.each([
     { model: 'MiniMax-H3', parameters: { resolution: '720p' } },
     { model: 'MiniMax-H3', parameters: { duration: 16 } },
+    { model: 'minimax-h3', parameters: { aspectRatio: 'adaptive' } },
     { model: 'wan3.0-video', parameters: { aspectRatio: '21:9' } },
     { model: 'doubao-seedance-2-0-fast-260128', parameters: { resolution: '1080p' } },
     { model: 'doubao-seedance-2-5-260628', parameters: { aspectRatio: '16:9' } },
@@ -6017,15 +6198,48 @@ describe('NewApiVideoProvider', () => {
     },
   );
 
+  it.each(['2k', '4k'])(
+    'requires a reference for Moon H3 %s text-to-video before POST',
+    async (resolution) => {
+      const snapshot = videoSnapshot();
+      snapshot.modelAlias = 'minimax-h3';
+      snapshot.parameters = { duration: 8, resolution, aspectRatio: '16:9' };
+      snapshot.nodes[1]!.data.videoMode = 'text_to_video';
+      snapshot.inputs = [];
+      const fetchImpl = vi.fn<typeof fetch>();
+
+      await expect(
+        new NewApiVideoProvider({
+          baseUrl: 'https://newapi.example/v1',
+          apiKey: 'test-secret',
+          videoContract: 'newapi-video-v1',
+          fetchImpl,
+        }).execute({ snapshot, onProviderJob: vi.fn() }),
+      ).rejects.toMatchObject({
+        code: 'INVALID_PROVIDER_PARAMETER',
+        retryable: false,
+        message: expect.stringContaining('需要首尾帧或参考素材'),
+      });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     { model: 'wan3.0-video', mediaType: 'video' as const, role: 'content' as const },
     { model: 'wan3.0-video', mediaType: 'audio' as const, role: 'audioTrack' as const },
     { model: 'doubao-seedance-2-0-260128', mediaType: 'video' as const, role: 'content' as const },
+    { model: 'minimax-h3', mediaType: 'image' as const, role: 'referenceImage' as const },
+    {
+      model: 'seedance-2-0-official',
+      mediaType: 'image' as const,
+      role: 'referenceImage' as const,
+    },
   ])(
-    'rejects $model $mediaType data URLs before POST when the official contract requires a public URL',
+    'rejects $model $mediaType data URLs before POST when the plugin contract requires a public URL',
     async ({ model, mediaType, role }) => {
       const snapshot = videoSnapshot();
       snapshot.modelAlias = model;
+      if (model === 'minimax-h3') snapshot.parameters.resolution = '768p';
       snapshot.nodes[1]!.data.videoMode = 'omni_reference';
       const input = providerInput('media', role, 1);
       input.snapshot.data = {
@@ -6049,10 +6263,10 @@ describe('NewApiVideoProvider', () => {
     },
   );
 
-  it('preserves Wan negative prompt and automatic duration in the plugin contract', async () => {
+  it('preserves Wan negative prompt, automatic duration and plugin-facing ratio', async () => {
     const snapshot = videoSnapshot();
     snapshot.modelAlias = 'wan3.0-video';
-    snapshot.parameters = { duration: -1 };
+    snapshot.parameters = { duration: -1, aspectRatio: '16:9' };
     snapshot.nodes[1]!.data.videoMode = 'text_to_video';
     snapshot.inputs = [providerInput('negative', 'negativePrompt', 0)];
     const records: RequestPromptRecord[] = [];
@@ -6060,8 +6274,10 @@ describe('NewApiVideoProvider', () => {
     expect(body).toMatchObject({
       seconds: '-1',
       duration: -1,
+      ratio: '16:9',
       metadata: { input: { negative_prompt: 'negativePrompt value' } },
     });
+    expect(body.aspect_ratio).toBeUndefined();
     expect(records[0]?.negativeText).toBe('negativePrompt value');
   });
 

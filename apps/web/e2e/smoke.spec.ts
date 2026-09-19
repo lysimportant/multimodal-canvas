@@ -2820,15 +2820,30 @@ test('PC 音频参数显式输入、保存恢复并提交，桌面截图无布�
 
 for (const model of [
   'MiniMax-H3',
+  'minimax-h3',
   'wan3.0-video',
   'doubao-seedance-2-0-260128',
   'doubao-seedance-2-5-260628',
+  'seedance-2-0-mini-official',
+  'seedance-2-0-fast-official',
+  'seedance-2-0-official',
 ]) {
-  test(`官方视频模式 ${model} 可选择并保存正确参数`, async ({ page }, testInfo) => {
+  test(`官方视频模式与 Moon 合同 ${model === 'minimax-h3' ? 'Moon ' : ''}${model} 可选择并保存正确参数`, async ({
+    page,
+  }, testInfo) => {
     const errors: string[] = [];
+    const runRequests: string[] = [];
     page.on('pageerror', (error) => errors.push(error.message));
     page.on('console', (message) => {
       if (message.type() === 'error') errors.push(message.text());
+    });
+    page.on('request', (request) => {
+      if (
+        request.method() === 'POST' &&
+        /^\/v1\/nodes\/[^/]+\/runs$/.test(new URL(request.url()).pathname)
+      ) {
+        runRequests.push(request.url());
+      }
     });
     await page.route('**/v1/models*', (route) =>
       json(route, {
@@ -2848,18 +2863,66 @@ for (const model of [
     await page.getByRole('combobox', { name: /^模型：/ }).click();
     await page.getByRole('option', { name: model, exact: true }).click();
     const editor = page.locator('.node-quick-editor');
+    await editor.getByRole('button', { name: '媒体参数', exact: true }).click();
+    if (model === 'minimax-h3') {
+      await editor.getByRole('combobox', { name: /^视频清晰度：/ }).click();
+      for (const label of ['480P', '768P', '1080P']) {
+        await expect(page.getByRole('option', { name: label, exact: true })).toBeEnabled();
+      }
+      await expect(page.getByRole('option', { name: '2K', exact: true })).toHaveCount(0);
+      await expect(page.getByRole('option', { name: '4K', exact: true })).toHaveCount(0);
+      await page.keyboard.press('Escape');
+      await editor.getByRole('button', { name: /^视频比例：/ }).click();
+      for (const ratio of ['16:9', '9:16', '1:1', '2:3', '3:2', '3:4', '4:3', '21:9']) {
+        await expect(editor.getByRole('button', { name: new RegExp(`^${ratio}`) })).toBeEnabled();
+      }
+      await expect(editor.getByRole('button', { name: /^adaptive/ })).toHaveCount(0);
+      await page.keyboard.press('Escape');
+    } else if (model === 'MiniMax-H3') {
+      await editor.getByRole('combobox', { name: /^视频清晰度：/ }).click();
+      await expect(page.getByRole('option', { name: '768P', exact: true })).toBeVisible();
+      await expect(page.getByRole('option', { name: '2K', exact: true })).toBeVisible();
+      await page.keyboard.press('Escape');
+    } else if (model === 'wan3.0-video') {
+      await expect(
+        editor.getByRole('spinbutton', { name: '自定义秒数（-1 为自动）' }),
+      ).toBeVisible();
+      await editor.getByRole('combobox', { name: /^时长（秒）：/ }).click();
+      const savedAutomaticDuration = page.waitForResponse(
+        (response) =>
+          response.request().method() === 'PATCH' &&
+          new URL(response.url()).pathname === `/v1/projects/${project.id}/canvas` &&
+          (response.request().postDataJSON() as CanvasDocument).nodes.some(
+            (node) => node.data.parameters?.duration === -1,
+          ),
+      );
+      await page.getByRole('option', { name: /^自动 / }).click();
+      const automaticCanvas = (
+        (await (await savedAutomaticDuration).json()) as { canvas: CanvasDocument }
+      ).canvas;
+      expect(automaticCanvas.nodes.at(-1)?.data.parameters?.duration).toBe(-1);
+    }
+
     await editor.getByRole('combobox', { name: /^生成模式：/ }).click();
     for (const label of ['文生视频', '首帧', '首尾帧', '全能参考']) {
       await expect(page.getByRole('option', { name: new RegExp(`^${label} `) })).toBeEnabled();
     }
+    for (const label of ['视频编辑', '视频延长']) {
+      const option = page.getByRole('option', { name: new RegExp(`^${label} `) });
+      if (model === 'MiniMax-H3' || model === 'minimax-h3') await expect(option).toBeDisabled();
+      else await expect(option).toBeEnabled();
+    }
     await page.getByRole('option', { name: /^全能参考 / }).click();
     await expect(editor.getByRole('combobox', { name: '生成模式：全能参考' })).toBeVisible();
-    await editor.getByRole('button', { name: '媒体参数', exact: true }).click();
-    if (model === 'MiniMax-H3') {
+    if (model === 'minimax-h3') {
+      await editor.getByRole('button', { name: '媒体参数', exact: true }).click();
       await editor.getByRole('combobox', { name: /^视频清晰度：/ }).click();
-      await expect(page.getByRole('option', { name: '768P', exact: true })).toBeVisible();
-      await page.getByRole('option', { name: '768P', exact: true }).click();
-    } else {
+      for (const label of ['480P', '768P', '1080P', '2K', '4K']) {
+        await expect(page.getByRole('option', { name: label, exact: true })).toBeEnabled();
+      }
+      await page.getByRole('option', { name: '4K', exact: true }).click();
+      await expect(editor.getByRole('combobox', { name: '视频清晰度：4K' })).toBeVisible();
+    } else if (model !== 'MiniMax-H3') {
       if (model.includes('2-5')) {
         await editor.getByRole('combobox', { name: /^生成模式：/ }).click();
         const savedFrames = page.waitForResponse(
@@ -2875,25 +2938,70 @@ for (const model of [
           .canvas;
         expect(framesCanvas.nodes.at(-1)?.data.parameters?.aspectRatio).toBe('adaptive');
       }
-      await editor.getByRole('combobox', { name: /^生成模式：/ }).click();
-      const nextMode = model.includes('2-5') ? 'video_edit' : 'video_extend';
-      const saved = page.waitForResponse(
-        (response) =>
-          response.request().method() === 'PATCH' &&
-          new URL(response.url()).pathname === `/v1/projects/${project.id}/canvas` &&
-          (response.request().postDataJSON() as CanvasDocument).nodes.some(
-            (node) => node.data.videoMode === nextMode,
-          ),
-      );
-      await page
-        .getByRole('option', {
-          name: nextMode === 'video_edit' ? /^视频编辑 / : /^视频延长 /,
-        })
-        .click();
-      const canvas = ((await (await saved).json()) as { canvas: CanvasDocument }).canvas;
-      expect(canvas.nodes.at(-1)?.data.parameters?.aspectRatio).toBe('adaptive');
-      if (nextMode === 'video_edit')
-        expect(canvas.nodes.at(-1)?.data.parameters?.duration).toBe(-1);
+      const moonSeedance = model.startsWith('seedance-2-0-');
+      if (moonSeedance) {
+        await editor.getByRole('combobox', { name: /^生成模式：/ }).click();
+        const savedEdit = page.waitForResponse(
+          (response) =>
+            response.request().method() === 'PATCH' &&
+            new URL(response.url()).pathname === `/v1/projects/${project.id}/canvas` &&
+            (response.request().postDataJSON() as CanvasDocument).nodes.some(
+              (node) => node.data.videoMode === 'video_edit',
+            ),
+        );
+        await page.getByRole('option', { name: /^视频编辑 / }).click();
+        const editCanvas = ((await (await savedEdit).json()) as { canvas: CanvasDocument }).canvas;
+        expect(editCanvas.nodes.at(-1)?.data.parameters).toMatchObject({
+          duration: -1,
+          aspectRatio: 'adaptive',
+        });
+
+        await editor.getByRole('combobox', { name: /^生成模式：/ }).click();
+        const savedExtend = page.waitForResponse(
+          (response) =>
+            response.request().method() === 'PATCH' &&
+            new URL(response.url()).pathname === `/v1/projects/${project.id}/canvas` &&
+            (response.request().postDataJSON() as CanvasDocument).nodes.some(
+              (node) => node.data.videoMode === 'video_extend',
+            ),
+        );
+        await page.getByRole('option', { name: /^视频延长 / }).click();
+        const extendCanvas = ((await (await savedExtend).json()) as { canvas: CanvasDocument })
+          .canvas;
+        expect(extendCanvas.nodes.at(-1)?.data.parameters).toMatchObject({
+          duration: 4,
+          aspectRatio: 'adaptive',
+        });
+      } else {
+        await editor.getByRole('combobox', { name: /^生成模式：/ }).click();
+        const nextMode = model.includes('2-5') ? 'video_edit' : 'video_extend';
+        const saved = page.waitForResponse(
+          (response) =>
+            response.request().method() === 'PATCH' &&
+            new URL(response.url()).pathname === `/v1/projects/${project.id}/canvas` &&
+            (response.request().postDataJSON() as CanvasDocument).nodes.some(
+              (node) => node.data.videoMode === nextMode,
+            ),
+        );
+        await page
+          .getByRole('option', {
+            name: nextMode === 'video_edit' ? /^视频编辑 / : /^视频延长 /,
+          })
+          .click();
+        const canvas = ((await (await saved).json()) as { canvas: CanvasDocument }).canvas;
+        if (model === 'doubao-seedance-2-0-260128') {
+          expect(canvas.nodes.at(-1)?.data.parameters?.aspectRatio).toBeUndefined();
+        } else if (model === 'wan3.0-video') {
+          expect(canvas.nodes.at(-1)?.data.parameters).toMatchObject({
+            duration: -1,
+            aspectRatio: 'adaptive',
+          });
+        } else {
+          expect(canvas.nodes.at(-1)?.data.parameters?.aspectRatio).toBe('adaptive');
+        }
+        if (nextMode === 'video_edit')
+          expect(canvas.nodes.at(-1)?.data.parameters?.duration).toBe(-1);
+      }
     }
     const screenshotPath = testInfo.outputPath('official-video-mode.png');
     await page.screenshot({ path: screenshotPath, animations: 'disabled' });
@@ -2901,6 +3009,7 @@ for (const model of [
       path: screenshotPath,
       contentType: 'image/png',
     });
+    expect(runRequests).toEqual([]);
     expect(errors).toEqual([]);
   });
 }

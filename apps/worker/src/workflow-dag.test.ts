@@ -198,6 +198,86 @@ describe('frozen workflow DAG', () => {
     ]);
   });
 
+  it('keeps the original target static video version and duration frozen by the API', () => {
+    const frozen = structuredClone(snapshot);
+    const source = {
+      id: 'node_video_source',
+      type: 'video' as const,
+      position: { x: 0, y: 400 },
+      data: {
+        label: 'Frozen clip',
+        mediaType: 'video' as const,
+        mode: 'source' as const,
+        assetId: 'asset_video_source',
+        contentUrl: '/v1/assets/asset_video_source/versions/3/content',
+        mimeType: 'video/mp4',
+      },
+    };
+    frozen.nodes.push(source);
+    frozen.edges.push({
+      id: 'edge_video_source_target',
+      sourceNodeId: source.id,
+      sourceHandle: 'output:video',
+      targetNodeId: frozen.targetNodeId,
+      targetHandle: 'input:content',
+      order: 2,
+    });
+    frozen.inputs.push({
+      nodeId: source.id,
+      role: 'content',
+      sortOrder: 2,
+      sourceAssetId: 'asset_video_source',
+      sourceAssetVersion: 3,
+      sourceDurationSeconds: 6.25,
+      snapshot: source,
+    });
+
+    const targetSnapshot = createNodeRunSnapshot(
+      frozen,
+      createInitialWorkflowState(frozen),
+      frozen.targetNodeId,
+    );
+
+    expect(targetSnapshot.inputs.find((input) => input.nodeId === source.id)).toMatchObject({
+      sourceAssetId: 'asset_video_source',
+      sourceAssetVersion: 3,
+      sourceDurationSeconds: 6.25,
+    });
+  });
+
+  it('does not copy a stale frozen version or duration onto a generated upstream result', () => {
+    const frozen = structuredClone(snapshot);
+    const generatedInput = frozen.inputs.find((input) => input.nodeId === 'node_image')!;
+    generatedInput.sourceAssetId = 'asset_image_old';
+    generatedInput.sourceAssetVersion = 1;
+    generatedInput.sourceDurationSeconds = 4;
+    let state = createInitialWorkflowState(frozen);
+    state = replaceWorkflowNodeState(state, {
+      nodeId: 'node_image',
+      status: 'succeeded',
+      result: {
+        provider: 'mock',
+        summary: 'new generated video',
+        targetNodeId: 'node_image',
+        mediaType: 'image',
+        inputCount: 2,
+        asset: {
+          assetId: 'asset_image_new',
+          version: 2,
+          contentUrl: '/v1/assets/asset_image_new/versions/2/content',
+          mimeType: 'image/png',
+        },
+      },
+    });
+
+    const targetSnapshot = createNodeRunSnapshot(frozen, state, frozen.targetNodeId);
+    const input = targetSnapshot.inputs.find((candidate) => candidate.nodeId === 'node_image');
+
+    expect(input).toMatchObject({ sourceAssetId: 'asset_image_new' });
+    expect(input?.sourceAssetVersion).toBeUndefined();
+    expect(input?.sourceDurationSeconds).toBeUndefined();
+  });
+
   it('按节点继承图片编辑限制，不把目标模型的限制传给其它模型', () => {
     const frozen: RunSnapshot = {
       ...snapshot,

@@ -335,6 +335,7 @@ describe('资源提及 HTTP 边界', () => {
             mediaType,
             mimeType: fixture.mimeType,
             content: fixture.content,
+            metadata: { durationSeconds: mediaType === 'video' ? 4.5 : 99 },
           });
           return [mediaType, asset] as const;
         }),
@@ -394,7 +395,10 @@ describe('资源提及 HTTP 边界', () => {
       (Object.keys(mediaFixtures) as MediaType[]).map((mediaType) =>
         assetStore.createVersion(
           assets[mediaType].id,
-          { content: Buffer.from(`${mediaType}-v2`) },
+          {
+            content: Buffer.from(`${mediaType}-v2`),
+            metadata: { durationSeconds: mediaType === 'video' ? 9.25 : 199 },
+          },
           { projectId: project.id },
         ),
       ),
@@ -415,6 +419,9 @@ describe('资源提及 HTTP 边界', () => {
           (mention: { assetVersion: number }) => mention.assetVersion === 1,
         ),
       ).toBe(true);
+      const frozenMention = submittedRun.snapshot.promptMentions[0];
+      if (mediaType === 'video') expect(frozenMention.durationSeconds).toBe(4.5);
+      else expect(frozenMention).not.toHaveProperty('durationSeconds');
 
       const completed = await waitForRun(runService, submittedRun.id, 'succeeded');
       expect(completed.snapshot.promptMentions).toHaveLength(expectedCount);

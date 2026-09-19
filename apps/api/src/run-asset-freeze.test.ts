@@ -1,4 +1,4 @@
-import type { CanvasDocument } from '@multimodal-canvas/domain';
+import type { CanvasDocument, MediaType } from '@multimodal-canvas/domain';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildApp } from './app';
@@ -10,21 +10,22 @@ import { MemoryRunService } from './runs';
 
 const jwtSecret = 'run-asset-freeze-jwt-secret';
 
-function assetCanvas(assetId: string): CanvasDocument {
+function assetCanvas(assetId: string, mediaType: MediaType = 'text'): CanvasDocument {
+  const mimeType = mediaType === 'video' ? 'video/mp4' : 'text/plain';
   return {
     revision: 0,
     nodes: [
       {
         id: 'node_source',
-        type: 'text',
+        type: mediaType,
         position: { x: 0, y: 0 },
         data: {
           label: 'Frozen source',
-          mediaType: 'text',
+          mediaType,
           mode: 'source',
           assetId,
           contentUrl: `/v1/assets/${encodeURIComponent(assetId)}/content`,
-          mimeType: 'text/plain',
+          mimeType,
         },
       },
       {
@@ -38,9 +39,9 @@ function assetCanvas(assetId: string): CanvasDocument {
       {
         id: 'edge_source_target',
         sourceNodeId: 'node_source',
-        sourceHandle: 'output:text',
+        sourceHandle: `output:${mediaType}`,
         targetNodeId: 'node_target',
-        targetHandle: 'input:prompt',
+        targetHandle: mediaType === 'text' ? 'input:prompt' : 'input:content',
         order: 0,
       },
     ],
@@ -129,6 +130,46 @@ describe('run asset version snapshots', () => {
     expect((await projectStore.getCanvas(project.id))?.nodes[0]?.data.contentUrl).toBe(
       `/v1/assets/${encodeURIComponent(asset.id)}/content`,
     );
+  });
+
+  it('freezes video duration from the selected immutable version', async () => {
+    const assetStore = new MemoryAssetStore();
+    const projectStore = new MemoryProjectStore();
+    const project = await projectStore.create({ name: 'Video duration freeze' });
+    const asset = await assetStore.create({
+      projectId: project.id,
+      name: 'reference.mp4',
+      mediaType: 'video',
+      mimeType: 'video/mp4',
+      content: Buffer.from('version one'),
+      metadata: { durationSeconds: 4.5 },
+    });
+    await projectStore.updateCanvas(project.id, assetCanvas(asset.id, 'video'));
+    const runService = new MemoryRunService({ stepDelayMs: 25 });
+    const app = buildApp({ logger: false, assetStore, projectStore, runService });
+    apps.push(app);
+
+    const submitted = await app.inject({
+      method: 'POST',
+      url: '/v1/nodes/node_target/runs',
+      payload: { projectId: project.id },
+    });
+    expect(submitted.statusCode).toBe(202);
+    const runId = submitted.json().run.id;
+    expect((await runService.get(runId))?.snapshot.inputs[0]).toMatchObject({
+      sourceAssetVersion: 1,
+      sourceDurationSeconds: 4.5,
+    });
+
+    await assetStore.createVersion(
+      asset.id,
+      { content: Buffer.from('version two'), metadata: { durationSeconds: 9.25 } },
+      { projectId: project.id },
+    );
+    expect((await runService.get(runId))?.snapshot.inputs[0]).toMatchObject({
+      sourceAssetVersion: 1,
+      sourceDurationSeconds: 4.5,
+    });
   });
 
   it('allows an authenticated owner to freeze a global asset', async () => {

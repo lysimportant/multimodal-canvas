@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MediaType, RunSnapshot } from '@multimodal-canvas/domain';
-import { NewApiProvider } from '@multimodal-canvas/providers';
+import { NewApiProvider, NewApiVideoProvider } from '@multimodal-canvas/providers';
 import type {
   AssetReferenceBlobStore,
   AssetReferenceRepository,
@@ -45,6 +45,7 @@ import {
   StoredAssetReferenceResolver,
 } from './asset-reference-resolver';
 import { createRunWorker } from './index';
+import { createInitialWorkflowState, createNodeRunSnapshot } from './workflow-dag';
 
 const projectId = '123e4567-e89b-42d3-a456-426614174700';
 const otherProjectId = '123e4567-e89b-42d3-a456-426614174701';
@@ -52,6 +53,7 @@ const userId = '123e4567-e89b-42d3-a456-426614174702';
 const otherUserId = '123e4567-e89b-42d3-a456-426614174703';
 const textAssetId = '123e4567-e89b-42d3-a456-426614174710';
 const imageAssetId = '123e4567-e89b-42d3-a456-426614174711';
+const videoAssetId = '123e4567-e89b-42d3-a456-426614174712';
 
 beforeEach(() => {
   bullmqState.job = undefined;
@@ -71,7 +73,7 @@ describe('StoredAssetReferenceResolver', () => {
 
     try {
       const signed = new URL(
-        await blobStore.createProviderGetUrl('assets/video/v2-frozen', {
+        await blobStore.createProviderGetUrl!('assets/video/v2-frozen', {
           expiresIn: 3_600,
           contentType: 'video/mp4',
         }),
@@ -88,9 +90,65 @@ describe('StoredAssetReferenceResolver', () => {
     }
   });
 
+  it('uses real S3 signer availability for preferred fallback and required transport failure', async () => {
+    const image = Buffer.from('preferred inline image');
+    const video = Buffer.from('required signed video');
+    const { repository } = fixtures({
+      assets: [
+        asset(imageAssetId, 'image', 'image/png', image, projectId),
+        asset(videoAssetId, 'video', 'video/mp4', video, projectId),
+      ],
+    });
+    const blobStore = new S3AssetReferenceBlobStore('canvas', {
+      endpoint: 'https://minio:9000',
+      region: 'us-east-1',
+      accessKeyId: 'synthetic-access-key',
+      secretAccessKey: 'synthetic-secret-key',
+      forcePathStyle: true,
+    });
+    vi.spyOn(blobStore, 'get').mockImplementation(async (key) =>
+      key === 'objects/image-current' ? image : key === 'objects/video-current' ? video : undefined,
+    );
+
+    try {
+      expect(blobStore.createProviderGetUrl).toBeUndefined();
+      const preferred = referenceSnapshot({
+        sourceMediaType: 'image',
+        targetMediaType: 'video',
+        role: 'referenceImage',
+        assetId: imageAssetId,
+        mimeType: 'image/png',
+        modelAlias: 'wan3.0-video',
+      });
+      const hydrated = await new StoredAssetReferenceResolver(repository, blobStore).resolve(
+        preferred,
+      );
+      expect(hydrated.inputs[0]?.snapshot.data.contentUrl).toBe(
+        `data:image/png;base64,${image.toString('base64')}`,
+      );
+
+      const required = referenceSnapshot({
+        sourceMediaType: 'video',
+        targetMediaType: 'video',
+        role: 'content',
+        assetId: videoAssetId,
+        mimeType: 'video/mp4',
+        modelAlias: 'wan3.0-video',
+      });
+      await expect(
+        new StoredAssetReferenceResolver(repository, blobStore).resolve(required),
+      ).rejects.toThrow('configure S3_PROVIDER_ENDPOINT');
+    } finally {
+      await blobStore.close();
+    }
+  });
+
   it.each([
     { modelAlias: 'wan3.0-video', mediaType: 'video' as const, role: 'content' as const },
     { modelAlias: 'wan3.0-video-prime', mediaType: 'audio' as const, role: 'audioTrack' as const },
+    { modelAlias: 'wan3.0-video', mediaType: 'image' as const, role: 'referenceImage' as const },
+    { modelAlias: 'MiniMax-H3', mediaType: 'image' as const, role: 'referenceImage' as const },
+    { modelAlias: 'minimax-h3', mediaType: 'audio' as const, role: 'audioTrack' as const },
     {
       modelAlias: 'doubao-seedance-2-0-mini-260615',
       mediaType: 'video' as const,
@@ -101,29 +159,33 @@ describe('StoredAssetReferenceResolver', () => {
       mediaType: 'video' as const,
       role: 'content' as const,
     },
+    {
+      modelAlias: 'doubao-seedance-2-0-260128',
+      mediaType: 'audio' as const,
+      role: 'audioTrack' as const,
+    },
+    {
+      modelAlias: 'seedance-2-0-official',
+      mediaType: 'image' as const,
+      role: 'referenceImage' as const,
+    },
   ])(
     'hydrates $modelAlias $mediaType input as one transient signed URL',
     async ({ modelAlias, mediaType, role }) => {
       const content = Buffer.from(`frozen-${modelAlias}-${mediaType}`);
+      const mimeType =
+        mediaType === 'video' ? 'video/mp4' : mediaType === 'audio' ? 'audio/wav' : 'image/png';
       const snapshot = referenceSnapshot({
         sourceMediaType: mediaType,
         targetMediaType: 'video',
         role,
         assetId: imageAssetId,
-        mimeType: `${mediaType}/${mediaType === 'video' ? 'mp4' : 'wav'}`,
+        mimeType,
         modelAlias,
       });
       const original = structuredClone(snapshot);
       const { repository, blobStore } = fixtures({
-        assets: [
-          asset(
-            imageAssetId,
-            mediaType,
-            `${mediaType}/${mediaType === 'video' ? 'mp4' : 'wav'}`,
-            content,
-            projectId,
-          ),
-        ],
+        assets: [asset(imageAssetId, mediaType, mimeType, content, projectId)],
         versions: [
           {
             assetId: imageAssetId,
@@ -151,7 +213,7 @@ describe('StoredAssetReferenceResolver', () => {
       expect(createProviderGetUrl).toHaveBeenCalledOnce();
       expect(createProviderGetUrl).toHaveBeenCalledWith(`objects/${mediaType}-frozen-v1`, {
         expiresIn: 3_600,
-        contentType: `${mediaType}/${mediaType === 'video' ? 'mp4' : 'wav'}`,
+        contentType: mimeType,
       });
       expect(blobStore.get).toHaveBeenCalledWith(
         `objects/${mediaType}-frozen-v1`,
@@ -167,28 +229,57 @@ describe('StoredAssetReferenceResolver', () => {
     { modelAlias: 'MiniMax-H3', mediaType: 'audio' as const },
     { modelAlias: 'wan3.0-video', mediaType: 'image' as const },
     { modelAlias: 'doubao-seedance-2-0-260128', mediaType: 'audio' as const },
-  ])('keeps $modelAlias $mediaType references as data URLs', async ({ modelAlias, mediaType }) => {
-    const content = Buffer.from(`inline-${modelAlias}-${mediaType}`);
-    const mimeType = `${mediaType}/${mediaType === 'video' ? 'mp4' : mediaType === 'audio' ? 'wav' : 'png'}`;
+  ])(
+    'falls back to a data URL for optional $modelAlias $mediaType transport without a signer',
+    async ({ modelAlias, mediaType }) => {
+      const content = Buffer.from(`inline-${modelAlias}-${mediaType}`);
+      const mimeType = `${mediaType}/${mediaType === 'video' ? 'mp4' : mediaType === 'audio' ? 'wav' : 'png'}`;
+      const snapshot = promptMentionSnapshot({
+        assetId: imageAssetId,
+        assetVersion: 2,
+        label: '参考素材',
+        mediaType,
+        modelAlias,
+        targetMediaType: 'video',
+      });
+      const { repository, blobStore } = fixtures({
+        assets: [asset(imageAssetId, mediaType, mimeType, content, projectId)],
+        versions: [
+          {
+            assetId: imageAssetId,
+            version: 2,
+            sizeBytes: BigInt(content.byteLength),
+            contentKey: 'objects/inline-v2',
+          },
+        ],
+        blobs: { 'objects/inline-v2': content },
+      });
+      const hydrated = await new StoredAssetReferenceResolver(repository, blobStore).resolve(
+        snapshot,
+      );
+      const mention = hydrated.nodes[0]?.data.promptDocument?.blocks.find(
+        (block) => block.type === 'mention',
+      );
+
+      expect(mention).toMatchObject({
+        contentUrl: `data:${mimeType};base64,${content.toString('base64')}`,
+      });
+    },
+  );
+
+  it('keeps text content as a data URL even when the Moon target has a signer', async () => {
+    const content = Buffer.from('frozen text');
     const snapshot = promptMentionSnapshot({
-      assetId: imageAssetId,
-      assetVersion: 2,
-      label: '参考素材',
-      mediaType,
-      modelAlias,
+      assetId: textAssetId,
+      assetVersion: 1,
+      label: '文字参考',
+      mediaType: 'text',
+      modelAlias: 'minimax-h3',
       targetMediaType: 'video',
     });
     const { repository, blobStore } = fixtures({
-      assets: [asset(imageAssetId, mediaType, mimeType, content, projectId)],
-      versions: [
-        {
-          assetId: imageAssetId,
-          version: 2,
-          sizeBytes: BigInt(content.byteLength),
-          contentKey: 'objects/inline-v2',
-        },
-      ],
-      blobs: { 'objects/inline-v2': content },
+      assets: [asset(textAssetId, 'text', 'text/plain', content, projectId)],
+      blobs: { 'objects/text-current': content },
     });
     const createProviderGetUrl = vi.fn(async () => 'https://objects.example.com/unexpected');
     blobStore.createProviderGetUrl = createProviderGetUrl;
@@ -199,10 +290,9 @@ describe('StoredAssetReferenceResolver', () => {
     const mention = hydrated.nodes[0]?.data.promptDocument?.blocks.find(
       (block) => block.type === 'mention',
     );
-
-    expect(mention).toMatchObject({
-      contentUrl: `data:${mimeType};base64,${content.toString('base64')}`,
-    });
+    expect(mention && Reflect.get(mention, 'contentUrl')).toBe(
+      `data:text/plain;base64,${content.toString('base64')}`,
+    );
     expect(createProviderGetUrl).not.toHaveBeenCalled();
   });
 
@@ -251,7 +341,8 @@ describe('StoredAssetReferenceResolver', () => {
       ],
       blobs: { 'objects/h3-video-v2': content },
     });
-    const createProviderGetUrl = vi.fn(async () => 'https://objects.example.com/unexpected');
+    const providerUrl = 'https://objects.example.com/canvas/objects/h3-video-v2';
+    const createProviderGetUrl = vi.fn(async () => providerUrl);
     blobStore.createProviderGetUrl = createProviderGetUrl;
 
     const hydrated = await new StoredAssetReferenceResolver(repository, blobStore).resolve(
@@ -261,10 +352,8 @@ describe('StoredAssetReferenceResolver', () => {
       .find((node) => node.id === mentionNode.id)
       ?.data.promptDocument?.blocks.find((block) => block.type === 'mention');
 
-    expect(mention && Reflect.get(mention, 'contentUrl')).toBe(
-      `data:video/mp4;base64,${content.toString('base64')}`,
-    );
-    expect(createProviderGetUrl).not.toHaveBeenCalled();
+    expect(mention && Reflect.get(mention, 'contentUrl')).toBe(providerUrl);
+    expect(createProviderGetUrl).toHaveBeenCalledOnce();
   });
 
   it('reuses one signed URL for repeated frozen Seedance video mentions', async () => {
@@ -314,26 +403,43 @@ describe('StoredAssetReferenceResolver', () => {
     expect(JSON.stringify(snapshot)).not.toContain('X-Amz-Signature');
   });
 
-  it('fails before provider execution when a URL-only frozen input has no public signer', async () => {
-    const content = Buffer.from('wan reference video');
-    const snapshot = referenceSnapshot({
-      sourceMediaType: 'video',
-      targetMediaType: 'video',
-      role: 'content',
-      assetId: imageAssetId,
-      mimeType: 'video/mp4',
-      modelAlias: 'wan3.0-video',
-    });
-    const { repository, blobStore } = fixtures({
-      assets: [asset(imageAssetId, 'video', 'video/mp4', content, projectId)],
-      blobs: { 'objects/video-current': content },
-    });
+  it.each([
+    { modelAlias: 'wan3.0-video', mediaType: 'video' as const, role: 'content' as const },
+    {
+      modelAlias: 'minimax-h3',
+      mediaType: 'image' as const,
+      role: 'referenceImage' as const,
+    },
+    {
+      modelAlias: 'seedance-2-0-fast-official',
+      mediaType: 'audio' as const,
+      role: 'audioTrack' as const,
+    },
+  ])(
+    'fails before provider execution when required $modelAlias $mediaType transport has no signer',
+    async ({ modelAlias, mediaType, role }) => {
+      const content = Buffer.from(`${modelAlias} reference ${mediaType}`);
+      const mimeType =
+        mediaType === 'video' ? 'video/mp4' : mediaType === 'audio' ? 'audio/wav' : 'image/png';
+      const snapshot = referenceSnapshot({
+        sourceMediaType: mediaType,
+        targetMediaType: 'video',
+        role,
+        assetId: imageAssetId,
+        mimeType,
+        modelAlias,
+      });
+      const { repository, blobStore } = fixtures({
+        assets: [asset(imageAssetId, mediaType, mimeType, content, projectId)],
+        blobs: { [`objects/${mediaType}-current`]: content },
+      });
 
-    await expect(
-      new StoredAssetReferenceResolver(repository, blobStore).resolve(snapshot),
-    ).rejects.toThrow('configure S3_PROVIDER_ENDPOINT');
-    expect(blobStore.get).toHaveBeenCalledOnce();
-  });
+      await expect(
+        new StoredAssetReferenceResolver(repository, blobStore).resolve(snapshot),
+      ).rejects.toThrow('configure S3_PROVIDER_ENDPOINT');
+      expect(blobStore.get).toHaveBeenCalledOnce();
+    },
+  );
 
   it('hydrates frozen inline prompt mentions in memory without mutating the durable snapshot', async () => {
     const content = Buffer.from('frozen image bytes');
@@ -637,6 +743,148 @@ describe('StoredAssetReferenceResolver', () => {
     expect(hydrated.inputs[0]?.snapshot.data.contentUrl).toBe(
       `data:image/png;base64,${version.toString('base64')}`,
     );
+  });
+
+  it.each([
+    {
+      name: 'matching frozen version',
+      sourceAssetVersion: 2,
+      storedDurationSeconds: 9,
+      expectedDurationSeconds: 5,
+    },
+    {
+      name: 'unbound duration with version metadata',
+      sourceAssetVersion: undefined,
+      storedDurationSeconds: 9,
+      expectedDurationSeconds: 9,
+    },
+    {
+      name: 'unbound duration without version metadata',
+      sourceAssetVersion: undefined,
+      storedDurationSeconds: undefined,
+      expectedDurationSeconds: undefined,
+    },
+  ])(
+    'binds a static target video duration to its immutable version: $name',
+    async ({ sourceAssetVersion, storedDurationSeconds, expectedDurationSeconds }) => {
+      const content = Buffer.from(`video-version-two-${String(storedDurationSeconds)}`);
+      const snapshot = referenceSnapshot({
+        sourceMediaType: 'video',
+        targetMediaType: 'video',
+        role: 'content',
+        assetId: videoAssetId,
+        mimeType: 'video/mp4',
+        contentUrl: `/v1/assets/${videoAssetId}/versions/2/content`,
+        modelAlias: 'wan3.0-video',
+      });
+      snapshot.inputs[0]!.sourceDurationSeconds = 5;
+      if (sourceAssetVersion !== undefined) {
+        snapshot.inputs[0]!.sourceAssetVersion = sourceAssetVersion;
+      }
+      const { repository, blobStore } = fixtures({
+        assets: [asset(videoAssetId, 'video', 'video/mp4', content, projectId)],
+        versions: [
+          {
+            assetId: videoAssetId,
+            version: 2,
+            sizeBytes: BigInt(content.byteLength),
+            contentKey: 'objects/video-v2',
+            ...(storedDurationSeconds !== undefined
+              ? { durationSeconds: storedDurationSeconds }
+              : {}),
+          },
+        ],
+        blobs: { 'objects/video-v2': content },
+      });
+      blobStore.createProviderGetUrl = vi.fn(
+        async () => 'https://objects.example.com/canvas/objects/video-v2?signature=test',
+      );
+
+      const hydrated = await new StoredAssetReferenceResolver(repository, blobStore).resolve(
+        snapshot,
+      );
+
+      expect(hydrated.inputs[0]?.sourceAssetVersion).toBe(2);
+      expect(hydrated.inputs[0]?.sourceDurationSeconds).toBe(expectedDurationSeconds);
+    },
+  );
+
+  it('hydrates an intermediate Wan static video duration from its immutable version metadata', async () => {
+    const content = Buffer.from('intermediate static video version two');
+    const workflow = referenceSnapshot({
+      sourceMediaType: 'video',
+      targetMediaType: 'video',
+      role: 'content',
+      assetId: videoAssetId,
+      mimeType: 'video/mp4',
+      contentUrl: `/v1/assets/${videoAssetId}/versions/2/content`,
+      modelAlias: 'final-video-model',
+    });
+    const wanNode = workflow.nodes.find((node) => node.id === 'node_target')!;
+    wanNode.data.modelAlias = 'wan3.0-video';
+    const finalNode = {
+      id: 'node_final',
+      type: 'video' as const,
+      position: { x: 400, y: 0 },
+      data: {
+        label: 'Final video',
+        mediaType: 'video' as const,
+        mode: 'generate' as const,
+        videoMode: 'omni_reference' as const,
+      },
+    };
+    workflow.targetNodeId = finalNode.id;
+    workflow.nodes.push(finalNode);
+    workflow.edges.push({
+      id: 'edge_wan_final',
+      sourceNodeId: wanNode.id,
+      sourceHandle: 'output:video',
+      targetNodeId: finalNode.id,
+      targetHandle: 'input:content',
+      order: 0,
+    });
+    workflow.inputs = [
+      {
+        nodeId: wanNode.id,
+        role: 'content',
+        sortOrder: 0,
+        snapshot: wanNode,
+      },
+    ];
+    const nodeSnapshot = createNodeRunSnapshot(
+      workflow,
+      createInitialWorkflowState(workflow),
+      wanNode.id,
+    );
+    expect(nodeSnapshot.inputs[0]?.sourceAssetVersion).toBeUndefined();
+    expect(nodeSnapshot.inputs[0]?.sourceDurationSeconds).toBeUndefined();
+    const { repository, blobStore } = fixtures({
+      assets: [asset(videoAssetId, 'video', 'video/mp4', content, projectId)],
+      versions: [
+        {
+          assetId: videoAssetId,
+          version: 2,
+          sizeBytes: BigInt(content.byteLength),
+          contentKey: 'objects/intermediate-video-v2',
+          durationSeconds: 6.75,
+        },
+      ],
+      blobs: { 'objects/intermediate-video-v2': content },
+    });
+    blobStore.createProviderGetUrl = vi.fn(
+      async () => 'https://objects.example.com/canvas/objects/intermediate-video-v2?signature=test',
+    );
+
+    const hydrated = await new StoredAssetReferenceResolver(repository, blobStore).resolve(
+      nodeSnapshot,
+    );
+
+    expect(repository.findVersion).toHaveBeenCalledWith(videoAssetId, 2);
+    expect(hydrated.inputs[0]).toMatchObject({
+      sourceAssetId: videoAssetId,
+      sourceAssetVersion: 2,
+      sourceDurationSeconds: 6.75,
+    });
   });
 
   it('rejects an asset owned by another project', async () => {
@@ -1229,6 +1477,193 @@ describe('createRunWorker asset hydration boundary', () => {
     );
     expect(JSON.stringify(job.data)).not.toContain(frozen.toString('base64'));
   });
+
+  it.each([
+    { name: 'duration metadata present', durationSeconds: 7.25 },
+    { name: 'duration metadata absent', durationSeconds: undefined },
+  ])(
+    'uses a newly archived upstream video version without inheriting old duration: $name',
+    async ({ durationSeconds }) => {
+      const versionOne = Buffer.from('generated video version one');
+      const versionTwo = Buffer.from(`generated video version two ${String(durationSeconds)}`);
+      const upstreamNode = {
+        id: 'node_generated_video',
+        type: 'video' as const,
+        position: { x: 0, y: 0 },
+        data: {
+          label: 'Generated source video',
+          mediaType: 'video' as const,
+          mode: 'generate' as const,
+          modelAlias: 'upstream-video-model',
+          videoMode: 'text_to_video' as const,
+          prompt: 'Generate a source clip.',
+          assetId: videoAssetId,
+          contentUrl: `/v1/assets/${videoAssetId}/versions/1/content`,
+          mimeType: 'video/mp4',
+        },
+      };
+      const targetNode = {
+        id: 'node_wan_target',
+        type: 'video' as const,
+        position: { x: 300, y: 0 },
+        data: {
+          label: 'Wan target',
+          mediaType: 'video' as const,
+          mode: 'generate' as const,
+          videoMode: 'omni_reference' as const,
+          prompt: 'Continue the archived clip.',
+        },
+      };
+      const durableSnapshot: RunSnapshot = {
+        projectId,
+        canvasRevision: 1,
+        targetNodeId: targetNode.id,
+        modelAlias: 'wan3.0-video',
+        parameters: { duration: 5, resolution: '720p', aspectRatio: '16:9' },
+        submittedAt: '2026-08-27T00:00:00.000Z',
+        nodes: [upstreamNode, targetNode],
+        edges: [
+          {
+            id: 'edge_generated_wan',
+            sourceNodeId: upstreamNode.id,
+            sourceHandle: 'output:video',
+            targetNodeId: targetNode.id,
+            targetHandle: 'input:content',
+            order: 0,
+          },
+        ],
+        inputs: [
+          {
+            nodeId: upstreamNode.id,
+            role: 'content',
+            sortOrder: 0,
+            sourceAssetId: videoAssetId,
+            sourceAssetVersion: 1,
+            sourceDurationSeconds: 4,
+            snapshot: upstreamNode,
+          },
+        ],
+      };
+      const { repository, blobStore } = fixtures({
+        assets: [asset(videoAssetId, 'video', 'video/mp4', versionTwo, projectId)],
+        versions: [
+          {
+            assetId: videoAssetId,
+            version: 1,
+            sizeBytes: BigInt(versionOne.byteLength),
+            contentKey: 'objects/generated-video-v1',
+            durationSeconds: 4,
+          },
+          {
+            assetId: videoAssetId,
+            version: 2,
+            sizeBytes: BigInt(versionTwo.byteLength),
+            contentKey: 'objects/generated-video-v2',
+            ...(durationSeconds !== undefined ? { durationSeconds } : {}),
+          },
+        ],
+        blobs: {
+          'objects/generated-video-v1': versionOne,
+          'objects/generated-video-v2': versionTwo,
+        },
+      });
+      blobStore.createProviderGetUrl = vi.fn(
+        async () => 'https://objects.example.com/canvas/objects/generated-video-v2?signature=test',
+      );
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ id: 'wan-target-task', status: 'queued' })),
+        )
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              id: 'wan-target-task',
+              status: 'completed',
+              video: { url: 'https://cdn.example.com/wan-target.mp4' },
+            }),
+          ),
+        );
+      const targetProvider = new NewApiVideoProvider({
+        baseUrl: 'https://newapi.example.test/v1',
+        apiKey: 'synthetic-test-key',
+        videoContract: 'newapi-video-v1',
+        fetchImpl,
+        pollIntervalMs: 0,
+        maxPollAttempts: 1,
+      });
+      let targetProviderSnapshot: RunSnapshot | undefined;
+      const job: StubJob = {
+        id: projectId,
+        data: {
+          runId: projectId,
+          userId,
+          snapshot: durableSnapshot,
+          attempt: 1,
+          provider: 'newapi',
+          cancelRequested: false,
+        },
+        async updateData(data) {
+          this.data = data;
+        },
+        async updateProgress() {},
+      };
+      bullmqState.job = job;
+      createRunWorker({
+        connection: { host: '127.0.0.1', port: 6379 },
+        stepDelayMs: 0,
+        providerName: 'newapi',
+        videoProvider: {
+          async execute(request) {
+            if (request.snapshot.targetNodeId === upstreamNode.id) {
+              return {
+                result: {
+                  provider: 'newapi',
+                  summary: 'generated upstream video',
+                  targetNodeId: upstreamNode.id,
+                  mediaType: 'video' as const,
+                  inputCount: 0,
+                },
+                output: {
+                  mediaType: 'video' as const,
+                  kind: 'url' as const,
+                  url: 'https://cdn.example.com/generated-video-v2.mp4',
+                  mimeType: 'video/mp4',
+                },
+              };
+            }
+            targetProviderSnapshot = request.snapshot;
+            return targetProvider.execute(request);
+          },
+        },
+        assetReferenceResolver: new StoredAssetReferenceResolver(repository, blobStore),
+        resultArchiver: async ({ result }) =>
+          result.targetNodeId === upstreamNode.id
+            ? { assetId: videoAssetId, version: 2, mimeType: 'video/mp4' }
+            : {
+                assetId: '123e4567-e89b-42d3-a456-426614174713',
+                version: 1,
+                mimeType: 'video/mp4',
+              },
+      });
+
+      await bullmqState.processor?.(job);
+
+      expect(repository.findVersion).toHaveBeenCalledWith(videoAssetId, 2);
+      expect(repository.findVersion).not.toHaveBeenCalledWith(videoAssetId, 1);
+      expect(targetProviderSnapshot?.inputs[0]).toMatchObject({
+        sourceAssetId: videoAssetId,
+        sourceAssetVersion: 2,
+      });
+      expect(targetProviderSnapshot?.inputs[0]?.sourceDurationSeconds).toBe(durationSeconds);
+      const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+      if (durationSeconds === undefined) {
+        expect(body.metadata).not.toHaveProperty('reference_video_durations');
+      } else {
+        expect(body.metadata.reference_video_durations).toEqual([durationSeconds]);
+      }
+    },
+  );
 
   it('passes only a transient hydrated snapshot to the provider', async () => {
     const content = Buffer.from('A frozen prompt', 'utf8');

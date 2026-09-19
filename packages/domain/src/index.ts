@@ -403,6 +403,8 @@ export const frozenPromptMentionSchema = z
     assetId: z.string().trim().min(1).max(512),
     assetVersion: z.number().int().positive(),
     mediaType: mediaTypeSchema,
+    /** 视频资产选中版本的探测时长；缺省表示该版本没有可信时长。 */
+    durationSeconds: z.number().finite().positive().optional(),
     label: z.string().trim().min(1).max(512),
     blockOrder: z.number().int().nonnegative(),
     semanticRole: z.string().trim().min(1).max(160).optional(),
@@ -1116,6 +1118,8 @@ export const runInputSnapshotSchema = z.object({
   sourceAssetId: z.string().min(1).optional(),
   /** 已冻结的资产版本，必须与来源资产 URL 对应；缺省不表示使用最新版。 */
   sourceAssetVersion: z.number().int().positive().optional(),
+  /** 已冻结视频版本的探测时长；不得从当前资产元数据回填。 */
+  sourceDurationSeconds: z.number().finite().positive().optional(),
   snapshot: canvasNodeSchema,
 });
 
@@ -1618,6 +1622,7 @@ export function targetPortRolesForMediaType(mediaType: MediaType): PortRole[] {
 export type VideoModelFamily =
   | 'grok-imagine-video-1.5'
   | 'grok-imagine-video'
+  | 'moon-minimax-h3'
   | 'minimax-h3'
   | 'wan3'
   | 'seedance-2'
@@ -1630,17 +1635,22 @@ export type VideoModelFamily =
  * @param modelAlias 运行快照或节点上的模型 ID。
  */
 export function videoFamilyForModel(modelAlias?: string): VideoModelFamily {
-  const id = (modelAlias ?? '').trim().toLowerCase();
-  if (!id) return 'unknown';
+  const exactId = (modelAlias ?? '').trim();
+  if (!exactId) return 'unknown';
+  if (exactId === 'minimax-h3') return 'moon-minimax-h3';
+  if (exactId === 'MiniMax-H3') return 'minimax-h3';
+  const id = exactId.toLowerCase();
   if (id.startsWith('grok-imagine-video-1.5')) return 'grok-imagine-video-1.5';
   if (/^grok[-_]?imagine/.test(id)) return 'grok-imagine-video';
-  if (id === 'minimax-h3') return 'minimax-h3';
   if (id === 'wan3.0-video' || id === 'wan3.0-video-prime') return 'wan3';
   if (id === 'doubao-seedance-2-5-260628') return 'seedance-2.5';
   if (
     id === 'doubao-seedance-2-0-260128' ||
     id === 'doubao-seedance-2-0-fast-260128' ||
-    id === 'doubao-seedance-2-0-mini-260615'
+    id === 'doubao-seedance-2-0-mini-260615' ||
+    id === 'seedance-2-0-official' ||
+    id === 'seedance-2-0-fast-official' ||
+    id === 'seedance-2-0-mini-official'
   ) {
     return 'seedance-2';
   }
@@ -1747,7 +1757,11 @@ export function videoModeCapability(mode: VideoMode, modelAlias?: string): Video
   const grok15 = family === 'grok-imagine-video-1.5';
   const wan3 = family === 'wan3';
   const mappedReferenceFamily =
-    family === 'minimax-h3' || wan3 || family === 'seedance-2' || family === 'seedance-2.5';
+    family === 'moon-minimax-h3' ||
+    family === 'minimax-h3' ||
+    wan3 ||
+    family === 'seedance-2' ||
+    family === 'seedance-2.5';
   const supportsEditOrExtend = wan3 || family === 'seedance-2' || family === 'seedance-2.5';
   if (mode === 'video_edit' || mode === 'video_extend') {
     if (!supportsEditOrExtend) return deferredVideoModeCapability(mode);
@@ -2115,7 +2129,12 @@ export function confirmedVideoInputRolesForModel(modelAlias?: string): readonly 
   const family = videoFamilyForModel(modelAlias);
   if (family === 'grok-imagine-video-1.5') return grokImagineVideo15InputRoles;
   if (family === 'wan3') return wan3VideoInputRoles;
-  if (family === 'minimax-h3' || family === 'seedance-2' || family === 'seedance-2.5') {
+  if (
+    family === 'moon-minimax-h3' ||
+    family === 'minimax-h3' ||
+    family === 'seedance-2' ||
+    family === 'seedance-2.5'
+  ) {
     return referenceVideoInputRoles;
   }
   return confirmedLiveVideoInputRoles;
@@ -2415,7 +2434,7 @@ function applyReferenceFamilyLimits(
   issues: VideoGenerationIssue[],
 ) {
   const limits =
-    family === 'minimax-h3' || family === 'seedance-2'
+    family === 'moon-minimax-h3' || family === 'minimax-h3' || family === 'seedance-2'
       ? { images: 9, videos: 3, audios: 3 }
       : family === 'wan3'
         ? { images: 10, videos: 5, audios: 5 }
@@ -2537,7 +2556,8 @@ export function precheckVideoGenerationInputs(
       if (present && !confirmed.has(role)) issues.push(videoUnsupportedRoleIssue(role));
     }
     if (
-      (family === 'minimax-h3' ||
+      (family === 'moon-minimax-h3' ||
+        family === 'minimax-h3' ||
         family === 'wan3' ||
         family === 'seedance-2' ||
         family === 'seedance-2.5') &&

@@ -506,3 +506,36 @@ P1：接通官方 MiniMax-H3、Wan3、Seedance 2.x 的已确认视频模式、�
 本轮复用了锁文件中的 AWS presigner 3.862.0，仅新增 Worker 的直接依赖声明。更新前 API、Worker、Web 镜像已分别保留 `before-official-video-20260919` 标签，回滚时保留原数据卷，不重建或迁移数据库。最终检查日志为 `test-results/official-video-final-{lint,typecheck,tests,web-build}.log`，浏览器日志与截图为 `test-results/official-video-e2e-live.log`、`test-results/official-video-e2e-live/`。
 
 本轮交付使用 `origin/codex/generate-to-new-node` 和 annotated Tag `v2026.09.19-official-video-modes`；提交前只暂存本任务文件，排除用户原有的 `docs/resource-input-compatibility.md`。提交 SHA、Tag 和推送后的远程引用核验结果在任务交接中记录。后续仅继续已列明的公网素材配置、线上插件更新及获准后的真实上游验收，不能重发已有任务或将本地通过视为外部完成。
+
+## 16. 2026-09-19 Moon 全能参考修复检查点
+
+P1：补齐 Moon Wan3、Seedance 与精确小写 `minimax-h3` 的画布能力、字段映射和参数菜单。基线为 `codex/generate-to-new-node @ bcecfe4`，跟踪同名 origin 分支；Node 24.12.0、pnpm 11.19.0，沿用已安装依赖。用户原有 `docs/resource-input-compatibility.md` 修改保留并排除提交。
+
+影响与兼容：新增可选冻结素材时长，由选定 AssetVersion 的 `metadata.durationSeconds` 取得；Wan 通过独立 `metadata.reference_video_durations` 传给 Moon，不修改百炼 `input.media`。持久化上传首版本补存已有 metadata，修复 v1 时长丢失；不改 schema、不迁移或回填用户数据。任一旧版本缺时长则省略整个附加数组，不回退到当前可变资产信息；Moon 插件随后在供应商 POST 前明确拒绝缺少必要时长的请求，百炼不受此要求影响。对象存储优先使用配置的供应商签名地址。官方 H3 保留原接口，Moon H3 独立识别大小写、清晰度、比例及工作流。
+
+Worker 为 DAG 节点重建输入时保留对应静态冻结版本和时长，中间节点按不可变版本读取缺失时长；同一 DAG 新生成的视频使用本轮归档版本，清除旧版本的时长后再读取新版本 metadata。官方 Wan 保留 `-1` 智能时长及顶层 `ratio` 合同，Moon 的额外限制由网关按渠道判断。对象存储未配置公网签名 endpoint 时，官方允许的图片等输入仍可使用 Base64；真实签名错误不会被吞掉或伪装成可用 URL。
+
+回滚使用修改前镜像和代码，保留原数据卷、资产版本与在途任务；可选字段兼容旧快照。不执行生产部署、付费生成或未经授权的数据覆盖。验收须区分本地 Mock、真实插件合同和供应商外部验收。
+
+- [x] 恢复仓库状态、全局规则和上轮检查点，确认 Newapi 基线 `38dbb951d`、目标 `fork/main`；网关宿主路由及 middleware 回归通过。
+- [x] 插件与画布实现及集中合同回归；主代理补充复核 S3 无公网配置回退、官方 Wan 比例与智能时长，保留官方合同。
+- [x] 新建 tmpfs 隔离 PostgreSQL 16.15（本机 19442，`admin_account_test_moon`）并迁移专用库；`account-management.integration.test.ts` 4 项通过，0 跳过，覆盖 v1/v2 时长保存与重建后读取。未操作用户数据库。
+- [x] 两仓库 lint/typecheck/test/build 或 Go 等价检查通过，禁网 HTTP 36 项、跨仓库字段映射 73 组通过；没有真实供应商请求。
+- [x] 本地 8080 的 API、Worker、Web 已更新，六个服务 healthy，健康接口和用户项目页面返回 200；浏览器 Mock 9 项通过，已检查参数面板截图及零控制台错误。
+- [x] 最终差异、凭据和用户文档检查；交付使用下述分支和 Tag，提交与远程引用核验结果在最终交接中记录。
+
+网关插件公开合同独立复核通过；禁网真实网关 HTTP 验收 36 项通过、0 失败，不调用供应商。Newapi 相关包测试、build、vet、插件 lint/format 通过。初次全插件回归出现 Grok 既有 multipart 字段顺序断言偶发失败，再次运行通过，未改 Grok 行为。
+
+本地服务更新前已保留 `multimodal-canvas-{api,worker,web}:before-moon-reference-20260919` 镜像。用户文档初始 SHA256 为 `56B2C9D2BFB09DCC56720769B9CE12AED4877A29090DEDFBADD2F1FC5B3AA2A7`；最终提交前再次核验。
+
+执行中另发现用户或其他任务正在修改 `docs/billing-and-model-marketplace-plan.md` 与 `TODO-CONSOLIDATED.md` 的 P2-03 计费规划。本轮不触碰该文档或规划段落，只暂存 TODO 中属于 Moon 的 P1-02 改动。
+
+该独立文档工作随后提交为 `6f1c681`，本轮继续基于此提交交付，保留其全部内容。用户已要求后续子代理继承主代理模型和推理强度，全局 `AGENTS.md` 已同步，原 Sol 子代理已停止。
+
+最终普通测试：Domain 150、Provider 431、Worker 302、Web 1108、API 869 项通过；Worker/API 分别保留 3/67 项设施跳过。`pnpm lint`、`pnpm typecheck`、`WEB_PORT=5173 pnpm test`、`pnpm build` 通过；build 保留既有 Vite 大包警告。日志为 `test-results/moon-reference-final-{lint,typecheck,tests,build}.log`，跨仓库合同日志为 `test-results/moon-reference-cross-contract.log`。
+
+隔离 PostgreSQL 16.15 → 实际 Prisma resolver → DAG → Provider → 实际 Moon 插件组合验证 4/4 通过：v1=4.5 秒、v2=9.25 秒，新版本没有时长时不读取当前资产的 123.456 秒，也不继承旧版本。实际 AWS signer 与本机 S3 模拟读取通过，外部请求为零；仅本轮创建的记录已清理。报告为 `test-results/moon-version-pipeline-report.json`。完整 Worker 新生成版本回归在 `apps/worker/src/asset-reference-resolver.test.ts`，真实数据库首版本写入另由前述 4 项集成测试验证。
+
+浏览器初轮因 H3 测试在 Escape 关闭面板后没有重新展开而超时；已修正测试步骤及大小写相近的截图目录名，最终 9/9 通过。证据为 `test-results/moon-reference-e2e-final.log` 和同名目录，测试未访问真实生成服务。最终源码的 Docker 构建通过，运行时镜像未包含上述仅测试脚本的调整。
+
+交付分支为 `origin/codex/generate-to-new-node`，annotated Tag 为 `v2026.09.19-moon-video-reference`。用户原有 `docs/resource-input-compatibility.md` 的 SHA256 保持不变并排除提交；独立计费文档提交完整保留。线上网关升级、Moon 公网素材访问配置及获准后的真实付费验收仍列在 TODO P1-02/P1-03，不将本地通过视作供应商成功生成。

@@ -834,11 +834,18 @@ async function resolveRunAssetRefs(input: {
           `资产 ${assetId} 的版本 ${pinnedVersion} 已不可用，无法恢复这次图片编辑`,
         );
       }
+      const durationSeconds = selected.metadata?.durationSeconds;
       return {
         ref: {
           assetId,
           version: selected.version,
           contentUrl: `/v1/assets/${encodeURIComponent(assetId)}/versions/${selected.version}/content`,
+          ...(asset.mediaType === 'video' &&
+          typeof durationSeconds === 'number' &&
+          Number.isFinite(durationSeconds) &&
+          durationSeconds > 0
+            ? { durationSeconds }
+            : {}),
         },
         mediaType: asset.mediaType,
       };
@@ -1050,6 +1057,12 @@ async function resolvePromptMentionRefs(
         assetId: block.assetId,
         assetVersion: selectedVersion.version,
         mediaType: block.mediaType,
+        ...(block.mediaType === 'video' &&
+        typeof selectedVersion.metadata?.durationSeconds === 'number' &&
+        Number.isFinite(selectedVersion.metadata.durationSeconds) &&
+        selectedVersion.metadata.durationSeconds > 0
+          ? { durationSeconds: selectedVersion.metadata.durationSeconds }
+          : {}),
         label: block.label,
         blockOrder,
         ...((block.semanticRole ?? block.binding?.semanticRole)

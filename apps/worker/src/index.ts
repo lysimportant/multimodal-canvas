@@ -2065,7 +2065,15 @@ function withWorkflowAssetVersions(
     };
     changed = true;
     hydratedNodes.set(input.nodeId, node);
-    return { ...input, sourceAssetId: asset.assetId, snapshot: node };
+    const versionedInput = {
+      ...input,
+      sourceAssetId: asset.assetId,
+      sourceAssetVersion: asset.version,
+      snapshot: node,
+    };
+    // 新归档版本的时长只能由该 AssetVersion 元数据补齐，不能沿用上游旧版本。
+    delete versionedInput.sourceDurationSeconds;
+    return versionedInput;
   });
   if (!changed) return snapshot;
   return {

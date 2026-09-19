@@ -186,6 +186,7 @@ const frozenPromptMentionSchema = {
     assetId: { type: 'string', minLength: 1, maxLength: 512 },
     assetVersion: { type: 'integer', minimum: 1 },
     mediaType: mediaTypeSchema,
+    durationSeconds: { type: 'number', exclusiveMinimum: 0 },
     label: { type: 'string', minLength: 1, maxLength: 512 },
     blockOrder: { type: 'integer', minimum: 0 },
     semanticRole: { type: 'string', minLength: 1, maxLength: 160 },

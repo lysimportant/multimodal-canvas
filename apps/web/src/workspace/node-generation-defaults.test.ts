@@ -114,14 +114,14 @@ describe('applyNodeGenerationDefaults', () => {
     expect(configured.parameters).toEqual({ duration: 10 });
   });
 
-  it('MiniMax H3 在目录缺项时使用官方默认，并清理其他家族的自动参数', () => {
+  it('官方 MiniMax-H3 在目录缺项时使用官方默认，并清理其他家族的自动参数', () => {
     const original = {
       ...data('video'),
-      modelAlias: 'minimax-h3',
+      modelAlias: 'MiniMax-H3',
       parameters: { duration: -1, aspectRatio: 'adaptive', custom: true },
     };
     const configured = applyNodeGenerationDefaults(original, {
-      id: 'minimax-h3',
+      id: 'MiniMax-H3',
       name: 'MiniMax H3',
       mediaTypes: ['video'],
     });
@@ -130,6 +130,47 @@ describe('applyNodeGenerationDefaults', () => {
       duration: -1,
       aspectRatio: 'adaptive',
       custom: true,
+    });
+  });
+
+  it('Moon 小写 minimax-h3 在文生模式使用普通档位和固定比例默认值', () => {
+    const original = {
+      ...data('video'),
+      modelAlias: 'minimax-h3',
+      videoMode: 'text_to_video' as const,
+      parameters: { duration: -1, aspectRatio: 'adaptive', custom: true },
+    };
+    const configured = applyNodeGenerationDefaults(original, {
+      id: 'minimax-h3',
+      name: 'Moon MiniMax H3',
+      mediaTypes: ['video'],
+    });
+    expect(configured.parameters).toEqual({
+      custom: true,
+      resolution: '480p',
+      aspectRatio: '16:9',
+      duration: 4,
+    });
+    expect(original.parameters).toEqual({
+      duration: -1,
+      aspectRatio: 'adaptive',
+      custom: true,
+    });
+  });
+
+  it('切换到 Wan3 时保留自动时长和 adaptive 比例', () => {
+    const configured = applyNodeGenerationDefaults(
+      {
+        ...data('video'),
+        modelAlias: 'wan3.0-video',
+        parameters: { duration: -1, aspectRatio: 'adaptive' },
+      },
+      { id: 'wan3.0-video', name: 'Moon Wan3', mediaTypes: ['video'] },
+    );
+    expect(configured.parameters).toEqual({
+      resolution: '480p',
+      aspectRatio: 'adaptive',
+      duration: -1,
     });
   });
 

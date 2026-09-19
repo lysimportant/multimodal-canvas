@@ -69,6 +69,10 @@ describe('resource mention OpenAPI contract', () => {
     expect(frozenMention.required).toEqual(
       expect.arrayContaining(['mentionId', 'assetId', 'assetVersion', 'mediaType', 'blockOrder']),
     );
+    expect(frozenMention.properties.durationSeconds).toEqual({
+      type: 'number',
+      exclusiveMinimum: 0,
+    });
     expect(document.components.schemas.PromptDocument.properties.blocks).toBeDefined();
     expect(nodeData?.data?.properties?.promptDocument).toEqual({
       $ref: '#/components/schemas/PromptDocument',

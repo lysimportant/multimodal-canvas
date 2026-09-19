@@ -696,6 +696,7 @@ export class PrismaAssetStore implements AssetStore {
             sizeBytes: BigInt(input.content.byteLength),
             sha256: hash,
             contentKey,
+            ...(input.metadata ? { metadata: input.metadata as Prisma.InputJsonValue } : {}),
           },
         });
         return asset;

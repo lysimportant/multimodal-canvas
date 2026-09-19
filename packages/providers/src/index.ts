@@ -922,16 +922,26 @@ export class NewApiVideoProvider {
       );
       validateProviderRoleParameters(snapshot.parameters, 'video');
       const family = videoFamilyForModel(snapshot.modelAlias);
-      const official = ['minimax-h3', 'wan3', 'seedance-2', 'seedance-2.5'].includes(family);
+      const official = [
+        'moon-minimax-h3',
+        'minimax-h3',
+        'wan3',
+        'seedance-2',
+        'seedance-2.5',
+      ].includes(family);
       if (official && !openaiVideo) {
         throw new NewApiProviderError(
-          '该官方模型使用 New API /v1/videos 插件协议，请选择 OpenAI 视频合同',
+          '该视频模型使用 New API /v1/videos 插件协议，请选择 OpenAI 视频合同',
           { code: 'VIDEO_CONTRACT_UNSUPPORTED', retryable: false },
         );
       }
       if (unified) validateUnifiedVideoParameters(snapshot.parameters);
       else
-        validateMediaParameters(snapshot.parameters, 'video', official && family !== 'minimax-h3');
+        validateMediaParameters(
+          snapshot.parameters,
+          'video',
+          official && family !== 'minimax-h3' && family !== 'moon-minimax-h3',
+        );
       const inputs = mapVideoInputs(snapshot, absorbedMentionInputs);
       const idempotencyKey = standardRequestIdempotencyKey(snapshot, existingProviderJob);
       const body = unified
@@ -1932,7 +1942,7 @@ function openaiVideoPayload(
   nodePromptDocument?: PromptDocument,
 ): Record<string, unknown> {
   if (
-    ['minimax-h3', 'wan3', 'seedance-2', 'seedance-2.5'].includes(
+    ['moon-minimax-h3', 'minimax-h3', 'wan3', 'seedance-2', 'seedance-2.5'].includes(
       videoFamilyForModel(snapshot.modelAlias),
     )
   ) {
@@ -1951,7 +1961,7 @@ function openaiVideoPayload(
 }
 
 /**
- * 将官方视频输入映射到 New API 任务插件协议；未知参数和不合法组合在 POST 前失败。
+ * 将官方供应商与 Moon 已确认的视频输入映射到 New API 任务插件协议；未知参数和不合法组合在 POST 前失败。
  * H3/Seedance 使用 metadata.content，Wan3 使用 metadata.input.media；角色不会互相降级。
  */
 function officialVideoPayload(
@@ -1962,6 +1972,10 @@ function officialVideoPayload(
   document?: PromptDocument,
 ): Record<string, unknown> {
   const family = videoFamilyForModel(snapshot.modelAlias);
+  const moonSeedance =
+    snapshot.modelAlias === 'seedance-2-0-official' ||
+    snapshot.modelAlias === 'seedance-2-0-fast-official' ||
+    snapshot.modelAlias === 'seedance-2-0-mini-official';
   const parameters = snapshot.parameters;
   for (const key of [
     'size',
@@ -1982,42 +1996,65 @@ function officialVideoPayload(
   );
   const rawDuration = parameters.duration ?? parameters.seconds ?? parameters.durationSeconds;
   const duration = rawDuration === undefined ? undefined : Number(rawDuration);
+  const h3Family = family === 'moon-minimax-h3' || family === 'minimax-h3';
+  const automaticDuration =
+    family === 'wan3' || family === 'seedance-2' || family === 'seedance-2.5';
   const minimum = family === 'wan3' ? 2 : 4;
   const maximum = family === 'wan3' || family === 'seedance-2.5' ? 30 : 15;
   if (
     duration !== undefined &&
-    !(duration === -1 && family !== 'minimax-h3') &&
+    !(duration === -1 && automaticDuration) &&
     (!Number.isSafeInteger(duration) || duration < minimum || duration > maximum)
   ) {
     throw invalidProviderParameter(
       'video',
       'duration',
-      `必须为 ${minimum} 到 ${maximum} 的整数秒数${family === 'minimax-h3' ? '' : '，或 -1（自动）'}`,
+      `必须为 ${minimum} 到 ${maximum} 的整数秒数${automaticDuration ? '，或 -1（自动）' : ''}`,
     );
   }
   const rawResolution = normalizeErrorField(
     parameters.resolution ?? parameters.video_resolution ?? parameters.videoResolution,
   );
-  const resolution = (rawResolution ?? (family === 'minimax-h3' ? '768P' : '720P')).toUpperCase();
+  const resolution = (rawResolution ?? (h3Family ? '768P' : '720P')).toUpperCase();
   const resolutions =
-    family === 'minimax-h3'
-      ? ['768P', '2K']
-      : family === 'seedance-2' && !/-(?:fast|mini)-/.test(snapshot.modelAlias ?? '')
-        ? ['480P', '720P', '1080P', '4K']
-        : family === 'seedance-2'
-          ? ['480P', '720P']
-          : ['480P', '720P', '1080P'];
+    family === 'moon-minimax-h3'
+      ? ['480P', '768P', '1080P', '2K', '4K']
+      : family === 'minimax-h3'
+        ? ['768P', '2K']
+        : family === 'seedance-2' && !/-(?:fast|mini)-/.test(snapshot.modelAlias ?? '')
+          ? ['480P', '720P', '1080P', '4K']
+          : family === 'seedance-2'
+            ? ['480P', '720P']
+            : ['480P', '720P', '1080P'];
   if (!resolutions.includes(resolution)) {
     throw invalidProviderParameter('video', 'resolution', `必须为 ${resolutions.join('、')}`);
+  }
+  const mode = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId)?.data.videoMode;
+  const hasReference = Boolean(
+    inputs.firstFrame ||
+    inputs.lastFrame ||
+    inputs.referenceImages.length ||
+    inputs.referenceVideos.length ||
+    inputs.referenceAudios.length,
+  );
+  if (
+    family === 'moon-minimax-h3' &&
+    (resolution === '2K' || resolution === '4K') &&
+    !hasReference
+  ) {
+    throw invalidProviderParameter('video', 'resolution', '2K 或 4K 需要首尾帧或参考素材');
   }
   const visual = Boolean(
     inputs.firstFrame || inputs.referenceImages.length || inputs.referenceVideos.length,
   );
   const ratio =
     normalizeErrorField(parameters.aspect_ratio ?? parameters.aspectRatio) ??
-    (visual ? 'adaptive' : '16:9');
-  const ratios = ['adaptive', '16:9', '4:3', '1:1', '3:4', '9:16'];
-  if (family !== 'wan3') ratios.push('21:9');
+    (family === 'moon-minimax-h3' ? '16:9' : visual ? 'adaptive' : '16:9');
+  const ratios =
+    family === 'moon-minimax-h3'
+      ? ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', '2:3', '3:2']
+      : ['adaptive', '16:9', '4:3', '1:1', '3:4', '9:16'];
+  if (family !== 'wan3' && family !== 'moon-minimax-h3') ratios.push('21:9');
   if (!ratios.includes(ratio) || (family === 'minimax-h3' && ratio === 'adaptive' && !visual)) {
     throw invalidProviderParameter(
       'video',
@@ -2025,9 +2062,9 @@ function officialVideoPayload(
       `必须为 ${ratios.join('、')}${family === 'minimax-h3' ? '；adaptive 需要图片或视频参考' : ''}`,
     );
   }
-  const mode = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId)?.data.videoMode;
   const requiresAdaptiveRatio =
     (family === 'wan3' && mode === 'video_extend') ||
+    (moonSeedance && (mode === 'video_edit' || mode === 'video_extend')) ||
     (family === 'seedance-2.5' &&
       (inputs.firstFrame || inputs.lastFrame || mode === 'video_edit' || mode === 'video_extend'));
   if (requiresAdaptiveRatio && ratio !== 'adaptive') {
@@ -2038,17 +2075,18 @@ function officialVideoPayload(
     );
   }
   if (
-    family === 'seedance-2.5' &&
+    (family === 'seedance-2.5' || moonSeedance) &&
     mode === 'video_edit' &&
     (duration !== -1 || ratio !== 'adaptive')
   ) {
     throw invalidProviderParameter(
       'video',
       'duration/aspectRatio',
-      'Seedance 2.5 视频编辑需要 -1（自动时长）和 adaptive（跟随原视频）',
+      'Seedance 视频编辑需要 -1（自动时长）和 adaptive（跟随原视频）',
     );
   }
-  const media = orderedVideoMedia(inputs).map((input) => {
+  const orderedMedia = orderedVideoMedia(inputs);
+  const media = orderedMedia.map((input) => {
     const mediaType = input.snapshot.data.mediaType;
     const role =
       input.role === 'firstFrame'
@@ -2056,7 +2094,7 @@ function officialVideoPayload(
         : input.role === 'lastFrame'
           ? 'last_frame'
           : `reference_${mediaType}`;
-    const url = officialVideoReferenceUrl(input, family);
+    const url = officialVideoReferenceUrl(input, family, snapshot.modelAlias);
     return family === 'wan3'
       ? { type: role, url }
       : { type: `${mediaType}_url`, role, [`${mediaType}_url`]: { url } };
@@ -2070,17 +2108,30 @@ function officialVideoPayload(
     const input: Record<string, unknown> = { media };
     if (inputs.negativePrompt)
       input.negative_prompt = inputTextValue(inputs.negativePrompt, 'video');
-    payload.metadata = { input };
+    const referenceVideos = orderedMedia.filter((item) => item.snapshot.data.mediaType === 'video');
+    const referenceVideoDurations = referenceVideos.flatMap((item) =>
+      typeof item.sourceDurationSeconds === 'number' &&
+      Number.isFinite(item.sourceDurationSeconds) &&
+      item.sourceDurationSeconds > 0
+        ? [item.sourceDurationSeconds]
+        : [],
+    );
+    payload.metadata = {
+      input,
+      ...(referenceVideos.length > 0 && referenceVideoDurations.length === referenceVideos.length
+        ? { reference_video_durations: referenceVideoDurations }
+        : {}),
+    };
     payload.resolution = resolution;
     payload.ratio = ratio;
   } else {
     const metadata: Record<string, unknown> = {
       content: [{ type: 'text', text: resolvedPrompt }, ...media],
-      resolution: family === 'minimax-h3' ? resolution : resolution.toLowerCase(),
+      resolution: h3Family ? resolution : resolution.toLowerCase(),
       ratio,
     };
     if (
-      family === 'seedance-2.5' &&
+      (family === 'seedance-2.5' || moonSeedance) &&
       ['omni_reference', 'video_edit', 'video_extend'].includes(mode ?? '')
     ) {
       metadata.omni_reference_task_type =
@@ -2106,8 +2157,12 @@ function orderedVideoMedia(inputs: VideoInputMapping): RunInputSnapshot[] {
     );
 }
 
-/** 校验官方参考素材的媒体类型与传输方式；URL 由 Worker 按冻结版本提供。 */
-function officialVideoReferenceUrl(input: RunInputSnapshot, family: string): string {
+/** 校验已确认视频模型参考素材的媒体类型与传输方式；URL 由 Worker 按冻结版本提供。 */
+function officialVideoReferenceUrl(
+  input: RunInputSnapshot,
+  family: string,
+  modelAlias: string,
+): string {
   const data = input.snapshot.data;
   const value = normalizeErrorField(data.contentUrl);
   const parsed = value ? parseDataUrl(value) : undefined;
@@ -2120,12 +2175,18 @@ function officialVideoReferenceUrl(input: RunInputSnapshot, family: string): str
     ) {
       throw inputRoleValueError('video', input.role, '与媒体类型匹配的有效内容');
     }
+    const moonUrlOnly =
+      family === 'moon-minimax-h3' ||
+      modelAlias === 'seedance-2-0-official' ||
+      modelAlias === 'seedance-2-0-fast-official' ||
+      modelAlias === 'seedance-2-0-mini-official';
     if (
+      moonUrlOnly ||
       (family === 'wan3' && data.mediaType !== 'image') ||
       (family.startsWith('seedance-') && data.mediaType === 'video')
     ) {
       throw new NewApiProviderError(
-        '该官方模型的参考视频或音频需要外部可访问的素材地址，请配置 S3_PROVIDER_ENDPOINT',
+        '该视频模型的参考素材需要外部可访问的素材地址，请配置 S3_PROVIDER_ENDPOINT',
         {
           code: 'VIDEO_REFERENCE_PUBLIC_URL_REQUIRED',
           retryable: false,
@@ -3863,9 +3924,8 @@ export function resolveProviderMentions(snapshot: RunSnapshot): ResolvedMention[
       ? hydratedBlock.contentUrl.trim()
       : undefined;
     const remoteUrl = dataUrl ? providerRemoteUrl(dataUrl) : undefined;
-    const videoReference =
-      node.data.mediaType === 'video' && ['video', 'audio'].includes(frozen.mediaType);
-    if (!mimeType || (!dataUrl?.startsWith('data:') && !(videoReference && remoteUrl))) {
+    const videoMediaReference = node.data.mediaType === 'video' && frozen.mediaType !== 'text';
+    if (!mimeType || (!dataUrl?.startsWith('data:') && !(videoMediaReference && remoteUrl))) {
       throw new Error(
         `resolved prompt mention ${frozen.mentionId} has no provider-readable content`,
       );
@@ -4022,6 +4082,9 @@ function collectAbsorbedVideoMentionInputs(
       sortOrder: 10_000 + (resolved.blockOrder ?? blockOrder),
       sourceAssetId: resolved.assetId,
       sourceAssetVersion: resolved.assetVersion,
+      ...(resolved.durationSeconds !== undefined
+        ? { sourceDurationSeconds: resolved.durationSeconds }
+        : {}),
       snapshot: {
         id: `mention:${resolved.mentionId}`,
         type: resolved.mediaType,
