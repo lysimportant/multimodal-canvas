@@ -2,17 +2,24 @@ import {
   BillingError,
   PrismaBillingService,
   billingSnapshotHash,
+  requestNewApiReceipt,
+  type NewApiReceipt,
 } from '@multimodal-canvas/billing';
 import {
   billingQuoteCalculationSchema,
   billingSecondsSchema,
   calculateBillingSettlement,
+  calculateNewApiSettlement,
+  newApiQuoteCalculationSchema,
+  newApiReceiptSchema,
   runSnapshotSchema,
   type BillingQuoteCalculation,
   type BillingUsage,
   type ProviderJob,
   type RunResult,
   type RunSnapshot,
+  type RunCredentialReference,
+  type NewApiQuoteCalculation,
 } from '@multimodal-canvas/domain';
 import { NewApiProviderError } from '@multimodal-canvas/providers';
 import type { Prisma } from '@prisma/client';
@@ -54,7 +61,16 @@ export interface WorkerBilling {
 
 /** 将已有钱包服务接入 Worker，用户结算与上游成本各自保留可恢复状态。 */
 export class PrismaWorkerBilling implements WorkerBilling {
-  constructor(private readonly billing: PrismaBillingService) {}
+  /** 凭据只按冻结身份在服务端解密，用于查询原请求账单；测试可注入只读传输。 */
+  constructor(
+    private readonly billing: PrismaBillingService,
+    private readonly options: {
+      getProviderCredentials?: (
+        reference: RunCredentialReference,
+      ) => Promise<{ baseUrl: string; apiKey: string } | undefined>;
+      fetchImpl?: typeof fetch;
+    } = {},
+  ) {}
 
   /** 已归档结果的本地记账失败只进入运维恢复；理由不包含供应商错误正文或凭据。 */
   async deferDelivery(
@@ -190,6 +206,21 @@ export class PrismaWorkerBilling implements WorkerBilling {
   ): Promise<void> {
     const item = await this.readItem(runId, nodeId, snapshot);
     if (!item) return;
+    if (record(item.quoteInput)?.version === 2) {
+      const quote = newApiQuoteCalculationSchema.parse(item.quoteInput);
+      const receipt = await this.readNewApiReceipt(
+        nodeId,
+        snapshot,
+        job,
+        quote,
+        item.status === 'SETTLED' ? record(item.deliveryEvidence)?.newApiReceipt : undefined,
+      );
+      await this.billing.recordCost(
+        item.id,
+        receipt && receipt.status !== 'pending' ? newApiReceiptCost(receipt) : undefined,
+      );
+      return;
+    }
     const reported = record(job.payload?.reportedUsage);
     const amount = reported?.amount;
     const currency = reported?.currency;
@@ -231,6 +262,52 @@ export class PrismaWorkerBilling implements WorkerBilling {
       ...(result.promptOptimization ? { resultType: 'prompt_optimization' } : {}),
       ...(job.platformJobId ? { providerTaskId: job.platformJobId } : {}),
     };
+    if (record(item.quoteInput)?.version === 2) {
+      const quote = newApiQuoteCalculationSchema.parse(item.quoteInput);
+      if (quote.capNanos !== item.maximumNanos.toFixed(0))
+        throw new BillingError('quote_changed', '收费项的冻结上限与报价不一致');
+      if (['RELEASED', 'REFUNDED'].includes(item.status)) return;
+      const savedReceipt = record(item.deliveryEvidence)?.newApiReceipt;
+      const receipt = await this.readNewApiReceipt(
+        nodeId,
+        snapshot,
+        job,
+        quote,
+        item.status === 'SETTLED' ? savedReceipt : undefined,
+      );
+      const settlement = calculateNewApiSettlement({ quote, delivery: 'delivered', receipt });
+      await this.billing.resolveItem(item.id, {
+        status: settlement.status === 'settled' ? 'SETTLED' : 'PENDING_VERIFICATION',
+        chargeNanos: settlement.chargeNanos,
+        reason:
+          settlement.status === 'settled'
+            ? settlement.capped
+              ? '沿用 New API 最终费用，按确认预算封顶'
+              : '沿用 New API 最终费用，按冻结人民币换算结算'
+            : '结果已归档，等待 New API 原请求的最终结算回执',
+        evidence: {
+          ...evidence,
+          settlement,
+          conversion: {
+            quotaPerUnit: quote.estimate.quota_per_unit,
+            usdToCny: quote.estimate.usd_to_cny,
+          },
+          ...(receipt ? { newApiReceipt: receipt } : {}),
+        } as Prisma.InputJsonValue,
+      });
+      if (settlement.status !== 'settled' || !receipt)
+        throw new BillingError('newapi_receipt_pending', '结果已交付，New API 最终账单待核实');
+      await this.billing.recordCost(item.id, newApiReceiptCost(receipt));
+      await this.billing.prisma.reconciliationItem.updateMany({
+        where: { chargeItemId: item.id, kind: 'worker_recovery', status: 'open' },
+        data: {
+          status: 'resolved',
+          resolution: '已查询原 New API 请求回执完成结算',
+          resolvedAt: new Date(),
+        },
+      });
+      return;
+    }
     const quote = billingQuoteCalculationSchema.parse(item.quoteInput);
     if (quote.capNanos !== item.maximumNanos.toFixed(0))
       throw new BillingError('quote_changed', '收费项的冻结上限与报价不一致');
@@ -262,6 +339,51 @@ export class PrismaWorkerBilling implements WorkerBilling {
         resolvedAt: new Date(),
       },
     });
+  }
+
+  /**
+   * 只按冻结 Key 和原创建请求查账；模型/任务不符返回未知，终态恢复优先使用已保存回执。
+   * 成本读取不要求已交付，不修改用户冻结，也不以最新分组或汇率替换历史授权。
+   */
+  private async readNewApiReceipt(
+    nodeId: string,
+    snapshot: RunSnapshot,
+    job: ProviderJob,
+    quote: NewApiQuoteCalculation,
+    savedReceipt?: unknown,
+  ): Promise<NewApiReceipt | undefined> {
+    const requestId = job.payload?.newApiRequestId;
+    let receipt: NewApiReceipt | undefined;
+    if (savedReceipt !== undefined) {
+      const saved = newApiReceiptSchema.safeParse(savedReceipt);
+      if (saved.success) receipt = saved.data;
+    } else if (typeof requestId === 'string') {
+      const reference = snapshot.nodeCredentialReferences?.[nodeId] ?? {
+        credentialId: snapshot.credentialId,
+        credentialVersion: snapshot.credentialVersion,
+      };
+      try {
+        const credentials =
+          reference.credentialId && reference.credentialVersion
+            ? await this.options.getProviderCredentials?.({
+                credentialId: reference.credentialId,
+                credentialVersion: reference.credentialVersion,
+              })
+            : undefined;
+        if (credentials)
+          receipt = await requestNewApiReceipt(credentials, requestId, {
+            fetchImpl: this.options.fetchImpl,
+          });
+      } catch {
+        // 网络、权限或格式失败保留未知；不能用生成重试代替原账单查询。
+      }
+    }
+    return receipt &&
+      receipt.request_id === requestId &&
+      receipt.model === quote.estimate.model &&
+      (!job.platformJobId || receipt.task_id === job.platformJobId)
+      ? receipt
+      : undefined;
   }
 
   /** 只用可验证的输入或交付计量；报价时长、未知单位字段及上游金额均不作实际用量。 */
@@ -334,6 +456,23 @@ export class PrismaWorkerBilling implements WorkerBilling {
       });
     }
   }
+}
+
+/** 以回执的原 quota 单位换算美元成本，统一向上取整至成本账本的 12 位小数。 */
+function newApiReceiptCost(receipt: NewApiReceipt): {
+  amount: string;
+  currency: string;
+  source: string;
+} {
+  const [wholeUnit, fractionUnit = ''] = receipt.quota_per_unit.split('.');
+  const unit = BigInt(`${wholeUnit}${fractionUnit}`);
+  const scaledQuota = BigInt(receipt.quota) * 10n ** BigInt(fractionUnit.length + 12);
+  const usdPicos = ((scaledQuota + unit - 1n) / unit).toString().padStart(13, '0');
+  return {
+    amount: `${usdPicos.slice(0, -12)}.${usdPicos.slice(-12)}`,
+    currency: 'USD',
+    source: 'newapi_receipt',
+  };
 }
 
 /** HTTP 明确拒绝或可信异步终态才代表失败；超时、取消和本地持久化错误均属未知。 */

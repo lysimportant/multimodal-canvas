@@ -1,21 +1,28 @@
 import {
   BillingError,
   billingSnapshotHash,
+  requestNewApiEstimate,
+  type NewApiEstimateInput,
   type PrismaBillingService,
   type QuoteItemInput,
 } from '@multimodal-canvas/billing';
 import {
   billingPriceRuleSchema,
   calculateBillingQuote,
+  newApiManagedPriceRuleSchema,
+  newApiQuoteCalculationSchema,
+  newApiQuotaToCnyNanos,
   renderPromptDocument,
   runSnapshotSchema,
   type BillingParameters,
   type CanvasNode,
+  type NewApiQuoteCalculation,
   type RunSnapshot,
 } from '@multimodal-canvas/domain';
 import type { Prisma } from '@prisma/client';
 import type { AuthenticatedSession } from './auth-service';
 import type { ResolvedMarketplaceModel } from './model-marketplace';
+import type { AiSettingsStoreLike } from './settings';
 
 /** 一个真实执行节点对应一个服务端已验证的平台商品；候选目录不能参与收费。 */
 export type RunBillingModels = Record<string, ResolvedMarketplaceModel>;
@@ -103,6 +110,9 @@ export async function prepareBillingSubmission(input: {
   fields: BillingSubmissionFields;
   snapshot: RunSnapshot;
   models: RunBillingModels;
+  settings?: Pick<AiSettingsStoreLike, 'getProviderCredentials'>;
+  /** 测试可注入只读估算传输；生成执行不经过此函数。 */
+  estimate?: typeof requestNewApiEstimate;
 }): Promise<PublicBillingQuote | undefined> {
   if (!input.billing) {
     if (input.fields.quoteOnly || input.fields.quoteId)
@@ -127,11 +137,18 @@ export async function prepareBillingSubmission(input: {
     return undefined;
   }
 
-  const items = createRunQuoteItems(input.snapshot, input.models);
+  const items = await createSubmissionQuoteItems(input);
+  const estimateExpirations = items.flatMap((item) => {
+    const managed = newApiQuoteCalculationSchema.safeParse(item.quoteInput);
+    return managed.success ? [Date.parse(managed.data.estimate.expires_at)] : [];
+  });
   const quote = await input.billing.createQuote({
     payerId: input.session.user.id,
     snapshot: input.snapshot,
     items,
+    ...(estimateExpirations.length
+      ? { expiresAt: new Date(Math.min(...estimateExpirations)) }
+      : {}),
   });
   return {
     id: quote.id,
@@ -139,7 +156,8 @@ export async function prepareBillingSubmission(input: {
     capNanos: quote.maximumNanos.toFixed(0),
     expiresAt: quote.expiresAt.toISOString(),
     items: items.map((item) => {
-      const calculation = item.quoteInput as unknown as ReturnType<typeof calculateBillingQuote>;
+      const calculation = item.quoteInput as unknown as
+        ReturnType<typeof calculateBillingQuote> | NewApiQuoteCalculation;
       return {
         nodeId: item.nodeId,
         id: `${quote.id}:${item.nodeId}`,
@@ -164,74 +182,238 @@ export function createRunQuoteItems(
 ): QuoteItemInput[] {
   return snapshot.nodes
     .filter((node) => node.data.mode !== 'source' && node.data.enabled !== false)
-    .map((node) => {
-      const resolved = models[node.id];
-      const frozen = snapshot.billingBindings?.[node.id];
-      if (
-        !resolved ||
-        !frozen ||
-        frozen.platformModelId !== resolved.model.id ||
-        frozen.bindingId !== resolved.binding.id ||
-        frozen.pricingVersionId !== resolved.pricing.id
-      )
-        throw new BillingError('invalid_charge_plan', '报价模型必须与执行快照一致', 400);
-      const rule = billingPriceRuleSchema.parse(resolved.pricing.rule);
-      if (rule.unit === 'per_token')
+    .map((node) => createManualRunQuoteItem(snapshot, node, models));
+}
+
+/** 人工规则逐项计算仍沿用 v1 合同；托管规则由独立的鉴权估算路径处理。 */
+function createManualRunQuoteItem(
+  snapshot: RunSnapshot,
+  node: CanvasNode,
+  models: RunBillingModels,
+): QuoteItemInput {
+  const resolved = models[node.id];
+  const frozen = snapshot.billingBindings?.[node.id];
+  if (
+    !resolved ||
+    !frozen ||
+    frozen.platformModelId !== resolved.model.id ||
+    frozen.bindingId !== resolved.binding.id ||
+    frozen.pricingVersionId !== resolved.pricing.id
+  )
+    throw new BillingError('invalid_charge_plan', '报价模型必须与执行快照一致', 400);
+  const rule = billingPriceRuleSchema.parse(resolved.pricing.rule);
+  if (rule.unit === 'per_token')
+    throw new BillingError(
+      'metering_unavailable',
+      '当前模型尚无可信输入 Token 计量，不能按 Token 报价',
+      409,
+    );
+  const parameters = effectiveNodeParameters(snapshot, node);
+  if (parameters.n !== undefined && parameters.n !== 1)
+    throw new BillingError(
+      'unsupported_quantity',
+      '当前调用合同一次只能交付一个结果，请使用批量任务',
+      400,
+    );
+  const dimensions: BillingParameters = {};
+  for (const key of Object.keys(rule.variants?.[0]?.parameters ?? {})) {
+    const value = parameters[key];
+    if (typeof value !== 'string' && typeof value !== 'boolean' && typeof value !== 'number')
+      throw new BillingError('unsupported_price_variant', `价格规格 ${key} 必须明确选择`, 400);
+    dimensions[key] = value;
+  }
+  try {
+    const calculation = calculateBillingQuote({
+      rule,
+      parameters: dimensions,
+      quantity: 1,
+      ...(rule.unit === 'per_second' ? { durationSeconds: frozenDuration(parameters) } : {}),
+      ...(rule.unit === 'per_character'
+        ? {
+            characters: frozenAudioCharacters(
+              snapshot,
+              node,
+              parameters,
+              resolved.binding.contract,
+            ),
+            charactersVerified: true,
+          }
+        : {}),
+    });
+    return {
+      nodeId: node.id,
+      platformModelId: resolved.model.id,
+      bindingId: resolved.binding.id,
+      pricingVersionId: resolved.pricing.id,
+      pricingRule: calculation.rule as Prisma.InputJsonValue,
+      quoteInput: calculation as Prisma.InputJsonValue,
+      maximumNanos: calculation.capNanos,
+    };
+  } catch (error) {
+    if (error instanceof BillingError) throw error;
+    throw new BillingError(
+      'invalid_quote_parameters',
+      '请求规格、数量或计量上限不符合已发布价格',
+      400,
+    );
+  }
+}
+
+/** 托管与人工模型可混合报价，每个节点只使用冻结绑定的原 Key 和精确模型 ID。 */
+async function createSubmissionQuoteItems(input: {
+  snapshot: RunSnapshot;
+  models: RunBillingModels;
+  settings?: Pick<AiSettingsStoreLike, 'getProviderCredentials'>;
+  estimate?: typeof requestNewApiEstimate;
+}): Promise<QuoteItemInput[]> {
+  const items: QuoteItemInput[] = [];
+  for (const node of input.snapshot.nodes) {
+    if (node.data.mode === 'source' || node.data.enabled === false) continue;
+    const resolved = input.models[node.id];
+    if (!resolved || !newApiManagedPriceRuleSchema.safeParse(resolved.pricing.rule).success) {
+      items.push(createManualRunQuoteItem(input.snapshot, node, input.models));
+      continue;
+    }
+    const frozen = input.snapshot.billingBindings?.[node.id];
+    const reference = input.snapshot.nodeCredentialReferences?.[node.id];
+    if (
+      !frozen ||
+      !reference ||
+      frozen.platformModelId !== resolved.model.id ||
+      frozen.bindingId !== resolved.binding.id ||
+      frozen.pricingVersionId !== resolved.pricing.id ||
+      frozen.contract !== resolved.binding.contract ||
+      reference.credentialId !== resolved.binding.credentialId ||
+      reference.credentialVersion !== resolved.binding.credentialVersion
+    )
+      throw new BillingError('invalid_charge_plan', '报价模型和凭据必须与执行快照一致', 400);
+    const parameters = effectiveNodeParameters(input.snapshot, node);
+    if (parameters.n !== undefined && parameters.n !== 1)
+      throw new BillingError(
+        'unsupported_quantity',
+        '当前调用合同一次只能交付一个结果，请使用批量任务',
+        400,
+      );
+    try {
+      const credentials = await input.settings?.getProviderCredentials?.(reference);
+      if (!credentials)
         throw new BillingError(
-          'metering_unavailable',
-          '当前模型尚无可信输入 Token 计量，不能按 Token 报价',
+          'billing_credentials_unavailable',
+          '无法读取报价绑定的原连接凭据',
           409,
         );
-      const parameters = effectiveNodeParameters(snapshot, node);
-      if (parameters.n !== undefined && parameters.n !== 1)
-        throw new BillingError(
-          'unsupported_quantity',
-          '当前调用合同一次只能交付一个结果，请使用批量任务',
-          400,
-        );
-      const dimensions: BillingParameters = {};
-      for (const key of Object.keys(rule.variants?.[0]?.parameters ?? {})) {
-        const value = parameters[key];
-        if (typeof value !== 'string' && typeof value !== 'boolean' && typeof value !== 'number')
-          throw new BillingError('unsupported_price_variant', `价格规格 ${key} 必须明确选择`, 400);
-        dimensions[key] = value;
-      }
-      try {
-        const calculation = calculateBillingQuote({
-          rule,
-          parameters: dimensions,
-          quantity: 1,
-          ...(rule.unit === 'per_second' ? { durationSeconds: frozenDuration(parameters) } : {}),
-          ...(rule.unit === 'per_character'
-            ? {
-                characters: frozenAudioCharacters(
-                  snapshot,
-                  node,
-                  parameters,
-                  resolved.binding.contract,
-                ),
-                charactersVerified: true,
-              }
-            : {}),
-        });
-        return {
-          nodeId: node.id,
-          platformModelId: resolved.model.id,
-          bindingId: resolved.binding.id,
-          pricingVersionId: resolved.pricing.id,
-          pricingRule: calculation.rule as Prisma.InputJsonValue,
-          quoteInput: calculation as Prisma.InputJsonValue,
-          maximumNanos: calculation.capNanos,
-        };
-      } catch (error) {
-        if (error instanceof BillingError) throw error;
-        throw new BillingError(
-          'invalid_quote_parameters',
-          '请求规格、数量或计量上限不符合已发布价格',
-          400,
-        );
-      }
-    });
+      const estimate = await (input.estimate ?? requestNewApiEstimate)(credentials, {
+        model: resolved.binding.upstreamModelId,
+        contract: resolved.binding.contract,
+        parameters: managedEstimateParameters(node, parameters),
+        ...managedEstimateInput(input.snapshot, node, parameters),
+      });
+      if (estimate.model !== resolved.binding.upstreamModelId)
+        throw new BillingError('invalid_upstream_estimate', '上游预估模型与冻结调用不一致', 502);
+      const calculation = newApiQuoteCalculationSchema.parse({
+        version: 2,
+        currency: 'CNY',
+        rule: resolved.pricing.rule,
+        quantity: 1,
+        capNanos: newApiQuotaToCnyNanos({
+          quota: estimate.estimated_quota,
+          quotaPerUnit: estimate.quota_per_unit,
+          usdToCny: estimate.usd_to_cny,
+        }),
+        estimate,
+      });
+      if (Date.parse(calculation.estimate.expires_at) <= Date.now())
+        throw new BillingError('quote_expired', '上游预估已过期，请重新报价', 409);
+      items.push({
+        nodeId: node.id,
+        platformModelId: resolved.model.id,
+        bindingId: resolved.binding.id,
+        pricingVersionId: resolved.pricing.id,
+        pricingRule: calculation.rule as Prisma.InputJsonValue,
+        quoteInput: calculation as Prisma.InputJsonValue,
+        maximumNanos: calculation.capNanos,
+      });
+    } catch (error) {
+      if (error instanceof BillingError) throw error;
+      throw new BillingError(
+        'newapi_estimate_unavailable',
+        'New API 预估暂不可用，未创建运行或冻结余额',
+        502,
+      );
+    }
+  }
+  return items;
+}
+
+/** 对齐 Provider 的媒体参数映射，只发送已确认的定价标量，不透传资产或地址。 */
+function managedEstimateParameters(
+  node: CanvasNode,
+  parameters: Record<string, unknown>,
+): NewApiEstimateInput['parameters'] {
+  const mapped: Record<string, unknown> = {};
+  if (node.data.mediaType === 'text') {
+    for (const key of [
+      'max_tokens',
+      'max_completion_tokens',
+      'temperature',
+      'top_p',
+      'reasoning_effort',
+    ])
+      if (parameters[key] !== undefined) mapped[key] = parameters[key];
+    if (typeof parameters.inferenceStrength === 'string' && parameters.inferenceStrength.trim())
+      mapped.reasoning_effort = parameters.inferenceStrength.trim();
+  } else if (node.data.mediaType === 'audio') {
+    mapped.voice = parameters.voice;
+    mapped.speed = parameters.speed;
+  } else {
+    mapped.n = parameters.n;
+    mapped.aspect_ratio = parameters.aspect_ratio ?? parameters.aspectRatio;
+    if (node.data.mediaType === 'image') {
+      mapped.size =
+        parameters.size ?? parameters.image_size ?? parameters.imageSize ?? parameters.resolution;
+      mapped.quality = parameters.quality ?? parameters.image_quality ?? parameters.imageQuality;
+    } else {
+      mapped.seconds = parameters.duration ?? parameters.seconds ?? parameters.durationSeconds;
+      mapped.resolution =
+        parameters.resolution ?? parameters.video_resolution ?? parameters.videoResolution;
+      mapped.size = parameters.size ?? parameters.video_size ?? parameters.videoSize;
+      mapped.quality = parameters.quality ?? parameters.video_quality ?? parameters.videoQuality;
+    }
+  }
+  const result: NewApiEstimateInput['parameters'] = {};
+  for (const [key, value] of Object.entries(mapped)) {
+    if (value === undefined || value === null) continue;
+    if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean')
+      throw new BillingError('invalid_quote_parameters', '上游预估规格必须是已确认的标量值', 400);
+    if (typeof value === 'number' && !Number.isFinite(value))
+      throw new BillingError('invalid_quote_parameters', '上游预估规格必须为有限数值', 400);
+    if (typeof value === 'string') {
+      if (value.trim()) result[key] = value.trim();
+    } else result[key] = value;
+  }
+  return result;
+}
+
+/** 提示词沿用 Provider 的优先级；尚未水合的输入只标记不完整，不猜测媒体 Token。 */
+function managedEstimateInput(
+  snapshot: RunSnapshot,
+  node: CanvasNode,
+  parameters: Record<string, unknown>,
+): Pick<NewApiEstimateInput, 'input_text' | 'input_pending'> {
+  const nonempty = (value: unknown) =>
+    typeof value === 'string' && value.trim() ? value.trim() : undefined;
+  const text = node.data.promptDocument
+    ? renderPromptDocument(node.data.promptDocument)
+    : (nonempty(parameters.prompt) ??
+      (node.data.mediaType === 'audio' ? nonempty(parameters.input) : undefined) ??
+      nonempty(node.data.prompt) ??
+      node.data.label);
+  return {
+    input_text: text,
+    input_pending:
+      snapshot.edges.some((edge) => edge.targetNodeId === node.id) ||
+      Boolean(node.data.promptDocument?.blocks.some((block) => block.type === 'mention')),
+  };
 }
 
 /** Worker 对上游节点移除目标 prompt，并覆盖该节点推理强度；报价采用完全相同口径。 */

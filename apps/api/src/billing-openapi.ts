@@ -22,10 +22,21 @@ const uuid = { type: 'string', format: 'uuid' };
 const dateTime = { type: 'string', format: 'date-time' };
 /** 展示用媒体类型使用小写，保持与画布合同一致。 */
 const mediaType = { type: 'string', enum: ['text', 'image', 'audio', 'video'] };
-/** 老客户端缺省读取 models，New API 公开定价必须显式选择，两个来源互不覆盖。 */
-const sourceType = { type: 'string', enum: ['models', 'newapi_pricing'], default: 'models' };
+/** 老客户端缺省读取 models，New API 公开目录与鉴权联动须显式选择，各来源互不覆盖。 */
+const sourceType = {
+  type: 'string',
+  enum: ['models', 'newapi_pricing', 'newapi_managed'],
+  default: 'models',
+};
 /** 公布的计费单位不等于所有适配器目前都能完成可信计量。 */
-const units = ['per_call', 'per_image', 'per_second', 'per_token', 'per_character'];
+const units = [
+  'per_call',
+  'per_image',
+  'per_second',
+  'per_token',
+  'per_character',
+  'upstream_cost',
+];
 /** 每个子调用的可交付数量边界，不表示工作流节点数或批次数。 */
 const quantity = { type: 'integer', minimum: 1, maximum: 10_000, default: 1 };
 /** Token 和字符计数必须为安全整数；只描述规则上限，不接受浏览器自报用量。 */
@@ -203,10 +214,14 @@ const priceRule = {
       ],
     ),
     unitRule('per_character', 'input_characters', { maxCharacters: usageCount }, ['maxCharacters']),
+    object({
+      unit: { type: 'string', const: 'upstream_cost' },
+      meteringSource: { type: 'string', const: 'newapi_receipt' },
+    }),
   ],
   discriminator: { propertyName: 'unit' },
   description:
-    '币种固定 CNY。minQuantity 不得超过 maxQuantity；显式零价允许，但缺价禁止执行。按 Token 报价当前因无可信输入计量而返回 metering_unavailable；字符计费仅支持完整冻结、无动态连线或提及的语音文本。按秒需明确请求时长。',
+    '币种固定 CNY。upstream_cost 无单价字段，每次由 New API 预估人民币预算，交付后以原请求最终回执和冻结换算结算，用户扣费不超过确认预算。其余规则为手工定价，minQuantity 不得超过 maxQuantity；显式零价允许，缺价禁止执行。手工 Token 缺可信输入计量时返回 metering_unavailable；字符只支持完整冻结语音文本，按秒需明确时长。',
 };
 
 /** 普通用户可见的价格不包含上游成本、供应商币种、操作者或连接标识。 */
@@ -449,6 +464,25 @@ export const billingOpenApiSchemas = {
         providerTaskId: { type: 'string' },
         providerJobId: { type: 'string' },
         deliveryState: { type: 'string', const: 'archived' },
+        conversion: object({
+          quotaPerUnit: { type: 'string' },
+          usdToCny: { type: 'string' },
+        }),
+        newApiReceipt: object(
+          {
+            version: { type: 'integer', const: 1 },
+            request_id: { type: 'string' },
+            task_id: { type: 'string' },
+            model: { type: 'string' },
+            group: { type: 'string' },
+            status: { type: 'string', enum: ['pending', 'settled', 'refunded'] },
+            quota: ref('BillingNanos'),
+            quota_per_unit: { type: 'string' },
+            pricing_version: { type: 'string' },
+            settled_at: dateTime,
+          },
+          [],
+        ),
         settlement: object(
           {
             status: { type: 'string', enum: ['settled', 'released', 'pending_verification'] },
@@ -468,7 +502,7 @@ export const billingOpenApiSchemas = {
       [],
     ),
     description:
-      '只读取归档身份和结算摘要的已记录字段，不含 result 正文、提示词、请求快照或供应商附加字段；不发起新调用。',
+      '只读取归档身份、结算摘要及 New API 原请求回执和冻结换算的白名单字段，不含 result 正文、提示词、请求快照、Key 或供应商附加字段；不发起新调用。',
   },
   BillingAuditRecord: object({
     id: uuid,
@@ -601,6 +635,15 @@ export const billingOpenApiSchemas = {
             description: '上游端点类型原文，仅来源参考，不代表媒体能力或可执行合同。',
           },
           pricingReference: ref('NewApiPricingReference'),
+          managed: object(
+            {
+              available: { type: 'boolean' },
+              contract: { type: 'string' },
+              pricingVersion: { type: 'string' },
+              reason: { type: 'string' },
+            },
+            ['available', 'pricingVersion'],
+          ),
           mediaTypes: { type: 'array', items: mediaType },
           capabilities: metadata,
           limitations: metadata,
@@ -766,27 +809,35 @@ export function billingOpenApiPaths() {
       },
       post: {
         ...operation(
-          '管理员创建手工模型或导入候选为草稿',
+          '管理员创建手工模型或联动 New API 模型',
           true,
-          '必须提供 name 或 source。候选只提供来源信息，不能自动上架或直接采用供应商价格。',
+          '必须提供 name 或 source。手工创建和公开目录导入需要 mediaType，初始为草稿。managed=true 只接受 newapi_managed 成功来源，重新校验 Key 权限和调用合同后建立稳定商品、绑定及跟随价格策略并发布；重复导入保留人工字段、已有手工价格和暂停状态，无需提供单价或媒体类型。',
         ),
         requestBody: body({
           ...object(
             {
               ...writableModel,
               mediaType,
+              managed: { type: 'boolean' },
               source: object({
                 syncId: uuid,
                 upstreamModelId: { type: 'string', minLength: 1, maxLength: 512 },
               }),
             },
-            ['mediaType'],
+            [],
           ),
           anyOf: [{ required: ['name'] }, { required: ['source'] }],
+          allOf: [
+            {
+              if: { properties: { managed: { const: true } }, required: ['managed'] },
+              then: { required: ['source'] },
+              else: { required: ['mediaType'] },
+            },
+          ],
         }),
         responses: {
           '201': response(
-            '已建立独立平台模型，初始状态 draft',
+            '独立平台模型；托管新导入可发布，人工创建初始为 draft',
             envelope('model', ref('MarketplaceAdminModel')),
           ),
           ...errors,
@@ -880,7 +931,7 @@ export function billingOpenApiPaths() {
         ...operation(
           '管理员新增人民币售价版本',
           true,
-          '不支持覆盖历史价格。未来生效版本可保存，activate=true 必须已经生效；零价必须明确配置。',
+          '不支持覆盖历史价格。upstream_cost 仅保存跟随策略，校验已绑定模型的 New API Key 权限，不要求单价。未来版本可保存，activate=true 必须已经生效；手工零价需明确配置。',
         ),
         requestBody: body(
           object(
@@ -919,7 +970,7 @@ export function billingOpenApiPaths() {
         ...operation(
           '管理员同步上游候选目录',
           true,
-          '来源 models 为已选连接的模型目录；newapi_pricing 从保存地址匿名 GET 固定 /api/pricing，不使用 Key、不会解密或发送 Authorization。公开定价不等于当前 Key 可调用目录，媒体类型和能力待管理员核实。供应商价格仅作原币种参考，倍率不换算、表达式不执行；表达式或插件计费时不展示旧固定 model_price。来源互相隔离，旧数组快照归属 models；成功空目录及失败也保留来源。不会覆盖人工名称、描述、绑定、价格、默认模型或发布状态；同步失败返回 200 且 sync.status=failed，保留同来源上次候选。',
+          'newapi_managed 使用实际 Key 查询 /v1/canvas/catalog，提供可联动合同和价格来源；需升级 New API 并开启 CANVAS_BRIDGE_ENABLED。来源 models 为已选连接的模型目录；newapi_pricing 从保存地址匿名 GET 固定 /api/pricing，不使用 Key、不会解密或发送 Authorization。公开定价不等于当前 Key 可调用目录，媒体类型和能力待管理员核实。供应商价格仅作原币种参考，倍率不换算、表达式不执行；表达式或插件计费时不展示旧固定 model_price。来源互相隔离，旧数组快照归属 models；成功空目录及失败也保留来源。不会覆盖人工名称、描述、绑定、价格、默认模型或发布状态；同步失败返回 200 且 sync.status=failed，保留同来源上次候选。',
         ),
         requestBody: body(object({ credentialId: uuid, sourceType }, ['credentialId'])),
         responses: {

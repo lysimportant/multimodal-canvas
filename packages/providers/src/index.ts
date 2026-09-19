@@ -326,15 +326,25 @@ export type ProviderExecution<Output extends ProviderOutput = ProviderOutput> = 
   usage?: ProviderUsage;
 };
 
-export type NewApiProviderErrorDetails = {
+/** 创建调用的关联身份与最近一次轮询身份分别保存，不能用 GET 身份替换计费请求。 */
+type NewApiRequestIds = {
+  /** 普通响应头或响应正文提供的关联 ID，不证明来自 New API 网关。 */
+  requestId?: string;
+  /** 仅来自创建响应 X-Oneapi-Request-Id 的网关 ID，按原文保存用于查账。 */
+  newApiRequestId?: string;
+  /** 最近一次查询的普通关联 ID，仅用于诊断。 */
+  pollRequestId?: string;
+  /** 最近一次查询的 New API 网关 ID，不可用于创建账单结算。 */
+  pollNewApiRequestId?: string;
+};
+
+export type NewApiProviderErrorDetails = NewApiRequestIds & {
   /** HTTP status returned by New API, when a response was received. */
   status?: number;
   /** Provider error code or type, if one was supplied. */
   code?: string;
   /** 仅表示错误可能是临时的；重试前必须确认供应商幂等，不能据此认定不会重复收费。 */
   retryable?: boolean;
-  /** Opaque provider request/correlation ID, never a credential. */
-  requestId?: string;
   /** Asynchronous platform job identity, when task creation already succeeded. */
   platformJobId?: string;
   /** Last provider task payload, suitable for durable reconciliation. */
@@ -353,6 +363,11 @@ export class NewApiProviderError extends Error {
   readonly code?: string;
   readonly retryable: boolean;
   readonly requestId?: string;
+  /** 原调用的 New API 网关身份；不从错误正文推断。 */
+  readonly newApiRequestId?: string;
+  /** 后续查询的诊断身份，与创建请求分开。 */
+  readonly pollRequestId?: string;
+  readonly pollNewApiRequestId?: string;
   readonly platformJobId?: string;
   readonly providerPayload?: Record<string, unknown>;
 
@@ -371,8 +386,17 @@ export class NewApiProviderError extends Error {
     this.status = details.status;
     this.code = sanitizeProviderDiagnosticField(details.code);
     this.requestId = sanitizeProviderDiagnosticField(details.requestId);
+    this.newApiRequestId = verifiedNewApiRequestId(details.newApiRequestId);
+    this.pollRequestId = sanitizeProviderDiagnosticField(details.pollRequestId);
+    this.pollNewApiRequestId = verifiedNewApiRequestId(details.pollNewApiRequestId);
     this.platformJobId = normalizeErrorField(details.platformJobId);
-    this.providerPayload = sanitizeProviderPayload(details.providerPayload);
+    this.providerPayload = sanitizeProviderPayload({
+      ...details.providerPayload,
+      // 响应正文中的同名字段不能冒充网关响应头。
+      newApiRequestId: this.newApiRequestId,
+      pollRequestId: this.pollRequestId,
+      pollNewApiRequestId: this.pollNewApiRequestId,
+    });
     this.retryable = details.retryable ?? isRetryableStatus(this.status);
 
     // Required when extending Error while targeting both Node and browsers.
@@ -513,15 +537,20 @@ export class NewApiProvider {
       });
     }
     const response = await this.request(plan.path, plan.body, idempotencyKey, signal);
-    const output =
-      target.data.mediaType === 'text'
-        ? parseTextOutput(response.payload)
-        : target.data.mediaType === 'image'
-          ? parseImageOutput(response.payload, snapshot)
-          : parseAudioOutput(response.payload, snapshot);
+    let output: StandardProviderOutput;
+    try {
+      output =
+        target.data.mediaType === 'text'
+          ? parseTextOutput(response.payload)
+          : target.data.mediaType === 'image'
+            ? parseImageOutput(response.payload, snapshot)
+            : parseAudioOutput(response.payload, snapshot);
+      await reportProgress?.(100);
+      throwIfProviderSignalAborted(signal);
+    } catch (error) {
+      throw withNewApiRequestIds(error, response, [this.apiKey]);
+    }
     const usage = parseProviderUsage(response.payload);
-    await reportProgress?.(100);
-    throwIfProviderSignalAborted(signal);
 
     return {
       result: {
@@ -532,11 +561,14 @@ export class NewApiProvider {
         inputCount: snapshot.inputs.length,
       },
       output,
-      ...(response.requestId
+      ...(response.requestId || response.newApiRequestId
         ? {
             providerJob: {
               provider: 'newapi' as const,
-              payload: { requestId: response.requestId },
+              payload: {
+                ...(response.requestId ? { requestId: response.requestId } : {}),
+                ...(response.newApiRequestId ? { newApiRequestId: response.newApiRequestId } : {}),
+              },
             },
           }
         : {}),
@@ -708,8 +740,9 @@ export class NewApiProvider {
     body: Record<string, unknown> | FormData,
     idempotencyKey: string,
     externalSignal?: AbortSignal,
-  ): Promise<{ payload: unknown; requestId?: string }> {
+  ): Promise<{ payload: unknown } & NewApiRequestIds> {
     const abortContext = createProviderAbortContext(this.timeoutMs, externalSignal);
+    let requestIds: NewApiRequestIds = {};
     try {
       throwIfProviderSignalAborted(externalSignal);
       const isForm = body instanceof FormData;
@@ -724,6 +757,7 @@ export class NewApiProvider {
         body: isForm ? body : JSON.stringify(body),
         signal: abortContext.signal,
       });
+      requestIds = responseRequestIds(response, [this.apiKey]);
       if (externalSignal?.aborted) discardResponseBody(response);
       throwIfProviderSignalAborted(externalSignal);
       const payload = await readResponsePayload(
@@ -740,12 +774,13 @@ export class NewApiProvider {
             .map((value) => sanitizeProviderDiagnosticField(value, [this.apiKey]))
             .find((value) => value !== undefined)
         : undefined;
-      const requestId = responseRequestId(response, [this.apiKey]) ?? bodyRequestId;
-      return { payload, ...(requestId ? { requestId } : {}) };
+      const requestId = requestIds.requestId ?? bodyRequestId;
+      return { payload, ...requestIds, ...(requestId ? { requestId } : {}) };
     } catch (error) {
-      if (error instanceof NewApiProviderError) throw error;
+      if (error instanceof NewApiProviderError)
+        throw withNewApiRequestIds(error, requestIds, [this.apiKey]);
       if (abortContext.wasExternallyAborted()) {
-        throw providerCancellationError();
+        throw withNewApiRequestIds(providerCancellationError(), requestIds, [this.apiKey]);
       }
       const isTimeout = getErrorName(error) === 'AbortError';
       throw new NewApiProviderError(
@@ -757,6 +792,7 @@ export class NewApiProvider {
         {
           code: isTimeout ? 'TIMEOUT' : 'NETWORK_ERROR',
           retryable: true,
+          ...requestIds,
         },
       );
     } finally {
@@ -897,16 +933,37 @@ export class NewApiVideoProvider {
     const openaiVideo = contract === 'newapi-video-v1';
     let platformJobId = normalizeErrorField(existingProviderJob?.platformJobId);
     const jobsPath = videoJobsPath(contract);
-    let requestId = sanitizeProviderDiagnosticField(existingProviderJob?.payload?.requestId, [
-      this.apiKey,
-    ]);
+    const requestIds: NewApiRequestIds = {
+      requestId: sanitizeProviderDiagnosticField(existingProviderJob?.payload?.requestId, [
+        this.apiKey,
+      ]),
+      newApiRequestId: verifiedNewApiRequestId(existingProviderJob?.payload?.newApiRequestId, [
+        this.apiKey,
+      ]),
+      pollRequestId: sanitizeProviderDiagnosticField(existingProviderJob?.payload?.pollRequestId, [
+        this.apiKey,
+      ]),
+      pollNewApiRequestId: verifiedNewApiRequestId(
+        existingProviderJob?.payload?.pollNewApiRequestId,
+        [this.apiKey],
+      ),
+    };
     let submissionUsage: ProviderUsage | undefined;
     let initialPhase: 'submitted' | 'resumed' = 'resumed';
     if (!platformJobId) {
       if (existingProviderJob?.payload?.phase === 'submitting') {
         throw new NewApiProviderError('New API 视频创建结果未知，请先核对平台任务状态', {
           code: 'VIDEO_SUBMISSION_UNKNOWN',
-          providerPayload: videoJobPayloadSummary(contract, 'submitting', snapshot.modelAlias),
+          ...requestIds,
+          providerPayload: videoJobPayloadSummary(
+            contract,
+            'submitting',
+            snapshot.modelAlias,
+            undefined,
+            undefined,
+            undefined,
+            requestIds,
+          ),
           retryable: false,
         });
       }
@@ -1016,7 +1073,7 @@ export class NewApiVideoProvider {
       }
       throwIfProviderSignalAborted(signal);
       // 创建可能立即收费，响应丢失时不重发；稳定 key 不证明供应商支持去重。
-      let submission: { payload: Record<string, unknown>; requestId?: string };
+      let submission: { payload: Record<string, unknown> } & NewApiRequestIds;
       try {
         submission = await this.requestJson(
           `${this.baseUrl}${videoCreatePath(contract)}`,
@@ -1045,6 +1102,8 @@ export class NewApiVideoProvider {
               status: error instanceof NewApiProviderError ? error.status : undefined,
               code: 'VIDEO_SUBMISSION_UNKNOWN',
               requestId: error instanceof NewApiProviderError ? error.requestId : undefined,
+              newApiRequestId:
+                error instanceof NewApiProviderError ? error.newApiRequestId : undefined,
               providerPayload: pendingPayload,
               retryable: false,
             },
@@ -1053,13 +1112,14 @@ export class NewApiVideoProvider {
         throw error;
       }
       platformJobId = videoPlatformId(submission.payload, contract);
-      requestId = submission.requestId;
+      requestIds.requestId = submission.requestId;
+      requestIds.newApiRequestId = submission.newApiRequestId;
       if (!platformJobId) {
         throw new NewApiProviderError(
           `New API 视频创建响应缺少 ${unified ? 'task_id' : openaiVideo ? 'id' : 'request_id'}`,
           {
             code: 'VIDEO_REQUEST_ID_MISSING',
-            requestId: submission.requestId,
+            ...requestIds,
             providerPayload: pendingPayload,
             retryable: false,
           },
@@ -1080,7 +1140,7 @@ export class NewApiVideoProvider {
               undefined,
               undefined,
               undefined,
-              requestId,
+              requestIds,
             ),
             [this.apiKey],
           );
@@ -1101,6 +1161,8 @@ export class NewApiVideoProvider {
           snapshot.modelAlias,
           terminal.providerStatus,
           terminal.progress,
+          undefined,
+          requestIds,
         );
         throw new NewApiProviderError(
           videoTerminalFailureMessage(terminal, platformJobId, snapshot.modelAlias),
@@ -1109,7 +1171,7 @@ export class NewApiVideoProvider {
               terminal.status === 'cancelled'
                 ? 'VIDEO_GENERATION_CANCELLED'
                 : 'VIDEO_GENERATION_FAILED',
-            requestId: submission.requestId,
+            ...requestIds,
             platformJobId,
             providerPayload,
             retryable: false,
@@ -1119,10 +1181,15 @@ export class NewApiVideoProvider {
       submissionUsage = parseProviderUsage(submission.payload);
       initialPhase = 'submitted';
     }
-    const initialPayload = {
-      ...videoJobPayloadSummary(contract, initialPhase, snapshot.modelAlias),
-      ...(requestId ? { requestId } : {}),
-    };
+    const initialPayload = videoJobPayloadSummary(
+      contract,
+      initialPhase,
+      snapshot.modelAlias,
+      undefined,
+      undefined,
+      undefined,
+      requestIds,
+    );
     const submittedProviderJob: ProviderJobUpdate = {
       provider: 'newapi',
       platformJobId,
@@ -1135,6 +1202,7 @@ export class NewApiVideoProvider {
     } catch (error) {
       throw new NewApiProviderError('视频平台任务 ID 持久化失败', {
         code: 'VIDEO_JOB_PERSISTENCE_FAILED',
+        ...requestIds,
         platformJobId,
         providerPayload: initialPayload,
         retryable: false,
@@ -1155,6 +1223,9 @@ export class NewApiVideoProvider {
           undefined,
           signal,
         );
+        requestIds.pollRequestId = statusResponse.requestId ?? requestIds.pollRequestId;
+        requestIds.pollNewApiRequestId =
+          statusResponse.newApiRequestId ?? requestIds.pollNewApiRequestId;
         const polledId = videoPlatformId(statusResponse.payload, contract);
         if (unified && polledId !== platformJobId) {
           throw new NewApiProviderError('New API 视频查询返回了不同的平台任务身份', {
@@ -1171,7 +1242,6 @@ export class NewApiVideoProvider {
         lastPoll = unified
           ? parseUnifiedVideoPollResult(statusResponse.payload, [this.apiKey])
           : parseVideoPollResult(statusResponse.payload, [this.apiKey]);
-        requestId = statusResponse.requestId ?? requestId;
         throwIfProviderSignalAborted(signal, platformJobId);
         const statusPayload = videoJobPayloadSummary(
           contract,
@@ -1180,7 +1250,7 @@ export class NewApiVideoProvider {
           lastPoll.providerStatus,
           lastPoll.status === 'succeeded' ? 100 : lastPoll.progress,
           lastPoll.mediaMetadata,
-          requestId,
+          requestIds,
         );
         try {
           await onProviderJob?.({
@@ -1200,12 +1270,17 @@ export class NewApiVideoProvider {
         } catch {
           throw new NewApiProviderError('视频任务状态持久化失败', {
             code: 'VIDEO_JOB_PERSISTENCE_FAILED',
+            ...requestIds,
             platformJobId,
             providerPayload: statusPayload,
             retryable: false,
           });
         }
       } catch (error) {
+        if (error instanceof NewApiProviderError && !error.platformJobId) {
+          requestIds.pollRequestId = error.requestId ?? requestIds.pollRequestId;
+          requestIds.pollNewApiRequestId = error.newApiRequestId ?? requestIds.pollNewApiRequestId;
+        }
         if (
           error instanceof NewApiProviderError &&
           error.retryable &&
@@ -1222,6 +1297,8 @@ export class NewApiVideoProvider {
             snapshot.modelAlias,
             lastPoll?.providerStatus,
             lastPoll?.progress,
+            undefined,
+            requestIds,
           ),
           [this.apiKey],
         );
@@ -1235,6 +1312,7 @@ export class NewApiVideoProvider {
               lastPoll.status === 'cancelled'
                 ? 'VIDEO_GENERATION_CANCELLED'
                 : 'VIDEO_GENERATION_FAILED',
+            ...requestIds,
             platformJobId,
             providerPayload: videoJobPayloadSummary(
               contract,
@@ -1242,6 +1320,8 @@ export class NewApiVideoProvider {
               snapshot.modelAlias,
               lastPoll.providerStatus,
               lastPoll.progress,
+              undefined,
+              requestIds,
             ),
             retryable: false,
           },
@@ -1262,6 +1342,8 @@ export class NewApiVideoProvider {
               snapshot.modelAlias,
               lastPoll.providerStatus,
               100,
+              undefined,
+              requestIds,
             ),
             [this.apiKey],
           );
@@ -1289,7 +1371,7 @@ export class NewApiVideoProvider {
               lastPoll.providerStatus,
               100,
               lastPoll.mediaMetadata,
-              requestId,
+              requestIds,
             ),
           },
           ...(usage ? { usage } : {}),
@@ -1306,6 +1388,7 @@ export class NewApiVideoProvider {
 
     throw new NewApiProviderError('New API 视频任务轮询超时', {
       code: 'VIDEO_POLL_TIMEOUT',
+      ...requestIds,
       platformJobId,
       providerPayload: videoJobPayloadSummary(
         contract,
@@ -1313,6 +1396,8 @@ export class NewApiVideoProvider {
         snapshot.modelAlias,
         lastPoll?.providerStatus,
         lastPoll?.progress,
+        undefined,
+        requestIds,
       ),
       retryable: true,
     });
@@ -1405,7 +1490,7 @@ export class NewApiVideoProvider {
     idempotencyKey?: string,
     externalSignal?: AbortSignal,
     contract: FrozenVideoContract = 'legacy-v1',
-  ): Promise<{ payload: Record<string, unknown>; requestId?: string }> {
+  ): Promise<{ payload: Record<string, unknown> } & NewApiRequestIds> {
     throwIfProviderSignalAborted(externalSignal);
     return this.fetchResponse(
       url,
@@ -1435,11 +1520,11 @@ export class NewApiVideoProvider {
           );
         if (!isRecord(payload) || isBinaryResponsePayload(payload)) {
           throw new NewApiProviderError('New API 视频响应不是有效 JSON', {
-            requestId: responseRequestId(response, [this.apiKey]),
+            ...responseRequestIds(response, [this.apiKey]),
             retryable: false,
           });
         }
-        return { payload, requestId: responseRequestId(response, [this.apiKey]) };
+        return { payload, ...responseRequestIds(response, [this.apiKey]) };
       },
       externalSignal,
     );
@@ -1501,6 +1586,7 @@ export class NewApiVideoProvider {
     externalSignal?: AbortSignal,
   ): Promise<Result> {
     const abortContext = createProviderAbortContext(this.timeoutMs, externalSignal);
+    let requestIds: NewApiRequestIds = {};
     try {
       throwIfProviderSignalAborted(externalSignal);
       const response = await this.fetchImpl(url, {
@@ -1508,12 +1594,14 @@ export class NewApiVideoProvider {
         redirect: 'error',
         signal: abortContext.signal,
       });
+      requestIds = responseRequestIds(response, [this.apiKey]);
       return await consume(response, abortContext.signal);
     } catch (error) {
-      if (error instanceof NewApiProviderError) throw error;
+      if (error instanceof NewApiProviderError)
+        throw withNewApiRequestIds(error, requestIds, [this.apiKey]);
       const isTimeout = getErrorName(error) === 'AbortError';
       if (abortContext.wasExternallyAborted()) {
-        throw providerCancellationError();
+        throw withNewApiRequestIds(providerCancellationError(), requestIds, [this.apiKey]);
       }
       throw new NewApiProviderError(
         isTimeout
@@ -1521,7 +1609,7 @@ export class NewApiVideoProvider {
           : error instanceof Error
             ? sanitizeProviderErrorMessage(error.message, [this.apiKey])
             : 'New API 请求失败',
-        { code: isTimeout ? 'TIMEOUT' : 'NETWORK_ERROR', retryable: true },
+        { code: isTimeout ? 'TIMEOUT' : 'NETWORK_ERROR', retryable: true, ...requestIds },
       );
     } finally {
       abortContext.cleanup();
@@ -1710,7 +1798,7 @@ function videoJobPayloadSummary(
   providerStatus?: string,
   progress?: number,
   mediaMetadata?: Record<string, number>,
-  requestId?: string,
+  requestIds: NewApiRequestIds = {},
 ): Record<string, unknown> {
   return {
     contract,
@@ -1719,7 +1807,12 @@ function videoJobPayloadSummary(
     ...(providerStatus ? { providerStatus } : {}),
     ...(progress !== undefined ? { progress } : {}),
     ...(mediaMetadata ? { mediaMetadata } : {}),
-    ...(requestId ? { requestId } : {}),
+    ...(requestIds.requestId ? { requestId: requestIds.requestId } : {}),
+    ...(requestIds.newApiRequestId ? { newApiRequestId: requestIds.newApiRequestId } : {}),
+    ...(requestIds.pollRequestId ? { pollRequestId: requestIds.pollRequestId } : {}),
+    ...(requestIds.pollNewApiRequestId
+      ? { pollNewApiRequestId: requestIds.pollNewApiRequestId }
+      : {}),
   };
 }
 
@@ -2391,6 +2484,7 @@ function providerResponseError(
 ): NewApiProviderError {
   const providerError = extractProviderError(payload, sensitiveValues);
   const requestId = providerError.requestId ?? responseRequestId(response, sensitiveValues);
+  const newApiRequestId = responseRequestIds(response, sensitiveValues).newApiRequestId;
   const definite = isDefiniteProviderRejection({
     status: response.status,
     code: providerError.code,
@@ -2412,6 +2506,7 @@ function providerResponseError(
       status: response.status,
       code: providerError.code,
       requestId,
+      newApiRequestId,
       providerPayload: sanitizeProviderPayload(isRecord(payload) ? payload : { body: payload }),
       retryable: definite ? false : isRetryableStatus(response.status),
     },
@@ -2475,11 +2570,20 @@ function videoJobError(
   providerPayload: Record<string, unknown>,
   sensitiveValues: readonly string[] = [],
 ): NewApiProviderError {
+  const requestIds: NewApiRequestIds = {
+    requestId: sanitizeProviderDiagnosticField(providerPayload.requestId, sensitiveValues),
+    newApiRequestId: verifiedNewApiRequestId(providerPayload.newApiRequestId, sensitiveValues),
+    pollRequestId: sanitizeProviderDiagnosticField(providerPayload.pollRequestId, sensitiveValues),
+    pollNewApiRequestId: verifiedNewApiRequestId(
+      providerPayload.pollNewApiRequestId,
+      sensitiveValues,
+    ),
+  };
   if (error instanceof NewApiProviderError) {
     return new NewApiProviderError(sanitizeProviderErrorMessage(error.message, sensitiveValues), {
       status: error.status,
       code: error.code,
-      requestId: error.requestId,
+      ...requestIds,
       platformJobId,
       providerPayload,
       retryable: error.retryable,
@@ -2491,6 +2595,7 @@ function videoJobError(
       : 'New API 视频任务处理失败',
     {
       code: 'VIDEO_JOB_ERROR',
+      ...requestIds,
       platformJobId,
       providerPayload,
       retryable: false,
@@ -2718,6 +2823,67 @@ function responseRequestId(
     if (requestId) return requestId;
   }
   return undefined;
+}
+
+/** 网关查账 ID 必须完整可用；拒绝敏感、超长或需改写的值，不截断后冒充原身份。 */
+function verifiedNewApiRequestId(
+  value: unknown,
+  sensitiveValues: readonly string[] = [],
+): string | undefined {
+  return typeof value === 'string' &&
+    /^[A-Za-z0-9._:-]{1,64}$/.test(value) &&
+    sanitizeProviderDiagnosticField(value, sensitiveValues) === value
+    ? value
+    : undefined;
+}
+
+/** 网关身份只认专用响应头，普通关联头和正文 ID 保持各自语义。 */
+function responseRequestIds(
+  response: Response,
+  sensitiveValues: readonly string[] = [],
+): NewApiRequestIds {
+  const headers = (response as Response & { headers?: Headers }).headers;
+  const requestId = responseRequestId(response, sensitiveValues);
+  const newApiRequestId = verifiedNewApiRequestId(
+    headers?.get?.('x-oneapi-request-id'),
+    sensitiveValues,
+  );
+  return {
+    ...(requestId ? { requestId } : {}),
+    ...(newApiRequestId ? { newApiRequestId } : {}),
+  };
+}
+
+/** 读取或解析正文失败时仍保留已收到的响应头身份，便于查询原调用且不重发。 */
+function withNewApiRequestIds(
+  error: unknown,
+  requestIds: NewApiRequestIds,
+  sensitiveValues: readonly string[] = [],
+): NewApiProviderError {
+  return new NewApiProviderError(
+    error instanceof Error
+      ? sanitizeProviderErrorMessage(error.message, sensitiveValues)
+      : 'New API 响应处理失败',
+    {
+      ...(error instanceof NewApiProviderError
+        ? {
+            status: error.status,
+            code: error.code,
+            retryable: error.retryable,
+            platformJobId: error.platformJobId,
+            providerPayload: error.providerPayload,
+            pollRequestId: error.pollRequestId,
+            pollNewApiRequestId: error.pollNewApiRequestId,
+          }
+        : { retryable: false }),
+      requestId:
+        (error instanceof NewApiProviderError ? error.requestId : undefined) ??
+        requestIds.requestId,
+      newApiRequestId:
+        requestIds.newApiRequestId ??
+        (error instanceof NewApiProviderError ? error.newApiRequestId : undefined),
+    },
+  );
 }
 
 function getErrorName(error: unknown): string | undefined {

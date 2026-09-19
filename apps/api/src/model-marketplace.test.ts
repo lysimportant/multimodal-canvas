@@ -118,7 +118,12 @@ function fixture() {
       findMany: vi.fn(async () => [currentPricing]),
       count: vi.fn(async () => 1),
       create: vi.fn(async ({ data }: { data: Omit<PricingVersion, 'id' | 'createdAt'> }) => {
-        currentPricing = { ...data, id: randomUUID(), createdAt: new Date() };
+        currentPricing = {
+          ...data,
+          effectiveAt: data.effectiveAt ?? new Date(),
+          id: randomUUID(),
+          createdAt: new Date(),
+        };
         return currentPricing;
       }),
     },
@@ -152,6 +157,10 @@ function fixture() {
     ),
   };
   const settings = {
+    getProviderCredentials: vi.fn(async () => ({
+      baseUrl: 'https://synthetic.invalid/v1',
+      apiKey: 'synthetic-bridge-key',
+    })),
     getCredentialReference: vi.fn(async (credentialId: string) => ({
       credentialId,
       credentialVersion: 1,
@@ -570,4 +579,113 @@ describe('PrismaModelMarketplace', () => {
     expect(marketplaceListSchema.safeParse({ pageSize: 101 }).success).toBe(false);
     expect(marketplaceListSchema.safeParse({ ownerId: actorId }).success).toBe(false);
   });
+
+  it('New API 价格无需单价，仍要求当前绑定和实际 Key 的模型权限', async () => {
+    const f = fixture();
+    f.pricingFetch.mockResolvedValue(Response.json(managedCatalog(f.rows.binding.upstreamModelId)));
+    await f.service.createPricing(
+      {
+        platformModelId: f.rows.model.id,
+        rule: { unit: 'upstream_cost', meteringSource: 'newapi_receipt' },
+        activate: true,
+      },
+      actorId,
+    );
+    expect(f.database.pricingVersion.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          rule: { unit: 'upstream_cost', meteringSource: 'newapi_receipt' },
+        }),
+      }),
+    );
+    expect((await f.service.getAdmin(f.rows.model.id)).pricing?.rule.unit).toBe('upstream_cost');
+    f.pricingFetch.mockResolvedValue(Response.json({ ...managedCatalog(), models: [] }));
+    await expect(
+      f.service.createPricing(
+        {
+          platformModelId: f.rows.model.id,
+          rule: { unit: 'upstream_cost', meteringSource: 'newapi_receipt' },
+          activate: true,
+        },
+        actorId,
+      ),
+    ).rejects.toMatchObject({ code: 'model_unavailable' });
+  });
+
+  it('托管来源独立同步，可用合同和缺失原因保留，Key 不进入来源快照', async () => {
+    const f = fixture();
+    const catalog = managedCatalog();
+    f.pricingFetch.mockResolvedValue(Response.json(catalog));
+    const result = await f.service.sync(f.rows.binding.credentialId, actorId, 'newapi_managed');
+    expect(result.sourceType).toBe('newapi_managed');
+    expect(result.candidates[0]).toMatchObject({
+      mediaTypes: ['image'],
+      managed: { available: true, contract: 'openai-images' },
+    });
+    expect(JSON.stringify(result)).not.toContain('synthetic-bridge-key');
+    expect(f.database.platformModel.create).not.toHaveBeenCalled();
+    f.pricingFetch.mockRejectedValue(new Error('private response'));
+    f.database.$queryRaw.mockResolvedValue([
+      snapshot(f.rows.binding.credentialId, result.candidates),
+    ]);
+    const failed = await f.service.sync(f.rows.binding.credentialId, actorId, 'newapi_managed');
+    expect(failed.status).toBe('failed');
+    expect(failed.candidates).toEqual(result.candidates);
+    expect(JSON.stringify(failed)).not.toContain('private response');
+  });
+
+  it('托管导入只接收托管快照，重新校验 Key 权限后自动建立价格与绑定', async () => {
+    const f = fixture();
+    const candidate = {
+      id: 'managed-image',
+      name: '托管图片',
+      mediaTypes: ['image'],
+      capabilities: {},
+      limitations: {},
+      refreshedAt: new Date().toISOString(),
+      verification: 'unverified',
+    };
+    const source = snapshot(f.rows.binding.credentialId, [candidate]);
+    source.candidates = { sourceType: 'newapi_managed', candidates: [candidate] };
+    f.database.modelCatalogSync.findUnique.mockResolvedValue(source);
+    f.database.platformModel.findUnique.mockResolvedValueOnce(null as never);
+    f.pricingFetch.mockImplementation(async () => Response.json(managedCatalog()));
+    const imported = await f.service.createModel(
+      { managed: true, source: { syncId: source.id, upstreamModelId: 'managed-image' } },
+      actorId,
+    );
+    expect(imported.status).toBe('published');
+    expect(imported.pricing?.rule.unit).toBe('upstream_cost');
+    expect(imported.modelAlias).toBe('managed-image');
+    expect(f.database.platformModel.create).toHaveBeenCalledTimes(1);
+    const repeated = await f.service.createModel(
+      { managed: true, source: { syncId: source.id, upstreamModelId: 'managed-image' } },
+      actorId,
+    );
+    expect(repeated.id).toBe(imported.id);
+    expect(f.database.platformModel.create).toHaveBeenCalledTimes(1);
+    expect(f.database.pricingVersion.create).toHaveBeenCalledTimes(1);
+  });
 });
+
+/** 合成的 Key 作用域目录，不包含真实定价、凭据或供应商请求。 */
+function managedCatalog(id = 'managed-image') {
+  return {
+    version: 1,
+    currency: 'CNY',
+    quota_per_unit: '500000',
+    usd_to_cny: '7.3',
+    models: [
+      {
+        id,
+        name: '托管图片',
+        media_type: 'image',
+        contract: 'openai-images',
+        available: true,
+        capabilities: { mediaTypes: ['image'] },
+        limitations: {},
+        pricing_version: 'synthetic-version',
+      },
+    ],
+  };
+}

@@ -3,6 +3,7 @@ import {
   formatCnyNanos,
   parseCnyNanos,
   type BillingPriceRule,
+  type MarketplacePriceRule,
   type MediaType,
 } from '@multimodal-canvas/domain';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -41,7 +42,7 @@ type Pricing = {
   id: string;
   revision: number;
   currency: string;
-  rule: BillingPriceRule;
+  rule: MarketplacePriceRule;
   effectiveAt: string;
 };
 /** 管理员可以选择的现有连接；version 缺失时必须手动确认。 */
@@ -64,7 +65,7 @@ type Binding = {
   verifiedAt: string;
 };
 /** 同步来源决定目录读取合同，通用模型与 New API 定价快照分别保存。 */
-type CatalogSourceType = 'models' | 'newapi_pricing';
+type CatalogSourceType = 'models' | 'newapi_pricing' | 'newapi_managed';
 /** 上游原始参考价仅供管理员核对，不换汇、不执行表达式或生成平台售价。 */
 type PricingReference = {
   source: 'newapi_pricing';
@@ -87,6 +88,7 @@ type Candidate = {
   tags?: string[];
   endpointTypes?: string[];
   pricingReference?: PricingReference;
+  managed?: { available: boolean; contract?: string; pricingVersion: string; reason?: string };
 };
 /** 同步状态失败时仍可能保留之前候选，缺失列表不自动删除商品。 */
 type CatalogSync = {
@@ -325,7 +327,8 @@ export function AdminModelsPage({ userId }: { userId: string }) {
 }
 
 /** 可读价格摘要，微额价格不按分舍入。 */
-function priceLabel(rule: BillingPriceRule): string {
+function priceLabel(rule: MarketplacePriceRule): string {
+  if (rule.unit === 'upstream_cost') return '沿用 New API 价格 · 人民币结算';
   return rule.unit === 'per_token'
     ? `输入 ¥${formatCnyNanos(rule.inputPriceNanos)} / 输出 ¥${formatCnyNanos(rule.outputPriceNanos)} · 百万 Token`
     : `¥${formatCnyNanos(rule.unitPriceNanos)} · ${unitLabels[rule.unit]}`;
@@ -432,6 +435,7 @@ function SyncModelsModal({
       ),
   });
   const sync = query.data?.sync;
+  const managed = sourceType === 'newapi_managed';
   const searchText = search.trim().toLocaleLowerCase();
   const candidates = (sync?.candidates ?? []).filter((candidate) =>
     [
@@ -444,7 +448,9 @@ function SyncModelsModal({
     ].some((value) => value?.toLocaleLowerCase().includes(searchText)),
   );
   const selectableIds = candidates
-    .filter((candidate) => !imported.includes(candidate.id))
+    .filter(
+      (candidate) => !imported.includes(candidate.id) && (!managed || candidate.managed?.available),
+    )
     .map((candidate) => candidate.id);
   /** 来源或连接变更后清空批次，避免旧来源的选择、类型和反馈混入新目录。 */
   const resetSelection = (nextSource: CatalogSourceType) => {
@@ -455,7 +461,7 @@ function SyncModelsModal({
     action.setNotice(null);
   };
   return (
-    <Modal title="同步候选并导入草稿" onClose={onClose} busy={action.busy}>
+    <Modal title="同步模型" onClose={onClose} busy={action.busy}>
       <div className="mp-form mp-sync-form">
         <Notice value={action.notice} />
         <QueryState error={credentialError} />
@@ -472,10 +478,14 @@ function SyncModelsModal({
             }}
           >
             <option value="models">通用模型目录</option>
+            <option value="newapi_managed">New API 模型与价格联动</option>
             <option value="newapi_pricing">New API 定价目录</option>
           </select>
           {sourceType === 'newapi_pricing' && (
-            <small>读取此连接的公开定价目录；上游参考价保留美元，平台人民币售价另行设置。</small>
+            <small>仅浏览公开目录。需要直接沿用价格，请选择“New API 模型与价格联动”。</small>
+          )}
+          {managed && (
+            <small>沿用此 Key 对应的 New API 价格，画布人民币钱包结算，无需逐个定价。</small>
           )}
         </label>
         <label className="mg-field">
@@ -514,7 +524,11 @@ function SyncModelsModal({
               setSelected([]);
               await query.refetch();
               if (result.sync.status === 'failed')
-                throw new Error('上游目录同步失败，已保留上次候选。请检查连接后重试。');
+                throw new Error(
+                  managed
+                    ? '联动失败，已保留上次目录。请确认 New API 已升级并开启画布联动，且当前 Key 有效。'
+                    : '上游目录同步失败，已保留上次候选。请检查连接后重试。',
+                );
             }, '候选目录已更新，尚未上架任何模型')
           }
         >
@@ -593,6 +607,7 @@ function SyncModelsModal({
                         disabled={
                           action.busy ||
                           imported.includes(candidate.id) ||
+                          (managed && !candidate.managed?.available) ||
                           sync.status !== 'succeeded'
                         }
                         checked={selected.includes(candidate.id)}
@@ -614,6 +629,17 @@ function SyncModelsModal({
                     </label>
                     <div className="mp-candidate-info">
                       {candidate.description && <p>{candidate.description}</p>}
+                      {managed && (
+                        <p>
+                          {candidate.managed?.available
+                            ? `${candidate.mediaTypes.map((type) => mediaLabels[type]).join(' · ')} · 沿用 New API 价格`
+                            : candidate.managed?.reason === 'missing_pricing'
+                              ? 'New API 尚未配置价格'
+                              : candidate.managed?.reason === 'invalid_model_id'
+                                ? '模型 ID 不符合联动接口的长度或格式要求'
+                                : 'New API 尚未提供此模型可用的调用合同'}
+                        </p>
+                      )}
                       {candidate.vendorName && <p>供应商：{candidate.vendorName}</p>}
                       {!!candidate.tags?.length && <p>标签：{candidate.tags.join(' · ')}</p>}
                       {!!candidate.endpointTypes?.length && (
@@ -626,49 +652,62 @@ function SyncModelsModal({
                   </article>
                 ))}
               </div>
-              <label className="mg-field">
-                <span>导入后的媒体类型</span>
-                <select
-                  aria-label="导入后的媒体类型"
-                  value={mediaType}
-                  disabled={action.busy}
-                  onChange={(event) => setMediaType(event.target.value as MediaType | '')}
-                >
-                  {sourceType === 'newapi_pricing' && (
-                    <option value="">请选择本批模型的媒体类型</option>
-                  )}
-                  {Object.entries(mediaLabels).map(([value, label]) => (
-                    <option value={value} key={value}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-                <small>
-                  本批所选模型使用同一类型。请按真实调用合同确认，名称和端点声明不代表已验证能力。
-                </small>
-              </label>
+              {!managed && (
+                <label className="mg-field">
+                  <span>导入后的媒体类型</span>
+                  <select
+                    aria-label="导入后的媒体类型"
+                    value={mediaType}
+                    disabled={action.busy}
+                    onChange={(event) => setMediaType(event.target.value as MediaType | '')}
+                  >
+                    {sourceType === 'newapi_pricing' && (
+                      <option value="">请选择本批模型的媒体类型</option>
+                    )}
+                    {Object.entries(mediaLabels).map(([value, label]) => (
+                      <option value={value} key={value}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                  <small>
+                    本批所选模型使用同一类型。请按真实调用合同确认，名称和端点声明不代表已验证能力。
+                  </small>
+                </label>
+              )}
               <button
                 className="mg-button is-primary"
                 type="button"
                 disabled={
-                  action.busy || selected.length === 0 || !mediaType || sync.status !== 'succeeded'
+                  action.busy ||
+                  selected.length === 0 ||
+                  (!managed && !mediaType) ||
+                  sync.status !== 'succeeded'
                 }
                 onClick={() =>
-                  void action.execute(async () => {
-                    if (!mediaType) throw new Error('请先确认本批模型的媒体类型');
-                    for (const id of selected) {
-                      await managementRequest('/admin/model-marketplace/models', {
-                        method: 'POST',
-                        body: { source: { syncId: sync.id, upstreamModelId: id }, mediaType },
-                      });
-                      setImported((current) => [...current, id]);
-                      setSelected((current) => current.filter((value) => value !== id));
-                    }
-                    await onImported();
-                  }, '所选模型已导入为草稿')
+                  void action.execute(
+                    async () => {
+                      if (!managed && !mediaType) throw new Error('请先确认本批模型的媒体类型');
+                      for (const id of selected) {
+                        await managementRequest('/admin/model-marketplace/models', {
+                          method: 'POST',
+                          body: {
+                            source: { syncId: sync.id, upstreamModelId: id },
+                            ...(managed ? { managed: true } : { mediaType }),
+                          },
+                        });
+                        setImported((current) => [...current, id]);
+                        setSelected((current) => current.filter((value) => value !== id));
+                      }
+                      await onImported();
+                    },
+                    managed
+                      ? '所选模型已联动，价格沿用 New API；已有暂停状态保持不变'
+                      : '所选模型已导入为草稿',
+                  )
                 }
               >
-                导入所选 {selected.length} 个模型
+                {managed ? '联动所选' : '导入所选'} {selected.length} 个模型
               </button>
             </>
           )}
@@ -1218,6 +1257,9 @@ function PricingForm({
   onSaved: (model?: AdminModel) => Promise<void>;
 }) {
   const action = useAction();
+  const [mode, setMode] = useState<'manual' | 'newapi'>(
+    model.pricing?.rule.unit === 'upstream_cost' ? 'newapi' : 'manual',
+  );
   const [unit, setUnit] = useState<BillingPriceRule['unit']>('per_call');
   const [price, setPrice] = useState('');
   const [outputPrice, setOutputPrice] = useState('');
@@ -1309,153 +1351,200 @@ function PricingForm({
     <section className="mg-section">
       <h2>新建价格版本</h2>
       <Notice value={action.notice} />
-      <form className="mp-form" onSubmit={submit}>
-        <label className="mg-field">
-          <span>收费单位</span>
-          <select
-            value={unit}
-            onChange={(event) => setUnit(event.target.value as BillingPriceRule['unit'])}
+      <label className="mg-field">
+        <span>价格来源</span>
+        <select
+          value={mode}
+          onChange={(event) => setMode(event.target.value as 'manual' | 'newapi')}
+        >
+          <option value="newapi">沿用 New API 价格</option>
+          <option value="manual">手工定价</option>
+        </select>
+      </label>
+      {mode === 'newapi' ? (
+        <div className="mp-form">
+          <p className="mg-muted">
+            价格由 New API
+            维护，无需填写单价。提交前确认人民币预算，交付后按最终账单结算，扣款不超过确认金额。
+          </p>
+          {!model.activeBindingId && (
+            <p className="mg-muted">请先完成调用绑定，或从“New API 模型与价格联动”导入。</p>
+          )}
+          <button
+            type="button"
+            className="mg-button is-primary"
+            disabled={
+              action.busy || !model.activeBindingId || model.pricing?.rule.unit === 'upstream_cost'
+            }
+            onClick={() =>
+              void action.execute(async () => {
+                await managementRequest('/admin/pricing-versions', {
+                  method: 'POST',
+                  body: {
+                    platformModelId: model.id,
+                    currency: 'CNY',
+                    rule: { unit: 'upstream_cost', meteringSource: 'newapi_receipt' },
+                    activate: true,
+                  },
+                });
+                await refresh();
+              }, '已沿用 New API 价格，无需重复定价')
+            }
           >
-            {units.map((value) => (
-              <option key={value} value={value}>
-                {unitLabels[value]}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div className="mp-grid">
+            {model.pricing?.rule.unit === 'upstream_cost'
+              ? '当前沿用 New API 价格'
+              : '启用 New API 价格'}
+          </button>
+        </div>
+      ) : (
+        <form className="mp-form" onSubmit={submit}>
           <label className="mg-field">
-            <span>
-              {unit === 'per_token'
-                ? '输入单价（元 / 百万 Token）'
-                : `单价（元 / ${unit === 'per_call' ? '次' : unit === 'per_image' ? '张' : unit === 'per_second' ? '秒' : '字符'}）`}
-            </span>
-            <input
-              required
-              inputMode="decimal"
-              pattern="(?:0|[1-9][0-9]*)(?:\.[0-9]{1,9})?"
-              value={price}
-              onChange={(event) => setPrice(event.target.value)}
-              placeholder="例如 0.002；免费请明确填写 0"
-            />
+            <span>收费单位</span>
+            <select
+              value={unit}
+              onChange={(event) => setUnit(event.target.value as BillingPriceRule['unit'])}
+            >
+              {units.map((value) => (
+                <option key={value} value={value}>
+                  {unitLabels[value]}
+                </option>
+              ))}
+            </select>
           </label>
-          {unit === 'per_token' && (
+          <div className="mp-grid">
             <label className="mg-field">
-              <span>输出单价（元 / 百万 Token）</span>
+              <span>
+                {unit === 'per_token'
+                  ? '输入单价（元 / 百万 Token）'
+                  : `单价（元 / ${unit === 'per_call' ? '次' : unit === 'per_image' ? '张' : unit === 'per_second' ? '秒' : '字符'}）`}
+              </span>
               <input
                 required
                 inputMode="decimal"
-                value={outputPrice}
-                onChange={(event) => setOutputPrice(event.target.value)}
+                pattern="(?:0|[1-9][0-9]*)(?:\.[0-9]{1,9})?"
+                value={price}
+                onChange={(event) => setPrice(event.target.value)}
+                placeholder="例如 0.002；免费请明确填写 0"
+              />
+            </label>
+            {unit === 'per_token' && (
+              <label className="mg-field">
+                <span>输出单价（元 / 百万 Token）</span>
+                <input
+                  required
+                  inputMode="decimal"
+                  value={outputPrice}
+                  onChange={(event) => setOutputPrice(event.target.value)}
+                />
+              </label>
+            )}
+          </div>
+          {(unit === 'per_image' || unit === 'per_second') && (
+            <label className="mg-field">
+              <span>单个子调用最多交付数量</span>
+              <input
+                required
+                type="number"
+                min={1}
+                max={10000}
+                value={maxQuantity}
+                onChange={(event) => setMaxQuantity(event.target.value)}
               />
             </label>
           )}
-        </div>
-        {(unit === 'per_image' || unit === 'per_second') && (
-          <label className="mg-field">
-            <span>单个子调用最多交付数量</span>
-            <input
-              required
-              type="number"
-              min={1}
-              max={10000}
-              value={maxQuantity}
-              onChange={(event) => setMaxQuantity(event.target.value)}
-            />
-          </label>
-        )}
-        {unit === 'per_second' && (
-          <div className="mp-grid">
+          {unit === 'per_second' && (
+            <div className="mp-grid">
+              <label className="mg-field">
+                <span>每份输出最长秒数</span>
+                <input
+                  required
+                  inputMode="decimal"
+                  value={maxDuration}
+                  onChange={(event) => setMaxDuration(event.target.value)}
+                />
+              </label>
+              <label className="mg-field">
+                <span>时长计量来源</span>
+                <select value={source} onChange={(event) => setSource(event.target.value)}>
+                  <option value="output_metadata">已交付文件时长</option>
+                  <option value="provider_usage">上游已验证用量</option>
+                </select>
+              </label>
+              <label className="mg-field">
+                <span>时长取整</span>
+                <select value={rounding} onChange={(event) => setRounding(event.target.value)}>
+                  <option value="exact">按实际时长</option>
+                  <option value="ceil_second">每份向上取整到秒</option>
+                </select>
+              </label>
+            </div>
+          )}
+          {unit === 'per_token' && (
+            <div className="mp-grid">
+              <label className="mg-field">
+                <span>最大输入 Token</span>
+                <input
+                  required
+                  type="number"
+                  min={0}
+                  value={maxInput}
+                  onChange={(event) => setMaxInput(event.target.value)}
+                />
+              </label>
+              <label className="mg-field">
+                <span>最大输出 Token</span>
+                <input
+                  required
+                  type="number"
+                  min={0}
+                  value={maxOutput}
+                  onChange={(event) => setMaxOutput(event.target.value)}
+                />
+              </label>
+            </div>
+          )}
+          {unit === 'per_character' && (
             <label className="mg-field">
-              <span>每份输出最长秒数</span>
-              <input
-                required
-                inputMode="decimal"
-                value={maxDuration}
-                onChange={(event) => setMaxDuration(event.target.value)}
-              />
-            </label>
-            <label className="mg-field">
-              <span>时长计量来源</span>
-              <select value={source} onChange={(event) => setSource(event.target.value)}>
-                <option value="output_metadata">已交付文件时长</option>
-                <option value="provider_usage">上游已验证用量</option>
-              </select>
-            </label>
-            <label className="mg-field">
-              <span>时长取整</span>
-              <select value={rounding} onChange={(event) => setRounding(event.target.value)}>
-                <option value="exact">按实际时长</option>
-                <option value="ceil_second">每份向上取整到秒</option>
-              </select>
-            </label>
-          </div>
-        )}
-        {unit === 'per_token' && (
-          <div className="mp-grid">
-            <label className="mg-field">
-              <span>最大输入 Token</span>
+              <span>最大输入字符数</span>
               <input
                 required
                 type="number"
-                min={0}
-                value={maxInput}
-                onChange={(event) => setMaxInput(event.target.value)}
+                min={1}
+                value={maxCharacters}
+                onChange={(event) => setMaxCharacters(event.target.value)}
               />
             </label>
+          )}
+          <details>
+            <summary>按规格覆盖单价（高级）</summary>
             <label className="mg-field">
-              <span>最大输出 Token</span>
-              <input
-                required
-                type="number"
-                min={0}
-                value={maxOutput}
-                onChange={(event) => setMaxOutput(event.target.value)}
+              <span>规格价格 JSON 数组</span>
+              <textarea
+                className="mp-code"
+                rows={5}
+                value={variants}
+                onChange={(event) => setVariants(event.target.value)}
+                placeholder={'[{"parameters":{"size":"1024x1024"},"unitPriceNanos":"200000000"}]'}
               />
+              <small>
+                金额使用十亿分之一元整数字符串；有规格价格时必须精确匹配，不回退默认价格。
+              </small>
             </label>
-          </div>
-        )}
-        {unit === 'per_character' && (
-          <label className="mg-field">
-            <span>最大输入字符数</span>
+          </details>
+          <label className="mp-choice">
             <input
-              required
-              type="number"
-              min={1}
-              value={maxCharacters}
-              onChange={(event) => setMaxCharacters(event.target.value)}
+              type="checkbox"
+              checked={activate}
+              onChange={(event) => setActivate(event.target.checked)}
             />
+            保存后启用此价格版本
           </label>
-        )}
-        <details>
-          <summary>按规格覆盖单价（高级）</summary>
-          <label className="mg-field">
-            <span>规格价格 JSON 数组</span>
-            <textarea
-              className="mp-code"
-              rows={5}
-              value={variants}
-              onChange={(event) => setVariants(event.target.value)}
-              placeholder={'[{"parameters":{"size":"1024x1024"},"unitPriceNanos":"200000000"}]'}
-            />
-            <small>
-              金额使用十亿分之一元整数字符串；有规格价格时必须精确匹配，不回退默认价格。
-            </small>
-          </label>
-        </details>
-        <label className="mp-choice">
-          <input
-            type="checkbox"
-            checked={activate}
-            onChange={(event) => setActivate(event.target.checked)}
-          />
-          保存后启用此价格版本
-        </label>
-        <p className="mg-muted">缺少实际计量的任务将待核实。定价不会改动已确认任务的价格。</p>
-        <button className="mg-button is-primary" type="submit" disabled={action.busy}>
-          {action.busy ? '正在保存…' : '保存价格版本'}
-        </button>
-      </form>
+          <p className="mg-muted">缺少实际计量的任务将待核实。定价不会改动已确认任务的价格。</p>
+          <button className="mg-button is-primary" type="submit" disabled={action.busy}>
+            {action.busy ? '正在保存…' : '保存价格版本'}
+          </button>
+        </form>
+      )}
       <h3>价格历史</h3>
       <QueryState
         loading={history.isLoading}

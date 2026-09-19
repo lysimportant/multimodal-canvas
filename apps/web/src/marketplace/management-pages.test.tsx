@@ -78,6 +78,97 @@ afterEach(() => {
 });
 
 describe('平台模型后台', () => {
+  it('New API 联动直接导入可用合同，无需重复填写媒体类型或单价', async () => {
+    const sync = {
+      id: 'sync-managed',
+      status: 'succeeded',
+      sourceType: 'newapi_managed',
+      missing: [],
+      createdAt: '2026-09-19T00:00:00.000Z',
+      candidates: [
+        {
+          id: 'managed-video',
+          name: '托管视频',
+          mediaTypes: ['video'],
+          managed: { available: true, contract: 'newapi-video-v1', pricingVersion: 'v1' },
+        },
+        {
+          id: 'unknown-profile',
+          name: '待确认协议',
+          mediaTypes: [],
+          managed: { available: false, reason: 'missing_profile', pricingVersion: 'v1' },
+        },
+      ],
+    };
+    vi.mocked(managementRequest).mockImplementation(async (path, options) => {
+      if (path === '/settings/ai/credentials') return { credentials: [credential] };
+      if (path.startsWith('/admin/model-marketplace/models?')) return { items: [], total: 0 };
+      if (path.startsWith('/admin/model-marketplace/sync?'))
+        return { sync: path.includes('newapi_managed') ? sync : null };
+      if (path === '/admin/model-marketplace/models' && options?.method === 'POST')
+        return { model: { ...initialModel, status: 'published' } };
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const { client } = renderPage(<AdminModelsPage userId={userId} />);
+    await waitFor(() =>
+      expect(client.getQueryData(['management', userId, 'model-credentials'])).toBeDefined(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: '同步导入' }));
+    fireEvent.change(screen.getByLabelText('目录来源'), { target: { value: 'newapi_managed' } });
+    expect(await screen.findByText('托管视频')).toBeVisible();
+    expect(screen.queryByLabelText('导入后的媒体类型')).not.toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: '选择 unknown-profile' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('checkbox', { name: '选择 managed-video' }));
+    fireEvent.click(screen.getByRole('button', { name: '联动所选 1 个模型' }));
+    await waitFor(() =>
+      expect(managementRequest).toHaveBeenCalledWith('/admin/model-marketplace/models', {
+        method: 'POST',
+        body: {
+          managed: true,
+          source: { syncId: 'sync-managed', upstreamModelId: 'managed-video' },
+        },
+      }),
+    );
+    expect(await screen.findByText(/所选模型已联动/)).toBeVisible();
+  });
+
+  it('已有绑定可直接启用 New API 价格，表单不要求单价', async () => {
+    let model = { ...initialModel, activeBindingId: 'binding-existing' };
+    vi.mocked(managementRequest).mockImplementation(async (path, options) => {
+      if (path === '/settings/ai/credentials') return { credentials: [credential] };
+      if (path.startsWith('/admin/model-marketplace/models?')) return { items: [model], total: 1 };
+      if (path === `/admin/model-marketplace/models/${model.id}`) return { model };
+      if (path.startsWith('/admin/pricing-versions?')) return { items: [], total: 0 };
+      if (path === '/admin/pricing-versions' && options?.method === 'POST') {
+        model = {
+          ...model,
+          pricing: {
+            id: 'managed-price',
+            revision: 1,
+            rule: { unit: 'upstream_cost', meteringSource: 'newapi_receipt' },
+          },
+        };
+        return { pricing: model.pricing };
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    renderPage(<AdminModelsPage userId={userId} />);
+    fireEvent.click(await screen.findByRole('button', { name: '管理模型' }));
+    fireEvent.click(screen.getByRole('button', { name: '平台定价' }));
+    fireEvent.change(screen.getByLabelText('价格来源'), { target: { value: 'newapi' } });
+    expect(screen.queryByLabelText('单价（元 / 次）')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '启用 New API 价格' }));
+    expect(await screen.findByText('已沿用 New API 价格，无需重复定价')).toBeVisible();
+    expect(managementRequest).toHaveBeenCalledWith('/admin/pricing-versions', {
+      method: 'POST',
+      body: {
+        platformModelId: model.id,
+        currency: 'CNY',
+        rule: { unit: 'upstream_cost', meteringSource: 'newapi_receipt' },
+        activate: true,
+      },
+    });
+  });
   it('手工创建、精确绑定、微额定价和上架形成完整流程', async () => {
     let model = { ...initialModel };
     let created = false;
@@ -498,7 +589,7 @@ describe('平台模型后台', () => {
     fireEvent.click(within(pluginItem).getByText('上游参考价格 · USD'));
     expect(within(pluginItem).getByText('插件计费参考不完整，需到上游核实。')).toBeVisible();
     expect(within(pluginItem).queryByText(/USD \/ 次/)).not.toBeInTheDocument();
-    expect(screen.getByText(/平台人民币售价另行设置/)).toBeVisible();
+    expect(screen.getByText(/需要直接沿用价格/)).toBeVisible();
   });
 });
 

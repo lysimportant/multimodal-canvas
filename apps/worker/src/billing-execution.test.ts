@@ -15,6 +15,8 @@ const snapshot: RunSnapshot = {
   canvasRevision: 1,
   targetNodeId: 'node_image',
   modelAlias: 'exact-upstream-id',
+  credentialId: '123e4567-e89b-42d3-a456-426614174205',
+  credentialVersion: 1,
   parameters: {},
   submittedAt: '2026-09-19T00:00:00.000Z',
   edges: [],
@@ -127,6 +129,197 @@ function fixture(
 }
 
 describe('Worker wallet execution adapter', () => {
+  it('托管模型按原请求回执结算，保留冻结换算并封顶，重放不再查询上游', async () => {
+    const f = fixture();
+    Object.assign(f.item, {
+      quoteInput: managedQuote(),
+      maximumNanos: new Prisma.Decimal('14600000'),
+    });
+    const request = {
+      ...providerJob,
+      payload: {
+        deliveryState: 'archived',
+        newApiRequestId: 'original-newapi-request',
+        pollNewApiRequestId: 'must-not-query',
+      },
+    };
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(Response.json(managedReceipt('2000')));
+    const getProviderCredentials = vi.fn(async () => ({
+      baseUrl: 'https://synthetic.invalid/v1',
+      apiKey: 'synthetic',
+    }));
+    const billing = new PrismaWorkerBilling(f.service as unknown as PrismaBillingService, {
+      fetchImpl,
+      getProviderCredentials,
+    });
+    await billing.deliver('run_original', 'node_image', snapshot, result, request);
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+      'https://synthetic.invalid/v1/canvas/receipts/original-newapi-request',
+    );
+    expect(f.service.resolveItem).toHaveBeenCalledWith(
+      'item_1',
+      expect.objectContaining({
+        status: 'SETTLED',
+        chargeNanos: '14600000',
+        evidence: expect.objectContaining({
+          settlement: expect.objectContaining({ capped: true, uncappedChargeNanos: '29200000' }),
+          conversion: { quotaPerUnit: '500000', usdToCny: '7.3' },
+        }),
+      }),
+    );
+    expect(f.service.recordCost).toHaveBeenCalledWith('item_1', {
+      amount: '0.004000000000',
+      currency: 'USD',
+      source: 'newapi_receipt',
+    });
+    await billing.deliver('run_original', 'node_image', snapshot, result, request);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['settled', 'refunded'] as const)(
+    '未交付托管项也记录 %s 原回执成本，不扣用户或释放冻结',
+    async (status) => {
+      const f = fixture();
+      Object.assign(f.item, {
+        quoteInput: managedQuote(),
+        maximumNanos: new Prisma.Decimal('14600000'),
+      });
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        Response.json({
+          ...managedReceipt(status === 'refunded' ? '0' : '1'),
+          status,
+          task_id: 'original-task',
+          quota_per_unit: '3',
+        }),
+      );
+      const getProviderCredentials = vi.fn(async () => ({
+        baseUrl: 'https://synthetic.invalid/v1',
+        apiKey: 'synthetic',
+      }));
+      const billing = new PrismaWorkerBilling(f.service as unknown as PrismaBillingService, {
+        fetchImpl,
+        getProviderCredentials,
+      });
+      await billing.recordCost('run_original', 'node_image', snapshot, {
+        ...providerJob,
+        platformJobId: 'original-task',
+        payload: { deliveryState: 'received', newApiRequestId: 'original-newapi-request' },
+      });
+      expect(getProviderCredentials).toHaveBeenCalledWith({
+        credentialId: snapshot.credentialId,
+        credentialVersion: 1,
+      });
+      expect(f.service.recordCost).toHaveBeenCalledWith('item_1', {
+        amount: status === 'refunded' ? '0.000000000000' : '0.333333333334',
+        currency: 'USD',
+        source: 'newapi_receipt',
+      });
+      expect(f.service.resolveItem).not.toHaveBeenCalled();
+      expect(f.item.status).toBe('HELD');
+    },
+  );
+
+  it.each(['pending', 'wrong_request', 'wrong_task', 'wrong_model', 'missing', 'network'])(
+    '未交付托管成本 %s 保持未知，不接受其他请求的费用',
+    async (kind) => {
+      const f = fixture();
+      Object.assign(f.item, {
+        quoteInput: managedQuote(),
+        maximumNanos: new Prisma.Decimal('14600000'),
+      });
+      const receipt = {
+        ...managedReceipt(),
+        task_id: 'original-task',
+        ...(kind === 'pending' ? { status: 'pending', settled_at: undefined } : {}),
+        ...(kind === 'wrong_request' ? { request_id: 'wrong-request' } : {}),
+        ...(kind === 'wrong_task' ? { task_id: 'wrong-task' } : {}),
+        ...(kind === 'wrong_model' ? { model: 'wrong-model' } : {}),
+      };
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(Response.json(receipt));
+      if (kind === 'network')
+        fetchImpl.mockRejectedValue(new Error('synthetic transport unavailable'));
+      const billing = new PrismaWorkerBilling(f.service as unknown as PrismaBillingService, {
+        fetchImpl,
+        getProviderCredentials: async () => ({
+          baseUrl: 'https://synthetic.invalid/v1',
+          apiKey: 'synthetic',
+        }),
+      });
+      await billing.recordCost('run_original', 'node_image', snapshot, {
+        ...providerJob,
+        platformJobId: 'original-task',
+        payload: kind === 'missing' ? {} : { newApiRequestId: 'original-newapi-request' },
+      });
+      expect(f.service.recordCost).toHaveBeenCalledWith('item_1', undefined);
+      expect(f.service.resolveItem).not.toHaveBeenCalled();
+      expect(fetchImpl).toHaveBeenCalledTimes(kind === 'missing' ? 0 : 1);
+    },
+  );
+
+  it('已结算后的成本修复沿用保存回执，停止上游访问且不会采用新金额', async () => {
+    const f = fixture();
+    Object.assign(f.item, {
+      quoteInput: managedQuote(),
+      maximumNanos: new Prisma.Decimal('14600000'),
+      status: 'SETTLED',
+      deliveryEvidence: { newApiReceipt: managedReceipt('500') },
+    });
+    const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(new Error('must not query'));
+    const billing = new PrismaWorkerBilling(f.service as unknown as PrismaBillingService, {
+      fetchImpl,
+    });
+    await billing.recordCost('run_original', 'node_image', snapshot, {
+      ...providerJob,
+      payload: { newApiRequestId: 'original-newapi-request' },
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(f.service.recordCost).toHaveBeenCalledWith('item_1', {
+      amount: '0.001000000000',
+      currency: 'USD',
+      source: 'newapi_receipt',
+    });
+    expect(f.service.resolveItem).not.toHaveBeenCalled();
+  });
+
+  it.each(['pending', 'wrong_request', 'wrong_task', 'wrong_model', 'wrong_unit', 'missing'])(
+    '托管回执 %s 不能冒充最终账单',
+    async (kind) => {
+      const f = fixture();
+      Object.assign(f.item, {
+        quoteInput: managedQuote(),
+        maximumNanos: new Prisma.Decimal('14600000'),
+      });
+      const receipt = {
+        ...managedReceipt(),
+        ...(kind === 'pending' ? { status: 'pending', settled_at: undefined } : {}),
+        ...(kind === 'wrong_request' ? { request_id: 'foreign-request' } : {}),
+        ...(kind === 'wrong_task' ? { task_id: 'foreign-task' } : {}),
+        ...(kind === 'wrong_model' ? { model: 'foreign-model' } : {}),
+        ...(kind === 'wrong_unit' ? { quota_per_unit: '1000000' } : {}),
+      };
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(Response.json(receipt));
+      const billing = new PrismaWorkerBilling(f.service as unknown as PrismaBillingService, {
+        fetchImpl,
+        getProviderCredentials: async () => ({
+          baseUrl: 'https://synthetic.invalid/v1',
+          apiKey: 'synthetic',
+        }),
+      });
+      await expect(
+        billing.deliver('run_original', 'node_image', snapshot, result, {
+          ...providerJob,
+          ...(kind === 'wrong_task' ? { platformJobId: 'expected-task' } : {}),
+          payload: kind === 'missing' ? {} : { newApiRequestId: 'original-newapi-request' },
+        }),
+      ).rejects.toMatchObject({ code: 'newapi_receipt_pending' });
+      expect(f.item.status).toBe('PENDING_VERIFICATION');
+      expect(f.item.deliveryEvidence).toMatchObject({ assetId: result.asset!.assetId });
+      expect(f.service.recordCost).not.toHaveBeenCalled();
+      expect(fetchImpl).toHaveBeenCalledTimes(kind === 'missing' ? 0 : 1);
+    },
+  );
   it('records received cost without settling or releasing an undelivered item', async () => {
     const f = fixture();
     await f.billing.recordCost('run_original', 'node_image', snapshot, {
@@ -348,3 +541,39 @@ describe('Worker wallet execution adapter', () => {
     ).toBe(false);
   });
 });
+
+/** 合成预估冻结的是人民币预算及换算，不是 New API 固定单价。 */
+function managedQuote() {
+  return {
+    version: 2,
+    currency: 'CNY',
+    rule: { unit: 'upstream_cost', meteringSource: 'newapi_receipt' },
+    quantity: 1,
+    capNanos: '14600000',
+    estimate: {
+      version: 1,
+      model: 'exact-upstream-id',
+      group: 'estimate-group',
+      pricing_version: 'estimate-version',
+      estimated_quota: '1000',
+      quota_per_unit: '500000',
+      usd_to_cny: '7.3',
+      expires_at: '2026-09-19T00:05:00.000Z',
+      estimate_only: true,
+    },
+  };
+}
+
+/** 账单可来自执行时最终分组，必须属于原模型、请求和配额单位。 */
+function managedReceipt(quota = '500') {
+  return {
+    version: 1,
+    request_id: 'original-newapi-request',
+    model: 'exact-upstream-id',
+    group: 'actual-group',
+    status: 'settled',
+    quota,
+    quota_per_unit: '500000',
+    settled_at: '2026-09-19T00:01:00.000Z',
+  };
+}

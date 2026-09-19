@@ -11,6 +11,7 @@ import {
   runJobDataSchema,
   runResultSchema,
   frozenPromptMentionSchema,
+  newApiRequestIdSchema,
   type NodeTiming,
   type ProviderJob,
   type RequestPromptRecord,
@@ -26,6 +27,7 @@ import {
 import {
   MockProvider,
   NewApiProvider,
+  NewApiProviderError,
   NewApiVideoProvider,
   resolveProviderMentions,
   type NewApiProviderRequest,
@@ -2198,7 +2200,7 @@ export function createRunWorker(options: {
   return { queue, worker };
 }
 
-/** Preserve an asynchronous provider identity even when polling or download fails. */
+/** 错误持久化保留原调用身份；网关 ID 只认 Provider 校验过的属性，正文不能提升为查账身份。 */
 export function attachProviderErrorMetadata(providerJob: ProviderJob, error: unknown): ProviderJob {
   if (!error || typeof error !== 'object') return providerJob;
   const candidate = error as { platformJobId?: unknown; providerPayload?: unknown };
@@ -2212,15 +2214,31 @@ export function attachProviderErrorMetadata(providerJob: ProviderJob, error: unk
     !Array.isArray(candidate.providerPayload)
       ? (candidate.providerPayload as Record<string, unknown>)
       : undefined;
-  if (!platformJobId && !providerPayload) return providerJob;
+  const requestMetadata =
+    error instanceof NewApiProviderError
+      ? sanitizeProviderJobPayload({
+          requestId: providerJob.payload?.requestId ?? error.requestId,
+          newApiRequestId: newApiRequestIdSchema.safeParse(
+            providerJob.payload?.newApiRequestId ?? error.newApiRequestId,
+          ).success
+            ? (providerJob.payload?.newApiRequestId ?? error.newApiRequestId)
+            : undefined,
+          pollRequestId: error.pollRequestId,
+          pollNewApiRequestId: newApiRequestIdSchema.safeParse(error.pollNewApiRequestId).success
+            ? error.pollNewApiRequestId
+            : undefined,
+        })
+      : undefined;
+  if (!platformJobId && !providerPayload && !requestMetadata) return providerJob;
   return {
     ...providerJob,
     ...(platformJobId ? { platformJobId } : {}),
-    ...(providerPayload
+    ...(providerPayload || requestMetadata
       ? {
           payload: {
             ...(providerJob.payload ?? {}),
             ...(sanitizeProviderJobPayload({ statusResponse: providerPayload }) ?? {}),
+            ...(requestMetadata ?? {}),
           },
         }
       : {}),
@@ -2246,6 +2264,9 @@ export function sanitizeProviderJobPayload(value: unknown): Record<string, unkno
     'code',
     'errorCode',
     'requestId',
+    'newApiRequestId',
+    'pollRequestId',
+    'pollNewApiRequestId',
     'retryable',
     'attempt',
     'workflowNodeId',
@@ -2800,7 +2821,9 @@ function createProcessPersistence(): {
   if (!persistence) return {};
   return {
     persistence,
-    billing: new PrismaWorkerBilling(new PrismaBillingService(persistence.prisma)),
+    billing: new PrismaWorkerBilling(new PrismaBillingService(persistence.prisma), {
+      getProviderCredentials: (reference) => persistence.getProviderCredentials(reference),
+    }),
     resolveDatabaseRunId: (runId) => databaseRunId(runId),
     // A production run must not be reported as successful when its durable
     // lifecycle or usage record could not be written.

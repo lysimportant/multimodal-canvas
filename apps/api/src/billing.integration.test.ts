@@ -1001,6 +1001,80 @@ integrationDescribe('人民币报价、钱包及 outbox（隔离 PostgreSQL + Re
     expect(await prisma.modelBinding.count({ where: { platformModelId: ctx.modelId } })).toBe(2);
   }, 20_000);
 
+  it('托管导入在真实数据库保持唯一身份、人工字段、价格和暂停状态', async () => {
+    const catalog = {
+      version: 1,
+      currency: 'CNY',
+      quota_per_unit: '500000',
+      usd_to_cny: '7.3',
+      models: [
+        {
+          id: 'managed-exact-image',
+          name: '合成托管图片',
+          media_type: 'image',
+          contract: 'openai-images',
+          available: true,
+          capabilities: { mediaTypes: ['image'], mentionMediaTypes: ['text'] },
+          limitations: {},
+          pricing_version: 'synthetic-v1',
+        },
+      ],
+    };
+    pricingFetch.mockImplementation(async () => Response.json(catalog));
+    const synced = await marketplace.sync(credentialId, adminId, 'newapi_managed');
+    expect(synced.status).toBe('succeeded');
+    const input = {
+      managed: true,
+      source: { syncId: synced.id, upstreamModelId: 'managed-exact-image' },
+    };
+    const first = await marketplace.createModel(input, adminId);
+    expect(first).toMatchObject({
+      status: 'published',
+      availability: 'available',
+      pricing: { rule: { unit: 'upstream_cost' } },
+    });
+    await marketplace.updateModel(first.id, {
+      name: '保留人工名',
+      description: '保留人工介绍',
+      status: 'paused',
+    });
+    const fresh = await marketplace.sync(credentialId, adminId, 'newapi_managed');
+    const second = await marketplace.createModel(
+      { ...input, source: { ...input.source, syncId: fresh.id } },
+      adminId,
+    );
+    expect(second).toMatchObject({
+      id: first.id,
+      name: '保留人工名',
+      description: '保留人工介绍',
+      status: 'paused',
+    });
+    expect(await prisma.pricingVersion.count({ where: { platformModelId: first.id } })).toBe(1);
+    expect(await prisma.modelBinding.count({ where: { platformModelId: first.id } })).toBe(1);
+    await marketplace.createPricing(
+      {
+        platformModelId: first.id,
+        rule: { unit: 'per_call', meteringSource: 'fixed', unitPriceNanos: '100' },
+        activate: true,
+      },
+      adminId,
+    );
+    expect((await marketplace.createModel(input, adminId)).pricing?.rule.unit).toBe('per_call');
+    const user = await fixture('managed-permission');
+    const denied = await app.inject({
+      method: 'POST',
+      url: '/v1/admin/model-marketplace/models',
+      headers: user.headers,
+      payload: input,
+    });
+    expect(denied.statusCode).toBe(403);
+    pricingFetch.mockImplementation(async () => Response.json({ ...catalog, models: [] }));
+    await marketplace.sync(credentialId, adminId, 'newapi_managed');
+    expect((await marketplace.getAdmin(first.id)).availability).toBe('needs_review');
+    expect(await prisma.platformModel.findUnique({ where: { id: first.id } })).not.toBeNull();
+    pricingFetch.mockImplementation(async () => Response.json({ success: true, data: [] }));
+  }, 20_000);
+
   it('钱包管理只接受管理员会话，用户无法读取他人逐项账单', async () => {
     const ctx = await fixture('permissions');
     const adjustment = {

@@ -95,6 +95,14 @@ export function QuoteDialog({ ownerId }: { ownerId?: string }) {
       >
         <h2 id="billing-quote-title">确认本次生成费用</h2>
         <p>费用按成功交付与已发布价格结算，最高扣费不超过本次确认额度。</p>
+        {current.quotes.some((quote) =>
+          quote.items.some((item) => item.unit === 'upstream_cost'),
+        ) && (
+          <p>
+            New API
+            模型按执行时价格和最终账单结算，使用本次报价的人民币换算。当前金额为预算授权，实际扣款不超过确认额度。
+          </p>
+        )}
         <div className="billing-quote-items">
           {current.quotes.flatMap((quote, index) =>
             quote.items.map((item) => (
@@ -146,6 +154,7 @@ export function QuoteDialog({ ownerId }: { ownerId?: string }) {
 /** 报价只展示平台售价的计量方式，不暴露上游成本。 */
 const quoteUnitLabels = {
   per_call: '按次',
+  upstream_cost: '沿用 New API 价格',
   per_image: '按张',
   per_second: '按秒',
   per_token: '按 Token',

@@ -45,7 +45,13 @@ describe('普通 NewAPI 成功请求关联', () => {
             id: 'completion-body-id',
             request_id: 'body-request-id',
           }),
-          { headers: { 'content-type': 'application/json', 'x-request-id': 'header-request-id' } },
+          {
+            headers: {
+              'content-type': 'application/json',
+              'x-request-id': 'header-request-id',
+              'X-Oneapi-Request-Id': 'newapi-create-request',
+            },
+          },
         ),
       );
       const provider = new NewApiProvider({
@@ -64,7 +70,7 @@ describe('普通 NewAPI 成功请求关联', () => {
       });
       expect(execution.providerJob).toEqual({
         provider: 'newapi',
-        payload: { requestId: 'header-request-id' },
+        payload: { requestId: 'header-request-id', newApiRequestId: 'newapi-create-request' },
       });
       expect(execution.providerJob).not.toHaveProperty('platformJobId');
       expect(execution.providerJob).not.toHaveProperty('id');
@@ -86,6 +92,7 @@ describe('普通 NewAPI 成功请求关联', () => {
           JSON.stringify({
             ...correlationPayload('text'),
             [field]: 'chatcmpl-body-id',
+            newApiRequestId: 'body-cannot-set-gateway-id',
           }),
           { headers: { 'content-type': 'application/json' } },
         ),
@@ -166,4 +173,93 @@ describe('普通 NewAPI 成功请求关联', () => {
     expect(execution).not.toHaveProperty('providerJob');
     expect(execution.usage).toMatchObject({ metadata: { total_tokens: 7 } });
   });
+
+  it('二进制音频也保留独立网关身份，不把它当作通用请求 ID', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(new Uint8Array([1, 2, 3]), {
+        headers: { 'content-type': 'audio/mpeg', 'x-oneapi-request-id': 'gateway-audio-request' },
+      }),
+    );
+    const provider = new NewApiProvider({
+      baseUrl: 'https://newapi.example/v1',
+      apiKey: 'synthetic-private-key',
+      fetchImpl,
+    });
+    const result = await provider.execute({ snapshot: correlationSnapshot('audio') });
+    expect(result.providerJob?.payload).toEqual({ newApiRequestId: 'gateway-audio-request' });
+    expect(result.usage).toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['http', 'read', 'oversize', 'output'] as const)(
+    '%s 失败保留已收到的网关响应头，错误正文不能替换身份',
+    async (failure) => {
+      const response = new Response(
+        JSON.stringify(
+          failure === 'output'
+            ? {}
+            : {
+                error: {
+                  code: 'invalid_request_error',
+                  message: 'rejected',
+                  request_id: 'body-error-id',
+                },
+                newApiRequestId: 'forged-body-id',
+              },
+        ),
+        {
+          status: failure === 'http' ? 400 : 200,
+          headers: {
+            'content-type': 'application/json',
+            'x-request-id': 'generic-request',
+            'x-oneapi-request-id': 'gateway-original',
+            ...(failure === 'oversize' ? { 'content-length': '999999999' } : {}),
+          },
+        },
+      );
+      if (failure === 'read') {
+        vi.spyOn(response.body!, 'getReader').mockImplementation(() => {
+          throw new Error('connection lost');
+        });
+      }
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(response);
+      const provider = new NewApiProvider({
+        baseUrl: 'https://newapi.example/v1',
+        apiKey: 'synthetic-private-key',
+        fetchImpl,
+      });
+      const error = await provider
+        .execute({ snapshot: correlationSnapshot('text') })
+        .catch((caught: unknown) => caught);
+      expect(error).toMatchObject({
+        name: 'NewApiProviderError',
+        requestId: failure === 'http' ? 'body-error-id' : 'generic-request',
+        newApiRequestId: 'gateway-original',
+        providerPayload: { newApiRequestId: 'gateway-original' },
+      });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['x'.repeat(65), 'synthetic-private-key', 'Bearer private-value'])(
+    '网关身份 %s 无法完整安全保存时保持未知，不截断或改写为可用 ID',
+    async (gatewayId) => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        Response.json(
+          { ...correlationPayload('text'), newApiRequestId: 'forged-body-id' },
+          {
+            headers: { 'x-oneapi-request-id': gatewayId },
+          },
+        ),
+      );
+      const provider = new NewApiProvider({
+        baseUrl: 'https://newapi.example/v1',
+        apiKey: 'synthetic-private-key',
+        fetchImpl,
+      });
+      const result = await provider.execute({ snapshot: correlationSnapshot('text') });
+      expect(result.providerJob).toBeUndefined();
+      expect(JSON.stringify(result)).not.toContain('forged-body-id');
+    },
+  );
 });

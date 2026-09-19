@@ -129,19 +129,20 @@ export function ModelsPage({ user, onLogin }: { user: AuthUser | null; onLogin: 
                           <span>{typeof value === 'string' ? value : JSON.stringify(value)}</span>
                         </div>
                       ))}
-                      {model.pricing?.rule.variants?.map((variant, index) => (
-                        <p key={index}>
-                          {Object.entries(variant.parameters)
-                            .map(([key, value]) => `${key}: ${value}`)
-                            .join(' · ')}{' '}
-                          —{' '}
-                          {marketplacePriceLabel({
-                            ...model.pricing!.rule,
-                            ...variant,
-                            variants: undefined,
-                          } as typeof model.pricing.rule)}
-                        </p>
-                      ))}
+                      {model.pricing?.rule.unit !== 'upstream_cost' &&
+                        model.pricing?.rule.variants?.map((variant, index) => (
+                          <p key={index}>
+                            {Object.entries(variant.parameters)
+                              .map(([key, value]) => `${key}: ${value}`)
+                              .join(' · ')}{' '}
+                            —{' '}
+                            {marketplacePriceLabel({
+                              ...model.pricing!.rule,
+                              ...variant,
+                              variants: undefined,
+                            } as typeof model.pricing.rule)}
+                          </p>
+                        ))}
                     </div>
                   )}
                 </article>

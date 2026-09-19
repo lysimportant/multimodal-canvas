@@ -2994,6 +2994,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           snapshot = freezeRunBillingModels(snapshot, resolution.billingModels);
         const quote = await prepareBillingSubmission({
           billing: options.billing,
+          settings: settingsStore,
           session: requestSessions.get(request),
           fields: body,
           snapshot,
@@ -3226,6 +3227,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
             snapshot = freezeRunBillingModels(snapshot, resolution.billingModels);
           const quote = await prepareBillingSubmission({
             billing: options.billing,
+            settings: settingsStore,
             session: requestSessions.get(request),
             fields: body,
             snapshot,
@@ -3440,6 +3442,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         snapshot = freezeRunBillingModels(snapshot, modelResolution.billingModels);
       const quote = await prepareBillingSubmission({
         billing: options.billing,
+        settings: settingsStore,
         session: requestSessions.get(request),
         fields: body,
         snapshot,
@@ -3657,6 +3660,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         );
         const quote = await prepareBillingSubmission({
           billing: options.billing,
+          settings: settingsStore,
           session: requestSessions.get(request),
           fields: fields.data,
           snapshot,

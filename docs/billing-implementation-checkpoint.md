@@ -1,6 +1,40 @@
 # 平台计费实施检查点
 
-更新时间：2026-09-19。状态：核心实现、隔离 PC Web 和全部补丁后的完整检查已通过，已具备本轮代码交付条件；尚未启用生产收费，外部合同、支付和运维上线条件继续保留。
+更新时间：2026-09-19。状态：人民币钱包和 New API 价格联动已实现，最后补丁后的完整检查、本机真实中继闭环、隔离数据库及 PC Web 验收通过；按下文目标提交交付。线上服务尚未升级或启用。
+
+## New API 价格沿用修正
+
+- 用户明确要求价格只在 New API 维护。上一轮“导入草稿后人工定价”的实现不满足该要求；本轮新增跟随 New API 价格模式，保留手工广场及历史价格。
+- P1 主目标：使用实际调用 Key 获取目录和费用预估，画布生成人民币预算授权，交付后按同一调用的最终结算回执扣款；不在 Canvas 复制表达式引擎。确认上限沿用现有封顶规则，超出部分不能追加扣用户余额。预估不是上游费用保证。
+- 验收覆盖：跟随价格不需填写单价、重复同步保留平台模型身份、真实 Key 权限隔离、分组及站点人民币换算、改价后的新报价、原请求回执恢复、异步最终结算、人工模型回归、隔离数据库与 PC Web 冒烟。
+- 基线：Canvas `codex/generate-to-new-node @ 3407bcb8`，上次完整检查 3,117 通过；仅原用户文件 `docs/resource-input-compatibility.md` 未提交，SHA256 `56B2C9D2BFB09DCC56720769B9CE12AED4877A29090DEDFBADD2F1FC5B3AA2A7`。New API `main @ 0e4680ad4` 干净，交付目标为 `fork/main`，不是 `origin`。Node 24.12.0、pnpm 11.19.0、Go 1.26.0，依赖已就绪。
+- 影响及回滚：新增托管价格/报价 JSON 与 New API 私有结算回执；不删除旧模型、不改历史流水、不合并两站账户。先在隔离数据库验证迁移和恢复。停用托管模型可停止新请求；已有冻结和回执必须由兼容版本处理，不用旧库覆盖账务。生产升级前需备份数据库与密钥，当前不操作现有 8080 服务或生产数据库。
+- 不在范围：真实付费生成、生产部署、支付充值、双向写回价格、自动定时同步。缺失调用协议的模型明确不可用，不按名称推断媒体能力；现有已验证绑定仍可使用跟随价格。
+- 已完成审计：公开 `/api/pricing` 不代表 Key 有效价；现有日志不能证明结算成功。原调用 `X-Oneapi-Request-Id` 与轮询身份分别保存。分工为 New API 目录/预估、Canvas 合同/API、Provider 与回执，主代理负责整合、文档及验证；本轮复用 3 个子代理，没有启动 100 个。
+
+### 本轮实现与边界
+
+- “模型管理 → 同步导入 → New API 模型与价格联动”使用保存的实际 Key。选中合同完整的模型后自动建立稳定商品、绑定和跟随价格策略并上架，无需单价。重复导入保留人工资料、手工价格和暂停状态，人工改绑不被原来源改回。
+- New API 新增 `/v1/canvas/catalog`、`/estimate`、`/receipts/:requestId`。目录严格按 Key、分组、渠道和真实插件路由过滤；视频跨渠道别名冲突与实际中继入口一致拒绝。预估复用上游计费引擎，明确 `estimate_only=true`。
+- 用户确认人民币预算，最终费用使用冻结换算并以预算封顶；上游超额由平台承担。普通人工计费 v1 与联动 v2 共存，历史不重算。账单延迟只查询原回执，已归档生成不重发。失败或取消也可独立保留已确定的上游成本。
+- New API 增加 `canvas_receipts` 表，终态只在资金及令牌记账成功后写入，日志关闭仍可核账。修复异步提交/轮询、免费任务、表达式失败及独立违规费退款竞态；不明确的金额保持 pending。主库新增表，独立日志库不新增表或依赖消费日志。
+- 部署开关 `CANVAS_BRIDGE_ENABLED` 默认 false；开启后相关额度同步写库。正式上线仍需容量评估、备份恢复及生产批准。先更新两边兼容版本，再开启联动；已有在途与冻结必须处理完毕后才能降级，不能删除账单表或覆盖新流水。
+- 当前自动导入只声明文本输入；缺少显式调用合同、仅 Responses 或插件无法估算的未知输入均明确不可用。真实站点的每种媒体合同仍需单独验收，不能把合成文本闭环称为线上全部模型已可用。
+
+### 本轮验收证据
+
+- Canvas `pnpm lint` 9/9、`pnpm typecheck` 15/15、`pnpm test` 15/15、`pnpm build` 9/9、`pnpm build:runtime` 均通过；最终共 3,221 项通过，121 skipped 及另 5 pending 不计通过。日志统一在 `.data/billing-implementation/newapi-follow-*.log`。Web 仍有既有大包提示。
+- 真实隔离 PostgreSQL/Redis：API `billing.integration.test.ts` 14 项通过，Worker `billing-worker.integration.test.ts` 15 项通过。后者包括原回执恢复、取消和归档失败成本保存，均验证一次生成、用户不重复扣款。日志分别为 `newapi-follow-api-integration.log` 和 `newapi-worker-receipt-recovery-review.log`。
+- New API `go test ./...`、`go vet ./...`、`go build ./...` 及 `relaykit` 内 `GOWORK=off go build ./...` 通过。目录三库矩阵 `go test ./controller -run '^TestCanvasBridge' -count=1 -v` 零跳过；日志 `newapi-follow-bridge-matrix.log`。
+- 回执使用 SQLite 3.50.4、MySQL 8.0.46、PostgreSQL 16.15。`go test ./model -run '^TestCanvasReceiptDatabaseMatrix$' -count=1 -v` 覆盖新建/代表性旧库升级、重复迁移无 DDL、旧余额/令牌/任务及唯一性不变；`go test ./service -run '^TestCanvasReceipt(AccountingMatrix|PollingWaitsForSubmission)$' -count=1 -v` 覆盖每库 12 种记账场景和 SQLite 7 种轮询/免费竞态。两项矩阵显式设置专用 `TEST_MYSQL_DSN`、`TEST_POSTGRES_DSN` 与 `CANVAS_REQUIRE_DATABASE_MATRIX=true`，零跳过；日志 `newapi-follow-receipt-{schema,accounting}-matrix.log`。
+- 认证复核参考 OWASP ASVS 5.0.0 V6/V8/V13、Authentication Cheat Sheet 和 Session Management Cheat Sheet。回归覆盖真实 TokenAuth、模型大小写、auto/指定分组、特殊倍率、耗尽/过期 Key 只读原回执、禁用/封禁/IP 拒绝、跨 Key/用户隔离以及 DTO 不含凭据；不宣称整个产品通过 ASVS 认证。
+- 本机 New API `127.0.0.1:13080` 使用真实 router/relay/计费、专用 SQLite 和合成上游；Canvas API/Worker/Vite 使用 13000/独立队列/15173 及隔离资产库。浏览器只生成一次：上游实际净扣 10,000 quota，即 USD 0.02；画布 CNY 0.146，冻结归零，成本及原请求回执一致。只修改上游价格至 USD 0.04 后新报价变为 CNY 0.292，取消确认，原账单不变。证据 `newapi-follow-browser-result.json`。
+- PC Web 1440×1000 已检查同步、广场、价格来源、费用确认、个人账单和后台回执截图。后台不显示单价输入，可查看原 request、quota 和冻结换算；页面及控制台错误为空。`newapi-follow-admin-read-result.json` 与 `newapi-follow-manual-browser.log` 另验证原有手工模型、取消报价余额不变、成本依据和账户切换，零新增生成。
+- 验证过程中两个失败属于测试状态/断言问题：全 controller 中其他测试残留 `ModelPrice`，现由桥接 fixture 显式恢复；旧 Grok multipart 测试对 Go map 的字段顺序作严格断言，现保持完整内容比较但不要求无序字段排列，100 次回归通过。早先整包设置外库 DSN 引发旧 redemption 空库假设失败，因此矩阵独立运行、全库检查不设置外库 DSN。浏览器选择器超时均在生成前或只读后台，修正后通过，未造成额外生成。
+
+交付前 New API 另一个任务已将 `main` 推进到 `4cd429a4` 和 `a5eb3b34`，提交 Moon 视频插件和按秒定价更新并使用 `custom.9`/`custom.10`；本轮保留这两项提交，以新 HEAD 验证，不覆盖其文件。
+
+交付目标：Canvas 当前分支 `origin/codex/generate-to-new-node`，附注标签 `v2026.09.19-newapi-price-follow`；New API 用户 fork 的 `fork/main`，附注标签 `v1.0.0-rc.37.custom.11`。原用户 `docs/resource-input-compatibility.md` 继续排除，哈希不变。线上 `api.lolicon.beer` 和既有 8080 服务未操作；合成验收不能代替线上部署或真实付费验收。
 
 ## New API 目录联动追加任务
 

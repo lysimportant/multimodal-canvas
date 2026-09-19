@@ -89,7 +89,7 @@ describe.skipIf(!databaseUrl || !redisUrl)('Worker 实际 BullMQ 重试与人民
   }, 30_000);
 
   /** 真实钱包冻结和 Run/outbox 共用事务；Provider 仅在内存返回合成文字。 */
-  async function fixture() {
+  async function fixture(managed = false) {
     const user = await prisma.user.create({ data: { email: `${randomUUID()}@example.invalid` } });
     const project = await prisma.project.create({
       data: { ownerId: user.id, name: 'Worker 隔离重试' },
@@ -113,6 +113,7 @@ describe.skipIf(!databaseUrl || !redisUrl)('Worker 实际 BullMQ 重试与人民
       canvasRevision: 1,
       targetNodeId: 'node',
       modelAlias: 'mock-text',
+      ...(managed ? { credentialId: randomUUID(), credentialVersion: 1 } : {}),
       parameters: {},
       submittedAt: new Date().toISOString(),
       inputs: [],
@@ -132,9 +133,28 @@ describe.skipIf(!databaseUrl || !redisUrl)('Worker 实际 BullMQ 重试与人民
       ],
       billingBindings: { node: binding },
     };
-    const calculation = calculateBillingQuote({
-      rule: { unit: 'per_call', meteringSource: 'fixed', unitPriceNanos: '120' },
-    });
+    const calculation = managed
+      ? {
+          version: 2,
+          currency: 'CNY',
+          rule: { unit: 'upstream_cost', meteringSource: 'newapi_receipt' },
+          quantity: 1,
+          capNanos: '120',
+          estimate: {
+            version: 1,
+            model: 'mock-text',
+            group: 'test-group',
+            pricing_version: 'synthetic-price',
+            estimated_quota: '60',
+            quota_per_unit: '500000000',
+            usd_to_cny: '1',
+            expires_at: new Date(Date.now() + 300000).toISOString(),
+            estimate_only: true,
+          },
+        }
+      : calculateBillingQuote({
+          rule: { unit: 'per_call', meteringSource: 'fixed', unitPriceNanos: '120' },
+        });
     const quote = await service.createQuote({
       payerId: user.id,
       snapshot,
@@ -180,7 +200,30 @@ describe.skipIf(!databaseUrl || !redisUrl)('Worker 实际 BullMQ 重试与人民
         }),
     );
     const persistence = new WorkerPrismaRunPersistence(prisma);
-    const billing = new PrismaWorkerBilling(service);
+    const receiptFetch = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        version: 1,
+        request_id: 'synthetic-newapi-original',
+        model: 'mock-text',
+        group: 'actual-group',
+        status: 'settled',
+        quota: '30',
+        quota_per_unit: '500000000',
+        settled_at: new Date().toISOString(),
+      }),
+    );
+    const billing = new PrismaWorkerBilling(
+      service,
+      managed
+        ? {
+            fetchImpl: receiptFetch,
+            getProviderCredentials: async () => ({
+              baseUrl: 'https://synthetic.invalid/v1',
+              apiKey: 'synthetic-unused',
+            }),
+          }
+        : {},
+    );
     const archiver = new PrismaResultAssetArchiver(prisma, {
       blobStore: new WorkerFileBlobStore(archiveDirectory),
       keyPrefix: runId,
@@ -200,6 +243,14 @@ describe.skipIf(!databaseUrl || !redisUrl)('Worker 实际 BullMQ 重试与人民
         text: 'Synthetic delivered result',
       },
       usage: { amount: '0.00001', currency: 'USD' },
+      ...(managed
+        ? {
+            providerJob: {
+              provider: 'mock',
+              payload: { newApiRequestId: 'synthetic-newapi-original' },
+            },
+          }
+        : {}),
     }));
     const redis = new URL(redisUrl!);
     const connection = { host: redis.hostname, port: Number(redis.port), db: 15 };
@@ -238,9 +289,121 @@ describe.skipIf(!databaseUrl || !redisUrl)('Worker 实际 BullMQ 重试与人民
       persistence,
       archiver,
       execute,
+      receiptFetch,
       start,
     };
   }
+
+  it('托管回执延迟后由原队列恢复，真实钱包按最终金额结算且不重复生成', async () => {
+    const f = await fixture(true);
+    f.receiptFetch.mockResolvedValueOnce(
+      Response.json({
+        version: 1,
+        request_id: 'synthetic-newapi-original',
+        model: 'mock-text',
+        group: 'actual-group',
+        status: 'pending',
+        quota: '0',
+        quota_per_unit: '500000000',
+      }),
+    );
+    const { job, events } = await f.start();
+    const delivered = await job.waitUntilFinished(events, 20_000);
+    expect(delivered.status).toBe('succeeded');
+    expect(f.execute).toHaveBeenCalledTimes(1);
+    expect(f.receiptFetch).toHaveBeenCalledTimes(2);
+    expect(
+      f.receiptFetch.mock.calls.every((call) =>
+        String(call[0]).endsWith('/receipts/synthetic-newapi-original'),
+      ),
+    ).toBe(true);
+    expect(await f.service.getWallet(f.user.id)).toMatchObject({
+      availableNanos: '940',
+      heldNanos: '0',
+    });
+    expect(
+      await prisma.walletEntry.count({
+        where: { wallet: { userId: f.user.id }, kind: 'settlement' },
+      }),
+    ).toBe(1);
+    const charged = await prisma.chargeItem.findFirstOrThrow({
+      where: { charge: { runId: f.runId } },
+    });
+    expect(charged.deliveryEvidence).toMatchObject({
+      newApiReceipt: { status: 'settled', quota: '30' },
+      conversion: { quotaPerUnit: '500000000', usdToCny: '1' },
+    });
+    expect(
+      (
+        await prisma.providerCost.findUniqueOrThrow({ where: { chargeItemId: charged.id } })
+      ).amount?.toFixed(12),
+    ).toBe('0.000000060000');
+    reports.push({
+      runId: f.runId,
+      scenario: 'newapi-receipt-recovery',
+      providerCalls: 1,
+      receiptReads: 2,
+    });
+  }, 30_000);
+
+  it.each(['cancel', 'archive'] as const)(
+    '托管 %s 后只读原回执记成本，钱包保留未知且不重新生成',
+    async (scenario) => {
+      const f = await fixture(true);
+      const original = f.execute.getMockImplementation()!;
+      if (scenario === 'archive')
+        vi.spyOn(f.archiver, 'archive').mockRejectedValue(
+          new Error('synthetic managed archive outage'),
+        );
+      else
+        f.execute.mockImplementation(async (request) => {
+          const execution = await original(request);
+          await prisma.runOutbox.update({
+            where: { runId: f.runId },
+            data: {
+              payload: { ...f.payload, cancelRequested: true } as unknown as Prisma.InputJsonValue,
+            },
+          });
+          return execution;
+        });
+      const { job, events } = await f.start();
+      if (scenario === 'archive')
+        await expect(job.waitUntilFinished(events, 20_000)).rejects.toThrow('禁止重新生成');
+      else
+        await expect(job.waitUntilFinished(events, 20_000)).resolves.toMatchObject({
+          status: 'cancelled',
+        });
+      expect(f.execute).toHaveBeenCalledTimes(1);
+      expect(f.receiptFetch.mock.calls.length).toBeGreaterThanOrEqual(1);
+      expect(
+        f.receiptFetch.mock.calls.every((call) =>
+          String(call[0]).endsWith('/receipts/synthetic-newapi-original'),
+        ),
+      ).toBe(true);
+      const item = await prisma.chargeItem.findFirstOrThrow({
+        where: { charge: { runId: f.runId } },
+        include: { providerCost: true },
+      });
+      expect(item.status).toBe('PENDING_VERIFICATION');
+      expect(item.deliveryEvidence).toBeNull();
+      expect(item.providerCost?.status).toBe('confirmed');
+      expect(item.providerCost?.amount?.toFixed(12)).toBe('0.000000060000');
+      expect(
+        await prisma.walletEntry.count({ where: { runId: f.runId, kind: 'settlement' } }),
+      ).toBe(0);
+      expect(await f.service.getWallet(f.user.id)).toMatchObject({
+        availableNanos: '880',
+        heldNanos: '120',
+      });
+      reports.push({
+        runId: f.runId,
+        scenario: `newapi-received-${scenario}`,
+        providerCalls: 1,
+        receiptReads: f.receiptFetch.mock.calls.length,
+      });
+    },
+    30_000,
+  );
 
   it('内置 Mock 文字真实归档、落库及钱包结算', async () => {
     const f = await fixture();

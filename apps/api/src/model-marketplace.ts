@@ -1,7 +1,9 @@
+import { createHash } from 'node:crypto';
+import { requestNewApiCatalog } from '@multimodal-canvas/billing';
 import {
-  billingPriceRuleSchema,
+  marketplacePriceRuleSchema,
   mediaTypes,
-  type BillingPriceRule,
+  type MarketplacePriceRule,
   type MediaType,
 } from '@multimodal-canvas/domain';
 import {
@@ -49,7 +51,7 @@ export const marketplaceContractSchema = z.enum([
 /** API 的 Zod 运行时独立校验媒体枚举，避免跨工作区 Zod 次版本类型混用。 */
 const mediaTypeSchema = z.enum(mediaTypes);
 /** 来源显式隔离；旧调用和旧数组快照继续归属 models。 */
-export const marketplaceSourceTypeSchema = z.enum(['models', 'newapi_pricing']);
+export const marketplaceSourceTypeSchema = z.enum(['models', 'newapi_pricing', 'newapi_managed']);
 /** 同步来源决定读取端点，不允许客户端提交任意 URL。 */
 export type MarketplaceSourceType = z.infer<typeof marketplaceSourceTypeSchema>;
 /** 对外保留候选数组，数据库中的 JSON 包装不进入路由响应。 */
@@ -58,8 +60,8 @@ export type MarketplaceSyncDto = Omit<ModelCatalogSync, 'candidates'> & {
   candidates: MarketplaceCandidate[];
 };
 /** 共享账务规则负责业务校验，本地桥接仅传递结果与脱敏错误路径。 */
-const marketplaceRuleSchema = z.unknown().transform((value, context): BillingPriceRule => {
-  const result = billingPriceRuleSchema.safeParse(value);
+const marketplaceRuleSchema = z.unknown().transform((value, context): MarketplacePriceRule => {
+  const result = marketplacePriceRuleSchema.safeParse(value);
   if (result.success) {
     if (containsPrivateMetadata(result.data)) {
       context.addIssue({
@@ -89,7 +91,8 @@ export const createMarketplaceModelSchema = z
   .object({
     name: z.string().trim().min(1).max(160).optional(),
     description: z.string().max(4_000).optional(),
-    mediaType: mediaTypeSchema,
+    mediaType: mediaTypeSchema.optional(),
+    managed: z.boolean().optional(),
     specifications: metadataSchema.default({}),
     sortOrder: z.number().int().min(-1_000_000).max(1_000_000).default(0),
     source: z
@@ -98,7 +101,11 @@ export const createMarketplaceModelSchema = z
       .optional(),
   })
   .strict()
-  .refine((value) => Boolean(value.name || value.source), '手工新建必须填写名称');
+  .refine((value) => Boolean(value.name || value.source), '手工新建必须填写名称')
+  .refine(
+    (value) => (value.managed ? Boolean(value.source) : Boolean(value.mediaType)),
+    '托管导入需要来源，手工创建需要媒体类型',
+  );
 /** 启用绑定、价格和发布在同一更新中验证，禁止跨模型引用。 */
 export const updateMarketplaceModelSchema = z
   .object({
@@ -160,7 +167,7 @@ export type MarketplacePricingDto = {
   id: string;
   revision: number;
   currency: 'CNY';
-  rule: BillingPriceRule;
+  rule: MarketplacePriceRule;
   effectiveAt: string;
 };
 /** 商品公开视图；modelAlias 保留精确上游 ID，id 始终为平台商品身份。 */
@@ -272,6 +279,7 @@ export class PrismaModelMarketplace implements ModelMarketplace {
   async createModel(input: unknown, actorId: string): Promise<MarketplaceAdminModelDto> {
     const parsed = createMarketplaceModelSchema.parse(input);
     z.string().uuid().parse(actorId);
+    if (parsed.managed) return this.importManagedModel(parsed.source!, actorId);
     let sourceName: string | undefined;
     let sourceDescription: string | undefined;
     if (parsed.source) {
@@ -291,7 +299,7 @@ export class PrismaModelMarketplace implements ModelMarketplace {
       data: {
         name: parsed.name ?? sourceName!,
         description: parsed.description ?? sourceDescription ?? '',
-        mediaType: toDatabaseMediaType(parsed.mediaType),
+        mediaType: toDatabaseMediaType(parsed.mediaType!),
         specifications: parsed.specifications as Prisma.InputJsonValue,
         sortOrder: parsed.sortOrder,
         status: 'draft',
@@ -433,6 +441,29 @@ export class PrismaModelMarketplace implements ModelMarketplace {
   async createPricing(input: unknown, actorId: string): Promise<PricingVersion> {
     const { activate, effectiveAt, ...parsed } = createMarketplacePricingSchema.parse(input);
     z.string().uuid().parse(actorId);
+    if (parsed.rule.unit === 'upstream_cost') {
+      const model = await requireModel(this.prisma, parsed.platformModelId);
+      if (!model.activeBinding)
+        throw new ModelMarketplaceError('binding_unavailable', '请先确认模型的调用绑定', 409);
+      if (
+        !['openai-chat-completions', 'openai-images', 'newapi-video-v1', 'openai-audio'].includes(
+          model.activeBinding.contract,
+        )
+      )
+        throw new ModelMarketplaceError(
+          'model_contract_unavailable',
+          '此调用合同尚未接入 New API 费用联动',
+          409,
+        );
+      await this.assertBindingAvailable(model.activeBinding, this.prisma);
+      const catalog = await this.managedCatalog(model.activeBinding.credentialId);
+      if (!catalog.models.some((entry) => entry.id === model.activeBinding!.upstreamModelId))
+        throw new ModelMarketplaceError(
+          'model_unavailable',
+          '当前 New API Key 无权使用此模型',
+          409,
+        );
+    }
     return this.transaction(async (transaction) => {
       const model = await requireModel(transaction, parsed.platformModelId);
       assertPriceMediaType(parsed.rule, model.mediaType);
@@ -477,7 +508,7 @@ export class PrismaModelMarketplace implements ModelMarketplace {
     marketplaceSourceTypeSchema.parse(sourceType);
     const pricingBaseUrl =
       sourceType === 'newapi_pricing' ? await this.pricingBaseUrl(credentialId) : undefined;
-    if (sourceType === 'models') await this.assertCredential(credentialId);
+    if (sourceType !== 'newapi_pricing') await this.assertCredential(credentialId);
     const previous = await this.findSync(credentialId, sourceType, 'succeeded');
     const existing = previous
       ? readCandidates(previous.candidates)
@@ -487,11 +518,13 @@ export class PrismaModelMarketplace implements ModelMarketplace {
     let candidates: MarketplaceCandidate[];
     try {
       candidates =
-        sourceType === 'newapi_pricing'
-          ? await requestNewApiPricing(pricingBaseUrl!, {
-              fetchImpl: this.options.pricingFetchImpl,
-            })
-          : sanitizeCandidates(await this.settings.refreshModels(credentialId));
+        sourceType === 'newapi_managed'
+          ? await this.managedCandidates(credentialId)
+          : sourceType === 'newapi_pricing'
+            ? await requestNewApiPricing(pricingBaseUrl!, {
+                fetchImpl: this.options.pricingFetchImpl,
+              })
+            : sanitizeCandidates(await this.settings.refreshModels(credentialId));
     } catch (error) {
       return syncView(
         await this.prisma.modelCatalogSync.create({
@@ -534,6 +567,178 @@ export class PrismaModelMarketplace implements ModelMarketplace {
     marketplaceSourceTypeSchema.parse(sourceType);
     const row = await this.findSync(credentialId, sourceType);
     return row ? syncView(row) : null;
+  }
+
+  /** 使用所选连接的精确凭据查询受 Key 权限约束的目录，失败不回退到匿名价格。 */
+  private async managedCatalog(credentialId: string) {
+    await this.assertCredential(credentialId);
+    const reference = await this.settings.getCredentialReference(credentialId);
+    const credentials = await this.settings.getProviderCredentials?.(reference);
+    if (!credentials)
+      throw new ModelMarketplaceError('binding_unavailable', '无法读取模型连接凭据', 409);
+    try {
+      return await requestNewApiCatalog(credentials, { fetchImpl: this.options.pricingFetchImpl });
+    } catch {
+      throw new ModelMarketplaceError(
+        'newapi_bridge_unavailable',
+        'New API 联动接口不可用，请确认服务已升级、开启画布联动且当前 Key 有效',
+        502,
+      );
+    }
+  }
+
+  /** 目录保留不可用模型及具体原因；已确认协议仍只进入白名单能力字段。 */
+  private async managedCandidates(credentialId: string): Promise<MarketplaceCandidate[]> {
+    const catalog = await this.managedCatalog(credentialId);
+    return catalog.models.map((entry) => ({
+      id: entry.id,
+      name: entry.name ?? entry.id,
+      ...(entry.description ? { description: entry.description } : {}),
+      mediaTypes: entry.media_type ? [entry.media_type] : [],
+      capabilities: publicMetadata(entry.capabilities),
+      limitations: publicMetadata(entry.limitations),
+      refreshedAt: new Date().toISOString(),
+      verification: 'unverified',
+      managed: {
+        available: entry.available,
+        ...(entry.contract ? { contract: entry.contract } : {}),
+        ...(entry.unavailable_reason ? { reason: entry.unavailable_reason } : {}),
+        pricingVersion: entry.pricing_version,
+      },
+    }));
+  }
+
+  /**
+   * 选中导入时再次读取 Key 权限和协议；稳定主键使重复导入复用商品，人工资料不覆盖。
+   * 新商品自动建立绑定与跟随价格版本并发布，既有暂停状态和人工价格保持原状。
+   */
+  private async importManagedModel(
+    source: { syncId: string; upstreamModelId: string },
+    actorId: string,
+  ): Promise<MarketplaceAdminModelDto> {
+    const sync = await this.prisma.modelCatalogSync.findUnique({ where: { id: source.syncId } });
+    if (
+      !sync ||
+      sync.status !== 'succeeded' ||
+      syncView(sync).sourceType !== 'newapi_managed' ||
+      !readCandidates(sync.candidates).some((candidate) => candidate.id === source.upstreamModelId)
+    )
+      throw new ModelMarketplaceError('candidate_not_found', '托管模型来源不存在或同步未成功', 404);
+    const catalog = await this.managedCatalog(sync.credentialId);
+    const entry = catalog.models.find((candidate) => candidate.id === source.upstreamModelId);
+    if (!entry?.available || !entry.media_type || !entry.contract)
+      throw new ModelMarketplaceError(
+        'model_contract_unavailable',
+        'New API 尚未提供此模型可用的调用合同',
+        409,
+      );
+    const contract = marketplaceContractSchema.parse(entry.contract);
+    const mediaType = toDatabaseMediaType(entry.media_type);
+    assertContractMediaType(contract, mediaType);
+    const reference = await this.settings.getCredentialReference(sync.credentialId);
+    const capabilities = publicMetadata(entry.capabilities);
+    const limitations = publicMetadata(entry.limitations);
+    if (!Object.keys(capabilities).length)
+      throw new ModelMarketplaceError('binding_unverified', 'New API 未返回可确认的模型能力', 409);
+    const id = managedModelId(sync.credentialId, entry.id);
+    const model = await this.transaction(async (transaction) => {
+      let current = await transaction.platformModel.findUnique({
+        where: { id },
+        include: modelInclude,
+      });
+      if (current && current.mediaType !== mediaType)
+        throw new ModelMarketplaceError(
+          'binding_needs_review',
+          '上游模型媒体类型已变化，请复核原模型',
+          409,
+        );
+      if (!current)
+        current = await transaction.platformModel.create({
+          data: {
+            id,
+            name: entry.name ?? entry.id,
+            description: entry.description ?? '',
+            mediaType,
+            sourceSyncId: sync.id,
+            sourceModelId: entry.id,
+            createdBy: actorId,
+          },
+          include: modelInclude,
+        });
+      const existingBinding = current.activeBinding;
+      if (
+        existingBinding &&
+        (existingBinding.credentialId !== sync.credentialId ||
+          existingBinding.upstreamModelId !== entry.id)
+      )
+        throw new ModelMarketplaceError(
+          'binding_manually_changed',
+          '此商品已切换调用连接，请在原商品中确认绑定；同步保留现有连接',
+          409,
+        );
+      const bindingUnchanged =
+        existingBinding &&
+        existingBinding.credentialId === reference.credentialId &&
+        existingBinding.credentialVersion === reference.credentialVersion &&
+        existingBinding.upstreamModelId === entry.id &&
+        existingBinding.contract === contract &&
+        JSON.stringify(existingBinding.capabilities) === JSON.stringify(capabilities) &&
+        JSON.stringify(existingBinding.limitations) === JSON.stringify(limitations);
+      const latestBinding = bindingUnchanged
+        ? existingBinding
+        : await transaction.modelBinding.findFirst({
+            where: { platformModelId: id },
+            orderBy: { revision: 'desc' },
+          });
+      const binding = bindingUnchanged
+        ? existingBinding
+        : await transaction.modelBinding.create({
+            data: {
+              platformModelId: id,
+              revision: (latestBinding?.revision ?? 0) + 1,
+              credentialId: reference.credentialId!,
+              credentialVersion: reference.credentialVersion!,
+              upstreamModelId: entry.id,
+              contract,
+              capabilities: capabilities as Prisma.InputJsonValue,
+              limitations: limitations as Prisma.InputJsonValue,
+              verificationEvidence: `New API Key 作用域目录确认调用合同；价格依据 ${entry.pricing_version}`,
+              verifiedAt: new Date(),
+              createdBy: actorId,
+            },
+          });
+      let pricing = current.activePrice;
+      if (!pricing) {
+        const latest = await transaction.pricingVersion.findFirst({
+          where: { platformModelId: id },
+          orderBy: { revision: 'desc' },
+        });
+        pricing = await transaction.pricingVersion.create({
+          data: {
+            platformModelId: id,
+            revision: (latest?.revision ?? 0) + 1,
+            currency: 'CNY',
+            rule: { unit: 'upstream_cost', meteringSource: 'newapi_receipt' },
+            createdBy: actorId,
+          },
+        });
+      }
+      await this.assertReady(
+        { ...current, activeBinding: binding, activePrice: pricing },
+        transaction,
+      );
+      return transaction.platformModel.update({
+        where: { id },
+        data: {
+          activeBindingId: binding.id,
+          activePricingVersionId: pricing.id,
+          status: current.status === 'paused' ? 'paused' : 'published',
+          sourceSyncId: sync.id,
+        },
+        include: modelInclude,
+      });
+    });
+    return this.adminView(model);
   }
 
   /** 公开定价只读连接地址，不调用会解密凭据的设置存储，也不改变连接和默认模型。 */
@@ -724,7 +929,7 @@ export class PrismaModelMarketplace implements ModelMarketplace {
       model.activePrice,
     );
     assertPriceAvailable(model.activePrice);
-    assertPriceMediaType(billingPriceRuleSchema.parse(model.activePrice.rule), model.mediaType);
+    assertPriceMediaType(marketplacePriceRuleSchema.parse(model.activePrice.rule), model.mediaType);
     assertContractMediaType(model.activeBinding.contract, model.mediaType);
     await this.assertBindingAvailable(model.activeBinding, database);
   }
@@ -775,6 +980,31 @@ export class PrismaModelMarketplace implements ModelMarketplace {
     ) {
       throw new ModelMarketplaceError('binding_unverified', '模型调用能力尚未验证', 409);
     }
+    if (binding.verificationEvidence.startsWith('New API Key 作用域目录')) {
+      const managedSource = await this.findSync(
+        binding.credentialId,
+        'newapi_managed',
+        'succeeded',
+        binding.verifiedAt,
+        database,
+      );
+      if (managedSource) {
+        const latest = readCandidates(managedSource.candidates).find(
+          (entry) => entry.id === binding.upstreamModelId,
+        );
+        if (
+          !latest?.managed?.available ||
+          latest.managed.contract !== binding.contract ||
+          hasConflict(binding.capabilities, latest.capabilities) ||
+          hasConflict(binding.limitations, latest.limitations)
+        )
+          throw new ModelMarketplaceError(
+            'binding_needs_review',
+            'New API 模型权限或调用合同已变化，请重新同步联动',
+            409,
+          );
+      }
+    }
     const source = await this.findSync(
       binding.credentialId,
       'models',
@@ -812,6 +1042,7 @@ export type MarketplaceCandidate = {
   limitations: Record<string, unknown>;
   providerDeclaredPrice?: Record<string, unknown>;
   pricingReference?: NewApiPricingReference;
+  managed?: { available: boolean; contract?: string; pricingVersion: string; reason?: string };
   refreshedAt: string;
   verification: 'unverified';
 };
@@ -1035,8 +1266,8 @@ function syncView(row: ModelCatalogSync): MarketplaceSyncDto {
     !Array.isArray(stored) &&
     stored &&
     typeof stored === 'object' &&
-    stored.sourceType === 'newapi_pricing'
-      ? 'newapi_pricing'
+    marketplaceSourceTypeSchema.safeParse(stored.sourceType).success
+      ? (stored.sourceType as MarketplaceSourceType)
       : 'models';
   return { ...row, sourceType, candidates: readCandidates(stored) };
 }
@@ -1091,13 +1322,17 @@ function assertContractMediaType(contract: string, mediaType: PlatformModel['med
     throw new ModelMarketplaceError('binding_contract_mismatch', '接口合同与模型媒体类型不兼容');
 }
 /** 固定按次可覆盖任意媒体，其他收费单位必须与可计量的媒体一致。 */
-function assertPriceMediaType(rule: BillingPriceRule, mediaType: PlatformModel['mediaType']): void {
+function assertPriceMediaType(
+  rule: MarketplacePriceRule,
+  mediaType: PlatformModel['mediaType'],
+): void {
   const allowed: Record<string, PlatformModel['mediaType'][]> = {
     per_call: ['TEXT', 'IMAGE', 'AUDIO', 'VIDEO'],
     per_image: ['IMAGE'],
     per_token: ['TEXT'],
     per_second: ['AUDIO', 'VIDEO'],
     per_character: ['AUDIO'],
+    upstream_cost: ['TEXT', 'IMAGE', 'AUDIO', 'VIDEO'],
   };
   if (!allowed[rule.unit]?.includes(mediaType))
     throw new ModelMarketplaceError('pricing_unit_mismatch', '收费单位与模型媒体类型不兼容');
@@ -1115,11 +1350,19 @@ function publicPrice(pricing: PricingVersion): MarketplacePricingDto {
     id: pricing.id,
     revision: pricing.revision,
     currency: 'CNY',
-    rule: billingPriceRuleSchema.parse(pricing.rule),
+    rule: marketplacePriceRuleSchema.parse(pricing.rule),
     effectiveAt: pricing.effectiveAt.toISOString(),
   };
 }
 /** Prisma 媒体枚举使用大写，HTTP 与共享领域模型使用小写。 */
 function toDatabaseMediaType(mediaType: MediaType): PlatformModel['mediaType'] {
   return mediaType.toUpperCase() as PlatformModel['mediaType'];
+}
+
+/** 固定命名空间、连接和精确模型 ID 产生稳定 UUID；数据库主键约束阻止并发重复导入。 */
+function managedModelId(credentialId: string, modelId: string): string {
+  const value = createHash('sha256')
+    .update(`newapi-managed-v1\0${credentialId}\0${modelId}`)
+    .digest('hex');
+  return `${value.slice(0, 8)}-${value.slice(8, 12)}-5${value.slice(13, 16)}-a${value.slice(17, 20)}-${value.slice(20, 32)}`;
 }

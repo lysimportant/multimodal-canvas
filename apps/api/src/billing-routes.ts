@@ -222,6 +222,30 @@ export function registerBillingRoutes(
                           ]),
                         }
                       : {}),
+                    ...(delivery.newApiReceipt
+                      ? {
+                          newApiReceipt: scalarFields(delivery.newApiReceipt, [
+                            'version',
+                            'request_id',
+                            'task_id',
+                            'model',
+                            'group',
+                            'status',
+                            'quota',
+                            'quota_per_unit',
+                            'pricing_version',
+                            'settled_at',
+                          ]),
+                        }
+                      : {}),
+                    ...(delivery.conversion
+                      ? {
+                          conversion: scalarFields(delivery.conversion, [
+                            'quotaPerUnit',
+                            'usdToCny',
+                          ]),
+                        }
+                      : {}),
                   }
                 : null,
               usage: usage

@@ -8,16 +8,244 @@ import {
   billingQuoteSchema,
   calculateBillingQuote,
   calculateBillingSettlement,
+  calculateNewApiSettlement,
   ceilBillingDivision,
   countBillingCharacters,
   formatCnyNanos,
   marketplaceModelSchema,
+  marketplacePriceRuleSchema,
+  newApiCatalogModelSchema,
+  newApiEstimateSchema,
+  newApiQuoteCalculationSchema,
+  newApiQuotaToCnyNanos,
+  newApiReceiptSchema,
   parseBillingNanos,
   parseCnyNanos,
   serializeBillingNanos,
   type BillingPriceRule,
   type BillingQuoteCalculation,
+  type NewApiQuoteCalculation,
+  type NewApiReceipt,
 } from './billing.js';
+
+/** 合成托管报价把当前预扣折算为人民币 0.0000142 元预算，不锁定上游分组。 */
+function managedQuote(): NewApiQuoteCalculation {
+  return newApiQuoteCalculationSchema.parse({
+    version: 2,
+    currency: 'CNY',
+    rule: { unit: 'upstream_cost', meteringSource: 'newapi_receipt' },
+    quantity: 1,
+    capNanos: '14200',
+    estimate: {
+      version: 1,
+      model: 'exact-model（按次）',
+      group: 'estimated-group',
+      pricing_version: 'estimate-v1',
+      estimated_quota: '1',
+      quota_per_unit: '500000',
+      usd_to_cny: '7.1',
+      expires_at: '2026-09-19T12:00:00Z',
+      estimate_only: true,
+    },
+  });
+}
+
+/** 最终回执允许执行时实际分组和价格变化；模型、请求及换算单位保持可核实。 */
+function managedReceipt(overrides: Partial<NewApiReceipt> = {}): NewApiReceipt {
+  return {
+    version: 1,
+    request_id: 'request-1',
+    model: 'exact-model（按次）',
+    group: 'actual-group',
+    pricing_version: 'actual-v2',
+    status: 'settled',
+    quota: '1',
+    quota_per_unit: '500000',
+    settled_at: '2026-09-19T11:59:02.123456789Z',
+    ...overrides,
+  };
+}
+
+describe('New API 人民币预算与回执', () => {
+  it('模型身份按 512 UTF-8 字节校验，超长目录条目只能保留为不可用', () => {
+    const valid = '中'.repeat(170) + 'ab';
+    const invalid = '中'.repeat(171);
+    const entry = { id: valid, available: true, pricing_version: 'v1' };
+    expect(newApiCatalogModelSchema.safeParse(entry).success).toBe(true);
+    expect(newApiCatalogModelSchema.safeParse({ ...entry, id: invalid }).success).toBe(false);
+    expect(
+      newApiCatalogModelSchema.safeParse({ ...entry, id: invalid, available: false }).success,
+    ).toBe(true);
+    for (const [model, accepted] of [
+      [valid, true],
+      [invalid, false],
+    ] as const) {
+      expect(newApiEstimateSchema.safeParse({ ...managedQuote().estimate, model }).success).toBe(
+        accepted,
+      );
+      expect(newApiReceiptSchema.safeParse(managedReceipt({ model })).success).toBe(accepted);
+    }
+  });
+  it.each([
+    ['1', '500000', '7.1', '14200'],
+    ['1', '3', '0.000000001', '1'],
+    ['3', '0.3', '0.000000001', '10'],
+    ['9007199254740993', '1', '1', '9007199254740993000000000'],
+    ['0', '500000', '7', '0'],
+  ])('精确换算 quota=%s 每美元=%s 汇率=%s', (quota, quotaPerUnit, usdToCny, expected) => {
+    expect(newApiQuotaToCnyNanos({ quota, quotaPerUnit, usdToCny })).toBe(expected);
+  });
+
+  it.each(['0', '-1', 'NaN', '1e5', ' 7', '7.', '01', 7])(
+    '拒绝缺省或不规范换算配置 %s',
+    (invalid) => {
+      expect(() =>
+        newApiQuotaToCnyNanos({ quota: '1', quotaPerUnit: invalid as string, usdToCny: '7' }),
+      ).toThrow();
+      expect(() =>
+        newApiQuotaToCnyNanos({ quota: '1', quotaPerUnit: '500000', usdToCny: invalid as string }),
+      ).toThrow();
+    },
+  );
+
+  it('人工规则校验不接受托管价格，广场接受两种规则且不接受托管附加单价', () => {
+    const rule = managedQuote().rule;
+    expect(billingPriceRuleSchema.safeParse(rule).success).toBe(false);
+    expect(marketplacePriceRuleSchema.safeParse(rule).success).toBe(true);
+    expect(marketplacePriceRuleSchema.safeParse(imageRule).success).toBe(true);
+    expect(marketplacePriceRuleSchema.safeParse({ ...rule, unitPriceNanos: '1' }).success).toBe(
+      false,
+    );
+  });
+
+  it('预算必须等于冻结估算的精确人民币换算，超精度预算也拒绝', () => {
+    const quote = managedQuote();
+    expect(newApiQuoteCalculationSchema.safeParse({ ...quote, capNanos: '14201' }).success).toBe(
+      false,
+    );
+    expect(
+      newApiQuoteCalculationSchema.safeParse({
+        ...quote,
+        estimate: { ...quote.estimate, usd_to_cny: '8' },
+      }).success,
+    ).toBe(false);
+    expect(() =>
+      newApiQuotaToCnyNanos({ quota: '9'.repeat(38), quotaPerUnit: '1', usdToCny: '1' }),
+    ).toThrow();
+  });
+
+  it('以实际回执结算并接受上游执行价格和分组变化，超预算差额不向用户补扣', () => {
+    expect(
+      calculateNewApiSettlement({
+        quote: managedQuote(),
+        receipt: managedReceipt({ quota: '2' }),
+        delivery: 'delivered',
+      }),
+    ).toEqual({
+      status: 'settled',
+      chargeNanos: '14200',
+      releaseNanos: '0',
+      capped: true,
+      uncappedChargeNanos: '28400',
+    });
+    const quote = managedQuote();
+    quote.estimate.estimated_quota = '2';
+    quote.capNanos = '28400';
+    expect(
+      calculateNewApiSettlement({
+        quote,
+        receipt: managedReceipt({ quota_per_unit: '500000.0' }),
+        delivery: 'delivered',
+      }),
+    ).toEqual({
+      status: 'settled',
+      chargeNanos: '14200',
+      releaseNanos: '14200',
+      capped: false,
+      uncappedChargeNanos: '14200',
+    });
+  });
+
+  it('未知交付、缺失或 pending 回执都保留冻结，pending 零值不能免费结算', () => {
+    const quote = managedQuote();
+    expect(calculateNewApiSettlement({ quote, delivery: 'unknown' })).toMatchObject({
+      status: 'pending_verification',
+      reason: 'delivery_unknown',
+    });
+    expect(calculateNewApiSettlement({ quote, delivery: 'delivered' })).toMatchObject({
+      status: 'pending_verification',
+      reason: 'receipt_missing',
+    });
+    expect(
+      calculateNewApiSettlement({
+        quote,
+        delivery: 'delivered',
+        receipt: managedReceipt({ status: 'pending', quota: '0', settled_at: undefined }),
+      }),
+    ).toMatchObject({
+      status: 'pending_verification',
+      reason: 'receipt_pending',
+      releaseNanos: '0',
+    });
+    expect(calculateNewApiSettlement({ quote, delivery: 'failed' })).toEqual({
+      status: 'released',
+      chargeNanos: '0',
+      releaseNanos: '14200',
+    });
+  });
+
+  it('最终上游成本超出钱包精度时仍按可表示的授权预算封顶，保留完整差额证据', () => {
+    const quote = managedQuote();
+    quote.estimate.quota_per_unit = '1';
+    quote.estimate.usd_to_cny = '1';
+    quote.capNanos = '1000000000';
+    const settled = calculateNewApiSettlement({
+      quote,
+      delivery: 'delivered',
+      receipt: managedReceipt({ quota: '9'.repeat(38), quota_per_unit: '1' }),
+    });
+    expect(settled).toMatchObject({
+      status: 'settled',
+      chargeNanos: '1000000000',
+      releaseNanos: '0',
+      capped: true,
+      uncappedChargeNanos: `${'9'.repeat(38)}000000000`,
+    });
+  });
+
+  it('回执模型或 quota 单位改变时不能沿用旧预算换算', () => {
+    expect(
+      calculateNewApiSettlement({
+        quote: managedQuote(),
+        delivery: 'delivered',
+        receipt: managedReceipt({ model: 'other-model' }),
+      }),
+    ).toMatchObject({ reason: 'receipt_model_mismatch' });
+    expect(
+      calculateNewApiSettlement({
+        quote: managedQuote(),
+        delivery: 'delivered',
+        receipt: managedReceipt({ quota_per_unit: '600000' }),
+      }),
+    ).toMatchObject({ reason: 'receipt_quota_unit_mismatch' });
+  });
+
+  it('最终回执必须有记账时间，已退款回执必须净 quota 为零', () => {
+    expect(newApiReceiptSchema.safeParse(managedReceipt({ settled_at: undefined })).success).toBe(
+      false,
+    );
+    expect(
+      newApiReceiptSchema.safeParse(managedReceipt({ status: 'refunded', quota: '1' })).success,
+    ).toBe(false);
+    expect(
+      calculateNewApiSettlement({
+        quote: managedQuote(),
+        delivery: 'delivered',
+        receipt: managedReceipt({ status: 'refunded', quota: '0' }),
+      }),
+    ).toMatchObject({ status: 'settled', chargeNanos: '0', releaseNanos: '14200' });
+  });
+});
 
 /** 人工发布的按图片交付计费规则；四张以内每张人民币 0.25 元。 */
 const imageRule = {

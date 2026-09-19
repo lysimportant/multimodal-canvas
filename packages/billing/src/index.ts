@@ -6,6 +6,8 @@ import {
   type RunSnapshot,
 } from '@multimodal-canvas/domain';
 
+export * from './newapi-bridge.js';
+
 /** 金额单位为十亿分之一元；数据库 Decimal 只承载整数，业务运算使用 BigInt。 */
 export const CNY_NANOS = 1_000_000_000n;
 
@@ -261,8 +263,13 @@ export class PrismaBillingService {
     });
   }
 
-  /** 创建五分钟报价，不冻结也不排队；服务端调用方必须已验证执行计划及账户权限。 */
-  async createQuote(input: { payerId: string; snapshot: RunSnapshot; items: QuoteItemInput[] }) {
+  /** 创建最长五分钟报价，上游估算更早过期时从严取值；不冻结也不排队。 */
+  async createQuote(input: {
+    payerId: string;
+    snapshot: RunSnapshot;
+    items: QuoteItemInput[];
+    expiresAt?: Date;
+  }) {
     const expected = input.snapshot.nodes
       .filter((node) => node.data.mode !== 'source' && node.data.enabled !== false)
       .map((node) => node.id)
@@ -278,6 +285,11 @@ export class PrismaBillingService {
       .reduce((sum, item) => sum + nanos(item.maximumNanos), 0n)
       .toString();
     nanos(maximumNanos);
+    const expiresAt = new Date(
+      Math.min(Date.now() + 5 * 60_000, input.expiresAt?.getTime() ?? Infinity),
+    );
+    if (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= Date.now())
+      throw new BillingError('quote_expired', '上游预估已过期，请重新报价', 409);
     return this.prisma.billingQuote.create({
       data: {
         payerId: input.payerId,
@@ -285,7 +297,7 @@ export class PrismaBillingService {
         requestHash: billingSnapshotHash(input.snapshot),
         items: input.items as Prisma.InputJsonValue,
         maximumNanos,
-        expiresAt: new Date(Date.now() + 5 * 60_000),
+        expiresAt,
       },
     });
   }

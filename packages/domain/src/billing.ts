@@ -219,6 +219,196 @@ export const billingPriceRuleSchema = z
 /** 已通过运行时验证的完整价格规则，包含默认数量边界。 */
 export type BillingPriceRule = z.infer<typeof billingPriceRuleSchema>;
 
+/** 托管模型只按同一 New API 请求的最终回执计费，不在 Canvas 复制上游价格表达式。 */
+export const newApiManagedPriceRuleSchema = z
+  .object({ unit: z.literal('upstream_cost'), meteringSource: z.literal('newapi_receipt') })
+  .strict();
+
+/** 模型广场可同时发布既有人工售价与 New API 托管计费规则。 */
+export const marketplacePriceRuleSchema = z.union([
+  billingPriceRuleSchema,
+  newApiManagedPriceRuleSchema,
+]);
+
+/** 平台商品的已发布计费规则；人工规则仍使用 BillingPriceRule 单独校验。 */
+export type MarketplacePriceRule = z.infer<typeof marketplacePriceRuleSchema>;
+
+/** 上游换算配置保留十进制文本，最多 38 位整数和 18 位小数，不接受指数或浮点数。 */
+const newApiDecimalSchema = z.string().regex(/^(0|[1-9]\d{0,37})(\.\d{1,18})?$/);
+
+/** 每美元 quota 与美元兑人民币汇率必须明确且大于零，禁止缺省或自动补价。 */
+const newApiPositiveDecimalSchema = newApiDecimalSchema.refine((value) => /[1-9]/.test(value));
+
+/** 模型及账单身份按原文匹配，不接受控制字符或首尾空白。 */
+const newApiIdentitySchema = z
+  .string()
+  .min(1)
+  .max(512)
+  .refine((value) => value === value.trim() && !/[\u0000-\u001f\u007f]/.test(value));
+
+/** 可执行模型身份与 New API 回执一致限定 512 UTF-8 字节，不把字符数当字节数。 */
+const newApiModelIdSchema = newApiIdentitySchema.refine(
+  (value) => new TextEncoder().encode(value).byteLength <= 512,
+);
+
+/** New API 请求关联 ID 限 ASCII 64 字符，拒绝会被 URL 归一化的独立点路径。 */
+export const newApiRequestIdSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9._:-]{1,64}$/)
+  .refine((value) => value !== '.' && value !== '..');
+
+/** 异步任务 ID 保留上游原文，但不能超过持久化的 191 字节范围或包含控制字符。 */
+const newApiTaskIdSchema = newApiIdentitySchema.refine(
+  (value) => new TextEncoder().encode(value).byteLength <= 191,
+);
+
+/** 已鉴权目录只承诺当前 Key 可见的模型和显式能力；缺失合同不能推断为可调用。 */
+export const newApiCatalogModelSchema = z
+  .object({
+    id: newApiIdentitySchema,
+    name: z.string().max(1024).optional(),
+    description: z.string().max(8192).optional(),
+    media_type: z.enum(['text', 'image', 'video', 'audio']).optional(),
+    contract: newApiIdentitySchema.optional(),
+    capabilities: z.record(z.unknown()).optional(),
+    limitations: z.record(z.unknown()).optional(),
+    input_media_types: z
+      .array(z.enum(['text', 'image', 'video', 'audio']))
+      .max(4)
+      .optional(),
+    available: z.boolean(),
+    unavailable_reason: z.string().max(2048).optional(),
+    pricing_version: newApiIdentitySchema,
+  })
+  .strict()
+  .refine((model) => !model.available || newApiModelIdSchema.safeParse(model.id).success, {
+    path: ['id'],
+    message: '可用模型 ID 不能超过 512 UTF-8 字节',
+  });
+
+/** New API 按已保存 Key 返回的只读目录，汇率只用于人民币预算转换。 */
+export const newApiCatalogSchema = z
+  .object({
+    version: z.literal(1),
+    currency: billingCurrencySchema,
+    quota_per_unit: newApiPositiveDecimalSchema,
+    usd_to_cny: newApiPositiveDecimalSchema,
+    models: z.array(newApiCatalogModelSchema).max(20_000),
+  })
+  .strict()
+  .refine(
+    (catalog) => new Set(catalog.models.map((model) => model.id)).size === catalog.models.length,
+    {
+      message: '鉴权目录不能包含重复模型身份',
+      path: ['models'],
+    },
+  );
+
+/** 预估只表示当前上游预扣预算，不保证执行价格、路由组或最终成本不变化。 */
+export const newApiEstimateSchema = z
+  .object({
+    version: z.literal(1),
+    model: newApiModelIdSchema,
+    group: newApiIdentitySchema,
+    pricing_version: newApiIdentitySchema,
+    estimated_quota: billingNanosSchema,
+    quota_per_unit: newApiPositiveDecimalSchema,
+    usd_to_cny: newApiPositiveDecimalSchema,
+    expires_at: z.string().datetime({ offset: true }),
+    estimate_only: z.literal(true),
+  })
+  .strict();
+
+/** 最终回执由原 Key 查询原请求获得；pending 的零 quota 不能作为免费结算证据。 */
+export const newApiReceiptSchema = z
+  .object({
+    version: z.literal(1),
+    request_id: newApiRequestIdSchema,
+    task_id: newApiTaskIdSchema.optional(),
+    model: newApiModelIdSchema,
+    group: newApiIdentitySchema,
+    status: z.enum(['pending', 'settled', 'refunded']),
+    quota: billingNanosSchema,
+    quota_per_unit: newApiPositiveDecimalSchema,
+    pricing_version: newApiIdentitySchema.optional(),
+    settled_at: z.string().datetime({ offset: true }).optional(),
+  })
+  .strict()
+  .superRefine((receipt, context) => {
+    if (receipt.status !== 'pending' && !receipt.settled_at)
+      context.addIssue({ code: 'custom', path: ['settled_at'], message: '最终回执缺少记账时间' });
+    if (receipt.status === 'refunded' && receipt.quota !== '0')
+      context.addIssue({
+        code: 'custom',
+        path: ['quota'],
+        message: '已退款回执的净 quota 必须为零',
+      });
+  });
+
+/** 保留上游原始字段的已验证估算；不得拿 estimated_quota 当最终账单。 */
+export type NewApiEstimate = z.infer<typeof newApiEstimateSchema>;
+
+/** 经过鉴权传输和格式验证的账单；调用方仍须核对原请求及异步任务身份。 */
+export type NewApiReceipt = z.infer<typeof newApiReceiptSchema>;
+
+/**
+ * 按冻结的每美元 quota 与汇率把 quota 精确换成人民币 nanos，最终只向上取整一次。
+ * @throws 非规范金额、非正换算配置或结果超出 Decimal(38, 0) 时拒绝换算。
+ */
+export function newApiQuotaToCnyNanos(input: {
+  quota: string;
+  quotaPerUnit: string;
+  usdToCny: string;
+}): string {
+  return serializeBillingNanos(newApiQuotaToCnyAmount(input));
+}
+
+/** 中间结果允许超过钱包存储范围，最终结算仍按可表示的用户预算封顶。 */
+function newApiQuotaToCnyAmount(input: {
+  quota: string;
+  quotaPerUnit: string;
+  usdToCny: string;
+}): bigint {
+  const quota = parseBillingNanos(input.quota);
+  const perUnit = decimalFraction(newApiPositiveDecimalSchema.parse(input.quotaPerUnit));
+  const rate = decimalFraction(newApiPositiveDecimalSchema.parse(input.usdToCny));
+  return ceilBillingDivision(
+    quota * perUnit.denominator * rate.numerator * CNY_NANOS_PER_YUAN,
+    perUnit.numerator * rate.denominator,
+  );
+}
+
+/** 托管报价固定换算配置和用户预算，执行时的上游价格允许变化但不能向用户超扣。 */
+export const newApiQuoteCalculationSchema = z
+  .object({
+    version: z.literal(2),
+    currency: billingCurrencySchema,
+    rule: newApiManagedPriceRuleSchema,
+    quantity: z.literal(1),
+    capNanos: billingNanosSchema,
+    estimate: newApiEstimateSchema,
+  })
+  .strict()
+  .superRefine((quote, context) => {
+    try {
+      if (
+        quote.capNanos ===
+        newApiQuotaToCnyNanos({
+          quota: quote.estimate.estimated_quota,
+          quotaPerUnit: quote.estimate.quota_per_unit,
+          usdToCny: quote.estimate.usd_to_cny,
+        })
+      )
+        return;
+    } catch {
+      // 无法表示的预算同样拒绝保存；不能由上游非法数据生成零价报价。
+    }
+    context.addIssue({ code: 'custom', path: ['capNanos'], message: '冻结预算与预估换算不一致' });
+  });
+
+/** 可持久化的 New API 人民币预算授权；v1 人工报价格式保持不变。 */
+export type NewApiQuoteCalculation = z.infer<typeof newApiQuoteCalculationSchema>;
+
 /**
  * 生成单项报价所需的服务端计量输入。
  * inputTokensVerified/charactersVerified 必须由可信服务端计量器给出，不能信任浏览器自报。
@@ -333,7 +523,15 @@ export type BillingSettlement =
       status: 'pending_verification';
       chargeNanos: '0';
       releaseNanos: '0';
-      reason: 'delivery_unknown' | 'usage_missing' | 'usage_unreliable' | 'usage_source_mismatch';
+      reason:
+        | 'delivery_unknown'
+        | 'usage_missing'
+        | 'usage_unreliable'
+        | 'usage_source_mismatch'
+        | 'receipt_missing'
+        | 'receipt_pending'
+        | 'receipt_model_mismatch'
+        | 'receipt_quota_unit_mismatch';
     }
   | { status: 'released'; chargeNanos: '0'; releaseNanos: string }
   | {
@@ -408,6 +606,48 @@ export function calculateBillingSettlement(input: {
   };
 }
 
+/**
+ * 以最终上游净 quota 结算人民币预算；高于预算的差额由平台承担，不向用户补扣。
+ * @param input 回执必须已由原冻结 Key 查询，且调用方已核对 request_id 和 task_id。
+ * @returns 缺少最终回执、模型或换算单位不符时保留冻结；失败释放，已交付按预算封顶。
+ * @throws 冻结预算或回执格式损坏时拒绝计算，调用方必须记录错误并保留待核实状态。
+ */
+export function calculateNewApiSettlement(input: {
+  quote: NewApiQuoteCalculation;
+  receipt?: NewApiReceipt;
+  delivery: 'delivered' | 'failed' | 'unknown';
+}): BillingSettlement {
+  const quote = newApiQuoteCalculationSchema.parse(input.quote);
+  if (input.delivery === 'failed')
+    return { status: 'released', chargeNanos: '0', releaseNanos: quote.capNanos };
+  if (input.delivery !== 'delivered') return pendingSettlement('delivery_unknown');
+  if (!input.receipt) return pendingSettlement('receipt_missing');
+  const receipt = newApiReceiptSchema.parse(input.receipt);
+  if (receipt.model !== quote.estimate.model) return pendingSettlement('receipt_model_mismatch');
+  const quotedUnit = decimalFraction(quote.estimate.quota_per_unit);
+  const receiptUnit = decimalFraction(receipt.quota_per_unit);
+  if (
+    quotedUnit.numerator * receiptUnit.denominator !==
+    receiptUnit.numerator * quotedUnit.denominator
+  )
+    return pendingSettlement('receipt_quota_unit_mismatch');
+  if (receipt.status === 'pending') return pendingSettlement('receipt_pending');
+  const amount = newApiQuotaToCnyAmount({
+    quota: receipt.quota,
+    quotaPerUnit: quote.estimate.quota_per_unit,
+    usdToCny: quote.estimate.usd_to_cny,
+  });
+  const cap = parseBillingNanos(quote.capNanos);
+  const charge = amount > cap ? cap : amount;
+  return {
+    status: 'settled',
+    chargeNanos: serializeBillingNanos(charge),
+    releaseNanos: serializeBillingNanos(cap - charge),
+    capped: amount > cap,
+    uncappedChargeNanos: amount.toString(),
+  };
+}
+
 /** 按 Unicode 码点统计输入字符；表情代理对算一个字符，组合符按各码点计数。 */
 export function countBillingCharacters(input: string): number {
   if (typeof input !== 'string') throw new TypeError('字符计费输入必须是文本');
@@ -420,7 +660,7 @@ export const marketplacePricingSchema = z
     id: z.string().min(1),
     revision: z.number().int().positive(),
     currency: billingCurrencySchema,
-    rule: billingPriceRuleSchema,
+    rule: marketplacePriceRuleSchema,
     effectiveAt: z.string().datetime({ offset: true }),
   })
   .strict();
@@ -458,7 +698,14 @@ export const billingQuoteItemSchema = z
     platformModelId: z.string().min(1),
     modelName: z.string().min(1),
     pricingVersionId: z.string().min(1),
-    unit: z.enum(['per_call', 'per_image', 'per_second', 'per_token', 'per_character']),
+    unit: z.enum([
+      'per_call',
+      'per_image',
+      'per_second',
+      'per_token',
+      'per_character',
+      'upstream_cost',
+    ]),
     capNanos: billingNanosSchema,
   })
   .strict();
@@ -512,6 +759,12 @@ export type BillingWallet = z.infer<typeof billingWalletSchema>;
 function secondsToNanos(value: string): bigint {
   const [whole, fraction = ''] = billingSecondsSchema.parse(value).split('.');
   return BigInt(whole!) * CNY_NANOS_PER_YUAN + BigInt(fraction.padEnd(9, '0'));
+}
+
+/** 将已校验的十进制拆成整数分数，保留全部小数位且不经过浮点运算。 */
+function decimalFraction(value: string): { numerator: bigint; denominator: bigint } {
+  const [whole, fraction = ''] = value.split('.');
+  return { numerator: BigInt(`${whole}${fraction}`), denominator: 10n ** BigInt(fraction.length) };
 }
 
 /** 已匹配具体规格后的整数单价；未使用的计费方式字段固定为零。 */

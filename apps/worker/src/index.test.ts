@@ -44,6 +44,7 @@ import {
 import { serializeWorkerError, type WorkerLogger } from './logger';
 import { workflowSnapshotFingerprint, workflowSnapshotFingerprintV1 } from './workflow-dag';
 import type { RequestPromptRecord } from '@multimodal-canvas/domain';
+import { NewApiProviderError } from '@multimodal-canvas/providers';
 
 const result = {
   provider: 'mock',
@@ -351,11 +352,71 @@ describe('worker provider job boundary', () => {
     });
   });
 
+  it('persists the verified gateway header identity when response parsing fails before delivery', () => {
+    const providerJob = createProviderJobRecord('run_header', 'newapi', 'running', 85);
+    const error = new NewApiProviderError('response body unavailable', {
+      newApiRequestId: 'original-header-id',
+      requestId: 'original-generic-id',
+      providerPayload: { newApiRequestId: 'forged-body-id' },
+    });
+    expect(attachProviderErrorMetadata(providerJob, error).payload).toEqual({
+      newApiRequestId: 'original-header-id',
+      requestId: 'original-generic-id',
+    });
+  });
+
+  it('keeps creation IDs when persisting later polling diagnostics', () => {
+    const providerJob = {
+      ...createProviderJobRecord('run_poll', 'newapi', 'running', 85),
+      payload: { newApiRequestId: 'original-create-id', requestId: 'original-generic-id' },
+    };
+    const error = new NewApiProviderError('polling unavailable', {
+      platformJobId: 'task_original',
+      newApiRequestId: 'must-not-replace-create',
+      requestId: 'must-not-replace-generic',
+      pollNewApiRequestId: 'latest-poll-gateway',
+      pollRequestId: 'latest-poll-generic',
+    });
+    expect(attachProviderErrorMetadata(providerJob, error)).toMatchObject({
+      platformJobId: 'task_original',
+      payload: {
+        newApiRequestId: 'original-create-id',
+        requestId: 'original-generic-id',
+        pollNewApiRequestId: 'latest-poll-gateway',
+        pollRequestId: 'latest-poll-generic',
+      },
+    });
+  });
+
+  it('never promotes unverified body or generic error fields to the billing request ID', () => {
+    const providerJob = createProviderJobRecord('run_untrusted', 'newapi', 'running', 85);
+    for (const error of [
+      Object.assign(new Error('generic failure'), {
+        newApiRequestId: 'forged-property',
+        providerPayload: { newApiRequestId: 'forged-body', pollNewApiRequestId: 'forged-poll' },
+      }),
+      new NewApiProviderError('upstream failure', {
+        providerPayload: { newApiRequestId: 'forged-body' },
+      }),
+      new NewApiProviderError('invalid ID', { newApiRequestId: '..' }),
+    ]) {
+      expect(attachProviderErrorMetadata(providerJob, error).payload ?? {}).not.toHaveProperty(
+        'newApiRequestId',
+      );
+      expect(attachProviderErrorMetadata(providerJob, error).payload ?? {}).not.toHaveProperty(
+        'pollNewApiRequestId',
+      );
+    }
+  });
+
   it('stores only a safe provider summary and drops signed output URLs', () => {
     expect(
       sanitizeProviderJobPayload({
         contract: 'newapi-video-v1',
         phase: 'completed',
+        newApiRequestId: 'original-newapi-request',
+        pollRequestId: 'poll-request',
+        pollNewApiRequestId: 'poll-newapi-request',
         statusResponse: {
           status: 'done',
           progress: 100,
@@ -383,6 +444,9 @@ describe('worker provider job boundary', () => {
     ).toEqual({
       contract: 'newapi-video-v1',
       phase: 'completed',
+      newApiRequestId: 'original-newapi-request',
+      pollRequestId: 'poll-request',
+      pollNewApiRequestId: 'poll-newapi-request',
       statusResponse: { status: 'done', progress: 100 },
       result: {
         provider: 'newapi',

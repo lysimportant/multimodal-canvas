@@ -77,6 +77,15 @@ describe('billing routes', () => {
         nodeId: 'node-1',
         result: { text: 'private input must stay hidden' },
         settlement: { status: 'settled', chargeNanos: '1', secret: 'hidden' },
+        newApiReceipt: {
+          request_id: 'original-request',
+          status: 'settled',
+          quota: '10000',
+          quota_per_unit: '500000',
+          apiKey: 'hidden',
+          raw: { secret: 'hidden' },
+        },
+        conversion: { quotaPerUnit: '500000', usdToCny: '7.3', raw: 'hidden' },
       },
       usage: { source: 'output_metadata', reliable: true, images: 1, raw: 'hidden' },
       maximumNanos: new Prisma.Decimal('1000000000000000000000000'),
@@ -110,6 +119,13 @@ describe('billing routes', () => {
     expect(response.json().item.deliveryEvidence).toEqual({
       nodeId: 'node-1',
       settlement: { status: 'settled', chargeNanos: '1' },
+      newApiReceipt: {
+        request_id: 'original-request',
+        status: 'settled',
+        quota: '10000',
+        quota_per_unit: '500000',
+      },
+      conversion: { quotaPerUnit: '500000', usdToCny: '7.3' },
     });
     expect(response.json().item.usage).toEqual({
       source: 'output_metadata',

@@ -78,7 +78,7 @@ describe('New API 官方统一视频合同', () => {
             status: 'queued',
             usage: { total_tokens: 9 },
           },
-          { 'x-request-id': 'create-request' },
+          { 'x-request-id': 'create-request', 'x-oneapi-request-id': 'gateway-create' },
         ),
       )
       .mockResolvedValueOnce(jsonResponse({ task_id: 'task-1', status: 'in_progress' }))
@@ -92,7 +92,7 @@ describe('New API 官方统一视频合同', () => {
               url: 'https://private.example?token=secret',
             },
           },
-          { 'x-request-id': 'poll-request' },
+          { 'x-request-id': 'poll-request', 'x-oneapi-request-id': 'gateway-poll' },
         ),
       );
     const snapshot = videoSnapshot({
@@ -166,7 +166,10 @@ describe('New API 官方统一视频合同', () => {
       payload: {
         contract: 'newapi-unified-v1',
         phase: 'completed',
-        requestId: 'poll-request',
+        requestId: 'create-request',
+        newApiRequestId: 'gateway-create',
+        pollRequestId: 'poll-request',
+        pollNewApiRequestId: 'gateway-poll',
         mediaMetadata: completed.metadata,
       },
     });
@@ -417,17 +420,117 @@ describe('New API 官方统一视频合同', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it('恢复查询未返回关联头时保留已有脱敏请求 ID', async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(completed));
+  it.each([false, true])('恢复查询有新关联头=%s 时保留创建身份', async (hasHeaders) => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        jsonResponse(
+          completed,
+          hasHeaders
+            ? { 'x-request-id': 'poll-current', 'x-oneapi-request-id': 'gateway-poll-current' }
+            : undefined,
+        ),
+      );
     const result = await providerFor(fetchImpl).execute({
       snapshot: videoSnapshot(),
       providerJob: {
         provider: 'newapi',
         platformJobId: 'task-1',
-        payload: { contract: 'newapi-unified-v1', requestId: 'old-request synthetic-key' },
+        payload: {
+          contract: 'newapi-unified-v1',
+          requestId: 'old-request synthetic-key',
+          newApiRequestId: 'gateway-original',
+          pollRequestId: 'poll-previous',
+          pollNewApiRequestId: 'gateway-poll-previous',
+        },
       },
     });
-    expect(result.providerJob?.payload?.requestId).toBe('old-request [REDACTED]');
+    expect(result.providerJob?.payload).toMatchObject({
+      requestId: 'old-request [REDACTED]',
+      newApiRequestId: 'gateway-original',
+      pollRequestId: hasHeaders ? 'poll-current' : 'poll-previous',
+      pollNewApiRequestId: hasHeaders ? 'gateway-poll-current' : 'gateway-poll-previous',
+    });
+    expect(fetchImpl.mock.calls.map(([, init]) => init?.method)).toEqual(['GET']);
+  });
+
+  it.each([false, true])(
+    '查询失败时创建身份已保存=%s，查询头不冒充创建身份',
+    async (hasCreationId) => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            error: { code: 'invalid_request_error', message: 'query unavailable' },
+            newApiRequestId: 'forged-body-id',
+          }),
+          {
+            status: 404,
+            headers: {
+              'content-type': 'application/json',
+              'x-request-id': 'query-error-id',
+              'x-oneapi-request-id': 'gateway-query-error',
+            },
+          },
+        ),
+      );
+      const error = await providerFor(fetchImpl)
+        .execute({
+          snapshot: videoSnapshot(),
+          providerJob: {
+            provider: 'newapi',
+            platformJobId: 'task-1',
+            payload: {
+              contract: 'newapi-unified-v1',
+              ...(hasCreationId
+                ? { requestId: 'original-request', newApiRequestId: 'gateway-original' }
+                : {}),
+            },
+          },
+        })
+        .catch((caught: unknown) => caught);
+      expect(error).toMatchObject({
+        platformJobId: 'task-1',
+        newApiRequestId: hasCreationId ? 'gateway-original' : undefined,
+        requestId: hasCreationId ? 'original-request' : undefined,
+        pollRequestId: 'query-error-id',
+        pollNewApiRequestId: 'gateway-query-error',
+        providerPayload: {
+          contract: 'newapi-unified-v1',
+          pollRequestId: 'query-error-id',
+          pollNewApiRequestId: 'gateway-query-error',
+          ...(hasCreationId ? { newApiRequestId: 'gateway-original' } : {}),
+        },
+      });
+      expect(JSON.stringify(error)).not.toContain('forged-body-id');
+      expect(fetchImpl.mock.calls.map(([, init]) => init?.method)).toEqual(['GET']);
+    },
+  );
+
+  it.each([400, 503, 200])('创建异常状态=%s 保留网关ID且不重复POST', async (status) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify(
+          status === 200
+            ? { status: 'queued' }
+            : { error: { code: 'synthetic-error', message: 'rejected' } },
+        ),
+        {
+          status,
+          headers: {
+            'content-type': 'application/json',
+            'x-oneapi-request-id': 'gateway-create-error',
+          },
+        },
+      ),
+    );
+    const error = await providerFor(fetchImpl)
+      .execute({ snapshot: videoSnapshot(), onProviderJob: vi.fn() })
+      .catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      newApiRequestId: 'gateway-create-error',
+      providerPayload: { newApiRequestId: 'gateway-create-error' },
+    });
+    expect(fetchImpl.mock.calls.map(([, init]) => init?.method)).toEqual(['POST']);
   });
 
   it('网络创建结果未知时仅一次 POST，冻结记录阻止下一次执行重放', async () => {
@@ -634,7 +737,8 @@ describe('New API 官方统一视频合同', () => {
       expect(result.providerJob?.payload).toMatchObject({
         contract: 'newapi-unified-v1',
         mediaMetadata: completed.metadata,
-        requestId: 'http-poll',
+        requestId: 'http-create',
+        pollRequestId: 'http-poll',
       });
       expect(result.usage).toEqual({ metadata: { total_tokens: 4 } });
     } finally {

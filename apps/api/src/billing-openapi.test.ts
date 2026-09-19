@@ -43,14 +43,14 @@ describe('计费与模型广场 OpenAPI 合同', () => {
     const operation = document.paths['/v1/admin/model-marketplace/sync'];
     expect(
       operation.post.requestBody.content['application/json'].schema.properties.sourceType,
-    ).toMatchObject({ enum: ['models', 'newapi_pricing'], default: 'models' });
+    ).toMatchObject({ enum: ['models', 'newapi_pricing', 'newapi_managed'], default: 'models' });
     expect(operation.get.parameters.map((item: { name: string }) => item.name)).toEqual([
       'credentialId',
       'sourceType',
     ]);
     expect(operation.post.description).toContain('不等于当前 Key 可调用目录');
     const sync = document.components.schemas!.ModelCatalogSync;
-    expect(sync.properties.sourceType.enum).toEqual(['models', 'newapi_pricing']);
+    expect(sync.properties.sourceType.enum).toEqual(['models', 'newapi_pricing', 'newapi_managed']);
     expect(sync.properties.candidates.items.properties.pricingReference.$ref).toBe(
       '#/components/schemas/NewApiPricingReference',
     );

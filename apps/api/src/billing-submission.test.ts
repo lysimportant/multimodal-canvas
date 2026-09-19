@@ -4,12 +4,14 @@ import { Prisma, type BillingQuote } from '@prisma/client';
 import {
   BillingError,
   billingSnapshotHash,
+  type NewApiEstimate,
   type PrismaBillingService,
   type QuoteItemInput,
 } from '@multimodal-canvas/billing';
 import {
   PROMPT_SKILLS,
   type BillingPriceRule,
+  type MarketplacePriceRule,
   type CanvasNode,
   type MediaType,
   type RunRecord,
@@ -27,7 +29,11 @@ import {
   type ModelMarketplace,
   type ResolvedMarketplaceModel,
 } from './model-marketplace';
-import { createRunQuoteItems, freezeRunBillingModels } from './billing-submission';
+import {
+  createRunQuoteItems,
+  freezeRunBillingModels,
+  prepareBillingSubmission,
+} from './billing-submission';
 
 /** 测试仅使用本机内存与合成身份，所有生成调用由返回排队记录的替身截断。 */
 const apps: Array<ReturnType<typeof buildApp>> = [];
@@ -43,12 +49,13 @@ const fixedPrice: BillingPriceRule = {
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
 });
 
 /** 生成完整平台版本记录，避免测试把候选模型名称误当商品身份。 */
 function resolvedModel(
   mediaType: MediaType = 'text',
-  rule: BillingPriceRule = fixedPrice,
+  rule: MarketplacePriceRule = fixedPrice,
 ): ResolvedMarketplaceModel {
   const now = new Date();
   const modelId = randomUUID();
@@ -153,7 +160,12 @@ async function fixture() {
   } as unknown as ModelMarketplace;
   const quotes = new Map<string, BillingQuote>();
   const createQuote = vi.fn(
-    async (input: { payerId: string; snapshot: RunSnapshot; items: QuoteItemInput[] }) => {
+    async (input: {
+      payerId: string;
+      snapshot: RunSnapshot;
+      items: QuoteItemInput[];
+      expiresAt?: Date;
+    }) => {
       const quote: BillingQuote = {
         id: randomUUID(),
         payerId: input.payerId,
@@ -163,7 +175,7 @@ async function fixture() {
         maximumNanos: new Prisma.Decimal(
           input.items.reduce((sum, item) => sum + BigInt(item.maximumNanos), 0n).toString(),
         ),
-        expiresAt: new Date(Date.now() + 300_000),
+        expiresAt: input.expiresAt ?? new Date(Date.now() + 300_000),
         consumedRunId: null,
         createdAt: new Date(),
       };
@@ -746,5 +758,275 @@ describe('可信报价计量', () => {
       { target: model },
     );
     expect(createRunQuoteItems(snapshot, { target: model })[0]!.maximumNanos).toBe('20');
+  });
+});
+
+/** 托管模型只冻结上游估算预算；精确绑定和凭据由现有快照机制负责。 */
+async function managedSubmissionFixture(
+  mediaType: MediaType = 'text',
+  parameters: Record<string, unknown> = {},
+) {
+  const ctx = await fixture();
+  const model = resolvedModel(mediaType, {
+    unit: 'upstream_cost',
+    meteringSource: 'newapi_receipt',
+  });
+  const node = nodeFor(model);
+  const models = { target: model };
+  const snapshot = freezeRunBillingModels(
+    createRunSnapshot(ctx.project.id, { revision: 0, nodes: [node], edges: [] }, node.id, {
+      parameters,
+    }),
+    models,
+  );
+  const credentials = {
+    baseUrl: 'https://original.example.invalid/v1',
+    apiKey: 'synthetic-original-key',
+  };
+  const settings = { getProviderCredentials: vi.fn(async () => credentials) };
+  const estimated: NewApiEstimate = {
+    version: 1,
+    model: model.binding.upstreamModelId,
+    group: 'original-group',
+    pricing_version: 'price-at-estimate',
+    estimated_quota: '3',
+    quota_per_unit: '500000',
+    usd_to_cny: '7.1',
+    expires_at: new Date(Date.now() + 60_000).toISOString(),
+    estimate_only: true,
+  };
+  const estimate = vi.fn(async () => estimated);
+  const session = await ctx.auth.verifyAccessToken(
+    ctx.headers.authorization.replace('Bearer ', ''),
+  );
+  return {
+    ...ctx,
+    model,
+    node,
+    models,
+    snapshot,
+    settings,
+    estimate,
+    estimated,
+    credentials,
+    session,
+  };
+}
+
+describe('New API 托管报价', () => {
+  it('使用冻结 Key 估算精确模型，公开预算隐藏上游细节且到期不晚于预估', async () => {
+    const ctx = await managedSubmissionFixture('text', {
+      max_tokens: 200,
+      inferenceStrength: 'high',
+      asset_url: 'https://not-forwarded.invalid',
+    });
+    const quote = await prepareBillingSubmission({ ...ctx, fields: { quoteOnly: true } });
+    expect(ctx.settings.getProviderCredentials).toHaveBeenCalledWith({
+      credentialId: ctx.model.binding.credentialId,
+      credentialVersion: 1,
+    });
+    expect(ctx.estimate).toHaveBeenCalledWith(ctx.credentials, {
+      model: ctx.model.binding.upstreamModelId,
+      contract: 'openai-chat-completions',
+      parameters: { max_tokens: 200, reasoning_effort: 'high' },
+      input_text: 'English test prompt',
+      input_pending: false,
+    });
+    expect(quote).toMatchObject({
+      currency: 'CNY',
+      capNanos: '42600',
+      expiresAt: ctx.estimated.expires_at,
+      items: [{ unit: 'upstream_cost', quantity: 1, capNanos: '42600' }],
+    });
+    expect(ctx.createQuote.mock.calls[0]?.[0].items[0]?.quoteInput).toMatchObject({
+      version: 2,
+      capNanos: '42600',
+      estimate: ctx.estimated,
+    });
+    expect(JSON.stringify(quote)).not.toContain(ctx.model.binding.upstreamModelId);
+    expect(JSON.stringify(quote)).not.toContain(ctx.credentials.apiKey);
+    expect(ctx.create).not.toHaveBeenCalled();
+  });
+
+  it('用户确认时复用已存预算，不读取当前 Key、不重新请求估算或执行价格锁定', async () => {
+    const ctx = await managedSubmissionFixture();
+    const quote = await prepareBillingSubmission({ ...ctx, fields: { quoteOnly: true } });
+    ctx.estimate.mockRejectedValue(new Error('must not reprice'));
+    ctx.settings.getProviderCredentials.mockRejectedValue(new Error('must not use current key'));
+    await expect(
+      prepareBillingSubmission({ ...ctx, fields: { quoteId: quote!.id } }),
+    ).resolves.toBeUndefined();
+    expect(ctx.estimate).toHaveBeenCalledTimes(1);
+    expect(ctx.settings.getProviderCredentials).toHaveBeenCalledTimes(1);
+  });
+
+  it('凭据版本与快照不符时拒绝估算，不能改用当前活动 Key', async () => {
+    const ctx = await managedSubmissionFixture();
+    ctx.snapshot.nodeCredentialReferences!.target!.credentialVersion = 2;
+    await expect(
+      prepareBillingSubmission({ ...ctx, fields: { quoteOnly: true } }),
+    ).rejects.toMatchObject({ code: 'invalid_charge_plan' });
+    expect(ctx.settings.getProviderCredentials).not.toHaveBeenCalled();
+    expect(ctx.estimate).not.toHaveBeenCalled();
+  });
+
+  it('上游明确返回免费预算时允许零值，缺失换算配置则拒绝并且不补价', async () => {
+    const ctx = await managedSubmissionFixture('text', { n: 1 });
+    ctx.estimate.mockResolvedValue({ ...ctx.estimated, estimated_quota: '0' });
+    expect(await prepareBillingSubmission({ ...ctx, fields: { quoteOnly: true } })).toMatchObject({
+      capNanos: '0',
+    });
+    expect(ctx.estimate).toHaveBeenCalledWith(
+      ctx.credentials,
+      expect.objectContaining({ parameters: {} }),
+    );
+    ctx.estimate.mockResolvedValue({
+      ...ctx.estimated,
+      usd_to_cny: undefined,
+    } as unknown as NewApiEstimate);
+    await expect(
+      prepareBillingSubmission({ ...ctx, fields: { quoteOnly: true } }),
+    ).rejects.toMatchObject({ code: 'newapi_estimate_unavailable' });
+    expect(ctx.createQuote).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [
+      'image',
+      { resolution: '1024x1024', imageQuality: 'high', aspectRatio: '1:1' },
+      { size: '1024x1024', quality: 'high', aspect_ratio: '1:1' },
+    ],
+    [
+      'video',
+      { duration: 8, seconds: 4, videoResolution: '720p', aspectRatio: '16:9' },
+      { seconds: 8, resolution: '720p', aspect_ratio: '16:9' },
+    ],
+    [
+      'audio',
+      { input: 'Speech input', voice: 'alloy', speed: 1.2, inferenceStrength: 'high' },
+      { voice: 'alloy', speed: 1.2 },
+    ],
+  ] as const)('按 %s Provider 字段优先级发送预估规格', async (mediaType, parameters, expected) => {
+    const ctx = await managedSubmissionFixture(mediaType, parameters);
+    await prepareBillingSubmission({ ...ctx, fields: { quoteOnly: true } });
+    expect(ctx.estimate).toHaveBeenCalledWith(
+      ctx.credentials,
+      expect.objectContaining({ parameters: expected }),
+    );
+  });
+
+  it('混合 DAG 保留人工规则与托管预算，待生成输入仅标记不完整', async () => {
+    const ctx = await managedSubmissionFixture();
+    const manual = resolvedModel();
+    const upstream = nodeFor(manual, 'upstream');
+    const models = { ...ctx.models, upstream: manual };
+    const snapshot = freezeRunBillingModels(
+      createRunSnapshot(
+        ctx.project.id,
+        {
+          revision: 0,
+          nodes: [upstream, ctx.node],
+          edges: [
+            {
+              id: 'edge',
+              sourceNodeId: 'upstream',
+              sourceHandle: 'output:text',
+              targetNodeId: 'target',
+              targetHandle: 'input:prompt',
+              order: 0,
+            },
+          ],
+        },
+        'target',
+      ),
+      models,
+    );
+    const quote = await prepareBillingSubmission({
+      ...ctx,
+      snapshot,
+      models,
+      fields: { quoteOnly: true },
+    });
+    expect(quote).toMatchObject({
+      capNanos: '42607',
+      items: [
+        { nodeId: 'upstream', unit: 'per_call', capNanos: '7' },
+        { nodeId: 'target', unit: 'upstream_cost', capNanos: '42600' },
+      ],
+    });
+    expect(ctx.estimate).toHaveBeenCalledWith(
+      ctx.credentials,
+      expect.objectContaining({ input_pending: true }),
+    );
+  });
+
+  it('原 Key 缺失、模型不符、过期与上游错误都不创建报价或零价放行', async () => {
+    const ctx = await managedSubmissionFixture();
+    await expect(
+      prepareBillingSubmission({
+        ...ctx,
+        settings: { getProviderCredentials: async () => undefined },
+        fields: { quoteOnly: true },
+      }),
+    ).rejects.toMatchObject({ code: 'billing_credentials_unavailable' });
+    ctx.estimate.mockResolvedValue({ ...ctx.estimated, model: 'other-model' });
+    await expect(
+      prepareBillingSubmission({ ...ctx, fields: { quoteOnly: true } }),
+    ).rejects.toMatchObject({ code: 'invalid_upstream_estimate' });
+    ctx.estimate.mockResolvedValue({
+      ...ctx.estimated,
+      expires_at: new Date(Date.now() - 1).toISOString(),
+    });
+    await expect(
+      prepareBillingSubmission({ ...ctx, fields: { quoteOnly: true } }),
+    ).rejects.toMatchObject({ code: 'quote_expired' });
+    ctx.estimate.mockRejectedValue(new Error('secret url and key'));
+    await expect(
+      prepareBillingSubmission({ ...ctx, fields: { quoteOnly: true } }),
+    ).rejects.toMatchObject({
+      code: 'newapi_estimate_unavailable',
+      message: 'New API 预估暂不可用，未创建运行或冻结余额',
+    });
+    expect(ctx.createQuote).not.toHaveBeenCalled();
+    expect(ctx.create).not.toHaveBeenCalled();
+  });
+
+  it('真实节点报价入口注入服务端设置，只请求估算接口不创建生成任务', async () => {
+    const ctx = await fixture();
+    ctx.model.pricing.rule = { unit: 'upstream_cost', meteringSource: 'newapi_receipt' };
+    vi.spyOn(ctx.settingsStore, 'getProviderCredentials').mockReturnValue({
+      baseUrl: 'https://estimate.example.invalid/v1',
+      apiKey: 'synthetic-key',
+    });
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json({
+        version: 1,
+        model: ctx.model.binding.upstreamModelId,
+        group: 'key-group',
+        pricing_version: 'actual',
+        estimated_quota: '1',
+        quota_per_unit: '500000',
+        usd_to_cny: '7.1',
+        expires_at: new Date(Date.now() + 60_000).toISOString(),
+        estimate_only: true,
+      }),
+    );
+    vi.stubGlobal('fetch', fetchImpl);
+    const response = await ctx.app.inject({
+      method: 'POST',
+      url: ctx.path,
+      headers: ctx.headers,
+      payload: { ...ctx.body, quoteOnly: true },
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().quote).toMatchObject({
+      capNanos: '14200',
+      items: [{ unit: 'upstream_cost' }],
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://estimate.example.invalid/v1/canvas/estimate',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(ctx.create).not.toHaveBeenCalled();
   });
 });

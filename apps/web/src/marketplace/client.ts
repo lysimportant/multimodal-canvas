@@ -1,7 +1,7 @@
 import {
   formatCnyNanos,
   marketplaceModelSchema,
-  type BillingPriceRule,
+  type MarketplacePriceRule,
   type MarketplaceModel,
 } from '@multimodal-canvas/domain';
 import { managementRequest } from '../management/client';
@@ -24,8 +24,9 @@ export async function fetchMarketplace(
 }
 
 /** 将精确整数售价转换为用户可读的人民币与计费单位，保留微额小数。 */
-export function marketplacePriceLabel(rule: BillingPriceRule | undefined): string {
+export function marketplacePriceLabel(rule: MarketplacePriceRule | undefined): string {
   if (!rule) return '暂未定价';
+  if (rule.unit === 'upstream_cost') return '沿用 New API 价格 · 人民币结算';
   if (rule.unit === 'per_token')
     return `输入 ¥${formatCnyNanos(rule.inputPriceNanos)} / 百万 Token · 输出 ¥${formatCnyNanos(rule.outputPriceNanos)} / 百万 Token`;
   const labels = { per_call: '次', per_image: '张', per_second: '秒', per_character: '字符' };
