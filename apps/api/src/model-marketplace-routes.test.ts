@@ -47,6 +47,7 @@ function fixture(configured = true) {
     getAdmin: vi.fn(async () => ({ id: randomUUID(), status: 'draft' })),
     createModel: vi.fn(async () => ({ id: randomUUID(), status: 'draft' })),
     updateModel: vi.fn(async () => ({ id: randomUUID(), status: 'paused' })),
+    deleteModel: vi.fn(async () => undefined),
     listBindings: vi.fn(async () => ({ items: [], page: 1, pageSize: 30, total: 0 })),
     createBinding: vi.fn(async () => ({ id: randomUUID() })),
     listPricing: vi.fn(async () => ({ items: [], page: 1, pageSize: 30, total: 0 })),
@@ -62,6 +63,27 @@ function fixture(configured = true) {
 }
 
 describe('model marketplace routes', () => {
+  it('管理员删除返回空 204，路径与业务错误明确返回', async () => {
+    const { app, service } = fixture();
+    const id = randomUUID();
+    const request = {
+      method: 'DELETE' as const,
+      url: `/v1/admin/model-marketplace/models/${id}`,
+      headers: { 'x-test-role': 'admin' },
+    };
+    const response = await app.inject(request);
+    expect(response.statusCode).toBe(204);
+    expect(response.body).toBe('');
+    expect(service.deleteModel).toHaveBeenCalledWith(id);
+    expect(
+      (await app.inject({ ...request, url: '/v1/admin/model-marketplace/models/invalid' }))
+        .statusCode,
+    ).toBe(400);
+    service.deleteModel.mockRejectedValueOnce(
+      new ModelMarketplaceError('platform_model_not_found', '平台模型不存在', 404),
+    );
+    expect((await app.inject(request)).statusCode).toBe(404);
+  });
   it('所有管理接口拒绝匿名、服务 token 和普通用户', async () => {
     const { app, service } = fixture();
     const modelId = randomUUID();
@@ -70,6 +92,7 @@ describe('model marketplace routes', () => {
       ['POST', '/v1/admin/model-marketplace/models'],
       ['GET', `/v1/admin/model-marketplace/models/${modelId}`],
       ['PATCH', `/v1/admin/model-marketplace/models/${modelId}`],
+      ['DELETE', `/v1/admin/model-marketplace/models/${modelId}`],
       ['GET', `/v1/admin/model-marketplace/models/${modelId}/bindings`],
       ['POST', `/v1/admin/model-marketplace/models/${modelId}/bindings`],
       ['GET', `/v1/admin/pricing-versions?platformModelId=${modelId}`],

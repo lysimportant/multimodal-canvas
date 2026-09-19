@@ -12,6 +12,7 @@ import {
   AiCredentialNotFoundError,
   AiSettingsStore,
   applyCredentialDefaults,
+  credentialSuffixSummary,
   normalizeProviderTimeout,
   resolveIndependentCredentialInput,
   type AiCredentialSummary,
@@ -257,7 +258,11 @@ export class FileAiSettingsStore implements AiSettingsStoreLike {
 
   /** 读取内存中的凭据摘要，调用方必须已经等待写入队列。 */
   private currentSummaries(): AiCredentialSummary[] {
-    return summarizeCredentials([...this.credentials.values()], this.activeCredential.credentialId);
+    return summarizeCredentials(
+      [...this.credentials.values()],
+      this.activeCredential.credentialId,
+      this.requireKeyring(),
+    );
   }
 
   /** 激活指定历史凭据，并创建一个新的活动版本以冻结后续任务引用。 */
@@ -786,7 +791,8 @@ function cloneModels(models: ModelCatalogEntry[]): ModelCatalogEntry[] {
 /** 按用途保留独立连接和当前活动连接，同一地址与 Key 的其他全局历史不重复列出。 */
 function summarizeCredentials(
   credentials: PersistedCredential[],
-  activeCredentialId?: string,
+  activeCredentialId: string | undefined,
+  keyring: CredentialEncryptionKeyring,
 ): AiCredentialSummary[] {
   const sorted = credentials
     .filter((credential) => credential.baseUrl && credential.keyFingerprint && !credential.deleted)
@@ -796,6 +802,7 @@ function summarizeCredentials(
         id: credential.id,
         baseUrl: credential.baseUrl,
         keyFingerprint: credential.keyFingerprint,
+        ...credentialSuffixSummary(keyring, credential),
         independent: credential.independent === true,
         updatedAt: credential.updatedAt,
         ...(Object.keys(defaultModels).length > 0 ? { defaultModels } : {}),

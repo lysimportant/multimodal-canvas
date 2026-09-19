@@ -262,6 +262,7 @@ describe('AI settings endpoints', () => {
       baseUrl: 'https://newapi.example.com/v1',
       configured: true,
       keyFingerprint: expect.stringMatching(/^[a-f0-9]{12}$/),
+      keySuffix: 'test-key',
       defaultModels: {
         text: { modelAlias: 'text-model' },
         video: { modelAlias: 'video-model' },

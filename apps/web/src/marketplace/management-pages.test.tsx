@@ -22,6 +22,7 @@ const credential = {
   id: '22222222-2222-4222-8222-222222222222',
   baseUrl: 'https://synthetic.invalid/v1',
   keyFingerprint: 'synthetic-fingerprint',
+  keySuffix: 'tail0008',
   version: 7,
   active: true,
 };
@@ -78,6 +79,63 @@ afterEach(() => {
 });
 
 describe('平台模型后台', () => {
+  it('列表删除需确认，取消不发送请求，成功后刷新广场和节点目录', async () => {
+    let deleted = false;
+    vi.mocked(managementRequest).mockImplementation(async (path, options) => {
+      if (path === '/settings/ai/credentials') return { credentials: [credential] };
+      if (path.startsWith('/admin/model-marketplace/models?'))
+        return { items: deleted ? [] : [initialModel], total: deleted ? 0 : 1 };
+      if (
+        path === `/admin/model-marketplace/models/${initialModel.id}` &&
+        options?.method === 'DELETE'
+      ) {
+        deleted = true;
+        return undefined;
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const { client } = renderPage(<AdminModelsPage userId={userId} />);
+    client.setQueryData(['marketplace', userId], { items: [initialModel] });
+    client.setQueryData(['platform-model-catalog', userId], [initialModel]);
+    fireEvent.click(await screen.findByRole('button', { name: `删除模型 ${initialModel.name}` }));
+    expect(screen.getByRole('dialog', { name: '删除模型' })).toHaveTextContent(
+      '历史账单、价格版本及已提交任务保留',
+    );
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+    expect(deleted).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: `删除模型 ${initialModel.name}` }));
+    fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(
+      await screen.findByText('还没有平台模型。可以手动新建，或从连接目录选择导入。'),
+    ).toBeVisible();
+    expect(client.getQueryState(['marketplace', userId])?.isInvalidated).toBe(true);
+    expect(client.getQueryState(['platform-model-catalog', userId])?.isInvalidated).toBe(true);
+    expect(
+      vi.mocked(managementRequest).mock.calls.filter(([, options]) => options?.method === 'DELETE'),
+    ).toHaveLength(1);
+  });
+
+  it('详情删除失败保留模型和错误，连接选择显示安全尾号', async () => {
+    vi.mocked(managementRequest).mockImplementation(async (path, options) => {
+      if (path === '/settings/ai/credentials') return { credentials: [credential] };
+      if (path.startsWith('/admin/model-marketplace/models?'))
+        return { items: [initialModel], total: 1 };
+      if (path.includes('/bindings?')) return { items: [], total: 0 };
+      if (options?.method === 'DELETE') throw new Error('连接暂时中断，请重试');
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    renderPage(<AdminModelsPage userId={userId} />);
+    fireEvent.click(await screen.findByRole('button', { name: '管理模型' }));
+    fireEvent.click(screen.getByRole('button', { name: '调用绑定' }));
+    expect(await screen.findByRole('option', { name: /…tail0008/ })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /synthetic-fingerprint/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '删除模型' }));
+    fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('连接暂时中断');
+    expect(screen.getByRole('dialog', { name: '删除模型' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: initialModel.name })).toBeInTheDocument();
+  });
   it('New API 联动直接导入可用合同，无需重复填写媒体类型或单价', async () => {
     const sync = {
       id: 'sync-managed',

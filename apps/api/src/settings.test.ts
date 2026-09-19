@@ -10,7 +10,10 @@ import {
   AiSettingsStore,
   normalizeModelsPayload,
   PrismaAiSettingsStore,
+  credentialSuffixSummary,
+  safeKeySuffix,
 } from './settings';
+import { CredentialEncryptionKeyring } from '@multimodal-canvas/credential-crypto';
 
 /** 生成历史单密钥 AES-GCM 载荷，覆盖未记录 encryptionKeyId 的旧快照迁移。 */
 function legacyCiphertext(plaintext: string, secret: string): string {
@@ -44,6 +47,29 @@ afterEach(() => {
 });
 
 describe('Prisma AI settings encryption', () => {
+  it('安全尾号覆盖普通、短 Key、空值和不可解密旧记录', () => {
+    expect(safeKeySuffix('synthetic-secret-abcdefgh')).toBe('abcdefgh');
+    expect(safeKeySuffix('12345678')).toBe('5678');
+    expect(safeKeySuffix('abc')).toBe('c');
+    expect(safeKeySuffix('x')).toBeUndefined();
+    expect(safeKeySuffix('')).toBeUndefined();
+    const keyring = new CredentialEncryptionKeyring({
+      currentKeyId: 'synthetic',
+      currentSecret: 'synthetic-encryption',
+    });
+    expect(credentialSuffixSummary(keyring, { encryptedApiKey: 'unreadable-cipher' })).toEqual({});
+    const store = new AiSettingsStore('synthetic-encryption');
+    store.update({ baseUrl: 'https://suffix.invalid/v1', apiKey: 'synthetic-secret-abcdefgh' });
+    expect(store.get().keySuffix).toBe('abcdefgh');
+    expect(store.listCredentials()[0]?.keySuffix).toBe('abcdefgh');
+    expect(
+      JSON.stringify({ settings: store.get(), credentials: store.listCredentials() }),
+    ).not.toContain('synthetic-secret-abcdefgh');
+    const restored = new AiSettingsStore('synthetic-encryption');
+    restored.hydrate(store.getPersisted());
+    expect(restored.get().keySuffix).toBe('abcdefgh');
+    expect(store.getPersisted()).not.toHaveProperty('keySuffix');
+  });
   it('requires a stable encryption secret instead of generating one at runtime', () => {
     vi.stubEnv('AI_CREDENTIAL_ENCRYPTION_KEY', '');
 
@@ -1021,6 +1047,7 @@ describe('New API model catalog normalization', () => {
         baseUrl: 'https://active.example.com/v1',
         version: 3,
         keyFingerprint: active.keyFingerprint,
+        keySuffix: 'tive-key',
         updatedAt: '2026-08-27T03:00:00.000Z',
         active: true,
       },

@@ -1,5 +1,20 @@
 # 平台计费实施检查点
 
+## 模型删除与 Key 尾号追加任务
+
+- P1 目标：模型列表及详情增加删除入口；已保存连接显示遮罩加 Key 末尾 8 位，内部指纹继续用于身份匹配。验收覆盖确认/取消/失败、管理员权限、删除后的新请求与同步、历史数据保留、旧凭据及短 Key 展示。
+- 起点 `codex/generate-to-new-node @ e5fefa0`，上游 `origin/codex/generate-to-new-node`。Node `24.12.0`、pnpm `11.19.0`、PowerShell `7.6.5`；本地依赖存在。前轮完整检查 3,221 通过，121 skipped 和 5 pending 不算通过，本轮另行验证。
+- 原用户文件 `docs/resource-input-compatibility.md` 未提交，SHA256 `56B2C9D2BFB09DCC56720769B9CE12AED4877A29090DEDFBADD2F1FC5B3AA2A7`，继续排除。
+- 影响及回滚：利用现有 String 状态增加逻辑删除，不删除模型、绑定、价格或账务记录；无需结构迁移。列表及新选择隐藏已删除模型，旧快照仍用于在途任务。导入遇到同身份已删除商品明确拒绝，不自动恢复。回退旧 API 前需保留理解该状态的查询过滤，避免已删除商品重新出现在后台；不覆盖账务备份。
+- Key 尾号从已有密文推导，不写入新的持久字段；短于或等于 8 字符的 Key 只显示末尾最多 4 字符且不超过半长，无法读取时显示“尾号不可用”，不回显完整 Key。
+- 协作恢复：尝试复用 3 个子代理，但 followup/send 消息持续为空并接续旧任务；已中断全部子代理，主代理完成本轮实现。旧任务自动补丁独立保存在忽略目录 `.data/billing-implementation/deferred-agent-prior-billing.patch`，不混入本轮。生产部署、真实模型删除、付费请求及 `D:/newapi` 业务代码修改不在范围。
+- 实现：管理员 `DELETE /v1/admin/model-marketplace/models/:id` 返回空 204；重复删除幂等，不存在返回 404。管理列表、广场和新请求排除删除状态，拒绝编辑或托管重导；历史版本接口仍可读取。消费报价时锁定模型行，阻止删除与新提交交错越过校验；已受理任务和历史结算不依赖当前发布状态。
+- 验证：本轮 API 定向 145 项、Web 初次基线 83 项及最终交互回归 70 项通过。完整 `pnpm lint`、`pnpm typecheck`、`pnpm test`、`pnpm build`、`pnpm build:runtime` 通过；全量共 3,226 项通过，122 skipped 及另 5 pending 不算通过，Web 保留既有大包提示。证据 `.data/billing-implementation/model-controls-{lint,typecheck,test,build,runtime}.log`。
+- 隔离数据库：`billing.integration.test.ts` 15 项通过，含删除后旧报价拒绝、无新增冻结、原快照/绑定/价格保留、原任务仍可执行和结算，以及托管重导不恢复。Billing 包显式启用隔离 PostgreSQL 后 58 项通过（含 22 项数据库用例），零跳过；证据 `model-controls-{integration,wallet-integration}.log`。
+- PC Web：API 13000、Vite 15173，1440×1000 检查列表/详情删除、确认/取消、刷新后消失、同步/设置/节点默认尾号，以及页面与控制台零错误。合成 Key 已删除，临时项目已归档；无生成 POST。截图 `model-controls-{delete-list,delete-confirm,key-suffix,settings-key}.png` 和 `model-controls-browser-result.json`。已有 8080 服务及线上未操作。
+- 恢复记录：单测早期失败来自旧指纹断言、新测试路径和类型参数；浏览器脚本曾误用另一用户项目、无活动连接时间戳和清理接口，均修正后通过。最后运行前旧 New API 合成上游 13080 已退出；本轮无上游调用依赖，保留原数据库/凭据夹具，使用 Canvas 请求计数验证零生成，没有重启会新建数据库的旧 harness。
+- 交付：当前上游分支，附注标签 `v2026.09.20-model-delete-key-suffix`；不含原用户文档或子代理旧任务补丁。后续上线条件仍由 TODO 的 P2-03 跟踪，本轮不把实现完成写成生产上线完成。
+
 更新时间：2026-09-19。状态：人民币钱包和 New API 价格联动已实现，最后补丁后的完整检查、本机真实中继闭环、隔离数据库及 PC Web 验收通过；按下文目标提交交付。线上服务尚未升级或启用。
 
 ## New API 价格沿用修正

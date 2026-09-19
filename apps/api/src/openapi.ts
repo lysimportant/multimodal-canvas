@@ -2419,6 +2419,12 @@ export const openApiDocument = {
             ],
           },
           keyFingerprint: { type: 'string', minLength: 1 },
+          keySuffix: {
+            type: 'string',
+            minLength: 1,
+            maxLength: 8,
+            description: '安全尾号；短 Key 最多展示半长且不超过 4 位，不可读取时省略。',
+          },
           defaultModels: {
             type: 'object',
             properties: {
@@ -2448,6 +2454,12 @@ export const openApiDocument = {
           id: { type: 'string', format: 'uuid' },
           baseUrl: { type: 'string', format: 'uri' },
           keyFingerprint: { type: 'string', minLength: 1 },
+          keySuffix: {
+            type: 'string',
+            minLength: 1,
+            maxLength: 8,
+            description: '安全尾号；仅用于展示，连接身份仍使用 ID 与内部指纹。',
+          },
           updatedAt: { type: 'string', format: 'date-time' },
           active: { type: 'boolean' },
           defaultModels: {

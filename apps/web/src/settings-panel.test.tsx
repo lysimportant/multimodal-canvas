@@ -31,6 +31,7 @@ type Settings = {
   baseUrl: string;
   configured: boolean;
   keyFingerprint?: string;
+  keySuffix?: string;
   defaultModels: Partial<Record<MediaType, string | ModelSelection>>;
 };
 
@@ -163,6 +164,7 @@ function installApiMock() {
           id: `123e4567-e89b-12d3-a456-${String(credentialSequence).padStart(12, '0')}`,
           baseUrl: body.baseUrl ?? credentials.find((entry) => entry.active)?.baseUrl ?? '',
           keyFingerprint: mockFingerprint(body.apiKey),
+          keySuffix: body.apiKey.slice(-8),
           updatedAt: new Date(credentialSequence * 1000).toISOString(),
           active: false,
         };
@@ -174,6 +176,7 @@ function installApiMock() {
       if (body.apiKey) {
         settings.configured = true;
         settings.keyFingerprint = mockFingerprint(body.apiKey);
+        settings.keySuffix = body.apiKey.slice(-8);
         const existing = credentials.find(
           (credential) =>
             credential.baseUrl === settings.baseUrl &&
@@ -191,6 +194,7 @@ function installApiMock() {
             id: `123e4567-e89b-12d3-a456-${String(credentialSequence).padStart(12, '0')}`,
             baseUrl: settings.baseUrl,
             keyFingerprint: settings.keyFingerprint,
+            keySuffix: settings.keySuffix,
             updatedAt: new Date(credentialSequence * 1000).toISOString(),
             active: true,
           });
@@ -238,6 +242,7 @@ function installApiMock() {
         baseUrl: 'https://reset.example.com/v1',
         configured: false,
         keyFingerprint: undefined,
+        keySuffix: undefined,
       };
       return jsonResponse({ settings, credentials });
     }
@@ -277,6 +282,7 @@ function installApiMock() {
         baseUrl: selected.baseUrl,
         configured: true,
         keyFingerprint: selected.keyFingerprint,
+        keySuffix: selected.keySuffix,
       };
       return jsonResponse({ settings, credentials });
     }
@@ -405,6 +411,7 @@ describe('SettingsPanel', () => {
       baseUrl: 'https://newapi.example.com/v1',
       configured: true,
       keyFingerprint: 'sha256:old-key',
+      keySuffix: 'old-key8',
       defaultModels: {},
     };
     credentialSequence = 1;
@@ -415,6 +422,7 @@ describe('SettingsPanel', () => {
         id: '123e4567-e89b-12d3-a456-000000000001',
         baseUrl: settings.baseUrl,
         keyFingerprint: settings.keyFingerprint!,
+        keySuffix: settings.keySuffix,
         updatedAt: '2026-01-01T00:00:00.000Z',
         active: true,
       },
@@ -525,7 +533,7 @@ describe('SettingsPanel', () => {
     }
     // 已解析的类型默认显示精确模型 ID 与该模型所属的 Key；未配置时保持未配置。
     expect(modelOptionTexts(panel, 'text')).toEqual([
-      '文字模型 · https://newapi.example.com/v1 · sha256:old-key',
+      '文字模型 · https://newapi.example.com/v1 · …old-key8',
     ]);
     expect(modelInput(panel, 'text')).toHaveValue('text-model');
     expect(modelInput(panel, 'image')).toHaveValue('image-model');
@@ -646,6 +654,7 @@ describe('SettingsPanel', () => {
       id: independentId,
       baseUrl: 'https://independent.example.com/v1',
       keyFingerprint: 'sha256:independent',
+      keySuffix: 'indep008',
       updatedAt: '2026-01-02T00:00:00.000Z',
       active: false,
     });
@@ -664,7 +673,7 @@ describe('SettingsPanel', () => {
     // 全局范围把该行改绑到独立连接，模型与凭据必须作为一个组合保存。
     fireEvent.click(
       within(row).getByRole('radio', {
-        name: '图片生成凭据来源：已保存连接 sha256:independent',
+        name: '图片生成凭据来源：已保存连接 …indep008',
       }),
     );
 
@@ -675,7 +684,7 @@ describe('SettingsPanel', () => {
     ).toBeUndefined();
     await waitFor(() =>
       expect(modelOptionTexts(panel, 'image')).toEqual([
-        '独立图片模型 · https://independent.example.com/v1 · sha256:independent',
+        '独立图片模型 · https://independent.example.com/v1 · …indep008',
       ]),
     );
     fireEvent.change(modelInput(panel, 'image'), { target: { value: 'image-only-b' } });
@@ -690,7 +699,7 @@ describe('SettingsPanel', () => {
     );
     await waitFor(() =>
       expect(modelOptionTexts(panel, 'image')).toEqual([
-        '独立图片模型 · https://independent.example.com/v1 · sha256:independent',
+        '独立图片模型 · https://independent.example.com/v1 · …indep008',
       ]),
     );
     // 保存没有落到活动凭据上：活动连接、活动凭据和全局设置都保持不变。
@@ -709,10 +718,10 @@ describe('SettingsPanel', () => {
     ).toHaveLength(0);
     expect(
       within(row).getByRole('radio', {
-        name: '图片生成凭据来源：已保存连接 sha256:independent',
+        name: '图片生成凭据来源：已保存连接 …indep008',
       }),
     ).toBeChecked();
-    expect(row).toHaveTextContent('https://independent.example.com/v1 · sha256:independent');
+    expect(row).toHaveTextContent('https://independent.example.com/v1 · …indep008');
   });
 
   it('恢复继承清除项目覆盖且不把当前默认值写回节点或项目', async () => {
@@ -828,7 +837,7 @@ describe('SettingsPanel', () => {
     expect(row).toHaveTextContent('节点独立');
     // 用 aria-label 精确取该行的来源单选，避免依赖 DOM 顺序。
     const selectedSource = row.querySelector(
-      `input[type="radio"][aria-label="文字生成凭据来源：已保存连接 ${created!.keyFingerprint}"]`,
+      `input[type="radio"][aria-label="文字生成凭据来源：已保存连接 …${created!.keySuffix}"]`,
     );
     expect(selectedSource).toBeInstanceOf(HTMLInputElement);
     // 单选组只有一个选项处于选中态：刚保存的独立连接。
@@ -836,7 +845,7 @@ describe('SettingsPanel', () => {
       Array.from(row.querySelectorAll<HTMLInputElement>('input[type="radio"]'))
         .filter((input) => input.checked)
         .map((input) => input.getAttribute('aria-label')),
-    ).toEqual([`文字生成凭据来源：已保存连接 ${created!.keyFingerprint}`]);
+    ).toEqual([`文字生成凭据来源：已保存连接 …${created!.keySuffix}`]);
     expect(row).not.toHaveTextContent('synthetic-independent-key');
   });
 
@@ -963,7 +972,7 @@ describe('SettingsPanel', () => {
       expect(refreshCalls).toEqual([created.id]);
       expect(modelInput(panel, 'text')).toHaveValue('');
       expect(modelOptionTexts(panel, 'text')).toEqual([
-        `独立文字模型 · https://independent.example.test/v1 · ${created.keyFingerprint}`,
+        `独立文字模型 · https://independent.example.test/v1 · …${created.keySuffix}`,
       ]);
       expect(created.defaultModels).toBeUndefined();
       expect(projectDefaults.text).toBeUndefined();
@@ -1024,10 +1033,12 @@ describe('SettingsPanel', () => {
       const independentId = '123e4567-e89b-12d3-a456-000000000099';
       const active = credentials[0]!;
       const keyFingerprint = sameKey ? active.keyFingerprint : 'sha256:unbound';
+      const keySuffix = sameKey ? active.keySuffix : 'unbound8';
       credentials.push({
         id: independentId,
         baseUrl: sameKey ? active.baseUrl : 'https://independent.example.test/v1',
         keyFingerprint,
+        keySuffix,
         updatedAt: '2026-09-18T00:00:00Z',
         active: false,
       });
@@ -1040,13 +1051,13 @@ describe('SettingsPanel', () => {
       if (sameKey) {
         expect(
           within(row).getByRole('radio', {
-            name: `文字生成凭据来源：已保存连接 ${keyFingerprint}（当前全局）`,
+            name: `文字生成凭据来源：已保存连接 …${keySuffix}（当前全局）`,
           }),
         ).toBeVisible();
       }
       fireEvent.click(
         within(row).getByRole('radio', {
-          name: `文字生成凭据来源：已保存连接 ${keyFingerprint}${sameKey ? '（独立连接）' : ''}`,
+          name: `文字生成凭据来源：已保存连接 …${keySuffix}${sameKey ? '（独立连接）' : ''}`,
         }),
       );
       await waitFor(() => expect(modelOptionTexts(panel, 'text')[0]).toContain('待绑定文字模型'));
@@ -1072,6 +1083,7 @@ describe('SettingsPanel', () => {
       id: independentId,
       baseUrl: 'https://independent.example.com/v1',
       keyFingerprint: 'sha256:independent',
+      keySuffix: 'indep008',
       updatedAt: '2026-01-02T00:00:00.000Z',
       active: false,
     });
@@ -1100,10 +1112,10 @@ describe('SettingsPanel', () => {
     );
     const row = mediaRow(panel, 'image');
     expect(modelOptionTexts(panel, 'image')).toEqual([
-      '共享图片模型 · https://independent.example.com/v1 · sha256:independent',
+      '共享图片模型 · https://independent.example.com/v1 · …indep008',
     ]);
     expect(modelOptionTexts(panel, 'image')).toEqual([
-      '共享图片模型 · https://independent.example.com/v1 · sha256:independent',
+      '共享图片模型 · https://independent.example.com/v1 · …indep008',
     ]);
 
     fireEvent.click(within(row).getByRole('button', { name: '配置图片生成连接' }));
@@ -1126,6 +1138,7 @@ describe('SettingsPanel', () => {
       id: independentId,
       baseUrl: 'https://independent.example.com/v1',
       keyFingerprint: 'sha256:independent',
+      keySuffix: 'indep008',
       updatedAt: '2026-01-02T00:00:00.000Z',
       active: false,
     });
@@ -1170,6 +1183,7 @@ describe('SettingsPanel', () => {
       id: remainingId,
       baseUrl: 'https://remaining.example.com/v1',
       keyFingerprint: 'sha256:remaining',
+      keySuffix: 'remai008',
       updatedAt: '2026-01-03T00:00:00.000Z',
       active: false,
     });
@@ -1177,6 +1191,7 @@ describe('SettingsPanel', () => {
       id: deletedId,
       baseUrl: 'https://deleted.example.com/v1',
       keyFingerprint: 'sha256:deleted',
+      keySuffix: 'delet008',
       updatedAt: '2026-01-02T00:00:00.000Z',
       active: false,
       defaultModels: { image: { modelAlias: 'image-model', credentialId: deletedId } },
@@ -1185,7 +1200,7 @@ describe('SettingsPanel', () => {
     const panel = await openNodeDefaults(dialog);
     const row = mediaRow(panel, 'image');
     expect(
-      row.querySelector('input[aria-label="图片生成凭据来源：已保存连接 sha256:deleted"]'),
+      row.querySelector('input[aria-label="图片生成凭据来源：已保存连接 …delet008"]'),
     ).toBeInstanceOf(HTMLInputElement);
 
     await act(async () => {
@@ -1206,10 +1221,10 @@ describe('SettingsPanel', () => {
     await waitFor(() => expect(deletedRow).toHaveTextContent('尚未配置类型默认'));
     expect(modelInput(refreshed, 'image')).toHaveValue('');
     expect(
-      within(deletedRow).queryByRole('radio', { name: /已保存连接 sha256:deleted/ }),
+      within(deletedRow).queryByRole('radio', { name: /已保存连接 …delet008/ }),
     ).not.toBeInTheDocument();
     expect(
-      within(deletedRow).getByRole('radio', { name: /已保存连接 sha256:remaining/ }),
+      within(deletedRow).getByRole('radio', { name: /已保存连接 …remai008/ }),
     ).not.toBeChecked();
     // 活动 Key 已被删除，设置面板回到未配置状态，也没有自动激活另一个 Key。
     expect(credentials.some((credential) => credential.active)).toBe(false);
@@ -1223,6 +1238,7 @@ describe('SettingsPanel', () => {
       id: independentId,
       baseUrl: 'https://independent.example.com/v1',
       keyFingerprint: 'sha256:independent',
+      keySuffix: 'indep008',
       updatedAt: '2026-01-02T00:00:00.000Z',
       active: false,
     });
@@ -1242,17 +1258,17 @@ describe('SettingsPanel', () => {
     expect(within(textRow).getByRole('radio', { name: '文字生成凭据来源：继承' })).toBeChecked();
     expect(
       within(textRow).getByRole('radio', {
-        name: '文字生成凭据来源：已保存连接 sha256:independent',
+        name: '文字生成凭据来源：已保存连接 …indep008',
       }),
     ).not.toBeChecked();
     expect(within(textRow).queryByRole('alert')).not.toBeInTheDocument();
-    expect(textRow).toHaveTextContent('https://newapi.example.com/v1 · sha256:old-key');
+    expect(textRow).toHaveTextContent('https://newapi.example.com/v1 · …old-key8');
 
     const imageRow = mediaRow(panel, 'image');
     expect(modelInput(panel, 'image')).toHaveValue('project-image');
     expect(imageRow).toHaveTextContent('继承自项目');
     expect(imageRow).toHaveTextContent('【项目类型默认】');
-    expect(imageRow).toHaveTextContent('https://independent.example.com/v1 · sha256:independent');
+    expect(imageRow).toHaveTextContent('https://independent.example.com/v1 · …indep008');
 
     const videoRow = mediaRow(panel, 'video');
     expect(modelInput(panel, 'video')).toHaveValue('global-video');
@@ -1391,6 +1407,7 @@ describe('SettingsPanel', () => {
       id: historicalId,
       baseUrl: 'https://history.example.com/v1',
       keyFingerprint: 'sha256:history',
+      keySuffix: 'hist0008',
       updatedAt: '2025-12-31T00:00:00.000Z',
       active: false,
     });
@@ -1444,6 +1461,7 @@ describe('SettingsPanel', () => {
       id: remainingId,
       baseUrl: 'https://remaining.example.com/v1',
       keyFingerprint: 'sha256:remaining',
+      keySuffix: 'remai008',
       updatedAt: '2025-12-31T00:00:00.000Z',
       active: false,
     });
@@ -1547,6 +1565,12 @@ describe('SettingsPanel', () => {
       apiKey: 'new-secret',
       timeoutMs: 900_000,
     });
+    expect(apiKey).toHaveValue('');
+    expect(apiKey).toHaveAttribute('placeholder', '已配置 · …w-secret');
+    expect(
+      within(dialog).getByRole('option', { name: /api\.example\.com\/v1 · …w-secret/ }),
+    ).toBeInTheDocument();
+    expect(dialog).not.toHaveTextContent(settings.keyFingerprint!);
 
     await user.click(within(dialog).getByRole('button', { name: '测试连接' }));
     await waitFor(() =>
@@ -1655,6 +1679,7 @@ describe('SettingsPanel', () => {
       id: historicalId,
       baseUrl: 'https://history.example.com/v1',
       keyFingerprint: 'sha256:history',
+      keySuffix: 'hist0008',
       updatedAt: '2025-12-31T00:00:00.000Z',
       active: false,
     });
@@ -1890,7 +1915,7 @@ describe('SettingsPanel', () => {
       await Promise.resolve();
     });
     expect(baseUrl).toHaveValue('https://saved.example.com/v1');
-    expect(within(dialog).getByText(/当前连接：.*· sha256:/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/当前连接：.*· …/)).toBeInTheDocument();
   });
 
   it('preserves dirty fields when the initial settings request resolves late', async () => {

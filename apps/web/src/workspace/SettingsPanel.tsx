@@ -28,6 +28,7 @@ import {
 } from '../query/credentials';
 import { useModelCatalogQuery, useRefreshModelCatalog } from '../query/models';
 import {
+  credentialKeyLabel,
   credentialSourceLabel,
   findCredential,
   findCredentialDefaultEntry,
@@ -116,6 +117,7 @@ function toKnownCredential(credential: AiCredentialSummary): KnownCredential {
     id: credential.id,
     baseUrl: credential.baseUrl,
     keyFingerprint: credential.keyFingerprint,
+    keySuffix: credential.keySuffix,
     active: credential.active,
   };
 }
@@ -904,7 +906,7 @@ export function SettingsPanel({
           scope === 'project'
             ? '当前项目'
             : writtenCredential
-              ? `独立连接 ${writtenCredential.keyFingerprint}`
+              ? `独立连接 ${credentialKeyLabel(writtenCredential)}`
               : '全局'
         }`,
       });
@@ -1127,7 +1129,7 @@ export function SettingsPanel({
           )}
           <p className="settings-status settings-header-status">
             {settings.configured
-              ? `当前连接：${settings.baseUrl} · ${settings.keyFingerprint ?? '未知指纹'}`
+              ? `当前连接：${credentialSourceLabel(settings)}`
               : '当前未配置平台连接'}
           </p>
         </div>
@@ -1243,11 +1245,7 @@ export function SettingsPanel({
               <dl className="settings-overview">
                 <div className="settings-row">
                   <dt>平台连接</dt>
-                  <dd>
-                    {settings.configured
-                      ? `${settings.baseUrl} · ${settings.keyFingerprint ?? '未知指纹'}`
-                      : '未配置'}
-                  </dd>
+                  <dd>{settings.configured ? credentialSourceLabel(settings) : '未配置'}</dd>
                 </div>
                 <div className="settings-row">
                   <dt>节点超时</dt>
@@ -1468,14 +1466,14 @@ export function SettingsPanel({
                                   <input
                                     type="radio"
                                     name={`settings-source-${row.mediaType}`}
-                                    aria-label={`${mediaDefaultLabels[row.mediaType]}凭据来源：已保存连接 ${credential.keyFingerprint}${sourceSuffix}`}
+                                    aria-label={`${mediaDefaultLabels[row.mediaType]}凭据来源：已保存连接 ${credentialKeyLabel(credential)}${sourceSuffix}`}
                                     checked={selectedCredentialId === credential.id}
                                     disabled={!canManageAiSettings || rowOperation !== null}
                                     onChange={() =>
                                       void bindRowCredential(row.mediaType, credential.id)
                                     }
                                   />
-                                  已保存连接 · {credential.keyFingerprint}
+                                  已保存连接 · {credentialKeyLabel(credential)}
                                   {sourceSuffix}
                                 </label>
                               );
@@ -1684,7 +1682,7 @@ export function SettingsPanel({
                   </option>
                   {credentials.map((credential) => (
                     <option key={credential.id} value={credential.id}>
-                      {credential.baseUrl} · {credential.keyFingerprint}
+                      {credentialSourceLabel(credential)}
                       {credential.active ? ' · 当前' : ''}
                     </option>
                   ))}
@@ -1725,8 +1723,8 @@ export function SettingsPanel({
                   aria-describedby={formErrors.apiKey ? 'settings-api-key-error' : undefined}
                   type="password"
                   placeholder={
-                    settings.keyFingerprint
-                      ? `已配置 · ${settings.keyFingerprint}`
+                    settings.configured
+                      ? `已配置 · ${credentialKeyLabel(settings)}`
                       : '输入服务端 Key'
                   }
                   name={apiKeyField.name}

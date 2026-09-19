@@ -58,7 +58,7 @@ export function SettingsOperationStatuses({
  * 渲染模型来源摘要；引用的 Key 已被删除时显示失效状态而不是换用其他 Key。
  * @param props.sourceLabel 来源层级标签，例如「继承自项目」。
  * @param props.hint 解析顺序说明；仅在辅助提示获得 hover 或 focus 时显示。
- * @param props.credentialLabel 提供该模型的凭据地址与指纹。
+ * @param props.credentialLabel 提供该模型的凭据地址与安全尾号。
  * @param props.invalidReason 失效原因；存在时整行标记为失效。
  */
 export function SettingsSourceSummary({

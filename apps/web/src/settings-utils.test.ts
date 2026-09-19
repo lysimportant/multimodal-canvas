@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  credentialKeyLabel,
   credentialSourceLabel,
   defaultModelUsable,
   findCredentialDefaultEntry,
@@ -52,6 +53,7 @@ const activeCredential: KnownCredential = {
   id: 'credential-active',
   baseUrl: 'https://active.example.com/v1',
   keyFingerprint: 'sha256:active',
+  keySuffix: 'active08',
   active: true,
 };
 
@@ -59,6 +61,7 @@ const independentCredential: KnownCredential = {
   id: 'credential-independent',
   baseUrl: 'https://independent.example.com/v1',
   keyFingerprint: 'sha256:independent',
+  keySuffix: 'indep008',
   active: false,
 };
 
@@ -310,15 +313,27 @@ describe('模型选择项与凭据来源', () => {
       ],
       'image',
       [
-        { id: 'a', baseUrl: 'https://a.example.com/v1', keyFingerprint: 'sha256:a', active: true },
-        { id: 'b', baseUrl: 'https://b.example.com/v1', keyFingerprint: 'sha256:b', active: false },
+        {
+          id: 'a',
+          baseUrl: 'https://a.example.com/v1',
+          keyFingerprint: 'sha256:a',
+          keySuffix: 'aaaa0008',
+          active: true,
+        },
+        {
+          id: 'b',
+          baseUrl: 'https://b.example.com/v1',
+          keyFingerprint: 'sha256:b',
+          keySuffix: 'bbbb0008',
+          active: false,
+        },
       ],
     );
 
     expect(choices.map((choice) => choice.value)).toEqual(['shared-image', 'shared-image']);
     expect(choices.map((choice) => choice.source)).toEqual([
-      'https://a.example.com/v1 · sha256:a',
-      'https://b.example.com/v1 · sha256:b',
+      'https://a.example.com/v1 · …aaaa0008',
+      'https://b.example.com/v1 · …bbbb0008',
     ]);
     expect(
       isEffectiveModelChoice(choices[0]!, {
@@ -366,9 +381,13 @@ describe('默认模型可用性', () => {
     expect(defaultModelUsable({}, 'video', credentials)).toBe(true);
   });
 
-  it('凭据展示名同时包含地址与指纹', () => {
+  it('凭据展示名包含地址与遮罩尾号，缺失尾号不回退到内部指纹', () => {
     expect(credentialSourceLabel(activeCredential)).toBe(
-      'https://active.example.com/v1 · sha256:active',
+      'https://active.example.com/v1 · …active08',
+    );
+    expect(credentialKeyLabel({})).toBe('尾号不可用');
+    expect(credentialSourceLabel({ ...activeCredential, keySuffix: undefined })).toBe(
+      'https://active.example.com/v1 · 尾号不可用',
     );
   });
 });

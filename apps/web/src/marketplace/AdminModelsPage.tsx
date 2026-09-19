@@ -7,7 +7,7 @@ import {
   type MediaType,
 } from '@multimodal-canvas/domain';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Download, Plus, RefreshCw, Search } from 'lucide-react';
+import { ArrowLeft, Download, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
 import { managementRequest, queryString } from '../management/client';
 import {
@@ -19,6 +19,7 @@ import {
   useAction,
 } from '../management/primitives';
 import { AppLink } from '../routing';
+import { credentialSourceLabel } from '../settings-utils';
 import './marketplace.css';
 
 /** 管理员商品记录，绑定凭据只通过管理员独立接口读取。 */
@@ -50,6 +51,7 @@ type Credential = {
   id: string;
   baseUrl: string;
   keyFingerprint: string;
+  keySuffix?: string;
   active: boolean;
   version?: number;
 };
@@ -129,6 +131,8 @@ export function AdminModelsPage({ userId }: { userId: string }) {
   const [creating, setCreating] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [editing, setEditing] = useState<AdminModel | null>(null);
+  const [deleting, setDeleting] = useState<AdminModel | null>(null);
+  const [deletedNotice, setDeletedNotice] = useState('');
   const models = useQuery({
     queryKey: ['management', userId, 'models', query, status, mediaType, page],
     queryFn: ({ signal }) =>
@@ -144,20 +148,41 @@ export function AdminModelsPage({ userId }: { userId: string }) {
   });
   /** 成功保存后使列表失效，同时更新当前编辑对象，避免旧版本继续被误用。 */
   const saved = async (model?: AdminModel) => {
-    await client.invalidateQueries({ queryKey: ['management', userId, 'models'] });
+    await Promise.all([
+      client.invalidateQueries({ queryKey: ['management', userId, 'models'] }),
+      client.invalidateQueries({ queryKey: ['marketplace', userId] }),
+      client.invalidateQueries({ queryKey: ['platform-model-catalog', userId] }),
+    ]);
     if (model) setEditing(model);
   };
+  const deleteDialog = deleting && (
+    <DeleteModelModal
+      model={deleting}
+      onClose={() => setDeleting(null)}
+      onDeleted={async () => {
+        setDeleting(null);
+        setEditing(null);
+        setDeletedNotice(`已删除“${deleting.name}”，历史账单和已提交任务保留`);
+        if (page > 1 && models.data?.items.length === 1) setPage(page - 1);
+        await saved();
+      }}
+    />
+  );
   if (editing)
     return (
-      <ModelEditor
-        key={editing.id}
-        model={editing}
-        userId={userId}
-        credentials={credentials.data?.credentials ?? []}
-        credentialError={credentials.error}
-        onBack={() => setEditing(null)}
-        onSaved={saved}
-      />
+      <>
+        <ModelEditor
+          key={editing.id}
+          model={editing}
+          userId={userId}
+          credentials={credentials.data?.credentials ?? []}
+          credentialError={credentials.error}
+          onBack={() => setEditing(null)}
+          onSaved={saved}
+          onDelete={() => setDeleting(editing)}
+        />
+        {deleteDialog}
+      </>
     );
   return (
     <>
@@ -180,6 +205,7 @@ export function AdminModelsPage({ userId }: { userId: string }) {
       <p className="mg-muted">
         先保存平台模型，再配置经验证的调用绑定和人民币售价。更换连接会保留模型身份和历史版本。
       </p>
+      <Notice value={deletedNotice ? { kind: 'success', text: deletedNotice } : null} />
       <form
         className="mg-toolbar"
         onSubmit={(event) => {
@@ -283,9 +309,20 @@ export function AdminModelsPage({ userId }: { userId: string }) {
                   </td>
                   <td>{model.pricing ? priceLabel(model.pricing.rule) : '未定价'}</td>
                   <td>
-                    <button type="button" className="mg-button" onClick={() => setEditing(model)}>
-                      管理模型
-                    </button>
+                    <div className="mp-actions">
+                      <button type="button" className="mg-button" onClick={() => setEditing(model)}>
+                        管理模型
+                      </button>
+                      <button
+                        type="button"
+                        className="mg-button is-danger"
+                        aria-label={`删除模型 ${model.name}`}
+                        onClick={() => setDeleting(model)}
+                      >
+                        <Trash2 size={15} />
+                        删除
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -322,7 +359,50 @@ export function AdminModelsPage({ userId }: { userId: string }) {
           }}
         />
       )}
+      {deleteDialog}
     </>
+  );
+}
+
+/** 删除前说明对新任务和历史记录的影响；请求失败保留对话框，不自动重试。 */
+function DeleteModelModal({
+  model,
+  onClose,
+  onDeleted,
+}: {
+  model: AdminModel;
+  onClose: () => void;
+  onDeleted: () => Promise<void>;
+}) {
+  const action = useAction();
+  return (
+    <Modal title="删除模型" onClose={onClose} busy={action.busy}>
+      <p>确定删除“{model.name}”？</p>
+      <p className="mg-muted">
+        删除后，该模型将退出模型管理、广场和新任务选择。历史账单、价格版本及已提交任务保留，后续同步不会自动恢复该模型。
+      </p>
+      <Notice value={action.notice} />
+      <div className="mp-actions">
+        <button type="button" className="mg-button" disabled={action.busy} onClick={onClose}>
+          取消
+        </button>
+        <button
+          type="button"
+          className="mg-button is-danger"
+          disabled={action.busy}
+          onClick={() =>
+            void action.execute(async () => {
+              await managementRequest<void>(`/admin/model-marketplace/models/${model.id}`, {
+                method: 'DELETE',
+              });
+              await onDeleted();
+            })
+          }
+        >
+          {action.busy ? '正在删除…' : '确认删除'}
+        </button>
+      </div>
+    </Modal>
   );
 }
 
@@ -501,7 +581,7 @@ function SyncModelsModal({
             <option value="">请选择已保存的连接</option>
             {credentials.map((credential) => (
               <option key={credential.id} value={credential.id}>
-                {credential.baseUrl} · {credential.keyFingerprint}
+                {credentialSourceLabel(credential)}
               </option>
             ))}
           </select>
@@ -798,6 +878,7 @@ function ModelEditor({
   credentialError,
   onBack,
   onSaved,
+  onDelete,
 }: {
   model: AdminModel;
   userId: string;
@@ -805,6 +886,7 @@ function ModelEditor({
   credentialError: unknown;
   onBack: () => void;
   onSaved: (model?: AdminModel) => Promise<void>;
+  onDelete: () => void;
 }) {
   const action = useAction();
   const [tab, setTab] = useState<'details' | 'binding' | 'pricing'>('details');
@@ -833,23 +915,34 @@ function ModelEditor({
           <p>{mediaLabels[model.mediaType]} · 平台模型</p>
           <h1>{model.name}</h1>
         </div>
-        <button
-          className="mg-button is-primary"
-          type="button"
-          disabled={
-            action.busy ||
-            ((!model.activeBindingId || !model.activePricingVersionId) &&
-              model.status !== 'published')
-          }
-          onClick={() =>
-            void action.execute(
-              () => patch({ status: model.status === 'published' ? 'paused' : 'published' }),
-              model.status === 'published' ? '模型已暂停，新任务不可再选用' : '模型已上架',
-            )
-          }
-        >
-          {model.status === 'published' ? '暂停模型' : '上架模型'}
-        </button>
+        <div className="mp-actions">
+          <button
+            className="mg-button is-primary"
+            type="button"
+            disabled={
+              action.busy ||
+              ((!model.activeBindingId || !model.activePricingVersionId) &&
+                model.status !== 'published')
+            }
+            onClick={() =>
+              void action.execute(
+                () => patch({ status: model.status === 'published' ? 'paused' : 'published' }),
+                model.status === 'published' ? '模型已暂停，新任务不可再选用' : '模型已上架',
+              )
+            }
+          >
+            {model.status === 'published' ? '暂停模型' : '上架模型'}
+          </button>
+          <button
+            type="button"
+            className="mg-button is-danger"
+            disabled={action.busy}
+            onClick={onDelete}
+          >
+            <Trash2 size={15} />
+            删除模型
+          </button>
+        </div>
       </header>
       <p className="mg-muted">
         平台编号：{model.id} · {model.availabilityReason ?? '当前配置可用'}
@@ -1075,7 +1168,7 @@ function BindingForm({
               <option value="">选择已保存连接</option>
               {credentials.map((credential) => (
                 <option key={credential.id} value={credential.id}>
-                  {credential.baseUrl} · {credential.keyFingerprint}
+                  {credentialSourceLabel(credential)}
                 </option>
               ))}
             </select>

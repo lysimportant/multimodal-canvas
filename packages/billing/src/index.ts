@@ -339,6 +339,17 @@ export class PrismaBillingService {
       if (quote.expiresAt.getTime() <= Date.now())
         throw new BillingError('quote_expired', '报价已过期，请重新确认');
       const items = quote.items as unknown as QuoteItemInput[];
+      // 与模型删除争用行锁，确保删除完成后不能消费预先签发的报价；已受理任务走上方幂等分支。
+      const modelIds = [...new Set(items.map((item) => item.platformModelId))].sort();
+      const models = modelIds.length
+        ? await tx.$queryRaw<Array<{ status: string }>>(Prisma.sql`
+            SELECT status FROM platform_models
+            WHERE id IN (${Prisma.join(modelIds.map((id) => Prisma.sql`${id}::uuid`))})
+            ORDER BY id FOR SHARE
+          `)
+        : [];
+      if (models.some((model) => model.status === 'deleted'))
+        throw new BillingError('platform_model_deleted', '平台模型已删除，请重新选择模型', 409);
       const charge = await tx.runCharge.create({
         data: {
           runId: input.runId,

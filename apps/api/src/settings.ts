@@ -13,6 +13,8 @@ export type AiSettings = {
   baseUrl: string;
   configured: boolean;
   keyFingerprint?: string;
+  /** 安全尾号用于识别连接，不暴露完整 Key；不可读取时省略。 */
+  keySuffix?: string;
   defaultModels: Partial<Record<MediaType, string | ModelSelection>>;
   /** Provider 单次请求超时，单位毫秒。 */
   timeoutMs: number;
@@ -25,6 +27,8 @@ export type AiCredentialSummary = {
   version?: number;
   baseUrl: string;
   keyFingerprint: string;
+  /** 正常 Key 的末尾 8 位；短 Key 最多展示半长且不超过 4 位。 */
+  keySuffix?: string;
   updatedAt: string;
   active: boolean;
   /** 该凭据自身已持久化的类型默认模型；从未配置过的凭据不返回该字段。 */
@@ -295,6 +299,10 @@ export class AiSettingsStore {
       baseUrl: this.baseUrl,
       configured: Boolean(this.baseUrl && this.encryptedApiKey),
       ...(this.keyFingerprint ? { keyFingerprint: this.keyFingerprint } : {}),
+      ...credentialSuffixSummary(this.credentialKeyring, {
+        encryptedApiKey: this.encryptedApiKey,
+        encryptionKeyId: this.encryptionKeyId,
+      }),
       defaultModels: serializeDefaultModels(this.defaultModels),
       timeoutMs: this.timeoutMs,
       updatedAt: this.updatedAt,
@@ -393,7 +401,13 @@ export class AiSettingsStore {
   }
 
   listCredentials(): AiCredentialSummary[] {
-    return summarizeCredentials([...this.credentialRecords.values()], this.credentialId);
+    return summarizeCredentials(
+      [...this.credentialRecords.values()].map((credential) => ({
+        ...credential,
+        keySuffix: safeKeySuffix(credential.apiKey),
+      })),
+      this.credentialId,
+    );
   }
 
   /**
@@ -904,7 +918,13 @@ export class PrismaAiSettingsStore implements AiSettingsStoreLike {
       where: { projectId: null },
       orderBy: activeCredentialOrderBy,
     });
-    return summarizeCredentials(credentials, this.credentialReference.credentialId);
+    return summarizeCredentials(
+      credentials.map((credential) => ({
+        ...credential,
+        ...credentialSuffixSummary(this.credentialKeyring, credential),
+      })),
+      this.credentialReference.credentialId,
+    );
   }
 
   /** 合并局部设置更新；`activate: false` 时新增不激活的独立凭据行。 */
@@ -1777,13 +1797,14 @@ function samePersistedSettings(left: PersistedAiSettings, right: PersistedAiSett
   );
 }
 
-/** 同连接优先独立记录并保留当前活动行；隐藏其他全局历史，不向 API 返回内部用途标记。 */
+/** 同连接优先独立记录并保留当前活动行；返回摘要不含密文、明文和内部用途标记。 */
 function summarizeCredentials(
   credentials: Array<{
     id: string;
     version?: number;
     baseUrl: string;
     keyFingerprint: string;
+    keySuffix?: string;
     label?: string;
     independent?: boolean;
     updatedAt: string | Date;
@@ -1806,6 +1827,7 @@ function summarizeCredentials(
         id: credential.id,
         baseUrl: credential.baseUrl,
         keyFingerprint: credential.keyFingerprint,
+        ...(credential.keySuffix ? { keySuffix: credential.keySuffix } : {}),
         version: credential.version,
         independent:
           credential.independent === true || credential.label === INDEPENDENT_CREDENTIAL_LABEL,
@@ -2251,6 +2273,33 @@ function normalizeMediaType(value: string): MediaType | undefined {
   }
   if (['video', 'videos', 'videogeneration'].includes(normalized)) return 'video';
   return undefined;
+}
+
+/** 返回安全尾号；长度不超过 8 的 Key 最多显示半长且不超过 4 位，单字符不展示。 */
+export function safeKeySuffix(apiKey: string): string | undefined {
+  const visibleLength = apiKey.length > 8 ? 8 : Math.min(4, Math.floor(apiKey.length / 2));
+  return visibleLength ? apiKey.slice(-visibleLength) : undefined;
+}
+
+/**
+ * 从已有密文只提取展示尾号；不改变密文或密钥版本。
+ * 缺失或不可解密时省略尾号，凭据执行路径仍保留原有的严格解密校验。
+ */
+export function credentialSuffixSummary(
+  keyring: CredentialEncryptionKeyring,
+  credential: { encryptedApiKey: string; encryptionKeyId?: string | null },
+): { keySuffix?: string } {
+  if (!credential.encryptedApiKey) return {};
+  try {
+    const keySuffix = safeKeySuffix(
+      keyring.decrypt(credential.encryptedApiKey, credential.encryptionKeyId ?? undefined)
+        .plaintext,
+    );
+    return keySuffix ? { keySuffix } : {};
+  } catch {
+    // 仅展示可选尾号，解密错误不得携带密钥材料进入响应或日志。
+    return {};
+  }
 }
 
 /** 计算 Key 指纹，仅用于识别相同连接；不可逆且不包含密钥材料。 */

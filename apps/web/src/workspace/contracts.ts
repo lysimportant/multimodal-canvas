@@ -34,6 +34,8 @@ export type AiSettings = {
   baseUrl: string;
   configured: boolean;
   keyFingerprint?: string;
+  /** 已配置 Key 的安全尾号；不能用于连接身份匹配。 */
+  keySuffix?: string;
   defaultModels: ModelDefaults;
   /** Provider 单次请求超时，单位毫秒；旧服务响应可能不包含该字段。 */
   timeoutMs?: number;

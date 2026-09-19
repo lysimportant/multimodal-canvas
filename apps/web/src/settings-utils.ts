@@ -40,6 +40,8 @@ export type KnownCredential = {
   id: string;
   baseUrl: string;
   keyFingerprint: string;
+  /** 服务端裁剪的安全尾号，缺失时不回退显示内部指纹。 */
+  keySuffix?: string;
   active: boolean;
 };
 
@@ -111,9 +113,14 @@ export function findCredential(
   return credentials.find((credential) => credential.id === credentialId);
 }
 
-/** 凭据展示名：地址加指纹，用于区分同名模型来自不同 Key。 */
-export function credentialSourceLabel(credential: KnownCredential): string {
-  return `${credential.baseUrl} · ${credential.keyFingerprint}`;
+/** 格式化服务端提供的安全尾号；前缀遮罩始终保留，缺失时提示不可用。 */
+export function credentialKeyLabel(credential: { keySuffix?: string }): string {
+  return credential.keySuffix ? `…${credential.keySuffix}` : '尾号不可用';
+}
+
+/** 凭据展示名：地址加安全尾号；连接匹配仍使用 ID 与内部指纹。 */
+export function credentialSourceLabel(credential: { baseUrl: string; keySuffix?: string }): string {
+  return `${credential.baseUrl} · ${credentialKeyLabel(credential)}`;
 }
 
 /** 模型选择项：同一个模型 ID 来自不同 Key 时靠凭据来源保持可区分。 */

@@ -65,6 +65,8 @@ describe('FileAiSettingsStore persistence', () => {
       ]);
       await store.close();
       const reopened = new FileAiSettingsStore(options);
+      expect((await reopened.listCredentials())[0]?.keySuffix).toBe('irst-key');
+      expect(JSON.stringify(await reopened.listCredentials())).not.toContain('synthetic-first-key');
       const reference = await reopened.getCredentialReference(id);
       expect(await reopened.getProviderCredentials(reference)).toMatchObject({
         apiKey: 'synthetic-first-key',

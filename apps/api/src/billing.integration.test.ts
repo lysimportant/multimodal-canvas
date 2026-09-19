@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { PrismaClient, type Prisma } from '@prisma/client';
 import { PrismaBillingService } from '@multimodal-canvas/billing';
+import type { RunSnapshot } from '@multimodal-canvas/domain';
 import { Queue } from 'bullmq';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { buildApp } from './app';
@@ -523,6 +524,89 @@ integrationDescribe('人民币报价、钱包及 outbox（隔离 PostgreSQL + Re
       availableNanos: '990000000',
       heldNanos: '10000000',
     });
+  }, 20_000);
+
+  it('删除隐藏模型并阻断旧报价，在途冻结、历史版本和账单仍能完成结算', async () => {
+    const ctx = await fixture('delete-model');
+    await credit(ctx.user.id);
+    const firstQuote = await quote(ctx);
+    const waitingQuote = await quote({
+      ...ctx,
+      body: { ...ctx.body, idempotencyKey: `waiting-${randomUUID()}` },
+    });
+    const submitted = await app.inject({
+      method: 'POST',
+      url: ctx.path,
+      headers: ctx.headers,
+      payload: { ...ctx.body, quoteId: firstQuote.id },
+    });
+    expect(submitted.statusCode, submitted.body).toBe(202);
+    const runId = submitted.json().run.id as string;
+    createdRuns.push(runId);
+    const beforeRun = await prisma.run.findUniqueOrThrow({ where: { id: databaseRunId(runId) } });
+    const walletBefore = await billing.getWallet(ctx.user.id);
+    const deleteRequest = {
+      method: 'DELETE' as const,
+      url: `/v1/admin/model-marketplace/models/${ctx.modelId}`,
+      headers: adminHeaders,
+    };
+    expect((await app.inject({ ...deleteRequest, headers: ctx.headers })).statusCode).toBe(403);
+    expect((await app.inject(deleteRequest)).statusCode).toBe(204);
+    expect((await app.inject(deleteRequest)).statusCode).toBe(204);
+    for (const url of ['/v1/model-marketplace', '/v1/admin/model-marketplace/models']) {
+      const listed = await app.inject({
+        method: 'GET',
+        url: `${url}?query=delete-model`,
+        headers: adminHeaders,
+      });
+      expect(listed.json().items).toEqual([]);
+      expect(listed.json().total).toBe(0);
+    }
+    const rejected = await app.inject({
+      method: 'POST',
+      url: ctx.path,
+      headers: ctx.headers,
+      payload: { ...ctx.body, idempotencyKey: `deleted-${randomUUID()}`, quoteId: waitingQuote.id },
+    });
+    expect(rejected.statusCode, rejected.body).toBe(409);
+    const unconsumed = await prisma.billingQuote.findUniqueOrThrow({
+      where: { id: waitingQuote.id },
+    });
+    const persist = vi.fn();
+    await expect(
+      billing.commitSubmission(
+        {
+          payerId: ctx.user.id,
+          quoteId: waitingQuote.id,
+          runId: `run_${randomUUID()}`,
+          snapshot: unconsumed.snapshot as unknown as RunSnapshot,
+          payload: {},
+          queueName,
+        },
+        persist,
+      ),
+    ).rejects.toMatchObject({ code: 'platform_model_deleted' });
+    expect(persist).not.toHaveBeenCalled();
+    expect(await billing.getWallet(ctx.user.id)).toEqual(walletBefore);
+    expect((await prisma.run.findUniqueOrThrow({ where: { id: beforeRun.id } })).snapshot).toEqual(
+      beforeRun.snapshot,
+    );
+    expect((await marketplace.listBindings(ctx.modelId, 1, 30)).items).toHaveLength(1);
+    expect((await marketplace.listPricing(ctx.modelId, 1, 30)).items).toHaveLength(1);
+    await billing.beginExecution(runId, ctx.targetId, beforeRun.snapshot as unknown as RunSnapshot);
+    const item = await prisma.chargeItem.findFirstOrThrow({ where: { charge: { runId } } });
+    await billing.resolveItem(item.id, {
+      status: 'SETTLED',
+      chargeNanos: '10000000',
+      reason: '合成任务验证删除后原冻结仍可结算',
+      evidence: { synthetic: true },
+    });
+    expect((await billing.getRunCharge(runId, ctx.user.id))?.items[0]?.status).toBe('SETTLED');
+    expect((await billing.getWallet(ctx.user.id)).heldNanos).toBe('0');
+    expect(
+      (await settings.listCredentials()).find((credential) => credential.id === credentialId)
+        ?.keySuffix,
+    ).toBe('key-only');
   }, 20_000);
 
   it('参数变化、过期、其他付款人、缺价和旧入口均不能绕过报价创建收费任务', async () => {
@@ -1072,6 +1156,12 @@ integrationDescribe('人民币报价、钱包及 outbox（隔离 PostgreSQL + Re
     await marketplace.sync(credentialId, adminId, 'newapi_managed');
     expect((await marketplace.getAdmin(first.id)).availability).toBe('needs_review');
     expect(await prisma.platformModel.findUnique({ where: { id: first.id } })).not.toBeNull();
+    pricingFetch.mockImplementation(async () => Response.json(catalog));
+    await marketplace.deleteModel(first.id);
+    await expect(marketplace.createModel(input, adminId)).rejects.toMatchObject({
+      code: 'platform_model_deleted',
+    });
+    expect(await prisma.pricingVersion.count({ where: { platformModelId: first.id } })).toBe(2);
     pricingFetch.mockImplementation(async () => Response.json({ success: true, data: [] }));
   }, 20_000);
 

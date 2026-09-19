@@ -194,6 +194,37 @@ function snapshot(credentialId: string, candidates: unknown[]): ModelCatalogSync
 }
 
 describe('PrismaModelMarketplace', () => {
+  it('删除幂等且保留历史版本，禁止编辑和新报价，管理列表排除删除状态', async () => {
+    const { service, database, rows, published } = fixture();
+    await service.deleteModel(rows.model.id);
+    await service.deleteModel(rows.model.id);
+    expect(database.platformModel.update).toHaveBeenCalledTimes(1);
+    expect(published()).toMatchObject({
+      status: 'deleted',
+      activeBindingId: rows.binding.id,
+      activePricingVersionId: rows.pricing.id,
+    });
+    expect((await service.listBindings(rows.model.id, 1, 30)).items).toEqual([rows.binding]);
+    expect((await service.listPricing(rows.model.id, 1, 30)).items).toEqual([rows.pricing]);
+    await expect(service.updateModel(rows.model.id, { status: 'published' })).rejects.toMatchObject(
+      { code: 'platform_model_deleted' },
+    );
+    await expect(service.resolvePublishedModel(rows.model.id)).rejects.toMatchObject({
+      code: 'platform_model_deleted',
+    });
+    await expect(
+      service.createPricing({ platformModelId: rows.model.id, rule }, actorId),
+    ).rejects.toMatchObject({ code: 'platform_model_deleted' });
+    await service.listAdmin({ page: 1, pageSize: 30 });
+    expect(database.platformModel.findMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({ where: { status: { not: 'deleted' } } }),
+    );
+    database.platformModel.findUnique.mockResolvedValueOnce(null as never);
+    await expect(service.deleteModel(randomUUID())).rejects.toMatchObject({
+      code: 'platform_model_not_found',
+      status: 404,
+    });
+  });
   it('公开目录过滤草稿并递归剔除内部凭据、成本和管理地址', async () => {
     const { service, database, rows } = fixture();
     rows.binding.capabilities = {
@@ -665,6 +696,14 @@ describe('PrismaModelMarketplace', () => {
     expect(repeated.id).toBe(imported.id);
     expect(f.database.platformModel.create).toHaveBeenCalledTimes(1);
     expect(f.database.pricingVersion.create).toHaveBeenCalledTimes(1);
+    await f.service.deleteModel(imported.id);
+    await expect(
+      f.service.createModel(
+        { managed: true, source: { syncId: source.id, upstreamModelId: 'managed-image' } },
+        actorId,
+      ),
+    ).rejects.toMatchObject({ code: 'platform_model_deleted' });
+    expect(f.database.platformModel.create).toHaveBeenCalledTimes(1);
   });
 });
 

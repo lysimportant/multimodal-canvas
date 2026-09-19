@@ -846,6 +846,14 @@ export function billingOpenApiPaths() {
     },
     '/v1/admin/model-marketplace/models/{id}': {
       parameters: [pathId('id')],
+      delete: {
+        ...operation(
+          '管理员删除模型',
+          true,
+          '逻辑删除后退出管理列表、广场和新任务选择；历史绑定、价格、账单及已受理任务保留。重复删除返回 204，未知 ID 返回 404。托管同步不会恢复已删除的同身份模型。',
+        ),
+        responses: { '204': { description: '已删除，无响应体' }, ...errors },
+      },
       get: {
         ...operation('管理员读取一个平台模型', true),
         responses: {

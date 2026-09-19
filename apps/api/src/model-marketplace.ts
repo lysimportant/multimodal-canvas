@@ -210,6 +210,8 @@ export interface ModelMarketplace {
   getAdmin(id: string): Promise<MarketplaceAdminModelDto>;
   createModel(input: unknown, actorId: string): Promise<MarketplaceAdminModelDto>;
   updateModel(id: string, input: unknown): Promise<MarketplaceAdminModelDto>;
+  /** 删除商品的新使用入口，保留历史版本和在途任务。 */
+  deleteModel(id: string): Promise<void>;
   listBindings(id: string, page: number, pageSize: number): Promise<MarketplacePage<ModelBinding>>;
   createBinding(id: string, input: unknown, actorId: string): Promise<ModelBinding>;
   listPricing(
@@ -273,6 +275,16 @@ export class PrismaModelMarketplace implements ModelMarketplace {
   async getAdmin(id: string): Promise<MarketplaceAdminModelDto> {
     z.string().uuid().parse(id);
     return this.adminView(await requireModel(this.prisma, id));
+  }
+
+  /** 逻辑删除使用可串行化事务，重复删除成功；不存在的 ID 返回 404。 */
+  async deleteModel(id: string): Promise<void> {
+    z.string().uuid().parse(id);
+    await this.transaction(async (transaction) => {
+      const model = await requireModel(transaction, id, true);
+      if (model.status === 'deleted') return;
+      await transaction.platformModel.update({ where: { id }, data: { status: 'deleted' } });
+    });
   }
 
   /** 手工或选中候选创建草稿；不会自动继承上游售价、能力或发布状态。 */
@@ -356,7 +368,7 @@ export class PrismaModelMarketplace implements ModelMarketplace {
   async listBindings(id: string, page = 1, pageSize = 30): Promise<MarketplacePage<ModelBinding>> {
     z.string().uuid().parse(id);
     const pagination = marketplaceListSchema.parse({ page, pageSize });
-    await requireModel(this.prisma, id);
+    await requireModel(this.prisma, id, true);
     const where = { platformModelId: id };
     const [items, total] = await Promise.all([
       this.prisma.modelBinding.findMany({
@@ -423,7 +435,7 @@ export class PrismaModelMarketplace implements ModelMarketplace {
   ): Promise<MarketplacePage<PricingVersion>> {
     z.string().uuid().parse(platformModelId);
     const pagination = marketplaceListSchema.parse({ page, pageSize });
-    await requireModel(this.prisma, platformModelId);
+    await requireModel(this.prisma, platformModelId, true);
     const where = { platformModelId };
     const [items, total] = await Promise.all([
       this.prisma.pricingVersion.findMany({
@@ -646,6 +658,12 @@ export class PrismaModelMarketplace implements ModelMarketplace {
         where: { id },
         include: modelInclude,
       });
+      if (current?.status === 'deleted')
+        throw new ModelMarketplaceError(
+          'platform_model_deleted',
+          '此平台模型已删除，同步不会自动恢复；如需使用，请手动新建模型',
+          409,
+        );
       if (current && current.mediaType !== mediaType)
         throw new ModelMarketplaceError(
           'binding_needs_review',
@@ -848,7 +866,7 @@ export class PrismaModelMarketplace implements ModelMarketplace {
   /** 数据库稳定排序和总数不依赖上游目录的排序或连接状态。 */
   private async loadPage(input: MarketplaceListInput): Promise<MarketplacePage<LoadedModel>> {
     const where: Prisma.PlatformModelWhereInput = {
-      ...(input.status ? { status: input.status } : {}),
+      status: input.status ?? { not: 'deleted' },
       ...(input.mediaType ? { mediaType: toDatabaseMediaType(input.mediaType) } : {}),
       ...(input.query ? { name: { contains: input.query, mode: 'insensitive' } } : {}),
     };
@@ -1285,10 +1303,20 @@ function hasConflict(verified: unknown, latest: unknown): boolean {
       : JSON.stringify(existing) !== JSON.stringify(value);
   });
 }
-/** 查找商品同时保留当前版本；调用者负责状态与权限要求。 */
-async function requireModel(database: MarketplaceDatabase, id: string): Promise<LoadedModel> {
+/** 查找当前商品；仅删除幂等检查与历史版本读取可以显式访问已删除记录。 */
+async function requireModel(
+  database: MarketplaceDatabase,
+  id: string,
+  includeDeleted = false,
+): Promise<LoadedModel> {
   const model = await database.platformModel.findUnique({ where: { id }, include: modelInclude });
   if (!model) throw new ModelMarketplaceError('platform_model_not_found', '平台模型不存在', 404);
+  if (!includeDeleted && model.status === 'deleted')
+    throw new ModelMarketplaceError(
+      'platform_model_deleted',
+      '平台模型已删除，请重新选择模型',
+      409,
+    );
   return model;
 }
 /** 防止把其他模型的绑定或售价指向当前商品。 */

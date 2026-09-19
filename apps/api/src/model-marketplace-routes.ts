@@ -100,6 +100,15 @@ export function registerModelMarketplaceRoutes(
       return { model: await service().getAdmin(id) };
     }),
   );
+  app.delete(
+    '/v1/admin/model-marketplace/models/:id',
+    handler(async (request, reply) => {
+      session(request, true);
+      const { id } = modelPathSchema.parse(request.params);
+      await service().deleteModel(id);
+      return reply.code(204).send();
+    }),
+  );
   app.patch(
     '/v1/admin/model-marketplace/models/:id',
     handler(async (request) => {
