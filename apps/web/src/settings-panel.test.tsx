@@ -13,6 +13,7 @@ import { clearAuthSession, persistAuthSession } from './auth-client';
 import type { AiCredentialSummary } from './contracts';
 import { createAppQueryClient } from './query/client';
 import { aiCredentialsQueryKey } from './query/credentials';
+import { modelCatalogQueryKey, modelCatalogQueryKeyFor } from './query/models';
 import {
   useWorkspacePreferences,
   workspacePreferenceDefaults,
@@ -236,14 +237,23 @@ function installApiMock() {
     if (deletion && method === 'DELETE') {
       const selected = credentials.find((credential) => credential.id === deletion[1]);
       if (!selected) return jsonResponse({ error: 'credential not found' }, 404);
-      credentials = credentials.filter((credential) => credential.id !== selected.id);
-      settings = {
-        ...settings,
-        baseUrl: 'https://reset.example.com/v1',
-        configured: false,
-        keyFingerprint: undefined,
-        keySuffix: undefined,
-      };
+      /** 与真实 API 一致，同地址及同 Key 的独立副本和历史版本一起移除。 */
+      const matches = (credential: AiCredentialSummary) =>
+        credential.baseUrl === selected.baseUrl &&
+        credential.keyFingerprint === selected.keyFingerprint;
+      const removesActive = credentials.some(
+        (credential) => credential.active && matches(credential),
+      );
+      credentials = credentials.filter((credential) => !matches(credential));
+      if (removesActive)
+        settings = {
+          ...settings,
+          baseUrl: 'https://reset.example.com/v1',
+          configured: false,
+          keyFingerprint: undefined,
+          keySuffix: undefined,
+          defaultModels: {},
+        };
       return jsonResponse({ settings, credentials });
     }
     const defaults = url.pathname.match(/^\/v1\/settings\/ai\/credentials\/([^/]+)\/defaults$/);
@@ -320,7 +330,7 @@ async function openSettingsPanel() {
   await waitFor(() =>
     expect(within(dialog).getByLabelText('New API Base URL')).toHaveValue(settings.baseUrl),
   );
-  return { dialog, view };
+  return { dialog, view, client };
 }
 
 /** 切换到「节点默认」分类，返回该分类的内容区域。 */
@@ -355,7 +365,14 @@ function draftInputs(row: HTMLElement) {
 
 /** 读取某个媒体类型行的默认模型输入框。 */
 function modelInput(panel: HTMLElement, mediaType: MediaType) {
-  return within(mediaRow(panel, mediaType)).getByRole('combobox');
+  return within(mediaRow(panel, mediaType)).getByRole('combobox', { name: /默认模型$/ });
+}
+
+/** 确认当前已打开的删除对话框，等待请求成功关闭。 */
+async function confirmDeletion() {
+  const confirm = screen.getByRole('dialog', { name: '删除已保存连接' });
+  fireEvent.click(within(confirm).getByRole('button', { name: '确认删除' }));
+  await waitFor(() => expect(confirm).not.toBeInTheDocument());
 }
 
 /** 读取某个媒体类型行的模型候选；来源文案只在候选里体现，因此直接检查选项内容。 */
@@ -525,9 +542,11 @@ describe('SettingsPanel', () => {
     for (const [mediaType, label] of mediaRowLabels) {
       const row = mediaRow(panel, mediaType);
       expect(within(row).getByText(label)).toBeVisible();
-      expect(within(row).getByRole('combobox')).toBeVisible();
-      expect(within(row).getByRole('radio', { name: `${label}凭据来源：继承` })).toBeVisible();
-      expect(within(row).getByRole('radio', { name: `${label}凭据来源：独立连接` })).toBeVisible();
+      expect(modelInput(panel, mediaType)).toBeVisible();
+      const source = within(row).getByRole('combobox', { name: `${label}凭据来源` });
+      expect(source).toBeVisible();
+      expect(within(source).getByRole('option', { name: '继承默认连接' })).toBeInTheDocument();
+      expect(within(source).getByRole('option', { name: '添加独立连接…' })).toBeInTheDocument();
       expect(within(row).getByRole('button', { name: `配置${label}连接` })).toBeVisible();
       expect(within(row).getByRole('button', { name: `恢复${label}继承` })).toBeVisible();
     }
@@ -671,11 +690,9 @@ describe('SettingsPanel', () => {
     const row = mediaRow(panel, 'image');
 
     // 全局范围把该行改绑到独立连接，模型与凭据必须作为一个组合保存。
-    fireEvent.click(
-      within(row).getByRole('radio', {
-        name: '图片生成凭据来源：已保存连接 …indep008',
-      }),
-    );
+    fireEvent.change(within(row).getByRole('combobox', { name: '图片生成凭据来源' }), {
+      target: { value: independentId },
+    });
 
     // 独立连接自己的目录提供候选模型，来源标注为该连接。
     expect(modelInput(panel, 'image')).toHaveValue('');
@@ -716,11 +733,9 @@ describe('SettingsPanel', () => {
         ([input, init]) => init?.method === 'POST' && String(input).endsWith('/activate'),
       ),
     ).toHaveLength(0);
-    expect(
-      within(row).getByRole('radio', {
-        name: '图片生成凭据来源：已保存连接 …indep008',
-      }),
-    ).toBeChecked();
+    expect(within(row).getByRole('combobox', { name: '图片生成凭据来源' })).toHaveValue(
+      independentId,
+    );
     expect(row).toHaveTextContent('https://independent.example.com/v1 · …indep008');
   });
 
@@ -835,47 +850,45 @@ describe('SettingsPanel', () => {
     expect(draftInputs(row).apiKey).toHaveValue('');
     // 当前范围是项目，所以该行显示为节点独立，并且选中刚保存的独立连接。
     expect(row).toHaveTextContent('节点独立');
-    // 用 aria-label 精确取该行的来源单选，避免依赖 DOM 顺序。
-    const selectedSource = row.querySelector(
-      `input[type="radio"][aria-label="文字生成凭据来源：已保存连接 …${created!.keySuffix}"]`,
+    expect(within(row).getByRole('combobox', { name: '文字生成凭据来源' })).toHaveValue(
+      created!.id,
     );
-    expect(selectedSource).toBeInstanceOf(HTMLInputElement);
-    // 单选组只有一个选项处于选中态：刚保存的独立连接。
-    expect(
-      Array.from(row.querySelectorAll<HTMLInputElement>('input[type="radio"]'))
-        .filter((input) => input.checked)
-        .map((input) => input.getAttribute('aria-label')),
-    ).toEqual([`文字生成凭据来源：已保存连接 …${created!.keySuffix}`]);
     expect(row).not.toHaveTextContent('synthetic-independent-key');
   });
 
-  it('取消节点独立连接配置时丢弃 URL 和 Key 草稿且不发送保存请求', async () => {
-    const { dialog } = await openSettingsPanel();
-    const panel = await openNodeDefaults(dialog);
-    const row = mediaRow(panel, 'text');
-    fireEvent.click(configureConnectionButton(row));
+  it.each(['取消按钮', '继承选项'] as const)(
+    '通过%s取消独立连接草稿且不发送保存请求',
+    async (method) => {
+      const { dialog } = await openSettingsPanel();
+      const panel = await openNodeDefaults(dialog);
+      const row = mediaRow(panel, 'text');
+      const source = within(row).getByRole('combobox', { name: '文字生成凭据来源' });
+      fireEvent.change(source, { target: { value: 'new' } });
 
-    const { baseUrl, apiKey } = draftInputs(row);
-    fireEvent.change(baseUrl, { target: { value: 'https://draft.example.com' } });
-    fireEvent.change(apiKey, { target: { value: 'unsaved-node-key' } });
-    expect(baseUrl).toHaveValue('https://draft.example.com');
-    expect(apiKey).toHaveValue('unsaved-node-key');
+      const { baseUrl, apiKey } = draftInputs(row);
+      fireEvent.change(baseUrl, { target: { value: 'https://draft.example.com' } });
+      fireEvent.change(apiKey, { target: { value: 'unsaved-node-key' } });
+      expect(baseUrl).toHaveValue('https://draft.example.com');
+      expect(apiKey).toHaveValue('unsaved-node-key');
 
-    fireEvent.click(within(row).getByRole('button', { name: '取消配置文字生成连接' }));
+      if (method === '取消按钮')
+        fireEvent.click(within(row).getByRole('button', { name: '取消配置文字生成连接' }));
+      else fireEvent.change(source, { target: { value: '' } });
 
-    await waitFor(() => expect(row.querySelector('.settings-default-connection')).toBeNull());
-    expect(fetchMock.mock.calls).not.toEqual(
-      expect.arrayContaining([
+      await waitFor(() => expect(row.querySelector('.settings-default-connection')).toBeNull());
+      expect(fetchMock.mock.calls).not.toEqual(
         expect.arrayContaining([
-          expect.stringContaining('/v1/settings/ai'),
-          expect.objectContaining({ method: 'PATCH' }),
+          expect.arrayContaining([
+            expect.stringContaining('/v1/settings/ai'),
+            expect.objectContaining({ method: 'PATCH' }),
+          ]),
         ]),
-      ]),
-    );
-    fireEvent.click(configureConnectionButton(row));
-    expect(draftInputs(row).baseUrl).toHaveValue(settings.baseUrl);
-    expect(draftInputs(row).apiKey).toHaveValue('');
-  });
+      );
+      fireEvent.click(configureConnectionButton(row));
+      expect(draftInputs(row).baseUrl).toHaveValue(settings.baseUrl);
+      expect(draftInputs(row).apiKey).toHaveValue('');
+    },
+  );
 
   it('保存后刷新失败保留新连接，取消重开后仍重试该 ID 并可选择其模型', async () => {
     const activeId = credentials[0]!.id;
@@ -1050,16 +1063,14 @@ describe('SettingsPanel', () => {
       const row = mediaRow(panel, 'text');
       if (sameKey) {
         expect(
-          within(row).getByRole('radio', {
-            name: `文字生成凭据来源：已保存连接 …${keySuffix}（当前全局）`,
+          within(row).getByRole('option', {
+            name: `${active.baseUrl} · …${keySuffix} · 当前全局`,
           }),
-        ).toBeVisible();
+        ).toBeInTheDocument();
       }
-      fireEvent.click(
-        within(row).getByRole('radio', {
-          name: `文字生成凭据来源：已保存连接 …${keySuffix}${sameKey ? '（独立连接）' : ''}`,
-        }),
-      );
+      fireEvent.change(within(row).getByRole('combobox', { name: '文字生成凭据来源' }), {
+        target: { value: independentId },
+      });
       await waitFor(() => expect(modelOptionTexts(panel, 'text')[0]).toContain('待绑定文字模型'));
       expect(modelInput(panel, 'text')).toHaveValue('');
       fireEvent.change(modelInput(panel, 'text'), { target: { value: 'unbound-text' } });
@@ -1150,15 +1161,15 @@ describe('SettingsPanel', () => {
     const panel = await openNodeDefaults(dialog);
     expect(modelInput(panel, 'text')).toHaveValue('text-model');
 
-    await act(async () => {
-      await fetchMock(`http://localhost:3000/v1/settings/ai/credentials/${independentId}`, {
-        method: 'DELETE',
-      });
-    });
     fireEvent.click(within(dialog).getByRole('tab', { name: '连接与 Key' }));
-    fireEvent.click(within(dialog).getByRole('button', { name: '删除当前 Key' }));
+    fireEvent.click(
+      within(dialog).getByRole('button', {
+        name: '删除连接 https://independent.example.com/v1 · …indep008',
+      }),
+    );
+    await confirmDeletion();
 
-    await waitFor(() => expect(credentials).toHaveLength(0));
+    await waitFor(() => expect(credentials).toHaveLength(1));
     fireEvent.click(within(dialog).getByRole('tab', { name: '节点默认' }));
     const refreshed = within(dialog).getByRole('tabpanel', { name: '节点默认' });
     await waitFor(() =>
@@ -1166,7 +1177,7 @@ describe('SettingsPanel', () => {
         '已失效：引用的 Key 已被删除',
       ),
     );
-    // 不再有可选的 Key，默认模型也没有被换成其他 Key 的值。
+    // 活动 Key 仍可选，但项目引用保留失效状态，不自动换成活动 Key。
     expect(modelInput(refreshed, 'text')).toHaveValue('text-model');
     expect(projectDefaults.text).toEqual({ modelAlias: 'text-model', credentialId: independentId });
   });
@@ -1199,36 +1210,30 @@ describe('SettingsPanel', () => {
     const { dialog } = await openSettings();
     const panel = await openNodeDefaults(dialog);
     const row = mediaRow(panel, 'image');
-    expect(
-      row.querySelector('input[aria-label="图片生成凭据来源：已保存连接 …delet008"]'),
-    ).toBeInstanceOf(HTMLInputElement);
+    expect(within(row).getByRole('combobox', { name: '图片生成凭据来源' })).toHaveValue(deletedId);
 
-    await act(async () => {
-      await fetchMock(`http://localhost:3000/v1/settings/ai/credentials/${deletedId}`, {
-        method: 'DELETE',
-      });
-    });
     fireEvent.click(within(dialog).getByRole('tab', { name: '连接与 Key' }));
-    fireEvent.click(within(dialog).getByRole('button', { name: '删除当前 Key' }));
+    fireEvent.click(
+      within(dialog).getByRole('button', {
+        name: '删除连接 https://deleted.example.com/v1 · …delet008',
+      }),
+    );
+    await confirmDeletion();
 
-    // 面板只删除当前活动的 Key：被绑定的 Key 和活动 Key 都已删除，另一个 Key 保留。
-    await waitFor(() => expect(credentials).toHaveLength(1));
-    expect(credentials[0]!.id).toBe(remainingId);
+    // 直接移除绑定的非活动连接，当前全局连接和另一个 Key 保留。
+    await waitFor(() => expect(credentials).toHaveLength(2));
     fireEvent.click(within(dialog).getByRole('tab', { name: '节点默认' }));
     const refreshed = within(dialog).getByRole('tabpanel', { name: '节点默认' });
     const deletedRow = mediaRow(refreshed, 'image');
     // 失效的默认值被清除并回到未配置；没有静默改成其他 Key 的模型。
     await waitFor(() => expect(deletedRow).toHaveTextContent('尚未配置类型默认'));
     expect(modelInput(refreshed, 'image')).toHaveValue('');
-    expect(
-      within(deletedRow).queryByRole('radio', { name: /已保存连接 …delet008/ }),
-    ).not.toBeInTheDocument();
-    expect(
-      within(deletedRow).getByRole('radio', { name: /已保存连接 …remai008/ }),
-    ).not.toBeChecked();
-    // 活动 Key 已被删除，设置面板回到未配置状态，也没有自动激活另一个 Key。
-    expect(credentials.some((credential) => credential.active)).toBe(false);
-    expect(within(dialog).getByText('当前未配置平台连接')).toBeInTheDocument();
+    expect(within(deletedRow).queryByRole('option', { name: /…delet008/ })).not.toBeInTheDocument();
+    expect(within(deletedRow).getByRole('combobox', { name: '图片生成凭据来源' })).not.toHaveValue(
+      remainingId,
+    );
+    expect(credentials.find((credential) => credential.active)?.id).toBe(activeId);
+    expect(settings.configured).toBe(true);
   });
 
   it('默认模型行按四层解析顺序显示继承自项目/全局/节点独立', async () => {
@@ -1255,12 +1260,7 @@ describe('SettingsPanel', () => {
       '本次运行显式配置 > 单节点显式配置 > 项目类型默认 > 【全局类型默认】',
     );
     // 未显式绑定连接时「继承」被选中，其它连接保持未选中。
-    expect(within(textRow).getByRole('radio', { name: '文字生成凭据来源：继承' })).toBeChecked();
-    expect(
-      within(textRow).getByRole('radio', {
-        name: '文字生成凭据来源：已保存连接 …indep008',
-      }),
-    ).not.toBeChecked();
+    expect(within(textRow).getByRole('combobox', { name: '文字生成凭据来源' })).toHaveValue('');
     expect(within(textRow).queryByRole('alert')).not.toBeInTheDocument();
     expect(textRow).toHaveTextContent('https://newapi.example.com/v1 · …old-key8');
 
@@ -1358,12 +1358,6 @@ describe('SettingsPanel', () => {
   it.each([
     ['测试连接', '正在测试连接', '/v1/settings/ai/test', 'POST'],
     ['获取模型', '正在获取模型', '/v1/settings/ai/models/refresh', 'POST'],
-    [
-      '删除当前 Key',
-      '正在删除',
-      '/v1/settings/ai/credentials/123e4567-e89b-12d3-a456-000000000001',
-      'DELETE',
-    ],
   ])(
     '%s 等待时显示旋转提示且失败后允许重试并保留当前 Key',
     async (label, pendingLabel, path, method) => {
@@ -1454,7 +1448,7 @@ describe('SettingsPanel', () => {
     expect(select).toHaveAttribute('aria-busy', 'false');
   });
 
-  it('删除当前 Key 后从列表移除，保留其他 Key 并能继续切换删除', async () => {
+  it('删除当前 Key 后保留其他 Key，没有活动连接时也能直接删除最后一条', async () => {
     const deletedId = credentials[0]!.id;
     const remainingId = '123e4567-e89b-12d3-a456-000000000002';
     credentials.push({
@@ -1468,9 +1462,8 @@ describe('SettingsPanel', () => {
     const { dialog, user } = await openSettings();
     const select = within(dialog).getByRole('combobox', { name: '已保存的 API Key' });
     await user.click(within(dialog).getByRole('button', { name: '删除当前 Key' }));
-    await waitFor(() =>
-      expect(within(dialog).getByRole('status')).toHaveTextContent('当前 Key 已删除'),
-    );
+    await confirmDeletion();
+    await waitFor(() => expect(within(dialog).getByRole('status')).toHaveTextContent('连接已删除'));
     expect(within(select).queryByRole('option', { name: /old-key/ })).not.toBeInTheDocument();
     expect(within(select).getByRole('option', { name: /remaining/ })).toBeInTheDocument();
     expect(select).toHaveValue('');
@@ -1478,10 +1471,12 @@ describe('SettingsPanel', () => {
       'placeholder',
       '输入服务端 Key',
     );
-    await user.selectOptions(select, remainingId);
-    await waitFor(() => expect(select).toBeEnabled());
-    expect(select).toHaveValue(remainingId);
-    await user.click(within(dialog).getByRole('button', { name: '删除当前 Key' }));
+    await user.click(
+      within(dialog).getByRole('button', {
+        name: '删除连接 https://remaining.example.com/v1 · …remai008',
+      }),
+    );
+    await confirmDeletion();
     await waitFor(() => expect(credentials).toHaveLength(0));
     expect(within(select).getAllByRole('option')).toHaveLength(1);
     expect(within(select).getByRole('option')).toHaveTextContent('暂无已保存凭据');
@@ -1493,6 +1488,136 @@ describe('SettingsPanel', () => {
       `/v1/settings/ai/credentials/${deletedId}`,
       `/v1/settings/ai/credentials/${remainingId}`,
     ]);
+  });
+
+  it('删除非活动连接前可取消；确认后保留活动连接与草稿，清空该连接目录和待绑定选择', async () => {
+    const active = credentials[0]!;
+    const independent = {
+      ...active,
+      id: '123e4567-e89b-12d3-a456-000000000088',
+      baseUrl: 'https://spare.example.test/v1',
+      keyFingerprint: 'synthetic-spare',
+      keySuffix: 'spare008',
+      active: false,
+    };
+    credentials.push(independent);
+    const before = structuredClone(settings);
+    const { dialog, client } = await openSettingsPanel();
+    const panel = await openNodeDefaults(dialog);
+    fireEvent.change(within(panel).getByRole('combobox', { name: '文字生成凭据来源' }), {
+      target: { value: independent.id },
+    });
+    await waitFor(() => expect(modelInput(panel, 'text')).toHaveValue(''));
+    fireEvent.click(within(panel).getByRole('button', { name: '管理已保存连接' }));
+    const url = within(dialog).getByLabelText('New API Base URL');
+    const key = within(dialog).getByLabelText('API Key');
+    fireEvent.change(url, { target: { value: 'https://unsaved.example.test/v1' } });
+    fireEvent.change(key, { target: { value: 'synthetic-unsaved-key' } });
+    fireEvent.change(within(dialog).getByLabelText('节点超时时间（毫秒）'), {
+      target: { value: '1200000' },
+    });
+    const trigger = within(dialog).getByRole('button', {
+      name: `删除连接 ${independent.baseUrl} · …spare008`,
+    });
+    fireEvent.click(trigger);
+    let confirm = screen.getByRole('dialog', { name: '删除已保存连接' });
+    expect(confirm).toHaveTextContent(`${independent.baseUrl} · …spare008`);
+    expect(confirm).not.toHaveTextContent(independent.keyFingerprint);
+    expect(confirm).not.toHaveTextContent('当前全局连接也将清空');
+    fireEvent.click(within(confirm).getByRole('button', { name: '取消' }));
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(0);
+    expect(credentials).toHaveLength(2);
+    fireEvent.click(trigger);
+    await confirmDeletion();
+    expect(settings).toEqual(before);
+    expect(credentials).toEqual([active]);
+    expect(url).toHaveValue('https://unsaved.example.test/v1');
+    expect(key).toHaveValue('synthetic-unsaved-key');
+    expect(within(dialog).getByLabelText('节点超时时间（毫秒）')).toHaveValue(1200000);
+    expect(client.getQueryData(modelCatalogQueryKeyFor(independent.id))).toEqual([]);
+    expect(client.getQueryData(modelCatalogQueryKeyFor(active.id))).not.toEqual([]);
+    const deletion = fetchMock.mock.calls.find(([, init]) => init?.method === 'DELETE');
+    expect(new Headers(deletion?.[1]?.headers).has('content-type')).toBe(false);
+    expect(
+      fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/activate')),
+    ).toHaveLength(0);
+    const defaults = await openNodeDefaults(dialog);
+    expect(within(defaults).getByRole('combobox', { name: '文字生成凭据来源' })).toHaveValue('');
+    expect(defaults).not.toHaveTextContent('连接已保存，待选择模型');
+  });
+
+  it('同地址同 Key 的独立副本删除时明确提示一起移除并清空全局连接', async () => {
+    const active = credentials[0]!;
+    const copy = { ...active, id: '123e4567-e89b-12d3-a456-000000000089', active: false };
+    credentials.push(copy);
+    const { dialog, client } = await openSettingsPanel();
+    client.setQueryData(modelCatalogQueryKey, [{ id: 'stale-model' }]);
+    const triggers = within(dialog).getAllByRole('button', {
+      name: `删除连接 ${copy.baseUrl} · …${copy.keySuffix}`,
+    });
+    fireEvent.click(triggers[1]!);
+    const confirm = screen.getByRole('dialog', { name: '删除已保存连接' });
+    expect(confirm).toHaveTextContent('同一地址、同一 Key 的历史版本和独立副本会一起移除');
+    expect(confirm).toHaveTextContent('当前全局连接也将清空');
+    await confirmDeletion();
+    expect(credentials).toEqual([]);
+    expect(settings.configured).toBe(false);
+    expect(client.getQueryData(modelCatalogQueryKey)).toEqual([]);
+    expect(within(dialog).queryByRole('button', { name: /^删除连接 / })).not.toBeInTheDocument();
+  });
+
+  it('删除等待中禁止重复提交，失败后在确认框重试且保留原连接', async () => {
+    const immediateFetch = fetchMock;
+    const pending = deferredResponse();
+    const delayedFetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
+      init?.method === 'DELETE' ? pending.promise : immediateFetch(input, init),
+    );
+    vi.stubGlobal('fetch', delayedFetch);
+    const { dialog } = await openSettingsPanel();
+    const before = structuredClone(credentials);
+    fireEvent.click(within(dialog).getByRole('button', { name: /^删除连接 / }));
+    const confirm = screen.getByRole('dialog', { name: '删除已保存连接' });
+    fireEvent.click(within(confirm).getByRole('button', { name: '确认删除' }));
+    const waiting = await within(confirm).findByRole('button', { name: '正在删除' });
+    expect(waiting).toHaveAttribute('aria-busy', 'true');
+    expect(waiting).toBeDisabled();
+    expect(waiting.querySelector('.spin')).toBeInTheDocument();
+    expect(within(confirm).getByRole('button', { name: '取消' })).toBeDisabled();
+    fireEvent.click(waiting);
+    await act(async () =>
+      pending.resolve(jsonResponse({ error: 'synthetic deletion failure' }, 502)),
+    );
+    expect(delayedFetch.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(1);
+    expect(within(confirm).getByRole('alert')).toHaveTextContent('synthetic deletion failure');
+    expect(credentials).toEqual(before);
+    expect(within(confirm).getByRole('button', { name: '确认删除' })).toBeEnabled();
+    vi.stubGlobal('fetch', immediateFetch);
+    await confirmDeletion();
+    expect(credentials).toEqual([]);
+  });
+
+  it('删除响应晚于账户切换时不能写入新账户缓存', async () => {
+    const immediateFetch = fetchMock;
+    const pending = deferredResponse();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
+        init?.method === 'DELETE' ? pending.promise : immediateFetch(input, init),
+      ),
+    );
+    const { dialog, client, view } = await openSettingsPanel();
+    fireEvent.click(within(dialog).getByRole('button', { name: /^删除连接 / }));
+    const confirm = screen.getByRole('dialog', { name: '删除已保存连接' });
+    fireEvent.click(within(confirm).getByRole('button', { name: '确认删除' }));
+    await act(async () => {
+      // App 在退出或权限变化时同步卸载管理面板，随后清理该身份的缓存。
+      view.unmount();
+      clearAuthSession();
+      client.clear();
+    });
+    await act(async () => pending.resolve(jsonResponse({ settings, credentials: [] })));
+    expect(client.getQueryData(aiCredentialsQueryKey)).toBeUndefined();
+    expect(confirm).not.toBeInTheDocument();
   });
 
   it('保存自定义超时后可以显式恢复默认值', async () => {
@@ -1722,6 +1847,7 @@ describe('SettingsPanel', () => {
     expect(within(dialog).getByRole('alert')).toHaveTextContent('请输入有效的 HTTP(S) Base URL');
 
     await user.click(within(dialog).getByRole('button', { name: '删除当前 Key' }));
+    await confirmDeletion();
     await waitFor(() => expect(within(dialog).getByText('当前未配置平台连接')).toBeInTheDocument());
     expect(baseUrl).toHaveValue('https://reset.example.com/v1');
     expect(apiKey).toHaveValue('');

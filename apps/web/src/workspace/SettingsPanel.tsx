@@ -1,6 +1,6 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useQueryClient } from '@tanstack/react-query';
-import { ExternalLink, KeyRound, Link2, LoaderCircle, Undo2, X } from 'lucide-react';
+import { ExternalLink, KeyRound, Link2, LoaderCircle, Trash2, Undo2, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useController, useForm } from 'react-hook-form';
 
@@ -9,6 +9,7 @@ import {
   Dialog,
   DialogClose,
   DialogContent,
+  DialogDescription,
   DialogTitle,
   Input,
 } from '@multimodal-canvas/ui';
@@ -187,6 +188,9 @@ export function SettingsPanel({
   const timeoutDirtyRef = useRef(false);
   /** 当前异步动作阶段；自动刷新阶段沿用发起操作，便于在原控件上显示进度。 */
   const [operation, setOperation] = useState<SettingsOperation | null>(null);
+  /** 确认目标只保存脱敏摘要；失败时保留目标，允许取消或重试。 */
+  const [deletingCredential, setDeletingCredential] = useState<KnownCredential | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   /** 同步互斥锁，避免 React 状态提交前的连续点击重复发送请求。 */
   const operationRef = useRef<SettingsOperation | null>(null);
   /** 初始设置请求的等待状态；不覆盖允许提前编辑的输入草稿。 */
@@ -646,13 +650,21 @@ export function SettingsPanel({
     }
   };
 
-  /** 删除当前激活 Key 并同步服务器清单，保留其他 Key；失败时保留原设置。 */
+  /** 打开指定连接的删除确认；保存或刷新中不允许交叉删除。 */
+  const confirmCredentialDeletion = (credential: KnownCredential) => {
+    if (!canManageAiSettings || loading || operationRef.current || rowOperationRef.current) return;
+    setDeleteError(null);
+    setDeletingCredential(credential);
+  };
+
+  /** 删除确认的连接及同 Key 版本；清理被移除引用的草稿，失败时保留当前设置。 */
   const deleteCredentials = async () => {
-    if (!currentCredentialId || !beginOperation('delete')) return;
+    if (!canManageAiSettings || !deletingCredential || !beginOperation('delete')) return;
     const generation = getAuthSessionGeneration();
+    setDeleteError(null);
     try {
       const response = await apiFetch(
-        `${API_BASE_URL}/v1/settings/ai/credentials/${encodeURIComponent(currentCredentialId)}`,
+        `${API_BASE_URL}/v1/settings/ai/credentials/${encodeURIComponent(deletingCredential.id)}`,
         { method: 'DELETE' },
       );
       const result = (await response.json().catch(() => ({}))) as {
@@ -665,15 +677,46 @@ export function SettingsPanel({
         throw new Error(result.error ?? '凭据删除失败');
       }
       stopSettingsLoad();
-      await applySettingsAndCredentials(result.settings, result.credentials, generation);
+      if (result.credentials.find((entry) => entry.active)?.id !== currentCredentialId) {
+        await applySettingsAndCredentials(result.settings, result.credentials, generation);
+      } else {
+        // 删除非活动连接不应清空另一个连接尚未保存的地址、Key 或超时草稿。
+        setSettings(result.settings);
+        await replaceAiCredentials(queryClient, result.credentials, generation);
+      }
       if (!isCurrentRequest(generation)) return;
-      reportNotice({ kind: 'success', message: '当前 Key 已删除' });
+      const remainingIds = new Set(result.credentials.map((entry) => entry.id));
+      setPendingCredentials((previous) => ({
+        global: Object.fromEntries(
+          Object.entries(previous.global).filter(([, id]) => remainingIds.has(id)),
+        ),
+        project: Object.fromEntries(
+          Object.entries(previous.project).filter(([, id]) => remainingIds.has(id)),
+        ),
+      }));
+      if (
+        expandedType &&
+        draft.submitted &&
+        !remainingIds.has(
+          rows.find((row) => row.mediaType === expandedType)?.scopeCredentialId ?? '',
+        )
+      ) {
+        cancelConnectionConfiguration();
+      }
+      setDeletingCredential(null);
+      reportNotice({
+        kind: 'success',
+        message: `连接已删除：${credentialSourceLabel(deletingCredential)}`,
+      });
+      await queryClient.invalidateQueries({
+        predicate: ({ queryKey }) =>
+          ['marketplace', 'platform-model-catalog'].includes(String(queryKey[0])) ||
+          (queryKey[0] === 'management' &&
+            ['models', 'model-credentials'].includes(String(queryKey[2]))),
+      });
     } catch (error) {
       if (!isCurrentRequest(generation)) return;
-      reportNotice({
-        kind: 'error',
-        message: error instanceof Error ? error.message : '凭据删除失败',
-      });
+      setDeleteError(error instanceof Error ? error.message : '凭据删除失败');
     } finally {
       finishOperation();
     }
@@ -763,19 +806,23 @@ export function SettingsPanel({
   );
   const textCatalogQuery = useModelCatalogQuery(
     independentCredentialIds[0]?.scopeCredentialId,
-    canManageAiSettings && Boolean(independentCredentialIds[0]?.scopeCredentialId),
+    canManageAiSettings &&
+      Boolean(findCredential(credentials, independentCredentialIds[0]?.scopeCredentialId)),
   );
   const imageCatalogQuery = useModelCatalogQuery(
     independentCredentialIds[1]?.scopeCredentialId,
-    canManageAiSettings && Boolean(independentCredentialIds[1]?.scopeCredentialId),
+    canManageAiSettings &&
+      Boolean(findCredential(credentials, independentCredentialIds[1]?.scopeCredentialId)),
   );
   const audioCatalogQuery = useModelCatalogQuery(
     independentCredentialIds[2]?.scopeCredentialId,
-    canManageAiSettings && Boolean(independentCredentialIds[2]?.scopeCredentialId),
+    canManageAiSettings &&
+      Boolean(findCredential(credentials, independentCredentialIds[2]?.scopeCredentialId)),
   );
   const videoCatalogQuery = useModelCatalogQuery(
     independentCredentialIds[3]?.scopeCredentialId,
-    canManageAiSettings && Boolean(independentCredentialIds[3]?.scopeCredentialId),
+    canManageAiSettings &&
+      Boolean(findCredential(credentials, independentCredentialIds[3]?.scopeCredentialId)),
   );
   const rowCatalogQueries = [
     textCatalogQuery,
@@ -1347,6 +1394,15 @@ export function SettingsPanel({
                     : `正在编辑：${projectName ?? projectId} 的项目覆盖`}
                 </span>
               </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={busy || rowOperation !== null}
+                onClick={() => setCategory('connections')}
+              >
+                管理已保存连接
+              </Button>
               {defaultsError && (
                 <p className="settings-field-error" role="alert">
                   项目默认模型加载失败：{defaultsError}
@@ -1422,74 +1478,61 @@ export function SettingsPanel({
                           >
                             凭据来源
                           </span>
-                          <span
-                            className="settings-source-choices"
-                            role="radiogroup"
-                            aria-labelledby={`settings-source-${row.mediaType}`}
+                          <select
+                            className="settings-source-select"
+                            aria-label={`${mediaDefaultLabels[row.mediaType]}凭据来源`}
+                            value={
+                              expanded && !draft.submitted ? 'new' : (selectedCredentialId ?? '')
+                            }
+                            disabled={!canManageAiSettings || busy || rowOperation !== null}
+                            onChange={(event) => {
+                              const value = event.target.value;
+                              if (value === 'new') {
+                                if (expanded) {
+                                  setDraft(
+                                    emptyDraft(sourceCredential?.baseUrl ?? settings.baseUrl),
+                                  );
+                                  setDraftResetKey((current) => current + 1);
+                                  setConnectionStatus(undefined);
+                                  setRefreshStatus(undefined);
+                                } else configureConnection(row.mediaType);
+                              } else if (value) {
+                                cancelConnectionConfiguration();
+                                bindRowCredential(row.mediaType, value);
+                              } else {
+                                cancelConnectionConfiguration();
+                                if (row.pendingCredentialId) selectPendingCredential(row.mediaType);
+                                else if (
+                                  scope === 'global' ? row.explicitCredentialId : row.hasOverride
+                                )
+                                  void restoreInheritance(row.mediaType);
+                              }
+                            }}
                           >
-                            <label className="settings-source-option">
-                              <input
-                                type="radio"
-                                name={`settings-source-${row.mediaType}`}
-                                aria-label={`${mediaDefaultLabels[row.mediaType]}凭据来源：继承`}
-                                checked={!selectedCredentialId && !expanded}
-                                disabled={
-                                  !canManageAiSettings ||
-                                  rowOperation !== null ||
-                                  (!row.pendingCredentialId &&
-                                    (scope === 'global'
-                                      ? !row.explicitCredentialId
-                                      : !row.hasOverride))
-                                }
-                                onChange={() =>
-                                  row.pendingCredentialId
-                                    ? selectPendingCredential(row.mediaType)
-                                    : void restoreInheritance(row.mediaType)
-                                }
-                              />
-                              继承
-                            </label>
-                            {credentials.map((credential) => {
-                              const sameConnection = credentials.some(
-                                (other) =>
-                                  other.id !== credential.id &&
-                                  other.baseUrl === credential.baseUrl &&
-                                  other.keyFingerprint === credential.keyFingerprint,
-                              );
-                              const sourceSuffix = sameConnection
-                                ? credential.active
-                                  ? '（当前全局）'
-                                  : '（独立连接）'
-                                : '';
-                              return (
-                                <label className="settings-source-option" key={credential.id}>
-                                  <input
-                                    type="radio"
-                                    name={`settings-source-${row.mediaType}`}
-                                    aria-label={`${mediaDefaultLabels[row.mediaType]}凭据来源：已保存连接 ${credentialKeyLabel(credential)}${sourceSuffix}`}
-                                    checked={selectedCredentialId === credential.id}
-                                    disabled={!canManageAiSettings || rowOperation !== null}
-                                    onChange={() =>
-                                      void bindRowCredential(row.mediaType, credential.id)
-                                    }
-                                  />
-                                  已保存连接 · {credentialKeyLabel(credential)}
-                                  {sourceSuffix}
-                                </label>
-                              );
-                            })}
-                            <label className="settings-source-option">
-                              <input
-                                type="radio"
-                                name={`settings-source-${row.mediaType}`}
-                                aria-label={`${mediaDefaultLabels[row.mediaType]}凭据来源：独立连接`}
-                                checked={expanded && !selectedCredentialId}
-                                disabled={!canManageAiSettings || rowOperation !== null}
-                                onChange={() => configureConnection(row.mediaType)}
-                              />
-                              独立连接
-                            </label>
-                          </span>
+                            <option
+                              value=""
+                              disabled={
+                                !expanded &&
+                                !row.pendingCredentialId &&
+                                (scope === 'global' ? !row.explicitCredentialId : !row.hasOverride)
+                              }
+                            >
+                              继承默认连接
+                            </option>
+                            {selectedCredentialId &&
+                              !findCredential(credentials, selectedCredentialId) && (
+                                <option value={selectedCredentialId} disabled>
+                                  已失效的连接，请重新选择
+                                </option>
+                              )}
+                            {credentials.map((credential) => (
+                              <option key={credential.id} value={credential.id}>
+                                {credentialSourceLabel(credential)}
+                                {credential.active ? ' · 当前全局' : ' · 已保存'}
+                              </option>
+                            ))}
+                            <option value="new">添加独立连接…</option>
+                          </select>
                           <SettingsSourceSummary
                             sourceLabel={
                               row.pendingCredentialId
@@ -1519,7 +1562,7 @@ export function SettingsPanel({
                             aria-expanded={expanded}
                             aria-label={`配置${mediaDefaultLabels[row.mediaType]}连接`}
                             title={`配置${mediaDefaultLabels[row.mediaType]}连接`}
-                            disabled={!canManageAiSettings || rowOperation !== null}
+                            disabled={!canManageAiSettings || busy || rowOperation !== null}
                             onClick={() => configureConnection(row.mediaType, rowCredentialId)}
                           >
                             <Link2 size={14} aria-hidden="true" />
@@ -1697,6 +1740,40 @@ export function SettingsPanel({
                   <span className="settings-field-error">凭据列表加载失败，可重新打开设置重试</span>
                 )}
               </label>
+              <div className="settings-saved-connections" aria-label="已保存连接管理">
+                <div className="settings-connections-heading">
+                  <h3>已保存连接</h3>
+                  <span>{credentials.length} 条 · 删除无需先切换</span>
+                </div>
+                <ul className="settings-connection-list">
+                  {credentials.map((credential) => (
+                    <li key={credential.id} className="settings-connection-item">
+                      <div className="settings-connection-details">
+                        <strong title={credential.baseUrl}>{credential.baseUrl}</strong>
+                        <span>
+                          Key {credentialKeyLabel(credential)}
+                          {credential.active ? ' · 当前全局' : ' · 已保存'}
+                        </span>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="settings-delete"
+                        aria-label={`删除连接 ${credentialSourceLabel(credential)}`}
+                        disabled={busy || rowOperation !== null || loading}
+                        onClick={() => confirmCredentialDeletion(credential)}
+                      >
+                        <Trash2 size={14} aria-hidden="true" />
+                        删除
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+                {!credentials.length && (
+                  <p className="settings-status">暂无已保存连接，在下方添加。</p>
+                )}
+              </div>
               <label className="settings-field">
                 <span>New API Base URL</span>
                 <Input
@@ -1963,8 +2040,8 @@ export function SettingsPanel({
               size="sm"
               className="settings-delete"
               type="button"
-              onClick={() => void deleteCredentials()}
-              disabled={busy || !currentCredentialId}
+              onClick={() => activeCredential && confirmCredentialDeletion(activeCredential)}
+              disabled={busy || rowOperation !== null || loading || !currentCredentialId}
               aria-busy={operation === 'delete'}
             >
               {operation === 'delete' && (
@@ -2000,6 +2077,69 @@ export function SettingsPanel({
           </Button>
         </footer>
       </form>
+      <Dialog
+        open={Boolean(deletingCredential)}
+        onOpenChange={(open) => !open && !busy && setDeletingCredential(null)}
+      >
+        <DialogContent
+          className="settings-connection-confirm"
+          overlayClassName="settings-connection-confirm-backdrop"
+          onEscapeKeyDown={(event) => busy && event.preventDefault()}
+          onPointerDownOutside={(event) => event.preventDefault()}
+          onInteractOutside={(event) => busy && event.preventDefault()}
+        >
+          <DialogTitle>删除已保存连接</DialogTitle>
+          <DialogDescription>
+            删除后，此连接不能再用于新请求。引用它的默认配置和模型绑定需要重新选择连接；不会自动切换其他
+            Key。
+          </DialogDescription>
+          {deletingCredential && (
+            <p className="settings-connection-target">
+              {credentialSourceLabel(deletingCredential)}
+            </p>
+          )}
+          <p>
+            同一地址、同一 Key 的历史版本和独立副本会一起移除。
+            {deletingCredential &&
+            credentials.some(
+              (entry) =>
+                entry.active &&
+                entry.baseUrl === deletingCredential.baseUrl &&
+                entry.keyFingerprint === deletingCredential.keyFingerprint,
+            )
+              ? ' 当前全局连接也将清空。'
+              : ''}
+          </p>
+          <p>历史任务和账单保留；已提交任务仍使用冻结的凭据版本。此操作不会撤销上游 Key。</p>
+          {deleteError && (
+            <p className="settings-field-error" role="alert">
+              {deleteError}
+            </p>
+          )}
+          <div className="settings-connection-confirm-actions">
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={busy}
+              onClick={() => setDeletingCredential(null)}
+            >
+              取消
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={busy}
+              aria-busy={operation === 'delete'}
+              onClick={() => void deleteCredentials()}
+            >
+              {operation === 'delete' && (
+                <LoaderCircle className="spin" size={15} aria-hidden="true" />
+              )}
+              {operation === 'delete' ? '正在删除' : '确认删除'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   );
 

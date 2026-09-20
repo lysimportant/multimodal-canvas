@@ -303,19 +303,11 @@
   gap: 8px;
 }
 
-.mc-settings-page .settings-source-choices {
-  gap: 6px 12px;
-}
-
-.mc-settings-page .settings-source-option {
+.mc-settings-page .settings-source-select {
   color: var(--mc-text);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.mc-settings-page .settings-source-option input {
-  accent-color: var(--mc-accent);
-  flex-shrink: 0;
+  border-color: var(--mc-border-strong);
+  font-size: 14px;
+  min-height: 40px;
 }
 
 .mc-settings-page .settings-source-key {

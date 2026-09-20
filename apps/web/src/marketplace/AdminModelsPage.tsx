@@ -192,6 +192,9 @@ export function AdminModelsPage({ userId }: { userId: string }) {
           <h1>模型管理</h1>
         </div>
         <div className="mp-actions">
+          <AppLink to="/settings" className="mg-button">
+            管理连接与 Key
+          </AppLink>
           <button className="mg-button" type="button" onClick={() => setSyncing(true)}>
             <Download size={16} />
             同步导入
@@ -586,11 +589,10 @@ function SyncModelsModal({
             ))}
           </select>
         </label>
-        {!credentials.length && (
-          <p className="mg-muted">
-            尚未保存连接。<AppLink to="/settings">前往连接与 Key</AppLink>
-          </p>
-        )}
+        <p className="mg-muted">
+          {!credentials.length && '尚未保存连接。'}
+          <AppLink to="/settings">管理已保存连接</AppLink>，可添加或删除连接。
+        </p>
         <button
           type="button"
           className="mg-button"
