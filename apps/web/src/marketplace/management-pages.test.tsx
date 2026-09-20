@@ -87,6 +87,15 @@ describe('平台模型后台', () => {
       active: false,
     };
     vi.mocked(managementRequest).mockImplementation(async (path) => {
+      if (path === '/admin/model-marketplace/newapi')
+        return {
+          configured: false,
+          url: null,
+          snapshot: null,
+          revision: 0,
+          authorized: false,
+          drafts: [],
+        };
       if (path === '/settings/ai/credentials') return { credentials: [credential, other] };
       if (path.startsWith('/admin/model-marketplace/models?')) return { items: [], total: 0 };
       if (path === '/admin/model-marketplace/connections/sync')
@@ -118,6 +127,15 @@ describe('平台模型后台', () => {
   it('列表删除需确认，取消不发送请求，成功后刷新广场和节点目录', async () => {
     let deleted = false;
     vi.mocked(managementRequest).mockImplementation(async (path, options) => {
+      if (path === '/admin/model-marketplace/newapi')
+        return {
+          configured: false,
+          url: null,
+          snapshot: null,
+          revision: 0,
+          authorized: false,
+          drafts: [],
+        };
       if (path === '/settings/ai/credentials') return { credentials: [credential] };
       if (path.startsWith('/admin/model-marketplace/models?'))
         return { items: deleted ? [] : [initialModel], total: deleted ? 0 : 1 };
@@ -154,6 +172,15 @@ describe('平台模型后台', () => {
 
   it('详情删除失败保留模型和错误，连接选择显示安全尾号', async () => {
     vi.mocked(managementRequest).mockImplementation(async (path, options) => {
+      if (path === '/admin/model-marketplace/newapi')
+        return {
+          configured: false,
+          url: null,
+          snapshot: null,
+          revision: 0,
+          authorized: false,
+          drafts: [],
+        };
       if (path === '/settings/ai/credentials') return { credentials: [credential] };
       if (path.startsWith('/admin/model-marketplace/models?'))
         return { items: [initialModel], total: 1 };
@@ -195,6 +222,15 @@ describe('平台模型后台', () => {
       ],
     };
     vi.mocked(managementRequest).mockImplementation(async (path, options) => {
+      if (path === '/admin/model-marketplace/newapi')
+        return {
+          configured: false,
+          url: null,
+          snapshot: null,
+          revision: 0,
+          authorized: false,
+          drafts: [],
+        };
       if (path === '/settings/ai/credentials') return { credentials: [credential] };
       if (path.startsWith('/admin/model-marketplace/models?')) return { items: [], total: 0 };
       if (path.startsWith('/admin/model-marketplace/sync?'))
@@ -229,6 +265,15 @@ describe('平台模型后台', () => {
   it('已有绑定可直接启用 New API 价格，表单不要求单价', async () => {
     let model = { ...initialModel, activeBindingId: 'binding-existing' };
     vi.mocked(managementRequest).mockImplementation(async (path, options) => {
+      if (path === '/admin/model-marketplace/newapi')
+        return {
+          configured: false,
+          url: null,
+          snapshot: null,
+          revision: 0,
+          authorized: false,
+          drafts: [],
+        };
       if (path === '/settings/ai/credentials') return { credentials: [credential] };
       if (path.startsWith('/admin/model-marketplace/models?')) return { items: [model], total: 1 };
       if (path === `/admin/model-marketplace/models/${model.id}`) return { model };
@@ -252,7 +297,7 @@ describe('平台模型后台', () => {
     fireEvent.change(screen.getByLabelText('价格来源'), { target: { value: 'newapi' } });
     expect(screen.queryByLabelText('单价（元 / 次）')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '启用 New API 价格' }));
-    expect(await screen.findByText('已沿用 New API 价格，无需重复定价')).toBeVisible();
+    expect(await screen.findByText(/该模型直接使用 New API 计价/)).toBeVisible();
     expect(managementRequest).toHaveBeenCalledWith('/admin/pricing-versions', {
       method: 'POST',
       body: {
@@ -269,6 +314,15 @@ describe('平台模型后台', () => {
     let binding: unknown = null;
     let pricing: unknown = null;
     vi.mocked(managementRequest).mockImplementation(async (path, options) => {
+      if (path === '/admin/model-marketplace/newapi')
+        return {
+          configured: false,
+          url: null,
+          snapshot: null,
+          revision: 0,
+          authorized: false,
+          drafts: [],
+        };
       if (path === '/settings/ai/credentials') return { credentials: [credential] };
       if (path === '/admin/model-marketplace/models' && options?.method === 'POST') {
         created = true;
@@ -362,6 +416,15 @@ describe('平台模型后台', () => {
     async (sourceType) => {
       let sync: unknown = null;
       vi.mocked(managementRequest).mockImplementation(async (path, options) => {
+        if (path === '/admin/model-marketplace/newapi')
+          return {
+            configured: false,
+            url: null,
+            snapshot: null,
+            revision: 0,
+            authorized: false,
+            drafts: [],
+          };
         if (path === '/settings/ai/credentials') return { credentials: [credential] };
         if (path.startsWith('/admin/model-marketplace/models'))
           return { items: [], total: 0, page: 1, pageSize: 20 };
@@ -430,6 +493,15 @@ describe('平台模型后台', () => {
       createdAt: '2026-01-01T00:00:00Z',
     });
     vi.mocked(managementRequest).mockImplementation(async (path, options) => {
+      if (path === '/admin/model-marketplace/newapi')
+        return {
+          configured: false,
+          url: null,
+          snapshot: null,
+          revision: 0,
+          authorized: false,
+          drafts: [],
+        };
       if (path === '/settings/ai/credentials')
         return { credentials: [credential, otherCredential] };
       if (path.startsWith('/admin/model-marketplace/models'))
@@ -517,6 +589,15 @@ describe('平台模型后台', () => {
       },
     ];
     vi.mocked(managementRequest).mockImplementation(async (path, options) => {
+      if (path === '/admin/model-marketplace/newapi')
+        return {
+          configured: false,
+          url: null,
+          snapshot: null,
+          revision: 0,
+          authorized: false,
+          drafts: [],
+        };
       if (path === '/settings/ai/credentials') return { credentials: [credential] };
       if (path === '/admin/model-marketplace/models' && options?.method === 'POST')
         return { model: initialModel };
@@ -587,6 +668,15 @@ describe('平台模型后台', () => {
   it('原币种参考详情默认折叠，保留零价、分组大小写与纯文本表达式', async () => {
     const expression = '<script>throw new Error("unsafe")</script> u("seconds") * 0.4';
     vi.mocked(managementRequest).mockImplementation(async (path) => {
+      if (path === '/admin/model-marketplace/newapi')
+        return {
+          configured: false,
+          url: null,
+          snapshot: null,
+          revision: 0,
+          authorized: false,
+          drafts: [],
+        };
       if (path === '/settings/ai/credentials') return { credentials: [credential] };
       if (path.startsWith('/admin/model-marketplace/models'))
         return { items: [], total: 0, page: 1, pageSize: 20 };

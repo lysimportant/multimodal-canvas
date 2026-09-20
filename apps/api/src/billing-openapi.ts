@@ -786,6 +786,117 @@ export function billingOpenApiPaths() {
     query('mediaType', mediaType),
   ];
   return {
+    '/v1/model-marketplace/newapi': {
+      get: {
+        ...operation(
+          '读取 New API 广场快照',
+          false,
+          '返回管理员配置 URL 的原广场模型、完整定价、授权无关的公开分组及上游汇率；不包含管理凭据或草稿。',
+        ),
+        responses: { '200': response('生效目录快照', { type: 'object' }), ...errors },
+      },
+    },
+    '/v1/admin/model-marketplace/newapi': {
+      get: {
+        ...operation('读取广场配置和草稿状态', true, '授权只返回布尔状态，不回显 PAT 或密文。'),
+        responses: { '200': response('配置、快照与草稿状态', { type: 'object' }), ...errors },
+      },
+      put: {
+        ...operation(
+          '保存广场 URL 和管理授权',
+          true,
+          '接受站点、pricing 页面或 api/pricing 地址；只读验证后保存。更换站点清除旧授权，原站草稿保留；revision 阻止并发覆盖。',
+        ),
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: object(
+                {
+                  url: { type: 'string', format: 'uri' },
+                  revision: { type: 'integer', minimum: 0 },
+                  accessToken: { type: 'string', writeOnly: true },
+                  removeAuthorization: { type: 'boolean' },
+                },
+                ['url', 'revision'],
+              ),
+            },
+          },
+        },
+        responses: { '200': response('新配置与原价快照', { type: 'object' }), ...errors },
+      },
+    },
+    '/v1/admin/model-marketplace/newapi/sync': {
+      post: {
+        requestBody: body(
+          object({ sourceRevision: { type: 'integer', minimum: 1 } }, ['sourceRevision']),
+        ),
+        ...operation(
+          '写回改价草稿并同步广场',
+          true,
+          '使用独立管理授权与 New API expected_version。先读取核对，按模型写回并确认；冲突或结果不明保留草稿。只影响上游未来计费，不修改历史钱包或账单。',
+        ),
+        responses: {
+          '200': response('快照和逐模型写回结果；存在 failed/conflict 时不代表全部成功', {
+            type: 'object',
+          }),
+          ...errors,
+        },
+      },
+    },
+    '/v1/admin/model-marketplace/newapi/price': {
+      get: {
+        ...operation(
+          '读取模型生效价格与草稿',
+          true,
+          '仅可编辑当前来源目录中的模型，返回当前上游版本及草稿基线。',
+        ),
+        parameters: [query('modelName', { type: 'string', maxLength: 512 }, true)],
+        responses: { '200': response('价格配置、基线与修订', { type: 'object' }), ...errors },
+      },
+      put: {
+        ...operation(
+          '保存待写回价格',
+          true,
+          '保存不修改上游价格；必须提交当前上游 expectedVersion、本地 revision、来源 sourceRevision 和原价格配置白名单。',
+        ),
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: object(
+                {
+                  modelName: { type: 'string', maxLength: 512 },
+                  expectedVersion: { type: 'string' },
+                  sourceRevision: { type: 'integer', minimum: 1 },
+                  revision: { type: 'integer', minimum: 0 },
+                  pricing: {
+                    type: 'object',
+                    description:
+                      'New API 完整模型配置：ModelPrice、ModelRatio、CompletionRatio、CacheRatio、CreateCacheRatio、ImageRatio、AudioRatio、AudioCompletionRatio、billing_setting.billing_mode/billing_expr/plugin_billing_expr。',
+                  },
+                },
+                ['modelName', 'expectedVersion', 'revision', 'sourceRevision', 'pricing'],
+              ),
+            },
+          },
+        },
+        responses: { '200': response('已保存的价格草稿', { type: 'object' }), ...errors },
+      },
+      delete: {
+        ...operation(
+          '放弃本地草稿并读取最新价格',
+          true,
+          '只删除指定修订的草稿，正在同步时拒绝；不恢复或覆盖上游价格。',
+        ),
+        parameters: [
+          query('modelName', { type: 'string', maxLength: 512 }, true),
+          query('revision', { type: 'integer', minimum: 1 }, true),
+          query('sourceRevision', { type: 'integer', minimum: 1 }, true),
+        ],
+        responses: { '200': response('最新上游价格', { type: 'object' }), ...errors },
+      },
+    },
     '/v1/model-marketplace': {
       get: {
         ...operation(

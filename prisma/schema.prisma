@@ -749,6 +749,36 @@ model ModelCatalogSync {
   @@map("model_catalog_syncs")
 }
 
+/// 广场来源与独立管理授权；PAT 使用既有密钥环加密，不进入可调用 Key 列表。
+model NewApiPricingSource {
+  id                   String   @id @default("default")
+  baseUrl              String
+  encryptedAccessToken String?
+  snapshot             Json?
+  revision             Int      @default(1)
+  updatedAt            DateTime @updatedAt
+
+  @@map("newapi_pricing_sources")
+}
+
+/// 同一站点同模型共用的待写回价格；基线用于冲突检查与恢复，不改变历史账务。
+model NewApiPricingDraft {
+  id              String   @id @default(uuid()) @db.Uuid
+  baseUrl         String
+  modelName       String
+  expectedVersion String
+  baseline        Json
+  pricing         Json
+  revision        Int      @default(1)
+  status          String   @default("pending")
+  error           String?
+  createdBy       String   @db.Uuid
+  updatedAt       DateTime @updatedAt
+
+  @@unique([baseUrl, modelName])
+  @@map("newapi_pricing_drafts")
+}
+
 /// 切换时刻用于识别迁移前的无账务历史运行，之后的新调用必须有冻结记录。
 model BillingActivation {
   id        String   @id @default("singleton")

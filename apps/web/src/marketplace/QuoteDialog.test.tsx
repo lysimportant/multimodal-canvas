@@ -58,7 +58,7 @@ describe('生成费用确认窗口', () => {
     expect(screen.getByText('按张 · 2 份')).toBeVisible();
     const confirm = screen.getByRole('button', { name: '确认并生成 · 最高 ¥0.2' });
     expect(execute).not.toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: '取消' })).toHaveFocus();
+    await waitFor(() => expect(screen.getByRole('button', { name: '取消' })).toHaveFocus());
     await user.tab({ shift: true });
     expect(confirm).toHaveFocus();
     await user.tab();

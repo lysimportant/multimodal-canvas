@@ -61,9 +61,13 @@ describe('计费与模型广场 OpenAPI 合同', () => {
     expect(propertyNames(publicResponse).has('pricingReference')).toBe(false);
   });
   it('实际 marketplace 和账务每个路由均出现在文档中，管理权限明确要求真实会话', async () => {
-    for (const file of ['model-marketplace-routes.ts', 'billing-routes.ts']) {
+    for (const file of [
+      'model-marketplace-routes.ts',
+      'billing-routes.ts',
+      'newapi-square-routes.ts',
+    ]) {
       const source = await readFile(new URL(`./${file}`, import.meta.url), 'utf8');
-      const routes = [...source.matchAll(/app\.(get|post|patch|delete)\(\s*'([^']+)'/g)];
+      const routes = [...source.matchAll(/app\.(get|post|put|patch|delete)\(\s*'([^']+)'/g)];
       expect(routes.length).toBeGreaterThan(5);
       for (const [, method, path] of routes) {
         const documentedPath = path!.replace(/:([A-Za-z]+)/g, '{$1}');

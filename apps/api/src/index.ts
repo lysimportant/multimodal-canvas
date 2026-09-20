@@ -3,6 +3,7 @@ import { FilePromptSkillStore, PrismaPromptSkillStore } from './prompt-skill-sto
 import { PrismaClient } from '@prisma/client';
 import { PrismaBillingService } from '@multimodal-canvas/billing';
 import { PrismaModelMarketplace } from './model-marketplace';
+import { PrismaNewApiSquare } from './newapi-square';
 import type { NewApiVideoContract } from '@multimodal-canvas/providers';
 import { FileSystemBlobStore, MemoryAssetStore, PrismaAssetStore, S3BlobStore } from './assets';
 import { FileProjectStore, PrismaProjectStore } from './projects';
@@ -91,6 +92,10 @@ if (providerName === 'newapi' && (!prisma || useMemoryRunService)) {
 /** 数据库模式统一使用平台钱包，内存模式只用于明确的 Mock。 */
 const billing = prisma && !useMemoryRunService ? new PrismaBillingService(prisma) : undefined;
 const marketplace = prisma ? new PrismaModelMarketplace(prisma, settingsStore) : undefined;
+/** 广场公开数据与价格草稿复用平台数据库，管理授权独立加密保存。 */
+const newApiSquare = prisma
+  ? new PrismaNewApiSquare(prisma, { settings: settingsStore })
+  : undefined;
 const runService = useMemoryRunService
   ? new MemoryRunService({
       providerName,
@@ -147,6 +152,7 @@ const mediaDerivativeGenerator =
 const app = buildApp({
   ...(billing ? { billing } : {}),
   ...(marketplace ? { marketplace } : {}),
+  ...(newApiSquare ? { newApiSquare } : {}),
   promptSkillStore,
   accountMailSender,
   s3DownloadMode,

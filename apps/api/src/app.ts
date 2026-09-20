@@ -135,6 +135,8 @@ import { registerPromptSkillRoutes } from './prompt-skill-routes';
 import { BillingError, type PrismaBillingService } from '@multimodal-canvas/billing';
 import { ModelMarketplaceError, type ModelMarketplace } from './model-marketplace';
 import { registerModelMarketplaceRoutes } from './model-marketplace-routes';
+import { registerNewApiSquareRoutes } from './newapi-square-routes';
+import type { PrismaNewApiSquare } from './newapi-square';
 import { registerBillingRoutes } from './billing-routes';
 import {
   freezeRunBillingModels,
@@ -163,6 +165,8 @@ export type BuildAppOptions = {
   billing?: PrismaBillingService;
   /** 平台模型独立于上游候选目录，负责验证当前调用绑定和发布价格。 */
   marketplace?: ModelMarketplace;
+  /** URL 直连的 New API 广场和管理员改价草稿。 */
+  newApiSquare?: PrismaNewApiSquare;
   /** Provider-like executor for an in-memory/local run service. */
   runExecutor?: RunExecutor;
   /** Optional result archiver; defaults to the configured asset store. */
@@ -1292,6 +1296,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         'api_key',
         'body.apiKey',
         'body.api_key',
+        'accessToken',
+        'body.accessToken',
       ],
       censor: '[REDACTED]',
     },
@@ -1495,7 +1501,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         ? corsConfig.origins
         : false,
     credentials: true,
-    methods: ['GET', 'HEAD', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     // Browser downloads need to read the server-provided attachment name.
     // These are metadata headers only; credentials remain in the body/auth
     // boundary and are never exposed here.
@@ -1741,6 +1747,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     marketplace: options.marketplace,
     sessions: requestSessions,
   });
+  registerNewApiSquareRoutes(app, { square: options.newApiSquare, sessions: requestSessions });
   registerBillingRoutes(app, { billing: options.billing, sessions: requestSessions });
 
   /** 只有真实账户可以确认计费；同键恢复也不能借服务令牌或匿名请求读到账务身份。 */

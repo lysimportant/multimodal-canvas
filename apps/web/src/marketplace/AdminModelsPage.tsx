@@ -22,6 +22,7 @@ import { AppLink } from '../routing';
 import { credentialSourceLabel } from '../settings-utils';
 import { ConnectionSyncNotice, useSyncConnections } from './ConnectionSync';
 import './marketplace.css';
+import { NewApiSquareAdmin } from './NewApiSquare';
 
 /** 管理员商品记录，绑定凭据只通过管理员独立接口读取。 */
 type AdminModel = {
@@ -216,6 +217,13 @@ export function AdminModelsPage({ userId }: { userId: string }) {
           </button>
         </div>
       </header>
+      <NewApiSquareAdmin
+        userId={userId}
+        onSynced={async () => {
+          await connectionSync.mutateAsync(undefined);
+          await saved();
+        }}
+      />
       <p className="mg-muted">
         同步全部连接后，用户可在画布按 Key 选择模型。New API
         模型沿用上游价格；手工模型保留独立配置。
@@ -1083,7 +1091,20 @@ function ModelEditor({
         />
       </div>
       <div hidden={tab !== 'pricing'}>
-        <PricingForm model={model} userId={userId} onSaved={onSaved} />
+        {model.pricing?.rule.unit === 'upstream_cost' ? (
+          <section className="mg-panel">
+            <h2>New API 价格</h2>
+            <p>
+              该模型直接使用 New API 计价。请返回模型管理，在上方 New API
+              广场点击“修改价格”，保存后同步写回。
+            </p>
+            <button type="button" className="mg-button" onClick={onBack}>
+              返回 New API 广场
+            </button>
+          </section>
+        ) : (
+          <PricingForm model={model} userId={userId} onSaved={onSaved} />
+        )}
       </div>
     </>
   );

@@ -8,6 +8,8 @@ import { QueryState } from '../management/primitives';
 import { mediaLabels } from '../workspace/contracts';
 import { fetchMarketplace, marketplacePriceLabel } from './client';
 import './models-page.css';
+import { NewApiSquareCatalog, useNewApiSquare } from './NewApiSquare';
+import { NewApiPrice } from './NewApiPrice';
 
 /** 用户模型广场与节点共用已发布目录；搜索筛选不会发起生成。 */
 export function ModelsPage({ user, onLogin }: { user: AuthUser | null; onLogin: () => void }) {
@@ -15,6 +17,7 @@ export function ModelsPage({ user, onLogin }: { user: AuthUser | null; onLogin: 
   const [mediaType, setMediaType] = useState('');
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const square = useNewApiSquare(user?.id);
   const models = useQuery({
     queryKey: ['marketplace', user?.id, query, mediaType, page],
     enabled: Boolean(user),
@@ -50,6 +53,17 @@ export function ModelsPage({ user, onLogin }: { user: AuthUser | null; onLogin: 
         </section>
       ) : (
         <>
+          {square.data?.snapshot && (
+            <NewApiSquareCatalog
+              key={`${square.data.url}:${square.data.snapshot.displayCurrency}`}
+              square={square.data}
+              availableNames={new Set(square.data.availableModels?.map((model) => model.modelName))}
+            />
+          )}
+          {square.error && (
+            <p role="alert">New API 广场读取失败，请稍后重试。下方保留已发布模型。</p>
+          )}
+          {square.data?.configured && <h2 className="na-legacy">画布可用连接与模型</h2>}
           <div className="model-square-filters">
             <label className="model-square-search">
               <Search size={18} />
@@ -107,7 +121,23 @@ export function ModelsPage({ user, onLogin }: { user: AuthUser | null; onLogin: 
                     {model.description || '使用已验证的模型能力开始创作。'}
                   </p>
                   <div className="model-square-price">
-                    {marketplacePriceLabel(model.pricing?.rule)}
+                    {model.pricing?.rule.unit === 'upstream_cost' &&
+                    square.data?.availableModels?.some(
+                      (item) => item.platformModelId === model.id,
+                    ) &&
+                    square.data.snapshot?.models.find(
+                      (item) => item.model_name === model.modelAlias,
+                    ) ? (
+                      <NewApiPrice
+                        model={square.data.snapshot.models.find(
+                          (item) => item.model_name === model.modelAlias,
+                        )!}
+                        rate={square.data.snapshot.usdToCny}
+                        displayCurrency={square.data.snapshot.displayCurrency}
+                      />
+                    ) : (
+                      marketplacePriceLabel(model.pricing?.rule)
+                    )}
                   </div>
                   {model.availabilityReason && <p role="status">{model.availabilityReason}</p>}
                   <div className="model-square-card-actions">

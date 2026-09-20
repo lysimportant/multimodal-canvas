@@ -3289,6 +3289,21 @@ describe('API development CORS defaults', () => {
         });
         expect(preflight.statusCode).toBe(204);
         expect(preflight.headers['access-control-allow-origin']).toBe(origin);
+        const pricingPreflight = await corsApp.inject({
+          method: 'OPTIONS',
+          url: '/v1/admin/model-marketplace/newapi',
+          headers: {
+            origin,
+            'access-control-request-method': 'PUT',
+            'access-control-request-headers': 'authorization,content-type',
+          },
+        });
+        expect(pricingPreflight.statusCode).toBe(204);
+        expect(
+          pricingPreflight.headers['access-control-allow-methods']
+            ?.split(',')
+            .map((method) => method.trim()),
+        ).toContain('PUT');
       } finally {
         await corsApp.close();
         vi.unstubAllEnvs();
