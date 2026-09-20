@@ -108,6 +108,7 @@
 
 按[平台计费与模型广场执行方案](docs/billing-and-model-marketplace-plan.md)和[实施检查点](docs/billing-implementation-checkpoint.md)继续验收。当前剩余事项如下，不把阶段实现或隔离测试当成上线完成：
 
+- P1 优先恢复模型调用，执行顺序见[模型调用恢复计划](docs/model-call-recovery-plan.md)：先让已提交的 H3 两端修复生效并同步，再补齐两个 Wan 的媒体能力和费用预估，验证旧节点、多 Key 选择、费用确认及真实调用。保留人民币钱包与 New API 原价；本轮仅形成计划，不代表已部署或已授权删除计费模块。
 - 补齐手工定价的可信输入 Token、各 Provider 按秒计量和具体 Sub2/New API 部署的逐任务 usage 权限/合同；手工 Token 报价仍阻止，按秒 `provider_usage` 缺计量时保持待核实，不能猜测字段收费。
 - 落实 24 小时待核实事项的运营处理时限、人工处置与告警，验证真实成本对账；上游成本保留原币种，不以估算或自动换汇补齐事实。
 - 线上 `CANVAS_BRIDGE_ENABLED` 已启用；8080 的 H3 已上架。图片提及仍被桥接目录的仅文字能力拦截，两端能力声明与媒体预估修复已通过本地回归，等待生产宿主更新授权及配套 Canvas 更新、目录同步核验；仅更新 Hailuo 插件不能生效。仍需真实费用预估/最终回执、生产同步写库容量、pending 运营恢复及各媒体调用合同验收。8080 已接入原广场价格，见[同步检查点](docs/newapi-pricing-sync-checkpoint.md)；线上管理授权、价格写回与真实付费验收待单独授权，后台定时同步后置。
