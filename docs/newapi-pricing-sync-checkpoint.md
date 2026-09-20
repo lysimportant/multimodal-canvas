@@ -44,3 +44,16 @@
 OWASP 参考：Authentication Cheat Sheet、Session Management Cheat Sheet（2026-09-20 读取）。沿用真实管理员会话、TLS/显式本机 HTTP、服务端授权、加密存储、凭据不回显、撤销和失败分支测试；不宣称未经验证的全面合规。
 
 子代理恢复后仍持续空消息，已中断；实现与验收由主代理完成。本轮实现、验证和文档同步完成。交付目标为 `origin/codex/generate-to-new-node` 与附注 Tag `v2026.09.20-newapi-square-pricing`，提交正文记录验证结果，远端状态以 Git 核验为准。原有 `docs/resource-input-compatibility.md` SHA256 保持 `56B2C9D2BFB09DCC56720769B9CE12AED4877A29090DEDFBADD2F1FC5B3AA2A7`，不纳入提交。生产部署、线上写回、真实付费生成和 New API 桥接的生产验收仍未执行。
+
+## 2026-09-20：8080 广场接入与 H3 映射检查点
+
+- P1：接入用户实际使用的 `http://localhost:8080`，定位并修复 `MiniMax-H3: missing_profile`。Canvas 基线为 `codex/generate-to-new-node @ 37f37bc`；本轮仅同步文档，保留原有 `docs/resource-input-compatibility.md` 改动。New API 基线为 `main @ 6f25a7b84`。
+- 用户登录并授权配置后，已在 8080 管理页保存 `https://api.lolicon.beer/pricing` 并读取。数据库来源修订为 1、快照 33 个模型、价格草稿 0 条；`/models` 可见 New API 原价，两个 Wan 模型已有可用连接。本轮没有修改线上价格或钱包。
+- 用户已启用线上桥接；原已保存 Key 的目录 GET 成功。`MiniMax-H3` 仍返回 `missing_profile`，`wan3.0-video`、`wan3.0-video-prime` 均为 `newapi-video-v1` 且可用。因此这次故障不是广场缺价格、缺 Key 权限或桥接开关关闭。
+- 只读管理页确认渠道使用官方 `hailuo` 插件，映射为 `MiniMax-H3 → h3`。用户确认仅名字不同，其余采用现有 H3 协议。线上 Hailuo 1.1.3 未声明 `h3`，其生成分支也会落到旧版 `/v1` 协议；New API 本地修复为 1.1.4，精确识别 `h3` 并沿用 H3 `/v2`，不修改渠道映射、模型价格或未知别名的阻断规则。
+- New API 全量 `go test -mod=readonly ./... -count=1`、`go vet -mod=readonly ./...`、构建与插件 lint 通过；最终 Hailuo 参数边界及目录/预估/入口回归通过。默认 SQLite 的桥接测试不等同三库验收；本次未改数据库行为。
+- Canvas `pnpm --filter @multimodal-canvas/worker exec vitest run src/billing-execution.test.ts` 28/28、`pnpm --filter @multimodal-canvas/web exec vitest run src/marketplace/newapi-square.test.tsx` 4/4 通过。
+- 已核对现有结算：上游 `/v1/canvas/estimate` 预估并冻结 CNY；最终以原 Key、原请求 ID、模型和任务匹配的 `/v1/canvas/receipts/:requestId` 净 quota 结算，使用冻结汇率并按用户确认预算封顶。未完成回执保持待核实；不再维护独立售价，也不使用 Key 余额变化推断单次费用。
+- 下一步须取得生产插件更新授权，部署 New API Hailuo 1.1.4，再同步 8080 连接并只读核验 H3 可用。上传覆盖版本可能优先于工厂插件；需要核对实际生效版本。保留旧版本以便回退，不覆盖账务数据。真实付费生成和最终扣款未执行，仍不能标记为生产验收完成。
+
+New API 的具体文件、回归命令和部署回退步骤记录在其仓库 `verification/hailuo-h3-alias.md`。已经删除的历史连接不会因为同步自动恢复；旧画布节点如仍绑定旧连接，需重新选择当前连接，不能把改价或广场展示当作重新绑定。
