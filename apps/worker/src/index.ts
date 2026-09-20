@@ -1471,6 +1471,23 @@ export function createRunWorker(options: {
           activeRequestPrompts = canResumeProviderJob(existingNodeProviderJob)
             ? storedRequestPromptIdentities(existingNodeProviderJob, node.id)
             : [];
+          /** 在最终请求准备完成后领取发送身份；本地参数拒绝不得留下未知发送记录。 */
+          const beginNodeSend = async () => {
+            if (!runExecution) return;
+            // 已受理视频沿用原任务；权限修订只约束新的创建请求。
+            if (!resumeSubmittedVideo)
+              await runExecution.authorizeNode(currentData.runId, node.id, executionSnapshot);
+            await runExecution.beginSend({
+              runId: currentData.runId,
+              nodeId: node.id,
+              attempt: currentData.attempt,
+              requestIdentity: requestProviderJobId ?? providerRequestJob.id,
+              ...(existingNodeProviderJob?.platformJobId
+                ? { resumePlatformJobId: existingNodeProviderJob.platformJobId }
+                : {}),
+            });
+            activeSendIntent = true;
+          };
           // 有持久化边界时，Provider 必须在真正发送前把最终请求文本交给 Worker
           // 落库；回调抛错会阻止本次请求，避免已计费但无法追溯。没有持久化适配器
           // 的本地运行（未配置 DATABASE_URL，例如 mock 或本地 newapi 调试）不传
@@ -1525,6 +1542,7 @@ export function createRunWorker(options: {
                   providerSnapshot,
                   currentData.userId ? { userId: currentData.userId } : undefined,
                 );
+                await beginNodeSend();
               }
             : undefined;
           recordNodeTiming({ nodeId: node.id, requestStartedAt: new Date().toISOString() });
@@ -1542,22 +1560,7 @@ export function createRunWorker(options: {
           );
           if (await cancellationRequested())
             return markCancelled(currentOverallProgress, node.id, activeProviderJob);
-          if (runExecution) {
-            // 已受理视频沿用原任务查询与归档；重新登录后的权限修订只约束新的创建请求。
-            // 持久授权、取消状态及原发送身份仍由 authorizeRun 和 beginSend 校验。
-            if (!resumeSubmittedVideo)
-              await runExecution.authorizeNode(currentData.runId, node.id, executionSnapshot);
-            await runExecution.beginSend({
-              runId: currentData.runId,
-              nodeId: node.id,
-              attempt: currentData.attempt,
-              requestIdentity: requestProviderJobId ?? providerRequestJob.id,
-              ...(existingNodeProviderJob?.platformJobId
-                ? { resumePlatformJobId: existingNodeProviderJob.platformJobId }
-                : {}),
-            });
-            activeSendIntent = true;
-          }
+          if (!captureRequestPrompt || resumeSubmittedVideo) await beginNodeSend();
           const returned = await executeProviderWithCancellation(
             provider,
             {

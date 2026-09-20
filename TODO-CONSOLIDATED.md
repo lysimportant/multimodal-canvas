@@ -104,10 +104,9 @@
 
 来源：TODO-LOCAL 的 `P2-USAGE-11`；TODO-VIDEO-NODE 第 1.2 节。代码按[翻新计划](docs/newapi-account-integration-plan.md)替代旧账号、手动 Key、广场和钱包；本地实现、隔离数据演练及检查见[实施检查点](docs/newapi-account-implementation-checkpoint.md)。尚需完成：
 
-- 共享实例按只读盘点形成最终删除/保留清单，明确保留项目的接收身份；冻结旧提交、处理在途或未知请求及未结费用，备份数据库、对象、队列和密钥后，再在授权范围内应用清理工具及前向迁移。当前只做了独立 Docker 演练。
+- 共享数据库与对象已只读备份并在独立副本恢复，清理 preview 因 3 个原请求 unknown 而 `applyAllowed=false`。先核实原请求、明确保留项目的接收身份，补齐队列/密钥恢复点；冻结旧提交后重新核对清单和 digest，再在授权范围内应用清理及前向迁移。具体 Run、数量和校验值见[共享切换包](docs/newapi-account-implementation-checkpoint.md)。
 - 配套发布 Canvas 与 New API，确认目标实例启用账号/桥接合同、精确回调、HTTPS 和管理员外部 ID；在目标环境重验唯一登录、全部开放组的幂等 Key、`auto` 排除策略、账号隔离及受理前权限变化。原共享 8080 实例尚未切换。
-- 对拟开放的文字、图片、`MiniMax-H3`、`wan3.0-video`、`wan3.0-video-prime` 输入组合取得真实供应商证据：插件实际版本、外部素材 URL、查询归档及 New API 最终费用归属。详见[Provider 验收记录](docs/newapi-provider-acceptance.md)；本地 Mock 不替代外部调用。
-- 补齐已发布 outbox 对应 Redis job 丢失后的受控恢复入口；沿用原 Run、请求身份及授权，已发送项不重复 POST，DAG 未发送节点仅在当前分组权限有效时继续。
+- 对拟开放的文字、图片、`MiniMax-H3`、`wan3.0-video`、`wan3.0-video-prime` 输入组合取得真实供应商证据：插件实际版本、外部素材 URL、查询归档及 New API 最终费用归属。本地签名素材 GET 和 500 quota 合成对账已有证据，目标环境仍待验，详见[Provider 验收记录](docs/newapi-provider-acceptance.md)。
 
 完成条件：共享清单和配套切换有可复核记录，目标环境烟测与获授权的真实调用通过，备份恢复可用。未知请求与真实未结事项持续保留，不以测试账号标签或旧备份覆盖新作品和账务。
 

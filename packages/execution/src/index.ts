@@ -340,6 +340,82 @@ export class PrismaExecutionService {
     });
   }
 
+  /**
+   * 将丢失队列消息的原任务重新列入待投递 outbox，不创建 Run、授权或发送身份。
+   * @param runId 原 API/BullMQ 运行编号。
+   * @param queueName 当前部署队列；禁止把其他部署的任务转移进来。
+   * @returns 完成或取消的任务返回 false；其余任务复核成功后返回 true。
+   * @throws {ExecutionError} 授权、快照或归属不一致，以及原请求发送结果尚不明确。
+   */
+  async requestRecovery(runId: string, queueName: string): Promise<boolean> {
+    return this.prisma.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${runId}, 0))`;
+      const authorization = await transaction.executionAuthorization.findUnique({
+        where: { runId },
+      });
+      const outbox = await transaction.runOutbox.findUnique({ where: { runId } });
+      if (!authorization || !outbox) {
+        throw new ExecutionError('authorization_required', '原任务缺少持久授权或 outbox');
+      }
+      const run = await transaction.run.findUnique({
+        where: { id: authorization.databaseRunId },
+      });
+      const payload = runJobDataSchema.safeParse(outbox.payload);
+      const authorizedSnapshot = runSnapshotSchema.safeParse(authorization.snapshot);
+      const storedSnapshot = runSnapshotSchema.safeParse(run?.snapshot);
+      if (
+        !run ||
+        outbox.queueName !== queueName ||
+        !payload.success ||
+        !authorizedSnapshot.success ||
+        !storedSnapshot.success ||
+        authorization.databaseRunId !== executionDatabaseRunId(runId) ||
+        payload.data.runId !== runId ||
+        payload.data.userId !== authorization.userId ||
+        run.userId !== authorization.userId ||
+        run.projectId !== authorization.projectId ||
+        payload.data.snapshot.projectId !== authorization.projectId ||
+        run.attempt !== payload.data.attempt ||
+        (run.retryOf ?? undefined) !==
+          (payload.data.retryOf ? executionDatabaseRunId(payload.data.retryOf) : undefined) ||
+        (run.idempotencyKey ?? undefined) !== payload.data.idempotencyKey ||
+        [payload.data.snapshot, authorizedSnapshot.data, storedSnapshot.data].some(
+          (snapshot) =>
+            executionSnapshotFingerprint(snapshot) !== authorization.snapshotFingerprint,
+        )
+      ) {
+        throw new ExecutionError('authorization_conflict', '原任务的队列、身份或冻结快照不一致');
+      }
+      if (run.status === 'SUCCEEDED' || run.status === 'CANCELLED') return false;
+      if (authorization.status !== 'active') {
+        throw new ExecutionError('authorization_revoked', '原任务执行授权已撤销');
+      }
+      assertExecutionBindings(authorizedSnapshot.data);
+      const cancelled = run.status === 'CANCEL_REQUESTED' || payload.data.cancelRequested;
+      // 取消只恢复本地收尾；其他任务发送不明时保留现场，由原请求证据核实。
+      if (!cancelled) {
+        const uncertain = await transaction.runSendIntent.findFirst({
+          where: { runId, status: { in: ['sending', 'unknown'] } },
+          select: { id: true },
+        });
+        if (uncertain) {
+          throw new ExecutionError('send_requires_review', '原请求发送结果不明，请先核实原任务');
+        }
+      }
+      await transaction.runOutbox.update({
+        where: { id: outbox.id },
+        data: {
+          publishedAt: null,
+          lastError: null,
+          ...(cancelled
+            ? { payload: { ...payload.data, cancelRequested: true } as Prisma.InputJsonValue }
+            : {}),
+        },
+      });
+      return true;
+    });
+  }
+
   /** 撤销执行授权；已发送请求仍依靠原任务身份查询，不会据此推断远端取消。 */
   async revokeAuthorization(runId: string): Promise<void> {
     const updated = await this.prisma.executionAuthorization.updateMany({

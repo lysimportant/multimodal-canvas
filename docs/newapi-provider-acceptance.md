@@ -16,7 +16,7 @@
 - 取消只保证本地停止后续工作；供应商实际取消和退款没有通用保证。未返回费用时保持未知，不能伪记为零或以补发获取费用。
 - 每次调用只支持单个交付结果，`n != 1` 明确拒绝。批量任务是独立授权的逻辑调用。
 - 对原失败 job 的恢复可能首次执行尚未发送的 DAG 下游；只有所有节点已归档或有持久取消意图时，才可要求恢复零新增 POST。长期数据库故障仍需外部监控，不能依赖数据库中的恢复记录本身。
-- 已发布 outbox 对应 Redis job 丢失后的受控恢复入口仍是独立运维缺口；须按原 Run、请求身份、授权和归档证据恢复，不能新建任务掩盖丢失。
+- 已补齐 `POST /v1/runs/:runId/recover`：仅接受空对象，复用原 Run、授权、快照和发送身份；已发送/结果不明项拒绝自动重发，成功任务不再投递，取消只做本地收尾，跨用户访问返回 404。集成恢复 14/14、HTTP/运行/限流 82/82 通过。
 
 ## 本地 Docker 验收（2026-09-21）
 
@@ -30,12 +30,31 @@
 | `wan3.0-video`       | `newapi-video-v1`         | 文生视频，5 秒、720P、16:9 | video/mp4，24 bytes  |
 | `wan3.0-video-prime` | `newapi-video-v1`         | 文生视频，5 秒、720P、16:9 | video/mp4，24 bytes  |
 
-H3 首次归档被私网素材保护拒绝。独立 New API 随后使用现有配置，只允许 `mock-provider` 的单个 Docker IP 与 8081 端口，SSRF 保护保持启用。Worker 修复了重新登录更新权限修订后阻断原视频查询的问题：首次创建仍校验当前权限，已受理视频通过持久授权、取消状态和原发送身份继续查询。原 Run `run_idem_a191ea289dcfa4efdf894684c77085d0a6ee34587d843426c96c7b90e60424a0`、上游任务 `task_dPkAARYWiXyj8YVVRx5rI8z5u2mVK4oC` 恢复成功，额外创建 POST 为 0。
+H3 首次归档被私网素材保护拒绝。独立 New API 随后使用现有配置，只允许 `mock-provider` 的单个 Docker IP 与 8081 端口，SSRF 保护保持启用。为补齐需要外部对象入口的组合，另建仅在独立 Docker 网络可达的 TLS 对象代理 `assets.canvas-acceptance.example.com`，Worker 以专用 `S3_PROVIDER_ENDPOINT` 启动，Mock 实际 GET 5 个冻结对象均为 200；这证明跨容器读取，不证明公网供应商可达。Worker 修复了重新登录更新权限修订后阻断原视频查询的问题：首次创建仍校验当前权限，已受理视频通过持久授权、取消状态和原发送身份继续查询，恢复不增加创建 POST。
 
 此前文字结果未知和图片私网地址失败的任务保留原记录，未补发它们的创建请求。成功图片场景使用标准 `b64_json`。报告位于被忽略的 `.local-tests/newapi-account/media-results.json`、`media-acceptance.md` 和 `media-h3-before-recovery.json`，不含可用凭据。
 
-这里的图片和 MP4 是最小合成数据，仅证明协议、任务身份、归档和读取闭环；没有验证画质、编码兼容性或真实时长。首尾帧及图片/视频/音频参考的映射回归已通过，其目标部署外部素材读取与真实模型组合仍按下一节取证。
+这里的图片、MP4、PNG 和 WAV 是最小合成数据，仅证明协议、任务身份、归档和读取闭环；没有验证画质、编码兼容性或真实时长。首尾帧及图片/视频/音频参考的映射回归已通过。H3 首帧场景另有一笔非零计费对账：New API 用户 7、default、Token 19、`MiniMax-H3`，500 quota = 0.001 USD，回执和唯一消费日志一致，Canvas usage ledger 为 0；无限 Token 的 `remain_quota` 递减属于既有计数语义。签名视频/音频和该计费场景均只创建一次，补充报告为只读恢复记录。
 
-## 未取得的证据
+## 媒体组合补证
 
-本次本机 New API 与 Mock 联调不替代真实供应商验收。实际模型/输入组合的外部 URL、真实供应商回执、New API 最终费用归属、插件生效版本及生产部署继续单列；未获授权时不为补验收重复付费生成。真实合同不清楚的模式保持不可调用。
+补充组合按精确模型分别记录；成功组合各一次创建并完成查询/归档，拒绝组合供应商 POST 为 0：
+
+| 精确模型 | 输入组合 | 本地结果 |
+|---|---|---|
+| `MiniMax-H3` | 两张图片提及、首尾帧、图/视频/音频混合参考 | 3 个独立场景通过；`media-full-results.json` |
+| `MiniMax-H3` | 首帧、非零合成价格 | 通过；`media-billing-reconciled.json`，请求 `202609202221586332587258268d9d6tlIe2yiL`、任务 `task_QQboKexjcyLT4bwqWk9M8SD48FJCPVCj` |
+| `wan3.0-video` | 首帧、首尾帧、参考图连线 | 3 个独立场景通过；`media-full-results.json` |
+| `wan3.0-video-prime` | 首帧、首尾帧、参考图连线 | 3 个独立场景通过；`media-full-results.json` |
+| `wan3.0-video` | 签名视频、签名音频参考 | 2 个独立场景通过；`media-signed-recovered.json`、`media-signed-audio-recovered.json` |
+| `wan3.0-video-prime` | 签名视频、签名音频参考 | 2 个独立场景通过；`media-billing-reconciled.json` |
+| 两个 Wan | `@` 图片提及 | 当前目录不声明该能力，明确拒绝，不能以参考图连线成功代替 |
+| 两个 Wan | 未配置 Provider 对象入口的视频/音频参考 | 4 个场景在 POST 前拒绝；配置隔离 TLS 代理后，使用新场景单独取证 |
+| `MiniMax-H3` | 文生模式附参考图、非法分辨率 | 明确拒绝；非法分辨率保留原错误且零 POST |
+| `wan3.0-video` | 首尾帧模式缺尾帧 | 发现并修复持久化遗漏 `videoMode`；修复后明确拒绝且零 POST |
+
+`media-full-results.json` 和 `media-final-results.json` 含原失败现场，只逐项引用其中已经核实的结果。Mock URL 解析异常留下的 unknown 原请求未重发；原始失败文件和只读补证同时保留，未把整份失败报告改成成功。
+
+## 目标环境仍待验证
+
+本次本机 New API 与 Mock 联调不替代真实供应商验收。已取得的签名 GET 只证明独立对象代理和 Canvas 冻结版本读取；仍未取得真实供应商外部 URL、真实供应商回执、生产插件生效版本、共享实例部署和完整密钥恢复点。未获授权时不为补验收重复付费生成；真实合同不清楚的模式保持不可调用。

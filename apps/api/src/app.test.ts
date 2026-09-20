@@ -7,7 +7,7 @@ import { buildApp } from './fixtures/test-app';
 import { MemoryAuthStore } from './auth-store';
 import { MemoryProjectStore } from './projects';
 import { type ModelCatalogEntry } from './settings';
-import { MemoryRunService } from './runs';
+import { MemoryRunService, createRunSnapshot } from './runs';
 import { MemoryWebhookEventStore } from './webhooks';
 import { TestAuthContext, issueTestSession } from './fixtures/auth-session';
 
@@ -1606,6 +1606,78 @@ describe('run request prompt endpoints', () => {
 });
 
 describe('run endpoints', () => {
+  it('恢复入口只允许本人原任务，并拒绝修改快照的恢复请求', async () => {
+    vi.stubEnv('API_JWT_SECRET', 'synthetic-recovery-session-secret');
+    vi.stubEnv('API_AUTH_TOKEN', '');
+    const context = new TestAuthContext();
+    const owner = await context.session({ email: 'recovery-owner@example.test' });
+    const other = await context.session({ email: 'recovery-other@example.test' });
+    const projects = new MemoryProjectStore();
+    const project = await projects.create(
+      { name: 'Recovery ownership' },
+      { ownerId: owner.user.id },
+    );
+    const service = new MemoryRunService();
+    const original = await service.create(
+      createRunSnapshot(
+        project.id,
+        {
+          revision: 0,
+          nodes: [
+            {
+              id: 'recovery-target',
+              type: 'text',
+              position: { x: 0, y: 0 },
+              data: { label: 'Recovery target', mediaType: 'text', mode: 'generate' },
+            },
+          ],
+          edges: [],
+        },
+        'recovery-target',
+      ),
+      { userId: owner.user.id },
+    );
+    const recover = vi.fn(async () => original);
+    const recoveryApp = buildApp({
+      logger: false,
+      ...context.appOptions,
+      projectStore: projects,
+      runService: Object.assign(service, { recover }),
+    });
+    const url = `/v1/runs/${original.id}/recover`;
+    const headers = { authorization: `Bearer ${owner.accessToken}` };
+    try {
+      expect((await recoveryApp.inject({ method: 'POST', url })).statusCode).toBe(401);
+      expect(
+        (
+          await recoveryApp.inject({
+            method: 'POST',
+            url,
+            headers: { authorization: `Bearer ${other.accessToken}` },
+          })
+        ).statusCode,
+      ).toBe(404);
+      expect(
+        (
+          await recoveryApp.inject({
+            method: 'POST',
+            url,
+            headers,
+            payload: { snapshot: {}, userId: other.user.id },
+          })
+        ).statusCode,
+      ).toBe(400);
+      expect(recover).not.toHaveBeenCalled();
+      const restored = await recoveryApp.inject({ method: 'POST', url, headers, payload: {} });
+      expect(restored.statusCode).toBe(202);
+      expect(restored.json().run).toMatchObject({ id: original.id, attempt: original.attempt });
+      expect(recover).toHaveBeenCalledExactlyOnceWith(original.id);
+    } finally {
+      await recoveryApp.close();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('lists run history after checking project access', async () => {
     const historyApp = buildApp({ logger: false });
     try {

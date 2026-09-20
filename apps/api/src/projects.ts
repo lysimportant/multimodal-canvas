@@ -992,24 +992,8 @@ function readStoredGroups(value: unknown): { groups: CanvasGroup[] } | undefined
   return parsed.success ? { groups: parsed.data } : undefined;
 }
 
-const nodeDataFields = [
-  'label',
-  'mediaType',
-  'mode',
-  'enabled',
-  'stale',
-  'manualOutput',
-  'manualOutputRunId',
-  'prompt',
-  'promptDocument',
-  'parameters',
-  'inferenceStrength',
-  'modelAlias',
-  'credentialId',
-  'assetId',
-  'contentUrl',
-  'mimeType',
-] as const satisfies ReadonlyArray<keyof CanvasNode['data']>;
+/** 读取领域合同内的节点字段，避免持久化回读丢失视频模式、派生动作等执行语义。 */
+const nodeDataFields = Object.keys(nodeDataSchema.shape) as Array<keyof CanvasNode['data']>;
 
 function mapNodeData(node: {
   type: string;

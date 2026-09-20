@@ -3,8 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { PrismaClient } from '@prisma/client';
-import type { RunSnapshot } from '@multimodal-canvas/domain';
+import { PrismaClient, type Prisma } from '@prisma/client';
+import { runJobDataSchema, type RunSnapshot } from '@multimodal-canvas/domain';
 import { ExecutionError, PrismaExecutionService } from '@multimodal-canvas/execution';
 import { Queue } from 'bullmq';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -211,6 +211,154 @@ integrationDescribe('中性执行授权与 outbox（隔离 PostgreSQL + Redis）
     expect(await prisma.runOutbox.count()).toBe(before.outbox);
     expect(await queue.getWaitingCount()).toBe(before.waiting);
   });
+
+  it('已发布 job 丢失后并发恢复原 Run，保留授权和原视频发送身份', async () => {
+    const accepted = await service.create(executionSnapshot(), {
+      userId,
+      idempotencyKey: 'lost-published-job',
+    });
+    const authorization = await execution.requireAuthorization(accepted.id);
+    await execution.beginSend({
+      runId: accepted.id,
+      nodeId: 'target',
+      attempt: 1,
+      requestIdentity: 'original-provider-request',
+    });
+    await execution.finishSend({
+      runId: accepted.id,
+      nodeId: 'target',
+      attempt: 1,
+      status: 'sent',
+      platformJobId: 'original-video-task',
+    });
+    await prisma.run.update({
+      where: { id: authorization.databaseRunId },
+      data: { status: 'PROCESSING' },
+    });
+    const outbox = await prisma.runOutbox.findUniqueOrThrow({ where: { runId: accepted.id } });
+    expect(outbox.publishedAt).not.toBeNull();
+    await (await queue.getJob(accepted.id))!.remove();
+    expect(await queue.getJob(accepted.id)).toBeUndefined();
+
+    const recovered = await Promise.all([
+      service.recover(accepted.id),
+      service.recover(authorization.databaseRunId),
+    ]);
+    expect(recovered.map((run) => run.id)).toEqual([accepted.id, accepted.id]);
+    expect((await queue.getJob(accepted.id))?.data).toEqual(outbox.payload);
+    expect(
+      await prisma.executionAuthorization.findUnique({ where: { runId: accepted.id } }),
+    ).toMatchObject({ snapshotFingerprint: authorization.snapshotFingerprint });
+    expect(await prisma.executionAuthorization.count({ where: { runId: accepted.id } })).toBe(1);
+    expect(await prisma.runOutbox.count({ where: { runId: accepted.id } })).toBe(1);
+    await expect(
+      execution.beginSend({
+        runId: accepted.id,
+        nodeId: 'target',
+        attempt: 1,
+        requestIdentity: 'original-provider-request',
+      }),
+    ).rejects.toMatchObject({ code: 'send_requires_review' });
+    await expect(
+      execution.beginSend({
+        runId: accepted.id,
+        nodeId: 'target',
+        attempt: 1,
+        requestIdentity: 'original-provider-request',
+        resumePlatformJobId: 'original-video-task',
+      }),
+    ).resolves.toMatchObject({ status: 'sent', platformJobId: 'original-video-task' });
+  });
+
+  it.each(['SUCCEEDED', 'CANCELLED'] as const)('%s 的 job 丢失后恢复不再投递', async (status) => {
+    const accepted = await service.create(executionSnapshot(), {
+      userId,
+      idempotencyKey: `terminal-lost-${status}`,
+    });
+    const authorization = await execution.requireAuthorization(accepted.id);
+    await prisma.run.update({ where: { id: authorization.databaseRunId }, data: { status } });
+    await (await queue.getJob(accepted.id))!.remove();
+    expect((await service.recover(accepted.id)).status).toBe(status.toLowerCase());
+    expect(await queue.getJob(accepted.id)).toBeUndefined();
+  });
+
+  it('取消后的队列消息丢失仍按原取消意图恢复，拒绝首次发送', async () => {
+    const accepted = await service.create(executionSnapshot(), {
+      userId,
+      idempotencyKey: 'cancelled-lost-job',
+    });
+    await service.cancel(accepted.id);
+    await (await queue.getJob(accepted.id))!.remove();
+    await service.recover(accepted.id);
+    expect((await queue.getJob(accepted.id))?.data.cancelRequested).toBe(true);
+    await expect(
+      execution.beginSend({
+        runId: accepted.id,
+        nodeId: 'target',
+        attempt: 1,
+        requestIdentity: 'must-not-send',
+      }),
+    ).rejects.toMatchObject({ code: 'authorization_revoked' });
+  });
+
+  it.each(['sending', 'unknown'] as const)(
+    '%s 原请求必须核实后才能恢复丢失的 job',
+    async (status) => {
+      const accepted = await service.create(executionSnapshot(), {
+        userId,
+        idempotencyKey: `uncertain-lost-${status}`,
+      });
+      await execution.beginSend({
+        runId: accepted.id,
+        nodeId: 'target',
+        attempt: 1,
+        requestIdentity: 'uncertain-request',
+      });
+      if (status === 'unknown') {
+        await execution.finishSend({ runId: accepted.id, nodeId: 'target', attempt: 1, status });
+      }
+      await (await queue.getJob(accepted.id))!.remove();
+      await expect(service.recover(accepted.id)).rejects.toMatchObject({
+        code: 'send_requires_review',
+      });
+      expect(await queue.getJob(accepted.id)).toBeUndefined();
+      expect(
+        (await prisma.runOutbox.findUniqueOrThrow({ where: { runId: accepted.id } })).publishedAt,
+      ).not.toBeNull();
+    },
+  );
+
+  it.each(['queue', 'snapshot', 'owner', 'revoked'] as const)(
+    '%s 不一致的丢失任务在重新投递前拒绝',
+    async (change) => {
+      const accepted = await service.create(executionSnapshot(), {
+        userId,
+        idempotencyKey: `invalid-recovery-${change}`,
+      });
+      const outbox = await prisma.runOutbox.findUniqueOrThrow({ where: { runId: accepted.id } });
+      await (await queue.getJob(accepted.id))!.remove();
+      if (change === 'revoked') {
+        await execution.revokeAuthorization(accepted.id);
+      } else if (change === 'queue') {
+        await prisma.runOutbox.update({
+          where: { id: outbox.id },
+          data: { queueName: 'other-queue' },
+        });
+      } else {
+        const payload = runJobDataSchema.parse(outbox.payload);
+        if (change === 'owner') payload.userId = randomUUID();
+        else payload.snapshot.parameters = { tampered: true };
+        await prisma.runOutbox.update({
+          where: { id: outbox.id },
+          data: { payload: payload as Prisma.InputJsonValue },
+        });
+      }
+      await expect(service.recover(accepted.id)).rejects.toMatchObject({
+        code: change === 'revoked' ? 'authorization_revoked' : 'authorization_conflict',
+      });
+      expect(await queue.getJob(accepted.id)).toBeUndefined();
+    },
+  );
 
   function executionSnapshot(): RunSnapshot {
     return {

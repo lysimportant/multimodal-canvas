@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ProviderJob, RunJobData, RunSnapshot } from '@multimodal-canvas/domain';
+import { reportRequestPrompt } from '@multimodal-canvas/providers';
 
 import {
   createProviderJobRecord,
@@ -126,15 +127,27 @@ function fixture(frozen: RunSnapshot, providerJob?: ProviderJob) {
     async upsertProviderJob({ providerJob: current }) {
       persisted.set(current.id, structuredClone(current));
     },
+    async upsertRequestPromptRecord() {},
     recordUsage,
   };
   let creationCalls = 0;
   let resumeCalls = 0;
   const execute = vi.fn(async (request: WorkerProviderRequest) => {
-    if (request.providerJob?.platformJobId) resumeCalls += 1;
-    else creationCalls += 1;
     const mediaType = request.snapshot.nodes.at(-1)!.data.mediaType as 'image' | 'video';
     const resumedId = request.providerJob?.platformJobId;
+    if (resumedId) resumeCalls += 1;
+    else {
+      await reportRequestPrompt({
+        ...request,
+        provider: 'newapi',
+        mediaType,
+        requestIdentity: 'POST /generate#1',
+        format: 'plain',
+        parts: [{ order: 0, text: 'Synthetic generation' }],
+        resources: [],
+      });
+      creationCalls += 1;
+    }
     return {
       result: {
         provider: 'newapi',
@@ -184,6 +197,40 @@ function fixture(frozen: RunSnapshot, providerJob?: ProviderJob) {
 }
 
 describe('Worker 中性执行授权', () => {
+  it('发送前本地校验失败不创建发送记录，重复消费仍保留原错误', async () => {
+    const f = fixture(snapshot('video', true));
+    f.execute.mockRejectedValue(new Error('首尾帧模式需要同时连接首帧和尾帧'));
+    const execution: WorkerExecutionAuthorization = {
+      authorizeRun: vi.fn(async () => undefined),
+      authorizeNode: vi.fn(async () => undefined),
+      beginSend: vi.fn(async () => undefined),
+      finishSend: vi.fn(async () => undefined),
+    };
+    createRunWorker({ ...f.options, execution });
+    await expect(queueState.processor?.(f.job)).rejects.toThrow('首尾帧模式需要同时连接首帧和尾帧');
+    await expect(queueState.processor?.(f.job)).rejects.toThrow('首尾帧模式需要同时连接首帧和尾帧');
+    expect(execution.beginSend).not.toHaveBeenCalled();
+    expect(execution.finishSend).not.toHaveBeenCalled();
+    expect(f.creationCalls()).toBe(0);
+  });
+
+  it('最终请求落库后发送授权失效仍阻止 Provider POST', async () => {
+    const f = fixture(snapshot('image', true));
+    const execution: WorkerExecutionAuthorization = {
+      authorizeRun: vi.fn(async () => undefined),
+      authorizeNode: vi.fn(async () => undefined),
+      beginSend: vi.fn(async () => {
+        throw new Error('授权已撤销');
+      }),
+      finishSend: vi.fn(async () => undefined),
+    };
+    createRunWorker({ ...f.options, execution });
+    await expect(queueState.processor?.(f.job)).rejects.toThrow('授权已撤销');
+    expect(execution.beginSend).toHaveBeenCalledOnce();
+    expect(execution.finishSend).not.toHaveBeenCalled();
+    expect(f.creationCalls()).toBe(0);
+  });
+
   it('新任务只走执行授权，并从 executionBindings 冻结 Provider 协议', async () => {
     const frozen = snapshot('image', true);
     const f = fixture(frozen);

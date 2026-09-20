@@ -278,7 +278,7 @@ const promptOptimizationBodySchema = z
 
 /** 报价只能进入会创建收费子调用的固定路由，不接受查询串、跳转或通用 API 代理。 */
 function isGenerationSubmissionPath(path: string): boolean {
-  return /^\/v1\/(?:nodes\/[^/?#]+\/runs|assets\/[^/?#]+\/versions\/\d+\/reverse-prompts|projects\/[^/?#]+\/prompt-optimizations|runs\/[^/?#]+\/retry)$/.test(
+  return /^\/v1\/(?:nodes\/[^/?#]+\/runs|assets\/[^/?#]+\/versions\/\d+\/reverse-prompts|projects\/[^/?#]+\/prompt-optimizations|runs\/[^/?#]+\/(?:retry|recover))$/.test(
     path,
   );
 }
@@ -1327,7 +1327,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           ),
         )
       : options.runExecutor;
-  const runService =
+  const runService: RunService =
     options.runService ??
     new MemoryRunService({
       providerName,
@@ -3393,6 +3393,39 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           ? { userId: requestSessions.get(request)!.user.id }
           : {}),
       });
+      return reply.code(202).send({ run: toPublicRunRecord(run) });
+    } catch (error) {
+      if (error instanceof RunServiceError) {
+        return reply.code(error.code === 'not_found' ? 404 : 409).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
+  /** 恢复只接受原 Run ID；项目归属和会话写入保护沿用其他运行入口。 */
+  app.post<{ Params: { runId: string } }>('/v1/runs/:runId/recover', async (request, reply) => {
+    const fields = z
+      .object({})
+      .strict()
+      .safeParse(request.body ?? {});
+    if (!fields.success) {
+      return reply.code(400).send({
+        code: 'invalid_recovery_request',
+        error: '恢复不接受修改原任务身份、参数或快照',
+      });
+    }
+    const current = await runService.get(request.params.runId);
+    if (
+      !current ||
+      !(await projectStore.get(current.projectId, projectScope(requestPrincipals, request)))
+    ) {
+      return reply.code(404).send({ error: 'run not found' });
+    }
+    if (!runService.recover) {
+      return reply.code(409).send({ error: '当前执行后端不支持持久任务恢复' });
+    }
+    try {
+      const run = await runService.recover(request.params.runId);
       return reply.code(202).send({ run: toPublicRunRecord(run) });
     } catch (error) {
       if (error instanceof RunServiceError) {

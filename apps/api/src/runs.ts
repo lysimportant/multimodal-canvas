@@ -154,6 +154,8 @@ export interface RunService {
   /** Apply an asynchronous provider callback when the service owns queue state. */
   applyProviderWebhook?(update: ProviderWebhookUpdate): Promise<RunRecord | undefined>;
   retry(runId: string, options?: RunCreateOptions): Promise<RunRecord>;
+  /** 重新投递丢失队列消息的原任务；不接受修改快照或发送身份。 */
+  recover?(runId: string): Promise<RunRecord>;
   cancel(runId: string): Promise<RunRecord>;
   close(): Promise<void>;
 }
@@ -1911,12 +1913,42 @@ export class BullMqRunService implements RunService {
     return this.toRunRecord(job);
   }
 
-  /** 发布已原子受理的执行 outbox；相同 runId 在 BullMQ 中只创建一次任务。 */
-  async dispatchOutbox(): Promise<void> {
+  /**
+   * 按原身份恢复丢失的队列消息；仍在队列中或已完成的任务保持原状。
+   * @throws {ExecutionError | RunServiceError} 原授权、归属、快照或发送状态不允许恢复。
+   */
+  async recover(runId: string): Promise<RunRecord> {
+    runId = await this.resolveRunId(runId);
+    if (!this.execution || !this.persistence?.getRun) {
+      throw new RunServiceError('invalid_state', '当前执行后端不支持持久任务恢复');
+    }
+    const durable = await this.persistence.getRun(runId);
+    if (!durable) throw new RunServiceError('not_found', 'run not found');
+    const existing = await this.queue.getJob(runId);
+    if (existing) {
+      const data = runJobDataSchema.parse(existing.data);
+      if (
+        data.runId !== runId ||
+        data.userId !== durable.userId ||
+        snapshotFingerprint(data.snapshot) !== snapshotFingerprint(durable.snapshot)
+      ) {
+        throw new ExecutionError('authorization_conflict', '队列任务与持久运行记录不一致');
+      }
+      return this.withDurableRunFields(await this.toRunRecord(existing), durable);
+    }
+    if (!(await this.execution.requestRecovery(runId, this.queue.name))) {
+      return { ...durable, id: runId };
+    }
+    await this.dispatchOutbox(runId);
+    return (await this.get(runId)) ?? { ...durable, id: runId };
+  }
+
+  /** 发布已原子受理的 outbox；指定 runId 时仅恢复该任务，不处理其他积压项。 */
+  async dispatchOutbox(runId?: string): Promise<void> {
     const outboxStore = this.outboxStore();
     if (!outboxStore) return;
     const pending = await outboxStore.runOutbox.findMany({
-      where: { publishedAt: null, queueName: this.queue.name },
+      where: { publishedAt: null, queueName: this.queue.name, ...(runId ? { runId } : {}) },
       orderBy: { createdAt: 'asc' },
       take: 50,
     });

@@ -1737,6 +1737,28 @@ export const openApiDocument = {
         },
       },
     },
+    '/v1/runs/{runId}/recover': {
+      post: {
+        tags: ['runs'],
+        summary: '恢复本人丢失队列消息的原任务',
+        description:
+          '复用原 Run、冻结快照、执行授权和发送身份，不新建重试任务。已完成或取消的任务不再投递，已有队列任务保持原状。发送结果不明时返回 send_requires_review；已受理视频和归档结果由 Worker 按原身份恢复。尚未发送的 DAG 节点仍须通过当前分组权限校验。',
+        parameters: [{ $ref: '#/components/parameters/RunId' }],
+        requestBody: {
+          required: false,
+          content: {
+            'application/json': { schema: { type: 'object', additionalProperties: false } },
+          },
+        },
+        responses: {
+          '202': response('原任务状态；恢复后 Run ID 与 attempt 不变', envelope('run', runSchema)),
+          '400': response('恢复请求不接受附加参数', errorSchema),
+          '403': response('持久执行授权缺失或已撤销', errorSchema),
+          '404': response('任务不存在或无权访问', errorSchema),
+          '409': response('发送结果不明、快照冲突或执行后端不支持恢复', errorSchema),
+        },
+      },
+    },
     '/v1/runs/{runId}/cancel': {
       post: {
         tags: ['runs'],

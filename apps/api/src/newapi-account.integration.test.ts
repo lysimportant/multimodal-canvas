@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PrismaClient } from '@prisma/client';
 import { CredentialEncryptionKeyring } from '@multimodal-canvas/credential-crypto';
+import { precheckVideoGenerationInputs } from '@multimodal-canvas/domain';
 import { AuthService } from './auth-service';
 import { PrismaAuthStore } from './auth-store';
 import { NewApiAccountClient } from './newapi-account-client';
@@ -12,6 +13,7 @@ import { NewApiAccountService } from './newapi-account-service';
 import { NewApiAccountSettings, newApiRequestUser } from './newapi-account-settings';
 import { buildApp } from './fixtures/test-app';
 import { PrismaProjectStore } from './projects';
+import { createRunSnapshot } from './runs';
 
 /** 必须显式给出隔离数据库；普通单测不连接本机实际业务实例。 */
 const databaseUrl = process.env.TEST_DATABASE_URL;
@@ -46,6 +48,9 @@ describe.skipIf(!databaseUrl)('New API 本人身份与分组隔离', () => {
   let changedGroup = false;
   let unavailable = false;
   let failGroup = '';
+  let lostGroupResponse = '';
+  let accountDenied = false;
+  let profile: { display_name: string; email?: string } = { display_name: 'same-name' };
   const operations = new Map<string, { token: string; key: string }>();
   const calls: string[] = [];
   let issuer: string;
@@ -73,6 +78,9 @@ describe.skipIf(!databaseUrl)('New API 本人身份与分组隔离', () => {
     changedGroup = false;
     unavailable = false;
     failGroup = '';
+    lostGroupResponse = '';
+    accountDenied = false;
+    profile = { display_name: 'same-name' };
     operations.clear();
     calls.length = 0;
     issuer = `https://newapi-${crypto.randomUUID()}.example.test`;
@@ -95,7 +103,7 @@ describe.skipIf(!databaseUrl)('New API 本人身份与分组隔离', () => {
           const account = headers.get('authorization')?.includes('account-b')
             ? 'account-b'
             : 'account-a';
-          const user = { id: selectedUser, display_name: 'same-name', status: 'active' };
+          const user = { id: selectedUser, ...profile, status: 'active' };
           if (url.pathname === '/api/canvas/token')
             return Response.json({
               issuer,
@@ -107,6 +115,8 @@ describe.skipIf(!databaseUrl)('New API 本人身份与分组隔离', () => {
                 scopes: ['identity:read', 'groups:read', 'tokens:manage'],
               },
             });
+          if (url.pathname === '/api/canvas/account' && accountDenied)
+            return new Response('{}', { status: 401 });
           if (url.pathname === '/api/canvas/account')
             return Response.json({
               user: { ...user, id: account },
@@ -121,6 +131,10 @@ describe.skipIf(!databaseUrl)('New API 本人身份与分组隔离', () => {
               key: `synthetic-${account}-${Buffer.from(group).toString('hex')}`,
             };
             operations.set(body.operation_id, operation);
+            if (group === lostGroupResponse) {
+              lostGroupResponse = '';
+              return new Response('{}', { status: 503 });
+            }
             return Response.json({
               token_id: operation.token,
               key: operation.key,
@@ -256,6 +270,148 @@ describe.skipIf(!databaseUrl)('New API 本人身份与分组隔离', () => {
       expect(await settings.hasCredential(aModels[0]!.credentialId!)).toBe(false);
     });
     await expect(settings.get()).rejects.toMatchObject({ code: 'authentication_required' });
+  });
+
+  it('上游修改邮箱昵称不改变资源归属，同邮箱的新 ID 仍是独立用户', async () => {
+    const first = await login();
+    const projects = new PrismaProjectStore(prisma);
+    const project = await projects.create(
+      { name: 'Identity profile ownership' },
+      { ownerId: first.user.id },
+    );
+    const credentials = (await service.status(first.user.id)).groups.map(
+      (entry) => entry.credentialId,
+    );
+    profile = { display_name: 'renamed-user', email: 'same-mail@example.test' };
+    const renamed = await login();
+    expect(renamed.user).toMatchObject({
+      id: first.user.id,
+      email: profile.email,
+      displayName: profile.display_name,
+    });
+    expect(
+      (await service.status(renamed.user.id)).groups.map((entry) => entry.credentialId),
+    ).toEqual(credentials);
+    expect(await projects.get(project.id, { ownerId: renamed.user.id })).toBeDefined();
+    selectedUser = 'account-b';
+    const recreated = await login();
+    expect(recreated.user.id).not.toBe(first.user.id);
+    expect(recreated.user.email).toBe(renamed.user.email);
+    expect(await projects.get(project.id, { ownerId: recreated.user.id })).toBeUndefined();
+  });
+
+  it('持久化回读保留显式视频模式和完成动作，缺尾帧仍在发送前拒绝', async () => {
+    const session = await login();
+    const store = new PrismaProjectStore(prisma);
+    const owner = { ownerId: session.user.id };
+    const project = await store.create({ name: 'Video mode persistence' }, owner);
+    const videoData = {
+      label: 'First and last frame',
+      mediaType: 'video' as const,
+      mode: 'generate' as const,
+      videoMode: 'first_last_frame' as const,
+      modelAlias: 'wan3.0-video',
+      completionAction: 'fill_designated_image_node' as const,
+      completionTargetNodeId: 'image-target',
+      generationCount: 2,
+      promptSkillId: 'cinematic',
+      resourceRefs: [
+        {
+          id: 'reference-1',
+          assetId: 'frozen-image',
+          assetVersion: 1,
+          mediaType: 'image' as const,
+          name: 'First frame',
+        },
+      ],
+    };
+    await store.updateCanvas(
+      project.id,
+      {
+        revision: 0,
+        nodes: [
+          {
+            id: 'first',
+            type: 'image',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'First',
+              mediaType: 'image',
+              mode: 'source',
+              contentUrl: 'https://assets.example.test/first.png',
+            },
+          },
+          { id: 'video', type: 'video', position: { x: 200, y: 0 }, data: videoData },
+        ],
+        edges: [
+          {
+            id: 'first-edge',
+            sourceNodeId: 'first',
+            sourceHandle: 'output:image',
+            targetNodeId: 'video',
+            targetHandle: 'input:firstFrame',
+            order: 0,
+          },
+        ],
+      },
+      owner,
+    );
+    const canvas = await store.getCanvas(project.id, owner);
+    expect(canvas?.nodes.find((node) => node.id === 'video')?.data).toEqual(videoData);
+    const snapshot = createRunSnapshot(project.id, canvas!, 'video', {
+      modelAlias: videoData.modelAlias,
+    });
+    const target = snapshot.nodes.find((node) => node.id === 'video')!;
+    const precheck = precheckVideoGenerationInputs(snapshot.inputs, {
+      modelAlias: target.data.modelAlias,
+      videoMode: target.data.videoMode,
+    });
+    expect(precheck.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ message: '首尾帧模式需要同时连接首帧和尾帧' }),
+      ]),
+    );
+  });
+
+  it('上游已建 Key 但回包丢失时刷新复用原操作，不增加成功组令牌', async () => {
+    lostGroupResponse = 'default';
+    const result = await login();
+    const identity = await service.identity(result.user.id);
+    const binding = await prisma.newApiGroupBinding.findUniqueOrThrow({
+      where: { identityId_group: { identityId: identity.id, group: 'default' } },
+    });
+    const token = operations.get(binding.operationId)!.token;
+    expect(binding.status).toBe('unavailable');
+    expect(binding.credentialId).toBeNull();
+    expect(operations.size).toBe(3);
+    await service.synchronize(result.user.id);
+    const restored = await prisma.newApiGroupBinding.findUniqueOrThrow({
+      where: { id: binding.id },
+    });
+    expect(restored).toMatchObject({
+      operationId: binding.operationId,
+      upstreamTokenId: token,
+      status: 'active',
+    });
+    expect(operations.size).toBe(3);
+  });
+
+  it('上游明确拒绝账号后撤销本地所有会话，不把拒绝当只读网络故障', async () => {
+    const result = await login();
+    expect((await auth.verifyAccessToken(result.accessToken)).user.id).toBe(result.user.id);
+    accountDenied = true;
+    await expect(service.synchronize(result.user.id)).rejects.toMatchObject({
+      code: 'authorization_revoked',
+    });
+    await expect(service.identity(result.user.id)).rejects.toMatchObject({
+      code: 'authorization_revoked',
+    });
+    expect(
+      await prisma.authSession.count({ where: { userId: result.user.id, revokedAt: null } }),
+    ).toBe(0);
+    await expect(auth.verifyAccessToken(result.accessToken)).rejects.toMatchObject({
+      code: 'session_revoked',
+    });
   });
 
   it('并发首次登录只有一个内部用户，state 不可重放或跨浏览器消费', async () => {
