@@ -8,6 +8,7 @@ import type {
 } from '@prisma/client';
 import { describe, expect, it, vi } from 'vitest';
 import { AiCredentialNotFoundError, type AiSettingsStoreLike } from './settings';
+import { checkResourceMentionCapabilities } from './resource-mention-capabilities';
 import {
   PrismaModelMarketplace,
   createMarketplaceBindingSchema,
@@ -746,6 +747,61 @@ describe('PrismaModelMarketplace', () => {
     await expect(f.service.syncConnections(credentialId, actorId)).rejects.toThrow(
       'database unavailable',
     );
+  });
+
+  it('重新同步 H3 能力创建新绑定并放行图片，旧绑定与原价格保持不变', async () => {
+    const f = fixture();
+    const catalog = managedCatalog('MiniMax-H3');
+    const entry = {
+      ...catalog.models[0]!,
+      name: 'MiniMax-H3',
+      media_type: 'video',
+      contract: 'newapi-video-v1',
+      capabilities: { mediaTypes: ['video'], mentionMediaTypes: ['text'] },
+    };
+    f.database.platformModel.findUnique.mockResolvedValueOnce(null as never);
+    f.pricingFetch.mockImplementation(async () => Response.json({ ...catalog, models: [entry] }));
+    await f.service.syncConnections(f.rows.binding.credentialId, actorId);
+    const previous = structuredClone(f.database.modelBinding.create.mock.calls[0]![0].data);
+    const modelId = f.database.platformModel.create.mock.calls[0]![0].data.id!;
+    const before = await f.service.getAdmin(modelId);
+    const mention = {
+      nodeId: 'video',
+      mentionId: 'photo',
+      assetId: 'photo',
+      assetVersion: 1,
+      mediaType: 'image' as const,
+      label: 'Photo',
+      blockOrder: 1,
+    };
+    const check = {
+      node: { id: 'video', data: { mediaType: 'video' as const, mode: 'generate' as const } },
+      modelAlias: 'MiniMax-H3',
+      mentions: [mention],
+      requestId: 'h3-sync-test',
+      allowMockPreview: false,
+    };
+    expect(
+      checkResourceMentionCapabilities({
+        ...check,
+        model: { capabilities: previous.capabilities as Record<string, unknown> },
+      }).issues[0]?.code,
+    ).toBe('RESOURCE_MENTION_MEDIA_UNSUPPORTED');
+    entry.capabilities.mentionMediaTypes = ['text', 'image', 'video', 'audio'];
+    await f.service.syncConnections(f.rows.binding.credentialId, actorId);
+    const current = f.database.modelBinding.create.mock.calls[1]![0].data;
+    const after = await f.service.getAdmin(modelId);
+    expect(current.revision).toBe(previous.revision + 1);
+    expect(
+      checkResourceMentionCapabilities({
+        ...check,
+        model: { capabilities: current.capabilities as Record<string, unknown> },
+      }).issues,
+    ).toEqual([]);
+    expect(previous.capabilities).toEqual({ mediaTypes: ['video'], mentionMediaTypes: ['text'] });
+    expect(after.activeBindingId).not.toBe(before.activeBindingId);
+    expect(after.activePricingVersionId).toBe(before.activePricingVersionId);
+    expect(f.database.pricingVersion.create).toHaveBeenCalledTimes(1);
   });
 
   it('全局切换折叠旧凭据版本后仍显示原 Key 尾号，平台绑定不改变', async () => {

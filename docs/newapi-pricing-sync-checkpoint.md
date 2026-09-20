@@ -57,3 +57,16 @@ OWASP 参考：Authentication Cheat Sheet、Session Management Cheat Sheet（202
 - 下一步须取得生产插件更新授权，部署 New API Hailuo 1.1.4，再同步 8080 连接并只读核验 H3 可用。上传覆盖版本可能优先于工厂插件；需要核对实际生效版本。保留旧版本以便回退，不覆盖账务数据。真实付费生成和最终扣款未执行，仍不能标记为生产验收完成。
 
 New API 的具体文件、回归命令和部署回退步骤记录在其仓库 `verification/hailuo-h3-alias.md`。已经删除的历史连接不会因为同步自动恢复；旧画布节点如仍绑定旧连接，需重新选择当前连接，不能把改价或广场展示当作重新绑定。
+
+## 2026-09-20：H3 图片提及与媒体预估
+
+- P1，起点 Canvas `692e6eb` / New API `9470bf372`。8080 当前 H3 已发布且合同为 `newapi-video-v1`，但冻结能力仍为 `mentionMediaTypes: ["text"]`；New API 桥接目录硬编码只支持文字，导致图片在 API 预检阶段被拒绝。
+- 验收目标：对外精确 MiniMax-H3 的真实 Hailuo H3 路由声明已实现的媒体能力；预估按冻结输入携带无 URL 的类型/角色描述，继续复用 New API 原插件用量与价格；未知或混合渠道保守处理。保留显式能力校验、精确模型名与历史绑定。
+- 兼容与回滚：新增可选 `input_media`，老文本请求保持兼容；旧宿主收到新字段应拒绝而非漏算。没有数据库、价格、凭据或依赖变更，无需数据迁移；部署前记录并保留双方旧镜像，回滚代码后重新同步目录，不回灌钱包或历史任务。两端应配套更新后再开放媒体生成。
+- 不在范围：生产部署、修改上游价格、真实付费生成、广场重构。原有 `docs/resource-input-compatibility.md` 不修改、不纳入提交。
+- 基线：API 报价与提及预检 45 项通过；New API `TestCanvasBridgeHailuoMappedH3` 通过。Node 24.12.0、pnpm 11.19.0、Go 1.26.0，依赖已存在。
+- 实现：New API 仅为画布已适配的对外 `MiniMax-H3`，根据实际 Hailuo 插件与精确 `MiniMax-H3`/`h3` 上游路由开放媒体，同名模型的可执行且已定价渠道取交集。Canvas 从节点直接连线、冻结提及生成 `input_media`，复用 Provider 的同资产版本去重及模式预检；类型、角色、9 图/3 视频/3 音频边界由两端校验，估算不携带真实 URL。H3 视频预估沿用插件原有 15 秒输入视频预留，最终仍以回执结算，不另写价格公式。
+- 回归：Canvas 传输测试 60 项、API 报价/广场同步/提及 71 项通过；H3 预估与实际请求角色一致、同版本去重/不同版本保留、首尾帧和参考互斥均通过。HTTP 报价入口复现原错误，并验证新能力可报价而不生成；同步新增能力绑定，旧绑定和原定价不变。New API 真实插件测试覆盖渠道 35/61、原名/映射、未知/混合路由和媒体边界；合成原表达式在 5 秒时纯文字 500000 quota、1 图 500500、2 图 501000，未调用上游。
+- 全量检查：`pnpm lint` 9/9、`pnpm typecheck` 15/15、`pnpm test` 15/15、`pnpm build` 9/9、`pnpm build:runtime` 通过。全量 Vitest 3280 项通过、125 项外部设施测试跳过、5 项既有待实现；审查后补齐中间 DAG 冻结版本去重、收紧对外别名，新增三项 API 回归；最终相关 71 项及 API 类型/lint/build/runtime、New API 桥接/vet/build 另行通过。New API `go test -mod=readonly ./... -count=1`、`go vet -mod=readonly ./...` 与宿主构建通过。未改变数据库行为，默认 SQLite 的测试不宣称三库验收；Web 既有大包构建提示保留。
+- 恢复：子代理消息正文丢失，通过临时交接文件恢复分工；主代理完成最终集成。证据在 `.data/billing-implementation/h3-media-*` 与 New API `.local-tests/h3-media-*`。没有更改 8080 运行容器或线上宿主，没有真实生成或扣款。
+- 下一步：授权后配套更新 Canvas 与 New API 宿主（必须重建镜像），确认 Hailuo 1.1.4 生效，重新同步 8080 的原连接；只读检查 H3 新绑定包含 image，再验证只读报价。真实生成与最终扣款仍需单独授权。本轮交付目标 Canvas `origin/codex/generate-to-new-node`、Tag `v2026.09.20-h3-media-inputs`；New API `fork/main`、Tag `v1.0.0-rc.37.custom.13`，线上行为尚未修复。

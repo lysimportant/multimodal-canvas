@@ -4106,6 +4106,68 @@ export function resolveProviderMentions(snapshot: RunSnapshot): ResolvedMention[
   });
 }
 
+/** 不含资产地址或身份的输入描述，供视频报价复用实际请求的角色映射。 */
+export type VideoEstimateMedia =
+  | { type: 'image'; role: 'first_frame' | 'last_frame' | 'reference_image' }
+  | { type: 'video'; role: 'reference_video' }
+  | { type: 'audio'; role: 'reference_audio' };
+
+/**
+ * 根据单节点快照计算实际发送的媒体描述，沿用 Provider 的版本去重及模式预检。
+ * @param snapshot 含直接连线和冻结提及的节点快照；无需水合资产内容。
+ * @returns 按请求顺序排列的类型/角色，不包含 URL、资产 ID 或二进制内容。
+ * @throws 提及身份缺失、模式不支持或输入组合不合法时拒绝报价；不读取资产或发送请求。
+ */
+export function describeVideoInputMedia(snapshot: RunSnapshot): VideoEstimateMedia[] {
+  const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
+  const resolved = (snapshot.promptMentions ?? []).map((mention): ResolvedMention => ({
+    ...mention,
+    nodeId: mention.nodeId ?? snapshot.targetNodeId,
+    source: {
+      kind: 'remote-url',
+      mimeType: `${mention.mediaType}/placeholder`,
+      url: 'https://canvas-estimate.invalid/media',
+    },
+  }));
+  const estimateSnapshot = {
+    ...snapshot,
+    inputs: snapshot.inputs.map((input) => ({
+      ...input,
+      snapshot: {
+        ...input.snapshot,
+        data: {
+          ...input.snapshot.data,
+          contentUrl: 'https://canvas-estimate.invalid/media',
+        },
+      },
+    })),
+  };
+  const absorbed = collectAbsorbedVideoMentionInputs(estimateSnapshot, resolved);
+  assertPromptMentionsUnsupported(
+    'video',
+    estimateSnapshot,
+    target?.data.promptDocument,
+    resolved,
+    absorbed.absorbedMentionIds,
+  );
+  return orderedVideoMedia(mapVideoInputs(estimateSnapshot, absorbed.inputs)).map((input) => {
+    const type = input.snapshot.data.mediaType;
+    if (type === 'image')
+      return {
+        type,
+        role:
+          input.role === 'firstFrame'
+            ? 'first_frame'
+            : input.role === 'lastFrame'
+              ? 'last_frame'
+              : 'reference_image',
+      };
+    if (type === 'video') return { type, role: 'reference_video' };
+    if (type === 'audio') return { type, role: 'reference_audio' };
+    throw unsupportedInputRoleError('video', input.role, '媒体预估不能包含文字输入');
+  });
+}
+
 /**
  * 将目标节点的结构化提示词转换为 New API Chat Completions 内容块。
  *

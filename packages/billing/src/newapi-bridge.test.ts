@@ -5,6 +5,7 @@ import {
   requestNewApiCatalog,
   requestNewApiEstimate,
   requestNewApiReceipt,
+  type NewApiEstimateInput,
 } from './newapi-bridge.js';
 
 /** 所有测试只使用合成 Key 和注入传输，绝不发出真实收费调用。 */
@@ -101,6 +102,135 @@ describe('New API 鉴权账务传输', () => {
       'https://newapi.example.invalid/deployment/v1/canvas/receipts/request%3Awith-safe.ID_1',
     );
   });
+
+  it.each([
+    [
+      '参考媒体上限',
+      [
+        ...Array.from({ length: 9 }, () => ({ type: 'image', role: 'reference_image' })),
+        ...Array.from({ length: 3 }, () => ({ type: 'video', role: 'reference_video' })),
+        ...Array.from({ length: 3 }, () => ({ type: 'audio', role: 'reference_audio' })),
+      ],
+    ],
+    [
+      '首尾帧',
+      [
+        { type: 'image', role: 'first_frame' },
+        { type: 'image', role: 'last_frame' },
+      ],
+    ],
+    ['空媒体数组', []],
+  ])('只传输 %s 的媒体类型和角色，不发送资产地址', async (_name, inputMedia) => {
+    const input = {
+      model: 'MiniMax-H3',
+      contract: 'newapi-video-v1',
+      parameters: { seconds: 5, resolution: '768P' },
+      input_text: 'Animate the scene.',
+      input_media: inputMedia,
+    } as NewApiEstimateInput;
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(Response.json({ ...estimate, model: input.model }));
+    await requestNewApiEstimate(credentials, input, { fetchImpl });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+      'https://newapi.example.invalid/deployment/v1/canvas/estimate',
+    );
+    expect(JSON.parse(fetchImpl.mock.calls[0]?.[1]?.body as string)).toEqual(input);
+  });
+
+  it.each([
+    ['null', null],
+    ['对象', { type: 'image', role: 'reference_image' }],
+    ['负数', -1],
+    ['空媒体项', [null]],
+    ['字符串媒体项', ['image']],
+    ['未知类型', [{ type: 'text', role: 'reference_image' }]],
+    ['未知角色', [{ type: 'image', role: 'middle_frame' }]],
+    ['图片角色不匹配', [{ type: 'image', role: 'reference_video' }]],
+    ['视频角色不匹配', [{ type: 'video', role: 'reference_image' }]],
+    ['音频角色不匹配', [{ type: 'audio', role: 'first_frame' }]],
+    ['缺少角色', [{ type: 'image' }]],
+    ['资产地址', [{ type: 'image', role: 'reference_image', url: 'https://asset.invalid' }]],
+    ['资产身份', [{ type: 'image', role: 'reference_image', id: 'asset-id' }]],
+    ['嵌套参数', [{ type: 'image', role: 'reference_image', options: {} }]],
+    ['图片超限', Array.from({ length: 10 }, () => ({ type: 'image', role: 'reference_image' }))],
+    ['视频超限', Array.from({ length: 4 }, () => ({ type: 'video', role: 'reference_video' }))],
+    ['音频超限', Array.from({ length: 4 }, () => ({ type: 'audio', role: 'reference_audio' }))],
+    [
+      '总数超限',
+      [
+        ...Array.from({ length: 9 }, () => ({ type: 'image', role: 'reference_image' })),
+        ...Array.from({ length: 3 }, () => ({ type: 'video', role: 'reference_video' })),
+        ...Array.from({ length: 4 }, () => ({ type: 'audio', role: 'reference_audio' })),
+      ],
+    ],
+    [
+      '重复首帧',
+      [
+        { type: 'image', role: 'first_frame' },
+        { type: 'image', role: 'first_frame' },
+      ],
+    ],
+    [
+      '重复尾帧',
+      [
+        { type: 'image', role: 'last_frame' },
+        { type: 'image', role: 'last_frame' },
+      ],
+    ],
+    [
+      '帧与参考图片混用',
+      [
+        { type: 'image', role: 'first_frame' },
+        { type: 'image', role: 'reference_image' },
+      ],
+    ],
+    [
+      '帧与参考视频混用',
+      [
+        { type: 'image', role: 'last_frame' },
+        { type: 'video', role: 'reference_video' },
+      ],
+    ],
+    [
+      '帧与参考音频混用',
+      [
+        { type: 'image', role: 'first_frame' },
+        { type: 'audio', role: 'reference_audio' },
+      ],
+    ],
+  ])('拒绝预估媒体的 %s，且不发送请求', async (_name, inputMedia) => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    await expect(
+      requestNewApiEstimate(
+        credentials,
+        {
+          model: 'MiniMax-H3',
+          contract: 'newapi-video-v1',
+          parameters: {},
+          input_media: inputMedia,
+        } as NewApiEstimateInput,
+        { fetchImpl },
+      ),
+    ).rejects.toMatchObject({ code: 'invalid_newapi_request' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it.each(['openai-chat-completions', 'openai-images-generations', 'openai-video-v1'])(
+    '未确认的合同 %s 不能发送媒体预估，即使数组为空',
+    async (contract) => {
+      const fetchImpl = vi.fn<typeof fetch>();
+      await expect(
+        requestNewApiEstimate(
+          credentials,
+          { model: 'model', contract, parameters: {}, input_media: [] } as NewApiEstimateInput,
+          { fetchImpl },
+        ),
+      ).rejects.toMatchObject({ code: 'invalid_newapi_request' });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(['.', '..', 'request/segment', 'request with space', 'r'.repeat(65), '中文'])(
     '拒绝超出上游 request_id 合同的路径 %s',

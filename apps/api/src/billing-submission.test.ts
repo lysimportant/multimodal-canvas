@@ -814,6 +814,297 @@ async function managedSubmissionFixture(
 }
 
 describe('New API 托管报价', () => {
+  it('H3 图片提及通过真实报价入口：同步前拦截，同步后只估价且不生成', async () => {
+    const ctx = await fixture();
+    ctx.model.model.mediaType = 'VIDEO';
+    ctx.model.binding.contract = 'newapi-video-v1';
+    ctx.model.binding.upstreamModelId = 'MiniMax-H3';
+    ctx.model.binding.capabilities = { mediaTypes: ['video'], mentionMediaTypes: ['text'] };
+    ctx.model.pricing.rule = { unit: 'upstream_cost', meteringSource: 'newapi_receipt' };
+    const asset = await ctx.assetStore.create({
+      ownerId: ctx.user.id,
+      name: 'reference.png',
+      mediaType: 'image',
+      mimeType: 'image/png',
+      content: Buffer.from('synthetic-reference-image'),
+    });
+    const node = nodeFor(ctx.model);
+    node.data.videoMode = 'text_to_video';
+    node.data.promptDocument = {
+      version: 1,
+      blocks: [
+        { type: 'text', text: 'Animate this image ' },
+        {
+          type: 'mention',
+          mentionId: 'reference',
+          assetId: asset.id,
+          assetVersion: 1,
+          mediaType: 'image',
+          label: 'Reference',
+        },
+      ],
+    };
+    await ctx.projectStore.updateCanvas(
+      ctx.project.id,
+      {
+        revision: ctx.canvas.revision,
+        nodes: [node],
+        edges: [],
+      },
+      { ownerId: ctx.user.id },
+    );
+    vi.spyOn(ctx.settingsStore, 'getProviderCredentials').mockReturnValue({
+      baseUrl: 'https://estimate.example.invalid/v1',
+      apiKey: 'synthetic-key',
+    });
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json({
+        version: 1,
+        model: 'MiniMax-H3',
+        group: 'default',
+        pricing_version: 'h3-with-media',
+        estimated_quota: '500500',
+        quota_per_unit: '500000',
+        usd_to_cny: '7.1',
+        expires_at: new Date(Date.now() + 60_000).toISOString(),
+        estimate_only: true,
+      }),
+    );
+    vi.stubGlobal('fetch', fetchImpl);
+    const request = {
+      method: 'POST' as const,
+      url: ctx.path,
+      headers: ctx.headers,
+      payload: { ...ctx.body, quoteOnly: true, parameters: { duration: 5, resolution: '768P' } },
+    };
+    const blocked = await ctx.app.inject(request);
+    expect(blocked.statusCode).toBe(400);
+    expect(blocked.body).toContain('不支持 image 类型资源提及');
+    expect(fetchImpl).not.toHaveBeenCalled();
+    ctx.model.binding.capabilities = {
+      mediaTypes: ['video'],
+      mentionMediaTypes: ['text', 'image', 'video', 'audio'],
+    };
+    const quoted = await ctx.app.inject(request);
+    expect(quoted.statusCode, quoted.body).toBe(200);
+    expect(quoted.json().quote.capNanos).toBe('7107100000');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+      'https://estimate.example.invalid/v1/canvas/estimate',
+    );
+    expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))).toMatchObject({
+      model: 'MiniMax-H3',
+      input_media: [{ type: 'image', role: 'reference_image' }],
+    });
+    expect(ctx.create).not.toHaveBeenCalled();
+  });
+
+  it('H3 按冻结资产版本去重图片提及，仅将类型和角色送给预估', async () => {
+    const ctx = await managedSubmissionFixture('video', { duration: 5, resolution: '768P' });
+    ctx.model.binding.upstreamModelId = 'MiniMax-H3';
+    ctx.estimate.mockResolvedValue({ ...ctx.estimated, model: 'MiniMax-H3' });
+    const mentions = [1, 2, 1].map((assetVersion, index) => ({
+      type: 'mention' as const,
+      mentionId: `photo-${index}`,
+      assetId: 'private-photo',
+      assetVersion,
+      label: 'Photo',
+      mediaType: 'image' as const,
+    }));
+    ctx.snapshot.nodes[0]!.data.videoMode = 'text_to_video';
+    ctx.snapshot.nodes[0]!.data.promptDocument = {
+      version: 1,
+      blocks: [{ type: 'text', text: 'Animate the photos ' }, ...mentions],
+    };
+    ctx.snapshot.promptMentions = mentions.map((mention, index) => ({
+      ...mention,
+      nodeId: 'target',
+      blockOrder: index + 1,
+    }));
+    const snapshot = freezeRunBillingModels(ctx.snapshot, ctx.models);
+    await prepareBillingSubmission({ ...ctx, snapshot, fields: { quoteOnly: true } });
+    const request = ctx.estimate.mock.calls[0] as unknown as [unknown, Record<string, unknown>];
+    expect(request[1]).toMatchObject({
+      model: 'MiniMax-H3',
+      parameters: { seconds: 5, resolution: '768P' },
+      input_media: [
+        { type: 'image', role: 'reference_image' },
+        { type: 'image', role: 'reference_image' },
+      ],
+    });
+    expect(JSON.stringify(request[1])).not.toContain('private-photo');
+    expect(JSON.stringify(request[1])).not.toContain('https://');
+
+    snapshot.promptMentions = [];
+    await expect(
+      prepareBillingSubmission({ ...ctx, snapshot, fields: { quoteOnly: true } }),
+    ).rejects.toMatchObject({ code: 'invalid_quote_parameters' });
+    expect(ctx.estimate).toHaveBeenCalledTimes(1);
+  });
+
+  it('DAG 中间 H3 节点按冻结地址恢复版本，九张参考图不会因重复提及误判超限', async () => {
+    const ctx = await managedSubmissionFixture('video', { duration: 5 });
+    ctx.model.binding.upstreamModelId = 'MiniMax-H3';
+    ctx.estimate.mockResolvedValue({ ...ctx.estimated, model: 'MiniMax-H3' });
+    const middle = nodeFor(ctx.model, 'middle');
+    middle.data.videoMode = 'omni_reference';
+    const mentions = Array.from({ length: 9 }, (_, index) => ({
+      type: 'mention' as const,
+      mentionId: `reference-${index}`,
+      assetId: `photo-${index}`,
+      assetVersion: 2,
+      label: 'Photo',
+      mediaType: 'image' as const,
+    }));
+    middle.data.promptDocument = {
+      version: 1,
+      blocks: [{ type: 'text', text: 'Animate ' }, ...mentions],
+    };
+    const source: CanvasNode = {
+      id: 'source',
+      type: 'image',
+      position: { x: 0, y: 0 },
+      data: { label: 'Source', mode: 'source', mediaType: 'image', assetId: 'photo-0' },
+    };
+    const finalModel = resolvedModel('video');
+    const target = nodeFor(finalModel);
+    const models = { middle: ctx.model, target: finalModel };
+    const snapshot = freezeRunBillingModels(
+      createRunSnapshot(
+        ctx.project.id,
+        {
+          revision: 0,
+          nodes: [source, middle, target],
+          edges: [
+            {
+              id: 'photo-edge',
+              sourceNodeId: 'source',
+              sourceHandle: 'output:image',
+              targetNodeId: 'middle',
+              targetHandle: 'input:referenceImage',
+              order: 0,
+            },
+            {
+              id: 'video-edge',
+              sourceNodeId: 'middle',
+              sourceHandle: 'output:video',
+              targetNodeId: 'target',
+              targetHandle: 'input:content',
+              order: 0,
+            },
+          ],
+        },
+        'target',
+        {
+          parameters: { duration: 5 },
+          frozenAssetRefs: {
+            source: {
+              assetId: 'photo-0',
+              version: 2,
+              contentUrl: '/v1/assets/photo-0/versions/2/content',
+            },
+          },
+          frozenPromptMentions: mentions.map((mention, index) => ({
+            ...mention,
+            nodeId: 'middle',
+            blockOrder: index + 1,
+          })),
+        },
+      ),
+      models,
+    );
+    await prepareBillingSubmission({ ...ctx, models, snapshot, fields: { quoteOnly: true } });
+    expect(ctx.estimate).toHaveBeenCalledWith(
+      ctx.credentials,
+      expect.objectContaining({
+        input_media: Array.from({ length: 9 }, () => ({ type: 'image', role: 'reference_image' })),
+      }),
+    );
+    snapshot.nodes[0]!.data.contentUrl = '/v1/assets/another-photo/versions/2/content';
+    await expect(
+      prepareBillingSubmission({ ...ctx, models, snapshot, fields: { quoteOnly: true } }),
+    ).rejects.toMatchObject({ code: 'invalid_quote_parameters' });
+    expect(ctx.estimate).toHaveBeenCalledTimes(1);
+  });
+
+  it('H3 连线和提及的同版本只计一次，保留首尾帧角色并拒绝与参考混用', async () => {
+    const ctx = await managedSubmissionFixture('video', { duration: 5 });
+    ctx.model.binding.upstreamModelId = 'MiniMax-H3';
+    ctx.estimate.mockResolvedValue({ ...ctx.estimated, model: 'MiniMax-H3' });
+    const source: CanvasNode = {
+      id: 'photo',
+      type: 'image',
+      position: { x: 0, y: 0 },
+      data: { label: 'Source', mode: 'source', mediaType: 'image', assetId: 'private-photo' },
+    };
+    ctx.node.data.videoMode = 'omni_reference';
+    const mention = {
+      type: 'mention' as const,
+      mentionId: 'photo-ref',
+      assetId: 'private-photo',
+      assetVersion: 2,
+      label: 'Photo',
+      mediaType: 'image' as const,
+    };
+    ctx.node.data.promptDocument = {
+      version: 1,
+      blocks: [{ type: 'text', text: 'Animate ' }, mention],
+    };
+    const snapshot = freezeRunBillingModels(
+      createRunSnapshot(
+        ctx.project.id,
+        {
+          revision: 0,
+          nodes: [source, ctx.node],
+          edges: [
+            {
+              id: 'edge',
+              sourceNodeId: 'photo',
+              sourceHandle: 'output:image',
+              targetNodeId: 'target',
+              targetHandle: 'input:referenceImage',
+              order: 0,
+            },
+          ],
+        },
+        'target',
+        {
+          frozenAssetRefs: {
+            photo: { assetId: 'private-photo', version: 2, contentUrl: '/private/version/2' },
+          },
+          frozenPromptMentions: [{ ...mention, nodeId: 'target', blockOrder: 1 }],
+          parameters: { duration: 5 },
+        },
+      ),
+      ctx.models,
+    );
+    await prepareBillingSubmission({ ...ctx, snapshot, fields: { quoteOnly: true } });
+    expect(ctx.estimate).toHaveBeenLastCalledWith(
+      ctx.credentials,
+      expect.objectContaining({
+        input_media: [{ type: 'image', role: 'reference_image' }],
+      }),
+    );
+    snapshot.nodes[1]!.data.videoMode = 'first_frame';
+    snapshot.nodes[1]!.data.promptDocument = undefined;
+    snapshot.promptMentions = [];
+    snapshot.edges[0]!.targetHandle = 'input:firstFrame';
+    snapshot.inputs[0]!.role = 'firstFrame';
+    await prepareBillingSubmission({ ...ctx, snapshot, fields: { quoteOnly: true } });
+    expect(ctx.estimate).toHaveBeenLastCalledWith(
+      ctx.credentials,
+      expect.objectContaining({
+        input_media: [{ type: 'image', role: 'first_frame' }],
+      }),
+    );
+    snapshot.nodes[1]!.data.promptDocument = ctx.node.data.promptDocument;
+    snapshot.promptMentions = [{ ...mention, nodeId: 'target', blockOrder: 1 }];
+    await expect(
+      prepareBillingSubmission({ ...ctx, snapshot, fields: { quoteOnly: true } }),
+    ).rejects.toMatchObject({ code: 'invalid_quote_parameters' });
+    expect(ctx.estimate).toHaveBeenCalledTimes(2);
+  });
+
   it('使用冻结 Key 估算精确模型，公开预算隐藏上游细节且到期不晚于预估', async () => {
     const ctx = await managedSubmissionFixture('text', {
       max_tokens: 200,

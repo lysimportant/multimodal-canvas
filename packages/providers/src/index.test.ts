@@ -14,6 +14,7 @@ import {
   NewApiProviderError,
   NewApiVideoProvider,
   normalizeNewApiBaseUrl,
+  describeVideoInputMedia,
   resolveProviderMentions,
   type ResolvedMention,
 } from './index';
@@ -5863,6 +5864,7 @@ describe('NewApiVideoProvider', () => {
       input.sourceAssetId = `asset-${index}`;
       input.sourceAssetVersion = index + 1;
     });
+    const estimatedMedia = model === 'MiniMax-H3' ? describeVideoInputMedia(snapshot) : undefined;
     const records: RequestPromptRecord[] = [];
     const { body } = await submitOfficialVideo(snapshot, records);
     expect(body).toMatchObject({ model, prompt: 'Animate the scene', seconds: '8', duration: 8 });
@@ -5884,6 +5886,14 @@ describe('NewApiVideoProvider', () => {
     } else {
       const media = body.metadata.content.filter((item: { type: string }) => item.type !== 'text');
       expect(media.map((item: { role: string }) => item.role)).toEqual(roles);
+      if (estimatedMedia) {
+        expect(estimatedMedia).toEqual(
+          media.map((item: { type: string; role: string }) => ({
+            type: item.type.replace('_url', ''),
+            role: item.role,
+          })),
+        );
+      }
       expect(
         media.every((item: Record<string, any>) => typeof item[item.type]?.url === 'string'),
       ).toBe(true);
@@ -6058,6 +6068,7 @@ describe('NewApiVideoProvider', () => {
       nodeId: 'node_video',
       blockOrder: blockOrder + 1,
     }));
+    const mediaEstimate = describeVideoInputMedia(snapshot);
     const records: RequestPromptRecord[] = [];
     const { body } = await submitOfficialVideo(snapshot, records);
     expect(body.metadata.content).toEqual([
@@ -6069,6 +6080,14 @@ describe('NewApiVideoProvider', () => {
       })),
     ]);
     expect(records[0]?.resources.map((resource) => resource.assetVersion)).toEqual([1, 2]);
+    expect(mediaEstimate).toEqual(
+      body.metadata.content
+        .filter((item: { type: string }) => item.type !== 'text')
+        .map((item: { type: string; role: string }) => ({
+          type: item.type.replace('_url', ''),
+          role: item.role,
+        })),
+    );
     expect(JSON.stringify(records)).not.toContain('base64');
   });
 

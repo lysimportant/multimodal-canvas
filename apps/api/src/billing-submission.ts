@@ -12,13 +12,16 @@ import {
   newApiManagedPriceRuleSchema,
   newApiQuoteCalculationSchema,
   newApiQuotaToCnyNanos,
+  portRoleSchema,
   renderPromptDocument,
   runSnapshotSchema,
+  videoFamilyForModel,
   type BillingParameters,
   type CanvasNode,
   type NewApiQuoteCalculation,
   type RunSnapshot,
 } from '@multimodal-canvas/domain';
+import { describeVideoInputMedia } from '@multimodal-canvas/providers';
 import type { Prisma } from '@prisma/client';
 import type { AuthenticatedSession } from './auth-service';
 import type { ResolvedMarketplaceModel } from './model-marketplace';
@@ -394,12 +397,12 @@ function managedEstimateParameters(
   return result;
 }
 
-/** 提示词沿用 Provider 的优先级；尚未水合的输入只标记不完整，不猜测媒体 Token。 */
+/** 提示词沿用 Provider 优先级；H3 媒体复用发送映射，未知文本用量仍标记不完整。 */
 function managedEstimateInput(
   snapshot: RunSnapshot,
   node: CanvasNode,
   parameters: Record<string, unknown>,
-): Pick<NewApiEstimateInput, 'input_text' | 'input_pending'> {
+): Pick<NewApiEstimateInput, 'input_text' | 'input_pending' | 'input_media'> {
   const nonempty = (value: unknown) =>
     typeof value === 'string' && value.trim() ? value.trim() : undefined;
   const text = node.data.promptDocument
@@ -408,12 +411,95 @@ function managedEstimateInput(
       (node.data.mediaType === 'audio' ? nonempty(parameters.input) : undefined) ??
       nonempty(node.data.prompt) ??
       node.data.label);
+  const media =
+    node.data.mediaType === 'video' && videoFamilyForModel(node.data.modelAlias) === 'minimax-h3'
+      ? managedVideoEstimateMedia(snapshot, node, parameters)
+      : [];
   return {
     input_text: text,
+    ...(media.length ? { input_media: media } : {}),
     input_pending:
       snapshot.edges.some((edge) => edge.targetNodeId === node.id) ||
       Boolean(node.data.promptDocument?.blocks.some((block) => block.type === 'mention')),
   };
+}
+
+/**
+ * 只收集当前节点直接连线与冻结提及，避免其他 DAG 节点素材进入本次报价。
+ * 尚未生成的来源只计媒体槽位，不用其旧资产身份去重；实际价格仍由上游计算。
+ * @throws 冻结身份缺失或 Provider 输入预检失败时返回可修正的报价参数错误。
+ */
+function managedVideoEstimateMedia(
+  snapshot: RunSnapshot,
+  node: CanvasNode,
+  parameters: Record<string, unknown>,
+): NonNullable<NewApiEstimateInput['input_media']> {
+  const nodes = new Map(snapshot.nodes.map((candidate) => [candidate.id, candidate]));
+  const inputs = snapshot.edges
+    .filter(
+      (edge) =>
+        edge.targetNodeId === node.id && nodes.get(edge.sourceNodeId)?.data.enabled !== false,
+    )
+    .map((edge) => {
+      const source = nodes.get(edge.sourceNodeId);
+      if (!source)
+        throw new BillingError('invalid_quote_parameters', '视频报价缺少冻结输入节点', 400);
+      const role = portRoleSchema.parse(edge.targetHandle.slice('input:'.length));
+      const frozen =
+        node.id === snapshot.targetNodeId && source.data.mode === 'source'
+          ? snapshot.inputs.find(
+              (input) =>
+                input.nodeId === source.id &&
+                input.role === role &&
+                input.sortOrder === edge.order &&
+                input.sourceAssetId === source.data.assetId,
+            )
+          : undefined;
+      let version = frozen?.sourceAssetVersion;
+      if (source.data.mode === 'source' && source.data.assetId && version === undefined) {
+        // 中间节点没有根目标的 inputs 版本记录；API 已冻结的节点地址仍携带精确版本。
+        const matched = /^\/v1\/assets\/([^/]+)\/versions\/([1-9]\d*)\/content$/.exec(
+          source.data.contentUrl ?? '',
+        );
+        let matchesAsset = false;
+        try {
+          matchesAsset = Boolean(
+            matched && decodeURIComponent(matched[1]!) === source.data.assetId,
+          );
+        } catch {
+          matchesAsset = false;
+        }
+        if (!matched || !matchesAsset || !Number.isSafeInteger(Number(matched[2])))
+          throw new BillingError('invalid_quote_parameters', '视频报价缺少有效冻结资产版本', 400);
+        version = Number(matched[2]);
+      }
+      return {
+        nodeId: source.id,
+        role,
+        sortOrder: edge.order,
+        ...(source.data.mode === 'source' ? { sourceAssetId: source.data.assetId } : {}),
+        ...(version !== undefined ? { sourceAssetVersion: version } : {}),
+        snapshot: source,
+      };
+    });
+  try {
+    return describeVideoInputMedia({
+      ...snapshot,
+      targetNodeId: node.id,
+      modelAlias: node.data.modelAlias!,
+      parameters,
+      inputs,
+      promptMentions: snapshot.promptMentions?.filter(
+        (mention) => (mention.nodeId ?? snapshot.targetNodeId) === node.id,
+      ),
+    });
+  } catch {
+    throw new BillingError(
+      'invalid_quote_parameters',
+      'H3 媒体预估失败，请检查资源版本、视频模式及参考素材数量',
+      400,
+    );
+  }
 }
 
 /** Worker 对上游节点移除目标 prompt，并覆盖该节点推理强度；报价采用完全相同口径。 */

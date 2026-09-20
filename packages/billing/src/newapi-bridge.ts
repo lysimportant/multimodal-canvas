@@ -20,13 +20,24 @@ export type NewApiReceipt = ReturnType<typeof newApiReceiptSchema.parse>;
 /** 只从服务端按已冻结凭据版本读取，不接受浏览器提供 Key 或账单地址。 */
 export type NewApiCredentials = { baseUrl: string; apiKey: string };
 
-/** 使用实际 Provider 字段名估算；input_pending 表示工作流的输入还不完整。 */
+/** 只读预估的媒体描述，仅包含类型和角色，不携带资产地址、身份或内容。 */
+export type NewApiEstimateMedia =
+  | { type: 'image'; role: 'first_frame' | 'last_frame' | 'reference_image' }
+  | { type: 'video'; role: 'reference_video' }
+  | { type: 'audio'; role: 'reference_audio' };
+
+/**
+ * 使用实际 Provider 字段名估算；input_pending 表示工作流的输入还不完整。
+ * input_media 仅用于 newapi-video-v1，最多 9 张图片、3 段视频和 3 段音频；
+ * 首尾帧各最多一张且不能混用参考媒体。支持能力仍由上游实际路由确认。
+ */
 export type NewApiEstimateInput = {
   model: string;
   contract: string;
   parameters: Record<string, string | number | boolean>;
   input_text?: string;
   input_pending?: boolean;
+  input_media?: NewApiEstimateMedia[];
 };
 
 /** 可注入测试传输及缩短限额，生产请求最长十秒、最多五 MiB，且不自动重试。 */
@@ -114,14 +125,60 @@ function validateEstimateInput(input: NewApiEstimateInput): void {
     !parameters.success ||
     Object.keys(input.parameters).some((key) => !estimateParameterNames.has(key)) ||
     Object.keys(input).some(
-      (key) => !['model', 'contract', 'parameters', 'input_text', 'input_pending'].includes(key),
+      (key) =>
+        !['model', 'contract', 'parameters', 'input_text', 'input_pending', 'input_media'].includes(
+          key,
+        ),
     ) ||
     (input.input_text !== undefined &&
       (typeof input.input_text !== 'string' ||
         Buffer.byteLength(input.input_text, 'utf8') > 1024 * 1024)) ||
-    (input.input_pending !== undefined && typeof input.input_pending !== 'boolean')
+    (input.input_pending !== undefined && typeof input.input_pending !== 'boolean') ||
+    (input.input_media !== undefined &&
+      (input.contract !== 'newapi-video-v1' || !validEstimateMedia(input.input_media)))
   )
     throw new NewApiBridgeError('invalid_newapi_request');
+}
+
+/** 校验媒体描述及数量上限；拒绝额外字段，避免只读估算意外携带资产或任意参数。 */
+function validEstimateMedia(value: unknown): value is NewApiEstimateMedia[] {
+  if (!Array.isArray(value) || value.length > 15) return false;
+  let images = 0;
+  let videos = 0;
+  let audios = 0;
+  let firstFrames = 0;
+  let lastFrames = 0;
+  let references = 0;
+  for (const item of value) {
+    if (
+      !item ||
+      typeof item !== 'object' ||
+      Array.isArray(item) ||
+      Object.keys(item).some((key) => key !== 'type' && key !== 'role')
+    )
+      return false;
+    if (item.type === 'image') {
+      images += 1;
+      if (item.role === 'first_frame') firstFrames += 1;
+      else if (item.role === 'last_frame') lastFrames += 1;
+      else if (item.role === 'reference_image') references += 1;
+      else return false;
+    } else if (item.type === 'video' && item.role === 'reference_video') {
+      videos += 1;
+      references += 1;
+    } else if (item.type === 'audio' && item.role === 'reference_audio') {
+      audios += 1;
+      references += 1;
+    } else return false;
+  }
+  return (
+    images <= 9 &&
+    videos <= 3 &&
+    audios <= 3 &&
+    firstFrames <= 1 &&
+    lastFrames <= 1 &&
+    (firstFrames + lastFrames === 0 || references === 0)
+  );
 }
 
 /** 原始模型和请求身份不能有控制字符或首尾空白；不改写大小写及中文字面量。 */
