@@ -179,23 +179,9 @@ async function installFixture(page: Page) {
     if (path.endsWith('/content')) {
       return route.fulfill({ contentType: 'image/jpeg', body: poster });
     }
-    if (path === '/v1/settings/ai/credentials') {
-      return json(route, {
-        credentials: [
-          {
-            id: 'hover-credential',
-            version: 1,
-            baseUrl: 'https://mock.example.test',
-            keyFingerprint: 'synthetic-hover',
-            active: true,
-            createdAt: project.createdAt,
-          },
-        ],
-      });
-    }
     if (path === '/v1/settings/ai') {
       return json(route, {
-        settings: { baseUrl: 'https://mock.example.test', configured: true, defaultModels: {} },
+        settings: { defaultModels: {}, timeoutMs: 900_000 },
       });
     }
     if (path === '/v1/models') {
@@ -204,7 +190,9 @@ async function installFixture(page: Page) {
           id: `mock-${mediaType}`,
           name: `Mock ${mediaType}`,
           mediaTypes: [mediaType],
+          group: 'alpha',
           credentialId: 'hover-credential',
+          available: true,
         })),
       });
     }

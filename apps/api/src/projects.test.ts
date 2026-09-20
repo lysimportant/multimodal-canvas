@@ -249,7 +249,6 @@ describe('PrismaProjectStore canvas mapping', () => {
         parameters: { quality: '2k', aspectRatio: '16:9' },
         inferenceStrength: 'high',
         modelAlias: 'image-special',
-        platformModelId: '123e4567-e89b-42d3-a456-426614174199',
         credentialId: 'credential-1',
         assetId: 'asset-from-data',
         contentUrl: 'https://example.test/image.png',
@@ -259,6 +258,7 @@ describe('PrismaProjectStore canvas mapping', () => {
     expect(canvas?.nodes[0].data).not.toHaveProperty('__canvasWidth');
     expect(canvas?.nodes[0].data).not.toHaveProperty('__canvasHeight');
     expect(canvas?.nodes[0].data).not.toHaveProperty('internalOnly');
+    expect(canvas?.nodes[0].data).not.toHaveProperty('platformModelId');
   });
 
   it('falls back to legacy node columns while retaining valid JSON fields', async () => {

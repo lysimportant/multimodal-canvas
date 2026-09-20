@@ -11,34 +11,28 @@ const models: ModelEntry[] = [
 describe('节点模型记忆', () => {
   beforeEach(() => window.localStorage.clear());
 
-  it('同名商品按平台 ID 区分，更换上游后仍恢复原商品和新别名', () => {
-    writeNodeModelPreference('user-a', 'image', 'generate', {
-      platformModelId: 'product-b',
-      modelAlias: 'same-alias',
-    });
-    const catalog: ModelEntry[] = [
-      { id: 'same-alias', platformModelId: 'product-a', name: '商品 A', mediaTypes: ['image'] },
-      {
-        id: 'new-upstream-alias',
-        platformModelId: 'product-b',
-        name: '商品 B',
-        mediaTypes: ['image'],
-      },
-    ];
-    expect(readNodeModelPreference('user-a', 'image', 'generate', catalog)).toEqual({
-      platformModelId: 'product-b',
-      modelAlias: 'new-upstream-alias',
-    });
-    expect(
-      readNodeModelPreference('user-a', 'image', 'generate', catalog.slice(0, 1)),
-    ).toBeUndefined();
+  it('含旧商品字段的本地偏好失效，不能继承同名分组模型', () => {
+    window.localStorage.setItem(
+      'multimodal-canvas:node-model:v1:user-a:image:generate',
+      JSON.stringify({
+        modelAlias: 'model-a',
+        credentialId: 'provider-a',
+        platformModelId: 'retired-product',
+      }),
+    );
+    expect(readNodeModelPreference('user-a', 'image', 'generate', models)).toBeUndefined();
   });
 
-  it('旧别名偏好不能自动绑定同名平台商品', () => {
+  it('缺少分组身份的旧别名偏好不能自动绑定同名模型', () => {
     writeNodeModelPreference('user-a', 'image', 'generate', { modelAlias: 'same-alias' });
     expect(
       readNodeModelPreference('user-a', 'image', 'generate', [
-        { id: 'same-alias', platformModelId: 'product-a', name: '商品 A', mediaTypes: ['image'] },
+        {
+          id: 'same-alias',
+          credentialId: 'provider-a',
+          name: '分组模型 A',
+          mediaTypes: ['image'],
+        },
       ]),
     ).toBeUndefined();
   });

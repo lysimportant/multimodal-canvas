@@ -65,7 +65,7 @@ export function ResourceGroupsPage({ userId }: { userId: string }) {
   const groups = query.data?.groups.filter(
     (group) =>
       !search.trim() ||
-      `${group.user?.displayName ?? ''} ${group.user?.email ?? ''} ${group.user ? '' : '待确认归属'}`
+      `${group.user?.displayName ?? ''} ${group.user?.email ?? ''} ${group.ownerId ?? ''} ${group.user ? '' : '待确认归属'}`
         .toLocaleLowerCase()
         .includes(search.trim().toLocaleLowerCase()),
   );
@@ -93,7 +93,7 @@ export function ResourceGroupsPage({ userId }: { userId: string }) {
           <input
             type="search"
             aria-label="搜索资源所属用户"
-            placeholder="搜索用户昵称或邮箱"
+            placeholder="搜索昵称、邮箱或用户 ID"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
           />
@@ -204,12 +204,13 @@ export function ResourcesPage({ userId, ownerId }: { userId: string; ownerId?: s
     if (page > lastPage) setPage(lastPage);
   }, [page, query.data, query.isFetching]);
   const owner = useQuery({
-    queryKey: ['management', userId, 'user', ownerId],
+    queryKey: ['management', userId, 'resource-owner', ownerId],
     queryFn: ({ signal }) =>
-      managementRequest<{ user: ManagedUser; projects: { id: string; name: string }[] }>(
-        `/admin/users/${encodeURIComponent(ownerId!)}`,
-        { signal },
-      ),
+      managementRequest<{
+        user: ManagedUser;
+        projects: { id: string; name: string }[];
+        stats: { resourceCount: number; storageBytes: number; runCount: number };
+      }>(`/admin/resource-owners/${encodeURIComponent(ownerId!)}`, { signal }),
     enabled: admin && ownerId !== 'unassigned',
   });
   const ownProjects = useQuery({
@@ -239,10 +240,10 @@ export function ResourcesPage({ userId, ownerId }: { userId: string; ownerId?: s
             {admin
               ? ownerId === 'unassigned'
                 ? '待确认归属的资源'
-                : `${owner.data?.user.displayName || owner.data?.user.email || '用户'}的资源`
+                : `${owner.data?.user.displayName || owner.data?.user.email || ownerId || '用户'}的资源`
               : '我的资源'}
           </h1>
-          {owner.data && <span className="mg-muted">{owner.data.user.email}</span>}
+          {owner.data?.user.email && <span className="mg-muted">{owner.data.user.email}</span>}
         </div>
         <button
           className="mg-icon"

@@ -57,7 +57,6 @@ describe('fork-generate-node', () => {
       mode: 'generate',
       prompt: '白色背景',
       modelAlias: 'image-edit-model',
-      platformModelId: 'platform-image-model',
       credentialId: 'cred_1',
       parameters: { quality: '2k' },
       resourceRefs: [{ id: 'ref', assetId: 'asset_1', mediaType: 'image', name: '参考' }],
@@ -68,7 +67,6 @@ describe('fork-generate-node', () => {
     } as AssetFlowNode['data']);
     expect(inherited).toMatchObject({
       modelAlias: 'image-edit-model',
-      platformModelId: 'platform-image-model',
       credentialId: 'cred_1',
       parameters: { quality: '2k' },
       inferenceStrength: 'high',

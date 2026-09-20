@@ -22,7 +22,7 @@ export type SettingsPageProps = {
  * 独立设置页的外框：负责路由骨架、项目加载与错误状态。
  *
  * 面板内容由 `SettingsPanel` 以 `presentation="page"` 注入，与对话框共用同一个内容组件，
- * 因此两处的分类、表单与凭据逻辑不会分叉。
+ * 因此两处的分组状态、模型默认值和画布偏好不会分叉。
  */
 export function SettingsPage({
   children,
@@ -53,9 +53,9 @@ export function SettingsPage({
             <Settings2 size={21} />
           </div>
           <div className="mc-settings-heading-copy">
-            <h1>连接与模型设置</h1>
+            <h1>New API 与模型设置</h1>
             <p className="mc-settings-context" aria-label="设置范围">
-              {projectId ? `当前上下文：${projectName ?? projectId}` : '平台全局'}
+              {projectId ? `当前项目：${projectName ?? projectId}` : '当前账号'}
             </p>
           </div>
           <a
@@ -64,18 +64,22 @@ export function SettingsPage({
             target="_blank"
             rel="noopener noreferrer"
           >
-            API获取
+            打开 New API
             <ArrowUpRight size={15} aria-hidden="true" />
           </a>
         </header>
 
         <div className="mc-settings-layout">
-          <section className="mc-settings-content" aria-label="AI 设置内容" aria-busy={isLoading}>
+          <section
+            className="mc-settings-content"
+            aria-label="New API 设置内容"
+            aria-busy={isLoading}
+          >
             {isLoading ? (
               <div className="mc-settings-state" role="status" aria-live="polite">
                 <span className="mc-settings-loading-bar" />
                 <strong>正在加载设置</strong>
-                <span>正在读取连接状态和模型目录…</span>
+                <span>正在读取分组状态和模型目录…</span>
               </div>
             ) : error ? (
               <div className="mc-settings-state is-error" role="alert">

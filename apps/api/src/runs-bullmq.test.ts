@@ -108,7 +108,7 @@ describe('BullMQ run result integrity', () => {
           status: 'queued',
           progress: 0,
           attempt: 1,
-          provider: 'newapi',
+          provider: 'mock',
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         };
@@ -132,7 +132,7 @@ describe('BullMQ run result integrity', () => {
       });
     const service = new BullMqRunService({
       connection: { host: '127.0.0.1', port: 6379 },
-      providerName: 'newapi',
+      providerName: 'mock',
       persistence: persistence as never,
     });
     await expect(service.create(snapshot, { idempotencyKey: 'skill-recovery' })).rejects.toThrow(
@@ -142,7 +142,7 @@ describe('BullMQ run result integrity', () => {
     const recovered = await service.create(snapshot, { idempotencyKey: 'skill-recovery' });
     expect(recovered.id).toBe(durable!.id);
     expect(recovered.snapshot).toEqual(snapshot);
-    expect(recovered.provider).toBe('newapi');
+    expect(recovered.provider).toBe('mock');
     await service.create(snapshot, { idempotencyKey: 'skill-recovery' });
     expect(state.add).toHaveBeenCalledTimes(2);
     expect(persistence.ensureRun).toHaveBeenCalledTimes(1);
@@ -906,7 +906,7 @@ describe('BullMQ run result integrity', () => {
         runId: 'run_failed',
         snapshot,
         attempt: 1,
-        provider: 'newapi',
+        provider: 'mock',
         cancelRequested: false,
       },
       progress: { status: 'failed', progress: 80, updatedAt: new Date().toISOString() },

@@ -24,7 +24,11 @@ vi.mock('bullmq', () => {
   return { Job, Queue, Worker };
 });
 
-import { createProviderJobRecord, createRunWorker } from './index';
+import { createProviderJobRecord } from './index';
+import {
+  createAuthorizedTestRunWorker as createRunWorker,
+  withTestExecutionBindings,
+} from './test-execution-fixtures';
 
 function diagnosticText(error: unknown): string {
   if (!(error instanceof Error)) return String(error);
@@ -54,7 +58,7 @@ describe('Worker observability boundary', () => {
       id: runId,
       data: {
         runId,
-        snapshot: {
+        snapshot: withTestExecutionBindings({
           projectId: runId,
           canvasRevision: 1,
           targetNodeId: 'node_text_observability',
@@ -75,7 +79,7 @@ describe('Worker observability boundary', () => {
           ],
           edges: [],
           inputs: [],
-        },
+        }),
         attempt: 1,
         provider: 'newapi',
         providerJob: createProviderJobRecord(runId, 'newapi'),

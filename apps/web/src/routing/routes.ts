@@ -2,31 +2,22 @@
 export type AppRoute = (
   | { id: 'home'; pathname: '/' }
   | { id: 'workspace'; pathname: '/workspace'; createProject?: boolean }
-  | { id: 'models'; pathname: '/models' }
   | { id: 'contact'; pathname: '/contact' }
   | { id: 'settings'; pathname: '/settings'; projectId?: string }
   | { id: 'project'; pathname: string; projectId: string }
   | { id: 'management'; pathname: string }
-  | {
-      id: 'authentication';
-      pathname: string;
-      page: 'login' | 'register' | 'verify' | 'forgot-password';
-    }
+  | { id: 'authentication'; pathname: string }
   | { id: 'not-found'; pathname: string }
 ) & { /** 离开画布时的返回来源，独立于页面筛选条件。 */ returnProjectId?: string };
 
-export type AppNavigationSection = 'home' | 'workspace' | 'models' | 'settings';
+export type AppNavigationSection = 'home' | 'workspace' | 'settings';
 
 /** 稳定页面入口，路径参数统一编码。 */
 export const appPaths = {
   home: '/',
   workspace: '/workspace',
-  models: '/models',
-  billing: '/account/billing',
   contact: '/contact',
   admin: '/admin',
-  profile: '/account/profile',
-  security: '/account/security',
   resources: '/resources',
   runs: '/runs',
   login: '/auth/login',
@@ -120,7 +111,7 @@ function parseRoutePath(input: Pick<Location, 'pathname' | 'search'>): AppRoute 
       ...(new URLSearchParams(search).get('create') === '1' ? { createProject: true } : {}),
     };
   if (pathname === '/contact') return { id: 'contact', pathname };
-  if (pathname === '/models') return { id: 'models', pathname };
+  if (pathname === '/models') return { id: 'not-found', pathname };
   if (
     pathname === appPaths.login ||
     pathname === appPaths.register ||
@@ -130,24 +121,14 @@ function parseRoutePath(input: Pick<Location, 'pathname' | 'search'>): AppRoute 
     return {
       id: 'authentication',
       pathname,
-      page:
-        pathname === appPaths.login
-          ? 'login'
-          : pathname === appPaths.register
-            ? 'register'
-            : pathname === appPaths.forgotPassword
-              ? 'forgot-password'
-              : 'verify',
     };
   const adminUserMatch = pathname.match(/^\/admin\/users\/([^/]+)(?:\/resources)?$/);
   if (adminUserMatch && !decodeProjectId(adminUserMatch[1]!)) return { id: 'not-found', pathname };
   if (
-    /^\/admin(?:\/(?:users(?:\/[^/]+(?:\/resources)?)?|resources|runs|audit|models|billing|system|settings\/email))?$/.test(
+    /^\/admin(?:\/(?:users(?:\/[^/]+(?:\/resources)?)?|resources|runs|audit|system))?$/.test(
       pathname,
     ) ||
-    ['/account/profile', '/account/security', '/account/billing', '/resources', '/runs'].includes(
-      pathname,
-    )
+    ['/resources', '/runs'].includes(pathname)
   ) {
     return { id: 'management', pathname };
   }

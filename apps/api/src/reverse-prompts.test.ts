@@ -1,10 +1,10 @@
+import { MemoryAiSettingsStore } from './fixtures/memory-ai-settings';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NewApiProvider } from '@multimodal-canvas/providers';
-import { buildApp } from './app';
+import { buildApp } from './fixtures/test-app';
 import { MemoryAssetStore } from './assets';
 import { MemoryProjectStore } from './projects';
 import { MemoryRunService, type RunExecutorRequest } from './runs';
-import { AiSettingsStore } from './settings';
 
 /** 每个用例使用隔离内存存储和合成 Provider，不发送外部请求。 */
 const apps: Array<ReturnType<typeof buildApp>> = [];
@@ -22,7 +22,7 @@ const characterReverseResult = {
 async function fixture(output = JSON.stringify(reverseResult), providerFetch?: typeof fetch) {
   const assetStore = new MemoryAssetStore();
   const projectStore = new MemoryProjectStore();
-  const settingsStore = new AiSettingsStore('reverse-prompt-tests');
+  const settingsStore = new MemoryAiSettingsStore('reverse-prompt-tests');
   settingsStore.update({
     baseUrl: 'https://provider.invalid/v1',
     apiKey: 'synthetic-key-for-reverse-tests',
@@ -224,12 +224,12 @@ describe('资源反推提示词 API', () => {
     expect(failed.json().code).toBe('model_unavailable');
   });
 
-  it('自动请求和重复手动点击按版本持久去重，失败也不自动重发', async () => {
+  it('手动请求按幂等键持久去重，失败也不自动重发', async () => {
     const ctx = await fixture('not JSON');
     const first = await ctx.app.inject({
       method: 'POST',
       url: ctx.url,
-      payload: { projectId: ctx.project.id, automatic: true },
+      payload: { projectId: ctx.project.id, idempotencyKey: 'failed-manual' },
     });
     const runId = first.json().analysis.runId;
     await vi.waitFor(async () => expect((await ctx.runService.get(runId))?.status).toBe('failed'));
@@ -237,7 +237,7 @@ describe('资源反推提示词 API', () => {
     const duplicate = await ctx.app.inject({
       method: 'POST',
       url: ctx.url,
-      payload: { projectId: ctx.project.id, automatic: true },
+      payload: { projectId: ctx.project.id, idempotencyKey: 'failed-manual' },
     });
     expect(duplicate.json().analysis).toMatchObject({
       runId,
@@ -260,7 +260,7 @@ describe('资源反推提示词 API', () => {
     expect(ctx.archiver).not.toHaveBeenCalled();
   });
 
-  it('同版本自动请求并发只产生一次运行', async () => {
+  it('旧自动反推请求在执行前拒绝且不产生运行', async () => {
     const ctx = await fixture();
     const responses = await Promise.all(
       Array.from({ length: 6 }, () =>
@@ -271,9 +271,9 @@ describe('资源反推提示词 API', () => {
         }),
       ),
     );
-    expect(responses.every((response) => response.statusCode === 202)).toBe(true);
-    expect(new Set(responses.map((response) => response.json().analysis.runId)).size).toBe(1);
-    await vi.waitFor(() => expect(ctx.executor).toHaveBeenCalledTimes(1));
+    expect(responses.every((response) => response.statusCode === 400)).toBe(true);
+    expect(await ctx.runService.listByProject(ctx.project.id)).toHaveLength(0);
+    expect(ctx.executor).not.toHaveBeenCalled();
   });
 
   it('拒绝其他项目资源、缺失版本和归档资源，在调用供应商前完成校验', async () => {
@@ -344,7 +344,9 @@ describe('资源反推提示词 API', () => {
       analysis: null,
       defaultModel: { modelAlias: 'alpha-text' },
     });
-    expect(empty.json().defaultModel).not.toHaveProperty('credentialId');
+    expect(empty.json().defaultModel.credentialId).toBe(
+      ctx.settingsStore.getCredentialReference().credentialId,
+    );
     const started = await ctx.app.inject({
       method: 'POST',
       url: ctx.url,
@@ -486,15 +488,15 @@ describe('资源反推提示词 API', () => {
     });
     expect(read.json()).toEqual({
       analysis: null,
-      defaultModel: { modelAlias: 'bound-text' },
+      defaultModel: { modelAlias: 'bound-text', credentialId },
     });
-    expect(read.json().defaultModel).not.toHaveProperty('credentialId');
+    expect(read.body).not.toContain('synthetic-independent-key');
     const start = await ctx.app.inject({
       method: 'POST',
       url: ctx.url,
       payload: { projectId: ctx.project.id },
     });
-    expect(start.json().analysis).toMatchObject(read.json().defaultModel);
+    expect(start.json().analysis.modelAlias).toBe(read.json().defaultModel.modelAlias);
     expect((await ctx.runService.get(start.json().analysis.runId))?.snapshot.credentialId).toBe(
       credentialId,
     );

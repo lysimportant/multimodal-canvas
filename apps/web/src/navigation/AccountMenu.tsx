@@ -8,17 +8,7 @@ import {
   type MouseEvent,
   type ReactNode,
 } from 'react';
-import {
-  FolderOpen,
-  LogIn,
-  LogOut,
-  ShieldCheck,
-  UserCircle,
-  UserRound,
-  LockKeyhole,
-  Activity,
-  Wallet,
-} from 'lucide-react';
+import { FolderOpen, LogIn, LogOut, ShieldCheck, UserCircle, Activity } from 'lucide-react';
 import type { AuthUser } from '../auth-client';
 import { AppLink, appPaths, shouldInterceptAppLink } from '../routing';
 import { isImeKeyboardEvent } from '../ime';
@@ -163,9 +153,6 @@ export function AccountMenu({
   }
 
   const links = [
-    { href: appPaths.profile, label: '个人信息', icon: UserRound },
-    { href: appPaths.billing, label: '余额与账单', icon: Wallet },
-    { href: appPaths.security, label: '账户安全', icon: LockKeyhole },
     { href: appPaths.resources, label: '我的资源', icon: FolderOpen },
     { href: appPaths.runs, label: '我的任务', icon: Activity },
     ...(user.role === 'admin'

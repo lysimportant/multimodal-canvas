@@ -64,12 +64,11 @@ describe('application route contracts', () => {
     expect(getNavigationSection(parseAppRoute('/not-found'))).toBeNull();
   });
 
-  it('为登录、注册和验证提供独立路由，并显式解析仅打开表单的创建意图', () => {
+  it('旧认证地址均收口到 New API 登录，并显式解析仅打开表单的创建意图', () => {
     for (const page of ['login', 'register', 'verify', 'forgot-password'] as const) {
       expect(parseAppRoute(`/auth/${page}`)).toEqual({
         id: 'authentication',
         pathname: `/auth/${page}`,
-        page,
       });
       expect(getNavigationSection(parseAppRoute(`/auth/${page}`))).toBeNull();
     }
@@ -82,14 +81,11 @@ describe('application route contracts', () => {
   });
 
   it('保留合法站内登录返回地址，拒绝外链和认证页循环', () => {
-    const loginPath = buildAuthPagePath('login', '/workspace?create=1');
+    const loginPath = buildAuthPagePath('/workspace?create=1');
     expect(readAuthReturnPath(new URL(loginPath, 'http://localhost').search)).toBe(
       '/workspace?create=1',
     );
-    expect(buildAuthPagePath('register')).toBe('/auth/register');
-    expect(buildAuthPagePath('forgot-password', '/workspace?create=1')).toBe(
-      '/auth/forgot-password?next=%2Fworkspace%3Fcreate%3D1',
-    );
+    expect(buildAuthPagePath()).toBe('/auth/login');
     for (const target of [
       'https://example.com',
       '//example.com',
@@ -104,7 +100,7 @@ describe('application route contracts', () => {
     }
     const emailVerification = '/auth/verify?purpose=email&email=new%40example.test';
     expect(readAuthReturnPath(`?${new URLSearchParams({ next: emailVerification })}`)).toBe(
-      emailVerification,
+      '/workspace',
     );
     expect(readAuthReturnPath('?next=%2Fprojects%2Fexample')).toBe('/projects/example');
     expect(

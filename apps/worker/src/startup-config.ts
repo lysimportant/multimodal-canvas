@@ -39,16 +39,7 @@ export function validateWorkerStartupConfiguration(
   const redisUrl = requireValue(environment, 'REDIS_URL', issues);
   requireValue(environment, 'S3_BUCKET', issues);
   requireValue(environment, 'S3_REGION', issues);
-  const encryptionSecret = environment.AI_CREDENTIAL_ENCRYPTION_KEY?.trim();
   validateCredentialEncryptionRotationConfiguration(environment, issues);
-  // 持久化 Worker 从数据库按快照读取凭据；无完整持久化边界时才允许静态回退。
-  const hasDurableCredentialStore = Boolean(databaseUrl && encryptionSecret);
-  const newApiBaseUrl = hasDurableCredentialStore
-    ? environment.NEW_API_BASE_URL?.trim()
-    : requireValue(environment, 'NEW_API_BASE_URL', issues);
-  if (!hasDurableCredentialStore) {
-    requireValue(environment, 'NEW_API_API_KEY', issues);
-  }
   requireValue(environment, 'AI_CREDENTIAL_ENCRYPTION_KEY', issues);
 
   if (databaseUrl) validateUrlProtocol(databaseUrl, 'DATABASE_URL', ['postgresql:'], issues);
@@ -56,13 +47,6 @@ export function validateWorkerStartupConfiguration(
     validateUrlProtocol(redisUrl, 'REDIS_URL', ['redis:', 'rediss:'], issues, {
       requireTlsForNonLoopback: true,
       secureProtocols: ['rediss:'],
-    });
-  }
-  if (newApiBaseUrl) {
-    validateUrlProtocol(newApiBaseUrl, 'NEW_API_BASE_URL', ['https:'], issues, {
-      rejectUserinfo: true,
-      rejectQuery: true,
-      rejectHash: true,
     });
   }
 

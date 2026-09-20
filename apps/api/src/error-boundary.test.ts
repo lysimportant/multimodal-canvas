@@ -1,10 +1,10 @@
+import { MemoryAiSettingsStore } from './fixtures/memory-ai-settings';
 import { describe, expect, it } from 'vitest';
 
 import type { RunRecord } from '@multimodal-canvas/domain';
 
-import { buildApp } from './app';
+import { buildApp } from './fixtures/test-app';
 import type { RunService } from './runs';
-import { AiSettingsStore } from './settings';
 
 async function readSseUntil(
   reader: ReadableStreamDefaultReader<Uint8Array>,
@@ -73,7 +73,7 @@ describe('API error boundary', () => {
 
   it('does not expose an upstream model refresh diagnostic', async () => {
     const diagnosticMarker = 'upstream-model-refresh-internal-diagnostic';
-    const settingsStore = new AiSettingsStore('error-boundary-test-secret', {
+    const settingsStore = new MemoryAiSettingsStore('error-boundary-test-secret', {
       fetchImpl: async () => {
         throw new Error(diagnosticMarker);
       },

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { buildApp, type BuildAppOptions } from './app';
+import { buildApp, type BuildAppOptions } from './fixtures/test-app';
 import { MemoryAssetStore, type AssetStore } from './assets';
 import { signHs256Jwt } from './auth';
 import type { S3DownloadMode } from './upload-transport';

@@ -77,18 +77,15 @@ docker compose --env-file .env.compose -f compose.yaml --profile server up -d --
 
 Caddy 将 API 请求直接转发到 API，其他请求转发到静态 Web；两种入口都只有一个可信代理。`API_TRUST_PROXY_HOPS=1` 仅信任 RFC1918 / IPv6 ULA 私有网络中的直接对端，不信任更早的转发链或公网对端。必须保持 API 端口不向宿主发布，且不把不可信容器加入此网络；使用自定义非私有 Docker 网段或外层 CDN 时需重新配置并验收，不能改为无条件信任转发头。
 
-## 首次账号与模型设置
+## New API 账号与模型
 
-1. 主页和项目工作台可匿名浏览；点击“新建项目”后登录或注册自己的邮箱和密码，认证成功继续创建表单，取消则返回浏览。私有项目、设置和 API 保持鉴权，普通账号不会自动成为管理员。
-2. 在拥有本机 Docker 权限的终端，将明确指定的已注册账号设为管理员：
+配置 `MC_NEW_API_ISSUER`、`MC_NEW_API_CLIENT_ID`、`MC_NEW_API_INSTANCE_ID`、`MC_NEW_API_REDIRECT_URI`，在 New API 端登记相同配置。HTTPS 回调为 `https://你的域名/v1/auth/newapi/callback`，并与 `MC_PUBLIC_ORIGIN` 对应。两端私有 client secret 如启用必须一致，只从私有环境文件注入，不能写入镜像或仓库。
 
-```bash
-docker compose -f compose.yaml exec -T api node docker/run.mjs admin your-email@example.com
-```
+用户通过 New API 登录，Canvas 按站点和不可变用户 ID 归属资源，自动接入本人开放分组的 Key，精确排除“神秘分组”。模型按组提供，所有收费由 New API 处理。普通用户不再导入 Key、开通 Canvas 钱包或领取本地额度。
 
-3. 退出并重新登录，在网页设置中填写供应商 HTTPS 地址、API Key 和模型。Key 加密存入数据库；API / Worker 共用专用卷中的加密密钥，镜像、Compose 和构建日志中不包含真实 Key。
+管理员由 `MC_NEW_API_ADMIN_USER_IDS` 指定，新配置在 API 重建和用户重新登录后生效；运维入口 `node docker/run.mjs admin <New API 用户 ID>` 只同步该允许列表中的已登录身份。升级前先按[接入计划](newapi-account-integration-plan.md)备份和核对旧数据、旧队列，使用独立的新任务队列。代码回退不能恢复数据库和对象。
 
-配置只使现有完整功能具备运行条件，不会凭空生成供应商权限。真实模型调用可能计费，必须由操作者明确发起。使用 Sub2API 的 `/v1/videos/generations` 时，按已确认供应商契约设置 `MC_VIDEO_CONTRACT=legacy-v1` 并重新创建 API / Worker；默认 `newapi-video-v1` 使用 `/v1/videos`；`newapi-unified-v1` 仍使用 `/v1/video/generations`。历史异步任务保留原冻结契约，不因更新配置重发创建请求。
+视频协议由鉴权目录中的精确合同决定。New API 的 `newapi-video-v1` 创建路径为 `/v1/videos`；历史任务保留原冻结协议与任务身份。真实调用需要独立验收，不因登录或目录成功而重复创建可能已受理的任务。
 
 公开供应商 Webhook 可指向 `https://你的域名/v1/webhooks/newapi`，但必须另外核对供应商正式签名、编码和重放约定。密钥在专用卷中，不能随意重建。未确认的供应商功能和服务器验收继续以 `TODO-SERVER.md` 为准。
 

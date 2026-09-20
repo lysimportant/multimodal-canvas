@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildApp } from './app';
+import { buildApp } from './fixtures/test-app';
 import { MemoryAssetStore } from './assets';
 import { withAssetOwnershipPolicy } from './asset-ownership';
 import { MemoryAuthStore } from './auth-store';
 import { MemoryProjectStore } from './projects';
-import { registerVerifiedTestUser, TestAccountMailSender } from './fixtures/account-mail';
+import { issueTestSession, TestAuthContext } from './fixtures/auth-session';
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -57,23 +57,22 @@ describe('历史项目资源的受约束授权读取', () => {
     vi.stubEnv('API_AUTH_RATE_LIMIT_PER_MINUTE', '1000');
     const raw = new MemoryAssetStore();
     const projects = new MemoryProjectStore();
-    const mail = new TestAccountMailSender();
+    const mail = new TestAuthContext();
     const app = buildApp({
       logger: false,
-      authStore: new MemoryAuthStore(),
       assetStore: raw,
       projectStore: projects,
-      accountMailSender: mail,
+      ...mail.appOptions,
     });
     try {
       const a = (
-        await registerVerifiedTestUser(app, mail, {
+        await issueTestSession(app, mail, {
           email: 'legacy-a@example.test',
           password: 'correct-password',
         })
       ).json();
       const b = (
-        await registerVerifiedTestUser(app, mail, {
+        await issueTestSession(app, mail, {
           email: 'legacy-b@example.test',
           password: 'correct-password',
         })

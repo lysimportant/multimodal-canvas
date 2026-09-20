@@ -41,7 +41,6 @@ async function installFixture(
   page: Page,
   options: {
     configuredDefault?: ModelSelection;
-    immediateGeneration?: boolean;
     role?: 'admin' | 'user';
     replayHistory?: boolean;
     sourceAsset?: boolean;
@@ -81,22 +80,11 @@ async function installFixture(
   const analyses = new Map<string, ReversePromptAnalysis>();
   const reversePosts: Array<{ path: string; body: Record<string, unknown> }> = [];
   const reverseGets: URL[] = [];
-  const generationPosts: Record<string, unknown>[] = [];
   const settingsReads: string[] = [];
   const errors: string[] = [];
-  const credentials = ['connection-a', 'connection-b'].map((id, index) => ({
-    id,
-    version: 1,
-    baseUrl: `https://${id}.example.test`,
-    keyFingerprint: `synthetic-${id}`,
-    active: index === 0,
-    createdAt: project.createdAt,
-    defaultModels: {},
-  }));
   const settings = {
-    baseUrl: credentials[0]!.baseUrl,
-    configured: true,
     defaultModels: options.configuredDefault ? { text: options.configuredDefault } : {},
+    timeoutMs: 900_000,
   };
   const makeRun = (id: string, assetId: string): RunRecord => ({
     id,
@@ -153,7 +141,6 @@ async function installFixture(
         releaseHistory = resolve;
       })
     : Promise.resolve();
-  let uploadSequence = 0;
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => {
     if (message.type() === 'error') {
@@ -163,29 +150,36 @@ async function installFixture(
     }
   });
   await page.addInitScript(
-    ({ role, automatic }) => {
-      if (automatic) localStorage.setItem('multimodal-canvas:auto-reverse-prompt', 'true');
+    ({ role }) => {
       localStorage.setItem(
         'multimodal-canvas:auth-session',
         JSON.stringify({
-          accessToken: 'synthetic-reverse-browser',
-          expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
           user: {
             id: 'reverse-user',
-            email: 'reverse@example.test',
+            displayName: '反推验收用户',
             role,
             createdAt: '2026-09-17T10:00:00.000Z',
           },
         }),
       );
     },
-    { role: options.role ?? 'admin', automatic: options.replayHistory ?? false },
+    { role: options.role ?? 'admin' },
   );
   await page.route('**/v1/**', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const path = url.pathname;
     const method = request.method();
+    if (method === 'GET' && path === '/v1/auth/me')
+      return json(route, {
+        user: {
+          id: 'reverse-user',
+          displayName: '反推验收用户',
+          role: options.role ?? 'admin',
+          createdAt: project.createdAt,
+        },
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
     if (path === '/v1/prompt-skills') return json(route, { skills: [] });
     if (path.endsWith('/events')) {
       eventRequests += 1;
@@ -207,21 +201,43 @@ async function installFixture(
       settingsReads.push(path);
       return json(route, { settings });
     }
-    if (path === '/v1/settings/ai/credentials') {
-      settingsReads.push(path);
-      return json(route, { credentials });
-    }
     if (path === '/v1/models') {
-      const credentialId = url.searchParams.get('credentialId') ?? 'connection-a';
-      const models =
-        credentialId === 'connection-a'
-          ? [
-              { id: 'first-text', name: '第一个文字模型', mediaTypes: ['text'] },
-              { id: 'shared-text', name: '同名文字模型', mediaTypes: ['text'] },
-              { id: 'mock-image', name: '图片模型', mediaTypes: ['image'] },
-            ]
-          : [{ id: 'shared-text', name: '同名文字模型', mediaTypes: ['text'] }];
-      return json(route, { models: models.map((model) => ({ ...model, credentialId })) });
+      return json(route, {
+        models: [
+          {
+            id: 'first-text',
+            name: '第一个文字模型',
+            mediaTypes: ['text'],
+            group: 'alpha',
+            credentialId: 'connection-a',
+            available: true,
+          },
+          {
+            id: 'shared-text',
+            name: '同名文字模型',
+            mediaTypes: ['text'],
+            group: 'alpha',
+            credentialId: 'connection-a',
+            available: true,
+          },
+          {
+            id: 'mock-image',
+            name: '图片模型',
+            mediaTypes: ['image'],
+            group: 'alpha',
+            credentialId: 'connection-a',
+            available: true,
+          },
+          {
+            id: 'shared-text',
+            name: '同名文字模型',
+            mediaTypes: ['text'],
+            group: 'beta',
+            credentialId: 'connection-b',
+            available: true,
+          },
+        ],
+      });
     }
     if (path.endsWith('/reverse-prompts')) {
       const assetId = path.split('/')[3]!;
@@ -289,19 +305,6 @@ async function installFixture(
       });
     }
     if (path === '/v1/assets') return json(route, { assets: [...assets.values()] });
-    if (path === '/v1/assets/uploads/init') {
-      const uploadId = `upload-${++uploadSequence}`;
-      return json(route, {
-        uploadId,
-        uploadUrl: `/v1/assets/uploads/${uploadId}/content`,
-        completeUrl: `/v1/assets/uploads/${uploadId}/complete`,
-      });
-    }
-    if (/^\/v1\/assets\/uploads\/[^/]+\/complete$/.test(path)) {
-      const asset = imageAsset(`uploaded-${uploadSequence}`);
-      assets.set(asset.id, asset);
-      return json(route, { asset }, 201);
-    }
     if (path.endsWith('/versions')) {
       const assetId = path.split('/')[3]!;
       return json(route, {
@@ -319,22 +322,6 @@ async function installFixture(
       return json(route, { url: path.replace('/access-url', '/versions/1/content') });
     if (path.endsWith('/content'))
       return route.fulfill({ contentType: 'image/jpeg', body: imageBytes });
-    if (method === 'POST' && /^\/v1\/nodes\/[^/]+\/runs$/.test(path)) {
-      generationPosts.push(request.postDataJSON());
-      const asset = imageAsset(`generated-${generationPosts.length}`);
-      assets.set(asset.id, asset);
-      const run = makeRun(`generation-${generationPosts.length}`, asset.id);
-      runs.set(run.id, run);
-      return json(
-        route,
-        {
-          run: options.immediateGeneration
-            ? run
-            : { ...run, status: 'queued', progress: 0, result: undefined },
-        },
-        202,
-      );
-    }
     if (path === `/v1/projects/${project.id}/runs`) {
       await historyGate;
       return json(route, { runs: [...runs.values()] });
@@ -348,7 +335,6 @@ async function installFixture(
     errors,
     reversePosts,
     reverseGets,
-    generationPosts,
     settingsReads,
     releaseHistory,
     eventRequests: () => eventRequests,
@@ -364,13 +350,6 @@ async function openPrompt(page: Page) {
   const dialog = page.getByRole('dialog', { name: '生成提示词', exact: true });
   await expect(dialog.getByRole('combobox', { name: '反推文字模型' })).toBeVisible();
   return dialog;
-}
-
-/** 在设置里读取或切换自动反推，调用方负责关闭面板。 */
-async function openAutomation(page: Page) {
-  await page.getByRole('button', { name: '打开设置', exact: true }).click();
-  await page.getByRole('tab', { name: '自动化', exact: true }).click();
-  return page.getByRole('switch', { name: '自动反推提示词' });
 }
 
 test('反推默认遵循设置，模型与连接可调整，结果独立展示且重开不重发', async ({ page }, testInfo) => {
@@ -404,7 +383,6 @@ test('反推默认遵循设置，模型与连接可调整，结果独立展示�
       projectId: project.id,
       modelAlias: 'shared-text',
       credentialId: 'connection-a',
-      automatic: false,
       idempotencyKey: expect.stringMatching(/^reverse-prompt-/),
     },
   });
@@ -435,13 +413,12 @@ test('未设置默认文字模型时选择第一个文字模型', async ({ page 
   expect(fixture.reversePosts[0]!.body).toMatchObject({
     modelAlias: 'first-text',
     credentialId: 'connection-a',
-    automatic: false,
   });
   expect(fixture.reversePosts).toHaveLength(1);
   expect(fixture.errors).toEqual([]);
 });
 
-test('普通账号使用服务端返回的独立连接默认模型，不读取管理员设置', async ({ page }) => {
+test('普通账号使用服务端返回的分组默认模型', async ({ page }) => {
   const fixture = await installFixture(page, {
     role: 'user',
     configuredDefault: { modelAlias: 'shared-text', credentialId: 'connection-b' },
@@ -451,12 +428,12 @@ test('普通账号使用服务端返回的独立连接默认模型，不读取�
   await expect(dialog.getByRole('combobox', { name: '反推文字模型' })).toHaveValue(
     JSON.stringify(['shared-text', 'connection-b']),
   );
-  expect(fixture.settingsReads).toEqual([]);
+  expect(fixture.settingsReads).toEqual(['/v1/settings/ai']);
   expect(fixture.reversePosts).toEqual([]);
   expect(fixture.errors).toEqual([]);
 });
 
-test('已开启自动反推时，先于REST恢复的历史SSE成功事件不触发新任务', async ({ page }) => {
+test('先于 REST 恢复的历史 SSE 成功事件不会自动触发反推', async ({ page }) => {
   const fixture = await installFixture(page, { replayHistory: true });
   await page.goto(`/projects/${project.id}`);
   await expect.poll(fixture.eventRequests).toBeGreaterThan(0);
@@ -510,74 +487,3 @@ test('提交网络结果未知后关闭重开，显式重试复用原模型与�
   expect(fixture.reversePosts[1]).toEqual(fixture.reversePosts[0]);
   expect(fixture.errors).toEqual([]);
 });
-
-test('自动反推默认关闭，开启持久化且只对新上传资源提交一次', async ({ page }, testInfo) => {
-  const fixture = await installFixture(page);
-  await page.goto(`/projects/${project.id}`);
-  const node = page.locator('.react-flow__node[data-id="image-node"]');
-  await node
-    .locator('input[type="file"]')
-    .setInputFiles({ name: 'disabled-reference.jpg', mimeType: 'image/jpeg', buffer: imageBytes });
-  await expect(node.locator('.flow-node-preview img')).toHaveAttribute('src', /uploaded-1/);
-  const toggle = await openAutomation(page);
-  await expect(toggle).not.toBeChecked();
-  expect(fixture.reversePosts).toHaveLength(0);
-  await toggle.check();
-  await expect
-    .poll(() => page.evaluate(() => localStorage.getItem('multimodal-canvas:auto-reverse-prompt')))
-    .toBe('true');
-  await page.screenshot({ path: testInfo.outputPath('automatic-setting.png') });
-  await page.getByRole('button', { name: '关闭设置', exact: true }).click();
-  await page.reload();
-  const persisted = await openAutomation(page);
-  await expect(persisted).toBeChecked();
-  expect(fixture.reversePosts).toHaveLength(0);
-  await page.getByRole('button', { name: '关闭设置', exact: true }).click();
-  await node
-    .locator('input[type="file"]')
-    .setInputFiles({ name: 'new-reference.jpg', mimeType: 'image/jpeg', buffer: imageBytes });
-  await expect.poll(() => fixture.reversePosts.length).toBe(1);
-  expect(fixture.reversePosts[0]).toEqual({
-    path: '/v1/assets/uploaded-2/versions/1/reverse-prompts',
-    body: { projectId: project.id, automatic: true, idempotencyKey: 'automatic:uploaded-2:1' },
-  });
-  await expect
-    .poll(() => fixture.reverseGets.some((url) => url.searchParams.get('runId') === 'analysis-1'))
-    .toBe(true);
-  await page.reload();
-  await expect(node).toBeVisible();
-  await openPrompt(page);
-  expect(fixture.reversePosts).toHaveLength(1);
-  expect(fixture.errors).toEqual([]);
-});
-
-for (const immediateGeneration of [false, true]) {
-  test(`新生成成功自动反推一次并在刷新后保留，提交响应${immediateGeneration ? '直接成功' : '排队后成功'}`, async ({
-    page,
-  }) => {
-    const fixture = await installFixture(page, { immediateGeneration });
-    await page.goto(`/projects/${project.id}`);
-    await (await openAutomation(page)).check();
-    await page.getByRole('button', { name: '关闭设置', exact: true }).click();
-    const node = page.locator('.react-flow__node[data-id="image-node"]');
-    await node.locator('.flow-node-preview').click();
-    await page
-      .locator('.node-quick-editor')
-      .getByRole('button', { name: '生成', exact: true })
-      .click();
-    await expect.poll(() => fixture.generationPosts.length).toBe(1);
-    await expect.poll(() => fixture.reversePosts.length).toBe(1);
-    expect(fixture.reversePosts[0]).toEqual({
-      path: '/v1/assets/generated-1/versions/1/reverse-prompts',
-      body: { projectId: project.id, automatic: true, idempotencyKey: 'automatic:generated-1:1' },
-    });
-    await page.reload();
-    await expect(node).toBeVisible();
-    const dialog = await openPrompt(page);
-    await expect(dialog.getByRole('region', { name: '反推详细提示词', exact: true })).toContainText(
-      reverseText,
-    );
-    expect(fixture.reversePosts).toHaveLength(1);
-    expect(fixture.errors).toEqual([]);
-  });
-}

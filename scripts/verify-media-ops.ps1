@@ -26,8 +26,6 @@ $variables = @{
   RUN_SERVICE = 'memory'
   DATABASE_URL = ''
   S3_BUCKET = ''
-  NEW_API_BASE_URL = ''
-  NEW_API_API_KEY = ''
   TEST_DATABASE_URL = "postgresql://test_user:synthetic-test-password@127.0.0.1:$PostgresPort/multimodal_canvas_test?schema=public"
   TEST_S3_ENDPOINT = "http://127.0.0.1:$S3Port"
   TEST_S3_REGION = 'us-east-1'

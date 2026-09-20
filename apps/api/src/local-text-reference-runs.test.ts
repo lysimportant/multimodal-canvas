@@ -1,15 +1,15 @@
+import { MemoryAiSettingsStore } from './fixtures/memory-ai-settings';
 import { NewApiProvider, NewApiVideoProvider } from '@multimodal-canvas/providers';
 import type { CanvasDocument, MediaType, RunRecord } from '@multimodal-canvas/domain';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { buildApp } from './app';
+import { buildApp } from './fixtures/test-app';
 import { MemoryAssetStore } from './assets';
 import { MemoryAuthStore } from './auth-store';
 import { AuthService } from './auth-service';
 import { createNewApiRunExecutor } from './newapi-run-executor';
 import { MemoryProjectStore } from './projects';
 import { MemoryRunService } from './runs';
-import { AiSettingsStore } from './settings';
 
 /** 等待真实适配器的合成网络调用结束，失败状态由测试断言报告。 */
 async function waitForRun(service: MemoryRunService, id: string): Promise<RunRecord> {
@@ -73,10 +73,9 @@ describe('本地文字资源到 Chat Completions', () => {
       store: authStore,
       jwtSecret: 'synthetic-local-text-jwt-secret',
     });
-    const session = await auth.register({
-      email: 'local-text@example.test',
-      password: 'synthetic-test-password',
-    });
+    const session = await auth.issueToken(
+      await authStore.createUser({ email: 'local-text@example.test' }),
+    );
     const ownerId = session.user.id;
     const project = await projectStore.create({ name: '本地文字资源' }, { ownerId });
     const fixture = mediaFixtures[mediaType];
@@ -89,7 +88,7 @@ describe('本地文字资源到 Chat Completions', () => {
       mimeType: fixture.mimeType,
       content: original,
     });
-    const settingsStore = new AiSettingsStore('local-text-reference');
+    const settingsStore = new MemoryAiSettingsStore('local-text-reference');
     settingsStore.update({
       baseUrl: 'https://newapi.example.test/v1',
       apiKey: 'synthetic-local-text-key',

@@ -15,7 +15,8 @@ x-runtime-environment: &runtime-environment
   # API 不发布端口；Caddy 直接转发，只信任最近一跳。
   API_TRUST_PROXY_HOPS: '1'
   RUN_SERVICE: bullmq
-  RUN_QUEUE_NAME: canvas-production
+  # 新授权队列与旧钱包 Worker 隔离；旧版本不得消费此队列。
+  RUN_QUEUE_NAME: ${MC_RUN_QUEUE_NAME:-canvas-accounts-v1}
   WORKER_PROVIDER: newapi
   S3_ENDPOINT: https://minio:9000
   # 仅为 URL-only Provider 参考素材签名；必须公开 HTTPS 访问同一 bucket/key。
@@ -27,6 +28,12 @@ x-runtime-environment: &runtime-environment
   FFMPEG_ENABLED: 'true'
   FFPROBE_ENABLED: 'true'
   NEW_API_VIDEO_CONTRACT: ${MC_VIDEO_CONTRACT:-newapi-video-v1}
+  NEW_API_ISSUER: ${MC_NEW_API_ISSUER:-}
+  NEW_API_CLIENT_ID: ${MC_NEW_API_CLIENT_ID:-canvas}
+  NEW_API_INSTANCE_ID: ${MC_NEW_API_INSTANCE_ID:-main}
+  NEW_API_REDIRECT_URI: ${MC_NEW_API_REDIRECT_URI:-${MC_PUBLIC_ORIGIN:-http://localhost:${MC_HTTP_PORT:-8080}}/v1/auth/newapi/callback}
+  CANVAS_WEB_URL: ${MC_PUBLIC_ORIGIN:-http://localhost:${MC_HTTP_PORT:-8080}}
+  NEW_API_ADMIN_USER_IDS: ${MC_NEW_API_ADMIN_USER_IDS:-}
   # 本机入口与 API 同源，默认不开放跨域；服务器仅允许显式 HTTPS 来源。
   CORS_ORIGIN: ${MC_PUBLIC_ORIGIN:-}
   API_RATE_LIMIT_REDIS_ENABLED: 'true'
@@ -168,14 +175,10 @@ services:
 
   api:
     <<: *runtime
-    # 邮件配置只注入 API；文件可位于仓库外，未配置时邮箱相关操作明确失败。
+    # 可选客户端密钥由私有文件注入，文件中仅填写 NEW_API_CLIENT_SECRET。
     env_file:
-      # Windows Docker 默认使用仓库根目录的私有 email.txt；部署时可用 MC_EMAIL_FILE 覆盖。
-      - path: ${MC_EMAIL_FILE:-email.txt}
+      - path: ${MC_ACCOUNT_ENV_FILE:-.env.newapi}
         required: false
-    environment:
-      <<: *runtime-environment
-      APP_PUBLIC_URL: ${MC_APP_PUBLIC_URL:-${MC_PUBLIC_ORIGIN:-http://localhost:${MC_HTTP_PORT:-8080}}}
     image: multimodal-canvas-api:local
     build:
       context: .

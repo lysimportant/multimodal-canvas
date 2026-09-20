@@ -1,4 +1,4 @@
-/* 独立设置页沿用项目主题，范围提示与分类导航各占一层。 */
+/* 独立设置页沿用应用主题，并为账号分组、模型默认值和画布偏好提供稳定布局。 */
 .mc-settings-page {
   font-family:
     ui-sans-serif,
@@ -8,8 +8,8 @@
     'Segoe UI',
     'Microsoft YaHei',
     sans-serif;
-  padding-bottom: 32px;
   letter-spacing: 0;
+  padding-bottom: 32px;
 }
 
 .mc-settings-page > .mc-page-container {
@@ -41,6 +41,7 @@
 }
 
 .mc-settings-page .mc-settings-heading h1 {
+  color: var(--mc-text-strong);
   font-size: 26px;
   font-weight: 650;
   letter-spacing: 0;
@@ -99,7 +100,7 @@
   padding: 12px 0;
 }
 
-/* 外框已有页面标题，内层标题继续作为面板的可访问名称。 */
+/* 页面外框已有标题，面板标题仅保留给可访问名称。 */
 .mc-settings-page .settings-header-copy > .eyebrow,
 .mc-settings-page #settings-title {
   clip-path: inset(50%);
@@ -110,8 +111,7 @@
   width: 1px;
 }
 
-.mc-settings-page .settings-header-status,
-.mc-settings-page .settings-save-state {
+.mc-settings-page .settings-header-status {
   color: var(--mc-text-muted);
   font-size: 12px;
   line-height: 1.5;
@@ -154,10 +154,6 @@
   color: var(--mc-accent-strong);
 }
 
-.mc-settings-page .settings-rail-scope {
-  display: none;
-}
-
 .mc-settings-page .settings-content {
   overflow: visible;
   padding: 28px 0 32px 32px;
@@ -176,8 +172,7 @@
   line-height: 1.65;
 }
 
-.mc-settings-page .settings-field > span:not(.settings-field-error),
-.mc-settings-page .settings-field-label {
+.mc-settings-page .settings-field > span:not(.settings-field-error) {
   color: var(--mc-text-muted);
   font-size: 12px;
   font-weight: 550;
@@ -192,25 +187,8 @@
   min-height: 40px;
 }
 
-.mc-settings-page input::placeholder {
-  color: var(--mc-text-muted);
-  opacity: 1;
-}
-
-.mc-settings-page
-  :is(
-    .settings-field-error,
-    .settings-source-invalid,
-    .settings-op-status.is-error,
-    .settings-inline-notice.is-error,
-    .settings-delete
-  ),
-.mc-settings-page .settings-source[data-invalid='true'] .settings-source-label {
+.mc-settings-page .settings-field-error {
   color: #a62f30;
-}
-
-.mc-settings-page .settings-op-status.is-success {
-  color: var(--mc-accent-strong);
 }
 
 .mc-settings-page .settings-scope {
@@ -220,23 +198,13 @@
   padding-bottom: 16px;
 }
 
-.mc-settings-page .settings-scope .settings-status {
-  margin-left: 8px;
-}
-
-.mc-settings-page .settings-scope button,
-.mc-settings-page .settings-default-actions button[aria-expanded] {
+.mc-settings-page .settings-scope button {
   background: var(--mc-surface);
   border-color: var(--mc-border-strong);
   color: var(--mc-text);
 }
 
-.mc-settings-page .settings-default-actions button:not([aria-expanded]) {
-  color: var(--mc-text-muted);
-}
-
-.mc-settings-page .settings-scope button:hover:not(:disabled),
-.mc-settings-page .settings-default-actions button:hover:not(:disabled) {
+.mc-settings-page .settings-scope button:hover:not(:disabled) {
   background: var(--mc-surface-muted);
 }
 
@@ -246,102 +214,18 @@
   color: #ffffff;
 }
 
-.mc-settings-page .settings-scope button[aria-pressed='true']:hover:not(:disabled) {
-  background: var(--mc-accent-strong);
+.mc-settings-page .settings-default-grid {
+  gap: 4px 24px;
 }
 
-.mc-settings-page .settings-section:has(#settings-defaults-title) {
-  display: grid;
-  column-gap: 24px;
-  grid-template-columns: 180px minmax(0, 1fr);
-}
-.mc-settings-page
-  .settings-section:has(#settings-defaults-title)
-  > :is(.settings-section-heading, .settings-default-rows, .settings-field-error) {
-  grid-column: 1 / -1;
-}
 .mc-settings-page .settings-generation-count-field {
-  margin-block: 20px;
-}
-.mc-settings-page .settings-section:has(#settings-defaults-title) > .settings-scope {
-  align-self: end;
-  border: 0;
-  margin-block: 20px;
-  padding: 0;
-}
-.mc-settings-page .settings-default-rows {
-  border-top: 1px solid var(--mc-border);
-}
-
-.mc-settings-page .settings-default-row {
-  border-color: var(--mc-border);
-}
-
-.mc-settings-page .settings-default-row[data-expanded='true'] {
-  background: transparent;
-}
-
-.mc-settings-page .settings-default-main {
-  column-gap: 20px;
-  grid-template-columns: 100px minmax(240px, 1.2fr) minmax(200px, 1fr) 118px;
-  padding: 16px 0;
-}
-
-.mc-settings-page .settings-default-type {
-  color: var(--mc-text-strong);
-  font-size: 13px;
-  gap: 8px;
-  padding-top: 27px;
-}
-
-.mc-settings-page .settings-model-input {
-  font-size: 14px !important;
-  min-height: 40px !important;
-}
-
-.mc-settings-page .settings-default-source {
-  gap: 8px;
-}
-
-.mc-settings-page .settings-source-select {
-  color: var(--mc-text);
-  border-color: var(--mc-border-strong);
-  font-size: 14px;
-  min-height: 40px;
-}
-
-.mc-settings-page .settings-source-key {
-  color: var(--mc-text-muted);
-  font-size: 11px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.mc-settings-page .settings-default-actions {
-  align-items: stretch;
-  flex-direction: column;
-  gap: 6px;
-  padding-top: 23px;
-}
-
-.mc-settings-page .settings-default-connection {
-  background: var(--mc-surface-soft);
-  border-left-width: 2px;
-  gap: 16px;
-  margin: 0 0 22px 120px;
-  padding: 16px 18px;
-}
-
-.mc-settings-page .settings-key-input > input {
-  min-width: 0;
+  max-width: 360px;
 }
 
 .mc-settings-page .settings-actions {
   gap: 8px;
 }
 
-/* 页内操作栏位于内容之上，层级低于应用导航及弹层。 */
 .mc-settings-page .settings-footer {
   background: var(--mc-page-bg);
   border-color: var(--mc-border);
@@ -362,54 +246,9 @@
   min-height: 36px;
 }
 
-.mc-settings-page .settings-overview,
-.mc-settings-page .settings-overview .settings-row,
-.mc-settings-page .settings-models,
 .mc-settings-page .settings-models-table-wrap,
 .mc-settings-page .settings-models-table :is(th, td) {
   border-color: var(--mc-border);
-}
-
-.mc-settings-page .settings-overview .settings-row {
-  align-items: center;
-  grid-template-columns: 168px minmax(0, 1fr);
-  padding-block: 16px;
-}
-
-.mc-settings-page .settings-overview dt,
-.mc-settings-page .settings-overview dd {
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.mc-settings-page .settings-section:has(#settings-connections-title) {
-  column-gap: 24px;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-.mc-settings-page
-  .settings-section:has(#settings-connections-title)
-  > :is(
-    .settings-section-heading,
-    .settings-field:first-of-type,
-    .settings-field:last-of-type,
-    .settings-actions,
-    .settings-models
-  ) {
-  grid-column: 1 / -1;
-}
-.mc-settings-page
-  .settings-section:has(#settings-connections-title)
-  > .settings-field:last-of-type {
-  max-width: 720px;
-}
-.mc-settings-page .settings-api-ad-row {
-  display: none;
-}
-
-.mc-settings-page .settings-models-heading h2 {
-  color: var(--mc-text-strong);
-  font-size: 15px;
 }
 
 .mc-settings-page .settings-models-table th {
@@ -474,22 +313,11 @@
   outline-offset: 3px;
 }
 
-[data-theme='dark']
-  .mc-settings-page
-  :is(.button-primary, .settings-scope button[aria-pressed='true']) {
+[data-theme='dark'] .mc-settings-page .settings-scope button[aria-pressed='true'] {
   color: var(--mc-page-bg);
 }
 
-[data-theme='dark']
-  .mc-settings-page
-  :is(
-    .settings-field-error,
-    .settings-source-invalid,
-    .settings-delete,
-    .settings-op-status.is-error,
-    .settings-inline-notice.is-error
-  ),
-[data-theme='dark'] .mc-settings-page .settings-source[data-invalid='true'] .settings-source-label {
+[data-theme='dark'] .mc-settings-page .settings-field-error {
   color: #f2a5a5;
 }
 
@@ -497,20 +325,11 @@
   .mc-settings-page .settings-body {
     grid-template-columns: 160px minmax(0, 1fr);
   }
+
   .mc-settings-page .settings-content {
     padding-left: 24px;
   }
-  .mc-settings-page .settings-default-main {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 118px;
-    row-gap: 16px;
-  }
-  .mc-settings-page .settings-default-type {
-    grid-column: 1 / -1;
-    padding-top: 0;
-  }
-  .mc-settings-page .settings-default-connection {
-    margin-left: 0;
-  }
+
   .mc-settings-page .settings-footer {
     padding-left: 184px;
   }
@@ -520,72 +339,69 @@
   .mc-settings-page > .mc-page-container {
     padding-inline: 20px;
   }
+
   .mc-settings-page .settings-body {
     grid-template-columns: minmax(0, 1fr);
     min-height: 0;
   }
+
   .mc-settings-page .settings-rail {
-    border-right: 0;
     border-bottom: 1px solid var(--mc-border);
+    border-right: 0;
     padding: 12px 0;
   }
+
   .mc-settings-page .settings-rail-tabs {
     display: flex;
     flex-wrap: wrap;
     position: static;
   }
+
   .mc-settings-page .settings-rail-tab {
+    flex: 1 1 auto;
     font-size: 13px;
     min-height: 36px;
     padding: 8px 10px;
+    text-align: center;
   }
+
   .mc-settings-page .settings-content {
     padding: 24px 0;
   }
-  .mc-settings-page .settings-default-main {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  }
-  .mc-settings-page .settings-default-actions {
-    flex-direction: row;
-    grid-column: 1 / -1;
-    justify-content: flex-start;
-    padding-top: 0;
-  }
+
   .mc-settings-page .settings-footer {
     padding-left: 0;
   }
 }
 
-@media (max-width: 520px) {
+@media (max-width: 560px) {
   .mc-settings-heading {
     align-items: flex-start;
     flex-wrap: wrap;
     gap: 10px;
     padding-block: 24px;
   }
+
   .mc-settings-heading-icon {
     display: none;
   }
+
   .mc-settings-page .mc-settings-heading h1 {
     font-size: 22px;
   }
+
+  .mc-settings-api-ad {
+    margin-left: 0;
+  }
+
   .mc-settings-page .settings-header {
     align-items: flex-start;
     flex-direction: column;
     gap: 6px;
   }
-  .mc-settings-page .settings-default-main,
-  .mc-settings-page .settings-default-connection,
-  .mc-settings-page .settings-appearance-grid,
-  .mc-settings-page .settings-section:has(#settings-connections-title),
-  .mc-settings-page .settings-section:has(#settings-defaults-title) {
+
+  .mc-settings-page .settings-default-grid,
+  .mc-settings-page .settings-appearance-grid {
     grid-template-columns: minmax(0, 1fr);
-  }
-  .mc-settings-page .settings-overview .settings-row {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .mc-settings-page .settings-scope .settings-status {
-    flex-basis: 100%;
-    margin-left: 0;
   }
 }

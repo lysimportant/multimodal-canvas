@@ -20,6 +20,7 @@ import {
   type RunSnapshot,
   type RunStatus,
 } from '@multimodal-canvas/domain';
+import { executionDatabaseRunId } from '@multimodal-canvas/execution';
 import { mergeNodeTimings, parseStoredNodeTimings } from './node-timings';
 import type {
   ObservableRequestPromptSendStatus,
@@ -30,23 +31,12 @@ import type {
 } from './index';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-/**
- * 独立凭据的行标记，必须与 API 设置存储保持一致；它们不是全局活动连接。
- *
- * PostgreSQL 存储把「最新行」当作活动连接，而独立凭据按构造总是最新行并且
- * `defaultModels` 为 NULL。读取平台设置时必须显式排除这些行，否则节点超时等
- * 平台配置会静默退回默认值。
- */
-const INDEPENDENT_CREDENTIAL_LABELS = ['independent', 'independent-deleted'];
-/** 活动连接行的稳定排序：更新时间优先，同毫秒用版本号决胜。 */
-const ACTIVE_CREDENTIAL_ORDER_BY = [{ updatedAt: 'desc' as const }, { version: 'desc' as const }];
-
 /** Worker-side Prisma adapter. API creates the row; worker only reconciles lifecycle state. */
 export class WorkerPrismaRunPersistence implements RunPersistence {
   private readonly credentialKeyring?: CredentialEncryptionKeyring;
 
   constructor(
-    /** Worker 账务与运行持久化共用连接；调用方不得替换客户端。 */
+    /** Worker 运行与执行授权共用连接；调用方不得替换客户端。 */
     public readonly prisma: PrismaClient,
     encryptionSecret = process.env.AI_CREDENTIAL_ENCRYPTION_KEY,
   ) {
@@ -82,19 +72,19 @@ export class WorkerPrismaRunPersistence implements RunPersistence {
   }
 
   /**
-   * 从最新的活动连接读取节点超时，兼容未包含扩展字段的旧凭据。
-   * 独立凭据行不参与平台设置选择；返回毫秒值，非法持久化数据显式报错，
-   * 避免静默重置用户配置。
+   * 按任务凭据所属 New API 身份读取个人超时，单位毫秒。
+   * 缺少绑定或偏好时使用调用方默认值；非法偏好显式报错，不读取其他用户设置。
    */
-  async getProviderTimeoutMs(): Promise<number | undefined> {
-    const settings = await this.prisma.aiCredential.findFirst({
-      where: { projectId: null, label: { notIn: INDEPENDENT_CREDENTIAL_LABELS } },
-      orderBy: ACTIVE_CREDENTIAL_ORDER_BY,
-      select: { defaultModels: true },
+  async getProviderTimeoutMs(reference: WorkerCredentialReference): Promise<number | undefined> {
+    if (!reference.credentialId) return undefined;
+    const binding = await this.prisma.newApiGroupBinding.findUnique({
+      where: { credentialId: reference.credentialId },
+      select: { identity: { select: { preferences: true } } },
     });
-    const defaults = settings?.defaultModels;
-    if (!defaults || typeof defaults !== 'object' || Array.isArray(defaults)) return undefined;
-    const timeoutMs = defaults.__timeoutMs;
+    const preferences = binding?.identity.preferences;
+    if (!preferences || typeof preferences !== 'object' || Array.isArray(preferences))
+      return undefined;
+    const timeoutMs = preferences.timeoutMs;
     if (timeoutMs === undefined) return undefined;
     if (
       typeof timeoutMs !== 'number' ||
@@ -524,9 +514,7 @@ function toPrismaStatus(status: RunStatus): PrismaRunStatus {
 }
 
 export function databaseRunId(runId: string): string {
-  if (UUID_PATTERN.test(runId)) return runId;
-  const digest = createHash('sha256').update(`multimodal-canvas:run:${runId}`).digest('hex');
-  return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
+  return executionDatabaseRunId(runId);
 }
 
 function stableProviderJobId(provider: string, providerJobId: string): string {

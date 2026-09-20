@@ -1,8 +1,3 @@
-import {
-  acceptTestQuotes,
-  withTestQuoteTransport,
-  TEST_QUOTE_ID,
-} from './marketplace/quote-test-fixture';
 import type { PromptDocument } from '@multimodal-canvas/domain';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthSessionChangedError, clearAuthSession, persistAuthSession } from './auth-client';
@@ -72,53 +67,33 @@ function response(value: unknown = optimization, status = 200): Response {
   return new Response(JSON.stringify({ optimization: value }), { status });
 }
 
-let releaseQuoteConfirmation: (() => void) | undefined;
-beforeEach(() => {
-  releaseQuoteConfirmation = acceptTestQuotes();
-});
 afterEach(() => {
-  releaseQuoteConfirmation?.();
   clearAuthSession();
   sessionStorage.clear();
   vi.restoreAllMocks();
 });
 
 describe('提示词优化客户端', () => {
-  it('更换上游后仅提交平台 ID，并按平台身份校验返回结果', async () => {
-    const fetcher = vi
-      .fn<typeof fetch>()
-      .mockResolvedValue(
-        response({ ...optimization, modelAlias: 'new-alias', platformModelId: 'product-a' }),
-      );
-    const result = await submitPromptOptimization(
-      {
-        ...request,
-        platformModelId: 'product-a',
-        modelAlias: 'old-alias',
-        credentialId: 'old-provider',
-      },
-      '',
-      { fetcher: withTestQuoteTransport(fetcher) },
-    );
-    expect(result.platformModelId).toBe('product-a');
+  it('只提交本人分组模型，拒绝其他凭据返回的结果', async () => {
+    const model = { modelAlias: 'text-model', credentialId: 'connection-a' };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(response());
+    const result = await submitPromptOptimization({ ...request, ...model }, '', { fetcher });
+    expect(result.credentialId).toBe(model.credentialId);
     const body = JSON.parse(String(fetcher.mock.calls[0]![1]?.body));
-    expect(body.platformModelId).toBe('product-a');
-    expect(body).not.toHaveProperty('modelAlias');
-    expect(body).not.toHaveProperty('credentialId');
+    expect(body).toMatchObject(model);
+    expect(body).not.toHaveProperty('quoteId');
     const wrong = vi
       .fn<typeof fetch>()
-      .mockResolvedValue(response({ ...optimization, platformModelId: 'other-product' }));
+      .mockResolvedValue(response({ ...optimization, credentialId: 'connection-b' }));
     await expect(
-      submitPromptOptimization({ ...request, platformModelId: 'product-a' }, '', {
-        fetcher: withTestQuoteTransport(wrong),
-      }),
+      submitPromptOptimization({ ...request, ...model }, '', { fetcher: wrong }),
     ).rejects.toThrow('身份不一致');
   });
   it('编码项目路由并只提交一次，不向服务器默认模型附加客户端猜测', async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(response());
     expect(
       await submitPromptOptimization(request, 'https://api.test/', {
-        fetcher: withTestQuoteTransport(fetcher),
+        fetcher: fetcher,
       }),
     ).toEqual(optimization);
     expect(fetcher).toHaveBeenCalledTimes(1);
@@ -131,7 +106,6 @@ describe('提示词优化客户端', () => {
       mediaType: request.mediaType,
       promptDocument: source,
       idempotencyKey: 'stable-key',
-      quoteId: TEST_QUOTE_ID,
     });
     expect(init?.method).toBe('POST');
     expect(source.blocks[0]).toEqual({ type: 'text', text: '保持角色 ' });
@@ -144,7 +118,7 @@ describe('提示词优化客户端', () => {
       submitPromptOptimization(
         { ...request, modelAlias: 'text-model', credentialId: 'key-b' },
         '',
-        { fetcher: withTestQuoteTransport(fetcher), signal: controller.signal },
+        { fetcher: fetcher, signal: controller.signal },
       ),
     ).rejects.toThrow('connection lost');
     expect(fetcher).toHaveBeenCalledTimes(1);
@@ -171,12 +145,12 @@ describe('提示词优化客户端', () => {
       submitPromptOptimization(
         { ...request, modelAlias: 'text-model', credentialId: 'connection-a' },
         '',
-        { fetcher: withTestQuoteTransport(fetcher) },
+        { fetcher: fetcher },
       ),
     ).rejects.toThrow();
   });
 
-  it('GET 核对任务 ID 与冻结模型，公开响应不回显旧连接时仍可恢复且不重新提交', async () => {
+  it('GET 核对任务与分组身份，缺少连接时拒绝且不重新提交', async () => {
     const fetcher = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(response())
@@ -187,24 +161,22 @@ describe('提示词优化客户端', () => {
       runId: 'run/a',
       model: { modelAlias: 'text-model', credentialId: 'connection-a' },
     };
-    await expect(
-      fetchPromptOptimization(pending, '', { fetcher: withTestQuoteTransport(fetcher) }),
-    ).resolves.toEqual(optimization);
+    await expect(fetchPromptOptimization(pending, '', { fetcher: fetcher })).resolves.toEqual(
+      optimization,
+    );
     expect(fetcher.mock.calls[0]![0]).toBe('/v1/projects/project%2Fa/prompt-optimizations/run%2Fa');
     expect(fetcher.mock.calls[0]![1]?.method).toBeUndefined();
-    await expect(
-      fetchPromptOptimization(pending, '', { fetcher: withTestQuoteTransport(fetcher) }),
-    ).rejects.toThrow('身份不一致');
-    await expect(
-      fetchPromptOptimization(pending, '', { fetcher: withTestQuoteTransport(fetcher) }),
-    ).resolves.toEqual(
-      expect.objectContaining({ runId: pending.runId, modelAlias: pending.model.modelAlias }),
+    await expect(fetchPromptOptimization(pending, '', { fetcher: fetcher })).rejects.toThrow(
+      '身份不一致',
+    );
+    await expect(fetchPromptOptimization(pending, '', { fetcher: fetcher })).rejects.toThrow(
+      '身份不一致',
     );
     expect(fetcher).toHaveBeenCalledTimes(3);
     expect(fetcher.mock.calls.every(([, init]) => init?.method === undefined)).toBe(true);
   });
 
-  it('旧模型请求兼容公开响应省略连接 ID，仍拒绝模型 alias 不一致', async () => {
+  it('缺失分组身份或模型 alias 不一致时拒绝响应', async () => {
     const fetcher = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(response({ ...optimization, credentialId: undefined }))
@@ -216,48 +188,14 @@ describe('提示词优化客户端', () => {
       modelAlias: 'text-model',
       credentialId: 'connection-a',
     };
-    const result = await submitPromptOptimization(legacyRequest, '', {
-      fetcher: withTestQuoteTransport(fetcher),
-    });
-    expect(result.modelAlias).toBe('text-model');
-    expect(result).not.toHaveProperty('credentialId');
+    await expect(submitPromptOptimization(legacyRequest, '', { fetcher })).rejects.toThrow(
+      '身份不一致',
+    );
     await expect(
       submitPromptOptimization(legacyRequest, '', {
-        fetcher: withTestQuoteTransport(fetcher),
+        fetcher: fetcher,
       }),
     ).rejects.toThrow('身份不一致');
-  });
-
-  it('GET 恢复按平台身份核对已冻结模型，不因旧 alias 或连接提示拒绝有效响应', async () => {
-    const fetcher = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(
-        response({
-          ...optimization,
-          modelAlias: 'current-provider-alias',
-          platformModelId: 'product-a',
-          credentialId: undefined,
-        }),
-      )
-      .mockResolvedValueOnce(
-        response({ ...optimization, platformModelId: 'wrong-product', credentialId: undefined }),
-      );
-    const pending = {
-      request: { ...request, platformModelId: 'product-a' },
-      runId: 'run/a',
-      model: {
-        modelAlias: 'old-provider-alias',
-        credentialId: 'old-connection',
-        platformModelId: 'product-a',
-      },
-    };
-    await expect(fetchPromptOptimization(pending, '', { fetcher })).resolves.toMatchObject({
-      platformModelId: 'product-a',
-      modelAlias: 'current-provider-alias',
-    });
-    await expect(fetchPromptOptimization(pending, '', { fetcher })).rejects.toThrow('身份不一致');
-    expect(fetcher).toHaveBeenCalledTimes(2);
-    expect(fetcher.mock.calls.every(([, init]) => init?.method === undefined)).toBe(true);
   });
 
   it.each([
@@ -270,11 +208,11 @@ describe('提示词优化客户端', () => {
       .fn<typeof fetch>()
       .mockImplementation(async () => response({ ...optimization, promptDocument }));
     await expect(
-      submitPromptOptimization(request, '', { fetcher: withTestQuoteTransport(fetcher) }),
+      submitPromptOptimization(request, '', { fetcher: fetcher }),
     ).rejects.toBeInstanceOf(PromptOptimizationResultError);
     await expect(
       fetchPromptOptimization({ request, runId: 'run/a' }, '', {
-        fetcher: withTestQuoteTransport(fetcher),
+        fetcher: fetcher,
       }),
     ).rejects.toMatchObject({
       name: 'PromptOptimizationResultError',
@@ -305,7 +243,7 @@ describe('提示词优化客户端', () => {
         model: { modelAlias: 'text-model' },
       },
       '',
-      { fetcher: withTestQuoteTransport(fetcher) },
+      { fetcher: fetcher },
     ).catch((error: unknown) => error);
     expect(cause).toBeInstanceOf(Error);
     expect(cause).not.toBeInstanceOf(PromptOptimizationResultError);
@@ -363,7 +301,7 @@ describe('提示词优化客户端', () => {
         }),
     );
     const pending = submitPromptOptimization(request, '', {
-      fetcher: withTestQuoteTransport(vi.fn().mockResolvedValue(received)),
+      fetcher: vi.fn().mockResolvedValue(received),
     });
     await vi.waitFor(() => expect(finish).toBeDefined());
     clearAuthSession();
@@ -375,13 +313,13 @@ describe('提示词优化客户端', () => {
     const fetcher = vi
       .fn<typeof fetch>()
       .mockResolvedValue(new Response(JSON.stringify({ error: '模型不可用' }), { status: 422 }));
-    await expect(
-      submitPromptOptimization(request, '', { fetcher: withTestQuoteTransport(fetcher) }),
-    ).rejects.toMatchObject({
-      message: '模型不可用',
-      status: 422,
-      rejected: true,
-    });
+    await expect(submitPromptOptimization(request, '', { fetcher: fetcher })).rejects.toMatchObject(
+      {
+        message: '模型不可用',
+        status: 422,
+        rejected: true,
+      },
+    );
     expect(new PromptOptimizationRequestError('timeout', 504).rejected).toBe(false);
     expect(new PromptOptimizationRequestError('conflict', 409).rejected).toBe(false);
   });

@@ -1,49 +1,19 @@
+import { AccountAccessError as AccountServiceError, accountError } from './account-errors';
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { AccountService, AccountServiceError, accountError } from './account-service';
 import { AuthService, toPublicUser, type AuthenticatedSession } from './auth-service';
 import { extractBearerToken } from './auth';
 import type { AuthStore } from './auth-store';
-import type { AccountMailSender } from './account-mail';
 import type { AssetStore, ManagementAsset } from './assets';
 import type { ProjectStore } from './projects';
 import type { RunService } from './runs';
-
-/** 公开的验证入口也使用共享认证限流，其他管理路由必须解析真实账户会话。 */
-export const publicAccountPaths = new Set([
-  '/v1/admin/bootstrap',
-  '/v1/admin/bootstrap/request',
-  '/v1/auth/verify',
-  '/v1/auth/verification/resend',
-  '/v1/auth/password/reset/request',
-]);
 
 /** 通用分页最大一百条，空值和无效枚举均明确拒绝。 */
 const paginationSchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(30),
 });
-/** 个人资料白名单，不允许修改角色、归属和密码摘要。 */
-const profileSchema = z
-  .object({
-    displayName: z.string().trim().min(1).max(120).optional(),
-    bio: z.string().max(500).optional(),
-    avatarUrl: z
-      .string()
-      .max(2048)
-      .refine(
-        (value) =>
-          !value ||
-          /^\/v1\/assets\/[A-Za-z0-9_-]+\/(?:content|derivatives\/thumbnail)$/.test(value) ||
-          isSecureImageUrl(value),
-        '头像地址必须使用 HTTPS',
-      )
-      .optional(),
-  })
-  .strict();
-/** 不同验证用途必须显式指定，验证码只能为六位数字。 */
-const purposeSchema = z.enum(['bootstrap', 'register', 'invite', 'email', 'reset']);
 /** 列表过滤在鉴权后的用户范围内执行，不接受任意 ownerId 覆盖。 */
 const resourceQuerySchema = paginationSchema
   .extend({
@@ -61,8 +31,6 @@ const resourceQuerySchema = paginationSchema
 export type AccountRoutesOptions = {
   store: AuthStore;
   auth?: AuthService;
-  service?: AccountService;
-  mail: AccountMailSender;
   assets: AssetStore;
   projects: ProjectStore;
   runs: RunService;
@@ -97,135 +65,15 @@ export function registerAccountRoutes(app: FastifyInstance, options: AccountRout
       throw new AccountServiceError('admin_required', '仅管理员可以访问', 403);
     return current;
   };
-  /** 缺少 JWT 配置时所有账户写入明确返回服务不可用。 */
-  const service = () => {
-    if (!options.service)
-      throw new AccountServiceError('authentication_unavailable', '账户服务尚未配置', 503);
-    return options.service;
-  };
   /** 用户详情不存在时采用统一 404，不把密码摘要带入响应。 */
   const userById = async (id: string) => {
     const user = await options.store.findUserById(id);
     if (!user) throw new AccountServiceError('user_not_found', '用户不存在', 404);
     return user;
   };
-
-  app.get(
-    '/v1/admin/bootstrap',
-    handler(async () => service().bootstrapStatus()),
-  );
-  app.post(
-    '/v1/admin/bootstrap/request',
-    handler(async (request, reply) => {
-      const input = z
-        .object({
-          email: z.string(),
-          password: z.string(),
-          displayName: z.string().trim().min(1).max(120).optional(),
-          setupToken: z.string().max(1024).optional(),
-        })
-        .strict()
-        .parse(request.body);
-      return reply.code(202).send(await service().requestBootstrap(input));
-    }),
-  );
-  app.post(
-    '/v1/auth/verify',
-    handler(async (request) => {
-      const input = z
-        .object({
-          email: z.string(),
-          code: z.string().regex(/^\d{6}$/),
-          purpose: purposeSchema,
-          password: z.string().optional(),
-        })
-        .strict()
-        .parse(request.body);
-      let userId: string | undefined;
-      if (input.purpose === 'email') {
-        const token = extractBearerToken(request.headers.authorization);
-        if (!token || !options.auth)
-          throw new AccountServiceError(
-            'authentication_required',
-            '请先登录正在更换邮箱的账户',
-            401,
-          );
-        userId = (await options.auth.verifyAccessToken(token)).user.id;
-      }
-      return service().verify(input, userId);
-    }),
-  );
-  app.post(
-    '/v1/auth/verification/resend',
-    handler(async (request, reply) => {
-      const input = z
-        .object({ email: z.string(), purpose: z.enum(['bootstrap', 'register', 'invite']) })
-        .strict()
-        .parse(request.body);
-      return reply.code(202).send(await service().resend(input.email, input.purpose));
-    }),
-  );
-  app.post(
-    '/v1/auth/password/reset/request',
-    handler(async (request, reply) => {
-      const input = z.object({ email: z.string() }).strict().parse(request.body);
-      return reply.code(202).send(await service().requestSelfServicePasswordReset(input.email));
-    }),
-  );
-  app.post(
-    '/v1/auth/refresh',
-    handler(async (request) => {
-      session(request);
-      return options.auth!.refresh(extractBearerToken(request.headers.authorization)!);
-    }),
-  );
   app.get(
     '/v1/account/profile',
     handler(async (request) => ({ user: toPublicUser(await userById(session(request).user.id)) })),
-  );
-  app.patch(
-    '/v1/account/profile',
-    handler(async (request) => {
-      const current = session(request);
-      return {
-        user: await service().updateProfile(
-          current.user.id,
-          current.user.id,
-          profileSchema.parse(request.body),
-        ),
-      };
-    }),
-  );
-  app.post(
-    '/v1/account/password',
-    handler(async (request) => {
-      const current = session(request);
-      const input = z
-        .object({ currentPassword: z.string(), newPassword: z.string() })
-        .strict()
-        .parse(request.body);
-      return service().changePassword(current.user.id, input.currentPassword, input.newPassword);
-    }),
-  );
-  app.post(
-    '/v1/account/email/request',
-    handler(async (request, reply) => {
-      const current = session(request);
-      const input = z
-        .object({ email: z.string(), currentPassword: z.string() })
-        .strict()
-        .parse(request.body);
-      return reply
-        .code(202)
-        .send(
-          await service().requestEmailChange(
-            current.user.id,
-            current.user.id,
-            input.email,
-            input.currentPassword,
-          ),
-        );
-    }),
   );
   app.get(
     '/v1/account/sessions',
@@ -287,51 +135,7 @@ export function registerAccountRoutes(app: FastifyInstance, options: AccountRout
   );
 
   app.get(
-    '/v1/admin/users',
-    handler(async (request) => {
-      session(request, true);
-      const query = paginationSchema
-        .extend({
-          query: z.string().max(512).optional(),
-          status: z.enum(['active', 'pending', 'disabled']).optional(),
-        })
-        .strict()
-        .parse(request.query);
-      const users = (await options.store.listUsers())
-        .filter(
-          (user) =>
-            (!query.status || user.status === query.status) &&
-            (!query.query ||
-              `${user.email} ${user.displayName ?? ''}`
-                .toLowerCase()
-                .includes(query.query.toLowerCase())),
-        )
-        .map(toPublicUser);
-      return {
-        users: paginate(users, query),
-        total: users.length,
-        page: query.page,
-        pageSize: query.pageSize,
-      };
-    }),
-  );
-  app.post(
-    '/v1/admin/users',
-    handler(async (request, reply) => {
-      const current = session(request, true);
-      const input = z
-        .object({
-          email: z.string(),
-          displayName: z.string().trim().min(1).max(120).optional(),
-          bio: z.string().max(500).optional(),
-        })
-        .strict()
-        .parse(request.body);
-      return reply.code(202).send(await service().invite(current.user.id, input));
-    }),
-  );
-  app.get(
-    '/v1/admin/users/:id',
+    '/v1/admin/resource-owners/:id',
     handler(async (request) => {
       session(request, true);
       const user = await userById(idParams(request).id);
@@ -349,58 +153,6 @@ export function registerAccountRoutes(app: FastifyInstance, options: AccountRout
       };
     }),
   );
-  app.patch(
-    '/v1/admin/users/:id',
-    handler(async (request) => {
-      const current = session(request, true);
-      const input = profileSchema
-        .extend({ status: z.enum(['active', 'disabled']).optional() })
-        .strict()
-        .parse(request.body);
-      return { user: await service().updateUser(current.user.id, idParams(request).id, input) };
-    }),
-  );
-  app.post(
-    '/v1/admin/users/:id/invite',
-    handler(async (request, reply) => {
-      const current = session(request, true);
-      const user = await userById(idParams(request).id);
-      const purpose = (await options.store.findChallenge(user.email, 'invite'))
-        ? 'invite'
-        : 'register';
-      return reply.code(202).send(await service().resend(user.email, purpose, current.user.id));
-    }),
-  );
-  app.post(
-    '/v1/admin/users/:id/password-reset',
-    handler(async (request, reply) => {
-      const current = session(request, true);
-      return reply
-        .code(202)
-        .send(await service().requestPasswordReset(current.user.id, idParams(request).id));
-    }),
-  );
-  app.post(
-    '/v1/admin/users/:id/email',
-    handler(async (request, reply) => {
-      const current = session(request, true);
-      const input = z
-        .object({ email: z.string(), currentPassword: z.string().optional() })
-        .strict()
-        .parse(request.body);
-      return reply
-        .code(202)
-        .send(
-          await service().requestEmailChange(
-            current.user.id,
-            idParams(request).id,
-            input.email,
-            input.currentPassword,
-          ),
-        );
-    }),
-  );
-
   app.get(
     '/v1/admin/resource-groups',
     handler(async (request) => {
@@ -637,7 +389,6 @@ export function registerAccountRoutes(app: FastifyInstance, options: AccountRout
       const users = await options.store.listUsers();
       const assets = await managedAssets(options);
       const runs = await managedRuns(options);
-      const deliveries = await options.store.listDeliveries();
       return {
         users: {
           total: users.length,
@@ -655,10 +406,6 @@ export function registerAccountRoutes(app: FastifyInstance, options: AccountRout
           failed: runs.filter((run) => run.status === 'failed').length,
           active: runs.filter((run) => !['succeeded', 'failed', 'cancelled'].includes(run.status))
             .length,
-        },
-        mail: {
-          configured: options.mail.configured,
-          failed: deliveries.filter((delivery) => delivery.status === 'failed').length,
         },
       };
     }),
@@ -681,11 +428,6 @@ export function registerAccountRoutes(app: FastifyInstance, options: AccountRout
         api: { status: 'ok' },
         storage,
         queue,
-        mail: {
-          configured: options.mail.configured,
-          ...options.mail.publicConfiguration,
-          deliveries: await options.store.listDeliveries(),
-        },
       };
     }),
   );
@@ -702,15 +444,6 @@ function idParams(request: FastifyRequest): { id: string } {
         .regex(/^[A-Za-z0-9_-]+$/),
     })
     .parse(request.params);
-}
-/** 对安全头像 URL 采用结构化解析，拒绝携带用户名/密码的地址。 */
-function isSecureImageUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.protocol === 'https:' && !url.username && !url.password;
-  } catch {
-    return false;
-  }
 }
 /** 在已授权结果上分页，避免总数暴露其他用户的信息。 */
 function paginate<T>(entries: T[], query: { page: number; pageSize: number }): T[] {

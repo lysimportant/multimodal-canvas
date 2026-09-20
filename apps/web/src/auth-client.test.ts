@@ -1,44 +1,129 @@
-import '@testing-library/jest-dom/vitest';
-
-import { QueryClient } from '@tanstack/react-query';
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
-import { createElement } from 'react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
-import { App } from './App';
+import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
 import {
   apiFetch,
-  AuthSessionChangedError,
   clearAuthSession,
-  getAuthSessionGeneration,
-  getAuthToken,
-  openAuthEventStream,
   persistAuthSession,
-  readAuthSession,
   readStoredAuthSession,
-  setUnauthorizedHandler,
-  type AuthTokenResponse,
+  readAuthSession,
+  refreshAuthSession,
+  fetchCurrentSession,
+  AuthSessionChangedError,
+  openAuthEventStream,
 } from './auth-client';
-import { projectQueryKeys } from './query/projects';
-import { navigateApp } from './routing';
-import { serverClockNow } from './server-clock';
-
-/** 仅用于本地模拟请求的合成会话，不包含真实账户或凭据。 */
-const response: AuthTokenResponse = {
-  accessToken: 'jwt-test-token',
-  tokenType: 'Bearer',
-  expiresIn: 900,
-  expiresAt: new Date(Date.now() + 900_000).toISOString(),
-  user: {
-    id: 'user-1',
-    email: 'user@example.com',
-    role: 'user',
-    createdAt: new Date().toISOString(),
-  },
+const user = {
+  id: 'synthetic-user-a',
+  displayName: '甲',
+  role: 'user' as const,
+  createdAt: '2026-09-21T00:00:00Z',
 };
+const session = { user, expiresAt: '2099-01-01T00:00:00Z' };
+beforeEach(() => {
+  clearAuthSession();
+  localStorage.clear();
+});
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+  clearAuthSession();
+});
+/** 合成可控响应，用于验证身份切换后迟到结果不会提交。 */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+describe('New API Cookie 会话', () => {
+  it('保存公开资料与到期时间，丢弃历史访问令牌', () => {
+    persistAuthSession({ ...session, accessToken: 'synthetic-obsolete-token' });
+    expect(readAuthSession()).toEqual(session);
+    expect(JSON.stringify(localStorage)).not.toContain('synthetic-obsolete-token');
+  });
+  it('无邮箱用户正常恢复，通过 Cookie 发送一次写请求且不注入 bearer', async () => {
+    persistAuthSession(session);
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ ok: true }));
+    vi.stubGlobal('fetch', fetcher);
+    await apiFetch('/v1/projects', { method: 'POST' });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher.mock.calls[0]![1]?.credentials).toBe('include');
+    expect(new Headers(fetcher.mock.calls[0]![1]?.headers).has('authorization')).toBe(false);
+  });
+  it('401 写请求不重试，撤销本地会话', async () => {
+    persistAuthSession(session);
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response('{}', { status: 401 }));
+    vi.stubGlobal('fetch', fetcher);
+    await apiFetch('/v1/projects', { method: 'POST' });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(readAuthSession()).toBeNull();
+  });
+  it('换号中断旧请求，旧响应不清除新账号', async () => {
+    persistAuthSession(session);
+    const delayed = deferred<Response>();
+    const fetcher = vi.fn<typeof fetch>().mockReturnValue(delayed.promise);
+    vi.stubGlobal('fetch', fetcher);
+    const request = apiFetch('/v1/projects');
+    const rejected = expect(request).rejects.toBeInstanceOf(AuthSessionChangedError);
+    persistAuthSession({ ...session, user: { ...user, id: 'synthetic-user-b' } });
+    expect(fetcher.mock.calls[0]![1]?.signal?.aborted).toBe(true);
+    delayed.resolve(new Response('{}', { status: 401 }));
+    await rejected;
+    expect(readAuthSession()?.user.id).toBe('synthetic-user-b');
+  });
+  it('恢复过期 Cookie 时先验证上游再续期，浏览器不接收令牌', async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('{}', { status: 401 }))
+      .mockResolvedValueOnce(Response.json(session));
+    vi.stubGlobal('fetch', fetcher);
+    expect(await fetchCurrentSession('http://localhost:3000')).toEqual(session);
+    expect(fetcher.mock.calls.map(([url]) => String(url))).toEqual([
+      'http://localhost:3000/v1/auth/me',
+      'http://localhost:3000/v1/auth/refresh',
+    ]);
+    expect(fetcher.mock.calls[1]![1]?.method).toBe('POST');
+  });
+  it('续期错误保留尚有效的作品会话，同一标签合并并发续期', async () => {
+    persistAuthSession(session);
+    const delayed = deferred<Response>();
+    const fetcher = vi.fn<typeof fetch>().mockReturnValue(delayed.promise);
+    vi.stubGlobal('fetch', fetcher);
+    const a = refreshAuthSession(''),
+      b = refreshAuthSession('');
+    const rejected = Promise.all([expect(a).rejects.toThrow(), expect(b).rejects.toThrow()]);
+    delayed.resolve(new Response('{}', { status: 503 }));
+    await rejected;
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(readStoredAuthSession()).toEqual(session);
+  });
+  it('等待其它标签完成续期后复用公开状态，不重复轮换 Cookie', async () => {
+    const initial = { user, expiresAt: '2020-01-01T00:00:00Z' };
+    persistAuthSession(initial);
+    const fetcher = vi.fn<typeof fetch>();
+    vi.stubGlobal('fetch', fetcher);
+    const request = vi.fn(async (_name: string, callback: () => unknown) => {
+      localStorage.setItem('multimodal-canvas:auth-session', JSON.stringify(session));
+      return callback();
+    });
+    vi.stubGlobal('navigator', { locks: { request } });
+    expect(await refreshAuthSession('')).toEqual(session);
+    expect(request).toHaveBeenCalledOnce();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+  it('并发 Cookie 轮换的迟到 401 只重读当前会话，不注销已更新身份', async () => {
+    persistAuthSession(session);
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('{}', { status: 401 }))
+      .mockResolvedValueOnce(Response.json(session));
+    vi.stubGlobal('fetch', fetcher);
+    expect(await refreshAuthSession('')).toEqual(session);
+    expect(fetcher.mock.calls.map(([url]) => url)).toEqual(['/v1/auth/refresh', '/v1/auth/me']);
+    expect(readAuthSession()).toEqual(session);
+  });
+});
 
-/** 将给定事件片段编码为会正常结束的模拟 SSE 响应。 */
 function streamResponse(...chunks: string[]): Response {
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
@@ -53,7 +138,6 @@ function streamResponse(...chunks: string[]): Response {
   });
 }
 
-/** 模拟保持连接的 SSE 响应，由调用方取消请求。 */
 function pendingStreamResponse(): Response {
   const stream = new ReadableStream<Uint8Array>({ start() {} });
   return new Response(stream, {
@@ -62,806 +146,67 @@ function pendingStreamResponse(): Response {
   });
 }
 
-/** 构造模拟 API 的 JSON 响应，不发起真实网络请求。 */
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'content-type': 'application/json' },
-  });
-}
-
-/** 通过标准 URL 解析器统一提取 fetch 各种输入形式的路径。 */
-function requestPath(input: RequestInfo | URL): string {
-  const rawUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-  return new URL(rawUrl, 'http://localhost:3000').pathname;
-}
-
-/** 返回指定方法的项目集合请求，区分读取列表与有副作用的创建操作。 */
-function projectRequests(method: 'GET' | 'POST') {
-  return vi.mocked(globalThis.fetch).mock.calls.filter(([input, init]) => {
-    const requestMethod = init?.method ?? (input instanceof Request ? input.method : 'GET');
-    return requestPath(input) === '/v1/projects' && requestMethod.toUpperCase() === method;
-  });
-}
-
-/** 在独立认证页面提交合成账户；确认密码只用于前端校验，不进入 API 请求。 */
-async function submitAuthentication(
-  user: ReturnType<typeof userEvent.setup>,
-  action: 'login' | 'register' = 'login',
-  email = response.user.email,
-) {
-  await screen.findByRole('heading', { name: '登录工作台' });
-  if (action === 'register') {
-    await user.click(screen.getByRole('link', { name: '创建账户' }));
-    await screen.findByRole('heading', { name: '创建账户' });
-    await user.type(screen.getByLabelText('显示名称（可选）'), '认证测试');
-    await user.type(screen.getByLabelText('确认密码'), 'synthetic-test-password');
-  }
-  await user.type(screen.getByLabelText('邮箱'), email);
-  await user.type(screen.getByLabelText('密码'), 'synthetic-test-password');
-  await user.click(screen.getByRole('button', { name: action === 'login' ? '登录' : '注册' }));
-}
-
-/** 校验匿名工作台为空态，且不会因禁用查询而永久加载或禁用创建入口。 */
-function expectAnonymousWorkspace() {
-  expect(screen.getByRole('heading', { name: '项目工作台' })).toBeVisible();
-  expect(screen.getByText('还没有项目')).toBeVisible();
-  expect(screen.queryByText('正在加载项目')).not.toBeInTheDocument();
-  expect(screen.queryByText('正在读取项目')).not.toBeInTheDocument();
-  expect(screen.queryByText('项目列表加载失败')).not.toBeInTheDocument();
-  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-  for (const trigger of screen.getAllByRole('button', { name: '新建项目' })) {
-    expect(trigger).toBeEnabled();
-  }
-}
-
-describe('auth-client', () => {
-  beforeEach(() => {
-    localStorage.clear();
-    clearAuthSession();
-    vi.restoreAllMocks();
-  });
-
-  it('应用请求读取服务端时间头并校准共享计时', async () => {
-    const serverTime = '2026-09-17T10:00:00.000Z';
-    const monotonic = vi.spyOn(performance, 'now').mockReturnValue(1_000);
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
-      monotonic.mockReturnValue(1_200);
-      return new Response('{}', { headers: { 'x-server-time': serverTime } });
-    });
-    await apiFetch('/v1/projects');
-    expect(serverClockNow()).toBe(Date.parse(serverTime) + 100);
-  });
-
-  afterEach(() => {
-    setUnauthorizedHandler(undefined);
-    clearAuthSession();
-  });
-
-  it('persists and restores a non-expired session without exposing the password', () => {
-    persistAuthSession(response);
-    expect(getAuthToken()).toBe('jwt-test-token');
-    expect(readAuthSession()).toMatchObject({
-      accessToken: 'jwt-test-token',
-      user: { email: 'user@example.com' },
-    });
-    expect(localStorage.getItem('multimodal-canvas:auth-session')).not.toContain('password');
-  });
-
-  it('adds a Bearer header and clears the session on 401', async () => {
-    persistAuthSession(response);
-    const unauthorized = vi.fn();
-    setUnauthorizedHandler(unauthorized);
+it('reconnects with exponential backoff and suppresses replayed events', async () => {
+  vi.useFakeTimers();
+  try {
+    const controller = new AbortController();
+    const replayed = 'event: run.updated\ndata: {"id":"run-1","status":"running"}\n\n';
     const fetcher = vi
       .spyOn(globalThis, 'fetch')
-      .mockResolvedValue(
-        new Response(JSON.stringify({ error: 'authentication required' }), { status: 401 }),
-      );
-
-    const result = await apiFetch('http://localhost:3000/v1/projects');
-    expect(result.status).toBe(401);
-    expect(fetcher.mock.calls[0]?.[1]).toEqual(
-      expect.objectContaining({
-        headers: expect.any(Headers),
-      }),
+      .mockResolvedValueOnce(streamResponse(replayed))
+      .mockResolvedValueOnce(streamResponse(replayed))
+      .mockResolvedValueOnce(pendingStreamResponse());
+    const events: Array<[string, string]> = [];
+    const streamPromise = openAuthEventStream(
+      'http://localhost:3000/v1/projects/project-1/events',
+      (eventName, data) => events.push([eventName, data]),
+      controller.signal,
+      { initialReconnectDelayMs: 40, maxReconnectDelayMs: 100 },
     );
-    const headers = fetcher.mock.calls[0]?.[1]?.headers;
-    expect(new Headers(headers).get('authorization')).toBe('Bearer jwt-test-token');
-    expect(unauthorized).toHaveBeenCalledTimes(1);
-    expect(getAuthToken()).toBeUndefined();
-  });
 
-  it('does not notify the app for an intentionally skipped 401', async () => {
-    persistAuthSession(response);
-    const unauthorized = vi.fn();
-    setUnauthorizedHandler(unauthorized);
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 401 }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(events).toEqual([['run.updated', '{"id":"run-1","status":"running"}']]);
 
-    await apiFetch(
-      'http://localhost:3000/v1/auth/logout',
-      { method: 'POST' },
-      { skipUnauthorized: true },
-    );
-    expect(unauthorized).not.toHaveBeenCalled();
-    expect(getAuthToken()).toBe('jwt-test-token');
-  });
-
-  it('expired sessions are not live but stay stored for refresh', () => {
-    persistAuthSession({
-      ...response,
-      expiresAt: new Date(Date.now() - 1_000).toISOString(),
-    });
-    expect(readAuthSession()).toBeNull();
-    expect(getAuthToken()).toBeUndefined();
-    expect(readStoredAuthSession()?.accessToken).toBe(response.accessToken);
-    expect(localStorage.getItem('multimodal-canvas:auth-session')).toContain(response.accessToken);
-  });
-
-  it('显式绑定已失效身份时，在续期或发送前拒绝请求', async () => {
-    persistAuthSession(response);
-    const expectedAuthGeneration = getAuthSessionGeneration();
-    clearAuthSession();
-    const fetcher = vi.spyOn(globalThis, 'fetch');
-    await expect(
-      apiFetch('/v1/projects', { method: 'POST' }, { expectedAuthGeneration }),
-    ).rejects.toBeInstanceOf(AuthSessionChangedError);
-    expect(fetcher).not.toHaveBeenCalled();
-  });
-
-  it('身份约束允许同一账户正常续期，再用新令牌发送一次请求', async () => {
-    persistAuthSession({ ...response, expiresAt: new Date(Date.now() - 1_000).toISOString() });
-    const expectedAuthGeneration = getAuthSessionGeneration();
-    const renewed = { ...response, accessToken: 'synthetic-renewed-token' };
-    const fetcher = vi
-      .spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(jsonResponse(renewed))
-      .mockResolvedValueOnce(jsonResponse({ projects: [] }));
-    await expect(
-      apiFetch('http://localhost:3000/v1/projects', undefined, { expectedAuthGeneration }),
-    ).resolves.toMatchObject({ status: 200 });
+    await vi.advanceTimersByTimeAsync(39);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
     expect(fetcher).toHaveBeenCalledTimes(2);
-    expect(new Headers(fetcher.mock.calls[1]?.[1]?.headers).get('authorization')).toBe(
-      `Bearer ${renewed.accessToken}`,
-    );
-    expect(getAuthSessionGeneration()).toBe(expectedAuthGeneration);
-  });
+    expect(events).toHaveLength(1);
 
-  it.each([true, false])('响应期间退出账户：身份约束=%s，默认调用合同不变', async (guarded) => {
-    persistAuthSession(response);
-    let finish!: (value: Response) => void;
-    vi.spyOn(globalThis, 'fetch').mockReturnValueOnce(
-      new Promise((resolve) => {
-        finish = resolve;
-      }),
-    );
-    const pending = apiFetch(
-      '/v1/projects',
-      undefined,
-      guarded ? { expectedAuthGeneration: getAuthSessionGeneration() } : undefined,
-    );
-    clearAuthSession();
-    const result = jsonResponse({ projects: [] });
-    finish(result);
-    if (guarded) await expect(pending).rejects.toBeInstanceOf(AuthSessionChangedError);
-    else await expect(pending).resolves.toBe(result);
-  });
+    // 第二次事件流立即结束，下一次重连等待时间应翻倍为 80ms。
+    await vi.advanceTimersByTimeAsync(79);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetcher).toHaveBeenCalledTimes(3);
 
-  it('reconnects with exponential backoff and suppresses replayed events', async () => {
-    vi.useFakeTimers();
-    try {
-      const controller = new AbortController();
-      const replayed = 'event: run.updated\ndata: {"id":"run-1","status":"running"}\n\n';
-      const fetcher = vi
-        .spyOn(globalThis, 'fetch')
-        .mockResolvedValueOnce(streamResponse(replayed))
-        .mockResolvedValueOnce(streamResponse(replayed))
-        .mockResolvedValueOnce(pendingStreamResponse());
-      const events: Array<[string, string]> = [];
-      const streamPromise = openAuthEventStream(
-        'http://localhost:3000/v1/projects/project-1/events',
-        (eventName, data) => events.push([eventName, data]),
-        controller.signal,
-        { initialReconnectDelayMs: 40, maxReconnectDelayMs: 100 },
-      );
-
-      await vi.advanceTimersByTimeAsync(0);
-      expect(fetcher).toHaveBeenCalledTimes(1);
-      expect(events).toEqual([['run.updated', '{"id":"run-1","status":"running"}']]);
-
-      await vi.advanceTimersByTimeAsync(39);
-      expect(fetcher).toHaveBeenCalledTimes(1);
-      await vi.advanceTimersByTimeAsync(1);
-      expect(fetcher).toHaveBeenCalledTimes(2);
-      expect(events).toHaveLength(1);
-
-      // 第二次事件流立即结束，下一次重连等待时间应翻倍为 80ms。
-      await vi.advanceTimersByTimeAsync(79);
-      expect(fetcher).toHaveBeenCalledTimes(2);
-      await vi.advanceTimersByTimeAsync(1);
-      expect(fetcher).toHaveBeenCalledTimes(3);
-
-      controller.abort();
-      await expect(streamPromise).rejects.toMatchObject({ name: 'AbortError' });
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('cancels an active stream and a pending reconnect delay immediately', async () => {
-    vi.useFakeTimers();
-    try {
-      const controller = new AbortController();
-      const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(streamResponse());
-      const streamPromise = openAuthEventStream(
-        'http://localhost:3000/v1/projects/project-1/events',
-        () => undefined,
-        controller.signal,
-        { initialReconnectDelayMs: 500, maxReconnectDelayMs: 500 },
-      );
-
-      await vi.advanceTimersByTimeAsync(0);
-      expect(fetcher).toHaveBeenCalledTimes(1);
-      controller.abort();
-      await expect(streamPromise).rejects.toMatchObject({ name: 'AbortError' });
-
-      await vi.advanceTimersByTimeAsync(1_000);
-      expect(fetcher).toHaveBeenCalledTimes(1);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+    controller.abort();
+    await expect(streamPromise).rejects.toMatchObject({ name: 'AbortError' });
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
-describe.each([{ development: false }, { development: true }])(
-  'App 按需认证（DEV=$development）',
-  ({ development }) => {
-    beforeEach(() => {
-      localStorage.clear();
-      clearAuthSession();
-      window.history.replaceState(null, '', '/workspace');
-      vi.stubEnv('DEV', development);
-      vi.stubEnv('PROD', !development);
-      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-        const path = requestPath(input);
-        const method = init?.method ?? 'GET';
-        if (path === '/v1/projects' && method === 'GET') return jsonResponse({ projects: [] });
-        if ((path === '/v1/auth/login' || path === '/v1/auth/verify') && method === 'POST') {
-          return jsonResponse(response);
-        }
-        if (path === '/v1/auth/refresh' && method === 'POST') {
-          return jsonResponse({ error: 'invalid access token' }, 401);
-        }
-        if (path === '/v1/auth/register' && method === 'POST') {
-          return jsonResponse(
-            {
-              verificationRequired: true,
-              email: response.user.email,
-              delivery: { id: 'synthetic-register-delivery', status: 'accepted' },
-            },
-            202,
-          );
-        }
-        throw new Error(`未预期的认证回归请求：${method} ${path}`);
-      });
-    });
-
-    afterEach(() => {
-      cleanup();
-      setUnauthorizedHandler(undefined);
-      clearAuthSession();
-      localStorage.clear();
-      window.history.replaceState(null, '', '/');
-      vi.unstubAllEnvs();
-      vi.restoreAllMocks();
-    });
-
-    it('匿名首页无需登录，可进入工作台且不读取私有项目列表', async () => {
-      window.history.replaceState(null, '', '/');
-      const user = userEvent.setup();
-      render(createElement(App));
-
-      expect(screen.getByRole('heading', { name: 'Multimodal Canvas' })).toBeVisible();
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-      expect(globalThis.fetch).not.toHaveBeenCalled();
-
-      await user.click(screen.getByRole('link', { name: /进入工作台/ }));
-
-      expect(window.location.pathname).toBe('/workspace');
-      expectAnonymousWorkspace();
-      expect(globalThis.fetch).not.toHaveBeenCalled();
-    });
-
-    it.each([0, 1])(
-      '匿名工作台的新建入口 %i 进入独立登录页，不发送项目 POST',
-      async (triggerIndex) => {
-        const user = userEvent.setup();
-        render(createElement(App));
-
-        expectAnonymousWorkspace();
-        await user.click(screen.getAllByRole('button', { name: '新建项目' })[triggerIndex]!);
-
-        expect(await screen.findByRole('heading', { name: '登录工作台' })).toBeVisible();
-        expect(window.location.pathname).toBe('/auth/login');
-        expect(new URLSearchParams(window.location.search).get('next')).toBe('/workspace?create=1');
-        expect(screen.queryByRole('dialog', { name: '新建项目' })).not.toBeInTheDocument();
-        expect(projectRequests('POST')).toHaveLength(0);
-        expect(globalThis.fetch).not.toHaveBeenCalled();
-      },
+it('cancels an active stream and a pending reconnect delay immediately', async () => {
+  vi.useFakeTimers();
+  try {
+    const controller = new AbortController();
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(streamResponse());
+    const streamPromise = openAuthEventStream(
+      'http://localhost:3000/v1/projects/project-1/events',
+      () => undefined,
+      controller.signal,
+      { initialReconnectDelayMs: 500, maxReconnectDelayMs: 500 },
     );
 
-    it.each(['返回上一级', '浏览器后退'])(
-      '%s 可离开独立登录页，保持匿名且不提交项目',
-      async (dismissal) => {
-        const user = userEvent.setup();
-        render(createElement(App));
-        const trigger = screen.getAllByRole('button', { name: '新建项目' })[0]!;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    controller.abort();
+    await expect(streamPromise).rejects.toMatchObject({ name: 'AbortError' });
 
-        await user.click(trigger);
-        expect(await screen.findByRole('heading', { name: '登录工作台' })).toBeVisible();
-        if (dismissal === '浏览器后退') {
-          act(() => window.history.back());
-        } else {
-          await user.click(screen.getByRole('button', { name: '返回上一级' }));
-        }
-        await screen.findByRole('heading', { name: '项目工作台' });
-        expectAnonymousWorkspace();
-        expect(readAuthSession()).toBeNull();
-        expect(globalThis.fetch).not.toHaveBeenCalled();
-      },
-    );
-
-    it('登录成功消费 create 查询并续接新建表单，不自动创建项目', async () => {
-      const user = userEvent.setup();
-      render(createElement(App));
-      await user.click(screen.getAllByRole('button', { name: '新建项目' })[0]!);
-
-      await submitAuthentication(user);
-
-      const createDialog = await screen.findByRole('dialog', { name: '新建项目' });
-      expect(screen.queryByRole('heading', { name: '登录工作台' })).not.toBeInTheDocument();
-      expect(window.location.pathname).toBe('/workspace');
-      expect(new URLSearchParams(window.location.search).has('create')).toBe(false);
-      expect(within(createDialog).getByLabelText('项目名称')).toHaveValue('未命名项目');
-      expect(readAuthSession()?.user.id).toBe(response.user.id);
-      expect(globalThis.fetch).toHaveBeenCalledWith(
-        expect.stringMatching(/\/v1\/auth\/login$/),
-        expect.objectContaining({
-          method: 'POST',
-          body: JSON.stringify({
-            email: response.user.email,
-            password: 'synthetic-test-password',
-          }),
-        }),
-      );
-      await waitFor(() => expect(projectRequests('GET')).toHaveLength(1));
-      expect(new Headers(projectRequests('GET')[0]?.[1]?.headers).get('authorization')).toBe(
-        `Bearer ${response.accessToken}`,
-      );
-      expect(projectRequests('POST')).toHaveLength(0);
-
-      await user.click(within(createDialog).getByRole('button', { name: '取消' }));
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-      expect(projectRequests('POST')).toHaveLength(0);
-      await user.click(screen.getAllByRole('button', { name: '新建项目' })[0]!);
-      expect(screen.getByRole('dialog', { name: '新建项目' })).toBeVisible();
-      expect(screen.queryByRole('heading', { name: '登录工作台' })).not.toBeInTheDocument();
-      expect(projectRequests('POST')).toHaveLength(0);
-    });
-
-    it('注册202后确认验证码直接进入工作台，丢弃新建意图且不自动创建项目', async () => {
-      const user = userEvent.setup();
-      render(createElement(App));
-      await user.click(screen.getAllByRole('button', { name: '新建项目' })[0]!);
-      await submitAuthentication(user, 'register');
-      expect(await screen.findByRole('heading', { name: '验证你的邮箱' })).toBeVisible();
-      expect(window.location.pathname).toBe('/auth/verify');
-      expect(readAuthSession()).toBeNull();
-      expect(globalThis.fetch).toHaveBeenCalledWith(
-        expect.stringMatching(/\/v1\/auth\/register$/),
-        expect.objectContaining({
-          method: 'POST',
-          body: JSON.stringify({
-            email: response.user.email,
-            password: 'synthetic-test-password',
-            displayName: '认证测试',
-          }),
-        }),
-      );
-      await user.type(screen.getByLabelText('邮箱验证码'), '123456');
-      await user.click(screen.getByRole('button', { name: '确认' }));
-      expect(await screen.findByRole('heading', { name: '项目工作台' })).toBeVisible();
-      expect(window.location.pathname).toBe('/workspace');
-      expect(window.location.search).toBe('');
-      expect(screen.queryByRole('dialog', { name: '新建项目' })).not.toBeInTheDocument();
-      expect(readAuthSession()?.user.id).toBe(response.user.id);
-      expect(projectRequests('POST')).toHaveLength(0);
-      const registrationPosts = vi
-        .mocked(globalThis.fetch)
-        .mock.calls.filter(([input]) => requestPath(input) === '/v1/auth/register');
-      expect(registrationPosts).toHaveLength(1);
-      expect(JSON.parse(String(registrationPosts[0]?.[1]?.body))).not.toHaveProperty(
-        'confirmPassword',
-      );
-      await waitFor(() => expect(projectRequests('GET')).toHaveLength(1));
-      expect(new Headers(projectRequests('GET')[0]?.[1]?.headers).get('authorization')).toBe(
-        `Bearer ${response.accessToken}`,
-      );
-    });
-
-    it('认证失败保留登录表单，取消后仍可匿名浏览', async () => {
-      vi.mocked(globalThis.fetch).mockResolvedValue(
-        jsonResponse({ error: 'invalid email or password' }, 401),
-      );
-      const user = userEvent.setup();
-      render(createElement(App));
-      await user.click(screen.getAllByRole('button', { name: '新建项目' })[0]!);
-
-      await submitAuthentication(user);
-
-      expect(await screen.findByRole('alert')).toHaveTextContent('邮箱或密码不正确');
-      expect(window.location.pathname).toBe('/auth/login');
-      expect(readAuthSession()).toBeNull();
-      expect(projectRequests('POST')).toHaveLength(0);
-      await user.click(screen.getByRole('button', { name: '返回上一级' }));
-      expectAnonymousWorkspace();
-    });
-
-    it('恢复有效会话后直接打开创建表单，不重复要求认证', async () => {
-      persistAuthSession(response);
-      const user = userEvent.setup();
-      render(createElement(App));
-      await screen.findByText('还没有项目');
-
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-      await user.click(screen.getAllByRole('button', { name: '新建项目' })[0]!);
-
-      expect(screen.getByRole('dialog', { name: '新建项目' })).toBeVisible();
-      expect(projectRequests('GET')).toHaveLength(1);
-      expect(projectRequests('POST')).toHaveLength(0);
-      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
-    });
-
-    it.each(['/workspace', '/projects/private-project'])(
-      '进入 %s 时过期会话会尝试续期，失败后不请求私有数据',
-      async (pathname) => {
-        persistAuthSession({ ...response, expiresAt: new Date(Date.now() - 1_000).toISOString() });
-        window.history.replaceState(null, '', pathname);
-        render(createElement(App));
-
-        await waitFor(() => expect(readStoredAuthSession()).toBeNull());
-        if (pathname === '/workspace') expectAnonymousWorkspace();
-        else expect(screen.getByRole('heading', { name: /请先登录|登录工作台/ })).toBeVisible();
-        expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-        expect(readAuthSession()).toBeNull();
-        expect(getAuthToken()).toBeUndefined();
-        expect(
-          vi.mocked(globalThis.fetch).mock.calls.some(([input, init]) => {
-            const path = requestPath(input);
-            return path === '/v1/auth/refresh' && (init?.method ?? 'GET') === 'POST';
-          }),
-        ).toBe(true);
-        expect(projectRequests('GET')).toHaveLength(0);
-      },
-    );
-
-    it('浏览期间会话过期时，新建入口重新检查有效期并提示登录', async () => {
-      persistAuthSession(response);
-      const user = userEvent.setup();
-      render(createElement(App));
-      await screen.findByText('还没有项目');
-      vi.spyOn(Date, 'now').mockReturnValue(Date.parse(response.expiresAt) + 1);
-
-      await user.click(screen.getAllByRole('button', { name: '新建项目' })[0]!);
-
-      expect(await screen.findByRole('heading', { name: '登录工作台' })).toBeVisible();
-      expect(window.location.pathname).toBe('/auth/login');
-      expect(screen.queryByRole('dialog', { name: '新建项目' })).not.toBeInTheDocument();
-      expect(getAuthToken()).toBeUndefined();
-      expect(projectRequests('POST')).toHaveLength(0);
-      expect(projectRequests('GET')).toHaveLength(1);
-      await user.click(screen.getByRole('button', { name: '返回上一级' }));
-      expectAnonymousWorkspace();
-    });
-
-    it('填写创建表单期间会话过期，提交前先认证且不发送过期项目 POST', async () => {
-      persistAuthSession(response);
-      const user = userEvent.setup();
-      render(createElement(App));
-      await screen.findByText('还没有项目');
-      await user.click(screen.getAllByRole('button', { name: '新建项目' })[0]!);
-      const createDialog = screen.getByRole('dialog', { name: '新建项目' });
-      await user.clear(within(createDialog).getByLabelText('项目名称'));
-      await user.type(within(createDialog).getByLabelText('项目名称'), '过期后继续编辑');
-      const now = vi.spyOn(Date, 'now').mockReturnValue(Date.parse(response.expiresAt) + 1);
-
-      await user.click(within(createDialog).getByRole('button', { name: '创建项目' }));
-
-      expect(await screen.findByRole('heading', { name: '登录工作台' })).toBeVisible();
-      expect(new URLSearchParams(window.location.search).get('next')).toBe('/workspace?create=1');
-      expect(screen.queryByRole('dialog', { name: '新建项目' })).not.toBeInTheDocument();
-      expect(getAuthToken()).toBeUndefined();
-      expect(projectRequests('POST')).toHaveLength(0);
-      now.mockRestore();
-      await submitAuthentication(user);
-      const resumedDialog = await screen.findByRole('dialog', { name: '新建项目' });
-      expect(within(resumedDialog).getByLabelText('项目名称')).toHaveValue('过期后继续编辑');
-      expect(projectRequests('POST')).toHaveLength(0);
-    });
-
-    it.each(['/projects/private-project', '/settings', '/settings?project=private-project'])(
-      '匿名进入 %s 只显示登录状态，独立登录页返回也不请求私有数据',
-      async (pathname) => {
-        window.history.replaceState(null, '', pathname);
-        const user = userEvent.setup();
-        render(createElement(App));
-
-        expect(screen.getByRole('heading', { name: '请先登录' })).toBeVisible();
-        expect(screen.queryByRole('application')).not.toBeInTheDocument();
-        expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-        expect(globalThis.fetch).not.toHaveBeenCalled();
-        const trigger = screen.getByRole('button', { name: '登录' });
-        await user.click(trigger);
-        expect(await screen.findByRole('heading', { name: '登录工作台' })).toBeVisible();
-        expect(window.location.pathname).toBe('/auth/login');
-        expect(new URLSearchParams(window.location.search).get('next')).toBe(pathname);
-        act(() => window.history.back());
-        expect(await screen.findByRole('heading', { name: '请先登录' })).toBeVisible();
-        expect(globalThis.fetch).not.toHaveBeenCalled();
-
-        await user.click(screen.getByRole('link', { name: '返回工作台' }));
-        expect(window.location.pathname).toBe('/workspace');
-        expectAnonymousWorkspace();
-        expect(globalThis.fetch).not.toHaveBeenCalled();
-      },
-    );
-
-    it('取消新建登录后清除续接操作，随后私有路由登录不会误开创建表单', async () => {
-      const defaultFetch = vi.mocked(globalThis.fetch).getMockImplementation()!;
-      vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
-        if (requestPath(input) === '/v1/projects/private-project') {
-          return jsonResponse({ error: 'project not found' }, 404);
-        }
-        return defaultFetch(input, init);
-      });
-      const user = userEvent.setup();
-      render(createElement(App));
-      await user.click(screen.getAllByRole('button', { name: '新建项目' })[0]!);
-      await user.click(screen.getByRole('button', { name: '返回上一级' }));
-      act(() => navigateApp('/projects/private-project'));
-      await user.click(screen.getByRole('button', { name: '登录' }));
-
-      await submitAuthentication(user);
-
-      expect(await screen.findByRole('heading', { name: '项目不存在' })).toBeVisible();
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-      expect(projectRequests('POST')).toHaveLength(0);
-    });
-
-    it('注册202邮件失败进入验证页并保留明确提示，不当作登录成功', async () => {
-      const original = vi.mocked(globalThis.fetch).getMockImplementation()!;
-      vi.mocked(globalThis.fetch).mockImplementation((input, init) =>
-        requestPath(input) === '/v1/auth/register'
-          ? Promise.resolve(
-              jsonResponse(
-                {
-                  verificationRequired: true,
-                  email: response.user.email,
-                  delivery: { id: 'synthetic-delivery', status: 'failed' },
-                },
-                202,
-              ),
-            )
-          : original(input, init),
-      );
-      const user = userEvent.setup();
-      render(createElement(App));
-      await user.click(screen.getAllByRole('button', { name: '新建项目' })[0]!);
-      await submitAuthentication(user, 'register');
-      expect(await screen.findByRole('heading', { name: '验证你的邮箱' })).toBeVisible();
-      expect(
-        screen.getByText('账户已保留，但验证邮件发送失败，请检查邮箱后重新发送验证码。'),
-      ).toBeVisible();
-      expect(readAuthSession()).toBeNull();
-      expect(window.location.search).not.toContain('password');
-      expect(projectRequests('POST')).toHaveLength(0);
-    });
-
-    it('公共列表 401 清空旧账户缓存且不弹登录，新账户读取期间也不回显旧项目', async () => {
-      const oldProject = {
-        id: 'old-user-project',
-        name: '旧账户私有项目',
-        createdAt: response.user.createdAt,
-        updatedAt: response.user.createdAt,
-      };
-      const newProject = { ...oldProject, id: 'new-user-project', name: '新账户私有项目' };
-      const nextSession: AuthTokenResponse = {
-        ...response,
-        accessToken: 'synthetic-next-user-token',
-        user: { ...response.user, id: 'user-2', email: 'next@example.com' },
-      };
-      /** 保持新账户的列表请求未完成，以检查加载过程中是否泄漏旧缓存。 */
-      let completeNextProjects!: (value: Response) => void;
-      const nextProjectsResponse = new Promise<Response>((resolve) => {
-        completeNextProjects = resolve;
-      });
-      /** 首次读取成功，后续模拟旧会话被服务端撤销。 */
-      let oldSessionRevoked = false;
-      vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
-        const path = requestPath(input);
-        if (path === '/v1/auth/login' && init?.method === 'POST') return jsonResponse(nextSession);
-        if (path === '/v1/projects' && (init?.method ?? 'GET') === 'GET') {
-          const authorization = new Headers(init?.headers).get('authorization');
-          if (authorization === `Bearer ${nextSession.accessToken}`) return nextProjectsResponse;
-          if (authorization === `Bearer ${response.accessToken}`) {
-            return oldSessionRevoked
-              ? jsonResponse({ error: 'authentication required' }, 401)
-              : jsonResponse({ projects: [oldProject] });
-          }
-        }
-        throw new Error(`未预期的账户隔离请求：${init?.method ?? 'GET'} ${path}`);
-      });
-      persistAuthSession(response);
-      const mount = vi.spyOn(QueryClient.prototype, 'mount');
-      const user = userEvent.setup();
-      render(createElement(App));
-      expect(await screen.findByRole('link', { name: oldProject.name })).toBeVisible();
-      // 观察实际挂载的 QueryClient，不替换生产 Provider 或查询实现。
-      const queryClient = mount.mock.contexts[0] as QueryClient;
-      expect(queryClient).toBeInstanceOf(QueryClient);
-      expect(queryClient.getQueryData(projectQueryKeys.list())).toEqual([oldProject]);
-      queryClient.setQueryData(projectQueryKeys.detail(oldProject.id), oldProject);
-      oldSessionRevoked = true;
-
-      await act(async () => {
-        await queryClient.refetchQueries({ queryKey: projectQueryKeys.list() });
-      });
-
-      expectAnonymousWorkspace();
-      expect(readAuthSession()).toBeNull();
-      expect(getAuthToken()).toBeUndefined();
-      expect(screen.queryByText(oldProject.name)).not.toBeInTheDocument();
-      expect(queryClient.getQueryData(projectQueryKeys.list())).toBeUndefined();
-      expect(queryClient.getQueryData(projectQueryKeys.detail(oldProject.id))).toBeUndefined();
-      expect(projectRequests('GET')).toHaveLength(2);
-      await user.click(screen.getAllByRole('button', { name: '新建项目' })[0]!);
-      await submitAuthentication(user, 'login', nextSession.user.email);
-
-      const createDialog = await screen.findByRole('dialog', { name: '新建项目' });
-      await waitFor(() => expect(projectRequests('GET')).toHaveLength(3));
-      expect(readAuthSession()?.user.id).toBe(nextSession.user.id);
-      expect(screen.queryByText(oldProject.name)).not.toBeInTheDocument();
-      expect(queryClient.getQueryData(projectQueryKeys.list())).toBeUndefined();
-      expect(new Headers(projectRequests('GET')[2]?.[1]?.headers).get('authorization')).toBe(
-        `Bearer ${nextSession.accessToken}`,
-      );
-      expect(projectRequests('POST')).toHaveLength(0);
-      await act(async () => completeNextProjects(jsonResponse({ projects: [newProject] })));
-      expect(await screen.findByRole('link', { name: newProject.name })).toBeVisible();
-      expect(queryClient.getQueryData(projectQueryKeys.list())).toEqual([newProject]);
-      await user.click(within(createDialog).getByRole('button', { name: '取消' }));
-      expect(screen.queryByText(oldProject.name)).not.toBeInTheDocument();
-      expect(projectRequests('POST')).toHaveLength(0);
-    });
-
-    it.each([201, 401])('旧账户创建的晚到 %s 不污染新账户缓存、不导航或弹登录', async (status) => {
-      const lateProject = {
-        id: 'late-a-project',
-        name: '仅A可见的晚到项目',
-        createdAt: response.user.createdAt,
-        updatedAt: response.user.createdAt,
-      };
-      let finish!: (value: Response) => void;
-      const pendingResponse = new Promise<Response>((resolve) => {
-        finish = resolve;
-      });
-      const original = vi.mocked(globalThis.fetch).getMockImplementation()!;
-      vi.mocked(globalThis.fetch).mockImplementation((input, init) =>
-        requestPath(input) === '/v1/projects' && init?.method === 'POST'
-          ? pendingResponse
-          : original(input, init),
-      );
-      persistAuthSession(response);
-      const mount = vi.spyOn(QueryClient.prototype, 'mount');
-      const user = userEvent.setup();
-      render(createElement(App));
-      await screen.findByText('还没有项目');
-      await user.click(screen.getAllByRole('button', { name: '新建项目' })[0]!);
-      await user.click(
-        within(screen.getByRole('dialog', { name: '新建项目' })).getByRole('button', {
-          name: '创建项目',
-        }),
-      );
-      const queryClient = mount.mock.contexts[0] as QueryClient;
-      act(() => {
-        persistAuthSession({
-          ...response,
-          accessToken: 'synthetic-user-b-new',
-          user: { ...response.user, id: 'user-b', email: 'b@example.test' },
-        });
-      });
-      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-      await act(async () =>
-        finish(
-          jsonResponse(
-            status === 201 ? { project: lateProject } : { error: 'authentication required' },
-            status,
-          ),
-        ),
-      );
-      expect(readAuthSession()?.user.id).toBe('user-b');
-      expect(window.location.pathname).toBe('/workspace');
-      expect(screen.queryByText(lateProject.name)).not.toBeInTheDocument();
-      expect(queryClient.getQueryData(projectQueryKeys.detail(lateProject.id))).toBeUndefined();
-      expect(queryClient.getQueryData(projectQueryKeys.list())).not.toContainEqual(lateProject);
-      expect(screen.queryByRole('heading', { name: '登录工作台' })).not.toBeInTheDocument();
-    });
-
-    it.each(['/projects/private-project', '/settings?project=private-project'])(
-      '已认证的 %s 返回 401 后进入独立登录页，仍可返回公共工作台',
-      async (pathname) => {
-        const defaultFetch = vi.mocked(globalThis.fetch).getMockImplementation()!;
-        vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
-          if (requestPath(input) === '/v1/projects/private-project') {
-            return jsonResponse({ error: 'authentication required' }, 401);
-          }
-          return defaultFetch(input, init);
-        });
-        persistAuthSession(response);
-        window.history.replaceState(null, '', pathname);
-        const user = userEvent.setup();
-        render(createElement(App));
-
-        expect(await screen.findByRole('heading', { name: '登录工作台' })).toBeVisible();
-        expect(window.location.pathname).toBe('/auth/login');
-        expect(readAuthSession()).toBeNull();
-        const requestsBeforeLeaving = vi.mocked(globalThis.fetch).mock.calls.length;
-        await user.click(screen.getByRole('button', { name: '返回上一级' }));
-        if (screen.queryByRole('heading', { name: '项目工作台' }) == null) {
-          const workspaceLink = screen.queryByRole('link', { name: '返回工作台' });
-          if (workspaceLink) await user.click(workspaceLink);
-          else act(() => navigateApp('/workspace'));
-        }
-        expectAnonymousWorkspace();
-        expect(globalThis.fetch).toHaveBeenCalledTimes(requestsBeforeLeaving);
-        expect(projectRequests('POST')).toHaveLength(0);
-      },
-    );
-
-    it('创建 POST 返回 401 时明确请求登录，认证成功只恢复表单而不重放 POST', async () => {
-      const defaultFetch = vi.mocked(globalThis.fetch).getMockImplementation()!;
-      vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
-        if (requestPath(input) === '/v1/projects' && init?.method === 'POST') {
-          return jsonResponse({ error: 'authentication required' }, 401);
-        }
-        return defaultFetch(input, init);
-      });
-      persistAuthSession(response);
-      const user = userEvent.setup();
-      render(createElement(App));
-      await screen.findByText('还没有项目');
-      await user.click(screen.getAllByRole('button', { name: '新建项目' })[0]!);
-      const createDialog = screen.getByRole('dialog', { name: '新建项目' });
-      await user.clear(within(createDialog).getByLabelText('项目名称'));
-      await user.type(within(createDialog).getByLabelText('项目名称'), '重新认证后手动创建');
-
-      await user.click(within(createDialog).getByRole('button', { name: '创建项目' }));
-
-      expect(await screen.findByRole('heading', { name: '登录工作台' })).toBeVisible();
-      expect(window.location.pathname).toBe('/auth/login');
-      expect(screen.queryByRole('dialog', { name: '新建项目' })).not.toBeInTheDocument();
-      expect(readAuthSession()).toBeNull();
-      expect(projectRequests('POST')).toHaveLength(1);
-      expect(JSON.parse(String(projectRequests('POST')[0]?.[1]?.body))).toEqual({
-        name: '重新认证后手动创建',
-      });
-      await submitAuthentication(user);
-
-      const resumedDialog = await screen.findByRole('dialog', { name: '新建项目' });
-      expect(within(resumedDialog).getByLabelText('项目名称')).toHaveValue('重新认证后手动创建');
-      expect(projectRequests('POST')).toHaveLength(1);
-      await user.click(within(resumedDialog).getByRole('button', { name: '取消' }));
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-      expect(projectRequests('POST')).toHaveLength(1);
-    });
-  },
-);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  } finally {
+    vi.useRealTimers();
+  }
+});

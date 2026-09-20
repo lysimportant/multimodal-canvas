@@ -1,16 +1,17 @@
+import { MemoryAiSettingsStore } from './fixtures/memory-ai-settings';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { createHash, createHmac } from 'node:crypto';
 
 import { MemoryAssetStore } from './assets';
-import { buildApp } from './app';
+import { buildApp } from './fixtures/test-app';
 import { MemoryAuthStore } from './auth-store';
 import { MemoryProjectStore } from './projects';
-import { AiSettingsStore, type ModelCatalogEntry } from './settings';
+import { type ModelCatalogEntry } from './settings';
 import { MemoryRunService } from './runs';
 import { MemoryWebhookEventStore } from './webhooks';
-import { TestAccountMailSender, registerVerifiedTestUser } from './fixtures/account-mail';
+import { TestAuthContext, issueTestSession } from './fixtures/auth-session';
 
-const appSettingsStore = new AiSettingsStore('app-test-model-catalog');
+const appSettingsStore = new MemoryAiSettingsStore('app-test-model-catalog');
 const appModelRefreshedAt = new Date().toISOString();
 appSettingsStore.replaceModels([
   {
@@ -163,21 +164,11 @@ describe('OpenAPI endpoint', () => {
       '403': expect.any(Object),
       '404': expect.any(Object),
     });
-    expect(response.json().paths['/v1/settings/ai/credentials'].get).toBeDefined();
-    expect(response.json().paths['/v1/settings/ai/credentials'].delete).toBeDefined();
-    expect(
-      response.json().paths['/v1/settings/ai/credentials/{credentialId}/activate'].post,
-    ).toBeDefined();
-    expect(
-      response.json().paths['/v1/settings/ai/credentials/{credentialId}/defaults'].patch,
-    ).toBeDefined();
-    expect(
-      response.json().components.schemas.AiCredentialSummary.properties.defaultModels,
-    ).toMatchObject({ additionalProperties: false });
-    expect(response.json().components.schemas.AiSettingsPatch.properties.activate).toMatchObject({
-      type: 'boolean',
-      default: true,
-    });
+    expect(response.json().paths['/v1/auth/newapi/start'].get).toBeDefined();
+    expect(response.json().paths['/v1/account/newapi/sync'].post).toBeDefined();
+    expect(response.json().paths['/v1/admin/resource-owners/{id}'].get).toBeDefined();
+    expect(response.json().paths['/v1/auth/login']).toBeUndefined();
+    expect(response.json().paths['/v1/settings/ai/credentials']).toBeUndefined();
     expect(response.json().paths['/v1/runs/{runId/retry}']).toBeUndefined();
 
     // 请求提示词只通过摘要列表 + 按需读取暴露，两者都必须被文档化。
@@ -208,22 +199,36 @@ describe('OpenAPI endpoint', () => {
 });
 
 describe('AI settings endpoints', () => {
-  it('never returns the configured API key and exposes model defaults', async () => {
-    const credentialUpdate = await app.inject({
-      method: 'PATCH',
-      url: '/v1/settings/ai',
-      payload: {
-        baseUrl: 'https://newapi.example.com/v1',
-        apiKey: 'secret-test-key',
-      },
+  it('读取安全设置视图且不返回合成 Key', async () => {
+    const store = new MemoryAiSettingsStore('safe-settings-view');
+    store.update({
+      baseUrl: 'https://newapi.example.test/v1',
+      apiKey: 'synthetic-settings-secret',
     });
-    expect(credentialUpdate.statusCode).toBe(200);
-    const credentialId = credentialUpdate
-      .json()
-      .credentials.find(
-        (credential: { baseUrl: string }) => credential.baseUrl === 'https://newapi.example.com/v1',
-      ).id as string;
-    appSettingsStore.replaceModels(
+    const settingsApp = buildApp({ logger: false, settingsStore: store });
+    try {
+      const response = await settingsApp.inject({ method: 'GET', url: '/v1/settings/ai' });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().settings).toMatchObject({
+        configured: true,
+        timeoutMs: 900_000,
+        defaultModels: {},
+      });
+      expect(response.body).not.toContain('synthetic-settings-secret');
+    } finally {
+      await settingsApp.close();
+    }
+  });
+
+  it('只接受模型默认和超时，并拒绝手工地址、Key 与激活字段', async () => {
+    const store = new MemoryAiSettingsStore('preference-only-settings');
+    store.update({
+      baseUrl: 'https://newapi.example.test/v1',
+      apiKey: 'synthetic-preference-key',
+    });
+    const credential = store.listCredentials()[0]!;
+    store.replaceModels(
       [
         {
           id: 'text-model',
@@ -231,104 +236,89 @@ describe('AI settings endpoints', () => {
           mediaTypes: ['text'],
           refreshedAt: appModelRefreshedAt,
         },
-        {
-          id: 'video-model',
-          name: 'Video model',
-          mediaTypes: ['video'],
-          refreshedAt: appModelRefreshedAt,
+      ],
+      credential.id,
+    );
+    const settingsApp = buildApp({ logger: false, settingsStore: store });
+    try {
+      const updated = await settingsApp.inject({
+        method: 'PATCH',
+        url: '/v1/settings/ai',
+        payload: {
+          defaultModels: {
+            text: { modelAlias: 'text-model', credentialId: credential.id },
+          },
+          timeoutMs: 1_200_000,
         },
-        {
-          id: 'image-node-model',
-          name: 'Image node model',
-          mediaTypes: ['image'],
-          refreshedAt: appModelRefreshedAt,
+      });
+
+      expect(updated.statusCode).toBe(200);
+      expect(updated.json()).toEqual({
+        settings: expect.objectContaining({
+          defaultModels: {
+            text: { modelAlias: 'text-model', credentialId: credential.id },
+          },
+          timeoutMs: 1_200_000,
+        }),
+      });
+
+      for (const payload of [
+        { baseUrl: 'https://manual.example.test/v1' },
+        { apiKey: 'manual-key' },
+        { activate: false },
+      ]) {
+        const rejected = await settingsApp.inject({
+          method: 'PATCH',
+          url: '/v1/settings/ai',
+          payload,
+        });
+        expect(rejected.statusCode).toBe(400);
+        expect(rejected.json()).toEqual({ error: 'invalid AI settings' });
+      }
+
+      const current = await settingsApp.inject({ method: 'GET', url: '/v1/settings/ai' });
+      expect(current.json().settings).toMatchObject({
+        defaultModels: {
+          text: { modelAlias: 'text-model', credentialId: credential.id },
         },
+        timeoutMs: 1_200_000,
+      });
+    } finally {
+      await settingsApp.close();
+    }
+  });
+
+  it('校验默认模型的凭据范围和媒体类型后再保存', async () => {
+    const store = new MemoryAiSettingsStore('preference-validation');
+    store.update({
+      baseUrl: 'https://newapi.example.test/v1',
+      apiKey: 'synthetic-validation-key',
+    });
+    const credential = store.listCredentials()[0]!;
+    store.replaceModels(
+      [
         {
-          id: 'image-special',
-          name: 'Image special',
+          id: 'image-model',
+          name: 'Image model',
           mediaTypes: ['image'],
           refreshedAt: appModelRefreshedAt,
         },
       ],
-      credentialId,
+      credential.id,
     );
-    const update = await app.inject({
-      method: 'PATCH',
-      url: '/v1/settings/ai',
-      payload: { defaultModels: { text: 'text-model', video: 'video-model' } },
-    });
-    expect(update.statusCode).toBe(200);
-    expect(update.json().settings).toMatchObject({
-      baseUrl: 'https://newapi.example.com/v1',
-      configured: true,
-      keyFingerprint: expect.stringMatching(/^[a-f0-9]{12}$/),
-      keySuffix: 'test-key',
-      defaultModels: {
-        text: { modelAlias: 'text-model' },
-        video: { modelAlias: 'video-model' },
-      },
-    });
-    expect(JSON.stringify(update.json())).not.toContain('secret-test-key');
-
-    const get = await app.inject({ method: 'GET', url: '/v1/settings/ai' });
-    expect(get.json().settings.configured).toBe(true);
-  });
-
-  it('validates platform defaults against the active credential catalog before saving', async () => {
-    const settingsStore = new AiSettingsStore('platform-default-validation');
-    const settingsApp = buildApp({ logger: false, settingsStore });
+    const settingsApp = buildApp({ logger: false, settingsStore: store });
     try {
-      const credentialSave = await settingsApp.inject({
-        method: 'PATCH',
-        url: '/v1/settings/ai',
-        payload: {
-          baseUrl: 'https://platform-defaults.example/v1',
-          apiKey: 'synthetic-platform-defaults-key',
-        },
-      });
-      const credentialId = credentialSave.json().credentials[0].id as string;
-      settingsStore.replaceModels(
-        [
-          {
-            id: 'platform-image',
-            name: 'Platform image',
-            mediaTypes: ['image'],
-            refreshedAt: new Date().toISOString(),
-          },
-        ],
-        credentialId,
-      );
-
-      const saved = await settingsApp.inject({
+      const wrongMedia = await settingsApp.inject({
         method: 'PATCH',
         url: '/v1/settings/ai',
         payload: {
           defaultModels: {
-            image: { modelAlias: 'platform-image', credentialId },
+            video: { modelAlias: 'image-model', credentialId: credential.id },
           },
         },
       });
-      expect(saved.statusCode).toBe(200);
-
-      const wrongMediaType = await settingsApp.inject({
-        method: 'PATCH',
-        url: '/v1/settings/ai',
-        payload: {
-          defaultModels: {
-            video: { modelAlias: 'platform-image', credentialId },
-          },
-        },
-      });
-      expect(wrongMediaType.statusCode).toBe(400);
-      expect(wrongMediaType.json()).toMatchObject({ code: 'model_unavailable' });
-
-      const unknownModel = await settingsApp.inject({
-        method: 'PATCH',
-        url: '/v1/settings/ai',
-        payload: { defaultModels: { image: 'missing-platform-model' } },
-      });
-      expect(unknownModel.statusCode).toBe(400);
-      expect(unknownModel.json()).toMatchObject({ code: 'model_unavailable' });
+      expect(wrongMedia.statusCode).toBe(400);
+      expect(wrongMedia.json()).toMatchObject({ code: 'model_unavailable' });
 
       const unknownCredential = await settingsApp.inject({
         method: 'PATCH',
@@ -336,7 +326,7 @@ describe('AI settings endpoints', () => {
         payload: {
           defaultModels: {
             image: {
-              modelAlias: 'platform-image',
+              modelAlias: 'image-model',
               credentialId: '123e4567-e89b-12d3-a456-426614174099',
             },
           },
@@ -344,371 +334,12 @@ describe('AI settings endpoints', () => {
       });
       expect(unknownCredential.statusCode).toBe(404);
       expect(unknownCredential.json()).toMatchObject({ code: 'credential_not_found' });
-
-      const current = await settingsApp.inject({ method: 'GET', url: '/v1/settings/ai' });
-      expect(current.json().settings.defaultModels).toEqual({
-        image: { modelAlias: 'platform-image', credentialId },
-      });
+      expect(store.get().defaultModels).toEqual({});
     } finally {
       await settingsApp.close();
-    }
-  });
-
-  it('新增独立 Key 不切换全局连接，并可按凭据读写类型默认模型', async () => {
-    const activeKey = 'synthetic-active-key';
-    const independentKey = 'synthetic-independent-key';
-    const secondIndependentKey = 'synthetic-independent-two-key';
-    const fetchImpl = vi.fn<typeof fetch>(async (_input, init) => {
-      const authorization = new Headers(init?.headers).get('authorization');
-      const models =
-        authorization === `Bearer ${activeKey}`
-          ? [{ id: 'active-text', mediaType: 'text' }]
-          : [{ id: 'shared-image', mediaType: 'image' }];
-      return Response.json({ data: models });
-    });
-    const settingsStore = new AiSettingsStore('independent-route-secret', {
-      fetchImpl,
-      modelRequestMaxAttempts: 1,
-    });
-    const settingsApp = buildApp({ logger: false, settingsStore });
-    const responses: string[] = [];
-    const inject = async (options: {
-      method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
-      url: string;
-      payload?: Record<string, unknown>;
-    }) => {
-      const response = await settingsApp.inject(options);
-      responses.push(response.body);
-      return response;
-    };
-    try {
-      const activeSave = await inject({
-        method: 'PATCH',
-        url: '/v1/settings/ai',
-        payload: { baseUrl: 'https://active.example.test/v1', apiKey: activeKey },
-      });
-      expect(activeSave.statusCode).toBe(200);
-      const activeId = activeSave.json().credentials[0].id as string;
-      const activeView = activeSave.json().settings;
-      expect(
-        (
-          await inject({
-            method: 'POST',
-            url: '/v1/settings/ai/models/refresh',
-            payload: { credentialId: activeId },
-          })
-        ).statusCode,
-      ).toBe(200);
-
-      const created = await inject({
-        method: 'PATCH',
-        url: '/v1/settings/ai',
-        payload: {
-          baseUrl: 'https://independent.example.test/v1',
-          apiKey: independentKey,
-          activate: false,
-        },
-      });
-      expect(created.statusCode).toBe(200);
-      const createdCredentialId = created.json().createdCredentialId as string;
-      expect(createdCredentialId).toEqual(expect.any(String));
-      // 活动连接视图保持逐字段不变，独立凭据只是新增摘要。
-      expect(created.json().settings).toEqual(activeView);
-      expect(created.json().credentials).toHaveLength(2);
-      expect(
-        created.json().credentials.find((item: { id: string }) => item.id === createdCredentialId),
-      ).toMatchObject({ baseUrl: 'https://independent.example.test/v1', active: false });
-      expect(
-        created.json().credentials.find((item: { id: string }) => item.id === activeId),
-      ).toMatchObject({ active: true });
-      expect((await inject({ method: 'GET', url: '/v1/settings/ai' })).json().settings).toEqual(
-        activeView,
-      );
-
-      // 被删除的活动默认模型引用不会被静默改写为独立凭据。
-      const independentRefresh = await inject({
-        method: 'POST',
-        url: '/v1/settings/ai/models/refresh',
-        payload: { credentialId: createdCredentialId },
-      });
-      expect(independentRefresh.statusCode).toBe(200);
-      expect(independentRefresh.json().models).toEqual([
-        expect.objectContaining({ id: 'shared-image', credentialId: createdCredentialId }),
-      ]);
-      expect(fetchImpl.mock.calls[1]?.[1]).toMatchObject({
-        headers: { authorization: `Bearer ${independentKey}` },
-      });
-
-      const independentCatalog = await inject({
-        method: 'GET',
-        url: `/v1/models?credentialId=${createdCredentialId}&mediaType=image`,
-      });
-      expect(independentCatalog.json().models).toEqual([
-        expect.objectContaining({ id: 'shared-image' }),
-      ]);
-      // 活动连接的目录没有被独立凭据的刷新影响。
-      expect(
-        (await inject({ method: 'GET', url: '/v1/models?mediaType=image' })).json().models,
-      ).toEqual([]);
-      expect(
-        (await inject({ method: 'GET', url: '/v1/models?mediaType=text' })).json().models,
-      ).toEqual([expect.objectContaining({ id: 'active-text' })]);
-
-      const defaults = await inject({
-        method: 'PATCH',
-        url: `/v1/settings/ai/credentials/${createdCredentialId}/defaults`,
-        payload: { image: 'shared-image' },
-      });
-      expect(defaults.statusCode).toBe(200);
-      expect(defaults.json().credentials).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            id: createdCredentialId,
-            defaultModels: { image: { modelAlias: 'shared-image' } },
-          }),
-          expect.objectContaining({ id: activeId, active: true }),
-        ]),
-      );
-      expect((await inject({ method: 'GET', url: '/v1/settings/ai' })).json().settings).toEqual(
-        activeView,
-      );
-
-      // 第二个独立凭据暴露同名模型，两个凭据各自保留自己的默认值。
-      const second = await inject({
-        method: 'PATCH',
-        url: '/v1/settings/ai',
-        payload: {
-          baseUrl: 'https://independent-two.example.test/v1',
-          apiKey: secondIndependentKey,
-          activate: false,
-        },
-      });
-      const secondId = second.json().createdCredentialId as string;
-      await inject({
-        method: 'POST',
-        url: '/v1/settings/ai/models/refresh',
-        payload: { credentialId: secondId },
-      });
-      const secondDefaults = await inject({
-        method: 'PATCH',
-        url: `/v1/settings/ai/credentials/${secondId}/defaults`,
-        payload: { image: { modelAlias: 'shared-image', credentialId: secondId } },
-      });
-      expect(secondDefaults.statusCode).toBe(200);
-      const sharedOwners = secondDefaults
-        .json()
-        .credentials.filter(
-          (item: { defaultModels?: { image?: { modelAlias: string } } }) =>
-            item.defaultModels?.image?.modelAlias === 'shared-image',
-        )
-        .map((item: { id: string }) => item.id);
-      expect(sharedOwners.sort()).toEqual([createdCredentialId, secondId].sort());
-      expect(
-        secondDefaults
-          .json()
-          .credentials.find((item: { id: string }) => item.id === createdCredentialId)
-          .defaultModels,
-      ).toEqual({ image: { modelAlias: 'shared-image' } });
-
-      // 未知凭据、无效请求体和跨凭据模型都必须被拒绝。
-      expect(
-        (
-          await inject({
-            method: 'PATCH',
-            url: '/v1/settings/ai/credentials/123e4567-e89b-12d3-a456-426614174099/defaults',
-            payload: { text: 'active-text' },
-          })
-        ).statusCode,
-      ).toBe(404);
-      expect(
-        (
-          await inject({
-            method: 'PATCH',
-            url: `/v1/settings/ai/credentials/${createdCredentialId}/defaults`,
-            payload: { unknown: 'shared-image' },
-          })
-        ).statusCode,
-      ).toBe(400);
-      expect(
-        (
-          await inject({
-            method: 'PATCH',
-            url: `/v1/settings/ai/credentials/${createdCredentialId}/defaults`,
-            payload: { image: 42 },
-          })
-        ).statusCode,
-      ).toBe(400);
-      const foreignModel = await inject({
-        method: 'PATCH',
-        url: `/v1/settings/ai/credentials/${createdCredentialId}/defaults`,
-        payload: { text: 'active-text' },
-      });
-      expect(foreignModel.statusCode).toBe(400);
-      expect(foreignModel.json()).toMatchObject({ code: 'model_unavailable' });
-      const foreignCredential = await inject({
-        method: 'PATCH',
-        url: `/v1/settings/ai/credentials/${createdCredentialId}/defaults`,
-        payload: { image: { modelAlias: 'shared-image', credentialId: secondId } },
-      });
-      expect(foreignCredential.statusCode).toBe(400);
-      expect(foreignCredential.json()).toMatchObject({ code: 'model_unavailable' });
-      expect(
-        (
-          await inject({
-            method: 'PATCH',
-            url: '/v1/settings/ai',
-            payload: { baseUrl: 'https://independent-three.example.test/v1', activate: false },
-          })
-        ).statusCode,
-      ).toBe(400);
-      expect(
-        (
-          await inject({
-            method: 'PATCH',
-            url: '/v1/settings/ai',
-            payload: {
-              apiKey: 'synthetic-independent-three-key',
-              activate: false,
-              defaultModels: { image: 'shared-image' },
-            },
-          })
-        ).statusCode,
-      ).toBe(400);
-
-      expect(responses.join('\n')).not.toContain(activeKey);
-      expect(responses.join('\n')).not.toContain(independentKey);
-      expect(responses.join('\n')).not.toContain(secondIndependentKey);
-    } finally {
-      await settingsApp.close();
-    }
-  });
-
-  it('lists, deduplicates, and activates credential summaries without exposing keys', async () => {
-    const settingsStore = new AiSettingsStore('credential-route-test');
-    const credentialApp = buildApp({ logger: false, settingsStore });
-    const firstKey = 'first-route-secret';
-    const secondKey = 'second-route-secret';
-    try {
-      const firstSave = await credentialApp.inject({
-        method: 'PATCH',
-        url: '/v1/settings/ai',
-        payload: { baseUrl: 'https://first.example.com/v1', apiKey: firstKey },
-      });
-      expect(firstSave.statusCode).toBe(200);
-      const firstCredential = firstSave.json().credentials[0];
-      expect(firstCredential).toMatchObject({
-        baseUrl: 'https://first.example.com/v1',
-        active: true,
-      });
-
-      const duplicateSave = await credentialApp.inject({
-        method: 'PATCH',
-        url: '/v1/settings/ai',
-        payload: { baseUrl: 'https://first.example.com/v1', apiKey: firstKey },
-      });
-      expect(duplicateSave.json().credentials).toHaveLength(1);
-      expect(duplicateSave.json().credentials[0].id).toBe(firstCredential.id);
-
-      const secondSave = await credentialApp.inject({
-        method: 'PATCH',
-        url: '/v1/settings/ai',
-        payload: { baseUrl: 'https://second.example.com/v1', apiKey: secondKey },
-      });
-      expect(secondSave.json().credentials).toHaveLength(2);
-      expect(
-        secondSave.json().credentials.find((item: { active: boolean }) => item.active),
-      ).toMatchObject({ baseUrl: 'https://second.example.com/v1' });
-
-      const list = await credentialApp.inject({
-        method: 'GET',
-        url: '/v1/settings/ai/credentials',
-      });
-      expect(list.statusCode).toBe(200);
-      expect(list.json().credentials).toHaveLength(2);
-
-      const activated = await credentialApp.inject({
-        method: 'POST',
-        url: `/v1/settings/ai/credentials/${firstCredential.id}/activate`,
-      });
-      expect(activated.statusCode).toBe(200);
-      expect(activated.json().settings).toMatchObject({
-        baseUrl: 'https://first.example.com/v1',
-        keyFingerprint: firstCredential.keyFingerprint,
-      });
-      expect(
-        activated.json().credentials.find((item: { active: boolean }) => item.active),
-      ).toMatchObject({ baseUrl: 'https://first.example.com/v1' });
-
-      const missing = await credentialApp.inject({
-        method: 'POST',
-        url: '/v1/settings/ai/credentials/123e4567-e89b-12d3-a456-426614174099/activate',
-      });
-      expect(missing.statusCode).toBe(404);
-
-      const serialized = [firstSave, duplicateSave, secondSave, list, activated]
-        .map((response) => response.body)
-        .join('\n');
-      expect(serialized).not.toContain(firstKey);
-      expect(serialized).not.toContain(secondKey);
-    } finally {
-      await credentialApp.close();
-    }
-  });
-
-  it('rejects insecure remote base URLs', async () => {
-    const response = await app.inject({
-      method: 'PATCH',
-      url: '/v1/settings/ai',
-      payload: { baseUrl: 'http://api.example.com/v1' },
-    });
-    expect(response.statusCode).toBe(400);
-  });
-
-  it('keeps the previous model catalog when refresh fails', async () => {
-    const store = new AiSettingsStore('test-encryption-secret');
-    store.update({ baseUrl: 'https://newapi.example.com/v1', apiKey: 'secret-test-key' });
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ data: [{ id: 'image-v1', mediaType: 'image' }] }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        }),
-      )
-      .mockRejectedValue(new Error('upstream unavailable'));
-    vi.stubGlobal('fetch', fetchMock);
-    try {
-      await expect(store.refreshModels()).resolves.toMatchObject([{ id: 'image-v1' }]);
-      await expect(store.refreshModels()).rejects.toThrow('upstream unavailable');
-      expect(store.listModels()).toMatchObject([{ id: 'image-v1', mediaTypes: ['image'] }]);
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it('resolves a media-compatible default or explicit model at submission time', async () => {
-    const store = new AiSettingsStore('test-encryption-secret');
-    store.update({ defaultModels: { image: 'image-v2' } });
-    expect(store.resolveModel('image')).toBe('image-v2');
-    expect(store.resolveModel('image', 'mock-image')).toBe('mock-image');
-
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ data: [{ id: 'image-v2', mediaType: 'image' }] }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      }),
-    );
-    vi.stubGlobal('fetch', fetchMock);
-    try {
-      store.update({ baseUrl: 'https://newapi.example.com/v1', apiKey: 'secret-test-key' });
-      await store.refreshModels();
-      expect(() => store.resolveModel('text', 'image-v2')).toThrow('不支持 text');
-    } finally {
-      vi.unstubAllGlobals();
     }
   });
 });
-
 describe('asset endpoints', () => {
   it('starts with an empty asset collection', async () => {
     const response = await app.inject({ method: 'GET', url: '/v1/assets' });
@@ -723,11 +354,11 @@ describe('asset endpoints', () => {
     vi.stubEnv('API_JWT_SECRET', 'asset-list-query-secret');
     const assetStore = new MemoryAssetStore();
     const authStore = new MemoryAuthStore();
-    const mail = new TestAccountMailSender();
-    const listApp = buildApp({ logger: false, assetStore, authStore, accountMailSender: mail });
+    const mail = new TestAuthContext();
+    const listApp = buildApp({ logger: false, assetStore, ...mail.appOptions });
     try {
       const register = async (email: string) => {
-        const response = await registerVerifiedTestUser(listApp, mail, {
+        const response = await issueTestSession(listApp, mail, {
           email,
           password: 'strong-password-123',
         });
@@ -830,17 +461,16 @@ describe('asset endpoints', () => {
     const assetStore = new MemoryAssetStore();
     const projectStore = new MemoryProjectStore();
     const authStore = new MemoryAuthStore();
-    const mail = new TestAccountMailSender();
+    const mail = new TestAuthContext();
     const listApp = buildApp({
       logger: false,
       assetStore,
       projectStore,
-      authStore,
-      accountMailSender: mail,
+      ...mail.appOptions,
     });
     try {
       const register = async (email: string) => {
-        const response = await registerVerifiedTestUser(listApp, mail, {
+        const response = await issueTestSession(listApp, mail, {
           email,
           password: 'strong-password-123',
         });
@@ -1177,11 +807,11 @@ describe('asset endpoints', () => {
   it('does not allow a different authenticated user to mint or use an asset URL', async () => {
     vi.stubEnv('API_JWT_SECRET', 'asset-url-test-secret');
     vi.stubEnv('API_AUTH_TOKEN', '');
-    const mail = new TestAccountMailSender();
-    const scopedApp = buildApp({ logger: false, accountMailSender: mail });
+    const mail = new TestAuthContext();
+    const scopedApp = buildApp({ logger: false, ...mail.appOptions });
     try {
       const register = async (email: string) => {
-        const response = await registerVerifiedTestUser(scopedApp, mail, {
+        const response = await issueTestSession(scopedApp, mail, {
           email,
           password: 'strong-password-123',
         });
@@ -1557,7 +1187,7 @@ describe('workflow import HTTP contract', () => {
 
   it('returns 409 for a stale revision without partially writing model defaults', async () => {
     const projectStore = new MemoryProjectStore();
-    const settingsStore = new AiSettingsStore('workflow-import-revision-atomicity');
+    const settingsStore = new MemoryAiSettingsStore('workflow-import-revision-atomicity');
     settingsStore.replaceModels([
       {
         id: 'revision-image-model',
@@ -1742,7 +1372,7 @@ describe('workflow import HTTP contract', () => {
   });
 
   it('imports valid model defaults and rejects invalid defaults without changing saved state', async () => {
-    const settingsStore = new AiSettingsStore('workflow-import-model-defaults');
+    const settingsStore = new MemoryAiSettingsStore('workflow-import-model-defaults');
     settingsStore.replaceModels([
       {
         id: 'import-image-model',
@@ -2029,7 +1659,7 @@ describe('run endpoints', () => {
   it('does not block a priced run on local cost policy settings', async () => {
     vi.stubEnv('MAX_RUN_COST', '1.00');
     vi.stubEnv('RUN_COST_CURRENCY', 'USD');
-    const settingsStore = new AiSettingsStore('cost-policy-test-secret');
+    const settingsStore = new MemoryAiSettingsStore('cost-policy-test-secret');
     settingsStore.replaceModels([
       {
         id: 'priced-image',
@@ -2268,7 +1898,11 @@ describe('run endpoints', () => {
 describe('T15C credential and model resolution contracts', () => {
   const refreshedAt = new Date().toISOString();
 
-  const configureCredential = (settingsStore: AiSettingsStore, baseUrl: string, apiKey: string) => {
+  const configureCredential = (
+    settingsStore: MemoryAiSettingsStore,
+    baseUrl: string,
+    apiKey: string,
+  ) => {
     settingsStore.update({ baseUrl, apiKey });
     const credential = settingsStore.listCredentials().find((item) => item.baseUrl === baseUrl);
     if (!credential) throw new Error(`credential fixture was not created for ${baseUrl}`);
@@ -2283,7 +1917,7 @@ describe('T15C credential and model resolution contracts', () => {
   });
 
   it('accepts a known credentialId and freezes its version in the run snapshot', async () => {
-    const settingsStore = new AiSettingsStore('t15c-known-credential');
+    const settingsStore = new MemoryAiSettingsStore('t15c-known-credential');
     const credential = configureCredential(
       settingsStore,
       'https://known-credential.example/v1',
@@ -2354,7 +1988,7 @@ describe('T15C credential and model resolution contracts', () => {
   });
 
   it('rejects a syntactically valid but unknown credentialId before resolving a run', async () => {
-    const settingsStore = new AiSettingsStore('t15c-unknown-credential');
+    const settingsStore = new MemoryAiSettingsStore('t15c-unknown-credential');
     const credentialApp = buildApp({ logger: false, settingsStore });
     const unknownCredentialId = '123e4567-e89b-12d3-a456-426614174099';
 
@@ -2383,7 +2017,7 @@ describe('T15C credential and model resolution contracts', () => {
     vi.stubEnv('API_JWT_SECRET', 't15c-auth-secret');
     const authStore = new MemoryAuthStore();
     const projectStore = new MemoryProjectStore();
-    const settingsStore = new AiSettingsStore('t15c-cross-user-credential');
+    const settingsStore = new MemoryAiSettingsStore('t15c-cross-user-credential');
     const credential = configureCredential(
       settingsStore,
       'https://shared-credential.example/v1',
@@ -2391,22 +2025,21 @@ describe('T15C credential and model resolution contracts', () => {
     );
     settingsStore.replaceModels([imageModel('shared-image')], credential.id);
     const authRunService = new MemoryRunService();
-    const mail = new TestAccountMailSender();
+    const mail = new TestAuthContext();
     const authApp = buildApp({
       logger: false,
-      authStore,
       projectStore,
       settingsStore,
       runService: authRunService,
-      accountMailSender: mail,
+      ...mail.appOptions,
     });
 
     try {
-      const aliceRegistration = await registerVerifiedTestUser(authApp, mail, {
+      const aliceRegistration = await issueTestSession(authApp, mail, {
         email: 'alice-t15c@example.test',
         password: 'alice-password',
       });
-      const bobRegistration = await registerVerifiedTestUser(authApp, mail, {
+      const bobRegistration = await issueTestSession(authApp, mail, {
         email: 'bob-t15c@example.test',
         password: 'bob-password',
       });
@@ -2515,7 +2148,7 @@ describe('T15C credential and model resolution contracts', () => {
   });
 
   it('resolves node, project, then platform model selections and credential references', async () => {
-    const settingsStore = new AiSettingsStore('t15c-model-priority');
+    const settingsStore = new MemoryAiSettingsStore('t15c-model-priority');
     const platformCredential = configureCredential(
       settingsStore,
       'https://platform-priority.example/v1',
@@ -2658,7 +2291,7 @@ describe('T15C credential and model resolution contracts', () => {
   });
 
   it('keeps an explicit node credential when inheriting unbound defaults and rejects a conflicting bound default', async () => {
-    const settingsStore = new AiSettingsStore('t17a-inherited-credential');
+    const settingsStore = new MemoryAiSettingsStore('t17a-inherited-credential');
     const projectStore = new MemoryProjectStore();
     const platformCredential = configureCredential(
       settingsStore,
@@ -2781,20 +2414,15 @@ describe('T15C credential and model resolution contracts', () => {
   });
 
   it('keeps legacy string model defaults compatible while normalizing platform settings', async () => {
-    const settingsStore = new AiSettingsStore('t15c-legacy-defaults');
+    const settingsStore = new MemoryAiSettingsStore('t15c-legacy-defaults');
     const legacyApp = buildApp({ logger: false, settingsStore });
 
     try {
-      const update = await legacyApp.inject({
-        method: 'PATCH',
-        url: '/v1/settings/ai',
-        payload: {
-          baseUrl: 'https://legacy-defaults.example/v1',
-          apiKey: 'synthetic-legacy-defaults-key',
-        },
+      const initialSettings = settingsStore.update({
+        baseUrl: 'https://legacy-defaults.example/v1',
+        apiKey: 'synthetic-legacy-defaults-key',
       });
-      expect(update.statusCode).toBe(200);
-      const credentialId = update.json().credentials[0].id as string;
+      const credentialId = settingsStore.listCredentials()[0]!.id;
       settingsStore.replaceModels(
         [imageModel('legacy-platform'), imageModel('legacy-project')],
         credentialId,
@@ -2805,7 +2433,7 @@ describe('T15C credential and model resolution contracts', () => {
         payload: { defaultModels: { image: 'legacy-platform' } },
       });
       expect(defaults.statusCode).toBe(200);
-      expect(update.json().settings.defaultModels).toEqual({});
+      expect(initialSettings.defaultModels).toEqual({});
       expect(defaults.json().settings.defaultModels).toEqual({
         image: { modelAlias: 'legacy-platform' },
       });
@@ -2868,7 +2496,9 @@ describe('T15C credential and model resolution contracts', () => {
       expect(currentSettings.json().settings.defaultModels).toEqual({
         image: { modelAlias: 'legacy-platform' },
       });
-      expect(JSON.stringify(update.json())).not.toContain('synthetic-legacy-defaults-key');
+      expect(
+        JSON.stringify([initialSettings, defaults.json(), currentSettings.json()]),
+      ).not.toContain('synthetic-legacy-defaults-key');
     } finally {
       await legacyApp.close();
     }
@@ -2980,7 +2610,7 @@ describe('webhook and run idempotency boundaries', () => {
       upsertProviderJob: vi.fn(),
       updateRun: vi.fn(),
     };
-    const settingsStore = new AiSettingsStore('synthetic-webhook-settings');
+    const settingsStore = new MemoryAiSettingsStore('synthetic-webhook-settings');
     settingsStore.update({
       baseUrl: 'https://newapi.example.test/v1',
       apiKey: 'synthetic-webhook-key',

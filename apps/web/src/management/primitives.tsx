@@ -4,20 +4,11 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
-  Eye,
-  EyeOff,
   LoaderCircle,
   RefreshCw,
   X,
 } from 'lucide-react';
-import {
-  useEffect,
-  useId,
-  useRef,
-  useState,
-  type InputHTMLAttributes,
-  type ReactNode,
-} from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { errorMessage } from './client';
 import { apiFetch } from '../auth-client';
 import { API_BASE_URL } from '../workspace/contracts';
@@ -119,37 +110,6 @@ export function QueryState({
       </div>
     );
   return <>{children}</>;
-}
-
-/** 密码输入支持显隐与密码管理器，不将值持久化。 */
-export function PasswordField({
-  label,
-  ...props
-}: InputHTMLAttributes<HTMLInputElement> & { label: string }) {
-  const id = useId();
-  const [visible, setVisible] = useState(false);
-  return (
-    <label className="mg-field" htmlFor={id}>
-      <span>{label}</span>
-      <span className="mg-password">
-        <input
-          {...props}
-          placeholder={props.placeholder ?? `请输入${label}`}
-          id={id}
-          type={visible ? 'text' : 'password'}
-        />
-        <button
-          type="button"
-          className="mg-icon"
-          onClick={() => setVisible(!visible)}
-          title={visible ? `隐藏${label}` : `显示${label}`}
-          aria-label={visible ? `隐藏${label}` : `显示${label}`}
-        >
-          {visible ? <EyeOff size={17} /> : <Eye size={17} />}
-        </button>
-      </span>
-    </label>
-  );
 }
 
 /** 编辑层使用原生 dialog 管理焦点，并在退出动画后恢复触发位置。 */
@@ -271,7 +231,7 @@ export function UserIdentity({
   avatarUrl,
 }: {
   name?: string | null;
-  email: string;
+  email?: string;
   avatarUrl?: string | null;
 }) {
   const [broken, setBroken] = useState(false);
@@ -307,11 +267,11 @@ export function UserIdentity({
         {source && !broken ? (
           <img src={source} alt="" onError={() => setBroken(true)} referrerPolicy="no-referrer" />
         ) : (
-          (name || email).slice(0, 1).toLocaleUpperCase()
+          (name || email || '用户').slice(0, 1).toLocaleUpperCase()
         )}
       </span>
       <span>
-        <strong>{name || email.split('@')[0]}</strong>
+        <strong>{name || email?.split('@')[0] || '用户'}</strong>
         <small>{email}</small>
       </span>
     </span>

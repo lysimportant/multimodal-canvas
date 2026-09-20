@@ -44,6 +44,9 @@ function render(...args: Parameters<typeof renderRaw>) {
 
 type PromptMentionBlock = Extract<PromptDocument['blocks'][number], { type: 'mention' }>;
 
+/** 组件用例的本人分组引用；重渲染时必须与目录保持相同身份。 */
+const testCredentialId = '11111111-1111-4111-8111-111111111111';
+
 const imageNode = {
   id: 'node_image',
   type: 'image',
@@ -54,7 +57,8 @@ const imageNode = {
     mode: 'generate',
     enabled: true,
     prompt: '白色背景',
-    modelAlias: 'removed-image-model',
+    modelAlias: 'image-model',
+    credentialId: testCredentialId,
     inferenceStrength: 'high',
   },
 } as AssetFlowNode;
@@ -69,6 +73,7 @@ const videoNode = {
     mode: 'generate',
     enabled: true,
     prompt: '产品旋转展示',
+    credentialId: testCredentialId,
   },
 } as AssetFlowNode;
 
@@ -84,6 +89,7 @@ const audioNode = {
     enabled: true,
     prompt: '介绍产品',
     modelAlias: 'test-tts',
+    credentialId: testCredentialId,
   },
 } as AssetFlowNode;
 
@@ -106,7 +112,7 @@ function syntheticCredentialPreview(suffix: string): string {
 }
 
 function makeProps(overrides: Partial<NodeQuickEditorProps> = {}): NodeQuickEditorProps {
-  return {
+  const props: NodeQuickEditorProps = {
     node: imageNode,
     models,
     busy: false,
@@ -116,6 +122,26 @@ function makeProps(overrides: Partial<NodeQuickEditorProps> = {}): NodeQuickEdit
     onRun: vi.fn(),
     ...overrides,
   };
+  const credentialId = testCredentialId;
+  props.node = {
+    ...props.node,
+    data: { credentialId, ...props.node.data },
+  };
+  props.models = (
+    overrides.models ??
+    (props.node.data.mediaType === 'video' && props.node.data.modelAlias
+      ? [
+          {
+            id: props.node.data.modelAlias,
+            name: props.node.data.modelAlias,
+            mediaTypes: ['video'],
+          },
+        ]
+      : props.node.data.mediaType === 'audio'
+        ? [{ id: 'test-tts', name: '测试音频', mediaTypes: ['audio'] }]
+        : models)
+  ).map((model) => ({ credentialId, group: '测试分组', ...model }));
+  return props;
 }
 
 /** 用任意持久化参数构造音频节点，覆盖合法配置及旧数据的非法类型。 */
@@ -163,104 +189,47 @@ afterEach(() => {
 });
 
 describe('NodeQuickEditor', () => {
-  it('不同 Key 的同名模型按连接分组，选中后提交精确平台身份', async () => {
-    const user = userEvent.setup();
-    const onModelChange = vi.fn();
-    const props = makeProps({
-      node: {
-        ...imageNode,
-        data: { ...imageNode.data, platformModelId: 'product-a', modelAlias: 'same-model' },
-      },
-      models: ['a', 'b'].map((key) => ({
-        id: 'same-model',
-        platformModelId: `product-${key}`,
-        name: '同名模型',
-        mediaTypes: ['image'],
-        connection: { id: `source-${key}`, label: `example.test · Key …${key}0000008` },
-      })),
-      onModelChange,
-    });
-    const view = render(<NodeQuickEditor {...props} />);
-    await user.click(screen.getByRole('combobox', { name: /模型：同名模型.*a0000008/ }));
-    expect(screen.getAllByText('example.test · Key …a0000008', { exact: true })).toHaveLength(2);
-    expect(screen.getAllByText('example.test · Key …b0000008', { exact: true })).toHaveLength(2);
-    await user.click(screen.getByRole('option', { name: /同名模型.*b0000008/ }));
-    expect(onModelChange).toHaveBeenCalledWith({
-      platformModelId: 'product-b',
-      modelAlias: 'same-model',
-    });
-    view.rerender(
-      <NodeQuickEditor
-        {...props}
-        node={{ ...props.node, data: { ...props.node.data, platformModelId: 'product-b' } }}
-      />,
-    );
-    expect(screen.getByRole('combobox', { name: /模型：同名模型.*b0000008/ })).toBeVisible();
-  });
-  it('同名平台商品保留独立身份，旧节点能显示更换上游后的原商品', async () => {
-    const user = userEvent.setup();
+  it('同名模型按本人分组保留独立身份，选中后提交分组凭据', async () => {
+    const actor = userEvent.setup();
     const onModelChange = vi.fn();
     render(
       <NodeQuickEditor
         {...makeProps({
           node: {
             ...imageNode,
-            data: { ...imageNode.data, platformModelId: 'product-b', modelAlias: 'old-alias' },
+            data: { ...imageNode.data, modelAlias: 'same-model', credentialId: 'group-a' },
           },
-          models: [
-            {
-              id: 'new-alias',
-              platformModelId: 'product-a',
-              name: '平台 A',
-              mediaTypes: ['image'],
-              availability: 'available',
-            },
-            {
-              id: 'new-alias',
-              platformModelId: 'product-b',
-              name: '平台 B',
-              mediaTypes: ['image'],
-              availability: 'available',
-            },
-            {
-              id: 'new-alias',
-              platformModelId: 'product-review',
-              name: '待确认商品',
-              mediaTypes: ['image'],
-              availability: 'needs_review',
-            },
-          ],
+          models: ['a', 'b'].map((group) => ({
+            id: 'same-model',
+            name: '同名模型',
+            credentialId: 'group-' + group,
+            group,
+            mediaTypes: ['image'],
+            availability: 'available',
+          })),
           onModelChange,
         })}
       />,
     );
-    await user.click(screen.getByRole('combobox', { name: '模型：平台 B' }));
-    expect(screen.getByRole('option', { name: /待确认商品/ })).toHaveAttribute(
-      'aria-disabled',
-      'true',
-    );
-    await user.click(screen.getByRole('option', { name: '平台 A' }));
+    await actor.click(screen.getByRole('combobox', { name: /模型：同名模型.*a/ }));
+    await actor.click(screen.getByRole('option', { name: /同名模型.*b/ }));
     expect(onModelChange).toHaveBeenCalledWith({
-      platformModelId: 'product-a',
-      modelAlias: 'new-alias',
+      modelAlias: 'same-model',
+      credentialId: 'group-b',
     });
   });
-
-  it('已选平台商品不可用时禁用生成按钮，不静默改选同名模型', () => {
+  it('原分组失效时不能静默改用其它组的同名模型', () => {
     render(
       <NodeQuickEditor
         {...makeProps({
-          node: {
-            ...imageNode,
-            data: { ...imageNode.data, platformModelId: 'product-b', modelAlias: 'same-alias' },
-          },
+          node: { ...imageNode, data: { ...imageNode.data, credentialId: 'missing-group' } },
           models: [
             {
-              id: 'same-alias',
-              platformModelId: 'product-a',
-              name: '其他商品',
+              id: 'image-model',
+              name: '图片',
+              credentialId: 'other-group',
+              group: '其他组',
               mediaTypes: ['image'],
-              availability: 'available',
             },
           ],
         })}
@@ -269,7 +238,7 @@ describe('NodeQuickEditor', () => {
     expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '生成' })).toHaveAttribute(
       'title',
-      '当前平台模型已下架，请选择其他模型',
+      '当前分组模型已失效，请重新选择；不会自动切换其他分组',
     );
   });
   it('模型、文字推理和媒体参数使用顶层浮层，不被编辑器滚动区域裁切', async () => {
@@ -594,7 +563,13 @@ describe('NodeQuickEditor', () => {
 
   it('只列出当前媒体模型，并保留目录中缺失的当前覆盖值', async () => {
     const user = userEvent.setup();
-    render(<NodeQuickEditor {...makeProps()} />);
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          node: { ...imageNode, data: { ...imageNode.data, modelAlias: 'removed-image-model' } },
+        })}
+      />,
+    );
 
     expect(screen.queryByText('生成设置 · 图片')).not.toBeInTheDocument();
     expect(screen.queryByText('产品主图')).not.toBeInTheDocument();
@@ -606,12 +581,12 @@ describe('NodeQuickEditor', () => {
     expect(modelTrigger).toHaveTextContent('removed-image-model');
     expect(screen.queryByText('继承项目默认模型')).not.toBeInTheDocument();
     await user.click(within(modelGroup).getByRole('combobox'));
-    expect(within(modelGroup).getByRole('option', { name: '图片模型' })).toBeInTheDocument();
-    expect(within(modelGroup).getByRole('option', { name: '多模态模型' })).toBeInTheDocument();
+    expect(within(modelGroup).getByRole('option', { name: /图片模型/ })).toBeInTheDocument();
+    expect(within(modelGroup).getByRole('option', { name: /多模态模型/ })).toBeInTheDocument();
     expect(within(modelGroup).queryByRole('option', { name: '文字模型' })).not.toBeInTheDocument();
     expect(
       within(modelGroup).getByRole('option', {
-        name: /removed-image-model.*旧设置，未绑定 API Key/,
+        name: /removed-image-model.*原分组当前不可用/,
         selected: true,
       }),
     ).toBeInTheDocument();
@@ -687,6 +662,7 @@ describe('NodeQuickEditor', () => {
             id: 'image-model',
             name: '多模态模型',
             mediaTypes: ['text', 'image'],
+            credentialId: testCredentialId,
             capabilities: { imageEdit: false },
           },
         ]}
@@ -722,7 +698,14 @@ describe('NodeQuickEditor', () => {
     rerender(
       <NodeQuickEditor
         {...props}
-        models={[{ id: 'image-model', name: '图片模型', mediaTypes: ['image'] }]}
+        models={[
+          {
+            id: 'image-model',
+            name: '图片模型',
+            mediaTypes: ['image'],
+            credentialId: testCredentialId,
+          },
+        ]}
       />,
     );
     await userEvent.setup().click(screen.getByRole('button', { name: '新节点' }));
@@ -838,12 +821,15 @@ describe('NodeQuickEditor', () => {
     fireEvent.change(prompt, { target: { value: '柔和棚拍光' } });
     const modelGroup = screen.getByText('模型').parentElement as HTMLElement;
     await user.click(within(modelGroup).getByRole('combobox'));
-    await user.click(within(modelGroup).getByRole('option', { name: '图片模型' }));
+    await user.click(within(modelGroup).getByRole('option', { name: /图片模型/ }));
     await user.click(screen.getByRole('button', { name: '生成' }));
     fireEvent.pointerDown(prompt);
 
     expect(props.onPromptChange).toHaveBeenCalledWith('柔和棚拍光');
-    expect(props.onModelChange).toHaveBeenCalledWith({ modelAlias: 'image-model' });
+    expect(props.onModelChange).toHaveBeenCalledWith({
+      modelAlias: 'image-model',
+      credentialId: testCredentialId,
+    });
     expect(props.onRun).toHaveBeenCalledTimes(1);
     expect(onCanvasPointerDown).not.toHaveBeenCalled();
     expect(screen.getByLabelText('产品主图生成设置')).toHaveClass('nodrag', 'nowheel', 'nopan');
@@ -1056,7 +1042,7 @@ describe('NodeQuickEditor', () => {
     expect(screen.getByRole('button', { name: '生成中' })).toBeDisabled();
   });
 
-  it('按 API Key 分组模型并回传凭据绑定', async () => {
+  it('按本人分组展示模型并回传内部绑定，不展示 Key 尾号', async () => {
     const user = userEvent.setup();
     const onModelChange = vi.fn();
     const chatCredentialLabel = `聊天 Key · ${syntheticCredentialPreview('1111')}`;
@@ -1072,6 +1058,7 @@ describe('NodeQuickEditor', () => {
               mediaTypes: ['image'],
               credentialId: 'credential-chat',
               credentialLabel: chatCredentialLabel,
+              group: '聊天分组',
             },
             {
               id: 'image-model',
@@ -1079,17 +1066,18 @@ describe('NodeQuickEditor', () => {
               mediaTypes: ['image'],
               credentialId: 'credential-image',
               credentialLabel: imageCredentialLabel,
+              group: '图片分组',
             },
           ],
         })}
       />,
     );
 
-    expect(screen.getByText(chatCredentialLabel)).toBeInTheDocument();
-    expect(screen.getByText(imageCredentialLabel)).toBeInTheDocument();
+    expect(screen.queryByText(chatCredentialLabel)).not.toBeInTheDocument();
+    expect(screen.queryByText(imageCredentialLabel)).not.toBeInTheDocument();
     const modelGroup = screen.getByText('模型').parentElement as HTMLElement;
     await user.click(within(modelGroup).getByRole('combobox'));
-    await user.click(within(modelGroup).getByRole('option', { name: '图片模型' }));
+    await user.click(within(modelGroup).getByRole('option', { name: /图片模型/ }));
 
     expect(onModelChange).toHaveBeenCalledWith({
       modelAlias: 'image-model',
@@ -1226,7 +1214,7 @@ describe('NodeQuickEditor', () => {
   it('保存并恢复平台自定义音色、格式和连续语速，保留其他参数', async () => {
     const user = userEvent.setup();
     const onParametersChange = vi.fn();
-    const props = makeProps({ onParametersChange });
+    const props = makeProps({ node: audioNode, onParametersChange });
     const saved = { voice: 'old-voice', providerOption: { preserved: true } };
     const { rerender, unmount } = render(
       <NodeQuickEditor {...props} node={makeAudioNode(saved)} />,
@@ -1310,7 +1298,7 @@ describe('NodeQuickEditor', () => {
   it('可选格式和语速可以清空，不回填默认值且显式音色仍能生成', async () => {
     const user = userEvent.setup();
     const onParametersChange = vi.fn();
-    const props = makeProps({ onParametersChange });
+    const props = makeProps({ node: audioNode, onParametersChange });
     const { rerender } = render(
       <NodeQuickEditor
         {...props}
@@ -1359,7 +1347,7 @@ describe('NodeQuickEditor', () => {
 
   it.each([0.25, 4])('语速边界 %s 按数值保存且允许生成', (speed) => {
     const onParametersChange = vi.fn();
-    const props = makeProps({ onParametersChange });
+    const props = makeProps({ node: audioNode, onParametersChange });
     const { rerender } = render(
       <NodeQuickEditor {...props} node={makeAudioNode({ voice: 'custom-voice' })} />,
     );
@@ -2063,7 +2051,7 @@ describe('NodeQuickEditor', () => {
     render(
       <NodeQuickEditor
         {...makeProps({
-          node: videoNode,
+          node: { ...videoNode, data: { ...videoNode.data, modelAlias: 'grok-video' } },
           models: [
             {
               id: 'grok-video',
@@ -2086,7 +2074,9 @@ describe('NodeQuickEditor', () => {
     const ratioGroup = screen.getByText('视频比例').parentElement as HTMLElement;
     const durationGroup = screen.getByText('时长（秒）').parentElement as HTMLElement;
     const modelGroup = screen.getByText('模型').parentElement as HTMLElement;
-    expect(within(modelGroup).getByRole('combobox', { name: '模型：未设置' })).toBeInTheDocument();
+    expect(
+      within(modelGroup).getByRole('combobox', { name: '模型：Grok 视频 · 测试分组' }),
+    ).toBeInTheDocument();
     expect(
       within(resolutionGroup).getByRole('combobox', { name: '视频清晰度：未设置' }),
     ).toBeInTheDocument();

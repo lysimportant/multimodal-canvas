@@ -44,8 +44,11 @@ import {
   S3AssetReferenceBlobStore,
   StoredAssetReferenceResolver,
 } from './asset-reference-resolver';
-import { createRunWorker } from './index';
 import { createInitialWorkflowState, createNodeRunSnapshot } from './workflow-dag';
+import {
+  createAuthorizedTestRunWorker,
+  withTestExecutionBindings,
+} from './test-execution-fixtures';
 
 const projectId = '123e4567-e89b-42d3-a456-426614174700';
 const otherProjectId = '123e4567-e89b-42d3-a456-426614174701';
@@ -59,6 +62,15 @@ beforeEach(() => {
   bullmqState.job = undefined;
   bullmqState.processor = undefined;
 });
+
+/** 在 Worker 捕获队列数据前，为 New API 夹具补齐最终节点形态对应的授权。 */
+function createRunWorker(options: Parameters<typeof createAuthorizedTestRunWorker>[0]) {
+  const data = bullmqState.job?.data;
+  if (data?.provider === 'newapi' && data.snapshot) {
+    data.snapshot = withTestExecutionBindings(data.snapshot as RunSnapshot);
+  }
+  return createAuthorizedTestRunWorker(options);
+}
 
 describe('StoredAssetReferenceResolver', () => {
   it('signs the frozen object key against the explicit public provider endpoint', async () => {
@@ -1150,7 +1162,7 @@ describe('createRunWorker asset hydration boundary', () => {
       expect(repository.findVersion).toHaveBeenCalledWith(otherImageId, 1);
       expect(blobStore.get).toHaveBeenCalledTimes(3);
       expect(durableSnapshot).toEqual(originalSnapshot);
-      expect(job.data.snapshot).toEqual(originalSnapshot);
+      expect(job.data.snapshot).toEqual(withTestExecutionBindings(originalSnapshot));
       expect(jobUpdates.length).toBeGreaterThan(0);
       const durable = JSON.stringify([job.data, ...jobUpdates]);
       expect(durable).not.toContain('data:image/');

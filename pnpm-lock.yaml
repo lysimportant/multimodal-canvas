@@ -41,15 +41,15 @@ importers:
       '@fastify/multipart':
         specifier: ^9.2.1
         version: 9.4.0
-      '@multimodal-canvas/billing':
-        specifier: workspace:*
-        version: link:../../packages/billing
       '@multimodal-canvas/credential-crypto':
         specifier: workspace:*
         version: link:../../packages/credential-crypto
       '@multimodal-canvas/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@multimodal-canvas/execution':
+        specifier: workspace:*
+        version: link:../../packages/execution
       '@multimodal-canvas/observability':
         specifier: workspace:*
         version: link:../../packages/observability
@@ -71,9 +71,6 @@ importers:
       ioredis:
         specifier: ^5.11.1
         version: 5.11.1
-      nodemailer:
-        specifier: ^10.0.0
-        version: 10.0.0
       zod:
         specifier: 3.24.2
         version: 3.24.2
@@ -81,9 +78,6 @@ importers:
       '@types/node':
         specifier: ^22.13.10
         version: 22.20.1
-      '@types/nodemailer':
-        specifier: ^8.0.1
-        version: 8.0.1
       tsx:
         specifier: ^4.19.3
         version: 4.23.12
@@ -175,15 +169,15 @@ importers:
       '@aws-sdk/s3-request-presigner':
         specifier: 3.862.0
         version: 3.862.0
-      '@multimodal-canvas/billing':
-        specifier: workspace:*
-        version: link:../../packages/billing
       '@multimodal-canvas/credential-crypto':
         specifier: workspace:*
         version: link:../../packages/credential-crypto
       '@multimodal-canvas/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@multimodal-canvas/execution':
+        specifier: workspace:*
+        version: link:../../packages/execution
       '@multimodal-canvas/observability':
         specifier: workspace:*
         version: link:../../packages/observability
@@ -210,22 +204,6 @@ importers:
         specifier: ^3.0.8
         version: 3.2.7(@types/node@22.20.1)(jiti@2.7.0)(jsdom@26.1.0)(lightningcss@1.32.0)(tsx@4.23.12)
 
-  packages/billing:
-    dependencies:
-      '@multimodal-canvas/domain':
-        specifier: workspace:*
-        version: link:../domain
-      '@prisma/client':
-        specifier: 6.16.2
-        version: 6.16.2(prisma@6.16.2(typescript@5.9.3))(typescript@5.9.3)
-    devDependencies:
-      '@types/node':
-        specifier: ^22.13.10
-        version: 22.20.1
-      vitest:
-        specifier: ^3.0.8
-        version: 3.2.7(@types/node@22.20.1)(jiti@2.7.0)(jsdom@26.1.0)(lightningcss@1.32.0)(tsx@4.23.12)
-
   packages/credential-crypto:
     devDependencies:
       '@types/node':
@@ -241,6 +219,22 @@ importers:
         specifier: ^3.24.2
         version: 3.25.76
     devDependencies:
+      vitest:
+        specifier: ^3.0.8
+        version: 3.2.7(@types/node@22.20.1)(jiti@2.7.0)(jsdom@26.1.0)(lightningcss@1.32.0)(tsx@4.23.12)
+
+  packages/execution:
+    dependencies:
+      '@multimodal-canvas/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@prisma/client':
+        specifier: 6.16.2
+        version: 6.16.2(prisma@6.16.2(typescript@5.9.3))(typescript@5.9.3)
+    devDependencies:
+      '@types/node':
+        specifier: ^22.13.10
+        version: 22.20.1
       vitest:
         specifier: ^3.0.8
         version: 3.2.7(@types/node@22.20.1)(jiti@2.7.0)(jsdom@26.1.0)(lightningcss@1.32.0)(tsx@4.23.12)
@@ -1714,9 +1708,6 @@ packages:
   '@types/node@22.20.1':
     resolution: {integrity: sha512-EANqOCF9QFyra+4pfxUcX9STKJpCLjMbObVzljIJomAWSnuSIEAvyzEU53GaajbXJEgdh0iEcPL+DGvpUd4k1Q==}
 
-  '@types/nodemailer@8.0.1':
-    resolution: {integrity: sha512-PxpaInm8V1JQDd4j0ds5HfvWQk8JupS1C0Picb96QJsrrRDjBH+DlK7L4ZdNSqNULhiZRQHc40nLVShaGxXAMw==}
-
   '@types/react-dom@19.2.4':
     resolution: {integrity: sha512-Bsc+QHgp+P/F02XDzNCY9jnZNCUuLki36KT7VKrTXXLdHf+vHMNZnW1rVu5DNW/rCK+fya3DATySbLM4yhtKUw==}
     peerDependencies:
@@ -2348,10 +2339,6 @@ packages:
   node-releases@2.0.53:
     resolution: {integrity: sha512-D9UOmYG3UH1V+ENW56t5QXBwJw1YEY18ruVeus89Rw+SyIgjPkCO84bRzO3uNIYosJbNwiabWVn48o3uJLjxFQ==}
     engines: {node: '>=18'}
-
-  nodemailer@10.0.0:
-    resolution: {integrity: sha512-wdv+hXBg0iIPIOf108FaZyTxqjQpCvQeAJt9pHHTooPy/y3vQtI9eiImM9AIVKR3e/0FeMA1oueNfBjFJcaK+Q==}
-    engines: {node: '>=20.0.0'}
 
   nwsapi@2.2.24:
     resolution: {integrity: sha512-7YRhZ3jS45LwmSCT4b2sVFHt/WuovaktDU07QrtOBY2PXskss5a9jfmR9jptyumwXST+rFjrmppMY1KT/yn35A==}
@@ -4429,10 +4416,6 @@ snapshots:
     dependencies:
       undici-types: 6.21.0
 
-  '@types/nodemailer@8.0.1':
-    dependencies:
-      '@types/node': 22.20.1
-
   '@types/react-dom@19.2.4(@types/react@19.2.18)':
     dependencies:
       '@types/react': 19.2.18
@@ -5094,8 +5077,6 @@ snapshots:
     optional: true
 
   node-releases@2.0.53: {}
-
-  nodemailer@10.0.0: {}
 
   nwsapi@2.2.24: {}
 

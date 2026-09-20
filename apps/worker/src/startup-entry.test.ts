@@ -37,7 +37,6 @@ describe('Worker process entrypoint', () => {
         'REDIS_URL',
         'S3_BUCKET',
         'S3_REGION',
-        'NEW_API_BASE_URL',
         'AI_CREDENTIAL_ENCRYPTION_KEY',
         'WORKER_PROVIDER',
         'RUN_SERVICE',

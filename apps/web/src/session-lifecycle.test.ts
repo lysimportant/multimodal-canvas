@@ -4,7 +4,8 @@ import {
   clearAuthSession,
   getAuthToken,
   getAuthSessionGeneration,
-  login,
+  fetchCurrentSession,
+  readAuthSession,
   logout,
   maintainAuthSession,
   persistAuthSession,
@@ -45,14 +46,11 @@ describe('会话隔离与恢复', () => {
           finish = resolve;
         }),
     );
-    const pending = login('http://localhost:3000', {
-      email: 'a@example.test',
-      password: 'synthetic-password',
-    });
+    const pending = fetchCurrentSession('http://localhost:3000');
     persistAuthSession(session('b'));
     finish(Response.json(session('a')));
     await expect(pending).rejects.toThrow('账户状态已改变');
-    expect(getAuthToken()).toBe(session('b').accessToken);
+    expect(readAuthSession()?.user.id).toBe('b');
   });
 
   it('临近到期进入页面会立即续期，不等待首次30秒轮询', async () => {
@@ -64,7 +62,9 @@ describe('会话隔离与恢复', () => {
       );
     const stop = maintainAuthSession('http://localhost:3000', vi.fn());
     expect(fetcher).toHaveBeenCalledTimes(1);
-    await vi.waitFor(() => expect(getAuthToken()).toBe('synthetic-initial-renewal'));
+    await vi.waitFor(() =>
+      expect(Date.parse(readAuthSession()!.expiresAt!)).toBeGreaterThan(Date.now() + 60_000),
+    );
     stop();
   });
 
@@ -79,14 +79,16 @@ describe('会话隔离与恢复', () => {
         Response.json({ ...session('a'), accessToken: 'synthetic-visible-renewal' }),
       );
     const stop = maintainAuthSession('http://localhost:3000', vi.fn());
-    await vi.waitFor(() => expect(getAuthToken()).toBe('synthetic-initial-renewal'));
+    await vi.waitFor(() =>
+      expect(Date.parse(readAuthSession()!.expiresAt!)).toBeGreaterThan(Date.now() + 60_000),
+    );
     persistAuthSession({
       ...session('a'),
       accessToken: 'synthetic-initial-renewal',
       expiresAt: new Date(Date.now() + 10_000).toISOString(),
     });
     document.dispatchEvent(new Event('visibilitychange'));
-    await vi.waitFor(() => expect(getAuthToken()).toBe('synthetic-visible-renewal'));
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
     expect(fetcher).toHaveBeenCalledTimes(2);
     stop();
   });
@@ -101,31 +103,12 @@ describe('会话隔离与恢复', () => {
       }),
     );
     const stop = maintainAuthSession('http://localhost:3000', vi.fn());
-    await vi.waitFor(() => expect(getAuthToken()).toBe('synthetic-expired-renewal'));
+    await vi.waitFor(() =>
+      expect(Date.parse(readAuthSession()!.expiresAt!)).toBeGreaterThan(Date.now()),
+    );
     stop();
   });
 
-  it('认证连接超时会中止请求并释放调用者忙碌状态', async () => {
-    vi.useFakeTimers();
-    try {
-      vi.spyOn(globalThis, 'fetch').mockImplementation(
-        (_url, init) =>
-          new Promise((_, reject) => {
-            init?.signal?.addEventListener('abort', () =>
-              reject(new DOMException('aborted', 'AbortError')),
-            );
-          }),
-      );
-      const assertion = expect(
-        login('http://localhost:3000', { email: 'a@example.test', password: 'synthetic-password' }),
-      ).rejects.toThrow('认证请求超时');
-      await vi.advanceTimersByTimeAsync(10_001);
-      await assertion;
-      expect(getAuthToken()).toBeUndefined();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
   it('A 的晚到 401 不清除新登录 B 的身份', async () => {
     persistAuthSession(session('a'));
     let finish!: (response: Response) => void;
@@ -140,8 +123,8 @@ describe('会话隔离与恢复', () => {
     const pending = apiFetch('/v1/projects');
     persistAuthSession(session('b'));
     finish(new Response('{}', { status: 401 }));
-    expect((await pending).status).toBe(401);
-    expect(getAuthToken()).toBe(session('b').accessToken);
+    await expect(pending).rejects.toThrow('账户状态已改变');
+    expect(readAuthSession()?.user.id).toBe('b');
     expect(unauthorized).not.toHaveBeenCalled();
   });
 
@@ -154,7 +137,7 @@ describe('会话隔离与恢复', () => {
     await expect(apiFetch('/v1/projects', { method: 'POST' })).rejects.toThrow('offline');
     expect((await apiFetch('/v1/projects', { method: 'POST' })).status).toBe(403);
     expect(fetcher).toHaveBeenCalledTimes(2);
-    expect(getAuthToken()).toBe(session('a').accessToken);
+    expect(readAuthSession()?.user.id).toBe('a');
   });
 
   it('同一会话并发续期只发一次，退出后晚到续期不能重新登录', async () => {
@@ -171,12 +154,12 @@ describe('会话隔离与恢复', () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
     clearAuthSession();
     finish(Response.json({ ...session('a'), accessToken: 'synthetic-refreshed-a' }));
-    expect(await first).toBeNull();
-    expect(await second).toBeNull();
+    await expect(first).rejects.toThrow('账户状态已改变');
+    await expect(second).rejects.toThrow('账户状态已改变');
     expect(getAuthToken()).toBeUndefined();
   });
 
-  it('续期保留用户身份并持久化新令牌', async () => {
+  it('续期保留用户身份并仅持久化公开资料', async () => {
     persistAuthSession(session('a'));
     const generation = getAuthSessionGeneration();
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
@@ -184,7 +167,7 @@ describe('会话隔离与恢复', () => {
     );
     const renewed = await refreshAuthSession('http://localhost:3000');
     expect(renewed?.user.id).toBe('a');
-    expect(getAuthToken()).toBe('synthetic-refreshed-a');
+    expect(getAuthToken()).toBeUndefined();
     expect(getAuthSessionGeneration()).toBe(generation);
   });
 
@@ -208,8 +191,8 @@ describe('会话隔离与恢复', () => {
       user: { ...administrator.user, role: 'user' },
     });
     finishBody({ ...administrator, accessToken: 'synthetic-late-admin-renewal' });
-    expect(await pending).toEqual(downgraded);
-    expect(getAuthToken()).toBe(downgraded.accessToken);
+    await expect(pending).rejects.toThrow('账户状态已改变');
+    expect(readAuthSession()).toEqual(downgraded);
   });
 
   it('显式退出立即清本地，服务端失败可见且不清之后登录的会话', async () => {
@@ -225,8 +208,8 @@ describe('会话隔离与恢复', () => {
     expect(getAuthToken()).toBeUndefined();
     persistAuthSession(session('b'));
     fail(new Error('offline'));
-    await expect(pending).rejects.toThrow('offline');
-    expect(getAuthToken()).toBe(session('b').accessToken);
+    await expect(pending).rejects.toThrow('账户状态已改变');
+    expect(readAuthSession()?.user.id).toBe('b');
   });
 
   it('其他标签退出会同步清内存令牌', () => {

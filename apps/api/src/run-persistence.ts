@@ -18,7 +18,7 @@ import {
   type RunStatus,
 } from '@multimodal-canvas/domain';
 import { Prisma, PrismaClient, type RunStatus as PrismaRunStatus } from '@prisma/client';
-import { billingDatabaseRunId } from '@multimodal-canvas/billing';
+import { executionDatabaseRunId } from '@multimodal-canvas/execution';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const AMOUNT_PATTERN = /^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,6})?$/;
@@ -787,7 +787,7 @@ function requireUuid(
 
 /** Stable UUID for a BullMQ/API run identifier. */
 export function databaseRunId(externalRunId: string): string {
-  return billingDatabaseRunId(externalRunId);
+  return executionDatabaseRunId(externalRunId);
 }
 
 function toPrismaRunStatus(status: RunStatus): PrismaRunStatus {

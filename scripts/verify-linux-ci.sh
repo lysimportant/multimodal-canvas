@@ -23,7 +23,7 @@ case "$scope" in
     fi
     for package in "${packages[@]}"; do
       case "$package" in
-        api|web|worker|providers|domain|observability|credential-crypto|ui) ;;
+        api|web|worker|providers|domain|execution|observability|credential-crypto|ui) ;;
         *) printf '不支持的验收包：%s\n' "$package" >&2; exit 1 ;;
       esac
     done
@@ -46,7 +46,6 @@ run_check() {
 }
 
 export CI=true NODE_ENV=test WORKER_PROVIDER=mock RUN_SERVICE=memory
-export NEW_API_BASE_URL='' NEW_API_API_KEY=''
 unset DATABASE_URL REDIS_URL S3_BUCKET TEST_DATABASE_URL TEST_REDIS_URL TEST_S3_ENDPOINT
 unset REQUIRE_INTEGRATION_SERVICES REQUIRE_PRODUCTION_ENTRY MEDIA_REAL_TESTS MEDIA_OPS_INTEGRATION
 

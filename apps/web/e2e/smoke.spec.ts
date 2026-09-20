@@ -10,19 +10,8 @@ type Project = {
 };
 
 type AiSettings = {
-  baseUrl: string;
-  configured: boolean;
-  keyFingerprint?: string;
   defaultModels: Record<string, string | ModelSelection>;
-};
-
-type AiCredentialSummary = {
-  id: string;
-  version: number;
-  baseUrl: string;
-  keyFingerprint: string;
-  active: boolean;
-  createdAt: string;
+  timeoutMs: number;
 };
 
 const project: Project = {
@@ -32,14 +21,8 @@ const project: Project = {
   updatedAt: '2026-01-01T00:00:00.000Z',
 };
 
-const initialCredential: AiCredentialSummary = {
-  id: 'credential-initial',
-  version: 1,
-  baseUrl: 'https://mock.initial.local/v1',
-  keyFingerprint: 'initial-fingerprint',
-  active: true,
-  createdAt: '2026-01-01T00:00:00.000Z',
-};
+/** 合成分组凭据只作为模型路由身份，不包含或模拟可用密钥。 */
+const fixtureCredentialId = 'credential-initial';
 
 const projectPath = `/projects/${project.id}`;
 const validPng = Buffer.from(
@@ -92,10 +75,8 @@ async function json(route: Route, body: unknown, status = 200) {
 
 async function mockApi(target: Pick<Page, 'route'>) {
   let settings: AiSettings = {
-    baseUrl: initialCredential.baseUrl,
-    configured: true,
-    keyFingerprint: initialCredential.keyFingerprint,
     defaultModels: {},
+    timeoutMs: 900_000,
   };
   const models = [
     { id: 'mock-text', name: 'Mock Text', mediaTypes: ['text'] },
@@ -125,11 +106,12 @@ async function mockApi(target: Pick<Page, 'route'>) {
   ];
 
   const assets: Asset[] = [];
-  const modelsForCredential = (credentialId: string) =>
-    models.map((model) => ({ ...model, credentialId }));
-
-  let credentials: AiCredentialSummary[] = [initialCredential];
-  const credentialByKey = new Map<string, AiCredentialSummary>();
+  const accountModels = models.map((model) => ({
+    ...model,
+    group: 'alpha',
+    credentialId: fixtureCredentialId,
+    available: true,
+  }));
   const generatedContent = new Map<string, { contentType: string; body: Buffer | string }>();
   let projectDefaults: Record<string, string | ModelSelection> = {};
   const pendingUploads = new Map<
@@ -140,7 +122,6 @@ async function mockApi(target: Pick<Page, 'route'>) {
   const uploadedBytes = new Map<string, Buffer>();
   const runs = new Map<string, RunRecord>();
   let currentCanvas: CanvasDocument = structuredClone(emptyCanvas);
-  let credentialSequence = 0;
   let uploadSequence = 0;
 
   const assetMediaType = (mimeType: string): Asset['mediaType'] => {
@@ -243,6 +224,19 @@ async function mockApi(target: Pick<Page, 'route'>) {
     const request = route.request();
     const url = new URL(request.url());
     const path = url.pathname;
+
+    if (request.method() === 'GET' && path === '/v1/auth/me') {
+      await json(route, {
+        user: {
+          id: 'e2e-user',
+          displayName: 'E2E 用户',
+          role: 'admin',
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      return;
+    }
 
     if (request.method() === 'POST' && path === '/v1/auth/logout') {
       await json(route, { ok: true });
@@ -430,30 +424,42 @@ async function mockApi(target: Pick<Page, 'route'>) {
       return;
     }
     if (request.method() === 'GET' && path === '/v1/models') {
-      const credentialId =
-        url.searchParams.get('credentialId') ??
-        credentials.find((credential) => credential.active)?.id;
-      await json(route, { models: credentialId ? modelsForCredential(credentialId) : [] });
+      await json(route, { models: accountModels });
+      return;
+    }
+    if (request.method() === 'GET' && path === '/v1/account/newapi') {
+      await json(route, {
+        account: {
+          issuer: 'https://newapi.example.test',
+          externalUserId: 'e2e-external-user',
+          displayName: 'E2E 用户',
+          status: 'active',
+          syncedAt: project.updatedAt,
+          groups: [
+            {
+              group: 'alpha',
+              credentialId: fixtureCredentialId,
+              status: 'ready',
+              modelCount: accountModels.length,
+            },
+          ],
+          links: { models: 'https://newapi.example.test/pricing' },
+        },
+      });
       return;
     }
     if (request.method() === 'GET' && path === '/v1/settings/ai') {
       await json(route, { settings });
       return;
     }
-    if (request.method() === 'GET' && path === '/v1/settings/ai/credentials') {
-      await json(route, { credentials });
-      return;
-    }
     if (request.method() === 'PATCH' && path === '/v1/settings/ai') {
       const body = request.postDataJSON() as {
-        baseUrl?: string;
-        apiKey?: string;
         defaultModels?: Record<string, string | ModelSelection | null>;
+        timeoutMs?: number;
       };
       settings = {
         ...settings,
-        ...(body.baseUrl ? { baseUrl: body.baseUrl } : {}),
-        ...(body.apiKey ? { configured: true, keyFingerprint: 'smoke-fingerprint' } : {}),
+        ...(typeof body.timeoutMs === 'number' ? { timeoutMs: body.timeoutMs } : {}),
         ...(body.defaultModels
           ? {
               defaultModels: {
@@ -465,77 +471,7 @@ async function mockApi(target: Pick<Page, 'route'>) {
             }
           : {}),
       };
-      if (body.apiKey) {
-        const existing = credentialByKey.get(`${settings.baseUrl}\u0000${body.apiKey}`);
-        const saved =
-          existing ??
-          ({
-            id: `credential-${++credentialSequence}`,
-            version: credentialSequence,
-            baseUrl: settings.baseUrl,
-            keyFingerprint: 'smoke-fingerprint',
-            active: true,
-            createdAt: new Date().toISOString(),
-          } satisfies AiCredentialSummary);
-        if (!existing) credentialByKey.set(`${settings.baseUrl}\u0000${body.apiKey}`, saved);
-        credentials = [
-          { ...saved, active: true },
-          ...credentials
-            .filter((credential) => credential.id !== saved.id)
-            .map((credential) => ({ ...credential, active: false })),
-        ];
-      }
-      await json(route, { settings, credentials });
-      return;
-    }
-    if (
-      request.method() === 'POST' &&
-      /^\/v1\/settings\/ai\/credentials\/[^/]+\/activate$/.test(path)
-    ) {
-      const credentialId = path.split('/')[5];
-      const selected = credentials.find((credential) => credential.id === credentialId);
-      if (!selected) {
-        await json(route, { error: '凭据不存在' }, 404);
-        return;
-      }
-      credentials = credentials.map((credential) => ({
-        ...credential,
-        active: credential.id === credentialId,
-      }));
-      settings = {
-        ...settings,
-        baseUrl: selected.baseUrl,
-        configured: true,
-        keyFingerprint: selected.keyFingerprint,
-      };
-      await json(route, { settings, credentials });
-      return;
-    }
-    if (request.method() === 'POST' && path === '/v1/settings/ai/test') {
-      await json(route, { result: { ok: true, modelCount: models.length } });
-      return;
-    }
-    if (request.method() === 'POST' && path === '/v1/settings/ai/models/refresh') {
-      const body = (request.postDataJSON() ?? {}) as { credentialId?: string };
-      const credentialId =
-        body.credentialId ?? credentials.find((credential) => credential.active)?.id;
-      await json(route, { models: credentialId ? modelsForCredential(credentialId) : [] });
-      return;
-    }
-    if (request.method() === 'DELETE' && /^\/v1\/settings\/ai\/credentials\/[^/]+$/.test(path)) {
-      const id = path.split('/')[5];
-      const removed = credentials.find((entry) => entry.id === id);
-      if (!removed) return json(route, { error: '凭据不存在' }, 404);
-      credentials = credentials.filter((entry) => entry.id !== id);
-      if (removed.active)
-        settings = { ...settings, baseUrl: '', configured: false, keyFingerprint: undefined };
-      await json(route, { settings, credentials });
-      return;
-    }
-    if (request.method() === 'DELETE' && path === '/v1/settings/ai/credentials') {
-      settings = { ...settings, baseUrl: '', configured: false, keyFingerprint: undefined };
-      credentials = credentials.map((credential) => ({ ...credential, active: false }));
-      await json(route, { settings, credentials });
+      await json(route, { settings });
       return;
     }
 
@@ -574,13 +510,13 @@ async function installImageCompatibilityModels(page: Page) {
           id: 'gpt-image-2.5-sunburst',
           name: 'gpt-image-2.5-sunburst',
           mediaTypes: ['image'],
-          credentialId: initialCredential.id,
+          credentialId: fixtureCredentialId,
         },
         {
           id: 'image-edit-disabled',
           name: 'image-edit-disabled',
           mediaTypes: ['image'],
-          credentialId: initialCredential.id,
+          credentialId: fixtureCredentialId,
           capabilities: { imageEdit: { supported: false } },
         },
       ],
@@ -776,7 +712,7 @@ async function installTextImageCompatibilityFixture(page: Page) {
           id: 'gpt-5.5',
           name: 'gpt-5.5',
           mediaTypes: ['text'],
-          credentialId: initialCredential.id,
+          credentialId: fixtureCredentialId,
         },
       ],
     }),
@@ -807,7 +743,7 @@ test('文字图片兼容：无能力声明时提交图片提及并恢复冻结�
   expect(requests).toHaveLength(1);
   expect(requests[0]).toMatchObject({
     modelAlias: 'gpt-5.5',
-    credentialId: initialCredential.id,
+    credentialId: fixtureCredentialId,
     promptDocument: {
       version: 1,
       blocks: [
@@ -882,7 +818,7 @@ test('文字图片兼容：拖拽图片到文字内容口后单次提交并保�
   expect(requests).toHaveLength(1);
   expect(requests[0]).toMatchObject({
     modelAlias: 'gpt-5.5',
-    credentialId: initialCredential.id,
+    credentialId: fixtureCredentialId,
     parameters: { prompt: 'Describe the connected image.' },
   });
   const saved = savedCanvases.at(-1)!;
@@ -986,11 +922,9 @@ test.beforeEach(async ({ page }) => {
     window.localStorage.setItem(
       'multimodal-canvas:auth-session',
       JSON.stringify({
-        accessToken: 'e2e-synthetic-token',
-        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
         user: {
           id: 'e2e-user',
-          email: 'e2e@example.com',
+          displayName: 'E2E 用户',
           role: 'admin',
           createdAt: '2026-01-01T00:00:00.000Z',
         },
@@ -1905,107 +1839,6 @@ test('supports theme/sidebar controls, node body connections, and corner resizin
   await expect(page.locator('.resource-panel')).toHaveClass(/is-collapsed/);
 });
 
-test('saves AI settings and tests the mocked connection', async ({ page }) => {
-  await page.goto(projectPath);
-  await page.getByRole('button', { name: '打开设置' }).click();
-
-  const dialog = page.getByRole('dialog', { name: 'AI 连接' });
-  const automaticRefresh = page.waitForResponse(
-    (response) =>
-      new URL(response.url()).pathname === '/v1/settings/ai/models/refresh' &&
-      response.request().method() === 'POST',
-  );
-  let refreshRequestCount = 0;
-  page.on('request', (request) => {
-    if (
-      new URL(request.url()).pathname === '/v1/settings/ai/models/refresh' &&
-      request.method() === 'POST'
-    ) {
-      refreshRequestCount += 1;
-    }
-  });
-  await expect(dialog).toBeVisible();
-  // 宽版设置把内容分成四类；连接表单在「连接与 Key」分类下。
-  await dialog.getByRole('tab', { name: '连接与 Key' }).click();
-  await dialog.getByLabel('New API Base URL').fill('https://mock.newapi.local/v1');
-  await dialog.getByRole('textbox', { name: 'API Key' }).fill('playwright-smoke-key');
-  await dialog.getByRole('button', { name: '保存' }).click();
-
-  await expect((await automaticRefresh).status()).toBe(200);
-  // 已配置状态显示在密钥输入框的占位提示里，不从服务端回显已保存密钥。
-  await expect(dialog.getByRole('textbox', { name: 'API Key' })).toHaveAttribute(
-    'placeholder',
-    '已配置 · smoke-fingerprint',
-  );
-  const credentialSelect = dialog.getByLabel('已保存的 API Key');
-  await expect(credentialSelect).toHaveValue('credential-1');
-  await expect(credentialSelect.locator('option', { hasText: 'smoke-fingerprint' })).toHaveCount(1);
-  await expect.poll(() => refreshRequestCount).toBe(1);
-  await dialog.getByRole('button', { name: '测试连接' }).click();
-  await expect(dialog.getByRole('status')).toContainText('连接成功');
-});
-
-test('设置删除当前 Key 完整移除列表与模型，操作期间显示 loading', async ({ page }, testInfo) => {
-  const errors: string[] = [];
-  page.on('pageerror', (error) => errors.push(error.message));
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto(projectPath);
-  await page.getByRole('button', { name: '打开设置' }).click();
-  const dialog = page.getByRole('dialog', { name: 'AI 连接' });
-  await dialog.getByRole('tab', { name: '连接与 Key' }).click();
-  await dialog.getByLabel('New API Base URL').fill('https://delete-smoke.example.test/v1');
-  await dialog.getByRole('textbox', { name: 'API Key' }).fill('synthetic-browser-key');
-  let releaseSave!: () => void;
-  const saveGate = new Promise<void>((resolve) => {
-    releaseSave = resolve;
-  });
-  await page.route('**/v1/settings/ai', async (route) => {
-    if (route.request().method() === 'PATCH') await saveGate;
-    await route.fallback();
-  });
-  await dialog.getByRole('button', { name: '保存', exact: true }).click();
-  await expect(dialog.getByRole('button', { name: '正在保存', exact: true })).toHaveAttribute(
-    'aria-busy',
-    'true',
-  );
-  await expect(dialog.getByRole('button', { name: '关闭设置' })).toBeDisabled();
-  releaseSave();
-  await expect(dialog.getByRole('button', { name: '保存', exact: true })).toBeEnabled();
-  const keys = dialog.getByLabel('已保存的 API Key');
-  await expect(keys.locator('option')).toHaveCount(3);
-  let releaseDelete!: () => void;
-  const deleteGate = new Promise<void>((resolve) => {
-    releaseDelete = resolve;
-  });
-  await page.route('**/v1/settings/ai/credentials/*', async (route) => {
-    if (route.request().method() === 'DELETE') await deleteGate;
-    await route.fallback();
-  });
-  await dialog.getByRole('button', { name: '删除当前 Key', exact: true }).click();
-  await expect(dialog.getByRole('button', { name: '正在删除', exact: true })).toHaveAttribute(
-    'aria-busy',
-    'true',
-  );
-  await page.screenshot({ path: testInfo.outputPath('settings-delete-loading.png') });
-  releaseDelete();
-  await expect(keys.locator('option')).toHaveCount(2);
-  await expect(keys).not.toContainText('delete-smoke');
-  await expect(dialog.getByText('平台全局默认')).toHaveCount(0);
-  await expect(dialog.getByText('当前项目默认')).toHaveCount(0);
-  await keys.selectOption(initialCredential.id);
-  await expect(dialog.getByRole('button', { name: '删除当前 Key', exact: true })).toBeEnabled();
-  await dialog.getByRole('button', { name: '删除当前 Key', exact: true }).click();
-  await expect(keys.locator('option')).toHaveCount(1);
-  await expect(keys).toBeDisabled();
-  await page.screenshot({ path: testInfo.outputPath('settings-all-removed.png') });
-  await dialog.getByRole('button', { name: '关闭设置' }).click();
-  await page.reload();
-  await page.getByRole('button', { name: '打开设置' }).click();
-  await dialog.getByRole('tab', { name: '连接与 Key' }).click();
-  await expect(page.getByLabel('已保存的 API Key').locator('option')).toHaveCount(1);
-  expect(errors).toEqual([]);
-});
-
 for (const width of [1440, 1024, 390]) {
   test(`生成节点选中描边与顶部悬浮操作 ${width}`, async ({ page }, testInfo) => {
     const errors: string[] = [];
@@ -2067,7 +1900,7 @@ test('settings are truly modal and contained on desktop and narrow viewports', a
 
   const trigger = page.getByRole('button', { name: '打开设置' });
   await trigger.click();
-  let dialog = page.getByRole('dialog', { name: 'AI 连接' });
+  let dialog = page.getByRole('dialog', { name: 'New API 与模型' });
   let overlay = page.locator('.settings-backdrop');
   await expect(dialog).toBeVisible();
   await expect(dialog).toHaveAttribute('aria-modal', 'true');
@@ -2113,13 +1946,13 @@ test('settings are truly modal and contained on desktop and narrow viewports', a
   ).toBe(false);
 
   await trigger.click();
-  dialog = page.getByRole('dialog', { name: 'AI 连接' });
-  await dialog.getByRole('tab', { name: '节点默认' }).click();
-  await dialog.getByRole('button', { name: '查看模型来源解析顺序' }).first().focus();
-  await expect(dialog.getByRole('tooltip')).toBeVisible();
-  await page.keyboard.press('Escape');
-  await expect(dialog).toBeVisible();
-  await expect(dialog.getByRole('tooltip')).toHaveCount(0);
+  dialog = page.getByRole('dialog', { name: 'New API 与模型' });
+  const defaultsTab = dialog.getByRole('tab', { name: '节点默认' });
+  await defaultsTab.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(dialog.getByRole('tab', { name: '画布外观' })).toBeFocused();
+  await page.keyboard.press('ArrowLeft');
+  await expect(defaultsTab).toBeFocused();
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
   await expect(trigger).toBeFocused();
@@ -2129,7 +1962,7 @@ test('settings are truly modal and contained on desktop and narrow viewports', a
     await page.goto(projectPath);
     const narrowTrigger = page.getByRole('button', { name: '打开设置' });
     await narrowTrigger.click();
-    dialog = page.getByRole('dialog', { name: 'AI 连接' });
+    dialog = page.getByRole('dialog', { name: 'New API 与模型' });
     overlay = page.locator('.settings-backdrop');
     await expect(dialog).toBeVisible();
     await expect(overlay).toBeVisible();
@@ -2163,8 +1996,8 @@ test('settings are truly modal and contained on desktop and narrow viewports', a
     expect(metrics.clientWidth).toBeGreaterThanOrEqual(metrics.scrollWidth);
     expect(metrics.overflowX).toBe('hidden');
     expect(metrics.overflowY).toBe('hidden');
-    await dialog.getByRole('tab', { name: '连接与 Key' }).click();
-    const content = dialog.getByRole('tabpanel', { name: '连接与 Key' });
+    await dialog.getByRole('tab', { name: '节点默认' }).click();
+    const content = dialog.getByRole('tabpanel', { name: '节点默认' });
     await expect(content).toHaveCSS('overflow-y', 'auto');
     const headerBefore = await dialog.locator('.settings-header').boundingBox();
     const scrollTop = await content.evaluate((panel) => {
@@ -2493,7 +2326,7 @@ test('未设类型默认时新节点沿用同类模型及凭据，刷新后保�
       canvas.nodes.filter((node) => node.data.modelAlias === 'mock-text-v2').length === 2 &&
       canvas.nodes
         .filter((node) => node.data.mediaType === 'text')
-        .every((node) => node.data.credentialId === initialCredential.id)
+        .every((node) => node.data.credentialId === fixtureCredentialId)
     );
   });
   await page.getByRole('textbox', { name: '提示词', exact: true }).fill('刷新后新建仍沿用同类模型');
@@ -2512,7 +2345,7 @@ test('未设类型默认时新节点沿用同类模型及凭据，刷新后保�
   await page.getByRole('button', { name: '生成', exact: true }).click();
   expect((await submitted).postDataJSON()).toMatchObject({
     modelAlias: 'mock-text-v2',
-    credentialId: initialCredential.id,
+    credentialId: fixtureCredentialId,
   });
   await focusCanvas(page);
   await page.getByRole('button', { name: '新建图片生成节点' }).click();
@@ -2528,7 +2361,7 @@ test('模型目录首个有效参数写入新节点，保存刷新与生成提�
         {
           id: 'mock-video',
           name: 'Mock Video',
-          credentialId: initialCredential.id,
+          credentialId: fixtureCredentialId,
           mediaTypes: ['video'],
           capabilities: {
             resolutions: ['360p', '720p', '2160p'],
@@ -2851,7 +2684,7 @@ for (const model of [
           {
             id: model,
             name: model,
-            credentialId: initialCredential.id,
+            credentialId: fixtureCredentialId,
             mediaTypes: ['video'],
           },
         ],
@@ -3217,30 +3050,17 @@ for (const viewport of [
   });
 }
 
-test('设置保留四类默认模型入口，节点显式选择模型后按所选模型运行', async ({ page }) => {
+test('设置展示 New API 分组和四类默认模型，节点按显式所选模型运行', async ({ page }) => {
   await page.goto(projectPath);
   await page.getByRole('button', { name: '打开设置' }).click();
 
-  const dialog = page.getByRole('dialog', { name: 'AI 连接' });
+  const dialog = page.getByRole('dialog', { name: 'New API 与模型' });
   await expect(dialog).toBeVisible();
-  await dialog.getByRole('tab', { name: '连接与 Key' }).click();
-  await dialog.getByLabel('New API Base URL').fill('https://mock.newapi.local/v1');
-  await dialog.getByRole('textbox', { name: 'API Key' }).fill('playwright-smoke-key');
-  const refreshResponse = page.waitForResponse(
-    (response) =>
-      new URL(response.url()).pathname === '/v1/settings/ai/models/refresh' &&
-      response.request().method() === 'POST',
-  );
-  await dialog.getByRole('button', { name: '保存' }).click();
-  await expect(dialog.getByRole('textbox', { name: 'API Key' })).toHaveAttribute(
-    'placeholder',
-    '已配置 · smoke-fingerprint',
-  );
-  await expect((await refreshResponse).status()).toBe(200);
-  await expect(dialog.getByRole('status')).toContainText('模型列表已自动刷新');
+  await expect(dialog.getByRole('cell', { name: 'alpha' })).toBeVisible();
+  await expect(dialog.getByText(/Base URL|API Key|连接与 Key/)).toHaveCount(0);
   await dialog.getByRole('tab', { name: '节点默认' }).click();
   for (const mediaType of ['文字', '图片', '音频', '视频']) {
-    await expect(dialog.getByRole('combobox', { name: `${mediaType}生成默认模型` })).toBeVisible();
+    await expect(dialog.getByRole('combobox', { name: mediaType })).toBeVisible();
   }
   await dialog.getByRole('button', { name: '关闭设置' }).click();
 

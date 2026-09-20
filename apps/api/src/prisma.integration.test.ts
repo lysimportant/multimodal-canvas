@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { createCipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { cp, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -14,7 +14,6 @@ import { CredentialEncryptionKeyring } from '@multimodal-canvas/credential-crypt
 
 import { FileSystemBlobStore, PrismaAssetStore, S3BlobStore } from './assets';
 import { PrismaProjectStore } from './projects';
-import { PrismaAiSettingsStore } from './settings';
 
 /**
  * This suite intentionally has no DATABASE_URL fallback. It only runs with a
@@ -143,10 +142,6 @@ const lifecycleMigrationPath = join(
   '0008_lifecycle_timestamps',
   'migration.sql',
 );
-const modelCatalogCredentialMigrationPath = join(
-  prismaMigrationsPath,
-  '0009_model_catalog_credentials',
-);
 const projectModelDefaultCredentialMigrationPath = join(
   prismaMigrationsPath,
   '0010_project_model_default_credential',
@@ -174,6 +169,8 @@ const preModelCatalogCredentialMigrations = [
   ...preLifecycleMigrations,
   '0008_lifecycle_timestamps',
 ] as const;
+const newApiLifecycleMigration = '20260921030000_newapi_lifecycle_timestamps';
+const retireLegacyAccountsBillingMigration = '20260921050000_retire_legacy_accounts_billing';
 const postLifecycleMigrations = [
   '0009_model_catalog_credentials',
   '0010_project_model_default_credential',
@@ -191,6 +188,13 @@ const postLifecycleMigrations = [
   '20260919090000_platform_billing',
   '20260919093000_platform_model_defaults',
   '20260919100000_billing_outbox_queue',
+  '20260920140000_newapi_pricing_sync',
+  '20260921010000_newapi_accounts_execution',
+  '20260921020000_newapi_credential_revision',
+  newApiLifecycleMigration,
+  '20260921040000_newapi_revocation_recovery',
+  retireLegacyAccountsBillingMigration,
+  '20260921060000_retire_credential_settings',
 ] as const;
 
 describe('integration configuration safety', () => {
@@ -266,8 +270,7 @@ describe('integration configuration safety', () => {
   });
 });
 
-integrationDescribe('凭据轮换与跨进程恢复（隔离 PostgreSQL）', () => {
-  /** 本组专用随机 schema，只包含合成凭据，不操作主测试或生产表。 */
+integrationDescribe('冻结凭据跨进程恢复（隔离 PostgreSQL）', () => {
   const schemaName = `mc_rotation_test_${randomBytes(12).toString('hex')}`;
   let prisma: PrismaClient;
   let scopedDatabaseUrl = '';
@@ -282,296 +285,74 @@ integrationDescribe('凭据轮换与跨进程恢复（隔离 PostgreSQL）', () 
   });
 
   afterAll(async () => {
-    if (prisma) {
-      try {
-        await prisma.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
-      } finally {
-        await prisma.$disconnect();
-      }
+    if (!prisma) return;
+    try {
+      await prisma.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
+    } finally {
+      await prisma.$disconnect();
     }
   });
 
-  it.each([
-    { role: 'api', revoked: false },
-    { role: 'worker', revoked: false },
-    { role: 'api', revoked: true },
-    { role: 'worker', revoked: true },
-  ])(
-    '$role 轮换历史凭据不改变活动或撤销状态（revoked=$revoked）',
-    async ({ role, revoked }) => {
-      await prisma.aiCredential.deleteMany();
-      const oldKeyring = new CredentialEncryptionKeyring({
-        currentKeyId: 'old',
-        currentSecret: 'synthetic-old-secret',
-      });
-      const newKeyring = new CredentialEncryptionKeyring({
-        currentKeyId: 'new',
-        currentSecret: 'synthetic-new-secret',
-      });
-      const historicalTime = new Date(Date.now() - 60_000);
-      const historical = await prisma.aiCredential.create({
-        data: {
-          label: 'historical',
-          baseUrl: 'https://historical.example/v1',
-          encryptedApiKey: oldKeyring.encrypt('synthetic-historical-key'),
-          encryptionKeyId: 'old',
-          keyFingerprint: 'synthetic-history',
-          version: 1,
-          updatedAt: historicalTime,
-        },
-      });
-      const active = await prisma.aiCredential.create({
-        data: {
-          label: revoked ? 'revoked' : 'active',
-          baseUrl: revoked ? '' : 'https://active.example/v1',
-          encryptedApiKey: revoked ? '' : newKeyring.encrypt('synthetic-active-key'),
-          encryptionKeyId: revoked ? null : 'new',
-          keyFingerprint: revoked ? '' : 'synthetic-active',
-          version: 2,
-          updatedAt: new Date(Date.now() - 30_000),
-        },
-      });
-      const childEnvironment = {
-        ...process.env,
-        TEST_DATABASE_URL: scopedDatabaseUrl,
-        TEST_CREDENTIAL_ID: historical.id,
-        TEST_CREDENTIAL_VERSION: '1',
-        AI_CREDENTIAL_ENCRYPTION_KEY: 'synthetic-new-secret',
-        AI_CREDENTIAL_ENCRYPTION_KEY_ID: 'new',
-        AI_CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS: JSON.stringify({ old: 'synthetic-old-secret' }),
-      };
-      const fixture = fileURLToPath(
-        new URL('./fixtures/credential-recovery-process.ts', import.meta.url),
-      );
-      const first = await execFileAsync(process.execPath, ['--import', 'tsx', fixture], {
-        cwd: fileURLToPath(new URL('../', import.meta.url)),
-        env: { ...childEnvironment, TEST_CREDENTIAL_ROLE: role },
-        timeout: 15_000,
-        killSignal: 'SIGKILL',
-        windowsHide: true,
-      });
-      const second = await execFileAsync(process.execPath, ['--import', 'tsx', fixture], {
-        cwd: fileURLToPath(new URL('../', import.meta.url)),
-        env: {
-          ...childEnvironment,
-          TEST_CREDENTIAL_ROLE: 'api',
-          AI_CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS: '{}',
-        },
-        timeout: 15_000,
-        killSignal: 'SIGKILL',
-        windowsHide: true,
-      });
-      const recovered = JSON.parse(second.stdout);
-      expect(JSON.parse(first.stdout).pid).not.toBe(recovered.pid);
-      expect(recovered).toMatchObject({
-        digest: createHash('sha256').update('synthetic-historical-key').digest('hex'),
-        configured: !revoked,
-        activeReference: revoked ? {} : { credentialId: active.id, credentialVersion: 2 },
-      });
-      const stored = await prisma.aiCredential.findUniqueOrThrow({ where: { id: historical.id } });
-      expect(stored).toMatchObject({
-        version: 1,
-        encryptionKeyId: 'new',
-        updatedAt: historicalTime,
-      });
-      expect(`${first.stdout}${first.stderr}${second.stdout}${second.stderr}`).not.toContain(
-        'synthetic-historical-key',
-      );
-    },
-    30_000,
-  );
-
-  it('真实数据库 CAS 拒绝迟到实例覆盖新密文且不改变历史版本', async () => {
-    await prisma.aiCredential.deleteMany();
+  it('Worker 按冻结 ID/版本轮换服务端密文，重启后仍能恢复同一 Key', async () => {
     const oldKeyring = new CredentialEncryptionKeyring({
       currentKeyId: 'old',
       currentSecret: 'synthetic-old-secret',
     });
-    const row = await prisma.aiCredential.create({
+    const historicalTime = new Date(Date.now() - 60_000);
+    const historical = await prisma.aiCredential.create({
       data: {
-        label: 'race',
-        baseUrl: 'https://race.example/v1',
-        encryptedApiKey: oldKeyring.encrypt('synthetic-race-key'),
+        label: 'newapi:test',
+        baseUrl: 'https://historical.example/v1',
+        encryptedApiKey: oldKeyring.encrypt('synthetic-historical-key'),
         encryptionKeyId: 'old',
-        keyFingerprint: 'synthetic-race',
+        keyFingerprint: 'synthetic-history',
         version: 7,
+        updatedAt: historicalTime,
       },
     });
-    /** 两个屏障固定“旧实例先读，新实例先写”的竞争顺序。 */
-    let releaseWrite!: () => void;
-    let signalRead!: () => void;
-    const writeGate = new Promise<void>((resolve) => {
-      releaseWrite = resolve;
-    });
-    const readSignal = new Promise<void>((resolve) => {
-      signalRead = resolve;
-    });
-    const delayed = prisma.$extends({
-      query: {
-        aiCredential: {
-          async update({ args, query }) {
-            signalRead();
-            await writeGate;
-            return query(args);
-          },
-        },
-      },
-    });
-    vi.stubEnv(
-      'AI_CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS',
-      JSON.stringify({ old: 'synthetic-old-secret' }),
+    const childEnvironment = {
+      ...process.env,
+      TEST_DATABASE_URL: scopedDatabaseUrl,
+      TEST_CREDENTIAL_ID: historical.id,
+      TEST_CREDENTIAL_VERSION: '7',
+      AI_CREDENTIAL_ENCRYPTION_KEY: 'synthetic-new-secret',
+      AI_CREDENTIAL_ENCRYPTION_KEY_ID: 'new',
+      AI_CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS: JSON.stringify({ old: 'synthetic-old-secret' }),
+    };
+    const fixture = fileURLToPath(
+      new URL('./fixtures/credential-recovery-process.ts', import.meta.url),
     );
-    vi.stubEnv('AI_CREDENTIAL_ENCRYPTION_KEY_ID', 'middle');
-    const middle = new PrismaAiSettingsStore(
-      delayed as unknown as PrismaClient,
-      'synthetic-middle-secret',
+    const first = await execFileAsync(process.execPath, ['--import', 'tsx', fixture], {
+      cwd: fileURLToPath(new URL('../', import.meta.url)),
+      env: childEnvironment,
+      timeout: 15_000,
+      killSignal: 'SIGKILL',
+      windowsHide: true,
+    });
+    const second = await execFileAsync(process.execPath, ['--import', 'tsx', fixture], {
+      cwd: fileURLToPath(new URL('../', import.meta.url)),
+      env: { ...childEnvironment, AI_CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS: '{}' },
+      timeout: 15_000,
+      killSignal: 'SIGKILL',
+      windowsHide: true,
+    });
+
+    const expectedDigest = createHash('sha256').update('synthetic-historical-key').digest('hex');
+    expect(JSON.parse(first.stdout)).toMatchObject({ digest: expectedDigest });
+    expect(JSON.parse(second.stdout)).toMatchObject({ digest: expectedDigest });
+    expect(JSON.parse(first.stdout).pid).not.toBe(JSON.parse(second.stdout).pid);
+    const stored = await prisma.aiCredential.findUniqueOrThrow({ where: { id: historical.id } });
+    expect(stored).toMatchObject({
+      version: 7,
+      encryptionKeyId: 'new',
+      updatedAt: historicalTime,
+    });
+    expect(stored.encryptedApiKey).not.toContain('synthetic-historical-key');
+    expect(`${first.stdout}${first.stderr}${second.stdout}${second.stderr}`).not.toContain(
+      'synthetic-historical-key',
     );
-    const failedRead = expect(middle.get()).rejects.toThrow(
-      'AI credential rotation could not be persisted',
-    );
-    try {
-      await Promise.race([
-        readSignal,
-        failedRead.then(() => {
-          throw new Error('轮换未进入预期写回屏障');
-        }),
-      ]);
-      vi.stubEnv('AI_CREDENTIAL_ENCRYPTION_KEY_ID', 'latest');
-      const latest = new PrismaAiSettingsStore(prisma, 'synthetic-latest-secret');
-      await latest.get();
-      releaseWrite();
-      await failedRead;
-      const stored = await prisma.aiCredential.findUniqueOrThrow({ where: { id: row.id } });
-      expect(stored).toMatchObject({
-        encryptionKeyId: 'latest',
-        version: 7,
-        updatedAt: row.updatedAt,
-      });
-      const latestKeyring = new CredentialEncryptionKeyring({
-        currentKeyId: 'latest',
-        currentSecret: 'synthetic-latest-secret',
-      });
-      expect(latestKeyring.decrypt(stored.encryptedApiKey).plaintext).toBe('synthetic-race-key');
-    } finally {
-      releaseWrite();
-      try {
-        await failedRead;
-      } finally {
-        vi.unstubAllEnvs();
-      }
-    }
-  });
-
-  it('首次独立凭据无全局 Key 时立即刷新目录，另一实例可读取并解析', async () => {
-    await prisma.aiCredential.deleteMany();
-    const fetchImpl = vi.fn<typeof fetch>(async () =>
-      Response.json({ data: [{ id: 'independent-text', mediaType: 'text' }] }),
-    );
-    const secret = 'synthetic-first-independent';
-    const writer = new PrismaAiSettingsStore(prisma, secret, { fetchImpl });
-    const reader = new PrismaAiSettingsStore(prisma, secret, { fetchImpl });
-    expect((await reader.get()).configured).toBe(false);
-    try {
-      const id = (
-        await writer.update({
-          baseUrl: 'https://independent.integration.test',
-          apiKey: 'synthetic-first-key',
-          activate: false,
-        })
-      ).createdCredentialId!;
-      expect(await reader.refreshModels(id)).toEqual([
-        expect.objectContaining({ id: 'independent-text', credentialId: id }),
-      ]);
-      expect(await writer.listModels('text', id)).toHaveLength(1);
-      expect(await reader.hasCredential(id)).toBe(true);
-      const reference = await reader.getCredentialReference(id);
-      expect(await reader.getProviderCredentials(reference)).toMatchObject({
-        apiKey: 'synthetic-first-key',
-      });
-      await writer.updateCredentialDefaults(id, {
-        text: { modelAlias: 'independent-text', credentialId: id },
-      });
-      expect((await reader.listCredentials())[0]?.defaultModels).toEqual({
-        text: { modelAlias: 'independent-text', credentialId: id },
-      });
-      expect(await reader.getCredentialReference()).toEqual({});
-      expect((await reader.get()).configured).toBe(false);
-      await writer.removeCredential(id);
-      expect(await reader.hasCredential(id)).toBe(false);
-      await expect(reader.refreshModels(id)).rejects.toThrow('not found');
-      expect(fetchImpl).toHaveBeenCalledTimes(1);
-    } finally {
-      await writer.close();
-      await reader.close();
-    }
-  });
-
-  it('新增独立凭据持久化为非活动行，重启实例后仍按 ID 可解析', async () => {
-    await prisma.aiCredential.deleteMany();
-    const settingsSecret = 'synthetic-independent-secret';
-    const writer = new PrismaAiSettingsStore(prisma, settingsSecret);
-    await writer.update({
-      baseUrl: 'https://active.integration.test/v1',
-      apiKey: 'synthetic-active-key',
-    });
-    const activeReference = await writer.getCredentialReference();
-    const activeView = await writer.get();
-
-    const created = await writer.update({
-      baseUrl: 'https://independent.integration.test/v1',
-      apiKey: 'synthetic-independent-key',
-      activate: false,
-    });
-    const createdCredentialId = created.createdCredentialId;
-    expect(createdCredentialId).toBeTruthy();
-    const { createdCredentialId: _createdId, ...unchangedView } = created;
-    expect(unchangedView).toEqual(activeView);
-    expect(await writer.getCredentialReference()).toEqual(activeReference);
-
-    const row = await prisma.aiCredential.findUniqueOrThrow({
-      where: { id: createdCredentialId! },
-    });
-    expect(row).toMatchObject({
-      label: 'independent',
-      baseUrl: 'https://independent.integration.test/v1',
-      version: 2,
-    });
-    expect(row.encryptedApiKey).not.toContain('synthetic-independent-key');
-    await writer.close?.();
-
-    // 新实例只从数据库恢复：独立行不能顶替活动连接，且必须仍可按 ID 解析。
-    const reopened = new PrismaAiSettingsStore(prisma, settingsSecret);
-    const summaries = await reopened.listCredentials();
-    expect(summaries.find((entry) => entry.id === activeReference.credentialId)).toMatchObject({
-      active: true,
-    });
-    expect(summaries.find((entry) => entry.id === createdCredentialId)).toMatchObject({
-      baseUrl: 'https://independent.integration.test/v1',
-      active: false,
-    });
-    expect(await reopened.getCredentialReference()).toEqual(activeReference);
-    expect(await reopened.get()).toEqual(activeView);
-    expect(await reopened.hasCredential(createdCredentialId!)).toBe(true);
-    const independentReference = await reopened.getCredentialReference(createdCredentialId!);
-    await expect(reopened.getProviderCredentials(independentReference)).resolves.toEqual({
-      baseUrl: 'https://independent.integration.test/v1',
-      apiKey: 'synthetic-independent-key',
-    });
-
-    const updated = await reopened.updateCredentialDefaults(createdCredentialId!, {
-      image: { modelAlias: 'independent-image', credentialId: createdCredentialId },
-    });
-    expect(updated?.find((entry) => entry.id === createdCredentialId)?.defaultModels).toEqual({
-      image: { modelAlias: 'independent-image', credentialId: createdCredentialId },
-    });
-    expect(await reopened.get()).toEqual(activeView);
-    await expect(
-      reopened.updateCredentialDefaults(randomUUID(), { text: 'missing-model' }),
-    ).resolves.toBeUndefined();
-    await reopened.close?.();
-  });
+  }, 30_000);
 });
-
 integrationDescribe('Prisma stores (isolated PostgreSQL)', () => {
   let schemaName = '';
   let scopedDatabaseUrl = '';
@@ -663,7 +444,7 @@ integrationDescribe('Prisma stores (isolated PostgreSQL)', () => {
     }
   });
 
-  it('persists projects/assets/settings across client restart and isolates assets by project', async () => {
+  it('persists projects/assets across client restart and isolates assets by project', async () => {
     const projectStore = new PrismaProjectStore(prisma);
     const projectA = await projectStore.create({ name: `Integration A ${schemaName}` });
     const projectB = await projectStore.create({ name: `Integration B ${schemaName}` });
@@ -751,32 +532,6 @@ integrationDescribe('Prisma stores (isolated PostgreSQL)', () => {
       id: assetA.id,
       content: Buffer.from('persistent asset'),
     });
-
-    const settingsSecret = 'integration-encryption-secret';
-    const firstSettings = new PrismaAiSettingsStore(prisma, settingsSecret);
-    const updated = await firstSettings.update({
-      baseUrl: 'https://newapi.integration.test/v1',
-      apiKey: 'integration-api-key',
-      defaultModels: { text: 'integration-text-model' },
-    });
-    expect(updated).toMatchObject({
-      configured: true,
-      defaultModels: { text: { modelAlias: 'integration-text-model' } },
-    });
-    expect(JSON.stringify(updated)).not.toContain('integration-api-key');
-    await firstSettings.close?.();
-
-    const restartedSettings = new PrismaAiSettingsStore(prisma, settingsSecret);
-    await expect(restartedSettings.get()).resolves.toMatchObject({
-      configured: true,
-      defaultModels: { text: { modelAlias: 'integration-text-model' } },
-    });
-    await expect(restartedSettings.getCredentialReference()).resolves.toMatchObject({
-      credentialVersion: 1,
-    });
-    const credential = await prisma.aiCredential.findFirst({ where: { projectId: null } });
-    expect(credential?.encryptedApiKey).toBeTruthy();
-    expect(credential?.encryptedApiKey).not.toContain('integration-api-key');
   });
 
   it('materializes lifecycle timestamps for mutable and append-only business rows', async () => {
@@ -1005,10 +760,11 @@ integrationDescribe('Prisma stores (isolated PostgreSQL)', () => {
         migrationDatabaseUrl,
       );
 
-      // Bring the isolated database to the current schema before comparing it
-      // with the current datamodel. The assertions above already prove the
-      // 0008 compatibility boundary; later migrations only close the diff.
-      await copyMigrations(migrationWorkspace, postLifecycleMigrations);
+      const retirementIndex = postLifecycleMigrations.indexOf(retireLegacyAccountsBillingMigration);
+      if (retirementIndex < 0) throw new Error('Missing legacy retirement migration fixture');
+
+      // 先升级到结构退出前一版，验证 0008 的历史行及旧客户端写入仍完整。
+      await copyMigrations(migrationWorkspace, postLifecycleMigrations.slice(0, retirementIndex));
       await runPnpm(
         ['exec', 'prisma', 'migrate', 'deploy', '--schema', migrationWorkspace.schemaPath],
         migrationDatabaseUrl,
@@ -1050,6 +806,33 @@ integrationDescribe('Prisma stores (isolated PostgreSQL)', () => {
         expect(row.createdAt).toBeInstanceOf(Date);
         expect(row.updatedAt).toBeInstanceOf(Date);
       }
+
+      // 结构退出迁移要求保留用户已明确转换为 New API 身份；测试只补关联，
+      // 不删除用于验证 0008 的项目、任务和生命周期记录。
+      await legacy.$executeRaw(Prisma.sql`
+        INSERT INTO "public"."newapi_identities"
+          ("id", "userId", "issuer", "externalUserId", "instanceId", "grantId",
+           "encryptedGrant", "expiresAt", "createdAt", "updatedAt")
+        VALUES
+          (${randomUUID()}::uuid, ${historicalRows.userId}::uuid,
+           'https://newapi.example.test', ${`historical-${historicalRows.userId}`},
+           'historical-test-instance', 'historical-test-grant', 'synthetic-encrypted-grant',
+           ${new Date('2027-01-01T00:00:00.000Z')}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      `);
+      await legacy.$disconnect();
+      legacy = undefined;
+
+      await copyMigrations(migrationWorkspace, postLifecycleMigrations.slice(retirementIndex));
+      await runPnpm(
+        ['exec', 'prisma', 'migrate', 'deploy', '--schema', migrationWorkspace.schemaPath],
+        migrationDatabaseUrl,
+      );
+
+      legacy = new PrismaClient({ datasources: { db: { url: migrationDatabaseUrl } } });
+      expect([
+        ...(await readHistoricalLifecycleRows(legacy, historicalRows)),
+        ...(await readHistoricalLifecycleRows(legacy, oldClientRows)),
+      ]).toEqual([...historicalValues, ...oldClientValues]);
 
       // Full schema diff catches public-schema and default mismatches.
       await runPnpm(
@@ -1143,7 +926,7 @@ integrationDescribe('Prisma stores (isolated PostgreSQL)', () => {
     }
   }, 120_000);
 
-  it('0014 扩展迁移保留旧凭据和撤销墓碑，受控轮换后历史版本仍可恢复', async () => {
+  it('补齐 New API 生命周期时间并保留已有记录的业务时间', async () => {
     const databaseName = `mc_migration_test_${randomBytes(12).toString('hex')}`;
     const adminUrl = withoutSchema(testDatabaseUrl!);
     const databaseUrl = withDatabase(testDatabaseUrl!, databaseName);
@@ -1151,11 +934,16 @@ integrationDescribe('Prisma stores (isolated PostgreSQL)', () => {
       ...preModelCatalogCredentialMigrations,
       ...postLifecycleMigrations.slice(
         0,
-        postLifecycleMigrations.indexOf('0014_ai_credential_encryption_key_id'),
+        postLifecycleMigrations.indexOf(newApiLifecycleMigration),
       ),
     ]);
     let created = false;
     let client: PrismaClient | undefined;
+    const loginCreatedAt = new Date('2025-01-01T00:00:00.000Z');
+    const loginConsumedAt = new Date('2025-01-01T00:05:00.000Z');
+    const pricingUpdatedAt = new Date('2025-02-01T00:00:00.000Z');
+    const draftUpdatedAt = new Date('2025-03-01T00:00:00.000Z');
+
     try {
       await createTemporaryDatabase(adminUrl, databaseName);
       created = true;
@@ -1163,291 +951,82 @@ integrationDescribe('Prisma stores (isolated PostgreSQL)', () => {
         ['exec', 'prisma', 'migrate', 'deploy', '--schema', workspace.schemaPath],
         databaseUrl,
       );
+
       client = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
-      const secret = 'synthetic-migration-old-secret';
-      const plaintext = 'synthetic-migration-provider-key';
-      const initializationVector = randomBytes(12);
-      const cipher = createCipheriv(
-        'aes-256-gcm',
-        createHash('sha256').update(secret).digest(),
-        initializationVector,
-      );
-      const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
-      const ciphertext = Buffer.concat([
-        initializationVector,
-        cipher.getAuthTag(),
-        encrypted,
-      ]).toString('base64url');
-      const credentialId = randomUUID();
-      const tombstoneId = randomUUID();
-      await client.$executeRaw`
-        INSERT INTO "public"."ai_credentials"
-          ("id", "label", "baseUrl", "encryptedApiKey", "keyFingerprint", "version", "updatedAt")
+      await client.$executeRaw(Prisma.sql`
+        INSERT INTO "public"."newapi_login_transactions"
+          ("stateHash", "browserHash", "encryptedVerifier", "expiresAt", "consumedAt", "createdAt")
         VALUES
-          (${credentialId}::uuid, 'legacy', 'https://newapi.example.test/v1', ${ciphertext}, 'synthetic-fingerprint', 1, '2025-01-01'::timestamp),
-          (${tombstoneId}::uuid, 'revoked', '', '', '', 2, '2025-01-02'::timestamp)
-      `;
-      const historical = await client.$queryRaw`
-        SELECT "id", "baseUrl", "encryptedApiKey", "keyFingerprint", "version", "updatedAt"
-        FROM "public"."ai_credentials" ORDER BY "version"
-      `;
+          ('historical-state', 'historical-browser', 'encrypted-verifier',
+           ${new Date('2025-01-01T01:00:00.000Z')}, ${loginConsumedAt}, ${loginCreatedAt})
+      `);
+      await client.$executeRaw(Prisma.sql`
+        INSERT INTO "public"."newapi_pricing_sources"
+          ("id", "baseUrl", "revision", "updatedAt")
+        VALUES ('default', 'https://newapi.example.test', 1, ${pricingUpdatedAt})
+      `);
+      await client.$executeRaw(Prisma.sql`
+        INSERT INTO "public"."newapi_pricing_drafts"
+          ("id", "baseUrl", "modelName", "expectedVersion", "baseline", "pricing", "createdBy", "updatedAt")
+        VALUES
+          (${randomUUID()}::uuid, 'https://newapi.example.test', 'historical-model', 'v1',
+           '{}'::jsonb, '{}'::jsonb, ${randomUUID()}::uuid, ${draftUpdatedAt})
+      `);
       await client.$disconnect();
-      await copyMigrations(workspace, ['0014_ai_credential_encryption_key_id']);
+      client = undefined;
+
+      await copyMigrations(workspace, [newApiLifecycleMigration]);
       await runPnpm(
         ['exec', 'prisma', 'migrate', 'deploy', '--schema', workspace.schemaPath],
         databaseUrl,
       );
-      await runPnpm(
-        ['exec', 'prisma', 'migrate', 'deploy', '--schema', workspace.schemaPath],
-        databaseUrl,
-      );
+
       client = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
-      expect(
-        await client.$queryRaw`
-        SELECT "id", "baseUrl", "encryptedApiKey", "keyFingerprint", "version", "updatedAt"
-        FROM "public"."ai_credentials" ORDER BY "version"
-      `,
-      ).toEqual(historical);
-      expect(
-        (await client.aiCredential.findMany()).every((row) => row.encryptionKeyId === null),
-      ).toBe(true);
-      const currentSecret = 'synthetic-migration-current-secret';
-      vi.stubEnv('AI_CREDENTIAL_ENCRYPTION_KEY_ID', 'migration-current');
-      vi.stubEnv('AI_CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS', JSON.stringify({ legacy: secret }));
-      const store = new PrismaAiSettingsStore(client, currentSecret);
-      expect((await store.get()).configured).toBe(false);
-      expect(await store.getProviderCredentials({ credentialId, credentialVersion: 1 })).toEqual({
-        baseUrl: 'https://newapi.example.test/v1',
-        apiKey: plaintext,
-      });
-      await store.close();
-      vi.stubEnv('AI_CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS', '{}');
-      const restored = new PrismaAiSettingsStore(client, currentSecret);
-      expect((await restored.get()).configured).toBe(false);
-      expect(await restored.getProviderCredentials({ credentialId, credentialVersion: 1 })).toEqual(
-        {
-          baseUrl: 'https://newapi.example.test/v1',
-          apiKey: plaintext,
-        },
-      );
-      await restored.close();
-      expect(
-        (
-          await client.aiCredential.findUniqueOrThrow({ where: { id: credentialId } })
-        ).updatedAt.toISOString(),
-      ).toBe('2025-01-01T00:00:00.000Z');
-      expect(
-        (await client.aiCredential.findUniqueOrThrow({ where: { id: tombstoneId } }))
-          .encryptedApiKey,
-      ).toBe('');
+      const [login] = await client.$queryRaw<Array<{ updatedAt: Date }>>(Prisma.sql`
+        SELECT "updatedAt"
+        FROM "public"."newapi_login_transactions"
+        WHERE "stateHash" = 'historical-state'
+      `);
+      const [source] = await client.$queryRaw<Array<{ createdAt: Date }>>(Prisma.sql`
+        SELECT "createdAt"
+        FROM "public"."newapi_pricing_sources"
+        WHERE "id" = 'default'
+      `);
+      const [draft] = await client.$queryRaw<Array<{ createdAt: Date }>>(Prisma.sql`
+        SELECT "createdAt"
+        FROM "public"."newapi_pricing_drafts"
+        WHERE "modelName" = 'historical-model'
+      `);
+      expect(login?.updatedAt).toEqual(loginConsumedAt);
+      expect(source?.createdAt).toEqual(pricingUpdatedAt);
+      expect(draft?.createdAt).toEqual(draftUpdatedAt);
+
+      const columns = await client.$queryRaw<
+        Array<{ columnDefault: string | null; isNullable: string; tableName: string }>
+      >(Prisma.sql`
+        SELECT
+          table_name AS "tableName",
+          column_default AS "columnDefault",
+          is_nullable AS "isNullable"
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND (
+            (table_name = 'newapi_login_transactions' AND column_name = 'updatedAt')
+            OR (table_name IN ('newapi_pricing_sources', 'newapi_pricing_drafts') AND column_name = 'createdAt')
+          )
+        ORDER BY table_name
+      `);
+      expect(columns).toHaveLength(3);
+      for (const column of columns) {
+        expect(column.columnDefault).toMatch(/CURRENT_TIMESTAMP/i);
+        expect(column.isNullable).toBe('NO');
+      }
     } finally {
-      vi.unstubAllEnvs();
       await client?.$disconnect();
       try {
         if (created) await dropTemporaryDatabase(adminUrl, databaseName);
       } finally {
         await rm(workspace.rootPath, { recursive: true, force: true });
-      }
-    }
-  }, 120_000);
-
-  it('applies 0009 to the pre-credential model catalog without losing legacy rows', async () => {
-    const migrationDatabaseName = `mc_migration_test_${randomBytes(12).toString('hex')}`;
-    assertTemporaryDatabaseName(migrationDatabaseName);
-    const adminDatabaseUrl = withoutSchema(testDatabaseUrl!);
-    const migrationDatabaseUrl = withDatabase(testDatabaseUrl!, migrationDatabaseName);
-    const migrationWorkspace = await createMigrationWorkspace(preModelCatalogCredentialMigrations);
-    let databaseCreated = false;
-    let migrationClient: PrismaClient | undefined;
-
-    try {
-      await createTemporaryDatabase(adminDatabaseUrl, migrationDatabaseName);
-      databaseCreated = true;
-      await runPnpm(
-        ['exec', 'prisma', 'migrate', 'deploy', '--schema', migrationWorkspace.schemaPath],
-        migrationDatabaseUrl,
-      );
-
-      migrationClient = new PrismaClient({
-        datasources: { db: { url: migrationDatabaseUrl } },
-      });
-      const fixtures = await insertHistoricalModelCatalogRows(migrationClient);
-      const legacyRows = await readLegacyModelCatalogRows(migrationClient);
-      await migrationClient.$disconnect();
-      migrationClient = undefined;
-
-      await cp(
-        modelCatalogCredentialMigrationPath,
-        join(migrationWorkspace.migrationsPath, '0009_model_catalog_credentials'),
-        { recursive: true },
-      );
-      await runPnpm(
-        ['exec', 'prisma', 'migrate', 'deploy', '--schema', migrationWorkspace.schemaPath],
-        migrationDatabaseUrl,
-      );
-
-      // Apply the remaining migrations only after 0009 has been recorded.
-      // Keeping the directory in lexical order mirrors a real forward upgrade
-      // and avoids introducing an already-applied migration out of sequence.
-      await copyMigrations(migrationWorkspace, postLifecycleMigrations.slice(1));
-      await runPnpm(
-        ['exec', 'prisma', 'migrate', 'deploy', '--schema', migrationWorkspace.schemaPath],
-        migrationDatabaseUrl,
-      );
-
-      migrationClient = new PrismaClient({
-        datasources: { db: { url: migrationDatabaseUrl } },
-      });
-
-      const credentialColumn = await migrationClient.$queryRaw<
-        Array<{ dataType: string; isNullable: string }>
-      >(Prisma.sql`
-        SELECT data_type AS "dataType", is_nullable AS "isNullable"
-        FROM information_schema.columns
-        WHERE table_schema = 'public'
-          AND table_name = 'model_catalog'
-          AND column_name = 'credentialId'
-      `);
-      expect(credentialColumn).toEqual([{ dataType: 'uuid', isNullable: 'YES' }]);
-
-      const migratedRows = await migrationClient.$queryRaw<
-        Array<LegacyModelCatalogRow & { credentialId: string | null }>
-      >(Prisma.sql`
-        SELECT
-          "id",
-          "credentialId",
-          "modelAlias",
-          "name",
-          "mediaType"::text AS "mediaType",
-          "capabilities",
-          "limitations",
-          "price",
-          "refreshedAt",
-          "createdAt",
-          "updatedAt"
-        FROM "public"."model_catalog"
-        ORDER BY "modelAlias", "mediaType"::text
-      `);
-      expect(
-        migratedRows.map(({ credentialId, ...row }) => {
-          expect(credentialId).toBe(fixtures.activeCredentialId);
-          return row;
-        }),
-      ).toEqual(legacyRows);
-
-      const indexes = await migrationClient.$queryRaw<
-        Array<{ indexDefinition: string; indexName: string }>
-      >(Prisma.sql`
-        SELECT indexname AS "indexName", indexdef AS "indexDefinition"
-        FROM pg_indexes
-        WHERE schemaname = 'public'
-          AND tablename = 'model_catalog'
-        ORDER BY indexname
-      `);
-      const indexesByName = new Map(
-        indexes.map(({ indexDefinition, indexName }) => [indexName, indexDefinition]),
-      );
-      expect(indexesByName.has('model_catalog_modelAlias_mediaType_key')).toBe(false);
-      expect(indexesByName.has('model_catalog_mediaType_idx')).toBe(false);
-      expect(indexesByName.get('model_catalog_credentialId_modelAlias_mediaType_key')).toMatch(
-        /UNIQUE INDEX[\s\S]*\("credentialId", "modelAlias", "mediaType"\)/,
-      );
-      expect(indexesByName.get('model_catalog_credentialId_mediaType_idx')).toMatch(
-        /INDEX[\s\S]*\("credentialId", "mediaType"\)/,
-      );
-
-      const foreignKeys = await migrationClient.$queryRaw<
-        Array<{
-          constraintName: string;
-          deleteAction: string;
-          updateAction: string;
-        }>
-      >(Prisma.sql`
-        SELECT
-          constraints.conname AS "constraintName",
-          constraints.confdeltype::text AS "deleteAction",
-          constraints.confupdtype::text AS "updateAction"
-        FROM pg_constraint AS constraints
-        JOIN pg_class AS tables ON tables.oid = constraints.conrelid
-        JOIN pg_namespace AS schemas ON schemas.oid = tables.relnamespace
-        WHERE schemas.nspname = 'public'
-          AND tables.relname = 'model_catalog'
-          AND constraints.contype = 'f'
-          AND constraints.conname = 'model_catalog_credentialId_fkey'
-      `);
-      expect(foreignKeys).toEqual([
-        {
-          constraintName: 'model_catalog_credentialId_fkey',
-          deleteAction: 'c',
-          updateAction: 'c',
-        },
-      ]);
-
-      const scopedDuplicateId = randomUUID();
-      await migrationClient.$executeRaw(Prisma.sql`
-        INSERT INTO "public"."model_catalog"
-          ("id", "credentialId", "modelAlias", "name", "mediaType", "refreshedAt", "createdAt", "updatedAt")
-        VALUES
-          (${scopedDuplicateId}::uuid, ${fixtures.olderCredentialId}::uuid,
-           ${legacyRows[0]!.modelAlias}, 'Credential-scoped duplicate',
-           ${legacyRows[0]!.mediaType}::"public"."MediaType", CURRENT_TIMESTAMP,
-           CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      `);
-
-      await expect(
-        migrationClient.$executeRaw(Prisma.sql`
-          INSERT INTO "public"."model_catalog"
-            ("id", "credentialId", "modelAlias", "name", "mediaType", "refreshedAt", "createdAt", "updatedAt")
-          VALUES
-            (${randomUUID()}::uuid, ${fixtures.activeCredentialId}::uuid,
-             ${legacyRows[0]!.modelAlias}, 'Duplicate in one credential',
-             ${legacyRows[0]!.mediaType}::"public"."MediaType", CURRENT_TIMESTAMP,
-             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        `),
-      ).rejects.toThrow();
-
-      await expect(
-        migrationClient.$executeRaw(Prisma.sql`
-          INSERT INTO "public"."model_catalog"
-            ("id", "credentialId", "modelAlias", "name", "mediaType", "refreshedAt", "createdAt", "updatedAt")
-          VALUES
-            (${randomUUID()}::uuid, ${randomUUID()}::uuid, 'missing-credential-model',
-             'Missing credential', 'TEXT'::"public"."MediaType", CURRENT_TIMESTAMP,
-             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        `),
-      ).rejects.toThrow();
-
-      await migrationClient.$executeRaw(Prisma.sql`
-        DELETE FROM "public"."ai_credentials"
-        WHERE "id" = ${fixtures.olderCredentialId}::uuid
-      `);
-      const cascadedRows = await migrationClient.$queryRaw<Array<{ count: bigint }>>(Prisma.sql`
-        SELECT COUNT(*)::bigint AS "count"
-        FROM "public"."model_catalog"
-        WHERE "id" = ${scopedDuplicateId}::uuid
-      `);
-      expect(cascadedRows).toEqual([{ count: 0n }]);
-
-      await runPnpm(
-        [
-          'exec',
-          'prisma',
-          'migrate',
-          'diff',
-          '--from-url',
-          migrationDatabaseUrl,
-          '--to-schema-datamodel',
-          prismaSchemaPath,
-          '--exit-code',
-        ],
-        migrationDatabaseUrl,
-      );
-    } finally {
-      await migrationClient?.$disconnect();
-      try {
-        if (databaseCreated) await dropTemporaryDatabase(adminDatabaseUrl, migrationDatabaseName);
-      } finally {
-        await rm(migrationWorkspace.rootPath, { recursive: true, force: true });
       }
     }
   }, 120_000);
@@ -1635,109 +1214,6 @@ type HistoricalLifecycleRows = LifecycleRowSet & {
   webhookReceivedAt: Date;
   webhookProcessedAt: Date;
 };
-
-type LegacyModelCatalogRow = {
-  id: string;
-  modelAlias: string;
-  name: string;
-  mediaType: string;
-  capabilities: Prisma.JsonValue | null;
-  limitations: Prisma.JsonValue | null;
-  price: Prisma.JsonValue | null;
-  refreshedAt: Date;
-  createdAt: Date;
-  updatedAt: Date;
-};
-
-async function insertHistoricalModelCatalogRows(prisma: PrismaClient): Promise<{
-  activeCredentialId: string;
-  olderCredentialId: string;
-}> {
-  const activeCredentialId = randomUUID();
-  const olderCredentialId = randomUUID();
-  const incompleteCredentialId = randomUUID();
-  const credentialCreatedAt = new Date('2025-02-01T00:00:00.000Z');
-  const activeCredentialUpdatedAt = new Date('2025-03-01T00:00:00.000Z');
-  const incompleteCredentialUpdatedAt = new Date('2025-04-01T00:00:00.000Z');
-  const catalogCreatedAt = new Date('2025-03-02T01:02:03.000Z');
-  const catalogUpdatedAt = new Date('2025-03-03T04:05:06.000Z');
-  const refreshedAt = new Date('2025-03-04T07:08:09.000Z');
-  const catalogRows = [
-    {
-      id: randomUUID(),
-      modelAlias: 'legacy-image-model',
-      name: 'Legacy Image Model',
-      mediaType: 'IMAGE',
-      capabilities: { image: true, references: 2 },
-      limitations: { maxPromptLength: 2048 },
-      price: { currency: 'USD', unit: 'image', value: 0.02 },
-    },
-    {
-      id: randomUUID(),
-      modelAlias: 'legacy-text-model',
-      name: 'Legacy Text Model',
-      mediaType: 'TEXT',
-      capabilities: { chat: true, contextWindow: 8192 },
-      limitations: null,
-      price: { currency: 'USD', unit: 'token', value: 0.000001 },
-    },
-  ] as const;
-
-  await prisma.$transaction(async (transaction) => {
-    await transaction.$executeRaw(Prisma.sql`
-      INSERT INTO "public"."ai_credentials"
-        ("id", "projectId", "ownerId", "label", "baseUrl", "encryptedApiKey",
-         "keyFingerprint", "version", "defaultModels", "createdAt", "updatedAt")
-      VALUES
-        (${olderCredentialId}::uuid, NULL, NULL, 'Legacy platform key v1',
-         'https://newapi.integration.test/v1', 'integration-encrypted-v1',
-         'integration-fingerprint-v1', 1, NULL, ${credentialCreatedAt},
-         ${activeCredentialUpdatedAt}),
-        (${activeCredentialId}::uuid, NULL, NULL, 'Legacy platform key v2',
-         'https://newapi.integration.test/v1', 'integration-encrypted-v2',
-         'integration-fingerprint-v2', 2, NULL, ${credentialCreatedAt},
-         ${activeCredentialUpdatedAt}),
-        (${incompleteCredentialId}::uuid, NULL, NULL, 'Incomplete platform key', '', '',
-         'integration-fingerprint-incomplete', 3, NULL, ${credentialCreatedAt},
-         ${incompleteCredentialUpdatedAt})
-    `);
-
-    for (const row of catalogRows) {
-      await transaction.$executeRaw(Prisma.sql`
-        INSERT INTO "public"."model_catalog"
-          ("id", "modelAlias", "name", "mediaType", "capabilities", "limitations", "price",
-           "refreshedAt", "createdAt", "updatedAt")
-        VALUES
-          (${row.id}::uuid, ${row.modelAlias}, ${row.name},
-           ${row.mediaType}::"public"."MediaType",
-           ${JSON.stringify(row.capabilities)}::jsonb,
-           ${row.limitations === null ? Prisma.sql`NULL` : Prisma.sql`${JSON.stringify(row.limitations)}::jsonb`},
-           ${JSON.stringify(row.price)}::jsonb, ${refreshedAt}, ${catalogCreatedAt},
-           ${catalogUpdatedAt})
-      `);
-    }
-  });
-
-  return { activeCredentialId, olderCredentialId };
-}
-
-async function readLegacyModelCatalogRows(prisma: PrismaClient): Promise<LegacyModelCatalogRow[]> {
-  return prisma.$queryRaw<LegacyModelCatalogRow[]>(Prisma.sql`
-    SELECT
-      "id",
-      "modelAlias",
-      "name",
-      "mediaType"::text AS "mediaType",
-      "capabilities",
-      "limitations",
-      "price",
-      "refreshedAt",
-      "createdAt",
-      "updatedAt"
-    FROM "public"."model_catalog"
-    ORDER BY "modelAlias", "mediaType"::text
-  `);
-}
 
 async function createMigrationWorkspace(migrations: readonly string[]): Promise<{
   rootPath: string;

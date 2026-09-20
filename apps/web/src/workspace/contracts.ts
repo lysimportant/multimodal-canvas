@@ -31,20 +31,15 @@ export type AssetFilter = 'all' | MediaType;
 export type ModelDefaults = Partial<Record<MediaType, string | ModelSelection>>;
 
 export type AiSettings = {
-  baseUrl: string;
-  configured: boolean;
-  keyFingerprint?: string;
-  /** 已配置 Key 的安全尾号；不能用于连接身份匹配。 */
-  keySuffix?: string;
   defaultModels: ModelDefaults;
-  /** Provider 单次请求超时，单位毫秒；旧服务响应可能不包含该字段。 */
+  /** Provider 单次请求超时，单位毫秒。 */
   timeoutMs?: number;
 };
 
 export type ModelEntry = {
   id: string;
-  /** 平台商品身份；更换上游连接不改变该值，id 继续保留精确模型字符串。 */
-  platformModelId?: string;
+  /** New API 的原始分组标识；同名模型按此字段区分。 */
+  group?: string;
   name: string;
   mediaTypes: MediaType[];
   credentialId?: string;
@@ -58,12 +53,14 @@ export type ModelEntry = {
   /** 模型价格信息，仅随目录透传，不参与节点参数选择。 */
   price?: Record<string, unknown>;
   availability?: 'available' | 'unavailable' | 'needs_review';
-  pricing?: import('@multimodal-canvas/domain').MarketplacePricing | null;
+  /** 账号目录给出的调用资格，由查询边界转换为界面状态。 */
+  available?: boolean;
+  /** 不可用原因由服务端按权限、路由和合同给出。 */
+  unavailableReason?: string;
 };
 
 export type ModelSelection = {
   modelAlias: string;
-  platformModelId?: string;
   credentialId?: string;
 };
 

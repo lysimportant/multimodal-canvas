@@ -1,8 +1,7 @@
 import { z } from 'zod';
 
 export * from './prompt-skills.js';
-export * from './billing.js';
-export * from './newapi-pricing.js';
+export * from './newapi-contracts.js';
 
 export const mediaTypes = ['text', 'image', 'audio', 'video'] as const;
 /** 画布节点模式。历史 `transform` 读取时归一为 `generate`，产品不再区分转换节点。 */
@@ -83,8 +82,7 @@ export const assetStatuses = ['ready', 'archived'] as const;
 export const mediaTypeSchema = z.enum(mediaTypes);
 export const modelSelectionSchema = z.object({
   modelAlias: z.string().trim().min(1),
-  /** 平台模型稳定身份；更换调用绑定不会改变已保存的画布选择。 */
-  platformModelId: z.string().uuid().optional(),
+  /** 本人分组的服务端凭据引用；精确模型名和引用共同确定调用身份。 */
   credentialId: z.string().trim().min(1).optional(),
 });
 export const nodeModeSchema = z.preprocess(normalizeNodeMode, z.enum(nodeModes));
@@ -903,9 +901,7 @@ export const nodeDataSchema = z.object({
    */
   inferenceStrength: z.string().trim().min(1).optional(),
   modelAlias: z.string().trim().min(1).optional(),
-  /** 独立于上游模型名称和连接的商品身份。 */
-  platformModelId: z.string().uuid().optional(),
-  /** Credential selected with the model. Omitted keeps legacy active-credential behavior. */
+  /** 本人分组模型的服务端凭据引用；实际生成前必须验证归属和版本。 */
   credentialId: z.string().trim().min(1).optional(),
   assetId: z.string().min(1).optional(),
   contentUrl: z.string().min(1).optional(),
@@ -1129,10 +1125,48 @@ export const runInputSnapshotSchema = z.object({
   snapshot: canvasNodeSchema,
 });
 
+/** 上游权威授权事实；无密钥，所有字段冻结后用于受理时的版本校验。 */
+export const newApiExecutionAuthoritySchema = z.object({
+  issuer: z.string().url(),
+  externalUserId: z.string().min(1),
+  instanceId: z.string().min(1),
+  grantId: z.string().min(1),
+  tokenId: z.string().min(1),
+  credentialRevision: z.string().min(1),
+  group: z
+    .string()
+    .min(1)
+    .refine((value) => value !== '神秘分组'),
+  permissionRevision: z.string().min(1),
+  autoGroups: z.array(
+    z
+      .string()
+      .min(1)
+      .refine((value) => value !== '神秘分组'),
+  ),
+});
+
+/** 本人凭据的不可变版本；newApi 仅供内部生成校验，不能由客户端授予权限。 */
 export const runCredentialReferenceSchema = z.object({
   credentialId: z.string().min(1),
   credentialVersion: z.number().int().positive(),
+  newApi: newApiExecutionAuthoritySchema.optional(),
 });
+
+/** 每个节点的中性执行合同；费用由 New API 处理，不含 Canvas 商品或报价。 */
+export const runExecutionBindingSchema = z.object({
+  credentialId: z.string().min(1),
+  credentialVersion: z.number().int().positive(),
+  modelAlias: z.string().min(1),
+  mediaType: z.enum(['text', 'image', 'audio', 'video']),
+  contract: z.string().min(1),
+  authority: newApiExecutionAuthoritySchema,
+});
+
+/** 无密钥的上游身份及权限修订。 */
+export type NewApiExecutionAuthority = z.infer<typeof newApiExecutionAuthoritySchema>;
+/** API 和 Worker 共享的逐节点执行绑定。 */
+export type RunExecutionBinding = z.infer<typeof runExecutionBindingSchema>;
 
 /** 独立资源分析的冻结身份；自动任务按项目、资产和版本去重，不属于画布节点。 */
 export const reversePromptSourceSchema = z.object({
@@ -1176,17 +1210,8 @@ export const runSnapshotSchema = z
      * Omitted legacy snapshots continue to use the root credential reference.
      */
     nodeCredentialReferences: z.record(runCredentialReferenceSchema).optional(),
-    /** 按真实执行节点冻结平台身份、绑定及价格；历史无账务运行可以省略。 */
-    billingBindings: z
-      .record(
-        z.object({
-          platformModelId: z.string().uuid(),
-          bindingId: z.string().uuid(),
-          pricingVersionId: z.string().uuid(),
-          contract: z.string().min(1),
-        }),
-      )
-      .optional(),
+    /** New API 本人分组的持久授权快照，由 API 冻结并由 Worker 复核。 */
+    executionBindings: z.record(runExecutionBindingSchema).optional(),
     parameters: z.record(z.unknown()),
     submittedAt: z.string().datetime(),
     nodes: z.array(canvasNodeSchema).min(1),

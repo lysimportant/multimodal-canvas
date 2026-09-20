@@ -7,11 +7,6 @@ import { flushSync } from 'react-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Asset, CanvasDocument, RunRecord } from '@multimodal-canvas/domain';
-import { acceptTestQuotes, withTestQuoteTransport } from './marketplace/quote-test-fixture';
-
-// 报价弹窗的确认、取消及换号由专属测试覆盖；画布用例显式接受合成报价。
-vi.mock('./marketplace/QuoteDialog', () => ({ QuoteDialog: () => null }));
-let releaseQuoteConfirmation: (() => void) | undefined;
 
 type FlowConnection = {
   source: string;
@@ -351,15 +346,8 @@ const assets: Asset[] = [
 ];
 
 const emptyCanvas: CanvasDocument = { revision: 0, nodes: [], edges: [] };
-/** 目录按凭据查询，因此测试会话需要一个凭据，节点才能继承到模型。 */
-const credentialSummary = {
-  id: 'credential-model-catalog',
-  version: 1,
-  baseUrl: 'https://mock.example.test/v1',
-  keyFingerprint: 'synthetic',
-  active: true,
-  createdAt: '2026-01-01T00:00:00.000Z',
-};
+/** 模型身份包含分组凭据，确保同名模型不会跨组串用。 */
+const modelCredentialId = 'credential-model-catalog';
 const modelCatalog = [
   {
     id: 'text-model',
@@ -379,7 +367,7 @@ const modelCatalog = [
     name: '普通图片模型',
     mediaTypes: ['image'],
   },
-];
+].map((model) => ({ ...model, group: 'default', credentialId: modelCredentialId }));
 const jsonResponse = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
@@ -388,6 +376,7 @@ const jsonResponse = (body: unknown, status = 200) =>
 
 let canvas: CanvasDocument;
 let projectRuns: RunRecord[];
+let workspaceProjects: (typeof project)[];
 /** 当前测试的项目与全局模型默认值，独立于节点和浏览器偏好。 */
 let projectModelDefaults: Record<string, unknown>;
 let globalModelDefaults: Record<string, unknown>;
@@ -449,28 +438,9 @@ function installApiMock() {
     if (url.pathname === '/v1/models' && method === 'GET') {
       return jsonResponse({ models: modelCatalog });
     }
-    if (url.pathname === '/v1/model-marketplace' && method === 'GET') {
-      return jsonResponse({
-        items: modelCatalog.map((model) => ({
-          id: `platform-${model.id}`,
-          modelAlias: model.id,
-          name: model.name,
-          description: '',
-          mediaType: model.mediaTypes[0],
-          specifications: {},
-          availability: 'available',
-          capabilities: model.capabilities ?? {},
-          limitations: {},
-          pricing: null,
-        })),
-        total: modelCatalog.length,
-      });
-    }
     if (url.pathname === '/v1/settings/ai' && method === 'GET')
       return jsonResponse({
         settings: {
-          baseUrl: 'https://example.test',
-          configured: true,
           defaultModels: globalModelDefaults,
         },
       });
@@ -490,17 +460,13 @@ function installApiMock() {
           )
           .map((record) => ({ ...record, id: record.recordId })),
       });
-    if (url.pathname === '/v1/settings/ai/credentials' && method === 'GET') {
-      // 目录是按凭据查询的；没有凭据时 modelCatalog 为空，节点拿不到模型。
-      return jsonResponse({ credentials: [credentialSummary] });
-    }
     if (url.pathname === '/v1/assets' && method === 'GET') return jsonResponse({ assets });
     if (url.pathname.endsWith('/access-url') && method === 'POST')
       return jsonResponse({
         url: `${url.pathname.replace('/access-url', '/content')}?access_token=synthetic-unit`,
       });
     if (url.pathname === '/v1/projects' && method === 'GET') {
-      return jsonResponse({ projects: [project] });
+      return jsonResponse({ projects: workspaceProjects });
     }
     if (url.pathname === '/v1/projects' && method === 'POST') return jsonResponse({ project });
     if (url.pathname === `/v1/projects/${project.id}/canvas` && method === 'GET') {
@@ -599,7 +565,7 @@ function installApiMock() {
     }
     throw new Error(`Unhandled mock request: ${method} ${url.pathname}`);
   });
-  vi.stubGlobal('fetch', withTestQuoteTransport(fetchMock));
+  vi.stubGlobal('fetch', fetchMock);
 }
 
 function createRestoredRun(
@@ -765,7 +731,6 @@ function handleFor(node: HTMLElement, handleId: string) {
 
 describe('画布编辑器交互', () => {
   beforeEach(() => {
-    releaseQuoteConfirmation = acceptTestQuotes();
     window.history.replaceState(null, '', `/projects/${project.id}`);
     window.localStorage.clear();
     clearAuthSession();
@@ -785,6 +750,7 @@ describe('画布编辑器交互', () => {
     clipboardText = '';
     canvas = structuredClone(emptyCanvas);
     projectRuns = [];
+    workspaceProjects = [project];
     projectModelDefaults = {};
     globalModelDefaults = {};
     nodeRunOverrides = new Map();
@@ -800,7 +766,6 @@ describe('画布编辑器交互', () => {
   });
 
   afterEach(() => {
-    releaseQuoteConfirmation?.();
     cleanup();
     vi.restoreAllMocks();
     clearAuthSession();
@@ -816,12 +781,12 @@ describe('画布编辑器交互', () => {
     vi.unstubAllGlobals();
   });
 
-  it('新节点优先继承项目默认的平台模型，不复制旧模型参数', async () => {
+  it('新节点优先继承项目默认的分组模型，不复制旧模型参数', async () => {
     projectModelDefaults = {
-      image: { modelAlias: 'image-plain-model', platformModelId: 'platform-image-plain-model' },
+      image: { modelAlias: 'image-plain-model', credentialId: modelCredentialId },
     };
     globalModelDefaults = {
-      image: { modelAlias: 'image-edit-model', credentialId: credentialSummary.id },
+      image: { modelAlias: 'image-edit-model', credentialId: modelCredentialId },
     };
     canvas = {
       revision: 1,
@@ -846,19 +811,19 @@ describe('画布编辑器交互', () => {
     await waitFor(() => expect(canvas.nodes).toHaveLength(2));
     const created = canvas.nodes.find((node) => node.id !== 'old-image')!;
     expect(created.data.modelAlias).toBe('image-plain-model');
-    expect(created.data.platformModelId).toBe('platform-image-plain-model');
+    expect(created.data.credentialId).toBe(modelCredentialId);
     expect(created.data.parameters).not.toHaveProperty('legacyOption');
   });
 
   it('未设置项目默认时继承全局类型默认', async () => {
     globalModelDefaults = {
-      image: { modelAlias: 'image-plain-model', platformModelId: 'platform-image-plain-model' },
+      image: { modelAlias: 'image-plain-model', credentialId: modelCredentialId },
     };
     const { user } = await renderCanvas();
     await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
     await waitFor(() => expect(canvas.nodes).toHaveLength(1));
     expect(canvas.nodes[0]!.data.modelAlias).toBe('image-plain-model');
-    expect(canvas.nodes[0]!.data.platformModelId).toBe('platform-image-plain-model');
+    expect(canvas.nodes[0]!.data.credentialId).toBe(modelCredentialId);
   });
 
   it('在根路径显示主页且不会自动创建项目', async () => {
@@ -887,6 +852,17 @@ describe('画布编辑器交互', () => {
     window.history.replaceState(null, '', '/projects/missing-project');
     render(createElement(App));
     expect(await screen.findByRole('heading', { name: '项目不存在' })).toBeVisible();
+  });
+
+  it('已登录账号的空工作台不再显示登录动作', async () => {
+    workspaceProjects = [];
+    window.history.replaceState(null, '', '/workspace');
+    render(createElement(App));
+
+    expect(await screen.findByText('还没有项目')).toBeVisible();
+    expect(screen.getByRole('button', { name: '账户菜单' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: '登录' })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: '新建项目' })).toHaveLength(2);
   });
 
   it('通过工具栏和资源库创建生成节点与来源节点', async () => {
@@ -1918,7 +1894,9 @@ describe('画布编辑器交互', () => {
 
     await user.click(handleFor(videoNode, 'output:video'));
     await user.click(handleFor(imageNode, 'input:content'));
-    expect(screen.getByRole('alert')).toHaveTextContent('不能创建循环依赖');
+    expect(
+      screen.getAllByRole('alert').some((item) => item.textContent?.includes('不能创建循环依赖')),
+    ).toBe(true);
     expect(screen.queryAllByTestId('flow-edge')).toHaveLength(1);
   });
 
@@ -2265,10 +2243,10 @@ describe('画布编辑器交互', () => {
     expect(within(editor).getByRole('button', { name: '新节点' })).toBeDisabled();
 
     await user.click(within(editor).getByRole('combobox', { name: /^模型：/ }));
-    await user.click(screen.getByRole('option', { name: '普通图片模型' }));
+    await user.click(screen.getByRole('option', { name: /普通图片模型/ }));
     expect(within(editor).getByRole('combobox', { name: /^模型：/ })).toHaveAttribute(
       'aria-label',
-      '模型：普通图片模型',
+      '模型：普通图片模型 · default',
     );
     expect(within(editor).getByRole('button', { name: '新节点' })).toBeEnabled();
     expect(within(editor).getByRole('button', { name: '新节点' })).toHaveAttribute(
@@ -2293,8 +2271,7 @@ describe('画布编辑器交互', () => {
         mediaType: 'image',
         mode: 'generate',
         modelAlias: 'image-edit-model',
-        credentialId: credentialSummary.id,
-        platformModelId: 'platform-image-edit-model',
+        credentialId: modelCredentialId,
         promptDocument: {
           version: 1,
           blocks: [

@@ -36,8 +36,6 @@ $variables = @{
   DATABASE_URL = ''
   WORKER_PROVIDER = 'mock'
   RUN_SERVICE = 'memory'
-  NEW_API_BASE_URL = ''
-  NEW_API_API_KEY = ''
   TEST_DATABASE_URL = "postgresql://test_user:synthetic-test-password@127.0.0.1:$PostgresPort/multimodal_canvas_test?schema=public"
   TEST_REDIS_URL = "redis://127.0.0.1:$RedisPort/15"
   TEST_REDIS_NAMESPACE = $Project

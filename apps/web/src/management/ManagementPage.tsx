@@ -5,36 +5,22 @@ import {
   ArrowLeft,
   Database,
   LayoutDashboard,
-  Library,
-  Mail,
   Menu,
   PanelLeftClose,
   Server,
   ShieldCheck,
   UserRound,
-  Users,
-  Wallet,
   X,
   type LucideIcon,
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import type { AuthUser, StoredAuthSession } from '../auth-client';
+import type { AuthUser } from '../auth-client';
 import { AccountMenu, useAccountActions } from '../navigation/AccountMenu';
-import {
-  AppLink,
-  appPaths,
-  navigateApp,
-  ProjectReturnProvider,
-  readReturnProjectId,
-} from '../routing';
-import { BootstrapPage, ProfilePage, SecurityPage, VerifyPage } from './AccountPages';
-import { AuditPage, OverviewPage, SystemPage, UserDetailPage, UsersPage } from './AdminPages';
+import { AppLink, appPaths, ProjectReturnProvider, readReturnProjectId } from '../routing';
+import { AuditPage, OverviewPage, SystemPage } from './AdminPages';
 import { ResourceGroupsPage, ResourcesPage, RunsPage } from './ResourcePages';
-import { managementRequest, type BootstrapStatus } from './client';
-import { QueryState, UserIdentity } from './primitives';
-import { AdminModelsPage } from '../marketplace/AdminModelsPage';
-import { AdminBillingPage } from '../marketplace/AdminBillingPage';
-import { BillingPage } from '../marketplace/BillingPage';
+import { managementRequest } from './client';
+import { UserIdentity } from './primitives';
 import './management.css';
 
 /** 管理页面与应用统一认证入口的边界。 */
@@ -49,8 +35,6 @@ export type ManagementPageProps = {
   authUser: AuthUser | null;
   /** 进入统一登录流程，保留用户此前所在项目。 */
   onRequestLogin: () => void;
-  /** 新建或更新服务端会话后同步整个应用。 */
-  onSessionChanged: (session: StoredAuthSession) => void;
 };
 
 /** 导航结构仅描述可访问入口，不能替代服务端授权。 */
@@ -59,21 +43,14 @@ type ManagementNav = { path: string; label: string; icon: LucideIcon };
 /** 管理员主要入口。 */
 const adminNavigation: ManagementNav[] = [
   { path: '/admin', label: '管理概览', icon: LayoutDashboard },
-  { path: '/admin/users', label: '用户管理', icon: Users },
-  { path: '/admin/models', label: '模型管理', icon: Library },
-  { path: '/admin/billing', label: '账务管理', icon: Wallet },
   { path: '/admin/resources', label: '用户资源', icon: Database },
   { path: '/admin/runs', label: '全站任务', icon: Activity },
   { path: '/admin/audit', label: '操作记录', icon: ShieldCheck },
-  { path: '/admin/settings/email', label: '邮件服务', icon: Mail },
   { path: '/admin/system', label: '系统状态', icon: Server },
 ];
 
 /** 登录用户的个人入口。 */
 const accountNavigation: ManagementNav[] = [
-  { path: '/account/profile', label: '个人信息', icon: UserRound },
-  { path: '/account/security', label: '账户安全', icon: ShieldCheck },
-  { path: '/account/billing', label: '余额与账单', icon: Wallet },
   { path: '/resources', label: '我的资源', icon: Database },
   { path: '/runs', label: '我的任务', icon: Activity },
 ];
@@ -84,50 +61,6 @@ const accountNavigation: ManagementNav[] = [
  */
 export function ManagementPage(props: ManagementPageProps) {
   const isAdminPath = props.routePath === '/admin' || props.routePath.startsWith('/admin/');
-  const bootstrap = useQuery({
-    queryKey: ['management', 'bootstrap'],
-    queryFn: ({ signal }) =>
-      managementRequest<BootstrapStatus>('/admin/bootstrap', { signal, public: true }),
-    enabled: isAdminPath,
-    staleTime: 0,
-  });
-  if (props.routePath === '/auth/verify')
-    return (
-      <div className="mg-shell is-public">
-        <VerifyPage
-          onSessionChanged={props.onSessionChanged}
-          authUser={props.authUser}
-          onRequestLogin={props.onRequestLogin}
-        />
-      </div>
-    );
-  if (isAdminPath && (bootstrap.isLoading || bootstrap.error))
-    return (
-      <div className="mg-shell is-public">
-        <QueryState
-          loading={bootstrap.isLoading}
-          error={bootstrap.error}
-          onRetry={() => void bootstrap.refetch()}
-        />
-        <AppLink to="/" className="mg-back">
-          <ArrowLeft size={16} />
-          返回主页
-        </AppLink>
-      </div>
-    );
-  if (isAdminPath && bootstrap.data && !bootstrap.data.initialized)
-    return (
-      <div className="mg-shell is-public">
-        <BootstrapPage
-          status={bootstrap.data}
-          onSessionChanged={props.onSessionChanged}
-          onInitialized={() => {
-            void bootstrap.refetch();
-            navigateApp('/admin', { replace: true });
-          }}
-        />
-      </div>
-    );
   if (!props.authUser)
     return (
       <div className="mg-shell is-public">
@@ -152,10 +85,6 @@ export function ManagementPage(props: ManagementPageProps) {
           <ShieldCheck size={32} />
           <h1>仅管理员可访问</h1>
           <p>当前账户没有后台管理权限。</p>
-          <AppLink to="/account/profile" className="mg-button">
-            <UserRound size={16} />
-            个人中心
-          </AppLink>
           <AppLink to="/workspace" className="mg-back">
             <ArrowLeft size={16} />
             返回工作台
@@ -170,7 +99,6 @@ export function ManagementPage(props: ManagementPageProps) {
 function ManagementShell({
   routePath,
   user,
-  onSessionChanged,
   returnProjectId: suppliedReturnProjectId,
   returnProjectName,
 }: ManagementPageProps & { user: AuthUser }) {
@@ -295,8 +223,7 @@ function ManagementShell({
               const active =
                 path === '/admin'
                   ? routePath === path
-                  : (routePath.startsWith(path) &&
-                      !(path === '/admin/users' && routePath.endsWith('/resources'))) ||
+                  : routePath.startsWith(path) ||
                     (path === '/admin/resources' &&
                       /^\/admin\/users\/[^/]+\/resources/.test(routePath));
               return (
@@ -315,9 +242,9 @@ function ManagementShell({
           </nav>
           <div className="mg-sidebar-secondary">
             {isAdmin ? (
-              <AppLink to="/account/profile">
+              <AppLink to="/workspace">
                 <UserRound size={19} />
-                <span>个人中心</span>
+                <span>工作台</span>
               </AppLink>
             ) : (
               user.role === 'admin' && (
@@ -374,12 +301,7 @@ function ManagementShell({
               {account ? (
                 <AccountMenu {...account} projectId={returnProjectId} />
               ) : (
-                <AppLink
-                  to="/account/profile"
-                  className="mg-icon"
-                  title="个人信息"
-                  aria-label="个人信息"
-                >
+                <AppLink to="/workspace" className="mg-icon" title="工作台" aria-label="工作台">
                   <UserRound size={19} />
                 </AppLink>
               )}
@@ -393,11 +315,7 @@ function ManagementShell({
             inert={leaving || undefined}
           >
             <div className="mg-page-enter" key={displayedPath}>
-              <ManagementContent
-                path={displayedPath}
-                user={user}
-                onSessionChanged={onSessionChanged}
-              />
+              <ManagementContent path={displayedPath} user={user} />
             </div>
           </main>
         </div>
@@ -407,22 +325,13 @@ function ManagementShell({
 }
 
 /** 已经过外层身份检查的页面分发，用户资源必须以明确 userId 为范围。 */
-function ManagementContent({ path, user, onSessionChanged }: SessionPropsForContent) {
+function ManagementContent({ path, user }: SessionPropsForContent) {
   if (path === '/admin') return <OverviewPage userId={user.id} />;
-  if (path === '/admin/users') return <UsersPage userId={user.id} />;
-  if (path === '/admin/models') return <AdminModelsPage userId={user.id} />;
-  if (path === '/admin/billing') return <AdminBillingPage userId={user.id} />;
-  if (path === '/account/billing') return <BillingPage userId={user.id} />;
   if (path === '/admin/resources') return <ResourceGroupsPage userId={user.id} />;
   if (path === '/admin/audit') return <AuditPage userId={user.id} />;
-  if (path === '/admin/system' || path === '/admin/settings/email')
-    return <SystemPage userId={user.id} emailOnly={path.endsWith('/email')} />;
+  if (path === '/admin/system') return <SystemPage userId={user.id} />;
   if (path === '/admin/runs' || path === '/runs')
     return <RunsPage userId={user.id} admin={path.startsWith('/admin')} />;
-  if (path === '/account/security')
-    return <SecurityPage userId={user.id} onSessionChanged={onSessionChanged} />;
-  if (path === '/account/profile' || path === '/account')
-    return <ProfilePage userId={user.id} onSessionChanged={onSessionChanged} />;
   if (path === '/resources') return <ResourcesPage userId={user.id} />;
   const ownerResources = /^\/admin\/users\/([^/]+)\/resources$/.exec(path);
   if (ownerResources)
@@ -433,15 +342,10 @@ function ManagementContent({ path, user, onSessionChanged }: SessionPropsForCont
         ownerId={decodeURIComponent(ownerResources[1]!)}
       />
     );
-  const detail = /^\/admin\/users\/([^/]+)$/.exec(path);
-  if (detail)
-    return (
-      <UserDetailPage key={detail[1]} actorId={user.id} userId={decodeURIComponent(detail[1]!)} />
-    );
   return (
     <div className="mg-state">
       <h1>页面不存在</h1>
-      <AppLink to={user.role === 'admin' ? '/admin' : '/account/profile'} className="mg-button">
+      <AppLink to={user.role === 'admin' ? '/admin' : '/workspace'} className="mg-button">
         返回工作台
       </AppLink>
     </div>
@@ -452,5 +356,4 @@ function ManagementContent({ path, user, onSessionChanged }: SessionPropsForCont
 type SessionPropsForContent = {
   path: string;
   user: AuthUser;
-  onSessionChanged: (session: StoredAuthSession) => void;
 };

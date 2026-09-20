@@ -12,6 +12,7 @@ import type {
   RunInputSnapshot,
   RunResult,
   RunSnapshot,
+  NewApiExecutionAuthority,
 } from '@multimodal-canvas/domain';
 import {
   imageEditSourceSchema,
@@ -25,6 +26,28 @@ import {
 } from '@multimodal-canvas/domain';
 
 export type ProviderName = 'mock' | 'newapi';
+export { verifyNewApiExecutionAuthority } from './newapi-authority';
+
+/** 服务端冻结权限按 New API 受理合同传递；上游在预扣与供应商 POST 前比对。 */
+export function newApiExecutionHeaders(
+  authority?: NewApiExecutionAuthority,
+): Record<string, string> {
+  if (!authority) return {};
+  const payload = {
+    version: 1,
+    issuer: authority.issuer,
+    user_id: authority.externalUserId,
+    instance_id: authority.instanceId,
+    grant_id: authority.grantId,
+    token_id: authority.tokenId,
+    expected_group: authority.group,
+    permission_revision: authority.permissionRevision,
+    auto_groups: authority.autoGroups,
+  };
+  return {
+    'x-canvas-execution': Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url'),
+  };
+}
 
 /**
  * Provider-neutral 的已解析资源提及。
@@ -536,7 +559,13 @@ export class NewApiProvider {
         ...plan.prompt,
       });
     }
-    const response = await this.request(plan.path, plan.body, idempotencyKey, signal);
+    const response = await this.request(
+      plan.path,
+      plan.body,
+      idempotencyKey,
+      signal,
+      snapshot.executionBindings?.[snapshot.targetNodeId]?.authority,
+    );
     let output: StandardProviderOutput;
     try {
       output =
@@ -740,6 +769,7 @@ export class NewApiProvider {
     body: Record<string, unknown> | FormData,
     idempotencyKey: string,
     externalSignal?: AbortSignal,
+    authority?: NewApiExecutionAuthority,
   ): Promise<{ payload: unknown } & NewApiRequestIds> {
     const abortContext = createProviderAbortContext(this.timeoutMs, externalSignal);
     let requestIds: NewApiRequestIds = {};
@@ -751,6 +781,7 @@ export class NewApiProvider {
         redirect: 'error',
         headers: {
           authorization: `Bearer ${this.apiKey}`,
+          ...newApiExecutionHeaders(authority),
           'idempotency-key': idempotencyKey,
           ...(isForm ? {} : { 'content-type': 'application/json' }),
         },
@@ -1082,6 +1113,7 @@ export class NewApiVideoProvider {
           idempotencyKey,
           signal,
           contract,
+          snapshot.executionBindings?.[snapshot.targetNodeId]?.authority,
         );
       } catch (error) {
         // 已收到明确拒绝（无渠道、参数错误等）时任务未创建，直接展示供应商诊断。
@@ -1490,6 +1522,7 @@ export class NewApiVideoProvider {
     idempotencyKey?: string,
     externalSignal?: AbortSignal,
     contract: FrozenVideoContract = 'legacy-v1',
+    authority?: NewApiExecutionAuthority,
   ): Promise<{ payload: Record<string, unknown> } & NewApiRequestIds> {
     throwIfProviderSignalAborted(externalSignal);
     return this.fetchResponse(
@@ -1501,6 +1534,7 @@ export class NewApiVideoProvider {
         headers: {
           authorization: `Bearer ${this.apiKey}`,
           accept: 'application/json',
+          ...(method === 'POST' ? newApiExecutionHeaders(authority) : {}),
           ...(body ? { 'content-type': 'application/json' } : {}),
           ...(method === 'POST' && idempotencyKey ? { 'idempotency-key': idempotencyKey } : {}),
         },

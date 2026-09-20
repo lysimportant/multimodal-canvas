@@ -50,16 +50,15 @@ vi.mock('./runs', () => ({
   MemoryRunService: vi.fn(),
   redisConnectionFromUrl: vi.fn(() => ({})),
 }));
-vi.mock('./settings', () => ({
+vi.mock('./newapi-account-settings', () => ({
   /** 初始化时不读取数据库或 Provider 设置。 */
-  PrismaAiSettingsStore: class {
+  NewApiAccountSettings: class {
     /** 返回隔离设置，避免入口初始化触发外部请求。 */
     async get() {
       return {};
     }
   },
 }));
-vi.mock('./file-ai-settings', () => ({ FileAiSettingsStore: vi.fn() }));
 vi.mock('./newapi-run-executor', () => ({ createNewApiRunExecutor: vi.fn() }));
 
 /** 合成生产配置，只用于通过入口校验；所有外部连接均由测试替身接管。 */
@@ -77,6 +76,11 @@ const productionEnvironment = {
   API_PORT: '3000',
   API_HOST: '0.0.0.0',
   NEW_API_WEBHOOK_SECRET: 'test-webhook-secret',
+  NEW_API_ISSUER: 'https://newapi.example.test',
+  NEW_API_CLIENT_ID: 'canvas',
+  NEW_API_INSTANCE_ID: 'transport-test',
+  NEW_API_REDIRECT_URI: 'https://canvas.example.test/v1/auth/newapi/callback',
+  CANVAS_WEB_URL: 'https://canvas.example.test',
   WORKER_PROVIDER: 'newapi',
   RUN_SERVICE: 'bullmq',
   CORS_ORIGIN: undefined,

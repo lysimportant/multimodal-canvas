@@ -9,7 +9,6 @@ const pendingReversePromptSchema = z.object({
     .object({
       modelAlias: z.string().min(1),
       credentialId: z.string().optional(),
-      platformModelId: z.string().optional(),
     })
     .optional(),
 });

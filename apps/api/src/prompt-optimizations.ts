@@ -6,7 +6,7 @@ export function promptOptimizationIdempotencyKey(requestKey: string): string {
   return `prompt-optimization:${createHash('sha256').update(requestKey).digest('hex')}`;
 }
 
-/** 返回独立优化结果和冻结平台身份；旧任务省略 platformModelId，所有响应均省略内部凭据。 */
+/** 返回独立优化的有效结果；省略内部凭据和请求正文。 */
 export function publicPromptOptimization(run: RunRecord) {
   const source = run.snapshot.promptOptimization!;
   const result = run.result?.promptOptimization;
@@ -25,11 +25,6 @@ export function publicPromptOptimization(run: RunRecord) {
     skillVersion: source.skillVersion,
     status,
     modelAlias: run.modelAlias,
-    ...(run.snapshot.billingBindings?.[run.snapshot.targetNodeId]?.platformModelId
-      ? {
-          platformModelId: run.snapshot.billingBindings[run.snapshot.targetNodeId]!.platformModelId,
-        }
-      : {}),
     ...(run.provider === 'mock' || run.result?.simulated ? { simulated: true } : {}),
     ...(status === 'succeeded' && result ? result : {}),
     ...(status === 'failed'

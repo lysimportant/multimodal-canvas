@@ -14,6 +14,8 @@ import { promisify } from 'node:util';
 
 import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { AuthService } from './auth-service';
+import { PrismaAuthStore } from './auth-store';
 
 /** 独立入口必需的测试依赖变量；不读取 .env，也不回退到生产连接。 */
 const configurationVariables = [
@@ -156,7 +158,8 @@ type EntryResponse = {
 describe.skipIf(!configuration)('隔离 HTTPS 代理到真实生产模式 API', () => {
   /** 证书、数据库 schema、队列与凭据均为本次随机生命周期资源。 */
   const schemaName = `mc_entry_ci_${randomUUID().replaceAll('-', '')}`;
-  const bearerToken = randomUUID();
+  const jwtSecret = randomUUID();
+  let bearerToken = '';
   let certificateDirectory = '';
   let certificate: Buffer;
   let proxy: Server | undefined;
@@ -251,6 +254,21 @@ describe.skipIf(!configuration)('隔离 HTTPS 代理到真实生产模式 API', 
       },
     );
 
+    const authStore = new PrismaAuthStore(database);
+    const user = await authStore.createUser({ email: 'entry@example.test', status: 'active' });
+    await database.newApiIdentity.create({
+      data: {
+        userId: user.id,
+        issuer: 'https://api.example.test',
+        externalUserId: 'entry-test-user',
+        instanceId: 'entry-test',
+        grantId: randomUUID(),
+        encryptedGrant: 'synthetic-unused-grant',
+        expiresAt: new Date(Date.now() + 3600_000),
+      },
+    });
+    bearerToken = (await new AuthService({ store: authStore, jwtSecret }).issueToken(user))
+      .accessToken;
     const apiPort = await availablePort();
     childEnvironment = {
       ...systemEnvironment(),
@@ -266,9 +284,14 @@ describe.skipIf(!configuration)('隔离 HTTPS 代理到真实生产模式 API', 
       S3_SECRET_KEY: configuration!.TEST_S3_SECRET_KEY,
       API_HOST: '127.0.0.1',
       API_PORT: String(apiPort),
-      API_AUTH_TOKEN: bearerToken,
-      // Prisma 导入时会读取根 .env；显式空值阻止本机 JWT 配置进入隔离子进程。
-      API_JWT_SECRET: '',
+      // 显式设置全部身份配置，阻止 Prisma 导入根 .env 中的本机认证值。
+      API_AUTH_TOKEN: '',
+      API_JWT_SECRET: jwtSecret,
+      NEW_API_ISSUER: 'https://api.example.test',
+      NEW_API_CLIENT_ID: 'canvas',
+      NEW_API_INSTANCE_ID: 'entry-test',
+      NEW_API_REDIRECT_URI: 'https://console.example.test/v1/auth/newapi/callback',
+      CANVAS_WEB_URL: 'https://console.example.test',
       API_BODY_LIMIT_BYTES: '256',
       CORS_ORIGIN: 'https://console.example.test',
       AI_CREDENTIAL_ENCRYPTION_KEY: randomUUID(),
@@ -411,9 +434,9 @@ describe.skipIf(!configuration)('隔离 HTTPS 代理到真实生产模式 API', 
     },
   );
 
-  it('正确 Bearer 经过代理后读取隔离数据库设置', async () => {
+  it('New API 身份的有效 Cookie 会话经过代理后读取本人设置', async () => {
     const response = await send('/v1/settings/ai', {
-      headers: { authorization: `Bearer ${bearerToken}` },
+      headers: { cookie: `canvas_session=${bearerToken}` },
     });
     expect(response.status).toBe(200);
     expect(JSON.parse(response.body)).toMatchObject({ settings: { configured: false } });
@@ -486,7 +509,8 @@ describe.skipIf(!configuration)('隔离 HTTPS 代理到真实生产模式 API', 
       {
         method: 'POST',
         headers: {
-          authorization: `Bearer ${bearerToken}`,
+          cookie: `canvas_session=${bearerToken}`,
+          origin: 'https://console.example.test',
           'content-type': 'application/json',
           'content-length': String(Buffer.byteLength(body)),
         },
@@ -502,7 +526,7 @@ describe.skipIf(!configuration)('隔离 HTTPS 代理到真实生产模式 API', 
   it('生产入口缺少认证配置时在监听前失败', async () => {
     const result = await execFileAsync(process.execPath, ['--import', 'tsx', 'src/index.ts'], {
       cwd: apiRoot,
-      env: { ...childEnvironment, API_AUTH_TOKEN: '' },
+      env: { ...childEnvironment, API_JWT_SECRET: '' },
       timeout: 10_000,
       windowsHide: true,
     }).then(
@@ -512,7 +536,7 @@ describe.skipIf(!configuration)('隔离 HTTPS 代理到真实生产模式 API', 
       (error: { code?: number; stdout?: string; stderr?: string }) => error,
     );
     expect(result.code).toBe(1);
-    expect(result.stderr).toContain('API_AUTH_TOKEN/API_JWT_SECRET');
+    expect(result.stderr).toContain('API_JWT_SECRET');
     expect(result.stdout).not.toContain('Server listening');
     expect(result.stderr).not.toContain(bearerToken);
   }, 15_000);

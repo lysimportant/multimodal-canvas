@@ -144,7 +144,7 @@ export function isReversePromptRun(
   );
 }
 
-/** 返回独立分析和冻结平台身份；旧任务省略 platformModelId，仅有效结构化结果报告成功，不返回内部凭据或请求正文。 */
+/** 返回独立分析，仅有效结构化结果报告成功，不返回内部凭据或请求正文。 */
 export function publicReversePromptAnalysis(run: RunRecord) {
   const source = run.snapshot.reversePrompt!;
   const result = run.result?.reversePrompt;
@@ -163,11 +163,6 @@ export function publicReversePromptAnalysis(run: RunRecord) {
     status,
     automatic: source.automatic,
     modelAlias: run.modelAlias,
-    ...(run.snapshot.billingBindings?.[run.snapshot.targetNodeId]?.platformModelId
-      ? {
-          platformModelId: run.snapshot.billingBindings[run.snapshot.targetNodeId]!.platformModelId,
-        }
-      : {}),
     ...(result && status === 'succeeded' ? result : {}),
     ...(run.error
       ? { error: run.error }

@@ -1,41 +1,18 @@
-/** 后台及个人中心的请求与数据契约；所有权限由服务端验证。 */
-import {
-  apiFetch,
-  getAuthSessionGeneration,
-  persistAuthSession,
-  readAuthSession,
-  type AuthTokenResponse,
-  type AuthUser,
-  type StoredAuthSession,
-} from '../auth-client';
+/** 后台及个人资源工作台的请求与数据契约；所有权限由服务端验证。 */
+import { apiFetch } from '../auth-client';
 import { API_BASE_URL } from '../workspace/contracts';
 
-/** 初始化状态由服务端持久化，不能由浏览器本地状态推断。 */
-export type BootstrapStatus = {
-  initialized: boolean;
-  mailConfigured: boolean;
-  setupTokenRequired: boolean;
-};
-
-/** 用户业务资料；不包含密码哈希、会话令牌及邮件凭据。 */
+/** 资源归属所需的公开用户资料；New API 身份可能不提供邮箱。 */
 export type ManagedUser = {
   id: string;
-  email: string;
+  email?: string;
   displayName?: string | null;
   bio?: string | null;
   avatarUrl?: string | null;
   role: 'user' | 'admin';
   status: string;
-  emailVerifiedAt?: string | null;
   createdAt: string;
   updatedAt?: string;
-};
-
-/** 邮件投递结果，区分已入队和失败；不回显验证码。 */
-export type DeliveryResult = {
-  email?: string;
-  verificationRequired?: boolean;
-  delivery: { status: string; id: string };
 };
 
 /** 统一请求错误，保留 HTTP 状态以区分权限、校验和临时故障。 */
@@ -67,6 +44,7 @@ export async function managementRequest<T>(
     `${API_BASE_URL.replace(/\/$/, '')}/v1${path}`,
     {
       method: options.method ?? 'GET',
+      credentials: 'include',
       ...(options.body !== undefined
         ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(options.body) }
         : {}),
@@ -97,77 +75,6 @@ export function queryString(values: Record<string, string | number | undefined>)
   }
   const query = params.toString();
   return query ? `?${query}` : '';
-}
-
-/** 验证邮箱并保存会话；路由取消抛 AbortError，迟到响应不提交，失败不清除当前身份。 */
-export async function verifyAccount(
-  input: {
-    email: string;
-    code: string;
-    purpose: 'bootstrap' | 'invite' | 'register' | 'reset' | 'email';
-    password?: string;
-  },
-  options: { signal?: AbortSignal } = {},
-): Promise<StoredAuthSession> {
-  if (options.signal?.aborted) throw new DOMException('验证请求已取消', 'AbortError');
-  const generation = getAuthSessionGeneration();
-  /** 提交前可取消，提交引发的页面卸载不得把成功结果重新判为取消。 */
-  let committed = false;
-  let cancellation: DOMException | undefined;
-  let rejectCancellation!: (error: DOMException) => void;
-  const cancelled = new Promise<never>((_resolve, reject) => {
-    rejectCancellation = reject;
-  });
-  const onAbort = () => {
-    if (committed || cancellation) return;
-    cancellation = new DOMException('验证请求已取消', 'AbortError');
-    rejectCancellation(cancellation);
-  };
-  options.signal?.addEventListener('abort', onAbort, { once: true });
-  try {
-    if (options.signal?.aborted) onAbort();
-    const request = (async () => {
-      if (cancellation) throw cancellation;
-      const response = await managementRequest<AuthTokenResponse>('/auth/verify', {
-        method: 'POST',
-        body: input,
-        public: true,
-        signal: options.signal,
-      });
-      if (options.signal?.aborted)
-        throw cancellation ?? new DOMException('验证请求已取消', 'AbortError');
-      committed = true;
-      return persistManagementSession(response, generation);
-    })();
-    return await Promise.race([request, cancelled]);
-  } finally {
-    options.signal?.removeEventListener('abort', onAbort);
-  }
-}
-
-/** 请求发出后身份发生变化时拒绝旧响应，避免重新登录或退出被晚到结果覆盖。 */
-export function persistManagementSession(
-  response: AuthTokenResponse,
-  requestGeneration: number,
-): StoredAuthSession {
-  if (getAuthSessionGeneration() !== requestGeneration) {
-    throw new ManagementError('账户状态已改变，请在当前账户中重新操作', 409);
-  }
-  return persistAuthSession(response);
-}
-
-/** 只将已保存的资料合并回同一用户的当前会话，不接管后来登录的账户。 */
-export function updateStoredUser(user: ManagedUser): StoredAuthSession {
-  const session = readAuthSession();
-  if (!session || session.user.id !== user.id) {
-    throw new ManagementError('账户状态已改变，请在当前账户中重新操作', 409);
-  }
-  return persistAuthSession({
-    ...session,
-    tokenType: 'Bearer',
-    expiresIn: Math.max(0, (Date.parse(session.expiresAt) - Date.now()) / 1000),
-    user: { ...session.user, ...user, displayName: user.displayName ?? undefined } as AuthUser,
-  });
 }
 
 /** 将任意请求异常转换为本地可理解的反馈，网络错误不会假装成功。 */

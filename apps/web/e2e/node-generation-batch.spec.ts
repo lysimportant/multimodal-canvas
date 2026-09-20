@@ -113,11 +113,9 @@ async function installFixture(
     localStorage.setItem(
       'multimodal-canvas:auth-session',
       JSON.stringify({
-        accessToken: 'synthetic-generation-batch',
-        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
         user: {
           id: 'batch-user',
-          email: 'batch@example.test',
+          displayName: '批量验收用户',
           role: 'admin',
           createdAt: '2026-09-18T00:00:00.000Z',
         },
@@ -127,6 +125,16 @@ async function installFixture(
   await page.route('**/v1/**', async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
+    if (request.method() === 'GET' && path === '/v1/auth/me')
+      return json(route, {
+        user: {
+          id: 'batch-user',
+          displayName: '批量验收用户',
+          role: 'admin',
+          createdAt: project.createdAt,
+        },
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
     if (path === '/v1/prompt-skills') return json(route, { skills: [] });
     if (path.endsWith('/events'))
       return route.fulfill({ contentType: 'text/event-stream', body: ': ready\n\n' });
@@ -208,26 +216,29 @@ async function installFixture(
         body: asset?.mediaType === 'video' ? video : poster,
       });
     }
-    if (path === '/v1/settings/ai/credentials')
+    if (path === '/v1/account/newapi')
       return json(route, {
-        credentials: [
-          {
-            id: 'batch-credential',
-            version: 1,
-            baseUrl: 'https://mock.example.test',
-            keyFingerprint: 'synthetic-batch',
-            active: true,
-            createdAt: project.createdAt,
-            defaultModels: { image: 'mock-image', video: 'mock-video' },
-          },
-        ],
+        account: {
+          issuer: 'https://newapi.example.test',
+          externalUserId: 'batch-external-user',
+          displayName: '批量验收用户',
+          status: 'active',
+          groups: [
+            {
+              group: 'alpha',
+              credentialId: 'batch-credential',
+              status: 'ready',
+              modelCount: 2,
+            },
+          ],
+          links: {},
+        },
       });
     if (path === '/v1/settings/ai')
       return json(route, {
         settings: {
-          baseUrl: 'https://mock.example.test',
-          configured: true,
           defaultModels: { image: 'mock-image', video: 'mock-video' },
+          timeoutMs: 900_000,
         },
       });
     if (path === '/v1/models')
@@ -236,7 +247,9 @@ async function installFixture(
           id: `mock-${type}`,
           name: `Mock ${type}`,
           mediaTypes: [type],
+          group: 'alpha',
           credentialId: 'batch-credential',
+          available: true,
         })),
       });
     errors.push(`未声明的 Mock 接口：${request.method()} ${path}`);
@@ -624,9 +637,9 @@ test('设置默认数量仅作用于新建节点，已有节点仍为一份', as
   await page.setViewportSize({ width: 1600, height: 1000 });
   const fixture = await installFixture(page);
   await page.getByRole('button', { name: '打开设置', exact: true }).click();
-  const settings = page.getByRole('dialog', { name: 'AI 连接', exact: true });
+  const settings = page.getByRole('dialog', { name: 'New API 与模型', exact: true });
   await settings.getByRole('tab', { name: '节点默认', exact: true }).click();
-  await settings.getByRole('spinbutton', { name: '默认生成数量' }).fill('3');
+  await settings.getByRole('spinbutton', { name: '新节点默认生成数量' }).fill('3');
   await page.screenshot({ path: testInfo.outputPath('default-generation-count.png') });
   await page.keyboard.press('Escape');
   await page.locator('.react-flow__node[data-id="generation-root"]').click();

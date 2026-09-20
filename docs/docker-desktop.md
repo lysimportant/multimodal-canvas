@@ -19,29 +19,15 @@
 
 Docker CLI 不在 `PATH` 时，脚本会检查 Docker Desktop 的标准全机和当前用户安装目录。引擎未就绪时，Start/Build/Https 可以隐藏启动已安装的 Docker Desktop，并最多等待约 180 秒；仍未就绪则显式失败。引擎就绪后，Compose 服务健康等待上限是 180 秒，首次镜像下载和构建耗时另计。尚未完成 Desktop 首次引导的机器，可能需要先手动打开 Desktop 处理提示。
 
-## 管理员首次引导
+## New API 登录与管理员
 
-邮件服务配置由 Compose 注入 API。Windows 本地运行默认读取项目根目录的 `email.txt`（dotenv 格式），文件不会复制进镜像或提交 Git；如需放在仓库外，可在启动前设置 `MC_EMAIL_FILE` 为私有配置文件的绝对路径。修改邮件配置后必须重新构建并启动 API：
+启动前按 [.env.compose.example](../.env.compose.example) 配置 `MC_NEW_API_ISSUER`、`MC_NEW_API_CLIENT_ID`、`MC_NEW_API_INSTANCE_ID`，并在 New API 配置相同客户端、实例与精确回调地址。回调使用当前浏览器入口的 `/v1/auth/newapi/callback`；必须先部署支持 Canvas Account 的 New API 版本。仅配旧网关地址无法完成登录。
 
-```powershell
-$env:MC_EMAIL_FILE = 'C:\private\multimodal-email.env'
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Action Build
-```
+用户点击“使用 New API 登录”，授权后自动建立内部资源身份，并同步本人全部开放分组的 Key；原始分组精确等于“神秘分组”时排除，开放的 auto 同样接入。画布只显示分组模型，Key 加密保存在服务端。账号密码、注册和账单由 New API 管理。
 
-如果使用根目录 `email.txt`，直接运行 `Docker-Start.cmd` 即可读取；已有容器不会自动重新加载文件，配置变更后请使用 `-Action Build`。
+需要后台资源管理时，将 New API 不可变用户 ID 加入 `MC_NEW_API_ADMIN_USER_IDS`，重新创建 API 并重新登录。可用 `-Action Admin -NewApiUserId '123'` 同步已经登录且被配置允许的身份；该命令不能绕过部署允许列表。昵称和邮箱不用于认领旧账号。
 
-1. 首次打开网页直接进入主页，可匿名浏览主页和项目工作台。点击“新建项目”时提示登录，可切换到注册；认证成功后继续填写项目名称，关闭提示则返回浏览。私有项目和设置仍要求登录。注册保持默认普通用户 `USER` 权限，不会因“第一个注册”而自动成为管理员。
-2. 在项目根目录打开 PowerShell，明确指定刚才注册的邮箱。下面的邮箱只是示例，必须替换为你自己的已注册账户：
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Action Admin -Email 'user@example.com'
-```
-
-3. 命令成功后，退出网页账户并重新登录，使用原来的密码。
-
-Admin 通过 `docker compose exec -T api node docker/run.mjs admin <email>` 调用容器内管理入口，只提升明确指定、已经存在的账户。它不会重置密码、创建账户、输出令牌或密码；账户不存在或执行失败时返回错误。API 必须已经运行，Admin 不会代替 Start 启动 Desktop 或应用。日常双击 Start 不会执行管理员提权，不需要重复引导。
-
-不要把不存在的默认账号当作管理员，也不要为了绕过登录而关闭认证。对本机 Docker 的控制权可用于管理员提权，应按管理员权限保护本机与 Docker Desktop 的访问。
+旧 Canvas 数据切换必须先完成[账号接入计划](newapi-account-integration-plan.md)中的清理预览、备份恢复与队列隔离。新授权任务使用独立 `MC_RUN_QUEUE_NAME`，旧 Worker 不能领取新队列。
 
 ## 日常使用
 
@@ -107,10 +93,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Ac
 
 ### 可选环境变量
 
-| 当前终端环境变量    | 默认值              | 含义                                                                              |
-| ------------------- | ------------------- | --------------------------------------------------------------------------------- |
-| `MC_HTTP_PORT`      | `8080`              | 仅在本机 `127.0.0.1` 发布的 Web 入口端口。                                        |
-| `MC_HTTPS_PORT`     | `8443`              | 启用 local-https 时的本机 HTTPS 端口；与 HTTP 端口不同，仅绑定 `127.0.0.1`。      |
+| 当前终端环境变量    | 默认值            | 含义                                                                                                 |
+| ------------------- | ----------------- | ---------------------------------------------------------------------------------------------------- |
+| `MC_HTTP_PORT`      | `8080`            | 仅在本机 `127.0.0.1` 发布的 Web 入口端口。                                                           |
+| `MC_HTTPS_PORT`     | `8443`            | 启用 local-https 时的本机 HTTPS 端口；与 HTTP 端口不同，仅绑定 `127.0.0.1`。                         |
 | `MC_VIDEO_CONTRACT` | `newapi-video-v1` | 视频供应商协议，可选 `newapi-video-v1`、`newapi-unified-v1` 或 `legacy-v1`；应与实际供应商契约匹配。 |
 
 仅在供应商明确使用 legacy-v1 协议时，按实际配置启动：
@@ -130,7 +116,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Ac
 
 这是**新的独立数据环境**：不会自动导入旧 `.data`、开发数据库、测试卷或根目录 `.env`，旧环境中的账户、项目、资源和供应商配置不会自动出现在此处。需要旧数据时应先制定并验证迁移与备份方案，不要直接复用旧卷或把生产迁移指向开发数据库。
 
-完成登录后，在网页的 AI/供应商设置中填写自己的 Provider API key、地址和已确认支持的模型。不向源码、Compose、CMD、文档或日志粘贴真实密钥。启动脚本不会调用付费 API；首次启动与登录不代表已配置供应商，也不代表真实生成任务已验收。点击真实生成可能产生费用，结果不明时应先查询已有任务，不重复创建。
+完成 New API 登录后，在画布选择所属分组和已确认支持的模型。不向源码、Compose、CMD、文档或日志粘贴真实密钥。启动脚本不会调用付费 API；首次启动与登录不代表真实供应商生成已验收。点击真实生成可能产生费用，结果不明时应先查询已有任务，不重复创建。
 
 本机回环地址不能被外部供应商直接访问。真实供应商回调、模型权限、账户余额、外网连通性及供应商端取消/签名/幂等契约，不由本地启动成功保障；未确认项仍以 [TODO-SERVER.md](../TODO-SERVER.md) 和相关供应商验收文档为准。
 

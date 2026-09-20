@@ -1,32 +1,6 @@
-/** 邮件验证响应不包含验证码，accepted 仅表示 SMTP 接收。 */
-export const verificationResponseSchema = {
-  type: 'object',
-  required: ['verificationRequired', 'email', 'delivery'],
-  properties: {
-    verificationRequired: { type: 'boolean', const: true },
-    email: { type: 'string', format: 'email' },
-    delivery: {
-      type: 'object',
-      required: ['id', 'status'],
-      properties: {
-        id: { type: 'string', format: 'uuid' },
-        status: { type: 'string', enum: ['pending', 'accepted', 'failed'] },
-      },
-    },
-  },
-} as const;
-
 /** 为后台和账户接口生成完整路由索引；业务 JSON 字段白名单由相同文档说明。 */
-export function accountOpenApiPaths(user: unknown, token: unknown, asset: unknown) {
+export function accountOpenApiPaths(user: unknown, asset: unknown) {
   const string = { type: 'string' };
-  const email = { type: 'string', format: 'email' };
-  const password = {
-    type: 'string',
-    minLength: 8,
-    maxLength: 512,
-    writeOnly: true,
-    description: '至少 8 个字符且 UTF-8 编码不超过 512 字节',
-  };
   const id = { name: 'id', in: 'path', required: true, schema: { type: 'string', minLength: 1 } };
   const paging = [
     { name: 'page', in: 'query', schema: { type: 'integer', minimum: 1, default: 1 } },
@@ -36,15 +10,6 @@ export function accountOpenApiPaths(user: unknown, token: unknown, asset: unknow
       schema: { type: 'integer', minimum: 1, maximum: 100, default: 30 },
     },
   ];
-  const profile = {
-    displayName: { type: 'string', minLength: 1, maxLength: 120 },
-    bio: { type: 'string', maxLength: 500 },
-    avatarUrl: {
-      type: 'string',
-      maxLength: 2048,
-      description: 'HTTPS 头像地址、已上传资源路径或空字符串',
-    },
-  };
   const baseAsset = asset as { required?: string[]; properties?: Record<string, unknown> };
   const managementAsset = {
     ...baseAsset,
@@ -194,111 +159,74 @@ export function accountOpenApiPaths(user: unknown, token: unknown, asset: unknow
     },
   };
   return {
-    '/v1/admin/bootstrap': {
-      get: operation(
-        '查询永久初始化状态；已有管理员不会再次开放',
-        object(
+    '/v1/auth/newapi/start': {
+      get: {
+        summary: '开始五分钟的一次性 New API 授权',
+        tags: ['auth'],
+        security: [],
+        parameters: [
           {
-            initialized: { type: 'boolean' },
-            mailConfigured: { type: 'boolean' },
-            setupTokenRequired: { type: 'boolean' },
+            name: 'next',
+            in: 'query',
+            schema: { type: 'string', maxLength: 2048 },
+            description: '登录后的站内路径，服务端白名单过滤',
           },
-          ['initialized', 'mailConfigured', 'setupTokenRequired'],
-        ),
-        '200',
-        true,
+        ],
+        responses: {
+          '302': { description: '设置登录事务 Cookie 并跳转固定 New API 授权站点' },
+          '503': { description: '授权服务不可用' },
+        },
+      },
+    },
+    '/v1/auth/newapi/callback': {
+      get: {
+        summary: '消费浏览器绑定的 state 和 PKCE 授权码',
+        tags: ['auth'],
+        security: [],
+        parameters: ['state', 'code'].map((name) => ({
+          name,
+          in: 'query',
+          required: true,
+          schema: string,
+        })),
+        responses: {
+          '302': { description: '设置 HttpOnly 会话并跳转站内路径，不返回长期 Key' },
+          '400': { description: '取消、过期、重放或浏览器绑定不匹配' },
+        },
+      },
+    },
+    '/v1/account/newapi': { get: operation('读取本人授权和全部纳入分组状态；不含 Key 或尾号') },
+    '/v1/account/newapi/sync': {
+      post: operation('用原操作身份同步本人全部纳入组，单组失败不影响成功组'),
+    },
+    '/v1/account/newapi/revoke': {
+      post: operation(
+        '持久撤销本地会话和执行授权，远端故障保留撤销恢复意图',
+        object({ revoked: { type: 'boolean', const: true } }, ['revoked']),
       ),
     },
-    '/v1/admin/bootstrap/request': {
-      post: {
-        ...operation(
-          '管理员首次初始化发送邮箱验证码；无部署凭据仅允许回环来源',
-          verificationResponseSchema,
-          '202',
-          true,
-        ),
-        requestBody: body(
+    '/v1/admin/resource-owners/{id}': {
+      parameters: [id],
+      get: operation(
+        '管理员读取资源主人与项目统计',
+        object(
           {
-            email,
-            password,
-            displayName: profile.displayName,
-            setupToken: { type: 'string', writeOnly: true, maxLength: 1024 },
+            user,
+            projects: { type: 'array', items: { type: 'object' } },
+            stats: { type: 'object' },
           },
-          ['email', 'password'],
+          ['user', 'projects', 'stats'],
         ),
-      },
-    },
-    '/v1/auth/verify': {
-      post: {
-        ...operation('原子消费验证码并签发会话；email 用途要求本人登录', token, '200', true),
-        requestBody: body(
-          {
-            email,
-            code: { type: 'string', pattern: '^\\d{6}$', writeOnly: true },
-            purpose: {
-              type: 'string',
-              enum: ['bootstrap', 'register', 'invite', 'email', 'reset'],
-            },
-            password,
-          },
-          ['email', 'code', 'purpose'],
-        ),
-      },
-    },
-    '/v1/auth/verification/resend': {
-      post: {
-        ...operation(
-          '60 秒后重发注册、邀请或初始化验证码',
-          verificationResponseSchema,
-          '202',
-          true,
-        ),
-        requestBody: body(
-          { email, purpose: { type: 'string', enum: ['bootstrap', 'register', 'invite'] } },
-          ['email', 'purpose'],
-        ),
-      },
-    },
-    '/v1/auth/password/reset/request': {
-      post: {
-        ...operation(
-          '申请邮箱密码找回；邮箱符合条件时发送验证码，账户不存在、不可用或处于冷却期也统一受理',
-          object({ accepted: { type: 'boolean', const: true } }, ['accepted']),
-          '202',
-          true,
-        ),
-        description:
-          '仅提交邮箱。验证码十分钟内有效、最多五次验证、六十秒内不重复发信；通过 /v1/auth/verify 提交 reset 用途、验证码和新密码后才修改密码并撤销旧会话。邮件配置和投递失败返回 503，超出共享认证限流返回 429。',
-        requestBody: body({ email }, ['email']),
-      },
+      ),
     },
     '/v1/auth/refresh': {
-      post: operation('有效会话续期；七天绝对期限不延长，业务请求不自动重放', token),
+      post: operation(
+        '上游复核后轮换 HttpOnly Cookie；绝对期限不延长，业务请求不重放',
+        object({ user, expiresAt: { type: 'string', format: 'date-time' } }, ['user', 'expiresAt']),
+      ),
     },
     '/v1/account/profile': {
       get: operation('查看个人资料', object({ user }, ['user'])),
-      patch: {
-        ...operation('保存个人资料', object({ user }, ['user'])),
-        requestBody: body(profile),
-      },
-    },
-    '/v1/account/password': {
-      post: {
-        ...operation('修改密码并撤销旧会话，返回新会话', token),
-        requestBody: body(
-          { currentPassword: { ...string, writeOnly: true }, newPassword: password },
-          ['currentPassword', 'newPassword'],
-        ),
-      },
-    },
-    '/v1/account/email/request': {
-      post: {
-        ...operation('申请邮箱绑定，验证完成前保留旧邮箱', verificationResponseSchema, '202'),
-        requestBody: body({ email, currentPassword: { ...string, writeOnly: true } }, [
-          'email',
-          'currentPassword',
-        ]),
-      },
     },
     '/v1/account/sessions': {
       get: operation(
@@ -335,67 +263,6 @@ export function accountOpenApiPaths(user: unknown, token: unknown, asset: unknow
         '保留当前会话并退出其他会话',
         object({ revokedSessions: { type: 'integer' } }, ['revokedSessions']),
       ),
-    },
-    '/v1/admin/users': {
-      get: {
-        ...operation('管理员搜索和筛选用户', page('users', user)),
-        parameters: [
-          ...paging,
-          ...['query', 'status'].map((name) => ({ name, in: 'query', schema: string })),
-        ],
-      },
-      post: {
-        ...operation(
-          '管理员创建待激活普通用户并发送邮件',
-          { allOf: [verificationResponseSchema, { type: 'object', properties: { user } }] },
-          '202',
-        ),
-        requestBody: body({ email, displayName: profile.displayName, bio: profile.bio }, ['email']),
-      },
-    },
-    '/v1/admin/users/{id}': {
-      parameters: [id],
-      get: operation(
-        '管理员查看用户资料、项目和用量',
-        object(
-          {
-            user,
-            projects: { type: 'array', items: { type: 'object' } },
-            stats: object({
-              resourceCount: { type: 'integer' },
-              storageBytes: { type: 'integer' },
-              runCount: { type: 'integer' },
-            }),
-          },
-          ['user', 'projects', 'stats'],
-        ),
-      ),
-      patch: {
-        ...operation(
-          '管理员编辑资料及禁用恢复；禁止禁用最后一位管理员',
-          object({ user }, ['user']),
-        ),
-        requestBody: body({ ...profile, status: { type: 'string', enum: ['active', 'disabled'] } }),
-      },
-    },
-    '/v1/admin/users/{id}/invite': {
-      parameters: [id],
-      post: operation('管理员重发用户激活邀请', verificationResponseSchema, '202'),
-    },
-    '/v1/admin/users/{id}/password-reset': {
-      parameters: [id],
-      post: operation('管理员发起邮件密码重置', verificationResponseSchema, '202'),
-    },
-    '/v1/admin/users/{id}/email': {
-      parameters: [id],
-      post: {
-        ...operation(
-          '管理员申请用户邮箱验证，不能跳过所有权验证',
-          verificationResponseSchema,
-          '202',
-        ),
-        requestBody: body({ email, currentPassword: { ...string, writeOnly: true } }, ['email']),
-      },
     },
     '/v1/admin/resource-groups': {
       get: operation(
@@ -456,7 +323,7 @@ export function accountOpenApiPaths(user: unknown, token: unknown, asset: unknow
         ],
       },
     },
-    '/v1/admin/overview': { get: operation('管理员查看真实账户、资源、运行及邮件统计') },
-    '/v1/admin/system': { get: operation('管理员查看存储、队列和脱敏 SMTP 配置与投递状态') },
+    '/v1/admin/overview': { get: operation('管理员查看资源、运行与身份统计') },
+    '/v1/admin/system': { get: operation('管理员查看存储、队列与服务状态') },
   };
 }

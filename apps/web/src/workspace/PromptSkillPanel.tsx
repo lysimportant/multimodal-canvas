@@ -10,7 +10,6 @@ import { Check, LoaderCircle, RotateCw, Settings2, Square, WandSparkles, X } fro
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 
 import { readStoredAuthSession, subscribeAuthSession } from '../auth-client';
-import { QuoteCancelledError } from '../marketplace/quote-client';
 import {
   clearPendingPromptOptimization,
   fetchPromptOptimization,
@@ -123,15 +122,9 @@ function PromptSkillPanelSession({
     ...textModels.map((model) => ({
       value: modelIdentity(model),
       label: model.name,
-      ...(model.connection
-        ? {
-            description: model.connection.label,
-            trailingLabel: model.connection.label.split(' · ').at(-1),
-          }
-        : {}),
-      groupLabel:
-        model.connection?.label ??
-        (model.platformModelId ? '平台文字模型' : (model.credentialLabel ?? '文字模型')),
+      description: model.group ?? model.credentialLabel,
+      trailingLabel: model.group ?? model.credentialLabel,
+      groupLabel: model.group ?? model.credentialLabel ?? '文字模型',
       disabled: Boolean(model.availability && model.availability !== 'available'),
     })),
   ];
@@ -203,7 +196,6 @@ function PromptSkillPanelSession({
             model: {
               modelAlias: result.modelAlias,
               credentialId: result.credentialId,
-              platformModelId: result.platformModelId,
             },
             result,
             draft: result.status === 'succeeded' ? result.promptDocument : undefined,
@@ -222,7 +214,6 @@ function PromptSkillPanelSession({
       } catch (cause) {
         if (controller.signal.aborted) return;
         if (
-          cause instanceof QuoteCancelledError ||
           cause instanceof PromptOptimizationResultError ||
           (!current.runId &&
             cause instanceof PromptOptimizationRequestError &&
@@ -303,7 +294,6 @@ function PromptSkillPanelSession({
           ? {
               modelAlias: selectedModel.id,
               credentialId: selectedModel.credentialId,
-              platformModelId: selectedModel.platformModelId,
             }
           : {}),
       };
@@ -552,11 +542,7 @@ function PromptSkillPanelSession({
 
 /** 模型与凭据共同构成选项身份，同名模型不会串连接。 */
 function modelIdentity(model: ModelEntry): string {
-  return JSON.stringify(
-    model.platformModelId
-      ? ['platform', model.platformModelId]
-      : [model.id, model.credentialId ?? null],
-  );
+  return JSON.stringify([model.id, model.credentialId ?? null]);
 }
 
 /** 比较冻结原文与当前输入；模型选择不改变原始文档身份。 */

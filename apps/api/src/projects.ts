@@ -466,10 +466,7 @@ function cloneModelDefaults(defaults: ProjectModelDefaults): ProjectModelDefault
   return Object.fromEntries(
     Object.entries(defaults).map(([mediaType, value]) => {
       const selection = normalizeSelection(value);
-      return [
-        mediaType,
-        selection.credentialId || selection.platformModelId ? selection : selection.modelAlias,
-      ];
+      return [mediaType, selection.credentialId ? selection : selection.modelAlias];
     }),
   ) as ProjectModelDefaults;
 }
@@ -479,7 +476,6 @@ function normalizeSelection(value: string | ModelSelection): ModelSelection {
     ? { modelAlias: value.trim() }
     : {
         modelAlias: value.modelAlias.trim(),
-        ...(value.platformModelId ? { platformModelId: value.platformModelId } : {}),
         ...(value.credentialId ? { credentialId: value.credentialId } : {}),
       };
 }
@@ -509,21 +505,18 @@ function mapProjectModelDefaults(
     mediaType: string;
     modelAlias: string;
     credentialId?: string | null;
-    platformModelId?: string | null;
   }>,
 ): ProjectModelDefaults {
   const defaults: ProjectModelDefaults = {};
   for (const row of rows) {
     const mediaType = row.mediaType.toLowerCase() as MediaType;
     if (['text', 'image', 'audio', 'video'].includes(mediaType) && row.modelAlias.trim()) {
-      defaults[mediaType] =
-        row.credentialId || row.platformModelId
-          ? {
-              modelAlias: row.modelAlias,
-              ...(row.credentialId ? { credentialId: row.credentialId } : {}),
-              ...(row.platformModelId ? { platformModelId: row.platformModelId } : {}),
-            }
-          : row.modelAlias;
+      defaults[mediaType] = row.credentialId
+        ? {
+            modelAlias: row.modelAlias,
+            ...(row.credentialId ? { credentialId: row.credentialId } : {}),
+          }
+        : row.modelAlias;
     }
   }
   return defaults;
@@ -832,7 +825,7 @@ export class PrismaProjectStore implements ProjectStore {
     const rows = await this.prisma.projectModelDefault.findMany({
       where: { projectId: id },
       orderBy: { mediaType: 'asc' },
-      select: { mediaType: true, modelAlias: true, credentialId: true, platformModelId: true },
+      select: { mediaType: true, modelAlias: true, credentialId: true },
     });
     return mapProjectModelDefaults(rows);
   }
@@ -875,12 +868,10 @@ export class PrismaProjectStore implements ProjectStore {
             projectId: id,
             mediaType: prismaMediaType,
             modelAlias: selection.modelAlias,
-            platformModelId: selection.platformModelId ?? null,
             credentialId: selection.credentialId ?? null,
           },
           update: {
             modelAlias: selection.modelAlias,
-            platformModelId: selection.platformModelId ?? null,
             credentialId: selection.credentialId ?? null,
           },
         });
@@ -893,7 +884,7 @@ export class PrismaProjectStore implements ProjectStore {
       const rows = await transaction.projectModelDefault.findMany({
         where: { projectId: id },
         orderBy: { mediaType: 'asc' },
-        select: { mediaType: true, modelAlias: true, credentialId: true, platformModelId: true },
+        select: { mediaType: true, modelAlias: true, credentialId: true },
       });
       return mapProjectModelDefaults(rows);
     });
@@ -1014,7 +1005,6 @@ const nodeDataFields = [
   'parameters',
   'inferenceStrength',
   'modelAlias',
-  'platformModelId',
   'credentialId',
   'assetId',
   'contentUrl',

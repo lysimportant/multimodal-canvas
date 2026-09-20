@@ -49,71 +49,51 @@ describe('Worker 持久取消意图', () => {
 });
 
 describe('Worker 节点超时设置', () => {
-  it('从当前设置读取超时并兼容旧格式', async () => {
-    const findFirst = vi
-      .fn()
-      .mockResolvedValueOnce({ defaultModels: { text: 'old-model' } })
-      .mockResolvedValueOnce({ defaultModels: { __timeoutMs: 1_800_000 } });
-    const persistence = new WorkerPrismaRunPersistence({ aiCredential: { findFirst } } as never);
-    await expect(persistence.getProviderTimeoutMs()).resolves.toBeUndefined();
-    await expect(persistence.getProviderTimeoutMs()).resolves.toBe(1_800_000);
-    expect(findFirst).toHaveBeenLastCalledWith({
-      // 独立凭据行按构造是最新行且 defaultModels 为 NULL，必须排除在平台设置之外。
-      where: {
-        projectId: null,
-        label: { notIn: ['independent', 'independent-deleted'] },
-      },
-      orderBy: [{ updatedAt: 'desc' }, { version: 'desc' }],
-      select: { defaultModels: true },
+  it('仅按冻结凭据读取所属账号偏好，缺少引用不读取任何账号', async () => {
+    const findUnique = vi.fn(async ({ where }: { where: { credentialId: string } }) => {
+      if (where.credentialId === 'credential-a')
+        return { identity: { preferences: { timeoutMs: 1_800_000 } } };
+      if (where.credentialId === 'credential-b')
+        return { identity: { preferences: { timeoutMs: 30_000 } } };
+      return null;
     });
+    const persistence = new WorkerPrismaRunPersistence({
+      newApiGroupBinding: { findUnique },
+    } as never);
+    await expect(persistence.getProviderTimeoutMs({})).resolves.toBeUndefined();
+    expect(findUnique).not.toHaveBeenCalled();
+    await expect(persistence.getProviderTimeoutMs({ credentialId: 'credential-a' })).resolves.toBe(
+      1_800_000,
+    );
+    await expect(persistence.getProviderTimeoutMs({ credentialId: 'credential-b' })).resolves.toBe(
+      30_000,
+    );
+    await expect(
+      persistence.getProviderTimeoutMs({ credentialId: 'missing' }),
+    ).resolves.toBeUndefined();
   });
 
-  it('最新的独立凭据行不会让平台超时退回默认值', async () => {
-    // 内存行集按持久化行的排序与过滤语义回答查询：先排除独立凭据，再取最新行。
-    const rows = [
-      {
-        label: 'platform',
-        version: 3,
-        updatedAt: new Date('2026-09-16T10:00:00.000Z'),
-        defaultModels: { __timeoutMs: 1_800_000 },
-      },
-      {
-        label: 'independent',
-        version: 9,
-        updatedAt: new Date('2026-09-17T10:00:00.000Z'),
-        defaultModels: null,
-      },
-      {
-        label: 'independent-deleted',
-        version: 10,
-        updatedAt: new Date('2026-09-17T11:00:00.000Z'),
-        defaultModels: null,
-      },
-    ];
-    const findFirst = vi.fn(async (args: { where: { label?: { notIn?: string[] } } }) => {
-      const excluded = args.where.label?.notIn ?? [];
-      return (
-        rows
-          .filter((row) => !excluded.includes(row.label))
-          .sort(
-            (left, right) =>
-              right.updatedAt.getTime() - left.updatedAt.getTime() || right.version - left.version,
-          )[0] ?? null
-      );
-    });
-    const persistence = new WorkerPrismaRunPersistence({ aiCredential: { findFirst } } as never);
-
-    await expect(persistence.getProviderTimeoutMs()).resolves.toBe(1_800_000);
-    expect(findFirst).toHaveBeenCalledTimes(1);
+  it('未配置个人超时不继承其他账号或旧平台设置', async () => {
+    const findUnique = vi
+      .fn()
+      .mockResolvedValue({ identity: { preferences: { defaultModels: {} } } });
+    const persistence = new WorkerPrismaRunPersistence({
+      newApiGroupBinding: { findUnique },
+    } as never);
+    await expect(
+      persistence.getProviderTimeoutMs({ credentialId: 'credential-a' }),
+    ).resolves.toBeUndefined();
   });
 
   it.each([0, 999, 2_147_483_648, '1800000'])('拒绝非法持久化超时 %s', async (timeoutMs) => {
     const persistence = new WorkerPrismaRunPersistence({
-      aiCredential: {
-        findFirst: vi.fn().mockResolvedValue({ defaultModels: { __timeoutMs: timeoutMs } }),
+      newApiGroupBinding: {
+        findUnique: vi.fn().mockResolvedValue({ identity: { preferences: { timeoutMs } } }),
       },
     } as never);
-    await expect(persistence.getProviderTimeoutMs()).rejects.toThrow('Provider timeout');
+    await expect(
+      persistence.getProviderTimeoutMs({ credentialId: 'credential-a' }),
+    ).rejects.toThrow('Provider timeout');
   });
 });
 
@@ -1045,6 +1025,57 @@ scratchDescribe('WorkerPrismaRunPersistence against the scratch database', () =>
   afterAll(async () => {
     await prisma.project.delete({ where: { id: projectId } });
     await prisma.$disconnect();
+  });
+
+  it('从真实数据库读取凭据所属用户的个人超时', async () => {
+    const ids = [randomUUID(), randomUUID()];
+    const credentialIds: string[] = [];
+    try {
+      for (const [index, id] of ids.entries()) {
+        const user = await prisma.user.create({ data: { id, status: 'active' } });
+        const identity = await prisma.newApiIdentity.create({
+          data: {
+            userId: user.id,
+            issuer: 'https://worker.example.test',
+            externalUserId: id,
+            instanceId: 'worker-timeout-test',
+            grantId: randomUUID(),
+            encryptedGrant: 'synthetic-unused-grant',
+            expiresAt: new Date(Date.now() + 3600_000),
+            preferences: { timeoutMs: index === 0 ? 30_000 : 1_800_000 },
+          },
+        });
+        const credential = await prisma.aiCredential.create({
+          data: {
+            ownerId: user.id,
+            label: 'Canvas default',
+            baseUrl: 'https://worker.example.test/v1',
+            encryptedApiKey: 'synthetic-unused-key',
+            keyFingerprint: 'synthetic',
+          },
+        });
+        credentialIds.push(credential.id);
+        await prisma.newApiGroupBinding.create({
+          data: {
+            identityId: identity.id,
+            group: 'default',
+            operationId: randomUUID(),
+            credentialId: credential.id,
+          },
+        });
+      }
+      await expect(
+        persistence.getProviderTimeoutMs({ credentialId: credentialIds[0] }),
+      ).resolves.toBe(30_000);
+      await expect(
+        persistence.getProviderTimeoutMs({ credentialId: credentialIds[1] }),
+      ).resolves.toBe(1_800_000);
+    } finally {
+      await prisma.newApiGroupBinding.deleteMany({ where: { identity: { userId: { in: ids } } } });
+      await prisma.aiCredential.deleteMany({ where: { ownerId: { in: ids } } });
+      await prisma.newApiIdentity.deleteMany({ where: { userId: { in: ids } } });
+      await prisma.user.deleteMany({ where: { id: { in: ids } } });
+    }
   });
 
   it('按身份键落库请求文本并在重放时保持既有状态', async () => {

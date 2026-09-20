@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import type { NewApiProviderRequest } from '@multimodal-canvas/providers';
-import { buildApp } from '../app';
+import { buildApp } from './test-app';
 import { PrismaAssetStore, S3BlobStore } from '../assets';
 import { PrismaProjectStore } from '../projects';
 import { PrismaRunPersistence } from '../run-persistence';

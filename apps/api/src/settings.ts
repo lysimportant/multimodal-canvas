@@ -1,40 +1,28 @@
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { type MediaType, type ModelSelection } from '@multimodal-canvas/domain';
 
-import {
-  CredentialEncryptionKeyring,
-  createCredentialEncryptionKeyringFromEnvironment,
-} from '@multimodal-canvas/credential-crypto';
-import { mediaTypes, type MediaType, type ModelSelection } from '@multimodal-canvas/domain';
-import { sanitizeExceptionForObservability } from '@multimodal-canvas/observability';
-import { normalizeNewApiBaseUrl } from '@multimodal-canvas/providers';
-import { Prisma, PrismaClient, type ModelCatalog } from '@prisma/client';
-
+/** 当前用户的模型偏好与 Provider 请求超时。 */
 export type AiSettings = {
-  baseUrl: string;
   configured: boolean;
-  keyFingerprint?: string;
-  /** 安全尾号用于识别连接，不暴露完整 Key；不可读取时省略。 */
-  keySuffix?: string;
   defaultModels: Partial<Record<MediaType, string | ModelSelection>>;
   /** Provider 单次请求超时，单位毫秒。 */
   timeoutMs: number;
   updatedAt: string;
 };
 
+/** 可供当前用户选择的 New API 分组凭据摘要，不包含密钥材料。 */
 export type AiCredentialSummary = {
   id: string;
-  /** 管理员建立不可变绑定时使用的当前凭据修订号。 */
+  /** 管理关系当前绑定的不可变凭据修订号。 */
   version?: number;
-  baseUrl: string;
-  keyFingerprint: string;
-  /** 正常 Key 的末尾 8 位；短 Key 最多展示半长且不超过 4 位。 */
-  keySuffix?: string;
+  group: string;
+  status: string;
+  error?: string;
   updatedAt: string;
   active: boolean;
-  /** 该凭据自身已持久化的类型默认模型；从未配置过的凭据不返回该字段。 */
   defaultModels?: Partial<Record<MediaType, string | ModelSelection>>;
 };
 
+/** 规范化后的模型目录条目；同名模型可通过 credentialId/group 保持独立。 */
 export type ModelCatalogEntry = {
   id: string;
   name: string;
@@ -44,120 +32,70 @@ export type ModelCatalogEntry = {
   limitations?: Record<string, unknown>;
   price?: Record<string, unknown>;
   refreshedAt: string;
+  /** 本人 New API 原始分组与执行合同，同名模型跨组保持独立。 */
+  group?: string;
+  contract?: string;
+  available?: boolean;
+  unavailableReason?: string;
 };
 
-export type ModelCapabilityOverride = {
-  credentialId?: string | null;
-  modelAlias: string;
-  mediaType: MediaType;
-  capabilities: Record<string, unknown>;
-};
-
+/** 用户可修改的模型偏好；分组地址和 Key 只由 New API 授权同步。 */
 export type UpdateAiSettingsInput = {
-  baseUrl?: string;
-  apiKey?: string;
   defaultModels?: Partial<Record<MediaType, string | ModelSelection | null>>;
   /** Provider 单次请求超时，单位毫秒；范围为 1 秒至 Node 定时器上限。 */
   timeoutMs?: number;
-  /**
-   * 是否把本次 `baseUrl`/`apiKey` 设为全局活动连接，缺省 `true`，保持既有调用行为。
-   * 传 `false` 时只新增一条不激活的独立凭据并返回其 ID，活动连接的 ID、版本、地址、
-   * 指纹和类型默认模型保持不变；该模式不接受 `defaultModels` 和 `timeoutMs`。
-   */
-  activate?: boolean;
 };
 
-/** 单个凭据自身的类型默认模型；`null` 或空串清除该媒体类型。 */
-export type UpdateCredentialDefaultsInput = Partial<
-  Record<MediaType, string | ModelSelection | null>
->;
+/** 设置更新后的安全视图。 */
+export type AiSettingsUpdateResult = AiSettings;
 
-/** 设置更新结果；`createdCredentialId` 仅在 `activate: false` 新增独立凭据时返回。 */
-export type AiSettingsUpdateResult = AiSettings & {
-  createdCredentialId?: string;
-};
-
-export type AiSettingsStoreOptions = {
-  /**
-   * 服务端共享的凭据密钥环。未提供时保持单密钥兼容模式，适用于隔离测试和
-   * 不需要跨部署轮换的内存存储。
-   */
-  credentialKeyring?: CredentialEncryptionKeyring;
-  /** Injectable for tests; production uses the platform fetch implementation. */
-  fetchImpl?: typeof fetch;
-  /** Receives a sanitized server-side diagnostic without changing the client error contract. */
-  onTestConnectionError?: (error: Error) => void;
-  modelRequestTimeoutMs?: number;
-  /** Maximum attempts for connection tests and model refreshes. Capped at 10. */
-  modelRequestMaxAttempts?: number;
-  /** Delay between failed model requests, in milliseconds. */
-  modelRequestRetryDelayMs?: number;
-  /** Maximum bytes accepted from the upstream model catalog response. */
-  modelRequestMaxResponseBytes?: number;
-};
-
+/** 任务快照引用的不可变凭据 ID 与版本。 */
 export type CredentialReference = {
   credentialId?: string;
   credentialVersion?: number;
 };
 
-/** Internal-only provider credentials. Never expose this shape from an HTTP route. */
+/** 仅供服务端执行器读取的 Provider 凭据，禁止从 HTTP 响应返回。 */
 export type ProviderCredentials = {
   baseUrl: string;
   apiKey: string;
 };
 
-export type PersistedAiSettings = {
-  baseUrl: string;
-  encryptedApiKey: string;
-  /** 仅标识密文使用的部署密钥，不包含密钥材料。 */
-  encryptionKeyId?: string;
-  keyFingerprint: string;
-  defaultModels: Partial<Record<MediaType, string | ModelSelection>>;
-  /** 节点请求与视频轮询等待预算，单位毫秒；旧存储缺省使用 15 分钟。 */
-  timeoutMs?: number;
-  updatedAt: string;
-};
-
+/** API、运行解析和 Worker 共用的本人 New API 设置合同。 */
 export interface AiSettingsStoreLike {
+  /** 读取当前用户的模型偏好和超时。 */
   get(): AiSettings | Promise<AiSettings>;
+  /** 更新当前用户的模型偏好和超时。 */
   update(input: UpdateAiSettingsInput): AiSettingsUpdateResult | Promise<AiSettingsUpdateResult>;
+  /** 列出当前用户可用的分组凭据摘要。 */
   listCredentials(): AiCredentialSummary[] | Promise<AiCredentialSummary[]>;
-  /**
-   * 更新指定凭据自身的类型默认模型，不改变当前活动连接和该连接的版本。
-   * 活动凭据同时更新全局默认视图，其他凭据只写自己的记录。
-   *
-   * @param credentialId 目标凭据 ID，必须来自凭据摘要列表。
-   * @param defaults 按媒体类型的局部更新；`null` 或空串清除该类型。
-   * @returns 更新后的凭据摘要列表；目标不存在或已删除时返回 `undefined`。
-   */
-  updateCredentialDefaults(
-    credentialId: string,
-    defaults: UpdateCredentialDefaultsInput,
-  ): AiCredentialSummary[] | undefined | Promise<AiCredentialSummary[] | undefined>;
-  activateCredential(
-    credentialId: string,
-  ): AiSettings | undefined | Promise<AiSettings | undefined>;
-  removeCredentials(): AiSettings | Promise<AiSettings>;
-  /** 删除指定已保存连接；历史任务的精确版本仍可解析，目标不存在时返回 undefined。 */
-  removeCredential(credentialId: string): AiSettings | undefined | Promise<AiSettings | undefined>;
+  /** 判断凭据是否属于当前用户且可用于新任务。 */
   hasCredential(credentialId: string): boolean | Promise<boolean>;
-  testConnection(): Promise<{ ok: boolean; modelCount?: number; error?: string }>;
+  /** 从 New API 重新同步目录并返回指定范围的模型。 */
   refreshModels(credentialId?: string): Promise<ModelCatalogEntry[]>;
+  /** 按媒体类型和凭据范围读取模型目录。 */
   listModels(
     mediaType?: MediaType,
     credentialId?: string,
   ): ModelCatalogEntry[] | Promise<ModelCatalogEntry[]>;
+  /** 解析显式模型或当前用户默认模型。 */
   resolveModel(mediaType: MediaType, requestedAlias?: string): string | Promise<string>;
+  /** 冻结指定分组凭据的精确 ID 和版本。 */
   getCredentialReference(credentialId?: string): CredentialReference | Promise<CredentialReference>;
-  /** Used only by the server-side run executor; intentionally optional for test doubles. */
+  /** 按冻结引用读取服务端凭据；测试替身可省略。 */
   getProviderCredentials?(
     reference?: CredentialReference,
   ): ProviderCredentials | undefined | Promise<ProviderCredentials | undefined>;
+  /** 释放适配器持有的连接。 */
   close?(): Promise<void>;
 }
 
+/** 模型解析失败时返回稳定错误码。 */
 export class AiSettingsError extends Error {
+  /**
+   * @param code 对外稳定错误码。
+   * @param message 可直接返回给客户端的中文错误说明。
+   */
   constructor(
     public readonly code: 'model_unavailable',
     message: string,
@@ -166,41 +104,30 @@ export class AiSettingsError extends Error {
   }
 }
 
+/** 当前用户无权访问指定凭据时抛出的稳定错误。 */
 export class AiCredentialNotFoundError extends Error {
   readonly code = 'credential_not_found';
 
+  /** @param credentialId 未找到或不属于当前用户的凭据 ID。 */
   constructor(credentialId: string) {
     super(`AI credential ${credentialId} was not found`);
   }
 }
 
-const LEGACY_MODEL_CATALOG_KEY = '__legacy__';
-/**
- * 独立凭据的行标记：它只供指定类型默认或单个节点使用，不是全局活动连接。
- * 由于 PostgreSQL 存储把“最新行”当作活动连接，独立行必须显式排除在该选择之外。
- */
-const INDEPENDENT_CREDENTIAL_LABEL = 'independent';
-/**
- * 已删除的独立凭据行标记。它保留独立行“不参与活动选择”的语义，同时和普通删除
- * 一样不再出现在凭据列表中；若改写为 `deleted`，该行会重新进入活动行的候选范围。
- */
-const INDEPENDENT_DELETED_CREDENTIAL_LABEL = 'independent-deleted';
-/** 活动连接行（含撤销墓碑）的查询条件；独立凭据行不参与活动选择。 */
-const activeCredentialWhere = {
-  projectId: null,
-  label: {
-    notIn: [INDEPENDENT_CREDENTIAL_LABEL, INDEPENDENT_DELETED_CREDENTIAL_LABEL],
-  },
-};
-/** 活动连接行的稳定排序：更新时间优先，同毫秒用版本号决胜。 */
-const activeCredentialOrderBy = [{ updatedAt: 'desc' as const }, { version: 'desc' as const }];
-const DEFAULT_MODEL_RESPONSE_BYTES = 50 * 1024 * 1024;
-/** Provider 默认超时，单位毫秒；视频任务需要比短请求更长的等待窗口。 */
+/** Provider 默认超时，单位毫秒；视频任务需要较长等待窗口。 */
 export const DEFAULT_PROVIDER_TIMEOUT_MS = 900_000;
+
 /** Node.js 定时器支持的最大毫秒数，防止溢出后立即超时。 */
 const MAX_PROVIDER_TIMEOUT_MS = 2_147_483_647;
 
-/** 校验并规范化 Provider 超时，避免无效值关闭超时保护。 */
+/**
+ * 校验并规范化 Provider 超时。
+ *
+ * @param value 待校验值；未提供时使用 fallback。
+ * @param fallback 缺省超时，默认 15 分钟。
+ * @returns 1 秒至 Node 定时器上限内的整数毫秒值。
+ * @throws TypeError 值不是范围内安全整数时抛出。
+ */
 export function normalizeProviderTimeout(
   value: unknown,
   fallback = DEFAULT_PROVIDER_TIMEOUT_MS,
@@ -217,1821 +144,15 @@ export function normalizeProviderTimeout(
   return timeoutMs;
 }
 
-/** GPT-5.6 文本模型目前可用的推理强度值，顺序与界面展示顺序保持一致。 */
 const GPT_56_REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
-
-/** 上一版兼容回退使用的档位，读取旧缓存时需要迁移到当前顺序。 */
 const LEGACY_GPT_56_REASONING_EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
-
-/** GPT-5.6 系列文本模型的别名；兼容供应商增加的稳定后缀。 */
 const GPT_56_TEXT_MODEL_ALIAS_PATTERN = /^gpt-5\.6(?:$|[-_.])/;
 
-export class AiSettingsStore {
-  private baseUrl = '';
-  private encryptedApiKey = '';
-  /** 当前密文的持久化 key-id；旧格式未写入该字段时保留 undefined。 */
-  private encryptionKeyId?: string;
-  private keyFingerprint = '';
-  private readonly credentialKeyring: CredentialEncryptionKeyring;
-  private readonly fetchImpl?: typeof fetch;
-  private readonly onTestConnectionError?: (error: Error) => void;
-  private readonly modelRequestTimeoutMs: number;
-  private readonly modelRequestMaxAttempts: number;
-  private readonly modelRequestRetryDelayMs: number;
-  private readonly modelRequestMaxResponseBytes: number;
-  private defaultModels: Partial<Record<MediaType, ModelSelection>> = {};
-  /** 当前平台节点超时，单位毫秒；修改后供下一次执行读取。 */
-  private timeoutMs = DEFAULT_PROVIDER_TIMEOUT_MS;
-  private readonly modelCatalogs = new Map<string, Map<string, ModelCatalogEntry>>();
-  private readonly modelRefreshQueues = new Map<string, Promise<void>>();
-  private readonly capabilityOverrides = new Map<string, Record<string, unknown>>();
-  private credentialId?: string;
-  private credentialVersion?: number;
-  private readonly credentialHistory = new Map<string, ProviderCredentials>();
-  /** 删除的连接 ID 不得通过尚未完成的目录刷新重新变为可见。 */
-  private readonly deletedCredentialIds = new Set<string>();
-  private readonly credentialRecords = new Map<
-    string,
-    ProviderCredentials & {
-      id: string;
-      version: number;
-      keyFingerprint: string;
-      updatedAt: string;
-      /** 该凭据自身的类型默认模型；活动凭据与全局默认视图保持一致。 */
-      defaultModels: Partial<Record<MediaType, ModelSelection>>;
-      /** 独立连接可在没有全局活动 Key 时显式选择。 */
-      independent?: boolean;
-    }
-  >();
-  private updatedAt = new Date().toISOString();
-
-  constructor(
-    encryptionSecret = process.env.AI_CREDENTIAL_ENCRYPTION_KEY ?? randomBytes(32).toString('hex'),
-    options: AiSettingsStoreOptions = {},
-  ) {
-    this.credentialKeyring =
-      options.credentialKeyring ??
-      new CredentialEncryptionKeyring({ currentSecret: encryptionSecret });
-    // Resolve the global fetch at request time when no test/deployment
-    // override is supplied, so callers can still instrument or stub it.
-    this.fetchImpl = options.fetchImpl;
-    this.onTestConnectionError = options.onTestConnectionError;
-    this.modelRequestTimeoutMs = options.modelRequestTimeoutMs ?? 10_000;
-    this.modelRequestMaxAttempts = Math.min(
-      10,
-      Math.max(1, Math.floor(options.modelRequestMaxAttempts ?? 10)),
-    );
-    this.modelRequestRetryDelayMs = Math.max(
-      0,
-      Math.floor(options.modelRequestRetryDelayMs ?? 250),
-    );
-    this.modelRequestMaxResponseBytes = parsePositiveByteLimit(
-      options.modelRequestMaxResponseBytes ?? process.env.NEW_API_MAX_RESPONSE_BYTES,
-      DEFAULT_MODEL_RESPONSE_BYTES,
-    );
-    // Provider credentials and model defaults are entered through the Web
-    // settings flow. Environment variables intentionally do not bootstrap
-    // them, which prevents a stale .env value from overriding that state.
-  }
-
-  get(): AiSettings {
-    return {
-      baseUrl: this.baseUrl,
-      configured: Boolean(this.baseUrl && this.encryptedApiKey),
-      ...(this.keyFingerprint ? { keyFingerprint: this.keyFingerprint } : {}),
-      ...credentialSuffixSummary(this.credentialKeyring, {
-        encryptedApiKey: this.encryptedApiKey,
-        encryptionKeyId: this.encryptionKeyId,
-      }),
-      defaultModels: serializeDefaultModels(this.defaultModels),
-      timeoutMs: this.timeoutMs,
-      updatedAt: this.updatedAt,
-    };
-  }
-
-  getPersisted(): PersistedAiSettings {
-    return {
-      baseUrl: this.baseUrl,
-      encryptedApiKey: this.encryptedApiKey,
-      ...(this.encryptedApiKey && this.encryptionKeyId
-        ? { encryptionKeyId: this.encryptionKeyId }
-        : {}),
-      keyFingerprint: this.keyFingerprint,
-      defaultModels: serializeDefaultModels(this.defaultModels),
-      timeoutMs: this.timeoutMs,
-      updatedAt: this.updatedAt,
-    };
-  }
-
-  hydrate(persisted: PersistedAiSettings, reference?: CredentialReference) {
-    if (
-      this.credentialId &&
-      (this.credentialId !== reference?.credentialId ||
-        this.credentialVersion !== reference?.credentialVersion)
-    ) {
-      this.credentialHistory.delete(credentialKey(this.getCredentialReference()));
-      this.credentialRecords.delete(this.credentialId);
-    }
-    this.baseUrl = persisted.baseUrl;
-    this.encryptedApiKey = persisted.encryptedApiKey;
-    this.encryptionKeyId = persisted.encryptionKeyId;
-    this.keyFingerprint = persisted.keyFingerprint;
-    this.defaultModels = normalizeDefaultModels(persisted.defaultModels);
-    this.timeoutMs = normalizeProviderTimeout(persisted.timeoutMs);
-    this.updatedAt = persisted.updatedAt;
-    this.credentialId = reference?.credentialId;
-    this.credentialVersion = reference?.credentialVersion;
-    this.registerCredential(false);
-  }
-
-  update(input: UpdateAiSettingsInput): AiSettingsUpdateResult {
-    // 先校验可失败字段，防止同一更新中的凭据已变更而超时校验失败。
-    const nextTimeout =
-      input.timeoutMs === undefined ? undefined : normalizeProviderTimeout(input.timeoutMs);
-    if (input.activate === false) return this.createIndependentCredential(input);
-    let changed = false;
-    let providerCredentialsChanged = false;
-    const previousCredentialId = this.credentialId;
-    if (input.baseUrl !== undefined) {
-      const baseUrl = input.baseUrl.replace(/\/$/, '');
-      if (baseUrl !== this.baseUrl) {
-        this.baseUrl = baseUrl;
-        changed = true;
-        providerCredentialsChanged = true;
-      }
-    }
-    if (input.apiKey !== undefined) {
-      const currentApiKey = this.encryptedApiKey ? this.decryptCurrentApiKey() : undefined;
-      if (input.apiKey !== currentApiKey) {
-        this.encryptedApiKey = this.credentialKeyring.encrypt(input.apiKey);
-        this.encryptionKeyId = this.credentialKeyring.currentKeyId;
-        this.keyFingerprint = fingerprint(input.apiKey);
-        changed = true;
-        providerCredentialsChanged = true;
-      }
-    }
-    if (input.defaultModels) {
-      const next = { ...this.defaultModels };
-      for (const [mediaType, modelAlias] of Object.entries(input.defaultModels)) {
-        if (modelAlias === null || modelAlias === '') delete next[mediaType as MediaType];
-        else next[mediaType as MediaType] = normalizeModelSelection(modelAlias);
-      }
-      if (!sameDefaultModels(next, this.defaultModels)) {
-        this.defaultModels = next;
-        changed = true;
-      }
-    }
-    if (nextTimeout !== undefined) {
-      const timeoutMs = nextTimeout;
-      if (timeoutMs !== this.timeoutMs) {
-        this.timeoutMs = timeoutMs;
-        changed = true;
-      }
-    }
-    if (!changed) return this.get();
-    this.updatedAt = new Date().toISOString();
-    if (providerCredentialsChanged) {
-      this.registerCredential();
-    }
-    if (!providerCredentialsChanged && previousCredentialId && this.credentialId) {
-      this.copyModels(previousCredentialId, this.credentialId);
-      this.recordActiveCredentialDefaults();
-    }
-    return this.get();
-  }
-
-  listCredentials(): AiCredentialSummary[] {
-    return summarizeCredentials(
-      [...this.credentialRecords.values()].map((credential) => ({
-        ...credential,
-        keySuffix: safeKeySuffix(credential.apiKey),
-      })),
-      this.credentialId,
-    );
-  }
-
-  /**
-   * 更新指定凭据自身的类型默认模型，不改变当前活动连接。
-   * 目标为活动凭据时走既有全局默认模型流程，其他凭据只写自己的记录。
-   *
-   * @param credentialId 目标凭据 ID。
-   * @param defaults 按媒体类型的局部更新；`null` 或空串清除该类型。
-   * @returns 更新后的凭据摘要列表；目标不存在时返回 `undefined`。
-   */
-  updateCredentialDefaults(
-    credentialId: string,
-    defaults: UpdateCredentialDefaultsInput,
-  ): AiCredentialSummary[] | undefined {
-    const record = this.credentialRecords.get(credentialId);
-    if (!record) return undefined;
-    if (credentialId === this.credentialId) {
-      this.update({ defaultModels: defaults });
-      return this.listCredentials();
-    }
-    const next = applyCredentialDefaults(record.defaultModels, defaults);
-    if (!sameDefaultModels(next, record.defaultModels)) {
-      // 只更新该凭据自身的时间戳，避免非活动变更改动全局设置的更新时间。
-      this.credentialRecords.set(credentialId, {
-        ...record,
-        defaultModels: next,
-        updatedAt: new Date().toISOString(),
-      });
-    }
-    return this.listCredentials();
-  }
-
-  activateCredential(credentialId: string): AiSettings | undefined {
-    const credential = this.credentialRecords.get(credentialId);
-    if (!credential) return undefined;
-    const currentApiKey = this.encryptedApiKey ? this.decryptCurrentApiKey() : undefined;
-    if (credential.baseUrl === this.baseUrl && credential.apiKey === currentApiKey) {
-      return this.get();
-    }
-    this.baseUrl = credential.baseUrl;
-    this.encryptedApiKey = this.credentialKeyring.encrypt(credential.apiKey);
-    this.encryptionKeyId = this.credentialKeyring.currentKeyId;
-    this.keyFingerprint = credential.keyFingerprint;
-    this.updatedAt = new Date().toISOString();
-    this.registerCredential();
-    if (this.credentialId) this.copyModels(credentialId, this.credentialId);
-    return this.get();
-  }
-
-  removeCredentials(): AiSettings {
-    // 清空全局活动引用，但保留不可变历史供已提交任务执行；独立连接仍须显式选择。
-    this.baseUrl = '';
-    this.encryptedApiKey = '';
-    this.encryptionKeyId = undefined;
-    this.keyFingerprint = '';
-    this.credentialId = undefined;
-    this.credentialVersion = undefined;
-    this.updatedAt = new Date().toISOString();
-    return this.get();
-  }
-
-  /** 移除同一连接的所有可选版本及目录，保留仅供已提交任务使用的历史快照。 */
-  removeCredential(credentialId: string): AiSettings | undefined {
-    const target = this.credentialRecords.get(credentialId);
-    if (!target) return undefined;
-    const removeActive =
-      target.baseUrl === this.baseUrl && target.keyFingerprint === this.keyFingerprint;
-    for (const [id, credential] of this.credentialRecords) {
-      if (
-        credential.baseUrl !== target.baseUrl ||
-        credential.keyFingerprint !== target.keyFingerprint
-      )
-        continue;
-      this.credentialRecords.delete(id);
-      this.deletedCredentialIds.add(id);
-      this.modelCatalogs.delete(modelCatalogKey(id));
-    }
-    if (removeActive) {
-      this.baseUrl = '';
-      this.encryptedApiKey = '';
-      this.encryptionKeyId = undefined;
-      this.keyFingerprint = '';
-      this.credentialId = undefined;
-      this.credentialVersion = undefined;
-    }
-    this.updatedAt = new Date().toISOString();
-    return this.get();
-  }
-
-  /** 判断显式连接能否用于新任务；独立连接不依赖全局配置，撤销的全局历史仍不可选。 */
-  hasCredential(credentialId: string): boolean {
-    const credential = this.credentialRecords.get(credentialId);
-    return Boolean(credential && (credential.independent || this.get().configured));
-  }
-
-  async testConnection(): Promise<{ ok: boolean; modelCount?: number; error?: string }> {
-    if (!this.baseUrl || !this.encryptedApiKey)
-      return { ok: false, error: 'New API 地址和 Key 尚未配置' };
-    try {
-      const response = await requestModels(
-        this.baseUrl,
-        this.decryptCurrentApiKey(),
-        this.fetchImpl,
-        this.modelRequestTimeoutMs,
-        this.modelRequestMaxAttempts,
-        this.modelRequestRetryDelayMs,
-        this.modelRequestMaxResponseBytes,
-      );
-      return { ok: true, modelCount: response.length };
-    } catch (error) {
-      const diagnostic = sanitizeExceptionForObservability(error);
-      try {
-        this.onTestConnectionError?.(diagnostic);
-      } catch {
-        // Diagnostics must never alter the stable connection-test response.
-      }
-      return { ok: false, error: '连接失败' };
-    }
-  }
-
-  async refreshModels(credentialId?: string): Promise<ModelCatalogEntry[]> {
-    const resolvedCredentialId = credentialId ?? this.credentialId;
-    const credential = resolvedCredentialId
-      ? this.credentialRecords.get(resolvedCredentialId)
-      : undefined;
-    if (credentialId && !this.hasCredential(credentialId))
-      throw new AiCredentialNotFoundError(credentialId);
-    const providerCredentials = credential
-      ? { baseUrl: credential.baseUrl, apiKey: credential.apiKey }
-      : this.getProviderCredentials();
-    if (!providerCredentials || !resolvedCredentialId) {
-      throw new Error('New API 地址和 Key 尚未配置');
-    }
-    return this.enqueueModelRefresh(resolvedCredentialId, () =>
-      this.refreshModelsForCredential(resolvedCredentialId, providerCredentials),
-    );
-  }
-
-  async refreshModelsForCredential(
-    credentialId: string,
-    providerCredentials: ProviderCredentials,
-  ): Promise<ModelCatalogEntry[]> {
-    const models = await requestModels(
-      providerCredentials.baseUrl,
-      providerCredentials.apiKey,
-      this.fetchImpl,
-      this.modelRequestTimeoutMs,
-      this.modelRequestMaxAttempts,
-      this.modelRequestRetryDelayMs,
-      this.modelRequestMaxResponseBytes,
-    );
-    this.replaceModels(models, credentialId);
-    return this.listModels(undefined, credentialId);
-  }
-
-  replaceModels(models: ModelCatalogEntry[], credentialId?: string) {
-    const resolvedCredentialId =
-      credentialId ?? models.find((model) => model.credentialId)?.credentialId;
-    const catalog = new Map<string, ModelCatalogEntry>();
-    for (const model of models) {
-      const capabilities = normalizeReasoningEffortCapabilities(
-        model.id,
-        model.mediaTypes,
-        model.capabilities,
-      );
-      catalog.set(model.id, {
-        ...model,
-        ...(resolvedCredentialId ? { credentialId: resolvedCredentialId } : {}),
-        ...(capabilities ? { capabilities } : {}),
-      });
-    }
-    this.modelCatalogs.set(modelCatalogKey(resolvedCredentialId), catalog);
-  }
-
-  copyModels(sourceCredentialId: string, targetCredentialId: string) {
-    if (sourceCredentialId === targetCredentialId) return;
-    const source = this.modelCatalogs.get(modelCatalogKey(sourceCredentialId));
-    if (!source) return;
-    this.modelCatalogs.set(
-      modelCatalogKey(targetCredentialId),
-      new Map(
-        [...source.entries()].map(([modelId, model]) => [
-          modelId,
-          { ...model, credentialId: targetCredentialId },
-        ]),
-      ),
-    );
-  }
-
-  replaceCapabilityOverrides(overrides: ModelCapabilityOverride[]) {
-    this.capabilityOverrides.clear();
-    for (const override of overrides) {
-      if (
-        !isRecord(override) ||
-        typeof override.modelAlias !== 'string' ||
-        !override.modelAlias.trim() ||
-        !mediaTypes.includes(override.mediaType) ||
-        !isRecord(override.capabilities)
-      ) {
-        continue;
-      }
-      this.capabilityOverrides.set(
-        capabilityOverrideKey(override.credentialId, override.modelAlias, override.mediaType),
-        { ...override.capabilities },
-      );
-    }
-  }
-
-  listModels(mediaType?: MediaType, credentialId?: string): ModelCatalogEntry[] {
-    if (credentialId && this.deletedCredentialIds.has(credentialId))
-      throw new AiCredentialNotFoundError(credentialId);
-    const catalog =
-      this.modelCatalogs.get(modelCatalogKey(credentialId ?? this.credentialId)) ??
-      (credentialId === undefined ? this.modelCatalogs.get(LEGACY_MODEL_CATALOG_KEY) : undefined);
-    return [...(catalog?.values() ?? [])]
-      .filter((model) => !mediaType || model.mediaTypes.includes(mediaType))
-      .map((model) =>
-        // 不带 mediaType 的目录请求（工作区节点编辑器使用）同样要合并能力覆盖，
-        // 否则“目录显式声明”只在带过滤的请求里可见，客户端会误判为未声明。
-        mediaType
-          ? this.withCapabilityOverride(model, mediaType)
-          : model.mediaTypes.reduce(
-              (current, declared) => this.withCapabilityOverride(current, declared),
-              model,
-            ),
-      );
-  }
-
-  resolveModel(mediaType: MediaType, requestedAlias?: string): string {
-    const alias =
-      requestedAlias ?? this.defaultModels[mediaType]?.modelAlias ?? `mock-${mediaType}`;
-    if (alias.startsWith('mock-')) return alias;
-
-    const catalog = this.listModels();
-    const compatibleModels = this.listModels(mediaType);
-    if (catalog.length > 0 && !compatibleModels.some((model) => model.id === alias)) {
-      throw new AiSettingsError('model_unavailable', `模型 ${alias} 不支持 ${mediaType} 媒体类型`);
-    }
-    return alias;
-  }
-
-  getCredentialReference(credentialId?: string): CredentialReference {
-    if (credentialId) {
-      if (!this.hasCredential(credentialId)) {
-        throw new AiCredentialNotFoundError(credentialId);
-      }
-      const credential = this.credentialRecords.get(credentialId);
-      if (!credential) throw new AiCredentialNotFoundError(credentialId);
-      return { credentialId: credential.id, credentialVersion: credential.version };
-    }
-    return {
-      ...(this.credentialId ? { credentialId: this.credentialId } : {}),
-      ...(this.credentialVersion ? { credentialVersion: this.credentialVersion } : {}),
-    };
-  }
-
-  getProviderCredentials(reference?: CredentialReference): ProviderCredentials | undefined {
-    if (reference?.credentialId || reference?.credentialVersion) {
-      if (
-        reference.credentialId !== this.credentialId ||
-        reference.credentialVersion !== this.credentialVersion
-      ) {
-        const historical =
-          reference.credentialId && reference.credentialVersion
-            ? this.credentialHistory.get(credentialKey(reference))
-            : undefined;
-        return historical ? { ...historical } : undefined;
-      }
-    }
-    if (!this.baseUrl || !this.encryptedApiKey) return undefined;
-    return {
-      baseUrl: this.baseUrl,
-      apiKey: this.decryptCurrentApiKey(),
-    };
-  }
-
-  /** 解密内存中的当前凭据，并把旧密文立即升级为当前 key-id 包装。 */
-  private decryptCurrentApiKey(): string {
-    const decrypted = this.credentialKeyring.decrypt(this.encryptedApiKey, this.encryptionKeyId);
-    if (decrypted.needsReencryption) {
-      this.encryptedApiKey = this.credentialKeyring.encrypt(decrypted.plaintext);
-      this.encryptionKeyId = this.credentialKeyring.currentKeyId;
-    }
-    return decrypted.plaintext;
-  }
-
-  private registerCredential(advanceVersion = true) {
-    if (!this.baseUrl || !this.encryptedApiKey) return;
-    if (advanceVersion) {
-      this.credentialId = randomUUID();
-      this.credentialVersion = this.nextCredentialVersion();
-    } else {
-      this.credentialId ??= randomUUID();
-      this.credentialVersion ??= 1;
-    }
-    const credentials = {
-      baseUrl: this.baseUrl,
-      apiKey: this.decryptCurrentApiKey(),
-    };
-    this.credentialHistory.set(credentialKey(this.getCredentialReference()), credentials);
-    this.credentialRecords.set(this.credentialId, {
-      ...credentials,
-      id: this.credentialId,
-      version: this.credentialVersion,
-      keyFingerprint: this.keyFingerprint,
-      updatedAt: this.updatedAt,
-      defaultModels: cloneDefaultModels(this.defaultModels),
-    });
-  }
-
-  /** 返回本存储统一递增的凭据版本，避免独立凭据与活动凭据出现重复版本号。 */
-  private nextCredentialVersion(): number {
-    return (
-      Math.max(
-        this.credentialVersion ?? 0,
-        ...[...this.credentialRecords.values()].map((credential) => credential.version),
-      ) + 1
-    );
-  }
-
-  /** 把活动默认模型同步到当前凭据记录，保证凭据摘要与全局设置视图一致。 */
-  private recordActiveCredentialDefaults() {
-    if (!this.credentialId) return;
-    const record = this.credentialRecords.get(this.credentialId);
-    if (!record) return;
-    this.credentialRecords.set(this.credentialId, {
-      ...record,
-      defaultModels: cloneDefaultModels(this.defaultModels),
-      updatedAt: this.updatedAt,
-    });
-  }
-
-  /**
-   * 新增一条不激活的独立凭据记录并返回其 ID。
-   *
-   * 活动连接的 ID、版本、地址、指纹和类型默认模型保持不变；只复用相同地址与 Key 的
-   * 独立记录，全局历史保留原有用途及冻结引用。
-   *
-   * @param input 设置更新输入，必须带 `activate: false` 和 `apiKey`。
-   * @returns 未变更的活动设置视图，并附带新凭据或复用凭据的 ID。
-   * @throws TypeError `apiKey`/`baseUrl` 无法确定或同时请求全局变更时抛出。
-   */
-  private createIndependentCredential(input: UpdateAiSettingsInput): AiSettingsUpdateResult {
-    const resolved = resolveIndependentCredentialInput(input, this.baseUrl);
-    const existing = [...this.credentialRecords.values()].find(
-      (credential) =>
-        credential.independent &&
-        credential.baseUrl === resolved.baseUrl &&
-        credential.keyFingerprint === resolved.keyFingerprint,
-    );
-    if (existing) return { ...this.get(), createdCredentialId: existing.id };
-
-    const id = randomUUID();
-    const version = this.nextCredentialVersion();
-    const credentials = { baseUrl: resolved.baseUrl, apiKey: resolved.apiKey };
-    this.credentialRecords.set(id, {
-      ...credentials,
-      id,
-      version,
-      keyFingerprint: resolved.keyFingerprint,
-      updatedAt: new Date().toISOString(),
-      defaultModels: {},
-      independent: true,
-    });
-    this.credentialHistory.set(
-      credentialKey({ credentialId: id, credentialVersion: version }),
-      credentials,
-    );
-    return { ...this.get(), createdCredentialId: id };
-  }
-
-  private withCapabilityOverride(model: ModelCatalogEntry, mediaType: MediaType) {
-    const override =
-      this.capabilityOverrides.get(
-        capabilityOverrideKey(model.credentialId, model.id, mediaType),
-      ) ?? this.capabilityOverrides.get(capabilityOverrideKey(undefined, model.id, mediaType));
-    if (!override) return model;
-    const capabilities = mergeModelCapabilities(
-      model.id,
-      model.mediaTypes,
-      model.capabilities,
-      override,
-    );
-    return {
-      ...model,
-      ...(capabilities ? { capabilities } : {}),
-    };
-  }
-
-  private enqueueModelRefresh<T>(credentialId: string, operation: () => Promise<T>): Promise<T> {
-    const previous = this.modelRefreshQueues.get(credentialId) ?? Promise.resolve();
-    const result = previous.then(operation);
-    const settled = result.then(
-      () => undefined,
-      () => undefined,
-    );
-    this.modelRefreshQueues.set(credentialId, settled);
-    void settled.finally(() => {
-      if (this.modelRefreshQueues.get(credentialId) === settled) {
-        this.modelRefreshQueues.delete(credentialId);
-      }
-    });
-    return result;
-  }
-}
-
 /**
- * PostgreSQL 设置存储。每次当前状态操作都先读取数据库，撤销提交后开始的操作
- * 不再使用其他实例的旧缓存；数据库不可用时抛错，不回退到缓存凭据。
- * 完整的 credentialId/version 仍按不可变历史记录解析，不取消已冻结的任务。
- * 文件存储不使用此同步机制，仍只支持单 API 进程。
- */
-export class PrismaAiSettingsStore implements AiSettingsStoreLike {
-  /** 最近一次完整加载的设置视图，仅在串行操作内部使用。 */
-  private memory: AiSettingsStore;
-  private readonly ready: Promise<void>;
-  private readonly encryptionSecret: string;
-  private readonly credentialKeyring: CredentialEncryptionKeyring;
-  /** 重建视图时保留请求超时、测试注入及共享密钥环配置。 */
-  private readonly memoryOptions: AiSettingsStoreOptions;
-  private credentialReference: CredentialReference = {};
-  /** 串行化本实例的刷新与写入，避免读取未持久化状态；失败后仍可继续操作。 */
-  private writeQueue: Promise<void> = Promise.resolve();
-
-  /** 使用调用方管理的数据库客户端初始化；缺少稳定加密密钥时立即拒绝启动。 */
-  constructor(
-    private readonly prisma: PrismaClient,
-    encryptionSecret = process.env.AI_CREDENTIAL_ENCRYPTION_KEY,
-    options: AiSettingsStoreOptions = {},
-  ) {
-    if (!encryptionSecret?.trim()) {
-      throw new Error(
-        'AI_CREDENTIAL_ENCRYPTION_KEY is required when PostgreSQL-backed AI settings are enabled',
-      );
-    }
-    this.encryptionSecret = encryptionSecret;
-    this.credentialKeyring = createCredentialEncryptionKeyringFromEnvironment({
-      ...process.env,
-      AI_CREDENTIAL_ENCRYPTION_KEY: encryptionSecret,
-    });
-    this.memoryOptions = {
-      ...options,
-      credentialKeyring: this.credentialKeyring,
-    };
-    this.memory = new AiSettingsStore(encryptionSecret, this.memoryOptions);
-    this.ready = this.load();
-  }
-
-  /** 返回数据库最新设置；读取失败时不暴露旧的活动状态。 */
-  async get() {
-    return this.withLatestSettings(() => this.memory.get());
-  }
-
-  /** 基于最新已提交设置合并局部更新，落库失败时撤回本实例的临时变更。 */
-  async update(input: UpdateAiSettingsInput) {
-    return this.withLatestSettings(() => this.applyUpdate(input));
-  }
-
-  /** 列出历史连接摘要，活动标记以本次读取的数据库设置为准。 */
-  async listCredentials() {
-    return this.withLatestSettings(() => this.loadCredentialSummaries());
-  }
-
-  /**
-   * 更新指定凭据自身的类型默认模型，不改变当前活动连接。
-   * 目标为活动凭据时复用全局默认写入路径，其他凭据只更新自己的行。
-   *
-   * @returns 更新后的凭据摘要列表；目标不存在或已删除时返回 `undefined`。
-   */
-  async updateCredentialDefaults(credentialId: string, defaults: UpdateCredentialDefaultsInput) {
-    return this.withLatestSettings(async () => {
-      if (credentialId === this.credentialReference.credentialId) {
-        await this.applyUpdate({ defaultModels: defaults });
-        return this.loadCredentialSummaries();
-      }
-      const updated = await this.prisma.$transaction(async (transaction) => {
-        const updatedAt = await this.lockCredentialWrites(transaction);
-        const target = await transaction.aiCredential.findFirst({
-          where: { id: credentialId, projectId: null },
-        });
-        if (!target?.baseUrl || !target.encryptedApiKey || isDeletedCredentialLabel(target.label))
-          return false;
-        const stored = readPersistedDefaults(target.defaultModels);
-        const next = applyCredentialDefaults(
-          normalizeDefaultModels(stored.defaultModels),
-          defaults,
-        );
-        await transaction.aiCredential.update({
-          where: { id: target.id, version: target.version, updatedAt: target.updatedAt },
-          data: {
-            defaultModels: writePersistedDefaults({
-              defaultModels: next,
-              ...(stored.timeoutMs === undefined ? {} : { timeoutMs: stored.timeoutMs }),
-            }),
-            updatedAt,
-          },
-        });
-        return true;
-      });
-      if (!updated) return undefined;
-      return this.loadCredentialSummaries();
-    });
-  }
-
-  /** 返回数据库中的全部平台凭据摘要；独立凭据同样以持久化默认模型列出。 */
-  private async loadCredentialSummaries() {
-    const credentials = await this.prisma.aiCredential.findMany({
-      where: { projectId: null },
-      orderBy: activeCredentialOrderBy,
-    });
-    return summarizeCredentials(
-      credentials.map((credential) => ({
-        ...credential,
-        ...credentialSuffixSummary(this.credentialKeyring, credential),
-      })),
-      this.credentialReference.credentialId,
-    );
-  }
-
-  /** 合并局部设置更新；`activate: false` 时新增不激活的独立凭据行。 */
-  private async applyUpdate(input: UpdateAiSettingsInput): Promise<AiSettingsUpdateResult> {
-    if (input.activate === false) return this.createIndependentCredential(input);
-    const previous = this.memory.getPersisted();
-    const previousReference = this.memory.getCredentialReference();
-    const previousStoreReference = { ...this.credentialReference };
-    const result = this.memory.update(input);
-    if (samePersistedSettings(previous, this.memory.getPersisted())) return result;
-    try {
-      const next = this.memory.getPersisted();
-      const sourceCatalogCredentialId =
-        previous.baseUrl === next.baseUrl && previous.keyFingerprint === next.keyFingerprint
-          ? previousStoreReference.credentialId
-          : undefined;
-      await this.persistCredential(
-        sourceCatalogCredentialId,
-        previous.baseUrl === next.baseUrl && previous.keyFingerprint === next.keyFingerprint,
-        previous.updatedAt,
-      );
-      return this.memory.get();
-    } catch (error) {
-      // A database outage must not leave this process serving credentials or
-      // defaults that were never durably written.
-      this.memory.hydrate(previous, previousReference);
-      this.credentialReference = previousStoreReference;
-      throw error;
-    }
-  }
-
-  /**
-   * 新增一条不激活的独立凭据行并返回其 ID；只复用同地址与 Key 的独立行。
-   *
-   * 独立行不参与活动选择，全局活动引用、版本、密文及默认模型保持不变。
-   */
-  private async createIndependentCredential(
-    input: UpdateAiSettingsInput,
-  ): Promise<AiSettingsUpdateResult> {
-    const resolved = resolveIndependentCredentialInput(input, this.memory.get().baseUrl);
-    const existing = await this.prisma.aiCredential.findFirst({
-      where: {
-        projectId: null,
-        baseUrl: resolved.baseUrl,
-        keyFingerprint: resolved.keyFingerprint,
-        label: INDEPENDENT_CREDENTIAL_LABEL,
-      },
-      orderBy: activeCredentialOrderBy,
-    });
-    if (existing) return { ...this.memory.get(), createdCredentialId: existing.id };
-
-    const created = await this.prisma.$transaction(async (transaction) => {
-      const updatedAt = await this.lockCredentialWrites(transaction);
-      const newest = await transaction.aiCredential.findFirst({
-        where: { projectId: null },
-        orderBy: [{ version: 'desc' }],
-        select: { version: true },
-      });
-      return transaction.aiCredential.create({
-        data: {
-          projectId: null,
-          ownerId: null,
-          label: INDEPENDENT_CREDENTIAL_LABEL,
-          baseUrl: resolved.baseUrl,
-          encryptedApiKey: this.credentialKeyring.encrypt(resolved.apiKey),
-          encryptionKeyId: this.credentialKeyring.currentKeyId,
-          keyFingerprint: resolved.keyFingerprint,
-          defaultModels: Prisma.JsonNull,
-          version: (newest?.version ?? 0) + 1,
-          updatedAt,
-        },
-      });
-    });
-    return { ...this.memory.get(), createdCredentialId: created.id };
-  }
-
-  /** 显式重新激活历史连接并保留最新默认模型；目标不存在时返回 undefined。 */
-  async activateCredential(credentialId: string) {
-    return this.withLatestSettings(async () => {
-      const credential = await this.prisma.aiCredential.findFirst({
-        where: { id: credentialId, projectId: null },
-      });
-      if (
-        !credential?.baseUrl ||
-        !credential.encryptedApiKey ||
-        !credential.keyFingerprint ||
-        isDeletedCredentialLabel(credential.label)
-      ) {
-        return undefined;
-      }
-
-      const providerCredentials = await this.providerCredentialsForCredential(credential);
-      if (!providerCredentials) return undefined;
-
-      const previous = this.memory.getPersisted();
-      const previousReference = this.memory.getCredentialReference();
-      const previousStoreReference = { ...this.credentialReference };
-      const result = this.memory.update(providerCredentials);
-      if (samePersistedSettings(previous, this.memory.getPersisted())) return result;
-      try {
-        await this.persistCredential(credential.id, false, previous.updatedAt);
-        return this.memory.get();
-      } catch (error) {
-        this.memory.hydrate(previous, previousReference);
-        this.credentialReference = previousStoreReference;
-        throw error;
-      }
-    });
-  }
-
-  /** 写入撤销墓碑阻止后续新任务使用凭据，保留历史快照的 id/version 和密文。 */
-  async removeCredentials() {
-    return this.withLatestSettings(async () => {
-      const timeoutMs = this.memory.get().timeoutMs;
-      // Do not delete or zero historical rows: queued/running jobs may refer
-      // to the current id/version. Append an empty tombstone version to revoke
-      // the active credential while leaving every immutable snapshot resolvable.
-      const revoked = await this.prisma.$transaction(async (transaction) => {
-        const updatedAt = await this.lockCredentialWrites(transaction);
-        const current = await transaction.aiCredential.findFirst({
-          where: activeCredentialWhere,
-          orderBy: activeCredentialOrderBy,
-          select: { version: true },
-        });
-        if (current) {
-          return transaction.aiCredential.create({
-            data: {
-              projectId: null,
-              ownerId: null,
-              version: current.version + 1,
-              baseUrl: '',
-              encryptedApiKey: '',
-              encryptionKeyId: null,
-              keyFingerprint: '',
-              defaultModels:
-                timeoutMs === DEFAULT_PROVIDER_TIMEOUT_MS
-                  ? Prisma.JsonNull
-                  : { __timeoutMs: timeoutMs },
-              label: 'revoked',
-              updatedAt,
-            },
-          });
-        }
-        return null;
-      });
-      this.credentialReference = {};
-      if (revoked) {
-        this.memory.hydrate({
-          baseUrl: '',
-          encryptedApiKey: '',
-          keyFingerprint: '',
-          defaultModels: {},
-          timeoutMs,
-          updatedAt: revoked.updatedAt.toISOString(),
-        });
-        return this.memory.get();
-      }
-      return this.memory.removeCredentials();
-    });
-  }
-
-  /**
-   * 原子删除指定连接的全部可选版本；历史密文保留给已提交任务，禁止列表、激活和新任务使用。
-   * 删除活动连接时追加空活动版本，其余已保存 Key 仍可手动切换；失败由数据库事务回滚。
-   */
-  async removeCredential(credentialId: string): Promise<AiSettings | undefined> {
-    return this.withLatestSettings(async () => {
-      const deleted = await this.prisma.$transaction(async (transaction) => {
-        const updatedAt = await this.lockCredentialWrites(transaction);
-        const target = await transaction.aiCredential.findFirst({
-          where: { id: credentialId, projectId: null },
-        });
-        if (!target?.encryptedApiKey || isDeletedCredentialLabel(target.label)) return false;
-        const current = await transaction.aiCredential.findFirst({
-          where: activeCredentialWhere,
-          orderBy: activeCredentialOrderBy,
-        });
-        const versions = await transaction.aiCredential.findMany({
-          where: {
-            projectId: null,
-            baseUrl: target.baseUrl,
-            keyFingerprint: target.keyFingerprint,
-          },
-        });
-        for (const version of versions) {
-          if (
-            version.baseUrl !== target.baseUrl ||
-            version.keyFingerprint !== target.keyFingerprint
-          )
-            continue;
-          // 保留排序时间，避免删除非活动连接时把它误提升为当前配置。
-          await transaction.aiCredential.update({
-            where: { id: version.id },
-            data: {
-              label: deletedCredentialLabel(version.label),
-              updatedAt: version.updatedAt,
-            },
-          });
-        }
-        if (
-          current?.baseUrl === target.baseUrl &&
-          current.keyFingerprint === target.keyFingerprint
-        ) {
-          const stored = readPersistedDefaults(current.defaultModels);
-          await transaction.aiCredential.create({
-            data: {
-              projectId: null,
-              ownerId: null,
-              label: 'revoked',
-              version: current.version + 1,
-              baseUrl: '',
-              encryptedApiKey: '',
-              encryptionKeyId: null,
-              keyFingerprint: '',
-              defaultModels:
-                stored.timeoutMs && stored.timeoutMs !== DEFAULT_PROVIDER_TIMEOUT_MS
-                  ? { __timeoutMs: stored.timeoutMs }
-                  : Prisma.JsonNull,
-              updatedAt,
-            },
-          });
-        }
-        return true;
-      });
-      if (!deleted) return undefined;
-      await this.load();
-      return this.memory.get();
-    });
-  }
-
-  /** 检查指定凭据是否可用于新任务；独立连接不依赖活动连接，撤销的全局历史仍不可选。 */
-  async hasCredential(credentialId: string) {
-    return this.withLatestSettings(() => this.hasLoadedCredential(credentialId));
-  }
-
-  /** 仅在已同步的串行操作中检查可选凭据，避免再次入队造成自等待。 */
-  private async hasLoadedCredential(credentialId: string) {
-    if (credentialId === this.credentialReference.credentialId) {
-      return true;
-    }
-    const credential = await this.prisma.aiCredential.findFirst({
-      where: { id: credentialId, projectId: null },
-      select: { id: true, baseUrl: true, encryptedApiKey: true, label: true },
-    });
-    return Boolean(
-      credential?.baseUrl &&
-      credential.encryptedApiKey &&
-      (this.memory.get().configured || credential.label === INDEPENDENT_CREDENTIAL_LABEL) &&
-      !isDeletedCredentialLabel(credential.label),
-    );
-  }
-
-  /** 使用本次读取的活动连接测试上游；已提交的远程撤销会阻止请求发出。 */
-  async testConnection() {
-    return this.withLatestSettings(() => this.memory.testConnection());
-  }
-
-  /** 同步活动状态后刷新指定连接目录；撤销后不能借历史 id 发起新的上游请求。 */
-  async refreshModels(credentialId?: string) {
-    return this.withLatestSettings(async () => {
-      const selected = await this.resolveModelCredential(credentialId);
-      const previousModels = this.memory.listModels(undefined, selected.credentialId);
-      const models = await this.memory.refreshModelsForCredential(
-        selected.credentialId,
-        selected.providerCredentials,
-      );
-      try {
-        await this.prisma.$transaction(async (transaction) => {
-          await transaction.modelCatalog.deleteMany({
-            where: { credentialId: selected.credentialId },
-          });
-          if (models.length > 0) {
-            await transaction.modelCatalog.createMany({
-              data: models.flatMap((model) =>
-                model.mediaTypes.map((mediaType) => ({
-                  credentialId: selected.credentialId,
-                  modelAlias: model.id,
-                  name: model.name,
-                  mediaType: toPrismaMediaType(mediaType),
-                  capabilities: model.capabilities
-                    ? (model.capabilities as Prisma.InputJsonValue)
-                    : undefined,
-                  limitations: model.limitations
-                    ? (model.limitations as Prisma.InputJsonValue)
-                    : undefined,
-                  price: model.price ? (model.price as Prisma.InputJsonValue) : undefined,
-                  refreshedAt: new Date(model.refreshedAt),
-                })),
-              ),
-            });
-          }
-        });
-        return models;
-      } catch (error) {
-        this.memory.replaceModels(previousModels, selected.credentialId);
-        throw error;
-      }
-    });
-  }
-
-  /** 返回数据库最新模型目录和能力覆盖；撤销后的显式历史选择会抛出未找到错误。 */
-  async listModels(mediaType?: MediaType, credentialId?: string) {
-    return this.withLatestSettings(async () => {
-      const resolvedCredentialId = credentialId ?? this.credentialReference.credentialId;
-      if (credentialId && !(await this.hasLoadedCredential(credentialId))) {
-        throw new AiCredentialNotFoundError(credentialId);
-      }
-      return this.memory.listModels(mediaType, resolvedCredentialId);
-    });
-  }
-
-  /** 使用最新默认模型、目录和能力覆盖解析别名；不兼容时保持既有错误契约。 */
-  async resolveModel(mediaType: MediaType, requestedAlias?: string) {
-    return this.withLatestSettings(() => this.memory.resolveModel(mediaType, requestedAlias));
-  }
-
-  /** 为新任务选择凭据版本；无活动连接时仍可显式选择独立连接，撤销或删除的历史选择报错。 */
-  async getCredentialReference(credentialId?: string) {
-    return this.withLatestSettings(async () => {
-      if (credentialId && credentialId !== this.credentialReference.credentialId) {
-        const credential = await this.prisma.aiCredential.findFirst({
-          where: { id: credentialId, projectId: null },
-          select: { id: true, version: true, baseUrl: true, encryptedApiKey: true, label: true },
-        });
-        if (
-          !credential?.baseUrl ||
-          !credential.encryptedApiKey ||
-          (!this.memory.get().configured && credential.label !== INDEPENDENT_CREDENTIAL_LABEL) ||
-          isDeletedCredentialLabel(credential.label)
-        ) {
-          throw new AiCredentialNotFoundError(credentialId);
-        }
-        return { credentialId: credential.id, credentialVersion: credential.version };
-      }
-      return { ...this.credentialReference };
-    });
-  }
-
-  /**
-   * 无引用时读取最新活动凭据；完整引用只按冻结 id/version 查询历史数据库记录。
-   * 部分引用或版本不匹配返回 undefined，不回退当前 Key；读取失败直接抛错。
-   * 返回值含明文，仅供服务端执行器使用，不得用于 HTTP 响应或日志。
-   */
-  async getProviderCredentials(reference?: CredentialReference) {
-    const requested = reference ?? {};
-    if (requested.credentialId === undefined && requested.credentialVersion === undefined) {
-      return this.withLatestSettings(() => this.memory.getProviderCredentials());
-    }
-    if (
-      !requested.credentialId ||
-      !requested.credentialVersion ||
-      !Number.isSafeInteger(requested.credentialVersion) ||
-      requested.credentialVersion < 1
-    )
-      return undefined;
-    await this.ready;
-    return this.enqueueWrite(async () => {
-      const historical = await this.prisma.aiCredential.findFirst({
-        where: {
-          id: requested.credentialId,
-          version: requested.credentialVersion,
-          projectId: null,
-        },
-      });
-      if (!historical) return undefined;
-      return this.providerCredentialsForCredential(historical);
-    });
-  }
-
-  /** 等待初始化和本实例已入队操作；数据库客户端仍由调用方管理。 */
-  async close() {
-    await this.ready;
-    await this.writeQueue;
-  }
-
-  /**
-   * 构造完整的新设置视图后才替换缓存，清除远程已删除的目录和能力覆盖。
-   * 数据库、解密或轮换写回失败时保留错误，不发布半加载状态。
-   */
-  private async load() {
-    const overrideDelegate = (
-      this.prisma as PrismaClient & {
-        modelCapabilityOverride?: { findMany: () => Promise<unknown[]> };
-      }
-    ).modelCapabilityOverride;
-    const [credential, catalog, overrides] = await Promise.all([
-      this.prisma.aiCredential.findFirst({
-        where: activeCredentialWhere,
-        orderBy: activeCredentialOrderBy,
-      }),
-      this.prisma.modelCatalog.findMany(),
-      overrideDelegate?.findMany ? overrideDelegate.findMany() : Promise.resolve([]),
-    ]);
-    const memory = new AiSettingsStore(this.encryptionSecret, this.memoryOptions);
-    const reference: CredentialReference = {};
-    if (credential) {
-      if (credential.baseUrl && credential.encryptedApiKey && credential.label !== 'deleted') {
-        await this.providerCredentialsForCredential(credential);
-        Object.assign(reference, {
-          credentialId: credential.id,
-          credentialVersion: credential.version,
-        });
-      }
-      const stored = readPersistedDefaults(credential.defaultModels);
-      memory.hydrate(
-        {
-          baseUrl: credential.label === 'deleted' ? '' : credential.baseUrl,
-          encryptedApiKey: credential.label === 'deleted' ? '' : credential.encryptedApiKey,
-          ...(credential.encryptionKeyId ? { encryptionKeyId: credential.encryptionKeyId } : {}),
-          keyFingerprint: credential.label === 'deleted' ? '' : credential.keyFingerprint,
-          defaultModels: stored.defaultModels,
-          ...(stored.timeoutMs === undefined ? {} : { timeoutMs: stored.timeoutMs }),
-          updatedAt: credential.updatedAt.toISOString(),
-        },
-        reference,
-      );
-    }
-    const activeCredentialId = reference.credentialId;
-    let resolvedCatalog = catalog;
-    if (activeCredentialId) {
-      const legacyModels = catalog.filter((model) => model.credentialId === null);
-      if (legacyModels.length > 0) {
-        const activeModels = catalog.filter((model) => model.credentialId === activeCredentialId);
-        await this.prisma.$transaction(async (transaction) => {
-          if (activeModels.length === 0) {
-            await transaction.modelCatalog.createMany({
-              data: legacyModels.map((model) => copyModelCatalogData(model, activeCredentialId)),
-              skipDuplicates: true,
-            });
-          }
-          await transaction.modelCatalog.deleteMany({ where: { credentialId: null } });
-        });
-        resolvedCatalog = [
-          ...catalog.filter((model) => model.credentialId !== null),
-          ...(activeModels.length === 0
-            ? legacyModels.map((model) => ({ ...model, credentialId: activeCredentialId }))
-            : []),
-        ];
-      }
-    }
-
-    const grouped = new Map<string, Map<string, ModelCatalogEntry>>();
-    for (const model of resolvedCatalog) {
-      const catalogCredentialId = model.credentialId ?? activeCredentialId;
-      const scopeKey = modelCatalogKey(catalogCredentialId);
-      const scopedModels = grouped.get(scopeKey) ?? new Map<string, ModelCatalogEntry>();
-      const existing = scopedModels.get(model.modelAlias);
-      const mediaType = fromPrismaMediaType(model.mediaType);
-      scopedModels.set(model.modelAlias, {
-        id: model.modelAlias,
-        name: model.name,
-        mediaTypes: existing ? [...new Set([...existing.mediaTypes, mediaType])] : [mediaType],
-        ...(catalogCredentialId ? { credentialId: catalogCredentialId } : {}),
-        ...(isRecord(model.capabilities) || existing?.capabilities
-          ? {
-              capabilities: {
-                ...(existing?.capabilities ?? {}),
-                ...(isRecord(model.capabilities) ? model.capabilities : {}),
-              },
-            }
-          : {}),
-        ...(isRecord(model.limitations) || existing?.limitations
-          ? {
-              limitations: {
-                ...(existing?.limitations ?? {}),
-                ...(isRecord(model.limitations) ? model.limitations : {}),
-              },
-            }
-          : {}),
-        ...(isRecord(model.price) || existing?.price
-          ? {
-              price: {
-                ...(existing?.price ?? {}),
-                ...(isRecord(model.price) ? model.price : {}),
-              },
-            }
-          : {}),
-        refreshedAt: model.refreshedAt.toISOString(),
-      });
-      grouped.set(scopeKey, scopedModels);
-    }
-    for (const [scopeKey, models] of grouped) {
-      memory.replaceModels(
-        [...models.values()],
-        scopeKey === LEGACY_MODEL_CATALOG_KEY ? undefined : scopeKey,
-      );
-    }
-    memory.replaceCapabilityOverrides(normalizeCapabilityOverrides(overrides));
-    this.memory = memory;
-    this.credentialReference = reference;
-  }
-
-  /**
-   * 持久化设置并绑定数据库版本；所有更新都校验原活动行与更新时间。
-   * 并发撤销或配置变更导致原视图失效时拒绝写入，不允许把历史行重新排成活动行。
-   */
-  private async persistCredential(
-    sourceCatalogCredentialId: string | undefined,
-    defaultsOnly: boolean,
-    expectedUpdatedAt: string,
-  ) {
-    const persisted = this.memory.getPersisted();
-    const current = await this.prisma.$transaction(async (transaction) => {
-      const updatedAt = await this.lockCredentialWrites(transaction);
-      if (sourceCatalogCredentialId) {
-        const source = await transaction.aiCredential.findFirst({
-          where: { id: sourceCatalogCredentialId, projectId: null },
-        });
-        if (isDeletedCredentialLabel(source?.label))
-          throw new AiCredentialNotFoundError(sourceCatalogCredentialId);
-      }
-      const existing = await transaction.aiCredential.findFirst({
-        where: activeCredentialWhere,
-        orderBy: activeCredentialOrderBy,
-      });
-      const expectedReference = this.credentialReference;
-      const matchesReference = expectedReference.credentialId
-        ? existing?.id === expectedReference.credentialId &&
-          existing.version === expectedReference.credentialVersion
-        : !existing?.baseUrl || !existing.encryptedApiKey;
-      if (
-        !matchesReference ||
-        (existing && existing.updatedAt.toISOString() !== expectedUpdatedAt)
-      ) {
-        throw new Error('AI settings changed before they could be persisted');
-      }
-      if (
-        defaultsOnly &&
-        this.credentialReference.credentialId &&
-        typeof transaction.aiCredential.update === 'function'
-      ) {
-        if (!existing) {
-          throw new Error('AI settings changed before they could be persisted');
-        }
-        return transaction.aiCredential.update({
-          where: { id: existing.id, version: existing.version, updatedAt: existing.updatedAt },
-          data: { defaultModels: writePersistedDefaults(persisted), updatedAt },
-        });
-      }
-      const created = await transaction.aiCredential.create({
-        data: {
-          label: 'default',
-          baseUrl: persisted.baseUrl,
-          encryptedApiKey: persisted.encryptedApiKey,
-          encryptionKeyId:
-            persisted.encryptionKeyId ??
-            (persisted.encryptedApiKey ? this.credentialKeyring.currentKeyId : null),
-          keyFingerprint: persisted.keyFingerprint,
-          defaultModels: writePersistedDefaults(persisted),
-          version: Math.max(
-            existing ? existing.version + 1 : 1,
-            this.memory.getCredentialReference().credentialVersion ?? 1,
-          ),
-          projectId: null,
-          ownerId: null,
-          updatedAt,
-        },
-      });
-      if (sourceCatalogCredentialId) {
-        const sourceModels = await transaction.modelCatalog.findMany({
-          where: { credentialId: sourceCatalogCredentialId },
-        });
-        if (sourceModels.length > 0) {
-          await transaction.modelCatalog.createMany({
-            data: sourceModels.map((model) => copyModelCatalogData(model, created.id)),
-          });
-        }
-      }
-      return created;
-    });
-    if (current) {
-      this.credentialReference =
-        persisted.baseUrl && persisted.encryptedApiKey
-          ? { credentialId: current.id, credentialVersion: current.version }
-          : {};
-      if (sourceCatalogCredentialId) {
-        this.memory.copyModels(sourceCatalogCredentialId, current.id);
-      }
-      this.memory.hydrate(
-        { ...persisted, updatedAt: current.updatedAt.toISOString() },
-        this.credentialReference,
-      );
-    }
-  }
-
-  /**
-   * 创建、默认模型更新和撤销共享事务级表锁，普通 SELECT 仍可读取已提交状态。
-   * 锁仅覆盖设置表的短时数据库操作，不跨 Provider 请求；由事务提交或回滚释放。
-   * 获锁后使用数据库 UTC wall clock，不使用应用时钟或事务开始时间；至少超过
-   * 已存最大时间一毫秒，使旧未来时间和同毫秒并发均不破坏排序或 CAS，无需迁移历史数据。
-   */
-  private async lockCredentialWrites(transaction: Prisma.TransactionClient): Promise<Date> {
-    await transaction.$executeRaw`LOCK TABLE "ai_credentials" IN SHARE ROW EXCLUSIVE MODE`;
-    const timestamps = await transaction.$queryRaw<Array<{ updatedAt: Date }>>`
-      SELECT GREATEST(
-        (clock_timestamp() AT TIME ZONE 'UTC')::timestamp(3),
-        MAX("updatedAt") + interval '1 millisecond'
-      ) AS "updatedAt"
-      FROM "ai_credentials" WHERE "projectId" IS NULL
-    `;
-    const updatedAt = timestamps[0]?.updatedAt;
-    if (!(updatedAt instanceof Date) || !Number.isFinite(updatedAt.getTime())) {
-      throw new Error('AI settings database timestamp is unavailable');
-    }
-    return updatedAt;
-  }
-
-  /** 在已同步的视图内解析模型请求凭据；撤销后拒绝显式历史选择，不影响冻结任务读取。 */
-  private async resolveModelCredential(credentialId?: string): Promise<{
-    credentialId: string;
-    providerCredentials: ProviderCredentials;
-  }> {
-    const resolvedCredentialId = credentialId ?? this.credentialReference.credentialId;
-    if (!resolvedCredentialId) {
-      if (credentialId) throw new AiCredentialNotFoundError(credentialId);
-      throw new Error('New API 地址和 Key 尚未配置');
-    }
-    if (resolvedCredentialId === this.credentialReference.credentialId) {
-      const providerCredentials = this.memory.getProviderCredentials();
-      if (providerCredentials) return { credentialId: resolvedCredentialId, providerCredentials };
-    }
-
-    const credential = await this.prisma.aiCredential.findFirst({
-      where: { id: resolvedCredentialId, projectId: null },
-    });
-    if (
-      !credential?.baseUrl ||
-      !credential.encryptedApiKey ||
-      !credential.keyFingerprint ||
-      (!this.memory.get().configured && credential.label !== INDEPENDENT_CREDENTIAL_LABEL) ||
-      isDeletedCredentialLabel(credential.label)
-    ) {
-      if (credentialId) throw new AiCredentialNotFoundError(credentialId);
-      throw new Error('New API 地址和 Key 尚未配置');
-    }
-    const providerCredentials = await this.providerCredentialsForCredential(credential);
-    if (!providerCredentials) throw new AiCredentialNotFoundError(resolvedCredentialId);
-    return { credentialId: resolvedCredentialId, providerCredentials };
-  }
-
-  /**
-   * 在同一队列内刷新并消费设置，避免异步刷新覆盖本实例尚未落库的写入。
-   * 每次操作重新读取，不使用 TTL；失败只拒绝本次操作，后续请求可自动恢复。
-   */
-  private async withLatestSettings<T>(operation: () => T | Promise<T>): Promise<T> {
-    await this.ready;
-    return this.enqueueWrite(async () => {
-      await this.load();
-      return operation();
-    });
-  }
-
-  /** 将操作追加到本实例队列并向调用方保留异常，不让失败中断后续操作。 */
-  private enqueueWrite<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.writeQueue.then(operation);
-    this.writeQueue = result.then(
-      () => undefined,
-      () => undefined,
-    );
-    return result;
-  }
-
-  /**
-   * 按记录的 key-id 解密历史凭据，并在同一行可更新时逐步迁移到当前 key。
-   *
-   * 读取失败会向上抛出，不会用活动凭据替代历史快照。重加密只改变密文包装，
-   * 不改变 credentialId/version 或活动排序时间。比较读取版本后写回，冲突时
-   * 拒绝本次读取，不覆盖其他实例的新密文，也不返回尚未持久化的凭据。
-   */
-  private async providerCredentialsForCredential(credential: {
-    id: string;
-    baseUrl: string;
-    encryptedApiKey: string;
-    encryptionKeyId?: string | null;
-    version: number;
-    updatedAt: Date;
-  }): Promise<ProviderCredentials | undefined> {
-    if (!credential.baseUrl || !credential.encryptedApiKey) return undefined;
-    const decrypted = this.credentialKeyring.decrypt(
-      credential.encryptedApiKey,
-      credential.encryptionKeyId ?? undefined,
-    );
-    if (decrypted.needsReencryption) {
-      const rotated = this.credentialKeyring.encrypt(decrypted.plaintext);
-      if (typeof this.prisma.aiCredential.update !== 'function') {
-        throw new Error('AI credential rotation requires a durable credential update method');
-      }
-      try {
-        await this.prisma.aiCredential.update({
-          where: {
-            id: credential.id,
-            version: credential.version,
-            encryptedApiKey: credential.encryptedApiKey,
-            encryptionKeyId: credential.encryptionKeyId ?? null,
-            updatedAt: credential.updatedAt,
-          },
-          data: {
-            encryptedApiKey: rotated,
-            encryptionKeyId: this.credentialKeyring.currentKeyId,
-            updatedAt: credential.updatedAt,
-          },
-        });
-      } catch {
-        throw new Error('AI credential rotation could not be persisted');
-      }
-      credential.encryptedApiKey = rotated;
-      credential.encryptionKeyId = this.credentialKeyring.currentKeyId;
-    }
-    return { baseUrl: credential.baseUrl, apiKey: decrypted.plaintext };
-  }
-}
-
-function copyModelCatalogData(
-  model: ModelCatalog,
-  credentialId: string,
-): Prisma.ModelCatalogCreateManyInput {
-  return {
-    credentialId,
-    modelAlias: model.modelAlias,
-    name: model.name,
-    mediaType: model.mediaType,
-    ...(model.capabilities === null
-      ? {}
-      : { capabilities: model.capabilities as Prisma.InputJsonValue }),
-    ...(model.limitations === null
-      ? {}
-      : { limitations: model.limitations as Prisma.InputJsonValue }),
-    ...(model.price === null ? {} : { price: model.price as Prisma.InputJsonValue }),
-    refreshedAt: model.refreshedAt,
-  };
-}
-
-function toPrismaMediaType(mediaType: MediaType) {
-  return mediaType.toUpperCase() as 'TEXT' | 'IMAGE' | 'AUDIO' | 'VIDEO';
-}
-
-function fromPrismaMediaType(mediaType: string): MediaType {
-  return mediaType.toLowerCase() as MediaType;
-}
-
-function capabilityOverrideKey(
-  credentialId: string | null | undefined,
-  modelAlias: string,
-  mediaType: MediaType,
-): string {
-  return `${credentialId ?? ''}\0${modelAlias.trim()}\0${mediaType}`;
-}
-
-function credentialKey(reference: CredentialReference): string {
-  return `${reference.credentialId ?? ''}:${reference.credentialVersion ?? ''}`;
-}
-
-/** 判断行标记是否代表已删除的凭据；普通删除和已删除的独立凭据都不可再用。 */
-function isDeletedCredentialLabel(label: string | null | undefined): boolean {
-  return label === 'deleted' || label === INDEPENDENT_DELETED_CREDENTIAL_LABEL;
-}
-
-/** 返回删除凭据后的行标记；独立凭据保留“不参与活动选择”的语义。 */
-function deletedCredentialLabel(label: string): string {
-  if (label === INDEPENDENT_CREDENTIAL_LABEL) return INDEPENDENT_DELETED_CREDENTIAL_LABEL;
-  return isDeletedCredentialLabel(label) ? label : 'deleted';
-}
-
-function modelCatalogKey(credentialId: string | undefined): string {
-  return credentialId ?? LEGACY_MODEL_CATALOG_KEY;
-}
-
-function sameDefaultModels(
-  left: Partial<Record<MediaType, ModelSelection>>,
-  right: Partial<Record<MediaType, ModelSelection>>,
-): boolean {
-  return mediaTypes.every(
-    (mediaType) =>
-      left[mediaType]?.modelAlias === right[mediaType]?.modelAlias &&
-      left[mediaType]?.credentialId === right[mediaType]?.credentialId &&
-      left[mediaType]?.platformModelId === right[mediaType]?.platformModelId,
-  );
-}
-
-function normalizeModelSelection(value: string | ModelSelection): ModelSelection {
-  if (typeof value === 'string') return { modelAlias: value.trim() };
-  return {
-    modelAlias: value.modelAlias.trim(),
-    ...(value.platformModelId ? { platformModelId: value.platformModelId } : {}),
-    ...(value.credentialId ? { credentialId: value.credentialId } : {}),
-  };
-}
-
-function normalizeDefaultModels(
-  value: Partial<Record<MediaType, string | ModelSelection>>,
-): Partial<Record<MediaType, ModelSelection>> {
-  return Object.fromEntries(
-    Object.entries(value).flatMap(([mediaType, selection]) =>
-      mediaTypes.includes(mediaType as MediaType) && selection
-        ? [[mediaType, normalizeModelSelection(selection)]]
-        : [],
-    ),
-  ) as Partial<Record<MediaType, ModelSelection>>;
-}
-
-function cloneDefaultModels(
-  value: Partial<Record<MediaType, ModelSelection>>,
-): Partial<Record<MediaType, ModelSelection>> {
-  return normalizeDefaultModels(value);
-}
-
-/**
- * 在现有类型默认上应用局部更新；`null` 或空串删除该媒体类型。
+ * 规范化 OpenAI `{ data: [...] }` 与常见网关模型目录。
  *
- * @param current 该凭据当前已保存的类型默认模型。
- * @param input 按媒体类型的局部更新；未知媒体类型会被忽略。
- * @returns 新的类型默认模型，不修改入参。
- */
-export function applyCredentialDefaults(
-  current: Partial<Record<MediaType, ModelSelection>>,
-  input: UpdateCredentialDefaultsInput,
-): Partial<Record<MediaType, ModelSelection>> {
-  const next = { ...current };
-  for (const [mediaType, selection] of Object.entries(input)) {
-    if (!mediaTypes.includes(mediaType as MediaType)) continue;
-    if (selection === null || selection === '') delete next[mediaType as MediaType];
-    else if (selection !== undefined)
-      next[mediaType as MediaType] = normalizeModelSelection(selection);
-  }
-  return next;
-}
-
-/**
- * 校验并解析“新增不激活独立凭据”的输入。
- *
- * @param input 设置更新输入；`activate` 必须为 `false`。
- * @param fallbackBaseUrl `baseUrl` 缺省时复用的当前活动地址。
- * @returns 规范化后的基础地址、Key 明文和指纹；Key 明文只允许进入加密存储。
- * @throws TypeError `apiKey` 缺失、地址无法确定，或同时请求默认模型/超时时抛出。
- */
-export function resolveIndependentCredentialInput(
-  input: UpdateAiSettingsInput,
-  fallbackBaseUrl: string,
-): { baseUrl: string; apiKey: string; keyFingerprint: string } {
-  if (input.defaultModels !== undefined || input.timeoutMs !== undefined) {
-    throw new TypeError(
-      'independent AI credential creation cannot change default models or timeout',
-    );
-  }
-  const apiKey = input.apiKey;
-  if (!apiKey) throw new TypeError('independent AI credential creation requires an apiKey');
-  const baseUrl = (input.baseUrl ?? fallbackBaseUrl).replace(/\/$/, '');
-  if (!baseUrl) throw new TypeError('independent AI credential creation requires a baseUrl');
-  return { baseUrl, apiKey, keyFingerprint: fingerprint(apiKey) };
-}
-
-function serializeDefaultModels(
-  value: Partial<Record<MediaType, ModelSelection>>,
-): Partial<Record<MediaType, ModelSelection>> {
-  return Object.fromEntries(
-    Object.entries(value).map(([mediaType, selection]) => [mediaType, selection]),
-  ) as Partial<Record<MediaType, ModelSelection>>;
-}
-
-function samePersistedSettings(left: PersistedAiSettings, right: PersistedAiSettings): boolean {
-  return (
-    left.baseUrl === right.baseUrl &&
-    left.encryptedApiKey === right.encryptedApiKey &&
-    left.keyFingerprint === right.keyFingerprint &&
-    normalizeProviderTimeout(left.timeoutMs) === normalizeProviderTimeout(right.timeoutMs) &&
-    sameDefaultModels(
-      normalizeDefaultModels(left.defaultModels),
-      normalizeDefaultModels(right.defaultModels),
-    )
-  );
-}
-
-/** 同连接优先独立记录并保留当前活动行；返回摘要不含密文、明文和内部用途标记。 */
-function summarizeCredentials(
-  credentials: Array<{
-    id: string;
-    version?: number;
-    baseUrl: string;
-    keyFingerprint: string;
-    keySuffix?: string;
-    label?: string;
-    independent?: boolean;
-    updatedAt: string | Date;
-    defaultModels?: unknown;
-  }>,
-  activeCredentialId?: string,
-): AiCredentialSummary[] {
-  const sorted = credentials
-    .filter(
-      (credential) =>
-        credential.baseUrl &&
-        credential.keyFingerprint &&
-        !isDeletedCredentialLabel(credential.label),
-    )
-    .map((credential) => {
-      const defaultModels = normalizeDefaultModels(
-        readPersistedDefaults(credential.defaultModels).defaultModels,
-      );
-      return {
-        id: credential.id,
-        baseUrl: credential.baseUrl,
-        keyFingerprint: credential.keyFingerprint,
-        ...(credential.keySuffix ? { keySuffix: credential.keySuffix } : {}),
-        version: credential.version,
-        independent:
-          credential.independent === true || credential.label === INDEPENDENT_CREDENTIAL_LABEL,
-        updatedAt:
-          credential.updatedAt instanceof Date
-            ? credential.updatedAt.toISOString()
-            : credential.updatedAt,
-        ...(Object.keys(defaultModels).length > 0 ? { defaultModels } : {}),
-      };
-    })
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-  const deduplicated = new Map<string, (typeof sorted)[number]>();
-  for (const credential of sorted) {
-    const key = `${credential.baseUrl}\0${credential.keyFingerprint}`;
-    const existing = deduplicated.get(key);
-    if (
-      !existing ||
-      (credential.independent && !existing.independent) ||
-      (!existing.independent && credential.id === activeCredentialId)
-    ) {
-      deduplicated.set(key, credential);
-    }
-  }
-  const visible = [...deduplicated.values()];
-  const active = sorted.find((credential) => credential.id === activeCredentialId);
-  if (active && !visible.some((credential) => credential.id === active.id)) visible.push(active);
-  return visible
-    .map(({ independent: _independent, ...credential }) => ({
-      ...credential,
-      active: credential.id === activeCredentialId,
-    }))
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-}
-
-function normalizeCapabilityOverrides(value: unknown): ModelCapabilityOverride[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((candidate) => {
-    if (!isRecord(candidate)) return [];
-    const modelAlias = typeof candidate.modelAlias === 'string' ? candidate.modelAlias.trim() : '';
-    const credentialId =
-      typeof candidate.credentialId === 'string' && candidate.credentialId.trim()
-        ? candidate.credentialId.trim()
-        : undefined;
-    const mediaTypeValue =
-      typeof candidate.mediaType === 'string' ? candidate.mediaType.toLowerCase() : '';
-    const capabilities = candidate.capabilities;
-    if (
-      !modelAlias ||
-      !mediaTypes.includes(mediaTypeValue as MediaType) ||
-      !isRecord(capabilities)
-    ) {
-      return [];
-    }
-    return [
-      {
-        ...(credentialId ? { credentialId } : {}),
-        modelAlias,
-        mediaType: mediaTypeValue as MediaType,
-        capabilities,
-      },
-    ];
-  });
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
-}
-
-function isDefaultModels(
-  value: unknown,
-): value is Partial<Record<MediaType, string | ModelSelection>> {
-  return (
-    isRecord(value) &&
-    Object.entries(value).every(
-      ([key, alias]) =>
-        mediaTypes.includes(key as MediaType) &&
-        (typeof alias === 'string' || (isRecord(alias) && typeof alias.modelAlias === 'string')),
-    )
-  );
-}
-
-/** 从凭据 JSON 中读取默认模型与可选超时扩展字段，兼容旧格式。 */
-function readPersistedDefaults(value: unknown): {
-  defaultModels: Partial<Record<MediaType, string | ModelSelection>>;
-  timeoutMs?: number;
-} {
-  if (!isRecord(value)) return { defaultModels: {} };
-  const defaultModels = Object.fromEntries(
-    Object.entries(value).filter(([key]) => key !== '__timeoutMs'),
-  );
-  const timeoutMs =
-    value.__timeoutMs === undefined ? undefined : normalizeProviderTimeout(value.__timeoutMs);
-  return {
-    defaultModels: isDefaultModels(defaultModels) ? defaultModels : {},
-    ...(timeoutMs === undefined ? {} : { timeoutMs }),
-  };
-}
-
-/** 将超时写入现有默认模型 JSON，默认值保持旧数据形状。 */
-function writePersistedDefaults(value: {
-  defaultModels: Partial<Record<MediaType, string | ModelSelection>>;
-  timeoutMs?: number;
-}): Prisma.InputJsonValue {
-  const defaults = { ...value.defaultModels } as Record<string, unknown>;
-  if (value.timeoutMs !== undefined && value.timeoutMs !== DEFAULT_PROVIDER_TIMEOUT_MS) {
-    defaults.__timeoutMs = value.timeoutMs;
-  }
-  return defaults as Prisma.InputJsonValue;
-}
-
-async function requestModels(
-  baseUrl: string,
-  apiKey: string,
-  fetchImpl: typeof fetch = fetch,
-  timeoutMs = 10_000,
-  maxAttempts = 10,
-  retryDelayMs = 250,
-  maxResponseBytes = DEFAULT_MODEL_RESPONSE_BYTES,
-): Promise<ModelCatalogEntry[]> {
-  const normalizedBaseUrl = normalizeNewApiBaseUrl(baseUrl);
-  const attempts = Math.min(10, Math.max(1, Math.floor(maxAttempts)));
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const response = await fetchImpl(`${normalizedBaseUrl}/models`, {
-        headers: { authorization: `Bearer ${apiKey}` },
-        signal: controller.signal,
-        redirect: 'error',
-      });
-      if (!response.ok) throw new Error(`模型服务返回 ${response.status}`);
-      const payload = await readJsonResponseWithinLimit(response, maxResponseBytes);
-      return normalizeModelsPayload(payload);
-    } catch (error) {
-      lastError = error;
-      if (attempt >= attempts) throw error;
-      if (retryDelayMs > 0) await delay(retryDelayMs);
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error('模型服务请求失败');
-}
-
-async function readJsonResponseWithinLimit(
-  response: Response,
-  maxResponseBytes: number,
-): Promise<unknown> {
-  const contentLength = response.headers.get('content-length');
-  if (contentLength) {
-    const declaredBytes = Number(contentLength);
-    if (Number.isSafeInteger(declaredBytes) && declaredBytes > maxResponseBytes) {
-      throw new Error('模型服务响应超出大小限制');
-    }
-  }
-
-  if (!response.body) {
-    const payload = (await response.json()) as unknown;
-    const encoded = new TextEncoder().encode(JSON.stringify(payload));
-    if (encoded.byteLength > maxResponseBytes) {
-      throw new Error('模型服务响应超出大小限制');
-    }
-    return payload;
-  }
-
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let totalBytes = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!value) continue;
-    totalBytes += value.byteLength;
-    if (totalBytes > maxResponseBytes) {
-      await reader.cancel();
-      throw new Error('模型服务响应超出大小限制');
-    }
-    chunks.push(value);
-  }
-
-  const bytes = new Uint8Array(totalBytes);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
-}
-
-function parsePositiveByteLimit(value: string | number | undefined, fallback: number): number {
-  const parsed = typeof value === 'number' ? value : Number(value);
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-/**
- * Accept the OpenAI `{ data: [...] }` shape as well as common gateway
- * variants. The returned list is deduplicated by model ID and merges explicit
- * media capabilities from repeated records instead of letting the last record
- * erase earlier capabilities.
+ * @param payload 上游 JSON 响应。
+ * @returns 去重后的安全模型目录；无效记录会被忽略。
  */
 export function normalizeModelsPayload(payload: unknown): ModelCatalogEntry[] {
   const candidates = extractModelCandidates(payload);
@@ -2063,7 +184,6 @@ export function normalizeModelsPayload(payload: unknown): ModelCatalogEntry[] {
       ...(model.price || existing.price
         ? { price: { ...(existing.price ?? {}), ...(model.price ?? {}) } }
         : {}),
-      // One refresh should expose one coherent timestamp for a model.
       refreshedAt: model.refreshedAt,
     });
   }
@@ -2079,15 +199,6 @@ function extractModelCandidates(payload: unknown): unknown[] {
   return [];
 }
 
-/**
- * 合并重复模型记录的能力，并避免低档占位值覆盖已确认的非低档声明。
- *
- * @param modelAlias 模型别名。
- * @param mediaTypes 模型支持的媒体类型。
- * @param existing 已合并的能力对象。
- * @param incoming 当前记录的能力对象。
- * @returns 合并后的能力；两侧都没有能力时返回 `undefined`。
- */
 function mergeModelCapabilities(
   modelAlias: string,
   mediaTypes: MediaType[],
@@ -2097,7 +208,6 @@ function mergeModelCapabilities(
   if (!existing && !incoming) {
     return normalizeReasoningEffortCapabilities(modelAlias, mediaTypes, undefined);
   }
-
   const merged = { ...(existing ?? {}), ...(incoming ?? {}) };
   const existingEffort = existing?.reasoning_effort;
   const incomingEffort = incoming?.reasoning_effort;
@@ -2111,23 +221,13 @@ function mergeModelCapabilities(
   return normalizeReasoningEffortCapabilities(modelAlias, mediaTypes, merged);
 }
 
-/**
- * 为已确认的 GPT-5.6 文本模型补齐缺失或仅有 low 占位的推理强度。
- * 未列入白名单的模型、非文本模型以及已声明任一非 low 值的模型均原样返回。
- *
- * @param modelAlias 模型别名。
- * @param mediaTypes 模型支持的媒体类型。
- * @param capabilities 上游声明的能力对象。
- * @returns 可能补齐 `reasoning_effort` 的能力对象。
- */
 function normalizeReasoningEffortCapabilities(
   modelAlias: string,
   mediaTypes: MediaType[],
   capabilities: Record<string, unknown> | undefined,
 ): Record<string, unknown> | undefined {
   if (!mediaTypes.includes('text')) return capabilities;
-  if (!isGpt56TextModelAlias(modelAlias)) return capabilities;
-
+  if (!GPT_56_TEXT_MODEL_ALIAS_PATTERN.test(modelAlias.trim().toLowerCase())) return capabilities;
   const declared = capabilities?.reasoning_effort;
   const shouldFill =
     !capabilities ||
@@ -2136,19 +236,12 @@ function normalizeReasoningEffortCapabilities(
     isLowOnlyReasoningEffort(declared) ||
     isLegacyGpt56ReasoningEffortFallback(declared);
   if (!shouldFill) return capabilities;
-
   return {
     ...(capabilities ?? {}),
     reasoning_effort: [...GPT_56_REASONING_EFFORTS],
   };
 }
 
-/** 判断模型别名是否属于已确认支持六档推理强度的 GPT-5.6 系列。 */
-function isGpt56TextModelAlias(modelAlias: string): boolean {
-  return GPT_56_TEXT_MODEL_ALIAS_PATTERN.test(modelAlias.trim().toLowerCase());
-}
-
-/** 判断能力字段是否为空或仅包含 low（忽略空白与大小写）。 */
 function isLowOnlyReasoningEffort(value: unknown): boolean {
   return (
     Array.isArray(value) &&
@@ -2156,7 +249,6 @@ function isLowOnlyReasoningEffort(value: unknown): boolean {
   );
 }
 
-/** 判断数组是否为本模块为 GPT-5.6 生成的完整兼容档位。 */
 function isGpt56ReasoningEffortFallback(value: unknown): boolean {
   return (
     Array.isArray(value) &&
@@ -2165,7 +257,6 @@ function isGpt56ReasoningEffortFallback(value: unknown): boolean {
   );
 }
 
-/** 判断数组是否为上一版包含 none 的 GPT-5.6 兼容档位。 */
 function isLegacyGpt56ReasoningEffortFallback(value: unknown): boolean {
   return (
     Array.isArray(value) &&
@@ -2175,45 +266,39 @@ function isLegacyGpt56ReasoningEffortFallback(value: unknown): boolean {
 }
 
 function normalizeModel(candidate: unknown, refreshedAt: string): ModelCatalogEntry | undefined {
-  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return undefined;
-  const record = candidate as Record<string, unknown>;
-  const id = typeof record.id === 'string' ? record.id.trim() : '';
+  if (!isRecord(candidate)) return undefined;
+  const id = typeof candidate.id === 'string' ? candidate.id.trim() : '';
   if (!id) return undefined;
-  const explicitMediaTypes = extractMediaTypes(record);
+  const explicitMediaTypes = extractMediaTypes(candidate);
   const inferredMediaTypes =
     explicitMediaTypes.length > 0 ? explicitMediaTypes : inferMediaTypes(id);
   const mediaTypes: MediaType[] = inferredMediaTypes.length > 0 ? inferredMediaTypes : ['text'];
   const capabilities = normalizeReasoningEffortCapabilities(
     id,
     mediaTypes,
-    isRecord(record.capabilities) ? record.capabilities : undefined,
+    isRecord(candidate.capabilities) ? candidate.capabilities : undefined,
   );
   return {
     id,
-    name: typeof record.name === 'string' && record.name.trim() ? record.name.trim() : id,
+    name: typeof candidate.name === 'string' && candidate.name.trim() ? candidate.name.trim() : id,
     mediaTypes,
     ...(capabilities ? { capabilities } : {}),
-    ...(isRecord(record.limitations)
-      ? { limitations: record.limitations }
-      : isRecord(record.limits)
-        ? { limitations: record.limits }
-        : isRecord(record.constraints)
-          ? { limitations: record.constraints }
+    ...(isRecord(candidate.limitations)
+      ? { limitations: candidate.limitations }
+      : isRecord(candidate.limits)
+        ? { limitations: candidate.limits }
+        : isRecord(candidate.constraints)
+          ? { limitations: candidate.constraints }
           : {}),
-    ...(isRecord(record.price)
-      ? { price: record.price }
-      : isRecord(record.pricing)
-        ? { price: record.pricing }
+    ...(isRecord(candidate.price)
+      ? { price: candidate.price }
+      : isRecord(candidate.pricing)
+        ? { price: candidate.pricing }
         : {}),
     refreshedAt,
   };
 }
 
-/**
- * Some OpenAI-compatible gateways omit media capabilities entirely. Keep the
- * fallback deliberately narrow; database capability overrides remain the
- * authoritative way to describe non-standard model aliases.
- */
 function inferMediaTypes(modelAlias: string): MediaType[] {
   const normalized = modelAlias.trim().toLowerCase();
   if (/^(gpt-image|dall[-_]?e|imagen|flux|sdxl|stable[-_]?diffusion|midjourney)/.test(normalized)) {
@@ -2227,9 +312,7 @@ function inferMediaTypes(modelAlias: string): MediaType[] {
   ) {
     return ['video'];
   }
-  if (/^(tts|whisper|speech|audio[-_]?generation|eleven)/.test(normalized)) {
-    return ['audio'];
-  }
+  if (/^(tts|whisper|speech|audio[-_]?generation|eleven)/.test(normalized)) return ['audio'];
   return [];
 }
 
@@ -2256,7 +339,7 @@ function extractMediaTypes(record: Record<string, unknown>): MediaType[] {
   }
   const normalized = values
     .flatMap((value) => (typeof value === 'string' ? value.split(/[+,\s]/) : []))
-    .map((value) => normalizeMediaType(value))
+    .map(normalizeMediaType)
     .filter((value): value is MediaType => value !== undefined);
   return [...new Set(normalized)];
 }
@@ -2265,9 +348,7 @@ function normalizeMediaType(value: string): MediaType | undefined {
   const normalized = value.trim().toLowerCase().replace(/[_-]/g, '');
   if (!normalized) return undefined;
   if (['text', 'language', 'chat', 'completion', 'llm'].includes(normalized)) return 'text';
-  if (['image', 'images', 'imggeneration', 'imagegeneration'].includes(normalized)) {
-    return 'image';
-  }
+  if (['image', 'images', 'imggeneration', 'imagegeneration'].includes(normalized)) return 'image';
   if (['audio', 'speech', 'tts', 'stt', 'transcription', 'audiogeneration'].includes(normalized)) {
     return 'audio';
   }
@@ -2275,34 +356,6 @@ function normalizeMediaType(value: string): MediaType | undefined {
   return undefined;
 }
 
-/** 返回安全尾号；长度不超过 8 的 Key 最多显示半长且不超过 4 位，单字符不展示。 */
-export function safeKeySuffix(apiKey: string): string | undefined {
-  const visibleLength = apiKey.length > 8 ? 8 : Math.min(4, Math.floor(apiKey.length / 2));
-  return visibleLength ? apiKey.slice(-visibleLength) : undefined;
-}
-
-/**
- * 从已有密文只提取展示尾号；不改变密文或密钥版本。
- * 缺失或不可解密时省略尾号，凭据执行路径仍保留原有的严格解密校验。
- */
-export function credentialSuffixSummary(
-  keyring: CredentialEncryptionKeyring,
-  credential: { encryptedApiKey: string; encryptionKeyId?: string | null },
-): { keySuffix?: string } {
-  if (!credential.encryptedApiKey) return {};
-  try {
-    const keySuffix = safeKeySuffix(
-      keyring.decrypt(credential.encryptedApiKey, credential.encryptionKeyId ?? undefined)
-        .plaintext,
-    );
-    return keySuffix ? { keySuffix } : {};
-  } catch {
-    // 仅展示可选尾号，解密错误不得携带密钥材料进入响应或日志。
-    return {};
-  }
-}
-
-/** 计算 Key 指纹，仅用于识别相同连接；不可逆且不包含密钥材料。 */
-export function fingerprint(value: string) {
-  return createHash('sha256').update(value).digest('hex').slice(0, 12);
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }

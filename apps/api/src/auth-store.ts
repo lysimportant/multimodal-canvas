@@ -10,16 +10,14 @@ const USER_UUID_PATTERN =
 
 export type AuthUserRecord = {
   id: string;
-  email: string;
+  /** 外部身份允许无邮箱；资源归属始终由内部 UUID 决定。 */
+  email?: string;
   displayName?: string;
-  passwordHash?: string;
   role: AuthRole;
-  /** 存量账户默认 active，新增待验证账户为 pending。 */
+  /** 内部资源账号仅跟随已验证身份启用或禁用。 */
   status: 'active' | 'pending' | 'disabled';
   bio?: string;
   avatarUrl?: string;
-  emailVerifiedAt?: Date;
-  verificationRequired?: boolean;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -37,13 +35,11 @@ export type AuthSessionRecord = {
 
 export type CreateAuthUserInput = {
   email: string;
-  passwordHash: string;
   displayName?: string;
   role?: AuthRole;
   status?: AuthUserRecord['status'];
   bio?: string;
   avatarUrl?: string;
-  emailVerifiedAt?: Date;
 };
 
 export type CreateAuthSessionInput = {
@@ -52,32 +48,6 @@ export type CreateAuthSessionInput = {
   tokenHash: string;
   expiresAt: Date;
   absoluteExpiresAt?: Date;
-};
-
-/** 邮箱验证用途；不同用途的验证码不能交叉消费。 */
-export type VerificationPurpose = 'bootstrap' | 'register' | 'invite' | 'email' | 'reset';
-/** 一次性邮件挑战，payload 仅包含经服务端校验的待提交账户字段。 */
-export type EmailChallengeRecord = {
-  id: string;
-  email: string;
-  purpose: VerificationPurpose;
-  userId?: string;
-  codeHash: string;
-  payload: Record<string, string>;
-  attempts: number;
-  expiresAt: Date;
-  consumedAt?: Date;
-  createdAt: Date;
-};
-/** 仅记录 SMTP 接收与失败，不代表收件箱送达。 */
-export type EmailDeliveryRecord = {
-  id: string;
-  to: string;
-  purpose: string;
-  status: 'pending' | 'accepted' | 'failed';
-  error?: string;
-  createdAt: Date;
-  updatedAt: Date;
 };
 /** 不含敏感原值的账户或资源操作审计。 */
 export type AccountAuditRecord = {
@@ -91,10 +61,7 @@ export type AccountAuditRecord = {
 };
 /** 可由账户服务更新的字段；角色不开放给通用 PATCH。 */
 export type UpdateAuthUserInput = Partial<
-  Pick<
-    AuthUserRecord,
-    'email' | 'displayName' | 'passwordHash' | 'status' | 'bio' | 'avatarUrl' | 'emailVerifiedAt'
-  >
+  Pick<AuthUserRecord, 'email' | 'displayName' | 'status' | 'bio' | 'avatarUrl'>
 >;
 
 /** 本地文件存储使用版本化快照，日期和 Map 由标准 V8 序列化保留。 */
@@ -102,9 +69,6 @@ export type AuthStoreSnapshot = {
   version: 1;
   users: Map<string, AuthUserRecord>;
   sessions: Map<string, AuthSessionRecord>;
-  initialized: boolean;
-  challenges: Map<string, EmailChallengeRecord>;
-  deliveries: Map<string, EmailDeliveryRecord>;
   audit: AccountAuditRecord[];
 };
 
@@ -117,26 +81,11 @@ export type AuthStore = {
   touchSession(id: string, lastUsedAt: Date): Promise<void>;
   revokeSession(id: string, revokedAt: Date): Promise<void>;
   revokeAllSessions(userId: string, revokedAt: Date): Promise<number>;
-  /** 串行化敏感写入；同一事务中的初始化、验证消费和用户更改原子完成。 */
+  /** 串行化敏感写入；同一事务中的会话撤销和用户更改原子完成。 */
   transaction<T>(operation: (store: AuthStore) => Promise<T>): Promise<T>;
   listUsers(): Promise<AuthUserRecord[]>;
   updateUser(id: string, input: UpdateAuthUserInput): Promise<AuthUserRecord>;
   listSessions(userId: string): Promise<AuthSessionRecord[]>;
-  bootstrapInitialized(): Promise<boolean>;
-  markBootstrapInitialized(): Promise<void>;
-  findChallenge(
-    email: string,
-    purpose: VerificationPurpose,
-  ): Promise<EmailChallengeRecord | undefined>;
-  saveChallenge(challenge: EmailChallengeRecord): Promise<void>;
-  /** 身份敏感变更后撤销旧挑战，避免旧重置或换绑邮件恢复已撤销权限。 */
-  invalidateChallenges(
-    userId: string,
-    consumedAt: Date,
-    purpose?: VerificationPurpose,
-  ): Promise<void>;
-  saveDelivery(delivery: EmailDeliveryRecord): Promise<void>;
-  listDeliveries(): Promise<EmailDeliveryRecord[]>;
   appendAudit(event: AccountAuditRecord): Promise<void>;
   listAudit(): Promise<AccountAuditRecord[]>;
   close?(): Promise<void>;
@@ -159,9 +108,6 @@ export class MemoryAuthStore implements AuthStore {
   private transactionTail: Promise<unknown> = Promise.resolve();
   /** 仅当前仍有效的异步调用链可以重入；已结束事务派生的延迟任务必须重新排队。 */
   private readonly executionContext = new AsyncLocalStorage<{ active: boolean }>();
-  private initialized = false;
-  private challenges = new Map<string, EmailChallengeRecord>();
-  private deliveries = new Map<string, EmailDeliveryRecord>();
   private audit: AccountAuditRecord[] = [];
 
   /** 串行执行完整存储操作，事务内的嵌套调用可重入，操作失败不会阻塞后续请求。 */
@@ -187,9 +133,6 @@ export class MemoryAuthStore implements AuthStore {
       version: 1,
       users: this.usersById,
       sessions: this.sessions,
-      initialized: this.initialized,
-      challenges: this.challenges,
-      deliveries: this.deliveries,
       audit: this.audit,
     });
   }
@@ -199,8 +142,6 @@ export class MemoryAuthStore implements AuthStore {
       snapshot.version !== 1 ||
       !(snapshot.users instanceof Map) ||
       !(snapshot.sessions instanceof Map) ||
-      !(snapshot.challenges instanceof Map) ||
-      !(snapshot.deliveries instanceof Map) ||
       !Array.isArray(snapshot.audit)
     )
       throw new Error('账户存储格式损坏或版本不兼容');
@@ -209,12 +150,9 @@ export class MemoryAuthStore implements AuthStore {
     this.sessions.clear();
     for (const [id, user] of snapshot.users) {
       this.usersById.set(id, user);
-      this.userIdsByEmail.set(user.email, id);
+      if (user.email) this.userIdsByEmail.set(user.email, id);
     }
     for (const [id, session] of snapshot.sessions) this.sessions.set(id, session);
-    this.initialized = snapshot.initialized;
-    this.challenges = snapshot.challenges;
-    this.deliveries = snapshot.deliveries;
     this.audit = snapshot.audit;
   }
 
@@ -228,13 +166,10 @@ export class MemoryAuthStore implements AuthStore {
         id: randomUUID(),
         email,
         ...(input.displayName ? { displayName: input.displayName } : {}),
-        passwordHash: input.passwordHash,
         role: input.role ?? 'user',
         status: input.status ?? 'active',
-        verificationRequired: input.status === 'pending',
         ...(input.bio !== undefined ? { bio: input.bio } : {}),
         ...(input.avatarUrl !== undefined ? { avatarUrl: input.avatarUrl } : {}),
-        ...(input.emailVerifiedAt ? { emailVerifiedAt: input.emailVerifiedAt } : {}),
         createdAt: now,
         updatedAt: now,
       };
@@ -326,9 +261,6 @@ export class MemoryAuthStore implements AuthStore {
         users: this.usersById,
         emails: this.userIdsByEmail,
         sessions: this.sessions,
-        initialized: this.initialized,
-        challenges: this.challenges,
-        deliveries: this.deliveries,
         audit: this.audit,
       });
       try {
@@ -340,9 +272,6 @@ export class MemoryAuthStore implements AuthStore {
         for (const [key, value] of snapshot.emails) this.userIdsByEmail.set(key, value);
         this.sessions.clear();
         for (const [key, value] of snapshot.sessions) this.sessions.set(key, value);
-        this.initialized = snapshot.initialized;
-        this.challenges = snapshot.challenges;
-        this.deliveries = snapshot.deliveries;
         this.audit = snapshot.audit;
         throw error;
       }
@@ -358,11 +287,11 @@ export class MemoryAuthStore implements AuthStore {
       const user = this.usersById.get(id);
       if (!user) throw new AuthStoreError('invalid_user', 'user not found');
       const email = input.email ? normalizeEmail(input.email) : user.email;
-      const existingId = this.userIdsByEmail.get(email);
+      const existingId = email ? this.userIdsByEmail.get(email) : undefined;
       if (existingId && existingId !== id)
         throw new AuthStoreError('email_taken', 'email is already registered');
-      this.userIdsByEmail.delete(user.email);
-      this.userIdsByEmail.set(email, id);
+      if (user.email) this.userIdsByEmail.delete(user.email);
+      if (email) this.userIdsByEmail.set(email, id);
       const next = { ...user, ...input, email, updatedAt: new Date() };
       this.usersById.set(id, next);
       return cloneUser(next);
@@ -372,66 +301,6 @@ export class MemoryAuthStore implements AuthStore {
   async listSessions(userId: string): Promise<AuthSessionRecord[]> {
     return this.runExclusive(() =>
       [...this.sessions.values()].filter((session) => session.userId === userId).map(cloneSession),
-    );
-  }
-  /** 兼容已存在管理员的旧部署，并持久保留已初始化状态。 */
-  async bootstrapInitialized(): Promise<boolean> {
-    return this.runExclusive(() => {
-      this.initialized ||= [...this.usersById.values()].some((user) => user.role === 'admin');
-      return this.initialized;
-    });
-  }
-  /** 仅在账户事务中调用，完成后不会因管理员被禁用而重新开放。 */
-  async markBootstrapInitialized(): Promise<void> {
-    await this.runExclusive(() => {
-      this.initialized = true;
-    });
-  }
-  /** 查找用途绑定的最新验证挑战。 */
-  async findChallenge(
-    email: string,
-    purpose: VerificationPurpose,
-  ): Promise<EmailChallengeRecord | undefined> {
-    return this.runExclusive(() => {
-      const value = this.challenges.get(`${email}:${purpose}`);
-      return value ? structuredClone(value) : undefined;
-    });
-  }
-  /** 替换最新挑战，重发自动使旧验证码失效。 */
-  async saveChallenge(challenge: EmailChallengeRecord): Promise<void> {
-    await this.runExclusive(() => {
-      this.challenges.set(`${challenge.email}:${challenge.purpose}`, structuredClone(challenge));
-    });
-  }
-  /** 按用户和用途撤销挑战，不保存或读取验证码明文。 */
-  async invalidateChallenges(
-    userId: string,
-    consumedAt: Date,
-    purpose?: VerificationPurpose,
-  ): Promise<void> {
-    await this.runExclusive(() => {
-      for (const challenge of this.challenges.values())
-        if (
-          challenge.userId === userId &&
-          (!purpose || challenge.purpose === purpose) &&
-          !challenge.consumedAt
-        )
-          challenge.consumedAt = consumedAt;
-    });
-  }
-  /** 保存不含邮件正文和验证码的投递状态。 */
-  async saveDelivery(delivery: EmailDeliveryRecord): Promise<void> {
-    await this.runExclusive(() => {
-      this.deliveries.set(delivery.id, structuredClone(delivery));
-    });
-  }
-  /** 返回最近的投递记录，避免管理页面无限增长。 */
-  async listDeliveries(): Promise<EmailDeliveryRecord[]> {
-    return this.runExclusive(() =>
-      [...this.deliveries.values()]
-        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-        .slice(0, 100)
-        .map((entry) => structuredClone(entry)),
     );
   }
   /** 追加审计，调用方不能更新或删除既有记录。 */
@@ -456,14 +325,11 @@ export class PrismaAuthStore implements AuthStore {
       const user = await this.prisma.user.create({
         data: {
           email: normalizeEmail(input.email),
-          passwordHash: input.passwordHash,
           ...(input.displayName ? { displayName: input.displayName } : {}),
           role: input.role === 'admin' ? 'ADMIN' : 'USER',
           status: input.status ?? 'active',
-          verificationRequired: input.status === 'pending',
           bio: input.bio,
           avatarUrl: input.avatarUrl,
-          emailVerifiedAt: input.emailVerifiedAt,
         },
       });
       return mapUser(user);
@@ -476,7 +342,7 @@ export class PrismaAuthStore implements AuthStore {
   }
 
   async findUserByEmail(email: string): Promise<AuthUserRecord | undefined> {
-    const user = await this.prisma.user.findUnique({ where: { email: normalizeEmail(email) } });
+    const user = await this.prisma.user.findFirst({ where: { email: normalizeEmail(email) } });
     return user ? mapUser(user) : undefined;
   }
 
@@ -569,83 +435,6 @@ export class PrismaAuthStore implements AuthStore {
       await this.prisma.authSession.findMany({ where: { userId }, orderBy: { createdAt: 'desc' } })
     ).map(mapSession);
   }
-  /** 首次兼容读取旧管理员后写入永久标记。 */
-  async bootstrapInitialized(): Promise<boolean> {
-    if (await this.prisma.adminBootstrap.findUnique({ where: { id: 'singleton' } })) return true;
-    if (!(await this.prisma.user.findFirst({ where: { role: 'ADMIN' }, select: { id: true } })))
-      return false;
-    await this.markBootstrapInitialized();
-    return true;
-  }
-  /** 事务内幂等写入完成标记。 */
-  async markBootstrapInitialized(): Promise<void> {
-    await this.prisma.adminBootstrap.upsert({
-      where: { id: 'singleton' },
-      create: { id: 'singleton' },
-      update: {},
-    });
-  }
-  /** 查找最新的邮件挑战，只返回内部用途数据。 */
-  async findChallenge(
-    email: string,
-    purpose: VerificationPurpose,
-  ): Promise<EmailChallengeRecord | undefined> {
-    const row = await this.prisma.emailChallenge.findUnique({
-      where: { email_purpose: { email, purpose } },
-    });
-    return row
-      ? {
-          ...row,
-          purpose: row.purpose as VerificationPurpose,
-          userId: row.userId ?? undefined,
-          consumedAt: row.consumedAt ?? undefined,
-          payload: row.payload as Record<string, string>,
-        }
-      : undefined;
-  }
-  /** 覆盖同用途挑战；消费和用户激活在同一事务中提交。 */
-  async saveChallenge(challenge: EmailChallengeRecord): Promise<void> {
-    const data = {
-      ...challenge,
-      userId: challenge.userId ?? null,
-      consumedAt: challenge.consumedAt ?? null,
-      updatedAt: new Date(),
-    };
-    await this.prisma.emailChallenge.upsert({
-      where: { email_purpose: { email: challenge.email, purpose: challenge.purpose } },
-      create: data,
-      update: data,
-    });
-  }
-  /** 与密码/邮箱/禁用修改共享事务，使旧挑战立即失效。 */
-  async invalidateChallenges(
-    userId: string,
-    consumedAt: Date,
-    purpose?: VerificationPurpose,
-  ): Promise<void> {
-    await this.prisma.emailChallenge.updateMany({
-      where: { userId, ...(purpose ? { purpose } : {}), consumedAt: null },
-      data: { consumedAt },
-    });
-  }
-  /** 持久化邮件状态，失败诊断必须由调用方预先脱敏。 */
-  async saveDelivery(delivery: EmailDeliveryRecord): Promise<void> {
-    await this.prisma.emailDelivery.upsert({
-      where: { id: delivery.id },
-      create: delivery,
-      update: delivery,
-    });
-  }
-  /** 最近一百封的 SMTP 结果，不包含邮件正文。 */
-  async listDeliveries(): Promise<EmailDeliveryRecord[]> {
-    return (
-      await this.prisma.emailDelivery.findMany({ orderBy: { createdAt: 'desc' }, take: 100 })
-    ).map((row) => ({
-      ...row,
-      status: row.status as EmailDeliveryRecord['status'],
-      error: row.error ?? undefined,
-    }));
-  }
   /** 保存不可变操作记录。 */
   async appendAudit(event: AccountAuditRecord): Promise<void> {
     await this.prisma.accountAudit.create({ data: { ...event, updatedAt: event.createdAt } });
@@ -672,30 +461,24 @@ function normalizeEmail(email: string): string {
 
 function mapUser(user: {
   id: string;
-  email: string;
+  email: string | null;
   displayName: string | null;
-  passwordHash: string | null;
   role: PrismaUserRole;
   status?: string;
   bio?: string | null;
   avatarUrl?: string | null;
-  emailVerifiedAt?: Date | null;
-  verificationRequired?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }): AuthUserRecord {
   return {
     id: user.id,
-    email: user.email,
+    ...(user.email ? { email: user.email } : {}),
     ...(user.displayName ? { displayName: user.displayName } : {}),
-    ...(user.passwordHash ? { passwordHash: user.passwordHash } : {}),
     role: user.role === 'ADMIN' ? 'admin' : 'user',
     status:
       user.status === 'disabled' ? 'disabled' : user.status === 'pending' ? 'pending' : 'active',
-    verificationRequired: user.verificationRequired ?? false,
     ...(user.bio ? { bio: user.bio } : {}),
     ...(user.avatarUrl ? { avatarUrl: user.avatarUrl } : {}),
-    ...(user.emailVerifiedAt ? { emailVerifiedAt: user.emailVerifiedAt } : {}),
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
   };

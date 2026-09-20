@@ -19,7 +19,7 @@ param(
   [Parameter(Mandatory)][string]$SnapshotPath,
   [switch]$PrepareOnly,
   [ValidateSet('full', 'delta')][string]$Scope = 'full',
-  [ValidateSet('api', 'web', 'worker', 'providers', 'domain', 'observability', 'credential-crypto', 'ui')]
+  [ValidateSet('api', 'web', 'worker', 'providers', 'domain', 'execution', 'observability', 'credential-crypto', 'ui')]
   [string[]]$Packages = @(),
   [ValidatePattern('^multimodal-canvas-acceptance:[a-z0-9.-]+$')]
   [string]$Image = 'multimodal-canvas-acceptance:local'

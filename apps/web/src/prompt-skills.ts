@@ -2,7 +2,7 @@ import { promptDocumentSchema, type PromptDocument } from '@multimodal-canvas/do
 import { z } from 'zod';
 
 import { apiFetch, AuthSessionChangedError, getAuthSessionGeneration } from './auth-client';
-import { QuoteRequestError, submitQuotedRequest } from './marketplace/quote-client';
+import { submitGenerationRequest } from './generation-client';
 
 /** 通过公共解析器保留完整文档约束，避免跨包嵌套 Zod 泛型超出推导深度。 */
 const documentSchema = z.unknown().transform((value, context): PromptDocument => {
@@ -26,7 +26,6 @@ const optimizationRequestSchema = z.object({
   idempotencyKey: z.string().min(1),
   modelAlias: z.string().min(1).optional(),
   credentialId: z.string().min(1).optional(),
-  platformModelId: z.string().min(1).optional(),
 });
 
 /** 完整优化请求快照，重试必须沿用全部字段和幂等键。 */
@@ -41,7 +40,6 @@ const optimizationSchema = z.object({
   status: z.enum(['queued', 'running', 'succeeded', 'failed', 'cancelled']),
   modelAlias: z.string().min(1),
   credentialId: z.string().min(1).optional(),
-  platformModelId: z.string().min(1).optional(),
   promptDocument: documentSchema.optional(),
   error: z.string().optional(),
   simulated: z.boolean().optional(),
@@ -58,7 +56,6 @@ const pendingOptimizationSchema = z.object({
     .object({
       modelAlias: z.string().min(1),
       credentialId: z.string().optional(),
-      platformModelId: z.string().optional(),
     })
     .optional(),
   draft: documentSchema.optional(),
@@ -164,17 +161,10 @@ async function readOptimization(
     result.skillId !== request.skillId ||
     result.skillVersion !== request.skillVersion ||
     (runId !== undefined && result.runId !== runId) ||
-    (request.platformModelId !== undefined
-      ? result.platformModelId !== request.platformModelId
-      : (request.modelAlias !== undefined && result.modelAlias !== request.modelAlias) ||
-        (request.credentialId !== undefined &&
-          result.credentialId !== undefined &&
-          result.credentialId !== request.credentialId)) ||
+    (request.modelAlias !== undefined && result.modelAlias !== request.modelAlias) ||
+    (request.credentialId !== undefined && result.credentialId !== request.credentialId) ||
     (model !== undefined &&
-      (model.platformModelId
-        ? result.platformModelId !== model.platformModelId
-        : result.modelAlias !== model.modelAlias ||
-          (result.credentialId !== undefined && result.credentialId !== model.credentialId)))
+      (result.modelAlias !== model.modelAlias || result.credentialId !== model.credentialId))
   )
     throw new Error('提示词优化任务身份不一致');
   if (result.status === 'succeeded') {
@@ -211,24 +201,13 @@ export async function submitPromptOptimization(
   const parsed = optimizationRequestSchema.parse(request);
   if (parsed.credentialId && !parsed.modelAlias) throw new Error('指定连接时必须同时指定文字模型');
   const { projectId, ...body } = parsed;
-  if (body.platformModelId) {
-    delete body.modelAlias;
-    delete body.credentialId;
-  }
   const fetcher =
     options.fetcher ?? ((input, init) => apiFetch(input, init, { expectedAuthGeneration }));
-  let response: Response;
-  try {
-    response = await submitQuotedRequest(
-      apiBaseUrl,
-      { path: optimizationUrl(projectId, ''), body },
-      { fetcher, signal: options.signal },
-    );
-  } catch (error) {
-    if (error instanceof QuoteRequestError)
-      throw new PromptOptimizationRequestError(error.message, error.status, error.code);
-    throw error;
-  }
+  const response = await submitGenerationRequest(
+    apiBaseUrl,
+    { path: optimizationUrl(projectId, ''), body },
+    { fetcher, signal: options.signal },
+  );
   return readOptimization(response, parsed, expectedAuthGeneration);
 }
 

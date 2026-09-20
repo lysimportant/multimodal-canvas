@@ -441,39 +441,24 @@ export function NodeQuickEditor({
   }, [mediaSettingsOpen]);
   const storedModelAlias = node.data.modelAlias ?? '';
   const currentCredentialId = node.data.credentialId;
-  const currentPlatformModelId = node.data.platformModelId;
   const availableModels = models.filter((model) => model.mediaTypes.includes(node.data.mediaType));
-  const selectedModel = findSelectedModel(
-    availableModels,
-    storedModelAlias,
-    currentCredentialId,
-    currentPlatformModelId,
-  );
-  const currentModel =
-    currentPlatformModelId && selectedModel ? selectedModel.id : storedModelAlias;
-  const modelIssue = currentPlatformModelId
-    ? !selectedModel
-      ? '当前平台模型已下架，请选择其他模型'
-      : selectedModel.availability && selectedModel.availability !== 'available'
-        ? '当前平台模型暂不可用，请选择其他模型'
-        : undefined
-    : availableModels.some((model) => model.platformModelId)
-      ? '请先选择平台模型'
-      : undefined;
+  const selectedModel = findSelectedModel(availableModels, storedModelAlias, currentCredentialId);
+  const currentModel = storedModelAlias;
+  const modelIssue =
+    currentModel && !selectedModel
+      ? '当前分组模型已失效，请重新选择；不会自动切换其他分组'
+      : selectedModel?.availability && selectedModel.availability !== 'available'
+        ? selectedModel.unavailableReason || '当前分组模型暂不可用，请重新选择'
+        : undefined;
   const currentModelIsMissing =
     Boolean(currentModel) &&
-    !availableModels.some((model) =>
-      currentPlatformModelId
-        ? model.platformModelId === currentPlatformModelId
-        : !model.platformModelId &&
-          model.id === currentModel &&
-          model.credentialId === currentCredentialId,
+    !availableModels.some(
+      (model) => model.id === currentModel && model.credentialId === currentCredentialId,
     );
   const currentModelValue = currentModel
     ? modelOptionValue({
         modelAlias: currentModel,
         credentialId: currentCredentialId,
-        platformModelId: currentPlatformModelId,
       })
     : '';
   const modelOptions = buildModelOptions(
@@ -1240,33 +1225,36 @@ export function NodeQuickEditor({
                 ? '生成中'
                 : !enabled
                   ? '节点已停用'
-                  : modelIssue ||
-                      generationCountIssue ||
-                      durationIssue ||
-                      resolutionIssue ||
-                      aspectRatioIssue ||
-                      videoContractParameterIssue
-                    ? (modelIssue ??
-                      generationCountIssue ??
-                      durationIssue ??
-                      resolutionIssue ??
-                      aspectRatioIssue ??
-                      videoContractParameterIssue)
-                    : !nodeHasPrompt(node.data)
-                      ? '请先填写提示词'
-                      : node.data.mediaType === 'image' &&
-                          selectedModel &&
-                          imageEditCapability(selectedModel).unsupported
-                        ? '当前模型明确不支持图片编辑，请更换模型后再运行'
-                        : mediaParameterIssue && node.data.mediaType === 'image'
-                          ? mediaParameterIssue
-                          : '把修改结果写到新节点'
+                  : !currentModel
+                    ? '请先选择本人可用的分组模型'
+                    : modelIssue ||
+                        generationCountIssue ||
+                        durationIssue ||
+                        resolutionIssue ||
+                        aspectRatioIssue ||
+                        videoContractParameterIssue
+                      ? (modelIssue ??
+                        generationCountIssue ??
+                        durationIssue ??
+                        resolutionIssue ??
+                        aspectRatioIssue ??
+                        videoContractParameterIssue)
+                      : !nodeHasPrompt(node.data)
+                        ? '请先填写提示词'
+                        : node.data.mediaType === 'image' &&
+                            selectedModel &&
+                            imageEditCapability(selectedModel).unsupported
+                          ? '当前模型明确不支持图片编辑，请更换模型后再运行'
+                          : mediaParameterIssue && node.data.mediaType === 'image'
+                            ? mediaParameterIssue
+                            : '把修改结果写到新节点'
             }
             onClick={() => onRunNewNode?.()}
             disabled={
               busy ||
               !enabled ||
               !onRunNewNode ||
+              !currentModel ||
               Boolean(
                 modelIssue ||
                 generationCountIssue ||
@@ -1760,10 +1748,7 @@ export function resolvePreviousOperationSeed(
   mediaType: AssetFlowNode['data']['mediaType'],
   mode: Exclude<AssetFlowNode['data']['mode'], 'source'>,
 ):
-  | Pick<
-      AssetFlowNode['data'],
-      'modelAlias' | 'credentialId' | 'platformModelId' | 'parameters' | 'inferenceStrength'
-    >
+  | Pick<AssetFlowNode['data'], 'modelAlias' | 'credentialId' | 'parameters' | 'inferenceStrength'>
   | undefined {
   for (let index = nodes.length - 1; index >= 0; index -= 1) {
     const data = nodes[index]?.data;
@@ -1771,7 +1756,6 @@ export function resolvePreviousOperationSeed(
     const parameters = readNodeMediaParameters(data);
     return {
       ...(data.modelAlias ? { modelAlias: data.modelAlias } : {}),
-      ...(data.platformModelId ? { platformModelId: data.platformModelId } : {}),
       ...(data.credentialId ? { credentialId: data.credentialId } : {}),
       ...(Object.keys(parameters).length > 0 ? { parameters } : {}),
       ...(data.inferenceStrength ? { inferenceStrength: data.inferenceStrength } : {}),
@@ -2143,7 +2127,7 @@ function buildModelOptions(
     options.push({
       value: currentValue,
       label: currentModel,
-      description: currentCredentialId ? '当前设置，目录中不可用' : '旧设置，未绑定 API Key',
+      description: currentCredentialId ? '原分组当前不可用' : '旧设置缺少分组身份',
     });
   }
   for (const group of groupModelsByCredential(models)) {
@@ -2152,20 +2136,15 @@ function buildModelOptions(
         value: modelOptionValue({
           modelAlias: model.id,
           credentialId: model.credentialId,
-          platformModelId: model.platformModelId,
         }),
         label: model.name,
-        ...(model.connection
-          ? {
-              description: model.connection.label,
-              trailingLabel: model.connection.label.split(' · ').at(-1),
-            }
-          : {}),
+        description: model.group ?? model.credentialLabel ?? '未知分组',
+        trailingLabel: model.group ?? model.credentialLabel,
         ...(model.availability && model.availability !== 'available'
           ? {
               disabled: true,
               description: [
-                model.connection?.label,
+                model.group ?? model.credentialLabel,
                 model.availability === 'needs_review' ? '待管理员确认' : '暂不可用',
               ]
                 .filter(Boolean)
@@ -2184,14 +2163,10 @@ function findSelectedModel(
   models: ModelEntry[],
   modelAlias: string,
   credentialId: string | undefined,
-  platformModelId?: string,
 ): ModelEntry | undefined {
   return (
-    models.find((model) =>
-      platformModelId
-        ? model.platformModelId === platformModelId
-        : !model.platformModelId && model.id === modelAlias && model.credentialId === credentialId,
-    ) ?? (!modelAlias ? models[0] : undefined)
+    models.find((model) => model.id === modelAlias && model.credentialId === credentialId) ??
+    (!modelAlias ? models[0] : undefined)
   );
 }
 
@@ -2432,8 +2407,6 @@ function formatTriggerLabel(
 /** 将模型与凭据绑定编码为菜单可用的稳定值。 */
 function modelOptionValue(selection: ModelSelection) {
   if (!selection.modelAlias) return '';
-  if (selection.platformModelId)
-    return JSON.stringify(['platform', selection.platformModelId, selection.modelAlias]);
   return JSON.stringify([selection.credentialId ?? '', selection.modelAlias]);
 }
 
@@ -2446,10 +2419,9 @@ function parseModelOptionValue(value: string): ModelSelection {
       Array.isArray(parsed) &&
       parsed.length === 3 &&
       parsed[0] === 'platform' &&
-      typeof parsed[1] === 'string' &&
       typeof parsed[2] === 'string'
     )
-      return { platformModelId: parsed[1], modelAlias: parsed[2] };
+      return { modelAlias: parsed[2] };
     if (
       Array.isArray(parsed) &&
       parsed.length === 2 &&
@@ -2472,15 +2444,10 @@ function parseModelOptionValue(value: string): ModelSelection {
 function groupModelsByCredential(models: ModelEntry[]) {
   const groups = new Map<string, { id: string; label: string; models: ModelEntry[] }>();
   for (const model of models) {
-    const id =
-      model.connection?.id ??
-      (model.platformModelId ? 'platform' : (model.credentialId ?? 'active'));
+    const id = model.credentialId ?? 'unavailable';
     const group = groups.get(id) ?? {
       id,
-      label:
-        model.connection?.label ??
-        (model.platformModelId ? '平台模型' : model.credentialLabel) ??
-        (model.credentialId ? `API Key · ${model.credentialId.slice(0, 8)}` : '当前 API Key'),
+      label: model.group ?? model.credentialLabel ?? '未知分组',
       models: [],
     };
     group.models.push(model);

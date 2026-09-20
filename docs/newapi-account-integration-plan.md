@@ -1,6 +1,6 @@
 # New API 账号接入与画布翻新计划
 
-更新时间：2026-09-21。主任务：P1。状态：已合并收费广场阶段的源码审查与分批清理计划；本轮只完成文档，功能替代、代码/数据清理和上线验收尚未执行。
+更新时间：2026-09-21。主任务：P1，身份、执行与数据边界按 P0 验证。代码实施、本地隔离迁移/清理演练、PC Web 和五模型 Mock 验收已完成；共享实例、生产部署和真实付费生成未执行。实际命令与剩余项见[实施检查点](newapi-account-implementation-checkpoint.md)。
 
 依据任务[计费模式你打算怎么做？汇报给我，要想保持现在的模式不变，新增解决](codex://threads/01a0b591-94e7-77a3-b1d0-81ae84035556)及本任务后续确认，采用“New API 唯一账号、统一权限与扣费，Canvas 管理该账号的项目、素材和执行”的路线。当前 Canvas 账号由用户确认为测试账号，允许在明确范围内清理；不再要求先注册或登录 Canvas 再绑定 New API。本文替代的旧模型调用恢复计划已在前次提交删除，历史计费方案和检查点仅作为拆除与收尾依据。
 
@@ -25,7 +25,7 @@
 
 从当前代码定向解耦，不整条回退收费分支。保留视频修复、冻结输入、幂等提交、恢复及服务端凭据加密/分组映射；手动填写地址、导入或选择 Key、激活全局连接、连接删除和普通界面的 Key 尾号退出新版产品流程。用户选择带分组标识的模型，系统自动使用该组 Key。
 
-本轮交付为把已核实的收费广场审查结果归入第 7 节清单，并在第 8 节按依赖拆成可验证、可恢复的清理批次；仅更新本文与 TODO，验证后提交并推送。用户明确本轮先完成分阶段文档，不实际删除源码、配置、旧文档或数据。所有不再需要的内容都必须有删除批次，临时兼容代码必须有退出条件；文档形成不能代替实际清理。后续实施优先 PC Web，移动端、其他身份提供方、新支付系统、未适配协议、性能重构及 New API 真实数据清理不在范围。
+本次按用户后续授权实施 B0—B6，并允许修改 New API、创建独立 Docker 管理员和分组。PC Web 优先；生产操作、未列清单的共享数据删除和真实付费生成不属于本次自动执行范围。移动端扩展、其他身份提供方、新支付系统和性能重构后置。
 
 ### 完成标准
 
@@ -43,31 +43,31 @@
 
 ## 2. 当前基线与改造原因
 
-下列代码及工作区事实在本轮核对；没有查询当前线上数据库或调用真实账号接口。
+实施从以下基线开始；仅本机隔离账号参与测试，线上测试账号未使用。
 
 | 项目         | 本轮基线                                                                                                                                    |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| Canvas       | `G:/multimodal-canvas`，`codex/generate-to-new-node @ 5ff2915d50ca47c808476e871845f9a6fa2a4078`                                             |
+| Canvas       | `G:/multimodal-canvas`，`codex/generate-to-new-node @ 9a0bed93abb10df98ca4d39bcad6880f0b4fba5a`                                             |
 | 上游         | `origin/codex/generate-to-new-node`；origin 为 `https://github.com/lysimportant/multimodal-canvas.git`                                      |
 | 用户原有修改 | `docs/resource-input-compatibility.md` 已修改，排除出本轮提交；SHA256 为 `56B2C9D2BFB09DCC56720769B9CE12AED4877A29090DEDFBADD2F1FC5B3AA2A7` |
-| New API      | 只读核对 `D:/newapi`，`main @ 43ee5dbf99ac6dd194e99f298ec582cf3adedd46`，工作区干净，跟踪 `fork/main`                                       |
+| New API      | 实施基线 `D:/newapi`，`main @ 43ee5dbf99ac6dd194e99f298ec582cf3adedd46`，工作区干净，跟踪 `fork/main`                                       |
 | 工具与依赖   | Node `24.12.0`、pnpm `11.19.0`、PowerShell `7.6.5`；存在 pnpm 锁文件和本地依赖，本轮无需安装                                                |
 | 恢复入口     | 根目录没有 README、TODO.md 或本地 AGENTS.md；遵守本次提供的规则，使用[待办汇总](../TODO-CONSOLIDATED.md)与本文接续                          |
-| 本轮检查基线 | 修改前本文与 TODO 的 Prettier 检查、`git diff --check` 通过；未执行业务测试、启动或上线检查                                                 |
+| 本轮检查基线 | 修改前 `pnpm test` 退出 0；API 983 passed / 85 skipped；设施和生产验收另行记录                                                              |
 
-已有[多连接检查点](canvas-connections-checkpoint.md)和[H3 修复记录](newapi-pricing-sync-checkpoint.md)包含历史测试及部署缺口。它们不能当作本轮测试结果；旧记录中的 8080 状态、插件版本和模型能力在实施阶段必须重新读取。
+历史多连接、计费和价格同步文档已退出；仍适用的 H3 精确映射、素材访问、插件版本及恢复缺口转入 [Provider 验收记录](newapi-provider-acceptance.md)。旧阶段计数与 8080 状态不作为当前证据。
 
-### 已确认的耦合
+### 改造前的耦合（历史依据）
 
-| 位置                                                                                                 | 当前行为                                                                                     | 改造要求                                                                                 |
-| ---------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| [用户与资源结构](../prisma/schema.prisma)、[认证边界](../apps/api/src/auth.ts)                       | 用户和资源外键使用 UUID，`User.email` 当前必填且唯一，存在本地密码与验证字段                 | 复用内部 UUID 映射外部身份；调整邮箱可选等约束，不能填假邮箱、用上游数字 ID 覆盖全部外键 |
-| [凭据存储](../apps/api/src/settings.ts)与[数据库结构](../prisma/schema.prisma)                       | `AiCredential` 有 `ownerId`，但平台连接创建为 `ownerId: null`，列表按 `projectId: null` 读取 | 补齐用户归属、查询及版本读取校验；仅给新行加 owner 字段不够                              |
-| [API 模型解析](../apps/api/src/app.ts)                                                               | 配置 marketplace 后通过 `resolvePublishedModel` / `resolveLegacyModel` 解析商品              | 新请求改为本人连接及精确模型；历史解析仅留到待保留数据转换或旧任务收尾完成               |
-| [启动入口](../apps/api/src/index.ts)与[运行服务](../apps/api/src/runs.ts)                            | 真实调用依赖数据库、BullMQ、计费服务；提交与 outbox 由账务流程持久化                         | 保留数据库、队列和 outbox，把执行授权从冻结金额中分离                                    |
-| [Worker 授权](../apps/worker/src/billing-execution.ts)及[执行器](../apps/worker/src/index.ts)        | 验证冻结账单、逐节点授权与快照；真实 Provider 缺少钱包配置会拒绝                             | 新增不依赖钱包的持久执行授权，旧账务兼容只用于切换收尾，不长期维持双模式                 |
-| [前端生成入口](../apps/web/src/App.tsx)与[节点编辑器](../apps/web/src/workspace/NodeQuickEditor.tsx) | 提交平台模型身份并经过报价确认                                                               | 全部入口统一使用用户连接；取消锁价文案和钱包门槛                                         |
-| [Provider](../packages/providers/src/index.ts)                                                       | 已有视频合同、输入映射、轮询和下载                                                           | 继续复用，单独验证媒体能力，不用移除收费代替协议适配                                     |
+| 位置                                                                                                       | 当前行为                                                                                     | 改造要求                                                                                 |
+| ---------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| [用户与资源结构](../prisma/schema.prisma)、[认证边界](../apps/api/src/auth.ts)                             | 用户和资源外键使用 UUID，`User.email` 当前必填且唯一，存在本地密码与验证字段                 | 复用内部 UUID 映射外部身份；调整邮箱可选等约束，不能填假邮箱、用上游数字 ID 覆盖全部外键 |
+| [凭据存储](../apps/api/src/settings.ts)与[数据库结构](../prisma/schema.prisma)                             | `AiCredential` 有 `ownerId`，但平台连接创建为 `ownerId: null`，列表按 `projectId: null` 读取 | 补齐用户归属、查询及版本读取校验；仅给新行加 owner 字段不够                              |
+| [API 模型解析](../apps/api/src/app.ts)                                                                     | 配置 marketplace 后通过 `resolvePublishedModel` / `resolveLegacyModel` 解析商品              | 新请求改为本人连接及精确模型；历史解析仅留到待保留数据转换或旧任务收尾完成               |
+| [启动入口](../apps/api/src/index.ts)与[运行服务](../apps/api/src/runs.ts)                                  | 真实调用依赖数据库、BullMQ、计费服务；提交与 outbox 由账务流程持久化                         | 保留数据库、队列和 outbox，把执行授权从冻结金额中分离                                    |
+| Worker 授权（原 `../apps/worker/src/billing-execution.ts`，已退出）及[执行器](../apps/worker/src/index.ts) | 验证冻结账单、逐节点授权与快照；真实 Provider 缺少钱包配置会拒绝                             | 新增不依赖钱包的持久执行授权，旧账务兼容只用于切换收尾，不长期维持双模式                 |
+| [前端生成入口](../apps/web/src/App.tsx)与[节点编辑器](../apps/web/src/workspace/NodeQuickEditor.tsx)       | 提交平台模型身份并经过报价确认                                                               | 全部入口统一使用用户连接；取消锁价文案和钱包门槛                                         |
+| [Provider](../packages/providers/src/index.ts)                                                             | 已有视频合同、输入映射、轮询和下载                                                           | 继续复用，单独验证媒体能力，不用移除收费代替协议适配                                     |
 
 不能通过删除广场数据、设置 `billing = undefined` 或关闭 Worker 校验完成翻新。那会同时破坏模型解析、任务授权和可靠投递。
 
@@ -78,14 +78,14 @@
 - `4ec9167` 引入钱包、平台商品、报价及执行耦合；`3407bcb` 增加公开定价导入；`e5fefa0` 增加上游回执与人民币结算；`37f37bc` 增加复制广场及价格写回。这些旧经营功能由新方案淘汰。
 - 同期也有需要保留的改动：创建与轮询请求身份分离、未知提交不重发、Mock 结果归档、`cc5aadc` 的 H3 素材修复。不能整段回退提交来代替清理。
 - 旧账号管理、邮件页面及按邮箱设置管理员工具早于本次收费阶段；它们因 New API 唯一身份而需要删除或改写，不能误称全部由收费引入。
-- 第 7.2 节列的是当前仍在运行链路中的依赖，已有源码及引用证据；并未证明它们现在就是无引用死代码。当前唯一登录、分组自动 Key、受理时分组校验仍未实现。
-- 本轮不把中断前子代理的口头进度或缺少可追溯命令的测试数量作为通过证据。清理实施的每批检查需独立保存命令、结果和日志，当前静态审查不代表运行环境或真实 Provider 验收。
+- 第 7.2 节记录改造前的依赖及退出条件；唯一登录、分组自动 Key 和受理时分组校验现已实现，各项当前去向见实施检查点。
+- 本轮不把中断前子代理的口头进度或缺少可追溯命令的测试数量作为通过证据。清理实施的每批检查需独立保存命令、结果和日志，本地运行证据与真实 Provider/生产验收分别记录。
 
 ## 3. 账号授权与分组 Key
 
 ### 3.1 已有接口与缺口
 
-以下是 New API 当前源码中的接口，不表示 Canvas 已接入，也不代表生产部署已具备相同版本。
+以下是改造前已有接口，供说明复用边界；新增账号合同见本节末尾。源码和本地验收不代表生产已部署相同版本。
 
 | 现有接口                                | 能力与限制                                                                             |
 | --------------------------------------- | -------------------------------------------------------------------------------------- |
@@ -106,7 +106,7 @@
 
 接口证据固定在上述 New API 提交：[用户及令牌路由](https://github.com/lysimportant/forknewapi/blob/43ee5dbf99ac6dd194e99f298ec582cf3adedd46/router/api-router.go)、[令牌实现](https://github.com/lysimportant/forknewapi/blob/43ee5dbf99ac6dd194e99f298ec582cf3adedd46/controller/token.go)、[桥接目录](https://github.com/lysimportant/forknewapi/blob/43ee5dbf99ac6dd194e99f298ec582cf3adedd46/controller/canvas_bridge.go)和[回执鉴权](https://github.com/lysimportant/forknewapi/blob/43ee5dbf99ac6dd194e99f298ec582cf3adedd46/controller/canvas_receipt.go)。这些链接用于定位本轮核对的源码，不证明生产状态。
 
-现有后台用户接口接受 dashboard JWT 或 PAT；New API 的 OAuth 登录是它作为第三方登录客户端，不等于它已经能向 Canvas 签发授权。需要新增登录授权桥接、幂等分组令牌管理及受理时预期分组校验。本文不把拟新增接口命名成现成能力，正式路径、请求体、scope、权限版本及错误码在 B0 固定并写入接口文档。
+此次新增 `GET/POST /api/canvas/authorize`、`POST /api/canvas/token`、`GET /api/canvas/account`、`PUT /api/canvas/groups/:group` 和 `POST /api/canvas/revoke`，使用固定实例、精确回调和 S256 PKCE。正式请求体、scope、权限修订及错误码记录在配套 New API 仓库 `docs/authentication.md` 的 Canvas 账号接入合同章节；Canvas 继续用各组 Key 读取 `/v1/canvas/catalog`。
 
 ### 3.2 唯一登录与授权流程
 
@@ -152,7 +152,7 @@ Canvas 只保留应用会话和资源权限，不再维护另一套用户密码�
 
 用户选择 `auto` 时，预期分组是路由策略 `auto`，不是某个固定实际组。校验包含该令牌当前解析并排除 `神秘分组` 后的有序实际组范围及权限修订，由 New API 在受理时按所选模型从此范围决定实际组，并固定到请求与回执；不能用“`auto` 等于实际组名”的比较阻断正常路由。Canvas 管理令牌默认 `cross_group_retry: false`，不在受理后切换实际组；发现用户修改该字段时先标记配置变更，不能静默覆盖或忽略。普通组不因同名模型在别组可用而换组，`auto` 也不能绕过排除项。
 
-预期字段的传递方式及版本合同由 B0 定稿，当前代码尚未支持。不能只在 Canvas 发请求前检查，也不能仅在 New API 入口比较一次陈旧缓存就声称消除竞态。上游需在权限变更与请求受理之间确定一致性边界，复用并验证已有令牌缓存失效机制；相应用户/分组/模型权限缓存也必须失效。通过事务、版本条件或同等原子机制确保受理使用权威状态，并将决定传递到本次路由、预扣和供应商发送，不在中途重新选组。变更发生在明确受理边界之后时，不追溯改变已受理任务的分组；撤销与在途任务的后续处理按原身份执行，不能承诺撤回已发送的请求。
+两端已固定 `x-canvas-execution`：canonical、无填充 base64url UTF-8 JSON，包含 version、issuer、user_id、instance_id、grant_id、token_id、expected_group、permission_revision、auto_groups 九个字段。不能只在 Canvas 发请求前检查，也不能仅在 New API 入口比较一次陈旧缓存就声称消除竞态。上游需在权限变更与请求受理之间确定一致性边界，复用并验证已有令牌缓存失效机制；相应用户/分组/模型权限缓存也必须失效。通过事务、版本条件或同等原子机制确保受理使用权威状态，并将决定传递到本次路由、预扣和供应商发送，不在中途重新选组。变更发生在明确受理边界之后时，不追溯改变已受理任务的分组；撤销与在途任务的后续处理按原身份执行，不能承诺撤回已发送的请求。
 
 首次使用先统一拉取分组与本人管理令牌；同一登录事务或并发刷新合并同步操作，限制并发并逐组报告。目录缓存按内部用户、凭据及版本、实际分组和权限修订隔离，只刷新失效项；没有上游修订字段时采用有期限的刷新，不能伪造版本或沿用旧成功状态。生成前校验不因为页面缓存未过期而省略。新增 Webhook/常驻推送不是首期必需条件，先完成明确的登录、刷新和受理合同。
 
@@ -246,18 +246,18 @@ New API 登录与 Canvas 内部身份映射
 
 ### 7.1 不再需要的内容与删除清单
 
-本节说明新版要删除什么及何时可删，当前均为 `[ ]` 待实施。现有运行代码仍使用其中部分模块；待相应替代链路完成并验证后删除，不将“新版不需要”误记为“当前无引用”。混合用途文件仅删除对应分支，不能按名称整目录移除。
+下列源码、配置和文档退出项已经落实；`[x]` 表示本地实现/结构已经退出，不能外推为共享实例已完成数据清理。最终回归状态见实施检查点。混合用途模块保留执行、权限、素材与审计能力。
 
 | 待删除内容                                                                           | 当前涉及位置                                                                                                                                                                                                                                                               | 删除前提及保留边界                                                                                                                                         |
 | ------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `[ ]` 手动填写 New API 地址、Key 导入、连接新增/激活/删除、多 Key 选择和普通界面尾号 | `apps/web/src/workspace/SettingsPanel.tsx`、`settings-components.tsx`；`apps/web/src/forms/ai-settings.ts`；`apps/web/src/query/credentials.ts` 的手工创建/激活 mutation；`settings-utils.ts` 的 Key 展示与旧活动连接逻辑                                                  | 自动账号及逐组同步接管后移除旧表单、状态、请求和专属样式；保留设置页外壳、个人偏好、Skill、项目模型默认与权限变化提示                                      |
-| `[ ]` 节点及优化/反推中的“选 Key/凭据来源”界面                                       | `apps/web/src/workspace/NodeQuickEditor.tsx`、`apps/web/src/App.tsx` 及相关模型选择组件                                                                                                                                                                                    | 改成带所属分组的模型选项；内部模型、分组及凭据引用仍用于精确路由，不跨组按模型名去重                                                                       |
-| `[ ]` 手动平台凭据增删、激活、测试和“同步连接到广场”接口                             | `apps/api/src/app.ts` 中旧 `/v1/settings/ai` 手工写入、`/credentials/:credentialId/activate`、凭据 DELETE 与手工测试分支；`apps/web/src/marketplace/ConnectionSync.tsx`；`apps/api/src/model-marketplace-routes.ts` 的连接上架同步                                         | 新账号/分组刷新合同接管后删除旧路由、客户端与 OpenAPI 定义；保留当前用户目录读取、分组状态和服务端密文管理，不能只隐藏按钮仍开放旧写入口                   |
-| `[ ]` Canvas 旧模型广场、商品上架、价格编辑及价格写回                                | `apps/web/src/marketplace/` 中 `ModelsPage.tsx`、`AdminModelsPage.tsx`、`NewApiSquare.tsx`、`NewApiPrice.tsx`、复制定价目录 `newapi/` 和专属样式/客户端；`apps/api/src/model-marketplace.ts`、`model-marketplace-routes.ts`、`newapi-square.ts`、`newapi-square-routes.ts` | 精确模型与能力解析已脱离 `PlatformModel`，保留必要协议/能力校验与 New API 外链后删除。复制定价代码全部不用才移除其目录；仍被使用的代码及许可归属不能一起删 |
-| `[ ]` Canvas 报价确认、钱包、账单管理及本地结算                                      | `QuoteDialog.tsx`、`quote-client.ts`、`BillingPage.tsx`、`AdminBillingPage.tsx`、`ChargeItemsPanel.tsx` 及专属样式；API `billing-submission.ts`、`billing-routes.ts`、`billing-openapi.ts`；Worker `billing-execution.ts` 的旧账务逻辑                                     | 先把执行授权、可靠投递、发送意图及恢复从计费中分离，处理清单内未结任务；`packages/billing` 只有在通用恢复/桥接能力转移并确认零引用后才能整包删除           |
-| `[ ]` 独立注册、密码登录、改密/找回、邮箱验证、账号邀请与初始化流程                  | `apps/web/src/authentication/` 的旧密码/验证码表单；`management/` 的旧账号安全/邀请分支；API `auth-service.ts`、`account-routes.ts`、`account-mail.ts`、`local-email.ts` 的对应逻辑                                                                                        | New API 登录和受控管理员映射完成后拆除；保留应用会话、退出/撤销、内部用户与资源归属、资源管理、任务观察及审计，不整删 `management` 或全部认证代码          |
-| `[ ]` 已删除功能的导航、路由、请求类型、缓存键、样式和专属测试夹具                   | Web `routing/`、`navigation/`、`contracts.ts`、查询层、API OpenAPI、对应测试/浏览器脚本                                                                                                                                                                                    | 搜索实际引用后连同入口清理；账号隔离、分组不误绑、授权、恢复和不重复生成测试应迁到新流程，不能仅为测试全绿删除有效回归                                     |
-| `[ ]` 旧模块独占依赖和构建/部署项                                                    | 受影响 `package.json`、`pnpm-lock.yaml`、启动脚本及 Compose 映射                                                                                                                                                                                                           | 只有全部消费者移除后才通过 pnpm 同步依赖；不猜测所有 billing/auth/配置相关依赖都已无用，不修改真实部署密钥                                                 |
+| `[x]` 手动填写 New API 地址、Key 导入、连接新增/激活/删除、多 Key 选择和普通界面尾号 | `apps/web/src/workspace/SettingsPanel.tsx`、`settings-components.tsx`；`apps/web/src/forms/ai-settings.ts`；`apps/web/src/query/credentials.ts` 的手工创建/激活 mutation；`settings-utils.ts` 的 Key 展示与旧活动连接逻辑                                                  | 自动账号及逐组同步接管后移除旧表单、状态、请求和专属样式；保留设置页外壳、个人偏好、Skill、项目模型默认与权限变化提示                                      |
+| `[x]` 节点及优化/反推中的“选 Key/凭据来源”界面                                       | `apps/web/src/workspace/NodeQuickEditor.tsx`、`apps/web/src/App.tsx` 及相关模型选择组件                                                                                                                                                                                    | 改成带所属分组的模型选项；内部模型、分组及凭据引用仍用于精确路由，不跨组按模型名去重                                                                       |
+| `[x]` 手动平台凭据增删、激活、测试和“同步连接到广场”接口                             | `apps/api/src/app.ts` 中旧 `/v1/settings/ai` 手工写入、`/credentials/:credentialId/activate`、凭据 DELETE 与手工测试分支；`apps/web/src/marketplace/ConnectionSync.tsx`；`apps/api/src/model-marketplace-routes.ts` 的连接上架同步                                         | 新账号/分组刷新合同接管后删除旧路由、客户端与 OpenAPI 定义；保留当前用户目录读取、分组状态和服务端密文管理，不能只隐藏按钮仍开放旧写入口                   |
+| `[x]` Canvas 旧模型广场、商品上架、价格编辑及价格写回                                | `apps/web/src/marketplace/` 中 `ModelsPage.tsx`、`AdminModelsPage.tsx`、`NewApiSquare.tsx`、`NewApiPrice.tsx`、复制定价目录 `newapi/` 和专属样式/客户端；`apps/api/src/model-marketplace.ts`、`model-marketplace-routes.ts`、`newapi-square.ts`、`newapi-square-routes.ts` | 精确模型与能力解析已脱离 `PlatformModel`，保留必要协议/能力校验与 New API 外链后删除。复制定价代码全部不用才移除其目录；仍被使用的代码及许可归属不能一起删 |
+| `[x]` Canvas 报价确认、钱包、账单管理及本地结算                                      | `QuoteDialog.tsx`、`quote-client.ts`、`BillingPage.tsx`、`AdminBillingPage.tsx`、`ChargeItemsPanel.tsx` 及专属样式；API `billing-submission.ts`、`billing-routes.ts`、`billing-openapi.ts`；Worker `billing-execution.ts` 的旧账务逻辑                                     | 先把执行授权、可靠投递、发送意图及恢复从计费中分离，处理清单内未结任务；`packages/billing` 只有在通用恢复/桥接能力转移并确认零引用后才能整包删除           |
+| `[x]` 独立注册、密码登录、改密/找回、邮箱验证、账号邀请与初始化流程                  | `apps/web/src/authentication/` 的旧密码/验证码表单；`management/` 的旧账号安全/邀请分支；API `auth-service.ts`、`account-routes.ts`、`account-mail.ts`、`local-email.ts` 的对应逻辑                                                                                        | New API 登录和受控管理员映射完成后拆除；保留应用会话、退出/撤销、内部用户与资源归属、资源管理、任务观察及审计，不整删 `management` 或全部认证代码          |
+| `[x]` 已删除功能的导航、路由、请求类型、缓存键、样式和专属测试夹具                   | Web `routing/`、`navigation/`、`contracts.ts`、查询层、API OpenAPI、对应测试/浏览器脚本                                                                                                                                                                                    | 搜索实际引用后连同入口清理；账号隔离、分组不误绑、授权、恢复和不重复生成测试应迁到新流程，不能仅为测试全绿删除有效回归                                     |
+| `[x]` 旧模块独占依赖和构建/部署项                                                    | 受影响 `package.json`、`pnpm-lock.yaml`、启动脚本及 Compose 映射                                                                                                                                                                                                           | 只有全部消费者移除后才通过 pnpm 同步依赖；不猜测所有 billing/auth/配置相关依赖都已无用，不修改真实部署密钥                                                 |
 
 旧广场退出还包括 `apps/api/src/app.ts` 的公共/管理读写路由注册，以及 `apps/api/src/index.ts` 中 `PrismaModelMarketplace`、`PrismaNewApiSquare` 的实例化和依赖注入；不能保留旧服务在后台继续查询或写入已退役表。新的本人分组模型目录与同步接口替代这些能力，不将仍供画布调用的模型目录整体关闭。
 
@@ -265,46 +265,46 @@ New API 登录与 Canvas 内部身份映射
 
 | 目标处理                                       | 配置或持久化对象                                                                                                                                                         | 删除条件                                                                                                                                                                    |
 | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `[ ]` 删除全站共享调用 Key 回退                | `NEW_API_API_KEY` 的生产回退读取、全局活动连接选择以及只为手动 Key 表单保存的草稿                                                                                        | 每个实际执行节点均已有用户/分组凭据；本地测试所需合成配置独立定义。保留 `NEW_API_BASE_URL` 或替代的可信站点配置，不能没有上游地址                                           |
-| `[ ]` 删除旧广场管理授权、来源快照和价格草稿   | `NewApiPricingSource.encryptedAccessToken`、旧定价来源/缓存、`NewApiPricingDraft`                                                                                        | 停止写回任务、处理未完成草稿并完成备份后按迁移删除；不撤销用户其他用途的 New API PAT，不删除上游价格配置                                                                    |
-| `[ ]` 删除仅为本地账号邮件使用的配置与加载逻辑 | `EMAIL_*`、兼容 `EMAIL_SMTP_*`、`MC_EMAIL_FILE` 挂载及 `email.txt` 读取入口；文档/模板中的旧说明                                                                         | 确认没有仍使用邮件的通知或运维功能后移除应用依赖及模板；实际私有邮件文件不自动删除，不读取或提交其凭据                                                                      |
-| `[ ]` 删除已退役的商品/定价和测试账务结构      | `PlatformModel`、`ModelBinding`、`PricingVersion`、`Wallet`、`WalletEntry`、`BillingQuote`、`RunCharge`、`ChargeItem`、`BillingActivation` 及仅服务旧体系的同步/对账记录 | 旧任务收尾、指定内容转换、引用清零、备份/恢复演练后通过新迁移处理，不修改已应用的历史迁移。`ProviderCost`/`UsageLedger` 是否仍承载运行用量须逐项核对                        |
-| 保留并按用户改造                               | `User` 内部 UUID、`AuthSession`、`AiCredential`、`ModelCatalog`、模型默认、`Run`、`RunOutbox`、`ProviderJob`、资产及版本                                                 | 它们承担资源隔离、分组 Key 对应关系、持久授权、模型能力和任务恢复；不因用户看不到 Key 而删除                                                                                |
+| `[x]` 删除全站共享调用 Key 回退                | `NEW_API_API_KEY` 的生产回退读取、全局活动连接选择以及只为手动 Key 表单保存的草稿                                                                                        | 每个实际执行节点均已有用户/分组凭据；本地测试所需合成配置独立定义。保留 `NEW_API_BASE_URL` 或替代的可信站点配置，不能没有上游地址                                           |
+| `[x]` 删除旧广场管理授权、来源快照和价格草稿   | `NewApiPricingSource.encryptedAccessToken`、旧定价来源/缓存、`NewApiPricingDraft`                                                                                        | 停止写回任务、处理未完成草稿并完成备份后按迁移删除；不撤销用户其他用途的 New API PAT，不删除上游价格配置                                                                    |
+| `[x]` 删除仅为本地账号邮件使用的配置与加载逻辑 | `EMAIL_*`、兼容 `EMAIL_SMTP_*`、`MC_EMAIL_FILE` 挂载及 `email.txt` 读取入口；文档/模板中的旧说明                                                                         | 确认没有仍使用邮件的通知或运维功能后移除应用依赖及模板；实际私有邮件文件不自动删除，不读取或提交其凭据                                                                      |
+| `[x]` 删除已退役的商品/定价和测试账务结构      | `PlatformModel`、`ModelBinding`、`PricingVersion`、`Wallet`、`WalletEntry`、`BillingQuote`、`RunCharge`、`ChargeItem`、`BillingActivation` 及仅服务旧体系的同步/对账记录 | 旧任务收尾、指定内容转换、引用清零、备份/恢复演练后通过新迁移处理，不修改已应用的历史迁移。`ProviderCost`/`UsageLedger` 是否仍承载运行用量须逐项核对                        |
+| 保留并按用户改造                               | `User` 内部 UUID、`AuthSession`、`AiCredential`、`NewApiGroupBinding.catalog`、模型默认、`Run`、`RunOutbox`、`ProviderJob`、资产及版本                                   | 它们承担资源隔离、分组 Key 对应关系、持久授权、模型能力和任务恢复；不因用户看不到 Key 而删除                                                                                |
 | 保留所需部署能力                               | `AI_CREDENTIAL_ENCRYPTION_KEY` / `_ID` / `_PREVIOUS_KEYS`、数据库/Redis/S3 配置、队列、超时、视频协议与媒体工具                                                          | 自动创建的 Key 仍要加密保存和读取历史版本；`API_JWT_SECRET` 若仍为 Canvas 会话签名则保留，不能随密码登录一起删。`API_AUTH_TOKEN`、文件存储配置是否有本地/运维用途需独立核对 |
 
 `AccountAudit`、`WebhookEvent`、`ReconciliationItem`、`ProviderCost` 和 `UsageLedger` 按真实用途与保留期逐项决定：安全审计、回调去重和未知费用核实的证据不能因旧 UI 删除而丢失；仅清理确认属于测试范围且不再承担这些职责的记录。
 
-旧文档的目标处理如下。本轮不物理删除，实施时先归并仍需遵守的合同与回退要点，再删除并更新全部引用；历史提交可供追溯，无需让已作废方案继续作为执行入口。
+以下旧文档已按用途迁出并删除。仍适用的 Provider、运维恢复和数据边界归入当前检查点与 Provider 验收记录，历史原文保留在 Git。
 
 | 待清理文档                                                                                                                                                                              | 处理要求                                                                                                                               |
 | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `[ ]` `docs/billing-and-model-marketplace-plan.md`、`docs/billing-implementation-checkpoint.md`                                                                                         | 把尚未关闭的任务身份、真实扣款核实及收尾要求归入当前检查点，旧钱包/广场退出后删除；同步 `TODO-CONSOLIDATED.md`、`TODO-ADMIN.md` 等引用 |
-| `[ ]` `docs/canvas-connections-checkpoint.md`、`docs/independent-connection-fix.md`                                                                                                     | 自动分组接入验收覆盖后删除手动多 Key/连接管理的旧计划与完成记录；分组不误绑、跨用户隔离和持久化语义由新文档承接                        |
-| `[ ]` `docs/newapi-pricing-sync-checkpoint.md`                                                                                                                                          | H3 精确模型映射、素材能力及部署缺口转入保留的 Provider 验收记录，再删除已作废价格同步/写回检查点，不能丢掉尚待真实验证的事项           |
-| `[ ]` `apps/web/src/marketplace/newapi/README.md`                                                                                                                                       | 复制广场目录确实全部移除时一并删除；仍有保留代码时继续保留必要来源及许可说明                                                           |
+| `[x]` `docs/billing-and-model-marketplace-plan.md`、`docs/billing-implementation-checkpoint.md`                                                                                         | 把尚未关闭的任务身份、真实扣款核实及收尾要求归入当前检查点，旧钱包/广场退出后删除；同步 `TODO-CONSOLIDATED.md`、`TODO-ADMIN.md` 等引用 |
+| `[x]` `docs/canvas-connections-checkpoint.md`、`docs/independent-connection-fix.md`                                                                                                     | 自动分组接入验收覆盖后删除手动多 Key/连接管理的旧计划与完成记录；分组不误绑、跨用户隔离和持久化语义由新文档承接                        |
+| `[x]` `docs/newapi-pricing-sync-checkpoint.md`                                                                                                                                          | H3 精确模型映射、素材能力及部署缺口转入保留的 Provider 验收记录，再删除已作废价格同步/写回检查点，不能丢掉尚待真实验证的事项           |
+| `[x]` `apps/web/src/marketplace/newapi/README.md`                                                                                                                                       | 复制广场目录确实全部移除时一并删除；仍有保留代码时继续保留必要来源及许可说明                                                           |
 | 局部更新：`docs/settings-page-redesign.md`、`docs/node-settings-cleanup-checkpoint.md`、`docs/auth-node-experience-checkpoint.md`、`apps/web/src/management/README.md`、`TODO-ADMIN.md` | 清掉被替代的 Key 表单、密码账号及旧广场说明，保留通用设置体验、节点交互、资源管理和审计内容；仅在剩余内容全部被承接后才删除整篇        |
 | 继续保留：`docs/credential-rotation.md`、Provider 合同/验收、部署/素材文档及 `docs/resource-input-compatibility.md`                                                                     | 加密轮换、上游调用和素材限制仍适用，不能按“旧文档”一并删除；用户现有未提交修改不纳入本轮                                               |
 
-删除的完成证据必须同时包括：新流程通过、旧入口及写接口退出、运行时代码和构建引用清零、环境模板/OpenAPI/说明一致、相关回归及 PC Web 烟测通过。核验实际删除的文件及迁移结果后才能把对应 `[ ]` 改为完成；记录未能删除的依赖与下一步，不保留无说明的空壳或重复实现。
+删除的完成证据必须同时包括：新流程通过、旧入口及写接口退出、运行时代码和构建引用清零、环境模板/OpenAPI/说明一致、相关回归及 PC Web 烟测通过。核验实际删除的文件及迁移结果后才能把对应 `[x]` 改为完成；记录未能删除的依赖与下一步，不保留无说明的空壳或重复实现。
 
 ### 7.2 收费广场审查补充项
 
 第 7.1 节覆盖功能范围，下表补充容易藏在页面之外的实际依赖。每项关联第 8 节批次；“先替换后删除”代表旧做法最终仍须退出，不代表可以永久保留。
 
-| 编号 / 当前证据                                                                                                                                                                                  | 最终处理                                                                                                                                   | 清理批次与验收重点                                                                                                                     |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
-| C01：旧公开价格导入器，[API](../apps/api/src/newapi-pricing.ts) 从 `/api/pricing` 生成未验证候选；[领域价格结构](../packages/domain/src/newapi-pricing.ts)用于复制广场与写回                     | 删除旧公开价格抓取、候选价格、表达式展示及写回结构；模型目录改用用户分组 Key 的鉴权来源                                                    | B3 解除目录依赖，B4 删除旧服务，B6 清理导出/包引用；公开价格不再参与调用资格                                                           |
-| C02：[billing 领域结构](../packages/domain/src/billing.ts)把 CNY、`quota_per_unit`、`usd_to_cny` 和价格版本绑入目录解析，并实现本地报价/封顶结算                                                 | 拆出仍需的模型合同、能力与上游回执校验；新目录不依赖 Canvas 人民币换算，本地金额计算和价格公式最终删除                                     | B3 明确两端新合同，B4 停止新请求本地计费，B6 删除仅供旧钱包的类型/计算；不能单边忽略上游不可用原因                                     |
-| C03：[Web 目录](../apps/web/src/query/models.ts)只读已发布平台商品；[默认模型投影](../apps/api/src/model-defaults-public.ts)仍把默认值解析为商品 ID                                              | 替换为本人分组的模型解析，删除发布/售价门槛和普通用户只能经平台广场选模型的旧分流                                                          | B3 迁移，B4 切换；普通用户无管理员 Key 管理权限也能读取本人全部纳入组，不能放开全站目录权限                                            |
-| C04：`platformModelId` 位于 [领域节点/运行结构](../packages/domain/src/index.ts)、项目默认、[本机偏好](../apps/web/src/state/node-model-preferences.ts)、分叉节点、优化/反推请求与结果           | 新请求改用用户分组模型身份；旧商品字段只留在确有需要的兼容读取中，节点、模板、默认值和缓存同步迁移或显式失效                               | B3 转换，B5 处理指定保留数据，B6 移除兼容字段；不能只删接口字段而让旧浏览器偏好持续回填                                                |
-| C05：[报价客户端](../apps/web/src/marketplace/quote-client.ts)、API 提交及 [OpenAPI](../apps/api/src/billing-openapi.ts)在生成/批量/重试/优化/反推使用 `quoteOnly`、`quoteId` 与钱包检查         | 删除强制报价、过期重确认、最高金额承诺和报价包装器，改用独立执行授权                                                                       | B1 先准备授权，B4 一次切换全部入口；旧页面/旧报价被明确拒绝，不能无提示转换为新的收费行为                                              |
-| C06：[自动反推 hook](../apps/web/src/workspace/useAutomaticReversePrompt.ts)现在只弹“确认费用”提示，设置仍有对应开关                                                                             | 新版删除这套仅提醒报价的实现、开关和偏好；保留手动资源反推及结果。若以后恢复自动执行，作为独立、有明确用户授权的功能，不因删除报价自动发送 | B4 清理；新资源出现不再产生无效报价提示，也不增加未经授权的上游 POST                                                                   |
-| C07：[后台概览/用户页](../apps/web/src/management/AdminPages.tsx)含邮箱验证待办、失败邮件、邀请、改密和账号编辑；[管理员脚本](../scripts/docker/admin.mjs)按邮箱提升角色                         | 删除旧账号运营及邮件专属页面/统计/请求、邀请码和密码相关动作；管理员配置改按受控外部身份。资源/任务统计和必要审计保留                      | B2 明确身份与管理员合同，B4 拆页面和 API，B6 清理 [SMTP 工具](../scripts/email-config.mjs)、预览及专属验收脚本；这些并非收费阶段才出现 |
-| C08：[钱包查询](../packages/billing/src/index.ts)的 `getWallet` 会 `upsert`，旧 [账务路由](../apps/api/src/billing-routes.ts)还支持额度调整、退款和裁决                                          | 新系统不保留自动建钱包的读接口，也不保留可被直接请求的旧写接口；必要旧账务处理只能针对既定收尾清单                                         | B4 关闭新调用入口，B5 收尾，B6 删除服务；验证读取个人页/后台不产生钱包记录                                                             |
-| C09：`billingDatabaseRunId`、`resolveRunId`、Run 提交、取消和重试在 [运行服务](../apps/api/src/runs.ts)及 billing 包间耦合；[启动定时器](../apps/api/src/index.ts)仅在 billing 存在时派发 outbox | 稳定运行身份、取消意图、原子 Run/授权/outbox 和故障补投迁入通用运行职责，旧账务依赖删除                                                    | B1 完成，B6 确认 billing 依赖清零；旧无幂等键任务从可信 outbox/原报价记录恢复身份，不能猜测映射或因删报价失去原任务                    |
-| C10：Worker 从 `billingBindings.contract` 取视频协议，[WorkerBilling](../apps/worker/src/billing-execution.ts)同时控制发送与结算                                                                 | 协议、逐节点凭据和发送状态改成中性执行快照；`authorizeRun`/发送意图/原请求记录与资金结算分离                                               | B1 拆分并兼容读旧快照，B3 填入新分组模型，B5 收尾后删除旧字段；`RunRequestPrompt` 不能单独充当执行授权                                 |
-| C11：[schema](../prisma/schema.prisma)中 `ProviderCost` 和 `ReconciliationItem` 关联 `ChargeItem`；`ProjectModelDefault` 引用平台商品，`ModelCatalogSync` 保存旧商品同步快照                     | 指定保留的成本事实先关联到中性任务/节点/请求或归档；目录同步改按用户分组，旧商品/报价表在无引用后删除                                      | B3 准备转换，B5 按新迁移清理；保留审计、Webhook 去重、真实未结证据和通用 `RunOutbox`，不修改已应用历史迁移                             |
-| C12：`.env.example` 仍要求发布售价、发内部额度、确认报价；API/Worker 的包依赖和锁文件仍引入 billing；测试夹具会模拟自动同意报价                                                                  | 更新部署样例、启动错误、OpenAPI、专属夹具和旧脚本；清掉零引用包与锁文件条目                                                                | B4 更新运行说明，B6 完整回收；保留数据库/Redis、真实授权、请求关联、素材安全和恢复回归，不以批量删测试代替验证                         |
+| 编号 / 当前证据                                                                                                                                                                                                    | 最终处理                                                                                                                                   | 清理批次与验收重点                                                                                                                                  |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C01：旧公开价格导入器，API（原 `../apps/api/src/newapi-pricing.ts`，已退出） 从 `/api/pricing` 生成未验证候选；领域价格结构（原 `../packages/domain/src/newapi-pricing.ts`，已退出）用于复制广场与写回             | 删除旧公开价格抓取、候选价格、表达式展示及写回结构；模型目录改用用户分组 Key 的鉴权来源                                                    | B3 解除目录依赖，B4 删除旧服务，B6 清理导出/包引用；公开价格不再参与调用资格                                                                        |
+| C02：billing 领域结构（原 `../packages/domain/src/billing.ts`，已退出）把 CNY、`quota_per_unit`、`usd_to_cny` 和价格版本绑入目录解析，并实现本地报价/封顶结算                                                      | 拆出仍需的模型合同、能力与上游回执校验；新目录不依赖 Canvas 人民币换算，本地金额计算和价格公式最终删除                                     | B3 明确两端新合同，B4 停止新请求本地计费，B6 删除仅供旧钱包的类型/计算；不能单边忽略上游不可用原因                                                  |
+| C03：[Web 目录](../apps/web/src/query/models.ts)只读已发布平台商品；默认模型投影（原 `../apps/api/src/model-defaults-public.ts`，已退出）仍把默认值解析为商品 ID                                                   | 替换为本人分组的模型解析，删除发布/售价门槛和普通用户只能经平台广场选模型的旧分流                                                          | B3 迁移，B4 切换；普通用户无管理员 Key 管理权限也能读取本人全部纳入组，不能放开全站目录权限                                                         |
+| C04：`platformModelId` 位于 [领域节点/运行结构](../packages/domain/src/index.ts)、项目默认、[本机偏好](../apps/web/src/state/node-model-preferences.ts)、分叉节点、优化/反推请求与结果                             | 新请求改用用户分组模型身份；旧商品字段只留在确有需要的兼容读取中，节点、模板、默认值和缓存同步迁移或显式失效                               | B3 转换，B5 处理指定保留数据，B6 移除兼容字段；不能只删接口字段而让旧浏览器偏好持续回填                                                             |
+| C05：报价客户端（原 `../apps/web/src/marketplace/quote-client.ts`，已退出）、API 提交及 OpenAPI（原 `../apps/api/src/billing-openapi.ts`，已退出）在生成/批量/重试/优化/反推使用 `quoteOnly`、`quoteId` 与钱包检查 | 删除强制报价、过期重确认、最高金额承诺和报价包装器，改用独立执行授权                                                                       | B1 先准备授权，B4 一次切换全部入口；旧页面/旧报价被明确拒绝，不能无提示转换为新的收费行为                                                           |
+| C06：自动反推 hook（原 `../apps/web/src/workspace/useAutomaticReversePrompt.ts`，已退出）现在只弹“确认费用”提示，设置仍有对应开关                                                                                  | 新版删除这套仅提醒报价的实现、开关和偏好；保留手动资源反推及结果。若以后恢复自动执行，作为独立、有明确用户授权的功能，不因删除报价自动发送 | B4 清理；新资源出现不再产生无效报价提示，也不增加未经授权的上游 POST                                                                                |
+| C07：[后台概览/用户页](../apps/web/src/management/AdminPages.tsx)含邮箱验证待办、失败邮件、邀请、改密和账号编辑；[管理员脚本](../scripts/docker/admin.mjs)按邮箱提升角色                                           | 删除旧账号运营及邮件专属页面/统计/请求、邀请码和密码相关动作；管理员配置改按受控外部身份。资源/任务统计和必要审计保留                      | B2 明确身份与管理员合同，B4 拆页面和 API，B6 清理 SMTP 工具（原 `../scripts/email-config.mjs`，已退出）、预览及专属验收脚本；这些并非收费阶段才出现 |
+| C08：钱包查询（原 `../packages/billing/src/index.ts`，已退出）的 `getWallet` 会 `upsert`，旧 账务路由（原 `../apps/api/src/billing-routes.ts`，已退出）还支持额度调整、退款和裁决                                  | 新系统不保留自动建钱包的读接口，也不保留可被直接请求的旧写接口；必要旧账务处理只能针对既定收尾清单                                         | B4 关闭新调用入口，B5 收尾，B6 删除服务；验证读取个人页/后台不产生钱包记录                                                                          |
+| C09：`billingDatabaseRunId`、`resolveRunId`、Run 提交、取消和重试在 [运行服务](../apps/api/src/runs.ts)及 billing 包间耦合；[启动定时器](../apps/api/src/index.ts)仅在 billing 存在时派发 outbox                   | 稳定运行身份、取消意图、原子 Run/授权/outbox 和故障补投迁入通用运行职责，旧账务依赖删除                                                    | B1 完成，B6 确认 billing 依赖清零；旧无幂等键任务从可信 outbox/原报价记录恢复身份，不能猜测映射或因删报价失去原任务                                 |
+| C10：Worker 从 `billingBindings.contract` 取视频协议，WorkerBilling（原 `../apps/worker/src/billing-execution.ts`，已退出）同时控制发送与结算                                                                      | 协议、逐节点凭据和发送状态改成中性执行快照；`authorizeRun`/发送意图/原请求记录与资金结算分离                                               | B1 拆分并兼容读旧快照，B3 填入新分组模型，B5 收尾后删除旧字段；`RunRequestPrompt` 不能单独充当执行授权                                              |
+| C11：[schema](../prisma/schema.prisma)中 `ProviderCost` 和 `ReconciliationItem` 关联 `ChargeItem`；`ProjectModelDefault` 引用平台商品，`ModelCatalogSync` 保存旧商品同步快照                                       | 指定保留的成本事实先关联到中性任务/节点/请求或归档；目录同步改按用户分组，旧商品/报价表在无引用后删除                                      | B3 准备转换，B5 按新迁移清理；保留审计、Webhook 去重、真实未结证据和通用 `RunOutbox`，不修改已应用历史迁移                                          |
+| C12：`.env.example` 仍要求发布售价、发内部额度、确认报价；API/Worker 的包依赖和锁文件仍引入 billing；测试夹具会模拟自动同意报价                                                                                    | 更新部署样例、启动错误、OpenAPI、专属夹具和旧脚本；清掉零引用包与锁文件条目                                                                | B4 更新运行说明，B6 完整回收；保留数据库/Redis、真实授权、请求关联、素材安全和恢复回归，不以批量删测试代替验证                                      |
 
 收费阶段的以下内容已有运行用途，作为保留清单进入验收，而不是回退对象：
 
@@ -315,19 +315,19 @@ New API 登录与 Canvas 内部身份映射
 
 ## 8. 实施顺序与分工
 
-本节 B0—B6 替代上一版 A—G 阶段，避免同时维护两套执行顺序。每批完成一个可独立恢复的目标，交付同时包含功能替代和已满足条件的删除；不把所有清理都推到末尾。所有实施批次当前均未执行，本轮完成的是审查归并与计划。
+B0—B6 为当前实施批次。B0—B4 已完成本地替代；B5 清理/恢复演练通过；B6 源码与前向结构退出、全仓检查、PC Web 及五模型 Mock 验收已完成，Git 交付见检查点。共享环境切换单列，不用本地证据替代。
 
 ### 8.1 清理批次、依赖与退出条件
 
 | 批次 / 状态                             | 前置条件与主要责任                                 | 当批处理范围                                                                                                                                                                                               | 必须取得的退出证据                                                                                                                                                         |
 | --------------------------------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `[ ]` B0 基线与清理登记（P0）           | 主代理；Canvas/New API 只读合同核对                | 固定双方版本、登录/分组受理合同、C01—C12 与第 7.1 节清单、在途任务及数据删除/保留范围；整理失效执行说明。仅对证明不被当前运行/构建/部署引用的独立遗留项提前清理                                            | 有明确路径、消费者、替代依赖、归属批次及备份/回退点。当前未确认任何可绕过依赖立即整包删除的运行模块；不能把“新版不需要”当作零引用证据                                      |
-| `[ ]` B1 执行与账务分离（P0）           | B0；Canvas API/domain/runs/Worker                  | C09/C10：迁出运行 ID、持久授权、快照协议、逐节点发送意图、Run/outbox 原子受理、取消及重试保护；旧任务仅兼容原清单。建立新执行路径，不提前开放未具备身份的真实新提交                                        | 数据库/Redis 故障后同一任务恢复、重复消费不重复 POST、旧协议/任务 ID 不丢、未授权节点零发送；旧收费路径回归仍通过，不能用 `billing = undefined` 绕过安全检查               |
-| `[ ]` B2 唯一身份与自动分组 Key（P0）   | B0；New API 授权/令牌/relay，Canvas 认证/凭据/资源 | 实现唯一登录、内部 UUID、资源隔离、全部纳入组一次建 Key、登录/续期校验、预期分组权威受理；“神秘分组”零自动创建/检查，Auto 不绕行。个人目录链路具备后淘汰全局 Key 回退                                      | 两用户隔离、并发登录不重复 Key、改组/撤销不串用、上游缓存失效、账号切换迟到响应隔离、无邮箱兼容；令牌均可追溯到本人和实例                                                  |
-| `[ ]` B3 模型与目录替换（P0）           | B1+B2；API/model/domain、Web 目录与偏好            | C01—C04/C10/C11：改为分组模型身份和中性快照，解除发布/价格/汇率门槛；处理项目默认、节点分叉、优化/反推、浏览器偏好及导入导出。迁移通用目录/能力/回执合同，旧数据兼容读不改原事实                           | 每组模型齐全、同名跨组不合并、不出现平台未上架/缺 Canvas 售价阻断；缺上游资格仍拒绝；旧引用可明确转换或失效，无静默改组，无个人 Key 泄露                                   |
-| `[ ]` B4 产品和旧接口退出（P1）         | B1—B3；Web/API/导航/OpenAPI/旧账号工具             | C05—C08/C12：切换所有生成入口；删除手动 Key 管理、旧广场/模型后台、报价钱包/账务后台、密码/邮件账号操作和报价提醒开关；关闭旧公共/管理接口、启动实例化及后台写回。同步删掉已无消费者的样式、组件与专属夹具 | PC Web 启动与核心交互无新增错误；普通/批量/DAG/重试/优化/反推均走新合同；新任务零 Canvas 报价/冻结/扣款；访问旧钱包不新建记录。资源、任务、系统状态及必要审计可用          |
-| `[ ]` B5 旧任务收尾与测试数据清理（P0） | B4、具体清单、备份与恢复演练；迁移/数据责任人      | C04/C08/C11：核实旧任务与真实支出，迁出需保留成本/运行身份；分批处理指定测试账号、项目/对象、会话/队列、旧商品/报价/钱包表。指定保留作品先确认目标身份                                                     | 新前向迁移及重复执行通过；失败可恢复；没有失主资源、活旧会话或恢复即重投的任务；新用户作品及 New API 真实用户/资金/账单不受影响。未结事项列具体 ID、原因和接续动作         |
-| `[ ]` B6 残留清零与配套验收（P1）       | B5；主代理最终整合，各模块复核                     | 删除已无收尾用途的兼容处理器、旧字段/schema、`packages/billing` 及依赖、公开定价复制代码、过时脚本/配置示例、旧文档与专属测试；保留有用途的通用实现和历史迁移。更新所有链接及运行说明                      | 第 7 节每项有去向；旧业务执行引用/路由/启动任务/生产配置消费者为零；全量检查及 PC Web 烟测通过。部署与获授权真实调用另记录，不以静态结果冒充上线；不存在无删除条件的兼容层 |
+| `[x]` B0 基线与清理登记（P0）           | 主代理；Canvas/New API 只读合同核对                | 固定双方版本、登录/分组受理合同、C01—C12 与第 7.1 节清单、在途任务及数据删除/保留范围；整理失效执行说明。仅对证明不被当前运行/构建/部署引用的独立遗留项提前清理                                            | 有明确路径、消费者、替代依赖、归属批次及备份/回退点。当前未确认任何可绕过依赖立即整包删除的运行模块；不能把“新版不需要”当作零引用证据                                      |
+| `[x]` B1 执行与账务分离（P0）           | B0；Canvas API/domain/runs/Worker                  | C09/C10：迁出运行 ID、持久授权、快照协议、逐节点发送意图、Run/outbox 原子受理、取消及重试保护；旧任务仅兼容原清单。建立新执行路径，不提前开放未具备身份的真实新提交                                        | 数据库/Redis 故障后同一任务恢复、重复消费不重复 POST、旧协议/任务 ID 不丢、未授权节点零发送；旧收费路径回归仍通过，不能用 `billing = undefined` 绕过安全检查               |
+| `[x]` B2 唯一身份与自动分组 Key（P0）   | B0；New API 授权/令牌/relay，Canvas 认证/凭据/资源 | 实现唯一登录、内部 UUID、资源隔离、全部纳入组一次建 Key、登录/续期校验、预期分组权威受理；“神秘分组”零自动创建/检查，Auto 不绕行。个人目录链路具备后淘汰全局 Key 回退                                      | 两用户隔离、并发登录不重复 Key、改组/撤销不串用、上游缓存失效、账号切换迟到响应隔离、无邮箱兼容；令牌均可追溯到本人和实例                                                  |
+| `[x]` B3 模型与目录替换（P0）           | B1+B2；API/model/domain、Web 目录与偏好            | C01—C04/C10/C11：改为分组模型身份和中性快照，解除发布/价格/汇率门槛；处理项目默认、节点分叉、优化/反推、浏览器偏好及导入导出。迁移通用目录/能力/回执合同，旧数据兼容读不改原事实                           | 每组模型齐全、同名跨组不合并、不出现平台未上架/缺 Canvas 售价阻断；缺上游资格仍拒绝；旧引用可明确转换或失效，无静默改组，无个人 Key 泄露                                   |
+| `[x]` B4 产品和旧接口退出（P1）         | B1—B3；Web/API/导航/OpenAPI/旧账号工具             | C05—C08/C12：切换所有生成入口；删除手动 Key 管理、旧广场/模型后台、报价钱包/账务后台、密码/邮件账号操作和报价提醒开关；关闭旧公共/管理接口、启动实例化及后台写回。同步删掉已无消费者的样式、组件与专属夹具 | PC Web 启动与核心交互无新增错误；普通/批量/DAG/重试/优化/反推均走新合同；新任务零 Canvas 报价/冻结/扣款；访问旧钱包不新建记录。资源、任务、系统状态及必要审计可用          |
+| `[~]` B5 旧任务收尾与测试数据清理（P0） | B4、具体清单、备份与恢复演练；迁移/数据责任人      | C04/C08/C11：核实旧任务与真实支出，迁出需保留成本/运行身份；分批处理指定测试账号、项目/对象、会话/队列、旧商品/报价/钱包表。指定保留作品先确认目标身份                                                     | 新前向迁移及重复执行通过；失败可恢复；没有失主资源、活旧会话或恢复即重投的任务；新用户作品及 New API 真实用户/资金/账单不受影响。未结事项列具体 ID、原因和接续动作         |
+| `[x]` B6 残留清零与本地验收（P1）       | B5；主代理最终整合，各模块复核                     | 删除已无收尾用途的兼容处理器、旧字段/schema、`packages/billing` 及依赖、公开定价复制代码、过时脚本/配置示例、旧文档与专属测试；保留有用途的通用实现和历史迁移。更新所有链接及运行说明                      | 第 7 节每项有去向；旧业务执行引用/路由/启动任务/生产配置消费者为零；全量检查及 PC Web 烟测通过。部署与获授权真实调用另记录，不以静态结果冒充上线；不存在无删除条件的兼容层 |
 
 B1 与 B2 可在 B0 合同确定后按文件归属并行；B3 依赖二者，B4 切换前必须具备新授权和目录；B5 的盘点与副本演练可提前，但实际清理遵守前置条件。已证明无依赖的单项不必等 B6，可随所属批次删除并记录；需要多步处理的项继续拆小批，不把工作挂为无期限“以后清理”。
 
@@ -353,7 +353,7 @@ B5 的数据清理和 B6 的源码/表结构退出必须配套：先证明所有
 
 每批检查点至少记录：实际修改/删除的文件，已迁出的能力及新位置，未删项与原因，最后成功命令和日志，测试通过/失败/跳过数量，环境和版本，提交/Tag/远端状态，回退方式与下一步。没有记录或只有口头结论不能关闭批次；每批代码改动按风险运行 lint、typecheck、相关 test、build，涉及数据库/队列时启用真实隔离集成，涉及 UI 时检查启动、核心交互和控制台。
 
-协作收口先接收已完成结果、复核证据，再结束子任务；需要主动中断时向用户说明原因，并标明完成范围、尚未验证部分与恢复位置。工具暂时断开要恢复，不能当作任务结束；不会为了抢先交付而把未核实的子代理测试数计入结果。此说明是后续执行要求，本轮没有恢复或实施上次未完成的代码清理。
+协作收口先接收已完成结果、复核证据，再结束子任务；需要主动中断时向用户说明原因，并标明完成范围、尚未验证部分与恢复位置。工具暂时断开要恢复，不能当作任务结束；不会为了抢先交付而把未核实的子代理测试数计入结果。各子任务报告已保存至本机隔离证据目录，主代理完成最终集成和复验。
 
 ## 9. 验证矩阵与执行命令
 
@@ -411,7 +411,7 @@ pnpm db:validate
 
 ## 10. 数据影响、发布与回退
 
-这是后续跨模块、跨仓库、涉及身份格式、收费责任和测试数据删除的改造，实施按大变更交付。本轮只更新计划，账号、素材、数据库和运行环境均未修改。
+本次改造跨 Canvas 与 New API，涉及身份、执行授权和前向删表迁移，按大变更交付。只在隔离环境执行迁移和清理恢复演练；现有 8080 容器和共享数据库未切换。
 
 ### 10.1 测试数据清理边界
 
@@ -433,16 +433,13 @@ pnpm db:validate
 6. **代码回退。** 只回退到能理解当前身份及任务结构的版本；保留必要消费者完成在途任务。旧版本不能理解新授权或表已删除时，不能直接回退并重开旧提交，应保持维护状态并按已演练方案恢复。
 7. **数据恢复。** 若需恢复测试备份，先恢复到隔离位置、禁用任务派发，核对后只恢复明确需要的数据，不覆盖切换后新用户作品、身份关系或真实账务。远端已撤销 Key 不能靠本地备份复活，也不自动重建授权。
 
-本轮范围已经明确为文档。后续实施按已有授权和具体清理清单推进；生产操作、超出清单的删除及真实付费调用仍按对应授权执行。先完成本地代码、检查、演练和可审阅操作包，不因等待上线决定而停止可独立完成的准备。
+生产操作、超出清单的删除和真实付费调用仍按对应授权执行。本地实现、检查、演练和可审阅操作包继续完成，不因尚未决定上线而停止准备。
 
 ## 11. 检查点与接续
 
-- 已确认 New API 唯一登录、除“神秘分组”外全部本人可用组各一个 Key、模型按分组供用户选择；用户侧手动 Key 管理与连接增删取消，内部凭据映射保留。旧功能、源码、配置和文档的目标删除清单见第 7.1 节，当前均待实施。
-- 本轮只关闭“合并审查结果并完成分阶段清理文档”，C01—C12 和第 7.1 节的实际清理均未执行，不关闭账号接入、模型调用或生产验收任务。
-- B0—B6 实施批次均待执行；下一步从 B0 的两端合同、当前运行状态和具体数据清理清单开始，再按第 8.1 节依赖推进。收费审查基线已记录，不重复把历史审查当作新环境验收。
-- [待办汇总](../TODO-CONSOLIDATED.md)的 P2-02/P2-03 跟随本路线：唯一身份作为 P1 前置，Canvas 独立账号/广场/钱包退出，旧实现仅为具体收尾事项短期保留。
-- 每阶段追加实际命令、结果、证据路径和下一步。出现连接中断时重读规则、本文及 Git 状态，从最后已验证状态继续。
-
-本轮文档验证：`pnpm exec prettier --check docs/newapi-account-integration-plan.md TODO-CONSOLIDATED.md`、49 处相对链接、4 处当前计划章节锚点、C01—C12 与 B0—B6 编号覆盖、表格列数、`git diff --check` 及凭据模式检查通过。源码依据已复核，旧 A—G 活动步骤已统一替换；原用户文件 SHA256 未变化。只提交本文与 TODO，未执行清单中的文件或数据删除，未创建真实 Key。
-
-源码与依赖未改动，业务 lint/typecheck/test/build 及浏览器烟测留给功能实施阶段执行，不沿用历史通过数作为本轮结果。本轮属于文档小改动，任务提交推送到 `origin/codex/generate-to-new-node`，不创建发布 Tag；后续功能改造按大变更执行完整验证、中文附注 Tag 和远端核验。
+- 两端已实现唯一登录、除精确 `神秘分组` 外全部本人开放组的幂等 Key、逐组目录及预期分组受理；`auto` 范围过滤由上游强制执行。
+- 稳定 Run 身份、授权/outbox 和发送意图迁入 `packages/execution`；新生成不写 Canvas 钱包或报价。历史源码退出情况见第 7.1 节，C01—C12 的实现去向见检查点。
+- 清理工具使用固定参数化 PostgreSQL SQL，在删表前生成精确计划并检查范围漂移，支持对象失败恢复；新 schema 删除旧模型，不再依赖旧 Prisma delegates。
+- 前向迁移 `20260921050000_retire_legacy_accounts_billing` 在旧数据未收尾时阻止部署；fresh、重复、阻断保持数据、清理后升级与备份恢复已有独立证据。不能直接对共享实例执行 DROP 或覆盖恢复。
+- 本地完整验证、PC 浏览器、逐媒体组合和交付状态统一记录在[实施检查点](newapi-account-implementation-checkpoint.md)。真实供应商、外部 URL、目标插件版本与最终费用证据见[Provider 验收记录](newapi-provider-acceptance.md)。
+- 本次大变更交付目标为 Canvas 当前上游分支及 New API fork/main，使用中文任务提交和 annotated Tag；交付必须核验远端引用，用户原有资源文档保持不纳入提交。

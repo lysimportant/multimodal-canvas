@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { buildApp } from './app';
+import { buildApp } from './fixtures/test-app';
 import { FallbackRateLimiter, MemoryRateLimiter } from './rate-limit';
 import { openApiDocument } from './openapi';
 
@@ -32,8 +32,8 @@ describe('生产全局限流 HTTP 故障边界', () => {
   it.each([
     { method: 'GET' as const, url: '/v1/projects' },
     { method: 'GET' as const, url: '/v1/projects/test-project/events' },
-    { method: 'POST' as const, url: '/v1/auth/login' },
-    { method: 'POST' as const, url: '/v1/auth/register' },
+    { method: 'GET' as const, url: '/v1/auth/newapi/start' },
+    { method: 'GET' as const, url: '/v1/auth/newapi/callback' },
   ])('$method $url 在 Redis 故障期间返回可诊断的 503 且不消费本机额度', async (route) => {
     const primary = { consume: vi.fn().mockRejectedValue(new Error('private-redis-password')) };
     const fallback = { consume: vi.fn() };

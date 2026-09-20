@@ -29,7 +29,7 @@ describe('route page states', () => {
       </SettingsPage>,
     );
 
-    expect(screen.getByText('当前上下文：产品演示')).toBeVisible();
+    expect(screen.getByText('当前项目：产品演示')).toBeVisible();
     expect(screen.getByText('已注入的设置面板')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: '打开主菜单' }));
     expect(screen.getByRole('navigation', { name: '菜单导航' })).toContainElement(

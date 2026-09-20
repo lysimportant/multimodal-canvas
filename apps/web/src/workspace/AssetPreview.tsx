@@ -16,7 +16,7 @@ import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 
 
 import type { Asset, MediaType } from '@multimodal-canvas/domain';
 import { Dialog, DialogClose, DialogContent, DialogTitle } from '@multimodal-canvas/ui';
-import { apiFetch, getAuthToken } from '../auth-client';
+import { apiFetch, readAuthSession } from '../auth-client';
 import { isApiOriginUrl, resolveUploadUrl } from '../upload-utils';
 import { API_BASE_URL } from './contracts';
 import './artifact-preview.css';
@@ -54,7 +54,7 @@ function useAuthenticatedAssetUrl(
   const fallback = asset.contentUrl ? resolveUploadUrl(asset.contentUrl, API_BASE_URL) : '';
   const protectedAsset =
     sign &&
-    Boolean(getAuthToken()) &&
+    Boolean(readAuthSession()) &&
     isApiResultUrl(fallback) &&
     new URL(fallback, window.location.href).pathname.includes('/v1/assets/');
   const identity = `${asset.id}:${fallback}:${reloadKey}`;

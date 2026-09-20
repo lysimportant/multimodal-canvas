@@ -41,10 +41,10 @@ function contentResponse(content: string): Response {
   return { ok: true, blob: async () => new NodeBlob([content]) } as unknown as Response;
 }
 /** 将列表挂载到与生产相同的查询上下文。 */
-function renderResources() {
+function renderResources({ userId = 'user', ownerId }: { userId?: string; ownerId?: string } = {}) {
   return render(
     <QueryClientProvider client={client}>
-      <ResourcesPage userId="user" />
+      <ResourcesPage userId={userId} ownerId={ownerId} />
     </QueryClientProvider>,
   );
 }
@@ -176,5 +176,112 @@ describe('资源内容预览', () => {
     const dialog = await screen.findByRole('dialog', { name: 'image-resource' });
     fireEvent(dialog, new Event('cancel', { bubbles: false, cancelable: true }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+});
+
+describe('资源归属范围', () => {
+  it('普通用户资源请求不发送可伪造的 ownerId', async () => {
+    renderResources();
+    await screen.findByText('image-resource');
+
+    const resourcePath = vi
+      .mocked(managementRequest)
+      .mock.calls.map(([path]) => path)
+      .find((path) => path.startsWith('/account/resources?'));
+    expect(resourcePath).toBeDefined();
+    expect(new URL(resourcePath!, 'http://canvas.test').searchParams.has('ownerId')).toBe(false);
+  });
+
+  it('管理员资源详情读取 resource-owners，并在列表请求中限定 ownerId', async () => {
+    vi.mocked(managementRequest).mockImplementation(async (path) => {
+      if (path === '/admin/resource-owners/owner-a') {
+        return {
+          user: {
+            id: 'owner-a',
+            displayName: '资源主人甲',
+            role: 'user',
+            status: 'active',
+            createdAt: '2026-09-21T00:00:00.000Z',
+          },
+          projects: [],
+          stats: { resourceCount: 0, storageBytes: 0, runCount: 0 },
+        };
+      }
+      if (path.startsWith('/admin/resources?')) {
+        return { assets: [], total: 0, page: 1, pageSize: 24 };
+      }
+      throw new Error(`未处理的测试请求：${path}`);
+    });
+
+    renderResources({ userId: 'admin-a', ownerId: 'owner-a' });
+    expect(await screen.findByRole('heading', { name: '资源主人甲的资源' })).toBeVisible();
+    expect(managementRequest).toHaveBeenCalledWith(
+      '/admin/resource-owners/owner-a',
+      expect.anything(),
+    );
+    const resourcePath = vi
+      .mocked(managementRequest)
+      .mock.calls.map(([path]) => path)
+      .find((path) => path.startsWith('/admin/resources?'));
+    expect(new URL(resourcePath!, 'http://canvas.test').searchParams.get('ownerId')).toBe(
+      'owner-a',
+    );
+  });
+
+  it('切换 owner 后，旧 owner 的迟到结果不能覆盖当前详情', async () => {
+    let finishOld!: (value: unknown) => void;
+    const oldOwner = new Promise((resolve) => {
+      finishOld = resolve;
+    });
+    vi.mocked(managementRequest).mockImplementation(async (path) => {
+      if (path === '/admin/resource-owners/owner-old') return oldOwner;
+      if (path === '/admin/resource-owners/owner-new') {
+        return {
+          user: {
+            id: 'owner-new',
+            displayName: '当前资源主人',
+            role: 'user',
+            status: 'active',
+            createdAt: '2026-09-21T00:00:00.000Z',
+          },
+          projects: [],
+          stats: { resourceCount: 0, storageBytes: 0, runCount: 0 },
+        };
+      }
+      if (path.startsWith('/admin/resources?')) {
+        return { assets: [], total: 0, page: 1, pageSize: 24 };
+      }
+      throw new Error(`未处理的测试请求：${path}`);
+    });
+    const view = renderResources({ userId: 'admin-a', ownerId: 'owner-old' });
+    await waitFor(() =>
+      expect(managementRequest).toHaveBeenCalledWith(
+        '/admin/resource-owners/owner-old',
+        expect.anything(),
+      ),
+    );
+
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <ResourcesPage userId="admin-a" ownerId="owner-new" />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByRole('heading', { name: '当前资源主人的资源' })).toBeVisible();
+
+    await act(async () => {
+      finishOld({
+        user: {
+          id: 'owner-old',
+          displayName: '迟到的旧主人',
+          role: 'user',
+          status: 'active',
+          createdAt: '2026-09-21T00:00:00.000Z',
+        },
+        projects: [],
+        stats: { resourceCount: 0, storageBytes: 0, runCount: 0 },
+      });
+    });
+    expect(screen.getByRole('heading', { name: '当前资源主人的资源' })).toBeVisible();
+    expect(screen.queryByText('迟到的旧主人')).toBeNull();
   });
 });

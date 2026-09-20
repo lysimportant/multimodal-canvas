@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RunRecord } from '@multimodal-canvas/domain';
 
 import { MemoryAssetStore } from './assets';
-import { buildApp } from './app';
+import { buildApp } from './fixtures/test-app';
 import {
   attachmentDisposition,
   createWorkflowExport,

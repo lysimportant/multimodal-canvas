@@ -1,11 +1,12 @@
+import { MemoryAiSettingsStore } from './fixtures/memory-ai-settings';
 import type { CanvasDocument } from '@multimodal-canvas/domain';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { buildApp } from './app';
+import { buildApp } from './fixtures/test-app';
 import { MemoryAssetStore } from './assets';
 import { MemoryProjectStore } from './projects';
 import { MemoryRunService, type RunExecutorRequest } from './runs';
-import { AiSettingsStore, type ModelCatalogEntry } from './settings';
+import { type ModelCatalogEntry } from './settings';
 
 const apps: Array<ReturnType<typeof buildApp>> = [];
 const now = new Date().toISOString();
@@ -114,7 +115,7 @@ describe('图片修改运行边界', () => {
     async ({ capability, issueCode, reason }) => {
       const assetStore = new MemoryAssetStore();
       const projectStore = new MemoryProjectStore();
-      const settingsStore = new AiSettingsStore('image-edit-unsupported');
+      const settingsStore = new MemoryAiSettingsStore('image-edit-unsupported');
       settingsStore.replaceModels([imageModel('image-edit-v1', { imageEdit: capability })]);
       const project = await projectStore.create({ name: '未声明能力' });
       const source = await assetStore.create({
@@ -162,7 +163,7 @@ describe('图片修改运行边界', () => {
   it('声明支持时冻结能力与来源版本，来源节点保持原资产', async () => {
     const assetStore = new MemoryAssetStore();
     const projectStore = new MemoryProjectStore();
-    const settingsStore = new AiSettingsStore('image-edit-supported');
+    const settingsStore = new MemoryAiSettingsStore('image-edit-supported');
     settingsStore.replaceModels([
       imageModel('image-edit-v1', {
         imageEdit: {
@@ -222,7 +223,7 @@ describe('图片修改运行边界', () => {
   it('编辑节点冻结的来源版本优先于之后产生的新版本', async () => {
     const assetStore = new MemoryAssetStore();
     const projectStore = new MemoryProjectStore();
-    const settingsStore = new AiSettingsStore('image-edit-pinned');
+    const settingsStore = new MemoryAiSettingsStore('image-edit-pinned');
     settingsStore.replaceModels([imageModel('image-edit-v1')]);
     const project = await projectStore.create({ name: '固定版本' });
     const source = await assetStore.create({
@@ -259,7 +260,7 @@ describe('图片修改运行边界', () => {
   it('冻结版本不可用时阻止运行并给出可操作错误', async () => {
     const assetStore = new MemoryAssetStore();
     const projectStore = new MemoryProjectStore();
-    const settingsStore = new AiSettingsStore('image-edit-version-missing');
+    const settingsStore = new MemoryAiSettingsStore('image-edit-version-missing');
     settingsStore.replaceModels([imageModel('image-edit-v1', { imageEdit: true })]);
     const project = await projectStore.create({ name: '版本缺失' });
     const source = await assetStore.create({
@@ -288,7 +289,7 @@ describe('图片修改运行边界', () => {
   it('来源节点换成另一张图时阻止运行并保留节点与边', async () => {
     const assetStore = new MemoryAssetStore();
     const projectStore = new MemoryProjectStore();
-    const settingsStore = new AiSettingsStore('image-edit-replaced');
+    const settingsStore = new MemoryAiSettingsStore('image-edit-replaced');
     settingsStore.replaceModels([imageModel('image-edit-v1', { imageEdit: true })]);
     const project = await projectStore.create({ name: '来源被替换' });
     const original = await assetStore.create({
@@ -329,7 +330,7 @@ describe('图片修改运行边界', () => {
   it.each([true, false])('逐个执行节点检查编辑模型，支持状态为 %s', async (supported) => {
     const assetStore = new MemoryAssetStore();
     const projectStore = new MemoryProjectStore();
-    const settingsStore = new AiSettingsStore('image-edit-workflow');
+    const settingsStore = new MemoryAiSettingsStore('image-edit-workflow');
     settingsStore.replaceModels([
       imageModel('image-edit-v1', { imageEdit: { supported, mimeTypes: ['image/png'] } }),
       imageModel('image-target-v1', { imageEdit: { supported: true, mimeTypes: ['image/jpeg'] } }),

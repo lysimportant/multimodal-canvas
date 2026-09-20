@@ -1,7 +1,7 @@
 import type { CanvasDocument, MediaType } from '@multimodal-canvas/domain';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { buildApp } from './app';
+import { buildApp } from './fixtures/test-app';
 import { MemoryAssetStore } from './assets';
 import { MemoryAuthStore } from './auth-store';
 import { AuthService } from './auth-service';
@@ -52,10 +52,9 @@ function assetCanvas(assetId: string, mediaType: MediaType = 'text'): CanvasDocu
 async function authenticatedOwner() {
   const authStore = new MemoryAuthStore();
   const auth = new AuthService({ store: authStore, jwtSecret });
-  const session = await auth.register({
-    email: 'freeze-owner@example.test',
-    password: 'synthetic-owner-password',
-  });
+  const session = await auth.issueToken(
+    await authStore.createUser({ email: 'freeze-owner@example.test' }),
+  );
   return {
     authStore,
     ownerId: session.user.id,

@@ -64,10 +64,11 @@ describe('节点媒体下载', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe('http://localhost:3000/v1/assets/asset-video/versions/3/content');
-    expect(new Headers(init.headers).get('authorization')).toBe(
-      'Bearer synthetic-node-download-test',
-    );
-    expect(init.signal).toBe(abort.signal);
+    expect(new Headers(init.headers).has('authorization')).toBe(false);
+    expect(init.credentials).toBe('include');
+    expect(init.signal?.aborted).toBe(false);
+    abort.abort();
+    expect(init.signal?.aborted).toBe(true);
     expect(result.filename).toBe('视频.mp4');
     expect(result.blob.size).toBe(5);
     expect(result.blob.type).toBe('video/mp4');

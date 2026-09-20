@@ -1,7 +1,7 @@
 import type { CanvasDocument } from '@multimodal-canvas/domain';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { buildApp } from './app';
+import { buildApp } from './fixtures/test-app';
 import { MemoryAssetStore } from './assets';
 import { MemoryProjectStore } from './projects';
 import { MemoryRunService } from './runs';

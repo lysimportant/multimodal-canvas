@@ -1,12 +1,12 @@
+import { MemoryAiSettingsStore } from './fixtures/memory-ai-settings';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { CanvasDocument, MediaType, RunRecord } from '@multimodal-canvas/domain';
 
-import { buildApp } from './app';
+import { buildApp } from './fixtures/test-app';
 import { MemoryAssetStore } from './assets';
 import { MemoryProjectStore } from './projects';
 import { MemoryRunService, type RunExecutorRequest } from './runs';
-import { AiSettingsStore } from './settings';
 
 const apps: Array<ReturnType<typeof buildApp>> = [];
 
@@ -80,7 +80,7 @@ describe('资源提及 HTTP 边界', () => {
       const assetStore = new MemoryAssetStore();
       const projectStore = new MemoryProjectStore();
       const runService = new MemoryRunService({ providerName: 'newapi', stepDelayMs: 0 });
-      const settingsStore = new AiSettingsStore('resource-declared-limits');
+      const settingsStore = new MemoryAiSettingsStore('resource-declared-limits');
       settingsStore.update({
         baseUrl: 'https://newapi.example.test/v1',
         apiKey: 'synthetic-resource-limits-key',
@@ -574,7 +574,7 @@ describe('资源提及 HTTP 边界', () => {
       const assetStore = new MemoryAssetStore();
       const projectStore = new MemoryProjectStore();
       const runService = new MemoryRunService({ providerName: 'newapi', stepDelayMs: 0 });
-      const settingsStore = new AiSettingsStore('resource-mention-real-preflight');
+      const settingsStore = new MemoryAiSettingsStore('resource-mention-real-preflight');
       settingsStore.update({
         baseUrl: 'https://newapi.example.test/v1',
         apiKey: 'synthetic-resource-mention-key',
@@ -688,7 +688,7 @@ describe('资源提及 HTTP 边界', () => {
     const assetStore = new MemoryAssetStore();
     const projectStore = new MemoryProjectStore();
     const runService = new MemoryRunService({ providerName: 'newapi', stepDelayMs: 0 });
-    const settingsStore = new AiSettingsStore('resource-mention-video-omni');
+    const settingsStore = new MemoryAiSettingsStore('resource-mention-video-omni');
     settingsStore.update({
       baseUrl: 'https://newapi.example.test/v1',
       apiKey: 'synthetic-resource-mention-key',
@@ -781,7 +781,7 @@ describe('资源提及 HTTP 边界', () => {
     const assetStore = new MemoryAssetStore();
     const projectStore = new MemoryProjectStore();
     const runService = new MemoryRunService({ providerName: 'newapi', stepDelayMs: 0 });
-    const settingsStore = new AiSettingsStore('resource-mention-video-text');
+    const settingsStore = new MemoryAiSettingsStore('resource-mention-video-text');
     settingsStore.update({
       baseUrl: 'https://newapi.example.test/v1',
       apiKey: 'synthetic-resource-mention-key',

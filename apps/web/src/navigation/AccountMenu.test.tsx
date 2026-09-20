@@ -33,7 +33,7 @@ describe('账户菜单', () => {
     expect(logout).toHaveBeenCalledTimes(1);
   });
 
-  it('管理员才显示后台入口，个人资料导航不注销', async () => {
+  it('管理员才显示后台入口，资源导航不注销', async () => {
     const actor = userEvent.setup();
     const logout = vi.fn();
     render(
@@ -41,7 +41,7 @@ describe('账户菜单', () => {
     );
     await actor.click(screen.getByRole('button', { name: '账户菜单' }));
     expect(screen.getByRole('menuitem', { name: '管理后台' })).toHaveAttribute('href', '/admin');
-    expect(screen.getByRole('menuitem', { name: '个人信息' })).toHaveAttribute('target', '_blank');
+    expect(screen.getByRole('menuitem', { name: '我的资源' })).toHaveAttribute('target', '_blank');
     expect(logout).not.toHaveBeenCalled();
   });
 
@@ -95,7 +95,7 @@ describe('账户菜单', () => {
     view.rerender(<AccountMenu user={user} onRequestLogin={login} onLogout={vi.fn()} />);
     await actor.click(screen.getByRole('button', { name: '账户菜单' }));
     fireEvent.keyDown(document, { key: 'ArrowDown' });
-    expect(screen.getByRole('menuitem', { name: '个人信息' })).toHaveFocus();
+    expect(screen.getByRole('menuitem', { name: '我的资源' })).toHaveFocus();
     fireEvent.keyDown(document, { key: 'End' });
     expect(screen.getByRole('menuitem', { name: '退出登录' })).toHaveFocus();
   });

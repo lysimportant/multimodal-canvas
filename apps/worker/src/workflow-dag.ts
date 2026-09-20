@@ -218,8 +218,14 @@ export function createNodeRunSnapshot(
     throw new Error(`workflow node ${nodeId} is missing a frozen model alias`);
   }
   const nodeCredentialReferences = snapshot.nodeCredentialReferences;
-  const credentialReference =
-    nodeCredentialReferences === undefined
+  const executionBinding = snapshot.executionBindings?.[nodeId];
+  const credentialReference = executionBinding
+    ? {
+        credentialId: executionBinding.credentialId,
+        credentialVersion: executionBinding.credentialVersion,
+        newApi: executionBinding.authority,
+      }
+    : nodeCredentialReferences === undefined
       ? snapshot.credentialId && snapshot.credentialVersion
         ? {
             credentialId: snapshot.credentialId,
@@ -256,6 +262,7 @@ export function createNodeRunSnapshot(
     modelAlias,
     ...(credentialReference ?? {}),
     ...(credentialReference ? { nodeCredentialReferences: { [nodeId]: credentialReference } } : {}),
+    ...(executionBinding ? { executionBindings: { [nodeId]: executionBinding } } : {}),
     parameters,
     submittedAt: snapshot.submittedAt,
     ...(snapshot.reversePrompt ? { reversePrompt: snapshot.reversePrompt } : {}),

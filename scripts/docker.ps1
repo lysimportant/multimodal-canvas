@@ -10,9 +10,9 @@ Start、Build 和 Https 最多等待 Docker 引擎 180 秒，随后由 Compose �
 .PARAMETER Action
 Start 启动并按需构建缺失镜像；Stop 保留数据地停止；Status 只查询；Build 重新构建并启动。
 Https 额外启用 local-https profile，同时保留 HTTP；Stop/Status 包含 server 和 local-https。
-Admin 仅提升 Email 指定的已注册账户，不自动创建账户或重置密码。
-.PARAMETER Email
-仅供 Admin 使用的已注册账户邮箱；必须明确提供，成功后需退出网页并重新登录。
+Admin 仅提升 NewApiUserId 指定的已注册账户，仅同步部署配置允许的内部管理员角色。
+.PARAMETER NewApiUserId
+仅供 Admin 使用的 New API 不可变用户 ID；必须明确提供，成功后需退出网页并重新登录。
 .PARAMETER NoBrowser
 Start、Build 或 Https 成功后不打开默认浏览器，适合终端或自动化。对其他操作无影响。
 .EXAMPLE
@@ -23,7 +23,7 @@ $env:MC_HTTP_PORT = '8088'
 .EXAMPLE
 .\scripts\docker.ps1 -Action Https -NoBrowser
 .EXAMPLE
-.\scripts\docker.ps1 -Action Admin -Email 'user@example.com'
+.\scripts\docker.ps1 -Action Admin -NewApiUserId '123'
 .NOTES
 兼容 Windows PowerShell 5.1 和 PowerShell 7。文件使用 UTF-8 BOM，保证 5.1 正确读取中文。
 MC_HTTP_PORT 取当前进程环境变量，默认为 8080，允许 1 至 65535；不写入用户环境配置。
@@ -35,7 +35,7 @@ MC_VIDEO_CONTRACT 可设为 newapi-video-v1、newapi-unified-v1 或 legacy-v1，
 param(
   [ValidateSet('Start', 'Stop', 'Status', 'Build', 'Https', 'Admin')]
   [string]$Action = 'Start',
-  [string]$Email,
+  [string]$NewApiUserId,
   [switch]$NoBrowser
 )
 
@@ -297,11 +297,11 @@ $previousComposeProfiles = [Environment]::GetEnvironmentVariable('COMPOSE_PROFIL
 
 try {
   if ($Action -eq 'Admin') {
-    if ([string]::IsNullOrWhiteSpace($Email) -or $Email -notmatch '^[^\s@]+@[^\s@]+$') {
-      throw 'Admin 必须通过 -Email 明确指定已注册账户的邮箱；不会创建新账户或重置密码。'
+    if ([string]::IsNullOrWhiteSpace($NewApiUserId) -or $NewApiUserId -notmatch '^[1-9][0-9]*$') {
+      throw 'Admin 必须通过 -NewApiUserId 明确指定已完成 New API 登录的用户 ID；请先配置 MC_NEW_API_ADMIN_USER_IDS 并完成 New API 登录。'
     }
-  } elseif ($PSBoundParameters.ContainsKey('Email')) {
-    throw '-Email 仅可与 -Action Admin 一起使用，未执行任何容器操作。'
+  } elseif ($PSBoundParameters.ContainsKey('NewApiUserId')) {
+    throw '-NewApiUserId 仅可与 -Action Admin 一起使用，未执行任何容器操作。'
   }
   if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
     throw '此入口仅支持 Windows Docker Desktop，请在 Windows PowerShell 5.1 或 PowerShell 7 中运行。'
@@ -344,8 +344,8 @@ try {
   switch ($Action) {
     'Status' { Write-Host '已查询当前容器状态，未启动或停止服务。' }
     'Admin' {
-      Invoke-Docker -Arguments ($script:ComposeArguments + @('exec', '-T', 'api', 'node', 'docker/run.mjs', 'admin', $Email)) | Out-Null
-      Write-Host '指定账户的管理员操作已完成。请退出网页账户后重新登录，原密码不变。'
+      Invoke-Docker -Arguments ($script:ComposeArguments + @('exec', '-T', 'api', 'node', 'docker/run.mjs', 'admin', $NewApiUserId)) | Out-Null
+      Write-Host '指定账户的管理员操作已完成。请退出网页账户后重新登录，角色按 New API 身份配置同步。'
     }
     'Stop' {
       Invoke-Docker -Arguments ($script:ComposeArguments + @('stop')) | Out-Null

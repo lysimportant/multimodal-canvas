@@ -57,17 +57,15 @@ describe('workspace preferences store', () => {
     expect(window.localStorage.getItem(DEFAULT_GENERATION_COUNT_KEY)).toBe('3');
   });
 
-  it('自动反推默认关闭，仅显式 true 开启且可持久恢复', async () => {
-    expect(useWorkspacePreferences.getState().autoReversePrompt).toBe(false);
+  it('旧自动反推偏好不能恢复或触发调用', async () => {
+    expect(useWorkspacePreferences.getState()).not.toHaveProperty('autoReversePrompt');
     window.localStorage.setItem(AUTO_REVERSE_PROMPT_KEY, 'yes');
     await useWorkspacePreferences.persist.rehydrate();
-    expect(useWorkspacePreferences.getState().autoReversePrompt).toBe(false);
-    useWorkspacePreferences.getState().setAutoReversePrompt(true);
-    expect(window.localStorage.getItem(AUTO_REVERSE_PROMPT_KEY)).toBe('true');
+    expect(useWorkspacePreferences.getState()).not.toHaveProperty('autoReversePrompt');
+    expect(window.localStorage.getItem(AUTO_REVERSE_PROMPT_KEY)).toBeNull();
     await useWorkspacePreferences.persist.rehydrate();
-    expect(useWorkspacePreferences.getState().autoReversePrompt).toBe(true);
-    useWorkspacePreferences.getState().setAutoReversePrompt(false);
-    expect(window.localStorage.getItem(AUTO_REVERSE_PROMPT_KEY)).toBe('false');
+    expect(useWorkspacePreferences.getState()).not.toHaveProperty('setAutoReversePrompt');
+    expect(window.localStorage.getItem(AUTO_REVERSE_PROMPT_KEY)).toBeNull();
   });
 
   it('persists theme, background, edge path, edge effect and resource panel state under stable keys', () => {

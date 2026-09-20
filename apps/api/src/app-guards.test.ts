@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHmac } from 'node:crypto';
 
-import { buildApp } from './app';
+import { buildApp } from './fixtures/test-app';
 import { MemoryRunService } from './runs';
 import type { Observability, ObservabilitySpan } from '@multimodal-canvas/observability';
 

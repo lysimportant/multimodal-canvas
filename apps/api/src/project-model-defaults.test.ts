@@ -1,12 +1,12 @@
+import { MemoryAiSettingsStore } from './fixtures/memory-ai-settings';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { buildApp } from './app';
+import { buildApp } from './fixtures/test-app';
 import { FileProjectStore, MemoryProjectStore, PrismaProjectStore } from './projects';
-import { AiSettingsStore } from './settings';
 
 describe('project model defaults store', () => {
   it('supports partial updates and removal in memory', async () => {
@@ -54,7 +54,7 @@ describe('project model defaults store', () => {
 describe('project model defaults endpoints', () => {
   it('reads and patches defaults, and resolves node > project > global', async () => {
     const projectStore = new MemoryProjectStore();
-    const settingsStore = new AiSettingsStore('project-default-test');
+    const settingsStore = new MemoryAiSettingsStore('project-default-test');
     settingsStore.update({ defaultModels: { image: 'global-image' } });
     const refreshedAt = new Date().toISOString();
     settingsStore.replaceModels(
@@ -174,7 +174,7 @@ describe('project model defaults endpoints', () => {
 
   it('validates credential bindings and catalog capabilities before writing any field', async () => {
     const projectStore = new MemoryProjectStore();
-    const settingsStore = new AiSettingsStore('project-default-validation');
+    const settingsStore = new MemoryAiSettingsStore('project-default-validation');
     const firstSettings = settingsStore.update({
       baseUrl: 'https://first-defaults.example/v1',
       apiKey: 'synthetic-first-defaults-key',

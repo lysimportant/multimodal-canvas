@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import { describe, expect, it, vi } from 'vitest';
 import { MemoryAuthStore } from './auth-store';
-import { FileAuthStore } from './file-auth-store';
+import { FileAuthStore } from './fixtures/file-auth-store';
 import { AuthService } from './auth-service';
 
 /** 显式控制并发交错，不依赖密码哈希或磁盘操作的执行速度。 */
@@ -24,11 +24,13 @@ async function fixture(mode: 'memory' | 'file') {
   const store = path ? new FileAuthStore(path) : new MemoryAuthStore();
   if (store instanceof FileAuthStore) await store.initialize();
   const auth = new AuthService({ store, jwtSecret: 'synthetic-concurrency-secret' });
-  const initial = await auth.register({
-    email: 'concurrent@example.test',
-    password: 'correct-password',
-    displayName: '原始资料',
-  });
+  const initial = await auth.issueToken(
+    await store.createUser({
+      email: 'concurrent@example.test',
+
+      displayName: '原始资料',
+    }),
+  );
   return {
     store,
     auth,
@@ -73,10 +75,9 @@ describe.each(['memory', 'file'] as const)('%s 账户事务与并发认证', (mo
       creating.open();
       return pending;
     });
-    const login = current.auth.login({
-      email: 'concurrent@example.test',
-      password: 'correct-password',
-    });
+    const login = current.store
+      .findUserByEmail('concurrent@example.test')
+      .then((user) => current.auth.issueToken(user!));
     let completed = false;
     void login.then(
       () => {
@@ -204,9 +205,7 @@ it('事务结束后派生的延迟任务必须重新排队，不能复用旧的�
   let completed = false;
   await store.transaction(async () => {
     lateWrite = delayed.promise
-      .then(() =>
-        store.createUser({ email: 'delayed@example.test', passwordHash: 'synthetic-hash' }),
-      )
+      .then(() => store.createUser({ email: 'delayed@example.test' }))
       .then(() => {
         completed = true;
       });

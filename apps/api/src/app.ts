@@ -1,3 +1,4 @@
+import { accountError } from './account-errors';
 import multipart from '@fastify/multipart';
 import cors from '@fastify/cors';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
@@ -64,7 +65,6 @@ import { z } from 'zod';
 import {
   AiCredentialNotFoundError,
   AiSettingsError,
-  AiSettingsStore,
   type AiSettingsStoreLike,
   type ModelCatalogEntry,
 } from './settings';
@@ -89,10 +89,14 @@ import {
   type Observability,
   type ObservabilitySpan,
 } from '@multimodal-canvas/observability';
-import { extractBearerToken, authenticateBearer, type AuthPrincipal } from './auth';
+import {
+  extractBearerToken,
+  authenticateBearer,
+  type AuthPrincipal,
+  type AuthenticationResult,
+} from './auth';
 import { AuthService, AuthServiceError, type AuthenticatedSession } from './auth-service';
 import { MemoryAuthStore, type AuthStore } from './auth-store';
-import { quoteModelCost, UsagePolicyError } from './usage-policy';
 import {
   attachmentDisposition,
   createWorkflowExport,
@@ -113,9 +117,7 @@ import {
 import { importWorkflowExport, WorkflowImportError } from './workflow-import';
 import { resolveS3DownloadMode, type S3DownloadMode } from './upload-transport';
 import { resolveApiProxyTrust } from './proxy-trust';
-import { AccountService, accountError } from './account-service';
-import { createAccountMailSender, type AccountMailSender } from './account-mail';
-import { publicAccountPaths, registerAccountRoutes } from './account-routes';
+import { registerAccountRoutes } from './account-routes';
 import { withAssetOwnershipPolicy } from './asset-ownership';
 import {
   createReversePromptCanvas,
@@ -132,19 +134,17 @@ import {
   type PromptSkillStore,
 } from './prompt-skill-store';
 import { registerPromptSkillRoutes } from './prompt-skill-routes';
-import { BillingError, type PrismaBillingService } from '@multimodal-canvas/billing';
-import { ModelMarketplaceError, type ModelMarketplace } from './model-marketplace';
-import { registerModelMarketplaceRoutes } from './model-marketplace-routes';
-import { registerNewApiSquareRoutes } from './newapi-square-routes';
-import type { PrismaNewApiSquare } from './newapi-square';
-import { registerBillingRoutes } from './billing-routes';
+import { ExecutionError } from '@multimodal-canvas/execution';
+import { NewApiAccountService } from './newapi-account-service';
+import { NewApiAccountError } from './newapi-account-client';
+import { NewApiAccountSettings, newApiRequestUser } from './newapi-account-settings';
 import {
-  freezeRunBillingModels,
-  prepareBillingSubmission,
-  type BillingSubmissionFields,
-  type RunBillingModels,
-} from './billing-submission';
-import { projectModelDefaultsResponse, resolvePublicModelDefaults } from './model-defaults-public';
+  registerNewApiAccountRoutes,
+  requestCookie,
+  sessionCookie,
+  NEWAPI_SESSION_COOKIE,
+  isRetiredNewApiRoute,
+} from './newapi-account-routes';
 
 type AppLoggerOptions = {
   level?: string;
@@ -156,17 +156,13 @@ type AppLoggerOptions = {
 };
 
 export type BuildAppOptions = {
+  /** 唯一 New API 身份与分组授权；生产由启动入口强制配置。 */
+  newApiAccount?: NewApiAccountService;
   assetStore?: AssetStore;
   /** 默认 direct；proxy 仅返回受资源、所有者和有效期约束的 API 下载路径。 */
   s3DownloadMode?: S3DownloadMode;
   projectStore?: ProjectStore;
   runService?: RunService;
-  /** 持久化人民币账务；正式执行必须使用已确认报价，内存 Mock 可省略。 */
-  billing?: PrismaBillingService;
-  /** 平台模型独立于上游候选目录，负责验证当前调用绑定和发布价格。 */
-  marketplace?: ModelMarketplace;
-  /** URL 直连的 New API 广场和管理员改价草稿。 */
-  newApiSquare?: PrismaNewApiSquare;
   /** Provider-like executor for an in-memory/local run service. */
   runExecutor?: RunExecutor;
   /** Optional result archiver; defaults to the configured asset store. */
@@ -189,8 +185,6 @@ export type BuildAppOptions = {
   authStore?: AuthStore;
   /** Injectable authentication service for tests or custom deployments. */
   authService?: AuthService;
-  /** 测试注入邮件替身；生产从受控 EMAIL_* 环境创建 SMTP 发送器。 */
-  accountMailSender?: AccountMailSender;
   /** Shared limiter; defaults to a bounded in-memory fallback. */
   rateLimiter?: RateLimiter;
 };
@@ -234,9 +228,8 @@ const assetListQuerySchema = z.object({
     .optional(),
 });
 
-type RunRequestBody = BillingSubmissionFields & {
+type RunRequestBody = {
   projectId: string;
-  platformModelId?: string;
   modelAlias?: string;
   credentialId?: string;
   idempotencyKey?: string;
@@ -246,9 +239,7 @@ type RunRequestBody = BillingSubmissionFields & {
 
 const runRequestBodySchema = z.object({
   projectId: z.string().min(1),
-  platformModelId: z.string().uuid().optional(),
-  quoteOnly: z.boolean().optional(),
-  quoteId: z.string().uuid().optional(),
+
   modelAlias: z.string().trim().min(1).max(160).optional(),
   credentialId: z.string().uuid().optional(),
   idempotencyKey: z.string().trim().min(1).max(200).optional(),
@@ -262,9 +253,7 @@ const runRequestBodySchema = z.object({
 const reversePromptBodySchema = z
   .object({
     projectId: z.string().trim().min(1).max(512),
-    platformModelId: z.string().uuid().optional(),
-    quoteOnly: z.boolean().optional(),
-    quoteId: z.string().uuid().optional(),
+
     modelAlias: z.string().trim().min(1).max(160).optional(),
     credentialId: z.string().uuid().optional(),
     idempotencyKey: z.string().trim().min(1).max(200).optional(),
@@ -281,16 +270,14 @@ const promptOptimizationBodySchema = z
     mediaType: z.enum(['text', 'image', 'audio', 'video']),
     promptDocument: z.unknown(),
     idempotencyKey: z.string().trim().min(1).max(200),
-    platformModelId: z.string().uuid().optional(),
-    quoteOnly: z.boolean().optional(),
-    quoteId: z.string().uuid().optional(),
+
     modelAlias: z.string().trim().min(1).max(160).optional(),
     credentialId: z.string().uuid().optional(),
   })
   .strict();
 
 /** 报价只能进入会创建收费子调用的固定路由，不接受查询串、跳转或通用 API 代理。 */
-function isBillingSubmissionPath(path: string): boolean {
+function isGenerationSubmissionPath(path: string): boolean {
   return /^\/v1\/(?:nodes\/[^/?#]+\/runs|assets\/[^/?#]+\/versions\/\d+\/reverse-prompts|projects\/[^/?#]+\/prompt-optimizations|runs\/[^/?#]+\/retry)$/.test(
     path,
   );
@@ -370,8 +357,6 @@ type RunNodeModelResolution = {
   targetModel?: ModelCatalogEntry;
   /** 每个可执行节点实际解析到的模型，供提交前能力预检使用。 */
   nodeModels: Record<string, ModelCatalogEntry | undefined>;
-  /** 已发布平台模型的内部版本，仅用于快照与报价。 */
-  billingModels: RunBillingModels;
 };
 
 class ResourceMentionCapabilityError extends Error {
@@ -432,7 +417,7 @@ const defaultModelSelectionSchema = z
     z
       .object({
         modelAlias: z.string().min(1),
-        platformModelId: z.string().uuid().optional(),
+
         credentialId: z.string().min(1).optional(),
       })
       .strict(),
@@ -457,7 +442,6 @@ const defaultModelsSchema = z.object({
  */
 async function validateProjectModelDefaults(input: {
   settingsStore: AiSettingsStoreLike;
-  marketplace?: ModelMarketplace;
   defaults: UpdateProjectModelDefaultsInput;
   allowVirtualMockModels: boolean;
   requireCredentialReferences: boolean;
@@ -487,14 +471,6 @@ async function validateProjectModelDefaults(input: {
     const selection = typeof configured === 'string' ? { modelAlias: configured } : configured;
     const alias = selection.modelAlias.trim();
     const credentialId = selection.credentialId?.trim();
-    if (input.marketplace) {
-      const resolved = selection.platformModelId
-        ? await input.marketplace.resolvePublishedModel(selection.platformModelId)
-        : await input.marketplace.resolveLegacyModel(alias, credentialId, mediaType);
-      if (resolved.model.mediaType.toLowerCase() !== mediaType)
-        throw new ModelMarketplaceError('model_media_mismatch', '默认模型与媒体类型不一致');
-      continue;
-    }
     if (!alias) {
       throw new AiSettingsError('model_unavailable', `未配置可用的 ${mediaType} 项目默认模型`);
     }
@@ -639,21 +615,11 @@ async function requireCredentialReference(
     throw new AiSettingsError('model_unavailable', `模型 ${alias} 未绑定可用的 API Key`);
   }
 }
-
-/** 独立文字任务优先使用已配置平台默认；未设置时只从已发布可用商品选择，不扫描候选目录。 */
+/** 独立文字任务仅使用本人的分组默认模型。 */
 async function resolveTextSubmissionModel(
   settingsStore: AiSettingsStoreLike,
-  marketplace?: ModelMarketplace,
 ): Promise<ModelSelection | undefined> {
-  if (!marketplace) return resolveReversePromptDefault(settingsStore);
-  const settings = await settingsStore.get();
-  const configured = settings.defaultModels.text;
-  if (configured) return typeof configured === 'string' ? { modelAlias: configured } : configured;
-  const page = await marketplace.listPublished({ page: 1, pageSize: 100, mediaType: 'text' });
-  const model = page.items.find((entry) => entry.availability === 'available');
-  return model
-    ? { platformModelId: model.id, modelAlias: model.modelAlias ?? model.name }
-    : undefined;
+  return resolveReversePromptDefault(settingsStore);
 }
 
 /**
@@ -663,11 +629,9 @@ async function resolveTextSubmissionModel(
  */
 async function resolveRunNodeModels(input: {
   settingsStore: AiSettingsStoreLike;
-  marketplace?: ModelMarketplace;
   canvas: CanvasDocument;
   targetNodeId: string;
   requestModelAlias?: string;
-  platformModelId?: string;
   credentialId?: string;
   projectDefaults?: ProjectModelDefaults;
   allowVirtualMockModels: boolean;
@@ -715,7 +679,6 @@ async function resolveRunNodeModels(input: {
   const nodeModelAliases: Record<string, string> = {};
   const nodeCredentialReferences: Record<string, RunCredentialReference> = {};
   const nodeModels: Record<string, ModelCatalogEntry | undefined> = {};
-  const billingModels: RunBillingModels = {};
   let targetModel: ModelCatalogEntry | undefined;
 
   for (const node of input.canvas.nodes) {
@@ -732,17 +695,15 @@ async function resolveRunNodeModels(input: {
       node.id === input.targetNodeId ? runCredentialId : node.data.credentialId;
     const requestedAlias = node.id === input.targetNodeId ? input.requestModelAlias : undefined;
     const configured = [
-      requestedAlias || (node.id === input.targetNodeId && input.platformModelId)
+      requestedAlias
         ? {
             modelAlias: requestedAlias,
-            platformModelId: input.platformModelId ?? node.data.platformModelId,
             credentialId: nodeCredentialId,
           }
         : undefined,
-      node.data.modelAlias || node.data.platformModelId
+      node.data.modelAlias
         ? {
             modelAlias: node.data.modelAlias,
-            ...(node.data.platformModelId ? { platformModelId: node.data.platformModelId } : {}),
             ...(node.data.credentialId ? { credentialId: node.data.credentialId } : {}),
           }
         : undefined,
@@ -757,43 +718,6 @@ async function resolveRunNodeModels(input: {
         ? { modelAlias: `mock-${mediaType}` }
         : undefined;
     const alias = selected?.modelAlias?.trim();
-    if (input.marketplace) {
-      if (!selected?.platformModelId && !alias)
-        throw new ModelMarketplaceError(
-          'model_unavailable',
-          `节点 ${node.id} 未选择已发布平台模型`,
-        );
-      const resolved = selected?.platformModelId
-        ? await input.marketplace.resolvePublishedModel(selected.platformModelId)
-        : await input.marketplace.resolveLegacyModel(
-            alias!,
-            nodeCredentialId ?? selected?.credentialId,
-            mediaType,
-          );
-      if (resolved.model.mediaType.toLowerCase() !== mediaType)
-        throw new ModelMarketplaceError(
-          'model_media_mismatch',
-          `平台模型与节点 ${node.id} 的媒体类型不一致`,
-        );
-      const model: ModelCatalogEntry = {
-        id: resolved.binding.upstreamModelId,
-        name: resolved.model.name,
-        mediaTypes: [mediaType],
-        credentialId: resolved.binding.credentialId,
-        capabilities: resolved.binding.capabilities as Record<string, unknown>,
-        limitations: resolved.binding.limitations as Record<string, unknown>,
-        refreshedAt: resolved.binding.verifiedAt.toISOString(),
-      };
-      billingModels[node.id] = resolved;
-      nodeModelAliases[node.id] = resolved.binding.upstreamModelId;
-      nodeModels[node.id] = model;
-      nodeCredentialReferences[node.id] = {
-        credentialId: resolved.binding.credentialId,
-        credentialVersion: resolved.binding.credentialVersion,
-      };
-      if (node.id === input.targetNodeId) targetModel = model;
-      continue;
-    }
     if (!alias) {
       throw new AiSettingsError(
         'model_unavailable',
@@ -845,7 +769,7 @@ async function resolveRunNodeModels(input: {
     );
     const virtualMockModel =
       input.allowVirtualMockModels && !nodeCredentialId && alias === `mock-${mediaType}`;
-    if (!model && !virtualMockModel) {
+    if ((!model || model.available === false) && !virtualMockModel) {
       throw new AiSettingsError(
         'model_unavailable',
         `模型 ${alias} 不支持 ${mediaType} 媒体类型（节点 ${node.id}）`,
@@ -879,7 +803,6 @@ async function resolveRunNodeModels(input: {
     nodeModelAliases,
     nodeCredentialReferences,
     nodeModels,
-    billingModels,
     ...(targetModel ? { targetModel } : {}),
   };
 }
@@ -1333,7 +1256,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     parseJsonBody(request, raw, done);
   });
   app.setErrorHandler((error, request, reply) => {
-    if (error instanceof BillingError || error instanceof ModelMarketplaceError)
+    if (error instanceof ExecutionError) {
+      const status =
+        error.code === 'authorization_required' || error.code === 'authorization_revoked'
+          ? 403
+          : 409;
+      return reply.code(status).send({ code: error.code, error: error.message });
+    }
+    if (error instanceof NewApiAccountError)
       return reply.code(error.status).send({ code: error.code, error: error.message });
     if (error instanceof RateLimitUnavailableError) {
       request.log.warn({ requestId: request.id }, 'global rate limiter unavailable');
@@ -1372,8 +1302,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     });
   });
   const observability =
-    options.observability ??
-    createEnvironmentObservability({ logger: app.log, service: 'multimodal-canvas-api' });
+    options.observability ?? createEnvironmentObservability({ logger: app.log });
   const requestSpans = new WeakMap<object, ObservabilitySpan>();
   const projectStore = options.projectStore ?? new MemoryProjectStore();
   const assetStore: AssetStore = withAssetOwnershipPolicy(
@@ -1420,7 +1349,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const requestPromptStore: Partial<RequestPromptStore> =
     options.runPersistence ?? (runService instanceof MemoryRunService ? runService : {});
   const userExists = options.userExists;
-  const settingsStore: AiSettingsStoreLike = options.settingsStore ?? new AiSettingsStore();
+  const settingsStore: AiSettingsStoreLike = options.newApiAccount
+    ? new NewApiAccountSettings(options.newApiAccount)
+    : options.settingsStore!;
+  if (!settingsStore) throw new Error('New API account settings are required');
   const promptSkillStore = options.promptSkillStore ?? new MemoryPromptSkillStore();
   /** 仅串行化当前 API 实例内同项目的 Skill 提交；不持有锁等待模型执行。 */
   const promptOptimizationQueues = new Map<string, Promise<void>>();
@@ -1461,17 +1393,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const authService =
     options.authService ??
     (jwtSecret ? new AuthService({ store: authStore, jwtSecret }) : undefined);
-  const accountMailSender = options.accountMailSender ?? createAccountMailSender();
-  const accountService =
-    authService && jwtSecret
-      ? new AccountService({
-          store: authStore,
-          auth: authService,
-          mail: accountMailSender,
-          secret: jwtSecret,
-          setupToken: process.env.ADMIN_SETUP_TOKEN,
-        })
-      : undefined;
   const requireJwtExpiration = process.env.NODE_ENV === 'production';
   const requestPrincipals = new WeakMap<object, AuthPrincipal>();
   const requestSessions = new WeakMap<object, AuthenticatedSession>();
@@ -1557,11 +1478,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     // route, so do not make preflight depend on API authentication.
     if (request.method === 'OPTIONS') return;
     const pathname = request.url.split('?')[0];
+    if (isRetiredNewApiRoute(pathname, request.method))
+      return reply.code(410).send({
+        code: 'legacy_endpoint_retired',
+        error: '此入口已退出，请刷新并使用 New API 登录',
+      });
     if (pathname === '/health' || pathname === '/v1/webhooks/newapi') return;
     const authRoute =
-      pathname === '/v1/auth/register' ||
-      pathname === '/v1/auth/login' ||
-      publicAccountPaths.has(pathname)
+      pathname === '/v1/auth/newapi/start' || pathname === '/v1/auth/newapi/callback'
         ? pathname
         : undefined;
     if (authRoute) {
@@ -1576,16 +1500,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           code: 'auth_rate_limit_exceeded',
           retryAfterSeconds: decision.retryAfterSeconds,
           requestId: request.id,
-        });
-      }
-      if (
-        pathname === '/v1/admin/bootstrap/request' &&
-        !process.env.ADMIN_SETUP_TOKEN?.trim() &&
-        !isLoopbackAddress(request.ip)
-      ) {
-        return reply.code(503).send({
-          code: 'setup_token_required',
-          error: '远程初始化必须由部署者配置 ADMIN_SETUP_TOKEN',
         });
       }
       return;
@@ -1625,11 +1539,42 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       requestPrincipals.set(request, { method: 'anonymous' });
       return;
     }
-    const result = authenticateBearer(request.headers.authorization, {
-      apiToken: authToken,
-      jwtSecret,
-      requireExpiration: requireJwtExpiration,
-    });
+    const cookieToken = options.newApiAccount
+      ? requestCookie(request, NEWAPI_SESSION_COOKIE)
+      : undefined;
+    if (cookieToken && !request.headers.authorization)
+      request.headers.authorization = `Bearer ${cookieToken}`;
+    if (options.newApiAccount && !['GET', 'HEAD', 'OPTIONS'].includes(request.method)) {
+      const origin = request.headers.origin;
+      const expectedOrigin = new URL(options.newApiAccount.options.webUrl).origin;
+      if (
+        (origin && origin !== expectedOrigin) ||
+        request.headers['sec-fetch-site'] === 'cross-site'
+      )
+        return reply.code(403).send({ code: 'origin_rejected', error: '请求来源与当前画布不一致' });
+    }
+    let refreshSession: AuthenticatedSession | undefined;
+    if (options.newApiAccount && pathname === '/v1/auth/refresh' && cookieToken && authService) {
+      try {
+        refreshSession = await authService.verifySessionForRefresh(cookieToken);
+      } catch {
+        return reply.code(401).send({ error: 'authentication required' });
+      }
+    }
+    const result: AuthenticationResult = refreshSession
+      ? {
+          ok: true,
+          principal: {
+            method: 'jwt',
+            userId: refreshSession.user.id,
+            sessionId: refreshSession.session.id,
+          },
+        }
+      : authenticateBearer(request.headers.authorization, {
+          apiToken: authToken,
+          jwtSecret,
+          requireExpiration: requireJwtExpiration,
+        });
     if (!result.ok) {
       return reply.code(401).send({ error: 'authentication required' });
     }
@@ -1637,10 +1582,30 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       const accessToken = extractBearerToken(request.headers.authorization);
       if (!accessToken) return reply.code(401).send({ error: 'authentication required' });
       try {
-        const session = await authService.verifyAccessToken(accessToken);
+        const session = refreshSession ?? (await authService.verifyAccessToken(accessToken));
+        if (options.newApiAccount) {
+          const identity = await options.newApiAccount.identity(session.user.id);
+          if (
+            identity.status === 'unavailable' &&
+            !['GET', 'HEAD', 'OPTIONS'].includes(request.method) &&
+            ![
+              '/v1/account/newapi/sync',
+              '/v1/auth/logout',
+              '/v1/auth/refresh',
+              '/v1/account/newapi/revoke',
+            ].includes(pathname)
+          )
+            throw new NewApiAccountError(
+              'upstream_unavailable',
+              'New API 暂不可用，当前作品只读',
+              503,
+            );
+        }
         requestSessions.set(request, session);
         result.principal.role = session.user.role;
       } catch (error) {
+        if (error instanceof NewApiAccountError)
+          return reply.code(error.status).send({ code: error.code, error: error.message });
         if (error instanceof AuthServiceError) {
           return reply.code(401).send({ error: 'authentication required' });
         }
@@ -1693,6 +1658,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       }
     }
     requestPrincipals.set(request, result.principal);
+    if (options.newApiAccount && !requestSessions.has(request))
+      return reply.code(401).send({ code: 'session_required', error: '请使用 New API 登录' });
     if (!pathname.startsWith('/v1/')) return;
 
     const isSse = /^\/v1\/projects\/[^/]+\/events$/.test(pathname);
@@ -1733,114 +1700,68 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   };
   registerPromptSkillRoutes(app, { store: promptSkillStore, ownerId: promptSkillOwnerId });
 
-  registerAccountRoutes(app, {
-    store: authStore,
-    auth: authService,
-    service: accountService,
-    mail: accountMailSender,
-    assets: assetStore,
-    projects: projectStore,
-    runs: runService,
-    sessions: requestSessions,
-  });
-  registerModelMarketplaceRoutes(app, {
-    marketplace: options.marketplace,
-    sessions: requestSessions,
-  });
-  registerNewApiSquareRoutes(app, { square: options.newApiSquare, sessions: requestSessions });
-  registerBillingRoutes(app, { billing: options.billing, sessions: requestSessions });
-
-  /** 只有真实账户可以确认计费；同键恢复也不能借服务令牌或匿名请求读到账务身份。 */
-  app.addHook('preHandler', async (request) => {
-    if (
-      options.billing &&
-      request.method === 'POST' &&
-      isBillingSubmissionPath(request.url.split('?')[0]!) &&
-      !requestSessions.has(request)
-    )
-      throw new BillingError('authentication_required', '计费操作需要登录账户', 401);
-    if (
-      options.billing &&
-      !options.marketplace &&
-      request.method === 'POST' &&
-      isBillingSubmissionPath(request.url.split('?')[0]!)
-    )
-      throw new BillingError('marketplace_unavailable', '平台模型服务尚未配置', 503);
-  });
-
-  /** 报价复用完整提交预检，只允许固定生成入口，不能转发任意 API 或外部 URL。 */
-  app.post('/v1/billing/quotes', async (request, reply) => {
-    if (!requestSessions.has(request))
-      throw new BillingError('authentication_required', '请先登录后报价', 401);
-    if (!options.billing)
-      throw new BillingError('billing_unavailable', '平台计费服务尚未配置', 503);
-    const parsed = z
-      .object({
-        path: z.string().max(1024).refine(isBillingSubmissionPath),
-        body: z.record(z.unknown()),
-      })
-      .strict()
-      .safeParse(request.body);
-    if (!parsed.success)
-      throw new BillingError('invalid_quote_request', '报价目标必须为已支持的生成提交入口', 400);
-    const { quoteId: _quoteId, ...body } = parsed.data.body;
-    const response = await app.inject({
-      method: 'POST',
-      url: parsed.data.path,
-      headers: { authorization: request.headers.authorization! },
-      payload: { ...body, quoteOnly: true },
+  if (options.newApiAccount) {
+    registerNewApiAccountRoutes(app, options.newApiAccount, requestSessions);
+    registerAccountRoutes(app, {
+      store: authStore,
+      auth: authService,
+      assets: assetStore,
+      projects: projectStore,
+      runs: runService,
+      sessions: requestSessions,
     });
-    return reply
-      .code(response.statusCode)
-      .header('cache-control', 'no-store')
-      .type('application/json')
-      .send(response.body);
-  });
+    app.addHook('preHandler', (request, _reply, done) => {
+      const userId = requestPrincipals.get(request)?.userId;
+      if (userId) newApiRequestUser.run(userId, done);
+      else done();
+    });
+  } else {
+    registerAccountRoutes(app, {
+      store: authStore,
+      auth: authService,
+      assets: assetStore,
+      projects: projectStore,
+      runs: runService,
+      sessions: requestSessions,
+    });
+  }
 
-  app.post('/v1/auth/register', async (request, reply) => {
-    if (!authService) {
-      return reply.code(503).send({ error: 'authentication service unavailable' });
-    }
-    const body = z
-      .object({
-        email: z.string(),
-        password: z.string(),
-        displayName: z.string().trim().max(120).optional(),
-      })
-      .strict()
-      .safeParse(request.body);
-    if (!body.success) return reply.code(400).send({ error: 'invalid authentication input' });
-    try {
-      if (!accountService)
-        return reply.code(503).send({ error: 'authentication service unavailable' });
-      return reply.code(202).send(await accountService.register(body.data));
-    } catch (error) {
-      const mapped = accountError(error);
-      if (mapped) return reply.code(mapped.status).send(mapped.body);
-      return sendAuthServiceError(reply, error);
-    }
-  });
-
-  app.post('/v1/auth/login', async (request, reply) => {
-    if (!authService) {
-      return reply.code(503).send({ error: 'authentication service unavailable' });
-    }
-    const body = z
-      .object({ email: z.string(), password: z.string() })
-      .strict()
-      .safeParse(request.body);
-    if (!body.success) return reply.code(400).send({ error: 'invalid authentication input' });
-    try {
-      return reply.send(await authService.login(body.data));
-    } catch (error) {
-      return sendAuthServiceError(reply, error);
+  /** 生成必须由已验证账号发起；旧报价和商品身份不能进入新的执行链路。 */
+  app.addHook('preHandler', async (request) => {
+    if (request.method === 'POST' && isGenerationSubmissionPath(request.url.split('?')[0]!)) {
+      if (options.newApiAccount && !requestSessions.has(request))
+        throw new NewApiAccountError('authentication_required', '请使用 New API 登录', 401);
+      const body = request.body as Record<string, unknown> | undefined;
+      if (
+        body?.quoteId !== undefined ||
+        body?.quoteOnly !== undefined ||
+        body?.platformModelId !== undefined
+      )
+        throw new NewApiAccountError(
+          'legacy_submission_retired',
+          '旧报价和平台模型已失效，请刷新并重新选择分组模型',
+          409,
+        );
+      if (body?.automatic === true)
+        throw new NewApiAccountError(
+          'automatic_generation_disabled',
+          '请手动发起反推，旧自动报价提醒已退出',
+          400,
+        );
     }
   });
 
   app.get('/v1/auth/me', async (request, reply) => {
     const session = requestSessions.get(request);
     if (!session) return reply.code(401).send({ error: 'authentication required' });
-    return { user: session.user };
+    if (options.newApiAccount) {
+      try {
+        await options.newApiAccount.synchronize(session.user.id);
+      } catch (error) {
+        if (!(error instanceof NewApiAccountError) || error.status !== 503) throw error;
+      }
+    }
+    return { user: session.user, expiresAt: session.session.expiresAt.toISOString() };
   });
 
   app.post('/v1/auth/logout', async (request, reply) => {
@@ -1854,6 +1775,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       return reply.code(401).send({ error: 'authentication required' });
     }
     await authService.logout(accessToken);
+    if (options.newApiAccount)
+      reply.header(
+        'set-cookie',
+        sessionCookie(
+          NEWAPI_SESSION_COOKIE,
+          '',
+          0,
+          new URL(options.newApiAccount.options.client.options.redirectUri).protocol === 'https:',
+        ),
+      );
     return { loggedOut: true };
   });
 
@@ -1942,80 +1873,38 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
 
   app.get('/v1/settings/ai', async (request, reply) => {
-    if (!canManagePlatformSettings(requestPrincipals, requestSessions, request)) {
+    if (
+      !options.newApiAccount &&
+      !canManagePlatformSettings(requestPrincipals, requestSessions, request)
+    ) {
       return reply.code(403).send({ error: 'platform credential access is not permitted' });
     }
     const settings = await settingsStore.get();
     return {
       settings,
-      ...(options.marketplace
-        ? {
-            resolvedDefaults: await resolvePublicModelDefaults(
-              settings.defaultModels,
-              options.marketplace,
-            ),
-          }
-        : {}),
     };
   });
 
   app.patch('/v1/settings/ai', async (request, reply) => {
-    if (!canManagePlatformSettings(requestPrincipals, requestSessions, request)) {
+    if (
+      !options.newApiAccount &&
+      !canManagePlatformSettings(requestPrincipals, requestSessions, request)
+    ) {
       return reply.code(403).send({ error: 'platform credential access is not permitted' });
     }
     const result = z
       .object({
-        baseUrl: z
-          .string()
-          .url()
-          .refine((value) => {
-            const url = new URL(value);
-            return url.protocol === 'https:' || ['localhost', '127.0.0.1'].includes(url.hostname);
-          }, 'baseUrl must use HTTPS outside local development')
-          .optional(),
-        apiKey: z.string().min(1).optional(),
         timeoutMs: z.number().int().min(1_000).max(2_147_483_647).optional(),
         defaultModels: defaultModelsSchema.optional(),
-        activate: z.boolean().optional(),
       })
       .strict()
-      .refine((value) => value.activate !== false || Boolean(value.apiKey), {
-        message: 'activate: false requires apiKey',
-        path: ['apiKey'],
-      })
-      .refine(
-        (value) =>
-          value.activate !== false ||
-          (value.defaultModels === undefined && value.timeoutMs === undefined),
-        { message: 'activate: false only creates an independent credential', path: ['activate'] },
-      )
       .safeParse(request.body);
     if (!result.success) return reply.code(400).send({ error: 'invalid AI settings' });
     try {
       const defaults = result.data.defaultModels as UpdateProjectModelDefaultsInput | undefined;
-      const hasUnboundDefault = defaults
-        ? Object.values(defaults).some(
-            (selection) =>
-              selection !== null &&
-              selection !== undefined &&
-              (typeof selection === 'string' || !selection.credentialId),
-          )
-        : false;
-      if (
-        defaults &&
-        hasUnboundDefault &&
-        (result.data.baseUrl !== undefined || result.data.apiKey !== undefined) &&
-        result.data.activate !== false
-      ) {
-        throw new AiSettingsError(
-          'model_unavailable',
-          '更换 API Key 后请先刷新模型目录，再保存未绑定凭据的默认模型',
-        );
-      }
       if (defaults) {
         await validateProjectModelDefaults({
           settingsStore,
-          marketplace: options.marketplace,
           defaults,
           allowVirtualMockModels: providerName === 'mock' && process.env.NODE_ENV !== 'production',
           requireCredentialReferences: providerName === 'newapi',
@@ -2023,12 +1912,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         });
       }
       const settings = await settingsStore.update(result.data);
-      const { createdCredentialId, ...settingsView } = settings;
-      return {
-        settings: settingsView,
-        credentials: await settingsStore.listCredentials(),
-        ...(createdCredentialId ? { createdCredentialId } : {}),
-      };
+      return { settings };
     } catch (error) {
       if (error instanceof AiCredentialNotFoundError) {
         return reply.code(404).send({ error: 'credential not found', code: error.code });
@@ -2041,98 +1925,20 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
 
   app.get('/v1/settings/ai/credentials', async (request, reply) => {
-    if (!canManagePlatformSettings(requestPrincipals, requestSessions, request)) {
+    if (
+      !options.newApiAccount &&
+      !canManagePlatformSettings(requestPrincipals, requestSessions, request)
+    ) {
       return reply.code(403).send({ error: 'platform credential access is not permitted' });
     }
     return { credentials: await settingsStore.listCredentials() };
   });
 
-  app.post<{ Params: { credentialId: string } }>(
-    '/v1/settings/ai/credentials/:credentialId/activate',
-    async (request, reply) => {
-      if (!canManagePlatformSettings(requestPrincipals, requestSessions, request)) {
-        return reply.code(403).send({ error: 'platform credential access is not permitted' });
-      }
-      const credentialId = z.string().uuid().safeParse(request.params.credentialId);
-      if (!credentialId.success) return reply.code(400).send({ error: 'invalid credential id' });
-      const settings = await settingsStore.activateCredential(credentialId.data);
-      if (!settings) return reply.code(404).send({ error: 'credential not found' });
-      return { settings, credentials: await settingsStore.listCredentials() };
-    },
-  );
-
-  app.delete('/v1/settings/ai/credentials', async (request, reply) => {
-    if (!canManagePlatformSettings(requestPrincipals, requestSessions, request)) {
-      return reply.code(403).send({ error: 'platform credential access is not permitted' });
-    }
-    const settings = await settingsStore.removeCredentials();
-    return { settings, credentials: await settingsStore.listCredentials() };
-  });
-
-  app.delete('/v1/settings/ai/credentials/:credentialId', async (request, reply) => {
-    if (!canManagePlatformSettings(requestPrincipals, requestSessions, request)) {
-      return reply.code(403).send({ error: 'platform credential access is not permitted' });
-    }
-    const parsed = z.object({ credentialId: z.string().uuid() }).safeParse(request.params);
-    if (!parsed.success) return reply.code(400).send({ error: 'invalid credential id' });
-    const settings = await settingsStore.removeCredential(parsed.data.credentialId);
-    if (!settings)
-      return reply.code(404).send({ error: 'credential not found', code: 'credential_not_found' });
-    return { settings, credentials: await settingsStore.listCredentials() };
-  });
-
-  app.patch<{ Params: { credentialId: string } }>(
-    '/v1/settings/ai/credentials/:credentialId/defaults',
-    async (request, reply) => {
-      if (!canManagePlatformSettings(requestPrincipals, requestSessions, request)) {
-        return reply.code(403).send({ error: 'platform credential access is not permitted' });
-      }
-      const params = z.object({ credentialId: z.string().uuid() }).safeParse(request.params);
-      if (!params.success) return reply.code(400).send({ error: 'invalid credential id' });
-      const body = defaultModelsSchema.strict().safeParse(request.body);
-      if (!body.success)
-        return reply.code(400).send({ error: 'invalid credential model defaults' });
-      try {
-        // 默认模型必须来自该凭据自己的目录，避免出现模型 A 配 Key B 的组合。
-        await validateProjectModelDefaults({
-          settingsStore,
-          marketplace: options.marketplace,
-          defaults: body.data as UpdateProjectModelDefaultsInput,
-          allowVirtualMockModels: providerName === 'mock' && process.env.NODE_ENV !== 'production',
-          requireCredentialReferences: providerName === 'newapi',
-          credentialScope: params.data.credentialId,
-        });
-        const credentials = await settingsStore.updateCredentialDefaults(
-          params.data.credentialId,
-          body.data,
-        );
-        if (!credentials) {
-          return reply
-            .code(404)
-            .send({ error: 'credential not found', code: 'credential_not_found' });
-        }
-        return { credentials };
-      } catch (error) {
-        if (error instanceof AiCredentialNotFoundError) {
-          return reply.code(404).send({ error: 'credential not found', code: error.code });
-        }
-        if (error instanceof AiSettingsError) {
-          return reply.code(400).send({ error: error.message, code: error.code });
-        }
-        throw error;
-      }
-    },
-  );
-
-  app.post('/v1/settings/ai/test', async (request, reply) => {
-    if (!canManagePlatformSettings(requestPrincipals, requestSessions, request)) {
-      return reply.code(403).send({ error: 'platform credential access is not permitted' });
-    }
-    return { result: await settingsStore.testConnection() };
-  });
-
   app.post('/v1/settings/ai/models/refresh', async (request, reply) => {
-    if (!canManagePlatformSettings(requestPrincipals, requestSessions, request)) {
+    if (
+      !options.newApiAccount &&
+      !canManagePlatformSettings(requestPrincipals, requestSessions, request)
+    ) {
       return reply.code(403).send({ error: 'platform credential access is not permitted' });
     }
     const body = z
@@ -2167,7 +1973,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         })
         .safeParse(request.query);
       if (!query.success) return reply.code(400).send({ error: 'invalid model query' });
-      if (!canManagePlatformSettings(requestPrincipals, requestSessions, request)) {
+      if (
+        !options.newApiAccount &&
+        !canManagePlatformSettings(requestPrincipals, requestSessions, request)
+      ) {
         return reply.code(403).send({ error: 'platform credential access is not permitted' });
       }
       if (
@@ -2351,7 +2160,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         if (imported.modelDefaults) {
           await validateProjectModelDefaults({
             settingsStore,
-            marketplace: options.marketplace,
             defaults: imported.modelDefaults as UpdateProjectModelDefaultsInput,
             allowVirtualMockModels:
               providerName === 'mock' && process.env.NODE_ENV !== 'production',
@@ -2501,11 +2309,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         projectScope(requestPrincipals, request),
       );
       if (!defaults) return reply.code(404).send({ error: 'project not found' });
-      return projectModelDefaultsResponse({
-        defaults,
-        marketplace: options.marketplace,
-        canManageSettings: canManagePlatformSettings(requestPrincipals, requestSessions, request),
-      });
+      return { defaults };
     },
   );
 
@@ -2520,7 +2324,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
               z
                 .object({
                   modelAlias: z.string().trim().min(1),
-                  platformModelId: z.string().uuid().optional(),
+
                   credentialId: z.string().trim().min(1).optional(),
                 })
                 .strict(),
@@ -2533,7 +2337,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
               z
                 .object({
                   modelAlias: z.string().trim().min(1),
-                  platformModelId: z.string().uuid().optional(),
+
                   credentialId: z.string().trim().min(1).optional(),
                 })
                 .strict(),
@@ -2546,7 +2350,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
               z
                 .object({
                   modelAlias: z.string().trim().min(1),
-                  platformModelId: z.string().uuid().optional(),
+
                   credentialId: z.string().trim().min(1).optional(),
                 })
                 .strict(),
@@ -2559,7 +2363,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
               z
                 .object({
                   modelAlias: z.string().trim().min(1),
-                  platformModelId: z.string().uuid().optional(),
+
                   credentialId: z.string().trim().min(1).optional(),
                 })
                 .strict(),
@@ -2578,7 +2382,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       try {
         await validateProjectModelDefaults({
           settingsStore,
-          marketplace: options.marketplace,
           defaults: result.data as UpdateProjectModelDefaultsInput,
           allowVirtualMockModels: providerName === 'mock' && process.env.NODE_ENV !== 'production',
           requireCredentialReferences: providerName === 'newapi',
@@ -2588,11 +2391,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           result.data as UpdateProjectModelDefaultsInput,
           scope,
         );
-        return projectModelDefaultsResponse({
-          defaults,
-          marketplace: options.marketplace,
-          canManageSettings: canManagePlatformSettings(requestPrincipals, requestSessions, request),
-        });
+        return { defaults };
       } catch (error) {
         if (error instanceof ProjectStoreError && error.code === 'not_found') {
           return reply.code(404).send({ error: error.message });
@@ -2843,12 +2642,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
         .at(0);
       if (runId && !run) return reply.code(404).send({ error: 'reverse prompt run not found' });
-      const selectedDefault = await resolveTextSubmissionModel(settingsStore, options.marketplace);
-      const defaultModel = selectedDefault
-        ? options.marketplace
-          ? (await resolvePublicModelDefaults({ text: selectedDefault }, options.marketplace)).text
-          : { modelAlias: selectedDefault.modelAlias }
-        : undefined;
+      const selectedDefault = await resolveTextSubmissionModel(settingsStore);
+      const defaultModel = selectedDefault;
       return {
         analysis: run ? publicReversePromptAnalysis(run) : null,
         ...(defaultModel ? { defaultModel } : {}),
@@ -2926,11 +2721,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         return reply.code(429).send({ error: 'project run quota exceeded', retryAfterSeconds: 30 });
       }
       try {
-        if (
-          !options.marketplace &&
-          body.credentialId &&
-          !(await settingsStore.hasCredential(body.credentialId))
-        ) {
+        if (body.credentialId && !(await settingsStore.hasCredential(body.credentialId))) {
           return reply.code(404).send({ error: 'credential not found' });
         }
         const selected: ModelSelection | undefined = body.modelAlias
@@ -2938,13 +2729,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
               modelAlias: body.modelAlias,
               ...(body.credentialId ? { credentialId: body.credentialId } : {}),
             }
-          : body.platformModelId
-            ? undefined
-            : await resolveTextSubmissionModel(settingsStore, options.marketplace);
-        if (!selected && !body.platformModelId)
-          throw new AiSettingsError('model_unavailable', '未配置可用的文字模型');
+          : await resolveTextSubmissionModel(settingsStore);
+        if (!selected) throw new AiSettingsError('model_unavailable', '未配置可用的文字模型');
         if (
-          !body.platformModelId &&
           body.credentialId &&
           selected?.credentialId &&
           body.credentialId !== selected.credentialId
@@ -2958,10 +2745,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         });
         const resolution = await resolveRunNodeModels({
           settingsStore,
-          marketplace: options.marketplace,
           canvas,
           targetNodeId: REVERSE_PROMPT_NODE_ID,
-          platformModelId: body.platformModelId ?? selected?.platformModelId,
           requestModelAlias: selected?.modelAlias,
           credentialId: body.credentialId ?? selected?.credentialId,
           allowVirtualMockModels: providerName === 'mock' && process.env.NODE_ENV !== 'production',
@@ -2997,20 +2782,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           }),
           reversePrompt: { assetId: asset.id, assetVersion: version, automatic: body.automatic },
         });
-        if (options.marketplace)
-          snapshot = freezeRunBillingModels(snapshot, resolution.billingModels);
-        const quote = await prepareBillingSubmission({
-          billing: options.billing,
-          settings: settingsStore,
-          session: requestSessions.get(request),
-          fields: body,
-          snapshot,
-          models: resolution.billingModels,
-        });
-        if (quote) return reply.header('cache-control', 'no-store').send({ quote });
+        if (options.newApiAccount)
+          snapshot = await options.newApiAccount.freeze(
+            requestSessions.get(request)!.user.id,
+            snapshot,
+          );
         const run = await runService.create(snapshot, {
           idempotencyKey,
-          ...(body.quoteId ? { quoteId: body.quoteId } : {}),
           ...(principal?.userId ? { userId: principal.userId } : {}),
         });
         return reply.code(202).send({ analysis: publicReversePromptAnalysis(run) });
@@ -3118,10 +2896,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
               JSON.stringify(source.input) !== JSON.stringify(body.promptDocument) ||
               (expectedPrompt && JSON.stringify(frozenPrompt) !== JSON.stringify(expectedPrompt)) ||
               (body.modelAlias && body.modelAlias !== existing.modelAlias) ||
-              (body.credentialId && body.credentialId !== existing.snapshot.credentialId) ||
-              (body.platformModelId &&
-                body.platformModelId !==
-                  existing.snapshot.billingBindings?.[targetNodeId]?.platformModelId)
+              (body.credentialId && body.credentialId !== existing.snapshot.credentialId)
             ) {
               return reply.code(409).send({
                 code: 'idempotency_conflict',
@@ -3135,7 +2910,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
               });
             // 补发是否安全由 Run 服务判断；恢复只能使用已提交的冻结身份。
             const run =
-              existing.status === 'queued' && !options.billing
+              existing.status === 'queued'
                 ? await runService.create(existing.snapshot, {
                     idempotencyKey: existing.idempotencyKey,
                     userId: existing.userId,
@@ -3174,24 +2949,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
               .code(429)
               .send({ error: 'project run quota exceeded', retryAfterSeconds: 30 });
           }
-          if (
-            !options.marketplace &&
-            body.credentialId &&
-            !(await settingsStore.hasCredential(body.credentialId))
-          )
+          if (body.credentialId && !(await settingsStore.hasCredential(body.credentialId)))
             return reply.code(404).send({ error: 'credential not found' });
           const selected: ModelSelection | undefined = body.modelAlias
             ? {
                 modelAlias: body.modelAlias,
                 ...(body.credentialId ? { credentialId: body.credentialId } : {}),
               }
-            : body.platformModelId
-              ? undefined
-              : await resolveTextSubmissionModel(settingsStore, options.marketplace);
-          if (!selected && !body.platformModelId)
-            throw new AiSettingsError('model_unavailable', '未配置可用的文字模型');
+            : await resolveTextSubmissionModel(settingsStore);
+          if (!selected) throw new AiSettingsError('model_unavailable', '未配置可用的文字模型');
           if (
-            !body.platformModelId &&
             body.credentialId &&
             selected?.credentialId &&
             body.credentialId !== selected.credentialId
@@ -3202,10 +2969,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
             );
           const resolution = await resolveRunNodeModels({
             settingsStore,
-            marketplace: options.marketplace,
             canvas,
             targetNodeId,
-            platformModelId: body.platformModelId ?? selected?.platformModelId,
             requestModelAlias: selected?.modelAlias,
             credentialId: body.credentialId ?? selected?.credentialId,
             allowVirtualMockModels:
@@ -3230,25 +2995,18 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
             },
           });
           const principal = requestPrincipals.get(request);
-          if (options.marketplace)
-            snapshot = freezeRunBillingModels(snapshot, resolution.billingModels);
-          const quote = await prepareBillingSubmission({
-            billing: options.billing,
-            settings: settingsStore,
-            session: requestSessions.get(request),
-            fields: body,
-            snapshot,
-            models: resolution.billingModels,
-          });
-          if (quote) return reply.header('cache-control', 'no-store').send({ quote });
+          if (options.newApiAccount)
+            snapshot = await options.newApiAccount.freeze(
+              requestSessions.get(request)!.user.id,
+              snapshot,
+            );
           const run = await runService.create(snapshot, {
             idempotencyKey,
-            ...(body.quoteId ? { quoteId: body.quoteId } : {}),
             ...(principal?.userId ? { userId: principal.userId } : {}),
           });
           return reply.code(202).send({ optimization: publicPromptOptimization(run) });
         } catch (error) {
-          if (error instanceof BillingError || error instanceof ModelMarketplaceError) throw error;
+          if (error instanceof NewApiAccountError || error instanceof ExecutionError) throw error;
           if (error instanceof AiSettingsError)
             return reply.code(400).send({ error: error.message, code: error.code });
           if (error instanceof AiCredentialNotFoundError)
@@ -3286,11 +3044,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     }
     const body: RunRequestBody = {
       projectId: parsedBody.data.projectId,
-      ...(parsedBody.data.platformModelId
-        ? { platformModelId: parsedBody.data.platformModelId }
-        : {}),
-      ...(parsedBody.data.quoteId ? { quoteId: parsedBody.data.quoteId } : {}),
-      ...(parsedBody.data.quoteOnly ? { quoteOnly: true } : {}),
       ...(parsedBody.data.modelAlias ? { modelAlias: parsedBody.data.modelAlias } : {}),
       ...(parsedBody.data.credentialId ? { credentialId: parsedBody.data.credentialId } : {}),
       ...(parsedBody.data.idempotencyKey ? { idempotencyKey: parsedBody.data.idempotencyKey } : {}),
@@ -3302,11 +3055,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     // Running with an already configured credential does not expose or mutate
     // its secret. Regular project users may select the credential bound to a
     // node, while listing, activating and editing credentials remains admin-only.
-    if (
-      !options.marketplace &&
-      body.credentialId &&
-      !(await settingsStore.hasCredential(body.credentialId))
-    ) {
+    if (body.credentialId && !(await settingsStore.hasCredential(body.credentialId))) {
       return reply.code(404).send({ error: 'credential not found' });
     }
     const canvas = await projectStore.getCanvas(body.projectId, scope);
@@ -3345,32 +3094,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       const projectDefaults = await projectStore.getModelDefaults(body.projectId, scope);
       const modelResolution = await resolveRunNodeModels({
         settingsStore,
-        marketplace: options.marketplace,
         canvas: canvasForRun,
         targetNodeId: request.params.nodeId,
-        platformModelId: body.platformModelId,
         ...(body.modelAlias ? { requestModelAlias: body.modelAlias } : {}),
         ...(body.credentialId ? { credentialId: body.credentialId } : {}),
         ...(projectDefaults ? { projectDefaults } : {}),
         allowVirtualMockModels: providerName === 'mock' && process.env.NODE_ENV !== 'production',
         requireCredentialReferences: providerName === 'newapi',
       });
-      // 目录价格仅作为可选估算元数据；本项目不以估算或上游费用阻断提交。
-      let estimatedCost: ReturnType<typeof quoteModelCost>;
-      try {
-        estimatedCost = quoteModelCost(
-          modelResolution.targetModel?.price,
-          target ? canvasForRun.edges.filter((edge) => edge.targetNodeId === target.id).length : 0,
-          getRequestedUnits(body.parameters),
-        );
-      } catch (error) {
-        if (!(error instanceof UsagePolicyError)) throw error;
-        request.log.warn(
-          { code: error.code, modelAlias: modelResolution.targetModelAlias },
-          'ignoring invalid provider price metadata; upstream remains responsible for billing',
-        );
-        estimatedCost = undefined;
-      }
       const principal = requestPrincipals.get(request);
       const frozenAssetRefs = await resolveRunAssetRefs({
         assetStore,
@@ -3445,27 +3176,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         frozenNodeImageEditCapabilities,
         ...(credential ?? {}),
       });
-      if (options.marketplace)
-        snapshot = freezeRunBillingModels(snapshot, modelResolution.billingModels);
-      const quote = await prepareBillingSubmission({
-        billing: options.billing,
-        settings: settingsStore,
-        session: requestSessions.get(request),
-        fields: body,
-        snapshot,
-        models: modelResolution.billingModels,
-      });
-      if (quote) return reply.header('cache-control', 'no-store').send({ quote });
+      if (options.newApiAccount)
+        snapshot = await options.newApiAccount.freeze(
+          requestSessions.get(request)!.user.id,
+          snapshot,
+        );
       const headerIdempotencyKey = request.headers['idempotency-key'];
       const idempotencyKey =
         typeof headerIdempotencyKey === 'string' ? headerIdempotencyKey : body.idempotencyKey;
       const run = await runService.create(snapshot, {
-        ...(body.quoteId ? { quoteId: body.quoteId } : {}),
         ...(idempotencyKey ? { idempotencyKey } : {}),
         ...(principal?.userId ? { userId: principal.userId } : {}),
-        ...(estimatedCost
-          ? { estimatedCost: { amount: estimatedCost.amount, currency: estimatedCost.currency } }
-          : {}),
       });
       request.log.info(
         {
@@ -3474,9 +3195,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           nodeId: request.params.nodeId,
           provider: run.provider,
           modelAlias: run.modelAlias,
-          ...(estimatedCost
-            ? { estimatedCost: `${estimatedCost.amount} ${estimatedCost.currency}` }
-            : {}),
           idempotent: Boolean(idempotencyKey),
         },
         'run queued',
@@ -3576,13 +3294,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.post<{ Params: { runId: string } }>('/v1/runs/:runId/retry', async (request, reply) => {
     try {
       const fields = z
-        .object({ quoteOnly: z.boolean().optional(), quoteId: z.string().uuid().optional() })
+        .object({})
         .strict()
         .safeParse(request.body ?? {});
       if (!fields.success)
-        throw new BillingError('invalid_quote_request', '重试仅接受报价身份或重新报价', 400);
-      if (!options.billing && (fields.data.quoteOnly || fields.data.quoteId))
-        throw new BillingError('billing_unavailable', '平台计费服务尚未配置', 503);
+        throw new NewApiAccountError(
+          'invalid_retry_request',
+          '重试不接受修改原任务身份或报价',
+          400,
+        );
       const previous = await runService.get(request.params.runId);
       if (
         !previous ||
@@ -3596,16 +3316,21 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       if (previous.snapshot.promptOptimization) {
         return reply.code(409).send({ error: '请在提示词优化窗口中明确发起新的优化' });
       }
-      if (options.billing) {
+      if (options.newApiAccount) {
+        if (!previous.snapshot.executionBindings)
+          throw new NewApiAccountError(
+            'legacy_execution_retired',
+            '旧任务仅可查看，请重新选择分组模型后生成',
+            409,
+          );
         if (!['failed', 'cancelled'].includes(previous.status))
-          throw new BillingError(
+          throw new NewApiAccountError(
             'retry_not_allowed',
-            '只有已结束且明确失败的任务可以重新报价',
+            '只有已结束且明确失败的任务可以重试',
             409,
           );
         const resolution = await resolveRunNodeModels({
           settingsStore,
-          marketplace: options.marketplace,
           canvas: {
             revision: previous.snapshot.canvasRevision,
             nodes: previous.snapshot.nodes,
@@ -3630,7 +3355,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           allowMockPreview: false,
         });
         if (mentionIssues.length)
-          throw new BillingError(
+          throw new NewApiAccountError(
             'binding_capability_changed',
             '当前模型绑定不再支持原运行的资源输入，请检查模型后重新发起',
             409,
@@ -3650,33 +3375,20 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
             requestId: request.id,
           });
           if (check.issues.length)
-            throw new BillingError(
+            throw new NewApiAccountError(
               'binding_capability_changed',
               '当前模型绑定不再支持原运行的图片编辑输入',
               409,
             );
           if (check.frozenCapability) capabilities[node.id] = check.frozenCapability;
         }
-        const snapshot = freezeRunBillingModels(
-          {
-            ...previous.snapshot,
-            imageEditCapability: capabilities[previous.targetNodeId],
-            nodeImageEditCapabilities: Object.keys(capabilities).length ? capabilities : undefined,
-          },
-          resolution.billingModels,
-        );
-        const quote = await prepareBillingSubmission({
-          billing: options.billing,
-          settings: settingsStore,
-          session: requestSessions.get(request),
-          fields: fields.data,
-          snapshot,
-          models: resolution.billingModels,
+        await options.newApiAccount.freeze(requestSessions.get(request)!.user.id, {
+          ...previous.snapshot,
+          imageEditCapability: capabilities[previous.targetNodeId],
+          nodeImageEditCapabilities: Object.keys(capabilities).length ? capabilities : undefined,
         });
-        if (quote) return reply.header('cache-control', 'no-store').send({ quote });
       }
       const run = await runService.retry(request.params.runId, {
-        ...(fields.data.quoteId ? { quoteId: fields.data.quoteId } : {}),
         ...(requestSessions.get(request)?.user.id
           ? { userId: requestSessions.get(request)!.user.id }
           : {}),
@@ -4368,26 +4080,6 @@ function isLoopbackAddress(value: string): boolean {
   return normalized === '127.0.0.1' || normalized === '::1' || normalized === '::ffff:127.0.0.1';
 }
 
-function sendAuthServiceError(
-  reply: { code(statusCode: number): { send(payload: unknown): unknown } },
-  error: unknown,
-): unknown {
-  if (!(error instanceof AuthServiceError)) throw error;
-  switch (error.code) {
-    case 'invalid_input':
-      return reply.code(400).send({ error: error.message });
-    case 'email_taken':
-      return reply.code(409).send({ error: error.message });
-    case 'invalid_credentials':
-    case 'invalid_token':
-    case 'session_revoked':
-      return reply.code(401).send({ error: error.message });
-    case 'email_verification_required':
-    case 'account_disabled':
-      return reply.code(403).send({ code: error.code, error: error.message });
-  }
-}
-
 function safeEqual(left: string, right: string) {
   const leftBuffer = Buffer.from(left);
   const rightBuffer = Buffer.from(right);
@@ -4747,11 +4439,6 @@ function resolveCorsOrigins(
 function parseLocalWebPort(value: string | undefined): number {
   const port = Number(value);
   return Number.isInteger(port) && port >= 1 && port <= 65_535 ? port : 5173;
-}
-
-function getRequestedUnits(parameters: Record<string, unknown> | undefined): number | string {
-  const value = parameters?.units;
-  return typeof value === 'number' || typeof value === 'string' ? value : 1;
 }
 
 async function tryExtractMediaMetadata(

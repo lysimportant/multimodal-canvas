@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { buildApp } from './app';
+import { buildApp } from './fixtures/test-app';
 
 function diagnosticText(error: unknown): string {
   if (!(error instanceof Error)) return String(error);

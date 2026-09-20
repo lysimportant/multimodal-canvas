@@ -35,12 +35,15 @@ vi.mock('bullmq', () => {
 import {
   attachProviderErrorMetadata,
   createProviderJobRecord,
-  createRunWorker,
   normalizeProviderExecution,
   requestPromptSendStatusForFailure,
   resolveDatabaseRunId,
   sanitizeProviderJobPayload,
 } from './index';
+import {
+  createAuthorizedTestRunWorker as createRunWorker,
+  withTestExecutionBindings,
+} from './test-execution-fixtures';
 import { serializeWorkerError, type WorkerLogger } from './logger';
 import { workflowSnapshotFingerprint, workflowSnapshotFingerprintV1 } from './workflow-dag';
 import type { RequestPromptRecord } from '@multimodal-canvas/domain';
@@ -89,7 +92,7 @@ function createBoundaryJob(
     id: runId,
     data: {
       runId,
-      snapshot,
+      snapshot: provider === 'newapi' ? withTestExecutionBindings(snapshot) : snapshot,
       attempt: 1,
       provider,
       providerJob,
@@ -159,6 +162,10 @@ describe('worker provider job boundary', () => {
         });
         await expect(bullmqState.processor?.(job)).resolves.toMatchObject({ status: 'succeeded' });
         expect(getProviderTimeoutMs).toHaveBeenCalledOnce();
+        expect(getProviderTimeoutMs).toHaveBeenCalledWith({
+          credentialId: 'credential-timeout',
+          credentialVersion: 1,
+        });
         expect(timer).toHaveBeenCalledWith(expect.any(Function), override ? 2_400_000 : 1_800_000);
         expect(fetchMock).toHaveBeenCalledOnce();
         // 真实 Provider 组装出的请求必须逐项留存在发送之前，并且只在调用返回后
@@ -643,7 +650,7 @@ describe('worker provider job boundary', () => {
         usage: { amount: '2.5', currency: 'USD' },
       };
     });
-    const videoSnapshot = {
+    const videoSnapshot = withTestExecutionBindings({
       projectId: databaseRunId,
       canvasRevision: 1,
       targetNodeId: 'node_video',
@@ -662,7 +669,7 @@ describe('worker provider job boundary', () => {
       ],
       edges: [],
       inputs: [],
-    };
+    });
     const job: NonNullable<typeof bullmqState.job> = {
       id: databaseRunId,
       data: {
@@ -743,15 +750,10 @@ describe('worker provider job boundary', () => {
       platformJobId: 'platform-video-1',
       payload: { contract: 'newapi-video-v1', phase: 'completed' },
     });
-    expect(usage).toEqual([
-      {
-        runId: databaseRunId,
-        providerJobId: 'platform-video-1',
-        kind: 'generation',
-        amount: '2.5',
-        currency: 'USD',
-      },
-    ]);
+    expect(usage).toEqual([]);
+    expect(job.data.providerJob).toMatchObject({
+      payload: { usageStatus: 'external' },
+    });
     expect(processed).toMatchObject({
       status: 'succeeded',
       providerJob: { platformJobId: 'platform-video-1' },
@@ -795,7 +797,7 @@ describe('worker provider job boundary', () => {
       id: runId,
       data: {
         runId,
-        snapshot: {
+        snapshot: withTestExecutionBindings({
           projectId: runId,
           canvasRevision: 1,
           targetNodeId: 'node_video_cancel',
@@ -819,7 +821,7 @@ describe('worker provider job boundary', () => {
           ],
           edges: [],
           inputs: [],
-        },
+        }),
         attempt: 1,
         provider: 'newapi',
         providerJob: createProviderJobRecord(runId, 'newapi'),
@@ -1099,7 +1101,7 @@ describe('worker provider job boundary', () => {
       id: runId,
       data: {
         runId,
-        snapshot: {
+        snapshot: withTestExecutionBindings({
           projectId: runId,
           canvasRevision: 1,
           targetNodeId: 'node_text_credentials',
@@ -1122,7 +1124,7 @@ describe('worker provider job boundary', () => {
           ],
           edges: [],
           inputs: [],
-        },
+        }),
         attempt: 1,
         provider: 'newapi',
         providerJob: createProviderJobRecord(runId, 'newapi', 'queued', 0),
@@ -1169,16 +1171,6 @@ describe('worker provider job boundary', () => {
       snapshot: {},
       expectedError: 'persistent New API worker requires a credential snapshot resolver',
     },
-    {
-      name: 'missing credential ID',
-      snapshot: { credentialVersion: 1 },
-      expectedError: 'run snapshot is missing an immutable New API credential reference',
-    },
-    {
-      name: 'missing credential version',
-      snapshot: { credentialId: '123e4567-e89b-12d3-a456-426614174022' },
-      expectedError: 'run snapshot is missing an immutable New API credential reference',
-    },
   ])(
     'fails closed for $name before an injected provider or environment fallback',
     async ({ snapshot: credentialSnapshot, expectedError }) => {
@@ -1192,7 +1184,7 @@ describe('worker provider job boundary', () => {
         id: runId,
         data: {
           runId,
-          snapshot: {
+          snapshot: withTestExecutionBindings({
             projectId: 'project_credential_boundary',
             canvasRevision: 1,
             targetNodeId: 'node_credential_boundary',
@@ -1214,7 +1206,7 @@ describe('worker provider job boundary', () => {
             ],
             edges: [],
             inputs: [],
-          },
+          }),
           attempt: 1,
           provider: 'newapi',
           providerJob: createProviderJobRecord(runId, 'newapi'),

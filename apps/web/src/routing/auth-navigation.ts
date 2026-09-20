@@ -10,20 +10,11 @@ function safeAuthReturnPath(value: string | null | undefined): string {
     if (url.origin !== base) return appPaths.workspace;
     const route = parseAppRoute(`${url.pathname}${url.search}`);
     if (route.id === 'not-found') return appPaths.workspace;
-    if (
-      route.id === 'authentication' &&
-      !(route.page === 'verify' && url.searchParams.get('purpose') === 'email')
-    )
-      return appPaths.workspace;
-    // 返回目标只保留业务需要的公开参数，外部传入的密码、验证码或任意查询字段不续传。
+    if (route.id === 'authentication') return appPaths.workspace;
+    // 返回目标只保留业务需要的公开参数，外部查询字段不续传。
     const query = new URLSearchParams();
     if (route.id === 'workspace' && route.createProject) query.set('create', '1');
     if (route.id === 'settings' && route.projectId) query.set('project', route.projectId);
-    if (route.id === 'authentication') {
-      query.set('purpose', 'email');
-      const email = url.searchParams.get('email');
-      if (email) query.set('email', email);
-    }
     return `${url.pathname}${query.size ? `?${query}` : ''}`;
   } catch {
     return appPaths.workspace;
@@ -35,17 +26,10 @@ export function readAuthReturnPath(search = window.location.search): string {
   return safeAuthReturnPath(new URLSearchParams(search).get('next'));
 }
 
-/** 构建登录、注册或找回密码 URL；只保留受控返回页面，不续传密码和验证码。 */
-export function buildAuthPagePath(
-  page: 'login' | 'register' | 'forgot-password',
-  next?: string,
-): string {
-  const path =
-    page === 'login'
-      ? appPaths.login
-      : page === 'register'
-        ? appPaths.register
-        : appPaths.forgotPassword;
+/** 构建唯一登录 URL，只保留受控的站内返回目标。 */
+export function buildAuthPagePath(next?: string): string {
   const target = safeAuthReturnPath(next);
-  return target === appPaths.workspace ? path : `${path}?${new URLSearchParams({ next: target })}`;
+  return target === appPaths.workspace
+    ? appPaths.login
+    : `${appPaths.login}?${new URLSearchParams({ next: target })}`;
 }

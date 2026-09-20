@@ -1,40 +1,27 @@
 import { buildApp } from './app';
 import { FilePromptSkillStore, PrismaPromptSkillStore } from './prompt-skill-store';
 import { PrismaClient } from '@prisma/client';
-import { PrismaBillingService } from '@multimodal-canvas/billing';
-import { PrismaModelMarketplace } from './model-marketplace';
-import { PrismaNewApiSquare } from './newapi-square';
+import { PrismaExecutionService } from '@multimodal-canvas/execution';
+import { createCredentialEncryptionKeyringFromEnvironment } from '@multimodal-canvas/credential-crypto';
+import { NewApiAccountClient } from './newapi-account-client';
+import { NewApiAccountService } from './newapi-account-service';
+import { NewApiAccountSettings } from './newapi-account-settings';
+import { AuthService } from './auth-service';
 import type { NewApiVideoContract } from '@multimodal-canvas/providers';
 import { FileSystemBlobStore, MemoryAssetStore, PrismaAssetStore, S3BlobStore } from './assets';
 import { FileProjectStore, PrismaProjectStore } from './projects';
 import { BullMqRunService, MemoryRunService, redisConnectionFromUrl } from './runs';
-import { FileAiSettingsStore } from './file-ai-settings';
-import { PrismaAiSettingsStore } from './settings';
 import { PrismaWebhookEventStore } from './webhooks';
 import { FfmpegMediaDerivativeGenerator, FfprobeMediaMetadataExtractor } from './media';
 import { PrismaUploadSessionStore } from './upload-sessions';
 import { PrismaRunPersistence } from './run-persistence';
 import { PrismaAuthStore } from './auth-store';
-import { FileAuthStore } from './file-auth-store';
 import { createNewApiRunExecutor } from './newapi-run-executor';
 import { createApiRateLimiter } from './runtime-rate-limit';
 import { assertApiStartupConfiguration } from './startup-config';
 import { resolveS3DownloadMode, resolveS3UploadMode } from './upload-transport';
-import { createAccountMailSender } from './account-mail';
-import { readLocalEmailFile } from './local-email';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 assertApiStartupConfiguration();
-
-/** 本地 API 自动读取仓库根目录 email.txt；真实值只停留在 API 进程内存。 */
-const localEmailFile = resolve(dirname(fileURLToPath(import.meta.url)), '../../../email.txt');
-const localEmailEnvironment =
-  process.env.NODE_ENV === 'production' ? {} : await readLocalEmailFile(localEmailFile);
-const accountMailSender = createAccountMailSender({
-  ...process.env,
-  ...localEmailEnvironment,
-});
 
 /** 上传传输方式在客户端初始化前完成校验，proxy 仍使用同一 S3 存储和 TLS 配置。 */
 const s3UploadMode = resolveS3UploadMode(process.env.S3_UPLOAD_MODE);
@@ -42,23 +29,45 @@ const s3UploadMode = resolveS3UploadMode(process.env.S3_UPLOAD_MODE);
 const s3DownloadMode = resolveS3DownloadMode(process.env.S3_DOWNLOAD_MODE);
 const prisma = process.env.DATABASE_URL ? new PrismaClient() : undefined;
 const rateLimiter = await createApiRateLimiter();
-const authStore = prisma ? new PrismaAuthStore(prisma) : new FileAuthStore();
-if (authStore instanceof FileAuthStore) await authStore.initialize();
 const runPersistence = prisma ? new PrismaRunPersistence(prisma) : undefined;
 const providerName = process.env.WORKER_PROVIDER === 'mock' ? 'mock' : 'newapi';
-if (!prisma && providerName === 'newapi' && process.env.RUN_SERVICE === 'bullmq') {
+if (
+  !prisma ||
+  !process.env.API_JWT_SECRET ||
+  !process.env.NEW_API_ISSUER ||
+  !process.env.NEW_API_CLIENT_ID ||
+  !process.env.NEW_API_INSTANCE_ID ||
+  !process.env.NEW_API_REDIRECT_URI ||
+  !process.env.CANVAS_WEB_URL
+)
   throw new Error(
-    'RUN_SERVICE=bullmq with WORKER_PROVIDER=newapi requires DATABASE_URL; local file credentials are not shared with the worker',
+    'New API 唯一登录需要 DATABASE_URL、API_JWT_SECRET、NEW_API_ISSUER、NEW_API_CLIENT_ID、NEW_API_INSTANCE_ID、NEW_API_REDIRECT_URI 和 CANVAS_WEB_URL',
   );
-}
-// 本地开发也要跨 API 重启保留已加密的凭据；测试直接调用 buildApp 时仍使用隔离内存存储。
-const settingsStore = prisma ? new PrismaAiSettingsStore(prisma) : new FileAiSettingsStore();
+/** New API 唯一登录使用可撤销应用会话和已有服务端加密密钥环。 */
+const authStore = new PrismaAuthStore(prisma);
+const authService = new AuthService({ store: authStore, jwtSecret: process.env.API_JWT_SECRET });
+const newApiAccount = new NewApiAccountService({
+  prisma,
+  auth: authService,
+  keyring: createCredentialEncryptionKeyringFromEnvironment(),
+  client: new NewApiAccountClient({
+    issuer: process.env.NEW_API_ISSUER,
+    clientId: process.env.NEW_API_CLIENT_ID,
+    instanceId: process.env.NEW_API_INSTANCE_ID,
+    redirectUri: process.env.NEW_API_REDIRECT_URI,
+    clientSecret: process.env.NEW_API_CLIENT_SECRET,
+  }),
+  webUrl: process.env.CANVAS_WEB_URL,
+  adminExternalIds: process.env.NEW_API_ADMIN_USER_IDS?.split(',')
+    .map((id) => id.trim())
+    .filter(Boolean),
+});
+const execution = new PrismaExecutionService(prisma);
+/** 所有环境均使用本人 New API 目录，测试通过 buildApp 显式注入替身。 */
+const settingsStore = new NewApiAccountSettings(newApiAccount);
 /** 本地和数据库部署均保存各用户自定义 Skill 与内置覆盖。 */
 const promptSkillStore = prisma ? new PrismaPromptSkillStore(prisma) : new FilePromptSkillStore();
 if (promptSkillStore instanceof FilePromptSkillStore) await promptSkillStore.initialize();
-// 在创建执行器和监听端口前完成设置存储初始化，避免坏文件、丢密钥或数据库故障
-// 让 API 先对外提供服务，再在第一条请求或后台任务中失败。
-await settingsStore.get();
 const runExecutor =
   providerName === 'newapi'
     ? createNewApiRunExecutor({
@@ -86,16 +95,9 @@ const useMemoryRunService =
   (process.env.NODE_ENV !== 'production' && process.env.RUN_SERVICE !== 'bullmq');
 if (providerName === 'newapi' && (!prisma || useMemoryRunService)) {
   throw new Error(
-    '正式模型调用要求 DATABASE_URL 与 RUN_SERVICE=bullmq，以保证报价、冻结和恢复持久化',
+    '正式模型调用要求 DATABASE_URL 与 RUN_SERVICE=bullmq，以保证执行授权、发送意图和恢复持久化',
   );
 }
-/** 数据库模式统一使用平台钱包，内存模式只用于明确的 Mock。 */
-const billing = prisma && !useMemoryRunService ? new PrismaBillingService(prisma) : undefined;
-const marketplace = prisma ? new PrismaModelMarketplace(prisma, settingsStore) : undefined;
-/** 广场公开数据与价格草稿复用平台数据库，管理授权独立加密保存。 */
-const newApiSquare = prisma
-  ? new PrismaNewApiSquare(prisma, { settings: settingsStore })
-  : undefined;
 const runService = useMemoryRunService
   ? new MemoryRunService({
       providerName,
@@ -108,7 +110,7 @@ const runService = useMemoryRunService
         : {}),
       providerName,
       ...(runPersistence ? { persistence: runPersistence } : {}),
-      ...(billing ? { billing } : {}),
+      execution,
     });
 // Keep local projects across API restarts when PostgreSQL is not configured.
 // Tests that call buildApp() directly still receive the isolated in-memory
@@ -150,11 +152,9 @@ const mediaDerivativeGenerator =
     ? new FfmpegMediaDerivativeGenerator({ binary: process.env.FFMPEG_PATH })
     : undefined;
 const app = buildApp({
-  ...(billing ? { billing } : {}),
-  ...(marketplace ? { marketplace } : {}),
-  ...(newApiSquare ? { newApiSquare } : {}),
+  newApiAccount,
+  authService,
   promptSkillStore,
-  accountMailSender,
   s3DownloadMode,
   runService,
   ...(runExecutor ? { runExecutor } : {}),
@@ -178,21 +178,35 @@ const app = buildApp({
 /** 只恢复已原子受理的 outbox；失败保留记录，后续按相同任务身份重投。 */
 let dispatching = false;
 const outboxTimer =
-  runService instanceof BullMqRunService && billing
+  runService instanceof BullMqRunService
     ? setInterval(() => {
         if (dispatching) return;
         dispatching = true;
         void runService
           .dispatchOutbox()
-          .catch(() => app.log.warn({ code: 'outbox_publish_failed' }, '账务任务等待队列恢复'))
+          .catch(() => app.log.warn({ code: 'outbox_publish_failed' }, '已授权任务等待队列恢复'))
           .finally(() => {
             dispatching = false;
           });
       }, 5_000)
     : undefined;
 outboxTimer?.unref();
+/** 撤销已经本地落库，远端暂时不可用时由后台继续完成同一撤销。 */
+let revoking = false;
+const revocationTimer = setInterval(() => {
+  if (revoking) return;
+  revoking = true;
+  void newApiAccount
+    .retryRevocations()
+    .catch(() => app.log.warn({ code: 'newapi_revocation_pending' }, 'New API 授权撤销等待恢复'))
+    .finally(() => {
+      revoking = false;
+    });
+}, 30_000);
+revocationTimer.unref();
 app.addHook('onClose', async () => {
   if (outboxTimer) clearInterval(outboxTimer);
+  clearInterval(revocationTimer);
 });
 const port = Number(process.env.API_PORT ?? 3000);
 const host =

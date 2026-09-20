@@ -13,6 +13,7 @@ import {
   NewApiProvider,
   NewApiProviderError,
   NewApiVideoProvider,
+  newApiExecutionHeaders,
   normalizeNewApiBaseUrl,
   describeVideoInputMedia,
   resolveProviderMentions,
@@ -32,6 +33,36 @@ const allPortRoles = [
   'transcript',
   'mask',
 ] as const satisfies readonly PortRole[];
+
+describe('New API 执行受理头', () => {
+  it('以 ASCII 单头传递完整权限，中文分组与 auto 范围可精确还原', () => {
+    const headers = newApiExecutionHeaders({
+      issuer: 'https://newapi.example',
+      externalUserId: 'user-1',
+      instanceId: 'canvas-1',
+      grantId: 'grant-1',
+      tokenId: 'token-1',
+      credentialRevision: 'credential-1',
+      group: 'auto',
+      permissionRevision: 'permission-1',
+      autoGroups: ['default', '视频分组'],
+    });
+    const encoded = new Headers(headers).get('x-canvas-execution')!;
+    expect(encoded).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'))).toEqual({
+      version: 1,
+      issuer: 'https://newapi.example',
+      user_id: 'user-1',
+      instance_id: 'canvas-1',
+      grant_id: 'grant-1',
+      token_id: 'token-1',
+      expected_group: 'auto',
+      permission_revision: 'permission-1',
+      auto_groups: ['default', '视频分组'],
+    });
+    expect(newApiExecutionHeaders()).toEqual({});
+  });
+});
 
 type StandardMediaType = Exclude<MediaType, 'video'>;
 

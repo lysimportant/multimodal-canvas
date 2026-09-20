@@ -9,3 +9,4 @@ README.md
 prisma
 apps/api/.data
 apps/web/.data
+.local-tests

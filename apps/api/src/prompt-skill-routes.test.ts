@@ -1,7 +1,7 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { PROMPT_SKILLS } from '@multimodal-canvas/domain';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildApp } from './app';
+import { buildApp } from './fixtures/test-app';
 import { authenticateBearer, signHs256Jwt, type AuthPrincipal } from './auth';
 import { promptSkillOpenApiPaths, promptSkillSchema } from './prompt-skill-openapi';
 import { registerPromptSkillRoutes } from './prompt-skill-routes';

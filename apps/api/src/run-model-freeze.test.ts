@@ -1,9 +1,10 @@
+import { MemoryAiSettingsStore } from './fixtures/memory-ai-settings';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CanvasDocument } from '@multimodal-canvas/domain';
 
-import { buildApp } from './app';
+import { buildApp } from './fixtures/test-app';
 import { MemoryProjectStore } from './projects';
-import { AiSettingsStore, type ModelCatalogEntry } from './settings';
+import { type ModelCatalogEntry } from './settings';
 import { createRunSnapshot, MemoryRunService } from './runs';
 
 const now = new Date().toISOString();
@@ -147,7 +148,7 @@ describe('per-node run model snapshots', () => {
 
   it('freezes every executable node in a cross-media closure with the documented priority', async () => {
     const projectStore = new MemoryProjectStore();
-    const settingsStore = new AiSettingsStore('model-freeze-priority');
+    const settingsStore = new MemoryAiSettingsStore('model-freeze-priority');
     settingsStore.update({
       defaultModels: {
         text: 'global-text',
@@ -226,7 +227,7 @@ describe('per-node run model snapshots', () => {
 
   it('freezes mixed per-node credentials without inheriting the target credential upstream', async () => {
     const projectStore = new MemoryProjectStore();
-    const settingsStore = new AiSettingsStore('model-freeze-mixed-credentials');
+    const settingsStore = new MemoryAiSettingsStore('model-freeze-mixed-credentials');
     settingsStore.update({
       baseUrl: 'https://chat-credential.example/v1',
       apiKey: 'synthetic-chat-credential-key',
@@ -328,7 +329,7 @@ describe('per-node run model snapshots', () => {
 
   it('rejects an unavailable intermediate model before creating a run', async () => {
     const projectStore = new MemoryProjectStore();
-    const settingsStore = new AiSettingsStore('model-freeze-unavailable');
+    const settingsStore = new MemoryAiSettingsStore('model-freeze-unavailable');
     settingsStore.replaceModels([model('text-ok', 'text'), model('video-ok', 'video')]);
     const app = buildApp({ logger: false, projectStore, settingsStore });
     apps.push(app);
@@ -370,7 +371,7 @@ describe('per-node run model snapshots', () => {
     const app = buildApp({
       logger: false,
       projectStore: new MemoryProjectStore(),
-      settingsStore: new AiSettingsStore(`model-freeze-${nodeEnvironment}-${workerProvider}`),
+      settingsStore: new MemoryAiSettingsStore(`model-freeze-${nodeEnvironment}-${workerProvider}`),
     });
     apps.push(app);
     const headers =
@@ -417,7 +418,7 @@ describe('per-node run model snapshots', () => {
 
   it('keeps the frozen aliases when retrying after defaults and canvas changes', async () => {
     const projectStore = new MemoryProjectStore();
-    const settingsStore = new AiSettingsStore('model-freeze-retry');
+    const settingsStore = new MemoryAiSettingsStore('model-freeze-retry');
     settingsStore.update({
       defaultModels: {
         text: 'text-old',

@@ -2,7 +2,11 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    include: ['src/prisma.integration.test.ts', 'src/settings-sync.integration.test.ts'],
+    include: [
+      'src/prisma.integration.test.ts',
+      'src/execution.integration.test.ts',
+      'src/newapi-account.integration.test.ts',
+    ],
     fileParallelism: false,
     maxWorkers: 1,
     minWorkers: 1,

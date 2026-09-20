@@ -186,9 +186,8 @@ async function installPerformanceFixture(page: Page) {
     if (path.endsWith('/content'))
       return route.fulfill({ contentType: 'text/plain', body: 'Fixed synthetic result.' });
     if (path === '/v1/assets') return send({ assets: [] });
-    if (path === '/v1/settings/ai/credentials') return send({ credentials: [] });
     if (path === '/v1/settings/ai')
-      return send({ settings: { configured: false, defaultModels: {} }, credentials: [] });
+      return send({ settings: { defaultModels: {}, timeoutMs: 900_000 } });
     if (path === '/v1/models') return send({ models: [] });
     if (path === '/v1/prompt-skills') return send({ skills: [] });
     errors.push(`未声明的接口: ${path}`);

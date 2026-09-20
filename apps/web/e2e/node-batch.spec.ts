@@ -85,10 +85,9 @@ async function installFixture(page: Page) {
       return json(route, { url: path.replace('/access-url', '/versions/1/content') });
     if (path.endsWith('/content'))
       return route.fulfill({ contentType: 'image/jpeg', body: poster });
-    if (path === '/v1/settings/ai/credentials') return json(route, { credentials: [] });
     if (path === '/v1/settings/ai')
       return json(route, {
-        settings: { baseUrl: 'https://mock.example.test', configured: false, defaultModels: {} },
+        settings: { defaultModels: {}, timeoutMs: 900_000 },
       });
     if (path === '/v1/models') return json(route, { models: [] });
     errors.push(`未声明的 Mock 接口：${request.method()} ${path}`);

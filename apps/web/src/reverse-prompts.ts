@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { apiFetch, AuthSessionChangedError, getAuthSessionGeneration } from './auth-client';
 import type { ModelSelection } from './workspace/contracts';
-import { submitQuotedRequest } from './marketplace/quote-client';
+import { submitGenerationRequest } from './generation-client';
 
 /** 反推任务的公共响应，与真实请求提示词记录分开读取。 */
 const reversePromptAnalysisSchema = z.object({
@@ -12,7 +12,6 @@ const reversePromptAnalysisSchema = z.object({
   status: z.enum(['queued', 'running', 'succeeded', 'failed', 'cancelled']),
   modelAlias: z.string().min(1),
   credentialId: z.string().optional(),
-  platformModelId: z.string().optional(),
   summary: z.string().optional(),
   prompt: z.string().optional(),
   error: z.string().optional(),
@@ -79,7 +78,6 @@ async function readAnalysis(
         .object({
           modelAlias: z.string().min(1),
           credentialId: z.string().optional(),
-          platformModelId: z.string().optional(),
         })
         .optional(),
     })
@@ -125,23 +123,19 @@ export async function submitReversePrompt(
   apiBaseUrl: string,
   options: {
     model?: ModelSelection;
-    automatic?: boolean;
     idempotencyKey: string;
     fetcher?: typeof fetch;
     signal?: AbortSignal;
   },
 ): Promise<ReversePromptAnalysis> {
   const generation = getAuthSessionGeneration();
-  const response = await submitQuotedRequest(
+  const response = await submitGenerationRequest(
     apiBaseUrl,
     {
       path: reversePromptUrl(target, ''),
       body: {
         projectId: target.projectId,
-        ...(options.model?.platformModelId
-          ? { platformModelId: options.model.platformModelId }
-          : options.model),
-        automatic: options.automatic ?? false,
+        ...options.model,
         idempotencyKey: options.idempotencyKey,
       },
     },
@@ -150,16 +144,16 @@ export async function submitReversePrompt(
   const { analysis } = await readAnalysis(response, target);
   if (generation !== getAuthSessionGeneration()) throw new AuthSessionChangedError();
   if (!analysis) throw new Error('未返回反推任务');
-  if (options.model?.platformModelId && analysis.platformModelId !== options.model.platformModelId)
-    throw new Error('反推任务的平台模型身份不一致');
+  if (
+    options.model &&
+    (analysis.modelAlias !== options.model.modelAlias ||
+      analysis.credentialId !== options.model.credentialId)
+  )
+    throw new Error('反推任务的分组模型身份不一致');
   return analysis;
 }
 
 /** 使用完整模型与凭据身份作为选项值，避免同名模型串用连接。 */
 export function reversePromptModelKey(model: ModelSelection): string {
-  return JSON.stringify(
-    model.platformModelId
-      ? ['platform', model.platformModelId]
-      : [model.modelAlias, model.credentialId ?? null],
-  );
+  return JSON.stringify([model.modelAlias, model.credentialId ?? null]);
 }

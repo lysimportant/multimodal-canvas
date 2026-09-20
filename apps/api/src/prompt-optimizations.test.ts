@@ -1,3 +1,4 @@
+import { MemoryAiSettingsStore } from './fixtures/memory-ai-settings';
 import { createHmac } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -7,11 +8,10 @@ import {
   type PromptDocument,
 } from '@multimodal-canvas/domain';
 import { NewApiProvider } from '@multimodal-canvas/providers';
-import { buildApp } from './app';
+import { buildApp } from './fixtures/test-app';
 import { MemoryAssetStore } from './assets';
 import { MemoryProjectStore } from './projects';
 import { MemoryRunService, type RunExecutorRequest } from './runs';
-import { AiSettingsStore } from './settings';
 import { MemoryPromptSkillStore } from './prompt-skill-store';
 
 /** 所有请求使用隔离内存存储及合成模型，不访问外部服务。 */
@@ -59,7 +59,7 @@ async function fixture(
   if (options.authenticated) vi.stubEnv('API_JWT_SECRET', 'synthetic-optimization-secret');
   const assetStore = new MemoryAssetStore();
   const projectStore = new MemoryProjectStore();
-  const settingsStore = new AiSettingsStore('prompt-optimization-tests');
+  const settingsStore = new MemoryAiSettingsStore('prompt-optimization-tests');
   const promptSkillStore = new MemoryPromptSkillStore();
   settingsStore.update({
     baseUrl: 'https://provider.invalid/v1',

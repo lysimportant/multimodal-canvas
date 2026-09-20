@@ -50,12 +50,11 @@ vi.mock('bullmq', () => {
   return { Job, Queue, Worker };
 });
 
+import { createProviderJobRecord, type RunPersistence, type WorkerProviderRequest } from './index';
 import {
-  createProviderJobRecord,
-  createRunWorker,
-  type RunPersistence,
-  type WorkerProviderRequest,
-} from './index';
+  createAuthorizedTestRunWorker as createRunWorker,
+  withTestExecutionBindings,
+} from './test-execution-fixtures';
 import {
   createInitialWorkflowState,
   replaceWorkflowNodeState,
@@ -74,7 +73,7 @@ async function getTestProviderCredentials() {
   };
 }
 
-const snapshot: RunSnapshot = {
+const snapshot: RunSnapshot = withTestExecutionBindings({
   projectId,
   canvasRevision: 7,
   targetNodeId: 'node_video',
@@ -221,12 +220,17 @@ const snapshot: RunSnapshot = {
       },
     },
   ],
-};
+});
 
+/** 新提交默认补齐中性执行授权；显式历史兼容由独立 execution-worker 测试覆盖。 */
 function createJob(data: RunJobData): StubJob {
+  const normalized =
+    data.provider === 'newapi'
+      ? { ...data, snapshot: withTestExecutionBindings(data.snapshot) }
+      : data;
   const job: StubJob = {
-    id: data.runId,
-    data: data as unknown as Record<string, unknown>,
+    id: normalized.runId,
+    data: normalized as unknown as Record<string, unknown>,
     async updateData(next) {
       this.data = next;
     },
@@ -266,7 +270,7 @@ function createExecution(snapshot: RunSnapshot) {
 }
 
 function createTextSnapshot(): RunSnapshot {
-  return {
+  return withTestExecutionBindings({
     projectId,
     canvasRevision: 8,
     targetNodeId: 'node_draft',
@@ -286,7 +290,7 @@ function createTextSnapshot(): RunSnapshot {
         snapshot: snapshot.nodes.find((node) => node.id === 'node_prompt')!,
       },
     ],
-  };
+  });
 }
 
 describe('worker workflow DAG execution', () => {
@@ -1192,10 +1196,15 @@ describe('worker workflow DAG execution', () => {
       'node_image',
     ]);
     expect(firstVideoProvider.execute).not.toHaveBeenCalled();
-    expect(usageRecords).toHaveLength(1);
+    expect(usageRecords).toEqual([]);
     const predecessorState = predecessor.data.workflowState as WorkflowState;
     expect(workflowNodeState(predecessorState, 'node_draft')?.status).toBe('succeeded');
     expect(workflowNodeState(predecessorState, 'node_image')?.status).toBe('cancelled');
+    expect(workflowNodeState(predecessorState, 'node_image')?.providerJob?.payload).toMatchObject({
+      deliveryState: 'received',
+      reportedUsage: { amount: '2.50', currency: 'USD', runId: predecessorRunId },
+      usageStatus: 'external',
+    });
 
     const retry = createJob({
       runId,
@@ -1240,11 +1249,7 @@ describe('worker workflow DAG execution', () => {
 
     expect(retryRequests).toEqual([]);
     expect(videoProvider.execute).not.toHaveBeenCalled();
-    expect(usageRecords).toEqual([
-      expect.objectContaining({
-        providerJobId: `provider_job_${predecessorRunId}_node_image`,
-      }),
-    ]);
+    expect(usageRecords).toEqual([]);
     expect(workflowNodeState(retry.data.workflowState as WorkflowState, 'node_draft')?.status).toBe(
       'succeeded',
     );
@@ -1336,14 +1341,13 @@ describe('worker workflow DAG execution', () => {
   });
 
   it.each(['queue', 'database', 'database-retry'] as const)(
-    'repairs provider cost from %s after a worker restart without repeating generation',
+    'replays an externally accounted result from %s after a worker restart without repeating generation',
     async (recoverySource) => {
       bullmqState.jobs.clear();
       const runId = '123e4567-e89b-42d3-a456-426614174119';
       const retryRunId = '123e4567-e89b-42d3-a456-426614174170';
       const textSnapshot = createTextSnapshot();
       const persistedJobs = new Map<string, ProviderJob>();
-      let rejectUsage = true;
       const submission: RunJobData = {
         runId,
         snapshot: textSnapshot,
@@ -1366,21 +1370,7 @@ describe('worker workflow DAG execution', () => {
           },
         },
       }));
-      const recordUsage = vi.fn<RunPersistence['recordUsage']>(async (input) => {
-        expect(persistedJobs.get(runId)?.payload).toMatchObject({
-          result: { asset: { assetId: 'asset_usage_replay', version: 1 } },
-          deliveryState: 'archived',
-        });
-        expect(input).toEqual({
-          runId,
-          providerJobId: `provider_job_${runId}`,
-          kind: 'generation',
-          amount: '1.000001',
-          currency: 'USD',
-          metadata: { requestId: 'request_usage_recovery', total_tokens: 30 },
-        });
-        if (rejectUsage) throw new Error('usage database unavailable');
-      });
+      const recordUsage = vi.fn<RunPersistence['recordUsage']>();
       const persistence: RunPersistence = {
         getProviderCredentials: getTestProviderCredentials,
         async upsertProviderJob({ runId: persistedRunId, providerJob }) {
@@ -1411,10 +1401,13 @@ describe('worker workflow DAG execution', () => {
       };
       createRunWorker(options);
 
-      await expect(bullmqState.processor?.(job)).rejects.toThrow('usage database unavailable');
+      await expect(bullmqState.processor?.(job)).resolves.toMatchObject({
+        status: 'succeeded',
+        result: { asset: { assetId: 'asset_usage_replay', version: 1 } },
+      });
       expect(persistedJobs.get(runId)?.payload).toMatchObject({
         reportedUsage: { amount: '1.000001', currency: 'USD', runId },
-        usageStatus: 'pending',
+        usageStatus: 'external',
       });
       expect(JSON.stringify(persistedJobs.get(runId)?.payload)).not.toContain('synthetic');
       const retainedData = structuredClone(job.data) as unknown as RunJobData;
@@ -1433,11 +1426,6 @@ describe('worker workflow DAG execution', () => {
                 providerJob: createProviderJobRecord(retryRunId, 'newapi'),
               },
       );
-      await expect(bullmqState.processor?.(recovered)).rejects.toThrow(
-        'usage database unavailable',
-      );
-      expect(execute).toHaveBeenCalledOnce();
-      rejectUsage = false;
       await expect(bullmqState.processor?.(recovered)).resolves.toMatchObject({
         status: 'succeeded',
         result: { asset: { assetId: 'asset_usage_replay', version: 1 } },
@@ -1445,21 +1433,21 @@ describe('worker workflow DAG execution', () => {
 
       expect(execute).toHaveBeenCalledOnce();
       expect(resultArchiver).toHaveBeenCalledOnce();
-      expect(recordUsage).toHaveBeenCalledTimes(3);
+      expect(recordUsage).not.toHaveBeenCalled();
       await expect(bullmqState.processor?.(recovered)).resolves.toMatchObject({
         status: 'succeeded',
       });
       expect(execute).toHaveBeenCalledOnce();
-      expect(recordUsage).toHaveBeenCalledTimes(3);
+      expect(recordUsage).not.toHaveBeenCalled();
     },
   );
 
-  it('recovers an intermediate charged result before continuing the remaining DAG', async () => {
+  it('recovers an archived intermediate result before continuing the remaining DAG', async () => {
     bullmqState.jobs.clear();
     const runId = '123e4567-e89b-42d3-a456-426614174171';
     const persistedJobs = new Map<string, ProviderJob>();
-    const completedUsage: string[] = [];
-    let rejectUsage = true;
+    let rejectArchivedPersistence = true;
+    const recordUsage = vi.fn<RunPersistence['recordUsage']>();
     const execute = vi.fn(async (request: WorkerProviderRequest) => ({
       ...createExecution(request.snapshot),
       ...(request.snapshot.targetNodeId === 'node_image'
@@ -1484,14 +1472,19 @@ describe('worker workflow DAG execution', () => {
         getProviderCredentials: getTestProviderCredentials,
         async upsertProviderJob({ providerJob }) {
           persistedJobs.set(providerJob.id, structuredClone(providerJob));
+          if (
+            rejectArchivedPersistence &&
+            providerJob.payload?.workflowNodeId === 'node_image' &&
+            providerJob.payload?.deliveryState === 'archived'
+          ) {
+            rejectArchivedPersistence = false;
+            throw new Error('intermediate archive finalization unavailable');
+          }
         },
         async findProviderJobsByRunId() {
           return structuredClone([...persistedJobs.values()]);
         },
-        async recordUsage(input) {
-          if (rejectUsage) throw new Error('intermediate usage unavailable');
-          completedUsage.push(input.providerJobId!);
-        },
+        recordUsage,
       },
       resultArchiver: async ({ snapshot: nodeSnapshot }) => ({
         assetId: `asset_${nodeSnapshot.targetNodeId}_recovered`,
@@ -1506,13 +1499,14 @@ describe('worker workflow DAG execution', () => {
     };
     createRunWorker(options);
     const job = createJob(structuredClone(submission));
-    await expect(bullmqState.processor?.(job)).rejects.toThrow('intermediate usage unavailable');
+    await expect(bullmqState.processor?.(job)).rejects.toThrow(
+      'intermediate archive finalization unavailable',
+    );
     expect(execute.mock.calls.map(([request]) => request.snapshot.targetNodeId)).toEqual([
       'node_draft',
       'node_image',
     ]);
     bullmqState.jobs.clear();
-    rejectUsage = false;
     createRunWorker(options);
     const recovered = createJob(structuredClone(submission));
     await expect(bullmqState.processor?.(recovered)).resolves.toMatchObject({
@@ -1523,7 +1517,7 @@ describe('worker workflow DAG execution', () => {
       'node_image',
       'node_video',
     ]);
-    expect(completedUsage).toEqual([`provider_job_${runId}_node_image`]);
+    expect(recordUsage).not.toHaveBeenCalled();
     expect(execute.mock.calls.at(-1)?.[0].snapshot.inputs).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ sourceAssetId: 'asset_node_image_recovered' }),
@@ -1564,7 +1558,7 @@ describe('worker workflow DAG execution', () => {
   });
 
   it.each(['result', 'usage'] as const)(
-    'keeps a delivered request pending when its saved %s evidence is incomplete',
+    'handles an archived request when its saved %s evidence is incomplete',
     async (missingEvidence) => {
       bullmqState.jobs.clear();
       const runId = '123e4567-e89b-42d3-a456-426614174173';
@@ -1611,7 +1605,20 @@ describe('worker workflow DAG execution', () => {
         providerJob: createProviderJobRecord(runId, 'newapi'),
         cancelRequested: false,
       });
-      await expect(bullmqState.processor?.(job)).rejects.toThrow('等待核实；禁止重新生成');
+      if (missingEvidence === 'result') {
+        await expect(bullmqState.processor?.(job)).rejects.toThrow('等待核实；禁止重新生成');
+      } else {
+        await expect(bullmqState.processor?.(job)).resolves.toMatchObject({
+          status: 'succeeded',
+          result: { asset: { assetId: 'asset_retained', version: 1 } },
+        });
+        expect(job.data.providerJob).toMatchObject({
+          payload: {
+            usageStatus: 'external',
+            usageReason: '费用由 New API 记录；Canvas 只保留原始供应商回执',
+          },
+        });
+      }
       expect(execute).not.toHaveBeenCalled();
       expect(recordUsage).not.toHaveBeenCalled();
     },
@@ -1647,7 +1654,7 @@ describe('worker workflow DAG execution', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it('keeps the original synchronous request identity and usage key across a retry', async () => {
+  it('keeps the original synchronous request identity and external receipt across a retry', async () => {
     bullmqState.jobs.clear();
     const runId = '123e4567-e89b-42d3-a456-426614174107';
     const predecessorRunId = '123e4567-e89b-42d3-a456-426614174108';
@@ -1713,12 +1720,15 @@ describe('worker workflow DAG execution', () => {
     await bullmqState.processor?.(job);
 
     expect(requestProviderJobIds).toEqual([`provider_job_${predecessorRunId}`]);
-    expect(usageRecords).toEqual([
-      expect.objectContaining({ providerJobId: `provider_job_${predecessorRunId}` }),
-    ]);
+    expect(usageRecords).toEqual([]);
     expect(job.data.providerJob).toMatchObject({
       id: `provider_job_${runId}`,
       status: 'succeeded',
+      payload: {
+        requestProviderJobId: `provider_job_${predecessorRunId}`,
+        reportedUsage: { amount: '1.25', currency: 'USD', runId },
+        usageStatus: 'external',
+      },
     });
   });
 

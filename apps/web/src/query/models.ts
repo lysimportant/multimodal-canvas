@@ -1,40 +1,48 @@
-import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 
-import { apiFetch, getAuthSessionGeneration } from '../auth-client';
+import { apiFetch, readStoredAuthSession } from '../auth-client';
 import { API_BASE_URL, type ModelEntry } from '../workspace/contracts';
-import type { AiCredentialSummary } from '../contracts';
-import { fetchMarketplace, marketplaceSelection } from '../marketplace/client';
 
-/** 节点只读取已上架平台商品，分页合并保留每个稳定商品身份。 */
-export function usePlatformModelCatalogQuery(ownerId?: string) {
-  return useQuery({
-    queryKey: ['platform-model-catalog', ownerId],
-    enabled: Boolean(ownerId),
-    queryFn: async ({ signal }) => {
-      const items: ModelEntry[] = [];
-      for (let page = 1; ; page += 1) {
-        const result = await fetchMarketplace({ page, signal });
-        items.push(...result.items.map(marketplaceSelection));
-        if (!result.items.length || items.length >= result.total) return items;
-      }
-    },
-  });
-}
-
+/** 模型目录缓存根键；实际查询必须追加用户身份和凭据范围。 */
 export const modelCatalogQueryKey = ['model-catalog'] as const;
 
-export function modelCatalogQueryKeyFor(credentialId?: string) {
-  return credentialId ? ([...modelCatalogQueryKey, credentialId] as const) : modelCatalogQueryKey;
+/** 返回当前浏览器公开会话的不可变用户 ID。 */
+function currentUserId(): string | undefined {
+  return readStoredAuthSession()?.user.id;
 }
 
-/** 将服务端的缺失凭据错误转为可操作的中文提示，其他错误保留原有上下文。 */
-function catalogErrorMessage(error: string | undefined, fallback: string): string {
+/**
+ * 构造用户隔离的目录键。
+ *
+ * @param credentialId 可选分组凭据；省略时表示当前账号的完整目录。
+ * @param userId 当前用户 ID；省略时从公开 Cookie 会话镜像读取。
+ * @returns 包含用户和凭据范围的稳定 React Query 键。
+ */
+export function modelCatalogQueryKeyFor(credentialId?: string, userId = currentUserId()) {
+  return [...modelCatalogQueryKey, userId ?? 'anonymous', credentialId ?? 'all'] as const;
+}
+
+/** 将服务端凭据错误转换为可操作提示，其他错误保留原文。 */
+function catalogErrorMessage(
+  error: string | undefined,
+  code: string | undefined,
+  fallback: string,
+): string {
+  if (code === 'group_credential_invalid' || code === 'credential_group_mismatch')
+    return '所选分组授权已失效，请同步分组并明确重新选择';
   return error?.trim().toLowerCase() === 'credential not found'
-    ? '连接凭据不存在或已删除，请重新保存连接后再刷新模型'
+    ? '分组授权不存在或已失效，请重新登录后同步分组'
     : (error ?? fallback);
 }
 
-/** 按凭据 ID 读取模型目录；缺失凭据或加载失败时抛出错误，signal 可取消请求。 */
+/**
+ * 读取当前账号的模型目录。
+ *
+ * @param signal 页面或查询生命周期取消信号。
+ * @param credentialId 可选分组凭据 ID。
+ * @returns 保留精确模型别名、分组和凭据身份的目录。
+ * @throws 服务端拒绝或响应缺少模型数组时抛出可读错误。
+ */
 export async function fetchModelCatalog(
   signal?: AbortSignal,
   credentialId?: string,
@@ -44,97 +52,34 @@ export async function fetchModelCatalog(
   const result = (await response.json().catch(() => ({}))) as {
     models?: ModelEntry[];
     error?: string;
+    code?: string;
   };
   if (!response.ok || !result.models)
-    throw new Error(catalogErrorMessage(result.error, '模型列表加载失败'));
-  return result.models.map((model) =>
-    credentialId && !model.credentialId ? { ...model, credentialId } : model,
-  );
-}
-
-/** 刷新指定凭据的目录并返回带来源的模型；省略 ID 时刷新活动连接，失败时抛出错误。 */
-export async function refreshModelCatalog(credentialId?: string): Promise<ModelEntry[]> {
-  const response = await apiFetch(`${API_BASE_URL}/v1/settings/ai/models/refresh`, {
-    method: 'POST',
-    ...(credentialId
-      ? {
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ credentialId }),
-        }
+    throw new Error(catalogErrorMessage(result.error, result.code, '模型列表加载失败'));
+  return result.models.map((model) => ({
+    ...model,
+    ...(credentialId && !model.credentialId ? { credentialId } : {}),
+    ...(model.available !== undefined
+      ? { availability: model.available ? ('available' as const) : ('unavailable' as const) }
       : {}),
-  });
-  const result = (await response.json().catch(() => ({}))) as {
-    models?: ModelEntry[];
-    error?: string;
-  };
-  if (!response.ok || !result.models)
-    throw new Error(catalogErrorMessage(result.error, '模型刷新失败'));
-  return result.models.map((model) =>
-    credentialId && !model.credentialId ? { ...model, credentialId } : model,
-  );
+  }));
 }
 
-export function useModelCatalogQuery(credentialId?: string, enabled = true) {
+/** 节点目录查询；用户 ID 变化会切换缓存且取消旧观察者。 */
+export function usePlatformModelCatalogQuery(userId?: string) {
   return useQuery({
-    queryKey: modelCatalogQueryKeyFor(credentialId),
+    queryKey: modelCatalogQueryKeyFor(undefined, userId),
+    enabled: Boolean(userId),
+    queryFn: ({ signal }) => fetchModelCatalog(signal),
+  });
+}
+
+/** 设置面板目录查询；键从当前公开会话读取用户 ID。 */
+export function useModelCatalogQuery(credentialId?: string, enabled = true) {
+  const userId = currentUserId();
+  return useQuery({
+    queryKey: modelCatalogQueryKeyFor(credentialId, userId),
     queryFn: ({ signal }) => fetchModelCatalog(signal, credentialId),
-    enabled,
-  });
-}
-
-/**
- * 按凭据读取模型目录；未启用时返回空查询，避免普通用户触发平台模型接口。
- * @param credentialIds 需要读取的凭据 ID；空列表代表当前激活凭据。
- * @param enabled 是否允许发起平台模型目录请求。
- */
-export function useCredentialModelCatalogQueries(credentialIds: readonly string[], enabled = true) {
-  const uniqueCredentialIds = [...new Set(credentialIds.filter(Boolean))];
-  const scopes: Array<string | undefined> = !enabled
-    ? []
-    : uniqueCredentialIds.length > 0
-      ? uniqueCredentialIds
-      : [undefined];
-  return useQueries({
-    queries: scopes.map((credentialId) => ({
-      queryKey: modelCatalogQueryKeyFor(credentialId),
-      queryFn: ({ signal }: { signal: AbortSignal }) => fetchModelCatalog(signal, credentialId),
-    })),
-  });
-}
-
-export function useRefreshModelCatalog() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: refreshModelCatalog,
-    onMutate: () => getAuthSessionGeneration(),
-    onSuccess: async (models, credentialId, requestGeneration) => {
-      if (getAuthSessionGeneration() !== requestGeneration)
-        throw new Error('账户状态已改变，请重新操作');
-      const credentials = queryClient.getQueryData<AiCredentialSummary[]>(['ai-credentials']);
-      if (credentialId && credentials && !credentials.some((entry) => entry.id === credentialId))
-        throw new Error('凭据已删除，请选择可用的 API Key');
-      const queryKey = modelCatalogQueryKeyFor(credentialId);
-      await queryClient.cancelQueries({
-        queryKey,
-        exact: true,
-      });
-      if (getAuthSessionGeneration() !== requestGeneration)
-        throw new Error('账户状态已改变，请重新操作');
-      const currentCredentials = queryClient.getQueryData<AiCredentialSummary[]>([
-        'ai-credentials',
-      ]);
-      if (
-        credentialId &&
-        currentCredentials &&
-        !currentCredentials.some((entry) => entry.id === credentialId)
-      )
-        throw new Error('凭据已删除，请选择可用的 API Key');
-      queryClient.setQueryData(queryKey, models);
-      await queryClient.invalidateQueries({
-        queryKey,
-        exact: true,
-        refetchType: 'none',
-      });
-    },
+    enabled: enabled && Boolean(userId),
   });
 }

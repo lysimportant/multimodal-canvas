@@ -15,10 +15,13 @@ const productionEnvironment: StartupEnvironment = {
   S3_REGION: 'us-east-1',
   S3_ACCESS_KEY: 'test-access-key',
   S3_SECRET_KEY: 'test-secret-key',
-  NEW_API_BASE_URL: 'https://newapi.example.com/v1',
-  NEW_API_API_KEY: 'test-new-api-key',
   NEW_API_WEBHOOK_SECRET: 'test-webhook-secret',
-  API_AUTH_TOKEN: 'test-api-auth-token',
+  API_JWT_SECRET: 'synthetic-session-secret',
+  NEW_API_CLIENT_ID: 'canvas',
+  NEW_API_INSTANCE_ID: 'acceptance',
+  NEW_API_ISSUER: 'https://newapi.example.com',
+  NEW_API_REDIRECT_URI: 'https://canvas.example.com/v1/auth/newapi/callback',
+  CANVAS_WEB_URL: 'https://canvas.example.com',
   WORKER_PROVIDER: 'newapi',
   RUN_SERVICE: 'bullmq',
   AI_CREDENTIAL_ENCRYPTION_KEY: 'test-encryption-secret',
@@ -167,11 +170,14 @@ describe('API production startup configuration', () => {
       'REDIS_URL',
       'S3_BUCKET',
       'S3_REGION',
-      'NEW_API_BASE_URL',
-      'NEW_API_API_KEY',
       'NEW_API_WEBHOOK_SECRET',
       'AI_CREDENTIAL_ENCRYPTION_KEY',
-      'API_AUTH_TOKEN/API_JWT_SECRET',
+      'API_JWT_SECRET',
+      'NEW_API_CLIENT_ID',
+      'NEW_API_INSTANCE_ID',
+      'NEW_API_ISSUER',
+      'NEW_API_REDIRECT_URI',
+      'CANVAS_WEB_URL',
       'WORKER_PROVIDER',
     ]);
     expect(() => assertApiStartupConfiguration({ NODE_ENV: 'production' })).toThrow(
@@ -182,43 +188,16 @@ describe('API production startup configuration', () => {
     );
   });
 
-  it('allows database-backed credentials to omit static New API URL and key', () => {
-    const {
-      NEW_API_BASE_URL: _baseUrl,
-      NEW_API_API_KEY: _apiKey,
-      ...databaseBacked
-    } = productionEnvironment;
-
-    expect(validateApiStartupConfiguration(databaseBacked)).toEqual([]);
-  });
-
-  it('requires static New API URL and key without a complete durable credential store', () => {
-    const missingDatabase = validateApiStartupConfiguration({
+  it('missing persistence never enables a shared static Key fallback', () => {
+    const issues = validateApiStartupConfiguration({
       ...productionEnvironment,
       DATABASE_URL: '',
-      NEW_API_BASE_URL: '  ',
-      NEW_API_API_KEY: '  ',
-    });
-    expect(missingDatabase).toContainEqual({
-      variable: 'NEW_API_BASE_URL',
-      message: 'is required',
-    });
-    expect(missingDatabase).toContainEqual({ variable: 'NEW_API_API_KEY', message: 'is required' });
-
-    const missingEncryptionKey = validateApiStartupConfiguration({
-      ...productionEnvironment,
       AI_CREDENTIAL_ENCRYPTION_KEY: '',
-      NEW_API_BASE_URL: '  ',
-      NEW_API_API_KEY: '  ',
     });
-    expect(missingEncryptionKey).toContainEqual({
-      variable: 'NEW_API_BASE_URL',
-      message: 'is required',
-    });
-    expect(missingEncryptionKey).toContainEqual({
-      variable: 'NEW_API_API_KEY',
-      message: 'is required',
-    });
+    expect(issues.map(({ variable }) => variable)).toEqual([
+      'DATABASE_URL',
+      'AI_CREDENTIAL_ENCRYPTION_KEY',
+    ]);
   });
 
   it.each([
@@ -228,10 +207,10 @@ describe('API production startup configuration', () => {
   ])(
     'rejects production New API URL with %s without echoing URL contents',
     (_kind, baseUrl, message) => {
-      const environment = { ...productionEnvironment, NEW_API_BASE_URL: baseUrl };
+      const environment = { ...productionEnvironment, NEW_API_ISSUER: baseUrl };
       const issues = validateApiStartupConfiguration(environment);
 
-      expect(issues).toContainEqual({ variable: 'NEW_API_BASE_URL', message });
+      expect(issues).toContainEqual({ variable: 'NEW_API_ISSUER', message });
 
       let error: unknown;
       try {
@@ -251,16 +230,16 @@ describe('API production startup configuration', () => {
       REDIS_URL: 'redis:///2',
       S3_ENDPOINT: 'not a URL',
       S3_SECRET_KEY: '',
-      NEW_API_BASE_URL: 'http://newapi.example.com/v1',
+      NEW_API_ISSUER: 'http://newapi.example.com/v1',
       WORKER_PROVIDER: 'mock',
       RUN_SERVICE: 'memory',
       API_RATE_LIMIT_REDIS_ENABLED: 'false',
     });
 
     expect(issues.map(({ variable }) => variable)).toEqual([
+      'NEW_API_ISSUER',
       'DATABASE_URL',
       'REDIS_URL',
-      'NEW_API_BASE_URL',
       'S3_ENDPOINT',
       'S3_ACCESS_KEY/S3_SECRET_KEY',
       'WORKER_PROVIDER',
@@ -525,7 +504,7 @@ describe('API production startup configuration', () => {
     ]);
   });
 
-  it('accepts either production API authentication mechanism', () => {
+  it('accepts stateful session signing configuration', () => {
     expect(
       validateApiStartupConfiguration({
         ...productionEnvironment,
@@ -543,8 +522,8 @@ describe('API production startup configuration', () => {
     });
 
     expect(issues).toContainEqual({
-      variable: 'API_AUTH_TOKEN/API_JWT_SECRET',
-      message: 'one is required',
+      variable: 'API_JWT_SECRET',
+      message: 'is required',
     });
   });
 

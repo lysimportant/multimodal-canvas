@@ -1,4 +1,3 @@
-import { acceptTestQuotes, withTestQuoteTransport } from '../marketplace/quote-test-fixture';
 import '@testing-library/jest-dom/vitest';
 import { PROMPT_SKILLS, type PromptDocument, type PromptSkill } from '@multimodal-canvas/domain';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -62,13 +61,10 @@ function result(overrides: Record<string, unknown> = {}): Response {
   );
 }
 
-let releaseQuoteConfirmation: (() => void) | undefined;
 beforeEach(() => {
   sessionStorage.clear();
-  releaseQuoteConfirmation = acceptTestQuotes();
 });
 afterEach(() => {
-  releaseQuoteConfirmation?.();
   cleanup();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -79,7 +75,7 @@ describe('PromptSkillPanel', () => {
   it('默认只显示 Skill 按钮，悬停后显示原标签的配置且不发送请求', async () => {
     const user = userEvent.setup();
     const fetcher = vi.fn();
-    vi.stubGlobal('fetch', withTestQuoteTransport(fetcher));
+    vi.stubGlobal('fetch', fetcher);
     const inputs = props({
       models: [{ id: 'text-a', name: '文字 A', mediaTypes: ['text'] }],
       onOpenWorkbench: vi.fn(),
@@ -232,7 +228,7 @@ describe('PromptSkillPanel', () => {
   it('关闭配置清理嵌套菜单但保留文字模型选择，不产生请求', async () => {
     const user = userEvent.setup();
     const fetcher = vi.fn();
-    vi.stubGlobal('fetch', withTestQuoteTransport(fetcher));
+    vi.stubGlobal('fetch', fetcher);
     render(
       <PromptSkillPanel
         {...props({ models: [{ id: 'text-a', name: '文字 A', mediaTypes: ['text'] }] })}
@@ -255,10 +251,7 @@ describe('PromptSkillPanel', () => {
 
   it('优化按钮禁用后通过焦点进入预览仍会收起配置', async () => {
     const user = userEvent.setup();
-    vi.stubGlobal(
-      'fetch',
-      withTestQuoteTransport(vi.fn<typeof fetch>().mockResolvedValue(result())),
-    );
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(result()));
     render(<PromptSkillPanel {...props()} />);
     await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
     await user.click(screen.getByRole('button', { name: '优化提示词' }));
@@ -287,7 +280,7 @@ describe('PromptSkillPanel', () => {
     async (dismiss) => {
       const user = userEvent.setup();
       const fetcher = vi.fn<typeof fetch>().mockResolvedValue(result());
-      vi.stubGlobal('fetch', withTestQuoteTransport(fetcher));
+      vi.stubGlobal('fetch', fetcher);
       const inputs = props();
       render(<PromptSkillPanel {...inputs} />);
       const trigger = screen.getByRole('button', { name: 'Skill 配置' });
@@ -321,7 +314,7 @@ describe('PromptSkillPanel', () => {
       .fn<typeof fetch>()
       .mockResolvedValueOnce(result({ status: 'queued', promptDocument: undefined }))
       .mockResolvedValueOnce(result());
-    vi.stubGlobal('fetch', withTestQuoteTransport(fetcher));
+    vi.stubGlobal('fetch', fetcher);
     render(<PromptSkillPanel {...props()} />);
     const trigger = screen.getByRole('button', { name: 'Skill 配置' });
     fireEvent.click(trigger);
@@ -344,7 +337,7 @@ describe('PromptSkillPanel', () => {
   it('关闭配置后未知提交的错误和确认入口仍可见，保留原请求身份', async () => {
     const user = userEvent.setup();
     const fetcher = vi.fn<typeof fetch>().mockRejectedValue(new Error('connection lost'));
-    vi.stubGlobal('fetch', withTestQuoteTransport(fetcher));
+    vi.stubGlobal('fetch', fetcher);
     render(<PromptSkillPanel {...props()} />);
     const trigger = screen.getByRole('button', { name: 'Skill 配置' });
     await user.click(trigger);
@@ -363,7 +356,7 @@ describe('PromptSkillPanel', () => {
   it('目录加载期间保留选择、恢复预览但不允许应用，完成后解除限制', async () => {
     const user = userEvent.setup();
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(result());
-    vi.stubGlobal('fetch', withTestQuoteTransport(fetcher));
+    vi.stubGlobal('fetch', fetcher);
     const inputs = props({ onOpenWorkbench: vi.fn() });
     const view = render(<PromptSkillPanel {...inputs} />);
     await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
@@ -401,7 +394,7 @@ describe('PromptSkillPanel', () => {
       if (phase === 'poll')
         fetcher.mockResolvedValueOnce(result({ status: 'queued', promptDocument: undefined }));
       fetcher.mockResolvedValueOnce(invalid()).mockResolvedValueOnce(result());
-      vi.stubGlobal('fetch', withTestQuoteTransport(fetcher));
+      vi.stubGlobal('fetch', fetcher);
       const inputs = props();
       render(<PromptSkillPanel {...inputs} />);
       await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
@@ -435,7 +428,7 @@ describe('PromptSkillPanel', () => {
             ? new Response('{}')
             : result({ nodeId: 'other', promptDocument: { version: 1, blocks: [] } }),
         );
-      vi.stubGlobal('fetch', withTestQuoteTransport(fetcher));
+      vi.stubGlobal('fetch', fetcher);
       render(<PromptSkillPanel {...props()} />);
       await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
       await user.click(screen.getByRole('button', { name: '优化提示词' }));
@@ -451,7 +444,7 @@ describe('PromptSkillPanel', () => {
 
   it('Ctrl/Cmd+S 从预览到达全局保存，普通编辑按键不冒泡', async () => {
     const user = userEvent.setup();
-    vi.stubGlobal('fetch', withTestQuoteTransport(vi.fn().mockResolvedValue(result())));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(result()));
     const save = vi.fn((event: KeyboardEvent) => event.preventDefault());
     window.addEventListener('keydown', save);
     try {
@@ -472,7 +465,7 @@ describe('PromptSkillPanel', () => {
     async (mediaType) => {
       const user = userEvent.setup();
       const fetcher = vi.fn();
-      vi.stubGlobal('fetch', withTestQuoteTransport(fetcher));
+      vi.stubGlobal('fetch', fetcher);
       const inputs = props({ mediaType, skillId: undefined });
       render(<PromptSkillPanel {...inputs} />);
       await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
@@ -518,7 +511,7 @@ describe('PromptSkillPanel', () => {
   it('优化成功仍保留原文，编辑文字后显式应用且保留精确资源身份', async () => {
     const user = userEvent.setup();
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(result({ simulated: true }));
-    vi.stubGlobal('fetch', withTestQuoteTransport(fetcher));
+    vi.stubGlobal('fetch', fetcher);
     const inputs = props();
     render(<PromptSkillPanel {...inputs} />);
     await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
@@ -544,7 +537,7 @@ describe('PromptSkillPanel', () => {
     '更改 %s 后禁止应用旧预览，丢弃不覆盖新输入',
     async (change) => {
       const user = userEvent.setup();
-      vi.stubGlobal('fetch', withTestQuoteTransport(vi.fn().mockResolvedValue(result())));
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(result()));
       const inputs = props();
       const view = render(<PromptSkillPanel {...inputs} />);
       await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
@@ -577,7 +570,7 @@ describe('PromptSkillPanel', () => {
       .fn<typeof fetch>()
       .mockRejectedValueOnce(new Error('connection lost'))
       .mockResolvedValueOnce(result());
-    vi.stubGlobal('fetch', withTestQuoteTransport(fetcher));
+    vi.stubGlobal('fetch', fetcher);
     const inputs = props();
     const view = render(<PromptSkillPanel {...inputs} />);
     await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
@@ -603,7 +596,7 @@ describe('PromptSkillPanel', () => {
   it('只展示文字模型，同名模型以连接区分', async () => {
     const user = userEvent.setup();
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(result({ credentialId: 'key-b' }));
-    vi.stubGlobal('fetch', withTestQuoteTransport(fetcher));
+    vi.stubGlobal('fetch', fetcher);
     render(
       <PromptSkillPanel
         {...props({
@@ -613,14 +606,14 @@ describe('PromptSkillPanel', () => {
               name: '文字 A',
               mediaTypes: ['text'],
               credentialId: 'key-a',
-              credentialLabel: '连接甲',
+              group: '分组甲',
             },
             {
               id: 'text-a',
               name: '文字 B',
               mediaTypes: ['text'],
               credentialId: 'key-b',
-              credentialLabel: '连接乙',
+              group: '分组乙',
             },
             { id: 'image-a', name: '图片专用', mediaTypes: ['image'] },
           ],
@@ -630,7 +623,7 @@ describe('PromptSkillPanel', () => {
     await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
     await user.click(screen.getByRole('combobox', { name: '优化模型' }));
     expect(screen.queryByRole('option', { name: '图片专用' })).not.toBeInTheDocument();
-    await user.click(screen.getByRole('option', { name: '文字 B' }));
+    await user.click(screen.getByRole('option', { name: /文字 B.*分组乙/ }));
     await user.click(screen.getByRole('button', { name: '优化提示词' }));
     await screen.findByRole('button', { name: '应用' });
     expect(JSON.parse(String(fetcher.mock.calls[0]![1]?.body))).toMatchObject({
@@ -643,13 +636,9 @@ describe('PromptSkillPanel', () => {
     const user = userEvent.setup();
     vi.stubGlobal(
       'fetch',
-      withTestQuoteTransport(
-        vi
-          .fn()
-          .mockResolvedValue(
-            result({ status, promptDocument: undefined, error: '模型未完成请求' }),
-          ),
-      ),
+      vi
+        .fn()
+        .mockResolvedValue(result({ status, promptDocument: undefined, error: '模型未完成请求' })),
     );
     const inputs = props();
     render(<PromptSkillPanel {...inputs} />);
@@ -667,7 +656,7 @@ describe('PromptSkillPanel', () => {
       .fn<typeof fetch>()
       .mockResolvedValueOnce(result({ status: 'queued', promptDocument: undefined }))
       .mockResolvedValueOnce(result());
-    vi.stubGlobal('fetch', withTestQuoteTransport(fetcher));
+    vi.stubGlobal('fetch', fetcher);
     render(<PromptSkillPanel {...props()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Skill 配置' }));
     await act(async () => fireEvent.click(screen.getByRole('button', { name: '优化提示词' })));
@@ -689,7 +678,7 @@ describe('PromptSkillPanel', () => {
           resolve = done;
         }),
     );
-    vi.stubGlobal('fetch', withTestQuoteTransport(fetcher));
+    vi.stubGlobal('fetch', fetcher);
     const inputs = props();
     const view = render(<PromptSkillPanel {...inputs} />);
     fireEvent.click(screen.getByRole('button', { name: 'Skill 配置' }));
@@ -708,7 +697,7 @@ describe('PromptSkillPanel', () => {
     const fetcher = vi
       .fn<typeof fetch>()
       .mockResolvedValue(result({ status: 'running', promptDocument: undefined }));
-    vi.stubGlobal('fetch', withTestQuoteTransport(fetcher));
+    vi.stubGlobal('fetch', fetcher);
     const view = render(<PromptSkillPanel {...props()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Skill 配置' }));
     await act(async () => fireEvent.click(screen.getByRole('button', { name: '优化提示词' })));
@@ -722,7 +711,7 @@ describe('PromptSkillPanel', () => {
 
   it('会话存储无法写入时不发送会造成身份丢失的新请求', async () => {
     const fetcher = vi.fn();
-    vi.stubGlobal('fetch', withTestQuoteTransport(fetcher));
+    vi.stubGlobal('fetch', fetcher);
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
       throw new Error('storage unavailable');
     });
@@ -736,7 +725,7 @@ describe('PromptSkillPanel', () => {
   it('停用 Skill 不可选择或新优化，禁用状态仍能打开工作台修复', async () => {
     const user = userEvent.setup();
     const fetcher = vi.fn();
-    vi.stubGlobal('fetch', withTestQuoteTransport(fetcher));
+    vi.stubGlobal('fetch', fetcher);
     const skills = PROMPT_SKILLS.map((skill) => ({ ...skill, enabled: skill.id !== 'character' }));
     const inputs = props({ skills, onOpenWorkbench: vi.fn() });
     const view = render(<PromptSkillPanel {...inputs} />);
@@ -762,7 +751,7 @@ describe('PromptSkillPanel', () => {
         .fn<typeof fetch>()
         .mockResolvedValueOnce(result({ status: 'running', promptDocument: undefined }))
         .mockResolvedValueOnce(result());
-      vi.stubGlobal('fetch', withTestQuoteTransport(fetcher));
+      vi.stubGlobal('fetch', fetcher);
       const inputs = props();
       const view = render(<PromptSkillPanel {...inputs} />);
       await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
@@ -789,7 +778,7 @@ describe('PromptSkillPanel', () => {
       .fn<typeof fetch>()
       .mockRejectedValueOnce(new Error('unknown'))
       .mockResolvedValueOnce(result());
-    vi.stubGlobal('fetch', withTestQuoteTransport(fetcher));
+    vi.stubGlobal('fetch', fetcher);
     const inputs = props();
     const view = render(<PromptSkillPanel {...inputs} />);
     await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
@@ -821,7 +810,7 @@ describe('PromptSkillPanel', () => {
           { status: 409 },
         ),
       );
-    vi.stubGlobal('fetch', withTestQuoteTransport(fetcher));
+    vi.stubGlobal('fetch', fetcher);
     render(<PromptSkillPanel {...props()} />);
     await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
     await user.click(screen.getByRole('button', { name: '优化提示词' }));
@@ -837,7 +826,7 @@ describe('PromptSkillPanel', () => {
   it('切换紧凑/展开面板保留已编辑预览，不重复请求', async () => {
     const user = userEvent.setup();
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(result());
-    vi.stubGlobal('fetch', withTestQuoteTransport(fetcher));
+    vi.stubGlobal('fetch', fetcher);
     const inputs = props();
     const view = render(<PromptSkillPanel {...inputs} />);
     await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
@@ -861,7 +850,7 @@ describe('PromptSkillPanel', () => {
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ error: 'permission denied' }), { status: 403 }),
       );
-    vi.stubGlobal('fetch', withTestQuoteTransport(fetcher));
+    vi.stubGlobal('fetch', fetcher);
     const inputs = props();
     const view = render(<PromptSkillPanel {...inputs} />);
     await user.click(screen.getByRole('button', { name: 'Skill 配置' }));

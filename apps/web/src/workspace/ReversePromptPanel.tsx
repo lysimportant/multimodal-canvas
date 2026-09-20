@@ -11,7 +11,6 @@ import {
   type ReversePromptTarget,
 } from '../reverse-prompts';
 import { API_BASE_URL, type ModelEntry, type ModelSelection } from './contracts';
-import { QuoteCancelledError, QuoteRequestError } from '../marketplace/quote-client';
 import {
   clearPendingReversePrompt,
   pendingReversePromptKey,
@@ -70,7 +69,6 @@ export function ReversePromptPanel({ target, userId, models }: ReversePromptPane
       reversePromptModelKey({
         modelAlias: entry.id,
         credentialId: entry.credentialId,
-        platformModelId: entry.platformModelId,
       }) === modelValue,
   );
 
@@ -110,12 +108,7 @@ export function ReversePromptPanel({ target, userId, models }: ReversePromptPane
       clearPendingReversePrompt(storageKey, submission.current.key);
       submission.current = undefined;
     } catch (cause) {
-      if (
-        cause instanceof QuoteCancelledError ||
-        ((cause instanceof ReversePromptRequestError || cause instanceof QuoteRequestError) &&
-          cause.status >= 400 &&
-          cause.status < 500)
-      ) {
+      if (cause instanceof ReversePromptRequestError && cause.status >= 400 && cause.status < 500) {
         if (submission.current) clearPendingReversePrompt(storageKey, submission.current.key);
         submission.current = undefined;
       }
@@ -153,14 +146,12 @@ export function ReversePromptPanel({ target, userId, models }: ReversePromptPane
                   reversePromptModelKey({
                     modelAlias: entry.id,
                     credentialId: entry.credentialId,
-                    platformModelId: entry.platformModelId,
                   }) === event.target.value,
               );
               if (selected)
                 setSelection({
                   modelAlias: selected.id,
                   credentialId: selected.credentialId,
-                  platformModelId: selected.platformModelId,
                 });
             }}
           >
@@ -172,7 +163,6 @@ export function ReversePromptPanel({ target, userId, models }: ReversePromptPane
               const key = reversePromptModelKey({
                 modelAlias: entry.id,
                 credentialId: entry.credentialId,
-                platformModelId: entry.platformModelId,
               });
               return (
                 <option
@@ -181,8 +171,8 @@ export function ReversePromptPanel({ target, userId, models }: ReversePromptPane
                   disabled={Boolean(entry.availability && entry.availability !== 'available')}
                 >
                   {entry.name || entry.id}
-                  {entry.connection?.label || entry.credentialLabel
-                    ? ` · ${entry.connection?.label ?? entry.credentialLabel}`
+                  {entry.group || entry.credentialLabel
+                    ? ` · ${entry.group ?? entry.credentialLabel}`
                     : ''}
                 </option>
               );

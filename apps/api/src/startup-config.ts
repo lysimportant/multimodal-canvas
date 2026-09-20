@@ -41,24 +41,21 @@ export function validateApiStartupConfiguration(
   const redisUrl = requireValue(environment, 'REDIS_URL', issues);
   requireValue(environment, 'S3_BUCKET', issues);
   requireValue(environment, 'S3_REGION', issues);
-  const encryptionSecret = environment.AI_CREDENTIAL_ENCRYPTION_KEY?.trim();
   validateCredentialEncryptionRotationConfiguration(environment, issues);
-  // PostgreSQL 凭据存储存在时，Provider 使用数据库中按运行快照解析的凭据；
-  // 只有没有完整持久化边界时才要求静态环境变量作为明确回退路径。
-  const hasDurableCredentialStore = Boolean(databaseUrl && encryptionSecret);
-  const newApiBaseUrl = hasDurableCredentialStore
-    ? environment.NEW_API_BASE_URL?.trim()
-    : requireValue(environment, 'NEW_API_BASE_URL', issues);
-  if (!hasDurableCredentialStore) {
-    requireValue(environment, 'NEW_API_API_KEY', issues);
-  }
   requireValue(environment, 'NEW_API_WEBHOOK_SECRET', issues);
   requireValue(environment, 'AI_CREDENTIAL_ENCRYPTION_KEY', issues);
-  if (!environment.API_AUTH_TOKEN?.trim() && !environment.API_JWT_SECRET?.trim()) {
-    issues.push({
-      variable: 'API_AUTH_TOKEN/API_JWT_SECRET',
-      message: 'one is required',
-    });
+  requireValue(environment, 'API_JWT_SECRET', issues);
+  requireValue(environment, 'NEW_API_CLIENT_ID', issues);
+  requireValue(environment, 'NEW_API_INSTANCE_ID', issues);
+  for (const variable of ['NEW_API_ISSUER', 'NEW_API_REDIRECT_URI', 'CANVAS_WEB_URL']) {
+    const value = requireValue(environment, variable, issues);
+    if (value)
+      validateUrlProtocol(value, variable, ['http:', 'https:'], issues, {
+        requireTlsForNonLoopback: true,
+        rejectUserinfo: true,
+        rejectQuery: true,
+        rejectHash: true,
+      });
   }
 
   if (databaseUrl) validateUrlProtocol(databaseUrl, 'DATABASE_URL', ['postgresql:'], issues);
@@ -66,13 +63,6 @@ export function validateApiStartupConfiguration(
     validateUrlProtocol(redisUrl, 'REDIS_URL', ['redis:', 'rediss:'], issues, {
       requireTlsForNonLoopback: true,
       secureProtocols: ['rediss:'],
-    });
-  }
-  if (newApiBaseUrl) {
-    validateUrlProtocol(newApiBaseUrl, 'NEW_API_BASE_URL', ['https:'], issues, {
-      rejectUserinfo: true,
-      rejectQuery: true,
-      rejectHash: true,
     });
   }
   const s3Endpoint = environment.S3_ENDPOINT?.trim();

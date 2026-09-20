@@ -16,8 +16,6 @@ const productionEnvironment: StartupEnvironment = {
   S3_REGION: 'us-east-1',
   S3_ACCESS_KEY: 'test-access-key',
   S3_SECRET_KEY: 'test-secret-key',
-  NEW_API_BASE_URL: 'https://newapi.example.com/v1',
-  NEW_API_API_KEY: 'test-new-api-key',
   WORKER_PROVIDER: 'newapi',
   RUN_SERVICE: 'bullmq',
   AI_CREDENTIAL_ENCRYPTION_KEY: 'test-encryption-secret',
@@ -86,8 +84,6 @@ describe('Worker production startup configuration', () => {
       'REDIS_URL',
       'S3_BUCKET',
       'S3_REGION',
-      'NEW_API_BASE_URL',
-      'NEW_API_API_KEY',
       'AI_CREDENTIAL_ENCRYPTION_KEY',
       'WORKER_PROVIDER',
     ]);
@@ -99,67 +95,17 @@ describe('Worker production startup configuration', () => {
     );
   });
 
-  it('allows database-backed credentials to omit static New API URL and key', () => {
-    const {
-      NEW_API_BASE_URL: _baseUrl,
-      NEW_API_API_KEY: _apiKey,
-      ...databaseBacked
-    } = productionEnvironment;
-
-    expect(validateWorkerStartupConfiguration(databaseBacked)).toEqual([]);
-  });
-
-  it('requires static New API URL and key without a complete durable credential store', () => {
-    const missingDatabase = validateWorkerStartupConfiguration({
+  it('缺少持久存储时拒绝启动，不请求共享 Key 回退', () => {
+    const issues = validateWorkerStartupConfiguration({
       ...productionEnvironment,
       DATABASE_URL: '',
-      NEW_API_BASE_URL: '  ',
-      NEW_API_API_KEY: '  ',
-    });
-    expect(missingDatabase).toContainEqual({
-      variable: 'NEW_API_BASE_URL',
-      message: 'is required',
-    });
-    expect(missingDatabase).toContainEqual({ variable: 'NEW_API_API_KEY', message: 'is required' });
-
-    const missingEncryptionKey = validateWorkerStartupConfiguration({
-      ...productionEnvironment,
       AI_CREDENTIAL_ENCRYPTION_KEY: '',
-      NEW_API_BASE_URL: '  ',
-      NEW_API_API_KEY: '  ',
     });
-    expect(missingEncryptionKey).toContainEqual({
-      variable: 'NEW_API_BASE_URL',
-      message: 'is required',
-    });
-    expect(missingEncryptionKey).toContainEqual({
-      variable: 'NEW_API_API_KEY',
-      message: 'is required',
-    });
+    expect(issues.map(({ variable }) => variable)).toEqual([
+      'DATABASE_URL',
+      'AI_CREDENTIAL_ENCRYPTION_KEY',
+    ]);
   });
-
-  it.each([
-    ['userinfo', 'https://user:marker@newapi.example.com/v1', 'must not include userinfo'],
-    ['query', 'https://newapi.example.com/v1?token=marker', 'must not include query parameters'],
-    ['hash', 'https://newapi.example.com/v1#marker', 'must not include a fragment'],
-  ])(
-    'rejects production New API URL with %s without echoing URL contents',
-    (_kind, baseUrl, message) => {
-      const environment = { ...productionEnvironment, NEW_API_BASE_URL: baseUrl };
-      const issues = validateWorkerStartupConfiguration(environment);
-
-      expect(issues).toContainEqual({ variable: 'NEW_API_BASE_URL', message });
-
-      let error: unknown;
-      try {
-        assertWorkerStartupConfiguration(environment);
-      } catch (caught) {
-        error = caught;
-      }
-      expect(error).toBeInstanceOf(StartupConfigurationError);
-      expect((error as Error).message).not.toContain('marker');
-    },
-  );
 
   it('rejects mock, volatile and invalid provider choices in production', () => {
     const issues = validateWorkerStartupConfiguration({
@@ -168,7 +114,6 @@ describe('Worker production startup configuration', () => {
       REDIS_URL: 'redis:///2',
       S3_ENDPOINT: 'not a URL',
       S3_ACCESS_KEY: '',
-      NEW_API_BASE_URL: 'http://newapi.example.com/v1',
       WORKER_PROVIDER: 'mock',
       RUN_SERVICE: 'memory',
     });
@@ -176,7 +121,6 @@ describe('Worker production startup configuration', () => {
     expect(issues.map(({ variable }) => variable)).toEqual([
       'DATABASE_URL',
       'REDIS_URL',
-      'NEW_API_BASE_URL',
       'S3_ENDPOINT',
       'S3_ACCESS_KEY/S3_SECRET_KEY',
       'WORKER_PROVIDER',

@@ -1,14 +1,5 @@
-import { accountOpenApiPaths, verificationResponseSchema } from './account-openapi';
+import { accountOpenApiPaths } from './account-openapi';
 import { promptSkillOpenApiPaths } from './prompt-skill-openapi';
-import {
-  billingOpenApiPaths,
-  billingOpenApiSchemas,
-  billingQuoteResponse,
-  billingSubmissionDescription,
-  billingSubmissionErrors,
-  billingSubmissionProperties,
-  platformModelSelectionProperty,
-} from './billing-openapi';
 
 const errorSchema = {
   type: 'object',
@@ -32,7 +23,6 @@ const modelSelectionSchema = {
   required: ['modelAlias'],
   properties: {
     modelAlias: { type: 'string', minLength: 1 },
-    platformModelId: platformModelSelectionProperty,
     credentialId: { type: 'string', format: 'uuid' },
   },
   additionalProperties: false,
@@ -60,7 +50,6 @@ const reversePromptAnalysisSchema = {
     status: { type: 'string', enum: ['queued', 'running', 'succeeded', 'failed', 'cancelled'] },
     automatic: { type: 'boolean' },
     modelAlias: { type: 'string' },
-    platformModelId: platformModelSelectionProperty,
     summary: { type: 'string', maxLength: 2000 },
     prompt: { type: 'string', maxLength: 20000 },
     error: { type: 'string' },
@@ -84,7 +73,6 @@ const promptOptimizationSchema = {
     },
     status: { type: 'string', enum: ['queued', 'running', 'succeeded', 'failed', 'cancelled'] },
     modelAlias: { type: 'string' },
-    platformModelId: platformModelSelectionProperty,
     promptDocument: { $ref: '#/components/schemas/PromptDocument' },
     error: { type: 'string' },
   },
@@ -310,39 +298,25 @@ const projectModelDefaultsSchema = {
   additionalProperties: false,
 } as const;
 
-/** 服务端完成精确解析后供画布使用的默认值；未映射项保留原身份，不含连接引用。 */
+/** 本人当前默认分组模型；凭据引用为内部 UUID，不包含 Key。 */
 const resolvedModelSelectionSchema = {
   type: 'object',
-  required: ['modelAlias'],
+  required: ['modelAlias', 'credentialId'],
   properties: {
     modelAlias: { type: 'string' },
-    platformModelId: platformModelSelectionProperty,
+    credentialId: { type: 'string', format: 'uuid' },
   },
   additionalProperties: false,
 } as const;
-/** 仅配置的媒体类型出现在解析视图中；未配置时不自动采用广场首个商品。 */
-const resolvedModelDefaultsSchema = {
-  type: 'object',
-  properties: {
-    text: resolvedModelSelectionSchema,
-    image: resolvedModelSelectionSchema,
-    audio: resolvedModelSelectionSchema,
-    video: resolvedModelSelectionSchema,
-  },
-  additionalProperties: false,
-  description:
-    '启用平台模型服务时返回。已有平台 ID 优先，否则由服务端按原 alias、连接和媒体类型唯一解析；成功返回当前 alias 和稳定 ID，失败保留原 alias/已存 ID，不选择其他商品。始终省略内部 credentialId。',
-} as const;
-/** 项目管理视图兼容旧设置面板；普通账户响应中的 defaults 同样裁剪内部连接字段。 */
+/** 项目默认值只返回当前用户的分组模型引用。 */
 const projectModelDefaultsResponseSchema = {
   type: 'object',
   required: ['defaults'],
   properties: {
     defaults: {
       ...projectModelDefaultsSchema,
-      description: '项目原始默认值；仅有平台设置管理权限的调用者可见内部 credentialId。',
+      description: '项目默认模型包含当前用户的 credentialId；服务端复核其归属。',
     },
-    resolvedDefaults: { $ref: '#/components/schemas/ResolvedModelDefaults' },
   },
   additionalProperties: false,
 } as const;
@@ -388,7 +362,6 @@ const nodeSchema = {
         inferenceStrength: { type: 'string', minLength: 1 },
         assetId: { type: 'string' },
         modelAlias: { type: 'string' },
-        platformModelId: platformModelSelectionProperty,
         credentialId: { type: 'string', format: 'uuid' },
         contentUrl: { type: 'string' },
         mimeType: { type: 'string' },
@@ -810,7 +783,7 @@ const response = (description: string, schema?: unknown) => ({
 
 const authUserSchema = {
   type: 'object',
-  required: ['id', 'email', 'role', 'createdAt', 'updatedAt', 'status'],
+  required: ['id', 'role', 'createdAt', 'updatedAt', 'status'],
   properties: {
     id: { type: 'string', format: 'uuid' },
     email: { type: 'string', format: 'email' },
@@ -819,22 +792,8 @@ const authUserSchema = {
     createdAt: { type: 'string', format: 'date-time' },
     updatedAt: { type: 'string', format: 'date-time' },
     status: { type: 'string', enum: ['active', 'pending', 'disabled'] },
-    emailVerifiedAt: { type: 'string', format: 'date-time' },
     bio: { type: 'string', maxLength: 500 },
     avatarUrl: { type: 'string', maxLength: 2048 },
-  },
-  additionalProperties: false,
-} as const;
-
-const authTokenSchema = {
-  type: 'object',
-  required: ['accessToken', 'tokenType', 'expiresIn', 'expiresAt', 'user'],
-  properties: {
-    accessToken: { type: 'string' },
-    tokenType: { type: 'string', enum: ['Bearer'] },
-    expiresIn: { type: 'integer', minimum: 60 },
-    expiresAt: { type: 'string', format: 'date-time' },
-    user: authUserSchema,
   },
   additionalProperties: false,
 } as const;
@@ -853,10 +812,10 @@ export const openApiDocument = {
     title: 'Multimodal Canvas API',
     version: '0.1.0',
     description:
-      '项目、资源、AI 设置与运行的 REST/SSE API。生产全局限流依赖故障时，登录、注册、SSE 及启用限流的普通 API 返回 503/rate_limit_unavailable，并携带 Retry-After、retryAfterSeconds 和 requestId；额度耗尽仍返回 429。健康检查、Webhook 和已验证的签名资源访问保持独立边界。',
+      '项目、资源、AI 设置与运行的 REST/SSE API。生产全局限流依赖故障时，New API 登录、SSE 及启用限流的普通 API 返回 503/rate_limit_unavailable，并携带 Retry-After、retryAfterSeconds 和 requestId；额度耗尽仍返回 429。健康检查、Webhook 和已验证的签名资源访问保持独立边界。',
   },
   servers: [{ url: '/' }],
-  security: [{ bearerAuth: [] }],
+  security: [{ cookieAuth: [] }],
   tags: [
     { name: 'system' },
     { name: 'projects' },
@@ -867,77 +826,16 @@ export const openApiDocument = {
     { name: 'webhooks' },
     { name: 'admin', description: '管理员用户、资源与系统管理' },
     { name: 'account', description: '个人资料、安全和资源' },
-    { name: 'billing', description: '平台模型、人民币报价、钱包及个人账单' },
-    { name: 'billing-admin', description: '平台模型与价格版本、额度调整和账务核实' },
   ],
   paths: {
-    ...accountOpenApiPaths(authUserSchema, authTokenSchema, assetSchema),
+    ...accountOpenApiPaths(authUserSchema, assetSchema),
     ...promptSkillOpenApiPaths(),
-    ...billingOpenApiPaths(),
     '/health': { get: { tags: ['system'], responses: { '200': response('Healthy') } } },
     '/documentation': {
       get: { tags: ['system'], responses: { '200': response('OpenAPI document') } },
     },
     '/documentation/json': {
       get: { tags: ['system'], responses: { '200': response('OpenAPI document') } },
-    },
-    '/v1/auth/register': {
-      post: {
-        tags: ['auth'],
-        security: [],
-        requestBody: {
-          required: true,
-          content: {
-            'application/json': {
-              schema: {
-                type: 'object',
-                required: ['email', 'password'],
-                properties: {
-                  email: { type: 'string', format: 'email' },
-                  password: { type: 'string', minLength: 8, maxLength: 512, writeOnly: true },
-                  displayName: { type: 'string', maxLength: 120 },
-                },
-                additionalProperties: false,
-              },
-            },
-          },
-        },
-        responses: {
-          '202': response('已创建待验证账户；验证完成后才发放业务会话', verificationResponseSchema),
-          '400': response('Invalid request', errorSchema),
-          '409': response('Email already registered', errorSchema),
-          '503': response('认证或全局限流服务不可用；限流故障附带 Retry-After', errorSchema),
-        },
-      },
-    },
-    '/v1/auth/login': {
-      post: {
-        tags: ['auth'],
-        security: [],
-        requestBody: {
-          required: true,
-          content: {
-            'application/json': {
-              schema: {
-                type: 'object',
-                required: ['email', 'password'],
-                properties: {
-                  email: { type: 'string', format: 'email' },
-                  password: { type: 'string', writeOnly: true },
-                },
-                additionalProperties: false,
-              },
-            },
-          },
-        },
-        responses: {
-          '200': response('Logged in', authTokenSchema),
-          '400': response('Invalid request', errorSchema),
-          '401': response('Invalid credentials', errorSchema),
-          '403': response('邮箱待验证或账户已禁用', errorSchema),
-          '503': response('认证或全局限流服务不可用；限流故障附带 Retry-After', errorSchema),
-        },
-      },
     },
     '/v1/auth/me': {
       get: {
@@ -1166,7 +1064,7 @@ export const openApiDocument = {
       get: {
         tags: ['projects'],
         description:
-          '需要项目访问权限。defaults 保留原设置形状，普通账户响应省略内部连接；启用模型广场时额外返回 resolvedDefaults，供画布保存稳定平台身份。',
+          '需要项目访问权限。defaults 返回本人分组和精确模型的引用；失效选择要求重新选择。',
         parameters: [{ $ref: '#/components/parameters/ProjectId' }],
         responses: {
           '200': response('Project model defaults', projectModelDefaultsResponseSchema),
@@ -1175,8 +1073,7 @@ export const openApiDocument = {
       },
       patch: {
         tags: ['projects'],
-        description:
-          '只更新显式提供的媒体类型。响应与 GET 一致，公开字段不包含内部连接，resolvedDefaults 由服务端按精确身份解析。',
+        description: '只更新显式提供的媒体类型，响应与 GET 一致；服务端校验分组引用属于当前用户。',
         parameters: [{ $ref: '#/components/parameters/ProjectId' }],
         requestBody: {
           required: true,
@@ -1476,7 +1373,7 @@ export const openApiDocument = {
       post: {
         tags: ['runs'],
         summary: '独立优化未保存的提示词，冻结默认文字模型与凭据',
-        description: `${billingSubmissionDescription}需要项目访问权限。只发送文本与稳定资源占位符，原始文档保存在 Run 快照。相同幂等键复用已提交任务，包括失败结果；quoteOnly 请求也可能返回 202/optimization，此时直接恢复原任务，不再提交。输入或显式模型变化返回 409。不会归档资产或修改画布，通用 retry 不适用。`,
+        description: `由本人分组授权执行，Canvas 不报价或扣款。需要项目访问权限。只发送文本与稳定资源占位符，原始文档保存在 Run 快照。相同幂等键复用已提交任务，包括失败结果。输入或显式模型变化返回 409。不会归档资产或修改画布，通用 retry 不适用。`,
         parameters: [{ $ref: '#/components/parameters/ProjectId' }],
         requestBody: {
           required: true,
@@ -1499,8 +1396,6 @@ export const openApiDocument = {
                   mediaType: mediaTypeSchema,
                   promptDocument: { $ref: '#/components/schemas/PromptDocument' },
                   idempotencyKey: { type: 'string', minLength: 1, maxLength: 200 },
-                  platformModelId: platformModelSelectionProperty,
-                  ...billingSubmissionProperties,
                   modelAlias: { type: 'string', minLength: 1, maxLength: 160 },
                   credentialId: { type: 'string', format: 'uuid' },
                 },
@@ -1509,16 +1404,11 @@ export const openApiDocument = {
           },
         },
         responses: {
-          ...billingSubmissionErrors,
-          '200': billingQuoteResponse,
           '202': response('新建或复用优化任务', envelope('optimization', promptOptimizationSchema)),
           '400': response('输入、Skill、模型或项目归档状态无效', errorSchema),
           '401': response('未认证', errorSchema),
           '404': response('项目或凭据不存在或无权访问', errorSchema),
-          '409': response(
-            '幂等身份、Skill 版本或报价冲突；缺少、过期、参数/售价变化需重新确认',
-            errorSchema,
-          ),
+          '409': response('幂等身份或 Skill 版本冲突', errorSchema),
           '429': response('项目运行配额已满', errorSchema),
           '503': response('暂时无法提交，可使用相同幂等键重试', errorSchema),
         },
@@ -1569,8 +1459,7 @@ export const openApiDocument = {
               analysis: { anyOf: [reversePromptAnalysisSchema, { type: 'null' }] },
               defaultModel: {
                 ...resolvedModelSelectionSchema,
-                description:
-                  '采用与独立文字任务相同的当前默认选择；平台模式由服务端精确解析稳定 ID，无法映射时保留原 alias，始终不返回内部连接。',
+                description: '采用本人文字默认模型和分组引用，未设置或已失效时要求重新选择。',
               },
             },
           }),
@@ -1581,7 +1470,7 @@ export const openApiDocument = {
       post: {
         tags: ['assets'],
         summary: '提交独立反推；默认文字模型含凭据，成功结果不归档为新资源',
-        description: `${billingSubmissionDescription}automatic=true 按项目、资源与版本复用已有任何状态的分析。手动相同 idempotencyKey 或仍有运行中的分析时复用任务；quoteOnly 请求也可能返回 202/analysis，此时直接恢复已有任务，不再提交。失败后必须明确新建分析，普通 Run retry 不适用。`,
+        description: `由本人分组授权执行，Canvas 不报价或扣款。仅手动发起分析；相同 idempotencyKey 或仍有运行中的分析时复用任务。失败后必须明确新建分析，普通 Run retry 不适用。`,
         parameters: [
           { $ref: '#/components/parameters/AssetId' },
           { name: 'version', in: 'path', required: true, schema: { type: 'integer', minimum: 1 } },
@@ -1596,8 +1485,6 @@ export const openApiDocument = {
                 additionalProperties: false,
                 properties: {
                   projectId: { type: 'string', minLength: 1, maxLength: 512 },
-                  platformModelId: platformModelSelectionProperty,
-                  ...billingSubmissionProperties,
                   modelAlias: { type: 'string', minLength: 1, maxLength: 160 },
                   credentialId: { type: 'string', format: 'uuid' },
                   idempotencyKey: { type: 'string', minLength: 1, maxLength: 200 },
@@ -1608,15 +1495,13 @@ export const openApiDocument = {
           },
         },
         responses: {
-          ...billingSubmissionErrors,
-          '200': billingQuoteResponse,
           '202': response(
             '新建或复用的分析任务',
             envelope('analysis', reversePromptAnalysisSchema),
           ),
           '400': response('模型、资源版本、归档、大小或显式能力限制不满足', errorSchema),
           '404': response('项目、资源版本或凭据不存在或无权访问', errorSchema),
-          '409': response('幂等身份或报价冲突；缺少、过期、参数/售价变化需重新确认', errorSchema),
+          '409': response('幂等身份冲突或分组权限已变化', errorSchema),
           '429': response('项目运行配额已满', errorSchema),
         },
       },
@@ -1778,8 +1663,8 @@ export const openApiDocument = {
     '/v1/nodes/{nodeId}/runs': {
       post: {
         tags: ['runs'],
-        summary: '对单节点及其实际工作流子调用报价或确认运行',
-        description: billingSubmissionDescription,
+        summary: '提交单节点及其工作流执行',
+        description: '使用本人分组模型提交持久任务，受理后由 New API 按实际规则计费。',
         parameters: [
           { $ref: '#/components/parameters/NodeId' },
           { $ref: '#/components/parameters/IdempotencyKey' },
@@ -1793,8 +1678,6 @@ export const openApiDocument = {
                 required: ['projectId'],
                 properties: {
                   projectId: { type: 'string', minLength: 1 },
-                  platformModelId: platformModelSelectionProperty,
-                  ...billingSubmissionProperties,
                   modelAlias: { type: 'string', minLength: 1, maxLength: 160 },
                   credentialId: { type: 'string', format: 'uuid' },
                   idempotencyKey: { type: 'string', minLength: 1, maxLength: 200 },
@@ -1807,8 +1690,6 @@ export const openApiDocument = {
           },
         },
         responses: {
-          ...billingSubmissionErrors,
-          '200': billingQuoteResponse,
           '202': response(
             '已原子受理或复用原任务；队列故障时由持久 outbox 稍后投递',
             envelope('run', runSchema),
@@ -1816,7 +1697,7 @@ export const openApiDocument = {
           '400': response('Invalid request', errorSchema),
           '403': response('Credential selection is not permitted', errorSchema),
           '404': response('Not found', errorSchema),
-          '409': response('幂等身份或报价冲突；缺少、过期、模型/参数变化需重新确认', errorSchema),
+          '409': response('幂等身份或执行快照冲突', errorSchema),
         },
       },
     },
@@ -1833,8 +1714,8 @@ export const openApiDocument = {
     '/v1/runs/{runId}/retry': {
       post: {
         tags: ['runs'],
-        summary: '对明确失败或取消的普通运行重新报价并显式重试',
-        description: `${billingSubmissionDescription}按当前有效平台绑定与价格重新确认。原收费项仍冻结、已交付或执行结果未知时禁止再次付费发送；反推和优化须在各自入口明确新建。恢复原队列消息不是新收费重试。`,
+        summary: '显式重试已确认失败或取消的运行',
+        description: `由本人分组授权执行，Canvas 不报价或扣款。按当前本人分组权限重新校验。已发送但结果未知时禁止重试；反推和优化须在各自入口明确新建。队列恢复使用原任务身份。`,
         parameters: [{ $ref: '#/components/parameters/RunId' }],
         requestBody: {
           required: false,
@@ -1842,19 +1723,17 @@ export const openApiDocument = {
             'application/json': {
               schema: {
                 type: 'object',
-                properties: billingSubmissionProperties,
+                properties: {},
                 additionalProperties: false,
               },
             },
           },
         },
         responses: {
-          ...billingSubmissionErrors,
-          '200': billingQuoteResponse,
           '202': response('已确认的新重试任务，冻结新的授权上限', envelope('run', runSchema)),
-          '400': response('无效报价参数', errorSchema),
+          '400': response('无效执行参数', errorSchema),
           '404': response('Not found', errorSchema),
-          '409': response('运行不可重试、原请求待核实、报价缺失/过期/变化或身份冲突', errorSchema),
+          '409': response('运行不可重试、原请求待核实或执行身份冲突', errorSchema),
         },
       },
     },
@@ -1914,15 +1793,13 @@ export const openApiDocument = {
     '/v1/settings/ai': {
       get: {
         tags: ['settings'],
-        description:
-          '保留平台连接管理权限。settings 是当前活动设置的原管理视图；启用模型广场时，顶层 resolvedDefaults 提供相同当前默认值的公开平台身份，不扫描其他连接或自动取首个商品。',
+        description: '读取本人模型默认与请求超时；Key、上游授权和密文均不返回客户端。',
         responses: {
           '200': response('AI settings without secrets', {
             type: 'object',
             required: ['settings'],
             properties: {
               settings: { $ref: '#/components/schemas/AiSettings' },
-              resolvedDefaults: { $ref: '#/components/schemas/ResolvedModelDefaults' },
             },
             additionalProperties: false,
           }),
@@ -1940,185 +1817,15 @@ export const openApiDocument = {
         responses: {
           '200': response('AI settings updated', {
             type: 'object',
-            required: ['settings', 'credentials'],
+            required: ['settings'],
             properties: {
               settings: { $ref: '#/components/schemas/AiSettings' },
-              credentials: {
-                type: 'array',
-                items: { $ref: '#/components/schemas/AiCredentialSummary' },
-              },
-              createdCredentialId: {
-                type: 'string',
-                format: 'uuid',
-                description:
-                  '仅在 activate=false 新增或复用独立凭据时返回；活动连接与全局默认模型不变。',
-              },
             },
             additionalProperties: false,
           }),
           '400': response('Invalid request', errorSchema),
           '403': response('Credential access is not permitted', errorSchema),
           '404': response('Credential not found', errorSchema),
-        },
-      },
-    },
-    '/v1/settings/ai/credentials': {
-      get: {
-        tags: ['settings'],
-        responses: {
-          '200': response('Saved AI credentials without secrets', {
-            type: 'object',
-            required: ['credentials'],
-            properties: {
-              credentials: {
-                type: 'array',
-                items: { $ref: '#/components/schemas/AiCredentialSummary' },
-              },
-            },
-            additionalProperties: false,
-          }),
-        },
-      },
-      delete: {
-        tags: ['settings'],
-        responses: {
-          '200': response('Credentials removed', {
-            type: 'object',
-            required: ['settings', 'credentials'],
-            properties: {
-              settings: { $ref: '#/components/schemas/AiSettings' },
-              credentials: {
-                type: 'array',
-                items: { $ref: '#/components/schemas/AiCredentialSummary' },
-              },
-            },
-            additionalProperties: false,
-          }),
-        },
-      },
-    },
-    '/v1/settings/ai/credentials/{credentialId}': {
-      delete: {
-        tags: ['settings'],
-        summary: '删除指定已保存 Key 及其可选历史版本',
-        description:
-          '仅管理员可用。从凭据和模型选择中移除，并禁止再次激活或发起新请求；已提交任务的精确历史版本仍可执行。删除活动连接后清空当前连接，其他 Key 可手动切换。',
-        parameters: [
-          {
-            name: 'credentialId',
-            in: 'path',
-            required: true,
-            schema: { type: 'string', format: 'uuid' },
-          },
-        ],
-        responses: {
-          '200': response('指定凭据已删除', {
-            type: 'object',
-            required: ['settings', 'credentials'],
-            additionalProperties: false,
-            properties: {
-              settings: { $ref: '#/components/schemas/AiSettings' },
-              credentials: {
-                type: 'array',
-                items: { $ref: '#/components/schemas/AiCredentialSummary' },
-              },
-            },
-          }),
-          '400': response('凭据 ID 无效', errorSchema),
-          '403': response('不允许访问平台凭据', errorSchema),
-          '404': response('凭据不存在或已删除', errorSchema),
-        },
-      },
-    },
-    '/v1/settings/ai/credentials/{credentialId}/activate': {
-      post: {
-        tags: ['settings'],
-        parameters: [
-          {
-            name: 'credentialId',
-            in: 'path',
-            required: true,
-            schema: { type: 'string', format: 'uuid' },
-          },
-        ],
-        responses: {
-          '200': response('Credential activated', {
-            type: 'object',
-            required: ['settings', 'credentials'],
-            properties: {
-              settings: { $ref: '#/components/schemas/AiSettings' },
-              credentials: {
-                type: 'array',
-                items: { $ref: '#/components/schemas/AiCredentialSummary' },
-              },
-            },
-            additionalProperties: false,
-          }),
-          '400': response('Invalid credential id', errorSchema),
-          '404': response('Credential not found', errorSchema),
-        },
-      },
-    },
-    '/v1/settings/ai/credentials/{credentialId}/defaults': {
-      patch: {
-        tags: ['settings'],
-        summary: '更新单个已保存 Key 自身的类型默认模型',
-        description:
-          '仅管理员可用。只更新该凭据自己的类型默认模型，不激活该连接、不改变当前活动连接和全局默认模型；' +
-          '模型必须来自该凭据的模型目录并保持同一凭据组合。显式 null 清除对应媒体类型。',
-        parameters: [
-          {
-            name: 'credentialId',
-            in: 'path',
-            required: true,
-            schema: { type: 'string', format: 'uuid' },
-          },
-        ],
-        requestBody: {
-          required: true,
-          content: {
-            'application/json': { schema: defaultModelUpdateSchema },
-          },
-        },
-        responses: {
-          '200': response('该凭据的类型默认模型已更新', {
-            type: 'object',
-            required: ['credentials'],
-            properties: {
-              credentials: {
-                type: 'array',
-                items: { $ref: '#/components/schemas/AiCredentialSummary' },
-              },
-            },
-            additionalProperties: false,
-          }),
-          '400': response('凭据 ID、请求体或模型选择无效', errorSchema),
-          '403': response('不允许访问平台凭据', errorSchema),
-          '404': response('凭据不存在或已删除', errorSchema),
-        },
-      },
-    },
-    '/v1/settings/ai/test': {
-      post: {
-        tags: ['settings'],
-        responses: {
-          '200': response('Connection result', {
-            type: 'object',
-            required: ['result'],
-            properties: {
-              result: {
-                type: 'object',
-                required: ['ok'],
-                properties: {
-                  ok: { type: 'boolean' },
-                  modelCount: { type: 'integer', minimum: 0 },
-                  error: { type: 'string' },
-                },
-                additionalProperties: false,
-              },
-            },
-            additionalProperties: false,
-          }),
         },
       },
     },
@@ -2154,9 +1861,9 @@ export const openApiDocument = {
     '/v1/models': {
       get: {
         tags: ['settings'],
-        summary: '读取管理员上游候选目录',
+        summary: '读取本人分组模型目录',
         description:
-          '所有查询都要求平台设置管理权限，省略 credentialId 不会开放目录。普通用户读取 /v1/model-marketplace 的已发布平台商品；此管理接口仍保留连接引用和上游参考价格。',
+          '使用已验证的 New API 身份读取本人全部纳入组；指定 credentialId 时仍须属于本人。同名模型按分组保留，available=false 时不能执行。',
         parameters: [
           { $ref: '#/components/parameters/CredentialIdQuery' },
           { $ref: '#/components/parameters/MediaTypeQuery' },
@@ -2169,7 +1876,7 @@ export const openApiDocument = {
             },
           }),
           '400': response('Invalid media type', errorSchema),
-          '403': response('Platform settings management permission is required', errorSchema),
+          '403': response('Authenticated New API account is required', errorSchema),
           '404': response('Credential not found', errorSchema),
         },
       },
@@ -2235,12 +1942,18 @@ export const openApiDocument = {
       },
     },
     securitySchemes: {
+      cookieAuth: {
+        type: 'apiKey',
+        in: 'cookie',
+        name: 'canvas_session',
+        description: 'New API 回调后签发的 HttpOnly 会话；写操作校验同源 Origin/Fetch Metadata',
+      },
       bearerAuth: {
         type: 'http',
         scheme: 'bearer',
         bearerFormat: 'JWT or API token',
         description:
-          '账户请求使用登录或邮箱验证签发的含 sid 的可撤销 JWT；旧式无 sid 用户 JWT 需要重新登录。服务 API token 不能进入账户及管理员接口。',
+          '浏览器使用 New API 回调签发的 HttpOnly 会话；服务端测试可使用含 sid 的会话 JWT。服务 API token 不能进入账户及管理员接口。',
       },
     },
     parameters: {
@@ -2343,7 +2056,6 @@ export const openApiDocument = {
       },
     },
     schemas: {
-      ...billingOpenApiSchemas,
       ModelSelection: modelSelectionSchema,
       ReversePromptAnalysis: reversePromptAnalysisSchema,
       PromptOptimization: promptOptimizationSchema,
@@ -2366,7 +2078,6 @@ export const openApiDocument = {
       Project: projectSchema,
       Canvas: canvasSchema,
       ProjectModelDefaults: projectModelDefaultsSchema,
-      ResolvedModelDefaults: resolvedModelDefaultsSchema,
       MentionBinding: mentionBindingSchema,
       PromptMention: promptMentionSchema,
       PromptTextBlock: promptTextBlockSchema,
@@ -2409,22 +2120,9 @@ export const openApiDocument = {
       },
       AiSettings: {
         type: 'object',
-        required: ['configured', 'baseUrl', 'defaultModels', 'timeoutMs', 'updatedAt'],
+        required: ['configured', 'defaultModels', 'timeoutMs', 'updatedAt'],
         properties: {
           configured: { type: 'boolean' },
-          baseUrl: {
-            oneOf: [
-              { type: 'string', const: '' },
-              { type: 'string', format: 'uri' },
-            ],
-          },
-          keyFingerprint: { type: 'string', minLength: 1 },
-          keySuffix: {
-            type: 'string',
-            minLength: 1,
-            maxLength: 8,
-            description: '安全尾号；短 Key 最多展示半长且不超过 4 位，不可读取时省略。',
-          },
           defaultModels: {
             type: 'object',
             properties: {
@@ -2449,32 +2147,21 @@ export const openApiDocument = {
       },
       AiCredentialSummary: {
         type: 'object',
-        required: ['id', 'baseUrl', 'keyFingerprint', 'updatedAt', 'active'],
+        required: ['id', 'group', 'status', 'updatedAt', 'active'],
         properties: {
           id: { type: 'string', format: 'uuid' },
-          baseUrl: { type: 'string', format: 'uri' },
-          keyFingerprint: { type: 'string', minLength: 1 },
-          keySuffix: {
-            type: 'string',
-            minLength: 1,
-            maxLength: 8,
-            description: '安全尾号；仅用于展示，连接身份仍使用 ID 与内部指纹。',
-          },
+          version: { type: 'integer', minimum: 1 },
+          group: { type: 'string' },
+          status: { type: 'string' },
+          error: { type: 'string' },
           updatedAt: { type: 'string', format: 'date-time' },
           active: { type: 'boolean' },
-          defaultModels: {
-            ...projectModelDefaultsSchema,
-            description:
-              '该凭据自身已持久化的类型默认模型；从未配置过的凭据省略该字段，不生成推断默认值。',
-          },
         },
         additionalProperties: false,
       },
       AiSettingsPatch: {
         type: 'object',
         properties: {
-          baseUrl: { type: 'string', format: 'uri' },
-          apiKey: { type: 'string', minLength: 1, writeOnly: true },
           defaultModels: defaultModelUpdateSchema,
           timeoutMs: {
             type: 'integer',
@@ -2482,13 +2169,6 @@ export const openApiDocument = {
             maximum: 2147483647,
             description:
               '新开始执行节点的请求超时及视频轮询等待预算，单位毫秒；省略保留现值，显式 900000 恢复默认。',
-          },
-          activate: {
-            type: 'boolean',
-            default: true,
-            description:
-              '是否把本次 Key 设为全局活动连接。false 时只新增不激活的独立凭据并返回 createdCredentialId，' +
-              '活动连接的 ID、版本、地址、指纹和默认模型保持不变；该模式不接受 defaultModels 和 timeoutMs。',
           },
         },
         additionalProperties: false,
@@ -2501,6 +2181,10 @@ export const openApiDocument = {
           name: { type: 'string' },
           mediaTypes: { type: 'array', items: mediaTypeSchema },
           credentialId: { type: 'string', format: 'uuid' },
+          group: { type: 'string' },
+          contract: { type: 'string' },
+          available: { type: 'boolean' },
+          unavailableReason: { type: 'string' },
           capabilities: { type: 'object', additionalProperties: true },
           limitations: { type: 'object', additionalProperties: true },
           price: { type: 'object', additionalProperties: true },

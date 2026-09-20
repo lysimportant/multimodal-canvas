@@ -3,13 +3,13 @@ import { synchronizeServerClock } from './server-clock';
 /** 当前会话可公开的用户资料；不包含密码、验证码或密钥。 */
 export type AuthUser = {
   id: string;
-  email: string;
+  /** New API 资料可能没有邮箱；资源归属只使用不可变用户 ID。 */
+  email?: string;
   displayName?: string;
   role: 'user' | 'admin';
   createdAt: string;
   avatarUrl?: string | null;
   bio?: string | null;
-  emailVerifiedAt?: string | null;
   status?: 'active' | 'pending' | 'disabled';
 };
 
@@ -21,21 +21,25 @@ export type AuthTokenResponse = {
   user: AuthUser;
 };
 
-export type StoredAuthSession = Pick<AuthTokenResponse, 'accessToken' | 'expiresAt' | 'user'>;
+/** 浏览器仅缓存当前公开用户；认证凭证由 HttpOnly Cookie 保存。 */
+export type StoredAuthSession = {
+  user: AuthUser;
+  /** 兼容切换期间的旧响应；新版 Web 不再持久化或主动发送此令牌。 */
+  accessToken?: string;
+  expiresAt?: string;
+};
 
 const STORAGE_KEY = 'multimodal-canvas:auth-session';
-/** 到期前这么久就开始续期，避免后台标签冻住 30 秒定时器后错过刷新窗口。 */
-const AUTH_REFRESH_LEAD_MS = 5 * 60 * 1000;
 /** 同一标签页的会话通知；身份变化时由应用清除前一用户缓存。 */
 const sessionListeners = new Set<(session: StoredAuthSession | null) => void>();
 /** 登录/退出意图代次，阻止早先认证响应覆盖后来选择的账户。 */
 let authGeneration = 0;
+/** 账号变化时立即中断尚未返回响应头的请求，业务层同时拒绝迟到正文。 */
+const inFlightRequests = new Set<AbortController>();
 /** 返回当前认证意图代次，异步账户操作提交结果前必须确认代次未改变。 */
 export function getAuthSessionGeneration(): number {
   return authGeneration;
 }
-/** 单个会话最多有一个续期请求，防止并发轮换令牌。 */
-let refreshRequest: { token: string; promise: Promise<StoredAuthSession | null> } | null = null;
 let unauthorizedHandler: (() => void) | undefined;
 
 function storage(): Storage | undefined {
@@ -50,18 +54,11 @@ function storage(): Storage | undefined {
 function isAuthSession(value: unknown): value is StoredAuthSession {
   if (!value || typeof value !== 'object') return false;
   const session = value as Record<string, unknown>;
-  return (
-    typeof session.accessToken === 'string' &&
-    session.accessToken.length > 0 &&
-    typeof session.expiresAt === 'string' &&
-    !Number.isNaN(Date.parse(session.expiresAt)) &&
-    Boolean(session.user) &&
-    typeof session.user === 'object'
-  );
+  return Boolean(session.user) && typeof session.user === 'object';
 }
 
 function isSessionUnexpired(session: StoredAuthSession): boolean {
-  return Date.parse(session.expiresAt) > Date.now();
+  return session.expiresAt ? Date.parse(session.expiresAt) > Date.now() : true;
 }
 
 /**
@@ -85,8 +82,13 @@ export function readStoredAuthSession(): StoredAuthSession | null {
       clearAuthSession();
       return null;
     }
-    memorySession = parsed;
-    return parsed;
+    const session: StoredAuthSession = {
+      user: parsed.user,
+      ...(parsed.expiresAt ? { expiresAt: parsed.expiresAt } : {}),
+    };
+    store.setItem(STORAGE_KEY, JSON.stringify(session));
+    memorySession = session;
+    return session;
   } catch {
     clearAuthSession();
     return null;
@@ -102,13 +104,12 @@ export function readAuthSession(): StoredAuthSession | null {
 
 /** 持久化已验证的会话并通知页面；存储受限时保留当前标签内存会话。 */
 export function persistAuthSession(
-  response: AuthTokenResponse,
+  response: AuthTokenResponse | StoredAuthSession | { user: AuthUser },
   options: { renewal?: boolean } = {},
 ): StoredAuthSession {
   const session: StoredAuthSession = {
-    accessToken: response.accessToken,
-    expiresAt: response.expiresAt,
     user: response.user,
+    ...('expiresAt' in response && response.expiresAt ? { expiresAt: response.expiresAt } : {}),
   };
   const store = storage();
   try {
@@ -120,9 +121,11 @@ export function persistAuthSession(
   if (
     memorySession?.user.id !== session.user.id ||
     memorySession?.user.role !== session.user.role ||
-    (!options.renewal && (memorySession?.accessToken ?? null) !== session.accessToken)
-  )
+    !options.renewal
+  ) {
     authGeneration++;
+    for (const controller of inFlightRequests) controller.abort(new AuthSessionChangedError());
+  }
   memorySession = session;
   sessionListeners.forEach((listener) => listener(session));
   return session;
@@ -133,6 +136,7 @@ let memorySession: StoredAuthSession | null = null;
 /** 清除当前浏览器会话并通知订阅者；不修改后端用户数据。 */
 export function clearAuthSession(): void {
   authGeneration++;
+  for (const controller of inFlightRequests) controller.abort(new AuthSessionChangedError());
   memorySession = null;
   try {
     storage()?.removeItem(STORAGE_KEY);
@@ -149,9 +153,18 @@ export function subscribeAuthSession(
   sessionListeners.add(listener);
   const onStorage = (event: StorageEvent) => {
     if (event.key !== STORAGE_KEY && event.key !== null) return;
-    authGeneration++;
+    const previous = memorySession;
     memorySession = null;
-    listener(readStoredAuthSession());
+    const current = readStoredAuthSession();
+    if (
+      previous?.user.id !== current?.user.id ||
+      previous?.user.role !== current?.user.role ||
+      !current
+    ) {
+      authGeneration++;
+      for (const controller of inFlightRequests) controller.abort(new AuthSessionChangedError());
+    }
+    listener(current);
   };
   window.addEventListener('storage', onStorage);
   return () => {
@@ -161,9 +174,7 @@ export function subscribeAuthSession(
 }
 
 export function getAuthToken(): string | undefined {
-  const session = readStoredAuthSession();
-  if (!session || !isSessionUnexpired(session)) return undefined;
-  return session.accessToken;
+  return undefined;
 }
 
 export function setUnauthorizedHandler(handler: (() => void) | undefined): () => void {
@@ -176,30 +187,15 @@ export function setUnauthorizedHandler(handler: (() => void) | undefined): () =>
 /** 仅让发起请求时的会话失效；旧请求的 401 不得注销后来登录的新账户。 */
 export function notifyUnauthorized(expectedToken?: string | null): void {
   const currentToken = memorySession?.accessToken ?? readStoredAuthSession()?.accessToken ?? null;
-  if (expectedToken !== undefined && expectedToken !== currentToken) return;
+  if (expectedToken !== undefined && expectedToken !== null && expectedToken !== currentToken)
+    return;
   clearAuthSession();
   unauthorizedHandler?.();
 }
 
 function withAuthHeaders(init?: RequestInit): RequestInit {
   const headers = new Headers(init?.headers);
-  const token = getAuthToken();
-  if (token && !headers.has('authorization')) headers.set('authorization', `Bearer ${token}`);
-  return { ...init, headers };
-}
-
-function requestHref(input: RequestInfo | URL): string {
-  if (typeof input === 'string') return input;
-  if (input instanceof URL) return input.href;
-  return input.url;
-}
-
-function authApiBaseUrl(input: RequestInfo | URL): string {
-  try {
-    return new URL(requestHref(input), window.location.href).origin;
-  } catch {
-    return '';
-  }
+  return { ...init, headers, credentials: init?.credentials ?? 'include' };
 }
 
 /** 请求所属账户已改变；调用方不得把该请求重放到当前账户或接纳旧响应。 */
@@ -225,30 +221,46 @@ export async function apiFetch(
     expectedAuthGeneration?: number;
   } = {},
 ): Promise<Response> {
+  const generation = options.expectedAuthGeneration ?? getAuthSessionGeneration();
   /** 同步校验与发送之间不等待，防止续期期间切换账户后使用新账户令牌。 */
   function assertRequestSession() {
-    if (
-      options.expectedAuthGeneration !== undefined &&
-      options.expectedAuthGeneration !== getAuthSessionGeneration()
-    )
-      throw new AuthSessionChangedError();
+    if (generation !== getAuthSessionGeneration()) throw new AuthSessionChangedError();
   }
   assertRequestSession();
-  const href = requestHref(input);
+  const cached = readStoredAuthSession();
   if (
-    !getAuthToken() &&
-    readStoredAuthSession() &&
-    !/\/v1\/auth\/refresh\/?$/.test(href.split('?')[0] ?? '')
+    cached?.expiresAt &&
+    Date.parse(cached.expiresAt) - Date.now() < 60_000 &&
+    !options.skipUnauthorized
   ) {
-    const baseUrl = authApiBaseUrl(input);
-    if (baseUrl) await refreshAuthSession(baseUrl).catch(() => null);
+    const url = new URL(
+      typeof input === 'string' || input instanceof URL ? input : input.url,
+      window.location.href,
+    );
+    const prefix = url.pathname.indexOf('/v1/');
+    if (prefix >= 0 && !url.pathname.includes('/auth/')) {
+      await refreshAuthSession(`${url.origin}${url.pathname.slice(0, prefix)}`);
+      assertRequestSession();
+    }
   }
-  assertRequestSession();
   const requestInit = withAuthHeaders(init);
   const authorization = new Headers(requestInit.headers).get('authorization');
   const requestToken = authorization?.startsWith('Bearer ') ? authorization.slice(7) : null;
   const requestStartedAt = performance.now();
-  const response = await fetch(input, requestInit);
+  const controller = new AbortController();
+  inFlightRequests.add(controller);
+  let response: Response;
+  try {
+    response = await fetch(input, {
+      ...requestInit,
+      signal: init?.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal,
+    });
+  } catch (error) {
+    assertRequestSession();
+    throw error;
+  } finally {
+    inFlightRequests.delete(controller);
+  }
   assertRequestSession();
   synchronizeServerClock(response.headers?.get('x-server-time') ?? null, requestStartedAt);
   if (response.status === 401 && !options.skipUnauthorized) {
@@ -257,118 +269,57 @@ export async function apiFetch(
   return response;
 }
 
-/** 表示账户尚需邮箱验证，调用者应切换验证页而非当作登录成功。 */
-export class EmailVerificationRequired extends Error {
-  constructor(
-    public readonly email: string,
-    message = '请验证邮箱后继续',
-    public readonly deliveryFailed = false,
-  ) {
-    super(message);
-    this.name = 'EmailVerificationRequired';
-  }
-}
-
-/** 发送认证请求；外部取消抛 AbortError，十秒超时抛 TimeoutError，迟到结果不提交会话。 */
-async function authRequest(
-  baseUrl: string,
-  path: string,
-  body: Record<string, unknown>,
-  options: { signal?: AbortSignal } = {},
-): Promise<StoredAuthSession> {
-  if (options.signal?.aborted) throw abortError(options.signal, '认证请求已取消');
-  const generation = ++authGeneration;
-  const controller = new AbortController();
-  /** 首次中断原因固定不变，避免取消被晚到的超时覆盖；提交会话后不再接受取消。 */
-  let interruption: Error | undefined;
-  let committed = false;
-  let rejectInterruption!: (error: Error) => void;
-  const interrupted = new Promise<never>((_resolve, reject) => {
-    rejectInterruption = reject;
+/**
+ * 读取 Cookie 所属的当前用户；401 表示匿名，其他失败保留上下文。
+ *
+ * @param baseUrl Canvas API 地址。
+ * @returns 当前用户，未登录时返回 null。
+ * @throws 网络错误或非 401 HTTP 错误。
+ */
+export async function fetchCurrentSession(baseUrl: string): Promise<StoredAuthSession | null> {
+  const generation = getAuthSessionGeneration();
+  const response = await fetch(`${baseUrl.replace(/\/$/, '')}/v1/auth/me`, {
+    credentials: 'include',
+    signal: AbortSignal.timeout(10_000),
   });
-  const interrupt = (error: Error) => {
-    if (committed || interruption) return;
-    interruption = error;
-    controller.abort(error);
-    rejectInterruption(error);
-  };
-  const onAbort = () => interrupt(abortError(options.signal, '认证请求已取消'));
-  options.signal?.addEventListener('abort', onAbort, { once: true });
-  const timeout = setTimeout(() => {
-    const error = new Error('认证请求超时，请检查连接后重试');
-    error.name = 'TimeoutError';
-    interrupt(error);
-  }, 10_000);
-  try {
-    if (options.signal?.aborted) onAbort();
-    const request = (async () => {
-      if (interruption) throw interruption;
-      const response = await fetch(`${baseUrl.replace(/\/$/, '')}${path}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-      if (interruption) throw interruption;
-      const payload = (await response.json().catch(() => ({}))) as Partial<AuthTokenResponse> & {
-        error?: string;
-        code?: string;
-        delivery?: { status?: string };
-      };
-      if (interruption) throw interruption;
-      if (options.signal?.aborted) throw abortError(options.signal, '认证请求已取消');
-      if (generation !== authGeneration) throw new Error('账户状态已改变，请重新操作');
-      if (response.status === 202 || payload.code === 'email_verification_required') {
-        throw new EmailVerificationRequired(
-          String(body.email ?? ''),
-          payload.error,
-          payload.delivery?.status === 'failed',
-        );
-      }
-      if (!response.ok || typeof payload.accessToken !== 'string' || !payload.user)
-        throw new Error(payload.error ?? '认证请求失败');
-      committed = true;
-      return persistAuthSession(payload as AuthTokenResponse);
-    })();
-    return await Promise.race([request, interrupted]);
-  } catch (error) {
-    if (interruption) throw interruption;
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-    options.signal?.removeEventListener('abort', onAbort);
+  if (generation !== getAuthSessionGeneration()) throw new AuthSessionChangedError();
+  if (response.status === 401) {
+    return refreshAuthSession(baseUrl);
   }
+  const payload = (await response.json().catch(() => ({}))) as {
+    user?: AuthUser;
+    expiresAt?: string;
+    error?: string;
+  };
+  if (generation !== getAuthSessionGeneration()) throw new AuthSessionChangedError();
+  if (!response.ok || !payload.user) throw new Error(payload.error ?? '登录状态加载失败');
+  return persistAuthSession(
+    { user: payload.user, expiresAt: payload.expiresAt },
+    { renewal: true },
+  );
 }
 
-/** 登录并保存最新有效会话；旧两参数调用保持兼容，取消或超时不会清除已有身份。 */
-export function login(
-  baseUrl: string,
-  input: { email: string; password: string },
-  options: { signal?: AbortSignal } = {},
-): Promise<StoredAuthSession> {
-  return authRequest(baseUrl, '/v1/auth/login', input, options);
+/**
+ * 跳转 New API 授权入口；`next` 仅允许由服务端继续校验的站内路径。
+ *
+ * @param baseUrl Canvas API 地址。
+ * @param next 授权完成后的站内返回路径。
+ */
+export function startNewApiLogin(baseUrl: string, next = '/workspace'): void {
+  const params = new URLSearchParams({ next });
+  window.location.assign(`${baseUrl.replace(/\/$/, '')}/v1/auth/newapi/start?${params}`);
 }
 
-/** 注册并按服务端结果进入验证或保存会话；支持路由离开时取消且不接纳迟到响应。 */
-export function register(
-  baseUrl: string,
-  input: { email: string; password: string; displayName?: string },
-  options: { signal?: AbortSignal } = {},
-): Promise<StoredAuthSession> {
-  return authRequest(baseUrl, '/v1/auth/register', input, options);
-}
-
-/** 撤销当前会话并退出本地；请求失败时抛错供界面说明服务端撤销未确认。 */
+/** 退出当前 Canvas 会话并通知其他标签页清理缓存。 */
 export async function logout(baseUrl: string): Promise<void> {
-  const token = getAuthToken();
+  const userId = readAuthSession()?.user.id;
   clearAuthSession();
   try {
-    if (token) {
+    if (userId) {
       const response = await apiFetch(
         `${baseUrl.replace(/\/$/, '')}/v1/auth/logout`,
         {
           method: 'POST',
-          headers: { authorization: `Bearer ${token}` },
           signal: AbortSignal.timeout(10_000),
         },
         { skipUnauthorized: true },
@@ -376,70 +327,107 @@ export async function logout(baseUrl: string): Promise<void> {
       if (!response.ok && response.status !== 401) throw new Error('服务端会话撤销未确认');
     }
   } finally {
-    if ((memorySession?.accessToken ?? readAuthSession()?.accessToken) === token)
-      clearAuthSession();
+    if ((memorySession?.user.id ?? readAuthSession()?.user.id) === userId) clearAuthSession();
   }
 }
 
-/** 使用当前本地会话续期，访问令牌刚过期也会尝试；并发请求复用一次刷新。 */
+/** 同一标签页合并续期；令牌始终只存在 HttpOnly Cookie。 */
+let pendingRefresh: Promise<StoredAuthSession | null> | undefined;
+
+/** 上游复核成功才续期；不重发业务请求，身份变化后拒绝迟到的结果。 */
 export async function refreshAuthSession(baseUrl: string): Promise<StoredAuthSession | null> {
-  const session = readStoredAuthSession();
-  const userId = session?.user.id;
-  const token = session?.accessToken;
-  if (!token) return null;
-  if (refreshRequest?.token === token) return refreshRequest.promise;
-  const generation = authGeneration;
-  const promise = (async () => {
+  if (pendingRefresh) return pendingRefresh;
+  const generation = getAuthSessionGeneration();
+  const before = readStoredAuthSession();
+  /** 同源标签共享 HttpOnly Cookie，必须串行轮换，避免旧 Cookie 的 401 清掉新会话。 */
+  const renew = async (): Promise<StoredAuthSession | null> => {
+    if (generation !== getAuthSessionGeneration()) throw new AuthSessionChangedError();
+    let stored: unknown = null;
+    try {
+      const raw = storage()?.getItem(STORAGE_KEY);
+      stored = raw ? JSON.parse(raw) : null;
+    } catch {
+      // 存储被禁用时仍可通过服务端 Cookie 校验当前会话。
+    }
+    if (isAuthSession(stored) && before && stored.user.id !== before.user.id)
+      throw new AuthSessionChangedError();
+    if (
+      isAuthSession(stored) &&
+      stored.user.id === before?.user.id &&
+      stored.expiresAt !== before?.expiresAt &&
+      stored.expiresAt &&
+      Date.parse(stored.expiresAt) > Date.now() + 60_000
+    ) {
+      return persistAuthSession(stored, { renewal: true });
+    }
     const response = await fetch(`${baseUrl.replace(/\/$/, '')}/v1/auth/refresh`, {
       method: 'POST',
-      headers: { authorization: `Bearer ${token}` },
+      credentials: 'include',
       signal: AbortSignal.timeout(10_000),
     });
-    if (
-      generation !== authGeneration ||
-      (memorySession?.accessToken ?? readStoredAuthSession()?.accessToken) !== token
-    )
-      return readAuthSession();
+    if (generation !== getAuthSessionGeneration()) throw new AuthSessionChangedError();
     if (response.status === 401) {
-      notifyUnauthorized(token);
+      // 不支持 Web Locks 的环境也只重读当前 Cookie，绝不重发生成或其它业务写请求。
+      const restored = await fetch(`${baseUrl.replace(/\/$/, '')}/v1/auth/me`, {
+        credentials: 'include',
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (generation !== getAuthSessionGeneration()) throw new AuthSessionChangedError();
+      if (restored.ok) {
+        const current = (await restored.json()) as StoredAuthSession;
+        if (generation !== getAuthSessionGeneration()) throw new AuthSessionChangedError();
+        if (!isAuthSession(current)) throw new Error('登录状态加载失败');
+        return persistAuthSession(current, { renewal: true });
+      }
+      if (restored.status !== 401) throw new Error('会话续期暂不可用');
+      clearAuthSession();
       return null;
     }
-    if (!response.ok) throw new Error(`会话续期失败（${response.status}）`);
-    const payload = (await response.json()) as AuthTokenResponse;
-    if (
-      generation !== authGeneration ||
-      (memorySession?.accessToken ?? readStoredAuthSession()?.accessToken) !== token
-    )
-      return readAuthSession();
-    if (!isAuthSession(payload) || payload.user.id !== userId) throw new Error('会话续期响应无效');
-    return persistAuthSession(payload, { renewal: true });
-  })();
-  refreshRequest = { token, promise };
+    const payload = (await response.json()) as {
+      user?: AuthUser;
+      expiresAt?: string;
+      error?: string;
+    };
+    if (generation !== getAuthSessionGeneration()) throw new AuthSessionChangedError();
+    if (!response.ok || !payload.user) throw new Error(payload.error ?? '会话续期失败');
+    return persistAuthSession(
+      { user: payload.user, expiresAt: payload.expiresAt },
+      { renewal: true },
+    );
+  };
+  pendingRefresh =
+    typeof navigator !== 'undefined' && navigator.locks
+      ? navigator.locks
+          .request('multimodal-canvas:session-refresh', renew)
+          .then((session) => session)
+      : renew();
   try {
-    return await promise;
+    return await pendingRefresh;
   } finally {
-    if (refreshRequest?.promise === promise) refreshRequest = null;
+    pendingRefresh = undefined;
   }
 }
 
-/** 每 30 秒、焦点恢复、标签页重新可见时检查续期；到期前五分钟刷新。 */
+/** Cookie 会话由服务端控制；焦点恢复时只重读用户，确保账号切换及时生效。 */
 export function maintainAuthSession(baseUrl: string, onError: (error: Error) => void): () => void {
   let active = true;
   const check = () => {
-    const session = readStoredAuthSession();
-    if (!session) return;
-    if (Date.parse(session.expiresAt) - Date.now() > AUTH_REFRESH_LEAD_MS) return;
-    void refreshAuthSession(baseUrl).catch((error: unknown) => {
+    const expiresAt = readStoredAuthSession()?.expiresAt;
+    const restore =
+      expiresAt && Date.parse(expiresAt) - Date.now() < 120_000
+        ? refreshAuthSession(baseUrl)
+        : fetchCurrentSession(baseUrl);
+    void restore.catch((error: unknown) => {
       if (active) onError(error instanceof Error ? error : new Error('会话续期失败'));
     });
   };
   const onVisibility = () => {
     check();
   };
-  const interval = window.setInterval(check, 30_000);
   window.addEventListener('focus', check);
   window.addEventListener('pageshow', check);
   document.addEventListener('visibilitychange', onVisibility);
+  const interval = window.setInterval(check, 60_000);
   check();
   return () => {
     active = false;

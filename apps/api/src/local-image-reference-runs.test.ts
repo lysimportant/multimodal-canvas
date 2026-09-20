@@ -1,15 +1,15 @@
+import { MemoryAiSettingsStore } from './fixtures/memory-ai-settings';
 import { NewApiProvider, NewApiVideoProvider } from '@multimodal-canvas/providers';
 import type { CanvasDocument, RunRecord } from '@multimodal-canvas/domain';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { buildApp } from './app';
+import { buildApp } from './fixtures/test-app';
 import { MemoryAssetStore } from './assets';
 import { MemoryAuthStore } from './auth-store';
 import { AuthService } from './auth-service';
 import { createNewApiRunExecutor } from './newapi-run-executor';
 import { MemoryProjectStore } from './projects';
 import { MemoryRunService } from './runs';
-import { AiSettingsStore } from './settings';
 
 /** 等待内存执行器终态，失败时保留 Provider 错误以便诊断。 */
 async function waitForRun(service: MemoryRunService, id: string): Promise<RunRecord> {
@@ -44,10 +44,9 @@ describe('本地图片执行与 Provider 适配器', () => {
       store: authStore,
       jwtSecret: 'synthetic-local-image-jwt-secret',
     });
-    const session = await auth.register({
-      email: 'multiple-images@example.test',
-      password: 'synthetic-test-password',
-    });
+    const session = await auth.issueToken(
+      await authStore.createUser({ email: 'multiple-images@example.test' }),
+    );
     const ownerId = session.user.id;
     const project = await projectStore.create({ name: '冻结多图引用' }, { ownerId });
     const firstVersion = Buffer.from('first-image-version-one');
@@ -68,7 +67,7 @@ describe('本地图片执行与 Provider 适配器', () => {
       mimeType: 'image/png',
       content: otherImage,
     });
-    const settingsStore = new AiSettingsStore('local-multiple-images');
+    const settingsStore = new MemoryAiSettingsStore('local-multiple-images');
     settingsStore.update({
       baseUrl: 'https://newapi.example.test/v1',
       apiKey: 'synthetic-local-image-key',
@@ -205,10 +204,9 @@ describe('本地图片执行与 Provider 适配器', () => {
       store: authStore,
       jwtSecret: 'synthetic-local-image-jwt-secret',
     });
-    const session = await auth.register({
-      email: 'local-image@example.test',
-      password: 'synthetic-test-password',
-    });
+    const session = await auth.issueToken(
+      await authStore.createUser({ email: 'local-image@example.test' }),
+    );
     const ownerId = session.user.id;
     const project = await projectStore.create({ name: '本地图片编辑' }, { ownerId });
     const original = Buffer.from('original-png-version');
@@ -220,7 +218,7 @@ describe('本地图片执行与 Provider 适配器', () => {
       content: original,
     });
     await assetStore.createVersion(asset.id, { content: Buffer.from('newer-version') });
-    const settingsStore = new AiSettingsStore('local-image-reference');
+    const settingsStore = new MemoryAiSettingsStore('local-image-reference');
     settingsStore.update({
       baseUrl: 'https://newapi.example.test/v1',
       apiKey: 'synthetic-local-image-key',

@@ -8,6 +8,14 @@ const project = {
   createdAt: '2026-09-16T10:00:00.000Z',
   updatedAt: '2026-09-16T10:00:00.000Z',
 };
+/** 合成账号和分组凭据只表达路由身份，不包含可用密钥。 */
+const fixtureUser = {
+  id: 'acceptance-user',
+  displayName: '验收用户',
+  role: 'admin',
+  createdAt: project.createdAt,
+};
+const fixtureCredentialId = 'group-credential-alpha';
 /** 长提示词同时包含角色、换行、中文和不可断英文段，用于检查复制及溢出。 */
 const promptText = `Describe the complete scene without inventing details.\n${'窗前的书桌上放着打开的笔记，午后的阳光落在纸页上。'.repeat(70)}\n${'long-unbroken-reference-'.repeat(40)}`;
 /** 结果版本对应的服务端记录；当前编辑框故意使用不同内容。 */
@@ -109,27 +117,17 @@ async function installFixture(page: Page) {
   let defaults: Record<string, unknown> = {};
   const writes: Array<{ path: string; body: Record<string, unknown> }> = [];
   const errors: string[] = [];
-  const credentials = [
-    {
-      id: 'active-credential',
-      version: 1,
-      baseUrl: 'https://mock.example.test/v1',
-      keyFingerprint: 'active-fingerprint',
-      active: true,
-      createdAt: project.createdAt,
-      defaultModels: {} as Record<string, unknown>,
-    },
-  ];
   const settings = {
-    baseUrl: credentials[0]!.baseUrl,
-    configured: true,
-    keyFingerprint: credentials[0]!.keyFingerprint,
     defaultModels: {} as Record<string, unknown>,
+    timeoutMs: 900_000,
   };
   const models = ['text', 'image', 'audio', 'video'].map((mediaType) => ({
     id: `mock-${mediaType}`,
     name: `Mock ${mediaType}`,
     mediaTypes: [mediaType],
+    group: 'alpha',
+    credentialId: fixtureCredentialId,
+    available: true,
   }));
   const run = {
     id: promptRecord.runId,
@@ -186,11 +184,9 @@ async function installFixture(page: Page) {
     localStorage.setItem(
       'multimodal-canvas:auth-session',
       JSON.stringify({
-        accessToken: 'synthetic-next-acceptance',
-        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
         user: {
           id: 'acceptance-user',
-          email: 'acceptance@example.test',
+          displayName: '验收用户',
           role: 'admin',
           createdAt: '2026-09-16T10:00:00.000Z',
         },
@@ -202,6 +198,8 @@ async function installFixture(page: Page) {
     const url = new URL(request.url());
     const path = url.pathname;
     const method = request.method();
+    if (method === 'GET' && path === '/v1/auth/me')
+      return json(route, { user: fixtureUser, expiresAt: '2099-01-01T00:00:00.000Z' });
     if (path === '/v1/prompt-skills') return json(route, { skills: [] });
     if (method !== 'GET') writes.push({ path, body: request.postDataJSON() ?? {} });
     if (path.endsWith('/events'))
@@ -224,7 +222,7 @@ async function installFixture(page: Page) {
     if (path.endsWith('/reverse-prompts') && method === 'GET') {
       return json(route, {
         analysis: null,
-        defaultModel: { modelAlias: 'text-model', credentialId: 'active-credential' },
+        defaultModel: { modelAlias: 'text-model', credentialId: fixtureCredentialId },
       });
     }
     if (path.includes('/request-prompts')) {
@@ -325,51 +323,41 @@ async function installFixture(page: Page) {
           : [],
       });
     }
-    if (path === '/v1/settings/ai/credentials') return json(route, { credentials });
-    if (/\/credentials\/[^/]+\/defaults$/.test(path)) {
-      const credential = credentials.find((entry) => entry.id === path.split('/')[5]);
-      if (credential)
-        credential.defaultModels = { ...credential.defaultModels, ...request.postDataJSON() };
-      return json(route, { credentials });
-    }
+    if (method === 'GET' && path === '/v1/account/newapi')
+      return json(route, {
+        account: {
+          issuer: 'https://newapi.example.test',
+          externalUserId: 'acceptance-external-user',
+          displayName: fixtureUser.displayName,
+          status: 'active',
+          syncedAt: project.updatedAt,
+          groups: [
+            {
+              group: 'alpha',
+              credentialId: fixtureCredentialId,
+              status: 'ready',
+              modelCount: models.length,
+            },
+          ],
+          links: { models: 'https://newapi.example.test/pricing' },
+        },
+      });
     if (path === '/v1/settings/ai') {
       if (method === 'PATCH') {
         const body = request.postDataJSON();
-        if (body.activate === false) {
-          credentials.push({
-            id: 'independent-credential',
-            version: 2,
-            baseUrl: body.baseUrl,
-            keyFingerprint: 'independent-fingerprint',
-            active: false,
-            createdAt: project.createdAt,
-            defaultModels: {},
-          });
-          return json(route, {
-            settings,
-            credentials,
-            createdCredentialId: 'independent-credential',
-          });
-        }
         if (body.defaultModels)
           settings.defaultModels = { ...settings.defaultModels, ...body.defaultModels };
+        if (typeof body.timeoutMs === 'number') settings.timeoutMs = body.timeoutMs;
       }
-      return json(route, { settings, credentials });
+      return json(route, { settings });
     }
-    if (path === '/v1/models' || path === '/v1/settings/ai/models/refresh') {
-      const credentialId =
-        url.searchParams.get('credentialId') ??
-        (method === 'POST' ? request.postDataJSON()?.credentialId : undefined) ??
-        'active-credential';
-      return json(route, { models: models.map((model) => ({ ...model, credentialId })) });
-    }
+    if (method === 'GET' && path === '/v1/models') return json(route, { models });
     errors.push(`未声明的 Mock 接口：${method} ${path}`);
     return json(route, { error: '未声明的验收接口' }, 404);
   });
   return {
     errors,
     writes,
-    credentials,
     records,
     settings,
     canvas: () => canvas,
@@ -463,32 +451,28 @@ async function expectReadableText(locator: Locator) {
     .toBeGreaterThanOrEqual(4.5);
 }
 
-test('设置：宽版四类默认及独立连接保存后保留全局活动 Key', async ({ page }) => {
+test('设置：宽版展示账号分组并保存四类项目默认', async ({ page }) => {
   const fixture = await installFixture(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   await openCanvas(page);
   await page.getByRole('button', { name: '打开设置', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: 'AI 连接', exact: true });
+  const dialog = page.getByRole('dialog', { name: 'New API 与模型', exact: true });
   await expect(dialog).toBeVisible();
   expect((await dialog.boundingBox())!.width).toBeGreaterThan(900);
+  await expect(dialog.getByRole('cell', { name: 'alpha' })).toBeVisible();
+  await expect(dialog.getByText(/Base URL|API Key|独立连接/)).toHaveCount(0);
   await dialog.getByRole('tab', { name: '节点默认', exact: true }).click();
-  await expect(dialog.locator('.settings-default-row')).toHaveCount(4);
+  await expect(dialog.locator('.settings-default-grid .settings-field')).toHaveCount(5);
   await dialog.getByRole('button', { name: '当前项目', exact: true }).click();
-  await dialog.getByRole('combobox', { name: '文字生成默认模型' }).fill('mock-text');
-  await page.keyboard.press('Enter');
-  await expect.poll(() => fixture.defaults().text).toBeTruthy();
-  await dialog.getByRole('button', { name: '配置图片生成连接' }).click();
-  const key = dialog.getByRole('textbox', { name: '图片生成独立连接 Key', exact: true });
-  await expect(key).toHaveAttribute('type', 'password');
   await dialog
-    .getByRole('textbox', { name: '图片生成独立连接 Base URL' })
-    .fill('https://independent.example.test/v1');
-  await key.fill('synthetic-independent-key');
-  await dialog.getByRole('button', { name: '保存连接', exact: true }).click();
-  await expect.poll(() => fixture.credentials.length).toBe(2);
-  expect(fixture.credentials.find((entry) => entry.active)?.id).toBe('active-credential');
-  expect(fixture.writes.find((entry) => entry.body.apiKey)?.body.activate).toBe(false);
-  await expect(key).toHaveValue('');
+    .getByRole('combobox', { name: '文字' })
+    .selectOption(JSON.stringify([fixtureCredentialId, 'mock-text']));
+  await dialog.getByRole('button', { name: '保存', exact: true }).click();
+  await expect.poll(() => fixture.defaults().text).toBeTruthy();
+  expect(fixture.defaults().text).toEqual({
+    modelAlias: 'mock-text',
+    credentialId: fixtureCredentialId,
+  });
   expect(fixture.errors).toEqual([]);
 });
 
@@ -614,7 +598,7 @@ test('连线：五种路径与六种特效独立切换并在刷新后恢复', as
   expect(fixture.errors).toEqual([]);
 });
 
-test('联合流程：独立连接与类型默认、生成、摘要、分组、清理、撤销及刷新', async ({ page }) => {
+test('联合流程：分组模型默认、生成、摘要、分组、清理、撤销及刷新', async ({ page }) => {
   const fixture = await installFixture(page);
   await page.setViewportSize({ width: 1920, height: 1080 });
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
@@ -622,21 +606,14 @@ test('联合流程：独立连接与类型默认、生成、摘要、分组、�
   await page.getByRole('button', { name: '新建分组', exact: true }).click();
   await expect(page.locator('.canvas-group')).toHaveCount(2);
   await page.getByRole('button', { name: '打开设置', exact: true }).click();
-  const settings = page.getByRole('dialog', { name: 'AI 连接', exact: true });
+  const settings = page.getByRole('dialog', { name: 'New API 与模型', exact: true });
   await settings.getByRole('tab', { name: '节点默认', exact: true }).click();
   await settings.getByRole('button', { name: '当前项目', exact: true }).click();
-  await settings.getByRole('combobox', { name: '文字生成默认模型' }).fill('mock-text');
-  await page.keyboard.press('Enter');
+  await settings
+    .getByRole('combobox', { name: '文字' })
+    .selectOption(JSON.stringify([fixtureCredentialId, 'mock-text']));
+  await settings.getByRole('button', { name: '保存', exact: true }).click();
   await expect.poll(() => fixture.defaults().text).toBeTruthy();
-  await settings.getByRole('button', { name: '配置图片生成连接' }).click();
-  await settings
-    .getByRole('textbox', { name: '图片生成独立连接 Base URL' })
-    .fill('https://independent.example.test/v1');
-  await settings
-    .getByRole('textbox', { name: '图片生成独立连接 Key', exact: true })
-    .fill('synthetic-independent-key');
-  await settings.getByRole('button', { name: '保存连接', exact: true }).click();
-  await expect.poll(() => fixture.credentials.length).toBe(2);
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: '新建文字生成节点' }).click();
   await expect(page.getByRole('combobox', { name: '模型：Mock text' })).toBeVisible();
@@ -651,7 +628,7 @@ test('联合流程：独立连接与类型默认、生成、摘要、分组、�
   const created = await (await response).json();
   expect(fixture.writes.find((entry) => entry.path.endsWith('/runs'))?.body).toMatchObject({
     modelAlias: 'mock-text',
-    credentialId: 'active-credential',
+    credentialId: fixtureCredentialId,
   });
   const node = page.locator(`.react-flow__node[data-id="${created.run.targetNodeId}"]`);
   await expect(node.getByRole('img', { name: '运行成功' })).toBeVisible();
@@ -692,7 +669,7 @@ test('联合流程：独立连接与类型默认、生成、摘要、分组、�
   const saved = structuredClone(fixture.canvas());
   expect(saved.nodes.find((entry) => entry.id === created.run.targetNodeId)?.data).toMatchObject({
     modelAlias: 'mock-text',
-    credentialId: 'active-credential',
+    credentialId: fixtureCredentialId,
   });
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(page.locator('.react-flow__node')).toHaveCount(4);
@@ -703,7 +680,6 @@ test('联合流程：独立连接与类型默认、生成、摘要、分组、�
   await expect(prompt.locator('.request-prompt-summary')).toHaveText(summary);
   await expect(prompt.locator('.node-duration-badge')).toHaveText('12.4秒');
   expect(fixture.canvas().groups).toEqual(saved.groups);
-  expect(fixture.credentials.find((entry) => entry.active)?.id).toBe('active-credential');
   expect(fixture.errors).toEqual([]);
 });
 
@@ -871,7 +847,7 @@ for (const viewport of [
       await page.keyboard.press('Escape');
       await page.screenshot({ path: testInfo.outputPath('canvas.png') });
       await page.getByRole('button', { name: '打开设置', exact: true }).click();
-      const settings = page.getByRole('dialog', { name: 'AI 连接', exact: true });
+      const settings = page.getByRole('dialog', { name: 'New API 与模型', exact: true });
       await settings.getByRole('tab', { name: '节点默认', exact: true }).click();
       const bounds = await settings.boundingBox();
       expect(bounds!.x).toBeGreaterThanOrEqual(0);
@@ -879,8 +855,8 @@ for (const viewport of [
       expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport.width);
       expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(viewport.height);
       await page.screenshot({ path: testInfo.outputPath('settings.png') });
-      await expectReadableText(settings.locator('.settings-default-type').first());
-      await expectReadableText(settings.getByRole('heading', { name: '节点默认', exact: true }));
+      await expectReadableText(settings.locator('.settings-field > span').first());
+      await expectReadableText(settings.getByRole('heading', { name: '节点默认模型' }));
       await page.keyboard.press('Escape');
       const node = page.locator('.react-flow__node[data-id="generated-text"]');
       await node.hover();

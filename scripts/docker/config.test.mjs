@@ -34,7 +34,7 @@ const composeEnvironment = {
   MC_HTTP_PORT: '8080',
   MC_VIDEO_CONTRACT: 'newapi-video-v1',
   MC_PUBLIC_ORIGIN: '',
-  MC_APP_PUBLIC_URL: '',
+  MC_NEW_API_ISSUER: '',
 };
 /** Docker Compose 自己解析 YAML，避免自行解析字符串或忽略继承后的配置。 */
 const configuration = JSON.parse(
@@ -46,7 +46,7 @@ const configuration = JSON.parse(
 );
 
 test('包含完整应用、持久化设施和一次性初始化', () => {
-  assert.equal(configuration.services.api.environment.APP_PUBLIC_URL, 'http://localhost:8080');
+  assert.equal(configuration.services.api.environment.CANVAS_WEB_URL, 'http://localhost:8080');
   assert.deepEqual(Object.keys(configuration.services).sort(), [
     'api',
     'initialize',
@@ -76,16 +76,16 @@ test('包含完整应用、持久化设施和一次性初始化', () => {
   }
 });
 
-test('API 默认从根目录 email.txt 注入邮件配置，并支持外部文件覆盖', () => {
-  for (const field of [
-    'EMAIL_HOST',
-    'EMAIL_PORT',
-    'EMAIL_SECURE',
-    'EMAIL_USER',
-    'EMAIL_PASS',
-    'EMAIL_FROM',
-  ])
-    assert.equal(typeof configuration.services.api.environment[field], 'string');
+test('唯一登录配置传入运行容器且不注入邮件或手工 Key', () => {
+  for (const service of ['api', 'worker']) {
+    const environment = configuration.services[service].environment;
+    assert.equal(environment.NEW_API_CLIENT_ID, 'canvas');
+    assert.equal(environment.NEW_API_INSTANCE_ID, 'main');
+    assert.equal(environment.NEW_API_REDIRECT_URI, 'http://localhost:8080/v1/auth/newapi/callback');
+    assert.equal(environment.RUN_QUEUE_NAME, 'canvas-accounts-v1');
+    assert.ok(!environment.EMAIL_PASS);
+    assert.ok(!environment.NEW_API_API_KEY);
+  }
 });
 
 test('只将 Web 发布到宿主回环，不暴露数据库、队列、对象存储或 API', () => {
@@ -191,7 +191,7 @@ test('Linux server profile 使用 HTTPS 来源和独立持久化证书，不改�
     ),
   );
   assert.equal(server.services.api.environment.CORS_ORIGIN, 'https://canvas.example.test');
-  assert.equal(server.services.api.environment.APP_PUBLIC_URL, 'https://canvas.example.test');
+  assert.equal(server.services.api.environment.CANVAS_WEB_URL, 'https://canvas.example.test');
   assert.equal(server.services.gateway.environment.MC_DOMAIN, 'canvas.example.test');
   assert.equal(server.services.gateway.restart, 'unless-stopped');
   assert.ok(server.services.gateway.ports.some((port) => port.published === '443'));
