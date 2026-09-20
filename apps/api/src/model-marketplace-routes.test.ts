@@ -53,6 +53,7 @@ function fixture(configured = true) {
     listPricing: vi.fn(async () => ({ items: [], page: 1, pageSize: 30, total: 0 })),
     createPricing: vi.fn(async () => ({ id: randomUUID(), currency: 'CNY' })),
     sync: vi.fn(async () => ({ id: randomUUID(), status: 'succeeded' })),
+    syncConnections: vi.fn(async () => ({ connections: [] })),
     getSync: vi.fn(async () => null),
   };
   registerModelMarketplaceRoutes(app, {
@@ -63,6 +64,18 @@ function fixture(configured = true) {
 }
 
 describe('model marketplace routes', () => {
+  it('管理员可同步指定或全部连接，禁止额外字段或无效凭据 ID', async () => {
+    const { app, service } = fixture();
+    const url = '/v1/admin/model-marketplace/connections/sync';
+    const headers = { 'x-test-role': 'admin' };
+    const credentialId = randomUUID();
+    for (const payload of [{}, { credentialId }]) {
+      expect((await app.inject({ method: 'POST', url, headers, payload })).statusCode).toBe(200);
+      expect(service.syncConnections).toHaveBeenLastCalledWith(payload.credentialId, actorId);
+    }
+    for (const payload of [{ credentialId: 'bad' }, { actorId }, { apiKey: 'synthetic' }])
+      expect((await app.inject({ method: 'POST', url, headers, payload })).statusCode).toBe(400);
+  });
   it('管理员删除返回空 204，路径与业务错误明确返回', async () => {
     const { app, service } = fixture();
     const id = randomUUID();
@@ -99,6 +112,7 @@ describe('model marketplace routes', () => {
       ['POST', '/v1/admin/pricing-versions'],
       ['GET', `/v1/admin/model-marketplace/sync?credentialId=${randomUUID()}`],
       ['POST', '/v1/admin/model-marketplace/sync'],
+      ['POST', '/v1/admin/model-marketplace/connections/sync'],
     ] as const;
     for (const [method, url] of routes) {
       expect((await app.inject({ method, url })).statusCode).toBe(401);

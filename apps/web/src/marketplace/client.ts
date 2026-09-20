@@ -38,6 +38,7 @@ export function marketplaceSelection(model: MarketplaceModel) {
   return {
     id: model.modelAlias ?? model.id,
     platformModelId: model.id,
+    connection: model.connection,
     name: model.name,
     mediaTypes: [model.mediaType],
     capabilities: model.capabilities,

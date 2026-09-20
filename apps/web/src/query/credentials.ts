@@ -140,6 +140,13 @@ export async function replaceAiCredentials(
     queryClient.setQueryData(queryKey, []);
   }
   queryClient.setQueryData(aiCredentialsQueryKey, credentials);
+  if (removed.length) {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['platform-model-catalog'] }),
+      queryClient.invalidateQueries({ queryKey: ['marketplace'] }),
+      queryClient.invalidateQueries({ queryKey: ['management'] }),
+    ]);
+  }
   await queryClient.invalidateQueries({
     queryKey: aiCredentialsQueryKey,
     exact: true,

@@ -133,6 +133,7 @@ function fixture() {
         version: 1,
         baseUrl: 'https://synthetic.invalid/v1',
         encryptedApiKey: 'synthetic-encrypted-key',
+        keyFingerprint: 'synthetic-fingerprint',
       })),
     },
     modelCatalogSync: {
@@ -157,6 +158,16 @@ function fixture() {
     ),
   };
   const settings = {
+    listCredentials: vi.fn(async () => [
+      {
+        id: rows.binding.credentialId,
+        baseUrl: 'https://synthetic.invalid/v1',
+        keySuffix: 'test-key',
+        keyFingerprint: 'synthetic-fingerprint',
+        active: true,
+        updatedAt: past.toISOString(),
+      },
+    ]),
     getProviderCredentials: vi.fn(async () => ({
       baseUrl: 'https://synthetic.invalid/v1',
       apiKey: 'synthetic-bridge-key',
@@ -249,11 +260,14 @@ describe('PrismaModelMarketplace', () => {
     for (const secret of [
       'credentialId',
       'encryptedApiKey',
-      'synthetic.invalid',
+      'https://synthetic.invalid',
+      'synthetic-fingerprint',
+      rows.binding.credentialId,
       'verificationEvidence',
       'cost',
     ])
       expect(encoded).not.toContain(secret);
+    expect(page.items[0]?.connection?.label).toBe('synthetic.invalid · Key …test-key');
   });
 
   it('没有候选目录也可手工建立草稿，未定价不能上架', async () => {
@@ -663,6 +677,104 @@ describe('PrismaModelMarketplace', () => {
     expect(failed.status).toBe('failed');
     expect(failed.candidates).toEqual(result.candidates);
     expect(JSON.stringify(failed)).not.toContain('private response');
+  });
+
+  it('批量同步独立保存连接且只读取每条目录一次，保留失败原因和同名模型身份', async () => {
+    const f = fixture();
+    const first = (await f.settings.listCredentials())[0]!;
+    const second = { ...first, id: randomUUID(), active: false, keySuffix: 'second08' };
+    const third = { ...first, id: randomUUID(), active: false, keySuffix: 'failed08' };
+    f.settings.listCredentials.mockResolvedValue([first, second, third]);
+    f.database.platformModel.findUnique.mockResolvedValue(null as never);
+    let reads = 0;
+    f.pricingFetch.mockImplementation(async () => {
+      reads++;
+      if (reads === 3) throw new Error('private upstream body');
+      const catalog = managedCatalog();
+      return Response.json({
+        ...catalog,
+        models: [
+          ...catalog.models,
+          {
+            ...catalog.models[0],
+            id: 'unavailable',
+            available: false,
+            unavailable_reason: '缺少调用合同',
+          },
+        ],
+      });
+    });
+    const result = await f.service.syncConnections(undefined, actorId);
+    expect(reads).toBe(3);
+    expect(result.connections.map((item) => item.published)).toEqual([1, 1, 0]);
+    expect(result.connections[0]?.issues).toEqual([
+      { modelId: 'unavailable', message: '缺少调用合同' },
+    ]);
+    expect(result.connections[2]?.issues[0]?.message).toContain('New API 联动接口不可用');
+    const ids = f.database.platformModel.create.mock.calls.map(([{ data }]) => data.id);
+    expect(new Set(ids).size).toBe(2);
+    expect(
+      f.database.modelBinding.create.mock.calls.map(([{ data }]) => data.credentialId),
+    ).toEqual([first.id, second.id]);
+    expect(JSON.stringify(result)).not.toContain('private upstream body');
+  });
+
+  it('自动同步保留人工价格、暂停和删除状态，数据库故障不伪装为成功', async () => {
+    const f = fixture();
+    f.database.platformModel.findUnique.mockResolvedValueOnce(null as never);
+    f.pricingFetch.mockImplementation(async () => Response.json(managedCatalog()));
+    const credentialId = f.rows.binding.credentialId;
+    expect((await f.service.syncConnections(credentialId, actorId)).connections[0]?.published).toBe(
+      1,
+    );
+    const id = f.database.platformModel.create.mock.calls[0]![0].data.id!;
+    await f.service.createPricing({ platformModelId: id, rule, activate: true }, actorId);
+    await f.service.updateModel(id, { status: 'paused', name: '人工名称' });
+    const repeated = await f.service.syncConnections(credentialId, actorId);
+    expect(repeated.connections[0]).toMatchObject({ published: 0, retained: 1, issues: [] });
+    expect(await f.service.getAdmin(id)).toMatchObject({
+      name: '人工名称',
+      status: 'paused',
+      pricing: { rule: { unit: 'per_call' } },
+    });
+    expect(f.database.platformModel.create).toHaveBeenCalledTimes(1);
+    await f.service.deleteModel(id);
+    expect(
+      (await f.service.syncConnections(credentialId, actorId)).connections[0]?.issues[0]?.message,
+    ).toContain('已删除');
+    f.database.modelCatalogSync.create.mockRejectedValueOnce(new Error('database unavailable'));
+    await expect(f.service.syncConnections(credentialId, actorId)).rejects.toThrow(
+      'database unavailable',
+    );
+  });
+
+  it('全局切换折叠旧凭据版本后仍显示原 Key 尾号，平台绑定不改变', async () => {
+    const f = fixture();
+    const original = (await f.settings.listCredentials())[0]!;
+    const before = await f.service.getAdmin(f.rows.model.id);
+    f.settings.listCredentials.mockResolvedValue([{ ...original, id: randomUUID() }]);
+    const after = await f.service.getAdmin(f.rows.model.id);
+    expect(after.connection).toEqual(before.connection);
+    expect(after.connection?.label).toContain('test-key');
+    expect(after.activeBindingId).toBe(before.activeBindingId);
+  });
+
+  it('公开来源去除地址认证、路径与查询字段，同一连接跨页面身份稳定', async () => {
+    const f = fixture();
+    const credential = (await f.settings.listCredentials())[0]!;
+    f.settings.listCredentials.mockResolvedValue([
+      {
+        ...credential,
+        baseUrl:
+          'https://hidden-user:hidden-password@synthetic.invalid/private-path?key=hidden-query',
+      },
+    ]);
+    const page = await f.service.listPublished(marketplaceListSchema.parse({}));
+    expect(page.items[0]?.connection?.label).toBe('synthetic.invalid · Key …test-key');
+    expect(JSON.stringify(page)).not.toMatch(/hidden-|private-path|synthetic-fingerprint/);
+    expect((await f.service.getAdmin(f.rows.model.id)).connection).toEqual(
+      page.items[0]?.connection,
+    );
   });
 
   it('托管导入只接收托管快照，重新校验 Key 权限后自动建立价格与绑定', async () => {

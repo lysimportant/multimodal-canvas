@@ -719,6 +719,14 @@ describe('公开账务 DTO', () => {
       pricing: null,
     };
     expect(marketplaceModelSchema.safeParse(model).success).toBe(true);
+    const connection = { id: 'public-connection', label: 'example.test · Key …test0008' };
+    expect(marketplaceModelSchema.safeParse({ ...model, connection }).success).toBe(true);
+    expect(
+      marketplaceModelSchema.safeParse({
+        ...model,
+        connection: { ...connection, apiKey: 'secret' },
+      }).success,
+    ).toBe(false);
     for (const internal of [
       { credentialId: 'private' },
       { providerCost: '1' },

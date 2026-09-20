@@ -12,6 +12,7 @@ import {
   modelCatalogQueryKeyFor,
   useModelCatalogQuery,
   useRefreshModelCatalog,
+  usePlatformModelCatalogQuery,
 } from './models';
 
 afterEach(() => {
@@ -21,6 +22,51 @@ afterEach(() => {
 });
 
 describe('model catalog query', () => {
+  it('普通用户目录合并所有分页与连接的同名商品，只保留公开来源', async () => {
+    const entry = {
+      name: '同名模型',
+      modelAlias: 'same-model',
+      description: '',
+      mediaType: 'text',
+      specifications: {},
+      capabilities: {},
+      limitations: {},
+      pricing: null,
+      availability: 'available',
+    };
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      expect(url.pathname).toBe('/v1/model-marketplace');
+      const suffix = url.searchParams.get('page') === '1' ? 'a' : 'b';
+      return Response.json({
+        items: [
+          {
+            ...entry,
+            id: `product-${suffix}`,
+            connection: { id: `source-${suffix}`, label: `Key …${suffix}0000008` },
+          },
+        ],
+        total: 2,
+      });
+    });
+    vi.stubGlobal('fetch', fetcher);
+    const client = createAppQueryClient();
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(() => usePlatformModelCatalogQuery('ordinary-user'), { wrapper });
+    await waitFor(() => expect(result.current.data).toHaveLength(2));
+    expect(result.current.data?.map((model) => model.platformModelId)).toEqual([
+      'product-a',
+      'product-b',
+    ]);
+    expect(result.current.data?.map((model) => model.connection?.id)).toEqual([
+      'source-a',
+      'source-b',
+    ]);
+    expect(result.current.data?.every((model) => model.credentialId === undefined)).toBe(true);
+    client.clear();
+  });
   it.each(['read', 'refresh'])('%s 缺失凭据时给出明确中文恢复提示', async (operation) => {
     vi.stubGlobal(
       'fetch',

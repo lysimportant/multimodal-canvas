@@ -163,6 +163,40 @@ afterEach(() => {
 });
 
 describe('NodeQuickEditor', () => {
+  it('不同 Key 的同名模型按连接分组，选中后提交精确平台身份', async () => {
+    const user = userEvent.setup();
+    const onModelChange = vi.fn();
+    const props = makeProps({
+      node: {
+        ...imageNode,
+        data: { ...imageNode.data, platformModelId: 'product-a', modelAlias: 'same-model' },
+      },
+      models: ['a', 'b'].map((key) => ({
+        id: 'same-model',
+        platformModelId: `product-${key}`,
+        name: '同名模型',
+        mediaTypes: ['image'],
+        connection: { id: `source-${key}`, label: `example.test · Key …${key}0000008` },
+      })),
+      onModelChange,
+    });
+    const view = render(<NodeQuickEditor {...props} />);
+    await user.click(screen.getByRole('combobox', { name: /模型：同名模型.*a0000008/ }));
+    expect(screen.getAllByText('example.test · Key …a0000008', { exact: true })).toHaveLength(2);
+    expect(screen.getAllByText('example.test · Key …b0000008', { exact: true })).toHaveLength(2);
+    await user.click(screen.getByRole('option', { name: /同名模型.*b0000008/ }));
+    expect(onModelChange).toHaveBeenCalledWith({
+      platformModelId: 'product-b',
+      modelAlias: 'same-model',
+    });
+    view.rerender(
+      <NodeQuickEditor
+        {...props}
+        node={{ ...props.node, data: { ...props.node.data, platformModelId: 'product-b' } }}
+      />,
+    );
+    expect(screen.getByRole('combobox', { name: /模型：同名模型.*b0000008/ })).toBeVisible();
+  });
   it('同名平台商品保留独立身份，旧节点能显示更换上游后的原商品', async () => {
     const user = userEvent.setup();
     const onModelChange = vi.fn();

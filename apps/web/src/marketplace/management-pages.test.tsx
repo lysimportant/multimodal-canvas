@@ -79,6 +79,42 @@ afterEach(() => {
 });
 
 describe('平台模型后台', () => {
+  it('同步全部连接会刷新画布目录并显示每条连接的部分失败原因', async () => {
+    const other = {
+      ...credential,
+      id: '44444444-4444-4444-8444-444444444444',
+      keySuffix: 'second08',
+      active: false,
+    };
+    vi.mocked(managementRequest).mockImplementation(async (path) => {
+      if (path === '/settings/ai/credentials') return { credentials: [credential, other] };
+      if (path.startsWith('/admin/model-marketplace/models?')) return { items: [], total: 0 };
+      if (path === '/admin/model-marketplace/connections/sync')
+        return {
+          connections: [
+            { id: credential.id, published: 2, retained: 0, issues: [] },
+            {
+              id: other.id,
+              published: 0,
+              retained: 1,
+              issues: [{ modelId: 'unknown-model', message: '缺少调用合同' }],
+            },
+          ],
+        };
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const { client } = renderPage(<AdminModelsPage userId={userId} />);
+    client.setQueryData(['platform-model-catalog', userId], []);
+    fireEvent.click(await screen.findByRole('button', { name: '同步全部连接到画布' }));
+    expect(await screen.findByText(/2 个模型已同步到画布/)).toBeVisible();
+    expect(screen.getByText('unknown-model：缺少调用合同')).toBeVisible();
+    expect(screen.getByLabelText('画布模型同步结果')).toHaveTextContent('second08');
+    expect(managementRequest).toHaveBeenCalledWith('/admin/model-marketplace/connections/sync', {
+      method: 'POST',
+      body: {},
+    });
+    expect(client.getQueryState(['platform-model-catalog', userId])?.isInvalidated).toBe(true);
+  });
   it('列表删除需确认，取消不发送请求，成功后刷新广场和节点目录', async () => {
     let deleted = false;
     vi.mocked(managementRequest).mockImplementation(async (path, options) => {

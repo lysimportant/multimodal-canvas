@@ -123,7 +123,15 @@ function PromptSkillPanelSession({
     ...textModels.map((model) => ({
       value: modelIdentity(model),
       label: model.name,
-      groupLabel: model.platformModelId ? '平台文字模型' : (model.credentialLabel ?? '文字模型'),
+      ...(model.connection
+        ? {
+            description: model.connection.label,
+            trailingLabel: model.connection.label.split(' · ').at(-1),
+          }
+        : {}),
+      groupLabel:
+        model.connection?.label ??
+        (model.platformModelId ? '平台文字模型' : (model.credentialLabel ?? '文字模型')),
       disabled: Boolean(model.availability && model.availability !== 'available'),
     })),
   ];

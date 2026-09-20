@@ -112,6 +112,15 @@ function installApiMock() {
     const url = new URL(rawUrl, 'http://localhost:3000');
     const method = init?.method?.toUpperCase() ?? 'GET';
 
+    if (url.pathname === '/v1/admin/model-marketplace/connections/sync' && method === 'POST') {
+      const body = JSON.parse(String(init?.body ?? '{}'));
+      return jsonResponse({
+        connections: credentials
+          .filter((entry) => !body.credentialId || entry.id === body.credentialId)
+          .map((entry) => ({ id: entry.id, published: 4, retained: 0, issues: [] })),
+      });
+    }
+
     if (url.pathname === '/v1/models' && method === 'GET') {
       const credentialId = url.searchParams.get('credentialId') ?? undefined;
       if (credentialId && !credentials.some((credential) => credential.id === credentialId)) {
@@ -983,6 +992,16 @@ describe('SettingsPanel', () => {
       expect(created.active).toBe(false);
       expect(settings.configured).toBe(false);
       expect(refreshCalls).toEqual([created.id]);
+      expect(
+        fetchMock.mock.calls.some(
+          ([input, init]) =>
+            String(input).endsWith('/admin/model-marketplace/connections/sync') &&
+            JSON.parse(String(init?.body)).credentialId === created.id,
+        ),
+      ).toBe(true);
+      expect(within(panel).getByLabelText('画布模型同步结果')).toHaveTextContent(
+        '4 个模型已同步到画布',
+      );
       expect(modelInput(panel, 'text')).toHaveValue('');
       expect(modelOptionTexts(panel, 'text')).toEqual([
         `独立文字模型 · https://independent.example.test/v1 · …${created.keySuffix}`,

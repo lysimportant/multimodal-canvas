@@ -665,12 +665,17 @@ export const marketplacePricingSchema = z
   })
   .strict();
 
-/** 普通用户可见的模型字段；调用绑定、凭据、Provider 成本和管理地址不得放入此对象。 */
+/** 普通用户可见的模型字段；仅公开脱敏连接摘要，不包含调用绑定、凭据或 Provider 成本。 */
 export const marketplaceModelSchema = z
   .object({
     id: z.string().min(1),
     /** 展示精确上游 ID 仅用于旧模型选择兼容，不表示新的计费身份。 */
     modelAlias: z.string().min(1).optional(),
+    /** 用于区分同名模型的来源；id 不作为凭据或计费身份使用。 */
+    connection: z
+      .object({ id: z.string().min(1), label: z.string().min(1) })
+      .strict()
+      .optional(),
     name: z.string().min(1),
     description: z.string(),
     mediaType: z.enum(['text', 'image', 'video', 'audio']),

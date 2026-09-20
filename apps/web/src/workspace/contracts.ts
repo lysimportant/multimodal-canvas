@@ -49,6 +49,8 @@ export type ModelEntry = {
   mediaTypes: MediaType[];
   credentialId?: string;
   credentialLabel?: string;
+  /** 平台商品公开的脱敏连接身份与标签，仅用于选模展示。 */
+  connection?: { id: string; label: string };
   /** 模型目录返回的能力描述，前端按媒体类型解析可用参数。 */
   capabilities?: Record<string, unknown>;
   /** 模型目录返回的限制描述，作为能力字段缺失时的兼容来源。 */

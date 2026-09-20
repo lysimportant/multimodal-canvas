@@ -100,6 +100,9 @@ export function ModelsPage({ user, onLogin }: { user: AuthUser | null; onLogin: 
                     </span>
                   </div>
                   <h2>{model.name}</h2>
+                  {model.connection && (
+                    <p className="model-square-description">{model.connection.label}</p>
+                  )}
                   <p className="model-square-description">
                     {model.description || '使用已验证的模型能力开始创作。'}
                   </p>

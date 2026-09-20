@@ -181,7 +181,9 @@ export function ReversePromptPanel({ target, userId, models }: ReversePromptPane
                   disabled={Boolean(entry.availability && entry.availability !== 'available')}
                 >
                   {entry.name || entry.id}
-                  {entry.credentialLabel ? ` · ${entry.credentialLabel}` : ''}
+                  {entry.connection?.label || entry.credentialLabel
+                    ? ` · ${entry.connection?.label ?? entry.credentialLabel}`
+                    : ''}
                 </option>
               );
             })}

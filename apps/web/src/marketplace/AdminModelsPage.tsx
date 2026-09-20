@@ -20,6 +20,7 @@ import {
 } from '../management/primitives';
 import { AppLink } from '../routing';
 import { credentialSourceLabel } from '../settings-utils';
+import { ConnectionSyncNotice, useSyncConnections } from './ConnectionSync';
 import './marketplace.css';
 
 /** 管理员商品记录，绑定凭据只通过管理员独立接口读取。 */
@@ -123,6 +124,7 @@ const unitLabels: Record<BillingPriceRule['unit'], string> = {
 /** 模型列表、搜索、候选同步及编辑入口，缓存始终按管理员身份分离。 */
 export function AdminModelsPage({ userId }: { userId: string }) {
   const client = useQueryClient();
+  const connectionSync = useSyncConnections();
   const [search, setSearch] = useState('');
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState('');
@@ -199,6 +201,15 @@ export function AdminModelsPage({ userId }: { userId: string }) {
             <Download size={16} />
             同步导入
           </button>
+          <button
+            className="mg-button"
+            type="button"
+            disabled={connectionSync.isPending}
+            onClick={() => connectionSync.mutate(undefined)}
+          >
+            <RefreshCw size={16} />
+            {connectionSync.isPending ? '正在同步全部连接…' : '同步全部连接到画布'}
+          </button>
           <button className="mg-button is-primary" type="button" onClick={() => setCreating(true)}>
             <Plus size={16} />
             手动新建
@@ -206,8 +217,19 @@ export function AdminModelsPage({ userId }: { userId: string }) {
         </div>
       </header>
       <p className="mg-muted">
-        先保存平台模型，再配置经验证的调用绑定和人民币售价。更换连接会保留模型身份和历史版本。
+        同步全部连接后，用户可在画布按 Key 选择模型。New API
+        模型沿用上游价格；手工模型保留独立配置。
       </p>
+      <ConnectionSyncNotice
+        result={connectionSync.data}
+        error={connectionSync.error}
+        labels={Object.fromEntries(
+          (credentials.data?.credentials ?? []).map((entry) => [
+            entry.id,
+            credentialSourceLabel(entry),
+          ]),
+        )}
+      />
       <Notice value={deletedNotice ? { kind: 'success', text: deletedNotice } : null} />
       <form
         className="mg-toolbar"

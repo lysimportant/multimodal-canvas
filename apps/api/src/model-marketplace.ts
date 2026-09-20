@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto';
-import { requestNewApiCatalog } from '@multimodal-canvas/billing';
+import {
+  requestNewApiCatalog,
+  type NewApiCatalog,
+  type NewApiCatalogModel,
+} from '@multimodal-canvas/billing';
 import {
   marketplacePriceRuleSchema,
   mediaTypes,
@@ -23,6 +27,7 @@ import {
 import {
   AiCredentialNotFoundError,
   type AiSettingsStoreLike,
+  type AiCredentialSummary,
   type ModelCatalogEntry,
 } from './settings';
 
@@ -178,6 +183,8 @@ export type MarketplaceModelDto = {
   mediaType: MediaType;
   specifications: Record<string, unknown>;
   modelAlias?: string;
+  /** 公开来源身份与主机/安全尾号；不接受其作为调用凭据。 */
+  connection?: { id: string; label: string };
   capabilities: Record<string, unknown>;
   limitations: Record<string, unknown>;
   pricing: MarketplacePricingDto | null;
@@ -197,6 +204,15 @@ export type MarketplaceAdminModelDto = MarketplaceModelDto & {
 };
 /** 分页结果总数用于后台和模型广场导航。 */
 export type MarketplacePage<T> = { items: T[]; page: number; pageSize: number; total: number };
+/** 管理员同步结果逐连接报告，部分成功不会掩盖缺合同或联动失败。 */
+export type ConnectionSyncResult = {
+  connections: Array<{
+    id: string;
+    published: number;
+    retained: number;
+    issues: Array<{ modelId?: string; message: string }>;
+  }>;
+};
 /** 仅用于服务端报价和执行冻结的解析结果，不应直接序列化到用户响应。 */
 export type ResolvedMarketplaceModel = {
   model: PlatformModel;
@@ -229,12 +245,38 @@ export interface ModelMarketplace {
     credentialId: string,
     sourceType?: MarketplaceSourceType,
   ): Promise<MarketplaceSyncDto | null>;
+  /** 同步指定或全部已保存连接的托管模型；不切换全局活动连接。 */
+  syncConnections(credentialId: string | undefined, actorId: string): Promise<ConnectionSyncResult>;
   resolvePublishedModel(id: string): Promise<ResolvedMarketplaceModel>;
   resolveLegacyModel(
     modelAlias: string,
     credentialId?: string,
     mediaType?: MediaType,
   ): Promise<ResolvedMarketplaceModel>;
+}
+
+/** 只公开主机与设置存储提供的安全尾号；地址的路径、查询和认证部分不能进入用户目录。 */
+function publicConnection(
+  credentialId: string,
+  credential?: AiCredentialSummary,
+): { id: string; label: string } {
+  const id = createHash('sha256')
+    .update(`canvas-public-connection-v1\0${credentialId}`)
+    .digest('hex');
+  let host = '连接';
+  if (credential) {
+    try {
+      host = new URL(credential.baseUrl).host || host;
+    } catch {
+      /* 旧地址不可解析时只展示连接身份。 */
+    }
+  }
+  return {
+    id,
+    label: credential
+      ? `${host} · ${credential.keySuffix ? `Key …${credential.keySuffix}` : `连接 ${id.slice(0, 8)}`}`
+      : `连接 · ${id.slice(0, 8)}`,
+  };
 }
 
 /** 查询时仅加载当前版本；所有旧绑定和价格继续独立留存。 */
@@ -262,13 +304,21 @@ export class PrismaModelMarketplace implements ModelMarketplace {
       ...marketplaceListSchema.parse(input),
       status: 'published',
     });
-    return { ...page, items: await Promise.all(page.items.map((item) => this.publicView(item))) };
+    const credentials = await this.settings.listCredentials();
+    return {
+      ...page,
+      items: await Promise.all(page.items.map((item) => this.publicView(item, credentials))),
+    };
   }
 
   /** 管理后台列表包含草稿、来源和版本指针；分页上限在服务边界复验。 */
   async listAdmin(input: MarketplaceListInput): Promise<MarketplacePage<MarketplaceAdminModelDto>> {
     const page = await this.loadPage(marketplaceListSchema.parse(input));
-    return { ...page, items: await Promise.all(page.items.map((item) => this.adminView(item))) };
+    const credentials = await this.settings.listCredentials();
+    return {
+      ...page,
+      items: await Promise.all(page.items.map((item) => this.adminView(item, credentials))),
+    };
   }
 
   /** 管理员按平台身份读取当前版本，编辑后无需依赖名称搜索定位商品。 */
@@ -515,6 +565,16 @@ export class PrismaModelMarketplace implements ModelMarketplace {
     actorId: string,
     sourceType: MarketplaceSourceType = 'models',
   ): Promise<MarketplaceSyncDto> {
+    return this.syncSource(credentialId, actorId, sourceType);
+  }
+
+  /** 同一连接批量导入复用本次鉴权目录，避免每个模型重复请求整个目录。 */
+  private async syncSource(
+    credentialId: string,
+    actorId: string,
+    sourceType: MarketplaceSourceType,
+    catalog?: NewApiCatalog,
+  ): Promise<MarketplaceSyncDto> {
     z.string().uuid().parse(credentialId);
     z.string().uuid().parse(actorId);
     marketplaceSourceTypeSchema.parse(sourceType);
@@ -531,7 +591,7 @@ export class PrismaModelMarketplace implements ModelMarketplace {
     try {
       candidates =
         sourceType === 'newapi_managed'
-          ? await this.managedCandidates(credentialId)
+          ? await this.managedCandidates(credentialId, catalog)
           : sourceType === 'newapi_pricing'
             ? await requestNewApiPricing(pricingBaseUrl!, {
                 fetchImpl: this.options.pricingFetchImpl,
@@ -570,6 +630,59 @@ export class PrismaModelMarketplace implements ModelMarketplace {
     );
   }
 
+  /**
+   * 将所选连接的可用托管模型同步至画布；省略 ID 时逐条处理全部保存连接。
+   * 只读取上游目录，不生成内容；业务阻塞逐项返回，数据库故障继续抛出。
+   */
+  async syncConnections(
+    credentialId: string | undefined,
+    actorId: string,
+  ): Promise<ConnectionSyncResult> {
+    z.string().uuid().parse(actorId);
+    if (credentialId) z.string().uuid().parse(credentialId);
+    const credentials = await this.settings.listCredentials();
+    const selected = credentialId
+      ? credentials.filter((entry) => entry.id === credentialId)
+      : credentials;
+    if (credentialId && !selected.length)
+      throw new ModelMarketplaceError('binding_unavailable', '连接不存在或已删除', 404);
+    const connections: ConnectionSyncResult['connections'] = [];
+    for (const credential of selected) {
+      const result: ConnectionSyncResult['connections'][number] = {
+        id: credential.id,
+        published: 0,
+        retained: 0,
+        issues: [],
+      };
+      connections.push(result);
+      let catalog: NewApiCatalog;
+      try {
+        catalog = await this.managedCatalog(credential.id);
+      } catch (error) {
+        if (!(error instanceof ModelMarketplaceError)) throw error;
+        result.issues.push({ message: error.message });
+        continue;
+      }
+      const sync = await this.syncSource(credential.id, actorId, 'newapi_managed', catalog);
+      for (const entry of catalog.models) {
+        try {
+          const model = await this.importManagedModel(
+            { syncId: sync.id, upstreamModelId: entry.id },
+            actorId,
+            { sync, entry, credentials },
+          );
+          if (model.status === 'published') result.published++;
+          else result.retained++;
+        } catch (error) {
+          if (!(error instanceof ModelMarketplaceError)) throw error;
+          result.retained++;
+          result.issues.push({ modelId: entry.id, message: error.message });
+        }
+      }
+    }
+    return { connections };
+  }
+
   /** 管理员重开页面可读取最近同步状态，包括失败后保留的候选。 */
   async getSync(
     credentialId: string,
@@ -600,8 +713,11 @@ export class PrismaModelMarketplace implements ModelMarketplace {
   }
 
   /** 目录保留不可用模型及具体原因；已确认协议仍只进入白名单能力字段。 */
-  private async managedCandidates(credentialId: string): Promise<MarketplaceCandidate[]> {
-    const catalog = await this.managedCatalog(credentialId);
+  private async managedCandidates(
+    credentialId: string,
+    freshCatalog?: NewApiCatalog,
+  ): Promise<MarketplaceCandidate[]> {
+    const catalog = freshCatalog ?? (await this.managedCatalog(credentialId));
     return catalog.models.map((entry) => ({
       id: entry.id,
       name: entry.name ?? entry.id,
@@ -627,24 +743,42 @@ export class PrismaModelMarketplace implements ModelMarketplace {
   private async importManagedModel(
     source: { syncId: string; upstreamModelId: string },
     actorId: string,
+    fresh?: {
+      sync: MarketplaceSyncDto;
+      entry: NewApiCatalogModel;
+      credentials: AiCredentialSummary[];
+    },
   ): Promise<MarketplaceAdminModelDto> {
-    const sync = await this.prisma.modelCatalogSync.findUnique({ where: { id: source.syncId } });
+    const sync =
+      fresh?.sync ??
+      (await this.prisma.modelCatalogSync.findUnique({ where: { id: source.syncId } }));
     if (
       !sync ||
       sync.status !== 'succeeded' ||
-      syncView(sync).sourceType !== 'newapi_managed' ||
+      (fresh ? fresh.sync.sourceType : syncView(sync as ModelCatalogSync).sourceType) !==
+        'newapi_managed' ||
       !readCandidates(sync.candidates).some((candidate) => candidate.id === source.upstreamModelId)
     )
       throw new ModelMarketplaceError('candidate_not_found', '托管模型来源不存在或同步未成功', 404);
-    const catalog = await this.managedCatalog(sync.credentialId);
-    const entry = catalog.models.find((candidate) => candidate.id === source.upstreamModelId);
+    const entry =
+      fresh?.entry ??
+      (await this.managedCatalog(sync.credentialId)).models.find(
+        (candidate) => candidate.id === source.upstreamModelId,
+      );
     if (!entry?.available || !entry.media_type || !entry.contract)
       throw new ModelMarketplaceError(
         'model_contract_unavailable',
-        'New API 尚未提供此模型可用的调用合同',
+        entry?.unavailable_reason ?? 'New API 尚未提供此模型可用的调用合同',
         409,
       );
-    const contract = marketplaceContractSchema.parse(entry.contract);
+    const parsedContract = marketplaceContractSchema.safeParse(entry.contract);
+    if (!parsedContract.success)
+      throw new ModelMarketplaceError(
+        'model_contract_unavailable',
+        '画布暂不支持 New API 返回的调用合同',
+        409,
+      );
+    const contract = parsedContract.data;
     const mediaType = toDatabaseMediaType(entry.media_type);
     assertContractMediaType(contract, mediaType);
     const reference = await this.settings.getCredentialReference(sync.credentialId);
@@ -756,7 +890,7 @@ export class PrismaModelMarketplace implements ModelMarketplace {
         include: modelInclude,
       });
     });
-    return this.adminView(model);
+    return this.adminView(model, fresh?.credentials);
   }
 
   /** 公开定价只读连接地址，不调用会解密凭据的设置存储，也不改变连接和默认模型。 */
@@ -884,7 +1018,10 @@ export class PrismaModelMarketplace implements ModelMarketplace {
   }
 
   /** 仅对明确业务不可用显示状态，数据库错误继续上抛而非伪装成空目录。 */
-  private async publicView(model: LoadedModel): Promise<MarketplaceModelDto> {
+  private async publicView(
+    model: LoadedModel,
+    credentials?: AiCredentialSummary[],
+  ): Promise<MarketplaceModelDto> {
     let availability: MarketplaceModelDto['availability'] = 'available';
     let availabilityReason: string | undefined;
     try {
@@ -894,6 +1031,24 @@ export class PrismaModelMarketplace implements ModelMarketplace {
       availability = error.code === 'binding_needs_review' ? 'needs_review' : 'unavailable';
       availabilityReason = error.message;
     }
+    const summaries = credentials ?? (await this.settings.listCredentials());
+    let credential = summaries.find((entry) => entry.id === model.activeBinding?.credentialId);
+    if (!credential && model.activeBinding) {
+      // 连接列表会折叠同地址同 Key 的旧版本，展示复用摘要，执行仍使用原绑定。
+      const original = await this.prisma.aiCredential.findUnique({
+        where: { id: model.activeBinding.credentialId },
+        select: { baseUrl: true, keyFingerprint: true },
+      });
+      credential = summaries.find(
+        (entry) =>
+          original?.keyFingerprint &&
+          entry.baseUrl === original.baseUrl &&
+          entry.keyFingerprint === original.keyFingerprint,
+      );
+    }
+    const connection = model.activeBinding
+      ? publicConnection(model.activeBinding.credentialId, credential)
+      : undefined;
     return {
       id: model.id,
       name: model.name,
@@ -901,6 +1056,7 @@ export class PrismaModelMarketplace implements ModelMarketplace {
       mediaType: model.mediaType.toLowerCase() as MediaType,
       specifications: publicMetadata(model.specifications),
       ...(model.activeBinding ? { modelAlias: model.activeBinding.upstreamModelId } : {}),
+      ...(connection ? { connection } : {}),
       capabilities: publicMetadata(model.activeBinding?.capabilities),
       limitations: publicMetadata(model.activeBinding?.limitations),
       pricing:
@@ -915,9 +1071,12 @@ export class PrismaModelMarketplace implements ModelMarketplace {
   }
 
   /** 后台视图复用公开字段并补充人工编辑及来源状态，不暴露加密 Key。 */
-  private async adminView(model: LoadedModel): Promise<MarketplaceAdminModelDto> {
+  private async adminView(
+    model: LoadedModel,
+    credentials?: AiCredentialSummary[],
+  ): Promise<MarketplaceAdminModelDto> {
     return {
-      ...(await this.publicView(model)),
+      ...(await this.publicView(model, credentials)),
       specifications: model.specifications as Record<string, unknown>,
       status: model.status,
       sortOrder: model.sortOrder,

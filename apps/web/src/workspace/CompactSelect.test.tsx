@@ -18,6 +18,29 @@ const options: CompactSelectOption[] = [
 afterEach(cleanup);
 
 describe('CompactSelect', () => {
+  it('选中项的 Key 尾号独立展示，模型名称截断不影响连接识别', () => {
+    render(
+      <CompactSelect
+        label="模型"
+        value="one"
+        options={[
+          {
+            value: 'one',
+            label: '同名模型',
+            description: 'example.test · Key …test0008',
+            trailingLabel: 'Key …test0008',
+          },
+        ]}
+        onChange={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByRole('combobox', { name: '模型：同名模型 · Key …test0008' }),
+    ).toHaveAttribute('title', '同名模型 · example.test · Key …test0008');
+    expect(screen.getByText('Key …test0008', { exact: true })).toHaveClass(
+      'compact-select-trigger-source',
+    );
+  });
   it('分类选项的用途仅在悬停或键盘焦点时显示，Escape 关闭提示', async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();

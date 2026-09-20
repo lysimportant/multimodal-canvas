@@ -28,6 +28,7 @@ import {
   useUpdateCredentialDefaultModels,
 } from '../query/credentials';
 import { useModelCatalogQuery, useRefreshModelCatalog } from '../query/models';
+import { ConnectionSyncNotice, useSyncConnections } from '../marketplace/ConnectionSync';
 import {
   credentialKeyLabel,
   credentialSourceLabel,
@@ -92,6 +93,7 @@ type SettingsOperation =
   | 'activate-refresh'
   | 'delete'
   | 'default'
+  | 'sync'
   | 'independent';
 
 /** 展开行里「保存连接」与「刷新模型」两个独立阶段的进行状态。 */
@@ -259,6 +261,7 @@ export function SettingsPanel({
   );
   const currentCredentialId = credentials.find((credential) => credential.active)?.id;
   const refreshModelCatalogMutation = useRefreshModelCatalog();
+  const connectionSync = useSyncConnections();
   const modelCatalogQuery = useModelCatalogQuery(
     currentCredentialId,
     canManageAiSettings && Boolean(currentCredentialId) && settings.configured,
@@ -492,6 +495,34 @@ export function SettingsPanel({
     setSettings((current) => ({ ...current, defaultModels: defaults }));
   }, []);
 
+  /** 上游目录与画布同步分别展示结果，任一失败不会丢弃已经保存的连接。 */
+  const refreshConnectionModels = async (credentialId?: string) => {
+    const generation = getAuthSessionGeneration();
+    try {
+      return await refreshModelCatalogMutation.mutateAsync(credentialId);
+    } finally {
+      if (credentialId && isCurrentRequest(generation)) {
+        try {
+          await connectionSync.mutateAsync(credentialId);
+        } catch {
+          /* 同步错误由 ConnectionSyncNotice 展示，保留目录刷新自己的结果。 */
+        }
+      }
+    }
+  };
+
+  /** 同步所有已保存 Key 的模型，不切换活动连接，也不修改用户草稿。 */
+  const syncAllConnections = async () => {
+    if (!beginOperation('sync')) return;
+    try {
+      await connectionSync.mutateAsync(undefined);
+    } catch {
+      /* 具体错误在同步结果区域展示。 */
+    } finally {
+      finishOperation();
+    }
+  };
+
   /** 校验并保存连接；成功后持续显示自动刷新进度，失败时保留用户草稿。 */
   const save = async ({ baseUrl, apiKey }: AiSettingsFormValues) => {
     if (!beginOperation('save')) return;
@@ -533,7 +564,7 @@ export function SettingsPanel({
       if (!isCurrentRequest(generation)) return;
       try {
         setOperation('save-refresh');
-        await refreshModelCatalogMutation.mutateAsync(
+        await refreshConnectionModels(
           result.credentials.find((credential) => credential.active)?.id,
         );
         if (!isCurrentRequest(generation)) return;
@@ -592,7 +623,7 @@ export function SettingsPanel({
     if (!beginOperation('refresh')) return;
     const generation = getAuthSessionGeneration();
     try {
-      await refreshModelCatalogMutation.mutateAsync(currentCredentialId);
+      await refreshConnectionModels(currentCredentialId);
       if (!isCurrentRequest(generation)) return;
       reportNotice({ kind: 'success', message: '模型列表已刷新' });
     } catch (error) {
@@ -627,7 +658,7 @@ export function SettingsPanel({
       });
       try {
         setOperation('activate-refresh');
-        await refreshModelCatalogMutation.mutateAsync(credentialId);
+        await refreshConnectionModels(credentialId);
         if (!isCurrentRequest(generation)) return;
         reportNotice({ kind: 'success', message: '凭据已激活，模型列表已自动刷新' });
       } catch (error) {
@@ -1099,7 +1130,7 @@ export function SettingsPanel({
       setRowOperation('refreshing');
       let refreshedModels: ModelEntry[];
       try {
-        refreshedModels = await refreshModelCatalogMutation.mutateAsync(createdCredentialId);
+        refreshedModels = await refreshConnectionModels(createdCredentialId);
         if (!isCurrentRequest(generation)) return;
         setRefreshStatus({ kind: 'success', message: '模型列表已刷新' });
       } catch (error) {
@@ -1148,7 +1179,7 @@ export function SettingsPanel({
     const generation = getAuthSessionGeneration();
     setRefreshStatus(undefined);
     try {
-      await refreshModelCatalogMutation.mutateAsync(targetCredentialId);
+      await refreshConnectionModels(targetCredentialId);
       if (!isCurrentRequest(generation)) return;
       setRefreshStatus({ kind: 'success', message: '模型列表已刷新' });
     } catch (error) {
@@ -1281,6 +1312,15 @@ export function SettingsPanel({
           aria-labelledby={`settings-tab-${category}`}
           tabIndex={-1}
         >
+          {canManageAiSettings && (
+            <ConnectionSyncNotice
+              result={connectionSync.data}
+              error={connectionSync.error}
+              labels={Object.fromEntries(
+                credentials.map((entry) => [entry.id, credentialSourceLabel(entry)]),
+              )}
+            />
+          )}
           {category === 'overview' && (
             <section className="settings-section" aria-labelledby="settings-overview-title">
               <div className="settings-section-heading">
@@ -1593,7 +1633,7 @@ export function SettingsPanel({
                       {expanded && (
                         <div className="settings-default-connection">
                           <p className="settings-status">
-                            独立连接只用于该类型默认，保存后不会切换全局活动连接。
+                            保存后可为此类型选择默认模型，可用模型也会同步到画布供所有用户选择。
                           </p>
                           <label className="settings-field">
                             <span>Base URL</span>
@@ -1693,7 +1733,8 @@ export function SettingsPanel({
               <div className="settings-section-heading">
                 <h2 id="settings-connections-title">连接与 Key</h2>
                 <p className="settings-status">
-                  这里维护平台共享连接：保存会切换全局活动 Key，并立即刷新它的模型目录。
+                  保存后自动同步此连接的可用模型到画布，沿用 New API
+                  价格。所有用户都能按连接选模，活动 Key 只决定默认来源。
                 </p>
               </div>
               <div className="settings-api-ad-row">
@@ -1745,6 +1786,15 @@ export function SettingsPanel({
                   <h3>已保存连接</h3>
                   <span>{credentials.length} 条 · 删除无需先切换</span>
                 </div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  disabled={busy || rowOperation !== null || !credentials.length}
+                  onClick={() => void syncAllConnections()}
+                >
+                  {operation === 'sync' ? '正在同步全部连接…' : '同步全部连接到画布'}
+                </Button>
                 <ul className="settings-connection-list">
                   {credentials.map((credential) => (
                     <li key={credential.id} className="settings-connection-item">

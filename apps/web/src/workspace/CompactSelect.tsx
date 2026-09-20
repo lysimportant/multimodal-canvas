@@ -16,6 +16,8 @@ export type CompactSelectOption = {
   value: string;
   /** 触发器和选项中展示的短标题。 */
   label: string;
+  /** 始终可见的短来源标签，模型名称被省略时仍可辨认所选 Key。 */
+  trailingLabel?: string;
   /** 可选的补充说明，展示在选项标题下方。 */
   description?: string;
   /** 仅在该项悬停或键盘聚焦时显示的用途提示。 */
@@ -257,7 +259,10 @@ export function CompactSelect({
         type="button"
         className="compact-select-trigger"
         role="combobox"
-        aria-label={ariaLabel ?? `${label}：${triggerLabel}`}
+        aria-label={
+          ariaLabel ??
+          `${label}：${triggerLabel}${selectedOption?.trailingLabel ? ` · ${selectedOption.trailingLabel}` : ''}`
+        }
         aria-expanded={open}
         aria-haspopup="listbox"
         aria-controls={listboxId}
@@ -277,6 +282,9 @@ export function CompactSelect({
         onKeyDown={handleKeyDown}
       >
         <span className="compact-select-trigger-value">{triggerLabel}</span>
+        {hasExplicitSelection && selectedOption?.trailingLabel && (
+          <span className="compact-select-trigger-source">{selectedOption.trailingLabel}</span>
+        )}
         <ChevronDown className="compact-select-trigger-icon" size={14} aria-hidden="true" />
       </button>
       {options.length > 0 && (

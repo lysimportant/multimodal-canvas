@@ -158,6 +158,7 @@ type MediaOption = {
 /** 可按模型来源分组的媒体选项。 */
 type QuickOption = MediaOption & {
   groupLabel?: string;
+  trailingLabel?: string;
 };
 
 const imageQualityOptions: MediaOption[] = [
@@ -2154,10 +2155,21 @@ function buildModelOptions(
           platformModelId: model.platformModelId,
         }),
         label: model.name,
+        ...(model.connection
+          ? {
+              description: model.connection.label,
+              trailingLabel: model.connection.label.split(' · ').at(-1),
+            }
+          : {}),
         ...(model.availability && model.availability !== 'available'
           ? {
               disabled: true,
-              description: model.availability === 'needs_review' ? '待管理员确认' : '暂不可用',
+              description: [
+                model.connection?.label,
+                model.availability === 'needs_review' ? '待管理员确认' : '暂不可用',
+              ]
+                .filter(Boolean)
+                .join(' · '),
             }
           : {}),
         groupLabel: group.label,
@@ -2460,10 +2472,13 @@ function parseModelOptionValue(value: string): ModelSelection {
 function groupModelsByCredential(models: ModelEntry[]) {
   const groups = new Map<string, { id: string; label: string; models: ModelEntry[] }>();
   for (const model of models) {
-    const id = model.platformModelId ? 'platform' : (model.credentialId ?? 'active');
+    const id =
+      model.connection?.id ??
+      (model.platformModelId ? 'platform' : (model.credentialId ?? 'active'));
     const group = groups.get(id) ?? {
       id,
       label:
+        model.connection?.label ??
         (model.platformModelId ? '平台模型' : model.credentialLabel) ??
         (model.credentialId ? `API Key · ${model.credentialId.slice(0, 8)}` : '当前 API Key'),
       models: [],

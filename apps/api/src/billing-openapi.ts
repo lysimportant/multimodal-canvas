@@ -234,6 +234,11 @@ const publicPricing = object({
 });
 /** 公开商品保留稳定平台 ID；精确上游 modelAlias 仅作兼容展示，不构成商品主键。 */
 const publicModelProperties = {
+  connection: {
+    ...object({ id: { type: 'string', minLength: 1 }, label: { type: 'string', minLength: 1 } }),
+    description:
+      '可选的公开来源身份与主机/安全 Key 尾号。不能用作调用凭据；不含原始凭据 ID、指纹、完整 Key 或地址路径。',
+  },
   id: uuid,
   name: { type: 'string' },
   description: { type: 'string' },
@@ -520,7 +525,7 @@ export const billingOpenApiSchemas = {
     ...object(
       publicModelProperties,
       Object.keys(publicModelProperties).filter(
-        (key) => !['modelAlias', 'availabilityReason'].includes(key),
+        (key) => !['modelAlias', 'availabilityReason', 'connection'].includes(key),
       ),
     ),
     description:
@@ -540,7 +545,7 @@ export const billingOpenApiSchemas = {
     },
     [
       ...Object.keys(publicModelProperties).filter(
-        (key) => !['modelAlias', 'availabilityReason'].includes(key),
+        (key) => !['modelAlias', 'availabilityReason', 'connection'].includes(key),
       ),
       'status',
       'sortOrder',
@@ -985,6 +990,38 @@ export function billingOpenApiPaths() {
           '200': response(
             '同步结果与缺失候选；成功或失败均保存来源快照',
             envelope('sync', ref('ModelCatalogSync')),
+          ),
+          ...errors,
+        },
+      },
+    },
+    '/v1/admin/model-marketplace/connections/sync': {
+      post: {
+        ...operation(
+          '将保存连接的可用托管模型同步到画布',
+          true,
+          '省略 credentialId 时依次处理全部保存连接。沿用 New API 价格；保留人工价格、暂停、删除及人工改绑，不切换活动 Key。每条连接返回已发布数量和业务阻塞原因；数据库故障返回错误，已成功导入的商品保留，可重复同步。',
+        ),
+        requestBody: { required: false, content: json(object({ credentialId: uuid }, [])) },
+        responses: {
+          '200': response(
+            '各连接的同步结果',
+            object({
+              connections: {
+                type: 'array',
+                items: object({
+                  id: uuid,
+                  published: { type: 'integer', minimum: 0 },
+                  retained: { type: 'integer', minimum: 0 },
+                  issues: {
+                    type: 'array',
+                    items: object({ modelId: { type: 'string' }, message: { type: 'string' } }, [
+                      'message',
+                    ]),
+                  },
+                }),
+              },
+            }),
           ),
           ...errors,
         },

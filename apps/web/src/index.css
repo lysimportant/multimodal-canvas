@@ -2195,6 +2195,12 @@ h2 {
   transition: transform 120ms ease;
 }
 
+.compact-select-trigger-source {
+  flex: 0 0 auto;
+  color: var(--mc-text-muted);
+  font-size: 10px;
+}
+
 .compact-select:hover .compact-select-trigger-icon,
 .compact-select:focus-within .compact-select-trigger-icon,
 .compact-select[data-open='true'] .compact-select-trigger-icon {

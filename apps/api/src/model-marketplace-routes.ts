@@ -165,6 +165,17 @@ export function registerModelMarketplaceRoutes(
     }),
   );
   app.post(
+    '/v1/admin/model-marketplace/connections/sync',
+    handler(async (request) => {
+      const current = session(request, true);
+      const { credentialId } = z
+        .object({ credentialId: z.string().uuid().optional() })
+        .strict()
+        .parse(request.body ?? {});
+      return service().syncConnections(credentialId, current.user.id);
+    }),
+  );
+  app.post(
     '/v1/admin/model-marketplace/sync',
     handler(async (request) => {
       const current = session(request, true);
