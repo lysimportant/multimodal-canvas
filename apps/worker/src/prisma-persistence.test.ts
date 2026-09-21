@@ -582,6 +582,40 @@ describe('WorkerPrismaRunPersistence credential snapshots', () => {
     expect(findFirst).not.toHaveBeenCalled();
   });
 
+  it('读取轮换前的完整版本并重加密历史密文，缺失版本不回退当前 Key', async () => {
+    const previous = {
+      id: 'rotation',
+      baseUrl: 'https://historical.example/v1',
+      encryptedApiKey: encrypt('synthetic-before-rotation'),
+      encryptionKeyId: null,
+      completedAt: new Date(),
+    };
+    const findUnique = vi.fn(async () => previous as typeof previous | null);
+    const updateMany = vi.fn(async () => ({ count: 1 }));
+    const persistence = new WorkerPrismaRunPersistence(
+      {
+        aiCredential: { findFirst: vi.fn(async () => null) },
+        newApiCredentialRotation: { findUnique, updateMany },
+      } as never,
+      encryptionSecret,
+    );
+    await expect(
+      persistence.getProviderCredentials({ credentialId, credentialVersion: 7 }),
+    ).resolves.toEqual({ baseUrl: previous.baseUrl, apiKey: 'synthetic-before-rotation' });
+    expect(findUnique).toHaveBeenCalledWith({
+      where: { credentialId_fromVersion: { credentialId, fromVersion: 7 } },
+    });
+    expect(updateMany).toHaveBeenCalledOnce();
+    findUnique.mockResolvedValueOnce(null);
+    await expect(
+      persistence.getProviderCredentials({ credentialId, credentialVersion: 6 }),
+    ).resolves.toBeUndefined();
+    updateMany.mockResolvedValueOnce({ count: 0 });
+    await expect(
+      persistence.getProviderCredentials({ credentialId, credentialVersion: 7 }),
+    ).rejects.toThrow('history encryption could not be persisted');
+  });
+
   it('fails clearly when the shared encryption secret is unavailable', async () => {
     const findFirst = vi.fn();
     const persistence = new WorkerPrismaRunPersistence(

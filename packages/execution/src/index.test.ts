@@ -268,6 +268,31 @@ function fakeExecutionClient() {
     `${where.runId}\0${where.nodeId}\0${where.attempt}`;
   const client: Record<string, unknown> = {};
   Object.assign(client, {
+    newApiCredentialRotation: { count: async () => 0 },
+    newApiGroupBinding: {
+      findUnique: async ({ where }: { where: { credentialId: string } }) => ({
+        id: 'group-binding',
+        status: 'active',
+        group: authority.group,
+        credential: {
+          id: where.credentialId,
+          version: 2,
+          ownerId: '33333333-3333-4333-a333-333333333333',
+        },
+        upstreamTokenId: authority.tokenId,
+        credentialRevision: authority.credentialRevision,
+        permissionRevision: authority.permissionRevision,
+        autoGroups: authority.autoGroups,
+        identity: {
+          issuer: authority.issuer,
+          externalUserId: authority.externalUserId,
+          instanceId: authority.instanceId,
+          grantId: authority.grantId,
+          status: 'active',
+          userId: '33333333-3333-4333-a333-333333333333',
+        },
+      }),
+    },
     run: {
       findUnique: async ({ where }: { where: { id: string } }) => rows.run.get(where.id) ?? null,
       upsert: async ({

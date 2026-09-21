@@ -82,6 +82,31 @@ integrationDescribe('中性执行授权与 outbox（隔离 PostgreSQL + Redis）
         version: 1,
       },
     });
+    const frozen = executionSnapshot().executionBindings!.target!;
+    await prisma.newApiIdentity.create({
+      data: {
+        userId,
+        issuer: frozen.authority.issuer,
+        externalUserId: frozen.authority.externalUserId,
+        instanceId: frozen.authority.instanceId,
+        grantId: frozen.authority.grantId,
+        encryptedGrant: 'synthetic-execution-grant',
+        expiresAt: new Date(Date.now() + 3600000),
+        status: 'active',
+        groups: {
+          create: {
+            group: frozen.authority.group,
+            operationId: randomUUID(),
+            credentialId,
+            upstreamTokenId: frozen.authority.tokenId,
+            credentialRevision: frozen.authority.credentialRevision,
+            permissionRevision: frozen.authority.permissionRevision,
+            autoGroups: frozen.authority.autoGroups,
+            status: 'active',
+          },
+        },
+      },
+    });
     const connection = redisConnectionFromUrl(redisUrl!);
     queue = new Queue(queueName, { connection });
     execution = new PrismaExecutionService(prisma);

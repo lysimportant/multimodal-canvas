@@ -121,26 +121,48 @@ model NewApiGrantRevocation {
 
 /// 每个本人纳入组只有一个管理关系；撤销和改组保留墓碑，不隐式重建。
 model NewApiGroupBinding {
-  id                 String         @id @default(uuid()) @db.Uuid
-  identityId         String         @db.Uuid
+  id                 String                     @id @default(uuid()) @db.Uuid
+  identityId         String                     @db.Uuid
   group              String
-  operationId        String         @unique
+  operationId        String                     @unique
   upstreamTokenId    String?
-  credentialId       String?        @unique @db.Uuid
+  credentialId       String?                    @unique @db.Uuid
   credentialRevision String?
   permissionRevision String?
-  autoGroups         String[]       @default([])
-  status             String         @default("pending")
+  autoGroups         String[]                   @default([])
+  status             String                     @default("pending")
   error              String?
   catalog            Json?
   syncedAt           DateTime?
-  createdAt          DateTime       @default(now())
-  updatedAt          DateTime       @updatedAt
-  identity           NewApiIdentity @relation(fields: [identityId], references: [id], onDelete: Restrict)
-  credential         AiCredential?  @relation(fields: [credentialId], references: [id], onDelete: Restrict)
+  createdAt          DateTime                   @default(now())
+  updatedAt          DateTime                   @updatedAt
+  identity           NewApiIdentity             @relation(fields: [identityId], references: [id], onDelete: Restrict)
+  credential         AiCredential?              @relation(fields: [credentialId], references: [id], onDelete: Restrict)
+  rotations          NewApiCredentialRotation[]
 
   @@unique([identityId, group])
   @@map("newapi_group_bindings")
+}
+
+/// 受控轮换的持久意图及旧版本密文；同一凭据版本只轮换一次，失败沿原操作恢复。
+model NewApiCredentialRotation {
+  id              String             @id @default(uuid()) @db.Uuid
+  bindingId       String             @db.Uuid
+  credentialId    String             @db.Uuid
+  fromVersion     Int
+  upstreamTokenId String
+  fromRevision    String
+  baseUrl         String
+  encryptedApiKey String
+  encryptionKeyId String?
+  keyFingerprint  String
+  createdAt       DateTime           @default(now())
+  completedAt     DateTime?
+  binding         NewApiGroupBinding @relation(fields: [bindingId], references: [id], onDelete: Restrict)
+
+  @@unique([credentialId, fromVersion])
+  @@index([bindingId, completedAt])
+  @@map("newapi_credential_rotations")
 }
 
 model AuthSession {

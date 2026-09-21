@@ -5,11 +5,12 @@ import { promisify } from 'node:util';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PrismaClient } from '@prisma/client';
 import { CredentialEncryptionKeyring } from '@multimodal-canvas/credential-crypto';
-import { precheckVideoGenerationInputs } from '@multimodal-canvas/domain';
+import { precheckVideoGenerationInputs, type RunSnapshot } from '@multimodal-canvas/domain';
+import { PrismaExecutionService } from '@multimodal-canvas/execution';
 import { AuthService } from './auth-service';
 import { PrismaAuthStore } from './auth-store';
 import { NewApiAccountClient } from './newapi-account-client';
-import { NewApiAccountService } from './newapi-account-service';
+import { NewApiAccountService, authority } from './newapi-account-service';
 import { NewApiAccountSettings, newApiRequestUser } from './newapi-account-settings';
 import { buildApp } from './fixtures/test-app';
 import { PrismaProjectStore } from './projects';
@@ -937,6 +938,282 @@ describe.skipIf(!databaseUrl)('New API 本人身份与分组隔离', () => {
       status: 'active',
     });
     expect(operations.size).toBe(3);
+  });
+
+  it('轮换排空旧任务和 unknown，丢失回包后原操作恢复且冻结旧版本不可再受理', async () => {
+    const account = await login();
+    const identity = await service.identity(account.user.id);
+    const binding = await prisma.newApiGroupBinding.findUniqueOrThrow({
+      where: { identityId_group: { identityId: identity.id, group: 'default' } },
+      include: { credential: true },
+    });
+    const credential = binding.credential!;
+    const project = await new PrismaProjectStore(prisma).create(
+      { name: 'Controlled rotation' },
+      { ownerId: account.user.id },
+    );
+    const snapshot: RunSnapshot = {
+      projectId: project.id,
+      canvasRevision: 1,
+      targetNodeId: 'target',
+      modelAlias: 'exact-model',
+      parameters: {},
+      submittedAt: new Date().toISOString(),
+      inputs: [],
+      edges: [],
+      credentialId: credential.id,
+      credentialVersion: credential.version,
+      nodes: [
+        {
+          id: 'target',
+          type: 'text',
+          position: { x: 0, y: 0 },
+          data: {
+            label: 'Rotation',
+            mediaType: 'text',
+            mode: 'generate',
+            modelAlias: 'exact-model',
+          },
+        },
+      ],
+      executionBindings: {
+        target: {
+          credentialId: credential.id,
+          credentialVersion: 1,
+          modelAlias: 'exact-model',
+          mediaType: 'text',
+          contract: 'openai-chat-completions',
+          authority: authority(identity, binding),
+        },
+      },
+    };
+    const execution = new PrismaExecutionService(prisma);
+    const input = (runId: string, value = snapshot) => ({
+      runId,
+      userId: account.user.id,
+      snapshot: value,
+      queueName: 'rotation-test',
+      payload: {
+        runId,
+        userId: account.user.id,
+        snapshot: value,
+        attempt: 1,
+        provider: 'newapi' as const,
+        cancelRequested: false,
+      },
+    });
+    const submitted = await execution.createSubmission(input(`rotation-${randomUUID()}`));
+    const remote = vi.spyOn(service.options.client, 'rotateGroup');
+    await expect(service.rotateGroup(account.user.id, credential.id, 1)).rejects.toMatchObject({
+      code: 'rotation_busy',
+    });
+    expect(remote).not.toHaveBeenCalled();
+    await prisma.run.update({ where: { id: submitted.databaseRunId }, data: { status: 'FAILED' } });
+    await prisma.runSendIntent.create({
+      data: {
+        runId: submitted.runId,
+        nodeId: 'target',
+        attempt: 1,
+        requestIdentity: 'synthetic-request',
+        status: 'unknown',
+      },
+    });
+    await expect(service.rotateGroup(account.user.id, credential.id, 1)).rejects.toMatchObject({
+      code: 'rotation_busy',
+    });
+    await prisma.runSendIntent.update({
+      where: { runId_nodeId_attempt: { runId: submitted.runId, nodeId: 'target', attempt: 1 } },
+      data: { status: 'sent' },
+    });
+    await expect(service.rotateGroup(account.user.id, credential.id, 1)).rejects.toMatchObject({
+      code: 'rotation_busy',
+    });
+    await prisma.run.update({
+      where: { id: submitted.databaseRunId },
+      data: { status: 'SUCCEEDED' },
+    });
+    let remoteCalls = 0;
+    let operationId = '';
+    const rotatedKey = 'synthetic-controlled-rotation-key';
+    remote.mockImplementation(async (_grant, group, operation, previous) => {
+      if (!operationId) operationId = operation;
+      expect(operation).toBe(operationId);
+      expect(previous).toEqual({
+        tokenId: binding.upstreamTokenId,
+        revision: '1',
+        fingerprint: credential.keyFingerprint,
+      });
+      if (++remoteCalls === 1) throw new Error('synthetic lost rotation response');
+      return {
+        token_id: binding.upstreamTokenId!,
+        key: rotatedKey,
+        group,
+        status: 'active',
+        credential_revision: '2',
+        permission_revision: '2',
+        auto_groups: [],
+      };
+    });
+    await expect(service.rotateGroup(account.user.id, credential.id, 1)).rejects.toThrow(
+      'synthetic lost',
+    );
+    await service.synchronize(account.user.id);
+    expect(
+      (await service.status(account.user.id)).groups.find((group) => group.group === 'default')
+        ?.status,
+    ).toBe('unavailable');
+    await expect(
+      execution.createSubmission(input(`rotation-stale-${randomUUID()}`)),
+    ).rejects.toMatchObject({ code: 'binding_changed' });
+    const recovered = new NewApiAccountService(service.options);
+    await expect(recovered.rotateGroup(account.user.id, credential.id, 1)).resolves.toEqual({
+      credentialId: credential.id,
+      version: 2,
+      completed: true,
+    });
+    await recovered.rotateGroup(account.user.id, credential.id, 1);
+    expect(remoteCalls).toBe(2);
+    const current = await prisma.aiCredential.findUniqueOrThrow({ where: { id: credential.id } });
+    expect(current.version).toBe(2);
+    expect(keyring.decrypt(current.encryptedApiKey).plaintext).toBe(rotatedKey);
+    const previous = await prisma.newApiCredentialRotation.findUniqueOrThrow({
+      where: { credentialId_fromVersion: { credentialId: credential.id, fromVersion: 1 } },
+    });
+    expect(previous.completedAt).not.toBeNull();
+    expect(keyring.decrypt(previous.encryptedApiKey).plaintext).toBe(
+      keyring.decrypt(credential.encryptedApiKey).plaintext,
+    );
+    expect((await execution.requireAuthorization(submitted.runId)).snapshot).toEqual(snapshot);
+    await expect(
+      execution.createSubmission(input(`rotation-late-${randomUUID()}`)),
+    ).rejects.toMatchObject({ code: 'binding_changed' });
+    const fresh = structuredClone(snapshot);
+    fresh.credentialVersion = 2;
+    fresh.executionBindings!.target!.credentialVersion = 2;
+    fresh.executionBindings!.target!.authority.credentialRevision = '2';
+    fresh.executionBindings!.target!.authority.permissionRevision = '2';
+    await expect(
+      execution.createSubmission(input(`rotation-fresh-${randomUUID()}`, fresh)),
+    ).resolves.toMatchObject({ status: 'active' });
+    selectedUser = 'account-b';
+    const b = await login();
+    await expect(service.rotateGroup(b.user.id, credential.id, 1)).rejects.toMatchObject({
+      code: 'credential_not_found',
+    });
+  });
+
+  it('并发轮换与提交只能受理一方，维护入口拒绝非管理员和跨站请求', async () => {
+    vi.stubEnv('API_JWT_SECRET', 'synthetic-account-jwt');
+    const account = await login();
+    const identity = await service.identity(account.user.id);
+    const binding = await prisma.newApiGroupBinding.findUniqueOrThrow({
+      where: { identityId_group: { identityId: identity.id, group: 'default' } },
+      include: { credential: true },
+    });
+    const credential = binding.credential!;
+    const app = buildApp({
+      logger: false,
+      newApiAccount: service,
+      authService: auth,
+      authStore: new PrismaAuthStore(prisma),
+      projectStore: new PrismaProjectStore(prisma),
+    });
+    try {
+      const request = {
+        method: 'POST' as const,
+        url: `/v1/account/newapi/groups/${credential.id}/rotate`,
+        headers: {
+          cookie: `canvas_session=${account.accessToken}`,
+          origin: 'http://localhost:5173',
+        },
+        payload: { expectedVersion: 1 },
+      };
+      expect((await app.inject(request)).statusCode).toBe(403);
+      await prisma.user.update({ where: { id: account.user.id }, data: { role: 'ADMIN' } });
+      expect(
+        (
+          await app.inject({
+            ...request,
+            headers: { ...request.headers, origin: 'https://untrusted.example' },
+          })
+        ).statusCode,
+      ).toBe(403);
+      expect((await app.inject({ ...request, payload: { expectedVersion: 0 } })).statusCode).toBe(
+        400,
+      );
+    } finally {
+      await app.close();
+      vi.unstubAllEnvs();
+    }
+    const project = await new PrismaProjectStore(prisma).create(
+      { name: 'Rotation race' },
+      { ownerId: account.user.id },
+    );
+    const snapshot: RunSnapshot = {
+      projectId: project.id,
+      canvasRevision: 1,
+      targetNodeId: 'target',
+      modelAlias: 'exact-model',
+      submittedAt: new Date().toISOString(),
+      parameters: {},
+      inputs: [],
+      edges: [],
+      nodes: [
+        {
+          id: 'target',
+          type: 'text',
+          position: { x: 0, y: 0 },
+          data: { label: 'Race', mediaType: 'text', mode: 'generate', modelAlias: 'exact-model' },
+        },
+      ],
+      executionBindings: {
+        target: {
+          credentialId: credential.id,
+          credentialVersion: 1,
+          modelAlias: 'exact-model',
+          mediaType: 'text',
+          contract: 'openai-chat-completions',
+          authority: authority(identity, binding),
+        },
+      },
+    };
+    vi.spyOn(service.options.client, 'rotateGroup').mockResolvedValue({
+      token_id: binding.upstreamTokenId!,
+      key: 'synthetic-race-rotation-key',
+      group: 'default',
+      status: 'active',
+      credential_revision: '2',
+      permission_revision: '2',
+      auto_groups: [],
+    });
+    const runId = `rotation-race-${randomUUID()}`;
+    const results = await Promise.allSettled([
+      service.rotateGroup(account.user.id, credential.id, 1),
+      new PrismaExecutionService(prisma).createSubmission({
+        runId,
+        userId: account.user.id,
+        snapshot,
+        queueName: 'rotation-test',
+        payload: {
+          runId,
+          userId: account.user.id,
+          snapshot,
+          attempt: 1,
+          provider: 'newapi',
+          cancelRequested: false,
+        },
+      }),
+    ]);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    const rejected = results.find(
+      (result) => result.status === 'rejected',
+    ) as PromiseRejectedResult;
+    expect(['rotation_busy', 'binding_changed']).toContain(rejected.reason.code);
+    const version = (await prisma.aiCredential.findUniqueOrThrow({ where: { id: credential.id } }))
+      .version;
+    expect(await prisma.executionAuthorization.count({ where: { runId } })).toBe(
+      version === 1 ? 1 : 0,
+    );
   });
 
   it('上游明确拒绝账号后撤销本地所有会话，不把拒绝当只读网络故障', async () => {

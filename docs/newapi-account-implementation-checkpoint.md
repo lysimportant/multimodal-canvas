@@ -2,7 +2,28 @@
 
 更新时间：2026-09-21。主任务 P1；身份、执行授权及数据迁移按 P0 验证。本记录覆盖本地代码、独立 Docker 和合成账号验收。生产部署、共享数据切换及外部付费调用单列。
 
-当前接续基线：Canvas `dbdc1093d204d00f3c1bec781b127055b0ad4a0d`，分支 `codex/generate-to-new-node`，上游 `origin/codex/generate-to-new-node`；New API `f31ac6ab7519cffe5f19e04a24e1aeaf7d4dcd26`，分支 `main`，上游 `fork/main`。Node `24.12.0`、pnpm `11.19.0`、Docker `29.7.2`、Go `1.26.0 windows/amd64`，已有依赖可用。本批按用户最新要求修改双方一体化登录，无依赖或 schema 变更；用户原有 `docs/resource-input-compatibility.md` 改动及 SHA256 保持不变。
+当前接续基线：Canvas `1d9f93032f71d27231f4b65831097dae8671939c`，分支 `codex/generate-to-new-node`，上游 `origin/codex/generate-to-new-node`；New API `b1f7ca022332b4c62113690817867e31da3db5a0`，分支 `main`，上游 `fork/main`。Node `24.12.0`、pnpm `11.19.0`、Docker `29.7.2`、Go `1.26.0 windows/amd64`，已有依赖可用。主代理直接实施和核验本批受控轮换，无依赖变更；用户原有 `docs/resource-input-compatibility.md` 改动及 SHA256 保持不变。
+
+## 受控轮换（17:41）
+
+普通登录继续自动同步全部纳入组。维护接口仅允许已登录画布管理员轮换本人明确分组，须指定原版本；不向日常设置页增加 Key 操作。Canvas 先持久化意图并暂停该组新受理，排队、处理中、unknown 及已发送未收尾的请求阻止轮换。新提交与轮换共用凭据事务锁。回包丢失或进程重建后复用原操作，普通同步不擅自恢复。New API 验证原 Token/版本/指纹，事务更换 Key，保留 Token ID 和账务归属；人工 Key/期限变化或撤销继续拒绝。
+
+Canvas 递增原 `credentialId` 的版本，节点/默认选择不变，旧版本密文存入增量表 `newapi_credential_rotations`；Worker 按原 ID/版本可读取历史密文，历史授权、outbox 和发送意图不改写。旧 Key 已失效，读取历史密文不代表上游继续接受它，也不得改用新 Key 重发旧请求。维护恢复、升级和回退步骤见[凭据轮换](credential-rotation.md)。
+
+| 验证 | 结果与证据 |
+|---|---|
+| 实际数据库 | 账号/客户端 25/25、PG+Redis 执行 14/14，涵盖丢失回包、服务重建、旧快照拒绝、并发轮换/提交、非管理员/跨站/跨用户拒绝。日志 `rotation-integration-recovered.log`、`rotation-outbox-integration.log` |
+| Worker 与全仓 | 历史凭据读取/重加密及授权定向 41 passed / 4 skipped；全仓 lint/typecheck/test/build/build:runtime 通过，API 807 passed / 82 skipped，Worker 321 passed / 4 skipped；设施跳过不算集成证据。日志 `rotation-worker.log`、`rotation-final-*.log` |
+| New API | `go test ./... -count=1`、`go vet ./model ./controller`、`go build ./...` 通过；SQLite 3.50.4、MySQL 5.7.44、PostgreSQL 9.6.24 的新建、代表旧版升级、重复迁移、事务回滚及轮换通过。日志 `D:\newapi\.local-tests\rotation-*.log`。矩阵发现并修复权限配置查询未引用 MySQL 保留字；新增指纹列采用 VARCHAR，避免 PG 定长字符空值补空格 |
+| 迁移 | 独立 Docker 从 60000 升至 70000，并重复执行无待迁移；全新临时数据库 30 次迁移及重复执行通过，schema validate 通过。初次使用随机 schema 时因历史 0001 固定 public 而拒绝，改用全新临时数据库验证，失败 schema 已清理，未改历史迁移 |
+| 实际轮换/发送 | `local-docker/rotation-acceptance.json`：vip Token 13、credentialId 保持；版本 1→2、旧 Key 401、新 Key 200；原两个 vip 运行授权不变，幂等重复和普通同步不加版本、Key 或凭据行。新版本一次免费文字 POST 成功归档，New API log 14 quota 0，Canvas usage ledger 0，探针项目归档保留 |
+| PC 与已有作品 | `local-docker/integrated-login-browser-results.json`：一体登录/换号/退出 8/8、5 图、额外生成 POST 0、非预期错误 0。17:39 `local-docker/final-audit-results.json`：原五归档 SHA256 不变，10 succeeded / 2 failed、12 sent、usage ledger 0、额外 POST 0 |
+
+日志路径除单列 New API 外均相对 `.local-tests/newapi-account/`。一次 Windows Prisma 引擎断连导致测试失败，复核 Docker 数据库 healthy 后以新测试进程通过完整 25 项，失败日志保留；没有以重跑生成处理问题。旧宿主 13001 API/Worker 占用 Prisma DLL，停止这两个过时验收进程后生成客户端成功，现行 8080 Docker 保持正常。
+
+部署前停止独立 api/worker/new-api 并备份双方库；`local-docker/rotation-backup/canvas.dump` SHA256 `FF5DD549A2245FA0D3B0AC55ACA8501A6694FAEDD82885D1068E6586BD3A2520`，`newapi/new-api.db` SHA256 `0470D1EB95A400AD88AADBCA328222926D32C9668967255299A9630732578AE5`，pg_restore 清单可读。API/Worker 保留 `before-controlled-rotation` 镜像，New API 保留 `canvas-integrated-login-20260921`。新栈已恢复 healthy，入口 `http://localhost:8080`，没有删除卷或共享业务记录。回退前停止新提交、核对待处理轮换并保留新增表/列和历史密文；旧备份不得直接覆盖轮换后新增作品。
+
+本地可验证缺口已补齐；整计划仍受共享归属/3 个原 unknown、线上配套部署及真实费用限制，不能标记全部完成。
 
 ## 导入一致性与执行补证（16:40）
 

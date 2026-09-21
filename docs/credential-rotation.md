@@ -2,6 +2,14 @@
 
 ## 当前实现
 
+New API 管理 Key 的业务轮换使用 `POST /v1/account/newapi/groups/{credentialId}/rotate`，请求体为 `{"expectedVersion":1}`；仅允许已登录画布管理员维护本人分组，普通画布流程不显示 Key 操作。该版本号是明确的原版本，网络失败后继续使用相同值，不能递增版本或另起操作猜测结果。
+
+Canvas 先在 PostgreSQL 记录轮换意图和旧版本密文，再让该组暂停新提交。受理 Run 与轮换共用凭据事务锁，避免已冻结的旧快照越过轮换；排队/处理中或存在 pending、sending、unknown 的请求拒绝轮换。已发送但所属 Run 未成功的请求也必须先按原身份恢复并收尾；失败和取消本身不能证明上游已结束。上游操作不放入本地数据库事务，进程重启和回包丢失后均沿用原操作 ID 恢复。普通同步不会自动发起或完成轮换。
+
+New API 校验原 Token ID、凭据修订与 Key 指纹，事务内更新原 Token 的 Key、修订和操作记录，保留 Token ID、历史费用及任务归属。Canvas 原子切换当前密文并递增 `AiCredential.version`，保留 credentialId、节点和默认模型选择；历史 Run、授权、outbox 和发送记录不改写。Worker 可按完整 ID/版本读取旧密文，但旧 Key 已失效，不能保证仍能查询上游，也不能用新 Key 重发旧请求。人工改 Key/期限、禁用、删除或撤销均拒绝，不会因轮换或重新登录被自动改回。
+
+本功能需要增量迁移 `20260921070000_newapi_credential_rotation`，只增加保存旧版本的表。New API AutoMigrate 增加可空语义为空字符串的 `key_fingerprint` 列，旧管理关系仍由 Canvas 已存指纹检查。升级前备份双方数据库，先部署全部 API/Worker 和配套 New API，再执行维护操作；不能在旧、新提交代码混跑时轮换。回退前停止新提交并完成或核实待处理轮换，保留新增表、列、历史密文及密钥配置，不能恢复旧 Key 或回写业务版本。下文的部署加密密钥轮换另按原流程执行。
+
 API 文件存储、Prisma 存储和 Worker 共用 `@multimodal-canvas/credential-crypto`。新增密文为 `mc:v2:<key-id>:<base64url>`，继续按原有 SHA-256 派生方式读取无 key-id 的 AES-GCM 历史密文。重复 key-id、格式错误、标签篡改和缺失历史密钥均显式失败，不回显密钥或密文。
 
 - `AI_CREDENTIAL_ENCRYPTION_KEY`：当前写入密钥，由密钥管理系统注入。

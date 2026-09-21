@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Linux/macOS Compose 运维入口：https 使用内部 CA，server 模式要求显式 HTTPS 域名。
-# 用法：bash scripts/docker.sh [start|https|server|build|stop|status|admin EMAIL]
+# 用法：bash scripts/docker.sh [start|https|server|build|stop|status|admin EXTERNAL_USER_ID]
 # 不安装全局软件、不改系统代理、不删除卷；任何失败均返回非零。
 # 环境隔离只适用于脚本子进程；拒绝 source，避免改变调用者的环境及 shell 选项。
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
@@ -82,11 +82,11 @@ case "$action" in
     "${compose[@]}" --profile server --profile local-https ps --all
     ;;
   admin)
-    [[ $# -eq 2 && -n "$2" ]] || { printf '%s\n' 'Usage: bash scripts/docker.sh admin registered-email' >&2; exit 1; }
+    [[ $# -eq 2 && -n "$2" ]] || { printf '%s\n' 'Usage: bash scripts/docker.sh admin EXTERNAL_USER_ID' >&2; exit 1; }
     "${compose[@]}" exec -T api node docker/run.mjs admin "$2"
     ;;
   *)
-    printf '%s\n' 'Usage: bash scripts/docker.sh [start|https|server|build|stop|status|admin EMAIL]' >&2
+    printf '%s\n' 'Usage: bash scripts/docker.sh [start|https|server|build|stop|status|admin EXTERNAL_USER_ID]' >&2
     exit 1
     ;;
 esac

@@ -107,6 +107,21 @@ export function registerNewApiAccountRoutes(
   });
   app.get('/v1/account/newapi', async (request) => service.status(userId(request)));
   app.post('/v1/account/newapi/sync', async (request) => service.synchronize(userId(request)));
+  app.post('/v1/account/newapi/groups/:credentialId/rotate', async (request, reply) => {
+    const owner = userId(request);
+    if (sessions.get(request)?.user.role !== 'admin')
+      throw new NewApiAccountError('admin_required', '轮换仅供画布管理员维护本人分组', 403);
+    const params = z.object({ credentialId: z.string().uuid() }).safeParse(request.params);
+    const body = z
+      .object({ expectedVersion: z.number().int().min(1).max(2147483646) })
+      .strict()
+      .safeParse(request.body);
+    if (!params.success || !body.success)
+      return reply
+        .code(400)
+        .send({ code: 'rotation_invalid', error: '请指定本人分组和原凭据版本' });
+    return service.rotateGroup(owner, params.data.credentialId, body.data.expectedVersion);
+  });
   app.post('/v1/account/newapi/revoke', async (request, reply) => {
     await service.revoke(userId(request));
     return reply

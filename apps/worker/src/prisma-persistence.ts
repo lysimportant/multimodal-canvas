@@ -126,7 +126,37 @@ export class WorkerPrismaRunPersistence implements RunPersistence {
       },
       select: { baseUrl: true, encryptedApiKey: true, encryptionKeyId: true, updatedAt: true },
     });
-    if (!credential) return undefined;
+    if (!credential) {
+      const previous = await this.prisma.newApiCredentialRotation.findUnique({
+        where: {
+          credentialId_fromVersion: {
+            credentialId: reference.credentialId,
+            fromVersion: reference.credentialVersion!,
+          },
+        },
+      });
+      if (!previous?.completedAt) return undefined;
+      const decrypted = this.credentialKeyring.decrypt(
+        previous.encryptedApiKey,
+        previous.encryptionKeyId ?? undefined,
+      );
+      if (decrypted.needsReencryption) {
+        const updated = await this.prisma.newApiCredentialRotation.updateMany({
+          where: {
+            id: previous.id,
+            encryptedApiKey: previous.encryptedApiKey,
+            encryptionKeyId: previous.encryptionKeyId,
+          },
+          data: {
+            encryptedApiKey: this.credentialKeyring.encrypt(decrypted.plaintext),
+            encryptionKeyId: this.credentialKeyring.currentKeyId,
+          },
+        });
+        if (updated.count !== 1)
+          throw new Error('AI credential history encryption could not be persisted');
+      }
+      return { baseUrl: previous.baseUrl, apiKey: decrypted.plaintext };
+    }
     const decrypted = this.credentialKeyring.decrypt(
       credential.encryptedApiKey,
       credential.encryptionKeyId ?? undefined,

@@ -200,6 +200,48 @@ export class PrismaExecutionService {
         return;
       }
 
+      // 与轮换使用相同凭据锁；已冻结但尚未受理的旧快照不能越过轮换意图。
+      for (const credentialId of [
+        ...new Set(
+          Object.values(snapshot.executionBindings ?? {}).map((binding) => binding.credentialId),
+        ),
+      ].sort()) {
+        await transaction.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${credentialId}, 0))`;
+        const group = await transaction.newApiGroupBinding.findUnique({
+          where: { credentialId },
+          include: { credential: true, identity: true },
+        });
+        if (
+          !group?.credential ||
+          group.status !== 'active' ||
+          group.identity.status !== 'active' ||
+          group.identity.userId !== input.userId ||
+          group.credential.ownerId !== input.userId ||
+          (await transaction.newApiCredentialRotation.count({
+            where: { bindingId: group.id, completedAt: null },
+          }))
+        )
+          throw new ExecutionError('binding_changed', '分组已失效或正在轮换，请刷新后重试');
+        for (const binding of Object.values(snapshot.executionBindings ?? {}).filter(
+          (value) => value.credentialId === credentialId,
+        )) {
+          assertExecutionBindingCurrent(binding, {
+            ...binding,
+            credentialVersion: group.credential.version,
+            authority: {
+              issuer: group.identity.issuer,
+              externalUserId: group.identity.externalUserId,
+              instanceId: group.identity.instanceId,
+              grantId: group.identity.grantId,
+              tokenId: group.upstreamTokenId ?? '',
+              credentialRevision: group.credentialRevision ?? '',
+              group: group.group,
+              permissionRevision: group.permissionRevision ?? '',
+              autoGroups: group.autoGroups,
+            },
+          });
+        }
+      }
       const existingRun = await transaction.run.findUnique({
         where: { id: databaseRunId },
         select: { projectId: true, userId: true, snapshot: true },

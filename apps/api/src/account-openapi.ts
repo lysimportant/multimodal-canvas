@@ -342,6 +342,23 @@ export function accountOpenApiPaths(user: unknown, asset: unknown) {
       },
     },
     '/v1/admin/overview': { get: operation('管理员查看资源、运行与身份统计') },
+    '/v1/account/newapi/groups/{credentialId}/rotate': {
+      post: {
+        ...operation('管理员排空任务后轮换本人分组 Key；同一原版本重试恢复原操作'),
+        parameters: [
+          {
+            name: 'credentialId',
+            in: 'path',
+            required: true,
+            schema: { type: 'string', format: 'uuid' },
+          },
+        ],
+        requestBody: body(
+          { expectedVersion: { type: 'integer', minimum: 1, maximum: 2147483646 } },
+          ['expectedVersion'],
+        ),
+      },
+    },
     '/v1/admin/system': { get: operation('管理员查看存储、队列与服务状态') },
   };
 }

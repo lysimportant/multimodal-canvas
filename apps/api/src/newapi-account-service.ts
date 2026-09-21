@@ -400,6 +400,166 @@ export class NewApiAccountService {
     return runSnapshotSchema.parse({ ...snapshot, executionBindings });
   }
 
+  /**
+   * 排空后轮换本人分组 Key；保留凭据 ID、旧版本密文及运行引用。
+   * @param expectedVersion 管理操作明确选择的当前版本；重试同一版本只恢复原意图。
+   * @throws 在途或 unknown 请求、人工改动、撤销、并发版本变化时拒绝轮换。
+   */
+  async rotateGroup(userId: string, credentialId: string, expectedVersion: number) {
+    const identity = await this.identity(userId);
+    const pending = await this.options.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${credentialId}, 0))`;
+      const binding = await tx.newApiGroupBinding.findFirst({
+        where: { identityId: identity.id, credentialId, group: { not: '神秘分组' } },
+        include: { credential: true },
+      });
+      if (!binding?.credential || binding.credential.ownerId !== userId)
+        throw new NewApiAccountError('credential_not_found', '分组不存在或不属于当前账号', 404);
+      const previous = await tx.newApiCredentialRotation.findUnique({
+        where: { credentialId_fromVersion: { credentialId, fromVersion: expectedVersion } },
+      });
+      if (previous) return { binding, rotation: previous };
+      if (
+        !Number.isSafeInteger(expectedVersion) ||
+        expectedVersion < 1 ||
+        binding.credential.version !== expectedVersion ||
+        binding.status !== 'active' ||
+        !binding.upstreamTokenId ||
+        !binding.credentialRevision
+      )
+        throw new NewApiAccountError('credential_changed', '分组状态或凭据版本已变化', 409);
+
+      const authorizations = await tx.executionAuthorization.findMany({ where: { userId } });
+      const affected = authorizations.filter((entry) =>
+        Object.values(runSnapshotSchema.parse(entry.snapshot).executionBindings ?? {}).some(
+          (value) => value.credentialId === credentialId,
+        ),
+      );
+      const runs = await tx.run.findMany({
+        where: {
+          userId,
+          OR: [{ credentialId }, { id: { in: affected.map((entry) => entry.databaseRunId) } }],
+        },
+        select: { id: true, status: true },
+      });
+      const intents = await tx.runSendIntent.findMany({
+        where: { runId: { in: affected.map((entry) => entry.runId) } },
+      });
+      const settled = new Set(
+        runs.filter((run) => run.status === 'SUCCEEDED').map((run) => run.id),
+      );
+      const unresolved = intents.some(
+        (intent) =>
+          ['pending', 'sending', 'unknown'].includes(intent.status) ||
+          (intent.status === 'sent' &&
+            !settled.has(affected.find((entry) => entry.runId === intent.runId)!.databaseRunId)),
+      );
+      if (
+        unresolved ||
+        runs.some((run) => !['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(run.status))
+      )
+        throw new NewApiAccountError(
+          'rotation_busy',
+          '该分组仍有任务或回执待收尾，请先恢复原请求',
+          409,
+        );
+      const credential = binding.credential;
+      const rotation = await tx.newApiCredentialRotation.create({
+        data: {
+          bindingId: binding.id,
+          credentialId,
+          fromVersion: expectedVersion,
+          upstreamTokenId: binding.upstreamTokenId,
+          fromRevision: binding.credentialRevision,
+          baseUrl: credential.baseUrl,
+          encryptedApiKey: credential.encryptedApiKey,
+          encryptionKeyId: credential.encryptionKeyId,
+          keyFingerprint: credential.keyFingerprint,
+        },
+      });
+      await tx.newApiGroupBinding.update({
+        where: { id: binding.id },
+        data: { status: 'unavailable', error: '分组正在轮换，等待原操作完成' },
+      });
+      return { binding, rotation };
+    });
+    const { binding, rotation } = pending;
+    if (rotation.completedAt)
+      return { credentialId, version: rotation.fromVersion + 1, completed: true };
+    const remote = await this.options.client.rotateGroup(
+      this.options.keyring.decrypt(identity.encryptedGrant).plaintext,
+      binding.group,
+      rotation.id,
+      {
+        tokenId: rotation.upstreamTokenId,
+        revision: rotation.fromRevision,
+        fingerprint: rotation.keyFingerprint,
+      },
+    );
+    if (
+      remote.token_id !== rotation.upstreamTokenId ||
+      remote.group !== binding.group ||
+      remote.credential_revision !== String(Number(rotation.fromRevision) + 1) ||
+      digest(remote.key) === rotation.keyFingerprint ||
+      remote.auto_groups.includes('神秘分组') ||
+      (remote.group === 'auto' && !remote.auto_groups.length)
+    )
+      throw new NewApiAccountError('rotation_conflict', '上游轮换结果与原操作不一致', 409);
+    const catalog = await this.options.client.catalog(remote.key);
+    await this.options.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${credentialId}, 0))`;
+      const current = await tx.newApiCredentialRotation.findUniqueOrThrow({
+        where: { id: rotation.id },
+      });
+      if (current.completedAt) return;
+      const latestIdentity = await tx.newApiIdentity.findUniqueOrThrow({
+        where: { id: identity.id },
+      });
+      if (
+        latestIdentity.encryptedGrant !== identity.encryptedGrant ||
+        latestIdentity.status !== 'active'
+      )
+        throw new NewApiAccountError(
+          'authorization_changed',
+          '登录状态已变化，请恢复原轮换操作',
+          409,
+        );
+      const updated = await tx.aiCredential.updateMany({
+        where: {
+          id: credentialId,
+          ownerId: userId,
+          version: rotation.fromVersion,
+          keyFingerprint: rotation.keyFingerprint,
+        },
+        data: {
+          encryptedApiKey: this.options.keyring.encrypt(remote.key),
+          encryptionKeyId: this.options.keyring.currentKeyId,
+          keyFingerprint: digest(remote.key),
+          version: rotation.fromVersion + 1,
+        },
+      });
+      if (updated.count !== 1)
+        throw new NewApiAccountError('credential_changed', '凭据已变化，请核对原轮换操作', 409);
+      await tx.newApiGroupBinding.update({
+        where: { id: binding.id },
+        data: {
+          credentialRevision: remote.credential_revision,
+          permissionRevision: remote.permission_revision,
+          autoGroups: remote.auto_groups,
+          catalog: catalog as Prisma.InputJsonValue,
+          status: 'active',
+          error: null,
+          syncedAt: new Date(),
+        },
+      });
+      await tx.newApiCredentialRotation.update({
+        where: { id: rotation.id },
+        data: { completedAt: new Date() },
+      });
+    });
+    return { credentialId, version: rotation.fromVersion + 1, completed: true };
+  }
+
   /** 撤销立即使本地会话和未发送执行失效；远端失败保留错误以便重试原撤销。 */
   async revoke(userId: string): Promise<void> {
     const identity = await this.options.prisma.newApiIdentity.findUnique({ where: { userId } });
@@ -477,6 +637,12 @@ export class NewApiAccountService {
   private async refreshGroup(identity: NewApiIdentity, binding: NewApiGroupBinding, grant: string) {
     if (binding.group === '神秘分组')
       throw new NewApiAccountError('excluded_group', '该分组不参与画布接入');
+    if (
+      await this.options.prisma.newApiCredentialRotation.count({
+        where: { bindingId: binding.id, completedAt: null },
+      })
+    )
+      throw new NewApiAccountError('rotation_pending', '分组轮换尚未完成，请恢复原轮换操作', 409);
     const remote = await this.options.client.group(grant, binding.group, binding.operationId);
     if (
       remote.group !== binding.group ||
@@ -493,6 +659,14 @@ export class NewApiAccountService {
     const catalog = await this.options.client.catalog(remote.key);
     return this.options.prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${binding.id}, 0))`;
+      if (binding.credentialId)
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${binding.credentialId}, 0))`;
+      if (
+        await tx.newApiCredentialRotation.count({
+          where: { bindingId: binding.id, completedAt: null },
+        })
+      )
+        throw new NewApiAccountError('rotation_pending', '分组轮换尚未完成，请恢复原轮换操作', 409);
       const latestIdentity = await tx.newApiIdentity.findUniqueOrThrow({
         where: { id: identity.id },
       });

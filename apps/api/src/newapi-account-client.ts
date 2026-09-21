@@ -157,6 +157,36 @@ export class NewApiAccountClient {
     );
   }
 
+  /** 按持久操作轮换指定版本；网络结果未知时由调用方恢复同一 operationId。 */
+  async rotateGroup(
+    token: string,
+    group: string,
+    operationId: string,
+    previous: { tokenId: string; revision: string; fingerprint: string },
+  ) {
+    if (group === '神秘分组')
+      throw new NewApiAccountError('excluded_group', '该分组不参与画布接入');
+    const tokenId = Number(previous.tokenId);
+    const revision = Number(previous.revision);
+    if (
+      !Number.isSafeInteger(tokenId) ||
+      tokenId < 1 ||
+      !Number.isSafeInteger(revision) ||
+      revision < 1
+    )
+      throw new NewApiAccountError('rotation_invalid', '轮换的上游版本无效', 409);
+    return newApiManagedGroupSchema.parse(
+      await this.request(`/api/canvas/groups/${encodeURIComponent(group)}/rotate`, 'POST', token, {
+        operation_id: operationId,
+        rotation: {
+          token_id: tokenId,
+          credential_revision: revision,
+          key_fingerprint: previous.fingerprint,
+        },
+      }),
+    );
+  }
+
   /** 每个 Key 读取本人目录，不执行公开价格导入或生成。 */
   async catalog(key: string) {
     return accountCatalogSchema.parse(await this.request('/v1/canvas/catalog', 'GET', key));
@@ -194,9 +224,9 @@ export class NewApiAccountClient {
               ? 'group_changed'
               : 'upstream_unavailable',
           response.status === 401 || response.status === 403
-            ? 'New API 授权已失效，请重新授权'
+            ? 'New API 登录已失效，请重新登录'
             : response.status === 409
-              ? 'New API 分组令牌或权限已变化，请在上游核对后重新授权'
+              ? 'New API 分组令牌或权限已变化，请在上游核对'
               : 'New API 暂不可用，请稍后刷新',
           response.status === 401 || response.status === 403
             ? 401
