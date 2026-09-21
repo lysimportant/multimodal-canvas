@@ -4,7 +4,19 @@
 
 本轮收口基线：Canvas `cf2fd7c03895ee83b327ab8b0dbd6eed04694173`，分支 `codex/generate-to-new-node`，上游 `origin/codex/generate-to-new-node`；New API `9152afc04ace3819bb550e67cb97cc3cc7bd7b19`，分支 `main`，上游 `fork/main`，Tag `v1.0.0-rc.37.custom.17`。Node `24.12.0`、pnpm `11.19.0`、Docker `29.7.2`、Go `1.26.0 windows/amd64`，已有依赖可用。主代理直接实施和核验，没有新增依赖；用户原有 `docs/resource-input-compatibility.md` 改动及 SHA256 保持不变。
 
-## 全新本地初始化与旧媒体隔离（最新状态）
+## 本地配套环境恢复（23:24，最新状态）
+
+默认 `multimodal-canvas-app` 的镜像构建和迁移已完成，但 API 日志明确报出 `NEW_API_ISSUER is required`。用户选择恢复当前电脑已有的 `canvas-newapi-local`。本轮 P1 基线为 Canvas `c8bd054`、New API `9152afc04`；没有修改应用源码、依赖或认证校验。
+
+- 保留原 `local.env`、Compose overlay 和 13 个本地卷。恢复缺失的五个 Canvas 专用镜像标签，从同一 New API 提交按原 Dockerfile 重建 `forknewapi:canvas-rotation-20260921`，补齐 Mock 使用的 Python 镜像。默认项目已停止，容器和卷保留。
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/docker.ps1 -LocalNewApi -Action Start -NoBrowser` 退出 0。9 个常驻服务运行，API/Worker/Web、New API 和设施健康，4 个一次性初始化/迁移服务退出 0；画布首页及 `/health` 返回 200。
+- 原应用密钥、内部 CA、New API 会话密钥和 TLS 证书/私钥的 SHA256 保持一致；未重建证书或修改信任库。Canvas 的用户、项目、素材、版本、Run、ProviderJob 数量与恢复前一致，New API 原账号、渠道和令牌保留。
+- 现有 `fresh-smoke.mjs` 在真实 Chrome 完成 6 项检查：受信任 HTTPS 登录和自动同步、空项目/素材、旧素材 404、重复同步复用凭据、工作台和退出。15 个分组、75 条模型，页面/控制台错误 0、Provider POST 0；两张截图已复核。此前报告与截图另存为本轮证据目录中的 `before-*`。
+- API 启动配置测试 93/93、Docker 配置测试 14/14 通过；全仓 lint/typecheck/test/build 退出 0，应用任务复用 Turbo 缓存，设施 skip 不作为真实集成证据。两份部署文档及本节新增内容格式检查通过，检查点历史表格的既有排版差异未整理。运行证据在 `.local-tests/local-newapi-recovery-20260921/`；浏览器最新结果仍在 `local-docker/fresh-smoke-results.json`。Windows/Linux 部署文档已明确区分本机配套入口与显式加载 `.env.compose` 的通用入口。
+
+当前使用 <http://localhost:8080/>，New API 为 <https://newapi.localhost:13443>；后续通过 `Docker-Local.cmd` 启动。根目录不带配套文件的 `docker compose up` 仍对应独立通用项目，需要真实 New API 配置。本次没有清库、重置账号、改渠道或执行真实供应商请求。
+
+## 全新本地初始化与旧媒体隔离（历史）
 
 本轮 P0 数据操作基线为 `d7d00c2caf7da68a76e4fd90c4cac4a3fb40a333`，分支/上游与上述记录相同。Node `24.12.0`、pnpm `11.19.0`、Docker `29.7.2`、Compose `v5.4.0`，依赖已有；用户资源文档仍为唯一原有未提交改动。验收目标是完整本地栈可登录、分组可同步、项目/媒体/任务为空，旧媒体不能通过新实例读取。
 

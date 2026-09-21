@@ -12,7 +12,7 @@
 
 当前电脑使用单独的 `canvas-newapi-local` 项目，包含已配套的本地 New API 和免费 Mock。**双击根目录的 `Docker-Local.cmd` 启动这套环境**：显式选择本地配置，使用已有镜像，不构建、不拉取镜像，也不清空数据。配置或镜像缺失时明确失败。
 
-根目录直接运行 `docker compose up -d --build`，或使用 `Docker-Start.cmd`，操作的是 `multimodal-canvas-app`，不会自动选中这套本地环境。两个项目各自保存数据库卷，但 Web 默认都使用 8080，同一时间只能有一个占用该入口。
+根目录直接运行通用 Compose 命令，或使用 `Docker-Start.cmd`，操作的是 `multimodal-canvas-app`，不会自动选中这套本地环境；通用入口必须先按下文提供真实 `MC_NEW_API_*` 配置。两个项目各自保存数据库卷，但 Web 默认都使用 8080，同一时间只能有一个占用该入口。
 
 在已保留配置和镜像的当前电脑，从仓库根目录启动、查看状态或停止：
 
@@ -44,7 +44,7 @@ docker compose --project-name canvas-newapi-local `
 
 1. 安装并打开 Windows Docker Desktop，完成其首次安装引导、许可确认及 WSL 2/虚拟化配置，使用 **Linux containers**。脚本不会替你修改系统功能、全局 Docker context 或容器模式。
 2. 保持 Docker Hub、Quay.io、Debian HTTPS 仓库和 npm 可访问。第一次需要下载基础镜像、安装镜像内依赖并构建应用；MinIO Server 与 `mc` 从 `quay.io/minio` 获取，并保留仓库固定的 SHA-256 digest。耗时取决于网络和机器性能；主机不需要另外安装 Node.js 或 pnpm。
-3. 在项目根目录双击 `Docker-Start.cmd`。从其他目录或快捷方式启动也可以，入口以自身文件路径定位项目。
+3. 当前电脑已有配套 New API 环境时，在项目根目录双击 `Docker-Local.cmd`。需要启动通用 `multimodal-canvas-app` 时，先按下节配置真实 New API 站点，再运行标准 Compose 命令或 `Docker-Start.cmd`。
 4. 等待 Compose 健康检查完成，脚本会打开默认浏览器。若初始化、构建或健康检查失败，窗口保留错误，不会宣称启动成功或自动重复变更操作。
 
 脚本兼容 Windows PowerShell 5.1 和 PowerShell 7。双击入口使用系统自带的 Windows PowerShell 5.1，`ExecutionPolicy Bypass` 仅作用于该进程，不修改机器或用户策略。组织策略禁止脚本时，请联系管理员处理，不要自行关闭安全机制。
@@ -53,7 +53,17 @@ Docker CLI 不在 `PATH` 时，脚本会检查 Docker Desktop 的标准全机和
 
 ## New API 登录与管理员
 
-启动前按 [.env.compose.example](../.env.compose.example) 配置 `MC_NEW_API_ISSUER`、`MC_NEW_API_CLIENT_ID`、`MC_NEW_API_INSTANCE_ID`，并在 New API 配置相同客户端、实例与精确回调地址。回调使用当前浏览器入口的 `/v1/auth/newapi/callback`；必须先部署支持 Canvas Account 的 New API 版本。仅配旧网关地址无法完成登录。
+通用 `multimodal-canvas-app` 启动前，按 [.env.compose.example](../.env.compose.example) 创建被 Git 忽略的 `.env.compose`，将 `MC_NEW_API_ISSUER`、`MC_NEW_API_CLIENT_ID`、`MC_NEW_API_INSTANCE_ID` 和回调地址替换为真实站点配置。`MC_NEW_API_ISSUER` 是 Compose 输入，传入 API/Worker 容器后名称为 `NEW_API_ISSUER`；issuer 必须从浏览器和容器实际可达，非回环地址使用 HTTPS。New API 端必须登记相同客户端、实例与精确回调地址，回调路径为当前浏览器入口的 `/v1/auth/newapi/callback`。仅配旧网关地址或保留示例域名无法完成登录。
+
+`.env.compose` 不会被 Compose 或 `Docker-Start.cmd` 自动选中。使用该文件时，从仓库根目录为同一项目的启动、状态和停止命令都显式保留 `--env-file`、`-f` 和项目名：
+
+```powershell
+docker compose --env-file .env.compose -f compose.yaml -p multimodal-canvas-app up -d --build --wait --wait-timeout 180
+docker compose --env-file .env.compose -f compose.yaml -p multimodal-canvas-app ps -a
+docker compose --env-file .env.compose -f compose.yaml -p multimodal-canvas-app stop
+```
+
+`Docker-Start.cmd` 使用临时空环境文件，不读取 `.env.compose` 或开发 `.env`；只有从同一终端启动时，当前进程中已设置的 `MC_NEW_API_*` 才会传给 Compose。本机既有 `canvas-newapi-local` 不需要这组通用站点配置，继续使用 `Docker-Local.cmd` 和它自己的配套文件。
 
 用户点击“使用 New API 登录”，授权后自动建立内部资源身份，并同步本人全部开放分组的 Key；原始分组精确等于“神秘分组”时排除，开放的 auto 同样接入。画布只显示分组模型，Key 加密保存在服务端。账号密码、注册和账单由 New API 管理。
 
@@ -63,7 +73,7 @@ Docker CLI 不在 `PATH` 时，脚本会检查 Docker Desktop 的标准全机和
 
 ## 日常使用
 
-- **启动**：双击 `Docker-Start.cmd`。已有镜像时直接使用；只有缺少应用镜像时才按需构建。
+- **启动通用栈**：完成上面的真实 New API 配置后运行 `Docker-Start.cmd`；双击不会加载 `.env.compose`。已有镜像时直接使用，只有缺少应用镜像时才按需构建。本机配套环境使用 `Docker-Local.cmd`。
 - **本地 HTTPS**：双击 `Docker-HTTPS.cmd`，或运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Action Https`，启用可选 `local-https` profile 的 `gateway-local`。默认打开 HTTPS 8443，HTTP 8080 仍保留，初次访问需要信任内部 CA。
 - **停止**：双击 `Docker-Stop.cmd`。包含 `server` 和 `local-https` profile，只停止本项目已经创建的服务和网关，保留数据库、对象存储、队列、密钥及证书卷；不创建未启用的网关，不影响其他 Compose 项目。
 - **查看状态**：在项目根目录运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Action Status`。包含两个网关 profile 的只读查询，不会启动 Docker Desktop 或应用。
@@ -165,6 +175,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Ac
 当前 `compose.yaml` 使用 `quay.io/minio/minio` 和 `quay.io/minio/mc`，仅明确了官方 Quay.io registry，两个镜像的固定 digest 没有变化。若错误中的镜像仍为不带 `quay.io/` 的 `minio/mc@sha256:...`，说明使用的是旧 Docker Hub 引用；先取得包含当前 `compose.yaml` 的完整版本再重试，不要删除 digest、改用 `latest` 或删除数据卷。
 
 Compose 会并行拉取多个服务镜像。一个镜像失败后，PostgreSQL、Redis 或 MinIO Server 等其他项目可能显示 `Interrupted`；这表示本轮操作被中止，不等于这些镜像也分别不可用。该失败发生在初始化和迁移之前，应以首个明确的 pull 错误为排障起点。
+
+### API 因缺少 New API issuer 而 unhealthy
+
+若镜像、初始化和迁移已经成功，但 API 日志显示 `StartupConfigurationError` 和 `NEW_API_ISSUER is required`，说明通用项目没有取得 New API 站点配置。宿主侧应设置 `MC_NEW_API_ISSUER`，Compose 将其映射为容器内的 `NEW_API_ISSUER`；不要把示例地址或猜测的站点填进去，也不要通过放宽生产启动校验绕过。
+
+当前电脑要使用已经配套的本地 New API 时，停止占用 8080 的通用项目后使用 `Docker-Local.cmd`，保留其现有数据卷。确需启动通用项目时，补齐真实 `.env.compose` 后使用上文三条带相同参数的命令恢复、查询或停止；不需要删除卷或重新迁移。
 
 ### `migrate` 因旧账号数据停止
 

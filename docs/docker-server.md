@@ -15,11 +15,12 @@
 
 ## 仅本机或已有 TLS 反向代理
 
-在仓库根目录直接执行标准命令：
+通用栈必须连接真实 New API。首次启动前将 `.env.compose.example` 复制为被 Git 忽略的 `.env.compose`，填写真实 `MC_NEW_API_ISSUER`、客户端、实例和回调配置；该文件不会自动加载。随后在仓库根目录执行标准命令，并为同一项目的启动、状态和停止始终保留相同的 `--env-file` 与 `-f` 参数：
 
 ```bash
-docker compose -f compose.yaml up -d --build --wait --wait-timeout 240
-docker compose -f compose.yaml ps -a
+docker compose --env-file .env.compose -f compose.yaml up -d --build --wait --wait-timeout 240
+docker compose --env-file .env.compose -f compose.yaml ps -a
+docker compose --env-file .env.compose -f compose.yaml stop
 ```
 
 访问 `http://localhost:8080`。只有该端口绑定 `127.0.0.1`，数据库、Redis、MinIO 和 API 不发布到宿主机。新服务器可先用 SSH 转发访问：
@@ -30,23 +31,23 @@ ssh -L 8080:127.0.0.1:8080 user@server
 
 已有 TLS 反向代理可转发到服务器 `127.0.0.1:8080`，部署时设置 `MC_PUBLIC_ORIGIN=https://你的域名`。这个串联方式会由 Caddy 覆盖未被信任的转发头，限流看到的是已有代理地址，不适合多用户公网入口；需要真实客户端限流时使用下述 Caddy profile，或单独设计并验证可信代理链。Web 始终使用同源 API，修改域名不用重新编译前端。
 
-也可使用 `bash scripts/docker.sh start`；后续 `build` 只构建镜像，`status` 查询，`stop` 停止但保留卷。
+也可在当前 shell 已显式导出真实 `MC_NEW_API_*` 后使用 `bash scripts/docker.sh start`；后续 `build` 只构建镜像，`status` 查询，`stop` 停止但保留卷。
 
-脚本只允许 action 选择 profile，忽略继承的 `COMPOSE_PROFILES`、`COMPOSE_ENV_FILES` 和默认 `.env`，防止普通 start 意外开启公网入口；它不会修改父终端环境。需要使用 `.env.compose` 时，使用明确带 `--env-file` 的标准 Compose 命令，不要用 `source` 加载脚本。
+脚本只允许 action 选择 profile，忽略继承的 `COMPOSE_PROFILES`、`COMPOSE_ENV_FILES` 和默认 `.env`，防止普通 start 意外开启公网入口；它不会加载 `.env.compose` 或修改父终端环境。需要使用 `.env.compose` 时，使用明确带 `--env-file` 的标准 Compose 命令，不要用 `source` 加载脚本。
 
 ## 本地 HTTPS 与后续域名映射
 
 不要求现在提供域名；启用本机 HTTPS 入口：
 
 ```bash
-docker compose -f compose.yaml --profile local-https up -d --build --wait --wait-timeout 240
+docker compose --env-file .env.compose -f compose.yaml --profile local-https up -d --build --wait --wait-timeout 240
 # 或：bash scripts/docker.sh https
 ```
 
 访问 `https://localhost:8443`；可通过 `MC_HTTPS_PORT` 调整端口。HTTP `127.0.0.1:8080` 同时保留。证书由专用卷中的 Caddy 本地 CA 签发，不是浏览器默认信任的公网证书，也不修改宿主机信任库。需要本机浏览器信任时，先导出公开根证书，再按你所在系统的证书管理方式明确安装：
 
 ```bash
-docker compose -f compose.yaml --profile local-https cp gateway-local:/data/caddy/pki/authorities/local/root.crt "$HOME/multimodal-local-ca.crt"
+docker compose --env-file .env.compose -f compose.yaml --profile local-https cp gateway-local:/data/caddy/pki/authorities/local/root.crt "$HOME/multimodal-local-ca.crt"
 ```
 
 仅导出并信任 `root.crt`，不要导出或传播同目录私钥。该文件是公开证书，建议保存在仓库外，避免提交机器专属文件。
@@ -62,7 +63,7 @@ docker compose -f compose.yaml --profile local-https cp gateway-local:/data/cadd
 ```bash
 export MC_DOMAIN=canvas.your-domain.com
 export MC_PUBLIC_ORIGIN="https://${MC_DOMAIN}"
-docker compose -f compose.yaml --profile server up -d --build --wait --wait-timeout 240
+docker compose --env-file .env.compose -f compose.yaml --profile server up -d --build --wait --wait-timeout 240
 ```
 
 或者设置 `MC_DOMAIN` 后运行 `bash scripts/docker.sh server`，脚本会按域名设置 HTTPS CORS 来源。Caddy 的证书和状态保存到专用卷中；更换机器时保留这些卷，避免不必要的重复签发。
@@ -79,7 +80,7 @@ Caddy 将 API 请求直接转发到 API，其他请求转发到静态 Web；两�
 
 ## New API 账号与模型
 
-配置 `MC_NEW_API_ISSUER`、`MC_NEW_API_CLIENT_ID`、`MC_NEW_API_INSTANCE_ID`、`MC_NEW_API_REDIRECT_URI`，在 New API 端登记相同配置。HTTPS 回调为 `https://你的域名/v1/auth/newapi/callback`，并与 `MC_PUBLIC_ORIGIN` 对应。两端私有 client secret 如启用必须一致，只从私有环境文件注入，不能写入镜像或仓库。
+配置 `MC_NEW_API_ISSUER`、`MC_NEW_API_CLIENT_ID`、`MC_NEW_API_INSTANCE_ID`、`MC_NEW_API_REDIRECT_URI`，在 New API 端登记相同配置。`MC_NEW_API_ISSUER` 是 Compose 输入，映射为 API/Worker 容器内的 `NEW_API_ISSUER`；不能只在容器私有 secret 文件中写入同名值。HTTPS 回调为 `https://你的域名/v1/auth/newapi/callback`，并与 `MC_PUBLIC_ORIGIN` 对应。两端私有 client secret 如启用必须一致，只从私有环境文件注入，不能写入镜像或仓库。
 
 issuer 必须同时从浏览器与 Canvas API/Worker 可达；跨 Compose 网络需要显式 DNS/网络配置，容器里的回环地址不会指向宿主或另一容器。本地 HTTPS 测试还需让浏览器、Canvas 和 New API 分别信任同一 CA，证书 SAN 覆盖实际访问域名。New API 的会话可信来源、Canvas 精确回调和 HTTPS 入口保持一致，不放宽来源校验。仅使用本地 HTTP Canvas 时保留默认空 `MC_PUBLIC_ORIGIN`，不要把 HTTP 地址填入只接受 HTTPS 的生产 CORS 配置。
 
@@ -102,11 +103,11 @@ issuer 必须同时从浏览器与 Canvas API/Worker 可达；跨 Compose 网络
 更新前记录 Git 提交与镜像 ID，并对全部相关卷做一致备份。在无运行任务的维护窗口停止业务入口和 Worker，停止写入，再备份数据库、Redis、MinIO 和密钥；备份密钥应加密保存并限制访问。PostgreSQL 物理卷恢复须使用相同主版本，跨版本应采用官方逻辑备份迁移。恢复演练使用新项目名和新卷，不覆盖原卷。仅有数据库或仅有对象存储的备份不足以恢复完整任务和凭据。
 
 ```bash
-docker compose -f compose.yaml images
-docker compose -f compose.yaml --profile server --profile local-https stop
+docker compose --env-file .env.compose -f compose.yaml images
+docker compose --env-file .env.compose -f compose.yaml --profile server --profile local-https stop
 # 在维护窗口备份上述所有卷，确认备份可恢复后再更新。
 git pull --ff-only
-docker compose -f compose.yaml --profile server up -d --build --wait --wait-timeout 240
+docker compose --env-file .env.compose -f compose.yaml --profile server up -d --build --wait --wait-timeout 240
 ```
 
 最后一行按之前实际使用的入口选择：本机 HTTPS 用 `--profile local-https`，只有 HTTP 时不加 profile；不要因更新而启用原先没有使用的公网入口。
@@ -116,12 +117,14 @@ docker compose -f compose.yaml --profile server up -d --build --wait --wait-time
 ## 诊断
 
 ```bash
-docker compose -f compose.yaml --profile server --profile local-https ps -a
-docker compose -f compose.yaml logs --tail 100 api worker migrate storage-init
-docker compose -f compose.yaml --profile server logs --tail 100 gateway
-docker compose -f compose.yaml --profile local-https logs --tail 100 gateway-local
+docker compose --env-file .env.compose -f compose.yaml --profile server --profile local-https ps -a
+docker compose --env-file .env.compose -f compose.yaml logs --tail 100 api worker migrate storage-init
+docker compose --env-file .env.compose -f compose.yaml --profile server logs --tail 100 gateway
+docker compose --env-file .env.compose -f compose.yaml --profile local-https logs --tail 100 gateway-local
 ```
 
 若拉取阶段提示 `minio/mc@sha256:... pull access denied`，且镜像名不含 `quay.io/`，说明当前使用的仍是旧 Docker Hub 引用。当前 Compose 使用 `quay.io/minio/mc`，MinIO Server 同样使用 `quay.io/minio/minio`，两者保留原固定 digest；取得包含当前 `compose.yaml` 的完整版本后重试，不要移除 digest 或改用 `latest`。并行拉取时其他镜像显示 `Interrupted` 只表示 Compose 在首个失败后中止剩余操作，不能据此判断这些镜像各自拉取失败。
+
+若镜像、初始化和迁移已经成功，但 API 显示 unhealthy，日志包含 `StartupConfigurationError` 和 `NEW_API_ISSUER is required`，说明 Compose 没有取得宿主侧 `MC_NEW_API_ISSUER`。填写真实且可达的 issuer 后，使用相同 `.env.compose` 和 Compose 文件重新执行 `up`；不需要删除卷、重复迁移或放宽生产认证校验。本机已有配套 New API 的电脑应改用 `Docker-Local.cmd` 启动独立的 `canvas-newapi-local`，不要为通用项目编造 issuer。
 
 依赖初始化故障时保留卷和日志，修复配置/网络后重新执行相同的 `up`，不要重建加密密钥或重复发起可能计费的模型任务。对外分享日志前先脱敏，不输出 `runtime.json`、口令文件、JWT 或 Provider Key。
