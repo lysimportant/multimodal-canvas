@@ -157,6 +157,8 @@ pnpm --filter @multimodal-canvas/web exec vitest run src/workspace/AssetNode.tes
 
 ## 5. 需求三：宽版设置、类型默认模型与独立 Key
 
+第 5.1—5.3 节的手动 Key 方案已由 [New API 账号接入计划](docs/newapi-account-integration-plan.md)替代，仅保留为原需求记录。后续设置布局和类型默认值使用登录后自动同步的“分组＋模型”；不恢复地址/Key 表单、指纹、连接新增/激活/删除或独立 Key 覆盖。当前账号、分组失效和凭据版本规则以接入计划为准。
+
 ### 5.1 界面布局
 
 当前设置 Dialog 约 640px 宽，现有默认模型编辑入口曾被主动移除，但后端默认值能力仍在。本次是重做入口与规则，需要同步更新“默认模型入口已移除”的旧测试。

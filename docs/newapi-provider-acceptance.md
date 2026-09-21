@@ -1,6 +1,6 @@
 # Provider 当前合同与验收边界
 
-更新时间：2026-09-21。本文承接已删除的收费/多连接/价格同步文档中仍适用的合同与未完成项。当前身份接入证据见[实施检查点](newapi-account-implementation-checkpoint.md)，更广泛的供应商任务见[待办汇总](../TODO-CONSOLIDATED.md)。
+更新时间：2026-09-21。本文承接已删除的收费/多连接/价格同步文档中仍适用的合同与未完成项。用户已明确本次仅完成本地测试；本文的本地 Mock 与跨容器素材证据用于本次验收，目标环境和真实付费调用留作后续，不要求当前部署线上 New API。当前身份接入证据见[实施检查点](newapi-account-implementation-checkpoint.md)，更广泛的供应商任务见[待办汇总](../TODO-CONSOLIDATED.md)。
 
 ## 精确模型与素材
 
@@ -59,6 +59,6 @@ H3 首次归档被私网素材保护拒绝。独立 New API 随后使用现有�
 
 `media-full-results.json` 和 `media-final-results.json` 含原失败现场，只逐项引用其中已经核实的结果。Mock URL 解析异常留下的 unknown 原请求未重发；原始失败文件和只读补证同时保留，未把整份失败报告改成成功。
 
-## 目标环境仍待验证
+## 后续目标环境验证（本次范围外）
 
 本次本机 New API 与 Mock 联调不替代真实供应商验收。已取得的签名 GET 只证明独立对象代理和 Canvas 冻结版本读取；仍未取得真实供应商外部 URL、真实供应商回执和生产插件生效版本。队列和密钥已完成当前 Windows 账户下的隔离恢复，限制见[实施检查点](newapi-account-implementation-checkpoint.md)。线上 `test` 已获准登录并核对分组/模型，但目标站点两个账号入口在预检仍为 404；用户明确暂不产生真实费用，真实生成继续暂停，合同不清楚的模式保持不可调用。

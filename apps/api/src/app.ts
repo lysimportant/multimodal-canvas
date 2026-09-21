@@ -1932,16 +1932,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     }
   });
 
-  app.get('/v1/settings/ai/credentials', async (request, reply) => {
-    if (
-      !options.newApiAccount &&
-      !canManagePlatformSettings(requestPrincipals, requestSessions, request)
-    ) {
-      return reply.code(403).send({ error: 'platform credential access is not permitted' });
-    }
-    return { credentials: await settingsStore.listCredentials() };
-  });
-
   app.post('/v1/settings/ai/models/refresh', async (request, reply) => {
     if (
       !options.newApiAccount &&

@@ -168,9 +168,5 @@ export function isRetiredNewApiRoute(path: string, method: string): boolean {
   )
     return true;
   if (path === '/v1/settings/ai' && method === 'DELETE') return true;
-  return (
-    /^\/v1\/settings\/ai\/(?:test$|credentials(?:\/[^/]+(?:\/(?:activate|defaults))?)?$)/.test(
-      path,
-    ) && method !== 'GET'
-  );
+  return /^\/v1\/settings\/ai\/(?:test|credentials)(?=\/|$)/.test(path);
 }

@@ -11,6 +11,7 @@ afterEach(async () => {
 
 describe('New API 旧入口退出边界', () => {
   it.each([
+    ['GET', '/v1/settings/ai/credentials'],
     ['GET', '/v1/account/wallet'],
     ['GET', '/v1/account/billing'],
     ['POST', '/v1/runs/run-legacy/charge'],

@@ -38,7 +38,7 @@ export function accountOpenApiPaths(user: unknown, asset: unknown) {
     required,
     additionalProperties: false,
   });
-  /** 请求体始终使用 JSON，不在 URL 放置密码和验证码。 */
+  /** 请求体使用 JSON，字段由对应接口白名单约束。 */
   const body = (properties: Record<string, unknown>, required: string[] = []) => ({
     required: true,
     content: { 'application/json': { schema: object(properties, required) } },
@@ -55,13 +55,13 @@ export function accountOpenApiPaths(user: unknown, asset: unknown) {
     ...(publicRoute ? { security: [] } : {}),
     responses: {
       [status]: { description: summary, content: { 'application/json': { schema } } },
-      '400': { description: '输入或验证码不符合要求' },
+      '400': { description: '输入字段或状态不符合要求' },
       '401': { description: '需有效账户会话' },
       '403': { description: '权限不足或账户禁用' },
       '404': { description: '对象不存在或无权访问' },
-      '409': { description: '邮箱重复、初始化已完成或最后管理员保护' },
-      '429': { description: '超过请求频率或 60 秒重发间隔' },
-      '503': { description: '邮件、持久化或账户服务未配置或暂不可用' },
+      '409': { description: '资源版本冲突或操作与当前状态不一致' },
+      '429': { description: '超过请求频率限制' },
+      '503': { description: '持久化或 New API 账户服务未配置或暂不可用' },
     },
   });
   /** 列表响应保留当前分页和已授权结果总数。 */
@@ -161,7 +161,7 @@ export function accountOpenApiPaths(user: unknown, asset: unknown) {
   return {
     '/v1/auth/newapi/start': {
       get: {
-        summary: '开始五分钟的一次性 New API 授权',
+        summary: '开始五分钟的一次性 New API 登录，完成后自动接入分组',
         tags: ['auth'],
         security: [],
         parameters: [
@@ -213,7 +213,7 @@ export function accountOpenApiPaths(user: unknown, asset: unknown) {
         },
       },
     },
-    '/v1/account/newapi': { get: operation('读取本人授权和全部纳入分组状态；不含 Key 或尾号') },
+    '/v1/account/newapi': { get: operation('读取本人账号和全部纳入分组状态；不含 Key 或尾号') },
     '/v1/account/newapi/sync': {
       post: operation('用原操作身份同步本人全部纳入组，单组失败不影响成功组'),
     },

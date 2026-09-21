@@ -2,7 +2,7 @@
 
 更新时间：2026-09-06。状态：**首页实现、专项质检和已登录账户联合验收完成。** 主计划见 [后台与账户 TODO](../TODO-ADMIN.md)，通用规范见 [全站 UI/UX 与质检清单](admin-ui-ux-review.md)，最终日志与 Git 交付依据见 [实施检查点](https://github.com/lysimportant/multimodal-canvas/blob/c750763925a2fd63988c8a84402dc982a6ec460a/IMPLEMENTATION-CHECKPOINT.md)。
 
-后续认证交互调整：登录侧栏已被 `/auth/login`、`/auth/register`、`/auth/verify` 三个独立页面替换。页面切换保留进出场动画，注册验证码确认后回工作台；下面侧栏 220ms/260ms 的记录仅用于追溯 `v0.15.1`，最新行为见 [独立认证流程](https://github.com/lysimportant/multimodal-canvas/blob/c750763925a2fd63988c8a84402dc982a6ec460a/TODO-AUTH-ENTRY.md)。首页圆形显影效果保持。
+当前认证交互以 [New API 一体化登录计划](newapi-account-integration-plan.md)为准：使用 New API 登录后直接回画布并同步分组，没有独立授权确认；Canvas 注册、验证码和密码页面已经退出。本文的侧栏 220ms/260ms 及独立认证页面记录只用于追溯旧版：首页圆形显影效果继续保留，不恢复旧账号流程。
 
 ## 本次实现
 

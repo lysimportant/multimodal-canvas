@@ -4,7 +4,7 @@
 
 - 生产 API 必须配置 `REDIS_URL`，且不能设置 `API_RATE_LIMIT_REDIS_ENABLED=false`。入口等待首次连接就绪；失败则在监听 HTTP 端口前退出，错误不包含连接凭据。
 - Redis 命令有 1 秒超时且不使用离线命令队列。运行中 Redis 故障后进入 30 秒冷却；生产模式拒绝受限请求，不使用进程内额度，冷却结束后尝试 Redis。
-- 登录、注册、配置了 `API_RATE_LIMIT_PER_MINUTE` 的普通 API，以及 SSE 受限入口返回 HTTP `503`、`code: rate_limit_unavailable`、可关联的 `requestId`、`retryAfterSeconds` 和 `Retry-After` 响应头。正常额度耗尽仍返回 `429`，两者不可混淆。
+- New API 登录起点与回调、配置了 `API_RATE_LIMIT_PER_MINUTE` 的普通 API，以及 SSE 受限入口返回 HTTP `503`、`code: rate_limit_unavailable`、可关联的 `requestId`、`retryAfterSeconds` 和 `Retry-After` 响应头。正常额度耗尽仍返回 `429`，两者不可混淆。旧注册、密码和手工 Key 入口已退出，统一返回 `410`。
 - `/health` 保持存活检查，不代表 Redis 就绪。未认证请求仍返回 `401`；已签名资源下载与 Provider Webhook 保持现有独立权限边界，不在本次变更中扩展限流。
 - 开发模式默认使用有界内存限流；显式启用 Redis 时仍允许故障回退。不新增本地计费、扣费或额度结算。
 
