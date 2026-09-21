@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   canvasDocumentSchema,
   promptDocumentSchema,
@@ -8,8 +9,9 @@ import {
 import { z } from 'zod';
 
 import type { AssetScope, AssetStore } from './assets';
-import { EXPORT_SCHEMA_VERSION, type WorkflowExport } from './export';
+import { EXPORT_SCHEMA_VERSION, sanitizeExportValue, type WorkflowExport } from './export';
 
+/** 单个资源提及的默认大小上限，单位为字节。 */
 const DEFAULT_IMPORT_MENTION_MAX_BYTES = 50 * 1024 * 1024;
 
 /** 导入报告中单项资源提及问题的稳定代码。 */
@@ -23,7 +25,7 @@ export type WorkflowImportIssueCode =
   | 'RESOURCE_MENTION_IMPORT_PLACEHOLDER';
 
 /** 导入报告中的逐项资源提及诊断；不包含 URL、凭据或媒体内容。 */
-export type WorkflowImportIssue = {
+export type WorkflowImportMentionIssue = {
   code: WorkflowImportIssueCode;
   message: string;
   mentionId: string;
@@ -40,12 +42,27 @@ export type WorkflowImportIssue = {
     | 'placeholder';
 };
 
+/** 导入只保留精确模型建议；没有 nodeId 时指项目默认，执行前须选择本人分组。 */
+export type WorkflowImportModelIssue = {
+  code: 'MODEL_SELECTION_REQUIRED';
+  message: string;
+  reason: 'model_selection_required';
+  modelAlias: string;
+  mediaType: MediaType;
+  nodeId?: string;
+};
+
+/** 导入后的资源占位和模型重选诊断，不携带原账号凭据。 */
+export type WorkflowImportIssue = WorkflowImportMentionIssue | WorkflowImportModelIssue;
+
 /** 成功解析的导入结果；占位提及会保留在返回画布中。 */
 export type WorkflowImportResult = {
   workflow: WorkflowExport;
   canvas: CanvasDocument;
   modelDefaults?: WorkflowExport['modelDefaults'];
   issues: WorkflowImportIssue[];
+  /** 源节点 ID 到导入节点 ID 的映射；跨项目复制使用新 ID 避免数据库主键冲突。 */
+  nodeIdMap: Record<string, string>;
 };
 
 /** 输入文档结构错误时抛出的导入错误。 */
@@ -60,6 +77,13 @@ export class WorkflowImportError extends Error {
   }
 }
 
+/** 导入默认模型兼容旧字符串；结构正确的模型建议不要求在当前目录中可用。 */
+const importedModelSelectionSchema = z.union([
+  z.string().trim().min(1),
+  z.object({ modelAlias: z.string().trim().min(1) }),
+]);
+
+/** 在任何项目写入前验证导出文档及各媒体类型的默认模型结构。 */
 const workflowExportSchema = z
   .object({
     schemaVersion: z.number().int(),
@@ -73,7 +97,14 @@ const workflowExportSchema = z
       })
       .passthrough(),
     canvas: z.unknown(),
-    modelDefaults: z.record(z.unknown()).optional(),
+    modelDefaults: z
+      .object({
+        text: importedModelSelectionSchema.optional(),
+        image: importedModelSelectionSchema.optional(),
+        audio: importedModelSelectionSchema.optional(),
+        video: importedModelSelectionSchema.optional(),
+      })
+      .optional(),
     runs: z.array(z.unknown()),
     results: z.array(z.unknown()),
   })
@@ -82,11 +113,11 @@ const workflowExportSchema = z
 /**
  * 解析并校验工作流导出文件，不访问资源存储。
  *
- * 该函数只负责格式和画布契约；资源可访问性由 `importWorkflowExport`
- * 在 API 边界再次校验。
+ * 移除源账号凭据、秘密及 URL，只保留模型建议；资源可访问性由
+ * `importWorkflowExport` 在 API 边界再次校验。结构错误抛出 WorkflowImportError。
  */
 export function parseWorkflowExport(input: unknown): WorkflowExport {
-  const parsed = workflowExportSchema.safeParse(input);
+  const parsed = workflowExportSchema.safeParse(sanitizeExportValue(input));
   if (!parsed.success) {
     throw new WorkflowImportError(
       'invalid_schema',
@@ -122,7 +153,7 @@ export function parseWorkflowExport(input: unknown): WorkflowExport {
 }
 
 /**
- * 导入工作流并逐项重新校验资源提及。
+ * 导入工作流，逐项重新校验资源提及并报告需要重新选择分组的模型建议。
  *
  * 缺失、无权限、归档、版本不存在、MIME 不匹配或超限的提及不会被删除，
  * 而是保留原始身份并标记 `placeholder: true`，供 UI 展示并阻止提交执行。
@@ -139,6 +170,13 @@ export async function importWorkflowExport(
 ): Promise<WorkflowImportResult> {
   const workflow = parseWorkflowExport(input);
   const projectId = options.projectId ?? workflow.project.id;
+  const copyToAnotherProject = projectId !== workflow.project.id;
+  const nodeIdMap = Object.fromEntries(
+    workflow.canvas.nodes.map((node) => [node.id, copyToAnotherProject ? randomUUID() : node.id]),
+  );
+  const importedCanvas = copyToAnotherProject
+    ? remapWorkflowCanvas(workflow.canvas, nodeIdMap)
+    : workflow.canvas;
   const maxMentionBytes = positiveByteLimit(
     options.maxMentionBytes ?? DEFAULT_IMPORT_MENTION_MAX_BYTES,
   );
@@ -152,8 +190,29 @@ export async function importWorkflowExport(
   };
   const assetCache = new Map<string, Promise<AssetLookup>>();
   const issues: WorkflowImportIssue[] = [];
+  for (const [mediaType, selection] of Object.entries(workflow.modelDefaults ?? {})) {
+    if (!selection) continue;
+    const modelAlias = typeof selection === 'string' ? selection : selection.modelAlias;
+    issues.push({
+      code: 'MODEL_SELECTION_REQUIRED',
+      reason: 'model_selection_required',
+      message: `项目默认模型 ${modelAlias} 仅作为建议保留，请重新选择本人分组模型`,
+      modelAlias,
+      mediaType: mediaType as MediaType,
+    });
+  }
   const nodes = [];
-  for (const node of workflow.canvas.nodes) {
+  for (const node of importedCanvas.nodes) {
+    if (node.data.mode !== 'source' && node.data.modelAlias) {
+      issues.push({
+        code: 'MODEL_SELECTION_REQUIRED',
+        reason: 'model_selection_required',
+        message: `节点 ${node.id} 的模型 ${node.data.modelAlias} 仅作为建议保留，请重新选择本人分组模型`,
+        nodeId: node.id,
+        modelAlias: node.data.modelAlias,
+        mediaType: node.data.mediaType,
+      });
+    }
     const document = node.data.promptDocument;
     if (!document) {
       nodes.push(node);
@@ -197,12 +256,70 @@ export async function importWorkflowExport(
     });
   }
 
-  const canvas = canvasDocumentSchema.parse({ ...workflow.canvas, nodes });
+  const canvas = canvasDocumentSchema.parse({ ...importedCanvas, nodes });
   return {
     workflow,
     canvas,
     ...(workflow.modelDefaults ? { modelDefaults: workflow.modelDefaults } : {}),
     issues,
+    nodeIdMap,
+  };
+}
+
+/** 跨项目导入时更新图内节点引用和边 ID；内容、资产版本、布局与节点尺寸保持不变。 */
+function remapWorkflowCanvas(
+  canvas: CanvasDocument,
+  nodeIdMap: Record<string, string>,
+): CanvasDocument {
+  return {
+    ...canvas,
+    nodes: canvas.nodes.map((node) => ({
+      ...node,
+      id: nodeIdMap[node.id],
+      data: {
+        ...node.data,
+        ...(node.data.generationBatch
+          ? {
+              generationBatch: {
+                ...node.data.generationBatch,
+                rootNodeId:
+                  nodeIdMap[node.data.generationBatch.rootNodeId] ??
+                  node.data.generationBatch.rootNodeId,
+              },
+            }
+          : {}),
+        ...(node.data.completionTargetNodeId
+          ? {
+              completionTargetNodeId:
+                nodeIdMap[node.data.completionTargetNodeId] ?? node.data.completionTargetNodeId,
+            }
+          : {}),
+        ...(node.data.imageEditSource
+          ? {
+              imageEditSource: {
+                ...node.data.imageEditSource,
+                sourceNodeId:
+                  nodeIdMap[node.data.imageEditSource.sourceNodeId] ??
+                  node.data.imageEditSource.sourceNodeId,
+              },
+            }
+          : {}),
+      },
+    })),
+    edges: canvas.edges.map((edge) => ({
+      ...edge,
+      id: randomUUID(),
+      sourceNodeId: nodeIdMap[edge.sourceNodeId],
+      targetNodeId: nodeIdMap[edge.targetNodeId],
+    })),
+    ...(canvas.groups
+      ? {
+          groups: canvas.groups.map((group) => ({
+            ...group,
+            nodeIds: group.nodeIds.map((id) => nodeIdMap[id]),
+          })),
+        }
+      : {}),
   };
 }
 
@@ -232,7 +349,7 @@ async function validateMention(
   lookup: AssetLookup,
   assetStore: AssetStore,
   maxBytes: number,
-): Promise<WorkflowImportIssue | undefined> {
+): Promise<WorkflowImportMentionIssue | undefined> {
   const base = {
     mentionId: mention.mentionId,
     assetId: mention.assetId,
@@ -307,10 +424,10 @@ async function validateMention(
 }
 
 function importIssueCode(
-  reason: Exclude<WorkflowImportIssue['reason'], 'placeholder'>,
+  reason: Exclude<WorkflowImportMentionIssue['reason'], 'placeholder'>,
 ): WorkflowImportIssueCode {
   const codes: Record<
-    Exclude<WorkflowImportIssue['reason'], 'placeholder'>,
+    Exclude<WorkflowImportMentionIssue['reason'], 'placeholder'>,
     WorkflowImportIssueCode
   > = {
     not_found: 'RESOURCE_MENTION_IMPORT_NOT_FOUND',

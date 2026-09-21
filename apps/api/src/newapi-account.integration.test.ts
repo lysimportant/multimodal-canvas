@@ -13,7 +13,7 @@ import { NewApiAccountService } from './newapi-account-service';
 import { NewApiAccountSettings, newApiRequestUser } from './newapi-account-settings';
 import { buildApp } from './fixtures/test-app';
 import { PrismaProjectStore } from './projects';
-import { createRunSnapshot } from './runs';
+import { createRunSnapshot, MemoryRunService } from './runs';
 
 /** 必须显式给出隔离数据库；普通单测不连接本机实际业务实例。 */
 const databaseUrl = process.env.TEST_DATABASE_URL;
@@ -270,6 +270,215 @@ describe.skipIf(!databaseUrl)('New API 本人身份与分组隔离', () => {
       expect(await settings.hasCredential(aModels[0]!.credentialId!)).toBe(false);
     });
     await expect(settings.get()).rejects.toMatchObject({ code: 'authentication_required' });
+  });
+
+  it('跨账号导入保留模型建议但不继承分组凭据，重选前不创建运行授权', async () => {
+    vi.stubEnv('NODE_ENV', 'test');
+    vi.stubEnv('WORKER_PROVIDER', 'newapi');
+    vi.stubEnv('API_JWT_SECRET', 'synthetic-account-jwt');
+    const accountA = await login();
+    selectedUser = 'account-b';
+    const accountB = await login();
+    const accountAGroups = (await service.status(accountA.user.id)).groups;
+    const accountBGroups = (await service.status(accountB.user.id)).groups;
+    const accountBModels = await service.models(accountB.user.id, 'text');
+    const accountACredential = accountAGroups.find(
+      (entry) => entry.group === 'default',
+    )?.credentialId;
+    const accountBCredential = accountBGroups.find(
+      (entry) => entry.group === 'default',
+    )?.credentialId;
+    expect(accountACredential).toBeTruthy();
+    expect(accountBCredential).toBeTruthy();
+    expect(accountBGroups.filter((entry) => entry.credentialId)).toHaveLength(3);
+    expect(accountBModels.filter((entry) => entry.id === 'exact-model')).toHaveLength(3);
+
+    const projects = new PrismaProjectStore(prisma);
+    const runs = new MemoryRunService({ providerName: 'newapi' });
+    const createRun = vi.spyOn(runs, 'create');
+    const app = buildApp({
+      logger: false,
+      newApiAccount: service,
+      authService: auth,
+      authStore: new PrismaAuthStore(prisma),
+      projectStore: projects,
+      runService: runs,
+    });
+    const cookieA = `canvas_session=${accountA.accessToken}`;
+    const cookieB = `canvas_session=${accountB.accessToken}`;
+    try {
+      const sourceProjectResponse = await app.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        headers: { cookie: cookieA },
+        payload: { name: '账号 A 导出源' },
+      });
+      expect(sourceProjectResponse.statusCode, sourceProjectResponse.body).toBe(201);
+      const sourceProjectId = sourceProjectResponse.json().project.id as string;
+      const sourceCanvas = {
+        revision: 0,
+        nodes: [
+          {
+            id: 'shared-text-node',
+            type: 'text',
+            position: { x: 160, y: 240 },
+            data: {
+              label: '必须保留的正文',
+              mediaType: 'text',
+              mode: 'generate',
+              prompt: 'Preserve this exact imported content.',
+              modelAlias: 'exact-model',
+              credentialId: accountACredential,
+              parameters: { temperature: 0.35 },
+            },
+          },
+        ],
+        edges: [],
+      };
+      const savedCanvas = await app.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${sourceProjectId}/canvas`,
+        headers: { cookie: cookieA },
+        payload: sourceCanvas,
+      });
+      expect(savedCanvas.statusCode, savedCanvas.body).toBe(200);
+      const savedDefault = await app.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${sourceProjectId}/models/defaults`,
+        headers: { cookie: cookieA },
+        payload: {
+          text: { modelAlias: 'exact-model', credentialId: accountACredential },
+        },
+      });
+      expect(savedDefault.statusCode, savedDefault.body).toBe(200);
+      expect(savedDefault.json().defaults).toEqual({
+        text: { modelAlias: 'exact-model', credentialId: accountACredential },
+      });
+
+      const exported = await app.inject({
+        method: 'GET',
+        url: `/v1/projects/${sourceProjectId}/export/workflow`,
+        headers: { cookie: cookieA },
+      });
+      expect(exported.statusCode, exported.body).toBe(200);
+      const workflow = exported.json();
+      expect(workflow.canvas.nodes[0]).toMatchObject({
+        id: 'shared-text-node',
+        position: { x: 160, y: 240 },
+        data: {
+          label: '必须保留的正文',
+          prompt: 'Preserve this exact imported content.',
+          modelAlias: 'exact-model',
+          parameters: { temperature: 0.35 },
+        },
+      });
+      expect(workflow.modelDefaults).toEqual({ text: { modelAlias: 'exact-model' } });
+      for (const credentialId of accountAGroups.flatMap((entry) =>
+        entry.credentialId ? [entry.credentialId] : [],
+      )) {
+        expect(exported.body).not.toContain(credentialId);
+      }
+
+      const targetProjectResponse = await app.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        headers: { cookie: cookieB },
+        payload: { name: '账号 B 导入目标' },
+      });
+      expect(targetProjectResponse.statusCode, targetProjectResponse.body).toBe(201);
+      const targetProjectId = targetProjectResponse.json().project.id as string;
+      const imported = await app.inject({
+        method: 'POST',
+        url: `/v1/projects/${targetProjectId}/import/workflow`,
+        headers: { cookie: cookieB },
+        payload: { workflow, expectedRevision: 0 },
+      });
+      expect(imported.statusCode, imported.body).toBe(200);
+      const importedNodeId = imported.json().canvas.nodes[0].id as string;
+      expect(importedNodeId).not.toBe('shared-text-node');
+      expect(imported.json().nodeIdMap).toEqual({ 'shared-text-node': importedNodeId });
+      expect(imported.json().canvas.nodes[0]).toMatchObject({
+        position: { x: 160, y: 240 },
+        data: {
+          label: '必须保留的正文',
+          prompt: 'Preserve this exact imported content.',
+          modelAlias: 'exact-model',
+          parameters: { temperature: 0.35 },
+        },
+      });
+      expect(imported.json().canvas.nodes[0].data).not.toHaveProperty('credentialId');
+      expect(imported.json().modelDefaults).toEqual({ text: 'exact-model' });
+      expect(imported.json().issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            code: 'MODEL_SELECTION_REQUIRED',
+            nodeId: importedNodeId,
+            modelAlias: 'exact-model',
+          }),
+          expect.objectContaining({
+            code: 'MODEL_SELECTION_REQUIRED',
+            mediaType: 'text',
+            modelAlias: 'exact-model',
+          }),
+        ]),
+      );
+      for (const credentialId of accountAGroups.flatMap((entry) =>
+        entry.credentialId ? [entry.credentialId] : [],
+      )) {
+        expect(imported.body).not.toContain(credentialId);
+      }
+      expect(
+        (await projects.getCanvas(sourceProjectId, { ownerId: accountA.user.id }))?.nodes[0]?.id,
+      ).toBe('shared-text-node');
+      expect(
+        (await projects.getCanvas(targetProjectId, { ownerId: accountB.user.id }))?.nodes[0]?.id,
+      ).toBe(importedNodeId);
+
+      const rejectedRun = await app.inject({
+        method: 'POST',
+        url: `/v1/nodes/${importedNodeId}/runs`,
+        headers: { cookie: cookieB },
+        payload: { projectId: targetProjectId },
+      });
+      expect(rejectedRun.statusCode, rejectedRun.body).toBe(400);
+      expect(rejectedRun.json()).toMatchObject({ code: 'model_unavailable' });
+      expect(createRun).not.toHaveBeenCalled();
+      expect(await runs.listByProject(targetProjectId)).toEqual([]);
+      expect(await prisma.run.count({ where: { projectId: targetProjectId } })).toBe(0);
+      expect(
+        await prisma.executionAuthorization.count({ where: { projectId: targetProjectId } }),
+      ).toBe(0);
+
+      const foreignDefault = await app.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${targetProjectId}/models/defaults`,
+        headers: { cookie: cookieB },
+        payload: {
+          text: { modelAlias: 'exact-model', credentialId: accountACredential },
+        },
+      });
+      expect(foreignDefault.statusCode, foreignDefault.body).toBe(404);
+      expect(foreignDefault.json()).toMatchObject({ code: 'credential_not_found' });
+      expect(
+        await projects.getModelDefaults(targetProjectId, { ownerId: accountB.user.id }),
+      ).toEqual({ text: 'exact-model' });
+
+      const ownDefault = await app.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${targetProjectId}/models/defaults`,
+        headers: { cookie: cookieB },
+        payload: {
+          text: { modelAlias: 'exact-model', credentialId: accountBCredential },
+        },
+      });
+      expect(ownDefault.statusCode, ownDefault.body).toBe(200);
+      expect(ownDefault.json().defaults).toEqual({
+        text: { modelAlias: 'exact-model', credentialId: accountBCredential },
+      });
+    } finally {
+      await app.close();
+      vi.unstubAllEnvs();
+    }
   });
 
   it('上游修改邮箱昵称不改变资源归属，同邮箱的新 ID 仍是独立用户', async () => {

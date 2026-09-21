@@ -8,15 +8,23 @@ import type {
 import type { AiSettingsStoreLike } from './settings';
 
 /**
- * 返回设置页的文字默认组合；仅在未设置时选目录第一项，不隐式修复失效默认。
+ * 返回显式个人文字默认；严格模式不根据目录顺序推导分组。
  * @param store 服务端设置存储，只向调用者返回模型与凭据 ID，不返回密钥。
- * @returns 可显示的默认选择；所有文字目录为空时返回 undefined。
+ * @param allowCatalogFallback 是否为本地 Mock 开启旧凭据默认与目录首项回退。
+ * @returns 可显示的默认选择；没有完整显式身份时返回 undefined。
  * @throws 存储或凭据目录读取失败时保留原异常。
  */
 export async function resolveReversePromptDefault(
   store: AiSettingsStoreLike,
+  allowCatalogFallback = false,
 ): Promise<ModelSelection | undefined> {
   const settings = await store.get();
+  if (!allowCatalogFallback) {
+    const configured = settings.defaultModels.text;
+    if (!configured || typeof configured === 'string' || !configured.credentialId) return undefined;
+    return { modelAlias: configured.modelAlias, credentialId: configured.credentialId };
+  }
+
   const credentials = await store.listCredentials();
   const bound = credentials.find((credential) => credential.defaultModels?.text);
   const configured = bound?.defaultModels?.text ?? settings.defaultModels.text;
@@ -32,7 +40,7 @@ export async function resolveReversePromptDefault(
             credentials.map((credential) => store.listModels('text', credential.id)),
           )
         ).flat();
-  const first = catalog[0];
+  const first = catalog.find((model) => model.available !== false);
   return first
     ? { modelAlias: first.id, ...(first.credentialId ? { credentialId: first.credentialId } : {}) }
     : undefined;

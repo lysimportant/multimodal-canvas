@@ -68,16 +68,73 @@ describe('canvas group import and export', () => {
     expect(parsed.canvas.groups).toEqual(canvasWithGroup().groups);
   });
 
-  it('导入时按原身份保留组与成员顺序，不把成员坐标改成组内相对坐标', async () => {
+  it('跨项目导入分配新节点身份，保留组与成员顺序及绝对坐标', async () => {
     const result = await importWorkflowExport(workflowForCanvas(canvasWithGroup()), {
       assetStore: new MemoryAssetStore(),
       projectId: 'project-target',
     });
-    expect(result.canvas.groups).toEqual(canvasWithGroup().groups);
+    expect(result.canvas.groups).toEqual([
+      {
+        ...canvasWithGroup().groups![0],
+        nodeIds: ['node-image', 'node-text'].map((id) => result.nodeIdMap[id]),
+      },
+    ]);
+    expect(result.canvas.nodes.map((node) => node.id)).toEqual([
+      result.nodeIdMap['node-image'],
+      result.nodeIdMap['node-text'],
+    ]);
+    expect(result.nodeIdMap['node-image']).not.toBe('node-image');
+    expect(result.nodeIdMap['node-text']).not.toBe('node-text');
     expect(result.canvas.nodes.map((node) => node.position)).toEqual([
       { x: 100, y: 120 },
       { x: 560, y: 120 },
     ]);
+  });
+
+  it('跨项目重新映射连线、批量根、完成动作目标和图片编辑来源', async () => {
+    const canvas = canvasWithGroup();
+    canvas.nodes[0].data.generationBatch = { id: 'batch', rootNodeId: 'node-image', index: 0 };
+    canvas.nodes[0].data.completionTargetNodeId = 'node-text';
+    canvas.nodes[0].data.imageEditSource = {
+      sourceNodeId: 'node-text',
+      assetId: 'asset-original',
+      version: 3,
+    };
+    canvas.edges = [
+      {
+        id: 'edge-original',
+        sourceNodeId: 'node-text',
+        sourceHandle: 'output:text',
+        targetNodeId: 'node-image',
+        targetHandle: 'input:prompt',
+        order: 0,
+      },
+    ];
+    const source = structuredClone(canvas);
+    const result = await importWorkflowExport(workflowForCanvas(canvas), {
+      assetStore: new MemoryAssetStore(),
+      projectId: 'project-target',
+    });
+    expect(result.canvas.edges[0]).toEqual({
+      ...canvas.edges[0],
+      id: expect.any(String),
+      sourceNodeId: result.nodeIdMap['node-text'],
+      targetNodeId: result.nodeIdMap['node-image'],
+    });
+    expect(result.canvas.edges[0].id).not.toBe('edge-original');
+    expect(result.canvas.nodes[0].data).toMatchObject({
+      generationBatch: { id: 'batch', rootNodeId: result.nodeIdMap['node-image'], index: 0 },
+      completionTargetNodeId: result.nodeIdMap['node-text'],
+      imageEditSource: {
+        sourceNodeId: result.nodeIdMap['node-text'],
+        assetId: 'asset-original',
+        version: 3,
+      },
+    });
+    expect(result.canvas.nodes.map(({ id, ...node }) => node)).toMatchObject(
+      source.nodes.map(({ id, data, ...node }) => node),
+    );
+    expect(canvas).toEqual(source);
   });
 
   it('旧导出文件没有 groups 字段时按空组导入', async () => {

@@ -2,9 +2,29 @@
 
 更新时间：2026-09-21。主任务 P1；身份、执行授权及数据迁移按 P0 验证。本记录覆盖本地代码、独立 Docker 和合成账号验收。生产部署、共享数据切换及外部付费调用单列。
 
-当前接续基线：Canvas `2c3595daeace6a578566ab01e31cf75db3d9f732`，分支 `codex/generate-to-new-node`，上游 `origin/codex/generate-to-new-node`；New API `f31ac6ab7519cffe5f19e04a24e1aeaf7d4dcd26`，分支 `main`，上游 `fork/main`。Node `24.12.0`、pnpm `11.19.0`、Docker `29.7.2`，已有依赖可用。本次未修改业务源码或依赖；用户原有 `docs/resource-input-compatibility.md` 改动保持不变。
+当前接续基线：Canvas `99627279dee9c4e53a4b707de20e29381a700094`，分支 `codex/generate-to-new-node`，上游 `origin/codex/generate-to-new-node`；New API `f31ac6ab7519cffe5f19e04a24e1aeaf7d4dcd26`，分支 `main`，上游 `fork/main`。Node `24.12.0`、pnpm `11.19.0`、Docker `29.7.2`，已有依赖可用。本批修改 Canvas 导入、模型身份和旧入口拒绝逻辑，无依赖或 schema 变更；New API 源码及用户原有 `docs/resource-input-compatibility.md` 改动保持不变。
 
-## 本次本地部署与验收
+## 跨账号导入与显式分组修复（12:21）
+
+本批沿用 P1 本地验收，分组授权和跨账号写入边界按 P0 检查。Docker 基线复现 A 导出、B 导入返回 400 `model_unavailable`；真实隔离 PostgreSQL 进一步暴露跨项目节点 ID 主键冲突。只有一个可用分组时，缺少凭据的模型建议以及优化/反推还会被隐式分配到目录中的分组。
+
+修复后，导入移除源账号凭据、秘密和 URL，保留精确模型建议并返回 `MODEL_SELECTION_REQUIRED`。跨项目复制为节点和边分配新 ID，同步连线、组成员、批量根、完成动作目标及图片编辑来源，返回 `nodeIdMap`；内容、布局和节点尺寸保留，同项目导入保留 ID。非法默认模型结构在写入前返回 400 `invalid_schema`。New API 项目默认、节点执行、优化和反推均要求显式的本人 `credentialId + modelAlias`，仅非生产 Mock 保留目录回退。旧钱包、计费、广场及后台历史实际路由补齐 410 提示。
+
+| 验证 | 结果及证据 |
+|---|---|
+| 导入与执行回归 | 导入/导出/API 90/90；优化/反推 42/42；旧入口 31/31、合并账号路由检查 36/36。日志 `continuation-import-remap.log` 及相关定向日志 |
+| 真实 PostgreSQL | `canvas_newapi_final_test` 随机 schema，身份集成 13/13、零跳过；A 导出到 B 的三组同名模型目录，源图未变、无他人凭据、未选分组不创建 Run/授权，见 `continuation-newapi-account-integration.log` |
+| 全仓检查 | `pnpm lint`、`pnpm typecheck`、`pnpm test`、`pnpm build`、`pnpm build:runtime`、`pnpm db:validate` 全部通过，日志 `continuation-final-*.log`；Turbo 测试任务 15/15，API 801 passed / 76 skipped，跳过项不作为集成证据。schema 校验使用仅进程内示例数据库 URL，不代表连库验收 |
+| 当前镜像 | `canvas-newapi-local` 的 initialize/migrate/API/Worker/Web 构建和部署通过，日志 `continuation-local-build.log`、`continuation-local-deploy.log`；本地服务健康，入口仍为 `http://localhost:8080` |
+| 双用户实际导入 | 12:16 的 `local-docker/workflow-import-probe.json`：导入 200、未选组执行 400、非法默认 400 且画布未写入、他人凭据 404；明确选择 B 分组后一次免费 Mock POST 成功归档，读取 200、跨用户 Run 404。两个探针项目已归档，保留原 Run 与证据 |
+| 归档及费用复核 | 12:17 的 `local-docker/final-audit-results.json`：原五模型归档均 200 且 SHA256 不变，新增探针后共 6 succeeded / 2 failed，8 个发送意图均为 sent；五渠道仍只指向本地 Mock、价格均为 0、Canvas usage ledger 0，复核额外 POST 0 |
+| PC Web | 12:21 的 `local-docker/web-pc-acceptance-results.json`：1440×900 双账号 13/13、10 张截图；15 组、刷新复用、已有结果、隔离及退出通过。预期 401/404 单列，非预期 pageerror/console/network/5xx 均为 0，额外 POST 0；已复核设置首尾、结果及第二账号工作台截图 |
+
+重测曾因验收脚本未退出 New API 会话而触发 409 `AUTH_SESSION_LIMIT`。停止独立 New API、备份 SQLite 后，仅撤销用户 1/2 的 49 条活跃 Node 探针会话，保留浏览器会话和所有项目、Token、grant、账务；这些会话并非自然过期。中断后核对备份并恢复服务，备份为 `.tmp/newapi-cleanup/new-api-before-session-cleanup.db`。HTTP 探针在 Canvas 回调完成后退出其临时 New API 登录，避免继续积累会话；最终导入、归档和 PC 验收均在恢复后通过。该处理不涉及线上账号或旧共享数据。
+
+接口兼容影响限于导入响应增加诊断和 ID 映射、跨项目节点/边 ID 重分配，以及缺少分组的生成请求明确拒绝。无需迁移现有数据；客户端应读取导入后的画布或 `nodeIdMap`，用户重新选择本人分组即可运行。回退本批代码不会还原已导入节点 ID、归档项目或撤销会话，并会重新引入导入冲突及隐式选组缺陷；独立数据库保留上述备份，共享 unknown 不变。
+
+## 首轮本地部署与验收
 
 本次目标为 P1 本地部署和验收，旧数据删除按 P0 管理。用户授权创建全新 Docker、管理员和分组，并使用线上 `test` 账号只读核对目录；真实供应商生成暂不产生费用。验收范围是登录、全部纳入组、Key 复用、账号隔离、五模型 Mock 归档、PC Web 和已确认测试数据清理。生产部署、未确认归属及真实费用不在本次执行范围内。
 
@@ -20,7 +40,7 @@
 | PC 浏览器 | 1440×900 双用户 13 项通过，10 张截图；15 组滚动展示、刷新、已有文字结果回显、隔离拒绝和双方退出通过。最终运行不忽略 HTTPS 证书错误，额外生成 POST 0 |
 | 回归检查 | `pnpm lint/typecheck/test/build/build:runtime/db:validate` 通过；测试任务 15/15，API 753 passed / 75 skipped，跳过不算集成通过；清理和 Docker 脚本 27/27。schema 校验首次因宿主缺 `DATABASE_URL` 失败，随后使用仅进程内无密码的本地示例 URL 通过，不代表连库验证 |
 
-两次早期 H3 失败仍留在本地数据库，最新原任务已恢复成功；最终为 5 succeeded、2 failed，7 个发送意图均为 sent，无 unknown。失败现场保存为 `local-docker/verification-before-h3-recovery.json`，恢复报告为 `local-docker/h3-recovery-results.json`，五模型和只读复核分别为 `local-docker/verification-results.json`、`local-docker/final-audit-results.json`。这些路径均相对被忽略的 `.local-tests/newapi-account/`，其中账号材料只保存为 DPAPI 密文，证书私钥和秘密卷不提交。
+两次早期 H3 失败仍留在本地数据库，最新原任务已恢复成功；首轮收尾时为 5 succeeded、2 failed，7 个发送意图均为 sent，无 unknown。失败现场保存为 `local-docker/verification-before-h3-recovery.json`，恢复报告为 `local-docker/h3-recovery-results.json`，五模型和只读复核分别为 `local-docker/verification-results.json`、`local-docker/final-audit-results.json`。这些路径均相对被忽略的 `.local-tests/newapi-account/`，其中账号材料只保存为 DPAPI 密文，证书私钥和秘密卷不提交。
 
 线上只读报告 `online-test-readonly.json` 记录 `https://api.lolicon.beer` 的 `test` 登录成功、外部 ID 498、14 个可用组和模型目录；线上组包含 `神秘分组`、没有 `auto`。本地额外加入 auto 和相近名称以验过滤边界，不宣称线上已有这两个组。线上账号接入入口在前次预检仍为 404，目录可读不能证明配套账号合同已上线。
 
@@ -74,7 +94,7 @@ node .local-tests/newapi-account/local-docker/final-audit.mjs
 - 普通、批量、DAG、显式优化、手动文本反推和取消后重试均有本地实际入口证据。特殊入口成功各 1 次 POST，取消原 Run 为 0；所有授权绑定同一所属用户/default/原 credential。终态恢复额外 POST 为 0，跨用户恢复为 404。
 - 两个 Wan 的视频/音频参考已完成签名对象读取；H3 首帧另有非零合成计费对账。Mock 实际 GET 5 个冻结对象均 200，H3 500 quota = 0.001 USD，New API 用户/Token/分组/请求/任务/唯一消费日志一致，Canvas 账务记录为 0。只证明本机跨容器与 Mock 合同，不证明公网真实供应商。
 
-本轮最后完整检查：`pnpm lint`、`pnpm typecheck`、`pnpm test`、`pnpm build`、`pnpm build:runtime` 均退出 0；Turbo 15/15，API 753 passed / 75 skipped，跳过项不计入集成通过。New API `go test ./...`、`go vet ./...`、`go build ./...` 和三库矩阵通过，独立 Docker 镜像重建后 healthy。完整日志为 Canvas `final-*.log`、`recovery-integration-final.log`、`recovery-routes.log`、`continuation-video-mode.log`、`continuation-send-boundary.log`；New API 日志在 `.local-tests/canvas-account-b0/continuation-*.log`。
+上一代码批次最后完整检查：`pnpm lint`、`pnpm typecheck`、`pnpm test`、`pnpm build`、`pnpm build:runtime` 均退出 0；Turbo 15/15，API 753 passed / 75 skipped，跳过项不计入集成通过。New API `go test ./...`、`go vet ./...`、`go build ./...` 和三库矩阵通过，独立 Docker 镜像重建后 healthy。完整日志为 Canvas `final-*.log`、`recovery-integration-final.log`、`recovery-routes.log`、`continuation-video-mode.log`、`continuation-send-boundary.log`；New API 日志在 `.local-tests/canvas-account-b0/continuation-*.log`。
 
 PC 前端本轮没有源码变化。此前真实双用户 9 项烟测与四组选择/生成/退出截图均通过，pageerror/console/network/5xx 为 0；本轮已复核设置、生成、第二账号空工作台截图，Web、API、New API 健康检查均 200。浏览器工具在最终复核中发生调用路由异常，未将未执行的交互计作新增通过，也未重跑生成。镜像重建后的两账号 HTTP 烟测 6 项通过：四组 active、同步复用、已有结果读取、资源/凭据隔离、退出会话失效，新增 Provider POST 为 0，见 `final-surface-smoke-results.json`。
 
@@ -160,6 +180,8 @@ PC 前端本轮没有源码变化。此前真实双用户 9 项烟测与四组�
 
 08:53 再次只读检查上述四个路径，状态与报告版本均未变化，证据 `target-contract-preflight-1789951996174.json`。线上 `test` 登录权限不能补齐不存在的账号合同，也不能提供旧凭据所属请求的消费结论。用户最新确认的部署范围仍为本地 Docker，且真实费用暂停；未获得新部署入口或费用范围前不执行相关操作。
 
+12:27 的四路径只读复核仍为 200/404/404/401，站点报告版本仍为 `v1.0.0-rc.37.custom.1`，见 `continuation-target-contract-final.json`；此次未登录、Provider POST 为 0。
+
 可部署代码已经交付：New API `fork/main @ f31ac6ab7519cffe5f19e04a24e1aeaf7d4dcd26` / `v1.0.0-rc.37.custom.15`，Canvas `origin/codex/generate-to-new-node @ 2c3595daeace6a578566ab01e31cf75db3d9f732` / `v2026.09.21-newapi-acceptance`。正式执行仍需：
 
 1. 确认目标服务器部署入口和生产操作授权；保留现有渠道、价格与用户数据，备份后部署配套版本，不用独立测试实例覆盖目标数据。
@@ -187,22 +209,22 @@ PC 前端本轮没有源码变化。此前真实双用户 9 项烟测与四组�
 | 12 | 预期分组受理竞态 | 隔离通过 | 受理前权限变化在 Provider POST 前拒绝且零发送 |
 | 13 | 两用户、两分组、同名模型 | Mock/运行环境通过 | PC 双上下文项目、设置、凭据和退出隔离通过 |
 | 14 | 凭据过期、撤销、断开、轮换 | 隔离通过 | 撤销后新提交拒绝，人工改期限不被同步复活；探针报告保留原 Token ID/期限且 Provider POST 为 0，三库通过 |
-| 15 | 普通、批量、DAG、优化、反推、重试 | Mock/运行环境通过 | `entries-results.json`、`special-entries-results.json`：普通、批量、DAG、优化、手动反推与取消后重试通过 |
+| 15 | 普通、批量、DAG、优化、反推、重试 | Mock/运行环境通过 | `entries-results.json`、`special-entries-results.json` 覆盖所有入口；本批优化/反推 42/42，缺少显式个人分组默认时拒绝，原选择失效不换组 |
 | 16 | 入队失败、重启、重复消费、未知创建结果 | 隔离通过 | 14/14 恢复集成、82/82 HTTP/运行/限流；unknown 仍拒绝自动重发 |
 | 17 | 新旧任务混合及旧页面提交 | 隔离通过 | 旧报价/账务入口拒绝，模式从服务端快照回读；旧数据收尾仍待共享切换 |
-| 18 | 保留项目、默认模型、导入导出 | 部分通过；目标环境待验 | 资源归属与节点字段回读通过；共享 owner-null 项目接收身份未定 |
+| 18 | 保留项目、默认模型、导入导出 | 本地导入通过；共享转换待验 | 真实 PostgreSQL 跨账号导入与 Docker A→B 导入通过；新节点/边身份、原内容、分组重选、越权拒绝有证据。共享 owner-null 项目接收身份仍未定 |
 | 19 | 测试账号清理、外键、对象、队列、恢复 | 已确认范围通过；其余暂缓 | 旧本地源库精确删除 21 行，恢复/副本重放通过；独立 Docker 探针用户 ID 3 及其 15 个 Token/Canvas 绑定已备份后清理；18 项目、65 素材、3 个 unknown 及所有关联证据保留，保留归属和旧库转换未完成 |
 | 20 | New API 不可用、禁用与撤销 | 本地运行环境通过 | 实际停止/恢复 New API、禁用/启用账号、产品撤销/重新授权共 11 项通过；只读可用、写入拒绝、旧会话不复活且零新增 POST，生产部署仍待验 |
-| 21 | 旧广场、钱包及后台同步退出 | 隔离通过 | 源码、路由和测试确认新任务无 Canvas 钱包/报价写入 |
+| 21 | 旧广场、钱包及后台同步退出 | 隔离通过 | 新任务无 Canvas 钱包/报价写入；旧钱包/计费/广场/后台实际路由补齐 410，31/31 定向回归通过 |
 | 22 | 手动 Key 管理与遗留引用清理 | 隔离通过 | 普通界面不显示 Key 表单/连接操作；共享旧引用仍待清单处理 |
-| 23 | 平台商品字段与本机缓存退出 | 隔离通过 | 节点/项目默认/优化/反推使用 credentialId + modelAlias |
+| 23 | 平台商品字段与本机缓存退出 | 隔离及本地运行通过 | 节点/项目默认/优化/反推必须显式 credentialId + modelAlias；导入只保留模型建议，即使仅一个分组也不自动补凭据，未选组零 Run/授权 |
 | 24 | 无本地货币门槛的目录 | Mock/运行环境通过 | 五模型目录与调用未创建 Canvas 报价；真实目录定价状态仍待验 |
 | 25 | 报价提醒型自动反推退出 | Mock/运行环境通过 | 主动优化/手动反推各一次成功，未触发自动生成 |
 | 26 | 迁出的通用执行能力 | 隔离通过 | Run、授权、outbox、取消、重试和恢复定向回归通过 |
-| 27 | 旧只读钱包及邮箱运营入口退出 | 隔离通过 | 读取设置/账号不 upsert 钱包；生产旧入口部署状态待验 |
+| 27 | 旧只读钱包及邮箱运营入口退出 | 隔离通过 | 读取设置/账号不 upsert 钱包；历史只读钱包、核账和定价入口明确 410，生产旧入口部署状态待验 |
 | 28 | H3、两个 Wan 与文字/图片 | Mock 通过；真实调用待验 | 五模型各一创建 POST 并归档；媒体补证报告记录签名视频/音频 |
 | 29 | 素材外部访问、费用及取消 | Mock 通过；真实调用待验 | 5 次签名素材 GET 200；H3 一笔 500 quota/0.001 USD 对账；真实供应商待验 |
-| 30 | PC Web 启动、连接、刷新、选模、生成、退出 | Mock/运行环境通过 | 首批双用户 9 项及生成通过；新 Docker PC 13 项、10 张截图通过，预期 401/404 单列，非预期错误 0，无新增生成 |
+| 30 | PC Web 启动、连接、刷新、选模、生成、退出 | Mock/运行环境通过 | 首批双用户 9 项及生成通过；本批镜像部署后 PC 13 项、10 张截图通过，预期 401/404 单列，非预期错误 0，无新增生成 |
 
 计划仍不能整体关闭：共享旧库保留归属与 unknown 核查、生产 HTTPS/管理员外部 ID、真实供应商回执/插件版本。8080 已由新独立 Docker 提供，队列与密钥的当前账户隔离恢复已补齐；本机验收和生产条件分别见文首与共享切换记录。
 
@@ -280,3 +302,5 @@ B6 两次前向迁移有显式事务和遗留数据门禁，不改已应用历�
 工程实现、隔离迁移/清理演练、PC Web 和五模型 Mock 已有首批验收。首批交付为 Canvas `ce6d5b4` / `v2026.09.21-newapi-accounts` 与 New API `727c274e7` / `v1.0.0-rc.37.custom.14`。本轮补齐恢复、视频持久化/发送边界和人工期限修复，交付 Tag 为 Canvas `v2026.09.21-newapi-acceptance`、New API `v1.0.0-rc.37.custom.15`，分别推送 `origin/codex/generate-to-new-node` 与 `fork/main`，实际提交和远端核验在任务交付中记录。
 
 本次独立 Docker、PC 13 项检查、重新授权探针及已确认旧测试账号的 21 行清理已完成，文档交付 Tag 为 `v2026.09.21-newapi-local-acceptance`。生产部署、旧库 unknown 核查及保留归属转换、真实供应商素材外网访问/付费回执仍待完成；原 Run 恢复入口已实现，队列和密钥的隔离恢复证据已补齐。下一阶段从这些剩余条件接续，不重复本机合成验收。前一代码版本可回退源码，但会重新出现已修复的期限和发送边界问题；本次未新增 schema 迁移，代码回退不能复活已经 changed 的管理授权或恢复已删除测试数据。
+
+本批跨账号导入、显式分组与历史入口修复使用 Tag `v2026.09.21-newapi-import-acceptance` 交付到当前 Canvas 上游分支。独立 Docker 已运行本批代码；完整检查、真实 PostgreSQL、双账号导入及 PC 证据见文首。New API 本批无源码改动，继续使用 `f31ac6ab7`；计划整体仍保留上述外部验收条件。

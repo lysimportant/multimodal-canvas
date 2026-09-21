@@ -99,7 +99,7 @@ describe('workflow import contract', () => {
         code: 'RESOURCE_MENTION_IMPORT_NOT_FOUND',
         mentionId: 'mention-1',
         assetId: 'asset-1',
-        nodeId: 'node-text',
+        nodeId: result.nodeIdMap['node-text'],
         mediaType: 'text',
       },
     ]);

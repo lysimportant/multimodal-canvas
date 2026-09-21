@@ -111,10 +111,21 @@ export function registerNewApiAccountRoutes(
   });
 }
 
-/** 旧写入口明确失效；在鉴权后也不能重新建钱包、写价格或新增独立账号。 */
+/**
+ * 判定已经退出的旧账号、钱包、计费、广场及手工凭据入口。
+ * @param path 不含查询串的请求路径。
+ * @param method 大写 HTTP 方法；用于保留设置读取等现行方法边界。
+ * @returns 命中旧入口时返回 true，调用方应统一响应 410。
+ */
 export function isRetiredNewApiRoute(path: string, method: string): boolean {
   if (
     /^\/v1\/(?:billing|marketplace|models\/marketplace|admin\/(?:billing|models|newapi|users|bootstrap)|auth\/(?:register|login|verify|verification|password)|account\/(?:password|email))(?=\/|$)/.test(
+      path,
+    ) ||
+    /^\/v1\/account\/(?:wallet|billing)\/?$/.test(path) ||
+    /^\/v1\/runs\/[^/]+\/charge\/?$/.test(path) ||
+    /^\/v1\/model-marketplace(?=\/|$)/.test(path) ||
+    /^\/v1\/admin\/(?:wallets|charge-items|reconciliation|model-marketplace|pricing-versions)(?=\/|$)/.test(
       path,
     )
   )

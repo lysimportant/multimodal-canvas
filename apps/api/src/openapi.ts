@@ -464,11 +464,12 @@ const workflowImportRequestSchema = {
     expectedRevision: { type: 'integer', minimum: 0 },
   },
   additionalProperties: false,
-  description: '项目导入接口接受的工作流文档；expectedRevision 用于乐观并发控制。',
+  description:
+    '项目导入接口接受的工作流文档；expectedRevision 用于乐观并发控制。跨项目导入分配新节点/边 ID 并返回 nodeIdMap。导入会移除源账号凭据和 URL，模型仅保留精确名称建议，New API 生成前必须重新选择本人分组。',
 } as const;
 
 /** 导入时单个资源提及产生的问题。 */
-const workflowImportIssueSchema = {
+const workflowImportMentionIssueSchema = {
   type: 'object',
   required: ['code', 'message', 'mentionId', 'assetId', 'mediaType', 'reason'],
   properties: {
@@ -506,6 +507,27 @@ const workflowImportIssueSchema = {
   description: '逐项导入诊断；资产无法解析时以占位形式保留原始资源身份。',
 } as const;
 
+/** 模型建议和资源占位分别返回诊断；nodeId 缺省表示项目默认模型。 */
+const workflowImportIssueSchema = {
+  oneOf: [
+    workflowImportMentionIssueSchema,
+    {
+      type: 'object',
+      required: ['code', 'message', 'modelAlias', 'mediaType', 'reason'],
+      properties: {
+        code: { type: 'string', enum: ['MODEL_SELECTION_REQUIRED'] },
+        message: { type: 'string', minLength: 1 },
+        modelAlias: { type: 'string', minLength: 1 },
+        mediaType: mediaTypeSchema,
+        nodeId: { type: 'string', minLength: 1 },
+        reason: { type: 'string', enum: ['model_selection_required'] },
+      },
+      additionalProperties: false,
+      description: '保留导入的精确模型建议；用户重新选择本人分组后才可执行。',
+    },
+  ],
+} as const;
+
 /** 工作流导入成功响应。 */
 const workflowImportResponseSchema = {
   type: 'object',
@@ -515,6 +537,11 @@ const workflowImportResponseSchema = {
     canvas: { $ref: '#/components/schemas/Canvas' },
     modelDefaults: { $ref: '#/components/schemas/ProjectModelDefaults' },
     issues: { type: 'array', items: { $ref: '#/components/schemas/WorkflowImportIssue' } },
+    nodeIdMap: {
+      type: 'object',
+      additionalProperties: { type: 'string', minLength: 1 },
+      description: '源节点 ID 到导入节点 ID 的映射；同项目导入保留 ID。',
+    },
   },
   additionalProperties: false,
 } as const;

@@ -434,11 +434,9 @@ const defaultModelsSchema = z.object({
 });
 
 /**
- * Validate project defaults before touching the project store. A default can
- * be a legacy unbound alias, but a bound selection must point at a usable
- * credential-scoped catalog entry. Unbound aliases are rejected when more
- * than one credential exposes the same model so the later run snapshot has a
- * deterministic credential reference.
+ * 写入前校验项目默认模型。New API 必须明确指定本人分组凭据；旧测试适配器
+ * 可保留无绑定别名，但同名模型来自多个分组时仍拒绝推断。无可用模型或凭据
+ * 不匹配时抛出 AiSettingsError / AiCredentialNotFoundError，不写入项目。
  */
 async function validateProjectModelDefaults(input: {
   settingsStore: AiSettingsStoreLike;
@@ -473,6 +471,9 @@ async function validateProjectModelDefaults(input: {
     const credentialId = selection.credentialId?.trim();
     if (!alias) {
       throw new AiSettingsError('model_unavailable', `未配置可用的 ${mediaType} 项目默认模型`);
+    }
+    if (input.requireCredentialReferences && !credentialId && !input.credentialScope) {
+      throw new AiSettingsError('model_unavailable', `模型 ${alias} 需要重新选择本人分组`);
     }
 
     if (alias === `mock-${mediaType}` && !credentialId && input.allowVirtualMockModels) {
@@ -615,17 +616,18 @@ async function requireCredentialReference(
     throw new AiSettingsError('model_unavailable', `模型 ${alias} 未绑定可用的 API Key`);
   }
 }
-/** 独立文字任务仅使用本人的分组默认模型。 */
+/** 独立文字任务只使用显式分组默认；allowCatalogFallback 仅供非生产 Mock 兼容。 */
 async function resolveTextSubmissionModel(
   settingsStore: AiSettingsStoreLike,
+  allowCatalogFallback: boolean,
 ): Promise<ModelSelection | undefined> {
-  return resolveReversePromptDefault(settingsStore);
+  return resolveReversePromptDefault(settingsStore, allowCatalogFallback);
 }
 
 /**
- * Resolve and validate every executable node in a run's upstream closure at
- * submission time. The resulting aliases are passed into the immutable run
- * snapshot; later project/settings changes therefore cannot affect retries.
+ * 提交时校验目标及其执行上游的模型和凭据。New API 不推断缺失的分组身份；
+ * 无效选择抛出 AiSettingsError。返回逐节点精确模型与凭据版本，供不可变快照
+ * 固定本次授权，后续项目或个人设置变化不影响原任务。
  */
 async function resolveRunNodeModels(input: {
   settingsStore: AiSettingsStoreLike;
@@ -732,6 +734,12 @@ async function resolveRunNodeModels(input: {
       );
     }
     let effectiveCredentialId = nodeCredentialId ?? selectedCredentialId;
+    if (input.requireCredentialReferences && !effectiveCredentialId) {
+      throw new AiSettingsError(
+        'model_unavailable',
+        `节点 ${node.id} 的模型 ${alias} 需要重新选择本人分组`,
+      );
+    }
     let catalog = await getCatalog(mediaType, effectiveCredentialId);
     if (!effectiveCredentialId && alias && !alias.startsWith('mock-')) {
       const candidates = await Promise.all(
@@ -2157,13 +2165,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           projectId: request.params.projectId,
         });
         let modelDefaults = await projectStore.getModelDefaults(request.params.projectId, scope);
-        if (imported.modelDefaults) {
+        // 导入的默认模型已剥离源账号凭据，只保留待重选建议；New API 执行边界
+        // 要求显式分组，不能因目录暂不可用或同名模型跨组而阻止画布导入。
+        if (imported.modelDefaults && providerName !== 'newapi') {
           await validateProjectModelDefaults({
             settingsStore,
             defaults: imported.modelDefaults as UpdateProjectModelDefaultsInput,
             allowVirtualMockModels:
               providerName === 'mock' && process.env.NODE_ENV !== 'production',
-            requireCredentialReferences: providerName === 'newapi',
+            requireCredentialReferences: false,
           });
         }
 
@@ -2191,6 +2201,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           canvas,
           ...(modelDefaults ? { modelDefaults } : {}),
           issues: imported.issues,
+          nodeIdMap: imported.nodeIdMap,
         };
       } catch (error) {
         if (error instanceof WorkflowImportError) {
@@ -2642,7 +2653,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
         .at(0);
       if (runId && !run) return reply.code(404).send({ error: 'reverse prompt run not found' });
-      const selectedDefault = await resolveTextSubmissionModel(settingsStore);
+      const selectedDefault = await resolveTextSubmissionModel(
+        settingsStore,
+        providerName === 'mock' && process.env.NODE_ENV !== 'production',
+      );
       const defaultModel = selectedDefault;
       return {
         analysis: run ? publicReversePromptAnalysis(run) : null,
@@ -2729,7 +2743,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
               modelAlias: body.modelAlias,
               ...(body.credentialId ? { credentialId: body.credentialId } : {}),
             }
-          : await resolveTextSubmissionModel(settingsStore);
+          : await resolveTextSubmissionModel(
+              settingsStore,
+              providerName === 'mock' && process.env.NODE_ENV !== 'production',
+            );
         if (!selected) throw new AiSettingsError('model_unavailable', '未配置可用的文字模型');
         if (
           body.credentialId &&
@@ -2956,7 +2973,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
                 modelAlias: body.modelAlias,
                 ...(body.credentialId ? { credentialId: body.credentialId } : {}),
               }
-            : await resolveTextSubmissionModel(settingsStore);
+            : await resolveTextSubmissionModel(
+                settingsStore,
+                providerName === 'mock' && process.env.NODE_ENV !== 'production',
+              );
           if (!selected) throw new AiSettingsError('model_unavailable', '未配置可用的文字模型');
           if (
             body.credentialId &&

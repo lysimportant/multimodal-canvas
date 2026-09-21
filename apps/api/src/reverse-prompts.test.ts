@@ -27,6 +27,8 @@ async function fixture(output = JSON.stringify(reverseResult), providerFetch?: t
     baseUrl: 'https://provider.invalid/v1',
     apiKey: 'synthetic-key-for-reverse-tests',
   });
+  const credentialId = settingsStore.getCredentialReference().credentialId;
+  if (!credentialId) throw new Error('反推测试缺少合成凭据');
   settingsStore.replaceModels(
     ['alpha-text', 'beta-text'].map((id) => ({
       id,
@@ -34,8 +36,11 @@ async function fixture(output = JSON.stringify(reverseResult), providerFetch?: t
       mediaTypes: ['text'],
       refreshedAt: new Date().toISOString(),
     })),
-    settingsStore.getCredentialReference().credentialId,
+    credentialId,
   );
+  settingsStore.update({
+    defaultModels: { text: { modelAlias: 'alpha-text', credentialId } },
+  });
   const project = await projectStore.create({ name: '资源分析' });
   const asset = await assetStore.create({
     projectId: project.id,
@@ -86,6 +91,7 @@ async function fixture(output = JSON.stringify(reverseResult), providerFetch?: t
     project,
     asset,
     url,
+    credentialId,
   };
 }
 
@@ -106,7 +112,9 @@ afterEach(async () => {
 describe('资源反推提示词 API', () => {
   it('选择文字默认模型并读取指定旧版本，独立保存结果而不归档或修改画布', async () => {
     const ctx = await fixture();
-    ctx.settingsStore.update({ defaultModels: { text: 'beta-text' } });
+    ctx.settingsStore.update({
+      defaultModels: { text: { modelAlias: 'beta-text', credentialId: ctx.credentialId } },
+    });
     await ctx.assetStore.createVersion(ctx.asset.id, { content: Buffer.from('version-two') });
     const before = await ctx.projectStore.getCanvas(ctx.project.id);
     const response = await ctx.app.inject({
@@ -156,24 +164,33 @@ describe('资源反推提示词 API', () => {
     expect(original.json().records).toEqual([]);
   });
 
-  it('未设置默认时选择第一个文字模型，允许明确选择其它模型', async () => {
+  it('未设置默认时拒绝隐式选组，允许明确选择分组模型', async () => {
     const ctx = await fixture();
-    const first = await ctx.app.inject({
+    ctx.settingsStore.update({ defaultModels: { text: null } });
+    const rejected = await ctx.app.inject({
       method: 'POST',
       url: ctx.url,
       payload: { projectId: ctx.project.id },
     });
-    expect(first.json().analysis.modelAlias).toBe(ctx.settingsStore.listModels('text')[0]?.id);
-    await vi.waitFor(async () =>
-      expect((await ctx.runService.get(first.json().analysis.runId))?.status).toBe('succeeded'),
-    );
-    const second = await ctx.app.inject({
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json()).toMatchObject({ code: 'model_unavailable' });
+    expect(ctx.executor).not.toHaveBeenCalled();
+
+    const explicit = await ctx.app.inject({
       method: 'POST',
       url: ctx.url,
-      payload: { projectId: ctx.project.id, modelAlias: 'beta-text' },
+      payload: {
+        projectId: ctx.project.id,
+        modelAlias: 'beta-text',
+        credentialId: ctx.credentialId,
+      },
     });
-    expect(second.json().analysis.modelAlias).toBe('beta-text');
-    expect(second.json().analysis.runId).not.toBe(first.json().analysis.runId);
+    expect(explicit.statusCode, explicit.body).toBe(202);
+    expect(explicit.json().analysis.modelAlias).toBe('beta-text');
+    await vi.waitFor(async () =>
+      expect((await ctx.runService.get(explicit.json().analysis.runId))?.status).toBe('succeeded'),
+    );
+    expect(ctx.executor).toHaveBeenCalledTimes(1);
   });
 
   it('保留默认模型的独立凭据，默认失效时不自动切换模型或 Key', async () => {
@@ -233,7 +250,9 @@ describe('资源反推提示词 API', () => {
     });
     const runId = first.json().analysis.runId;
     await vi.waitFor(async () => expect((await ctx.runService.get(runId))?.status).toBe('failed'));
-    ctx.settingsStore.update({ defaultModels: { text: 'beta-text' } });
+    ctx.settingsStore.update({
+      defaultModels: { text: { modelAlias: 'beta-text', credentialId: ctx.credentialId } },
+    });
     const duplicate = await ctx.app.inject({
       method: 'POST',
       url: ctx.url,
@@ -462,7 +481,7 @@ describe('资源反推提示词 API', () => {
     expect(original.json().records).toEqual([]);
   });
 
-  it('GET 只返回安全默认模型身份，并可继承独立 Key 的文字类型默认', async () => {
+  it('GET 只返回安全默认模型身份，并保留独立分组的个人文字默认', async () => {
     const ctx = await fixture();
     const added = ctx.settingsStore.update({
       baseUrl: 'https://other.invalid/v1',
@@ -481,7 +500,9 @@ describe('资源反推提示词 API', () => {
       ],
       credentialId,
     );
-    ctx.settingsStore.updateCredentialDefaults(credentialId, { text: 'bound-text' });
+    ctx.settingsStore.update({
+      defaultModels: { text: { modelAlias: 'bound-text', credentialId } },
+    });
     const read = await ctx.app.inject({
       method: 'GET',
       url: `${ctx.url}?projectId=${ctx.project.id}`,

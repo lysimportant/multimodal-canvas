@@ -1125,11 +1125,13 @@ describe('workflow import HTTP contract', () => {
       });
 
       expect(response.statusCode).toBe(200);
+      const importedNodeId = response.json().nodeIdMap.node_direct_import;
+      expect(importedNodeId).not.toBe('node_direct_import');
       expect(response.json()).toMatchObject({
         workflow: {
           project: { id: 'project_source_direct', name: 'Source direct project' },
         },
-        canvas: { revision: 1, nodes: [{ id: 'node_direct_import' }] },
+        canvas: { revision: 1, nodes: [{ id: importedNodeId }] },
         issues: [],
       });
       const currentProject = await importApp.inject({
@@ -1168,8 +1170,10 @@ describe('workflow import HTTP contract', () => {
       });
 
       expect(response.statusCode).toBe(200);
+      const importedNodeId = response.json().nodeIdMap.node_wrapped_import;
+      expect(importedNodeId).not.toBe('node_wrapped_import');
       expect(response.json()).toMatchObject({
-        canvas: { revision: 1, nodes: [{ id: 'node_wrapped_import' }] },
+        canvas: { revision: 1, nodes: [{ id: importedNodeId }] },
         issues: [],
       });
       const currentCanvas = await importApp.inject({
@@ -1178,7 +1182,7 @@ describe('workflow import HTTP contract', () => {
       });
       expect(currentCanvas.json().canvas).toMatchObject({
         revision: 1,
-        nodes: [{ id: 'node_wrapped_import' }],
+        nodes: [{ id: importedNodeId }],
       });
     } finally {
       await importApp.close();
@@ -1319,14 +1323,14 @@ describe('workflow import HTTP contract', () => {
         expect.arrayContaining([
           expect.objectContaining({
             code: 'RESOURCE_MENTION_IMPORT_NOT_FOUND',
-            nodeId: 'node_missing_mentions',
+            nodeId: response.json().nodeIdMap.node_missing_mentions,
             mentionId: 'mention_missing_image',
             assetId: 'asset_missing_image',
             reason: 'not_found',
           }),
           expect.objectContaining({
             code: 'RESOURCE_MENTION_IMPORT_NOT_FOUND',
-            nodeId: 'node_missing_mentions',
+            nodeId: response.json().nodeIdMap.node_missing_mentions,
             mentionId: 'mention_missing_audio',
             assetId: 'asset_missing_audio',
             reason: 'not_found',
@@ -1421,12 +1425,14 @@ describe('workflow import HTTP contract', () => {
       });
 
       expect(valid.statusCode).toBe(200);
+      const importedNodeId = valid.json().nodeIdMap.node_valid_defaults;
+      expect(importedNodeId).not.toBe('node_valid_defaults');
       expect(valid.json()).toMatchObject({
         modelDefaults: {
           image: 'import-image-model',
           text: 'import-text-model',
         },
-        canvas: { revision: 1, nodes: [{ id: 'node_valid_defaults' }] },
+        canvas: { revision: 1, nodes: [{ id: importedNodeId }] },
       });
       const invalid = await importApp.inject({
         method: 'POST',
@@ -1464,7 +1470,7 @@ describe('workflow import HTTP contract', () => {
       });
       expect(currentCanvas.json().canvas).toMatchObject({
         revision: 1,
-        nodes: [{ id: 'node_valid_defaults' }],
+        nodes: [{ id: importedNodeId }],
       });
     } finally {
       await importApp.close();

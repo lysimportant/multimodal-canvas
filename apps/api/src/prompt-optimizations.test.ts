@@ -65,6 +65,8 @@ async function fixture(
     baseUrl: 'https://provider.invalid/v1',
     apiKey: 'synthetic-optimization-key',
   });
+  const credentialId = settingsStore.getCredentialReference().credentialId;
+  if (!credentialId) throw new Error('提示词优化测试缺少合成凭据');
   settingsStore.replaceModels(
     ['alpha-text', 'beta-text'].map((id) => ({
       id,
@@ -72,8 +74,11 @@ async function fixture(
       mediaTypes: ['text'],
       refreshedAt: new Date().toISOString(),
     })),
-    settingsStore.getCredentialReference().credentialId,
+    credentialId,
   );
+  settingsStore.update({
+    defaultModels: { text: { modelAlias: 'alpha-text', credentialId } },
+  });
   const project = await projectStore.create({ name: 'Skill 优化' }, { ownerId });
   const executor = vi.fn(async (request: RunExecutorRequest) =>
     options.fetchImpl
@@ -138,6 +143,7 @@ async function fixture(
     url,
     payload,
     headers,
+    credentialId,
   };
 }
 
@@ -445,7 +451,9 @@ describe('独立 Skill 提示词优化 API', () => {
     const runId = frozen.id;
     expect(frozen.status).toBe('queued');
     expect(frozen.userId).toBe(ownerId);
-    ctx.settingsStore.update({ defaultModels: { text: 'beta-text' } });
+    ctx.settingsStore.update({
+      defaultModels: { text: { modelAlias: 'beta-text', credentialId: ctx.credentialId } },
+    });
     vi.spyOn(ctx.promptSkillStore, 'get').mockRejectedValue(new Error('Skill store unavailable'));
     create.mockClear();
     create.mockRejectedValueOnce(new Error('synthetic queue publication failure'));
@@ -513,7 +521,9 @@ describe('独立 Skill 提示词优化 API', () => {
 
   it('接受未保存提示词，冻结文字默认及引用，既不读媒体也不改画布或归档资产', async () => {
     const ctx = await fixture();
-    ctx.settingsStore.update({ defaultModels: { text: 'beta-text' } });
+    ctx.settingsStore.update({
+      defaultModels: { text: { modelAlias: 'beta-text', credentialId: ctx.credentialId } },
+    });
     const readContent = vi.spyOn(ctx.assetStore, 'getVersionContent');
     const before = await ctx.projectStore.getCanvas(ctx.project.id);
     const response = await ctx.app.inject({ method: 'POST', url: ctx.url, payload: ctx.payload });
@@ -577,7 +587,9 @@ describe('独立 Skill 提示词优化 API', () => {
     expect(runIds.size).toBe(1);
     const runId = responses[0]!.json().optimization.runId;
     await vi.waitFor(async () => expect((await ctx.runService.get(runId))?.status).toBe('failed'));
-    ctx.settingsStore.update({ defaultModels: { text: 'beta-text' } });
+    ctx.settingsStore.update({
+      defaultModels: { text: { modelAlias: 'beta-text', credentialId: ctx.credentialId } },
+    });
     const repeated = await ctx.app.inject({ method: 'POST', url: ctx.url, payload: ctx.payload });
     expect(repeated.statusCode).toBe(202);
     expect(repeated.json().optimization).toMatchObject({
@@ -725,7 +737,9 @@ describe('独立 Skill 提示词优化 API', () => {
       ],
       credentialId,
     );
-    ctx.settingsStore.updateCredentialDefaults(credentialId, { text: 'independent-text' });
+    ctx.settingsStore.update({
+      defaultModels: { text: { modelAlias: 'independent-text', credentialId } },
+    });
     const start = await ctx.app.inject({ method: 'POST', url: ctx.url, payload: ctx.payload });
     expect(start.statusCode, start.body).toBe(202);
     expect(start.json().optimization).toMatchObject({
