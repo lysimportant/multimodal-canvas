@@ -4,6 +4,14 @@
 
 本轮收口基线：Canvas `cf2fd7c03895ee83b327ab8b0dbd6eed04694173`，分支 `codex/generate-to-new-node`，上游 `origin/codex/generate-to-new-node`；New API `9152afc04ace3819bb550e67cb97cc3cc7bd7b19`，分支 `main`，上游 `fork/main`，Tag `v1.0.0-rc.37.custom.17`。Node `24.12.0`、pnpm `11.19.0`、Docker `29.7.2`、Go `1.26.0 windows/amd64`，已有依赖可用。主代理直接实施和核验，没有新增依赖；用户原有 `docs/resource-input-compatibility.md` 改动及 SHA256 保持不变。
 
+## 本地启动恢复（18:55）
+
+用户运行根目录 `docker compose up -d --build` 后，`multimodal-canvas-app-migrate-1` 退出 1。PostgreSQL 日志给出原始原因：“旧表 email_challenges 仍有 1 行；先完成已备份的 B5 清理，再部署本迁移”。该默认项目复用旧共享数据库，仍有 1 个用户、18 个项目、65 个素材、65 个 Run、27 条凭据、193 条旧目录和 1 个钱包。新迁移 010000—040000 已应用，050000 的保护检查失败、事务回滚且应用步骤为 0；没有清库、删除卷或标记迁移为成功。`--build` 更新镜像，不清理数据卷，此故障与线上 New API 的版本无关。
+
+已从现有卷恢复独立 `canvas-newapi-local`：使用原 `local.env` 与两个 Compose 文件，`up -d --no-build --wait --wait-timeout 60` 退出 0；本地迁移退出 0，API、Worker、Web、New API 和设施健康。随后 PC 登录/换号 8/8，15 个分组、75 条目录，页面/控制台无新增错误；五个归档 SHA256 不变，10 succeeded / 2 failed、12 sent、Canvas usage ledger 0、复核新增生成 POST 0。此次没有重新生成素材。日志 `local-recovery-start.log`、`local-recovery-browser.log`、`local-recovery-audit.log`，报告仍在 `local-docker/`；之前的报告另存 `local-recovery-*-before.json`。
+
+本次只补充[本地启动与迁移排障说明](docker-desktop.md)，不改应用源码、迁移、依赖或默认项目数据。`node --test scripts/docker/config.test.mjs` 14/14、`git diff --check` 通过；原用户资源文档 SHA256 未变。当前继续使用 `http://localhost:8080/`；浏览器中的旧登录事务可能过期，应从画布重新登录。默认项目的旧数据迁移继续保持阻断，后续按明确归属和备份清单处理，不能据本地恢复结果将其标记成功。
+
 ## 本地范围收口
 
 逐项复核第 9 节、本地报告和当前工作区后，发现旧 `GET /v1/settings/ai/credentials` 没有消费者且已从 OpenAPI 退出，但实际仍返回 200。已删除处理器并纳入统一 410 边界，当前分组列表继续由 `/v1/account/newapi` 提供。OpenAPI 移除旧密码、验证码、邮件响应说明，旧界面设计文档明确标记已退役账号和 Key 流程。无需数据库迁移；API 更新前保留 `multimodal-canvas-api:before-local-final-20260921`，可按原卷回退。

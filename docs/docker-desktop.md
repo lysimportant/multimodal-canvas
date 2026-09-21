@@ -8,6 +8,24 @@
 
 默认浏览器地址是 <http://localhost:8080/>，仅向 `127.0.0.1` 发布入口端口。可以额外启用 <https://localhost:8443/>，同时保留 HTTP 8080 供本机访问或后续域名反向代理。数据库、Redis、对象存储和应用内部端口不面向局域网或公网开放。生产构建不等于公网部署；域名、公网证书、认证策略和供应商回调需要独立配置与验收。
 
+### 当前电脑的 New API 本地验收环境
+
+账号接入验收使用单独的 `canvas-newapi-local` 项目，包含已配套的本地 New API 和免费 Mock。根目录直接运行 `docker compose up -d --build`，或使用 `Docker-Start.cmd`，操作的是 `multimodal-canvas-app`，不会自动选中这套验收环境。两个项目各自保存数据库卷，但 Web 默认都使用 8080，同一时间只能有一个占用该入口。
+
+在已保留验收配置和镜像的当前电脑，从仓库根目录恢复本地环境：
+
+```powershell
+docker compose --project-name canvas-newapi-local `
+  --env-file .local-tests/newapi-account/local-docker/local.env `
+  -f compose.yaml `
+  -f .local-tests/newapi-account/local-docker/compose.yaml `
+  up -d --no-build --wait --wait-timeout 60
+```
+
+画布入口为 <http://localhost:8080/>，New API 为 <https://newapi.localhost:13443>。从画布重新发起登录，不复用浏览器中已过期的回调或登录事务 URL。此环境使用本地合成账号，不依赖线上 New API 是否更新。
+
+查看状态或保留数据地停止时，保留相同的 `--project-name`、`--env-file` 和两个 `-f` 参数，将末尾 `up ...` 替换为 `ps -a` 或 `stop`。这里的 `.local-tests` 配置、证书和合成账号不进入 Git；此命令仅用于已建立该环境的电脑，不是新克隆仓库的通用初始化命令。
+
 ## 首次启动
 
 1. 安装并打开 Windows Docker Desktop，完成其首次安装引导、许可确认及 WSL 2/虚拟化配置，使用 **Linux containers**。脚本不会替你修改系统功能、全局 Docker context 或容器模式。
@@ -114,13 +132,28 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Ac
 
 原始 `secrets` 卷只挂载给初始化服务。各服务使用独立的 `*_secrets` 只读视图与匹配容器身份的文件权限，基础设施无法读取 API 的 JWT 或凭据加密密钥；已有卷再次初始化不会轮换密钥，遇到内容不一致会明确失败。备份必须保持原始密钥、派生视图和业务数据一致，不要通过删除卷排障。
 
-这是**新的独立数据环境**：不会自动导入旧 `.data`、开发数据库、测试卷或根目录 `.env`，旧环境中的账户、项目、资源和供应商配置不会自动出现在此处。需要旧数据时应先制定并验证迁移与备份方案，不要直接复用旧卷或把生产迁移指向开发数据库。
+首次建立该 Compose 项目时使用独立数据环境，不会自动导入旧 `.data`、开发数据库、测试卷或根目录 `.env`。同名项目之后再次启动会复用原有 named volumes；`--build` 只更新镜像，不会清空数据库或将旧卷变成新库。需要旧数据时应先制定并验证迁移与备份方案，不要把“已重新构建镜像”当作“已经完成数据迁移”。
 
 完成 New API 登录后，在画布选择所属分组和已确认支持的模型。不向源码、Compose、CMD、文档或日志粘贴真实密钥。启动脚本不会调用付费 API；首次启动与登录不代表真实供应商生成已验收。点击真实生成可能产生费用，结果不明时应先查询已有任务，不重复创建。
 
 本机回环地址不能被外部供应商直接访问。真实供应商回调、模型权限、账户余额、外网连通性及供应商端取消/签名/幂等契约，不由本地启动成功保障；未确认项仍以 [TODO-SERVER.md](../TODO-SERVER.md) 和相关供应商验收文档为准。
 
 ## 失败与恢复
+
+### `migrate` 因旧账号数据停止
+
+如果 Compose 提示 `service "migrate" didn't complete successfully: exit 1`，先读取具体错误：
+
+```powershell
+docker compose logs --tail 100 migrate
+docker compose logs --tail 200 postgres
+```
+
+`20260921050000_retire_legacy_accounts_billing` 会检查旧账号、手动凭据、钱包等数据是否已经收尾；存在保留记录时主动回滚，不执行删表。Prisma 有时只显示 `current transaction is aborted`，PostgreSQL 日志保留先前的具体门禁原因，例如“旧表 email_challenges 仍有 1 行”。这是旧数据库数据阻止新迁移，不是镜像缓存或线上 New API 未更新。
+
+2026-09-21 当前电脑的 `multimodal-canvas-app` 仍保存 18 个项目、65 个素材及原 unknown 关联证据，因此不作为本次本地测试的启动目标。使用上面的独立验收环境继续测试；旧库保留到按明确归属、清单和备份方案处理。不得用删除卷、清库或把失败迁移标为已完成来绕过门禁；即使重建镜像不使用缓存，该数据条件仍然存在。
+
+### 其他启动失败
 
 1. 保留失败窗口中的错误与退出码，打开 Docker Desktop 检查引擎状态、Linux containers 模式和本项目容器状态。
 2. 运行 `-Action Status`。Start/Build/Https/Stop 失败后脚本已经尝试只读查询状态；查询也失败时会明确说明状态无法确认，不盲目重启。
