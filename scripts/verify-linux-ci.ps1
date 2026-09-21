@@ -107,7 +107,7 @@ try {
   foreach ($service in @(
     @{ Name = 'postgres'; Image = 'postgres:16-alpine'; Arguments = @('-e', 'POSTGRES_DB=multimodal_canvas_ci', '-e', 'POSTGRES_USER=ci_user', '-e', 'POSTGRES_PASSWORD=ci_password'); Command = @() },
     @{ Name = 'redis'; Image = 'redis:7-alpine'; Arguments = @(); Command = @() },
-    @{ Name = 'minio'; Image = 'minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e'; Arguments = @('-e', 'MINIO_ROOT_USER=ci-minio-user', '-e', 'MINIO_ROOT_PASSWORD=ci-minio-password'); Command = @('server', '/data', '--console-address', ':9001') }
+    @{ Name = 'minio'; Image = 'quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e'; Arguments = @('-e', 'MINIO_ROOT_USER=ci-minio-user', '-e', 'MINIO_ROOT_PASSWORD=ci-minio-password'); Command = @('server', '/data', '--console-address', ':9001') }
   )) {
     $name = "$runName-$($service.Name)"
     $containers.Add($name)
@@ -116,7 +116,7 @@ try {
   Wait-Dependency -Arguments @('exec', "$runName-postgres", 'pg_isready', '-U', 'ci_user', '-d', 'multimodal_canvas_ci')
   Wait-Dependency -Arguments @('exec', "$runName-redis", 'redis-cli', 'ping')
   Wait-Dependency -Arguments @('exec', $runner, 'curl', '--fail', '--silent', 'http://127.0.0.1:9000/minio/health/live')
-  Invoke-Docker -Arguments @('run', '--rm', '--network', "container:$runner", '--entrypoint', '/bin/sh', 'minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727', '-ec', 'mc alias set local http://127.0.0.1:9000 ci-minio-user ci-minio-password; mc mb local/multimodal-canvas-linux-ci')
+  Invoke-Docker -Arguments @('run', '--rm', '--network', "container:$runner", '--entrypoint', '/bin/sh', 'quay.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727', '-ec', 'mc alias set local http://127.0.0.1:9000 ci-minio-user ci-minio-password; mc mb local/multimodal-canvas-linux-ci')
   }
 
   [ordered]@{

@@ -43,7 +43,7 @@ docker compose --project-name canvas-newapi-local `
 ## 首次启动
 
 1. 安装并打开 Windows Docker Desktop，完成其首次安装引导、许可确认及 WSL 2/虚拟化配置，使用 **Linux containers**。脚本不会替你修改系统功能、全局 Docker context 或容器模式。
-2. 保持网络可用。第一次需要下载基础镜像、安装镜像内依赖并构建应用，耗时取决于网络和机器性能；主机不需要另外安装 Node.js 或 pnpm。
+2. 保持 Docker Hub、Quay.io、Debian HTTPS 仓库和 npm 可访问。第一次需要下载基础镜像、安装镜像内依赖并构建应用；MinIO Server 与 `mc` 从 `quay.io/minio` 获取，并保留仓库固定的 SHA-256 digest。耗时取决于网络和机器性能；主机不需要另外安装 Node.js 或 pnpm。
 3. 在项目根目录双击 `Docker-Start.cmd`。从其他目录或快捷方式启动也可以，入口以自身文件路径定位项目。
 4. 等待 Compose 健康检查完成，脚本会打开默认浏览器。若初始化、构建或健康检查失败，窗口保留错误，不会宣称启动成功或自动重复变更操作。
 
@@ -158,7 +158,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Ac
 
 `Dockerfile:2`、`failed to fetch anonymous token` 和 `auth.docker.io` 连接超时表示基础镜像构建前的网络请求失败，还没有进入数据库迁移。`--build` 仍可能访问镜像仓库；删除数据卷不能修复这个错误。
 
-当前电脑已有配套镜像时使用 `Docker-Local.cmd`，其启动带 `--no-build --pull never`。需要从源码重建时，仍须先恢复 Docker 引擎到 Docker Hub 的 DNS/代理连通性。本次只验证已有镜像启动，没有宣称 Docker Hub 网络已修复。
+当前电脑已有配套镜像时使用 `Docker-Local.cmd`，其启动带 `--no-build --pull never`。需要从源码重建时，仍须验证 Docker 引擎到 Docker Hub 和 Quay.io 的 DNS/代理连通性。
+
+### MinIO 镜像提示 `pull access denied`
+
+当前 `compose.yaml` 使用 `quay.io/minio/minio` 和 `quay.io/minio/mc`，仅明确了官方 Quay.io registry，两个镜像的固定 digest 没有变化。若错误中的镜像仍为不带 `quay.io/` 的 `minio/mc@sha256:...`，说明使用的是旧 Docker Hub 引用；先取得包含当前 `compose.yaml` 的完整版本再重试，不要删除 digest、改用 `latest` 或删除数据卷。
+
+Compose 会并行拉取多个服务镜像。一个镜像失败后，PostgreSQL、Redis 或 MinIO Server 等其他项目可能显示 `Interrupted`；这表示本轮操作被中止，不等于这些镜像也分别不可用。该失败发生在初始化和迁移之前，应以首个明确的 pull 错误为排障起点。
 
 ### `migrate` 因旧账号数据停止
 

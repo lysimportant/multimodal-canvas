@@ -12,7 +12,7 @@
 ## 运行
 
 前提：PowerShell 7、Node、本机 Docker、已安装的仓库锁文件依赖，以及已启动且健康的专用 MinIO（映射端口 19900），
-以及本地已有仓库固定 digest 的 `minio/mc` 镜像。缺镜像时 `--pull never` 显式失败，
+以及本地已有仓库固定 digest 的 `quay.io/minio/mc` 镜像。缺镜像时 `--pull never` 显式失败，
 不会自动运行其他版本。主脚本的启动方式如下；本验收不自行启动或停止其他服务。
 
 ```powershell

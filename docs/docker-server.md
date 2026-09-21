@@ -11,7 +11,7 @@
 - FFmpeg / ffprobe：包含在 API / Worker 镜像中，用于媒体元数据和预览；上传和下载均经同源 API，浏览器不会访问容器内部 MinIO 地址。
 - 可选 Caddy：`local-https` profile 提供本机自签 HTTPS；`server` profile 提供公网 HTTPS 自动证书和续期。
 
-基础条件：Linux 容器、Docker Engine 与 Compose 插件、足够的镜像构建磁盘和内存。首次构建需访问 Docker Hub、Debian HTTPS 仓库和 npm；镜像固定 Node/pnpm 版本，依赖遵守 `pnpm-lock.yaml`。建议从 4 CPU / 8 GB 内存开始，根据媒体任务负载调整；这不是容量性能承诺。
+基础条件：Linux 容器、Docker Engine 与 Compose 插件、足够的镜像构建磁盘和内存。首次构建需访问 Docker Hub、Quay.io、Debian HTTPS 仓库和 npm；PostgreSQL、Redis、Caddy 及构建基础镜像来自 Docker Hub，MinIO Server 与 `mc` 从 `quay.io/minio` 获取。两个 MinIO 镜像仍按既有 SHA-256 digest 固定，不跟随浮动标签；应用镜像固定 Node/pnpm 版本，依赖遵守 `pnpm-lock.yaml`。建议从 4 CPU / 8 GB 内存开始，根据媒体任务负载调整；这不是容量性能承诺。
 
 ## 仅本机或已有 TLS 反向代理
 
@@ -121,5 +121,7 @@ docker compose -f compose.yaml logs --tail 100 api worker migrate storage-init
 docker compose -f compose.yaml --profile server logs --tail 100 gateway
 docker compose -f compose.yaml --profile local-https logs --tail 100 gateway-local
 ```
+
+若拉取阶段提示 `minio/mc@sha256:... pull access denied`，且镜像名不含 `quay.io/`，说明当前使用的仍是旧 Docker Hub 引用。当前 Compose 使用 `quay.io/minio/mc`，MinIO Server 同样使用 `quay.io/minio/minio`，两者保留原固定 digest；取得包含当前 `compose.yaml` 的完整版本后重试，不要移除 digest 或改用 `latest`。并行拉取时其他镜像显示 `Interrupted` 只表示 Compose 在首个失败后中止剩余操作，不能据此判断这些镜像各自拉取失败。
 
 依赖初始化故障时保留卷和日志，修复配置/网络后重新执行相同的 `up`，不要重建加密密钥或重复发起可能计费的模型任务。对外分享日志前先脱敏，不输出 `runtime.json`、口令文件、JWT 或 Provider Key。
