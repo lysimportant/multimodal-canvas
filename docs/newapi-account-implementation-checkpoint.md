@@ -57,6 +57,14 @@ node .local-tests/newapi-account/local-docker/final-audit.mjs
 
 本次不新增业务源码、依赖或 schema，已有完整 lint/typecheck/test/build 检查沿用同一业务代码版本；新增本机脚本通过 `node --check` 和实际运行。这里证明本地真实进程故障与权限控制，不替代线上 HTTPS 或真实供应商验收。
 
+### 人工改期后的重新授权与探针收尾（09:14—09:40）
+
+执行 `node .local-tests/newapi-account/local-docker/reauthorization-probe.mjs`，报告 `local-docker/reauthorization-probe-1789953249744.json` 为 `reproduced`：独立本地 New API 用户 ID 3 的 `default` 管理令牌原本 active，人工把令牌期限改为过去时间后同步变为 `unavailable`；再次完成显式授权后仍为 `unavailable`，原 Token ID 41、15 个 Token 数量和人工期限均保持不变，Provider POST 增量为 0。该结果证明人工修改过的管理 Token 不会被显式重新授权静默复活，符合 New API 合同；没有修改业务源码。
+
+探针结束后按精确用户名和 ID 清理了本地独立栈，不触碰用户 1/2 或五模型归档：停止 New API 后备份 SQLite，并以 `canvas-recovery`、ID 3 为门禁删除其 15 个 Token、1 个 grant、15 个 managed-token 关系及认证数据；另备份 Canvas PostgreSQL，再删除对应的 1 个 New API identity、15 个分组 binding、15 个凭据和 2 个会话。探针在 Canvas 的项目、素材和 Run 均为 0。重启后 New API/Canvas 均 healthy；SQLite 用户数为 2、Token 分布为用户 1/2 各 16/15、managed-token 各 15/15，Canvas 用户/identity/凭据/binding 为 2/2/30/30。备份保留在被忽略的 `.tmp/newapi-cleanup/`，不写入 Git。
+
+清理后重新执行 `node .local-tests/newapi-account/local-docker/verify.mjs` 和 `node .local-tests/newapi-account/local-docker/final-audit.mjs`：15 个纳入组、75 条目录、双用户隔离、五模型已有归档和 0 usage ledger 均通过，新增 Provider POST 为 0。
+
 ## 上一代码批次补齐结果
 
 - `POST /v1/runs/:runId/recover` 已补齐：仅接受 `{}`，沿用原 Run/outbox/授权/发送身份；核对队列、用户、项目、attempt、retryOf、幂等键与三份快照指纹。成功或取消的任务不再投递，unknown/sending 拒绝，撤销拒绝，取消只恢复本地收尾。PostgreSQL/Redis 恢复集成 14/14，HTTP/运行/限流 82/82 通过。
@@ -174,16 +182,16 @@ PC 前端本轮没有源码变化。此前真实双用户 9 项烟测与四组�
 | 07 | 多组模型汇总及选择 | Mock/运行环境通过 | 新 Docker 的 15 组 API 目录与归属、PC 设置表格首尾和刷新复用通过 |
 | 08 | `auto` 范围与显式变化 | 隔离通过 | 空范围拒绝、排除组不路由；目标站点 Auto 顺序仍待验 |
 | 09 | 部分组失败或令牌数量达限 | 隔离通过 | 限额保留成功组、失败组原因和 auto 空范围回归通过 |
-| 10 | Key 从 G1 改到 G2 | 隔离通过 | 管理令牌人工改组/撤销和旧绑定失效回归通过 |
+| 10 | Key 从 G1 改到 G2 | 隔离通过 | 管理令牌人工改组/撤销和旧绑定失效回归通过；重新授权探针确认人工改期不会复活旧 Token |
 | 11 | 账号组、模型限制及热缓存 | 隔离通过 | Redis 缓存失效和跨进程权限修订回归通过 |
 | 12 | 预期分组受理竞态 | 隔离通过 | 受理前权限变化在 Provider POST 前拒绝且零发送 |
 | 13 | 两用户、两分组、同名模型 | Mock/运行环境通过 | PC 双上下文项目、设置、凭据和退出隔离通过 |
-| 14 | 凭据过期、撤销、断开、轮换 | 隔离通过 | 撤销后新提交拒绝，人工改期限不被同步复活；三库通过 |
+| 14 | 凭据过期、撤销、断开、轮换 | 隔离通过 | 撤销后新提交拒绝，人工改期限不被同步复活；探针报告保留原 Token ID/期限且 Provider POST 为 0，三库通过 |
 | 15 | 普通、批量、DAG、优化、反推、重试 | Mock/运行环境通过 | `entries-results.json`、`special-entries-results.json`：普通、批量、DAG、优化、手动反推与取消后重试通过 |
 | 16 | 入队失败、重启、重复消费、未知创建结果 | 隔离通过 | 14/14 恢复集成、82/82 HTTP/运行/限流；unknown 仍拒绝自动重发 |
 | 17 | 新旧任务混合及旧页面提交 | 隔离通过 | 旧报价/账务入口拒绝，模式从服务端快照回读；旧数据收尾仍待共享切换 |
 | 18 | 保留项目、默认模型、导入导出 | 部分通过；目标环境待验 | 资源归属与节点字段回读通过；共享 owner-null 项目接收身份未定 |
-| 19 | 测试账号清理、外键、对象、队列、恢复 | 已确认范围通过；其余暂缓 | 旧本地源库精确删除 21 行，恢复/副本重放通过；18 项目、65 素材、3 个 unknown 及所有关联证据保留，保留归属和旧库转换未完成 |
+| 19 | 测试账号清理、外键、对象、队列、恢复 | 已确认范围通过；其余暂缓 | 旧本地源库精确删除 21 行，恢复/副本重放通过；独立 Docker 探针用户 ID 3 及其 15 个 Token/Canvas 绑定已备份后清理；18 项目、65 素材、3 个 unknown 及所有关联证据保留，保留归属和旧库转换未完成 |
 | 20 | New API 不可用、禁用与撤销 | 本地运行环境通过 | 实际停止/恢复 New API、禁用/启用账号、产品撤销/重新授权共 11 项通过；只读可用、写入拒绝、旧会话不复活且零新增 POST，生产部署仍待验 |
 | 21 | 旧广场、钱包及后台同步退出 | 隔离通过 | 源码、路由和测试确认新任务无 Canvas 钱包/报价写入 |
 | 22 | 手动 Key 管理与遗留引用清理 | 隔离通过 | 普通界面不显示 Key 表单/连接操作；共享旧引用仍待清单处理 |
@@ -271,4 +279,4 @@ B6 两次前向迁移有显式事务和遗留数据门禁，不改已应用历�
 
 工程实现、隔离迁移/清理演练、PC Web 和五模型 Mock 已有首批验收。首批交付为 Canvas `ce6d5b4` / `v2026.09.21-newapi-accounts` 与 New API `727c274e7` / `v1.0.0-rc.37.custom.14`。本轮补齐恢复、视频持久化/发送边界和人工期限修复，交付 Tag 为 Canvas `v2026.09.21-newapi-acceptance`、New API `v1.0.0-rc.37.custom.15`，分别推送 `origin/codex/generate-to-new-node` 与 `fork/main`，实际提交和远端核验在任务交付中记录。
 
-本次独立 Docker、PC 13 项检查和已确认旧测试账号的 21 行清理已完成，文档交付 Tag 为 `v2026.09.21-newapi-local-acceptance`。生产部署、旧库 unknown 核查及保留归属转换、真实供应商素材外网访问/付费回执仍待完成；原 Run 恢复入口已实现，队列和密钥的隔离恢复证据已补齐。下一阶段从这些剩余条件接续，不重复本机合成验收。前一代码版本可回退源码，但会重新出现已修复的期限和发送边界问题；本次未新增 schema 迁移，代码回退不能复活已经 changed 的管理授权或恢复已删除测试数据。
+本次独立 Docker、PC 13 项检查、重新授权探针及已确认旧测试账号的 21 行清理已完成，文档交付 Tag 为 `v2026.09.21-newapi-local-acceptance`。生产部署、旧库 unknown 核查及保留归属转换、真实供应商素材外网访问/付费回执仍待完成；原 Run 恢复入口已实现，队列和密钥的隔离恢复证据已补齐。下一阶段从这些剩余条件接续，不重复本机合成验收。前一代码版本可回退源码，但会重新出现已修复的期限和发送边界问题；本次未新增 schema 迁移，代码回退不能复活已经 changed 的管理授权或恢复已删除测试数据。
