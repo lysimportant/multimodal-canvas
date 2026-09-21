@@ -98,17 +98,17 @@
 
 ### [ ] P2-02 其他外部身份系统
 
-来源：TODO-LOCAL 的 `P2-SSO-10`。New API 唯一身份接入已实现并完成本地验收，记录见[实施检查点](docs/newapi-account-implementation-checkpoint.md)。其他身份提供方后置；New API 共享/生产切换合并到下一项。
+来源：TODO-LOCAL 的 `P2-SSO-10`。New API 唯一身份接入已实现并完成本地验收，记录见[实施检查点](docs/newapi-account-implementation-checkpoint.md)。其他身份提供方后置；New API 生产切换合并到下一项。
 
-### [ ] P2-03 New API 生产切换与共享数据后续处理（本次范围外）
+### [ ] P2-03 New API 生产切换与原 unknown 核查（本次范围外）
 
 来源：TODO-LOCAL 的 `P2-USAGE-11`；TODO-VIDEO-NODE 第 1.2 节。用户已明确本次只需完成本地测试；本地实现与验收见[翻新计划](docs/newapi-account-integration-plan.md)及[实施检查点](docs/newapi-account-implementation-checkpoint.md)。以下是后续事项，不要求当前用户部署线上 New API，不阻止本地交付：
 
-- 旧共享实例的已确认测试账号及 21 行关联记录已清理，备份恢复和保留数据完整性通过；仍保留 18 项目、65 素材及 3 个原请求 unknown 的全部证据。原令牌日志读取返回 401，需上游管理员核实请求与收费；owner-null 资源及 27 条共享凭据的归属、保留项目接收身份尚未确定。旧业务入口继续停止，后续转换前更新备份、清单和 digest，不直接对保留库执行删表迁移。具体 Run、数量和恢复限制见[实施检查点](docs/newapi-account-implementation-checkpoint.md)。
+- 3 个原请求 unknown 仍需上游管理员核实请求与收费，原令牌日志读取曾返回 401。其数据库、对象、队列、密钥及审计证据已保存到桌面 `multimodal-canvas-backup-20260921-194647`；恢复核验通过后，已按用户最新授权清空旧 `multimodal-canvas-app`。18 个旧项目、65 个素材转为离线归档，不再等待归属转换；核查只在隔离恢复副本进行，不重发原请求或恢复旧队列派发。具体 Run、归档与恢复限制见[实施检查点](docs/newapi-account-implementation-checkpoint.md)。
 - 日后执行生产发布时，再核对目标版本、部署入口、Canvas HTTPS 来源和管理员外部 ID，并重验登录、分组幂等、`auto` 范围过滤、隔离及受理竞态。`api.lolicon.beer` 的账号入口在 2026-09-21 12:27 预检为 404，仅是历史记录，后续需重新核对。当前本地 Docker 使用已配套的 New API，线上状态不影响本次验收。
 - 真实供应商生成按用户要求暂停，不产生真实费用。待明确费用范围后，对拟开放的文字、图片、`MiniMax-H3`、`wan3.0-video`、`wan3.0-video-prime` 输入组合取证：插件实际版本、外部素材 URL、查询归档及 New API 最终费用归属。本地签名素材 GET 和 500 quota 合成对账已有证据，目标环境仍待验，详见[Provider 验收记录](docs/newapi-provider-acceptance.md)。
 
-本后续项完成条件：用户另行安排共享转换或生产发布后，取得对应清单、备份恢复、目标环境烟测及获授权的真实调用记录。未知请求与真实未结事项持续保留，不以测试账号标签或旧备份覆盖新作品和账务；没有生产或真实调用安排时不自动执行。
+本后续项完成条件：原 unknown 取得外部核查结论；用户另行安排生产发布或真实验收后，取得对应清单、备份恢复、目标环境烟测及获授权的真实调用记录。未知请求与真实未结事项持续保留，不用旧备份覆盖新作品和账务；没有生产或真实调用安排时不自动执行。
 
 ### [ ] P2-04 资源提及增强
 

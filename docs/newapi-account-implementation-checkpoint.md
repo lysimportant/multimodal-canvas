@@ -1,10 +1,24 @@
 # New API 账号接入实施与验收记录
 
-更新时间：2026-09-21。主任务 P1；身份、执行授权及数据迁移按 P0 验证。用户最新明确仅需完成本地测试，本次交付以本地代码、独立 Docker 和合成账号验收为范围，不需要用户提供生产部署入口。生产部署、共享保留数据转换、原 unknown 核账及外部付费调用留作后续事项，不计为本次已通过或阻塞项。
+更新时间：2026-09-21。主任务 P1；身份、执行授权及数据迁移按 P0 验证。用户最新明确仅需完成本地测试，并授权将不兼容的旧本地数据备份到桌面后清空。本次交付以本地代码、独立 Docker、旧环境归档清空和合成账号验收为范围，不需要用户提供生产部署入口。生产部署、原 unknown 核账及外部付费调用留作后续事项，不计为本次已通过或阻塞项；已丢弃的旧项目不再等待归属转换。
 
 本轮收口基线：Canvas `cf2fd7c03895ee83b327ab8b0dbd6eed04694173`，分支 `codex/generate-to-new-node`，上游 `origin/codex/generate-to-new-node`；New API `9152afc04ace3819bb550e67cb97cc3cc7bd7b19`，分支 `main`，上游 `fork/main`，Tag `v1.0.0-rc.37.custom.17`。Node `24.12.0`、pnpm `11.19.0`、Docker `29.7.2`、Go `1.26.0 windows/amd64`，已有依赖可用。主代理直接实施和核验，没有新增依赖；用户原有 `docs/resource-input-compatibility.md` 改动及 SHA256 保持不变。
 
-## 本地启动恢复（18:55）
+## 旧本地环境归档清空（最新状态）
+
+本次数据操作按 P0 处理，基线为 `dfd64779b9cbf1e96395f00faf9e6b9ff52f83bf`，分支和上游仍为 `codex/generate-to-new-node` / `origin/codex/generate-to-new-node`。Node `24.12.0`、pnpm `11.19.0`、Docker `29.7.2`、Compose `v5.4.0`；依赖已有，无源码、迁移或依赖变更。目标仅为旧 Compose 项目 `multimodal-canvas-app`；验收标准是桌面备份可恢复、旧容器与卷清零、独立验收环境可用。线上 New API、真实供应商、其他本地项目和用户资源文档不在清理范围。
+
+用户已明确要求把文件保存到桌面新文件夹再直接清空。备份目录为 `C:/Users/Sui/Desktop/multimodal-canvas-backup-20260921-194647`，包含 `canvas.dump`、11 个完整卷归档、Compose/镜像/容器清单、SHA256、三份清理前文档，以及原 unknown 审计和此前加密恢复证据。目录权限限制为当前用户、SYSTEM 和 Administrators，备份不进入 Git。
+
+- 恢复校验：11 个归档在隔离 tmpfs 解压后，与停止的源卷逐文件 SHA256 一致；数据库实际恢复到无网络 PostgreSQL，46 张表的行数和内容摘要全部一致。复核 12 个数据备份文件的 SHA256 均与 manifest 相同。
+- 已清空：19:53 删除旧项目 9 个容器、网络和全部 11 个卷；旧 18 个项目、65 个素材及 unknown 关联资料转为离线归档，不再保留在线或等待新账号认领。外部请求和费用结论没有因本地删除而改变。
+- 空库验证：新建临时卷执行 30 条迁移，`migrate` 退出 0、失败迁移 0、27 张业务表均为空。默认 API 因缺 `NEW_API_ISSUER` 和生产 HTTPS 来源被拒绝启动，已停止；不将该验证记为默认整栈启动成功。临时项目的 9 个容器、网络和 9 个新卷均已移除，最终旧项目容器、卷、网络数量均为 0。日志见备份中的 `fresh-empty-migrate.log` 和 `fresh-empty-database-counts.txt`。
+- 保留环境：`canvas-newapi-local` 的 13 个容器 ID、启动时间及 13 个卷名称与清理前相同，常驻业务服务健康，8080 首页及 `/health` 均为 200。未产生供应商请求。
+- 检查：`node --test scripts/docker/config.test.mjs` 14/14，`git diff --check` 通过；四份文档均通过 Markdown 解析，Docker 文档和 TODO 的 Prettier 检查通过，计划及检查点保留基线已有的表格排版差异。本次仅同步四份文档，不重跑应用全仓构建。用户原有 `docs/resource-input-compatibility.md` 的 SHA256 仍为 `56B2C9D2BFB09DCC56720769B9CE12AED4877A29090DEDFBADD2F1FC5B3AA2A7`，不纳入提交。
+
+恢复先按桌面 `README.md` 操作，在隔离数据库和对象存储核查，禁用 Worker/旧队列派发，不覆盖 8080 验收环境；Git 回退不能恢复卷或数据。交付 Tag 为 `v2026.09.21-legacy-local-reset`。后续只保留原 unknown 核查、生产发布和真实调用事项，不再要求旧项目归属转换。下文按历史时点保留，“旧库保留/待转换”不代表当前状态。
+
+## 本地启动恢复（18:55，历史）
 
 用户运行根目录 `docker compose up -d --build` 后，`multimodal-canvas-app-migrate-1` 退出 1。PostgreSQL 日志给出原始原因：“旧表 email_challenges 仍有 1 行；先完成已备份的 B5 清理，再部署本迁移”。该默认项目复用旧共享数据库，仍有 1 个用户、18 个项目、65 个素材、65 个 Run、27 条凭据、193 条旧目录和 1 个钱包。新迁移 010000—040000 已应用，050000 的保护检查失败、事务回滚且应用步骤为 0；没有清库、删除卷或标记迁移为成功。`--build` 更新镜像，不清理数据卷，此故障与线上 New API 的版本无关。
 
