@@ -39,6 +39,24 @@ node .local-tests/newapi-account/local-docker/final-audit.mjs
 
 最终 PC 报告为 `local-docker/web-pc-acceptance-results.json`，截图在同级 `web-pc-acceptance/`。未登录阶段每个浏览器的 5 次预期 401、主动跨用户打开项目的 1 次预期 404 单列；非预期 console/pageerror/request failure/5xx 均为 0。截图复核了设置表格首尾、已有结果和第二账号空工作台，无横向溢出或主要区域重叠。分组手动同步及重登复用以 HTTP 报告为准，最终 PC 场景只刷新页面和读取已有结果。
 
+### 本地故障、禁用与撤销演练（08:52）
+
+接续基线为 Canvas `d040bac1ed8a0415c2c15bab11f22e6ef776d2fa`，用户原有资源兼容文档仍是唯一未提交修改；Node 24.12.0、pnpm 11.19.0。此阶段补充第 9 节的实际运行证据，旧共享清理结果保持不变。
+
+执行 `node .local-tests/newapi-account/local-docker/fault-acceptance.mjs`，报告 `local-docker/fault-acceptance-1789951946202.json`：11 项通过，退出码 0。脚本先确认五条渠道只指向本机 Mock，随后仅停止 `canvas-newapi-local-new-api-1`，未操作旧共享库或线上实例。
+
+| 场景 | 结果 |
+|---|---|
+| 上游暂不可用 | 有效旧会话可读本人项目、Run 和原归档，内容 SHA256 不变；身份显示 unavailable |
+| 故障时写入与生成 | 项目创建和单次生成探测均返回 503 / `upstream_unavailable`；Run、素材、项目和账务数量不变，Provider POST 增量 0 |
+| 故障时登录与续期 | 已准备但未兑换的真实授权回调、旧会话刷新均返回 503；无 Set-Cookie，auth_sessions 总数仍为 28 |
+| 上游恢复 | 原会话同步恢复 15 个 active 组，原 credentialId 和上游 Token ID 未变 |
+| 禁用第二账号 | New API 管理接口禁用外部 ID 2 后，Canvas 同步返回 401 / `authorization_revoked`；该账号两个旧会话均不能读取项目 |
+| 恢复与重新授权 | 重新启用账号不会复活旧会话，必须重新登录；产品撤销授权后旧会话失效，显式重新授权恢复 15 组且旧会话仍不可用 |
+| 收尾与保留 | 本地服务已恢复 healthy，第二账号已启用，测试会话均退出；7 Run、5 素材、7 项目、0 usage ledger 及 30 条原分组绑定未变 |
+
+本次不新增业务源码、依赖或 schema，已有完整 lint/typecheck/test/build 检查沿用同一业务代码版本；新增本机脚本通过 `node --check` 和实际运行。这里证明本地真实进程故障与权限控制，不替代线上 HTTPS 或真实供应商验收。
+
 ## 上一代码批次补齐结果
 
 - `POST /v1/runs/:runId/recover` 已补齐：仅接受 `{}`，沿用原 Run/outbox/授权/发送身份；核对队列、用户、项目、attempt、retryOf、幂等键与三份快照指纹。成功或取消的任务不再投递，unknown/sending 拒绝，撤销拒绝，取消只恢复本地收尾。PostgreSQL/Redis 恢复集成 14/14，HTTP/运行/限流 82/82 通过。
@@ -132,6 +150,8 @@ PC 前端本轮没有源码变化。此前真实双用户 9 项烟测与四组�
 
 2026-09-21 07:06（Asia/Shanghai）对 `https://api.lolicon.beer` 做未登录 GET 预检：`/api/status` 返回 200，报告版本 `v1.0.0-rc.37.custom.1`；`/api/canvas/account` 和 `/api/canvas/authorize` 返回 404；`/v1/canvas/catalog` 返回预期的未鉴权 401。报告版本不是部署提交证明，但两个账号入口当前不可用，不能开始正式唯一登录验收。
 
+08:53 再次只读检查上述四个路径，状态与报告版本均未变化，证据 `target-contract-preflight-1789951996174.json`。线上 `test` 登录权限不能补齐不存在的账号合同，也不能提供旧凭据所属请求的消费结论。用户最新确认的部署范围仍为本地 Docker，且真实费用暂停；未获得新部署入口或费用范围前不执行相关操作。
+
 可部署代码已经交付：New API `fork/main @ f31ac6ab7519cffe5f19e04a24e1aeaf7d4dcd26` / `v1.0.0-rc.37.custom.15`，Canvas `origin/codex/generate-to-new-node @ 2c3595daeace6a578566ab01e31cf75db3d9f732` / `v2026.09.21-newapi-acceptance`。正式执行仍需：
 
 1. 确认目标服务器部署入口和生产操作授权；保留现有渠道、价格与用户数据，备份后部署配套版本，不用独立测试实例覆盖目标数据。
@@ -164,7 +184,7 @@ PC 前端本轮没有源码变化。此前真实双用户 9 项烟测与四组�
 | 17 | 新旧任务混合及旧页面提交 | 隔离通过 | 旧报价/账务入口拒绝，模式从服务端快照回读；旧数据收尾仍待共享切换 |
 | 18 | 保留项目、默认模型、导入导出 | 部分通过；目标环境待验 | 资源归属与节点字段回读通过；共享 owner-null 项目接收身份未定 |
 | 19 | 测试账号清理、外键、对象、队列、恢复 | 已确认范围通过；其余暂缓 | 旧本地源库精确删除 21 行，恢复/副本重放通过；18 项目、65 素材、3 个 unknown 及所有关联证据保留，保留归属和旧库转换未完成 |
-| 20 | New API 不可用、禁用与撤销 | 隔离通过 | 明确拒绝账号会撤销 Canvas 会话；目标部署故障演练仍待验 |
+| 20 | New API 不可用、禁用与撤销 | 本地运行环境通过 | 实际停止/恢复 New API、禁用/启用账号、产品撤销/重新授权共 11 项通过；只读可用、写入拒绝、旧会话不复活且零新增 POST，生产部署仍待验 |
 | 21 | 旧广场、钱包及后台同步退出 | 隔离通过 | 源码、路由和测试确认新任务无 Canvas 钱包/报价写入 |
 | 22 | 手动 Key 管理与遗留引用清理 | 隔离通过 | 普通界面不显示 Key 表单/连接操作；共享旧引用仍待清单处理 |
 | 23 | 平台商品字段与本机缓存退出 | 隔离通过 | 节点/项目默认/优化/反推使用 credentialId + modelAlias |
