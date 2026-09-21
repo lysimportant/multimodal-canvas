@@ -20,7 +20,11 @@
 
 ## 本地 Docker 验收（2026-09-21）
 
-独立合成用户通过 Canvas → New API 授权后，五个目录项均可调用。以下场景均完成 API 提交、Worker 执行、归档和授权下载；每个场景的供应商创建 POST 为 1 次。
+用户确认先完成本地验收、暂不产生真实费用。最新独立部署为 `canvas-newapi-local`，Canvas `http://localhost:8080`、New API issuer `https://newapi.localhost:13443`。15 个接入组、75 条模型目录和五模型归档读取均通过，详见[实施检查点](newapi-account-implementation-checkpoint.md)。五条实际渠道均只指向本机 Mock，模型配置价格全部为 0；这里不使用线上 `test` 的 Key 生成。
+
+新部署的 H3 曾因本地证书缺少素材域名 SAN、随后下载端口配置类型错误而失败。最终以字符串数组 `["8081"]` 配置端口，并白名单限制 Mock 域名与单个 Docker IP；SSRF 保持启用。原 Run `run_idem_6bae53cade2730911f3b69c2c9b15661f7aaedffa6ad0be605d8d0e27ef21277` 和上游 `task_JysK7tsI2la52SMM5sIovCqM8VuY6cIZ` 恢复归档，额外创建 POST 为 0。两次早期失败保留；报告 `local-docker/h3-recovery-results.json` 与 `local-docker/verification-results.json` 位于 `.local-tests/newapi-account/`。后续只读下载复核不再创建任务。
+
+此前首批独立合成用户通过 Canvas → New API 授权后，五个目录项均可调用。以下场景均完成 API 提交、Worker 执行、归档和授权下载；每个场景的供应商创建 POST 为 1 次。
 
 | 精确模型             | Canvas 合同               | 本轮输入                   | 归档内容             |
 | -------------------- | ------------------------- | -------------------------- | -------------------- |
@@ -57,4 +61,4 @@ H3 首次归档被私网素材保护拒绝。独立 New API 随后使用现有�
 
 ## 目标环境仍待验证
 
-本次本机 New API 与 Mock 联调不替代真实供应商验收。已取得的签名 GET 只证明独立对象代理和 Canvas 冻结版本读取；仍未取得真实供应商外部 URL、真实供应商回执、生产插件生效版本、共享实例部署和完整密钥恢复点。未获授权时不为补验收重复付费生成；真实合同不清楚的模式保持不可调用。
+本次本机 New API 与 Mock 联调不替代真实供应商验收。已取得的签名 GET 只证明独立对象代理和 Canvas 冻结版本读取；仍未取得真实供应商外部 URL、真实供应商回执和生产插件生效版本。队列和密钥已完成当前 Windows 账户下的隔离恢复，限制见[实施检查点](newapi-account-implementation-checkpoint.md)。线上 `test` 已获准登录并核对分组/模型，但目标站点两个账号入口在预检仍为 404；用户明确暂不产生真实费用，真实生成继续暂停，合同不清楚的模式保持不可调用。

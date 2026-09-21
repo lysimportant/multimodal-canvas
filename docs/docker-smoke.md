@@ -4,12 +4,14 @@
 
 ## 准备
 
-1. 按 New API 仓库的 `docs/canvas-account.md` 启动独立实例并登记 Canvas 的 issuer、client、instance 和精确 redirect URI。创建两个合成用户，开放用于验收的分组；包含精确排除组 `神秘分组` 和相近名称可检查边界。
+1. 按 New API 仓库的 `docs/authentication.md` 中 Canvas 账号合同启动独立实例并登记 Canvas 的 issuer、client、instance 和精确 redirect URI。创建两个合成用户，开放用于验收的分组；包含精确排除组 `神秘分组` 和相近名称可检查边界。
 2. 配置只指向本地 Mock 的渠道和文字模型 `canvas-test-model`。为模型声明 `POST /v1/chat/completions`；目录必须有有效合同和渠道资格，不能绕过缺合同拒绝。
 3. Canvas 使用独立数据库、队列和对象存储，Origin、回调和 New API 配置保持一致，API 与 Worker 运行匹配版本。
 4. 在进程环境中设置 `NEW_API_TEST_USER`、`NEW_API_TEST_PASSWORD`、`NEW_API_TEST_USER_B`、`NEW_API_TEST_PASSWORD_B`。不要将真实账号或密码写入脚本、报告或版本库。
 
 可选地址为 `CANVAS_ACCEPTANCE_ORIGIN`（默认 `http://localhost:5173`）和 `NEW_API_ACCEPTANCE_ORIGIN`（默认 `http://127.0.0.1:13000`）。脚本拒绝非回环站点、URL 用户信息、查询参数和非根路径。
+
+浏览器和容器需要能访问同一个 issuer。全 Docker 部署不能把容器内 `127.0.0.1` 当成宿主 New API；本机覆盖层应提供统一 HTTPS 来源、Docker DNS 别名和双方信任的 CA，并精确登记回调。New API 独立实例避免固定容器名、宿主端口和 bind 数据目录冲突。2026-09-21 的完整本地部署及仅查询复核命令见[实施检查点](newapi-account-implementation-checkpoint.md)。
 
 ## 执行与结果
 

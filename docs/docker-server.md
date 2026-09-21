@@ -81,6 +81,8 @@ Caddy 将 API 请求直接转发到 API，其他请求转发到静态 Web；两�
 
 配置 `MC_NEW_API_ISSUER`、`MC_NEW_API_CLIENT_ID`、`MC_NEW_API_INSTANCE_ID`、`MC_NEW_API_REDIRECT_URI`，在 New API 端登记相同配置。HTTPS 回调为 `https://你的域名/v1/auth/newapi/callback`，并与 `MC_PUBLIC_ORIGIN` 对应。两端私有 client secret 如启用必须一致，只从私有环境文件注入，不能写入镜像或仓库。
 
+issuer 必须同时从浏览器与 Canvas API/Worker 可达；跨 Compose 网络需要显式 DNS/网络配置，容器里的回环地址不会指向宿主或另一容器。本地 HTTPS 测试还需让浏览器、Canvas 和 New API 分别信任同一 CA，证书 SAN 覆盖实际访问域名。New API 的会话可信来源、Canvas 精确回调和 HTTPS 入口保持一致，不放宽来源校验。仅使用本地 HTTP Canvas 时保留默认空 `MC_PUBLIC_ORIGIN`，不要把 HTTP 地址填入只接受 HTTPS 的生产 CORS 配置。
+
 用户通过 New API 登录，Canvas 按站点和不可变用户 ID 归属资源，自动接入本人开放分组的 Key，精确排除“神秘分组”。模型按组提供，所有收费由 New API 处理。普通用户不再导入 Key、开通 Canvas 钱包或领取本地额度。
 
 管理员由 `MC_NEW_API_ADMIN_USER_IDS` 指定，新配置在 API 重建和用户重新登录后生效；运维入口 `node docker/run.mjs admin <New API 用户 ID>` 只同步该允许列表中的已登录身份。升级前先按[接入计划](newapi-account-integration-plan.md)备份和核对旧数据、旧队列，使用独立的新任务队列。代码回退不能恢复数据库和对象。
