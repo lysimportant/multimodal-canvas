@@ -20,7 +20,9 @@
 
 ## 本地 Docker 验收（2026-09-21）
 
-用户确认先完成本地验收、暂不产生真实费用。最新独立部署为 `canvas-newapi-local`，Canvas `http://localhost:8080`、New API issuer `https://newapi.localhost:13443`。15 个接入组、75 条模型目录和五模型归档读取均通过，详见[实施检查点](newapi-account-implementation-checkpoint.md)。五条实际渠道均只指向本机 Mock，模型配置价格全部为 0；这里不使用线上 `test` 的 Key 生成。
+以下生成、归档和恢复结果属于重置前的历史验收。用户随后要求彻底清空旧本地数据；当前 `canvas-newapi-local` 已从空卷初始化，只保留新账号、分组和免费 Mock 配置，项目/素材/任务均为空。旧素材地址已验证为 404，本轮没有重新生成；删除和最新登录验收见[实施检查点](newapi-account-implementation-checkpoint.md)。
+
+用户确认先完成本地验收、暂不产生真实费用。重置前的独立部署为 `canvas-newapi-local`，Canvas `http://localhost:8080`、New API issuer `https://newapi.localhost:13443`。15 个接入组、75 条模型目录和五模型归档读取均通过，详见[实施检查点](newapi-account-implementation-checkpoint.md)。五条实际渠道均只指向本机 Mock，模型配置价格全部为 0；这里不使用线上 `test` 的 Key 生成。
 
 新部署的 H3 曾因本地证书缺少素材域名 SAN、随后下载端口配置类型错误而失败。最终以字符串数组 `["8081"]` 配置端口，并白名单限制 Mock 域名与单个 Docker IP；SSRF 保持启用。原 Run `run_idem_6bae53cade2730911f3b69c2c9b15661f7aaedffa6ad0be605d8d0e27ef21277` 和上游 `task_JysK7tsI2la52SMM5sIovCqM8VuY6cIZ` 恢复归档，额外创建 POST 为 0。两次早期失败保留；报告 `local-docker/h3-recovery-results.json` 与 `local-docker/verification-results.json` 位于 `.local-tests/newapi-account/`。后续只读下载复核不再创建任务。
 

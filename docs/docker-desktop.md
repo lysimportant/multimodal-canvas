@@ -10,21 +10,35 @@
 
 ### 当前电脑的 New API 本地验收环境
 
-账号接入验收使用单独的 `canvas-newapi-local` 项目，包含已配套的本地 New API 和免费 Mock。根目录直接运行 `docker compose up -d --build`，或使用 `Docker-Start.cmd`，操作的是 `multimodal-canvas-app`，不会自动选中这套验收环境。两个项目各自保存数据库卷，但 Web 默认都使用 8080，同一时间只能有一个占用该入口。
+当前电脑使用单独的 `canvas-newapi-local` 项目，包含已配套的本地 New API 和免费 Mock。**双击根目录的 `Docker-Local.cmd` 启动这套环境**：显式选择本地配置，使用已有镜像，不构建、不拉取镜像，也不清空数据。配置或镜像缺失时明确失败。
 
-在已保留验收配置和镜像的当前电脑，从仓库根目录恢复本地环境：
+根目录直接运行 `docker compose up -d --build`，或使用 `Docker-Start.cmd`，操作的是 `multimodal-canvas-app`，不会自动选中这套本地环境。两个项目各自保存数据库卷，但 Web 默认都使用 8080，同一时间只能有一个占用该入口。
+
+在已保留配置和镜像的当前电脑，从仓库根目录启动、查看状态或停止：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/docker.ps1 -LocalNewApi -Action Start -NoBrowser
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/docker.ps1 -LocalNewApi -Action Status
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/docker.ps1 -LocalNewApi -Action Stop
+```
+
+直接使用 Compose 的等价启动命令为：
 
 ```powershell
 docker compose --project-name canvas-newapi-local `
   --env-file .local-tests/newapi-account/local-docker/local.env `
   -f compose.yaml `
   -f .local-tests/newapi-account/local-docker/compose.yaml `
-  up -d --no-build --wait --wait-timeout 60
+  up -d --no-build --pull never --wait --wait-timeout 180
 ```
 
 画布入口为 <http://localhost:8080/>，New API 为 <https://newapi.localhost:13443>。从画布重新发起登录，不复用浏览器中已过期的回调或登录事务 URL。此环境使用本地合成账号，不依赖线上 New API 是否更新。
 
 查看状态或保留数据地停止时，保留相同的 `--project-name`、`--env-file` 和两个 `-f` 参数，将末尾 `up ...` 替换为 `ps -a` 或 `stop`。这里的 `.local-tests` 配置、证书和合成账号不进入 Git；此命令仅用于已建立该环境的电脑，不是新克隆仓库的通用初始化命令。
+
+2026-09-21 晚按用户“不再保留旧数据”的最新要求，已删除桌面归档并将本地环境的 13 个卷重新初始化，随后删除已确认的离线数据库/对象/队列备份、旧账号文件和 9 个恢复演练卷。30 条迁移成功；新管理员登录后同步 15 个分组、75 条免费 Mock 目录。项目、素材、素材版本、节点、任务及 `canvas` bucket 均为空，旧素材地址返回 404。旧脚本导入不再自动读取历史账号或发送请求；应用容器不挂载宿主 `.data` 或验收备份。
+
+本次重新初始化生成了新的内部 CA，已核对其来源并导入当前用户证书存储，浏览器未关闭 TLS 校验即可完成登录。历史迁移记录中的桌面归档和恢复副本已经删除，不再作为可用恢复来源；Git 回退不能恢复这些数据。
 
 ## 首次启动
 
@@ -140,6 +154,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Ac
 
 ## 失败与恢复
 
+### 构建时 Docker Hub 令牌请求超时
+
+`Dockerfile:2`、`failed to fetch anonymous token` 和 `auth.docker.io` 连接超时表示基础镜像构建前的网络请求失败，还没有进入数据库迁移。`--build` 仍可能访问镜像仓库；删除数据卷不能修复这个错误。
+
+当前电脑已有配套镜像时使用 `Docker-Local.cmd`，其启动带 `--no-build --pull never`。需要从源码重建时，仍须先恢复 Docker 引擎到 Docker Hub 的 DNS/代理连通性。本次只验证已有镜像启动，没有宣称 Docker Hub 网络已修复。
+
 ### `migrate` 因旧账号数据停止
 
 如果 Compose 提示 `service "migrate" didn't complete successfully: exit 1`，先读取具体错误：
@@ -151,9 +171,9 @@ docker compose logs --tail 200 postgres
 
 `20260921050000_retire_legacy_accounts_billing` 会检查旧账号、手动凭据、钱包等数据是否已经收尾；存在保留记录时主动回滚，不执行删表。Prisma 有时只显示 `current transaction is aborted`，PostgreSQL 日志保留先前的具体门禁原因，例如“旧表 email_challenges 仍有 1 行”。这是旧数据库数据阻止新迁移，不是镜像缓存或线上 New API 未更新。
 
-2026-09-21 用户随后明确要求“桌面建文件夹备份，然后清空”。已将 `multimodal-canvas-app` 的数据库、对象、队列、密钥、网关证书及原 unknown 证据归档到桌面 `multimodal-canvas-backup-20260921-194647`。11 个卷归档逐文件校验通过，数据库实际隔离恢复后 46 张表的行数和摘要一致；随后删除旧项目的 9 个容器、网络和全部 11 个卷。旧项目和素材不再要求转移归属，unknown 的外部核查仍未完成，证据保留在归档中。
+2026-09-21 首次清理时，按当时要求先归档 `multimodal-canvas-app`，核对 11 个卷与数据库 46 张表后删除旧容器和卷。用户随后明确改为“不再保留旧数据”；桌面归档及已确认的恢复副本已删除，外部 unknown 的费用结论仍未知，不重发原请求。
 
-另用新空卷验证：30 条迁移全部成功，27 张业务表均为空；验证用容器、网络和 9 个新卷也已移除。此轮只证明空库迁移通过；未配置 `NEW_API_ISSUER` 和生产 HTTPS 来源的默认 API 被启动校验拒绝，不算整栈启动成功。当前继续使用上面的 `canvas-newapi-local` 和 <http://localhost:8080/>，其容器与卷保持不变。恢复旧资料时先查看桌面备份的 `README.md`，在隔离环境恢复并禁用 Worker 派发；Git 回退不能恢复已删除的数据。
+此前默认 Compose 的空库测试仅证明迁移成功，API 因缺少 `NEW_API_ISSUER` 和生产来源配置未启动。之后已使用上面的配套 `canvas-newapi-local` 从空卷完成整栈启动和浏览器登录；当前访问 <http://localhost:8080/>。
 
 ### 其他启动失败
 

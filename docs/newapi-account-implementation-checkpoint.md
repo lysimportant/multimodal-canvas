@@ -1,10 +1,25 @@
 # New API 账号接入实施与验收记录
 
-更新时间：2026-09-21。主任务 P1；身份、执行授权及数据迁移按 P0 验证。用户最新明确仅需完成本地测试，并授权将不兼容的旧本地数据备份到桌面后清空。本次交付以本地代码、独立 Docker、旧环境归档清空和合成账号验收为范围，不需要用户提供生产部署入口。生产部署、原 unknown 核账及外部付费调用留作后续事项，不计为本次已通过或阻塞项；已丢弃的旧项目不再等待归属转换。
+更新时间：2026-09-21。主任务 P1；身份、执行授权及数据迁移按 P0 验证。用户最新要求清空旧本地数据、不再保留备份，交付全新初始化的本地项目。本次交付以本地代码、独立 Docker、数据清空和合成账号验收为范围，不需要用户提供生产部署入口。生产部署、原 unknown 核账及外部付费调用留作后续事项，不计为本次已通过或阻塞项；已丢弃的旧项目不再等待归属转换。
 
 本轮收口基线：Canvas `cf2fd7c03895ee83b327ab8b0dbd6eed04694173`，分支 `codex/generate-to-new-node`，上游 `origin/codex/generate-to-new-node`；New API `9152afc04ace3819bb550e67cb97cc3cc7bd7b19`，分支 `main`，上游 `fork/main`，Tag `v1.0.0-rc.37.custom.17`。Node `24.12.0`、pnpm `11.19.0`、Docker `29.7.2`、Go `1.26.0 windows/amd64`，已有依赖可用。主代理直接实施和核验，没有新增依赖；用户原有 `docs/resource-input-compatibility.md` 改动及 SHA256 保持不变。
 
-## 旧本地环境归档清空（最新状态）
+## 全新本地初始化与旧媒体隔离（最新状态）
+
+本轮 P0 数据操作基线为 `d7d00c2caf7da68a76e4fd90c4cac4a3fb40a333`，分支/上游与上述记录相同。Node `24.12.0`、pnpm `11.19.0`、Docker `29.7.2`、Compose `v5.4.0`，依赖已有；用户资源文档仍为唯一原有未提交改动。验收目标是完整本地栈可登录、分组可同步、项目/媒体/任务为空，旧媒体不能通过新实例读取。
+
+- 故障原因：本次 `Dockerfile:2` 的 `auth.docker.io` 匿名令牌请求连接超时属于基础镜像网络故障。删除旧数据无法修复网络；当前使用已有配套镜像与 `--no-build --pull never`，未声称在线构建已恢复。
+- 全新初始化：删除并重建 `canvas-newapi-local` 的 13 个容器和 13 个卷，30 条迁移成功，四个一次性服务退出 0，常驻服务健康。新本地 New API 管理员 ID 为 1，另有一个合成隔离测试用户；密码与 Key 不写入仓库。Canvas 登录后建立新身份，15 个分组、75 条免费 Mock 模型目录可用。
+- 删除结果：桌面 `multimodal-canvas-backup-20260921-194647` 已删除；进一步删除 15 处已确认的旧账号/离线数据库/对象/队列备份路径，以及 9 个未挂载的恢复演练卷。清单和结果为 `.local-tests/newapi-account/fresh-reset-cleanup-{inventory,results}.json`。默认 `multimodal-canvas-app` 仍无容器、网络、卷；其他项目不受影响。
+- 媒体隔离：API/Worker 只挂载新密钥卷，数据库/MinIO 使用新实例卷，未挂载宿主 `.data`、旧媒体或备份目录。项目、素材、素材版本、节点、Run、ProviderJob、发送意图均为 0，MinIO `canvas` bucket 中无对象。5 个旧素材下载地址均返回 404。
+- 验收脚本：此前直接导入 `http-library.mjs` 会启动历史媒体验收，读取旧账号后登录失败；这不代表新应用能访问旧媒体。现已增加直接执行入口判断，导入时无请求，也不创建历史报告；旧 `media-account.json` 已删除。
+- PC 烟测：真实 Chrome 未禁用 TLS 校验，完成登录自动同步、空项目/素材接口、旧素材 404、重复同步复用凭据、空工作台与退出会话 6 项检查。页面/控制台错误 0，Provider POST 总数 0。证据为 `local-docker/fresh-smoke-results.json`、`fresh-settings.png`、`fresh-workspace.png`；截图已复核。重新签发的公开 CA 已核对来源并加入当前用户信任存储。
+- 启动入口：新增 `Docker-Local.cmd`，调用 `scripts/docker.ps1 -LocalNewApi`，固定当前电脑的配套项目、环境文件与 Compose overlay。仅支持 Start/Stop/Status；不构建、不拉取镜像，配置缺失不退回默认项目。Windows PowerShell 5.1 的 Status/Start 已实际退出 0，重复初始化和迁移成功；Docker 配置测试 14/14、PowerShell 语法检查通过。
+- 配置补齐：空库重新写入仅限当前 Mock 主机、单个 IP 和 `8081` 端口的下载白名单，SSRF 校验保持开启；初始化脚本已同步该步骤。再次执行初始化与 Chrome 6 项烟测通过，仍为零生成。交付检查另包括 Markdown 解析、文档格式、diff 和新增内容秘密扫描；本轮仅改启动包装与文档，无业务源码/依赖变更，不重复全仓应用构建。交付 Tag 为 `v2026.09.21-fresh-local-initialized`。
+
+当前入口仍为 <http://localhost:8080/>，本地 New API 为 <https://newapi.localhost:13443>。日常使用 `Docker-Local.cmd`，此入口依赖本机已建立的配置和镜像，不是新电脑的自动安装包。线上 New API、真实调用和业务源码均未修改；此前生成归档只作为历史验收记录，不在当前空实例中。删除操作按用户明确授权未新增备份，Git 回退只能恢复脚本/文档，不能恢复旧数据。原 unknown 仍只能按历史请求 ID 向上游核查，不重发请求。
+
+## 旧本地环境归档清空（19:53，历史，归档现已删除）
 
 本次数据操作按 P0 处理，基线为 `dfd64779b9cbf1e96395f00faf9e6b9ff52f83bf`，分支和上游仍为 `codex/generate-to-new-node` / `origin/codex/generate-to-new-node`。Node `24.12.0`、pnpm `11.19.0`、Docker `29.7.2`、Compose `v5.4.0`；依赖已有，无源码、迁移或依赖变更。目标仅为旧 Compose 项目 `multimodal-canvas-app`；验收标准是桌面备份可恢复、旧容器与卷清零、独立验收环境可用。线上 New API、真实供应商、其他本地项目和用户资源文档不在清理范围。
 

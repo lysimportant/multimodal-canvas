@@ -3,7 +3,8 @@
 .SYNOPSIS
 在 Windows Docker Desktop 中管理完整生产应用及指定已注册管理员。
 .DESCRIPTION
-仅操作本机 named pipe context 中的 multimodal-canvas-app 项目，不切换全局 context。
+仅操作本机 named pipe context，不切换全局 context；默认项目为 multimodal-canvas-app，
+LocalNewApi 显式选择当前电脑的 canvas-newapi-local 配套环境。
 忽略仓库 .env，使用独立 named volumes；不删除卷或已有开发数据。
 Start、Build 和 Https 最多等待 Docker 引擎 180 秒，随后由 Compose 等待服务健康 180 秒。
 首次下载和构建镜像所需时间不计入健康等待时间；失败时只查询状态，不自动重试变更。
@@ -15,6 +16,9 @@ Admin 仅提升 NewApiUserId 指定的已注册账户，仅同步部署配置允
 仅供 Admin 使用的 New API 不可变用户 ID；必须明确提供，成功后需退出网页并重新登录。
 .PARAMETER NoBrowser
 Start、Build 或 Https 成功后不打开默认浏览器，适合终端或自动化。对其他操作无影响。
+.PARAMETER LocalNewApi
+使用当前电脑已初始化的 canvas-newapi-local 配置与镜像；仅支持 Start、Stop、Status。
+Start 不构建或拉取镜像，不清理数据；配置或镜像缺失时明确失败，不退回默认项目。
 .EXAMPLE
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Action Start
 .EXAMPLE
@@ -24,6 +28,8 @@ $env:MC_HTTP_PORT = '8088'
 .\scripts\docker.ps1 -Action Https -NoBrowser
 .EXAMPLE
 .\scripts\docker.ps1 -Action Admin -NewApiUserId '123'
+.EXAMPLE
+.\scripts\docker.ps1 -LocalNewApi -Action Start -NoBrowser
 .NOTES
 兼容 Windows PowerShell 5.1 和 PowerShell 7。文件使用 UTF-8 BOM，保证 5.1 正确读取中文。
 MC_HTTP_PORT 取当前进程环境变量，默认为 8080，允许 1 至 65535；不写入用户环境配置。
@@ -36,6 +42,7 @@ param(
   [ValidateSet('Start', 'Stop', 'Status', 'Build', 'Https', 'Admin')]
   [string]$Action = 'Start',
   [string]$NewApiUserId,
+  [switch]$LocalNewApi,
   [switch]$NoBrowser
 )
 
@@ -296,6 +303,9 @@ $exitCode = 0
 $previousComposeProfiles = [Environment]::GetEnvironmentVariable('COMPOSE_PROFILES', 'Process')
 
 try {
+  if ($LocalNewApi -and $Action -notin @('Start', 'Stop', 'Status')) {
+    throw '-LocalNewApi 仅支持 Start、Stop、Status；本地配套入口不执行在线构建或更换回调来源。'
+  }
   if ($Action -eq 'Admin') {
     if ([string]::IsNullOrWhiteSpace($NewApiUserId) -or $NewApiUserId -notmatch '^[1-9][0-9]*$') {
       throw 'Admin 必须通过 -NewApiUserId 明确指定已完成 New API 登录的用户 ID；请先配置 MC_NEW_API_ADMIN_USER_IDS 并完成 New API 登录。'
@@ -310,6 +320,16 @@ try {
   $composeFile = Join-Path $workspace 'compose.yaml'
   if (-not (Test-Path -LiteralPath $composeFile -PathType Leaf)) {
     throw '仓库根目录缺少 compose.yaml，请取得完整项目文件后重试。'
+  }
+  $localDirectory = Join-Path $workspace '.local-tests\newapi-account\local-docker'
+  $localEnvironment = Join-Path $localDirectory 'local.env'
+  $localCompose = Join-Path $localDirectory 'compose.yaml'
+  if ($LocalNewApi) {
+    foreach ($requiredFile in @($localEnvironment, $localCompose)) {
+      if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
+        throw '缺少当前电脑的本地 New API 配置，请先按 docs/docker-desktop.md 初始化；未操作默认项目。'
+      }
+    }
   }
   $port = Get-LocalPort
   $httpsPort = $null
@@ -331,9 +351,28 @@ try {
   Wait-DockerEngine -AllowDesktopStart:($Action -in @('Start', 'Build', 'Https'))
 
   [Environment]::SetEnvironmentVariable('COMPOSE_PROFILES', $null, 'Process')
-  $emptyEnvironmentFile = [IO.Path]::GetTempFileName()
-  $script:ComposeArguments = @('--context', $script:DockerContext, 'compose', '--env-file', $emptyEnvironmentFile, '-f', $composeFile, '-p', 'multimodal-canvas-app')
-  if ($Action -in @('Stop', 'Status')) {
+  if ($LocalNewApi) {
+    $script:ComposeArguments = @('--context', $script:DockerContext, 'compose', '--env-file', $localEnvironment, '-f', $composeFile, '-f', $localCompose, '-p', 'canvas-newapi-local')
+    $configuration = Invoke-Docker -Arguments ($script:ComposeArguments + @('config', '--format', 'json')) -CaptureOutput
+    $localConfig = $configuration.Output | ConvertFrom-Json
+    $port = [int]$localConfig.services.web.ports[0].published
+    $webUrl = "http://localhost:$port/"
+    if ($localConfig.services.api.environment.NEW_API_REDIRECT_URI -cne "${webUrl}v1/auth/newapi/callback") {
+      throw '本地 Web 端口与 New API 回调不一致；请保持配套配置，未启动或更改容器。'
+    }
+    foreach ($bindingName in @('ISSUER', 'CLIENT_ID', 'INSTANCE_ID', 'REDIRECT_URI')) {
+      $apiName = "NEW_API_$bindingName"
+      $newApiName = "CANVAS_ACCOUNT_$bindingName"
+      if ($localConfig.services.api.environment.$apiName -cne $localConfig.services.'new-api'.environment.$newApiName) {
+        throw "本地 Canvas 与 New API 的 $bindingName 不一致；请检查继承的 MC_NEW_API_* 环境变量，未更改容器。"
+      }
+    }
+    Write-Host '当前项目：canvas-newapi-local（本地 New API 与免费 Mock）'
+  } else {
+    $emptyEnvironmentFile = [IO.Path]::GetTempFileName()
+    $script:ComposeArguments = @('--context', $script:DockerContext, 'compose', '--env-file', $emptyEnvironmentFile, '-f', $composeFile, '-p', 'multimodal-canvas-app')
+  }
+  if (-not $LocalNewApi -and $Action -in @('Stop', 'Status')) {
     $script:ComposeArguments += @('--profile', 'server', '--profile', 'local-https')
   } elseif ($Action -eq 'Https') {
     $script:ComposeArguments += @('--profile', 'local-https')
@@ -350,14 +389,23 @@ try {
     'Stop' {
       Invoke-Docker -Arguments ($script:ComposeArguments + @('stop')) | Out-Null
       Invoke-Docker -Arguments ($script:ComposeArguments + @('ps', '--all')) | Out-Null
-      Write-Host '应用及已启用的网关已停止，全部数据卷保留。HTTP 使用 Docker-Start.cmd；恢复本地 HTTPS 请运行 -Action Https。'
+      if ($LocalNewApi) {
+        Write-Host '本地 New API 与画布已停止，数据卷保留；使用 Docker-Local.cmd 恢复。'
+      } else {
+        Write-Host '应用及已启用的网关已停止，全部数据卷保留。HTTP 使用 Docker-Start.cmd；恢复本地 HTTPS 请运行 -Action Https。'
+      }
     }
     default {
       Assert-ServicePort -Service 'web' -Port $port
       if ($Action -eq 'Https') { Assert-ServicePort -Service 'gateway-local' -Port $httpsPort }
       $upArguments = @('up', '-d', '--wait', '--wait-timeout', '180')
       if ($Action -eq 'Build') { $upArguments += '--build' }
-      Write-Host '正在启动完整生产应用；首次拉取镜像和构建需要联网，请等待命令结束。'
+      if ($LocalNewApi) {
+        $upArguments += @('--no-build', '--pull', 'never')
+        Write-Host '正在使用本机镜像启动画布与配套 New API；不访问镜像仓库。'
+      } else {
+        Write-Host '正在启动完整生产应用；首次拉取镜像和构建需要联网，请等待命令结束。'
+      }
       Invoke-Docker -Arguments ($script:ComposeArguments + $upArguments) | Out-Null
       Invoke-Docker -Arguments ($script:ComposeArguments + @('ps', '--all')) | Out-Null
       Write-Host "Compose 健康检查通过。访问地址：$webUrl"
