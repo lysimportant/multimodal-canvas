@@ -50,11 +50,13 @@ export function AuthenticationPage({ authUser }: AuthenticationPageProps) {
             <h1 id="auth-entry-title">使用 New API 登录</h1>
           </header>
           <p className="auth-entry-description">
-            New API 统一验证身份、分组权限和费用。登录后即可使用本人可用的分组与模型。
+            使用 New API 账号登录，全部可用分组与模型会自动同步到画布。
           </p>
           {failure && (
             <p className="notice notice-error" role="alert">
-              登录未完成，请重新授权或检查 New API 账号状态。
+              {failure === 'login_cancelled'
+                ? '已取消登录，你可以随时重新登录。'
+                : '登录未完成，请重试或检查 New API 账号状态。'}
             </p>
           )}
           {authUser ? (
@@ -91,7 +93,7 @@ export function AuthenticationPage({ authUser }: AuthenticationPageProps) {
             </a>
           </div>
           <footer className="auth-entry-footer">
-            <span>授权完成后会自动同步当前账号可用的分组与模型。</span>
+            <span>账号权限和费用由 New API 统一管理。</span>
           </footer>
         </section>
       </main>

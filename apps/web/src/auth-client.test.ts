@@ -9,6 +9,7 @@ import {
   fetchCurrentSession,
   AuthSessionChangedError,
   openAuthEventStream,
+  startNewApiLogin,
 } from './auth-client';
 const user = {
   id: 'synthetic-user-a',
@@ -36,6 +37,20 @@ function deferred<T>() {
   return { promise, resolve };
 }
 describe('New API Cookie 会话', () => {
+  it('显式换号仅向固定 Canvas 入口传递账号选择提示，普通登录保持兼容', () => {
+    const assign = vi.fn();
+    vi.stubGlobal('window', { location: { assign } });
+    startNewApiLogin('http://localhost:3000/', '/settings', 'select_account');
+    const switching = new URL(assign.mock.calls[0][0]);
+    expect(switching.pathname).toBe('/v1/auth/newapi/start');
+    expect([...switching.searchParams]).toEqual([
+      ['next', '/settings'],
+      ['prompt', 'select_account'],
+    ]);
+    startNewApiLogin('http://localhost:3000');
+    expect(new URL(assign.mock.calls[1][0]).searchParams.has('prompt')).toBe(false);
+  });
+
   it('保存公开资料与到期时间，丢弃历史访问令牌', () => {
     persistAuthSession({ ...session, accessToken: 'synthetic-obsolete-token' });
     expect(readAuthSession()).toEqual(session);

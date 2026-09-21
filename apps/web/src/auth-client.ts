@@ -300,13 +300,19 @@ export async function fetchCurrentSession(baseUrl: string): Promise<StoredAuthSe
 }
 
 /**
- * 跳转 New API 授权入口；`next` 仅允许由服务端继续校验的站内路径。
+ * 跳转 New API 登录入口；`next` 仅允许由服务端继续校验的站内路径。
  *
  * @param baseUrl Canvas API 地址。
- * @param next 授权完成后的站内返回路径。
+ * @param next 登录完成后的站内返回路径。
+ * @param prompt 显式换号时展示 New API 账号选择；跳转本身不会撤销当前授权。
  */
-export function startNewApiLogin(baseUrl: string, next = '/workspace'): void {
+export function startNewApiLogin(
+  baseUrl: string,
+  next = '/workspace',
+  prompt?: 'select_account',
+): void {
   const params = new URLSearchParams({ next });
+  if (prompt) params.set('prompt', prompt);
   window.location.assign(`${baseUrl.replace(/\/$/, '')}/v1/auth/newapi/start?${params}`);
 }
 

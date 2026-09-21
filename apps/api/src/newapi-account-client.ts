@@ -111,8 +111,8 @@ export class NewApiAccountClient {
       throw new NewApiAccountError('invalid_configuration', 'New API 回调地址不匹配', 503);
   }
 
-  /** 构造授权跳转；不在 URL 中携带长期授权。 */
-  authorizeUrl(state: string, challenge: string): string {
+  /** 构造固定站点授权跳转；可显式选择账号，URL 不携带长期授权。 */
+  authorizeUrl(state: string, challenge: string, prompt?: 'select_account'): string {
     const url = new URL(`${this.issuer}/api/canvas/authorize`);
     for (const [key, value] of Object.entries({
       client_id: this.options.clientId,
@@ -121,6 +121,7 @@ export class NewApiAccountClient {
       state,
       code_challenge: challenge,
       code_challenge_method: 'S256',
+      ...(prompt ? { prompt } : {}),
     }))
       url.searchParams.set(key, value);
     return url.toString();

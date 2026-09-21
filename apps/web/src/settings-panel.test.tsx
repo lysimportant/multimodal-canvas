@@ -5,6 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MediaType, ModelSelection } from '@multimodal-canvas/domain';
 import { clearAuthSession, persistAuthSession, type AuthUser } from './auth-client';
+import * as authClient from './auth-client';
 import { modelCatalogQueryKeyFor } from './query/models';
 import {
   useWorkspacePreferences,
@@ -18,6 +19,8 @@ type AccountState = {
   externalUserId: string;
   displayName?: string;
   status: string;
+  syncedAt?: string;
+  error?: string;
   groups: Array<{
     group: string;
     credentialId?: string;
@@ -59,8 +62,9 @@ const baseAccount: AccountState = {
   externalUserId: 'external-a',
   displayName: '账号甲',
   status: 'active',
+  syncedAt: '2026-09-21T04:00:00.000Z',
   groups: [
-    { group: 'alpha', credentialId: 'cred-alpha', status: 'ready', modelCount: 1 },
+    { group: 'alpha', credentialId: 'cred-alpha', status: 'active', modelCount: 1 },
     {
       group: 'beta',
       credentialId: 'cred-beta',
@@ -166,6 +170,7 @@ afterEach(() => {
   clearAuthSession();
   useWorkspacePreferences.setState(workspacePreferenceDefaults);
   window.localStorage.clear();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -174,11 +179,39 @@ describe('SettingsPanel', () => {
     await openPanel();
 
     expect(screen.getByRole('cell', { name: 'alpha' })).toBeVisible();
-    expect(screen.getByRole('cell', { name: 'ready' })).toBeVisible();
+    expect(screen.getByRole('cell', { name: 'active' })).toBeVisible();
     expect(screen.getByRole('cell', { name: 'beta' })).toBeVisible();
     expect(screen.getByRole('cell', { name: '同步失败' })).toBeVisible();
     expect(screen.queryByLabelText(/Base URL|API Key/)).toBeNull();
     expect(screen.queryByText(/余额|定价|密码|邮箱|激活|删除/)).toBeNull();
+    expect(screen.queryByRole('button', { name: /授权/ })).toBeNull();
+  });
+
+  it('显示服务端同步时间和账号错误，部分失败不报告全部成功', async () => {
+    account.error = '上游暂不可用';
+    await openPanel();
+    expect(screen.getByText(/上次同步/).querySelector('time')).toHaveAttribute(
+      'datetime',
+      baseAccount.syncedAt,
+    );
+    expect(screen.getByText('上游暂不可用')).toBeVisible();
+    fetchMock.mockImplementationOnce(async () => response(account));
+    fireEvent.click(screen.getByRole('button', { name: '同步分组与模型' }));
+    expect(await screen.findByText('账号或部分分组未同步成功，请查看状态后重试。')).toBeVisible();
+  });
+
+  it.each([
+    ['重新登录', undefined],
+    ['切换账号', 'select_account'],
+  ] as const)('%s 进入一体化登录，不额外撤销账号连接', async (label, prompt) => {
+    const start = vi.spyOn(authClient, 'startNewApiLogin').mockImplementation(() => undefined);
+    await openPanel();
+    fireEvent.click(screen.getByRole('button', { name: label }));
+    expect(start).toHaveBeenCalledWith(expect.any(String), '/settings', prompt);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/newapi/revoke'))).toBe(
+      false,
+    );
+    expect(authClient.readAuthSession()?.user.id).toBe('user-a');
   });
 
   it('分类标签支持方向键与首尾键导航', async () => {

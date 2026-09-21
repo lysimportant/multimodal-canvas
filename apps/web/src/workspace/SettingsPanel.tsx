@@ -5,7 +5,7 @@ import { Button, Dialog, DialogContent, DialogTitle, Input } from '@multimodal-c
 import type { MediaType, ModelSelection } from '@multimodal-canvas/domain';
 import { GENERATION_COUNT_MAX, isValidGenerationCount } from '@multimodal-canvas/domain';
 
-import { apiFetch, getAuthSessionGeneration } from '../auth-client';
+import { apiFetch, getAuthSessionGeneration, startNewApiLogin } from '../auth-client';
 import { useModelCatalogQuery } from '../query/models';
 import { useWorkspacePreferences, type CanvasTheme } from '../state/workspace-preferences';
 import { isImeKeyboardEvent } from '../ime';
@@ -120,7 +120,7 @@ export function SettingsPanel({
   const [scope, setScope] = useState<'global' | 'project'>(projectId ? 'project' : 'global');
   const [timeoutMs, setTimeoutMs] = useState(String(DEFAULT_PROVIDER_TIMEOUT_MS));
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState<'save' | 'sync' | null>(null);
+  const [busy, setBusy] = useState<'save' | 'sync' | 'login' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const mounted = useRef(true);
   const generation = useRef(getAuthSessionGeneration());
@@ -244,7 +244,19 @@ export function SettingsPanel({
         throw new Error('error' in result ? result.error : '分组同步失败');
       if (!mounted.current || requestGeneration !== getAuthSessionGeneration()) return;
       setAccount(value);
-      await modelsQuery.refetch();
+      const refreshed = await modelsQuery.refetch();
+      if (!mounted.current || requestGeneration !== getAuthSessionGeneration()) return;
+      if (
+        value.status !== 'active' ||
+        value.error ||
+        value.groups.some((group) => group.status !== 'active') ||
+        refreshed.isError
+      ) {
+        const message = '账号或部分分组未同步成功，请查看状态后重试。';
+        setError(message);
+        onNotice({ kind: 'error', message });
+        return;
+      }
       onNotice({ kind: 'success', message: 'New API 分组与模型已同步' });
     } catch (reason) {
       if (!mounted.current || requestGeneration !== getAuthSessionGeneration()) return;
@@ -253,6 +265,19 @@ export function SettingsPanel({
       onNotice({ kind: 'error', message });
     } finally {
       if (mounted.current) setBusy(null);
+    }
+  };
+
+  /** 重新登录后自动同步本人分组；显式换号不会提前撤销当前作品会话。 */
+  const loginAccount = (prompt?: 'select_account') => {
+    if (busy) return;
+    setBusy('login');
+    setError(null);
+    try {
+      startNewApiLogin(API_BASE_URL, '/settings', prompt);
+    } catch (reason) {
+      setBusy(null);
+      setError(reason instanceof Error ? reason.message : '无法打开 New API 登录页');
     }
   };
 
@@ -386,6 +411,17 @@ export function SettingsPanel({
                   {account?.displayName || account?.externalUserId || '当前账号'} ·{' '}
                   {account?.status ?? '状态未知'}
                 </p>
+                <p className="settings-status">
+                  上次同步：
+                  {account?.syncedAt ? (
+                    <time dateTime={account.syncedAt} title={account.syncedAt}>
+                      {new Date(account.syncedAt).toLocaleString('zh-CN', { hour12: false })}
+                    </time>
+                  ) : (
+                    '暂无记录'
+                  )}
+                </p>
+                {account?.error && <p className="settings-field-error">{account.error}</p>}
               </div>
               <div className="settings-actions">
                 <Button
@@ -412,6 +448,22 @@ export function SettingsPanel({
                     <ExternalLink size={14} />
                   </a>
                 )}
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={Boolean(busy)}
+                  onClick={() => loginAccount()}
+                >
+                  重新登录
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={Boolean(busy)}
+                  onClick={() => loginAccount('select_account')}
+                >
+                  切换账号
+                </Button>
               </div>
               <div className="settings-models-table-wrap">
                 <table className="settings-models-table">

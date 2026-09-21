@@ -40,7 +40,7 @@ describe('New API 认证页', () => {
     expect(screen.queryByText(/注册|找回密码|邮箱验证/)).not.toBeInTheDocument();
   });
 
-  it('保留安全站内 next 并只发起一次整页 New API 授权', () => {
+  it('保留安全站内 next 并只发起一次整页 New API 登录', () => {
     window.history.replaceState(null, '', '/auth/login?next=%2Fprojects%2Fproject-a');
     renderPage();
     const action = screen.getByRole('button', { name: '使用 New API 登录' });
@@ -78,5 +78,14 @@ describe('New API 认证页', () => {
     expect(link).toHaveAttribute('href', PUBLIC_API_CATALOG_URL);
     expect(link).toHaveAttribute('target', '_blank');
     expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+  });
+
+  it('取消登录后提供可恢复提示，不要求再次授权', () => {
+    window.history.replaceState(null, '', '/auth/login?error=login_cancelled&next=%2Fsettings');
+    renderPage();
+    expect(screen.getByRole('alert')).toHaveTextContent('已取消登录');
+    expect(screen.queryByText(/重新授权/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '使用 New API 登录' }));
+    expect(startNewApiLogin).toHaveBeenCalledWith(expect.any(String), '/settings');
   });
 });

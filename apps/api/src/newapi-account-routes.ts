@@ -47,8 +47,15 @@ export function registerNewApiAccountRoutes(
     return session.user.id;
   };
   app.get('/v1/auth/newapi/start', async (request, reply) => {
-    const query = z.object({ next: z.string().max(2048).optional() }).parse(request.query);
-    const result = await service.start(query.next);
+    const query = z
+      .object({
+        next: z.string().max(2048).optional(),
+        prompt: z.literal('select_account').optional(),
+      })
+      .safeParse(request.query);
+    if (!query.success)
+      return reply.code(400).send({ code: 'invalid_login', error: '登录参数无效，请重新登录' });
+    const result = await service.start(query.data.next, query.data.prompt);
     return reply
       .header('cache-control', 'no-store')
       .header('referrer-policy', 'no-referrer')
@@ -57,16 +64,31 @@ export function registerNewApiAccountRoutes(
   });
   app.get('/v1/auth/newapi/callback', async (request, reply) => {
     const query = z
-      .object({ state: z.string().min(1).max(128), code: z.string().min(1).max(4096) })
+      .object({
+        state: z.string().min(1).max(128),
+        code: z.string().min(1).max(4096).optional(),
+        error: z.literal('access_denied').optional(),
+      })
+      .refine((value) => Boolean(value.code) !== Boolean(value.error))
       .safeParse(request.query);
     reply.header('cache-control', 'no-store').header('referrer-policy', 'no-referrer');
     if (!query.success)
+      return reply.code(400).send({ code: 'invalid_login', error: '登录返回无效，请重新登录' });
+    if (query.data.error) {
+      const next = await service.cancel(
+        query.data.state,
+        requestCookie(request, LOGIN_COOKIE) ?? '',
+      );
+      const destination = new URL('/auth/login', service.options.webUrl);
+      destination.searchParams.set('error', 'login_cancelled');
+      destination.searchParams.set('next', next);
       return reply
-        .code(400)
-        .send({ code: 'invalid_login', error: '授权已取消或返回无效，请重新登录' });
+        .header('set-cookie', sessionCookie(LOGIN_COOKIE, '', 0, secure))
+        .redirect(destination.toString());
+    }
     const result = await service.callback(
       query.data.state,
-      query.data.code,
+      query.data.code!,
       requestCookie(request, LOGIN_COOKIE) ?? '',
     );
     const previous = requestCookie(request, NEWAPI_SESSION_COOKIE);

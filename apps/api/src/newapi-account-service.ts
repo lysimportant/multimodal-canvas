@@ -32,8 +32,8 @@ export class NewApiAccountService {
     normalizeNewApiIssuer(options.webUrl);
   }
 
-  /** 建立五分钟的一次性事务；浏览器 Cookie 与 state 分别生成，PKCE verifier 只保存密文。 */
-  async start(next?: string) {
+  /** 建立五分钟登录事务；可提示上游选择账号，PKCE verifier 只保存密文，不撤销原会话。 */
+  async start(next?: string, prompt?: 'select_account') {
     const state = randomBytes(32).toString('base64url');
     const browser = randomBytes(32).toString('base64url');
     const verifier = randomBytes(48).toString('base64url');
@@ -51,8 +51,32 @@ export class NewApiAccountService {
       url: this.options.client.authorizeUrl(
         state,
         createHash('sha256').update(verifier).digest('base64url'),
+        prompt,
       ),
     };
+  }
+
+  /** 取消本人尚未消费的登录事务；返回原站内路径，不影响现有账号或会话。 */
+  async cancel(state: string, browser: string): Promise<string> {
+    if (!state || !browser)
+      throw new NewApiAccountError('invalid_login', '登录事务无效，请重新登录');
+    return this.options.prisma.$transaction(async (tx) => {
+      const claimed = await tx.newApiLoginTransaction.updateMany({
+        where: {
+          stateHash: digest(state),
+          browserHash: digest(browser),
+          consumedAt: null,
+          expiresAt: { gt: new Date() },
+        },
+        data: { consumedAt: new Date() },
+      });
+      if (claimed.count !== 1)
+        throw new NewApiAccountError('invalid_login', '登录已过期或已使用，请重新登录');
+      const transaction = await tx.newApiLoginTransaction.findUniqueOrThrow({
+        where: { stateHash: digest(state) },
+      });
+      return transaction.returnPath;
+    });
   }
 
   /** 回调原子消费事务；错误回调和跨浏览器重放均不能创建资源身份。 */

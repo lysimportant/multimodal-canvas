@@ -170,6 +170,94 @@ describe.skipIf(!databaseUrl)('New API 本人身份与分组隔离', () => {
     return service.callback(state, 'synthetic-code', started.browser);
   }
 
+  it('登录入口只转发显式换号提示，非法和重复 prompt 不创建事务', async () => {
+    const app = buildApp({
+      logger: false,
+      newApiAccount: service,
+      authService: auth,
+      authStore: new PrismaAuthStore(prisma),
+      projectStore: new PrismaProjectStore(prisma),
+    });
+    const before = await prisma.newApiLoginTransaction.count();
+    try {
+      for (const prompt of [undefined, 'select_account']) {
+        const response = await app.inject({
+          method: 'GET',
+          url: `/v1/auth/newapi/start?next=%2Fsettings${prompt ? `&prompt=${prompt}` : ''}`,
+        });
+        expect(response.statusCode, response.body).toBe(302);
+        const location = new URL(response.headers.location!);
+        expect(location.origin).toBe(issuer);
+        expect(location.searchParams.get('prompt')).toBe(prompt ?? null);
+        expect(location.searchParams.get('code_challenge_method')).toBe('S256');
+        expect(location.searchParams.get('redirect_uri')).toBe(
+          service.options.client.options.redirectUri,
+        );
+        expect(response.headers['set-cookie']).toContain('canvas_login=');
+        expect(response.headers['set-cookie']).not.toContain('canvas_session=');
+      }
+      expect(await prisma.newApiLoginTransaction.count()).toBe(before + 2);
+      for (const query of [
+        'prompt=none',
+        'prompt=',
+        'prompt=select_account&prompt=select_account',
+      ]) {
+        expect(
+          (await app.inject({ method: 'GET', url: `/v1/auth/newapi/start?${query}` })).statusCode,
+        ).toBe(400);
+      }
+      expect(await prisma.newApiLoginTransaction.count()).toBe(before + 2);
+      expect(calls).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('取消登录只消费本人事务并返回登录页，旧会话保留且拒绝伪造和重放', async () => {
+    const app = buildApp({ logger: false, newApiAccount: service, authService: auth });
+    const before = {
+      identities: await prisma.newApiIdentity.count(),
+      sessions: await prisma.authSession.count(),
+      groups: await prisma.newApiGroupBinding.count(),
+    };
+    try {
+      const started = await service.start('/settings', 'select_account');
+      const state = new URL(started.url).searchParams.get('state')!;
+      const url = `/v1/auth/newapi/callback?state=${state}&error=access_denied`;
+      const wrongBrowser = await app.inject({
+        method: 'GET',
+        url,
+        headers: { cookie: 'canvas_login=another-browser' },
+      });
+      expect(wrongBrowser.statusCode).toBe(400);
+      const cookie = `canvas_login=${started.browser}; canvas_session=synthetic-current-session`;
+      expect(
+        (await app.inject({ method: 'GET', url: `${url}&code=ambiguous`, headers: { cookie } }))
+          .statusCode,
+      ).toBe(400);
+      const cancelled = await app.inject({ method: 'GET', url, headers: { cookie } });
+      expect(cancelled.statusCode).toBe(302);
+      const destination = new URL(cancelled.headers.location!);
+      expect(destination.origin).toBe(service.options.webUrl);
+      expect(destination.pathname).toBe('/auth/login');
+      expect(destination.searchParams.get('next')).toBe('/settings');
+      expect(destination.searchParams.get('error')).toBe('login_cancelled');
+      expect(cancelled.headers['set-cookie']).toContain('canvas_login=;');
+      expect(cancelled.headers['set-cookie']).toContain('Max-Age=0');
+      expect(cancelled.headers['set-cookie']).not.toContain('canvas_session=');
+      expect((await app.inject({ method: 'GET', url, headers: { cookie } })).statusCode).toBe(400);
+      await expect(
+        service.callback(state, 'synthetic-code', started.browser),
+      ).rejects.toMatchObject({ code: 'invalid_login' });
+      expect(await prisma.newApiIdentity.count()).toBe(before.identities);
+      expect(await prisma.authSession.count()).toBe(before.sessions);
+      expect(await prisma.newApiGroupBinding.count()).toBe(before.groups);
+      expect(calls).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('访问令牌过期后仅续期入口可使用原 Cookie，轮换撤销旧会话且失败不续期', async () => {
     vi.stubEnv('API_JWT_SECRET', 'synthetic-account-jwt');
     const result = await login();
