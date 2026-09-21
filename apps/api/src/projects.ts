@@ -60,7 +60,13 @@ export interface ProjectStore {
   update(id: string, input: UpdateProjectInput, scope?: ProjectScope): Promise<Project | undefined>;
   setArchived(id: string, archived: boolean, scope?: ProjectScope): Promise<Project | undefined>;
   getCanvas(id: string, scope?: ProjectScope): Promise<CanvasDocument | undefined>;
-  updateCanvas(id: string, document: CanvasDocument, scope?: ProjectScope): Promise<CanvasDocument>;
+  /** 按 revision 保存画布；导入传入的默认模型与画布一并提交，任一写入失败不得部分生效。 */
+  updateCanvas(
+    id: string,
+    document: CanvasDocument,
+    scope?: ProjectScope,
+    modelDefaults?: UpdateProjectModelDefaultsInput,
+  ): Promise<CanvasDocument>;
   getModelDefaults(id: string, scope?: ProjectScope): Promise<ProjectModelDefaults | undefined>;
   updateModelDefaults(
     id: string,
@@ -167,6 +173,7 @@ export class MemoryProjectStore implements ProjectStore {
     id: string,
     document: CanvasDocument,
     scope: ProjectScope = {},
+    modelDefaults?: UpdateProjectModelDefaultsInput,
   ): Promise<CanvasDocument> {
     const project = this.projects.get(id);
     if (!project || (scope.ownerId && project.ownerId !== scope.ownerId)) {
@@ -185,8 +192,12 @@ export class MemoryProjectStore implements ProjectStore {
       ...document,
       revision: project.canvas.revision + 1,
     };
+    const nextDefaults = modelDefaults
+      ? applyModelDefaults(this.modelDefaults.get(id) ?? {}, modelDefaults)
+      : undefined;
     const updatedAt = this.nextTimestamp();
     this.projects.set(id, { ...project, updatedAt, canvas: nextCanvas });
+    if (nextDefaults) this.modelDefaults.set(id, nextDefaults);
     return nextCanvas;
   }
 
@@ -333,6 +344,7 @@ export class FileProjectStore implements ProjectStore {
     id: string,
     document: CanvasDocument,
     scope: ProjectScope = {},
+    modelDefaults?: UpdateProjectModelDefaultsInput,
   ): Promise<CanvasDocument> {
     await this.ready;
     const project = this.projects.get(id);
@@ -352,9 +364,22 @@ export class FileProjectStore implements ProjectStore {
       ...structuredClone(document),
       revision: project.canvas.revision + 1,
     };
-    const updated = { ...project, updatedAt: this.nextTimestamp(), canvas: nextCanvas };
+    const updated = {
+      ...project,
+      updatedAt: this.nextTimestamp(),
+      canvas: nextCanvas,
+      ...(modelDefaults
+        ? { modelDefaults: applyModelDefaults(project.modelDefaults ?? {}, modelDefaults) }
+        : {}),
+    };
     this.projects.set(id, updated);
-    await this.persist();
+    try {
+      await this.persist();
+    } catch (error) {
+      // 单次导入失败恢复内存快照；不能覆盖随后已排队的更新。
+      if (this.projects.get(id) === updated) this.projects.set(id, project);
+      throw error;
+    }
     return structuredClone(nextCanvas);
   }
 
@@ -683,6 +708,7 @@ export class PrismaProjectStore implements ProjectStore {
     id: string,
     document: CanvasDocument,
     scope: ProjectScope = {},
+    modelDefaults?: UpdateProjectModelDefaultsInput,
   ): Promise<CanvasDocument> {
     const nextRevision = document.revision + 1;
     const nextDocument: CanvasDocument = { ...document, revision: nextRevision };
@@ -801,7 +827,9 @@ export class PrismaProjectStore implements ProjectStore {
         });
       }
 
-      // Keep project list ordering in sync with the latest canvas edit.
+      if (modelDefaults) await writeProjectModelDefaults(transaction, id, modelDefaults);
+
+      // 画布及导入默认模型提交后同步项目排序时间，失败时一起回滚。
       await transaction.project.update({
         where: { id },
         data: { updatedAt: new Date() },
@@ -844,38 +872,7 @@ export class PrismaProjectStore implements ProjectStore {
         : await transaction.project.findUnique({ where: { id }, select: { id: true } });
       if (!project) throw new ProjectStoreError('not_found', 'project not found');
 
-      for (const mediaType of ['text', 'image', 'audio', 'video'] as const) {
-        if (!(mediaType in defaults)) continue;
-        const value = defaults[mediaType];
-        const prismaMediaType = mediaTypeToPrisma[mediaType];
-        if (
-          value === null ||
-          value === undefined ||
-          (typeof value === 'string' && value.trim() === '') ||
-          (typeof value !== 'string' && value.modelAlias.trim() === '')
-        ) {
-          await transaction.projectModelDefault.deleteMany({
-            where: { projectId: id, mediaType: prismaMediaType },
-          });
-          continue;
-        }
-        const selection = normalizeSelection(value);
-        await transaction.projectModelDefault.upsert({
-          where: {
-            projectId_mediaType: { projectId: id, mediaType: prismaMediaType },
-          },
-          create: {
-            projectId: id,
-            mediaType: prismaMediaType,
-            modelAlias: selection.modelAlias,
-            credentialId: selection.credentialId ?? null,
-          },
-          update: {
-            modelAlias: selection.modelAlias,
-            credentialId: selection.credentialId ?? null,
-          },
-        });
-      }
+      await writeProjectModelDefaults(transaction, id, defaults);
 
       await transaction.project.update({
         where: { id },
@@ -892,6 +889,47 @@ export class PrismaProjectStore implements ProjectStore {
 
   async close(): Promise<void> {
     await this.prisma.$disconnect();
+  }
+}
+
+/**
+ * 在调用方已核验项目归属的事务内更新默认模型；省略媒体类型保持原值，空值删除覆盖。
+ * 数据库或凭据外键错误向外传播，保证与画布导入一起回滚。
+ */
+async function writeProjectModelDefaults(
+  transaction: Prisma.TransactionClient,
+  id: string,
+  defaults: UpdateProjectModelDefaultsInput,
+): Promise<void> {
+  for (const mediaType of ['text', 'image', 'audio', 'video'] as const) {
+    if (!(mediaType in defaults)) continue;
+    const value = defaults[mediaType];
+    const prismaMediaType = mediaTypeToPrisma[mediaType];
+    if (
+      value === null ||
+      value === undefined ||
+      (typeof value === 'string' && value.trim() === '') ||
+      (typeof value !== 'string' && value.modelAlias.trim() === '')
+    ) {
+      await transaction.projectModelDefault.deleteMany({
+        where: { projectId: id, mediaType: prismaMediaType },
+      });
+      continue;
+    }
+    const selection = normalizeSelection(value);
+    await transaction.projectModelDefault.upsert({
+      where: { projectId_mediaType: { projectId: id, mediaType: prismaMediaType } },
+      create: {
+        projectId: id,
+        mediaType: prismaMediaType,
+        modelAlias: selection.modelAlias,
+        credentialId: selection.credentialId ?? null,
+      },
+      update: {
+        modelAlias: selection.modelAlias,
+        credentialId: selection.credentialId ?? null,
+      },
+    });
   }
 }
 

@@ -92,12 +92,22 @@ describe('canvas group import and export', () => {
   });
 
   it('跨项目重新映射连线、批量根、完成动作目标和图片编辑来源', async () => {
+    const assetStore = new MemoryAssetStore();
+    const asset = await assetStore.create({
+      projectId: 'project-target',
+      name: 'original.png',
+      mediaType: 'image',
+      mimeType: 'image/png',
+      content: Buffer.from('version-one'),
+    });
+    await assetStore.createVersion(asset.id, { content: Buffer.from('version-two') });
+    await assetStore.createVersion(asset.id, { content: Buffer.from('version-three') });
     const canvas = canvasWithGroup();
     canvas.nodes[0].data.generationBatch = { id: 'batch', rootNodeId: 'node-image', index: 0 };
     canvas.nodes[0].data.completionTargetNodeId = 'node-text';
     canvas.nodes[0].data.imageEditSource = {
       sourceNodeId: 'node-text',
-      assetId: 'asset-original',
+      assetId: asset.id,
       version: 3,
     };
     canvas.edges = [
@@ -112,7 +122,7 @@ describe('canvas group import and export', () => {
     ];
     const source = structuredClone(canvas);
     const result = await importWorkflowExport(workflowForCanvas(canvas), {
-      assetStore: new MemoryAssetStore(),
+      assetStore,
       projectId: 'project-target',
     });
     expect(result.canvas.edges[0]).toEqual({
@@ -127,7 +137,7 @@ describe('canvas group import and export', () => {
       completionTargetNodeId: result.nodeIdMap['node-text'],
       imageEditSource: {
         sourceNodeId: result.nodeIdMap['node-text'],
-        assetId: 'asset-original',
+        assetId: asset.id,
         version: 3,
       },
     });

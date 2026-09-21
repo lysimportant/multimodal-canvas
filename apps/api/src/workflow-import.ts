@@ -65,10 +65,10 @@ export type WorkflowImportResult = {
   nodeIdMap: Record<string, string>;
 };
 
-/** 输入文档结构错误时抛出的导入错误。 */
+/** 输入结构或非占位素材引用不可用时抛出的导入错误；目标项目尚未写入。 */
 export class WorkflowImportError extends Error {
   constructor(
-    public readonly code: 'invalid_schema' | 'unsupported_schema_version',
+    public readonly code: 'invalid_schema' | 'unsupported_schema_version' | 'asset_unavailable',
     message: string,
     public readonly issues: readonly z.ZodIssue[] = [],
   ) {
@@ -157,6 +157,8 @@ export function parseWorkflowExport(input: unknown): WorkflowExport {
  *
  * 缺失、无权限、归档、版本不存在、MIME 不匹配或超限的提及不会被删除，
  * 而是保留原始身份并标记 `placeholder: true`，供 UI 展示并阻止提交执行。
+ * 节点素材、资源池及图片编辑来源没有占位合同，不可用时拒绝整个导入。
+ * runs/results 仅保留导出元数据，不创建运行、复制媒体或转移资产归属。
  */
 export async function importWorkflowExport(
   input: unknown,
@@ -203,6 +205,60 @@ export async function importWorkflowExport(
   }
   const nodes = [];
   for (const node of importedCanvas.nodes) {
+    const references: Array<{
+      assetId: string;
+      mediaType: MediaType;
+      version?: number;
+      path: (string | number)[];
+    }> = [
+      ...(node.data.assetId
+        ? [{ assetId: node.data.assetId, mediaType: node.data.mediaType, path: ['assetId'] }]
+        : []),
+      ...(node.data.resourceRefs ?? []).map((reference, index) => ({
+        assetId: reference.assetId,
+        mediaType: reference.mediaType,
+        version: reference.assetVersion,
+        path: ['resourceRefs', index],
+      })),
+      ...(node.data.imageEditSource
+        ? [
+            {
+              assetId: node.data.imageEditSource.assetId,
+              mediaType: 'image' as const,
+              version: node.data.imageEditSource.version,
+              path: ['imageEditSource'],
+            },
+          ]
+        : []),
+    ];
+    for (const reference of references) {
+      const lookup = await cached(assetCache, reference.assetId, () =>
+        lookupAsset(options.assetStore, reference.assetId, projectScope, globalScope),
+      );
+      if (
+        !lookup.accessible ||
+        !lookup.asset ||
+        lookup.asset.status === 'archived' ||
+        lookup.asset.mediaType !== reference.mediaType ||
+        !isMimeCompatible(lookup.asset.mimeType, reference.mediaType) ||
+        (reference.version !== undefined &&
+          !(await options.assetStore.listVersions(reference.assetId, lookup.scope)).some(
+            (version) => version.version === reference.version,
+          ))
+      ) {
+        throw new WorkflowImportError(
+          'asset_unavailable',
+          '工作流包含目标项目不可用的素材，请先重新绑定本人素材后再导入',
+          [
+            {
+              code: z.ZodIssueCode.custom,
+              path: ['canvas', 'nodes', nodes.length, 'data', ...reference.path],
+              message: '素材无权访问、已归档、类型不匹配或指定版本不存在',
+            },
+          ],
+        );
+      }
+    }
     if (node.data.mode !== 'source' && node.data.modelAlias) {
       issues.push({
         code: 'MODEL_SELECTION_REQUIRED',
@@ -336,7 +392,14 @@ async function lookupAsset(
   globalScope: AssetScope,
 ): Promise<AssetLookup> {
   const projectAsset = await assetStore.get(assetId, projectScope);
-  if (projectAsset) return { asset: projectAsset, scope: projectScope, accessible: true };
+  if (projectAsset) {
+    const ownership = globalScope.ownerId ? await assetStore.getOwnership?.(assetId) : undefined;
+    return {
+      asset: projectAsset,
+      scope: projectScope,
+      accessible: !ownership?.ownerId || ownership.ownerId === globalScope.ownerId,
+    };
+  }
   const globalAsset = await assetStore.get(assetId, globalScope);
   if (globalAsset) return { asset: globalAsset, scope: globalScope, accessible: true };
   const existing = await assetStore.get(assetId);

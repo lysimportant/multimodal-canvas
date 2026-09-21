@@ -465,7 +465,7 @@ const workflowImportRequestSchema = {
   },
   additionalProperties: false,
   description:
-    '项目导入接口接受的工作流文档；expectedRevision 用于乐观并发控制。跨项目导入分配新节点/边 ID 并返回 nodeIdMap。导入会移除源账号凭据和 URL，模型仅保留精确名称建议，New API 生成前必须重新选择本人分组。',
+    '项目导入接口接受的工作流文档；expectedRevision 用于乐观并发控制，画布与默认模型原子保存。跨项目导入分配新节点/边 ID 并返回 nodeIdMap。导入移除源账号凭据和 URL，模型仅保留建议；非占位素材必须可用于目标项目且指定版本存在。runs/results 仅为导出元数据，不恢复历史运行或复制素材。',
 } as const;
 
 /** 导入时单个资源提及产生的问题。 */
@@ -554,7 +554,12 @@ const workflowImportErrorSchema = {
     error: { type: 'string' },
     code: {
       type: 'string',
-      enum: ['invalid_schema', 'unsupported_schema_version', 'revision_conflict'],
+      enum: [
+        'invalid_schema',
+        'unsupported_schema_version',
+        'revision_conflict',
+        'asset_unavailable',
+      ],
     },
     revision: { type: 'integer', minimum: 0 },
     requestId: { type: 'string', minLength: 1 },

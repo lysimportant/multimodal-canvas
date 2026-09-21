@@ -61,6 +61,59 @@ function workflowForCanvas(canvas: ReturnType<typeof canvasWithMention>) {
 }
 
 describe('workflow import contract', () => {
+  it.each(['assetId', 'resourceRefs', 'imageEditSource'] as const)(
+    'rejects unavailable %s references before importing the graph',
+    async (field) => {
+      const store = new MemoryAssetStore();
+      const asset = await store.create({
+        projectId: 'project-source',
+        ownerId: 'owner-a',
+        name: 'private.png',
+        mediaType: 'image',
+        mimeType: 'image/png',
+        content: Buffer.from('synthetic-image'),
+      });
+      const data: CanvasDocument['nodes'][number]['data'] = {
+        label: 'Reference',
+        mediaType: 'image',
+        mode: 'source',
+        ...(field === 'assetId' ? { assetId: asset.id } : {}),
+        ...(field === 'resourceRefs'
+          ? {
+              resourceRefs: [
+                {
+                  id: 'ref',
+                  assetId: asset.id,
+                  assetVersion: 1,
+                  mediaType: 'image' as const,
+                  name: 'Reference',
+                },
+              ],
+            }
+          : {}),
+        ...(field === 'imageEditSource'
+          ? { imageEditSource: { sourceNodeId: 'source', assetId: asset.id, version: 1 } }
+          : {}),
+      };
+      const workflow = workflowForCanvas({
+        revision: 0,
+        nodes: [{ id: 'source', type: 'image', position: { x: 0, y: 0 }, data }],
+        edges: [],
+      });
+      await expect(
+        importWorkflowExport(workflow, {
+          assetStore: store,
+          assetScope: { ownerId: 'owner-b' },
+          projectId: 'project-target',
+        }),
+      ).rejects.toMatchObject({ code: 'asset_unavailable' });
+      expect(await store.getOwnership(asset.id)).toEqual({
+        ownerId: 'owner-a',
+        projectId: 'project-source',
+      });
+    },
+  );
+
   it('parses the current schema and rejects unsupported versions', () => {
     expect(parseWorkflowExport(workflowForCanvas(canvasWithMention())).canvas.nodes).toHaveLength(
       1,

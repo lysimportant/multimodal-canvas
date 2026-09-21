@@ -14,6 +14,7 @@ import { NewApiAccountSettings, newApiRequestUser } from './newapi-account-setti
 import { buildApp } from './fixtures/test-app';
 import { PrismaProjectStore } from './projects';
 import { createRunSnapshot, MemoryRunService } from './runs';
+import { MemoryBlobStore, PrismaAssetStore } from './assets';
 
 /** 必须显式给出隔离数据库；普通单测不连接本机实际业务实例。 */
 const databaseUrl = process.env.TEST_DATABASE_URL;
@@ -563,6 +564,251 @@ describe.skipIf(!databaseUrl)('New API 本人身份与分组隔离', () => {
       expect(ownDefault.json().defaults).toEqual({
         text: { modelAlias: 'exact-model', credentialId: accountBCredential },
       });
+    } finally {
+      await app.close();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('导入默认模型写入失败时回滚画布、默认模型及版本，修复后可原版本重试', async () => {
+    vi.stubEnv('WORKER_PROVIDER', 'newapi');
+    vi.stubEnv('API_JWT_SECRET', 'synthetic-account-jwt');
+    const session = await login();
+    const owner = { ownerId: session.user.id };
+    const projects = new PrismaProjectStore(prisma);
+    const project = await projects.create({ name: 'Atomic workflow import' }, owner);
+    const originalCanvas = await projects.updateCanvas(
+      project.id,
+      { revision: 0, nodes: [], edges: [], groups: [] },
+      owner,
+    );
+    const originalDefaults = await projects.updateModelDefaults(
+      project.id,
+      { text: 'original-model', image: 'retained-image' },
+      owner,
+    );
+    const originalProject = await projects.get(project.id, owner);
+    const app = buildApp({
+      logger: false,
+      newApiAccount: service,
+      authService: auth,
+      authStore: new PrismaAuthStore(prisma),
+      projectStore: projects,
+    });
+    const workflow = {
+      schemaVersion: 1,
+      exportedAt: new Date().toISOString(),
+      project,
+      canvas: {
+        revision: 0,
+        nodes: [
+          {
+            id: randomUUID(),
+            type: 'text',
+            position: { x: 15, y: 30 },
+            data: { label: 'Imported node', mediaType: 'text', mode: 'generate' },
+          },
+        ],
+        edges: [],
+      },
+      modelDefaults: { text: 'reject-import' },
+      runs: [],
+      results: [],
+    };
+    try {
+      // 仅在随机测试 schema 中拒绝该默认值，让真实数据库在写入阶段失败。
+      await prisma.$executeRawUnsafe(
+        `ALTER TABLE project_model_defaults ADD CONSTRAINT import_failure_fixture CHECK ("modelAlias" <> 'reject-import')`,
+      );
+      const failed = await app.inject({
+        method: 'POST',
+        url: `/v1/projects/${project.id}/import/workflow`,
+        headers: { cookie: `canvas_session=${session.accessToken}` },
+        payload: { workflow, expectedRevision: originalCanvas.revision },
+      });
+      expect(failed.statusCode, failed.body).toBe(500);
+      expect(await projects.getCanvas(project.id, owner)).toEqual(originalCanvas);
+      expect(await projects.getModelDefaults(project.id, owner)).toEqual(originalDefaults);
+      expect(await projects.get(project.id, owner)).toEqual(originalProject);
+      await prisma.$executeRawUnsafe(
+        'ALTER TABLE project_model_defaults DROP CONSTRAINT import_failure_fixture',
+      );
+      const imported = await app.inject({
+        method: 'POST',
+        url: `/v1/projects/${project.id}/import/workflow`,
+        headers: { cookie: `canvas_session=${session.accessToken}` },
+        payload: { workflow, expectedRevision: originalCanvas.revision },
+      });
+      expect(imported.statusCode, imported.body).toBe(200);
+      expect(imported.json().canvas).toMatchObject({
+        revision: originalCanvas.revision + 1,
+        nodes: workflow.canvas.nodes,
+      });
+      expect(imported.json().modelDefaults).toEqual({
+        text: 'reject-import',
+        image: 'retained-image',
+      });
+    } finally {
+      await prisma.$executeRawUnsafe(
+        'ALTER TABLE project_model_defaults DROP CONSTRAINT IF EXISTS import_failure_fixture',
+      );
+      await app.close();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('导入拒绝外人素材及失效版本，保留本人图片来源版本且不复制运行或资产', async () => {
+    vi.stubEnv('WORKER_PROVIDER', 'newapi');
+    vi.stubEnv('API_JWT_SECRET', 'synthetic-account-jwt');
+    const a = await login();
+    selectedUser = 'account-b';
+    const b = await login();
+    const owner = { ownerId: b.user.id };
+    const projects = new PrismaProjectStore(prisma);
+    const assets = new PrismaAssetStore(prisma, { blobStore: new MemoryBlobStore() });
+    const source = await projects.create({ name: 'Private source' }, { ownerId: a.user.id });
+    const target = await projects.create({ name: 'Import reference target' }, owner);
+    const foreignAsset = await assets.create({
+      ownerId: a.user.id,
+      projectId: source.id,
+      name: 'Private image',
+      mediaType: 'image',
+      mimeType: 'image/png',
+      content: Buffer.from('private-image'),
+    });
+    const ownAsset = await assets.create({
+      ownerId: b.user.id,
+      name: 'Own image',
+      mediaType: 'image',
+      mimeType: 'image/png',
+      content: Buffer.from('original-image'),
+    });
+    await assets.createVersion(ownAsset.id, { content: Buffer.from('new-image') }, owner);
+    const beforeCanvas = await projects.getCanvas(target.id, owner);
+    const beforeCounts = { assets: await prisma.asset.count(), runs: await prisma.run.count() };
+    const app = buildApp({
+      logger: false,
+      newApiAccount: service,
+      authService: auth,
+      authStore: new PrismaAuthStore(prisma),
+      projectStore: projects,
+      assetStore: assets,
+    });
+    const workflow = {
+      schemaVersion: 1,
+      exportedAt: new Date().toISOString(),
+      project: source,
+      canvas: {
+        revision: 0,
+        nodes: [
+          {
+            id: 'source-image',
+            type: 'image',
+            position: { x: 1, y: 2 },
+            data: { label: 'Image', mediaType: 'image', mode: 'source' },
+          },
+        ],
+        edges: [],
+      },
+      modelDefaults: { text: 'exact-model' },
+      runs: [{ id: 'exported-run' }],
+      results: [{ runId: 'exported-run', asset: { assetId: foreignAsset.id, version: 1 } }],
+    };
+    try {
+      for (const data of [
+        { assetId: foreignAsset.id },
+        {
+          resourceRefs: [
+            { id: 'ref', assetId: foreignAsset.id, mediaType: 'image', name: 'Reference' },
+          ],
+        },
+        { imageEditSource: { sourceNodeId: 'source-image', assetId: foreignAsset.id, version: 1 } },
+        { imageEditSource: { sourceNodeId: 'source-image', assetId: ownAsset.id, version: 99 } },
+      ]) {
+        const result = await app.inject({
+          method: 'POST',
+          url: `/v1/projects/${target.id}/import/workflow`,
+          headers: { cookie: `canvas_session=${b.accessToken}` },
+          payload: {
+            ...workflow,
+            canvas: {
+              ...workflow.canvas,
+              nodes: [
+                {
+                  ...workflow.canvas.nodes[0],
+                  data: { ...workflow.canvas.nodes[0].data, ...data },
+                },
+              ],
+            },
+          },
+        });
+        expect(result.statusCode, result.body).toBe(400);
+        expect(result.json().code).toBe('asset_unavailable');
+        expect(await projects.getCanvas(target.id, owner)).toEqual(beforeCanvas);
+        expect(await projects.getModelDefaults(target.id, owner)).toEqual({});
+      }
+      const imported = await app.inject({
+        method: 'POST',
+        url: `/v1/projects/${target.id}/import/workflow`,
+        headers: { cookie: `canvas_session=${b.accessToken}` },
+        payload: {
+          ...workflow,
+          canvas: {
+            ...workflow.canvas,
+            nodes: [
+              {
+                ...workflow.canvas.nodes[0],
+                data: {
+                  ...workflow.canvas.nodes[0].data,
+                  assetId: ownAsset.id,
+                  resourceRefs: [
+                    {
+                      id: 'ref',
+                      assetId: ownAsset.id,
+                      assetVersion: 1,
+                      mediaType: 'image',
+                      name: 'Reference',
+                    },
+                  ],
+                  imageEditSource: {
+                    sourceNodeId: 'source-image',
+                    assetId: ownAsset.id,
+                    version: 1,
+                    sourceKind: 'result',
+                  },
+                },
+              },
+            ],
+          },
+        },
+      });
+      expect(imported.statusCode, imported.body).toBe(200);
+      const nodeId = imported.json().nodeIdMap['source-image'];
+      const saved = await projects.getCanvas(target.id, owner);
+      expect(saved?.nodes[0].data).toMatchObject({
+        assetId: ownAsset.id,
+        resourceRefs: [{ assetId: ownAsset.id, assetVersion: 1 }],
+        imageEditSource: {
+          sourceNodeId: nodeId,
+          assetId: ownAsset.id,
+          version: 1,
+          sourceKind: 'result',
+        },
+      });
+      expect(await assets.getOwnership(foreignAsset.id)).toEqual({
+        ownerId: a.user.id,
+        projectId: source.id,
+      });
+      expect(await assets.getOwnership(ownAsset.id)).toEqual({
+        ownerId: b.user.id,
+        projectId: null,
+      });
+      expect({ assets: await prisma.asset.count(), runs: await prisma.run.count() }).toEqual(
+        beforeCounts,
+      );
+      expect(await assets.getVersionContent(ownAsset.id, 1, owner)).toEqual(
+        Buffer.from('original-image'),
+      );
     } finally {
       await app.close();
       vi.unstubAllEnvs();

@@ -79,6 +79,55 @@ describe('canvas group persistence compatibility', () => {
   });
 });
 
+describe('workflow import persistence', () => {
+  it.each(['memory', 'file'] as const)(
+    'saves canvas and model defaults together in the %s store',
+    async (mode) => {
+      const directory = await mkdtemp(join(tmpdir(), 'multimodal-workflow-'));
+      const filePath = join(directory, 'projects.json');
+      const store =
+        mode === 'memory' ? new MemoryProjectStore() : new FileProjectStore({ filePath });
+      const owner = { ownerId: 'workflow-owner' };
+      try {
+        const project = await store.create({ name: 'Workflow target' }, owner);
+        await store.updateModelDefaults(project.id, { image: 'preserved-model' }, owner);
+        const canvas = await store.updateCanvas(
+          project.id,
+          { revision: 0, nodes: [], edges: [], groups: storedGroups },
+          owner,
+          { text: 'imported-model' },
+        );
+        await expect(
+          store.updateCanvas(project.id, { ...canvas, revision: 0 }, owner, {
+            text: 'stale-model',
+          }),
+        ).rejects.toMatchObject({ code: 'revision_conflict' });
+        await expect(
+          store.updateCanvas(
+            project.id,
+            canvas,
+            { ownerId: 'other-owner' },
+            { text: 'foreign-model' },
+          ),
+        ).rejects.toMatchObject({ code: 'not_found' });
+        const restored = mode === 'file' ? new FileProjectStore({ filePath }) : store;
+        try {
+          expect(await restored.getCanvas(project.id, owner)).toEqual(canvas);
+          expect(await restored.getModelDefaults(project.id, owner)).toEqual({
+            image: 'preserved-model',
+            text: 'imported-model',
+          });
+        } finally {
+          if (restored instanceof FileProjectStore) await restored.close();
+        }
+      } finally {
+        if (store instanceof FileProjectStore) await store.close();
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
+});
+
 describe('MemoryProjectStore listing', () => {
   it('returns project summaries in updatedAt descending order', async () => {
     const store = new MemoryProjectStore();

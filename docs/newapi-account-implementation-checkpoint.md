@@ -4,6 +4,18 @@
 
 当前接续基线：Canvas `dbdc1093d204d00f3c1bec781b127055b0ad4a0d`，分支 `codex/generate-to-new-node`，上游 `origin/codex/generate-to-new-node`；New API `f31ac6ab7519cffe5f19e04a24e1aeaf7d4dcd26`，分支 `main`，上游 `fork/main`。Node `24.12.0`、pnpm `11.19.0`、Docker `29.7.2`、Go `1.26.0 windows/amd64`，已有依赖可用。本批按用户最新要求修改双方一体化登录，无依赖或 schema 变更；用户原有 `docs/resource-input-compatibility.md` 改动及 SHA256 保持不变。
 
+## 导入一致性与执行补证（16:40）
+
+主代理继续完成本地缺口；基线为 Canvas `3603f3cf48bae1656c9165807ae2e4abe7a406fe`，New API `b1f7ca022332b4c62113690817867e31da3db5a0`。一体化登录两端已分别交付 Tag `v2026.09.21-newapi-integrated-login`、`v1.0.0-rc.37.custom.16`，远端分支及 Tag 解引用核验一致。
+
+- 真实 PostgreSQL 故障复现：默认模型写入失败返回 500，但原画布 revision 从 1 变成 2。修复后画布、默认模型和项目更新时间在同一事务提交，失败全部回滚，解除故障后可用原 revision 重试。内存和文件适配器同一次保存默认值；原有调用参数兼容，无 schema 或依赖变更。
+- 导入前校验节点 `assetId`、`resourceRefs` 和 `imageEditSource`：无权访问、归档、媒体类型不符或明确版本缺失返回 400 `asset_unavailable`，目标图和默认值不变。本人可访问的素材及原图片来源版本保留，跨项目 sourceNodeId 映射仍正确。工作流中的 runs/results 只保留导出元数据，不复制资产、不创建历史 Run、不转移账号归属；完整保留项目转换继续等待明确接收身份。
+- 定向及真实数据库检查 94/94，包含身份集成 17/17、项目存储、API、导入和导出。复现日志 `import-atomicity-before.log`、`import-reference-before.log`；修复日志 `import-reference-integration.log`，路径均相对 `.local-tests/newapi-account/`。
+- 实际 vip/auto 同名文字模型各调用一次免费 Mock，持久授权、Key 与 New API 消费记录一致。vip 使用 Token 13 并落到 vip；auto 使用 Token 7，按 `[default, vip]` 落到 default；排除组不参与，两个消费记录 quota 0、Canvas usage ledger 0。报告 `local-docker/group-send-acceptance.json`。
+- 独立 Docker 中将免费 H3 任务保持处理中，确认授权/outbox/发送记录和上游任务 ID 落库后对 Worker 发 SIGKILL，再启动新进程。原 Run、授权指纹、outbox、attempt 和发送记录保持，原上游任务完成归档；创建 POST 总计 1，恢复及终态再恢复额外 POST 0。报告 `local-docker/worker-crash-acceptance.json`。Mock 的暂停标记已移除，Worker 恢复 healthy，未更改原 unknown 或共享数据。
+
+本批 lint/typecheck/test/build/build:runtime/db:validate 全通过，API 807 passed / 80 skipped、Web 932 passed；skip 不计入集成验收，17/17 真实 PG 独立执行。全量检查曾发现旧组映射测试使用不存在的来源素材，已改为显式建立三个合成版本后验证原版本不变；修复的是测试前提，未放宽导入权限。日志 `reference-final-*.log`。API 镜像 `sha256:2bd6dc67375b9d36597e499160e2f76ee066da11fbd87ddbc02b7d5d81044144` 已部署 healthy；新浏览器 8/8、额外 POST 0，日志 `reference-browser.log`。回退使用 `multimodal-canvas-api:before-import-reference` 和原卷，会重新引入导入部分更新和非 mention 引用未校验问题。三个新增免费请求和对应原始证据保留，验收项目归档而不删除。
+
 ## 一体化登录（15:42）
 
 用户明确不需要单独授权：普通登录由 New API 验证本人会话后自动连接 Canvas，后台兑换一次性码、同步本人全部纳入组，再进入画布。已有 New API 会话无需再次输入密码或点击授权。仅主动“切换账号”显示账号选择，新账号登录后直接返回画布。设置页保留同步、重新登录、切换账号、同步时间及账号/逐组错误，移除授权与撤销控件；后台撤销和权限失效机制保留。
@@ -21,7 +33,7 @@
 
 独立 `canvas-newapi-local` 的 api/web/new-api 已部署，入口 `http://localhost:8080`。New API 镜像 `forknewapi:canvas-integrated-login-20260921`。保留 api/web 的 `before-integrated-login` 镜像及 New API 前版命名镜像，可用原卷回退；没有数据库迁移或业务数据删除。源码回退会恢复额外授权确认，不会撤回已完成的会话退出。此前授权按钮验收只保留历史证据，当前 PC 合同以本节为准。
 
-本批不关闭全计划。接续审计还需核实并补齐：导入画布与默认模型的原子性、非 mention 素材/派生引用的导入范围、合法受控 Key 轮换和非 default 分组端到端发送证据，以及带执行授权的独立 Worker 崩溃接管；不能从现有目录或其他恢复测试外推。旧共享归属/3 个 unknown、线上部署和真实费用仍按原边界保留。
+本批不关闭全计划。导入原子性、素材引用边界、非 default 发送及带授权的 Worker 崩溃接管已在后续补齐，见文首；合法受控 Key 轮换仍需实现。旧共享归属/3 个 unknown、线上部署和真实费用仍按原边界保留。
 
 ## 跨账号导入与显式分组修复（12:21）
 
@@ -220,7 +232,7 @@ PC 前端本轮没有源码变化。此前真实双用户 9 项烟测与四组�
 | 04 | 并发同步、上游已建但回包丢失 | 隔离通过 | 原 operation/token 复用测试通过，未增加成功组 Key |
 | 05 | 首次全部组建 Key、增加组、切换模型 | Mock/运行环境通过 | 新 Docker 接入 15 个 active 组、75 条目录；同步/重登复用，新增组补建另有回归 |
 | 06 | `神秘分组` 精确排除 | Mock/运行环境通过 | 新 Docker 包含 auto 和 `神秘分组-可用`，精确排除组原 Token 保持不变 |
-| 07 | 多组模型汇总及选择 | 目录/PC 通过；发送补证待做 | 新 Docker 的 15 组 API 目录与归属、PC 表格和刷新复用通过；非 default 同名模型的最终分组 Key 发送仍需独立 Mock 证据 |
+| 07 | 多组模型汇总及选择 | Mock/运行环境通过 | 15 组目录/PC 通过；vip/auto 同名文字模型各一次实际发送，使用不同 Token，消费记录分别落在 vip/default 且排除神秘分组，见 group-send-acceptance.json |
 | 08 | `auto` 范围与显式变化 | 隔离通过 | 空范围拒绝、排除组不路由；目标站点 Auto 顺序仍待验 |
 | 09 | 部分组失败或令牌数量达限 | 隔离通过 | 限额保留成功组、失败组原因和 auto 空范围回归通过 |
 | 10 | Key 从 G1 改到 G2 | 隔离通过 | 管理令牌人工改组/撤销和旧绑定失效回归通过；重新授权探针确认人工改期不会复活旧 Token |
@@ -229,9 +241,9 @@ PC 前端本轮没有源码变化。此前真实双用户 9 项烟测与四组�
 | 13 | 两用户、两分组、同名模型 | Mock/运行环境通过 | PC 双上下文项目、设置、凭据和退出隔离通过 |
 | 14 | 凭据过期、撤销、断开、轮换 | 失效隔离通过；受控轮换未完成 | 撤销后新提交拒绝，人工改期限不被同步复活；探针保留原 Token ID/期限且 Provider POST 0。该证据不覆盖合法替换 Key 的新凭据版本和旧运行引用 |
 | 15 | 普通、批量、DAG、优化、反推、重试 | Mock/运行环境通过 | `entries-results.json`、`special-entries-results.json` 覆盖所有入口；本批优化/反推 42/42，缺少显式个人分组默认时拒绝，原选择失效不换组 |
-| 16 | 入队失败、重启、重复消费、未知创建结果 | 隔离通过；执行授权跨进程补证待做 | 14/14 恢复集成、82/82 HTTP/运行/限流；unknown 拒绝自动重发。已有跨进程 Mock 媒体恢复未注入 New API 执行授权，不能外推其崩溃接管合同 |
+| 16 | 入队失败、重启、重复消费、未知创建结果 | 隔离及本地运行通过 | 14/14 恢复集成、82/82 HTTP/运行/限流；独立 Docker SIGKILL 后以原授权、outbox、attempt、发送和上游任务身份恢复 H3，创建总计 1、恢复增量 0，见 worker-crash-acceptance.json；unknown 继续禁止自动重发 |
 | 17 | 新旧任务混合及旧页面提交 | 隔离通过 | 旧报价/账务入口拒绝，模式从服务端快照回读；旧数据收尾仍待共享切换 |
-| 18 | 保留项目、默认模型、导入导出 | 已测图/模型导入通过；其余未关闭 | PG 与 Docker A→B 已验证节点/边身份、分组重选和越权拒绝；画布与默认写入原子性、非 mention 素材及派生/结果引用还需核实。普通工作流导入不等于完整作品/归属迁移，shared owner-null 接收身份未定 |
+| 18 | 保留项目、默认模型、导入导出 | 工作流导入通过；归属迁移暂缓 | PG 故障回归验证画布/默认同事务回滚；非 mention 素材/图片来源权限及版本在写前校验，本人原版本保留且节点引用映射；工作流不复制历史运行和资产。完整保留作品迁移及 shared owner-null 接收身份仍未定 |
 | 19 | 测试账号清理、外键、对象、队列、恢复 | 已确认范围通过；其余暂缓 | 旧本地源库精确删除 21 行，恢复/副本重放通过；独立 Docker 探针用户 ID 3 及其 15 个 Token/Canvas 绑定已备份后清理；18 项目、65 素材、3 个 unknown 及所有关联证据保留，保留归属和旧库转换未完成 |
 | 20 | New API 不可用、禁用与撤销 | 本地运行环境通过 | 实际停止/恢复 New API、禁用/启用账号、产品撤销/重新授权共 11 项通过；只读可用、写入拒绝、旧会话不复活且零新增 POST，生产部署仍待验 |
 | 21 | 旧广场、钱包及后台同步退出 | 隔离通过 | 新任务无 Canvas 钱包/报价写入；旧钱包/计费/广场/后台实际路由补齐 410，31/31 定向回归通过 |

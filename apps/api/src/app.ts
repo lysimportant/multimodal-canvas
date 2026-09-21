@@ -2164,7 +2164,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           assetScope: assetScope(requestPrincipals, request),
           projectId: request.params.projectId,
         });
-        let modelDefaults = await projectStore.getModelDefaults(request.params.projectId, scope);
         // 导入的默认模型已剥离源账号凭据，只保留待重选建议；New API 执行边界
         // 要求显式分组，不能因目录暂不可用或同名模型跨组而阻止画布导入。
         if (imported.modelDefaults && providerName !== 'newapi') {
@@ -2188,14 +2187,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           request.params.projectId,
           rebasedCanvas,
           scope,
+          imported.modelDefaults as UpdateProjectModelDefaultsInput | undefined,
         );
-        if (imported.modelDefaults) {
-          modelDefaults = await projectStore.updateModelDefaults(
-            request.params.projectId,
-            imported.modelDefaults as UpdateProjectModelDefaultsInput,
-            scope,
-          );
-        }
+        const modelDefaults = await projectStore.getModelDefaults(request.params.projectId, scope);
         return {
           workflow: imported.workflow,
           canvas,
