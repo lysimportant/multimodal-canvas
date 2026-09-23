@@ -434,19 +434,24 @@ describe('ResourceMentionEditor', () => {
     expect(screen.getByRole('button', { name: '预览并命名 产品视频' })).toBeInTheDocument();
   });
 
-  it('protects a confirmed mention from partial text edits', () => {
+  it.each([
+    { name: '末尾 Backspace', key: '{Backspace}', offset: 3 },
+    { name: '名称中 Backspace', key: '{Backspace}', offset: 2 },
+    { name: '开头 Delete', key: '{Delete}', offset: 0 },
+    { name: '名称中 Delete', key: '{Delete}', offset: 1 },
+  ])('$name 会原子删除完整引用', async ({ key, offset }) => {
+    const user = userEvent.setup();
     const onDocumentChange = vi.fn();
     render(
       <ResourceMentionEditor
-        nodeId="node-image"
-        value="前 产品图 后"
+        nodeId="node-delete-image"
         promptDocument={{
           version: 1,
           blocks: [
             { type: 'text', text: '前 ' },
             {
               type: 'mention',
-              mentionId: 'mention-protected',
+              mentionId: 'mention-delete-image',
               assetId: imageAsset.id,
               label: imageAsset.name,
               mediaType: imageAsset.mediaType,
@@ -459,14 +464,277 @@ describe('ResourceMentionEditor', () => {
         ariaLabel="提示词"
       />,
     );
-    const editor = screen.getByRole('textbox', { name: '提示词' });
+    const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
+    const mentionStart = editor.value.indexOf(imageAsset.name);
+    editor.focus();
+    editor.setSelectionRange(mentionStart + offset, mentionStart + offset);
 
-    fireEvent.change(editor, { target: { value: '前 产品 后' } });
+    await user.keyboard(key);
 
+    expect(editor).toHaveValue('前  后');
+    expect(screen.queryByRole('button', { name: '删除 产品图' })).not.toBeInTheDocument();
+    expect(onDocumentChange).toHaveBeenLastCalledWith({
+      version: 1,
+      blocks: [{ type: 'text', text: '前  后' }],
+    });
+  });
+
+  it.each(['{Backspace}', '{Delete}'])('%s 删除完整引用选区并保留周边文字', async (key) => {
+    const user = userEvent.setup();
+    const onDocumentChange = vi.fn();
+    render(
+      <ResourceMentionEditor
+        nodeId="node-delete-selected-image"
+        promptDocument={{
+          version: 1,
+          blocks: [
+            { type: 'text', text: '前 ' },
+            {
+              type: 'mention',
+              mentionId: 'mention-selected-image',
+              assetId: imageAsset.id,
+              label: imageAsset.name,
+              mediaType: imageAsset.mediaType,
+            },
+            { type: 'text', text: ' 后' },
+          ],
+        }}
+        assets={[imageAsset]}
+        onDocumentChange={onDocumentChange}
+        ariaLabel="提示词"
+      />,
+    );
+    const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
+    const mentionStart = editor.value.indexOf(imageAsset.name);
+    editor.focus();
+    editor.setSelectionRange(mentionStart, mentionStart + imageAsset.name.length);
+
+    await user.keyboard(key);
+
+    expect(editor).toHaveValue('前  后');
+    expect(screen.queryByRole('article')).not.toBeInTheDocument();
+    expect(onDocumentChange).toHaveBeenLastCalledWith({
+      version: 1,
+      blocks: [{ type: 'text', text: '前  后' }],
+    });
+  });
+
+  it('选区部分覆盖多个引用时清理完整引用并保留两侧文本', async () => {
+    const user = userEvent.setup();
+    const onDocumentChange = vi.fn();
+    render(
+      <ResourceMentionEditor
+        nodeId="node-delete-selection"
+        promptDocument={{
+          version: 1,
+          blocks: [
+            { type: 'text', text: '前 ' },
+            {
+              type: 'mention',
+              mentionId: 'mention-selection-image',
+              assetId: imageAsset.id,
+              label: imageAsset.name,
+              mediaType: imageAsset.mediaType,
+            },
+            { type: 'text', text: ' + ' },
+            {
+              type: 'mention',
+              mentionId: 'mention-selection-audio',
+              assetId: audioAsset.id,
+              label: audioAsset.name,
+              mediaType: audioAsset.mediaType,
+            },
+            { type: 'text', text: ' 后' },
+          ],
+        }}
+        assets={[imageAsset, audioAsset]}
+        onDocumentChange={onDocumentChange}
+        ariaLabel="提示词"
+      />,
+    );
+    const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
+    const selectionStart = editor.value.indexOf(imageAsset.name) + 1;
+    const selectionEnd = editor.value.indexOf(audioAsset.name) + 2;
+    editor.focus();
+    editor.setSelectionRange(selectionStart, selectionEnd);
+
+    await user.keyboard('{Delete}');
+
+    expect(editor).toHaveValue('前  后');
+    expect(screen.queryAllByRole('article')).toHaveLength(0);
+    expect(onDocumentChange).toHaveBeenLastCalledWith({
+      version: 1,
+      blocks: [{ type: 'text', text: '前  后' }],
+    });
+  });
+
+  it('输入覆盖部分名称会移除该引用，保留替换文字并可撤销恢复', async () => {
+    const onDocumentChange = vi.fn();
+    render(
+      <ResourceMentionEditor
+        nodeId="node-replace-image"
+        promptDocument={{
+          version: 1,
+          blocks: [
+            { type: 'text', text: '前 ' },
+            {
+              type: 'mention',
+              mentionId: 'mention-replace-image',
+              assetId: imageAsset.id,
+              label: imageAsset.name,
+              mediaType: imageAsset.mediaType,
+            },
+            { type: 'text', text: ' 后' },
+          ],
+        }}
+        assets={[imageAsset]}
+        onDocumentChange={onDocumentChange}
+        ariaLabel="提示词"
+      />,
+    );
+    const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
+    const mentionStart = editor.value.indexOf(imageAsset.name);
+    editor.focus();
+    editor.setSelectionRange(mentionStart + 1, mentionStart + 2);
+
+    fireEvent.change(editor, {
+      target: {
+        value: '前 产主体图 后',
+        selectionStart: mentionStart + 3,
+        selectionEnd: mentionStart + 3,
+      },
+    });
+
+    expect(editor).toHaveValue('前 主体 后');
+    expect(screen.queryByRole('article')).not.toBeInTheDocument();
+    expect(onDocumentChange).toHaveBeenLastCalledWith({
+      version: 1,
+      blocks: [{ type: 'text', text: '前 主体 后' }],
+    });
+
+    fireEvent.keyDown(editor, { key: 'z', ctrlKey: true });
     expect(editor).toHaveValue('前 产品图 后');
-    expect(screen.getByRole('status')).toHaveTextContent('请用资源条删除或重新绑定');
-    expect(screen.getByRole('article')).toHaveAttribute('data-mention-id', 'mention-protected');
-    expect(onDocumentChange).not.toHaveBeenCalled();
+    expect(screen.getByRole('article')).toHaveAttribute('data-mention-id', 'mention-replace-image');
+    expect(onDocumentChange.mock.lastCall?.[0].blocks[1]).toMatchObject({
+      type: 'mention',
+      mentionId: 'mention-replace-image',
+      assetId: imageAsset.id,
+    });
+  });
+
+  it('重复同资源只删除命中的引用，最后一处删除后清理缩略图且撤销可恢复', async () => {
+    const user = userEvent.setup();
+    const onDocumentChange = vi.fn();
+    render(
+      <ResourceMentionEditor
+        nodeId="node-delete-duplicate"
+        promptDocument={{
+          version: 1,
+          blocks: [
+            {
+              type: 'mention',
+              mentionId: 'mention-duplicate-first',
+              assetId: imageAsset.id,
+              label: imageAsset.name,
+              mediaType: imageAsset.mediaType,
+            },
+            { type: 'text', text: ' + ' },
+            {
+              type: 'mention',
+              mentionId: 'mention-duplicate-second',
+              assetId: imageAsset.id,
+              label: imageAsset.name,
+              mediaType: imageAsset.mediaType,
+            },
+          ],
+        }}
+        assets={[imageAsset]}
+        connectedAssets={[audioAsset]}
+        onDocumentChange={onDocumentChange}
+        ariaLabel="提示词"
+      />,
+    );
+    const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
+    editor.focus();
+    editor.setSelectionRange(1, 1);
+    await user.keyboard('{Backspace}');
+
+    expect(editor).toHaveValue(' + 产品图');
+    expect(onDocumentChange.mock.lastCall?.[0].blocks).toEqual([
+      { type: 'text', text: ' + ' },
+      expect.objectContaining({
+        type: 'mention',
+        mentionId: 'mention-duplicate-second',
+        assetId: imageAsset.id,
+      }),
+    ]);
+    expect(screen.getByRole('button', { name: '删除 产品图' })).toBeInTheDocument();
+
+    const remainingStart = editor.value.indexOf(imageAsset.name);
+    editor.focus();
+    editor.setSelectionRange(remainingStart + 1, remainingStart + 1);
+    fireEvent.keyDown(editor, { key: 'Delete' });
+
+    expect(editor).toHaveValue(' + ');
+    expect(screen.queryByRole('button', { name: '删除 产品图' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '预览并命名 声音样本' })).toBeInTheDocument();
+
+    fireEvent.keyDown(editor, { key: 'z', ctrlKey: true });
+    expect(editor).toHaveValue(' + 产品图');
+    expect(screen.getByRole('button', { name: '删除 产品图' })).toBeInTheDocument();
+    expect(onDocumentChange.mock.lastCall?.[0].blocks[1]).toMatchObject({
+      type: 'mention',
+      mentionId: 'mention-duplicate-second',
+    });
+  });
+
+  it('紧贴的同名引用从开头 Delete 只删除第一处', () => {
+    const onDocumentChange = vi.fn();
+    render(
+      <ResourceMentionEditor
+        nodeId="node-delete-adjacent-duplicates"
+        promptDocument={{
+          version: 1,
+          blocks: [
+            {
+              type: 'mention',
+              mentionId: 'mention-adjacent-first',
+              assetId: imageAsset.id,
+              label: imageAsset.name,
+              mediaType: imageAsset.mediaType,
+            },
+            {
+              type: 'mention',
+              mentionId: 'mention-adjacent-second',
+              assetId: imageAsset.id,
+              label: imageAsset.name,
+              mediaType: imageAsset.mediaType,
+            },
+          ],
+        }}
+        assets={[imageAsset]}
+        onDocumentChange={onDocumentChange}
+        ariaLabel="提示词"
+      />,
+    );
+    const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
+    editor.focus();
+    editor.setSelectionRange(0, 0);
+
+    fireEvent.keyDown(editor, { key: 'Delete' });
+
+    expect(editor).toHaveValue('产品图');
+    expect(screen.getByRole('button', { name: '删除 产品图' })).toBeInTheDocument();
+    expect(onDocumentChange).toHaveBeenLastCalledWith({
+      version: 1,
+      blocks: [
+        expect.objectContaining({
+          type: 'mention',
+          mentionId: 'mention-adjacent-second',
+          assetId: imageAsset.id,
+        }),
+      ],
+    });
   });
 
   it('keeps Chinese IME, paste, and caret insertion stable', async () => {
@@ -815,11 +1083,11 @@ describe('ResourceMentionEditor', () => {
     expect(cards[2].querySelector('img, video, audio')).toBeNull();
   });
 
-  it('searches aliases and tags while keeping all media groups visible', async () => {
+  it('保留 textarea 内的 @ 查询并继续匹配别名与标签', async () => {
     const user = userEvent.setup();
     render(
       <ResourceMentionEditor
-        nodeId="node-text"
+        nodeId="node-text-query"
         assets={[imageAsset, audioAsset, videoAsset, textAsset]}
         ariaLabel="提示词"
       />,
@@ -827,19 +1095,154 @@ describe('ResourceMentionEditor', () => {
     const editor = screen.getByRole('textbox', { name: '提示词' });
 
     await user.type(editor, '@采访');
+    expect(editor).toHaveValue('@采访');
     expect(screen.getByRole('option', { name: /资料文档/ })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /产品图/ })).not.toBeInTheDocument();
     await user.keyboard('{Escape}');
     await user.clear(editor);
     await user.type(editor, '@广告');
+    expect(editor).toHaveValue('@广告');
     expect(screen.getByRole('option', { name: /产品视频/ })).toBeInTheDocument();
-    await user.keyboard('{Escape}');
-    await user.clear(editor);
+  });
+
+  it('将选择器 portal 到 body，并用独立搜索与类型筛选控制 listbox', async () => {
+    const user = userEvent.setup();
+    render(
+      <ResourceMentionEditor
+        nodeId="node-picker-search"
+        assets={[imageAsset, audioAsset, videoAsset, textAsset]}
+        ariaLabel="提示词"
+      />,
+    );
+    const editor = screen.getByRole('textbox', { name: '提示词' });
+    const editorRoot = editor.closest('.resource-mention-editor');
+
     await user.type(editor, '@');
 
-    expect(screen.getByText('图片')).toBeInTheDocument();
-    expect(screen.getByText('视频')).toBeInTheDocument();
-    expect(screen.getByText('音频')).toBeInTheDocument();
-    expect(screen.getByText('文字')).toBeInTheDocument();
+    const listbox = screen.getByRole('listbox', { name: '选择资源' });
+    const searchbox = screen.getByRole('searchbox', { name: '搜索资源' });
+    expect(globalThis.document.body).toContainElement(listbox);
+    expect(editorRoot).not.toContainElement(listbox);
+    expect(editorRoot).not.toContainElement(searchbox);
+
+    const filterLabels = ['全部', '图片', '视频', '音频', '文本'] as const;
+    for (const label of filterLabels) {
+      expect(screen.getByRole('button', { name: label })).toHaveAttribute('aria-pressed');
+    }
+    expect(screen.getByRole('button', { name: '全部' })).toHaveAttribute('aria-pressed', 'true');
+
+    await user.click(searchbox);
+    await user.type(searchbox, '采访');
+    expect(editor).toHaveValue('@');
+    expect(searchbox).toHaveValue('采访');
+    expect(within(listbox).getByRole('option', { name: /资料文档/ })).toBeInTheDocument();
+    expect(within(listbox).queryByRole('option', { name: /产品图/ })).not.toBeInTheDocument();
+
+    await user.clear(searchbox);
+    await user.click(screen.getByRole('button', { name: '视频' }));
+    expect(screen.getByRole('button', { name: '视频' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: '全部' })).toHaveAttribute('aria-pressed', 'false');
+    expect(within(listbox).getByRole('option', { name: /产品视频/ })).toBeInTheDocument();
+    expect(within(listbox).queryByRole('option', { name: /产品图/ })).not.toBeInTheDocument();
+    expect(editor).toHaveValue('@');
+
+    await user.click(screen.getByRole('button', { name: '全部' }));
+    await user.type(searchbox, '不存在的资源');
+    expect(within(listbox).queryByRole('option')).not.toBeInTheDocument();
+    expect(within(listbox).getByText(/没有.*资源/)).toBeInTheDocument();
+    expect(editor).toHaveValue('@');
+  });
+
+  it('portal 内交互不触发外点关闭，外部点击与 Escape 会关闭选择器', async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <ResourceMentionEditor
+          nodeId="node-picker-dismiss"
+          assets={[imageAsset]}
+          ariaLabel="提示词"
+        />
+        <button type="button">编辑器外部</button>
+      </>,
+    );
+    const editor = screen.getByRole('textbox', { name: '提示词' });
+
+    await user.type(editor, '@');
+    const searchbox = screen.getByRole('searchbox', { name: '搜索资源' });
+    await user.click(searchbox);
+    expect(screen.getByRole('listbox', { name: '选择资源' })).toBeInTheDocument();
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: '编辑器外部' }));
+    expect(screen.queryByRole('listbox', { name: '选择资源' })).not.toBeInTheDocument();
+    expect(editor).toHaveValue('@');
+
+    await user.clear(editor);
+    await user.type(editor, '@');
+    screen.getByRole('searchbox', { name: '搜索资源' }).focus();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('listbox', { name: '选择资源' })).not.toBeInTheDocument();
+    expect(editor).toHaveValue('@');
+  });
+
+  it('搜索框按 Enter 选择当前结果且不把搜索词写进提示词', async () => {
+    const user = userEvent.setup();
+    const onDocumentChange = vi.fn();
+    render(
+      <ResourceMentionEditor
+        nodeId="node-picker-enter"
+        assets={[imageAsset, audioAsset]}
+        onDocumentChange={onDocumentChange}
+        ariaLabel="提示词"
+      />,
+    );
+    const editor = screen.getByRole('textbox', { name: '提示词' });
+
+    await user.type(editor, '生成 @');
+    const searchbox = screen.getByRole('searchbox', { name: '搜索资源' });
+    await user.type(searchbox, '产品');
+    expect(editor).toHaveValue('生成 @');
+    await user.keyboard('{Enter}');
+
+    expect(editor).toHaveValue('生成 产品图');
+    expect(screen.queryByRole('listbox', { name: '选择资源' })).not.toBeInTheDocument();
+    expect(onDocumentChange.mock.lastCall?.[0].blocks).toEqual([
+      { type: 'text', text: '生成 ' },
+      expect.objectContaining({
+        type: 'mention',
+        assetId: imageAsset.id,
+        label: imageAsset.name,
+      }),
+    ]);
+  });
+
+  it('搜索框处于 IME composition 时按 Enter 不确认资源', async () => {
+    const user = userEvent.setup();
+    const onDocumentChange = vi.fn();
+    render(
+      <ResourceMentionEditor
+        nodeId="node-picker-composition-enter"
+        assets={[imageAsset, audioAsset]}
+        onDocumentChange={onDocumentChange}
+        ariaLabel="提示词"
+      />,
+    );
+    const editor = screen.getByRole('textbox', { name: '提示词' });
+    await user.type(editor, '@');
+    const searchbox = screen.getByRole('searchbox', { name: '搜索资源' });
+
+    fireEvent.compositionStart(searchbox);
+    fireEvent.change(searchbox, { target: { value: '产品' } });
+    expect(screen.getByRole('option', { name: /产品图/ })).toBeInTheDocument();
+    fireEvent.keyDown(searchbox, { key: 'Enter', keyCode: 229, isComposing: true });
+
+    expect(editor).toHaveValue('@');
+    expect(screen.getByRole('listbox', { name: '选择资源' })).toBeInTheDocument();
+    expect(screen.queryByRole('article')).not.toBeInTheDocument();
+    expect(onDocumentChange).toHaveBeenLastCalledWith({
+      version: 1,
+      blocks: [{ type: 'text', text: '@' }],
+    });
+    fireEvent.compositionEnd(searchbox);
   });
 
   it('预览连线资源时不要求目录 status，点击能看到内容', async () => {
