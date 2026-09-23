@@ -65,13 +65,48 @@ describe('New API Cookie 会话', () => {
     expect(fetcher.mock.calls[0]![1]?.credentials).toBe('include');
     expect(new Headers(fetcher.mock.calls[0]![1]?.headers).has('authorization')).toBe(false);
   });
-  it('401 写请求不重试，撤销本地会话', async () => {
+  it('401 写请求只验证会话，不重试业务写入或误清已续期登录', async () => {
     persistAuthSession(session);
-    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response('{}', { status: 401 }));
+    const renewed = { ...session, expiresAt: '2099-02-01T00:00:00Z' };
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('{}', { status: 401 }))
+      .mockResolvedValueOnce(Response.json(renewed));
     vi.stubGlobal('fetch', fetcher);
-    await apiFetch('/v1/projects', { method: 'POST' });
-    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect((await apiFetch('/v1/projects', { method: 'POST' })).status).toBe(401);
+    expect(fetcher.mock.calls.map(([url]) => String(url))).toEqual([
+      '/v1/projects',
+      'http://localhost:3000/v1/auth/refresh',
+    ]);
+    expect(readAuthSession()).toEqual(renewed);
+  });
+  it('业务 401 后续期服务不可用时保留登录，服务端确认失效才清除', async () => {
+    persistAuthSession(session);
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('{}', { status: 401 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 503 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 401 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 401 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 401 }));
+    vi.stubGlobal('fetch', fetcher);
+    expect((await apiFetch('/v1/projects')).status).toBe(401);
+    expect(readStoredAuthSession()).toEqual(session);
+    await expect(apiFetch('/v1/projects')).rejects.toBeInstanceOf(AuthSessionChangedError);
     expect(readAuthSession()).toBeNull();
+  });
+  it('旧业务请求的迟到 401 不清除同一账户已续期的 Cookie', async () => {
+    persistAuthSession(session);
+    const delayed = deferred<Response>();
+    const fetcher = vi.fn<typeof fetch>().mockReturnValue(delayed.promise);
+    vi.stubGlobal('fetch', fetcher);
+    const request = apiFetch('/v1/projects');
+    const renewed = { ...session, expiresAt: '2099-02-01T00:00:00Z' };
+    persistAuthSession(renewed, { renewal: true });
+    delayed.resolve(new Response('{}', { status: 401 }));
+    expect((await request).status).toBe(401);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(readAuthSession()).toEqual(renewed);
   });
   it('换号中断旧请求，旧响应不清除新账号', async () => {
     persistAuthSession(session);

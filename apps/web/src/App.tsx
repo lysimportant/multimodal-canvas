@@ -201,7 +201,10 @@ import {
   apiFetch,
   fetchCurrentSession,
   logout as logoutWithApi,
-  notifyUnauthorized,
+  getAuthSessionGeneration,
+  maintainAuthSession,
+  readStoredAuthSession,
+  verifyUnauthorized,
   openAuthEventStream,
   readAuthSession,
   setUnauthorizedHandler,
@@ -453,6 +456,8 @@ async function uploadAsset(file: File, onProgress: (progress: number) => void) {
     throw new Error(initResult.error ?? `${file.name} 上传初始化失败`);
   }
 
+  const uploadGeneration = getAuthSessionGeneration();
+  const uploadExpiresAt = readStoredAuthSession()?.expiresAt;
   await new Promise<void>((resolve, reject) => {
     const request = new XMLHttpRequest();
     request.open('PUT', resolveUploadUrl(initResult.uploadUrl!, API_BASE_URL));
@@ -465,7 +470,9 @@ async function uploadAsset(file: File, onProgress: (progress: number) => void) {
     request.onload = () => {
       if (request.status < 200 || request.status >= 300) {
         if (request.status === 401) {
-          notifyUnauthorized(null);
+          void verifyUnauthorized(API_BASE_URL, uploadGeneration, uploadExpiresAt);
+          reject(new Error(`${file.name} 上传失败（${request.status}）`));
+          return;
         }
         reject(new Error(`${file.name} 上传失败（${request.status}）`));
         return;
@@ -4262,7 +4269,9 @@ function AppContent() {
     route.id === 'project' ||
     route.id === 'settings' ||
     (route.id === 'management' && route.pathname !== '/admin');
-  const [authSession, setAuthSession] = useState<StoredAuthSession | null>(() => readAuthSession());
+  const [authSession, setAuthSession] = useState<StoredAuthSession | null>(() =>
+    readStoredAuthSession(),
+  );
   const [authLoading, setAuthLoading] = useState(true);
   const [authNotice, setAuthNotice] = useState<string | null>(null);
   /** 监听回调使用最新身份，续期/资料变更不清空同一用户的项目缓存。 */
@@ -4279,6 +4288,7 @@ function AppContent() {
           queryClient.clear();
         authSessionRef.current = session;
         setAuthSession(session);
+        if (session) setAuthNotice(null);
       }),
     [queryClient],
   );
@@ -4309,6 +4319,13 @@ function AppContent() {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (authLoading || !authSession) return;
+    return maintainAuthSession(API_BASE_URL, (error) => {
+      setAuthNotice(`${error.message}，当前内容已保留，连接恢复后会重试。`);
+    });
+  }, [authLoading, authSession?.user.id]);
 
   useEffect(() => {
     return setUnauthorizedHandler(() => {

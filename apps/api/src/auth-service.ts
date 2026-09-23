@@ -3,6 +3,8 @@ import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { signHs256Jwt, verifyHs256Jwt, type AuthRole, type JwtClaims } from './auth';
 import { type AuthSessionRecord, type AuthStore, type AuthUserRecord } from './auth-store';
 const DEFAULT_ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
+const DEFAULT_SESSION_TTL_SECONDS = 7 * 86400;
+const MAX_SESSION_TTL_SECONDS = 30 * 86400;
 const SESSION_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -10,6 +12,8 @@ export type AuthServiceOptions = {
   store: AuthStore;
   jwtSecret: string;
   accessTokenTtlSeconds?: number;
+  /** 本地会话最长寿命；New API 实例仍须受上游授权到期时间约束。 */
+  maxSessionTtlSeconds?: number;
   now?: () => number;
 };
 
@@ -60,6 +64,7 @@ export class AuthServiceError extends Error {
 
 export class AuthService {
   private readonly accessTokenTtlSeconds: number;
+  private readonly maxSessionTtlSeconds: number;
   private readonly now: () => number;
 
   constructor(private readonly options: AuthServiceOptions) {
@@ -69,6 +74,14 @@ export class AuthService {
       throw new Error('access token TTL must be between 60 and 86400 seconds');
     }
     this.accessTokenTtlSeconds = ttl;
+    const sessionTtl = options.maxSessionTtlSeconds ?? DEFAULT_SESSION_TTL_SECONDS;
+    if (
+      !Number.isSafeInteger(sessionTtl) ||
+      sessionTtl < 60 ||
+      sessionTtl > MAX_SESSION_TTL_SECONDS
+    )
+      throw new Error('session TTL must be between 60 and 2592000 seconds');
+    this.maxSessionTtlSeconds = sessionTtl;
     this.now = options.now ?? (() => Date.now());
   }
 
@@ -102,7 +115,7 @@ export class AuthService {
 
   async logout(accessToken: string): Promise<boolean> {
     try {
-      const authenticated = await this.verifyAccessToken(accessToken);
+      const authenticated = await this.verifySessionForRefresh(accessToken);
       await this.options.store.revokeSession(authenticated.session.id, new Date(this.now()));
       return true;
     } catch (error) {
@@ -117,12 +130,19 @@ export class AuthService {
     return this.options.store.revokeAllSessions(userId, new Date(this.now()));
   }
 
-  /** 续期原子轮换会话并撤销旧令牌，绝对期限不会随着续期延长。 */
-  async refresh(accessToken: string): Promise<AuthTokenResponse> {
+  /**
+   * 轮换短期令牌且不重放业务请求；仅调用方已复核上游授权时才传入新的最晚期限。
+   * @param accessToken 当前 Cookie 内的会话令牌。
+   * @param authorizedUntil 经过上游复核的授权到期时间；不能突破实例寿命上限。
+   * @returns 新令牌及其 Cookie 最晚保留期限；原令牌同时撤销。
+   * @throws AuthServiceError 会话撤销、账号禁用或授权期限已到。
+   */
+  async refresh(accessToken: string, authorizedUntil?: Date): Promise<AuthTokenResponse> {
     const current = await this.verifySessionForRefresh(accessToken);
     const absoluteExpiresAt =
+      authorizedUntil ??
       current.session.absoluteExpiresAt ??
-      new Date(current.session.createdAt.getTime() + 7 * 24 * 60 * 60 * 1000);
+      new Date(current.session.createdAt.getTime() + DEFAULT_SESSION_TTL_SECONDS * 1000);
     if (absoluteExpiresAt.getTime() <= this.now() + 60_000)
       throw new AuthServiceError('invalid_token', 'session absolute expiry reached');
     const user = await this.options.store.findUserById(current.user.id);
@@ -151,8 +171,8 @@ export class AuthService {
       !session ||
       session.userId !== result.claims.sub ||
       session.revokedAt ||
-      (session.absoluteExpiresAt?.getTime() ?? session.createdAt.getTime() + 604800000) <=
-        this.now() ||
+      (session.absoluteExpiresAt?.getTime() ??
+        session.createdAt.getTime() + DEFAULT_SESSION_TTL_SECONDS * 1000) <= this.now() ||
       !equalHash(session.tokenHash, sha256(accessToken))
     ) {
       throw new AuthServiceError(
@@ -169,13 +189,17 @@ export class AuthService {
   /** 仅供完成上游身份或本地身份校验的内部服务签发会话，不接受 HTTP 用户对象。 */
   async issueToken(
     user: AuthUserRecord,
-    absoluteExpiresAt = new Date(this.now() + 7 * 24 * 60 * 60 * 1000),
+    absoluteExpiresAt = new Date(this.now() + DEFAULT_SESSION_TTL_SECONDS * 1000),
     store = this.options.store,
   ): Promise<AuthTokenResponse> {
     if (user.status !== 'active')
       throw new AuthServiceError('invalid_token', 'account is not active');
     const issuedAt = this.now();
-    absoluteExpiresAt = new Date(Math.min(absoluteExpiresAt.getTime(), issuedAt + 604800000));
+    absoluteExpiresAt = new Date(
+      Math.min(absoluteExpiresAt.getTime(), issuedAt + this.maxSessionTtlSeconds * 1000),
+    );
+    if (!Number.isFinite(absoluteExpiresAt.getTime()) || absoluteExpiresAt.getTime() <= issuedAt)
+      throw new AuthServiceError('invalid_token', 'session absolute expiry reached');
     const expiresAt = new Date(
       Math.min(issuedAt + this.accessTokenTtlSeconds * 1000, absoluteExpiresAt.getTime()),
     );

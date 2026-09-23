@@ -1561,6 +1561,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       )
         return reply.code(403).send({ code: 'origin_rejected', error: '请求来源与当前画布不一致' });
     }
+    if (options.newApiAccount && pathname === '/v1/auth/logout') {
+      requestPrincipals.set(request, { method: 'anonymous' });
+      return;
+    }
     let refreshSession: AuthenticatedSession | undefined;
     if (options.newApiAccount && pathname === '/v1/auth/refresh' && cookieToken && authService) {
       try {
@@ -1776,14 +1780,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (!authService) {
       return reply.code(503).send({ error: 'authentication service unavailable' });
     }
-    const session = requestSessions.get(request);
-    const principal = requestPrincipals.get(request);
-    const accessToken = extractBearerToken(request.headers.authorization);
-    if (!session || principal?.method !== 'jwt' || !accessToken) {
-      return reply.code(401).send({ error: 'authentication required' });
-    }
-    await authService.logout(accessToken);
-    if (options.newApiAccount)
+    if (options.newApiAccount) {
+      const cookieToken = requestCookie(request, NEWAPI_SESSION_COOKIE);
+      if (cookieToken) await authService.logout(cookieToken);
       reply.header(
         'set-cookie',
         sessionCookie(
@@ -1793,6 +1792,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           new URL(options.newApiAccount.options.client.options.redirectUri).protocol === 'https:',
         ),
       );
+      return { loggedOut: true };
+    }
+    const session = requestSessions.get(request);
+    const principal = requestPrincipals.get(request);
+    const accessToken = extractBearerToken(request.headers.authorization);
+    if (!session || principal?.method !== 'jwt' || !accessToken) {
+      return reply.code(401).send({ error: 'authentication required' });
+    }
+    await authService.logout(accessToken);
     return { loggedOut: true };
   });
 

@@ -38,6 +38,15 @@ afterEach(() => {
 });
 
 describe('会话隔离与恢复', () => {
+  it('未临期的登录不会每分钟做上游目录同步', () => {
+    persistAuthSession(session('a'));
+    const fetcher = vi.spyOn(globalThis, 'fetch');
+    const stop = maintainAuthSession('http://localhost:3000', vi.fn());
+    expect(fetcher).not.toHaveBeenCalled();
+    window.dispatchEvent(new Event('focus'));
+    expect(fetcher).not.toHaveBeenCalled();
+    stop();
+  });
   it('旧登录成功响应不能覆盖新账户，已退出的认证意图不能复活', async () => {
     let finish!: (response: Response) => void;
     vi.spyOn(globalThis, 'fetch').mockImplementation(
@@ -193,6 +202,42 @@ describe('会话隔离与恢复', () => {
     finishBody({ ...administrator, accessToken: 'synthetic-late-admin-renewal' });
     await expect(pending).rejects.toThrow('账户状态已改变');
     expect(readAuthSession()).toEqual(downgraded);
+  });
+
+  it('续期在途时主动退出，等待轮换结束后才撤销最新 Cookie', async () => {
+    persistAuthSession(session('a'));
+    let finishRefresh!: (response: Response) => void;
+    const fetcher = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishRefresh = resolve;
+          }),
+      )
+      .mockResolvedValueOnce(Response.json({ loggedOut: true }));
+    const refreshing = refreshAuthSession('http://localhost:3000');
+    const leaving = logout('http://localhost:3000');
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    finishRefresh(Response.json(session('a')));
+    await expect(refreshing).rejects.toThrow('账户状态已改变');
+    await leaving;
+    expect(fetcher.mock.calls.map(([url]) => String(url))).toEqual([
+      'http://localhost:3000/v1/auth/refresh',
+      'http://localhost:3000/v1/auth/logout',
+    ]);
+    expect(readAuthSession()).toBeNull();
+  });
+
+  it('过期访问令牌的用户主动退出仍向服务端撤销 Cookie', async () => {
+    persistAuthSession({ ...session('a'), expiresAt: new Date(Date.now() - 1000).toISOString() });
+    const fetcher = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(Response.json({ loggedOut: true }));
+    await logout('http://localhost:3000');
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(fetcher.mock.calls[0]?.[0]).toBe('http://localhost:3000/v1/auth/logout');
+    expect(readAuthSession()).toBeNull();
   });
 
   it('显式退出立即清本地，服务端失败可见且不清之后登录的会话', async () => {

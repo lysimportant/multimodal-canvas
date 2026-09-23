@@ -247,8 +247,6 @@ export async function apiFetch(
     }
   }
   const requestInit = withAuthHeaders(init);
-  const authorization = new Headers(requestInit.headers).get('authorization');
-  const requestToken = authorization?.startsWith('Bearer ') ? authorization.slice(7) : null;
   const requestStartedAt = performance.now();
   const controller = new AbortController();
   inFlightRequests.add(controller);
@@ -266,10 +264,46 @@ export async function apiFetch(
   }
   assertRequestSession();
   synchronizeServerClock(response.headers?.get('x-server-time') ?? null, requestStartedAt);
-  if (response.status === 401 && !options.skipUnauthorized) {
-    notifyUnauthorized(requestToken);
+  if (response.status === 401 && !options.skipUnauthorized && cached) {
+    const url = new URL(
+      typeof input === 'string' || input instanceof URL ? input : input.url,
+      window.location.href,
+    );
+    const prefix = url.pathname.indexOf('/v1/');
+    if (prefix >= 0 && !url.pathname.includes('/auth/')) {
+      await verifyUnauthorized(
+        `${url.origin}${url.pathname.slice(0, prefix)}`,
+        generation,
+        cached.expiresAt,
+      );
+      assertRequestSession();
+    }
   }
   return response;
+}
+
+/**
+ * 业务请求收到 401 时仅验证原身份是否还能续期；绝不重发原请求。
+ * 校验网络失败仍保留本地登录，只有续期和当前会话均确认 401 才注销。
+ * @param baseUrl Canvas API 地址。
+ * @param expectedGeneration 请求发起时的账户代次；换号后不处理旧响应。
+ * @param expectedExpiresAt 请求发起时缓存的到期时间；已续期则忽略旧 401。
+ * @returns 校验完成后返回；不返回业务请求的结果。
+ */
+export async function verifyUnauthorized(
+  baseUrl: string,
+  expectedGeneration: number,
+  expectedExpiresAt?: string,
+): Promise<void> {
+  if (expectedGeneration !== getAuthSessionGeneration()) return;
+  const current = readStoredAuthSession();
+  if (!current || current.expiresAt !== expectedExpiresAt) return;
+  try {
+    await refreshAuthSession(baseUrl);
+  } catch (error) {
+    if (error instanceof AuthSessionChangedError) return;
+    // 上游或网络暂时不可用不等于注销；下一次焦点恢复会继续验证。
+  }
 }
 
 /** 同一认证意图中的重复页面挂载共享一次服务端同步。 */
@@ -338,19 +372,25 @@ export function startNewApiLogin(
 
 /** 退出当前 Canvas 会话并通知其他标签页清理缓存。 */
 export async function logout(baseUrl: string): Promise<void> {
-  const userId = readAuthSession()?.user.id;
+  const userId = readStoredAuthSession()?.user.id;
   clearAuthSession();
+  const generation = getAuthSessionGeneration();
+  const revoke = async () => {
+    // 先等待本标签旧续期的 Set-Cookie 落地，再撤销最新 Cookie。
+    if (pendingRefresh) await pendingRefresh.catch(() => undefined);
+    if (generation !== getAuthSessionGeneration()) throw new AuthSessionChangedError();
+    const response = await apiFetch(
+      `${baseUrl.replace(/\/$/, '')}/v1/auth/logout`,
+      { method: 'POST', signal: AbortSignal.timeout(10_000) },
+      { skipUnauthorized: true, expectedAuthGeneration: generation },
+    );
+    if (!response.ok) throw new Error('服务端会话撤销未确认');
+  };
   try {
     if (userId) {
-      const response = await apiFetch(
-        `${baseUrl.replace(/\/$/, '')}/v1/auth/logout`,
-        {
-          method: 'POST',
-          signal: AbortSignal.timeout(10_000),
-        },
-        { skipUnauthorized: true },
-      );
-      if (!response.ok && response.status !== 401) throw new Error('服务端会话撤销未确认');
+      if (typeof navigator !== 'undefined' && navigator.locks)
+        await navigator.locks.request('multimodal-canvas:session-refresh', revoke);
+      else await revoke();
     }
   } finally {
     if ((memorySession?.user.id ?? readAuthSession()?.user.id) === userId) clearAuthSession();
@@ -406,7 +446,7 @@ export async function refreshAuthSession(baseUrl: string): Promise<StoredAuthSes
         return persistAuthSession(current, { renewal: true });
       }
       if (restored.status !== 401) throw new Error('会话续期暂不可用');
-      clearAuthSession();
+      notifyUnauthorized();
       return null;
     }
     const payload = (await response.json()) as {
@@ -434,21 +474,28 @@ export async function refreshAuthSession(baseUrl: string): Promise<StoredAuthSes
   }
 }
 
-/** Cookie 会话由服务端控制；焦点恢复时只重读用户，确保账号切换及时生效。 */
+/**
+ * 登录后只在临期时主动续期；冻结标签页恢复时重试，不反复同步上游目录。
+ * @param baseUrl Canvas API 地址。
+ * @param onError 网络或上游暂不可用时的提示回调；不清登录。
+ * @returns 卸载页面监听和定时器的清理函数。
+ */
 export function maintainAuthSession(baseUrl: string, onError: (error: Error) => void): () => void {
   let active = true;
   const check = () => {
-    const expiresAt = readStoredAuthSession()?.expiresAt;
-    const restore =
-      expiresAt && Date.parse(expiresAt) - Date.now() < 120_000
-        ? refreshAuthSession(baseUrl)
-        : fetchCurrentSession(baseUrl);
+    const session = readStoredAuthSession();
+    if (!session) return;
+    const expiresAt = session.expiresAt ? Date.parse(session.expiresAt) : NaN;
+    if (Number.isFinite(expiresAt) && expiresAt - Date.now() >= 120_000) return;
+    const restore = Number.isFinite(expiresAt)
+      ? refreshAuthSession(baseUrl)
+      : fetchCurrentSession(baseUrl);
     void restore.catch((error: unknown) => {
       if (active) onError(error instanceof Error ? error : new Error('会话续期失败'));
     });
   };
   const onVisibility = () => {
-    check();
+    if (document.visibilityState === 'visible') check();
   };
   window.addEventListener('focus', check);
   window.addEventListener('pageshow', check);

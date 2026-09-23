@@ -4,6 +4,38 @@ import { AuthService } from './auth-service';
 import { verifyHs256Jwt } from './auth';
 
 describe('已验证身份的 Canvas 会话', () => {
+  it('New API 会话以已验证授权为上限，旧 7 天会话续期后可延长但不能绕过撤销', async () => {
+    let now = Date.now();
+    const store = new MemoryAuthStore();
+    const user = await store.createUser({ email: 'synthetic@example.test' });
+    const auth = new AuthService({
+      store,
+      jwtSecret: 'synthetic-secret',
+      now: () => now,
+      maxSessionTtlSeconds: 30 * 86400,
+    });
+    const grant = new Date(now + 25 * 86400000);
+    const initial = await auth.issueToken(user, grant);
+    expect(initial.refreshExpiresAt).toBe(grant.toISOString());
+    const capped = await auth.issueToken(user, new Date(now + 50 * 86400000));
+    expect(Date.parse(capped.refreshExpiresAt)).toBe(now + 30 * 86400000);
+    const legacy = await auth.issueToken(user, new Date(now + 7 * 86400000));
+    now += 86400000;
+    const renewed = await auth.refresh(legacy.accessToken, grant);
+    expect(renewed.refreshExpiresAt).toBe(grant.toISOString());
+    await expect(auth.refresh(legacy.accessToken, grant)).rejects.toMatchObject({
+      code: 'session_revoked',
+    });
+    await store.updateUser(user.id, { status: 'disabled' });
+    await expect(auth.refresh(renewed.accessToken, grant)).rejects.toMatchObject({
+      code: 'invalid_token',
+    });
+    await store.updateUser(user.id, { status: 'active' });
+    now = grant.getTime();
+    await expect(auth.refresh(renewed.accessToken, grant)).rejects.toMatchObject({
+      code: 'invalid_token',
+    });
+  });
   it('签发短期会话、服务端角色及最晚期限，不公开会话材料', async () => {
     const store = new MemoryAuthStore();
     const user = await store.createUser({ email: 'synthetic@example.test', role: 'admin' });
@@ -45,6 +77,19 @@ describe('已验证身份的 Canvas 会话', () => {
     now += 300_000;
     await expect(auth.refresh(renewed.accessToken)).rejects.toMatchObject({
       code: 'invalid_token',
+    });
+  });
+
+  it('访问令牌过期但绝对期限尚有效时主动退出仍撤销会话', async () => {
+    let now = Date.now();
+    const store = new MemoryAuthStore();
+    const user = await store.createUser({ email: 'synthetic@example.test' });
+    const auth = new AuthService({ store, jwtSecret: 'synthetic-secret', now: () => now });
+    const first = await auth.issueToken(user);
+    now += 16 * 60000;
+    expect(await auth.logout(first.accessToken)).toBe(true);
+    await expect(auth.refresh(first.accessToken)).rejects.toMatchObject({
+      code: 'session_revoked',
     });
   });
 

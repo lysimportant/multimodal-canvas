@@ -131,8 +131,10 @@ export function registerNewApiAccountRoutes(
   app.post('/v1/auth/refresh', async (request, reply) => {
     const id = userId(request);
     await service.synchronize(id);
+    const identity = await service.identity(id);
     const result = await service.options.auth.refresh(
       requestCookie(request, NEWAPI_SESSION_COOKIE) ?? '',
+      identity.expiresAt,
     );
     return reply
       .header(

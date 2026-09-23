@@ -45,7 +45,11 @@ if (
   );
 /** New API 唯一登录使用可撤销应用会话和已有服务端加密密钥环。 */
 const authStore = new PrismaAuthStore(prisma);
-const authService = new AuthService({ store: authStore, jwtSecret: process.env.API_JWT_SECRET });
+const authService = new AuthService({
+  store: authStore,
+  jwtSecret: process.env.API_JWT_SECRET,
+  maxSessionTtlSeconds: 30 * 86400,
+});
 const newApiAccount = new NewApiAccountService({
   prisma,
   auth: authService,

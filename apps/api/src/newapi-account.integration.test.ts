@@ -44,11 +44,13 @@ describe.skipIf(!databaseUrl)('New API 本人身份与分组隔离', () => {
   const auth = new AuthService({
     store: new PrismaAuthStore(prisma),
     jwtSecret: 'synthetic-account-jwt',
+    maxSessionTtlSeconds: 30 * 86400,
   });
   let selectedUser = 'account-a';
   let groups = ['default', 'auto', '神秘分组', '神秘分组2'];
   let changedGroup = false;
   let unavailable = false;
+  let grantLifetimeMs = 3600000;
   let failGroup = '';
   let lostGroupResponse = '';
   let accountDenied = false;
@@ -79,6 +81,7 @@ describe.skipIf(!databaseUrl)('New API 本人身份与分组隔离', () => {
     groups = ['default', 'auto', '神秘分组', '神秘分组2'];
     changedGroup = false;
     unavailable = false;
+    grantLifetimeMs = 3600000;
     failGroup = '';
     lostGroupResponse = '';
     accountDenied = false;
@@ -113,7 +116,7 @@ describe.skipIf(!databaseUrl)('New API 本人身份与分组隔离', () => {
               grant: {
                 id: `grant-${selectedUser}`,
                 token: `synthetic-grant-${selectedUser}`,
-                expires_at: new Date(Date.now() + 3600000).toISOString(),
+                expires_at: new Date(Date.now() + grantLifetimeMs).toISOString(),
                 scopes: ['identity:read', 'groups:read', 'tokens:manage'],
               },
             });
@@ -255,6 +258,67 @@ describe.skipIf(!databaseUrl)('New API 本人身份与分组隔离', () => {
       expect(await prisma.authSession.count()).toBe(before.sessions);
       expect(await prisma.newApiGroupBinding.count()).toBe(before.groups);
       expect(calls).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('访问令牌过期后主动退出仍清 Cookie、撤销旧会话', async () => {
+    const result = await login();
+    const app = buildApp({ logger: false, newApiAccount: service, authService: auth });
+    const cookie = `canvas_session=${result.accessToken}`;
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 16 * 60000);
+    try {
+      const crossSite = await app.inject({
+        method: 'POST',
+        url: '/v1/auth/logout',
+        headers: { cookie, origin: 'https://other.example.test' },
+      });
+      expect(crossSite.statusCode).toBe(403);
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v1/auth/logout',
+        headers: { cookie },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['set-cookie']).toContain('Max-Age=0');
+      expect(
+        (await app.inject({ method: 'POST', url: '/v1/auth/refresh', headers: { cookie } }))
+          .statusCode,
+      ).toBe(401);
+    } finally {
+      clock.mockRestore();
+      await app.close();
+    }
+  });
+
+  it('旧 7 天会话在上游复核后延长至 grant 到期，但已轮换 Cookie 不可复用', async () => {
+    grantLifetimeMs = 25 * 86400000;
+    const result = await login();
+    expect(Date.parse(result.refreshExpiresAt) - Date.now()).toBeGreaterThan(24 * 86400000);
+    const store = new PrismaAuthStore(prisma);
+    const user = await store.findUserById(result.user.id);
+    const legacy = await auth.issueToken(user!, new Date(Date.now() + 7 * 86400000));
+    const app = buildApp({ logger: false, newApiAccount: service, authService: auth });
+    const cookie = `canvas_session=${legacy.accessToken}`;
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v1/auth/refresh',
+        headers: { cookie },
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).not.toHaveProperty('accessToken');
+      const maxAge = Number(String(response.headers['set-cookie']).match(/Max-Age=(\d+)/)?.[1]);
+      expect(maxAge).toBeGreaterThan(7 * 86400);
+      const renewed = String(response.headers['set-cookie']).split(';')[0]!;
+      const session = (await auth.verifyAccessToken(decodeURIComponent(renewed.split('=')[1]!)))
+        .session;
+      expect(session?.absoluteExpiresAt?.toISOString()).toBe(result.refreshExpiresAt);
+      expect(
+        (await app.inject({ method: 'POST', url: '/v1/auth/refresh', headers: { cookie } }))
+          .statusCode,
+      ).toBe(401);
     } finally {
       await app.close();
     }

@@ -117,3 +117,53 @@ test('会话超时明确提示检查 Canvas API 而非回显浏览器异常', as
   await expect(page.getByRole('alert')).toContainText('Canvas API 会话校验超时');
   await expect(page.getByRole('alert')).not.toContainText('signal timed out');
 });
+
+test('已缓存登录遇到暂时故障不退出，焦点恢复后自动续期', async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      'multimodal-canvas:auth-session',
+      JSON.stringify({
+        user: { id: 'synthetic-e2e-user', role: 'user', createdAt: '2026-01-01T00:00:00Z' },
+        expiresAt: '2026-01-01T00:00:00Z',
+      }),
+    );
+  });
+  let connected = false;
+  let refreshes = 0;
+  await page.route('**/v1/**', async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/v1/auth/me') return json(route, { error: 'unauthorized' }, 401);
+    if (path === '/v1/auth/refresh') {
+      refreshes++;
+      return connected
+        ? json(route, {
+            user: { id: 'synthetic-e2e-user', role: 'user', createdAt: '2026-01-01T00:00:00Z' },
+            expiresAt: '2099-01-01T00:00:00Z',
+          })
+        : json(route, { error: 'temporary outage' }, 503);
+    }
+    return json(route, { error: 'unavailable' }, 503);
+  });
+  await page.goto('/');
+  await expect(page.getByRole('heading', { level: 1, name: 'Multimodal Canvas' })).toBeVisible();
+  await expect(page.getByRole('alert')).toContainText('当前内容已保留');
+  expect(
+    await page.evaluate(
+      () => JSON.parse(localStorage.getItem('multimodal-canvas:auth-session')!).user.id,
+    ),
+  ).toBe('synthetic-e2e-user');
+  connected = true;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect
+    .poll(async () =>
+      page.evaluate(
+        () => JSON.parse(localStorage.getItem('multimodal-canvas:auth-session')!).expiresAt,
+      ),
+    )
+    .toBe('2099-01-01T00:00:00Z');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  expect(refreshes).toBeGreaterThanOrEqual(2);
+  expect(pageErrors).toEqual([]);
+});

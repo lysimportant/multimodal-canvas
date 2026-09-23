@@ -239,7 +239,7 @@ export function accountOpenApiPaths(user: unknown, asset: unknown) {
     },
     '/v1/auth/refresh': {
       post: operation(
-        '上游复核后轮换 HttpOnly Cookie；绝对期限不延长，业务请求不重放',
+        '上游复核后轮换 HttpOnly Cookie；最晚不超过授权到期日和本地 30 天上限，业务请求不重放',
         object({ user, expiresAt: { type: 'string', format: 'date-time' } }, ['user', 'expiresAt']),
       ),
     },
