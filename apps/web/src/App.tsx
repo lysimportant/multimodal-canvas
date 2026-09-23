@@ -4292,10 +4292,15 @@ function AppContent() {
         setAuthNotice(null);
       })
       .catch((error: unknown) => {
-        if (active)
-          setAuthNotice(
-            `${error instanceof Error ? error.message : '登录状态加载失败'}，当前内容已保留，请检查连接。`,
-          );
+        if (active) {
+          const message =
+            error instanceof DOMException && error.name === 'TimeoutError'
+              ? 'Canvas API 会话校验超时'
+              : error instanceof Error
+                ? error.message
+                : '登录状态加载失败';
+          setAuthNotice(`${message}，当前内容已保留，请检查 Canvas API 连接。`);
+        }
       })
       .finally(() => {
         if (active) setAuthLoading(false);

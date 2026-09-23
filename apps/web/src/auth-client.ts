@@ -30,6 +30,9 @@ export type StoredAuthSession = {
 };
 
 const STORAGE_KEY = 'multimodal-canvas:auth-session';
+/** 会话恢复会等待 Canvas API 逐组校验 New API 授权和目录，不能使用单次上游请求的 10 秒预算。 */
+const AUTH_SESSION_TIMEOUT_MS = 180_000;
+
 /** 同一标签页的会话通知；身份变化时由应用清除前一用户缓存。 */
 const sessionListeners = new Set<(session: StoredAuthSession | null) => void>();
 /** 登录/退出意图代次，阻止早先认证响应覆盖后来选择的账户。 */
@@ -269,34 +272,51 @@ export async function apiFetch(
   return response;
 }
 
+/** 同一认证意图中的重复页面挂载共享一次服务端同步。 */
+let pendingCurrentSession:
+  { baseUrl: string; generation: number; promise: Promise<StoredAuthSession | null> } | undefined;
+
 /**
- * 读取 Cookie 所属的当前用户；401 表示匿名，其他失败保留上下文。
+ * 读取 Cookie 所属的当前用户；并发恢复共享请求，401 时尝试续期。
  *
  * @param baseUrl Canvas API 地址。
  * @returns 当前用户，未登录时返回 null。
- * @throws 网络错误或非 401 HTTP 错误。
+ * @throws 网络错误、非 401 HTTP 错误或会话切换错误。
  */
-export async function fetchCurrentSession(baseUrl: string): Promise<StoredAuthSession | null> {
+export function fetchCurrentSession(baseUrl: string): Promise<StoredAuthSession | null> {
   const generation = getAuthSessionGeneration();
-  const response = await fetch(`${baseUrl.replace(/\/$/, '')}/v1/auth/me`, {
-    credentials: 'include',
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (generation !== getAuthSessionGeneration()) throw new AuthSessionChangedError();
-  if (response.status === 401) {
-    return refreshAuthSession(baseUrl);
-  }
-  const payload = (await response.json().catch(() => ({}))) as {
-    user?: AuthUser;
-    expiresAt?: string;
-    error?: string;
+  const normalizedBaseUrl = baseUrl.replace(/\/$/, '');
+  if (
+    pendingCurrentSession?.baseUrl === normalizedBaseUrl &&
+    pendingCurrentSession.generation === generation
+  )
+    return pendingCurrentSession.promise;
+
+  const promise = (async () => {
+    const response = await fetch(`${normalizedBaseUrl}/v1/auth/me`, {
+      credentials: 'include',
+      signal: AbortSignal.timeout(AUTH_SESSION_TIMEOUT_MS),
+    });
+    if (generation !== getAuthSessionGeneration()) throw new AuthSessionChangedError();
+    if (response.status === 401) return refreshAuthSession(baseUrl);
+    const payload = (await response.json().catch(() => ({}))) as {
+      user?: AuthUser;
+      expiresAt?: string;
+      error?: string;
+    };
+    if (generation !== getAuthSessionGeneration()) throw new AuthSessionChangedError();
+    if (!response.ok || !payload.user) throw new Error(payload.error ?? '登录状态加载失败');
+    return persistAuthSession(
+      { user: payload.user, expiresAt: payload.expiresAt },
+      { renewal: true },
+    );
+  })();
+  pendingCurrentSession = { baseUrl: normalizedBaseUrl, generation, promise };
+  const clear = () => {
+    if (pendingCurrentSession?.promise === promise) pendingCurrentSession = undefined;
   };
-  if (generation !== getAuthSessionGeneration()) throw new AuthSessionChangedError();
-  if (!response.ok || !payload.user) throw new Error(payload.error ?? '登录状态加载失败');
-  return persistAuthSession(
-    { user: payload.user, expiresAt: payload.expiresAt },
-    { renewal: true },
-  );
+  void promise.then(clear, clear);
+  return promise;
 }
 
 /**
@@ -369,14 +389,14 @@ export async function refreshAuthSession(baseUrl: string): Promise<StoredAuthSes
     const response = await fetch(`${baseUrl.replace(/\/$/, '')}/v1/auth/refresh`, {
       method: 'POST',
       credentials: 'include',
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(AUTH_SESSION_TIMEOUT_MS),
     });
     if (generation !== getAuthSessionGeneration()) throw new AuthSessionChangedError();
     if (response.status === 401) {
       // 不支持 Web Locks 的环境也只重读当前 Cookie，绝不重发生成或其它业务写请求。
       const restored = await fetch(`${baseUrl.replace(/\/$/, '')}/v1/auth/me`, {
         credentials: 'include',
-        signal: AbortSignal.timeout(10_000),
+        signal: AbortSignal.timeout(AUTH_SESSION_TIMEOUT_MS),
       });
       if (generation !== getAuthSessionGeneration()) throw new AuthSessionChangedError();
       if (restored.ok) {

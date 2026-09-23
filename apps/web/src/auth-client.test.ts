@@ -99,6 +99,52 @@ describe('New API Cookie 会话', () => {
     ]);
     expect(fetcher.mock.calls[1]![1]?.method).toBe('POST');
   });
+  it('并发页面恢复共享一次校验，身份切换后不复用旧请求', async () => {
+    const firstResponse = deferred<Response>();
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockReturnValueOnce(firstResponse.promise)
+      .mockResolvedValueOnce(
+        Response.json({ ...session, user: { ...user, id: 'synthetic-user-b' } }),
+      );
+    vi.stubGlobal('fetch', fetcher);
+    const first = fetchCurrentSession('http://localhost:3000/');
+    expect(fetchCurrentSession('http://localhost:3000')).toBe(first);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    persistAuthSession({ ...session, user: { ...user, id: 'synthetic-user-b' } });
+    const second = fetchCurrentSession('http://localhost:3000');
+    expect(second).not.toBe(first);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    firstResponse.resolve(Response.json(session));
+    await expect(first).rejects.toBeInstanceOf(AuthSessionChangedError);
+    expect((await second)?.user.id).toBe('synthetic-user-b');
+    expect(readAuthSession()?.user.id).toBe('synthetic-user-b');
+  });
+  it('会话校验失败后允许重新检查，不缓存旧错误', async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockRejectedValueOnce(new TypeError('offline'))
+      .mockResolvedValueOnce(Response.json(session));
+    vi.stubGlobal('fetch', fetcher);
+    await expect(fetchCurrentSession('http://localhost:3000')).rejects.toThrow('offline');
+    expect(await fetchCurrentSession('http://localhost:3000')).toEqual(session);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+  it('恢复会话及 401 续期不沿用 10 秒的单次请求预算', async () => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response('{}', { status: 401 }));
+    vi.stubGlobal('fetch', fetcher);
+    expect(await fetchCurrentSession('http://localhost:3000')).toBeNull();
+    expect(fetcher.mock.calls.map(([url]) => String(url))).toEqual([
+      'http://localhost:3000/v1/auth/me',
+      'http://localhost:3000/v1/auth/refresh',
+      'http://localhost:3000/v1/auth/me',
+    ]);
+    expect(timeout.mock.calls.map(([milliseconds]) => milliseconds)).toEqual([
+      180_000, 180_000, 180_000,
+    ]);
+  });
   it('续期错误保留尚有效的作品会话，同一标签合并并发续期', async () => {
     persistAuthSession(session);
     const delayed = deferred<Response>();

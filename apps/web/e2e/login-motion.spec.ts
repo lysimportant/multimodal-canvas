@@ -76,3 +76,44 @@ test('登录按钮只带受控 next 跳转到 New API，窄屏和减少动态效
   expect(authorizationRequests[0]!.pathname).toBe('/v1/auth/newapi/start');
   expect(authorizationRequests[0]!.searchParams.get('next')).toBe('/projects/project-a');
 });
+
+test('会话校验超过 10 秒后仍能进入页面，不重复请求', async ({ page }) => {
+  test.setTimeout(40_000);
+  const pageErrors: string[] = [];
+  let checks = 0;
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  await page.route('**/v1/**', async (route) => {
+    if (new URL(route.request().url()).pathname === '/v1/auth/me') {
+      checks++;
+      await new Promise((resolve) => setTimeout(resolve, 11_000));
+      await json(route, {
+        user: { id: 'e2e-user', role: 'user', createdAt: '2026-01-01T00:00:00Z' },
+        expiresAt: '2099-01-01T00:00:00Z',
+      });
+      return;
+    }
+    await json(route, { error: 'unexpected fixture request' }, 501);
+  });
+
+  await page.goto('/');
+  await expect(page.getByRole('heading', { level: 1, name: 'Multimodal Canvas' })).toBeVisible({
+    timeout: 20_000,
+  });
+  expect(checks).toBe(1);
+  await expect(page.getByLabel('关闭账户提示')).toHaveCount(0);
+  expect(pageErrors).toEqual([]);
+});
+
+test('会话超时明确提示检查 Canvas API 而非回显浏览器异常', async ({ page }) => {
+  await page.addInitScript(() => {
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = (input, init) =>
+      String(input).endsWith('/v1/auth/me')
+        ? Promise.reject(new DOMException('signal timed out', 'TimeoutError'))
+        : originalFetch(input, init);
+  });
+
+  await page.goto('/');
+  await expect(page.getByRole('alert')).toContainText('Canvas API 会话校验超时');
+  await expect(page.getByRole('alert')).not.toContainText('signal timed out');
+});
