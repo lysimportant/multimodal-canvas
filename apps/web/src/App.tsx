@@ -178,6 +178,7 @@ import {
   type InferenceStrength,
 } from './workspace/NodeQuickEditor';
 import { AppQueryProvider } from './query/client';
+import { SessionLoading } from './startup/SessionLoading';
 import { usePlatformModelCatalogQuery } from './query/models';
 import {
   mergeRunUpdate,
@@ -4488,7 +4489,9 @@ function AppContent() {
 
   return (
     <AccountProvider value={accountActions}>
-      {!authLoading && (
+      {authLoading ? (
+        <SessionLoading />
+      ) : (
         <RoutedApplication
           authUser={authSession?.user ?? null}
           onRequestLogin={handleRequestLogin}

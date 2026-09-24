@@ -1,13 +1,193 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="eye-care">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#f7f8fa" />
+    <meta name="theme-color" content="#eff4ed" />
     <title>Multimodal Canvas</title>
+    <script>
+      // 首屏不等待应用脚本；仅读取既有主题偏好，存储不可用时沿用默认主题。
+      try {
+        const theme = localStorage.getItem('multimodal-canvas:theme');
+        if (['eye-care', 'light', 'dark', 'sepia', 'contrast'].includes(theme)) {
+          document.documentElement.dataset.theme = theme;
+        }
+      } catch {}
+    </script>
+    <style>
+      /* 启动占位必须随 HTML 到达，不能依赖尚未下载的组件库或主样式。 */
+      :root {
+        --startup-bg: #eff4ed;
+        --startup-text: #25352a;
+        --startup-muted: #607365;
+        --startup-accent: #3d7958;
+      }
+      :root[data-theme='light'] {
+        --startup-bg: #f8fafc;
+        --startup-text: #172033;
+        --startup-muted: #667085;
+        --startup-accent: #176b9f;
+      }
+      :root[data-theme='dark'] {
+        --startup-bg: #11151a;
+        --startup-text: #e6edf3;
+        --startup-muted: #a7b3c0;
+        --startup-accent: #62c28d;
+      }
+      :root[data-theme='sepia'] {
+        --startup-bg: #f3eee4;
+        --startup-text: #3a3025;
+        --startup-muted: #746452;
+        --startup-accent: #9a6b35;
+      }
+      :root[data-theme='contrast'] {
+        --startup-bg: #ffffff;
+        --startup-text: #000000;
+        --startup-muted: #2f2f2f;
+        --startup-accent: #005a2b;
+      }
+      html {
+        background: var(--startup-bg);
+      }
+      body {
+        margin: 0;
+      }
+      .app-startup {
+        box-sizing: border-box;
+        min-height: 100svh;
+        display: grid;
+        place-content: center;
+        gap: 16px;
+        padding: 32px 24px;
+        background: var(--startup-bg);
+        color: var(--startup-text);
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          'Segoe UI',
+          sans-serif;
+        text-align: center;
+      }
+      .app-startup p,
+      .app-startup h1 {
+        margin: 0;
+      }
+      .app-startup h1 {
+        font-size: 22px;
+        font-weight: 600;
+      }
+      .app-startup p {
+        color: var(--startup-muted);
+        font-size: 14px;
+        line-height: 1.6;
+      }
+      #app-startup-track {
+        width: 180px;
+        height: 4px;
+        overflow: hidden;
+        margin: 4px auto;
+        border-radius: 4px;
+        background: color-mix(in srgb, var(--startup-accent) 16%, transparent);
+      }
+      #app-startup-indicator {
+        width: 40%;
+        height: 100%;
+        border-radius: inherit;
+        background: var(--startup-accent);
+        animation: startup-progress 1.4s ease-in-out infinite alternate;
+      }
+      #app-startup-retry {
+        justify-self: center;
+        padding: 8px 18px;
+        border: 1px solid var(--startup-accent);
+        border-radius: 6px;
+        background: transparent;
+        color: var(--startup-accent);
+        font: inherit;
+        font-size: 14px;
+        cursor: pointer;
+      }
+      #app-startup-retry:focus-visible {
+        outline: 2px solid var(--startup-accent);
+        outline-offset: 3px;
+      }
+      @keyframes startup-progress {
+        to {
+          transform: translateX(150%);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #app-startup-indicator {
+          animation: none;
+          width: 100%;
+        }
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <div id="root">
+      <main id="app-startup" class="app-startup" aria-labelledby="app-startup-title">
+        <p>Multimodal Canvas</p>
+        <div role="status" aria-live="polite" aria-atomic="true">
+          <h1 id="app-startup-title">正在加载工作区</h1>
+          <p id="app-startup-detail">正在准备界面，请稍候…</p>
+        </div>
+        <div id="app-startup-track" aria-hidden="true">
+          <div id="app-startup-indicator"></div>
+        </div>
+        <button id="app-startup-retry" type="button" hidden>重新加载</button>
+      </main>
+      <noscript>
+        <style>
+          #app-startup {
+            display: none;
+          }
+        </style>
+        <main class="app-startup">
+          <h1>请启用 JavaScript</h1>
+          <p>工作区需要 JavaScript 才能运行，请在浏览器中启用后重新加载。</p>
+        </main>
+      </noscript>
+    </div>
+    <script>
+      /** 应用提交首屏后移交给 React，并清除仅用于启动阶段的监听和定时器。 */
+      (() => {
+        const root = document.getElementById('root');
+        const startup = document.getElementById('app-startup');
+        const title = document.getElementById('app-startup-title');
+        const detail = document.getElementById('app-startup-detail');
+        const retry = document.getElementById('app-startup-retry');
+        /** 只报告启动阶段错误，不拦截浏览器原始异常或挂载后的业务错误。 */
+        const onError = () => {
+          if (!startup.isConnected) return;
+          clearTimeout(slowTimer);
+          title.textContent = '工作区加载失败';
+          detail.textContent = '页面资源未能加载，请检查网络连接后重新加载。';
+          document.getElementById('app-startup-track').hidden = true;
+          retry.hidden = false;
+        };
+        const slowTimer = setTimeout(() => {
+          if (!startup.isConnected) return;
+          title.textContent = '加载时间较长';
+          detail.textContent = '请检查网络连接，或重新加载页面。';
+          retry.hidden = false;
+        }, 15000);
+        retry.addEventListener('click', () => window.location.reload());
+        window.addEventListener('error', onError, true);
+        window.addEventListener('unhandledrejection', onError);
+        window.addEventListener('canvas:startup-error', onError);
+        const observer = new MutationObserver(() => {
+          if (startup.isConnected) return;
+          clearTimeout(slowTimer);
+          window.removeEventListener('error', onError, true);
+          window.removeEventListener('unhandledrejection', onError);
+          window.removeEventListener('canvas:startup-error', onError);
+          observer.disconnect();
+        });
+        observer.observe(root, { childList: true });
+      })();
+    </script>
+    <script type="module" src="/src/startup/bootstrap.ts"></script>
   </body>
 </html>
