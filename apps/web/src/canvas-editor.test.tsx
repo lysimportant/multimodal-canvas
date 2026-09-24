@@ -3,7 +3,6 @@ import '@testing-library/jest-dom/vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createContext, createElement } from 'react';
-import { flushSync } from 'react-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Asset, CanvasDocument, RunRecord } from '@multimodal-canvas/domain';
@@ -671,6 +670,15 @@ function captureRunEvents() {
   };
 }
 
+/** 测试环境浮层会重复使用 test-id；由真实确认按钮定位窗口，仍校验弹窗和范围文案。 */
+async function findClearCanvasConfirmation() {
+  const button = await screen.findByRole('button', { name: '确认清空' });
+  const dialog = button.closest('[role="dialog"]') as HTMLElement;
+  expect(dialog).toHaveTextContent('清空画布');
+  await waitFor(() => expect(dialog).toBeVisible());
+  return dialog;
+}
+
 async function renderCanvas() {
   const user = userEvent.setup();
   // userEvent installs its own Clipboard stub; replace it with the test spy
@@ -729,7 +737,8 @@ function handleFor(node: HTMLElement, handleId: string) {
   return handle;
 }
 
-describe('画布编辑器交互', () => {
+/** 真实 Ant Design 浮层增加挂载开销；单例多步业务回归仍逐项断言，限时只在本套件放宽。 */
+describe('画布编辑器交互', { timeout: 15_000 }, () => {
   beforeEach(() => {
     window.history.replaceState(null, '', `/projects/${project.id}`);
     window.localStorage.clear();
@@ -1046,7 +1055,7 @@ describe('画布编辑器交互', () => {
     await user.type(prompt, '用最新提示词生成');
     const inferenceGroup = within(quickEditor).getByText('推理强度').parentElement as HTMLElement;
     await user.click(within(inferenceGroup).getByRole('combobox', { name: /^推理强度：/ }));
-    await user.click(within(inferenceGroup).getByRole('option', { name: '高' }));
+    await user.click(await screen.findByRole('option', { name: '高' }));
     await user.click(within(quickEditor).getByRole('button', { name: '生成' }));
 
     await waitFor(() => {
@@ -1344,7 +1353,7 @@ describe('画布编辑器交互', () => {
     await restored.user.click(within(restoredNode).getByRole('button', { name: '查看节点信息' }));
     const info = await screen.findByRole('dialog', { name: '节点信息' });
     expect(within(info).getByRole('alert')).toHaveTextContent('新请求失败，旧结果保留');
-    expect(within(info).getByText('12.4秒')).toBeVisible();
+    await waitFor(() => expect(within(info).getByText('12.4秒')).toBeVisible());
     expect(within(info).queryByText('3秒')).not.toBeInTheDocument();
     await restored.user.click(within(info).getByRole('button', { name: /查看生成提示词/ }));
     const dialog = await screen.findByRole('dialog', { name: '生成提示词' });
@@ -1365,7 +1374,9 @@ describe('画布编辑器交互', () => {
     const trigger = screen.getAllByRole('button', { name: '外观' })[0];
     await user.click(trigger);
 
-    expect(screen.getByRole('dialog', { name: '主题、画布背景与连接线' })).toBeVisible();
+    await waitFor(() =>
+      expect(screen.getByRole('dialog', { name: '主题、画布背景与连接线' })).toBeVisible(),
+    );
     await user.click(screen.getByRole('tab', { name: '背景' }));
     expect(screen.getByRole('button', { name: '点' })).toHaveAttribute('aria-pressed', 'true');
 
@@ -1480,13 +1491,18 @@ describe('画布编辑器交互', () => {
     expect(clearCanvasItem).toHaveTextContent('1 节点');
     expect(clearCanvasItem).toHaveTextContent('1 组');
 
-    // 取消确认：节点与组都不变。
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    // 等待 Dropdown 完成挂载再激活，取消后节点与组都不变。
+    await waitFor(() => expect(clearCanvasItem).toBeVisible());
     await user.click(clearCanvasItem);
-    await waitFor(() => expect(confirmSpy).toHaveBeenCalledTimes(1));
+    const dialog = await findClearCanvasConfirmation();
+    expect(dialog).toHaveTextContent('1 个节点');
+    expect(dialog).toHaveTextContent('1 个分组');
+    await user.click(within(dialog).getByRole('button', { name: '取消' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: '清空画布' })).not.toBeInTheDocument(),
+    );
     expect(flowNodes()).toHaveLength(1);
     expect(screen.getByRole('button', { name: /^组 1/ })).toBeInTheDocument();
-    confirmSpy.mockRestore();
   });
 
   it('清空确认说明在途任务继续执行，迟到完成事件只刷新资源而不复活节点', async () => {
@@ -1498,13 +1514,12 @@ describe('画布编辑器交互', () => {
     const running = createRestoredRun(node, { status: 'running', includeAsset: false });
     act(() => emitRun(running));
     await user.hover(screen.getByRole('button', { name: '清空' }));
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
     await user.click(await screen.findByRole('menuitem', { name: /清空画布/ }));
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('当前有 1 个在途任务'));
-    expect(confirmSpy).toHaveBeenCalledWith(
-      expect.stringContaining('清空后仍会继续执行，结果保留在资源库'),
-    );
-    expect(flowNodes()).toHaveLength(0);
+    const dialog = await findClearCanvasConfirmation();
+    expect(dialog).toHaveTextContent('当前有 1 个在途任务');
+    expect(dialog).toHaveTextContent('清空后仍会继续执行，结果保留在资源库');
+    await user.click(within(dialog).getByRole('button', { name: '确认清空' }));
+    await waitFor(() => expect(flowNodes()).toHaveLength(0));
     expect(screen.queryByRole('region', { name: /设置$/ })).not.toBeInTheDocument();
     const requestsBeforeCompletion = fetchMock.mock.calls.length;
 
@@ -1540,24 +1555,22 @@ describe('画布编辑器交互', () => {
       await user.hover(screen.getByRole('button', { name: '清空' }));
       const clearEmpty = await screen.findByRole('menuitem', { name: /清空空节点/ });
       expect(clearEmpty).toHaveTextContent('2 节点');
-      const confirmSpy = vi
-        .spyOn(window, 'confirm')
-        .mockImplementationOnce(() => {
-          flushSync(() => {
-            if (change === '提示词')
-              fireEvent.change(prompt, { target: { value: '确认期间新增的内容' } });
-            else emitRun(running);
-          });
-          return true;
-        })
-        .mockReturnValue(true);
-
       await user.click(clearEmpty);
-      expect(confirmSpy).toHaveBeenCalledTimes(2);
-      expect(confirmSpy.mock.calls[0]?.[0]).toContain('2 个空节点');
-      expect(confirmSpy.mock.calls[1]?.[0]).toContain('节点状态已变化');
-      expect(confirmSpy.mock.calls[1]?.[0]).toContain('1 个空节点');
-      expect(flowNodes()).toHaveLength(1);
+      const initialDialog = await screen.findByRole('dialog', { name: '清空空节点' });
+      expect(initialDialog).toHaveTextContent('2 个空节点');
+      // 模拟确认等待期间回填的内容或运行事件，提交后必须重读最新候选。
+      act(() => {
+        if (change === '提示词')
+          fireEvent.change(prompt, { target: { value: '确认期间新增的内容' } });
+        else emitRun(running);
+      });
+      await user.click(within(initialDialog).getByRole('button', { name: '确认清理' }));
+      const updatedContent = await screen.findByText(/节点状态已变化，请确认更新后的范围/);
+      const updatedDialog = updatedContent.closest('[role="dialog"]') as HTMLElement;
+      expect(updatedDialog).toHaveTextContent('1 个空节点');
+      expect(flowNodes()).toHaveLength(2);
+      await user.click(within(updatedDialog).getByRole('button', { name: '确认清理' }));
+      await waitFor(() => expect(flowNodes()).toHaveLength(1));
       expect(findNodeByLabel('文字生成节点')).toBeTruthy();
       expect(findNodeByLabel('图片生成节点')).toBeUndefined();
       if (change === '提示词') expect(prompt).toHaveValue('确认期间新增的内容');
@@ -1576,13 +1589,21 @@ describe('画布编辑器交互', () => {
     expect(screen.getByRole('region', { name: /设置$/ })).toBeVisible();
     const clearButton = screen.getByRole('button', { name: '清空' });
     await user.click(within(node).getByRole('button', { name: '查看节点信息' }));
-    await user.click(await screen.findByRole('button', { name: /查看生成提示词/ }));
-    expect(await screen.findByRole('dialog', { name: '生成提示词' })).toBeVisible();
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    await user.click(
+      within(await screen.findByRole('dialog', { name: '节点信息' })).getByRole('button', {
+        name: /查看生成提示词/,
+      }),
+    );
+    await waitFor(() => expect(screen.getByRole('dialog', { name: '生成提示词' })).toBeVisible());
+    // 模拟弹窗存续期间触发画布操作，验证它随所属节点删除而关闭。
     fireEvent.click(clearButton);
-    fireEvent.click(screen.getByRole('menuitem', { name: /清空空节点/, hidden: true }));
-    expect(flowNodes()).toHaveLength(0);
-    expect(screen.queryByRole('dialog', { name: '生成提示词' })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('menuitem', { name: /清空空节点/, hidden: true }));
+    const confirm = await screen.findByRole('dialog', { name: '清空空节点' });
+    await user.click(within(confirm).getByRole('button', { name: '确认清理' }));
+    await waitFor(() => expect(flowNodes()).toHaveLength(0));
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: '生成提示词' })).not.toBeInTheDocument(),
+    );
     expect(screen.queryByRole('region', { name: /设置$/ })).not.toBeInTheDocument();
   });
 
@@ -1606,14 +1627,21 @@ describe('画布编辑器交互', () => {
     });
     const clearButton = screen.getByRole('button', { name: '清空' });
     await user.click(within(node).getByRole('button', { name: '查看节点信息' }));
-    await user.click(await screen.findByRole('button', { name: /查看生成提示词/ }));
+    await user.click(
+      within(await screen.findByRole('dialog', { name: '节点信息' })).getByRole('button', {
+        name: /查看生成提示词/,
+      }),
+    );
     await waitFor(() => expect(resolvePrompt).toBeDefined());
-    expect(await screen.findByRole('dialog', { name: '生成提示词' })).toBeVisible();
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    await waitFor(() => expect(screen.getByRole('dialog', { name: '生成提示词' })).toBeVisible());
     fireEvent.click(clearButton);
-    fireEvent.click(screen.getByRole('menuitem', { name: /清空画布/, hidden: true }));
-    expect(flowNodes()).toHaveLength(0);
-    expect(screen.queryByRole('dialog', { name: '生成提示词' })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('menuitem', { name: /清空画布/, hidden: true }));
+    const confirm = await findClearCanvasConfirmation();
+    await user.click(within(confirm).getByRole('button', { name: '确认清空' }));
+    await waitFor(() => expect(flowNodes()).toHaveLength(0));
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: '生成提示词' })).not.toBeInTheDocument(),
+    );
     await act(async () => resolvePrompt!(jsonResponse({ records: [] })));
     expect(screen.queryByRole('dialog', { name: '生成提示词' })).not.toBeInTheDocument();
     expect(screen.queryByRole('region', { name: /设置$/ })).not.toBeInTheDocument();
@@ -1640,12 +1668,12 @@ describe('画布编辑器交互', () => {
     // 只有一个空模板是候选：已填写提示词的节点被保留。
     expect(clearEmptyItem).toHaveTextContent('1 节点');
 
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
     await user.click(clearEmptyItem);
+    const dialog = await screen.findByRole('dialog', { name: '清空空节点' });
+    await user.click(within(dialog).getByRole('button', { name: '确认清理' }));
     await waitFor(() => expect(flowNodes()).toHaveLength(1));
     expect(findNodeByLabel('文字生成节点')).toBeTruthy();
     expect(findNodeByLabel('图片生成节点')).toBeUndefined();
-    confirmSpy.mockRestore();
 
     // 一次撤销恢复节点与提示词。
     await user.keyboard('{Control>}z{/Control}');
@@ -1676,13 +1704,13 @@ describe('画布编辑器交互', () => {
     // 两个没有任何内容的模板都是候选；有上游输入的文字节点必须保留。
     expect(clearEmptyItem).toHaveTextContent('2 节点');
 
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
     await user.click(clearEmptyItem);
+    const dialog = await screen.findByRole('dialog', { name: '清空空节点' });
+    await user.click(within(dialog).getByRole('button', { name: '确认清理' }));
     await waitFor(() => expect(flowNodes()).toHaveLength(1));
     expect(findNodeByLabel('文字生成节点')).toBeTruthy();
     expect(findNodeByLabel('图片生成节点')).toBeUndefined();
     expect(findNodeByLabel('音频生成节点')).toBeUndefined();
-    confirmSpy.mockRestore();
   });
 
   it('提示词入口读取该节点真正发送的请求文本，缺失记录时明确说明', async () => {
@@ -1721,9 +1749,13 @@ describe('画布编辑器交互', () => {
 
     // 提示词入口在节点信息面板内，属于只读查询，不是输入编辑入口。
     await user.click(within(node).getByRole('button', { name: '查看节点信息' }));
-    await user.click(await screen.findByRole('button', { name: /查看生成提示词/ }));
+    await user.click(
+      within(await screen.findByRole('dialog', { name: '节点信息' })).getByRole('button', {
+        name: /查看生成提示词/,
+      }),
+    );
     const dialog = await screen.findByRole('dialog', { name: '生成提示词' });
-    expect(within(dialog).getByText('写一段开头。')).toBeVisible();
+    await waitFor(() => expect(within(dialog).getByText('写一段开头。')).toBeVisible());
     expect(within(dialog).getByText('[user] 写一段开头')).toBeVisible();
     await user.click(within(dialog).getByRole('button', { name: '关闭生成提示词' }));
     await waitFor(() =>
@@ -1738,7 +1770,11 @@ describe('画布编辑器交互', () => {
 
     // 提示词入口在节点信息面板内，属于只读查询，不是输入编辑入口。
     await user.click(within(node).getByRole('button', { name: '查看节点信息' }));
-    await user.click(await screen.findByRole('button', { name: /查看生成提示词/ }));
+    await user.click(
+      within(await screen.findByRole('dialog', { name: '节点信息' })).getByRole('button', {
+        name: /查看生成提示词/,
+      }),
+    );
     const dialog = await screen.findByRole('dialog', { name: '生成提示词' });
     await waitFor(() => expect(within(dialog).getByText(/未记录生成提示词/)).toBeVisible());
     await user.click(within(dialog).getByRole('button', { name: '关闭生成提示词' }));

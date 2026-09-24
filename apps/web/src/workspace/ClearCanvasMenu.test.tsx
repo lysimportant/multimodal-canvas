@@ -1,7 +1,8 @@
 import '@testing-library/jest-dom/vitest';
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { Button } from '@multimodal-canvas/ui';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ClearCanvasMenu, type ClearActionCounts } from './ClearCanvasMenu';
@@ -62,6 +63,12 @@ describe('ClearCanvasMenu', () => {
 
     await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(screen.getByRole('menuitem', { name: /清空画布/ })).toHaveFocus());
+    // jsdom 没有布局盒，菜单库以 offsetParent 判断候选项是否可见。
+    for (const item of screen.getAllByRole('menuitem')) {
+      Object.defineProperty(item, 'offsetParent', { configurable: true, value: document.body });
+    }
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowDown', keyCode: 40, which: 40 });
+    await waitFor(() => expect(screen.getByRole('menuitem', { name: /清空空节点/ })).toHaveFocus());
   });
 
   it('Esc 关闭菜单', async () => {
@@ -78,7 +85,7 @@ describe('ClearCanvasMenu', () => {
     render(
       <div>
         <ClearCanvasMenu counts={counts()} onClearCanvas={vi.fn()} onClearEmptyNodes={vi.fn()} />
-        <button type="button">外部按钮</button>
+        <Button type="button">外部按钮</Button>
       </div>,
     );
     await userEvent.hover(screen.getByRole('button', { name: '清空' }));
@@ -92,7 +99,6 @@ describe('ClearCanvasMenu', () => {
       <ClearCanvasMenu counts={counts()} onClearCanvas={vi.fn()} onClearEmptyNodes={vi.fn()} />,
     );
     const trigger = screen.getByRole('button', { name: '清空' });
-    const root = trigger.parentElement!;
 
     await userEvent.hover(trigger);
     const card = screen.getByRole('menu');
@@ -148,7 +154,13 @@ describe('ClearCanvasMenu', () => {
     );
     await userEvent.hover(screen.getByRole('button', { name: '清空' }));
     expect(screen.getByRole('menuitem', { name: /清空画布/ })).toBeEnabled();
-    expect(screen.getByRole('menuitem', { name: /清空空节点/ })).toBeDisabled();
+    expect(screen.getByRole('menuitem', { name: /清空空节点/ })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+    await userEvent.click(screen.getByRole('menuitem', { name: /清空空节点/ }));
+    expect(onClearEmptyNodes).not.toHaveBeenCalled();
+    expect(onClearCanvas).not.toHaveBeenCalled();
   });
 
   it('选择动作后先关闭菜单再交回调用方处理确认', async () => {

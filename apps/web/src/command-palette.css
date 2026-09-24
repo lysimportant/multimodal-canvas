@@ -1,14 +1,5 @@
 .command-palette-backdrop {
-  align-items: flex-start;
   background: rgb(15 23 42 / 28%);
-  display: flex;
-  inset: 0;
-  justify-content: center;
-  overflow: auto;
-  overscroll-behavior: contain;
-  padding: clamp(52px, 12vh, 112px) 16px 32px;
-  position: fixed;
-  z-index: 100;
 }
 
 .command-palette-dialog {
@@ -22,6 +13,7 @@
   max-height: min(72vh, 640px);
   overflow: hidden;
   width: min(680px, 100%);
+  padding: 0;
 }
 
 .command-palette-search-row {

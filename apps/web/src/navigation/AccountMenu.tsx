@@ -1,9 +1,10 @@
+import { Button } from '@multimodal-canvas/ui';
+import { Dropdown, type MenuProps } from 'antd';
 import {
   createContext,
   useContext,
   useEffect,
   useId,
-  useRef,
   useState,
   type MouseEvent,
   type ReactNode,
@@ -11,8 +12,6 @@ import {
 import { FolderOpen, LogIn, LogOut, ShieldCheck, UserCircle, Activity } from 'lucide-react';
 import type { AuthUser } from '../auth-client';
 import { AppLink, appPaths, shouldInterceptAppLink } from '../routing';
-import { isImeKeyboardEvent } from '../ime';
-import { usePresence } from './motion';
 import './account-menu.css';
 
 /** 全站账户入口的状态与显式动作；打开菜单不修改会话。 */
@@ -48,7 +47,7 @@ export type AccountMenuProps = AccountActions & {
   onNavigate?: (href: string, event: MouseEvent<HTMLAnchorElement>) => void;
 };
 
-/** 显示账户菜单、个人页面与独立注销命令，支持键盘、点击外部及退出动画。 */
+/** 使用库菜单提供账户入口；链接保留新标签、来源项目和跳转前保存回调。 */
 export function AccountMenu({
   user,
   onRequestLogin,
@@ -57,90 +56,15 @@ export function AccountMenu({
   projectId,
 }: AccountMenuProps) {
   const [open, setOpen] = useState(false);
-  const [openedByClick, setOpenedByClick] = useState(false);
-  const present = usePresence(open, 140);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const closeTimerRef = useRef<number | null>(null);
   const menuId = useId();
 
-  /** 取消悬停离开后的延迟关闭，允许指针经过菜单与按钮之间的间隙。 */
-  const cancelHoverClose = () => {
-    if (closeTimerRef.current === null) return;
-    window.clearTimeout(closeTimerRef.current);
-    closeTimerRef.current = null;
-  };
-
-  /** 延迟关闭悬停菜单，避免指针移动到浮层时因间隙导致菜单闪退。 */
-  const scheduleHoverClose = () => {
-    cancelHoverClose();
-    closeTimerRef.current = window.setTimeout(() => {
-      closeTimerRef.current = null;
-      setOpen(false);
-      setOpenedByClick(false);
-    }, 140);
-  };
-
-  /** 关闭菜单并按调用方式恢复焦点，避免干扰链接目标页。 */
-  const close = (restoreFocus = false) => {
-    cancelHoverClose();
-    setOpen(false);
-    setOpenedByClick(false);
-    if (restoreFocus) triggerRef.current?.focus();
-  };
-
   useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (event: PointerEvent) => {
-      if (event.target instanceof Node && !containerRef.current?.contains(event.target)) close();
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (isImeKeyboardEvent(event)) return;
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        event.stopPropagation();
-        close(true);
-        return;
-      }
-      const items = Array.from(
-        menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [],
-      );
-      const index = items.indexOf(document.activeElement as HTMLElement);
-      let next: number | undefined;
-      if (event.key === 'ArrowDown') next = (index + 1) % items.length;
-      if (event.key === 'ArrowUp') next = index <= 0 ? items.length - 1 : index - 1;
-      if (event.key === 'Home') next = 0;
-      if (event.key === 'End') next = items.length - 1;
-      if (next !== undefined && items[next]) {
-        event.preventDefault();
-        items[next]?.focus();
-      }
-    };
-    document.addEventListener('pointerdown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
-    };
-  }, [open]);
-
-  useEffect(() => {
-    cancelHoverClose();
     setOpen(false);
-    setOpenedByClick(false);
   }, [user?.id]);
-
-  useEffect(
-    () => () => {
-      cancelHoverClose();
-    },
-    [],
-  );
 
   if (!user) {
     return (
-      <button
+      <Button
         type="button"
         className="mc-navigation-icon-button mc-account-trigger"
         aria-label="登录账户"
@@ -148,7 +72,7 @@ export function AccountMenu({
         onClick={onRequestLogin}
       >
         <LogIn size={17} aria-hidden="true" />
-      </button>
+      </Button>
     );
   }
 
@@ -161,103 +85,80 @@ export function AccountMenu({
   ];
 
   return (
-    <div
-      ref={containerRef}
-      className="mc-account"
-      onMouseEnter={() => {
-        cancelHoverClose();
-        setOpen(true);
-      }}
-      onMouseLeave={scheduleHoverClose}
-      onBlur={(event) => {
-        if (
-          event.relatedTarget instanceof Node &&
-          !event.currentTarget.contains(event.relatedTarget)
-        ) {
-          close();
-        }
+    <Dropdown
+      open={open}
+      onOpenChange={setOpen}
+      trigger={['hover', 'click']}
+      mouseLeaveDelay={0.14}
+      placement="bottomRight"
+      autoFocus
+      destroyOnHidden
+      classNames={{ root: 'mc-account-dropdown' }}
+      menu={{
+        id: menuId,
+        'aria-label': '账户操作',
+        items: [
+          {
+            type: 'group',
+            key: 'account',
+            label: (
+              <div className="mc-account-identity">
+                <strong>{user.displayName || '我的账户'}</strong>
+                <span>{user.email}</span>
+                <small>{user.role === 'admin' ? '管理员' : '普通用户'}</small>
+              </div>
+            ),
+            children: [
+              ...links.map(({ href, label, icon: Icon }) => ({
+                key: href,
+                icon: <Icon size={16} aria-hidden="true" />,
+                onClick: ({ domEvent }: Parameters<NonNullable<MenuProps['onClick']>>[0]) => {
+                  // 库菜单聚焦 li；键盘激活仍经由原链接执行保存回调和新标签跳转。
+                  if (domEvent.type === 'keydown') {
+                    domEvent.currentTarget.querySelector<HTMLAnchorElement>('a[href]')?.click();
+                  }
+                },
+                label: (
+                  <AppLink
+                    to={appPaths.withProject(href, projectId)}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={(event) => {
+                      const targetHref = appPaths.withProject(href, projectId);
+                      // 普通点击交给画布先保存；修饰键继续采用浏览器的新标签行为。
+                      if (shouldInterceptAppLink(event, targetHref, undefined, undefined)) {
+                        onNavigate?.(targetHref, event);
+                      }
+                    }}
+                  >
+                    {label}
+                  </AppLink>
+                ),
+              })),
+              { type: 'divider', key: 'logout-divider' },
+              {
+                key: 'logout',
+                label: '退出登录',
+                icon: <LogOut size={16} aria-hidden="true" />,
+                danger: true,
+                onClick: onLogout,
+              },
+            ],
+          },
+        ],
       }}
     >
-      <button
-        ref={triggerRef}
+      <Button
         type="button"
         className="mc-navigation-icon-button mc-account-trigger"
         aria-label="账户菜单"
         title={`账户：${user.displayName ?? user.email}`}
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-controls={menuId}
-        onClick={() => {
-          cancelHoverClose();
-          setOpenedByClick((value) => {
-            setOpen(!value);
-            return !value;
-          });
-        }}
-        onKeyDown={(event) => {
-          if (isImeKeyboardEvent(event)) return;
-          if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-            event.preventDefault();
-            setOpen(true);
-            requestAnimationFrame(() => {
-              const items = menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]');
-              items?.[event.key === 'ArrowUp' ? items.length - 1 : 0]?.focus();
-            });
-          }
-        }}
+        aria-controls={open ? menuId : undefined}
       >
         <UserCircle size={17} aria-hidden="true" />
-      </button>
-      {present && (
-        <div
-          ref={menuRef}
-          id={menuId}
-          role="menu"
-          aria-label="账户操作"
-          aria-hidden={!open}
-          inert={!open}
-          className="mc-account-menu"
-          data-state={open ? 'open' : 'closed'}
-        >
-          <div className="mc-account-identity" role="presentation">
-            <strong>{user.displayName || '我的账户'}</strong>
-            <span>{user.email}</span>
-            <small>{user.role === 'admin' ? '管理员' : '普通用户'}</small>
-          </div>
-          {links.map(({ href, label, icon: Icon }) => (
-            <AppLink
-              key={href}
-              to={appPaths.withProject(href, projectId)}
-              target="_blank"
-              rel="noreferrer"
-              role="menuitem"
-              onClick={(event) => {
-                const targetHref = appPaths.withProject(href, projectId);
-                // 普通点击交给画布先保存；新标签在保存成功后再跳转。
-                if (shouldInterceptAppLink(event, targetHref, undefined, undefined)) {
-                  onNavigate?.(targetHref, event);
-                }
-                close();
-              }}
-            >
-              <Icon size={16} aria-hidden="true" />
-              {label}
-            </AppLink>
-          ))}
-          <button
-            type="button"
-            role="menuitem"
-            className="mc-account-logout"
-            onClick={() => {
-              close();
-              onLogout();
-            }}
-          >
-            <LogOut size={16} aria-hidden="true" />
-            退出登录
-          </button>
-        </div>
-      )}
-    </div>
+      </Button>
+    </Dropdown>
   );
 }

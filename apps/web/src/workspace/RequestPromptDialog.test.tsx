@@ -1,6 +1,7 @@
+import { ConfigProvider } from 'antd';
 import '@testing-library/jest-dom/vitest';
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render as renderAntd, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -9,6 +10,15 @@ import { NodeDurationBadge, NODE_DURATION_TICK_MS, useSharedNodeClock } from './
 import type { RequestPromptRecord } from '@multimodal-canvas/domain';
 
 afterEach(cleanup);
+
+/** 禁用库动画以同步检查可见性；仍渲染真实 Ant Design 控件和 portal。 */
+const render = (ui: Parameters<typeof renderAntd>[0], options?: Parameters<typeof renderAntd>[1]) =>
+  renderAntd(ui, {
+    wrapper: ({ children }) => (
+      <ConfigProvider theme={{ token: { motion: false } }}>{children}</ConfigProvider>
+    ),
+    ...options,
+  });
 
 /** 复制到剪贴板的测试替身，默认成功。 */
 function stubClipboard(writeText: (value: string) => Promise<void>) {
@@ -236,7 +246,7 @@ describe('RequestPromptDialog', () => {
 
   it('Esc 关闭并把焦点还给触发按钮，Tab 焦点圈定在 Dialog 内', async () => {
     const onClose = vi.fn();
-    const { unmount } = render(
+    const { rerender } = render(
       <div>
         <button type="button" id="prompt-trigger">
           提示词
@@ -248,6 +258,8 @@ describe('RequestPromptDialog', () => {
         />
       </div>,
     );
+    await waitFor(() => expect(screen.getByRole('dialog')).toHaveFocus());
+    await userEvent.tab();
     expect(screen.getByRole('button', { name: '关闭生成提示词' })).toHaveFocus();
 
     await userEvent.tab();
@@ -258,8 +270,21 @@ describe('RequestPromptDialog', () => {
     await userEvent.keyboard('{Escape}');
     expect(onClose).toHaveBeenCalledTimes(1);
 
-    unmount();
+    rerender(
+      <div>
+        <button type="button" id="prompt-trigger">
+          提示词
+        </button>
+        <RequestPromptDialog
+          state={{ status: 'ready', record: record() }}
+          open={false}
+          triggerId="prompt-trigger"
+          onClose={onClose}
+        />
+      </div>,
+    );
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: '提示词' })).toHaveFocus());
   });
 
   it('长提示词与长 URL 不改变节点外壳：正文放在独立滚动容器内', () => {

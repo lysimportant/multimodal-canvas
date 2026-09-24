@@ -1,21 +1,22 @@
-import { forwardRef, type InputHTMLAttributes } from 'react';
+import { Input as AntInput, type InputRef } from 'antd';
+import { forwardRef, useImperativeHandle, useRef, type InputHTMLAttributes } from 'react';
 
-import { cn } from './utils';
-
+/** 兼容原生输入属性、IME 事件与 HTMLInputElement 引用的组件库输入框。 */
 export type InputProps = InputHTMLAttributes<HTMLInputElement>;
 
+/** 将 Ant Design 的组件引用映射到实际 input，保持现有焦点、选区与表单代码。 */
 export const Input = forwardRef<HTMLInputElement, InputProps>(
-  ({ className, type, ...props }, ref) => (
-    <input
-      ref={ref}
-      type={type}
-      className={cn(
-        'flex h-9 w-full rounded-md border border-zinc-300 bg-white px-3 py-1 text-sm text-zinc-900 outline-none transition-colors placeholder:text-zinc-400 focus-visible:border-emerald-700 focus-visible:ring-2 focus-visible:ring-emerald-600/25 disabled:cursor-not-allowed disabled:opacity-50',
-        className,
-      )}
-      {...props}
-    />
-  ),
+  ({ size, className, ...props }, ref) => {
+    const inputRef = useRef<InputRef>(null);
+    useImperativeHandle(ref, () => inputRef.current!.input!, []);
+    return (
+      <AntInput
+        {...props}
+        ref={inputRef}
+        htmlSize={size}
+        className={['ui-input', className].filter(Boolean).join(' ')}
+      />
+    );
+  },
 );
-
 Input.displayName = 'Input';

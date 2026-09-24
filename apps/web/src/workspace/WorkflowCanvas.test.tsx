@@ -36,6 +36,7 @@ vi.mock('@xyflow/react', async () => {
     edgeTypes,
     minZoom,
     fitViewOptions,
+    deleteKeyCode,
     children,
   }: {
     nodes: AssetFlowNode[];
@@ -55,6 +56,7 @@ vi.mock('@xyflow/react', async () => {
     ) => void;
     minZoom?: number;
     fitViewOptions?: { minZoom?: number };
+    deleteKeyCode?: string | null;
     children?: React.ReactNode;
   }) {
     reactFlowMock.onConnectStart = onConnectStart;
@@ -68,6 +70,7 @@ vi.mock('@xyflow/react', async () => {
         data-default-edge-style={JSON.stringify(defaultEdgeOptions?.style ?? null)}
         data-fit-view-min-zoom={String(minZoom)}
         data-fit-view-options={JSON.stringify(fitViewOptions ?? null)}
+        data-library-delete-key={String(deleteKeyCode)}
       >
         <div
           data-testid="canvas-pane"
@@ -173,6 +176,19 @@ function createMockRect(left: number, top: number, width: number, height: number
   } as DOMRect;
 }
 
+/** 校验真实 Dropdown 的屏幕锚点；jsdom 不负责推断浮层最终布局坐标。 */
+function expectContextMenuAnchor(menu: HTMLElement, position: { x: number; y: number }) {
+  expect(menu.closest('.canvas-context-dropdown')).toHaveClass('ant-dropdown');
+  const anchor = document.querySelector('body > .ant-dropdown-trigger[aria-hidden="true"]');
+  expect(anchor).toHaveStyle({
+    position: 'fixed',
+    left: `${Math.min(position.x, window.innerWidth - 1)}px`,
+    top: `${Math.min(position.y, window.innerHeight - 1)}px`,
+    width: '1px',
+    height: '1px',
+  });
+}
+
 function createProps(overrides: Partial<WorkflowCanvasProps> = {}): WorkflowCanvasProps {
   return {
     nodes: [],
@@ -217,6 +233,10 @@ afterEach(() => {
 });
 
 describe('WorkflowCanvas context menu', () => {
+  it('禁用 React Flow 默认删除键，由 App 统一检查菜单边界和撤销历史', () => {
+    render(<WorkflowCanvas {...createProps()} />);
+    expect(screen.getByTestId('react-flow')).toHaveAttribute('data-library-delete-key', 'null');
+  });
   it.each(['textarea', 'select'] as const)(
     'keeps the native context menu for a %s inside a node',
     (tagName) => {
@@ -256,7 +276,7 @@ describe('WorkflowCanvas context menu', () => {
 
     expect(contextEvent.defaultPrevented).toBe(true);
     const menu = await screen.findByRole('menu', { name: '画布操作' });
-    expect(menu).toHaveStyle({ left: '320px', top: '210px' });
+    expectContextMenuAnchor(menu, { x: 320, y: 210 });
     await user.click(screen.getByRole('menuitem', { name: '创建图片生成节点' }));
     expect(props.onAddGenerateNode).toHaveBeenCalledWith('image', { x: 220, y: 160 });
     expect(screen.queryByRole('menu', { name: '画布操作' })).not.toBeInTheDocument();
@@ -280,7 +300,10 @@ describe('WorkflowCanvas context menu', () => {
     fireEvent.contextMenu(source, { clientX: 140, clientY: 120 });
 
     expect(props.onNodeSelect).toHaveBeenCalledWith(sourceNode);
-    expect(screen.getByRole('menuitem', { name: '开始生成' })).toBeEnabled();
+    expect(screen.getByRole('menuitem', { name: '开始生成' })).not.toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
     await user.click(screen.getByRole('menuitem', { name: '开始生成' }));
     expect(props.onRunNode).toHaveBeenCalledWith(sourceNode);
     fireEvent.contextMenu(source, { clientX: 140, clientY: 120 });
@@ -332,12 +355,20 @@ describe('WorkflowCanvas context menu', () => {
     fireEvent.contextMenu(pane, { clientX: 180, clientY: 140 });
 
     const textItem = await screen.findByRole('menuitem', { name: '创建文字生成节点' });
-    expect(textItem).toHaveFocus();
-    await user.keyboard('{ArrowDown}');
-    expect(screen.getByRole('menuitem', { name: '创建图片生成节点' })).toHaveFocus();
-    await user.keyboard('{End}');
-    expect(screen.getByRole('menuitem', { name: '自动适配缩放' })).toHaveFocus();
-    await user.keyboard('{Escape}');
+    // Menu 按 offsetParent 判断可见性；只补布局输入，不手动设置焦点。
+    for (const item of screen.getAllByRole('menuitem')) {
+      Object.defineProperty(item, 'offsetParent', { configurable: true, value: document.body });
+    }
+    await waitFor(() => expect(textItem).toHaveFocus());
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowDown', keyCode: 40, which: 40 });
+    await waitFor(() =>
+      expect(screen.getByRole('menuitem', { name: '创建图片生成节点' })).toHaveFocus(),
+    );
+    fireEvent.keyDown(document.activeElement!, { key: 'End', keyCode: 35, which: 35 });
+    await waitFor(() =>
+      expect(screen.getByRole('menuitem', { name: '自动适配缩放' })).toHaveFocus(),
+    );
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape', keyCode: 27, which: 27 });
     expect(screen.queryByRole('menu', { name: '画布操作' })).not.toBeInTheDocument();
     await waitFor(() => expect(pane).toHaveFocus());
 
@@ -389,7 +420,7 @@ describe('WorkflowCanvas context menu', () => {
     expect(props.onCreateGroup).toHaveBeenCalledTimes(1);
   });
 
-  it('运行中的节点禁用生成与图片编辑，仍可查看提示词', () => {
+  it('运行中的节点禁用生成与图片编辑，仍可查看提示词', async () => {
     const node = {
       ...generateNode,
       data: {
@@ -406,10 +437,19 @@ describe('WorkflowCanvas context menu', () => {
     });
     render(<WorkflowCanvas {...props} />);
     fireEvent.contextMenu(screen.getByTestId(`canvas-node-${node.id}`));
-    expect(screen.getByRole('menuitem', { name: '开始生成' })).toBeDisabled();
-    expect(screen.getByRole('menuitem', { name: '生成到新节点' })).toBeDisabled();
-    expect(screen.getByRole('menuitem', { name: '修改图片' })).toBeDisabled();
-    expect(screen.getByRole('menuitem', { name: '提示词' })).toBeEnabled();
+    for (const name of ['开始生成', '生成到新节点', '修改图片']) {
+      const item = screen.getByRole('menuitem', { name });
+      expect(item).toHaveAttribute('aria-disabled', 'true');
+      await userEvent.click(item);
+    }
+    expect(props.onRunNode).not.toHaveBeenCalled();
+    expect(props.onEditImage).not.toHaveBeenCalled();
+    expect(screen.getByRole('menuitem', { name: '提示词' })).not.toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+    await userEvent.click(screen.getByRole('menuitem', { name: '提示词' }));
+    expect(props.onOpenRequestPrompt).toHaveBeenCalledWith(node.id);
   });
 
   it('画布菜单包含分组、历史、视图和清理操作，遵循现有可用状态', async () => {
@@ -429,7 +469,9 @@ describe('WorkflowCanvas context menu', () => {
     render(<WorkflowCanvas {...props} />);
     const pane = screen.getByTestId('canvas-pane');
     fireEvent.contextMenu(pane);
-    expect(screen.getByRole('menuitem', { name: '重做' })).toBeDisabled();
+    expect(screen.getByRole('menuitem', { name: '重做' })).toHaveAttribute('aria-disabled', 'true');
+    await user.click(screen.getByRole('menuitem', { name: '重做' }));
+    expect(props.onRedoCanvas).not.toHaveBeenCalled();
     for (const [name, callback] of [
       ['新建分组', props.onCreateGroup],
       ['撤销', props.onUndoCanvas],
@@ -444,31 +486,32 @@ describe('WorkflowCanvas context menu', () => {
     }
   });
 
-  it('较长菜单在视口边缘打开时仍完整位于可见区域', () => {
-    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
-      this: HTMLElement,
-    ) {
-      return this.classList.contains('canvas-context-menu')
-        ? createMockRect(0, 0, 280, 600)
-        : createMockRect(0, 0, 0, 0);
-    });
-    render(<WorkflowCanvas {...createProps()} />);
+  it('窗口缩放时锚点约束到视口，新节点仍使用冻结右键坐标', async () => {
+    const user = userEvent.setup();
+    const props = createProps();
+    const clickPosition = { x: window.innerWidth, y: window.innerHeight };
+    render(<WorkflowCanvas {...props} />);
     fireEvent.contextMenu(screen.getByTestId('canvas-pane'), {
-      clientX: window.innerWidth,
-      clientY: window.innerHeight,
+      clientX: clickPosition.x,
+      clientY: clickPosition.y,
     });
-    expect(screen.getByRole('menu', { name: '画布操作' })).toHaveStyle({
-      left: `${window.innerWidth - 288}px`,
-      top: `${window.innerHeight - 608}px`,
-    });
-    vi.stubGlobal('innerWidth', 900);
-    vi.stubGlobal('innerHeight', 700);
-    fireEvent(window, new Event('resize'));
-    expect(screen.getByRole('menu', { name: '画布操作' })).toHaveStyle({
-      left: '612px',
-      top: '92px',
-    });
-    vi.unstubAllGlobals();
+    const menu = await screen.findByRole('menu', { name: '画布操作' });
+    expect(menu.closest('.canvas-context-dropdown')).toHaveClass('ant-dropdown');
+    expectContextMenuAnchor(menu, clickPosition);
+    try {
+      vi.stubGlobal('innerWidth', 900);
+      vi.stubGlobal('innerHeight', 700);
+      fireEvent(window, new Event('resize'));
+      // 屏幕锚点跟随视口约束，库浮层的真实避让在 Playwright 中测量。
+      expectContextMenuAnchor(menu, clickPosition);
+      await user.click(screen.getByRole('menuitem', { name: '创建图片生成节点' }));
+      expect(props.onAddGenerateNode).toHaveBeenCalledWith('image', {
+        x: clickPosition.x - 100,
+        y: clickPosition.y - 50,
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('shows the quick editor after clicking a node and scopes edits to the selected node', async () => {
@@ -539,7 +582,7 @@ describe('WorkflowCanvas context menu', () => {
       view.rerender(<WorkflowCanvas {...props} selectedNode={imageNode} />);
       expect(screen.getByRole('region', { name: '图片生成节点生成设置' })).toBeInTheDocument();
       await userEvent.click(image);
-      expect(screen.getByRole('dialog', { name: imageNode.data.label })).toBeInTheDocument();
+      expect(await screen.findByRole('dialog', { name: imageNode.data.label })).toBeInTheDocument();
     },
   );
 
@@ -726,7 +769,7 @@ describe('WorkflowCanvas connection drop create', () => {
     fireEvent.click(screen.getByTestId('canvas-pane'));
 
     const menu = await screen.findByRole('menu', { name: '选择要创建的节点' });
-    expect(menu).toHaveStyle({ left: '320px', top: '210px' });
+    expectContextMenuAnchor(menu, { x: 320, y: 210 });
     expect(screen.getByRole('menuitem', { name: '图生图' })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: '视频首帧' })).toBeInTheDocument();
     expect(props.onConnect).not.toHaveBeenCalled();

@@ -1,6 +1,8 @@
 /** 用户分组资源库、受控媒体预览和任务中心。 */
+import { Button, Input } from '@multimodal-canvas/ui';
 import type { Asset } from '@multimodal-canvas/domain';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Alert, Progress, Select, Table } from 'antd';
 import {
   Archive,
   ArrowLeft,
@@ -20,7 +22,7 @@ import {
   Search,
   Tags,
 } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { apiFetch } from '../auth-client';
 import { AppLink } from '../routing';
 import { API_BASE_URL } from '../workspace/contracts';
@@ -76,7 +78,7 @@ export function ResourceGroupsPage({ userId }: { userId: string }) {
           <p>RESOURCE OWNERS</p>
           <h1>用户资源</h1>
         </div>
-        <button
+        <Button
           type="button"
           className="mg-icon"
           title="刷新资源分组"
@@ -85,12 +87,12 @@ export function ResourceGroupsPage({ userId }: { userId: string }) {
           onClick={() => void query.refetch()}
         >
           <RefreshCw size={17} />
-        </button>
+        </Button>
       </header>
       <div className="mg-toolbar">
         <label className="mg-search">
           <Search size={17} />
-          <input
+          <Input
             type="search"
             aria-label="搜索资源所属用户"
             placeholder="搜索昵称、邮箱或用户 ID"
@@ -164,6 +166,8 @@ function MediaIcon({ type, size = 24 }: { type: string; size?: number }) {
  */
 export function ResourcesPage({ userId, ownerId }: { userId: string; ownerId?: string }) {
   const admin = ownerId !== undefined;
+  /** 同页筛选器使用独立标识，确保选项列表与输入的无障碍关联不串页。 */
+  const filterId = useId();
   const [search, setSearch] = useState('');
   const [queryText, setQueryText] = useState('');
   const [mediaType, setMediaType] = useState('');
@@ -245,7 +249,7 @@ export function ResourcesPage({ userId, ownerId }: { userId: string; ownerId?: s
           </h1>
           {owner.data?.user.email && <span className="mg-muted">{owner.data.user.email}</span>}
         </div>
-        <button
+        <Button
           className="mg-icon"
           type="button"
           title="刷新资源"
@@ -254,7 +258,7 @@ export function ResourcesPage({ userId, ownerId }: { userId: string; ownerId?: s
           onClick={() => void query.refetch()}
         >
           <RefreshCw size={17} />
-        </button>
+        </Button>
       </header>
       <div className="mg-toolbar is-wrap">
         <form
@@ -266,7 +270,7 @@ export function ResourcesPage({ userId, ownerId }: { userId: string; ownerId?: s
           }}
         >
           <Search size={17} />
-          <input
+          <Input
             type="search"
             value={search}
             aria-label="搜索资源"
@@ -279,65 +283,73 @@ export function ResourcesPage({ userId, ownerId }: { userId: string; ownerId?: s
               }
             }}
           />
-          <button type="submit" className="mg-icon" title="搜索" aria-label="提交资源搜索">
+          <Button type="submit" className="mg-icon" title="搜索" aria-label="提交资源搜索">
             <ArrowRight size={16} />
-          </button>
+          </Button>
         </form>
-        <select
+        <Select
+          virtual={false}
+          className="mg-select"
           value={mediaType}
+          id={filterId + '-type'}
           aria-label="资源类型"
-          onChange={(event) => {
-            setMediaType(event.target.value);
+          onChange={(value) => {
+            setMediaType(value);
             setPage(1);
           }}
-        >
-          <option value="">全部类型</option>
-          {Object.entries(mediaLabels).map(([value, label]) => (
-            <option key={value} value={value}>
-              {label}
-            </option>
-          ))}
-        </select>
-        <select
+          options={[
+            { value: '', label: '全部类型' },
+            ...Object.entries(mediaLabels).map(([value, label]) => ({ value, label })),
+          ]}
+        />
+        <Select
+          virtual={false}
+          className="mg-select"
           value={source}
+          id={filterId + '-source'}
           aria-label="资源来源"
-          onChange={(event) => {
-            setSource(event.target.value);
+          onChange={(value) => {
+            setSource(value);
             setPage(1);
           }}
-        >
-          <option value="">全部来源</option>
-          <option value="upload">上传资源</option>
-          <option value="generated">生成资源</option>
-        </select>
-        <select
+          options={[
+            { value: '', label: '全部来源' },
+            { value: 'upload', label: '上传资源' },
+            { value: 'generated', label: '生成资源' },
+          ]}
+        />
+        <Select
+          virtual={false}
+          className="mg-select"
           value={status}
+          id={filterId + '-status'}
           aria-label="资源状态"
-          onChange={(event) => {
-            setStatus(event.target.value);
+          onChange={(value) => {
+            setStatus(value);
             setPage(1);
           }}
-        >
-          <option value="ready">正常资源</option>
-          <option value="archived">已归档</option>
-          <option value="">全部状态</option>
-        </select>
+          options={[
+            { value: 'ready', label: '正常资源' },
+            { value: 'archived', label: '已归档' },
+            { value: '', label: '全部状态' },
+          ]}
+        />
         {projects && (
-          <select
+          <Select
+            virtual={false}
+            className="mg-select"
             value={projectId}
+            id={filterId + '-project'}
             aria-label="所属项目"
-            onChange={(event) => {
-              setProjectId(event.target.value);
+            onChange={(value) => {
+              setProjectId(value);
               setPage(1);
             }}
-          >
-            <option value="">全部项目</option>
-            {projects.map((project) => (
-              <option key={project.id} value={project.id}>
-                {project.name}
-              </option>
-            ))}
-          </select>
+            options={[
+              { value: '', label: '全部项目' },
+              ...projects.map((project) => ({ value: project.id, label: project.name })),
+            ]}
+          />
         )}
         <form
           className="mg-search mg-tag-filter"
@@ -354,7 +366,7 @@ export function ResourcesPage({ userId, ownerId }: { userId: string; ownerId?: s
           }}
         >
           <Tags size={16} />
-          <input
+          <Input
             type="search"
             value={tagDraft}
             maxLength={2048}
@@ -368,12 +380,12 @@ export function ResourcesPage({ userId, ownerId }: { userId: string; ownerId?: s
               }
             }}
           />
-          <button type="submit" className="mg-icon" title="应用标签筛选" aria-label="应用标签筛选">
+          <Button type="submit" className="mg-icon" title="应用标签筛选" aria-label="应用标签筛选">
             <ArrowRight size={16} />
-          </button>
+          </Button>
         </form>
         {projectId && !projects && (
-          <button
+          <Button
             className="mg-text-button"
             onClick={() => {
               setProjectId('');
@@ -381,7 +393,7 @@ export function ResourcesPage({ userId, ownerId }: { userId: string; ownerId?: s
             }}
           >
             清除项目筛选
-          </button>
+          </Button>
         )}
       </div>
       <QueryState
@@ -398,7 +410,7 @@ export function ResourcesPage({ userId, ownerId }: { userId: string; ownerId?: s
       >
         <div className="mg-resource-grid">
           {query.data?.assets.map((asset) => (
-            <button
+            <Button
               key={asset.id}
               type="button"
               className="mg-resource-item"
@@ -425,7 +437,7 @@ export function ResourcesPage({ userId, ownerId }: { userId: string; ownerId?: s
                   ))}
                 </div>
               </div>
-            </button>
+            </Button>
           ))}
         </div>
       </QueryState>
@@ -619,6 +631,7 @@ function ResourceModal({
   onSelect: (asset: ManagementAsset) => void;
 }) {
   const queryClient = useQueryClient();
+  const versionId = useId();
   const query = useQuery({
     queryKey: ['management', userId, basePath, 'resource', asset.id],
     queryFn: ({ signal }) =>
@@ -644,7 +657,9 @@ function ResourceModal({
         return;
       if (
         event.target instanceof Element &&
-        event.target.closest('input, textarea, select, video, audio, [contenteditable="true"]')
+        event.target.closest(
+          'input, textarea, select, video, audio, [role="combobox"], [role="listbox"], [role="option"], [contenteditable="true"]',
+        )
       )
         return;
       const target =
@@ -675,9 +690,9 @@ function ResourceModal({
     onChanged();
   };
   return (
-    <Modal title={current.name} onClose={onClose} busy={action.busy}>
+    <Modal title={current.name} onClose={onClose} busy={action.busy} width={1000}>
       <div className="mg-resource-navigation" aria-label="资源切换">
-        <button
+        <Button
           type="button"
           className="mg-icon"
           title="上一个资源"
@@ -686,8 +701,8 @@ function ResourceModal({
           onClick={() => previous && onSelect(previous)}
         >
           <ArrowLeft size={18} />
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
           className="mg-icon"
           title="下一个资源"
@@ -696,7 +711,7 @@ function ResourceModal({
           onClick={() => next && onSelect(next)}
         >
           <ArrowRight size={18} />
-        </button>
+        </Button>
       </div>
       <div className="mg-resource-detail">
         <section className="mg-media-region">
@@ -706,7 +721,7 @@ function ResourceModal({
             asset={current}
           />
           <div className="mg-form-actions">
-            <button
+            <Button
               type="button"
               className="mg-button"
               disabled={action.busy}
@@ -726,20 +741,23 @@ function ResourceModal({
             >
               <Download size={16} />
               下载
-            </button>
+            </Button>
             {Boolean(query.data?.versions.length) && (
-              <select
+              <Select
+                virtual={false}
+                className="mg-select"
                 value={version}
+                id={versionId}
                 aria-label="资源版本"
-                onChange={(event) => setVersion(event.target.value)}
-              >
-                <option value="">最新版本</option>
-                {query.data?.versions.map((item) => (
-                  <option key={item.version} value={item.version}>
-                    版本 {item.version} · {formatDate(item.createdAt)}
-                  </option>
-                ))}
-              </select>
+                onChange={(value) => setVersion(value)}
+                options={[
+                  { value: '', label: '最新版本' },
+                  ...(query.data?.versions.map((item) => ({
+                    value: String(item.version),
+                    label: '版本 ' + item.version + ' · ' + formatDate(item.createdAt),
+                  })) ?? []),
+                ]}
+              />
             )}
           </div>
         </section>
@@ -817,11 +835,11 @@ function ResourceModal({
           >
             <label className="mg-field">
               <span>资源名称</span>
-              <input name="name" defaultValue={current.name} required maxLength={240} />
+              <Input name="name" defaultValue={current.name} required maxLength={240} />
             </label>
             <label className="mg-field">
               <span>标签</span>
-              <input
+              <Input
                 name="tags"
                 defaultValue={current.tags.join(', ')}
                 maxLength={1000}
@@ -830,11 +848,11 @@ function ResourceModal({
             </label>
             <Notice value={action.notice} />
             <div className="mg-form-actions">
-              <button className="mg-button is-primary" disabled={action.busy}>
+              <Button type="submit" className="mg-button is-primary" disabled={action.busy}>
                 <Save size={16} />
                 保存
-              </button>
-              <button
+              </Button>
+              <Button
                 className="mg-button"
                 type="button"
                 disabled={action.busy}
@@ -846,37 +864,43 @@ function ResourceModal({
               >
                 {current.status === 'archived' ? <RotateCcw size={16} /> : <Archive size={16} />}
                 {current.status === 'archived' ? '恢复' : '归档'}
-              </button>
+              </Button>
             </div>
           </form>
           {confirmArchive && (
-            <div className="mg-confirm-inline" role="alert">
-              <p>确认归档“{current.name}”？资源将从正常列表移入归档，可随时恢复。</p>
-              <div className="mg-form-actions">
-                <button
-                  type="button"
-                  className="mg-button"
-                  disabled={action.busy}
-                  onClick={() =>
-                    void action.execute(async () => {
-                      await update({ status: 'archived' });
-                      setConfirmArchive(false);
-                    }, '资源已归档')
-                  }
-                >
-                  <Archive size={16} />
-                  确认归档
-                </button>
-                <button
-                  type="button"
-                  className="mg-text-button"
-                  disabled={action.busy}
-                  onClick={() => setConfirmArchive(false)}
-                >
-                  取消
-                </button>
-              </div>
-            </div>
+            <Alert
+              className="mg-confirm-inline"
+              type="warning"
+              role="alert"
+              showIcon
+              title={<>确认归档“{current.name}”？资源将从正常列表移入归档，可随时恢复。</>}
+              description={
+                <div className="mg-form-actions">
+                  <Button
+                    type="button"
+                    className="mg-button"
+                    disabled={action.busy}
+                    onClick={() =>
+                      void action.execute(async () => {
+                        await update({ status: 'archived' });
+                        setConfirmArchive(false);
+                      }, '资源已归档')
+                    }
+                  >
+                    <Archive size={16} />
+                    确认归档
+                  </Button>
+                  <Button
+                    type="button"
+                    className="mg-text-button"
+                    disabled={action.busy}
+                    onClick={() => setConfirmArchive(false)}
+                  >
+                    取消
+                  </Button>
+                </div>
+              }
+            />
           )}
         </section>
       </div>
@@ -975,6 +999,7 @@ type ManagedRun = {
 
 /** 任务中心只刷新已创建任务，点击行不会触发付费重试。 */
 export function RunsPage({ userId, admin = false }: { userId: string; admin?: boolean }) {
+  const filterId = useId();
   const [status, setStatus] = useState('');
   const [ownerId, setOwnerId] = useState('');
   const [page, setPage] = useState(1);
@@ -1003,7 +1028,7 @@ export function RunsPage({ userId, admin = false }: { userId: string; admin?: bo
           <p>RUNS</p>
           <h1>{admin ? '全站任务' : '我的任务'}</h1>
         </div>
-        <button
+        <Button
           className="mg-icon"
           type="button"
           title="刷新任务"
@@ -1012,42 +1037,49 @@ export function RunsPage({ userId, admin = false }: { userId: string; admin?: bo
           onClick={() => void query.refetch()}
         >
           <RefreshCw size={17} />
-        </button>
+        </Button>
       </header>
       <div className="mg-toolbar">
-        <select
+        <Select
+          virtual={false}
+          className="mg-select"
           value={status}
+          id={filterId + '-status'}
           aria-label="任务状态"
-          onChange={(event) => {
-            setStatus(event.target.value);
+          onChange={(value) => {
+            setStatus(value);
             setPage(1);
           }}
-        >
-          <option value="">全部状态</option>
-          <option value="queued">排队中</option>
-          <option value="running">运行中</option>
-          <option value="succeeded">已完成</option>
-          <option value="failed">失败</option>
-          <option value="cancelled">已取消</option>
-        </select>
+          options={[
+            { value: '', label: '全部状态' },
+            { value: 'queued', label: '排队中' },
+            { value: 'running', label: '运行中' },
+            { value: 'succeeded', label: '已完成' },
+            { value: 'failed', label: '失败' },
+            { value: 'cancelled', label: '已取消' },
+          ]}
+        />
         {admin && (
-          <select
+          <Select
+            virtual={false}
+            className="mg-select"
             value={ownerId}
+            id={filterId + '-owner'}
             aria-label="任务所属用户"
-            onChange={(event) => {
-              setOwnerId(event.target.value);
+            onChange={(value) => {
+              setOwnerId(value);
               setPage(1);
             }}
-          >
-            <option value="">全部用户</option>
-            {groups.data?.groups
-              .filter((group) => group.ownerId)
-              .map((group) => (
-                <option key={group.ownerId} value={group.ownerId!}>
-                  {group.user?.displayName || group.user?.email || group.ownerId}
-                </option>
-              ))}
-          </select>
+            options={[
+              { value: '', label: '全部用户' },
+              ...(groups.data?.groups
+                .filter((group) => group.ownerId)
+                .map((group) => ({
+                  value: group.ownerId!,
+                  label: group.user?.displayName || group.user?.email || group.ownerId,
+                })) ?? []),
+            ]}
+          />
         )}
       </div>
       <QueryState
@@ -1062,61 +1094,70 @@ export function RunsPage({ userId, admin = false }: { userId: string; admin?: bo
             : undefined
         }
       >
-        <div className="mg-table-wrap">
-          <table className="mg-table mg-runs-table">
-            <thead>
-              <tr>
-                <th>任务与模型</th>
-                {admin && <th>所属用户</th>}
-                <th>状态</th>
-                <th>进度</th>
-                <th>更新时间</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {query.data?.runs.map((run) => (
-                <tr key={run.id}>
-                  <td>
-                    <strong>{run.modelAlias || run.provider}</strong>
-                    <small className="mg-truncate" title={run.id}>
-                      {run.id}
-                    </small>
-                  </td>
-                  {admin && (
-                    <td>
-                      {run.user?.displayName || run.user?.email || run.ownerId || '待确认归属'}
-                    </td>
-                  )}
-                  <td>
-                    <StatusBadge value={run.status} />
-                  </td>
-                  <td>
-                    <span className="mg-run-progress">
-                      <progress
-                        max={100}
-                        value={run.progress}
-                        aria-label={`${run.modelAlias}的进度`}
-                      />
-                      <span>{run.progress}%</span>
-                    </span>
-                  </td>
-                  <td>{formatDate(run.updatedAt)}</td>
-                  <td>
-                    <button
-                      type="button"
-                      className="mg-text-button"
-                      onClick={() => setSelected(run)}
-                    >
-                      详情
-                      <ArrowRight size={15} />
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <Table<ManagedRun>
+          className="mg-table mg-runs-table"
+          rowKey="id"
+          dataSource={query.data?.runs ?? []}
+          pagination={false}
+          size="middle"
+          scroll={{ x: 690 }}
+          columns={[
+            {
+              title: '任务与模型',
+              key: 'model',
+              render: (_, run) => (
+                <>
+                  <strong>{run.modelAlias || run.provider}</strong>
+                  <small className="mg-truncate" title={run.id}>
+                    {run.id}
+                  </small>
+                </>
+              ),
+            },
+            {
+              title: '所属用户',
+              key: 'owner',
+              hidden: !admin,
+              render: (_, run) =>
+                run.user?.displayName || run.user?.email || run.ownerId || '待确认归属',
+            },
+            {
+              title: '状态',
+              key: 'status',
+              render: (_, run) => <StatusBadge value={run.status} />,
+            },
+            {
+              title: '进度',
+              key: 'progress',
+              render: (_, run) => (
+                <span className="mg-run-progress">
+                  <Progress
+                    percent={run.progress}
+                    size="small"
+                    showInfo={false}
+                    aria-label={run.modelAlias + '的进度'}
+                  />
+                  <span>{run.progress}%</span>
+                </span>
+              ),
+            },
+            {
+              title: '更新时间',
+              key: 'updatedAt',
+              render: (_, run) => formatDate(run.updatedAt),
+            },
+            {
+              title: '操作',
+              key: 'actions',
+              render: (_, run) => (
+                <Button type="button" className="mg-text-button" onClick={() => setSelected(run)}>
+                  详情
+                  <ArrowRight size={15} />
+                </Button>
+              ),
+            },
+          ]}
+        />
       </QueryState>
       {query.data && (
         <Pagination
@@ -1178,10 +1219,10 @@ export function RunsPage({ userId, admin = false }: { userId: string; admin?: bo
               <Database size={16} />
               查看结果资源
             </AppLink>
-            <button className="mg-button" type="button" onClick={() => setSelected(null)}>
+            <Button className="mg-button" type="button" onClick={() => setSelected(null)}>
               <Check size={16} />
               关闭
-            </button>
+            </Button>
           </div>
         </Modal>
       )}

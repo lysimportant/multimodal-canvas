@@ -1,3 +1,5 @@
+import { Button } from '@multimodal-canvas/ui';
+import { Drawer, Dropdown } from 'antd';
 import {
   Check,
   ExternalLink,
@@ -10,16 +12,7 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react';
-import {
-  useEffect,
-  useId,
-  useRef,
-  useState,
-  type FocusEvent,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type MouseEvent,
-  type ReactNode,
-} from 'react';
+import { useEffect, useId, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 
 import { useWorkspacePreferences, type CanvasTheme } from '../state/workspace-preferences';
 import { isImeKeyboardEvent } from '../ime';
@@ -36,8 +29,8 @@ import { PUBLIC_API_CATALOG_URL } from '../workspace/contracts';
 import './app-navigation.css';
 
 import { AccountMenu, useAccountActions } from './AccountMenu';
-import { usePresence } from './motion';
 
+/** 主菜单路由及用于当前页面高亮的元数据。 */
 type NavigationItem = {
   id: AppNavigationSection | 'contact';
   label: string;
@@ -46,6 +39,7 @@ type NavigationItem = {
   icon: LucideIcon;
 };
 
+/** 保留公共入口顺序，管理员设置入口在渲染时按账户权限过滤。 */
 const navigationItems: NavigationItem[] = [
   {
     id: 'home',
@@ -77,6 +71,7 @@ const navigationItems: NavigationItem[] = [
   },
 ];
 
+/** 已持久化的主题标识，迁移控件时不改变偏好存储格式。 */
 const themeOptions: Array<{ value: CanvasTheme; label: string }> = [
   { value: 'eye-care', label: '护眼' },
   { value: 'light', label: '明亮' },
@@ -85,6 +80,7 @@ const themeOptions: Array<{ value: CanvasTheme; label: string }> = [
   { value: 'contrast', label: '高对比' },
 ];
 
+/** 导航上下文；onNavigate 可阻止默认跳转并先保存当前项目。 */
 export type AppNavigationProps = {
   route: AppRoute;
   projectId?: string | null;
@@ -93,152 +89,67 @@ export type AppNavigationProps = {
   onNavigate?: (href: string, event: MouseEvent<HTMLAnchorElement>) => void;
 };
 
-function focusableElements(container: HTMLElement) {
-  return Array.from(
-    container.querySelectorAll<HTMLElement>(
-      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
-    ),
-  );
-}
-
+/** 主题选项由库菜单处理悬停、键盘导航和外部点击。 */
 function ThemeMenu() {
   const theme = useWorkspacePreferences((state) => state.canvasTheme);
   const setTheme = useWorkspacePreferences((state) => state.setCanvasTheme);
   const [open, setOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const menuId = useId();
-  const activeIndex = Math.max(
-    0,
-    themeOptions.findIndex((option) => option.value === theme),
-  );
-  const activeLabel = themeOptions[activeIndex]?.label ?? '主题';
-
-  useEffect(() => {
-    if (!open) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      if (!(event.target instanceof Node) || containerRef.current?.contains(event.target)) return;
-      setOpen(false);
-    };
-    document.addEventListener('pointerdown', handlePointerDown);
-    return () => document.removeEventListener('pointerdown', handlePointerDown);
-  }, [open]);
-
-  const focusOption = (index: number) => {
-    optionRefs.current[index]?.focus();
-  };
-
-  const openWithFocus = (index: number) => {
-    setOpen(true);
-    window.requestAnimationFrame(() => focusOption(index));
-  };
-
-  const closeAndRestoreFocus = () => {
-    setOpen(false);
-    window.requestAnimationFrame(() => triggerRef.current?.focus());
-  };
-
-  const handleTriggerKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
-    if (isImeKeyboardEvent(event)) return;
-    if (event.key === 'ArrowDown') {
-      event.preventDefault();
-      openWithFocus(activeIndex);
-    } else if (event.key === 'ArrowUp') {
-      event.preventDefault();
-      openWithFocus(themeOptions.length - 1);
-    } else if (event.key === 'Escape' && open) {
-      event.preventDefault();
-      setOpen(false);
-    }
-  };
-
-  const handleOptionKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, index: number) => {
-    if (isImeKeyboardEvent(event)) return;
-    let nextIndex: number | null = null;
-    if (event.key === 'ArrowDown') nextIndex = (index + 1) % themeOptions.length;
-    else if (event.key === 'ArrowUp') {
-      nextIndex = (index - 1 + themeOptions.length) % themeOptions.length;
-    } else if (event.key === 'Home') nextIndex = 0;
-    else if (event.key === 'End') nextIndex = themeOptions.length - 1;
-    else if (event.key === 'Escape') {
-      event.preventDefault();
-      event.stopPropagation();
-      closeAndRestoreFocus();
-      return;
-    } else if (event.key === 'Tab') {
-      setOpen(false);
-      return;
-    }
-
-    if (nextIndex !== null) {
-      event.preventDefault();
-      focusOption(nextIndex);
-    }
-  };
-
-  const handleBlur = (event: FocusEvent<HTMLDivElement>) => {
-    if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) {
-      return;
-    }
-    setOpen(false);
-  };
+  const activeLabel = themeOptions.find((option) => option.value === theme)?.label ?? '主题';
 
   return (
-    <div
-      ref={containerRef}
-      className="mc-navigation-theme"
-      onMouseEnter={() => setOpen(true)}
-      onMouseLeave={(event) => {
-        if (!event.currentTarget.contains(document.activeElement)) setOpen(false);
-      }}
-      onBlur={handleBlur}
-    >
-      <button
-        ref={triggerRef}
-        type="button"
-        className="mc-navigation-icon-button"
-        aria-label={`切换主题，当前${activeLabel}`}
-        aria-controls={menuId}
-        aria-expanded={open}
-        aria-haspopup="menu"
-        title="切换主题"
-        onClick={() => setOpen(true)}
-        onKeyDown={handleTriggerKeyDown}
-      >
-        <Palette size={17} aria-hidden="true" />
-      </button>
-      {open && (
-        <div id={menuId} className="mc-navigation-theme-menu" role="menu" aria-label="界面主题">
-          {themeOptions.map((option, index) => (
-            <button
-              key={option.value}
-              ref={(element) => {
-                optionRefs.current[index] = element;
-              }}
-              type="button"
-              role="menuitemradio"
-              aria-checked={theme === option.value}
-              onClick={() => {
-                setTheme(option.value);
-                closeAndRestoreFocus();
-              }}
-              onKeyDown={(event) => handleOptionKeyDown(event, index)}
-            >
+    <Dropdown
+      open={open}
+      onOpenChange={setOpen}
+      trigger={['hover', 'click']}
+      placement="bottomRight"
+      autoFocus
+      destroyOnHidden
+      classNames={{ root: 'mc-navigation-theme-menu' }}
+      menu={{
+        id: menuId,
+        'aria-label': '界面主题',
+        selectable: true,
+        selectedKeys: [theme],
+        items: themeOptions.map((option) => ({
+          key: option.value,
+          role: 'menuitemradio',
+          'aria-checked': theme === option.value,
+          label: (
+            <span className="mc-navigation-theme-option">
               <span
                 className={`mc-navigation-theme-swatch is-${option.value}`}
                 aria-hidden="true"
               />
               <span>{option.label}</span>
               {theme === option.value && <Check size={14} aria-hidden="true" />}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
+            </span>
+          ),
+          onClick: () => {
+            setTheme(option.value);
+            triggerRef.current?.focus();
+          },
+        })),
+      }}
+    >
+      <Button
+        ref={triggerRef}
+        type="button"
+        className="mc-navigation-icon-button"
+        aria-label={`切换主题，当前${activeLabel}`}
+        aria-controls={open ? menuId : undefined}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        title="切换主题"
+      >
+        <Palette size={17} aria-hidden="true" />
+      </Button>
+    </Dropdown>
   );
 }
 
+/** 渲染公共导航与主菜单；跳转前保留调用方的保存和路由拦截逻辑。 */
 export function AppNavigation({
   route,
   projectId,
@@ -247,15 +158,12 @@ export function AppNavigation({
   onNavigate,
 }: AppNavigationProps) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const menuPresent = usePresence(menuOpen, 180);
   const account = useAccountActions();
   const [isScrolled, setIsScrolled] = useState(
     () => typeof window !== 'undefined' && window.scrollY > 16,
   );
   const menuId = useId();
-  const titleId = useId();
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const drawerRef = useRef<HTMLElement>(null);
+  const drawerRef = useRef<HTMLDivElement>(null);
   const activeSection = getNavigationSection(route);
 
   /** 普通导航与账户入口使用同一返回来源，目标页面查询参数保持独立。 */
@@ -272,46 +180,6 @@ export function AppNavigation({
     window.addEventListener('scroll', handleScroll, { passive: true });
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    const frame = window.requestAnimationFrame(() => {
-      const activeLink = drawerRef.current?.querySelector<HTMLElement>('[aria-current="page"]');
-      const firstTarget = activeLink ?? focusableElements(drawerRef.current!)[0];
-      firstTarget?.focus();
-    });
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (isImeKeyboardEvent(event)) return;
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        setMenuOpen(false);
-        window.requestAnimationFrame(() => triggerRef.current?.focus());
-        return;
-      }
-      if (event.key !== 'Tab' || !drawerRef.current) return;
-      const focusable = focusableElements(drawerRef.current);
-      if (focusable.length === 0) return;
-      const first = focusable[0]!;
-      const last = focusable[focusable.length - 1]!;
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      document.body.style.overflow = previousOverflow;
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [menuOpen]);
 
   const handleNavigation = (href: string) => (event: MouseEvent<HTMLAnchorElement>) => {
     onNavigate?.(href, event);
@@ -336,8 +204,7 @@ export function AppNavigation({
           .join(' ')}
       >
         <div className="mc-navigation-leading">
-          <button
-            ref={triggerRef}
+          <Button
             type="button"
             className="mc-navigation-icon-button mc-navigation-menu-trigger"
             aria-label="打开主菜单"
@@ -347,7 +214,7 @@ export function AppNavigation({
             onClick={() => setMenuOpen(true)}
           >
             <Menu size={18} aria-hidden="true" />
-          </button>
+          </Button>
           <AppLink
             className="mc-navigation-brand"
             to={appPaths.withProject(appPaths.home, returnProjectId)}
@@ -399,85 +266,76 @@ export function AppNavigation({
         </div>
       </header>
 
-      {menuPresent && (
-        <div
-          className="mc-navigation-overlay"
-          data-state={menuOpen ? 'open' : 'closed'}
-          aria-hidden={!menuOpen}
-          inert={!menuOpen}
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target !== event.currentTarget) return;
-            setMenuOpen(false);
-            window.requestAnimationFrame(() => triggerRef.current?.focus());
-          }}
-        >
-          <aside
-            ref={drawerRef}
-            className="mc-navigation-drawer"
-            id={menuId}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby={titleId}
-          >
-            <div className="mc-navigation-drawer-header">
-              <div>
-                <span className="mc-navigation-drawer-kicker">NAVIGATION</span>
-                <h2 id={titleId}>Multimodal Canvas</h2>
-              </div>
-              <button
-                type="button"
-                className="mc-navigation-icon-button"
-                aria-label="关闭主菜单"
-                title="关闭"
-                onClick={() => {
-                  setMenuOpen(false);
-                  window.requestAnimationFrame(() => triggerRef.current?.focus());
-                }}
-              >
-                <X size={18} aria-hidden="true" />
-              </button>
-            </div>
-
-            <nav className="mc-navigation-drawer-links" aria-label="菜单导航">
-              {navigationItems
-                .filter(
-                  (item) =>
-                    item.id !== 'settings' || !account?.user || account.user.role === 'admin',
-                )
-                .map((item, index) => {
-                  const Icon = item.icon;
-                  const href = itemHref(item);
-                  const isActive =
-                    item.id === activeSection || (item.id === 'contact' && route.id === 'contact');
-                  return (
-                    <AppLink
-                      key={item.id}
-                      className={`mc-navigation-drawer-link${isActive ? ' is-active' : ''}`}
-                      to={href}
-                      aria-current={isActive ? 'page' : undefined}
-                      onClick={handleNavigation(href)}
-                    >
-                      <span className="mc-navigation-drawer-index" aria-hidden="true">
-                        {String(index + 1).padStart(2, '0')}
-                      </span>
-                      <Icon size={18} aria-hidden="true" />
-                      <span>
-                        <strong>{item.label}</strong>
-                        <small>{item.description}</small>
-                      </span>
-                    </AppLink>
-                  );
-                })}
-            </nav>
-
-            <div className="mc-navigation-drawer-footer">
-              <span>文字 · 图片 · 音频 · 视频</span>
-              <span>统一工作流</span>
-            </div>
-          </aside>
-        </div>
-      )}
+      <Drawer
+        open={menuOpen}
+        id={menuId}
+        panelRef={drawerRef}
+        placement="left"
+        size="min(88vw, 390px)"
+        destroyOnHidden
+        classNames={{
+          root: 'mc-navigation-overlay',
+          section: 'mc-navigation-drawer',
+          header: 'mc-navigation-drawer-header',
+          body: 'mc-navigation-drawer-body',
+          footer: 'mc-navigation-drawer-footer',
+        }}
+        title={
+          <div>
+            <span className="mc-navigation-drawer-kicker" aria-hidden="true">
+              NAVIGATION
+            </span>
+            <h2>Multimodal Canvas</h2>
+          </div>
+        }
+        closable={{ placement: 'end', 'aria-label': '关闭主菜单' }}
+        closeIcon={<X size={18} aria-hidden="true" />}
+        onClose={(event) => {
+          if ('key' in event && isImeKeyboardEvent(event)) return;
+          setMenuOpen(false);
+        }}
+        afterOpenChange={(visible) => {
+          if (visible)
+            drawerRef.current?.querySelector<HTMLElement>('[aria-current="page"]')?.focus();
+        }}
+        footer={
+          <>
+            <span>文字 · 图片 · 音频 · 视频</span>
+            <span>统一工作流</span>
+          </>
+        }
+      >
+        <nav className="mc-navigation-drawer-links" aria-label="菜单导航">
+          {navigationItems
+            .filter(
+              (item) => item.id !== 'settings' || !account?.user || account.user.role === 'admin',
+            )
+            .map((item, index) => {
+              const Icon = item.icon;
+              const href = itemHref(item);
+              const isActive =
+                item.id === activeSection || (item.id === 'contact' && route.id === 'contact');
+              return (
+                <AppLink
+                  key={item.id}
+                  className={`mc-navigation-drawer-link${isActive ? ' is-active' : ''}`}
+                  to={href}
+                  aria-current={isActive ? 'page' : undefined}
+                  onClick={handleNavigation(href)}
+                >
+                  <span className="mc-navigation-drawer-index" aria-hidden="true">
+                    {String(index + 1).padStart(2, '0')}
+                  </span>
+                  <Icon size={18} aria-hidden="true" />
+                  <span>
+                    <strong>{item.label}</strong>
+                    <small>{item.description}</small>
+                  </span>
+                </AppLink>
+              );
+            })}
+        </nav>
+      </Drawer>
     </>
   );
 }

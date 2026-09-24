@@ -3,7 +3,6 @@
   background: rgb(15 23 33 / 42%);
   inset: 0;
   position: fixed;
-  z-index: 84;
 }
 
 .skill-workbench {
@@ -19,7 +18,6 @@
   overflow: hidden;
   padding: 0;
   width: 1000px;
-  z-index: 85;
 }
 
 .skill-workbench-header,
@@ -49,11 +47,6 @@
   gap: 4px;
 }
 
-.skill-action-wrap {
-  display: inline-flex;
-  position: relative;
-}
-
 .skill-action {
   align-items: center;
   background: transparent;
@@ -76,28 +69,6 @@
 .skill-action:disabled {
   cursor: default;
   opacity: 0.35;
-}
-
-.skill-action-tip {
-  background: var(--mc-text, #18212f);
-  border-radius: 4px;
-  color: var(--mc-surface, #fff);
-  font-size: 11px;
-  opacity: 0;
-  padding: 5px 8px;
-  pointer-events: none;
-  position: absolute;
-  right: 0;
-  top: calc(100% + 5px);
-  visibility: hidden;
-  white-space: nowrap;
-  z-index: 2;
-}
-
-.skill-action-wrap:hover .skill-action-tip,
-.skill-action-wrap:focus-within .skill-action-tip {
-  opacity: 1;
-  visibility: visible;
 }
 
 .skill-workbench-body {
@@ -134,9 +105,7 @@
   position: absolute;
 }
 
-.skill-workbench input:not([type='checkbox']),
-.skill-workbench textarea,
-.skill-workbench select {
+.skill-workbench .ant-input {
   background: var(--mc-surface, #fff);
   border: 1px solid var(--mc-border-strong, #d3dce0);
   border-radius: 5px;
@@ -340,10 +309,6 @@
   color: var(--mc-danger, #c13b46);
 }
 
-.skill-workbench-confirm-backdrop {
-  z-index: 86;
-}
-
 .skill-workbench-confirm {
   background: var(--mc-surface, #fff);
   border-color: var(--mc-border, #e2e7eb);
@@ -352,7 +317,6 @@
   max-width: calc(100vw - 32px);
   overflow-wrap: anywhere;
   width: 420px;
-  z-index: 87;
 }
 
 .skill-confirm-actions {
@@ -429,4 +393,19 @@
   .skill-workbench-header {
     padding: 10px 12px;
   }
+}
+
+.skill-library-filters .ant-select {
+  width: 100%;
+  min-width: 0;
+}
+
+.skill-library-item.ant-btn {
+  height: auto;
+  white-space: normal;
+}
+
+.skill-search > svg {
+  z-index: 1;
+  pointer-events: none;
 }

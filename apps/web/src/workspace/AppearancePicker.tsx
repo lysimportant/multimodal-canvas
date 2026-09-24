@@ -1,5 +1,9 @@
 import { Check, Palette } from 'lucide-react';
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { Popover, Tabs } from 'antd';
+import { Button } from '@multimodal-canvas/ui';
+import { useState, type PointerEvent as ReactPointerEvent } from 'react';
+
+import './AppearancePicker.css';
 
 import type { CanvasBackground } from '../app-contract-utils';
 import type { CanvasTheme } from '../state/workspace-preferences';
@@ -91,6 +95,7 @@ function CanvasEdgePreview({
   );
 }
 
+/** 外观设置的受控值与回调；关闭面板不会重置设置。 */
 type AppearancePickerProps = {
   canvasTheme: CanvasTheme;
   onThemeChange: (theme: CanvasTheme) => void;
@@ -121,8 +126,6 @@ export function AppearancePicker({
   placement,
   compact = false,
 }: AppearancePickerProps) {
-  const rootRef = useRef<HTMLDivElement>(null);
-  const closeTimerRef = useRef<number>(0);
   const [open, setOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'theme' | 'background' | 'edge'>('theme');
   const themeLabel =
@@ -131,73 +134,9 @@ export function AppearancePicker({
     appearanceBackgroundOptions.find((option) => option.value === canvasBackground)?.label ??
     '背景';
 
-  const clearCloseTimer = () => {
-    window.clearTimeout(closeTimerRef.current);
-  };
-
-  const openCard = () => {
-    clearCloseTimer();
-    setOpen(true);
-  };
-
-  const scheduleClose = () => {
-    clearCloseTimer();
-    closeTimerRef.current = window.setTimeout(() => setOpen(false), 140);
-  };
-
-  useEffect(() => () => clearCloseTimer(), []);
-
-  useEffect(() => {
-    if (!open) return;
-    const close = (event: MouseEvent) => {
-      if (event.target instanceof Node && !rootRef.current?.contains(event.target)) {
-        setOpen(false);
-      }
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false);
-    };
-    window.addEventListener('mousedown', close);
-    window.addEventListener('keydown', onKey);
-    return () => {
-      window.removeEventListener('mousedown', close);
-      window.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
-
   const stopCanvasEvent = (event: ReactPointerEvent<HTMLElement>) => {
     event.stopPropagation();
   };
-
-  const tabs = (
-    <div
-      className="appearance-card-tabs"
-      data-position={placement}
-      role="tablist"
-      aria-label="画布外观设置"
-    >
-      {[
-        ['theme', '主题'],
-        ['background', '背景'],
-        ['edge', '连接'],
-      ].map(([value, label]) => (
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeTab === value}
-          className="appearance-card-tab"
-          key={value}
-          onPointerDown={stopCanvasEvent}
-          onClick={(event) => {
-            event.stopPropagation();
-            setActiveTab(value as typeof activeTab);
-          }}
-        >
-          {label}
-        </button>
-      ))}
-    </div>
-  );
 
   const content = (
     <>
@@ -206,7 +145,8 @@ export function AppearancePicker({
           <h3 className="appearance-card-label">主题</h3>
           <div className="appearance-card-options">
             {appearanceThemeOptions.map((option) => (
-              <button
+              <Button
+                variant="ghost"
                 type="button"
                 className="theme-option"
                 key={option.value}
@@ -220,7 +160,7 @@ export function AppearancePicker({
                 <span className={`theme-swatch ${option.swatch}`} aria-hidden="true" />
                 {option.label}
                 {canvasTheme === option.value ? <Check size={14} aria-hidden="true" /> : null}
-              </button>
+              </Button>
             ))}
           </div>
         </section>
@@ -230,7 +170,8 @@ export function AppearancePicker({
           <h3 className="appearance-card-label">背景</h3>
           <div className="appearance-card-options">
             {appearanceBackgroundOptions.map((option) => (
-              <button
+              <Button
+                variant="ghost"
                 type="button"
                 className="background-option"
                 key={option.value}
@@ -247,7 +188,7 @@ export function AppearancePicker({
                 />
                 <span>{option.label}</span>
                 {canvasBackground === option.value ? <Check size={14} aria-hidden="true" /> : null}
-              </button>
+              </Button>
             ))}
           </div>
         </section>
@@ -258,7 +199,8 @@ export function AppearancePicker({
             <h3 className="appearance-card-label">路径形态</h3>
             <div className="appearance-edge-options">
               {appearanceEdgePathOptions.map((option) => (
-                <button
+                <Button
+                  variant="ghost"
                   type="button"
                   className="appearance-edge-option"
                   key={option.value}
@@ -279,7 +221,7 @@ export function AppearancePicker({
                   {canvasEdgePathStyle === option.value ? (
                     <Check size={14} aria-hidden="true" />
                   ) : null}
-                </button>
+                </Button>
               ))}
             </div>
           </section>
@@ -287,7 +229,8 @@ export function AppearancePicker({
             <h3 className="appearance-card-label">动态特效</h3>
             <div className="appearance-edge-options">
               {appearanceEdgeEffectOptions.map((option) => (
-                <button
+                <Button
+                  variant="ghost"
                   type="button"
                   className="appearance-edge-option"
                   key={option.value}
@@ -308,7 +251,7 @@ export function AppearancePicker({
                   {canvasEdgeEffect === option.value ? (
                     <Check size={14} aria-hidden="true" />
                   ) : null}
-                </button>
+                </Button>
               ))}
             </div>
           </section>
@@ -324,46 +267,68 @@ export function AppearancePicker({
   );
 
   return (
-    <div
-      className={`appearance-control${compact ? ' is-compact' : ''}`}
-      data-placement={placement}
-      ref={rootRef}
-      onMouseEnter={openCard}
-      onMouseLeave={scheduleClose}
-    >
-      <button
-        type="button"
-        className={
-          compact
-            ? 'canvas-node-tool canvas-node-action-tool appearance-trigger'
-            : 'appearance-trigger'
+    <div className={`appearance-control${compact ? ' is-compact' : ''}`} data-placement={placement}>
+      <Popover
+        trigger={['hover', 'click']}
+        open={open}
+        onOpenChange={setOpen}
+        placement={placement === 'top' ? 'topRight' : 'bottomRight'}
+        mouseEnterDelay={0}
+        mouseLeaveDelay={0.14}
+        destroyOnHidden
+        getPopupContainer={(trigger) =>
+          trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
         }
-        aria-label="外观"
-        aria-expanded={open}
-        aria-haspopup="dialog"
-        title={`主题 ${themeLabel} · 背景 ${backgroundLabel}`}
-        onPointerDown={stopCanvasEvent}
-        onClick={(event) => {
-          event.stopPropagation();
-          clearCloseTimer();
-          setOpen(true);
-        }}
+        classNames={{ root: 'appearance-antd-popover' }}
+        styles={{ root: { pointerEvents: 'auto' } }}
+        content={
+          <div
+            role="dialog"
+            aria-label="主题、画布背景与连接线"
+            onPointerDown={stopCanvasEvent}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <Tabs
+              activeKey={activeTab}
+              onChange={(key) => setActiveTab(key as typeof activeTab)}
+              tabPlacement={placement === 'top' ? 'top' : 'bottom'}
+              aria-label="画布外观设置"
+              size="small"
+              items={[
+                { key: 'theme', label: '主题', children: activeTab === 'theme' ? content : null },
+                {
+                  key: 'background',
+                  label: '背景',
+                  children: activeTab === 'background' ? content : null,
+                },
+                { key: 'edge', label: '连接', children: activeTab === 'edge' ? content : null },
+              ]}
+            />
+          </div>
+        }
       >
-        <Palette size={compact ? 16 : 15} aria-hidden="true" />
-        {compact ? null : <span>外观</span>}
-      </button>
-      {open ? (
-        <div
-          className="appearance-card"
-          role="dialog"
-          aria-label="主题、画布背景与连接线"
+        <Button
+          type="button"
+          variant="ghost"
+          className={
+            compact
+              ? 'canvas-node-tool canvas-node-action-tool appearance-trigger'
+              : 'appearance-trigger'
+          }
+          aria-label="外观"
+          aria-expanded={open}
+          aria-haspopup="dialog"
+          title={`主题 ${themeLabel} · 背景 ${backgroundLabel}`}
           onPointerDown={stopCanvasEvent}
+          onClick={(event) => {
+            event.stopPropagation();
+            setOpen(true);
+          }}
         >
-          {placement === 'top' ? tabs : null}
-          {content}
-          {placement === 'bottom' ? tabs : null}
-        </div>
-      ) : null}
+          <Palette size={compact ? 16 : 15} aria-hidden="true" />
+          {compact ? null : <span>外观</span>}
+        </Button>
+      </Popover>
     </div>
   );
 }

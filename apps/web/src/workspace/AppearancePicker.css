@@ -1,0 +1,18 @@
+.appearance-antd-popover {
+  max-width: calc(100vw - 16px);
+  width: 320px;
+}
+
+.appearance-antd-popover .ant-tabs-content-holder {
+  max-height: min(620px, calc(100vh - 100px));
+  overflow-y: auto;
+}
+
+.appearance-antd-popover .ant-tabs-tab {
+  flex: 1;
+  justify-content: center;
+}
+
+.appearance-antd-popover .ant-tabs-nav-list {
+  width: 100%;
+}

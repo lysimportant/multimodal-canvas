@@ -1,3 +1,4 @@
+import { Button } from '@multimodal-canvas/ui';
 import { RefreshCw } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { HomeDemoImage } from './HomeDemoImage';
@@ -38,9 +39,9 @@ export function HomeDemoMedia() {
           <HomeDemoImage alt="自然观察视频的参考画面" priority />
           <div>
             <span role="status">视频暂时无法播放</span>
-            <button type="button" onClick={() => setFailed(false)}>
+            <Button type="button" onClick={() => setFailed(false)}>
               <RefreshCw size={15} aria-hidden="true" /> 重试
-            </button>
+            </Button>
           </div>
         </div>
       ) : (

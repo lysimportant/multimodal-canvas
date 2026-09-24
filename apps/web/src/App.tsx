@@ -1,3 +1,5 @@
+import { Dropdown, Modal } from 'antd';
+import { Input as UiInput, Button as UiButton } from '@multimodal-canvas/ui';
 import {
   Archive,
   Check,
@@ -247,9 +249,10 @@ function ImeInput({ value, identity, onValueChange, onValueBlur, ...props }: Ime
     onCommit: onValueChange,
     onBlur: onValueBlur,
   });
-  return <input {...props} {...bind} />;
+  return <UiInput {...props} {...bind} />;
 }
 
+/** 新建项目表单保留 IME 与业务校验，浮层和焦点生命周期交给 Modal。 */
 function ProjectCreateDialog({
   open,
   name,
@@ -267,54 +270,29 @@ function ProjectCreateDialog({
   onClose: () => void;
   onSubmit: () => void;
 }) {
-  useEffect(() => {
-    if (!open) return;
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (isImeKeyboardEvent(event)) return;
-      if (event.key === 'Escape' && !busy) onClose();
-    };
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [busy, onClose, open]);
-
-  if (!open) return null;
   return (
-    <div
-      className="project-create-backdrop"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget && !busy) onClose();
+    <Modal
+      open={open}
+      title="新建项目"
+      width={420}
+      footer={null}
+      destroyOnHidden
+      closable={{ disabled: busy, 'aria-label': '关闭新建项目' }}
+      keyboard={!busy}
+      mask={{ closable: !busy }}
+      onCancel={(event) => {
+        if (!busy && !('key' in event && isImeKeyboardEvent(event))) onClose();
       }}
     >
       <form
-        className="project-create-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="project-create-title"
         onKeyDown={(event) => {
           if (event.key === 'Enter' && isImeKeyboardEvent(event)) event.preventDefault();
         }}
         onSubmit={(event) => {
           event.preventDefault();
-          onSubmit();
+          if (!busy) onSubmit();
         }}
       >
-        <div className="project-create-heading">
-          <div>
-            <p className="eyebrow">项目集合</p>
-            <h2 id="project-create-title">新建项目</h2>
-          </div>
-          <button
-            type="button"
-            className="icon-button"
-            aria-label="关闭新建项目"
-            title="关闭"
-            onClick={onClose}
-            disabled={busy}
-          >
-            <X size={17} />
-          </button>
-        </div>
         <label className="project-create-field">
           <span>项目名称</span>
           <ImeInput
@@ -333,21 +311,116 @@ function ProjectCreateDialog({
           )}
         </label>
         <div className="project-create-actions">
-          <button
+          <UiButton
             type="button"
             className="button button-secondary"
             onClick={onClose}
             disabled={busy}
           >
             取消
-          </button>
-          <button type="submit" className="button button-primary" disabled={busy}>
+          </UiButton>
+          <UiButton type="submit" className="button button-primary" disabled={busy}>
             {busy && <LoaderCircle className="spin" size={15} />}
             {busy ? '创建中' : '创建项目'}
-          </button>
+          </UiButton>
         </div>
       </form>
-    </div>
+    </Modal>
+  );
+}
+
+/** 编辑资源名称；校验失败或保存失败时保留草稿，保存期间不能重复提交或关闭。 */
+function AssetRenameDialog({
+  asset,
+  onClose,
+  onSubmit,
+}: {
+  asset: Asset | null;
+  onClose: () => void;
+  onSubmit: (asset: Asset, name: string) => Promise<void>;
+}) {
+  const [name, setName] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    setName(asset?.name ?? '');
+    setError('');
+  }, [asset]);
+
+  /** 仅提交去除首尾空白后的新名称；错误保留在弹窗中供用户重试。 */
+  const submit = async () => {
+    if (!asset || busy) return;
+    const nextName = name.trim();
+    if (!nextName) {
+      setError('请输入资源名称');
+      return;
+    }
+    if (nextName === asset.name) {
+      onClose();
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      await onSubmit(asset, nextName);
+      onClose();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '重命名失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      open={Boolean(asset)}
+      title="重命名资源"
+      width={420}
+      footer={null}
+      destroyOnHidden
+      closable={{ disabled: busy, 'aria-label': '关闭资源重命名' }}
+      keyboard={!busy}
+      mask={{ closable: !busy }}
+      onCancel={(event) => {
+        if (!busy && !('key' in event && isImeKeyboardEvent(event))) onClose();
+      }}
+    >
+      <form
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' && isImeKeyboardEvent(event)) event.preventDefault();
+        }}
+        onSubmit={(event) => {
+          event.preventDefault();
+          void submit();
+        }}
+      >
+        <label className="project-create-field">
+          <span>资源名称</span>
+          <ImeInput
+            autoFocus
+            value={name}
+            identity={asset?.id}
+            onValueChange={setName}
+            disabled={busy}
+            aria-invalid={Boolean(error)}
+            aria-describedby={error ? 'asset-rename-error' : undefined}
+          />
+        </label>
+        {error && (
+          <p id="asset-rename-error" role="alert" className="project-create-error">
+            {error}
+          </p>
+        )}
+        <div className="project-create-actions">
+          <UiButton type="button" onClick={onClose} disabled={busy}>
+            取消
+          </UiButton>
+          <UiButton type="submit" variant="default" disabled={busy}>
+            {busy ? '保存中' : '保存名称'}
+          </UiButton>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
@@ -517,6 +590,10 @@ function WorkspaceApp({
   onLoggedOut: () => void;
   onNavigate: (to: string) => void;
 }) {
+  const [modal, modalHolder] = Modal.useModal();
+  const [renamingAsset, setRenamingAsset] = useState<Asset | null>(null);
+  /** 清理确认异步等待期间只允许一个清理事务，避免重复确认与历史快照。 */
+  const clearActionPendingRef = useRef(false);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [showArchived, setShowArchived] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -605,11 +682,9 @@ function WorkspaceApp({
   const [canvasRevision, setCanvasRevision] = useState(0);
   const [isCanvasReady, setIsCanvasReady] = useState(false);
   const settingsTriggerRef = useRef<HTMLButtonElement>(null);
-  const exportTriggerRef = useRef<HTMLButtonElement>(null);
   const commandPaletteTriggerRef = useRef<HTMLButtonElement>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const canvasCenterPositionRef = useRef<{ x: number; y: number } | null>(null);
-  const exportMenuWasOpenRef = useRef(false);
   const settingsWasOpenRef = useRef(false);
   const canvasRevisionRef = useRef(0);
   const canvasDirtyRef = useRef(false);
@@ -656,6 +731,9 @@ function WorkspaceApp({
       }
     | undefined
   >(undefined);
+  /** 异步清理确认后读取当前提示词窗口，避免关闭或保留错误的旧节点窗口。 */
+  const promptDialogRef = useRef(promptDialog);
+  promptDialogRef.current = promptDialog;
   const reversePromptModels = modelCatalog;
   /** 防止关闭、切换节点或版本后的异步响应重新打开旧说明。 */
   const promptRequestRef = useRef(0);
@@ -686,45 +764,6 @@ function WorkspaceApp({
     }, 3200);
     return () => window.clearTimeout(timer);
   }, [notice]);
-
-  useEffect(() => {
-    if (!showProjects) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target;
-      if (target instanceof Element && !target.closest('.project-context')) {
-        setShowProjects(false);
-      }
-    };
-    document.addEventListener('pointerdown', handlePointerDown);
-    return () => document.removeEventListener('pointerdown', handlePointerDown);
-  }, [showProjects]);
-
-  useEffect(() => {
-    if (!showExportMenu) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target;
-      if (target instanceof Element && !target.closest('.export-control')) {
-        setShowExportMenu(false);
-      }
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (isImeKeyboardEvent(event)) return;
-      if (event.key === 'Escape') setShowExportMenu(false);
-    };
-    document.addEventListener('pointerdown', handlePointerDown);
-    document.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.removeEventListener('pointerdown', handlePointerDown);
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [showExportMenu]);
-
-  useEffect(() => {
-    if (exportMenuWasOpenRef.current && !showExportMenu) {
-      exportTriggerRef.current?.focus();
-    }
-    exportMenuWasOpenRef.current = showExportMenu;
-  }, [showExportMenu]);
 
   useEffect(() => {
     const handleCommandShortcut = (event: KeyboardEvent) => {
@@ -802,41 +841,76 @@ function WorkspaceApp({
    * 历史记录，因此仍可通过撤销恢复；项目资源库中的资产、资产版本、生成说明、
    * 运行记录与 Key 都不受影响，也不会额外发起供应商取消或重试。
    */
-  const clearCanvas = useCallback(() => {
-    if (
-      nodesRef.current.length === 0 &&
-      edgesRef.current.length === 0 &&
-      groupsRef.current.length === 0
-    ) {
-      return;
+  const clearCanvas = useCallback(async () => {
+    if (clearActionPendingRef.current) return;
+    const lifecycle = runPollingLifecycleRef.current;
+    /** 对比实际对象标识与在途任务，而非只比较数量，避免异步等待后误用旧范围。 */
+    const currentScope = () => {
+      const activeRunIds = Array.from(
+        new Set(
+          Object.values(runRecordsRef.current)
+            .filter((run) => isActiveRunStatus(run.status))
+            .map((run) => run.id),
+        ),
+      ).sort();
+      return {
+        empty:
+          nodesRef.current.length === 0 &&
+          edgesRef.current.length === 0 &&
+          groupsRef.current.length === 0,
+        description: describeClearCanvasScope(
+          nodesRef.current,
+          edgesRef.current,
+          groupsRef.current,
+        ),
+        activeRuns: activeRunIds.length,
+        signature: JSON.stringify([
+          nodesRef.current.map((node) => node.id).sort(),
+          edgesRef.current.map((edge) => edge.id).sort(),
+          groupsRef.current.map((group) => group.id).sort(),
+          activeRunIds,
+        ]),
+      };
+    };
+    if (currentScope().empty) return;
+    clearActionPendingRef.current = true;
+    try {
+      let changed = false;
+      while (lifecycle.active) {
+        const scope = currentScope();
+        if (scope.empty) return;
+        const confirmed = await modal.confirm({
+          title: '清空画布',
+          content: `${changed ? '画布状态已变化，请确认更新后的范围。' : ''}确定清空当前画布吗？将移除${scope.description}。当前有 ${scope.activeRuns} 个在途任务，清空后仍会继续执行，结果保留在资源库。画布资源不会删除，且可以通过撤销恢复。`,
+          okText: '确认清空',
+          cancelText: '取消',
+          cancelButtonProps: { autoInsertSpace: false },
+          okButtonProps: { danger: true },
+          mask: { closable: false },
+        });
+        if (!confirmed || !lifecycle.active) return;
+        if (currentScope().signature === scope.signature) break;
+        changed = true;
+      }
+      if (!lifecycle.active) return;
+      rememberHistory();
+      nodesRef.current = [];
+      edgesRef.current = [];
+      groupsRef.current = [];
+      setNodes([]);
+      setEdges([]);
+      setGroups([]);
+      setSelectedNodeId(null);
+      setSelectedGroupId(null);
+      setDropTargetGroupId(null);
+      promptRequestRef.current += 1;
+      setPromptDialog(undefined);
+      canvasDirtyRef.current = true;
+      setNotice({ kind: 'success', message: '画布已清空，可通过撤销恢复' });
+    } finally {
+      clearActionPendingRef.current = false;
     }
-    const counts = describeClearCanvasScope(nodesRef.current, edgesRef.current, groupsRef.current);
-    const activeRuns = new Set(
-      Object.values(runRecordsRef.current)
-        .filter((run) => isActiveRunStatus(run.status))
-        .map((run) => run.id),
-    ).size;
-    if (
-      !window.confirm(
-        `确定清空当前画布吗？将移除${counts}。当前有 ${activeRuns} 个在途任务，清空后仍会继续执行，结果保留在资源库。画布资源不会删除，且可以通过撤销恢复。`,
-      )
-    )
-      return;
-    rememberHistory();
-    nodesRef.current = [];
-    edgesRef.current = [];
-    groupsRef.current = [];
-    setNodes([]);
-    setEdges([]);
-    setGroups([]);
-    setSelectedNodeId(null);
-    setSelectedGroupId(null);
-    setDropTargetGroupId(null);
-    promptRequestRef.current += 1;
-    setPromptDialog(undefined);
-    canvasDirtyRef.current = true;
-    setNotice({ kind: 'success', message: '画布已清空，可通过撤销恢复' });
-  }, [rememberHistory, setEdges, setNodes]);
+  }, [modal, rememberHistory, setEdges, setNodes]);
 
   /**
    * 只清理内容为空的提示词节点。
@@ -845,7 +919,9 @@ function WorkspaceApp({
    * 结果、有有效输入或有进行中操作的节点都会保留。删除范围是候选节点、与之
    * 相连的边以及组内的成员引用，组本身（空组）保留；整个清理是一次历史事务。
    */
-  const clearEmptyNodes = useCallback(() => {
+  const clearEmptyNodes = useCallback(async () => {
+    if (clearActionPendingRef.current) return;
+    const lifecycle = runPollingLifecycleRef.current;
     /** 每轮确认后重新读取实时状态，避免异步运行或输入使候选失效。 */
     const currentCandidateIds = () =>
       collectEmptyNodeCandidates(
@@ -861,62 +937,72 @@ function WorkspaceApp({
       ).candidateIds;
     const candidateIds = currentCandidateIds();
     if (candidateIds.length === 0) return;
-    let removable = new Set(candidateIds);
-    let changed = false;
-    while (removable.size > 0) {
-      const removedEdgeCount = edgesRef.current.filter(
-        (edge) => removable.has(edge.source) || removable.has(edge.target),
-      ).length;
-      if (
-        !window.confirm(
-          `${changed ? '节点状态已变化，请确认更新后的范围。' : ''}确定清空空节点吗？将移除 ${removable.size} 个空节点` +
+    clearActionPendingRef.current = true;
+    try {
+      let removable = new Set(candidateIds);
+      let changed = false;
+      while (removable.size > 0) {
+        const removedEdgeCount = edgesRef.current.filter(
+          (edge) => removable.has(edge.source) || removable.has(edge.target),
+        ).length;
+        const confirmed = await modal.confirm({
+          title: '清空空节点',
+          content:
+            `${changed ? '节点状态已变化，请确认更新后的范围。' : ''}确定清空空节点吗？将移除 ${removable.size} 个空节点` +
             `${removedEdgeCount > 0 ? `和 ${removedEdgeCount} 条关联连线` : ''}。` +
             '已填写提示词、已绑定资源或有生成结果的节点会保留，且本次清理可以撤销。',
-        )
-      )
+          okText: '确认清理',
+          cancelText: '取消',
+          cancelButtonProps: { autoInsertSpace: false },
+          okButtonProps: { danger: true },
+          mask: { closable: false },
+        });
+        if (!confirmed || !lifecycle.active) return;
+        const latest = new Set(currentCandidateIds().filter((id) => removable.has(id)));
+        const latestEdgeCount = edgesRef.current.filter(
+          (edge) => latest.has(edge.source) || latest.has(edge.target),
+        ).length;
+        const stable = latest.size === removable.size && latestEdgeCount === removedEdgeCount;
+        removable = latest;
+        if (stable) break;
+        changed = true;
+      }
+      if (removable.size === 0) {
+        setNotice({
+          kind: 'success',
+          message: '节点状态已变化，当前有 0 个可清理的空节点，未移除任何内容',
+        });
         return;
-      const latest = new Set(currentCandidateIds().filter((id) => removable.has(id)));
-      const latestEdgeCount = edgesRef.current.filter(
-        (edge) => latest.has(edge.source) || latest.has(edge.target),
-      ).length;
-      const stable = latest.size === removable.size && latestEdgeCount === removedEdgeCount;
-      removable = latest;
-      if (stable) break;
-      changed = true;
-    }
-    if (removable.size === 0) {
+      }
+      rememberHistory();
+      const remainingNodes = nodesRef.current.filter((node) => !removable.has(node.id));
+      const remainingEdges = edgesRef.current.filter(
+        (edge) => !removable.has(edge.source) && !removable.has(edge.target),
+      );
+      const remainingGroups = pruneGroupMembers(
+        groupsRef.current,
+        remainingNodes.map((node) => node.id),
+      );
+      nodesRef.current = remainingNodes;
+      edgesRef.current = remainingEdges;
+      groupsRef.current = remainingGroups;
+      setNodes(remainingNodes);
+      setEdges(remainingEdges);
+      setGroups(remainingGroups);
+      setSelectedNodeId((current) => (current && removable.has(current) ? null : current));
+      if (promptDialogRef.current && removable.has(promptDialogRef.current.nodeId)) {
+        promptRequestRef.current += 1;
+        setPromptDialog(undefined);
+      }
+      canvasDirtyRef.current = true;
       setNotice({
         kind: 'success',
-        message: '节点状态已变化，当前有 0 个可清理的空节点，未移除任何内容',
+        message: `已清理 ${removable.size} 个空节点，可通过撤销恢复`,
       });
-      return;
+    } finally {
+      clearActionPendingRef.current = false;
     }
-    rememberHistory();
-    const remainingNodes = nodesRef.current.filter((node) => !removable.has(node.id));
-    const remainingEdges = edgesRef.current.filter(
-      (edge) => !removable.has(edge.source) && !removable.has(edge.target),
-    );
-    const remainingGroups = pruneGroupMembers(
-      groupsRef.current,
-      remainingNodes.map((node) => node.id),
-    );
-    nodesRef.current = remainingNodes;
-    edgesRef.current = remainingEdges;
-    groupsRef.current = remainingGroups;
-    setNodes(remainingNodes);
-    setEdges(remainingEdges);
-    setGroups(remainingGroups);
-    setSelectedNodeId((current) => (current && removable.has(current) ? null : current));
-    if (promptDialog && removable.has(promptDialog.nodeId)) {
-      promptRequestRef.current += 1;
-      setPromptDialog(undefined);
-    }
-    canvasDirtyRef.current = true;
-    setNotice({
-      kind: 'success',
-      message: `已清理 ${removable.size} 个空节点，可通过撤销恢复`,
-    });
-  }, [promptDialog, rememberHistory, setEdges, setNodes]);
+  }, [modal, rememberHistory, setEdges, setNodes]);
 
   /**
    * 清空菜单的候选数量。
@@ -2030,18 +2116,14 @@ function WorkspaceApp({
     [appendNodesAndSelect, createNodeForAsset, nodes.length, rememberHistory],
   );
 
-  const handleRenameAsset = useCallback(
-    (asset: Asset) => {
-      const name = window.prompt('资源名称', asset.name)?.trim();
-      if (!name || name === asset.name) return;
-      void updateAsset(asset, { name }).then(
-        () => setNotice({ kind: 'success', message: '资源已重命名' }),
-        (error: unknown) =>
-          setNotice({
-            kind: 'error',
-            message: error instanceof Error ? error.message : '重命名失败',
-          }),
-      );
+  /** 资源重命名先编辑草稿，取消不会写入资源库。 */
+  const handleRenameAsset = useCallback((asset: Asset) => setRenamingAsset(asset), []);
+
+  /** 保存通过校验的新名称，失败交给表单显示并保留输入。 */
+  const submitAssetRename = useCallback(
+    async (asset: Asset, name: string) => {
+      await updateAsset(asset, { name });
+      setNotice({ kind: 'success', message: '资源已重命名' });
     },
     [updateAsset],
   );
@@ -3551,6 +3633,12 @@ function WorkspaceApp({
   ]);
   return (
     <ReactFlowProvider>
+      {modalHolder}
+      <AssetRenameDialog
+        asset={renamingAsset}
+        onClose={() => setRenamingAsset(null)}
+        onSubmit={submitAssetRename}
+      />
       <main className="app-shell" data-theme={canvasTheme}>
         <AppNavigation
           route={route}
@@ -3560,20 +3648,79 @@ function WorkspaceApp({
         />
         <header className="topbar">
           <div className="project-context">
-            <button
-              type="button"
-              className="project-switcher"
-              aria-label="打开项目集合"
-              aria-expanded={showProjects}
-              aria-haspopup="menu"
-              onClick={() => setShowProjects((current) => !current)}
-              disabled={isProjectLoading}
+            <Dropdown
+              open={showProjects}
+              onOpenChange={(open, info) => {
+                if (info.source === 'trigger') setShowProjects(open);
+              }}
+              trigger={['click']}
+              autoFocus
+              destroyOnHidden
+              // 两侧翻转都放不下时由组件库水平避让，保留窄视口内的完整菜单。
+              align={{ overflow: { adjustX: true, adjustY: true, shiftX: true } }}
+              styles={{ root: { width: 300, maxWidth: 'calc(100vw - 24px)' } }}
+              menu={{
+                'aria-label': '项目集合',
+                selectable: true,
+                selectedKeys: projectId ? [projectId] : [],
+                style: { maxHeight: 360, overflowY: 'auto' },
+                items: [
+                  {
+                    key: 'create-project',
+                    label: '新建',
+                    icon: <Plus size={14} aria-hidden="true" />,
+                    disabled: isProjectLoading,
+                    onClick: () => {
+                      setShowProjects(false);
+                      setProjectCreateName('未命名项目');
+                      setProjectCreateError('');
+                      setShowProjectCreate(true);
+                    },
+                  },
+                  { type: 'divider', key: 'project-divider' },
+                  ...projects.map((project) => ({
+                    key: project.id,
+                    disabled: isProjectLoading,
+                    icon:
+                      project.id === projectId ? (
+                        <Check size={14} aria-hidden="true" />
+                      ) : (
+                        <FolderOpen size={14} aria-hidden="true" />
+                      ),
+                    label: (
+                      <span className="project-menu-item-copy">
+                        <strong>{project.name}</strong>
+                        <small>{project.id === projectId ? '当前项目' : '一张工作流画布'}</small>
+                      </span>
+                    ),
+                    onClick: () => void switchProject(project),
+                  })),
+                  ...(projects.length === 0
+                    ? [{ key: 'empty-projects', label: '还没有项目', disabled: true }]
+                    : []),
+                  {
+                    type: 'group',
+                    key: 'project-note',
+                    label: '每个项目独立保存一张工作流画布',
+                    children: [],
+                  },
+                ],
+              }}
             >
-              <FolderOpen size={15} aria-hidden="true" />
-              <span className="project-name">{projectName}</span>
-              <ChevronDown size={14} aria-hidden="true" />
-            </button>
-            <button
+              <UiButton
+                type="button"
+                className="project-switcher"
+                aria-label="打开项目集合"
+                aria-expanded={showProjects}
+                aria-haspopup="menu"
+                disabled={isProjectLoading}
+              >
+                <FolderOpen size={15} aria-hidden="true" />
+                <span className="project-name">{projectName}</span>
+                <ChevronDown size={14} aria-hidden="true" />
+              </UiButton>
+            </Dropdown>
+            <UiButton
               type="button"
               className="icon-button project-hub-trigger"
               aria-label="打开工作台"
@@ -3585,48 +3732,7 @@ function WorkspaceApp({
               disabled={isProjectLoading}
             >
               <LayoutGrid size={15} aria-hidden="true" />
-            </button>
-            {showProjects && (
-              <div className="project-menu" role="menu" aria-label="项目集合">
-                <div className="project-menu-heading">
-                  <span>项目集合</span>
-                  <button
-                    type="button"
-                    className="project-menu-create"
-                    onClick={() => {
-                      setShowProjects(false);
-                      setProjectCreateName('未命名项目');
-                      setProjectCreateError('');
-                      setShowProjectCreate(true);
-                    }}
-                    disabled={isProjectLoading}
-                  >
-                    <Plus size={14} aria-hidden="true" />
-                    新建
-                  </button>
-                </div>
-                <div className="project-menu-list">
-                  {projects.map((project) => (
-                    <button
-                      type="button"
-                      className={`project-menu-item ${project.id === projectId ? 'is-active' : ''}`}
-                      key={project.id}
-                      role="menuitem"
-                      onClick={() => void switchProject(project)}
-                      disabled={isProjectLoading}
-                    >
-                      <span className="project-menu-item-copy">
-                        <strong>{project.name}</strong>
-                        <small>{project.id === projectId ? '当前项目' : '一张工作流画布'}</small>
-                      </span>
-                      {project.id === projectId && <Check size={14} aria-hidden="true" />}
-                    </button>
-                  ))}
-                  {projects.length === 0 && <p className="project-menu-empty">还没有项目</p>}
-                </div>
-                <p className="project-menu-note">每个项目独立保存一张工作流画布</p>
-              </div>
-            )}
+            </UiButton>
             <span className="save-state" role="status" aria-label={saveState} title={saveState}>
               {saveState.includes('保存') ? <Check size={13} aria-hidden="true" /> : null}
               <span className="save-state-label">{saveState}</span>
@@ -3634,7 +3740,7 @@ function WorkspaceApp({
           </div>
           <div className="topbar-actions">
             <div className="topbar-tool-cluster" aria-label="画布编辑工具">
-              <button
+              <UiButton
                 type="button"
                 className="icon-button command-palette-trigger"
                 ref={commandPaletteTriggerRef}
@@ -3644,9 +3750,9 @@ function WorkspaceApp({
               >
                 <Search size={16} aria-hidden="true" />
                 <span className="command-palette-trigger-label">命令</span>
-              </button>
+              </UiButton>
               <span className="topbar-tool-divider" aria-hidden="true" />
-              <button
+              <UiButton
                 type="button"
                 className="icon-button"
                 aria-label="撤销"
@@ -3655,8 +3761,8 @@ function WorkspaceApp({
                 disabled={historyRef.current.past.length === 0}
               >
                 <Undo2 size={16} />
-              </button>
-              <button
+              </UiButton>
+              <UiButton
                 type="button"
                 className="icon-button"
                 aria-label="重做"
@@ -3665,7 +3771,7 @@ function WorkspaceApp({
                 disabled={historyRef.current.future.length === 0}
               >
                 <Redo2 size={16} />
-              </button>
+              </UiButton>
               <span className="topbar-tool-divider" aria-hidden="true" />
               <AppearancePicker
                 placement="top"
@@ -3679,7 +3785,7 @@ function WorkspaceApp({
                 onEdgeEffectChange={setCanvasEdgeEffect}
               />
             </div>
-            <button
+            <UiButton
               type="button"
               className="icon-button"
               aria-label="打开设置"
@@ -3688,7 +3794,7 @@ function WorkspaceApp({
               ref={settingsTriggerRef}
             >
               <Settings size={16} />
-            </button>
+            </UiButton>
             <AccountMenu
               projectId={projectId}
               user={authUser}
@@ -3696,62 +3802,52 @@ function WorkspaceApp({
               onLogout={onLoggedOut}
               onNavigate={handlePageNavigation}
             />
-            <div className="export-control">
-              <button
+            <Dropdown
+              open={showExportMenu}
+              onOpenChange={setShowExportMenu}
+              trigger={['click']}
+              autoFocus
+              destroyOnHidden
+              styles={{ root: { minWidth: 236 } }}
+              menu={{
+                id: 'project-export-menu',
+                'aria-label': '导出选项',
+                items: [
+                  {
+                    key: 'workflow',
+                    label: '导出工作流 JSON',
+                    title: '节点、连线和运行元数据',
+                    icon: <FileText size={15} aria-hidden="true" />,
+                    disabled: isExporting,
+                    onClick: () => void exportProject('workflow'),
+                  },
+                  {
+                    key: 'results',
+                    label: '导出结果 ZIP',
+                    title: '工作流、清单和生成结果文件',
+                    icon: <Archive size={15} aria-hidden="true" />,
+                    disabled: isExporting,
+                    onClick: () => void exportProject('results'),
+                  },
+                ],
+              }}
+            >
+              <UiButton
                 type="button"
                 className="button button-secondary"
-                ref={exportTriggerRef}
                 aria-haspopup="menu"
                 aria-expanded={showExportMenu}
                 aria-controls="project-export-menu"
                 aria-busy={isExporting}
-                onClick={() => setShowExportMenu((current) => !current)}
                 disabled={isExporting || !projectId}
                 title={!projectId ? '项目加载后可导出' : '导出工作流或结果'}
               >
                 {isExporting ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}
                 {isExporting ? '导出中' : '导出'}
                 <ChevronDown size={13} aria-hidden="true" />
-              </button>
-              {showExportMenu && (
-                <div
-                  className="export-menu"
-                  id="project-export-menu"
-                  role="menu"
-                  aria-label="导出选项"
-                >
-                  <button
-                    type="button"
-                    role="menuitem"
-                    aria-label="导出工作流 JSON"
-                    className="export-menu-item"
-                    onClick={() => void exportProject('workflow')}
-                    disabled={isExporting}
-                  >
-                    <FileText size={15} aria-hidden="true" />
-                    <span>
-                      <strong>导出工作流 JSON</strong>
-                      <small>节点、连线和运行元数据</small>
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    aria-label="导出结果 ZIP"
-                    className="export-menu-item"
-                    onClick={() => void exportProject('results')}
-                    disabled={isExporting}
-                  >
-                    <Archive size={15} aria-hidden="true" />
-                    <span>
-                      <strong>导出结果 ZIP</strong>
-                      <small>工作流、清单和生成结果文件</small>
-                    </span>
-                  </button>
-                </div>
-              )}
-            </div>
-            <button
+              </UiButton>
+            </Dropdown>
+            <UiButton
               type="button"
               className="button button-primary"
               disabled={!selectedNode || selectedNode.data.enabled === false || isRunning}
@@ -3762,7 +3858,7 @@ function WorkspaceApp({
             >
               {isRunning ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}
               {isRunning ? '运行中' : '运行'}
-            </button>
+            </UiButton>
           </div>
         </header>
 
@@ -3773,9 +3869,9 @@ function WorkspaceApp({
           >
             {notice.kind === 'success' ? <Check size={15} /> : <X size={15} />}
             <span>{notice.message}</span>
-            <button type="button" aria-label="关闭提示" onClick={() => setNotice(null)}>
+            <UiButton type="button" aria-label="关闭提示" onClick={() => setNotice(null)}>
               <X size={14} />
-            </button>
+            </UiButton>
           </div>
         )}
 
@@ -4158,14 +4254,14 @@ function RoutedApplication({
           <h1>请先登录</h1>
           <p>{route.id === 'project' ? '登录后访问此项目。' : '登录后访问连接与模型设置。'}</p>
           <div>
-            <button
+            <UiButton
               type="button"
               className="button button-primary"
               onClick={() => onRequestLogin()}
             >
               <UserCircle size={16} aria-hidden="true" />
               登录
-            </button>
+            </UiButton>
             <AppLink to={appPaths.workspace}>返回工作台</AppLink>
           </div>
         </section>
@@ -4238,9 +4334,9 @@ function RoutedApplication({
         >
           {pageNotice.kind === 'success' ? <Check size={15} /> : <X size={15} />}
           <span>{pageNotice.message}</span>
-          <button type="button" aria-label="关闭提示" onClick={() => setPageNotice(null)}>
+          <UiButton type="button" aria-label="关闭提示" onClick={() => setPageNotice(null)}>
             <X size={14} />
-          </button>
+          </UiButton>
         </div>
       )}
       <ProjectCreateDialog
@@ -4402,9 +4498,9 @@ function AppContent() {
       {authNotice && (
         <div className="notice notice-error" role="alert">
           <span>{authNotice}</span>
-          <button type="button" aria-label="关闭账户提示" onClick={() => setAuthNotice(null)}>
+          <UiButton type="button" aria-label="关闭账户提示" onClick={() => setAuthNotice(null)}>
             <X size={14} />
-          </button>
+          </UiButton>
         </div>
       )}
     </AccountProvider>

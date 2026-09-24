@@ -1,3 +1,4 @@
+import { Button } from '@multimodal-canvas/ui';
 import { ArrowLeft, ArrowRight, LoaderCircle, ShieldCheck } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
@@ -31,7 +32,7 @@ export function AuthenticationPage({ authUser }: AuthenticationPageProps) {
       </header>
       <main className="auth-entry-main">
         <section className="auth-entry-content" aria-labelledby="auth-entry-title">
-          <button
+          <Button
             type="button"
             className="auth-entry-back"
             aria-label="返回上一级"
@@ -42,7 +43,7 @@ export function AuthenticationPage({ authUser }: AuthenticationPageProps) {
             }}
           >
             <ArrowLeft size={18} aria-hidden="true" />
-          </button>
+          </Button>
           <header className="auth-entry-heading">
             <span className="auth-entry-emblem">
               <ShieldCheck size={24} aria-hidden="true" />
@@ -60,16 +61,16 @@ export function AuthenticationPage({ authUser }: AuthenticationPageProps) {
             </p>
           )}
           {authUser ? (
-            <button
+            <Button
               type="button"
               className="mg-button is-primary"
               onClick={() => navigateApp(next, { replace: true, transition: false })}
             >
               <ArrowRight size={17} />
               继续进入工作台
-            </button>
+            </Button>
           ) : (
-            <button
+            <Button
               type="button"
               className="mg-button is-primary"
               disabled={leaving}
@@ -80,7 +81,7 @@ export function AuthenticationPage({ authUser }: AuthenticationPageProps) {
             >
               {leaving ? <LoaderCircle size={17} className="mg-spin" /> : <ArrowRight size={17} />}
               {leaving ? '正在前往 New API' : '使用 New API 登录'}
-            </button>
+            </Button>
           )}
           <div className="auth-entry-form-ad">
             <a

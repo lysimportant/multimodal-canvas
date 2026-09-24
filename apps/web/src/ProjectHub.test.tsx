@@ -1,7 +1,8 @@
 import '@testing-library/jest-dom/vitest';
 
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { Button } from '@multimodal-canvas/ui';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ProjectHub, type ProjectHubProject } from './ProjectHub';
@@ -283,6 +284,10 @@ describe('ProjectHub', () => {
   });
 
   it('keeps card actions inside the dialog Tab cycle', async () => {
+    // jsdom 没有布局；仅为本测试提供可见尺寸，让库自己的焦点循环生效。
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(
+      new DOMRect(0, 0, 100, 32),
+    );
     const user = userEvent.setup();
 
     render(
@@ -295,6 +300,9 @@ describe('ProjectHub', () => {
         onCreateProject={vi.fn()}
       />,
     );
+
+    // 放置浮层外的入口，验证库会将离开的焦点带回弹窗。
+    render(<Button type="button">工作台外部入口</Button>);
 
     const activeCard = screen.getByRole('button', { name: /当前工作流/ });
     const otherCard = screen.getByRole('button', { name: /宣传片草稿/ });
@@ -326,6 +334,10 @@ describe('ProjectHub', () => {
   });
 
   it('returns focus to the opener after Escape and backdrop close', async () => {
+    // jsdom 没有布局；仅为本测试提供可见尺寸，让库自己的焦点循环生效。
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(
+      new DOMRect(0, 0, 100, 32),
+    );
     const user = userEvent.setup();
     const opener = document.createElement('button');
     opener.type = 'button';
@@ -345,7 +357,7 @@ describe('ProjectHub', () => {
       />,
     );
 
-    expect(screen.getByRole('button', { name: '关闭工作台' })).toHaveFocus();
+    await waitFor(() => expect(screen.getByRole('button', { name: '关闭工作台' })).toHaveFocus());
     await user.keyboard('{Escape}');
     expect(onClose).toHaveBeenCalledTimes(1);
     view.rerender(
@@ -358,7 +370,7 @@ describe('ProjectHub', () => {
         onCreateProject={vi.fn()}
       />,
     );
-    expect(opener).toHaveFocus();
+    await waitFor(() => expect(opener).toHaveFocus());
 
     view.rerender(
       <ProjectHub
@@ -370,7 +382,7 @@ describe('ProjectHub', () => {
         onCreateProject={vi.fn()}
       />,
     );
-    const backdrop = view.container.querySelector('.project-hub-backdrop');
+    const backdrop = document.querySelector('.project-hub-backdrop');
     expect(backdrop).not.toBeNull();
     await user.click(backdrop as HTMLElement);
     expect(onClose).toHaveBeenCalledTimes(2);
@@ -384,7 +396,7 @@ describe('ProjectHub', () => {
         onCreateProject={vi.fn()}
       />,
     );
-    expect(opener).toHaveFocus();
+    await waitFor(() => expect(opener).toHaveFocus());
     opener.remove();
   });
 
@@ -599,5 +611,45 @@ describe('ProjectHub', () => {
     rejectArchive?.('归档请求失败');
     expect(await screen.findByRole('alert')).toHaveTextContent('归档请求失败');
     expect(archiveButton).toBeEnabled();
+  });
+
+  it('使用真实非虚拟选择器排序，并在关闭排序菜单时保留工作台', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const thirdProject = {
+      ...projects[1]!,
+      id: 'project-third',
+      name: '分镜设计',
+      updatedAt: '2026-01-01T12:00:00.000Z',
+    };
+    window.localStorage.setItem(
+      'multimodal-canvas:project-recent-opened',
+      JSON.stringify({ 'project-third': 200, 'project-other': 100 }),
+    );
+    render(
+      <ProjectHub
+        open
+        projects={[...projects, thirdProject]}
+        activeProjectId="project-active"
+        onClose={onClose}
+        onSelectProject={vi.fn()}
+        onCreateProject={vi.fn()}
+      />,
+    );
+    const sort = screen.getByRole('combobox', { name: '项目排序' });
+    await user.click(sort);
+    expect(await screen.findByRole('option', { name: '最近更新' })).toBeVisible();
+    await user.click(screen.getByRole('option', { name: '最近打开' }));
+    const rows = within(screen.getByRole('list', { name: '项目列表' })).getAllByRole('listitem');
+    expect(rows[0]).toHaveTextContent('当前工作流');
+    expect(rows[1]).toHaveTextContent('分镜设计');
+    expect(rows[2]).toHaveTextContent('宣传片草稿');
+    await user.click(sort);
+    fireEvent.keyDown(sort, { key: 'Escape', keyCode: 27 });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole('heading', { name: '所有画布' })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole('option', { name: '最近打开' })).not.toBeInTheDocument(),
+    );
   });
 });

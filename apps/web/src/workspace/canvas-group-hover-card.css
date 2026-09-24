@@ -45,9 +45,7 @@
   overflow: auto;
   padding: 8px 12px;
   pointer-events: auto;
-  position: fixed;
   width: max-content;
-  z-index: 74;
 }
 
 .canvas-group-hover-heading {

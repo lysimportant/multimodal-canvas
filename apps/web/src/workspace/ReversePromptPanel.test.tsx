@@ -1,6 +1,7 @@
+import { ConfigProvider } from 'antd';
 import '@testing-library/jest-dom/vitest';
 import { QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render as renderAntd, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -29,6 +30,15 @@ beforeEach(() => {
     defaultModel: { modelAlias: 'text-model', credentialId: 'key-b' },
   });
 });
+
+/** 禁用库动画以同步检查可见性；仍渲染真实 Ant Design 控件和 portal。 */
+const render = (ui: Parameters<typeof renderAntd>[0], options?: Parameters<typeof renderAntd>[1]) =>
+  renderAntd(ui, {
+    wrapper: ({ children }) => (
+      <ConfigProvider theme={{ token: { motion: false } }}>{children}</ConfigProvider>
+    ),
+    ...options,
+  });
 
 /** 当前版本可验证结果；不作为真实生成记录。 */
 const result: ReversePromptAnalysis = {
@@ -64,16 +74,14 @@ describe('反推提示词面板', () => {
     vi.mocked(submitReversePrompt).mockResolvedValue(result);
     renderPanel();
     await waitFor(() => expect(screen.getByRole('button', { name: '反推提示词' })).toBeEnabled());
-    expect(screen.getByRole('combobox', { name: '反推文字模型' })).toHaveValue(
-      reversePromptModelKey({ modelAlias: 'text-model', credentialId: 'key-b' }),
-    );
-    await userEvent.selectOptions(
-      screen.getByRole('combobox'),
-      reversePromptModelKey({ modelAlias: 'text-model', credentialId: 'key-a' }),
-    );
+    expect(
+      screen.getByRole('combobox', { name: '反推文字模型' }).closest('.ant-select'),
+    ).toHaveTextContent('模型 B');
+    await userEvent.click(screen.getByRole('combobox'));
+    await userEvent.click(screen.getByRole('option', { name: '模型 A' }));
     await userEvent.click(screen.getByRole('button', { name: '反推提示词' }));
     await screen.findByText('合成详细提示词');
-    expect(screen.getByText('合成摘要')).toBeVisible();
+    await waitFor(() => expect(screen.getByText('合成摘要')).toBeVisible());
     expect(submitReversePrompt).toHaveBeenCalledTimes(1);
     expect(vi.mocked(submitReversePrompt).mock.calls[0]![2].model).toEqual({
       modelAlias: 'text-model',

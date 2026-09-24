@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Asset, PromptDocument } from '@multimodal-canvas/domain';
+import { Dialog, DialogContent, DialogTitle, Button } from '@multimodal-canvas/ui';
 
 import { ResourceMentionEditor } from './ResourceMentionEditor';
 import { ASSET_DRAG_TYPE } from './workspace/contracts';
@@ -67,7 +68,10 @@ const numberedVideoAsset: Asset = {
 };
 
 describe('ResourceMentionEditor', () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllEnvs();
+  });
 
   it('does not turn typing 2 or 3 into a project-library mention', async () => {
     const user = userEvent.setup();
@@ -179,7 +183,7 @@ describe('ResourceMentionEditor', () => {
     });
   });
 
-  it('shows a hover preview on the hovered mention name, not only the first name', () => {
+  it('shows a hover preview on the hovered mention name, not only the first name', async () => {
     render(
       <ResourceMentionEditor
         nodeId="node-hover"
@@ -215,19 +219,23 @@ describe('ResourceMentionEditor', () => {
     document.elementFromPoint = () => tokens[1] as Element;
     const composer = screen.getByRole('textbox', { name: '提示词' }).parentElement as HTMLElement;
     fireEvent.mouseMove(composer, { clientX: 48, clientY: 12 });
-    expect(screen.getByRole('tooltip', { name: '预览 良爷' })).toBeInTheDocument();
+    expect(await screen.findByRole('region', { name: '预览 良爷' })).toBeInTheDocument();
     document.elementFromPoint = () => tokens[0] as Element;
     fireEvent.mouseMove(composer, { clientX: 12, clientY: 12 });
-    const preview = screen.getByRole('tooltip', { name: '预览 满穗' });
-    expect(preview).toHaveStyle({ width: '280px', height: '210px' });
-    expect(preview.parentElement).toBe(document.body);
+    const preview = await screen.findByRole('region', { name: '预览 满穗' });
+    expect(preview).toHaveClass('resource-mention-hover-content');
+    expect(preview.closest('.ant-popover')).toHaveClass('resource-mention-hover-popover');
+    expect(document.body).toContainElement(preview);
+    expect(preview.closest('[aria-hidden="true"]')).toBeNull();
     expect(preview.querySelector('.resource-mention-hover-preview img')).toBeInTheDocument();
     fireEvent.mouseLeave(composer);
-    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: /预览/ })).not.toBeInTheDocument(),
+    );
     document.elementFromPoint = original;
   });
 
-  it('扩大后的资源预览在视口底部翻到名称上方，滚动时关闭', () => {
+  it('资源预览由 Popover 定位到名称旁，滚动时关闭且不修改结构化文档', async () => {
     render(
       <ResourceMentionEditor
         nodeId="node-edge-hover"
@@ -257,13 +265,17 @@ describe('ResourceMentionEditor', () => {
         clientX: tokenRect.left + 4,
         clientY: tokenRect.top + 4,
       });
-      const preview = screen.getByRole('tooltip', { name: '预览 产品图' });
-      expect(preview).toHaveStyle({
-        left: `${window.innerWidth - 280 - 12}px`,
-        top: `${tokenRect.top - 210 - 8}px`,
-      });
+      const preview = await screen.findByRole('region', { name: '预览 产品图' });
+      await waitFor(() => expect(preview).toBeVisible());
+      expect(preview.closest('.ant-popover')).toHaveClass('resource-mention-hover-popover');
+      expect(bounds).toHaveBeenCalled();
+      expect(preview.closest('[aria-hidden="true"]')).toBeNull();
+      expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue('产品图');
       fireEvent.scroll(document);
-      expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+      await waitFor(() =>
+        expect(screen.queryByRole('region', { name: '预览 产品图' })).not.toBeInTheDocument(),
+      );
+      expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue('产品图');
     } finally {
       document.elementFromPoint = original;
       bounds.mockRestore();
@@ -961,12 +973,12 @@ describe('ResourceMentionEditor', () => {
           assets={[imageAsset]}
           onDocumentChange={onDocumentChange}
         />
-        <button type="button">编辑器外部</button>
+        <Button type="button">编辑器外部</Button>
       </>,
     );
     await user.type(screen.getByRole('textbox'), '@');
     expect(screen.getByRole('listbox')).toBeInTheDocument();
-    fireEvent.pointerDown(screen.getByRole('button', { name: '编辑器外部' }));
+    await user.click(screen.getByRole('button', { name: '编辑器外部' }));
 
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
     expect(screen.queryByRole('article')).not.toBeInTheDocument();
@@ -1162,7 +1174,7 @@ describe('ResourceMentionEditor', () => {
           assets={[imageAsset]}
           ariaLabel="提示词"
         />
-        <button type="button">编辑器外部</button>
+        <Button type="button">编辑器外部</Button>
       </>,
     );
     const editor = screen.getByRole('textbox', { name: '提示词' });
@@ -1172,7 +1184,7 @@ describe('ResourceMentionEditor', () => {
     await user.click(searchbox);
     expect(screen.getByRole('listbox', { name: '选择资源' })).toBeInTheDocument();
 
-    fireEvent.pointerDown(screen.getByRole('button', { name: '编辑器外部' }));
+    await user.click(screen.getByRole('button', { name: '编辑器外部' }));
     expect(screen.queryByRole('listbox', { name: '选择资源' })).not.toBeInTheDocument();
     expect(editor).toHaveValue('@');
 
@@ -1264,7 +1276,89 @@ describe('ResourceMentionEditor', () => {
       />,
     );
     await user.click(screen.getByRole('button', { name: '预览并命名 父节点结果' }));
-    expect(screen.getByRole('dialog', { name: '资源预览' })).toBeVisible();
-    expect(screen.getByRole('img')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('dialog', { name: '资源预览' })).toBeVisible());
+    expect(
+      within(screen.getByRole('dialog', { name: '资源预览' })).getByRole('img', {
+        name: '父节点结果',
+      }),
+    ).toBeInTheDocument();
+  });
+  it('真实 Popover 使用 @ 字符作锚点，浮层不进入隐藏高亮层或节点布局', async () => {
+    const user = userEvent.setup();
+    render(
+      <ResourceMentionEditor nodeId="inline-anchor" assets={[imageAsset]} ariaLabel="提示词" />,
+    );
+    const editor = screen.getByRole('textbox', { name: '提示词' });
+    await user.type(editor, '第一行\n第二行 @');
+    const anchor = document.querySelector('[data-resource-picker-anchor]');
+    expect(anchor).toHaveTextContent('@');
+    expect(anchor).toHaveAttribute('data-offset', String('第一行\n第二行 '.length));
+    expect(
+      editor.closest('.resource-mention-composer')?.querySelector('.resource-mention-highlight'),
+    ).toHaveTextContent('第一行 第二行 @');
+    const listbox = screen.getByRole('listbox', { name: '选择资源' });
+    expect(listbox.closest('.ant-popover')).toHaveClass('resource-mention-picker-popover');
+    expect(listbox.closest('[aria-hidden="true"]')).toBeNull();
+    expect(editor.closest('.resource-mention-composer')).not.toContainElement(listbox);
+    expect(editor).toHaveValue('第一行\n第二行 @');
+    await user.click(screen.getByRole('option', { name: /产品图/ }));
+    expect(editor).toHaveValue('第一行\n第二行 产品图');
+  });
+
+  it('Modal 内的选择器归属最近 Dialog，第一次 Escape 只关选择器并恢复编辑焦点', async () => {
+    // rc-util 在 test 环境把所有层的 id 固定成 test-id；恢复真实 id，防止内层卸载清掉 Modal 的 Escape 注册。
+    vi.stubEnv('NODE_ENV', 'development');
+    const user = userEvent.setup();
+    const onOpenChange = vi.fn();
+    const onEscapeKeyDown = vi.fn();
+    render(
+      <Dialog open onOpenChange={onOpenChange}>
+        <DialogContent onEscapeKeyDown={onEscapeKeyDown}>
+          <DialogTitle>放大编辑器</DialogTitle>
+          <ResourceMentionEditor nodeId="dialog-picker" assets={[imageAsset]} ariaLabel="提示词" />
+        </DialogContent>
+      </Dialog>,
+    );
+    const dialog = await screen.findByRole('dialog', { name: '放大编辑器' });
+    const editor = within(dialog).getByRole('textbox', { name: '提示词' });
+    await waitFor(() => expect(editor).toBeVisible());
+    await user.type(editor, '@');
+    expect(within(dialog).getByRole('listbox', { name: '选择资源' })).toBeInTheDocument();
+    const search = within(dialog).getByRole('searchbox', { name: '搜索资源' });
+    await user.click(search);
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expect(dialog).toBeVisible();
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(onEscapeKeyDown).not.toHaveBeenCalled();
+    expect(editor).toHaveFocus();
+    expect(editor).toHaveValue('@');
+    fireEvent.keyDown(editor, { key: 'Escape', code: 'Escape', keyCode: 27, which: 27 });
+    expect(onEscapeKeyDown).toHaveBeenCalledOnce();
+    expect(onEscapeKeyDown.mock.calls[0]?.[0].defaultPrevented).toBe(false);
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it('输入法取消按键不关闭资源选择器，结束组合后 Escape 才取消', async () => {
+    const user = userEvent.setup();
+    const onDocumentChange = vi.fn();
+    render(
+      <ResourceMentionEditor
+        nodeId="ime-escape-picker"
+        assets={[imageAsset]}
+        ariaLabel="提示词"
+        onDocumentChange={onDocumentChange}
+      />,
+    );
+    await user.type(screen.getByRole('textbox', { name: '提示词' }), '@');
+    const search = screen.getByRole('searchbox', { name: '搜索资源' });
+    await user.click(search);
+    fireEvent.compositionStart(search);
+    fireEvent.keyDown(search, { key: 'Escape', keyCode: 229, isComposing: true });
+    expect(screen.getByRole('listbox', { name: '选择资源' })).toBeInTheDocument();
+    fireEvent.compositionEnd(search);
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expect(onDocumentChange.mock.calls.at(-1)?.[0].blocks).toEqual([{ type: 'text', text: '@' }]);
   });
 });

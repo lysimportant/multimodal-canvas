@@ -1,3 +1,5 @@
+import { Button } from '@multimodal-canvas/ui';
+import { Select } from 'antd';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, Copy, Loader2, RefreshCw, ScanText } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
@@ -136,50 +138,45 @@ export function ReversePromptPanel({ target, userId, models }: ReversePromptPane
       <div className="reverse-prompt-toolbar">
         <label className="reverse-prompt-model">
           <span>文字模型</span>
-          <select
+          <Select
             aria-label="反推文字模型"
             value={modelValue}
             disabled={busy || running || Boolean(submission.current)}
-            onChange={(event) => {
+            virtual={false}
+            styles={{ popup: { root: { pointerEvents: 'auto' } } }}
+            getPopupContainer={(trigger: HTMLElement) =>
+              trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
+            }
+            onChange={(value) => {
               const selected = textModels.find(
                 (entry) =>
                   reversePromptModelKey({
                     modelAlias: entry.id,
                     credentialId: entry.credentialId,
-                  }) === event.target.value,
+                  }) === value,
               );
               if (selected)
-                setSelection({
-                  modelAlias: selected.id,
-                  credentialId: selected.credentialId,
-                });
+                setSelection({ modelAlias: selected.id, credentialId: selected.credentialId });
             }}
-          >
-            {!model ? <option value="">默认文字模型</option> : null}
-            {model && !hasSelectedModel ? (
-              <option value={modelValue}>{model.modelAlias}</option>
-            ) : null}
-            {textModels.map((entry) => {
-              const key = reversePromptModelKey({
-                modelAlias: entry.id,
-                credentialId: entry.credentialId,
-              });
-              return (
-                <option
-                  key={key}
-                  value={key}
-                  disabled={Boolean(entry.availability && entry.availability !== 'available')}
-                >
-                  {entry.name || entry.id}
-                  {entry.group || entry.credentialLabel
-                    ? ` · ${entry.group ?? entry.credentialLabel}`
-                    : ''}
-                </option>
-              );
-            })}
-          </select>
+            options={[
+              ...(!model ? [{ value: '', label: '默认文字模型' }] : []),
+              ...(model && !hasSelectedModel
+                ? [{ value: modelValue, label: model.modelAlias }]
+                : []),
+              ...textModels.map((entry) => ({
+                value: reversePromptModelKey({
+                  modelAlias: entry.id,
+                  credentialId: entry.credentialId,
+                }),
+                label: [entry.name || entry.id, entry.group ?? entry.credentialLabel]
+                  .filter(Boolean)
+                  .join(' · '),
+                disabled: Boolean(entry.availability && entry.availability !== 'available'),
+              })),
+            ]}
+          />
         </label>
-        <button
+        <Button
           type="button"
           className="request-prompt-copy"
           disabled={
@@ -197,7 +194,7 @@ export function ReversePromptPanel({ target, userId, models }: ReversePromptPane
             <ScanText size={14} aria-hidden="true" />
           )}
           {busy ? '提交中' : running ? '反推中' : '反推提示词'}
-        </button>
+        </Button>
       </div>
       {analysisQuery.isPending ? (
         <p className="request-prompt-status" role="status">
@@ -207,13 +204,13 @@ export function ReversePromptPanel({ target, userId, models }: ReversePromptPane
       {analysisQuery.isError ? (
         <div className="request-prompt-status" role="alert">
           <span>{analysisQuery.error.message}</span>
-          <button
+          <Button
             type="button"
             className="request-prompt-retry"
             onClick={() => void analysisQuery.refetch()}
           >
             <RefreshCw size={13} /> 重新查询
-          </button>
+          </Button>
         </div>
       ) : null}
       {error || analysis?.error ? (
@@ -238,7 +235,7 @@ export function ReversePromptPanel({ target, userId, models }: ReversePromptPane
             >
               <div className="request-prompt-block-head">
                 <h4>{field === 'summary' ? '整体摘要' : '详细提示词'}</h4>
-                <button
+                <Button
                   type="button"
                   className="request-prompt-copy"
                   aria-label={field === 'summary' ? '复制反推摘要' : '复制反推提示词'}
@@ -246,7 +243,7 @@ export function ReversePromptPanel({ target, userId, models }: ReversePromptPane
                 >
                   {copied === field ? <Check size={13} /> : <Copy size={13} />}
                   {copied === field ? '已复制' : '复制'}
-                </button>
+                </Button>
               </div>
               <pre className="request-prompt-text">{analysis[field]}</pre>
             </section>

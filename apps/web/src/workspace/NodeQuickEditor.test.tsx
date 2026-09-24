@@ -1,9 +1,11 @@
+import { ConfigProvider } from 'antd';
 import '@testing-library/jest-dom/vitest';
 
 import {
+  act,
   cleanup,
   fireEvent,
-  render as renderRaw,
+  render as renderAntd,
   screen,
   within,
   waitFor,
@@ -25,6 +27,18 @@ import {
   type NodeQuickEditorProps,
 } from './NodeQuickEditor';
 
+/** 禁用库动画以同步检查可见性；仍渲染真实 Ant Design 控件和 portal。 */
+const renderRaw = (
+  ui: Parameters<typeof renderAntd>[0],
+  options?: Parameters<typeof renderAntd>[1],
+) =>
+  renderAntd(ui, {
+    wrapper: ({ children }) => (
+      <ConfigProvider theme={{ token: { motion: false } }}>{children}</ConfigProvider>
+    ),
+    ...options,
+  });
+
 /** 参数契约测试显式打开参数页，保持原有字段输入与序列化断言。 */
 function render(...args: Parameters<typeof renderRaw>) {
   const result = renderRaw(...args);
@@ -40,6 +54,14 @@ function render(...args: Parameters<typeof renderRaw>) {
       openParameters();
     },
   };
+}
+
+/** 真实 Select 把选项放入 portal；按 aria-controls 查询与字段关联的列表。 */
+function selectPopup(group: HTMLElement) {
+  const trigger = within(group).getByRole('combobox');
+  const list = document.getElementById(trigger.getAttribute('aria-controls')!);
+  expect(list).not.toBeNull();
+  return within(list!);
 }
 
 type PromptMentionBlock = Extract<PromptDocument['blocks'][number], { type: 'mention' }>;
@@ -218,6 +240,39 @@ describe('NodeQuickEditor', () => {
       credentialId: 'group-b',
     });
   });
+  it.each(['快捷', '完整'] as const)(
+    '%s编辑器首次打开和重开都为真实模型 listbox 命名',
+    async (presentation) => {
+      const user = userEvent.setup();
+      const inputs = makeProps();
+      renderRaw(<NodeQuickEditor {...inputs} />);
+      if (presentation === '完整') {
+        await user.click(screen.getByRole('button', { name: '打开完整编辑器' }));
+      }
+      const dialog = screen.queryByRole('dialog');
+      const trigger = screen.getByRole('combobox', { name: /^模型：/ });
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        await user.click(trigger);
+        const listbox = await screen.findByRole('listbox', { name: '模型选项' });
+        await waitFor(() => expect(listbox).toBeVisible());
+        expect(trigger).toHaveAttribute('aria-controls', listbox.id);
+        expect(listbox.closest('.ant-select-dropdown')).toBeInTheDocument();
+        expect(listbox.closest('[role="dialog"]')).toBe(dialog);
+        expect(screen.getAllByRole('listbox', { name: '模型选项' })).toHaveLength(1);
+        expect(within(listbox).getAllByRole('option')).toHaveLength(2);
+        await user.click(
+          within(listbox).getByRole('option', { name: /^图片模型/, selected: true }),
+        );
+        await waitFor(() => expect(trigger).toHaveAttribute('aria-expanded', 'false'));
+      }
+      expect(inputs.onModelChange).toHaveBeenCalledTimes(2);
+      expect(inputs.onModelChange).toHaveBeenLastCalledWith({
+        modelAlias: 'image-model',
+        credentialId: testCredentialId,
+      });
+    },
+  );
+
   it('原分组失效时不能静默改用其它组的同名模型', () => {
     render(
       <NodeQuickEditor
@@ -241,14 +296,18 @@ describe('NodeQuickEditor', () => {
       '当前分组模型已失效，请重新选择；不会自动切换其他分组',
     );
   });
-  it('模型、文字推理和媒体参数使用顶层浮层，不被编辑器滚动区域裁切', async () => {
+  it('模型、文字推理和媒体参数通过 Antd portal 脱离编辑器滚动区域', async () => {
     const user = userEvent.setup();
     const view = renderRaw(<NodeQuickEditor {...makeProps()} />);
     await user.click(screen.getByRole('combobox', { name: /^模型：/ }));
-    expect(screen.getByRole('listbox', { name: '模型选项' })).toHaveAttribute('popover', 'manual');
-    await user.keyboard('{Escape}');
+    expect(screen.getByRole('listbox').closest('.ant-select-dropdown')?.parentElement).toBe(
+      document.body,
+    );
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape', keyCode: 27, which: 27 });
     await user.click(screen.getByRole('button', { name: '媒体参数' }));
-    expect(screen.getByRole('region', { name: '生成参数' })).toHaveAttribute('popover', 'manual');
+    expect(
+      screen.getByRole('region', { name: '生成参数' }).closest('.ant-dropdown')?.parentElement,
+    ).toBe(document.body);
     view.rerender(
       <NodeQuickEditor
         {...makeProps({
@@ -261,11 +320,11 @@ describe('NodeQuickEditor', () => {
       />,
     );
     await user.click(screen.getByRole('combobox', { name: /^推理强度：/ }));
-    expect(screen.getByRole('listbox', { name: '推理强度选项' })).toHaveAttribute(
-      'popover',
-      'manual',
+    expect(screen.getByRole('listbox').closest('.ant-select-dropdown')?.parentElement).toBe(
+      document.body,
     );
   });
+
   it('目录加载只禁用 Skill，保留原媒体生成入口与当前选择', async () => {
     const user = userEvent.setup();
     const inputs = makeProps({
@@ -306,10 +365,14 @@ describe('NodeQuickEditor', () => {
     expect(screen.queryByRole('button', { name: '技能工作台' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '优化提示词' })).not.toBeInTheDocument();
     await user.hover(screen.getByRole('button', { name: 'Skill 配置' }));
-    const settings = screen.getByRole('group', { name: 'Skill 配置' });
-    expect(settings).toHaveAttribute('popover', 'manual');
-    expect(within(settings).getByRole('combobox', { name: '提示词 Skill' })).toBeVisible();
-    expect(within(settings).getByRole('combobox', { name: '优化模型' })).toBeVisible();
+    const settings = await screen.findByRole('group', { name: 'Skill 配置' });
+    expect(settings.closest('.ant-dropdown')?.parentElement).toBe(document.body);
+    await waitFor(() =>
+      expect(within(settings).getByRole('combobox', { name: '提示词 Skill' })).toBeVisible(),
+    );
+    await waitFor(() =>
+      expect(within(settings).getByRole('combobox', { name: '优化模型' })).toBeVisible(),
+    );
     await user.click(within(settings).getByRole('button', { name: '技能工作台' }));
     expect(inputs.onOpenSkillWorkbench).toHaveBeenCalledOnce();
     expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
@@ -327,17 +390,17 @@ describe('NodeQuickEditor', () => {
     await user.click(screen.getByRole('option', { name: '生成人物' }));
     expect(inputs.onPromptSkillChange).toHaveBeenCalledWith('character');
     await user.click(within(expanded).getByRole('combobox', { name: '提示词 Skill' }));
-    await user.keyboard('{Escape}');
-    expect(dialog).toBeVisible();
-    expect(screen.queryByRole('listbox', { name: 'Skill选项' })).not.toBeInTheDocument();
-    expect(expanded).toBeVisible();
-    await user.keyboard('{Escape}');
-    expect(dialog).toBeVisible();
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape', keyCode: 27, which: 27 });
+    await waitFor(() => expect(dialog).toBeVisible());
+    await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument());
+    await waitFor(() => expect(expanded).toBeVisible());
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape', keyCode: 27, which: 27 });
+    await waitFor(() => expect(dialog).toBeVisible());
     expect(within(dialog).queryByRole('group', { name: 'Skill 配置' })).not.toBeInTheDocument();
     await user.click(within(dialog).getByRole('button', { name: 'Skill 配置' }));
     await user.click(within(dialog).getByRole('textbox', { name: '提示词' }));
     expect(within(dialog).queryByRole('group', { name: 'Skill 配置' })).not.toBeInTheDocument();
-    expect(dialog).toBeVisible();
+    await waitFor(() => expect(dialog).toBeVisible());
     expect(fetcher).not.toHaveBeenCalled();
   });
 
@@ -394,7 +457,7 @@ describe('NodeQuickEditor', () => {
     const duration = screen.getByRole('spinbutton', { name: '自定义秒数' });
     const trigger = screen.getByRole('combobox', { name: '时长（秒）：未设置' });
     await user.click(trigger);
-    expect(screen.getByRole('option', { name: '15 秒' })).toBeVisible();
+    await waitFor(() => expect(screen.getByRole('option', { name: '15 秒' })).toBeVisible());
     expect(screen.queryByRole('option', { name: '16 秒' })).not.toBeInTheDocument();
     await user.click(screen.getByRole('option', { name: '15 秒' }));
     expect(onParametersChange).toHaveBeenLastCalledWith({ resolution: '720p', duration: 15 });
@@ -439,28 +502,53 @@ describe('NodeQuickEditor', () => {
     const trigger = screen.getByRole('button', { name: '媒体参数' });
     await user.click(trigger);
     expect(trigger).toHaveAttribute('aria-expanded', 'true');
-    await user.keyboard('{Escape}');
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape', keyCode: 27, which: 27 });
     expect(trigger).toHaveAttribute('aria-expanded', 'false');
     expect(trigger).toHaveFocus();
   });
 
-  it('点击固定参数页，外点与 Esc 关闭，键盘可打开并返回触发器', async () => {
+  it.each([{ isComposing: true }, { keyCode: 229 }])(
+    '参数输入法组合按键不关闭浮层或提交参数：%j',
+    async (composition) => {
+      const user = userEvent.setup();
+      const onParametersChange = vi.fn();
+      renderRaw(<NodeQuickEditor {...makeProps({ node: videoNode, onParametersChange })} />);
+      const trigger = screen.getByRole('button', { name: '媒体参数' });
+      await user.click(trigger);
+      const select = screen.getByRole('combobox', { name: '视频清晰度：未设置' });
+      await user.click(select);
+      await waitFor(() => expect(screen.getByRole('listbox')).toBeVisible());
+      fireEvent.keyDown(select, { key: 'Enter', keyCode: 13, which: 13, ...composition });
+      fireEvent.keyDown(select, { key: 'Escape', keyCode: 27, which: 27, ...composition });
+      expect(screen.getByRole('listbox')).toBeVisible();
+      expect(trigger).toHaveAttribute('aria-expanded', 'true');
+      expect(onParametersChange).not.toHaveBeenCalled();
+      fireEvent.keyDown(select, { key: 'Escape', keyCode: 27, which: 27 });
+      await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument());
+      expect(trigger).toHaveAttribute('aria-expanded', 'true');
+      fireEvent.keyDown(select, { key: 'Escape', keyCode: 27, which: 27 });
+      expect(trigger).toHaveAttribute('aria-expanded', 'false');
+      expect(trigger).toHaveFocus();
+    },
+  );
+
+  it('参数页由 Antd 处理外点与 Escape，键盘 Enter 可打开并返回触发器', async () => {
     const user = userEvent.setup();
     renderRaw(<NodeQuickEditor {...makeProps()} />);
     const trigger = screen.getByRole('button', { name: '媒体参数' });
     await user.click(trigger);
     expect(trigger).toHaveAttribute('aria-expanded', 'true');
-    fireEvent.pointerDown(document.body);
+    await user.click(document.body);
     expect(trigger).toHaveAttribute('aria-expanded', 'false');
     trigger.focus();
-    await user.keyboard('{ArrowDown}');
-    await waitFor(() => expect(screen.getByRole('button', { name: '收起媒体参数' })).toHaveFocus());
-    await user.keyboard('{Escape}');
+    await user.keyboard('{Enter}');
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.keyDown(trigger, { key: 'Escape', keyCode: 27, which: 27 });
     expect(trigger).toHaveAttribute('aria-expanded', 'false');
     expect(trigger).toHaveFocus();
     await user.keyboard('{Enter}');
     expect(trigger).toHaveAttribute('aria-expanded', 'true');
-    await user.keyboard('{Escape}');
+    await user.click(screen.getByRole('button', { name: '收起媒体参数' }));
     expect(trigger).toHaveAttribute('aria-expanded', 'false');
   });
 
@@ -502,14 +590,12 @@ describe('NodeQuickEditor', () => {
       toJSON: () => ({}),
     });
     await user.click(resolution);
-    const menu = screen.getByRole('listbox', { name: '视频清晰度选项' });
-    expect(menu).toHaveAttribute('popover', 'manual');
-    expect(menu.style.bottom).not.toBe('');
-    expect(menu).toHaveStyle({ position: 'fixed' });
+    const menu = screen.getByRole('listbox');
+    expect(menu.closest('.ant-select-dropdown')?.parentElement).toBe(document.body);
     expect(within(menu).getByRole('option', { name: '480p', selected: true })).toBeInTheDocument();
     resolution.focus();
-    await user.keyboard('{Escape}');
-    expect(screen.getByRole('region', { name: '生成参数' })).toBeVisible();
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape', keyCode: 27, which: 27 });
+    await waitFor(() => expect(screen.getByRole('region', { name: '生成参数' })).toBeVisible());
     expect(resolution).toHaveAttribute('aria-expanded', 'false');
     expect(onParametersChange).not.toHaveBeenCalled();
   });
@@ -539,26 +625,23 @@ describe('NodeQuickEditor', () => {
     expect(screen.getByRole('combobox', { name: '图片清晰度：1K' })).toBeInTheDocument();
   });
 
-  it('比例可用悬停、键盘和点击选择，关闭参数页时移除顶层菜单', async () => {
+  it('比例通过真实 Select 支持键盘和点击，收起参数页会移除 portal', async () => {
     const user = userEvent.setup();
     const onParametersChange = vi.fn();
     render(<NodeQuickEditor {...makeProps({ onParametersChange })} />);
-    const trigger = screen.getByRole('button', { name: '图片比例：未设置' });
-    await user.click(trigger);
-    expect(trigger).toHaveAttribute('aria-expanded', 'true');
-    expect(screen.getByRole('group', { name: '图片比例选项' })).toHaveAttribute(
-      'popover',
-      'manual',
-    );
+    const trigger = screen.getByRole('combobox', { name: '图片比例：未设置' });
     trigger.focus();
-    await user.keyboard('{ArrowDown}');
-    const first = screen.getByRole('button', { name: /1:1/, pressed: true });
-    await waitFor(() => expect(first).toHaveFocus());
-    await user.keyboard('{Enter}');
+    fireEvent.keyDown(trigger, { key: 'ArrowDown', keyCode: 40, which: 40 });
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getAllByRole('option')).toHaveLength(8);
+    expect(screen.getByRole('listbox').closest('.ant-select-dropdown')?.parentElement).toBe(
+      document.body,
+    );
+    fireEvent.keyDown(trigger, { key: 'Enter', keyCode: 13, which: 13 });
     expect(onParametersChange).toHaveBeenCalledWith({ aspectRatio: '1:1' });
     await user.click(trigger);
     await user.click(screen.getByRole('button', { name: '收起媒体参数' }));
-    expect(screen.queryByRole('group', { name: '图片比例选项' })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument());
   });
 
   it('只列出当前媒体模型，并保留目录中缺失的当前覆盖值', async () => {
@@ -578,19 +661,23 @@ describe('NodeQuickEditor', () => {
     const modelTrigger = within(modelGroup).getByRole('combobox');
     expect(modelTrigger).not.toBeNull();
     expect(modelTrigger).toHaveAttribute('aria-expanded', 'false');
-    expect(modelTrigger).toHaveTextContent('removed-image-model');
+    expect(modelTrigger.closest('.ant-select')).toHaveTextContent('removed-image-model');
     expect(screen.queryByText('继承项目默认模型')).not.toBeInTheDocument();
     await user.click(within(modelGroup).getByRole('combobox'));
-    expect(within(modelGroup).getByRole('option', { name: /图片模型/ })).toBeInTheDocument();
-    expect(within(modelGroup).getByRole('option', { name: /多模态模型/ })).toBeInTheDocument();
-    expect(within(modelGroup).queryByRole('option', { name: '文字模型' })).not.toBeInTheDocument();
+    expect(selectPopup(modelGroup).getByRole('option', { name: /图片模型/ })).toBeInTheDocument();
+    expect(selectPopup(modelGroup).getByRole('option', { name: /多模态模型/ })).toBeInTheDocument();
     expect(
-      within(modelGroup).getByRole('option', {
+      selectPopup(modelGroup).queryByRole('option', { name: '文字模型' }),
+    ).not.toBeInTheDocument();
+    expect(
+      selectPopup(modelGroup).getByRole('option', {
         name: /removed-image-model.*原分组当前不可用/,
         selected: true,
       }),
     ).toBeInTheDocument();
-    expect(modelGroup).toHaveAttribute('data-placement', 'top');
+    expect(screen.getByRole('listbox').closest('.ant-select-dropdown')?.parentElement).toBe(
+      document.body,
+    );
   });
 
   it('资源提及时不再显示额外能力诊断', () => {
@@ -821,7 +908,7 @@ describe('NodeQuickEditor', () => {
     fireEvent.change(prompt, { target: { value: '柔和棚拍光' } });
     const modelGroup = screen.getByText('模型').parentElement as HTMLElement;
     await user.click(within(modelGroup).getByRole('combobox'));
-    await user.click(within(modelGroup).getByRole('option', { name: /图片模型/ }));
+    await user.click(selectPopup(modelGroup).getByRole('option', { name: /图片模型/ }));
     await user.click(screen.getByRole('button', { name: '生成' }));
     fireEvent.pointerDown(prompt);
 
@@ -868,7 +955,7 @@ describe('NodeQuickEditor', () => {
     await user.click(within(inferenceGroup).getByRole('combobox'));
 
     for (const label of labels) {
-      expect(within(inferenceGroup).getByRole('option', { name: label })).toBeInTheDocument();
+      expect(selectPopup(inferenceGroup).getByRole('option', { name: label })).toBeInTheDocument();
     }
   });
 
@@ -920,7 +1007,7 @@ describe('NodeQuickEditor', () => {
     await user.click(within(inferenceGroup).getByRole('combobox'));
 
     for (const label of labels) {
-      expect(within(inferenceGroup).getByRole('option', { name: label })).toBeInTheDocument();
+      expect(selectPopup(inferenceGroup).getByRole('option', { name: label })).toBeInTheDocument();
     }
   });
 
@@ -949,10 +1036,10 @@ describe('NodeQuickEditor', () => {
     await user.click(within(inferenceGroup).getByRole('combobox'));
 
     for (const label of labels) {
-      expect(within(inferenceGroup).getByRole('option', { name: label })).toBeInTheDocument();
+      expect(selectPopup(inferenceGroup).getByRole('option', { name: label })).toBeInTheDocument();
     }
     expect(
-      within(inferenceGroup).getByRole('option', { name: '最高', selected: true }),
+      selectPopup(inferenceGroup).getByRole('option', { name: '最高', selected: true }),
     ).toBeInTheDocument();
   });
 
@@ -986,10 +1073,10 @@ describe('NodeQuickEditor', () => {
     const inferenceGroup = screen.getByText('推理强度').parentElement as HTMLElement;
     await user.click(within(inferenceGroup).getByRole('combobox'));
 
-    expect(within(inferenceGroup).getByRole('option', { name: '轻度' })).toBeInTheDocument();
-    expect(within(inferenceGroup).getByRole('option', { name: 'Ultra' })).toBeInTheDocument();
+    expect(selectPopup(inferenceGroup).getByRole('option', { name: '轻度' })).toBeInTheDocument();
+    expect(selectPopup(inferenceGroup).getByRole('option', { name: 'Ultra' })).toBeInTheDocument();
     expect(
-      within(inferenceGroup).getByRole('option', { name: '中', selected: true }),
+      selectPopup(inferenceGroup).getByRole('option', { name: '中', selected: true }),
     ).toBeInTheDocument();
   });
 
@@ -1023,8 +1110,8 @@ describe('NodeQuickEditor', () => {
     const inferenceGroup = screen.getByText('推理强度').parentElement as HTMLElement;
     await user.click(within(inferenceGroup).getByRole('combobox'));
 
-    expect(within(inferenceGroup).getByRole('option', { name: '轻度' })).toBeInTheDocument();
-    expect(within(inferenceGroup).getByRole('option', { name: 'Ultra' })).toBeInTheDocument();
+    expect(selectPopup(inferenceGroup).getByRole('option', { name: '轻度' })).toBeInTheDocument();
+    expect(selectPopup(inferenceGroup).getByRole('option', { name: 'Ultra' })).toBeInTheDocument();
   });
 
   it('节点停用或忙碌时禁用生成按钮', () => {
@@ -1077,7 +1164,7 @@ describe('NodeQuickEditor', () => {
     expect(screen.queryByText(imageCredentialLabel)).not.toBeInTheDocument();
     const modelGroup = screen.getByText('模型').parentElement as HTMLElement;
     await user.click(within(modelGroup).getByRole('combobox'));
-    await user.click(within(modelGroup).getByRole('option', { name: /图片模型/ }));
+    await user.click(selectPopup(modelGroup).getByRole('option', { name: /图片模型/ }));
 
     expect(onModelChange).toHaveBeenCalledWith({
       modelAlias: 'image-model',
@@ -1115,7 +1202,13 @@ describe('NodeQuickEditor', () => {
     expect(mediaOptions).toHaveAttribute('data-columns', '2');
     expect(mediaOptions.querySelectorAll('.node-quick-editor-option-group')).toHaveLength(1);
     expect(screen.queryByText('图片尺寸')).not.toBeInTheDocument();
-    expect(ratioGroup.querySelectorAll('.node-quick-editor-option')).toHaveLength(8);
+    await user.click(within(ratioGroup).getByRole('combobox'));
+    expect(selectPopup(ratioGroup).getAllByRole('option')).toHaveLength(8);
+    fireEvent.keyDown(within(ratioGroup).getByRole('combobox'), {
+      key: 'Escape',
+      keyCode: 27,
+      which: 27,
+    });
 
     expect(within(qualityGroup).getByRole('combobox', { name: '图片清晰度：2K' })).toHaveAttribute(
       'aria-expanded',
@@ -1123,23 +1216,18 @@ describe('NodeQuickEditor', () => {
     );
     await user.click(within(qualityGroup).getByRole('combobox'));
     expect(
-      within(qualityGroup).getByRole('option', { name: '2K 高清', selected: true }),
+      selectPopup(qualityGroup).getByRole('option', { name: '2K 高清', selected: true }),
     ).toBeInTheDocument();
-    expect(within(qualityGroup).getByRole('option', { name: '4K 极致' })).toBeInTheDocument();
-    if (ratioGroup.getAttribute('data-open') !== 'true')
-      await user.click(
-        ratioGroup.querySelector<HTMLButtonElement>('.node-quick-editor-option-trigger')!,
-      );
-    expect(within(ratioGroup).queryByText('自动比例')).not.toBeInTheDocument();
-    expect(within(ratioGroup).getByRole('button', { name: /1:1/, pressed: true })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
-    if (ratioGroup.getAttribute('data-open') !== 'true')
-      await user.click(
-        ratioGroup.querySelector<HTMLButtonElement>('.node-quick-editor-option-trigger')!,
-      );
-    fireEvent.click(within(ratioGroup).getByRole('button', { name: /9:16/ }));
+    expect(selectPopup(qualityGroup).getByRole('option', { name: '4K 极致' })).toBeInTheDocument();
+    if (within(ratioGroup).getByRole('combobox').getAttribute('aria-expanded') !== 'true')
+      await user.click(within(ratioGroup).getByRole('combobox'));
+    expect(selectPopup(ratioGroup).queryByText('自动比例')).not.toBeInTheDocument();
+    expect(
+      selectPopup(ratioGroup).getByRole('option', { name: /1:1/, selected: false }),
+    ).toHaveAttribute('aria-selected', 'false');
+    if (within(ratioGroup).getByRole('combobox').getAttribute('aria-expanded') !== 'true')
+      await user.click(within(ratioGroup).getByRole('combobox'));
+    fireEvent.click(selectPopup(ratioGroup).getByRole('option', { name: /9:16/ }));
 
     expect(onParametersChange).toHaveBeenCalledTimes(1);
     expect(onParametersChange).toHaveBeenCalledWith({
@@ -1148,6 +1236,44 @@ describe('NodeQuickEditor', () => {
       providerOption: 'preserved',
       aspectRatio: '9:16',
     });
+  });
+
+  it('完整编辑器将库默认关闭按钮的初始焦点交给提示词', async () => {
+    vi.useFakeTimers();
+    try {
+      renderRaw(<NodeQuickEditor {...makeProps()} />);
+      fireEvent.click(screen.getByRole('button', { name: '打开完整编辑器' }));
+      const dialog = screen.getByRole('dialog');
+      act(() => within(dialog).getByRole('button', { name: '关闭编辑器' }).focus());
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500);
+      });
+      expect(within(dialog).getByRole('textbox', { name: '提示词' })).toHaveFocus();
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
+  });
+
+  it('完整编辑器动画结束不抢走已操作的数量输入焦点', async () => {
+    vi.useFakeTimers();
+    try {
+      renderRaw(<NodeQuickEditor {...makeProps({ onGenerationCountChange: vi.fn() })} />);
+      fireEvent.click(screen.getByRole('button', { name: '打开完整编辑器' }));
+      const dialog = screen.getByRole('dialog');
+      const count = within(dialog).getByRole('spinbutton', { name: '生成数量' });
+      expect(count).toBeEnabled();
+      act(() => count.focus());
+      expect(count).toHaveFocus();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500);
+      });
+      expect(count).toHaveFocus();
+      expect(within(dialog).getByRole('textbox', { name: '提示词' })).toHaveValue('白色背景');
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
   });
 
   it('媒体参数由单一摘要按钮展开，Dialog 共享编辑内容与引用并支持关闭恢复焦点', async () => {
@@ -1169,8 +1295,8 @@ describe('NodeQuickEditor', () => {
     expect(trigger).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByRole('region', { name: '生成参数' })).not.toBeInTheDocument();
     await user.click(trigger);
-    expect(screen.getByRole('region', { name: '生成参数' })).toBeVisible();
-    await user.click(screen.getByRole('button', { name: '收起媒体参数' }));
+    await waitFor(() => expect(screen.getByRole('region', { name: '生成参数' })).toBeVisible());
+    fireEvent.keyDown(trigger, { key: 'Escape', keyCode: 27, which: 27 });
     expect(trigger).toHaveFocus();
     await user.click(screen.getByRole('button', { name: '打开完整编辑器' }));
     const dialog = screen.getByRole('dialog');
@@ -1233,8 +1359,11 @@ describe('NodeQuickEditor', () => {
 
     const formatGroup = screen.getByText('音频格式').parentElement as HTMLElement;
     await user.click(within(formatGroup).getByRole('combobox'));
-    expect(formatGroup).toHaveAttribute('data-placement', 'top');
-    await user.click(within(formatGroup).getByRole('option', { name: 'FLAC' }));
+    expect(
+      selectPopup(formatGroup).getByRole('option', { name: 'FLAC' }).closest('.ant-select-dropdown')
+        ?.parentElement,
+    ).toBe(document.body);
+    await user.click(selectPopup(formatGroup).getByRole('option', { name: 'FLAC' }));
     const formatParameters = onParametersChange.mock.lastCall?.[0];
     expect(formatParameters).toEqual({ ...voiceParameters, response_format: 'flac' });
     rerender(<NodeQuickEditor {...props} node={makeAudioNode(formatParameters)} />);
@@ -1307,7 +1436,7 @@ describe('NodeQuickEditor', () => {
     );
     const formatGroup = screen.getByText('音频格式').parentElement as HTMLElement;
     await user.click(within(formatGroup).getByRole('combobox'));
-    await user.click(within(formatGroup).getByRole('option', { name: '未设置' }));
+    await user.click(selectPopup(formatGroup).getByRole('option', { name: '未设置' }));
     expect(onParametersChange).toHaveBeenLastCalledWith({ voice: 'custom-voice', speed: 2 });
     rerender(
       <NodeQuickEditor {...props} node={makeAudioNode(onParametersChange.mock.lastCall?.[0])} />,
@@ -1336,8 +1465,10 @@ describe('NodeQuickEditor', () => {
       );
       const formatGroup = screen.getByText('音频格式').parentElement as HTMLElement;
       await user.click(within(formatGroup).getByRole('combobox'));
-      expect(within(formatGroup).getAllByRole('option')).toHaveLength(7);
-      await user.click(within(formatGroup).getByRole('option', { name: format.toUpperCase() }));
+      expect(selectPopup(formatGroup).getAllByRole('option')).toHaveLength(7);
+      await user.click(
+        selectPopup(formatGroup).getByRole('option', { name: format.toUpperCase() }),
+      );
       expect(onParametersChange).toHaveBeenCalledWith({
         voice: 'platform-voice',
         response_format: format,
@@ -1408,9 +1539,9 @@ describe('NodeQuickEditor', () => {
     const formatGroup = screen.getByText('音频格式').parentElement as HTMLElement;
     await user.click(within(formatGroup).getByRole('combobox'));
     expect(
-      within(formatGroup).getByRole('option', { name: /wma 已保存，当前不支持/ }),
-    ).toBeDisabled();
-    await user.click(within(formatGroup).getByRole('option', { name: 'WAV' }));
+      selectPopup(formatGroup).getByRole('option', { name: /wma 已保存，当前不支持/ }),
+    ).toHaveAttribute('aria-disabled', 'true');
+    await user.click(selectPopup(formatGroup).getByRole('option', { name: 'WAV' }));
     expect(onParametersChange).toHaveBeenCalledWith({
       voice: 'custom-voice',
       response_format: 'wav',
@@ -1464,10 +1595,13 @@ describe('NodeQuickEditor', () => {
     expect(modeGroup.closest('.node-quick-editor-parameter-popover')).toBeNull();
     expect(within(modeGroup).getByRole('combobox', { name: '生成模式：首帧' })).toBeInTheDocument();
     await user.click(within(modeGroup).getByRole('combobox'));
-    expect(within(modeGroup).getByRole('option', { name: /文生视频/ })).toBeInTheDocument();
-    expect(within(modeGroup).getByRole('option', { name: /全能参考/ })).toBeInTheDocument();
-    expect(within(modeGroup).getByText('视频编辑').closest('button')).toBeDisabled();
-    await user.click(within(modeGroup).getByRole('option', { name: /全能参考/ }));
+    expect(selectPopup(modeGroup).getByRole('option', { name: /文生视频/ })).toBeInTheDocument();
+    expect(selectPopup(modeGroup).getByRole('option', { name: /全能参考/ })).toBeInTheDocument();
+    expect(selectPopup(modeGroup).getByRole('option', { name: /视频编辑/ })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+    await user.click(selectPopup(modeGroup).getByRole('option', { name: /全能参考/ }));
     expect(onVideoModeChange).toHaveBeenCalledWith('omni_reference');
   });
 
@@ -1488,7 +1622,7 @@ describe('NodeQuickEditor', () => {
     const { rerender } = render(<NodeQuickEditor {...props} />);
     const modeGroup = screen.getByText('生成模式').parentElement as HTMLElement;
     await user.click(within(modeGroup).getByRole('combobox'));
-    await user.click(within(modeGroup).getByRole('option', { name: /视频编辑/ }));
+    await user.click(selectPopup(modeGroup).getByRole('option', { name: /视频编辑/ }));
     expect(onParametersChange).toHaveBeenCalledWith({ duration: -1, aspectRatio: 'adaptive' });
     expect(onVideoModeChange).toHaveBeenCalledWith('video_edit');
 
@@ -1506,8 +1640,9 @@ describe('NodeQuickEditor', () => {
       />,
     );
     expect(screen.getByRole('combobox', { name: '时长（秒）：自动' })).toBeInTheDocument();
-    expect(screen.getByText('时长（秒）').parentElement).toHaveTextContent('30秒');
-    expect(screen.getByRole('button', { name: /视频比例：原视频比例/ })).toBeInTheDocument();
+    await user.click(screen.getByRole('combobox', { name: '时长（秒）：自动' }));
+    expect(screen.getByRole('option', { name: '30 秒' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: /视频比例：原视频比例/ })).toBeInTheDocument();
     expect(screen.getByRole('spinbutton', { name: '自定义秒数（-1 为自动）' })).toHaveValue(-1);
     expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
   });
@@ -1629,8 +1764,8 @@ describe('NodeQuickEditor', () => {
           })}
         />,
       );
-      await user.click(screen.getByRole('button', { name: /^视频比例：16:9/ }));
-      await user.click(screen.getByRole('button', { name: /^自动比例/ }));
+      await user.click(screen.getByRole('combobox', { name: /^视频比例：16:9/ }));
+      await user.click(screen.getByRole('option', { name: /^自动比例/ }));
       expect(onParametersChange).toHaveBeenCalledWith({ duration: 8, aspectRatio: 'adaptive' });
     },
   );
@@ -1655,10 +1790,13 @@ describe('NodeQuickEditor', () => {
     );
     expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
     expect(screen.getByRole('spinbutton', { name: '自定义秒数（-1 为自动）' })).toHaveValue(-1);
-    expect(screen.getByRole('button', { name: /视频比例：自动比例/ })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: /视频比例：自动比例/ })).toBeInTheDocument();
     const durationGroup = screen.getByText('时长（秒）').parentElement as HTMLElement;
     await user.click(within(durationGroup).getByRole('combobox'));
-    expect(within(durationGroup).getByRole('option', { name: /^自动 / })).toBeEnabled();
+    expect(selectPopup(durationGroup).getByRole('option', { name: /^自动 / })).not.toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
   });
 
   it.each(['wan3.0-video', 'seedance-2-0-fast-official', 'doubao-seedance-2-5-260628'])(
@@ -1686,7 +1824,7 @@ describe('NodeQuickEditor', () => {
       );
       const modeGroup = screen.getByText('生成模式').parentElement as HTMLElement;
       await user.click(within(modeGroup).getByRole('combobox'));
-      await user.click(within(modeGroup).getByRole('option', { name: /视频延长/ }));
+      await user.click(selectPopup(modeGroup).getByRole('option', { name: /视频延长/ }));
       expect(onParametersChange).toHaveBeenCalledWith({ duration: 8, aspectRatio: 'adaptive' });
       expect(onVideoModeChange).toHaveBeenCalledWith('video_extend');
     },
@@ -1753,7 +1891,7 @@ describe('NodeQuickEditor', () => {
     );
     const modeGroup = screen.getByText('生成模式').parentElement as HTMLElement;
     await user.click(within(modeGroup).getByRole('combobox'));
-    await user.click(within(modeGroup).getByRole('option', { name: /文生视频/ }));
+    await user.click(selectPopup(modeGroup).getByRole('option', { name: /文生视频/ }));
     expect(onParametersChange).toHaveBeenCalledWith({ duration: 6, aspectRatio: '16:9' });
     expect(onVideoModeChange).toHaveBeenCalledWith('text_to_video');
   });
@@ -1783,23 +1921,32 @@ describe('NodeQuickEditor', () => {
     );
     const resolutionGroup = screen.getByText('视频清晰度').parentElement as HTMLElement;
     await user.click(within(resolutionGroup).getByRole('combobox'));
-    expect(within(resolutionGroup).getByRole('option', { name: '768P' })).toBeEnabled();
-    expect(within(resolutionGroup).getByRole('option', { name: '2K' })).toBeEnabled();
+    expect(selectPopup(resolutionGroup).getByRole('option', { name: '768P' })).not.toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+    expect(selectPopup(resolutionGroup).getByRole('option', { name: '2K' })).not.toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
     expect(
-      within(resolutionGroup).getByRole('option', { name: /720p.*当前模型不支持/ }),
-    ).toBeDisabled();
+      selectPopup(resolutionGroup).getByRole('option', { name: /720p.*当前模型不支持/ }),
+    ).toHaveAttribute('aria-disabled', 'true');
     expect(
-      within(resolutionGroup).queryByRole('option', { name: '1080p' }),
+      selectPopup(resolutionGroup).queryByRole('option', { name: '1080p' }),
     ).not.toBeInTheDocument();
-    await user.click(within(resolutionGroup).getByRole('option', { name: '768P' }));
+    await user.click(selectPopup(resolutionGroup).getByRole('option', { name: '768P' }));
     expect(onParametersChange).toHaveBeenCalledWith({
       duration: 15,
       resolution: '768p',
       aspectRatio: '16:9',
     });
     const durationGroup = screen.getByText('时长（秒）').parentElement as HTMLElement;
-    expect(durationGroup).toHaveTextContent('15秒');
-    expect(durationGroup).not.toHaveTextContent('20秒');
+    await user.click(within(durationGroup).getByRole('combobox'));
+    expect(selectPopup(durationGroup).getByRole('option', { name: '15 秒' })).toBeInTheDocument();
+    expect(
+      selectPopup(durationGroup).queryByRole('option', { name: '20 秒' }),
+    ).not.toBeInTheDocument();
   });
 
   it('Moon 小写 minimax-h3 文生视频只提供普通档位并拒绝 adaptive 比例', async () => {
@@ -1827,19 +1974,30 @@ describe('NodeQuickEditor', () => {
     const resolutionGroup = screen.getByText('视频清晰度').parentElement as HTMLElement;
     await user.click(within(resolutionGroup).getByRole('combobox'));
     for (const label of ['480P', '768P', '1080P']) {
-      expect(within(resolutionGroup).getByRole('option', { name: label })).toBeEnabled();
+      expect(selectPopup(resolutionGroup).getByRole('option', { name: label })).not.toHaveAttribute(
+        'aria-disabled',
+        'true',
+      );
     }
     expect(
-      within(resolutionGroup).getByRole('option', { name: /2k.*当前模型不支持/i }),
-    ).toBeDisabled();
-    expect(within(resolutionGroup).queryByRole('option', { name: '4K' })).not.toBeInTheDocument();
-    await user.keyboard('{Escape}');
+      selectPopup(resolutionGroup).getByRole('option', { name: /2k.*当前模型不支持/i }),
+    ).toHaveAttribute('aria-disabled', 'true');
+    expect(
+      selectPopup(resolutionGroup).queryByRole('option', { name: '4K' }),
+    ).not.toBeInTheDocument();
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape', keyCode: 27, which: 27 });
 
-    await user.click(screen.getByRole('button', { name: /^视频比例：adaptive/ }));
+    await user.click(screen.getByRole('combobox', { name: /^视频比例：adaptive/ }));
     for (const ratio of ['16:9', '9:16', '1:1', '2:3', '3:2', '3:4', '4:3', '21:9']) {
-      expect(screen.getByRole('button', { name: new RegExp(`^${ratio}`) })).toBeEnabled();
+      expect(screen.getByRole('option', { name: new RegExp(`^${ratio}`) })).not.toHaveAttribute(
+        'aria-disabled',
+        'true',
+      );
     }
-    expect(screen.getByRole('button', { name: /^adaptive.*当前模型不支持/ })).toBeDisabled();
+    expect(screen.getByRole('option', { name: /^adaptive.*当前模型不支持/ })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
   });
 
   it('Moon 小写 minimax-h3 参考模式开放 2K 与 4K 并保留固定比例', async () => {
@@ -1864,9 +2022,12 @@ describe('NodeQuickEditor', () => {
     const resolutionGroup = screen.getByText('视频清晰度').parentElement as HTMLElement;
     await user.click(within(resolutionGroup).getByRole('combobox'));
     for (const label of ['480P', '768P', '1080P', '2K', '4K']) {
-      expect(within(resolutionGroup).getByRole('option', { name: label })).toBeEnabled();
+      expect(selectPopup(resolutionGroup).getByRole('option', { name: label })).not.toHaveAttribute(
+        'aria-disabled',
+        'true',
+      );
     }
-    expect(within(resolutionGroup).getAllByRole('option')).toHaveLength(5);
+    expect(selectPopup(resolutionGroup).getAllByRole('option')).toHaveLength(5);
     expect(screen.getByText('时长（秒）').parentElement).not.toHaveTextContent('20秒');
   });
 
@@ -1936,16 +2097,20 @@ describe('NodeQuickEditor', () => {
       const resolutionGroup = screen.getByText('视频清晰度').parentElement as HTMLElement;
       await user.click(within(resolutionGroup).getByRole('combobox'));
       for (const label of supported) {
-        expect(within(resolutionGroup).getByRole('option', { name: label })).toBeEnabled();
+        expect(
+          selectPopup(resolutionGroup).getByRole('option', { name: label }),
+        ).not.toHaveAttribute('aria-disabled', 'true');
       }
-      expect(within(resolutionGroup).getAllByRole('option')).toHaveLength(supported.length + 1);
+      expect(selectPopup(resolutionGroup).getAllByRole('option')).toHaveLength(
+        supported.length + 1,
+      );
       expect(
-        within(resolutionGroup).getByRole('option', {
+        selectPopup(resolutionGroup).getByRole('option', {
           name: new RegExp(`${invalid}.*当前模型不支持`),
         }),
-      ).toBeDisabled();
+      ).toHaveAttribute('aria-disabled', 'true');
       await user.click(
-        within(resolutionGroup).getByRole('option', { name: selected.toUpperCase() }),
+        selectPopup(resolutionGroup).getByRole('option', { name: selected.toUpperCase() }),
       );
       expect(onParametersChange).toHaveBeenCalledWith({
         duration: 8,
@@ -1993,37 +2158,50 @@ describe('NodeQuickEditor', () => {
     expect(mediaOptions).toHaveAttribute('data-columns', '2');
     expect(mediaOptions.querySelectorAll('.node-quick-editor-option-group')).toHaveLength(1);
     expect(screen.queryByText('视频尺寸')).not.toBeInTheDocument();
-    expect(resolutionGroup.querySelectorAll('.compact-select-option')).toHaveLength(6);
-    expect(ratioGroup.querySelectorAll('.node-quick-editor-option')).toHaveLength(8);
-    expect(durationGroup.querySelectorAll('.compact-select-option')).toHaveLength(5);
+    await user.click(within(resolutionGroup).getByRole('combobox'));
+    expect(selectPopup(resolutionGroup).getAllByRole('option')).toHaveLength(6);
+    fireEvent.keyDown(within(resolutionGroup).getByRole('combobox'), {
+      key: 'Escape',
+      keyCode: 27,
+      which: 27,
+    });
+    await user.click(within(ratioGroup).getByRole('combobox'));
+    expect(selectPopup(ratioGroup).getAllByRole('option')).toHaveLength(8);
+    fireEvent.keyDown(within(ratioGroup).getByRole('combobox'), {
+      key: 'Escape',
+      keyCode: 27,
+      which: 27,
+    });
+    await user.click(within(durationGroup).getByRole('combobox'));
+    expect(selectPopup(durationGroup).getAllByRole('option')).toHaveLength(5);
+    fireEvent.keyDown(within(durationGroup).getByRole('combobox'), {
+      key: 'Escape',
+      keyCode: 27,
+      which: 27,
+    });
 
     expect(
       within(resolutionGroup).getByRole('combobox', { name: '视频清晰度：720p' }),
     ).toHaveAttribute('aria-expanded', 'false');
     await user.click(within(resolutionGroup).getByRole('combobox'));
     expect(
-      within(resolutionGroup).getByRole('option', { name: '720p', selected: true }),
+      selectPopup(resolutionGroup).getByRole('option', { name: '720p', selected: true }),
     ).toBeInTheDocument();
-    expect(within(resolutionGroup).getByRole('option', { name: '360p' })).toBeInTheDocument();
-    expect(within(resolutionGroup).getByRole('option', { name: '2160p' })).toBeInTheDocument();
-    if (ratioGroup.getAttribute('data-open') !== 'true')
-      await user.click(
-        ratioGroup.querySelector<HTMLButtonElement>('.node-quick-editor-option-trigger')!,
-      );
-    expect(within(ratioGroup).queryByText('自动比例')).not.toBeInTheDocument();
-    expect(within(ratioGroup).getByRole('button', { name: /1:1/, pressed: true })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
+    expect(selectPopup(resolutionGroup).getByRole('option', { name: '360p' })).toBeInTheDocument();
+    expect(selectPopup(resolutionGroup).getByRole('option', { name: '2160p' })).toBeInTheDocument();
+    if (within(ratioGroup).getByRole('combobox').getAttribute('aria-expanded') !== 'true')
+      await user.click(within(ratioGroup).getByRole('combobox'));
+    expect(selectPopup(ratioGroup).queryByText('自动比例')).not.toBeInTheDocument();
+    expect(
+      selectPopup(ratioGroup).getByRole('option', { name: /1:1/, selected: false }),
+    ).toHaveAttribute('aria-selected', 'false');
     await user.click(within(durationGroup).getByRole('combobox'));
     expect(
-      within(durationGroup).getByRole('option', { name: '4 秒', selected: true }),
+      selectPopup(durationGroup).getByRole('option', { name: '4 秒', selected: true }),
     ).toBeInTheDocument();
-    if (ratioGroup.getAttribute('data-open') !== 'true')
-      await user.click(
-        ratioGroup.querySelector<HTMLButtonElement>('.node-quick-editor-option-trigger')!,
-      );
-    const ratioButton = within(ratioGroup).getByRole('button', { name: /16:9/ });
+    if (within(ratioGroup).getByRole('combobox').getAttribute('aria-expanded') !== 'true')
+      await user.click(within(ratioGroup).getByRole('combobox'));
+    const ratioButton = selectPopup(ratioGroup).getByRole('option', { name: /16:9/ });
     const ratioPreview = ratioButton.querySelector('.node-quick-editor-aspect-preview');
     expect(ratioPreview).toBeInTheDocument();
     expect(ratioPreview).toHaveStyle({ aspectRatio: '16 / 9' });
@@ -2031,7 +2209,7 @@ describe('NodeQuickEditor', () => {
 
     await user.click(ratioButton);
     await user.click(within(durationGroup).getByRole('combobox'));
-    fireEvent.click(within(durationGroup).getByRole('option', { name: '8 秒' }));
+    fireEvent.click(selectPopup(durationGroup).getByRole('option', { name: '8 秒' }));
 
     expect(onParametersChange).toHaveBeenNthCalledWith(1, {
       size: '1920x1080',
@@ -2046,7 +2224,7 @@ describe('NodeQuickEditor', () => {
     });
   });
 
-  it('按当前视频模型能力动态显示清晰度、比例和时长，并默认选中第一项', async () => {
+  it('按视频模型能力展示首项候选，未持久化时不伪装成已选中', async () => {
     const user = userEvent.setup();
     render(
       <NodeQuickEditor
@@ -2081,31 +2259,31 @@ describe('NodeQuickEditor', () => {
       within(resolutionGroup).getByRole('combobox', { name: '视频清晰度：未设置' }),
     ).toBeInTheDocument();
     expect(
-      within(ratioGroup).getByRole('button', { name: '视频比例：未设置' }),
+      within(ratioGroup).getByRole('combobox', { name: '视频比例：未设置' }),
     ).toBeInTheDocument();
     expect(
       within(durationGroup).getByRole('combobox', { name: '时长（秒）：未设置' }),
     ).toBeInTheDocument();
     await user.click(within(resolutionGroup).getByRole('combobox'));
     expect(
-      within(resolutionGroup).getByRole('option', { name: '360p', selected: true }),
+      selectPopup(resolutionGroup).getByRole('option', { name: '360p', selected: false }),
     ).toBeInTheDocument();
     expect(
-      within(resolutionGroup).queryByRole('option', { name: '1080p' }),
+      selectPopup(resolutionGroup).queryByRole('option', { name: '1080p' }),
     ).not.toBeInTheDocument();
-    if (ratioGroup.getAttribute('data-open') !== 'true')
-      await user.click(
-        ratioGroup.querySelector<HTMLButtonElement>('.node-quick-editor-option-trigger')!,
-      );
+    if (within(ratioGroup).getByRole('combobox').getAttribute('aria-expanded') !== 'true')
+      await user.click(within(ratioGroup).getByRole('combobox'));
     expect(
-      within(ratioGroup).getByRole('button', { name: /16:9/, pressed: true }),
+      selectPopup(ratioGroup).getByRole('option', { name: /16:9/, selected: false }),
     ).toBeInTheDocument();
-    expect(within(ratioGroup).queryByRole('button', { name: /1:1/ })).not.toBeInTheDocument();
+    expect(selectPopup(ratioGroup).queryByRole('option', { name: /1:1/ })).not.toBeInTheDocument();
     await user.click(within(durationGroup).getByRole('combobox'));
     expect(
-      within(durationGroup).getByRole('option', { name: '6 秒', selected: true }),
+      selectPopup(durationGroup).getByRole('option', { name: '6 秒', selected: false }),
     ).toBeInTheDocument();
-    expect(within(durationGroup).queryByRole('option', { name: '20 秒' })).not.toBeInTheDocument();
+    expect(
+      selectPopup(durationGroup).queryByRole('option', { name: '20 秒' }),
+    ).not.toBeInTheDocument();
   });
 
   it('视频不展示像素尺寸，也不会根据分辨率和比例写入宽高', () => {
@@ -2149,8 +2327,8 @@ describe('NodeQuickEditor', () => {
     const { unmount } = render(<NodeQuickEditor {...props} />);
     expect(onParametersChange).not.toHaveBeenCalled();
     await user.click(screen.getByRole('combobox', { name: '视频清晰度：720p' }));
-    const menu = screen.getByRole('listbox', { name: '视频清晰度选项' });
-    expect(menu).toHaveAttribute('data-layout', 'grid');
+    const menu = screen.getByRole('listbox');
+    expect(menu.closest('.node-parameter-grid')).not.toBeNull();
     await user.click(within(menu).getByRole('option', { name: '480p' }));
     expect(onParametersChange).toHaveBeenCalledWith({ ...legacy, resolution: '480p' });
     expect(legacy.resolution).toBe('720p');
@@ -2226,9 +2404,11 @@ describe('NodeQuickEditor', () => {
     await user.click(within(inferenceGroup).getByRole('combobox'));
 
     expect(
-      within(inferenceGroup).getByRole('option', { name: '极高', selected: true }),
+      selectPopup(inferenceGroup).getByRole('option', { name: '极高', selected: false }),
     ).toBeInTheDocument();
-    expect(within(inferenceGroup).queryByRole('option', { name: '轻度' })).not.toBeInTheDocument();
+    expect(
+      selectPopup(inferenceGroup).queryByRole('option', { name: '轻度' }),
+    ).not.toBeInTheDocument();
   });
 
   it('不会把对象能力映射中禁用的推理强度显示出来', async () => {
@@ -2267,11 +2447,17 @@ describe('NodeQuickEditor', () => {
     await user.click(within(inferenceGroup).getByRole('combobox'));
 
     expect(
-      within(inferenceGroup).getByRole('option', { name: '极高', selected: true }),
+      selectPopup(inferenceGroup).getByRole('option', { name: '极高', selected: false }),
     ).toBeInTheDocument();
-    expect(within(inferenceGroup).queryByRole('option', { name: '轻度' })).not.toBeInTheDocument();
-    expect(within(inferenceGroup).queryByRole('option', { name: '中' })).not.toBeInTheDocument();
-    expect(within(inferenceGroup).queryByRole('option', { name: '高' })).not.toBeInTheDocument();
+    expect(
+      selectPopup(inferenceGroup).queryByRole('option', { name: '轻度' }),
+    ).not.toBeInTheDocument();
+    expect(
+      selectPopup(inferenceGroup).queryByRole('option', { name: '中' }),
+    ).not.toBeInTheDocument();
+    expect(
+      selectPopup(inferenceGroup).queryByRole('option', { name: '高' }),
+    ).not.toBeInTheDocument();
   });
 
   it('无回显只显示生成，有回显才显示新节点', () => {
@@ -2371,13 +2557,14 @@ describe('NodeQuickEditor', () => {
     await user.click(within(card).getByRole('button', { name: '原图' }));
     expect(onFocusImageEditSource).toHaveBeenCalledWith('node_parent');
     await user.click(within(card).getByRole('img'));
-    expect(await screen.findByRole('dialog', { name: '原图' })).toBeVisible();
+    await waitFor(() => expect(screen.getByRole('dialog', { name: '原图' })).toBeVisible());
     await user.click(screen.getByRole('button', { name: '关闭预览' }));
     await waitFor(() =>
       expect(screen.queryByRole('dialog', { name: '原图' })).not.toBeInTheDocument(),
     );
     await user.click(screen.getByRole('button', { name: '隐藏来源图' }));
     expect(screen.queryByRole('group', { name: '来源图（只读）' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '媒体参数' }));
     expect(screen.getByRole('checkbox', { name: '显示来源图' })).not.toBeChecked();
   });
 

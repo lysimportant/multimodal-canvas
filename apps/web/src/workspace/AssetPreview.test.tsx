@@ -282,7 +282,7 @@ describe('AssetPreview', () => {
     expect(screen.queryByRole('link', { name: /查看大图/ })).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '预览图片：城市夜景' }));
     const viewer = screen.getByRole('dialog', { name: '城市夜景' });
-    expect(viewer).toBeVisible();
+    await waitFor(() => expect(viewer).toBeVisible());
     expect(viewer.querySelector('img')).toHaveAttribute('src', 'https://assets.example/city.png');
     await user.click(screen.getByRole('button', { name: '关闭预览' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
@@ -336,7 +336,7 @@ describe('AssetPreview', () => {
     expect(screen.getByRole('button', { name: '恢复原始大小' })).toBeDisabled();
   });
 
-  it('图片首次按下后即使节点变为选中也只打开编辑器，再次点击才预览', () => {
+  it('图片首次按下后即使节点变为选中也只打开编辑器，再次点击才预览', async () => {
     const asset = makeAsset({ mediaType: 'image', mimeType: 'image/png' });
     const selectNode = vi.fn();
     const view = render(
@@ -357,7 +357,7 @@ describe('AssetPreview', () => {
 
     fireEvent.pointerDown(image);
     fireEvent.click(image);
-    expect(screen.getByRole('dialog')).toBeVisible();
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeVisible());
     expect(selectNode).toHaveBeenCalledTimes(1);
   });
 
@@ -370,7 +370,7 @@ describe('AssetPreview', () => {
       />,
     );
     await userEvent.click(screen.getByRole('button', { name: '预览图片：生成结果' }));
-    expect(screen.getByRole('dialog')).toBeVisible();
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeVisible());
   });
 
   it.each([
@@ -561,7 +561,7 @@ describe('AssetPreview', () => {
     expect(screen.getByRole('button', { name: '播放视频' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '预览视频：生成结果' }));
     const viewer = screen.getByRole('dialog', { name: '生成结果' });
-    expect(viewer).toBeVisible();
+    await waitFor(() => expect(viewer).toBeVisible());
     expect(viewer.querySelector('video')).toHaveAttribute('controls');
     fireEvent.click(screen.getByRole('button', { name: '关闭预览' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());

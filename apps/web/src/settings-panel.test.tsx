@@ -1,5 +1,7 @@
 /** New API 设置页的分组模型、偏好和账户切换回归。 */
 import '@testing-library/jest-dom/vitest';
+import { ConfigProvider } from 'antd';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -137,9 +139,11 @@ function panel(
   onNotice: (notice: { kind: 'error' | 'success'; message: string }) => void = vi.fn(),
 ) {
   return (
-    <QueryClientProvider client={client}>
-      <SettingsPanel key={key} presentation="page" onClose={vi.fn()} onNotice={onNotice} />
-    </QueryClientProvider>
+    <ConfigProvider theme={{ token: { motion: false } }}>
+      <QueryClientProvider client={client}>
+        <SettingsPanel key={key} presentation="page" onClose={vi.fn()} onNotice={onNotice} />
+      </QueryClientProvider>
+    </ConfigProvider>
   );
 }
 
@@ -220,17 +224,23 @@ describe('SettingsPanel', () => {
     const defaults = screen.getByRole('tab', { name: '节点默认' });
     const appearance = screen.getByRole('tab', { name: '画布外观' });
 
+    const interaction = userEvent.setup();
     overview.focus();
-    fireEvent.keyDown(overview, { key: 'End' });
-    expect(appearance).toHaveFocus();
+    await interaction.keyboard('{End}');
+    await waitFor(() => expect(appearance).toHaveFocus());
+    expect(appearance).toHaveAttribute('aria-selected', 'false');
+    await interaction.keyboard('{Enter}');
     expect(appearance).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByRole('tabpanel')).toHaveAccessibleName('画布外观');
+    expect(screen.getByRole('tabpanel')).toHaveAccessibleName(/画布外观$/);
 
-    fireEvent.keyDown(appearance, { key: 'Home' });
-    expect(overview).toHaveFocus();
-    fireEvent.keyDown(overview, { key: 'ArrowDown' });
-    expect(defaults).toHaveFocus();
-    expect(screen.getByRole('tabpanel')).toHaveAccessibleName('节点默认');
+    await interaction.keyboard('{Home}');
+    await waitFor(() => expect(overview).toHaveFocus());
+    await interaction.keyboard('{Enter}');
+    expect(screen.getByRole('tabpanel')).toHaveAccessibleName(/New API 账号$/);
+    await interaction.keyboard('{ArrowDown}');
+    await waitFor(() => expect(defaults).toHaveFocus());
+    await interaction.keyboard('{Enter}');
+    expect(screen.getByRole('tabpanel')).toHaveAccessibleName(/节点默认$/);
   });
 
   it('同 alias 跨组保留为两个选项，并保存模型身份与超时', async () => {
@@ -240,12 +250,15 @@ describe('SettingsPanel', () => {
     });
     fireEvent.click(screen.getByRole('tab', { name: '节点默认' }));
 
+    const interaction = userEvent.setup();
     const imageSelect = screen.getByRole('combobox', { name: '图片' });
-    expect(screen.getByRole('option', { name: '同名图片模型 · alpha' })).toBeVisible();
+    await interaction.click(imageSelect);
+    await waitFor(() =>
+      expect(screen.getByRole('option', { name: '同名图片模型 · alpha' })).toBeVisible(),
+    );
     expect(screen.getByRole('option', { name: '同名图片模型 · beta' })).toBeVisible();
-    fireEvent.change(imageSelect, {
-      target: { value: JSON.stringify(['cred-beta', 'shared-image']) },
-    });
+    await interaction.click(screen.getByRole('option', { name: '同名图片模型 · beta' }));
+    expect(imageSelect.closest('.ant-select')).toHaveTextContent('同名图片模型 · beta');
     fireEvent.click(screen.getByRole('button', { name: '保存' }));
 
     await waitFor(() => expect(patchBodies).toHaveLength(1));
@@ -264,7 +277,22 @@ describe('SettingsPanel', () => {
     await openPanel();
     fireEvent.click(screen.getByRole('tab', { name: '节点默认' }));
 
-    expect(screen.getByRole('combobox', { name: /^图片 / })).toHaveValue('');
+    const imageSelect = screen.getByRole('combobox', { name: '图片' });
+    expect(imageSelect.closest('.ant-select')).toHaveTextContent('未选择');
+    const interaction = userEvent.setup();
+    await interaction.click(imageSelect);
+    await waitFor(() =>
+      expect(screen.getByRole('option', { name: '未选择', selected: true })).toBeVisible(),
+    );
+    expect(screen.getByRole('option', { name: '同名图片模型 · alpha' })).toHaveAttribute(
+      'aria-selected',
+      'false',
+    );
+    expect(screen.getByRole('option', { name: '同名图片模型 · beta' })).toHaveAttribute(
+      'aria-selected',
+      'false',
+    );
+    await interaction.keyboard('{Escape}');
     expect(screen.getByText('原选择 shared-image 已失效，请明确选择新的分组模型。')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: '保存' }));
 
@@ -282,21 +310,17 @@ describe('SettingsPanel', () => {
       target: { value: '4' },
     });
     fireEvent.click(screen.getByRole('tab', { name: '画布外观' }));
-    fireEvent.change(screen.getByRole('combobox', { name: '主题' }), {
-      target: { value: 'dark' },
-    });
-    fireEvent.change(screen.getByRole('combobox', { name: '画布背景' }), {
-      target: { value: 'blank' },
-    });
-    fireEvent.change(screen.getByRole('combobox', { name: '图片修改来源图' }), {
-      target: { value: 'hide' },
-    });
-    fireEvent.change(screen.getByRole('combobox', { name: '连接线路径' }), {
-      target: { value: 'straight' },
-    });
-    fireEvent.change(screen.getByRole('combobox', { name: '连接线特效' }), {
-      target: { value: 'none' },
-    });
+    const interaction = userEvent.setup();
+    for (const [name, option] of [
+      ['主题', '深色'],
+      ['画布背景', '空白'],
+      ['图片修改来源图', '隐藏'],
+      ['连接线路径', '直线'],
+      ['连接线特效', '无特效'],
+    ]) {
+      await interaction.click(screen.getByRole('combobox', { name }));
+      await interaction.click(await screen.findByRole('option', { name: option }));
+    }
 
     expect(useWorkspacePreferences.getState()).toMatchObject({
       defaultGenerationCount: 4,
@@ -367,7 +391,13 @@ describe('SettingsPanel', () => {
     view.rerender(panel(client, 'user-b'));
     expect(await screen.findByText('账号乙 · active')).toBeVisible();
     fireEvent.click(screen.getByRole('tab', { name: '节点默认' }));
-    expect(screen.getByRole('option', { name: '当前账号模型 · gamma' })).toBeVisible();
+    const interaction = userEvent.setup();
+    await interaction.click(screen.getByRole('combobox', { name: '图片' }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole('option', { name: '当前账号模型 · gamma', selected: true }),
+      ).toBeVisible(),
+    );
 
     await act(async () => {
       oldAccount.resolve(response({ account: { ...baseAccount, displayName: '迟到账号甲' } }));
@@ -397,9 +427,16 @@ describe('SettingsPanel', () => {
     });
 
     expect(screen.queryByText(/迟到账号甲|迟到旧模型/)).toBeNull();
-    expect(screen.getByRole('combobox', { name: '图片' })).toHaveValue(
-      JSON.stringify(['cred-gamma', 'new-image']),
+    expect(screen.getByRole('combobox', { name: '图片' }).closest('.ant-select')).toHaveTextContent(
+      '当前账号模型 · gamma',
     );
+    expect(
+      screen.getByRole('option', { name: '当前账号模型 · gamma', selected: true }),
+    ).toBeVisible();
+    await interaction.keyboard('{Escape}');
+    await interaction.click(screen.getByRole('tab', { name: 'New API 账号' }));
+    expect(screen.getByText('账号乙 · active')).toBeVisible();
+    expect(screen.getByRole('spinbutton', { name: '节点超时时间（毫秒）' })).toHaveValue(240_000);
     expect(client.getQueryData(modelCatalogQueryKeyFor(undefined, 'user-b'))).toEqual([
       expect.objectContaining({ id: 'new-image', credentialId: 'cred-gamma' }),
     ]);

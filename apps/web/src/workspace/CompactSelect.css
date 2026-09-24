@@ -1,0 +1,33 @@
+.compact-select-antd {
+  min-width: 0;
+  width: 100%;
+}
+
+.compact-select-antd-value {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.compact-select-antd-popup .compact-select-option-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.compact-select-antd-popup .compact-select-option-copy small {
+  color: var(--mc-text-muted, #687386);
+  font-size: 11px;
+  white-space: normal;
+}
+
+.compact-select-antd-grid .ant-select-dropdown-list-holder-inner {
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 3px;
+}
+
+.compact-select-antd-grid .ant-select-item-group {
+  grid-column: 1 / -1;
+}

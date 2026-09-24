@@ -1,3 +1,4 @@
+import { Button, Input } from '@multimodal-canvas/ui';
 import {
   AlertTriangle,
   Archive,
@@ -81,7 +82,7 @@ export function WorkspacePage({
             <span>集中查看画布、最近更新时间和归档状态。</span>
           </div>
           <div className="mc-workspace-heading-actions">
-            <button
+            <Button
               type="button"
               className="mc-workspace-create"
               onClick={onCreateProject}
@@ -89,7 +90,7 @@ export function WorkspacePage({
             >
               <Plus size={16} aria-hidden="true" />
               新建项目
-            </button>
+            </Button>
           </div>
         </header>
 
@@ -106,7 +107,7 @@ export function WorkspacePage({
           <label className="mc-workspace-search">
             <Search size={16} aria-hidden="true" />
             <span className="mc-visually-hidden">搜索项目</span>
-            <input type="search" {...queryBinding} placeholder="搜索项目名称或 ID" />
+            <Input type="search" {...queryBinding} placeholder="搜索项目名称或 ID" />
           </label>
           <span className="mc-workspace-count" aria-live="polite">
             {isLoading ? '正在读取项目' : `${filteredProjects.length} / ${projects.length} 个项目`}
@@ -125,9 +126,9 @@ export function WorkspacePage({
             <strong>项目列表加载失败</strong>
             <span>{error}</span>
             {onRetry && (
-              <button type="button" onClick={onRetry}>
+              <Button type="button" onClick={onRetry}>
                 重新加载
-              </button>
+              </Button>
             )}
           </div>
         ) : filteredProjects.length === 0 ? (
@@ -142,16 +143,16 @@ export function WorkspacePage({
             {(onRequestLogin || (projects.length === 0 && onCreateProject)) && (
               <div className="mc-workspace-state-actions">
                 {onRequestLogin && (
-                  <button type="button" className="mc-workspace-login" onClick={onRequestLogin}>
+                  <Button type="button" className="mc-workspace-login" onClick={onRequestLogin}>
                     <LogIn size={16} aria-hidden="true" />
                     登录
-                  </button>
+                  </Button>
                 )}
                 {projects.length === 0 && onCreateProject && (
-                  <button type="button" onClick={onCreateProject}>
+                  <Button type="button" onClick={onCreateProject}>
                     <Plus size={15} aria-hidden="true" />
                     新建项目
-                  </button>
+                  </Button>
                 )}
               </div>
             )}

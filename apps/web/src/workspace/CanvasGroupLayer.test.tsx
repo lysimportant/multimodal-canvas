@@ -67,6 +67,38 @@ describe('CanvasGroupLayer', () => {
     });
   });
 
+  it('Popover 挂在组外，成员和视口更新不写入显式组尺寸', () => {
+    const onResizeGroup = vi.fn();
+    const onTranslateGroup = vi.fn();
+    const props = {
+      groups: [group()],
+      selectedGroupId: 'g1',
+      onResizeGroup,
+      onTranslateGroup,
+    };
+    const { container, rerender } = render(
+      <CanvasGroupLayer {...props} viewport={{ x: 0, y: 0, zoom: 1 }} />,
+    );
+    const card = screen.getByRole('region', { name: '场景 A分组信息' });
+    expect(card.closest('.ant-popover')).toBeInTheDocument();
+    expect(container).not.toContainElement(card);
+    rerender(
+      <CanvasGroupLayer
+        {...props}
+        nodes={[{ id: 'a', data: { mediaType: 'image' } }] as AssetFlowNode[]}
+        viewport={{ x: 10, y: 20, zoom: 0.5 }}
+      />,
+    );
+    expect(container.querySelector('.canvas-group')).toHaveStyle({
+      transform: 'translate(60px, 45px)',
+      width: '320px',
+      height: '210px',
+    });
+    expect(within(card).getByText('图片').parentElement).toHaveTextContent('图片1');
+    expect(onResizeGroup).not.toHaveBeenCalled();
+    expect(onTranslateGroup).not.toHaveBeenCalled();
+  });
+
   it('没有任何组时不渲染区域层', () => {
     const { container } = render(
       <CanvasGroupLayer groups={[]} viewport={{ x: 0, y: 0, zoom: 1 }} />,

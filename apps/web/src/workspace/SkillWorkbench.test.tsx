@@ -1,10 +1,19 @@
+import { ConfigProvider } from 'antd';
 import '@testing-library/jest-dom/vitest';
 
 import type { PromptSkill } from '@multimodal-canvas/domain';
 import { QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render as renderAntd,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { useState } from 'react';
+import { StrictMode, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createAppQueryClient } from '../query/client';
@@ -24,6 +33,15 @@ vi.mock('../skill-library', async (importOriginal) => ({
   fetchSkillLibrary: vi.fn(),
   updateSkill: vi.fn(),
 }));
+
+/** 禁用库动画以同步检查可见性；仍渲染真实 Ant Design 控件和 portal。 */
+const render = (ui: Parameters<typeof renderAntd>[0], options?: Parameters<typeof renderAntd>[1]) =>
+  renderAntd(ui, {
+    wrapper: ({ children }) => (
+      <ConfigProvider theme={{ token: { motion: false } }}>{children}</ConfigProvider>
+    ),
+    ...options,
+  });
 
 /** 内置项与用户项覆盖只读、开关及完整编辑两种权限。 */
 const builtin: PromptSkill = {
@@ -51,12 +69,17 @@ const custom: PromptSkill = {
 };
 
 beforeEach(() => {
+  // 库在 test 环境给所有 Portal 相同 ID，会互相移除嵌套 Escape 注册；使用真实唯一 ID 验证窗口栈。
+  vi.stubEnv('NODE_ENV', 'development');
   vi.mocked(fetchSkillLibrary).mockReset().mockResolvedValue([builtin, custom]);
   vi.mocked(createSkill).mockReset();
   vi.mocked(updateSkill).mockReset();
   vi.mocked(deleteSkill).mockReset();
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllEnvs();
+});
 
 /** 渲染真实受控开关，以检查确认关闭后的卸载行为。 */
 function setup() {
@@ -85,6 +108,110 @@ async function selectCustom(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe('Skill 工作台', () => {
+  describe('Tooltip 焦点兼容', () => {
+    beforeEach(() => {
+      // jsdom 不计算布局；只补 offsetParent，让真实 Modal 焦点锁识别当前按钮。
+      vi.spyOn(HTMLElement.prototype, 'offsetParent', 'get').mockImplementation(function (
+        this: HTMLElement,
+      ) {
+        return this.parentElement;
+      });
+    });
+
+    it('StrictMode 下图标按钮保留键盘提示，聚焦和失焦不触发同步刷新警告', async () => {
+      const errors = vi.spyOn(console, 'error');
+      const user = userEvent.setup();
+      render(
+        <StrictMode>
+          <SkillWorkbench open onOpenChange={vi.fn()} onChanged={vi.fn()} />
+        </StrictMode>,
+      );
+      await screen.findByRole('button', { name: custom.name });
+      const dialog = screen.getByRole('dialog', { name: 'Skill 工作台' });
+      const create = within(dialog).getByRole('button', { name: '新建 Skill' });
+      const reload = within(dialog).getByRole('button', { name: '重新加载 Skill 库' });
+
+      act(() => create.focus());
+      const createTooltip = await screen.findByRole('tooltip', { name: '新建 Skill' });
+      expect(create).toHaveFocus();
+      expect(createTooltip).toHaveClass('ant-tooltip-container');
+      expect(dialog).toContainElement(createTooltip);
+      expect(create).toHaveAttribute('aria-describedby', createTooltip.id);
+
+      await user.tab();
+      expect(reload).toHaveFocus();
+      await waitFor(() => expect(createTooltip).not.toBeVisible());
+      expect(create).not.toHaveAttribute('aria-describedby');
+      const reloadTooltip = await screen.findByRole('tooltip', { name: '重新加载 Skill 库' });
+      await waitFor(() => expect(reloadTooltip).toBeVisible());
+
+      await user.tab({ shift: true });
+      expect(create).toHaveFocus();
+      await waitFor(() => expect(reloadTooltip).not.toBeVisible());
+      await waitFor(() =>
+        expect(screen.getByRole('tooltip', { name: '新建 Skill' })).toBeVisible(),
+      );
+      expect(errors).not.toHaveBeenCalled();
+    });
+
+    it('嵌套确认自动聚焦并回到关闭按钮，保留提示和草稿且没有同步刷新警告', async () => {
+      const errors = vi.spyOn(console, 'error');
+      const { user, closed } = setup();
+      await selectCustom(user);
+      const name = screen.getByLabelText('名称');
+      await user.type(name, '草稿');
+      const close = screen.getByRole('button', { name: '关闭 Skill 工作台' });
+      await user.click(close);
+      const confirmation = await screen.findByRole('alertdialog');
+      const resume = within(confirmation).getByRole('button', { name: '继续编辑' });
+      await waitFor(() => expect(resume).toHaveFocus());
+      await user.click(resume);
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+      await waitFor(() => expect(close).toHaveFocus());
+      await waitFor(() =>
+        expect(screen.getByRole('tooltip', { name: '关闭 Skill 工作台' })).toBeVisible(),
+      );
+      expect(name).toHaveValue(custom.name + '草稿');
+      expect(closed).not.toHaveBeenCalled();
+
+      await user.click(close);
+      await user.click(await screen.findByRole('button', { name: '放弃更改' }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(closed).toHaveBeenCalledWith(false);
+      expect(errors).not.toHaveBeenCalled();
+    });
+
+    it('焦点微任务复核最终落点，卸载后不重新显示提示', async () => {
+      const errors = vi.spyOn(console, 'error');
+      const { unmount } = render(
+        <SkillWorkbench open onOpenChange={vi.fn()} onChanged={vi.fn()} />,
+      );
+      await screen.findByRole('button', { name: custom.name });
+      const create = screen.getByRole('button', { name: '新建 Skill' });
+      const reload = screen.getByRole('button', { name: '重新加载 Skill 库' });
+      act(() => {
+        create.focus();
+        reload.focus();
+      });
+      await waitFor(() =>
+        expect(screen.getByRole('tooltip', { name: '重新加载 Skill 库' })).toBeVisible(),
+      );
+      expect(screen.queryByRole('tooltip', { name: '新建 Skill' })).not.toBeInTheDocument();
+      expect(reload).toHaveFocus();
+
+      act(() => {
+        create.focus();
+        unmount();
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(create.isConnected).toBe(false);
+      expect(screen.queryByRole('tooltip', { hidden: true })).not.toBeInTheDocument();
+      expect(errors).not.toHaveBeenCalled();
+    });
+  });
+
   it('字段 maxLength 与服务端一致，说明可空，越界和空白指令不能保存', async () => {
     const { user } = setup();
     await selectCustom(user);
@@ -104,6 +231,97 @@ describe('Skill 工作台', () => {
     expect(screen.getByRole('button', { name: '保存 Skill' })).toBeEnabled();
     fireEvent.change(screen.getByLabelText('指令'), { target: { value: '  \n ' } });
     expect(screen.getByRole('button', { name: '保存 Skill' })).toBeDisabled();
+  });
+
+  it('分类建议使用工作台内的真实列表，按输入筛选并保存所选分类', async () => {
+    const { user, changed } = setup();
+    await selectCustom(user);
+    const dialog = screen.getByRole('dialog', { name: 'Skill 工作台' });
+    const categoryInput = screen.getByRole('combobox', { name: /^分类$/ });
+    expect(screen.getByLabelText('分类')).toBe(categoryInput);
+    expect(categoryInput.closest('.ant-select-auto-complete')).not.toBeNull();
+    expect(categoryInput).not.toHaveAttribute('list');
+    expect(dialog.querySelector('datalist')).toBeNull();
+    await user.clear(categoryInput);
+    await user.type(categoryInput, '小说');
+    const option = await within(dialog).findByRole('option', { name: builtin.category });
+    expect(option).toBeVisible();
+    expect(option.closest('[role="dialog"]')).toBe(dialog);
+    expect(screen.queryByRole('option', { name: custom.category })).not.toBeInTheDocument();
+    await user.click(option);
+    expect(categoryInput).toHaveValue(builtin.category);
+    vi.mocked(updateSkill).mockResolvedValue({
+      ...custom,
+      category: builtin.category,
+      revision: 4,
+    });
+    await user.click(screen.getByRole('button', { name: '保存 Skill' }));
+    expect(updateSkill).toHaveBeenCalledWith(custom.id, {
+      name: custom.name,
+      category: builtin.category,
+      description: custom.description,
+      instruction: custom.instruction,
+      enabled: true,
+      revision: 3,
+    });
+    expect(changed).toHaveBeenCalledOnce();
+  });
+
+  it('分类允许保存建议之外的自定义文本，并保留 80 字符限制', async () => {
+    const { user } = setup();
+    await selectCustom(user);
+    const categoryInput = screen.getByRole('combobox', { name: /^分类$/ });
+    await user.clear(categoryInput);
+    await user.type(categoryInput, '场景镜头');
+    expect(categoryInput).toHaveValue('场景镜头');
+    expect(screen.queryByRole('option')).not.toBeInTheDocument();
+    vi.mocked(updateSkill).mockResolvedValue({ ...custom, category: '场景镜头', revision: 4 });
+    await user.click(screen.getByRole('button', { name: '保存 Skill' }));
+    expect(updateSkill).toHaveBeenCalledWith(
+      custom.id,
+      expect.objectContaining({ category: '场景镜头', revision: 3 }),
+    );
+    expect(categoryInput).toHaveValue('场景镜头');
+    expect(screen.getByRole('button', { name: '保存 Skill' })).toBeDisabled();
+    fireEvent.change(categoryInput, { target: { value: '类'.repeat(80) } });
+    await user.type(categoryInput, '别');
+    expect(categoryInput).toHaveValue('类'.repeat(80));
+    expect(screen.getByRole('button', { name: '保存 Skill' })).toBeEnabled();
+    fireEvent.change(categoryInput, { target: { value: '类'.repeat(81) } });
+    expect(screen.getByRole('button', { name: '保存 Skill' })).toBeDisabled();
+  });
+
+  it('分类 IME 组合确认不选择建议或提交，结束后保存完整自定义分类', async () => {
+    const { user, closed } = setup();
+    await selectCustom(user);
+    const categoryInput = screen.getByRole('combobox', { name: /^分类$/ });
+    await user.clear(categoryInput);
+    fireEvent.compositionStart(categoryInput);
+    fireEvent.change(categoryInput, { target: { value: '小说' } });
+    await waitFor(() =>
+      expect(screen.getByRole('option', { name: builtin.category })).toBeVisible(),
+    );
+    fireEvent.keyDown(categoryInput, {
+      key: 'Enter',
+      code: 'Enter',
+      keyCode: 229,
+      which: 229,
+      isComposing: true,
+    });
+    expect(categoryInput).toHaveValue('小说');
+    expect(createSkill).not.toHaveBeenCalled();
+    expect(updateSkill).not.toHaveBeenCalled();
+    expect(closed).not.toHaveBeenCalled();
+    fireEvent.change(categoryInput, { target: { value: '小说设定' } });
+    fireEvent.compositionEnd(categoryInput, { data: '小说设定' });
+    expect(categoryInput).toHaveValue('小说设定');
+    vi.mocked(updateSkill).mockResolvedValue({ ...custom, category: '小说设定', revision: 4 });
+    await user.click(screen.getByRole('button', { name: '保存 Skill' }));
+    expect(updateSkill).toHaveBeenCalledWith(
+      custom.id,
+      expect.objectContaining({ category: '小说设定', revision: 3 }),
+    );
+    expect(updateSkill).toHaveBeenCalledOnce();
   });
 
   it('120 字符名称可复制，不把新增后缀提交为超长名称', async () => {
@@ -134,6 +352,16 @@ describe('Skill 工作台', () => {
     await screen.findByRole('button', { name: builtin.name });
     expect(screen.getByLabelText('名称')).toHaveAttribute('readonly');
     expect(screen.getByLabelText('指令')).toHaveAttribute('readonly');
+    const categoryInput = screen.getByRole('combobox', { name: /^分类$/ });
+    expect(categoryInput).toHaveAttribute('readonly');
+    expect(categoryInput).not.toBeDisabled();
+    await user.type(categoryInput, '不可修改');
+    await user.keyboard('{ArrowDown}{Enter}');
+    expect(categoryInput).toHaveValue(builtin.category);
+    expect(categoryInput).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expect(createSkill).not.toHaveBeenCalled();
+    expect(updateSkill).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: '保存 Skill' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '删除 Skill' })).toBeDisabled();
     await user.type(screen.getByRole('searchbox'), '性格');
@@ -141,7 +369,11 @@ describe('Skill 工作台', () => {
     expect(screen.getByRole('button', { name: custom.name })).toBeInTheDocument();
     expect(screen.getByLabelText('名称')).toHaveValue(builtin.name);
     await user.clear(screen.getByRole('searchbox'));
-    await user.selectOptions(screen.getByLabelText('筛选分类'), builtin.category);
+    await user.click(screen.getByRole('combobox', { name: '筛选分类' }));
+    await waitFor(() =>
+      expect(screen.getByRole('option', { name: builtin.category })).toBeVisible(),
+    );
+    await user.click(screen.getByRole('option', { name: builtin.category }));
     expect(screen.queryByRole('button', { name: custom.name })).not.toBeInTheDocument();
   });
 
@@ -322,9 +554,16 @@ describe('Skill 工作台', () => {
     expect(screen.getByRole('alertdialog')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '继续编辑' }));
     expect(screen.getByLabelText('名称')).toHaveValue(`${custom.name}草稿`);
-    await user.keyboard('{Escape}');
+    await waitFor(() =>
+      expect(screen.queryByRole('alertdialog', { hidden: true })).not.toBeInTheDocument(),
+    );
+    await user.click(screen.getByLabelText('名称'));
+    fireEvent.keyDown(screen.getByLabelText('名称'), { key: 'Escape', keyCode: 27, which: 27 });
     expect(closed).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('button', { name: '继续编辑' }));
+    await user.click(await screen.findByRole('button', { name: '继续编辑' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('alertdialog', { hidden: true })).not.toBeInTheDocument(),
+    );
     await user.click(screen.getByRole('button', { name: '关闭 Skill 工作台' }));
     await user.click(screen.getByRole('button', { name: '放弃更改' }));
     expect(closed).toHaveBeenCalledWith(false);
@@ -461,15 +700,25 @@ describe('Skill 工作台', () => {
     const { user, changed, closed } = setup();
     await selectCustom(user);
     await user.type(screen.getByLabelText('名称'), '新版');
+    const categoryInput = screen.getByRole('combobox', { name: /^分类$/ });
+    await user.click(categoryInput);
+    expect(await screen.findByRole('option', { name: custom.category })).toBeVisible();
     await user.dblClick(screen.getByRole('button', { name: '保存 Skill' }));
     expect(updateSkill).toHaveBeenCalledOnce();
     expect(screen.getByRole('button', { name: '关闭 Skill 工作台' })).toBeDisabled();
     expect(screen.getByRole('button', { name: builtin.name })).toBeDisabled();
-    await user.keyboard('{Escape}');
+    expect(categoryInput).toBeDisabled();
+    expect(categoryInput).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    await user.type(categoryInput, '不可修改');
+    expect(categoryInput).toHaveValue(custom.category);
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape', keyCode: 27, which: 27 });
     expect(closed).not.toHaveBeenCalled();
     expect(changed).not.toHaveBeenCalled();
     await act(async () => resolve({ ...custom, name: `${custom.name}新版`, revision: 4 }));
     expect(changed).toHaveBeenCalledOnce();
     expect(within(screen.getByRole('dialog')).getByRole('status')).toHaveTextContent('已保存');
+    expect(categoryInput).toBeEnabled();
+    expect(categoryInput).toHaveValue(custom.category);
   });
 });

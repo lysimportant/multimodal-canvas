@@ -1,3 +1,5 @@
+import { Button, Input } from '@multimodal-canvas/ui';
+import { Modal } from 'antd';
 import {
   LoaderCircle,
   History,
@@ -68,6 +70,7 @@ export function ResourcePanel({
 }) {
   const localInputRef = useRef<HTMLInputElement>(null);
   const inputRef = uploadInputRef ?? localInputRef;
+  const [modal, modalContextHolder] = Modal.useModal();
   /** 当前正在预览的资源；关闭对话框后清空。 */
   const [previewAsset, setPreviewAsset] = useState<Asset | null>(null);
   /** 版本历史独立于原节点，资源保留时仍可读取生成说明。 */
@@ -138,7 +141,7 @@ export function ResourcePanel({
             onChange={(value) => onFilterChange(value as AssetFilter)}
           />
         )}
-        <button
+        <Button
           type="button"
           className="icon-button resource-upload-button"
           aria-label="上传资源"
@@ -147,9 +150,9 @@ export function ResourcePanel({
           disabled={isUploading}
         >
           {isUploading ? <LoaderCircle className="spin" size={17} /> : <Plus size={18} />}
-        </button>
+        </Button>
         {!collapsed && (
-          <button
+          <Button
             type="button"
             className={`icon-button archive-filter-icon ${showArchived ? 'is-active' : ''}`}
             aria-label={showArchived ? '查看可用资源' : '查看已归档资源'}
@@ -157,9 +160,9 @@ export function ResourcePanel({
             onClick={onToggleArchived}
           >
             <Trash2 size={18} aria-hidden="true" />
-          </button>
+          </Button>
         )}
-        <button
+        <Button
           type="button"
           className="icon-button resource-collapse-button"
           aria-label={collapsed ? '展开资源栏' : '折叠资源栏'}
@@ -167,7 +170,7 @@ export function ResourcePanel({
           onClick={onToggleCollapsed}
         >
           {collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
-        </button>
+        </Button>
         <input
           ref={inputRef}
           className="visually-hidden"
@@ -183,16 +186,16 @@ export function ResourcePanel({
       {!collapsed && (
         <label className="search-field">
           <Search size={15} aria-hidden="true" />
-          <input type="search" placeholder="搜索资源" {...queryBinding} />
+          <Input type="search" placeholder="搜索资源" {...queryBinding} />
           {queryBinding.value && (
-            <button
+            <Button
               type="button"
               className="clear-search"
               aria-label="清除搜索"
               onClick={() => onQueryChange('')}
             >
               <X size={14} />
-            </button>
+            </Button>
           )}
         </label>
       )}
@@ -246,7 +249,7 @@ export function ResourcePanel({
                 </div>
               </div>
               <div className="asset-card-actions">
-                <button
+                <Button
                   type="button"
                   id={`asset-history-${asset.id}`}
                   className="asset-add-button"
@@ -255,8 +258,8 @@ export function ResourcePanel({
                   onClick={() => setHistoryAsset(asset)}
                 >
                   <History size={14} />
-                </button>
-                <button
+                </Button>
+                <Button
                   type="button"
                   className="asset-add-button"
                   aria-label={
@@ -268,26 +271,29 @@ export function ResourcePanel({
                   }
                 >
                   {asset.status === 'archived' ? <RotateCcw size={15} /> : <SquarePlus size={16} />}
-                </button>
+                </Button>
                 {asset.status === 'archived' && (
-                  <button
+                  <Button
                     type="button"
                     className="asset-add-button asset-delete-button"
                     aria-label={`永久删除 ${asset.name}`}
                     title="永久删除资源，删除后无法找回"
                     onClick={() => {
-                      if (
-                        window.confirm(
-                          `资源“${asset.name}”将被永久删除，删除后无法找回。确定继续吗？`,
-                        )
-                      )
-                        onDeleteAsset?.(asset);
+                      modal.confirm({
+                        title: '永久删除资源',
+                        content: `资源“${asset.name}”将被永久删除，删除后无法找回。确定继续吗？`,
+                        okText: '永久删除',
+                        cancelText: '取消',
+                        okButtonProps: { danger: true },
+                        focusable: { autoFocusButton: 'cancel' },
+                        onOk: () => onDeleteAsset?.(asset),
+                      });
                     }}
                   >
                     <Trash2 size={14} />
-                  </button>
+                  </Button>
                 )}
-                <button
+                <Button
                   type="button"
                   className="asset-add-button"
                   aria-label={`重命名 ${asset.name}`}
@@ -295,20 +301,26 @@ export function ResourcePanel({
                   onClick={() => onRenameAsset(asset)}
                 >
                   <Pencil size={14} />
-                </button>
+                </Button>
                 {asset.status !== 'archived' && (
-                  <button
+                  <Button
                     type="button"
                     className="asset-add-button asset-archive-button"
                     aria-label={`删除 ${asset.name}`}
                     title="删除资源（归档）"
                     onClick={() => {
-                      if (window.confirm(`将“${asset.name}”移入已归档？可在已归档列表恢复。`))
-                        onArchiveAsset(asset);
+                      modal.confirm({
+                        title: '归档资源',
+                        content: `将“${asset.name}”移入已归档？可在已归档列表恢复。`,
+                        okText: '移入已归档',
+                        cancelText: '取消',
+                        focusable: { autoFocusButton: 'cancel' },
+                        onOk: () => onArchiveAsset(asset),
+                      });
                     }}
                   >
                     <Trash2 size={14} />
-                  </button>
+                  </Button>
                 )}
               </div>
             </article>
@@ -326,6 +338,7 @@ export function ResourcePanel({
           )}
         </div>
       )}
+      {modalContextHolder}
       {previewAsset ? (
         <AssetViewerDialog
           asset={previewAsset}

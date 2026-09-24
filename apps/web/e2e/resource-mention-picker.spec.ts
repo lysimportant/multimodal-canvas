@@ -245,7 +245,11 @@ async function openQuickEditor(page: Page) {
 async function caretCharacterRect(textarea: Locator) {
   return textarea.evaluate((element) => {
     const input = element as HTMLTextAreaElement;
-    const highlight = input.previousElementSibling as HTMLElement | null;
+    const highlight =
+      input
+        .closest('.resource-mention-input-wrap')
+        ?.querySelector<HTMLElement>('.resource-mention-highlight') ??
+      input.parentElement?.querySelector<HTMLElement>('.resource-mention-highlight');
     if (!highlight) throw new Error('缺少提示词高亮层');
     const offset = Math.max(0, (input.selectionStart ?? 1) - 1);
     const walker = document.createTreeWalker(highlight, NodeFilter.SHOW_TEXT);
@@ -319,8 +323,10 @@ test('1440 PC 节点 picker 贴近 @、独立搜索筛选滚动，并支持原�
   await expect(picker).toBeVisible();
   await expect(searchbox).toBeVisible();
   await expect(listbox).toBeVisible();
-  expect(await picker.evaluate((element) => element.parentElement === document.body)).toBe(true);
-  await expect(picker).toHaveCSS('position', 'fixed');
+  await expect(page.locator('.ant-popover.resource-mention-picker-popover')).toBeVisible();
+  expect(await picker.evaluate((element) => element.closest('.react-flow__node') === null)).toBe(
+    true,
+  );
 
   const promptBox = await prompt.boundingBox();
   const pickerBox = await picker.boundingBox();
@@ -452,8 +458,7 @@ test('1024 PC 放大 Dialog 的顶层 picker 保持搜索焦点、可选中且 E
   const searchbox = picker.getByRole('searchbox', { name: '搜索资源' });
   const listbox = picker.getByRole('listbox', { name: '选择资源' });
   await expect(picker).toBeVisible();
-  await expect(picker).toHaveAttribute('popover', 'manual');
-  expect(await picker.evaluate((element) => element.matches(':popover-open'))).toBe(true);
+  await expect(dialog.locator('.ant-popover.resource-mention-picker-popover')).toBeVisible();
   expect(await picker.evaluate((element) => element.closest('[role="dialog"]') !== null)).toBe(
     true,
   );
@@ -497,5 +502,420 @@ test('1024 PC 放大 Dialog 的顶层 picker 保持搜索焦点、可选中且 E
   const nodeAfter = await node.boundingBox();
   expect(nodeAfter).not.toBeNull();
   expectSameNodeSize(nodeBefore!, nodeAfter!);
+  expect(fixture.errors).toEqual([]);
+});
+
+test('Ant Design 命令面板圈定焦点、保护 IME，并在关闭后恢复触发器', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const fixture = await installFixture(page);
+  await page.goto(`/projects/${project.id}`);
+  const trigger = page.getByRole('button', { name: '打开命令面板' });
+  await trigger.click();
+  const dialog = page.getByRole('dialog', { name: '命令面板' });
+  await expect(dialog).toHaveClass(/ant-modal/);
+  const input = dialog.getByRole('searchbox');
+  const close = dialog.getByRole('button', { name: '关闭命令面板' });
+  await expect(input).toBeFocused();
+  await input.press('Tab');
+  await expect(close).toBeFocused();
+  await close.press('Tab');
+  await expect(input).toBeFocused();
+  await input.press('Shift+Tab');
+  await expect(close).toBeFocused();
+  await input.fill('设置');
+  await input.press('Tab');
+  const clear = dialog.getByRole('button', { name: '清空搜索' });
+  await expect(clear).toBeFocused();
+  await clear.press('Tab');
+  await expect(close).toBeFocused();
+  await close.press('Tab');
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        tag: document.activeElement?.tagName,
+        classes: document.activeElement?.className,
+        label: document.activeElement?.getAttribute('aria-label'),
+      })),
+    )
+    .toMatchObject({ classes: expect.stringContaining('command-palette-input') });
+  await expect(input).toBeFocused();
+  await input.dispatchEvent('keydown', { key: 'Escape', isComposing: true, keyCode: 229 });
+  await expect(dialog).toBeVisible();
+  await page.screenshot({
+    path: '../../test-results/component-library-command.png',
+    animations: 'disabled',
+  });
+  await input.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  await trigger.click();
+  await expect(dialog).toBeVisible();
+  await page.locator('.ant-modal-wrap').click({ position: { x: 8, y: 8 } });
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  expect(fixture.errors).toEqual([]);
+});
+
+test('外观入口的五种主题同步到组件库模型选项且不撑大节点', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const fixture = await installFixture(page);
+  await page.goto('/projects/' + project.id);
+  const { node, editor } = await openQuickEditor(page);
+  const before = (await node.boundingBox())!;
+  const dialog = page.getByRole('dialog', { name: '资源引用节点 · 编辑设置' });
+  const model = dialog.getByRole('combobox', { name: /^模型：/ });
+  for (const [theme, label] of [
+    ['eye-care', '护眼'],
+    ['light', '明亮'],
+    ['dark', '深色'],
+    ['sepia', '暖白'],
+    ['contrast', '高对比'],
+  ]) {
+    await page.getByRole('button', { name: '外观', exact: true }).first().hover();
+    const appearance = page.getByRole('dialog', { name: '主题、画布背景与连接线' });
+    await appearance.getByRole('button', { name: label, exact: true }).click();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-theme', theme);
+    await page.mouse.move(600, 50);
+    await expect(appearance).toHaveCount(0);
+    await editor.getByRole('button', { name: '打开完整编辑器' }).click();
+    await model.click();
+    const options = dialog.getByRole('listbox', { name: '模型选项' });
+    await expect(options).toBeVisible();
+    await expect(options.getByRole('option').first()).toBeVisible();
+    const popup = dialog.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden)');
+    await expect(popup).toBeVisible();
+    await expect
+      .poll(() => popup.evaluate((element) => getComputedStyle(element).backgroundColor))
+      .toBe(
+        theme === 'dark'
+          ? 'rgb(26, 32, 40)'
+          : theme === 'eye-care'
+            ? 'rgb(248, 251, 245)'
+            : theme === 'sepia'
+              ? 'rgb(251, 248, 241)'
+              : 'rgb(255, 255, 255)',
+      );
+    await page.screenshot({
+      path: '../../test-results/component-library-theme-' + theme + '.png',
+      animations: 'disabled',
+    });
+    await options.getByRole('option', { name: /Mock image/ }).click();
+    await expect(options).toHaveCount(0);
+    await expect(dialog).toBeVisible();
+    expectSameNodeSize(before, (await node.boundingBox())!);
+    await dialog.getByRole('button', { name: '关闭编辑器' }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(editor.getByRole('button', { name: '打开完整编辑器' })).toBeFocused();
+  }
+  expect(fixture.errors).toEqual([]);
+});
+
+test('组件库右键菜单避开 PC 视口边缘，窗口缩放后仍可见可取消', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const fixture = await installFixture(page);
+  await page.goto('/projects/' + project.id);
+  await expect(page.locator('.react-flow__pane')).toBeVisible();
+  await page.mouse.click(1435, 700, { button: 'right' });
+  const menu = page.getByRole('menu', { name: '画布操作' });
+  await expect(menu).toBeVisible();
+  /** 测量组件库定位后的菜单，而非没有布局的测试环境里的锚点。 */
+  const expectInside = async (width: number, height: number) => {
+    await expect
+      .poll(async () => {
+        const box = await menu.boundingBox();
+        return Boolean(
+          box &&
+          box.x >= 0 &&
+          box.y >= 0 &&
+          box.x + box.width <= width + 1 &&
+          box.y + box.height <= height + 1,
+        );
+      })
+      .toBe(true);
+  };
+  await expectInside(1440, 900);
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await expectInside(1024, 768);
+  await page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+  expect(fixture.errors).toEqual([]);
+});
+
+test('资源管理的库组件支持保存、归档确认、恢复和键盘关闭', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const fixture = await installFixture(page);
+  let entry = {
+    ...assets[0],
+    ownerId: 'resource-mention-user',
+    projectId: project.id,
+    source: 'upload',
+    createdAt: project.createdAt,
+    updatedAt: project.updatedAt,
+  };
+  const writes: Record<string, unknown>[] = [];
+  await page.route('**/v1/account/resources**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname.endsWith('/content'))
+      return route.fulfill({ contentType: 'image/jpeg', body: poster });
+    if (url.pathname === '/v1/account/resources')
+      return json(route, { assets: [entry], total: 1, page: 1, pageSize: 24 });
+    if (request.method() === 'PATCH') {
+      const patch = request.postDataJSON();
+      writes.push(patch);
+      entry = { ...entry, ...patch };
+    }
+    return json(route, { asset: entry, versions: [], project });
+  });
+  await page.goto('/resources');
+  await expect(page.getByRole('heading', { name: '我的资源' })).toBeVisible();
+  await page.getByRole('combobox', { name: '资源类型' }).click();
+  await page.getByRole('option', { name: '图片', exact: true }).click();
+  await page.getByRole('button', { name: /产品图.*上传资源/ }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toHaveClass(/ant-modal/);
+  await dialog.getByRole('textbox', { name: '资源名称' }).fill('组件库测试图');
+  await dialog.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(dialog.getByText('资源信息已保存')).toBeVisible();
+  expect(writes).toHaveLength(1);
+  expect(writes[0]).toMatchObject({ name: '组件库测试图' });
+  await dialog.getByRole('button', { name: '归档', exact: true }).click();
+  await expect(dialog.getByRole('button', { name: '确认归档' })).toBeVisible();
+  expect(writes).toHaveLength(1);
+  await dialog.getByRole('button', { name: '确认归档' }).click();
+  await expect(dialog.getByRole('button', { name: '恢复', exact: true })).toBeVisible();
+  await dialog.getByRole('button', { name: '恢复', exact: true }).click();
+  await expect(dialog.getByText('资源已恢复')).toBeVisible();
+  expect(writes.map((write) => write.status).filter(Boolean)).toEqual(['archived', 'ready']);
+  await page.screenshot({
+    path: '../../test-results/component-library-resources.png',
+    animations: 'disabled',
+  });
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  expect(fixture.errors).toEqual([]);
+});
+
+test('管理审计使用组件库表格和分页，并保留服务端页码', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const fixture = await installFixture(page);
+  const user = {
+    id: 'component-admin',
+    role: 'admin',
+    displayName: '组件验收管理员',
+    createdAt: project.createdAt,
+  };
+  await page.addInitScript(
+    (user) => localStorage.setItem('multimodal-canvas:auth-session', JSON.stringify({ user })),
+    user,
+  );
+  await page.route('**/v1/auth/me', (route) => json(route, { user }));
+  const pages: number[] = [];
+  await page.route('**/v1/admin/audit**', (route) => {
+    const pageNumber = Number(new URL(route.request().url()).searchParams.get('page') ?? 1);
+    pages.push(pageNumber);
+    return json(route, {
+      events: [
+        {
+          id: 'audit-' + pageNumber,
+          actorId: user.id,
+          action: 'resource.update',
+          targetId: '合成资源',
+          summary: '第 ' + pageNumber + ' 页本地审计',
+          createdAt: project.createdAt,
+        },
+      ],
+      total: 31,
+      page: pageNumber,
+      pageSize: 30,
+    });
+  });
+  await page.goto('/admin/audit');
+  await expect(page.locator('.ant-table')).toBeVisible();
+  await expect(page.getByText('第 1 页本地审计')).toBeVisible();
+  await page.locator('.ant-pagination-next').click();
+  await expect(page.getByText('第 2 页本地审计')).toBeVisible();
+  expect(pages).toContain(2);
+  await page.screenshot({
+    path: '../../test-results/component-library-audit.png',
+    animations: 'disabled',
+  });
+  expect(fixture.errors).toEqual([]);
+});
+
+test('资源预览由库模态承载，关闭后焦点回到原资源', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const fixture = await installFixture(page);
+  await page.goto('/projects/' + project.id);
+  const trigger = page.getByRole('button', { name: '预览 产品图', exact: true });
+  await trigger.click();
+  const dialog = page.getByRole('dialog', { name: '产品图', exact: true });
+  await expect(dialog).toHaveClass(/ant-modal/);
+  await expect(dialog.getByRole('img', { name: '产品图' })).toBeVisible();
+  await expect(dialog).toHaveCSS('opacity', '1');
+  await expect(dialog).toHaveCSS('display', 'inline-grid');
+  await expect
+    .poll(() =>
+      dialog.evaluate((element) => {
+        const stage = element
+          .querySelector('.artifact-preview-viewer-stage')!
+          .getBoundingClientRect();
+        const image = element.querySelector('img')!.getBoundingClientRect();
+        const title = element.querySelector('[data-slot="dialog-title"]')!.getBoundingClientRect();
+        const zoom = element
+          .querySelector('.artifact-preview-viewer-zoom')!
+          .getBoundingClientRect();
+        const close = element
+          .querySelector('.artifact-preview-viewer-close')!
+          .getBoundingClientRect();
+        return Math.max(
+          Math.abs(stage.width - image.width),
+          Math.abs(stage.height - image.height),
+          Math.abs(zoom.y - close.y),
+          Math.abs(title.y - zoom.y),
+        );
+      }),
+    )
+    .toBeLessThan(2);
+  await page.screenshot({
+    path: '../../test-results/component-library-preview.png',
+    animations: 'disabled',
+  });
+  await dialog.getByRole('button', { name: '关闭预览' }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  expect(fixture.errors).toEqual([]);
+});
+
+test('设置、Skill 和生成说明模态保留业务布局及嵌套关闭语义', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const fixture = await installFixture(page);
+  await page.route('**/v1/account/newapi', (route) =>
+    json(route, {
+      account: {
+        issuer: 'https://provider.example.test',
+        externalUserId: 'component-user',
+        status: 'active',
+        groups: [],
+        links: {},
+      },
+    }),
+  );
+  await page.goto('/projects/' + project.id);
+  await page.getByRole('button', { name: '打开设置', exact: true }).click();
+  const settings = page.getByRole('dialog', { name: 'New API 与模型', exact: true });
+  await expect(settings).toHaveCSS('display', 'inline-flex');
+  await expect(settings).toHaveCSS('width', '1080px');
+  await expect(settings).toHaveCSS('padding', '0px');
+  await settings.getByRole('tab', { name: '节点默认', exact: true }).click();
+  const imageModel = settings.getByRole('combobox', { name: '图片', exact: true });
+  await expect(imageModel).toBeEnabled();
+  await imageModel.click();
+  await expect(settings.getByRole('option', { name: /Mock image/ })).toBeVisible();
+  await imageModel.press('Escape');
+  await expect(settings.getByRole('option', { name: /Mock image/ })).toHaveCount(0);
+  await expect(settings).toBeVisible();
+  await page.screenshot({
+    path: '../../test-results/component-library-settings.png',
+    animations: 'disabled',
+  });
+  await settings.getByRole('button', { name: '关闭设置', exact: true }).click();
+  await expect(settings).toHaveCount(0);
+
+  await page.getByRole('button', { name: '技能工作台', exact: true }).first().click();
+  const skills = page.getByRole('dialog', { name: 'Skill 工作台', exact: true });
+  await expect(skills).toHaveCSS('display', 'inline-flex');
+  await expect(skills).toHaveCSS('width', '1000px');
+  const name = skills.getByRole('textbox', { name: '名称', exact: true });
+  await expect(name).toBeEditable();
+  await name.fill('未保存的本地测试');
+  await skills.getByRole('button', { name: '关闭 Skill 工作台', exact: true }).click();
+  const discard = page.getByRole('alertdialog', { name: '放弃未保存的更改？', exact: true });
+  await expect(discard).toHaveCSS('width', '420px');
+  await discard.getByRole('button', { name: '继续编辑', exact: true }).click();
+  await expect(discard).toHaveCount(0);
+  await expect(name).toHaveValue('未保存的本地测试');
+  await page.screenshot({
+    path: '../../test-results/component-library-skills.png',
+    animations: 'disabled',
+  });
+  await skills.getByRole('button', { name: '关闭 Skill 工作台', exact: true }).click();
+  await discard.getByRole('button', { name: '放弃更改', exact: true }).click();
+  await expect(skills).toHaveCount(0);
+
+  const { node } = await openQuickEditor(page);
+  await node.getByRole('button', { name: '查看生成提示词：资源引用节点', exact: true }).click();
+  const prompt = page.getByRole('dialog', { name: '生成提示词', exact: true });
+  await expect(prompt).toHaveCSS('display', 'inline-flex');
+  await expect(prompt).toHaveCSS('width', '800px');
+  await prompt.getByRole('button', { name: '关闭生成提示词', exact: true }).click();
+  await expect(prompt).toHaveCount(0);
+  expect(fixture.errors).toEqual([]);
+});
+
+test('组件库菜单和外观标签独占键盘，不删除节点或穿透撤销重做', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const fixture = await installFixture(page);
+  await page.goto('/projects/' + project.id);
+  await page.getByRole('button', { name: '新建文字生成节点', exact: true }).click();
+  const nodes = page.locator('.react-flow__node');
+  await expect(nodes).toHaveCount(2);
+  await expect(page.locator('.react-flow__node.selected')).toHaveCount(1);
+  await expect.poll(() => fixture.canvas().nodes.length).toBe(2);
+
+  /** 在真实菜单项和标签获得焦点后发键，防止只测到原生触发按钮。 */
+  const assertKeysStayInControls = async (keys: string[], count: number) => {
+    for (const entry of [
+      { trigger: '打开项目集合', layer: '项目集合', type: 'menu' },
+      { trigger: '导出', layer: '导出选项', type: 'menu' },
+      { trigger: '账户菜单', layer: '账户操作', type: 'menu' },
+      { trigger: '外观', layer: '主题、画布背景与连接线', type: 'dialog' },
+    ] as const) {
+      const trigger = page.getByRole('button', { name: entry.trigger, exact: true }).first();
+      if (entry.trigger === '账户菜单' || entry.trigger === '外观') await trigger.hover();
+      else await trigger.click();
+      const layer = page.getByRole(entry.type, { name: entry.layer, exact: true });
+      await expect(layer).toBeVisible();
+      const control = layer.getByRole(entry.type === 'menu' ? 'menuitem' : 'tab').first();
+      await control.focus();
+      await expect(control).toBeFocused();
+      for (const key of keys) {
+        await page.keyboard.press(key);
+        await expect(nodes, `${entry.trigger} 不响应画布 ${key}`).toHaveCount(count);
+        await expect(layer).toBeVisible();
+      }
+      await page.mouse.click(600, 50);
+      await expect(layer).toHaveCount(0);
+      expect(fixture.canvas().nodes).toHaveLength(count);
+    }
+  };
+
+  await assertKeysStayInControls(['Delete', 'Backspace', 'Control+z'], 2);
+  await page.getByRole('button', { name: '撤销', exact: true }).click();
+  await expect(nodes).toHaveCount(1);
+  await expect.poll(() => fixture.canvas().nodes.length).toBe(1);
+  await expect(page.getByRole('button', { name: '重做', exact: true })).toBeEnabled();
+  await assertKeysStayInControls(['Control+Shift+z', 'Control+y'], 1);
+  await page.getByRole('button', { name: '重做', exact: true }).click();
+  await expect(nodes).toHaveCount(2);
+  await expect.poll(() => fixture.canvas().nodes.length).toBe(2);
+  const selectedNode = page.locator('.react-flow__node[data-id^="node_text_generate_"]');
+  await selectedNode.getByText('尚未生成', { exact: true }).click();
+  await expect(selectedNode).toHaveClass(/selected/);
+  await selectedNode.focus();
+  await page.keyboard.press('Delete');
+  await expect(nodes).toHaveCount(1);
+  await expect.poll(() => fixture.canvas().nodes.length).toBe(1);
+  await page.keyboard.press('Control+z');
+  await expect(nodes).toHaveCount(2);
+  await selectedNode.getByText('尚未生成', { exact: true }).click();
+  await expect(selectedNode).toHaveClass(/selected/);
+  await selectedNode.focus();
+  await page.keyboard.press('Backspace');
+  await expect(nodes).toHaveCount(1);
+  await expect.poll(() => fixture.canvas().nodes.length).toBe(1);
+  await page.keyboard.press('Control+z');
+  await expect(nodes).toHaveCount(2);
   expect(fixture.errors).toEqual([]);
 });

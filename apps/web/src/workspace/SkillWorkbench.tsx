@@ -1,5 +1,14 @@
 import { PROMPT_SKILLS, type PromptSkill } from '@multimodal-canvas/domain';
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@multimodal-canvas/ui';
+import {
+  Button,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+  Input,
+  Textarea,
+} from '@multimodal-canvas/ui';
+import { AutoComplete, Checkbox, Select, Tooltip } from 'antd';
 import {
   Copy,
   Loader2,
@@ -11,7 +20,7 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react';
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type FocusEvent } from 'react';
 
 import {
   createSkill,
@@ -73,21 +82,46 @@ function SkillAction({
   disabled?: boolean;
   danger?: boolean;
 }) {
+  const [tooltipOpen, setTooltipOpen] = useState(false);
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  /** Modal 会在 effect 中切换焦点；延后更新提示，避免库的 focus trigger 同步 flush。 */
+  function scheduleTooltipFocus(event: FocusEvent<HTMLButtonElement>) {
+    const button = event.currentTarget;
+    queueMicrotask(() => {
+      if (!mounted.current || !button.isConnected) return;
+      setTooltipOpen(button.ownerDocument.activeElement === button);
+    });
+  }
+
   return (
-    <span className="skill-action-wrap">
-      <button
+    <Tooltip
+      title={label}
+      trigger={['hover']}
+      open={tooltipOpen}
+      onOpenChange={setTooltipOpen}
+      getPopupContainer={(trigger: HTMLElement) =>
+        trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
+      }
+    >
+      <Button
         type="button"
         className={`skill-action${danger ? ' is-danger' : ''}`}
         aria-label={label}
         onClick={onClick}
+        onFocus={scheduleTooltipFocus}
+        onBlur={scheduleTooltipFocus}
         disabled={disabled}
       >
         <Icon size={16} aria-hidden="true" />
-      </button>
-      <span className="skill-action-tip" aria-hidden="true">
-        {label}
-      </span>
-    </span>
+      </Button>
+    </Tooltip>
   );
 }
 
@@ -114,7 +148,6 @@ function SkillWorkbenchSession({ onOpenChange, onChanged }: Omit<SkillWorkbenchP
   const active = useRef(true);
   const writing = useRef(false);
   const onChangedRef = useRef(onChanged);
-  const categoryListId = useId();
   const selected = skills.find((skill) => skill.id === selectedId);
   const builtin = selected ? isBuiltin(selected) : false;
   const dirty = JSON.stringify(draft) !== JSON.stringify(draftFrom(selected));
@@ -302,6 +335,7 @@ function SkillWorkbenchSession({ onOpenChange, onChanged }: Omit<SkillWorkbenchP
         <DialogContent
           className="skill-workbench"
           overlayClassName="skill-workbench-backdrop"
+          style={{ display: 'inline-flex', padding: 0, width: 'min(1000px, calc(100vw - 32px))' }}
           aria-describedby={undefined}
         >
           <header className="skill-workbench-header">
@@ -332,7 +366,7 @@ function SkillWorkbenchSession({ onOpenChange, onChanged }: Omit<SkillWorkbenchP
               <div className="skill-library-filters">
                 <label className="skill-search">
                   <Search size={15} aria-hidden="true" />
-                  <input
+                  <Input
                     type="search"
                     aria-label="搜索 Skill"
                     placeholder="搜索 Skill"
@@ -340,18 +374,20 @@ function SkillWorkbenchSession({ onOpenChange, onChanged }: Omit<SkillWorkbenchP
                     onChange={(event) => setQuery(event.target.value)}
                   />
                 </label>
-                <select
+                <Select
                   aria-label="筛选分类"
                   value={category}
-                  onChange={(event) => setCategory(event.target.value)}
-                >
-                  <option value="">全部分类</option>
-                  {categories.map((value) => (
-                    <option key={value} value={value}>
-                      {value}
-                    </option>
-                  ))}
-                </select>
+                  onChange={setCategory}
+                  virtual={false}
+                  styles={{ popup: { root: { pointerEvents: 'auto' } } }}
+                  getPopupContainer={(trigger: HTMLElement) =>
+                    trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
+                  }
+                  options={[
+                    { value: '', label: '全部分类' },
+                    ...categories.map((value) => ({ value, label: value })),
+                  ]}
+                />
                 <span className="skill-library-count">
                   {loading
                     ? '加载中'
@@ -365,7 +401,7 @@ function SkillWorkbenchSession({ onOpenChange, onChanged }: Omit<SkillWorkbenchP
               <ul className="skill-library-list" aria-label="Skill 列表">
                 {filtered.map((skill) => (
                   <li key={skill.id}>
-                    <button
+                    <Button
                       type="button"
                       className="skill-library-item"
                       aria-label={skill.name}
@@ -384,7 +420,7 @@ function SkillWorkbenchSession({ onOpenChange, onChanged }: Omit<SkillWorkbenchP
                         {skill.enabled === false ? <span>已停用</span> : null}
                       </span>
                       <span className="skill-library-description">{skill.description}</span>
-                    </button>
+                    </Button>
                   </li>
                 ))}
               </ul>
@@ -445,7 +481,7 @@ function SkillWorkbenchSession({ onOpenChange, onChanged }: Omit<SkillWorkbenchP
                     <div className="skill-editor-fields">
                       <label>
                         名称
-                        <input
+                        <Input
                           value={draft.name}
                           maxLength={SKILL_FIELD_LIMITS.name}
                           readOnly={builtin}
@@ -456,34 +492,43 @@ function SkillWorkbenchSession({ onOpenChange, onChanged }: Omit<SkillWorkbenchP
                       </label>
                       <label>
                         分类
-                        <input
+                        <AutoComplete<string>
                           value={draft.category}
-                          maxLength={SKILL_FIELD_LIMITS.category}
-                          list={categoryListId}
-                          readOnly={builtin}
+                          options={categories.map((value) => ({ value }))}
+                          showSearch={{ filterOption: true }}
                           disabled={locked}
-                          required
-                          onChange={(event) => setDraft({ ...draft, category: event.target.value })}
-                        />
+                          open={builtin || locked ? false : undefined}
+                          virtual={false}
+                          styles={{ popup: { root: { pointerEvents: 'auto' } } }}
+                          getPopupContainer={(trigger: HTMLElement) =>
+                            trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
+                          }
+                          onChange={(value) => {
+                            if (!builtin && !locked) {
+                              setDraft((current) => ({ ...current, category: value }));
+                            }
+                          }}
+                        >
+                          <Input
+                            maxLength={SKILL_FIELD_LIMITS.category}
+                            readOnly={builtin}
+                            disabled={locked}
+                            required
+                          />
+                        </AutoComplete>
                       </label>
-                      <datalist id={categoryListId}>
-                        {categories.map((value) => (
-                          <option key={value} value={value} />
-                        ))}
-                      </datalist>
                     </div>
-                    <label className="skill-enabled">
-                      <input
-                        type="checkbox"
-                        checked={draft.enabled}
-                        disabled={locked}
-                        onChange={(event) => toggleEnabled(event.target.checked)}
-                      />
+                    <Checkbox
+                      className="skill-enabled"
+                      checked={draft.enabled}
+                      disabled={locked}
+                      onChange={(event) => toggleEnabled(event.target.checked)}
+                    >
                       启用 Skill
-                    </label>
+                    </Checkbox>
                     <label>
                       说明
-                      <textarea
+                      <Textarea
                         rows={2}
                         value={draft.description}
                         maxLength={SKILL_FIELD_LIMITS.description}
@@ -496,7 +541,7 @@ function SkillWorkbenchSession({ onOpenChange, onChanged }: Omit<SkillWorkbenchP
                     </label>
                     <label className="skill-instruction">
                       指令
-                      <textarea
+                      <Textarea
                         rows={12}
                         value={draft.instruction}
                         maxLength={SKILL_FIELD_LIMITS.instruction}
@@ -544,6 +589,7 @@ function SkillWorkbenchSession({ onOpenChange, onChanged }: Omit<SkillWorkbenchP
           role="alertdialog"
           className="skill-workbench-confirm"
           overlayClassName="skill-workbench-confirm-backdrop"
+          style={{ width: 420 }}
         >
           <DialogTitle>
             {confirmation?.kind === 'delete' ? '删除 Skill？' : '放弃未保存的更改？'}
@@ -554,10 +600,10 @@ function SkillWorkbenchSession({ onOpenChange, onChanged }: Omit<SkillWorkbenchP
               : '当前编辑内容尚未保存，放弃后无法恢复。'}
           </DialogDescription>
           <div className="skill-confirm-actions">
-            <button type="button" autoFocus onClick={() => setConfirmation(null)}>
+            <Button type="button" autoFocus onClick={() => setConfirmation(null)}>
               {confirmation?.kind === 'delete' ? '取消' : '继续编辑'}
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
               className="is-danger"
               onClick={() => {
@@ -569,7 +615,7 @@ function SkillWorkbenchSession({ onOpenChange, onChanged }: Omit<SkillWorkbenchP
               }}
             >
               {confirmation?.kind === 'delete' ? '确认删除' : '放弃更改'}
-            </button>
+            </Button>
           </div>
         </DialogContent>
       </Dialog>

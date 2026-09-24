@@ -5,3 +5,5 @@
 
 @source './**/*.{ts,tsx}';
 @source '../../../apps/web/src/**/*.{ts,tsx}';
+
+@import './antd-bridge.css';

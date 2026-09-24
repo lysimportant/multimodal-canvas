@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest';
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useState } from 'react';
@@ -100,20 +100,23 @@ describe('ResourcePanel search input', () => {
   it('删除需确认，已归档资源显示恢复和永久删除', async () => {
     const archive = vi.fn();
     const remove = vi.fn();
-    const confirm = vi
-      .spyOn(window, 'confirm')
-      .mockReturnValueOnce(false)
-      .mockReturnValueOnce(true)
-      .mockReturnValueOnce(false)
-      .mockReturnValueOnce(true);
+    const user = userEvent.setup();
+    const nativeConfirm = vi.spyOn(window, 'confirm');
     const view = render(
       <ResourcePanelHarness onQueryCommit={vi.fn()} onArchive={archive} onDelete={remove} />,
     );
-    await userEvent.click(screen.getByRole('button', { name: '删除 中文参考素材' }));
+    await user.click(screen.getByRole('button', { name: '删除 中文参考素材' }));
+    let confirmation = await screen.findByRole('dialog', { name: '归档资源' });
+    expect(confirmation).toHaveTextContent('可在已归档列表恢复');
     expect(archive).not.toHaveBeenCalled();
-    await userEvent.click(screen.getByRole('button', { name: '删除 中文参考素材' }));
+    await user.click(within(confirmation).getByRole('button', { name: /^取\s*消$/ }));
+    await waitFor(() => expect(confirmation).not.toBeInTheDocument());
+    expect(archive).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: '删除 中文参考素材' }));
+    confirmation = await screen.findByRole('dialog', { name: '归档资源' });
+    await user.click(within(confirmation).getByRole('button', { name: '移入已归档' }));
+    await waitFor(() => expect(confirmation).not.toBeInTheDocument());
     expect(archive).toHaveBeenCalledExactlyOnceWith(assets[0]);
-    expect(confirm).toHaveBeenCalledTimes(2);
     view.rerender(
       <ResourcePanelHarness
         onQueryCommit={vi.fn()}
@@ -124,19 +127,29 @@ describe('ResourcePanel search input', () => {
     );
     expect(screen.queryByRole('button', { name: /^删除 / })).toBeNull();
     expect(screen.getByRole('button', { name: '永久删除 中文参考素材' })).toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: '恢复 中文参考素材' }));
+    await user.click(screen.getByRole('button', { name: '恢复 中文参考素材' }));
     expect(archive).toHaveBeenLastCalledWith({ ...assets[0], status: 'archived' });
-    await userEvent.click(screen.getByRole('button', { name: '永久删除 中文参考素材' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '永久删除 中文参考素材' }));
+    confirmation = await screen.findByRole('dialog', { name: '永久删除资源' });
+    expect(confirmation).toHaveTextContent('删除后无法找回');
     expect(remove).not.toHaveBeenCalled();
-    await userEvent.click(screen.getByRole('button', { name: '永久删除 中文参考素材' }));
+    await user.click(within(confirmation).getByRole('button', { name: /^取\s*消$/ }));
+    await waitFor(() => expect(confirmation).not.toBeInTheDocument());
+    expect(remove).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: '永久删除 中文参考素材' }));
+    confirmation = await screen.findByRole('dialog', { name: '永久删除资源' });
+    await user.click(within(confirmation).getByRole('button', { name: '永久删除' }));
+    await waitFor(() => expect(confirmation).not.toBeInTheDocument());
     expect(remove).toHaveBeenCalledExactlyOnceWith({ ...assets[0], status: 'archived' });
+    expect(nativeConfirm).not.toHaveBeenCalled();
   });
 
   it('点击卡片预览打开对话框，添加和删除按钮不会打开', async () => {
     const user = userEvent.setup();
     render(<ResourcePanelHarness onQueryCommit={vi.fn()} />);
     await user.click(screen.getByRole('button', { name: '预览 图片参考' }));
-    expect(screen.getByRole('dialog', { name: '图片参考' })).toBeVisible();
+    await waitFor(() => expect(screen.getByRole('dialog', { name: '图片参考' })).toBeVisible());
     expect(screen.getByRole('dialog').querySelector('img')).toHaveAttribute(
       'src',
       'https://assets.example/image.png',

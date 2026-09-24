@@ -9,6 +9,7 @@ export default defineConfig({
   },
   test: {
     environment: 'jsdom',
+    setupFiles: ['../../packages/ui/test-setup.ts'],
     restoreMocks: true,
     clearMocks: true,
     exclude: ['e2e/**', 'node_modules/**'],

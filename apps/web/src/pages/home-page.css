@@ -111,25 +111,6 @@
 .mc-home-icon-action[aria-pressed='false'] {
   color: var(--home-muted);
 }
-.mc-home-tooltip {
-  position: absolute;
-  top: 42px;
-  right: 0;
-  width: max-content;
-  max-width: 180px;
-  background: var(--home-ink);
-  color: var(--home-paper);
-  padding: 7px 10px;
-  border-radius: 4px;
-  visibility: hidden;
-  opacity: 0;
-  transition: opacity 150ms;
-  pointer-events: none;
-}
-.mc-home-motion-control:has(:focus-visible) .mc-home-tooltip {
-  visibility: visible;
-  opacity: 1;
-}
 .mc-home-hero-copy {
   position: absolute;
   top: 50%;

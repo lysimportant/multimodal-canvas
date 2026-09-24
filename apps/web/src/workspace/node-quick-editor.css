@@ -317,19 +317,17 @@
 }
 
 .node-quick-editor-parameter-popover {
-  position: absolute;
-  right: 0;
-  bottom: calc(100% + 10px);
-  width: min(400px, 100%);
+  box-sizing: border-box;
+  width: min(400px, calc(100vw - 48px));
+  padding: 14px;
+  border: 1px solid var(--mc-border);
+  border-radius: 12px;
+  background: var(--mc-surface);
+  box-shadow: 0 12px 30px var(--mc-shadow);
   max-height: min(440px, 55dvh);
   overflow: auto;
   overscroll-behavior: contain;
-  padding: 14px;
-  background: var(--mc-surface);
-  border: 1px solid var(--mc-border);
-  border-radius: 14px;
-  box-shadow: 0 12px 30px var(--mc-shadow);
-  z-index: 30;
+  color: var(--mc-text);
 }
 
 .node-quick-editor-parameter-heading,
@@ -368,39 +366,6 @@
   display: contents;
 }
 
-/* 原生 Popover 位于浏览器顶层，向上展开时不会被参数页的 overflow 裁切。 */
-.node-quick-editor-parameter-popover [popover] {
-  background: var(--mc-surface);
-  border-color: var(--mc-border);
-  color: var(--mc-text);
-  box-shadow: 0 12px 28px var(--mc-shadow);
-}
-
-.node-quick-editor-parameter-popover .node-quick-editor-option-popover[hidden] {
-  display: none;
-}
-
-.node-quick-editor-parameter-popover .node-quick-editor-option-label,
-.node-quick-editor-parameter-popover .node-quick-editor-option-copy small {
-  color: var(--mc-text-muted);
-}
-
-.node-quick-editor-parameter-popover .node-quick-editor-option {
-  background: var(--mc-surface-soft);
-  border-color: var(--mc-border);
-  color: var(--mc-text);
-}
-
-.node-quick-editor-parameter-popover .node-quick-editor-option.is-active {
-  border-color: var(--mc-accent);
-}
-
-.node-quick-editor-parameter-popover
-  .node-quick-editor-option-group[data-open='false']
-  .node-quick-editor-option-popover {
-  display: none;
-}
-
 .node-quick-editor-parameter-issue {
   grid-column: 1 / -1;
   color: var(--mc-text-muted);
@@ -408,39 +373,53 @@
   margin: 0;
 }
 
-/* 短枚举独立于参数面板列数排成三列，长模型名称仍使用单列菜单。 */
-.node-quick-editor-select-group .compact-select-menu[data-layout='grid'] {
-  width: min(264px, calc(100vw - 24px));
+/* Ant Design 负责浮层定位；短枚举保留紧凑网格，长模型名保持单列。 */
+.node-parameter-select {
+  display: grid;
+  gap: 5px;
   min-width: 0;
+}
+
+.node-parameter-select .ant-select {
+  width: 100%;
+  min-width: 0;
+}
+
+.node-parameter-options {
+  max-width: min(480px, calc(100vw - 32px));
+}
+
+.node-parameter-options .node-parameter-grid {
+  width: min(294px, calc(100vw - 48px));
+}
+
+/* 非虚拟列表自带行内 flex 布局，短枚举只覆盖其选项容器，不影响其他 Select。 */
+.node-parameter-options .node-parameter-grid [role='listbox'] {
+  display: grid !important;
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-.node-quick-editor-select-group .compact-select-menu[data-layout='grid'] .compact-select-option {
+.node-parameter-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   min-width: 0;
-  padding: 8px;
+  white-space: normal;
 }
 
-.node-quick-editor-select-group
-  .compact-select-menu[data-layout='grid']
-  .compact-select-group-label {
-  grid-column: 1 / -1;
+.node-parameter-option .node-quick-editor-option-copy {
+  display: grid;
+  min-width: 0;
 }
 
-@media (max-width: 360px) {
-  .node-quick-editor-select-group .compact-select-menu[data-layout='grid'] {
-    width: min(192px, calc(100vw - 24px));
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+.node-parameter-option small {
+  color: var(--mc-text-muted);
+  font-size: 11px;
 }
 
 .node-quick-editor-dialog.node-quick-editor-dialog {
   width: min(860px, calc(100vw - 32px));
   max-height: calc(100dvh - 40px);
-  z-index: 72;
-}
-
-.node-quick-editor-dialog-backdrop {
-  z-index: 71;
 }
 
 .node-quick-editor-dialog-header {

@@ -1,3 +1,5 @@
+import { Button } from '@multimodal-canvas/ui';
+import { Select } from 'antd';
 import { useEffect, useState } from 'react';
 import { Eye } from 'lucide-react';
 import type { Asset } from '@multimodal-canvas/domain';
@@ -85,19 +87,18 @@ export function AssetGenerationHistory({ asset, onClose }: { asset: Asset; onClo
           <div className="request-prompt-block-head">
             <label>
               结果版本{' '}
-              <select
+              <Select<number>
                 aria-label="结果版本"
-                value={version ?? ''}
-                onChange={(event) => setVersion(Number(event.target.value))}
-              >
-                {versions.map((entry) => (
-                  <option key={entry.id} value={entry.version}>
-                    v{entry.version}
-                  </option>
-                ))}
-              </select>
+                value={version}
+                virtual={false}
+                options={versions.map((entry) => ({
+                  value: entry.version,
+                  label: `v${entry.version}`,
+                }))}
+                onChange={setVersion}
+              />
             </label>
-            <button
+            <Button
               className="icon-button"
               type="button"
               aria-label="预览此版本"
@@ -106,7 +107,7 @@ export function AssetGenerationHistory({ asset, onClose }: { asset: Asset; onClo
               onClick={() => setPreviewOpen(true)}
             >
               <Eye size={16} />
-            </button>
+            </Button>
           </div>
         }
         onSaveSummary={

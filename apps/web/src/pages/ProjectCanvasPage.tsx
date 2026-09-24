@@ -1,3 +1,4 @@
+import { Button } from '@multimodal-canvas/ui';
 import { AlertTriangle, FolderX, LoaderCircle, RotateCcw } from 'lucide-react';
 import type { MouseEvent, ReactNode } from 'react';
 
@@ -52,10 +53,10 @@ export function ProjectCanvasPage({
             <p>{isMissing ? `无法访问项目 ${projectId}。` : (error ?? '请稍后重试。')}</p>
             <div>
               {status === 'error' && onRetry && (
-                <button type="button" onClick={onRetry}>
+                <Button type="button" onClick={onRetry}>
                   <RotateCcw size={15} aria-hidden="true" />
                   重新加载
-                </button>
+                </Button>
               )}
               <AppLink
                 to={appPaths.workspace}

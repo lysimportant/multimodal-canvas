@@ -1,11 +1,13 @@
 /** 管理员概览、审计与系统状态页面。 */
+import { Button } from '@multimodal-canvas/ui';
 import { useQuery } from '@tanstack/react-query';
+import { Table } from 'antd';
 import { Activity, ArrowRight, Database, RefreshCw, Server, ShieldCheck } from 'lucide-react';
 import { useState } from 'react';
 
 import { AppLink } from '../routing';
 import { managementRequest, queryString } from './client';
-import { formatBytes, formatDate, Pagination, QueryState } from './primitives';
+import { formatBytes, formatDate, Pagination, QueryState, StatusBadge } from './primitives';
 
 /** 后台概览只消费资源和任务统计，不依赖旧账号或邮件服务。 */
 type Overview = {
@@ -27,7 +29,7 @@ export function OverviewPage({ userId }: { userId: string }) {
           <p>ADMINISTRATION</p>
           <h1>管理概览</h1>
         </div>
-        <button
+        <Button
           className="mg-icon"
           type="button"
           title="刷新概览"
@@ -36,7 +38,7 @@ export function OverviewPage({ userId }: { userId: string }) {
           disabled={query.isFetching}
         >
           <RefreshCw size={18} className={query.isFetching ? 'mg-spin' : ''} />
-        </button>
+        </Button>
       </header>
       <QueryState
         loading={query.isLoading}
@@ -130,7 +132,7 @@ export function AuditPage({ userId }: { userId: string }) {
           <p>AUDIT</p>
           <h1>操作记录</h1>
         </div>
-        <button
+        <Button
           type="button"
           className="mg-icon"
           aria-label="刷新操作记录"
@@ -139,7 +141,7 @@ export function AuditPage({ userId }: { userId: string }) {
           onClick={() => void query.refetch()}
         >
           <RefreshCw size={17} />
-        </button>
+        </Button>
       </header>
       <QueryState
         loading={query.isLoading}
@@ -147,44 +149,42 @@ export function AuditPage({ userId }: { userId: string }) {
         onRetry={() => void query.refetch()}
         empty={query.data?.events.length === 0 ? '暂无操作记录' : undefined}
       >
-        <div className="mg-table-wrap">
-          <table className="mg-table mg-audit-table">
-            <thead>
-              <tr>
-                <th>时间</th>
-                <th>操作</th>
-                <th>操作者</th>
-                <th>对象</th>
-                <th>摘要</th>
-              </tr>
-            </thead>
-            <tbody>
-              {query.data?.events.map((event) => (
-                <tr key={event.id}>
-                  <td>{formatDate(event.createdAt)}</td>
-                  <td>
-                    <code>{event.action}</code>
-                  </td>
-                  <td>
-                    <span className="mg-truncate" title={event.actorId}>
-                      {event.actorId || '系统'}
-                    </span>
-                  </td>
-                  <td>
-                    <span className="mg-truncate" title={event.targetId}>
-                      {event.targetId || '系统'}
-                    </span>
-                  </td>
-                  <td>
-                    {typeof event.summary === 'string'
-                      ? event.summary
-                      : JSON.stringify(event.summary)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <Table<AuditResult['events'][number]>
+          className="mg-table mg-audit-table"
+          rowKey="id"
+          dataSource={query.data?.events ?? []}
+          pagination={false}
+          size="middle"
+          scroll={{ x: 760 }}
+          columns={[
+            { title: '时间', key: 'createdAt', render: (_, event) => formatDate(event.createdAt) },
+            { title: '操作', key: 'action', render: (_, event) => <code>{event.action}</code> },
+            {
+              title: '操作者',
+              key: 'actorId',
+              render: (_, event) => (
+                <span className="mg-truncate" title={event.actorId}>
+                  {event.actorId || '系统'}
+                </span>
+              ),
+            },
+            {
+              title: '对象',
+              key: 'targetId',
+              render: (_, event) => (
+                <span className="mg-truncate" title={event.targetId}>
+                  {event.targetId || '系统'}
+                </span>
+              ),
+            },
+            {
+              title: '摘要',
+              key: 'summary',
+              render: (_, event) =>
+                typeof event.summary === 'string' ? event.summary : JSON.stringify(event.summary),
+            },
+          ]}
+        />
       </QueryState>
       {query.data && (
         <Pagination
@@ -228,7 +228,7 @@ export function SystemPage({ userId }: { userId: string }) {
           <p>SYSTEM</p>
           <h1>系统状态</h1>
         </div>
-        <button
+        <Button
           className="mg-button"
           type="button"
           disabled={query.isFetching}
@@ -236,7 +236,7 @@ export function SystemPage({ userId }: { userId: string }) {
         >
           <RefreshCw size={16} className={query.isFetching ? 'mg-spin' : ''} />
           刷新状态
-        </button>
+        </Button>
       </header>
       <QueryState
         loading={query.isLoading}
@@ -253,11 +253,16 @@ export function SystemPage({ userId }: { userId: string }) {
               <div key={name}>
                 <Icon size={21} />
                 <strong>{name}</strong>
-                <span
-                  className={`mg-badge ${value === 'ok' || value === 'available' ? 'is-active' : value === 'unknown' ? 'is-pending' : 'is-failed'}`}
-                >
-                  {healthLabel(value)}
-                </span>
+                <StatusBadge
+                  value={
+                    value === 'ok' || value === 'available'
+                      ? 'active'
+                      : value === 'unknown'
+                        ? 'pending'
+                        : 'failed'
+                  }
+                  label={healthLabel(value)}
+                />
               </div>
             ))}
           </div>

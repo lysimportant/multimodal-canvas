@@ -1,4 +1,9 @@
 import {
+  Button as UiButton,
+  Textarea as UiTextarea,
+  Input as UiInput,
+} from '@multimodal-canvas/ui';
+import {
   ArrowDown,
   ArrowUp,
   AudioLines,
@@ -16,17 +21,17 @@ import {
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type ChangeEvent,
-  type CSSProperties,
+  type ReactElement,
+  type ReactNode,
   type DragEvent,
   type KeyboardEvent,
   type MouseEvent as ReactMouseEvent,
 } from 'react';
-import { createPortal } from 'react-dom';
+import { Popover, type GetRef } from 'antd';
 
 import type {
   Asset,
@@ -107,8 +112,8 @@ const RESOURCE_FILTERS = ['all', 'image', 'video', 'audio', 'text'] as const;
 /**
  * 通用资源提及编辑器。
  *
- * 文本框仍然使用原生 textarea，因此浏览器的粘贴、选区和 IME 行为保持
- * 稳定；名称以原子范围绑定到不可变 mentionId，资源条按 assetId 去重。
+ * 文本域通过组件库 Textarea 渲染，底层保留原生选区、粘贴和 IME 行为；
+ * 名称以原子范围绑定到不可变 mentionId，资源条按 assetId 去重。
  * 提交时同时回传纯文本和 PromptDocument，旧调用方只接收
  * 纯文本也可以继续工作。
  */
@@ -143,9 +148,9 @@ export function ResourceMentionEditor({
   const rangesRef = useRef<MentionRange[]>(initialRanges);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
-  const composerRef = useRef<HTMLDivElement>(null);
   const highlightRef = useRef<HTMLDivElement>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
+  const pickerPopoverRef = useRef<GetRef<typeof Popover>>(null);
   const pickerDismissedRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const caretRef = useRef(initialText.length);
@@ -164,7 +169,6 @@ export function ResourceMentionEditor({
   const [resourceDialogId, setResourceDialogId] = useState<string | null>(null);
   const [resourceNameDraft, setResourceNameDraft] = useState('');
   const [hoveredMentionId, setHoveredMentionId] = useState<string | null>(null);
-  const [hoverCardStyle, setHoverCardStyle] = useState<CSSProperties | null>(null);
   const [uploading, setUploading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [protectedEditMessage, setProtectedEditMessage] = useState<string | null>(null);
@@ -305,6 +309,7 @@ export function ResourceMentionEditor({
   }, [nodeId, promptDocument, value]);
 
   useEffect(() => {
+    if (bindingMentionId === null) return;
     const closeOnOutsidePointer = (event: PointerEvent) => {
       if (
         !(event.target instanceof Node) ||
@@ -312,14 +317,11 @@ export function ResourceMentionEditor({
         pickerRef.current?.contains(event.target)
       )
         return;
-      setTrigger(null);
-      setReplaceMentionId(null);
-      setPendingDropAssetId(null);
       setBindingMentionId(null);
     };
     document.addEventListener('pointerdown', closeOnOutsidePointer);
     return () => document.removeEventListener('pointerdown', closeOnOutsidePointer);
-  }, []);
+  }, [bindingMentionId]);
 
   const activeAssets = useMemo(
     () => assets.filter((asset) => asset.status !== 'archived'),
@@ -356,9 +358,6 @@ export function ResourceMentionEditor({
 
   const pickerOpen = Boolean(trigger || replaceMentionId !== null || pendingDropAssetId !== null);
   const pickerId = `resource-mention-picker-${nodeId}`;
-  // 模态编辑器内保留 DOM 焦点归属；原生 popover 的顶层渲染避开其 transform 和裁切。
-  const pickerContainer = rootRef.current?.closest('[role="dialog"]') ?? document.body;
-  const useTopLayer = typeof HTMLElement.prototype.showPopover === 'function';
   const closePicker = useCallback(() => {
     pickerDismissedRef.current = true;
     setTrigger(null);
@@ -384,7 +383,12 @@ export function ResourceMentionEditor({
   useEffect(() => {
     if (!pickerOpen) return;
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key !== 'Escape' || isImeKeyboardEvent(event)) return;
+      if (event.key !== 'Escape') return;
+      // IME 的取消键不得被浮层或外层 Modal 解释成关闭。
+      if (isImeKeyboardEvent(event)) {
+        event.stopPropagation();
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       const restoreFocus = pickerRef.current?.contains(document.activeElement);
@@ -402,48 +406,6 @@ export function ResourceMentionEditor({
       searchEntries.length === 0 ? 0 : Math.min(current, searchEntries.length - 1),
     );
   }, [searchEntries.length]);
-
-  /** 使用高亮层的实际字符矩形定位，不把弹层高度加入输入节点布局。 */
-  const positionPicker = useCallback(() => {
-    const picker = pickerRef.current;
-    const input = textareaRef.current;
-    const highlight = highlightRef.current;
-    if (!picker || !input || !highlight) return;
-    const anchor = getPromptAnchorRect(highlight, input, trigger?.start ?? caretRef.current);
-    const margin = 8;
-    const width = Math.min(420, window.innerWidth - margin * 2);
-    picker.style.width = width + 'px';
-    picker.style.maxHeight = Math.min(320, window.innerHeight - margin * 2) + 'px';
-    const height = picker.getBoundingClientRect().height;
-    const right = anchor.right + margin;
-    const left =
-      right + width <= window.innerWidth - margin
-        ? right
-        : anchor.left - width - margin >= margin
-          ? anchor.left - width - margin
-          : Math.max(margin, window.innerWidth - width - margin);
-    picker.style.left = left + 'px';
-    picker.style.top =
-      Math.max(margin, Math.min(anchor.top - 4, window.innerHeight - height - margin)) + 'px';
-  }, [trigger?.start]);
-
-  useLayoutEffect(() => {
-    if (!pickerOpen) return;
-    const picker = pickerRef.current;
-    if (useTopLayer && picker && !picker.matches(':popover-open')) picker.showPopover();
-    positionPicker();
-    const observer =
-      typeof ResizeObserver === 'function' ? new ResizeObserver(positionPicker) : null;
-    if (picker) observer?.observe(picker);
-    if (textareaRef.current) observer?.observe(textareaRef.current);
-    window.addEventListener('resize', positionPicker);
-    document.addEventListener('scroll', positionPicker, true);
-    return () => {
-      observer?.disconnect();
-      window.removeEventListener('resize', positionPicker);
-      document.removeEventListener('scroll', positionPicker, true);
-    };
-  }, [pickerOpen, positionPicker, useTopLayer, text, pickerContainer]);
 
   useEffect(() => {
     const option = pickerRef.current?.querySelector<HTMLElement>('[aria-selected="true"]');
@@ -806,75 +768,35 @@ export function ResourceMentionEditor({
     [activeIndex, searchEntries, selectMention],
   );
 
-  /** 按名字的屏幕坐标摆放预览，并在视口边缘翻转或收缩，避免被编辑器裁切。 */
-  const positionHoverCard = useCallback((mentionId: string, token?: Element | null) => {
-    const composer = composerRef.current;
-    const mark =
-      token ??
-      Array.from(composer?.querySelectorAll<HTMLElement>('.resource-mention-token') ?? []).find(
-        (element) => element.dataset.mentionId === mentionId,
-      );
-    if (!composer || !(mark instanceof HTMLElement)) {
-      setHoverCardStyle(null);
+  const handleComposerMouseMove = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    const overlay = highlightRef.current;
+    const textarea = textareaRef.current;
+    if (!overlay || !textarea) return;
+    const previousTextarea = textarea.style.pointerEvents;
+    const previousOverlay = overlay.style.pointerEvents;
+    let hit: Element | null = null;
+    textarea.style.pointerEvents = 'none';
+    overlay.style.pointerEvents = 'auto';
+    try {
+      hit =
+        typeof document.elementFromPoint === 'function'
+          ? document.elementFromPoint(event.clientX, event.clientY)
+          : null;
+    } finally {
+      textarea.style.pointerEvents = previousTextarea;
+      overlay.style.pointerEvents = previousOverlay;
+    }
+    const token = hit instanceof Element ? hit.closest('.resource-mention-token') : null;
+    const mentionId = token instanceof HTMLElement ? (token.dataset.mentionId ?? null) : null;
+    if (!mentionId) {
+      setHoveredMentionId(null);
       return;
     }
-    const tokenRect = mark.getBoundingClientRect();
-    const margin = 12;
-    const gap = 8;
-    const width = Math.min(280, Math.max(0, window.innerWidth - margin * 2));
-    const height = Math.min(210, Math.max(0, window.innerHeight - margin * 2));
-    const below = tokenRect.bottom + gap;
-    const top =
-      below + height <= window.innerHeight - margin ? below : tokenRect.top - height - gap;
-    setHoverCardStyle({
-      left: Math.max(
-        margin,
-        Math.min(
-          tokenRect.left + tokenRect.width / 2 - width / 2,
-          window.innerWidth - width - margin,
-        ),
-      ),
-      top: Math.max(margin, Math.min(top, window.innerHeight - height - margin)),
-      width,
-      height,
-    });
+    setHoveredMentionId(mentionId);
   }, []);
-
-  const handleComposerMouseMove = useCallback(
-    (event: ReactMouseEvent<HTMLDivElement>) => {
-      const overlay = highlightRef.current;
-      const textarea = textareaRef.current;
-      if (!overlay || !textarea) return;
-      const previousTextarea = textarea.style.pointerEvents;
-      const previousOverlay = overlay.style.pointerEvents;
-      let hit: Element | null = null;
-      textarea.style.pointerEvents = 'none';
-      overlay.style.pointerEvents = 'auto';
-      try {
-        hit =
-          typeof document.elementFromPoint === 'function'
-            ? document.elementFromPoint(event.clientX, event.clientY)
-            : null;
-      } finally {
-        textarea.style.pointerEvents = previousTextarea;
-        overlay.style.pointerEvents = previousOverlay;
-      }
-      const token = hit instanceof Element ? hit.closest('.resource-mention-token') : null;
-      const mentionId = token instanceof HTMLElement ? (token.dataset.mentionId ?? null) : null;
-      if (!mentionId) {
-        setHoveredMentionId(null);
-        setHoverCardStyle(null);
-        return;
-      }
-      setHoveredMentionId(mentionId);
-      positionHoverCard(mentionId, token);
-    },
-    [positionHoverCard],
-  );
 
   const handleComposerMouseLeave = useCallback(() => {
     setHoveredMentionId(null);
-    setHoverCardStyle(null);
   }, []);
 
   useEffect(() => {
@@ -903,16 +825,14 @@ export function ResourceMentionEditor({
       setTrigger({ start: selected.start, query: '' });
       setActiveIndex(0);
       setHoveredMentionId(selected.mention.mentionId);
-      positionHoverCard(selected.mention.mentionId);
       return;
     }
     const inside = rangesRef.current.find((range) => start > range.start && start < range.end);
     if (inside) {
       setHoveredMentionId(inside.mention.mentionId);
-      positionHoverCard(inside.mention.mentionId);
     }
     updateTrigger(textRef.current, caretRef.current, setTrigger);
-  }, [positionHoverCard]);
+  }, []);
 
   const handleKeyUp = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1015,12 +935,8 @@ export function ResourceMentionEditor({
   }, [assets, connectedAssets, mentionRanges]);
 
   const dialogItem = stripItems.find((item) => item.key === resourceDialogId) ?? null;
-  const hoveredRange = mentionRanges.find((range) => range.mention.mentionId === hoveredMentionId);
-  const hoveredAsset = hoveredRange
-    ? (assets.find((asset) => asset.id === hoveredRange.mention.assetId) ??
-      connectedAssets.find((asset) => asset.id === hoveredRange.mention.assetId))
-    : undefined;
 
+  /** 同一资源的全部名称范围原子更新，复用既有编辑历史。 */
   const renameStripResource = useCallback(
     (mentionId: string, nextName: string) => {
       const trimmed = nextName.trim();
@@ -1063,6 +979,98 @@ export function ResourceMentionEditor({
     [commitState],
   );
 
+  const pickerContent = (
+    <div
+      ref={pickerRef}
+      className="resource-mention-picker resource-mention-picker-content nodrag nopan nowheel"
+      onKeyDown={handlePickerKeyDown}
+      onPointerDown={(event) => event.stopPropagation()}
+      onWheel={(event) => event.stopPropagation()}
+    >
+      <label className="resource-mention-search">
+        <Search size={15} aria-hidden="true" />
+        <UiInput
+          type="search"
+          aria-label="搜索资源"
+          placeholder="搜索资源名称或标签"
+          value={pickerQuery}
+          onChange={(event) => setSearchQuery(event.currentTarget.value)}
+          aria-controls={pickerId}
+          aria-autocomplete="list"
+          aria-activedescendant={
+            searchEntries.length > 0
+              ? `${pickerId}-option-${activeIndex % searchEntries.length}`
+              : undefined
+          }
+        />
+      </label>
+      <div className="resource-mention-picker-body">
+        <div className="resource-mention-filters" role="group" aria-label="节点类型">
+          {RESOURCE_FILTERS.map((type) => (
+            <UiButton
+              key={type}
+              type="button"
+              aria-pressed={mediaFilter === type}
+              onClick={() => setMediaFilter(type)}
+              disabled={pendingDropAssetId !== null}
+            >
+              {type === 'all' ? (
+                <Search size={14} aria-hidden="true" />
+              ) : (
+                <MentionMediaIcon mediaType={type} />
+              )}
+              {type === 'all' ? '全部' : type === 'text' ? '文本' : mediaLabels[type]}
+            </UiButton>
+          ))}
+        </div>
+        <div
+          className="resource-mention-results"
+          id={pickerId}
+          role="listbox"
+          aria-label={
+            replaceMentionId !== null
+              ? '选择替换资源'
+              : pendingDropAssetId !== null
+                ? '确认拖入资源'
+                : '选择资源'
+          }
+        >
+          {searchEntries.length === 0 ? (
+            <div className="resource-mention-empty">没有可引用的资源</div>
+          ) : (
+            searchEntries.map((entry, index) => (
+              <UiButton
+                type="button"
+                role="option"
+                id={`${pickerId}-option-${index}`}
+                aria-selected={index === activeIndex}
+                className={`resource-mention-option ${index === activeIndex ? 'is-active' : ''}`}
+                key={entry.asset.id}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => selectMention(entry.asset)}
+              >
+                <MentionPreview asset={entry.asset} mediaType={entry.asset.mediaType} />
+                <span className="resource-mention-option-copy">
+                  <strong>{entry.asset.name}</strong>
+                  <small>
+                    {mediaLabels[entry.asset.mediaType]} · {formatBytes(entry.asset.sizeBytes)} ·{' '}
+                    {formatVersionHint(getAssetVersion(entry.asset))}
+                  </small>
+                </span>
+              </UiButton>
+            ))
+          )}
+        </div>
+      </div>
+      {(replaceMentionId !== null || pendingDropAssetId !== null) && (
+        <UiButton type="button" className="resource-mention-picker-cancel" onClick={closePicker}>
+          <X size={13} aria-hidden="true" />
+          {replaceMentionId !== null ? '取消替换' : '取消引用'}
+        </UiButton>
+      )}
+    </div>
+  );
+
   return (
     <div
       ref={rootRef}
@@ -1088,7 +1096,7 @@ export function ResourceMentionEditor({
               data-mention-id={item.mentionId}
               {...(unavailableReason ? { 'data-placeholder-reason': unavailableReason.code } : {})}
             >
-              <button
+              <UiButton
                 type="button"
                 className="resource-mention-thumb-main"
                 aria-label={`预览并命名 ${item.name}`}
@@ -1103,8 +1111,8 @@ export function ResourceMentionEditor({
                 ) : (
                   <MentionMediaIcon mediaType={item.mediaType} />
                 )}
-              </button>
-              <button
+              </UiButton>
+              <UiButton
                 type="button"
                 className="resource-mention-thumb-delete"
                 aria-label={`删除 ${item.name}`}
@@ -1118,11 +1126,11 @@ export function ResourceMentionEditor({
                 }}
               >
                 <X size={11} aria-hidden="true" />
-              </button>
+              </UiButton>
             </div>
           );
         })}
-        <button
+        <UiButton
           type="button"
           className="resource-mention-thumb resource-mention-thumb-add"
           aria-label="上传引用资源"
@@ -1130,7 +1138,7 @@ export function ResourceMentionEditor({
           onClick={() => fileInputRef.current?.click()}
         >
           <Plus size={16} aria-hidden="true" />
-        </button>
+        </UiButton>
         <input
           ref={fileInputRef}
           type="file"
@@ -1148,14 +1156,103 @@ export function ResourceMentionEditor({
 
       <div
         className="resource-mention-composer"
-        ref={composerRef}
         onMouseMove={handleComposerMouseMove}
         onMouseLeave={handleComposerMouseLeave}
       >
         <div className="resource-mention-highlight" aria-hidden="true" ref={highlightRef}>
-          {renderHighlightedPrompt(text, mentionRanges)}
+          {renderHighlightedPrompt(
+            text,
+            mentionRanges,
+            pickerOpen
+              ? {
+                  offset: trigger?.start ?? caretRef.current,
+                  render: (character) => (
+                    <Popover
+                      ref={pickerPopoverRef}
+                      open
+                      trigger={['click']}
+                      onOpenChange={(next) => {
+                        if (!next) closePicker();
+                      }}
+                      placement="rightTop"
+                      arrow={false}
+                      autoAdjustOverflow
+                      destroyOnHidden
+                      getPopupContainer={(anchor) =>
+                        anchor.closest<HTMLElement>('[role="dialog"]') ?? document.body
+                      }
+                      classNames={{
+                        root: 'resource-mention-picker-popover',
+                        container: 'resource-mention-picker-container',
+                      }}
+                      styles={{ root: { pointerEvents: 'auto' } }}
+                      content={pickerContent}
+                    >
+                      <span
+                        className={
+                          character
+                            ? 'resource-mention-picker-anchor'
+                            : 'resource-mention-picker-anchor is-empty'
+                        }
+                        data-resource-picker-anchor
+                        data-offset={trigger?.start ?? caretRef.current}
+                      >
+                        {character}
+                      </span>
+                    </Popover>
+                  ),
+                }
+              : undefined,
+            (mentionId, mark) => {
+              const mention = mentionRanges.find(
+                (range) => range.mention.mentionId === mentionId,
+              )!.mention;
+              const asset =
+                assets.find((item) => item.id === mention.assetId) ??
+                connectedAssets.find((item) => item.id === mention.assetId);
+              return (
+                <Popover
+                  key={mentionId}
+                  open={hoveredMentionId === mentionId}
+                  trigger={[]}
+                  placement="bottom"
+                  arrow={false}
+                  autoAdjustOverflow
+                  destroyOnHidden
+                  onOpenChange={(next) => {
+                    if (!next) setHoveredMentionId(null);
+                  }}
+                  getPopupContainer={(anchor) =>
+                    anchor.closest<HTMLElement>('[role="dialog"]') ?? document.body
+                  }
+                  classNames={{ root: 'resource-mention-hover-popover' }}
+                  styles={{ container: { padding: 0 } }}
+                  content={
+                    <div
+                      className="resource-mention-hover-content"
+                      role="region"
+                      aria-label={`预览 ${mentionDisplayName(mention)}`}
+                    >
+                      {canPreviewMentionAsset(asset) &&
+                      !getMentionUnavailableReason(mention, asset as Asset | undefined) ? (
+                        <AssetPreview
+                          asset={asset as Asset}
+                          mode="compact"
+                          className="resource-mention-hover-preview"
+                        />
+                      ) : (
+                        <MentionMediaIcon mediaType={mention.mediaType} />
+                      )}
+                    </div>
+                  }
+                >
+                  {mark}
+                </Popover>
+              );
+            },
+          )}
         </div>
-        <textarea
+        <UiTextarea
           ref={textareaRef}
           rows={4}
           {...ime.bind}
@@ -1169,10 +1266,11 @@ export function ResourceMentionEditor({
           onKeyUp={handleKeyUp}
           onMouseUp={handleSelect}
           onScroll={(event) => {
-            const highlight = event.currentTarget.previousElementSibling as HTMLElement | null;
+            const highlight = highlightRef.current;
             if (!highlight) return;
             highlight.scrollTop = event.currentTarget.scrollTop;
             highlight.scrollLeft = event.currentTarget.scrollLeft;
+            pickerPopoverRef.current?.forceAlign();
           }}
           placeholder={placeholder}
           aria-label={ariaLabel}
@@ -1187,31 +1285,6 @@ export function ResourceMentionEditor({
           disabled={disabled}
           className="resource-mention-textarea"
         />
-        {hoveredRange &&
-          hoverCardStyle &&
-          createPortal(
-            <div
-              className="resource-mention-hover-card resource-mention-hover-card-expanded"
-              role="tooltip"
-              style={hoverCardStyle}
-              aria-label={`预览 ${mentionDisplayName(hoveredRange.mention)}`}
-            >
-              {canPreviewMentionAsset(hoveredAsset) &&
-              !getMentionUnavailableReason(
-                hoveredRange.mention,
-                hoveredAsset as Asset | undefined,
-              ) ? (
-                <AssetPreview
-                  asset={hoveredAsset as Asset}
-                  mode="compact"
-                  className="resource-mention-hover-preview"
-                />
-              ) : (
-                <MentionMediaIcon mediaType={hoveredRange.mention.mediaType} />
-              )}
-            </div>,
-            document.body,
-          )}
       </div>
 
       {protectedEditMessage && (
@@ -1249,14 +1322,14 @@ export function ResourceMentionEditor({
             </div>
             <label className="resource-mention-dialog-name">
               <span>资源名称</span>
-              <input
+              <UiInput
                 value={resourceNameDraft}
                 onChange={(event) => setResourceNameDraft(event.currentTarget.value)}
                 maxLength={160}
               />
             </label>
             <div className="resource-mention-dialog-actions">
-              <button
+              <UiButton
                 type="button"
                 className="button button-primary"
                 disabled={disabled || !dialogItem.mentionId}
@@ -1268,150 +1341,21 @@ export function ResourceMentionEditor({
                 }}
               >
                 保存名称
-              </button>
+              </UiButton>
               <DialogClose asChild>
-                <button type="button" className="button button-secondary">
+                <UiButton type="button" className="button button-secondary">
                   关闭
-                </button>
+                </UiButton>
               </DialogClose>
             </div>
           </DialogContent>
         )}
       </Dialog>
-
-      {pickerOpen &&
-        createPortal(
-          <div
-            ref={pickerRef}
-            className="resource-mention-picker nodrag nopan nowheel"
-            popover={useTopLayer ? 'manual' : undefined}
-            onKeyDown={handlePickerKeyDown}
-            onPointerDown={(event) => event.stopPropagation()}
-            onWheel={(event) => event.stopPropagation()}
-          >
-            <label className="resource-mention-search">
-              <Search size={15} aria-hidden="true" />
-              <input
-                type="search"
-                aria-label="搜索资源"
-                placeholder="搜索资源名称或标签"
-                value={pickerQuery}
-                onChange={(event) => setSearchQuery(event.currentTarget.value)}
-                aria-controls={pickerId}
-                aria-autocomplete="list"
-                aria-activedescendant={
-                  searchEntries.length > 0
-                    ? `${pickerId}-option-${activeIndex % searchEntries.length}`
-                    : undefined
-                }
-              />
-            </label>
-            <div className="resource-mention-picker-body">
-              <div className="resource-mention-filters" role="group" aria-label="节点类型">
-                {RESOURCE_FILTERS.map((type) => (
-                  <button
-                    key={type}
-                    type="button"
-                    aria-pressed={mediaFilter === type}
-                    onClick={() => setMediaFilter(type)}
-                    disabled={pendingDropAssetId !== null}
-                  >
-                    {type === 'all' ? (
-                      <Search size={14} aria-hidden="true" />
-                    ) : (
-                      <MentionMediaIcon mediaType={type} />
-                    )}
-                    {type === 'all' ? '全部' : type === 'text' ? '文本' : mediaLabels[type]}
-                  </button>
-                ))}
-              </div>
-              <div
-                className="resource-mention-results"
-                id={pickerId}
-                role="listbox"
-                aria-label={
-                  replaceMentionId !== null
-                    ? '选择替换资源'
-                    : pendingDropAssetId !== null
-                      ? '确认拖入资源'
-                      : '选择资源'
-                }
-              >
-                {searchEntries.length === 0 ? (
-                  <div className="resource-mention-empty">没有可引用的资源</div>
-                ) : (
-                  searchEntries.map((entry, index) => (
-                    <button
-                      type="button"
-                      role="option"
-                      id={`${pickerId}-option-${index}`}
-                      aria-selected={index === activeIndex}
-                      className={`resource-mention-option ${index === activeIndex ? 'is-active' : ''}`}
-                      key={entry.asset.id}
-                      onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => selectMention(entry.asset)}
-                    >
-                      <MentionPreview asset={entry.asset} mediaType={entry.asset.mediaType} />
-                      <span className="resource-mention-option-copy">
-                        <strong>{entry.asset.name}</strong>
-                        <small>
-                          {mediaLabels[entry.asset.mediaType]} ·{' '}
-                          {formatBytes(entry.asset.sizeBytes)} ·{' '}
-                          {formatVersionHint(getAssetVersion(entry.asset))}
-                        </small>
-                      </span>
-                    </button>
-                  ))
-                )}
-              </div>
-            </div>
-            {(replaceMentionId !== null || pendingDropAssetId !== null) && (
-              <button
-                type="button"
-                className="resource-mention-picker-cancel"
-                onClick={closePicker}
-              >
-                <X size={13} aria-hidden="true" />
-                {replaceMentionId !== null ? '取消替换' : '取消引用'}
-              </button>
-            )}
-          </div>,
-          pickerContainer,
-        )}
     </div>
   );
 }
 
 /** 将旧字符串或结构化文档规范化为可编辑文档。 */
-/**
- * 从与 textarea 同步滚动的高亮层读取字符视口坐标；空文本或无布局环境退回输入框。
- * offset 为 UTF-16 字符偏移，返回矩形限制在当前输入框可见区域内。
- */
-function getPromptAnchorRect(highlight: HTMLElement, input: HTMLTextAreaElement, offset: number) {
-  const bounds = input.getBoundingClientRect();
-  const walker = document.createTreeWalker(highlight, NodeFilter.SHOW_TEXT);
-  let remaining = Math.max(0, offset);
-  let node = walker.nextNode();
-  while (node) {
-    const length = node.textContent?.length ?? 0;
-    if (remaining < length) {
-      const range = document.createRange();
-      range.setStart(node, remaining);
-      range.setEnd(node, remaining + 1);
-      const rect =
-        typeof range.getBoundingClientRect === 'function' ? range.getBoundingClientRect() : bounds;
-      return {
-        left: Math.max(bounds.left, Math.min(rect.left, bounds.right)),
-        right: Math.max(bounds.left, Math.min(rect.right, bounds.right)),
-        top: Math.max(bounds.top, Math.min(rect.top, bounds.bottom - rect.height)),
-      };
-    }
-    remaining -= length;
-    node = walker.nextNode();
-  }
-  return { left: bounds.left + 8, right: bounds.left + 8, top: bounds.top + 8 };
-}
-
 function normalizeDocument(document: PromptDocument | undefined, value: string): PromptDocument {
   if (document !== undefined) {
     const parsed = promptDocumentSchema.safeParse(document);
@@ -1770,32 +1714,53 @@ function promotePlaintextResourceNames(
   return next.sort((left, right) => left.start - right.start);
 }
 
-function renderHighlightedPrompt(text: string, ranges: readonly MentionRange[]) {
-  const parts: Array<{ key: string; text: string; mention?: boolean }> = [];
+/**
+ * 按 UTF-16 范围保留原文与提及标记；在查询字符处嵌入无额外占位的库锚点。
+ * 浮层始终由 getPopupContainer 挂到 Dialog/body，不进入 aria-hidden 高亮层。
+ */
+function renderHighlightedPrompt(
+  text: string,
+  ranges: readonly MentionRange[],
+  picker: { offset: number; render: (character: string) => ReactNode } | undefined,
+  renderMention: (mentionId: string, mark: ReactElement) => ReactNode,
+) {
+  const parts: Array<{ key: string; start: number; end: number; mention?: boolean }> = [];
   let cursor = 0;
   for (const range of [...ranges].sort((left, right) => left.start - right.start)) {
-    if (range.start > cursor) {
-      parts.push({ key: `text-${cursor}`, text: text.slice(cursor, range.start) });
-    }
-    parts.push({
-      key: range.mention.mentionId,
-      text: text.slice(range.start, range.end),
-      mention: true,
-    });
+    if (range.start > cursor)
+      parts.push({ key: `text-${cursor}`, start: cursor, end: range.start });
+    parts.push({ key: range.mention.mentionId, start: range.start, end: range.end, mention: true });
     cursor = range.end;
   }
-  if (cursor < text.length || parts.length === 0) {
-    parts.push({ key: `text-${cursor}`, text: text.slice(cursor) });
-  }
-  return parts.map((part) =>
-    part.mention ? (
-      <mark key={part.key} className="resource-mention-token" data-mention-id={part.key}>
-        {part.text}
-      </mark>
+  if (cursor < text.length || parts.length === 0)
+    parts.push({ key: `text-${cursor}`, start: cursor, end: text.length });
+  const offset = picker ? Math.max(0, Math.min(picker.offset, text.length)) : -1;
+  return parts.map((part, index) => {
+    const containsAnchor =
+      picker &&
+      offset >= part.start &&
+      (offset < part.end || (offset === text.length && index === parts.length - 1));
+    const character = text[offset] === '@' ? '@' : '';
+    const content = containsAnchor ? (
+      <>
+        {text.slice(part.start, offset)}
+        {picker.render(character)}
+        {text.slice(offset + character.length, part.end)}
+      </>
     ) : (
-      <span key={part.key}>{part.text}</span>
-    ),
-  );
+      text.slice(part.start, part.end)
+    );
+    return part.mention ? (
+      renderMention(
+        part.key,
+        <mark className="resource-mention-token" data-mention-id={part.key}>
+          {content}
+        </mark>,
+      )
+    ) : (
+      <span key={part.key}>{content}</span>
+    );
+  });
 }
 
 function takenDisplayNames(ranges: readonly MentionRange[], exceptId?: string): Set<string> {

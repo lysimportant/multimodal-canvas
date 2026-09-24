@@ -1,3 +1,4 @@
+import { Button as UiButton } from '@multimodal-canvas/ui';
 import { AlertTriangle, CheckCircle2, RotateCcw, ShieldAlert } from 'lucide-react';
 import { useState } from 'react';
 
@@ -255,7 +256,7 @@ export function FailureDiagnostics({
       )}
       {retryError && <p className="failure-diagnostics-retry-error">{retryError}</p>}
       {canRetry && (
-        <button
+        <UiButton
           type="button"
           className="button button-secondary failure-diagnostics-retry"
           onClick={() => void handleRetry()}
@@ -264,7 +265,7 @@ export function FailureDiagnostics({
         >
           {isRetrying ? <CheckCircle2 className="spin" size={14} /> : <RotateCcw size={14} />}
           {isRetrying ? '重试中' : '重试'}
-        </button>
+        </UiButton>
       )}
     </section>
   );

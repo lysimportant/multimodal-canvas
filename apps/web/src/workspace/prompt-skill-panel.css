@@ -46,35 +46,41 @@
   outline-offset: 2px;
 }
 
-.prompt-skill-settings-popover {
-  box-sizing: border-box;
+.prompt-skill-settings-content {
   display: grid;
   gap: 10px;
+  width: min(320px, calc(100vw - 48px));
+  box-sizing: border-box;
   padding: 12px;
   border: 1px solid var(--mc-border);
   border-radius: 8px;
   background: var(--mc-surface);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 14%);
+  max-height: min(440px, 60dvh);
+  overflow-y: auto;
   color: var(--mc-text);
   font-size: 12px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  box-shadow: 0 8px 24px rgb(0 0 0 / 14%);
 }
 
-.prompt-skill-settings-popover[hidden] {
-  display: none;
-}
-
-.prompt-skill-controls > .compact-select {
-  flex: 1 1 190px;
+.prompt-skill-select {
+  display: grid;
+  gap: 5px;
   min-width: 0;
+}
+
+.prompt-skill-controls > .prompt-skill-select {
+  flex: 1 1 190px;
+}
+
+.prompt-skill-select .ant-select {
+  width: 100%;
 }
 
 .prompt-skill-optimize {
   width: 100%;
 }
 
-.prompt-skill-panel .button {
+:is(.prompt-skill-panel, .prompt-skill-settings-content) .button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -84,7 +90,7 @@
   font-size: 12px;
 }
 
-.prompt-skill-panel .button svg {
+:is(.prompt-skill-panel, .prompt-skill-settings-content) .button svg {
   flex-shrink: 0;
 }
 
@@ -167,34 +173,4 @@
 
 .prompt-skill-actions {
   justify-content: flex-end;
-}
-
-.prompt-skill-workbench {
-  position: relative;
-  flex: 0 0 34px;
-}
-
-.prompt-skill-workbench .button {
-  width: 34px;
-  padding: 0;
-}
-
-.prompt-skill-workbench-tip {
-  display: none;
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  z-index: 2;
-  white-space: nowrap;
-  padding: 5px 8px;
-  border: 1px solid var(--mc-border);
-  border-radius: 4px;
-  background: var(--mc-surface);
-  color: var(--mc-text);
-  pointer-events: none;
-}
-
-.prompt-skill-workbench:hover .prompt-skill-workbench-tip,
-.prompt-skill-workbench:focus-within .prompt-skill-workbench-tip {
-  display: block;
 }

@@ -1,3 +1,4 @@
+import { Button } from '@multimodal-canvas/ui';
 import { mediaTypes, type MediaType } from '@multimodal-canvas/domain';
 import { Group, Maximize2, Redo2, Search, Undo2, Upload, WandSparkles } from 'lucide-react';
 import { type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
@@ -89,7 +90,7 @@ export function CanvasNodeToolbar({
   const systemActions: ReactNode[] = [];
   if (onOpenSkillWorkbench)
     systemActions.push(
-      <button
+      <Button
         type="button"
         className="canvas-node-tool canvas-node-action-tool"
         aria-label="技能工作台"
@@ -102,7 +103,7 @@ export function CanvasNodeToolbar({
         }}
       >
         <WandSparkles size={16} aria-hidden="true" />
-      </button>,
+      </Button>,
     );
   /** 防止底部按钮点击被 React Flow 解释为画布交互。 */
   const stopCanvasEvent = (event: ReactPointerEvent<HTMLButtonElement>) => {
@@ -111,7 +112,7 @@ export function CanvasNodeToolbar({
 
   if (onRequestUpload) {
     nodeActions.push(
-      <button
+      <Button
         type="button"
         className="canvas-node-tool canvas-node-action-tool"
         aria-label="上传资产"
@@ -124,13 +125,13 @@ export function CanvasNodeToolbar({
         }}
       >
         <Upload size={16} aria-hidden="true" />
-      </button>,
+      </Button>,
     );
   }
 
   if (onCreateGroup) {
     nodeActions.push(
-      <button
+      <Button
         type="button"
         className="canvas-node-tool canvas-node-action-tool"
         aria-label="新建分组"
@@ -143,7 +144,7 @@ export function CanvasNodeToolbar({
         }}
       >
         <Group size={16} aria-hidden="true" />
-      </button>,
+      </Button>,
     );
   }
 
@@ -167,7 +168,7 @@ export function CanvasNodeToolbar({
 
   if (onUndoCanvas) {
     nodeActions.push(
-      <button
+      <Button
         type="button"
         className="canvas-node-tool canvas-node-action-tool"
         aria-label="画布撤销"
@@ -181,13 +182,13 @@ export function CanvasNodeToolbar({
         disabled={!canUndo}
       >
         <Undo2 size={16} aria-hidden="true" />
-      </button>,
+      </Button>,
     );
   }
 
   if (onRedoCanvas) {
     nodeActions.push(
-      <button
+      <Button
         type="button"
         className="canvas-node-tool canvas-node-action-tool"
         aria-label="画布重做"
@@ -201,13 +202,13 @@ export function CanvasNodeToolbar({
         disabled={!canRedo}
       >
         <Redo2 size={16} aria-hidden="true" />
-      </button>,
+      </Button>,
     );
   }
 
   if (onOpenSearch) {
     systemActions.push(
-      <button
+      <Button
         type="button"
         className="canvas-node-tool canvas-node-action-tool"
         aria-label="搜索"
@@ -220,7 +221,7 @@ export function CanvasNodeToolbar({
         }}
       >
         <Search size={16} aria-hidden="true" />
-      </button>,
+      </Button>,
     );
   }
 
@@ -244,7 +245,7 @@ export function CanvasNodeToolbar({
 
   if (onFitView) {
     systemActions.push(
-      <button
+      <Button
         type="button"
         className="canvas-node-tool canvas-node-action-tool"
         aria-label="自动适配缩放"
@@ -257,7 +258,7 @@ export function CanvasNodeToolbar({
         }}
       >
         <Maximize2 size={16} aria-hidden="true" />
-      </button>,
+      </Button>,
     );
   }
 
@@ -267,7 +268,7 @@ export function CanvasNodeToolbar({
         {mediaTypes.map((mediaType) => {
           const Icon = mediaIcons[mediaType];
           return (
-            <button
+            <Button
               type="button"
               className={`canvas-node-tool media-icon-${mediaType}`}
               aria-label={`新建${mediaLabels[mediaType]}生成节点`}
@@ -276,7 +277,7 @@ export function CanvasNodeToolbar({
               onClick={() => onAddGenerateNode(mediaType)}
             >
               <Icon size={14} aria-hidden="true" />
-            </button>
+            </Button>
           );
         })}
       </div>

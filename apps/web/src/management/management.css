@@ -325,44 +325,20 @@
   width: 26px;
   flex-basis: 26px;
 }
-.mg-shell select,
-.mg-modal select {
+.mg-select {
+  min-width: 140px;
   max-width: 240px;
   min-height: 38px;
-  background: var(--mc-surface, #fff);
-  color: var(--mc-text, #18212f);
-  border: 1px solid var(--mc-border-strong, #d3dce0);
-  border-radius: 6px;
-  padding: 7px 30px 7px 10px;
-  font-size: 13px;
-}
-.mg-table-wrap {
-  position: relative;
-  width: 100%;
-  overflow-x: auto;
 }
 .mg-table {
   width: 100%;
-  border-collapse: collapse;
-  text-align: left;
-  font-size: 13px;
+  min-width: 0;
 }
 .mg-table th {
-  padding: 12px 15px;
-  font-size: 12px;
-  font-weight: 550;
-  color: var(--mc-text-muted, #687386);
-  background: var(--mc-surface-soft, #f7f8fa);
   white-space: nowrap;
 }
 .mg-table td {
-  padding: 15px;
-  border-bottom: 1px solid var(--mc-border, #e2e7eb);
-  line-height: 1.55;
   overflow-wrap: anywhere;
-}
-.mg-table tr:hover td {
-  background: var(--mc-surface-soft, #f7f8fa);
 }
 .mg-table td:last-child {
   white-space: nowrap;
@@ -372,9 +348,6 @@
   font-size: 11px;
   color: var(--mc-text-muted, #687386);
   margin-top: 4px;
-}
-.mg-audit-table {
-  min-width: 760px;
 }
 .mg-audit-table td:last-child {
   white-space: normal;
@@ -477,22 +450,10 @@
   overflow-wrap: anywhere;
 }
 .mg-pagination {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 16px;
   padding: 18px 0;
-  color: var(--mc-text-muted, #687386);
-  font-size: 12px;
 }
-.mg-pagination > div {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-.mg-pagination > div > span {
-  min-width: 44px;
-  text-align: center;
+.mg-pagination .ant-pagination {
+  flex-wrap: wrap;
 }
 .mg-state {
   min-height: 220px;
@@ -508,10 +469,6 @@
 .mg-state p {
   max-width: 560px;
   overflow-wrap: anywhere;
-}
-.mg-state-mark {
-  font-size: 30px;
-  color: var(--mc-text-faint, #8993a3);
 }
 .mg-stat-row {
   display: grid;
@@ -616,31 +573,8 @@
   gap: 0 32px;
 }
 .mg-notice {
-  display: flex;
-  align-items: flex-start;
-  gap: 9px;
-  padding: 11px 13px;
   margin: 10px 0 18px;
-  border-left: 3px solid #3a83b8;
-  background: #edf5fc;
-  color: #275b7e;
-  font-size: 13px;
-  line-height: 1.6;
   overflow-wrap: anywhere;
-}
-.mg-notice svg {
-  flex: 0 0 17px;
-  margin-top: 2px;
-}
-.mg-notice.is-error {
-  border-color: #c34242;
-  background: #fbebeb;
-  color: #983535;
-}
-.mg-notice.is-success {
-  border-color: #287849;
-  background: #eaf6ed;
-  color: #296441;
 }
 .mg-form {
   display: grid;
@@ -714,48 +648,17 @@
   color: var(--mc-text-muted, #687386);
 }
 .mg-modal {
-  border: 1px solid var(--mc-border-strong, #d3dce0);
-  background: var(--mc-surface, #fff);
-  color: var(--mc-text, #18212f);
-  padding: 0;
-  border-radius: 8px;
-  max-width: min(1000px, calc(100vw - 40px));
-  max-height: calc(100svh - 48px);
-  width: max-content;
-  min-width: min(460px, calc(100vw - 40px));
-  overflow: auto;
-  animation: mg-dialog-in 160ms ease both;
+  max-width: calc(100vw - 40px);
 }
-.mg-modal::backdrop {
-  background: rgb(10 15 20 / 45%);
-  animation: mg-fade-in 160ms ease both;
-}
-.mg-modal.is-closing {
-  animation: mg-dialog-out 160ms ease both;
-}
-.mg-modal.is-closing::backdrop {
-  animation: mg-fade-out 160ms ease both;
-}
-.mg-modal-inner {
-  padding: 24px;
-}
-.mg-modal-inner > header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  margin-bottom: 22px;
-}
-.mg-modal-inner > header h2 {
-  font-size: 18px;
-  line-height: 1.5;
+.mg-modal-title {
+  padding-right: 26px;
   overflow-wrap: anywhere;
 }
-.mg-modal-inner > p {
-  line-height: 1.7;
-  max-width: 550px;
+.mg-modal-body {
+  max-height: calc(100svh - 168px);
+  overflow: auto;
 }
-.mg-modal-inner > .mg-form-actions {
+.mg-modal-body > .mg-form-actions {
   margin-top: 22px;
 }
 .mg-owner-list {
@@ -794,6 +697,10 @@
 }
 .mg-resource-item {
   display: inline-block;
+  height: auto;
+  white-space: normal;
+  line-height: inherit;
+  box-shadow: none;
   width: 100%;
   margin: 0 0 18px;
   break-inside: avoid;
@@ -941,7 +848,7 @@
 .mg-resource-detail {
   display: grid;
   grid-template-columns: minmax(250px, 1.25fr) minmax(260px, 1fr);
-  width: min(920px, calc(100vw - 90px));
+  width: 100%;
   gap: 24px;
 }
 .mg-media-region {
@@ -990,17 +897,7 @@
   max-width: 100%;
 }
 .mg-confirm-inline {
-  border-left: 3px solid #bd8831;
   margin-top: 20px;
-  padding: 10px 14px;
-  background: var(--mc-surface-soft, #f7f8fa);
-}
-.mg-confirm-inline p {
-  font-size: 12px;
-  line-height: 1.7;
-}
-.mg-runs-table {
-  min-width: 690px;
 }
 .mg-run-progress {
   display: flex;
@@ -1008,10 +905,8 @@
   gap: 8px;
   font-size: 11px;
 }
-.mg-run-progress progress {
+.mg-run-progress .ant-progress {
   width: 70px;
-  height: 6px;
-  accent-color: var(--mc-accent, #18794e);
 }
 .mg-run-result {
   margin: 20px 0;
@@ -1101,42 +996,6 @@
   to {
     opacity: 1;
     transform: translateY(0);
-  }
-}
-@keyframes mg-dialog-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-@keyframes mg-dialog-out {
-  from {
-    opacity: 1;
-    transform: translateY(0);
-  }
-  to {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-}
-@keyframes mg-fade-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-@keyframes mg-fade-out {
-  from {
-    opacity: 1;
-  }
-  to {
-    opacity: 0;
   }
 }
 @keyframes mg-spin {
@@ -1263,7 +1122,7 @@
     width: 100%;
     flex-basis: 100%;
   }
-  .mg-toolbar select {
+  .mg-toolbar .mg-select {
     max-width: 100%;
     min-width: 110px;
   }
@@ -1275,7 +1134,7 @@
   }
   .mg-resource-detail {
     grid-template-columns: 1fr;
-    width: min(490px, calc(100vw - 72px));
+    width: 100%;
   }
   .mg-media-preview {
     height: 270px;
@@ -1283,9 +1142,6 @@
   .mg-modal {
     min-width: 0;
     max-width: calc(100vw - 24px);
-  }
-  .mg-modal-inner {
-    padding: 20px;
   }
   .mg-owner-row {
     flex-wrap: wrap;
@@ -1315,7 +1171,7 @@
 @media (prefers-reduced-motion: reduce) {
   .mg-shell *,
   .mg-modal,
-  .mg-modal::backdrop {
+  .mg-modal * {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
   }

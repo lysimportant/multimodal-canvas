@@ -1,6 +1,7 @@
 import '@testing-library/jest-dom/vitest';
 
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -102,5 +103,17 @@ describe('HomePage', () => {
     fireEvent.error(screen.getByRole('img', { name: /自然观察演示素材/ }));
     expect(screen.getByRole('img', { name: /自然观察演示素材.*暂时无法加载/ })).toBeVisible();
     expect(screen.getByRole('link', { name: /进入工作台/ })).toHaveAttribute('href', '/workspace');
+  });
+
+  it('使用库 Tooltip 说明动效开关，并保留键盘激活和按下状态', async () => {
+    const user = userEvent.setup();
+    render(<HomePage />);
+    const toggle = screen.getByRole('button', { name: '首页动态效果' });
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    toggle.focus();
+    await waitFor(() => expect(screen.getByRole('tooltip')).toHaveTextContent('关闭动态效果'));
+    await user.keyboard('{Enter}');
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    await waitFor(() => expect(screen.getByRole('tooltip')).toHaveTextContent('开启动态效果'));
   });
 });

@@ -1,3 +1,4 @@
+import { Button } from '@multimodal-canvas/ui';
 import {
   Background,
   BackgroundVariant,
@@ -728,6 +729,8 @@ export function WorkflowCanvas({
                                   connectionLineComponent={connectionLineComponent}
                                   onNodesChange={handleNodesChange}
                                   onEdgesChange={onEdgesChange}
+                                  // 删除统一走 App 的控件边界、历史记录及保存，避免库默认 Backspace 穿透菜单。
+                                  deleteKeyCode={null}
                                   onConnect={handleFlowConnect}
                                   onConnectStart={(_event, params) => {
                                     connectionStartRef.current = params;
@@ -893,22 +896,22 @@ export function WorkflowCanvas({
           <h2>从一个节点开始</h2>
           <p>上传资源、创建提示词节点，或从工作台打开另一张画布。</p>
           <div className="canvas-welcome-actions">
-            <button type="button" className="button button-primary" onClick={onRequestUpload}>
+            <Button type="button" className="button button-primary" onClick={onRequestUpload}>
               <Upload size={15} aria-hidden="true" />
               上传资源
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
               className="button button-secondary"
               onClick={() => handleAddGenerateNode('text')}
             >
               <FileText size={15} aria-hidden="true" />
               新建文字节点
-            </button>
-            <button type="button" className="button button-secondary" onClick={onOpenProjectHub}>
+            </Button>
+            <Button type="button" className="button button-secondary" onClick={onOpenProjectHub}>
               <LayoutGrid size={15} aria-hidden="true" />
               打开工作台
-            </button>
+            </Button>
           </div>
         </div>
       )}

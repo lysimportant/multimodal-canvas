@@ -8,7 +8,8 @@ import {
   SlidersHorizontal,
   X,
 } from 'lucide-react';
-import { useEffect, useId, useRef, useState, type FocusEvent } from 'react';
+import { Checkbox, Dropdown, Select, type SelectProps } from 'antd';
+import { useEffect, useId, useRef, useState } from 'react';
 
 import type {
   Asset,
@@ -34,7 +35,14 @@ import {
   videoModes,
 } from '@multimodal-canvas/domain';
 import { renderPromptDocument } from '@multimodal-canvas/domain';
-import { Dialog, DialogClose, DialogContent, DialogTitle } from '@multimodal-canvas/ui';
+import {
+  Button,
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogTitle,
+  Input,
+} from '@multimodal-canvas/ui';
 import type { AssetFlowNode } from '../canvas-utils';
 import { TextPromptEditor } from '../TextPromptEditor';
 import { AssetPreview } from './AssetPreview';
@@ -44,9 +52,7 @@ import {
   type ImageEditSourcePreview,
 } from './image-edit-source-preview';
 import { useWorkspacePreferences } from '../state/workspace-preferences';
-import { CompactSelect } from './CompactSelect';
 import { PromptSkillPanel } from './PromptSkillPanel';
-import { useFloatingParameterMenu } from './use-floating-parameter-menu';
 import { isImeKeyboardEvent } from '../ime';
 import './node-quick-editor.css';
 import './node-quick-editor-layout.css';
@@ -362,83 +368,12 @@ export function NodeQuickEditor({
   const [mediaSettingsOpen, setMediaSettingsOpen] = useState(false);
   /** 同一节点在快速面板和 Dialog 之间共用父层保存的文档。 */
   const [expandedEditorOpen, setExpandedEditorOpen] = useState(false);
-  /** 关闭浮层后恢复键盘焦点的触发器。 */
-  const settingsTriggerRef = useRef<HTMLButtonElement>(null);
   const expandTriggerRef = useRef<HTMLButtonElement>(null);
-  const settingsRef = useRef<HTMLDivElement>(null);
-  /** 点击或键盘打开后固定至显式关闭。 */
-  const settingsPinnedRef = useRef(false);
-  const settingsCloseTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  useEffect(() => () => clearTimeout(settingsCloseTimerRef.current), []);
-
-  /** 仅改变展示状态，关闭时取消仍在等待的定时器。 */
-  const closeMediaSettings = () => {
-    clearTimeout(settingsCloseTimerRef.current);
-    settingsPinnedRef.current = false;
-    setMediaSettingsOpen(false);
-  };
-  /** 点击或键盘打开参数页。 */
-  const enterMediaSettings = () => {
-    clearTimeout(settingsCloseTimerRef.current);
-    setMediaSettingsOpen(true);
-  };
-  /** Tab 移出整个参数区域时关闭，区域内部移动焦点不影响菜单。 */
-  const blurMediaSettings = (event: FocusEvent<HTMLElement>) => {
-    const next = event.relatedTarget as Node | null;
-    if (!settingsRef.current?.contains(next) && !settingsTriggerRef.current?.contains(next)) {
-      closeMediaSettings();
-    }
-  };
-  const settingsId = useId();
-  /** 参数页与模型菜单同处浏览器顶层，不受编辑器最大高度滚动容器裁切。 */
-  const settingsStyle = useFloatingParameterMenu({
-    anchorRef: settingsTriggerRef,
-    menuRef: settingsRef,
-    enabled: node.data.mediaType !== 'text',
-    open: mediaSettingsOpen,
-    placement: 'top',
-  });
+  const expandedDialogRef = useRef<HTMLDivElement>(null);
   const dialogTitleId = useId();
-  /** Dialog 的关闭动画结束前外层控件会重新挂载，随后恢复展开按钮焦点。 */
-  const wasExpandedRef = useRef(false);
-  useEffect(() => {
-    const restore = wasExpandedRef.current && !expandedEditorOpen;
-    wasExpandedRef.current = expandedEditorOpen;
-    if (!restore) return;
-    const timer = window.setTimeout(() => expandTriggerRef.current?.focus(), 0);
-    return () => window.clearTimeout(timer);
-  }, [expandedEditorOpen]);
 
-  useEffect(() => {
-    if (!mediaSettingsOpen) return;
-    /** 点击参数页与触发器外部时关闭，不影响页内参数菜单。 */
-    const dismiss = (event: PointerEvent) => {
-      if (
-        event.target instanceof Node &&
-        !settingsRef.current?.contains(event.target) &&
-        !settingsTriggerRef.current?.contains(event.target)
-      ) {
-        settingsPinnedRef.current = false;
-        clearTimeout(settingsCloseTimerRef.current);
-        setMediaSettingsOpen(false);
-      }
-    };
-    /** 悬停时焦点可留在提示词；子菜单展开时优先由子菜单消费 Escape。 */
-    const dismissOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented || isImeKeyboardEvent(event)) return;
-      if (settingsRef.current?.querySelector('[aria-expanded="true"]')) return;
-      event.preventDefault();
-      settingsPinnedRef.current = false;
-      clearTimeout(settingsCloseTimerRef.current);
-      setMediaSettingsOpen(false);
-    };
-    document.addEventListener('pointerdown', dismiss);
-    document.addEventListener('keydown', dismissOnEscape);
-    return () => {
-      document.removeEventListener('pointerdown', dismiss);
-      document.removeEventListener('keydown', dismissOnEscape);
-    };
-  }, [mediaSettingsOpen]);
+  /** 关闭参数配置不改变已持久化参数。 */
+  const closeMediaSettings = () => setMediaSettingsOpen(false);
   const storedModelAlias = node.data.modelAlias ?? '';
   const currentCredentialId = node.data.credentialId;
   const availableModels = models.filter((model) => model.mediaTypes.includes(node.data.mediaType));
@@ -653,14 +588,12 @@ export function NodeQuickEditor({
   /** 推理强度对文字节点直接显示，对媒体节点收进参数页。 */
   const inferenceEditor =
     inferenceOptions.length > 0 ? (
-      <CompactSelect
+      <NodeParameterSelect
         label="推理强度"
         value={node.data.inferenceStrength}
         options={inferenceOptions}
         onChange={onInferenceStrengthChange}
         className="node-quick-editor-select-group"
-        placement="top"
-        floating
       />
     ) : null;
 
@@ -735,19 +668,19 @@ export function NodeQuickEditor({
           </span>
         )}
         <span className="node-quick-editor-image-edit-meta">
-          <button
+          <Button
             type="button"
             className="node-quick-editor-image-edit-name nodrag nopan"
             onClick={() => onFocusImageEditSource?.(imageEditSource.sourceNodeId)}
           >
             {imageEditSource.name}
-          </button>
+          </Button>
           <span>
             来源图固定版本：
             {imageEditSource.version ? `v${imageEditSource.version}` : '运行前冻结'}
           </span>
         </span>
-        <button
+        <Button
           type="button"
           className="node-quick-editor-image-edit-hide nodrag nopan"
           aria-label="隐藏来源图"
@@ -755,7 +688,7 @@ export function NodeQuickEditor({
           onClick={() => setShowImageEditSourceCard(false)}
         >
           <EyeOff size={15} aria-hidden="true" />
-        </button>
+        </Button>
       </div>
     ) : null;
 
@@ -811,7 +744,7 @@ export function NodeQuickEditor({
   /** 视频模式在快速编辑器控制栏常驻，避免用户为切换模式打开参数页。 */
   const videoModeEditor =
     node.data.mediaType === 'video' ? (
-      <CompactSelect
+      <NodeParameterSelect
         label="生成模式"
         value={displayVideoMode(node.data, connectedInputRoles)}
         options={videoModes.map((mode) => {
@@ -826,23 +759,20 @@ export function NodeQuickEditor({
         })}
         onChange={(value) => changeVideoMode(value as VideoMode)}
         className="node-quick-editor-select-group node-quick-editor-video-mode"
-        placement="top"
-        floating
       />
     ) : null;
 
   const mediaParameterEditor = (
     <div className="node-quick-editor-media-settings">
       {imageEditSource ? (
-        <label className="node-quick-editor-source-card-toggle">
-          <input
-            type="checkbox"
-            checked={showImageEditSourceCard}
-            onChange={(event) => setShowImageEditSourceCard(event.target.checked)}
-            aria-label="显示来源图"
-          />
+        <Checkbox
+          className="node-quick-editor-source-card-toggle"
+          checked={showImageEditSourceCard}
+          onChange={(event) => setShowImageEditSourceCard(event.target.checked)}
+          aria-label="显示来源图"
+        >
           显示来源图
-        </label>
+        </Checkbox>
       ) : null}
       {node.data.mediaType === 'image' && (
         <div
@@ -851,15 +781,13 @@ export function NodeQuickEditor({
           role="group"
           aria-label="媒体参数"
         >
-          <CompactSelect
+          <NodeParameterSelect
             label="图片清晰度"
             value={normalizeCurrentOptionValue(parameters.quality)}
             options={mediaOptions.quality}
             onChange={(value) => updateParameter('quality', value)}
             className="node-quick-editor-select-group"
-            placement="top"
             optionLayout="grid"
-            floating
           />
           <QuickOptionMenu
             label="图片比例"
@@ -879,15 +807,13 @@ export function NodeQuickEditor({
             role="group"
             aria-label="媒体参数"
           >
-            <CompactSelect
+            <NodeParameterSelect
               label="视频清晰度"
               value={normalizeCurrentOptionValue(parameters.resolution)}
               options={mediaOptions.resolution}
               onChange={(value) => updateParameter('resolution', value)}
               className="node-quick-editor-select-group"
-              placement="top"
               optionLayout="grid"
-              floating
             />
             <QuickOptionMenu
               label="视频比例"
@@ -896,7 +822,7 @@ export function NodeQuickEditor({
               aspectOptions
               onChange={(value) => updateParameter('aspectRatio', value)}
             />
-            <CompactSelect
+            <NodeParameterSelect
               label="时长（秒）"
               value={normalizeCurrentOptionValue(parameters.duration)}
               options={mediaOptions.duration}
@@ -905,15 +831,13 @@ export function NodeQuickEditor({
                 updateParameter('duration', value ? Number(value) : undefined);
               }}
               className="node-quick-editor-select-group"
-              placement="top"
               optionLayout="grid"
-              floating
             />
             <label className="compact-select node-quick-editor-select-group">
               <span className="compact-select-label">
                 {supportsAutomaticDuration ? '自定义秒数（-1 为自动）' : '自定义秒数'}
               </span>
-              <input
+              <Input
                 className="compact-select-trigger node-quick-editor-number-input"
                 type="number"
                 inputMode="numeric"
@@ -937,7 +861,7 @@ export function NodeQuickEditor({
                 }}
               />
             </label>
-            <CompactSelect
+            <NodeParameterSelect
               label="完成后"
               value={resolveVideoCompletionAction(node.data)}
               options={[
@@ -951,11 +875,9 @@ export function NodeQuickEditor({
                 onCompletionActionChange?.((value || 'none') as VideoCompletionAction)
               }
               className="node-quick-editor-select-group"
-              placement="top"
-              floating
             />
             {resolveVideoCompletionAction(node.data) === 'fill_designated_image_node' ? (
-              <CompactSelect
+              <NodeParameterSelect
                 label="填充目标"
                 value={node.data.completionTargetNodeId ?? ''}
                 options={[
@@ -964,8 +886,6 @@ export function NodeQuickEditor({
                 ]}
                 onChange={(value) => onCompletionTargetNodeIdChange?.(value || undefined)}
                 className="node-quick-editor-select-group"
-                placement="top"
-                floating
               />
             ) : null}
           </div>
@@ -981,7 +901,7 @@ export function NodeQuickEditor({
         >
           <label className="compact-select node-quick-editor-select-group">
             <span className="compact-select-label">音色</span>
-            <input
+            <Input
               className="compact-select-trigger"
               style={{ cursor: 'text' }}
               type="text"
@@ -999,19 +919,17 @@ export function NodeQuickEditor({
               }
             />
           </label>
-          <CompactSelect
+          <NodeParameterSelect
             label="音频格式"
             value={normalizeCurrentOptionValue(parameters.response_format)}
             options={getAudioFormatOptions(parameters.response_format, selectedModel)}
             onChange={(value) => updateParameter('response_format', value)}
             disabled={!onParametersChange}
             className="node-quick-editor-select-group"
-            placement="top"
-            floating
           />
           <label className="compact-select node-quick-editor-select-group">
             <span className="compact-select-label">语速</span>
-            <input
+            <Input
               className="compact-select-trigger"
               style={{ cursor: 'text' }}
               type="number"
@@ -1053,40 +971,47 @@ export function NodeQuickEditor({
   const summaryItems = getMediaSummary(node.data.mediaType, parameters, mediaOptions);
   const mediaSummary =
     node.data.mediaType === 'text' ? null : (
-      <button
-        ref={settingsTriggerRef}
-        type="button"
-        className="node-quick-editor-summary-button"
-        onBlur={blurMediaSettings}
-        onClick={() => {
-          clearTimeout(settingsCloseTimerRef.current);
-          if (mediaSettingsOpen && settingsPinnedRef.current) closeMediaSettings();
-          else {
-            settingsPinnedRef.current = true;
-            setMediaSettingsOpen(true);
-          }
-        }}
-        onKeyDown={(event) => {
-          if (isImeKeyboardEvent(event)) return;
-          if (event.key === 'Escape') {
-            event.preventDefault();
-            event.stopPropagation();
-            closeMediaSettings();
-          } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-            event.preventDefault();
-            settingsPinnedRef.current = true;
-            enterMediaSettings();
-            requestAnimationFrame(() => settingsRef.current?.querySelector('button')?.focus());
-          }
-        }}
-        aria-expanded={mediaSettingsOpen}
-        aria-controls={settingsId}
-        aria-label="媒体参数"
-        title={summaryItems.map((item) => item.label + '：' + item.value).join(' · ')}
+      <Dropdown
+        trigger={['click']}
+        placement="topRight"
+        open={mediaSettingsOpen}
+        onOpenChange={setMediaSettingsOpen}
+        styles={{ root: { pointerEvents: 'auto' } }}
+        getPopupContainer={nodePopupContainer}
+        classNames={{ root: 'node-quick-editor-parameter-overlay' }}
+        destroyOnHidden
+        popupRender={() => (
+          <div
+            className="node-quick-editor-parameter-popover"
+            tabIndex={-1}
+            role="region"
+            aria-label="生成参数"
+            onKeyDownCapture={(event) => {
+              // 输入法候选操作不能被浮层解释为关闭。
+              if (isImeKeyboardEvent(event)) event.stopPropagation();
+            }}
+          >
+            <div className="node-quick-editor-parameter-heading">
+              <strong>生成参数</strong>
+              <Button type="button" aria-label="收起媒体参数" onClick={closeMediaSettings}>
+                <X size={15} aria-hidden="true" />
+              </Button>
+            </div>
+            {mediaParameterEditor}
+          </div>
+        )}
       >
-        <SlidersHorizontal size={15} aria-hidden="true" />
-        <span>{summaryItems.map((item) => item.value).join(' · ')}</span>
-      </button>
+        <Button
+          type="button"
+          className="node-quick-editor-summary-button"
+          aria-expanded={mediaSettingsOpen}
+          aria-label="媒体参数"
+          title={summaryItems.map((item) => item.label + '：' + item.value).join(' · ')}
+        >
+          <SlidersHorizontal size={15} aria-hidden="true" />
+          <span>{summaryItems.map((item) => item.value).join(' · ')}</span>
+        </Button>
+      </Dropdown>
     );
 
   const controls = (
@@ -1097,7 +1022,7 @@ export function NodeQuickEditor({
       }
     >
       {!expandedEditorOpen && (
-        <button
+        <Button
           type="button"
           ref={expandTriggerRef}
           className="node-quick-editor-expand"
@@ -1109,59 +1034,21 @@ export function NodeQuickEditor({
           }}
         >
           <Expand size={16} aria-hidden="true" />
-        </button>
+        </Button>
       )}
-      <CompactSelect
+      <NodeParameterSelect
         label="模型"
         value={currentModelValue}
         options={modelOptions}
         onChange={(value) => onModelChange(parseModelOptionValue(value))}
         className="node-quick-editor-select-group"
-        placement="top"
-        floating
       />
       {videoModeEditor}
       {node.data.mediaType === 'text' ? inferenceEditor : mediaSummary}
-      {node.data.mediaType !== 'text' && (
-        <div
-          ref={settingsRef}
-          id={settingsId}
-          className="node-quick-editor-parameter-popover"
-          popover="manual"
-          style={settingsStyle}
-          hidden={!mediaSettingsOpen}
-          role="region"
-          aria-label="生成参数"
-          onBlur={blurMediaSettings}
-          onKeyDown={(event) => {
-            if (event.key === 'Escape' && !isImeKeyboardEvent(event)) {
-              event.preventDefault();
-              event.stopPropagation();
-              closeMediaSettings();
-              settingsTriggerRef.current?.focus();
-            }
-          }}
-        >
-          <div className="node-quick-editor-parameter-heading">
-            <strong>生成参数</strong>
-            <button
-              type="button"
-              aria-label="收起媒体参数"
-              onClick={() => {
-                closeMediaSettings();
-                settingsTriggerRef.current?.focus();
-              }}
-            >
-              <X size={15} aria-hidden="true" />
-            </button>
-          </div>
-          {mediaSettingsOpen && mediaParameterEditor}
-        </div>
-      )}
       <div className="node-quick-editor-run-group">
         <label className="node-quick-editor-generation-count" title="本次生成数量">
           <span>数量</span>
-          <input
+          <Input
             type="number"
             inputMode="numeric"
             aria-label="生成数量"
@@ -1181,7 +1068,7 @@ export function NodeQuickEditor({
           />
         </label>
         {canRunSameNode(node) ? (
-          <button
+          <Button
             type="button"
             className="button button-primary node-quick-editor-run"
             aria-label={busy ? '生成中' : '生成'}
@@ -1213,10 +1100,10 @@ export function NodeQuickEditor({
               <Play size={16} aria-hidden="true" />
             )}
             <span>{busy ? '生成中' : '生成'}</span>
-          </button>
+          </Button>
         ) : null}
         {canForkNewNode(node) ? (
-          <button
+          <Button
             type="button"
             className="button node-quick-editor-run node-quick-editor-run-new"
             aria-label="新节点"
@@ -1274,7 +1161,7 @@ export function NodeQuickEditor({
           >
             <GitFork size={16} aria-hidden="true" />
             <span>新节点</span>
-          </button>
+          </Button>
         ) : null}
       </div>
     </div>
@@ -1312,68 +1199,75 @@ export function NodeQuickEditor({
         )}
       </section>
       <Dialog open={expandedEditorOpen} onOpenChange={setExpandedEditorOpen}>
-        {expandedEditorOpen && (
-          <DialogContent
-            className="node-quick-editor-dialog"
-            overlayClassName="node-quick-editor-dialog-backdrop"
-            aria-labelledby={dialogTitleId}
-            aria-describedby={undefined}
-            onOpenAutoFocus={(event) => {
-              event.preventDefault();
-              document
-                .querySelector<HTMLTextAreaElement>('.node-quick-editor-dialog textarea')
-                ?.focus();
-            }}
-            onCloseAutoFocus={(event) => {
-              event.preventDefault();
-              expandTriggerRef.current?.focus();
-            }}
-            onEscapeKeyDown={(event) => {
-              // Radix 在捕获阶段处理 Escape，先让展开的 Skill 配置消费它。
-              if (
-                isImeKeyboardEvent(event) ||
-                document.querySelector(
-                  '.node-quick-editor-dialog .prompt-skill-trigger[aria-expanded="true"]',
-                )
+        <DialogContent
+          ref={expandedDialogRef}
+          className="node-quick-editor-dialog"
+          overlayClassName="node-quick-editor-dialog-backdrop"
+          aria-labelledby={dialogTitleId}
+          aria-describedby={undefined}
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            const dialog = expandedDialogRef.current;
+            // 库默认落在首个关闭按钮；动画结束只修正默认落点，不抢走其他业务控件焦点。
+            if (
+              dialog &&
+              (document.activeElement === dialog ||
+                document.activeElement?.matches('.node-quick-editor-dialog-close') ||
+                !dialog.contains(document.activeElement))
+            ) {
+              dialog.querySelector<HTMLTextAreaElement>('textarea')?.focus({ preventScroll: true });
+            }
+          }}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            expandTriggerRef.current?.focus();
+          }}
+          onEscapeKeyDown={(event) => {
+            // 子浮层先处理 Escape，不能同时关闭完整编辑器。
+            if (
+              isImeKeyboardEvent(event) ||
+              mediaSettingsOpen ||
+              document.querySelector(
+                '.node-quick-editor-dialog .prompt-skill-trigger[aria-expanded="true"]',
               )
-                event.preventDefault();
-            }}
-            onPointerDown={(event) => event.stopPropagation()}
-          >
-            <div className="node-quick-editor-dialog-header">
-              <div>
-                <DialogTitle id={dialogTitleId}>{node.data.label} · 编辑设置</DialogTitle>
-              </div>
-              <DialogClose asChild>
-                <button
-                  type="button"
-                  className="node-quick-editor-dialog-close"
-                  aria-label="关闭编辑器"
-                  title="关闭"
-                >
-                  <X size={17} aria-hidden="true" />
-                </button>
-              </DialogClose>
+            )
+              event.preventDefault();
+          }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <div className="node-quick-editor-dialog-header">
+            <div>
+              <DialogTitle id={dialogTitleId}>{node.data.label} · 编辑设置</DialogTitle>
             </div>
-            <div className="node-quick-editor-dialog-body">
-              <div className="node-quick-editor-prompt-group">
-                {promptEditor}
-                {skillPanel}
-                {skillLibraryError ? (
-                  <p className="node-quick-editor-parameter-issue" role="alert">
-                    {skillLibraryError}
-                  </p>
-                ) : null}
-              </div>
-              {controls}
-              {generationCountIssue && (
-                <p className="node-quick-editor-parameter-issue" role="status">
-                  {generationCountIssue}
+            <DialogClose asChild>
+              <Button
+                type="button"
+                className="node-quick-editor-dialog-close"
+                aria-label="关闭编辑器"
+                title="关闭"
+              >
+                <X size={17} aria-hidden="true" />
+              </Button>
+            </DialogClose>
+          </div>
+          <div className="node-quick-editor-dialog-body">
+            <div className="node-quick-editor-prompt-group">
+              {promptEditor}
+              {skillPanel}
+              {skillLibraryError ? (
+                <p className="node-quick-editor-parameter-issue" role="alert">
+                  {skillLibraryError}
                 </p>
-              )}
+              ) : null}
             </div>
-          </DialogContent>
-        )}
+            {controls}
+            {generationCountIssue && (
+              <p className="node-quick-editor-parameter-issue" role="status">
+                {generationCountIssue}
+              </p>
+            )}
+          </div>
+        </DialogContent>
       </Dialog>
     </>
   );
@@ -1505,7 +1399,124 @@ function getSupportedAudioFormatOptions(model?: ModelEntry): MediaOption[] {
   ];
 }
 
-/** 渲染一个统一的向上展开选择菜单。 */
+/** 将节点浮层挂到最近的模态窗口，非模态编辑器使用 body，避免画布裁切。 */
+function nodePopupContainer(trigger: HTMLElement): HTMLElement {
+  return trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body;
+}
+
+/** 保留参数短枚举、模型分组和未设置语义；选项导航与焦点由 Ant Design 处理。 */
+function NodeParameterSelect({
+  label,
+  value,
+  options,
+  onChange,
+  className,
+  disabled,
+  optionLayout = 'list',
+  aspectOptions = false,
+}: {
+  label: string;
+  value?: string;
+  options: QuickOption[];
+  onChange: (value: string) => void;
+  className?: string;
+  disabled?: boolean;
+  optionLayout?: 'list' | 'grid';
+  aspectOptions?: boolean;
+}) {
+  const selectId = useId();
+  const selected = options.find((option) => option.value === value);
+  const selectionLabel = selected
+    ? [selected.label, selected.trailingLabel].filter(Boolean).join(' · ')
+    : '未设置';
+  const entries = options.map((option) => ({
+    ...option,
+    title: option.description ? option.label + ' · ' + option.description : option.label,
+    'aria-label': [option.label, option.description, option.trailingLabel]
+      .filter(Boolean)
+      .join(' '),
+  }));
+  const grouped = entries.some((option) => option.groupLabel)
+    ? [...new Set(entries.map((option) => option.groupLabel))].flatMap<
+        NonNullable<SelectProps<string>['options']>[number]
+      >((group) =>
+        group
+          ? [{ label: group, options: entries.filter((option) => option.groupLabel === group) }]
+          : entries.filter((option) => !option.groupLabel),
+      )
+    : entries;
+  return (
+    <div
+      className={[
+        'node-parameter-select',
+        aspectOptions ? 'node-quick-editor-option-group' : 'compact-select',
+        className,
+      ]
+        .filter(Boolean)
+        .join(' ')}
+    >
+      <span className="compact-select-label">{label}</span>
+      <Select<string>
+        id={selectId}
+        aria-label={label + '：' + selectionLabel}
+        value={selected?.value}
+        placeholder="未设置"
+        disabled={disabled || !options.some((option) => !option.disabled)}
+        options={grouped}
+        onSelect={onChange}
+        virtual={false}
+        styles={{ popup: { root: { pointerEvents: 'auto' } } }}
+        placement="topLeft"
+        getPopupContainer={nodePopupContainer}
+        popupMatchSelectWidth={false}
+        classNames={{
+          popup: {
+            root: 'node-parameter-options',
+            list: optionLayout === 'grid' ? 'node-parameter-grid' : undefined,
+          },
+        }}
+        labelRender={() => selectionLabel}
+        popupRender={(menu) => (
+          <div
+            ref={(container) => {
+              if (!container) return;
+              /** 为可能延后挂载的真实选项列表补名称，不创建替代角色或接管焦点。 */
+              const labelListbox = () => {
+                container
+                  .querySelector('[role="listbox"]')
+                  ?.setAttribute('aria-label', `${label}选项`);
+              };
+              const observer = new MutationObserver(labelListbox);
+              observer.observe(container, { childList: true, subtree: true });
+              labelListbox();
+              return () => observer.disconnect();
+            }}
+          >
+            {menu}
+          </div>
+        )}
+        optionRender={(option) => (
+          <span className="node-parameter-option">
+            {aspectOptions && option.data.previewAspectRatio && (
+              <span
+                className="node-quick-editor-aspect-preview"
+                style={{ aspectRatio: option.data.previewAspectRatio }}
+                aria-hidden="true"
+              />
+            )}
+            <span className="node-quick-editor-option-copy">
+              <strong>{option.data.label}</strong>
+              {option.data.description && <small>{option.data.description}</small>}
+              {option.data.trailingLabel && <small>{option.data.trailingLabel}</small>}
+            </span>
+          </span>
+        )}
+      />
+    </div>
+  );
+}
+
+/** 比例沿用相同 Select 交互，同时保留可视化比例预览和供应商说明。 */
 function QuickOptionMenu({
   label,
   value,
@@ -1519,151 +1530,15 @@ function QuickOptionMenu({
   onChange: (value: string) => void;
   aspectOptions?: boolean;
 }) {
-  const stringValue = normalizeCurrentOptionValue(value);
-  const hasExplicitSelection = Boolean(
-    stringValue && options.some((option) => option.value === stringValue),
-  );
-  const selectedValue = options.some((option) => option.value === stringValue)
-    ? stringValue
-    : (options[0]?.value ?? '');
-  const selectedOption = options.find((option) => option.value === selectedValue) ??
-    options[0] ?? {
-      value: '',
-      label: '暂无选项',
-    };
-  const [open, setOpen] = useState(false);
-  /** 保持原有按钮语义，并将比例菜单放入浏览器顶层以避免滚动裁切。 */
-  const rootRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const openedByHoverRef = useRef(false);
-  /** 比例菜单同样允许跨越浮层间隙，点击与键盘打开后不随鼠标离开收起。 */
-  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  useEffect(() => () => clearTimeout(closeTimerRef.current), []);
-  useEffect(() => {
-    if (!open) return;
-    /** 焦点仍在提示词时，优先关闭当前比例菜单。 */
-    const dismissOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented || isImeKeyboardEvent(event)) return;
-      event.preventDefault();
-      openedByHoverRef.current = false;
-      clearTimeout(closeTimerRef.current);
-      setOpen(false);
-    };
-    document.addEventListener('keydown', dismissOnEscape);
-    return () => document.removeEventListener('keydown', dismissOnEscape);
-  }, [open]);
-  const menuStyle = useFloatingParameterMenu({
-    anchorRef: rootRef,
-    menuRef,
-    enabled: true,
-    open,
-    placement: 'top',
-  });
-  const handleBlur = (event: FocusEvent<HTMLDivElement>) => {
-    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
-  };
-  let previousGroup: string | undefined;
-
   return (
-    <div
-      ref={rootRef}
-      className="node-quick-editor-option-group"
-      aria-label={label}
-      data-open={open ? 'true' : 'false'}
-      data-placement="top"
-      onBlur={handleBlur}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape' && open && !isImeKeyboardEvent(event)) {
-          event.preventDefault();
-          event.stopPropagation();
-          setOpen(false);
-          triggerRef.current?.focus();
-        }
-      }}
-    >
-      <span className="node-quick-editor-option-label">{label}</span>
-      <button
-        ref={triggerRef}
-        type="button"
-        className="node-quick-editor-option-trigger"
-        aria-label={`${label}：${formatTriggerLabel(selectedOption, hasExplicitSelection, options)}`}
-        aria-expanded={open}
-        disabled={!options.some((option) => !option.disabled)}
-        onClick={() => {
-          clearTimeout(closeTimerRef.current);
-          openedByHoverRef.current = false;
-          setOpen((current) => !current);
-        }}
-        onKeyDown={(event) => {
-          if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
-          event.preventDefault();
-          openedByHoverRef.current = false;
-          clearTimeout(closeTimerRef.current);
-          setOpen(true);
-          requestAnimationFrame(() => {
-            const choices =
-              menuRef.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)');
-            const index = event.key === 'ArrowUp' ? (choices?.length ?? 1) - 1 : 0;
-            choices?.[index]?.focus();
-          });
-        }}
-      >
-        <span title={formatTriggerLabel(selectedOption, hasExplicitSelection, options)}>
-          {formatTriggerLabel(selectedOption, hasExplicitSelection, options)}
-        </span>
-        <span className="node-quick-editor-option-trigger-icon" aria-hidden="true">
-          ▾
-        </span>
-      </button>
-      <div
-        ref={menuRef}
-        className="node-quick-editor-option-popover"
-        role="group"
-        aria-label={`${label}选项`}
-        hidden={!open}
-        popover="manual"
-        style={menuStyle}
-      >
-        {options.map((option) => {
-          const showGroup = option.groupLabel && option.groupLabel !== previousGroup;
-          previousGroup = option.groupLabel;
-          return (
-            <span key={`${option.groupLabel ?? ''}:${option.value}`}>
-              {showGroup && (
-                <span className="node-quick-editor-option-group-label">{option.groupLabel}</span>
-              )}
-              <button
-                type="button"
-                className={`node-quick-editor-option ${
-                  aspectOptions ? 'node-quick-editor-aspect-option' : ''
-                } ${selectedValue === option.value ? 'is-active' : ''}`}
-                aria-pressed={selectedValue === option.value}
-                disabled={option.disabled}
-                onClick={() => {
-                  onChange(option.value);
-                  setOpen(false);
-                  triggerRef.current?.focus();
-                }}
-                title={formatOptionLabel(option)}
-              >
-                {aspectOptions && option.previewAspectRatio && (
-                  <span
-                    className="node-quick-editor-aspect-preview"
-                    style={{ aspectRatio: option.previewAspectRatio }}
-                    aria-hidden="true"
-                  />
-                )}
-                <span className="node-quick-editor-option-copy">
-                  <strong>{option.label}</strong>
-                  {option.description && <small>{option.description}</small>}
-                </span>
-              </button>
-            </span>
-          );
-        })}
-      </div>
-    </div>
+    <NodeParameterSelect
+      label={label}
+      value={normalizeCurrentOptionValue(value)}
+      options={options}
+      onChange={onChange}
+      aspectOptions={aspectOptions}
+      optionLayout="grid"
+    />
   );
 }
 
@@ -2383,25 +2258,6 @@ function normalizeCurrentOptionValue(value: unknown): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-function formatOptionLabel(option: MediaOption): string {
-  return option.description ? `${option.label} · ${option.description}` : option.label;
-}
-
-/**
- * 生成触发器文案：未显式设置时不把模型/参数的首项伪装成用户已选择的值。
- * 首项仍会在浮层中作为当前候选高亮，只有用户确认后才写入节点数据。
- */
-function formatTriggerLabel(
-  selectedOption: MediaOption,
-  hasExplicitSelection: boolean,
-  options: MediaOption[],
-): string {
-  if (hasExplicitSelection || options.length === 0 || !options[0]?.value) {
-    return formatOptionLabel(selectedOption);
-  }
-  return '未设置';
 }
 
 /** 将模型与凭据绑定编码为菜单可用的稳定值。 */

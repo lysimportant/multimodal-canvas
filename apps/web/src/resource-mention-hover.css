@@ -1,15 +1,57 @@
-/* 名称悬浮预览独立于资源条缩略图，固定在视口内，不改变编辑器或节点大小。 */
-.resource-mention-hover-card.resource-mention-hover-card-expanded {
+.resource-mention-picker-anchor {
+  display: inline-block;
+  font: inherit;
+  line-height: inherit;
+}
+
+.resource-mention-picker-anchor.is-empty {
+  height: 1em;
+  width: 0;
+}
+
+.resource-mention-picker-popover .resource-mention-picker-container {
+  padding: 0;
+  overflow: hidden;
+}
+
+.resource-mention-picker-popover .resource-mention-picker-content {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  max-height: min(320px, calc(100vh - 16px));
+  position: static;
+  width: min(420px, calc(100vw - 16px));
+  z-index: auto;
+}
+
+.resource-mention-picker-popover .resource-mention-picker-body {
+  min-height: 0;
+}
+
+/* 结果项包含名称和元信息，两行内容不能受通用按钮的固定高度裁切。 */
+.resource-mention-picker-popover .resource-mention-option.ui-button {
+  height: auto;
+  min-height: 42px;
+  padding: 5px 6px;
+}
+
+.resource-mention-hover-popover {
+  max-width: calc(100vw - 24px);
+  pointer-events: none;
+}
+
+.resource-mention-hover-content {
   align-items: center;
   box-sizing: border-box;
   display: flex;
+  height: min(210px, calc(100vh - 24px));
   justify-content: center;
+  overflow: hidden;
   padding: 8px;
-  position: fixed;
-  z-index: 100;
+  width: min(280px, calc(100vw - 24px));
 }
 
-.resource-mention-hover-card-expanded .resource-mention-hover-preview {
+.resource-mention-hover-content .resource-mention-hover-preview {
   align-items: center;
   background: var(--mc-surface-muted, #f0f3f5);
   border-radius: 4px;
@@ -23,14 +65,14 @@
   width: 100%;
 }
 
-.resource-mention-hover-card-expanded .resource-mention-hover-preview .artifact-preview-media {
+.resource-mention-hover-content .resource-mention-hover-preview .artifact-preview-media {
   height: 100%;
   object-fit: contain;
   object-position: center;
   width: 100%;
 }
 
-.resource-mention-hover-card-expanded > .resource-mention-media-icon {
+.resource-mention-hover-content > .resource-mention-media-icon {
   align-items: center;
   flex-basis: 64px;
   height: 64px;
@@ -38,12 +80,12 @@
   width: 64px;
 }
 
-.resource-mention-hover-card-expanded > .resource-mention-media-icon svg {
+.resource-mention-hover-content > .resource-mention-media-icon svg {
   height: 32px;
   width: 32px;
 }
 
-.resource-mention-hover-card-expanded > svg.resource-mention-hover-preview {
+.resource-mention-hover-content > svg.resource-mention-hover-preview {
   height: 64px;
   padding: 12px;
   width: 64px;

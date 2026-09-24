@@ -2,6 +2,7 @@ import '@testing-library/jest-dom/vitest';
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { Button } from '@multimodal-canvas/ui';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -55,6 +56,10 @@ describe('AppNavigation', () => {
   });
 
   it('supports Escape, focus restoration, body locking, and Tab wrapping', async () => {
+    // jsdom 没有布局；仅为本测试提供可见尺寸，让库自己的焦点循环生效。
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(
+      new DOMRect(0, 0, 100, 32),
+    );
     const user = userEvent.setup();
     render(<AppNavigation route={parseAppRoute('/workspace')} />);
     const trigger = screen.getByRole('button', { name: '打开主菜单' });
@@ -62,21 +67,23 @@ describe('AppNavigation', () => {
     await user.click(trigger);
     const dialog = screen.getByRole('dialog', { name: 'Multimodal Canvas' });
     await waitFor(() => expect(screen.getByRole('link', { name: /工作台/ })).toHaveFocus());
-    expect(document.body.style.overflow).toBe('hidden');
+    expect(window.getComputedStyle(document.body).overflowY).toBe('hidden');
 
+    // 模拟抽屉外的页面入口，焦点循环由 Drawer 自身实现。
+    render(<Button type="button">主菜单外部入口</Button>);
     const close = screen.getByRole('button', { name: '关闭主菜单' });
     const links = Array.from(dialog.querySelectorAll<HTMLElement>('a[href]'));
     const last = links.at(-1)!;
     last.focus();
-    fireEvent.keyDown(document, { key: 'Tab' });
+    await user.tab();
     expect(close).toHaveFocus();
-    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    await user.tab({ shift: true });
     expect(last).toHaveFocus();
 
-    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape', keyCode: 27 });
     expect(screen.queryByRole('dialog', { name: 'Multimodal Canvas' })).not.toBeInTheDocument();
     await waitFor(() => expect(trigger).toHaveFocus());
-    expect(document.body.style.overflow).toBe('');
+    expect(window.getComputedStyle(document.body).overflowY).not.toBe('hidden');
   });
 
   it('ignores an IME Escape event while the drawer is open', async () => {
@@ -87,7 +94,7 @@ describe('AppNavigation', () => {
     fireEvent.keyDown(document, { key: 'Escape', keyCode: 229, isComposing: true });
     expect(screen.getByRole('dialog', { name: 'Multimodal Canvas' })).toBeInTheDocument();
 
-    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape', keyCode: 27 });
     expect(screen.queryByRole('dialog', { name: 'Multimodal Canvas' })).not.toBeInTheDocument();
   });
 
@@ -140,31 +147,44 @@ describe('AppNavigation', () => {
   });
 
   it('opens all existing themes on hover and supports keyboard selection', async () => {
+    // jsdom 没有布局；仅为本测试提供可见尺寸，让库自己的焦点循环生效。
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(
+      new DOMRect(0, 0, 100, 32),
+    );
     const user = userEvent.setup();
     render(<AppNavigation route={parseAppRoute('/')} />);
     const trigger = screen.getByRole('button', { name: '切换主题，当前护眼' });
-    const container = trigger.parentElement!;
 
-    fireEvent.mouseEnter(container);
-    expect(screen.getByRole('menu', { name: '界面主题' })).toBeVisible();
+    await user.hover(trigger);
+    await waitFor(() => expect(screen.getByRole('menu', { name: '界面主题' })).toBeVisible());
     expect(screen.getAllByRole('menuitemradio')).toHaveLength(5);
-    fireEvent.mouseLeave(container);
-    expect(screen.queryByRole('menu', { name: '界面主题' })).not.toBeInTheDocument();
+    await user.unhover(trigger);
+    await waitFor(() =>
+      expect(screen.queryByRole('menu', { name: '界面主题' })).not.toBeInTheDocument(),
+    );
 
     await user.click(trigger);
-    expect(screen.getByRole('menu', { name: '界面主题' })).toBeVisible();
-    fireEvent.keyDown(trigger, { key: 'Escape' });
-    expect(screen.queryByRole('menu', { name: '界面主题' })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('menu', { name: '界面主题' })).toBeVisible());
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape', keyCode: 27 });
+    await waitFor(() =>
+      expect(screen.queryByRole('menu', { name: '界面主题' })).not.toBeInTheDocument(),
+    );
 
     trigger.focus();
-    fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+    await user.keyboard('{Enter}');
     await waitFor(() => expect(screen.getByRole('menuitemradio', { name: '护眼' })).toHaveFocus());
     fireEvent.keyDown(screen.getByRole('menuitemradio', { name: '护眼' }), {
       key: 'ArrowDown',
+      keyCode: 40,
     });
-    expect(screen.getByRole('menuitemradio', { name: '明亮' })).toHaveFocus();
-    fireEvent.keyDown(screen.getByRole('menuitemradio', { name: '明亮' }), { key: 'End' });
-    expect(screen.getByRole('menuitemradio', { name: '高对比' })).toHaveFocus();
+    await waitFor(() => expect(screen.getByRole('menuitemradio', { name: '明亮' })).toHaveFocus());
+    fireEvent.keyDown(screen.getByRole('menuitemradio', { name: '明亮' }), {
+      key: 'End',
+      keyCode: 35,
+    });
+    await waitFor(() =>
+      expect(screen.getByRole('menuitemradio', { name: '高对比' })).toHaveFocus(),
+    );
 
     await user.click(screen.getByRole('menuitemradio', { name: '高对比' }));
     expect(useWorkspacePreferences.getState().canvasTheme).toBe('contrast');

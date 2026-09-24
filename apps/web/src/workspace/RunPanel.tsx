@@ -1,3 +1,4 @@
+import { Button } from '@multimodal-canvas/ui';
 import { ExternalLink, X } from 'lucide-react';
 
 import type { Asset, RunRecord } from '@multimodal-canvas/domain';
@@ -6,6 +7,7 @@ import { FailureDiagnostics } from '../FailureDiagnostics';
 import { AssetPreview, AuthenticatedAssetLink, TextResultContent } from './AssetPreview';
 import type { RunResultState } from './useRunResultState';
 
+/** 展示当前运行、归档版本和派生末帧；取消、重试及文字编辑均交由调用方持久化。 */
 export function RunPanel({
   node,
   run,
@@ -38,10 +40,10 @@ export function RunPanel({
     <>
       <div className="inspector-run-actions">
         {run && !['succeeded', 'failed', 'cancelled'].includes(run.status) && (
-          <button type="button" className="button button-secondary" onClick={() => void onCancel()}>
+          <Button type="button" className="button button-secondary" onClick={() => void onCancel()}>
             <X size={14} />
             取消运行
-          </button>
+          </Button>
         )}
       </div>
       <FailureDiagnostics run={run} onRetry={() => onRetry()} busy={busy} />

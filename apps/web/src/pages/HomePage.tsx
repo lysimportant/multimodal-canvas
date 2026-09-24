@@ -1,3 +1,5 @@
+import { Button } from '@multimodal-canvas/ui';
+import { Tooltip } from 'antd';
 import {
   ArrowDown,
   ArrowRight,
@@ -63,18 +65,21 @@ export function HomePage({ continueProject, onNavigate }: HomePageProps) {
           <div className="mc-home-scene-topline">
             {sceneTitle}
             <div className="mc-home-motion-control">
-              <button
-                type="button"
-                className="mc-home-icon-action"
-                aria-label="首页动态效果"
-                aria-pressed={motionEnabled}
-                onClick={() => setMotionEnabled((enabled) => !enabled)}
+              <Tooltip
+                title={motionEnabled ? '关闭动态效果' : '开启动态效果'}
+                placement="bottomRight"
+                trigger={['hover', 'focus']}
               >
-                <Sparkles size={16} aria-hidden="true" />
-              </button>
-              <span className="mc-home-tooltip" role="tooltip">
-                {motionEnabled ? '关闭动态效果' : '开启动态效果'}
-              </span>
+                <Button
+                  type="button"
+                  className="mc-home-icon-action"
+                  aria-label="首页动态效果"
+                  aria-pressed={motionEnabled}
+                  onClick={() => setMotionEnabled((enabled) => !enabled)}
+                >
+                  <Sparkles size={16} aria-hidden="true" />
+                </Button>
+              </Tooltip>
             </div>
           </div>
           <HomeHeroCopy continueProject={continueProject} onNavigate={onNavigate} />

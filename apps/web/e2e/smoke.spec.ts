@@ -1056,6 +1056,9 @@ for (const size of [
     await expect
       .poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth))
       .toBe(size.width);
+    // 等待 Modal 入场完成，避免跨帧测量混入不同的缩放比例。
+    await expect(dialog).toHaveCSS('opacity', '1');
+    await expect(dialog).toHaveCSS('transform', 'none');
     await expect
       .poll(async () => {
         const box = await image.boundingBox();
@@ -1353,9 +1356,11 @@ test('桌面六主题节点外壳与短枚举菜单保持尺寸和可点击布�
   await page.getByRole('button', { name: '媒体参数', exact: true }).click();
   await page.getByRole('combobox', { name: /^图片清晰度：/ }).click();
   await expect(page.getByRole('option', { name: '1K', exact: true })).toBeVisible();
-  const columns = await page
-    .locator('.compact-select-menu[data-layout="grid"]')
-    .evaluate((element) => getComputedStyle(element).gridTemplateColumns);
+  const qualityOptions = page.getByRole('listbox', { name: '图片清晰度选项', exact: true });
+  await expect(qualityOptions).toBeVisible();
+  const columns = await qualityOptions.evaluate(
+    (element) => getComputedStyle(element).gridTemplateColumns,
+  );
   expect(columns.split(' ')).toHaveLength(3);
   const chrome = await node.evaluate((element) => {
     const style = getComputedStyle(element);
@@ -1463,8 +1468,10 @@ test('资源预览按衍生图加载，筛选不改变返回项目且跨页前�
   expect(contentRequests.some((url) => url.includes('derivative=poster'))).toBe(true);
   expect(contentRequests.some((url) => url.includes('derivative=waveform'))).toBe(true);
   expect(contentRequests.some((url) => /review-(video|audio)\/content$/.test(url))).toBe(false);
-  await resourcesPage.getByRole('combobox', { name: '所属项目' }).selectOption(project.id);
-  await resourcesPage.getByRole('combobox', { name: '所属项目' }).selectOption('');
+  await resourcesPage.getByRole('combobox', { name: '所属项目' }).click();
+  await resourcesPage.getByRole('option', { name: project.name, exact: true }).click();
+  await resourcesPage.getByRole('combobox', { name: '所属项目' }).click();
+  await resourcesPage.getByRole('option', { name: '全部项目', exact: true }).click();
   const back = resourcesPage.getByRole('link', { name: /返回项目/ });
   await expect(back).toHaveAttribute('href', projectPath);
   await resourcesPage.screenshot({ path: '../../.data/canvas-optimization-review/resources.png' });
@@ -1545,6 +1552,8 @@ test('starts with the resource library and workflow canvas visible', async ({ pa
   await expect(page.getByText('从一个节点开始')).toBeVisible();
   const resourceSearch = page.locator('.search-field input');
   await resourceSearch.focus();
+  await expect(resourceSearch).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  await expect(resourceSearch).toHaveCSS('box-shadow', 'none');
   const resourceSearchStyle = await resourceSearch.evaluate((element) => ({
     background: getComputedStyle(element).backgroundColor,
     outline: getComputedStyle(element).outlineStyle,

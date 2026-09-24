@@ -1,6 +1,6 @@
 import type { NodeTiming, RequestPromptRecord } from '@multimodal-canvas/domain';
 import { renderRequestPromptText, requestPromptRecordKey } from '@multimodal-canvas/domain';
-import { Dialog, DialogContent, DialogTitle } from '@multimodal-canvas/ui';
+import { Button, Dialog, DialogContent, DialogTitle, Textarea } from '@multimodal-canvas/ui';
 import { Check, Copy, Loader2, Pencil, Plus, RefreshCw, Save, X } from 'lucide-react';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 
@@ -118,6 +118,7 @@ export function RequestPromptDialog({
       <DialogContent
         className="request-prompt-dialog"
         overlayClassName="request-prompt-backdrop"
+        style={{ display: 'inline-flex', padding: 0, width: 'min(800px, calc(100vw - 32px))' }}
         aria-label="生成提示词"
         aria-describedby={undefined}
         onCloseAutoFocus={(event) => {
@@ -130,14 +131,14 @@ export function RequestPromptDialog({
       >
         <header className="request-prompt-header">
           <DialogTitle>生成提示词</DialogTitle>
-          <button
+          <Button
             type="button"
             className="request-prompt-close"
             aria-label="关闭生成提示词"
             onClick={onClose}
           >
             <X size={16} aria-hidden="true" />
-          </button>
+          </Button>
         </header>
         <div className="request-prompt-body">
           {versionActions}
@@ -151,9 +152,9 @@ export function RequestPromptDialog({
             <div className="request-prompt-status" role="alert">
               <span>{state.message ?? '生成说明加载失败'}</span>
               {onRetry ? (
-                <button type="button" className="request-prompt-retry" onClick={onRetry}>
+                <Button type="button" className="request-prompt-retry" onClick={onRetry}>
                   <RefreshCw size={13} aria-hidden="true" /> 重试
-                </button>
+                </Button>
               ) : null}
             </div>
           ) : null}
@@ -178,7 +179,7 @@ export function RequestPromptDialog({
                   <h3>整体摘要</h3>
                   <div className="request-prompt-summary-actions">
                     {onSaveSummary && !editingSummary ? (
-                      <button
+                      <Button
                         type="button"
                         className="request-prompt-copy request-prompt-icon-action"
                         aria-label={summary ? '编辑摘要' : '添加摘要'}
@@ -194,9 +195,9 @@ export function RequestPromptDialog({
                         ) : (
                           <Plus size={13} aria-hidden="true" />
                         )}
-                      </button>
+                      </Button>
                     ) : null}
-                    <button
+                    <Button
                       type="button"
                       className="request-prompt-copy"
                       aria-label="复制摘要"
@@ -213,7 +214,7 @@ export function RequestPromptDialog({
                         : summaryCopy === 'failed'
                           ? '复制失败'
                           : '复制'}
-                    </button>
+                    </Button>
                   </div>
                 </div>
                 {editingSummary ? (
@@ -224,7 +225,7 @@ export function RequestPromptDialog({
                       void saveSummary();
                     }}
                   >
-                    <textarea
+                    <Textarea
                       aria-label="摘要正文"
                       className="request-prompt-summary-input"
                       value={summaryDraft}
@@ -237,15 +238,15 @@ export function RequestPromptDialog({
                     <div className="request-prompt-summary-editor-footer">
                       <span className="request-prompt-hint">{summaryDraft.length} / 2000</span>
                       <div className="request-prompt-summary-actions">
-                        <button
+                        <Button
                           type="button"
                           className="request-prompt-copy"
                           disabled={savingSummary}
                           onClick={() => setEditingSummary(false)}
                         >
                           <X size={13} aria-hidden="true" /> 取消
-                        </button>
-                        <button
+                        </Button>
+                        <Button
                           type="submit"
                           className="request-prompt-copy"
                           disabled={savingSummary}
@@ -256,7 +257,7 @@ export function RequestPromptDialog({
                             <Save size={13} aria-hidden="true" />
                           )}
                           {savingSummary ? '保存中' : '保存摘要'}
-                        </button>
+                        </Button>
                       </div>
                     </div>
                     {summaryError ? (
@@ -279,7 +280,7 @@ export function RequestPromptDialog({
               <section className="request-prompt-block" aria-label="完整提示词">
                 <div className="request-prompt-block-head">
                   <h3>完整提示词</h3>
-                  <button
+                  <Button
                     type="button"
                     className="request-prompt-copy"
                     aria-label="复制完整提示词"
@@ -295,7 +296,7 @@ export function RequestPromptDialog({
                       : promptCopy === 'failed'
                         ? '复制失败'
                         : '复制完整提示词'}
-                  </button>
+                  </Button>
                 </div>
                 <pre className="request-prompt-text">{fullPrompt}</pre>
               </section>

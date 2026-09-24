@@ -1,3 +1,4 @@
+import { Select, Tabs } from 'antd';
 import { ExternalLink, LoaderCircle, RefreshCw, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
@@ -19,6 +20,7 @@ import {
   type ModelEntry,
 } from './contracts';
 import './settings-automation.css';
+import './settings-panel.css';
 
 const DEFAULT_PROVIDER_TIMEOUT_MS = 900_000;
 const MIN_PROVIDER_TIMEOUT_MS = 1_000;
@@ -331,15 +333,289 @@ export function SettingsPanel({
     }
   };
 
+  const settingsContent = (
+    <div className="settings-content">
+      {loading && <p className="settings-status">正在加载 New API 账号与模型…</p>}
+      {error && (
+        <p className="settings-field-error" role="alert">
+          {error}
+        </p>
+      )}
+      {!loading && category === 'overview' && (
+        <section className="settings-section" aria-labelledby="newapi-account-title">
+          <div className="settings-section-heading">
+            <h2 id="newapi-account-title">New API 账号</h2>
+            <p className="settings-status">
+              {account?.displayName || account?.externalUserId || '当前账号'} ·{' '}
+              {account?.status ?? '状态未知'}
+            </p>
+            <p className="settings-status">
+              上次同步：
+              {account?.syncedAt ? (
+                <time dateTime={account.syncedAt} title={account.syncedAt}>
+                  {new Date(account.syncedAt).toLocaleString('zh-CN', { hour12: false })}
+                </time>
+              ) : (
+                '暂无记录'
+              )}
+            </p>
+            {account?.error && <p className="settings-field-error">{account.error}</p>}
+          </div>
+          <div className="settings-actions">
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={Boolean(busy)}
+              onClick={() => void syncAccount()}
+            >
+              {busy === 'sync' ? (
+                <LoaderCircle className="spin" size={15} />
+              ) : (
+                <RefreshCw size={15} />
+              )}
+              {busy === 'sync' ? '正在同步' : '同步分组与模型'}
+            </Button>
+            {account?.links.models && (
+              <a
+                className="button button-secondary"
+                href={account.links.models}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                在 New API 查看模型
+                <ExternalLink size={14} />
+              </a>
+            )}
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={Boolean(busy)}
+              onClick={() => loginAccount()}
+            >
+              重新登录
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={Boolean(busy)}
+              onClick={() => loginAccount('select_account')}
+            >
+              切换账号
+            </Button>
+          </div>
+          <div className="settings-models-table-wrap">
+            <table className="settings-models-table">
+              <thead>
+                <tr>
+                  <th>分组</th>
+                  <th>状态</th>
+                  <th>模型</th>
+                </tr>
+              </thead>
+              <tbody>
+                {account?.groups.map((group) => (
+                  <tr key={group.group}>
+                    <td>
+                      <code>{group.group}</code>
+                    </td>
+                    <td>{group.error || group.status}</td>
+                    <td>{group.modelCount ?? 0}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {!account?.groups.length && <p className="settings-status">当前没有可用分组。</p>}
+          </div>
+          <label className="settings-field">
+            <span>节点超时时间（毫秒）</span>
+            <Input
+              aria-label="节点超时时间（毫秒）"
+              type="number"
+              min={MIN_PROVIDER_TIMEOUT_MS}
+              max={MAX_PROVIDER_TIMEOUT_MS}
+              value={timeoutMs}
+              onChange={(event) => setTimeoutMs(event.target.value)}
+            />
+          </label>
+        </section>
+      )}
+      {!loading && category === 'defaults' && (
+        <section className="settings-section" aria-labelledby="settings-defaults-title">
+          <div className="settings-section-heading">
+            <h2 id="settings-defaults-title">节点默认模型</h2>
+            <p className="settings-status">同名模型按分组分别显示；失效选择不会自动换组。</p>
+          </div>
+          {projectId && (
+            <div className="settings-scope" role="group" aria-label="默认模型范围">
+              <Button
+                type="button"
+                aria-pressed={scope === 'global'}
+                onClick={() => setScope('global')}
+              >
+                个人默认
+              </Button>
+              <Button
+                type="button"
+                aria-pressed={scope === 'project'}
+                onClick={() => setScope('project')}
+              >
+                当前项目
+              </Button>
+            </div>
+          )}
+          <div className="settings-default-grid">
+            {mediaOrder.map((mediaType) => {
+              const current = readSelection(editedDefaults[mediaType]);
+              const currentValue = current
+                ? JSON.stringify([current.credentialId ?? '', current.modelAlias])
+                : '';
+              const currentExists =
+                !current ||
+                modelsByMedia[mediaType].some((model) => modelOptionValue(model) === currentValue);
+              return (
+                <label key={mediaType} className="settings-field">
+                  <span>{mediaLabels[mediaType]}</span>
+                  <Select
+                    aria-label={mediaLabels[mediaType]}
+                    value={currentExists ? currentValue : ''}
+                    onChange={(value) => updateDefault(mediaType, value)}
+                    options={[
+                      { value: '', label: '未选择' },
+                      ...modelsByMedia[mediaType].map((model) => ({
+                        value: modelOptionValue(model),
+                        label:
+                          (model.name || model.id) +
+                          ' · ' +
+                          (model.group ?? model.credentialLabel ?? '未知分组'),
+                      })),
+                    ]}
+                    virtual={false}
+                    styles={{ popup: { root: { pointerEvents: 'auto' } } }}
+                    getPopupContainer={(trigger: HTMLElement) =>
+                      trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
+                    }
+                  />
+                  {!currentExists && (
+                    <span className="settings-field-error">
+                      原选择 {current?.modelAlias} 已失效，请明确选择新的分组模型。
+                    </span>
+                  )}
+                </label>
+              );
+            })}
+            <label className="settings-field settings-generation-count-field">
+              <span>新节点默认生成数量</span>
+              <Input
+                type="number"
+                min="1"
+                max={GENERATION_COUNT_MAX}
+                value={generationCountDraft}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setGenerationCountDraft(value);
+                  const count = Number(value);
+                  if (isValidGenerationCount(count)) setDefaultGenerationCount(count);
+                }}
+              />
+            </label>
+          </div>
+          {modelsQuery.isError && (
+            <p className="settings-field-error">模型目录加载失败，请同步后重试。</p>
+          )}
+        </section>
+      )}
+      {!loading && category === 'appearance' && (
+        <section className="settings-section" aria-labelledby="appearance-title">
+          <div className="settings-section-heading">
+            <h2 id="appearance-title">画布外观</h2>
+          </div>
+          <div className="settings-appearance-grid">
+            <label className="settings-field">
+              <span>主题</span>
+              <Select
+                aria-label={'主题'}
+                value={canvasTheme}
+                onChange={(value) => setCanvasTheme(value)}
+                options={themeOptions}
+                virtual={false}
+                styles={{ popup: { root: { pointerEvents: 'auto' } } }}
+                getPopupContainer={(trigger: HTMLElement) =>
+                  trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
+                }
+              />
+            </label>
+            <label className="settings-field">
+              <span>画布背景</span>
+              <Select
+                aria-label={'画布背景'}
+                value={canvasBackground}
+                onChange={(value) => setCanvasBackground(value)}
+                options={backgroundOptions}
+                virtual={false}
+                styles={{ popup: { root: { pointerEvents: 'auto' } } }}
+                getPopupContainer={(trigger: HTMLElement) =>
+                  trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
+                }
+              />
+            </label>
+            <label className="settings-field">
+              <span>图片修改来源图</span>
+              <Select
+                aria-label={'图片修改来源图'}
+                value={showImageEditSourceCard ? 'show' : 'hide'}
+                onChange={(value) => setShowImageEditSourceCard(value === 'show')}
+                options={[
+                  { value: 'show', label: '显示' },
+                  { value: 'hide', label: '隐藏' },
+                ]}
+                virtual={false}
+                styles={{ popup: { root: { pointerEvents: 'auto' } } }}
+                getPopupContainer={(trigger: HTMLElement) =>
+                  trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
+                }
+              />
+            </label>
+            <label className="settings-field">
+              <span>连接线路径</span>
+              <Select
+                aria-label={'连接线路径'}
+                value={canvasEdgePathStyle}
+                onChange={(value) => setCanvasEdgePathStyle(value)}
+                options={appearanceEdgePathOptions}
+                virtual={false}
+                styles={{ popup: { root: { pointerEvents: 'auto' } } }}
+                getPopupContainer={(trigger: HTMLElement) =>
+                  trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
+                }
+              />
+            </label>
+            <label className="settings-field">
+              <span>连接线特效</span>
+              <Select
+                aria-label={'连接线特效'}
+                value={canvasEdgeEffect}
+                onChange={(value) => setCanvasEdgeEffect(value)}
+                options={appearanceEdgeEffectOptions}
+                virtual={false}
+                styles={{ popup: { root: { pointerEvents: 'auto' } } }}
+                getPopupContainer={(trigger: HTMLElement) =>
+                  trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
+                }
+              />
+            </label>
+          </div>
+        </section>
+      )}
+    </div>
+  );
+
   const content = (
     <>
       <header className="settings-header">
         <div className="settings-header-copy">
           <p className="eyebrow">设置</p>
           {presentation === 'dialog' ? (
-            <DialogTitle asChild>
-              <h1 id="settings-title">New API 与模型</h1>
-            </DialogTitle>
+            <DialogTitle id="settings-title">New API 与模型</DialogTitle>
           ) : (
             <h1 id="settings-title">New API 与模型</h1>
           )}
@@ -353,312 +629,18 @@ export function SettingsPanel({
           </Button>
         )}
       </header>
-      <div className="settings-body">
-        <nav className="settings-rail" aria-label="设置分类">
-          <div className="settings-rail-tabs" role="tablist" aria-orientation="vertical">
-            {settingsCategories.map((entry, index) => (
-              <button
-                key={entry.id}
-                id={`settings-tab-${entry.id}`}
-                type="button"
-                role="tab"
-                className="settings-rail-tab"
-                aria-selected={category === entry.id}
-                aria-controls={`settings-panel-${entry.id}`}
-                tabIndex={category === entry.id ? 0 : -1}
-                onClick={() => setCategory(entry.id)}
-                onKeyDown={(event) => {
-                  const lastIndex = settingsCategories.length - 1;
-                  const nextIndex =
-                    event.key === 'Home'
-                      ? 0
-                      : event.key === 'End'
-                        ? lastIndex
-                        : event.key === 'ArrowUp' || event.key === 'ArrowLeft'
-                          ? (index - 1 + settingsCategories.length) % settingsCategories.length
-                          : event.key === 'ArrowDown' || event.key === 'ArrowRight'
-                            ? (index + 1) % settingsCategories.length
-                            : -1;
-                  if (nextIndex < 0) return;
-                  event.preventDefault();
-                  const next = settingsCategories[nextIndex]!;
-                  setCategory(next.id);
-                  document.getElementById(`settings-tab-${next.id}`)?.focus();
-                }}
-              >
-                {entry.label}
-              </button>
-            ))}
-          </div>
-        </nav>
-        <div
-          id={`settings-panel-${category}`}
-          className="settings-content"
-          role="tabpanel"
-          aria-labelledby={`settings-tab-${category}`}
-        >
-          {loading && <p className="settings-status">正在加载 New API 账号与模型…</p>}
-          {error && (
-            <p className="settings-field-error" role="alert">
-              {error}
-            </p>
-          )}
-          {!loading && category === 'overview' && (
-            <section className="settings-section" aria-labelledby="newapi-account-title">
-              <div className="settings-section-heading">
-                <h2 id="newapi-account-title">New API 账号</h2>
-                <p className="settings-status">
-                  {account?.displayName || account?.externalUserId || '当前账号'} ·{' '}
-                  {account?.status ?? '状态未知'}
-                </p>
-                <p className="settings-status">
-                  上次同步：
-                  {account?.syncedAt ? (
-                    <time dateTime={account.syncedAt} title={account.syncedAt}>
-                      {new Date(account.syncedAt).toLocaleString('zh-CN', { hour12: false })}
-                    </time>
-                  ) : (
-                    '暂无记录'
-                  )}
-                </p>
-                {account?.error && <p className="settings-field-error">{account.error}</p>}
-              </div>
-              <div className="settings-actions">
-                <Button
-                  type="button"
-                  variant="secondary"
-                  disabled={Boolean(busy)}
-                  onClick={() => void syncAccount()}
-                >
-                  {busy === 'sync' ? (
-                    <LoaderCircle className="spin" size={15} />
-                  ) : (
-                    <RefreshCw size={15} />
-                  )}
-                  {busy === 'sync' ? '正在同步' : '同步分组与模型'}
-                </Button>
-                {account?.links.models && (
-                  <a
-                    className="button button-secondary"
-                    href={account.links.models}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    在 New API 查看模型
-                    <ExternalLink size={14} />
-                  </a>
-                )}
-                <Button
-                  type="button"
-                  variant="secondary"
-                  disabled={Boolean(busy)}
-                  onClick={() => loginAccount()}
-                >
-                  重新登录
-                </Button>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  disabled={Boolean(busy)}
-                  onClick={() => loginAccount('select_account')}
-                >
-                  切换账号
-                </Button>
-              </div>
-              <div className="settings-models-table-wrap">
-                <table className="settings-models-table">
-                  <thead>
-                    <tr>
-                      <th>分组</th>
-                      <th>状态</th>
-                      <th>模型</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {account?.groups.map((group) => (
-                      <tr key={group.group}>
-                        <td>
-                          <code>{group.group}</code>
-                        </td>
-                        <td>{group.error || group.status}</td>
-                        <td>{group.modelCount ?? 0}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {!account?.groups.length && <p className="settings-status">当前没有可用分组。</p>}
-              </div>
-              <label className="settings-field">
-                <span>节点超时时间（毫秒）</span>
-                <Input
-                  aria-label="节点超时时间（毫秒）"
-                  type="number"
-                  min={MIN_PROVIDER_TIMEOUT_MS}
-                  max={MAX_PROVIDER_TIMEOUT_MS}
-                  value={timeoutMs}
-                  onChange={(event) => setTimeoutMs(event.target.value)}
-                />
-              </label>
-            </section>
-          )}
-          {!loading && category === 'defaults' && (
-            <section className="settings-section" aria-labelledby="settings-defaults-title">
-              <div className="settings-section-heading">
-                <h2 id="settings-defaults-title">节点默认模型</h2>
-                <p className="settings-status">同名模型按分组分别显示；失效选择不会自动换组。</p>
-              </div>
-              {projectId && (
-                <div className="settings-scope" role="group" aria-label="默认模型范围">
-                  <button
-                    type="button"
-                    aria-pressed={scope === 'global'}
-                    onClick={() => setScope('global')}
-                  >
-                    个人默认
-                  </button>
-                  <button
-                    type="button"
-                    aria-pressed={scope === 'project'}
-                    onClick={() => setScope('project')}
-                  >
-                    当前项目
-                  </button>
-                </div>
-              )}
-              <div className="settings-default-grid">
-                {mediaOrder.map((mediaType) => {
-                  const current = readSelection(editedDefaults[mediaType]);
-                  const currentValue = current
-                    ? JSON.stringify([current.credentialId ?? '', current.modelAlias])
-                    : '';
-                  const currentExists =
-                    !current ||
-                    modelsByMedia[mediaType].some(
-                      (model) => modelOptionValue(model) === currentValue,
-                    );
-                  return (
-                    <label key={mediaType} className="settings-field">
-                      <span>{mediaLabels[mediaType]}</span>
-                      <select
-                        value={currentExists ? currentValue : ''}
-                        onChange={(event) => updateDefault(mediaType, event.target.value)}
-                      >
-                        <option value="">未选择</option>
-                        {modelsByMedia[mediaType].map((model) => (
-                          <option key={modelOptionValue(model)} value={modelOptionValue(model)}>
-                            {model.name || model.id} ·{' '}
-                            {model.group ?? model.credentialLabel ?? '未知分组'}
-                          </option>
-                        ))}
-                      </select>
-                      {!currentExists && (
-                        <span className="settings-field-error">
-                          原选择 {current?.modelAlias} 已失效，请明确选择新的分组模型。
-                        </span>
-                      )}
-                    </label>
-                  );
-                })}
-                <label className="settings-field settings-generation-count-field">
-                  <span>新节点默认生成数量</span>
-                  <Input
-                    type="number"
-                    min="1"
-                    max={GENERATION_COUNT_MAX}
-                    value={generationCountDraft}
-                    onChange={(event) => {
-                      const value = event.target.value;
-                      setGenerationCountDraft(value);
-                      const count = Number(value);
-                      if (isValidGenerationCount(count)) setDefaultGenerationCount(count);
-                    }}
-                  />
-                </label>
-              </div>
-              {modelsQuery.isError && (
-                <p className="settings-field-error">模型目录加载失败，请同步后重试。</p>
-              )}
-            </section>
-          )}
-          {!loading && category === 'appearance' && (
-            <section className="settings-section" aria-labelledby="appearance-title">
-              <div className="settings-section-heading">
-                <h2 id="appearance-title">画布外观</h2>
-              </div>
-              <div className="settings-appearance-grid">
-                <label className="settings-field">
-                  <span>主题</span>
-                  <select
-                    value={canvasTheme}
-                    onChange={(event) => setCanvasTheme(event.target.value as CanvasTheme)}
-                  >
-                    {themeOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="settings-field">
-                  <span>画布背景</span>
-                  <select
-                    value={canvasBackground}
-                    onChange={(event) =>
-                      setCanvasBackground(event.target.value as CanvasBackground)
-                    }
-                  >
-                    {backgroundOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="settings-field">
-                  <span>图片修改来源图</span>
-                  <select
-                    value={showImageEditSourceCard ? 'show' : 'hide'}
-                    onChange={(event) => setShowImageEditSourceCard(event.target.value === 'show')}
-                  >
-                    <option value="show">显示</option>
-                    <option value="hide">隐藏</option>
-                  </select>
-                </label>
-                <label className="settings-field">
-                  <span>连接线路径</span>
-                  <select
-                    value={canvasEdgePathStyle}
-                    onChange={(event) =>
-                      setCanvasEdgePathStyle(event.target.value as typeof canvasEdgePathStyle)
-                    }
-                  >
-                    {appearanceEdgePathOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="settings-field">
-                  <span>连接线特效</span>
-                  <select
-                    value={canvasEdgeEffect}
-                    onChange={(event) =>
-                      setCanvasEdgeEffect(event.target.value as typeof canvasEdgeEffect)
-                    }
-                  >
-                    {appearanceEdgeEffectOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-            </section>
-          )}
-        </div>
-      </div>
+      <Tabs
+        className="settings-tabs"
+        tabPlacement="start"
+        activeKey={category}
+        onChange={(key) => setCategory(key as SettingsCategory)}
+        destroyOnHidden
+        items={settingsCategories.map((entry) => ({
+          key: entry.id,
+          label: entry.label,
+          children: settingsContent,
+        }))}
+      />
       <footer className="settings-footer">
         <span className="settings-footer-spacer" />
         <Button type="button" variant="secondary" onClick={onClose} disabled={Boolean(busy)}>
@@ -689,6 +671,7 @@ export function SettingsPanel({
       <DialogContent
         overlayClassName="settings-backdrop"
         className="settings-panel settings-dialog-panel"
+        style={{ display: 'inline-flex', padding: 0, width: 'min(1080px, calc(100vw - 48px))' }}
         aria-busy={loading || Boolean(busy)}
         onEscapeKeyDown={(event) => (busy || isImeKeyboardEvent(event)) && event.preventDefault()}
         onPointerDownOutside={(event) => busy && event.preventDefault()}

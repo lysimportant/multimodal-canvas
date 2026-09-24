@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest';
 
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -92,5 +92,33 @@ describe('VideoInputRolePicker', () => {
     await user.keyboard('{Escape}');
     expect(onSelect).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
+  });
+  it('外部点击与窗口失焦只取消，不保存图片角色', async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    const onClose = vi.fn();
+    render(
+      <VideoInputRolePicker
+        target={{
+          connection: {
+            source: 'image-1',
+            target: 'video-1',
+            sourceHandle: 'output:image',
+            targetHandle: null,
+          },
+          clientPosition: { x: 1000, y: 700 },
+        }}
+        onSelect={onSelect}
+        onClose={onClose}
+      />,
+    );
+    const menu = screen.getByRole('menu', { name: '选择图片在视频中的用途' });
+    expect(menu).toHaveClass('ant-dropdown-menu');
+    await waitFor(() => expect(menu).toBeVisible());
+    await user.click(document.body);
+    expect(onClose).toHaveBeenCalledOnce();
+    fireEvent.blur(window);
+    expect(onClose).toHaveBeenCalledTimes(2);
+    expect(onSelect).not.toHaveBeenCalled();
   });
 });

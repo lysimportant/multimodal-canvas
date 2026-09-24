@@ -130,8 +130,9 @@ describe('workspace modules', () => {
     expect(callbacks.onFit).toHaveBeenCalledTimes(1);
 
     await user.click(screen.getByRole('button', { name: '外观' }));
-    const card = screen.getByRole('dialog', { name: '主题、画布背景与连接线' });
-    expect(card).toBeVisible();
+    const card = await screen.findByRole('dialog', { name: '主题、画布背景与连接线' });
+    await waitFor(() => expect(card).toBeVisible());
+    expect(card.closest('.ant-popover')).toBeInTheDocument();
     expect(screen.getByRole('group', { name: '界面主题' })).toBeVisible();
     await user.click(screen.getByRole('button', { name: '深色' }));
     expect(callbacks.onTheme).toHaveBeenCalledWith('dark');

@@ -15,7 +15,14 @@ import {
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 
 import type { Asset, MediaType } from '@multimodal-canvas/domain';
-import { Dialog, DialogClose, DialogContent, DialogTitle } from '@multimodal-canvas/ui';
+import {
+  Button,
+  Textarea,
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogTitle,
+} from '@multimodal-canvas/ui';
 import { apiFetch, readAuthSession } from '../auth-client';
 import { isApiOriginUrl, resolveUploadUrl } from '../upload-utils';
 import { API_BASE_URL } from './contracts';
@@ -454,21 +461,21 @@ function ZoomableMediaStage({
   return (
     <>
       <div className="artifact-preview-viewer-zoom" role="group" aria-label="预览缩放">
-        <button type="button" aria-label="缩小预览" title="缩小" onClick={() => zoomFromCenter(-1)}>
+        <Button type="button" aria-label="缩小预览" title="缩小" onClick={() => zoomFromCenter(-1)}>
           <Minus size={15} aria-hidden="true" />
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
           aria-label="重置预览缩放"
           title="重置为 100%"
           onClick={resetTransform}
         >
           {Math.round(transform.scale * 100)}%
-        </button>
-        <button type="button" aria-label="放大预览" title="放大" onClick={() => zoomFromCenter(1)}>
+        </Button>
+        <Button type="button" aria-label="放大预览" title="放大" onClick={() => zoomFromCenter(1)}>
           <Plus size={15} aria-hidden="true" />
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
           className="artifact-preview-viewer-zoom-reset"
           aria-label="恢复原始大小"
@@ -478,7 +485,7 @@ function ZoomableMediaStage({
         >
           <RotateCcw size={15} aria-hidden="true" />
           原始大小
-        </button>
+        </Button>
       </div>
       <div
         ref={stageRef}
@@ -568,6 +575,11 @@ export function AssetViewerDialog({ asset, open, onOpenChange, src }: AssetViewe
             kind === 'image' || kind === 'video' ? ' is-zoomable' : ''
           }`}
           overlayClassName="artifact-preview-viewer-backdrop"
+          // 居中 Modal 默认 inline-block，显式保留预览网格与尺寸计算依赖的内边距。
+          style={{
+            display: kind === 'image' || kind === 'video' ? 'inline-grid' : 'inline-flex',
+            padding: '12px 12px 16px',
+          }}
           aria-labelledby={viewerTitleId}
           onPointerDown={(event) => event.stopPropagation()}
           onWheel={(event) => event.stopPropagation()}
@@ -575,14 +587,14 @@ export function AssetViewerDialog({ asset, open, onOpenChange, src }: AssetViewe
           <div className="artifact-preview-viewer-header">
             <DialogTitle id={viewerTitleId}>{asset.name}</DialogTitle>
             <DialogClose asChild>
-              <button
+              <Button
                 type="button"
                 className="artifact-preview-viewer-close"
                 aria-label="关闭预览"
                 title="关闭"
               >
                 <X size={17} aria-hidden="true" />
-              </button>
+              </Button>
             </DialogClose>
           </div>
           {access.loading ? (
@@ -795,7 +807,7 @@ function MediaArtifactPreview({
         </span>
       )}
       {kind === 'video' && controls && !videoPlaying && loadState === 'ready' && (
-        <button
+        <Button
           type="button"
           className="artifact-preview-play-button nodrag nopan nowheel"
           aria-label="播放视频"
@@ -807,10 +819,10 @@ function MediaArtifactPreview({
           }}
         >
           <span aria-hidden="true" className="artifact-preview-play-icon" />
-        </button>
+        </Button>
       )}
       {canPreviewInDialog && (
-        <button
+        <Button
           type="button"
           className="artifact-preview-open-button nodrag nopan nowheel"
           aria-label={`预览${mediaKindLabel(kind)}：${asset.name}`}
@@ -819,7 +831,7 @@ function MediaArtifactPreview({
           onClick={openViewer}
         >
           <Expand className="artifact-preview-open-icon" size={15} aria-hidden="true" />
-        </button>
+        </Button>
       )}
       {canPreviewInDialog && (
         <AssetViewerDialog asset={asset} open={viewerOpen} onOpenChange={setViewerOpen} src={src} />
@@ -917,10 +929,10 @@ function ArtifactState({
       )}
       <span>{message}</span>
       {actionLabel && onAction ? (
-        <button type="button" className="artifact-preview-retry nodrag nopan" onClick={onAction}>
+        <Button type="button" className="artifact-preview-retry nodrag nopan" onClick={onAction}>
           <RefreshCw size={14} aria-hidden="true" />
           {actionLabel}
-        </button>
+        </Button>
       ) : null}
     </div>
   );
@@ -1096,7 +1108,7 @@ export function TextResultContent({
     >
       {copyable ? (
         <div className="artifact-preview-text-toolbar">
-          <button
+          <Button
             type="button"
             className="artifact-preview-action nodrag nopan"
             onClick={() => void copyContent()}
@@ -1104,7 +1116,7 @@ export function TextResultContent({
             title="复制文字结果"
           >
             <Copy size={14} aria-hidden="true" />
-          </button>
+          </Button>
           <span aria-live="polite">
             {copyState === 'copied' ? '已复制' : copyState === 'failed' ? '复制失败' : ''}
           </span>
@@ -1112,7 +1124,7 @@ export function TextResultContent({
       ) : null}
       {draft !== null ? (
         <>
-          <textarea
+          <Textarea
             autoFocus
             className="inspector-result-text artifact-preview-text-body artifact-preview-text-editor nodrag nopan nowheel"
             aria-label="编辑文字结果"
@@ -1147,18 +1159,18 @@ export function TextResultContent({
           {saveError && (
             <div role="alert">
               {saveError}
-              <button
+              <Button
                 type="button"
                 className="artifact-preview-action"
                 onClick={() => void commitDraft()}
               >
                 重试保存
-              </button>
+              </Button>
             </div>
           )}
         </>
       ) : editable ? (
-        <textarea
+        <Textarea
           className="inspector-result-text artifact-preview-text-body artifact-preview-text-editor"
           value={content ?? ''}
           aria-label="编辑文字结果"

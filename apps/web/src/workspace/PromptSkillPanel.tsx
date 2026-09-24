@@ -6,10 +6,22 @@ import {
   type PromptDocument,
   type PromptSkill,
 } from '@multimodal-canvas/domain';
-import { Check, LoaderCircle, RotateCw, Settings2, Square, WandSparkles, X } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { Button, Textarea } from '@multimodal-canvas/ui';
+import { Dropdown, Select, Tooltip, type SelectProps } from 'antd';
+import {
+  Check,
+  ChevronDown,
+  LoaderCircle,
+  RotateCw,
+  Settings2,
+  Square,
+  WandSparkles,
+  X,
+} from 'lucide-react';
+import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
 
 import { readStoredAuthSession, subscribeAuthSession } from '../auth-client';
+import { isImeKeyboardEvent } from '../ime';
 import {
   clearPendingPromptOptimization,
   fetchPromptOptimization,
@@ -23,8 +35,6 @@ import {
   type PendingPromptOptimization,
   type PromptOptimizationRequest,
 } from '../prompt-skills';
-import { CompactSelect, type CompactSelectOption } from './CompactSelect';
-import { PromptSkillSettings } from './PromptSkillSettings';
 import { API_BASE_URL, type ModelEntry } from './contracts';
 import './prompt-skill-panel.css';
 
@@ -92,6 +102,9 @@ function PromptSkillPanelSession({
   onApply,
   storageKey,
 }: PromptSkillPanelProps & { storageKey: string }) {
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsPinned, setSettingsPinned] = useState(false);
+  const selectId = useId();
   const [modelKey, setModelKey] = useState('default');
   const [pending, setPending] = useState<PendingPromptOptimization>();
   const [busy, setBusy] = useState(false);
@@ -100,7 +113,7 @@ function PromptSkillPanelSession({
   const requestRef = useRef<AbortController | undefined>(undefined);
   const pendingRef = useRef<PendingPromptOptimization | undefined>(undefined);
   const skill = skills.find((entry) => entry.id === skillId);
-  const skillOptions: CompactSelectOption[] = [
+  const skillOptions: NonNullable<SelectProps<string>['options']> = [
     { value: '', label: '不使用 Skill' },
     ...Array.from(new Set(skills.map((entry) => entry.category))).flatMap((category) =>
       skills
@@ -110,6 +123,7 @@ function PromptSkillPanelSession({
           label: entry.name,
           groupLabel: category,
           tooltip: entry.description,
+          'aria-description': entry.description,
           disabled: entry.enabled === false,
         })),
     ),
@@ -117,11 +131,11 @@ function PromptSkillPanelSession({
   const skillAvailable = skill !== undefined && skill.enabled !== false;
   const textModels = models.filter((model) => model.mediaTypes.includes('text'));
   const selectedModel = textModels.find((model) => modelIdentity(model) === modelKey);
-  const modelOptions: CompactSelectOption[] = [
+  const modelOptions = [
     { value: 'default', label: '默认文字模型' },
     ...textModels.map((model) => ({
       value: modelIdentity(model),
-      label: model.name,
+      label: [model.name, model.group ?? model.credentialLabel].filter(Boolean).join(' · '),
       description: model.group ?? model.credentialLabel,
       trailingLabel: model.group ?? model.credentialLabel,
       groupLabel: model.group ?? model.credentialLabel ?? '文字模型',
@@ -340,80 +354,177 @@ function PromptSkillPanelSession({
     <section
       className="prompt-skill-panel nodrag nowheel"
       aria-label="提示词 Skill"
+      onKeyDownCapture={(event) => {
+        // 输入法组合期间保留输入，不让库浮层把候选操作解释为关闭。
+        if (isImeKeyboardEvent(event)) event.stopPropagation();
+      }}
       onKeyDown={(event) => {
+        // Escape 留给 Ant Design 浮层；IME 按键仍留在当前输入中。
+        if (['Escape', 'Tab'].includes(event.key) && !isImeKeyboardEvent(event)) return;
         // 保存属于全局画布命令，其他按键留在预览中，避免误触画布操作。
         if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 's')
           return;
         event.stopPropagation();
       }}
     >
-      <PromptSkillSettings selected={!!skillId}>
-        <div className="prompt-skill-controls">
-          <CompactSelect
-            label="Skill"
-            ariaLabel="提示词 Skill"
-            value={skillId && !skillAvailable ? undefined : (skillId ?? '')}
-            options={skillOptions}
-            onChange={(id) => onSkillChange(id || undefined)}
-            placeholder={
-              skillsLoading ? 'Skill 目录加载中' : skillId ? 'Skill 不可用' : '不使用 Skill'
-            }
-            disabled={disabled || skillsLoading}
-            floating
-            placement="top"
-          />
-          {onOpenWorkbench && (
-            <span className="prompt-skill-workbench">
-              <button
-                type="button"
-                className="button button-secondary"
-                aria-label="技能工作台"
-                title="技能工作台"
-                onClick={onOpenWorkbench}
-              >
-                <Settings2 size={15} aria-hidden="true" />
-              </button>
-              <span className="prompt-skill-workbench-tip" role="tooltip">
-                技能工作台
-              </span>
-            </span>
-          )}
-        </div>
-        {textModels.length > 0 && (
-          <CompactSelect
-            label="优化模型"
-            ariaLabel="优化模型"
-            value={modelKey}
-            options={modelOptions}
-            onChange={setModelKey}
-            disabled={disabled || busy || !!pending}
-            floating
-            placement="top"
-          />
+      <Dropdown
+        trigger={settingsPinned ? ['click'] : ['hover', 'click']}
+        placement="topLeft"
+        mouseLeaveDelay={0.18}
+        open={settingsOpen}
+        onOpenChange={(open) => {
+          setSettingsOpen(open);
+          if (!open) setSettingsPinned(false);
+        }}
+        styles={{ root: { pointerEvents: 'auto' } }}
+        getPopupContainer={(trigger: HTMLElement) =>
+          trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
+        }
+        classNames={{ root: 'prompt-skill-settings-overlay' }}
+        destroyOnHidden
+        popupRender={() => (
+          <div
+            className="prompt-skill-settings-content"
+            tabIndex={-1}
+            role="group"
+            aria-label="Skill 配置"
+            onPointerDown={() => setSettingsPinned(true)}
+          >
+            <div className="prompt-skill-controls">
+              <label className="prompt-skill-select">
+                <span>Skill</span>
+                <Select
+                  id={selectId + '-skill'}
+                  aria-label="提示词 Skill"
+                  value={skillId && !skillAvailable ? undefined : (skillId ?? '')}
+                  options={[
+                    skillOptions[0]!,
+                    ...Array.from(new Set(skills.map((entry) => entry.category))).map(
+                      (category) => ({
+                        label: category,
+                        options: skillOptions.filter(
+                          (entry) => 'groupLabel' in entry && entry.groupLabel === category,
+                        ),
+                      }),
+                    ),
+                  ]}
+                  optionRender={(option) => (
+                    <Tooltip
+                      title={'tooltip' in option.data ? option.data.tooltip : undefined}
+                      mouseEnterDelay={0}
+                      getPopupContainer={(trigger: HTMLElement) =>
+                        trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
+                      }
+                    >
+                      <span>{option.label}</span>
+                    </Tooltip>
+                  )}
+                  onChange={(id) => onSkillChange(id || undefined)}
+                  placeholder={
+                    skillsLoading ? 'Skill 目录加载中' : skillId ? 'Skill 不可用' : '不使用 Skill'
+                  }
+                  disabled={disabled || skillsLoading}
+                  virtual={false}
+                  styles={{ popup: { root: { pointerEvents: 'auto' } } }}
+                  placement="topLeft"
+                  getPopupContainer={(trigger: HTMLElement) =>
+                    trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
+                  }
+                  popupMatchSelectWidth={false}
+                />
+              </label>
+              {onOpenWorkbench && (
+                <Tooltip
+                  title="技能工作台"
+                  trigger={['hover', 'focus']}
+                  getPopupContainer={(trigger: HTMLElement) =>
+                    trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
+                  }
+                >
+                  <Button
+                    type="button"
+                    className="button button-secondary"
+                    aria-label="技能工作台"
+                    title="技能工作台"
+                    onClick={onOpenWorkbench}
+                  >
+                    <Settings2 size={15} aria-hidden="true" />
+                  </Button>
+                </Tooltip>
+              )}
+            </div>
+            {textModels.length > 0 && (
+              <label className="prompt-skill-select">
+                <span>优化模型</span>
+                <Select
+                  id={selectId + '-model'}
+                  aria-label="优化模型"
+                  value={modelKey}
+                  options={[
+                    modelOptions[0]!,
+                    ...[
+                      ...new Set(
+                        textModels.map(
+                          (model) => model.group ?? model.credentialLabel ?? '文字模型',
+                        ),
+                      ),
+                    ].map((group) => ({
+                      label: group,
+                      options: modelOptions.filter(
+                        (option) => 'groupLabel' in option && option.groupLabel === group,
+                      ),
+                    })),
+                  ]}
+                  onChange={setModelKey}
+                  disabled={disabled || busy || !!pending}
+                  virtual={false}
+                  styles={{ popup: { root: { pointerEvents: 'auto' } } }}
+                  placement="topLeft"
+                  getPopupContainer={(trigger: HTMLElement) =>
+                    trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
+                  }
+                  popupMatchSelectWidth={false}
+                />
+              </label>
+            )}
+            <Button
+              type="button"
+              className="button button-secondary prompt-skill-optimize"
+              onClick={optimize}
+              disabled={
+                disabled ||
+                skillsLoading ||
+                busy ||
+                !!pending ||
+                storageBlocked ||
+                !projectId ||
+                !skillAvailable ||
+                !promptDocument.blocks.some((block) => block.type === 'text' && block.text.trim())
+              }
+            >
+              {busy ? (
+                <LoaderCircle size={14} aria-hidden="true" />
+              ) : (
+                <WandSparkles size={14} aria-hidden="true" />
+              )}
+              {busy ? '优化中' : '优化提示词'}
+            </Button>
+          </div>
         )}
-        <button
+      >
+        <Button
           type="button"
-          className="button button-secondary prompt-skill-optimize"
-          onClick={optimize}
-          disabled={
-            disabled ||
-            skillsLoading ||
-            busy ||
-            !!pending ||
-            storageBlocked ||
-            !projectId ||
-            !skillAvailable ||
-            !promptDocument.blocks.some((block) => block.type === 'text' && block.text.trim())
-          }
+          className="prompt-skill-trigger"
+          aria-label="Skill 配置"
+          aria-expanded={settingsOpen}
+          onClick={() => setSettingsPinned(true)}
+          data-selected={!!skillId || undefined}
         >
-          {busy ? (
-            <LoaderCircle size={14} aria-hidden="true" />
-          ) : (
-            <WandSparkles size={14} aria-hidden="true" />
-          )}
-          {busy ? '优化中' : '优化提示词'}
-        </button>
-      </PromptSkillSettings>
+          <WandSparkles size={14} aria-hidden="true" />
+          <span>Skill</span>
+          <ChevronDown size={12} aria-hidden="true" />
+        </Button>
+      </Dropdown>
       {!projectId && <p className="prompt-skill-status">保存项目后可优化提示词</p>}
       {skillsLoading && (
         <p className="prompt-skill-status" role="status">
@@ -440,7 +551,7 @@ function PromptSkillPanelSession({
                 : '提交结果尚未确认，将沿用原请求查询'}
           </p>
           {busy ? (
-            <button
+            <Button
               type="button"
               className="button button-secondary"
               onClick={() => {
@@ -453,9 +564,9 @@ function PromptSkillPanelSession({
             >
               <Square size={13} aria-hidden="true" />
               停止查询
-            </button>
+            </Button>
           ) : (
-            <button
+            <Button
               type="button"
               className="button button-secondary"
               disabled={disabled || storageBlocked}
@@ -463,7 +574,7 @@ function PromptSkillPanelSession({
             >
               <RotateCw size={13} aria-hidden="true" />
               {pending.runId ? '继续查询' : '确认原请求'}
-            </button>
+            </Button>
           )}
         </div>
       )}
@@ -476,7 +587,7 @@ function PromptSkillPanelSession({
           <div className="prompt-skill-preview-document">
             {draft.blocks.map((block, index) =>
               block.type === 'text' ? (
-                <textarea
+                <Textarea
                   key={index}
                   aria-label={`优化文字 ${index + 1}`}
                   value={block.text}
@@ -509,7 +620,7 @@ function PromptSkillPanelSession({
             </p>
           )}
           <div className="prompt-skill-actions">
-            <button
+            <Button
               type="button"
               className="button button-secondary"
               onClick={() => {
@@ -523,8 +634,8 @@ function PromptSkillPanelSession({
             >
               <X size={14} aria-hidden="true" />
               丢弃
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
               className="button button-primary"
               disabled={disabled || skillsLoading || stale || !!draftIssue}
@@ -532,7 +643,7 @@ function PromptSkillPanelSession({
             >
               <Check size={14} aria-hidden="true" />
               应用
-            </button>
+            </Button>
           </div>
         </div>
       )}

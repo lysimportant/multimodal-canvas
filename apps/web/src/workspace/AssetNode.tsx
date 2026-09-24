@@ -45,7 +45,14 @@ import {
   isImageEditSourceNode,
   videoModeLabels,
 } from '@multimodal-canvas/domain';
-import { Dialog, DialogClose, DialogContent, DialogTitle } from '@multimodal-canvas/ui';
+import {
+  Button,
+  Input,
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogTitle,
+} from '@multimodal-canvas/ui';
 import type { AssetFlowNode } from '../canvas-utils';
 import { isImeKeyboardEvent } from '../ime';
 import { NodeHandles, videoInputRoleLabel } from '../NodeHandles';
@@ -377,7 +384,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const nodeLabel = (
     <div className="flow-node-label" title={data.label}>
       {changeLabel ? (
-        <button
+        <Button
           type="button"
           className="flow-node-label-button nodrag nopan nowheel"
           aria-label={`重命名节点：${data.label}`}
@@ -395,7 +402,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
           }}
         >
           {data.label}
-        </button>
+        </Button>
       ) : (
         data.label
       )}
@@ -447,7 +454,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
       }}
     >
       {batchView?.rootNodeId === id && batchContext.onExpandedChange ? (
-        <button
+        <Button
           type="button"
           className="flow-node-batch-toggle nodrag nopan nowheel"
           aria-label={
@@ -468,7 +475,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
           ) : (
             <ArrowUpRight size={18} aria-hidden="true" />
           )}
-        </button>
+        </Button>
       ) : null}
       {Resizer ? (
         <Resizer
@@ -524,7 +531,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
         {floatingControls ? (
           <>
             {changeLabel ? (
-              <button
+              <Button
                 type="button"
                 className="flow-node-action-button flow-node-label-button nodrag nopan nowheel"
                 aria-label={`重命名节点：${data.label}`}
@@ -543,9 +550,9 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
               >
                 <Pencil size={18} aria-hidden="true" />
                 <NodeFloatingActionLabel>重命名</NodeFloatingActionLabel>
-              </button>
+              </Button>
             ) : null}
-            <button
+            <Button
               type="button"
               className="flow-node-action-button flow-node-drag-handle"
               aria-label="拖动移动节点"
@@ -553,8 +560,8 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
             >
               <GripVertical size={18} aria-hidden="true" />
               <NodeFloatingActionLabel>移动</NodeFloatingActionLabel>
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
               className={`flow-node-action-button flow-node-info-button nodrag nopan nowheel${data.stale ? ' is-stale' : ''}`}
               aria-label="查看节点信息"
@@ -567,9 +574,9 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
             >
               <Info size={18} aria-hidden="true" />
               <NodeFloatingActionLabel>信息</NodeFloatingActionLabel>
-            </button>
+            </Button>
             {openPrompt ? (
-              <button
+              <Button
                 type="button"
                 id={`node-prompt-trigger-${id}`}
                 className="flow-node-action-button flow-node-prompt-button nodrag nopan nowheel"
@@ -583,7 +590,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
               >
                 <FileText size={18} aria-hidden="true" />
                 <NodeFloatingActionLabel>提示词</NodeFloatingActionLabel>
-              </button>
+              </Button>
             ) : null}
             <span
               className="flow-node-action-button flow-node-floating-duration nodrag nopan nowheel"
@@ -610,7 +617,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
               </span>
             ) : null}
             {setNodeEnabled ? (
-              <button
+              <Button
                 type="button"
                 className="flow-node-action-button flow-node-enabled-toggle nodrag nopan nowheel"
                 aria-label={enabled ? '停用节点' : '启用节点'}
@@ -624,7 +631,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
               >
                 <Power size={18} strokeWidth={2.2} aria-hidden="true" />
                 <NodeFloatingActionLabel>{enabled ? '停用' : '启用'}</NodeFloatingActionLabel>
-              </button>
+              </Button>
             ) : null}
             <span
               className={`flow-node-action-button flow-node-status ${
@@ -638,7 +645,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
               <NodeFloatingActionLabel>{statusTooltip}</NodeFloatingActionLabel>
             </span>
             {contentHandlers && (
-              <button
+              <Button
                 type="button"
                 className="flow-node-action-button flow-node-upload-button nodrag nopan nowheel"
                 disabled={writingDisabled}
@@ -658,10 +665,10 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
                 <NodeFloatingActionLabel>
                   {uploadProgress === null ? '上传' : '上传中'}
                 </NodeFloatingActionLabel>
-              </button>
+              </Button>
             )}
             {editImage && isImageEditSourceNode({ data }) ? (
-              <button
+              <Button
                 type="button"
                 className="flow-node-action-button flow-node-edit-image-button nodrag nopan nowheel"
                 disabled={writingDisabled}
@@ -681,10 +688,10 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
               >
                 <WandSparkles size={18} aria-hidden="true" />
                 <NodeFloatingActionLabel>修改图片</NodeFloatingActionLabel>
-              </button>
+              </Button>
             ) : null}
             {downloadableMedia && (
-              <button
+              <Button
                 type="button"
                 className="flow-node-action-button flow-node-download-button nodrag nopan nowheel"
                 disabled={!previewAsset?.contentUrl || isDownloading}
@@ -711,10 +718,10 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
                 <NodeFloatingActionLabel>
                   {isDownloading ? '下载中' : '下载'}
                 </NodeFloatingActionLabel>
-              </button>
+              </Button>
             )}
             {deleteNode ? (
-              <button
+              <Button
                 type="button"
                 className="flow-node-action-button flow-node-delete-button nodrag nopan nowheel"
                 aria-label={`删除节点：${data.label}`}
@@ -727,7 +734,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
               >
                 <Trash2 size={18} strokeWidth={2.2} aria-hidden="true" />
                 <NodeFloatingActionLabel>删除</NodeFloatingActionLabel>
-              </button>
+              </Button>
             ) : null}
           </>
         ) : (
@@ -750,7 +757,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
         {floatingControls ? null : (
           <>
             {setNodeEnabled ? (
-              <button
+              <Button
                 type="button"
                 className="flow-node-enabled-toggle nodrag nopan nowheel"
                 aria-label={enabled ? '停用节点' : '启用节点'}
@@ -759,7 +766,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
                 onClick={() => setNodeEnabled(id, !enabled)}
               >
                 <Power size={18} strokeWidth={2.2} aria-hidden="true" />
-              </button>
+              </Button>
             ) : null}
             <span
               className={`flow-node-status ${effectivePreviewLoadState === 'error' || presentationState === 'missing' ? 'is-error' : ''}`}
@@ -781,24 +788,29 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
             className="flow-node-dialog"
             overlayClassName="flow-node-dialog-backdrop"
             aria-labelledby={renameTitleId}
+            style={{
+              display: 'inline-flex',
+              padding: '14px 16px 16px',
+              width: 'min(420px, calc(100vw - 32px))',
+            }}
             onPointerDown={(event) => event.stopPropagation()}
           >
             <div className="flow-node-dialog-header">
               <DialogTitle id={renameTitleId}>重命名节点</DialogTitle>
               <DialogClose asChild>
-                <button
+                <Button
                   type="button"
                   className="flow-node-dialog-close"
                   aria-label="关闭重命名"
                   title="关闭"
                 >
                   <X size={17} aria-hidden="true" />
-                </button>
+                </Button>
               </DialogClose>
             </div>
             <label className="flow-node-dialog-field">
               <span>节点名称</span>
-              <input
+              <Input
                 className="flow-node-label-input"
                 aria-label="编辑节点名称"
                 placeholder="输入节点名称"
@@ -809,12 +821,12 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
               />
             </label>
             <div className="flow-node-dialog-actions">
-              <button type="button" className="flow-node-dialog-secondary" onClick={cancelRename}>
+              <Button type="button" className="flow-node-dialog-secondary" onClick={cancelRename}>
                 取消
-              </button>
-              <button type="button" className="flow-node-dialog-primary" onClick={commitLabel}>
+              </Button>
+              <Button type="button" className="flow-node-dialog-primary" onClick={commitLabel}>
                 保存
-              </button>
+              </Button>
             </div>
           </DialogContent>
         )}
@@ -825,19 +837,24 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
             className="flow-node-dialog"
             overlayClassName="flow-node-dialog-backdrop"
             aria-labelledby={infoTitleId}
+            style={{
+              display: 'inline-flex',
+              padding: '14px 16px 16px',
+              width: 'min(420px, calc(100vw - 32px))',
+            }}
             onPointerDown={(event) => event.stopPropagation()}
           >
             <div className="flow-node-dialog-header">
               <DialogTitle id={infoTitleId}>节点信息</DialogTitle>
               <DialogClose asChild>
-                <button
+                <Button
                   type="button"
                   className="flow-node-dialog-close"
                   aria-label="关闭节点信息"
                   title="关闭"
                 >
                   <X size={17} aria-hidden="true" />
-                </button>
+                </Button>
               </DialogClose>
             </div>
             <p className="flow-node-dialog-intro">{nodeIntroduction(data)}</p>
@@ -894,7 +911,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
                 <div>
                   <dt>提示词</dt>
                   <dd>
-                    <button
+                    <Button
                       type="button"
                       id={`node-prompt-info-trigger-${id}`}
                       className="flow-node-prompt-link"
@@ -906,7 +923,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
                     >
                       <FileText size={13} aria-hidden="true" />
                       查看生成提示词
-                    </button>
+                    </Button>
                   </dd>
                 </div>
               ) : null}
@@ -974,9 +991,9 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
         <div className="flow-node-upload-feedback is-error nodrag nopan" role="alert">
           {uploadError}
           {retryFile && (
-            <button type="button" onClick={() => void uploadFile(retryFile)}>
+            <Button type="button" onClick={() => void uploadFile(retryFile)}>
               重试
-            </button>
+            </Button>
           )}
         </div>
       )}
@@ -1043,7 +1060,7 @@ function NodeStateContent({
           {message}
         </span>
         {canRetry ? (
-          <button
+          <Button
             type="button"
             className="flow-node-retry nodrag nopan"
             onClick={onRetry}
@@ -1055,7 +1072,7 @@ function NodeStateContent({
               <RefreshCw size={13} aria-hidden="true" />
             )}
             {isRetrying ? '提交中…' : '重试生成'}
-          </button>
+          </Button>
         ) : null}
         {retryError ? <span className="flow-node-retry-error">{retryError}</span> : null}
       </div>

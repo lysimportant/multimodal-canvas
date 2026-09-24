@@ -1,0 +1,31 @@
+/* 仅覆盖设置页，避免短枚举和 Ant Design Tabs 改动其他面板布局。 */
+.settings-panel .settings-tabs {
+  flex: 1;
+  min-height: 0;
+}
+
+.settings-tabs > .ant-tabs-nav {
+  width: 160px;
+  flex: 0 0 160px;
+}
+
+.settings-tabs .ant-tabs-content-holder,
+.settings-tabs .ant-tabs-content,
+.settings-tabs .ant-tabs-tabpane {
+  min-height: 0;
+  height: 100%;
+}
+
+.settings-tabs .ant-tabs-content-holder {
+  overflow: auto;
+}
+
+.settings-panel .settings-field .ant-select {
+  width: 100%;
+  min-width: 0;
+}
+
+.settings-header-copy h2 {
+  margin: 0;
+  font-size: 22px;
+}

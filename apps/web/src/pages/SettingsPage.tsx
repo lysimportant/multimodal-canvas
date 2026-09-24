@@ -1,3 +1,4 @@
+import { Button } from '@multimodal-canvas/ui';
 import { AlertTriangle, ArrowUpRight, RotateCcw, Settings2 } from 'lucide-react';
 import type { MouseEvent, ReactNode } from 'react';
 
@@ -87,10 +88,10 @@ export function SettingsPage({
                 <strong>设置加载失败</strong>
                 <span>{error}</span>
                 {onRetry && (
-                  <button type="button" onClick={onRetry}>
+                  <Button type="button" onClick={onRetry}>
                     <RotateCcw size={14} aria-hidden="true" />
                     重新加载
-                  </button>
+                  </Button>
                 )}
               </div>
             ) : (

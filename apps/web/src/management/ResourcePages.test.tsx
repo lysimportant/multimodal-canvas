@@ -2,7 +2,8 @@
 import '@testing-library/jest-dom/vitest';
 import { Blob as NodeBlob } from 'node:buffer';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { apiFetch } from '../auth-client';
 import { managementRequest } from './client';
@@ -65,28 +66,12 @@ beforeEach(() => {
   );
   vi.stubGlobal('IntersectionObserver', undefined);
   vi.stubGlobal(
-    'matchMedia',
-    vi.fn(() => ({ matches: true })),
-  );
-  vi.stubGlobal(
     'URL',
     class extends URL {
       static createObjectURL = vi.fn(() => `blob:${Math.random()}`);
       static revokeObjectURL = vi.fn();
     },
   );
-  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', {
-    configurable: true,
-    value() {
-      this.setAttribute('open', '');
-    },
-  });
-  Object.defineProperty(HTMLDialogElement.prototype, 'close', {
-    configurable: true,
-    value() {
-      this.removeAttribute('open');
-    },
-  });
 });
 afterEach(() => {
   cleanup();
@@ -157,15 +142,21 @@ describe('资源内容预览', () => {
     expect(URL.createObjectURL).not.toHaveBeenCalled();
   });
 
-  it('详情支持左右切换，输入框方向键不切换，Esc cancel 关闭', async () => {
+  it('详情支持左右切换，输入框方向键不切换，Escape 关闭真实弹层', async () => {
     renderResources();
     fireEvent.click(await screen.findByRole('button', { name: /image-resource/ }));
     await screen.findByRole('dialog', { name: 'image-resource' });
+    await waitFor(() =>
+      expect(screen.getByRole('dialog', { name: 'image-resource' })).toBeVisible(),
+    );
     expect(screen.getByRole('button', { name: '上一个资源' })).toBeDisabled();
     fireEvent.keyDown(screen.getByLabelText('资源名称'), { key: 'ArrowRight' });
     expect(screen.getByRole('dialog', { name: 'image-resource' })).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: '下一个资源' }));
     await screen.findByRole('dialog', { name: 'video-resource' });
+    await waitFor(() =>
+      expect(screen.getByRole('dialog', { name: 'video-resource' })).toBeVisible(),
+    );
     await waitFor(() =>
       expect(apiFetch).toHaveBeenCalledWith(
         expect.stringMatching(/\/video\/content$/),
@@ -174,7 +165,8 @@ describe('资源内容预览', () => {
     );
     fireEvent.keyDown(document, { key: 'ArrowLeft' });
     const dialog = await screen.findByRole('dialog', { name: 'image-resource' });
-    fireEvent(dialog, new Event('cancel', { bubbles: false, cancelable: true }));
+    await waitFor(() => expect(dialog).toBeVisible());
+    fireEvent.keyDown(dialog, { key: 'Escape', code: 'Escape', keyCode: 27 });
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 });
@@ -283,5 +275,221 @@ describe('资源归属范围', () => {
     });
     expect(screen.getByRole('heading', { name: '当前资源主人的资源' })).toBeVisible();
     expect(screen.queryByText('迟到的旧主人')).toBeNull();
+  });
+});
+
+/** 从真实非虚拟列表选择选项，不将 Select 替换为原生控件。 */
+async function selectResourceOption(label: string, option: string | RegExp) {
+  fireEvent.mouseDown(screen.getByRole('combobox', { name: label }));
+  fireEvent.click(await screen.findByRole('option', { name: option }));
+  await waitFor(() =>
+    expect(screen.getByRole('combobox', { name: label })).toHaveAttribute('aria-expanded', 'false'),
+  );
+}
+
+/** 当前测试中明确由用户提交的资源写操作。 */
+function resourceWrites() {
+  return vi.mocked(managementRequest).mock.calls.filter(([, init]) => init?.method === 'PATCH');
+}
+
+describe('资源库组件交互', () => {
+  it('真实分页与全部筛选保持请求参数和身份缓存，筛选变化回到第一页', async () => {
+    vi.mocked(managementRequest).mockImplementation(async (requestPath) => {
+      if (requestPath.startsWith('/projects'))
+        return { projects: [{ id: 'project-a', name: '项目甲' }] };
+      if (requestPath.startsWith('/account/resources?')) {
+        const params = new URL(requestPath, 'http://canvas.test').searchParams;
+        return { assets, total: 48, page: Number(params.get('page')), pageSize: 24 };
+      }
+      throw new Error('未处理的请求：' + requestPath);
+    });
+    renderResources();
+    await screen.findByText('共 48 项');
+    fireEvent.click(screen.getByTitle('下一页'));
+    await waitFor(() =>
+      expect(managementRequest).toHaveBeenCalledWith(
+        expect.stringContaining('page=2'),
+        expect.anything(),
+      ),
+    );
+    await selectResourceOption('资源类型', '图片');
+    await selectResourceOption('资源来源', '生成资源');
+    await selectResourceOption('资源状态', '已归档');
+    await selectResourceOption('所属项目', '项目甲');
+    fireEvent.change(screen.getByRole('searchbox', { name: '搜索资源' }), {
+      target: { value: ' 测试资源 ' },
+    });
+    await userEvent.click(screen.getByRole('button', { name: '提交资源搜索' }));
+    fireEvent.change(screen.getByRole('searchbox', { name: '筛选资源标签' }), {
+      target: { value: ' 标签甲， 标签乙,, ' },
+    });
+    await userEvent.click(screen.getByRole('button', { name: '应用标签筛选' }));
+    await waitFor(() =>
+      expect(
+        client.getQueryData([
+          'management',
+          'user',
+          'resources',
+          'mine',
+          '测试资源',
+          'image',
+          'generated',
+          '标签甲,标签乙',
+          'archived',
+          'project-a',
+          1,
+        ]),
+      ).toMatchObject({ total: 48 }),
+    );
+    const requestPath = vi
+      .mocked(managementRequest)
+      .mock.calls.map(([value]) => value)
+      .filter((value) => value.startsWith('/account/resources?'))
+      .at(-1)!;
+    expect(Object.fromEntries(new URL(requestPath, 'http://canvas.test').searchParams)).toEqual({
+      query: '测试资源',
+      mediaType: 'image',
+      source: 'generated',
+      tags: '标签甲,标签乙',
+      status: 'archived',
+      projectId: 'project-a',
+      page: '1',
+      pageSize: '24',
+    });
+    expect(resourceWrites()).toHaveLength(0);
+  });
+
+  it('保存通过原生 submit 语义提交白名单字段，写入期间禁止关闭和重复提交', async () => {
+    const read = vi.mocked(managementRequest).getMockImplementation()!;
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    vi.mocked(managementRequest).mockImplementation((requestPath, init) =>
+      init?.method === 'PATCH' ? pending : read(requestPath, init),
+    );
+    renderResources();
+    await userEvent.click(await screen.findByRole('button', { name: /image-resource/ }));
+    const dialog = await screen.findByRole('dialog', { name: 'image-resource' });
+    await waitFor(() => expect(dialog).toBeVisible());
+    fireEvent.change(within(dialog).getByLabelText('资源名称'), {
+      target: { value: ' 新资源名称 ' },
+    });
+    fireEvent.change(within(dialog).getByLabelText('标签'), {
+      target: { value: ' 标签甲，标签甲, 标签乙 ' },
+    });
+    const save = within(dialog).getByRole('button', { name: '保存' });
+    expect(save).toHaveAttribute('type', 'submit');
+    await userEvent.click(save);
+    expect(save).toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: '关闭弹窗' })).toBeDisabled();
+    fireEvent.click(save);
+    fireEvent.keyDown(dialog, { key: 'Escape', keyCode: 27 });
+    expect(dialog).toBeVisible();
+    expect(resourceWrites()).toEqual([
+      [
+        '/account/resources/image',
+        { method: 'PATCH', body: { name: '新资源名称', tags: ['标签甲', '标签乙'] } },
+      ],
+    ]);
+    await act(async () => {
+      finish();
+    });
+    expect(await within(dialog).findByRole('status')).toHaveTextContent('资源信息已保存');
+    expect(resourceWrites()).toHaveLength(1);
+    expect(save).toBeEnabled();
+  });
+
+  it('保存失败保持错误与当前弹层，不重放 PATCH', async () => {
+    const read = vi.mocked(managementRequest).getMockImplementation()!;
+    vi.mocked(managementRequest).mockImplementation((requestPath, init) =>
+      init?.method === 'PATCH'
+        ? Promise.reject(new Error('此资源没有修改权限'))
+        : read(requestPath, init),
+    );
+    renderResources();
+    await userEvent.click(await screen.findByRole('button', { name: /image-resource/ }));
+    const dialog = await screen.findByRole('dialog', { name: 'image-resource' });
+    await waitFor(() => expect(dialog).toBeVisible());
+    await userEvent.click(within(dialog).getByRole('button', { name: '保存' }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('此资源没有修改权限');
+    expect(dialog).toBeVisible();
+    expect(resourceWrites()).toHaveLength(1);
+    expect(within(dialog).queryByText('资源信息已保存')).toBeNull();
+  });
+
+  it('归档需要确认，取消不写入，归档后可以恢复', async () => {
+    let current = { ...assets[0]! };
+    const read = vi.mocked(managementRequest).getMockImplementation()!;
+    vi.mocked(managementRequest).mockImplementation(async (requestPath, init) => {
+      if (requestPath === '/account/resources/image') {
+        if (init?.method === 'PATCH')
+          current = { ...current, ...(init.body as { status: string }) };
+        return { asset: current, versions: [] };
+      }
+      return read(requestPath, init);
+    });
+    renderResources();
+    await userEvent.click(await screen.findByRole('button', { name: /image-resource/ }));
+    const dialog = await screen.findByRole('dialog', { name: 'image-resource' });
+    await waitFor(() => expect(dialog).toBeVisible());
+    await userEvent.click(within(dialog).getByRole('button', { name: '归档' }));
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('可随时恢复');
+    expect(resourceWrites()).toHaveLength(0);
+    await userEvent.click(within(dialog).getByRole('button', { name: /取\s*消/ }));
+    expect(resourceWrites()).toHaveLength(0);
+    await userEvent.click(within(dialog).getByRole('button', { name: '归档' }));
+    await userEvent.click(within(dialog).getByRole('button', { name: '确认归档' }));
+    expect(await within(dialog).findByRole('status')).toHaveTextContent('资源已归档');
+    await userEvent.click(within(dialog).getByRole('button', { name: '恢复' }));
+    await waitFor(() => expect(within(dialog).getByRole('status')).toHaveTextContent('资源已恢复'));
+    expect(resourceWrites().map(([, init]) => init?.body)).toEqual([
+      { status: 'archived' },
+      { status: 'ready' },
+    ]);
+  });
+
+  it.each([Array.from({ length: 33 }, (_, index) => '标签' + index).join(','), '长'.repeat(65)])(
+    '标签越界时在前端明确报错，不写入资源（%#）',
+    async (tags) => {
+      renderResources();
+      await userEvent.click(await screen.findByRole('button', { name: /image-resource/ }));
+      const dialog = await screen.findByRole('dialog', { name: 'image-resource' });
+      await waitFor(() => expect(dialog).toBeVisible());
+      fireEvent.change(within(dialog).getByLabelText('标签'), { target: { value: tags } });
+      await userEvent.click(within(dialog).getByRole('button', { name: '保存' }));
+      expect(within(dialog).getByRole('alert')).toHaveTextContent(
+        '最多添加 32 个标签，每个标签不超过 64 个字符',
+      );
+      expect(resourceWrites()).toHaveLength(0);
+    },
+  );
+
+  it('版本 Select 保持字符串请求值，选择器方向键不会切换资源', async () => {
+    const read = vi.mocked(managementRequest).getMockImplementation()!;
+    vi.mocked(managementRequest).mockImplementation((requestPath, init) =>
+      requestPath === '/account/resources/image'
+        ? Promise.resolve({
+            asset: assets[0],
+            versions: [{ version: 1, sizeBytes: 3, createdAt: '2026-09-12T00:00:00Z' }],
+          })
+        : read(requestPath, init),
+    );
+    renderResources();
+    await userEvent.click(await screen.findByRole('button', { name: /image-resource/ }));
+    await screen.findByRole('combobox', { name: '资源版本' });
+    await waitFor(() =>
+      expect(screen.getByRole('dialog', { name: 'image-resource' })).toBeVisible(),
+    );
+    fireEvent.keyDown(screen.getByRole('combobox', { name: '资源版本' }), { key: 'ArrowRight' });
+    expect(screen.getByRole('dialog', { name: 'image-resource' })).toBeVisible();
+    await selectResourceOption('资源版本', /版本 1/);
+    await waitFor(() =>
+      expect(apiFetch).toHaveBeenCalledWith(
+        expect.stringMatching(new RegExp('/image/content[?]version=1$')),
+        expect.anything(),
+      ),
+    );
+    expect(resourceWrites()).toHaveLength(0);
   });
 });

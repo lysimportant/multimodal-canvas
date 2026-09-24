@@ -1,10 +1,28 @@
+import { ConfigProvider } from 'antd';
 import '@testing-library/jest-dom/vitest';
 import { PROMPT_SKILLS, type PromptDocument, type PromptSkill } from '@multimodal-canvas/domain';
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render as renderAntd,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PromptSkillPanel, type PromptSkillPanelProps } from './PromptSkillPanel';
+
+/** 禁用库动画以同步检查可见性；仍渲染真实 Ant Design 控件和 portal。 */
+const render = (ui: Parameters<typeof renderAntd>[0], options?: Parameters<typeof renderAntd>[1]) =>
+  renderAntd(ui, {
+    wrapper: ({ children }) => (
+      <ConfigProvider theme={{ token: { motion: false } }}>{children}</ConfigProvider>
+    ),
+    ...options,
+  });
 
 /** 具有版本和绑定的用户原文。 */
 const source: PromptDocument = {
@@ -92,83 +110,109 @@ describe('PromptSkillPanel', () => {
     expect(screen.queryByRole('button', { name: '优化提示词' })).not.toBeInTheDocument();
 
     await user.hover(trigger);
-    const settings = screen.getByRole('group', { name: 'Skill 配置' });
-    expect(settings).toBeVisible();
-    expect(settings).toHaveAttribute('popover', 'manual');
+    const settings = await screen.findByRole('group', { name: 'Skill 配置' });
+    await waitFor(() => expect(settings).toBeVisible());
+    expect(settings.closest('.ant-dropdown')?.parentElement).toBe(document.body);
     expect(trigger).toHaveAttribute('aria-expanded', 'true');
-    expect(within(settings).getByRole('combobox', { name: '提示词 Skill' })).toBeVisible();
-    expect(within(settings).getByRole('combobox', { name: '优化模型' })).toBeVisible();
-    expect(within(settings).getByRole('button', { name: '技能工作台' })).toBeVisible();
-    expect(within(settings).getByRole('button', { name: '优化提示词' })).toBeVisible();
+    await waitFor(() =>
+      expect(within(settings).getByRole('combobox', { name: '提示词 Skill' })).toBeVisible(),
+    );
+    await waitFor(() =>
+      expect(within(settings).getByRole('combobox', { name: '优化模型' })).toBeVisible(),
+    );
+    await waitFor(() =>
+      expect(within(settings).getByRole('button', { name: '技能工作台' })).toBeVisible(),
+    );
+    await waitFor(() =>
+      expect(within(settings).getByRole('button', { name: '优化提示词' })).toBeVisible(),
+    );
     expect(fetcher).not.toHaveBeenCalled();
     expect(inputs.onSkillChange).not.toHaveBeenCalled();
     expect(inputs.onOpenWorkbench).not.toHaveBeenCalled();
   });
 
-  it('鼠标跨入配置浮层和嵌套菜单时保持展开，允许选择技能', async () => {
-    vi.useFakeTimers();
+  it('配置浮层与真实 Select 保持可交互，选择技能并显示用途 Tooltip', async () => {
+    const user = userEvent.setup();
+    const inputs = props();
+    render(<PromptSkillPanel {...inputs} />);
+    await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
+    const settings = screen.getByRole('group', { name: 'Skill 配置' });
+    await user.click(within(settings).getByRole('combobox', { name: '提示词 Skill' }));
+    const option = screen.getByRole('option', { name: '生成场景' });
+    await user.hover(within(option).getByText('生成场景'));
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(
+      PROMPT_SKILLS.find((skill) => skill.id === 'scene')!.description,
+    );
+    await user.click(option);
+    expect(inputs.onSkillChange).toHaveBeenCalledWith('scene');
+    expect(screen.getByRole('button', { name: 'Skill 配置' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+  });
+
+  it('悬停配置由 Antd 延迟收起，再打开时不残留嵌套菜单', async () => {
+    const user = userEvent.setup();
+    render(<PromptSkillPanel {...props()} />);
+    const trigger = screen.getByRole('button', { name: 'Skill 配置' });
+    await user.hover(trigger);
+    const settings = await screen.findByRole('group', { name: 'Skill 配置' });
+    await user.hover(settings);
+    await user.unhover(settings);
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    await waitFor(() => expect(trigger).toHaveAttribute('aria-expanded', 'false'));
+    await waitFor(() =>
+      expect(screen.queryByRole('group', { name: 'Skill 配置' })).not.toBeInTheDocument(),
+    );
+    await user.hover(trigger);
+    await waitFor(() => expect(screen.getByRole('group', { name: 'Skill 配置' })).toBeVisible());
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+  });
+
+  it('点击和外点由 Antd 切换配置，重新打开不修改所选 Skill', async () => {
+    const user = userEvent.setup();
     const inputs = props();
     render(<PromptSkillPanel {...inputs} />);
     const trigger = screen.getByRole('button', { name: 'Skill 配置' });
-    fireEvent.mouseEnter(trigger);
-    const settings = screen.getByRole('group', { name: 'Skill 配置' });
-    fireEvent.mouseLeave(trigger, { relatedTarget: document.body });
-    await act(async () => vi.advanceTimersByTimeAsync(90));
-    fireEvent.mouseEnter(settings);
-    await act(async () => vi.advanceTimersByTimeAsync(180));
-    expect(settings).toBeVisible();
-
-    fireEvent.click(within(settings).getByRole('combobox', { name: '提示词 Skill' }));
-    const menu = screen.getByRole('listbox', { name: 'Skill选项' });
-    fireEvent.mouseLeave(settings, { relatedTarget: menu });
-    fireEvent.mouseEnter(menu);
-    await act(async () => vi.advanceTimersByTimeAsync(180));
-    expect(settings).toBeVisible();
-    expect(menu).toBeVisible();
-    const option = within(menu).getByRole('option', { name: '生成场景' });
-    fireEvent.mouseEnter(option);
-    await act(async () => vi.advanceTimersByTimeAsync(180));
-    expect(screen.getByRole('tooltip')).toBeVisible();
-    fireEvent.click(option);
-    expect(inputs.onSkillChange).toHaveBeenCalledWith('scene');
-    expect(settings).toBeVisible();
-  });
-
-  it('未固定的配置离开后等待 180ms 才关闭，并清理嵌套菜单', async () => {
-    vi.useFakeTimers();
-    render(<PromptSkillPanel {...props()} />);
-    const trigger = screen.getByRole('button', { name: 'Skill 配置' });
-    fireEvent.mouseEnter(trigger);
-    fireEvent.click(screen.getByRole('combobox', { name: '提示词 Skill' }));
-    const option = screen.getByRole('option', { name: '生成人物' });
-    fireEvent.mouseEnter(option);
-    fireEvent.mouseLeave(option, { relatedTarget: document.body });
-    await act(async () => vi.advanceTimersByTimeAsync(179));
-    expect(screen.getByRole('group', { name: 'Skill 配置' })).toBeVisible();
-    await act(async () => vi.advanceTimersByTimeAsync(1));
+    await user.click(trigger);
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    await user.click(document.body);
     expect(trigger).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.queryByRole('group', { name: 'Skill 配置' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('listbox', { name: 'Skill选项' })).not.toBeInTheDocument();
-    fireEvent.mouseEnter(trigger);
-    expect(screen.getByRole('group', { name: 'Skill 配置' })).toBeVisible();
-    expect(screen.queryByRole('listbox', { name: 'Skill选项' })).not.toBeInTheDocument();
+    await user.click(trigger);
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    expect(
+      screen.getByRole('combobox', { name: '提示词 Skill' }).closest('.ant-select'),
+    ).toHaveTextContent('生成人物');
+    expect(inputs.onSkillChange).not.toHaveBeenCalled();
   });
 
-  it('点击固定后鼠标离开不会关闭，再次点击收起', async () => {
-    vi.useFakeTimers();
-    render(<PromptSkillPanel {...props()} />);
-    const trigger = screen.getByRole('button', { name: 'Skill 配置' });
-    fireEvent.mouseEnter(trigger);
-    // 不移动焦点，避免将焦点留在配置内的保护误判为点击固定。
-    fireEvent.click(trigger);
-    expect(trigger).not.toHaveFocus();
-    fireEvent.mouseLeave(trigger, { relatedTarget: document.body });
-    await act(async () => vi.advanceTimersByTimeAsync(500));
-    expect(screen.getByRole('group', { name: 'Skill 配置' })).toBeVisible();
-    fireEvent.click(trigger);
-    expect(trigger).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.queryByRole('group', { name: 'Skill 配置' })).not.toBeInTheDocument();
-  });
+  it.each([{ isComposing: true }, { keyCode: 229 }])(
+    'Skill 组合按键不关闭配置、改选或发起优化：%j',
+    async (composition) => {
+      const user = userEvent.setup();
+      const inputs = props();
+      const fetcher = vi.fn();
+      vi.stubGlobal('fetch', fetcher);
+      render(<PromptSkillPanel {...inputs} />);
+      const trigger = screen.getByRole('button', { name: 'Skill 配置' });
+      await user.click(trigger);
+      const select = screen.getByRole('combobox', { name: '提示词 Skill' });
+      await user.click(select);
+      await waitFor(() => expect(screen.getByRole('listbox')).toBeVisible());
+      fireEvent.keyDown(select, { key: 'Enter', keyCode: 13, which: 13, ...composition });
+      fireEvent.keyDown(select, { key: 'Escape', keyCode: 27, which: 27, ...composition });
+      expect(screen.getByRole('listbox')).toBeVisible();
+      expect(trigger).toHaveAttribute('aria-expanded', 'true');
+      expect(inputs.onSkillChange).not.toHaveBeenCalled();
+      expect(fetcher).not.toHaveBeenCalled();
+      fireEvent.keyDown(select, { key: 'Escape', keyCode: 27, which: 27 });
+      await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument());
+      expect(trigger).toHaveAttribute('aria-expanded', 'true');
+      fireEvent.keyDown(select, { key: 'Escape', keyCode: 27, which: 27 });
+      expect(trigger).toHaveAttribute('aria-expanded', 'false');
+      expect(trigger).toHaveFocus();
+    },
+  );
 
   it('Escape 先关闭嵌套菜单，再关闭配置并恢复按钮焦点', async () => {
     const user = userEvent.setup();
@@ -176,15 +220,15 @@ describe('PromptSkillPanel', () => {
     const trigger = screen.getByRole('button', { name: 'Skill 配置' });
     await user.click(trigger);
     await user.click(screen.getByRole('combobox', { name: '提示词 Skill' }));
-    await user.keyboard('{Escape}');
-    expect(screen.queryByRole('listbox', { name: 'Skill选项' })).not.toBeInTheDocument();
-    expect(screen.getByRole('group', { name: 'Skill 配置' })).toBeVisible();
-    await user.keyboard('{Escape}');
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape', keyCode: 27, which: 27 });
+    await waitFor(() => expect(screen.queryByRole('listbox', {})).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('group', { name: 'Skill 配置' })).toBeVisible());
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape', keyCode: 27, which: 27 });
     expect(trigger).toHaveAttribute('aria-expanded', 'false');
     expect(trigger).toHaveFocus();
   });
 
-  it('悬停展开时 Escape 可从配置外关闭且不移动原焦点', async () => {
+  it('悬停展开后 Escape 由 Antd 关闭并把焦点还给配置按钮', async () => {
     const user = userEvent.setup();
     render(
       <>
@@ -192,37 +236,30 @@ describe('PromptSkillPanel', () => {
         <PromptSkillPanel {...props()} />
       </>,
     );
-    const input = screen.getByRole('textbox', { name: '原提示词' });
-    await user.click(input);
-    await user.hover(screen.getByRole('button', { name: 'Skill 配置' }));
-    expect(screen.getByRole('group', { name: 'Skill 配置' })).toBeVisible();
-    await user.keyboard('{Escape}');
-    expect(screen.queryByRole('group', { name: 'Skill 配置' })).not.toBeInTheDocument();
-    expect(input).toHaveFocus();
+    await user.click(screen.getByRole('textbox', { name: '原提示词' }));
+    const trigger = screen.getByRole('button', { name: 'Skill 配置' });
+    await user.hover(trigger);
+    await waitFor(() => expect(screen.getByRole('group', { name: 'Skill 配置' })).toBeVisible());
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape', keyCode: 27, which: 27 });
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    expect(trigger).toHaveFocus();
   });
 
-  it('键盘 Enter 打开配置，Tab 进入配置并在离开后关闭', async () => {
+  it('键盘 Enter 打开配置，Antd 处理 Tab 导航和 Escape 回焦', async () => {
     const user = userEvent.setup();
-    render(
-      <>
-        <PromptSkillPanel {...props()} />
-        <input aria-label="配置后的输入" />
-      </>,
-    );
+    render(<PromptSkillPanel {...props()} />);
     const trigger = screen.getByRole('button', { name: 'Skill 配置' });
     await user.tab();
     expect(trigger).toHaveFocus();
     await user.keyboard('{Enter}');
-    expect(screen.getByRole('group', { name: 'Skill 配置' })).toBeVisible();
+    const settings = screen.getByRole('group', { name: 'Skill 配置' });
+    fireEvent.keyDown(trigger, { key: 'Tab', keyCode: 9, which: 9 });
+    expect(settings).toHaveFocus();
     await user.tab();
     expect(screen.getByRole('combobox', { name: '提示词 Skill' })).toHaveFocus();
-    expect(trigger).toHaveAttribute('aria-expanded', 'true');
-    await user.tab();
-    expect(screen.getByRole('button', { name: '优化提示词' })).toHaveFocus();
-    await user.tab();
-    expect(screen.getByRole('textbox', { name: '配置后的输入' })).toHaveFocus();
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape', keyCode: 27, which: 27 });
     expect(trigger).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.queryByRole('group', { name: 'Skill 配置' })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
   });
 
   it('关闭配置清理嵌套菜单但保留文字模型选择，不产生请求', async () => {
@@ -239,25 +276,26 @@ describe('PromptSkillPanel', () => {
     await user.click(screen.getByRole('combobox', { name: '优化模型' }));
     await user.click(screen.getByRole('option', { name: '文字 A' }));
     await user.click(screen.getByRole('combobox', { name: '提示词 Skill' }));
-    expect(screen.getByRole('listbox', { name: 'Skill选项' })).toBeVisible();
+    await waitFor(() => expect(screen.getByRole('listbox', {})).toBeVisible());
     await user.click(document.body);
     expect(trigger).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.queryByRole('listbox', { name: 'Skill选项' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('listbox', {})).not.toBeInTheDocument();
     await user.click(trigger);
-    expect(screen.getByRole('combobox', { name: '优化模型' })).toHaveTextContent('文字 A');
-    expect(screen.queryByRole('listbox', { name: 'Skill选项' })).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('combobox', { name: '优化模型' }).closest('.ant-select'),
+    ).toHaveTextContent('文字 A');
+    expect(screen.queryByRole('listbox', {})).not.toBeInTheDocument();
     expect(fetcher).not.toHaveBeenCalled();
   });
 
-  it('优化按钮禁用后通过焦点进入预览仍会收起配置', async () => {
+  it('优化按钮禁用后点击预览收起配置，保留可编辑结果', async () => {
     const user = userEvent.setup();
     vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(result()));
     render(<PromptSkillPanel {...props()} />);
     await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
     await user.click(screen.getByRole('button', { name: '优化提示词' }));
     const preview = await screen.findByRole('textbox', { name: '优化文字 1' });
-    // disabled 按钮失焦可能不产生 blur，以浏览器的 focusin 为准。
-    fireEvent.focusIn(preview);
+    await user.click(preview);
     expect(screen.queryByRole('group', { name: 'Skill 配置' })).not.toBeInTheDocument();
     expect(preview).toHaveValue('优化后的角色 ');
   });
@@ -271,7 +309,7 @@ describe('PromptSkillPanel', () => {
       </section>,
     );
     await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
-    fireEvent.pointerDown(screen.getByTestId('editor-blank'));
+    await user.click(screen.getByTestId('editor-blank'));
     expect(screen.queryByRole('group', { name: 'Skill 配置' })).not.toBeInTheDocument();
   });
 
@@ -290,11 +328,12 @@ describe('PromptSkillPanel', () => {
         target: { value: '关闭后保留的编辑' },
       });
       const saved = sessionStorage.getItem(sessionStorage.key(0)!);
-      if (dismiss === 'Escape') await user.keyboard('{Escape}');
+      if (dismiss === 'Escape')
+        fireEvent.keyDown(document.activeElement!, { key: 'Escape', keyCode: 27, which: 27 });
       else await user.click(dismiss === 'outside' ? document.body : trigger);
       expect(trigger).toHaveAttribute('aria-expanded', 'false');
       expect(screen.queryByRole('group', { name: 'Skill 配置' })).not.toBeInTheDocument();
-      expect(screen.getByRole('group', { name: '优化预览' })).toBeVisible();
+      await waitFor(() => expect(screen.getByRole('group', { name: '优化预览' })).toBeVisible());
       expect(screen.getByRole('textbox', { name: '优化文字 1' })).toHaveValue('关闭后保留的编辑');
       expect(screen.getByRole('button', { name: '丢弃' })).toBeEnabled();
       expect(sessionStorage.getItem(sessionStorage.key(0)!)).toBe(saved);
@@ -320,9 +359,10 @@ describe('PromptSkillPanel', () => {
     fireEvent.click(trigger);
     await act(async () => fireEvent.click(screen.getByRole('button', { name: '优化提示词' })));
     const saved = sessionStorage.getItem(sessionStorage.key(0)!);
-    fireEvent.keyDown(trigger, { key: 'Escape' });
+    fireEvent.keyDown(trigger, { key: 'Escape', keyCode: 27, which: 27 });
     expect(trigger).toHaveAttribute('aria-expanded', 'false');
     expect(screen.getByRole('status')).toHaveTextContent('等待优化');
+    await act(async () => vi.advanceTimersByTimeAsync(100));
     expect(screen.getByRole('button', { name: '停止查询' })).toBeVisible();
     expect(sessionStorage.getItem(sessionStorage.key(0)!)).toBe(saved);
     expect(fetcher).toHaveBeenCalledOnce();
@@ -344,7 +384,7 @@ describe('PromptSkillPanel', () => {
     await user.click(screen.getByRole('button', { name: '优化提示词' }));
     await screen.findByRole('alert');
     const saved = sessionStorage.getItem(sessionStorage.key(0)!);
-    await user.keyboard('{Escape}');
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape', keyCode: 27, which: 27 });
     expect(trigger).toHaveAttribute('aria-expanded', 'false');
     expect(screen.getByRole('alert')).toHaveTextContent('connection lost');
     expect(screen.getByRole('status')).toHaveTextContent('提交结果尚未确认');
@@ -366,7 +406,9 @@ describe('PromptSkillPanel', () => {
     const restored = render(<PromptSkillPanel {...inputs} skills={[]} skillsLoading />);
     await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
     expect(screen.getByRole('combobox', { name: '提示词 Skill' })).toBeDisabled();
-    expect(screen.getByRole('combobox', { name: '提示词 Skill' })).toHaveTextContent('目录加载中');
+    expect(
+      screen.getByRole('combobox', { name: '提示词 Skill' }).closest('.ant-select'),
+    ).toHaveTextContent('目录加载中');
     expect(screen.getByRole('button', { name: '应用' })).toBeDisabled();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(screen.getByRole('status')).toHaveTextContent('目录加载中');
@@ -471,14 +513,16 @@ describe('PromptSkillPanel', () => {
       await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
       expect(screen.getByRole('button', { name: '优化提示词' })).toBeDisabled();
       await user.click(screen.getByRole('combobox', { name: '提示词 Skill' }));
-      const list = screen.getByRole('listbox', { name: 'Skill选项' });
+      const list = screen.getByRole('listbox', {});
       expect(within(list).getAllByRole('option')).toHaveLength(PROMPT_SKILLS.length + 1);
       for (const category of new Set(PROMPT_SKILLS.map((skill) => skill.category)))
-        expect(within(list).getByText(category)).toBeVisible();
+        await waitFor(() => expect(within(list).getByText(category)).toBeVisible());
       const skill = PROMPT_SKILLS[0]!;
       expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
-      await user.hover(within(list).getByRole('option', { name: skill.name }));
-      expect(screen.getByRole('tooltip')).toHaveTextContent(skill.description);
+      await user.hover(
+        within(within(list).getByRole('option', { name: skill.name })).getByText(skill.name),
+      );
+      expect(await screen.findByRole('tooltip')).toHaveTextContent(skill.description);
       await user.click(within(list).getByRole('option', { name: skill.name }));
       expect(inputs.onSkillChange).toHaveBeenCalledWith(skill.id);
       expect(fetcher).not.toHaveBeenCalled();
@@ -502,7 +546,7 @@ describe('PromptSkillPanel', () => {
     expect(inputs.onOpenWorkbench).toHaveBeenCalledOnce();
     await user.click(screen.getByRole('combobox', { name: '提示词 Skill' }));
     expect(screen.getAllByRole('option')).toHaveLength(2);
-    expect(screen.getByText('小说创作')).toBeVisible();
+    await waitFor(() => expect(screen.getByText('小说创作')).toBeVisible());
     view.rerender(<PromptSkillPanel {...inputs} skills={[]} />);
     expect(screen.getByRole('alert')).toHaveTextContent('所选 Skill 已不可用');
     expect(screen.getByRole('button', { name: '优化提示词' })).toBeDisabled();
@@ -517,7 +561,7 @@ describe('PromptSkillPanel', () => {
     await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
     await user.click(screen.getByRole('button', { name: '优化提示词' }));
     const editor = await screen.findByRole('textbox', { name: '优化文字 1' });
-    expect(screen.getByText('模拟结果')).toBeVisible();
+    await waitFor(() => expect(screen.getByText('模拟结果')).toBeVisible());
     expect(inputs.onApply).not.toHaveBeenCalled();
     expect(source.blocks[0]).toEqual({ type: 'text', text: '保持角色 ' });
     fireEvent.change(editor, { target: { value: '手工调整角色 ' } });
@@ -730,13 +774,16 @@ describe('PromptSkillPanel', () => {
     const inputs = props({ skills, onOpenWorkbench: vi.fn() });
     const view = render(<PromptSkillPanel {...inputs} />);
     await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
-    expect(screen.getByRole('combobox', { name: '提示词 Skill' })).toHaveTextContent(
-      'Skill 不可用',
-    );
+    expect(
+      screen.getByRole('combobox', { name: '提示词 Skill' }).closest('.ant-select'),
+    ).toHaveTextContent('Skill 不可用');
     expect(screen.getByRole('button', { name: '优化提示词' })).toBeDisabled();
     await user.click(screen.getByRole('combobox', { name: '提示词 Skill' }));
-    expect(screen.getByRole('option', { name: '生成人物' })).toBeDisabled();
-    await user.keyboard('{Escape}');
+    expect(screen.getByRole('option', { name: '生成人物' })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape', keyCode: 27, which: 27 });
     view.rerender(<PromptSkillPanel {...inputs} disabled />);
     await user.click(screen.getByRole('button', { name: '技能工作台' }));
     expect(inputs.onOpenWorkbench).toHaveBeenCalledOnce();

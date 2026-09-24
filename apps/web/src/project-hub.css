@@ -1,16 +1,8 @@
-.project-hub-backdrop {
-  align-items: flex-start;
-  background: rgb(15 23 22 / 42%);
-  display: flex;
-  inset: 0;
-  justify-content: center;
-  overflow: auto;
-  padding: clamp(24px, 8vh, 72px) 20px 40px;
-  position: fixed;
-  z-index: 40;
+.project-hub-modal.ant-modal {
+  max-width: calc(100vw - 40px);
 }
 
-.project-hub {
+.project-hub.ant-modal-container {
   background: var(--mc-surface, #fff);
   border: 1px solid var(--mc-border, #e2e7eb);
   border-radius: 12px;
@@ -22,17 +14,25 @@
   max-width: 860px;
   min-width: 0;
   overflow: hidden;
-  width: min(100%, 860px);
+  padding: 0;
+  width: 100%;
 }
 
-.project-hub-header {
+.project-hub-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.project-hub-header.ant-modal-header {
   align-items: flex-start;
   border-bottom: 1px solid var(--mc-border, #e2e7eb);
   display: flex;
   gap: 16px;
   justify-content: space-between;
   min-width: 0;
-  padding: 24px 28px 20px;
+  margin: 0;
+  padding: 24px 52px 20px 28px;
 }
 
 .project-hub-heading {
@@ -175,16 +175,8 @@
   white-space: nowrap;
 }
 
-.project-hub-sort select {
-  appearance: none;
-  background: transparent;
-  border: 0;
-  color: var(--mc-text, #18212f);
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  outline: 0;
-  padding: 0;
+.project-hub-sort .ant-select {
+  min-width: 104px;
 }
 
 .project-hub-sort:focus-within {

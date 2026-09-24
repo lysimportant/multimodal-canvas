@@ -1,0 +1,47 @@
+/* Ant Design 提供控件与弹层行为；这里只衔接现有业务布局。 */
+.ui-button-icon {
+  padding-inline: 0;
+  width: 32px;
+}
+/* 窄图标按钮不能继承文字按钮的左右内边距，否则 SVG 会被挤成零宽。 */
+.ui-button.ant-btn:has(> svg:only-child) {
+  padding-inline: 0;
+}
+.ui-button.ant-btn > svg {
+  flex-shrink: 0;
+}
+.ui-input,
+.ui-textarea {
+  min-width: 0;
+}
+.ui-dialog {
+  width: min(520px, calc(100vw - 32px));
+  background: var(--mc-surface, #fff);
+  border-radius: 8px;
+  color: var(--mc-text, #18212f);
+  padding: 20px;
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+}
+/* Modal 的自定义渲染包裹层不参与布局，保留业务窗口直接子项的 flex/grid 关系。 */
+.ui-dialog > .ant-modal-render,
+.ui-dialog-content {
+  display: contents;
+}
+.ui-dialog-contained {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  margin: 0;
+  height: 100dvh;
+  max-height: 100dvh;
+  border-radius: 0;
+}
+.ui-dialog .ant-modal-header {
+  display: none;
+}
+/* 旧表单样式不能覆盖库组件的禁用及焦点语义。 */
+.ui-button.ant-btn:disabled {
+  cursor: not-allowed;
+}

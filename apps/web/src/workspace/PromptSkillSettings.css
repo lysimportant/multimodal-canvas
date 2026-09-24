@@ -1,0 +1,12 @@
+.prompt-skill-antd-popover {
+  max-width: calc(100vw - 16px);
+  width: 340px;
+}
+
+.prompt-skill-antd-popover [role='group'] {
+  display: grid;
+  gap: 10px;
+  max-height: min(600px, calc(100vh - 80px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}

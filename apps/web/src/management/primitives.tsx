@@ -1,14 +1,9 @@
 /** 管理工作台通用控件，统一加载、表单、对话框与分页行为。 */
-import {
-  AlertCircle,
-  CheckCircle2,
-  ChevronLeft,
-  ChevronRight,
-  LoaderCircle,
-  RefreshCw,
-  X,
-} from 'lucide-react';
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { Button } from '@multimodal-canvas/ui';
+import { Alert, Empty, Modal as AntModal, Pagination as AntPagination, Spin, Tag } from 'antd';
+import zhCN from 'antd/locale/zh_CN';
+import { RefreshCw } from 'lucide-react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { errorMessage } from './client';
 import { apiFetch } from '../auth-client';
 import { API_BASE_URL } from '../workspace/contracts';
@@ -20,17 +15,13 @@ export type NoticeValue = { kind: 'success' | 'error' | 'info'; text: string } |
 export function Notice({ value }: { value: NoticeValue }) {
   if (!value) return null;
   return (
-    <div
-      className={`mg-notice is-${value.kind}`}
+    <Alert
+      className="mg-notice"
       role={value.kind === 'error' ? 'alert' : 'status'}
-    >
-      {value.kind === 'success' ? (
-        <CheckCircle2 size={17} aria-hidden="true" />
-      ) : (
-        <AlertCircle size={17} aria-hidden="true" />
-      )}
-      <span>{value.text}</span>
-    </div>
+      type={value.kind}
+      showIcon
+      title={value.text}
+    />
   );
 }
 
@@ -82,102 +73,78 @@ export function QueryState({
   if (loading)
     return (
       <div className="mg-state" role="status">
-        <LoaderCircle className="mg-spin" size={24} />
+        <Spin size="large" />
         <span>正在加载</span>
       </div>
     );
   if (error)
     return (
-      <div className="mg-state" role="alert">
-        <AlertCircle size={26} />
-        <strong>暂时无法读取</strong>
-        <p>{errorMessage(error)}</p>
-        {onRetry && (
-          <button type="button" className="mg-button" onClick={onRetry}>
-            <RefreshCw size={16} />
-            重新加载
-          </button>
-        )}
+      <div className="mg-state">
+        <Alert
+          type="error"
+          role="alert"
+          showIcon
+          title="暂时无法读取"
+          description={errorMessage(error)}
+          action={
+            onRetry && (
+              <Button type="button" className="mg-button" onClick={onRetry}>
+                <RefreshCw size={16} />
+                重新加载
+              </Button>
+            )
+          }
+        />
       </div>
     );
   if (empty)
     return (
       <div className="mg-state">
-        <span className="mg-state-mark" aria-hidden="true">
-          —
-        </span>
-        <p>{empty}</p>
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={empty} />
       </div>
     );
   return <>{children}</>;
 }
 
-/** 编辑层使用原生 dialog 管理焦点，并在退出动画后恢复触发位置。 */
+/** 业务弹层仅适配标题和写操作锁定；焦点、遮罩、退出动画由 Ant Design 管理。 */
 export function Modal({
   title,
   onClose,
   children,
   busy = false,
+  width = 640,
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
   busy?: boolean;
+  width?: number;
 }) {
-  const dialogRef = useRef<HTMLDialogElement>(null);
-  const titleId = useId();
-  const [closing, setClosing] = useState(false);
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    dialog?.showModal();
-    return () => {
-      dialog?.close();
-      previous?.focus();
-    };
-  }, []);
-  useEffect(() => {
-    if (!closing) return;
-    const timer = window.setTimeout(
-      onClose,
-      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 0 : 160,
-    );
-    return () => window.clearTimeout(timer);
-  }, [closing, onClose]);
+  const [open, setOpen] = useState(true);
   return (
-    <dialog
-      ref={dialogRef}
-      className={`mg-modal${closing ? ' is-closing' : ''}`}
-      aria-labelledby={titleId}
-      onCancel={(event) => {
-        event.preventDefault();
-        if (!busy) setClosing(true);
+    <AntModal
+      open={open}
+      title={title}
+      className="mg-modal"
+      classNames={{ body: 'mg-modal-body', title: 'mg-modal-title' }}
+      width={width}
+      centered
+      footer={null}
+      destroyOnHidden
+      closable={{ disabled: busy, 'aria-label': '关闭弹窗' }}
+      keyboard={!busy}
+      mask={{ closable: !busy }}
+      onCancel={() => {
+        if (!busy) setOpen(false);
       }}
-      onClick={(event) => {
-        if (event.target === event.currentTarget && !busy) setClosing(true);
-      }}
+      afterClose={onClose}
     >
-      <div className="mg-modal-inner">
-        <header>
-          <h2 id={titleId}>{title}</h2>
-          <button
-            type="button"
-            className="mg-icon"
-            title="关闭"
-            aria-label="关闭"
-            disabled={busy}
-            onClick={() => setClosing(true)}
-          >
-            <X size={19} />
-          </button>
-        </header>
-        {children}
-      </div>
-    </dialog>
+      {children}
+    </AntModal>
   );
 }
 
-/** 稳定页码，保留上一页按钮的尺寸和总数语义。 */
+/** 固定业务页大小，保留总数和请求期间禁用翻页的语义。 */
 export function Pagination({
   page,
   pageSize,
@@ -191,35 +158,18 @@ export function Pagination({
   onChange: (page: number) => void;
   busy?: boolean;
 }) {
-  const pages = Math.max(1, Math.ceil(total / pageSize));
   return (
     <nav className="mg-pagination" aria-label="结果分页">
-      <span>共 {total} 项</span>
-      <div>
-        <button
-          type="button"
-          className="mg-icon"
-          aria-label="上一页"
-          title="上一页"
-          disabled={busy || page <= 1}
-          onClick={() => onChange(page - 1)}
-        >
-          <ChevronLeft size={17} />
-        </button>
-        <span>
-          {page} / {pages}
-        </span>
-        <button
-          type="button"
-          className="mg-icon"
-          aria-label="下一页"
-          title="下一页"
-          disabled={busy || page >= pages}
-          onClick={() => onChange(page + 1)}
-        >
-          <ChevronRight size={17} />
-        </button>
-      </div>
+      <AntPagination
+        current={page}
+        pageSize={pageSize}
+        total={total}
+        disabled={busy}
+        showSizeChanger={false}
+        showTotal={(count) => '共 ' + count + ' 项'}
+        onChange={onChange}
+        locale={zhCN.Pagination}
+      />
     </nav>
   );
 }
@@ -320,8 +270,8 @@ export function StatusBadge({ value, label }: { value: string; label?: string })
     processing: '处理中',
   };
   return (
-    <span className={`mg-badge is-${value.toLowerCase()}`}>
+    <Tag className={`mg-badge is-${value.toLowerCase()}`}>
       {label ?? labels[value.toLowerCase()] ?? value}
-    </span>
+    </Tag>
   );
 }

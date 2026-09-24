@@ -1,5 +1,7 @@
 /** 后台与个人工作台的路由外壳，以当前身份隔离所有页面查询。 */
+import { Button } from '@multimodal-canvas/ui';
 import { useQuery } from '@tanstack/react-query';
+import { Result } from 'antd';
 import {
   Activity,
   ArrowLeft,
@@ -67,10 +69,10 @@ export function ManagementPage(props: ManagementPageProps) {
         <div className="mg-access-state">
           <ShieldCheck size={32} />
           <h1>{isAdminPath ? '管理员登录' : '登录你的账户'}</h1>
-          <button type="button" className="mg-button is-primary" onClick={props.onRequestLogin}>
+          <Button type="button" className="mg-button is-primary" onClick={props.onRequestLogin}>
             <UserRound size={17} />
             登录
-          </button>
+          </Button>
           <AppLink to="/" className="mg-back">
             <ArrowLeft size={16} />
             返回主页
@@ -208,7 +210,7 @@ function ManagementShell({
               <ShieldCheck size={21} />
             </span>
             <span>{isAdmin ? '管理工作台' : '个人工作台'}</span>
-            <button
+            <Button
               className="mg-icon mg-mobile-close"
               type="button"
               title="关闭导航"
@@ -216,7 +218,7 @@ function ManagementShell({
               onClick={() => setMobileOpen(false)}
             >
               <X size={17} />
-            </button>
+            </Button>
           </div>
           <nav>
             {navigation.map(({ path, label, icon: Icon }) => {
@@ -275,7 +277,7 @@ function ManagementShell({
         <div className="mg-sidebar-shade" onClick={() => setMobileOpen(false)} aria-hidden="true" />
         <div className="mg-workspace" inert={(narrow && mobileOpen) || undefined}>
           <header className="mg-topbar">
-            <button
+            <Button
               type="button"
               className="mg-icon mg-desktop-toggle"
               title={collapsed ? '展开侧栏' : '收起侧栏'}
@@ -284,8 +286,8 @@ function ManagementShell({
               onClick={() => setCollapsed(!collapsed)}
             >
               <PanelLeftClose size={19} />
-            </button>
-            <button
+            </Button>
+            <Button
               ref={mobileTriggerRef}
               type="button"
               className="mg-icon mg-mobile-toggle"
@@ -295,7 +297,7 @@ function ManagementShell({
               onClick={() => setMobileOpen(!mobileOpen)}
             >
               <Menu size={19} />
-            </button>
+            </Button>
             <span>{isAdmin ? '后台管理' : '个人中心'}</span>
             <div className="mg-topbar-end">
               {account ? (
@@ -343,12 +345,15 @@ function ManagementContent({ path, user }: SessionPropsForContent) {
       />
     );
   return (
-    <div className="mg-state">
-      <h1>页面不存在</h1>
-      <AppLink to={user.role === 'admin' ? '/admin' : '/workspace'} className="mg-button">
-        返回工作台
-      </AppLink>
-    </div>
+    <Result
+      status="404"
+      title={<h1>页面不存在</h1>}
+      extra={
+        <AppLink to={user.role === 'admin' ? '/admin' : '/workspace'} className="mg-button">
+          返回工作台
+        </AppLink>
+      }
+    />
   );
 }
 

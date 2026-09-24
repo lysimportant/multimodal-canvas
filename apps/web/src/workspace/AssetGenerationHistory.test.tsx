@@ -51,6 +51,12 @@ function prompt(version: number): AssetRequestPrompt {
   return { record, records: [record], recordId: record.id };
 }
 
+/** 通过真实 Select 选项切换版本，覆盖非虚拟列表的可访问交互。 */
+async function selectVersion(version: number) {
+  await userEvent.click(screen.getByRole('combobox', { name: '结果版本' }));
+  await userEvent.click(await screen.findByRole('option', { name: `v${version}` }));
+}
+
 beforeEach(() => {
   vi.mocked(fetchAssetVersions).mockResolvedValue(
     [1, 2].map((version) => ({
@@ -82,14 +88,14 @@ describe('资源版本生成记录', () => {
     render(<AssetGenerationHistory asset={asset} onClose={vi.fn()} />);
     const select = await screen.findByRole('combobox', { name: '结果版本' });
     await waitFor(() => expect(fetchAssetRequestPrompt).toHaveBeenCalled());
-    expect(select).toHaveValue('2');
+    expect(select.closest('.ant-select')).toHaveTextContent('v2');
     const latestSignal = vi.mocked(fetchAssetRequestPrompt).mock.calls[0]![4];
-    await userEvent.selectOptions(select, '1');
+    await selectVersion(1);
     expect(await screen.findByText('第 1 版真实提示词')).toBeInTheDocument();
     expect(latestSignal?.aborted).toBe(true);
     await act(async () => resolveLatest(prompt(2)));
     expect(screen.queryByText('第 2 版真实提示词')).not.toBeInTheDocument();
-    expect(select).toHaveValue('1');
+    expect(select.closest('.ant-select')).toHaveTextContent('v1');
   });
 
   it('摘要保存中切到手动版本，迟到保存不恢复上一版记录', async () => {
@@ -105,7 +111,7 @@ describe('资源版本生成记录', () => {
     );
     render(<AssetGenerationHistory asset={asset} onClose={vi.fn()} />);
     expect(await screen.findByText('未记录生成提示词。')).toBeInTheDocument();
-    await userEvent.selectOptions(screen.getByRole('combobox', { name: '结果版本' }), '1');
+    await selectVersion(1);
     await userEvent.click(await screen.findByRole('button', { name: '添加摘要' }));
     await userEvent.type(screen.getByRole('textbox', { name: '摘要正文' }), '第一版摘要');
     await userEvent.click(screen.getByRole('button', { name: '保存摘要' }));
@@ -118,7 +124,7 @@ describe('资源版本生成记录', () => {
         expect.any(String),
       ),
     );
-    await userEvent.selectOptions(screen.getByRole('combobox', { name: '结果版本' }), '2');
+    await selectVersion(2);
     expect(await screen.findByText('未记录生成提示词。')).toBeInTheDocument();
     await act(async () =>
       finishSave({ ...prompt(1).record!, summary: '第一版摘要', summarySource: 'manual' }),

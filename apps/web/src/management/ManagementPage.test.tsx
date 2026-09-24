@@ -48,14 +48,6 @@ function renderManagement(routePath: string, authUser: AuthUser | null, onReques
 beforeEach(() => {
   window.history.replaceState(null, '', '/');
   vi.mocked(managementRequest).mockReset();
-  vi.stubGlobal(
-    'matchMedia',
-    vi.fn(() => ({
-      matches: false,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    })),
-  );
 });
 
 afterEach(() => {
