@@ -164,6 +164,7 @@ export function normalizeNewApiBaseUrl(value: string): string {
 /** Provider 返回的持久化增量，普通关联 ID 不占用异步平台任务身份。 */
 export type ProviderJobUpdate = Partial<ProviderJob> & Pick<ProviderJob, 'provider'>;
 
+/** New API 执行输入，包含已有任务恢复与本地持久化回调。 */
 export type NewApiProviderRequest = MockProviderRequest & {
   /**
    * 调用方的协作取消信号。信号只终止本地请求、轮询和下载，不会猜测
@@ -173,6 +174,8 @@ export type NewApiProviderRequest = MockProviderRequest & {
   signal?: AbortSignal;
   /** 已冻结合同及异步平台身份，用于恢复查询，避免再次发送收费 POST。 */
   providerJob?: ProviderJobUpdate;
+  /** 视频只读恢复：仅按已存在且冻结合同明确的 platformJobId 查询/取内容，绝不创建 POST。 */
+  resumeOnly?: boolean;
   /** 新视频 POST 前必须持久化合同，创建后持久化平台 ID；失败时停止执行，不自动重试。 */
   onProviderJob?: (providerJob: ProviderJobUpdate) => Promise<void> | void;
 };
@@ -929,11 +932,15 @@ export class NewApiVideoProvider {
     );
   }
 
-  /** 执行或恢复视频任务；新建要求先落盘合同，返回媒体、usage 与脱敏任务摘要。 */
+  /**
+   * 执行或恢复视频任务；新建要求先落盘合同，返回媒体、usage 与脱敏任务摘要。
+   * @throws 只读恢复缺少有效平台身份或显式冻结合同时，在请求和回调前抛出不可重试的脱敏错误。
+   */
   async execute({
     snapshot,
     reportProgress,
     providerJob: existingProviderJob,
+    resumeOnly,
     onProviderJob,
     resolvedMentions,
     signal,
@@ -941,6 +948,30 @@ export class NewApiVideoProvider {
     attempt,
     onRequestPrompt,
   }: NewApiProviderRequest): Promise<ProviderExecution<VideoProviderOutput>> {
+    if (resumeOnly) {
+      if (existingProviderJob && existingProviderJob.provider !== 'newapi') {
+        throw new NewApiProviderError('已有平台任务与 New API Provider 不匹配', {
+          code: 'VIDEO_PROVIDER_MISMATCH',
+          retryable: false,
+        });
+      }
+      if (!existingProviderJob || !normalizeErrorField(existingProviderJob.platformJobId)) {
+        throw new NewApiProviderError('视频只读恢复必须提供已有平台任务 ID', {
+          code: 'VIDEO_RESUME_JOB_REQUIRED',
+          retryable: false,
+        });
+      }
+      const frozenContract = existingProviderJob.payload?.contract;
+      if (typeof frozenContract !== 'string' || !isNewApiVideoContract(frozenContract)) {
+        throw new NewApiProviderError('视频只读恢复必须提供有效的显式冻结合同', {
+          code: 'VIDEO_CONTRACT_UNSUPPORTED',
+          platformJobId: sanitizeProviderDiagnosticField(existingProviderJob.platformJobId, [
+            this.apiKey,
+          ]),
+          retryable: false,
+        });
+      }
+    }
     throwIfProviderSignalAborted(
       signal,
       existingProviderJob?.provider === 'newapi' ? existingProviderJob.platformJobId : undefined,
@@ -1265,7 +1296,11 @@ export class NewApiVideoProvider {
             retryable: false,
           });
         }
-        if (openaiVideo && polledId && polledId !== platformJobId) {
+        if (
+          (openaiVideo || (resumeOnly && contract === 'legacy-v1')) &&
+          polledId &&
+          polledId !== platformJobId
+        ) {
           throw new NewApiProviderError('New API 视频查询返回了不同的平台任务身份', {
             code: 'VIDEO_TASK_ID_MISMATCH',
             retryable: false,

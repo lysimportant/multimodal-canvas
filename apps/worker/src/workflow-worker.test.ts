@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { Prisma } from '@prisma/client';
+import { NewApiVideoProvider } from '@multimodal-canvas/providers';
 import { WorkerPrismaRunPersistence } from './prisma-persistence';
 import {
   nodeTimingDuration,
@@ -21,6 +22,7 @@ import {
 import { createHash } from 'node:crypto';
 import { CredentialEncryptionKeyring } from '@multimodal-canvas/credential-crypto';
 import { createRedisResultStagingStore, type ResultStagingRedisClient } from './result-staging';
+import { ResultUrlUnavailableError } from './result-archiver';
 
 type StubJob = {
   id: string;
@@ -975,6 +977,496 @@ describe('worker workflow DAG execution', () => {
       result: { simulated: true },
     });
   });
+
+  it.each([401, 403, 404, 410])(
+    '视频原链接 %s 时只读刷新原平台任务，不重新生成',
+    async (status) => {
+      bullmqState.jobs.clear();
+      const runId = '123e4567-e89b-42d3-a456-426614174213';
+      const staging = createStagingFixture();
+      const videoSnapshot = withTestExecutionBindings({
+        ...structuredClone(snapshot),
+        nodes: snapshot.nodes.filter((node) => node.id === 'node_video'),
+        edges: [],
+        inputs: [],
+      });
+      const platformJobId = 'synthetic-existing-video';
+      let creations = 0;
+      const execute = vi.fn(async (request: WorkerProviderRequest) => {
+        if (!request.resumeOnly) creations++;
+        else {
+          expect(request.providerJob?.platformJobId).toBe(platformJobId);
+          expect(request.providerJob?.payload?.contract).toBe('newapi-video-v1');
+          expect(request.onRequestPrompt).toBeUndefined();
+        }
+        return {
+          ...createExecution(request.snapshot),
+          output: {
+            mediaType: 'video' as const,
+            kind: 'url' as const,
+            url: request.resumeOnly
+              ? 'https://cdn.example/fresh.mp4?secret=fresh'
+              : 'https://cdn.example/expired.mp4?secret=expired',
+            mimeType: 'video/mp4',
+          },
+          providerJob: {
+            provider: 'newapi' as const,
+            platformJobId,
+            payload: { contract: 'newapi-video-v1' },
+          },
+          usage: { amount: request.resumeOnly ? '999' : '1.25', currency: 'USD' },
+        };
+      });
+      const archiveKeys: Array<string | undefined> = [];
+      let archives = 0;
+      const resultArchiver = vi.fn(async (input) => {
+        archiveKeys.push(input.archiveKey);
+        archives++;
+        if (archives === 1) throw new Error('synthetic object store unavailable');
+        if (archives === 2) throw new ResultUrlUnavailableError(status);
+        expect(input.output.url).toContain('/fresh.mp4');
+        return { assetId: 'synthetic-video-result', version: 1, mimeType: 'video/mp4' };
+      });
+      const beginSend = vi.fn(async () => {});
+      const options: Parameters<typeof createRunWorker>[0] = {
+        connection: { host: '127.0.0.1', port: 6379 },
+        providerName: 'newapi',
+        stepDelayMs: 0,
+        videoProvider: { execute },
+        resultArchiver,
+        resultStagingStore: staging.createStore(),
+        execution: {
+          async authorizeRun() {},
+          async authorizeNode() {},
+          beginSend,
+          async finishSend() {},
+        },
+      };
+      const job = createJob({
+        runId,
+        snapshot: videoSnapshot,
+        attempt: 1,
+        provider: 'newapi',
+        providerJob: createProviderJobRecord(runId, 'newapi'),
+        cancelRequested: false,
+      });
+      createRunWorker(options);
+      await expect(bullmqState.processor?.(job)).rejects.toThrow(
+        'synthetic object store unavailable',
+      );
+      expect(execute).toHaveBeenCalledOnce();
+      createRunWorker({
+        ...options,
+        assetReferenceResolver: {
+          resolve: vi.fn(async () => {
+            throw new Error('must not hydrate input');
+          }),
+        },
+      });
+      await expect(bullmqState.processor?.(job)).resolves.toMatchObject({
+        status: 'succeeded',
+        result: { asset: { assetId: 'synthetic-video-result' } },
+      });
+      expect(creations).toBe(1);
+      expect(execute).toHaveBeenCalledTimes(2);
+      expect(beginSend).toHaveBeenCalledOnce();
+      expect(new Set(archiveKeys).size).toBe(1);
+      expect((job.data.providerJob as ProviderJob).payload?.reportedUsage).toMatchObject({
+        amount: '1.25',
+        runId,
+      });
+      expect(JSON.stringify(job.data)).not.toContain('secret=');
+      expect(staging.values.size).toBe(0);
+    },
+  );
+
+  it.each([
+    'missing-id',
+    'unknown-contract',
+    'storage-error',
+    'unsafe-url',
+    'wrong-id',
+    'wrong-node',
+    'wrong-contract',
+    'refresh-fails',
+    'still-expired',
+    'cancelled',
+    'cancelled-during-refresh',
+  ] as const)('视频只读刷新 %s 时明确失败，不扩大为重新生成', async (failure) => {
+    bullmqState.jobs.clear();
+    const runId = '123e4567-e89b-42d3-a456-426614174214';
+    const staging = createStagingFixture();
+    const videoSnapshot = withTestExecutionBindings({
+      ...structuredClone(snapshot),
+      nodes: snapshot.nodes.filter((node) => node.id === 'node_video'),
+      edges: [],
+      inputs: [],
+    });
+    const platformJobId = 'synthetic-existing-video';
+    let creations = 0;
+    let job: StubJob;
+    const execute = vi.fn(async (request: WorkerProviderRequest) => {
+      if (!request.resumeOnly) creations++;
+      if (request.resumeOnly && failure === 'cancelled-during-refresh')
+        job.data.cancelRequested = true;
+      if (request.resumeOnly && failure === 'refresh-fails')
+        throw new Error('synthetic poll unavailable');
+      return {
+        ...createExecution(request.snapshot),
+        result: {
+          ...createExecution(request.snapshot).result,
+          ...(request.resumeOnly && failure === 'wrong-node' ? { targetNodeId: 'other-node' } : {}),
+        },
+        output: {
+          mediaType: 'video' as const,
+          kind: 'url' as const,
+          url: 'https://cdn.example/video.mp4',
+          mimeType: 'video/mp4',
+        },
+        providerJob: {
+          provider: 'newapi' as const,
+          ...(failure === 'missing-id'
+            ? {}
+            : {
+                platformJobId:
+                  request.resumeOnly && failure === 'wrong-id' ? 'other-video' : platformJobId,
+              }),
+          payload: {
+            contract:
+              failure === 'unknown-contract' || (request.resumeOnly && failure === 'wrong-contract')
+                ? 'unconfirmed-contract'
+                : 'newapi-video-v1',
+          },
+        },
+      };
+    });
+    let archives = 0;
+    const resultArchiver = vi.fn(async () => {
+      archives++;
+      if (failure === 'storage-error') throw new Error('synthetic storage failure');
+      if (failure === 'unsafe-url') throw new Error('provider URL host must be public');
+      if (failure === 'cancelled') job.data.cancelRequested = true;
+      throw new ResultUrlUnavailableError(403);
+    });
+    const options: Parameters<typeof createRunWorker>[0] = {
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      stepDelayMs: 0,
+      videoProvider: { execute },
+      resultArchiver,
+      resultStagingStore: staging.createStore(),
+    };
+    job = createJob({
+      runId,
+      snapshot: videoSnapshot,
+      attempt: 1,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(runId, 'newapi'),
+      cancelRequested: false,
+    });
+    // 未确认合同必须来自冻结快照，不能被已知节点配置悄悄覆盖后刷新。
+    if (failure === 'unknown-contract') {
+      const frozen = job.data.snapshot as RunSnapshot;
+      frozen.executionBindings![frozen.targetNodeId]!.contract = 'unconfirmed-contract';
+    }
+    createRunWorker(options);
+    if (failure === 'cancelled' || failure === 'cancelled-during-refresh')
+      await expect(bullmqState.processor?.(job)).resolves.toMatchObject({ status: 'cancelled' });
+    else await expect(bullmqState.processor?.(job)).rejects.toThrow();
+    expect(creations).toBe(1);
+    const refresh = [
+      'wrong-id',
+      'wrong-node',
+      'wrong-contract',
+      'refresh-fails',
+      'still-expired',
+      'cancelled-during-refresh',
+    ].includes(failure);
+    expect(execute).toHaveBeenCalledTimes(refresh ? 2 : 1);
+    expect(archives).toBe(failure === 'still-expired' ? 2 : 1);
+    expect(staging.values.size).toBe(1);
+  });
+
+  it.each(['legacy-v1', 'newapi-video-v1', 'newapi-unified-v1'] as const)(
+    '视频只读刷新 %s 拒绝平台错任务响应，不归档他人结果',
+    async (contract) => {
+      bullmqState.jobs.clear();
+      const runId = '123e4567-e89b-42d3-a456-426614174215';
+      const staging = createStagingFixture();
+      const videoSnapshot = withTestExecutionBindings({
+        ...structuredClone(snapshot),
+        nodes: snapshot.nodes.filter((node) => node.id === 'node_video'),
+        edges: [],
+        inputs: [],
+      });
+      videoSnapshot.executionBindings![videoSnapshot.targetNodeId]!.contract = contract;
+      const platformJobId = 'synthetic-frozen-video';
+      const fetchImpl = vi.fn<typeof fetch>(
+        async () =>
+          new Response(
+            JSON.stringify({
+              id: 'synthetic-other-video',
+              task_id: 'synthetic-other-video',
+              status: 'completed',
+              url: 'https://cdn.example/other-video.mp4',
+              video: { url: 'https://cdn.example/other-video.mp4' },
+            }),
+            { headers: { 'content-type': 'application/json' } },
+          ),
+      );
+      const recoveryProvider = new NewApiVideoProvider({
+        baseUrl: 'https://synthetic.invalid/v1',
+        apiKey: 'synthetic-not-a-real-key',
+        videoContract: contract,
+        fetchImpl,
+        pollIntervalMs: 0,
+        maxPollAttempts: 1,
+      });
+      let creations = 0;
+      const execute = vi.fn(async (request: WorkerProviderRequest) => {
+        if (request.resumeOnly) return recoveryProvider.execute(request);
+        creations++;
+        return {
+          ...createExecution(request.snapshot),
+          output: {
+            mediaType: 'video' as const,
+            kind: 'url' as const,
+            url: 'https://cdn.example/expired.mp4',
+            mimeType: 'video/mp4',
+          },
+          providerJob: { provider: 'newapi' as const, platformJobId, payload: { contract } },
+        };
+      });
+      const resultArchiver = vi.fn(async () => {
+        throw new ResultUrlUnavailableError(403);
+      });
+      const job = createJob({
+        runId,
+        snapshot: videoSnapshot,
+        attempt: 1,
+        provider: 'newapi',
+        providerJob: createProviderJobRecord(runId, 'newapi'),
+        cancelRequested: false,
+      });
+      createRunWorker({
+        connection: { host: '127.0.0.1', port: 6379 },
+        providerName: 'newapi',
+        stepDelayMs: 0,
+        videoProvider: { execute },
+        resultArchiver,
+        resultStagingStore: staging.createStore(),
+      });
+      await expect(bullmqState.processor?.(job)).rejects.toThrow(
+        '上游视频结果地址已失效或不可访问',
+      );
+      expect(creations).toBe(1);
+      expect(execute).toHaveBeenCalledTimes(2);
+      expect(fetchImpl).toHaveBeenCalledExactlyOnceWith(
+        contract === 'newapi-unified-v1'
+          ? 'https://synthetic.invalid/v1/video/generations/' + platformJobId
+          : 'https://synthetic.invalid/v1/videos/' + platformJobId,
+        expect.objectContaining({ method: 'GET' }),
+      );
+      expect(resultArchiver).toHaveBeenCalledOnce();
+      expect(staging.values.size).toBe(1);
+      expect(JSON.stringify(job.data)).not.toContain('other-video.mp4');
+    },
+  );
+
+  it.each(['reverse', 'optimization'] as const)(
+    '%s 收到输出后回执写失败，重启从密文恢复且不重新请求',
+    async (kind) => {
+      bullmqState.jobs.clear();
+      const runId = '123e4567-e89b-42d3-a456-426614174211';
+      const staging = createStagingFixture();
+      const input: PromptDocument = {
+        version: 1,
+        blocks: [{ type: 'text', text: 'private-original-prompt' }],
+      };
+      const skill = PROMPT_SKILLS[0]!;
+      const canvas = createPromptOptimizationCanvas({
+        skillId: skill.id,
+        input,
+        mediaType: 'image',
+      });
+      const base = createTextSnapshot();
+      const independentSnapshot: RunSnapshot =
+        kind === 'reverse'
+          ? {
+              ...base,
+              nodes: base.nodes.filter((node) => node.id === base.targetNodeId),
+              edges: [],
+              inputs: [],
+              reversePrompt: { assetId: 'asset_image', assetVersion: 1, automatic: false },
+              promptMentions: [
+                {
+                  nodeId: base.targetNodeId,
+                  mentionId: 'source',
+                  assetId: 'asset_image',
+                  assetVersion: 1,
+                  mediaType: 'image',
+                  label: 'synthetic source',
+                  blockOrder: 0,
+                },
+              ],
+            }
+          : {
+              ...base,
+              nodes: canvas.nodes,
+              edges: [],
+              inputs: [],
+              targetNodeId: PROMPT_OPTIMIZATION_NODE_ID,
+              promptOptimization: {
+                nodeId: 'canvas-node',
+                skillId: skill.id,
+                skillVersion: skill.version,
+                input,
+              },
+            };
+      const text =
+        kind === 'reverse'
+          ? JSON.stringify({ summary: 'private-summary', prompt: 'private-original-prompt' })
+          : createMockPromptOptimizationOutput(input);
+      const execute = vi.fn(async (request: WorkerProviderRequest) => ({
+        ...createExecution(request.snapshot),
+        output: { mediaType: 'text' as const, kind: 'text' as const, text, mimeType: 'text/plain' },
+      }));
+      let failReceipt = true;
+      const finishSend = vi.fn(async () => {
+        if (failReceipt) throw new Error('synthetic receipt unavailable');
+      });
+      const resultArchiver = vi.fn();
+      const options: Parameters<typeof createRunWorker>[0] = {
+        connection: { host: '127.0.0.1', port: 6379 },
+        providerName: 'newapi',
+        stepDelayMs: 0,
+        provider: { execute },
+        resultArchiver,
+        resultStagingStore: staging.createStore(),
+        execution: {
+          async authorizeRun() {},
+          async authorizeNode() {},
+          async beginSend() {},
+          finishSend,
+        },
+      };
+      const job = createJob({
+        runId,
+        snapshot: independentSnapshot,
+        attempt: 1,
+        provider: 'newapi',
+        providerJob: createProviderJobRecord(runId, 'newapi'),
+        cancelRequested: false,
+      });
+      createRunWorker(options);
+      await expect(bullmqState.processor?.(job)).rejects.toThrow('synthetic receipt unavailable');
+      expect(staging.values.size).toBe(1);
+      expect(JSON.stringify([...staging.values.values()])).not.toContain('private-original-prompt');
+      failReceipt = false;
+      createRunWorker({
+        ...options,
+        assetReferenceResolver: {
+          resolve: vi.fn(async () => {
+            throw new Error('must not hydrate old inputs');
+          }),
+        },
+      });
+      await expect(bullmqState.processor?.(job)).resolves.toMatchObject({
+        status: 'succeeded',
+        result:
+          kind === 'reverse'
+            ? { reversePrompt: { summary: 'private-summary', prompt: 'private-original-prompt' } }
+            : { promptOptimization: parsePromptOptimizationOutput(text, input) },
+      });
+      expect(execute).toHaveBeenCalledOnce();
+      expect(resultArchiver).not.toHaveBeenCalled();
+      expect(staging.values.size).toBe(0);
+    },
+  );
+
+  it.each(['invalid', 'cancelled', 'expired', 'corrupt'] as const)(
+    '独立结果恢复 %s 不重发或绕过解析/取消',
+    async (failure) => {
+      bullmqState.jobs.clear();
+      const runId = '123e4567-e89b-42d3-a456-426614174212';
+      const staging = createStagingFixture();
+      const base = createTextSnapshot();
+      const independentSnapshot: RunSnapshot = {
+        ...base,
+        nodes: base.nodes.filter((node) => node.id === base.targetNodeId),
+        edges: [],
+        inputs: [],
+        reversePrompt: { assetId: 'asset_image', assetVersion: 1, automatic: false },
+        promptMentions: [
+          {
+            nodeId: base.targetNodeId,
+            mentionId: 'source',
+            assetId: 'asset_image',
+            assetVersion: 1,
+            mediaType: 'image',
+            label: 'synthetic source',
+            blockOrder: 0,
+          },
+        ],
+      };
+      const execute = vi.fn(async (request: WorkerProviderRequest) => ({
+        ...createExecution(request.snapshot),
+        output: {
+          mediaType: 'text' as const,
+          kind: 'text' as const,
+          text:
+            failure === 'invalid'
+              ? 'not valid JSON'
+              : JSON.stringify({ summary: 'test', prompt: 'test prompt' }),
+          mimeType: 'text/plain',
+        },
+      }));
+      let failReceipt = failure !== 'invalid';
+      const options: Parameters<typeof createRunWorker>[0] = {
+        connection: { host: '127.0.0.1', port: 6379 },
+        providerName: 'newapi',
+        stepDelayMs: 0,
+        provider: { execute },
+        resultStagingStore: staging.createStore(),
+        execution: {
+          async authorizeRun() {},
+          async authorizeNode() {},
+          async beginSend() {},
+          async finishSend() {
+            if (failReceipt) throw new Error('synthetic receipt unavailable');
+          },
+        },
+      };
+      const job = createJob({
+        runId,
+        snapshot: independentSnapshot,
+        attempt: 1,
+        provider: 'newapi',
+        providerJob: createProviderJobRecord(runId, 'newapi'),
+        cancelRequested: false,
+      });
+      createRunWorker(options);
+      await expect(bullmqState.processor?.(job)).rejects.toThrow();
+      expect(staging.values.size).toBe(1);
+      failReceipt = false;
+      if (failure === 'cancelled') job.data.cancelRequested = true;
+      if (failure === 'expired') staging.values.clear();
+      if (failure === 'corrupt')
+        for (const key of staging.values.keys()) staging.values.set(key, 'invalid-ciphertext');
+      createRunWorker(options);
+      if (failure === 'cancelled')
+        await expect(bullmqState.processor?.(job)).resolves.toMatchObject({ status: 'cancelled' });
+      else
+        await expect(bullmqState.processor?.(job)).rejects.toThrow(
+          failure === 'invalid'
+            ? '反推结果格式无效'
+            : failure === 'corrupt'
+              ? '结果暂存记录无法验证'
+              : '反推请求已发送或发送状态不确定',
+        );
+      expect(execute).toHaveBeenCalledOnce();
+    },
+  );
 
   it('将独立反推结果留在 Run，并在重新处理队列任务时复用结果而不归档或重发', async () => {
     bullmqState.jobs.clear();

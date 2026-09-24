@@ -1,11 +1,12 @@
-/** HTTPS 图片兼容的隔离 TLS 验收；仅连接本机服务器，不调用 Provider 或外网。 */
+/** HTTPS 图片/视频兼容的隔离 TLS 验收；仅连接本机服务器，不调用 Provider 或外网。 */
+import { readFile } from 'node:fs/promises';
 import { request as requestHttp, type IncomingMessage } from 'node:http';
 import { createServer, request as requestHttps, type RequestOptions } from 'node:https';
 import type { TLSSocket } from 'node:tls';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PrismaClient } from '@prisma/client';
 import type { ProviderJob, RunResult, RunSnapshot } from '@multimodal-canvas/domain';
-import { PrismaResultAssetArchiver } from './result-archiver';
+import { PrismaResultAssetArchiver, ResultUrlUnavailableError } from './result-archiver';
 
 vi.mock('node:http', async (importOriginal) => ({
   ...(await importOriginal<typeof import('node:http')>()),
@@ -42,6 +43,8 @@ const image = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a/p8AAAAASUVORK5CYII=',
   'base64',
 );
+/** 仓库已有的演示 MP4；真实视频经 TLS 完整读取，避免把合成文本当作视频验收。 */
+const video = await readFile(new URL('../../web/public/demo/field-study.mp4', import.meta.url));
 
 /** 合成归档身份，无真实用户或 Provider 任务。 */
 const snapshot: RunSnapshot = {
@@ -77,13 +80,30 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('HTTP 图片兼容的真实 TLS 下载', () => {
+describe.each(['image', 'video'] as const)('HTTP %s 兼容的真实 TLS 下载', (mediaType) => {
+  /** 响应字节与 MIME 一致，输入 URL 仅改变协议，保留编码路径与完整签名查询。 */
+  const payload = mediaType === 'video' ? video : image;
+  /** 下载响应中的真实 MIME。 */
+  const mimeType = mediaType === 'video' ? 'video/mp4' : 'image/png';
+  /** 包含转义路径、重复键的合成签名地址。 */
+  const path = `/a%2Fb/${mediaType === 'video' ? 'video.mp4' : 'image.png'}?signature=synthetic-secret&part=1&part=2`;
+  /** 图片保留既有文案，视频使用独立无 URL 文案。 */
+  const failureMessage =
+    mediaType === 'video'
+      ? '上游返回HTTP视频地址且HTTPS安全读取失败'
+      : '上游返回HTTP图片地址且HTTPS安全读取失败';
   it.each([
     'success',
     'untrusted-certificate',
     'hostname-mismatch',
+    'private-dns',
     'dns-rebinding',
     'redirect',
+    'timeout',
+    401,
+    403,
+    404,
+    410,
   ] as const)('%s：保留 DNS/socket/TLS 校验且绝不回退明文或访问外网', async (mode) => {
     const received: Array<{ host?: string; path?: string }> = [];
     const server = createServer({ key: testKey, cert: testCertificate }, (request, response) => {
@@ -95,8 +115,17 @@ describe('HTTP 图片兼容的真实 TLS 下载', () => {
         response.end();
         return;
       }
-      response.writeHead(200, { 'content-type': 'image/png', 'content-length': image.byteLength });
-      response.end(image);
+      if (typeof mode === 'number') {
+        response.writeHead(mode, { 'content-type': 'text/html' });
+        response.end('synthetic upstream failure with signed URL: ' + path);
+        return;
+      }
+      response.writeHead(200, { 'content-type': mimeType, 'content-length': payload.byteLength });
+      if (mode === 'timeout') {
+        response.flushHeaders();
+        return;
+      }
+      response.end(payload);
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const address = server.address();
@@ -112,9 +141,7 @@ describe('HTTP 图片兼容的真实 TLS 下载', () => {
     ) => {
       expect(url.protocol).toBe('https:');
       expect(url.port).toBe('');
-      expect(url.pathname + url.search).toBe(
-        '/a%2Fb/image.png?signature=synthetic-secret&part=1&part=2',
-      );
+      expect(url.pathname + url.search).toBe(path);
       expect(options.lookup).toBeTypeOf('function');
       expect(options.rejectUnauthorized).not.toBe(false);
       const productionLookup = options.lookup!;
@@ -154,7 +181,9 @@ describe('HTTP 图片兼容的真实 TLS 下载', () => {
     }) as typeof requestHttps);
     const lookupHost = vi
       .fn()
-      .mockResolvedValueOnce([{ address: '203.0.113.1', family: 4 }])
+      .mockResolvedValueOnce([
+        { address: mode === 'private-dns' ? '10.0.0.1' : '203.0.113.1', family: 4 },
+      ])
       .mockResolvedValue([
         { address: mode === 'dns-rebinding' ? '127.0.0.1' : '203.0.113.1', family: 4 },
       ]);
@@ -173,7 +202,7 @@ describe('HTTP 图片兼容的真实 TLS 下载', () => {
         allowHttp: false,
         strictDns: true,
         lookupHost,
-        fetchTimeoutMs: 2000,
+        fetchTimeoutMs: mode === 'timeout' ? 1000 : 2000,
       },
     );
     try {
@@ -181,38 +210,54 @@ describe('HTTP 图片兼容的真实 TLS 下载', () => {
       const pending = archiver.archive({
         runId: 'synthetic-tls',
         snapshot,
-        result,
+        result: { ...result, mediaType },
         providerJob,
         archiveInput: {
-          mediaType: 'image',
-          mimeType: 'image/png',
-          contentUrl:
-            'http://' + hostname + ':80/a%2Fb/image.png?signature=synthetic-secret&part=1&part=2',
+          mediaType,
+          mimeType,
+          contentUrl: 'http://' + hostname + ':80' + path,
         },
       });
       if (mode === 'success') {
-        await expect(pending).resolves.toMatchObject({ mimeType: 'image/png' });
-        expect(put).toHaveBeenCalledWith(expect.any(String), image, 'image/png');
+        await expect(pending).resolves.toMatchObject({ mimeType, sizeBytes: payload.byteLength });
+        expect(put).toHaveBeenCalledOnce();
+        expect(put.mock.calls[0][0]).toEqual(expect.any(String));
+        expect(put.mock.calls[0][1].equals(payload)).toBe(true);
+        expect(put.mock.calls[0][2]).toBe(mimeType);
         expect(transaction).toHaveBeenCalledOnce();
         expect(received).toEqual([
           {
             host: 'cdn.example',
-            path: '/a%2Fb/image.png?signature=synthetic-secret&part=1&part=2',
+            path,
           },
         ]);
       } else {
-        await expect(pending).rejects.toThrow(/^上游返回HTTP图片地址且HTTPS安全读取失败$/);
+        if (typeof mode === 'number' && mediaType === 'video') {
+          await expect(pending).rejects.toBeInstanceOf(ResultUrlUnavailableError);
+          await expect(pending).rejects.toMatchObject({
+            status: mode,
+            message: '上游视频结果地址已失效或不可访问',
+          });
+        } else {
+          await expect(pending).rejects.toMatchObject({
+            name: mode === 'timeout' ? 'AbortError' : 'Error',
+            message: failureMessage,
+          });
+          await expect(pending).rejects.not.toBeInstanceOf(ResultUrlUnavailableError);
+        }
         expect(put).not.toHaveBeenCalled();
         expect(transaction).not.toHaveBeenCalled();
-        expect(received).toHaveLength(mode === 'redirect' ? 1 : 0);
+        expect(received).toHaveLength(
+          mode === 'redirect' || mode === 'timeout' || typeof mode === 'number' ? 1 : 0,
+        );
       }
       if (mode === 'untrusted-certificate')
         expect(tlsErrors).toContain('DEPTH_ZERO_SELF_SIGNED_CERT');
       if (mode === 'hostname-mismatch') expect(tlsErrors).toContain('ERR_TLS_CERT_ALTNAME_INVALID');
-      expect(authorizedResponses).toEqual(mode === 'success' || mode === 'redirect' ? [true] : []);
-      expect(lookupHost).toHaveBeenCalledTimes(2);
-      expect(socketLookup).toHaveBeenCalledOnce();
-      expect(requestHttps).toHaveBeenCalledOnce();
+      expect(authorizedResponses).toEqual(received.length ? [true] : []);
+      expect(lookupHost).toHaveBeenCalledTimes(mode === 'private-dns' ? 1 : 2);
+      expect(socketLookup).toHaveBeenCalledTimes(mode === 'private-dns' ? 0 : 1);
+      expect(requestHttps).toHaveBeenCalledTimes(mode === 'private-dns' ? 0 : 1);
       expect(requestHttp).not.toHaveBeenCalled();
     } finally {
       vi.mocked(requestHttps).mockImplementation(() => {

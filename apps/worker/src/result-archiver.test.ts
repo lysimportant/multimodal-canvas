@@ -5,6 +5,7 @@ import type { ProviderJob, RunResult, RunSnapshot } from '@multimodal-canvas/dom
 
 import {
   PrismaResultAssetArchiver,
+  ResultUrlUnavailableError,
   WorkerFfprobeMediaMetadataExtractor,
   WorkerS3BlobStore,
   type ResultBlobStore,
@@ -560,7 +561,16 @@ describe('PrismaResultAssetArchiver', () => {
     expect(rows).toHaveLength(2);
   });
 
-  describe('HTTP 图片的 HTTPS 安全读取', () => {
+  describe.each(['image', 'video'] as const)('HTTP %s 的 HTTPS 安全读取', (mediaType) => {
+    /** 两种媒体共享原图片安全边界，诊断按媒体脱敏且图片文案保持兼容。 */
+    const failureMessage =
+      mediaType === 'video'
+        ? '上游返回HTTP视频地址且HTTPS安全读取失败'
+        : '上游返回HTTP图片地址且HTTPS安全读取失败';
+    /** 输入扩展名不决定归档 MIME，以下载响应为准。 */
+    const fileName = mediaType === 'image' ? 'image.png' : 'video.mp4';
+    /** 合成响应的媒体类型，不涉及编解码或真实 Provider。 */
+    const mimeType = mediaType === 'image' ? 'image/webp' : 'video/mp4';
     /** 使用严格生产选项与内存存储；网络和 DNS 均由当前用例注入。 */
     function setup(
       options: Partial<ConstructorParameters<typeof PrismaResultAssetArchiver>[1]> = {},
@@ -584,16 +594,16 @@ describe('PrismaResultAssetArchiver', () => {
         lookupHost,
         /** 只调用归档入口，不创建任何真实 Provider 生成任务。 */
         archive(
-          contentUrl = 'http://cdn.example/image.png?signature=synthetic-secret',
+          contentUrl = `http://cdn.example/${fileName}?signature=synthetic-secret`,
           signal?: AbortSignal,
         ) {
           return archiver.archive({
-            runId: 'http-image-upgrade',
+            runId: `http-${mediaType}-upgrade`,
             snapshot,
             result,
             providerJob,
             signal,
-            archiveInput: { mediaType: 'image', mimeType: 'image/png', contentUrl },
+            archiveInput: { mediaType, mimeType, contentUrl },
           });
         },
       };
@@ -611,10 +621,10 @@ describe('PrismaResultAssetArchiver', () => {
                 stream = controller;
               },
             }),
-            { headers: { 'content-type': 'image/webp' } },
+            { headers: { 'content-type': mimeType } },
           ),
         );
-        const path = '/a%2Fb/image.png?signature=synthetic-secret&part=1&part=2&name=a+b';
+        const path = `/a%2Fb/${fileName}?signature=synthetic-secret&part=1&part=2&name=a+b`;
         const pending = fixture.archive(origin + path);
         await vi.waitFor(() => expect(fixture.fetchImpl).toHaveBeenCalledOnce());
         stream.enqueue(new Uint8Array([1, 2, 3]));
@@ -630,7 +640,7 @@ describe('PrismaResultAssetArchiver', () => {
           all: true,
           verbatim: true,
         });
-        expect(archived?.mimeType).toBe('image/webp');
+        expect(archived?.mimeType).toBe(mimeType);
         expect(fixture.blob.puts[0].content).toEqual(Buffer.from([1, 2, 3]));
         expect(fixture.record).toHaveBeenCalledTimes(2);
       },
@@ -643,9 +653,9 @@ describe('PrismaResultAssetArchiver', () => {
         fixture.fetchImpl.mockRejectedValue(
           new Error(reason + ': https://cdn.example/image?signature=synthetic-secret'),
         );
-        await expect(fixture.archive()).rejects.toThrow(
-          /^上游返回HTTP图片地址且HTTPS安全读取失败$/,
-        );
+        const pending = fixture.archive();
+        await expect(pending).rejects.toThrow(new Error(failureMessage));
+        await expect(pending).rejects.not.toBeInstanceOf(ResultUrlUnavailableError);
         expect(fixture.fetchImpl).toHaveBeenCalledOnce();
         expect(String(fixture.fetchImpl.mock.calls[0][0])).toMatch(/^https:/);
         expect(fixture.blob.puts).toHaveLength(0);
@@ -676,9 +686,9 @@ describe('PrismaResultAssetArchiver', () => {
       'http://[fd00::1]/image',
     ])('拒绝不安全原始地址 %s 且不进行 DNS 或下载', async (url) => {
       const fixture = setup();
-      await expect(fixture.archive(url)).rejects.toThrow(
-        /^上游返回HTTP图片地址且HTTPS安全读取失败$/,
-      );
+      const pending = fixture.archive(url);
+      await expect(pending).rejects.toThrow(new Error(failureMessage));
+      await expect(pending).rejects.not.toBeInstanceOf(ResultUrlUnavailableError);
       expect(fixture.lookupHost).not.toHaveBeenCalled();
       expect(fixture.fetchImpl).not.toHaveBeenCalled();
       expect(fixture.blob.puts).toHaveLength(0);
@@ -698,7 +708,9 @@ describe('PrismaResultAssetArchiver', () => {
     ])('HTTPS 候选仍拒绝私网或空 DNS 结果 %#', async ({ addresses }) => {
       const fixture = setup();
       fixture.lookupHost.mockResolvedValue(addresses);
-      await expect(fixture.archive()).rejects.toThrow(/^上游返回HTTP图片地址且HTTPS安全读取失败$/);
+      const pending = fixture.archive();
+      await expect(pending).rejects.toThrow(new Error(failureMessage));
+      await expect(pending).rejects.not.toBeInstanceOf(ResultUrlUnavailableError);
       expect(fixture.fetchImpl).not.toHaveBeenCalled();
       expect(fixture.blob.puts).toHaveLength(0);
       expect(fixture.record).not.toHaveBeenCalled();
@@ -709,7 +721,7 @@ describe('PrismaResultAssetArchiver', () => {
       { status: 302, headers: { location: 'https://127.0.0.1/private' } },
       { status: 307, headers: { location: 'https://other.example/image' } },
       { status: 308, headers: { location: 'https://cdn.example/other' } },
-      { status: 403 },
+      { status: 500 },
       { status: 503 },
       { headers: { 'content-type': 'text/html' } },
       { headers: { 'content-length': '11' } },
@@ -719,9 +731,9 @@ describe('PrismaResultAssetArchiver', () => {
         const fixture = setup({ maxBytes: 10 });
         const cancel = vi.fn();
         fixture.fetchImpl.mockResolvedValue(new Response(new ReadableStream({ cancel }), options));
-        await expect(fixture.archive()).rejects.toThrow(
-          /^上游返回HTTP图片地址且HTTPS安全读取失败$/,
-        );
+        const pending = fixture.archive();
+        await expect(pending).rejects.toThrow(new Error(failureMessage));
+        await expect(pending).rejects.not.toBeInstanceOf(ResultUrlUnavailableError);
         await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
         expect(fixture.fetchImpl).toHaveBeenCalledOnce();
         expect(fixture.blob.puts).toHaveLength(0);
@@ -732,13 +744,97 @@ describe('PrismaResultAssetArchiver', () => {
     it.each(['', '12345678901'])('拒绝空内容或实际超限的 HTTPS 响应 %#', async (content) => {
       const fixture = setup({ maxBytes: 10 });
       fixture.fetchImpl.mockResolvedValue(
-        new Response(content, { headers: { 'content-type': 'image/png' } }),
+        new Response(content, { headers: { 'content-type': mimeType } }),
       );
-      await expect(fixture.archive()).rejects.toThrow(/^上游返回HTTP图片地址且HTTPS安全读取失败$/);
+      const pending = fixture.archive();
+      await expect(pending).rejects.toThrow(new Error(failureMessage));
+      await expect(pending).rejects.not.toBeInstanceOf(ResultUrlUnavailableError);
       expect(fixture.fetchImpl).toHaveBeenCalledOnce();
       expect(fixture.blob.puts).toHaveLength(0);
       expect(fixture.record).not.toHaveBeenCalled();
     });
+
+    it.each(['', '12345678901'])('非流式响应也拒绝空内容和实际超限 %#', async (content) => {
+      const fixture = setup({ maxBytes: 10 });
+      fixture.fetchImpl.mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': mimeType }),
+        body: null,
+        arrayBuffer: async () => new TextEncoder().encode(content).buffer,
+      } as Response);
+      const pending = fixture.archive();
+      await expect(pending).rejects.toThrow(new Error(failureMessage));
+      await expect(pending).rejects.not.toBeInstanceOf(ResultUrlUnavailableError);
+      expect(fixture.blob.puts).toHaveLength(0);
+      expect(fixture.record).not.toHaveBeenCalled();
+    });
+
+    it.each([401, 403, 404, 410])('下载响应 %s 仅视频保留可刷新错误类型', async (status) => {
+      const fixture = setup();
+      const cancel = vi.fn();
+      fixture.fetchImpl.mockResolvedValue(
+        new Response(new ReadableStream({ cancel }), {
+          status,
+          statusText: 'synthetic-secret',
+          headers: { location: 'https://127.0.0.1/private?signature=synthetic-secret' },
+        }),
+      );
+      const pending = fixture.archive();
+      if (mediaType === 'video') {
+        await expect(pending).rejects.toBeInstanceOf(ResultUrlUnavailableError);
+        await expect(pending).rejects.toMatchObject({
+          name: 'ResultUrlUnavailableError',
+          status,
+          message: '上游视频结果地址已失效或不可访问',
+        });
+      } else {
+        await expect(pending).rejects.toThrow(new Error(failureMessage));
+        await expect(pending).rejects.not.toBeInstanceOf(ResultUrlUnavailableError);
+      }
+      await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+      expect(fixture.lookupHost).toHaveBeenCalledOnce();
+      expect(fixture.fetchImpl).toHaveBeenCalledOnce();
+      expect(fixture.fetchImpl.mock.calls[0][1]?.signal?.aborted).toBe(true);
+      expect(fixture.blob.puts).toHaveLength(0);
+      expect(fixture.record).not.toHaveBeenCalled();
+    });
+
+    it.each(['dns', 'transport', 'body', 'blob', 'database'] as const)(
+      '%s 抛出的带 403 状态错误不视为下载 Response、不能触发刷新',
+      async (stage) => {
+        const fixture = setup();
+        const failure = Object.assign(new Error('synthetic 403 failure'), { status: 403 });
+        fixture.fetchImpl.mockResolvedValue(
+          new Response('media', { headers: { 'content-type': mimeType } }),
+        );
+        if (stage === 'dns') fixture.lookupHost.mockRejectedValue(failure);
+        if (stage === 'transport') fixture.fetchImpl.mockRejectedValue(failure);
+        if (stage === 'body')
+          fixture.fetchImpl.mockResolvedValue(
+            new Response(
+              new ReadableStream({
+                start(controller) {
+                  controller.error(failure);
+                },
+              }),
+              { headers: { 'content-type': mimeType } },
+            ),
+          );
+        if (stage === 'blob') vi.spyOn(fixture.blob, 'put').mockRejectedValue(failure);
+        if (stage === 'database') fixture.record.mockRejectedValue(failure);
+        const pending = fixture.archive();
+        await expect(pending).rejects.not.toBeInstanceOf(ResultUrlUnavailableError);
+        if (stage === 'blob' || stage === 'database') {
+          await expect(pending).rejects.toBe(failure);
+        } else {
+          await expect(pending).rejects.toThrow(new Error(failureMessage));
+        }
+        if (stage !== 'database') expect(fixture.record).not.toHaveBeenCalled();
+        if (stage !== 'database') expect(fixture.blob.puts).toHaveLength(0);
+        else expect(fixture.blob.deletes).toEqual([fixture.blob.puts[0].key]);
+      },
+    );
 
     it('预先取消时不发起 DNS 或下载', async () => {
       const fixture = setup();
@@ -765,19 +861,20 @@ describe('PrismaResultAssetArchiver', () => {
         if (stage === 'body')
           fixture.fetchImpl.mockResolvedValue(
             new Response(new ReadableStream({ cancel }), {
-              headers: { 'content-type': 'image/png' },
+              headers: { 'content-type': mimeType },
             }),
           );
         const pending = fixture.archive(undefined, controller.signal);
         const rejected = expect(pending).rejects.toMatchObject({
           name: 'AbortError',
-          message: '上游返回HTTP图片地址且HTTPS安全读取失败',
+          message: failureMessage,
         });
         await vi.waitFor(() =>
           expect(stage === 'dns' ? fixture.lookupHost : fixture.fetchImpl).toHaveBeenCalledOnce(),
         );
         controller.abort(new Error('https://cdn.example/image?signature=synthetic-secret'));
         await rejected;
+        await expect(pending).rejects.not.toBeInstanceOf(ResultUrlUnavailableError);
         if (stage === 'dns') expect(fixture.fetchImpl).not.toHaveBeenCalled();
         else expect(fixture.fetchImpl.mock.calls[0][1]?.signal?.aborted).toBe(true);
         if (stage === 'body') await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
@@ -797,10 +894,12 @@ describe('PrismaResultAssetArchiver', () => {
           fixture.fetchImpl.mockImplementation(() => new Promise(() => undefined));
         if (stage === 'body')
           fixture.fetchImpl.mockResolvedValue(new Response(new ReadableStream({ cancel })));
-        await expect(fixture.archive()).rejects.toMatchObject({
+        const pending = fixture.archive();
+        await expect(pending).rejects.toMatchObject({
           name: 'AbortError',
-          message: '上游返回HTTP图片地址且HTTPS安全读取失败',
+          message: failureMessage,
         });
+        await expect(pending).rejects.not.toBeInstanceOf(ResultUrlUnavailableError);
         if (stage === 'dns') expect(fixture.fetchImpl).not.toHaveBeenCalled();
         else expect(fixture.fetchImpl).toHaveBeenCalledOnce();
         if (stage === 'body') await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
@@ -809,50 +908,17 @@ describe('PrismaResultAssetArchiver', () => {
       },
     );
 
-    it.each(['audio', 'video', 'text'] as const)(
-      '生产 %s 输出保持拒绝 HTTP 的原行为',
-      async (mediaType) => {
-        const fetchImpl = vi.fn<typeof fetch>();
-        const archiver = new PrismaResultAssetArchiver(
-          fakePrisma(async () => undefined),
-          {
-            blobStore: createBlobStore(),
-            allowHttp: false,
-            strictDns: true,
-            fetchImpl,
-            lookupHost: async () => {
-              throw new Error('must not resolve');
-            },
-          },
-        );
-        await expect(
-          archiver.archive({
-            runId: 'other-media',
-            snapshot,
-            result,
-            providerJob,
-            archiveInput: {
-              mediaType,
-              mimeType: mediaType + '/test',
-              contentUrl: 'http://cdn.example/media',
-            },
-          }),
-        ).rejects.toThrow('provider result URL must use HTTPS');
-        expect(fetchImpl).not.toHaveBeenCalled();
-      },
-    );
-
     it('production 默认配置也仅下载 HTTPS，不需要新增环境开关', async () => {
       vi.stubEnv('NODE_ENV', 'production');
       try {
         const fixture = setup({ allowHttp: undefined, strictDns: undefined });
         fixture.fetchImpl.mockResolvedValue(
-          new Response('image', { headers: { 'content-type': 'image/png' } }),
+          new Response('media', { headers: { 'content-type': mimeType } }),
         );
         await fixture.archive();
         expect(fixture.lookupHost).toHaveBeenCalledOnce();
         expect(fixture.fetchImpl).toHaveBeenCalledWith(
-          'https://cdn.example/image.png?signature=synthetic-secret',
+          `https://cdn.example/${fileName}?signature=synthetic-secret`,
           {
             signal: expect.any(AbortSignal),
             redirect: 'error',
@@ -866,15 +932,141 @@ describe('PrismaResultAssetArchiver', () => {
     it('显式 allowHttp 开发行为保留原 HTTP 和非默认端口', async () => {
       const fixture = setup({ allowHttp: true });
       fixture.fetchImpl.mockResolvedValue(
-        new Response('image', { headers: { 'content-type': 'image/png' } }),
+        new Response('media', { headers: { 'content-type': mimeType } }),
       );
-      await fixture.archive('http://cdn.example:8080/image.png');
-      expect(fixture.fetchImpl).toHaveBeenCalledWith('http://cdn.example:8080/image.png', {
+      await fixture.archive(`http://cdn.example:8080/${fileName}`);
+      expect(fixture.fetchImpl).toHaveBeenCalledWith(`http://cdn.example:8080/${fileName}`, {
         signal: expect.any(AbortSignal),
         redirect: 'error',
       });
       expect(fixture.blob.puts).toHaveLength(1);
     });
+  });
+
+  it.each(['audio', 'text'] as const)('生产 %s 输出保持拒绝 HTTP 的原行为', async (mediaType) => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const lookupHost = vi.fn(async () => [{ address: '203.0.113.1', family: 4 }]);
+    const blob = createBlobStore();
+    const record = vi.fn(async () => undefined);
+    const archiver = new PrismaResultAssetArchiver(fakePrisma(record), {
+      blobStore: blob,
+      allowHttp: false,
+      strictDns: true,
+      fetchImpl,
+      lookupHost,
+    });
+    const pending = archiver.archive({
+      runId: 'other-media',
+      snapshot,
+      result,
+      providerJob,
+      archiveInput: {
+        mediaType,
+        mimeType: mediaType + '/test',
+        contentUrl: 'http://cdn.example/media',
+      },
+    });
+    await expect(pending).rejects.toThrow(new Error('provider result URL must use HTTPS'));
+    await expect(pending).rejects.not.toBeInstanceOf(ResultUrlUnavailableError);
+    expect(lookupHost).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(blob.puts).toHaveLength(0);
+    expect(record).not.toHaveBeenCalled();
+  });
+
+  describe.each(['video', 'image', 'audio', 'text'] as const)(
+    '直接 HTTPS %s 下载状态的兼容边界',
+    (mediaType) => {
+      it.each([401, 403, 404, 410, 400, 408, 429, 500, 503])(
+        '%s 仅指定的视频 Response 状态抛出 ResultUrlUnavailableError',
+        async (status) => {
+          const blob = createBlobStore();
+          const record = vi.fn(async () => undefined);
+          const cancel = vi.fn();
+          const fetchImpl = vi
+            .fn<typeof fetch>()
+            .mockResolvedValue(new Response(new ReadableStream({ cancel }), { status }));
+          const lookupHost = vi.fn(async () => [{ address: '203.0.113.1', family: 4 }]);
+          const archiver = new PrismaResultAssetArchiver(fakePrisma(record), {
+            blobStore: blob,
+            allowHttp: false,
+            strictDns: true,
+            fetchImpl,
+            lookupHost,
+          });
+          const pending = archiver.archive({
+            runId: `https-${mediaType}-${status}`,
+            snapshot,
+            result: { ...result, mediaType },
+            providerJob,
+            archiveInput: {
+              mediaType,
+              mimeType: `${mediaType}/test`,
+              contentUrl: 'https://cdn.example/media?signature=synthetic-secret',
+            },
+          });
+          await expect(pending).rejects.toBeInstanceOf(Error);
+          if (mediaType === 'video' && [401, 403, 404, 410].includes(status)) {
+            await expect(pending).rejects.toBeInstanceOf(ResultUrlUnavailableError);
+            await expect(pending).rejects.toMatchObject({
+              name: 'ResultUrlUnavailableError',
+              status,
+              message: '上游视频结果地址已失效或不可访问',
+            });
+          } else {
+            await expect(pending).rejects.not.toBeInstanceOf(ResultUrlUnavailableError);
+            await expect(pending).rejects.toThrow(
+              new Error(`provider result download failed (${status})`),
+            );
+          }
+          await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+          expect(lookupHost).toHaveBeenCalledOnce();
+          expect(fetchImpl).toHaveBeenCalledWith(
+            'https://cdn.example/media?signature=synthetic-secret',
+            { signal: expect.any(AbortSignal), redirect: 'error' },
+          );
+          expect(blob.puts).toHaveLength(0);
+          expect(record).not.toHaveBeenCalled();
+        },
+      );
+    },
+  );
+
+  it.each([
+    { allowHttp: false, contentUrl: 'https://cdn.example/audio.mp3?signature=synthetic-secret' },
+    { allowHttp: true, contentUrl: 'http://cdn.example:8080/audio.mp3?signature=synthetic-secret' },
+  ])('音频成功归档保留原 URL、MIME 和 allowHttp=$allowHttp 行为', async (options) => {
+    const blob = createBlobStore();
+    const record = vi.fn(async () => undefined);
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response('audio', { headers: { 'content-type': 'audio/mpeg' } }));
+    const archiver = new PrismaResultAssetArchiver(fakePrisma(record), {
+      blobStore: blob,
+      allowHttp: options.allowHttp,
+      strictDns: true,
+      lookupHost: async () => [{ address: '203.0.113.1', family: 4 }],
+      fetchImpl,
+    });
+    await expect(
+      archiver.archive({
+        runId: 'audio-unchanged',
+        snapshot,
+        result: { ...result, mediaType: 'audio' },
+        providerJob,
+        archiveInput: {
+          mediaType: 'audio',
+          mimeType: 'audio/wav',
+          contentUrl: options.contentUrl,
+        },
+      }),
+    ).resolves.toMatchObject({ mimeType: 'audio/mpeg', sizeBytes: 5 });
+    expect(fetchImpl).toHaveBeenCalledWith(options.contentUrl, {
+      signal: expect.any(AbortSignal),
+      redirect: 'error',
+    });
+    expect(blob.puts[0].content).toEqual(Buffer.from('audio'));
+    expect(record).toHaveBeenCalledTimes(2);
   });
 
   it('downloads and archives a generated video with ffprobe metadata', async () => {

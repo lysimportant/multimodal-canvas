@@ -294,7 +294,7 @@ export type PrismaResultAssetArchiverOptions = {
   fetchImpl?: typeof fetch;
   maxBytes?: number;
   fetchTimeoutMs?: number;
-  /** 仅本地开发/测试允许明文 HTTP；关闭时仅图片可尝试默认端口的 HTTPS 候选。 */
+  /** 仅本地开发/测试允许明文 HTTP；关闭时图片和视频可尝试默认端口的 HTTPS 候选。 */
   allowHttp?: boolean;
   /** Resolve provider hostnames and reject private/link-local answers. */
   strictDns?: boolean;
@@ -309,6 +309,22 @@ export type PrismaResultAssetArchiverOptions = {
   /** 末帧提取使用的 FFmpeg 可执行文件。 */
   ffmpegBinary?: string;
 };
+
+/**
+ * 已通过 URL、DNS 和传输校验的视频下载响应表明地址不可用，供 Worker 只读刷新已有任务。
+ * 固定消息不包含 URL、签名或响应正文；安全校验、传输、大小及存储错误不使用此类型。
+ */
+export class ResultUrlUnavailableError extends Error {
+  /** 实际下载 Response 的 HTTP 状态码，仅在 401、403、404、410 时由归档器抛出。 */
+  readonly status: number;
+
+  /** @param status 已校验的视频下载 Response 状态码，不接受地址或上游错误文本。 */
+  constructor(status: number) {
+    super('上游视频结果地址已失效或不可访问');
+    this.name = 'ResultUrlUnavailableError';
+    this.status = status;
+  }
+}
 
 /**
  * Persists a provider output as an Asset and its first AssetVersion.
@@ -611,7 +627,7 @@ export class PrismaResultAssetArchiver {
     }
   }
 
-  /** 受限下载并完整校验内容；HTTP 图片失败返回脱敏诊断，取消保留原错误类型。 */
+  /** 受限下载并完整校验内容；HTTP 图片/视频失败返回脱敏诊断，保留地址失效类型和取消名称。 */
   private async download(
     url: string | undefined,
     mediaType: MediaType,
@@ -619,7 +635,10 @@ export class PrismaResultAssetArchiver {
   ): Promise<{ content: Buffer; mimeType?: string } | undefined> {
     if (!url) return undefined;
     throwIfCancelled(cancellationSignal);
-    const requiresHttpsImage = !this.allowHttp && mediaType === 'image' && /^http:\/\//i.test(url);
+    const requiresHttpsCandidate =
+      !this.allowHttp &&
+      (mediaType === 'image' || mediaType === 'video') &&
+      /^http:\/\//i.test(url);
     const controller = new AbortController();
     const cancelDownload = () => controller.abort(cancellationSignal?.reason);
     cancellationSignal?.addEventListener('abort', cancelDownload, { once: true });
@@ -627,7 +646,7 @@ export class PrismaResultAssetArchiver {
     let response: Response | undefined;
     try {
       const parsed = validateRemoteUrl(
-        requiresHttpsImage ? createHttpsImageCandidate(url) : url,
+        requiresHttpsCandidate ? createHttpsMediaCandidate(url, mediaType) : url,
         this.allowHttp,
       );
       await waitForDownloadStage(
@@ -648,7 +667,12 @@ export class PrismaResultAssetArchiver {
           }),
         controller.signal,
       );
-      if (!response.ok) throw new Error(`provider result download failed (${response.status})`);
+      if (!response.ok) {
+        if (mediaType === 'video' && [401, 403, 404, 410].includes(response.status)) {
+          throw new ResultUrlUnavailableError(response.status);
+        }
+        throw new Error(`provider result download failed (${response.status})`);
+      }
       const receivedMime = response.headers
         .get('content-type')
         ?.split(';', 1)[0]
@@ -671,10 +695,10 @@ export class PrismaResultAssetArchiver {
         const bytes = Buffer.from(
           await waitForDownloadStage(response.arrayBuffer(), controller.signal),
         );
-        if (requiresHttpsImage && bytes.byteLength === 0) {
+        if (requiresHttpsCandidate && bytes.byteLength === 0) {
           throw new Error('provider returned an empty result payload');
         }
-        if (requiresHttpsImage && bytes.byteLength > this.maxBytes) {
+        if (requiresHttpsCandidate && bytes.byteLength > this.maxBytes) {
           throw new Error(`provider result exceeds the ${this.maxBytes}-byte limit`);
         }
         return { content: bytes, mimeType };
@@ -696,12 +720,16 @@ export class PrismaResultAssetArchiver {
       } finally {
         reader.releaseLock();
       }
-      if (requiresHttpsImage && total === 0)
+      if (requiresHttpsCandidate && total === 0)
         throw new Error('provider returned an empty result payload');
       return { content: Buffer.concat(chunks, total), mimeType };
     } catch (error) {
-      if (!requiresHttpsImage) throw error;
-      const failure = new Error('上游返回HTTP图片地址且HTTPS安全读取失败');
+      if (!requiresHttpsCandidate || error instanceof ResultUrlUnavailableError) throw error;
+      const failure = new Error(
+        mediaType === 'video'
+          ? '上游返回HTTP视频地址且HTTPS安全读取失败'
+          : '上游返回HTTP图片地址且HTTPS安全读取失败',
+      );
       if (
         error instanceof Error &&
         (error.name === 'AbortError' || error.name === 'WorkerCancellationError')
@@ -1027,9 +1055,12 @@ function defaultFfprobeRunner(binary: string, args: string[], timeoutMs: number)
 
 /**
  * 将默认 HTTP 端口且无 userinfo 的地址转为同主机、路径及查询参数的 HTTPS 候选，不发送请求。
+ * @param value 上游原始 HTTP 地址，查询参数不解码或重组。
+ * @param mediaType 调用方已确认的图片或视频类型，仅用于选择脱敏诊断。
+ * @returns 仍需经过 URL、公网 DNS、TLS 和内容校验的 HTTPS 地址。
  * @throws 非默认端口或任何 userinfo（包括空用户名）均拒绝；候选仍须经过完整下载校验。
  */
-function createHttpsImageCandidate(value: string): string {
+function createHttpsMediaCandidate(value: string, mediaType: MediaType): string {
   const candidate = new URL(value);
   const authority = /^http:\/\/([^/?#\\]+)(?:[/?#]|$)/i.exec(value)?.[1];
   if (
@@ -1039,7 +1070,11 @@ function createHttpsImageCandidate(value: string): string {
     candidate.username ||
     candidate.password
   ) {
-    throw new Error('HTTP图片地址不满足HTTPS安全读取条件');
+    throw new Error(
+      mediaType === 'video'
+        ? 'HTTP视频地址不满足HTTPS安全读取条件'
+        : 'HTTP图片地址不满足HTTPS安全读取条件',
+    );
   }
   candidate.protocol = 'https:';
   return candidate.toString();

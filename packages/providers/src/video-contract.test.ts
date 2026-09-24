@@ -1,7 +1,12 @@
 import { createServer } from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
 import type { RunSnapshot } from '@multimodal-canvas/domain';
-import { NewApiVideoProvider, type NewApiVideoContract, type ProviderJobUpdate } from './index.js';
+import {
+  NewApiProviderError,
+  NewApiVideoProvider,
+  type NewApiVideoContract,
+  type ProviderJobUpdate,
+} from './index.js';
 
 /** 官方通用视频的最小冻结输入，仅使用合成模型与媒体，不访问供应商。 */
 function videoSnapshot(parameters: Record<string, unknown> = { duration: 5 }): RunSnapshot {
@@ -59,6 +64,334 @@ const completed = {
   format: 'webm',
   metadata: { duration: 5, width: 640, height: 480, fps: 24, seed: 42 },
 };
+
+describe('New API 视频结果只读恢复', () => {
+  describe.each([
+    ['newapi-unified-v1', 'legacy-v1', '/video/generations/task-1'],
+    ['newapi-video-v1', 'newapi-unified-v1', '/videos/task-1'],
+    ['legacy-v1', 'newapi-video-v1', '/videos/task-1'],
+  ] as const)('冻结合同 %s', (contract, configuredContract, statusPath) => {
+    it.each(['url', 'content'] as const)(
+      '仅 GET 刷新 %s，不采用当前合同或重新创建',
+      async (output) => {
+        const contentUrl = 'https://newapi.example/v1/videos/task-1/content';
+        const remoteUrl = 'https://cdn.example/refreshed.mp4';
+        const url = output === 'content' ? contentUrl : remoteUrl;
+        const fetchImpl = vi
+          .fn<typeof fetch>()
+          .mockResolvedValueOnce(
+            jsonResponse(
+              contract === 'newapi-unified-v1'
+                ? { ...completed, url, format: 'mp4' }
+                : { id: 'task-1', status: 'completed', video: { url } },
+            ),
+          )
+          .mockResolvedValueOnce(
+            new Response(Buffer.from([0, 1, 2, 3]), {
+              headers: { 'content-type': 'video/mp4' },
+            }),
+          );
+        const onProviderJob = vi.fn();
+        const onRequestPrompt = vi.fn();
+        const reportProgress = vi.fn();
+        const providerJob: ProviderJobUpdate = {
+          provider: 'newapi',
+          platformJobId: 'task-1',
+          status: 'succeeded',
+          progress: 100,
+          payload: { contract, phase: 'completed', requestId: 'original-create-request' },
+        };
+        const result = await providerFor(fetchImpl, configuredContract).execute({
+          // 已受理任务不应重新校验当前创建参数，也不应重复记录生成提示词。
+          snapshot: videoSnapshot({ unconfirmedCreationParameter: true }),
+          resumeOnly: true,
+          providerJob,
+          onProviderJob,
+          onRequestPrompt,
+          reportProgress,
+        });
+        expect(fetchImpl.mock.calls.map(([url, init]) => [String(url), init?.method])).toEqual([
+          ['https://newapi.example/v1' + statusPath, 'GET'],
+          ...(output === 'content' ? [[contentUrl, 'GET']] : []),
+        ]);
+        for (const [, init] of fetchImpl.mock.calls) {
+          expect(init?.body).toBeUndefined();
+          expect(init?.headers).toMatchObject({ authorization: 'Bearer synthetic-key' });
+        }
+        expect(result.providerJob).toMatchObject(providerJob);
+        expect(result.output).toEqual(
+          output === 'content'
+            ? {
+                mediaType: 'video',
+                kind: 'base64',
+                base64: 'AAECAw==',
+                mimeType: 'video/mp4',
+                format: 'mp4',
+              }
+            : {
+                mediaType: 'video',
+                kind: 'url',
+                url: remoteUrl,
+                mimeType: 'video/mp4',
+                format: 'mp4',
+              },
+        );
+        expect(onRequestPrompt).not.toHaveBeenCalled();
+        expect(onProviderJob.mock.calls.map(([job]) => job.payload.phase)).toEqual([
+          'resumed',
+          'completed',
+        ]);
+        expect(reportProgress).toHaveBeenLastCalledWith(100);
+      },
+    );
+
+    it.each(['missing', 'different'] as const)(
+      '只读查询任务 ID 为 %s 时保持合同校验边界',
+      async (identity) => {
+        const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
+          jsonResponse({
+            status: 'completed',
+            url: 'https://cdn.example/refreshed.mp4',
+            ...(identity === 'different'
+              ? { [contract === 'newapi-unified-v1' ? 'task_id' : 'id']: 'different-task' }
+              : {}),
+          }),
+        );
+        const execution = providerFor(fetchImpl, configuredContract).execute({
+          snapshot: videoSnapshot(),
+          resumeOnly: true,
+          providerJob: { provider: 'newapi', platformJobId: 'task-1', payload: { contract } },
+        });
+        if (identity === 'different' || contract === 'newapi-unified-v1') {
+          await expect(execution).rejects.toMatchObject({
+            code: 'VIDEO_TASK_ID_MISMATCH',
+            retryable: false,
+            platformJobId: 'task-1',
+            providerPayload: { contract },
+          });
+        } else {
+          await expect(execution).resolves.toMatchObject({
+            providerJob: { provider: 'newapi', platformJobId: 'task-1', status: 'succeeded' },
+            output: { kind: 'url', url: 'https://cdn.example/refreshed.mp4' },
+          });
+        }
+        expect(fetchImpl).toHaveBeenCalledExactlyOnceWith(
+          'https://newapi.example/v1' + statusPath,
+          expect.objectContaining({ method: 'GET' }),
+        );
+      },
+    );
+
+    it.each(['before', 'poll', 'content'] as const)(
+      '取消阶段 %s 不创建或远程取消任务',
+      async (phase) => {
+        const controller = new AbortController();
+        const cancelled = vi.fn();
+        const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (url) => {
+          if (phase === 'content' && !String(url).endsWith('/content')) {
+            return jsonResponse(
+              contract === 'newapi-unified-v1'
+                ? { ...completed, url: 'https://newapi.example/v1/videos/task-1/content' }
+                : { id: 'task-1', status: 'completed' },
+            );
+          }
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              pull() {
+                controller.abort();
+              },
+              cancel: cancelled,
+            }),
+            { headers: { 'content-type': phase === 'content' ? 'video/mp4' : 'application/json' } },
+          );
+        });
+        const onProviderJob = vi.fn();
+        const onRequestPrompt = vi.fn();
+        const reportProgress = vi.fn();
+        if (phase === 'before') controller.abort();
+        await expect(
+          providerFor(fetchImpl, configuredContract).execute({
+            snapshot: videoSnapshot(),
+            resumeOnly: true,
+            providerJob: { provider: 'newapi', platformJobId: 'task-1', payload: { contract } },
+            signal: controller.signal,
+            onProviderJob,
+            onRequestPrompt,
+            reportProgress,
+          }),
+        ).rejects.toMatchObject({ code: 'ABORTED', retryable: false, platformJobId: 'task-1' });
+        expect(fetchImpl.mock.calls.map(([, init]) => init?.method)).toEqual(
+          phase === 'before' ? [] : phase === 'poll' ? ['GET'] : ['GET', 'GET'],
+        );
+        expect(onRequestPrompt).not.toHaveBeenCalled();
+        if (phase === 'before') {
+          expect(onProviderJob).not.toHaveBeenCalled();
+          expect(reportProgress).not.toHaveBeenCalled();
+        } else {
+          expect(cancelled).toHaveBeenCalledTimes(1);
+        }
+      },
+    );
+
+    it.each([401, 403, 404, 410])(
+      '查询返回 %s 时直接失败，不回退创建或切换合同',
+      async (status) => {
+        const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+          new Response(JSON.stringify({ error: { message: 'expired task' } }), {
+            status,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+        await expect(
+          providerFor(fetchImpl, configuredContract).execute({
+            snapshot: videoSnapshot(),
+            resumeOnly: true,
+            providerJob: { provider: 'newapi', platformJobId: 'task-1', payload: { contract } },
+            onProviderJob: vi.fn(),
+          }),
+        ).rejects.toMatchObject({ status, retryable: false, platformJobId: 'task-1' });
+        expect(fetchImpl).toHaveBeenCalledExactlyOnceWith(
+          'https://newapi.example/v1' + statusPath,
+          expect.objectContaining({ method: 'GET' }),
+        );
+      },
+    );
+  });
+
+  describe.each(['top', 'data', 'video'] as const)('legacy 只读恢复的 %s 身份', (level) => {
+    it.each(['id', 'task_id', 'request_id'] as const)(
+      '拒绝 %s 明确不同的任务，只 GET 一次且不下载内容',
+      async (field) => {
+        const identity = { [field]: 'different-task' };
+        const fetchImpl = vi
+          .fn<typeof fetch>()
+          .mockResolvedValueOnce(
+            jsonResponse({
+              status: 'completed',
+              url: 'https://newapi.example/v1/videos/different-task/content',
+              ...(level === 'top' ? identity : { [level]: identity }),
+            }),
+          )
+          .mockResolvedValueOnce(
+            new Response(Buffer.from([0, 1, 2, 3]), {
+              headers: { 'content-type': 'video/mp4' },
+            }),
+          );
+        const onProviderJob = vi.fn();
+        const onRequestPrompt = vi.fn();
+        const error = await providerFor(fetchImpl)
+          .execute({
+            snapshot: videoSnapshot(),
+            resumeOnly: true,
+            providerJob: {
+              provider: 'newapi',
+              platformJobId: 'frozen-task',
+              payload: { contract: 'legacy-v1' },
+            },
+            onProviderJob,
+            onRequestPrompt,
+          })
+          .catch((caught: unknown) => caught);
+        expect(error).toBeInstanceOf(NewApiProviderError);
+        expect(error).toMatchObject({
+          code: 'VIDEO_TASK_ID_MISMATCH',
+          retryable: false,
+          platformJobId: 'frozen-task',
+          providerPayload: { contract: 'legacy-v1', phase: 'polling' },
+        });
+        expect(fetchImpl).toHaveBeenCalledExactlyOnceWith(
+          'https://newapi.example/v1/videos/frozen-task',
+          expect.objectContaining({ method: 'GET' }),
+        );
+        expect(onProviderJob).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            platformJobId: 'frozen-task',
+            payload: expect.objectContaining({ contract: 'legacy-v1', phase: 'resumed' }),
+          }),
+        );
+        expect(onRequestPrompt).not.toHaveBeenCalled();
+      },
+    );
+  });
+
+  it.each([
+    undefined,
+    { provider: 'newapi' },
+    { provider: 'newapi', platformJobId: '' },
+    { provider: 'newapi', platformJobId: ' \t\n ' },
+    { provider: 'mock', platformJobId: 'task-1' },
+  ] satisfies (ProviderJobUpdate | undefined)[])(
+    '缺失或不匹配的平台身份 %# 在请求和回调前拒绝',
+    async (job) => {
+      const fetchImpl = vi.fn<typeof fetch>();
+      const onProviderJob = vi.fn();
+      const onRequestPrompt = vi.fn();
+      const reportProgress = vi.fn();
+      const error = await providerFor(fetchImpl)
+        .execute({
+          snapshot: videoSnapshot(),
+          resumeOnly: true,
+          providerJob: job ? { ...job, payload: { contract: 'newapi-unified-v1' } } : undefined,
+          onProviderJob,
+          onRequestPrompt,
+          reportProgress,
+        })
+        .catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(NewApiProviderError);
+      expect(error).toMatchObject({
+        code: job?.provider === 'mock' ? 'VIDEO_PROVIDER_MISMATCH' : 'VIDEO_RESUME_JOB_REQUIRED',
+        retryable: false,
+      });
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(onProviderJob).not.toHaveBeenCalled();
+      expect(onRequestPrompt).not.toHaveBeenCalled();
+      expect(reportProgress).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    undefined,
+    {},
+    { contract: undefined },
+    { contract: null },
+    { contract: '' },
+    { contract: 'newapi-unified-v1 ' },
+    { contract: 'unknown' },
+    { contract: ['newapi-unified-v1'] },
+    { contract: { toString: (): string => 'newapi-unified-v1' } },
+    { contract: 'Bearer synthetic-key https://private.example/result?token=payload-secret' },
+  ])('缺失或未知冻结合同 %# 不从当前配置推定，错误不回显凭据', async (payload) => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const onProviderJob = vi.fn();
+    const onRequestPrompt = vi.fn();
+    const reportProgress = vi.fn();
+    const error = await providerFor(fetchImpl)
+      .execute({
+        snapshot: videoSnapshot(),
+        resumeOnly: true,
+        providerJob: {
+          provider: 'newapi',
+          platformJobId: 'synthetic-key https://private.example/result?token=identity-secret',
+          payload,
+        },
+        onProviderJob,
+        onRequestPrompt,
+        reportProgress,
+      })
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(NewApiProviderError);
+    expect(error).toMatchObject({ code: 'VIDEO_CONTRACT_UNSUPPORTED', retryable: false });
+    const diagnostic = JSON.stringify(error);
+    for (const secret of ['synthetic-key', 'identity-secret', 'payload-secret']) {
+      expect(diagnostic).not.toContain(secret);
+      expect(String(error)).not.toContain(secret);
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(onProviderJob).not.toHaveBeenCalled();
+    expect(onRequestPrompt).not.toHaveBeenCalled();
+    expect(reportProgress).not.toHaveBeenCalled();
+  });
+});
 
 describe('New API 官方统一视频合同', () => {
   it('POST 前等待合同持久化，按官方路径提交和查询，不采用 completion ID', async () => {

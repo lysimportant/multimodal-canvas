@@ -2,7 +2,15 @@ import { createCipheriv, createHash, randomBytes, randomUUID } from 'node:crypto
 import { afterEach, beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import { PrismaClient, Prisma } from '@prisma/client';
 
-import { nodeTimingDuration, type RequestPromptRecord } from '@multimodal-canvas/domain';
+import {
+  nodeTimingDuration,
+  runResultSchema,
+  runSnapshotSchema,
+  type NodeTiming,
+  type PromptDocument,
+  type ProviderJob,
+  type RequestPromptRecord,
+} from '@multimodal-canvas/domain';
 
 import {
   databaseRunId,
@@ -857,14 +865,22 @@ describe('WorkerPrismaRunPersistence 请求提示词记录', () => {
   });
 });
 
-/** 可控的 Run 行存储，复现 nodeTimings 单调合并的读写路径。 */
-function createRunTimingStore(initialTimings?: unknown) {
-  const state = { nodeTimings: initialTimings ?? null } as Record<string, unknown>;
+/**
+ * 可控的 Run 行存储，复现 nodeTimings 单调合并的读写路径，不连接数据库。
+ * @param initialTimings 初始节点时间；允许损坏值以验证读取边界。
+ * @param snapshot 数据库冻结快照；缺省模拟历史或缺失快照。
+ * @returns 内存状态、调用记录与使用同一状态的持久化适配器。
+ */
+function createRunTimingStore(initialTimings?: unknown, snapshot?: unknown) {
+  const state = { nodeTimings: initialTimings ?? null, snapshot } as Record<string, unknown>;
   const update = vi.fn(async (args: { data: Record<string, unknown> }) => {
     Object.assign(state, args.data);
     return state;
   });
-  const findUnique = vi.fn(async () => ({ nodeTimings: state.nodeTimings }));
+  const findUnique = vi.fn(async () => ({
+    nodeTimings: state.nodeTimings,
+    snapshot: state.snapshot,
+  }));
   const queryRaw = vi.fn(async () => []);
   const prisma = {
     run: { findUnique, update },
@@ -880,6 +896,305 @@ function createRunTimingStore(initialTimings?: unknown) {
     persistence: new WorkerPrismaRunPersistence(prisma as never),
   };
 }
+
+/**
+ * 构造独立任务的冻结快照、结构化结果和归档恢复事件，仅使用内存 Prisma 替身。
+ * @param kind 独立任务类型；优化来源节点刻意不同于运行目标，防止混淆身份。
+ * @returns 可修改的证据及持久状态，用于验证严格恢复条件和拒绝边界。
+ */
+function createIndependentTimingRecovery(kind: 'reversePrompt' | 'promptOptimization') {
+  const nodeId = kind === 'reversePrompt' ? 'node_reverse_prompt' : 'prompt_skill_optimization';
+  const source: PromptDocument = {
+    version: 1,
+    blocks: [
+      { type: 'text', text: '参考两张图片绘制近景。' },
+      {
+        type: 'mention',
+        mentionId: 'first',
+        assetId: 'asset_first',
+        assetVersion: 3,
+        mediaType: 'image',
+        label: '人物',
+      },
+      {
+        type: 'mention',
+        mentionId: 'second',
+        assetId: 'asset_second',
+        assetVersion: 2,
+        mediaType: 'image',
+        label: '背景',
+      },
+    ],
+  };
+  const snapshot = runSnapshotSchema.parse({
+    projectId: 'project_frozen',
+    canvasRevision: 1,
+    targetNodeId: nodeId,
+    modelAlias: 'mock-text',
+    parameters: {},
+    submittedAt: '2026-09-24T10:00:00.000Z',
+    nodes: [
+      {
+        id: nodeId,
+        type: 'text',
+        position: { x: 0, y: 0 },
+        data: { label: '独立任务', mediaType: 'text', mode: 'generate' },
+      },
+    ],
+    edges: [],
+    inputs: [],
+    ...(kind === 'reversePrompt'
+      ? {
+          reversePrompt: { assetId: 'asset_first', assetVersion: 3, automatic: false },
+          promptMentions: [
+            {
+              nodeId,
+              mentionId: 'source',
+              assetId: 'asset_first',
+              assetVersion: 3,
+              mediaType: 'image',
+              label: '人物',
+              blockOrder: 0,
+            },
+          ],
+        }
+      : {
+          promptOptimization: {
+            nodeId: 'user_canvas_node',
+            skillId: 'test-skill',
+            skillVersion: '1',
+            input: source,
+          },
+        }),
+  });
+  const result = runResultSchema.parse({
+    provider: 'newapi',
+    summary: '独立结果已恢复',
+    targetNodeId: nodeId,
+    mediaType: 'text',
+    inputCount: 0,
+    ...(kind === 'reversePrompt'
+      ? { reversePrompt: { summary: '人物特写', prompt: '以柔光呈现人物和背景。' } }
+      : {
+          promptOptimization: {
+            promptDocument: {
+              version: 1,
+              blocks: [
+                { type: 'text', text: '以柔光呈现人物和背景。' },
+                ...structuredClone(source.blocks.filter((block) => block.type === 'mention')),
+              ],
+            },
+          },
+        }),
+  });
+  const initialTiming: NodeTiming = {
+    nodeId,
+    queuedAt: '2026-09-24T09:59:59.000Z',
+    startedAt: '2026-09-24T10:00:00.000Z',
+    requestStartedAt: '2026-09-24T10:00:01.000Z',
+    requestFinishedAt: '2026-09-24T10:00:02.000Z',
+    finishedAt: '2026-09-24T10:00:03.000Z',
+    outcome: 'failed',
+  };
+  const store = createRunTimingStore({ [nodeId]: initialTiming }, snapshot);
+  const providerJob: ProviderJob = {
+    id: 'synthetic-independent-job',
+    provider: 'newapi',
+    status: 'succeeded',
+    progress: 100,
+    createdAt: '2026-09-24T10:00:00.000Z',
+    updatedAt: '2026-09-24T10:00:10.000Z',
+    payload: { workflowNodeId: nodeId, deliveryState: 'archived', result },
+  };
+  const input: Parameters<WorkerPrismaRunPersistence['updateRun']>[0] = {
+    runId,
+    status: 'succeeded',
+    result,
+    providerJob,
+    nodeTimings: {
+      [nodeId]: {
+        nodeId,
+        startedAt: '2026-09-24T10:00:09.000Z',
+        finishedAt: '2026-09-24T10:00:10.000Z',
+        outcome: 'succeeded',
+      },
+    },
+  };
+  return { ...store, nodeId, initialTiming, snapshot, result, providerJob, input };
+}
+
+describe.each(['reversePrompt', 'promptOptimization'] as const)(
+  'Worker 独立结果恢复 %s',
+  (kind) => {
+    it('仅数据库冻结任务的已归档结果可修正失败，重复恢复不移动终态且不改快照', async () => {
+      const {
+        persistence,
+        state,
+        findUnique,
+        update,
+        input,
+        result,
+        snapshot,
+        nodeId,
+        initialTiming,
+      } = createIndependentTimingRecovery(kind);
+      const frozen = structuredClone(snapshot);
+      expect(result.asset).toBeUndefined();
+      await persistence.updateRun(input);
+      const recovered = {
+        ...initialTiming,
+        outcome: 'succeeded',
+        finishedAt: '2026-09-24T10:00:10.000Z',
+      };
+      expect(state.nodeTimings).toEqual({ [nodeId]: recovered });
+      expect(findUnique).toHaveBeenCalledWith({
+        where: { id: databaseId },
+        select: { nodeTimings: true, snapshot: true },
+      });
+      expect(state.snapshot).toEqual(frozen);
+      expect(update.mock.calls[0]?.[0].data).not.toHaveProperty('snapshot');
+      expect(update.mock.calls[0]?.[0].data).not.toHaveProperty('userId');
+      await persistence.updateRun({
+        ...input,
+        nodeTimings: {
+          [nodeId]: { nodeId, finishedAt: '2026-09-24T10:01:00.000Z', outcome: 'succeeded' },
+        },
+      });
+      expect(state.nodeTimings).toEqual({ [nodeId]: recovered });
+    });
+
+    it.each([
+      '缺失快照',
+      '损坏快照',
+      '普通任务',
+      '另一类独立任务',
+      '快照目标错位',
+      '结果目标错位',
+      '结果与工作流共同偏离快照',
+      '只有顶层结果',
+      '工作流目标错位',
+      '任务未成功',
+      '未完成归档',
+      '只有任意提示词',
+      '只有原始 text',
+      '空结构化结果',
+      '非文字结果',
+      '两类结果混用',
+      '取消终态',
+      '传入失败终态',
+    ])('%s不构成独立成功证据', async (failure) => {
+      const { persistence, state, input, providerJob, result, snapshot, nodeId, initialTiming } =
+        createIndependentTimingRecovery(kind);
+      const payload = providerJob.payload!;
+      if (failure === '缺失快照') {
+        state.snapshot = undefined;
+        payload.snapshot = snapshot;
+      }
+      if (failure === '损坏快照') snapshot.nodes = [];
+      if (failure === '普通任务') {
+        delete snapshot.reversePrompt;
+        delete snapshot.promptOptimization;
+        expect(runSnapshotSchema.safeParse(snapshot).success).toBe(true);
+      }
+      if (failure === '另一类独立任务') {
+        const other = createIndependentTimingRecovery(
+          kind === 'reversePrompt' ? 'promptOptimization' : 'reversePrompt',
+        ).snapshot;
+        // 保持结果与工作流目标一致，让拒绝原因仅为冻结任务类型不匹配。
+        result.targetNodeId = other.targetNodeId;
+        payload.workflowNodeId = other.targetNodeId;
+        state.snapshot = other;
+        state.nodeTimings = {
+          [other.targetNodeId]: { ...initialTiming, nodeId: other.targetNodeId },
+        };
+        input.nodeTimings = {
+          [other.targetNodeId]: { ...input.nodeTimings![nodeId]!, nodeId: other.targetNodeId },
+        };
+      }
+      if (failure === '快照目标错位') snapshot.targetNodeId = 'another_target';
+      if (failure === '结果目标错位') result.targetNodeId = 'another_target';
+      if (failure === '结果与工作流共同偏离快照') {
+        result.targetNodeId = 'another_target';
+        payload.workflowNodeId = 'another_target';
+        state.nodeTimings = { another_target: { ...initialTiming, nodeId: 'another_target' } };
+        input.nodeTimings = {
+          another_target: { ...input.nodeTimings![nodeId]!, nodeId: 'another_target' },
+        };
+        expect(runSnapshotSchema.safeParse(snapshot).success).toBe(true);
+      }
+      if (failure === '只有顶层结果') delete payload.result;
+      if (failure === '工作流目标错位') payload.workflowNodeId = 'another_target';
+      if (failure === '任务未成功') providerJob.status = 'failed';
+      if (failure === '未完成归档') payload.deliveryState = 'received';
+      if (failure === '只有任意提示词' || failure === '只有原始 text') {
+        delete result.reversePrompt;
+        delete result.promptOptimization;
+        Object.assign(
+          result,
+          failure === '只有任意提示词'
+            ? {
+                prompt: '任意提示词',
+                promptDocument: { version: 1, blocks: [{ type: 'text', text: '任意提示词' }] },
+              }
+            : { kind: 'text', text: '{"summary":"摘要","prompt":"原文"}' },
+        );
+      }
+      if (failure === '空结构化结果') {
+        if (result.reversePrompt) result.reversePrompt.prompt = '  ';
+        if (result.promptOptimization)
+          result.promptOptimization.promptDocument.blocks = [
+            { type: 'text', text: '  ' },
+            ...result.promptOptimization.promptDocument.blocks.filter(
+              (block) => block.type === 'mention',
+            ),
+          ];
+      }
+      if (failure === '非文字结果') result.mediaType = 'image';
+      if (failure === '两类结果混用') {
+        result.reversePrompt = { summary: '摘要', prompt: '描述' };
+        result.promptOptimization = {
+          promptDocument: { version: 1, blocks: [{ type: 'text', text: '描述' }] },
+        };
+      }
+      if (failure === '取消终态') initialTiming.outcome = 'cancelled';
+      if (failure === '传入失败终态') input.nodeTimings![nodeId]!.outcome = 'failed';
+      const unchanged = structuredClone(state.nodeTimings);
+      await persistence.updateRun(input);
+      expect(state.nodeTimings).toEqual(unchanged);
+    });
+  },
+);
+
+describe('Worker 提示词优化冻结引用', () => {
+  it('无资源引用的有效优化也可恢复失败终态', async () => {
+    const { persistence, state, input, snapshot, result, nodeId } =
+      createIndependentTimingRecovery('promptOptimization');
+    snapshot.promptOptimization!.input.blocks = [{ type: 'text', text: '原始提示词' }];
+    result.promptOptimization!.promptDocument.blocks = [{ type: 'text', text: '优化后的提示词' }];
+    await persistence.updateRun(input);
+    expect((state.nodeTimings as Record<string, NodeTiming>)[nodeId]?.outcome).toBe('succeeded');
+  });
+
+  it.each(['删除引用', '新增引用', '交换引用', '修改资源', '修改版本', '修改标签', '仅引用无文字'])(
+    '%s时不修正失败终态',
+    async (failure) => {
+      const { persistence, state, input, result, nodeId, initialTiming } =
+        createIndependentTimingRecovery('promptOptimization');
+      const blocks = result.promptOptimization!.promptDocument.blocks;
+      const mention = blocks.find((block) => block.type === 'mention')!;
+      if (failure === '删除引用') blocks.pop();
+      if (failure === '新增引用')
+        blocks.push({ ...mention, mentionId: 'new_mention', assetId: 'foreign_asset' });
+      if (failure === '交换引用') [blocks[1], blocks[2]] = [blocks[2]!, blocks[1]!];
+      if (failure === '修改资源') mention.assetId = 'foreign_asset';
+      if (failure === '修改版本') mention.assetVersion = 99;
+      if (failure === '修改标签') mention.label = '被替换的资源';
+      if (failure === '仅引用无文字') blocks.shift();
+      await persistence.updateRun(input);
+      expect(state.nodeTimings).toEqual({ [nodeId]: initialTiming });
+    },
+  );
+});
 
 describe('WorkerPrismaRunPersistence 节点时间单调写入', () => {
   it.each([true, false])(
@@ -942,6 +1257,133 @@ describe('WorkerPrismaRunPersistence 节点时间单调写入', () => {
         requestFinishedAt: '2026-09-24T10:00:02.000Z',
         finishedAt: hasArchivedEvidence ? '2026-09-24T10:00:10.000Z' : '2026-09-24T10:00:03.000Z',
         outcome: hasArchivedEvidence ? 'succeeded' : 'failed',
+      });
+    },
+  );
+
+  it.each([
+    {
+      name: '普通文字',
+      mediaType: 'text',
+      asset: { assetId: 'asset_recovered', version: 1 },
+      outcome: 'failed',
+      expected: 'succeeded',
+    },
+    {
+      name: '普通视频',
+      mediaType: 'video',
+      asset: { assetId: 'asset_recovered', version: 1 },
+      outcome: 'failed',
+      expected: 'succeeded',
+    },
+    {
+      name: '音频既有语义',
+      mediaType: 'audio',
+      asset: { assetId: 'asset_recovered', version: 1 },
+      outcome: 'failed',
+      expected: 'succeeded',
+    },
+    {
+      name: '无资产普通文字',
+      mediaType: 'text',
+      asset: undefined,
+      outcome: 'failed',
+      expected: 'failed',
+    },
+    {
+      name: '无资产普通图片',
+      mediaType: 'image',
+      asset: undefined,
+      outcome: 'failed',
+      expected: 'failed',
+    },
+    {
+      name: '无资产普通视频',
+      mediaType: 'video',
+      asset: undefined,
+      outcome: 'failed',
+      expected: 'failed',
+    },
+    {
+      name: '无资产普通音频',
+      mediaType: 'audio',
+      asset: undefined,
+      outcome: 'failed',
+      expected: 'failed',
+    },
+    {
+      name: '缺少版本',
+      mediaType: 'image',
+      asset: { assetId: 'asset_recovered' },
+      outcome: 'failed',
+      expected: 'failed',
+    },
+    {
+      name: '非法版本',
+      mediaType: 'image',
+      asset: { assetId: 'asset_recovered', version: 0 },
+      outcome: 'failed',
+      expected: 'failed',
+    },
+    {
+      name: '无效资产身份',
+      mediaType: 'image',
+      asset: { assetId: '', version: 1 },
+      outcome: 'failed',
+      expected: 'failed',
+    },
+    {
+      name: '取消终态',
+      mediaType: 'image',
+      asset: { assetId: 'asset_recovered', version: 1 },
+      outcome: 'cancelled',
+      expected: 'cancelled',
+    },
+  ] as const)(
+    '$name保持媒体版本与既有终态边界',
+    async ({ mediaType, asset, outcome, expected }) => {
+      const nodeId = 'node_media';
+      const initialTiming = {
+        nodeId,
+        startedAt: '2026-09-24T10:00:00.000Z',
+        finishedAt: '2026-09-24T10:00:03.000Z',
+        outcome,
+      };
+      const { persistence, state } = createRunTimingStore({ [nodeId]: initialTiming });
+      await persistence.updateRun({
+        runId,
+        status: 'succeeded',
+        providerJob: {
+          id: 'synthetic-media-job',
+          provider: 'newapi',
+          status: 'succeeded',
+          progress: 100,
+          createdAt: '2026-09-24T10:00:00.000Z',
+          updatedAt: '2026-09-24T10:00:10.000Z',
+          payload: {
+            workflowNodeId: nodeId,
+            deliveryState: 'archived',
+            result: {
+              provider: 'newapi',
+              summary: '媒体结果',
+              targetNodeId: nodeId,
+              mediaType,
+              inputCount: 0,
+              asset,
+            },
+          },
+        },
+        nodeTimings: {
+          [nodeId]: { nodeId, finishedAt: '2026-09-24T10:00:10.000Z', outcome: 'succeeded' },
+        },
+      });
+      expect(state.nodeTimings).toEqual({
+        [nodeId]: {
+          ...initialTiming,
+          outcome: expected,
+          finishedAt:
+            expected === 'succeeded' ? '2026-09-24T10:00:10.000Z' : initialTiming.finishedAt,
+        },
       });
     },
   );

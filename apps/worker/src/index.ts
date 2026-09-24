@@ -39,6 +39,7 @@ import {
   NewApiProviderError,
   NewApiVideoProvider,
   resolveProviderMentions,
+  isNewApiVideoContract,
   type NewApiProviderRequest,
   type NewApiVideoContract,
 } from '@multimodal-canvas/providers';
@@ -55,7 +56,10 @@ import {
   type ObservabilitySpan,
 } from '@multimodal-canvas/observability';
 import { createWorkerPersistenceFromEnvironment, databaseRunId } from './prisma-persistence';
-import { createResultAssetArchiverFromEnvironment } from './result-archiver';
+import {
+  createResultAssetArchiverFromEnvironment,
+  ResultUrlUnavailableError,
+} from './result-archiver';
 import { mergeNodeTimings } from './node-timings';
 import {
   createAssetReferenceResolverFromEnvironment,
@@ -1091,11 +1095,7 @@ export function createRunWorker(options: {
             continue;
           }
 
-          if (
-            resultStagingStore &&
-            !executionSnapshot.reversePrompt &&
-            !executionSnapshot.promptOptimization
-          ) {
+          if (resultStagingStore) {
             const stagingRunIds = new Set(
               [
                 ...providerCandidates.map((candidate) => candidate.payload?.resultStagingRunId),
@@ -1921,7 +1921,7 @@ export function createRunWorker(options: {
           const safeUsage = execution.usage?.metadata
             ? sanitizeProviderJobPayload({ usage: execution.usage.metadata })
             : undefined;
-          const executionProviderJob: ProviderJob = {
+          let executionProviderJob: ProviderJob = {
             ...(activeProviderJob ?? providerJob),
             ...providerMetadata,
             id: providerJob.id,
@@ -1975,13 +1975,7 @@ export function createRunWorker(options: {
             requestProviderJobId: requestProviderJobId ?? providerJob.id,
           };
           // 收到输出后先保护原结果，再落库回执；任何后续失败都不能再次创建生成请求。
-          if (
-            resultStagingStore &&
-            execution.output &&
-            !stagedResult &&
-            !executionSnapshot.reversePrompt &&
-            !executionSnapshot.promptOptimization
-          ) {
+          if (resultStagingStore && execution.output && !stagedResult) {
             await resultStagingStore.save(stagingIdentity, {
               ...execution,
               providerJob: executionProviderJob,
@@ -2060,10 +2054,10 @@ export function createRunWorker(options: {
                 }
               : (execution.output ??
                 (provider === mockProvider ? createMockWorkerOutput(providerSnapshot) : undefined));
-          const output = effectiveOutput
+          let output = effectiveOutput
             ? normalizeProviderOutput(effectiveOutput, executionResult.mediaType)
             : undefined;
-          const archiveInput = output
+          let archiveInput = output
             ? providerOutputToArchiveInput(output, executionResult.mediaType)
             : undefined;
           if (!output || !archiveInput) {
@@ -2083,28 +2077,85 @@ export function createRunWorker(options: {
             throw new Error(`result archiver is required for workflow node ${node.id}`);
           }
           await persistRun('processing', executionProviderJob);
-          const asset = independent
-            ? undefined
-            : await executeWithCancellation(
-                () =>
-                  options.resultArchiver!({
-                    runId: currentData.runId,
-                    ...(currentData.userId ? { userId: currentData.userId } : {}),
-                    snapshot: nodeSnapshot,
-                    result: executionResult,
-                    providerJob: executionProviderJob,
-                    output,
-                    archiveInput,
-                    signal: cancellationSignal,
-                    archiveKey: createArchiveKey(
-                      executionSnapshot,
-                      node.id,
-                      requestProviderJobId,
-                      executionProviderJob,
-                    ),
-                  }),
+          /** 只重试原输出归档；恢复 URL 不改变资产键、费用和请求提示词身份。 */
+          const archiveCurrentOutput = () =>
+            executeWithCancellation(
+              () =>
+                options.resultArchiver!({
+                  runId: currentData.runId,
+                  ...(currentData.userId ? { userId: currentData.userId } : {}),
+                  snapshot: nodeSnapshot,
+                  result: executionResult,
+                  providerJob: executionProviderJob,
+                  output,
+                  archiveInput,
+                  signal: cancellationSignal,
+                  archiveKey: createArchiveKey(
+                    executionSnapshot,
+                    node.id,
+                    requestProviderJobId,
+                    executionProviderJob,
+                  ),
+                }),
+              cancellationSignal,
+            );
+          let asset: Awaited<ReturnType<ResultAssetArchiver>>;
+          if (!independent) {
+            try {
+              asset = await archiveCurrentOutput();
+            } catch (error) {
+              // 只允许过期/不可取的视频 URL 触发一次原任务查询，安全检查或存储错误不重试。
+              const frozenContract = executionProviderJob.payload?.contract;
+              if (
+                !(error instanceof ResultUrlUnavailableError) ||
+                output.kind !== 'url' ||
+                node.data.mediaType !== 'video' ||
+                currentData.provider !== 'newapi' ||
+                !executionProviderJob.platformJobId ||
+                !isNewApiVideoContract(frozenContract)
+              )
+                throw error;
+              if (await cancellationRequested()) throw workerCancellationError();
+              executionProviderJob = {
+                ...executionProviderJob,
+                payload: {
+                  ...executionProviderJob.payload,
+                  firstArchiveError:
+                    executionProviderJob.payload?.firstArchiveError ?? safeArchiveError(error),
+                },
+              };
+              activeProviderJob = executionProviderJob;
+              const recoveryProvider =
+                provider ??
+                (await getNewApiProvider(true, nodeSnapshot, cancellationSignal, frozenContract));
+              if (!recoveryProvider) throw new Error('原视频结果缺少只读恢复执行器；禁止重新生成');
+              const refreshed = await executeProviderWithCancellation(
+                recoveryProvider,
+                {
+                  snapshot: nodeSnapshot,
+                  providerJob: executionProviderJob,
+                  signal: cancellationSignal,
+                  resumeOnly: true,
+                },
                 cancellationSignal,
               );
+              if (
+                !('result' in refreshed) ||
+                refreshed.result.targetNodeId !== node.id ||
+                refreshed.result.mediaType !== 'video' ||
+                refreshed.providerJob?.provider !== 'newapi' ||
+                refreshed.providerJob.platformJobId !== executionProviderJob.platformJobId ||
+                refreshed.providerJob.payload?.contract !== frozenContract
+              ) {
+                throw new Error('原视频只读恢复返回不匹配的任务身份；禁止重新生成');
+              }
+              output = normalizeProviderOutput(refreshed.output, 'video');
+              archiveInput = output ? providerOutputToArchiveInput(output, 'video') : undefined;
+              if (!output || !archiveInput) throw new Error('原视频只读恢复未返回可归档内容');
+              if (await cancellationRequested()) throw workerCancellationError();
+              asset = await archiveCurrentOutput();
+            }
+          }
           if (await cancellationRequested()) {
             throw workerCancellationError();
           }

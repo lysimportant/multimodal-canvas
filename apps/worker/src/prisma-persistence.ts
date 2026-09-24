@@ -14,6 +14,7 @@ import {
   requestPromptRecordKey,
   requestPromptRecordSchema,
   runResultSchema,
+  runSnapshotSchema,
   type NodeTiming,
   type ProviderJob,
   type RequestPromptRecord,
@@ -259,7 +260,7 @@ export class WorkerPrismaRunPersistence implements RunPersistence {
       await transaction.$queryRaw`SELECT "id" FROM "runs" WHERE "id" = ${runId}::uuid FOR UPDATE`;
       const current = await transaction.run.findUnique({
         where: { id: runId },
-        select: { nodeTimings: true },
+        select: { nodeTimings: true, snapshot: true },
       });
       const existingTimings = parseStoredNodeTimings(current?.nodeTimings);
       const archivedResult = runResultSchema.safeParse(input.providerJob?.payload?.result);
@@ -267,7 +268,8 @@ export class WorkerPrismaRunPersistence implements RunPersistence {
         input.providerJob?.status === 'succeeded' &&
         input.providerJob.payload?.deliveryState === 'archived' &&
         archivedResult.success &&
-        archivedResult.data.asset?.version
+        (archivedResult.data.asset?.version ||
+          hasSnapshotBoundIndependentResult(archivedResult.data, current?.snapshot))
       ) {
         const nodeId = archivedResult.data.targetNodeId;
         const timing = existingTimings[nodeId];
@@ -276,7 +278,7 @@ export class WorkerPrismaRunPersistence implements RunPersistence {
           timing?.outcome === 'failed' &&
           input.nodeTimings?.[nodeId]?.outcome === 'succeeded'
         ) {
-          // 生成请求未重发，仅归档恢复成功：保留原始开始时间，终态改为实际归档完成时刻。
+          // 生成请求未重发，仅结果持久化恢复成功：保留原始开始时间及请求时间。
           const { finishedAt: _finishedAt, outcome: _outcome, ...started } = timing;
           existingTimings[nodeId] = started;
         }
@@ -503,6 +505,32 @@ export class WorkerPrismaRunPersistence implements RunPersistence {
       update: {},
     });
   }
+}
+
+/**
+ * 验证无资产的独立成功结果，只信任同一 Run 行内的冻结任务身份。
+ * @param result 已通过 RunResult schema 验证的归档结果，必须为独立文字结果。
+ * @param storedSnapshot 数据库冻结快照；缺失、损坏、类型或目标不符均拒绝修正终态。
+ * @returns 结果与独立任务匹配且优化引用未增删、替换或重排时返回 true；不修改快照。
+ */
+function hasSnapshotBoundIndependentResult(result: RunResult, storedSnapshot: unknown): boolean {
+  if (result.mediaType !== 'text' || result.asset) return false;
+  const parsed = runSnapshotSchema.safeParse(storedSnapshot);
+  if (!parsed.success || parsed.data.targetNodeId !== result.targetNodeId) return false;
+  const snapshot = parsed.data;
+  if (snapshot.reversePrompt) return Boolean(result.reversePrompt && !result.promptOptimization);
+  if (!snapshot.promptOptimization || !result.promptOptimization || result.reversePrompt)
+    return false;
+
+  // 文档 schema 允许空文字；成功优化还必须有正文并原样保留冻结引用，而非任意提示词。
+  const blocks = result.promptOptimization.promptDocument.blocks;
+  return (
+    blocks.some((block) => block.type === 'text' && block.text.trim().length > 0) &&
+    JSON.stringify(blocks.filter((block) => block.type === 'mention')) ===
+      JSON.stringify(
+        snapshot.promptOptimization.input.blocks.filter((block) => block.type === 'mention'),
+      )
+  );
 }
 
 function isPrismaUniqueConstraintError(error: unknown): boolean {
