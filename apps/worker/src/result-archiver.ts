@@ -294,7 +294,7 @@ export type PrismaResultAssetArchiverOptions = {
   fetchImpl?: typeof fetch;
   maxBytes?: number;
   fetchTimeoutMs?: number;
-  /** Allow HTTP provider URLs only for local development/test environments. */
+  /** 仅本地开发/测试允许明文 HTTP；关闭时仅图片可尝试默认端口的 HTTPS 候选。 */
   allowHttp?: boolean;
   /** Resolve provider hostnames and reject private/link-local answers. */
   strictDns?: boolean;
@@ -611,6 +611,7 @@ export class PrismaResultAssetArchiver {
     }
   }
 
+  /** 受限下载并完整校验内容；HTTP 图片失败返回脱敏诊断，取消保留原错误类型。 */
   private async download(
     url: string | undefined,
     mediaType: MediaType,
@@ -618,13 +619,17 @@ export class PrismaResultAssetArchiver {
   ): Promise<{ content: Buffer; mimeType?: string } | undefined> {
     if (!url) return undefined;
     throwIfCancelled(cancellationSignal);
-    const parsed = validateRemoteUrl(url, this.allowHttp);
+    const requiresHttpsImage = !this.allowHttp && mediaType === 'image' && /^http:\/\//i.test(url);
     const controller = new AbortController();
     const cancelDownload = () => controller.abort(cancellationSignal?.reason);
     cancellationSignal?.addEventListener('abort', cancelDownload, { once: true });
     const timeout = setTimeout(() => controller.abort(), this.fetchTimeoutMs);
     let response: Response | undefined;
     try {
+      const parsed = validateRemoteUrl(
+        requiresHttpsImage ? createHttpsImageCandidate(url) : url,
+        this.allowHttp,
+      );
       await waitForDownloadStage(
         assertPublicResolvedHost(parsed.hostname, this.strictDns, this.lookupHost),
         controller.signal,
@@ -666,6 +671,12 @@ export class PrismaResultAssetArchiver {
         const bytes = Buffer.from(
           await waitForDownloadStage(response.arrayBuffer(), controller.signal),
         );
+        if (requiresHttpsImage && bytes.byteLength === 0) {
+          throw new Error('provider returned an empty result payload');
+        }
+        if (requiresHttpsImage && bytes.byteLength > this.maxBytes) {
+          throw new Error(`provider result exceeds the ${this.maxBytes}-byte limit`);
+        }
         return { content: bytes, mimeType };
       }
       const reader = response.body.getReader();
@@ -685,7 +696,19 @@ export class PrismaResultAssetArchiver {
       } finally {
         reader.releaseLock();
       }
+      if (requiresHttpsImage && total === 0)
+        throw new Error('provider returned an empty result payload');
       return { content: Buffer.concat(chunks, total), mimeType };
+    } catch (error) {
+      if (!requiresHttpsImage) throw error;
+      const failure = new Error('上游返回HTTP图片地址且HTTPS安全读取失败');
+      if (
+        error instanceof Error &&
+        (error.name === 'AbortError' || error.name === 'WorkerCancellationError')
+      ) {
+        failure.name = error.name;
+      }
+      throw failure;
     } finally {
       controller.abort();
       void response?.body?.cancel().catch(() => undefined);
@@ -1000,6 +1023,26 @@ function defaultFfprobeRunner(binary: string, args: string[], timeoutMs: number)
       throw new Error('media metadata probe failed or timed out');
     },
   );
+}
+
+/**
+ * 将默认 HTTP 端口且无 userinfo 的地址转为同主机、路径及查询参数的 HTTPS 候选，不发送请求。
+ * @throws 非默认端口或任何 userinfo（包括空用户名）均拒绝；候选仍须经过完整下载校验。
+ */
+function createHttpsImageCandidate(value: string): string {
+  const candidate = new URL(value);
+  const authority = /^http:\/\/([^/?#\\]+)(?:[/?#]|$)/i.exec(value)?.[1];
+  if (
+    !authority ||
+    authority.includes('@') ||
+    candidate.port ||
+    candidate.username ||
+    candidate.password
+  ) {
+    throw new Error('HTTP图片地址不满足HTTPS安全读取条件');
+  }
+  candidate.protocol = 'https:';
+  return candidate.toString();
 }
 
 function validateRemoteUrl(value: string, allowHttp: boolean): URL {

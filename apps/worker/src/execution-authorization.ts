@@ -105,6 +105,20 @@ export class PrismaWorkerExecutionAuthorization implements WorkerExecutionAuthor
     }
   }
 
+  /** 核对原 Run 全部尝试的发送证据；不读取当前凭据或调用上游授权。 */
+  async assertRetrySafe(
+    input: Parameters<PrismaExecutionService['assertRetrySafe']>[0],
+  ): Promise<void> {
+    await this.execution.assertRetrySafe(input);
+  }
+
+  /** 仅转交已验证暂存回执的原请求身份；取消或撤销后也只补记事实，不恢复授权。 */
+  async reconcileReceived(
+    input: Parameters<PrismaExecutionService['reconcileReceived']>[0],
+  ): Promise<void> {
+    await this.execution.reconcileReceived(input);
+  }
+
   /** 领取节点发送意图；重复或不确定请求由 execution 包拒绝。 */
   async beginSend(input: Parameters<WorkerExecutionAuthorization['beginSend']>[0]): Promise<void> {
     await this.execution.beginSend(input);

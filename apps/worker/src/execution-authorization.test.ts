@@ -65,7 +65,15 @@ function fixture(permissionRevision = 'revision-1', credentialRevision = 'creden
   }));
   const beginSend = vi.fn(async () => ({}));
   const finishSend = vi.fn(async () => ({}));
-  const execution = { requireAuthorization, beginSend, finishSend };
+  const assertRetrySafe = vi.fn(async (_input: unknown) => undefined);
+  const reconcileReceived = vi.fn(async (_input: unknown) => undefined);
+  const execution = {
+    requireAuthorization,
+    beginSend,
+    finishSend,
+    assertRetrySafe,
+    reconcileReceived,
+  };
   const prisma = {
     aiCredential: {
       findUnique: vi.fn(async () => ({
@@ -161,4 +169,60 @@ describe('PrismaWorkerExecutionAuthorization', () => {
     });
     expect(verifyUpstream).not.toHaveBeenCalled();
   });
+});
+
+describe('Worker 暂存回执委托', () => {
+  it.each(['assertRetrySafe', 'reconcileReceived'] as const)(
+    '%s 原样委托且不做新的上游授权或领取发送',
+    async (method) => {
+      const { frozen, execution, prisma } = fixture();
+      const verifyUpstream = vi.fn(async () => undefined);
+      const authorization = new PrismaWorkerExecutionAuthorization(
+        execution as never,
+        prisma as never,
+        verifyUpstream,
+      );
+      const input = {
+        runId: 'run-original',
+        nodeId: 'target',
+        attempt: 2,
+        requestIdentity: 'provider_job_run-original',
+        platformJobId: 'platform-1',
+        snapshot: frozen,
+        userId,
+      };
+      await authorization[method](input);
+      expect(execution[method]).toHaveBeenCalledExactlyOnceWith(input);
+      expect(execution.requireAuthorization).not.toHaveBeenCalled();
+      expect(execution.beginSend).not.toHaveBeenCalled();
+      expect(execution.finishSend).not.toHaveBeenCalled();
+      expect(prisma.aiCredential.findUnique).not.toHaveBeenCalled();
+      expect(prisma.newApiGroupBinding.findFirst).not.toHaveBeenCalled();
+      expect(verifyUpstream).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['assertRetrySafe', 'reconcileReceived'] as const)(
+    '%s 保留内部拒绝，不吞异常或降级授权',
+    async (method) => {
+      const { frozen, execution, prisma } = fixture();
+      const error = new Error('synthetic conflict');
+      execution[method].mockRejectedValueOnce(error);
+      const authorization = new PrismaWorkerExecutionAuthorization(
+        execution as never,
+        prisma as never,
+      );
+      await expect(
+        authorization[method]({
+          runId: 'run-original',
+          nodeId: 'target',
+          attempt: 1,
+          requestIdentity: 'provider_job_run-original',
+          snapshot: frozen,
+          userId,
+        }),
+      ).rejects.toBe(error);
+      expect(execution.beginSend).not.toHaveBeenCalled();
+    },
+  );
 });

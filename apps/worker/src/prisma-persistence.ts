@@ -6,13 +6,14 @@ import {
 import {
   PrismaClient,
   type MediaType as PrismaMediaType,
-  type Prisma,
+  Prisma,
   type RunStatus as PrismaRunStatus,
 } from '@prisma/client';
 import {
   providerJobSchema,
   requestPromptRecordKey,
   requestPromptRecordSchema,
+  runResultSchema,
   type NodeTiming,
   type ProviderJob,
   type RequestPromptRecord,
@@ -230,6 +231,7 @@ export class WorkerPrismaRunPersistence implements RunPersistence {
     });
   }
 
+  /** 写入运行结果；确认成功时清除旧错误，已归档证据允许修正本地归档失败的节点终态。 */
   async updateRun(input: {
     runId: string;
     status: RunStatus;
@@ -242,7 +244,11 @@ export class WorkerPrismaRunPersistence implements RunPersistence {
     const data = {
       status: toPrismaStatus(input.status),
       ...(input.result ? { result: input.result as Prisma.InputJsonValue } : {}),
-      ...(input.error ? { error: { message: input.error } as Prisma.InputJsonValue } : {}),
+      ...(input.status === 'succeeded' && input.result
+        ? { error: Prisma.DbNull }
+        : input.error
+          ? { error: { message: input.error } as Prisma.InputJsonValue }
+          : {}),
     };
     if (!input.nodeTimings) {
       return this.prisma.run.update({ where: { id: runId }, data });
@@ -255,10 +261,27 @@ export class WorkerPrismaRunPersistence implements RunPersistence {
         where: { id: runId },
         select: { nodeTimings: true },
       });
-      const nodeTimings = mergeNodeTimings(
-        parseStoredNodeTimings(current?.nodeTimings),
-        input.nodeTimings ?? {},
-      );
+      const existingTimings = parseStoredNodeTimings(current?.nodeTimings);
+      const archivedResult = runResultSchema.safeParse(input.providerJob?.payload?.result);
+      if (
+        input.providerJob?.status === 'succeeded' &&
+        input.providerJob.payload?.deliveryState === 'archived' &&
+        archivedResult.success &&
+        archivedResult.data.asset?.version
+      ) {
+        const nodeId = archivedResult.data.targetNodeId;
+        const timing = existingTimings[nodeId];
+        if (
+          input.providerJob.payload.workflowNodeId === nodeId &&
+          timing?.outcome === 'failed' &&
+          input.nodeTimings?.[nodeId]?.outcome === 'succeeded'
+        ) {
+          // 生成请求未重发，仅归档恢复成功：保留原始开始时间，终态改为实际归档完成时刻。
+          const { finishedAt: _finishedAt, outcome: _outcome, ...started } = timing;
+          existingTimings[nodeId] = started;
+        }
+      }
+      const nodeTimings = mergeNodeTimings(existingTimings, input.nodeTimings ?? {});
       return transaction.run.update({
         where: { id: runId },
         data: { ...data, nodeTimings: nodeTimings as Prisma.InputJsonValue },

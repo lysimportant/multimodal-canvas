@@ -560,6 +560,323 @@ describe('PrismaResultAssetArchiver', () => {
     expect(rows).toHaveLength(2);
   });
 
+  describe('HTTP 图片的 HTTPS 安全读取', () => {
+    /** 使用严格生产选项与内存存储；网络和 DNS 均由当前用例注入。 */
+    function setup(
+      options: Partial<ConstructorParameters<typeof PrismaResultAssetArchiver>[1]> = {},
+    ) {
+      const blob = createBlobStore();
+      const record = vi.fn(async (_data: Record<string, unknown>) => undefined);
+      const fetchImpl = vi.fn<typeof fetch>();
+      const lookupHost = vi.fn(async () => [{ address: '203.0.113.1', family: 4 }]);
+      const archiver = new PrismaResultAssetArchiver(fakePrisma(record), {
+        blobStore: blob,
+        allowHttp: false,
+        strictDns: true,
+        fetchImpl,
+        lookupHost,
+        ...options,
+      });
+      return {
+        blob,
+        record,
+        fetchImpl,
+        lookupHost,
+        /** 只调用归档入口，不创建任何真实 Provider 生成任务。 */
+        archive(
+          contentUrl = 'http://cdn.example/image.png?signature=synthetic-secret',
+          signal?: AbortSignal,
+        ) {
+          return archiver.archive({
+            runId: 'http-image-upgrade',
+            snapshot,
+            result,
+            providerJob,
+            signal,
+            archiveInput: { mediaType: 'image', mimeType: 'image/png', contentUrl },
+          });
+        },
+      };
+    }
+
+    it.each(['http://cdn.example', 'http://cdn.example:80', 'HTTP://cdn.example:80'])(
+      '%s 只读取同主机、路径、查询的 HTTPS 内容并完整读取后归档',
+      async (origin) => {
+        const fixture = setup();
+        let stream!: ReadableStreamDefaultController<Uint8Array>;
+        fixture.fetchImpl.mockResolvedValue(
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                stream = controller;
+              },
+            }),
+            { headers: { 'content-type': 'image/webp' } },
+          ),
+        );
+        const path = '/a%2Fb/image.png?signature=synthetic-secret&part=1&part=2&name=a+b';
+        const pending = fixture.archive(origin + path);
+        await vi.waitFor(() => expect(fixture.fetchImpl).toHaveBeenCalledOnce());
+        stream.enqueue(new Uint8Array([1, 2, 3]));
+        expect(fixture.blob.puts).toHaveLength(0);
+        expect(fixture.record).not.toHaveBeenCalled();
+        stream.close();
+        const archived = await pending;
+        expect(fixture.fetchImpl).toHaveBeenCalledWith('https://cdn.example' + path, {
+          signal: expect.any(AbortSignal),
+          redirect: 'error',
+        });
+        expect(fixture.lookupHost).toHaveBeenCalledWith('cdn.example', {
+          all: true,
+          verbatim: true,
+        });
+        expect(archived?.mimeType).toBe('image/webp');
+        expect(fixture.blob.puts[0].content).toEqual(Buffer.from([1, 2, 3]));
+        expect(fixture.record).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it.each(['certificate expired', 'hostname mismatch', 'connection refused'])(
+      'HTTPS 候选 %s 时不回退 HTTP、不泄露签名 URL',
+      async (reason) => {
+        const fixture = setup();
+        fixture.fetchImpl.mockRejectedValue(
+          new Error(reason + ': https://cdn.example/image?signature=synthetic-secret'),
+        );
+        await expect(fixture.archive()).rejects.toThrow(
+          /^上游返回HTTP图片地址且HTTPS安全读取失败$/,
+        );
+        expect(fixture.fetchImpl).toHaveBeenCalledOnce();
+        expect(String(fixture.fetchImpl.mock.calls[0][0])).toMatch(/^https:/);
+        expect(fixture.blob.puts).toHaveLength(0);
+        expect(fixture.record).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      'http://cdn.example:81/image',
+      'http://cdn.example:443/image',
+      'http://cdn.example:8080/image',
+      'http://cdn.example:0/image',
+      'http://synthetic-user@cdn.example/image',
+      'http://:synthetic-password@cdn.example/image',
+      'http://@cdn.example/image',
+      'http://:@cdn.example/image',
+      'http:///@cdn.example/image',
+      'http:///cdn.example/image',
+      'http://localhost/image',
+      'http://127.0.0.1/image',
+      'http://2130706433/image',
+      'http://10.0.0.1/image',
+      'http://172.16.0.1/image',
+      'http://192.168.1.1/image',
+      'http://169.254.169.254/image',
+      'http://[::1]/image',
+      'http://[::ffff:127.0.0.1]/image',
+      'http://[fd00::1]/image',
+    ])('拒绝不安全原始地址 %s 且不进行 DNS 或下载', async (url) => {
+      const fixture = setup();
+      await expect(fixture.archive(url)).rejects.toThrow(
+        /^上游返回HTTP图片地址且HTTPS安全读取失败$/,
+      );
+      expect(fixture.lookupHost).not.toHaveBeenCalled();
+      expect(fixture.fetchImpl).not.toHaveBeenCalled();
+      expect(fixture.blob.puts).toHaveLength(0);
+      expect(fixture.record).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { addresses: [] },
+      { addresses: [{ address: '10.0.0.1', family: 4 }] },
+      {
+        addresses: [
+          { address: '203.0.113.1', family: 4 },
+          { address: '127.0.0.1', family: 4 },
+        ],
+      },
+      { addresses: [{ address: '::ffff:7f00:1', family: 6 }] },
+    ])('HTTPS 候选仍拒绝私网或空 DNS 结果 %#', async ({ addresses }) => {
+      const fixture = setup();
+      fixture.lookupHost.mockResolvedValue(addresses);
+      await expect(fixture.archive()).rejects.toThrow(/^上游返回HTTP图片地址且HTTPS安全读取失败$/);
+      expect(fixture.fetchImpl).not.toHaveBeenCalled();
+      expect(fixture.blob.puts).toHaveLength(0);
+      expect(fixture.record).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { status: 301, headers: { location: 'http://cdn.example/fallback' } },
+      { status: 302, headers: { location: 'https://127.0.0.1/private' } },
+      { status: 307, headers: { location: 'https://other.example/image' } },
+      { status: 308, headers: { location: 'https://cdn.example/other' } },
+      { status: 403 },
+      { status: 503 },
+      { headers: { 'content-type': 'text/html' } },
+      { headers: { 'content-length': '11' } },
+    ] as ResponseInit[])(
+      '拒绝重定向、状态、MIME 和声明大小错误 %# 并关闭响应体',
+      async (options) => {
+        const fixture = setup({ maxBytes: 10 });
+        const cancel = vi.fn();
+        fixture.fetchImpl.mockResolvedValue(new Response(new ReadableStream({ cancel }), options));
+        await expect(fixture.archive()).rejects.toThrow(
+          /^上游返回HTTP图片地址且HTTPS安全读取失败$/,
+        );
+        await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+        expect(fixture.fetchImpl).toHaveBeenCalledOnce();
+        expect(fixture.blob.puts).toHaveLength(0);
+        expect(fixture.record).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(['', '12345678901'])('拒绝空内容或实际超限的 HTTPS 响应 %#', async (content) => {
+      const fixture = setup({ maxBytes: 10 });
+      fixture.fetchImpl.mockResolvedValue(
+        new Response(content, { headers: { 'content-type': 'image/png' } }),
+      );
+      await expect(fixture.archive()).rejects.toThrow(/^上游返回HTTP图片地址且HTTPS安全读取失败$/);
+      expect(fixture.fetchImpl).toHaveBeenCalledOnce();
+      expect(fixture.blob.puts).toHaveLength(0);
+      expect(fixture.record).not.toHaveBeenCalled();
+    });
+
+    it('预先取消时不发起 DNS 或下载', async () => {
+      const fixture = setup();
+      const controller = new AbortController();
+      controller.abort();
+      await expect(fixture.archive(undefined, controller.signal)).rejects.toMatchObject({
+        name: 'WorkerCancellationError',
+      });
+      expect(fixture.lookupHost).not.toHaveBeenCalled();
+      expect(fixture.fetchImpl).not.toHaveBeenCalled();
+      expect(fixture.blob.puts).toHaveLength(0);
+    });
+
+    it.each(['dns', 'headers', 'body'] as const)(
+      '取消 %s 阶段后不归档、不泄露错误并停止下载',
+      async (stage) => {
+        const fixture = setup();
+        const controller = new AbortController();
+        const cancel = vi.fn();
+        if (stage === 'dns')
+          fixture.lookupHost.mockImplementation(() => new Promise(() => undefined));
+        if (stage === 'headers')
+          fixture.fetchImpl.mockImplementation(() => new Promise(() => undefined));
+        if (stage === 'body')
+          fixture.fetchImpl.mockResolvedValue(
+            new Response(new ReadableStream({ cancel }), {
+              headers: { 'content-type': 'image/png' },
+            }),
+          );
+        const pending = fixture.archive(undefined, controller.signal);
+        const rejected = expect(pending).rejects.toMatchObject({
+          name: 'AbortError',
+          message: '上游返回HTTP图片地址且HTTPS安全读取失败',
+        });
+        await vi.waitFor(() =>
+          expect(stage === 'dns' ? fixture.lookupHost : fixture.fetchImpl).toHaveBeenCalledOnce(),
+        );
+        controller.abort(new Error('https://cdn.example/image?signature=synthetic-secret'));
+        await rejected;
+        if (stage === 'dns') expect(fixture.fetchImpl).not.toHaveBeenCalled();
+        else expect(fixture.fetchImpl.mock.calls[0][1]?.signal?.aborted).toBe(true);
+        if (stage === 'body') await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+        expect(fixture.blob.puts).toHaveLength(0);
+        expect(fixture.record).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(['dns', 'headers', 'body'] as const)(
+      'HTTPS 候选 %s 阶段受总超时约束',
+      async (stage) => {
+        const fixture = setup({ fetchTimeoutMs: 20 });
+        const cancel = vi.fn();
+        if (stage === 'dns')
+          fixture.lookupHost.mockImplementation(() => new Promise(() => undefined));
+        if (stage === 'headers')
+          fixture.fetchImpl.mockImplementation(() => new Promise(() => undefined));
+        if (stage === 'body')
+          fixture.fetchImpl.mockResolvedValue(new Response(new ReadableStream({ cancel })));
+        await expect(fixture.archive()).rejects.toMatchObject({
+          name: 'AbortError',
+          message: '上游返回HTTP图片地址且HTTPS安全读取失败',
+        });
+        if (stage === 'dns') expect(fixture.fetchImpl).not.toHaveBeenCalled();
+        else expect(fixture.fetchImpl).toHaveBeenCalledOnce();
+        if (stage === 'body') await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+        expect(fixture.blob.puts).toHaveLength(0);
+        expect(fixture.record).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(['audio', 'video', 'text'] as const)(
+      '生产 %s 输出保持拒绝 HTTP 的原行为',
+      async (mediaType) => {
+        const fetchImpl = vi.fn<typeof fetch>();
+        const archiver = new PrismaResultAssetArchiver(
+          fakePrisma(async () => undefined),
+          {
+            blobStore: createBlobStore(),
+            allowHttp: false,
+            strictDns: true,
+            fetchImpl,
+            lookupHost: async () => {
+              throw new Error('must not resolve');
+            },
+          },
+        );
+        await expect(
+          archiver.archive({
+            runId: 'other-media',
+            snapshot,
+            result,
+            providerJob,
+            archiveInput: {
+              mediaType,
+              mimeType: mediaType + '/test',
+              contentUrl: 'http://cdn.example/media',
+            },
+          }),
+        ).rejects.toThrow('provider result URL must use HTTPS');
+        expect(fetchImpl).not.toHaveBeenCalled();
+      },
+    );
+
+    it('production 默认配置也仅下载 HTTPS，不需要新增环境开关', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      try {
+        const fixture = setup({ allowHttp: undefined, strictDns: undefined });
+        fixture.fetchImpl.mockResolvedValue(
+          new Response('image', { headers: { 'content-type': 'image/png' } }),
+        );
+        await fixture.archive();
+        expect(fixture.lookupHost).toHaveBeenCalledOnce();
+        expect(fixture.fetchImpl).toHaveBeenCalledWith(
+          'https://cdn.example/image.png?signature=synthetic-secret',
+          {
+            signal: expect.any(AbortSignal),
+            redirect: 'error',
+          },
+        );
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it('显式 allowHttp 开发行为保留原 HTTP 和非默认端口', async () => {
+      const fixture = setup({ allowHttp: true });
+      fixture.fetchImpl.mockResolvedValue(
+        new Response('image', { headers: { 'content-type': 'image/png' } }),
+      );
+      await fixture.archive('http://cdn.example:8080/image.png');
+      expect(fixture.fetchImpl).toHaveBeenCalledWith('http://cdn.example:8080/image.png', {
+        signal: expect.any(AbortSignal),
+        redirect: 'error',
+      });
+      expect(fixture.blob.puts).toHaveLength(1);
+    });
+  });
+
   it('downloads and archives a generated video with ffprobe metadata', async () => {
     const blob = createBlobStore();
     const rows: Record<string, unknown>[] = [];

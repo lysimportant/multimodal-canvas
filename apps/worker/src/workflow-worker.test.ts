@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { Prisma } from '@prisma/client';
+import { WorkerPrismaRunPersistence } from './prisma-persistence';
 import {
   nodeTimingDuration,
   createMockPromptOptimizationOutput,
@@ -17,6 +19,8 @@ import {
   type WorkflowState,
 } from '@multimodal-canvas/domain';
 import { createHash } from 'node:crypto';
+import { CredentialEncryptionKeyring } from '@multimodal-canvas/credential-crypto';
+import { createRedisResultStagingStore, type ResultStagingRedisClient } from './result-staging';
 
 type StubJob = {
   id: string;
@@ -293,7 +297,474 @@ function createTextSnapshot(): RunSnapshot {
   });
 }
 
+/** 在多个 Worker 实例之间保留加密值，模拟进程重启而非复用内存执行结果。 */
+function createStagingFixture() {
+  const values = new Map<string, string>();
+  const client: ResultStagingRedisClient = {
+    async get(key) {
+      return values.get(key) ?? null;
+    },
+    async set(key, value) {
+      if (values.has(key)) return null;
+      values.set(key, value);
+      return 'OK';
+    },
+    async del(key) {
+      return values.delete(key) ? 1 : 0;
+    },
+  };
+  const createStore = () =>
+    createRedisResultStagingStore({
+      client,
+      namespace: 'synthetic-workflow-recovery',
+      keyring: new CredentialEncryptionKeyring({ currentSecret: 'synthetic-recovery-secret' }),
+    });
+  return { values, createStore };
+}
+
 describe('worker workflow DAG execution', () => {
+  it.each(['queue', 'database', 'predecessor'] as const)(
+    '加密暂存支持 %s 恢复，仅归档不重复生成',
+    async (source) => {
+      bullmqState.jobs.clear();
+      const runId = '123e4567-e89b-42d3-a456-426614174192';
+      const retryId = '123e4567-e89b-42d3-a456-426614174193';
+      const staging = createStagingFixture();
+      const savedJobs: ProviderJob[] = [];
+      const execute = vi.fn(async (request: WorkerProviderRequest) => {
+        await request.onRequestPrompt?.(
+          providerRequestPrompt({ runId: request.runId ?? runId, nodeId: 'node_draft' }),
+        );
+        return createExecution(request.snapshot);
+      });
+      const archiveKeys: Array<string | undefined> = [];
+      const archiver = vi.fn(
+        async (
+          input: Parameters<
+            NonNullable<Parameters<typeof createRunWorker>[0]['resultArchiver']>
+          >[0],
+        ) => {
+          archiveKeys.push(input.archiveKey);
+          if (archiveKeys.length === 1) throw new Error('storage temporarily unavailable');
+          expect(input.archiveInput?.content?.toString()).toBe('output for node_draft');
+          return { assetId: 'asset_recovered', version: 1, mimeType: 'text/plain' };
+        },
+      );
+      const beginSend = vi.fn(async () => {});
+      const options: Parameters<typeof createRunWorker>[0] = {
+        connection: { host: '127.0.0.1', port: 6379 },
+        providerName: 'newapi',
+        provider: { execute },
+        stepDelayMs: 0,
+        resultArchiver: archiver,
+        execution: {
+          async authorizeRun() {},
+          async authorizeNode() {},
+          beginSend,
+          async finishSend() {},
+        },
+        ...(source === 'database'
+          ? {
+              persistence: {
+                getProviderCredentials: getTestProviderCredentials,
+                async upsertRequestPromptRecord() {},
+                async recordUsage() {},
+                async upsertProviderJob(input) {
+                  savedJobs.push(structuredClone(input.providerJob));
+                },
+                async findProviderJobsByRunId() {
+                  return savedJobs.length ? [savedJobs.at(-1)!] : [];
+                },
+              } satisfies RunPersistence,
+            }
+          : {}),
+      };
+      const data: RunJobData = {
+        runId,
+        snapshot: createTextSnapshot(),
+        attempt: 1,
+        provider: 'newapi',
+        providerJob: createProviderJobRecord(runId, 'newapi'),
+        cancelRequested: false,
+      };
+      const job = createJob(data);
+      createRunWorker({ ...options, resultStagingStore: staging.createStore() });
+      await expect(bullmqState.processor?.(job)).rejects.toThrow(
+        '生成已完成，归档失败：storage temporarily unavailable',
+      );
+      expect(staging.values.size).toBe(1);
+      expect(JSON.stringify(job.data)).not.toContain('output for node_draft');
+      expect(JSON.stringify([...staging.values.values()])).not.toContain('output for node_draft');
+      const nextJob =
+        source === 'database'
+          ? createJob(data)
+          : source === 'predecessor'
+            ? createJob({
+                ...data,
+                runId: retryId,
+                retryOf: runId,
+                attempt: 2,
+                providerJob: createProviderJobRecord(retryId, 'newapi'),
+              })
+            : job;
+      createRunWorker({
+        ...options,
+        resultStagingStore: staging.createStore(),
+        assetReferenceResolver: {
+          resolve: vi.fn(async () => {
+            throw new Error('恢复不应重新读取输入');
+          }),
+        },
+      });
+      await expect(bullmqState.processor?.(nextJob)).resolves.toMatchObject({
+        status: 'succeeded',
+        result: { asset: { assetId: 'asset_recovered', version: 1 } },
+      });
+      expect(execute).toHaveBeenCalledOnce();
+      expect(beginSend).toHaveBeenCalledOnce();
+      expect(archiver).toHaveBeenCalledTimes(2);
+      expect(archiveKeys[1]).toBe(archiveKeys[0]);
+      expect(staging.values.size).toBe(0);
+    },
+  );
+
+  it('暂存后回执写入失败仍从原输出恢复，不重复 Provider 调用', async () => {
+    bullmqState.jobs.clear();
+    const runId = '123e4567-e89b-42d3-a456-426614174194';
+    const staging = createStagingFixture();
+    const execute = vi.fn(async (request: WorkerProviderRequest) =>
+      createExecution(request.snapshot),
+    );
+    const archiver = vi.fn(async () => ({
+      assetId: 'asset_recovered',
+      version: 1,
+      mimeType: 'text/plain',
+    }));
+    const options = {
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi' as const,
+      provider: { execute },
+      stepDelayMs: 0,
+      resultArchiver: archiver,
+    };
+    const job = createJob({
+      runId,
+      snapshot: createTextSnapshot(),
+      attempt: 1,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(runId, 'newapi'),
+      cancelRequested: false,
+    });
+    const originalUpdate = job.updateData.bind(job);
+    job.updateData = async (data) => {
+      if ((data.providerJob as ProviderJob)?.payload?.deliveryState === 'received')
+        throw new Error('receipt write failed');
+      await originalUpdate(data);
+    };
+    createRunWorker({ ...options, resultStagingStore: staging.createStore() });
+    await expect(bullmqState.processor?.(job)).rejects.toThrow('receipt write failed');
+    expect(staging.values.size).toBe(1);
+    job.updateData = originalUpdate;
+    createRunWorker({ ...options, resultStagingStore: staging.createStore() });
+    await expect(bullmqState.processor?.(job)).resolves.toMatchObject({ status: 'succeeded' });
+    expect(execute).toHaveBeenCalledOnce();
+    expect(archiver).toHaveBeenCalledOnce();
+  });
+
+  it.each(['expired', 'corrupt', 'cancelled', 'storage-failed'] as const)(
+    '暂存 %s 时不重发或错误归档',
+    async (failure) => {
+      bullmqState.jobs.clear();
+      const runId = '123e4567-e89b-42d3-a456-426614174195';
+      const staging = createStagingFixture();
+      const execute = vi.fn(async (request: WorkerProviderRequest) =>
+        createExecution(request.snapshot),
+      );
+      const archiver = vi.fn(async () => {
+        throw new Error('first archive error');
+      });
+      const options = {
+        connection: { host: '127.0.0.1', port: 6379 },
+        providerName: 'newapi' as const,
+        provider: { execute },
+        stepDelayMs: 0,
+        resultArchiver: archiver,
+      };
+      const job = createJob({
+        runId,
+        snapshot: createTextSnapshot(),
+        attempt: 1,
+        provider: 'newapi',
+        providerJob: createProviderJobRecord(runId, 'newapi'),
+        cancelRequested: false,
+      });
+      const store = staging.createStore();
+      if (failure === 'storage-failed')
+        store.save = async () => {
+          throw new Error('结果暂存存储操作失败');
+        };
+      createRunWorker({ ...options, resultStagingStore: store });
+      await expect(bullmqState.processor?.(job)).rejects.toThrow(
+        failure === 'storage-failed' ? '结果暂存存储操作失败' : 'first archive error',
+      );
+      if (failure === 'expired') staging.values.clear();
+      if (failure === 'corrupt')
+        for (const key of staging.values.keys()) staging.values.set(key, 'invalid-ciphertext');
+      if (failure === 'cancelled') job.data.cancelRequested = true;
+      createRunWorker({ ...options, resultStagingStore: staging.createStore() });
+      if (failure === 'cancelled')
+        await expect(bullmqState.processor?.(job)).resolves.toMatchObject({ status: 'cancelled' });
+      else
+        await expect(bullmqState.processor?.(job)).rejects.toThrow(
+          failure === 'corrupt' ? '结果暂存记录无法验证' : '禁止重新生成',
+        );
+      expect(execute).toHaveBeenCalledOnce();
+      expect(archiver).toHaveBeenCalledTimes(failure === 'storage-failed' ? 0 : 1);
+      if (failure === 'expired')
+        expect((job.data.providerJob as ProviderJob).payload?.firstArchiveError).toBe(
+          'first archive error',
+        );
+    },
+  );
+
+  it('保留首次归档错误并隐藏地址与内联内容', async () => {
+    bullmqState.jobs.clear();
+    const runId = '123e4567-e89b-42d3-a456-426614174196';
+    const staging = createStagingFixture();
+    const execute = vi.fn(async (request: WorkerProviderRequest) =>
+      createExecution(request.snapshot),
+    );
+    const archiver = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new Error('download failed https://example.test/file?key=private-value'),
+      )
+      .mockRejectedValue(new Error('second archive error'));
+    const options = {
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi' as const,
+      provider: { execute },
+      stepDelayMs: 0,
+      resultArchiver: archiver,
+    };
+    const job = createJob({
+      runId,
+      snapshot: createTextSnapshot(),
+      attempt: 1,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(runId, 'newapi'),
+      cancelRequested: false,
+    });
+    for (let i = 0; i < 2; i++) {
+      createRunWorker({ ...options, resultStagingStore: staging.createStore() });
+      await expect(bullmqState.processor?.(job)).rejects.toThrow(
+        'download failed [资源内容已隐藏]',
+      );
+    }
+    expect(JSON.stringify(job.data)).not.toContain('private-value');
+    expect(JSON.stringify(job.data)).not.toContain('second archive error');
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it('发送回执写入失败且暂存过期后，retryOf 仍核对原请求并阻止重新生成', async () => {
+    bullmqState.jobs.clear();
+    const runId = '123e4567-e89b-42d3-a456-426614174197';
+    const staging = createStagingFixture();
+    const execute = vi.fn(async (request: WorkerProviderRequest) =>
+      createExecution(request.snapshot),
+    );
+    const beginSend = vi.fn(async () => {});
+    const finishSend = vi.fn(async () => {
+      throw new Error('send receipt unavailable');
+    });
+    const assertRetrySafe = vi.fn(async () => {
+      throw new Error('原请求发送结果不明；禁止重新生成');
+    });
+    const options: Parameters<typeof createRunWorker>[0] = {
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      provider: { execute },
+      stepDelayMs: 0,
+      resultArchiver: vi.fn(),
+      resultStagingStore: staging.createStore(),
+      execution: {
+        async authorizeRun() {},
+        async authorizeNode() {},
+        beginSend,
+        finishSend,
+        assertRetrySafe,
+      },
+    };
+    const data: RunJobData = {
+      runId,
+      snapshot: createTextSnapshot(),
+      attempt: 1,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(runId, 'newapi'),
+      cancelRequested: false,
+    };
+    const original = createJob(data);
+    createRunWorker(options);
+    await expect(bullmqState.processor?.(original)).rejects.toThrow('send receipt unavailable');
+    expect(staging.values.size).toBe(1);
+    staging.values.clear();
+    const retryId = '123e4567-e89b-42d3-a456-426614174198';
+    const retry = createJob({
+      ...data,
+      runId: retryId,
+      retryOf: runId,
+      attempt: 2,
+      providerJob: createProviderJobRecord(retryId, 'newapi'),
+    });
+    createRunWorker(options);
+    await expect(bullmqState.processor?.(retry)).rejects.toThrow('原请求发送结果不明');
+    expect(assertRetrySafe).toHaveBeenCalledWith(
+      expect.objectContaining({ runId, nodeId: 'node_draft' }),
+    );
+    expect(execute).toHaveBeenCalledOnce();
+    expect(beginSend).toHaveBeenCalledOnce();
+    expect(options.resultArchiver).not.toHaveBeenCalled();
+  });
+
+  it.each(['same-run', 'retry', 'cancelled'] as const)(
+    '暂存恢复 %s 只对账原发送身份，缺失发送记录不阻止归档',
+    async (mode) => {
+      bullmqState.jobs.clear();
+      const runId = '123e4567-e89b-42d3-a456-426614174201';
+      const staging = createStagingFixture();
+      const execute = vi.fn(async (request: WorkerProviderRequest) => ({
+        ...createExecution(request.snapshot),
+        usage: { amount: '1.25', currency: 'USD' },
+      }));
+      const finishSend = vi.fn(async () => {
+        throw new Error('send record unavailable');
+      });
+      const reconcileReceived = vi.fn(async () => {});
+      const resultArchiver = vi.fn(async () => ({
+        assetId: 'asset_recovered_receipt',
+        version: 1,
+        mimeType: 'text/plain',
+      }));
+      const options: Parameters<typeof createRunWorker>[0] = {
+        connection: { host: '127.0.0.1', port: 6379 },
+        providerName: 'newapi',
+        provider: { execute },
+        stepDelayMs: 0,
+        resultStagingStore: staging.createStore(),
+        resultArchiver,
+        execution: {
+          async authorizeRun() {},
+          async authorizeNode() {},
+          async beginSend() {},
+          finishSend,
+          reconcileReceived,
+        },
+      };
+      const data: RunJobData = {
+        runId,
+        snapshot: createTextSnapshot(),
+        attempt: 1,
+        provider: 'newapi',
+        providerJob: createProviderJobRecord(runId, 'newapi'),
+        cancelRequested: false,
+      };
+      const original = createJob(data);
+      createRunWorker(options);
+      await expect(bullmqState.processor?.(original)).rejects.toThrow('send record unavailable');
+      const secondId = '123e4567-e89b-42d3-a456-426614174202';
+      const retry =
+        mode === 'retry'
+          ? createJob({
+              ...data,
+              runId: secondId,
+              retryOf: runId,
+              attempt: 2,
+              providerJob: createProviderJobRecord(secondId, 'newapi'),
+            })
+          : original;
+      if (mode === 'cancelled') retry.data.cancelRequested = true;
+      createRunWorker(options);
+      await expect(bullmqState.processor?.(retry)).resolves.toMatchObject({
+        status: mode === 'cancelled' ? 'cancelled' : 'succeeded',
+      });
+      expect(reconcileReceived).toHaveBeenCalledOnce();
+      expect(reconcileReceived).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runId,
+          nodeId: 'node_draft',
+          attempt: 1,
+          requestIdentity: `provider_job_${runId}`,
+        }),
+      );
+      expect(finishSend).toHaveBeenCalledTimes(2);
+      expect(execute).toHaveBeenCalledOnce();
+      expect(resultArchiver).toHaveBeenCalledTimes(mode === 'cancelled' ? 0 : 1);
+      expect((retry.data.providerJob as ProviderJob).payload?.usageStatus).toBe('external');
+      expect((retry.data.providerJob as ProviderJob).payload?.reportedUsage).toMatchObject({
+        runId,
+        amount: '1.25',
+      });
+    },
+  );
+
+  it('过时队列不能覆盖数据库已保存的首个归档错误与费用终态', async () => {
+    bullmqState.jobs.clear();
+    const runId = '123e4567-e89b-42d3-a456-426614174203';
+    const staging = createStagingFixture();
+    const saved: ProviderJob[] = [];
+    const execute = vi.fn(async (request: WorkerProviderRequest) => ({
+      ...createExecution(request.snapshot),
+      usage: { amount: '1.25', currency: 'USD' },
+    }));
+    const archiver = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('first archive failure'))
+      .mockRejectedValueOnce(new Error('second archive failure'));
+    const options: Parameters<typeof createRunWorker>[0] = {
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      provider: { execute },
+      stepDelayMs: 0,
+      resultArchiver: archiver,
+      resultStagingStore: staging.createStore(),
+      persistence: {
+        getProviderCredentials: getTestProviderCredentials,
+        async recordUsage() {},
+        async upsertProviderJob({ providerJob }) {
+          saved.push(structuredClone(providerJob));
+        },
+        async findProviderJobsByRunId() {
+          return saved.length ? [saved.at(-1)!] : [];
+        },
+      },
+    };
+    const original = createJob({
+      runId,
+      snapshot: createTextSnapshot(),
+      attempt: 1,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(runId, 'newapi'),
+      cancelRequested: false,
+    });
+    createRunWorker(options);
+    await expect(bullmqState.processor?.(original)).rejects.toThrow('first archive failure');
+    const data = original.data as unknown as RunJobData;
+    for (const providerJob of [
+      data.providerJob,
+      ...(data.workflowState?.nodes ?? []).map((node) => node.providerJob),
+    ]) {
+      if (providerJob?.payload) {
+        delete providerJob.payload.firstArchiveError;
+        providerJob.payload.usageStatus = 'pending';
+      }
+    }
+    createRunWorker(options);
+    await expect(bullmqState.processor?.(original)).rejects.toThrow('first archive failure');
+    expect(saved.at(-1)?.payload?.firstArchiveError).toBe('first archive failure');
+    expect(saved.at(-1)?.payload?.usageStatus).toBe('external');
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
   it('独立 Skill 优化保存完整引用和长结果，无媒体读取与归档，恢复后不重发', async () => {
     bullmqState.jobs.clear();
     const runId = '123e4567-e89b-42d3-a456-426614174191';
@@ -3027,6 +3498,155 @@ describe('worker node timings', () => {
       createHash('sha256').update(runSnapshotFingerprintMaterial(baselineSnapshot)).digest('hex'),
     ).toBe('920140f9ed2f7a6cd011fd32714283a99c4e0d1ee8870beea42ba6c87db1a286');
   });
+
+  it.each([
+    ['queue', 'none'],
+    ['database', 'none'],
+    ['queue', 'timing-write'],
+    ['database', 'timing-write'],
+    ['queue', 'final-run-write'],
+    ['database', 'final-run-write'],
+  ] as const)(
+    '缓存归档结果从 %s 恢复时严格修正终态，后续故障 %s 不重发请求',
+    async (recoverySource, recoveryFailure) => {
+      bullmqState.jobs.clear();
+      const runId = '123e4567-e89b-42d3-a456-426614174204';
+      const nodeId = 'node_draft';
+      const runState: {
+        status?: string;
+        error?: unknown;
+        nodeTimings: Record<string, NodeTiming>;
+      } = { nodeTimings: {} };
+      const run = {
+        async findUnique() {
+          return { nodeTimings: runState.nodeTimings };
+        },
+        async update({ data }: { data: Record<string, unknown> }) {
+          Object.assign(runState, data);
+          return runState;
+        },
+      };
+      // 只把真实的 timing 合并逻辑接到内存 Run 行，不创建数据库连接。
+      const timingPersistence = new WorkerPrismaRunPersistence({
+        run,
+        async $transaction(callback: (transaction: unknown) => Promise<unknown>) {
+          return callback({ run, $queryRaw: async () => [] });
+        },
+      } as never);
+      let persistedProviderJob: ProviderJob | undefined;
+      let archiveReceiptUnavailable = true;
+      let pendingFailure: typeof recoveryFailure = 'none';
+      const recoveryEvents: string[] = [];
+      const updateRun = vi.fn<NonNullable<RunPersistence['updateRun']>>(async (input) => {
+        if (input.nodeTimings?.[nodeId]?.outcome === 'succeeded') {
+          recoveryEvents.push('timing:succeeded');
+          if (pendingFailure === 'timing-write') {
+            pendingFailure = 'none';
+            throw new Error('cached timing write unavailable');
+          }
+        }
+        if (input.status === 'succeeded' && pendingFailure === 'final-run-write') {
+          pendingFailure = 'none';
+          throw new Error('final Run write unavailable');
+        }
+        return timingPersistence.updateRun(input);
+      });
+      const execute = vi.fn(async (request: WorkerProviderRequest) =>
+        createExecution(request.snapshot),
+      );
+      const resultArchiver = vi.fn(async () => ({
+        assetId: 'asset_cached_recovery',
+        version: 1,
+        mimeType: 'text/plain',
+      }));
+      const options: Parameters<typeof createRunWorker>[0] = {
+        connection: { host: '127.0.0.1', port: 6379 },
+        providerName: 'newapi',
+        stepDelayMs: 0,
+        provider: { execute },
+        resultArchiver,
+        persistence: {
+          getProviderCredentials: getTestProviderCredentials,
+          async upsertProviderJob({ providerJob }) {
+            if (
+              archiveReceiptUnavailable &&
+              providerJob.status === 'running' &&
+              providerJob.payload?.deliveryState === 'archived'
+            ) {
+              archiveReceiptUnavailable = false;
+              throw new Error('archive receipt write unavailable');
+            }
+            if (providerJob.status === 'succeeded') recoveryEvents.push('provider-job:succeeded');
+            persistedProviderJob = structuredClone(providerJob);
+          },
+          async findProviderJobsByRunId() {
+            return recoverySource === 'database' && persistedProviderJob
+              ? [structuredClone(persistedProviderJob)]
+              : [];
+          },
+          async recordUsage() {},
+          updateRun,
+        },
+      };
+      const data: RunJobData = {
+        runId,
+        snapshot: createTextSnapshot(),
+        attempt: 1,
+        provider: 'newapi',
+        providerJob: createProviderJobRecord(runId, 'newapi'),
+        cancelRequested: false,
+      };
+      const original = createJob(data);
+      createRunWorker(options);
+      await expect(bullmqState.processor?.(original)).rejects.toThrow(
+        'archive receipt write unavailable',
+      );
+      const failedTiming = structuredClone(runState.nodeTimings[nodeId]!);
+      expect(failedTiming).toMatchObject({ outcome: 'failed' });
+      expect(failedTiming.requestFinishedAt).toBeTruthy();
+      const replay = recoverySource === 'database' ? createJob(data) : original;
+      pendingFailure = recoveryFailure;
+      let retainedSuccessTiming: NodeTiming | undefined;
+      if (recoveryFailure !== 'none') {
+        createRunWorker(options);
+        await expect(bullmqState.processor?.(replay)).rejects.toThrow(
+          recoveryFailure === 'timing-write'
+            ? 'cached timing write unavailable'
+            : 'final Run write unavailable',
+        );
+        expect(runState.nodeTimings[nodeId]?.outcome).toBe(
+          recoveryFailure === 'timing-write' ? 'failed' : 'succeeded',
+        );
+        if (recoveryFailure === 'final-run-write')
+          retainedSuccessTiming = structuredClone(runState.nodeTimings[nodeId]);
+      }
+      createRunWorker(options);
+      await expect(bullmqState.processor?.(replay)).resolves.toMatchObject({ status: 'succeeded' });
+      expect(recoveryEvents.slice(0, 2)).toEqual(['provider-job:succeeded', 'timing:succeeded']);
+      expect(runState.status).toBe('SUCCEEDED');
+      expect(runState.error).toBe(Prisma.DbNull);
+      const { finishedAt, outcome: _outcome, ...requestTiming } = failedTiming;
+      expect(runState.nodeTimings[nodeId]).toMatchObject({
+        ...requestTiming,
+        outcome: 'succeeded',
+      });
+      expect(Date.parse(runState.nodeTimings[nodeId]!.finishedAt!)).toBeGreaterThanOrEqual(
+        Date.parse(finishedAt!),
+      );
+      if (retainedSuccessTiming)
+        expect(runState.nodeTimings[nodeId]).toEqual(retainedSuccessTiming);
+      expect(
+        updateRun.mock.calls.some(
+          ([input]) =>
+            input.providerJob?.status === 'succeeded' &&
+            input.providerJob.payload?.deliveryState === 'archived' &&
+            input.nodeTimings?.[nodeId]?.outcome === 'succeeded',
+        ),
+      ).toBe(true);
+      expect(execute).toHaveBeenCalledOnce();
+      expect(resultArchiver).toHaveBeenCalledOnce();
+    },
+  );
 
   it('records lifecycle timings for executed nodes only', async () => {
     bullmqState.jobs.clear();

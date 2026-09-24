@@ -1,6 +1,16 @@
 import { Job, Queue, Worker, type ConnectionOptions } from 'bullmq';
 import { Prisma } from '@prisma/client';
 import {
+  createCredentialEncryptionKeyringFromEnvironment,
+  type CredentialEncryptionKeyring,
+} from '@multimodal-canvas/credential-crypto';
+import {
+  createRedisResultStagingStore,
+  createResultStagingRedisAdapter,
+  type ResultStagingStore,
+  type ResultStagingIdentity,
+} from './result-staging';
+import {
   requestPromptRecordSchema,
   parseReversePromptOutput,
   createMockPromptOptimizationOutput,
@@ -217,6 +227,23 @@ export interface WorkerExecutionAuthorization {
   authorizeRun(runId: string, snapshot: RunSnapshot, userId?: string): Promise<void>;
   /** 首次发送前复核当前凭据、分组、模型、合同与权限修订。 */
   authorizeNode(runId: string, nodeId: string, snapshot: RunSnapshot): Promise<void>;
+  /** 新建重试发送前核对原 Run 的持久证据；暂存缺失不能解释为未发送。 */
+  assertRetrySafe?(input: {
+    runId: string;
+    nodeId: string;
+    snapshot: RunSnapshot;
+    userId?: string;
+  }): Promise<void>;
+  /** 已验证暂存回执只补记原请求 sent，不领取新的发送身份，取消也不抹去送达事实。 */
+  reconcileReceived?(input: {
+    runId: string;
+    nodeId: string;
+    attempt: number;
+    requestIdentity: string;
+    platformJobId?: string;
+    snapshot: RunSnapshot;
+    userId?: string;
+  }): Promise<void>;
   /** 创建或领取持久发送意图；unknown/sending 必须拒绝再次创建。 */
   beginSend(input: {
     runId: string;
@@ -390,6 +417,10 @@ export function createRunWorker(options: {
   videoProvider?: ProviderExecutor;
   providerName?: 'mock' | 'newapi';
   resultArchiver?: ResultAssetArchiver;
+  /** 成功输出的受控暂存；仅用于恢复归档，不授权新的 Provider 请求。 */
+  resultStagingStore?: ResultStagingStore;
+  /** 进程入口复用凭据密钥环，使用当前队列连接建立加密暂存。 */
+  resultStagingKeyring?: CredentialEncryptionKeyring;
   /** Resolves durable asset IDs to provider-readable values in memory only. */
   assetReferenceResolver?: AssetReferenceResolver;
   persistence?: RunPersistence;
@@ -402,6 +433,16 @@ export function createRunWorker(options: {
 }) {
   const name = options.queueName ?? queueName;
   const queue = new Queue<RunJobData>(name, { connection: options.connection });
+  const resultStagingStore =
+    options.resultStagingStore ??
+    (options.resultStagingKeyring
+      ? createRedisResultStagingStore({
+          namespace: name,
+          keyring: options.resultStagingKeyring,
+          client: createResultStagingRedisAdapter(queue.client),
+          maxBytes: Number(process.env.RESULT_ASSET_MAX_BYTES ?? 50 * 1024 * 1024),
+        })
+      : undefined);
   const logger = options.logger ?? createNoopWorkerLogger();
   const observability =
     options.observability ??
@@ -946,6 +987,11 @@ export function createRunWorker(options: {
       const uncertainReversePromptNodes = new Set<string>();
       /** 返回或归档证据已存在但结果不可恢复时，只能核实原请求，不能自动重新生成。 */
       const unrecoverableDeliveryNodes = new Set<string>();
+      /** 只在进程内持有解密结果；队列中始终仅保留恢复身份。 */
+      const stagedResults = new Map<
+        string,
+        { identity: ResultStagingIdentity; execution: ProviderExecution }
+      >();
       for (const node of executionOrder) {
         if (node.data.mode === 'source') continue;
         try {
@@ -1028,6 +1074,14 @@ export function createRunWorker(options: {
               updatedAt: new Date().toISOString(),
             };
             await persistProviderJobStrict(completedProviderJob);
+            // 缓存恢复不再进入执行循环；先严格补写成功终态，失败时仍保留缓存供重放。
+            await persistRun('processing', completedProviderJob, undefined, undefined, true, {
+              [node.id]: {
+                nodeId: node.id,
+                finishedAt: completedProviderJob.updatedAt,
+                outcome: 'succeeded',
+              },
+            });
             workflowState = replaceWorkflowNodeState(workflowState, {
               nodeId: node.id,
               status: 'succeeded',
@@ -1035,6 +1089,114 @@ export function createRunWorker(options: {
               result: cachedResult,
             });
             continue;
+          }
+
+          if (
+            resultStagingStore &&
+            !executionSnapshot.reversePrompt &&
+            !executionSnapshot.promptOptimization
+          ) {
+            const stagingRunIds = new Set(
+              [
+                ...providerCandidates.map((candidate) => candidate.payload?.resultStagingRunId),
+                initialData.runId,
+                initialData.retryOf,
+              ].filter((value): value is string => typeof value === 'string' && value.length > 0),
+            );
+            for (const runId of stagingRunIds) {
+              const identity: ResultStagingIdentity = {
+                runId,
+                ...(initialData.userId ? { userId: initialData.userId } : {}),
+                projectId: executionSnapshot.projectId,
+                nodeId: node.id,
+                snapshotFingerprint,
+                requestProviderJobId,
+              };
+              const staged = await resultStagingStore.load(identity);
+              if (!staged) continue;
+              if (
+                staged.result.targetNodeId !== node.id ||
+                staged.result.mediaType !== node.data.mediaType
+              )
+                throw new Error('暂存结果与冻结节点不匹配；禁止重新生成');
+              if (runExecution) {
+                const attempt = staged.providerJob?.payload?.resultStagingAttempt;
+                if (
+                  !runExecution.reconcileReceived ||
+                  typeof attempt !== 'number' ||
+                  !Number.isSafeInteger(attempt) ||
+                  attempt < 1
+                )
+                  throw new Error('原结果缺少可核对的发送身份；禁止重新生成');
+                await runExecution.reconcileReceived({
+                  runId,
+                  nodeId: node.id,
+                  attempt,
+                  requestIdentity: requestProviderJobId,
+                  snapshot: executionSnapshot,
+                  ...(initialData.userId ? { userId: initialData.userId } : {}),
+                  ...(staged.providerJob?.platformJobId
+                    ? { platformJobId: staged.providerJob.platformJobId }
+                    : {}),
+                });
+              }
+              stagedResults.set(node.id, { identity, execution: staged });
+              const retained =
+                providerCandidates.find(
+                  (candidate) => candidate.payload?.deliveryState === 'received',
+                ) ??
+                currentState?.providerJob ??
+                recoveredForNode ??
+                localProviderJob;
+              // 首错和费用终态按同一请求的持久证据合并，旧队列回执不能覆盖数据库补写。
+              const matchingReceipts = [recoveredForNode, ...providerCandidates].filter(
+                (candidate): candidate is ProviderJob =>
+                  Boolean(
+                    candidate &&
+                    providerJobMatchesSnapshot(candidate, snapshotFingerprints, false) &&
+                    workflowRequestProviderJobId(candidate) === requestProviderJobId,
+                  ),
+              );
+              const firstArchiveError = matchingReceipts
+                .map((candidate) => candidate.payload?.firstArchiveError)
+                .find((value): value is string => typeof value === 'string' && value.length > 0);
+              const settledUsage = matchingReceipts.find((candidate) =>
+                ['recorded', 'external'].includes(String(candidate.payload?.usageStatus)),
+              );
+              const received: ProviderJob = {
+                ...retained,
+                ...(staged.providerJob?.platformJobId
+                  ? { platformJobId: staged.providerJob.platformJobId }
+                  : {}),
+                id: localProviderJob.id,
+                payload: workflowProviderPayload(
+                  node.id,
+                  {
+                    ...(sanitizeProviderJobPayload(staged.providerJob?.payload) ?? {}),
+                    ...(retained.payload ?? {}),
+                    requestProviderJobId,
+                    resultStagingRunId: runId,
+                    deliveryState: 'received',
+                    ...(firstArchiveError ? { firstArchiveError } : {}),
+                    ...(settledUsage
+                      ? {
+                          usageStatus: settledUsage.payload?.usageStatus,
+                          reportedUsage: settledUsage.payload?.reportedUsage,
+                        }
+                      : {}),
+                  },
+                  snapshotFingerprint,
+                ),
+              };
+              const reconciled = await persistReceivedUsage(node.id, received);
+              workflowState = replaceWorkflowNodeState(workflowState, {
+                nodeId: node.id,
+                status: 'pending',
+                providerJob: reconciled,
+              });
+              break;
+            }
+            if (stagedResults.has(node.id)) continue;
           }
 
           const receiptIndex = providerCandidates.findIndex(
@@ -1292,6 +1454,7 @@ export function createRunWorker(options: {
       let activeProviderJob: ProviderJob | undefined;
       let activeArchiveFinalizationPending = false;
       let activeSendIntent = false;
+      let activeArchivePhase = false;
       let currentOverallProgress = 80;
       try {
         assertWorkflowModelAliases(executionSnapshot);
@@ -1326,7 +1489,10 @@ export function createRunWorker(options: {
           if (unrecoverableDeliveryNodes.has(node.id)) {
             activeNodeId = node.id;
             activeProviderJob = nodeState.providerJob;
-            throw new Error(`节点 ${node.id} 已收到生成结果但无法恢复归档，等待核实；禁止重新生成`);
+            const reason = nodeState.providerJob?.payload?.firstArchiveError;
+            throw new Error(
+              `节点 ${node.id} 已收到生成结果但无法恢复归档，等待核实；禁止重新生成${typeof reason === 'string' ? `。首次归档错误：${reason}` : ''}`,
+            );
           }
 
           for (const edge of executionSnapshot.edges.filter(
@@ -1385,6 +1551,8 @@ export function createRunWorker(options: {
           activeNodeId = node.id;
           activeProviderJob = providerJob;
           activeArchiveFinalizationPending = false;
+          activeArchivePhase = false;
+          const stagedResult = stagedResults.get(node.id);
           // 节点真正开始执行：开始时间只写一次，重放与轮询不会重置它；排队时间
           // 取自节点进入待执行状态的时刻。
           const queuedAt = queuedAtByNode.get(node.id);
@@ -1418,7 +1586,7 @@ export function createRunWorker(options: {
             flushNodeTimings(),
           );
 
-          if (legacyNewApiRecovery) {
+          if (legacyNewApiRecovery && !stagedResult) {
             const frozenLegacyContract = existingNodeProviderJob?.payload?.contract;
             if (
               node.data.mediaType !== 'video' ||
@@ -1432,8 +1600,9 @@ export function createRunWorker(options: {
             }
           }
 
-          const provider =
-            currentData.provider === 'newapi'
+          const provider: ProviderExecutor | undefined = stagedResult
+            ? undefined
+            : currentData.provider === 'newapi'
               ? await getNewApiProvider(
                   node.data.mediaType === 'video',
                   nodeSnapshot,
@@ -1441,10 +1610,12 @@ export function createRunWorker(options: {
                   executionContract,
                 )
               : (options.provider ?? mockProvider);
-          if (!provider) throw new Error('New API provider is not configured for this worker');
-          const assetResolver = nodeSnapshot.promptOptimization
-            ? undefined
-            : options.assetReferenceResolver;
+          if (!stagedResult && !provider)
+            throw new Error('New API provider is not configured for this worker');
+          const assetResolver =
+            stagedResult || nodeSnapshot.promptOptimization
+              ? undefined
+              : options.assetReferenceResolver;
           // 已提交的视频任务只按已验证的平台 ID 继续查询；原素材水合与可访问性
           // 复核仅服务创建 POST，恢复时重复执行会让已付费任务因素材变化而无法收尾。
           const resumeSubmittedVideo =
@@ -1468,12 +1639,23 @@ export function createRunWorker(options: {
             node.data.mediaType === 'video' || !requestProviderJobId
               ? providerJob
               : { ...providerJob, id: requestProviderJobId };
-          activeRequestPrompts = canResumeProviderJob(existingNodeProviderJob)
-            ? storedRequestPromptIdentities(existingNodeProviderJob, node.id)
-            : [];
+          activeRequestPrompts =
+            stagedResult || canResumeProviderJob(existingNodeProviderJob)
+              ? storedRequestPromptIdentities(existingNodeProviderJob, node.id)
+              : [];
           /** 在最终请求准备完成后领取发送身份；本地参数拒绝不得留下未知发送记录。 */
           const beginNodeSend = async () => {
             if (!runExecution) return;
+            if (!resumeSubmittedVideo && currentData.retryOf) {
+              if (!runExecution.assertRetrySafe)
+                throw new Error('缺少原请求发送证据核对；禁止重新生成');
+              await runExecution.assertRetrySafe({
+                runId: currentData.retryOf,
+                nodeId: node.id,
+                snapshot: executionSnapshot,
+                ...(currentData.userId ? { userId: currentData.userId } : {}),
+              });
+            }
             // 已受理视频沿用原任务；权限修订只约束新的创建请求。
             if (!resumeSubmittedVideo)
               await runExecution.authorizeNode(currentData.runId, node.id, executionSnapshot);
@@ -1492,60 +1674,62 @@ export function createRunWorker(options: {
           // 落库；回调抛错会阻止本次请求，避免已计费但无法追溯。没有持久化适配器
           // 的本地运行（未配置 DATABASE_URL，例如 mock 或本地 newapi 调试）不传
           // 该回调，Provider 按其合同跳过记录：这是有意的兼容行为，不是留存失败。
-          const captureRequestPrompt = options.persistence
-            ? async (record: RequestPromptRecord) => {
-                const parsed = requestPromptRecordSchema.safeParse(record);
-                if (!parsed.success) {
-                  throw new Error(
-                    `provider returned an invalid request prompt record for node ${node.id}`,
+          const captureRequestPrompt =
+            !stagedResult && options.persistence
+              ? async (record: RequestPromptRecord) => {
+                  const parsed = requestPromptRecordSchema.safeParse(record);
+                  if (!parsed.success) {
+                    throw new Error(
+                      `provider returned an invalid request prompt record for node ${node.id}`,
+                    );
+                  }
+                  if (
+                    parsed.data.nodeId !== node.id ||
+                    parsed.data.runId !== currentData.runId ||
+                    parsed.data.attempt !== currentData.attempt
+                  ) {
+                    throw new Error(
+                      `request prompt record does not belong to workflow node ${node.id}`,
+                    );
+                  }
+                  await persistRequestPromptRecordStrict(parsed.data);
+                  activeRequestPrompts.push(requestPromptIdentitySchema.parse(parsed.data));
+                  // 恢复异步任务时不会再次组装创建请求，因此必须在发送前保存原请求身份。
+                  const retainedProviderJob: ProviderJob = {
+                    ...(activeProviderJob ?? providerJob),
+                    payload: workflowProviderPayload(
+                      node.id,
+                      {
+                        ...((activeProviderJob ?? providerJob).payload ?? {}),
+                        requestPromptRecords: activeRequestPrompts,
+                      },
+                      snapshotFingerprint,
+                    ),
+                  };
+                  activeProviderJob = retainedProviderJob;
+                  const retainedData = readJobData();
+                  const retainedWorkflowState = replaceWorkflowNodeState(
+                    retainedData.workflowState ?? currentWorkflowState,
+                    { nodeId: node.id, status: 'running', providerJob: retainedProviderJob },
                   );
-                }
-                if (
-                  parsed.data.nodeId !== node.id ||
-                  parsed.data.runId !== currentData.runId ||
-                  parsed.data.attempt !== currentData.attempt
-                ) {
-                  throw new Error(
-                    `request prompt record does not belong to workflow node ${node.id}`,
+                  await job.updateData({
+                    ...retainedData,
+                    workflowState: retainedWorkflowState,
+                    ...(node.id === executionSnapshot.targetNodeId
+                      ? { providerJob: retainedProviderJob }
+                      : {}),
+                  });
+                  await persistProviderJobStrict(retainedProviderJob);
+                  // 提示词落库期间资源可能已撤销；发送前只复核权限与归档，不重复读取内容。
+                  await requestAssetResolver?.assertAccessible?.(
+                    providerSnapshot,
+                    currentData.userId ? { userId: currentData.userId } : undefined,
                   );
+                  await beginNodeSend();
                 }
-                await persistRequestPromptRecordStrict(parsed.data);
-                activeRequestPrompts.push(requestPromptIdentitySchema.parse(parsed.data));
-                // 恢复异步任务时不会再次组装创建请求，因此必须在发送前保存原请求身份。
-                const retainedProviderJob: ProviderJob = {
-                  ...(activeProviderJob ?? providerJob),
-                  payload: workflowProviderPayload(
-                    node.id,
-                    {
-                      ...((activeProviderJob ?? providerJob).payload ?? {}),
-                      requestPromptRecords: activeRequestPrompts,
-                    },
-                    snapshotFingerprint,
-                  ),
-                };
-                activeProviderJob = retainedProviderJob;
-                const retainedData = readJobData();
-                const retainedWorkflowState = replaceWorkflowNodeState(
-                  retainedData.workflowState ?? currentWorkflowState,
-                  { nodeId: node.id, status: 'running', providerJob: retainedProviderJob },
-                );
-                await job.updateData({
-                  ...retainedData,
-                  workflowState: retainedWorkflowState,
-                  ...(node.id === executionSnapshot.targetNodeId
-                    ? { providerJob: retainedProviderJob }
-                    : {}),
-                });
-                await persistProviderJobStrict(retainedProviderJob);
-                // 提示词落库期间资源可能已撤销；发送前只复核权限与归档，不重复读取内容。
-                await requestAssetResolver?.assertAccessible?.(
-                  providerSnapshot,
-                  currentData.userId ? { userId: currentData.userId } : undefined,
-                );
-                await beginNodeSend();
-              }
-            : undefined;
-          recordNodeTiming({ nodeId: node.id, requestStartedAt: new Date().toISOString() });
+              : undefined;
+          if (!stagedResult)
+            recordNodeTiming({ nodeId: node.id, requestStartedAt: new Date().toISOString() });
           await persistRun(
             'processing',
             activeProviderJob ?? providerJob,
@@ -1560,180 +1744,173 @@ export function createRunWorker(options: {
           );
           if (await cancellationRequested())
             return markCancelled(currentOverallProgress, node.id, activeProviderJob);
-          if (!captureRequestPrompt || resumeSubmittedVideo) await beginNodeSend();
-          const returned = await executeProviderWithCancellation(
-            provider,
-            {
-              snapshot: providerSnapshot,
-              ...(resolvedMentions?.length ? { resolvedMentions } : {}),
-              providerJob: providerRequestJob,
-              signal: cancellationSignal,
-              ...(captureRequestPrompt
-                ? {
-                    onRequestPrompt: captureRequestPrompt,
-                    runId: currentData.runId,
-                    attempt: currentData.attempt,
+          if (!stagedResult && (!captureRequestPrompt || resumeSubmittedVideo))
+            await beginNodeSend();
+          const returned =
+            stagedResult?.execution ??
+            (await executeProviderWithCancellation(
+              provider!,
+              {
+                snapshot: providerSnapshot,
+                ...(resolvedMentions?.length ? { resolvedMentions } : {}),
+                providerJob: providerRequestJob,
+                signal: cancellationSignal,
+                ...(captureRequestPrompt
+                  ? {
+                      onRequestPrompt: captureRequestPrompt,
+                      runId: currentData.runId,
+                      attempt: currentData.attempt,
+                    }
+                  : {}),
+                onProviderJob: async (update) => {
+                  if (cancellationSignal.aborted) return;
+                  const callbackData = readJobData();
+                  let callbackWorkflowState =
+                    callbackData.workflowState ??
+                    createInitialWorkflowState(executionSnapshot, callbackData.providerJob);
+                  const callbackState = workflowNodeState(callbackWorkflowState, node.id);
+                  const currentNodeProviderJob = callbackState?.providerJob ?? providerJob;
+                  const { payload: rawPayload, ...safeUpdate } = update;
+                  const updateProgress =
+                    typeof update.progress === 'number' && Number.isFinite(update.progress)
+                      ? Math.max(0, Math.min(100, Math.round(update.progress)))
+                      : currentNodeProviderJob.progress;
+                  const merged: ProviderJob = {
+                    ...currentNodeProviderJob,
+                    ...safeUpdate,
+                    // Local identity belongs to this workflow node; providers
+                    // may only change their external task fields.
+                    id: currentNodeProviderJob.id,
+                    provider: currentNodeProviderJob.provider,
+                    createdAt: currentNodeProviderJob.createdAt,
+                    status: update.status ?? currentNodeProviderJob.status,
+                    progress: Math.max(currentNodeProviderJob.progress, updateProgress),
+                    payload: workflowProviderPayload(
+                      node.id,
+                      rawPayload === undefined
+                        ? currentNodeProviderJob.payload
+                        : {
+                            ...(currentNodeProviderJob.payload ?? {}),
+                            ...rawPayload,
+                            ...(executionContract ? { contract: executionContract } : {}),
+                            requestPromptRecords: activeRequestPrompts,
+                            ...(workflowRequestProviderJobId(currentNodeProviderJob)
+                              ? {
+                                  requestProviderJobId:
+                                    workflowRequestProviderJobId(currentNodeProviderJob),
+                                }
+                              : {}),
+                          },
+                      snapshotFingerprint,
+                    ),
+                    updatedAt: new Date().toISOString(),
+                  };
+                  const callbackNodeStatus =
+                    merged.status === 'failed'
+                      ? 'failed'
+                      : merged.status === 'cancelled'
+                        ? 'cancelled'
+                        : 'running';
+                  if (callbackNodeStatus !== 'running') {
+                    // 供应商回调已经把节点带到终态：终态时间与标签只在这里写一次。
+                    recordNodeTiming({
+                      nodeId: node.id,
+                      finishedAt: merged.updatedAt,
+                      outcome: callbackNodeStatus,
+                    });
                   }
-                : {}),
-              onProviderJob: async (update) => {
-                if (cancellationSignal.aborted) return;
-                const callbackData = readJobData();
-                let callbackWorkflowState =
-                  callbackData.workflowState ??
-                  createInitialWorkflowState(executionSnapshot, callbackData.providerJob);
-                const callbackState = workflowNodeState(callbackWorkflowState, node.id);
-                const currentNodeProviderJob = callbackState?.providerJob ?? providerJob;
-                const { payload: rawPayload, ...safeUpdate } = update;
-                const updateProgress =
-                  typeof update.progress === 'number' && Number.isFinite(update.progress)
-                    ? Math.max(0, Math.min(100, Math.round(update.progress)))
-                    : currentNodeProviderJob.progress;
-                const merged: ProviderJob = {
-                  ...currentNodeProviderJob,
-                  ...safeUpdate,
-                  // Local identity belongs to this workflow node; providers
-                  // may only change their external task fields.
-                  id: currentNodeProviderJob.id,
-                  provider: currentNodeProviderJob.provider,
-                  createdAt: currentNodeProviderJob.createdAt,
-                  status: update.status ?? currentNodeProviderJob.status,
-                  progress: Math.max(currentNodeProviderJob.progress, updateProgress),
-                  payload: workflowProviderPayload(
-                    node.id,
-                    rawPayload === undefined
-                      ? currentNodeProviderJob.payload
-                      : {
-                          ...(currentNodeProviderJob.payload ?? {}),
-                          ...rawPayload,
-                          ...(executionContract ? { contract: executionContract } : {}),
-                          requestPromptRecords: activeRequestPrompts,
-                          ...(workflowRequestProviderJobId(currentNodeProviderJob)
-                            ? {
-                                requestProviderJobId:
-                                  workflowRequestProviderJobId(currentNodeProviderJob),
-                              }
-                            : {}),
-                        },
-                    snapshotFingerprint,
-                  ),
-                  updatedAt: new Date().toISOString(),
-                };
-                const callbackNodeStatus =
-                  merged.status === 'failed'
-                    ? 'failed'
-                    : merged.status === 'cancelled'
-                      ? 'cancelled'
-                      : 'running';
-                if (callbackNodeStatus !== 'running') {
-                  // 供应商回调已经把节点带到终态：终态时间与标签只在这里写一次。
-                  recordNodeTiming({
+                  callbackWorkflowState = replaceWorkflowNodeState(callbackWorkflowState, {
                     nodeId: node.id,
-                    finishedAt: merged.updatedAt,
-                    outcome: callbackNodeStatus,
+                    status: callbackNodeStatus,
+                    providerJob: merged,
                   });
-                }
-                callbackWorkflowState = replaceWorkflowNodeState(callbackWorkflowState, {
-                  nodeId: node.id,
-                  status: callbackNodeStatus,
-                  providerJob: merged,
-                });
-                activeProviderJob = merged;
-                await job.updateData({
-                  ...callbackData,
-                  workflowState: callbackWorkflowState,
-                  ...(node.id === executionSnapshot.targetNodeId
-                    ? { providerJob: merged }
-                    : { providerJob: callbackData.providerJob }),
-                });
-                await persistProviderJobStrict(merged);
-                if (merged.platformJobId)
-                  await runExecution?.finishSend({
-                    runId: currentData.runId,
-                    nodeId: node.id,
-                    attempt: currentData.attempt,
-                    status: 'sent',
-                    platformJobId: merged.platformJobId,
+                  activeProviderJob = merged;
+                  await job.updateData({
+                    ...callbackData,
+                    workflowState: callbackWorkflowState,
+                    ...(node.id === executionSnapshot.targetNodeId
+                      ? { providerJob: merged }
+                      : { providerJob: callbackData.providerJob }),
                   });
-                await persistRun(
-                  merged.status === 'failed'
-                    ? 'failed'
-                    : merged.status === 'cancelled'
-                      ? 'cancelled'
-                      : 'processing',
-                  merged,
-                  undefined,
-                  undefined,
-                  false,
-                  flushNodeTimings(),
-                );
-                Object.assign(providerJob, merged);
+                  await persistProviderJobStrict(merged);
+                  if (merged.platformJobId)
+                    await runExecution?.finishSend({
+                      runId: currentData.runId,
+                      nodeId: node.id,
+                      attempt: currentData.attempt,
+                      status: 'sent',
+                      platformJobId: merged.platformJobId,
+                    });
+                  await persistRun(
+                    merged.status === 'failed'
+                      ? 'failed'
+                      : merged.status === 'cancelled'
+                        ? 'cancelled'
+                        : 'processing',
+                    merged,
+                    undefined,
+                    undefined,
+                    false,
+                    flushNodeTimings(),
+                  );
+                  Object.assign(providerJob, merged);
+                },
+                reportProgress: async (progress) => {
+                  if (cancellationSignal.aborted) return;
+                  const providerProgress = Math.max(0, Math.min(100, Math.round(progress)));
+                  // Divide the final 19% across provider-backed DAG nodes and
+                  // reserve 100 until every output has been archived.
+                  const lifecycleProgress = Math.min(
+                    99,
+                    80 +
+                      Math.round(((nodeIndex + providerProgress / 100) / providerNodeCount) * 19),
+                  );
+                  currentOverallProgress = Math.max(currentOverallProgress, lifecycleProgress);
+                  const progressData = readJobData();
+                  let progressWorkflowState =
+                    progressData.workflowState ??
+                    createInitialWorkflowState(executionSnapshot, progressData.providerJob);
+                  const progressState = workflowNodeState(progressWorkflowState, node.id);
+                  const currentNodeProviderJob = progressState?.providerJob ?? providerJob;
+                  const progressedProviderJob: ProviderJob = {
+                    ...currentNodeProviderJob,
+                    progress: Math.max(currentNodeProviderJob.progress, lifecycleProgress),
+                    payload: workflowProviderPayload(
+                      node.id,
+                      currentNodeProviderJob.payload,
+                      snapshotFingerprint,
+                    ),
+                    updatedAt: new Date().toISOString(),
+                  };
+                  activeProviderJob = progressedProviderJob;
+                  Object.assign(providerJob, progressedProviderJob);
+                  progressWorkflowState = replaceWorkflowNodeState(progressWorkflowState, {
+                    ...(progressState ?? { nodeId: node.id }),
+                    status:
+                      progressState?.status === 'failed' || progressState?.status === 'cancelled'
+                        ? progressState.status
+                        : 'running',
+                    providerJob: progressedProviderJob,
+                  });
+                  await job.updateData({
+                    ...progressData,
+                    workflowState: progressWorkflowState,
+                    ...(node.id === executionSnapshot.targetNodeId
+                      ? { providerJob: progressedProviderJob }
+                      : { providerJob: progressData.providerJob }),
+                  });
+                  await job.updateProgress({
+                    status: 'processing',
+                    progress: currentOverallProgress,
+                    updatedAt: progressedProviderJob.updatedAt,
+                  } satisfies WorkerProgress);
+                  await persistProviderJob(progressedProviderJob);
+                  await persistRun('processing', progressedProviderJob);
+                },
               },
-              reportProgress: async (progress) => {
-                if (cancellationSignal.aborted) return;
-                const providerProgress = Math.max(0, Math.min(100, Math.round(progress)));
-                // Divide the final 19% across provider-backed DAG nodes and
-                // reserve 100 until every output has been archived.
-                const lifecycleProgress = Math.min(
-                  99,
-                  80 + Math.round(((nodeIndex + providerProgress / 100) / providerNodeCount) * 19),
-                );
-                currentOverallProgress = Math.max(currentOverallProgress, lifecycleProgress);
-                const progressData = readJobData();
-                let progressWorkflowState =
-                  progressData.workflowState ??
-                  createInitialWorkflowState(executionSnapshot, progressData.providerJob);
-                const progressState = workflowNodeState(progressWorkflowState, node.id);
-                const currentNodeProviderJob = progressState?.providerJob ?? providerJob;
-                const progressedProviderJob: ProviderJob = {
-                  ...currentNodeProviderJob,
-                  progress: Math.max(currentNodeProviderJob.progress, lifecycleProgress),
-                  payload: workflowProviderPayload(
-                    node.id,
-                    currentNodeProviderJob.payload,
-                    snapshotFingerprint,
-                  ),
-                  updatedAt: new Date().toISOString(),
-                };
-                activeProviderJob = progressedProviderJob;
-                Object.assign(providerJob, progressedProviderJob);
-                progressWorkflowState = replaceWorkflowNodeState(progressWorkflowState, {
-                  ...(progressState ?? { nodeId: node.id }),
-                  status:
-                    progressState?.status === 'failed' || progressState?.status === 'cancelled'
-                      ? progressState.status
-                      : 'running',
-                  providerJob: progressedProviderJob,
-                });
-                await job.updateData({
-                  ...progressData,
-                  workflowState: progressWorkflowState,
-                  ...(node.id === executionSnapshot.targetNodeId
-                    ? { providerJob: progressedProviderJob }
-                    : { providerJob: progressData.providerJob }),
-                });
-                await job.updateProgress({
-                  status: 'processing',
-                  progress: currentOverallProgress,
-                  updatedAt: progressedProviderJob.updatedAt,
-                } satisfies WorkerProgress);
-                await persistProviderJob(progressedProviderJob);
-                await persistRun('processing', progressedProviderJob);
-              },
-            },
-            cancellationSignal,
-          );
+              cancellationSignal,
+            ));
           const execution = 'result' in returned ? returned : { result: returned };
-
-          await runExecution?.finishSend({
-            runId: currentData.runId,
-            nodeId: node.id,
-            attempt: currentData.attempt,
-            status: 'sent',
-            ...(execution.providerJob?.platformJobId
-              ? { platformJobId: execution.providerJob.platformJobId }
-              : {}),
-          });
-          activeSendIntent = false;
 
           // 先留存脱敏响应回执和明确成本，取消、校验或归档失败均可按原身份补账。
           const rawProviderMetadata: Partial<ProviderJob> = execution.providerJob ?? {};
@@ -1762,11 +1939,24 @@ export function createRunWorker(options: {
                 ...(safeUsage ?? {}),
                 ...(executionContract ? { contract: executionContract } : {}),
                 deliveryState: 'received',
-                reportedUsage:
-                  execution.usage?.amount !== undefined
+                ...(resultStagingStore
+                  ? {
+                      resultStagingRunId: stagedResult?.identity.runId ?? currentData.runId,
+                      resultStagingAttempt:
+                        stagedResult?.execution.providerJob?.payload?.resultStagingAttempt ??
+                        currentData.attempt,
+                    }
+                  : {}),
+                reportedUsage: stagedResult
+                  ? existingNodeProviderJob?.payload?.reportedUsage
+                  : execution.usage?.amount !== undefined
                     ? { ...execution.usage, runId: databaseRunId }
                     : undefined,
-                usageStatus: execution.usage?.amount !== undefined ? 'pending' : undefined,
+                usageStatus: stagedResult
+                  ? existingNodeProviderJob?.payload?.usageStatus
+                  : execution.usage?.amount !== undefined
+                    ? 'pending'
+                    : undefined,
                 requestPromptRecords: activeRequestPrompts,
                 ...(requestProviderJobId ? { requestProviderJobId } : {}),
               },
@@ -1776,6 +1966,39 @@ export function createRunWorker(options: {
             updatedAt: new Date().toISOString(),
           };
           activeProviderJob = executionProviderJob;
+          const stagingIdentity: ResultStagingIdentity = stagedResult?.identity ?? {
+            runId: currentData.runId,
+            ...(currentData.userId ? { userId: currentData.userId } : {}),
+            projectId: executionSnapshot.projectId,
+            nodeId: node.id,
+            snapshotFingerprint,
+            requestProviderJobId: requestProviderJobId ?? providerJob.id,
+          };
+          // 收到输出后先保护原结果，再落库回执；任何后续失败都不能再次创建生成请求。
+          if (
+            resultStagingStore &&
+            execution.output &&
+            !stagedResult &&
+            !executionSnapshot.reversePrompt &&
+            !executionSnapshot.promptOptimization
+          ) {
+            await resultStagingStore.save(stagingIdentity, {
+              ...execution,
+              providerJob: executionProviderJob,
+            });
+          }
+          if (!stagedResult) {
+            await runExecution?.finishSend({
+              runId: currentData.runId,
+              nodeId: node.id,
+              attempt: currentData.attempt,
+              status: 'sent',
+              ...(execution.providerJob?.platformJobId
+                ? { platformJobId: execution.providerJob.platformJobId }
+                : {}),
+            });
+            activeSendIntent = false;
+          }
           const latestData = readJobData();
           let latestWorkflowState =
             latestData.workflowState ??
@@ -1799,7 +2022,8 @@ export function createRunWorker(options: {
           for (const prompt of activeRequestPrompts) {
             await recordRequestPromptOutcome(prompt, 'sent');
           }
-          recordNodeTiming({ nodeId: node.id, requestFinishedAt: new Date().toISOString() });
+          if (!stagedResult)
+            recordNodeTiming({ nodeId: node.id, requestFinishedAt: new Date().toISOString() });
           await persistRun(
             'processing',
             activeProviderJob ?? providerJob,
@@ -1813,6 +2037,7 @@ export function createRunWorker(options: {
           if (await cancellationRequested()) {
             throw workerCancellationError();
           }
+          activeArchivePhase = true;
           const executionResult = runResultSchema.parse({
             ...execution.result,
             ...(provider === mockProvider ? { simulated: true } : {}),
@@ -1886,6 +2111,7 @@ export function createRunWorker(options: {
           if (!independent && (!asset || !asset.version)) {
             throw new Error(`result archiver did not return a versioned asset for ${node.id}`);
           }
+          activeArchivePhase = false;
           const completedAt = new Date().toISOString();
           const { finalFrame, ...resultAsset } = (asset ?? {}) as RunResultAsset & {
             finalFrame?: RunResult['finalFrame'];
@@ -1994,6 +2220,14 @@ export function createRunWorker(options: {
             'workflow node succeeded',
           );
           activeArchiveFinalizationPending = false;
+          if (resultStagingStore) {
+            try {
+              await resultStagingStore.remove(stagingIdentity);
+            } catch {
+              // 资产已持久化，清理故障不回滚成功结果；密文由固定 TTL 兜底过期。
+              runLogger.warn({ workflowNodeId: node.id }, '已归档结果暂存清理失败，等待到期清理');
+            }
+          }
         }
 
         const completedData = readJobData();
@@ -2070,8 +2304,22 @@ export function createRunWorker(options: {
           },
         };
       } catch (rawError) {
+        let error = redactTransientAssetData(rawError);
+        if (activeArchivePhase && activeProviderJob?.payload?.deliveryState === 'received') {
+          const previous = activeProviderJob.payload.firstArchiveError;
+          const firstArchiveError =
+            typeof previous === 'string' ? previous : safeArchiveError(error);
+          activeProviderJob = {
+            ...activeProviderJob,
+            payload: { ...activeProviderJob.payload, firstArchiveError },
+          };
+          error = new Error(`生成已完成，归档失败：${firstArchiveError}。仅重试归档，不会重新生成`);
+        }
         if (activeSendIntent && activeNodeId) {
-          const sendStatus = requestPromptSendStatusForFailure(rawError);
+          const sendStatus =
+            activeProviderJob?.payload?.deliveryState === 'received'
+              ? 'sent'
+              : requestPromptSendStatusForFailure(rawError);
           await runExecution?.finishSend({
             runId: initialData.runId,
             nodeId: activeNodeId,
@@ -2104,7 +2352,6 @@ export function createRunWorker(options: {
             }
           return markCancelled(currentOverallProgress, activeNodeId, activeProviderJob);
         }
-        const error = redactTransientAssetData(rawError);
         const failedAt = new Date().toISOString();
         const failedData = readJobData();
         const failedNodeId =
@@ -2293,6 +2540,9 @@ export function sanitizeProviderJobPayload(value: unknown): Record<string, unkno
     'usageStatus',
     'usageReason',
     'deliveryState',
+    'resultStagingRunId',
+    'resultStagingAttempt',
+    'firstArchiveError',
     'result',
   ]);
   for (const [key, raw] of Object.entries(value)) {
@@ -2326,6 +2576,14 @@ export function sanitizeProviderJobPayload(value: unknown): Record<string, unkno
     if (scalar !== undefined) output[key] = scalar;
   }
   return Object.keys(output).length > 0 ? output : undefined;
+}
+
+/** 保留首个归档原因，但不把短期地址、内联内容或凭据写入可见错误。 */
+function safeArchiveError(error: unknown): string {
+  return serializeWorkerError(error)
+    .errorMessage.replace(/(?:https?:|data:|blob:)[^\s"'<>]+/gi, '[资源内容已隐藏]')
+    .replace(/[A-Za-z0-9+/_=-]{128,}/g, '[资源内容已隐藏]')
+    .slice(0, 500);
 }
 
 function redactTransientAssetData(error: unknown): unknown {
@@ -2781,6 +3039,9 @@ if (shouldStartWorkerProcess()) {
     providerName: process.env.WORKER_PROVIDER === 'mock' ? 'mock' : 'newapi',
     logger: processLogger,
     ...processPersistence,
+    ...(process.env.DATABASE_URL && process.env.WORKER_PROVIDER !== 'mock'
+      ? { resultStagingKeyring: createCredentialEncryptionKeyringFromEnvironment() }
+      : {}),
     ...(processArchiver.resultArchiver ? { resultArchiver: processArchiver.resultArchiver } : {}),
     ...(processAssetReferences.assetReferenceResolver
       ? { assetReferenceResolver: processAssetReferences.assetReferenceResolver }

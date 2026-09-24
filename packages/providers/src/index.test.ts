@@ -2737,56 +2737,253 @@ describe('NewApiProvider', () => {
     });
   });
 
-  it('uses the New API top-level output format for data[0].b64_json responses', async () => {
+  it.each(['b64_json', 'b64Json', 'base64', 'data'])(
+    'prefers inline image bytes in %s over HTTP and HTTPS URLs without changing the request',
+    async (field) => {
+      for (const protocol of ['http', 'https']) {
+        const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+          new Response(
+            JSON.stringify({
+              data: [{ url: protocol + '://cdn.example/image.jpg', [field]: editPng }],
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        );
+        const provider = new NewApiProvider({
+          baseUrl: 'https://newapi.example.com/v1',
+          apiKey: 'server-secret',
+          fetchImpl,
+        });
+
+        const result = await provider.execute({ snapshot: standardSnapshot('image') });
+
+        expect(result.output).toEqual({
+          mediaType: 'image',
+          kind: 'base64',
+          base64: editPng,
+          mimeType: 'image/png',
+          format: undefined,
+        });
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+        expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+          'https://newapi.example.com/v1/images/generations',
+        );
+        expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))).not.toHaveProperty(
+          'response_format',
+        );
+      }
+    },
+  );
+
+  it.each([
+    { image_url: { url: 'http://cdn.example/image.jpg' } },
+    { imageUrl: 'https://cdn.example/image.jpg' },
+    { data: 'http://cdn.example/image.jpg' },
+  ])('prefers an inline data URL over remote image URL aliases %#', async (remote) => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
         JSON.stringify({
-          created: 1_756_000_000,
-          output_format: 'webp',
-          data: [{ b64_json: 'd2VicC1pbWFnZQ==' }],
-          usage: { input_tokens: 12, output_tokens: 1 },
+          data: [{ ...remote, b64_json: 'data:image/png;base64,' + editPng }],
         }),
-        {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        },
+        { status: 200, headers: { 'content-type': 'application/json' } },
       ),
     );
     const provider = new NewApiProvider({
-      baseUrl: 'https://api.example.com/v1',
+      baseUrl: 'https://newapi.example.com/v1',
       apiKey: 'server-secret',
       fetchImpl,
     });
 
-    const result = await provider.execute({
-      snapshot: {
-        projectId: 'project_1',
-        canvasRevision: 1,
-        targetNodeId: 'node_image',
-        modelAlias: 'gpt-image-2',
-        parameters: {},
-        submittedAt: '2026-08-24T00:00:00.000Z',
-        nodes: [
-          {
-            id: 'node_image',
-            type: 'image',
-            position: { x: 0, y: 0 },
-            data: { label: 'Image', mediaType: 'image', mode: 'generate' },
-          },
-        ],
-        edges: [],
-        inputs: [],
-      },
-    });
+    const result = await provider.execute({ snapshot: standardSnapshot('image') });
 
     expect(result.output).toEqual({
       mediaType: 'image',
       kind: 'base64',
-      base64: 'd2VicC1pbWFnZQ==',
-      mimeType: 'image/webp',
-      format: 'webp',
+      base64: editPng,
+      mimeType: 'image/png',
+      format: 'png',
     });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
+
+  it.each(['http', 'https'])(
+    'preserves %s URL-only image responses including existing URL aliases',
+    async (protocol) => {
+      const url = protocol + '://cdn.example/image.webp';
+      for (const item of [{ url }, { image_url: { url } }, { imageUrl: url }, { data: url }]) {
+        const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+          new Response(JSON.stringify({ data: [item] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+        const provider = new NewApiProvider({
+          baseUrl: 'https://newapi.example.com/v1',
+          apiKey: 'server-secret',
+          fetchImpl,
+        });
+
+        const result = await provider.execute({ snapshot: standardSnapshot('image') });
+
+        expect(result.output).toEqual({
+          mediaType: 'image',
+          kind: 'url',
+          url,
+          mimeType: 'image/webp',
+          format: 'webp',
+        });
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+      }
+    },
+  );
+
+  it.each([undefined, null, '', ' \n\t '])(
+    'falls back to the image URL for absent or empty inline fields: %j',
+    async (inline) => {
+      for (const field of ['b64_json', 'b64Json', 'base64', 'data']) {
+        const url = 'http://cdn.example/image.webp';
+        const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+          new Response(JSON.stringify({ data: [{ url, [field]: inline }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+        const provider = new NewApiProvider({
+          baseUrl: 'https://newapi.example.com/v1',
+          apiKey: 'server-secret',
+          fetchImpl,
+        });
+
+        const result = await provider.execute({ snapshot: standardSnapshot('image') });
+
+        expect(result.output).toEqual({
+          mediaType: 'image',
+          kind: 'url',
+          url,
+          mimeType: 'image/webp',
+          format: 'webp',
+        });
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+      }
+    },
+  );
+
+  it.each([undefined, null, '', ' \n\t '])(
+    'keeps the missing-content error for empty inline fields without a URL: %j',
+    async (inline) => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(JSON.stringify({ data: [{ b64_json: inline }] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+      const provider = new NewApiProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+      });
+
+      await expect(provider.execute({ snapshot: standardSnapshot('image') })).rejects.toMatchObject(
+        {
+          name: 'NewApiProviderError',
+          message: 'New API 图片响应缺少 url 或 base64 内容',
+          retryable: false,
+        },
+      );
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    { inline: '%%%', code: 'PROVIDER_OUTPUT_BASE64_INVALID' },
+    { inline: 'data:image/png;base64,%%%', code: 'PROVIDER_OUTPUT_BASE64_INVALID' },
+    { inline: 'data:image/png;base64,', code: 'PROVIDER_OUTPUT_BASE64_INVALID' },
+    { inline: 'data:audio/mpeg;base64,YXVkaW8=', code: 'PROVIDER_OUTPUT_MIME_MISMATCH' },
+  ])(
+    'rejects malformed inline images rather than falling back to a URL: $inline',
+    async ({ inline, code }) => {
+      for (const url of [
+        undefined,
+        'http://cdn.example/image.png',
+        'https://cdn.example/image.png',
+      ]) {
+        const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+          new Response(JSON.stringify({ data: [{ url, b64_json: inline }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+        const provider = new NewApiProvider({
+          baseUrl: 'https://newapi.example.com/v1',
+          apiKey: 'server-secret',
+          fetchImpl,
+        });
+
+        await expect(
+          provider.execute({ snapshot: standardSnapshot('image') }),
+        ).rejects.toMatchObject({
+          name: 'NewApiProviderError',
+          code,
+          retryable: false,
+        });
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+      }
+    },
+  );
+
+  it.each([undefined, 'http://cdn.example/image.jpg', 'https://cdn.example/image.jpg'])(
+    'uses the New API top-level output format for data[0].b64_json responses (%s)',
+    async (url) => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            created: 1_756_000_000,
+            output_format: 'webp',
+            data: [{ url, b64_json: 'd2VicC1pbWFnZQ==', format: 'jpeg' }],
+            usage: { input_tokens: 12, output_tokens: 1 },
+          }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        ),
+      );
+      const provider = new NewApiProvider({
+        baseUrl: 'https://api.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+      });
+
+      const result = await provider.execute({
+        snapshot: {
+          projectId: 'project_1',
+          canvasRevision: 1,
+          targetNodeId: 'node_image',
+          modelAlias: 'gpt-image-2',
+          parameters: {},
+          submittedAt: '2026-08-24T00:00:00.000Z',
+          nodes: [
+            {
+              id: 'node_image',
+              type: 'image',
+              position: { x: 0, y: 0 },
+              data: { label: 'Image', mediaType: 'image', mode: 'generate' },
+            },
+          ],
+          edges: [],
+          inputs: [],
+        },
+      });
+
+      expect(result.output).toEqual({
+        mediaType: 'image',
+        kind: 'base64',
+        base64: 'd2VicC1pbWFnZQ==',
+        mimeType: 'image/webp',
+        format: 'webp',
+      });
+    },
+  );
 
   it('accepts image arrays returned under a provider-compatible output alias', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
@@ -2927,44 +3124,60 @@ describe('NewApiProvider', () => {
     });
   });
 
-  it('rejects an image response that explicitly declares an audio MIME type', async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(JSON.stringify({ mime_type: 'audio/mpeg', data: [{ b64_json: 'aW1hZ2U=' }] }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      }),
-    );
-    const provider = new NewApiProvider({
-      baseUrl: 'https://newapi.example.com/v1',
-      apiKey: 'server-secret',
-      fetchImpl,
-    });
+  it.each([undefined, 'http://cdn.example/image.jpg', 'https://cdn.example/image.jpg'])(
+    'rejects an image response that explicitly declares an audio MIME type (%s)',
+    async (url) => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({ mime_type: 'audio/mpeg', data: [{ url, b64_json: 'aW1hZ2U=' }] }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        ),
+      );
+      const provider = new NewApiProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+      });
 
-    await expect(provider.execute({ snapshot: standardSnapshot('image') })).rejects.toMatchObject({
-      name: 'NewApiProviderError',
-      code: 'PROVIDER_OUTPUT_MIME_MISMATCH',
-      message: 'New API 图片响应 MIME 类型与媒体类型不匹配',
-    });
-  });
+      await expect(provider.execute({ snapshot: standardSnapshot('image') })).rejects.toMatchObject(
+        {
+          name: 'NewApiProviderError',
+          code: 'PROVIDER_OUTPUT_MIME_MISMATCH',
+          message: 'New API 图片响应 MIME 类型与媒体类型不匹配',
+        },
+      );
+    },
+  );
 
-  it('rejects an image data URL that explicitly carries an audio MIME type', async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(JSON.stringify({ data: [{ b64_json: 'data:audio/mpeg;base64,YXVkaW8=' }] }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      }),
-    );
-    const provider = new NewApiProvider({
-      baseUrl: 'https://newapi.example.com/v1',
-      apiKey: 'server-secret',
-      fetchImpl,
-    });
+  it.each([undefined, 'http://cdn.example/image.jpg', 'https://cdn.example/image.jpg'])(
+    'rejects an image data URL that explicitly carries an audio MIME type (%s)',
+    async (url) => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({ data: [{ url, b64_json: 'data:audio/mpeg;base64,YXVkaW8=' }] }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        ),
+      );
+      const provider = new NewApiProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+      });
 
-    await expect(provider.execute({ snapshot: standardSnapshot('image') })).rejects.toMatchObject({
-      name: 'NewApiProviderError',
-      code: 'PROVIDER_OUTPUT_MIME_MISMATCH',
-    });
-  });
+      await expect(provider.execute({ snapshot: standardSnapshot('image') })).rejects.toMatchObject(
+        {
+          name: 'NewApiProviderError',
+          code: 'PROVIDER_OUTPUT_MIME_MISMATCH',
+        },
+      );
+    },
+  );
 
   it('converts an OpenAI-compatible raw audio response to base64', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(

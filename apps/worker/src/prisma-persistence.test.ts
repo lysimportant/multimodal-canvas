@@ -1,6 +1,6 @@
 import { createCipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { afterEach, beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Prisma } from '@prisma/client';
 
 import { nodeTimingDuration, type RequestPromptRecord } from '@multimodal-canvas/domain';
 
@@ -451,7 +451,7 @@ describe('WorkerPrismaRunPersistence run result persistence', () => {
 
     expect(update).toHaveBeenNthCalledWith(1, {
       where: { id: databaseId },
-      data: { status: 'SUCCEEDED', result },
+      data: { status: 'SUCCEEDED', result, error: Prisma.DbNull },
     });
     expect(update).toHaveBeenNthCalledWith(2, {
       where: { id: databaseId },
@@ -882,6 +882,70 @@ function createRunTimingStore(initialTimings?: unknown) {
 }
 
 describe('WorkerPrismaRunPersistence 节点时间单调写入', () => {
+  it.each([true, false])(
+    '仅持久归档证据(%s)允许修正旧失败终态，成功清理旧错误',
+    async (hasArchivedEvidence) => {
+      const nodeId = 'node_image';
+      const { persistence, state } = createRunTimingStore({
+        [nodeId]: {
+          nodeId,
+          startedAt: '2026-09-24T10:00:00.000Z',
+          requestStartedAt: '2026-09-24T10:00:01.000Z',
+          requestFinishedAt: '2026-09-24T10:00:02.000Z',
+          finishedAt: '2026-09-24T10:00:03.000Z',
+          outcome: 'failed',
+        },
+      });
+      const result = {
+        provider: 'newapi',
+        summary: 'synthetic recovery',
+        targetNodeId: nodeId,
+        mediaType: 'image' as const,
+        inputCount: 0,
+        asset: { assetId: 'asset_recovered', version: 1 },
+      };
+      await persistence.updateRun({ runId, status: 'failed', error: 'first archive error' });
+      await persistence.updateRun({ runId, status: 'processing' });
+      expect(state.error).toEqual({ message: 'first archive error' });
+      await persistence.updateRun({
+        runId,
+        status: 'succeeded',
+        result,
+        ...(hasArchivedEvidence
+          ? {
+              providerJob: {
+                id: 'synthetic-job',
+                provider: 'newapi',
+                status: 'succeeded' as const,
+                progress: 100,
+                createdAt: '2026-09-24T10:00:00.000Z',
+                updatedAt: '2026-09-24T10:00:10.000Z',
+                payload: { workflowNodeId: nodeId, deliveryState: 'archived', result },
+              },
+            }
+          : {}),
+        nodeTimings: {
+          [nodeId]: {
+            nodeId,
+            startedAt: '2026-09-24T10:00:09.000Z',
+            finishedAt: '2026-09-24T10:00:10.000Z',
+            outcome: 'succeeded',
+          },
+        },
+      });
+      expect(state.error).toBe(Prisma.DbNull);
+      expect(state.result).toEqual(result);
+      expect((state.nodeTimings as Record<string, unknown>)[nodeId]).toEqual({
+        nodeId,
+        startedAt: '2026-09-24T10:00:00.000Z',
+        requestStartedAt: '2026-09-24T10:00:01.000Z',
+        requestFinishedAt: '2026-09-24T10:00:02.000Z',
+        finishedAt: hasArchivedEvidence ? '2026-09-24T10:00:10.000Z' : '2026-09-24T10:00:03.000Z',
+        outcome: hasArchivedEvidence ? 'succeeded' : 'failed',
+      });
+    },
+  );
+
   it('写入开始时间并保持状态字段不变', async () => {
     const { persistence, update, prisma } = createRunTimingStore();
 

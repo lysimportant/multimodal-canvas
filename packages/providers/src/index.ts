@@ -3291,6 +3291,13 @@ function extractTextContent(value: unknown): string | undefined {
   return parts.length > 0 ? parts.join('') : undefined;
 }
 
+/**
+ * 解析同步图片响应，优先返回已收到的内联字节，避免额外下载。
+ * @param payload 供应商响应；空内联字段可回退 URL，data 中的远程 URL 不视作编码。
+ * @param snapshot 用于沿用请求中的图片格式。
+ * @returns 已校验的内联图片或远程 URL。
+ * @throws 内联内容损坏或 MIME 不匹配时抛出不可重试错误，不回退 URL。
+ */
 function parseImageOutput(payload: unknown, snapshot: RunSnapshot): ImageProviderOutput {
   const item = firstMediaItem(payload);
   if (!item) throw new NewApiProviderError('New API 图片响应缺少 data[0] 内容');
@@ -3327,6 +3334,23 @@ function parseImageOutput(payload: unknown, snapshot: RunSnapshot): ImageProvide
     typeof imageDataValue === 'string' && /^https?:\/\//i.test(imageDataValue.trim())
       ? imageDataValue
       : undefined;
+  const base64 =
+    item.b64_json ??
+    item.b64Json ??
+    item.base64 ??
+    (imageDataUrl && providerRemoteUrl(imageDataUrl) ? undefined : imageDataValue);
+  if (nonEmptyString(base64)) {
+    const dataUrl = parseDataUrl(base64);
+    const dataUrlMimeType = dataUrl ? validatedMediaMimeType(dataUrl.mimeType, 'image') : undefined;
+    return {
+      mediaType: 'image',
+      kind: 'base64',
+      base64: validatedMediaBase64(dataUrl?.base64 ?? base64),
+      mimeType: dataUrlMimeType ?? mimeType,
+      format: format ?? formatFromMimeType(dataUrl?.mimeType),
+    };
+  }
+
   const url =
     (isRecord(imageUrlValue) ? imageUrlValue.url : imageUrlValue) ?? imageDataUrl ?? undefined;
   if (nonEmptyString(url)) {
@@ -3354,18 +3378,6 @@ function parseImageOutput(payload: unknown, snapshot: RunSnapshot): ImageProvide
     }
   }
 
-  const base64 = item.b64_json ?? item.b64Json ?? item.base64 ?? item.data;
-  if (nonEmptyString(base64)) {
-    const dataUrl = parseDataUrl(base64);
-    const dataUrlMimeType = dataUrl ? validatedMediaMimeType(dataUrl.mimeType, 'image') : undefined;
-    return {
-      mediaType: 'image',
-      kind: 'base64',
-      base64: validatedMediaBase64(dataUrl?.base64 ?? base64),
-      mimeType: dataUrlMimeType ?? mimeType,
-      format: format ?? formatFromMimeType(dataUrl?.mimeType),
-    };
-  }
   throw new NewApiProviderError('New API 图片响应缺少 url 或 base64 内容');
 }
 

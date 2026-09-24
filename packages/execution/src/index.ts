@@ -14,6 +14,9 @@ import { Prisma, type PrismaClient } from '@prisma/client';
 const DATABASE_RUN_UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+/** 原请求链最多核对 32 个 Run；更深或循环链需人工核实，不能按无发送处理。 */
+const MAX_RETRY_ANCESTORS = 32;
+
 /** 可持久化的发送意图状态；unknown 表示供应商可能已经收到请求。 */
 export type SendIntentStatus = 'pending' | 'sending' | 'sent' | 'unknown' | 'failed';
 
@@ -472,6 +475,7 @@ export class PrismaExecutionService {
   /**
    * 在 Provider POST 前创建或读取发送意图。
    * unknown/sending 表示可能已经送达，调用方只能按原请求身份查询或人工核实。
+   * 新发送在同一事务内检查后继与祖先链，防止重试预检与领取之间被旧 Run 抢先发送。
    */
   async beginSend(input: {
     runId: string;
@@ -528,6 +532,36 @@ export class PrismaExecutionService {
       if (record.status !== 'pending') {
         throw new ExecutionError('send_requires_review', '原请求可能已经送达，禁止重复创建');
       }
+      const frozen = await this.requireFrozenNodeRequest(transaction, {
+        runId: input.runId,
+        nodeId: input.nodeId,
+        snapshot: authorization.snapshot,
+        userId: authorization.userId,
+      });
+      if (input.attempt !== frozen.attempt) {
+        throw new ExecutionError('authorization_conflict', '发送 attempt 与冻结请求不一致');
+      }
+      // 重试受理后原 Run 只能恢复已有结果或轮询，不能再领取尚未发送的节点。
+      // 后继若在此查询之后才受理，其 beginSend 会等待本锁并看见本次 sending。
+      const successor = await transaction.run.findFirst({
+        where: { retryOf: currentAuthorization.databaseRunId },
+        select: { id: true },
+      });
+      if (successor) {
+        throw new ExecutionError('send_requires_review', '原任务已有后继重试，禁止再次创建请求');
+      }
+      if (frozen.retryOf) {
+        await this.assertRetryChainSafe(
+          transaction,
+          {
+            runId: frozen.retryOf,
+            nodeId: input.nodeId,
+            snapshot: authorization.snapshot,
+            userId: authorization.userId,
+          },
+          new Set([input.runId]),
+        );
+      }
       const claimed = await transaction.runSendIntent.updateMany({
         where: { id: existing.id, status: 'pending' },
         data: { status: 'sending' },
@@ -537,6 +571,270 @@ export class PrismaExecutionService {
       }
       return { ...record, status: 'sending' };
     });
+  }
+
+  /**
+   * 沿原 Run 的 retryOf 链核对全部发送尝试；仅无发送证据或明确失败时允许新建请求。
+   * @param input 原 Run、节点、冻结快照与所属用户；不是本次重试 Run 的身份。
+   * @throws ExecutionError 身份不一致，或任一次发送处于 sending、unknown、sent。
+   * @remarks 仅预检历史事实；beginSend 在领取事务内再次检查，预检成功不构成发送授权。
+   */
+  async assertRetrySafe(input: {
+    runId: string;
+    nodeId: string;
+    snapshot: RunSnapshot;
+    userId?: string;
+  }): Promise<void> {
+    await this.prisma.$transaction(async (transaction) => {
+      await this.assertRetryChainSafe(transaction, input);
+    });
+  }
+
+  /**
+   * 在已有事务中锁定并核对祖先链；beginSend 保持全部锁直到领取本次发送后提交。
+   * @param visited 已持锁的后继 Run，用于循环检测与 32 层总深度限制。
+   * @throws ExecutionError 原请求证据不完整、链无效或存在可能已发送的尝试。
+   */
+  private async assertRetryChainSafe(
+    transaction: Prisma.TransactionClient,
+    input: { runId: string; nodeId: string; snapshot: RunSnapshot; userId?: string },
+    visited = new Set<string>(),
+  ): Promise<void> {
+    let runId: string | undefined = input.runId;
+    while (runId) {
+      if (visited.has(runId) || visited.size >= MAX_RETRY_ANCESTORS) {
+        throw new ExecutionError('authorization_conflict', '原请求重试链循环或超过核对上限');
+      }
+      visited.add(runId);
+      await transaction.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${runId}, 0))`;
+      const frozen = await this.requireFrozenNodeRequest(transaction, { ...input, runId });
+      const intents = await transaction.runSendIntent.findMany({
+        where: { runId, nodeId: input.nodeId },
+      });
+      for (const intent of intents) {
+        const status = sendIntentStatus(intent.status);
+        if (status !== 'pending' && status !== 'failed') {
+          throw new ExecutionError('send_requires_review', '原节点请求可能已经送达，禁止重复创建');
+        }
+        if (status === 'pending' && intent.platformJobId) {
+          throw new ExecutionError('authorization_conflict', '未发送意图包含上游任务身份');
+        }
+      }
+      runId = frozen.retryOf;
+    }
+  }
+
+  /**
+   * 对账 Worker 已解密并验证的暂存回执；允许补回丢失的发送记录，绝不领取新发送。
+   * @param input 原 Run、节点、attempt、确定性请求 ID 及可选上游任务 ID，连同冻结身份。
+   * @throws ExecutionError 冻结证据缺失、身份或 attempt 冲突、已有 failed 或上游 ID 冲突。
+   * @remarks 取消或撤销不抹去已收到事实；本方法不修改授权、Run/outbox，也不调用外网。
+   */
+  async reconcileReceived(input: {
+    runId: string;
+    nodeId: string;
+    attempt: number;
+    requestIdentity: string;
+    platformJobId?: string;
+    snapshot: RunSnapshot;
+    userId?: string;
+  }): Promise<void> {
+    await this.prisma.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${input.runId}, 0))`;
+      const frozen = await this.requireFrozenNodeRequest(transaction, input);
+      if (
+        input.attempt !== frozen.attempt ||
+        typeof input.requestIdentity !== 'string' ||
+        !input.requestIdentity.trim() ||
+        (input.platformJobId !== undefined &&
+          (typeof input.platformJobId !== 'string' ||
+            !input.platformJobId.trim() ||
+            input.platformJobId !== input.platformJobId.trim()))
+      ) {
+        throw new ExecutionError('authorization_conflict', '暂存回执与原请求身份或尝试次数不一致');
+      }
+      const identity = { runId: input.runId, nodeId: input.nodeId, attempt: input.attempt };
+      const existing = await transaction.runSendIntent.findUnique({
+        where: { runId_nodeId_attempt: identity },
+      });
+      if (!existing) {
+        const chain = [frozen];
+        const visited = new Set([input.runId]);
+        let runId = frozen.retryOf;
+        while (runId) {
+          if (visited.has(runId) || visited.size >= MAX_RETRY_ANCESTORS) {
+            throw new ExecutionError('authorization_conflict', '原请求重试链循环或超过核对上限');
+          }
+          visited.add(runId);
+          await transaction.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${runId}, 0))`;
+          const ancestor = await this.requireFrozenNodeRequest(transaction, { ...input, runId });
+          chain.push(ancestor);
+          runId = ancestor.retryOf;
+        }
+        // 缺失行时仅信任同租户冻结链上派生的节点 ID，不能把 outbox 任意字段当授权。
+        const verified = new Set<string>();
+        for (const request of chain.reverse()) {
+          verified.add(request.requestIdentity);
+          if (
+            request.outboxRequestIdentity !== undefined &&
+            (typeof request.outboxRequestIdentity !== 'string' ||
+              !verified.has(request.outboxRequestIdentity))
+          ) {
+            throw new ExecutionError('authorization_conflict', 'outbox 请求身份不属于已验证祖先链');
+          }
+        }
+        if (
+          !verified.has(input.requestIdentity) ||
+          (frozen.outboxRequestIdentity !== undefined &&
+            frozen.outboxRequestIdentity !== input.requestIdentity)
+        ) {
+          throw new ExecutionError(
+            'authorization_conflict',
+            '缺失发送记录的回执没有原请求身份证据',
+          );
+        }
+      }
+      const current =
+        existing ??
+        (await transaction.runSendIntent.upsert({
+          where: { runId_nodeId_attempt: identity },
+          create: {
+            ...identity,
+            requestIdentity: input.requestIdentity,
+            status: 'sent',
+            ...(input.platformJobId ? { platformJobId: input.platformJobId } : {}),
+          },
+          update: {},
+        }));
+      const status = sendIntentStatus(current.status);
+      if (
+        current.runId !== input.runId ||
+        current.nodeId !== input.nodeId ||
+        current.attempt !== input.attempt ||
+        current.requestIdentity !== input.requestIdentity ||
+        status === 'failed' ||
+        (current.platformJobId &&
+          input.platformJobId &&
+          current.platformJobId !== input.platformJobId)
+      ) {
+        throw new ExecutionError('authorization_conflict', '暂存回执与已有发送事实矛盾');
+      }
+      if (status === 'sent') return;
+      // finishSend 的迟到写入不持有此锁；条件更新避免覆盖并发形成的 failed 或其他身份。
+      const reconciled = await transaction.runSendIntent.updateMany({
+        where: {
+          id: current.id,
+          requestIdentity: input.requestIdentity,
+          status: current.status,
+          platformJobId: current.platformJobId,
+        },
+        data: {
+          status: 'sent',
+          error: null,
+          ...(input.platformJobId ? { platformJobId: input.platformJobId } : {}),
+        },
+      });
+      if (reconciled.count !== 1) {
+        throw new ExecutionError('authorization_conflict', '发送事实已并发变化，不能覆盖');
+      }
+    });
+  }
+
+  /**
+   * 在调用方持有原 Run 事务锁时，核对授权、Run/outbox 与节点的冻结请求事实。
+   * @returns 原 attempt 与确定性 Provider 请求 ID；不授予新的执行权限。
+   * @throws ExecutionError 原始证据缺失、用户/项目/快照不一致或节点没有冻结绑定。
+   */
+  private async requireFrozenNodeRequest(
+    transaction: Prisma.TransactionClient,
+    input: { runId: string; nodeId: string; snapshot: RunSnapshot; userId?: string },
+  ): Promise<{
+    attempt: number;
+    requestIdentity: string;
+    outboxRequestIdentity?: unknown;
+    retryOf?: string;
+  }> {
+    const authorization = await transaction.executionAuthorization.findUnique({
+      where: { runId: input.runId },
+    });
+    const outbox = await transaction.runOutbox.findUnique({ where: { runId: input.runId } });
+    if (!authorization || !outbox) {
+      throw new ExecutionError('authorization_required', '原请求缺少持久授权或 outbox');
+    }
+    const run = await transaction.run.findUnique({ where: { id: authorization.databaseRunId } });
+    const payload = runJobDataSchema.safeParse(outbox.payload);
+    const suppliedSnapshot = runSnapshotSchema.safeParse(input.snapshot);
+    const authorizedSnapshot = runSnapshotSchema.safeParse(authorization.snapshot);
+    const storedSnapshot = runSnapshotSchema.safeParse(run?.snapshot);
+    if (
+      !run ||
+      !input.userId ||
+      input.userId !== authorization.userId ||
+      authorization.runId !== input.runId ||
+      authorization.databaseRunId !== executionDatabaseRunId(input.runId) ||
+      run.id !== authorization.databaseRunId ||
+      run.userId !== authorization.userId ||
+      run.projectId !== authorization.projectId ||
+      outbox.runId !== input.runId ||
+      !payload.success ||
+      !suppliedSnapshot.success ||
+      !authorizedSnapshot.success ||
+      !storedSnapshot.success ||
+      payload.data.runId !== input.runId ||
+      payload.data.userId !== authorization.userId ||
+      payload.data.provider !== 'newapi' ||
+      run.attempt !== payload.data.attempt ||
+      (run.retryOf ?? undefined) !==
+        (payload.data.retryOf ? executionDatabaseRunId(payload.data.retryOf) : undefined) ||
+      (run.idempotencyKey ?? undefined) !== payload.data.idempotencyKey ||
+      [
+        suppliedSnapshot.data,
+        authorizedSnapshot.data,
+        storedSnapshot.data,
+        payload.data.snapshot,
+      ].some(
+        (snapshot) =>
+          snapshot.projectId !== authorization.projectId ||
+          executionSnapshotFingerprint(snapshot) !== authorization.snapshotFingerprint,
+      )
+    ) {
+      throw new ExecutionError(
+        'authorization_conflict',
+        '原请求的用户、项目、快照或 outbox 不一致',
+      );
+    }
+    const snapshot = authorizedSnapshot.data;
+    assertExecutionBindings(snapshot);
+    if (
+      !executableNodeIds(snapshot).includes(input.nodeId) ||
+      !snapshot.executionBindings?.[input.nodeId]
+    ) {
+      throw new ExecutionError('binding_required', '原请求节点缺少冻结执行绑定');
+    }
+    const targetIdentity = `provider_job_${input.runId}`;
+    const requestIdentity =
+      input.nodeId === snapshot.targetNodeId ? targetIdentity : `${targetIdentity}_${input.nodeId}`;
+    const targetJob = payload.data.providerJob;
+    const nodeJob = payload.data.workflowState?.nodes.find(
+      (node) => node.nodeId === input.nodeId,
+    )?.providerJob;
+    for (const [job, expected] of [
+      [targetJob, targetIdentity],
+      [nodeJob, requestIdentity],
+    ] as const) {
+      if (job && (job.provider !== 'newapi' || job.id !== expected)) {
+        throw new ExecutionError('authorization_conflict', 'outbox 中的原请求身份不一致');
+      }
+    }
+    return {
+      attempt: payload.data.attempt,
+      requestIdentity,
+      outboxRequestIdentity: (input.nodeId === snapshot.targetNodeId
+        ? (nodeJob ?? targetJob)
+        : nodeJob
+      )?.payload?.requestProviderJobId,
+      ...(payload.data.retryOf ? { retryOf: payload.data.retryOf } : {}),
+    };
   }
 
   /** 保存发送结果；终态不会被迟到的弱证据回退。 */

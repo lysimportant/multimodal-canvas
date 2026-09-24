@@ -62,6 +62,8 @@ export const permissiveTestExecutionAuthorization: WorkerExecutionAuthorization 
   async authorizeNode() {},
   async beginSend() {},
   async finishSend() {},
+  async assertRetrySafe() {},
+  async reconcileReceived() {},
 };
 
 /** 创建带合成持久授权的 Worker；显式授权桩仍优先。 */
@@ -70,6 +72,6 @@ export function createAuthorizedTestRunWorker(
 ): ReturnType<typeof createRunWorker> {
   return createRunWorker({
     ...options,
-    execution: options.execution ?? permissiveTestExecutionAuthorization,
+    execution: { ...permissiveTestExecutionAuthorization, ...options.execution },
   });
 }
