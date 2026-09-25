@@ -539,7 +539,7 @@ test('提示词与耗时：旧结果只读长文本、双复制、焦点及刷�
   await node.hover();
   await node.getByRole('button', { name: '查看节点信息' }).click();
   const info = page.getByRole('dialog', { name: '节点信息', exact: true });
-  await expect(info.locator('.node-duration-badge')).toHaveText('12.4秒');
+  await expect(info.locator('.node-duration-badge')).toHaveText('12秒');
   const trigger = info.getByRole('button', { name: /查看生成提示词/ });
   await trigger.click();
   const dialog = page.getByRole('dialog', { name: '生成提示词' });
@@ -562,7 +562,7 @@ test('提示词与耗时：旧结果只读长文本、双复制、焦点及刷�
   await page.reload({ waitUntil: 'domcontentloaded' });
   await node.hover();
   await node.getByRole('button', { name: '查看节点信息' }).click();
-  await expect(info.locator('.node-duration-badge')).toHaveText('12.4秒');
+  await expect(info.locator('.node-duration-badge')).toHaveText('12秒');
   expect(fixture.errors).toEqual([]);
 });
 
@@ -638,7 +638,7 @@ test('联合流程：分组模型默认、生成、摘要、分组、清理、�
   await page.getByRole('button', { name: /查看生成提示词/ }).click();
   const prompt = page.getByRole('dialog', { name: '生成提示词' });
   await expect(prompt.locator('.request-prompt-text')).toHaveText(`[user] ${submittedPrompt}`);
-  await expect(prompt.locator('.node-duration-badge')).toHaveText('12.4秒');
+  await expect(prompt.locator('.node-duration-badge')).toHaveText('12秒');
   await prompt.getByRole('button', { name: '添加摘要', exact: true }).click();
   const summary = '窗边笔记上的阳光，保持原始场景。';
   await prompt.getByRole('textbox', { name: '摘要正文' }).fill(summary);
@@ -678,7 +678,7 @@ test('联合流程：分组模型默认、生成、摘要、分组、清理、�
   await node.getByRole('button', { name: '查看节点信息' }).click();
   await page.getByRole('button', { name: /查看生成提示词/ }).click();
   await expect(prompt.locator('.request-prompt-summary')).toHaveText(summary);
-  await expect(prompt.locator('.node-duration-badge')).toHaveText('12.4秒');
+  await expect(prompt.locator('.node-duration-badge')).toHaveText('12秒');
   expect(fixture.canvas().groups).toEqual(saved.groups);
   expect(fixture.errors).toEqual([]);
 });
@@ -744,7 +744,7 @@ test('资源历史：删除原节点后按精确版本切换提示词、摘要�
   await prompt.getByRole('button', { name: '取消', exact: true }).click();
   await prompt.getByRole('combobox', { name: '结果版本' }).selectOption('1');
   await expect(prompt.locator('.request-prompt-text')).toHaveText(`[user] ${promptText}`);
-  await expect(prompt.locator('.node-duration-badge')).toHaveText('12.4秒');
+  await expect(prompt.locator('.node-duration-badge')).toHaveText('12秒');
   await prompt.getByRole('button', { name: '编辑摘要', exact: true }).click();
   await prompt.getByRole('textbox', { name: '摘要正文' }).fill('第一版独立保存的摘要');
   await prompt.getByRole('button', { name: '保存摘要', exact: true }).click();

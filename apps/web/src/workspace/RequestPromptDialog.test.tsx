@@ -202,7 +202,7 @@ describe('RequestPromptDialog', () => {
     );
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
     expect(screen.getByText('asset-1 · v1')).toBeInTheDocument();
-    expect(screen.getByText('4.5秒')).toBeInTheDocument();
+    expect(screen.getByText('4秒')).toBeInTheDocument();
     expect(onSaveSummary).not.toHaveBeenCalled();
   });
 
@@ -314,7 +314,7 @@ describe('NodeDurationBadge', () => {
         now={Date.parse('2026-09-16T10:05:00.000Z')}
       />,
     );
-    expect(screen.getByText('12.4秒')).toBeInTheDocument();
+    expect(screen.getByText('12秒')).toBeInTheDocument();
 
     rerender(
       <NodeDurationBadge
@@ -339,7 +339,7 @@ describe('NodeDurationBadge', () => {
         running
       />,
     );
-    expect(screen.getByText('3.2秒')).toBeInTheDocument();
+    expect(screen.getByText('3秒')).toBeInTheDocument();
     expect(document.querySelector('.node-duration-badge.is-running')).not.toBeNull();
   });
 

@@ -14,7 +14,7 @@ import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { PromptDocument } from '@multimodal-canvas/domain';
+import { PROMPT_SKILLS, type PromptDocument } from '@multimodal-canvas/domain';
 import { clearAuthSession, persistAuthSession } from '../auth-client';
 import {
   useWorkspacePreferences,
@@ -208,6 +208,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   useWorkspacePreferences.setState(workspacePreferenceDefaults);
   window.localStorage.clear();
+  sessionStorage.clear();
 });
 
 describe('NodeQuickEditor', () => {
@@ -335,6 +336,9 @@ describe('NodeQuickEditor', () => {
       onPromptSkillChange: vi.fn(),
     });
     renderRaw(<NodeQuickEditor {...inputs} />);
+    const trigger = screen.getByRole('button', { name: 'Skill 配置' });
+    expect(screen.queryByRole('combobox', { name: '提示词 Skill' })).not.toBeInTheDocument();
+    expect(trigger).toHaveAttribute('aria-description', 'Skill 目录加载中');
     await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
     expect(screen.getByRole('combobox', { name: '提示词 Skill' })).toBeDisabled();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
@@ -348,6 +352,57 @@ describe('NodeQuickEditor', () => {
     expect(screen.getByRole('combobox', { name: '提示词 Skill' })).toBeDisabled();
     expect(inputs.onPromptSkillChange).not.toHaveBeenCalled();
   });
+
+  it.each(['快捷', '完整'] as const)(
+    '%s编辑器目录错误只显示在 Skill 浮卡，不影响原媒体生成',
+    async (presentation) => {
+      const user = userEvent.setup();
+      const fetcher = vi.fn();
+      vi.stubGlobal('fetch', fetcher);
+      const inputs = makeProps({
+        projectId: 'project-a',
+        node: { ...imageNode, data: { ...imageNode.data, promptSkillId: 'character' } },
+        skillLibraryError: '技能目录读取失败',
+        onPromptSkillChange: vi.fn(),
+        onOpenSkillWorkbench: vi.fn(),
+      });
+      const view = renderRaw(<NodeQuickEditor {...inputs} />);
+      if (presentation === '完整') {
+        await user.click(screen.getByRole('button', { name: '打开完整编辑器' }));
+      }
+      const trigger = screen.getByRole('button', { name: 'Skill 配置' });
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      expect(screen.queryByText('技能目录读取失败')).not.toBeInTheDocument();
+      expect(trigger).toHaveAttribute('aria-description', '技能目录读取失败');
+      expect(trigger).toHaveAttribute('title', '技能目录读取失败');
+      await user.hover(trigger);
+      const settings = await screen.findByRole('group', { name: 'Skill 配置' });
+      await waitFor(() => expect(settings).toBeVisible());
+      expect(settings.closest('.ant-dropdown')?.parentElement).toBe(
+        screen.queryByRole('dialog') ?? document.body,
+      );
+      expect(within(settings).getByRole('alert')).toHaveTextContent('技能目录读取失败');
+      expect(screen.getAllByRole('alert')).toEqual([within(settings).getByRole('alert')]);
+      expect(within(settings).getByRole('combobox', { name: '提示词 Skill' })).toBeDisabled();
+      expect(within(settings).getByRole('button', { name: '优化提示词' })).toBeDisabled();
+      await user.click(within(settings).getByRole('button', { name: '技能工作台' }));
+      expect(inputs.onOpenSkillWorkbench).toHaveBeenCalledOnce();
+      const run = screen.getByRole('button', { name: '生成' });
+      expect(run).toBeEnabled();
+      await user.click(run);
+      expect(inputs.onRun).toHaveBeenCalledOnce();
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      expect(screen.queryByRole('group', { name: 'Skill 配置' })).not.toBeInTheDocument();
+      view.rerender(<NodeQuickEditor {...inputs} skillLibraryError={undefined} />);
+      await user.hover(trigger);
+      const recovered = await screen.findByRole('group', { name: 'Skill 配置' });
+      await waitFor(() => expect(recovered).toBeVisible());
+      expect(within(recovered).queryByRole('alert')).not.toBeInTheDocument();
+      expect(within(recovered).getByRole('button', { name: '优化提示词' })).toBeEnabled();
+      expect(inputs.onPromptSkillChange).not.toHaveBeenCalled();
+      expect(fetcher).not.toHaveBeenCalled();
+    },
+  );
 
   it('快捷与完整编辑器的 Skill 默认收起，展开后共用原配置入口', async () => {
     const user = userEvent.setup();
@@ -364,6 +419,11 @@ describe('NodeQuickEditor', () => {
     expect(screen.queryByRole('combobox', { name: '优化模型' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '技能工作台' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '优化提示词' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: '优化预览' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Skill 配置' })).toHaveAttribute(
+      'aria-description',
+      '悬停配置 Skill',
+    );
     await user.hover(screen.getByRole('button', { name: 'Skill 配置' }));
     const settings = await screen.findByRole('group', { name: 'Skill 配置' });
     expect(settings.closest('.ant-dropdown')?.parentElement).toBe(document.body);
@@ -404,9 +464,89 @@ describe('NodeQuickEditor', () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
+  it('快捷和完整编辑器切换后重开 Skill 浮卡恢复编辑预览，只显式应用且不重复提交', async () => {
+    const user = userEvent.setup();
+    const inputs = makeProps({
+      projectId: 'project-a',
+      node: { ...imageNode, data: { ...imageNode.data, promptSkillId: 'character' } },
+      onPromptSkillChange: vi.fn(),
+      onPromptDocumentChange: vi.fn(),
+    });
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json({
+        optimization: {
+          runId: 'run-editor-skill',
+          nodeId: imageNode.id,
+          skillId: 'character',
+          skillVersion: PROMPT_SKILLS.find((skill) => skill.id === 'character')!.version,
+          status: 'succeeded',
+          modelAlias: 'text-model',
+          promptDocument: { version: 1, blocks: [{ type: 'text', text: '优化后的白色背景' }] },
+        },
+      }),
+    );
+    vi.stubGlobal('fetch', fetcher);
+    renderRaw(<NodeQuickEditor {...inputs} />);
+    await user.hover(screen.getByRole('button', { name: 'Skill 配置' }));
+    const quick = await screen.findByRole('group', { name: 'Skill 配置' });
+    await waitFor(() => expect(quick).toBeVisible());
+    await user.click(within(quick).getByRole('button', { name: '优化提示词' }));
+    const preview = await within(quick).findByRole('textbox', { name: '优化文字 1' });
+    fireEvent.change(preview, { target: { value: '快捷编辑器未应用的预览' } });
+    expect(inputs.onPromptDocumentChange).not.toHaveBeenCalled();
+    expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue('白色背景');
+
+    await user.click(screen.getByRole('button', { name: '打开完整编辑器' }));
+    const dialog = screen.getByRole('dialog');
+    const fullTrigger = within(dialog).getByRole('button', { name: 'Skill 配置' });
+    expect(fullTrigger).toHaveAttribute('aria-expanded', 'false');
+    expect(fullTrigger).toHaveAttribute('aria-description', '优化预览待应用');
+    expect(screen.queryByRole('group', { name: '优化预览' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: '优化文字 1' })).not.toBeInTheDocument();
+    await user.hover(fullTrigger);
+    const full = await within(dialog).findByRole('group', { name: 'Skill 配置' });
+    await waitFor(() => expect(full).toBeVisible());
+    expect(full.closest('.ant-dropdown')?.parentElement).toBe(dialog);
+    expect(within(full).getByRole('textbox', { name: '优化文字 1' })).toHaveValue(
+      '快捷编辑器未应用的预览',
+    );
+    fireEvent.change(within(full).getByRole('textbox', { name: '优化文字 1' }), {
+      target: { value: '完整编辑器继续编辑的预览' },
+    });
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(inputs.onPromptDocumentChange).not.toHaveBeenCalled();
+    await user.click(within(dialog).getByRole('button', { name: '关闭编辑器' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    const restoredTrigger = screen.getByRole('button', { name: 'Skill 配置' });
+    expect(restoredTrigger).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('group', { name: '优化预览' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: '优化文字 1' })).not.toBeInTheDocument();
+    await user.hover(restoredTrigger);
+    const restored = await screen.findByRole('group', { name: 'Skill 配置' });
+    await waitFor(() => expect(restored).toBeVisible());
+    expect(restored.closest('.ant-dropdown')?.parentElement).toBe(document.body);
+    expect(within(restored).getByRole('textbox', { name: '优化文字 1' })).toHaveValue(
+      '完整编辑器继续编辑的预览',
+    );
+    expect(inputs.onPromptDocumentChange).not.toHaveBeenCalled();
+    expect(fetcher).toHaveBeenCalledOnce();
+    await user.click(within(restored).getByRole('button', { name: '应用' }));
+    expect(inputs.onPromptDocumentChange).toHaveBeenCalledExactlyOnceWith({
+      version: 1,
+      blocks: [{ type: 'text', text: '完整编辑器继续编辑的预览' }],
+    });
+    expect(screen.queryByRole('group', { name: '优化预览' })).not.toBeInTheDocument();
+    expect(inputs.onPromptChange).not.toHaveBeenCalled();
+    expect(inputs.onRun).not.toHaveBeenCalled();
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(fetcher.mock.calls[0]![1]?.method).toBe('POST');
+    expect(sessionStorage.length).toBe(0);
+  });
+
   it.each(['text', 'image', 'audio', 'video'] as const)(
-    '%s 节点显示独立生成数量，历史节点默认一份且不使用新的全局偏好',
-    (mediaType) => {
+    '%s 节点数量复用参数选择器，历史节点仍默认一份',
+    async (mediaType) => {
+      const user = userEvent.setup();
       useWorkspacePreferences.getState().setDefaultGenerationCount(3);
       const onGenerationCountChange = vi.fn();
       const onParametersChange = vi.fn();
@@ -419,29 +559,125 @@ describe('NodeQuickEditor', () => {
           })}
         />,
       );
-      const input = screen.getByRole('spinbutton', { name: '生成数量' });
-      expect(input).toHaveValue(1);
-      fireEvent.change(input, { target: { value: '2' } });
-      expect(onGenerationCountChange).toHaveBeenCalledWith(2);
+      const count = screen.getByRole('combobox', { name: '生成数量：1份' });
+      expect(count.closest('.node-parameter-select')).toHaveClass(
+        'node-quick-editor-generation-count',
+      );
+      expect(screen.queryByRole('spinbutton', { name: '生成数量' })).not.toBeInTheDocument();
+      await user.click(count);
+      const options = screen.getByRole('listbox', { name: '生成数量选项' });
+      expect(within(options).getAllByRole('option')).toHaveLength(20);
+      expect(within(options).getByRole('option', { name: '20份' })).toBeInTheDocument();
+      await user.click(within(options).getByRole('option', { name: '2份' }));
+      expect(onGenerationCountChange).toHaveBeenCalledExactlyOnceWith(2);
+      expect(screen.getByRole('combobox', { name: '生成数量：2份' })).toBeInTheDocument();
       expect(onParametersChange).not.toHaveBeenCalled();
     },
   );
 
-  it('非法数量只保留草稿并阻止运行，修正后恢复可运行状态', () => {
+  it.each(['快捷', '完整'] as const)(
+    '%s编辑器重选当前生成数量不回调，改值后也按当前草稿去重',
+    async (presentation) => {
+      const user = userEvent.setup();
+      const onGenerationCountChange = vi.fn();
+      renderRaw(
+        <NodeQuickEditor
+          {...makeProps({
+            node: { ...imageNode, data: { ...imageNode.data, generationCount: 3 } },
+            onGenerationCountChange,
+          })}
+        />,
+      );
+      if (presentation === '完整') {
+        await user.click(screen.getByRole('button', { name: '打开完整编辑器' }));
+      }
+      await user.click(screen.getByRole('combobox', { name: '生成数量：3份' }));
+      await user.click(screen.getByRole('option', { name: '3份', selected: true }));
+      expect(onGenerationCountChange).not.toHaveBeenCalled();
+      expect(screen.getByRole('combobox', { name: '生成数量：3份' })).toHaveAttribute(
+        'aria-expanded',
+        'false',
+      );
+      await user.click(screen.getByRole('combobox', { name: '生成数量：3份' }));
+      await user.click(screen.getByRole('option', { name: '2份' }));
+      expect(onGenerationCountChange).toHaveBeenCalledExactlyOnceWith(2);
+      await user.click(screen.getByRole('combobox', { name: '生成数量：2份' }));
+      await user.click(screen.getByRole('option', { name: '2份', selected: true }));
+      expect(onGenerationCountChange).toHaveBeenCalledExactlyOnceWith(2);
+      expect(screen.getByRole('combobox', { name: '生成数量：2份' })).toHaveAttribute(
+        'aria-expanded',
+        'false',
+      );
+    },
+  );
+
+  it('非法历史数量不会自动改写，选择有效数量后恢复运行', async () => {
+    const user = userEvent.setup();
     const onGenerationCountChange = vi.fn();
-    renderRaw(<NodeQuickEditor {...makeProps({ onGenerationCountChange })} />);
-    const input = screen.getByRole('spinbutton', { name: '生成数量' });
-    for (const value of ['', '0', '-1', '1.5', '21']) {
-      fireEvent.change(input, { target: { value } });
-      expect(input).toHaveAttribute('aria-invalid', 'true');
+    const props = makeProps({ onGenerationCountChange });
+    const view = renderRaw(<NodeQuickEditor {...props} />);
+    for (const generationCount of [0, -1, 1.5, 21]) {
+      view.rerender(
+        <NodeQuickEditor
+          {...props}
+          node={{ ...imageNode, data: { ...imageNode.data, generationCount } }}
+        />,
+      );
       expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+      expect(screen.getByRole('status')).toHaveTextContent('生成数量必须为 1 至 20 的整数');
     }
     expect(onGenerationCountChange).not.toHaveBeenCalled();
-    fireEvent.change(input, { target: { value: '3' } });
-    expect(onGenerationCountChange).toHaveBeenCalledWith(3);
-    expect(input).toHaveAttribute('aria-invalid', 'false');
+    await user.click(screen.getByRole('combobox', { name: '生成数量：未设置' }));
+    await user.click(screen.getByRole('option', { name: '3份' }));
+    expect(onGenerationCountChange).toHaveBeenCalledExactlyOnceWith(3);
     expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
   });
+
+  it.each(['快捷', '完整'] as const)(
+    '%s编辑器忙碌时禁用数量和生成，Skill 与模型、数量、生成共用工具栏',
+    async (presentation) => {
+      const user = userEvent.setup();
+      const inputs = makeProps({
+        busy: true,
+        onGenerationCountChange: vi.fn(),
+        onPromptSkillChange: vi.fn(),
+        onOpenSkillWorkbench: vi.fn(),
+      });
+      renderRaw(<NodeQuickEditor {...inputs} />);
+      if (presentation === '完整') {
+        await user.click(screen.getByRole('button', { name: '打开完整编辑器' }));
+      }
+      const trigger = screen.getByRole('button', { name: 'Skill 配置' });
+      const skill = trigger.closest('.prompt-skill-panel')!;
+      const controls = trigger.closest('.node-quick-editor-controls')!;
+      const runGroup = trigger.closest('.node-quick-editor-run-group')!;
+      const count = screen.getByRole('combobox', { name: '生成数量：1份' });
+      const run = screen.getByRole('button', { name: '生成中' });
+      expect(controls).not.toBeNull();
+      expect(runGroup).not.toBeNull();
+      expect(runGroup.parentElement).toBe(controls);
+      expect(runGroup.firstElementChild).toBe(skill);
+      expect(skill.nextElementSibling).toBe(count.closest('.node-parameter-select'));
+      expect(count.closest('.node-parameter-select')!.nextElementSibling).toBe(run);
+      expect(
+        screen.getByRole('combobox', { name: /^模型：/ }).closest('.node-quick-editor-controls'),
+      ).toBe(controls);
+      expect(screen.getAllByRole('button', { name: 'Skill 配置' })).toEqual([trigger]);
+      expect(skill).toHaveTextContent(/^Skill$/);
+      expect(count).toBeDisabled();
+      expect(run).toBeDisabled();
+      expect(trigger).toBeEnabled();
+      expect(screen.queryByRole('group', { name: 'Skill 配置' })).not.toBeInTheDocument();
+      await user.hover(trigger);
+      const settings = await screen.findByRole('group', { name: 'Skill 配置' });
+      await waitFor(() => expect(settings).toBeVisible());
+      expect(within(settings).getByRole('combobox', { name: '提示词 Skill' })).toBeDisabled();
+      expect(within(settings).getByRole('button', { name: '优化提示词' })).toBeDisabled();
+      await user.click(within(settings).getByRole('button', { name: '技能工作台' }));
+      expect(inputs.onOpenSkillWorkbench).toHaveBeenCalledOnce();
+      expect(inputs.onRun).not.toHaveBeenCalled();
+    },
+  );
 
   it('视频快捷时长包含 15 秒，自定义秒数保留其他参数且拒绝非正整数', async () => {
     const user = userEvent.setup();
@@ -1261,7 +1497,7 @@ describe('NodeQuickEditor', () => {
       renderRaw(<NodeQuickEditor {...makeProps({ onGenerationCountChange: vi.fn() })} />);
       fireEvent.click(screen.getByRole('button', { name: '打开完整编辑器' }));
       const dialog = screen.getByRole('dialog');
-      const count = within(dialog).getByRole('spinbutton', { name: '生成数量' });
+      const count = within(dialog).getByRole('combobox', { name: '生成数量：1份' });
       expect(count).toBeEnabled();
       act(() => count.focus());
       expect(count).toHaveFocus();

@@ -56,6 +56,8 @@ export type PromptSkillPanelProps = {
   skills?: readonly PromptSkill[];
   /** 目录尚未确认时保留节点选择，禁止更改、提交和应用；不阻止查询已有任务。 */
   skillsLoading?: boolean;
+  /** 技能目录请求失败的信息，在浮卡中展示；父层同时禁止提交和应用。 */
+  skillsError?: string;
   /** 打开父层提供的技能工作台；缺省时隐藏入口。 */
   onOpenWorkbench?: () => void;
   /** 禁止提交与应用，但保留恢复记录。 */
@@ -72,7 +74,8 @@ function currentUserId(): string {
 }
 
 /**
- * 渲染独立优化面板，节点或账户切换时释放旧轮询并从对应会话记录恢复。
+ * 渲染紧凑 Skill 按钮和悬浮卡片；收起卡片不停止轮询或清除预览。
+ * 节点或账户切换时释放旧轮询并从对应会话记录恢复。
  * 父组件在紧凑和展开编辑器中传入相同参数即可，预览和未知请求跨重挂载保留。
  */
 export function PromptSkillPanel(props: PromptSkillPanelProps) {
@@ -96,6 +99,7 @@ function PromptSkillPanelSession({
   models = [],
   skills = PROMPT_SKILLS,
   skillsLoading = false,
+  skillsError,
   onOpenWorkbench,
   disabled = false,
   onSkillChange,
@@ -105,6 +109,7 @@ function PromptSkillPanelSession({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsPinned, setSettingsPinned] = useState(false);
   const selectId = useId();
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const [modelKey, setModelKey] = useState('default');
   const [pending, setPending] = useState<PendingPromptOptimization>();
   const [busy, setBusy] = useState(false);
@@ -350,6 +355,20 @@ function PromptSkillPanelSession({
     }
   };
 
+  /** 收起浮卡时仍提示进度、待应用结果或错误，不占用工具栏以外的布局。 */
+  const statusLabel =
+    skillsError ??
+    error ??
+    (skillsLoading
+      ? 'Skill 目录加载中'
+      : busy
+        ? '正在优化提示词'
+        : draft
+          ? '优化预览待应用'
+          : pending
+            ? '优化任务待确认'
+            : '悬停配置 Skill');
+
   return (
     <section
       className="prompt-skill-panel nodrag nowheel"
@@ -389,6 +408,20 @@ function PromptSkillPanelSession({
             role="group"
             aria-label="Skill 配置"
             onPointerDown={() => setSettingsPinned(true)}
+            onKeyDown={(event) => {
+              // 卡片内是表单，不让 Dropdown 的菜单式 Tab 处理打断预览编辑。
+              if (event.key === 'Tab') event.stopPropagation();
+            }}
+            onBlur={(event) => {
+              if (
+                event.relatedTarget &&
+                !event.currentTarget.contains(event.relatedTarget) &&
+                !triggerRef.current?.contains(event.relatedTarget)
+              ) {
+                setSettingsOpen(false);
+                setSettingsPinned(false);
+              }
+            }}
           >
             <div className="prompt-skill-controls">
               <label className="prompt-skill-select">
@@ -509,144 +542,161 @@ function PromptSkillPanelSession({
               )}
               {busy ? '优化中' : '优化提示词'}
             </Button>
+            {!projectId && <p className="prompt-skill-status">保存项目后可优化提示词</p>}
+            {skillsLoading && (
+              <p className="prompt-skill-status" role="status">
+                Skill 目录加载中
+              </p>
+            )}
+            {!skillsLoading && skillId && !skillAvailable && (
+              <p role="alert">所选 Skill 已不可用或已停用，请在技能工作台修复或重新选择</p>
+            )}
+            {skillsError && (
+              <p className="prompt-skill-error" role="alert">
+                {skillsError}
+              </p>
+            )}
+            {error && (
+              <p className="prompt-skill-error" role="alert">
+                {error}
+              </p>
+            )}
+            {pending && !draft && (
+              <div className="prompt-skill-progress">
+                <p role="status">
+                  {busy
+                    ? pending.result?.status === 'queued'
+                      ? '等待优化'
+                      : '正在优化提示词'
+                    : pending.runId
+                      ? '优化任务待确认'
+                      : '提交结果尚未确认，将沿用原请求查询'}
+                </p>
+                {busy ? (
+                  <Button
+                    type="button"
+                    className="button button-secondary"
+                    onClick={() => {
+                      const controller = requestRef.current;
+                      requestRef.current = undefined;
+                      controller?.abort();
+                      setBusy(false);
+                      setError('已停止查询，服务端任务可能仍在运行');
+                    }}
+                  >
+                    <Square size={13} aria-hidden="true" />
+                    停止查询
+                  </Button>
+                ) : (
+                  <Button
+                    type="button"
+                    className="button button-secondary"
+                    disabled={disabled || storageBlocked}
+                    onClick={() => void execute(pending)}
+                  >
+                    <RotateCw size={13} aria-hidden="true" />
+                    {pending.runId ? '继续查询' : '确认原请求'}
+                  </Button>
+                )}
+              </div>
+            )}
+            {pending && draft && (
+              <div className="prompt-skill-preview" role="group" aria-label="优化预览">
+                <div className="prompt-skill-preview-heading">
+                  <strong>优化预览</strong>
+                  {pending.result?.simulated && <span>模拟结果</span>}
+                </div>
+                <div className="prompt-skill-preview-document">
+                  {draft.blocks.map((block, index) =>
+                    block.type === 'text' ? (
+                      <Textarea
+                        key={index}
+                        aria-label={`优化文字 ${index + 1}`}
+                        value={block.text}
+                        rows={Math.max(2, Math.min(8, block.text.split('\n').length))}
+                        maxLength={20_000}
+                        disabled={disabled}
+                        onChange={(event) => editText(index, event.target.value)}
+                      />
+                    ) : (
+                      <span
+                        key={block.mentionId}
+                        className="prompt-skill-mention"
+                        title={
+                          block.assetVersion ? `资源版本 ${block.assetVersion}` : '当前资源版本'
+                        }
+                      >
+                        @{mentionDisplayName(block)}
+                      </span>
+                    ),
+                  )}
+                </div>
+                {stale && !skillsLoading && (
+                  <p className="prompt-skill-error" role="status">
+                    {!skillAvailable
+                      ? '此 Skill 已删除或停用，已保留优化结果，但无法应用此预览；请恢复 Skill 或丢弃结果'
+                      : '原提示词、节点或 Skill 版本已改变，无法应用此预览；请丢弃后重新优化'}
+                  </p>
+                )}
+                {draftIssue && (
+                  <p className="prompt-skill-error" role="alert">
+                    {draftIssue}
+                  </p>
+                )}
+                <div className="prompt-skill-actions">
+                  <Button
+                    type="button"
+                    className="button button-secondary"
+                    onClick={() => {
+                      try {
+                        release(pending);
+                        setError(undefined);
+                      } catch (cause) {
+                        setError(errorMessage(cause));
+                      }
+                    }}
+                  >
+                    <X size={14} aria-hidden="true" />
+                    丢弃
+                  </Button>
+                  <Button
+                    type="button"
+                    className="button button-primary"
+                    disabled={disabled || skillsLoading || stale || !!draftIssue}
+                    onClick={apply}
+                  >
+                    <Check size={14} aria-hidden="true" />
+                    应用
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       >
         <Button
           type="button"
+          ref={triggerRef}
           className="prompt-skill-trigger"
           aria-label="Skill 配置"
           aria-expanded={settingsOpen}
+          aria-description={statusLabel}
+          title={statusLabel}
+          data-error={!!(error || skillsError) || undefined}
           onClick={() => setSettingsPinned(true)}
           data-selected={!!skillId || undefined}
         >
-          <WandSparkles size={14} aria-hidden="true" />
+          {busy || skillsLoading ? (
+            <LoaderCircle size={14} aria-hidden="true" />
+          ) : draft ? (
+            <Check size={14} aria-hidden="true" />
+          ) : (
+            <WandSparkles size={14} aria-hidden="true" />
+          )}
           <span>Skill</span>
           <ChevronDown size={12} aria-hidden="true" />
         </Button>
       </Dropdown>
-      {!projectId && <p className="prompt-skill-status">保存项目后可优化提示词</p>}
-      {skillsLoading && (
-        <p className="prompt-skill-status" role="status">
-          Skill 目录加载中
-        </p>
-      )}
-      {!skillsLoading && skillId && !skillAvailable && (
-        <p role="alert">所选 Skill 已不可用或已停用，请在技能工作台修复或重新选择</p>
-      )}
-      {error && (
-        <p className="prompt-skill-error" role="alert">
-          {error}
-        </p>
-      )}
-      {pending && !draft && (
-        <div className="prompt-skill-progress">
-          <p role="status">
-            {busy
-              ? pending.result?.status === 'queued'
-                ? '等待优化'
-                : '正在优化提示词'
-              : pending.runId
-                ? '优化任务待确认'
-                : '提交结果尚未确认，将沿用原请求查询'}
-          </p>
-          {busy ? (
-            <Button
-              type="button"
-              className="button button-secondary"
-              onClick={() => {
-                const controller = requestRef.current;
-                requestRef.current = undefined;
-                controller?.abort();
-                setBusy(false);
-                setError('已停止查询，服务端任务可能仍在运行');
-              }}
-            >
-              <Square size={13} aria-hidden="true" />
-              停止查询
-            </Button>
-          ) : (
-            <Button
-              type="button"
-              className="button button-secondary"
-              disabled={disabled || storageBlocked}
-              onClick={() => void execute(pending)}
-            >
-              <RotateCw size={13} aria-hidden="true" />
-              {pending.runId ? '继续查询' : '确认原请求'}
-            </Button>
-          )}
-        </div>
-      )}
-      {pending && draft && (
-        <div className="prompt-skill-preview" role="group" aria-label="优化预览">
-          <div className="prompt-skill-preview-heading">
-            <strong>优化预览</strong>
-            {pending.result?.simulated && <span>模拟结果</span>}
-          </div>
-          <div className="prompt-skill-preview-document">
-            {draft.blocks.map((block, index) =>
-              block.type === 'text' ? (
-                <Textarea
-                  key={index}
-                  aria-label={`优化文字 ${index + 1}`}
-                  value={block.text}
-                  rows={Math.max(2, Math.min(8, block.text.split('\n').length))}
-                  maxLength={20_000}
-                  disabled={disabled}
-                  onChange={(event) => editText(index, event.target.value)}
-                />
-              ) : (
-                <span
-                  key={block.mentionId}
-                  className="prompt-skill-mention"
-                  title={block.assetVersion ? `资源版本 ${block.assetVersion}` : '当前资源版本'}
-                >
-                  @{mentionDisplayName(block)}
-                </span>
-              ),
-            )}
-          </div>
-          {stale && !skillsLoading && (
-            <p className="prompt-skill-error" role="status">
-              {!skillAvailable
-                ? '此 Skill 已删除或停用，已保留优化结果，但无法应用此预览；请恢复 Skill 或丢弃结果'
-                : '原提示词、节点或 Skill 版本已改变，无法应用此预览；请丢弃后重新优化'}
-            </p>
-          )}
-          {draftIssue && (
-            <p className="prompt-skill-error" role="alert">
-              {draftIssue}
-            </p>
-          )}
-          <div className="prompt-skill-actions">
-            <Button
-              type="button"
-              className="button button-secondary"
-              onClick={() => {
-                try {
-                  release(pending);
-                  setError(undefined);
-                } catch (cause) {
-                  setError(errorMessage(cause));
-                }
-              }}
-            >
-              <X size={14} aria-hidden="true" />
-              丢弃
-            </Button>
-            <Button
-              type="button"
-              className="button button-primary"
-              disabled={disabled || skillsLoading || stale || !!draftIssue}
-              onClick={apply}
-            >
-              <Check size={14} aria-hidden="true" />
-              应用
-            </Button>
-          </div>
-        </div>
-      )}
     </section>
   );
 }

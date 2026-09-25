@@ -79,6 +79,15 @@ function result(overrides: Record<string, unknown> = {}): Response {
   );
 }
 
+/** 点击已收起的入口并等待浮卡可见，返回可查询配置和预览的浮卡节点。 */
+async function openSkillSettings(user: ReturnType<typeof userEvent.setup>) {
+  const trigger = screen.getByRole('button', { name: 'Skill 配置' });
+  await user.click(trigger);
+  const settings = await screen.findByRole('group', { name: 'Skill 配置' });
+  await waitFor(() => expect(settings).toBeVisible());
+  return settings;
+}
+
 beforeEach(() => {
   sessionStorage.clear();
 });
@@ -108,6 +117,9 @@ describe('PromptSkillPanel', () => {
     expect(screen.queryByRole('combobox', { name: '优化模型' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '技能工作台' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '优化提示词' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: '优化预览' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
 
     await user.hover(trigger);
     const settings = await screen.findByRole('group', { name: 'Skill 配置' });
@@ -129,6 +141,48 @@ describe('PromptSkillPanel', () => {
     expect(fetcher).not.toHaveBeenCalled();
     expect(inputs.onSkillChange).not.toHaveBeenCalled();
     expect(inputs.onOpenWorkbench).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { state: '项目未保存', overrides: { projectId: undefined }, message: '保存项目后可优化提示词' },
+    {
+      state: '目录加载',
+      overrides: { skills: [], skillsLoading: true },
+      message: 'Skill 目录加载中',
+    },
+    { state: '技能失效', overrides: { skills: [] }, message: '所选 Skill 已不可用或已停用' },
+    {
+      state: '目录错误',
+      overrides: { skillsError: '技能目录读取失败', disabled: true },
+      message: '技能目录读取失败',
+    },
+  ])('$state 的提示只在 hover 浮卡内出现，不在正文展开', async ({ overrides, message }) => {
+    const user = userEvent.setup();
+    const fetcher = vi.fn();
+    vi.stubGlobal('fetch', fetcher);
+    const inputs = props(overrides);
+    render(<PromptSkillPanel {...inputs} />);
+    const trigger = screen.getByRole('button', { name: 'Skill 配置' });
+    expect(trigger).toBeEnabled();
+    expect(trigger).toHaveTextContent(/^Skill$/);
+    expect(screen.getAllByRole('button')).toEqual([trigger]);
+    expect(screen.queryByText(message, { exact: false })).not.toBeInTheDocument();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+
+    await user.hover(trigger);
+    const settings = await screen.findByRole('group', { name: 'Skill 配置' });
+    await waitFor(() => expect(settings).toBeVisible());
+    expect(settings).toHaveTextContent(message);
+    expect(settings.closest('.ant-dropdown')?.parentElement).toBe(document.body);
+    expect(within(settings).getByRole('button', { name: '优化提示词' })).toBeDisabled();
+    fireEvent.keyDown(trigger, { key: 'Escape', keyCode: 27, which: 27 });
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('group', { name: 'Skill 配置' })).not.toBeInTheDocument();
+    expect(screen.queryByText(message, { exact: false })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('button')).toEqual([trigger]);
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(inputs.onApply).not.toHaveBeenCalled();
   });
 
   it('配置浮层与真实 Select 保持可交互，选择技能并显示用途 Tooltip', async () => {
@@ -262,6 +316,77 @@ describe('PromptSkillPanel', () => {
     expect(trigger).toHaveFocus();
   });
 
+  it.each(['body', 'dialog'] as const)(
+    '%s 浮卡预览连续 Tab 遍历文本和操作，离开后收起但保留会话',
+    async (portal) => {
+      const user = userEvent.setup();
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(result());
+      vi.stubGlobal('fetch', fetcher);
+      const inputs = props();
+      render(
+        <div role={portal === 'dialog' ? 'dialog' : undefined}>
+          <PromptSkillPanel {...inputs} />
+          <input aria-label="浮卡外输入" />
+        </div>,
+      );
+      const trigger = screen.getByRole('button', { name: 'Skill 配置' });
+      const settings = await openSkillSettings(user);
+      expect(settings.closest('.ant-dropdown')?.parentElement).toBe(
+        portal === 'dialog' ? screen.getByRole('dialog') : document.body,
+      );
+      await user.click(within(settings).getByRole('button', { name: '优化提示词' }));
+      const first = await within(settings).findByRole('textbox', { name: '优化文字 1' });
+      const second = within(settings).getByRole('textbox', { name: '优化文字 3' });
+      const discard = within(settings).getByRole('button', { name: '丢弃' });
+      const apply = within(settings).getByRole('button', { name: '应用' });
+      fireEvent.change(first, { target: { value: '键盘编辑保留的预览' } });
+      await user.click(first);
+      const saved = sessionStorage.getItem(sessionStorage.key(0)!);
+      const windowKeyDown = vi.fn();
+      window.addEventListener('keydown', windowKeyDown);
+      try {
+        for (const order of [
+          [first, second, discard, apply],
+          [apply, discard, second, first],
+        ]) {
+          const shiftKey = order[0] === apply;
+          for (let index = 0; index < order.length - 1; index += 1) {
+            const current = order[index]!;
+            expect(current).toHaveFocus();
+            expect(fireEvent.keyDown(current, { key: 'Tab', keyCode: 9, which: 9, shiftKey })).toBe(
+              true,
+            );
+            expect(current).toHaveFocus();
+            expect(windowKeyDown).not.toHaveBeenCalled();
+            await user.tab({ shift: shiftKey });
+            expect(order[index + 1]).toHaveFocus();
+            expect(settings).toBeVisible();
+            expect(trigger).toHaveAttribute('aria-expanded', 'true');
+          }
+        }
+        expect(windowKeyDown).not.toHaveBeenCalled();
+      } finally {
+        window.removeEventListener('keydown', windowKeyDown);
+      }
+      expect(inputs.onApply).not.toHaveBeenCalled();
+      expect(fetcher).toHaveBeenCalledOnce();
+      expect(sessionStorage.getItem(sessionStorage.key(0)!)).toBe(saved);
+
+      act(() => screen.getByRole('textbox', { name: '浮卡外输入' }).focus());
+      expect(screen.getByRole('textbox', { name: '浮卡外输入' })).toHaveFocus();
+      expect(trigger).toHaveAttribute('aria-expanded', 'false');
+      expect(screen.queryByRole('group', { name: 'Skill 配置' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('group', { name: '优化预览' })).not.toBeInTheDocument();
+      expect(sessionStorage.getItem(sessionStorage.key(0)!)).toBe(saved);
+      const reopened = await openSkillSettings(user);
+      expect(within(reopened).getByRole('textbox', { name: '优化文字 1' })).toHaveValue(
+        '键盘编辑保留的预览',
+      );
+      expect(inputs.onApply).not.toHaveBeenCalled();
+      expect(fetcher).toHaveBeenCalledOnce();
+    },
+  );
+
   it('关闭配置清理嵌套菜单但保留文字模型选择，不产生请求', async () => {
     const user = userEvent.setup();
     const fetcher = vi.fn();
@@ -288,16 +413,20 @@ describe('PromptSkillPanel', () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
-  it('优化按钮禁用后点击预览收起配置，保留可编辑结果', async () => {
+  it('优化按钮禁用后点击浮卡预览，配置和可编辑结果仍在同一浮卡', async () => {
     const user = userEvent.setup();
     vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(result()));
     render(<PromptSkillPanel {...props()} />);
-    await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
-    await user.click(screen.getByRole('button', { name: '优化提示词' }));
-    const preview = await screen.findByRole('textbox', { name: '优化文字 1' });
+    const settings = await openSkillSettings(user);
+    await user.click(within(settings).getByRole('button', { name: '优化提示词' }));
+    const preview = await within(settings).findByRole('textbox', { name: '优化文字 1' });
     await user.click(preview);
-    expect(screen.queryByRole('group', { name: 'Skill 配置' })).not.toBeInTheDocument();
-    expect(preview).toHaveValue('优化后的角色 ');
+    expect(within(settings).getByRole('button', { name: '优化提示词' })).toBeDisabled();
+    expect(screen.getByRole('group', { name: 'Skill 配置' })).toBeVisible();
+    expect(within(settings).getByRole('group', { name: '优化预览' })).toBeVisible();
+    expect(within(settings).getByRole('textbox', { name: '优化文字 1' })).toHaveValue(
+      '优化后的角色 ',
+    );
   });
 
   it('编辑器阻止指针冒泡时，点击配置外的空白仍会关闭', async () => {
@@ -333,48 +462,83 @@ describe('PromptSkillPanel', () => {
       else await user.click(dismiss === 'outside' ? document.body : trigger);
       expect(trigger).toHaveAttribute('aria-expanded', 'false');
       expect(screen.queryByRole('group', { name: 'Skill 配置' })).not.toBeInTheDocument();
-      await waitFor(() => expect(screen.getByRole('group', { name: '优化预览' })).toBeVisible());
-      expect(screen.getByRole('textbox', { name: '优化文字 1' })).toHaveValue('关闭后保留的编辑');
-      expect(screen.getByRole('button', { name: '丢弃' })).toBeEnabled();
+      expect(screen.queryByRole('group', { name: '优化预览' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('textbox', { name: '优化文字 1' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: '应用' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: '丢弃' })).not.toBeInTheDocument();
+      expect(screen.getAllByRole('button')).toEqual([trigger]);
+      expect(trigger).toHaveAttribute('aria-description', '优化预览待应用');
+      expect(trigger).toHaveAttribute('title', '优化预览待应用');
+      expect(sessionStorage.getItem(sessionStorage.key(0)!)).toBe(saved);
+      expect(inputs.onApply).not.toHaveBeenCalled();
+      if (dismiss === 'trigger') await user.click(trigger);
+      else await user.hover(trigger);
+      const settings = await screen.findByRole('group', { name: 'Skill 配置' });
+      await waitFor(() => expect(settings).toBeVisible());
+      expect(within(settings).getByRole('group', { name: '优化预览' })).toBeVisible();
+      expect(within(settings).getByRole('textbox', { name: '优化文字 1' })).toHaveValue(
+        '关闭后保留的编辑',
+      );
+      expect(within(settings).getByRole('button', { name: '丢弃' })).toBeEnabled();
       expect(sessionStorage.getItem(sessionStorage.key(0)!)).toBe(saved);
       expect(fetcher).toHaveBeenCalledOnce();
       expect(inputs.onApply).not.toHaveBeenCalled();
-      await user.click(screen.getByRole('button', { name: '应用' }));
+      await user.click(within(settings).getByRole('button', { name: '应用' }));
       expect(inputs.onApply).toHaveBeenCalledWith({
         ...source,
         blocks: [{ type: 'text', text: '关闭后保留的编辑' }, ...source.blocks.slice(1)],
       });
+      expect(inputs.onApply).toHaveBeenCalledOnce();
+      expect(fetcher).toHaveBeenCalledOnce();
+      expect(sessionStorage.length).toBe(0);
     },
   );
 
-  it('关闭配置不清理排队任务、不中止轮询，状态和完成后的预览仍可见', async () => {
+  it('关闭浮卡不清理排队任务、不中止轮询，进度和完成预览仅重开后可见', async () => {
     vi.useFakeTimers();
     const fetcher = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(result({ status: 'queued', promptDocument: undefined }))
       .mockResolvedValueOnce(result());
     vi.stubGlobal('fetch', fetcher);
-    render(<PromptSkillPanel {...props()} />);
+    const inputs = props();
+    render(<PromptSkillPanel {...inputs} />);
     const trigger = screen.getByRole('button', { name: 'Skill 配置' });
     fireEvent.click(trigger);
     await act(async () => fireEvent.click(screen.getByRole('button', { name: '优化提示词' })));
+    expect(screen.getByRole('group', { name: 'Skill 配置' })).toHaveTextContent('等待优化');
     const saved = sessionStorage.getItem(sessionStorage.key(0)!);
     fireEvent.keyDown(trigger, { key: 'Escape', keyCode: 27, which: 27 });
     expect(trigger).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.getByRole('status')).toHaveTextContent('等待优化');
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '停止查询' })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('button')).toEqual([trigger]);
+    expect(trigger).toHaveAttribute('aria-description', '正在优化提示词');
+    expect(trigger).toHaveAttribute('title', '正在优化提示词');
+    fireEvent.click(trigger);
+    const settings = screen.getByRole('group', { name: 'Skill 配置' });
+    expect(within(settings).getByRole('status')).toHaveTextContent('等待优化');
     await act(async () => vi.advanceTimersByTimeAsync(100));
-    expect(screen.getByRole('button', { name: '停止查询' })).toBeVisible();
+    expect(within(settings).getByRole('button', { name: '停止查询' })).toBeVisible();
     expect(sessionStorage.getItem(sessionStorage.key(0)!)).toBe(saved);
     expect(fetcher).toHaveBeenCalledOnce();
     expect(fetcher.mock.calls[0]![1]?.signal?.aborted).toBe(false);
+    fireEvent.keyDown(trigger, { key: 'Escape', keyCode: 27, which: 27 });
     await act(async () => vi.advanceTimersByTimeAsync(1_000));
-    expect(screen.getByRole('group', { name: '优化预览' })).toBeVisible();
-    expect(screen.getByRole('button', { name: '应用' })).toBeEnabled();
+    expect(screen.queryByRole('group', { name: '优化预览' })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('button')).toEqual([trigger]);
+    expect(trigger).toHaveAttribute('aria-description', '优化预览待应用');
+    fireEvent.click(trigger);
+    const completed = screen.getByRole('group', { name: 'Skill 配置' });
+    await act(async () => vi.advanceTimersByTimeAsync(100));
+    expect(within(completed).getByRole('group', { name: '优化预览' })).toBeVisible();
+    expect(within(completed).getByRole('button', { name: '应用' })).toBeEnabled();
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(fetcher.mock.calls[1]![1]?.method).toBeUndefined();
+    expect(inputs.onApply).not.toHaveBeenCalled();
   });
 
-  it('关闭配置后未知提交的错误和确认入口仍可见，保留原请求身份', async () => {
+  it('未知提交的错误和确认入口随浮卡收起，重开保留原请求身份', async () => {
     const user = userEvent.setup();
     const fetcher = vi.fn<typeof fetch>().mockRejectedValue(new Error('connection lost'));
     vi.stubGlobal('fetch', fetcher);
@@ -386,9 +550,18 @@ describe('PromptSkillPanel', () => {
     const saved = sessionStorage.getItem(sessionStorage.key(0)!);
     fireEvent.keyDown(document.activeElement!, { key: 'Escape', keyCode: 27, which: 27 });
     expect(trigger).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.getByRole('alert')).toHaveTextContent('connection lost');
-    expect(screen.getByRole('status')).toHaveTextContent('提交结果尚未确认');
-    expect(screen.getByRole('button', { name: '确认原请求' })).toBeEnabled();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '确认原请求' })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('button')).toEqual([trigger]);
+    expect(trigger).toHaveAttribute('aria-description', 'connection lost');
+    expect(trigger).toHaveAttribute('title', 'connection lost');
+    await user.hover(trigger);
+    const settings = await screen.findByRole('group', { name: 'Skill 配置' });
+    await waitFor(() => expect(settings).toBeVisible());
+    expect(within(settings).getByRole('alert')).toHaveTextContent('connection lost');
+    expect(within(settings).getByRole('status')).toHaveTextContent('提交结果尚未确认');
+    expect(within(settings).getByRole('button', { name: '确认原请求' })).toBeEnabled();
     expect(sessionStorage.getItem(sessionStorage.key(0)!)).toBe(saved);
     expect(fetcher).toHaveBeenCalledOnce();
   });
@@ -404,6 +577,8 @@ describe('PromptSkillPanel', () => {
     await screen.findByRole('button', { name: '应用' });
     view.unmount();
     const restored = render(<PromptSkillPanel {...inputs} skills={[]} skillsLoading />);
+    expect(screen.queryByRole('group', { name: '优化预览' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
     expect(screen.getByRole('combobox', { name: '提示词 Skill' })).toBeDisabled();
     expect(
@@ -630,6 +805,8 @@ describe('PromptSkillPanel', () => {
       />,
     );
     expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', { name: '确认原请求' })).not.toBeInTheDocument();
+    await openSkillSettings(user);
     await user.click(screen.getByRole('button', { name: '确认原请求' }));
     await screen.findByRole('button', { name: '应用' });
     expect(JSON.parse(String(fetcher.mock.calls[1]![1]?.body))).toEqual(originalBody);
@@ -808,6 +985,8 @@ describe('PromptSkillPanel', () => {
       const skills =
         state === 'disabled' ? PROMPT_SKILLS.map((skill) => ({ ...skill, enabled: false })) : [];
       render(<PromptSkillPanel {...inputs} skills={skills} />);
+      expect(screen.queryByRole('group', { name: '优化预览' })).not.toBeInTheDocument();
+      await openSkillSettings(user);
       await screen.findByRole('button', { name: '应用' });
       expect(screen.getByRole('button', { name: '应用' })).toBeDisabled();
       expect(screen.getByRole('status')).toHaveTextContent('已保留优化结果');
@@ -834,6 +1013,8 @@ describe('PromptSkillPanel', () => {
     const original = fetcher.mock.calls[0]![1]?.body;
     view.unmount();
     render(<PromptSkillPanel {...inputs} skills={[]} />);
+    expect(screen.queryByRole('button', { name: '确认原请求' })).not.toBeInTheDocument();
+    await openSkillSettings(user);
     await user.click(screen.getByRole('button', { name: '确认原请求' }));
     await screen.findByRole('button', { name: '应用' });
     expect(fetcher.mock.calls[1]![1]?.body).toBe(original);
@@ -883,6 +1064,9 @@ describe('PromptSkillPanel', () => {
     });
     view.unmount();
     render(<PromptSkillPanel {...inputs} />);
+    expect(screen.queryByRole('group', { name: '优化预览' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: '优化文字 1' })).not.toBeInTheDocument();
+    await openSkillSettings(user);
     expect(screen.getByRole('textbox', { name: '优化文字 1' })).toHaveValue('尚未应用的编辑');
     expect(fetcher).toHaveBeenCalledOnce();
     await user.click(screen.getByRole('button', { name: '丢弃' }));
@@ -906,11 +1090,12 @@ describe('PromptSkillPanel', () => {
     const originalBody = fetcher.mock.calls[0]![1]?.body;
     view.unmount();
     render(<PromptSkillPanel {...inputs} />);
+    expect(screen.queryByRole('button', { name: '确认原请求' })).not.toBeInTheDocument();
+    await openSkillSettings(user);
     await user.click(screen.getByRole('button', { name: '确认原请求' }));
     await screen.findByText('permission denied');
     expect(sessionStorage.length).toBe(1);
     expect(fetcher.mock.calls[1]![1]?.body).toBe(originalBody);
-    await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
     expect(screen.getByRole('button', { name: '优化提示词' })).toBeDisabled();
   });
 });

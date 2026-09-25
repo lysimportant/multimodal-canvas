@@ -413,7 +413,7 @@ export function NodeQuickEditor({
   );
   const supportsAutomaticDuration = supportsAutomaticVideoDuration(videoFamily);
   const supportsAdaptiveAspectRatio = supportsAdaptiveVideoAspectRatio(videoFamily);
-  /** 无效输入只留在当前草稿，修正前不改写已保存数量，也不能发起运行。 */
+  /** 数量选择即时显示；切换节点同步已存值，非法历史值仍阻止运行。 */
   const [generationCountDraft, setGenerationCountDraft] = useState(
     String(node.data.generationCount ?? DEFAULT_GENERATION_COUNT),
   );
@@ -631,6 +631,7 @@ export function NodeQuickEditor({
       skillId={node.data.promptSkillId}
       skills={promptSkills}
       skillsLoading={skillLibraryLoading}
+      skillsError={skillLibraryError}
       onOpenWorkbench={onOpenSkillWorkbench}
       models={models}
       disabled={busy || !onPromptSkillChange || Boolean(skillLibraryError)}
@@ -1046,27 +1047,22 @@ export function NodeQuickEditor({
       {videoModeEditor}
       {node.data.mediaType === 'text' ? inferenceEditor : mediaSummary}
       <div className="node-quick-editor-run-group">
-        <label className="node-quick-editor-generation-count" title="本次生成数量">
-          <span>数量</span>
-          <Input
-            type="number"
-            inputMode="numeric"
-            aria-label="生成数量"
-            min={1}
-            max={GENERATION_COUNT_MAX}
-            step={1}
-            value={generationCountDraft}
-            aria-invalid={Boolean(generationCountIssue)}
-            disabled={busy || !onGenerationCountChange}
-            onChange={(event) => {
-              const value = event.currentTarget.value;
-              setGenerationCountDraft(value);
-              if (isValidGenerationCount(Number(value))) {
-                onGenerationCountChange?.(Number(value));
-              }
-            }}
-          />
-        </label>
+        {skillPanel}
+        <NodeParameterSelect
+          label="生成数量"
+          className="node-quick-editor-generation-count"
+          value={generationCountDraft}
+          options={Array.from({ length: GENERATION_COUNT_MAX }, (_, index) => ({
+            value: String(index + 1),
+            label: `${index + 1}份`,
+          }))}
+          disabled={busy || !onGenerationCountChange}
+          onChange={(value) => {
+            if (value === generationCountDraft) return;
+            setGenerationCountDraft(value);
+            onGenerationCountChange?.(Number(value));
+          }}
+        />
         {canRunSameNode(node) ? (
           <Button
             type="button"
@@ -1182,12 +1178,6 @@ export function NodeQuickEditor({
             <div className="node-quick-editor-prompt-group">
               {imageEditSourcePreview}
               {promptEditor}
-              {skillPanel}
-              {skillLibraryError ? (
-                <p className="node-quick-editor-parameter-issue" role="alert">
-                  {skillLibraryError}
-                </p>
-              ) : null}
             </div>
             {controls}
             {generationCountIssue && (
@@ -1251,15 +1241,7 @@ export function NodeQuickEditor({
             </DialogClose>
           </div>
           <div className="node-quick-editor-dialog-body">
-            <div className="node-quick-editor-prompt-group">
-              {promptEditor}
-              {skillPanel}
-              {skillLibraryError ? (
-                <p className="node-quick-editor-parameter-issue" role="alert">
-                  {skillLibraryError}
-                </p>
-              ) : null}
-            </div>
+            <div className="node-quick-editor-prompt-group">{promptEditor}</div>
             {controls}
             {generationCountIssue && (
               <p className="node-quick-editor-parameter-issue" role="status">

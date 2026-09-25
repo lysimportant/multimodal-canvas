@@ -2,7 +2,13 @@ import { expect, test, type Locator, type Page, type Route } from '@playwright/t
 import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { canvasDocumentSchema, type Asset, type CanvasDocument } from '@multimodal-canvas/domain';
+import {
+  canvasDocumentSchema,
+  PROMPT_SKILLS,
+  type Asset,
+  type CanvasDocument,
+  type PromptDocument,
+} from '@multimodal-canvas/domain';
 
 /** 本规格只使用本地媒体和浏览器路由 Mock，不调用真实后端或付费 Provider。 */
 const project = {
@@ -917,5 +923,233 @@ test('组件库菜单和外观标签独占键盘，不删除节点或穿透撤�
   await expect.poll(() => fixture.canvas().nodes.length).toBe(1);
   await page.keyboard.press('Control+z');
   await expect(nodes).toHaveCount(2);
+  expect(fixture.errors).toEqual([]);
+});
+
+test('节点输入区数量样式统一，Skill 同行悬浮且不撑大节点', async ({ page }, testInfo) => {
+  const fixture = await installFixture(page);
+  let generationRequests = 0;
+  page.on('request', (request) => {
+    if (
+      request.method() === 'POST' &&
+      /\/(runs|prompt-optimizations)$/.test(new URL(request.url()).pathname)
+    )
+      generationRequests++;
+  });
+  await page.goto('/projects/' + project.id);
+  const { node, editor } = await openQuickEditor(page);
+  const originalBounds = await node.boundingBox();
+  for (const viewport of [
+    { width: 1440, height: 900 },
+    { width: 1024, height: 768 },
+  ]) {
+    await page.setViewportSize(viewport);
+    const count = editor.getByRole('combobox', { name: '生成数量：1份' });
+    const skill = editor.getByRole('button', { name: 'Skill 配置', exact: true });
+    await expect(count).toBeVisible();
+    // 节点下方空间有限时，只滚动已有编辑区，不改变节点外框。
+    await skill.scrollIntoViewIfNeeded();
+    await expect(skill).toBeInViewport({ ratio: 1 });
+    const layout = await editor.evaluate((element) => {
+      const model = element.querySelector('.node-quick-editor-select-group .ant-select')!;
+      const quantity = element.querySelector('.node-quick-editor-generation-count .ant-select')!;
+      const controls = element.querySelector('.node-quick-editor-controls')!;
+      const trigger = element.querySelector('.prompt-skill-trigger')!;
+      const shape = (target: Element) => {
+        const style = getComputedStyle(target);
+        return {
+          height: target.getBoundingClientRect().height,
+          radius: style.borderRadius,
+          background: style.backgroundColor,
+          fontSize: style.fontSize,
+        };
+      };
+      return {
+        model: shape(model),
+        quantity: shape(quantity),
+        skillWidth: trigger.getBoundingClientRect().width,
+        skillTop: trigger.getBoundingClientRect().top,
+        modelTop: model.getBoundingClientRect().top,
+        quantityTop: quantity.getBoundingClientRect().top,
+        inControls: controls.contains(trigger),
+        overflow: element.scrollWidth > element.clientWidth,
+      };
+    });
+    expect(layout.quantity).toEqual(layout.model);
+    expect(layout.skillWidth).toBeLessThan(100);
+    expect(layout.inControls).toBe(true);
+    expect(layout.skillTop).toBeCloseTo(layout.quantityTop, 0);
+    expect(layout.skillTop).toBeCloseTo(layout.modelTop, 0);
+    expect(layout.overflow).toBe(false);
+    await page.screenshot({
+      path: testInfo.outputPath(`node-controls-${viewport.width}.png`),
+      animations: 'disabled',
+    });
+    const editorBounds = await editor.boundingBox();
+    await skill.hover();
+    const configuration = page.getByRole('group', { name: 'Skill 配置', exact: true });
+    await expect(configuration).toBeInViewport({ ratio: 1 });
+    await expect(editor.getByRole('group', { name: 'Skill 配置', exact: true })).toHaveCount(0);
+    expect((await editor.boundingBox())!.height).toBeCloseTo(editorBounds!.height, 0);
+    await page.screenshot({
+      path: testInfo.outputPath(`node-controls-hover-${viewport.width}.png`),
+      animations: 'disabled',
+    });
+    await expect(
+      configuration.getByRole('combobox', { name: '提示词 Skill', exact: true }),
+    ).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(configuration).toBeHidden();
+  }
+  await editor.getByRole('combobox', { name: '生成数量：1份' }).click();
+  const options = page.getByRole('listbox', { name: '生成数量选项' });
+  await expect(options.getByRole('option')).toHaveCount(20);
+  await options.getByRole('option', { name: '3份', exact: true }).click();
+  await expect(editor.getByRole('combobox', { name: '生成数量：3份' })).toBeVisible();
+  await page.keyboard.press('Control+s');
+  await expect
+    .poll(
+      () =>
+        fixture.canvas().nodes.find((entry) => entry.id === 'resource-mention-node')?.data
+          .generationCount,
+    )
+    .toBe(3);
+  await page.reload();
+  await openQuickEditor(page);
+  await expect(editor.getByRole('combobox', { name: '生成数量：3份' })).toBeVisible();
+  await editor.getByRole('button', { name: '打开完整编辑器' }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('combobox', { name: '生成数量：3份' })).toBeVisible();
+  const skill = dialog.getByRole('button', { name: 'Skill 配置', exact: true });
+  expect((await skill.boundingBox())!.width).toBeLessThan(100);
+  await skill.hover();
+  const configuration = page.getByRole('group', { name: 'Skill 配置', exact: true });
+  await expect(configuration).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(configuration).toBeHidden();
+  await expect(dialog).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath('node-controls-dialog.png'),
+    animations: 'disabled',
+  });
+  await dialog.getByRole('button', { name: '关闭编辑器' }).click();
+  const finalBounds = await node.boundingBox();
+  expect(finalBounds!.width).toBeCloseTo(originalBounds!.width, 0);
+  expect(finalBounds!.height).toBeCloseTo(originalBounds!.height, 0);
+  expect(generationRequests).toBe(0);
+  expect(fixture.errors).toEqual([]);
+});
+
+test('Skill 优化预览只在悬浮卡片展示，关闭和切换编辑器保留结果且不撑开输入区', async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const fixture = await installFixture(page);
+  const source = structuredClone(fixture.canvas().nodes[0]!.data.promptDocument!);
+  const skill = PROMPT_SKILLS[0]!;
+  let submissions = 0;
+  await page.route('**/v1/prompt-skills', (route) => json(route, { skills: [skill] }));
+  await page.route('**/v1/**/prompt-optimizations', async (route) => {
+    const body = route.request().postDataJSON();
+    submissions++;
+    expect(body.promptDocument).toEqual(source);
+    return json(route, {
+      optimization: {
+        runId: 'synthetic-bottom-skill',
+        nodeId: body.nodeId,
+        skillId: skill.id,
+        skillVersion: skill.version,
+        status: 'succeeded',
+        modelAlias: 'mock-text',
+        promptDocument: {
+          ...source,
+          blocks: source.blocks.map((block: PromptDocument['blocks'][number]) =>
+            block.type === 'text' ? { ...block, text: '优化后：' + block.text } : block,
+          ),
+        },
+      },
+    });
+  });
+  await page.goto('/projects/' + project.id);
+  const { node, editor } = await openQuickEditor(page);
+  const nodeBounds = await node.boundingBox();
+  const editorBounds = await editor.boundingBox();
+  const trigger = editor.getByRole('button', { name: 'Skill 配置', exact: true });
+  await trigger.hover();
+  const configuration = page.getByRole('group', { name: 'Skill 配置', exact: true });
+  await configuration.getByRole('combobox', { name: '提示词 Skill', exact: true }).click();
+  await page.getByRole('option', { name: skill.name, exact: true }).click();
+  await configuration.getByRole('button', { name: '优化提示词', exact: true }).click();
+  const preview = configuration.getByRole('group', { name: '优化预览', exact: true });
+  await expect(preview).toBeVisible();
+  await preview.getByRole('textbox', { name: '优化文字 1', exact: true }).click();
+  await page.keyboard.press('Tab');
+  await expect(preview.getByRole('textbox', { name: '优化文字 3', exact: true })).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(preview.getByRole('textbox', { name: '优化文字 5', exact: true })).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(preview.getByRole('button', { name: '丢弃', exact: true })).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(preview.getByRole('button', { name: '应用', exact: true })).toBeFocused();
+  await expect(configuration).toBeVisible();
+  await expect(editor.locator('.prompt-skill-preview')).toHaveCount(0);
+  expect((await editor.boundingBox())!.height).toBeCloseTo(editorBounds!.height, 0);
+  expect((await node.boundingBox())!.height).toBeCloseTo(nodeBounds!.height, 0);
+  await configuration.getByRole('button', { name: '应用', exact: true }).scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: testInfo.outputPath('inline-skill-preview.png'),
+    animations: 'disabled',
+  });
+  await expect(editor.getByRole('textbox', { name: '提示词', exact: true })).not.toHaveValue(
+    /优化后/,
+  );
+  await page.keyboard.press('Escape');
+  await expect(configuration).toBeHidden();
+  await expect(trigger).toHaveAttribute('aria-description', '优化预览待应用');
+  await trigger.hover();
+  await expect(configuration.getByRole('group', { name: '优化预览', exact: true })).toBeVisible();
+  await configuration.getByRole('textbox', { name: '优化文字 1', exact: true }).click();
+  await trigger.click();
+  await expect(configuration).toBeHidden();
+  await trigger.click();
+  await expect(configuration.getByRole('group', { name: '优化预览', exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(configuration).toBeHidden();
+  await editor.getByRole('button', { name: '打开完整编辑器' }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  await expect(page.getByRole('group', { name: '优化预览', exact: true })).toHaveCount(0);
+  const dialogHeight = await dialog.evaluate((element) => element.clientHeight);
+  await dialog.getByRole('button', { name: 'Skill 配置', exact: true }).hover();
+  const dialogConfiguration = page.getByRole('group', { name: 'Skill 配置', exact: true });
+  await expect(
+    dialogConfiguration.getByRole('group', { name: '优化预览', exact: true }),
+  ).toBeVisible();
+  await expect(dialog.locator('.node-quick-editor-dialog-body .prompt-skill-preview')).toHaveCount(
+    0,
+  );
+  expect(await dialog.evaluate((element) => element.clientHeight)).toBe(dialogHeight);
+  await dialogConfiguration
+    .getByRole('button', { name: '应用', exact: true })
+    .scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: testInfo.outputPath('dialog-skill-preview.png'),
+    animations: 'disabled',
+  });
+  await dialogConfiguration.getByRole('button', { name: '应用', exact: true }).click();
+  await expect(dialog.getByRole('textbox', { name: '提示词', exact: true })).toHaveValue(/优化后/);
+  await page.keyboard.press('Escape');
+  await expect(dialogConfiguration).toBeHidden();
+  await dialog.getByRole('button', { name: '关闭编辑器' }).click();
+  await page.keyboard.press('Control+s');
+  await expect
+    .poll(() => fixture.canvas().nodes[0]!.data.promptDocument?.blocks[0])
+    .toEqual({ type: 'text', text: '优化后：开场 ' });
+  expect(
+    fixture
+      .canvas()
+      .nodes[0]!.data.promptDocument?.blocks.filter((block) => block.type === 'mention'),
+  ).toEqual(source.blocks.filter((block) => block.type === 'mention'));
+  expect(submissions).toBe(1);
   expect(fixture.errors).toEqual([]);
 });

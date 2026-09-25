@@ -10,6 +10,7 @@
 }
 
 .node-quick-editor.node-quick-editor {
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -64,8 +65,8 @@
 }
 
 .node-quick-editor-controls > .compact-select {
-  flex: 1 1 140px;
-  min-width: min(140px, 100%);
+  flex: 1 1 100px;
+  min-width: min(100px, 100%);
 }
 
 /* 图片编辑来源只读展示：缩略图与固定版本标识都不提供任何编辑入口。 */
@@ -191,7 +192,7 @@
   font-size: 12px;
 }
 
-.node-quick-editor-controls > .compact-select > .compact-select-label {
+.node-quick-editor-controls .compact-select > .compact-select-label {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -230,6 +231,20 @@
   white-space: nowrap;
 }
 
+/* 侧边编辑器空间不足时只收起参数摘要文字，完整说明仍由按钮名称与 title 提供。 */
+@container (max-width: 520px) {
+  .node-quick-editor-summary-button {
+    flex: 0 0 36px;
+    justify-content: center;
+    width: 36px;
+    padding: 0;
+  }
+
+  .node-quick-editor-summary-button span {
+    display: none;
+  }
+}
+
 .node-quick-editor-summary-button svg {
   flex-shrink: 0;
 }
@@ -242,44 +257,35 @@
 }
 
 .node-quick-editor-run-group {
+  align-items: center;
   display: flex;
   flex: 0 0 auto;
   gap: 6px;
   min-width: 0;
 }
 
-.node-quick-editor-generation-count {
-  align-items: center;
-  background: var(--mc-surface-soft);
-  border: 1px solid var(--mc-border);
-  border-radius: 8px;
-  color: var(--mc-text-muted);
-  display: flex;
-  flex: 0 0 78px;
-  font-size: 11px;
-  gap: 3px;
+/* Skill 与数量、生成保持同行，浮卡内容不参与工具栏布局。 */
+.node-quick-editor-run-group > .prompt-skill-panel {
+  flex: 0 0 auto;
+}
+
+.node-quick-editor-controls .prompt-skill-trigger {
   height: 36px;
-  padding: 0 7px;
-  width: 78px;
+  font-size: 11px;
 }
 
-.node-quick-editor-generation-count input {
-  background: transparent;
-  border: 0;
-  color: var(--mc-text);
-  font: inherit;
-  height: 30px;
-  min-width: 0;
-  padding: 0;
-  width: 36px;
+.node-quick-editor-generation-count {
+  flex: 0 0 82px;
+  width: 82px;
 }
 
-.node-quick-editor-generation-count:focus-within {
-  border-color: var(--mc-accent);
-}
-
-.node-quick-editor-generation-count:has(input[aria-invalid='true']) {
-  border-color: var(--mc-danger, #b42318);
+/* 数量和模型共用库选择器，与同栏按钮保持一致的高度、圆角和主题色。 */
+.node-quick-editor-controls .node-parameter-select .ant-select {
+  height: 36px;
+  border-radius: 999px;
+  background: var(--mc-surface-soft);
+  border-color: var(--mc-border);
+  font-size: 11px;
 }
 
 :is(.node-quick-editor, .node-quick-editor-dialog) .node-quick-editor-number-input {

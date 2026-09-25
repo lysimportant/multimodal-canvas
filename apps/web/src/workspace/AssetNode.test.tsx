@@ -116,14 +116,14 @@ describe('AssetNode result presentation', () => {
     });
     const view = renderNode(base);
     const toolbar = screen.getByRole('group', { name: '节点操作：文案生成' });
-    expect(within(toolbar).getByText('12.4秒')).toBeInTheDocument();
+    expect(within(toolbar).getByText('12秒')).toBeInTheDocument();
     expect(within(toolbar).getByText('耗时')).toBeInTheDocument();
     expect(within(toolbar).queryByText('结果耗时')).not.toBeInTheDocument();
     expect(within(toolbar).getByText('当前执行')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: '查看节点信息' }));
     const info = within(screen.getByRole('dialog', { name: '节点信息' }));
     expect(info.getByText('耗时')).toBeInTheDocument();
-    expect(info.getByText('12.4秒')).toBeInTheDocument();
+    expect(info.getByText('12秒')).toBeInTheDocument();
     expect(info.getByText('当前执行')).toBeInTheDocument();
     view.rerender(
       <AssetNode
@@ -135,7 +135,7 @@ describe('AssetNode result presentation', () => {
       />,
     );
     await userEvent.click(screen.getByRole('button', { name: '查看节点信息' }));
-    expect(screen.queryByText('12.4秒')).not.toBeInTheDocument();
+    expect(screen.queryByText('12秒')).not.toBeInTheDocument();
     expect(
       within(screen.getByRole('dialog', { name: '节点信息' })).getByText('未记录'),
     ).toBeInTheDocument();
@@ -169,7 +169,7 @@ describe('AssetNode result presentation', () => {
     await userEvent.click(screen.getByRole('button', { name: '查看节点信息' }));
     expect(screen.getByRole('alert')).toHaveTextContent('供应商超时，未重发请求');
     expect(
-      within(screen.getByRole('dialog', { name: '节点信息' })).getByText('12.4秒'),
+      within(screen.getByRole('dialog', { name: '节点信息' })).getByText('12秒'),
     ).toBeInTheDocument();
   });
 

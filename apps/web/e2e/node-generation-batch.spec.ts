@@ -275,7 +275,14 @@ for (const count of [1, 2, 3]) {
     const root = page.locator('.react-flow__node[data-id="generation-root"]');
     await root.click();
     const editor = page.getByRole('region', { name: '待生成节点生成设置' });
-    await editor.getByRole('spinbutton', { name: '生成数量' }).fill(String(count));
+    const quantity = editor.getByRole('combobox', { name: /^生成数量：/ });
+    await expect(quantity).toHaveAccessibleName('生成数量：1份');
+    await quantity.click();
+    await page
+      .getByRole('listbox', { name: '生成数量选项' })
+      .getByRole('option', { name: `${count}份`, exact: true })
+      .click();
+    await expect(quantity).toHaveAccessibleName(`生成数量：${count}份`);
     expect(fixture.submissions).toHaveLength(0);
     await editor.getByRole('button', { name: '生成', exact: true }).click();
     await expect(
@@ -643,10 +650,14 @@ test('设置默认数量仅作用于新建节点，已有节点仍为一份', as
   await page.screenshot({ path: testInfo.outputPath('default-generation-count.png') });
   await page.keyboard.press('Escape');
   await page.locator('.react-flow__node[data-id="generation-root"]').click();
-  await expect(page.getByRole('spinbutton', { name: '生成数量' })).toHaveValue('1');
+  await expect(page.getByRole('combobox', { name: /^生成数量：/ })).toHaveAccessibleName(
+    '生成数量：1份',
+  );
   await page.locator('.react-flow__pane').click({ position: { x: 12, y: 12 } });
   await page.getByRole('button', { name: '新建图片生成节点' }).click();
-  await expect(page.getByRole('spinbutton', { name: '生成数量' })).toHaveValue('3');
+  await expect(page.getByRole('combobox', { name: /^生成数量：/ })).toHaveAccessibleName(
+    '生成数量：3份',
+  );
   await save(page);
   const created = fixture
     .canvas()
@@ -657,7 +668,9 @@ test('设置默认数量仅作用于新建节点，已有节点仍为一份', as
   ).toBeUndefined();
   await page.reload();
   await page.getByRole('button', { name: '新建图片生成节点' }).click();
-  await expect(page.getByRole('spinbutton', { name: '生成数量' })).toHaveValue('3');
+  await expect(page.getByRole('combobox', { name: /^生成数量：/ })).toHaveAccessibleName(
+    '生成数量：3份',
+  );
   expect(fixture.submissions).toHaveLength(0);
   expect(fixture.errors).toEqual([]);
 });

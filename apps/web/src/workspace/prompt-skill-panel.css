@@ -1,6 +1,5 @@
 .prompt-skill-panel {
-  display: grid;
-  gap: 8px;
+  display: inline-flex;
   min-width: 0;
   color: var(--mc-text);
   font-size: 12px;
@@ -24,11 +23,13 @@
   align-items: center;
   justify-content: center;
   gap: 5px;
-  height: 28px;
-  padding: 0 7px;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
+  justify-self: start;
+  width: max-content;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--mc-border);
+  border-radius: 999px;
+  background: var(--mc-surface-soft);
   color: var(--mc-text-muted);
   font: inherit;
   cursor: pointer;
@@ -39,6 +40,10 @@
 .prompt-skill-trigger[aria-expanded='true'] {
   background: var(--mc-surface-soft);
   color: var(--mc-text);
+}
+
+.prompt-skill-trigger[data-error] {
+  color: var(--mc-danger, #b42318);
 }
 
 .prompt-skill-trigger:focus-visible {
@@ -94,7 +99,7 @@
   flex-shrink: 0;
 }
 
-.prompt-skill-panel p {
+.prompt-skill-settings-content p {
   margin: 0;
   line-height: 1.5;
   overflow-wrap: anywhere;

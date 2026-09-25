@@ -1083,9 +1083,15 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     const { user } = await renderCanvas();
     await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
     const editor = await fillSelectedPrompt(user, 'Create three independent drafts.');
-    const quantity = within(editor).getByRole('spinbutton', { name: '生成数量' });
-    expect(quantity).toHaveValue(1);
-    fireEvent.change(quantity, { target: { value: '3' } });
+    const quantity = within(editor).getByRole('combobox', { name: /^生成数量：/ });
+    expect(quantity).toHaveAccessibleName('生成数量：1份');
+    await user.click(quantity);
+    await user.click(
+      within(await screen.findByRole('listbox', { name: '生成数量选项' })).getByRole('option', {
+        name: '3份',
+      }),
+    );
+    expect(quantity).toHaveAccessibleName('生成数量：3份');
     await user.click(within(editor).getByRole('button', { name: '生成' }));
     await screen.findByText('已完成 3 份生成');
     expect(flowNodes()).toHaveLength(3);
@@ -1113,9 +1119,12 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     const { user } = await renderCanvas();
     await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
     const editor = await fillSelectedPrompt(user, 'Create independent drafts.');
-    fireEvent.change(within(editor).getByRole('spinbutton', { name: '生成数量' }), {
-      target: { value: '3' },
-    });
+    await user.click(within(editor).getByRole('combobox', { name: /^生成数量：/ }));
+    await user.click(
+      within(await screen.findByRole('listbox', { name: '生成数量选项' })).getByRole('option', {
+        name: '3份',
+      }),
+    );
     const originalFetch = fetchMock.getMockImplementation()!;
     let attempts = 0;
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -1137,9 +1146,12 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     const { user } = await renderCanvas();
     await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
     const editor = await fillSelectedPrompt(user, 'Create independent drafts.');
-    fireEvent.change(within(editor).getByRole('spinbutton', { name: '生成数量' }), {
-      target: { value: '3' },
-    });
+    await user.click(within(editor).getByRole('combobox', { name: /^生成数量：/ }));
+    await user.click(
+      within(await screen.findByRole('listbox', { name: '生成数量选项' })).getByRole('option', {
+        name: '3份',
+      }),
+    );
     const originalFetch = fetchMock.getMockImplementation()!;
     let releaseFirst!: () => void;
     const firstRequest = new Promise<void>((resolve) => {
@@ -1172,9 +1184,12 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     const { user } = await renderCanvas();
     await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
     const editor = await fillSelectedPrompt(user, 'Create independent drafts.');
-    fireEvent.change(within(editor).getByRole('spinbutton', { name: '生成数量' }), {
-      target: { value: '3' },
-    });
+    await user.click(within(editor).getByRole('combobox', { name: /^生成数量：/ }));
+    await user.click(
+      within(await screen.findByRole('listbox', { name: '生成数量选项' })).getByRole('option', {
+        name: '3份',
+      }),
+    );
     const originalFetch = fetchMock.getMockImplementation()!;
     let releaseFirst!: () => void;
     const firstResponse = new Promise<void>((resolve) => {
@@ -1353,7 +1368,7 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     await restored.user.click(within(restoredNode).getByRole('button', { name: '查看节点信息' }));
     const info = await screen.findByRole('dialog', { name: '节点信息' });
     expect(within(info).getByRole('alert')).toHaveTextContent('新请求失败，旧结果保留');
-    await waitFor(() => expect(within(info).getByText('12.4秒')).toBeVisible());
+    await waitFor(() => expect(within(info).getByText('12秒')).toBeVisible());
     expect(within(info).queryByText('3秒')).not.toBeInTheDocument();
     await restored.user.click(within(info).getByRole('button', { name: /查看生成提示词/ }));
     const dialog = await screen.findByRole('dialog', { name: '生成提示词' });

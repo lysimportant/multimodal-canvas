@@ -78,7 +78,7 @@ type NodeDurationBadgeProps = {
  * 节点耗时显示。
  *
  * 未执行或缺少时间戳的节点显示“未记录”；时间顺序异常时标记不可用；
- * 运行中显示已用时间与进行中状态，完成后冻结为终态耗时。
+ * 运行中显示已用整秒与进行中状态，完成后冻结为终态耗时。
  */
 export function NodeDurationBadge({ timing, label, now, running = false }: NodeDurationBadgeProps) {
   const durationLabel = label ? <span>{label}</span> : null;
@@ -111,12 +111,14 @@ export function NodeDurationBadge({ timing, label, now, running = false }: NodeD
       </span>
     );
   }
+  /** 只展示完整秒数，避免小数跳动或四舍五入提前进入下一秒。 */
+  const durationText = formatNodeDuration(Math.floor(duration.milliseconds / 1000) * 1000);
   if (duration.availability === 'running') {
     return (
       <span className="node-duration-badge is-running" title="本节点正在执行">
         <Loader2 size={11} aria-hidden="true" className="node-duration-spinner" />
         {durationLabel}
-        {formatNodeDuration(duration.milliseconds)}
+        {durationText}
       </span>
     );
   }
@@ -125,10 +127,9 @@ export function NodeDurationBadge({ timing, label, now, running = false }: NodeD
   return (
     <span
       className={`node-duration-badge${running ? ' is-running' : ''}`}
-      title={`${outcomeLabel} ${formatNodeDuration(duration.milliseconds)}`}
+      title={`${outcomeLabel} ${durationText}`}
     >
-      <Clock size={11} aria-hidden="true" /> {durationLabel}{' '}
-      {formatNodeDuration(duration.milliseconds)}
+      <Clock size={11} aria-hidden="true" /> {durationLabel} {durationText}
     </span>
   );
 }

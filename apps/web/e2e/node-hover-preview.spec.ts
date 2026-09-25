@@ -102,6 +102,16 @@ async function installFixture(page: Page) {
   });
   await page.route('**/v1/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
+    if (path === '/v1/auth/me') {
+      return json(route, {
+        user: {
+          id: 'hover-user',
+          email: 'hover@example.test',
+          role: 'admin',
+          createdAt: '2026-09-17T10:00:00.000Z',
+        },
+      });
+    }
     if (path === '/v1/prompt-skills') return json(route, { skills: [] });
     if (path.endsWith('/events')) {
       return route.fulfill({ contentType: 'text/event-stream', body: ': ready\n\n' });
@@ -207,6 +217,37 @@ for (const viewport of [
   { width: 1920, height: 1080 },
   { width: 1024, height: 768 },
 ]) {
+  test(`${viewport.width}x${viewport.height} 节点悬浮计时只显示完整秒数且终态冻结`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(viewport);
+    const errors = await installFixture(page);
+    await page.goto(`/projects/${project.id}`);
+    const node = page.locator('.react-flow__node[data-id="image-result"]');
+    await expect(node).toBeVisible();
+    const bounds = await node.boundingBox();
+    await node.hover();
+    const toolbar = node.getByRole('group', { name: '节点操作：图片结果' });
+    const duration = toolbar.locator('.node-duration-badge');
+    await expect(duration).toHaveText('耗时 12秒');
+    await expect(duration).toHaveAttribute('title', '耗时 12秒');
+    await page.clock.install();
+    await page.clock.fastForward(3_000);
+    await expect(duration).toHaveText('耗时 12秒');
+    await toolbar.getByRole('button', { name: '查看节点信息' }).click();
+    const info = page.getByRole('dialog', { name: '节点信息', exact: true });
+    await expect(info.locator('.node-duration-badge')).toHaveText('12秒');
+    await info.getByRole('button', { name: '关闭节点信息' }).click();
+    await node.hover();
+    expect((await node.boundingBox())!.width).toBeCloseTo(bounds!.width, 0);
+    expect((await node.boundingBox())!.height).toBeCloseTo(bounds!.height, 0);
+    await page.screenshot({
+      path: testInfo.outputPath('node-duration-integer.png'),
+      animations: 'disabled',
+    });
+    expect(errors).toEqual([]);
+  });
+
   test(`${viewport.width}x${viewport.height} 悬浮卡片直接展示提示词耗时，资源预览放大居中`, async ({
     page,
   }, testInfo) => {
@@ -218,7 +259,7 @@ for (const viewport of [
     const before = await node.boundingBox();
     await node.hover();
     const toolbar = node.getByRole('group', { name: '节点操作：图片结果' });
-    await expect(toolbar.getByText('12.4秒')).toBeVisible();
+    await expect(toolbar.getByText('12秒')).toBeVisible();
     const trigger = toolbar.getByRole('button', { name: '查看生成提示词：图片结果' });
     await expect(trigger).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath('node-toolbar.png') });
@@ -230,7 +271,7 @@ for (const viewport of [
     await prompt.getByRole('button', { name: '关闭生成提示词' }).click();
     await toolbar.getByRole('button', { name: '查看节点信息' }).click();
     const info = page.getByRole('dialog', { name: '节点信息', exact: true });
-    await expect(info.getByText('12.4秒')).toBeVisible();
+    await expect(info.getByText('12秒')).toBeVisible();
     await expect(info.getByRole('button', { name: '查看生成提示词：图片结果' })).toBeVisible();
     await info.getByRole('button', { name: '关闭节点信息' }).click();
 
