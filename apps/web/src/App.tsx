@@ -114,7 +114,7 @@ import { fetchNodeEchoText, nodeEchoAssetVersion } from './workspace/node-echo-t
 import { fetchAssetVersions } from './result-versions';
 import { fetchAssetRequestPrompt, saveRequestPromptSummary } from './request-prompts';
 import { ReversePromptPanel } from './workspace/ReversePromptPanel';
-import { prepareGenerationRequests, submitGenerationRequest } from './generation-client';
+import { prepareGenerationRequests } from './generation-client';
 import {
   collectEmptyNodeCandidates,
   hasRetainedResult,
@@ -3459,31 +3459,15 @@ function WorkspaceApp({
 
   const retryNodeRun = useCallback(
     async (nodeId: string) => {
-      const run = runRecordsRef.current[nodeId];
+      const previousRun = runRecordsRef.current[nodeId];
       const node = nodesRef.current.find((candidate) => candidate.id === nodeId);
-      if (!run || !node) throw new Error('没有可重试的运行记录');
-      setIsRunning(true);
-      try {
-        const response = await submitGenerationRequest(API_BASE_URL, {
-          path: `/v1/runs/${run.id}/retry`,
-          body: {},
-        });
-        const result = (await response.json().catch(() => ({}))) as {
-          run?: RunRecord;
-          error?: string;
-        };
-        if (!response.ok || !result.run) throw new Error(result.error ?? '重试提交失败');
-        updateNodeRunState(nodeId, result.run, 'submitted');
-        const completed = await pollRun(result.run.id, nodeId);
-        if (completed.status !== 'succeeded') {
-          throw new Error(completed.error ?? runStatusLabel(completed.status));
-        }
-        setNotice({ kind: 'success', message: `${node.data.label} 重试完成` });
-      } finally {
-        setIsRunning(false);
-      }
+      if (!previousRun || !node) throw new Error('没有可重试的运行记录');
+
+      // 配置修改后不能继续复用旧 Run 的冻结绑定；重新走当前节点入口，
+      // 让服务端基于最新画布、模型和凭据创建新的不可变快照。
+      await runNode(node, 'sameNode');
     },
-    [pollRun, updateNodeRunState],
+    [runNode],
   );
 
   const retryNodeFromCanvas = useCallback(

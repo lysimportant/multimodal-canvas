@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { Button } from '@multimodal-canvas/ui';
 import type { ComponentProps } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Asset, CanvasDocument } from '@multimodal-canvas/domain';
+import type { Asset, CanvasDocument, RunRecord, RunSnapshot } from '@multimodal-canvas/domain';
 import type { WorkflowCanvasProps } from './workspace/WorkflowCanvas';
 import type { ResourcePanel } from './workspace/ResourcePanel';
 
@@ -85,6 +85,61 @@ function emptyNode(id: string): CanvasDocument['nodes'][number] {
     data: { label: id, mode: 'generate', mediaType: 'text', parameters: {} },
   };
 }
+
+/** 构造图片生成节点，测试重试时只替换当前节点配置而不替换节点身份。 */
+function imageNode(
+  id: string,
+  modelAlias: string,
+  credentialId?: string,
+): CanvasDocument['nodes'][number] {
+  return {
+    id,
+    type: 'image',
+    position: { x: 100, y: 100 },
+    data: {
+      label: '图片生成节点',
+      mode: 'generate',
+      mediaType: 'image',
+      modelAlias,
+      ...(credentialId ? { credentialId } : {}),
+      parameters: { prompt: '重新生成图片' },
+    },
+  };
+}
+
+/** 构造图片节点重试使用的完整冻结快照，避免测试夹具绕过运行合同。 */
+function imageRunSnapshot(canvasRevision: number, modelAlias: string): RunSnapshot {
+  return {
+    projectId: project.id,
+    canvasRevision,
+    targetNodeId: 'image-node',
+    modelAlias,
+    parameters: {},
+    submittedAt: '2026-09-25T00:00:00.000Z',
+    nodes: [imageNode('image-node', modelAlias)],
+    edges: [],
+    inputs: [],
+  };
+}
+
+/** 为运行恢复和重试轮询提供最小的前端运行记录。 */
+function runRecord(overrides: Partial<RunRecord>): RunRecord {
+  return {
+    id: 'run-image-failed',
+    projectId: project.id,
+    targetNodeId: 'image-node',
+    status: 'failed',
+    progress: 100,
+    attempt: 1,
+    provider: 'newapi',
+    modelAlias: 'image-old',
+    snapshot: imageRunSnapshot(1, 'image-old'),
+    createdAt: '2026-09-25T00:00:00.000Z',
+    updatedAt: '2026-09-25T00:01:00.000Z',
+    error: '上游请求失败',
+    ...overrides,
+  };
+}
 /** 返回 JSON 响应并保留 HTTP 状态，供 App 的真实错误处理消费。 */
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -97,6 +152,8 @@ let fetchMock: ReturnType<typeof vi.fn>;
 let renameFailure: string | null;
 let createFailure: string | null;
 let saveFailure: string | null;
+let projectRuns: RunRecord[];
+let currentRun: RunRecord | null;
 
 /** 按真实 URL 和方法提供最小后端合同；未声明请求直接使测试失败。 */
 function installApi() {
@@ -130,7 +187,15 @@ function installApi() {
       canvas = { ...JSON.parse(String(init?.body)), revision: canvas.revision + 1 };
       return json({ canvas });
     }
-    if (name.endsWith('/runs') && method === 'GET') return json({ runs: [] });
+    if (name.endsWith('/runs') && method === 'GET') return json({ runs: projectRuns });
+    if (name === '/v1/nodes/image-node/runs' && method === 'POST') {
+      if (!currentRun) throw new Error('测试未准备新的运行记录');
+      return json({ run: currentRun }, 202);
+    }
+    if (name === '/v1/runs/' + currentRun?.id && method === 'GET') {
+      if (!currentRun) throw new Error('测试未准备新的运行记录');
+      return json({ run: currentRun });
+    }
     if (name.includes('/export/'))
       return new Response('export-fixture', {
         headers: { 'content-disposition': 'attachment; filename="workflow.json"' },
@@ -141,11 +206,11 @@ function installApi() {
 }
 
 /** 等待画布和运行状态回填完毕，不使用空测试或固定时间替代加载断言。 */
-async function renderCanvas() {
+async function renderCanvas(expectedEmptyNodes = 2) {
   const result = render(<App />);
   await screen.findByRole('region', { name: '测试画布' });
   await waitFor(() => expect(screen.getByRole('button', { name: '打开项目集合' })).toBeEnabled());
-  await waitFor(() => expect(view.canvas?.clearCounts?.emptyNodes).toBe(2));
+  await waitFor(() => expect(view.canvas?.clearCounts?.emptyNodes).toBe(expectedEmptyNodes));
   return result;
 }
 
@@ -186,6 +251,8 @@ beforeEach(() => {
   renameFailure = null;
   createFailure = null;
   saveFailure = null;
+  projectRuns = [];
+  currentRun = null;
   installApi();
 });
 afterEach(() => {
@@ -197,6 +264,52 @@ afterEach(() => {
 });
 
 describe('App 组件库迁移', () => {
+  it('图片节点配置变化后重试复用原节点并创建新的运行', async () => {
+    canvas = {
+      revision: 1,
+      nodes: [imageNode('image-node', 'image-new', 'credential-new')],
+      edges: [],
+    };
+    const previousRun = runRecord({});
+    currentRun = runRecord({
+      id: 'run-image-new',
+      status: 'succeeded',
+      progress: 100,
+      attempt: 1,
+      modelAlias: 'image-new',
+      snapshot: imageRunSnapshot(2, 'image-new'),
+      createdAt: '2026-09-25T00:02:00.000Z',
+      updatedAt: '2026-09-25T00:03:00.000Z',
+      error: undefined,
+    });
+    projectRuns = [previousRun];
+
+    await renderCanvas(1);
+    await waitFor(() => expect(view.canvas?.nodes[0]?.data.runStatus).toBe('failed'));
+
+    await act(async () => {
+      await view.canvas!.onRetryNode('image-node');
+    });
+
+    const retryRequests = fetchMock.mock.calls.filter(
+      ([url, init]) => init?.method === 'POST' && String(url).includes('/v1/nodes/image-node/runs'),
+    );
+    expect(retryRequests).toHaveLength(1);
+    expect(JSON.parse(String(retryRequests[0]?.[1]?.body))).toMatchObject({
+      projectId: project.id,
+      modelAlias: 'image-new',
+      credentialId: 'credential-new',
+    });
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) =>
+          init?.method === 'POST' && String(url).endsWith('/v1/runs/run-image-failed/retry'),
+      ),
+    ).toBe(false);
+    expect(view.canvas?.nodes.map((node) => node.id)).toEqual(['image-node']);
+    expect(view.canvas?.nodes[0]?.data.runStatus).toBe('succeeded');
+  });
+
   it('新建项目保留必填校验、取消和创建失败后的草稿', async () => {
     const user = userEvent.setup();
     await renderCanvas();

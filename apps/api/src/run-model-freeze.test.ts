@@ -512,6 +512,84 @@ describe('per-node run model snapshots', () => {
       'video-old',
     ]);
   });
+
+  it('creates a fresh snapshot from the current image node after its model changes', async () => {
+    const projectStore = new MemoryProjectStore();
+    const settingsStore = new MemoryAiSettingsStore('model-freeze-current-image');
+    settingsStore.update({
+      defaultModels: {
+        text: 'text-old',
+        image: 'image-old',
+        audio: 'audio-old',
+        video: 'video-old',
+      },
+    });
+    settingsStore.replaceModels([
+      model('text-old', 'text'),
+      model('image-old', 'image'),
+      model('image-node', 'image'),
+      model('image-new', 'image'),
+      model('audio-old', 'audio'),
+      model('video-old', 'video'),
+    ]);
+    let executions = 0;
+    const runService = new MemoryRunService({
+      stepDelayMs: 0,
+      executor: async ({ snapshot }) => {
+        executions += 1;
+        if (executions === 1) throw new Error('first image attempt fails');
+        const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId)!;
+        return {
+          result: {
+            provider: 'mock',
+            summary: 'current image model succeeded',
+            targetNodeId: target.id,
+            mediaType: target.data.mediaType,
+            inputCount: snapshot.inputs.length,
+          },
+        };
+      },
+    });
+    const app = buildApp({ logger: false, projectStore, settingsStore, runService });
+    apps.push(app);
+    const projectId = await createProject(app);
+
+    const firstResponse = await app.inject({
+      method: 'POST',
+      url: '/v1/nodes/node_image/runs',
+      payload: { projectId, modelAlias: 'image-node' },
+    });
+    expect(firstResponse.statusCode).toBe(202);
+    const first = await waitForStatus(runService, firstResponse.json().run.id, 'failed');
+
+    const currentCanvas = (await projectStore.getCanvas(projectId))!;
+    await projectStore.updateCanvas(projectId, {
+      ...currentCanvas,
+      nodes: currentCanvas.nodes.map((node) =>
+        node.id === 'node_image'
+          ? { ...node, data: { ...node.data, modelAlias: 'image-new' } }
+          : node,
+      ),
+    });
+
+    const currentResponse = await app.inject({
+      method: 'POST',
+      url: '/v1/nodes/node_image/runs',
+      payload: { projectId, modelAlias: 'image-new' },
+    });
+    expect(currentResponse.statusCode).toBe(202);
+    const currentPublicRun = currentResponse.json().run;
+    const current = await runService.get(currentPublicRun.id);
+    expect(current).toBeDefined();
+    expect(current?.id).not.toBe(first.id);
+    expect(current?.snapshot.nodes.find((node) => node.id === 'node_image')?.data.modelAlias).toBe(
+      'image-new',
+    );
+    expect(current?.snapshot.canvasRevision).toBeGreaterThan(first.snapshot.canvasRevision);
+    await expect(
+      waitForStatus(runService, currentPublicRun.id, 'succeeded'),
+    ).resolves.toBeDefined();
+  });
 });
 
 describe('createRunSnapshot model alias overlay', () => {
