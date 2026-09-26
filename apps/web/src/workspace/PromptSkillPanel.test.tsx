@@ -429,6 +429,35 @@ describe('PromptSkillPanel', () => {
     );
   });
 
+  it('popover 生成的结果切换为 inline 后可编辑并采用，采用后预览消失', async () => {
+    const user = userEvent.setup();
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(result());
+    vi.stubGlobal('fetch', fetcher);
+    const inputs = props();
+    const view = render(<PromptSkillPanel {...inputs} />);
+
+    await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
+    await user.click(screen.getByRole('button', { name: '优化提示词' }));
+    await screen.findByRole('textbox', { name: '优化文字 1' });
+    expect(sessionStorage.length).toBe(1);
+    view.unmount();
+
+    render(<PromptSkillPanel {...inputs} presentation="inline" />);
+    const preview = await screen.findByRole('group', { name: '优化预览' });
+    const editor = within(preview).getByRole('textbox', { name: '优化文字 1' });
+    expect(editor).toHaveValue('优化后的角色 ');
+    fireEvent.change(editor, { target: { value: 'inline 编辑后的提示词' } });
+    await user.click(within(preview).getByRole('button', { name: '应用' }));
+
+    expect(inputs.onApply).toHaveBeenCalledExactlyOnceWith({
+      ...source,
+      blocks: [{ type: 'text', text: 'inline 编辑后的提示词' }, ...source.blocks.slice(1)],
+    });
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(sessionStorage.length).toBe(0);
+    expect(screen.queryByRole('group', { name: '优化预览' })).not.toBeInTheDocument();
+  });
+
   it('编辑器阻止指针冒泡时，点击配置外的空白仍会关闭', async () => {
     const user = userEvent.setup();
     render(

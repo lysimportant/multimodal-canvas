@@ -326,7 +326,7 @@ describe('NodeQuickEditor', () => {
     );
   });
 
-  it('目录加载只禁用 Skill，保留原媒体生成入口与当前选择', async () => {
+  it('目录加载只禁用快捷 Skill，完整 Dialog 不渲染 Skill 配置按钮', async () => {
     const user = userEvent.setup();
     const inputs = makeProps({
       projectId: 'project-a',
@@ -339,7 +339,7 @@ describe('NodeQuickEditor', () => {
     const trigger = screen.getByRole('button', { name: 'Skill 配置' });
     expect(screen.queryByRole('combobox', { name: '提示词 Skill' })).not.toBeInTheDocument();
     expect(trigger).toHaveAttribute('aria-description', 'Skill 目录加载中');
-    await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
+    await user.click(trigger);
     expect(screen.getByRole('combobox', { name: '提示词 Skill' })).toBeDisabled();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '优化提示词' })).toBeDisabled();
@@ -347,14 +347,17 @@ describe('NodeQuickEditor', () => {
     expect(run).toBeEnabled();
     await user.click(run);
     expect(inputs.onRun).toHaveBeenCalledOnce();
+
     await user.click(screen.getByRole('button', { name: '打开完整编辑器' }));
-    await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
-    expect(screen.getByRole('combobox', { name: '提示词 Skill' })).toBeDisabled();
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).queryByRole('button', { name: 'Skill 配置' })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole('group', { name: '优化预览' })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: '生成' })).toBeEnabled();
     expect(inputs.onPromptSkillChange).not.toHaveBeenCalled();
   });
 
   it.each(['快捷', '完整'] as const)(
-    '%s编辑器目录错误只显示在 Skill 浮卡，不影响原媒体生成',
+    '%s编辑器目录错误不影响原媒体生成，完整模式不渲染 Skill 配置按钮',
     async (presentation) => {
       const user = userEvent.setup();
       const fetcher = vi.fn();
@@ -369,7 +372,21 @@ describe('NodeQuickEditor', () => {
       const view = renderRaw(<NodeQuickEditor {...inputs} />);
       if (presentation === '完整') {
         await user.click(screen.getByRole('button', { name: '打开完整编辑器' }));
+        const dialog = screen.getByRole('dialog');
+        expect(
+          within(dialog).queryByRole('button', { name: 'Skill 配置' }),
+        ).not.toBeInTheDocument();
+        expect(within(dialog).queryByRole('group', { name: '优化预览' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+        expect(screen.queryByText('技能目录读取失败')).not.toBeInTheDocument();
+        const run = within(dialog).getByRole('button', { name: '生成' });
+        expect(run).toBeEnabled();
+        await user.click(run);
+        expect(inputs.onRun).toHaveBeenCalledOnce();
+        expect(fetcher).not.toHaveBeenCalled();
+        return;
       }
+
       const trigger = screen.getByRole('button', { name: 'Skill 配置' });
       expect(screen.queryByRole('alert')).not.toBeInTheDocument();
       expect(screen.queryByText('技能目录读取失败')).not.toBeInTheDocument();
@@ -378,9 +395,7 @@ describe('NodeQuickEditor', () => {
       await user.hover(trigger);
       const settings = await screen.findByRole('group', { name: 'Skill 配置' });
       await waitFor(() => expect(settings).toBeVisible());
-      expect(settings.closest('.ant-dropdown')?.parentElement).toBe(
-        screen.queryByRole('dialog') ?? document.body,
-      );
+      expect(settings.closest('.ant-dropdown')?.parentElement).toBe(document.body);
       expect(within(settings).getByRole('alert')).toHaveTextContent('技能目录读取失败');
       expect(screen.getAllByRole('alert')).toEqual([within(settings).getByRole('alert')]);
       expect(within(settings).getByRole('combobox', { name: '提示词 Skill' })).toBeDisabled();
@@ -404,7 +419,7 @@ describe('NodeQuickEditor', () => {
     },
   );
 
-  it('快捷与完整编辑器的 Skill 默认收起，展开后共用原配置入口', async () => {
+  it('快捷面板保留 Skill 配置，完整编辑器不再渲染 Skill 触发按钮', async () => {
     const user = userEvent.setup();
     const fetcher = vi.fn();
     vi.stubGlobal('fetch', fetcher);
@@ -439,32 +454,13 @@ describe('NodeQuickEditor', () => {
 
     await user.click(screen.getByRole('button', { name: '打开完整编辑器' }));
     const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByRole('button', { name: 'Skill 配置' })).toHaveAttribute(
-      'aria-expanded',
-      'false',
-    );
-    expect(within(dialog).queryByRole('group', { name: 'Skill 配置' })).not.toBeInTheDocument();
-    await user.click(within(dialog).getByRole('button', { name: 'Skill 配置' }));
-    const expanded = within(dialog).getByRole('group', { name: 'Skill 配置' });
-    await user.click(within(expanded).getByRole('combobox', { name: '提示词 Skill' }));
-    await user.click(screen.getByRole('option', { name: '生成人物' }));
-    expect(inputs.onPromptSkillChange).toHaveBeenCalledWith('character');
-    await user.click(within(expanded).getByRole('combobox', { name: '提示词 Skill' }));
-    fireEvent.keyDown(document.activeElement!, { key: 'Escape', keyCode: 27, which: 27 });
-    await waitFor(() => expect(dialog).toBeVisible());
-    await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument());
-    await waitFor(() => expect(expanded).toBeVisible());
-    fireEvent.keyDown(document.activeElement!, { key: 'Escape', keyCode: 27, which: 27 });
-    await waitFor(() => expect(dialog).toBeVisible());
-    expect(within(dialog).queryByRole('group', { name: 'Skill 配置' })).not.toBeInTheDocument();
-    await user.click(within(dialog).getByRole('button', { name: 'Skill 配置' }));
-    await user.click(within(dialog).getByRole('textbox', { name: '提示词' }));
-    expect(within(dialog).queryByRole('group', { name: 'Skill 配置' })).not.toBeInTheDocument();
-    await waitFor(() => expect(dialog).toBeVisible());
+    expect(within(dialog).queryByRole('button', { name: 'Skill 配置' })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('textbox', { name: '提示词' })).toHaveValue('白色背景');
+    expect(within(dialog).getByRole('button', { name: '生成' })).toBeEnabled();
     expect(fetcher).not.toHaveBeenCalled();
   });
 
-  it('快捷和完整编辑器切换后重开 Skill 浮卡恢复编辑预览，只显式应用且不重复提交', async () => {
+  it('快速面板生成后完整编辑器以 inline 预览保留编辑并可应用', async () => {
     const user = userEvent.setup();
     const inputs = makeProps({
       projectId: 'project-a',
@@ -487,60 +483,38 @@ describe('NodeQuickEditor', () => {
     );
     vi.stubGlobal('fetch', fetcher);
     renderRaw(<NodeQuickEditor {...inputs} />);
+
     await user.hover(screen.getByRole('button', { name: 'Skill 配置' }));
     const quick = await screen.findByRole('group', { name: 'Skill 配置' });
     await waitFor(() => expect(quick).toBeVisible());
     await user.click(within(quick).getByRole('button', { name: '优化提示词' }));
-    const preview = await within(quick).findByRole('textbox', { name: '优化文字 1' });
-    fireEvent.change(preview, { target: { value: '快捷编辑器未应用的预览' } });
+    const quickPreview = await within(quick).findByRole('textbox', { name: '优化文字 1' });
+    fireEvent.change(quickPreview, { target: { value: '快捷面板产生的待采用预览' } });
     expect(inputs.onPromptDocumentChange).not.toHaveBeenCalled();
     expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue('白色背景');
 
     await user.click(screen.getByRole('button', { name: '打开完整编辑器' }));
     const dialog = screen.getByRole('dialog');
-    const fullTrigger = within(dialog).getByRole('button', { name: 'Skill 配置' });
-    expect(fullTrigger).toHaveAttribute('aria-expanded', 'false');
-    expect(fullTrigger).toHaveAttribute('aria-description', '优化预览待应用');
-    expect(screen.queryByRole('group', { name: '优化预览' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('textbox', { name: '优化文字 1' })).not.toBeInTheDocument();
-    await user.hover(fullTrigger);
-    const full = await within(dialog).findByRole('group', { name: 'Skill 配置' });
-    await waitFor(() => expect(full).toBeVisible());
-    expect(full.closest('.ant-dropdown')?.parentElement).toBe(dialog);
-    expect(within(full).getByRole('textbox', { name: '优化文字 1' })).toHaveValue(
-      '快捷编辑器未应用的预览',
+    expect(within(dialog).queryByRole('button', { name: 'Skill 配置' })).not.toBeInTheDocument();
+    const preview = within(dialog).getByRole('group', { name: '优化预览' });
+    expect(within(preview).getByRole('textbox', { name: '优化文字 1' })).toHaveValue(
+      '快捷面板产生的待采用预览',
     );
-    fireEvent.change(within(full).getByRole('textbox', { name: '优化文字 1' }), {
-      target: { value: '完整编辑器继续编辑的预览' },
+
+    fireEvent.change(within(preview).getByRole('textbox', { name: '优化文字 1' }), {
+      target: { value: '完整编辑器最终提示词' },
     });
-    expect(fetcher).toHaveBeenCalledOnce();
-    expect(inputs.onPromptDocumentChange).not.toHaveBeenCalled();
-    await user.click(within(dialog).getByRole('button', { name: '关闭编辑器' }));
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    const restoredTrigger = screen.getByRole('button', { name: 'Skill 配置' });
-    expect(restoredTrigger).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.queryByRole('group', { name: '优化预览' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('textbox', { name: '优化文字 1' })).not.toBeInTheDocument();
-    await user.hover(restoredTrigger);
-    const restored = await screen.findByRole('group', { name: 'Skill 配置' });
-    await waitFor(() => expect(restored).toBeVisible());
-    expect(restored.closest('.ant-dropdown')?.parentElement).toBe(document.body);
-    expect(within(restored).getByRole('textbox', { name: '优化文字 1' })).toHaveValue(
-      '完整编辑器继续编辑的预览',
-    );
-    expect(inputs.onPromptDocumentChange).not.toHaveBeenCalled();
-    expect(fetcher).toHaveBeenCalledOnce();
-    await user.click(within(restored).getByRole('button', { name: '应用' }));
+    await user.click(within(preview).getByRole('button', { name: '应用' }));
+
     expect(inputs.onPromptDocumentChange).toHaveBeenCalledExactlyOnceWith({
       version: 1,
-      blocks: [{ type: 'text', text: '完整编辑器继续编辑的预览' }],
+      blocks: [{ type: 'text', text: '完整编辑器最终提示词' }],
     });
-    expect(screen.queryByRole('group', { name: '优化预览' })).not.toBeInTheDocument();
     expect(inputs.onPromptChange).not.toHaveBeenCalled();
-    expect(inputs.onRun).not.toHaveBeenCalled();
     expect(fetcher).toHaveBeenCalledOnce();
     expect(fetcher.mock.calls[0]![1]?.method).toBe('POST');
     expect(sessionStorage.length).toBe(0);
+    expect(screen.queryByRole('group', { name: '优化预览' })).not.toBeInTheDocument();
   });
 
   it.each(['text', 'image', 'audio', 'video'] as const)(
@@ -634,7 +608,7 @@ describe('NodeQuickEditor', () => {
   });
 
   it.each(['快捷', '完整'] as const)(
-    '%s编辑器忙碌时禁用数量和生成，Skill 与模型、数量、生成共用工具栏',
+    '%s编辑器忙碌时禁用数量和生成，完整模式不渲染 Skill 配置按钮',
     async (presentation) => {
       const user = userEvent.setup();
       const inputs = makeProps({
@@ -646,7 +620,19 @@ describe('NodeQuickEditor', () => {
       renderRaw(<NodeQuickEditor {...inputs} />);
       if (presentation === '完整') {
         await user.click(screen.getByRole('button', { name: '打开完整编辑器' }));
+        const dialog = screen.getByRole('dialog');
+        const count = within(dialog).getByRole('combobox', { name: '生成数量：1份' });
+        const run = within(dialog).getByRole('button', { name: '生成中' });
+        expect(
+          within(dialog).queryByRole('button', { name: 'Skill 配置' }),
+        ).not.toBeInTheDocument();
+        expect(count).toBeDisabled();
+        expect(run).toBeDisabled();
+        expect(inputs.onOpenSkillWorkbench).not.toHaveBeenCalled();
+        expect(inputs.onRun).not.toHaveBeenCalled();
+        return;
       }
+
       const trigger = screen.getByRole('button', { name: 'Skill 配置' });
       const skill = trigger.closest('.prompt-skill-panel')!;
       const controls = trigger.closest('.node-quick-editor-controls')!;
