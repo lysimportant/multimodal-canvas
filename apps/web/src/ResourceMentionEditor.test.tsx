@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { Asset, PromptDocument } from '@multimodal-canvas/domain';
+import type { Asset, PromptDocument, PromptMention } from '@multimodal-canvas/domain';
 import { Dialog, DialogContent, DialogTitle, Button } from '@multimodal-canvas/ui';
 
 import { ResourceMentionEditor } from './ResourceMentionEditor';
@@ -354,7 +354,7 @@ describe('ResourceMentionEditor', () => {
     expect(screen.getByRole('textbox')).toHaveValue('兼容文本');
   });
 
-  it('supports duplicate references and deleting one card without deleting the other', async () => {
+  it('资源条解绑同资源多处名称时保留原文并只提交一次', async () => {
     const user = userEvent.setup();
     const onDocumentChange = vi.fn();
     render(
@@ -393,8 +393,204 @@ describe('ResourceMentionEditor', () => {
     expect(screen.getByLabelText('引用资源')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '上传引用资源' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '删除 产品图' })).not.toBeInTheDocument();
-    expect(screen.getByRole('textbox')).toHaveValue(' ');
-    expect(onDocumentChange.mock.lastCall?.[0].blocks).toEqual([{ type: 'text', text: ' ' }]);
+    expect(screen.getByRole('textbox')).toHaveValue('产品图 产品图');
+    expect(onDocumentChange).toHaveBeenCalledExactlyOnceWith({
+      version: 1,
+      blocks: [{ type: 'text', text: '产品图 产品图' }],
+    });
+  });
+
+  it.each([imageAsset, audioAsset, videoAsset, textAsset])(
+    '资源条解绑 $mediaType 多别名时保留原文、其他引用范围和撤销边界',
+    async (asset) => {
+      const user = userEvent.setup();
+      const onChange = vi.fn();
+      const onDocumentChange = vi.fn();
+      const otherAsset = asset.mediaType === 'audio' ? videoAsset : audioAsset;
+      const before: PromptMention = {
+        type: 'mention',
+        mentionId: 'mention-before',
+        assetId: otherAsset.id,
+        label: otherAsset.name,
+        mediaType: otherAsset.mediaType,
+        entityName: '开场',
+        assetVersion: 5,
+        binding: { futureRole: 'keep-before' },
+      };
+      const after: PromptMention = {
+        ...before,
+        mentionId: 'mention-after',
+        entityName: '尾声',
+        assetVersion: 7,
+        binding: { futureRole: 'keep-after' },
+      };
+      const first: PromptMention = {
+        type: 'mention',
+        mentionId: 'mention-first',
+        assetId: asset.id,
+        label: asset.name,
+        mediaType: asset.mediaType,
+        entityName: '主角🙂',
+      };
+      const alias: PromptMention = {
+        type: 'mention',
+        mentionId: 'mention-alias',
+        assetId: asset.id,
+        label: asset.name,
+        mediaType: asset.mediaType,
+        binding: { entityName: '侧影', futureRole: 'appearance' },
+      };
+      const promptDocument: PromptDocument = {
+        version: 1,
+        blocks: [
+          { type: 'text', text: '  🎬' },
+          before,
+          { type: 'text', text: '：\n“' },
+          first,
+          { type: 'text', text: '” 与 ' },
+          alias,
+          { ...first, mentionId: 'mention-adjacent' },
+          { type: 'text', text: '；普通名字主角🙂\t' },
+          after,
+          { type: 'text', text: '。\n' },
+        ],
+      };
+      const middle = '：\n“主角🙂” 与 侧影主角🙂；普通名字主角🙂\t';
+      const originalText = '  🎬开场' + middle + '尾声。\n';
+      const unlinkedDocument: PromptDocument = {
+        version: 1,
+        blocks: [
+          { type: 'text', text: '  🎬' },
+          before,
+          { type: 'text', text: middle },
+          after,
+          { type: 'text', text: '。\n' },
+        ],
+      };
+      render(
+        <ResourceMentionEditor
+          nodeId="node-unlink-aliases"
+          promptDocument={promptDocument}
+          assets={[asset, otherAsset]}
+          onChange={onChange}
+          onDocumentChange={onDocumentChange}
+          ariaLabel="提示词"
+        />,
+      );
+      const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
+      expect(editor).toHaveValue(originalText);
+
+      await user.click(screen.getByRole('button', { name: '删除 主角🙂' }));
+
+      expect(editor).toHaveValue(originalText);
+      expect(onChange).toHaveBeenCalledExactlyOnceWith(originalText);
+      expect(onDocumentChange).toHaveBeenCalledExactlyOnceWith(unlinkedDocument);
+      expect(screen.queryByRole('button', { name: '删除 主角🙂' })).not.toBeInTheDocument();
+      expect(
+        Array.from(
+          document.querySelectorAll('.resource-mention-token'),
+          (token) => token.textContent,
+        ),
+      ).toEqual(['开场', '尾声']);
+
+      fireEvent.keyDown(editor, { key: 'z', ctrlKey: true });
+      expect(editor).toHaveValue(originalText);
+      expect(onDocumentChange).toHaveBeenLastCalledWith(promptDocument);
+      fireEvent.keyDown(editor, { key: 'y', ctrlKey: true });
+      expect(editor).toHaveValue(originalText);
+      expect(onDocumentChange).toHaveBeenLastCalledWith(unlinkedDocument);
+
+      await waitFor(() => expect(editor).toHaveFocus());
+      const plainNameStart = editor.value.indexOf('主角🙂');
+      editor.setSelectionRange(plainNameStart + 1, plainNameStart + 1);
+      await user.keyboard('{Backspace}');
+      const editedMiddle = middle.replace('主角🙂', '角🙂');
+      expect(editor).toHaveValue('  🎬开场' + editedMiddle + '尾声。\n');
+      expect(onDocumentChange).toHaveBeenLastCalledWith({
+        ...unlinkedDocument,
+        blocks: [
+          { type: 'text', text: '  🎬' },
+          before,
+          { type: 'text', text: editedMiddle },
+          after,
+          { type: 'text', text: '。\n' },
+        ],
+      });
+
+      const remainingStart = editor.value.indexOf('尾声');
+      editor.setSelectionRange(remainingStart, remainingStart);
+      fireEvent.keyDown(editor, { key: 'Delete' });
+      expect(editor).toHaveValue('  🎬开场' + editedMiddle + '。\n');
+      expect(onDocumentChange).toHaveBeenLastCalledWith({
+        version: 1,
+        blocks: [
+          { type: 'text', text: '  🎬' },
+          before,
+          { type: 'text', text: editedMiddle + '。\n' },
+        ],
+      });
+      expect(screen.getByRole('button', { name: '删除 开场' })).toBeInTheDocument();
+
+      const lastStart = editor.value.indexOf('开场');
+      editor.setSelectionRange(lastStart, lastStart);
+      fireEvent.keyDown(editor, { key: 'Delete' });
+      expect(editor).toHaveValue('  🎬' + editedMiddle + '。\n');
+      expect(onDocumentChange).toHaveBeenLastCalledWith({
+        version: 1,
+        blocks: [{ type: 'text', text: '  🎬' + editedMiddle + '。\n' }],
+      });
+      expect(screen.queryByRole('article')).not.toBeInTheDocument();
+    },
+  );
+
+  it('反复解绑连线资源只清理文字绑定，不修改资源、连线输入或触发请求', async () => {
+    const user = userEvent.setup();
+    const onDocumentChange = vi.fn();
+    const onConnectedResourceRename = vi.fn();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('禁止外部请求'));
+    const assets = [imageAsset];
+    const connectedAssets = [{ ...imageAsset, referenceName: '主角' }];
+    const originalInputs = structuredClone({ assets, connectedAssets });
+    render(
+      <ResourceMentionEditor
+        nodeId="node-unlink-connected"
+        promptDocument={{
+          version: 1,
+          blocks: [
+            { type: 'text', text: '让' },
+            {
+              type: 'mention',
+              mentionId: 'mention-connected',
+              assetId: imageAsset.id,
+              label: imageAsset.name,
+              mediaType: imageAsset.mediaType,
+              entityName: '主角',
+            },
+            { type: 'text', text: '回头' },
+          ],
+        }}
+        assets={assets}
+        connectedAssets={connectedAssets}
+        onConnectedResourceRename={onConnectedResourceRename}
+        onDocumentChange={onDocumentChange}
+        ariaLabel="提示词"
+      />,
+    );
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await user.click(screen.getByRole('button', { name: '删除 主角' }));
+      expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue('让主角回头');
+      expect(screen.getByRole('button', { name: '预览并命名 主角' })).toBeInTheDocument();
+      expect(document.querySelectorAll('.resource-mention-token')).toHaveLength(0);
+    }
+
+    expect(onDocumentChange).toHaveBeenCalledExactlyOnceWith({
+      version: 1,
+      blocks: [{ type: 'text', text: '让主角回头' }],
+    });
+    expect({ assets, connectedAssets }).toEqual(originalInputs);
+    expect(onConnectedResourceRename).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('reorders mentions while preserving surrounding text and structured identities', async () => {
@@ -1379,6 +1575,58 @@ describe('ResourceMentionEditor', () => {
     await user.keyboard('{Control>}y{/Control}');
     expect(screen.getByRole('button', { name: '预览并命名 主角' })).toBeVisible();
   });
+
+  it.each([imageAsset, audioAsset, videoAsset])(
+    '选中文字绑定 $mediaType 后反复从资源条解绑仍完整保留原文',
+    async (asset) => {
+      const user = userEvent.setup();
+      const onDocumentChange = vi.fn();
+      const name = '主角🙂';
+      const value = '  ' + name + '  走过窗边；' + name + '回头。\n';
+      render(
+        <ResourceMentionEditor
+          nodeId="selection-unlink"
+          value={value}
+          assets={[asset]}
+          onDocumentChange={onDocumentChange}
+          ariaLabel="提示词"
+        />,
+      );
+      const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
+
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        editor.focus();
+        editor.setSelectionRange(0, name.length + 4);
+        fireEvent.mouseUp(editor);
+        fireEvent.click(editor);
+        await user.click(screen.getByRole('option', { name: new RegExp(asset.name) }));
+        expect(editor).toHaveValue(value);
+        expect(onDocumentChange).toHaveBeenLastCalledWith({
+          version: 1,
+          blocks: [
+            { type: 'text', text: '  ' },
+            expect.objectContaining({
+              type: 'mention',
+              assetId: asset.id,
+              mediaType: asset.mediaType,
+              entityName: name,
+            }),
+            { type: 'text', text: '  走过窗边；' + name + '回头。\n' },
+          ],
+        });
+
+        await user.click(screen.getByRole('button', { name: '删除 ' + name }));
+        expect(editor).toHaveValue(value);
+        expect(onDocumentChange).toHaveBeenLastCalledWith({
+          version: 1,
+          blocks: [{ type: 'text', text: value }],
+        });
+        expect(screen.queryByRole('article')).not.toBeInTheDocument();
+        expect(document.querySelectorAll('.resource-mention-token')).toHaveLength(0);
+      }
+      expect(onDocumentChange).toHaveBeenCalledTimes(4);
+    },
+  );
 
   it('取消选中文字引用不修改原文，重复选中可以重新打开', async () => {
     const user = userEvent.setup();

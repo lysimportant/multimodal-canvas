@@ -179,3 +179,51 @@
 .prompt-skill-actions {
   justify-content: flex-end;
 }
+
+.prompt-skill-authoring-panel {
+  display: block;
+  width: 100%;
+}
+
+.prompt-skill-authoring-content {
+  border: 0;
+  box-shadow: none;
+  max-height: none;
+  overflow: visible;
+  padding: 0;
+  width: 100%;
+}
+
+.prompt-skill-authoring-content .prompt-skill-preview {
+  border-top: 1px solid var(--mc-border);
+  padding-top: 14px;
+}
+
+.prompt-skill-authoring-content .prompt-skill-preview textarea {
+  line-height: 1.65;
+  min-height: 200px;
+  width: 100%;
+}
+
+/* 长用途说明保持在悬浮卡片内滚动，不撑开 Select 或节点输入面板。 */
+.prompt-skill-option-tooltip {
+  max-width: min(360px, calc(100vw - 32px));
+  max-height: min(240px, 40dvh);
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.prompt-skill-inline-panel {
+  display: block;
+  width: 100%;
+}
+
+.prompt-skill-inline-panel .prompt-skill-preview {
+  border-top: 1px solid var(--mc-border);
+  padding-top: 12px;
+}
+
+.prompt-skill-inline-panel .prompt-skill-preview-document {
+  max-height: min(360px, 45dvh);
+}

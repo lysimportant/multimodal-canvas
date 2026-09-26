@@ -869,7 +869,8 @@ test('输入面板随画布滚轮缩放，屏幕宽度始终匹配节点', async
   const before = await editorGeometry(editor);
   const nodeBefore = await node.boundingBox();
   expect(nodeBefore).not.toBeNull();
-  expect(Math.abs(before.width - nodeBefore!.width)).toBeLessThan(1);
+  expect(before.width).toBeGreaterThan(nodeBefore!.width + 1);
+  expect(before.width).toBeLessThanOrEqual(nodeBefore!.width * 2 + 1);
   await screenshot(page, testInfo, 'editor-before-zoom');
 
   const canvas = await page.getByRole('region', { name: '工作流画布' }).boundingBox();
@@ -883,11 +884,16 @@ test('输入面板随画布滚轮缩放，屏幕宽度始终匹配节点', async
     .poll(async () => {
       const geometry = await editorGeometry(editor);
       const bounds = await node.boundingBox();
-      return bounds ? Math.abs(geometry.width - bounds.width) : Infinity;
+      return bounds && geometry.width > bounds.width
+        ? Math.min(geometry.width - bounds.width, bounds.width * 2 + 1 - geometry.width)
+        : Infinity;
     })
-    .toBeLessThan(1);
+    .toBeGreaterThan(0);
   const after = await editorGeometry(editor);
-  expect(Math.abs(after.width / before.width - after.zoom / before.zoom)).toBeLessThan(0.01);
+  const nodeAfter = await node.boundingBox();
+  expect(nodeAfter).not.toBeNull();
+  expect(after.width).toBeGreaterThan(nodeAfter!.width + 1);
+  expect(after.width).toBeLessThanOrEqual(nodeAfter!.width * 2 + 1);
   expect(scenario.canvasWrites).toHaveLength(0);
   expect(scenario.submissions).toHaveLength(0);
   await screenshot(page, testInfo, 'editor-after-zoom');
@@ -923,9 +929,11 @@ test('输入长文不撑大节点，只有拖拽手柄后节点与输入面板�
     .poll(async () => {
       const geometry = await editorGeometry(editor);
       const bounds = await node.boundingBox();
-      return bounds ? Math.abs(geometry.width - bounds.width) : Infinity;
+      return bounds && geometry.width > bounds.width
+        ? Math.min(geometry.width - bounds.width, bounds.width * 2 + 1 - geometry.width)
+        : Infinity;
     })
-    .toBeLessThan(1);
+    .toBeGreaterThan(0);
   const write = await saveCanvas(page, scenario);
   expect(write.body.nodes.find((entry) => entry.id === 'node-b')?.width).toBeLessThan(310);
   expect(

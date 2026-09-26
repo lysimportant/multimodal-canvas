@@ -627,26 +627,16 @@ export function ResourceMentionEditor({
     [disabled, onUploadResource, selectMention],
   );
 
-  const removeMention = useCallback(
-    (mentionId: string) => {
-      const range = rangesRef.current.find(
-        (candidate) => candidate.mention.mentionId === mentionId,
-      );
-      if (!range) return;
-      const nextText = `${textRef.current.slice(0, range.start)}${textRef.current.slice(range.end)}`;
-      const nextRanges = rangesRef.current
-        .filter((candidate) => candidate.mention.mentionId !== mentionId)
-        .map((candidate) =>
-          candidate.start > range.start
-            ? {
-                ...candidate,
-                start: candidate.start - (range.end - range.start),
-                end: candidate.end - (range.end - range.start),
-              }
-            : candidate,
-        );
-      caretRef.current = range.start;
-      commitState(nextText, nextRanges);
+  /**
+   * 解除资源条中同一资源的全部提及，名称保留为普通文字，其他引用范围不变。
+   * @param assetId 要解绑的资源 ID；没有提及时不提交变更，也不删除资源或连线。
+   * @returns 无返回值；所有别名合并为一次可撤销的文档更新。
+   */
+  const unlinkResource = useCallback(
+    (assetId: string) => {
+      const nextRanges = rangesRef.current.filter((range) => range.mention.assetId !== assetId);
+      if (nextRanges.length === rangesRef.current.length) return;
+      commitState(textRef.current, nextRanges);
       setTrigger(null);
     },
     [commitState],
@@ -1230,10 +1220,7 @@ export function ResourceMentionEditor({
                 disabled={disabled}
                 onClick={(event) => {
                   event.stopPropagation();
-                  const ids = rangesRef.current
-                    .filter((range) => range.mention.assetId === item.assetId)
-                    .map((range) => range.mention.mentionId);
-                  for (const mentionId of ids) removeMention(mentionId);
+                  unlinkResource(item.assetId);
                 }}
               >
                 <X size={11} aria-hidden="true" />

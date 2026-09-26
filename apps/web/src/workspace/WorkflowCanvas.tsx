@@ -994,7 +994,7 @@ type QuickEditorOverlayProps = Omit<NodeQuickEditorProps, 'node'> & {
 };
 
 /**
- * 在画布外层渲染输入面板，按节点实测宽度和视口倍率同步缩放。
+ * 在画布外层渲染输入面板，空间足够时宽度为节点的两倍，并随视口倍率同步缩放。
  * portal 避免被节点的 overflow 裁剪；碰撞检测使用屏幕像素，最终尺寸换回画布像素，
  * 使输入内容不影响节点外框，且缩放后仍避开节点、工具栏和画布边界。
  */
@@ -1078,7 +1078,7 @@ function QuickEditorOverlay({
     const nodeRect = nodeElement.getBoundingClientRect();
     const hasNodeBounds = nodeRect.width > 0 && nodeRect.height > 0;
     let width = Math.min(
-      hasNodeBounds ? nodeRect.width : QUICK_EDITOR_FALLBACK_WIDTH * viewportZoom,
+      hasNodeBounds ? nodeRect.width * 2 : QUICK_EDITOR_FALLBACK_WIDTH * viewportZoom,
       Math.max(1, boundedRight - canvasLeft),
     );
     const nodeCenter = hasNodeBounds

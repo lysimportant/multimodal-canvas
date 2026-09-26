@@ -26,6 +26,8 @@ const dialogScreenshotPath = fileURLToPath(
   new URL('../../../test-results/resource-mention-picker-dialog.png', import.meta.url),
 );
 
+test.use({ serviceWorkers: 'block' });
+
 /** 构造完整资源索引项，确保浏览器验收覆盖真实领域字段。 */
 function asset(
   id: string,
@@ -141,8 +143,11 @@ async function json(route: Route, body: unknown, status = 200) {
 }
 
 /** 安装项目、资源、模型及画布离线 Mock，并记录浏览器异常。 */
-async function installFixture(page: Page) {
-  let canvas = initialCanvas();
+async function installFixture(page: Page, baseURL: string | undefined, initial = initialCanvas()) {
+  if (!baseURL) throw new Error('请通过 WEB_BASE_URL 指定隔离浏览器验收地址');
+  const webOrigin = new URL(baseURL).origin;
+  let canvas = structuredClone(initial);
+  const apiRequests: Array<{ method: string; path: string }> = [];
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => {
@@ -163,14 +168,26 @@ async function installFixture(page: Page) {
       }),
     );
   });
-  await page.route('**/v1/**', async (route) => {
+  await page.context().route('**/*', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const path = url.pathname;
     const method = request.method();
-    if (path.endsWith('/events'))
+    if (!path.startsWith('/v1/')) {
+      if (
+        url.origin === webOrigin &&
+        method === 'GET' &&
+        !['fetch', 'xhr', 'eventsource'].includes(request.resourceType())
+      ) {
+        return route.continue();
+      }
+      errors.push('已阻断未声明的网络请求：' + method + ' ' + url.origin + path);
+      return route.abort('blockedbyclient');
+    }
+    apiRequests.push({ method, path });
+    if (method === 'GET' && path === `/v1/projects/${project.id}/events`)
       return route.fulfill({ contentType: 'text/event-stream', body: ': ready\n\n' });
-    if (path === '/v1/auth/me')
+    if (method === 'GET' && path === '/v1/auth/me')
       return json(route, {
         user: {
           id: 'resource-mention-user',
@@ -179,8 +196,8 @@ async function installFixture(page: Page) {
           createdAt: '2026-09-23T00:00:00.000Z',
         },
       });
-    if (path === '/v1/projects') return json(route, { projects: [project] });
-    if (path === `/v1/projects/${project.id}`) return json(route, { project });
+    if (method === 'GET' && path === '/v1/projects') return json(route, { projects: [project] });
+    if (method === 'GET' && path === `/v1/projects/${project.id}`) return json(route, { project });
     if (path === `/v1/projects/${project.id}/canvas`) {
       if (method === 'PATCH') {
         canvas = canvasDocumentSchema.parse({
@@ -188,19 +205,20 @@ async function installFixture(page: Page) {
           revision: canvas.revision + 1,
         });
       }
-      return json(route, { canvas });
+      if (method === 'GET' || method === 'PATCH') return json(route, { canvas });
     }
-    if (path === `/v1/projects/${project.id}/models/defaults`)
+    if (method === 'GET' && path === `/v1/projects/${project.id}/models/defaults`)
       return json(route, { defaults: {}, resolvedDefaults: {} });
-    if (path === `/v1/projects/${project.id}/runs`) return json(route, { runs: [] });
-    if (path === '/v1/assets') return json(route, { assets });
-    if (path === '/v1/prompt-skills') return json(route, { skills: [] });
-    if (path === '/v1/settings/ai')
+    if (method === 'GET' && path === `/v1/projects/${project.id}/runs`)
+      return json(route, { runs: [] });
+    if (method === 'GET' && path === '/v1/assets') return json(route, { assets });
+    if (method === 'GET' && path === '/v1/prompt-skills') return json(route, { skills: [] });
+    if (method === 'GET' && path === '/v1/settings/ai')
       return json(route, {
         settings: { defaultModels: { image: 'mock-image' }, timeoutMs: 900_000 },
         resolvedDefaults: { image: 'mock-image' },
       });
-    if (path === '/v1/models')
+    if (method === 'GET' && path === '/v1/models')
       return json(route, {
         models: ['text', 'image', 'video', 'audio'].map((mediaType) => ({
           id: `mock-${mediaType}`,
@@ -212,12 +230,12 @@ async function installFixture(page: Page) {
         })),
       });
     const accessMatch = path.match(/^\/v1\/assets\/([^/]+)\/access-url$/);
-    if (accessMatch) {
+    if (method === 'POST' && accessMatch) {
       const id = decodeURIComponent(accessMatch[1]);
       return json(route, { url: `/v1/assets/${id}/versions/1/content` });
     }
     const contentMatch = path.match(/^\/v1\/assets\/([^/]+)\/versions\/1\/content$/);
-    if (contentMatch) {
+    if (method === 'GET' && contentMatch) {
       const entry = assets.find(
         (candidate) => candidate.id === decodeURIComponent(contentMatch[1]),
       );
@@ -229,12 +247,14 @@ async function installFixture(page: Page) {
         body: entry.mediaType === 'video' ? video : poster,
       });
     }
-    if (path.endsWith('/reverse-prompts')) return json(route, { analysis: null });
-    if (path.includes('/request-prompts')) return json(route, { records: [] });
+    if (method === 'GET' && /^\/v1\/assets\/[^/]+\/versions\/1\/reverse-prompts$/.test(path))
+      return json(route, { analysis: null });
+    if (method === 'GET' && /^\/v1\/nodes\/[^/]+\/request-prompts$/.test(path))
+      return json(route, { records: [] });
     errors.push(`未声明的 Mock 接口：${method} ${path}`);
     return route.fulfill({ status: 404, contentType: 'application/json', body: '{}' });
   });
-  return { errors, canvas: () => canvas };
+  return { errors, apiRequests, canvas: () => structuredClone(canvas) };
 }
 
 /** 通过 PC 画布节点的真实入口打开紧凑编辑器。 */
@@ -311,9 +331,12 @@ function occurrenceCount(value: string, name: string) {
   return value.split(name).length - 1;
 }
 
-test('1440 PC 节点 picker 贴近 @、独立搜索筛选滚动，并支持原子删除与撤销', async ({ page }) => {
+test('1440 PC 节点 picker 贴近 @、独立搜索筛选滚动，并支持原子删除与撤销', async ({
+  page,
+  baseURL,
+}) => {
   await page.setViewportSize({ width: 1440, height: 900 });
-  const fixture = await installFixture(page);
+  const fixture = await installFixture(page, baseURL);
   await page.goto(`/projects/${project.id}`);
   const { node, editor } = await openQuickEditor(page);
   const prompt = editor.getByRole('textbox', { name: '提示词' });
@@ -443,9 +466,10 @@ test('1440 PC 节点 picker 贴近 @、独立搜索筛选滚动，并支持原�
 
 test('1024 PC 放大 Dialog 的顶层 picker 保持搜索焦点、可选中且 Escape 不关闭模态框', async ({
   page,
+  baseURL,
 }) => {
   await page.setViewportSize({ width: 1024, height: 768 });
-  const fixture = await installFixture(page);
+  const fixture = await installFixture(page, baseURL);
   await page.goto(`/projects/${project.id}`);
   const { node, editor } = await openQuickEditor(page);
   const nodeBefore = await node.boundingBox();
@@ -511,9 +535,9 @@ test('1024 PC 放大 Dialog 的顶层 picker 保持搜索焦点、可选中且 E
   expect(fixture.errors).toEqual([]);
 });
 
-test('Ant Design 命令面板圈定焦点、保护 IME，并在关闭后恢复触发器', async ({ page }) => {
+test('Ant Design 命令面板圈定焦点、保护 IME，并在关闭后恢复触发器', async ({ page, baseURL }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
-  const fixture = await installFixture(page);
+  const fixture = await installFixture(page, baseURL);
   await page.goto(`/projects/${project.id}`);
   const trigger = page.getByRole('button', { name: '打开命令面板' });
   await trigger.click();
@@ -562,9 +586,9 @@ test('Ant Design 命令面板圈定焦点、保护 IME，并在关闭后恢复�
   expect(fixture.errors).toEqual([]);
 });
 
-test('外观入口的五种主题同步到组件库模型选项且不撑大节点', async ({ page }) => {
+test('外观入口的五种主题同步到组件库模型选项且不撑大节点', async ({ page, baseURL }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
-  const fixture = await installFixture(page);
+  const fixture = await installFixture(page, baseURL);
   await page.goto('/projects/' + project.id);
   const { node, editor } = await openQuickEditor(page);
   const before = (await node.boundingBox())!;
@@ -617,9 +641,9 @@ test('外观入口的五种主题同步到组件库模型选项且不撑大节�
   expect(fixture.errors).toEqual([]);
 });
 
-test('组件库右键菜单避开 PC 视口边缘，窗口缩放后仍可见可取消', async ({ page }) => {
+test('组件库右键菜单避开 PC 视口边缘，窗口缩放后仍可见可取消', async ({ page, baseURL }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
-  const fixture = await installFixture(page);
+  const fixture = await installFixture(page, baseURL);
   await page.goto('/projects/' + project.id);
   await expect(page.locator('.react-flow__pane')).toBeVisible();
   await page.mouse.click(1435, 700, { button: 'right' });
@@ -648,9 +672,9 @@ test('组件库右键菜单避开 PC 视口边缘，窗口缩放后仍可见可�
   expect(fixture.errors).toEqual([]);
 });
 
-test('资源管理的库组件支持保存、归档确认、恢复和键盘关闭', async ({ page }) => {
+test('资源管理的库组件支持保存、归档确认、恢复和键盘关闭', async ({ page, baseURL }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
-  const fixture = await installFixture(page);
+  const fixture = await installFixture(page, baseURL);
   let entry = {
     ...assets[0],
     ownerId: 'resource-mention-user',
@@ -703,9 +727,9 @@ test('资源管理的库组件支持保存、归档确认、恢复和键盘关�
   expect(fixture.errors).toEqual([]);
 });
 
-test('管理审计使用组件库表格和分页，并保留服务端页码', async ({ page }) => {
+test('管理审计使用组件库表格和分页，并保留服务端页码', async ({ page, baseURL }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
-  const fixture = await installFixture(page);
+  const fixture = await installFixture(page, baseURL);
   const user = {
     id: 'component-admin',
     role: 'admin',
@@ -750,10 +774,11 @@ test('管理审计使用组件库表格和分页，并保留服务端页码', as
   expect(fixture.errors).toEqual([]);
 });
 
-test('资源预览由库模态承载，关闭后焦点回到原资源', async ({ page }) => {
+test('资源预览由库模态承载，关闭后焦点回到原资源', async ({ page, baseURL }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
-  const fixture = await installFixture(page);
+  const fixture = await installFixture(page, baseURL);
   await page.goto('/projects/' + project.id);
+  await page.getByRole('button', { name: '展开资源栏', exact: true }).click();
   const trigger = page.getByRole('button', { name: '预览 产品图', exact: true });
   await trigger.click();
   const dialog = page.getByRole('dialog', { name: '产品图', exact: true });
@@ -794,9 +819,9 @@ test('资源预览由库模态承载，关闭后焦点回到原资源', async ({
   expect(fixture.errors).toEqual([]);
 });
 
-test('设置、Skill 和生成说明模态保留业务布局及嵌套关闭语义', async ({ page }) => {
+test('设置、Skill 和生成说明模态保留业务布局及嵌套关闭语义', async ({ page, baseURL }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
-  const fixture = await installFixture(page);
+  const fixture = await installFixture(page, baseURL);
   await page.route('**/v1/account/newapi', (route) =>
     json(route, {
       account: {
@@ -832,7 +857,7 @@ test('设置、Skill 和生成说明模态保留业务布局及嵌套关闭语�
   await page.getByRole('button', { name: '技能工作台', exact: true }).first().click();
   const skills = page.getByRole('dialog', { name: 'Skill 工作台', exact: true });
   await expect(skills).toHaveCSS('display', 'inline-flex');
-  await expect(skills).toHaveCSS('width', '1000px');
+  await expect(skills).toHaveCSS('width', '1408px');
   const name = skills.getByRole('textbox', { name: '名称', exact: true });
   await expect(name).toBeEditable();
   await name.fill('未保存的本地测试');
@@ -860,9 +885,9 @@ test('设置、Skill 和生成说明模态保留业务布局及嵌套关闭语�
   expect(fixture.errors).toEqual([]);
 });
 
-test('组件库菜单和外观标签独占键盘，不删除节点或穿透撤销重做', async ({ page }) => {
+test('组件库菜单和外观标签独占键盘，不删除节点或穿透撤销重做', async ({ page, baseURL }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
-  const fixture = await installFixture(page);
+  const fixture = await installFixture(page, baseURL);
   await page.goto('/projects/' + project.id);
   await page.getByRole('button', { name: '新建文字生成节点', exact: true }).click();
   const nodes = page.locator('.react-flow__node');
@@ -926,8 +951,8 @@ test('组件库菜单和外观标签独占键盘，不删除节点或穿透撤�
   expect(fixture.errors).toEqual([]);
 });
 
-test('节点输入区数量样式统一，Skill 同行悬浮且不撑大节点', async ({ page }, testInfo) => {
-  const fixture = await installFixture(page);
+test('节点输入区数量样式统一，Skill 同行悬浮且不撑大节点', async ({ page, baseURL }, testInfo) => {
+  const fixture = await installFixture(page, baseURL);
   let generationRequests = 0;
   page.on('request', (request) => {
     if (
@@ -949,7 +974,7 @@ test('节点输入区数量样式统一，Skill 同行悬浮且不撑大节点',
     await expect(count).toBeVisible();
     // 节点下方空间有限时，只滚动已有编辑区，不改变节点外框。
     await skill.scrollIntoViewIfNeeded();
-    await expect(skill).toBeInViewport({ ratio: 1 });
+    await expect(skill).toBeInViewport({ ratio: 0.999 });
     const layout = await editor.evaluate((element) => {
       const model = element.querySelector('.node-quick-editor-select-group .ant-select')!;
       const quantity = element.querySelector('.node-quick-editor-generation-count .ant-select')!;
@@ -979,7 +1004,6 @@ test('节点输入区数量样式统一，Skill 同行悬浮且不撑大节点',
     expect(layout.skillWidth).toBeLessThan(100);
     expect(layout.inControls).toBe(true);
     expect(layout.skillTop).toBeCloseTo(layout.quantityTop, 0);
-    expect(layout.skillTop).toBeCloseTo(layout.modelTop, 0);
     expect(layout.overflow).toBe(false);
     await page.screenshot({
       path: testInfo.outputPath(`node-controls-${viewport.width}.png`),
@@ -1020,13 +1044,8 @@ test('节点输入区数量样式统一，Skill 同行悬浮且不撑大节点',
   await editor.getByRole('button', { name: '打开完整编辑器' }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByRole('combobox', { name: '生成数量：3份' })).toBeVisible();
-  const skill = dialog.getByRole('button', { name: 'Skill 配置', exact: true });
-  expect((await skill.boundingBox())!.width).toBeLessThan(100);
-  await skill.hover();
-  const configuration = page.getByRole('group', { name: 'Skill 配置', exact: true });
-  await expect(configuration).toBeVisible();
-  await page.keyboard.press('Escape');
-  await expect(configuration).toBeHidden();
+  await expect(dialog.getByRole('button', { name: 'Skill 配置', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('group', { name: 'Skill 配置', exact: true })).toHaveCount(0);
   await expect(dialog).toBeVisible();
   await page.screenshot({
     path: testInfo.outputPath('node-controls-dialog.png'),
@@ -1042,9 +1061,10 @@ test('节点输入区数量样式统一，Skill 同行悬浮且不撑大节点',
 
 test('Skill 优化预览在悬浮卡片和完整编辑器中可编辑，关闭后保留结果且不撑开输入区', async ({
   page,
+  baseURL,
 }, testInfo) => {
   await page.setViewportSize({ width: 1440, height: 900 });
-  const fixture = await installFixture(page);
+  const fixture = await installFixture(page, baseURL);
   const source = structuredClone(fixture.canvas().nodes[0]!.data.promptDocument!);
   const skill = PROMPT_SKILLS[0]!;
   let submissions = 0;

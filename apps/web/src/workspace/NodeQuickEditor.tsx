@@ -53,7 +53,7 @@ import {
   type ImageEditSourcePreview,
 } from './image-edit-source-preview';
 import { useWorkspacePreferences } from '../state/workspace-preferences';
-import { PromptSkillPanel } from './PromptSkillPanel';
+import { PromptSkillPanel, type PromptSkillPanelProps } from './PromptSkillPanel';
 import { isImeKeyboardEvent } from '../ime';
 import './node-quick-editor.css';
 import './node-quick-editor-layout.css';
@@ -621,31 +621,30 @@ export function NodeQuickEditor({
   );
 
   /** 与提示词编辑器共用结构化文档，采用时走现有历史和保存回调。 */
-  const skillPanel = (
-    <PromptSkillPanel
-      nodeId={node.id}
-      projectId={projectId}
-      mediaType={node.data.mediaType}
-      promptDocument={
-        node.data.promptDocument ?? {
-          version: 1,
-          blocks: [{ type: 'text', text: node.data.prompt ?? '' }],
-        }
-      }
-      skillId={node.data.promptSkillId}
-      skills={promptSkills}
-      skillsLoading={skillLibraryLoading}
-      skillsError={skillLibraryError}
-      onOpenWorkbench={onOpenSkillWorkbench}
-      models={models}
-      disabled={busy || !onPromptSkillChange || Boolean(skillLibraryError)}
-      onSkillChange={(id) => onPromptSkillChange?.(id)}
-      onApply={(document) => {
-        if (onPromptDocumentChange) onPromptDocumentChange(document);
-        else onPromptChange?.(renderPromptDocument(document));
-      }}
-    />
-  );
+  const skillPanelProps: PromptSkillPanelProps = {
+    nodeId: node.id,
+    projectId,
+    mediaType: node.data.mediaType,
+    promptDocument: node.data.promptDocument ?? {
+      version: 1,
+      blocks: [{ type: 'text', text: node.data.prompt ?? '' }],
+    },
+    skillId: node.data.promptSkillId,
+    skills: promptSkills,
+    skillsLoading: skillLibraryLoading,
+    skillsError: skillLibraryError,
+    onOpenWorkbench: onOpenSkillWorkbench,
+    models,
+    disabled: busy || !onPromptSkillChange || Boolean(skillLibraryError),
+    onSkillChange: (id) => onPromptSkillChange?.(id),
+    onApply: (document) => {
+      if (onPromptDocumentChange) onPromptDocumentChange(document);
+      else onPromptChange?.(renderPromptDocument(document));
+    },
+  };
+  const skillPanel = <PromptSkillPanel {...skillPanelProps} />;
+  /** 完整编辑器只展示已生成的优化结果，不把配置悬浮卡片嵌套进 Dialog。 */
+  const inlineSkillPreview = <PromptSkillPanel {...skillPanelProps} presentation="inline" />;
 
   /** 来源图只读展示：点击缩略图预览，点击名称定位到来源节点。 */
   const sourcePreviewAsset = imageEditSource
@@ -1051,7 +1050,7 @@ export function NodeQuickEditor({
       {videoModeEditor}
       {node.data.mediaType === 'text' ? inferenceEditor : mediaSummary}
       <div className="node-quick-editor-run-group">
-        {skillPanel}
+        {!expandedEditorOpen && skillPanel}
         <NodeParameterSelect
           label="生成数量"
           className="node-quick-editor-generation-count"
@@ -1246,6 +1245,7 @@ export function NodeQuickEditor({
           </div>
           <div className="node-quick-editor-dialog-body">
             <div className="node-quick-editor-prompt-group">{promptEditor}</div>
+            {expandedEditorOpen && inlineSkillPreview}
             {controls}
             {generationCountIssue && (
               <p className="node-quick-editor-parameter-issue" role="status">

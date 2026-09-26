@@ -2,6 +2,7 @@ import {
   mentionDisplayName,
   PROMPT_SKILLS,
   promptDocumentSchema,
+  renderPromptDocument,
   type MediaType,
   type PromptDocument,
   type PromptSkill,
@@ -22,6 +23,7 @@ import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore }
 
 import { readStoredAuthSession, subscribeAuthSession } from '../auth-client';
 import { isImeKeyboardEvent } from '../ime';
+import { SKILL_FIELD_LIMITS } from '../skill-library';
 import {
   clearPendingPromptOptimization,
   fetchPromptOptimization,
@@ -40,8 +42,12 @@ import './prompt-skill-panel.css';
 
 /** 所有媒体节点共用的优化面板；父层负责持久化技能和显式应用后的文档。 */
 export type PromptSkillPanelProps = {
-  /** 当前画布节点身份。 */
+  /** 来源身份；画布节点用 nodeId，工作台用独立命名空间，不修改画布。 */
   nodeId: string;
+  /**
+   * 节点使用悬浮配置；完整编辑器只内联展示已有优化任务；工作台内联展示完整升级表单。
+   */
+  presentation?: 'popover' | 'inline' | 'skill-authoring';
   /** 已保存的项目身份；缺省时禁止提交。 */
   projectId?: string;
   /** 目标媒体仅作为优化上下文，不影响技能目录。 */
@@ -74,7 +80,8 @@ function currentUserId(): string {
 }
 
 /**
- * 渲染紧凑 Skill 按钮和悬浮卡片；收起卡片不停止轮询或清除预览。
+ * 节点渲染紧凑 Skill 悬浮卡片，工作台内联复用同一优化与恢复流程。
+ * 收起卡片不停止轮询或清除预览，工作台采用也不会直接保存 Skill。
  * 节点或账户切换时释放旧轮询并从对应会话记录恢复。
  * 父组件在紧凑和展开编辑器中传入相同参数即可，预览和未知请求跨重挂载保留。
  */
@@ -97,6 +104,7 @@ function PromptSkillPanelSession({
   promptDocument,
   skillId,
   models = [],
+  presentation = 'popover',
   skills = PROMPT_SKILLS,
   skillsLoading = false,
   skillsError,
@@ -106,8 +114,28 @@ function PromptSkillPanelSession({
   onApply,
   storageKey,
 }: PromptSkillPanelProps & { storageKey: string }) {
+  const isInline = presentation === 'inline';
+  const isAuthoring = presentation === 'skill-authoring';
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsPinned, setSettingsPinned] = useState(false);
+
+  /** 最近一次打开浮卡前的焦点；悬停打开时 Escape 应回到原输入控件，而非抢到 Skill 按钮。 */
+  const settingsFocusReturnRef = useRef<HTMLElement | null>(null);
+  /** 浏览器端 Ant Design 浮层关闭时有时不会回焦；仅在 Escape 后按打开方式恢复焦点。 */
+  useEffect(() => {
+    if (isAuthoring || !settingsOpen) return;
+    const restoreFocusAfterEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || isImeKeyboardEvent(event)) return;
+      queueMicrotask(() => {
+        const listbox = document.querySelector<HTMLElement>('[role="listbox"]');
+        if (listbox && listbox.getClientRects().length > 0) return;
+        const target = settingsPinned ? triggerRef.current : settingsFocusReturnRef.current;
+        if (target?.isConnected) target.focus({ preventScroll: true });
+      });
+    };
+    document.addEventListener('keydown', restoreFocusAfterEscape, true);
+    return () => document.removeEventListener('keydown', restoreFocusAfterEscape, true);
+  }, [isAuthoring, settingsOpen, settingsPinned]);
   const selectId = useId();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const [modelKey, setModelKey] = useState('default');
@@ -148,21 +176,26 @@ function PromptSkillPanelSession({
     })),
   ];
   const draft = pending?.draft;
+  /** 编辑中的输入可能超出文档上限，保留已有预览而不是在渲染期间抛错。 */
+  const inputDocument = promptDocumentSchema.safeParse(promptDocument);
+  const inputIssue = inputDocument.success
+    ? undefined
+    : isAuthoring
+      ? '草稿和升级要求超出输入限制，请精简后再生成预览'
+      : '当前提示词格式无效或超出输入限制，请检查后再优化';
   const stale =
     pending !== undefined &&
     ((!skillsLoading && (!skillAvailable || pending.request.skillVersion !== skill?.version)) ||
+      !inputDocument.success ||
       requestBaseline(pending.request) !==
-        JSON.stringify([
-          projectId,
-          nodeId,
-          mediaType,
-          skillId,
-          promptDocumentSchema.parse(promptDocument),
-        ]));
+        JSON.stringify([projectId, nodeId, mediaType, skillId, inputDocument.data]));
   let draftIssue: string | undefined;
   if (draft && pending) {
     try {
       validateOptimizedPromptDocument(draft, pending.request.promptDocument);
+      if (isAuthoring && renderPromptDocument(draft).length > SKILL_FIELD_LIMITS.instruction) {
+        draftIssue = `升级后的 Skill 指令不能超过 ${SKILL_FIELD_LIMITS.instruction} 字符，请精简预览后采用`;
+      }
     } catch (cause) {
       draftIssue = errorMessage(cause);
     }
@@ -286,7 +319,8 @@ function PromptSkillPanelSession({
       storageBlocked ||
       !projectId ||
       !skill ||
-      !skillAvailable
+      !skillAvailable ||
+      !inputDocument.success
     )
       return;
     try {
@@ -307,7 +341,7 @@ function PromptSkillPanelSession({
         mediaType,
         skillId: skill.id,
         skillVersion: skill.version,
-        promptDocument: promptDocumentSchema.parse(promptDocument),
+        promptDocument: inputDocument.data,
         idempotencyKey: crypto.randomUUID(),
         ...(selectedModel
           ? {
@@ -369,10 +403,332 @@ function PromptSkillPanelSession({
             ? '优化任务待确认'
             : '悬停配置 Skill');
 
+  /** 待确认任务和可编辑预览与配置入口分离，完整编辑器可以复用而不打开悬浮卡片。 */
+  const pendingContent = (
+    <>
+      {pending && !draft && (
+        <div className="prompt-skill-progress">
+          <p role="status">
+            {busy
+              ? pending.result?.status === 'queued'
+                ? '等待优化'
+                : isAuthoring
+                  ? '正在生成 Skill 升级预览'
+                  : '正在优化提示词'
+              : pending.runId
+                ? '优化任务待确认'
+                : '提交结果尚未确认，将沿用原请求查询'}
+          </p>
+          {busy ? (
+            <Button
+              type="button"
+              className="button button-secondary"
+              onClick={() => {
+                const controller = requestRef.current;
+                requestRef.current = undefined;
+                controller?.abort();
+                setBusy(false);
+                setError('已停止查询，服务端任务可能仍在运行');
+              }}
+            >
+              <Square size={13} aria-hidden="true" />
+              停止查询
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              className="button button-secondary"
+              disabled={disabled || storageBlocked}
+              onClick={() => void execute(pending)}
+            >
+              <RotateCw size={13} aria-hidden="true" />
+              {pending.runId ? '继续查询' : '确认原请求'}
+            </Button>
+          )}
+        </div>
+      )}
+      {pending && draft && (
+        <div
+          className="prompt-skill-preview"
+          role="group"
+          aria-label={isAuthoring ? 'Skill 升级预览' : '优化预览'}
+        >
+          <div className="prompt-skill-preview-heading">
+            <strong>{isAuthoring ? 'Skill 升级预览' : '优化预览'}</strong>
+            {pending.result?.simulated && <span>模拟结果</span>}
+          </div>
+          <div className="prompt-skill-preview-document">
+            {draft.blocks.map((block, index) =>
+              block.type === 'text' ? (
+                <Textarea
+                  key={index}
+                  aria-label={
+                    isAuthoring ? `升级后的 Skill 指令 ${index + 1}` : `优化文字 ${index + 1}`
+                  }
+                  value={block.text}
+                  rows={isAuthoring ? 12 : Math.max(2, Math.min(8, block.text.split('\n').length))}
+                  maxLength={20_000}
+                  disabled={disabled}
+                  onChange={(event) => editText(index, event.target.value)}
+                />
+              ) : (
+                <span
+                  key={block.mentionId}
+                  className="prompt-skill-mention"
+                  title={block.assetVersion ? `资源版本 ${block.assetVersion}` : '当前资源版本'}
+                >
+                  @{mentionDisplayName(block)}
+                </span>
+              ),
+            )}
+          </div>
+          {stale && !skillsLoading && (
+            <p className="prompt-skill-error" role="status">
+              {!skillAvailable
+                ? '此 Skill 已删除或停用，已保留优化结果，但无法应用此预览；请恢复 Skill 或丢弃结果'
+                : isAuthoring
+                  ? '草稿或升级要求已改变，不能覆盖当前内容；恢复原内容后可采用，或丢弃此预览'
+                  : '原提示词、节点或 Skill 版本已改变，无法应用此预览；请丢弃后重新优化'}
+            </p>
+          )}
+          {draftIssue && (
+            <p className="prompt-skill-error" role="alert">
+              {draftIssue}
+            </p>
+          )}
+          <div className="prompt-skill-actions">
+            <Button
+              type="button"
+              className="button button-secondary"
+              onClick={() => {
+                try {
+                  release(pending);
+                  setError(undefined);
+                } catch (cause) {
+                  setError(errorMessage(cause));
+                }
+              }}
+            >
+              <X size={14} aria-hidden="true" />
+              丢弃
+            </Button>
+            <Button
+              type="button"
+              className="button button-primary"
+              disabled={disabled || skillsLoading || stale || !!draftIssue}
+              onClick={apply}
+            >
+              <Check size={14} aria-hidden="true" />
+              {isAuthoring ? '采用到草稿' : '应用'}
+            </Button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+
+  const settingsContent = (
+    <div
+      className={`prompt-skill-settings-content${isAuthoring ? ' prompt-skill-authoring-content' : ''}`}
+      tabIndex={-1}
+      role="group"
+      aria-label={isAuthoring ? 'Skill 升级设置' : 'Skill 配置'}
+      onPointerDown={isAuthoring ? undefined : () => setSettingsPinned(true)}
+      onKeyDown={(event) => {
+        // 卡片内是表单，不让 Dropdown 的菜单式 Tab 处理打断预览编辑。
+        if (event.key === 'Tab') event.stopPropagation();
+      }}
+      onBlur={(event) => {
+        if (isAuthoring) return;
+        if (
+          event.relatedTarget &&
+          !event.currentTarget.contains(event.relatedTarget) &&
+          !triggerRef.current?.contains(event.relatedTarget)
+        ) {
+          setSettingsOpen(false);
+          setSettingsPinned(false);
+        }
+      }}
+    >
+      {!isAuthoring && (
+        <div className="prompt-skill-controls">
+          <label className="prompt-skill-select">
+            <span>Skill</span>
+            <Select
+              id={selectId + '-skill'}
+              aria-label="提示词 Skill"
+              value={skillId && !skillAvailable ? undefined : (skillId ?? '')}
+              options={[
+                skillOptions[0]!,
+                ...Array.from(new Set(skills.map((entry) => entry.category))).map((category) => ({
+                  label: category,
+                  options: skillOptions.filter(
+                    (entry) => 'groupLabel' in entry && entry.groupLabel === category,
+                  ),
+                })),
+              ]}
+              optionRender={(option) => (
+                <Tooltip
+                  title={'tooltip' in option.data ? option.data.tooltip : undefined}
+                  mouseEnterDelay={0}
+                  classNames={{ container: 'prompt-skill-option-tooltip' }}
+                  getPopupContainer={(trigger: HTMLElement) =>
+                    trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
+                  }
+                >
+                  <span>{option.label}</span>
+                </Tooltip>
+              )}
+              onChange={(id) => onSkillChange(id || undefined)}
+              placeholder={
+                skillsLoading ? 'Skill 目录加载中' : skillId ? 'Skill 不可用' : '不使用 Skill'
+              }
+              disabled={disabled || skillsLoading}
+              virtual={false}
+              styles={{ popup: { root: { pointerEvents: 'auto' } } }}
+              placement="topLeft"
+              getPopupContainer={(trigger: HTMLElement) =>
+                trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
+              }
+              popupMatchSelectWidth={false}
+            />
+          </label>
+          {onOpenWorkbench && (
+            <Tooltip
+              title="技能工作台"
+              trigger={['hover']}
+              getPopupContainer={(trigger: HTMLElement) =>
+                trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
+              }
+            >
+              <Button
+                type="button"
+                className="button button-secondary"
+                aria-label="技能工作台"
+                title="技能工作台"
+                onClick={onOpenWorkbench}
+              >
+                <Settings2 size={15} aria-hidden="true" />
+              </Button>
+            </Tooltip>
+          )}
+        </div>
+      )}
+      {(textModels.length > 0 || isAuthoring) && (
+        <label className="prompt-skill-select">
+          <span>优化模型</span>
+          <Select
+            id={selectId + '-model'}
+            aria-label="优化模型"
+            value={modelKey}
+            options={[
+              modelOptions[0]!,
+              ...[
+                ...new Set(
+                  textModels.map((model) => model.group ?? model.credentialLabel ?? '文字模型'),
+                ),
+              ].map((group) => ({
+                label: group,
+                options: modelOptions.filter(
+                  (option) => 'groupLabel' in option && option.groupLabel === group,
+                ),
+              })),
+            ]}
+            onChange={setModelKey}
+            disabled={disabled || busy || !!pending}
+            virtual={false}
+            styles={{ popup: { root: { pointerEvents: 'auto' } } }}
+            placement="topLeft"
+            getPopupContainer={(trigger: HTMLElement) =>
+              trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
+            }
+            popupMatchSelectWidth={false}
+          />
+        </label>
+      )}
+      <Button
+        type="button"
+        className="button button-secondary prompt-skill-optimize"
+        onClick={optimize}
+        disabled={
+          disabled ||
+          skillsLoading ||
+          busy ||
+          !!pending ||
+          storageBlocked ||
+          !projectId ||
+          !skillAvailable ||
+          !!inputIssue ||
+          !promptDocument.blocks.some((block) => block.type === 'text' && block.text.trim())
+        }
+      >
+        {busy ? (
+          <LoaderCircle size={14} aria-hidden="true" />
+        ) : (
+          <WandSparkles size={14} aria-hidden="true" />
+        )}
+        {busy ? (isAuthoring ? '升级中' : '优化中') : isAuthoring ? '生成升级预览' : '优化提示词'}
+      </Button>
+      {!projectId && (
+        <p className="prompt-skill-status">
+          {isAuthoring ? '打开已保存项目后可调用文字模型升级 Skill' : '保存项目后可优化提示词'}
+        </p>
+      )}
+      {skillsLoading && (
+        <p className="prompt-skill-status" role="status">
+          Skill 目录加载中
+        </p>
+      )}
+      {!skillsLoading && skillId && !skillAvailable && (
+        <p role={isAuthoring ? undefined : 'alert'}>
+          {isAuthoring
+            ? '请先在左侧启用内置「Skill 升级助手」，或重新加载技能库。'
+            : '所选 Skill 已不可用或已停用，请在技能工作台修复或重新选择'}
+        </p>
+      )}
+      {inputIssue && (
+        <p className="prompt-skill-error" role="alert">
+          {inputIssue}
+        </p>
+      )}
+      {skillsError && (
+        <p className="prompt-skill-error" role="alert">
+          {skillsError}
+        </p>
+      )}
+      {error && (
+        <p className="prompt-skill-error" role="alert">
+          {error}
+        </p>
+      )}
+      {pendingContent}
+    </div>
+  );
+
+  if (isInline) {
+    return pending ? (
+      <section
+        className="prompt-skill-panel prompt-skill-inline-panel nodrag nowheel"
+        aria-label="提示词优化预览"
+        onKeyDownCapture={(event) => {
+          if (isImeKeyboardEvent(event)) event.stopPropagation();
+        }}
+        onKeyDown={(event) => {
+          if (['Escape', 'Tab'].includes(event.key) && !isImeKeyboardEvent(event)) return;
+          if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 's')
+            return;
+          event.stopPropagation();
+        }}
+      >
+        {pendingContent}
+      </section>
+    ) : null;
+  }
+
   return (
     <section
-      className="prompt-skill-panel nodrag nowheel"
-      aria-label="提示词 Skill"
+      className={`prompt-skill-panel nodrag nowheel${isAuthoring ? ' prompt-skill-authoring-panel' : ''}`}
+      aria-label={isAuthoring ? 'Skill 模型辅助升级' : '提示词 Skill'}
       onKeyDownCapture={(event) => {
         // 输入法组合期间保留输入，不让库浮层把候选操作解释为关闭。
         if (isImeKeyboardEvent(event)) event.stopPropagation();
@@ -386,317 +742,56 @@ function PromptSkillPanelSession({
         event.stopPropagation();
       }}
     >
-      <Dropdown
-        trigger={settingsPinned ? ['click'] : ['hover', 'click']}
-        placement="topLeft"
-        mouseLeaveDelay={0.18}
-        open={settingsOpen}
-        onOpenChange={(open) => {
-          setSettingsOpen(open);
-          if (!open) setSettingsPinned(false);
-        }}
-        styles={{ root: { pointerEvents: 'auto' } }}
-        getPopupContainer={(trigger: HTMLElement) =>
-          trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
-        }
-        classNames={{ root: 'prompt-skill-settings-overlay' }}
-        destroyOnHidden
-        popupRender={() => (
-          <div
-            className="prompt-skill-settings-content"
-            tabIndex={-1}
-            role="group"
-            aria-label="Skill 配置"
-            onPointerDown={() => setSettingsPinned(true)}
-            onKeyDown={(event) => {
-              // 卡片内是表单，不让 Dropdown 的菜单式 Tab 处理打断预览编辑。
-              if (event.key === 'Tab') event.stopPropagation();
-            }}
-            onBlur={(event) => {
-              if (
-                event.relatedTarget &&
-                !event.currentTarget.contains(event.relatedTarget) &&
-                !triggerRef.current?.contains(event.relatedTarget)
-              ) {
-                setSettingsOpen(false);
-                setSettingsPinned(false);
-              }
-            }}
-          >
-            <div className="prompt-skill-controls">
-              <label className="prompt-skill-select">
-                <span>Skill</span>
-                <Select
-                  id={selectId + '-skill'}
-                  aria-label="提示词 Skill"
-                  value={skillId && !skillAvailable ? undefined : (skillId ?? '')}
-                  options={[
-                    skillOptions[0]!,
-                    ...Array.from(new Set(skills.map((entry) => entry.category))).map(
-                      (category) => ({
-                        label: category,
-                        options: skillOptions.filter(
-                          (entry) => 'groupLabel' in entry && entry.groupLabel === category,
-                        ),
-                      }),
-                    ),
-                  ]}
-                  optionRender={(option) => (
-                    <Tooltip
-                      title={'tooltip' in option.data ? option.data.tooltip : undefined}
-                      mouseEnterDelay={0}
-                      getPopupContainer={(trigger: HTMLElement) =>
-                        trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
-                      }
-                    >
-                      <span>{option.label}</span>
-                    </Tooltip>
-                  )}
-                  onChange={(id) => onSkillChange(id || undefined)}
-                  placeholder={
-                    skillsLoading ? 'Skill 目录加载中' : skillId ? 'Skill 不可用' : '不使用 Skill'
-                  }
-                  disabled={disabled || skillsLoading}
-                  virtual={false}
-                  styles={{ popup: { root: { pointerEvents: 'auto' } } }}
-                  placement="topLeft"
-                  getPopupContainer={(trigger: HTMLElement) =>
-                    trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
-                  }
-                  popupMatchSelectWidth={false}
-                />
-              </label>
-              {onOpenWorkbench && (
-                <Tooltip
-                  title="技能工作台"
-                  trigger={['hover', 'focus']}
-                  getPopupContainer={(trigger: HTMLElement) =>
-                    trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
-                  }
-                >
-                  <Button
-                    type="button"
-                    className="button button-secondary"
-                    aria-label="技能工作台"
-                    title="技能工作台"
-                    onClick={onOpenWorkbench}
-                  >
-                    <Settings2 size={15} aria-hidden="true" />
-                  </Button>
-                </Tooltip>
-              )}
-            </div>
-            {textModels.length > 0 && (
-              <label className="prompt-skill-select">
-                <span>优化模型</span>
-                <Select
-                  id={selectId + '-model'}
-                  aria-label="优化模型"
-                  value={modelKey}
-                  options={[
-                    modelOptions[0]!,
-                    ...[
-                      ...new Set(
-                        textModels.map(
-                          (model) => model.group ?? model.credentialLabel ?? '文字模型',
-                        ),
-                      ),
-                    ].map((group) => ({
-                      label: group,
-                      options: modelOptions.filter(
-                        (option) => 'groupLabel' in option && option.groupLabel === group,
-                      ),
-                    })),
-                  ]}
-                  onChange={setModelKey}
-                  disabled={disabled || busy || !!pending}
-                  virtual={false}
-                  styles={{ popup: { root: { pointerEvents: 'auto' } } }}
-                  placement="topLeft"
-                  getPopupContainer={(trigger: HTMLElement) =>
-                    trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
-                  }
-                  popupMatchSelectWidth={false}
-                />
-              </label>
-            )}
-            <Button
-              type="button"
-              className="button button-secondary prompt-skill-optimize"
-              onClick={optimize}
-              disabled={
-                disabled ||
-                skillsLoading ||
-                busy ||
-                !!pending ||
-                storageBlocked ||
-                !projectId ||
-                !skillAvailable ||
-                !promptDocument.blocks.some((block) => block.type === 'text' && block.text.trim())
-              }
-            >
-              {busy ? (
-                <LoaderCircle size={14} aria-hidden="true" />
-              ) : (
-                <WandSparkles size={14} aria-hidden="true" />
-              )}
-              {busy ? '优化中' : '优化提示词'}
-            </Button>
-            {!projectId && <p className="prompt-skill-status">保存项目后可优化提示词</p>}
-            {skillsLoading && (
-              <p className="prompt-skill-status" role="status">
-                Skill 目录加载中
-              </p>
-            )}
-            {!skillsLoading && skillId && !skillAvailable && (
-              <p role="alert">所选 Skill 已不可用或已停用，请在技能工作台修复或重新选择</p>
-            )}
-            {skillsError && (
-              <p className="prompt-skill-error" role="alert">
-                {skillsError}
-              </p>
-            )}
-            {error && (
-              <p className="prompt-skill-error" role="alert">
-                {error}
-              </p>
-            )}
-            {pending && !draft && (
-              <div className="prompt-skill-progress">
-                <p role="status">
-                  {busy
-                    ? pending.result?.status === 'queued'
-                      ? '等待优化'
-                      : '正在优化提示词'
-                    : pending.runId
-                      ? '优化任务待确认'
-                      : '提交结果尚未确认，将沿用原请求查询'}
-                </p>
-                {busy ? (
-                  <Button
-                    type="button"
-                    className="button button-secondary"
-                    onClick={() => {
-                      const controller = requestRef.current;
-                      requestRef.current = undefined;
-                      controller?.abort();
-                      setBusy(false);
-                      setError('已停止查询，服务端任务可能仍在运行');
-                    }}
-                  >
-                    <Square size={13} aria-hidden="true" />
-                    停止查询
-                  </Button>
-                ) : (
-                  <Button
-                    type="button"
-                    className="button button-secondary"
-                    disabled={disabled || storageBlocked}
-                    onClick={() => void execute(pending)}
-                  >
-                    <RotateCw size={13} aria-hidden="true" />
-                    {pending.runId ? '继续查询' : '确认原请求'}
-                  </Button>
-                )}
-              </div>
-            )}
-            {pending && draft && (
-              <div className="prompt-skill-preview" role="group" aria-label="优化预览">
-                <div className="prompt-skill-preview-heading">
-                  <strong>优化预览</strong>
-                  {pending.result?.simulated && <span>模拟结果</span>}
-                </div>
-                <div className="prompt-skill-preview-document">
-                  {draft.blocks.map((block, index) =>
-                    block.type === 'text' ? (
-                      <Textarea
-                        key={index}
-                        aria-label={`优化文字 ${index + 1}`}
-                        value={block.text}
-                        rows={Math.max(2, Math.min(8, block.text.split('\n').length))}
-                        maxLength={20_000}
-                        disabled={disabled}
-                        onChange={(event) => editText(index, event.target.value)}
-                      />
-                    ) : (
-                      <span
-                        key={block.mentionId}
-                        className="prompt-skill-mention"
-                        title={
-                          block.assetVersion ? `资源版本 ${block.assetVersion}` : '当前资源版本'
-                        }
-                      >
-                        @{mentionDisplayName(block)}
-                      </span>
-                    ),
-                  )}
-                </div>
-                {stale && !skillsLoading && (
-                  <p className="prompt-skill-error" role="status">
-                    {!skillAvailable
-                      ? '此 Skill 已删除或停用，已保留优化结果，但无法应用此预览；请恢复 Skill 或丢弃结果'
-                      : '原提示词、节点或 Skill 版本已改变，无法应用此预览；请丢弃后重新优化'}
-                  </p>
-                )}
-                {draftIssue && (
-                  <p className="prompt-skill-error" role="alert">
-                    {draftIssue}
-                  </p>
-                )}
-                <div className="prompt-skill-actions">
-                  <Button
-                    type="button"
-                    className="button button-secondary"
-                    onClick={() => {
-                      try {
-                        release(pending);
-                        setError(undefined);
-                      } catch (cause) {
-                        setError(errorMessage(cause));
-                      }
-                    }}
-                  >
-                    <X size={14} aria-hidden="true" />
-                    丢弃
-                  </Button>
-                  <Button
-                    type="button"
-                    className="button button-primary"
-                    disabled={disabled || skillsLoading || stale || !!draftIssue}
-                    onClick={apply}
-                  >
-                    <Check size={14} aria-hidden="true" />
-                    应用
-                  </Button>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      >
-        <Button
-          type="button"
-          ref={triggerRef}
-          className="prompt-skill-trigger"
-          aria-label="Skill 配置"
-          aria-expanded={settingsOpen}
-          aria-description={statusLabel}
-          title={statusLabel}
-          data-error={!!(error || skillsError) || undefined}
-          onClick={() => setSettingsPinned(true)}
-          data-selected={!!skillId || undefined}
+      {isAuthoring ? (
+        settingsContent
+      ) : (
+        <Dropdown
+          trigger={settingsPinned ? ['click'] : ['hover', 'click']}
+          placement="topLeft"
+          mouseLeaveDelay={0.18}
+          open={settingsOpen}
+          onOpenChange={(open) => {
+            if (open) {
+              settingsFocusReturnRef.current =
+                document.activeElement instanceof HTMLElement
+                  ? document.activeElement
+                  : triggerRef.current;
+            }
+            setSettingsOpen(open);
+            if (!open) setSettingsPinned(false);
+          }}
+          styles={{ root: { pointerEvents: 'auto' } }}
+          getPopupContainer={(trigger: HTMLElement) =>
+            trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
+          }
+          classNames={{ root: 'prompt-skill-settings-overlay' }}
+          destroyOnHidden
+          popupRender={() => settingsContent}
         >
-          {busy || skillsLoading ? (
-            <LoaderCircle size={14} aria-hidden="true" />
-          ) : draft ? (
-            <Check size={14} aria-hidden="true" />
-          ) : (
-            <WandSparkles size={14} aria-hidden="true" />
-          )}
-          <span>Skill</span>
-          <ChevronDown size={12} aria-hidden="true" />
-        </Button>
-      </Dropdown>
+          <Button
+            type="button"
+            ref={triggerRef}
+            className="prompt-skill-trigger"
+            aria-label="Skill 配置"
+            aria-expanded={settingsOpen}
+            aria-description={statusLabel}
+            title={statusLabel}
+            data-error={!!(error || skillsError) || undefined}
+            onClick={() => setSettingsPinned(true)}
+            data-selected={!!skillId || undefined}
+          >
+            {busy || skillsLoading ? (
+              <LoaderCircle size={14} aria-hidden="true" />
+            ) : draft ? (
+              <Check size={14} aria-hidden="true" />
+            ) : (
+              <WandSparkles size={14} aria-hidden="true" />
+            )}
+            <span>Skill</span>
+            <ChevronDown size={12} aria-hidden="true" />
+          </Button>
+        </Dropdown>
+      )}
     </section>
   );
 }

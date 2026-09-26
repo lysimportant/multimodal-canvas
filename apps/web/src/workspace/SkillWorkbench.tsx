@@ -1,4 +1,10 @@
-import { PROMPT_SKILLS, type PromptSkill } from '@multimodal-canvas/domain';
+import {
+  PROMPT_SKILLS,
+  SKILL_AUTHORING_SKILL_ID,
+  renderPromptDocument,
+  type PromptDocument,
+  type PromptSkill,
+} from '@multimodal-canvas/domain';
 import {
   Button,
   Dialog,
@@ -17,6 +23,7 @@ import {
   Save,
   Search,
   Trash2,
+  WandSparkles,
   X,
   type LucideIcon,
 } from 'lucide-react';
@@ -30,11 +37,17 @@ import {
   updateSkill,
   type CreateSkillInput,
 } from '../skill-library';
+import { PromptSkillPanel } from './PromptSkillPanel';
+import type { ModelEntry } from './contracts';
 import './skill-workbench.css';
 
 /** 工作台受控开关；成功写入或手动刷新后通知父级失效共享目录缓存。 */
 export type SkillWorkbenchProps = {
   open: boolean;
+  /** 优化任务使用当前项目的身份与计费；无项目时仍可编辑 Skill，但不能调用模型。 */
+  projectId?: string;
+  /** 当前用户可用模型；优化面板只显示文字模型，保留精确分组和凭据身份。 */
+  models?: ModelEntry[];
   onOpenChange: (open: boolean) => void;
   onChanged: () => void;
 };
@@ -131,7 +144,12 @@ export function SkillWorkbench({ open, ...props }: SkillWorkbenchProps) {
 }
 
 /** 持有单次打开期间的目录、草稿与并发确认；服务端写入成功后才更新目录。 */
-function SkillWorkbenchSession({ onOpenChange, onChanged }: Omit<SkillWorkbenchProps, 'open'>) {
+function SkillWorkbenchSession({
+  onOpenChange,
+  onChanged,
+  projectId,
+  models = [],
+}: Omit<SkillWorkbenchProps, 'open'>) {
   const [skills, setSkills] = useState<PromptSkill[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<SkillDraft>(() => draftFrom());
@@ -144,6 +162,7 @@ function SkillWorkbenchSession({ onOpenChange, onChanged }: Omit<SkillWorkbenchP
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [upgradeGoal, setUpgradeGoal] = useState('');
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const active = useRef(true);
   const writing = useRef(false);
@@ -158,6 +177,31 @@ function SkillWorkbenchSession({ onOpenChange, onChanged }: Omit<SkillWorkbenchP
     draft.description.length <= SKILL_FIELD_LIMITS.description &&
     draft.instruction.length <= SKILL_FIELD_LIMITS.instruction;
   const locked = busy || loading || !hasLoaded;
+  /** 当前草稿只作为文字上下文发送；不读取画布资源或更改已保存的 Skill。 */
+  const authoringPrompt: PromptDocument = {
+    version: 1,
+    blocks: [
+      {
+        type: 'text',
+        text: JSON.stringify(
+          {
+            task: 'Improve this reusable prompt-optimization Skill. Do not perform its task.',
+            skill: {
+              name: draft.name,
+              category: draft.category,
+              description: draft.description,
+              instruction: draft.instruction,
+            },
+            requirements: upgradeGoal,
+            output:
+              'Only the revised reusable Skill instruction, preserving its language and exact placeholders. Do not repeat the surrounding metadata. Maximum 12000 characters.',
+          },
+          null,
+          2,
+        ),
+      },
+    ],
+  };
   const categories = [...new Set(skills.map((skill) => skill.category))].sort((a, b) =>
     a.localeCompare(b, 'zh-CN'),
   );
@@ -206,7 +250,7 @@ function SkillWorkbenchSession({ onOpenChange, onChanged }: Omit<SkillWorkbenchP
   }, [loadAttempt]);
 
   useEffect(() => {
-    if (!dirty) return;
+    if (!dirty && !upgradeGoal.trim()) return;
     /** 浏览器关闭与刷新也保留未保存提醒。 */
     const preventUnload = (event: BeforeUnloadEvent) => {
       event.preventDefault();
@@ -214,12 +258,12 @@ function SkillWorkbenchSession({ onOpenChange, onChanged }: Omit<SkillWorkbenchP
     };
     window.addEventListener('beforeunload', preventUnload);
     return () => window.removeEventListener('beforeunload', preventUnload);
-  }, [dirty]);
+  }, [dirty, upgradeGoal]);
 
   /** 普通导航先确认草稿；正在写入时禁止切换和关闭。 */
   function leaveDraft(proceed: () => void) {
     if (writing.current) return;
-    if (dirty) setConfirmation({ kind: 'discard', proceed });
+    if (dirty || upgradeGoal.trim()) setConfirmation({ kind: 'discard', proceed });
     else proceed();
   }
 
@@ -227,6 +271,7 @@ function SkillWorkbenchSession({ onOpenChange, onChanged }: Omit<SkillWorkbenchP
   function select(skill?: PromptSkill) {
     setSelectedId(skill?.id ?? null);
     setDraft(draftFrom(skill));
+    setUpgradeGoal('');
     setError('');
     setNotice('');
   }
@@ -274,6 +319,31 @@ function SkillWorkbenchSession({ onOpenChange, onChanged }: Omit<SkillWorkbenchP
           : createSkill(draft),
       acceptSkill,
     );
+  }
+
+  /** 采用只更新本地草稿；内置项转为未保存的自定义副本，服务端版本由显式保存更新。 */
+  function applyUpgrade(document: PromptDocument) {
+    if (locked) return;
+    const instruction = renderPromptDocument(document);
+    if (!instruction.trim() || instruction.length > SKILL_FIELD_LIMITS.instruction) {
+      setError('Skill 指令不能为空或超过 12000 字符');
+      return;
+    }
+    if (builtin) {
+      const name = `${draft.name.trim()}（升级版）`;
+      setSelectedId(null);
+      setDraft({
+        ...draft,
+        name: name.length <= SKILL_FIELD_LIMITS.name ? name : draft.name,
+        instruction,
+      });
+      setNotice('已生成自定义副本草稿，点击保存 Skill 后才会加入技能库');
+    } else {
+      setDraft((current) => ({ ...current, instruction }));
+      setNotice('已采用升级指令到草稿，点击保存 Skill 后生效');
+    }
+    setUpgradeGoal('');
+    setError('');
   }
 
   /** 复制当前可见草稿，支持把冲突草稿另存为自定义项。 */
@@ -335,7 +405,7 @@ function SkillWorkbenchSession({ onOpenChange, onChanged }: Omit<SkillWorkbenchP
         <DialogContent
           className="skill-workbench"
           overlayClassName="skill-workbench-backdrop"
-          style={{ display: 'inline-flex', padding: 0, width: 'min(1000px, calc(100vw - 32px))' }}
+          style={{ display: 'inline-flex', padding: 0, width: 'min(1440px, calc(100vw - 32px))' }}
           aria-describedby={undefined}
         >
           <header className="skill-workbench-header">
@@ -471,90 +541,141 @@ function SkillWorkbenchSession({ onOpenChange, onChanged }: Omit<SkillWorkbenchP
                       />
                     </div>
                   </div>
-                  <form
-                    className="skill-editor-form"
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      save();
-                    }}
-                  >
-                    <div className="skill-editor-fields">
-                      <label>
-                        名称
-                        <Input
-                          value={draft.name}
-                          maxLength={SKILL_FIELD_LIMITS.name}
-                          readOnly={builtin}
-                          disabled={locked}
-                          required
-                          onChange={(event) => setDraft({ ...draft, name: event.target.value })}
-                        />
-                      </label>
-                      <label>
-                        分类
-                        <AutoComplete<string>
-                          value={draft.category}
-                          options={categories.map((value) => ({ value }))}
-                          showSearch={{ filterOption: true }}
-                          disabled={locked}
-                          open={builtin || locked ? false : undefined}
-                          virtual={false}
-                          styles={{ popup: { root: { pointerEvents: 'auto' } } }}
-                          getPopupContainer={(trigger: HTMLElement) =>
-                            trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
-                          }
-                          onChange={(value) => {
-                            if (!builtin && !locked) {
-                              setDraft((current) => ({ ...current, category: value }));
-                            }
-                          }}
-                        >
+                  <div className="skill-editor-workspace">
+                    <form
+                      className="skill-editor-form"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        save();
+                      }}
+                    >
+                      <div className="skill-editor-fields">
+                        <label>
+                          名称
                           <Input
-                            maxLength={SKILL_FIELD_LIMITS.category}
+                            value={draft.name}
+                            maxLength={SKILL_FIELD_LIMITS.name}
                             readOnly={builtin}
                             disabled={locked}
                             required
+                            onChange={(event) => setDraft({ ...draft, name: event.target.value })}
                           />
-                        </AutoComplete>
+                        </label>
+                        <label>
+                          分类
+                          <AutoComplete<string>
+                            value={draft.category}
+                            options={categories.map((value) => ({ value }))}
+                            showSearch={{ filterOption: true }}
+                            disabled={locked}
+                            open={builtin || locked ? false : undefined}
+                            virtual={false}
+                            styles={{ popup: { root: { pointerEvents: 'auto' } } }}
+                            getPopupContainer={(trigger: HTMLElement) =>
+                              trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
+                            }
+                            onChange={(value) => {
+                              if (!builtin && !locked) {
+                                setDraft((current) => ({ ...current, category: value }));
+                              }
+                            }}
+                          >
+                            <Input
+                              maxLength={SKILL_FIELD_LIMITS.category}
+                              readOnly={builtin}
+                              disabled={locked}
+                              required
+                            />
+                          </AutoComplete>
+                        </label>
+                      </div>
+                      <Checkbox
+                        className="skill-enabled"
+                        checked={draft.enabled}
+                        disabled={locked}
+                        onChange={(event) => toggleEnabled(event.target.checked)}
+                      >
+                        启用 Skill
+                      </Checkbox>
+                      <label>
+                        说明
+                        <Textarea
+                          rows={2}
+                          value={draft.description}
+                          maxLength={SKILL_FIELD_LIMITS.description}
+                          readOnly={builtin}
+                          disabled={locked}
+                          onChange={(event) =>
+                            setDraft({ ...draft, description: event.target.value })
+                          }
+                        />
                       </label>
-                    </div>
-                    <Checkbox
-                      className="skill-enabled"
-                      checked={draft.enabled}
-                      disabled={locked}
-                      onChange={(event) => toggleEnabled(event.target.checked)}
-                    >
-                      启用 Skill
-                    </Checkbox>
-                    <label>
-                      说明
-                      <Textarea
-                        rows={2}
-                        value={draft.description}
-                        maxLength={SKILL_FIELD_LIMITS.description}
-                        readOnly={builtin}
-                        disabled={locked}
-                        onChange={(event) =>
-                          setDraft({ ...draft, description: event.target.value })
-                        }
+                      <label className="skill-instruction">
+                        <span className="skill-instruction-label">
+                          指令{' '}
+                          <span>
+                            {draft.instruction.length} / {SKILL_FIELD_LIMITS.instruction}
+                          </span>
+                        </span>
+                        <Textarea
+                          aria-label="指令"
+                          rows={12}
+                          value={draft.instruction}
+                          maxLength={SKILL_FIELD_LIMITS.instruction}
+                          readOnly={builtin}
+                          disabled={locked}
+                          required
+                          spellCheck={false}
+                          onChange={(event) =>
+                            setDraft({ ...draft, instruction: event.target.value })
+                          }
+                        />
+                      </label>
+                    </form>
+                    <aside className="skill-authoring-assistant" aria-label="AI 升级 Skill">
+                      <div className="skill-authoring-heading">
+                        <WandSparkles size={17} aria-hidden="true" />
+                        <h3>AI 升级 Skill</h3>
+                      </div>
+                      <p className="skill-authoring-description">
+                        把想法打磨成可复用指令。模型先给预览，采用后仍需保存，不会直接覆盖原 Skill。
+                      </p>
+                      <label className="skill-authoring-goal">
+                        升级要求
+                        <Textarea
+                          aria-label="Skill 升级要求"
+                          value={upgradeGoal}
+                          rows={3}
+                          maxLength={2000}
+                          disabled={locked}
+                          placeholder="例如：补齐输入、输出格式和边界条件，保留现有占位符；不要替我执行这个 Skill。"
+                          onChange={(event) => setUpgradeGoal(event.target.value)}
+                        />
+                      </label>
+                      <PromptSkillPanel
+                        presentation="skill-authoring"
+                        nodeId={`skill-workbench:${selectedId ?? 'new'}`}
+                        projectId={projectId}
+                        mediaType="text"
+                        promptDocument={authoringPrompt}
+                        skillId={SKILL_AUTHORING_SKILL_ID}
+                        skills={skills}
+                        skillsLoading={loading}
+                        models={models}
+                        disabled={locked || (!draft.instruction.trim() && !upgradeGoal.trim())}
+                        onSkillChange={() => undefined}
+                        onApply={applyUpgrade}
                       />
-                    </label>
-                    <label className="skill-instruction">
-                      指令
-                      <Textarea
-                        rows={12}
-                        value={draft.instruction}
-                        maxLength={SKILL_FIELD_LIMITS.instruction}
-                        readOnly={builtin}
-                        disabled={locked}
-                        required
-                        spellCheck={false}
-                        onChange={(event) =>
-                          setDraft({ ...draft, instruction: event.target.value })
-                        }
-                      />
-                    </label>
-                  </form>
+                      <p className="skill-authoring-note">
+                        使用所选文字模型，可能产生费用。生成只创建独立优化任务，不修改画布，也不生成图片或视频。
+                      </p>
+                      {builtin && (
+                        <p className="skill-authoring-note">
+                          内置 Skill 保持只读；采用升级结果会创建自定义副本草稿。
+                        </p>
+                      )}
+                    </aside>
+                  </div>
                 </>
               )}
             </main>

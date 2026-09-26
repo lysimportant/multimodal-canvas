@@ -737,7 +737,7 @@ describe('WorkflowCanvas context menu', () => {
     },
   );
 
-  it('根据节点四周空间布局编辑器，不能向上挤进节点或超出画布', async () => {
+  it('根据节点四周空间布局双倍宽编辑器，不能向上挤进节点或超出画布', async () => {
     const props = createProps({ nodes: [generateNode], selectedNode: null });
     const { rerender } = render(<WorkflowCanvas {...props} />);
     const canvas = screen.getByRole('region', { name: '工作流画布' });
@@ -753,7 +753,7 @@ describe('WorkflowCanvas context menu', () => {
 
     expect(overlay).not.toBeNull();
     await waitFor(() => expect(overlay).toHaveAttribute('data-placement', 'above'));
-    expect(overlay).toHaveStyle({ visibility: 'visible', width: '180px', left: '380px' });
+    expect(overlay).toHaveStyle({ visibility: 'visible', width: '360px', left: '290px' });
     expect(overlay?.closest('.react-flow__node')).toBeNull();
     expect(
       Number.parseInt(overlay?.style.top ?? '', 10) +
@@ -763,7 +763,7 @@ describe('WorkflowCanvas context menu', () => {
     nodeRect = createMockRect(380, 150, 180, 80);
     canvasNode.style.transform = 'translate(1px)';
     await waitFor(() => expect(overlay).toHaveAttribute('data-placement', 'below'));
-    expect(overlay).toHaveStyle({ width: '180px', left: '380px' });
+    expect(overlay).toHaveStyle({ width: '360px', left: '290px' });
     expect(Number.parseInt(overlay?.style.top ?? '', 10)).toBeGreaterThan(230);
 
     nodeRect = createMockRect(600, 350, 180, 80);
@@ -771,7 +771,7 @@ describe('WorkflowCanvas context menu', () => {
     await waitFor(() => expect(overlay).toHaveAttribute('data-placement', 'left'));
     const overlayLeft = Number.parseInt(overlay?.style.left ?? '', 10);
     const overlayWidth = Number.parseInt(overlay?.style.width ?? '', 10);
-    expect(overlayWidth).toBe(180);
+    expect(overlayWidth).toBe(360);
     expect(overlayLeft).toBeGreaterThanOrEqual(88);
     expect(overlayLeft + overlayWidth).toBeLessThanOrEqual(792);
     expect(overlayLeft + overlayWidth).toBeLessThanOrEqual(nodeRect.left - 16);
@@ -779,7 +779,7 @@ describe('WorkflowCanvas context menu', () => {
     nodeRect = createMockRect(180, 350, 180, 80);
     canvasNode.style.transform = 'translate(3px)';
     await waitFor(() => expect(overlay).toHaveAttribute('data-placement', 'right'));
-    expect(overlay).toHaveStyle({ left: '376px', width: '180px' });
+    expect(overlay).toHaveStyle({ left: '376px', width: '360px' });
     expect(Number.parseInt(overlay?.style.left ?? '', 10)).toBeGreaterThanOrEqual(
       nodeRect.right + 16,
     );
@@ -789,7 +789,7 @@ describe('WorkflowCanvas context menu', () => {
     { name: '窄画布', viewportWidth: 1024, canvasLeft: 120, canvasWidth: 480, width: 464 },
     { name: '窄视口', viewportWidth: 560, canvasLeft: 0, canvasWidth: 900, width: 544 },
   ])(
-    '在$name内约束与节点同宽的编辑器，空间恢复后重新适配节点宽度',
+    '在$name内约束双倍宽编辑器，空间恢复后还原节点两倍宽度',
     async ({ viewportWidth, canvasLeft, canvasWidth, width }) => {
       const innerWidth = vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(viewportWidth);
       vi.spyOn(document.documentElement, 'clientWidth', 'get').mockReturnValue(viewportWidth);
@@ -816,15 +816,15 @@ describe('WorkflowCanvas context menu', () => {
       );
       expect(Number.parseInt(overlay?.style.top ?? '', 10)).toBeGreaterThanOrEqual(230 + 16);
 
-      innerWidth.mockReturnValue(1024);
-      bounds.mockReturnValue(createMockRect(0, 90, 900, 620));
+      innerWidth.mockReturnValue(1600);
+      bounds.mockReturnValue(createMockRect(0, 90, 1600, 620));
       fireEvent(window, new Event('resize'));
-      await waitFor(() => expect(overlay).toHaveStyle({ width: '570px' }));
+      await waitFor(() => expect(overlay).toHaveStyle({ width: '1140px' }));
     },
   );
 
   it.each([0.25, 0.5, 1, 1.5])(
-    '输入面板跟随画布倍率 %s 缩放，定位使用缩放后的实际尺寸',
+    '输入面板跟随画布倍率 %s 缩放，屏幕宽度保持节点两倍且定位有界',
     async (zoom) => {
       reactFlowMock.viewportZoom = zoom;
       vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(1600);
@@ -834,31 +834,33 @@ describe('WorkflowCanvas context menu', () => {
       const canvas = screen.getByRole('region', { name: '工作流画布' });
       const canvasNode = screen.getByTestId(`canvas-node-${generateNode.id}`);
       vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue(createMockRect(0, 80, 1600, 920));
-      vi.spyOn(canvasNode, 'getBoundingClientRect').mockReturnValue(
-        createMockRect(500, 200, 400 * zoom, 266 * zoom),
-      );
+      const nodeRect = createMockRect(500, 200, 400 * zoom, 266 * zoom);
+      vi.spyOn(canvasNode, 'getBoundingClientRect').mockReturnValue(nodeRect);
       rerender(<WorkflowCanvas {...props} selectedNode={generateNode} />);
 
       const editor = await screen.findByRole('region', { name: '图片生成节点生成设置' });
       const overlay = editor.closest<HTMLDivElement>('.quick-editor-overlay')!;
       expect(overlay).toHaveStyle({
         visibility: 'visible',
-        width: '400px',
+        width: '800px',
         transform: `scale(${zoom})`,
         transformOrigin: 'top left',
       });
       const left = Number.parseFloat(overlay.style.left);
       const top = Number.parseFloat(overlay.style.top);
       const height = Number.parseFloat(overlay.style.getPropertyValue('--quick-editor-max-height'));
+      const screenWidth = Number.parseFloat(overlay.style.width) * zoom;
+      expect(screenWidth).toBe(nodeRect.width * 2);
       expect(left).toBeGreaterThanOrEqual(8);
-      expect(left + 400 * zoom).toBeLessThanOrEqual(1592);
+      expect(left + screenWidth).toBeLessThanOrEqual(1592);
+      expect(top).toBeGreaterThanOrEqual(nodeRect.bottom + 16 * zoom);
       expect(top + height * zoom).toBeLessThanOrEqual(992);
       expect(overlay.closest('.react-flow__node')).toBeNull();
       expect(props.onResizeNode).not.toHaveBeenCalled();
     },
   );
 
-  it('画布缩放及手动缩窄节点后重新测量输入面板，不保留原屏幕宽度', async () => {
+  it('画布缩放及手动缩放节点后保持双倍宽度，提示词内容不改变节点外框', async () => {
     vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(1600);
     vi.spyOn(window, 'innerHeight', 'get').mockReturnValue(1000);
     const props = createProps({ nodes: [generateNode], selectedNode: null });
@@ -871,21 +873,91 @@ describe('WorkflowCanvas context menu', () => {
     rerender(<WorkflowCanvas {...props} selectedNode={generateNode} />);
     const editor = await screen.findByRole('region', { name: '图片生成节点生成设置' });
     const overlay = editor.closest<HTMLDivElement>('.quick-editor-overlay')!;
-    expect(overlay).toHaveStyle({ width: '400px', transform: 'scale(1)' });
+    expect(overlay).toHaveStyle({ width: '800px', transform: 'scale(1)' });
 
     reactFlowMock.viewportZoom = 0.5;
     nodeRect = createMockRect(400, 160, 200, 133);
     rerender(<WorkflowCanvas {...props} selectedNode={generateNode} />);
-    await waitFor(() => expect(overlay).toHaveStyle({ width: '400px', transform: 'scale(0.5)' }));
-    expect(Number.parseFloat(overlay.style.width) * 0.5).toBe(nodeRect.width);
+    await waitFor(() => expect(overlay).toHaveStyle({ width: '800px', transform: 'scale(0.5)' }));
+    expect(Number.parseFloat(overlay.style.width) * 0.5).toBe(nodeRect.width * 2);
 
     nodeRect = createMockRect(400, 160, 120, 133);
     canvasNode.style.width = '240px';
-    await waitFor(() => expect(overlay).toHaveStyle({ width: '240px', transform: 'scale(0.5)' }));
-    expect(Number.parseFloat(overlay.style.width) * 0.5).toBe(nodeRect.width);
+    await waitFor(() => expect(overlay).toHaveStyle({ width: '480px', transform: 'scale(0.5)' }));
+    expect(Number.parseFloat(overlay.style.width) * 0.5).toBe(nodeRect.width * 2);
+
+    nodeRect = createMockRect(400, 160, 320, 133);
+    canvasNode.style.width = '640px';
+    await waitFor(() => expect(overlay).toHaveStyle({ width: '1280px', transform: 'scale(0.5)' }));
+    expect(Number.parseFloat(overlay.style.width) * 0.5).toBe(nodeRect.width * 2);
+
+    const editedNode: AssetFlowNode = {
+      ...generateNode,
+      data: { ...generateNode.data, prompt: '不会撑大节点的长提示词'.repeat(100) },
+    };
+    rerender(<WorkflowCanvas {...props} nodes={[editedNode]} selectedNode={editedNode} />);
+    fireEvent.scroll(window);
+    expect(overlay).toHaveStyle({ width: '1280px', transform: 'scale(0.5)' });
+    expect(overlay.closest('.react-flow__node')).toBeNull();
+    expect(canvasNode).toHaveStyle({ width: '640px' });
+    expect(props.onNodesChange).not.toHaveBeenCalled();
     expect(props.onResizeNode).not.toHaveBeenCalled();
     expect(generateNode).not.toHaveProperty('width');
   });
+
+  it.each([0.5, 1, 1.5])(
+    '倍率 %s 下四周空间不足时收窄侧边或隐藏，空间恢复后还原双倍宽度',
+    async (zoom) => {
+      reactFlowMock.viewportZoom = zoom;
+      const props = createProps({ nodes: [generateNode], selectedNode: null });
+      const { rerender } = render(<WorkflowCanvas {...props} />);
+      const canvas = screen.getByRole('region', { name: '工作流画布' });
+      const canvasNode = screen.getByTestId(`canvas-node-${generateNode.id}`);
+      let nodeRect = createMockRect(110, 0, 520, 710);
+      vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue(createMockRect(80, 90, 720, 620));
+      vi.spyOn(canvasNode, 'getBoundingClientRect').mockImplementation(() => nodeRect);
+      rerender(<WorkflowCanvas {...props} selectedNode={generateNode} />);
+
+      const editor = await screen.findByRole('region', { name: '图片生成节点生成设置' });
+      const overlay = editor.closest<HTMLDivElement>('.quick-editor-overlay')!;
+      expect(overlay).toHaveAttribute('data-placement', 'right');
+      expect(overlay).toHaveStyle({ visibility: 'visible', transform: `scale(${zoom})` });
+      const left = Number.parseFloat(overlay.style.left);
+      const top = Number.parseFloat(overlay.style.top);
+      const screenWidth = Number.parseFloat(overlay.style.width) * zoom;
+      const maxHeight = Number.parseFloat(
+        overlay.style.getPropertyValue('--quick-editor-max-height'),
+      );
+      expect(left).toBe(nodeRect.right + 16 * zoom);
+      expect(screenWidth).toBeCloseTo(792 - left);
+      expect(screenWidth).toBeLessThan(360 * zoom);
+      expect(left + screenWidth).toBeLessThanOrEqual(792);
+      expect(top).toBeGreaterThanOrEqual(98);
+      expect(top + maxHeight * zoom).toBeLessThanOrEqual(702);
+
+      nodeRect = createMockRect(70, 80, 740, 640);
+      canvasNode.style.transform = 'translate(1px)';
+      await waitFor(() => expect(overlay).toHaveStyle({ visibility: 'hidden' }));
+
+      nodeRect = createMockRect(380, 150, 180 * zoom, 80 * zoom);
+      canvasNode.style.transform = 'translate(2px)';
+      await waitFor(() =>
+        expect(overlay).toHaveStyle({
+          visibility: 'visible',
+          width: '360px',
+          transform: `scale(${zoom})`,
+        }),
+      );
+      expect(overlay).toHaveAttribute('data-placement', 'below');
+      expect(Number.parseFloat(overlay.style.width) * zoom).toBe(nodeRect.width * 2);
+      expect(Number.parseFloat(overlay.style.top)).toBeGreaterThanOrEqual(
+        nodeRect.bottom + 16 * zoom,
+      );
+      expect(overlay.closest('.react-flow__node')).toBeNull();
+      expect(props.onNodesChange).not.toHaveBeenCalled();
+      expect(props.onResizeNode).not.toHaveBeenCalled();
+    },
+  );
 
   it('uses the appearance-driven default edge without forcing animation', () => {
     render(<WorkflowCanvas {...createProps()} />);

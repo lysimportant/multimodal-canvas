@@ -4061,6 +4061,9 @@ function WorkspaceApp({
             uploadInputRef={uploadInputRef}
           />
           <SkillWorkbench
+            key={authUser?.id ?? 'anonymous'}
+            projectId={projectId ?? undefined}
+            models={reversePromptModels}
             open={showSkillWorkbench}
             onOpenChange={setShowSkillWorkbench}
             onChanged={() => {

@@ -5,6 +5,7 @@ import {
   createMockPromptOptimizationOutput,
   PROMPT_OPTIMIZATION_NODE_ID,
   PROMPT_SKILLS,
+  SKILL_AUTHORING_SKILL_ID,
   type PromptDocument,
 } from '@multimodal-canvas/domain';
 import { NewApiProvider } from '@multimodal-canvas/providers';
@@ -843,5 +844,204 @@ describe('独立 Skill 提示词优化 API', () => {
     });
     expect(records.json().records).toHaveLength(1);
     expect(records.json().records[0]).not.toHaveProperty('assetId');
+  });
+});
+
+describe('Skill 工作台元技能合同', () => {
+  /** 草稿字段均是待编辑数据；来源标签不对应任何真实画布节点。 */
+  const draft = {
+    task: 'Improve this reusable prompt-optimization Skill. Do not perform its task.',
+    skill: {
+      name: '保留占位符的镜头优化',
+      category: '镜头与特效',
+      description: '保留输入输出约束，不直接生成图片或视频。',
+      instruction: 'Refine {{subject}} prompts while preserving the requested input/output format.',
+    },
+    requirements: 'Clarify the input and output constraints without performing the Skill.',
+    output:
+      'Only the revised reusable Skill instruction, preserving its language and exact placeholders. Do not repeat the surrounding metadata. Maximum 12000 characters.',
+  };
+  /** 工作台沿用单个文字块中的 JSON，不把外层表单字段加入优化 API。 */
+  const document: PromptDocument = {
+    version: 1,
+    blocks: [{ type: 'text', text: JSON.stringify(draft) }],
+  };
+  /** 合成来源不必存在于画布或技能库；实际执行的技能仍从元技能目录解析。 */
+  const payload = {
+    nodeId: 'skill-workbench:synthetic-skill',
+    skillId: SKILL_AUTHORING_SKILL_ID,
+    skillVersion: '1.0.0',
+    mediaType: 'text',
+    promptDocument: document,
+    idempotencyKey: 'skill-authoring-1',
+  };
+  /** 元技能回归禁止任何 fetch 出站，所有提交和查询均使用 app.inject。 */
+  const unexpectedFetch = vi.fn<typeof fetch>(async () => {
+    throw new Error('Skill 工作台合同测试禁止真实网络请求');
+  });
+
+  beforeEach(() => {
+    unexpectedFetch.mockClear();
+    vi.stubGlobal('fetch', unexpectedFetch);
+  });
+  afterEach(() => {
+    try {
+      expect(unexpectedFetch).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('不存在来源画布节点也能创建独立文字 Run，冻结所选模型凭据且不生成媒体', async () => {
+    const ctx = await fixture({ mock: true, authenticated: true });
+    const beforeCanvas = await ctx.projectStore.getCanvas(ctx.project.id);
+    const beforeProject = await ctx.projectStore.get(ctx.project.id);
+    const readContent = vi.spyOn(ctx.assetStore, 'getVersionContent');
+    expect(beforeCanvas!.nodes.some((node) => node.id === payload.nodeId)).toBe(false);
+    const start = await ctx.app.inject({
+      method: 'POST',
+      url: ctx.url,
+      headers: ctx.headers,
+      payload: { ...payload, modelAlias: 'beta-text', credentialId: ctx.credentialId },
+    });
+    expect(start.statusCode, start.body).toBe(202);
+    const runId = start.json().optimization.runId;
+    await vi.waitFor(async () =>
+      expect((await ctx.runService.get(runId))?.status).toBe('succeeded'),
+    );
+    const read = await ctx.app.inject({
+      method: 'GET',
+      url: `${ctx.url}/${runId}`,
+      headers: ctx.headers,
+    });
+    expect(read.statusCode).toBe(200);
+    expect(read.json().optimization).toMatchObject({
+      runId,
+      nodeId: payload.nodeId,
+      skillId: SKILL_AUTHORING_SKILL_ID,
+      skillVersion: '1.0.0',
+      modelAlias: 'beta-text',
+      status: 'succeeded',
+      simulated: true,
+      promptDocument: document,
+    });
+    const run = (await ctx.runService.get(runId))!;
+    expect(run.snapshot.targetNodeId).toBe(PROMPT_OPTIMIZATION_NODE_ID);
+    expect(run.snapshot.credentialId).toBe(ctx.credentialId);
+    expect(run.snapshot.credentialVersion).toBeGreaterThan(0);
+    expect(run.snapshot.promptOptimization).toEqual({
+      nodeId: payload.nodeId,
+      skillId: SKILL_AUTHORING_SKILL_ID,
+      skillVersion: '1.0.0',
+      instruction: PROMPT_SKILLS.find((skill) => skill.id === SKILL_AUTHORING_SKILL_ID)!
+        .instruction,
+      input: document,
+    });
+    expect(run.snapshot.nodes).toHaveLength(1);
+    expect(run.snapshot.nodes[0]).toMatchObject({
+      id: PROMPT_OPTIMIZATION_NODE_ID,
+      type: 'text',
+      data: { mediaType: 'text', mode: 'generate' },
+    });
+    expect(run.snapshot.inputs).toEqual([]);
+    expect(run.snapshot.promptMentions ?? []).toEqual([]);
+    expect(run.result?.asset).toBeUndefined();
+    expect(readContent).not.toHaveBeenCalled();
+    expect(ctx.executor).not.toHaveBeenCalled();
+    expect(ctx.archiver).not.toHaveBeenCalled();
+    expect(await ctx.projectStore.getCanvas(ctx.project.id)).toEqual(beforeCanvas);
+    expect(await ctx.projectStore.get(ctx.project.id)).toEqual(beforeProject);
+  });
+
+  it('并发同键只保留一个 Run，来源或草稿变化同键冲突且不覆盖原快照', async () => {
+    const ctx = await fixture({ mock: true, authenticated: true });
+    const request = { method: 'POST' as const, url: ctx.url, headers: ctx.headers, payload };
+    const responses = await Promise.all(Array.from({ length: 3 }, () => ctx.app.inject(request)));
+    expect(responses.map((response) => response.statusCode)).toEqual([202, 202, 202]);
+    const runId = responses[0]!.json().optimization.runId;
+    expect(responses.map((response) => response.json().optimization.runId)).toEqual([
+      runId,
+      runId,
+      runId,
+    ]);
+    await vi.waitFor(async () =>
+      expect((await ctx.runService.get(runId))?.status).toBe('succeeded'),
+    );
+    const replay = await ctx.app.inject(request);
+    expect(replay.statusCode).toBe(202);
+    expect(replay.json().optimization.runId).toBe(runId);
+    for (const change of [
+      { nodeId: 'skill-workbench:another-synthetic-skill' },
+      {
+        promptDocument: {
+          version: 1,
+          blocks: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                ...draft,
+                skill: { ...draft.skill, instruction: 'A different Skill instruction.' },
+              }),
+            },
+          ],
+        },
+      },
+    ]) {
+      const conflict = await ctx.app.inject({ ...request, payload: { ...payload, ...change } });
+      expect(conflict.statusCode, conflict.body).toBe(409);
+      expect(conflict.json().code).toBe('idempotency_conflict');
+    }
+    expect(await ctx.runService.listByProject(ctx.project.id)).toHaveLength(1);
+    expect((await ctx.runService.get(runId))!.snapshot.promptOptimization).toMatchObject({
+      nodeId: payload.nodeId,
+      skillId: SKILL_AUTHORING_SKILL_ID,
+      input: document,
+    });
+    expect(ctx.executor).not.toHaveBeenCalled();
+    expect(ctx.archiver).not.toHaveBeenCalled();
+  });
+
+  it('工作台来源标签不绕过项目鉴权，跨用户提交和读取均拒绝', async () => {
+    const ctx = await fixture({ mock: true, authenticated: true });
+    const otherOwner = '123e4567-e89b-42d3-a456-426614174002';
+    const otherHeaders = { authorization: authorization(otherOwner) };
+    const otherProject = await ctx.projectStore.create(
+      { name: '其他用户项目' },
+      { ownerId: otherOwner },
+    );
+    expect((await ctx.app.inject({ method: 'POST', url: ctx.url, payload })).statusCode).toBe(401);
+    expect(
+      (await ctx.app.inject({ method: 'POST', url: ctx.url, payload, headers: otherHeaders }))
+        .statusCode,
+    ).toBe(404);
+    expect(
+      (
+        await ctx.app.inject({
+          method: 'POST',
+          url: `/v1/projects/${otherProject.id}/prompt-optimizations`,
+          payload,
+          headers: ctx.headers,
+        })
+      ).statusCode,
+    ).toBe(404);
+    expect(await ctx.runService.listByProject(ctx.project.id)).toHaveLength(0);
+    expect(await ctx.runService.listByProject(otherProject.id)).toHaveLength(0);
+    const start = await ctx.app.inject({
+      method: 'POST',
+      url: ctx.url,
+      payload,
+      headers: ctx.headers,
+    });
+    expect(start.statusCode, start.body).toBe(202);
+    const runId = start.json().optimization.runId;
+    const denied = await ctx.app.inject({
+      method: 'GET',
+      url: `${ctx.url}/${runId}`,
+      headers: otherHeaders,
+    });
+    expect(denied.statusCode).toBe(404);
+    expect(denied.body).not.toContain(draft.skill.instruction);
+    expect(ctx.executor).not.toHaveBeenCalled();
+    expect(ctx.archiver).not.toHaveBeenCalled();
   });
 });
