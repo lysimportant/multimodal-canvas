@@ -145,16 +145,25 @@ describe('workspace modules', () => {
     expect(screen.getByRole('group', { name: '连接线路径' })).toBeVisible();
     expect(screen.getByRole('group', { name: '连接线特效' })).toBeVisible();
     expect(screen.getByRole('group', { name: '连接线组合预览' })).toBeVisible();
-    expect(document.querySelectorAll('.appearance-edge-option')).toHaveLength(11);
+    expect(document.querySelectorAll('.appearance-edge-option')).toHaveLength(12);
     expect(document.querySelectorAll('[data-edge-path-style]')).toHaveLength(5);
-    expect(document.querySelectorAll('[data-edge-effect]')).toHaveLength(6);
+    expect(document.querySelectorAll('[data-edge-effect]')).toHaveLength(7);
     // 每个选项与最终组合预览都使用真实路径预览，不是示意色块。
-    expect(document.querySelectorAll('.appearance-edge-preview')).toHaveLength(12);
+    expect(document.querySelectorAll('.appearance-edge-preview')).toHaveLength(13);
+    expect(document.querySelectorAll('[data-edge-effect="meteor"]')).toHaveLength(1);
+    expect(document.querySelectorAll('[data-edge-effect="shooting-star"]')).toHaveLength(1);
+    /** 新增流星保持独立选项，且单条预览只有一个亮点，不替换原有流光。 */
+    const shootingStar = screen.getByRole('button', { name: '单点流星 亮点携短尾迹' });
+    expect(shootingStar.querySelectorAll('.canvas-edge-shooting-star-head')).toHaveLength(1);
     await user.click(screen.getByRole('button', { name: /圆角折线/ }));
     expect(callbacks.onEdgePathStyle).toHaveBeenCalledWith('smoothstep');
     expect(callbacks.onEdgeEffect).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: /单点巡航/ }));
     expect(callbacks.onEdgeEffect).toHaveBeenCalledWith('cruiser');
+    expect(callbacks.onEdgeEffect).toHaveBeenCalledTimes(1);
+    await user.click(shootingStar);
+    expect(callbacks.onEdgeEffect).toHaveBeenLastCalledWith('shooting-star');
+    expect(callbacks.onEdgeEffect).toHaveBeenCalledTimes(2);
     expect(callbacks.onEdgePathStyle).toHaveBeenCalledTimes(1);
     expect(callbacks.onClear).not.toHaveBeenCalled();
     expect(callbacks.onUndo).not.toHaveBeenCalled();

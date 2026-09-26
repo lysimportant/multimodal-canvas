@@ -4,7 +4,8 @@ import { createContext, useContext, type ReactNode } from 'react';
 /** 连接线路径形态；只影响几何，不改变画布边的 ID、顺序、端口和 DAG。 */
 export type CanvasEdgePathStyle = 'bezier' | 'gentle' | 'smoothstep' | 'step' | 'straight';
 /** 连接线动态特效；`none` 表示保留静态基础路径。 */
-export type CanvasEdgeEffect = 'meteor' | 'marching' | 'cruiser' | 'multi' | 'breathe' | 'none';
+export type CanvasEdgeEffect =
+  'meteor' | 'shooting-star' | 'marching' | 'cruiser' | 'multi' | 'breathe' | 'none';
 
 /** 连接线外观偏好；由 `edgePathStyle` 与 `edgeEffect` 两个互相独立的字段组成。 */
 export type CanvasEdgeAppearance = {
@@ -80,7 +81,13 @@ export function resolveEdgePath(
 }
 
 /** 需要额外叠加层的特效；`marching` 直接改造基础路径，`none` 完全静止。 */
-const overlayEffects = new Set<CanvasEdgeEffect>(['meteor', 'cruiser', 'multi', 'breathe']);
+const overlayEffects = new Set<CanvasEdgeEffect>([
+  'meteor',
+  'shooting-star',
+  'cruiser',
+  'multi',
+  'breathe',
+]);
 
 /**
  * 特效叠加层的类名，`none` 没有叠加层。

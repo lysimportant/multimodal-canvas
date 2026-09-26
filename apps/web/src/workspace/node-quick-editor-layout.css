@@ -24,6 +24,51 @@
   min-width: 112px;
 }
 
+/* 节点缩窄后优先收起按钮文字；Skill、数量和生成仍在同一行，不横向溢出。 */
+@container (max-width: 300px) {
+  .node-quick-editor-run-group {
+    flex: 0 1 auto;
+    gap: 4px;
+    max-width: 100%;
+  }
+
+  .node-quick-editor-controls .prompt-skill-trigger,
+  .node-quick-editor .node-quick-editor-run {
+    flex: 0 0 36px;
+    min-width: 36px;
+    padding: 0;
+    width: 36px;
+  }
+
+  .node-quick-editor-run-group .prompt-skill-trigger > span,
+  .node-quick-editor-run-group .prompt-skill-trigger > .lucide-chevron-down,
+  .node-quick-editor-run-group .node-quick-editor-run > span {
+    display: none;
+  }
+
+  .node-quick-editor-generation-count {
+    flex: 0 1 82px;
+    min-width: 0;
+  }
+}
+
+@container (max-width: 220px) {
+  .node-quick-editor-run-group {
+    gap: 2px;
+  }
+
+  .node-quick-editor-controls .prompt-skill-trigger,
+  .node-quick-editor .node-quick-editor-run {
+    flex-basis: 28px;
+    min-width: 28px;
+    width: 28px;
+  }
+
+  .node-quick-editor-generation-count .ant-select {
+    padding-inline: 6px;
+  }
+}
+
 @media (max-width: 640px) {
   .quick-editor-overlay > .node-quick-editor {
     max-width: min(100%, calc(100vw - 24px));

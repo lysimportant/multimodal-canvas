@@ -3,8 +3,9 @@
   width: 320px;
 }
 
-.appearance-antd-popover .ant-tabs-content-holder {
+.appearance-antd-popover .ant-tabs-content {
   max-height: min(620px, calc(100vh - 100px));
+  min-height: 0;
   overflow-y: auto;
 }
 
@@ -15,4 +16,41 @@
 
 .appearance-antd-popover .ant-tabs-nav-list {
   width: 100%;
+}
+
+.appearance-antd-popover .appearance-edge-options {
+  gap: 8px;
+}
+
+/* AntD 按钮默认只有 32px 高；多行预览卡片必须按内容撑高，不能让文字溢入下一行。 */
+.appearance-antd-popover .appearance-edge-option.ant-btn {
+  align-items: start;
+  gap: 6px 8px;
+  grid-template-columns: minmax(0, 1fr) 14px;
+  height: auto;
+  padding: 8px;
+  white-space: normal;
+}
+
+.appearance-antd-popover .appearance-edge-option-label {
+  gap: 2px;
+}
+
+.appearance-antd-popover .appearance-edge-option strong,
+.appearance-antd-popover .appearance-edge-option small {
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.appearance-antd-popover .appearance-edge-option strong {
+  font-size: 12px;
+}
+
+.appearance-antd-popover .appearance-edge-option small {
+  font-size: 11px;
+}
+
+.appearance-antd-popover .appearance-edge-option-check {
+  margin-top: 1px;
 }

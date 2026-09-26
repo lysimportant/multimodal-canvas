@@ -1,0 +1,55 @@
+.canvas-edge-effect-shooting-star {
+  --canvas-edge-star-tail: 0.22px;
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--mc-accent) 70%, #ffffff));
+  pointer-events: none;
+}
+
+.canvas-edge-effect-shooting-star > path {
+  --canvas-edge-star-span: 0px;
+  animation: canvas-edge-shooting-star 2.6s linear infinite;
+  fill: none;
+  pointer-events: none;
+  stroke: #f7ffe8;
+  stroke-dasharray: var(--canvas-edge-star-span) 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.canvas-edge-effect-shooting-star > .canvas-edge-shooting-star-trail {
+  --canvas-edge-star-span: var(--canvas-edge-star-tail);
+  opacity: 0.22;
+  stroke-width: 1.2;
+}
+
+.canvas-edge-effect-shooting-star > .canvas-edge-shooting-star-trail-middle {
+  --canvas-edge-star-span: calc(var(--canvas-edge-star-tail) * 0.66);
+  opacity: 0.4;
+  stroke-width: 2;
+}
+
+.canvas-edge-effect-shooting-star > .canvas-edge-shooting-star-trail-near {
+  --canvas-edge-star-span: calc(var(--canvas-edge-star-tail) * 0.33);
+  opacity: 0.65;
+  stroke-width: 2.8;
+}
+
+.canvas-edge-shooting-star-head {
+  stroke-width: 4.4;
+}
+
+/* 归一化长度仍显式带 px，保证 calc 的动画插值连续；负偏移沿源到目标方向移动。 */
+@keyframes canvas-edge-shooting-star {
+  from {
+    stroke-dashoffset: var(--canvas-edge-star-span);
+  }
+  to {
+    stroke-dashoffset: calc(var(--canvas-edge-star-span) - 1px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .canvas-edge-effect-shooting-star > path {
+    animation: none;
+    stroke-dashoffset: calc(var(--canvas-edge-star-span) - 0.5px);
+  }
+}

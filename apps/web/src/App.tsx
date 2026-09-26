@@ -4034,10 +4034,11 @@ function WorkspaceApp({
           onSubmit={() => void createProject()}
         />
 
-        <div className={`workspace ${isResourceCollapsed ? 'resource-panel-collapsed' : ''}`}>
+        <div className="workspace">
           <ResourcePanel
             assets={assets}
             collapsed={isResourceCollapsed}
+            isRenameDialogOpen={renamingAsset !== null}
             showArchived={showArchived}
             activeFilter={activeFilter}
             query={query}

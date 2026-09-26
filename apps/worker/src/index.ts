@@ -1,5 +1,6 @@
 import { Job, Queue, Worker, type ConnectionOptions } from 'bullmq';
 import { Prisma } from '@prisma/client';
+import { startWorkerConcurrencySync } from './generation-concurrency';
 import {
   createCredentialEncryptionKeyringFromEnvironment,
   type CredentialEncryptionKeyring,
@@ -420,6 +421,8 @@ function snapshotForProvider(snapshot: RunSnapshot, provider: string): RunSnapsh
 export function createRunWorker(options: {
   connection: ConnectionOptions;
   queueName?: string;
+  /** 进程入口先加载全局并发再显式 run；默认保留测试及嵌入调用的自动启动。 */
+  autorun?: boolean;
   stepDelayMs?: number;
   cancellationPollMs?: number;
   provider?: ProviderExecutor;
@@ -2512,7 +2515,12 @@ export function createRunWorker(options: {
         cancellationMonitor.stop();
       }
     },
-    { connection: options.connection, concurrency },
+    {
+      connection: options.connection,
+      concurrency,
+      drainDelay: 1,
+      autorun: options.autorun ?? true,
+    },
   );
 
   return { queue, worker };
@@ -3091,8 +3099,9 @@ if (shouldStartWorkerProcess()) {
   const processArchiver = createResultAssetArchiverFromEnvironment();
   const processAssetReferences =
     process.env.WORKER_PROVIDER === 'newapi' ? createAssetReferenceResolverFromEnvironment() : {};
-  const { worker } = createRunWorker({
+  const { queue, worker } = createRunWorker({
     connection,
+    autorun: false,
     ...(configuredQueueName ? { queueName: configuredQueueName } : {}),
     providerName: process.env.WORKER_PROVIDER === 'mock' ? 'mock' : 'newapi',
     logger: processLogger,
@@ -3105,7 +3114,9 @@ if (shouldStartWorkerProcess()) {
       ? { assetReferenceResolver: processAssetReferences.assetReferenceResolver }
       : {}),
   });
-  worker.on('ready', () => processLogger.info({ worker: workerName }, 'worker ready'));
+  worker.on('error', (error) => {
+    processLogger.error(serializeWorkerError(error), 'worker connection failed');
+  });
   worker.on('failed', (job, error) => {
     processLogger.error(
       { bullmqJobId: job?.id, ...serializeWorkerError(error) },
@@ -3113,11 +3124,12 @@ if (shouldStartWorkerProcess()) {
     );
   });
   let shuttingDown = false;
-  const shutdown = async (signal: string) => {
+  const shutdown = async (signal: string, exitCode = 0) => {
     if (shuttingDown) return;
     shuttingDown = true;
     processLogger.info({ signal }, 'worker shutting down');
     await worker.close();
+    await queue.close();
     const resourceClosers = [
       processPersistence.close,
       processArchiver.close,
@@ -3130,10 +3142,29 @@ if (shouldStartWorkerProcess()) {
     for (const failure of closeFailures) {
       processLogger.error(serializeWorkerError(failure.reason), 'worker resource shutdown failed');
     }
-    process.exit(closeFailures.length > 0 ? 1 : 0);
+    process.exit(closeFailures.length > 0 ? 1 : exitCode);
   };
   process.once('SIGINT', () => void shutdown('SIGINT'));
   process.once('SIGTERM', () => void shutdown('SIGTERM'));
+  try {
+    await startWorkerConcurrencySync({
+      queue,
+      worker,
+      initialConcurrency: resolveWorkerConcurrency(),
+      onError: (error) =>
+        processLogger.error(serializeWorkerError(error), 'worker concurrency sync failed'),
+    });
+    if (!shuttingDown) {
+      processLogger.info({ worker: workerName }, 'worker ready');
+      void worker.run().catch((error: unknown) => {
+        processLogger.error(serializeWorkerError(error), 'worker processing failed');
+        void shutdown('worker_failure', 1);
+      });
+    }
+  } catch (error) {
+    processLogger.error(serializeWorkerError(error), 'worker concurrency startup failed');
+    await shutdown('startup_failure', 1);
+  }
 }
 
 /**

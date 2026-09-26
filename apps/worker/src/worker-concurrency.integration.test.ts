@@ -262,7 +262,7 @@ describe.skipIf(!isolatedRedis)('隔离 Redis 的真实 Worker Run 并发', () =
       await expect
         .poll(() => [...fixture.entered].sort(), { timeout: 4_000 })
         .toEqual(fixture.runs.map(({ runId }) => runId).sort());
-      expect(fixture.worker.opts.concurrency).toBe(4);
+      expect(fixture.worker.opts.concurrency).toBe(20);
       expect(await fixture.queue.getActiveCount()).toBe(2);
       expect(fixture.execute.mock.calls.map(([request]) => request.snapshot.targetNodeId)).toEqual([
         'draft',

@@ -638,7 +638,7 @@ describe('ProjectHub', () => {
     );
     const sort = screen.getByRole('combobox', { name: '项目排序' });
     await user.click(sort);
-    expect(await screen.findByRole('option', { name: '最近更新' })).toBeVisible();
+    await waitFor(() => expect(screen.getByRole('option', { name: '最近更新' })).toBeVisible());
     await user.click(screen.getByRole('option', { name: '最近打开' }));
     const rows = within(screen.getByRole('list', { name: '项目列表' })).getAllByRole('listitem');
     expect(rows[0]).toHaveTextContent('当前工作流');

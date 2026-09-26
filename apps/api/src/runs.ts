@@ -1,5 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Job, Queue, type ConnectionOptions } from 'bullmq';
+import {
+  createGenerationConcurrencyStore,
+  type GenerationConcurrencyStore,
+} from './generation-concurrency';
 import { ExecutionError, PrismaExecutionService } from '@multimodal-canvas/execution';
 import type { PrismaClient } from '@prisma/client';
 import {
@@ -1473,6 +1477,8 @@ type RunProgress = {
 };
 
 export class BullMqRunService implements RunService {
+  /** 与当前 Run 队列共享 Redis 的管理员并发配置，不创建第二条业务队列。 */
+  readonly generationConcurrency: GenerationConcurrencyStore;
   /** 查询实际 Redis 队列计数，避免无项目时误报队列健康。 */
   async health(): Promise<void> {
     await this.queue.getJobCounts('active', 'waiting');
@@ -1504,6 +1510,7 @@ export class BullMqRunService implements RunService {
     this.queue = new Queue<RunJobData>(options.queueName ?? RUN_QUEUE_NAME, {
       connection: options.connection,
     });
+    this.generationConcurrency = createGenerationConcurrencyStore(this.queue);
     this.providerName = options.providerName ?? 'mock';
     this.persistence = options.persistence;
     this.execution = options.execution;

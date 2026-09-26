@@ -128,6 +128,8 @@ async function installFixture(page: Page, baseURL: string | undefined) {
   let order = 0;
   let canvasReads = 0;
   let runListReads = 0;
+  let generationConcurrency = 20;
+  const concurrencyWrites: number[] = [];
   let holdAResponse = true;
   let releaseA!: () => void;
   const aResponseGate = new Promise<void>((resolve) => {
@@ -215,6 +217,24 @@ async function installFixture(page: Page, baseURL: string | undefined) {
       return json(route, { runs: [...runs.values()] });
     }
     if (method === 'GET' && path === '/v1/prompt-skills') return json(route, { skills: [] });
+    if (path === '/v1/admin/generation-concurrency') {
+      if (method === 'GET') {
+        return json(route, { settings: { concurrency: generationConcurrency, scope: 'queue' } });
+      }
+      if (method === 'PATCH') {
+        const body = request.postDataJSON() as { concurrency?: unknown };
+        if (
+          typeof body.concurrency !== 'number' ||
+          !Number.isSafeInteger(body.concurrency) ||
+          body.concurrency < 1
+        ) {
+          return json(route, { error: '并发数量必须是正整数' }, 400);
+        }
+        generationConcurrency = body.concurrency;
+        concurrencyWrites.push(generationConcurrency);
+        return json(route, { settings: { concurrency: generationConcurrency, scope: 'queue' } });
+      }
+    }
     if (method === 'GET' && path === '/v1/settings/ai')
       return json(route, {
         settings: { defaultModels: { image: 'mock-image' }, timeoutMs: 900_000 },
@@ -317,6 +337,7 @@ async function installFixture(page: Page, baseURL: string | undefined) {
     apiRequests,
     submissions,
     canvasWrites,
+    concurrencyWrites,
     runs,
     completedOrder,
     runReads,
@@ -398,6 +419,7 @@ const test = base.extend<{ scenario: Scenario }>({
             apiRequests: scenario.apiRequests,
             submissions: scenario.submissions,
             canvasWrites: scenario.canvasWrites,
+            concurrencyWrites: scenario.concurrencyWrites,
             canvasReads: scenario.canvasReads(),
             runListReads: scenario.runListReads(),
             runReads: scenario.runReads,
@@ -427,7 +449,14 @@ async function fitCanvas(page: Page) {
   await expect(page.locator('.react-flow__node[data-id="node-a"]')).toBeVisible({
     timeout: 20_000,
   });
-  await page.locator('.react-flow__pane').click({ button: 'right', position: { x: 20, y: 20 } });
+  const pane = page.locator('.react-flow__pane');
+  const bounds = await pane.boundingBox();
+  if (!bounds) throw new Error('画布尚未取得可操作范围');
+  // 左上角为资源抽屉，右下空白区避开抽屉、节点和底部工具栏。
+  await pane.click({
+    button: 'right',
+    position: { x: bounds.width - 72, y: bounds.height - 144 },
+  });
   await page.getByRole('menuitem', { name: '自动适配缩放', exact: true }).click();
   for (const id of ['source-image', 'node-a', 'node-b']) {
     await expect(page.locator(`.react-flow__node[data-id="${id}"]`)).toBeInViewport();
@@ -820,4 +849,327 @@ test('reload 从服务端恢复两节点忙碌状态并防重复，终态刷新�
   await expectCompleted(page, 'node-b');
   expect(scenario.submissions).toHaveLength(2);
   await screenshot(page, testInfo, 'reload-restored-completed-nodes');
+});
+
+/** 读取真实布局与 CSS 变换，不改写 DOM、React Flow 状态或缩放值。 */
+async function editorGeometry(editor: Locator) {
+  return editor.evaluate((element) => {
+    const overlay = element.closest<HTMLElement>('.quick-editor-overlay');
+    if (!overlay) throw new Error('节点输入面板没有独立定位层');
+    const rect = overlay.getBoundingClientRect();
+    const transform = new DOMMatrixReadOnly(getComputedStyle(overlay).transform);
+    return { width: rect.width, height: rect.height, x: rect.x, y: rect.y, zoom: transform.a };
+  });
+}
+
+test('输入面板随画布滚轮缩放，屏幕宽度始终匹配节点', async ({ page, scenario }, testInfo) => {
+  await openProject(page);
+  const editor = await openEditor(page, 'node-a');
+  const node = page.locator('.react-flow__node[data-id="node-a"]');
+  const before = await editorGeometry(editor);
+  const nodeBefore = await node.boundingBox();
+  expect(nodeBefore).not.toBeNull();
+  expect(Math.abs(before.width - nodeBefore!.width)).toBeLessThan(1);
+  await screenshot(page, testInfo, 'editor-before-zoom');
+
+  const canvas = await page.getByRole('region', { name: '工作流画布' }).boundingBox();
+  if (!canvas) throw new Error('画布不存在');
+  await page.mouse.move(canvas.x + canvas.width - 120, canvas.y + canvas.height / 2);
+  await page.mouse.wheel(0, 320);
+  await expect
+    .poll(async () => (await editorGeometry(editor)).zoom)
+    .toBeLessThan(before.zoom * 0.9);
+  await expect
+    .poll(async () => {
+      const geometry = await editorGeometry(editor);
+      const bounds = await node.boundingBox();
+      return bounds ? Math.abs(geometry.width - bounds.width) : Infinity;
+    })
+    .toBeLessThan(1);
+  const after = await editorGeometry(editor);
+  expect(Math.abs(after.width / before.width - after.zoom / before.zoom)).toBeLessThan(0.01);
+  expect(scenario.canvasWrites).toHaveLength(0);
+  expect(scenario.submissions).toHaveLength(0);
+  await screenshot(page, testInfo, 'editor-after-zoom');
+});
+
+test('输入长文不撑大节点，只有拖拽手柄后节点与输入面板一起变窄', async ({
+  page,
+  scenario,
+}, testInfo) => {
+  await openProject(page);
+  const editor = await openEditor(page, 'node-b');
+  const node = page.locator('.react-flow__node[data-id="node-b"]');
+  const before = await node.boundingBox();
+  if (!before) throw new Error('目标节点不存在');
+  await editor
+    .getByRole('textbox', { name: '提示词' })
+    .fill('Draw a small boat beside a quiet lake. '.repeat(40));
+  await expect.poll(async () => (await node.boundingBox())?.width).toBeCloseTo(before.width, 1);
+  await expect.poll(async () => (await node.boundingBox())?.height).toBeCloseTo(before.height, 1);
+
+  const handle = node.locator('.react-flow__resize-control.bottom.right');
+  await expect(handle).toBeVisible();
+  const grip = await handle.boundingBox();
+  if (!grip) throw new Error('右下角缩放手柄不可见');
+  const x = grip.x + grip.width / 2;
+  const y = grip.y + grip.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x - 70, y, { steps: 12 });
+  await page.mouse.up();
+  await expect.poll(async () => (await node.boundingBox())?.width).toBeLessThan(before.width - 20);
+  await expect
+    .poll(async () => {
+      const geometry = await editorGeometry(editor);
+      const bounds = await node.boundingBox();
+      return bounds ? Math.abs(geometry.width - bounds.width) : Infinity;
+    })
+    .toBeLessThan(1);
+  const write = await saveCanvas(page, scenario);
+  expect(write.body.nodes.find((entry) => entry.id === 'node-b')?.width).toBeLessThan(310);
+  expect(
+    await editor.evaluate((element) => element.scrollWidth - element.clientWidth),
+  ).toBeLessThanOrEqual(1);
+  const editorBounds = await editor.boundingBox();
+  const runBounds = await editor.getByRole('button', { name: '生成', exact: true }).boundingBox();
+  expect(runBounds!.x + runBounds!.width).toBeLessThanOrEqual(
+    editorBounds!.x + editorBounds!.width,
+  );
+  expect(scenario.submissions).toHaveLength(0);
+  await screenshot(page, testInfo, 'editor-after-node-resize');
+});
+
+test('最小宽度节点的Skill、数量、生成和新节点按钮仍可同排使用', async ({
+  page,
+  scenario,
+}, testInfo) => {
+  await openProject(page);
+  const node = page.locator('.react-flow__node[data-id="source-image"]');
+  await node.click({ position: { x: 100, y: 60 } });
+  const editor = page.getByRole('region', { name: '源参考图片生成设置', exact: true });
+  await expect(editor).toBeVisible();
+  const grip = await node.locator('.react-flow__resize-control.bottom.right').boundingBox();
+  if (!grip) throw new Error('来源节点的缩放手柄不可见');
+  const x = grip.x + grip.width / 2;
+  const y = grip.y + grip.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x - 150, y, { steps: 12 });
+  await page.mouse.up();
+  await expect
+    .poll(async () =>
+      Number(await node.evaluate((element) => getComputedStyle(element).width.replace('px', ''))),
+    )
+    .toBeCloseTo(180, 0);
+  const skill = editor.getByRole('button', { name: 'Skill 配置', exact: true });
+  const run = editor.getByRole('button', { name: '生成', exact: true });
+  const fork = editor.getByRole('button', { name: '新节点', exact: true });
+  for (const button of [skill, run, fork]) {
+    await expect(button).toBeVisible();
+    const bounds = await button.boundingBox();
+    const panel = await editor.boundingBox();
+    expect(bounds!.x).toBeGreaterThanOrEqual(panel!.x);
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(panel!.x + panel!.width + 1);
+  }
+  expect(Math.abs((await skill.boundingBox())!.y - (await run.boundingBox())!.y)).toBeLessThan(1);
+  expect(Math.abs((await fork.boundingBox())!.y - (await run.boundingBox())!.y)).toBeLessThan(1);
+  expect(
+    await editor.evaluate((element) => element.scrollWidth - element.clientWidth),
+  ).toBeLessThanOrEqual(1);
+  expect(scenario.submissions).toHaveLength(0);
+  await screenshot(page, testInfo, 'editor-minimum-width');
+});
+
+test('资源抽屉默认只露出搜索区，悬停展开并释放收起后的画布命中区域', async ({
+  page,
+  scenario,
+}, testInfo) => {
+  await openProject(page);
+  const drawer = page.getByRole('complementary', { name: '项目资源' });
+  await expect(drawer).toHaveClass(/is-collapsed/);
+  await expect(drawer.getByPlaceholder('搜索资源')).toBeVisible();
+  const compact = await drawer.boundingBox();
+  expect(compact!.height).toBeLessThan(160);
+  const freePoint = { x: compact!.x + 30, y: compact!.y + compact!.height + 100 };
+  expect(
+    await page.evaluate(
+      ({ x, y }) => Boolean(document.elementFromPoint(x, y)?.closest('.canvas-area')),
+      freePoint,
+    ),
+  ).toBe(true);
+  await page.mouse.click(freePoint.x, freePoint.y);
+  await screenshot(page, testInfo, 'resource-drawer-compact');
+
+  await drawer.hover();
+  await expect(drawer).toHaveClass(/is-expanded/);
+  await expect(drawer.getByRole('button', { name: '预览 角色照片', exact: true })).toBeVisible();
+  const expanded = await drawer.boundingBox();
+  expect(expanded!.height).toBeGreaterThan(700);
+  await screenshot(page, testInfo, 'resource-drawer-expanded');
+  await page.mouse.move(1450, 800);
+  await expect(drawer).toHaveClass(/is-collapsed/);
+
+  await drawer.getByRole('button', { name: '展开资源栏', exact: true }).click();
+  await expect(drawer.getByRole('button', { name: '折叠资源栏', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await page.mouse.move(1450, 800);
+  await expect(drawer).toHaveClass(/is-expanded/);
+  await drawer.getByRole('button', { name: '折叠资源栏', exact: true }).click();
+  await expect(drawer).toHaveClass(/is-collapsed/);
+  await page.mouse.move(1450, 800);
+
+  const search = drawer.getByPlaceholder('搜索资源');
+  await search.fill('角色');
+  await page.mouse.move(1450, 800);
+  await expect(drawer).toHaveClass(/is-expanded/);
+  await expect(drawer.getByRole('button', { name: '预览 角色照片', exact: true })).toBeVisible();
+  await expect(drawer.getByRole('button', { name: '预览 源参考图片', exact: true })).toHaveCount(0);
+  await search.press('Escape');
+  await expect(drawer).toHaveClass(/is-collapsed/);
+  expect(
+    await page.evaluate(
+      ({ x, y }) => Boolean(document.elementFromPoint(x, y)?.closest('.canvas-area')),
+      freePoint,
+    ),
+  ).toBe(true);
+  expect(scenario.canvasWrites).toHaveLength(0);
+  expect(scenario.submissions).toHaveLength(0);
+});
+
+test('连接选项排版无重叠，单点流星沿真实连线运动并持久保留', async ({
+  page,
+  scenario,
+}, testInfo) => {
+  await openProject(page);
+  await page.locator('.topbar').getByRole('button', { name: '外观', exact: true }).click();
+  await page.getByRole('tab', { name: '连接', exact: true }).click();
+  const picker = page.locator('.appearance-antd-popover');
+  const cards = picker.locator('.appearance-edge-option');
+  await expect(cards).toHaveCount(12);
+  const overflow = await cards.evaluateAll((elements) =>
+    elements.flatMap((element) => {
+      const card = element.getBoundingClientRect();
+      const title = element.querySelector('strong')!.getBoundingClientRect();
+      const description = element.querySelector('small')!.getBoundingClientRect();
+      return title.bottom > description.top + 1 ||
+        description.bottom > card.bottom + 1 ||
+        description.right > card.right + 1
+        ? [element.textContent]
+        : [];
+    }),
+  );
+  expect(overflow).toEqual([]);
+  await picker.locator('[data-edge-effect="shooting-star"]').click();
+  const canvas = page.getByRole('region', { name: '工作流画布' });
+  await expect(canvas).toHaveAttribute('data-edge-effect', 'shooting-star');
+  const head = canvas.locator('.react-flow__edges .canvas-edge-shooting-star-head');
+  await expect(head).toHaveCount(1);
+  const firstOffset = await head.evaluate((element) =>
+    Number.parseFloat(getComputedStyle(element).strokeDashoffset),
+  );
+  await expect
+    .poll(async () =>
+      Math.abs(
+        (await head.evaluate((element) =>
+          Number.parseFloat(getComputedStyle(element).strokeDashoffset),
+        )) - firstOffset,
+      ),
+    )
+    .toBeGreaterThan(0.04);
+  expect(await head.evaluate((element) => getComputedStyle(element).pointerEvents)).toBe('none');
+  for (const style of ['bezier', 'gentle', 'smoothstep', 'step', 'straight']) {
+    await picker.locator(`[data-edge-path-style="${style}"]`).click();
+    await expect(canvas).toHaveAttribute('data-edge-path-style', style);
+    const basePath = canvas.locator('.react-flow__edges .canvas-flow-edge-path');
+    await expect(head).toHaveAttribute('d', (await basePath.getAttribute('d'))!);
+  }
+  await screenshot(page, testInfo, 'appearance-connection-shooting-star');
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await expect
+    .poll(() => head.evaluate((element) => getComputedStyle(element).animationName))
+    .toBe('none');
+  expect(
+    await head.evaluate((element) => Number.parseFloat(getComputedStyle(element).strokeDashoffset)),
+  ).toBe(-0.5);
+  await page.reload();
+  await expect(canvas).toHaveAttribute('data-edge-effect', 'shooting-star');
+  await expect(canvas).toHaveAttribute('data-edge-path-style', 'straight');
+  expect(scenario.canvasWrites).toHaveLength(0);
+  expect(scenario.submissions).toHaveLength(0);
+});
+
+test('设置页默认并发20，可保存大于20的值并刷新恢复，非法数值不能提交', async ({
+  page,
+  scenario,
+}, testInfo) => {
+  await page.goto('/settings');
+  await page.getByRole('tab', { name: '生成并发', exact: true }).click();
+  const input = page.getByRole('spinbutton', { name: '同时生成上限', exact: true });
+  const save = page.getByRole('button', { name: '保存并发', exact: true });
+  await expect(input).toHaveValue('20');
+  await expect(save).toBeDisabled();
+  for (const invalid of ['0', '-1', '1.5']) {
+    await input.fill(invalid);
+    await expect(input).toHaveAttribute('aria-invalid', 'true');
+    await expect(save).toBeDisabled();
+  }
+  expect(scenario.concurrencyWrites).toHaveLength(0);
+  await input.fill('32');
+  await expect(save).toBeEnabled();
+  await save.click();
+  await expect(page.getByText(/当前已保存：32/)).toBeVisible();
+  expect(scenario.concurrencyWrites).toEqual([32]);
+  await page.reload();
+  await page.getByRole('tab', { name: '生成并发', exact: true }).click();
+  await expect(input).toHaveValue('32');
+  await expect(save).toBeDisabled();
+  expect(scenario.concurrencyWrites).toEqual([32]);
+  expect(scenario.submissions).toHaveLength(0);
+  expect(scenario.canvasWrites).toHaveLength(0);
+  await screenshot(page, testInfo, 'settings-generation-concurrency');
+});
+
+test('从展开抽屉拖入提示词后确认引用，抽屉让出画布且不触发生成', async ({
+  page,
+  scenario,
+}, testInfo) => {
+  await openProject(page);
+  const editor = await openEditor(page, 'node-b');
+  const prompt = editor.getByRole('textbox', { name: '提示词', exact: true });
+  await prompt.click();
+  await page.keyboard.press('Control+End');
+  const drawer = page.getByRole('complementary', { name: '项目资源' });
+  await drawer.hover();
+  await expect(drawer).toHaveClass(/is-expanded/);
+  const card = drawer
+    .locator('.asset-card')
+    .filter({ has: page.getByRole('button', { name: '预览 角色照片', exact: true }) });
+  await expect(card).toHaveCount(1);
+  await card.dragTo(prompt);
+  const picker = page.getByRole('listbox', { name: '确认拖入资源', exact: true });
+  await expect(picker).toBeVisible();
+  await expect(drawer).toHaveClass(/is-collapsed/);
+  await expect(prompt).toHaveValue('Draw a blue boat beside a quiet lake.');
+  expect(scenario.canvasWrites).toHaveLength(0);
+  await picker.getByRole('option', { name: /角色照片/ }).click();
+  await expect(picker).toBeHidden();
+  await expect(
+    editor.getByRole('button', { name: '预览并命名 角色照片', exact: true }),
+  ).toBeVisible();
+  await expect(page.locator('.react-flow__node')).toHaveCount(3);
+  const saved = await saveCanvas(page, scenario);
+  expect(
+    saved.body.nodes.find((node) => node.id === 'node-b')!.data.promptDocument?.blocks,
+  ).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ type: 'mention', assetId: 'character-image' }),
+    ]),
+  );
+  expect(saved.body.nodes).toHaveLength(3);
+  expect(scenario.assets.map((asset) => asset.name)).toEqual(['源参考图片', '角色照片']);
+  expect(scenario.submissions).toHaveLength(0);
+  await screenshot(page, testInfo, 'resource-drawer-drag-to-prompt');
 });

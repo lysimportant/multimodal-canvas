@@ -15,6 +15,23 @@ const errorSchema = {
   additionalProperties: true,
 } as const;
 
+/** 全局生成并发与运行时合同一致；只允许管理员设置正安全整数。 */
+const generationConcurrencySchema = {
+  type: 'integer',
+  minimum: 1,
+  maximum: Number.MAX_SAFE_INTEGER,
+} as const;
+/** 不公开 Redis 地址、队列名称或运行凭据。 */
+const generationConcurrencySettingsSchema = {
+  type: 'object',
+  required: ['concurrency', 'scope'],
+  additionalProperties: false,
+  properties: {
+    concurrency: { ...generationConcurrencySchema, default: 20 },
+    scope: { const: 'queue', type: 'string' },
+  },
+} as const;
+
 const mediaTypeSchema = { type: 'string', enum: ['text', 'image', 'audio', 'video'] } as const;
 /** 节点执行模式的公开契约。 */
 const nodeModeSchema = { type: 'string', enum: ['source', 'generate'] } as const;
@@ -1841,6 +1858,50 @@ export const openApiDocument = {
             envelope('record', runRequestPromptRecordSchema),
           ),
           '404': response('Not found', errorSchema),
+        },
+      },
+    },
+    '/v1/admin/generation-concurrency': {
+      get: {
+        tags: ['settings'],
+        description:
+          '仅有状态管理员会话可读取已保存的队列全局 Run 并发；普通用户和静态服务令牌无权访问。首次未初始化或配置丢失返回 503 generation_concurrency_unconfigured，不写入或假称已保存默认值。',
+        responses: {
+          '200': response(
+            '当前全局并发',
+            envelope('settings', generationConcurrencySettingsSchema),
+          ),
+          '401': response('需要有效会话', errorSchema),
+          '403': response('仅管理员可以访问', errorSchema),
+          '503': response('生成队列配置不可用', errorSchema),
+        },
+      },
+      patch: {
+        tags: ['settings'],
+        description:
+          '管理员确认后持久保存正安全整数，也可初始化或恢复缺失的配置；建议初始值 20 而非最大 20。Worker 在后续调度应用上限，满载时扩容需等待在途任务完成；调低不取消已运行任务。失败时先重新读取，不自动重试写入。',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['concurrency'],
+                additionalProperties: false,
+                properties: { concurrency: generationConcurrencySchema },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': response(
+            '已持久保存的全局并发',
+            envelope('settings', generationConcurrencySettingsSchema),
+          ),
+          '400': response('必须是正安全整数且无额外字段', errorSchema),
+          '401': response('需要有效会话', errorSchema),
+          '403': response('仅管理员可以访问', errorSchema),
+          '503': response('无法确认配置写入，请重新读取', errorSchema),
         },
       },
     },

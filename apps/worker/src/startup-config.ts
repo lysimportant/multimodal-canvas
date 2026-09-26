@@ -1,4 +1,5 @@
 import { isIP } from 'node:net';
+import { DEFAULT_GENERATION_CONCURRENCY } from '@multimodal-canvas/domain';
 
 export type StartupEnvironment = Readonly<Record<string, string | undefined>>;
 
@@ -28,25 +29,20 @@ export class StartupConfigurationError extends Error {
 }
 
 /**
- * 读取单个 Worker 同时处理的 Run 数；未配置时为 4，不改变 Run 内部 DAG 顺序。
- * @param environment 启动环境；显式 WORKER_CONCURRENCY 只允许 1..20 的十进制整数。
- * @returns 有界并发数；设为 1 恢复串行领取 Run。
+ * 读取队列首次启动的 Run 并发；未配置时为 20，Redis 已保存值优先于环境值。
+ * @param environment 启动环境；显式 WORKER_CONCURRENCY 只允许可精确表示的正十进制整数。
+ * @returns 初始并发数；设为 1 串行领取 Run，不改变 Run 内部 DAG 顺序。
  * @throws StartupConfigurationError 显式值为空、非整数或越界时拒绝启动。
  */
 export function resolveWorkerConcurrency(environment: StartupEnvironment = process.env): number {
   const raw = environment.WORKER_CONCURRENCY;
-  if (raw === undefined) return 4;
+  if (raw === undefined) return DEFAULT_GENERATION_CONCURRENCY;
   const value = raw.trim();
   const concurrency = Number(value);
-  if (
-    !/^[0-9]+$/.test(value) ||
-    !Number.isInteger(concurrency) ||
-    concurrency < 1 ||
-    concurrency > 20
-  ) {
+  if (!/^[0-9]+$/.test(value) || !Number.isSafeInteger(concurrency) || concurrency < 1) {
     throw new StartupConfigurationError(
       'Worker',
-      [{ variable: 'WORKER_CONCURRENCY', message: 'must be an integer between 1 and 20' }],
+      [{ variable: 'WORKER_CONCURRENCY', message: 'must be a positive safe integer' }],
       environment.NODE_ENV,
     );
   }

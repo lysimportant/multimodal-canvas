@@ -161,6 +161,9 @@ const app = buildApp({
   promptSkillStore,
   s3DownloadMode,
   runService,
+  ...(runService instanceof BullMqRunService
+    ? { generationConcurrencyStore: runService.generationConcurrency }
+    : {}),
   ...(runExecutor ? { runExecutor } : {}),
   settingsStore,
   ...(runPersistence ? { runPersistence } : {}),

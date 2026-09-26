@@ -1,14 +1,91 @@
 import '@testing-library/jest-dom/vitest';
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { AppearancePicker } from './AppearancePicker';
+import { canvasEdgePreviewPath } from './canvas-edge-appearance';
 
 afterEach(cleanup);
 
 describe('AppearancePicker', () => {
+  it('连接卡片按内容撑高，标题与说明允许换行且不依赖 important 覆盖', () => {
+    const css = readFileSync(
+      resolve(process.cwd(), 'src/workspace/AppearancePicker.css'),
+      'utf8',
+    ).replace(/\s+/g, ' ');
+
+    expect(css).toMatch(
+      /\.appearance-antd-popover \.appearance-edge-option\.ant-btn \{[^}]*height: auto;/,
+    );
+    expect(css).toMatch(/\.appearance-edge-option small \{[^}]*white-space: normal;/);
+    expect(css).toMatch(/\.appearance-edge-options \{[^}]*gap: 8px;/);
+    expect(css).toMatch(
+      /\.appearance-antd-popover \.ant-tabs-content \{[^}]*max-height: min\([^;]+;[^}]*overflow-y: auto;/,
+    );
+    expect(css).not.toContain('!important');
+  });
+
+  it('单点流星独立于旧流光，选项与组合预览共用真实路径和同一特效层', async () => {
+    const user = userEvent.setup();
+    const props = {
+      canvasTheme: 'eye-care' as const,
+      canvasBackground: 'dots' as const,
+      canvasEdgePathStyle: 'step' as const,
+      placement: 'bottom' as const,
+      onThemeChange: vi.fn(),
+      onBackgroundChange: vi.fn(),
+      onEdgePathStyleChange: vi.fn(),
+      onEdgeEffectChange: vi.fn(),
+    };
+    const { rerender } = render(<AppearancePicker {...props} canvasEdgeEffect="meteor" />);
+    await user.click(screen.getByRole('button', { name: '外观' }));
+    const dialog = await screen.findByRole('dialog', { name: '主题、画布背景与连接线' });
+    await user.click(within(dialog).getByRole('tab', { name: '连接' }));
+    expect(dialog.querySelector('.ant-tabs-content-active')).toContainElement(
+      within(dialog).getByRole('group', { name: '连接线特效' }),
+    );
+
+    const meteor = within(dialog).getByRole('button', { name: '流光 短亮线行进' });
+    const shootingStar = within(dialog).getByRole('button', { name: '单点流星 亮点携短尾迹' });
+    expect(meteor).toHaveAttribute('aria-pressed', 'true');
+    expect(meteor.querySelector('.canvas-edge-effect-meteor')).toBeInTheDocument();
+    expect(shootingStar).toHaveAttribute('aria-pressed', 'false');
+    expect(shootingStar.querySelectorAll('.canvas-edge-shooting-star-head')).toHaveLength(1);
+    expect(shootingStar.querySelector('strong')).toHaveTextContent('单点流星');
+    expect(shootingStar.querySelector('small')).toHaveTextContent('亮点携短尾迹');
+
+    await user.click(shootingStar);
+    expect(props.onEdgeEffectChange).toHaveBeenCalledExactlyOnceWith('shooting-star');
+    expect(props.onEdgePathStyleChange).not.toHaveBeenCalled();
+    rerender(<AppearancePicker {...props} canvasEdgeEffect="shooting-star" />);
+    expect(shootingStar).toHaveAttribute('aria-pressed', 'true');
+    expect(meteor).toHaveAttribute('aria-pressed', 'false');
+
+    const combined = within(dialog).getByRole('group', { name: '连接线组合预览' });
+    const expectedPath = canvasEdgePreviewPath('step');
+    expect(combined.querySelectorAll('.canvas-edge-shooting-star-head')).toHaveLength(1);
+    combined.querySelectorAll('path').forEach((path) => {
+      expect(path).toHaveAttribute('d', expectedPath);
+    });
+    within(dialog)
+      .getByRole('group', { name: '连接线路径' })
+      .querySelectorAll('.appearance-edge-option')
+      .forEach((option) => {
+        const base = option.querySelector('.canvas-flow-edge-path');
+        option.querySelectorAll('.canvas-edge-effect-shooting-star path').forEach((path) => {
+          expect(path).toHaveAttribute('d', base?.getAttribute('d'));
+        });
+      });
+
+    await user.click(within(dialog).getByRole('button', { name: '直线 两端直连' }));
+    expect(props.onEdgePathStyleChange).toHaveBeenCalledExactlyOnceWith('straight');
+    expect(props.onEdgeEffectChange).toHaveBeenCalledTimes(1);
+  });
+
   it('真实 Popover 保留主题、背景与连接的独立选择和组合预览', async () => {
     const user = userEvent.setup();
     const onThemeChange = vi.fn();

@@ -14,7 +14,10 @@ export const CANVAS_THEME_KEY = 'multimodal-canvas:theme';
 export const CANVAS_EDGE_STYLE_KEY = 'multimodal-canvas:edge-style';
 export const CANVAS_EDGE_PATH_STYLE_KEY = 'multimodal-canvas:edge-path-style';
 export const CANVAS_EDGE_EFFECT_KEY = 'multimodal-canvas:edge-effect';
+/** 用户显式固定/收起的资源栏状态；只有抽屉版本标记有效时才恢复旧布尔值。 */
 export const RESOURCE_PANEL_COLLAPSED_KEY = 'multimodal-canvas:resource-panel-collapsed';
+/** 区分旧版默认展开和新版主动固定，未标记的浏览器统一启用紧凑抽屉。 */
+export const RESOURCE_PANEL_DRAWER_VERSION_KEY = 'multimodal-canvas:resource-panel-drawer-version';
 export const IMAGE_EDIT_SOURCE_CARD_KEY = 'multimodal-canvas:image-edit-source-card';
 /** 仅用于删除已退役偏好，不恢复或写入自动生成状态。 */
 export const AUTO_REVERSE_PROMPT_KEY = 'multimodal-canvas:auto-reverse-prompt';
@@ -32,6 +35,7 @@ type PreferenceValues = {
   canvasEdgePathStyle: CanvasEdgePathStyle;
   /** 连接线动态特效；切换特效不会改变路径几何。 */
   canvasEdgeEffect: CanvasEdgeEffect;
+  /** true 为默认紧凑抽屉；false 为用户主动固定展开，不包含临时悬停状态。 */
   isResourcePanelCollapsed: boolean;
   /** 图片修改节点是否显示只读来源图卡片，默认显示。 */
   showImageEditSourceCard: boolean;
@@ -57,7 +61,7 @@ export const workspacePreferenceDefaults: PreferenceValues = {
   canvasTheme: 'eye-care',
   canvasEdgePathStyle: 'bezier',
   canvasEdgeEffect: 'meteor',
-  isResourcePanelCollapsed: false,
+  isResourcePanelCollapsed: true,
   showImageEditSourceCard: true,
   defaultGenerationCount: DEFAULT_GENERATION_COUNT,
 };
@@ -73,6 +77,7 @@ const canvasEdgePathStyles: CanvasEdgePathStyle[] = [
 ];
 const canvasEdgeEffects: CanvasEdgeEffect[] = [
   'meteor',
+  'shooting-star',
   'marching',
   'cruiser',
   'multi',
@@ -112,6 +117,7 @@ function parsePreferences(storage: Storage): PreferenceValues | null {
   const rawEffect = storage.getItem(CANVAS_EDGE_EFFECT_KEY);
   const rawLegacyEdgeStyle = storage.getItem(CANVAS_EDGE_STYLE_KEY);
   const rawCollapsed = storage.getItem(RESOURCE_PANEL_COLLAPSED_KEY);
+  const drawerVersion = storage.getItem(RESOURCE_PANEL_DRAWER_VERSION_KEY);
   const rawSourceCard = storage.getItem(IMAGE_EDIT_SOURCE_CARD_KEY);
   storage.removeItem(AUTO_REVERSE_PROMPT_KEY);
   const rawGenerationCount = storage.getItem(DEFAULT_GENERATION_COUNT_KEY);
@@ -144,7 +150,7 @@ function parsePreferences(storage: Storage): PreferenceValues | null {
     canvasEdgeEffect: canvasEdgeEffects.includes(rawEffect as CanvasEdgeEffect)
       ? (rawEffect as CanvasEdgeEffect)
       : (migrated?.canvasEdgeEffect ?? workspacePreferenceDefaults.canvasEdgeEffect),
-    isResourcePanelCollapsed: rawCollapsed === 'true',
+    isResourcePanelCollapsed: drawerVersion !== '1' || rawCollapsed !== 'false',
     showImageEditSourceCard: rawSourceCard !== 'false',
     defaultGenerationCount: isValidGenerationCount(Number(rawGenerationCount))
       ? Number(rawGenerationCount)
@@ -171,6 +177,7 @@ const preferenceStorage: StateStorage = {
       storage.setItem(CANVAS_EDGE_EFFECT_KEY, state.canvasEdgeEffect);
       storage.removeItem(CANVAS_EDGE_STYLE_KEY);
       storage.setItem(RESOURCE_PANEL_COLLAPSED_KEY, String(state.isResourcePanelCollapsed));
+      storage.setItem(RESOURCE_PANEL_DRAWER_VERSION_KEY, '1');
       storage.setItem(IMAGE_EDIT_SOURCE_CARD_KEY, String(state.showImageEditSourceCard));
       storage.removeItem(AUTO_REVERSE_PROMPT_KEY);
       storage.setItem(DEFAULT_GENERATION_COUNT_KEY, String(state.defaultGenerationCount));
@@ -186,6 +193,7 @@ const preferenceStorage: StateStorage = {
     storage?.removeItem(CANVAS_EDGE_EFFECT_KEY);
     storage?.removeItem(CANVAS_EDGE_STYLE_KEY);
     storage?.removeItem(RESOURCE_PANEL_COLLAPSED_KEY);
+    storage?.removeItem(RESOURCE_PANEL_DRAWER_VERSION_KEY);
     storage?.removeItem(IMAGE_EDIT_SOURCE_CARD_KEY);
     storage?.removeItem(AUTO_REVERSE_PROMPT_KEY);
     storage?.removeItem(DEFAULT_GENERATION_COUNT_KEY);

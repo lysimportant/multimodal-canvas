@@ -125,8 +125,8 @@ function shouldKeepNativeContextMenu(target: EventTarget | null) {
   return target instanceof Element && Boolean(target.closest(NATIVE_CONTEXT_MENU_SELECTOR));
 }
 
-/** 快速编辑器在桌面画布中的最大宽度，单位为像素。 */
-const QUICK_EDITOR_MAX_WIDTH = 570;
+/** 节点尚未取得尺寸时的输入面板回退宽度，单位为画布像素。 */
+const QUICK_EDITOR_FALLBACK_WIDTH = 570;
 /** 快速编辑器与可见画布边界之间的最小距离，单位为像素。 */
 const QUICK_EDITOR_VIEWPORT_MARGIN = 8;
 /** 快速编辑器与选中节点之间的视觉间距，单位为像素。 */
@@ -138,10 +138,12 @@ type QuickEditorLayout = {
   left: number;
   /** 浮层上边缘的视口坐标，单位为像素。 */
   top: number;
-  /** 浮层宽度，单位为像素。 */
+  /** 缩放前的浮层宽度，单位为画布像素。 */
   width: number;
-  /** 可见画布的最大可用高度，单位为像素；超长编辑器内部滚动。 */
+  /** 缩放前的最大可用高度，单位为画布像素；超长编辑器内部滚动。 */
   maxHeight: number;
+  /** 与 React Flow 视口一致的缩放比例，不改写节点持久化尺寸。 */
+  scale: number;
   /** 浮层相对于选中节点的展开方向。 */
   placement: 'below' | 'above' | 'left' | 'right';
   /** 是否已取得可用于显示的首个布局结果。 */
@@ -838,6 +840,7 @@ export function WorkflowCanvas({
           models={models}
           busy={isNodeBusy(quickEditorNode)}
           canvasAreaRef={canvasAreaRef}
+          viewportZoom={viewport.zoom}
           assets={assets}
           connectedAssets={collectConnectedPromptAssets(quickEditorNode.id, nodes, edges, assets)}
           onConnectedResourceRename={
@@ -986,14 +989,21 @@ type QuickEditorOverlayProps = Omit<NodeQuickEditorProps, 'node'> & {
   node: AssetFlowNode;
   /** 用于约束浮层可见范围的画布容器引用。 */
   canvasAreaRef: RefObject<HTMLElement | null>;
+  /** 画布当前缩放比例；用于将独立 portal 与节点保持同倍率。 */
+  viewportZoom: number;
 };
 
 /**
- * 将快速编辑器渲染到画布外层，并根据节点和画布的视口矩形定位。
- * React Flow 的节点容器使用 `overflow: hidden`，因此编辑器不能继续嵌套在
- * `NodeToolbar` 中；优先沿上下方向布局，空间不足时停靠节点侧面以避开缩放控制点。
+ * 在画布外层渲染输入面板，按节点实测宽度和视口倍率同步缩放。
+ * portal 避免被节点的 overflow 裁剪；碰撞检测使用屏幕像素，最终尺寸换回画布像素，
+ * 使输入内容不影响节点外框，且缩放后仍避开节点、工具栏和画布边界。
  */
-function QuickEditorOverlay({ node, canvasAreaRef, ...editorProps }: QuickEditorOverlayProps) {
+function QuickEditorOverlay({
+  node,
+  canvasAreaRef,
+  viewportZoom,
+  ...editorProps
+}: QuickEditorOverlayProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
   /** portal 宿主在客户端挂载后确定，服务端渲染阶段保持为空。 */
   const [portalHost, setPortalHost] = useState<HTMLElement | null>(null);
@@ -1001,8 +1011,9 @@ function QuickEditorOverlay({ node, canvasAreaRef, ...editorProps }: QuickEditor
   const [layout, setLayout] = useState<QuickEditorLayout>({
     left: QUICK_EDITOR_VIEWPORT_MARGIN,
     top: QUICK_EDITOR_VIEWPORT_MARGIN,
-    width: QUICK_EDITOR_MAX_WIDTH,
+    width: QUICK_EDITOR_FALLBACK_WIDTH,
     maxHeight: 420,
+    scale: 1,
     placement: 'below',
     ready: false,
   });
@@ -1017,14 +1028,20 @@ function QuickEditorOverlay({ node, canvasAreaRef, ...editorProps }: QuickEditor
     const canvas = canvasAreaRef.current;
     const overlay = overlayRef.current;
     const nodeElement = findReactFlowNodeElement(node.id);
-    if (!canvas || !overlay || !nodeElement) {
+    if (
+      !canvas ||
+      !overlay ||
+      !nodeElement ||
+      !Number.isFinite(viewportZoom) ||
+      viewportZoom <= 0
+    ) {
       setLayout((current) => (current.ready ? { ...current, ready: false } : current));
       return;
     }
 
     const viewportWidth =
       Math.max(window.innerWidth || 0, document.documentElement.clientWidth || 0) ||
-      QUICK_EDITOR_MAX_WIDTH + QUICK_EDITOR_VIEWPORT_MARGIN * 2;
+      QUICK_EDITOR_FALLBACK_WIDTH + QUICK_EDITOR_VIEWPORT_MARGIN * 2;
     const viewportHeight = Math.max(
       window.innerHeight || 0,
       document.documentElement.clientHeight || 0,
@@ -1058,9 +1075,12 @@ function QuickEditorOverlay({ node, canvasAreaRef, ...editorProps }: QuickEditor
     const boundedRight = Math.max(canvasLeft, canvasRight);
     const boundedBottom = Math.max(canvasTop, canvasBottom);
     let maxHeight = Math.max(1, boundedBottom - canvasTop);
-    let width = Math.min(QUICK_EDITOR_MAX_WIDTH, Math.max(1, boundedRight - canvasLeft));
     const nodeRect = nodeElement.getBoundingClientRect();
     const hasNodeBounds = nodeRect.width > 0 && nodeRect.height > 0;
+    let width = Math.min(
+      hasNodeBounds ? nodeRect.width : QUICK_EDITOR_FALLBACK_WIDTH * viewportZoom,
+      Math.max(1, boundedRight - canvasLeft),
+    );
     const nodeCenter = hasNodeBounds
       ? nodeRect.left + nodeRect.width / 2
       : (canvasLeft + boundedRight) / 2;
@@ -1077,10 +1097,11 @@ function QuickEditorOverlay({ node, canvasAreaRef, ...editorProps }: QuickEditor
     let placement: QuickEditorLayout['placement'] = 'below';
     if (hasNodeBounds) {
       // 候选区域只取节点外侧，不以编辑器当前高度回推位置，避免增高或滚动时跳动。
-      const belowTop = Math.max(canvasTop, nodeRect.bottom + QUICK_EDITOR_NODE_GAP);
+      const nodeGap = QUICK_EDITOR_NODE_GAP * viewportZoom;
+      const belowTop = Math.max(canvasTop, nodeRect.bottom + nodeGap);
       const aboveBottom = Math.min(boundedBottom, nodeRect.top - 64);
-      const rightLeft = Math.max(canvasLeft, nodeRect.right + QUICK_EDITOR_NODE_GAP);
-      const leftRight = Math.min(boundedRight, nodeRect.left - QUICK_EDITOR_NODE_GAP);
+      const rightLeft = Math.max(canvasLeft, nodeRect.right + nodeGap);
+      const leftRight = Math.min(boundedRight, nodeRect.left - nodeGap);
       const below = {
         placement: 'below' as const,
         left,
@@ -1114,9 +1135,9 @@ function QuickEditorOverlay({ node, canvasAreaRef, ...editorProps }: QuickEditor
       const candidates = [below, above, right, leftSide].filter(
         (area) => area.width > 0 && area.maxHeight > 0,
       );
-      const usable = candidates.filter((area) => area.width >= Math.min(360, width));
+      const usable = candidates.filter((area) => area.width >= Math.min(360 * viewportZoom, width));
       const chosen =
-        usable.find((area) => area.maxHeight >= 400) ??
+        usable.find((area) => area.maxHeight >= 400 * viewportZoom) ??
         usable.sort((a, b) => b.maxHeight - a.maxHeight)[0] ??
         candidates.sort((a, b) => b.width * b.maxHeight - a.width * a.maxHeight)[0];
       if (chosen) {
@@ -1129,10 +1150,11 @@ function QuickEditorOverlay({ node, canvasAreaRef, ...editorProps }: QuickEditor
     }
 
     const nextLayout: QuickEditorLayout = {
-      left: Math.round(left),
-      top: Math.round(top),
-      width: Math.round(width),
-      maxHeight: Math.floor(maxHeight),
+      left,
+      top,
+      width: width / viewportZoom,
+      maxHeight: Math.floor(maxHeight / viewportZoom),
+      scale: viewportZoom,
       placement,
       ready: true,
     };
@@ -1141,12 +1163,13 @@ function QuickEditorOverlay({ node, canvasAreaRef, ...editorProps }: QuickEditor
       current.top === nextLayout.top &&
       current.width === nextLayout.width &&
       current.maxHeight === nextLayout.maxHeight &&
+      current.scale === nextLayout.scale &&
       current.placement === nextLayout.placement &&
       current.ready === nextLayout.ready
         ? current
         : nextLayout,
     );
-  }, [canvasAreaRef, node.id]);
+  }, [canvasAreaRef, node.id, viewportZoom]);
 
   useLayoutEffect(() => {
     if (!portalHost) return;
@@ -1202,6 +1225,8 @@ function QuickEditorOverlay({ node, canvasAreaRef, ...editorProps }: QuickEditor
     top: `${layout.top}px`,
     visibility: layout.ready ? 'visible' : 'hidden',
     width: `${layout.width}px`,
+    transform: `scale(${layout.scale})`,
+    transformOrigin: 'top left',
     '--quick-editor-max-height': `${layout.maxHeight}px`,
   };
 

@@ -29,3 +29,19 @@
   margin: 0;
   font-size: 22px;
 }
+
+.generation-concurrency-settings .settings-field {
+  max-width: 320px;
+}
+
+.generation-concurrency-settings .settings-status {
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.generation-concurrency-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}

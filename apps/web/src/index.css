@@ -775,8 +775,9 @@ input:disabled {
 
 .workspace {
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr) 280px;
+  grid-template-columns: minmax(0, 1fr);
   height: 100vh;
+  position: relative;
 }
 
 .resource-panel,
@@ -4652,37 +4653,6 @@ textarea:focus-visible {
   outline-color: var(--mc-accent);
 }
 
-/* Resource panel collapse states. The :has() selector keeps the grid in sync
-   even when the owner only toggles the panel class. */
-.workspace.resource-panel-collapsed,
-.workspace:has(.resource-panel.is-collapsed) {
-  grid-template-columns: 64px minmax(0, 1fr) 280px;
-}
-
-.resource-panel.is-collapsed {
-  padding: 86px 10px 16px;
-}
-
-.resource-panel.is-collapsed > :not(.panel-heading) {
-  display: none;
-}
-
-.resource-panel.is-collapsed .panel-heading {
-  justify-content: center;
-}
-
-.resource-panel.is-collapsed .resource-panel-heading {
-  justify-content: center;
-}
-
-.resource-panel.is-collapsed .panel-heading > div {
-  display: none;
-}
-
-.resource-panel.is-collapsed .resource-upload-button {
-  display: none;
-}
-
 .resource-collapse-button,
 .sidebar-toggle,
 .topbar-background-picker,
@@ -4958,17 +4928,6 @@ textarea:focus-visible {
 @media (max-width: 900px) {
   .brand-mark > span:last-child {
     display: none;
-  }
-
-  .workspace.resource-panel-collapsed,
-  .workspace:has(.resource-panel.is-collapsed) {
-    display: flex;
-  }
-
-  .resource-panel.is-collapsed {
-    max-height: 58px;
-    min-height: 58px;
-    padding: 16px 10px;
   }
 
   .theme-toggle-label,
@@ -5330,43 +5289,8 @@ textarea:focus-visible {
   width: 1px;
 }
 
-.workspace {
-  grid-template-columns: 260px minmax(0, 1fr);
-  transition: grid-template-columns 180ms ease;
-}
-
 .workspace.has-inspector {
-  grid-template-columns: 260px minmax(0, 1fr) 280px;
-}
-
-.workspace.resource-panel-collapsed,
-.workspace:has(.resource-panel.is-collapsed) {
-  grid-template-columns: 64px minmax(0, 1fr);
-}
-
-.workspace.has-inspector.resource-panel-collapsed,
-.workspace.has-inspector:has(.resource-panel.is-collapsed) {
-  grid-template-columns: 64px minmax(0, 1fr) 280px;
-}
-
-.resource-panel {
-  background: color-mix(in srgb, var(--mc-surface) 82%, transparent);
-  opacity: 0.78;
-  transition:
-    background-color 180ms ease,
-    border-color 180ms ease,
-    opacity 180ms ease,
-    padding 180ms ease;
-}
-
-.resource-panel:hover,
-.resource-panel:focus-within {
-  background: color-mix(in srgb, var(--mc-surface) 96%, transparent);
-  opacity: 1;
-}
-
-.resource-panel.is-collapsed {
-  opacity: 0.9;
+  grid-template-columns: minmax(0, 1fr) 280px;
 }
 
 .auth-heading-actions {
@@ -5454,21 +5378,8 @@ textarea:focus-visible {
   }
 
   .workspace,
-  .workspace.has-inspector,
-  .workspace.resource-panel-collapsed,
-  .workspace.has-inspector.resource-panel-collapsed,
-  .workspace:has(.resource-panel.is-collapsed),
-  .workspace.has-inspector:has(.resource-panel.is-collapsed) {
+  .workspace.has-inspector {
     display: flex;
-  }
-
-  .resource-panel {
-    opacity: 1;
-    transition:
-      background-color 180ms ease,
-      max-height 180ms ease,
-      min-height 180ms ease,
-      padding 180ms ease;
   }
 }
 

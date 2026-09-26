@@ -6,12 +6,12 @@ import {
 } from '@xyflow/react';
 
 import {
-  edgeEffectOverlayClassName,
   resolveEdgePath,
   useCanvasEdgeAppearance,
   type CanvasEdgeEffect,
   type CanvasEdgePathStyle,
 } from './canvas-edge-appearance';
+import { CanvasEdgeEffectOverlay } from './CanvasEdgeEffectOverlay';
 
 /** 与节点锚点 CSS 直径保持一致，用于把落定连线从外沿收到圆心。 */
 export const FLOW_HANDLE_SIZE = 18;
@@ -48,21 +48,6 @@ export function centerHandlePoint(x: number, y: number, position: Position) {
 function baseEdgeClassName(effect: CanvasEdgeEffect, selected: boolean): string {
   const marching = effect === 'marching' ? ' canvas-edge-effect-marching' : '';
   return `canvas-flow-edge-path${marching}${selected ? ' is-selected' : ''}`;
-}
-
-/**
- * 特效叠加层。叠加层不参与命中测试，也不随选中态变化；选择、状态颜色和连线删除
- * 始终由基础边负责。
- * @param props.path 与基础边完全相同的路径，叠加层不会改写基础边的 `d`。
- * @param props.effect 当前动态特效。
- * @returns 叠加路径；`marching` 与 `none` 不渲染叠加层。
- */
-function EdgeEffectOverlay({ path, effect }: { path: string; effect: CanvasEdgeEffect }) {
-  const className = edgeEffectOverlayClassName(effect);
-  if (!className) return null;
-  return (
-    <path d={path} aria-hidden="true" data-testid="edge-effect-overlay" className={className} />
-  );
 }
 
 /**
@@ -104,7 +89,7 @@ export function FlowingCanvasEdge({
         markerEnd={markerEnd}
         className={baseEdgeClassName(effect, Boolean(selected))}
       />
-      <EdgeEffectOverlay path={path} effect={effect} />
+      <CanvasEdgeEffectOverlay path={path} effect={effect} />
     </>
   );
 }
@@ -112,8 +97,9 @@ export function FlowingCanvasEdge({
 /**
  * 拖拽连线预览。xyflow 对预览端点已经使用 `center = true`，不能再内收，
  * 否则会从圆心再往节点内偏移，松手后还会和落定边跳点。
- * 路径形态与特效由调用方注入，保证与落定边完全一致。
+ * 路径形态与特效由调用方注入；从输入端反向拖线时交换端点，仍保持源到目标的方向。
  * @param props React Flow 连接线参数与当前连接线外观。
+ * @param props.fromHandle 拖线起点锚点；未传时按源端拖线处理，传入 target 时反转几何方向。
  * @returns 预览路径与可选的特效叠加路径。
  */
 export function FlowingConnectionLine({
@@ -123,24 +109,30 @@ export function FlowingConnectionLine({
   toY,
   fromPosition,
   toPosition,
+  fromHandle,
   pathStyle,
   effect,
 }: Pick<
   ConnectionLineComponentProps,
   'fromX' | 'fromY' | 'toX' | 'toY' | 'fromPosition' | 'toPosition'
-> & { pathStyle: CanvasEdgePathStyle; effect: CanvasEdgeEffect }) {
+> &
+  Partial<Pick<ConnectionLineComponentProps, 'fromHandle'>> & {
+    pathStyle: CanvasEdgePathStyle;
+    effect: CanvasEdgeEffect;
+  }) {
+  const fromTarget = fromHandle?.type === 'target';
   const path = resolveEdgePath(pathStyle, {
-    sourceX: fromX,
-    sourceY: fromY,
-    targetX: toX,
-    targetY: toY,
-    sourcePosition: fromPosition,
-    targetPosition: toPosition,
+    sourceX: fromTarget ? toX : fromX,
+    sourceY: fromTarget ? toY : fromY,
+    targetX: fromTarget ? fromX : toX,
+    targetY: fromTarget ? fromY : toY,
+    sourcePosition: fromTarget ? toPosition : fromPosition,
+    targetPosition: fromTarget ? fromPosition : toPosition,
   });
   return (
     <g>
       <path d={path} fill="none" className={baseEdgeClassName(effect, false)} />
-      <EdgeEffectOverlay path={path} effect={effect} />
+      <CanvasEdgeEffectOverlay path={path} effect={effect} />
     </g>
   );
 }

@@ -11,10 +11,10 @@ import {
   CANVAS_EDGE_PREVIEW_VIEW_BOX,
   canvasEdgeAppearanceDefaults,
   canvasEdgePreviewPath,
-  edgeEffectOverlayClassName,
   type CanvasEdgeEffect,
   type CanvasEdgePathStyle,
 } from './canvas-edge-appearance';
+import { CanvasEdgeEffectOverlay } from './CanvasEdgeEffectOverlay';
 
 /** 界面主题选项，顶栏与底部胶囊共用。 */
 export const appearanceThemeOptions: Array<{ value: CanvasTheme; label: string; swatch: string }> =
@@ -54,6 +54,7 @@ export const appearanceEdgeEffectOptions: Array<{
   description: string;
 }> = [
   { value: 'meteor', label: '流光', description: '短亮线行进' },
+  { value: 'shooting-star', label: '单点流星', description: '亮点携短尾迹' },
   { value: 'marching', label: '虚线行进', description: '虚线沿向移动' },
   { value: 'cruiser', label: '单点巡航', description: '单点循环' },
   { value: 'multi', label: '多点流动', description: '多点间隔' },
@@ -62,7 +63,7 @@ export const appearanceEdgeEffectOptions: Array<{
 ];
 
 /**
- * 连接线小预览：与画布共用同一套路径求解和特效类名，预览即最终形态。
+ * 连接线小预览：与画布共用路径求解和特效组件，预览即最终形态。
  * @param props.pathStyle 路径形态。
  * @param props.effect 动态特效。
  * @returns 固定视框内的预览路径。
@@ -75,7 +76,6 @@ function CanvasEdgePreview({
   effect: CanvasEdgeEffect;
 }) {
   const path = canvasEdgePreviewPath(pathStyle);
-  const overlayClassName = edgeEffectOverlayClassName(effect);
   return (
     <svg
       className="appearance-edge-preview"
@@ -90,7 +90,7 @@ function CanvasEdgePreview({
         }`}
         fill="none"
       />
-      {overlayClassName ? <path d={path} className={overlayClassName} fill="none" /> : null}
+      <CanvasEdgeEffectOverlay path={path} effect={effect} />
     </svg>
   );
 }
@@ -219,7 +219,7 @@ export function AppearancePicker({
                     <small>{option.description}</small>
                   </span>
                   {canvasEdgePathStyle === option.value ? (
-                    <Check size={14} aria-hidden="true" />
+                    <Check className="appearance-edge-option-check" size={14} aria-hidden="true" />
                   ) : null}
                 </Button>
               ))}
@@ -249,7 +249,7 @@ export function AppearancePicker({
                     <small>{option.description}</small>
                   </span>
                   {canvasEdgeEffect === option.value ? (
-                    <Check size={14} aria-hidden="true" />
+                    <Check className="appearance-edge-option-check" size={14} aria-hidden="true" />
                   ) : null}
                 </Button>
               ))}

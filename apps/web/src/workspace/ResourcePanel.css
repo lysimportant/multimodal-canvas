@@ -1,0 +1,57 @@
+/* 抽屉本身就是命中区域；PC 画布不再为侧栏预留整高的网格列。 */
+.resource-panel.resource-drawer {
+  background: color-mix(in srgb, var(--mc-surface) 96%, transparent);
+  border: 1px solid var(--mc-border);
+  border-radius: 8px;
+  min-height: 0;
+  opacity: 1;
+  overflow: visible;
+  padding: 12px;
+  position: relative;
+}
+
+.resource-drawer.is-expanded {
+  height: 340px;
+}
+
+/* 只旋转同一个图标，避免替换光标下的 SVG 触发伪 mouseover，让刚收起的抽屉重开。 */
+.resource-drawer .resource-collapse-button[aria-expanded='true'] > svg {
+  transform: rotate(180deg);
+}
+
+.resource-drawer > .search-field,
+.resource-drawer > .upload-progress {
+  flex: 0 0 auto;
+}
+
+.resource-drawer > .asset-list {
+  min-height: 0;
+  overscroll-behavior: contain;
+}
+
+/* 不卸载拖拽源；压缩实际高度，同时从点击命中和键盘导航中移除隐藏列表。 */
+.resource-drawer.is-collapsed > .asset-list {
+  flex: 0 0 0;
+  height: 0;
+  margin: 0;
+  overflow: hidden;
+  padding-block: 0;
+  pointer-events: none;
+  visibility: hidden;
+}
+
+@media (min-width: 901px) {
+  .workspace > .resource-panel.resource-drawer {
+    box-shadow: 0 4px 16px var(--mc-shadow);
+    left: 12px;
+    max-height: calc(100% - 88px);
+    position: absolute;
+    top: 76px;
+    width: 248px;
+    z-index: 25;
+  }
+
+  .workspace > .resource-panel.resource-drawer.is-expanded {
+    height: calc(100% - 88px);
+  }
+}

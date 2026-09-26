@@ -15,6 +15,10 @@ vi.mock('../auth-client', () => ({
   apiFetch: vi.fn(),
   getAuthSessionGeneration: () => 1,
   startNewApiLogin: vi.fn(),
+  readAuthSession: () => ({
+    user: { id: 'synthetic-admin', role: 'admin', createdAt: '2026-09-26T00:00:00Z' },
+  }),
+  subscribeAuthSession: () => () => {},
 }));
 vi.mock('../query/models', () => ({
   useModelCatalogQuery: () => ({
@@ -42,6 +46,10 @@ vi.mock('../query/models', () => ({
 beforeEach(() => {
   useWorkspacePreferences.setState(workspacePreferenceDefaults);
   vi.mocked(apiFetch).mockImplementation(async (url, init) => {
+    if (String(url).endsWith('/v1/admin/generation-concurrency')) {
+      const concurrency = init?.method === 'PATCH' ? JSON.parse(String(init.body)).concurrency : 20;
+      return new Response(JSON.stringify({ settings: { concurrency, scope: 'queue' } }));
+    }
     if (init?.method === 'PATCH')
       return new Response(JSON.stringify({ defaults: JSON.parse(String(init.body)) }));
     if (String(url).endsWith('/v1/account/newapi'))
@@ -80,6 +88,23 @@ async function renderSettings(presentation: 'dialog' | 'page' = 'page') {
 }
 
 describe('SettingsPanel Ant Design 迁移', () => {
+  it('生成并发入口使用独立管理员 API，不误保存模型默认值', async () => {
+    const user = userEvent.setup();
+    const { onNotice } = await renderSettings();
+    await user.click(screen.getByRole('tab', { name: '生成并发' }));
+    const input = await screen.findByRole('spinbutton', { name: '同时生成上限' });
+    expect(input).toHaveValue(20);
+    expect(screen.queryByRole('button', { name: '保存' })).not.toBeInTheDocument();
+    fireEvent.change(input, { target: { value: '32' } });
+    await user.click(screen.getByRole('button', { name: '保存并发' }));
+    await waitFor(() =>
+      expect(onNotice).toHaveBeenCalledWith(expect.objectContaining({ kind: 'success' })),
+    );
+    const writes = vi.mocked(apiFetch).mock.calls.filter(([, init]) => init?.method === 'PATCH');
+    expect(writes).toHaveLength(1);
+    expect(String(writes[0]![0])).toContain('/v1/admin/generation-concurrency');
+    expect(JSON.parse(String(writes[0]![1]?.body))).toEqual({ concurrency: 32 });
+  });
   it('失效分组保持提示，明确选择同名模型的另一组后只保存该身份', async () => {
     const user = userEvent.setup();
     const { onNotice } = await renderSettings();

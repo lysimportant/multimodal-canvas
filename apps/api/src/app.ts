@@ -118,6 +118,8 @@ import { importWorkflowExport, WorkflowImportError } from './workflow-import';
 import { resolveS3DownloadMode, type S3DownloadMode } from './upload-transport';
 import { resolveApiProxyTrust } from './proxy-trust';
 import { registerAccountRoutes } from './account-routes';
+import { registerGenerationConcurrencyRoutes } from './generation-concurrency-routes';
+import type { GenerationConcurrencyStore } from './generation-concurrency';
 import { withAssetOwnershipPolicy } from './asset-ownership';
 import {
   createReversePromptCanvas,
@@ -163,6 +165,8 @@ export type BuildAppOptions = {
   s3DownloadMode?: S3DownloadMode;
   projectStore?: ProjectStore;
   runService?: RunService;
+  /** 管理员全局并发配置；未注入实际队列存储时接口明确返回不可用。 */
+  generationConcurrencyStore?: GenerationConcurrencyStore;
   /** Provider-like executor for an in-memory/local run service. */
   runExecutor?: RunExecutor;
   /** Optional result archiver; defaults to the configured asset store. */
@@ -1711,6 +1715,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     throw new PromptSkillStoreError('authentication_required', 'Skill 操作需要用户身份', 403);
   };
   registerPromptSkillRoutes(app, { store: promptSkillStore, ownerId: promptSkillOwnerId });
+  registerGenerationConcurrencyRoutes(app, {
+    sessions: requestSessions,
+    store: options.generationConcurrencyStore,
+  });
 
   if (options.newApiAccount) {
     registerNewApiAccountRoutes(app, options.newApiAccount, requestSessions);

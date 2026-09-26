@@ -991,7 +991,8 @@ export function ResourceMentionEditor({
   const handleDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
     if (!event.dataTransfer.types.includes(ASSET_DRAG_TYPE)) return;
     event.preventDefault();
-    event.dataTransfer.dropEffect = 'copy';
+    // 资源库只允许 link；声明 copy 会让浏览器拒绝真正的 drop。
+    event.dataTransfer.dropEffect = 'link';
     setDragActive(true);
   }, []);
 

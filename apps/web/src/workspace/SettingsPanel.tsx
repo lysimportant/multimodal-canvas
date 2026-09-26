@@ -10,6 +10,7 @@ import { apiFetch, getAuthSessionGeneration, startNewApiLogin } from '../auth-cl
 import { useModelCatalogQuery } from '../query/models';
 import { useWorkspacePreferences, type CanvasTheme } from '../state/workspace-preferences';
 import { isImeKeyboardEvent } from '../ime';
+import { GenerationConcurrencySettings } from './GenerationConcurrencySettings';
 import { appearanceEdgeEffectOptions, appearanceEdgePathOptions } from './AppearancePicker';
 import {
   API_BASE_URL,
@@ -27,7 +28,7 @@ const MIN_PROVIDER_TIMEOUT_MS = 1_000;
 const MAX_PROVIDER_TIMEOUT_MS = 2_147_483_647;
 const mediaOrder: MediaType[] = ['text', 'image', 'audio', 'video'];
 
-type SettingsCategory = 'overview' | 'defaults' | 'appearance';
+type SettingsCategory = 'overview' | 'defaults' | 'generation' | 'appearance';
 type AccountGroup = {
   group: string;
   credentialId?: string;
@@ -49,6 +50,7 @@ type NewApiAccount = {
 const settingsCategories: Array<{ id: SettingsCategory; label: string }> = [
   { id: 'overview', label: 'New API 账号' },
   { id: 'defaults', label: '节点默认' },
+  { id: 'generation', label: '生成并发' },
   { id: 'appearance', label: '画布外观' },
 ];
 
@@ -335,8 +337,10 @@ export function SettingsPanel({
 
   const settingsContent = (
     <div className="settings-content">
-      {loading && <p className="settings-status">正在加载 New API 账号与模型…</p>}
-      {error && (
+      {loading && category !== 'generation' && (
+        <p className="settings-status">正在加载 New API 账号与模型…</p>
+      )}
+      {error && category !== 'generation' && (
         <p className="settings-field-error" role="alert">
           {error}
         </p>
@@ -524,6 +528,7 @@ export function SettingsPanel({
           )}
         </section>
       )}
+      {category === 'generation' && <GenerationConcurrencySettings onNotice={onNotice} />}
       {!loading && category === 'appearance' && (
         <section className="settings-section" aria-labelledby="appearance-title">
           <div className="settings-section-heading">
@@ -646,10 +651,12 @@ export function SettingsPanel({
         <Button type="button" variant="secondary" onClick={onClose} disabled={Boolean(busy)}>
           关闭
         </Button>
-        <Button type="button" onClick={() => void save()} disabled={Boolean(busy)}>
-          {busy === 'save' && <LoaderCircle className="spin" size={15} />}
-          {busy === 'save' ? '正在保存' : '保存'}
-        </Button>
+        {category !== 'generation' && (
+          <Button type="button" onClick={() => void save()} disabled={Boolean(busy)}>
+            {busy === 'save' && <LoaderCircle className="spin" size={15} />}
+            {busy === 'save' ? '正在保存' : '保存'}
+          </Button>
+        )}
       </footer>
     </>
   );

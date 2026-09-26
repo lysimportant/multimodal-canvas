@@ -58,9 +58,9 @@ describe('Worker 并发启动门禁', () => {
     '在 %s 的进程入口拒绝非法并发，且不建立 Redis 连接',
     async (environment) => {
       vi.stubEnv('NODE_ENV', environment);
-      vi.stubEnv('WORKER_CONCURRENCY', '21');
+      vi.stubEnv('WORKER_CONCURRENCY', '1.5');
       await expect(import('./index')).rejects.toThrow(
-        /WORKER_CONCURRENCY must be an integer between 1 and 20/,
+        /WORKER_CONCURRENCY must be a positive safe integer/,
       );
       expect(bullmqConstructors.queue).not.toHaveBeenCalled();
       expect(bullmqConstructors.worker).not.toHaveBeenCalled();
@@ -73,7 +73,7 @@ describe('Worker 并发启动门禁', () => {
     const { createRunWorker } = await import('./index');
     vi.stubEnv('WORKER_CONCURRENCY', '0');
     expect(() => createRunWorker({ connection: { host: '127.0.0.1', port: 16389 } })).toThrow(
-      /WORKER_CONCURRENCY must be an integer between 1 and 20/,
+      /WORKER_CONCURRENCY must be a positive safe integer/,
     );
     expect(bullmqConstructors.queue).not.toHaveBeenCalled();
     expect(bullmqConstructors.worker).not.toHaveBeenCalled();

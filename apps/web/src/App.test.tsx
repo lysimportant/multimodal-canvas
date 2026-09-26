@@ -15,7 +15,10 @@ import type { WorkflowCanvasProps } from './workspace/WorkflowCanvas';
 import type { ResourcePanel } from './workspace/ResourcePanel';
 
 /** 只替换重型画布视图，保留 App 的真实状态、请求与 Ant Design 交互。 */
-const view = vi.hoisted(() => ({ canvas: null as WorkflowCanvasProps | null }));
+const view = vi.hoisted(() => ({
+  canvas: null as WorkflowCanvasProps | null,
+  resource: null as ComponentProps<typeof ResourcePanel> | null,
+}));
 vi.mock('./workspace/WorkflowCanvas', () => ({
   WorkflowCanvas: (props: WorkflowCanvasProps) => {
     view.canvas = props;
@@ -36,21 +39,28 @@ vi.mock('./workspace/WorkflowCanvas', () => ({
   },
 }));
 vi.mock('./workspace/ResourcePanel', () => ({
-  ResourcePanel: (props: ComponentProps<typeof ResourcePanel>) => (
-    <section aria-label="测试资源库">
-      {props.assets.map((asset) => (
-        <Button type="button" key={asset.id} onClick={() => props.onRenameAsset(asset)}>
-          重命名 {asset.name}
+  ResourcePanel: (props: ComponentProps<typeof ResourcePanel>) => {
+    view.resource = props;
+    return (
+      <section aria-label="测试资源库">
+        <Button type="button" onClick={props.onToggleCollapsed}>
+          切换测试资源栏
         </Button>
-      ))}
-    </section>
-  ),
+        {props.assets.map((asset) => (
+          <Button type="button" key={asset.id} onClick={() => props.onRenameAsset(asset)}>
+            重命名 {asset.name}
+          </Button>
+        ))}
+      </section>
+    );
+  },
 }));
 
 import { App } from './App';
 import * as auth from './auth-client';
 import * as exports from './export-utils';
 import {
+  RESOURCE_PANEL_DRAWER_VERSION_KEY,
   useWorkspacePreferences,
   workspacePreferenceDefaults,
 } from './state/workspace-preferences';
@@ -299,6 +309,7 @@ beforeEach(() => {
   vi.spyOn(exports, 'downloadProjectExport').mockImplementation(() => {});
   canvas = { revision: 1, nodes: [emptyNode('empty-one'), emptyNode('empty-two')], edges: [] };
   view.canvas = null;
+  view.resource = null;
   renameFailure = null;
   createFailure = null;
   saveFailure = null;
@@ -312,6 +323,38 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   useWorkspacePreferences.setState(workspacePreferenceDefaults);
+});
+
+describe('App 资源抽屉集成', () => {
+  it('默认紧凑且工作区不保留折叠侧栏列，显式切换仍由偏好状态控制', async () => {
+    const user = userEvent.setup();
+    await renderCanvas();
+    const workspace = screen.getByRole('region', { name: '测试资源库' }).parentElement!;
+    expect(workspace).toHaveClass('workspace');
+    expect(workspace).not.toHaveClass('resource-panel-collapsed');
+    expect(view.resource!.collapsed).toBe(true);
+    await user.click(screen.getByRole('button', { name: '切换测试资源栏' }));
+    expect(view.resource!.collapsed).toBe(false);
+    expect(useWorkspacePreferences.getState().isResourcePanelCollapsed).toBe(false);
+    expect(window.localStorage.getItem(RESOURCE_PANEL_DRAWER_VERSION_KEY)).toBe('1');
+    await user.click(screen.getByRole('button', { name: '切换测试资源栏' }));
+    expect(view.resource!.collapsed).toBe(true);
+    expect(workspace).not.toHaveClass('resource-panel-collapsed');
+  });
+
+  it('重命名弹窗的开关传回资源抽屉，取消后解锁且没有资源写入', async () => {
+    const user = userEvent.setup();
+    await renderCanvas();
+    expect(view.resource!.isRenameDialogOpen).toBe(false);
+    await user.click(screen.getByRole('button', { name: '重命名 原资源名称' }));
+    const dialog = await screen.findByRole('dialog', { name: '重命名资源' });
+    expect(view.resource!.isRenameDialogOpen).toBe(true);
+    await user.click(within(dialog).getByRole('button', { name: /^取\s*消$/ }));
+    await waitFor(() => expect(dialog).not.toBeInTheDocument());
+    expect(view.resource!.isRenameDialogOpen).toBe(false);
+    expect(view.resource!.collapsed).toBe(true);
+    expect(renameRequests()).toHaveLength(0);
+  });
 });
 
 describe('App 组件库迁移', () => {

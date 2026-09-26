@@ -690,6 +690,14 @@ async function renderCanvas() {
   return { user };
 }
 
+/** 从默认收起的资源抽屉添加测试图片；先悬停展开，不绕过隐藏控件命中限制。 */
+async function addReferenceAsset(user: Awaited<ReturnType<typeof renderCanvas>>['user']) {
+  const panel = screen.getByRole('complementary', { name: '项目资源' });
+  await user.hover(panel);
+  await user.click(within(panel).getByRole('button', { name: '添加 reference.png 到画布' }));
+  await user.unhover(panel);
+}
+
 function flowNodes() {
   return screen.queryAllByTestId('flow-node');
 }
@@ -878,7 +886,7 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     const { user } = await renderCanvas();
 
     await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
-    await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
+    await addReferenceAsset(user);
 
     expect(findNodeByLabel('图片生成节点')).toBeTruthy();
     expect(findNodeByLabel('reference.png')).toBeTruthy();
@@ -1402,7 +1410,7 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
   it('来源节点不再打开右侧属性栏，并支持直接重命名', async () => {
     const { user } = await renderCanvas();
 
-    await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
+    await addReferenceAsset(user);
     const source = findNodeByLabel('reference.png');
     expect(source).toBeTruthy();
 
@@ -2000,7 +2008,7 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     const empty = findNodeByLabel('图片生成节点')!;
     expect(within(empty).queryByRole('button', { name: /^修改图片/ })).toBeNull();
 
-    await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
+    await addReferenceAsset(user);
     const source = findNodeByLabel('reference.png')!;
     expect(within(source).getByRole('button', { name: '修改图片：reference.png' })).toBeVisible();
     expect(within(source).getByRole('button', { name: '修改图片：reference.png' })).toBeEnabled();
@@ -2015,7 +2023,7 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
 
   it('无提示词时修改图片只创建引用草稿，不发运行请求', async () => {
     const { user } = await renderCanvas();
-    await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
+    await addReferenceAsset(user);
     const source = findNodeByLabel('reference.png')!;
     const button = within(source).getByRole('button', { name: '修改图片：reference.png' });
     expect(button).toBeEnabled();
@@ -2033,7 +2041,7 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
 
   it('卸载画布后取消所有分叉节点的延迟层级更新', async () => {
     const { user } = await renderCanvas();
-    await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
+    await addReferenceAsset(user);
     const source = findNodeByLabel('reference.png')!;
     const edit = within(source).getByRole('button', { name: '修改图片：reference.png' });
     const timerWindow: Window = window;
@@ -2060,7 +2068,7 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
   it('修改图片不复制提示词或自动运行，手动生成后结果只写入新节点', async () => {
     const { user } = await renderCanvas();
 
-    await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
+    await addReferenceAsset(user);
     const source = findNodeByLabel('reference.png')!;
     const sourceId = source.getAttribute('data-id')!;
     await user.click(source);
@@ -2128,7 +2136,7 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
   it('图片修改节点与来源边可以整体撤销和重做', async () => {
     const { user } = await renderCanvas();
 
-    await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
+    await addReferenceAsset(user);
     const source = findNodeByLabel('reference.png')!;
     await user.click(source);
     await fillSelectedPrompt(user, '换成夜景');
@@ -2150,7 +2158,7 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
   it('已在来源右侧的修改节点不会与已有节点重叠', async () => {
     const { user } = await renderCanvas();
 
-    await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
+    await addReferenceAsset(user);
     const source = findNodeByLabel('reference.png')!;
     const sourceId = source.getAttribute('data-id')!;
     const sourceBefore = await waitFor(() => {
@@ -2191,7 +2199,7 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     const { user } = await renderCanvas();
 
     await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
-    await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
+    await addReferenceAsset(user);
     const source = findNodeByLabel('reference.png')!;
     const sourceId = source.getAttribute('data-id')!;
     const editButton = within(source).getByRole('button', { name: '修改图片：reference.png' });
@@ -2253,7 +2261,7 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     const { user } = await renderCanvas();
 
     await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
-    await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
+    await addReferenceAsset(user);
     const source = findNodeByLabel('reference.png')!;
     await user.click(source);
     await fillSelectedPrompt(user, '换成夜景');
@@ -2287,7 +2295,7 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     const { user } = await renderCanvas();
 
     await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
-    await user.click(screen.getByRole('button', { name: '添加 reference.png 到画布' }));
+    await addReferenceAsset(user);
     const source = findNodeByLabel('reference.png')!;
     await user.click(source);
     const editor = await fillSelectedPrompt(user, '换成夜景');

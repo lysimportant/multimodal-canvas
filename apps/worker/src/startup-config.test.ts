@@ -417,21 +417,24 @@ describe('Worker production startup configuration', () => {
 });
 
 describe('Worker 有界 Run 并发配置', () => {
-  it('未配置时默认同时处理 4 个 Run', () => {
-    expect(resolveWorkerConcurrency({})).toBe(4);
+  it('未配置时默认同时处理 20 个 Run', () => {
+    expect(resolveWorkerConcurrency({})).toBe(20);
   });
 
-  it.each(Array.from({ length: 20 }, (_, index) => index + 1))(
-    '接受显式并发 %i，包含串行回滚和上限',
-    (concurrency) => {
-      const environment = { WORKER_CONCURRENCY: String(concurrency) };
-      expect(resolveWorkerConcurrency(environment)).toBe(concurrency);
-      expect(validateWorkerStartupConfiguration(environment)).toEqual([]);
-      expect(
-        validateWorkerStartupConfiguration({ ...productionEnvironment, ...environment }),
-      ).toEqual([]);
-    },
-  );
+  it.each([
+    ...Array.from({ length: 20 }, (_, index) => index + 1),
+    21,
+    32,
+    100,
+    Number.MAX_SAFE_INTEGER,
+  ])('接受显式并发 %i，包含串行和大于默认值的并发', (concurrency) => {
+    const environment = { WORKER_CONCURRENCY: String(concurrency) };
+    expect(resolveWorkerConcurrency(environment)).toBe(concurrency);
+    expect(validateWorkerStartupConfiguration(environment)).toEqual([]);
+    expect(
+      validateWorkerStartupConfiguration({ ...productionEnvironment, ...environment }),
+    ).toEqual([]);
+  });
 
   it('去除显式整数前后空白', () => {
     expect(resolveWorkerConcurrency({ WORKER_CONCURRENCY: ' 4 ' })).toBe(4);
@@ -442,7 +445,6 @@ describe('Worker 有界 Run 并发配置', () => {
     ' ',
     '0',
     '-1',
-    '21',
     '1.5',
     '4.0',
     '4e0',
@@ -461,11 +463,11 @@ describe('Worker 有界 Run 并发配置', () => {
         WORKER_CONCURRENCY: value,
       };
       expect(validateWorkerStartupConfiguration(environment)).toEqual([
-        { variable: 'WORKER_CONCURRENCY', message: 'must be an integer between 1 and 20' },
+        { variable: 'WORKER_CONCURRENCY', message: 'must be a positive safe integer' },
       ]);
       expect(() => resolveWorkerConcurrency(environment)).toThrow(StartupConfigurationError);
       expect(() => assertWorkerStartupConfiguration(environment)).toThrow(
-        /WORKER_CONCURRENCY must be an integer between 1 and 20/,
+        /WORKER_CONCURRENCY must be a positive safe integer/,
       );
       expect(() => shouldStartWorkerProcess(environment)).toThrow(StartupConfigurationError);
     }
@@ -484,6 +486,6 @@ describe('Worker 有界 Run 并发配置', () => {
   it('错误消息不回显非法配置原值', () => {
     expect(() =>
       resolveWorkerConcurrency({ WORKER_CONCURRENCY: 'synthetic-private-value' }),
-    ).toThrow('Worker cannot start: WORKER_CONCURRENCY must be an integer between 1 and 20');
+    ).toThrow('Worker cannot start: WORKER_CONCURRENCY must be a positive safe integer');
   });
 });

@@ -26,8 +26,16 @@ import {
 
 /** 五种路径形态，顺序与外观面板一致。 */
 const pathStyles: CanvasEdgePathStyle[] = ['bezier', 'gentle', 'smoothstep', 'step', 'straight'];
-/** 六种动态特效，`none` 不渲染叠加层。 */
-const effects: CanvasEdgeEffect[] = ['meteor', 'marching', 'cruiser', 'multi', 'breathe', 'none'];
+/** 七种动态特效，单点流星与旧流光独立，`none` 不渲染叠加层。 */
+const effects: CanvasEdgeEffect[] = [
+  'meteor',
+  'shooting-star',
+  'marching',
+  'cruiser',
+  'multi',
+  'breathe',
+  'none',
+];
 
 /** 同一条边的两端锚点参数，路径求解测试共用。 */
 const edgeParams = {
@@ -212,8 +220,8 @@ describe('连接线路径与特效的独立性', () => {
     effects.map((effect) => [pathStyle, effect] as const),
   );
 
-  it('覆盖 5 x 6 共 30 种组合', () => {
-    expect(combinations).toHaveLength(30);
+  it('覆盖 5 x 7 共 35 种组合', () => {
+    expect(combinations).toHaveLength(35);
   });
 
   it.each(combinations)(
@@ -231,7 +239,17 @@ describe('连接线路径与特效的独立性', () => {
       );
       if (expectedOverlayClass) {
         expect(overlay).toHaveAttribute('class', expectedOverlayClass);
-        expect(overlay).toHaveAttribute('d', settledPath(pathStyle));
+        if (effect === 'shooting-star') {
+          expect(overlay?.querySelectorAll('.canvas-edge-shooting-star-head')).toHaveLength(1);
+          const paths = overlay?.querySelectorAll('path');
+          expect(paths).toHaveLength(4);
+          paths?.forEach((path) => {
+            expect(path).toHaveAttribute('d', settledPath(pathStyle));
+            expect(path).toHaveAttribute('pathLength', '1');
+          });
+        } else {
+          expect(overlay).toHaveAttribute('d', settledPath(pathStyle));
+        }
       } else {
         expect(overlay).toBeNull();
       }
@@ -248,6 +266,37 @@ describe('连接线路径与特效的独立性', () => {
 
     expect(paths.size).toBe(1);
     expect([...paths][0]).toBe(settledPath('smoothstep'));
+  });
+
+  it('单点流星保留基础边的状态颜色、选中态、终点标记和透明命中区域', () => {
+    const { container } = render(
+      <CanvasEdgeAppearanceProvider appearance={{ pathStyle: 'step', effect: 'shooting-star' }}>
+        <svg>
+          <FlowingCanvasEdge
+            id="state-edge"
+            source="a"
+            target="b"
+            {...edgeParams}
+            selected
+            style={{ stroke: '#dc2626', strokeWidth: 3 }}
+            markerEnd="url(#target-arrow)"
+          />
+        </svg>
+      </CanvasEdgeAppearanceProvider>,
+    );
+    const base = container.querySelector('.react-flow__edge-path');
+    const hitArea = container.querySelector('.react-flow__edge-interaction');
+    const overlay = container.querySelector('[data-testid="edge-effect-overlay"]');
+
+    expect(base).toHaveAttribute('id', 'state-edge');
+    expect(base).toHaveClass('is-selected');
+    expect(base).toHaveStyle({ stroke: '#dc2626', strokeWidth: '3' });
+    expect(base).toHaveAttribute('marker-end', 'url(#target-arrow)');
+    expect(hitArea).toHaveAttribute('d', settledPath('step'));
+    expect(hitArea).toHaveAttribute('stroke-width', '20');
+    expect(overlay).toHaveAttribute('aria-hidden', 'true');
+    expect(overlay).toHaveAttribute('pointer-events', 'none');
+    expect(overlay).not.toHaveClass('is-selected');
   });
 
   it('叠加层不接收指针事件，基础边仍是选择命中目标', () => {
@@ -285,6 +334,63 @@ describe('连接线路径与特效的独立性', () => {
 });
 
 describe('FlowingConnectionLine', () => {
+  it.each(pathStyles)('%s 单点流星在正向/反向拖线与落定后共用同一条源到目标路径', (pathStyle) => {
+    const source = centerHandlePoint(
+      edgeParams.sourceX,
+      edgeParams.sourceY,
+      edgeParams.sourcePosition,
+    );
+    const target = centerHandlePoint(
+      edgeParams.targetX,
+      edgeParams.targetY,
+      edgeParams.targetPosition,
+    );
+    const fromHandle = {
+      id: 'input',
+      nodeId: 'b',
+      type: 'target' as const,
+      position: edgeParams.targetPosition,
+      x: 0,
+      y: 0,
+      width: FLOW_HANDLE_SIZE,
+      height: FLOW_HANDLE_SIZE,
+    };
+    const { container } = render(
+      <svg>
+        <g data-testid="forward">
+          <FlowingConnectionLine
+            fromX={source.x}
+            fromY={source.y}
+            toX={target.x}
+            toY={target.y}
+            fromPosition={edgeParams.sourcePosition}
+            toPosition={edgeParams.targetPosition}
+            pathStyle={pathStyle}
+            effect="shooting-star"
+          />
+        </g>
+        <g data-testid="reverse">
+          <FlowingConnectionLine
+            fromX={target.x}
+            fromY={target.y}
+            toX={source.x}
+            toY={source.y}
+            fromPosition={edgeParams.targetPosition}
+            toPosition={edgeParams.sourcePosition}
+            fromHandle={fromHandle}
+            pathStyle={pathStyle}
+            effect="shooting-star"
+          />
+        </g>
+      </svg>,
+    );
+
+    expect(container.querySelectorAll('.canvas-edge-shooting-star-head')).toHaveLength(2);
+    container.querySelectorAll('path').forEach((path) => {
+      expect(path).toHaveAttribute('d', settledPath(pathStyle));
+    });
+  });
+
   it.each(pathStyles)('%s 预览使用 xyflow 已居中的端点，不再二次内收', (pathStyle) => {
     const { container } = render(
       <svg>

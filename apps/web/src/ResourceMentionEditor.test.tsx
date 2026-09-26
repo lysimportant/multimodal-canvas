@@ -914,12 +914,15 @@ describe('ResourceMentionEditor', () => {
     const root = editor.closest('.resource-mention-editor');
     expect(root).not.toBeNull();
 
-    fireEvent.drop(root!, {
-      dataTransfer: {
-        types: [ASSET_DRAG_TYPE],
-        getData: (type: string) => (type === ASSET_DRAG_TYPE ? imageAsset.id : ''),
-      },
-    });
+    const dataTransfer = {
+      types: [ASSET_DRAG_TYPE],
+      effectAllowed: 'link',
+      dropEffect: 'none',
+      getData: (type: string) => (type === ASSET_DRAG_TYPE ? imageAsset.id : ''),
+    };
+    fireEvent.dragOver(root!, { dataTransfer });
+    expect(dataTransfer.dropEffect).toBe('link');
+    fireEvent.drop(root!, { dataTransfer });
 
     expect(screen.getByRole('listbox', { name: '确认拖入资源' })).toBeInTheDocument();
     expect(screen.queryByRole('article')).not.toBeInTheDocument();
