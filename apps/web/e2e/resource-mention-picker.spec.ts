@@ -1040,7 +1040,7 @@ test('节点输入区数量样式统一，Skill 同行悬浮且不撑大节点',
   expect(fixture.errors).toEqual([]);
 });
 
-test('Skill 优化预览只在悬浮卡片展示，关闭和切换编辑器保留结果且不撑开输入区', async ({
+test('Skill 优化预览在悬浮卡片和完整编辑器中可编辑，关闭后保留结果且不撑开输入区', async ({
   page,
 }, testInfo) => {
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -1118,33 +1118,37 @@ test('Skill 优化预览只在悬浮卡片展示，关闭和切换编辑器保�
   await editor.getByRole('button', { name: '打开完整编辑器' }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog).toBeVisible();
-  await expect(page.getByRole('group', { name: '优化预览', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('group', { name: 'Skill 配置', exact: true })).toHaveCount(0);
+  const dialogPreview = dialog.getByRole('group', { name: '优化预览', exact: true });
+  await expect(dialogPreview).toBeVisible();
   const dialogHeight = await dialog.evaluate((element) => element.clientHeight);
-  await dialog.getByRole('button', { name: 'Skill 配置', exact: true }).hover();
-  const dialogConfiguration = page.getByRole('group', { name: 'Skill 配置', exact: true });
-  await expect(
-    dialogConfiguration.getByRole('group', { name: '优化预览', exact: true }),
-  ).toBeVisible();
+  const dialogPreviewText = dialogPreview.getByRole('textbox', {
+    name: '优化文字 1',
+    exact: true,
+  });
+  await expect(dialogPreviewText).toBeEditable();
+  await dialogPreviewText.fill('优化后：完整编辑器 ');
+  await expect(dialogPreview).toHaveCount(1);
   await expect(dialog.locator('.node-quick-editor-dialog-body .prompt-skill-preview')).toHaveCount(
-    0,
+    1,
   );
   expect(await dialog.evaluate((element) => element.clientHeight)).toBe(dialogHeight);
-  await dialogConfiguration
-    .getByRole('button', { name: '应用', exact: true })
-    .scrollIntoViewIfNeeded();
+  await dialogPreview.getByRole('button', { name: '应用', exact: true }).scrollIntoViewIfNeeded();
   await page.screenshot({
     path: testInfo.outputPath('dialog-skill-preview.png'),
     animations: 'disabled',
   });
-  await dialogConfiguration.getByRole('button', { name: '应用', exact: true }).click();
-  await expect(dialog.getByRole('textbox', { name: '提示词', exact: true })).toHaveValue(/优化后/);
-  await page.keyboard.press('Escape');
-  await expect(dialogConfiguration).toBeHidden();
+  await dialogPreview.getByRole('button', { name: '应用', exact: true }).click();
+  await expect(dialog.getByRole('textbox', { name: '提示词', exact: true })).toHaveValue(
+    /完整编辑器/,
+  );
+  await expect(dialogPreview).toHaveCount(0);
+  await expect(dialog).toBeVisible();
   await dialog.getByRole('button', { name: '关闭编辑器' }).click();
   await page.keyboard.press('Control+s');
   await expect
     .poll(() => fixture.canvas().nodes[0]!.data.promptDocument?.blocks[0])
-    .toEqual({ type: 'text', text: '优化后：开场 ' });
+    .toEqual({ type: 'text', text: '优化后：完整编辑器 ' });
   expect(
     fixture
       .canvas()
