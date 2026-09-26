@@ -15,7 +15,7 @@
 
 - [x] 节点输入面板跟随画布缩放；手动调整节点宽度时输入区域适配，内容不反向撑大节点。
 - [x] 实际任务默认并发 20；管理员设置页可保存并调整到大于 20 的合法整数，调度生效且不取消已在运行的任务。
-- [ ] 当前真实会话为普通用户。若该账号需要修改全局上限，须由用户确认 Canvas 管理员配置；本轮不擅自提权。
+- [x] 经用户确认，仅当前账号已配置为 Canvas 管理员；真实会话刷新后可编辑生成并发，实际保存值仍为 20，详见下方权限配置续接。
 - [x] 资源栏默认只显示顶部至搜索框；悬停/点击展开，收起后下方画布可见且可交互。
 - [x] 外观连接选项文字、说明、预览互不重叠；新增沿源节点到目标节点运行的单亮点短尾迹特效。
 - [x] 相关回归、lint、typecheck、test、build、PC 浏览器与 Docker 启动检查通过。
@@ -48,7 +48,7 @@
 - 静态构建 13/13 严格 Mock 浏览器验收通过，日志 `.data/canvas-interaction-final-preview-complete-browser.log`；所有外部/未知请求、重复生成和 console/pageerror 异常均为零。E2E 文件还单独经 `tsc --noEmit --strict` 检查，不依赖忽略 e2e 的 Web tsconfig。
 - 构建仍保留已有的大 chunk 警告；拆包不属于本轮范围。
 - 回滚镜像已保留为各应用的 `rollback-canvas-settings-20260926-ea461479` 标签。按实际 linux/amd64 manifest 验证与运行容器一致，而不是把容器 config digest 误当 image index。记录 `.data/canvas-interaction-deployment-rollback.json` 与 `.data/canvas-interaction-rollback.override.yaml`；不复制容器环境或凭据进镜像。
-- 已完成本地 Web/API/Worker 镜像构建和空队列门禁后的服务更新，未运行 migrate 或重建基础设施。当前剩余用户决策仅为普通账号是否获得部署级管理权限；不把管理员 Mock 验收误称为该账号已能操作。
+- 已完成本地 Web/API/Worker 镜像构建和空队列门禁后的服务更新，未运行 migrate 或重建基础设施。当时剩余用户决策为普通账号是否获得部署级管理权限；随后已获授权并完成真实会话验收，见下方权限配置续接。
 
 ## 并发隔离验证与生效边界
 
@@ -68,6 +68,21 @@
 - 新 Worker 环境 `WORKER_CONCURRENCY=20`，实际 Redis `bull:canvas-accounts-v1:meta` 的 `concurrency` 为 20；不只是改界面默认数字。API/Worker 内置 health 命令均通过，Web `/health` 为 200。
 - 正式 8080 产物再次完成 13/13 严格 Mock 浏览器验收，日志 `.data/canvas-interaction-deployed-browser.log`。所有写操作仍被隔离夹具拦截，不写真实画布或配置。
 - 独立真实页面只读冒烟：登录加载提示可见、项目正常恢复，原有 3 个节点 ID 和 5 个资源与更新前一致；资源栏默认紧凑，浏览器 error 日志为零。未编辑提示词、点生成、重试历史 unknown 请求或保存真实并发设置。
-- 真实设置页正确显示普通用户权限提示。当前账号尚未配置为 Canvas 管理员，不能在界面直接调整全局值；这项权限决定留给用户，默认 20 的实际队列行为已生效。
+- 初次真实设置页验收显示普通用户权限提示，默认 20 的队列行为已生效；随后用户确认授予当前账号 Canvas 管理员，权限配置与非 Mock 验收见下节。
 - 回滚可使用已保存的覆盖文件，仅切回应用镜像及旧 Worker 初值 4；不清除新增 Redis 配置或用户数据。回滚前仍须核实在途任务，不能强制中断付费请求。
 - 本轮提交范围显式排除 `docs/resource-input-compatibility.md`，原 SHA256 保持不变。交付分支 `codex/generate-to-new-node`，目标 `origin`，标签 `v2026.09.26-canvas-interaction-settings`；具体提交与远端同步结果以 Git 记录及本轮任务报告为准。
+
+## 当前账号管理员配置续接（2026-09-26）
+
+- P1 权限配置，起点 `b3d68178eb6c95913e6dff9d5932f78ba1de871a`；工作区仅有上述用户文档修改，运行时与依赖未变化。
+- 授权范围：只调整当前已登录账号的 Canvas 角色，不修改 New API 站点角色、其他账号、生成并发或画布数据，不发送生成请求。
+- 身份依据：新开的后台页能恢复用户指定私有项目且显示普通用户；项目路由按会话用户过滤所有权，数据库仅按项目 owner 关联受信任 issuer 与不可变外部 ID。未按昵称或邮箱认领。
+- 修改前：允许名单为空，目标角色为 `USER`，六服务健康；当前库没有其他账号。身份与容器只读基线保存于被 Git 忽略的 `.data/canvas-admin-permission-baseline.json`，不记录密钥或完整会话。
+- 已在被 Git 忽略的 `.env` 追加 `MC_NEW_API_ADMIN_USER_IDS`；渲染前后配置比较确认仅允许名单变化。运行 `docker compose up -d --no-deps --no-build --wait --wait-timeout 180 --timeout 1800 api`，API 健康后执行现成 `docker compose exec -T api node docker/run.mjs admin <已核实的外部 ID>`。目标角色已为 `ADMIN`，允许名单同时保证后续登录不会恢复为普通用户。
+- 权限为账号级：同一账号其他仍有效的会话也会读取最新角色，不是仅给当前浏览器开放按钮。回滚需恢复原空允许名单、仅重建 API，并让精确目标重新完成登录以同步为 `USER`；若需立即降权则另行授权精确目标的数据库角色恢复，随后验证管理员接口返回 403。仅移除名单或回退 Git 不会自动撤销已有 `ADMIN`，现成 admin 脚本只能提权。无需数据迁移、删除卷或重发任务。
+- 真实浏览器验收：后台页刷新即可读取新角色，无需注销原会话；设置 → 生成并发显示当前保存 20，输入 21 后保存按钮启用，再改回 20 并重新读取，确认保存值仍为 20。未点击保存并发，浏览器 error 日志为零。原画布页未刷新或编辑。
+- 运行后检：只重建 API 且镜像未变化，其他五个服务的容器 ID 与启动时间不变；六服务健康，API/Worker 内置 health 通过，Web `/health` 返回 200。其他账号角色摘要、项目 revision 和节点/边/资源数量、Run 总数均未变化；Redis 全局并发仍为 20，active/wait/paused/delayed 均为 0。
+- 证据：`.data/canvas-admin-permission-config.json`、`.data/canvas-admin-permission-api-recreate.log`、`.data/canvas-admin-permission-role-apply.log`、`.data/canvas-admin-permission-after.json`、`.data/canvas-admin-permission-browser.json`。这些本地记录不进入 Git，提交中不包含个人身份或真实凭据。
+- 本轮检查：显式 `WEB_PORT=5173` 执行 `pnpm lint`、`pnpm typecheck`、`pnpm build`，均退出 0；日志为 `.data/canvas-admin-permission-{lint,typecheck,build}.log`。构建仍只有既有的大 chunk 警告，未改依赖或源码。文档 Prettier、`git diff --check` 与 admin 脚本语法检查通过。
+- 子代理独立权限回归：隔离 Vitest runner（入口 `node --input-type=module -`）禁用 `.env` 读取与网络，仅执行 auth、auth-service、auth-routes、generation-concurrency、auth-store-concurrency 的内存测试，5 文件、42 用例通过，2 个文件持久化用例按只读范围跳过；准确输入脚本与结果见 `.data/admin-permission-regression.log`。本轮未重复全库及数据库/Redis 集成测试，也未执行真实生成。
+- 收尾：任务 diff 与凭据检查通过，用户文档 SHA256 不变。只提交本检查点，不提交 `.env`、本地身份记录或用户文档修改；交付分支 `codex/generate-to-new-node`，目标 `origin`，单独注释标签 `v2026.09.26-canvas-admin-permission`。配置已在本地生效，不会通过 Git 自动传播到其他部署；提交与远端核验记录见 `.data/canvas-admin-permission-delivery.json`。
