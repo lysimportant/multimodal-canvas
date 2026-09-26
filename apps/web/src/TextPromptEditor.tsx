@@ -1,6 +1,7 @@
 import type { Asset, PromptDocument, PromptMention } from '@multimodal-canvas/domain';
 
 import { ResourceMentionEditor } from './ResourceMentionEditor';
+import type { ConnectedPromptAsset } from './workspace/connected-prompt-assets';
 
 type TextPromptEditorProps = {
   nodeId: string;
@@ -12,8 +13,9 @@ type TextPromptEditorProps = {
   promptDocument?: PromptDocument;
   /** 当前项目资源，用于 `@` 搜索和提及卡片。 */
   assets?: readonly Asset[];
-  connectedAssets?: readonly (Pick<Asset, 'id' | 'name' | 'mediaType'> &
-    Partial<Pick<Asset, 'contentUrl' | 'mimeType'>>)[];
+  connectedAssets?: readonly ConnectedPromptAsset[];
+  /** 保存当前节点的连线资源别名，不重命名源资源。 */
+  onConnectedResourceRename?: (assetId: string, name: string) => void;
   /** 结构化文档保存回调。 */
   onDocumentChange?: (document: PromptDocument) => void;
   /** 提示词资源条点击上传后，把本地文件收成项目资源。 */
@@ -40,6 +42,7 @@ export function TextPromptEditor({
   promptDocument,
   assets,
   connectedAssets,
+  onConnectedResourceRename,
   onDocumentChange,
   onUploadResource,
   onMentionDetails,
@@ -54,6 +57,7 @@ export function TextPromptEditor({
       promptDocument={promptDocument}
       assets={assets}
       connectedAssets={connectedAssets}
+      onConnectedResourceRename={onConnectedResourceRename}
       // 结构化文档是唯一执行来源；避免新编辑同时触发两个父层更新。
       onChange={onDocumentChange ? undefined : onChange}
       onDocumentChange={onDocumentChange}

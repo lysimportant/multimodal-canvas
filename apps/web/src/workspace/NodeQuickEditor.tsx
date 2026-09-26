@@ -46,6 +46,7 @@ import {
 import type { AssetFlowNode } from '../canvas-utils';
 import { TextPromptEditor } from '../TextPromptEditor';
 import { AssetPreview } from './AssetPreview';
+import type { ConnectedPromptAsset } from './connected-prompt-assets';
 import { canForkNewNode, canRunSameNode, nodeHasPrompt } from './fork-generate-node';
 import {
   imageEditSourcePreviewAsset,
@@ -121,8 +122,9 @@ export type NodeQuickEditorProps = {
   /** 当前节点是否有可供转换/生成的连线输入。 */
   hasConnectedInput?: boolean;
   /** 显式连接到当前节点的输入文件，供完整编辑器展示。 */
-  connectedAssets?: readonly (Pick<Asset, 'id' | 'name' | 'mediaType'> &
-    Partial<Pick<Asset, 'contentUrl' | 'mimeType'>>)[];
+  connectedAssets?: readonly ConnectedPromptAsset[];
+  /** 保存当前节点的连线资源别名，不重命名源资源。 */
+  onConnectedResourceRename?: (assetId: string, name: string) => void;
   /** 更新节点的媒体参数；未提供时参数控件仍可显示但不会修改父状态。 */
   onParametersChange?: (value: NodeMediaParameters) => void;
   /** 保存本次操作的生成份数，范围为 1 至 20；不作为 Provider 参数发送。 */
@@ -350,6 +352,7 @@ export function NodeQuickEditor({
   onRunNewNode,
   hasConnectedInput = false,
   connectedAssets = [],
+  onConnectedResourceRename,
   onParametersChange,
   onGenerationCountChange,
   onCompletionActionChange,
@@ -605,6 +608,7 @@ export function NodeQuickEditor({
         promptDocument={node.data.promptDocument}
         assets={assets}
         connectedAssets={connectedAssets}
+        onConnectedResourceRename={onConnectedResourceRename}
         placeholder={
           imageEditSource ? '想用这张图修改什么？例如：换成夜景、去掉背景' : '描述你想生成的内容'
         }

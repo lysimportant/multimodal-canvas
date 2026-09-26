@@ -43,6 +43,7 @@ import type { CanvasTheme } from '../state/workspace-preferences';
 import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
 import { getNewNodeDimensions } from '../canvas-utils';
 import { collectConnectedPromptAssets } from './connected-prompt-assets';
+import { isActiveRunStatus } from './empty-node-rules';
 import { resolveImageEditSourcePreview } from './image-edit-source-preview';
 import {
   GenerationBatchViewContext,
@@ -164,7 +165,8 @@ export type WorkflowCanvasProps = {
   /** 当前项目中可访问的资源，供所有节点的提及编辑器共用。 */
   assets?: readonly Asset[];
   models: ModelEntry[];
-  busy: boolean;
+  /** 运行或内容保存中的节点身份，不影响其它节点的生成入口。 */
+  busyNodeIds?: ReadonlySet<string>;
   background: CanvasBackground;
   onNodesChange: OnNodesChange<AssetFlowNode>;
   /** 批量结果首节点的展开状态，由 App 负责历史记录和持久化。 */
@@ -191,6 +193,8 @@ export type WorkflowCanvasProps = {
   onRetryNode: (nodeId: string) => void | Promise<void>;
   onPromptChange?: (value: string, nodeId?: string) => void;
   onPromptDocumentChange?: (document: PromptDocument, nodeId?: string) => void;
+  /** 仅保存目标节点的连线资源别名，不修改源资源名称或提示词。 */
+  onConnectedResourceRename?: (assetId: string, name: string, nodeId?: string) => void;
   /** 保存目标节点的技能选择，不触发生成。 */
   onPromptSkillChange?: (skillId: string | undefined, nodeId?: string) => void;
   /** 提示词资源条点击上传后，把文件收成项目资源并回写提及。 */
@@ -285,7 +289,7 @@ export function WorkflowCanvas({
   selectedNode,
   assets = [],
   models,
-  busy,
+  busyNodeIds,
   background,
   onNodesChange,
   onBatchExpandedChange,
@@ -304,6 +308,7 @@ export function WorkflowCanvas({
   onRetryNode,
   onPromptChange,
   onPromptDocumentChange,
+  onConnectedResourceRename,
   onPromptSkillChange,
   onUploadResource,
   onParametersChange,
@@ -369,6 +374,17 @@ export function WorkflowCanvas({
   /** 收起后的后方卡牌不能继续显示输入编辑器。 */
   const quickEditorNode =
     selectedNode && !batchProjection.views.get(selectedNode.id)?.hidden ? selectedNode : null;
+  /** 菜单打开后仍读取实时节点，避免恢复/SSE 更新被右键快照遮住。 */
+  const currentContextMenu =
+    contextMenu?.kind === 'node'
+      ? {
+          ...contextMenu,
+          node: nodes.find((node) => node.id === contextMenu.node.id) ?? contextMenu.node,
+        }
+      : contextMenu;
+  /** 所有节点入口共用本地锁及服务端活动状态。 */
+  const isNodeBusy = (node: AssetFlowNode) =>
+    Boolean(busyNodeIds?.has(node.id)) || isActiveRunStatus(node.data.runStatus);
   /** React Flow 只接收显示坐标；历史记录和保存始终接收真实坐标。 */
   const handleNodesChange = useCallback<OnNodesChange<AssetFlowNode>>(
     (changes) =>
@@ -820,10 +836,15 @@ export function WorkflowCanvas({
           skillLibraryLoading={skillLibraryLoading}
           node={quickEditorNode}
           models={models}
-          busy={busy}
+          busy={isNodeBusy(quickEditorNode)}
           canvasAreaRef={canvasAreaRef}
           assets={assets}
           connectedAssets={collectConnectedPromptAssets(quickEditorNode.id, nodes, edges, assets)}
+          onConnectedResourceRename={
+            onConnectedResourceRename
+              ? (assetId, name) => onConnectedResourceRename(assetId, name, quickEditorNode.id)
+              : undefined
+          }
           onPromptChange={
             onPromptChange ? (value) => onPromptChange(value, quickEditorNode.id) : undefined
           }
@@ -925,10 +946,10 @@ export function WorkflowCanvas({
           onClose={() => setVideoImageRolePicker(null)}
         />
       )}
-      {contextMenu && (
+      {currentContextMenu && (
         <CanvasContextMenu
-          target={contextMenu}
-          busy={busy}
+          target={currentContextMenu}
+          busy={currentContextMenu.kind === 'node' && isNodeBusy(currentContextMenu.node)}
           canDeleteNode={Boolean(onDeleteNode)}
           onRunNode={onRunNode}
           onCenterNode={handleCenterNode}

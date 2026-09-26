@@ -1257,6 +1257,288 @@ describe('ResourceMentionEditor', () => {
     fireEvent.compositionEnd(searchbox);
   });
 
+  it('连线资源没有 mentionId 也可保存节点别名，不插入文字或修改源资源', async () => {
+    const user = userEvent.setup();
+    const onConnectedResourceRename = vi.fn();
+    const onDocumentChange = vi.fn();
+    const props = {
+      nodeId: 'connected-rename',
+      value: '原提示词',
+      ariaLabel: '提示词',
+      connectedAssets: [imageAsset],
+      onConnectedResourceRename,
+      onDocumentChange,
+    };
+    const view = render(<ResourceMentionEditor {...props} />);
+    await user.click(screen.getByRole('button', { name: '预览并命名 产品图' }));
+    const dialog = screen.getByRole('dialog', { name: '资源预览' });
+    const name = within(dialog).getByRole('textbox', { name: '资源名称' });
+    await user.clear(name);
+    expect(within(dialog).getByRole('button', { name: '保存名称' })).toBeDisabled();
+    await user.type(name, '主角');
+    await user.click(within(dialog).getByRole('button', { name: '保存名称' }));
+    expect(onConnectedResourceRename).toHaveBeenCalledWith(imageAsset.id, '主角');
+    expect(onDocumentChange).not.toHaveBeenCalled();
+    expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue('原提示词');
+    view.rerender(
+      <ResourceMentionEditor
+        {...props}
+        connectedAssets={[{ ...imageAsset, referenceName: '主角' }]}
+      />,
+    );
+    expect(screen.getByRole('button', { name: '预览并命名 主角' })).toBeVisible();
+    await user.type(screen.getByRole('textbox', { name: '提示词' }), '主角');
+    expect(onDocumentChange.mock.calls.at(-1)?.[0].blocks).toContainEqual(
+      expect.objectContaining({
+        type: 'mention',
+        assetId: imageAsset.id,
+        entityName: '主角',
+        label: imageAsset.name,
+      }),
+    );
+    expect(imageAsset.name).toBe('产品图');
+  });
+
+  it('连线资源命名冲突或保存失败保留对话框与草稿', async () => {
+    const user = userEvent.setup();
+    const onConnectedResourceRename = vi.fn(() => {
+      throw new Error('连线已移除');
+    });
+    render(
+      <ResourceMentionEditor
+        nodeId="rename-failure"
+        connectedAssets={[imageAsset, audioAsset]}
+        onConnectedResourceRename={onConnectedResourceRename}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: '预览并命名 产品图' }));
+    const dialog = screen.getByRole('dialog', { name: '资源预览' });
+    const name = within(dialog).getByRole('textbox', { name: '资源名称' });
+    await user.clear(name);
+    await user.type(name, '声音样本');
+    await user.click(within(dialog).getByRole('button', { name: '保存名称' }));
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('这个名字已被其他资源占用');
+    expect(onConnectedResourceRename).not.toHaveBeenCalled();
+    await user.clear(name);
+    await user.type(name, '主角');
+    await user.click(within(dialog).getByRole('button', { name: '保存名称' }));
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('连线已移除');
+    expect(name).toHaveValue('主角');
+  });
+
+  it('鼠标选中文字后使用同一资源选择器，并把选中文字保留为引用名', async () => {
+    const user = userEvent.setup();
+    const onDocumentChange = vi.fn();
+    const value = '让主角站在窗边，主角回头';
+    render(
+      <ResourceMentionEditor
+        nodeId="selection"
+        value={value}
+        assets={[imageAsset, audioAsset]}
+        onDocumentChange={onDocumentChange}
+        ariaLabel="提示词"
+      />,
+    );
+    const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
+    editor.focus();
+    editor.setSelectionRange(1, 3);
+    fireEvent.mouseUp(editor);
+    await waitFor(() => expect(screen.getByRole('listbox', { name: '选择资源' })).toBeVisible());
+    expect(screen.getByRole('searchbox', { name: '搜索资源' })).toHaveValue('');
+    expect(document.querySelector('[data-resource-picker-anchor]')).toHaveAttribute(
+      'data-offset',
+      '3',
+    );
+    await user.click(screen.getByRole('button', { name: '图片' }));
+    await user.type(screen.getByRole('searchbox', { name: '搜索资源' }), '产品');
+    await user.click(screen.getByRole('option', { name: /产品图/ }));
+    expect(editor).toHaveValue(value);
+    expect(onDocumentChange).toHaveBeenLastCalledWith({
+      version: 1,
+      blocks: [
+        { type: 'text', text: '让' },
+        expect.objectContaining({
+          type: 'mention',
+          assetId: imageAsset.id,
+          label: imageAsset.name,
+          entityName: '主角',
+          assetVersion: 3,
+        }),
+        { type: 'text', text: '站在窗边，主角回头' },
+      ],
+    });
+    expect(screen.getByRole('button', { name: '预览并命名 主角' })).toBeVisible();
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    await user.click(editor);
+    await user.keyboard('{Control>}z{/Control}');
+    expect(editor).toHaveValue(value);
+    expect(screen.queryByRole('article')).not.toBeInTheDocument();
+    await user.keyboard('{Control>}y{/Control}');
+    expect(screen.getByRole('button', { name: '预览并命名 主角' })).toBeVisible();
+  });
+
+  it('取消选中文字引用不修改原文，重复选中可以重新打开', async () => {
+    const user = userEvent.setup();
+    const onDocumentChange = vi.fn();
+    render(
+      <ResourceMentionEditor
+        nodeId="selection-cancel"
+        value="主角回头"
+        assets={[imageAsset]}
+        onDocumentChange={onDocumentChange}
+        ariaLabel="提示词"
+      />,
+    );
+    const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
+    editor.focus();
+    editor.setSelectionRange(0, 2);
+    fireEvent.mouseUp(editor);
+    await user.click(screen.getByRole('searchbox', { name: '搜索资源' }));
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expect(editor).toHaveValue('主角回头');
+    expect(onDocumentChange).not.toHaveBeenCalled();
+    fireEvent.click(editor);
+    await waitFor(() => expect(screen.getByRole('listbox')).toBeVisible());
+  });
+
+  it('选区的边界空白保留，长名称与纯空白不创建引用', async () => {
+    const user = userEvent.setup();
+    const onDocumentChange = vi.fn();
+    const view = render(
+      <ResourceMentionEditor
+        nodeId="selection-space"
+        value="  主角  回头"
+        assets={[imageAsset]}
+        onDocumentChange={onDocumentChange}
+        ariaLabel="提示词"
+      />,
+    );
+    const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
+    editor.focus();
+    editor.setSelectionRange(0, 6);
+    fireEvent.mouseUp(editor);
+    await user.click(screen.getByRole('option', { name: /产品图/ }));
+    expect(editor).toHaveValue('  主角  回头');
+    expect(onDocumentChange.mock.calls.at(-1)?.[0].blocks).toEqual([
+      { type: 'text', text: '  ' },
+      expect.objectContaining({ entityName: '主角' }),
+      { type: 'text', text: '  回头' },
+    ]);
+    view.rerender(
+      <ResourceMentionEditor
+        nodeId="selection-long"
+        value={'字'.repeat(161)}
+        assets={[imageAsset]}
+        ariaLabel="提示词"
+      />,
+    );
+    editor.focus();
+    editor.setSelectionRange(0, 161);
+    fireEvent.click(editor);
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('引用名称不能超过 160 个字符');
+  });
+
+  it('选中文字与另一资源别名冲突时不自动加后缀或错绑', async () => {
+    const user = userEvent.setup();
+    const onDocumentChange = vi.fn();
+    render(
+      <ResourceMentionEditor
+        nodeId="selection-conflict"
+        value="主角回头"
+        assets={[imageAsset, audioAsset]}
+        connectedAssets={[{ ...audioAsset, referenceName: '主角' }]}
+        onDocumentChange={onDocumentChange}
+        ariaLabel="提示词"
+      />,
+    );
+    const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
+    editor.focus();
+    editor.setSelectionRange(0, 2);
+    fireEvent.mouseUp(editor);
+    await user.click(screen.getByRole('option', { name: /产品图/ }));
+    expect(editor).toHaveValue('主角回头');
+    expect(onDocumentChange).not.toHaveBeenCalled();
+    expect(screen.getByRole('status')).toHaveTextContent('这个名字已被其他资源占用');
+    await user.click(screen.getByRole('option', { name: /声音样本/ }));
+    expect(onDocumentChange.mock.calls.at(-1)?.[0].blocks[0]).toMatchObject({
+      assetId: audioAsset.id,
+      entityName: '主角',
+    });
+  });
+
+  it('纯空白或只读编辑器不创建选字引用，父文档更新会关闭旧选区', async () => {
+    const onDocumentChange = vi.fn();
+    const view = render(
+      <ResourceMentionEditor
+        nodeId="selection-reset"
+        value="  主角回头"
+        assets={[imageAsset]}
+        onDocumentChange={onDocumentChange}
+        ariaLabel="提示词"
+      />,
+    );
+    const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
+    editor.focus();
+    editor.setSelectionRange(0, 2);
+    fireEvent.mouseUp(editor);
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    editor.setSelectionRange(2, 4);
+    fireEvent.mouseUp(editor);
+    await waitFor(() => expect(screen.getByRole('listbox')).toBeVisible());
+    view.rerender(
+      <ResourceMentionEditor
+        nodeId="selection-reset"
+        value="新的提示词"
+        assets={[imageAsset]}
+        onDocumentChange={onDocumentChange}
+        ariaLabel="提示词"
+        disabled
+      />,
+    );
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expect(editor).toHaveValue('新的提示词');
+    editor.setSelectionRange(0, 2);
+    fireEvent.mouseUp(editor);
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expect(onDocumentChange).not.toHaveBeenCalled();
+  });
+
+  it('部分覆盖既有引用或输入法组合期间不打开选字引用', () => {
+    render(
+      <ResourceMentionEditor
+        nodeId="selection-protected"
+        assets={[imageAsset]}
+        promptDocument={{
+          version: 1,
+          blocks: [
+            {
+              type: 'mention',
+              mentionId: 'm',
+              assetId: imageAsset.id,
+              label: imageAsset.name,
+              mediaType: 'image',
+              entityName: '主角',
+            },
+            { type: 'text', text: '回头' },
+          ],
+        }}
+        ariaLabel="提示词"
+      />,
+    );
+    const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
+    editor.focus();
+    editor.setSelectionRange(1, 3);
+    fireEvent.mouseUp(editor);
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    fireEvent.compositionStart(editor);
+    editor.setSelectionRange(2, 4);
+    fireEvent.mouseUp(editor);
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    fireEvent.compositionEnd(editor);
+  });
+
   it('预览连线资源时不要求目录 status，点击能看到内容', async () => {
     const user = userEvent.setup();
     render(

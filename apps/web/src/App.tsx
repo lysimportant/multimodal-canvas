@@ -63,6 +63,7 @@ import {
   getNodeGenerationCount,
   isValidGenerationCount,
   renderPromptDocument,
+  nodeResourceRefSchema,
 } from '@multimodal-canvas/domain';
 import {
   fromCanvasDocument,
@@ -98,6 +99,7 @@ import {
 import { createUniqueNodeLabel } from './app-contract-utils';
 import { getNodePlacementRightOf } from './workspace/canvas-position';
 import { createGenerationBatch } from './workspace/generation-batch';
+import { collectConnectedPromptAssets } from './workspace/connected-prompt-assets';
 import {
   appendGeneratedContentToPrompt,
   canForkNewNode,
@@ -626,7 +628,6 @@ function WorkspaceApp({
   const platformModelsQuery = usePlatformModelCatalogQuery(authUser?.id);
   const modelCatalog = platformModelsQuery.data ?? [];
   const [runRecords, setRunRecords] = useState<Record<string, RunRecord>>({});
-  const [isRunning, setIsRunning] = useState(false);
   const [saveState, setSaveState] = useState('准备就绪');
   const [projectId, setProjectId] = useState<string | null>(null);
   const defaultsQuery = useQuery({
@@ -695,7 +696,12 @@ function WorkspaceApp({
   /** 同节点写入锁覆盖上传、文本保存和生成提交的异步窗口。 */
   const nodeContentLocksRef = useRef(new Set<string>());
   const nodeRunLocksRef = useRef(new Set<string>());
-  const [nodeContentBusy, setNodeContentBusy] = useState(false);
+  /** React 展示锁快照；ref 同步阻断同节点在重渲染前的重复操作。 */
+  const [lockedNodeIds, setLockedNodeIds] = useState<ReadonlySet<string>>(() => new Set());
+  /** 发布运行与内容写入锁的并集，不把一个节点的操作扩散到整个画布。 */
+  const syncNodeLocks = useCallback(() => {
+    setLockedNodeIds(new Set([...nodeContentLocksRef.current, ...nodeRunLocksRef.current]));
+  }, []);
   /** 保存失败重试复用已上传资源，避免重复创建相同草稿资产。 */
   const pendingNodeUploadsRef = useRef(new Map<string, { file: File; asset: Asset }>());
   /** 当前画布生命周期的轮询令牌，离开画布时终止后台等待。 */
@@ -741,6 +747,31 @@ function WorkspaceApp({
   const selectedNode = useMemo(
     () => nodes.find((node) => node.id === selectedNodeId) ?? null,
     [nodes, selectedNodeId],
+  );
+
+  /** 本地提交窗口与服务端恢复的活动运行都只占用各自节点。 */
+  const busyNodeIds = useMemo(() => {
+    const ids = new Set(lockedNodeIds);
+    for (const node of nodes) {
+      if (
+        isActiveRunStatus(runRecords[node.id]?.status) ||
+        isActiveRunStatus(node.data.runStatus)
+      ) {
+        ids.add(node.id);
+      }
+    }
+    return ids;
+  }, [lockedNodeIds, nodes, runRecords]);
+  const selectedNodeBusy = Boolean(selectedNode && busyNodeIds.has(selectedNode.id));
+
+  /** 事件入口读取实时锁和运行记录，不能依赖按钮渲染时的闭包。 */
+  const isNodeBusy = useCallback(
+    (nodeId: string) =>
+      nodeContentLocksRef.current.has(nodeId) ||
+      nodeRunLocksRef.current.has(nodeId) ||
+      isActiveRunStatus(runRecordsRef.current[nodeId]?.status) ||
+      isActiveRunStatus(nodesRef.current.find((node) => node.id === nodeId)?.data.runStatus),
+    [],
   );
 
   useEffect(() => {
@@ -1422,7 +1453,6 @@ function WorkspaceApp({
         promptRequestRef.current += 1;
         setPromptDialog(undefined);
         refreshedResultAssetKeysRef.current.clear();
-        setIsRunning(false);
         historyRef.current = { past: [], future: [] };
         canvasDirtyRef.current = false;
         setSaveState(result.canvas.revision > 0 ? '已从项目恢复' : '项目已连接');
@@ -1489,7 +1519,8 @@ function WorkspaceApp({
 
   const saveCanvas = useCallback(async () => {
     if (!projectId) return;
-    if (saveRequestRef.current) await saveRequestRef.current;
+    // 多个等待者唤醒后必须重新检查锁，否则它们会同时 PATCH 同一修订。
+    while (saveRequestRef.current) await saveRequestRef.current;
     if (!canvasDirtyRef.current) return;
     const request = (async () => {
       const snapshotNodes = structuredClone(nodesRef.current);
@@ -2002,14 +2033,7 @@ function WorkspaceApp({
     async (nodeId: string, originalFile: File, onProgress: (value: number) => void) => {
       const node = nodesRef.current.find((candidate) => candidate.id === nodeId);
       if (!node || !projectId) throw new Error('节点或项目已不存在');
-      if (
-        nodeContentLocksRef.current.has(nodeId) ||
-        nodeRunLocksRef.current.has(nodeId) ||
-        ['queued', 'preparing', 'running', 'processing', 'cancel_requested'].includes(
-          node.data.runStatus ?? '',
-        )
-      )
-        throw new Error('节点正在运行或保存，请稍后再试');
+      if (isNodeBusy(nodeId)) throw new Error('节点正在运行或保存，请稍后再试');
       const textFile = node.data.mediaType === 'text' && /\.(txt|md)$/i.test(originalFile.name);
       if (!originalFile.type.startsWith(`${node.data.mediaType}/`) && !textFile)
         throw new Error(`请选择${mediaLabels[node.data.mediaType]}文件`);
@@ -2019,7 +2043,7 @@ function WorkspaceApp({
           : originalFile;
       const lifecycle = runPollingLifecycleRef.current;
       nodeContentLocksRef.current.add(nodeId);
-      setNodeContentBusy(true);
+      syncNodeLocks();
       try {
         const pending = pendingNodeUploadsRef.current.get(nodeId);
         const asset =
@@ -2062,10 +2086,10 @@ function WorkspaceApp({
         onProgress(100);
       } finally {
         nodeContentLocksRef.current.delete(nodeId);
-        if (lifecycle.active) setNodeContentBusy(nodeContentLocksRef.current.size > 0);
+        if (lifecycle.active) syncNodeLocks();
       }
     },
-    [projectId, rememberHistory, saveCanvas, setNodes],
+    [isNodeBusy, projectId, rememberHistory, saveCanvas, setNodes, syncNodeLocks],
   );
 
   /** 正文编辑复用文件上传与保存契约；相同失败草稿重试沿用原文件身份。 */
@@ -2492,6 +2516,61 @@ function WorkspaceApp({
       selectedNode,
       updateNodeDataAndMarkDownstreamStale,
     ],
+  );
+
+  /**
+   * 保存目标节点的连线资源别名，不插入提示词或修改视频模式、连线和原资源。
+   * 优先更新连线专用引用，否则复用旧资产引用的身份与版本，不重复占用名额。
+   * @param assetId 当前连线输入的资产身份。
+   * @param name 节点内别名，去除首尾空白后为 1 至 160 字符。
+   * @param nodeId 目标节点；省略时使用当前选中节点。
+   * @throws 节点或连线已移除、引用格式非法或超过 40 个引用时拒绝保存。
+   */
+  const renameConnectedResource = useCallback(
+    (assetId: string, name: string, nodeId?: string) => {
+      const targetNodeId = nodeId ?? selectedNode?.id;
+      const current = nodesRef.current.find((node) => node.id === targetNodeId);
+      if (!current) throw new Error('目标节点已不存在');
+      const connected = collectConnectedPromptAssets(
+        current.id,
+        nodesRef.current,
+        edgesRef.current,
+        assets,
+      ).find((asset) => asset.id === assetId);
+      if (!connected) throw new Error('连线资源已移除，请重新选择');
+      const references = current.data.resourceRefs ?? [];
+      const previous =
+        references.find((item) => item.id === 'connected:' + assetId) ??
+        references.find((item) => item.assetId === assetId);
+      const parsed = nodeResourceRefSchema.safeParse({
+        ...previous,
+        id: previous?.id ?? 'connected:' + assetId,
+        assetId,
+        mediaType: connected.mediaType,
+        name,
+      });
+      if (!parsed.success) throw new Error('资源名称或引用身份无效，名称须为 1 至 160 字符');
+      const reference = parsed.data;
+      if (
+        previous?.name === reference.name &&
+        previous.assetId === reference.assetId &&
+        previous.mediaType === reference.mediaType
+      )
+        return;
+      if (!previous && references.length >= 40) throw new Error('节点引用资源不能超过 40 个');
+      rememberHistory();
+      canvasDirtyRef.current = true;
+      updateNodeDataAndMarkDownstreamStale(current.id, (data) => {
+        const refs = data.resourceRefs ?? [];
+        return {
+          ...data,
+          resourceRefs: refs.some((item) => item.id === reference.id)
+            ? refs.map((item) => (item.id === reference.id ? { ...item, ...reference } : item))
+            : [...refs, reference],
+        };
+      });
+    },
+    [assets, rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
   );
 
   const updateSelectedParameters = useCallback(
@@ -3024,7 +3103,7 @@ function WorkspaceApp({
     ) => {
       if (target === 'newNode') {
         const source = nodesRef.current.find((candidate) => candidate.id === node.id) ?? node;
-        if (nodeContentLocksRef.current.has(source.id) || nodeRunLocksRef.current.has(source.id)) {
+        if (isNodeBusy(source.id)) {
           setNotice({ kind: 'error', message: '节点正在保存或提交，请稍后再试' });
           return;
         }
@@ -3046,6 +3125,7 @@ function WorkspaceApp({
         }
 
         nodeRunLocksRef.current.add(source.id);
+        syncNodeLocks();
         try {
           let runPromptOverride: NodeRunPromptOverride = {
             ...(source.data.prompt !== undefined ? { prompt: source.data.prompt } : {}),
@@ -3190,12 +3270,12 @@ function WorkspaceApp({
           await runNode(child, 'sameNode', runPromptOverride);
         } finally {
           nodeRunLocksRef.current.delete(source.id);
-          setIsRunning(nodeRunLocksRef.current.size > 0);
+          syncNodeLocks();
         }
         return;
       }
 
-      if (nodeContentLocksRef.current.has(node.id) || nodeRunLocksRef.current.has(node.id)) {
+      if (isNodeBusy(node.id)) {
         setNotice({ kind: 'error', message: '节点正在保存或提交，请稍后再试' });
         return;
       }
@@ -3217,8 +3297,8 @@ function WorkspaceApp({
         setNotice({ kind: 'error', message: (error as Error).message });
         return;
       }
-      setIsRunning(true);
       nodeRunLocksRef.current.add(node.id);
+      syncNodeLocks();
       setNotice(null);
       let targets = [nodeSnapshot];
       const batchLifecycle = runPollingLifecycleRef.current;
@@ -3246,6 +3326,7 @@ function WorkspaceApp({
           }
           canvasDirtyRef.current = true;
           for (const targetNode of targets) nodeRunLocksRef.current.add(targetNode.id);
+          syncNodeLocks();
         }
         await saveCanvas();
         const plannedRequests = targets.map((target) => {
@@ -3367,12 +3448,13 @@ function WorkspaceApp({
         setNotice({ kind: 'error', message: error instanceof Error ? error.message : '运行失败' });
       } finally {
         for (const targetNode of targets) nodeRunLocksRef.current.delete(targetNode.id);
-        setIsRunning(nodeRunLocksRef.current.size > 0);
+        syncNodeLocks();
       }
     },
     [
       commitForkGraph,
       createGenerateNode,
+      isNodeBusy,
       pollRun,
       promoteSourceNodeToGenerate,
       projectId,
@@ -3380,6 +3462,7 @@ function WorkspaceApp({
       saveCanvas,
       setEdges,
       setNodes,
+      syncNodeLocks,
       updateNodeRunState,
     ],
   );
@@ -3395,7 +3478,7 @@ function WorkspaceApp({
         setNotice({ kind: 'error', message: '图片来源节点已不存在，请重新选择图片节点' });
         return;
       }
-      if (nodeContentLocksRef.current.has(source.id) || nodeRunLocksRef.current.has(source.id)) {
+      if (isNodeBusy(source.id)) {
         setNotice({ kind: 'error', message: '节点正在保存或提交，请稍后再试' });
         return;
       }
@@ -3454,7 +3537,7 @@ function WorkspaceApp({
           : { kind: 'success', message: `已创建${child.data.label}` },
       );
     },
-    [commitForkGraph, createGenerateNode, projectId],
+    [commitForkGraph, createGenerateNode, isNodeBusy, projectId],
   );
 
   const retryNodeRun = useCallback(
@@ -3594,7 +3677,7 @@ function WorkspaceApp({
         description: '使用当前提示词、模型和推理强度',
         shortcut: 'R',
         icon: <Play size={15} aria-hidden="true" />,
-        disabled: isRunning || selectedNode.data.enabled === false,
+        disabled: selectedNodeBusy || selectedNode.data.enabled === false,
         onSelect: () => runNode(selectedNode),
       });
     }
@@ -3607,7 +3690,7 @@ function WorkspaceApp({
     isExporting,
     isProjectLoading,
     isResourceCollapsed,
-    isRunning,
+    selectedNodeBusy,
     nodes,
     onNavigate,
     projectId,
@@ -3835,14 +3918,14 @@ function WorkspaceApp({
             <UiButton
               type="button"
               className="button button-primary"
-              disabled={!selectedNode || selectedNode.data.enabled === false || isRunning}
+              disabled={!selectedNode || selectedNode.data.enabled === false || selectedNodeBusy}
               onClick={() => {
                 if (selectedNode) void runNode(selectedNode);
               }}
               title={selectedNode ? '运行选中的节点' : '先选择要运行的节点'}
             >
-              {isRunning ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}
-              {isRunning ? '运行中' : '运行'}
+              {selectedNodeBusy ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}
+              {selectedNodeBusy ? '运行中' : '运行'}
             </UiButton>
           </div>
         </header>
@@ -3998,7 +4081,7 @@ function WorkspaceApp({
             selectedNode={selectedNode}
             assets={assets}
             models={reversePromptModels}
-            busy={isRunning || nodeContentBusy}
+            busyNodeIds={busyNodeIds}
             onNodesChange={handleNodesChange}
             onEdgesChange={handleEdgesChange}
             onConnect={handleConnect}
@@ -4012,6 +4095,7 @@ function WorkspaceApp({
             onNodeEnabledChange={updateNodeEnabled}
             onRetryNode={retryNodeFromCanvas}
             onPromptDocumentChange={updateSelectedPromptDocument}
+            onConnectedResourceRename={renameConnectedResource}
             onPromptSkillChange={updateSelectedPromptSkill}
             onUploadResource={uploadProjectAsset}
             onParametersChange={updateSelectedParameters}

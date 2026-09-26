@@ -4,7 +4,13 @@ import userEvent from '@testing-library/user-event';
 import { Button } from '@multimodal-canvas/ui';
 import type { ComponentProps } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Asset, CanvasDocument, RunRecord, RunSnapshot } from '@multimodal-canvas/domain';
+import type {
+  Asset,
+  CanvasDocument,
+  PromptDocument,
+  RunRecord,
+  RunSnapshot,
+} from '@multimodal-canvas/domain';
 import type { WorkflowCanvasProps } from './workspace/WorkflowCanvas';
 import type { ResourcePanel } from './workspace/ResourcePanel';
 
@@ -147,6 +153,51 @@ function json(body: unknown, status = 200) {
     headers: { 'content-type': 'application/json' },
   });
 }
+
+/** 人工释放请求，精确覆盖提交、轮询和画布保存的并发窗口。 */
+function pendingResponse() {
+  let resolve!: (response: Response) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<Response>((accept, fail) => {
+    resolve = accept;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
+/** 拦截每个节点的一次创建与独立轮询；调用方决定何时到达终态。 */
+function pendingNodeRuns(nodeIds: string[], delayCreation = false) {
+  const api = fetchMock.getMockImplementation()!;
+  const posts: string[] = [];
+  const creates = new Map(nodeIds.map((id) => [id, pendingResponse()]));
+  const polls = new Map(nodeIds.map((id) => [id, pendingResponse()]));
+  const runs = new Map(
+    nodeIds.map((id) => [
+      id,
+      runRecord({
+        id: 'run-' + id,
+        targetNodeId: id,
+        status: 'running',
+        progress: 10,
+        error: undefined,
+      }),
+    ]),
+  );
+  fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+    const path = new URL(String(input), 'http://localhost:3000').pathname;
+    for (const [id, run] of runs) {
+      if (path === '/v1/nodes/' + id + '/runs' && init?.method === 'POST') {
+        posts.push(id);
+        return delayCreation ? creates.get(id)!.promise : Promise.resolve(json({ run }, 202));
+      }
+      if (path === '/v1/runs/' + run.id && (!init?.method || init.method === 'GET')) {
+        return polls.get(id)!.promise;
+      }
+    }
+    return api(input, init);
+  });
+  return { posts, creates, polls, runs };
+}
 let canvas: CanvasDocument;
 let fetchMock: ReturnType<typeof vi.fn>;
 let renameFailure: string | null;
@@ -264,6 +315,542 @@ afterEach(() => {
 });
 
 describe('App 组件库迁移', () => {
+  it('A 未结束时 B 可提交，重渲染前后连点 A 都只创建一次运行', async () => {
+    canvas.nodes = [imageNode('a', 'image-model'), imageNode('b', 'image-model')];
+    const pending = pendingNodeRuns(['a', 'b']);
+    await renderCanvas(2);
+    const [a, b] = view.canvas!.nodes;
+    act(() => {
+      view.canvas!.onNodeSelect(a);
+      view.canvas!.onRunNode(a);
+      view.canvas!.onRunNode(a);
+      view.canvas!.onRunNode(a, 'newNode');
+    });
+    await waitFor(() => expect(pending.posts).toEqual(['a']));
+    expect(view.canvas!.busyNodeIds).toEqual(new Set(['a']));
+    expect(screen.getByRole('button', { name: '运行中' })).toBeDisabled();
+    await userEvent.click(screen.getByRole('button', { name: '打开命令面板' }));
+    expect(screen.getByRole('option', { name: /运行「图片生成节点」/ })).toBeDisabled();
+    act(() => view.canvas!.onNodeSelect(b));
+    expect(screen.getByRole('option', { name: /运行「图片生成节点」/ })).toBeEnabled();
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(screen.getByRole('button', { name: '运行' })).toBeEnabled();
+    await userEvent.click(screen.getByRole('button', { name: '运行' }));
+    act(() => {
+      view.canvas!.onRunNode(a);
+      view.canvas!.onRunNode(b);
+    });
+    await waitFor(() => expect(pending.posts).toEqual(['a', 'b']));
+    expect(view.canvas!.busyNodeIds).toEqual(new Set(['a', 'b']));
+    await act(async () =>
+      pending.polls.get('b')!.resolve(
+        json({
+          run: { ...pending.runs.get('b'), status: 'succeeded', progress: 100 },
+        }),
+      ),
+    );
+    await waitFor(() => expect(view.canvas!.busyNodeIds).toEqual(new Set(['a'])));
+    await act(async () =>
+      pending.polls.get('a')!.resolve(
+        json({
+          run: { ...pending.runs.get('a'), status: 'succeeded', progress: 100 },
+        }),
+      ),
+    );
+    await waitFor(() => expect(view.canvas!.busyNodeIds?.size).toBe(0));
+    expect(pending.posts).toEqual(['a', 'b']);
+  });
+
+  it.each(['queued', 'preparing', 'running', 'processing', 'cancel_requested'] as const)(
+    '恢复 %s 任务后只禁用其节点，直接回调和重试也不能重复提交',
+    async (status) => {
+      canvas.nodes = [imageNode('a', 'image-model'), imageNode('b', 'image-model')];
+      projectRuns = [runRecord({ id: 'restored-a', targetNodeId: 'a', status })];
+      const pending = pendingNodeRuns(['b']);
+      await renderCanvas(1);
+      const [a, b] = view.canvas!.nodes;
+      expect(view.canvas!.busyNodeIds).toEqual(new Set(['a']));
+      act(() => {
+        view.canvas!.onNodeSelect(a);
+        view.canvas!.onRunNode(a);
+        view.canvas!.onRunNode(a, 'newNode');
+      });
+      await act(async () => {
+        await view.canvas!.onRetryNode(a.id);
+      });
+      expect(screen.getByRole('button', { name: '运行中' })).toBeDisabled();
+      act(() => view.canvas!.onNodeSelect(b));
+      expect(screen.getByRole('button', { name: '运行' })).toBeEnabled();
+      act(() => view.canvas!.onRunNode(b));
+      await waitFor(() => expect(pending.posts).toEqual(['b']));
+      const creates = fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST');
+      expect(creates).toHaveLength(1);
+      await act(async () =>
+        pending.polls.get('b')!.resolve(
+          json({
+            run: { ...pending.runs.get('b'), status: 'succeeded', progress: 100 },
+          }),
+        ),
+      );
+      await waitFor(() => expect(view.canvas!.busyNodeIds).toEqual(new Set(['a'])));
+    },
+  );
+
+  it.each(['succeeded', 'failed', 'cancelled'] as const)(
+    '旧 %s Run 不算忙碌，新的 POST pending 期间同步阻断 A 连点但不阻断 B',
+    async (status) => {
+      canvas.nodes = [imageNode('a', 'image-model'), imageNode('b', 'image-model')];
+      projectRuns = [
+        runRecord({
+          id: 'old-a',
+          targetNodeId: 'a',
+          status,
+          createdAt: '2026-09-24T00:00:00.000Z',
+          updatedAt: '2026-09-24T00:01:00.000Z',
+        }),
+      ];
+      const pending = pendingNodeRuns(['a', 'b'], true);
+      await renderCanvas(2);
+      await waitFor(() => expect(view.canvas!.nodes[0].data.runStatus).toBe(status));
+      expect(view.canvas!.busyNodeIds?.size).toBe(0);
+      const [a, b] = view.canvas!.nodes;
+      act(() => {
+        view.canvas!.onNodeSelect(a);
+        view.canvas!.onRunNode(a);
+        view.canvas!.onRunNode(a);
+        view.canvas!.onRunNode(a, 'newNode');
+      });
+      await waitFor(() => expect(pending.posts).toEqual(['a']));
+      expect(view.canvas!.nodes[0].data.runStatus).toBe(status);
+      expect(view.canvas!.busyNodeIds).toEqual(new Set(['a']));
+      expect(screen.getByRole('button', { name: '运行中' })).toBeDisabled();
+      act(() => {
+        view.canvas!.onRunNode(a);
+        view.canvas!.onNodeSelect(b);
+        view.canvas!.onRunNode(b);
+      });
+      await act(async () => view.canvas!.onRetryNode(a.id));
+      await waitFor(() => expect(pending.posts).toEqual(['a', 'b']));
+      expect(view.canvas!.nodes).toHaveLength(2);
+      await act(async () => {
+        pending.creates.get('b')!.resolve(json({ run: pending.runs.get('b') }, 202));
+        pending.polls
+          .get('b')!
+          .resolve(json({ run: { ...pending.runs.get('b'), status: 'succeeded', progress: 100 } }));
+      });
+      await waitFor(() => expect(view.canvas!.busyNodeIds).toEqual(new Set(['a'])));
+      await act(async () =>
+        pending.creates.get('a')!.resolve(json({ run: pending.runs.get('a') }, 202)),
+      );
+      await waitFor(() => expect(view.canvas!.nodes[0].data.runStatus).toBe('running'));
+      act(() => view.canvas!.onRunNode(view.canvas!.nodes[0]));
+      expect(pending.posts).toEqual(['a', 'b']);
+      await act(async () =>
+        pending.polls
+          .get('a')!
+          .resolve(json({ run: { ...pending.runs.get('a'), status: 'succeeded', progress: 100 } })),
+      );
+      await waitFor(() => expect(view.canvas!.busyNodeIds?.size).toBe(0));
+    },
+  );
+
+  it('轮询失败不解除服务端仍在运行的节点，不自动重发创建请求', async () => {
+    canvas.nodes = [imageNode('a', 'image-model')];
+    const pending = pendingNodeRuns(['a']);
+    await renderCanvas(1);
+    act(() => view.canvas!.onRunNode(view.canvas!.nodes[0]));
+    await waitFor(() => expect(pending.posts).toEqual(['a']));
+    await act(async () => pending.polls.get('a')!.reject(new Error('运行结果未确认')));
+    await screen.findByText('运行结果未确认');
+    expect(view.canvas!.busyNodeIds).toEqual(new Set(['a']));
+    act(() => view.canvas!.onRunNode(view.canvas!.nodes[0]));
+    expect(pending.posts).toEqual(['a']);
+  });
+
+  it('批量创建结果不明时停止后续提交，不重发原 POST', async () => {
+    const node = imageNode('a', 'image-model');
+    canvas.nodes = [{ ...node, data: { ...node.data, generationCount: 3 } }];
+    const api = fetchMock.getMockImplementation()!;
+    const posts: string[] = [];
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/v1/nodes/') && init?.method === 'POST') {
+        posts.push(String(input));
+        return Promise.reject(new Error('创建结果 unknown，请先核对运行记录'));
+      }
+      return api(input, init);
+    });
+    await renderCanvas(1);
+    act(() => {
+      view.canvas!.onRunNode(view.canvas!.nodes[0]);
+      view.canvas!.onRunNode(view.canvas!.nodes[0]);
+    });
+    await screen.findByText(/已停止后续提交，请先核对运行记录/);
+    expect(posts).toHaveLength(1);
+    expect(view.canvas!.nodes).toHaveLength(3);
+    expect(view.canvas!.busyNodeIds?.size).toBe(0);
+  });
+
+  it('多个生成等待同一次保存后仍串行保存新修订，不并行 PATCH 或重发生成', async () => {
+    canvas.nodes = ['a', 'b', 'c'].map((id) => imageNode(id, 'image-model'));
+    const pending = pendingNodeRuns(['a', 'b', 'c'], true);
+    const api = fetchMock.getMockImplementation()!;
+    const saves: Array<{ gate: ReturnType<typeof pendingResponse>; document: CanvasDocument }> = [];
+    let inFlight = 0;
+    let maximumInFlight = 0;
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/canvas') && init?.method === 'PATCH') {
+        const gate = pendingResponse();
+        saves.push({ gate, document: JSON.parse(String(init.body)) });
+        maximumInFlight = Math.max(maximumInFlight, ++inFlight);
+        return gate.promise.finally(() => {
+          inFlight -= 1;
+        });
+      }
+      return api(input, init);
+    });
+    await renderCanvas(3);
+    fillNode('a', '第一版');
+    act(() => view.canvas!.onRunNode(view.canvas!.nodes[0]));
+    await waitFor(() => expect(saves).toHaveLength(1));
+    fillNode('b', '保存期间的第二版');
+    act(() => {
+      view.canvas!.onRunNode(view.canvas!.nodes[1]);
+      view.canvas!.onRunNode(view.canvas!.nodes[2]);
+    });
+    expect(pending.posts).toEqual([]);
+    await act(async () =>
+      saves[0].gate.resolve(json({ canvas: { ...saves[0].document, revision: 2 } })),
+    );
+    await waitFor(() => expect(saves.length).toBeGreaterThanOrEqual(2));
+    expect(saves).toHaveLength(2);
+    expect(maximumInFlight).toBe(1);
+    expect(saves[1].document.revision).toBe(2);
+    expect(saves[1].document.nodes.find((node) => node.id === 'b')?.data.prompt).toBe(
+      '保存期间的第二版',
+    );
+    await act(async () =>
+      saves[1].gate.resolve(json({ canvas: { ...saves[1].document, revision: 3 } })),
+    );
+    await waitFor(() => expect(pending.posts).toHaveLength(3));
+    expect(new Set(pending.posts)).toEqual(new Set(['a', 'b', 'c']));
+    await act(async () => {
+      for (const [id, gate] of pending.creates) {
+        gate.resolve(json({ run: pending.runs.get(id) }, 202));
+      }
+      for (const [id, gate] of pending.polls) {
+        gate.resolve(
+          json({ run: { ...pending.runs.get(id), status: 'succeeded', progress: 100 } }),
+        );
+      }
+    });
+    await waitFor(() => expect(view.canvas!.busyNodeIds?.size).toBe(0));
+    expect(maximumInFlight).toBe(1);
+  });
+
+  it('A 上传内容时只锁 A，B 仍可生成且内容失败不会解除 B 的锁', async () => {
+    canvas.nodes = [imageNode('a', 'image-model'), imageNode('b', 'image-model')];
+    const pending = pendingNodeRuns(['b']);
+    const api = fetchMock.getMockImplementation()!;
+    const upload = pendingResponse();
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) =>
+      String(input).endsWith('/v1/assets/uploads/init') ? upload.promise : api(input, init),
+    );
+    await renderCanvas(2);
+    const file = new File(['image'], 'local.png', { type: 'image/png' });
+    Object.defineProperty(file, 'arrayBuffer', {
+      value: async () => new Uint8Array([1, 2, 3]).buffer,
+    });
+    let uploading!: Promise<void>;
+    act(() => {
+      uploading = view.canvas!.nodeContentHandlers!.upload('a', file, vi.fn());
+      view.canvas!.onRunNode(view.canvas!.nodes[0]);
+    });
+    const uploadResult = uploading.catch((error: Error) => error.message);
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/uploads/init'))).toBe(
+        true,
+      ),
+    );
+    expect(view.canvas!.busyNodeIds).toEqual(new Set(['a']));
+    act(() => {
+      view.canvas!.onNodeSelect(view.canvas!.nodes[1]);
+      view.canvas!.onRunNode(view.canvas!.nodes[1]);
+    });
+    await waitFor(() => expect(pending.posts).toEqual(['b']));
+    expect(view.canvas!.busyNodeIds).toEqual(new Set(['a', 'b']));
+    await act(async () => upload.resolve(json({ error: '合成上传失败' }, 500)));
+    expect(await uploadResult).toBe('合成上传失败');
+    await waitFor(() => expect(view.canvas!.busyNodeIds).toEqual(new Set(['b'])));
+    await act(async () =>
+      pending.polls.get('b')!.resolve(
+        json({
+          run: { ...pending.runs.get('b'), status: 'succeeded', progress: 100 },
+        }),
+      ),
+    );
+    await waitFor(() => expect(view.canvas!.busyNodeIds?.size).toBe(0));
+  });
+
+  it('连线改名只持久化目标 resourceRefs，保留提示词、视频模式、文件名、其它引用和连线并可撤销', async () => {
+    const retained = {
+      id: 'other-ref',
+      assetId: 'other-asset',
+      mediaType: 'image' as const,
+      name: '背景',
+    };
+    canvas.nodes = [
+      {
+        ...imageNode('source', 'image-model'),
+        data: { label: '原图片节点', mediaType: 'image', mode: 'source', assetId: asset.id },
+      },
+      {
+        ...emptyNode('target'),
+        type: 'video',
+        data: {
+          label: '视频',
+          mode: 'generate',
+          mediaType: 'video',
+          prompt: '保持原提示词',
+          videoMode: 'first_frame',
+          resourceRefs: [retained],
+        },
+      },
+      {
+        ...emptyNode('downstream'),
+        data: { ...emptyNode('downstream').data, prompt: '下游提示词' },
+      },
+    ];
+    canvas.edges = [
+      {
+        id: 'input',
+        sourceNodeId: 'source',
+        targetNodeId: 'target',
+        sourceHandle: 'output:image',
+        targetHandle: 'input:firstFrame',
+        order: 0,
+      },
+      {
+        id: 'downstream',
+        sourceNodeId: 'target',
+        targetNodeId: 'downstream',
+        sourceHandle: 'output:video',
+        targetHandle: 'input:content',
+        order: 0,
+      },
+    ];
+    await renderCanvas(0);
+    const edges = structuredClone(view.canvas!.edges);
+    const sourceData = structuredClone(view.canvas!.nodes[0].data);
+    act(() => {
+      view.canvas!.onNodeSelect(view.canvas!.nodes[2]);
+      view.canvas!.onConnectedResourceRename!(asset.id, ' 主角 ', 'target');
+    });
+    const renamed = view.canvas!.nodes.find((node) => node.id === 'target')!;
+    expect(renamed.data).toMatchObject({
+      prompt: '保持原提示词',
+      videoMode: 'first_frame',
+      stale: true,
+      resourceRefs: [
+        retained,
+        { id: 'connected:' + asset.id, assetId: asset.id, mediaType: 'image', name: '主角' },
+      ],
+    });
+    expect(renamed.data.promptDocument).toBeUndefined();
+    expect(view.canvas!.nodes[0].data).toEqual(sourceData);
+    expect(view.canvas!.nodes[2].data).toMatchObject({ stale: true, prompt: '下游提示词' });
+    expect(view.canvas!.nodes[2].data.resourceRefs).toBeUndefined();
+    expect(view.canvas!.edges).toEqual(edges);
+    expect(view.canvas!.assets?.find((item) => item.id === asset.id)?.name).toBe(asset.name);
+    await waitFor(() =>
+      expect(canvas.nodes.find((node) => node.id === 'target')?.data.resourceRefs).toEqual(
+        renamed.data.resourceRefs,
+      ),
+    );
+    expect(renameRequests()).toHaveLength(0);
+    act(() => view.canvas!.onConnectedResourceRename!(asset.id, '配角', 'target'));
+    expect(view.canvas!.nodes.find((node) => node.id === 'target')?.data.resourceRefs).toEqual([
+      retained,
+      { id: 'connected:' + asset.id, assetId: asset.id, mediaType: 'image', name: '配角' },
+    ]);
+    act(() => view.canvas!.onUndoCanvas?.());
+    expect(view.canvas!.nodes.find((node) => node.id === 'target')?.data.resourceRefs).toEqual(
+      renamed.data.resourceRefs,
+    );
+    act(() => view.canvas!.onUndoCanvas?.());
+    expect(view.canvas!.nodes.find((node) => node.id === 'target')?.data.resourceRefs).toEqual([
+      retained,
+    ]);
+    expect(view.canvas!.edges).toEqual(edges);
+    act(() => view.canvas!.onEdgesChange([{ type: 'remove', id: 'input' }]));
+    expect(() => view.canvas!.onConnectedResourceRename!(asset.id, '失效别名', 'target')).toThrow(
+      '连线资源已移除',
+    );
+    expect(view.canvas!.nodes.find((node) => node.id === 'target')?.data.resourceRefs).toEqual([
+      retained,
+    ]);
+  });
+
+  it.each([false, true])(
+    '连线改名复用旧 resourceRef，优先 connected 身份（已有专用引用：%s），满 40 项仍可改名',
+    async (hasConnectedReference) => {
+      const legacy = {
+        id: 'imported-reference',
+        assetId: asset.id,
+        mediaType: 'image' as const,
+        name: '导入别名',
+        assetVersion: 3,
+      };
+      const connected = {
+        ...legacy,
+        id: 'connected:' + asset.id,
+        name: '连线别名',
+        assetVersion: 7,
+      };
+      const others = Array.from({ length: hasConnectedReference ? 38 : 39 }, (_, index) => ({
+        id: 'retained-' + index,
+        assetId: 'other-asset-' + index,
+        mediaType: 'image' as const,
+        name: '其它资源' + index,
+      }));
+      const references = [legacy, ...others, ...(hasConnectedReference ? [connected] : [])];
+      canvas.nodes = [
+        {
+          ...imageNode('source', 'image-model'),
+          data: { label: '原图片节点', mode: 'source', mediaType: 'image', assetId: asset.id },
+        },
+        {
+          ...imageNode('target', 'image-model'),
+          data: { ...imageNode('target', 'image-model').data, resourceRefs: references },
+        },
+      ];
+      canvas.edges = [
+        {
+          id: 'input',
+          sourceNodeId: 'source',
+          targetNodeId: 'target',
+          sourceHandle: 'output:image',
+          targetHandle: 'input:content',
+          order: 0,
+        },
+      ];
+      await renderCanvas(0);
+      act(() => view.canvas!.onConnectedResourceRename!(asset.id, ' 主角 ', 'target'));
+      const updatedId = hasConnectedReference ? connected.id : legacy.id;
+      const expected = references.map((reference) =>
+        reference.id === updatedId ? { ...reference, name: '主角' } : reference,
+      );
+      expect(view.canvas!.nodes[1].data.resourceRefs).toEqual(expected);
+      await waitFor(() => expect(canvas.nodes[1].data.resourceRefs).toEqual(expected));
+      act(() => view.canvas!.onConnectedResourceRename!(asset.id, '配角', 'target'));
+      expect(view.canvas!.nodes[1].data.resourceRefs).toHaveLength(40);
+      expect(
+        view.canvas!.nodes[1].data.resourceRefs?.find((reference) => reference.id === updatedId),
+      ).toEqual({ ...(hasConnectedReference ? connected : legacy), name: '配角' });
+      expect(view.canvas!.assets?.find((item) => item.id === asset.id)?.name).toBe(asset.name);
+      expect(renameRequests()).toHaveLength(0);
+    },
+  );
+
+  it('连线别名经历提示词修改、同资源改名和删除最后提及后仍保留，切换节点及重载读取保存值', async () => {
+    const otherReference = {
+      id: 'other-node-ref',
+      assetId: asset.id,
+      mediaType: 'image' as const,
+      name: '另一节点别名',
+    };
+    canvas.nodes = [
+      {
+        ...imageNode('source', 'image-model'),
+        data: { label: '原图片节点', mode: 'source', mediaType: 'image', assetId: asset.id },
+      },
+      {
+        ...imageNode('target', 'image-model'),
+        data: { ...imageNode('target', 'image-model').data, prompt: '保持文本' },
+      },
+      {
+        ...emptyNode('other'),
+        data: { ...emptyNode('other').data, prompt: '其它节点', resourceRefs: [otherReference] },
+      },
+    ];
+    canvas.edges = [
+      {
+        id: 'input',
+        sourceNodeId: 'source',
+        targetNodeId: 'target',
+        sourceHandle: 'output:image',
+        targetHandle: 'input:content',
+        order: 0,
+      },
+    ];
+    const mounted = await renderCanvas(0);
+    const originalEdges = structuredClone(view.canvas!.edges);
+    act(() => view.canvas!.onConnectedResourceRename!(asset.id, '主角', 'target'));
+    const firstAlias = [
+      { id: 'connected:' + asset.id, assetId: asset.id, mediaType: 'image', name: '主角' },
+    ];
+    const mentioned: PromptDocument = {
+      version: 1,
+      blocks: [
+        { type: 'text', text: '请绘制 ' },
+        {
+          type: 'mention',
+          mentionId: 'mention-image',
+          assetId: asset.id,
+          mediaType: 'image',
+          label: asset.name,
+          entityName: '主角',
+        },
+      ],
+    };
+    act(() => view.canvas!.onPromptDocumentChange!(mentioned, 'target'));
+    expect(view.canvas!.nodes[1].data.resourceRefs).toEqual(firstAlias);
+    const renamed: PromptDocument = {
+      ...mentioned,
+      blocks: mentioned.blocks.map((block) =>
+        block.type === 'mention' ? { ...block, entityName: '配角' } : block,
+      ),
+    };
+    act(() => {
+      view.canvas!.onConnectedResourceRename!(asset.id, '配角', 'target');
+      view.canvas!.onPromptDocumentChange!(renamed, 'target');
+    });
+    const finalAlias = [{ ...firstAlias[0], name: '配角' }];
+    expect(view.canvas!.nodes[1].data).toMatchObject({
+      prompt: '请绘制 配角',
+      resourceRefs: finalAlias,
+    });
+    const noMentions: PromptDocument = {
+      version: 1,
+      blocks: [{ type: 'text', text: '没有提及的提示词' }],
+    };
+    act(() => view.canvas!.onPromptDocumentChange!(noMentions, 'target'));
+    expect(view.canvas!.nodes[1].data.resourceRefs).toEqual(finalAlias);
+    act(() => view.canvas!.onNodeSelect(view.canvas!.nodes[2]));
+    expect(view.canvas!.selectedNode?.data.resourceRefs).toEqual([otherReference]);
+    act(() => view.canvas!.onNodeSelect(view.canvas!.nodes[1]));
+    expect(view.canvas!.selectedNode?.data.resourceRefs).toEqual(finalAlias);
+    await waitFor(() =>
+      expect(canvas.nodes[1].data).toMatchObject({
+        resourceRefs: finalAlias,
+        promptDocument: noMentions,
+        prompt: '没有提及的提示词',
+      }),
+    );
+    mounted.unmount();
+    view.canvas = null;
+    await renderCanvas(0);
+    expect(view.canvas!.nodes[1].data).toMatchObject({
+      resourceRefs: finalAlias,
+      promptDocument: noMentions,
+      prompt: '没有提及的提示词',
+    });
+    expect(view.canvas!.nodes[2].data.resourceRefs).toEqual([otherReference]);
+    expect(view.canvas!.edges).toEqual(originalEdges);
+    expect(view.canvas!.assets?.find((item) => item.id === asset.id)?.name).toBe(asset.name);
+    expect(renameRequests()).toHaveLength(0);
+  });
+
   it('图片节点配置变化后重试复用原节点并创建新的运行', async () => {
     canvas = {
       revision: 1,

@@ -71,7 +71,7 @@ import {
   type ProviderOutput,
   type ResultAssetArchiveInput,
 } from './result-output';
-import { shouldStartWorkerProcess } from './startup-config';
+import { resolveWorkerConcurrency, shouldStartWorkerProcess } from './startup-config';
 import type { SendIntentStatus } from '@multimodal-canvas/execution';
 import { PrismaExecutionService } from '@multimodal-canvas/execution';
 import { PrismaWorkerExecutionAuthorization } from './execution-authorization';
@@ -411,6 +411,12 @@ function snapshotForProvider(snapshot: RunSnapshot, provider: string): RunSnapsh
   return withoutCredentialReferences;
 }
 
+/**
+ * 创建处理独立 Run 的有界并发 Worker；单 Run DAG、发送授权和计费边界保持不变。
+ * @param options 队列连接与按 Run 隔离的执行、持久化适配器。
+ * @returns 同一命名空间的队列与 Worker；调用方负责关闭资源。
+ * @throws StartupConfigurationError WORKER_CONCURRENCY 非法时在连接 Redis 前失败。
+ */
 export function createRunWorker(options: {
   connection: ConnectionOptions;
   queueName?: string;
@@ -435,6 +441,7 @@ export function createRunWorker(options: {
   logger?: WorkerLogger;
   observability?: Observability;
 }) {
+  const concurrency = resolveWorkerConcurrency();
   const name = options.queueName ?? queueName;
   const queue = new Queue<RunJobData>(name, { connection: options.connection });
   const resultStagingStore =
@@ -2505,7 +2512,7 @@ export function createRunWorker(options: {
         cancellationMonitor.stop();
       }
     },
-    { connection: options.connection },
+    { connection: options.connection, concurrency },
   );
 
   return { queue, worker };

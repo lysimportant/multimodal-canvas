@@ -34,6 +34,60 @@ const child = {
 } as AssetFlowNode;
 
 describe('collectConnectedPromptAssets', () => {
+  it('目标节点的连线别名独立于源名称，断开连线后不留下资源', () => {
+    const namedChild = {
+      ...child,
+      data: {
+        ...child.data,
+        resourceRefs: [
+          {
+            id: 'connected:asset_result',
+            assetId: 'asset_result',
+            mediaType: 'image' as const,
+            name: '主角',
+          },
+        ],
+      },
+    };
+    const edges = [
+      { id: 'ref', source: parent.id, target: child.id, targetHandle: 'input:content' },
+    ] as FlowEdge[];
+    expect(collectConnectedPromptAssets(child.id, [parent, namedChild], edges)[0]).toMatchObject({
+      id: 'asset_result',
+      name: '原图',
+      referenceName: '主角',
+    });
+    expect(collectConnectedPromptAssets(child.id, [parent, namedChild], [])).toEqual([]);
+    expect(parent.data.label).toBe('原图');
+  });
+  it('兼容导入的引用身份，同时优先读取连线别名', () => {
+    const legacyReference = {
+      id: 'imported-reference',
+      assetId: 'asset_result',
+      mediaType: 'image' as const,
+      name: '旧别名',
+      assetVersion: 2,
+    };
+    const namedChild = {
+      ...child,
+      data: { ...child.data, resourceRefs: [legacyReference] },
+    };
+    const edges = [
+      { id: 'ref', source: parent.id, target: child.id, targetHandle: 'input:content' },
+    ] as FlowEdge[];
+    expect(
+      collectConnectedPromptAssets(child.id, [parent, namedChild], edges)[0]?.referenceName,
+    ).toBe('旧别名');
+    namedChild.data.resourceRefs.push({
+      ...legacyReference,
+      id: 'connected:asset_result',
+      name: '主角',
+    });
+    expect(
+      collectConnectedPromptAssets(child.id, [parent, namedChild], edges)[0]?.referenceName,
+    ).toBe('主角');
+  });
+
   it('does not put imageEdit originals into the prompt resource strip', () => {
     const edges = [
       {

@@ -90,3 +90,11 @@
   padding: 12px;
   width: 64px;
 }
+
+/* 选中文字的命名说明只在浮层内出现，不改变输入节点尺寸。 */
+.resource-mention-selection-label {
+  margin: 0;
+  padding: 8px 10px 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}

@@ -52,3 +52,30 @@ describe('Worker process entrypoint', () => {
     },
   );
 });
+
+describe('Worker 并发启动门禁', () => {
+  it.each(['production', 'development', 'test'])(
+    '在 %s 的进程入口拒绝非法并发，且不建立 Redis 连接',
+    async (environment) => {
+      vi.stubEnv('NODE_ENV', environment);
+      vi.stubEnv('WORKER_CONCURRENCY', '21');
+      await expect(import('./index')).rejects.toThrow(
+        /WORKER_CONCURRENCY must be an integer between 1 and 20/,
+      );
+      expect(bullmqConstructors.queue).not.toHaveBeenCalled();
+      expect(bullmqConstructors.worker).not.toHaveBeenCalled();
+    },
+  );
+
+  it('直接调用 Worker 工厂也必须在连接队列前拒绝非法并发', async () => {
+    vi.stubEnv('NODE_ENV', 'test');
+    vi.stubEnv('WORKER_CONCURRENCY', undefined);
+    const { createRunWorker } = await import('./index');
+    vi.stubEnv('WORKER_CONCURRENCY', '0');
+    expect(() => createRunWorker({ connection: { host: '127.0.0.1', port: 16389 } })).toThrow(
+      /WORKER_CONCURRENCY must be an integer between 1 and 20/,
+    );
+    expect(bullmqConstructors.queue).not.toHaveBeenCalled();
+    expect(bullmqConstructors.worker).not.toHaveBeenCalled();
+  });
+});

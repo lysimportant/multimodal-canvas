@@ -141,6 +141,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Ac
 | `MC_HTTPS_PORT`     | `8443`            | 启用 local-https 时的本机 HTTPS 端口；与 HTTP 端口不同，仅绑定 `127.0.0.1`。                         |
 | `MC_VIDEO_CONTRACT` | `newapi-video-v1` | 视频供应商协议，可选 `newapi-video-v1`、`newapi-unified-v1` 或 `legacy-v1`；应与实际供应商契约匹配。 |
 
+Worker 容器将 `MC_WORKER_CONCURRENCY` 映射为 `WORKER_CONCURRENCY`：未设置时默认同时处理 4 个独立 Run，显式值必须是 1..20 的整数；空值、小数及越界值会在连接队列前拒绝启动。直接运行 Worker 时使用 `WORKER_CONCURRENCY`。需要回滚为串行时设为 `1`，由部署方在确认没有执行中任务后更新 Worker；调整环境变量不会改变已运行的进程，也不会主动取消任务。该上限按 Worker 进程计算，多副本会叠加；只改变跨 Run 并发，不改变单 Run DAG 依赖、防重复发送、unknown 禁止自动重发或 New API 计费合同。
+
 仅在供应商明确使用 legacy-v1 协议时，按实际配置启动：
 
 ```powershell

@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest';
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -195,7 +195,7 @@ function createProps(overrides: Partial<WorkflowCanvasProps> = {}): WorkflowCanv
     edges: [],
     selectedNode: null,
     models: [],
-    busy: false,
+    busyNodeIds: new Set(),
     background: 'dots',
     onNodesChange: vi.fn(),
     onEdgesChange: vi.fn(),
@@ -418,6 +418,155 @@ describe('WorkflowCanvas context menu', () => {
     fireEvent.contextMenu(target);
     await user.click(screen.getByRole('menuitem', { name: '为选中节点创建分组' }));
     expect(props.onCreateGroup).toHaveBeenCalledTimes(1);
+  });
+
+  it('A 的本地锁不禁用 B 的快捷编辑器或右键生成，同节点两个入口保持一致', async () => {
+    const a: AssetFlowNode = {
+      ...generateNode,
+      id: 'a',
+      data: {
+        ...generateNode.data,
+        label: '节点 A',
+        prompt: '编辑原图',
+        modelAlias: 'image-model',
+        credentialId: 'credential',
+        resultAsset: {
+          assetId: 'image-a',
+          contentUrl: 'https://assets.example/image.png',
+          mimeType: 'image/png',
+        },
+      },
+    };
+    const b: AssetFlowNode = { ...a, id: 'b', data: { ...a.data, label: '节点 B' } };
+    const props = createProps({
+      nodes: [a, b],
+      selectedNode: b,
+      busyNodeIds: new Set(['a']),
+      models: [
+        {
+          id: 'image-model',
+          name: '图片模型',
+          mediaTypes: ['image'],
+          credentialId: 'credential',
+          group: '测试分组',
+        },
+      ],
+    });
+    const view = render(<WorkflowCanvas {...props} />);
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: '新节点' })).toBeEnabled();
+    await userEvent.click(screen.getByRole('button', { name: '生成' }));
+    expect(props.onRunNode).toHaveBeenLastCalledWith(b, 'sameNode');
+    fireEvent.contextMenu(screen.getByTestId('canvas-node-b'));
+    for (const name of ['开始生成', '生成到新节点']) {
+      expect(screen.getByRole('menuitem', { name })).not.toHaveAttribute('aria-disabled', 'true');
+    }
+    await userEvent.click(screen.getByRole('menuitem', { name: '开始生成' }));
+    expect(props.onRunNode).toHaveBeenLastCalledWith(b);
+    view.rerender(<WorkflowCanvas {...props} selectedNode={a} />);
+    expect(screen.getByRole('button', { name: '生成中' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '新节点' })).toBeDisabled();
+    fireEvent.contextMenu(screen.getByTestId('canvas-node-a'));
+    for (const name of ['开始生成', '生成到新节点']) {
+      expect(screen.getByRole('menuitem', { name })).toHaveAttribute('aria-disabled', 'true');
+    }
+    expect(props.onRunNode).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['queued', 'preparing', 'running', 'processing', 'cancel_requested'] as const)(
+    '恢复 %s 时同步禁用快捷编辑器和已经打开的右键菜单，终态恢复可用',
+    (status) => {
+      const node: AssetFlowNode = {
+        ...generateNode,
+        data: {
+          ...generateNode.data,
+          prompt: '编辑原图',
+          modelAlias: 'image-model',
+          credentialId: 'credential',
+          resultAsset: {
+            assetId: 'image-a',
+            contentUrl: 'https://assets.example/image.png',
+            mimeType: 'image/png',
+          },
+        },
+      };
+      const props = createProps({
+        nodes: [node],
+        selectedNode: node,
+        models: [
+          {
+            id: 'image-model',
+            name: '图片模型',
+            mediaTypes: ['image'],
+            credentialId: 'credential',
+            group: '测试分组',
+          },
+        ],
+      });
+      const view = render(<WorkflowCanvas {...props} />);
+      fireEvent.contextMenu(screen.getByTestId('canvas-node-' + node.id));
+      const active = { ...node, data: { ...node.data, runStatus: status } };
+      view.rerender(<WorkflowCanvas {...props} nodes={[active]} selectedNode={active} />);
+      expect(screen.getByRole('button', { name: '生成中' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: '新节点' })).toBeDisabled();
+      expect(screen.getByRole('menuitem', { name: '开始生成' })).toHaveAttribute(
+        'aria-disabled',
+        'true',
+      );
+      expect(screen.getByRole('menuitem', { name: '生成到新节点' })).toHaveAttribute(
+        'aria-disabled',
+        'true',
+      );
+      const completed = { ...node, data: { ...node.data, runStatus: 'succeeded' as const } };
+      view.rerender(<WorkflowCanvas {...props} nodes={[completed]} selectedNode={completed} />);
+      expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+      expect(screen.getByRole('menuitem', { name: '开始生成' })).not.toHaveAttribute(
+        'aria-disabled',
+        'true',
+      );
+    },
+  );
+
+  it('连线资源命名带上实际编辑节点 ID，不调用提示词或视频模式回调', async () => {
+    const source: AssetFlowNode = {
+      ...sourceNode,
+      data: {
+        ...sourceNode.data,
+        assetId: 'connected-image',
+        contentUrl: 'https://assets.example/image.png',
+        mimeType: 'image/png',
+      },
+    };
+    const target: AssetFlowNode = {
+      ...generateNode,
+      data: { ...generateNode.data, prompt: '保持原提示词' },
+    };
+    const props = createProps({
+      nodes: [source, target],
+      selectedNode: target,
+      edges: [
+        { id: 'connected', source: source.id, target: target.id, targetHandle: 'input:content' },
+      ],
+      onConnectedResourceRename: vi.fn(),
+      onPromptDocumentChange: vi.fn(),
+      onVideoModeChange: vi.fn(),
+    });
+    render(<WorkflowCanvas {...props} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: '预览并命名 图片来源节点' }));
+    const dialog = screen.getByRole('dialog', { name: '资源预览' });
+    const name = within(dialog).getByRole('textbox', { name: '资源名称' });
+    await user.clear(name);
+    await user.type(name, '主角');
+    await user.click(within(dialog).getByRole('button', { name: '保存名称' }));
+    expect(props.onConnectedResourceRename).toHaveBeenCalledExactlyOnceWith(
+      'connected-image',
+      '主角',
+      target.id,
+    );
+    expect(props.onPromptDocumentChange).not.toHaveBeenCalled();
+    expect(props.onVideoModeChange).not.toHaveBeenCalled();
+    expect(source.data.label).toBe('图片来源节点');
   });
 
   it('运行中的节点禁用生成与图片编辑，仍可查看提示词', async () => {

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   assertWorkerStartupConfiguration,
+  resolveWorkerConcurrency,
   shouldStartWorkerProcess,
   StartupConfigurationError,
   validateWorkerStartupConfiguration,
@@ -413,4 +414,76 @@ describe('Worker production startup configuration', () => {
       expect(() => assertWorkerStartupConfiguration({ NODE_ENV: nodeEnvironment })).not.toThrow();
     },
   );
+});
+
+describe('Worker 有界 Run 并发配置', () => {
+  it('未配置时默认同时处理 4 个 Run', () => {
+    expect(resolveWorkerConcurrency({})).toBe(4);
+  });
+
+  it.each(Array.from({ length: 20 }, (_, index) => index + 1))(
+    '接受显式并发 %i，包含串行回滚和上限',
+    (concurrency) => {
+      const environment = { WORKER_CONCURRENCY: String(concurrency) };
+      expect(resolveWorkerConcurrency(environment)).toBe(concurrency);
+      expect(validateWorkerStartupConfiguration(environment)).toEqual([]);
+      expect(
+        validateWorkerStartupConfiguration({ ...productionEnvironment, ...environment }),
+      ).toEqual([]);
+    },
+  );
+
+  it('去除显式整数前后空白', () => {
+    expect(resolveWorkerConcurrency({ WORKER_CONCURRENCY: ' 4 ' })).toBe(4);
+  });
+
+  it.each([
+    '',
+    ' ',
+    '0',
+    '-1',
+    '21',
+    '1.5',
+    '4.0',
+    '4e0',
+    '0x4',
+    '+4',
+    '1_0',
+    'NaN',
+    'Infinity',
+    'four',
+    '9007199254740992',
+  ])('所有环境均拒绝非法并发 %j，不回退默认值', (value) => {
+    for (const nodeEnvironment of ['production', 'development', 'test', undefined]) {
+      const environment = {
+        ...productionEnvironment,
+        NODE_ENV: nodeEnvironment,
+        WORKER_CONCURRENCY: value,
+      };
+      expect(validateWorkerStartupConfiguration(environment)).toEqual([
+        { variable: 'WORKER_CONCURRENCY', message: 'must be an integer between 1 and 20' },
+      ]);
+      expect(() => resolveWorkerConcurrency(environment)).toThrow(StartupConfigurationError);
+      expect(() => assertWorkerStartupConfiguration(environment)).toThrow(
+        /WORKER_CONCURRENCY must be an integer between 1 and 20/,
+      );
+      expect(() => shouldStartWorkerProcess(environment)).toThrow(StartupConfigurationError);
+    }
+  });
+
+  it('memory 开关不能绕过非法并发校验', () => {
+    expect(() =>
+      shouldStartWorkerProcess({
+        NODE_ENV: 'development',
+        RUN_SERVICE: 'memory',
+        WORKER_CONCURRENCY: '0',
+      }),
+    ).toThrow(StartupConfigurationError);
+  });
+
+  it('错误消息不回显非法配置原值', () => {
+    expect(() =>
+      resolveWorkerConcurrency({ WORKER_CONCURRENCY: 'synthetic-private-value' }),
+    ).toThrow('Worker cannot start: WORKER_CONCURRENCY must be an integer between 1 and 20');
+  });
 });

@@ -18,6 +18,7 @@ x-runtime-environment: &runtime-environment
   # 新授权队列与旧钱包 Worker 隔离；旧版本不得消费此队列。
   RUN_QUEUE_NAME: ${MC_RUN_QUEUE_NAME:-canvas-accounts-v1}
   WORKER_PROVIDER: newapi
+  WORKER_CONCURRENCY: ${MC_WORKER_CONCURRENCY-4}
   S3_ENDPOINT: https://minio:9000
   # 仅为 URL-only Provider 参考素材签名；必须公开 HTTPS 访问同一 bucket/key。
   S3_PROVIDER_ENDPOINT: ${MC_S3_PROVIDER_ENDPOINT:-}

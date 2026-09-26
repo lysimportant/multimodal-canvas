@@ -11,13 +11,15 @@ const ENCRYPTION_KEY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 const MAX_RESULT_ASSET_BYTES = 50 * 1024 * 1024;
 
+/** 启动配置错误；保留生产环境消息前缀，不回显配置中的原始值。 */
 export class StartupConfigurationError extends Error {
   constructor(
     service: string,
     public readonly issues: readonly StartupConfigurationIssue[],
+    nodeEnvironment?: string,
   ) {
     super(
-      `${service} cannot start in production: ${issues
+      `${service} cannot start${nodeEnvironment === 'production' ? ' in production' : ''}: ${issues
         .map(({ variable, message }) => `${variable} ${message}`)
         .join('; ')}`,
     );
@@ -26,15 +28,48 @@ export class StartupConfigurationError extends Error {
 }
 
 /**
- * Lists configuration errors that would let the worker run without durable
- * persistence, object storage, or the New API provider in production.
+ * 读取单个 Worker 同时处理的 Run 数；未配置时为 4，不改变 Run 内部 DAG 顺序。
+ * @param environment 启动环境；显式 WORKER_CONCURRENCY 只允许 1..20 的十进制整数。
+ * @returns 有界并发数；设为 1 恢复串行领取 Run。
+ * @throws StartupConfigurationError 显式值为空、非整数或越界时拒绝启动。
+ */
+export function resolveWorkerConcurrency(environment: StartupEnvironment = process.env): number {
+  const raw = environment.WORKER_CONCURRENCY;
+  if (raw === undefined) return 4;
+  const value = raw.trim();
+  const concurrency = Number(value);
+  if (
+    !/^[0-9]+$/.test(value) ||
+    !Number.isInteger(concurrency) ||
+    concurrency < 1 ||
+    concurrency > 20
+  ) {
+    throw new StartupConfigurationError(
+      'Worker',
+      [{ variable: 'WORKER_CONCURRENCY', message: 'must be an integer between 1 and 20' }],
+      environment.NODE_ENV,
+    );
+  }
+  return concurrency;
+}
+
+/**
+ * 检查所有环境的 Worker 并发上限，以及生产环境的持久化、存储和 Provider 配置。
+ * @param environment 启动环境；非生产环境仍可使用本地依赖和 Mock。
+ * @returns 不含配置原值的错误列表；空列表表示配置通过校验。
  */
 export function validateWorkerStartupConfiguration(
   environment: StartupEnvironment = process.env,
 ): StartupConfigurationIssue[] {
-  if (environment.NODE_ENV !== 'production') return [];
-
   const issues: StartupConfigurationIssue[] = [];
+  try {
+    resolveWorkerConcurrency(environment);
+  } catch (error) {
+    if (!(error instanceof StartupConfigurationError)) throw error;
+    issues.push(...error.issues);
+  }
+  if (environment.NODE_ENV !== 'production') return issues;
+
   const databaseUrl = requireValue(environment, 'DATABASE_URL', issues);
   const redisUrl = requireValue(environment, 'REDIS_URL', issues);
   requireValue(environment, 'S3_BUCKET', issues);
@@ -115,7 +150,8 @@ export function assertWorkerStartupConfiguration(
   environment: StartupEnvironment = process.env,
 ): void {
   const issues = validateWorkerStartupConfiguration(environment);
-  if (issues.length > 0) throw new StartupConfigurationError('Worker', issues);
+  if (issues.length > 0)
+    throw new StartupConfigurationError('Worker', issues, environment.NODE_ENV);
 }
 
 /**

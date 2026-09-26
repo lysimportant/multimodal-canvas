@@ -8,7 +8,10 @@ import { resultAssetContentUrl } from './node-echo-text';
 
 /** 提示词资源条使用的连线资源，至少要能预览。 */
 export type ConnectedPromptAsset = Pick<Asset, 'id' | 'name' | 'mediaType'> &
-  Partial<Pick<Asset, 'contentUrl' | 'mimeType' | 'status' | 'sizeBytes' | 'tags'>>;
+  Partial<Pick<Asset, 'contentUrl' | 'mimeType' | 'status' | 'sizeBytes' | 'tags'>> & {
+    /** 当前目标节点保存的引用别名，不修改资源库文件名。 */
+    referenceName?: string;
+  };
 
 /**
  * 收集可出现在提示词「引用资源」条里的上游资源。
@@ -27,6 +30,7 @@ export function collectConnectedPromptAssets(
 ): ConnectedPromptAsset[] {
   const items: ConnectedPromptAsset[] = [];
   const seen = new Set<string>();
+  const references = nodes.find((node) => node.id === nodeId)?.data.resourceRefs ?? [];
   for (const edge of edges) {
     if (edge.target !== nodeId) continue;
     if (edge.targetHandle === 'input:imageEdit') continue;
@@ -42,9 +46,14 @@ export function collectConnectedPromptAssets(
       result?.contentUrl ??
       source.data.contentUrl ??
       resultAssetContentUrl(assetId, result?.version);
+    const referenceName = (
+      references.find((reference) => reference.id === `connected:${assetId}`) ??
+      references.find((reference) => reference.assetId === assetId)
+    )?.name;
     items.push({
       id: assetId,
       name: catalog?.name ?? source.data.label,
+      ...(referenceName ? { referenceName } : {}),
       mediaType: source.data.mediaType,
       contentUrl,
       mimeType: catalog?.mimeType ?? result?.mimeType ?? source.data.mimeType ?? '',
