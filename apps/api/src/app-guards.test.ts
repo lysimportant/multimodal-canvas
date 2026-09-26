@@ -2,8 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHmac } from 'node:crypto';
 
 import { buildApp } from './fixtures/test-app';
+import { MemoryAssetStore } from './assets';
+import type { NewApiAccountService } from './newapi-account-service';
 import { MemoryRunService } from './runs';
 import type { Observability, ObservabilitySpan } from '@multimodal-canvas/observability';
+import { TestAuthContext } from './fixtures/auth-session';
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -145,6 +148,64 @@ describe('API authentication guard', () => {
       });
       expect(response.statusCode).toBe(503);
       expect(response.json()).toEqual({ error: 'authentication service unavailable' });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('上游暂时不可用时仍可签发本地资源访问授权，写操作继续被只读保护', async () => {
+    vi.stubEnv('API_AUTH_TOKEN', '');
+    vi.stubEnv('API_JWT_SECRET', 'read-only-guard-jwt');
+    const auth = new TestAuthContext();
+    const assetStore = new MemoryAssetStore();
+    const identity = vi.fn(async () => ({ status: 'unavailable' }));
+    const unavailableAccount = {
+      options: {
+        webUrl: 'http://localhost:8080',
+        client: { options: { redirectUri: 'http://localhost:8080/v1/auth/newapi/callback' } },
+      },
+      identity,
+    } as unknown as NewApiAccountService;
+    const app = buildApp({
+      logger: false,
+      assetStore,
+      newApiAccount: unavailableAccount,
+      ...auth.appOptions,
+    });
+    const session = await auth.session({ email: 'read-only-assets@example.com' });
+    const user = await auth.store.findUserByEmail('read-only-assets@example.com');
+    if (!user) throw new Error('test user was not created');
+    const asset = await assetStore.create({
+      name: 'read-only.png',
+      mediaType: 'image',
+      mimeType: 'image/png',
+      content: Buffer.from('read-only-content'),
+      ownerId: user.id,
+    });
+
+    try {
+      const issued = await app.inject({
+        method: 'POST',
+        url: '/v1/assets/' + asset.id + '/access-url',
+        headers: { authorization: 'Bearer ' + session.accessToken },
+      });
+      expect(issued.statusCode).toBe(200);
+      const content = await app.inject({ method: 'GET', url: issued.json().url });
+      expect(content.statusCode).toBe(200);
+      expect(content.rawPayload.toString()).toBe('read-only-content');
+
+      const write = await app.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        headers: { authorization: 'Bearer ' + session.accessToken },
+        payload: { name: 'write-attempt' },
+      });
+      expect(identity).toHaveBeenCalled();
+      expect(write.statusCode).toBe(503);
+      expect(write.json()).toMatchObject({
+        code: 'upstream_unavailable',
+        error: 'New API 暂不可用，当前作品只读',
+      });
     } finally {
       await app.close();
     }

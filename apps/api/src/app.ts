@@ -287,6 +287,11 @@ function isGenerationSubmissionPath(path: string): boolean {
   );
 }
 
+/** 上游短暂不可用时仍允许读取本地资源内容；该接口只签发本地短期访问令牌，不会发起上游写操作。 */
+function isLocalAssetAccessRequest(method: string, path: string): boolean {
+  return method === 'POST' && /^\/v1\/assets\/[^/?#]+\/access-url$/.test(path);
+}
+
 function serializeRequestForLog(request: FastifyRequest): Record<string, unknown> {
   return {
     method: request.method,
@@ -1604,6 +1609,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           if (
             identity.status === 'unavailable' &&
             !['GET', 'HEAD', 'OPTIONS'].includes(request.method) &&
+            !isLocalAssetAccessRequest(request.method, pathname) &&
             ![
               '/v1/account/newapi/sync',
               '/v1/auth/logout',
