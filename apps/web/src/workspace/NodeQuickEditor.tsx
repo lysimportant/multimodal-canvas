@@ -1,4 +1,5 @@
 import {
+  ChevronDown,
   Expand,
   EyeOff,
   GitFork,
@@ -8,8 +9,8 @@ import {
   SlidersHorizontal,
   X,
 } from 'lucide-react';
-import { Checkbox, Dropdown, Select, type SelectProps } from 'antd';
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { Checkbox, Dropdown, Popover, Select, type SelectProps } from 'antd';
+import { useEffect, useId, useRef, useState } from 'react';
 
 import type {
   Asset,
@@ -209,7 +210,6 @@ const automaticVideoDurationOption: MediaOption = {
 
 /** 视频节点浮层中优先展示的常用时长；不改变模型合同的范围校验。 */
 const VIDEO_DURATION_PRESETS = [5, 10, 15, 30] as const;
-const CUSTOM_VIDEO_DURATION_VALUE = '__custom_video_duration__';
 
 /** 自动比例按模型根据提示词和输入素材决定；强制沿用素材的模式另显示原素材标签。 */
 const adaptiveVideoAspectRatioOption: MediaOption = {
@@ -438,6 +438,14 @@ export function NodeQuickEditor({
     ? undefined
     : `生成数量必须为 1 至 ${GENERATION_COUNT_MAX} 的整数`;
   const durationContract = videoDurationContracts[videoFamily];
+  /** 已确认的范围合同优先；其它模型的目录枚举不能被快捷值或自定义输入扩大。 */
+  const declaredDurations = durationContract
+    ? undefined
+    : readCapabilityOptions(
+        getCapabilityRoots(selectedModel, 'video'),
+        ['duration', 'durations', 'seconds', 'durationSeconds', 'duration_seconds'],
+        'duration',
+      );
   const durationValue = Number(durationDraft);
   const automaticDuration = supportsAutomaticDuration && durationValue === -1;
   const durationIssue =
@@ -455,7 +463,14 @@ export function NodeQuickEditor({
         : supportsAutomaticDuration
           ? '视频时长必须为正整数秒，或使用 -1 自动时长'
           : '视频时长必须为正整数秒，且不能超过安全整数范围'
-      : undefined;
+      : node.data.mediaType === 'video' &&
+          durationDraft !== '' &&
+          declaredDurations &&
+          !declaredDurations.some((option) => option.value === String(durationValue))
+        ? declaredDurations.length
+          ? `当前模型仅支持 ${declaredDurations.map((option) => option.value).join('、')} 秒`
+          : '当前模型未声明可用的视频时长'
+        : undefined;
   const resolutionContract = videoResolutionContractForModel(
     currentModel,
     allowMoonH3SuperResolution,
@@ -524,19 +539,8 @@ export function NodeQuickEditor({
     mediaOptions.duration,
     durationContract,
     supportsAutomaticDuration,
+    declaredDurations,
   );
-  const durationIsQuickOption = durationQuickOptions.some(
-    (option) => option.value === durationDraft,
-  );
-  const durationSelectOptions: QuickOption[] = [
-    ...durationQuickOptions,
-    {
-      value: CUSTOM_VIDEO_DURATION_VALUE,
-      label: '自定义',
-      trailingLabel: durationDraft ? `${durationDraft} 秒` : undefined,
-      description: '在此输入秒数',
-    },
-  ];
   const videoContractParameterIssue =
     node.data.mediaType === 'video' &&
     currentVideoMode === 'video_edit' &&
@@ -847,57 +851,23 @@ export function NodeQuickEditor({
               aspectOptions
               onChange={(value) => updateParameter('aspectRatio', value)}
             />
-            <NodeParameterSelect
-              label="时长（秒）"
-              value={
-                durationDraft === ''
-                  ? undefined
-                  : durationIsQuickOption
-                    ? durationDraft
-                    : CUSTOM_VIDEO_DURATION_VALUE
-              }
-              options={durationSelectOptions}
+            <VideoDurationControl
+              value={durationDraft}
+              options={durationQuickOptions}
+              issue={durationIssue}
+              contract={durationContract}
+              supportsAutomaticDuration={supportsAutomaticDuration}
+              inputDisabled={!onParametersChange}
               onChange={(value) => {
-                if (value === CUSTOM_VIDEO_DURATION_VALUE) return;
                 setDurationDraft(value);
-                updateParameter('duration', value ? Number(value) : undefined);
+                if (value === '') updateParameter('duration', undefined);
+                else if (
+                  Number.isSafeInteger(Number(value)) &&
+                  (Number(value) > 0 || (supportsAutomaticDuration && Number(value) === -1))
+                ) {
+                  updateParameter('duration', Number(value));
+                }
               }}
-              className="node-quick-editor-select-group"
-              optionLayout="grid"
-              popupExtra={
-                <label
-                  className="node-quick-editor-duration-custom"
-                  onMouseDown={(event) => event.stopPropagation()}
-                >
-                  <span className="node-quick-editor-duration-custom-label">自定义秒数</span>
-                  <Input
-                    className="node-quick-editor-number-input"
-                    type="number"
-                    inputMode="numeric"
-                    min={supportsAutomaticDuration ? -1 : 1}
-                    max={Number.MAX_SAFE_INTEGER}
-                    step={1}
-                    value={durationDraft}
-                    placeholder="输入秒数"
-                    aria-label={
-                      supportsAutomaticDuration ? '自定义秒数（-1 为自动）' : '自定义秒数'
-                    }
-                    aria-invalid={Boolean(durationIssue)}
-                    disabled={!onParametersChange}
-                    onChange={(event) => {
-                      const value = event.currentTarget.value;
-                      setDurationDraft(value);
-                      if (value === '') updateParameter('duration', undefined);
-                      else if (
-                        Number.isSafeInteger(Number(value)) &&
-                        (Number(value) > 0 || (supportsAutomaticDuration && Number(value) === -1))
-                      ) {
-                        updateParameter('duration', Number(value));
-                      }
-                    }}
-                  />
-                </label>
-              }
             />
             <NodeParameterSelect
               label="完成后"
@@ -1424,6 +1394,198 @@ function nodePopupContainer(trigger: HTMLElement): HTMLElement {
   return trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body;
 }
 
+/**
+ * 视频秒数使用库浮卡共享快捷按钮与自定义输入，不占据外部参数网格。
+ * value 保留空值和旧节点秒数；选项由模型合同约束，输入错误由父层阻止生成。
+ * hover 不抢焦点；点击或键盘进入后固定卡片，Escape 只关闭本层并归还焦点。
+ */
+function VideoDurationControl({
+  value,
+  options,
+  issue,
+  contract,
+  supportsAutomaticDuration,
+  inputDisabled,
+  onChange,
+}: {
+  value: string;
+  options: QuickOption[];
+  issue?: string;
+  contract?: { min: number; max: number };
+  supportsAutomaticDuration: boolean;
+  inputDisabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  const popupId = useId();
+  const inputId = useId();
+  const [open, setOpen] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const focusOnOpenRef = useRef(false);
+  const selected = options.find((option) => option.value === value);
+  const selectionLabel = value === '' ? '未设置' : (selected?.label ?? `自定义 · ${value} 秒`);
+
+  /** 首次键盘打开时等 portal 挂载再聚焦；hover 打开不执行此步骤。 */
+  const focusFirstOption = (container: HTMLDivElement | null) => {
+    if (!container || !focusOnOpenRef.current) return;
+    focusOnOpenRef.current = false;
+    (
+      container.querySelector<HTMLButtonElement>('button:not(:disabled)') ?? inputRef.current
+    )?.focus({ preventScroll: true });
+  };
+
+  /** 仅关闭时长浮层，不提交新值，也不关闭媒体参数页或完整编辑器。 */
+  const close = () => {
+    setOpen(false);
+    setPinned(false);
+    focusOnOpenRef.current = false;
+  };
+
+  return (
+    <div
+      className="node-parameter-select compact-select node-quick-editor-select-group"
+      onKeyDown={(event) => {
+        if (!open) return;
+        if (isImeKeyboardEvent(event)) {
+          event.stopPropagation();
+          return;
+        }
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          event.stopPropagation();
+          close();
+          triggerRef.current?.focus({ preventScroll: true });
+        } else if (contentRef.current?.contains(event.target as Node)) {
+          // 保留输入和 Tab 的浏览器默认行为，不触发父级菜单或画布快捷键。
+          event.stopPropagation();
+        }
+      }}
+    >
+      <span className="compact-select-label">时长（秒）</span>
+      <Popover
+        open={open}
+        trigger={pinned ? ['click'] : ['hover', 'click']}
+        placement="topLeft"
+        mouseEnterDelay={0.1}
+        mouseLeaveDelay={0.18}
+        onOpenChange={(nextOpen) => {
+          if (nextOpen) setOpen(true);
+          else close();
+        }}
+        getPopupContainer={nodePopupContainer}
+        classNames={{ root: 'node-quick-editor-duration-popover' }}
+        styles={{ root: { pointerEvents: 'auto' } }}
+        destroyOnHidden
+        content={
+          <div
+            id={popupId}
+            role="dialog"
+            aria-label="视频时长"
+            className="node-quick-editor-duration-card"
+            ref={(container) => {
+              contentRef.current = container;
+              focusFirstOption(container);
+            }}
+            onFocusCapture={() => setPinned(true)}
+            onBlur={(event) => {
+              if (
+                !event.currentTarget.contains(event.relatedTarget) &&
+                event.relatedTarget !== triggerRef.current
+              )
+                close();
+            }}
+          >
+            <div className="node-quick-editor-duration-presets" role="group" aria-label="快捷秒数">
+              {options.map((option) => (
+                <Button
+                  key={option.value}
+                  type="button"
+                  aria-label={option.value === '-1' ? '自动时长' : `${option.label} 秒`}
+                  aria-pressed={value === option.value}
+                  disabled={inputDisabled || option.disabled}
+                  title={option.description}
+                  onClick={() => {
+                    onChange(option.value);
+                    close();
+                    triggerRef.current?.focus({ preventScroll: true });
+                  }}
+                >
+                  {option.value === '-1' ? '自动' : `${option.label} 秒`}
+                </Button>
+              ))}
+            </div>
+            <div className="node-quick-editor-duration-custom">
+              <Button
+                type="button"
+                variant="ghost"
+                className="node-quick-editor-duration-custom-label"
+                disabled={inputDisabled}
+                onClick={() => inputRef.current?.focus({ preventScroll: true })}
+              >
+                自定义秒数
+              </Button>
+              <Input
+                ref={inputRef}
+                id={inputId}
+                className="node-quick-editor-number-input"
+                type="number"
+                inputMode="numeric"
+                min={supportsAutomaticDuration ? -1 : (contract?.min ?? 1)}
+                max={contract?.max ?? Number.MAX_SAFE_INTEGER}
+                step={1}
+                value={value}
+                placeholder="输入秒数"
+                aria-label={supportsAutomaticDuration ? '自定义秒数（-1 为自动）' : '自定义秒数'}
+                aria-invalid={Boolean(issue)}
+                aria-describedby={issue ? `${inputId}-issue` : undefined}
+                disabled={inputDisabled}
+                onChange={(event) => onChange(event.currentTarget.value)}
+              />
+              {issue && (
+                <small id={`${inputId}-issue`} role="status">
+                  {issue}
+                </small>
+              )}
+            </div>
+          </div>
+        }
+      >
+        <Button
+          ref={triggerRef}
+          type="button"
+          className="node-quick-editor-duration-trigger"
+          aria-label={`时长（秒）：${selectionLabel}`}
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          aria-controls={open ? popupId : undefined}
+          onClick={(event) => {
+            // hover 后第一次点击固定卡片，再次点击才收起，避免移动过来就关掉。
+            const nextOpen = !open || !pinned;
+            focusOnOpenRef.current = nextOpen && event.detail === 0;
+            setOpen(nextOpen);
+            setPinned(nextOpen);
+            if (nextOpen) focusFirstOption(contentRef.current);
+          }}
+          onKeyDown={(event) => {
+            if (event.key !== 'ArrowDown' || isImeKeyboardEvent(event)) return;
+            event.preventDefault();
+            event.stopPropagation();
+            focusOnOpenRef.current = true;
+            setOpen(true);
+            setPinned(true);
+            focusFirstOption(contentRef.current);
+          }}
+        >
+          <span>{selectionLabel}</span>
+          <ChevronDown size={12} aria-hidden="true" />
+        </Button>
+      </Popover>
+    </div>
+  );
+}
+
 /** 保留参数短枚举、模型分组和未设置语义；选项导航与焦点由 Ant Design 处理。 */
 function NodeParameterSelect({
   label,
@@ -1434,7 +1596,6 @@ function NodeParameterSelect({
   disabled,
   optionLayout = 'list',
   aspectOptions = false,
-  popupExtra,
 }: {
   label: string;
   value?: string;
@@ -1444,7 +1605,6 @@ function NodeParameterSelect({
   disabled?: boolean;
   optionLayout?: 'list' | 'grid';
   aspectOptions?: boolean;
-  popupExtra?: ReactNode;
 }) {
   const selectId = useId();
   const selected = options.find((option) => option.value === value);
@@ -1515,7 +1675,6 @@ function NodeParameterSelect({
             }}
           >
             {menu}
-            {popupExtra}
           </div>
         )}
         optionRender={(option) => (
@@ -1673,12 +1832,15 @@ function getVideoDurationQuickOptions(
   options: readonly QuickOption[],
   contract: { min: number; max: number } | undefined,
   supportsAutomaticDuration: boolean,
+  declaredDurations?: readonly MediaOption[],
 ): QuickOption[] {
   const byValue = new Map(options.map((option) => [option.value, option]));
   const presets = VIDEO_DURATION_PRESETS.map((seconds) => {
     const value = String(seconds);
     const existing = byValue.get(value);
-    const supported = !contract || (seconds >= contract.min && seconds <= contract.max);
+    const supported =
+      (!contract || (seconds >= contract.min && seconds <= contract.max)) &&
+      (!declaredDurations || declaredDurations.some((option) => option.value === value));
     return {
       ...(existing ?? { value, label: value, description: '秒' }),
       value,

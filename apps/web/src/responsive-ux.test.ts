@@ -11,10 +11,12 @@ const nodeQuickEditorCss = readFileSync(
 const normalizedNodeQuickEditorCss = nodeQuickEditorCss.replace(/\s+/g, ' ');
 
 describe('responsive UX CSS contracts', () => {
-  it('只为节点提示词输入层加宽 caret，避免影响普通表单', () => {
-    expect(normalizedNodeQuickEditorCss).toMatch(
-      /:is\(\.node-quick-editor, \.node-quick-editor-dialog\) \.node-quick-editor-field textarea\.resource-mention-textarea \{[^}]*caret-color: var\(--mc-text\);[^}]*caret-width: 2px;/,
-    );
+  it('仅可见的增强光标隐藏原生 caret，并支持减少动态效果', () => {
+    const caretCss = readFileSync(resolve(process.cwd(), 'src/prompt-caret.css'), 'utf8');
+    expect(caretCss).toContain("textarea.resource-mention-textarea[data-prompt-caret='visible']");
+    expect(caretCss).toContain('caret-color: transparent');
+    expect(caretCss).toContain('pointer-events: none');
+    expect(caretCss).toContain('prefers-reduced-motion: reduce');
   });
 
   it('locks the page scroll while any modal surface is open', () => {

@@ -64,6 +64,11 @@ function selectPopup(group: HTMLElement) {
   return within(list!);
 }
 
+/** 时长浮卡独立于库 Select，按可访问名称查询真实 portal 内容。 */
+function durationCard() {
+  return within(screen.getByRole('dialog', { name: '视频时长' }));
+}
+
 type PromptMentionBlock = Extract<PromptDocument['blocks'][number], { type: 'mention' }>;
 
 /** 组件用例的本人分组引用；重渲染时必须与目录保持相同身份。 */
@@ -676,18 +681,18 @@ describe('NodeQuickEditor', () => {
         })}
       />,
     );
-    const trigger = screen.getByRole('combobox', { name: '时长（秒）：未设置' });
+    const trigger = screen.getByRole('button', { name: '时长（秒）：未设置' });
     await user.click(trigger);
-    const durationPopup = screen.getByRole('listbox', { name: '时长（秒）选项' });
+    const durationPopup = screen.getByRole('dialog', { name: '视频时长' });
     await waitFor(() =>
-      expect(within(durationPopup).getByRole('option', { name: '15 秒' })).toBeVisible(),
+      expect(within(durationPopup).getByRole('button', { name: '15 秒' })).toBeVisible(),
     );
     for (const seconds of ['5 秒', '10 秒', '15 秒', '30 秒']) {
-      expect(within(durationPopup).getByRole('option', { name: seconds })).toBeInTheDocument();
+      expect(within(durationPopup).getByRole('button', { name: seconds })).toBeInTheDocument();
     }
-    expect(within(durationPopup).getByRole('option', { name: /自定义/ })).toBeInTheDocument();
-    expect(within(durationPopup).queryByRole('option', { name: '16 秒' })).not.toBeInTheDocument();
-    await user.click(screen.getByRole('option', { name: '15 秒' }));
+    expect(within(durationPopup).getByRole('button', { name: /自定义/ })).toBeInTheDocument();
+    expect(within(durationPopup).queryByRole('button', { name: '16 秒' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '15 秒' }));
     expect(onParametersChange).toHaveBeenLastCalledWith({ resolution: '720p', duration: 15 });
     await user.click(trigger);
     const duration = screen.getByRole('spinbutton', { name: '自定义秒数' });
@@ -701,6 +706,352 @@ describe('NodeQuickEditor', () => {
     }
     fireEvent.change(duration, { target: { value: '' } });
     expect(onParametersChange).toHaveBeenLastCalledWith({ resolution: '720p' });
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+  });
+
+  it('没有参数回调时只读时长卡片禁用快捷按钮和自定义输入', async () => {
+    const user = userEvent.setup();
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          node: {
+            ...videoNode,
+            data: { ...videoNode.data, modelAlias: 'grok-video', parameters: { duration: 10 } },
+          },
+          models: [
+            {
+              id: 'grok-video',
+              name: '枚举视频模型',
+              mediaTypes: ['video'],
+              capabilities: { video: { durations: [6, 10] } },
+            },
+          ],
+        })}
+      />,
+    );
+    const trigger = screen.getByRole('button', { name: '时长（秒）：10' });
+    expect(trigger).toBeEnabled();
+    await user.click(trigger);
+    const card = screen.getByRole('dialog', { name: '视频时长' });
+    for (const option of within(screen.getByRole('group', { name: '快捷秒数' })).getAllByRole(
+      'button',
+    )) {
+      expect(option).toBeDisabled();
+    }
+    expect(within(card).getByRole('button', { name: '自定义秒数' })).toBeDisabled();
+    expect(within(card).getByRole('spinbutton', { name: '自定义秒数' })).toBeDisabled();
+  });
+
+  it('时长 hover 浮卡不抢焦点，鼠标移入卡片可操作，离开后收起', async () => {
+    const user = userEvent.setup();
+    const onParametersChange = vi.fn();
+    render(<NodeQuickEditor {...makeProps({ node: videoNode, onParametersChange })} />);
+    const trigger = screen.getByRole('button', { name: '时长（秒）：未设置' });
+    trigger.focus();
+    expect(screen.queryByRole('spinbutton', { name: '自定义秒数' })).not.toBeInTheDocument();
+
+    await user.hover(trigger);
+    const card = await screen.findByRole('dialog', { name: '视频时长' });
+    await waitFor(() => expect(card).toBeVisible());
+    expect(trigger).toHaveFocus();
+    expect(trigger).toHaveAttribute('aria-controls', card.id);
+    expect(within(card).getByRole('spinbutton', { name: '自定义秒数' })).toBeVisible();
+    expect(card.closest('.ant-popover')?.parentElement).toBe(document.body);
+    await user.hover(card);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 220));
+    });
+    expect(card).toBeVisible();
+    await user.unhover(card);
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: '视频时长' })).not.toBeInTheDocument(),
+    );
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    expect(onParametersChange).not.toHaveBeenCalled();
+  });
+
+  it('hover 后点击固定时长浮卡，再次点击或外点才收起', async () => {
+    const user = userEvent.setup();
+    render(<NodeQuickEditor {...makeProps({ node: videoNode, onParametersChange: vi.fn() })} />);
+    const trigger = screen.getByRole('button', { name: '时长（秒）：未设置' });
+    await user.hover(trigger);
+    await screen.findByRole('dialog', { name: '视频时长' });
+    await user.click(trigger);
+    await user.unhover(trigger);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 220));
+    });
+    expect(screen.getByRole('dialog', { name: '视频时长' })).toBeVisible();
+    await user.click(trigger);
+    expect(screen.queryByRole('dialog', { name: '视频时长' })).not.toBeInTheDocument();
+    await user.click(trigger);
+    await waitFor(() => expect(screen.getByRole('dialog', { name: '视频时长' })).toBeVisible());
+    await user.click(document.body);
+    expect(screen.queryByRole('dialog', { name: '视频时长' })).not.toBeInTheDocument();
+  });
+
+  it('点击自定义聚焦后可连续键入，受控回写和移走鼠标不会关闭卡片或丢失焦点', async () => {
+    const user = userEvent.setup();
+    const onParametersChange = vi.fn();
+    const props = makeProps({
+      node: {
+        ...videoNode,
+        data: { ...videoNode.data, parameters: { duration: 8, resolution: '720p' } },
+      },
+    });
+    /** 模拟父层逐字保存，确保焦点不是靠静态 mock 偶然保留。 */
+    function ControlledDuration() {
+      const [node, setNode] = useState(props.node);
+      return (
+        <NodeQuickEditor
+          {...props}
+          node={node}
+          onParametersChange={(parameters) => {
+            onParametersChange(parameters);
+            setNode((current) => ({ ...current, data: { ...current.data, parameters } }));
+          }}
+        />
+      );
+    }
+    render(<ControlledDuration />);
+    const trigger = screen.getByRole('button', { name: '时长（秒）：自定义 · 8 秒' });
+    await user.hover(trigger);
+    const card = await screen.findByRole('dialog', { name: '视频时长' });
+    await user.click(within(card).getByRole('button', { name: '自定义秒数' }));
+    const input = within(card).getByRole('spinbutton', { name: '自定义秒数' });
+    expect(input).toHaveFocus();
+    await user.clear(input);
+    await user.type(input, '17');
+    expect(input).toHaveValue(17);
+    expect(input).toHaveFocus();
+    expect(onParametersChange.mock.calls.map(([parameters]) => parameters.duration)).toEqual([
+      undefined,
+      1,
+      17,
+    ]);
+    expect(onParametersChange).toHaveBeenLastCalledWith({ resolution: '720p', duration: 17 });
+    expect(trigger).toHaveAccessibleName('时长（秒）：自定义 · 17 秒');
+    await user.unhover(input);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 220));
+    });
+    expect(card).toBeVisible();
+    expect(input).toHaveFocus();
+    await user.keyboard('{Enter}');
+    expect(card).toBeVisible();
+    expect(props.onRun).not.toHaveBeenCalled();
+    await user.tab({ shift: true });
+    expect(within(card).getByRole('button', { name: '自定义秒数' })).toHaveFocus();
+    await user.tab();
+    expect(input).toHaveFocus();
+    await user.tab();
+    expect(screen.queryByRole('dialog', { name: '视频时长' })).not.toBeInTheDocument();
+  });
+
+  it.each(['{Enter}', ' ', '{ArrowDown}'])(
+    '时长支持键盘 %s 打开、Tab 选择和 Escape 归还焦点',
+    async (key) => {
+      const user = userEvent.setup();
+      const onParametersChange = vi.fn();
+      render(<NodeQuickEditor {...makeProps({ node: videoNode, onParametersChange })} />);
+      const trigger = screen.getByRole('button', { name: '时长（秒）：未设置' });
+      trigger.focus();
+      await user.keyboard(key);
+      await waitFor(() =>
+        expect(durationCard().getByRole('button', { name: '5 秒' })).toHaveFocus(),
+      );
+      await user.tab();
+      expect(durationCard().getByRole('button', { name: '10 秒' })).toHaveFocus();
+      await user.keyboard('{Enter}');
+      expect(onParametersChange).toHaveBeenLastCalledWith({ duration: 10 });
+      expect(screen.queryByRole('dialog', { name: '视频时长' })).not.toBeInTheDocument();
+      expect(trigger).toHaveFocus();
+      await user.keyboard('{ArrowDown}');
+      await user.keyboard('{Escape}');
+      expect(screen.queryByRole('dialog', { name: '视频时长' })).not.toBeInTheDocument();
+      expect(trigger).toHaveFocus();
+      expect(screen.getByRole('button', { name: '媒体参数' })).toHaveAttribute(
+        'aria-expanded',
+        'true',
+      );
+    },
+  );
+
+  it.each(['快捷', '完整'] as const)(
+    '%s编辑器中时长输入 Escape 只关闭本层，IME Escape 不关闭',
+    async (presentation) => {
+      const user = userEvent.setup();
+      render(<NodeQuickEditor {...makeProps({ node: videoNode, onParametersChange: vi.fn() })} />);
+      if (presentation === '完整') {
+        await user.click(screen.getByRole('button', { name: '打开完整编辑器' }));
+        await user.click(screen.getByRole('button', { name: '媒体参数' }));
+      }
+      const editorDialog = presentation === '完整' ? screen.getByRole('dialog') : undefined;
+      const trigger = screen.getByRole('button', { name: '时长（秒）：未设置' });
+      await user.click(trigger);
+      const card = screen.getByRole('dialog', { name: '视频时长' });
+      if (editorDialog) expect(card.closest('.ant-popover')?.parentElement).toBe(editorDialog);
+      await user.click(within(card).getByRole('button', { name: '自定义秒数' }));
+      const input = within(card).getByRole('spinbutton', { name: '自定义秒数' });
+      fireEvent.keyDown(input, { key: 'Escape', code: 'Escape', keyCode: 27, isComposing: true });
+      expect(card).toBeVisible();
+      expect(input).toHaveFocus();
+      await user.keyboard('{Escape}');
+      expect(screen.queryByRole('dialog', { name: '视频时长' })).not.toBeInTheDocument();
+      expect(trigger).toHaveFocus();
+      if (editorDialog) expect(editorDialog).toBeVisible();
+      else
+        expect(screen.getByRole('button', { name: '媒体参数' })).toHaveAttribute(
+          'aria-expanded',
+          'true',
+        );
+    },
+  );
+
+  it.each([6, 7])(
+    '目录枚举只允许 6/10 秒，旧值 %s 回显但不能放宽快捷值或自定义输入',
+    async (saved) => {
+      const user = userEvent.setup();
+      const onParametersChange = vi.fn();
+      render(
+        <NodeQuickEditor
+          {...makeProps({
+            node: {
+              ...videoNode,
+              data: {
+                ...videoNode.data,
+                modelAlias: 'grok-video',
+                parameters: { duration: saved },
+              },
+            },
+            models: [
+              {
+                id: 'grok-video',
+                name: '枚举模型',
+                mediaTypes: ['video'],
+                capabilities: { video: { durations: [6, 10] } },
+              },
+            ],
+            onParametersChange,
+          })}
+        />,
+      );
+      const trigger = screen.getByRole('button', { name: `时长（秒）：自定义 · ${saved} 秒` });
+      expect(onParametersChange).not.toHaveBeenCalled();
+      await user.click(trigger);
+      for (const seconds of [5, 15, 30]) {
+        const option = durationCard().getByRole('button', { name: `${seconds} 秒` });
+        expect(option).toBeDisabled();
+        await user.click(option);
+      }
+      expect(onParametersChange).not.toHaveBeenCalled();
+      expect(durationCard().getByRole('button', { name: '10 秒' })).toBeEnabled();
+      const input = durationCard().getByRole('spinbutton', { name: '自定义秒数' });
+      expect(input).toHaveValue(saved);
+      expect(input).toHaveAttribute('aria-invalid', String(saved !== 6));
+      await user.clear(input);
+      await user.type(input, '8');
+      expect(input).toHaveAttribute('aria-invalid', 'true');
+      expect(input).toHaveAccessibleDescription('当前模型仅支持 6、10 秒');
+      expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+      await user.clear(input);
+      await user.type(input, '6');
+      expect(input).toHaveAttribute('aria-invalid', 'false');
+      expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+    },
+  );
+
+  it('显式空枚举不能用快捷回退值绕过，已保存的时长仍然可见', async () => {
+    const user = userEvent.setup();
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          node: {
+            ...videoNode,
+            data: { ...videoNode.data, modelAlias: 'limited-video', parameters: { duration: 5 } },
+          },
+          models: [
+            {
+              id: 'limited-video',
+              name: '空枚举模型',
+              mediaTypes: ['video'],
+              capabilities: { video: { duration: { enum: [] } } },
+            },
+          ],
+          onParametersChange: vi.fn(),
+        })}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: '时长（秒）：5' }));
+    for (const option of within(screen.getByRole('group', { name: '快捷秒数' })).getAllByRole(
+      'button',
+    )) {
+      expect(option).toBeDisabled();
+    }
+    const input = durationCard().getByRole('spinbutton', { name: '自定义秒数' });
+    expect(input).toHaveValue(5);
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+  });
+
+  it('MiniMax 范围合同限制 4 至 15 秒，旧值和中间输入不被快捷菜单改写', async () => {
+    const user = userEvent.setup();
+    const onParametersChange = vi.fn();
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          node: {
+            ...videoNode,
+            data: { ...videoNode.data, modelAlias: 'MiniMax-H3', parameters: { duration: 4 } },
+          },
+          onParametersChange,
+        })}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: '时长（秒）：自定义 · 4 秒' }));
+    expect(onParametersChange).not.toHaveBeenCalled();
+    expect(durationCard().getByRole('button', { name: '30 秒' })).toBeDisabled();
+    expect(durationCard().getByRole('button', { name: '15 秒' })).toBeEnabled();
+    const input = durationCard().getByRole('spinbutton', { name: '自定义秒数' });
+    expect(input).toHaveAttribute('min', '4');
+    expect(input).toHaveAttribute('max', '15');
+    await user.clear(input);
+    await user.type(input, '30');
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+    await user.clear(input);
+    await user.type(input, '12');
+    expect(input).toHaveAttribute('aria-invalid', 'false');
+    expect(input).toHaveFocus();
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+  });
+
+  it('Wan3 保留 -1 自动时长按钮与自定义输入，不更改默认或旧值', async () => {
+    const user = userEvent.setup();
+    const onParametersChange = vi.fn();
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          node: {
+            ...videoNode,
+            data: { ...videoNode.data, modelAlias: 'wan3.0-video', parameters: { duration: 2 } },
+          },
+          onParametersChange,
+        })}
+      />,
+    );
+    const trigger = screen.getByRole('button', { name: '时长（秒）：自定义 · 2 秒' });
+    await user.click(trigger);
+    expect(onParametersChange).not.toHaveBeenCalled();
+    await user.click(durationCard().getByRole('button', { name: '自动时长' }));
+    expect(onParametersChange).toHaveBeenLastCalledWith({ duration: -1 });
+    expect(trigger).toHaveAccessibleName('时长（秒）：自动');
+    await user.click(trigger);
+    const input = durationCard().getByRole('spinbutton', { name: '自定义秒数（-1 为自动）' });
+    expect(input).toHaveValue(-1);
+    expect(input).toHaveAttribute('min', '-1');
+    expect(input).toHaveAttribute('max', '30');
+    expect(input).toHaveAttribute('aria-invalid', 'false');
     expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
   });
 
@@ -1868,9 +2219,9 @@ describe('NodeQuickEditor', () => {
         }}
       />,
     );
-    expect(screen.getByRole('combobox', { name: '时长（秒）：自动' })).toBeInTheDocument();
-    await user.click(screen.getByRole('combobox', { name: '时长（秒）：自动' }));
-    expect(screen.getByRole('option', { name: '30 秒' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '时长（秒）：自动' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '时长（秒）：自动' }));
+    expect(screen.getByRole('button', { name: '30 秒' })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: /视频比例：原视频比例/ })).toBeInTheDocument();
     expect(screen.getByRole('spinbutton', { name: '自定义秒数（-1 为自动）' })).toHaveValue(-1);
     expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
@@ -2020,12 +2371,9 @@ describe('NodeQuickEditor', () => {
     expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
     expect(screen.getByRole('combobox', { name: /视频比例：自动比例/ })).toBeInTheDocument();
     const durationGroup = screen.getByText('时长（秒）').parentElement as HTMLElement;
-    await user.click(within(durationGroup).getByRole('combobox'));
+    await user.click(within(durationGroup).getByRole('button'));
     expect(screen.getByRole('spinbutton', { name: '自定义秒数（-1 为自动）' })).toHaveValue(-1);
-    expect(selectPopup(durationGroup).getByRole('option', { name: /^自动 / })).not.toHaveAttribute(
-      'aria-disabled',
-      'true',
-    );
+    expect(durationCard().getByRole('button', { name: '自动时长' })).toBeEnabled();
   });
 
   it.each(['wan3.0-video', 'seedance-2-0-fast-official', 'doubao-seedance-2-5-260628'])(
@@ -2171,11 +2519,9 @@ describe('NodeQuickEditor', () => {
       aspectRatio: '16:9',
     });
     const durationGroup = screen.getByText('时长（秒）').parentElement as HTMLElement;
-    await user.click(within(durationGroup).getByRole('combobox'));
-    expect(selectPopup(durationGroup).getByRole('option', { name: '15 秒' })).toBeInTheDocument();
-    expect(
-      selectPopup(durationGroup).queryByRole('option', { name: '20 秒' }),
-    ).not.toBeInTheDocument();
+    await user.click(within(durationGroup).getByRole('button'));
+    expect(durationCard().getByRole('button', { name: '15 秒' })).toBeInTheDocument();
+    expect(durationCard().queryByRole('button', { name: '20 秒' })).not.toBeInTheDocument();
   });
 
   it('Moon 小写 minimax-h3 文生视频只提供普通档位并拒绝 adaptive 比例', async () => {
@@ -2401,9 +2747,11 @@ describe('NodeQuickEditor', () => {
       keyCode: 27,
       which: 27,
     });
-    await user.click(within(durationGroup).getByRole('combobox'));
-    expect(selectPopup(durationGroup).getAllByRole('option')).toHaveLength(5);
-    fireEvent.keyDown(within(durationGroup).getByRole('combobox'), {
+    await user.click(within(durationGroup).getByRole('button'));
+    expect(
+      within(screen.getByRole('group', { name: '快捷秒数' })).getAllByRole('button'),
+    ).toHaveLength(4);
+    fireEvent.keyDown(within(durationGroup).getByRole('button'), {
       key: 'Escape',
       keyCode: 27,
       which: 27,
@@ -2424,7 +2772,7 @@ describe('NodeQuickEditor', () => {
     expect(
       selectPopup(ratioGroup).getByRole('option', { name: /1:1/, selected: false }),
     ).toHaveAttribute('aria-selected', 'false');
-    await user.click(within(durationGroup).getByRole('combobox'));
+    await user.click(within(durationGroup).getByRole('button'));
     expect(screen.getByRole('spinbutton', { name: '自定义秒数' })).toHaveValue(4);
     if (within(ratioGroup).getByRole('combobox').getAttribute('aria-expanded') !== 'true')
       await user.click(within(ratioGroup).getByRole('combobox'));
@@ -2435,8 +2783,8 @@ describe('NodeQuickEditor', () => {
     expect(ratioButton).toHaveAttribute('title', '16:9 · 横屏');
 
     await user.click(ratioButton);
-    await user.click(within(durationGroup).getByRole('combobox'));
-    fireEvent.click(selectPopup(durationGroup).getByRole('option', { name: '10 秒' }));
+    await user.click(within(durationGroup).getByRole('button'));
+    fireEvent.click(durationCard().getByRole('button', { name: '10 秒' }));
 
     expect(onParametersChange).toHaveBeenNthCalledWith(1, {
       size: '1920x1080',
@@ -2489,7 +2837,7 @@ describe('NodeQuickEditor', () => {
       within(ratioGroup).getByRole('combobox', { name: '视频比例：未设置' }),
     ).toBeInTheDocument();
     expect(
-      within(durationGroup).getByRole('combobox', { name: '时长（秒）：未设置' }),
+      within(durationGroup).getByRole('button', { name: '时长（秒）：未设置' }),
     ).toBeInTheDocument();
     await user.click(within(resolutionGroup).getByRole('combobox'));
     expect(
@@ -2504,13 +2852,11 @@ describe('NodeQuickEditor', () => {
       selectPopup(ratioGroup).getByRole('option', { name: /16:9/, selected: false }),
     ).toBeInTheDocument();
     expect(selectPopup(ratioGroup).queryByRole('option', { name: /1:1/ })).not.toBeInTheDocument();
-    await user.click(within(durationGroup).getByRole('combobox'));
+    await user.click(within(durationGroup).getByRole('button'));
     expect(
-      selectPopup(durationGroup).getByRole('option', { name: '10 秒', selected: false }),
+      durationCard().getByRole('button', { name: '10 秒', pressed: false }),
     ).toBeInTheDocument();
-    expect(
-      selectPopup(durationGroup).queryByRole('option', { name: '6 秒' }),
-    ).not.toBeInTheDocument();
+    expect(durationCard().queryByRole('button', { name: '6 秒' })).not.toBeInTheDocument();
   });
 
   it('视频不展示像素尺寸，也不会根据分辨率和比例写入宽高', () => {

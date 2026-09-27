@@ -50,6 +50,7 @@ import {
 import { Dialog, DialogClose, DialogContent, DialogTitle } from '@multimodal-canvas/ui';
 
 import { isImeKeyboardEvent, useImeDraft } from './ime';
+import { PromptCaret } from './PromptCaret';
 import { AssetPreview } from './workspace/AssetPreview';
 import type { ConnectedPromptAsset } from './workspace/connected-prompt-assets';
 import { ASSET_DRAG_TYPE, formatBytes, mediaLabels } from './workspace/contracts';
@@ -1383,6 +1384,7 @@ export function ResourceMentionEditor({
           disabled={disabled}
           className="resource-mention-textarea"
         />
+        <PromptCaret inputRef={textareaRef} value={ime.bind.value} disabled={disabled} />
       </div>
 
       {protectedEditMessage && (

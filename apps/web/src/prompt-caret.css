@@ -1,0 +1,42 @@
+.resource-mention-caret-mirror {
+  border-style: solid;
+  box-sizing: border-box;
+  height: auto;
+  left: 0;
+  overflow: hidden;
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  visibility: hidden;
+  white-space: pre-wrap;
+}
+
+.resource-mention-caret {
+  animation: prompt-caret-blink 1s step-end infinite;
+  background: var(--mc-text, #18212f);
+  pointer-events: none;
+  position: absolute;
+  z-index: 2;
+}
+
+:is(.node-quick-editor, .node-quick-editor-dialog)
+  .node-quick-editor-field
+  textarea.resource-mention-textarea[data-prompt-caret='visible'] {
+  caret-color: transparent;
+}
+
+@keyframes prompt-caret-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .resource-mention-caret {
+    animation: none;
+  }
+}

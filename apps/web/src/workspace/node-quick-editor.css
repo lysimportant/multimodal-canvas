@@ -37,9 +37,6 @@
   .node-quick-editor-field
   textarea.resource-mention-textarea {
   background: transparent;
-  caret-color: var(--mc-text);
-  /* 仅限快速编辑器的资源提及输入层，避免影响普通表单。 */
-  caret-width: 2px;
   color: transparent;
 }
 
@@ -425,6 +422,39 @@
   font-size: 11px;
 }
 
+/* 时长使用独立浮卡，触发按钮与相邻库选择器保持相同尺寸。 */
+.node-quick-editor-duration-trigger {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  min-width: 0;
+}
+
+.node-quick-editor-duration-trigger > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-quick-editor-duration-card {
+  width: min(244px, calc(100vw - 64px));
+  max-height: min(360px, 60dvh);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.node-quick-editor-duration-presets {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.node-quick-editor-duration-presets [aria-pressed='true'] {
+  background: var(--mc-surface-muted);
+  border-color: var(--mc-border-strong);
+  color: var(--mc-text-strong);
+}
+
 /* 视频时长的自定义输入与快捷项共用同一个 Ant Design 浮层。 */
 .node-quick-editor-duration-custom {
   display: grid;
@@ -434,7 +464,10 @@
   border-top: 1px solid var(--mc-border);
 }
 
-.node-quick-editor-duration-custom-label {
+.node-quick-editor-duration-custom .node-quick-editor-duration-custom-label {
+  height: auto;
+  width: fit-content;
+  padding: 0;
   color: var(--mc-text-muted);
   font-size: 11px;
   font-weight: 600;

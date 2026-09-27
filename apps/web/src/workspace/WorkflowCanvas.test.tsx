@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest';
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -785,8 +785,14 @@ describe('WorkflowCanvas context menu', () => {
     );
   });
 
-  it('节点越过画布边界未达到四分之一前保持当前输入面板方向', async () => {
+  it('按真实面板高度连续拖动：触边前不换向，超过节点四分之一才换向且不缩成细条', async () => {
     const props = createProps({ nodes: [generateNode], selectedNode: null });
+    // scrollHeight 取整为 219，布局预留 1px 后允许 220px 内容，不能使用固定 400px 来提前换边。
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      return this.classList.contains('node-quick-editor') ? 219 : 0;
+    });
     const { rerender } = render(<WorkflowCanvas {...props} />);
     const canvas = screen.getByRole('region', { name: '工作流画布' });
     const canvasNode = screen.getByTestId(`canvas-node-${generateNode.id}`);
@@ -799,21 +805,57 @@ describe('WorkflowCanvas context menu', () => {
     const editor = await screen.findByRole('region', { name: '图片生成节点生成设置' });
     const overlay = editor.closest<HTMLDivElement>('.quick-editor-overlay')!;
     await waitFor(() => expect(overlay).toHaveAttribute('data-placement', 'below'));
+    const path = [
+      150, 190, 220, 260, 300, 340, 380, 385, 386, 387, 400, 380, 386, 405, 406, 407, 406, 405, 407,
+    ];
+    for (const [frame, top] of path.entries()) {
+      await act(async () => {
+        nodeRect = createMockRect(380, top, 180, 80);
+        canvasNode.style.transform = 'translate(' + frame + 'px)';
+      });
+      const switched = frame >= path.indexOf(407);
+      expect(overlay).toHaveAttribute('data-placement', switched ? 'above' : 'below');
+      expect(overlay).toHaveStyle({ visibility: 'visible', width: '360px', left: '290px' });
+      const maxHeight = Number.parseFloat(
+        overlay.style.getPropertyValue('--quick-editor-max-height'),
+      );
+      const overlayTop = Number.parseFloat(overlay.style.top);
+      expect(maxHeight).toBe(220);
+      expect(overlayTop).toBe(switched ? top - 64 - 220 : Math.min(top + 80 + 16, 482));
+      expect(overlayTop).toBeGreaterThanOrEqual(98);
+      expect(overlayTop + maxHeight).toBeLessThanOrEqual(702);
+    }
+    expect(props.onResizeNode).not.toHaveBeenCalled();
+    expect(props.onNodesChange).not.toHaveBeenCalled();
+  });
 
-    // 画布底边为 702，节点底边加间距越界 16px，小于节点高度 80px 的四分之一。
-    nodeRect = createMockRect(380, 620, 180, 80);
-    canvasNode.style.transform = 'translate(4px)';
-    await waitFor(() => expect(overlay).toHaveAttribute('data-placement', 'below'));
-
-    // 恰好达到四分之一时仍保持原方向，避免边界处来回跳动。
-    nodeRect = createMockRect(380, 626, 180, 80);
-    canvasNode.style.transform = 'translate(5px)';
-    await waitFor(() => expect(overlay).toHaveAttribute('data-placement', 'below'));
-
-    // 再移动 1px 超过阈值后，才允许切换到上方。
-    nodeRect = createMockRect(380, 627, 180, 80);
-    canvasNode.style.transform = 'translate(6px)';
-    await waitFor(() => expect(overlay).toHaveAttribute('data-placement', 'above'));
+  it('内容增高后重新测量自然高度，不保留过小初始高度制造常态滚动条', async () => {
+    let contentHeight = 199;
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      return this.classList.contains('node-quick-editor') ? contentHeight : 0;
+    });
+    const props = createProps({ nodes: [generateNode], selectedNode: null });
+    const { rerender } = render(<WorkflowCanvas {...props} />);
+    const canvas = screen.getByRole('region', { name: '工作流画布' });
+    const canvasNode = screen.getByTestId(`canvas-node-${generateNode.id}`);
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue(createMockRect(80, 90, 720, 620));
+    vi.spyOn(canvasNode, 'getBoundingClientRect').mockReturnValue(
+      createMockRect(380, 150, 180, 80),
+    );
+    rerender(<WorkflowCanvas {...props} selectedNode={generateNode} />);
+    const editor = await screen.findByRole('region', { name: '图片生成节点生成设置' });
+    const overlay = editor.closest<HTMLDivElement>('.quick-editor-overlay')!;
+    expect(overlay.style.getPropertyValue('--quick-editor-max-height')).toBe('200px');
+    await act(async () => {
+      contentHeight = 449;
+      // DOM 子树变化模拟参数/资源内容增加，必须唤醒自然高度测量而非依赖外框变大。
+      editor.append(document.createElement('span'));
+    });
+    expect(overlay).toHaveAttribute('data-placement', 'below');
+    expect(overlay.style.getPropertyValue('--quick-editor-max-height')).toBe('450px');
+    expect(overlay).toHaveStyle({ top: '246px', width: '360px' });
   });
 
   it.each([
