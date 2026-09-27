@@ -1,5 +1,5 @@
-/** 输入面板相对于节点的展开方向。 */
-export type QuickEditorPlacement = 'below' | 'above' | 'right' | 'left';
+/** 输入面板相对于节点的展开方向；快速编辑器只在节点上下展开。 */
+export type QuickEditorPlacement = 'below' | 'above';
 
 /** 面板可使用的画布区域，坐标单位为视口像素，已扣除工具栏和安全边距。 */
 export type QuickEditorBounds = {
@@ -46,11 +46,11 @@ type LayoutResult = Candidate & {
   state: QuickEditorPlacementState;
 };
 
-/** 面板触边后，节点须继续向该边移动自身对应轴尺寸的四分之一。 */
-const EDGE_SWITCH_RATIO = 0.25;
+/** 面板触边后，节点须继续向该边移动自身高度的四分之三。 */
+const EDGE_SWITCH_RATIO = 0.75;
 /** 上侧节点工具栏的固定屏幕高度与避让间距。 */
 const TOOLBAR_GAP = 64;
-/** 输入面板在侧边保留端口、缩放手柄的画布像素间距。 */
+/** 输入面板与节点之间的画布像素间距。 */
 const NODE_GAP = 16;
 
 /** 将面板起点钳制到有序的可见范围，不改变面板尺寸。 */
@@ -58,13 +58,13 @@ function clamp(value: number, minimum: number, maximum: number) {
   return Math.min(Math.max(value, minimum), maximum);
 }
 
-/** 初次打开时优先完整显示；空间不足时沿用宽度优先、再比较可用面积的策略。 */
-function pickInitialCandidate(candidates: Candidate[], minWidth: number, height: number) {
-  const usable = candidates.filter((candidate) => candidate.width >= minWidth);
+/** 初次打开时优先完整显示；空间不足时选择可用高度更大的上下方向。 */
+function pickInitialCandidate(candidates: Candidate[], height: number) {
   return (
-    usable.find((candidate) => candidate.maxHeight >= height) ??
-    usable.sort((a, b) => b.maxHeight - a.maxHeight)[0] ??
-    candidates.sort((a, b) => b.width * b.maxHeight - a.width * a.maxHeight)[0]
+    candidates.find((candidate) => candidate.maxHeight >= height) ??
+    candidates.reduce((best, candidate) =>
+      candidate.maxHeight > best.maxHeight ? candidate : best,
+    )
   );
 }
 
@@ -98,16 +98,6 @@ export function getQuickEditorLayout({
       width: desiredWidth,
       maxHeight: Math.min(bounds.bottom, node.top - TOOLBAR_GAP) - bounds.top,
     },
-    {
-      placement: 'right',
-      width: Math.min(desiredWidth, bounds.right - Math.max(bounds.left, node.right + gap)),
-      maxHeight: availableHeight,
-    },
-    {
-      placement: 'left',
-      width: Math.min(desiredWidth, Math.min(bounds.right, node.left - gap) - bounds.left),
-      maxHeight: availableHeight,
-    },
   ];
   const candidates = areas.filter((candidate) => candidate.width > 0 && candidate.maxHeight > 0);
   if (candidates.length === 0) return null;
@@ -125,11 +115,7 @@ export function getQuickEditorLayout({
     .map((value) => Math.round(value * 1000) / 1000)
     .join(':');
   const last = previous?.geometryKey === geometryKey ? previous : null;
-  const initial = pickInitialCandidate(
-    candidates,
-    Math.min(360 * zoom, desiredWidth),
-    desiredHeight,
-  );
+  const initial = pickInitialCandidate(candidates, desiredHeight);
   let placement = last?.placement ?? initial.placement;
   const area = areas.find((candidate) => candidate.placement === placement)!;
   // 可用区域变小时保留已有尺寸，避免等待换向期间编辑器被压扁；恢复空间时允许展开。
@@ -157,20 +143,6 @@ export function getQuickEditorLayout({
           position: -node.top,
           overflow: bounds.top - (node.top - TOOLBAR_GAP - maxHeight),
         };
-      case 'right':
-        return {
-          left: node.right + gap,
-          top: bounds.top,
-          position: node.right,
-          overflow: node.right + gap + width - bounds.right,
-        };
-      case 'left':
-        return {
-          left: node.left - gap - width,
-          top: bounds.top,
-          position: -node.left,
-          overflow: bounds.left - (node.left - gap - width),
-        };
     }
   };
 
@@ -185,20 +157,18 @@ export function getQuickEditorLayout({
           (position.position > last.position
             ? position.position - position.overflow
             : position.position));
-  const nodeSize = placement === 'above' || placement === 'below' ? node.height : node.width;
-  const opposite = { below: 'above', above: 'below', right: 'left', left: 'right' }[placement];
-  const alternatives = candidates.filter(
+  const nodeSize = node.height;
+  const opposite = placement === 'below' ? 'above' : 'below';
+  const next = candidates.find(
     (candidate) =>
-      candidate.placement !== placement &&
+      candidate.placement === opposite &&
       candidate.width >= width &&
       candidate.maxHeight >= maxHeight,
   );
-  const next =
-    alternatives.find((candidate) => candidate.placement === opposite) ?? alternatives[0];
   const movedOutwardPastContact =
     contact !== null && position.position - contact - nodeSize * EDGE_SWITCH_RATIO > 1e-6;
   if (next && movedOutwardPastContact) {
-    // 对侧放不下时才借用其它方向；没有同等可用区域就继续钳制，不能缩成窄条或来回翻转。
+    // 只有对侧能容纳当前面板且超过滞后阈值才换向；空间不足时继续钳制当前方向。
     placement = next.placement;
     width = Math.min(desiredWidth, next.width);
     maxHeight = Math.min(desiredHeight, next.maxHeight);

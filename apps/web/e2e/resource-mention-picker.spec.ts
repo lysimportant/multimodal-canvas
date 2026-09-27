@@ -1,7 +1,5 @@
 import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
-import { mkdirSync, readFileSync } from 'node:fs';
-import { dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 import {
   canvasDocumentSchema,
   PROMPT_SKILLS,
@@ -19,12 +17,6 @@ const project = {
 };
 const poster = readFileSync(new URL('../public/demo/field-study-poster.jpg', import.meta.url));
 const video = readFileSync(new URL('../public/demo/field-study.mp4', import.meta.url));
-const screenshotPath = fileURLToPath(
-  new URL('../../../test-results/resource-mention-picker.png', import.meta.url),
-);
-const dialogScreenshotPath = fileURLToPath(
-  new URL('../../../test-results/resource-mention-picker-dialog.png', import.meta.url),
-);
 
 test.use({ serviceWorkers: 'block' });
 
@@ -142,7 +134,7 @@ async function json(route: Route, body: unknown, status = 200) {
   await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 }
 
-/** 安装项目、资源、模型及画布离线 Mock，并记录浏览器异常。 */
+/** 安装离线 Mock 并记录浏览器异常；Cookie 会话有效期由 /v1/auth/me 返回。 */
 async function installFixture(page: Page, baseURL: string | undefined, initial = initialCanvas()) {
   if (!baseURL) throw new Error('请通过 WEB_BASE_URL 指定隔离浏览器验收地址');
   const webOrigin = new URL(baseURL).origin;
@@ -157,8 +149,6 @@ async function installFixture(page: Page, baseURL: string | undefined, initial =
     localStorage.setItem(
       'multimodal-canvas:auth-session',
       JSON.stringify({
-        accessToken: 'synthetic-resource-mention-browser',
-        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
         user: {
           id: 'resource-mention-user',
           email: 'resource-mention@example.test',
@@ -189,6 +179,7 @@ async function installFixture(page: Page, baseURL: string | undefined, initial =
       return route.fulfill({ contentType: 'text/event-stream', body: ': ready\n\n' });
     if (method === 'GET' && path === '/v1/auth/me')
       return json(route, {
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
         user: {
           id: 'resource-mention-user',
           email: 'resource-mention@example.test',
@@ -374,7 +365,12 @@ test('1440 PC 节点 picker 贴近 @、独立搜索筛选滚动，并支持原�
     Math.abs(pickerBox!.x + pickerBox!.width - caretBox.left),
   );
   expect(horizontalGap).toBeLessThanOrEqual(16);
-  expect(Math.abs(pickerBox!.y - caretBox.top)).toBeLessThanOrEqual(20);
+  // 输入面板贴近底边时 Popover 会沿 @ 的底边对齐，仍须紧邻同一个字符。
+  const verticalGap = Math.min(
+    Math.abs(pickerBox!.y - caretBox.top),
+    Math.abs(pickerBox!.y + pickerBox!.height - caretBox.bottom),
+  );
+  expect(verticalGap).toBeLessThanOrEqual(20);
   const nodeWithPicker = await node.boundingBox();
   expect(nodeWithPicker).not.toBeNull();
   expectSameNodeSize(nodeBefore!, nodeWithPicker!);
@@ -402,8 +398,10 @@ test('1440 PC 节点 picker 贴近 @、独立搜索筛选滚动，并支持原�
   await expect(prompt).toHaveValue(`${initialPrompt} @`);
   await expect(listbox.getByRole('option', { name: /采访脚本/ })).toBeVisible();
   await expect(listbox.getByRole('option', { name: /产品图/ })).toHaveCount(0);
-  mkdirSync(dirname(screenshotPath), { recursive: true });
-  await page.screenshot({ path: screenshotPath, animations: 'disabled' });
+  await page.screenshot({
+    path: test.info().outputPath('resource-mention-picker.png'),
+    animations: 'disabled',
+  });
 
   await searchbox.fill('');
   await picker.getByRole('button', { name: '视频', exact: true }).click();
@@ -418,7 +416,7 @@ test('1440 PC 节点 picker 贴近 @、独立搜索筛选滚动，并支持原�
   await picker.getByRole('button', { name: '全部', exact: true }).click();
   await expect(listbox.getByRole('option')).toHaveCount(assets.length);
   await page.screenshot({
-    path: screenshotPath.replace('.png', '-all-resources.png'),
+    path: test.info().outputPath('resource-mention-picker-all-resources.png'),
     animations: 'disabled',
   });
   const filterScrollBefore = await picker
@@ -508,8 +506,10 @@ test('1024 PC 放大 Dialog 的顶层 picker 保持搜索焦点、可选中且 E
   expect(pickerBox!.y).toBeGreaterThanOrEqual(8);
   expect(pickerBox!.x + pickerBox!.width).toBeLessThanOrEqual(1016);
   expect(pickerBox!.y + pickerBox!.height).toBeLessThanOrEqual(760);
-  mkdirSync(dirname(dialogScreenshotPath), { recursive: true });
-  await page.screenshot({ path: dialogScreenshotPath, animations: 'disabled' });
+  await page.screenshot({
+    path: test.info().outputPath('resource-mention-picker-dialog.png'),
+    animations: 'disabled',
+  });
 
   await searchbox.press('Enter');
   await expect(dialog).toBeVisible();
@@ -974,7 +974,18 @@ test('节点输入区数量样式统一，Skill 同行悬浮且不撑大节点',
     await expect(count).toBeVisible();
     // 节点下方空间有限时，只滚动已有编辑区，不改变节点外框。
     await skill.scrollIntoViewIfNeeded();
-    await expect(skill).toBeInViewport({ ratio: 0.999 });
+    await expect(skill).toBeInViewport();
+    const skillBounds = (await skill.boundingBox())!;
+    const visibleEditor = (await editor.boundingBox())!;
+    // 缩放后的原生滚动边界可能舍入不足一个屏幕像素，不能误判为按钮被遮挡。
+    expect(skillBounds.x).toBeGreaterThanOrEqual(Math.max(0, visibleEditor.x) - 1);
+    expect(skillBounds.y).toBeGreaterThanOrEqual(Math.max(0, visibleEditor.y) - 1);
+    expect(skillBounds.x + skillBounds.width).toBeLessThanOrEqual(
+      Math.min(viewport.width, visibleEditor.x + visibleEditor.width) + 1,
+    );
+    expect(skillBounds.y + skillBounds.height).toBeLessThanOrEqual(
+      Math.min(viewport.height, visibleEditor.y + visibleEditor.height) + 1,
+    );
     const layout = await editor.evaluate((element) => {
       const model = element.querySelector('.node-quick-editor-select-group .ant-select')!;
       const quantity = element.querySelector('.node-quick-editor-generation-count .ant-select')!;

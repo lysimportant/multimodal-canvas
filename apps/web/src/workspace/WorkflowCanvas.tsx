@@ -145,8 +145,8 @@ type QuickEditorLayout = {
   maxHeight: number;
   /** 与 React Flow 视口一致的缩放比例，不改写节点持久化尺寸。 */
   scale: number;
-  /** 浮层相对于选中节点的展开方向。 */
-  placement: 'below' | 'above' | 'left' | 'right';
+  /** 浮层相对于选中节点的展开方向；快速编辑器只在节点上下展开。 */
+  placement: 'below' | 'above';
   /** 是否已取得可用于显示的首个布局结果。 */
   ready: boolean;
 };

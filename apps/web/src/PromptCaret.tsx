@@ -65,9 +65,10 @@ export function PromptCaret({ inputRef, value, disabled = false }: PromptCaretPr
     host.append(mirror);
     let composing = false;
 
-    /** 隐藏增强光标时恢复原生 caret，尤其不能遮掉 IME 候选位置。 */
+    /** 恢复原生 caret 并移除镜像布局，避免失焦后缩小节点仍保留旧测量宽度。 */
     const hide = () => {
       caret.hidden = true;
+      mirror.hidden = true;
       delete input.dataset.promptCaret;
     };
 
@@ -97,9 +98,12 @@ export function PromptCaret({ inputRef, value, disabled = false }: PromptCaretPr
       const borderTop = parseFloat(style.borderTopWidth) || 0;
       // 排除滚动条占位，确保换行位置与可编辑区域一致。
       mirror.style.width = `${input.clientWidth + borderLeft + borderRight}px`;
+      // 测量长文本时也要裁剪到输入框高度，不能把隐藏内容计入父面板的 scrollHeight。
+      mirror.style.height = `${input.offsetHeight}px`;
       mirror.textContent = input.value.slice(0, input.selectionStart);
       marker.textContent = input.value.slice(input.selectionStart) || '\u200b';
       mirror.append(marker);
+      mirror.hidden = false;
       const markerRect = marker.getClientRects()[0];
       if (!markerRect) {
         hide();

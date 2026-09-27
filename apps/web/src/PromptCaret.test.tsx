@@ -142,6 +142,56 @@ describe('PromptCaret', () => {
     expect(input).toHaveValue('一行提示词');
   });
 
+  it.each([0.5, 1, 1.5, 2])('倍率 %s 下长文本测量层只占输入框高度，并随输入框尺寸更新', (scale) => {
+    const value = '长提示词与隐藏测量层\n'.repeat(100);
+    const { container } = render(<CaretHarness value={value} />);
+    const input = screen.getByRole('textbox') as HTMLTextAreaElement;
+    mockLayout(input, scale);
+    act(() => input.focus());
+    const mirror = container.querySelector('.resource-mention-caret-mirror')!;
+
+    // 原来的 auto 高度会把全部隐藏文字计入外层面板的 scrollHeight，造成聚焦后重新定位。
+    expect(mirror).toHaveStyle({ height: '100px' });
+    expect(mirror.textContent).toContain(value);
+    expect(input).toHaveValue(value);
+    expect(container.querySelector('.resource-mention-caret')).toBeVisible();
+
+    Object.defineProperty(input, 'offsetHeight', { configurable: true, value: 140 });
+    vi.mocked(input.getBoundingClientRect).mockReturnValue(
+      new DOMRect(0, 0, 300 * scale, 140 * scale),
+    );
+    fireEvent.select(input);
+    expect(mirror).toHaveStyle({ height: '140px' });
+    expect(input).toHaveValue(value);
+  });
+
+  it('失焦后测量层不占布局，节点缩小后再次聚焦使用新的输入框尺寸', () => {
+    const value = '长提示词\n'.repeat(100);
+    const { container } = render(<CaretHarness value={value} />);
+    const input = screen.getByRole('textbox') as HTMLTextAreaElement;
+    mockLayout(input);
+    const mirror = container.querySelector<HTMLDivElement>('.resource-mention-caret-mirror')!;
+    expect(mirror.hidden).toBe(true);
+
+    act(() => input.focus());
+    expect(mirror.hidden).toBe(false);
+    expect(mirror).toHaveStyle({ width: '300px', height: '100px' });
+
+    act(() => input.blur());
+    expect(mirror.hidden).toBe(true);
+    Object.defineProperties(input, {
+      offsetWidth: { configurable: true, value: 200 },
+      clientWidth: { configurable: true, value: 198 },
+    });
+    vi.mocked(input.getBoundingClientRect).mockReturnValue(new DOMRect(0, 0, 200, 100));
+    expect(mirror.hidden).toBe(true);
+
+    act(() => input.focus());
+    expect(mirror.hidden).toBe(false);
+    expect(mirror).toHaveStyle({ width: '200px', height: '100px' });
+    expect(input).toHaveValue(value);
+  });
+
   it('输入框禁用时立即移除增强光标', () => {
     const { container, rerender } = render(<CaretHarness />);
     const input = screen.getByRole('textbox') as HTMLTextAreaElement;

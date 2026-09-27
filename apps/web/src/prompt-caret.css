@@ -1,7 +1,8 @@
 .resource-mention-caret-mirror {
   border-style: solid;
   box-sizing: border-box;
-  height: auto;
+  /* 聚焦后由输入框实际高度覆盖；初始空镜像也不参与父级滚动范围。 */
+  height: 0;
   left: 0;
   overflow: hidden;
   pointer-events: none;
