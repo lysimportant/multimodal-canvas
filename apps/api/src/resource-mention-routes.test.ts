@@ -1,3 +1,4 @@
+/** 保留真实 HTTP 预检与资源冻结，仅以内存执行器替代 Provider，禁止外网生成。 */
 import { MemoryAiSettingsStore } from './fixtures/memory-ai-settings';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -8,19 +9,42 @@ import { MemoryAssetStore } from './assets';
 import { MemoryProjectStore } from './projects';
 import { MemoryRunService, type RunExecutorRequest } from './runs';
 
+/** HTTP 仅公开冻结提及投影；完整节点从内存运行记录或执行器入参读取。 */
+type SubmittedRun = Pick<RunRecord, 'id' | 'targetNodeId' | 'modelAlias'> & {
+  snapshot: Pick<RunRecord['snapshot'], 'promptMentions'>;
+};
+
+/** 每个用例结束后关闭其内存应用，避免运行状态串扰。 */
 const apps: Array<ReturnType<typeof buildApp>> = [];
 
 beforeEach(() => {
   vi.stubEnv('NODE_ENV', 'test');
   vi.stubEnv('WORKER_PROVIDER', 'mock');
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => {
+      throw new Error('资源提及 HTTP 回归禁止外部网络请求');
+    }),
+  );
 });
 
 afterEach(async () => {
-  await Promise.all(apps.splice(0).map((app) => app.close()));
-  vi.unstubAllEnvs();
+  try {
+    await Promise.all(apps.splice(0).map((app) => app.close()));
+    expect(fetch).not.toHaveBeenCalled();
+  } finally {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  }
 });
 
-/** 创建不经过 HTTP 校验的测试画布，用于覆盖运行边界的防御性检查。 */
+/**
+ * 创建不经过 HTTP 校验的测试画布，用于覆盖运行边界的防御性检查。
+ * @param projectStore 当前用例的内存项目存储。
+ * @param projectId 画布所属项目 ID。
+ * @param canvas 待保存的节点、连线和当前修订号。
+ * @returns 已保存且修订号递增的画布；存储校验错误直接向上传递。
+ */
 async function storeCanvas(
   projectStore: MemoryProjectStore,
   projectId: string,
@@ -29,7 +53,14 @@ async function storeCanvas(
   return projectStore.updateCanvas(projectId, canvas);
 }
 
-/** 等待内存运行到达终态，并在超时时保留最后状态。 */
+/**
+ * 每隔 5 毫秒查询一次内存运行，最多查询 100 次，不重发生成请求。
+ * @param runService 当前用例的内存运行服务。
+ * @param runId 已由 HTTP 提交返回的运行 ID。
+ * @param expectedStatus 需要等待的运行状态。
+ * @returns 达到指定状态的完整运行记录。
+ * @throws 超过轮询次数时抛出含运行 ID 和最后状态的错误。
+ */
 async function waitForRun(
   runService: MemoryRunService,
   runId: string,
@@ -52,31 +83,104 @@ describe('资源提及 HTTP 边界', () => {
     mediaType: MediaType;
     modelAlias: string;
     capabilities?: Record<string, unknown>;
-    expectedMessage: string;
+    mentionMediaType?: 'image' | 'text';
+    semanticRole?: string;
+    mixedMentions?: boolean;
+    status: 202 | 400;
+    issueCode?: string;
+    expectedMessage?: string;
   }>([
     {
-      name: '文字节点明确禁用图片引用',
+      name: '文字节点不按空媒体声明拒绝图片引用',
       mediaType: 'text',
       modelAlias: 'text-model',
       capabilities: { mentionMediaTypes: [] },
-      expectedMessage: '不支持 image 类型资源提及',
+      status: 202,
     },
     {
-      name: '视频参考图已映射也不能绕过明确禁用',
+      name: '文字节点不按 text-only 声明拒绝图片引用',
+      mediaType: 'text',
+      modelAlias: 'text-model',
+      capabilities: { mentionMediaTypes: ['text'] },
+      status: 202,
+    },
+    {
+      name: '空媒体声明不阻止已映射的视频参考图',
       mediaType: 'video',
       modelAlias: 'grok-imagine-video-1.5.1',
       capabilities: { mentionMediaTypes: [] },
-      expectedMessage: '不支持 image 类型资源提及',
+      status: 202,
     },
     {
       name: '音频缺省声明仍准确提示适配未接通',
       mediaType: 'audio',
       modelAlias: 'tts-model',
+      status: 400,
+      issueCode: 'RESOURCE_MENTION_MEDIA_UNSUPPORTED',
       expectedMessage: '当前项目的音频生成适配器',
     },
+    {
+      name: '视频未接通的文本提及映射仍拒绝排队',
+      mediaType: 'video',
+      modelAlias: 'grok-imagine-video-1.5.1',
+      capabilities: { mentionMediaTypes: [] },
+      mentionMediaType: 'text',
+      status: 400,
+      issueCode: 'RESOURCE_MENTION_MEDIA_UNSUPPORTED',
+      expectedMessage: '提及映射',
+    },
+    {
+      name: '明确模式限制仍拒绝排队',
+      mediaType: 'text',
+      modelAlias: 'text-model',
+      capabilities: { mentionMediaTypes: [], modes: [] },
+      status: 400,
+      issueCode: 'RESOURCE_MENTION_MODE_UNSUPPORTED',
+      expectedMessage: '不支持 generate 模式',
+    },
+    {
+      name: '明确角色限制仍拒绝排队',
+      mediaType: 'text',
+      modelAlias: 'text-model',
+      capabilities: { mentionMediaTypes: [], semanticRoles: [] },
+      semanticRole: 'reference',
+      status: 400,
+      issueCode: 'RESOURCE_MENTION_ROLE_UNSUPPORTED',
+      expectedMessage: '不支持语义角色 reference',
+    },
+    {
+      name: '明确数量上限仍拒绝排队',
+      mediaType: 'text',
+      modelAlias: 'text-model',
+      capabilities: { mentionMediaTypes: [], maxMentions: 0 },
+      status: 400,
+      issueCode: 'RESOURCE_MENTION_COUNT_EXCEEDED',
+      expectedMessage: '最多支持 0 个资源提及',
+    },
+    {
+      name: '明确混合媒体限制仍拒绝排队',
+      mediaType: 'text',
+      modelAlias: 'text-model',
+      capabilities: { mentionMediaTypes: [], supportsMixedMentions: false },
+      mixedMentions: true,
+      status: 400,
+      issueCode: 'RESOURCE_MENTION_MIXED_UNSUPPORTED',
+      expectedMessage: '不支持混合媒体资源提及',
+    },
   ])(
-    '$name 在创建运行前拒绝且不调用 Provider',
-    async ({ mediaType, modelAlias, capabilities, expectedMessage }) => {
+    '目录元数据与实际适配边界：$name',
+    async ({
+      mediaType,
+      modelAlias,
+      capabilities,
+      mentionMediaType = 'image',
+      semanticRole,
+      mixedMentions,
+      status,
+      issueCode,
+      expectedMessage,
+    }) => {
+      vi.stubEnv('WORKER_PROVIDER', 'newapi');
       const assetStore = new MemoryAssetStore();
       const projectStore = new MemoryProjectStore();
       const runService = new MemoryRunService({ providerName: 'newapi', stepDelayMs: 0 });
@@ -102,10 +206,20 @@ describe('资源提及 HTTP 边界', () => {
       const asset = await assetStore.create({
         projectId: project.id,
         name: 'reference.png',
-        mediaType: 'image',
-        mimeType: 'image/png',
+        mediaType: mentionMediaType,
+        mimeType: mentionMediaType === 'text' ? 'text/plain' : 'image/png',
         content: Buffer.from('synthetic-image'),
       });
+      await assetStore.createVersion(asset.id, { content: Buffer.from('new-version') });
+      const textAsset = mixedMentions
+        ? await assetStore.create({
+            projectId: project.id,
+            name: 'reference.txt',
+            mediaType: 'text',
+            mimeType: 'text/plain',
+            content: Buffer.from('synthetic-text'),
+          })
+        : undefined;
       await storeCanvas(projectStore, project.id, {
         revision: 0,
         nodes: [
@@ -129,8 +243,21 @@ describe('资源提及 HTTP 边界', () => {
                     assetId: asset.id,
                     assetVersion: 1,
                     label: asset.name,
-                    mediaType: 'image',
+                    mediaType: mentionMediaType,
+                    ...(semanticRole ? { semanticRole } : {}),
                   },
+                  ...(textAsset
+                    ? [
+                        {
+                          type: 'mention' as const,
+                          mentionId: 'mixed-reference',
+                          assetId: textAsset.id,
+                          assetVersion: 1,
+                          label: textAsset.name,
+                          mediaType: 'text' as const,
+                        },
+                      ]
+                    : []),
                 ],
               },
             },
@@ -140,7 +267,7 @@ describe('资源提及 HTTP 边界', () => {
       });
       const executor = vi.fn(async ({ snapshot }: RunExecutorRequest) => ({
         provider: 'newapi',
-        summary: '不应执行',
+        summary: '内存资源提及执行',
         targetNodeId: snapshot.targetNodeId,
         mediaType,
         inputCount: 0,
@@ -159,17 +286,51 @@ describe('资源提及 HTTP 边界', () => {
         url: '/v1/nodes/target/runs',
         payload: { projectId: project.id },
       });
-      expect(response.statusCode).toBe(400);
-      expect(response.json().code).toBe('RESOURCE_MENTION_CAPABILITY_UNSUPPORTED');
-      expect(response.json().issues).toEqual([
-        expect.objectContaining({
-          code: 'RESOURCE_MENTION_MEDIA_UNSUPPORTED',
-          message: expect.stringContaining(expectedMessage),
-        }),
-      ]);
-      expect(JSON.stringify(response.json())).not.toContain('未声明');
-      expect(executor).not.toHaveBeenCalled();
-      expect(await runService.listByProject(project.id)).toEqual([]);
+      expect(response.statusCode).toBe(status);
+      if (status === 202) {
+        const submitted = response.json<{ run: SubmittedRun }>().run;
+        expect(submitted.snapshot.promptMentions).toEqual([
+          expect.objectContaining({
+            nodeId: 'target',
+            mentionId: 'reference',
+            assetId: asset.id,
+            assetVersion: 1,
+            mediaType: 'image',
+          }),
+        ]);
+        const run = await waitForRun(runService, submitted.id, 'succeeded');
+        expect(executor).toHaveBeenCalledOnce();
+        expect(run.snapshot.promptMentions).toEqual(submitted.snapshot.promptMentions);
+        expect(executor.mock.calls[0]![0].snapshot.promptMentions).toEqual(
+          submitted.snapshot.promptMentions,
+        );
+        if (mediaType === 'text') {
+          expect(executor.mock.calls[0]![0].resolvedMentions).toEqual([
+            {
+              ...submitted.snapshot.promptMentions![0],
+              source: {
+                kind: 'data-url',
+                mimeType: 'image/png',
+                dataUrl: `data:image/png;base64,${Buffer.from('synthetic-image').toString('base64')}`,
+              },
+            },
+          ]);
+        }
+        expect(await runService.listByProject(project.id)).toHaveLength(1);
+      } else {
+        expect(response.json().code).toBe('RESOURCE_MENTION_CAPABILITY_UNSUPPORTED');
+        expect(response.json().issues).toEqual(
+          Array.from({ length: mixedMentions ? 2 : 1 }, () =>
+            expect.objectContaining({
+              code: issueCode,
+              message: expect.stringContaining(expectedMessage!),
+            }),
+          ),
+        );
+        expect(JSON.stringify(response.json())).not.toContain('未声明');
+        expect(executor).not.toHaveBeenCalled();
+        expect(await runService.listByProject(project.id)).toEqual([]);
+      }
     },
   );
 
@@ -517,11 +678,15 @@ describe('资源提及 HTTP 边界', () => {
   it.each<{
     name: string;
     capabilities?: Record<string, unknown>;
+    limitations?: Record<string, unknown>;
+    modelAlias?: string;
+    requestCount?: 1 | 2;
     mentionMediaType?: MediaType;
     foreignAsset?: boolean;
     assetVersion?: number;
     status: number;
     issueCode?: string;
+    expectedMessage?: string;
   }>([
     { name: '无能力声明时进入图片执行链路', status: 202 },
     {
@@ -536,17 +701,84 @@ describe('资源提及 HTTP 边界', () => {
       issueCode: 'IMAGE_EDIT_CAPABILITY_UNSUPPORTED',
     },
     {
-      name: '明确排除图片引用时阻止排队',
+      name: 'text-only 媒体声明不阻止图片执行',
       capabilities: { mentionMediaTypes: ['text'] },
-      status: 400,
-      issueCode: 'RESOURCE_MENTION_MEDIA_UNSUPPORTED',
+      status: 202,
     },
+    {
+      name: '空媒体声明不阻止图片执行',
+      capabilities: { mentionMediaTypes: [] },
+      status: 202,
+    },
+    {
+      name: 'limitations 的 text-only 声明不阻止图片执行',
+      limitations: { mentionMediaTypes: ['text'] },
+      status: 202,
+    },
+    {
+      name: 'limitations 的空媒体声明不覆盖图片编辑链路',
+      capabilities: { imageEdit: { supported: true, mimeTypes: ['image/png'] } },
+      limitations: { mentionMediaTypes: [] },
+      status: 202,
+    },
+    {
+      name: 'capabilities 覆盖 limitations 为 text-only 也不拒绝图片',
+      capabilities: { mentionMediaTypes: ['text'] },
+      limitations: { mentionMediaTypes: ['image'] },
+      status: 202,
+    },
+    ...[
+      'mention_media_types',
+      'supportedMentionMediaTypes',
+      'supported_mention_media_types',
+      'referenceMediaTypes',
+      'reference_media_types',
+    ].flatMap((field) => [
+      {
+        name: `${field} 的 text-only 别名声明不阻止图片执行`,
+        capabilities: { [field]: ['text'] },
+        status: 202,
+      },
+      {
+        name: `limitations.${field} 的空别名声明不阻止图片执行`,
+        limitations: { [field]: [] },
+        status: 202,
+      },
+    ]),
+    ...([1, 2] as const).map((requestCount) => ({
+      name: `${requestCount} 份独立节点使用 gpt-image-2.5-sunburst text-only 目录且每份仅执行一次`,
+      modelAlias: 'gpt-image-2.5-sunburst',
+      capabilities: { mentionMediaTypes: ['text'] },
+      requestCount,
+      status: 202,
+    })),
     {
       name: '非图片提及不能进入编辑链路',
       mentionMediaType: 'text',
       capabilities: { mentionMediaTypes: ['text'] },
       status: 400,
       issueCode: 'RESOURCE_MENTION_MEDIA_UNSUPPORTED',
+      expectedMessage: '当前项目的图片生成适配器',
+    },
+    ...(['audio', 'video'] as const).map((mentionMediaType) => ({
+      name: `${mentionMediaType} 提及不能伪装成图片编辑输入`,
+      mentionMediaType,
+      capabilities: { mentionMediaTypes: [mentionMediaType] },
+      status: 400,
+      issueCode: 'RESOURCE_MENTION_MEDIA_UNSUPPORTED',
+      expectedMessage: '当前项目的图片生成适配器',
+    })),
+    {
+      name: 'text-only 声明放行后明确模式限制仍拒绝图片排队',
+      capabilities: { mentionMediaTypes: ['text'], modes: [] },
+      status: 400,
+      issueCode: 'RESOURCE_MENTION_MODE_UNSUPPORTED',
+    },
+    {
+      name: 'text-only 声明放行后明确数量上限仍拒绝图片排队',
+      capabilities: { mentionMediaTypes: ['text'], maxMentions: 0 },
+      status: 400,
+      issueCode: 'RESOURCE_MENTION_COUNT_EXCEEDED',
     },
     {
       name: '其他项目的图片仍被权限校验拒绝',
@@ -561,14 +793,18 @@ describe('资源提及 HTTP 边界', () => {
       issueCode: 'RESOURCE_MENTION_VERSION_MISSING',
     },
   ])(
-    '真实 Provider 图片引用：$name',
+    'New API 预检与内存图片执行：$name',
     async ({
       capabilities,
+      limitations,
+      modelAlias = 'real-image',
+      requestCount = 1,
       mentionMediaType = 'image',
       foreignAsset,
       assetVersion = 1,
       status,
       issueCode,
+      expectedMessage,
     }) => {
       vi.stubEnv('WORKER_PROVIDER', 'newapi');
       const assetStore = new MemoryAssetStore();
@@ -584,10 +820,11 @@ describe('资源提及 HTTP 边界', () => {
       settingsStore.replaceModels(
         [
           {
-            id: 'real-image',
+            id: modelAlias,
             name: 'Real image',
             mediaTypes: ['image'],
             ...(capabilities ? { capabilities } : {}),
+            ...(limitations ? { limitations } : {}),
             refreshedAt: new Date().toISOString(),
           },
         ],
@@ -598,39 +835,46 @@ describe('资源提及 HTTP 边界', () => {
         projectId: foreignAsset ? 'another-project' : project.id,
         name: 'reference.png',
         mediaType: mentionMediaType,
-        mimeType: mentionMediaType === 'text' ? 'text/plain' : 'image/png',
+        mimeType: {
+          text: 'text/plain',
+          image: 'image/png',
+          audio: 'audio/wav',
+          video: 'video/mp4',
+        }[mentionMediaType],
         content: Buffer.from('image'),
       });
       await assetStore.createVersion(asset.id, { content: Buffer.from('new-version') });
+      const nodeIds = Array.from(
+        { length: requestCount },
+        (_, index) => `node-real-image-${index + 1}`,
+      );
       await storeCanvas(projectStore, project.id, {
         revision: 0,
-        nodes: [
-          {
-            id: 'node-real-image',
-            type: 'image',
-            position: { x: 0, y: 0 },
-            data: {
-              label: '真实图片',
-              mediaType: 'image',
-              mode: 'generate',
-              modelAlias: 'real-image',
-              credentialId: credential.id,
-              promptDocument: {
-                version: 1,
-                blocks: [
-                  {
-                    type: 'mention',
-                    mentionId: 'mention-real',
-                    assetId: asset.id,
-                    assetVersion,
-                    label: asset.name,
-                    mediaType: mentionMediaType,
-                  },
-                ],
-              },
+        nodes: nodeIds.map((nodeId): CanvasDocument['nodes'][number] => ({
+          id: nodeId,
+          type: 'image',
+          position: { x: 0, y: 0 },
+          data: {
+            label: '真实图片',
+            mediaType: 'image',
+            mode: 'generate',
+            modelAlias,
+            credentialId: credential.id,
+            promptDocument: {
+              version: 1,
+              blocks: [
+                {
+                  type: 'mention',
+                  mentionId: `mention-${nodeId}`,
+                  assetId: asset.id,
+                  assetVersion,
+                  label: asset.name,
+                  mediaType: mentionMediaType,
+                },
+              ],
             },
           },
-        ],
+        })),
         edges: [],
       });
       const executor = vi.fn(async ({ snapshot }: RunExecutorRequest) => ({
@@ -650,36 +894,73 @@ describe('资源提及 HTTP 边界', () => {
       });
       apps.push(app);
 
-      const response = await app.inject({
-        method: 'POST',
-        url: '/v1/nodes/node-real-image/runs',
-        payload: { projectId: project.id },
-      });
-      expect(response.statusCode).toBe(status);
-      if (status === 202) {
-        const run = await waitForRun(runService, response.json().run.id, 'succeeded');
-        expect(executor).toHaveBeenCalledOnce();
-        expect(run.snapshot.promptMentions).toEqual([
-          expect.objectContaining({
-            nodeId: 'node-real-image',
-            assetId: asset.id,
-            assetVersion: 1,
-            mediaType: 'image',
-          }),
-        ]);
-        expect(run.snapshot.nodeImageEditCapabilities).toEqual(
-          capabilities
-            ? { 'node-real-image': { declared: true, maxImages: 1, mimeTypes: ['image/png'] } }
-            : undefined,
-        );
-      } else {
-        expect(response.json().issues).toEqual(
-          expect.arrayContaining([expect.objectContaining({ code: issueCode })]),
-        );
-        expect(executor).not.toHaveBeenCalled();
-        expect(await runService.listByProject(project.id)).toEqual([]);
+      const runIds: string[] = [];
+      for (const [index, nodeId] of nodeIds.entries()) {
+        const response = await app.inject({
+          method: 'POST',
+          url: `/v1/nodes/${nodeId}/runs`,
+          payload: { projectId: project.id },
+        });
+        expect(response.statusCode).toBe(status);
+        if (status === 202) {
+          const submitted = response.json<{ run: SubmittedRun }>().run;
+          runIds.push(submitted.id);
+          const frozenMentions = [
+            {
+              nodeId,
+              mentionId: `mention-${nodeId}`,
+              assetId: asset.id,
+              assetVersion: 1,
+              mediaType: 'image',
+              label: asset.name,
+              blockOrder: 0,
+            },
+          ];
+          expect(submitted.snapshot.promptMentions).toEqual(frozenMentions);
+          expect(submitted.targetNodeId).toBe(nodeId);
+          expect(submitted.modelAlias).toBe(modelAlias);
+          const run = await waitForRun(runService, submitted.id, 'succeeded');
+          expect(run.snapshot.nodes.map((node) => node.id)).toEqual([nodeId]);
+          expect(executor).toHaveBeenCalledTimes(index + 1);
+          expect(executor.mock.calls.map(([request]) => request.snapshot.targetNodeId)).toEqual(
+            nodeIds.slice(0, index + 1),
+          );
+          const request = executor.mock.calls[index]![0];
+          expect(request.runId).toBe(submitted.id);
+          expect(request.snapshot.modelAlias).toBe(modelAlias);
+          expect(request.snapshot.nodes.map((node) => node.id)).toEqual([nodeId]);
+          expect(request.snapshot.promptMentions).toEqual(frozenMentions);
+          expect(request.resolvedMentions).toEqual([
+            {
+              ...frozenMentions[0],
+              source: {
+                kind: 'data-url',
+                mimeType: 'image/png',
+                dataUrl: `data:image/png;base64,${Buffer.from('image').toString('base64')}`,
+              },
+            },
+          ]);
+          expect(run.snapshot.promptMentions).toEqual(frozenMentions);
+          expect(run.snapshot.nodeImageEditCapabilities).toEqual(
+            capabilities?.imageEdit
+              ? { [nodeId]: { declared: true, maxImages: 1, mimeTypes: ['image/png'] } }
+              : undefined,
+          );
+        } else {
+          expect(response.json().issues).toEqual([
+            expect.objectContaining({
+              code: issueCode,
+              ...(expectedMessage ? { message: expect.stringContaining(expectedMessage) } : {}),
+            }),
+          ]);
+          expect(executor).not.toHaveBeenCalled();
+          expect(await runService.listByProject(project.id)).toEqual([]);
+        }
+        expect(JSON.stringify(response.json())).not.toContain('synthetic-resource-mention-key');
       }
-      expect(JSON.stringify(response.json())).not.toContain('synthetic-resource-mention-key');
+      expect(new Set(runIds).size).toBe(runIds.length);
+      expect(await runService.listByProject(project.id)).toHaveLength(runIds.length);
+      expect(executor).toHaveBeenCalledTimes(runIds.length);
     },
   );
 

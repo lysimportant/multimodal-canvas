@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { checkResourceMentionCapabilities } from './resource-mention-capabilities';
 
+/** 冻结图片预检样本；用例不读取真实资产或调用供应商。 */
 const base = {
   node: { id: 'node-image', data: { mediaType: 'image' as const, mode: 'generate' as const } },
   modelAlias: 'image-v1',
@@ -21,6 +22,25 @@ const base = {
 };
 
 describe('resource mention capability preflight', () => {
+  it.each([
+    ['mentionMediaTypes', ['text']],
+    ['mentionMediaTypes', []],
+    ['mention_media_types', ['text']],
+    ['supportedMentionMediaTypes', ['text']],
+    ['supported_mention_media_types', ['text']],
+    ['referenceMediaTypes', ['text']],
+    ['reference_media_types', ['text']],
+  ] as const)('图片引用不受目录媒体声明 %s=%j 拦截', (field, mediaTypes) => {
+    for (const source of ['capabilities', 'limitations']) {
+      const result = checkResourceMentionCapabilities({
+        ...base,
+        modelAlias: 'gpt-image-2.5-sunburst',
+        model: { mediaTypes: ['image'], [source]: { [field]: mediaTypes } },
+      });
+      expect(result, source).toEqual({ issues: [], simulated: false });
+    }
+  });
+
   it('图片生成缺少能力声明时允许图片引用', () => {
     expect(checkResourceMentionCapabilities(base)).toEqual({ issues: [], simulated: false });
     expect(checkResourceMentionCapabilities({ ...base, model: { mediaTypes: ['image'] } })).toEqual(
@@ -40,7 +60,7 @@ describe('resource mention capability preflight', () => {
     expect(JSON.stringify(result)).not.toContain('data:');
   });
 
-  it('文字节点的显式空列表和零上限在 Mock 中同样生效', () => {
+  it('文字节点的显式空模式列表和零上限在 Mock 中同样生效', () => {
     const result = checkResourceMentionCapabilities({
       ...base,
       node: { id: 'node-text', data: { mediaType: 'text', mode: 'generate' } },
@@ -50,7 +70,6 @@ describe('resource mention capability preflight', () => {
     expect(result.simulated).toBe(true);
     expect(result.issues.map((issue) => issue.code)).toEqual([
       'RESOURCE_MENTION_MODE_UNSUPPORTED',
-      'RESOURCE_MENTION_MEDIA_UNSUPPORTED',
       'RESOURCE_MENTION_COUNT_EXCEEDED',
     ]);
   });
@@ -111,8 +130,6 @@ describe('resource mention capability preflight', () => {
   });
 
   it.each([
-    { capabilities: { mentionMediaTypes: ['text'] }, code: 'RESOURCE_MENTION_MEDIA_UNSUPPORTED' },
-    { capabilities: { mentionMediaTypes: [] }, code: 'RESOURCE_MENTION_MEDIA_UNSUPPORTED' },
     { capabilities: { maxMentions: 0 }, code: 'RESOURCE_MENTION_COUNT_EXCEEDED' },
     { capabilities: { modes: [] }, code: 'RESOURCE_MENTION_MODE_UNSUPPORTED' },
   ])('图片兼容路径仍遵守显式限制 $code', ({ capabilities, code }) => {

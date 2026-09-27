@@ -36,7 +36,11 @@ afterEach(async () => {
 });
 
 describe('本地图片执行与 Provider 适配器', () => {
-  it('HTTP 多图提及按文档顺序发送 image[]，保留不同历史版本并去重同版本', async () => {
+  it.each([
+    { modelAlias: 'gpt-image-1', capabilities: undefined },
+    { modelAlias: 'gpt-image-2.5-sunburst', capabilities: { mentionMediaTypes: ['text'] } },
+    { modelAlias: 'gpt-image-2.5-sunburst', capabilities: { mentionMediaTypes: [] } },
+  ])('HTTP $modelAlias 多图冻结与去重', async ({ modelAlias, capabilities }) => {
     const assetStore = new MemoryAssetStore();
     const projectStore = new MemoryProjectStore();
     const authStore = new MemoryAuthStore();
@@ -76,9 +80,10 @@ describe('本地图片执行与 Provider 适配器', () => {
     settingsStore.replaceModels(
       [
         {
-          id: 'gpt-image-1',
+          id: modelAlias,
           name: 'GPT Image',
           mediaTypes: ['image'],
+          capabilities,
           refreshedAt: new Date().toISOString(),
         },
       ],
@@ -101,7 +106,7 @@ describe('本地图片执行与 Provider 适配器', () => {
             label: '多图组合',
             mediaType: 'image',
             mode: 'generate',
-            modelAlias: 'gpt-image-1',
+            modelAlias,
             credentialId: credential.id,
             promptDocument: {
               version: 1,
@@ -168,7 +173,7 @@ describe('本地图片执行与 Provider 适配器', () => {
         form.getAll('image[]').map(async (file) => Buffer.from(await (file as File).arrayBuffer())),
       ),
     ).toEqual([secondVersion, otherImage, firstVersion]);
-    expect(form.get('model')).toBe('gpt-image-1');
+    expect(form.get('model')).toBe(modelAlias);
     expect(form.get('n')).toBe('1');
     expect(reader.mock.calls.map(([assetId, version]) => ({ assetId, version }))).toEqual(
       references.map(({ assetId, assetVersion }) => ({ assetId, version: assetVersion })),

@@ -992,6 +992,110 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     });
   });
 
+  it('目录仅声明文字提及时，两份图片生成分别保留精确模型、资源提及和输入边', async () => {
+    const modelAlias = 'gpt-image-2.5-sunburst';
+    const reference = {
+      ...assets[0]!,
+      latestVersion: 1,
+      contentUrl: '/v1/assets/asset-reference/versions/1/content',
+    };
+    const originalFetch = fetchMock.getMockImplementation()!;
+    const submittedCanvases = new Map<string, CanvasDocument>();
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(input), 'http://localhost:3000').pathname;
+      if (path === '/v1/assets') return jsonResponse({ assets: [reference] });
+      if (path === '/v1/models') {
+        return jsonResponse({
+          models: [
+            {
+              id: modelAlias,
+              name: modelAlias,
+              mediaTypes: ['image'],
+              capabilities: { mentionMediaTypes: ['text'] },
+              group: 'default',
+              credentialId: modelCredentialId,
+            },
+          ],
+        });
+      }
+      const match = path.match(/\/nodes\/([^/]+)\/runs$/);
+      if (match && init?.method === 'POST') {
+        submittedCanvases.set(decodeURIComponent(match[1]!), structuredClone(canvas));
+      }
+      return originalFetch(input, init);
+    });
+    const { user } = await renderCanvas();
+    await addReferenceAsset(user);
+    await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
+    const source = findNodeByLabel('reference.png')!;
+    const root = findNodeByLabel('图片生成节点')!;
+    const sourceId = source.getAttribute('data-id')!;
+    const rootId = root.getAttribute('data-id')!;
+    await user.click(handleFor(source, 'output:image'));
+    await user.click(handleFor(root, 'input:content'));
+    await user.click(root);
+    const editor = screen.getByLabelText('图片生成节点生成设置');
+    await user.click(within(editor).getByRole('combobox', { name: /^模型：/ }));
+    await user.click(screen.getByRole('option', { name: /gpt-image-2\.5-sunburst/ }));
+    await user.type(within(editor).getByRole('textbox', { name: '提示词' }), 'Use @ref');
+    await user.click(screen.getByRole('option', { name: /reference.png/ }));
+    await user.click(within(editor).getByRole('combobox', { name: /^生成数量：/ }));
+    await user.click(
+      within(await screen.findByRole('listbox', { name: '生成数量选项' })).getByRole('option', {
+        name: '2份',
+      }),
+    );
+    expect(nodeRunRequestCounts.size).toBe(0);
+    await user.click(within(editor).getByRole('button', { name: '生成' }));
+    await screen.findByText('已完成 2 份生成');
+    expect(flowNodes()).toHaveLength(3);
+    expect([...nodeRunRequestCounts.values()]).toEqual([1, 1]);
+    expect(submittedCanvases.size).toBe(2);
+    const promptDocument = lastNodeRunBody(rootId).promptDocument;
+    expect(promptDocument).toMatchObject({
+      version: 1,
+      blocks: [
+        { type: 'text', text: 'Use ' },
+        {
+          type: 'mention',
+          mentionId: expect.any(String),
+          assetId: 'asset-reference',
+          assetVersion: 1,
+          label: 'reference.png',
+          mediaType: 'image',
+        },
+      ],
+    });
+    for (const [nodeId, savedCanvas] of submittedCanvases) {
+      expect(lastNodeRunBody(nodeId)).toMatchObject({
+        projectId: project.id,
+        modelAlias,
+        credentialId: modelCredentialId,
+        promptDocument,
+        parameters: { prompt: runPromptOf(rootId) },
+      });
+      expect(lastNodeRunBody(nodeId).parameters).not.toHaveProperty('generationCount');
+      expect(savedCanvas.nodes.find((node) => node.id === nodeId)?.data).toMatchObject({
+        modelAlias,
+        promptDocument,
+      });
+      expect(savedCanvas.nodes.find((node) => node.id === sourceId)?.data).toMatchObject({
+        assetId: reference.id,
+        contentUrl: reference.contentUrl,
+        mimeType: reference.mimeType,
+      });
+      expect(savedCanvas.edges.filter((edge) => edge.targetNodeId === nodeId)).toEqual([
+        expect.objectContaining({
+          sourceNodeId: sourceId,
+          sourceHandle: 'output:image',
+          targetHandle: 'input:content',
+          order: 0,
+        }),
+      ]);
+    }
+    expect(within(editor).getByRole('button', { name: '生成' })).toBeEnabled();
+  });
+
   it.each(['video_edit', 'video_extend'] as const)(
     '添加提示词参考素材后保留 %s 模式与参数',
     async (videoMode) => {
@@ -1123,32 +1227,38 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     expect(within(editor).getByRole('button', { name: '生成' })).toBeEnabled();
   });
 
-  it('批量提交断网后停止后续 POST，保留已提交结果且不自动重试', async () => {
-    const { user } = await renderCanvas();
-    await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
-    const editor = await fillSelectedPrompt(user, 'Create independent drafts.');
-    await user.click(within(editor).getByRole('combobox', { name: /^生成数量：/ }));
-    await user.click(
-      within(await screen.findByRole('listbox', { name: '生成数量选项' })).getByRole('option', {
-        name: '3份',
-      }),
-    );
-    const originalFetch = fetchMock.getMockImplementation()!;
-    let attempts = 0;
-    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input).match(/\/nodes\/[^/]+\/runs$/) && init?.method === 'POST') {
-        attempts += 1;
-        if (attempts === 2) throw new TypeError('Network disconnected');
-      }
-      return originalFetch(input, init);
-    });
-    await user.click(within(editor).getByRole('button', { name: '生成' }));
-    await screen.findByText(/已完成 1\/3 份.*已停止后续提交/);
-    expect(attempts).toBe(2);
-    expect(nodeRunRequestCounts.size).toBe(1);
-    expect(flowNodes()).toHaveLength(3);
-    expect(within(editor).getByRole('button', { name: '生成' })).toBeEnabled();
-  });
+  it.each(['断网', 'HTTP 400'] as const)(
+    '批量提交%s后停止后续 POST，保留已提交结果且不自动重试',
+    async (failure) => {
+      const { user } = await renderCanvas();
+      await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
+      const editor = await fillSelectedPrompt(user, 'Create independent drafts.');
+      await user.click(within(editor).getByRole('combobox', { name: /^生成数量：/ }));
+      await user.click(
+        within(await screen.findByRole('listbox', { name: '生成数量选项' })).getByRole('option', {
+          name: '3份',
+        }),
+      );
+      const originalFetch = fetchMock.getMockImplementation()!;
+      let attempts = 0;
+      fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).match(/\/nodes\/[^/]+\/runs$/) && init?.method === 'POST') {
+          attempts += 1;
+          if (attempts === 2) {
+            if (failure === '断网') throw new TypeError('Network disconnected');
+            return jsonResponse({ error: '输入参数不合法' }, 400);
+          }
+        }
+        return originalFetch(input, init);
+      });
+      await user.click(within(editor).getByRole('button', { name: '生成' }));
+      await screen.findByText(/已完成 1\/3 份.*已停止后续提交/);
+      expect(attempts).toBe(2);
+      expect(nodeRunRequestCounts.size).toBe(1);
+      expect(flowNodes()).toHaveLength(3);
+      expect(within(editor).getByRole('button', { name: '生成' })).toBeEnabled();
+    },
+  );
 
   it('批量首份请求等待期间撤销新增节点，不再提交已移除的后续份数', async () => {
     const { user } = await renderCanvas();

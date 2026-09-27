@@ -320,7 +320,36 @@ describe('资源反推提示词 API', () => {
     expect(ctx.executor).not.toHaveBeenCalled();
   });
 
-  it('复用资源大小与显式媒体能力限制', async () => {
+  it('目录仅声明文字时仍受理图片反推并保留冻结内容', async () => {
+    const ctx = await fixture();
+    ctx.settingsStore.replaceModels(
+      [
+        {
+          id: 'alpha-text',
+          name: '文字',
+          mediaTypes: ['text'],
+          capabilities: { mentionMediaTypes: ['text'] },
+          refreshedAt: new Date().toISOString(),
+        },
+      ],
+      ctx.credentialId,
+    );
+    const response = await ctx.app.inject({
+      method: 'POST',
+      url: ctx.url,
+      payload: { projectId: ctx.project.id },
+    });
+    expect(response.statusCode, response.body).toBe(202);
+    await vi.waitFor(async () =>
+      expect((await ctx.runService.get(response.json().analysis.runId))?.status).toBe('succeeded'),
+    );
+    expect(ctx.executor).toHaveBeenCalledTimes(1);
+    expect(ctx.executor.mock.calls[0]![0].resolvedMentions?.[0]?.source).toMatchObject({
+      dataUrl: `data:image/png;base64,${Buffer.from('version-one').toString('base64')}`,
+    });
+  });
+
+  it('复用资源大小与显式引用数量限制', async () => {
     const ctx = await fixture();
     vi.stubEnv('RESOURCE_MENTION_MAX_BYTES', '3');
     const oversized = await ctx.app.inject({
@@ -337,7 +366,7 @@ describe('资源反推提示词 API', () => {
           id: 'alpha-text',
           name: '文字',
           mediaTypes: ['text'],
-          capabilities: { mentionMediaTypes: ['text'] },
+          capabilities: { maxMentions: 0 },
           refreshedAt: new Date().toISOString(),
         },
       ],

@@ -133,7 +133,7 @@ Web MVP 稳定后接入 Tauri 桌面壳；桌面封装与 PC Web 核心流程优
 六项 PC Web 验收的本地缺口已补齐，最新证据见 [next.md 第 14 节](next.md#14-功能补齐与最终检查点)及 [验收记录第 7 节](docs/six-feature-acceptance.md#7-功能补齐后的验收)。仍需追加额度完成文字/视频成功取证，音频需可用的精确模型；不要重发已用完授权次数的创建请求。固定大画布已取得基线/当前样本，后续性能工作先拆分自动化等待与实际渲染耗时，再决定是否优化。
 
 - 先完成合同取证，再开放字段映射与真实验收；末帧治理按生命周期、恢复机制、TTL/关系映射及部署验收推进；P2 能力单独立项。
-- 保持 `source` / `generate` 和历史 `transform` 兼容，以及 `VideoInputSet`、`referenceImage`、冻结快照、输入顺序和未知能力 fail-closed 等既有约束，不将这些已完成事项重新列为开发任务。
+- 保持 `source` / `generate` 和历史 `transform` 兼容，以及 `VideoInputSet`、`referenceImage`、冻结快照与输入顺序。未接通的 Provider 合同或输入映射仍拒绝；模型目录的媒体列表不作为资源提及的硬拦截条件，见[当前输入边界](docs/resource-mention-media-checkpoint.md)。不将这些既有约束重新列为开发任务。
 - PostgreSQL、Redis、S3/MinIO、队列及凭据使用专用 namespace、bucket/prefix 和合成或获授权测试配置；执行前核验当前环境，不照搬历史端口状态。
 - 真实请求按 Provider、精确模型 ID、合同、组合和次数取得授权；保留已知任务 ID，结果不明不重复发送可能计费的创建 POST，不记录真实密钥。
 - 数据模型、迁移、依赖升级、删除或覆盖前说明影响与回滚；生产操作和破坏性操作另行确认。

@@ -5,10 +5,8 @@ import {
   type NodeMode,
 } from '@multimodal-canvas/domain';
 
-/** 模型目录中与资源提及相关的能力字段。 */
+/** 模型目录中仍参与资源提及预检的模式、角色与组合限制。 */
 export type ResourceMentionCapabilities = {
-  mediaTypes?: readonly MediaType[];
-  mentionMediaTypes?: readonly MediaType[];
   semanticRoles?: readonly string[];
   maxMentions?: number;
   supportsMixedMentions?: boolean;
@@ -41,7 +39,7 @@ export type ResourceMentionCapabilityDiagnostic = {
     | 'mode_unsupported';
 };
 
-/** 能力预检结果；缺省声明不阻断，Mock 请求仍显式标记为模拟路径。 */
+/** 能力预检结果；媒体目录不决定输入受理，Mock 请求显式标记为模拟路径。 */
 export type ResourceMentionCapabilityCheck = {
   issues: ResourceMentionCapabilityDiagnostic[];
   simulated: boolean;
@@ -58,6 +56,7 @@ export type ResourceMentionCapabilityNode = {
 
 /** 输入模型的最小结构，兼容不同模型目录实现。 */
 export type ResourceMentionCapabilityModel = {
+  /** 节点输出媒体类型，不作为资源输入的白名单。 */
   mediaTypes?: readonly MediaType[];
   capabilities?: Record<string, unknown>;
   limitations?: Record<string, unknown>;
@@ -66,7 +65,8 @@ export type ResourceMentionCapabilityModel = {
 /**
  * 按节点媒体类型、模式、模型和提及组合执行资源能力预检。
  *
- * 缺少能力字段不推断为不支持；仅检查明确声明的限制及图片接口映射边界。
+ * 媒体目录可能只描述默认输入，不能据此拒绝资源提及；媒体由实际适配器判断。
+ * 缺省声明不阻断，模式、角色、数量及混合限制仍按明确声明校验。
  * 各 Provider 继续校验实际输入，不在此读取资产或发起请求。
  * @param input 节点模式、模型目录、已冻结提及及是否为 Mock 预览。
  * @returns 不含媒体内容的逐项诊断与模拟路径标记。
@@ -82,7 +82,6 @@ export function checkResourceMentionCapabilities(input: {
   if (input.mentions.length === 0) return { issues: [], simulated: false };
 
   const modelCapabilities = mergeCapabilityRecords(
-    input.model?.mediaTypes ? { mediaTypes: input.model.mediaTypes } : undefined,
     input.model?.capabilities,
     input.model?.limitations,
   );
@@ -112,19 +111,6 @@ export function checkResourceMentionCapabilities(input: {
           code: 'RESOURCE_MENTION_MODE_UNSUPPORTED',
           reason: 'mode_unsupported',
           message: `模型 ${input.modelAlias} 不支持 ${input.node.data.mode} 模式下的资源提及`,
-        }),
-      );
-    }
-  }
-
-  if (parsed.mentionMediaTypes) {
-    for (const mention of input.mentions) {
-      if (parsed.mentionMediaTypes.includes(mention.mediaType)) continue;
-      issues.push(
-        diagnostic(input, mention, {
-          code: 'RESOURCE_MENTION_MEDIA_UNSUPPORTED',
-          reason: 'media_unsupported',
-          message: `模型 ${input.modelAlias} 不支持 ${mention.mediaType} 类型资源提及`,
         }),
       );
     }
@@ -189,35 +175,21 @@ function diagnostic(
   };
 }
 
-/** 合并模型目录字段，显式能力覆盖 limitations，节点输出类型保持目录值。 */
+/** 合并预检限制，capabilities 中的显式值覆盖 limitations。 */
 function mergeCapabilityRecords(
-  mediaTypes: Record<string, unknown> | undefined,
   capabilities: Record<string, unknown> | undefined,
   limitations: Record<string, unknown> | undefined,
 ): Record<string, unknown> | undefined {
-  if (!mediaTypes && !capabilities && !limitations) return undefined;
-  return { ...(limitations ?? {}), ...(capabilities ?? {}), ...(mediaTypes ?? {}) };
+  if (!capabilities && !limitations) return undefined;
+  return { ...(limitations ?? {}), ...(capabilities ?? {}) };
 }
 
-/** 解析可选声明及其别名，显式空列表与零上限仍表示禁用。 */
+/** 仅解析模式、角色与组合限制；对应空列表与零上限仍表示禁用。 */
 function parseCapabilities(
   value: Record<string, unknown> | undefined,
 ): ResourceMentionCapabilities {
   if (!value) return {};
   return {
-    mediaTypes: readMediaTypes(value, ['mediaTypes', 'media_types']),
-    mentionMediaTypes: readMediaTypes(
-      value,
-      [
-        'mentionMediaTypes',
-        'mention_media_types',
-        'supportedMentionMediaTypes',
-        'supported_mention_media_types',
-        'referenceMediaTypes',
-        'reference_media_types',
-      ],
-      true,
-    ),
     semanticRoles: readStrings(value, [
       'semanticRoles',
       'semantic_roles',
@@ -233,27 +205,6 @@ function parseCapabilities(
     ]),
     modes: readModes(value, ['modes', 'supportedModes', 'supported_modes']),
   };
-}
-
-/** 读取媒体列表；preserveEmpty 为 true 时保留显式空数组的禁用语义。 */
-function readMediaTypes(
-  record: Record<string, unknown>,
-  keys: readonly string[],
-  preserveEmpty = false,
-): MediaType[] | undefined {
-  for (const key of keys) {
-    const raw = record[key];
-    if (!Array.isArray(raw)) continue;
-    const values = raw
-      .filter((item): item is MediaType =>
-        ['text', 'image', 'audio', 'video'].includes(String(item).toLowerCase()),
-      )
-      .map((item) => String(item).toLowerCase() as MediaType);
-    return values.length > 0 || (preserveEmpty && raw.length === 0)
-      ? [...new Set(values)]
-      : undefined;
-  }
-  return undefined;
 }
 
 /** 读取字符串声明，保留显式空数组的禁用语义。 */
