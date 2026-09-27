@@ -9,7 +9,7 @@ import {
   SlidersHorizontal,
   X,
 } from 'lucide-react';
-import { Checkbox, Dropdown, Popover, Select, type SelectProps } from 'antd';
+import { Checkbox, Popover, Select, type SelectProps } from 'antd';
 import { useEffect, useId, useRef, useState } from 'react';
 
 import type {
@@ -375,6 +375,8 @@ export function NodeQuickEditor({
   const [mediaSettingsOpen, setMediaSettingsOpen] = useState(false);
   /** 同一节点在快速面板和 Dialog 之间共用父层保存的文档。 */
   const [expandedEditorOpen, setExpandedEditorOpen] = useState(false);
+  /** 参数页 Escape 关闭后的回焦目标；外点关闭不干预用户正在操作的控件。 */
+  const mediaSettingsTriggerRef = useRef<HTMLButtonElement>(null);
   const expandTriggerRef = useRef<HTMLButtonElement>(null);
   const expandedDialogRef = useRef<HTMLDivElement>(null);
   const dialogTitleId = useId();
@@ -977,18 +979,23 @@ export function NodeQuickEditor({
 
   /** 摘要仅展示已保存值；未设置项不假装已提交模型默认参数。 */
   const summaryItems = getMediaSummary(node.data.mediaType, parameters, mediaOptions);
+  /** 容器级 Popover 为秒数及 Select 提供库层级上下文，避免子浮层落到参数页下面。 */
   const mediaSummary =
     node.data.mediaType === 'text' ? null : (
-      <Dropdown
+      <Popover
         trigger={['click']}
         placement="topRight"
         open={mediaSettingsOpen}
         onOpenChange={setMediaSettingsOpen}
-        styles={{ root: { pointerEvents: 'auto' } }}
+        arrow={false}
+        styles={{
+          root: { pointerEvents: 'auto' },
+          container: { padding: 0, background: 'transparent', boxShadow: 'none' },
+        }}
         getPopupContainer={nodePopupContainer}
         classNames={{ root: 'node-quick-editor-parameter-overlay' }}
         destroyOnHidden
-        popupRender={() => (
+        content={
           <div
             className="node-quick-editor-parameter-popover"
             tabIndex={-1}
@@ -997,6 +1004,14 @@ export function NodeQuickEditor({
             onKeyDownCapture={(event) => {
               // 输入法候选操作不能被浮层解释为关闭。
               if (isImeKeyboardEvent(event)) event.stopPropagation();
+            }}
+            onKeyDown={(event) => {
+              // 子 Select/秒数先拦截自己的 Escape；剩下的按键只关闭参数页并归还焦点。
+              if (event.key !== 'Escape' || isImeKeyboardEvent(event)) return;
+              event.preventDefault();
+              event.stopPropagation();
+              closeMediaSettings();
+              mediaSettingsTriggerRef.current?.focus({ preventScroll: true });
             }}
           >
             <div className="node-quick-editor-parameter-heading">
@@ -1007,9 +1022,10 @@ export function NodeQuickEditor({
             </div>
             {mediaParameterEditor}
           </div>
-        )}
+        }
       >
         <Button
+          ref={mediaSettingsTriggerRef}
           type="button"
           className="node-quick-editor-summary-button"
           aria-expanded={mediaSettingsOpen}
@@ -1019,7 +1035,7 @@ export function NodeQuickEditor({
           <SlidersHorizontal size={15} aria-hidden="true" />
           <span>{summaryItems.map((item) => item.value).join(' · ')}</span>
         </Button>
-      </Dropdown>
+      </Popover>
     );
 
   const controls = (

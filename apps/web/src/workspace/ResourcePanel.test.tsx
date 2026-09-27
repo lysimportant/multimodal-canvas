@@ -197,7 +197,9 @@ describe('ResourcePanel search input', () => {
     render(<ResourcePanelHarness onQueryCommit={vi.fn()} />);
 
     const heading = document.querySelector('.resource-panel-heading');
-    expect(heading).toContainElement(screen.getByRole('combobox', { name: '资源类型' }));
+    const filter = screen.getByRole('combobox', { name: '资源类型' });
+    expect(heading).toContainElement(filter);
+    expect(filter.closest('.ant-select')).toHaveClass('ant-select-borderless');
     expect(heading).toContainElement(screen.getByRole('button', { name: '上传资源' }));
     expect(heading).toContainElement(screen.getByRole('button', { name: '查看已归档资源' }));
     expect(heading).toContainElement(screen.getByRole('button', { name: '折叠资源栏' }));
@@ -206,6 +208,28 @@ describe('ResourcePanel search input', () => {
     ).toHaveLength(4);
     expect(screen.queryByText('资源库')).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: '项目资源' })).not.toBeInTheDocument();
+  });
+
+  it('无边框分类入口仍可通过键盘打开、切换并返回焦点', async () => {
+    const user = userEvent.setup();
+    render(<ResourcePanelHarness onQueryCommit={vi.fn()} initiallyCollapsed />);
+    const filter = screen.getByRole('combobox', { name: '资源类型' });
+    await user.tab();
+    await user.tab();
+    expect(filter).toHaveFocus();
+    // jsdom 不填充 keyCode，补齐库控件依赖的原生键盘字段。
+    fireEvent.keyDown(filter, { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40, which: 40 });
+    fireEvent.keyUp(filter, { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40, which: 40 });
+    await screen.findByRole('option', { name: '全部资源（3）' });
+    expect(filter).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.keyDown(filter, { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40, which: 40 });
+    fireEvent.keyUp(filter, { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40, which: 40 });
+    fireEvent.keyDown(filter, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13 });
+    fireEvent.keyUp(filter, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13 });
+    await waitFor(() => expect(filter).toHaveAttribute('aria-expanded', 'false'));
+    expect(filter).toHaveFocus();
+    expect(screen.getByText('中文参考素材')).toBeInTheDocument();
+    expect(screen.queryByText('图片参考')).not.toBeInTheDocument();
   });
 
   it('keeps a Chinese composition draft across a parent render and commits once', () => {

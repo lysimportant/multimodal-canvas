@@ -398,10 +398,20 @@
   width: min(294px, calc(100vw - 48px));
 }
 
-/* 非虚拟列表自带行内 flex 布局，短枚举只覆盖其选项容器，不影响其他 Select。 */
+/* 按选项实际宽度换列，为比例图形和中文说明留足空间；短清晰度仍可排成三列。 */
 .node-parameter-options .node-parameter-grid [role='listbox'] {
-  display: grid !important;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  display: flex !important;
+  flex-flow: row wrap !important;
+}
+
+.node-parameter-options .node-parameter-grid [role='option'] {
+  flex: 1 1 max-content;
+  min-width: calc(100% / 3);
+  max-width: 100%;
+}
+
+.node-parameter-grid .node-quick-editor-option-copy :is(strong, small) {
+  white-space: nowrap;
 }
 
 .node-parameter-option {

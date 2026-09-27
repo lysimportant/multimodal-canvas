@@ -702,7 +702,9 @@ describe('Skill 工作台', () => {
     await user.type(screen.getByLabelText('名称'), '新版');
     const categoryInput = screen.getByRole('combobox', { name: /^分类$/ });
     await user.click(categoryInput);
-    expect(await screen.findByRole('option', { name: custom.category })).toBeVisible();
+    await waitFor(() =>
+      expect(screen.getByRole('option', { name: custom.category })).toBeVisible(),
+    );
     await user.dblClick(screen.getByRole('button', { name: '保存 Skill' }));
     expect(updateSkill).toHaveBeenCalledOnce();
     expect(screen.getByRole('button', { name: '关闭 Skill 工作台' })).toBeDisabled();

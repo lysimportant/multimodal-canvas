@@ -586,6 +586,95 @@ test('Ant Design 命令面板圈定焦点、保护 IME，并在关闭后恢复�
   expect(fixture.errors).toEqual([]);
 });
 
+/** 分类标题与只读 combobox 只保留文字焦点提示，不能叠加旧表单底色、边框或阴影。 */
+async function expectPlainResourceFilter(field: Locator) {
+  await expect
+    .poll(() =>
+      field.evaluate((root) =>
+        [root, ...root.querySelectorAll('.ant-select, .ant-select-input')].map((element) => {
+          const style = getComputedStyle(element);
+          return {
+            background: style.backgroundColor,
+            shadow: style.boxShadow,
+            outlined: style.outlineStyle !== 'none' && Number.parseFloat(style.outlineWidth) > 0,
+            bordered:
+              style.borderTopStyle !== 'none' &&
+              Number.parseFloat(style.borderTopWidth) > 0 &&
+              style.borderTopColor !== 'rgba(0, 0, 0, 0)',
+          };
+        }),
+      ),
+    )
+    .toEqual(
+      Array.from({ length: 3 }, () => ({
+        background: 'rgba(0, 0, 0, 0)',
+        shadow: 'none',
+        outlined: false,
+        bordered: false,
+      })),
+    );
+}
+
+test('资源分类在五种主题下没有叠加底色和点击边框，键盘与筛选仍可用', async ({
+  page,
+  baseURL,
+}, testInfo) => {
+  test.setTimeout(60_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const fixture = await installFixture(page, baseURL);
+  await page.goto('/projects/' + project.id);
+  const panel = page.getByRole('complementary', { name: '项目资源' });
+  const field = panel.locator('.resource-filter-field');
+  const filter = panel.getByRole('combobox', { name: '资源类型', exact: true });
+  await expect(filter).toBeVisible({ timeout: 30_000 });
+
+  for (const [theme, label] of [
+    ['eye-care', '护眼'],
+    ['light', '明亮'],
+    ['dark', '深色'],
+    ['sepia', '暖白'],
+    ['contrast', '高对比'],
+  ]) {
+    await page.getByRole('button', { name: '外观', exact: true }).first().hover();
+    const appearance = page.getByRole('dialog', { name: '主题、画布背景与连接线' });
+    await appearance.getByRole('button', { name: label, exact: true }).click();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+    await page.mouse.move(600, 50);
+    await expect(appearance).toHaveCount(0);
+    await expectPlainResourceFilter(field);
+    await filter.click();
+    await expect(filter).toHaveAttribute('aria-expanded', 'true');
+    await expectPlainResourceFilter(field);
+    await expect(panel.locator('.compact-select-antd-popup')).not.toHaveClass(
+      /slide-up-(enter|appear)/,
+    );
+    await page.screenshot({ path: testInfo.outputPath('resource-filter-' + theme + '.png') });
+    await filter.press('Escape');
+    await expect(filter).toHaveAttribute('aria-expanded', 'false');
+  }
+
+  await filter.press('Tab');
+  await expect(panel.getByRole('button', { name: '上传资源', exact: true })).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(filter).toBeFocused();
+  await expect(field.locator('.ant-select-content')).toHaveCSS('text-decoration-line', 'underline');
+  await expectPlainResourceFilter(field);
+  await filter.press('ArrowDown');
+  await expect(filter).toHaveAttribute('aria-expanded', 'true');
+  await page.getByRole('option', { name: '图片（9）', exact: true }).click();
+  await expect(field.locator('.ant-select-content')).toHaveText('图片（9）');
+  await expect(panel.getByRole('button', { name: '预览 产品图', exact: true })).toBeVisible();
+  await expect(panel.getByRole('button', { name: '预览 产品视频', exact: true })).toHaveCount(0);
+  await panel.getByPlaceholder('搜索资源').fill('产品');
+  await expect(panel.getByRole('button', { name: /^预览 / })).toHaveCount(1);
+  expect(
+    fixture.apiRequests.some(
+      (request) => /\/runs(?:\/|$)/.test(request.path) && request.method !== 'GET',
+    ),
+  ).toBe(false);
+  expect(fixture.errors).toEqual([]);
+});
+
 test('外观入口的五种主题同步到组件库模型选项且不撑大节点', async ({ page, baseURL }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   const fixture = await installFixture(page, baseURL);

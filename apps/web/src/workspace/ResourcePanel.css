@@ -10,6 +10,22 @@
   position: relative;
 }
 
+/* 分类入口是标题，不再叠加旧表单底色；只读输入的焦点改为文字下划线。 */
+.resource-filter-field .compact-select-antd {
+  height: 30px;
+  padding-inline: 0;
+}
+
+.resource-filter-field .ant-select-input:focus-visible {
+  outline: 0;
+}
+
+.resource-filter-field .ant-select-focused .ant-select-content {
+  text-decoration: underline;
+  text-decoration-color: var(--mc-accent);
+  text-underline-offset: 3px;
+}
+
 .resource-drawer.is-expanded {
   height: 340px;
 }

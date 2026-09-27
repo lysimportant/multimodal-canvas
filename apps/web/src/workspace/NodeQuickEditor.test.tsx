@@ -312,7 +312,7 @@ describe('NodeQuickEditor', () => {
     fireEvent.keyDown(document.activeElement!, { key: 'Escape', keyCode: 27, which: 27 });
     await user.click(screen.getByRole('button', { name: '媒体参数' }));
     expect(
-      screen.getByRole('region', { name: '生成参数' }).closest('.ant-dropdown')?.parentElement,
+      screen.getByRole('region', { name: '生成参数' }).closest('.ant-popover')?.parentElement,
     ).toBe(document.body);
     view.rerender(
       <NodeQuickEditor
@@ -708,6 +708,57 @@ describe('NodeQuickEditor', () => {
     expect(onParametersChange).toHaveBeenLastCalledWith({ resolution: '720p' });
     expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
   });
+
+  it.each(['快捷', '完整'] as const)(
+    '%s参数页向秒数及比例选择器传递主题层级，portal 不进入滚动容器',
+    async (presentation) => {
+      const user = userEvent.setup();
+      const onParametersChange = vi.fn();
+      const props = makeProps({ node: videoNode, onParametersChange });
+      renderRaw(
+        <ConfigProvider theme={{ token: { zIndexPopupBase: 2000 } }}>
+          <NodeQuickEditor {...props} />
+        </ConfigProvider>,
+      );
+      if (presentation === '完整')
+        await user.click(screen.getByRole('button', { name: '打开完整编辑器' }));
+      const container = presentation === '完整' ? screen.getByRole('dialog') : document.body;
+      await user.click(screen.getByRole('button', { name: '媒体参数' }));
+      const panel = screen.getByRole('region', { name: '生成参数' });
+      const parentLayer = panel.closest<HTMLElement>('.node-quick-editor-parameter-overlay')!;
+      expect(parentLayer.parentElement).toBe(container);
+      await user.click(within(panel).getByRole('button', { name: '时长（秒）：未设置' }));
+      const durationLayer = screen
+        .getByRole('dialog', { name: '视频时长' })
+        .closest<HTMLElement>('.node-quick-editor-duration-popover')!;
+      expect(durationLayer.parentElement).toBe(container);
+      expect(Number(durationLayer.style.zIndex)).toBeGreaterThan(2000);
+      expect(Number(durationLayer.style.zIndex)).toBeGreaterThan(Number(parentLayer.style.zIndex));
+      await user.click(durationCard().getByRole('button', { name: '30 秒' }));
+      expect(onParametersChange).toHaveBeenLastCalledWith({ duration: 30 });
+      expect(panel).toBeVisible();
+      await user.click(within(panel).getByRole('combobox', { name: '视频比例：未设置' }));
+      const options = screen.getByRole('listbox', { name: '视频比例选项' });
+      const selectLayer = options.closest<HTMLElement>('.ant-select-dropdown')!;
+      expect(selectLayer.parentElement).toBe(container);
+      expect(Number(selectLayer.style.zIndex)).toBeGreaterThan(2000);
+      expect(Number(selectLayer.style.zIndex)).toBeGreaterThan(Number(parentLayer.style.zIndex));
+      await user.click(within(options).getByRole('option', { name: '4:3 标准横向' }));
+      expect(onParametersChange).toHaveBeenLastCalledWith({ aspectRatio: '4:3' });
+      expect(panel).toBeVisible();
+      const ratio = within(panel).getByRole('combobox', { name: '视频比例：未设置' });
+      await user.click(ratio);
+      await waitFor(() => expect(screen.getByRole('listbox')).toBeVisible());
+      fireEvent.keyDown(ratio, { key: 'Escape', keyCode: 27, which: 27 });
+      await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument());
+      expect(panel).toBeVisible();
+      fireEvent.keyDown(ratio, { key: 'Escape', keyCode: 27, which: 27 });
+      expect(screen.queryByRole('region', { name: '生成参数' })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: '媒体参数' })).toHaveFocus();
+      if (presentation === '完整') expect(container).toBeVisible();
+      expect(props.onRun).not.toHaveBeenCalled();
+    },
+  );
 
   it('没有参数回调时只读时长卡片禁用快捷按钮和自定义输入', async () => {
     const user = userEvent.setup();

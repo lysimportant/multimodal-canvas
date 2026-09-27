@@ -272,7 +272,8 @@ export function ResourcePanel({
             id={`resource-filter-${listId}`}
             aria-label="资源类型"
             className="compact-select-antd"
-            size="small"
+            size="middle"
+            variant="borderless"
             value={activeFilter}
             options={resourceOptions}
             open={filterOpen}
@@ -283,7 +284,10 @@ export function ResourcePanel({
             placement="bottomLeft"
             getPopupContainer={() => panelRef.current ?? document.body}
             classNames={{ popup: { root: 'compact-select-antd-popup' } }}
-            styles={{ popup: { root: { minWidth: 180, pointerEvents: 'auto' } } }}
+            styles={{
+              root: { outline: 0, boxShadow: 'none' },
+              popup: { root: { minWidth: 180, pointerEvents: 'auto' } },
+            }}
           />
         </div>
         <Button
