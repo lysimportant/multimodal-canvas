@@ -131,6 +131,8 @@ const QUICK_EDITOR_FALLBACK_WIDTH = 570;
 const QUICK_EDITOR_VIEWPORT_MARGIN = 8;
 /** 快速编辑器与选中节点之间的视觉间距，单位为像素。 */
 const QUICK_EDITOR_NODE_GAP = 16;
+/** 节点越过画布边界后，继续移动该比例才允许输入面板换边。 */
+const QUICK_EDITOR_EDGE_SWITCH_RATIO = 0.25;
 
 /** 快速编辑器相对于视口的测量结果。 */
 type QuickEditorLayout = {
@@ -150,6 +152,89 @@ type QuickEditorLayout = {
   ready: boolean;
 };
 
+/** 快速编辑器候选区域的几何信息。 */
+type QuickEditorCandidate = Pick<
+  QuickEditorLayout,
+  'left' | 'top' | 'width' | 'maxHeight' | 'placement'
+>;
+
+/** 输入面板可使用的画布边界，单位为视口像素。 */
+type QuickEditorBounds = {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+};
+
+/**
+ * 计算当前展开方向相对画布边界的越界距离。
+ * @param placement 当前输入面板展开方向。
+ * @param nodeRect 选中节点的视口矩形。
+ * @param bounds 输入面板允许使用的画布边界。
+ * @param nodeGap 节点与输入面板之间的间距。
+ * @returns 当前方向的边界越界距离；负数表示尚未触及边界。
+ */
+function getQuickEditorEdgeOverflow(
+  placement: QuickEditorLayout['placement'],
+  nodeRect: DOMRect,
+  bounds: QuickEditorBounds,
+  nodeGap: number,
+) {
+  switch (placement) {
+    case 'below':
+      return nodeRect.bottom + nodeGap - bounds.bottom;
+    case 'above':
+      return bounds.top + nodeGap - nodeRect.top;
+    case 'right':
+      return nodeRect.right + nodeGap - bounds.right;
+    case 'left':
+      return bounds.left + nodeGap - nodeRect.left;
+  }
+}
+
+/**
+ * 判断当前方向是否仍处于换边滞后区间。
+ * @param placement 当前输入面板展开方向。
+ * @param nodeRect 选中节点的视口矩形。
+ * @param bounds 输入面板允许使用的画布边界。
+ * @param nodeGap 节点与输入面板之间的间距。
+ * @returns 节点越过对应边界未超过自身四分之一时返回 true。
+ */
+function shouldHoldQuickEditorPlacement(
+  placement: QuickEditorLayout['placement'],
+  nodeRect: DOMRect,
+  bounds: QuickEditorBounds,
+  nodeGap: number,
+) {
+  const overflow = getQuickEditorEdgeOverflow(placement, nodeRect, bounds, nodeGap);
+  const nodeSize =
+    placement === 'below' || placement === 'above' ? nodeRect.height : nodeRect.width;
+  return overflow >= 0 && overflow <= Math.max(1, nodeSize) * QUICK_EDITOR_EDGE_SWITCH_RATIO;
+}
+
+/**
+ * 将滞后区间内仍保留的候选区域约束到可见画布边界，避免换边前出现无效负尺寸。
+ * @param candidate 当前方向计算出的候选区域。
+ * @param bounds 输入面板允许使用的画布边界。
+ * @returns 至少保留一个像素且完全位于边界内的候选区域。
+ */
+function constrainQuickEditorCandidate(
+  candidate: QuickEditorCandidate,
+  bounds: QuickEditorBounds,
+): QuickEditorCandidate {
+  const availableWidth = Math.max(1, bounds.right - bounds.left);
+  const availableHeight = Math.max(1, bounds.bottom - bounds.top);
+  const width = clampQuickEditorValue(candidate.width, 1, availableWidth);
+  const maxHeight = clampQuickEditorValue(candidate.maxHeight, 1, availableHeight);
+
+  return {
+    ...candidate,
+    left: clampQuickEditorValue(candidate.left, bounds.left, bounds.right - width),
+    top: clampQuickEditorValue(candidate.top, bounds.top, bounds.bottom - maxHeight),
+    width,
+    maxHeight,
+  };
+}
 export type WorkflowCanvasProps = {
   /** 当前项目用于创建独立 Skill 优化任务。 */
   projectId?: string;
@@ -1017,6 +1102,8 @@ function QuickEditorOverlay({
     placement: 'below',
     ready: false,
   });
+  /** 记录上一次已提交的展开方向，换边时用于施加四分之一尺寸滞后。 */
+  const placementRef = useRef<QuickEditorLayout['placement'] | null>(null);
 
   useLayoutEffect(() => {
     if (typeof document === 'undefined') return;
@@ -1098,55 +1185,85 @@ function QuickEditorOverlay({
     if (hasNodeBounds) {
       // 候选区域只取节点外侧，不以编辑器当前高度回推位置，避免增高或滚动时跳动。
       const nodeGap = QUICK_EDITOR_NODE_GAP * viewportZoom;
+      const bounds: QuickEditorBounds = {
+        left: canvasLeft,
+        right: boundedRight,
+        top: canvasTop,
+        bottom: boundedBottom,
+      };
       const belowTop = Math.max(canvasTop, nodeRect.bottom + nodeGap);
       const aboveBottom = Math.min(boundedBottom, nodeRect.top - 64);
       const rightLeft = Math.max(canvasLeft, nodeRect.right + nodeGap);
       const leftRight = Math.min(boundedRight, nodeRect.left - nodeGap);
-      const below = {
-        placement: 'below' as const,
+      const below: QuickEditorCandidate = {
+        placement: 'below',
         left,
         top: belowTop,
         width,
         maxHeight: boundedBottom - belowTop,
       };
       // 上方为节点工具栏额外预留空间；侧面保留端口与缩放手柄间距。
-      const above = {
-        placement: 'above' as const,
+      const above: QuickEditorCandidate = {
+        placement: 'above',
         left,
         top: canvasTop,
         width,
         maxHeight: aboveBottom - canvasTop,
       };
-      const right = {
-        placement: 'right' as const,
+      const right: QuickEditorCandidate = {
+        placement: 'right',
         left: rightLeft,
         top: canvasTop,
         width: Math.min(width, boundedRight - rightLeft),
         maxHeight,
       };
       const sideWidth = Math.min(width, leftRight - canvasLeft);
-      const leftSide = {
-        placement: 'left' as const,
+      const leftSide: QuickEditorCandidate = {
+        placement: 'left',
         left: leftRight - sideWidth,
         top: canvasTop,
         width: sideWidth,
         maxHeight,
       };
-      const candidates = [below, above, right, leftSide].filter(
-        (area) => area.width > 0 && area.maxHeight > 0,
-      );
+      const allCandidates = [below, above, right, leftSide];
+      const candidates = allCandidates.filter((area) => area.width > 0 && area.maxHeight > 0);
       const usable = candidates.filter((area) => area.width >= Math.min(360 * viewportZoom, width));
-      const chosen =
+      const preferred =
         usable.find((area) => area.maxHeight >= 400 * viewportZoom) ??
         usable.sort((a, b) => b.maxHeight - a.maxHeight)[0] ??
         candidates.sort((a, b) => b.width * b.maxHeight - a.width * a.maxHeight)[0];
-      if (chosen) {
-        ({ left, top, width, maxHeight, placement } = chosen);
-      } else {
+      if (!preferred) {
         // 节点完全占满视口时没有不遮挡的浮层区域，缩放或平移后会重新测量。
         setLayout((current) => (current.ready ? { ...current, ready: false } : current));
         return;
       }
+
+      const currentPlacement = placementRef.current;
+      const holdCurrentPlacement =
+        currentPlacement !== null &&
+        currentPlacement !== preferred.placement &&
+        shouldHoldQuickEditorPlacement(currentPlacement, nodeRect, bounds, nodeGap);
+      const selectedPlacement = holdCurrentPlacement ? currentPlacement : preferred.placement;
+      const selectedCandidate = allCandidates.find(
+        (candidate) => candidate.placement === selectedPlacement,
+      );
+      if (!selectedCandidate) {
+        setLayout((current) => (current.ready ? { ...current, ready: false } : current));
+        return;
+      }
+
+      const resolvedCandidate =
+        selectedCandidate.width > 0 && selectedCandidate.maxHeight > 0
+          ? selectedCandidate
+          : holdCurrentPlacement
+            ? constrainQuickEditorCandidate(selectedCandidate, bounds)
+            : null;
+      if (!resolvedCandidate) {
+        setLayout((current) => (current.ready ? { ...current, ready: false } : current));
+        return;
+      }
+      ({ left, top, width, maxHeight, placement } = resolvedCandidate);
+      placementRef.current = placement;
     }
 
     const nextLayout: QuickEditorLayout = {

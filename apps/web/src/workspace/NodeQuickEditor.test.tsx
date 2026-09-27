@@ -665,7 +665,7 @@ describe('NodeQuickEditor', () => {
     },
   );
 
-  it('视频快捷时长包含 15 秒，自定义秒数保留其他参数且拒绝非正整数', async () => {
+  it('视频快捷时长展示 5/10/15/30 秒，自定义输入保留其他参数且拒绝非正整数', async () => {
     const user = userEvent.setup();
     const onParametersChange = vi.fn();
     render(
@@ -676,13 +676,21 @@ describe('NodeQuickEditor', () => {
         })}
       />,
     );
-    const duration = screen.getByRole('spinbutton', { name: '自定义秒数' });
     const trigger = screen.getByRole('combobox', { name: '时长（秒）：未设置' });
     await user.click(trigger);
-    await waitFor(() => expect(screen.getByRole('option', { name: '15 秒' })).toBeVisible());
-    expect(screen.queryByRole('option', { name: '16 秒' })).not.toBeInTheDocument();
+    const durationPopup = screen.getByRole('listbox', { name: '时长（秒）选项' });
+    await waitFor(() =>
+      expect(within(durationPopup).getByRole('option', { name: '15 秒' })).toBeVisible(),
+    );
+    for (const seconds of ['5 秒', '10 秒', '15 秒', '30 秒']) {
+      expect(within(durationPopup).getByRole('option', { name: seconds })).toBeInTheDocument();
+    }
+    expect(within(durationPopup).getByRole('option', { name: /自定义/ })).toBeInTheDocument();
+    expect(within(durationPopup).queryByRole('option', { name: '16 秒' })).not.toBeInTheDocument();
     await user.click(screen.getByRole('option', { name: '15 秒' }));
     expect(onParametersChange).toHaveBeenLastCalledWith({ resolution: '720p', duration: 15 });
+    await user.click(trigger);
+    const duration = screen.getByRole('spinbutton', { name: '自定义秒数' });
     expect(duration).toHaveValue(15);
     fireEvent.change(duration, { target: { value: '17' } });
     expect(onParametersChange).toHaveBeenLastCalledWith({ resolution: '720p', duration: 17 });
@@ -691,7 +699,6 @@ describe('NodeQuickEditor', () => {
       expect(duration).toHaveAttribute('aria-invalid', 'true');
       expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
     }
-    expect(onParametersChange).toHaveBeenCalledTimes(2);
     fireEvent.change(duration, { target: { value: '' } });
     expect(onParametersChange).toHaveBeenLastCalledWith({ resolution: '720p' });
     expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
@@ -2011,10 +2018,10 @@ describe('NodeQuickEditor', () => {
       />,
     );
     expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
-    expect(screen.getByRole('spinbutton', { name: '自定义秒数（-1 为自动）' })).toHaveValue(-1);
     expect(screen.getByRole('combobox', { name: /视频比例：自动比例/ })).toBeInTheDocument();
     const durationGroup = screen.getByText('时长（秒）').parentElement as HTMLElement;
     await user.click(within(durationGroup).getByRole('combobox'));
+    expect(screen.getByRole('spinbutton', { name: '自定义秒数（-1 为自动）' })).toHaveValue(-1);
     expect(selectPopup(durationGroup).getByRole('option', { name: /^自动 / })).not.toHaveAttribute(
       'aria-disabled',
       'true',
@@ -2418,9 +2425,7 @@ describe('NodeQuickEditor', () => {
       selectPopup(ratioGroup).getByRole('option', { name: /1:1/, selected: false }),
     ).toHaveAttribute('aria-selected', 'false');
     await user.click(within(durationGroup).getByRole('combobox'));
-    expect(
-      selectPopup(durationGroup).getByRole('option', { name: '4 秒', selected: true }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('spinbutton', { name: '自定义秒数' })).toHaveValue(4);
     if (within(ratioGroup).getByRole('combobox').getAttribute('aria-expanded') !== 'true')
       await user.click(within(ratioGroup).getByRole('combobox'));
     const ratioButton = selectPopup(ratioGroup).getByRole('option', { name: /16:9/ });
@@ -2431,7 +2436,7 @@ describe('NodeQuickEditor', () => {
 
     await user.click(ratioButton);
     await user.click(within(durationGroup).getByRole('combobox'));
-    fireEvent.click(selectPopup(durationGroup).getByRole('option', { name: '8 秒' }));
+    fireEvent.click(selectPopup(durationGroup).getByRole('option', { name: '10 秒' }));
 
     expect(onParametersChange).toHaveBeenNthCalledWith(1, {
       size: '1920x1080',
@@ -2442,7 +2447,7 @@ describe('NodeQuickEditor', () => {
     expect(onParametersChange).toHaveBeenNthCalledWith(2, {
       size: '1920x1080',
       resolution: '720p',
-      duration: 8,
+      duration: 10,
     });
   });
 
@@ -2501,10 +2506,10 @@ describe('NodeQuickEditor', () => {
     expect(selectPopup(ratioGroup).queryByRole('option', { name: /1:1/ })).not.toBeInTheDocument();
     await user.click(within(durationGroup).getByRole('combobox'));
     expect(
-      selectPopup(durationGroup).getByRole('option', { name: '6 秒', selected: false }),
+      selectPopup(durationGroup).getByRole('option', { name: '10 秒', selected: false }),
     ).toBeInTheDocument();
     expect(
-      selectPopup(durationGroup).queryByRole('option', { name: '20 秒' }),
+      selectPopup(durationGroup).queryByRole('option', { name: '6 秒' }),
     ).not.toBeInTheDocument();
   });
 

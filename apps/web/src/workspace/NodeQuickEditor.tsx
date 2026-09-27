@@ -9,7 +9,7 @@ import {
   X,
 } from 'lucide-react';
 import { Checkbox, Dropdown, Select, type SelectProps } from 'antd';
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 
 import type {
   Asset,
@@ -206,6 +206,10 @@ const automaticVideoDurationOption: MediaOption = {
   label: '自动',
   description: '由模型根据输入决定',
 };
+
+/** 视频节点浮层中优先展示的常用时长；不改变模型合同的范围校验。 */
+const VIDEO_DURATION_PRESETS = [5, 10, 15, 30] as const;
+const CUSTOM_VIDEO_DURATION_VALUE = '__custom_video_duration__';
 
 /** 自动比例按模型根据提示词和输入素材决定；强制沿用素材的模式另显示原素材标签。 */
 const adaptiveVideoAspectRatioOption: MediaOption = {
@@ -516,6 +520,23 @@ export function NodeQuickEditor({
         ]
       : catalogMediaOptions.aspectRatio,
   };
+  const durationQuickOptions = getVideoDurationQuickOptions(
+    mediaOptions.duration,
+    durationContract,
+    supportsAutomaticDuration,
+  );
+  const durationIsQuickOption = durationQuickOptions.some(
+    (option) => option.value === durationDraft,
+  );
+  const durationSelectOptions: QuickOption[] = [
+    ...durationQuickOptions,
+    {
+      value: CUSTOM_VIDEO_DURATION_VALUE,
+      label: '自定义',
+      trailingLabel: durationDraft ? `${durationDraft} 秒` : undefined,
+      description: '在此输入秒数',
+    },
+  ];
   const videoContractParameterIssue =
     node.data.mediaType === 'video' &&
     currentVideoMode === 'video_edit' &&
@@ -828,43 +849,56 @@ export function NodeQuickEditor({
             />
             <NodeParameterSelect
               label="时长（秒）"
-              value={normalizeCurrentOptionValue(parameters.duration)}
-              options={mediaOptions.duration}
+              value={
+                durationDraft === ''
+                  ? undefined
+                  : durationIsQuickOption
+                    ? durationDraft
+                    : CUSTOM_VIDEO_DURATION_VALUE
+              }
+              options={durationSelectOptions}
               onChange={(value) => {
+                if (value === CUSTOM_VIDEO_DURATION_VALUE) return;
                 setDurationDraft(value);
                 updateParameter('duration', value ? Number(value) : undefined);
               }}
               className="node-quick-editor-select-group"
               optionLayout="grid"
+              popupExtra={
+                <label
+                  className="node-quick-editor-duration-custom"
+                  onMouseDown={(event) => event.stopPropagation()}
+                >
+                  <span className="node-quick-editor-duration-custom-label">自定义秒数</span>
+                  <Input
+                    className="node-quick-editor-number-input"
+                    type="number"
+                    inputMode="numeric"
+                    min={supportsAutomaticDuration ? -1 : 1}
+                    max={Number.MAX_SAFE_INTEGER}
+                    step={1}
+                    value={durationDraft}
+                    placeholder="输入秒数"
+                    aria-label={
+                      supportsAutomaticDuration ? '自定义秒数（-1 为自动）' : '自定义秒数'
+                    }
+                    aria-invalid={Boolean(durationIssue)}
+                    disabled={!onParametersChange}
+                    onChange={(event) => {
+                      const value = event.currentTarget.value;
+                      setDurationDraft(value);
+                      if (value === '') updateParameter('duration', undefined);
+                      else if (
+                        Number.isSafeInteger(Number(value)) &&
+                        (Number(value) > 0 || (supportsAutomaticDuration && Number(value) === -1))
+                      ) {
+                        updateParameter('duration', Number(value));
+                      }
+                    }}
+                  />
+                </label>
+              }
             />
-            <label className="compact-select node-quick-editor-select-group">
-              <span className="compact-select-label">
-                {supportsAutomaticDuration ? '自定义秒数（-1 为自动）' : '自定义秒数'}
-              </span>
-              <Input
-                className="compact-select-trigger node-quick-editor-number-input"
-                type="number"
-                inputMode="numeric"
-                min={supportsAutomaticDuration ? -1 : 1}
-                max={Number.MAX_SAFE_INTEGER}
-                step={1}
-                value={durationDraft}
-                placeholder="输入秒数"
-                aria-invalid={Boolean(durationIssue)}
-                disabled={!onParametersChange}
-                onChange={(event) => {
-                  const value = event.currentTarget.value;
-                  setDurationDraft(value);
-                  if (value === '') updateParameter('duration', undefined);
-                  else if (
-                    Number.isSafeInteger(Number(value)) &&
-                    (Number(value) > 0 || (supportsAutomaticDuration && Number(value) === -1))
-                  ) {
-                    updateParameter('duration', Number(value));
-                  }
-                }}
-              />
-            </label>
             <NodeParameterSelect
               label="完成后"
               value={resolveVideoCompletionAction(node.data)}
@@ -1400,6 +1434,7 @@ function NodeParameterSelect({
   disabled,
   optionLayout = 'list',
   aspectOptions = false,
+  popupExtra,
 }: {
   label: string;
   value?: string;
@@ -1409,6 +1444,7 @@ function NodeParameterSelect({
   disabled?: boolean;
   optionLayout?: 'list' | 'grid';
   aspectOptions?: boolean;
+  popupExtra?: ReactNode;
 }) {
   const selectId = useId();
   const selected = options.find((option) => option.value === value);
@@ -1479,6 +1515,7 @@ function NodeParameterSelect({
             }}
           >
             {menu}
+            {popupExtra}
           </div>
         )}
         optionRender={(option) => (
@@ -1623,6 +1660,37 @@ export function resolvePreviousOperationSeed(
     };
   }
   return undefined;
+}
+
+/**
+ * 组合视频时长浮层的固定快捷项、自动时长和当前已保存值。
+ *
+ * 快捷项只负责展示常用值；是否可提交仍由 `getMediaOptions` 生成的模型合同和
+ * `durationIssue` 共同决定。这样旧节点中的非快捷时长可以通过“自定义”继续编辑，
+ * 不会因更换界面菜单而被静默丢弃。
+ */
+function getVideoDurationQuickOptions(
+  options: readonly QuickOption[],
+  contract: { min: number; max: number } | undefined,
+  supportsAutomaticDuration: boolean,
+): QuickOption[] {
+  const byValue = new Map(options.map((option) => [option.value, option]));
+  const presets = VIDEO_DURATION_PRESETS.map((seconds) => {
+    const value = String(seconds);
+    const existing = byValue.get(value);
+    const supported = !contract || (seconds >= contract.min && seconds <= contract.max);
+    return {
+      ...(existing ?? { value, label: value, description: '秒' }),
+      value,
+      label: value,
+      description: existing?.description ?? '秒',
+      ...(supported ? {} : { disabled: true, description: '当前模型不支持' }),
+    };
+  });
+  const automatic = supportsAutomaticDuration
+    ? (byValue.get('-1') ?? automaticVideoDurationOption)
+    : undefined;
+  return automatic ? [...presets, automatic] : presets;
 }
 
 /** 返回当前模型的媒体能力；官方视频合同可补目录缺项，通用旧回退只供手动选择。 */

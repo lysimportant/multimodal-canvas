@@ -38,6 +38,8 @@
   textarea.resource-mention-textarea {
   background: transparent;
   caret-color: var(--mc-text);
+  /* 仅限快速编辑器的资源提及输入层，避免影响普通表单。 */
+  caret-width: 2px;
   color: transparent;
 }
 
@@ -421,6 +423,25 @@
 .node-parameter-option small {
   color: var(--mc-text-muted);
   font-size: 11px;
+}
+
+/* 视频时长的自定义输入与快捷项共用同一个 Ant Design 浮层。 */
+.node-quick-editor-duration-custom {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 8px 2px 2px;
+  border-top: 1px solid var(--mc-border);
+}
+
+.node-quick-editor-duration-custom-label {
+  color: var(--mc-text-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.node-quick-editor-duration-custom .node-quick-editor-number-input {
+  width: 100%;
 }
 
 .node-quick-editor-dialog.node-quick-editor-dialog {

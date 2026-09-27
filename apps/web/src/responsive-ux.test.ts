@@ -4,8 +4,19 @@ import { describe, expect, it } from 'vitest';
 
 const indexCss = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf8');
 const normalizedCss = indexCss.replace(/\s+/g, ' ');
+const nodeQuickEditorCss = readFileSync(
+  resolve(process.cwd(), 'src/workspace/node-quick-editor.css'),
+  'utf8',
+);
+const normalizedNodeQuickEditorCss = nodeQuickEditorCss.replace(/\s+/g, ' ');
 
 describe('responsive UX CSS contracts', () => {
+  it('只为节点提示词输入层加宽 caret，避免影响普通表单', () => {
+    expect(normalizedNodeQuickEditorCss).toMatch(
+      /:is\(\.node-quick-editor, \.node-quick-editor-dialog\) \.node-quick-editor-field textarea\.resource-mention-textarea \{[^}]*caret-color: var\(--mc-text\);[^}]*caret-width: 2px;/,
+    );
+  });
+
   it('locks the page scroll while any modal surface is open', () => {
     expect(normalizedCss).toMatch(
       /html:has\(\.project-hub-backdrop\), html:has\(\.command-palette-backdrop\), html:has\(\.project-create-backdrop\), html:has\(\.settings-backdrop\), body:has\(\.project-hub-backdrop\), body:has\(\.command-palette-backdrop\), body:has\(\.project-create-backdrop\), body:has\(\.settings-backdrop\) \{[^}]*overflow: hidden;/,

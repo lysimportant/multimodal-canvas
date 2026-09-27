@@ -785,6 +785,37 @@ describe('WorkflowCanvas context menu', () => {
     );
   });
 
+  it('节点越过画布边界未达到四分之一前保持当前输入面板方向', async () => {
+    const props = createProps({ nodes: [generateNode], selectedNode: null });
+    const { rerender } = render(<WorkflowCanvas {...props} />);
+    const canvas = screen.getByRole('region', { name: '工作流画布' });
+    const canvasNode = screen.getByTestId(`canvas-node-${generateNode.id}`);
+    let nodeRect = createMockRect(380, 150, 180, 80);
+
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue(createMockRect(80, 90, 720, 620));
+    vi.spyOn(canvasNode, 'getBoundingClientRect').mockImplementation(() => nodeRect);
+    rerender(<WorkflowCanvas {...props} selectedNode={generateNode} />);
+
+    const editor = await screen.findByRole('region', { name: '图片生成节点生成设置' });
+    const overlay = editor.closest<HTMLDivElement>('.quick-editor-overlay')!;
+    await waitFor(() => expect(overlay).toHaveAttribute('data-placement', 'below'));
+
+    // 画布底边为 702，节点底边加间距越界 16px，小于节点高度 80px 的四分之一。
+    nodeRect = createMockRect(380, 620, 180, 80);
+    canvasNode.style.transform = 'translate(4px)';
+    await waitFor(() => expect(overlay).toHaveAttribute('data-placement', 'below'));
+
+    // 恰好达到四分之一时仍保持原方向，避免边界处来回跳动。
+    nodeRect = createMockRect(380, 626, 180, 80);
+    canvasNode.style.transform = 'translate(5px)';
+    await waitFor(() => expect(overlay).toHaveAttribute('data-placement', 'below'));
+
+    // 再移动 1px 超过阈值后，才允许切换到上方。
+    nodeRect = createMockRect(380, 627, 180, 80);
+    canvasNode.style.transform = 'translate(6px)';
+    await waitFor(() => expect(overlay).toHaveAttribute('data-placement', 'above'));
+  });
+
   it.each([
     { name: '窄画布', viewportWidth: 1024, canvasLeft: 120, canvasWidth: 480, width: 464 },
     { name: '窄视口', viewportWidth: 560, canvasLeft: 0, canvasWidth: 900, width: 544 },
