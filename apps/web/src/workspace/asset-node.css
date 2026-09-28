@@ -3,7 +3,8 @@
   transition: transform 220ms ease;
 }
 
-.react-flow__node.is-generation-batch.dragging {
+.react-flow__node.is-generation-batch.dragging,
+.react-flow__node.is-generation-batch-dragging {
   transition: none;
 }
 

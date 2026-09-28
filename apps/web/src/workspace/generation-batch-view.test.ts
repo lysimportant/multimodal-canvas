@@ -51,6 +51,92 @@ describe('批量卡牌显示投影', () => {
     expect(edges[1]!.hidden).toBeUndefined();
   });
 
+  it('收起时用首节点的拖动状态标记整叠，不修改原节点或既有投影', () => {
+    const nodes = batchNodes();
+    nodes[0]!.className = 'custom-root';
+    nodes[1]!.className = 'custom-back';
+    nodes[1]!.width = 420;
+    nodes[1]!.height = 320;
+    const edges: FlowEdge[] = [
+      { id: 'root-edge', source: 'source', target: 'result-0' },
+      { id: 'back-edge', source: 'source', target: 'result-1' },
+    ];
+    const before = projectGenerationBatches(nodes, edges);
+    nodes[0]!.dragging = true;
+    nodes[1]!.dragging = false;
+    const original = structuredClone(nodes);
+    const view = projectGenerationBatches(nodes, edges);
+    expect(view.nodes).toHaveLength(nodes.length);
+    view.nodes.forEach((node, index) => {
+      expect(node.className?.split(' ')).toContain('is-generation-batch-dragging');
+      expect({
+        ...node,
+        className: before.nodes[index]!.className,
+        dragging: before.nodes[index]!.dragging,
+      }).toEqual(before.nodes[index]);
+      expect(node.data).toBe(nodes[index]!.data);
+    });
+    expect(view.edges).toEqual(before.edges);
+    expect(view.views).toEqual(before.views);
+    expect(nodes).toEqual(original);
+  });
+
+  it.each([false, undefined])('首节点未拖动时忽略后卡残留拖动状态：%s', (dragging) => {
+    const nodes = batchNodes();
+    if (dragging !== undefined) nodes[0]!.dragging = dragging;
+    nodes[1]!.dragging = true;
+    const view = projectGenerationBatches(nodes, []);
+    for (const node of view.nodes) {
+      expect(node.className?.split(' ')).not.toContain('is-generation-batch-dragging');
+    }
+  });
+
+  it.each([0, 1])('展开后只标记实际拖动的成员，停止后移除标记：%s', (draggedIndex) => {
+    const nodes = batchNodes();
+    nodes[0]!.data.generationBatchExpanded = true;
+    nodes[draggedIndex]!.dragging = true;
+    const view = projectGenerationBatches(nodes, []);
+    expect(
+      view.nodes.map((node) => node.className?.includes('is-generation-batch-dragging')),
+    ).toEqual(nodes.map((_, index) => index === draggedIndex));
+    expect(view.nodes.map((node) => node.position)).toEqual(nodes.map((node) => node.position));
+    nodes[draggedIndex]!.dragging = false;
+    for (const node of projectGenerationBatches(nodes, []).nodes) {
+      expect(node.className?.split(' ')).not.toContain('is-generation-batch-dragging');
+    }
+  });
+
+  it('拖动状态按批次隔离，不影响另一批次或独立节点', () => {
+    const nodes = batchNodes();
+    const otherBatch = batchNodes().map((node) => ({
+      ...node,
+      id: 'other-' + node.id,
+      data: {
+        ...node.data,
+        generationBatch: {
+          ...node.data.generationBatch!,
+          id: 'batch-2',
+          rootNodeId: 'other-result-0',
+        },
+      },
+    }));
+    const independent: AssetFlowNode = {
+      id: 'independent',
+      type: 'image',
+      position: { x: 0, y: 0 },
+      dragging: true,
+      className: 'custom-independent',
+      data: { label: '独立图片', mediaType: 'image', mode: 'generate' },
+    };
+    nodes[0]!.dragging = true;
+    const view = projectGenerationBatches([...nodes, ...otherBatch, independent], []);
+    expect(
+      view.nodes.map((node) => node.className?.includes('is-generation-batch-dragging')),
+    ).toEqual([true, true, true, false, false, false, false]);
+    expect(view.nodes.at(-1)).toBe(independent);
+    expect(view.views.has(independent.id)).toBe(false);
+  });
+
   it('展开恢复真实位置、既有交互配置和连线显示', () => {
     const nodes = batchNodes();
     nodes[0]!.data.generationBatchExpanded = true;
@@ -89,6 +175,9 @@ describe('批量卡牌显示投影', () => {
       { x: 820, y: 230 },
     ]);
     expect(moved[1]!.selected).not.toBe(true);
+    for (const node of projectGenerationBatches(moved, []).nodes) {
+      expect(node.className?.split(' ')).toContain('is-generation-batch-dragging');
+    }
     const stopped = reconcileGenerationBatchChanges(
       [{ id: 'result-0', type: 'position', dragging: false }],
       moved,
@@ -97,6 +186,12 @@ describe('批量卡牌显示投影', () => {
     expect(stopped.filter((change) => change.type === 'position' && !change.dragging)).toHaveLength(
       3,
     );
+    const settled = applyNodeChanges(stopped, moved);
+    expect(settled.every((node) => node.dragging === false)).toBe(true);
+    for (const node of projectGenerationBatches(settled, []).nodes) {
+      expect(node.className?.split(' ')).not.toContain('is-generation-batch-dragging');
+    }
+    expect(settled.map((node) => node.position)).toEqual(moved.map((node) => node.position));
   });
 
   it('展开后移动首节点只影响自己，独立节点的尺寸变化继续传给原有处理器', () => {

@@ -22,6 +22,7 @@ export const GenerationBatchViewContext = createContext<{
 
 /**
  * 将同批节点投影为卡牌堆叠，保留真实尺寸、数据和展开坐标。
+ * 拖动类只用于显示：收起时整叠跟随首节点，展开时各成员独立。
  * @param nodes 持久化坐标对应的节点列表。
  * @param edges 全部连线；收起成员的连线只在显示层隐藏。
  * @returns 显示节点、显示连线和节点交互状态；找不到有效首节点时保持成员可访问。
@@ -58,11 +59,13 @@ export function projectGenerationBatches(nodes: AssetFlowNode[], edges: FlowEdge
     const baseZIndex = Math.max(...members.map((node) => node.zIndex ?? 0));
     members.forEach((node, index) => {
       const hidden = !expanded && node.id !== rootId;
+      /** 后卡禁用原生拖动，没有 React Flow 自身的拖动类，需沿用首节点状态。 */
+      const dragging = expanded ? node.dragging === true : root.dragging === true;
       views.set(node.id, { rootNodeId: rootId, count: members.length, expanded, hidden });
       projected.set(node.id, {
         ...node,
         className:
-          `${node.className ?? ''} is-generation-batch${hidden ? ' is-generation-batch-hidden' : ''}`.trim(),
+          `${node.className ?? ''} is-generation-batch${hidden ? ' is-generation-batch-hidden' : ''}${dragging ? ' is-generation-batch-dragging' : ''}`.trim(),
         ...(!expanded ? { zIndex: baseZIndex + members.length - index } : {}),
         ...(hidden
           ? {

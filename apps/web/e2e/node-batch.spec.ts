@@ -40,32 +40,35 @@ async function json(route: Route, value: unknown) {
   await route.fulfill({ contentType: 'application/json', body: JSON.stringify(value) });
 }
 
-/** 安装可保存与刷新恢复的画布，记录所有未声明请求和页面异常。 */
-async function installFixture(page: Page) {
-  let canvas = structuredClone(initialCanvas);
+/** 安装可保存与刷新恢复的合成画布；可传入空成员场景，未声明网络请求一律阻断。 */
+async function installFixture(page: Page, initialDocument: CanvasDocument = initialCanvas) {
+  let canvas = structuredClone(initialDocument);
   const errors: string[] = [];
+  const staticOrigin = new URL(test.info().project.use.baseURL!).origin;
+  const user = {
+    id: 'batch-user',
+    email: 'batch@example.test',
+    role: 'admin',
+    createdAt: '2026-09-17T10:00:00.000Z',
+  };
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => {
     if (message.type() === 'error') errors.push(message.text());
   });
-  await page.addInitScript(() => {
-    localStorage.setItem(
-      'multimodal-canvas:auth-session',
-      JSON.stringify({
-        accessToken: 'synthetic-batch-test',
-        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
-        user: {
-          id: 'batch-user',
-          email: 'batch@example.test',
-          role: 'admin',
-          createdAt: '2026-09-17T10:00:00.000Z',
-        },
-      }),
-    );
-  });
-  await page.route('**/v1/**', async (route) => {
+  await page.addInitScript((user) => {
+    localStorage.setItem('multimodal-canvas:auth-session', JSON.stringify({ user }));
+  }, user);
+  await page.context().route('**/*', async (route) => {
     const request = route.request();
-    const path = new URL(request.url()).pathname;
+    const url = new URL(request.url());
+    const path = url.pathname;
+    if (!path.startsWith('/v1/')) {
+      if (request.method() === 'GET' && url.origin === staticOrigin) return route.continue();
+      errors.push(`已阻断未声明网络请求：${request.method()} ${url.origin}${path}`);
+      return route.abort('blockedbyclient');
+    }
+    if (request.method() === 'GET' && path === '/v1/auth/me')
+      return json(route, { user, expiresAt: '2099-01-01T00:00:00.000Z' });
     if (path === '/v1/prompt-skills') return json(route, { skills: [] });
     if (path.endsWith('/events'))
       return route.fulfill({ contentType: 'text/event-stream', body: ': ready\n\n' });
@@ -77,7 +80,7 @@ async function installFixture(page: Page) {
       return json(route, { canvas });
     }
     if (path.endsWith('/models/defaults')) return json(route, { defaults: {} });
-    if (path.endsWith('/runs')) return json(route, { runs: [] });
+    if (request.method() === 'GET' && path.endsWith('/runs')) return json(route, { runs: [] });
     if (path.endsWith('/reverse-prompts')) return json(route, { analysis: null });
     if (path.includes('/request-prompts')) return json(route, { records: [] });
     if (path === '/v1/assets') return json(route, { assets: [] });
@@ -94,7 +97,10 @@ async function installFixture(page: Page) {
     return route.fulfill({ status: 404, body: '未声明的验收接口' });
   });
   await page.goto(`/projects/${project.id}`);
-  await expect(page.locator('.react-flow__node')).toHaveCount(3);
+  await expect(page.getByRole('region', { name: '工作流画布', exact: true })).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(page.locator('.react-flow__node')).toHaveCount(initialDocument.nodes.length);
   return { errors, canvas: () => canvas };
 }
 
@@ -130,6 +136,75 @@ for (const viewport of [
   { width: 1920, height: 1080 },
   { width: 1366, height: 900 },
 ]) {
+  test(`${viewport.width} 折叠图片批次拖动时空成员保持贴合`, async ({ page }, testInfo) => {
+    await page.setViewportSize(viewport);
+    const testCanvas = structuredClone(initialCanvas);
+    testCanvas.nodes = testCanvas.nodes.slice(0, 2);
+    const empty = testCanvas.nodes[1]!;
+    delete empty.data.assetId;
+    delete empty.data.contentUrl;
+    delete empty.data.mimeType;
+    const fixture = await installFixture(page, testCanvas);
+    const root = page.locator('.react-flow__node[data-id="batch-result-0"]');
+    const back = page.locator('.react-flow__node[data-id="batch-result-1"]');
+    await expect(back.locator('.flow-node-placeholder')).toHaveText('尚未生成');
+    await expect(root.getByRole('img', { name: '批量图片 1', exact: true })).toBeVisible();
+    await expectToolbarInsideCanvas(page, root);
+    const handle = (await root.getByRole('button', { name: '拖动移动节点' }).boundingBox())!;
+    const start = { x: handle.x + handle.width / 2, y: handle.y + handle.height / 2 };
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down();
+    try {
+      await page.mouse.move(start.x + 140, start.y + 80, { steps: 5 });
+      await expect(root).toHaveClass(/(?:^|\s)dragging(?:\s|$)/);
+      await page.screenshot({ path: testInfo.outputPath('empty-member-during-drag.png') });
+      await expect(root).toHaveCSS('transition-duration', '0s');
+      await expect(back).toHaveCSS('transition-duration', '0s');
+      for (const [dx, dy] of [
+        [200, 110],
+        [70, 25],
+        [170, 90],
+      ] as const) {
+        await page.mouse.move(start.x + dx, start.y + dy);
+        const positions = await page.evaluate(() => {
+          const front = document
+            .querySelector('[data-id="batch-result-0"]')!
+            .getBoundingClientRect();
+          const rear = document
+            .querySelector('[data-id="batch-result-1"]')!
+            .getBoundingClientRect();
+          return { dx: rear.x - front.x, dy: rear.y - front.y, offset: (front.width / 300) * 10 };
+        });
+        expect(positions.dx).toBeCloseTo(positions.offset, 1);
+        expect(positions.dy).toBeCloseTo(positions.offset, 1);
+      }
+    } finally {
+      await page.mouse.up();
+    }
+    await expect(root).toHaveCSS('transition-duration', '0.22s');
+    await expect(back).toHaveCSS('transition-duration', '0.22s');
+    await save(page);
+    const moved = structuredClone(fixture.canvas());
+    const delta = {
+      x: moved.nodes[0]!.position.x - testCanvas.nodes[0]!.position.x,
+      y: moved.nodes[0]!.position.y - testCanvas.nodes[0]!.position.y,
+    };
+    expect(delta.x).toBeGreaterThan(0);
+    expect(moved.nodes[1]!.position.x - testCanvas.nodes[1]!.position.x).toBeCloseTo(delta.x, 2);
+    expect(moved.nodes[1]!.position.y - testCanvas.nodes[1]!.position.y).toBeCloseTo(delta.y, 2);
+    await root.getByRole('button', { name: '展开 2 个生成结果' }).click();
+    await expect(back).not.toHaveClass(/is-generation-batch-hidden/);
+    await expect(back.locator('.flow-node-placeholder')).toBeVisible();
+    await expect(back.locator('.flow-asset-node')).not.toHaveAttribute('inert');
+    await save(page);
+    await page.reload();
+    await expect(root.getByRole('button', { name: '收起 2 个生成结果' })).toBeVisible();
+    expect(
+      fixture.canvas().nodes.map(({ position, width, height }) => ({ position, width, height })),
+    ).toEqual(moved.nodes.map(({ position, width, height }) => ({ position, width, height })));
+    expect(fixture.errors).toEqual([]);
+  });
+
   test(`${viewport.width} 批量图片折叠、整叠拖动、展开、保存刷新和删除首节点`, async ({
     page,
   }, testInfo) => {
