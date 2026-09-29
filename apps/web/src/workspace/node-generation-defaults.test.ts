@@ -24,6 +24,22 @@ function data(mediaType: AssetFlowNode['data']['mediaType']): AssetFlowNode['dat
 }
 
 describe('applyNodeGenerationDefaults', () => {
+  it('新视频未选模型或目录缺项时也保存数字 10 秒，不只设置控件显示值', () => {
+    for (const candidate of [undefined, model('video')]) {
+      const original = data('video');
+      const configured = applyNodeGenerationDefaults(original, candidate);
+      expect(configured.parameters).toEqual({ duration: 10 });
+      expect(JSON.parse(JSON.stringify(configured)).parameters.duration).toBe(10);
+      expect(original.parameters).toBeUndefined();
+    }
+  });
+
+  it.each([2, 4, 10, 30, 31])('已有视频时长 %s 秒不被新默认覆盖', (duration) => {
+    const original = { ...data('video'), parameters: { duration, custom: true } };
+    const configured = applyNodeGenerationDefaults(original, model('video'));
+    expect(configured.parameters).toEqual(original.parameters);
+  });
+
   it('图片清晰度和原生质量按独立枚举初始化，不把原生质量当作尺寸', () => {
     const configured = applyNodeGenerationDefaults(
       data('image'),
@@ -55,7 +71,7 @@ describe('applyNodeGenerationDefaults', () => {
     expect(original.parameters).toEqual(parameters);
   });
 
-  it('只在明确事务中把目录的第一个有效选项写入真实节点参数', () => {
+  it('明确事务初始化媒体首项和 10 秒，目录不含 10 时不暗改成首项秒数', () => {
     const original = data('video');
     const configured = applyNodeGenerationDefaults(
       original,
@@ -70,10 +86,10 @@ describe('applyNodeGenerationDefaults', () => {
     );
     expect(configured).toMatchObject({
       prompt: original.prompt,
-      parameters: { resolution: '360p', aspectRatio: '1:1', duration: 4 },
+      parameters: { resolution: '360p', aspectRatio: '1:1', duration: 10 },
       inferenceStrength: 'high',
     });
-    expect(JSON.parse(JSON.stringify(configured)).parameters.duration).toBe(4);
+    expect(JSON.parse(JSON.stringify(configured)).parameters.duration).toBe(10);
     expect(original.parameters).toBeUndefined();
   });
 
@@ -113,7 +129,7 @@ describe('applyNodeGenerationDefaults', () => {
       resolution: 'legacy',
       width: 1920,
       custom: true,
-      duration: 4,
+      duration: 10,
     });
     expect(configured.inferenceStrength).toBe('custom-effort');
     expect(original.parameters).toEqual({ resolution: 'legacy', width: 1920, custom: true });
@@ -145,7 +161,7 @@ describe('applyNodeGenerationDefaults', () => {
     expect(configured.parameters).toEqual({ duration: 10 });
   });
 
-  it('官方 MiniMax-H3 在目录缺项时使用官方默认，并清理其他家族的自动参数', () => {
+  it('官方 MiniMax-H3 使用 10 秒和合同清晰度，并清理其他家族的自动参数', () => {
     const original = {
       ...data('video'),
       modelAlias: 'MiniMax-H3',
@@ -156,7 +172,7 @@ describe('applyNodeGenerationDefaults', () => {
       name: 'MiniMax H3',
       mediaTypes: ['video'],
     });
-    expect(configured.parameters).toEqual({ custom: true, resolution: '768p', duration: 4 });
+    expect(configured.parameters).toEqual({ custom: true, resolution: '768p', duration: 10 });
     expect(original.parameters).toEqual({
       duration: -1,
       aspectRatio: 'adaptive',
@@ -180,7 +196,7 @@ describe('applyNodeGenerationDefaults', () => {
       custom: true,
       resolution: '480p',
       aspectRatio: '16:9',
-      duration: 4,
+      duration: 10,
     });
     expect(original.parameters).toEqual({
       duration: -1,
@@ -204,6 +220,23 @@ describe('applyNodeGenerationDefaults', () => {
       duration: -1,
     });
   });
+
+  it.each(['doubao-seedance-2-5-260628', 'seedance-2-0-official'])(
+    '%s 视频编辑仍使用强制自动时长，不能被 10 秒默认值覆盖',
+    (modelAlias) => {
+      const configured = applyNodeGenerationDefaults(
+        {
+          ...data('video'),
+          modelAlias,
+          videoMode: 'video_edit',
+          parameters: { aspectRatio: 'adaptive' },
+        },
+        { id: modelAlias, name: modelAlias, mediaTypes: ['video'] },
+      );
+      expect(configured.parameters?.duration).toBe(-1);
+      expect(configured.parameters?.aspectRatio).toBe('adaptive');
+    },
+  );
 
   it('音频仅初始化已确认格式的第一项，保留必填音色与连续语速的输入含义', () => {
     const configured = applyNodeGenerationDefaults(data('audio'), model('audio'));

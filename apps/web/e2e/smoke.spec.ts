@@ -1,6 +1,17 @@
 import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
 import { readFileSync } from 'node:fs';
-import type { Asset, CanvasDocument, ModelSelection, RunRecord } from '@multimodal-canvas/domain';
+import type {
+  Asset,
+  CanvasDocument,
+  ModelSelection,
+  RunRecord,
+  RunResultAsset,
+} from '@multimodal-canvas/domain';
+
+test.use({ serviceWorkers: 'block' });
+
+/** 每页记录未声明请求；测试结束时必须为空，业务请求一律不能透传。 */
+const unexpectedRequests = new WeakMap<Page, string[]>();
 
 type Project = {
   id: string;
@@ -10,7 +21,7 @@ type Project = {
 };
 
 type AiSettings = {
-  defaultModels: Record<string, string | ModelSelection>;
+  defaultModels: Record<string, string | ModelSelection | null>;
   timeoutMs: number;
 };
 
@@ -73,7 +84,8 @@ async function json(route: Route, body: unknown, status = 200) {
   });
 }
 
-async function mockApi(target: Pick<Page, 'route'>) {
+/** 内存 Mock 覆盖业务读写；未声明接口立即 abort，并记入调用方的错误列表。 */
+async function mockApi(target: Pick<Page, 'route'>, errors: string[] = []) {
   let settings: AiSettings = {
     defaultModels: {},
     timeoutMs: 900_000,
@@ -367,12 +379,9 @@ async function mockApi(target: Pick<Page, 'route'>) {
     }
     if (request.method() === 'PATCH' && path === `/v1/projects/${project.id}/models/defaults`) {
       const body = request.postDataJSON() as Record<string, string | ModelSelection | null>;
-      projectDefaults = {
-        ...projectDefaults,
-        ...Object.fromEntries(Object.entries(body).filter(([, value]) => value)),
-      };
-      for (const [mediaType, modelAlias] of Object.entries(body)) {
-        if (!modelAlias) delete projectDefaults[mediaType];
+      for (const [mediaType, selection] of Object.entries(body)) {
+        if (selection) projectDefaults[mediaType] = selection;
+        else delete projectDefaults[mediaType];
       }
       await json(route, { defaults: projectDefaults });
       return;
@@ -491,7 +500,8 @@ async function mockApi(target: Pick<Page, 'route'>) {
       return;
     }
 
-    await json(route, {});
+    errors.push(`未声明的 Mock 接口：${request.method()} ${path}`);
+    await route.abort('blockedbyclient');
   });
 }
 
@@ -915,7 +925,44 @@ async function moveNode(page: Page, node: Locator, x: number, y: number) {
   await page.mouse.up();
 }
 
-test.beforeEach(async ({ page }) => {
+test.beforeEach(async ({ page, baseURL }) => {
+  if (!baseURL) throw new Error('缺少隔离的 Playwright baseURL');
+  const webUrl = new URL(baseURL);
+  if (
+    !['127.0.0.1', 'localhost', '[::1]'].includes(webUrl.hostname) ||
+    !webUrl.port ||
+    webUrl.port === '8080'
+  )
+    throw new Error('冒烟回归只允许独立本地 Web 端口，禁止使用真实 8080 项目');
+  const errors: string[] = [];
+  unexpectedRequests.set(page, errors);
+  await page.context().routeWebSocket('**/*', (socket) => {
+    const url = new URL(socket.url());
+    // 只模拟 Vite 握手，不建立真实 WebSocket 或转发业务消息。
+    if (url.host === webUrl.host && url.pathname === '/' && url.searchParams.has('token')) {
+      socket.send(JSON.stringify({ type: 'connected' }));
+      return;
+    }
+    errors.push(`已阻断未声明 WebSocket：${url.origin}${url.pathname}`);
+    socket.close({ code: 1008, reason: 'Only the isolated Vite handshake is allowed' });
+  });
+  // page 级业务 Mock 优先；仅允许已知页面和静态资源进入独立 Vite。
+  await page.context().route('**/*', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (
+      url.origin === webUrl.origin &&
+      request.method() === 'GET' &&
+      !['fetch', 'xhr', 'eventsource'].includes(request.resourceType()) &&
+      (['/', projectPath, '/not-a-real-page', '/projects/missing-project'].includes(url.pathname) ||
+        /^\/(?:@vite\/|@id\/|@fs\/|@react-refresh$|src\/|node_modules\/|assets\/|demo\/|favicon\.)/.test(
+          url.pathname,
+        ))
+    )
+      return route.continue();
+    errors.push(`已阻断未声明网络请求：${request.method()} ${url.origin}${url.pathname}`);
+    return route.abort('blockedbyclient');
+  });
   await page.context().addInitScript(() => {
     // Playwright 为每个测试创建独立上下文；刷新时保留模型记忆等真实持久化行为。
     // 私有画布验收使用模拟会话；所有 API 均由本文件拦截，不访问真实账户。
@@ -931,7 +978,11 @@ test.beforeEach(async ({ page }) => {
       }),
     );
   });
-  await mockApi(page);
+  await mockApi(page, errors);
+});
+
+test.afterEach(async ({ page }) => {
+  expect(unexpectedRequests.get(page), '不能出现未声明业务请求或外部网络连接').toEqual([]);
 });
 
 /** 安装单节点媒体夹具，所有读写均由既有 Mock 接管，不访问真实账户或供应商。 */
@@ -2362,8 +2413,10 @@ test('未设类型默认时新节点沿用同类模型及凭据，刷新后保�
   expect(errors).toEqual([]);
 });
 
-test('模型目录首个有效参数写入新节点，保存刷新与生成提交保持一致', async ({ page }) => {
-  /** 使用合成目录验证参数来自真实可用选项，并在保存和提交时保持一致。 */
+test('模型目录首个有效清晰度比例和默认 10 秒写入新节点，保存刷新与生成提交保持一致', async ({
+  page,
+}) => {
+  /** 清晰度比例采用目录首项，时长固定默认 10 秒；保存与提交不得改成目录首个秒数。 */
   await page.route('**/v1/models*', (route) =>
     json(route, {
       models: [
@@ -2384,12 +2437,16 @@ test('模型目录首个有效参数写入新节点，保存刷新与生成提�
   await page.goto(projectPath);
   await page.getByRole('button', { name: '新建视频生成节点' }).click();
   await page.getByRole('combobox', { name: /^模型：/ }).click();
-  await page.getByRole('option', { name: 'Mock Video', exact: true }).click();
+  await page
+    .getByRole('listbox', { name: '模型选项', exact: true })
+    .getByRole('option')
+    .filter({ has: page.getByText('Mock Video', { exact: true }) })
+    .click();
   await focusCanvas(page);
   await page.getByRole('button', { name: '新建视频生成节点' }).click();
   const editor = page.locator('.node-quick-editor');
   await expect(editor.getByRole('button', { name: '媒体参数', exact: true })).toHaveText(
-    '360p · 1:1 · 2s',
+    '360p · 1:1 · 10s',
   );
   const saved = page.waitForResponse((response) => {
     if (
@@ -2408,12 +2465,12 @@ test('模型目录首个有效参数写入新节点，保存刷新与生成提�
   expect(savedNode.data.parameters).toEqual({
     resolution: '360p',
     aspectRatio: '1:1',
-    duration: 2,
+    duration: 10,
   });
   await page.reload();
   await page.locator('.flow-generate-node').last().click();
   await expect(editor.getByRole('button', { name: '媒体参数', exact: true })).toHaveText(
-    '360p · 1:1 · 2s',
+    '360p · 1:1 · 10s',
   );
   const submitted = page.waitForRequest(
     (request) =>
@@ -2470,16 +2527,35 @@ test('四类节点都可以填写提示词、运行并显示对应结果预览',
         : undefined;
     if (mediaType === '音频') {
       await page.getByRole('combobox', { name: /^模型：/ }).click();
-      await page.getByRole('option', { name: 'Mock Audio', exact: true }).click();
+      await page
+        .getByRole('listbox', { name: '模型选项', exact: true })
+        .getByRole('option')
+        .filter({ has: page.getByText('Mock Audio', { exact: true }) })
+        .click();
       await expect(page.getByRole('button', { name: '生成', exact: true })).toBeDisabled();
       await page.getByRole('button', { name: '媒体参数', exact: true }).click();
-      await page.getByRole('textbox', { name: '音色', exact: true }).fill('synthetic-smoke-voice');
+      await page.getByRole('textbox', { name: '音色', exact: true }).fill('alloy');
+    }
+    if (mediaType === '视频') {
+      await page.getByRole('button', { name: '媒体参数', exact: true }).click();
+      await page.getByRole('button', { name: '时长（秒）：10 秒', exact: true }).click();
+      const slider = page
+        .getByRole('dialog', { name: '视频时长', exact: true })
+        .getByRole('slider', { name: '视频时长（秒）', exact: true });
+      await expect(slider).toHaveAttribute('aria-invalid', 'true');
+      await expect(page.getByRole('button', { name: '生成', exact: true })).toBeDisabled();
+      await slider.press('Home');
+      for (let second = 5; second < 8; second++) await slider.press('ArrowRight');
+      await expect(slider).toHaveValue('8');
+      await expect(slider).toHaveAttribute('aria-invalid', 'false');
+      await slider.press('Escape');
+      await page.keyboard.press('Escape');
     }
     await page.getByRole('button', { name: '生成', exact: true }).click();
     if (audioRunRequest) {
       const body = (await audioRunRequest).postDataJSON();
       expect(body.parameters).toMatchObject({
-        voice: 'synthetic-smoke-voice',
+        voice: 'alloy',
         prompt: 'Playwright 音频 生成测试',
       });
       expect(body.parameters.response_format).toBe('mp3');
@@ -2556,7 +2632,11 @@ test('PC 音频参数显式输入、保存恢复并提交，桌面截图无布�
   await page.goto(projectPath);
   await page.getByRole('button', { name: '新建音频生成节点' }).click();
   await page.getByRole('combobox', { name: /^模型：/ }).click();
-  await page.getByRole('option', { name: 'Mock Audio', exact: true }).click();
+  await page
+    .getByRole('listbox', { name: '模型选项', exact: true })
+    .getByRole('option')
+    .filter({ has: page.getByText('Mock Audio', { exact: true }) })
+    .click();
 
   const editor = page.locator('.node-quick-editor');
   const voice = editor.getByRole('textbox', { name: '音色', exact: true });
@@ -2703,33 +2783,44 @@ for (const model of [
     await page.goto(projectPath);
     await page.getByRole('button', { name: '新建视频生成节点' }).click();
     await page.getByRole('combobox', { name: /^模型：/ }).click();
-    await page.getByRole('option', { name: model, exact: true }).click();
+    await page
+      .getByRole('listbox', { name: '模型选项', exact: true })
+      .getByRole('option')
+      .filter({ has: page.getByText(model, { exact: true }) })
+      .click();
     const editor = page.locator('.node-quick-editor');
     await editor.getByRole('button', { name: '媒体参数', exact: true }).click();
+    const panel = page.getByRole('region', { name: '生成参数', exact: true });
     if (model === 'minimax-h3') {
-      await editor.getByRole('combobox', { name: /^视频清晰度：/ }).click();
+      await panel.getByRole('combobox', { name: /^视频清晰度：/ }).click();
       for (const label of ['480P', '768P', '1080P']) {
         await expect(page.getByRole('option', { name: label, exact: true })).toBeEnabled();
       }
       await expect(page.getByRole('option', { name: '2K', exact: true })).toHaveCount(0);
       await expect(page.getByRole('option', { name: '4K', exact: true })).toHaveCount(0);
       await page.keyboard.press('Escape');
-      await editor.getByRole('button', { name: /^视频比例：/ }).click();
+      await panel.getByRole('combobox', { name: /^视频比例：/ }).click();
+      const ratios = page.getByRole('listbox', { name: '视频比例选项', exact: true });
       for (const ratio of ['16:9', '9:16', '1:1', '2:3', '3:2', '3:4', '4:3', '21:9']) {
-        await expect(editor.getByRole('button', { name: new RegExp(`^${ratio}`) })).toBeEnabled();
+        await expect(ratios.getByRole('option', { name: new RegExp(`^${ratio}`) })).toBeEnabled();
       }
-      await expect(editor.getByRole('button', { name: /^adaptive/ })).toHaveCount(0);
+      await expect(ratios.getByRole('option', { name: /^自动比例/ })).toHaveCount(0);
       await page.keyboard.press('Escape');
     } else if (model === 'MiniMax-H3') {
-      await editor.getByRole('combobox', { name: /^视频清晰度：/ }).click();
+      await panel.getByRole('combobox', { name: /^视频清晰度：/ }).click();
       await expect(page.getByRole('option', { name: '768P', exact: true })).toBeVisible();
       await expect(page.getByRole('option', { name: '2K', exact: true })).toBeVisible();
       await page.keyboard.press('Escape');
     } else if (model === 'wan3.0-video') {
-      await expect(
-        editor.getByRole('spinbutton', { name: '自定义秒数（-1 为自动）' }),
-      ).toBeVisible();
-      await editor.getByRole('combobox', { name: /^时长（秒）：/ }).click();
+      const duration = panel.getByRole('button', { name: /^时长（秒）：/ });
+      await expect(duration).toHaveAccessibleName('时长（秒）：10 秒');
+      await duration.click();
+      const card = page.getByRole('dialog', { name: '视频时长', exact: true });
+      const slider = card.getByRole('slider', { name: '视频时长（秒）', exact: true });
+      await expect(slider).toBeVisible();
+      await expect(slider).toHaveAttribute('min', '5');
+      await expect(slider).toHaveAttribute('max', '30');
+      await expect(slider).toHaveAttribute('step', '1');
       const savedAutomaticDuration = page.waitForResponse(
         (response) =>
           response.request().method() === 'PATCH' &&
@@ -2738,11 +2829,12 @@ for (const model of [
             (node) => node.data.parameters?.duration === -1,
           ),
       );
-      await page.getByRole('option', { name: /^自动 / }).click();
+      await card.getByRole('button', { name: '自动时长', exact: true }).click();
       const automaticCanvas = (
         (await (await savedAutomaticDuration).json()) as { canvas: CanvasDocument }
       ).canvas;
       expect(automaticCanvas.nodes.at(-1)?.data.parameters?.duration).toBe(-1);
+      await expect(duration).toHaveAccessibleName('时长（秒）：自动');
     }
 
     await editor.getByRole('combobox', { name: /^生成模式：/ }).click();
@@ -2758,12 +2850,12 @@ for (const model of [
     await expect(editor.getByRole('combobox', { name: '生成模式：全能参考' })).toBeVisible();
     if (model === 'minimax-h3') {
       await editor.getByRole('button', { name: '媒体参数', exact: true }).click();
-      await editor.getByRole('combobox', { name: /^视频清晰度：/ }).click();
+      await panel.getByRole('combobox', { name: /^视频清晰度：/ }).click();
       for (const label of ['480P', '768P', '1080P', '2K', '4K']) {
         await expect(page.getByRole('option', { name: label, exact: true })).toBeEnabled();
       }
       await page.getByRole('option', { name: '4K', exact: true }).click();
-      await expect(editor.getByRole('combobox', { name: '视频清晰度：4K' })).toBeVisible();
+      await expect(panel.getByRole('combobox', { name: '视频清晰度：4K' })).toBeVisible();
     } else if (model !== 'MiniMax-H3') {
       if (model.includes('2-5')) {
         await editor.getByRole('combobox', { name: /^生成模式：/ }).click();
@@ -2811,7 +2903,7 @@ for (const model of [
         const extendCanvas = ((await (await savedExtend).json()) as { canvas: CanvasDocument })
           .canvas;
         expect(extendCanvas.nodes.at(-1)?.data.parameters).toMatchObject({
-          duration: 4,
+          duration: 10,
           aspectRatio: 'adaptive',
         });
       } else {
@@ -2867,18 +2959,33 @@ test('PC 视频仅显示清晰度比例时长，新建保存刷新与提交不�
   await page.goto(projectPath);
   await page.getByRole('button', { name: '新建视频生成节点' }).click();
   await page.getByRole('combobox', { name: /^模型：/ }).click();
-  await page.getByRole('option', { name: 'Mock Video', exact: true }).click();
+  await page
+    .getByRole('listbox', { name: '模型选项', exact: true })
+    .getByRole('option')
+    .filter({ has: page.getByText('Mock Video', { exact: true }) })
+    .click();
   const editor = page.locator('.node-quick-editor');
-  const width = editor.getByRole('spinbutton', { name: '宽度（像素）', exact: true });
-  const height = editor.getByRole('spinbutton', { name: '高度（像素）', exact: true });
+  const panel = page.getByRole('region', { name: '生成参数', exact: true });
+  const width = panel.getByRole('spinbutton', { name: '宽度（像素）', exact: true });
+  const height = panel.getByRole('spinbutton', { name: '高度（像素）', exact: true });
   const run = editor.getByRole('button', { name: '生成', exact: true });
   await editor.locator('textarea').fill('Playwright 视频像素尺寸');
   await editor.getByRole('button', { name: '媒体参数', exact: true }).click();
   await expect(width).toHaveCount(0);
   await expect(height).toHaveCount(0);
+  await expect(run).toBeDisabled();
+  await panel.getByRole('button', { name: '时长（秒）：10 秒', exact: true }).click();
+  const card = page.getByRole('dialog', { name: '视频时长', exact: true });
+  const slider = card.getByRole('slider', { name: '视频时长（秒）', exact: true });
+  await expect(slider).toHaveValue('10');
+  await expect(slider).toHaveAttribute('aria-invalid', 'true');
+  await page.screenshot({ path: testInfo.outputPath('video-default-10-unsupported.png') });
+  await slider.press('Home');
+  for (let second = 5; second < 8; second++) await slider.press('ArrowRight');
+  await expect(slider).toHaveValue('8');
+  await expect(slider).toHaveAttribute('aria-invalid', 'false');
   await expect(run).toBeEnabled();
-  await editor.getByRole('combobox', { name: /^时长（秒）：/ }).click();
-  await editor.getByRole('option', { name: '8 秒', exact: true }).click();
+  await slider.press('Escape');
   const savedDimensions = page.waitForResponse((response) => {
     if (
       response.request().method() !== 'PATCH' ||
@@ -2902,15 +3009,15 @@ test('PC 视频仅显示清晰度比例时长，新建保存刷新与提交不�
   await editor.getByRole('button', { name: '媒体参数', exact: true }).click();
   await expect(width).toHaveCount(0);
   await expect(height).toHaveCount(0);
-  await expect(editor.getByRole('combobox', { name: '时长（秒）：8' })).toBeVisible();
-  await expect(editor.getByRole('combobox', { name: '视频清晰度：360p' })).toBeVisible();
-  await expect(editor.getByRole('button', { name: '视频比例：1:1' })).toBeVisible();
+  await expect(panel.getByRole('button', { name: '时长（秒）：8 秒', exact: true })).toBeVisible();
+  await expect(panel.getByRole('combobox', { name: '视频清晰度：360p' })).toBeVisible();
+  await expect(panel.getByRole('combobox', { name: '视频比例：1:1' })).toBeVisible();
   await testInfo.attach('video-dimensions-desktop-1440x1000', {
     body: await page.screenshot({ fullPage: false, animations: 'disabled' }),
     contentType: 'image/png',
   });
 
-  await expect(editor.getByRole('combobox', { name: '时长（秒）：8' })).toBeVisible();
+  await expect(panel.getByRole('button', { name: '时长（秒）：8 秒', exact: true })).toBeVisible();
   await expect(run).toBeEnabled();
   const submittedRequest = page.waitForRequest(
     (request) =>
@@ -2946,49 +3053,75 @@ for (const viewport of [
     await page.goto(projectPath);
     await page.getByRole('button', { name: '新建视频生成节点' }).click();
     await page.getByRole('combobox', { name: /^模型：/ }).click();
-    await page.getByRole('option', { name: 'Mock Video', exact: true }).click();
+    await page
+      .getByRole('listbox', { name: '模型选项', exact: true })
+      .getByRole('option')
+      .filter({ has: page.getByText('Mock Video', { exact: true }) })
+      .click();
     const editor = page.locator('.node-quick-editor');
     await editor.getByRole('textbox', { name: '提示词' }).fill('镜头缓缓掠过山间，晨光照亮林梢。');
     const summary = editor.getByRole('button', { name: '媒体参数', exact: true });
-    await expect(summary).toHaveText('360p · 1:1 · 4s');
-    await expect(editor.getByRole('region', { name: '生成参数' })).toBeHidden();
+    await expect(summary).toHaveText('360p · 1:1 · 10s');
+    const panel = page.getByRole('region', { name: '生成参数', exact: true });
+    await expect(panel).toBeHidden();
     const before = await editor.boundingBox();
     await summary.click();
-    const panel = editor.getByRole('region', { name: '生成参数' });
     await expect(panel).toBeVisible();
     expect((await editor.boundingBox())!.height).toBeCloseTo(before!.height, 0);
     /** PC 参数按两列排列，时长换行；基础移动验收仍要求不溢出。 */
     const resolution = panel.getByRole('combobox', { name: /视频清晰度/ });
-    const ratio = panel.getByRole('button', { name: /视频比例：/ });
-    const duration = panel.getByRole('combobox', { name: /时长（秒）/ });
-    const controlBoxes = await Promise.all([
-      resolution.boundingBox(),
-      ratio.boundingBox(),
-      duration.boundingBox(),
-    ]);
+    const ratio = panel.getByRole('combobox', { name: /视频比例：/ });
+    const duration = panel.getByRole('button', { name: /^时长（秒）：/ });
     if (viewport.width >= 1024) {
-      expect(Math.abs(controlBoxes[0]!.y - controlBoxes[1]!.y)).toBeLessThanOrEqual(3);
-      expect(controlBoxes[2]!.y).toBeGreaterThan(controlBoxes[1]!.y + controlBoxes[1]!.height);
-      expect(controlBoxes[0]!.x + controlBoxes[0]!.width).toBeLessThan(controlBoxes[1]!.x);
-      expect(controlBoxes[0]!.x).toBeCloseTo(controlBoxes[2]!.x, 0);
+      /** Select 的 combobox 是带内边距的内部输入；按外层参数格核验动画后的对齐。 */
+      await expect(async () => {
+        const controlBoxes = await Promise.all(
+          [resolution, ratio, duration].map((control) =>
+            control.evaluate((element) => {
+              const { x, y, width, height } = element
+                .closest('.node-parameter-select')!
+                .getBoundingClientRect();
+              return { x, y, width, height };
+            }),
+          ),
+        );
+        expect(Math.abs(controlBoxes[0]!.y - controlBoxes[1]!.y)).toBeLessThanOrEqual(3);
+        expect(controlBoxes[2]!.y).toBeGreaterThan(controlBoxes[1]!.y + controlBoxes[1]!.height);
+        expect(controlBoxes[0]!.x + controlBoxes[0]!.width).toBeLessThan(controlBoxes[1]!.x);
+        expect(controlBoxes[0]!.x).toBeCloseTo(controlBoxes[2]!.x, 0);
+      }).toPass({ timeout: 5_000 });
     }
     await resolution.click();
-    const resolutionMenu = panel.getByRole('listbox', { name: '视频清晰度' });
+    const resolutionMenu = page.getByRole('listbox', { name: '视频清晰度选项', exact: true });
     await expect(resolutionMenu).toBeVisible();
     /** 点击后向上展示，菜单无需撑大参数页且可直接点击。 */
-    const menuBox = await resolutionMenu.boundingBox();
-    expect(menuBox!.y + menuBox!.height).toBeLessThanOrEqual(controlBoxes[0]!.y);
-    expect(menuBox!.x).toBeGreaterThanOrEqual(0);
-    expect(menuBox!.x + menuBox!.width).toBeLessThanOrEqual(viewport.width);
+    await expect(async () => {
+      const [menuBox, triggerTop] = await Promise.all([
+        resolutionMenu.boundingBox(),
+        resolution.evaluate((element) => element.closest('.ant-select')!.getBoundingClientRect().y),
+      ]);
+      expect(menuBox!.y + menuBox!.height).toBeLessThanOrEqual(triggerTop);
+      expect(menuBox!.x).toBeGreaterThanOrEqual(0);
+      expect(menuBox!.x + menuBox!.width).toBeLessThanOrEqual(viewport.width);
+    }).toPass({ timeout: 5_000 });
     await page.screenshot({
       path: testInfo.outputPath('parameters-hover-upward.png'),
       animations: 'disabled',
     });
-    await panel.getByRole('option', { name: '720p', exact: true }).click();
-    await panel.getByRole('button', { name: /视频比例：/ }).click();
-    await panel.getByRole('button', { name: /16:9/, exact: false }).last().click();
-    await panel.getByRole('combobox', { name: /时长（秒）/ }).click();
-    await panel.getByRole('option', { name: '8 秒', exact: true }).click();
+    await resolutionMenu.getByRole('option', { name: '720p', exact: true }).click();
+    await panel.getByRole('combobox', { name: /视频比例：/ }).click();
+    await page
+      .getByRole('listbox', { name: '视频比例选项', exact: true })
+      .getByRole('option', { name: /^16:9/ })
+      .click();
+    await duration.click();
+    const slider = page
+      .getByRole('dialog', { name: '视频时长', exact: true })
+      .getByRole('slider', { name: '视频时长（秒）', exact: true });
+    await slider.press('Home');
+    for (let second = 5; second < 8; second++) await slider.press('ArrowRight');
+    await expect(slider).toHaveValue('8');
+    await slider.press('Escape');
     await page.mouse.move(1, 1);
     await panel.getByRole('button', { name: '收起媒体参数' }).click();
     await expect(summary).toHaveText('720p · 16:9 · 8s');
@@ -3192,6 +3325,25 @@ async function installImageEditFixture(page: Page) {
     contentUrl: '/v1/assets/image-edit-blocker-asset/content',
     tags: [],
   };
+  /** 兼容旧响应的运行态回显；扩展夹具不把 resultAsset 声明为持久化画布字段。 */
+  const sourceData: CanvasDocument['nodes'][number]['data'] & { resultAsset: RunResultAsset } = {
+    label: '原始图片',
+    mediaType: 'image',
+    mode: 'generate',
+    prompt: '换成夜景',
+    assetId: asset.id,
+    contentUrl: asset.contentUrl,
+    mimeType,
+    manualOutput: true,
+    // 来源是已归档的生成结果时，编辑节点在创建时就能冻结明确的资产版本。
+    resultAsset: {
+      assetId: asset.id,
+      version: 1,
+      contentUrl: asset.contentUrl,
+      mimeType,
+      sizeBytes: asset.sizeBytes,
+    },
+  };
   const canvas: CanvasDocument = {
     revision: 0,
     edges: [],
@@ -3202,24 +3354,7 @@ async function installImageEditFixture(page: Page) {
         position: { x: 80, y: 140 },
         width: 400,
         height: 266,
-        data: {
-          label: '原始图片',
-          mediaType: 'image',
-          mode: 'generate',
-          prompt: '换成夜景',
-          assetId: asset.id,
-          contentUrl: asset.contentUrl,
-          mimeType,
-          manualOutput: true,
-          // 来源是已归档的生成结果时，编辑节点在创建时就能冻结明确的资产版本。
-          resultAsset: {
-            assetId: asset.id,
-            version: 1,
-            contentUrl: asset.contentUrl,
-            mimeType,
-            sizeBytes: asset.sizeBytes,
-          },
-        },
+        data: sourceData,
       },
       {
         id: 'node-image-blocker',
@@ -3269,7 +3404,7 @@ for (const viewport of [
     page.on('console', (message) => {
       if (message.type() === 'error') errors.push(message.text());
     });
-    const fixture = await installImageEditFixture(page);
+    await installImageEditFixture(page);
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await page.goto(projectPath);
 

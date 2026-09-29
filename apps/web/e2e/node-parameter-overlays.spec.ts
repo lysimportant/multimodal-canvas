@@ -29,7 +29,14 @@ async function installFixture(
   modelAlias = 'wan3.0-video',
 ) {
   if (!baseURL) throw new Error('缺少隔离的 Playwright baseURL');
-  const webOrigin = new URL(baseURL).origin;
+  const webUrl = new URL(baseURL);
+  if (
+    !['127.0.0.1', 'localhost', '[::1]'].includes(webUrl.hostname) ||
+    !webUrl.port ||
+    webUrl.port === '8080'
+  )
+    throw new Error('参数回归只允许独立本地 Web 端口，禁止使用真实 8080 项目');
+  const webOrigin = webUrl.origin;
   const errors: string[] = [];
   const requests: Array<{ method: string; path: string }> = [];
   const user = {
@@ -73,6 +80,16 @@ async function installFixture(
   await page.addInitScript((user) => {
     localStorage.setItem('multimodal-canvas:auth-session', JSON.stringify({ user }));
   }, user);
+  await page.context().routeWebSocket('**/*', (socket) => {
+    const url = new URL(socket.url());
+    // 只模拟 Vite 握手，不建立真实 WebSocket 或转发业务消息。
+    if (url.host === webUrl.host && url.pathname === '/' && url.searchParams.has('token')) {
+      socket.send(JSON.stringify({ type: 'connected' }));
+      return;
+    }
+    errors.push(`已阻断未声明 WebSocket：${url.origin}${url.pathname}`);
+    socket.close({ code: 1008, reason: 'Only the isolated Vite handshake is allowed' });
+  });
   await page.context().route('**/*', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -82,7 +99,11 @@ async function installFixture(
       if (
         url.origin === webOrigin &&
         method === 'GET' &&
-        !['fetch', 'xhr', 'eventsource'].includes(request.resourceType())
+        !['fetch', 'xhr', 'eventsource'].includes(request.resourceType()) &&
+        (path === `/projects/${project.id}` ||
+          /^\/(?:@vite\/|@id\/|@fs\/|@react-refresh$|src\/|node_modules\/|assets\/|favicon\.)/.test(
+            path,
+          ))
       )
         return route.continue();
       errors.push(`已阻断未声明网络请求：${method} ${url.origin}${path}`);
@@ -204,7 +225,7 @@ test.afterEach(async ({ page }, testInfo) => {
 });
 
 for (const presentation of ['快捷', '完整'] as const) {
-  test(`${presentation}参数页的秒数浮卡不被父面板遮挡，预设及自定义输入可操作`, async ({
+  test(`${presentation}参数页的秒数浮卡不被父面板遮挡，滑块、自动及清除可操作`, async ({
     page,
     baseURL,
   }, testInfo) => {
@@ -213,18 +234,41 @@ for (const presentation of ['快捷', '完整'] as const) {
     const trigger = panel.getByRole('button', { name: /^时长（秒）：/ });
     await trigger.click();
     const card = page.getByRole('dialog', { name: '视频时长', exact: true });
-    for (const seconds of [5, 10, 15, 30])
-      await expectUnobstructed(card.getByRole('button', { name: `${seconds} 秒`, exact: true }));
-    const input = card.getByRole('spinbutton', { name: '自定义秒数（-1 为自动）', exact: true });
-    await expectUnobstructed(input);
+    const slider = card.getByRole('slider', { name: '视频时长（秒）', exact: true });
+    const automatic = card.getByRole('button', { name: '自动时长', exact: true });
+    const clear = card.getByRole('button', { name: '清除时长', exact: true });
+    await expect(slider).toHaveAttribute('type', 'range');
+    await expect(slider).toHaveAttribute('min', '5');
+    await expect(slider).toHaveAttribute('max', '30');
+    await expect(slider).toHaveAttribute('step', '1');
+    await expect(slider).toHaveValue('5');
+    for (const control of [slider, automatic, clear]) await expectUnobstructed(control);
     await page.screenshot({ path: testInfo.outputPath('duration-open.png'), fullPage: true });
-    await card.getByRole('button', { name: '30 秒', exact: true }).click();
+    await slider.press('End');
+    await expect(slider).toHaveValue('30');
     await expect.poll(() => fixture.parameters()?.duration).toBe(30);
     await expect(panel).toBeVisible();
-    await trigger.click();
-    await input.fill('12');
+    await slider.press('Home');
+    await expect(slider).toHaveValue('5');
+    for (let second = 5; second < 12; second++) await slider.press('ArrowRight');
+    await expect(slider).toHaveValue('12');
     await expect.poll(() => fixture.parameters()?.duration).toBe(12);
-    await input.press('Escape');
+    await automatic.click();
+    await expect.poll(() => fixture.parameters()?.duration).toBe(-1);
+    await expect(trigger).toHaveAccessibleName('时长（秒）：自动');
+    await trigger.click();
+    await expect(slider).toHaveValue('10');
+    await expect(automatic).toHaveAttribute('aria-pressed', 'true');
+    await clear.click();
+    await expect.poll(() => fixture.parameters()?.duration).toBeUndefined();
+    await expect(trigger).toHaveAccessibleName('时长（秒）：未设置');
+    await trigger.click();
+    await expect(slider).toHaveValue('10');
+    await expect(clear).toBeDisabled();
+    await slider.press('Home');
+    for (let second = 5; second < 12; second++) await slider.press('ArrowRight');
+    await expect.poll(() => fixture.parameters()?.duration).toBe(12);
+    await slider.press('Escape');
     await expect(card).toBeHidden();
     await expect(trigger).toBeFocused();
     await expect(panel).toBeVisible();

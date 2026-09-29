@@ -463,44 +463,138 @@
 }
 
 .node-quick-editor-duration-card {
-  width: min(244px, calc(100vw - 64px));
+  display: grid;
+  gap: 12px;
+  width: min(272px, calc(100vw - 64px));
   max-height: min(360px, 60dvh);
+  padding: 4px;
   overflow: auto;
   overscroll-behavior: contain;
 }
 
-.node-quick-editor-duration-presets {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
+.node-quick-editor-duration-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--mc-text-muted);
+  font-size: 12px;
 }
 
-.node-quick-editor-duration-presets [aria-pressed='true'] {
-  background: var(--mc-surface-muted);
-  border-color: var(--mc-border-strong);
+.node-quick-editor-duration-heading output {
   color: var(--mc-text-strong);
+  font-size: 20px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
-/* 视频时长的自定义输入与快捷项共用同一个 Ant Design 浮层。 */
-.node-quick-editor-duration-custom {
-  display: grid;
-  gap: 6px;
-  margin-top: 6px;
-  padding: 8px 2px 2px;
-  border-top: 1px solid var(--mc-border);
-}
-
-.node-quick-editor-duration-custom .node-quick-editor-duration-custom-label {
-  height: auto;
-  width: fit-content;
+/* 保留原生键盘行为，以较大的命中区域包住细轨道和拖动圆点。 */
+.node-quick-editor-duration-slider {
+  display: block;
+  appearance: none;
+  width: 100%;
+  height: 28px;
+  margin: 0;
   padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.node-quick-editor-duration-slider::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--mc-accent) var(--duration-progress),
+    var(--mc-border) var(--duration-progress)
+  );
+}
+
+.node-quick-editor-duration-slider::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--mc-accent) var(--duration-progress),
+    var(--mc-border) var(--duration-progress)
+  );
+}
+
+.node-quick-editor-duration-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -6px;
+  border: 3px solid var(--mc-surface);
+  border-radius: 50%;
+  background: var(--mc-accent);
+  box-shadow: 0 0 0 1px var(--mc-accent);
+}
+
+.node-quick-editor-duration-slider::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border: 3px solid var(--mc-surface);
+  border-radius: 50%;
+  background: var(--mc-accent);
+  box-shadow: 0 0 0 1px var(--mc-accent);
+}
+
+.node-quick-editor-duration-slider:focus-visible {
+  outline: 2px solid var(--mc-accent);
+  outline-offset: 2px;
+}
+
+.node-quick-editor-duration-slider:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.node-quick-editor-duration-scale {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 3px;
+  color: var(--mc-text-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.node-quick-editor-duration-hints {
+  display: grid;
+  gap: 4px;
   color: var(--mc-text-muted);
   font-size: 11px;
-  font-weight: 600;
+  line-height: 1.6;
 }
 
-.node-quick-editor-duration-custom .node-quick-editor-number-input {
-  width: 100%;
+.node-quick-editor-duration-hints small {
+  font-size: inherit;
+}
+
+.node-quick-editor-duration-issue {
+  color: #cf3a45;
+}
+
+.node-quick-editor-duration-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.node-quick-editor-duration-actions button {
+  padding: 5px 9px;
+  border: 0;
+  border-radius: 7px;
+  color: var(--mc-text-muted);
+  font-size: 11px;
+}
+
+.node-quick-editor-duration-actions button:hover:not(:disabled),
+.node-quick-editor-duration-actions [aria-pressed='true'] {
+  background: var(--mc-surface-muted);
+  color: var(--mc-text-strong);
 }
 
 .node-quick-editor-dialog.node-quick-editor-dialog {

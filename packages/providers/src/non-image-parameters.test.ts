@@ -338,6 +338,102 @@ describe('非图片参数的出站字段', () => {
   });
 });
 
+describe('Moon H3 必填时长', () => {
+  it.each([
+    {},
+    { duration: undefined, seconds: undefined, durationSeconds: undefined },
+    ...['duration', 'seconds', 'durationSeconds'].flatMap((alias) =>
+      ['', '   ', null].map((value) => ({ [alias]: value })),
+    ),
+    { duration: '', seconds: '10' },
+  ])('缺失或空时长在请求记录和 POST 前失败 %#', async (durationParameters) => {
+    const { provider, fetchImpl, onProviderJob } = videoHarness('newapi-video-v1');
+    const snapshot = snapshotFor(
+      'video',
+      { resolution: '480p', aspectRatio: '16:9', ...durationParameters },
+      'minimax-h3',
+    );
+    const before = structuredClone(snapshot);
+    const onRequestPrompt = vi.fn();
+    await expect(
+      provider.execute({
+        snapshot,
+        onProviderJob,
+        onRequestPrompt,
+        runId: 'moon-duration-test-run',
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_PROVIDER_PARAMETER', retryable: false });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(onProviderJob).not.toHaveBeenCalled();
+    expect(onRequestPrompt).not.toHaveBeenCalled();
+    expect(snapshot).toEqual(before);
+  });
+
+  it.each([
+    { duration: 10 },
+    { duration: ' 10 ' },
+    { seconds: '10' },
+    { durationSeconds: ' 10 ' },
+    { duration: undefined, seconds: '10' },
+    { duration: 10, seconds: ' 10 ', durationSeconds: 10 },
+  ])('合法别名归一为 10 秒且不回写原参数 %#', async (durationParameters) => {
+    const { provider, fetchImpl, onProviderJob } = videoHarness('newapi-video-v1');
+    const snapshot = snapshotFor(
+      'video',
+      { resolution: '480p', aspectRatio: '16:9', ...durationParameters },
+      'minimax-h3',
+    );
+    const before = structuredClone(snapshot);
+    await provider.execute({ snapshot, onProviderJob });
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://newapi.example/v1/videos');
+    expect(requestBody(fetchImpl.mock.calls[0]?.[1])).toEqual({
+      model: 'minimax-h3',
+      prompt: 'Describe a calm coastal scene.',
+      seconds: '10',
+      duration: 10,
+      metadata: {
+        content: [{ type: 'text', text: 'Describe a calm coastal scene.' }],
+        resolution: '480P',
+        ratio: '16:9',
+      },
+    });
+    expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    expect(snapshot).toEqual(before);
+  });
+
+  it.each([
+    { model: 'MiniMax-H3', contract: 'newapi-video-v1' },
+    { model: 'synthetic-video', contract: 'newapi-video-v1' },
+    { model: 'synthetic-video', contract: 'legacy-v1' },
+    { model: 'synthetic-video', contract: 'newapi-unified-v1' },
+  ] as const)('$model / $contract 保留省略时长的原合同', async ({ model, contract }) => {
+    const { provider, fetchImpl, onProviderJob } = videoHarness(contract);
+    const snapshot = snapshotFor('video', {}, model);
+    const before = structuredClone(snapshot);
+    await provider.execute({ snapshot, onProviderJob });
+    const body = requestBody(fetchImpl.mock.calls[0]?.[1]);
+    expect(body).not.toHaveProperty('duration');
+    expect(body).not.toHaveProperty('seconds');
+    expect(snapshot).toEqual(before);
+  });
+
+  it.each(['legacy-v1', 'newapi-unified-v1'] as const)(
+    'Moon H3 在 %s 下仍按原合同拒绝，不被必填时长错误覆盖',
+    async (contract) => {
+      const { provider, fetchImpl, onProviderJob } = videoHarness(contract);
+      const snapshot = snapshotFor('video', {}, 'minimax-h3');
+      const before = structuredClone(snapshot);
+      await expect(provider.execute({ snapshot, onProviderJob })).rejects.toMatchObject({
+        code: 'VIDEO_CONTRACT_UNSUPPORTED',
+        retryable: false,
+      });
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(onProviderJob).not.toHaveBeenCalled();
+      expect(snapshot).toEqual(before);
+    },
+  );
+});
+
 describe('非图片参数的别名与单项输出兼容', () => {
   it.each([
     { inferenceStrength: 'high', reasoning_effort: 'high' },

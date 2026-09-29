@@ -3,6 +3,8 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import type { Asset, CanvasDocument, PromptDocument, RunRecord } from '@multimodal-canvas/domain';
 import { canvasDocumentSchema } from '@multimodal-canvas/domain';
 
+test.use({ serviceWorkers: 'block' });
+
 /** 所有运行都由路由夹具生成，不连接真实供应商。 */
 const project = {
   id: 'node-generation-batch',
@@ -87,6 +89,15 @@ async function installFixture(
   initialCanvas: CanvasDocument = makeCanvas(mediaType),
   additionalAssets: Asset[] = [],
 ) {
+  const baseURL = test.info().project.use.baseURL;
+  if (!baseURL) throw new Error('缺少隔离的 Playwright baseURL');
+  const webUrl = new URL(baseURL);
+  if (
+    !['127.0.0.1', 'localhost', '[::1]'].includes(webUrl.hostname) ||
+    !webUrl.port ||
+    webUrl.port === '8080'
+  )
+    throw new Error('批量回归只允许独立本地 Web 端口，禁止使用真实 8080 项目');
   let canvas = structuredClone(initialCanvas);
   const submissions: Submission[] = [];
   const runs = new Map<string, RunRecord>();
@@ -121,6 +132,33 @@ async function installFixture(
         },
       }),
     );
+  });
+  await page.context().routeWebSocket('**/*', (socket) => {
+    const url = new URL(socket.url());
+    // 只模拟 Vite 握手，不建立真实 WebSocket 或转发业务消息。
+    if (url.host === webUrl.host && url.pathname === '/' && url.searchParams.has('token')) {
+      socket.send(JSON.stringify({ type: 'connected' }));
+      return;
+    }
+    errors.push(`已阻断未声明 WebSocket：${url.origin}${url.pathname}`);
+    socket.close({ code: 1008, reason: 'Only the isolated Vite handshake is allowed' });
+  });
+  // page 级业务 Mock 优先；漏出的请求只允许访问隔离 Vite 的静态资源。
+  await page.context().route('**/*', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (
+      url.origin === webUrl.origin &&
+      request.method() === 'GET' &&
+      !['fetch', 'xhr', 'eventsource'].includes(request.resourceType()) &&
+      (url.pathname === `/projects/${project.id}` ||
+        /^\/(?:@vite\/|@id\/|@fs\/|@react-refresh$|src\/|node_modules\/|assets\/|demo\/|favicon\.)/.test(
+          url.pathname,
+        ))
+    )
+      return route.continue();
+    errors.push(`已阻断未声明网络请求：${request.method()} ${url.origin}${url.pathname}`);
+    return route.abort('blockedbyclient');
   });
   await page.route('**/v1/**', async (route) => {
     const request = route.request();
@@ -253,7 +291,7 @@ async function installFixture(
         })),
       });
     errors.push(`未声明的 Mock 接口：${request.method()} ${path}`);
-    return route.fulfill({ status: 404, body: '未声明的验收接口' });
+    return route.abort('blockedbyclient');
   });
   await page.goto(`/projects/${project.id}`);
   await expect(page.locator('.react-flow__node[data-id="generation-root"]')).toBeVisible();
@@ -599,42 +637,83 @@ test('图片新节点显式追加资源提及与连线，保存刷新后仍提�
   expect(fixture.errors).toEqual([]);
 });
 
-test('视频 15 秒预设和自定义秒数只在手动生成时提交', async ({ page }, testInfo) => {
+test('视频滑块的 15 秒和 17 秒只在手动生成时提交，不支持的 30 秒不能生成', async ({
+  page,
+}, testInfo) => {
   await page.setViewportSize({ width: 1600, height: 1000 });
   const fixture = await installFixture(page, 'video');
+  // 只约束本用例；用目录不支持的整数替代旧数字输入框可填入的 0。
+  await page.route('**/v1/models', (route) =>
+    json(route, {
+      models: [
+        {
+          id: 'mock-video',
+          name: 'Mock video',
+          mediaTypes: ['video'],
+          group: 'alpha',
+          credentialId: 'batch-credential',
+          available: true,
+          capabilities: { durations: [15, 17] },
+        },
+      ],
+    }),
+  );
+  await page.reload();
   const root = page.locator('.react-flow__node[data-id="generation-root"]');
   await root.click();
   const editor = page.getByRole('region', { name: '待生成节点生成设置' });
   await editor.getByRole('button', { name: '媒体参数', exact: true }).click();
-  await page.getByRole('combobox', { name: /^时长（秒）：/ }).click();
+  const duration = page.getByRole('button', { name: /^时长（秒）：/ });
+  await expect(duration).toHaveAccessibleName('时长（秒）：未设置');
+  await duration.click();
+  const card = page.getByRole('dialog', { name: '视频时长', exact: true });
+  const seconds = card.getByRole('slider', { name: '视频时长（秒）', exact: true });
   await expect(page.getByRole('option', { name: '16 秒', exact: true })).toHaveCount(0);
-  await page.getByRole('option', { name: '15 秒', exact: true }).click();
-  const seconds = page.getByRole('spinbutton', { name: '自定义秒数' });
+  await expect(seconds).toHaveAttribute('type', 'range');
+  await expect(seconds).toHaveAttribute('min', '5');
+  await expect(seconds).toHaveAttribute('max', '30');
+  await expect(seconds).toHaveAttribute('step', '1');
+  await expect(seconds).toHaveValue('10');
+  await expect(card.getByRole('button', { name: '清除时长', exact: true })).toBeDisabled();
+  await seconds.press('Home');
+  for (let second = 5; second < 15; second++) await seconds.press('ArrowRight');
   await expect(seconds).toHaveValue('15');
   expect(fixture.submissions).toHaveLength(0);
+  await seconds.press('Escape');
+  await page.keyboard.press('Escape');
   await editor.getByRole('button', { name: '生成', exact: true }).click();
   await expect(page.getByText('待生成节点 已完成', { exact: true })).toBeVisible();
   expect(fixture.submissions).toHaveLength(1);
   expect(fixture.submissions[0]!.body.parameters).toMatchObject({ duration: 15 });
   await editor.getByRole('button', { name: '媒体参数', exact: true }).click();
-  await seconds.fill('0');
+  await duration.click();
+  await seconds.press('End');
+  await expect(seconds).toHaveValue('30');
   await expect(seconds).toHaveAttribute('aria-invalid', 'true');
   await expect(editor.getByRole('button', { name: '生成', exact: true })).toBeDisabled();
-  await seconds.fill('17');
+  await page.screenshot({ path: testInfo.outputPath('video-unsupported-seconds.png') });
+  expect(fixture.submissions).toHaveLength(1);
+  await seconds.press('Home');
+  for (let second = 5; second < 17; second++) await seconds.press('ArrowRight');
+  await expect(seconds).toHaveValue('17');
   await expect(seconds).toHaveAttribute('aria-invalid', 'false');
   expect(fixture.submissions).toHaveLength(1);
-  await page.screenshot({ path: testInfo.outputPath('video-custom-seconds.png') });
+  await page.screenshot({ path: testInfo.outputPath('video-slider-seconds.png') });
+  await seconds.press('Escape');
+  await page.keyboard.press('Escape');
   await editor.getByRole('button', { name: '生成', exact: true }).click();
   await expect.poll(() => fixture.submissions.length).toBe(2);
   await expect(page.getByText('待生成节点 已完成', { exact: true })).toBeVisible();
   expect(fixture.submissions[1]!.body.parameters).toMatchObject({ duration: 17 });
   await expect
-    .poll(() => root.locator('video').evaluate((element) => element.readyState))
+    .poll(() => root.locator('video').evaluate((element: HTMLVideoElement) => element.readyState))
     .toBeGreaterThan(0);
   await save(page);
   await page.reload();
   await root.click();
   await editor.getByRole('button', { name: '媒体参数', exact: true }).click();
+  await expect(duration).toHaveAccessibleName('时长（秒）：17 秒');
+  await duration.click();
   await expect(seconds).toHaveValue('17');
   expect(fixture.submissions).toHaveLength(2);
   expect(fixture.errors).toEqual([]);

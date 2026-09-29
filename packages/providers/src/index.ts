@@ -2137,6 +2137,7 @@ function openaiVideoPayload(
 /**
  * 将官方供应商与 Moon 已确认的视频输入映射到 New API 任务插件协议；未知参数和不合法组合在 POST 前失败。
  * H3/Seedance 使用 metadata.content，Wan3 使用 metadata.input.media；角色不会互相降级。
+ * Moon H3 必须显式提供时长；其他模型保留各自的缺省合同。
  */
 function officialVideoPayload(
   snapshot: RunSnapshot,
@@ -2169,6 +2170,9 @@ function officialVideoPayload(
     document,
   );
   const rawDuration = parameters.duration ?? parameters.seconds ?? parameters.durationSeconds;
+  if (family === 'moon-minimax-h3' && rawDuration === undefined) {
+    throw invalidProviderParameter('video', 'duration', '必须显式提供，不能省略');
+  }
   const duration = rawDuration === undefined ? undefined : Number(rawDuration);
   const h3Family = family === 'moon-minimax-h3' || family === 'minimax-h3';
   const automaticDuration =

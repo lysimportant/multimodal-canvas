@@ -10,7 +10,7 @@ import {
   X,
 } from 'lucide-react';
 import { Checkbox, Popover, Select, type SelectProps } from 'antd';
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState, type CSSProperties } from 'react';
 
 import type {
   Asset,
@@ -220,8 +220,8 @@ const automaticVideoDurationOption: MediaOption = {
   description: '由模型根据输入决定',
 };
 
-/** 视频节点浮层中优先展示的常用时长；不改变模型合同的范围校验。 */
-const VIDEO_DURATION_PRESETS = [5, 10, 15, 30] as const;
+/** 固定时长滑块的秒数范围；不扩大模型合同，旧值只在用户拖动时改变。 */
+const VIDEO_DURATION_RANGE = { min: 5, max: 30, default: 10 } as const;
 
 /** 自动比例按模型根据提示词和输入素材决定；强制沿用素材的模式另显示原素材标签。 */
 const adaptiveVideoAspectRatioOption: MediaOption = {
@@ -266,7 +266,7 @@ function requiresAdaptiveVideoAspectRatio(
   );
 }
 
-/** 已确认的官方视频时长边界；菜单仅列常用值，自定义输入仍可填写区间内整数。 */
+/** 已确认的视频时长边界；控制提交校验，不能由滑块范围或默认值扩大。 */
 const videoDurationContracts: Partial<
   Record<VideoModelFamily, { min: number; max: number; presets: readonly number[] }>
 > = {
@@ -458,7 +458,7 @@ export function NodeQuickEditor({
   const [generationCountDraft, setGenerationCountDraft] = useState(
     String(node.data.generationCount ?? DEFAULT_GENERATION_COUNT),
   );
-  /** 自定义时长允许清空；空值保留供应商默认语义，非空值只接受正整数秒。 */
+  /** 历史空值和秒数原样回显；滑块或显式清除才写回，不在渲染时补默认值。 */
   const [durationDraft, setDurationDraft] = useState(
     parameters.duration === undefined ? '' : String(parameters.duration),
   );
@@ -479,32 +479,34 @@ export function NodeQuickEditor({
         getCapabilityRoots(selectedModel, 'video'),
         ['duration', 'durations', 'seconds', 'durationSeconds', 'duration_seconds'],
         'duration',
-      );
+      )?.filter((option) => !option.disabled);
   const durationValue = Number(durationDraft);
   const automaticDuration = supportsAutomaticDuration && durationValue === -1;
   const durationIssue =
-    node.data.mediaType === 'video' &&
-    durationDraft !== '' &&
-    (!Number.isSafeInteger(durationValue) ||
-      (!automaticDuration &&
-        (durationValue <= 0 ||
-          Boolean(
-            durationContract &&
-            (durationValue < durationContract.min || durationValue > durationContract.max),
-          ))))
-      ? durationContract
-        ? `视频时长必须为 ${durationContract.min} 至 ${durationContract.max} 秒${supportsAutomaticDuration ? '，或使用 -1 自动时长' : ''}`
-        : supportsAutomaticDuration
-          ? '视频时长必须为正整数秒，或使用 -1 自动时长'
-          : '视频时长必须为正整数秒，且不能超过安全整数范围'
+    node.data.mediaType === 'video' && videoFamily === 'moon-minimax-h3' && durationDraft === ''
+      ? 'Moon MiniMax H3 必须选择 4 至 15 秒的视频时长'
       : node.data.mediaType === 'video' &&
           durationDraft !== '' &&
-          declaredDurations &&
-          !declaredDurations.some((option) => option.value === String(durationValue))
-        ? declaredDurations.length
-          ? `当前模型仅支持 ${declaredDurations.map((option) => option.value).join('、')} 秒`
-          : '当前模型未声明可用的视频时长'
-        : undefined;
+          (!Number.isSafeInteger(durationValue) ||
+            (!automaticDuration &&
+              (durationValue <= 0 ||
+                Boolean(
+                  durationContract &&
+                  (durationValue < durationContract.min || durationValue > durationContract.max),
+                ))))
+        ? durationContract
+          ? `视频时长必须为 ${durationContract.min} 至 ${durationContract.max} 秒${supportsAutomaticDuration ? '，或使用 -1 自动时长' : ''}`
+          : supportsAutomaticDuration
+            ? '视频时长必须为正整数秒，或使用 -1 自动时长'
+            : '视频时长必须为正整数秒，且不能超过安全整数范围'
+        : node.data.mediaType === 'video' &&
+            durationDraft !== '' &&
+            declaredDurations &&
+            !declaredDurations.some((option) => option.value === String(durationValue))
+          ? declaredDurations.length
+            ? `当前模型仅支持 ${declaredDurations.map((option) => option.value).join('、')} 秒`
+            : '当前模型未声明可用的视频时长'
+          : undefined;
   const resolutionContract = videoResolutionContractForModel(
     currentModel,
     allowMoonH3SuperResolution,
@@ -569,12 +571,6 @@ export function NodeQuickEditor({
         ]
       : catalogMediaOptions.aspectRatio,
   };
-  const durationQuickOptions = getVideoDurationQuickOptions(
-    mediaOptions.duration,
-    durationContract,
-    supportsAutomaticDuration,
-    declaredDurations,
-  );
   const videoContractParameterIssue =
     node.data.mediaType === 'video' &&
     currentVideoMode === 'video_edit' &&
@@ -805,12 +801,7 @@ export function NodeQuickEditor({
       }
     } else {
       if (currentVideoMode === 'video_edit' && nextParameters.duration === -1) {
-        const fallback = catalogMediaOptions.duration.find((option) => {
-          const seconds = Number(option.value);
-          return !option.disabled && Number.isSafeInteger(seconds) && seconds > 0;
-        });
-        if (fallback) nextParameters.duration = Number(fallback.value);
-        else delete nextParameters.duration;
+        nextParameters.duration = VIDEO_DURATION_RANGE.default;
         parametersChanged = true;
       }
       if (requiresAdaptiveVideoAspectRatio(videoFamily, nextMode, currentModel)) {
@@ -948,9 +939,9 @@ export function NodeQuickEditor({
             />
             <VideoDurationControl
               value={durationDraft}
-              options={durationQuickOptions}
               issue={durationIssue}
               contract={durationContract}
+              declaredDurations={declaredDurations}
               supportsAutomaticDuration={supportsAutomaticDuration}
               inputDisabled={!onParametersChange}
               onChange={(value) => {
@@ -1538,23 +1529,23 @@ function nodePopupContainer(trigger: HTMLElement): HTMLElement {
 }
 
 /**
- * 视频秒数使用库浮卡共享快捷按钮与自定义输入，不占据外部参数网格。
- * value 保留空值和旧节点秒数；选项由模型合同约束，输入错误由父层阻止生成。
- * hover 不抢焦点；点击或键盘进入后固定卡片，Escape 只关闭本层并归还焦点。
+ * 视频固定秒数在 5–30 的整数范围内拖动；模型限制由父层校验并阻止生成。
+ * value 为实际保存值，历史空值、范围外值和自动 -1 不因打开浮卡而改写。
+ * hover 不抢焦点；键盘进入后聚焦滑块，Escape 只关闭本层并归还焦点。
  */
 function VideoDurationControl({
   value,
-  options,
   issue,
   contract,
+  declaredDurations,
   supportsAutomaticDuration,
   inputDisabled,
   onChange,
 }: {
   value: string;
-  options: QuickOption[];
   issue?: string;
   contract?: { min: number; max: number };
+  declaredDurations?: readonly MediaOption[];
   supportsAutomaticDuration: boolean;
   inputDisabled: boolean;
   onChange: (value: string) => void;
@@ -1567,16 +1558,39 @@ function VideoDurationControl({
   const inputRef = useRef<HTMLInputElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const focusOnOpenRef = useRef(false);
-  const selected = options.find((option) => option.value === value);
-  const selectionLabel = value === '' ? '未设置' : (selected?.label ?? `自定义 · ${value} 秒`);
+  const automatic = supportsAutomaticDuration && value === '-1';
+  const selectionLabel = value === '' ? '未设置' : automatic ? '自动' : value + ' 秒';
+  const seconds = Number(value);
+  const fixedDuration = value !== '' && Number.isSafeInteger(seconds) && seconds > 0;
+  const outsideSlider =
+    fixedDuration && (seconds < VIDEO_DURATION_RANGE.min || seconds > VIDEO_DURATION_RANGE.max);
+  const sliderValue = fixedDuration
+    ? Math.min(VIDEO_DURATION_RANGE.max, Math.max(VIDEO_DURATION_RANGE.min, seconds))
+    : VIDEO_DURATION_RANGE.default;
+  const hint =
+    value === ''
+      ? '未设置；滑块从 10 秒起，拖动后才保存。'
+      : automatic
+        ? '当前为自动时长；拖动后改用固定秒数。'
+        : outsideSlider
+          ? '已保存 ' + value + ' 秒，超出滑块范围；保留原值，拖动后才修改。'
+          : '拖动或使用方向键调整，每次 1 秒。';
+  const availableDurations = declaredDurations?.filter((option) => !option.disabled);
+  const capabilityHint = contract
+    ? '当前模型支持 ' + contract.min + '–' + contract.max + ' 秒；超出范围无法生成。'
+    : availableDurations
+      ? availableDurations.length
+        ? '当前模型仅支持 ' + availableDurations.map((option) => option.value).join('、') + ' 秒。'
+        : '当前模型未声明可用的视频时长。'
+      : undefined;
 
-  /** 首次键盘打开时等 portal 挂载再聚焦；hover 打开不执行此步骤。 */
-  const focusFirstOption = (container: HTMLDivElement | null) => {
+  /** 首次键盘打开时等 portal 挂载再聚焦滑块；hover 打开不执行此步骤。 */
+  const focusSlider = (container: HTMLDivElement | null) => {
     if (!container || !focusOnOpenRef.current) return;
     focusOnOpenRef.current = false;
-    (
-      container.querySelector<HTMLButtonElement>('button:not(:disabled)') ?? inputRef.current
-    )?.focus({ preventScroll: true });
+    container
+      .querySelector<HTMLInputElement>('input[type="range"]:not(:disabled)')
+      ?.focus({ preventScroll: true });
   };
 
   /** 仅关闭时长浮层，不提交新值，也不关闭媒体参数页或完整编辑器。 */
@@ -1601,7 +1615,7 @@ function VideoDurationControl({
           close();
           triggerRef.current?.focus({ preventScroll: true });
         } else if (contentRef.current?.contains(event.target as Node)) {
-          // 保留输入和 Tab 的浏览器默认行为，不触发父级菜单或画布快捷键。
+          // 方向键、Home/End 和 Tab 交给原生滑块，不触发画布快捷键。
           event.stopPropagation();
         }
       }}
@@ -1629,7 +1643,7 @@ function VideoDurationControl({
             className="node-quick-editor-duration-card"
             ref={(container) => {
               contentRef.current = container;
-              focusFirstOption(container);
+              focusSlider(container);
             }}
             onFocusCapture={() => setPinned(true)}
             onBlur={(event) => {
@@ -1640,57 +1654,122 @@ function VideoDurationControl({
                 close();
             }}
           >
-            <div className="node-quick-editor-duration-presets" role="group" aria-label="快捷秒数">
-              {options.map((option) => (
+            <div className="node-quick-editor-duration-heading">
+              <span>视频时长</span>
+              <output htmlFor={inputId} aria-live="polite">
+                {selectionLabel}
+              </output>
+            </div>
+            <div className="node-quick-editor-duration-range">
+              <input
+                ref={inputRef}
+                id={inputId}
+                className="node-quick-editor-duration-slider"
+                type="range"
+                min={VIDEO_DURATION_RANGE.min}
+                max={VIDEO_DURATION_RANGE.max}
+                step={1}
+                value={sliderValue}
+                style={
+                  {
+                    '--duration-progress':
+                      ((sliderValue - VIDEO_DURATION_RANGE.min) /
+                        (VIDEO_DURATION_RANGE.max - VIDEO_DURATION_RANGE.min)) *
+                        100 +
+                      '%',
+                  } as CSSProperties
+                }
+                aria-label="视频时长（秒）"
+                aria-valuetext={
+                  fixedDuration && !outsideSlider
+                    ? selectionLabel
+                    : selectionLabel + '，滑块参考起点 ' + sliderValue + ' 秒'
+                }
+                aria-invalid={Boolean(issue)}
+                aria-describedby={[
+                  inputId + '-hint',
+                  capabilityHint ? inputId + '-capability' : undefined,
+                  issue ? inputId + '-issue' : undefined,
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
+                disabled={inputDisabled}
+                onChange={(event) => onChange(event.currentTarget.value)}
+                onClick={(event) => {
+                  // 历史值与滑块参考点不同，点击当前圆点也属于显式选择。
+                  if (!inputDisabled && event.currentTarget.value !== value) {
+                    onChange(event.currentTarget.value);
+                  }
+                }}
+                onKeyDown={(event) => {
+                  if (
+                    inputDisabled ||
+                    isImeKeyboardEvent(event) ||
+                    (fixedDuration && !outsideSlider)
+                  )
+                    return;
+                  // 原生 Home/End 停在参考端点时不触发 change，仍须保存用户的选择。
+                  if (event.key === 'Home' || event.key === 'End') {
+                    event.preventDefault();
+                    onChange(
+                      String(
+                        event.key === 'Home' ? VIDEO_DURATION_RANGE.min : VIDEO_DURATION_RANGE.max,
+                      ),
+                    );
+                  }
+                }}
+              />
+              <div className="node-quick-editor-duration-scale" aria-hidden="true">
+                {[5, 10, 15, 20, 25, 30].map((seconds) => (
+                  <span key={seconds}>{seconds}</span>
+                ))}
+              </div>
+            </div>
+            <div className="node-quick-editor-duration-hints">
+              <span>5–30 秒 · 新建默认 10 秒</span>
+              <small id={inputId + '-hint'}>{hint}</small>
+              {capabilityHint && <small id={inputId + '-capability'}>{capabilityHint}</small>}
+              {issue && (
+                <small
+                  id={inputId + '-issue'}
+                  className="node-quick-editor-duration-issue"
+                  role="status"
+                >
+                  {issue}
+                </small>
+              )}
+            </div>
+            <div className="node-quick-editor-duration-actions">
+              {supportsAutomaticDuration && (
                 <Button
-                  key={option.value}
                   type="button"
-                  aria-label={option.value === '-1' ? '自动时长' : `${option.label} 秒`}
-                  aria-pressed={value === option.value}
-                  disabled={inputDisabled || option.disabled}
-                  title={option.description}
+                  variant="ghost"
+                  aria-label="自动时长"
+                  aria-pressed={automatic}
+                  disabled={inputDisabled}
+                  title="由模型根据输入决定时长"
                   onClick={() => {
-                    onChange(option.value);
+                    onChange('-1');
                     close();
                     triggerRef.current?.focus({ preventScroll: true });
                   }}
                 >
-                  {option.value === '-1' ? '自动' : `${option.label} 秒`}
+                  自动时长
                 </Button>
-              ))}
-            </div>
-            <div className="node-quick-editor-duration-custom">
+              )}
               <Button
                 type="button"
                 variant="ghost"
-                className="node-quick-editor-duration-custom-label"
-                disabled={inputDisabled}
-                onClick={() => inputRef.current?.focus({ preventScroll: true })}
+                disabled={inputDisabled || value === ''}
+                title="删除时长参数；要求指定时长的模型会阻止生成"
+                onClick={() => {
+                  onChange('');
+                  close();
+                  triggerRef.current?.focus({ preventScroll: true });
+                }}
               >
-                自定义秒数
+                清除时长
               </Button>
-              <Input
-                ref={inputRef}
-                id={inputId}
-                className="node-quick-editor-number-input"
-                type="number"
-                inputMode="numeric"
-                min={supportsAutomaticDuration ? -1 : (contract?.min ?? 1)}
-                max={contract?.max ?? Number.MAX_SAFE_INTEGER}
-                step={1}
-                value={value}
-                placeholder="输入秒数"
-                aria-label={supportsAutomaticDuration ? '自定义秒数（-1 为自动）' : '自定义秒数'}
-                aria-invalid={Boolean(issue)}
-                aria-describedby={issue ? `${inputId}-issue` : undefined}
-                disabled={inputDisabled}
-                onChange={(event) => onChange(event.currentTarget.value)}
-              />
-              {issue && (
-                <small id={`${inputId}-issue`} role="status">
-                  {issue}
-                </small>
-              )}
             </div>
           </div>
         }
@@ -1699,7 +1778,7 @@ function VideoDurationControl({
           ref={triggerRef}
           type="button"
           className="node-quick-editor-duration-trigger"
-          aria-label={`时长（秒）：${selectionLabel}`}
+          aria-label={'时长（秒）：' + selectionLabel}
           aria-haspopup="dialog"
           aria-expanded={open}
           aria-controls={open ? popupId : undefined}
@@ -1709,7 +1788,7 @@ function VideoDurationControl({
             focusOnOpenRef.current = nextOpen && event.detail === 0;
             setOpen(nextOpen);
             setPinned(nextOpen);
-            if (nextOpen) focusFirstOption(contentRef.current);
+            if (nextOpen) focusSlider(contentRef.current);
           }}
           onKeyDown={(event) => {
             if (event.key !== 'ArrowDown' || isImeKeyboardEvent(event)) return;
@@ -1718,7 +1797,7 @@ function VideoDurationControl({
             focusOnOpenRef.current = true;
             setOpen(true);
             setPinned(true);
-            focusFirstOption(contentRef.current);
+            focusSlider(contentRef.current);
           }}
         >
           <span>{selectionLabel}</span>
@@ -1868,10 +1947,10 @@ function QuickOptionMenu({
 }
 
 /**
- * 为新建节点或显式切换模型补齐媒体枚举的第一项；推理强度优先 high、标签“高”、首项。
+ * 为新建节点或显式切换模型补齐媒体默认值；固定视频时长默认 10 秒。
  * 返回可直接写入节点的浅拷贝，不修改输入；已有参数和未知字段全部保留。
- * 只使用该媒体模型声明的枚举或已确认的 TTS/GPT 契约；没有模型或没有枚举时不造值，
- * 切换到不支持自动时长或比例的模型时移除 -1/adaptive，再按新目录补默认值。
+ * 时长默认值是编辑偏好，不是能力声明；目录不支持 10 秒时由生成预检明确阻止。
+ * 其它媒体枚举仅使用目录或已确认合同；不支持的 -1/adaptive 在明确切模型时清理。
  * 音色和连续语速由用户填写，像素宽高仅保留旧值。不得在渲染或加载历史节点时自动调用。
  */
 export function applyNodeGenerationDefaults(
@@ -1888,6 +1967,13 @@ export function applyNodeGenerationDefaults(
     if (!supportsAdaptiveVideoAspectRatio(family) && parameters.aspectRatio === 'adaptive') {
       delete parameters.aspectRatio;
     }
+    if (parameters.duration === undefined) {
+      parameters.duration =
+        data.videoMode === 'video_edit' &&
+        (family === 'seedance-2.5' || isMoonSeedanceModel(model?.id ?? data.modelAlias))
+          ? -1
+          : VIDEO_DURATION_RANGE.default;
+    }
   }
   if (!model?.mediaTypes.includes(mediaType)) return { ...data, parameters };
   const options = getMediaOptions(model, mediaType, {}, false, data.modelAlias);
@@ -1895,7 +1981,7 @@ export function applyNodeGenerationDefaults(
     mediaType === 'image'
       ? (['resolution', 'quality', 'aspectRatio'] as const)
       : mediaType === 'video'
-        ? (['resolution', 'aspectRatio', 'duration'] as const)
+        ? (['resolution', 'aspectRatio'] as const)
         : [];
   for (const field of fields) {
     if (parameters[field] !== undefined) continue;
@@ -1922,17 +2008,9 @@ export function applyNodeGenerationDefaults(
       if (field === 'aspectRatio' && (hasStoredSize || parameters.aspect_ratio !== undefined))
         continue;
     }
-    const choices =
-      field === 'duration'
-        ? options[field].filter((option) => {
-            const seconds = Number(option.value);
-            return Number.isInteger(seconds) && seconds > 0;
-          })
-        : options[field];
-    const value = firstAvailableOption(choices);
+    const value = firstAvailableOption(options[field]);
     if (value === undefined) continue;
-    if (field === 'duration') parameters.duration = Number(value);
-    else parameters[field] = value;
+    parameters[field] = value;
   }
   if (mediaType === 'audio' && parameters.response_format === undefined) {
     const format = firstAvailableOption(getSupportedAudioFormatOptions(model));
@@ -1985,40 +2063,6 @@ export function resolvePreviousOperationSeed(
     };
   }
   return undefined;
-}
-
-/**
- * 组合视频时长浮层的固定快捷项、自动时长和当前已保存值。
- *
- * 快捷项只负责展示常用值；是否可提交仍由 `getMediaOptions` 生成的模型合同和
- * `durationIssue` 共同决定。这样旧节点中的非快捷时长可以通过“自定义”继续编辑，
- * 不会因更换界面菜单而被静默丢弃。
- */
-function getVideoDurationQuickOptions(
-  options: readonly QuickOption[],
-  contract: { min: number; max: number } | undefined,
-  supportsAutomaticDuration: boolean,
-  declaredDurations?: readonly MediaOption[],
-): QuickOption[] {
-  const byValue = new Map(options.map((option) => [option.value, option]));
-  const presets = VIDEO_DURATION_PRESETS.map((seconds) => {
-    const value = String(seconds);
-    const existing = byValue.get(value);
-    const supported =
-      (!contract || (seconds >= contract.min && seconds <= contract.max)) &&
-      (!declaredDurations || declaredDurations.some((option) => option.value === value));
-    return {
-      ...(existing ?? { value, label: value, description: '秒' }),
-      value,
-      label: value,
-      description: existing?.description ?? '秒',
-      ...(supported ? {} : { disabled: true, description: '当前模型不支持' }),
-    };
-  });
-  const automatic = supportsAutomaticDuration
-    ? (byValue.get('-1') ?? automaticVideoDurationOption)
-    : undefined;
-  return automatic ? [...presets, automatic] : presets;
 }
 
 /** 返回当前模型的媒体能力；官方视频合同可补目录缺项，通用旧回退只供手动选择。 */

@@ -1,6 +1,6 @@
 # 待完成任务汇总
 
-更新时间：2026-09-30（本轮仅补图片尺寸的真实 Provider 验收项）
+更新时间：2026-09-30（补图片尺寸真实验收与视频入队前预检待办）
 整理基线：`main @ 43c69b6`
 来源：[视频节点任务历史版本](https://github.com/lysimportant/multimodal-canvas/blob/c750763925a2fd63988c8a84402dc982a6ec460a/TODO-VIDEO-NODE.md)、[本地任务历史版本](https://github.com/lysimportant/multimodal-canvas/blob/c750763925a2fd63988c8a84402dc982a6ec460a/TODO-LOCAL.md)。
 
@@ -29,6 +29,7 @@
 - 为需要 URL 的视频参考配置可外部访问同一冻结对象的 `MC_S3_PROVIDER_ENDPOINT`，验收短期签名 URL 的外部 GET；Moon 所有参考素材均要求可访问 URL，Wan 视频还要求冻结版本时长。线上网关需更新 Moon 1.1.0 及支持 H3 精确大小写共存的宿主；官方 Seedance 自动时长要求 Doubao 1.0.3 插件。
 - 共享 Wan 模型 ID 尚不能在 Canvas 区分百炼与 Moon 的全部参数差异；Moon 的总引用数量、参考视频合计时长及不支持负向提示/自动时长等限制由网关插件在预扣与供应商 POST 前明确拒绝。后续按渠道身份细分预检，不以 Moon 限制收窄百炼合同。
 - 对已确认字段补齐序列化、响应解析、数量/组合边界和未知字段拒绝测试。现有 Grok 1.5 尾帧与参考图映射不重复列为待实现项。
+- 将视频参数的精确合同校验集中到 API 创建 Run/入队前，避免绕过 Web 的无效参数先产生失败 Run；目前已有 Web 提示和 Provider 创建 POST 前拦截，不等同于所有入口都零 Run 拒绝，见[视频参数复核](docs/image-output-parameters.md#视频时长滑块与传值复核)。
 - 明确各模型重复端口上限，取产品、模型、供应商限制的最小值；来源文档中的示例配额不能当成确认值。
 
 完成条件：拟开放组合均有字段证据与测试，未确认角色、超限输入和不支持的组合在供应商创建 POST 前明确失败，不静默丢弃或降级；共享模型 ID 的渠道差异需另行完成 Canvas 预检。
