@@ -14,6 +14,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 
 import type {
   Asset,
+  ImageOutputParameters,
   PortRole,
   PromptDocument,
   PromptSkill,
@@ -26,6 +27,8 @@ import {
   GENERATION_COUNT_MAX,
   displayVideoMode,
   imageEditCapability,
+  ImageOutputParameterError,
+  resolveImageOutputParameters,
   implementedVideoModes,
   isValidGenerationCount,
   resolveVideoCompletionAction,
@@ -74,7 +77,9 @@ export type InferenceStrength = string;
  */
 export type NodeMediaParameters = Record<string, unknown> & {
   size?: string;
+  /** 供应商原生质量；历史 K 档仅兼容读取，显式编辑后改存 resolution。 */
   quality?: string;
+  /** 图片使用 1k/2k/3k/4k；视频继续使用各自合同中的清晰度标识。 */
   resolution?: string;
   aspectRatio?: string;
   duration?: number;
@@ -82,7 +87,7 @@ export type NodeMediaParameters = Record<string, unknown> & {
   width?: number;
   /** 保留历史视频高度，单位像素；界面不再编辑，新建不初始化。 */
   height?: number;
-  /** TTS 音色标识，允许平台自定义非空字符串，必须由用户显式填写。 */
+  /** TTS 音色必须由用户显式填写；未受当前接口支持的历史值保留显示但禁止提交。 */
   voice?: string;
   /** TTS 输出格式；新建或切换模型时可初始化为支持列表中的第一项，清空后省略。 */
   response_format?: string;
@@ -170,12 +175,19 @@ type QuickOption = MediaOption & {
   trailingLabel?: string;
 };
 
-const imageQualityOptions: MediaOption[] = [
+/** 通用图片像素档位仅供用户手选，不视为具体模型的能力声明。 */
+const imageResolutionOptions: MediaOption[] = [
   { value: '1k', label: '1K', description: '标准' },
   { value: '2k', label: '2K', description: '高清' },
   { value: '3k', label: '3K', description: '超清' },
   { value: '4k', label: '4K', description: '极致' },
 ];
+
+/** 显式修改图片清晰度或比例时清理旧尺寸，避免隐藏值覆盖当前选择。 */
+const imageSizeParameterAliases = ['size', 'image_size', 'imageSize'] as const;
+
+/** 供应商质量字段的兼容别名；只有识别为 K 档的旧值在尺寸编辑时迁移。 */
+const imageQualityParameterAliases = ['quality', 'image_quality', 'imageQuality'] as const;
 
 const videoResolutionOptions: MediaOption[] = [
   '360p',
@@ -304,6 +316,16 @@ function videoResolutionContractForModel(
   return videoResolutionContracts[family];
 }
 
+/** 当前 Provider 已确认的音色；提示和预检共用此列表，目录额外声明不扩大接口能力。 */
+const SUPPORTED_AUDIO_VOICES: readonly string[] = [
+  'alloy',
+  'echo',
+  'fable',
+  'onyx',
+  'nova',
+  'shimmer',
+];
+
 /** Provider 已支持的 TTS 格式，空选项仅用于移除显式配置。 */
 const AUDIO_FORMAT_OPTIONS: MediaOption[] = [
   { value: '', label: '未设置' },
@@ -413,6 +435,16 @@ export function NodeQuickEditor({
     currentModelIsMissing,
   );
   const parameters = readNodeMediaParameters(node.data);
+  let imageOutputParameters: ImageOutputParameters | undefined;
+  let imageOutputParameterIssue: string | undefined;
+  if (node.data.mediaType === 'image') {
+    try {
+      imageOutputParameters = resolveImageOutputParameters(parameters, currentModel);
+    } catch (error) {
+      if (!(error instanceof ImageOutputParameterError)) throw error;
+      imageOutputParameterIssue = error.message;
+    }
+  }
   const videoFamily = videoFamilyForModel(currentModel);
   const currentVideoMode =
     node.data.mediaType === 'video' ? displayVideoMode(node.data, connectedInputRoles) : undefined;
@@ -594,6 +626,7 @@ export function NodeQuickEditor({
       ? '当前模型明确不支持图片编辑，请更换模型后再运行'
       : undefined;
   const mediaParameterIssue =
+    imageOutputParameterIssue ??
     durationIssue ??
     resolutionIssue ??
     aspectRatioIssue ??
@@ -612,6 +645,37 @@ export function NodeQuickEditor({
     } else {
       next[key] = value;
     }
+    onParametersChange(next);
+  };
+
+  /** 仅用户明确编辑时迁移旧 K 档；尺寸和质量仍由共享合同解析，不在界面计算像素。 */
+  const updateImageParameter = (key: 'resolution' | 'aspectRatio' | 'quality', value: string) => {
+    if (!onParametersChange) return;
+    const next = { ...parameters };
+    const storedResolution = mediaOptions.imageResolutionValue;
+    const currentResolution = readImageResolutionParameter(next.resolution);
+    if (storedResolution && !currentResolution?.resolution) {
+      if (
+        key === 'quality' &&
+        currentResolution?.size &&
+        !imageSizeParameterAliases.some((alias) => next[alias] !== undefined)
+      )
+        next.size = currentResolution.size;
+      if (next.resolution === undefined || currentResolution?.size)
+        next.resolution = storedResolution;
+    }
+    for (const alias of imageQualityParameterAliases) {
+      if (key === 'quality' || readImageResolutionParameter(next[alias])?.resolution)
+        delete next[alias];
+    }
+    if (key !== 'quality') {
+      for (const alias of imageSizeParameterAliases) delete next[alias];
+      const output = readImageResolutionParameter(next.resolution);
+      if (output?.size && !output.resolution) delete next.resolution;
+      if (key === 'aspectRatio') delete next.aspect_ratio;
+    }
+    if (value) next[key] = value;
+    else delete next[key];
     onParametersChange(next);
   };
 
@@ -814,19 +878,48 @@ export function NodeQuickEditor({
         >
           <NodeParameterSelect
             label="图片清晰度"
-            value={normalizeCurrentOptionValue(parameters.quality)}
-            options={mediaOptions.quality}
-            onChange={(value) => updateParameter('quality', value)}
+            value={imageOutputParameters?.resolution ?? mediaOptions.imageResolutionValue}
+            options={mediaOptions.resolution}
+            onChange={(value) => updateImageParameter('resolution', value)}
             className="node-quick-editor-select-group"
             optionLayout="grid"
           />
           <QuickOptionMenu
             label="图片比例"
-            value={parameters.aspectRatio}
+            value={normalizeCurrentOptionValue(parameters.aspectRatio ?? parameters.aspect_ratio)}
             options={mediaOptions.aspectRatio}
             aspectOptions
-            onChange={(value) => updateParameter('aspectRatio', value)}
+            onChange={(value) => updateImageParameter('aspectRatio', value)}
           />
+          {mediaOptions.hasNativeImageQuality && (
+            <NodeParameterSelect
+              label="生成质量"
+              value={
+                imageOutputParameters?.quality ??
+                (readImageResolutionParameter(parameters.quality)?.resolution
+                  ? ''
+                  : normalizeCurrentOptionValue(parameters.quality))
+              }
+              options={mediaOptions.quality}
+              onChange={(value) => updateImageParameter('quality', value)}
+              className="node-quick-editor-select-group"
+            />
+          )}
+          <p
+            className="node-quick-editor-image-size"
+            title="发送给图片接口的请求像素；实际输出取决于上游对该尺寸的支持。"
+          >
+            <span>请求像素</span>
+            <output aria-label="请求像素" aria-live="polite">
+              {imageOutputParameters?.size
+                ? imageOutputParameters.size === 'auto'
+                  ? '自动'
+                  : imageOutputParameters.size.replace('x', ' × ')
+                : imageOutputParameterIssue
+                  ? '请修正参数'
+                  : '未设置'}
+            </output>
+          </p>
         </div>
       )}
 
@@ -918,8 +1011,11 @@ export function NodeQuickEditor({
               value={typeof parameters.voice === 'string' ? parameters.voice : ''}
               placeholder="输入音色 ID"
               required
-              aria-invalid={typeof parameters.voice !== 'string' || !parameters.voice.trim()}
-              title="音色（必填）"
+              aria-invalid={
+                typeof parameters.voice !== 'string' ||
+                !SUPPORTED_AUDIO_VOICES.includes(parameters.voice)
+              }
+              title={'音色（必填）；当前接口支持 ' + SUPPORTED_AUDIO_VOICES.join('、')}
               disabled={!onParametersChange}
               onChange={(event) =>
                 updateParameter(
@@ -978,7 +1074,10 @@ export function NodeQuickEditor({
   );
 
   /** 摘要仅展示已保存值；未设置项不假装已提交模型默认参数。 */
-  const summaryItems = getMediaSummary(node.data.mediaType, parameters, mediaOptions);
+  const summaryItems = getMediaSummary(node.data.mediaType, parameters, {
+    ...mediaOptions,
+    imageResolutionValue: imageOutputParameters?.resolution ?? mediaOptions.imageResolutionValue,
+  });
   /** 容器级 Popover 为秒数及 Select 提供库层级上下文，避免子浮层落到参数页下面。 */
   const mediaSummary =
     node.data.mediaType === 'text' ? null : (
@@ -1151,7 +1250,7 @@ export function NodeQuickEditor({
                             selectedModel &&
                             imageEditCapability(selectedModel).unsupported
                           ? '当前模型明确不支持图片编辑，请更换模型后再运行'
-                          : mediaParameterIssue && node.data.mediaType === 'image'
+                          : mediaParameterIssue
                             ? mediaParameterIssue
                             : '把修改结果写到新节点'
             }
@@ -1175,7 +1274,7 @@ export function NodeQuickEditor({
                 selectedModel &&
                 imageEditCapability(selectedModel).unsupported,
               ) ||
-              Boolean(mediaParameterIssue && node.data.mediaType === 'image')
+              Boolean(mediaParameterIssue)
             }
           >
             <GitFork size={16} aria-hidden="true" />
@@ -1291,8 +1390,16 @@ function getMediaSummary(
   };
   if (mediaType === 'image') {
     return [
-      { label: '清晰度', value: getOptionLabel(parameters.quality, options.quality, '未设置') },
-      { label: '比例', value: normalizeCurrentOptionValue(parameters.aspectRatio) || '未设置' },
+      {
+        label: '清晰度',
+        value: getOptionLabel(options.imageResolutionValue, options.resolution, '未设置'),
+      },
+      {
+        label: '比例',
+        value:
+          normalizeCurrentOptionValue(parameters.aspectRatio ?? parameters.aspect_ratio) ||
+          '未设置',
+      },
     ];
   }
   if (mediaType === 'video') {
@@ -1333,6 +1440,20 @@ function readNodeMediaParameters(data: unknown): NodeMediaParameters {
   return { ...(candidate as Record<string, unknown>) };
 }
 
+/**
+ * 用共享解析器区分图片 K 档与历史像素别名，不根据模型名或标签推算尺寸。
+ * @returns 合法字段的解析值；无效字段留给完整参数校验展示错误，不隐藏原始节点数据。
+ */
+function readImageResolutionParameter(value: unknown): ImageOutputParameters | undefined {
+  if (value === undefined) return undefined;
+  try {
+    return resolveImageOutputParameters({ resolution: value });
+  } catch (error) {
+    if (!(error instanceof ImageOutputParameterError)) throw error;
+    return undefined;
+  }
+}
+
 /** 检查已保存的语速；字符串、非有限值和越界值不能作为合法倍率提交。 */
 function isValidAudioSpeed(value: unknown): value is number {
   return (
@@ -1346,12 +1467,18 @@ function isValidAudioSpeed(value: unknown): value is number {
 /**
  * 音频生成的前置校验；返回首个需要修正的字段提示，合法时返回 undefined。
  * 只检查契约，不修改节点或猜测默认值；后端仍负责最终校验。
+ * @param parameters 当前节点的原始媒体参数，非法历史值不会在此改写。
+ * @param model 所选模型目录项，仅用于读取已声明的格式列表。
+ * @returns 可展示的中文错误；参数符合已实现接口时返回 undefined。
  */
-function getAudioParameterIssue(
+export function getAudioParameterIssue(
   parameters: NodeMediaParameters,
   model?: ModelEntry,
 ): string | undefined {
   if (typeof parameters.voice !== 'string' || !parameters.voice.trim()) return '请先填写音色';
+  if (!SUPPORTED_AUDIO_VOICES.includes(parameters.voice)) {
+    return '当前接口不支持此音色，请使用 ' + SUPPORTED_AUDIO_VOICES.join('、');
+  }
   if (
     parameters.response_format !== undefined &&
     !getSupportedAudioFormatOptions(model).some(
@@ -1766,12 +1893,35 @@ export function applyNodeGenerationDefaults(
   const options = getMediaOptions(model, mediaType, {}, false, data.modelAlias);
   const fields =
     mediaType === 'image'
-      ? (['quality', 'aspectRatio'] as const)
+      ? (['resolution', 'quality', 'aspectRatio'] as const)
       : mediaType === 'video'
         ? (['resolution', 'aspectRatio', 'duration'] as const)
         : [];
   for (const field of fields) {
     if (parameters[field] !== undefined) continue;
+    if (mediaType === 'image') {
+      const hasStoredSize =
+        imageSizeParameterAliases.some((alias) => parameters[alias] !== undefined) ||
+        Boolean(
+          parameters.resolution !== undefined &&
+          !readImageResolutionParameter(parameters.resolution)?.resolution,
+        );
+      if (
+        field === 'quality' &&
+        imageQualityParameterAliases.some((alias) => parameters[alias] !== undefined)
+      )
+        continue;
+      if (
+        field === 'resolution' &&
+        (hasStoredSize ||
+          imageQualityParameterAliases.some(
+            (alias) => readImageResolutionParameter(parameters[alias])?.resolution,
+          ))
+      )
+        continue;
+      if (field === 'aspectRatio' && (hasStoredSize || parameters.aspect_ratio !== undefined))
+        continue;
+    }
     const choices =
       field === 'duration'
         ? options[field].filter((option) => {
@@ -1887,13 +2037,43 @@ function getMediaOptions(
       ? videoResolutionContractForModel(modelAlias ?? model?.id, allowMoonH3SuperResolution)
       : undefined;
   const durationContract = mediaType === 'video' ? videoDurationContracts[family] : undefined;
+  const declaredQuality = readCapabilityOptions(
+    roots,
+    ['quality', 'qualities', 'imageQuality', 'image_quality'],
+    'quality',
+  );
+  const nativeQuality = declaredQuality?.filter(
+    (option) => !readImageResolutionParameter(option.value)?.resolution,
+  );
+  const legacyResolution = readImageResolutionParameter(parameters.quality)?.resolution;
   const quality = ensureCurrentOption(
-    readCapabilityOptions(
-      roots,
-      ['quality', 'qualities', 'imageQuality', 'image_quality', 'resolution', 'resolutions'],
-      'quality',
-    ) ?? (allowLegacyFallback ? imageQualityOptions : []),
-    parameters.quality,
+    nativeQuality ?? [],
+    legacyResolution ? undefined : parameters.quality,
+    'quality',
+  );
+  const declaredImageResolution = readCapabilityOptions(
+    roots,
+    ['resolution', 'resolutions', 'imageResolution', 'image_resolution', 'imageSize', 'image_size'],
+    'quality',
+  );
+  const imageTiers = (declaredImageResolution ?? declaredQuality ?? []).flatMap((option) => {
+    const resolution = readImageResolutionParameter(option.value)?.resolution;
+    return resolution ? [{ ...option, value: resolution }] : [];
+  });
+  const imageResolutionValue = [
+    'resolution',
+    ...imageQualityParameterAliases,
+    ...imageSizeParameterAliases,
+  ]
+    .map((field) => readImageResolutionParameter(parameters[field])?.resolution)
+    .find((value) => value !== undefined);
+  const imageResolution = ensureCurrentOption(
+    declaredImageResolution !== undefined || imageTiers.length > 0
+      ? imageTiers
+      : allowLegacyFallback
+        ? imageResolutionOptions
+        : [],
+    imageResolutionValue,
     'quality',
   );
   const declaredResolution = readCapabilityOptions(
@@ -1908,7 +2088,7 @@ function getMediaOptions(
       declaredResolution?.find((option) => option.value.toLowerCase() === value)?.label ??
       value.toUpperCase(),
   }));
-  const resolution = ensureCurrentOption(
+  const videoResolution = ensureCurrentOption(
     contractResolutionOptions ??
       declaredResolution ??
       (allowLegacyFallback ? videoResolutionOptions : []),
@@ -1953,7 +2133,7 @@ function getMediaOptions(
         );
   const aspectRatio = ensureCurrentOption(
     supportedAspectRatios,
-    parameters.aspectRatio,
+    parameters.aspectRatio ?? (mediaType === 'image' ? parameters.aspect_ratio : undefined),
     'aspectRatio',
   ).map((option) =>
     ratioContract && !ratioContract.includes(option.value)
@@ -2009,7 +2189,14 @@ function getMediaOptions(
         : { ...option, disabled: true, description: '已保存，当前模型不支持' };
     },
   );
-  return { quality, resolution, aspectRatio, duration };
+  return {
+    quality,
+    resolution: mediaType === 'image' ? imageResolution : videoResolution,
+    aspectRatio,
+    duration,
+    imageResolutionValue,
+    hasNativeImageQuality: Boolean(nativeQuality?.length),
+  };
 }
 
 /**

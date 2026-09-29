@@ -195,6 +195,7 @@ const postLifecycleMigrations = [
   '20260921040000_newapi_revocation_recovery',
   retireLegacyAccountsBillingMigration,
   '20260921060000_retire_credential_settings',
+  '20260921070000_newapi_credential_rotation',
 ] as const;
 
 describe('integration configuration safety', () => {
@@ -552,7 +553,8 @@ integrationDescribe('Prisma stores (isolated PostgreSQL)', () => {
             )
             OR (tables.table_name NOT IN (
               'pricing_versions', 'wallet_entries', 'run_charges', 'billing_quotes',
-              'model_bindings', 'model_catalog_syncs', 'billing_activation'
+              'model_bindings', 'model_catalog_syncs', 'billing_activation',
+              'newapi_credential_rotations'
             ) AND NOT EXISTS (
               SELECT 1
               FROM information_schema.columns AS updated_columns
@@ -564,6 +566,42 @@ integrationDescribe('Prisma stores (isolated PostgreSQL)', () => {
       `,
     );
     expect(tablesMissingLifecycleColumns).toEqual([]);
+
+    /** 轮换意图只记录创建和一次性完成时刻，不能仅豁免 updatedAt 而漏掉实际字段约束。 */
+    const rotationLifecycleColumns = await prisma.$queryRaw<
+      Array<{
+        columnName: string;
+        dataType: string;
+        datetimePrecision: number;
+        isNullable: string;
+        columnDefault: string | null;
+      }>
+    >(Prisma.sql`
+      SELECT column_name AS "columnName", data_type AS "dataType",
+             datetime_precision AS "datetimePrecision", is_nullable AS "isNullable",
+             column_default AS "columnDefault"
+      FROM information_schema.columns
+      WHERE table_schema = ${schemaName}
+        AND table_name = 'newapi_credential_rotations'
+        AND column_name IN ('createdAt', 'completedAt', 'updatedAt')
+      ORDER BY column_name
+    `);
+    expect(rotationLifecycleColumns).toEqual([
+      {
+        columnName: 'completedAt',
+        dataType: 'timestamp without time zone',
+        datetimePrecision: 3,
+        isNullable: 'YES',
+        columnDefault: null,
+      },
+      {
+        columnName: 'createdAt',
+        dataType: 'timestamp without time zone',
+        datetimePrecision: 3,
+        isNullable: 'NO',
+        columnDefault: 'CURRENT_TIMESTAMP',
+      },
+    ]);
 
     const user = await prisma.user.create({
       data: { email: `lifecycle-${schemaName}@example.test` },

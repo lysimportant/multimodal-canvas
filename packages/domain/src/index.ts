@@ -3,6 +3,7 @@ import { z } from 'zod';
 export * from './prompt-skills.js';
 export * from './newapi-contracts.js';
 export * from './generation-concurrency.js';
+export * from './image-output-parameters.js';
 
 export const mediaTypes = ['text', 'image', 'audio', 'video'] as const;
 /** 画布节点模式。历史 `transform` 读取时归一为 `generate`，产品不再区分转换节点。 */

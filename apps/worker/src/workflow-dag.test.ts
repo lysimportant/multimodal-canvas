@@ -174,7 +174,7 @@ describe('frozen workflow DAG', () => {
 
     expect(imageSnapshot.targetNodeId).toBe('node_image');
     expect(imageSnapshot.modelAlias).toBe('image-override');
-    expect(imageSnapshot.parameters).toEqual({ resolution: '1080p', inferenceStrength: 'high' });
+    expect(imageSnapshot.parameters).toEqual({ inferenceStrength: 'high' });
     expect(imageSnapshot.inputs).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -196,6 +196,144 @@ describe('frozen workflow DAG', () => {
       'edge_draft_image',
       'edge_style_image',
     ]);
+  });
+
+  it.each([
+    {
+      mediaType: 'image' as const,
+      parameters: { resolution: '4k', aspectRatio: '9:16', quality: 'high', seed: 17 },
+    },
+    {
+      mediaType: 'video' as const,
+      parameters: { resolution: '720p', aspectRatio: '4:3', duration: 6, fps: 24 },
+    },
+    {
+      mediaType: 'text' as const,
+      parameters: { temperature: 0.2, top_p: 0.8, max_tokens: 512, stream: false },
+    },
+    {
+      mediaType: 'audio' as const,
+      parameters: { voice: 'test-voice', speed: 1.25, response_format: 'wav' },
+    },
+  ])('上游 $mediaType 节点只使用自身冻结参数，不继承最终目标参数', ({ mediaType, parameters }) => {
+    const frozen = structuredClone(snapshot);
+    frozen.parameters = {
+      ...frozen.parameters,
+      aspectRatio: '16:9',
+      duration: 12,
+      inferenceStrength: 'max',
+      temperature: 0.95,
+    };
+    frozen.nodes.push({
+      id: 'node_parameters',
+      type: mediaType,
+      position: { x: 0, y: 400 },
+      data: {
+        label: 'Frozen parameters',
+        mediaType,
+        mode: 'generate',
+        modelAlias: 'own-model',
+        parameters: structuredClone(parameters),
+      },
+    });
+    frozen.edges.push({
+      id: 'edge_parameters_target',
+      sourceNodeId: 'node_parameters',
+      sourceHandle: `output:${mediaType}`,
+      targetNodeId: frozen.targetNodeId,
+      targetHandle: 'input:content',
+      order: 2,
+    });
+    const before = structuredClone(frozen);
+
+    const derived = createNodeRunSnapshot(
+      frozen,
+      createInitialWorkflowState(frozen),
+      'node_parameters',
+    );
+
+    expect(derived.parameters).toEqual(parameters);
+    expect(derived.modelAlias).toBe('own-model');
+    expect(frozen).toEqual(before);
+  });
+
+  it('目标提交的部分参数覆盖已存值，并保留目标自身未覆盖的参数', () => {
+    const frozen = structuredClone(snapshot);
+    const target = frozen.nodes.find((node) => node.id === frozen.targetNodeId)!;
+    target.data.parameters = { resolution: '720p', aspectRatio: '16:9', duration: 6, seed: 17 };
+    target.data.inferenceStrength = 'high';
+    frozen.parameters = { resolution: '1080p', seed: 0 };
+
+    const derived = createNodeRunSnapshot(
+      frozen,
+      createInitialWorkflowState(frozen),
+      frozen.targetNodeId,
+    );
+
+    expect(derived.parameters).toEqual({
+      resolution: '1080p',
+      aspectRatio: '16:9',
+      duration: 6,
+      seed: 0,
+      inferenceStrength: 'high',
+    });
+  });
+
+  it('目标提交的推理强度和显式 false 优先于节点保存值', () => {
+    const frozen = structuredClone(snapshot);
+    const target = frozen.nodes.find((node) => node.id === frozen.targetNodeId)!;
+    target.data.parameters = { inferenceStrength: 'low', upscale: true };
+    target.data.inferenceStrength = 'high';
+    frozen.parameters = { inferenceStrength: 'max', upscale: false };
+
+    const derived = createNodeRunSnapshot(
+      frozen,
+      createInitialWorkflowState(frozen),
+      frozen.targetNodeId,
+    );
+
+    expect(derived.parameters).toEqual({ inferenceStrength: 'max', upscale: false });
+  });
+
+  it('旧快照未存节点参数时保留目标提交值，但不向上游猜测共享参数', () => {
+    const state = createInitialWorkflowState(snapshot);
+
+    expect(createNodeRunSnapshot(snapshot, state, snapshot.targetNodeId).parameters).toEqual(
+      snapshot.parameters,
+    );
+    expect(createNodeRunSnapshot(snapshot, state, 'node_image').parameters).toEqual({
+      inferenceStrength: 'high',
+    });
+  });
+
+  it('派生节点参数不改根快照指纹和已冻结的任务恢复状态', () => {
+    const frozen = structuredClone(snapshot);
+    frozen.nodes.find((node) => node.id === 'node_image')!.data.parameters = {
+      resolution: '4k',
+      aspectRatio: '9:16',
+    };
+    const fingerprint = workflowSnapshotFingerprint(frozen);
+    const state = replaceWorkflowNodeState(createInitialWorkflowState(frozen), {
+      nodeId: 'node_image',
+      status: 'running',
+      providerJob: {
+        id: 'provider_job_legacy_node_image',
+        provider: 'newapi',
+        platformJobId: 'existing-platform-task',
+        status: 'running',
+        progress: 50,
+        createdAt: frozen.submittedAt,
+        updatedAt: frozen.submittedAt,
+        payload: { workflowNodeId: 'node_image', snapshotFingerprint: fingerprint },
+      },
+    });
+    const before = structuredClone(state);
+
+    createNodeRunSnapshot(frozen, state, 'node_image');
+
+    expect(workflowSnapshotFingerprint(frozen)).toBe(fingerprint);
+    expect(state).toEqual(before);
+    expect(createInitialWorkflowState(frozen, undefined, state)).toEqual(before);
   });
 
   it('keeps the original target static video version and duration frozen by the API', () => {

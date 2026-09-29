@@ -24,6 +24,37 @@ function data(mediaType: AssetFlowNode['data']['mediaType']): AssetFlowNode['dat
 }
 
 describe('applyNodeGenerationDefaults', () => {
+  it('图片清晰度和原生质量按独立枚举初始化，不把原生质量当作尺寸', () => {
+    const configured = applyNodeGenerationDefaults(
+      data('image'),
+      model('image', {
+        resolutions: ['2k', '4k'],
+        quality: ['high', 'medium'],
+        aspectRatios: ['9:16'],
+      }),
+    );
+    expect(configured.parameters).toEqual({
+      resolution: '2k',
+      quality: 'high',
+      aspectRatio: '9:16',
+    });
+  });
+
+  it.each([
+    { quality: '4k', aspectRatio: '9:16' },
+    { image_quality: '4k', aspect_ratio: '9:16' },
+    { size: '1536x1024', quality: 'high' },
+    { resolution: '1536x1024', quality: 'high' },
+  ])('显式切模型不会把新默认清晰度或比例加入历史尺寸 %j', (parameters) => {
+    const original = { ...data('image'), parameters };
+    const configured = applyNodeGenerationDefaults(
+      original,
+      model('image', { resolutions: ['1k'], quality: ['high'], aspectRatios: ['1:1'] }),
+    );
+    expect(configured.parameters).toEqual(parameters);
+    expect(original.parameters).toEqual(parameters);
+  });
+
   it('只在明确事务中把目录的第一个有效选项写入真实节点参数', () => {
     const original = data('video');
     const configured = applyNodeGenerationDefaults(
@@ -277,6 +308,6 @@ describe('applyNodeGenerationDefaults', () => {
         aspectRatios: ['1:1'],
       }),
     );
-    expect(configured.parameters).toEqual({ quality: '1k', aspectRatio: '1:1' });
+    expect(configured.parameters).toEqual({ resolution: '1k', aspectRatio: '1:1' });
   });
 });

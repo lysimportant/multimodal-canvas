@@ -15,7 +15,9 @@ import type {
   NewApiExecutionAuthority,
 } from '@multimodal-canvas/domain';
 import {
+  ImageOutputParameterError,
   imageEditSourceSchema,
+  resolveImageOutputParameters,
   precheckVideoGenerationInputs,
   renderPromptDocument,
   resolveImageEditMaxImages,
@@ -693,7 +695,7 @@ export class NewApiProvider {
       nodePromptDocument,
       resolvedMentions,
     );
-    const parameters = providerParameters(snapshot.parameters, 'image');
+    const parameters = providerParameters(snapshot.parameters, 'image', snapshot.modelAlias);
     if (mapping.images.length === 0) {
       // 声明了图片编辑语义却没有可用原图时，绝不静默退回文生图。
       assertImageEditSourceInput(snapshot, mapping);
@@ -716,6 +718,16 @@ export class NewApiProvider {
       );
     }
     const capability = snapshot.imageEditCapability;
+    if (
+      capability?.sizes &&
+      parameters.size &&
+      !capability.sizes.some((size) => size.trim().toLowerCase() === parameters.size)
+    ) {
+      throw new NewApiProviderError('当前模型未声明支持请求的图片编辑尺寸', {
+        code: 'IMAGE_EDIT_SIZE_UNSUPPORTED',
+        retryable: false,
+      });
+    }
     const form = new FormData();
     form.append('model', snapshot.modelAlias);
     form.append('prompt', mapping.prompt);
@@ -3257,18 +3269,28 @@ function normalizeUsageCurrency(value: unknown): string | undefined {
   return /^[A-Z]{3}$/.test(currency) ? currency : undefined;
 }
 
+/**
+ * 解析单项文本结果；保留 Chat Completions 优先级，不能静默舍弃额外候选。
+ * @param payload 供应商返回并解码后的 JSON 内容。
+ * @returns 可归档的单项纯文本结果。
+ * @throws {NewApiProviderError} 响应无有效文本或包含多个候选；多候选错误不可重试。
+ */
 function parseTextOutput(payload: unknown): Extract<ProviderOutput, { kind: 'text' }> {
   if (!isRecord(payload)) {
     throw new NewApiProviderError('New API 文本响应缺少 choices[0] 内容');
   }
 
-  // Keep Chat Completions as the canonical contract. Only fall back to the
-  // explicitly named Responses envelopes when `choices` is absent, so a
-  // malformed standard response cannot be silently reinterpreted.
+  // 仅在缺少 choices 时读取 Responses 兼容字段，不能把损坏的标准响应重新解释为成功。
   let content: string | undefined;
   if ('choices' in payload) {
     if (!Array.isArray(payload.choices) || payload.choices.length === 0) {
       throw new NewApiProviderError('New API 文本响应缺少 choices[0] 内容');
+    }
+    if (payload.choices.length > 1) {
+      throw new NewApiProviderError('New API 返回多个文本候选，当前运行仅支持单项归档', {
+        code: 'PROVIDER_OUTPUT_CARDINALITY_UNSUPPORTED',
+        retryable: false,
+      });
     }
     const choice = payload.choices[0];
     if (!isRecord(choice)) throw new NewApiProviderError('New API 文本响应格式无效');
@@ -3815,16 +3837,31 @@ function videoPromptResources(
 }
 
 /**
- * Remove application-only fields before crossing the provider boundary.
- * `inferenceStrength` is intentionally translated only for chat models:
- * image, audio and video endpoints use different option sets and commonly
- * reject unknown reasoning fields.
+ * 从冻结参数复制 Provider 字段，不修改快照；推理强度只映射到文本请求。
+ * @param parameters 目标节点的冻结参数，包括画布别名和供应商字段。
+ * @param mediaType 目标媒体类型，决定参数校验与别名映射规则。
+ * @param modelAlias 图片模型的精确 ID，仅对已知模型应用公开尺寸边界。
+ * @returns 移除画布专用字段后的请求参数。
+ * @throws {NewApiProviderError} 参数冲突，或请求当前无法归档的多项、流式输出。
  */
 function providerParameters(
   parameters: Record<string, unknown>,
   mediaType: 'text' | 'image' | 'audio',
+  modelAlias?: string,
 ): Record<string, unknown> {
-  if (mediaType !== 'text') validateMediaParameters(parameters, mediaType);
+  if (mediaType === 'text') {
+    if (
+      parameters.inferenceStrength !== undefined &&
+      typeof parameters.inferenceStrength !== 'string'
+    )
+      throw invalidProviderParameter(mediaType, 'inferenceStrength', '必须为字符串');
+    if (parameters.n !== undefined && parameters.n !== 1)
+      throw unsupportedProviderParameter(mediaType, 'n');
+    if (parameters.stream !== undefined && parameters.stream !== false)
+      throw unsupportedProviderParameter(mediaType, 'stream');
+  } else {
+    validateMediaParameters(parameters, mediaType);
+  }
   const {
     inferenceStrength,
     prompt: _prompt,
@@ -3837,26 +3874,49 @@ function providerParameters(
     typeof inferenceStrength === 'string' &&
     inferenceStrength.trim().length > 0
   ) {
+    if (
+      Object.hasOwn(parameters, 'reasoning_effort') &&
+      parameters.reasoning_effort !== undefined &&
+      typeof parameters.reasoning_effort !== 'string'
+    ) {
+      throw invalidProviderParameter(
+        mediaType,
+        'inferenceStrength/reasoning_effort',
+        '显式原生值不能被推理强度覆盖',
+      );
+    }
+    const reasoningEffort = normalizeErrorField(parameters.reasoning_effort);
+    if (reasoningEffort !== undefined && reasoningEffort !== inferenceStrength.trim()) {
+      throw invalidProviderParameter(mediaType, 'inferenceStrength/reasoning_effort', '别名值冲突');
+    }
     providerParameters.reasoning_effort = inferenceStrength.trim();
   }
   if (mediaType === 'image') {
-    // 兼容旧画布中的 `resolution`/`imageSize`，统一映射到兼容接口的图片 `size` 字段。
-    const size = normalizeErrorField(
-      parameters.size ?? parameters.image_size ?? parameters.imageSize ?? parameters.resolution,
-    );
-    if (size) providerParameters.size = size;
-    const quality = normalizeErrorField(
-      parameters.quality ?? parameters.image_quality ?? parameters.imageQuality,
-    );
-    if (quality) providerParameters.quality = quality;
-    const aspectRatio = normalizeErrorField(parameters.aspect_ratio ?? parameters.aspectRatio);
-    if (aspectRatio) providerParameters.aspect_ratio = aspectRatio;
-    delete providerParameters.image_size;
-    delete providerParameters.imageSize;
-    delete providerParameters.resolution;
-    delete providerParameters.image_quality;
-    delete providerParameters.imageQuality;
-    delete providerParameters.aspectRatio;
+    let output;
+    try {
+      output = resolveImageOutputParameters(parameters, modelAlias);
+    } catch (error) {
+      if (!(error instanceof ImageOutputParameterError)) throw error;
+      throw new NewApiProviderError(error.message, {
+        code: 'INVALID_PROVIDER_PARAMETER',
+        retryable: false,
+      });
+    }
+    // 清晰度、比例和旧别名都由 size 表达，不能把 4k 作为采样质量或发送未定义的比例字段。
+    for (const key of [
+      'size',
+      'image_size',
+      'imageSize',
+      'resolution',
+      'quality',
+      'image_quality',
+      'imageQuality',
+      'aspectRatio',
+      'aspect_ratio',
+    ])
+      delete providerParameters[key];
+    if (output.size) providerParameters.size = output.size;
+    if (output.quality) providerParameters.quality = output.quality;
   }
   return providerParameters;
 }
@@ -4037,11 +4097,7 @@ function validateMediaParameters(
   }
   const aliasGroups =
     mediaType === 'image'
-      ? [
-          ['size', 'image_size', 'imageSize', 'resolution'],
-          ['quality', 'image_quality', 'imageQuality'],
-          ['aspect_ratio', 'aspectRatio'],
-        ]
+      ? [] // 图片别名按解析后的尺寸比较，允许 resolution=4k 与等价的显式 size 共存。
       : mediaType === 'video'
         ? [
             ['duration', 'seconds', 'durationSeconds'],
@@ -4050,7 +4106,7 @@ function validateMediaParameters(
             ['quality', 'video_quality', 'videoQuality'],
             ['aspect_ratio', 'aspectRatio'],
           ]
-        : [];
+        : [['prompt', 'input']];
   for (const aliases of aliasGroups) {
     const values = aliases
       .filter((alias) => parameters[alias] !== undefined)

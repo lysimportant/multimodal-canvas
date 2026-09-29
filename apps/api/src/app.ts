@@ -23,6 +23,7 @@ import {
 } from './projects';
 import { withLocalResourceReferences } from './local-resource-references';
 import { withConnectedImageResults } from './connected-image-results';
+import { RunImageParameterError, validateRunImageParameters } from './run-image-parameters';
 import {
   createRunSnapshot,
   getRunSnapshotIncludedNodeIds,
@@ -3146,6 +3147,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         allowVirtualMockModels: providerName === 'mock' && process.env.NODE_ENV !== 'production',
         requireCredentialReferences: providerName === 'newapi',
       });
+      validateRunImageParameters({
+        canvas: canvasForRun,
+        targetNodeId: request.params.nodeId,
+        parameters: body.parameters,
+        nodeModelAliases: modelResolution.nodeModelAliases,
+      });
       const principal = requestPrincipals.get(request);
       const frozenAssetRefs = await resolveRunAssetRefs({
         assetStore,
@@ -3246,6 +3253,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       );
       return reply.code(202).send({ run: toPublicRunRecord(run) });
     } catch (error) {
+      if (error instanceof RunImageParameterError) {
+        return reply.code(400).send({
+          error: error.message,
+          code: error.code,
+          nodeId: error.nodeId,
+          parameter: error.parameter,
+        });
+      }
       if (
         error instanceof RunServiceError &&
         (error.code === 'invalid_target' || error.code === 'idempotency_conflict')

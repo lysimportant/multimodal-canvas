@@ -603,7 +603,7 @@ describe('NodeQuickEditor', () => {
         />,
       );
       expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-      expect(screen.getByRole('status')).toHaveTextContent('生成数量必须为 1 至 20 的整数');
+      expect(screen.getByText('生成数量必须为 1 至 20 的整数')).toHaveAttribute('role', 'status');
     }
     expect(onGenerationCountChange).not.toHaveBeenCalled();
     await user.click(screen.getByRole('combobox', { name: '生成数量：未设置' }));
@@ -1803,7 +1803,223 @@ describe('NodeQuickEditor', () => {
     });
   });
 
-  it('为图片节点回传清晰度和比例，并保留已存尺寸参数', async () => {
+  it.each([
+    ['1k', '1:1', '1024 × 1024'],
+    ['2k', '16:9', '2048 × 1152'],
+    ['3k', '4:3', '3072 × 2304'],
+    ['4k', '9:16', '2160 × 3840'],
+    ['4k', '21:9', '3840 × 1648'],
+  ])(
+    '旧图片清晰度 %s 与比例 %s 显示共享请求像素，不在打开时迁移',
+    (quality, aspectRatio, pixels) => {
+      const onParametersChange = vi.fn();
+      const parameters = { quality, aspectRatio };
+      render(
+        <NodeQuickEditor
+          {...makeProps({
+            node: { ...imageNode, data: { ...imageNode.data, parameters } },
+            onParametersChange,
+          })}
+        />,
+      );
+      expect(screen.getByLabelText('请求像素')).toHaveTextContent(pixels);
+      expect(
+        screen.getByRole('combobox', { name: '图片清晰度：' + quality.toUpperCase() }),
+      ).toBeInTheDocument();
+      expect(screen.queryByText('生成质量')).not.toBeInTheDocument();
+      expect(onParametersChange).not.toHaveBeenCalled();
+      expect(parameters).toEqual({ quality, aspectRatio });
+    },
+  );
+
+  it.each([
+    [{}, '未设置'],
+    [{ size: 'auto' }, '自动'],
+    [{ aspectRatio: '9:16' }, '576 × 1024'],
+    [{ resolution: '1536x1024' }, '1536 × 1024'],
+    [{ imageQuality: '4k', aspect_ratio: '21:9' }, '3840 × 1648'],
+  ])('未设置、自动尺寸和历史别名按共享合同显示 %j', (parameters, pixels) => {
+    const onParametersChange = vi.fn();
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          node: { ...imageNode, data: { ...imageNode.data, parameters } },
+          onParametersChange,
+        })}
+      />,
+    );
+    expect(screen.getByLabelText('请求像素')).toHaveTextContent(pixels);
+    expect(onParametersChange).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['gpt-image-2.5-sunburst', '4k', '1:1', false],
+    ['gpt-image-2.5-sunburst', '1k', '9:16', false],
+    ['gpt-image-2.5-sunburst', '4k', '21:9', true],
+    ['gpt-image-2.5-sunburst', '4k', '9:16', true],
+    ['unknown-custom-image-model', '4k', '1:1', true],
+  ])(
+    '模型 %s 的 %s %s 组合遵循共享预检，不按未知别名猜测限制',
+    (modelAlias, resolution, aspectRatio, allowed) => {
+      const onParametersChange = vi.fn();
+      render(
+        <NodeQuickEditor
+          {...makeProps({
+            onParametersChange,
+            node: {
+              ...imageNode,
+              data: { ...imageNode.data, modelAlias, parameters: { resolution, aspectRatio } },
+            },
+            models: [{ id: modelAlias, name: modelAlias, mediaTypes: ['image'] }],
+          })}
+        />,
+      );
+      if (allowed) expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+      else {
+        expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+        expect(screen.getByText(/总像素范围/)).toHaveAttribute('role', 'status');
+      }
+      expect(onParametersChange).not.toHaveBeenCalled();
+    },
+  );
+
+  it('目录原生质量独立显示，选择质量不会丢失旧 K 档和比例', async () => {
+    const user = userEvent.setup();
+    const onParametersChange = vi.fn();
+    const props = makeProps({
+      onParametersChange,
+      node: {
+        ...imageNode,
+        data: { ...imageNode.data, parameters: { quality: '4k', aspectRatio: '9:16' } },
+      },
+      models: [
+        {
+          id: 'image-model',
+          name: '图片模型',
+          mediaTypes: ['image'],
+          capabilities: {
+            resolutions: ['1k', '2k', '3k', '4k'],
+            quality: ['low', 'medium', 'high', 'auto', 'xhigh', 'max'],
+          },
+        },
+      ],
+    });
+    const { rerender } = render(<NodeQuickEditor {...props} />);
+    const qualityGroup = screen.getByText('生成质量').parentElement!;
+    await user.click(within(qualityGroup).getByRole('combobox'));
+    expect(selectPopup(qualityGroup).queryByRole('option', { name: /4K/ })).not.toBeInTheDocument();
+    expect(selectPopup(qualityGroup).getByRole('option', { name: 'XHIGH' })).toBeInTheDocument();
+    expect(selectPopup(qualityGroup).getByRole('option', { name: 'MAX' })).toBeInTheDocument();
+    await user.click(selectPopup(qualityGroup).getByRole('option', { name: 'HIGH' }));
+    expect(onParametersChange).toHaveBeenCalledWith({
+      resolution: '4k',
+      quality: 'high',
+      aspectRatio: '9:16',
+    });
+    rerender(
+      <NodeQuickEditor
+        {...props}
+        node={{
+          ...props.node,
+          data: { ...props.node.data, parameters: onParametersChange.mock.lastCall![0] },
+        }}
+      />,
+    );
+    expect(screen.getByLabelText('请求像素')).toHaveTextContent('2160 × 3840');
+    expect(screen.getByRole('combobox', { name: '生成质量：HIGH' })).toBeInTheDocument();
+  });
+
+  it('修改清晰度清除全部旧像素别名，保留原生质量与未知字段', async () => {
+    const user = userEvent.setup();
+    const onParametersChange = vi.fn();
+    const parameters = {
+      size: '1024x1024',
+      image_size: '1024x1024',
+      imageSize: '1024x1024',
+      resolution: '1024x1024',
+      quality: 'high',
+      aspectRatio: '1:1',
+      providerOption: 'preserved',
+    };
+    const props = makeProps({
+      onParametersChange,
+      node: { ...imageNode, data: { ...imageNode.data, parameters } },
+    });
+    const { rerender } = render(<NodeQuickEditor {...props} />);
+    const resolutionGroup = screen.getByText('图片清晰度').parentElement!;
+    await user.click(within(resolutionGroup).getByRole('combobox'));
+    await user.click(selectPopup(resolutionGroup).getByRole('option', { name: '4K 极致' }));
+    expect(onParametersChange).toHaveBeenCalledWith({
+      resolution: '4k',
+      quality: 'high',
+      aspectRatio: '1:1',
+      providerOption: 'preserved',
+    });
+    rerender(
+      <NodeQuickEditor
+        {...props}
+        node={{
+          ...props.node,
+          data: { ...props.node.data, parameters: onParametersChange.mock.lastCall![0] },
+        }}
+      />,
+    );
+    expect(screen.getByLabelText('请求像素')).toHaveTextContent('3840 × 3840');
+    expect(parameters.size).toBe('1024x1024');
+  });
+
+  it('图片尺寸冲突同时阻止生成和新节点，改比例后只迁移明确编辑的字段', async () => {
+    const user = userEvent.setup();
+    const onParametersChange = vi.fn();
+    const props = makeProps({
+      onParametersChange,
+      onRunNewNode: vi.fn(),
+      node: {
+        ...imageNode,
+        data: {
+          ...imageNode.data,
+          assetId: 'existing-image',
+          contentUrl: '/v1/assets/existing-image/content',
+          parameters: {
+            size: '1024x1024',
+            image_quality: '4k',
+            aspect_ratio: '9:16',
+            providerOption: 'preserved',
+          },
+        },
+      },
+    });
+    const { rerender } = render(<NodeQuickEditor {...props} />);
+    expect(screen.getByLabelText('请求像素')).toHaveTextContent('请修正参数');
+    expect(screen.getByText(/图片参数.*冲突/)).toHaveAttribute('role', 'status');
+    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '新节点' })).toBeDisabled();
+    expect(onParametersChange).not.toHaveBeenCalled();
+    const ratioGroup = screen.getByText('图片比例').parentElement!;
+    await user.click(within(ratioGroup).getByRole('combobox'));
+    await user.click(selectPopup(ratioGroup).getByRole('option', { name: /21:9/ }));
+    expect(onParametersChange).toHaveBeenCalledWith({
+      resolution: '4k',
+      aspectRatio: '21:9',
+      providerOption: 'preserved',
+    });
+    rerender(
+      <NodeQuickEditor
+        {...props}
+        node={{
+          ...props.node,
+          data: { ...props.node.data, parameters: onParametersChange.mock.lastCall![0] },
+        }}
+      />,
+    );
+    expect(screen.getByLabelText('请求像素')).toHaveTextContent('3840 × 1648');
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: '新节点' })).toBeEnabled();
+    expect(props.onRun).not.toHaveBeenCalled();
+    expect(props.onRunNewNode).not.toHaveBeenCalled();
+  });
+
+  it('为图片节点回传新清晰度字段和比例，显式编辑清除旧尺寸', async () => {
     const user = userEvent.setup();
     const onParametersChange = vi.fn();
     render(
@@ -1862,8 +2078,7 @@ describe('NodeQuickEditor', () => {
 
     expect(onParametersChange).toHaveBeenCalledTimes(1);
     expect(onParametersChange).toHaveBeenCalledWith({
-      size: '1536x1024',
-      quality: '2k',
+      resolution: '2k',
       providerOption: 'preserved',
       aspectRatio: '9:16',
     });
@@ -1946,6 +2161,61 @@ describe('NodeQuickEditor', () => {
     );
   });
 
+  it.each(['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'])(
+    '当前接口支持的音色 %s 可明确提交，不写入额外默认值',
+    (voice) => {
+      const onParametersChange = vi.fn();
+      const props = makeProps({ node: makeAudioNode({ voice }), onParametersChange });
+      render(<NodeQuickEditor {...props} />);
+      expect(screen.getByRole('textbox', { name: '音色' })).toHaveValue(voice);
+      expect(screen.getByRole('textbox', { name: '音色' })).toHaveAttribute(
+        'aria-invalid',
+        'false',
+      );
+      expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+      fireEvent.click(screen.getByRole('button', { name: '生成' }));
+      expect(props.onRun).toHaveBeenCalledOnce();
+      expect(onParametersChange).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['custom-voice', 'Alloy', ' alloy '])(
+    '历史音色 %j 即使目录声明也不扩大 Provider 合同或静默重置',
+    (voice) => {
+      const onParametersChange = vi.fn();
+      const node = makeAudioNode({ voice });
+      const props = makeProps({
+        onParametersChange,
+        onRunNewNode: vi.fn(),
+        node: {
+          ...node,
+          data: {
+            ...node.data,
+            assetId: 'history-audio',
+            contentUrl: '/v1/assets/history-audio/content',
+          },
+        },
+        models: [
+          {
+            id: 'test-tts',
+            name: '测试音频',
+            mediaTypes: ['audio'],
+            capabilities: { voices: [voice] },
+          },
+        ],
+      });
+      render(<NodeQuickEditor {...props} />);
+      expect(screen.getByRole('textbox', { name: '音色' })).toHaveValue(voice);
+      expect(screen.getByRole('textbox', { name: '音色' })).toHaveAttribute('aria-invalid', 'true');
+      expect(screen.getByText(/当前接口不支持此音色/)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: '新节点' })).toBeDisabled();
+      expect(onParametersChange).not.toHaveBeenCalled();
+      expect(props.onRun).not.toHaveBeenCalled();
+      expect(props.onRunNewNode).not.toHaveBeenCalled();
+    },
+  );
+
   it('音频控件保持紧凑布局且没有音色或可选参数的静默默认值', () => {
     const onParametersChange = vi.fn();
     const props = makeProps({ node: audioNode, onParametersChange });
@@ -1968,7 +2238,7 @@ describe('NodeQuickEditor', () => {
     expect(onParametersChange).not.toHaveBeenCalled();
   });
 
-  it('保存并恢复平台自定义音色、格式和连续语速，保留其他参数', async () => {
+  it('保留历史自定义音色、格式和语速，但提前阻止不支持的音色', async () => {
     const user = userEvent.setup();
     const onParametersChange = vi.fn();
     const props = makeProps({ node: audioNode, onParametersChange });
@@ -2014,11 +2284,14 @@ describe('NodeQuickEditor', () => {
     expect(screen.getByRole('textbox', { name: '音色' })).toHaveValue('platform/custom Voice-42');
     expect(screen.getByRole('combobox', { name: '音频格式：FLAC' })).toBeInTheDocument();
     expect(screen.getByRole('spinbutton', { name: '语速' })).toHaveValue(1.234);
-    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+    expect(screen.getByText(/当前接口不支持此音色/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '生成' }));
+    expect(props.onRun).not.toHaveBeenCalled();
     expect(onParametersChange).toHaveBeenCalledTimes(3);
   });
 
-  it('连续键入保留自定义音色中的空格和小数语速，越界后可明确修正', async () => {
+  it('连续键入保留历史音色与小数语速，明确修正后才可生成', async () => {
     const user = userEvent.setup();
     const onParametersChange = vi.fn();
     render(<StatefulAudioEditor onParametersChange={onParametersChange} />);
@@ -2030,12 +2303,15 @@ describe('NodeQuickEditor', () => {
     await user.type(speed, '0.25');
     expect(speed).toHaveValue(0.25);
     expect(onParametersChange).toHaveBeenLastCalledWith({ voice: 'custom Voice-42', speed: 0.25 });
+    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+    fireEvent.change(voice, { target: { value: 'alloy' } });
+    expect(voice).toHaveValue('alloy');
     expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
 
     fireEvent.change(speed, { target: { value: '4.001' } });
     expect(speed).toHaveValue(4.001);
     expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-    expect(onParametersChange).toHaveBeenLastCalledWith({ voice: 'custom Voice-42', speed: 4.001 });
+    expect(onParametersChange).toHaveBeenLastCalledWith({ voice: 'alloy', speed: 4.001 });
     fireEvent.change(speed, { target: { value: '1.234' } });
     expect(speed).toHaveValue(1.234);
     expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
@@ -2043,7 +2319,7 @@ describe('NodeQuickEditor', () => {
 
   it.each(['', '   '])('音色输入 %j 会删除参数并阻止生成', (value) => {
     const onParametersChange = vi.fn();
-    const parameters = { voice: 'custom-voice', response_format: 'wav', speed: 1.25 };
+    const parameters = { voice: 'alloy', response_format: 'wav', speed: 1.25 };
     const props = makeProps({ onParametersChange });
     const { rerender } = render(<NodeQuickEditor {...props} node={makeAudioNode(parameters)} />);
     fireEvent.change(screen.getByRole('textbox', { name: '音色' }), { target: { value } });
@@ -2062,18 +2338,18 @@ describe('NodeQuickEditor', () => {
     const { rerender } = render(
       <NodeQuickEditor
         {...props}
-        node={makeAudioNode({ voice: 'custom-voice', response_format: 'wav', speed: 2 })}
+        node={makeAudioNode({ voice: 'alloy', response_format: 'wav', speed: 2 })}
       />,
     );
     const formatGroup = screen.getByText('音频格式').parentElement as HTMLElement;
     await user.click(within(formatGroup).getByRole('combobox'));
     await user.click(selectPopup(formatGroup).getByRole('option', { name: '未设置' }));
-    expect(onParametersChange).toHaveBeenLastCalledWith({ voice: 'custom-voice', speed: 2 });
+    expect(onParametersChange).toHaveBeenLastCalledWith({ voice: 'alloy', speed: 2 });
     rerender(
       <NodeQuickEditor {...props} node={makeAudioNode(onParametersChange.mock.lastCall?.[0])} />,
     );
     fireEvent.change(screen.getByRole('spinbutton', { name: '语速' }), { target: { value: '' } });
-    expect(onParametersChange).toHaveBeenLastCalledWith({ voice: 'custom-voice' });
+    expect(onParametersChange).toHaveBeenLastCalledWith({ voice: 'alloy' });
     rerender(
       <NodeQuickEditor {...props} node={makeAudioNode(onParametersChange.mock.lastCall?.[0])} />,
     );
@@ -2091,7 +2367,7 @@ describe('NodeQuickEditor', () => {
       const onParametersChange = vi.fn();
       render(
         <NodeQuickEditor
-          {...makeProps({ onParametersChange, node: makeAudioNode({ voice: 'platform-voice' }) })}
+          {...makeProps({ onParametersChange, node: makeAudioNode({ voice: 'alloy' }) })}
         />,
       );
       const formatGroup = screen.getByText('音频格式').parentElement as HTMLElement;
@@ -2101,7 +2377,7 @@ describe('NodeQuickEditor', () => {
         selectPopup(formatGroup).getByRole('option', { name: format.toUpperCase() }),
       );
       expect(onParametersChange).toHaveBeenCalledWith({
-        voice: 'platform-voice',
+        voice: 'alloy',
         response_format: format,
       });
     },
@@ -2111,12 +2387,12 @@ describe('NodeQuickEditor', () => {
     const onParametersChange = vi.fn();
     const props = makeProps({ node: audioNode, onParametersChange });
     const { rerender } = render(
-      <NodeQuickEditor {...props} node={makeAudioNode({ voice: 'custom-voice' })} />,
+      <NodeQuickEditor {...props} node={makeAudioNode({ voice: 'alloy' })} />,
     );
     fireEvent.change(screen.getByRole('spinbutton', { name: '语速' }), {
       target: { value: String(speed) },
     });
-    expect(onParametersChange).toHaveBeenCalledWith({ voice: 'custom-voice', speed });
+    expect(onParametersChange).toHaveBeenCalledWith({ voice: 'alloy', speed });
     rerender(
       <NodeQuickEditor {...props} node={makeAudioNode(onParametersChange.mock.lastCall?.[0])} />,
     );
@@ -2131,7 +2407,7 @@ describe('NodeQuickEditor', () => {
       render(
         <NodeQuickEditor
           {...makeProps({
-            node: makeAudioNode({ voice: 'custom-voice', speed }),
+            node: makeAudioNode({ voice: 'alloy', speed }),
             onParametersChange,
           })}
         />,
@@ -2155,7 +2431,7 @@ describe('NodeQuickEditor', () => {
     render(
       <NodeQuickEditor
         {...makeProps({
-          node: makeAudioNode({ voice: 'custom-voice', response_format: 'wma' }),
+          node: makeAudioNode({ voice: 'alloy', response_format: 'wma' }),
           onParametersChange,
         })}
       />,
@@ -2174,7 +2450,7 @@ describe('NodeQuickEditor', () => {
     ).toHaveAttribute('aria-disabled', 'true');
     await user.click(selectPopup(formatGroup).getByRole('option', { name: 'WAV' }));
     expect(onParametersChange).toHaveBeenCalledWith({
-      voice: 'custom-voice',
+      voice: 'alloy',
       response_format: 'wav',
     });
   });
@@ -2201,7 +2477,7 @@ describe('NodeQuickEditor', () => {
   });
 
   it('未提供保存回调时音频控件禁用，不制造无法持久化的编辑', () => {
-    render(<NodeQuickEditor {...makeProps({ node: makeAudioNode({ voice: 'custom-voice' }) })} />);
+    render(<NodeQuickEditor {...makeProps({ node: makeAudioNode({ voice: 'alloy' }) })} />);
     expect(screen.getByRole('textbox', { name: '音色' })).toBeDisabled();
     expect(screen.getByRole('combobox', { name: '音频格式：未设置' })).toBeDisabled();
     expect(screen.getByRole('spinbutton', { name: '语速' })).toBeDisabled();

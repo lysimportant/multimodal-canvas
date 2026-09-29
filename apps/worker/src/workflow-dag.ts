@@ -165,9 +165,12 @@ export function cachedWorkflowResult(providerJob: ProviderJob | undefined): RunR
 }
 
 /**
- * Builds the exact provider view for one node. The only inputs are direct,
- * ordered upstream edges and prior results already stored in the workflow
- * state, so later live canvas changes cannot influence this request.
+ * 从冻结图及已归档上游结果构造单个节点的 Provider 快照，不读取或修改实时画布。
+ * @param snapshot 提交时的不可变快照；根目标的提交参数优先于其节点保存值。
+ * @param workflowState 当前 DAG 的持久化执行状态，用于解析直接上游的结果资产。
+ * @param nodeId 本次执行的生成节点 ID。
+ * @returns 仅含该节点自身参数、直接输入和冻结模型配置的快照。
+ * @throws 节点不在执行闭包、不能执行，或缺少所需模型与凭据时拒绝派生。
  */
 export function createNodeRunSnapshot(
   snapshot: RunSnapshot,
@@ -207,10 +210,11 @@ export function createNodeRunSnapshot(
     return resolveWorkflowReferenceNode(source, workflowNodeState(workflowState, source.id));
   });
   const sourceById = new Map(inputNodes.map((node) => [node.id, node]));
-  const { prompt: _workflowPrompt, ...sharedParameters } = snapshot.parameters;
+  // 参数只属于当前节点；旧快照缺少节点参数时沿用模型默认值，不能借用根目标的值。
   const parameters = {
-    ...(nodeId === snapshot.targetNodeId ? snapshot.parameters : sharedParameters),
+    ...(target.data.parameters ?? {}),
     ...(target.data.inferenceStrength ? { inferenceStrength: target.data.inferenceStrength } : {}),
+    ...(nodeId === snapshot.targetNodeId ? snapshot.parameters : {}),
   };
   const modelAlias =
     nodeId === snapshot.targetNodeId ? snapshot.modelAlias : target.data.modelAlias?.trim();

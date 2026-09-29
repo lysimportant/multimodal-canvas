@@ -1313,3 +1313,154 @@ describe('App 组件库迁移', () => {
     expect(screen.getByRole('button', { name: '重命名 等待保存的名称' })).toBeInTheDocument();
   });
 });
+
+describe('App 节点参数提交', () => {
+  it.each(['sameNode', 'newNode'] as const)(
+    '不支持的音色在 %s 入口提前拒绝且保留历史值',
+    async (target) => {
+      const node: CanvasDocument['nodes'][number] = {
+        ...emptyNode('image-node'),
+        type: 'audio',
+        data: {
+          label: '历史音色',
+          mediaType: 'audio',
+          mode: 'generate',
+          modelAlias: 'test-tts',
+          prompt: 'Read the sample.',
+          assetId: 'existing-audio',
+          parameters: { voice: 'custom voice', response_format: 'wav' },
+        },
+      };
+      canvas.nodes = [node];
+      await renderCanvas(0);
+      await act(async () => view.canvas!.onRunNode(view.canvas!.nodes[0]!, target));
+      expect(screen.getByText(/当前接口不支持此音色/)).toBeInTheDocument();
+      expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
+      expect(view.canvas!.nodes).toHaveLength(1);
+      expect(view.canvas!.nodes[0]!.data.parameters).toEqual(node.data.parameters);
+    },
+  );
+
+  it.each(['sameNode', 'newNode'] as const)(
+    '图片尺寸冲突时 %s 入口不创建任务或新节点',
+    async (target) => {
+      const node = imageNode('image-node', 'image-model');
+      node.data = {
+        ...node.data,
+        prompt: 'Change the lighting.',
+        assetId: asset.id,
+        parameters: { quality: '4k', aspectRatio: '9:16', size: '1024x1024' },
+      };
+      canvas.nodes = [node];
+      await renderCanvas(0);
+      await act(async () => view.canvas!.onRunNode(view.canvas!.nodes[0]!, target));
+      expect(screen.getByText(/图片参数.*冲突/)).toBeInTheDocument();
+      expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
+      expect(view.canvas!.nodes).toHaveLength(1);
+      expect(canvas.nodes[0]!.data.parameters).toEqual(node.data.parameters);
+    },
+  );
+
+  it.each(['sameNode', 'newNode'] as const)(
+    '已知图片模型不支持的尺寸在 %s 入口按冻结模型拒绝',
+    async (target) => {
+      const node = imageNode('image-node', 'gpt-image-2.5-sunburst');
+      node.data = {
+        ...node.data,
+        prompt: 'Change the lighting.',
+        assetId: asset.id,
+        parameters: { quality: '4k', aspectRatio: '1:1' },
+      };
+      canvas.nodes = [node];
+      await renderCanvas(0);
+      await act(async () => view.canvas!.onRunNode(view.canvas!.nodes[0]!, target));
+      expect(screen.getByText(/总像素范围/)).toBeInTheDocument();
+      expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
+      expect(view.canvas!.nodes).toHaveLength(1);
+      expect(view.canvas!.nodes[0]!.data.parameters).toEqual(node.data.parameters);
+    },
+  );
+
+  it.each([
+    ['image', { quality: 'standard', aspectRatio: '1:1' }],
+    ['image', { quality: '2k', aspectRatio: '16:9' }],
+    ['image', { quality: '3k', aspectRatio: '4:3' }],
+    ['image', { quality: '4k', aspectRatio: '9:16' }],
+    ['image', { quality: '4k', aspectRatio: '21:9', size: '3840x1648' }],
+    ['video', { resolution: '1080p', aspectRatio: '9:16', duration: 10 }],
+    ['audio', { voice: 'alloy', response_format: 'wav', speed: 1.25 }],
+    ['text', { temperature: 0.7, max_tokens: 512, top_p: 0.9 }],
+  ] as const)('%s 节点保存与提交不改写已选参数 %j', async (mediaType, parameters) => {
+    const node: CanvasDocument['nodes'][number] = {
+      ...emptyNode('image-node'),
+      type: mediaType,
+      data: {
+        label: '参数提交测试',
+        mediaType,
+        mode: 'generate',
+        modelAlias: 'exact-model-alias',
+        credentialId: 'synthetic-parameter-credential',
+        prompt: 'Describe the sample.',
+        inferenceStrength: 'medium',
+        parameters: { providerOption: 'preserved' },
+      },
+    };
+    canvas.nodes = [node];
+    currentRun = runRecord({ status: 'succeeded', error: undefined });
+    await renderCanvas(0);
+    const savedParameters = { ...parameters, providerOption: 'preserved' };
+    act(() => view.canvas!.onParametersChange!(savedParameters, node.id));
+    await act(async () => view.canvas!.onRunNode(view.canvas!.nodes[0]!));
+
+    const requests = fetchMock.mock.calls.filter(
+      ([url, init]) => init?.method === 'POST' && String(url).endsWith('/nodes/image-node/runs'),
+    );
+    expect(requests).toHaveLength(1);
+    expect(JSON.parse(String(requests[0]![1]!.body))).toEqual({
+      projectId: project.id,
+      modelAlias: 'exact-model-alias',
+      credentialId: 'synthetic-parameter-credential',
+      parameters: {
+        ...savedParameters,
+        prompt: 'Describe the sample.',
+        inferenceStrength: 'medium',
+      },
+    });
+    expect(canvas.nodes[0]!.data.parameters).toEqual(savedParameters);
+  });
+
+  it.each([undefined, 'low'] as const)(
+    '文字节点提交不为未设置的推理强度补 high，保留旧参数中的 %s',
+    async (legacyInferenceStrength) => {
+      const parameters = {
+        max_tokens: 256,
+        ...(legacyInferenceStrength ? { inferenceStrength: legacyInferenceStrength } : {}),
+      };
+      canvas.nodes = [
+        {
+          ...emptyNode('image-node'),
+          data: {
+            ...emptyNode('image-node').data,
+            prompt: 'Summarize the sample.',
+            modelAlias: 'text-model-without-reasoning-default',
+            parameters,
+          },
+        },
+      ];
+      currentRun = runRecord({ status: 'succeeded', error: undefined });
+      await renderCanvas(0);
+      expect(view.canvas!.nodes[0]!.data.inferenceStrength).toBeUndefined();
+      await act(async () => view.canvas!.onRunNode(view.canvas!.nodes[0]!));
+
+      const requests = fetchMock.mock.calls.filter(
+        ([url, init]) => init?.method === 'POST' && String(url).endsWith('/nodes/image-node/runs'),
+      );
+      expect(requests).toHaveLength(1);
+      expect(JSON.parse(String(requests[0]![1]!.body)).parameters).toEqual({
+        ...parameters,
+        prompt: 'Summarize the sample.',
+      });
+      expect(view.canvas!.nodes[0]!.data.inferenceStrength).toBeUndefined();
+    },
+  );
+});

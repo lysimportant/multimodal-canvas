@@ -220,6 +220,7 @@ export function createRunSnapshot(
   targetNodeId: string,
   options: {
     modelAlias?: string;
+    /** 目标提交参数，按字段覆盖保存参数和节点推理强度；合并后独立深拷贝。 */
     parameters?: Record<string, unknown>;
     credentialId?: string;
     credentialVersion?: number;
@@ -324,7 +325,13 @@ export function createRunSnapshot(
     ...(options.nodeCredentialReferences
       ? { nodeCredentialReferences: options.nodeCredentialReferences }
       : {}),
-    parameters: options.parameters ?? {},
+    parameters: clone({
+      ...(target.data.parameters ?? {}),
+      ...(target.data.inferenceStrength
+        ? { inferenceStrength: target.data.inferenceStrength }
+        : {}),
+      ...(options.parameters ?? {}),
+    }),
     submittedAt: new Date().toISOString(),
     nodes,
     edges,

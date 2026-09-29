@@ -65,6 +65,7 @@ import {
   renderPromptDocument,
   defaultResourceDisplayName,
   nodeResourceRefSchema,
+  resolveImageOutputParameters,
 } from '@multimodal-canvas/domain';
 import {
   fromCanvasDocument,
@@ -182,6 +183,7 @@ import { AppearancePicker } from './workspace/AppearancePicker';
 import { WorkflowCanvas } from './workspace/WorkflowCanvas';
 import {
   applyNodeGenerationDefaults,
+  getAudioParameterIssue,
   resolvePreviousOperationSeed,
   type InferenceStrength,
 } from './workspace/NodeQuickEditor';
@@ -3153,6 +3155,30 @@ function WorkspaceApp({
       target: NodeRunTarget = 'sameNode',
       promptOverride?: NodeRunPromptOverride,
     ) => {
+      const currentNode = nodesRef.current.find((candidate) => candidate.id === node.id) ?? node;
+      try {
+        // 工具栏、命令面板和新节点入口也必须预检，不能仅依靠快捷编辑器禁用按钮。
+        if (currentNode.data.mediaType === 'image') {
+          resolveImageOutputParameters(
+            currentNode.data.parameters ?? {},
+            currentNode.data.modelAlias,
+          );
+        } else if (currentNode.data.mediaType === 'audio') {
+          const model = modelCatalog.find(
+            (entry) =>
+              entry.id === currentNode.data.modelAlias &&
+              entry.credentialId === currentNode.data.credentialId,
+          );
+          const issue = getAudioParameterIssue(currentNode.data.parameters ?? {}, model);
+          if (issue) throw new Error(issue);
+        }
+      } catch (error) {
+        setNotice({
+          kind: 'error',
+          message: error instanceof Error ? error.message : '节点输出参数无效',
+        });
+        return;
+      }
       if (target === 'newNode') {
         const source = nodesRef.current.find((candidate) => candidate.id === node.id) ?? node;
         if (isNodeBusy(source.id)) {
@@ -3394,9 +3420,7 @@ function WorkspaceApp({
               ? renderPromptDocument(promptDocument)
               : (promptOverride?.prompt ?? target.data.prompt)
           )?.trim();
-          const inferenceStrength =
-            target.data.inferenceStrength ??
-            (target.data.mediaType === 'text' ? 'high' : undefined);
+          const inferenceStrength = target.data.inferenceStrength;
           return {
             path: `/v1/nodes/${target.id}/runs`,
             body: {
@@ -3513,6 +3537,7 @@ function WorkspaceApp({
       commitForkGraph,
       createGenerateNode,
       isNodeBusy,
+      modelCatalog,
       pollRun,
       promoteSourceNodeToGenerate,
       projectId,

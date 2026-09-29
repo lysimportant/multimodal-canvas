@@ -1,6 +1,6 @@
 # 待完成任务汇总
 
-更新时间：2026-09-21
+更新时间：2026-09-30（本轮仅补图片尺寸的真实 Provider 验收项）
 整理基线：`main @ 43c69b6`
 来源：[视频节点任务历史版本](https://github.com/lysimportant/multimodal-canvas/blob/c750763925a2fd63988c8a84402dc982a6ec460a/TODO-VIDEO-NODE.md)、[本地任务历史版本](https://github.com/lysimportant/multimodal-canvas/blob/c750763925a2fd63988c8a84402dc982a6ec460a/TODO-LOCAL.md)。
 
@@ -109,6 +109,8 @@
 - 真实供应商生成按用户要求暂停，不产生真实费用。待明确费用范围后，对拟开放的文字、图片、`MiniMax-H3`、`wan3.0-video`、`wan3.0-video-prime` 输入组合取证：插件实际版本、外部素材 URL、查询归档及 New API 最终费用归属。本地签名素材 GET 和 500 quota 合成对账已有证据，目标环境仍待验，详见[Provider 验收记录](docs/newapi-provider-acceptance.md)。
 
 本后续项完成条件：原 unknown 取得外部核查结论；用户另行安排生产发布或真实验收后，取得对应清单、备份恢复、目标环境烟测及获授权的真实调用记录。未知请求与真实未结事项持续保留；删除本地资料不等于确认上游未收费，没有生产或真实调用安排时不自动执行。
+
+- 图片尺寸专项仍待用户明确费用范围后单次验收：对 `gpt-image-2.5-sunburst` 的文生图和图生图核对 `size` 受理与原始图片像素（例如 9:16 的 2160×3840、21:9 的 3840×1648）。不重放本轮错误历史 Run；本地参数和模拟请求回归不算真实 4K 产出证明，见[图片参数合同](docs/image-output-parameters.md)。
 
 ### [ ] P2-04 资源提及增强
 

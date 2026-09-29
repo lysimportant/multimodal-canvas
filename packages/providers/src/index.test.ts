@@ -2124,7 +2124,7 @@ describe('NewApiProvider', () => {
     );
   });
 
-  it('maps image aspect ratio to the New API field', async () => {
+  it('maps image resolution and aspect ratio to explicit pixels', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ data: [{ url: 'https://cdn.example/portrait.png' }] }), {
         status: 200,
@@ -2142,7 +2142,6 @@ describe('NewApiProvider', () => {
         ...standardSnapshot('image'),
         modelAlias: 'image-portrait-v1',
         parameters: {
-          size: '1024x1536',
           quality: '4k',
           aspectRatio: '9:16',
           prompt: 'Portrait image',
@@ -2154,9 +2153,7 @@ describe('NewApiProvider', () => {
       'https://newapi.example.com/v1/images/generations',
       expect.objectContaining({
         body: JSON.stringify({
-          size: '1024x1536',
-          quality: '4k',
-          aspect_ratio: '9:16',
+          size: '2160x3840',
           model: 'image-portrait-v1',
           prompt: 'Portrait image',
           n: 1,

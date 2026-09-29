@@ -371,6 +371,22 @@
   display: contents;
 }
 
+/* 请求像素只读展示，不参与节点外框尺寸计算。 */
+.node-quick-editor-image-size {
+  align-items: center;
+  color: var(--mc-text-muted);
+  display: flex;
+  font-size: 11px;
+  gap: 8px;
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.node-quick-editor-image-size output {
+  color: var(--mc-text);
+  font-variant-numeric: tabular-nums;
+}
+
 .node-quick-editor-parameter-issue {
   grid-column: 1 / -1;
   color: var(--mc-text-muted);
