@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest';
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ComponentProps } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -52,9 +52,120 @@ function node(data: Partial<AssetFlowNode['data']> = {}): AssetFlowNode {
   };
 }
 
+/** 补齐 jsdom 的布局属性，让真实 Menu 识别可聚焦的可见项。 */
+function exposeMenuItems() {
+  for (const item of screen.getAllByRole('menuitem')) {
+    Object.defineProperty(item, 'offsetParent', { configurable: true, value: document.body });
+  }
+}
+
 afterEach(cleanup);
 
 describe('CanvasContextMenu', () => {
+  it('整行悬停显示功能简述，移开后关闭且不触发动作', async () => {
+    const user = userEvent.setup();
+    const inputs = props();
+    render(<CanvasContextMenu {...inputs} />);
+    exposeMenuItems();
+    const first = screen.getByRole('menuitem', { name: '创建文字生成节点' });
+    await waitFor(() => expect(first).toHaveFocus());
+    act(() => first.blur());
+    await waitFor(() => expect(screen.queryByRole('tooltip')).not.toBeInTheDocument());
+    const item = screen.getByRole('menuitem', { name: '上传资源' });
+    await user.hover(item);
+    const tooltip = await screen.findByRole('tooltip');
+    expect(tooltip).toHaveTextContent('选择本地文件并加入项目资源');
+    expect(item).toHaveAccessibleDescription('选择本地文件并加入项目资源');
+    expect(item).not.toHaveAttribute('title');
+    expect(tooltip.closest('.canvas-context-dropdown')).toBeNull();
+    await user.unhover(item);
+    await waitFor(() => expect(screen.queryByRole('tooltip')).not.toBeInTheDocument());
+    expect(inputs.onRequestUpload).not.toHaveBeenCalled();
+    expect(inputs.onClose).not.toHaveBeenCalled();
+  });
+
+  it('方向键聚焦时显示对应简述，Enter 仍调用原创建动作', async () => {
+    const user = userEvent.setup();
+    const inputs = props();
+    render(<CanvasContextMenu {...inputs} />);
+    exposeMenuItems();
+    const first = screen.getByRole('menuitem', { name: '创建文字生成节点' });
+    await waitFor(() => expect(first).toHaveFocus());
+    await waitFor(() => expect(first).toHaveAccessibleDescription('在此处添加文字生成节点'));
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('在此处添加文字生成节点');
+
+    await user.hover(first);
+    fireEvent.keyDown(first, { key: 'ArrowDown', keyCode: 40, which: 40 });
+    const next = screen.getByRole('menuitem', { name: '创建图片生成节点' });
+    await waitFor(() => expect(next).toHaveFocus());
+    await waitFor(() => expect(next).toHaveAccessibleDescription('在此处添加图片生成节点'));
+    await waitFor(() =>
+      expect(screen.getByRole('tooltip')).toHaveTextContent('在此处添加图片生成节点'),
+    );
+    expect(first).not.toHaveAttribute('aria-describedby');
+    expect(next.querySelector('[tabindex], button, a')).toBeNull();
+
+    fireEvent.keyDown(next, { key: 'Enter', keyCode: 13, which: 13 });
+    expect(inputs.onAddGenerateNode).toHaveBeenCalledExactlyOnceWith('image', { x: 200, y: 100 });
+    expect(inputs.onClose).toHaveBeenCalledExactlyOnceWith('action');
+  });
+
+  it('鼠标离开仍保留键盘焦点说明，失焦后才关闭', async () => {
+    const user = userEvent.setup();
+    const inputs = props();
+    render(<CanvasContextMenu {...inputs} />);
+    exposeMenuItems();
+    const item = screen.getByRole('menuitem', { name: '创建文字生成节点' });
+    await waitFor(() => expect(item).toHaveFocus());
+    await user.hover(item);
+    await user.unhover(item);
+    expect(item).toHaveFocus();
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('在此处添加文字生成节点');
+    act(() => item.blur());
+    await waitFor(() => expect(screen.queryByRole('tooltip')).not.toBeInTheDocument());
+    expect(item).not.toHaveAttribute('aria-describedby');
+    expect(inputs.onAddGenerateNode).not.toHaveBeenCalled();
+  });
+
+  it('禁用项可悬停阅读说明，但不能被点击或 Enter 激活', async () => {
+    const user = userEvent.setup();
+    const inputs = props({ onUndoCanvas: vi.fn(), canUndo: false });
+    render(<CanvasContextMenu {...inputs} />);
+    const item = screen.getByRole('menuitem', { name: '撤销' });
+    expect(item).toHaveAttribute('aria-disabled', 'true');
+    expect(item).not.toHaveAttribute('tabindex');
+    await user.hover(item);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(
+      '撤销上一步画布操作（当前不可用）',
+    );
+    expect(item).toHaveAccessibleDescription('撤销上一步画布操作（当前不可用）');
+    await user.click(item);
+    fireEvent.keyDown(item, { key: 'Enter', keyCode: 13, which: 13 });
+    fireEvent.keyDown(item, { key: ' ', keyCode: 32, which: 32 });
+    expect(inputs.onUndoCanvas).not.toHaveBeenCalled();
+    expect(inputs.onClose).not.toHaveBeenCalled();
+  });
+
+  it('键盘跳过禁用项，提示词说明不改变菜单的焦点顺序', async () => {
+    const asset = node({ runStatus: 'running' });
+    const inputs = props({
+      target: { kind: 'node', node: asset, clientPosition: { x: 40, y: 80 }, returnFocusTo: null },
+      onOpenRequestPrompt: vi.fn(),
+      onEditImage: vi.fn(),
+    });
+    render(<CanvasContextMenu {...inputs} />);
+    exposeMenuItems();
+    const prompt = screen.getByRole('menuitem', { name: '提示词' });
+    await waitFor(() => expect(prompt).toHaveFocus());
+    await waitFor(() => expect(prompt).toHaveAccessibleDescription('查看提示词记录与资源分析'));
+    fireEvent.keyDown(prompt, { key: 'ArrowDown', keyCode: 40, which: 40 });
+    const center = screen.getByRole('menuitem', { name: '定位并居中节点' });
+    await waitFor(() => expect(center).toHaveFocus());
+    expect(screen.getByRole('menuitem', { name: '修改图片' })).not.toHaveAttribute('tabindex');
+    expect(inputs.onRunNode).not.toHaveBeenCalled();
+    expect(inputs.onEditImage).not.toHaveBeenCalled();
+  });
+
   it('创建命令保留画布坐标，点击只调用对应动作并以 action 关闭', async () => {
     const user = userEvent.setup();
     const inputs = props();
@@ -116,6 +227,7 @@ describe('CanvasContextMenu', () => {
         const item = screen.getByRole('menuitem', { name });
         expect(item).toHaveAttribute('aria-disabled', 'true');
         await user.click(item);
+        fireEvent.keyDown(item, { key: 'Enter', keyCode: 13, which: 13 });
       }
       expect(inputs.onRunNode).not.toHaveBeenCalled();
       expect(inputs.onEditImage).not.toHaveBeenCalled();
@@ -179,6 +291,9 @@ describe('CanvasContextMenu', () => {
       expect(screen.getByText('视频节点')).toBeInTheDocument();
       const item = screen.getByRole('menuitem', { name: '首帧生视频' });
       expect(item).toHaveTextContent('把图片作为起始画面');
+      await user.hover(item);
+      expect(await screen.findByRole('tooltip')).toHaveTextContent('把图片作为起始画面');
+      expect(item).toHaveAccessibleDescription('把图片作为起始画面');
       await user.click(item);
       expect(inputs.onAddConnectedGenerateNode).toHaveBeenCalledWith({
         mediaType: 'video',
@@ -198,10 +313,7 @@ describe('CanvasContextMenu', () => {
     const user = userEvent.setup();
     const inputs = props();
     const view = render(<CanvasContextMenu {...inputs} />);
-    // jsdom 没有布局盒；补齐菜单库判断可见性所需的布局属性。
-    for (const item of screen.getAllByRole('menuitem')) {
-      Object.defineProperty(item, 'offsetParent', { configurable: true, value: document.body });
-    }
+    exposeMenuItems();
     await waitFor(() =>
       expect(screen.getByRole('menuitem', { name: '创建文字生成节点' })).toHaveFocus(),
     );

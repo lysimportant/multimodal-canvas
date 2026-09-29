@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
+import { UnrecoverableError } from 'bullmq';
 
 import type { ProviderJob, RunJobData, RunSnapshot } from '@multimodal-canvas/domain';
-import { reportRequestPrompt } from '@multimodal-canvas/providers';
+import { NewApiProviderError, reportRequestPrompt } from '@multimodal-canvas/providers';
+import type { SendIntentStatus } from '@multimodal-canvas/execution';
 
 import {
   createProviderJobRecord,
@@ -16,7 +18,8 @@ const queueState = vi.hoisted(() => ({
   processor: undefined as ((job: TestJob) => Promise<unknown>) | undefined,
 }));
 
-vi.mock('bullmq', () => ({
+vi.mock('bullmq', async (importOriginal) => ({
+  UnrecoverableError: (await importOriginal<typeof import('bullmq')>()).UnrecoverableError,
   Queue: class {},
   Worker: class {
     constructor(_name: string, processor: (job: TestJob) => Promise<unknown>) {
@@ -196,7 +199,187 @@ function fixture(frozen: RunSnapshot, providerJob?: ProviderJob) {
   };
 }
 
+/** 模拟持久发送终态：只有 pending 可领取，同一发送的终态不能被重投覆盖。 */
+function singleSendAuthorization() {
+  let status: SendIntentStatus = 'pending';
+  const execution = {
+    authorizeRun: vi.fn(async () => undefined),
+    authorizeNode: vi.fn(async () => undefined),
+    beginSend: vi.fn(async () => {
+      if (status !== 'pending') throw new Error('原请求可能已经送达，禁止重复创建');
+      status = 'sending';
+    }),
+    finishSend: vi.fn(async (input: Parameters<WorkerExecutionAuthorization['finishSend']>[0]) => {
+      if (status === 'sending') status = input.status;
+    }),
+  } satisfies WorkerExecutionAuthorization;
+  return { execution, status: () => status };
+}
+
+/** 按 attempts 和 BullMQ 不可重试错误模拟自动重投，不连接 Redis。 */
+async function processWithQueueRetries(job: TestJob): Promise<unknown[]> {
+  const failures: unknown[] = [];
+  while (job.attemptsMade < job.opts.attempts) {
+    try {
+      await queueState.processor!(job);
+      break;
+    } catch (error) {
+      failures.push(error);
+      job.attemptsMade += 1;
+      if (error instanceof UnrecoverableError) break;
+    }
+  }
+  return failures;
+}
+
+/** Provider 桩先走真实提示词/发送授权回调，再以合成错误拒绝唯一创建请求。 */
+function rejectCreation(f: ReturnType<typeof fixture>, failure: Error) {
+  const post = vi.fn(async () => {
+    throw failure;
+  });
+  f.execute.mockImplementation(async (request) => {
+    await reportRequestPrompt({
+      ...request,
+      provider: 'newapi',
+      mediaType: 'image',
+      requestIdentity: 'POST /images/generations#1',
+      format: 'plain',
+      parts: [{ order: 0, text: 'Synthetic generation' }],
+      resources: [],
+    });
+    return post();
+  });
+  return post;
+}
+
 describe('Worker 中性执行授权', () => {
+  it.each([400, 422])('上游明确 HTTP %s 拒绝后停止队列重投，保留原始错误', async (status) => {
+    const f = fixture(snapshot('image', true));
+    const failure = new NewApiProviderError(
+      'This model is not supported on the Chat Completions endpoint',
+      { status, requestId: 'synthetic-rejected-request' },
+    );
+    const post = rejectCreation(f, failure);
+    const authorization = singleSendAuthorization();
+    const updateRun = vi.fn(async () => undefined);
+    f.options.persistence!.updateRun = updateRun;
+    createRunWorker({ ...f.options, execution: authorization.execution });
+
+    const failures = await processWithQueueRetries(f.job);
+
+    expect(updateRun).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: 'failed', error: failure.message }),
+    );
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toBeInstanceOf(UnrecoverableError);
+    expect(failures[0]).toMatchObject({ message: failure.message, cause: failure });
+    expect(authorization.status()).toBe('failed');
+    expect(authorization.execution.beginSend).toHaveBeenCalledOnce();
+    expect(authorization.execution.finishSend).toHaveBeenCalledWith(
+      expect.objectContaining({ nodeId: 'target', status: 'failed', error: failure.message }),
+    );
+    expect(post).toHaveBeenCalledOnce();
+    expect(f.execute).toHaveBeenCalledOnce();
+  });
+
+  it.each([undefined, 408, 425, 429, 500])(
+    '创建送达未知（HTTP %s）时重投仍严格禁止第二次 POST',
+    async (status) => {
+      const f = fixture(snapshot('image', true));
+      const failure = new NewApiProviderError('creation delivery unknown', { status });
+      const post = rejectCreation(f, failure);
+      const authorization = singleSendAuthorization();
+      createRunWorker({ ...f.options, execution: authorization.execution });
+
+      const failures = await processWithQueueRetries(f.job);
+      await expect(queueState.processor?.(f.job)).rejects.toThrow('禁止重复创建');
+
+      expect(failures[0]).toBe(failure);
+      expect(authorization.status()).toBe('unknown');
+      expect(authorization.execution.finishSend).toHaveBeenCalledOnce();
+      expect(authorization.execution.finishSend).toHaveBeenCalledWith(
+        expect.objectContaining({ nodeId: 'target', status: 'unknown' }),
+      );
+      expect(post).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('显式新建的授权 retryOf 不继承前驱 Run 的不可重试标记', async () => {
+    const original = fixture(snapshot('image', true));
+    const failure = new NewApiProviderError('upstream rejected the request', { status: 400 });
+    const originalPost = rejectCreation(original, failure);
+    createRunWorker({ ...original.options, execution: singleSendAuthorization().execution });
+    await expect(queueState.processor?.(original.job)).rejects.toBeInstanceOf(UnrecoverableError);
+
+    const retry = fixture(snapshot('image', true));
+    const retryRunId = '123e4567-e89b-42d3-a456-426614174221';
+    retry.job.id = retryRunId;
+    retry.job.data = {
+      ...retry.job.data,
+      runId: retryRunId,
+      retryOf: original.job.data.runId,
+      attempt: 2,
+      providerJob: createProviderJobRecord(retryRunId, 'newapi'),
+    };
+    queueState.jobs.clear();
+    queueState.jobs.set(retryRunId, retry.job);
+    retry.options.persistence!.findProviderJobsByRunId = async (runId) =>
+      runId === original.job.data.runId ? [...original.persisted.values()] : [];
+    const authorization = singleSendAuthorization();
+    const assertRetrySafe = vi.fn(async () => undefined);
+    createRunWorker({
+      ...retry.options,
+      execution: { ...authorization.execution, assertRetrySafe },
+    });
+
+    await expect(queueState.processor?.(retry.job)).resolves.toMatchObject({ status: 'succeeded' });
+
+    expect(assertRetrySafe).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: original.job.data.runId, nodeId: 'target' }),
+    );
+    expect(originalPost).toHaveBeenCalledOnce();
+    expect(retry.creationCalls()).toBe(1);
+    expect(authorization.execution.beginSend).toHaveBeenCalledOnce();
+    expect(authorization.status()).toBe('sent');
+  });
+
+  it('带平台 ID 的轮询 HTTP 400 仍可恢复，不重新创建异步任务', async () => {
+    const providerJob: ProviderJob = {
+      ...createProviderJobRecord('123e4567-e89b-42d3-a456-426614174215', 'newapi', 'submitted', 35),
+      platformJobId: 'accepted-platform-task',
+      payload: { contract: 'newapi-unified-v1', phase: 'polling' },
+    };
+    const f = fixture(snapshot('video', true), providerJob);
+    const failure = new NewApiProviderError('polling response unavailable', { status: 400 });
+    f.execute.mockRejectedValueOnce(failure);
+    const beginSend = vi.fn(
+      async (input: Parameters<WorkerExecutionAuthorization['beginSend']>[0]) => {
+        expect(input.resumePlatformJobId).toBe('accepted-platform-task');
+      },
+    );
+    createRunWorker({
+      ...f.options,
+      execution: {
+        async authorizeRun() {},
+        async authorizeNode() {},
+        beginSend,
+        async finishSend() {},
+      },
+    });
+
+    const failures = await processWithQueueRetries(f.job);
+
+    expect(failures).toEqual([failure]);
+    expect(f.job.data.providerJob).toMatchObject({
+      status: 'succeeded',
+      platformJobId: 'accepted-platform-task',
+    });
+    expect(beginSend).toHaveBeenCalledTimes(2);
+    expect(f.execute).toHaveBeenCalledTimes(2);
+    expect(f.creationCalls()).toBe(0);
+    expect(f.resumeCalls()).toBe(1);
+  });
+
   it('发送前本地校验失败不创建发送记录，重复消费仍保留原错误', async () => {
     const f = fixture(snapshot('video', true));
     f.execute.mockRejectedValue(new Error('首尾帧模式需要同时连接首帧和尾帧'));

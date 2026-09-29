@@ -189,3 +189,48 @@ describe('NodeHandles', () => {
     },
   );
 });
+
+describe('连接点功能说明', () => {
+  it('给出输出和不可用输入的明确提示', () => {
+    const { container } = render(<NodeHandles mediaType="image" mode="source" />);
+    expect(container.querySelector('[data-handle-side="right"]')).toHaveAttribute(
+      'title',
+      expect.stringContaining('拖到其他节点'),
+    );
+    for (const side of ['top', 'left', 'bottom']) {
+      const handle = container.querySelector(`[data-handle-side="${side}"]`);
+      expect(handle).toHaveAttribute('aria-disabled', 'true');
+      expect(handle).toHaveAttribute('title', expect.stringContaining('资源节点不接收输入'));
+    }
+  });
+
+  it('视频模式改变后说明与当前输入职责同步，不把空闲点标作参考输入', () => {
+    const { container, rerender } = render(
+      <NodeHandles mediaType="video" mode="generate" videoMode="first_last_frame" />,
+    );
+    expect(container.querySelector('[data-handle-side="bottom"]')).toHaveAttribute(
+      'title',
+      expect.stringContaining('尾帧'),
+    );
+    rerender(
+      <NodeHandles
+        mediaType="video"
+        mode="generate"
+        videoMode="omni_reference"
+        modelAlias="minimax-h3"
+      />,
+    );
+    expect(container.querySelector('[data-handle-side="left"]')).toHaveAttribute(
+      'title',
+      expect.stringContaining('自动选择'),
+    );
+    expect(container.querySelector('[data-handle-side="bottom"]')).toHaveAttribute(
+      'title',
+      expect.stringContaining('当前模式未启用'),
+    );
+    expect(container.querySelector('[data-handle-side="bottom"]')).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+  });
+});

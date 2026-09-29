@@ -22,6 +22,7 @@ import {
   type UpdateProjectModelDefaultsInput,
 } from './projects';
 import { withLocalResourceReferences } from './local-resource-references';
+import { withConnectedImageResults } from './connected-image-results';
 import {
   createRunSnapshot,
   getRunSnapshotIncludedNodeIds,
@@ -824,12 +825,15 @@ async function resolveRunNodeModels(input: {
   };
 }
 
+/** 校验来源资产并冻结版本；生成图片回显优先使用其已归档版本，失效时拒绝提交。 */
 async function resolveRunAssetRefs(input: {
   assetStore: AssetStore;
   canvas: CanvasDocument;
   targetNodeId: string;
   projectId: string;
   ownerId?: string;
+  /** 连线生成结果明确记录的版本，不得换成同资产的较新内容。 */
+  sourceVersions?: Readonly<Record<string, number>>;
 }): Promise<Record<string, FrozenRunAssetRef>> {
   const includedNodeIds = getRunSnapshotIncludedNodeIds(input.canvas, input.targetNodeId);
   // 项目权限已经由项目存储边界校验；项目内资源按项目身份授权，兼容
@@ -862,6 +866,12 @@ async function resolveRunAssetRefs(input: {
         throw new RunAssetFreezeError(
           'asset_unavailable',
           `资产 ${assetId} 不存在或无权用于项目 ${input.projectId}`,
+        );
+      }
+      if (asset.status === 'archived') {
+        throw new RunAssetFreezeError(
+          'asset_unavailable',
+          `资产 ${assetId} 已归档，不能作为生成输入`,
         );
       }
       const versions = await input.assetStore.listVersions(assetId, scope);
@@ -918,7 +928,9 @@ async function resolveRunAssetRefs(input: {
       throw new RunAssetFreezeError('asset_unavailable', `节点 ${node.id} 的手动输出缺少资产引用`);
     }
     if (!assetId) continue;
-    const pinnedVersion = pinnedSource?.sourceNodeId === node.id ? pinnedSource.version : undefined;
+    const pinnedVersion =
+      input.sourceVersions?.[node.id] ??
+      (pinnedSource?.sourceNodeId === node.id ? pinnedSource.version : undefined);
     const resolved = await loadAsset(assetId, pinnedVersion);
     if (resolved.mediaType !== node.data.mediaType) {
       throw new RunAssetFreezeError(
@@ -3091,7 +3103,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       // A request may submit a freshly edited document before the canvas PATCH
       // reaches storage. It applies only to the target node's immutable run
       // snapshot; it never mutates the saved canvas implicitly.
-      const canvasForRun = body.promptDocument
+      const requestedCanvas = body.promptDocument
         ? {
             ...canvas,
             nodes: canvas.nodes.map((node) =>
@@ -3104,6 +3116,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
             ),
           }
         : canvas;
+      const { canvas: canvasForRun, sourceVersions } = await withConnectedImageResults({
+        projectId: body.projectId,
+        canvas: requestedCanvas,
+        targetNodeId: request.params.nodeId,
+        runService,
+      });
       if (maxActiveRunsPerProject !== undefined) {
         const activeRuns = await runService.listByProject(body.projectId);
         const activeCount = activeRuns.filter((run) =>
@@ -3134,6 +3152,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         canvas: canvasForRun,
         targetNodeId: request.params.nodeId,
         projectId: body.projectId,
+        sourceVersions,
         ...(principal?.userId ? { ownerId: principal.userId } : {}),
       });
       const frozenPromptMentions = await resolvePromptMentionRefs({

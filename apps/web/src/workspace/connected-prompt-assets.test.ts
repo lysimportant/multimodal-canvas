@@ -34,6 +34,104 @@ const child = {
 } as AssetFlowNode;
 
 describe('collectConnectedPromptAssets', () => {
+  it('生成结果缺少版本时不借用目录最新版本来伪造冻结身份', () => {
+    const source = {
+      ...parent,
+      data: {
+        ...parent.data,
+        resultAsset: { assetId: 'asset_result', contentUrl: '/v1/assets/asset_result/content' },
+      },
+    };
+    const catalog = {
+      id: 'asset_result',
+      name: 'generated',
+      mediaType: 'image',
+      mimeType: 'image/png',
+      status: 'ready',
+      sizeBytes: 1,
+      tags: [],
+      latestVersion: 9,
+      contentUrl: '/v1/assets/asset_result/versions/9/content',
+    } as Asset;
+    const result = collectConnectedPromptAssets(
+      child.id,
+      [source, child],
+      [{ id: 'input', source: parent.id, target: child.id, targetHandle: 'input:referenceImage' }],
+      [catalog],
+    );
+    expect(result[0].assetVersion).toBeUndefined();
+  });
+
+  it('同名来源按节点连线和资产版本解析，冻结版本的预览不读取目录最新内容', () => {
+    const second = {
+      ...parent,
+      id: 'other-source',
+      data: { ...parent.data, resultAsset: { assetId: 'other-asset', version: 1 } },
+    };
+    const historical = {
+      ...parent,
+      id: 'historical-source',
+      data: { ...parent.data, resultAsset: { assetId: 'asset_result', version: 1 } },
+    };
+    const sources = [parent, second, historical];
+    const edges = sources.map((source) => ({
+      id: source.id,
+      source: source.id,
+      target: child.id,
+      targetHandle: 'input:referenceImage',
+    }));
+    const assets = [
+      {
+        id: 'asset_result',
+        name: '同名',
+        mediaType: 'image',
+        mimeType: 'image/png',
+        status: 'ready',
+        sizeBytes: 1,
+        tags: [],
+        latestVersion: 9,
+        contentUrl: '/v1/assets/asset_result/versions/9/content',
+      },
+    ] as Asset[];
+    const result = collectConnectedPromptAssets(child.id, [...sources, child], edges, assets);
+    expect(result.map((asset) => [asset.id, asset.assetVersion])).toEqual([
+      ['asset_result', 2],
+      ['other-asset', 1],
+      ['asset_result', 1],
+    ]);
+    expect(result[0].contentUrl).toBe('/v1/assets/asset_result/versions/2/content');
+    expect(result[2].contentUrl).toBe('/v1/assets/asset_result/versions/1/content');
+  });
+
+  it('目标引用已冻结的历史版本不被更新后的来源节点或目录覆盖', () => {
+    const target = {
+      ...child,
+      data: {
+        ...child.data,
+        resourceRefs: [
+          {
+            id: 'connected:asset_result',
+            assetId: 'asset_result',
+            mediaType: 'image' as const,
+            name: '良',
+            assetVersion: 1,
+          },
+        ],
+      },
+    };
+    const result = collectConnectedPromptAssets(
+      child.id,
+      [parent, target],
+      [{ id: 'input', source: parent.id, target: child.id, targetHandle: 'input:referenceImage' }],
+    );
+    expect(result[0]).toMatchObject({
+      id: 'asset_result',
+      assetVersion: 1,
+      referenceName: '良',
+      contentUrl: '/v1/assets/asset_result/versions/1/content',
+    });
+  });
+
   it('目标节点的连线别名独立于源名称，断开连线后不留下资源', () => {
     const namedChild = {
       ...child,
@@ -118,6 +216,7 @@ describe('collectConnectedPromptAssets', () => {
       {
         id: 'asset_result',
         name: '参考图',
+        assetVersion: 2,
         mediaType: 'image',
         contentUrl: '/v1/assets/asset_result/versions/2/content',
         mimeType: 'image/png',

@@ -1,6 +1,8 @@
 import type { Asset, PromptDocument, PromptMention } from '@multimodal-canvas/domain';
+import { useMemo } from 'react';
 
 import { ResourceMentionEditor } from './ResourceMentionEditor';
+import { projectConnectedPromptDocument } from './resource-mention-sync';
 import type { ConnectedPromptAsset } from './workspace/connected-prompt-assets';
 
 type TextPromptEditorProps = {
@@ -14,7 +16,7 @@ type TextPromptEditorProps = {
   /** 当前项目资源，用于 `@` 搜索和提及卡片。 */
   assets?: readonly Asset[];
   connectedAssets?: readonly ConnectedPromptAsset[];
-  /** 保存当前节点的连线资源别名，不重命名源资源。 */
+  /** 父层原子保存连线别名和正文引用，不重命名源资源。 */
   onConnectedResourceRename?: (assetId: string, name: string) => void;
   /** 结构化文档保存回调。 */
   onDocumentChange?: (document: PromptDocument) => void;
@@ -50,23 +52,59 @@ export function TextPromptEditor({
   disabled,
   className,
 }: TextPromptEditorProps) {
+  /** 父层重建连线数组或等值文档时保留投影 ID，不重置输入草稿。 */
+  const projectionKey = JSON.stringify([
+    nodeId,
+    promptDocument ?? value,
+    connectedAssets?.map((asset) => [
+      asset.id,
+      asset.name,
+      asset.mediaType,
+      asset.referenceName,
+      asset.assetVersion,
+      asset.referenceNeedsSync,
+      asset.versionUnavailable,
+    ]),
+  ]);
+  const projection = useMemo(() => {
+    try {
+      return {
+        document: projectConnectedPromptDocument(
+          { prompt: value, promptDocument },
+          connectedAssets ?? [],
+        ),
+      };
+    } catch (error) {
+      return {
+        document: promptDocument,
+        error: error instanceof Error ? error.message : '引用恢复失败，请检查来源和别名',
+      };
+    }
+  }, [projectionKey]);
   return (
-    <ResourceMentionEditor
-      nodeId={nodeId}
-      value={value}
-      promptDocument={promptDocument}
-      assets={assets}
-      connectedAssets={connectedAssets}
-      onConnectedResourceRename={onConnectedResourceRename}
-      // 结构化文档是唯一执行来源；避免新编辑同时触发两个父层更新。
-      onChange={onDocumentChange ? undefined : onChange}
-      onDocumentChange={onDocumentChange}
-      onUploadResource={onUploadResource}
-      onMentionDetails={onMentionDetails}
-      placeholder={placeholder}
-      ariaLabel={ariaLabel}
-      disabled={disabled}
-      className={className}
-    />
+    <>
+      <ResourceMentionEditor
+        nodeId={nodeId}
+        value={value}
+        promptDocument={projection.document}
+        assets={assets}
+        connectedAssets={connectedAssets}
+        onConnectedResourceRename={onConnectedResourceRename}
+        // 结构化文档是唯一执行来源；避免新编辑同时触发两个父层更新。
+        onChange={onDocumentChange ? undefined : onChange}
+        onDocumentChange={onDocumentChange}
+        onUploadResource={onUploadResource}
+        onMentionDetails={onMentionDetails}
+        placeholder={placeholder}
+        ariaLabel={ariaLabel}
+        disabled={disabled}
+        className={className}
+      />
+      {projection.error && (
+        <p role="alert" className="resource-mention-edit-warning">
+          引用未自动恢复：{projection.error}
+        </p>
+      )}
+    </>
   );
 }

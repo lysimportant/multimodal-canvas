@@ -341,6 +341,31 @@ describe('WorkerPrismaRunPersistence retry recovery', () => {
     });
   });
 
+  it.each([
+    ['根任务', `provider_job_${runId}`, 'node_target'],
+    ['上游节点', `provider_job_${runId}_node_upstream`, 'node_upstream'],
+  ])('恢复%s的原始本地身份，不把上游拒绝误认作新的请求', async (_label, id, nodeId) => {
+    const now = '2026-09-29T00:00:00.000Z';
+    const providerJob: ProviderJob = {
+      id,
+      provider: 'newapi',
+      status: 'failed',
+      progress: 0,
+      payload: { workflowNodeId: nodeId, sendStatus: 'failed', error: '模型不支持当前端点' },
+      createdAt: now,
+      updatedAt: now,
+    };
+    const upsert = vi.fn(async (input: { create: unknown }) => input.create);
+    const findMany = vi.fn();
+    const persistence = new WorkerPrismaRunPersistence({
+      providerJob: { upsert, findMany },
+    } as never);
+    const stored = await persistence.upsertProviderJob({ runId, providerJob });
+    findMany.mockResolvedValue([stored]);
+
+    await expect(persistence.findProviderJobsByRunId(runId)).resolves.toEqual([providerJob]);
+  });
+
   it('returns synchronous completed jobs and asynchronous tasks for workflow recovery', async () => {
     const createdAt = new Date('2026-08-27T00:00:00.000Z');
     const updatedAt = new Date('2026-08-27T00:01:00.000Z');

@@ -1,8 +1,8 @@
 import '@testing-library/jest-dom/vitest';
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /** 用于验证悬浮栏在不同缩放级别下提供反向缩放值。 */
 const viewportMock = vi.hoisted(() => ({ zoom: 1 }));
@@ -39,6 +39,8 @@ import { downloadProjectExport } from '../export-utils';
 import { fetchNodeAssetDownload } from './node-asset-download';
 import {
   AssetNode,
+  NodeContentContext,
+  NodeImageEditContext,
   NodeDeleteContext,
   NodeEnabledContext,
   NodeLabelChangeContext,
@@ -47,8 +49,12 @@ import {
   NodeResizeStartContext,
   NodeRetryContext,
   NodeSelectionContext,
+  type NodeContentHandlers,
+  type NodeImageEditHandler,
+  type NodePromptHandler,
 } from './AssetNode';
 
+/** 构造节点数据；未覆盖的字段保持现有文字生成节点契约。 */
 function makeNode(overrides: Partial<AssetFlowNode['data']> = {}): AssetFlowNode {
   return {
     id: 'node_1',
@@ -64,6 +70,7 @@ function makeNode(overrides: Partial<AssetFlowNode['data']> = {}): AssetFlowNode
   } as AssetFlowNode;
 }
 
+/** 挂载真实节点控件与按需提供的动作，网络能力由测试回调替代。 */
 function renderNode(
   node: AssetFlowNode,
   onRetry?: (nodeId: string) => void | Promise<void>,
@@ -72,6 +79,11 @@ function renderNode(
   selected = false,
   onLabelChange?: (nodeId: string, label: string) => void,
   onDelete?: (nodeId: string) => void,
+  actions: {
+    content?: NodeContentHandlers;
+    editImage?: NodeImageEditHandler;
+    openPrompt?: NodePromptHandler;
+  } = {},
 ) {
   const props = {
     id: node.id,
@@ -84,7 +96,13 @@ function renderNode(
         <NodeEnabledContext.Provider value={onEnabled ?? null}>
           <NodeRetryContext.Provider value={onRetry ?? null}>
             <NodeDeleteContext.Provider value={onDelete ?? null}>
-              <AssetNode {...props} />
+              <NodeContentContext.Provider value={actions.content ?? null}>
+                <NodeImageEditContext.Provider value={actions.editImage ?? null}>
+                  <NodePromptContext.Provider value={actions.openPrompt ?? null}>
+                    <AssetNode {...props} />
+                  </NodePromptContext.Provider>
+                </NodeImageEditContext.Provider>
+              </NodeContentContext.Provider>
             </NodeDeleteContext.Provider>
           </NodeRetryContext.Provider>
         </NodeEnabledContext.Provider>
@@ -93,14 +111,160 @@ function renderNode(
   );
 }
 
+beforeEach(() => {
+  /** rc-util 测试环境固定 Portal ID；恢复唯一 ID，避免 Tooltip 卸载清掉 Modal 的 Escape 注册。 */
+  vi.stubEnv('NODE_ENV', 'development');
+});
+
 afterEach(() => {
   cleanup();
+  vi.unstubAllEnvs();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
   viewportMock.zoom = 1;
 });
 
 describe('AssetNode result presentation', () => {
+  it('悬浮按钮整项 hover 显示简述，仍直接位于操作栏且不继承描边按钮', async () => {
+    const user = userEvent.setup();
+    renderNode(
+      makeNode({
+        label: '产品图',
+        mediaType: 'image',
+        assetId: 'asset-1',
+        contentUrl: '/assets/1',
+      }),
+      undefined,
+      vi.fn(),
+      undefined,
+      false,
+      vi.fn(),
+      vi.fn(),
+      {
+        content: { upload: vi.fn(), saveText: vi.fn() },
+        editImage: vi.fn(),
+        openPrompt: vi.fn(),
+      },
+    );
+    const toolbar = screen.getByRole('group', { name: '节点操作：产品图' });
+    for (const [name, hint] of [
+      ['重命名节点：产品图', '修改节点名称，不影响已有内容'],
+      ['拖动移动节点', '按住拖动，调整节点在画布中的位置'],
+      ['查看节点信息', '查看节点类型、运行状态与资源信息'],
+      ['查看生成提示词：产品图', '查看本次生成实际发送的提示词'],
+      ['停用节点', '停用后不参与生成，保留已有内容'],
+      ['上传到节点：产品图', '上传本地文件并替换当前节点内容'],
+      ['修改图片：产品图', '引用当前图片创建编辑节点，不覆盖原图'],
+      ['下载图片', '下载当前回显的图片文件'],
+      ['删除节点：产品图', '删除当前节点及关联连线'],
+    ]) {
+      const button = within(toolbar).getByRole('button', { name });
+      expect(button.parentElement).toBe(toolbar);
+      expect(button).toHaveClass('ant-btn-variant-text');
+      expect(button).not.toHaveAttribute('title');
+      await user.hover(button);
+      const tooltip = await screen.findByRole('tooltip');
+      expect(tooltip).toHaveTextContent(hint!);
+      expect(button).toHaveAccessibleDescription(hint);
+      expect(toolbar).not.toContainElement(tooltip);
+      await user.unhover(button);
+      await waitFor(() => expect(screen.queryByRole('tooltip')).not.toBeInTheDocument());
+    }
+  });
+
+  it('悬浮按钮键盘 focus 显示简述，不触发动作；耗时保持只读', async () => {
+    const user = userEvent.setup();
+    const onLabelChange = vi.fn();
+    renderNode(makeNode(), undefined, undefined, undefined, false, onLabelChange);
+    await user.tab();
+    const rename = screen.getByRole('button', { name: '重命名节点：文案生成' });
+    expect(rename).toHaveFocus();
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('修改节点名称，不影响已有内容');
+    await user.tab();
+    const move = screen.getByRole('button', { name: '拖动移动节点' });
+    expect(move).toHaveFocus();
+    await waitFor(() =>
+      expect(screen.getByRole('tooltip')).toHaveTextContent('按住拖动，调整节点在画布中的位置'),
+    );
+    expect(onLabelChange).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    const duration = screen.getByLabelText('节点生成耗时');
+    expect(duration.tagName).toBe('SPAN');
+    expect(duration).toHaveAttribute('tabindex', '0');
+    expect(screen.queryByRole('button', { name: '节点生成耗时' })).not.toBeInTheDocument();
+    act(() => duration.focus());
+    await waitFor(() =>
+      expect(screen.getByRole('tooltip')).toHaveTextContent('查看节点本次生成的耗时'),
+    );
+    expect(duration).toHaveAccessibleDescription('查看节点本次生成的耗时');
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('tooltip')).not.toBeInTheDocument());
+    expect(duration).toHaveFocus();
+  });
+
+  it('拖动手柄保持直接按钮与指针冒泡，普通操作仍阻止节点拖动', () => {
+    const { container } = renderNode(makeNode());
+    const toolbar = screen.getByRole('group', { name: '节点操作：文案生成' });
+    const move = within(toolbar).getByRole('button', { name: '拖动移动节点' });
+    expect(move.parentElement).toBe(toolbar);
+    expect(move).toHaveClass('flow-node-drag-handle');
+    expect(move.closest('.nodrag, .nopan')).toBeNull();
+    const pointerDown = vi.fn();
+    const mouseDown = vi.fn();
+    const parent = container.parentElement!;
+    parent.addEventListener('pointerdown', pointerDown);
+    parent.addEventListener('mousedown', mouseDown);
+    try {
+      expect(fireEvent.pointerDown(move, { button: 0, pointerId: 1, pointerType: 'mouse' })).toBe(
+        true,
+      );
+      expect(fireEvent.mouseDown(move, { button: 0 })).toBe(true);
+      expect(pointerDown).toHaveBeenCalledOnce();
+      expect(mouseDown).toHaveBeenCalledOnce();
+      fireEvent.pointerDown(screen.getByRole('button', { name: '查看节点信息' }));
+      expect(pointerDown).toHaveBeenCalledOnce();
+    } finally {
+      parent.removeEventListener('pointerdown', pointerDown);
+      parent.removeEventListener('mousedown', mouseDown);
+    }
+  });
+
+  it('运行中上传与修改图片保持原生禁用，可悬停读原因但不执行动作', async () => {
+    const user = userEvent.setup();
+    const upload = vi.fn();
+    const editImage = vi.fn();
+    renderNode(
+      makeNode({
+        mediaType: 'image',
+        assetId: 'asset-1',
+        contentUrl: '/assets/1',
+        runStatus: 'running',
+      }),
+      undefined,
+      undefined,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      { content: { upload, saveText: vi.fn() }, editImage },
+    );
+    for (const [name, hint] of [
+      ['上传到节点：文案生成', '节点正在运行或保存，请稍后再上传'],
+      ['修改图片：文案生成', '节点正在运行或保存，请稍后再修改图片'],
+    ]) {
+      const button = screen.getByRole('button', { name });
+      expect(button).toBeDisabled();
+      await user.hover(button);
+      expect(await screen.findByRole('tooltip')).toHaveTextContent(hint!);
+      await user.click(button);
+      fireEvent.keyDown(button, { key: 'Enter', keyCode: 13, which: 13 });
+      await user.unhover(button);
+      await waitFor(() => expect(screen.queryByRole('tooltip')).not.toBeInTheDocument());
+    }
+    expect(upload).not.toHaveBeenCalled();
+    expect(editImage).not.toHaveBeenCalled();
+  });
+
   it('旧结果与新执行分别显示计时，手动版本不继承旧生成耗时', async () => {
     const base = makeNode({
       assetId: 'asset-1',
@@ -276,13 +440,18 @@ describe('AssetNode result presentation', () => {
     expect(screen.getByRole('button', { name: '查看节点信息' })).toHaveTextContent('信息');
   });
 
-  it.each(['image', 'video'] as const)('没有内容的 %s 节点禁用下载按钮', (mediaType) => {
+  it.each(['image', 'video'] as const)('没有内容的 %s 节点禁用下载按钮', async (mediaType) => {
+    const user = userEvent.setup();
     renderNode(makeNode({ mediaType }));
     const button = screen.getByRole('button', {
       name: mediaType === 'image' ? '下载图片' : '下载视频',
     });
     expect(button).toBeDisabled();
-    expect(button).toHaveAttribute('title', '暂无可下载内容');
+    await user.hover(button);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('暂无可下载内容');
+    expect(button).toHaveAccessibleDescription('暂无可下载内容');
+    await user.click(button);
+    expect(fetchNodeAssetDownload).not.toHaveBeenCalled();
   });
 
   it.each(['text', 'audio'] as const)('%s 节点不增加下载按钮', (mediaType) => {
@@ -545,19 +714,10 @@ describe('AssetNode result presentation', () => {
     expect(screen.getByRole('button', { name: '查看节点信息' })).toHaveTextContent('信息');
     expect(screen.getByRole('button', { name: '停用节点' })).toHaveTextContent('停用');
     expect(screen.getByRole('button', { name: '删除节点：文案生成' })).toHaveTextContent('删除');
-    expect(screen.getByRole('button', { name: '拖动移动节点' })).toHaveAttribute(
-      'title',
-      '拖动移动节点',
-    );
-    expect(screen.getByRole('button', { name: '查看节点信息' })).toHaveAttribute(
-      'title',
-      '查看节点信息',
-    );
-    expect(screen.getByRole('button', { name: '停用节点' })).toHaveAttribute('title', '停用节点');
-    expect(screen.getByRole('button', { name: '删除节点：文案生成' })).toHaveAttribute(
-      'title',
-      '删除节点',
-    );
+    for (const button of within(toolbar).getAllByRole('button')) {
+      expect(button.parentElement).toBe(toolbar);
+      expect(button).not.toHaveAttribute('title');
+    }
     expect(container.querySelector('.flow-node-placeholder')).not.toContainElement(toolbar);
     expect(screen.getAllByRole('button', { name: '删除节点：文案生成' })).toHaveLength(1);
     expect(screen.getByRole('button', { name: '停用节点' }).querySelector('svg')).toHaveAttribute(

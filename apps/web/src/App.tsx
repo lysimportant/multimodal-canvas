@@ -63,6 +63,7 @@ import {
   getNodeGenerationCount,
   isValidGenerationCount,
   renderPromptDocument,
+  defaultResourceDisplayName,
   nodeResourceRefSchema,
 } from '@multimodal-canvas/domain';
 import {
@@ -100,6 +101,11 @@ import { createUniqueNodeLabel } from './app-contract-utils';
 import { getNodePlacementRightOf } from './workspace/canvas-position';
 import { createGenerationBatch } from './workspace/generation-batch';
 import { collectConnectedPromptAssets } from './workspace/connected-prompt-assets';
+import {
+  freezeConnectedResourceReferences,
+  projectConnectedPromptDocument,
+  renameConnectedPromptDocument,
+} from './resource-mention-sync';
 import {
   appendGeneratedContentToPrompt,
   canForkNewNode,
@@ -2460,11 +2466,18 @@ function WorkspaceApp({
     (prompt: string, nodeId?: string) => {
       const targetNodeId = nodeId ?? selectedNode?.id;
       if (!targetNodeId) return;
+      const connectedAssets = collectConnectedPromptAssets(
+        targetNodeId,
+        nodesRef.current,
+        edgesRef.current,
+        assets,
+      );
       rememberHistory();
       canvasDirtyRef.current = true;
       updateNodeDataAndMarkDownstreamStale(targetNodeId, (data) => ({
         ...data,
         prompt: prompt || undefined,
+        resourceRefs: freezeConnectedResourceReferences(data.resourceRefs, connectedAssets),
         // 仅提供纯文本的调用方（例如结果编辑）会显式替换结构化文档，
         // 避免旧提及继续作为实际执行来源。
         ...(data.promptDocument
@@ -2477,7 +2490,7 @@ function WorkspaceApp({
           : {}),
       }));
     },
-    [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
+    [assets, rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
   );
 
   /** 保存结构化提示词，并同步维护旧节点仍读取的纯文本派生字段。 */
@@ -2489,16 +2502,36 @@ function WorkspaceApp({
       canvasDirtyRef.current = true;
       const prompt = renderPromptDocument(document);
       const current = nodesRef.current.find((node) => node.id === targetNodeId);
-      const hasMentions = document.blocks.some((block) => block.type === 'mention');
+      const connectedAssets = collectConnectedPromptAssets(
+        targetNodeId,
+        nodesRef.current,
+        edgesRef.current,
+        assets,
+      );
+      /** 恢复已有连线或编辑既有提及不会增加输入，不因此切换模式或剪掉原有连线。 */
+      const hasNewResource = document.blocks.some(
+        (block) =>
+          block.type === 'mention' &&
+          !current?.data.promptDocument?.blocks.some(
+            (existing) =>
+              existing.type === 'mention' &&
+              existing.assetId === block.assetId &&
+              existing.assetVersion === block.assetVersion,
+          ) &&
+          !connectedAssets.some(
+            (asset) => asset.id === block.assetId && asset.assetVersion === block.assetVersion,
+          ),
+      );
       const promoteOmni =
         current?.data.mediaType === 'video' &&
         current.data.mode !== 'source' &&
-        hasMentions &&
+        hasNewResource &&
         !['omni_reference', 'video_edit', 'video_extend'].includes(current.data.videoMode ?? '');
       updateNodeDataAndMarkDownstreamStale(targetNodeId, (data) => ({
         ...data,
         prompt: prompt || undefined,
         promptDocument: document,
+        resourceRefs: freezeConnectedResourceReferences(data.resourceRefs, connectedAssets),
         ...(promoteOmni ? { videoMode: 'omni_reference' as const } : {}),
       }));
       if (promoteOmni && current) {
@@ -2511,6 +2544,7 @@ function WorkspaceApp({
       }
     },
     [
+      assets,
       pruneIncompatibleTargetEdges,
       rememberHistory,
       selectedNode,
@@ -2519,25 +2553,28 @@ function WorkspaceApp({
   );
 
   /**
-   * 保存目标节点的连线资源别名，不插入提示词或修改视频模式、连线和原资源。
-   * 优先更新连线专用引用，否则复用旧资产引用的身份与版本，不重复占用名额。
+   * 同步连线别名与正文中的结构化引用，不追加文字或修改视频模式、连线和原资源。
+   * 别名、引用和冻结版本共用一次撤销；不重建其它提及或覆盖同资源的自定义别名。
    * @param assetId 当前连线输入的资产身份。
    * @param name 节点内别名，去除首尾空白后为 1 至 160 字符。
    * @param nodeId 目标节点；省略时使用当前选中节点。
-   * @throws 节点或连线已移除、引用格式非法或超过 40 个引用时拒绝保存。
+   * @throws 节点或连线已移除、身份/名称有歧义、格式非法或超出引用限制时拒绝保存。
    */
   const renameConnectedResource = useCallback(
     (assetId: string, name: string, nodeId?: string) => {
       const targetNodeId = nodeId ?? selectedNode?.id;
       const current = nodesRef.current.find((node) => node.id === targetNodeId);
       if (!current) throw new Error('目标节点已不存在');
-      const connected = collectConnectedPromptAssets(
+      const connectedAssets = collectConnectedPromptAssets(
         current.id,
         nodesRef.current,
         edgesRef.current,
         assets,
-      ).find((asset) => asset.id === assetId);
+      );
+      const candidates = connectedAssets.filter((asset) => asset.id === assetId);
+      const connected = candidates[0];
       if (!connected) throw new Error('连线资源已移除，请重新选择');
+      if (candidates.length > 1) throw new Error('连线资源包含多个版本，请先明确来源版本');
       const references = current.data.resourceRefs ?? [];
       const previous =
         references.find((item) => item.id === 'connected:' + assetId) ??
@@ -2548,13 +2585,25 @@ function WorkspaceApp({
         assetId,
         mediaType: connected.mediaType,
         name,
+        ...(connected.assetVersion !== undefined ? { assetVersion: connected.assetVersion } : {}),
       });
       if (!parsed.success) throw new Error('资源名称或引用身份无效，名称须为 1 至 160 字符');
       const reference = parsed.data;
       if (
+        connectedAssets.some(
+          (asset) =>
+            asset.id !== assetId &&
+            (asset.referenceName ?? defaultResourceDisplayName(asset.name)) === reference.name,
+        )
+      )
+        throw new Error('这个名字已被其他资源占用');
+      const document = renameConnectedPromptDocument(current.data, connected, reference.name);
+      if (
         previous?.name === reference.name &&
         previous.assetId === reference.assetId &&
-        previous.mediaType === reference.mediaType
+        previous.mediaType === reference.mediaType &&
+        previous.assetVersion === reference.assetVersion &&
+        !document
       )
         return;
       if (!previous && references.length >= 40) throw new Error('节点引用资源不能超过 40 个');
@@ -2567,6 +2616,9 @@ function WorkspaceApp({
           resourceRefs: refs.some((item) => item.id === reference.id)
             ? refs.map((item) => (item.id === reference.id ? { ...item, ...reference } : item))
             : [...refs, reference],
+          ...(document
+            ? { promptDocument: document, prompt: renderPromptDocument(document) || undefined }
+            : {}),
         };
       });
     },
@@ -3330,7 +3382,13 @@ function WorkspaceApp({
         }
         await saveCanvas();
         const plannedRequests = targets.map((target) => {
-          const promptDocument = promptOverride?.promptDocument ?? target.data.promptDocument;
+          const promptDocument = projectConnectedPromptDocument(
+            {
+              prompt: promptOverride?.prompt ?? target.data.prompt,
+              promptDocument: promptOverride?.promptDocument ?? target.data.promptDocument,
+            },
+            collectConnectedPromptAssets(target.id, nodesRef.current, edgesRef.current, assets),
+          );
           const prompt = (
             promptDocument
               ? renderPromptDocument(promptDocument)

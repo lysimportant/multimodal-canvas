@@ -51,8 +51,10 @@ import { Dialog, DialogClose, DialogContent, DialogTitle } from '@multimodal-can
 
 import { isImeKeyboardEvent, useImeDraft } from './ime';
 import { PromptCaret } from './PromptCaret';
+import { canPromoteResourceNameAt, createPromptMentionId } from './resource-mention-sync';
 import { AssetPreview } from './workspace/AssetPreview';
 import type { ConnectedPromptAsset } from './workspace/connected-prompt-assets';
+import { resultAssetContentUrl } from './workspace/node-echo-text';
 import { ASSET_DRAG_TYPE, formatBytes, mediaLabels } from './workspace/contracts';
 import './resource-mention-hover.css';
 
@@ -68,7 +70,7 @@ export type ResourceMentionEditorProps = {
   assets?: readonly Asset[];
   /** 画布连到当前节点的资源，进入上方资源条。 */
   connectedAssets?: readonly ConnectedPromptAsset[];
-  /** 保存当前节点的连线资源别名，不重命名源资源。 */
+  /** 父层原子保存连线别名和正文引用，不重命名源资源。 */
   onConnectedResourceRename?: (assetId: string, name: string) => void;
   /** 纯文本兼容回调；始终接收当前文档渲染后的文字。 */
   onChange?: (value: string) => void;
@@ -996,6 +998,7 @@ export function ResourceMentionEditor({
     const items: Array<{
       key: string;
       assetId: string;
+      assetVersion?: number;
       mediaType: (typeof mentionRanges)[number]['mention']['mediaType'];
       name: string;
       mentionId?: string;
@@ -1005,29 +1008,43 @@ export function ResourceMentionEditor({
     const seen = new Set<string>();
     const taken = new Set<string>();
     for (const range of mentionRanges) {
-      if (seen.has(range.mention.assetId)) continue;
-      seen.add(range.mention.assetId);
-      const name = mentionDisplayName(range.mention);
+      const identity = JSON.stringify([range.mention.assetId, range.mention.assetVersion]);
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      const connected = connectedAssets.find(
+        (asset) =>
+          asset.id === range.mention.assetId && asset.assetVersion === range.mention.assetVersion,
+      );
+      const name = connected?.referenceName ?? mentionDisplayName(range.mention);
+      const namedRange = connected?.referenceName
+        ? mentionRanges.find(
+            (item) =>
+              item.mention.assetId === range.mention.assetId &&
+              item.mention.assetVersion === range.mention.assetVersion &&
+              mentionDisplayName(item.mention) === name,
+          )
+        : range;
       taken.add(name);
       items.push({
         key: range.mention.mentionId,
         assetId: range.mention.assetId,
+        assetVersion: range.mention.assetVersion,
         mediaType: range.mention.mediaType,
         name,
-        mentionId: range.mention.mentionId,
-        asset:
-          assets.find((candidate) => candidate.id === range.mention.assetId) ??
-          connectedAssets.find((candidate) => candidate.id === range.mention.assetId),
+        mentionId: namedRange?.mention.mentionId,
+        asset: resolveMentionAsset(range.mention, assets, connectedAssets),
       });
     }
     for (const asset of connectedAssets) {
-      if (seen.has(asset.id)) continue;
-      seen.add(asset.id);
+      const identity = JSON.stringify([asset.id, asset.assetVersion]);
+      if (seen.has(identity)) continue;
+      seen.add(identity);
       const name = asset.referenceName ?? uniqueResourceDisplayName(asset.name, taken);
       taken.add(name);
       items.push({
-        key: `connected:${asset.id}`,
+        key: `connected:${asset.id}:${asset.assetVersion ?? ''}`,
         assetId: asset.id,
+        assetVersion: asset.assetVersion,
         mediaType: asset.mediaType,
         name,
         asset,
@@ -1038,13 +1055,14 @@ export function ResourceMentionEditor({
 
   const dialogItem = stripItems.find((item) => item.key === resourceDialogId) ?? null;
 
-  /** 同一资源的全部名称范围原子更新，复用既有编辑历史。 */
+  /** 按选中提及的资产、版本和别名原子更新，不覆盖历史版本或其它自定义别名。 */
   const renameStripResource = useCallback(
     (mentionId: string, nextName: string) => {
       const trimmed = nextName.trim();
       if (!trimmed) return;
       const target = rangesRef.current.find((range) => range.mention.mentionId === mentionId);
       if (!target) return;
+      const previousName = mentionDisplayName(target.mention);
       let nextText = textRef.current;
       const nextRanges: MentionRange[] = [];
       let delta = 0;
@@ -1054,8 +1072,11 @@ export function ResourceMentionEditor({
           start: range.start + delta,
           end: range.end + delta,
         };
-        const sameAsset = range.mention.assetId === target.mention.assetId;
-        if (!sameAsset) {
+        const sameReference =
+          range.mention.assetId === target.mention.assetId &&
+          range.mention.assetVersion === target.mention.assetVersion &&
+          mentionDisplayName(range.mention) === previousName;
+        if (!sameReference) {
           nextRanges.push(shifted);
           continue;
         }
@@ -1069,7 +1090,18 @@ export function ResourceMentionEditor({
         delta += sizeDelta;
       }
       caretRef.current = Math.min(nextText.length, caretRef.current);
-      commitState(nextText, nextRanges);
+      commitState(
+        nextText,
+        promotePlaintextResourceNames(nextText, nextRanges, [
+          {
+            name: trimmed,
+            assetId: target.mention.assetId,
+            label: target.mention.label,
+            mediaType: target.mention.mediaType,
+            assetVersion: target.mention.assetVersion,
+          },
+        ]),
+      );
       setProtectedEditMessage(null);
     },
     [commitState],
@@ -1183,9 +1215,9 @@ export function ResourceMentionEditor({
       <div className="resource-mention-strip" aria-label="引用资源">
         {stripItems.map((item) => {
           const mention = mentionRanges.find(
-            (range) => range.mention.assetId === item.assetId,
+            (range) => range.mention.mentionId === item.mentionId,
           )?.mention;
-          const resolvedAsset = assets.find((asset) => asset.id === item.assetId) ?? item.asset;
+          const resolvedAsset = item.asset;
           const unavailableReason = mention
             ? getMentionUnavailableReason(mention, resolvedAsset as Asset | undefined)
             : undefined;
@@ -1306,9 +1338,7 @@ export function ResourceMentionEditor({
               const mention = mentionRanges.find(
                 (range) => range.mention.mentionId === mentionId,
               )!.mention;
-              const asset =
-                assets.find((item) => item.id === mention.assetId) ??
-                connectedAssets.find((item) => item.id === mention.assetId);
+              const asset = resolveMentionAsset(mention, assets, connectedAssets);
               return (
                 <Popover
                   key={mentionId}
@@ -1455,17 +1485,32 @@ export function ResourceMentionEditor({
                     return;
                   }
                   const pool = collectNamedResourcePool(rangesRef.current, connectedAssets);
+                  const mention = rangesRef.current.find(
+                    (range) => range.mention.mentionId === dialogItem.mentionId,
+                  )?.mention;
+                  const connected = connectedAssets.find(
+                    (asset) =>
+                      asset.id === dialogItem.assetId &&
+                      asset.assetVersion === dialogItem.assetVersion &&
+                      (!mention || asset.referenceName === dialogItem.name),
+                  );
+                  const version = dialogItem.assetVersion;
                   if (
-                    pool.some((item) => item.assetId !== dialogItem.assetId && item.name === name)
+                    pool.some(
+                      (item) =>
+                        item.name === name &&
+                        (item.assetId !== dialogItem.assetId || item.assetVersion !== version),
+                    )
                   ) {
                     setResourceNameError('这个名字已被其他资源占用');
                     return;
                   }
                   try {
-                    if (connectedAssets.some((asset) => asset.id === dialogItem.assetId)) {
-                      onConnectedResourceRename?.(dialogItem.assetId, name);
+                    if (onConnectedResourceRename && connected) {
+                      onConnectedResourceRename(dialogItem.assetId, name);
+                    } else if (dialogItem.mentionId) {
+                      renameStripResource(dialogItem.mentionId, name);
                     }
-                    if (dialogItem.mentionId) renameStripResource(dialogItem.mentionId, name);
                     setResourceDialogId(null);
                   } catch (error) {
                     setResourceNameError(
@@ -1730,17 +1775,28 @@ function getMentionUnavailableReason(
   return { code, label: labels[code] ?? '资源不可用' };
 }
 
-/** 资源搜索分组的中文显示名。 */
+/**
+ * 按提及身份解析预览；目录只提供元数据，不能覆盖文档冻结的版本地址。
+ * @returns 可用资源；目录和连线均不存在时保持缺失占位，不伪造资产。
+ */
+function resolveMentionAsset(
+  mention: PromptMention,
+  assets: readonly Asset[],
+  connectedAssets: readonly ConnectedPromptAsset[],
+): ConnectedPromptAsset | undefined {
+  const asset =
+    assets.find((item) => item.id === mention.assetId) ??
+    connectedAssets.find(
+      (item) => item.id === mention.assetId && item.assetVersion === mention.assetVersion,
+    ) ??
+    connectedAssets.find((item) => item.id === mention.assetId);
+  if (!asset || mention.assetVersion === undefined) return asset;
+  return { ...asset, contentUrl: resultAssetContentUrl(mention.assetId, mention.assetVersion) };
+}
+
+/** 为本地编辑生成唯一提及 ID，保留已有范围的稳定身份。 */
 function createMentionId(ranges: readonly MentionRange[]): string {
-  const occupied = new Set(ranges.map((range) => range.mention.mentionId));
-  const random =
-    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : `mention_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-  if (!occupied.has(random)) return random;
-  let suffix = 2;
-  while (occupied.has(`${random}_${suffix}`)) suffix += 1;
-  return `${random}_${suffix}`;
+  return createPromptMentionId(ranges.map((range) => range.mention.mentionId));
 }
 
 /**
@@ -1764,11 +1820,17 @@ function collectNamedResourcePool(
     label: string;
     assetVersion?: number;
   }> = [];
-  const seen = new Set<string>();
   for (const range of ranges) {
     const name = mentionDisplayName(range.mention);
-    if (seen.has(name)) continue;
-    seen.add(name);
+    if (
+      pool.some(
+        (item) =>
+          item.name === name &&
+          item.assetId === range.mention.assetId &&
+          item.assetVersion === range.mention.assetVersion,
+      )
+    )
+      continue;
     pool.push({
       name,
       assetId: range.mention.assetId,
@@ -1778,7 +1840,16 @@ function collectNamedResourcePool(
     });
   }
   for (const asset of connectedAssets) {
-    if (pool.some((item) => item.assetId === asset.id)) continue;
+    if (asset.versionUnavailable) continue;
+    if (
+      pool.some(
+        (item) =>
+          item.assetId === asset.id &&
+          item.assetVersion === asset.assetVersion &&
+          (!asset.referenceName || item.name === asset.referenceName),
+      )
+    )
+      continue;
     const name =
       asset.referenceName ??
       uniqueResourceDisplayName(
@@ -1790,27 +1861,14 @@ function collectNamedResourcePool(
       assetId: asset.id,
       mediaType: asset.mediaType,
       label: asset.name,
+      assetVersion: asset.assetVersion,
     });
   }
   return pool;
 }
 
 /**
- * ASCII 资源名只在独立词边界上绑定，避免输入 12 时命中名为 2 的资源。
- * 中文名仍按整段匹配，因为提示词里通常没有空格。
- */
-function canPromoteNameAt(text: string, start: number, end: number, name: string): boolean {
-  if (!name) return false;
-  const asciiName = [...name].every((ch) => ch.charCodeAt(0) <= 127);
-  if (!asciiName) return true;
-  const left = start === 0 ? '' : (text[start - 1] ?? '');
-  const right = end >= text.length ? '' : (text[end] ?? '');
-  const isAsciiWord = (ch: string) => /[A-Za-z0-9_]/u.test(ch);
-  return !isAsciiWord(left) && !isAsciiWord(right);
-}
-
-/**
- * 把当前节点已绑定的资源名从纯文本提升为提及。只使用本节点资源池。
+ * 按本节点资源池提升文字；同名对应不同资产或版本时不推断身份。
  */
 function promotePlaintextResourceNames(
   text: string,
@@ -1818,7 +1876,16 @@ function promotePlaintextResourceNames(
   pool: ReturnType<typeof collectNamedResourcePool>,
 ): MentionRange[] {
   const next = [...ranges];
-  const names = [...pool].sort((left, right) => right.name.length - left.name.length);
+  const names = pool
+    .filter(
+      (item) =>
+        !pool.some(
+          (other) =>
+            other.name === item.name &&
+            (other.assetId !== item.assetId || other.assetVersion !== item.assetVersion),
+        ),
+    )
+    .sort((left, right) => right.name.length - left.name.length);
   for (const item of names) {
     if (!item.name) continue;
     let from = 0;
@@ -1827,7 +1894,7 @@ function promotePlaintextResourceNames(
       if (start < 0) break;
       const end = start + item.name.length;
       const overlap = next.some((range) => start < range.end && end > range.start);
-      if (overlap || !canPromoteNameAt(text, start, end, item.name)) {
+      if (overlap || !canPromoteResourceNameAt(text, start, end, item.name)) {
         from = start + 1;
         continue;
       }

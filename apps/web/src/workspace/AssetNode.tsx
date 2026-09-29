@@ -18,6 +18,7 @@ import {
   WandSparkles,
   X,
 } from 'lucide-react';
+import { Tooltip } from 'antd';
 import {
   NodeResizer,
   useEdges,
@@ -26,6 +27,7 @@ import {
   type NodeProps,
 } from '@xyflow/react';
 import {
+  cloneElement,
   createContext,
   useCallback,
   useContext,
@@ -35,7 +37,10 @@ import {
   useState,
   useRef,
   type KeyboardEvent,
+  type FocusEvent,
+  type HTMLAttributes,
   type ReactNode,
+  type ReactElement,
   type CSSProperties,
 } from 'react';
 
@@ -52,6 +57,7 @@ import {
   DialogClose,
   DialogContent,
   DialogTitle,
+  type ButtonProps,
 } from '@multimodal-canvas/ui';
 import type { AssetFlowNode } from '../canvas-utils';
 import { isImeKeyboardEvent } from '../ime';
@@ -113,6 +119,59 @@ type NodePresentationState = 'empty' | 'running' | 'failed' | 'cancelled' | 'pre
  */
 function NodeFloatingActionLabel({ children }: { children: ReactNode }) {
   return <span className="flow-node-action-label">{children}</span>;
+}
+
+/** 直接附着原操作元素，说明浮层不增加影响拖动命中的 DOM 包裹层。 */
+function NodeFloatingHint({
+  description,
+  children,
+}: {
+  description: string;
+  children: ReactElement<HTMLAttributes<HTMLElement>>;
+}) {
+  const [open, setOpen] = useState(false);
+
+  /** Modal 会在 effect 内恢复焦点；延后更新说明，避免库的 focus trigger 同步 flush。 */
+  const updateFocus = (event: FocusEvent<HTMLElement>) => {
+    const element = event.currentTarget;
+    queueMicrotask(() => {
+      if (!element.isConnected) return;
+      setOpen(element.ownerDocument.activeElement === element);
+    });
+  };
+
+  return (
+    <Tooltip
+      title={description}
+      trigger={['hover']}
+      open={open}
+      onOpenChange={setOpen}
+      placement="top"
+      destroyOnHidden
+      getPopupContainer={() => document.body}
+      styles={{ root: { pointerEvents: 'none' } }}
+    >
+      {cloneElement(children, {
+        onFocus: (event) => {
+          children.props.onFocus?.(event);
+          updateFocus(event);
+        },
+        onBlur: (event) => {
+          children.props.onBlur?.(event);
+          updateFocus(event);
+        },
+      })}
+    </Tooltip>
+  );
+}
+
+/** title 只用于功能说明；原生禁用、可访问名与拖动事件原样透传给按钮。 */
+function NodeFloatingActionButton({ title, ...props }: ButtonProps & { title: string }) {
+  return (
+    <NodeFloatingHint description={title}>
+      <Button {...props} variant="ghost" />
+    </NodeFloatingHint>
+  );
 }
 
 /**
@@ -531,11 +590,11 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
         {floatingControls ? (
           <>
             {changeLabel ? (
-              <Button
+              <NodeFloatingActionButton
                 type="button"
                 className="flow-node-action-button flow-node-label-button nodrag nopan nowheel"
                 aria-label={`重命名节点：${data.label}`}
-                title="重命名节点"
+                title="修改节点名称，不影响已有内容"
                 onClick={(event) => {
                   event.stopPropagation();
                   openRename();
@@ -550,22 +609,26 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
               >
                 <Pencil size={18} aria-hidden="true" />
                 <NodeFloatingActionLabel>重命名</NodeFloatingActionLabel>
-              </Button>
+              </NodeFloatingActionButton>
             ) : null}
-            <Button
+            <NodeFloatingActionButton
               type="button"
               className="flow-node-action-button flow-node-drag-handle"
               aria-label="拖动移动节点"
-              title="拖动移动节点"
+              title="按住拖动，调整节点在画布中的位置"
             >
               <GripVertical size={18} aria-hidden="true" />
               <NodeFloatingActionLabel>移动</NodeFloatingActionLabel>
-            </Button>
-            <Button
+            </NodeFloatingActionButton>
+            <NodeFloatingActionButton
               type="button"
               className={`flow-node-action-button flow-node-info-button nodrag nopan nowheel${data.stale ? ' is-stale' : ''}`}
               aria-label="查看节点信息"
-              title={data.stale ? '查看节点信息（待更新）' : '查看节点信息'}
+              title={
+                data.stale
+                  ? '查看节点信息；上游内容已变更，节点待更新'
+                  : '查看节点类型、运行状态与资源信息'
+              }
               onPointerDown={(event) => event.stopPropagation()}
               onClick={(event) => {
                 event.stopPropagation();
@@ -574,14 +637,14 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
             >
               <Info size={18} aria-hidden="true" />
               <NodeFloatingActionLabel>信息</NodeFloatingActionLabel>
-            </Button>
+            </NodeFloatingActionButton>
             {openPrompt ? (
-              <Button
+              <NodeFloatingActionButton
                 type="button"
                 id={`node-prompt-trigger-${id}`}
                 className="flow-node-action-button flow-node-prompt-button nodrag nopan nowheel"
                 aria-label={`查看生成提示词：${data.label}`}
-                title="查看生成提示词"
+                title="查看本次生成实际发送的提示词"
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={(event) => {
                   event.stopPropagation();
@@ -590,39 +653,47 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
               >
                 <FileText size={18} aria-hidden="true" />
                 <NodeFloatingActionLabel>提示词</NodeFloatingActionLabel>
-              </Button>
+              </NodeFloatingActionButton>
             ) : null}
-            <span
-              className="flow-node-action-button flow-node-floating-duration nodrag nopan nowheel"
-              aria-label="节点生成耗时"
+            <NodeFloatingHint
+              description={previewAsset ? '查看当前结果的生成耗时' : '查看节点本次生成的耗时'}
             >
-              <NodeDurationBadge
-                {...(displayedTiming ? { timing: displayedTiming } : {})}
-                label="耗时"
-                now={durationNow}
-                running={!previewAsset && isNodeRunning(data.runStatus)}
-              />
-            </span>
-            {previewAsset && isNodeRunning(data.runStatus) ? (
               <span
                 className="flow-node-action-button flow-node-floating-duration nodrag nopan nowheel"
-                aria-label="当前执行耗时"
+                aria-label="节点生成耗时"
+                tabIndex={0}
               >
                 <NodeDurationBadge
-                  {...(data.nodeTiming ? { timing: data.nodeTiming } : {})}
-                  label="当前执行"
+                  {...(displayedTiming ? { timing: displayedTiming } : {})}
+                  label="耗时"
                   now={durationNow}
-                  running
+                  running={!previewAsset && isNodeRunning(data.runStatus)}
                 />
               </span>
+            </NodeFloatingHint>
+            {previewAsset && isNodeRunning(data.runStatus) ? (
+              <NodeFloatingHint description="当前任务已用时间，不包含旧结果的耗时">
+                <span
+                  className="flow-node-action-button flow-node-floating-duration nodrag nopan nowheel"
+                  aria-label="当前执行耗时"
+                  tabIndex={0}
+                >
+                  <NodeDurationBadge
+                    {...(data.nodeTiming ? { timing: data.nodeTiming } : {})}
+                    label="当前执行"
+                    now={durationNow}
+                    running
+                  />
+                </span>
+              </NodeFloatingHint>
             ) : null}
             {setNodeEnabled ? (
-              <Button
+              <NodeFloatingActionButton
                 type="button"
                 className="flow-node-action-button flow-node-enabled-toggle nodrag nopan nowheel"
                 aria-label={enabled ? '停用节点' : '启用节点'}
                 aria-pressed={enabled}
-                title={enabled ? '停用节点' : '启用节点'}
+                title={enabled ? '停用后不参与生成，保留已有内容' : '重新启用此节点参与生成'}
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={(event) => {
                   event.stopPropagation();
@@ -631,26 +702,32 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
               >
                 <Power size={18} strokeWidth={2.2} aria-hidden="true" />
                 <NodeFloatingActionLabel>{enabled ? '停用' : '启用'}</NodeFloatingActionLabel>
-              </Button>
+              </NodeFloatingActionButton>
             ) : null}
-            <span
-              className={`flow-node-action-button flow-node-status ${
-                effectivePreviewLoadState === 'error' || presentationState === 'missing'
-                  ? 'is-error'
-                  : ''
-              }`}
-              title={statusTooltip}
-            >
-              <RunStatusIcon status={data.runStatus} artifactState={statusArtifactState} />
-              <NodeFloatingActionLabel>{statusTooltip}</NodeFloatingActionLabel>
-            </span>
+            <NodeFloatingHint description={`运行与资源状态：${statusTooltip}`}>
+              <span
+                className={`flow-node-action-button flow-node-status ${
+                  effectivePreviewLoadState === 'error' || presentationState === 'missing'
+                    ? 'is-error'
+                    : ''
+                }`}
+                tabIndex={0}
+              >
+                <RunStatusIcon status={data.runStatus} artifactState={statusArtifactState} />
+                <NodeFloatingActionLabel>{statusTooltip}</NodeFloatingActionLabel>
+              </span>
+            </NodeFloatingHint>
             {contentHandlers && (
-              <Button
+              <NodeFloatingActionButton
                 type="button"
                 className="flow-node-action-button flow-node-upload-button nodrag nopan nowheel"
                 disabled={writingDisabled}
                 aria-label={`上传到节点：${data.label}`}
-                title="上传并替换节点内容"
+                title={
+                  writingDisabled
+                    ? '节点正在运行或保存，请稍后再上传'
+                    : '上传本地文件并替换当前节点内容'
+                }
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={(event) => {
                   event.stopPropagation();
@@ -665,10 +742,10 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
                 <NodeFloatingActionLabel>
                   {uploadProgress === null ? '上传' : '上传中'}
                 </NodeFloatingActionLabel>
-              </Button>
+              </NodeFloatingActionButton>
             )}
             {editImage && isImageEditSourceNode({ data }) ? (
-              <Button
+              <NodeFloatingActionButton
                 type="button"
                 className="flow-node-action-button flow-node-edit-image-button nodrag nopan nowheel"
                 disabled={writingDisabled}
@@ -676,7 +753,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
                 title={
                   writingDisabled
                     ? '节点正在运行或保存，请稍后再修改图片'
-                    : '修改图片：引用当前图片到新节点'
+                    : '引用当前图片创建编辑节点，不覆盖原图'
                 }
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={(event) => {
@@ -688,10 +765,10 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
               >
                 <WandSparkles size={18} aria-hidden="true" />
                 <NodeFloatingActionLabel>修改图片</NodeFloatingActionLabel>
-              </Button>
+              </NodeFloatingActionButton>
             ) : null}
             {downloadableMedia && (
-              <Button
+              <NodeFloatingActionButton
                 type="button"
                 className="flow-node-action-button flow-node-download-button nodrag nopan nowheel"
                 disabled={!previewAsset?.contentUrl || isDownloading}
@@ -701,7 +778,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
                   isDownloading
                     ? '正在准备下载'
                     : previewAsset?.contentUrl
-                      ? `下载${mediaLabels[data.mediaType]}`
+                      ? `下载当前回显的${mediaLabels[data.mediaType]}文件`
                       : '暂无可下载内容'
                 }
                 onPointerDown={(event) => event.stopPropagation()}
@@ -718,14 +795,14 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
                 <NodeFloatingActionLabel>
                   {isDownloading ? '下载中' : '下载'}
                 </NodeFloatingActionLabel>
-              </Button>
+              </NodeFloatingActionButton>
             )}
             {deleteNode ? (
-              <Button
+              <NodeFloatingActionButton
                 type="button"
                 className="flow-node-action-button flow-node-delete-button nodrag nopan nowheel"
                 aria-label={`删除节点：${data.label}`}
-                title="删除节点"
+                title="删除当前节点及关联连线"
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={(event) => {
                   event.stopPropagation();
@@ -734,7 +811,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
               >
                 <Trash2 size={18} strokeWidth={2.2} aria-hidden="true" />
                 <NodeFloatingActionLabel>删除</NodeFloatingActionLabel>
-              </Button>
+              </NodeFloatingActionButton>
             ) : null}
           </>
         ) : (

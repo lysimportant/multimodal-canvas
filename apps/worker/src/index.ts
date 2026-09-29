@@ -1,4 +1,4 @@
-import { Job, Queue, Worker, type ConnectionOptions } from 'bullmq';
+import { Job, Queue, UnrecoverableError, Worker, type ConnectionOptions } from 'bullmq';
 import { Prisma } from '@prisma/client';
 import { startWorkerConcurrencySync } from './generation-concurrency';
 import {
@@ -1001,6 +1001,8 @@ export function createRunWorker(options: {
       const uncertainReversePromptNodes = new Set<string>();
       /** 返回或归档证据已存在但结果不可恢复时，只能核实原请求，不能自动重新生成。 */
       const unrecoverableDeliveryNodes = new Set<string>();
+      /** 同一 Run 已明确拒绝的创建请求保留原错；不拦截新 Run 的显式重试。 */
+      const rejectedCreationErrors = new Map<string, string>();
       /** 只在进程内持有解密结果；队列中始终仅保留恢复身份。 */
       const stagedResults = new Map<
         string,
@@ -1234,6 +1236,31 @@ export function createRunWorker(options: {
             continue;
           }
 
+          const resumableProviderJob = providerCandidates.find(
+            (candidate) =>
+              candidate.provider === initialData.provider && canResumeProviderJob(candidate),
+          );
+          const rejectedCreation = !resumableProviderJob
+            ? providerCandidates.find(
+                (candidate) =>
+                  candidate.id === localProviderJob.id &&
+                  candidate.provider === initialData.provider &&
+                  candidate.status === 'failed' &&
+                  !candidate.platformJobId &&
+                  candidate.payload?.sendStatus === 'failed',
+              )
+            : undefined;
+          const rejectionMessage = rejectedCreation?.payload?.error;
+          if (rejectedCreation && typeof rejectionMessage === 'string') {
+            rejectedCreationErrors.set(node.id, rejectionMessage);
+            workflowState = replaceWorkflowNodeState(workflowState, {
+              nodeId: node.id,
+              status: 'failed',
+              providerJob: rejectedCreation,
+            });
+            continue;
+          }
+
           if (
             (executionSnapshot.reversePrompt || executionSnapshot.promptOptimization) &&
             ((currentState && currentState.status !== 'pending') ||
@@ -1249,10 +1276,6 @@ export function createRunWorker(options: {
             continue;
           }
 
-          const resumableProviderJob = providerCandidates.find(
-            (candidate) =>
-              candidate.provider === initialData.provider && canResumeProviderJob(candidate),
-          );
           const providerJob: ProviderJob = resumableProviderJob
             ? {
                 ...localProviderJob,
@@ -1490,6 +1513,12 @@ export function createRunWorker(options: {
             isCompletedWorkflowResultForNode(nodeState.result, node, executionSnapshot)
           ) {
             continue;
+          }
+          const rejectedCreationError = rejectedCreationErrors.get(node.id);
+          if (rejectedCreationError !== undefined) {
+            activeNodeId = node.id;
+            activeProviderJob = nodeState.providerJob;
+            throw new UnrecoverableError(rejectedCreationError);
           }
           if (uncertainReversePromptNodes.has(node.id)) {
             if (executionSnapshot.promptOptimization)
@@ -2366,6 +2395,13 @@ export function createRunWorker(options: {
         };
       } catch (rawError) {
         let error = redactTransientAssetData(rawError);
+        // 仅明确拒绝且没有结果或平台任务可恢复的创建请求终止队列重试。
+        const rejectedCreation =
+          activeSendIntent &&
+          !activeProviderJob?.platformJobId &&
+          activeProviderJob?.payload?.deliveryState !== 'received' &&
+          activeProviderJob?.payload?.deliveryState !== 'archived' &&
+          requestPromptSendStatusForFailure(rawError) === 'failed';
         if (activeArchivePhase && activeProviderJob?.payload?.deliveryState === 'received') {
           const previous = activeProviderJob.payload.firstArchiveError;
           const firstArchiveError =
@@ -2389,7 +2425,7 @@ export function createRunWorker(options: {
             ...(isRecord(rawError) && typeof rawError.platformJobId === 'string'
               ? { platformJobId: rawError.platformJobId }
               : {}),
-            error: sendStatus,
+            error: serializeWorkerError(error).errorMessage,
           });
           activeSendIntent = false;
         }
@@ -2447,12 +2483,16 @@ export function createRunWorker(options: {
           failedNodeProviderJobBase,
           error,
         );
+        const errorMessage = serializeWorkerError(error).errorMessage;
         const failedProviderJob: ProviderJob = {
           ...failedNodeWithMetadata,
           status: 'failed' as const,
           payload: workflowProviderPayload(
             failedNodeId,
-            failedNodeWithMetadata.payload,
+            {
+              ...(failedNodeWithMetadata.payload ?? {}),
+              ...(rejectedCreation ? { sendStatus: 'failed', error: errorMessage } : {}),
+            },
             snapshotFingerprint,
           ),
           updatedAt: failedAt,
@@ -2462,7 +2502,6 @@ export function createRunWorker(options: {
           status: 'failed',
           providerJob: failedProviderJob,
         });
-        const errorMessage = serializeWorkerError(error).errorMessage;
         const rootProviderJob: ProviderJob =
           failedNodeId === executionSnapshot.targetNodeId
             ? failedProviderJob
@@ -2510,6 +2549,11 @@ export function createRunWorker(options: {
           'workflow.node_id': failedNodeId,
         });
         finishRunSpan('error', 'failed');
+        if (rejectedCreation) {
+          const terminalError = new UnrecoverableError(errorMessage);
+          terminalError.cause = error;
+          throw terminalError;
+        }
         throw error;
       } finally {
         cancellationMonitor.stop();
@@ -2598,6 +2642,7 @@ export function sanitizeProviderJobPayload(value: unknown): Record<string, unkno
     'workflowNodeId',
     'requestProviderJobId',
     'requestPromptRecords',
+    'sendStatus',
     'snapshotFingerprint',
     'error',
     'statusResponse',

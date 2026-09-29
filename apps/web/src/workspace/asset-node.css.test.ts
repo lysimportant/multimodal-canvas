@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 const assetNodeCss = readFileSync(resolve(process.cwd(), 'src/workspace/asset-node.css'), 'utf8');
 const normalizedCss = assetNodeCss.replace(/\s+/g, ' ');
@@ -30,5 +30,89 @@ describe('asset node floating controls CSS contracts', () => {
     );
     expect(normalizedCss).toMatch(/\.flow-node-action-label \{[^}]*font-size: 13px;/);
     expect(normalizedCss).toMatch(/\.flow-node-action-label \{[^}]*display: inline;/);
+  });
+});
+
+describe('asset node action item CSS', () => {
+  let style: HTMLStyleElement;
+  let fixture: HTMLDivElement;
+
+  beforeEach(() => {
+    style = document.createElement('style');
+    style.textContent = assetNodeCss;
+    document.head.append(style);
+    fixture = document.createElement('div');
+    fixture.innerHTML = `
+      <div class="flow-node-header flow-node-floating-controls">
+        <button class="ant-btn flow-node-action-button flow-node-drag-handle" id="move">移动</button>
+        <button class="ant-btn flow-node-action-button flow-node-upload-button" id="upload">上传</button>
+        <button class="ant-btn flow-node-action-button flow-node-delete-button" id="delete">删除</button>
+        <button class="ant-btn flow-node-action-button flow-node-upload-button" disabled id="disabled">上传</button>
+        <span class="flow-node-action-button flow-node-floating-duration" tabindex="0" id="duration">耗时</span>
+      </div>
+      <div class="flow-node-header">
+        <button class="flow-node-delete-button" id="ordinary-delete">删除</button>
+      </div>
+    `;
+    document.body.append(fixture);
+  });
+
+  afterEach(() => {
+    fixture.remove();
+    style.remove();
+  });
+
+  /** 检查原生按钮与只读项的实际 CSS 选择器匹配，不复制生产规则。 */
+  function actionStyle(id: string) {
+    return getComputedStyle(fixture.querySelector<HTMLElement>(`#${id}`)!);
+  }
+
+  it('操作项留白一致，旧上传和删除规则不能清零 padding 或固定 flex 宽度', () => {
+    for (const id of ['move', 'upload', 'delete', 'disabled', 'duration']) {
+      const css = actionStyle(id);
+      expect(css.padding).toBe('6px 8px');
+      expect(css.borderTopWidth).toBe('0px');
+      expect(css.flex).toBe('0 0 auto');
+    }
+    expect(actionStyle('move').cursor).toBe('grab');
+    expect(actionStyle('ordinary-delete').padding).toBe('0px');
+    expect(actionStyle('ordinary-delete').width).toBe('40px');
+  });
+
+  it('hover、active 和 focus 明确覆盖 Ant Button 的整条 border，危险项仍为原警示色', () => {
+    const interactiveRule = normalizedCss.match(
+      /\.flow-node-floating-controls \.flow-node-action-button:not\(:disabled\):not\(\.ant-btn-disabled\):is\(\s*:hover, :active, :focus-visible\s*\) \{([^}]+)\}/,
+    )?.[1];
+    expect(interactiveRule).toContain('border: 0;');
+    expect(interactiveRule).toContain('box-shadow: none;');
+    expect(interactiveRule).toContain('background-color: var(--mc-accent-soft);');
+    expect(interactiveRule).toContain('color: var(--mc-accent-strong);');
+    fixture.querySelector<HTMLButtonElement>('#delete')!.focus();
+    const danger = actionStyle('delete');
+    expect(danger.borderTopWidth).toBe('0px');
+    expect(danger.boxShadow).toBe('none');
+    expect(danger.color).toBe('rgb(191, 66, 55)');
+  });
+
+  it('键盘焦点可见但不再绘制外框，禁用按钮不带 hover 底色', () => {
+    fixture.querySelector<HTMLButtonElement>('#move')!.focus();
+    expect(actionStyle('move').outline).toBe('none');
+    expect(actionStyle('move').textDecoration).toBe('underline');
+    expect(actionStyle('move').backgroundColor).toBe('var(--mc-accent-soft)');
+    expect(actionStyle('disabled').backgroundColor).toBe('rgba(0, 0, 0, 0)');
+    expect(actionStyle('disabled').cursor).toBe('not-allowed');
+    expect(actionStyle('disabled').boxShadow).toBe('none');
+  });
+
+  it('减少动态效果时关闭新增按钮过渡和图标位移', () => {
+    const rules = Array.from(style.sheet!.cssRules)
+      .filter(
+        (rule): rule is CSSMediaRule =>
+          rule instanceof CSSMediaRule && rule.conditionText === '(prefers-reduced-motion: reduce)',
+      )
+      .flatMap((rule) => Array.from(rule.cssRules) as CSSStyleRule[])
+      .filter((rule) => rule.selectorText.includes('flow-node-action-button'));
+    expect(rules.some((rule) => rule.style.getPropertyValue('transition') === 'none')).toBe(true);
+    expect(rules.some((rule) => rule.style.getPropertyValue('transform') === 'none')).toBe(true);
   });
 });

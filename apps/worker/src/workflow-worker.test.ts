@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
+import { UnrecoverableError } from 'bullmq';
 import { Prisma } from '@prisma/client';
-import { NewApiVideoProvider } from '@multimodal-canvas/providers';
+import {
+  NewApiProviderError,
+  NewApiVideoProvider,
+  reportRequestPrompt,
+} from '@multimodal-canvas/providers';
 import { WorkerPrismaRunPersistence } from './prisma-persistence';
 import {
   nodeTimingDuration,
@@ -36,7 +41,8 @@ const bullmqState = vi.hoisted(() => ({
   processor: undefined as ((job: StubJob) => Promise<unknown>) | undefined,
 }));
 
-vi.mock('bullmq', () => {
+vi.mock('bullmq', async (importOriginal) => {
+  const { UnrecoverableError } = await importOriginal<typeof import('bullmq')>();
   class Queue {
     constructor(..._args: unknown[]) {}
   }
@@ -53,7 +59,7 @@ vi.mock('bullmq', () => {
     }
   }
 
-  return { Job, Queue, Worker };
+  return { Job, Queue, Worker, UnrecoverableError };
 });
 
 import { createProviderJobRecord, type RunPersistence, type WorkerProviderRequest } from './index';
@@ -347,7 +353,8 @@ describe('worker workflow DAG execution', () => {
           >[0],
         ) => {
           archiveKeys.push(input.archiveKey);
-          if (archiveKeys.length === 1) throw new Error('storage temporarily unavailable');
+          if (archiveKeys.length === 1)
+            throw Object.assign(new Error('storage temporarily unavailable'), { status: 400 });
           expect(input.archiveInput?.content?.toString()).toBe('output for node_draft');
           return { assetId: 'asset_recovered', version: 1, mimeType: 'text/plain' };
         },
@@ -391,9 +398,11 @@ describe('worker workflow DAG execution', () => {
       };
       const job = createJob(data);
       createRunWorker({ ...options, resultStagingStore: staging.createStore() });
-      await expect(bullmqState.processor?.(job)).rejects.toThrow(
+      const firstAttempt = bullmqState.processor?.(job);
+      await expect(firstAttempt).rejects.toThrow(
         '生成已完成，归档失败：storage temporarily unavailable',
       );
+      await expect(firstAttempt).rejects.not.toBeInstanceOf(UnrecoverableError);
       expect(staging.values.size).toBe(1);
       expect(JSON.stringify(job.data)).not.toContain('output for node_draft');
       expect(JSON.stringify([...staging.values.values()])).not.toContain('output for node_draft');
@@ -460,11 +469,13 @@ describe('worker workflow DAG execution', () => {
     const originalUpdate = job.updateData.bind(job);
     job.updateData = async (data) => {
       if ((data.providerJob as ProviderJob)?.payload?.deliveryState === 'received')
-        throw new Error('receipt write failed');
+        throw Object.assign(new Error('receipt write failed'), { status: 400 });
       await originalUpdate(data);
     };
     createRunWorker({ ...options, resultStagingStore: staging.createStore() });
-    await expect(bullmqState.processor?.(job)).rejects.toThrow('receipt write failed');
+    const receiptAttempt = bullmqState.processor?.(job);
+    await expect(receiptAttempt).rejects.toThrow('receipt write failed');
+    await expect(receiptAttempt).rejects.not.toBeInstanceOf(UnrecoverableError);
     expect(staging.values.size).toBe(1);
     job.updateData = originalUpdate;
     createRunWorker({ ...options, resultStagingStore: staging.createStore() });
@@ -2278,7 +2289,7 @@ describe('worker workflow DAG execution', () => {
           runStatuses.push(input.status);
           if (input.status === 'succeeded' && rejectSucceededWrite) {
             rejectSucceededWrite = false;
-            throw new Error('final run write unavailable');
+            throw Object.assign(new Error('final run write unavailable'), { status: 400 });
           }
         },
       },
@@ -2289,7 +2300,9 @@ describe('worker workflow DAG execution', () => {
       }),
     });
 
-    await expect(bullmqState.processor?.(job)).rejects.toThrow('final run write unavailable');
+    const finalizationAttempt = bullmqState.processor?.(job);
+    await expect(finalizationAttempt).rejects.toThrow('final run write unavailable');
+    await expect(finalizationAttempt).rejects.not.toBeInstanceOf(UnrecoverableError);
     expect(workflowNodeState(job.data.workflowState as WorkflowState, 'node_draft')).toMatchObject({
       status: 'failed',
       result: { asset: { assetId: 'asset_draft_replayed' } },
@@ -3238,6 +3251,126 @@ function providerRequestPrompt(input: {
 }
 
 describe('worker request prompt retention', () => {
+  it.each(['queue', 'database'] as const)(
+    '上游文字节点 400 的 %s 重复消费保留原错与节点身份，不覆盖为防重发提示',
+    async (source) => {
+      bullmqState.jobs.clear();
+      const runId = '123e4567-e89b-42d3-a456-426614174220';
+      const imageSnapshot = withTestExecutionBindings({
+        ...snapshot,
+        targetNodeId: 'node_image',
+        modelAlias: 'image-model',
+        nodes: snapshot.nodes
+          .filter((node) => node.id !== 'node_video')
+          .map((node) =>
+            node.id === 'node_draft'
+              ? { ...node, data: { ...node.data, modelAlias: 'gpt-image-2' } }
+              : node,
+          ),
+        edges: snapshot.edges.filter((edge) => edge.targetNodeId !== 'node_video'),
+        inputs: [],
+      });
+      const failure = new NewApiProviderError(
+        'This model is not supported on the Chat Completions endpoint',
+        { status: 400, requestId: 'synthetic-chat-rejection' },
+      );
+      const saved = new Map<string, ProviderJob>();
+      const updateRun = vi.fn(async () => undefined);
+      const retainPrompt = vi.fn(async () => undefined);
+      const finishSend = vi.fn(async () => undefined);
+      let sendClaimed = false;
+      const beginSend = vi.fn(async () => {
+        if (sendClaimed) throw new Error('原请求可能已经送达，禁止重复创建');
+        sendClaimed = true;
+      });
+      const post = vi.fn(async () => {
+        throw failure;
+      });
+      const execute = vi.fn(async (request: WorkerProviderRequest) => {
+        await reportRequestPrompt({
+          ...request,
+          provider: 'newapi',
+          mediaType: 'text',
+          requestIdentity: 'POST /chat/completions#1',
+          format: 'plain',
+          parts: [{ order: 0, text: 'Synthetic upstream text request' }],
+          resources: [],
+        });
+        return post();
+      });
+      const options: Parameters<typeof createRunWorker>[0] = {
+        connection: { host: '127.0.0.1', port: 6379 },
+        providerName: 'newapi',
+        provider: { execute },
+        stepDelayMs: 0,
+        execution: {
+          async authorizeRun() {},
+          async authorizeNode() {},
+          beginSend,
+          finishSend,
+        },
+        persistence: {
+          getProviderCredentials: getTestProviderCredentials,
+          async upsertProviderJob({ providerJob }) {
+            saved.set(providerJob.id, structuredClone(providerJob));
+          },
+          async findProviderJobsByRunId() {
+            return [...saved.values()];
+          },
+          async recordUsage() {},
+          upsertRequestPromptRecord: retainPrompt,
+          updateRun,
+        },
+      };
+      const data: RunJobData = {
+        runId,
+        snapshot: imageSnapshot,
+        attempt: 1,
+        provider: 'newapi',
+        providerJob: createProviderJobRecord(runId, 'newapi'),
+        cancelRequested: false,
+      };
+      const job = createJob(data);
+      createRunWorker(options);
+      await expect(bullmqState.processor?.(job)).rejects.toThrow(failure.message);
+
+      const duplicate = source === 'database' ? createJob(data) : job;
+      createRunWorker(options);
+      await expect(bullmqState.processor?.(duplicate)).rejects.toMatchObject({
+        name: 'UnrecoverableError',
+        message: failure.message,
+      });
+
+      expect(updateRun).toHaveBeenLastCalledWith(
+        expect.objectContaining({ status: 'failed', error: failure.message }),
+      );
+      expect(beginSend).toHaveBeenCalledOnce();
+      expect(finishSend).toHaveBeenCalledOnce();
+      expect(finishSend).toHaveBeenCalledWith(
+        expect.objectContaining({ nodeId: 'node_draft', status: 'failed' }),
+      );
+      expect(post).toHaveBeenCalledOnce();
+      expect(execute).toHaveBeenCalledOnce();
+      expect(retainPrompt).toHaveBeenCalledOnce();
+      expect(retainPrompt).toHaveBeenCalledWith({
+        record: expect.objectContaining({
+          nodeId: 'node_draft',
+          mediaType: 'text',
+          modelAlias: 'gpt-image-2',
+          requestIdentity: 'POST /chat/completions#1',
+        }),
+      });
+      const state = duplicate.data.workflowState as WorkflowState;
+      expect(workflowNodeState(state, 'node_draft')).toMatchObject({
+        status: 'failed',
+        providerJob: {
+          payload: { workflowNodeId: 'node_draft', sendStatus: 'failed', error: failure.message },
+        },
+      });
+      expect(workflowNodeState(state, 'node_image')?.status).toBe('pending');
+    },
+  );
+
   it('binds the original request after resuming a platform task without another creation', async () => {
     bullmqState.jobs.clear();
     const originalRunId = '123e4567-e89b-42d3-a456-426614174162';
@@ -3722,7 +3855,11 @@ describe('worker request prompt retention', () => {
    * 返回可观测的发送终态、留存次数与 Provider 调用次数，用于确认失败分类不会
    * 让创建请求被重发。
    */
-  async function runProviderFailureScenario(input: { runId: string; failure: unknown }) {
+  async function runProviderFailureScenario(input: {
+    runId: string;
+    failure: unknown;
+    unrecoverable?: boolean;
+  }) {
     bullmqState.jobs.clear();
     const retained: string[] = [];
     const statuses: string[] = [];
@@ -3761,7 +3898,13 @@ describe('worker request prompt retention', () => {
       },
     });
 
-    await expect(bullmqState.processor?.(job)).rejects.toBe(input.failure);
+    const attempt = bullmqState.processor?.(job);
+    if (input.unrecoverable) {
+      await expect(attempt).rejects.toBeInstanceOf(UnrecoverableError);
+      await expect(attempt).rejects.toMatchObject({ cause: input.failure });
+    } else {
+      await expect(attempt).rejects.toBe(input.failure);
+    }
     return {
       statuses,
       retained,
@@ -3784,6 +3927,7 @@ describe('worker request prompt retention', () => {
       const scenario = await runProviderFailureScenario({
         runId,
         failure: Object.assign(new Error(`gateway responded ${status}`), { status }),
+        unrecoverable: expected === 'failed',
       });
 
       expect(scenario.statuses).toEqual([expected]);

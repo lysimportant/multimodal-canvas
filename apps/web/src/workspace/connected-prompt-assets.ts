@@ -4,13 +4,19 @@
 import type { Asset } from '@multimodal-canvas/domain';
 
 import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
-import { resultAssetContentUrl } from './node-echo-text';
+import { nodeEchoAssetVersion, resultAssetContentUrl } from './node-echo-text';
 
 /** 提示词资源条使用的连线资源，至少要能预览。 */
 export type ConnectedPromptAsset = Pick<Asset, 'id' | 'name' | 'mediaType'> &
   Partial<Pick<Asset, 'contentUrl' | 'mimeType' | 'status' | 'sizeBytes' | 'tags'>> & {
     /** 当前目标节点保存的引用别名，不修改资源库文件名。 */
     referenceName?: string;
+    /** 目标引用或来源回显已确定的版本；不因资源目录更新而替换。 */
+    assetVersion?: number;
+    /** 尚未冻结的旧别名，仅用于只读恢复投影。 */
+    referenceNeedsSync?: boolean;
+    /** 生成来源版本未知，不能借资源目录最新版建立引用。 */
+    versionUnavailable?: boolean;
   };
 
 /**
@@ -38,22 +44,35 @@ export function collectConnectedPromptAssets(
     if (!source) continue;
     const result = source.data.resultAsset;
     const assetId = result?.assetId ?? source.data.assetId;
-    if (!assetId || seen.has(assetId)) continue;
-    seen.add(assetId);
+    if (!assetId) continue;
     const catalog = assets.find((asset) => asset.id === assetId);
-    const contentUrl =
-      catalog?.contentUrl ??
-      result?.contentUrl ??
-      source.data.contentUrl ??
-      resultAssetContentUrl(assetId, result?.version);
-    const referenceName = (
+    const reference =
       references.find((reference) => reference.id === `connected:${assetId}`) ??
-      references.find((reference) => reference.assetId === assetId)
-    )?.name;
+      references.find((reference) => reference.assetId === assetId);
+    const assetVersion =
+      reference?.assetVersion ??
+      nodeEchoAssetVersion(source) ??
+      (source.data.mode === 'source' && !result ? catalog?.latestVersion : undefined);
+    const versionUnavailable = assetVersion === undefined && source.data.mode !== 'source';
+    const identity = JSON.stringify([assetId, assetVersion]);
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    const contentUrl =
+      assetVersion !== undefined
+        ? resultAssetContentUrl(assetId, assetVersion)
+        : versionUnavailable
+          ? undefined
+          : (catalog?.contentUrl ??
+            result?.contentUrl ??
+            source.data.contentUrl ??
+            resultAssetContentUrl(assetId));
     items.push({
       id: assetId,
       name: catalog?.name ?? source.data.label,
-      ...(referenceName ? { referenceName } : {}),
+      ...(reference?.name ? { referenceName: reference.name } : {}),
+      ...(reference && reference.assetVersion === undefined ? { referenceNeedsSync: true } : {}),
+      ...(assetVersion !== undefined ? { assetVersion } : {}),
+      ...(versionUnavailable ? { versionUnavailable: true } : {}),
       mediaType: source.data.mediaType,
       contentUrl,
       mimeType: catalog?.mimeType ?? result?.mimeType ?? source.data.mimeType ?? '',

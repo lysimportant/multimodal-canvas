@@ -130,8 +130,8 @@ function preferredRolesForVideoMode(
 }
 
 /**
- * Keep the four visible anchors stable while preserving every role-specific
- * target handle through the semantic hit layer rendered by NodeHandles.
+ * 四侧位置保持稳定，输入职责按媒体、视频模式和模型能力分配。
+ * 额外角色通过重叠语义输入层保留，已有连线身份不随可见位置变化。
  * @param mediaType 节点媒体类型。
  * @param mode 节点 source/generate。
  * @param options 视频模式与模型，仅视频生成节点需要。
@@ -199,6 +199,35 @@ type NodeHandlesProps = {
 };
 
 /**
+ * 说明当前连接点的职责和不可用原因；位置不变，说明跟随媒体模式切换。
+ * @param handle 当前可见连接点及其规范角色。
+ * @param mode 资源或生成节点模式。
+ * @param videoMode 视频输入模式，决定首尾帧及参考素材的含义。
+ * @returns 悬停提示，不改变连线身份或可连接性。
+ */
+function nodeHandleDescription(
+  handle: VisibleNodeHandle,
+  mode: NodeMode,
+  videoMode?: VideoMode,
+): string {
+  if (handle.type === 'source') {
+    return '输出：拖到其他节点作为输入，拖到空白处创建下游节点';
+  }
+  if (!handle.isConnectable) {
+    return mode === 'source'
+      ? '资源节点不接收输入，请从右侧输出连接'
+      : '当前模式未启用此输入口；切换模式后会自动调整';
+  }
+  if (!handle.role) return '参考素材：按拖入的媒体自动选择当前模式支持的输入';
+  const label = videoInputRoleLabel(handle.role, videoMode);
+  if (handle.role === 'prompt') return '提示词输入：接入文字节点，补充生成描述';
+  if (handle.role === 'negativePrompt') return '负面提示词输入：接入不希望出现的内容描述';
+  if (handle.role === 'firstFrame') return '首帧输入：接入图片，作为视频的开始画面';
+  if (handle.role === 'lastFrame') return '尾帧输入：接入图片，作为视频的结束画面';
+  return `${label}输入：接入兼容的上游内容`;
+}
+
+/**
  * 渲染四边居中可见锚点。额外语义输入叠在左侧可见锚点圆心，
  * 保证任意角色的连线都吸附到同一个可见圆点，而不是沿边框错位。
  * 首尾帧把尾帧放在下侧，形成两个可见槽位。
@@ -216,17 +245,8 @@ export function NodeHandles({ mediaType, mode, videoMode, modelAlias }: NodeHand
           type={handle.type}
           position={sidePositions[handle.side]}
           id={handle.id}
-          title={
-            handle.role
-              ? videoInputRoleLabel(handle.role, videoMode)
-              : handle.side === 'right'
-                ? '输出'
-                : videoMode === 'omni_reference' ||
-                    videoMode === 'video_edit' ||
-                    videoMode === 'video_extend'
-                  ? '参考'
-                  : '输入'
-          }
+          title={nodeHandleDescription(handle, mode, videoMode)}
+          aria-disabled={handle.isConnectable ? undefined : true}
           style={centeredSideStyles[handle.side]}
           isConnectable={handle.isConnectable}
         />

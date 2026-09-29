@@ -1,11 +1,98 @@
 .canvas-context-dropdown {
-  max-height: calc(100vh - 16px);
-  overflow-y: auto;
+  overflow: visible;
   width: min(280px, calc(100vw - 16px));
 }
 
 .canvas-context-dropdown.is-connection-drop {
   width: min(320px, calc(100vw - 16px));
+}
+
+/* 滚动只留在列表内；子菜单和 tooltip 通过 portal 脱离滚动裁切。 */
+.canvas-context-dropdown:is(.ant-dropdown, .ant-dropdown-menu-submenu) .ant-dropdown-menu {
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+}
+
+.canvas-context-dropdown:is(.ant-dropdown, .ant-dropdown-menu-submenu)
+  .ant-dropdown-menu
+  :is(.ant-dropdown-menu-item, .ant-dropdown-menu-submenu-title) {
+  border: 0;
+  box-shadow: none;
+  min-height: 38px;
+  outline: none;
+  padding: 9px 12px;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
+}
+
+.canvas-context-dropdown:is(.ant-dropdown, .ant-dropdown-menu-submenu)
+  .ant-dropdown-menu
+  .ant-dropdown-menu-submenu-title {
+  padding-inline-end: 32px;
+}
+
+.canvas-context-dropdown:is(.ant-dropdown, .ant-dropdown-menu-submenu)
+  .ant-dropdown-menu
+  :is(
+    .ant-dropdown-menu-item:not(.ant-dropdown-menu-item-disabled):not(
+        .ant-dropdown-menu-item-danger
+      ),
+    .ant-dropdown-menu-submenu:not(.ant-dropdown-menu-submenu-disabled)
+      > .ant-dropdown-menu-submenu-title
+  ):is(:hover, :focus-visible, .ant-dropdown-menu-item-active),
+.canvas-context-dropdown:is(.ant-dropdown, .ant-dropdown-menu-submenu)
+  .ant-dropdown-menu
+  .ant-dropdown-menu-submenu-active:not(.ant-dropdown-menu-submenu-disabled)
+  > .ant-dropdown-menu-submenu-title {
+  background-color: var(--mc-accent-soft, #edf7f2);
+  color: var(--mc-accent-strong, #12613e);
+}
+
+/* 键盘焦点保留填色和下划线，不再绘制逐项外框。 */
+.canvas-context-dropdown:is(.ant-dropdown, .ant-dropdown-menu-submenu)
+  .ant-dropdown-menu
+  :is(.ant-dropdown-menu-item, .ant-dropdown-menu-submenu-title):focus-visible {
+  outline: none;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.canvas-context-dropdown:is(.ant-dropdown, .ant-dropdown-menu-submenu)
+  .ant-dropdown-menu
+  .ant-dropdown-menu-item-icon {
+  flex-shrink: 0;
+  transition: transform 140ms ease;
+}
+
+.canvas-context-dropdown:is(.ant-dropdown, .ant-dropdown-menu-submenu)
+  .ant-dropdown-menu
+  .ant-dropdown-menu-item:not(.ant-dropdown-menu-item-disabled):is(:hover, :focus-visible)
+  > .ant-dropdown-menu-item-icon {
+  transform: translateX(1px);
+}
+
+.canvas-context-dropdown:is(.ant-dropdown, .ant-dropdown-menu-submenu)
+  .ant-dropdown-menu
+  .ant-dropdown-menu-title-content {
+  min-width: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .canvas-context-dropdown:is(.ant-dropdown, .ant-dropdown-menu-submenu)
+    .ant-dropdown-menu
+    :is(.ant-dropdown-menu-item, .ant-dropdown-menu-submenu-title, .ant-dropdown-menu-item-icon) {
+    transition: none;
+  }
+
+  .canvas-context-dropdown:is(.ant-dropdown, .ant-dropdown-menu-submenu)
+    .ant-dropdown-menu
+    .ant-dropdown-menu-item:not(.ant-dropdown-menu-item-disabled):is(:hover, :focus-visible)
+    > .ant-dropdown-menu-item-icon {
+    transform: none;
+  }
 }
 
 .canvas-context-menu-heading {

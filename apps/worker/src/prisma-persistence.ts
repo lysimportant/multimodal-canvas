@@ -430,25 +430,34 @@ export class WorkerPrismaRunPersistence implements RunPersistence {
   }
 
   /**
-   * Returns every durable workflow task for a previous DAG attempt. This also
-   * includes synchronous completions without a platform identity because their
-   * sanitized payload contains the archived result needed to skip regeneration.
+   * 读取当前或前次 DAG 的持久任务，包括没有平台任务 ID 的同步结果和创建拒绝。
+   * @param runId 原执行 Run 身份，用于恢复该次执行的本地任务 ID。
+   * @returns 按更新时间倒序排列的合法任务；上游身份经数据库主键校验后恢复。
+   * @throws 数据库查询错误原样抛出，不伪造可再次发送的空结果。
    */
   async findProviderJobsByRunId(runId: string): Promise<ProviderJob[]> {
     const rows = await this.prisma.providerJob.findMany({
       where: { runId: databaseRunId(runId) },
       orderBy: { updatedAt: 'desc' },
     });
+    const rootId = `provider_job_${runId}`;
     return rows.flatMap((row) => {
+      const payload =
+        row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
+          ? row.payload
+          : undefined;
+      const nodeId = payload?.workflowNodeId;
+      const nodeJobId = typeof nodeId === 'string' && nodeId ? `${rootId}_${nodeId}` : undefined;
+      // 根任务也带 workflowNodeId；只能用持久主键确认该行原本是否属于上游节点。
+      const id =
+        nodeJobId && row.id === stableProviderJobId(row.provider, nodeJobId) ? nodeJobId : rootId;
       const parsed = providerJobSchema.safeParse({
-        id: `provider_job_${runId}`,
+        id,
         provider: row.provider,
         ...(row.platformJobId ? { platformJobId: row.platformJobId } : {}),
         status: String(row.status).toLowerCase(),
         progress: row.progress,
-        ...(row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
-          ? { payload: row.payload }
-          : {}),
+        ...(payload ? { payload } : {}),
         createdAt: row.createdAt.toISOString(),
         updatedAt: row.updatedAt.toISOString(),
       });

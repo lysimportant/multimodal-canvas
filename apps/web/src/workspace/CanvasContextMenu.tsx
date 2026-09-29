@@ -16,8 +16,8 @@ import {
   WandSparkles,
   type LucideIcon,
 } from 'lucide-react';
-import { Dropdown, type MenuProps } from 'antd';
-import { useEffect, useState } from 'react';
+import { Dropdown, Tooltip, type MenuProps } from 'antd';
+import { useEffect, useId, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { isImageEditSourceNode, mediaTypes, type MediaType } from '@multimodal-canvas/domain';
@@ -97,6 +97,9 @@ type CanvasContextMenuProps = {
 /** 使用 Ant Design 菜单处理定位与键盘导航，保留画布动作和关闭原因。 */
 export function CanvasContextMenu(props: CanvasContextMenuProps) {
   const { target, onClose } = props;
+  const tooltipId = useId();
+  const [hoveredItem, setHoveredItem] = useState<string | null>(null);
+  const [focusedItem, setFocusedItem] = useState<string | null>(null);
   /** 将库的实际锚点限制在当前视口，避免缩放后固定点落到屏幕外。 */
   const clampAnchor = (position: { x: number; y: number }) => ({
     x: Math.max(0, Math.min(position.x, window.innerWidth - 1)),
@@ -120,7 +123,44 @@ export function CanvasContextMenu(props: CanvasContextMenuProps) {
     action();
     onClose('action');
   };
-  const items =
+  /** 整行接收悬停与焦点；禁用项只读说明，不增加嵌套焦点或接管方向键。 */
+  const withTooltips = (entries: MenuProps['items'] = []): NonNullable<MenuProps['items']> =>
+    entries.map((item) => {
+      if (!item || item.type === 'divider') return item;
+      if (item.type === 'group' || 'children' in item) {
+        return { ...item, children: withTooltips(item.children) };
+      }
+      const key = String(item.key);
+      const open = hoveredItem === key || (hoveredItem === null && focusedItem === key);
+      const descriptionId = `${tooltipId}-${key}`;
+      return {
+        ...item,
+        title: undefined,
+        'aria-describedby': open ? descriptionId : undefined,
+        onPointerEnter: () => setHoveredItem(key),
+        onPointerLeave: () => setHoveredItem(null),
+        onFocus: () => {
+          setHoveredItem(null);
+          setFocusedItem(key);
+        },
+        onBlur: () => setFocusedItem(null),
+        label: (
+          <Tooltip
+            id={descriptionId}
+            title={item.title}
+            open={open}
+            trigger={[]}
+            placement="right"
+            destroyOnHidden
+            getPopupContainer={() => document.body}
+            styles={{ root: { pointerEvents: 'none' } }}
+          >
+            {item.label}
+          </Tooltip>
+        ),
+      };
+    });
+  const items = withTooltips(
     target.kind === 'node'
       ? nodeMenuItems(props, target.node, runAction)
       : target.kind === 'connection-drop'
@@ -142,7 +182,8 @@ export function CanvasContextMenu(props: CanvasContextMenuProps) {
               }),
             ),
           )
-        : canvasMenuItems(props, target.flowPosition, runAction);
+        : canvasMenuItems(props, target.flowPosition, runAction),
+  );
   const ariaLabel =
     target.kind === 'node'
       ? `${target.node.data.label}节点操作`
@@ -172,11 +213,11 @@ export function CanvasContextMenu(props: CanvasContextMenuProps) {
       onOpenChange={(next, info) => {
         if (!next && info.source === 'trigger') onClose('outside');
       }}
-      classNames={{
-        root: `canvas-context-dropdown${target.kind === 'connection-drop' ? ' is-connection-drop' : ''}`,
-      }}
+      rootClassName="canvas-context-dropdown"
+      classNames={{ root: target.kind === 'connection-drop' ? 'is-connection-drop' : undefined }}
       menu={{
         'aria-label': ariaLabel,
+        getPopupContainer: () => document.body,
         items: heading
           ? [
               {
@@ -189,7 +230,7 @@ export function CanvasContextMenu(props: CanvasContextMenuProps) {
                 ),
                 children: [],
               },
-              ...items!,
+              ...items,
             ]
           : items,
         selectable: false,
@@ -239,17 +280,25 @@ function nodeMenuItems(
       key: 'node',
       label: '节点操作',
       children: [
-        menuItem('run', Play, '开始生成', () => run(() => props.onRunNode(node)), unavailable),
+        menuItem(
+          'run',
+          Play,
+          '开始生成',
+          '使用当前配置生成，结果保留在此节点',
+          () => run(() => props.onRunNode(node)),
+          unavailable,
+        ),
         menuItem(
           'run-new',
           CopyPlus,
           '生成到新节点',
+          '保留当前节点，将结果生成到新节点',
           () => run(() => props.onRunNode(node, 'newNode')),
           unavailable,
         ),
         ...(props.onOpenRequestPrompt
           ? [
-              menuItem('prompt', FileText, '提示词', () =>
+              menuItem('prompt', FileText, '提示词', '查看提示词记录与资源分析', () =>
                 run(() => props.onOpenRequestPrompt!(node.id)),
               ),
             ]
@@ -260,6 +309,7 @@ function nodeMenuItems(
                 'edit-image',
                 WandSparkles,
                 '修改图片',
+                '引用当前图片创建编辑节点，不覆盖原图',
                 () => run(() => props.onEditImage!(node.id)),
                 props.busy || running || !nodeHasPrompt(node.data),
               ),
@@ -273,14 +323,22 @@ function nodeMenuItems(
       key: 'layout',
       label: '节点布局',
       children: [
-        menuItem('center', LocateFixed, '定位并居中节点', () =>
+        menuItem('center', LocateFixed, '定位并居中节点', '将视图定位到当前节点', () =>
           run(() => props.onCenterNode(node)),
         ),
         ...(props.onCreateGroup
-          ? [menuItem('group', Group, '为选中节点创建分组', () => run(props.onCreateGroup!))]
+          ? [
+              menuItem('group', Group, '为选中节点创建分组', '将选中的节点放入新分组', () =>
+                run(props.onCreateGroup!),
+              ),
+            ]
           : []),
-        menuItem('enabled', Power, enabled ? '停用节点' : '启用节点', () =>
-          run(() => props.onNodeEnabledChange(node.id, !enabled)),
+        menuItem(
+          'enabled',
+          Power,
+          enabled ? '停用节点' : '启用节点',
+          '切换节点是否参与生成，保留已有内容',
+          () => run(() => props.onNodeEnabledChange(node.id, !enabled)),
         ),
       ],
     },
@@ -289,6 +347,7 @@ function nodeMenuItems(
       'delete',
       Trash2,
       '删除节点',
+      '删除当前节点及其连线',
       () => run(() => props.onDeleteNode(node.id)),
       !props.canDeleteNode,
       true,
@@ -317,28 +376,61 @@ function canvasMenuItems(
           `create-${mediaType}`,
           mediaIcons[mediaType],
           `创建${mediaLabels[mediaType]}生成节点`,
+          `在此处添加${mediaLabels[mediaType]}生成节点`,
           () => run(() => props.onAddGenerateNode(mediaType, position)),
         ),
       ),
     },
     { type: 'divider' },
-    menuItem('upload', Upload, '上传资源', () => run(props.onRequestUpload)),
+    menuItem('upload', Upload, '上传资源', '选择本地文件并加入项目资源', () =>
+      run(props.onRequestUpload),
+    ),
     ...(props.onCreateGroup
-      ? [menuItem('group', Group, '新建分组', () => run(props.onCreateGroup!))]
+      ? [
+          menuItem('group', Group, '新建分组', '创建分组，整理画布节点', () =>
+            run(props.onCreateGroup!),
+          ),
+        ]
       : []),
     ...(props.onUndoCanvas || props.onRedoCanvas ? [{ type: 'divider' as const }] : []),
     ...(props.onUndoCanvas
-      ? [menuItem('undo', Undo2, '撤销', () => run(props.onUndoCanvas!), props.canUndo === false)]
+      ? [
+          menuItem(
+            'undo',
+            Undo2,
+            '撤销',
+            '撤销上一步画布操作',
+            () => run(props.onUndoCanvas!),
+            props.canUndo === false,
+          ),
+        ]
       : []),
     ...(props.onRedoCanvas
-      ? [menuItem('redo', Redo2, '重做', () => run(props.onRedoCanvas!), props.canRedo === false)]
+      ? [
+          menuItem(
+            'redo',
+            Redo2,
+            '重做',
+            '恢复刚撤销的画布操作',
+            () => run(props.onRedoCanvas!),
+            props.canRedo === false,
+          ),
+        ]
       : []),
     ...(props.onFitView || props.onOpenSearch ? [{ type: 'divider' as const }] : []),
     ...(props.onFitView
-      ? [menuItem('fit', Maximize2, '自动适配缩放', () => run(props.onFitView!))]
+      ? [
+          menuItem('fit', Maximize2, '自动适配缩放', '调整视图以显示画布内容', () =>
+            run(props.onFitView!),
+          ),
+        ]
       : []),
     ...(props.onOpenSearch
-      ? [menuItem('search', Search, '搜索', () => run(props.onOpenSearch!))]
+      ? [
+          menuItem('search', Search, '搜索', '查找并定位画布中的节点', () =>
+            run(props.onOpenSearch!),
+          ),
+        ]
       : []),
     ...(props.onClearCanvas || props.onClearEmptyNodes ? [{ type: 'divider' as const }] : []),
     ...(props.onClearEmptyNodes
@@ -347,6 +439,7 @@ function canvasMenuItems(
             'clear-empty',
             Eraser,
             '清理空节点',
+            '移除空节点及其连线，保留已有内容',
             () => run(props.onClearEmptyNodes!),
             !props.clearCounts?.emptyNodes,
           ),
@@ -358,6 +451,7 @@ function canvasMenuItems(
             'clear',
             Trash2,
             '清空画布',
+            '清空画布中的节点、连线与分组',
             () => run(props.onClearCanvas!),
             !props.canClearCanvas,
             true,
@@ -388,6 +482,7 @@ function connectionDropItems(
           option.id,
           Icon,
           option.label,
+          option.description,
           () => onSelect(option),
           false,
           false,
@@ -398,11 +493,12 @@ function connectionDropItems(
   });
 }
 
-/** 生成真实 Menu 数据项，禁用与焦点规则交给 Ant Design。 */
+/** 生成带功能简述的 Menu 数据项；禁用时拒绝点击和键盘触发，导航仍交给库。 */
 function menuItem(
   key: string,
   Icon: LucideIcon,
   label: string,
+  hint: string,
   onClick: () => void,
   disabled = false,
   danger = false,
@@ -418,12 +514,12 @@ function menuItem(
       </span>
     ),
     'aria-label': label,
-    title: disabled ? `${label}当前不可用` : (description ?? label),
+    title: disabled ? `${hint}（当前不可用）` : hint,
     disabled,
     danger,
     onClick: ({ domEvent }) => {
       domEvent.stopPropagation();
-      onClick();
+      if (!disabled) onClick();
     },
   };
 }
