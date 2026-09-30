@@ -370,12 +370,41 @@ for (const viewport of [
     expect(readFileSync(path!)).toEqual(poster);
     const input = page.getByRole('textbox', { name: '提示词', exact: true });
     if (!(await input.isVisible())) await node.click({ position: { x: 40, y: 40 } });
+    await expect(input).toBeVisible();
+    await image.click();
+    const viewer = page.getByRole('dialog', { name: '图片结果结果', exact: true });
+    await expect(viewer).toBeVisible();
+    const previewDownload = page.waitForEvent('download');
+    await viewer.getByRole('button', { name: '下载原文件', exact: true }).click();
+    expect(readFileSync((await (await previewDownload).path())!)).toEqual(poster);
+    await expect(viewer.getByRole('button', { name: '下载原文件', exact: true })).toBeEnabled();
+    await expect(viewer.getByRole('alert')).toHaveCount(0);
+    await page.screenshot({
+      path: testInfo.outputPath('preview-original-download.png'),
+      animations: 'disabled',
+    });
+    await viewer.getByRole('button', { name: '关闭预览' }).click();
+    if (!(await input.isVisible())) await node.click({ position: { x: 40, y: 40 } });
     await expect(page.getByRole('dialog')).toHaveCount(0);
     await expect(input).toBeVisible();
     expect(
       await input.evaluate((element) => Number.parseFloat(getComputedStyle(element).height)),
     ).toBe(180);
-    await input.fill('A synthetic long prompt for scroll verification.\n'.repeat(50));
+    await input.fill('A synthetic long prompt for scroll verification.\n'.repeat(50).trimEnd());
+    // 文字由高亮层绘制，必须占满透明输入框，不能保留旧高度形成空白。
+    const highlight = page.locator('.node-quick-editor .resource-mention-highlight');
+    const composer = page.locator('.node-quick-editor .resource-mention-composer');
+    const inputBounds = (await input.boundingBox())!;
+    const highlightBounds = (await highlight.boundingBox())!;
+    expect(highlightBounds.y).toBeCloseTo(inputBounds.y, 0);
+    expect(highlightBounds.height).toBeCloseTo(inputBounds.height, 0);
+    expect((await composer.boundingBox())!.height).toBeCloseTo(inputBounds.height, 0);
+    await input.press('Control+End');
+    await expect.poll(() => input.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+    expect(await highlight.evaluate((element) => element.scrollTop)).toBeCloseTo(
+      await input.evaluate((element) => element.scrollTop),
+      0,
+    );
     expect(await input.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(
       true,
     );

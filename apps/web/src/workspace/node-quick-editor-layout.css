@@ -12,10 +12,11 @@
   resize: none;
 }
 
+/* 透明输入框决定高度；文字层铺满同一容器，避免桌面加高后底部仍被旧高度裁切。 */
 .node-quick-editor .node-quick-editor-prompt .resource-mention-highlight {
-  height: 136px;
-  max-height: 136px;
-  min-height: 136px;
+  height: auto;
+  max-height: none;
+  min-height: 0;
   overflow-y: auto;
 }
 
@@ -75,8 +76,7 @@
     width: min(100%, calc(100vw - 24px));
   }
 
-  .node-quick-editor .node-quick-editor-prompt textarea,
-  .node-quick-editor .node-quick-editor-prompt .resource-mention-highlight {
+  .node-quick-editor .node-quick-editor-prompt textarea {
     height: 120px;
     max-height: 120px;
     min-height: 120px;

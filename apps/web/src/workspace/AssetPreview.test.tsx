@@ -1,12 +1,15 @@
 import '@testing-library/jest-dom/vitest';
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Asset } from '@multimodal-canvas/domain';
 import { AssetPreview, AssetViewerDialog, type AssetPreviewLoadState } from './AssetPreview';
 import { clearAuthSession, persistAuthSession } from '../auth-client';
+import * as exports from '../export-utils';
+import type { ProjectExportDownload } from '../export-utils';
+import * as downloads from './node-asset-download';
 
 /** 保存测试前的剪贴板配置，避免不同用例之间泄漏模拟状态。 */
 const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(window.navigator, 'clipboard');
@@ -620,5 +623,337 @@ describe('AssetPreview', () => {
 
     expect(screen.getByRole('alert')).toHaveTextContent('产物不存在或已失效');
     await waitFor(() => expect(onLoadStateChange).toHaveBeenCalledWith('missing'));
+  });
+});
+
+describe('AssetViewerDialog 原文件下载', () => {
+  it('图片展开入口可下载当前版本，保存后仍保留预览', async () => {
+    const asset = makeAsset({
+      mediaType: 'image',
+      mimeType: 'image/png',
+      contentUrl: '/v1/assets/asset_1/versions/3/content',
+    });
+    const download = { blob: new Blob(['original']), filename: '原图.png' };
+    const fetchDownload = vi.spyOn(downloads, 'fetchNodeAssetDownload').mockResolvedValue(download);
+    const saveDownload = vi.spyOn(exports, 'downloadProjectExport').mockImplementation(() => {});
+    render(<AssetPreview asset={asset} mode="content" mediaClickPreviewEnabled={false} />);
+
+    await userEvent.click(screen.getByRole('button', { name: '预览图片：生成结果' }));
+    const viewer = screen.getByRole('dialog');
+    await userEvent.click(within(viewer).getByRole('button', { name: '下载原文件' }));
+
+    await waitFor(() => expect(saveDownload).toHaveBeenCalledWith(download));
+    expect(fetchDownload).toHaveBeenCalledWith(asset, expect.any(AbortSignal));
+    expect(saveDownload).toHaveBeenCalledTimes(1);
+    expect(viewer).toBeVisible();
+    expect(within(viewer).getByRole('button', { name: '下载原文件' })).toBeEnabled();
+    expect(within(viewer).queryByRole('button', { name: '取消下载' })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    { mediaType: 'image', mimeType: 'image/png', filename: 'original.png' },
+    { mediaType: 'video', mimeType: 'video/mp4', filename: 'original.mp4' },
+    { mediaType: 'audio', mimeType: 'audio/wav', filename: 'original.wav' },
+  ] as const)(
+    '$mediaType 下载版本原文件而非预览地址，保留文件名、MIME 和全部字节',
+    async ({ mediaType, mimeType, filename }) => {
+      const asset = makeAsset({
+        mediaType,
+        mimeType,
+        contentUrl: '/v1/assets/asset_1/versions/3/content',
+      });
+      const bytes = new Uint8Array([0, 255, 137, 80, 78, 71, 13, 10, 0, 254]);
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response(bytes, {
+          headers: {
+            'content-type': mimeType,
+            'content-disposition': 'attachment; filename="' + filename + '"',
+          },
+        }),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+      const fetchDownload = vi.spyOn(downloads, 'fetchNodeAssetDownload');
+      const saveDownload = vi.spyOn(exports, 'downloadProjectExport').mockImplementation(() => {});
+      render(
+        <AssetViewerDialog
+          asset={asset}
+          open
+          onOpenChange={vi.fn()}
+          src="https://cdn.example/preview-only"
+        />,
+      );
+
+      await userEvent.click(screen.getByRole('button', { name: '下载原文件' }));
+
+      await waitFor(() => expect(saveDownload).toHaveBeenCalledTimes(1));
+      expect(fetchDownload).toHaveBeenCalledWith(asset, expect.any(AbortSignal));
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0][0]).toBe(
+        'http://localhost:3000/v1/assets/asset_1/versions/3/content',
+      );
+      const saved = saveDownload.mock.calls[0][0];
+      expect(saved.filename).toBe(filename);
+      expect(saved.blob.type).toBe(mimeType);
+      const savedBytes = await new Promise<ArrayBuffer>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as ArrayBuffer);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsArrayBuffer(saved.blob);
+      });
+      expect(new Uint8Array(savedBytes)).toEqual(bytes);
+    },
+  );
+
+  it.each([
+    { reason: new Error('下载失败（403），请重试'), message: '下载失败（403），请重试' },
+    { reason: '连接断开', message: '下载失败，请重试' },
+  ])('下载失败保留具体或兜底错误，重新下载清除错误：$message', async ({ reason, message }) => {
+    const download = { blob: new Blob(['original']), filename: '原图.png' };
+    const fetchDownload = vi
+      .spyOn(downloads, 'fetchNodeAssetDownload')
+      .mockRejectedValueOnce(reason)
+      .mockResolvedValueOnce(download);
+    const saveDownload = vi.spyOn(exports, 'downloadProjectExport').mockImplementation(() => {});
+    render(
+      <AssetViewerDialog
+        asset={makeAsset({ mediaType: 'image', mimeType: 'image/png' })}
+        open
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: '下载原文件' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(message);
+    expect(saveDownload).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '下载原文件' })).toBeEnabled();
+    await userEvent.click(screen.getByRole('button', { name: '下载原文件' }));
+    await waitFor(() => expect(saveDownload).toHaveBeenCalledWith(download));
+    expect(fetchDownload).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('浏览器保存失败显示错误且允许重试', async () => {
+    const download = { blob: new Blob(['original']), filename: '原图.png' };
+    vi.spyOn(downloads, 'fetchNodeAssetDownload').mockResolvedValue(download);
+    const saveDownload = vi
+      .spyOn(exports, 'downloadProjectExport')
+      .mockImplementationOnce(() => {
+        throw new Error('当前环境不支持文件下载');
+      })
+      .mockImplementation(() => {});
+    render(
+      <AssetViewerDialog
+        asset={makeAsset({ mediaType: 'image', mimeType: 'image/png' })}
+        open
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: '下载原文件' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('当前环境不支持文件下载');
+    await userEvent.click(screen.getByRole('button', { name: '下载原文件' }));
+    await waitFor(() => expect(saveDownload).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it.each(['完成', '失败'])(
+    '下载中禁止重复请求，取消后旧请求晚到$0不干扰新下载',
+    async (outcome) => {
+      let resolveOld!: (value: ProjectExportDownload) => void;
+      let rejectOld!: (reason: Error) => void;
+      let resolveNew!: (value: ProjectExportDownload) => void;
+      const fetchDownload = vi
+        .spyOn(downloads, 'fetchNodeAssetDownload')
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve, reject) => {
+              resolveOld = resolve;
+              rejectOld = reject;
+            }),
+        )
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolveNew = resolve;
+            }),
+        );
+      const saveDownload = vi.spyOn(exports, 'downloadProjectExport').mockImplementation(() => {});
+      render(
+        <AssetViewerDialog
+          asset={makeAsset({ mediaType: 'image', mimeType: 'image/png' })}
+          open
+          onOpenChange={vi.fn()}
+        />,
+      );
+      const button = screen.getByRole('button', { name: '下载原文件' });
+      await userEvent.click(button);
+      expect(button).toBeDisabled();
+      expect(button).toHaveAttribute('aria-busy', 'true');
+      expect(within(button).getByRole('status')).toHaveTextContent('下载中');
+      await userEvent.click(button);
+      expect(fetchDownload).toHaveBeenCalledTimes(1);
+      const oldSignal = fetchDownload.mock.calls[0][1];
+
+      await userEvent.click(screen.getByRole('button', { name: '取消下载' }));
+      expect(oldSignal?.aborted).toBe(true);
+      expect(button).toBeEnabled();
+      expect(screen.queryByRole('button', { name: '取消下载' })).not.toBeInTheDocument();
+      await userEvent.click(button);
+      await act(async () => {
+        if (outcome === '完成') resolveOld({ blob: new Blob(['old']), filename: 'old.png' });
+        else rejectOld(new Error('旧请求失败'));
+      });
+      expect(saveDownload).not.toHaveBeenCalled();
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      expect(button).toBeDisabled();
+      expect(fetchDownload.mock.calls[1][1]?.aborted).toBe(false);
+
+      const current = { blob: new Blob(['current']), filename: 'current.png' };
+      await act(async () => resolveNew(current));
+      expect(saveDownload).toHaveBeenCalledExactlyOnceWith(current);
+      expect(button).toBeEnabled();
+    },
+  );
+
+  it.each([
+    { label: '资产 ID', next: { id: 'asset_2' } },
+    { label: '版本地址', next: { contentUrl: '/v1/assets/asset_1/versions/4/content' } },
+    { label: '当前版本号', next: { latestVersion: 4 } },
+  ])('切换$label取消旧下载，忽略旧响应并使用当前资源重试', async ({ next }) => {
+    let resolveOld!: (value: ProjectExportDownload) => void;
+    const current = { blob: new Blob(['current']), filename: 'current.png' };
+    const fetchDownload = vi
+      .spyOn(downloads, 'fetchNodeAssetDownload')
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveOld = resolve;
+          }),
+      )
+      .mockResolvedValueOnce(current);
+    const saveDownload = vi.spyOn(exports, 'downloadProjectExport').mockImplementation(() => {});
+    const asset = makeAsset({ mediaType: 'image', mimeType: 'image/png', latestVersion: 3 });
+    const onOpenChange = vi.fn();
+    const view = render(<AssetViewerDialog asset={asset} open onOpenChange={onOpenChange} />);
+    await userEvent.click(screen.getByRole('button', { name: '下载原文件' }));
+    const oldSignal = fetchDownload.mock.calls[0][1];
+    const nextAsset = { ...asset, ...next };
+    view.rerender(<AssetViewerDialog asset={nextAsset} open onOpenChange={onOpenChange} />);
+    expect(oldSignal?.aborted).toBe(true);
+    expect(screen.getByRole('button', { name: '下载原文件' })).toBeEnabled();
+    await act(async () => resolveOld({ blob: new Blob(['old']), filename: 'old.png' }));
+    expect(saveDownload).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: '下载原文件' }));
+    await waitFor(() => expect(saveDownload).toHaveBeenCalledExactlyOnceWith(current));
+    expect(fetchDownload).toHaveBeenLastCalledWith(nextAsset, expect.any(AbortSignal));
+  });
+
+  it.each(['关闭按钮', 'Escape', '受控关闭', '卸载'])(
+    '$0取消下载，晚到响应不保存文件',
+    async (method) => {
+      let resolveDownload!: (value: ProjectExportDownload) => void;
+      const fetchDownload = vi.spyOn(downloads, 'fetchNodeAssetDownload').mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveDownload = resolve;
+          }),
+      );
+      const saveDownload = vi.spyOn(exports, 'downloadProjectExport').mockImplementation(() => {});
+      const asset = makeAsset({ mediaType: 'image', mimeType: 'image/png' });
+      const onOpenChange = vi.fn();
+      const view = render(<AssetViewerDialog asset={asset} open onOpenChange={onOpenChange} />);
+      await userEvent.click(screen.getByRole('button', { name: '下载原文件' }));
+      const signal = fetchDownload.mock.calls[0][1];
+
+      if (method === '关闭按钮')
+        await userEvent.click(screen.getByRole('button', { name: '关闭预览' }));
+      else if (method === 'Escape') await userEvent.keyboard('{Escape}');
+      else if (method === '受控关闭')
+        view.rerender(<AssetViewerDialog asset={asset} open={false} onOpenChange={onOpenChange} />);
+      else view.unmount();
+      expect(signal?.aborted).toBe(true);
+      if (method === '关闭按钮' || method === 'Escape')
+        expect(onOpenChange).toHaveBeenCalledWith(false);
+      await act(async () => resolveDownload({ blob: new Blob(['old']), filename: 'old.png' }));
+      expect(saveDownload).not.toHaveBeenCalled();
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      if (method === '受控关闭') {
+        view.rerender(<AssetViewerDialog asset={asset} open onOpenChange={onOpenChange} />);
+        expect(screen.getByRole('button', { name: '下载原文件' })).toBeEnabled();
+        expect(screen.queryByRole('button', { name: '取消下载' })).not.toBeInTheDocument();
+      }
+    },
+  );
+
+  it.each(['切换资源', '关闭重开'])('$0清除旧下载错误', async (method) => {
+    vi.spyOn(downloads, 'fetchNodeAssetDownload').mockRejectedValueOnce(
+      new Error('旧资源下载失败'),
+    );
+    const asset = makeAsset({ mediaType: 'image', mimeType: 'image/png' });
+    const onOpenChange = vi.fn();
+    const view = render(<AssetViewerDialog asset={asset} open onOpenChange={onOpenChange} />);
+    await userEvent.click(screen.getByRole('button', { name: '下载原文件' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('旧资源下载失败');
+    if (method === '切换资源')
+      view.rerender(
+        <AssetViewerDialog asset={{ ...asset, id: 'asset_2' }} open onOpenChange={onOpenChange} />,
+      );
+    else {
+      view.rerender(<AssetViewerDialog asset={asset} open={false} onOpenChange={onOpenChange} />);
+      view.rerender(<AssetViewerDialog asset={asset} open onOpenChange={onOpenChange} />);
+    }
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '下载原文件' })).toBeEnabled();
+  });
+
+  it('只刷新预览签名地址不取消原文件下载', async () => {
+    let resolveDownload!: (value: ProjectExportDownload) => void;
+    const fetchDownload = vi.spyOn(downloads, 'fetchNodeAssetDownload').mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveDownload = resolve;
+        }),
+    );
+    const saveDownload = vi.spyOn(exports, 'downloadProjectExport').mockImplementation(() => {});
+    const asset = makeAsset({ mediaType: 'image', mimeType: 'image/png' });
+    const onOpenChange = vi.fn();
+    const view = render(
+      <AssetViewerDialog
+        asset={asset}
+        open
+        onOpenChange={onOpenChange}
+        src="https://cdn.example/original?token=old"
+      />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: '下载原文件' }));
+    view.rerender(
+      <AssetViewerDialog
+        asset={{ ...asset }}
+        open
+        onOpenChange={onOpenChange}
+        src="https://cdn.example/original?token=new"
+      />,
+    );
+    expect(fetchDownload.mock.calls[0][1]?.aborted).toBe(false);
+    expect(screen.getByRole('button', { name: '下载原文件' })).toBeDisabled();
+    const download = { blob: new Blob(['original']), filename: 'original.png' };
+    await act(async () => resolveDownload(download));
+    expect(saveDownload).toHaveBeenCalledExactlyOnceWith(download);
+  });
+
+  it('没有原文件地址时禁用下载，不使用预览地址兜底', async () => {
+    const fetchDownload = vi.spyOn(downloads, 'fetchNodeAssetDownload');
+    render(
+      <AssetViewerDialog
+        asset={makeAsset({ mediaType: 'image', mimeType: 'image/png', contentUrl: '' })}
+        open
+        onOpenChange={vi.fn()}
+        src="https://cdn.example/thumbnail.png"
+      />,
+    );
+    const button = screen.getByRole('button', { name: '下载原文件' });
+    expect(button).toBeDisabled();
+    await userEvent.click(button);
+    expect(fetchDownload).not.toHaveBeenCalled();
   });
 });

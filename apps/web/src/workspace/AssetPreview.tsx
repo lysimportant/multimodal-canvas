@@ -24,8 +24,10 @@ import {
   DialogTitle,
 } from '@multimodal-canvas/ui';
 import { apiFetch, readAuthSession } from '../auth-client';
+import { downloadProjectExport } from '../export-utils';
 import { isApiOriginUrl, resolveUploadUrl } from '../upload-utils';
 import { API_BASE_URL } from './contracts';
+import { fetchNodeAssetDownload } from './node-asset-download';
 import './artifact-preview.css';
 
 /** 资源预览展示方式：紧凑图标或完整内容。 */
@@ -553,7 +555,7 @@ export type AssetViewerDialogProps = {
 };
 
 /**
- * 页内资源预览对话框：图片/视频支持滚轮缩放与拖拽平移。
+ * 页内资源预览对话框：图片/视频支持缩放平移，媒体下载保留当前版本原文件。
  * @param asset 要预览的资源。
  * @param open 是否打开对话框。
  * @param onOpenChange 开关变化回调。
@@ -566,9 +568,60 @@ export function AssetViewerDialog({ asset, open, onOpenChange, src }: AssetViewe
   const resolvedSrc = src ?? access.url;
   const viewerTitleId = useId();
   const resetKey = `${asset.id}:${resolvedSrc}:${open ? 'open' : 'closed'}`;
+  const canDownload = kind === 'image' || kind === 'video' || kind === 'audio';
+  const downloadIdentity = `${asset.id}:${asset.contentUrl}:${asset.mimeType}:${asset.latestVersion ?? ''}`;
+  /** 请求按原文件版本隔离，不随预览签名地址刷新而重新下载。 */
+  const downloadAbort = useRef<AbortController | null>(null);
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setIsDownloading(false);
+    setDownloadError(null);
+    return () => {
+      downloadAbort.current?.abort();
+      downloadAbort.current = null;
+    };
+  }, [downloadIdentity, open]);
+
+  /** 取消当前请求并允许立即重试；晚到的响应不触发保存。 */
+  const cancelDownload = () => {
+    downloadAbort.current?.abort();
+    downloadAbort.current = null;
+    setIsDownloading(false);
+    setDownloadError(null);
+  };
+
+  /** 关闭时立即取消下载，不等待父组件更新打开状态。 */
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen) cancelDownload();
+    onOpenChange(nextOpen);
+  };
+
+  /** 下载当前资产原文件，不使用预览地址；失败保留原因并允许重试。 */
+  const handleDownload = async () => {
+    if (!open || !asset.contentUrl || downloadAbort.current) return;
+    const abort = new AbortController();
+    downloadAbort.current = abort;
+    setIsDownloading(true);
+    setDownloadError(null);
+    try {
+      const download = await fetchNodeAssetDownload(asset, abort.signal);
+      if (!abort.signal.aborted) downloadProjectExport(download);
+    } catch (reason) {
+      if (!abort.signal.aborted) {
+        setDownloadError(reason instanceof Error ? reason.message : '下载失败，请重试');
+      }
+    } finally {
+      if (downloadAbort.current === abort) {
+        downloadAbort.current = null;
+        setIsDownloading(false);
+      }
+    }
+  };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       {open && (
         <DialogContent
           className={`artifact-preview-viewer overflow-hidden${
@@ -586,17 +639,53 @@ export function AssetViewerDialog({ asset, open, onOpenChange, src }: AssetViewe
         >
           <div className="artifact-preview-viewer-header">
             <DialogTitle id={viewerTitleId}>{asset.name}</DialogTitle>
-            <DialogClose asChild>
-              <Button
-                type="button"
-                className="artifact-preview-viewer-close"
-                aria-label="关闭预览"
-                title="关闭"
-              >
-                <X size={17} aria-hidden="true" />
-              </Button>
-            </DialogClose>
+            <div className="artifact-preview-viewer-actions">
+              {canDownload && (
+                <Button
+                  type="button"
+                  className="artifact-preview-viewer-download"
+                  aria-label="下载原文件"
+                  aria-busy={isDownloading}
+                  title="下载当前版本原文件"
+                  disabled={!asset.contentUrl || isDownloading}
+                  onClick={() => void handleDownload()}
+                >
+                  {isDownloading ? (
+                    <LoaderCircle size={16} className="spin" aria-hidden="true" />
+                  ) : (
+                    <Download size={16} aria-hidden="true" />
+                  )}
+                  <span role={isDownloading ? 'status' : undefined}>
+                    {isDownloading ? '下载中…' : '下载原文件'}
+                  </span>
+                </Button>
+              )}
+              {isDownloading && (
+                <Button
+                  type="button"
+                  className="artifact-preview-viewer-download"
+                  onClick={cancelDownload}
+                >
+                  取消下载
+                </Button>
+              )}
+              <DialogClose asChild>
+                <Button
+                  type="button"
+                  className="artifact-preview-viewer-close"
+                  aria-label="关闭预览"
+                  title="关闭"
+                >
+                  <X size={17} aria-hidden="true" />
+                </Button>
+              </DialogClose>
+            </div>
           </div>
+          {downloadError && (
+            <div className="artifact-preview-viewer-download-error" role="alert">
+              {downloadError}
+            </div>
+          )}
           {access.loading ? (
             <ArtifactState
               className="artifact-preview-viewer-state"

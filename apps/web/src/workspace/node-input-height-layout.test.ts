@@ -10,8 +10,23 @@ const editorCss = readFileSync(
   'utf8',
 ).replace(/\s+/g, ' ');
 
+/** 输入框决定滚动容器高度，文字层不再单独固定尺寸。 */
+const layoutCss = readFileSync(
+  resolve(process.cwd(), 'src/workspace/node-quick-editor-layout.css'),
+  'utf8',
+).replace(/\s+/g, ' ');
+
 // CSS 契约只覆盖尺寸边界；实际视口位置与滚动仍需浏览器视觉验收。
 describe('桌面节点输入区高度', () => {
+  it('文字层铺满输入容器，不保留独立固定高度或移动端高度覆盖', () => {
+    expect(layoutCss).toMatch(
+      /\.node-quick-editor \.node-quick-editor-prompt \.resource-mention-highlight \{ height: auto; max-height: none; min-height: 0; overflow-y: auto; \}/,
+    );
+    expect(layoutCss.match(/\.resource-mention-highlight/g)).toHaveLength(1);
+    expect(indexCss).toMatch(
+      /\.resource-mention-highlight \{[^}]*bottom: 0;[^}]*position: absolute;[^}]*top: 0;/,
+    );
+  });
   it('仅为桌面浮层的提示词输入区增加固定初始高度，并保留内部滚动', () => {
     expect(indexCss).toMatch(
       /@media \(min-width: 901px\) \{ \.quick-editor-overlay \.node-quick-editor \.node-quick-editor-prompt textarea \{ height: 180px; min-height: 180px; max-height: 240px; overflow-y: auto; \} \}/,
