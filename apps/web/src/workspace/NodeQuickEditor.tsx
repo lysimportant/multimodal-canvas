@@ -723,8 +723,13 @@ export function NodeQuickEditor({
     onOpenWorkbench: onOpenSkillWorkbench,
     models,
     disabled: busy || !onPromptSkillChange || Boolean(skillLibraryError),
+    applyMode: 'direct',
     onSkillChange: (id) => onPromptSkillChange?.(id),
     onApply: (document) => {
+      if (onPromptDocumentChange) onPromptDocumentChange(document);
+      else onPromptChange?.(renderPromptDocument(document));
+    },
+    onUndo: (document) => {
       if (onPromptDocumentChange) onPromptDocumentChange(document);
       else onPromptChange?.(renderPromptDocument(document));
     },

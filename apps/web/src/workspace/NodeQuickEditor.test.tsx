@@ -465,7 +465,7 @@ describe('NodeQuickEditor', () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
-  it('快速面板生成后完整编辑器以 inline 预览保留编辑并可应用', async () => {
+  it('快速面板生成后直接回填提示词，悬浮卡片可撤销且不触发生成', async () => {
     const user = userEvent.setup();
     const inputs = makeProps({
       projectId: 'project-a',
@@ -487,39 +487,44 @@ describe('NodeQuickEditor', () => {
       }),
     );
     vi.stubGlobal('fetch', fetcher);
-    renderRaw(<NodeQuickEditor {...inputs} />);
+    const view = renderRaw(<NodeQuickEditor {...inputs} />);
 
     await user.hover(screen.getByRole('button', { name: 'Skill 配置' }));
     const quick = await screen.findByRole('group', { name: 'Skill 配置' });
     await waitFor(() => expect(quick).toBeVisible());
     await user.click(within(quick).getByRole('button', { name: '优化提示词' }));
-    const quickPreview = await within(quick).findByRole('textbox', { name: '优化文字 1' });
-    fireEvent.change(quickPreview, { target: { value: '快捷面板产生的待采用预览' } });
-    expect(inputs.onPromptDocumentChange).not.toHaveBeenCalled();
-    expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue('白色背景');
-
-    await user.click(screen.getByRole('button', { name: '打开完整编辑器' }));
-    const dialog = screen.getByRole('dialog');
-    expect(within(dialog).queryByRole('button', { name: 'Skill 配置' })).not.toBeInTheDocument();
-    const preview = within(dialog).getByRole('group', { name: '优化预览' });
-    expect(within(preview).getByRole('textbox', { name: '优化文字 1' })).toHaveValue(
-      '快捷面板产生的待采用预览',
-    );
-
-    fireEvent.change(within(preview).getByRole('textbox', { name: '优化文字 1' }), {
-      target: { value: '完整编辑器最终提示词' },
-    });
-    await user.click(within(preview).getByRole('button', { name: '应用' }));
-
-    expect(inputs.onPromptDocumentChange).toHaveBeenCalledExactlyOnceWith({
+    const optimizedDocument: PromptDocument = {
       version: 1,
-      blocks: [{ type: 'text', text: '完整编辑器最终提示词' }],
-    });
+      blocks: [{ type: 'text', text: '优化后的白色背景' }],
+    };
+    await waitFor(() => expect(inputs.onPromptDocumentChange).toHaveBeenCalledOnce());
+    expect(inputs.onPromptDocumentChange).toHaveBeenCalledExactlyOnceWith(optimizedDocument);
+    expect(inputs.onRun).not.toHaveBeenCalled();
     expect(inputs.onPromptChange).not.toHaveBeenCalled();
     expect(fetcher).toHaveBeenCalledOnce();
     expect(fetcher.mock.calls[0]![1]?.method).toBe('POST');
     expect(sessionStorage.length).toBe(0);
     expect(screen.queryByRole('group', { name: '优化预览' })).not.toBeInTheDocument();
+
+    const updatedNode = {
+      ...inputs.node,
+      data: {
+        ...inputs.node.data,
+        prompt: '优化后的白色背景',
+        promptDocument: optimizedDocument,
+      },
+    } as AssetFlowNode;
+    view.rerender(<NodeQuickEditor {...inputs} node={updatedNode} />);
+    expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue('优化后的白色背景');
+    const updatedQuick = await screen.findByRole('group', { name: 'Skill 配置' });
+    await user.click(within(updatedQuick).getByRole('button', { name: '撤销提示词' }));
+    expect(inputs.onPromptDocumentChange).toHaveBeenCalledTimes(2);
+    expect(inputs.onPromptDocumentChange).toHaveBeenLastCalledWith({
+      version: 1,
+      blocks: [{ type: 'text', text: '白色背景' }],
+    });
+    expect(inputs.onRun).not.toHaveBeenCalled();
+    view.unmount();
   });
 
   it.each(['text', 'image', 'audio', 'video'] as const)(

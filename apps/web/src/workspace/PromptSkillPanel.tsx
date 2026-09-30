@@ -16,6 +16,7 @@ import {
   RotateCw,
   Settings2,
   Square,
+  Undo2,
   WandSparkles,
   X,
 } from 'lucide-react';
@@ -68,10 +69,14 @@ export type PromptSkillPanelProps = {
   onOpenWorkbench?: () => void;
   /** 禁止提交与应用，但保留恢复记录。 */
   disabled?: boolean;
+  /** 节点结果直接写回输入框；Skill 工作台继续使用可编辑预览。 */
+  applyMode?: 'preview' | 'direct';
   /** 保存用户选择；undefined 表示取消技能。 */
   onSkillChange: (id: string | undefined) => void;
-  /** 显式应用已验证的文档，不得在此回调中自动生成媒体。 */
+  /** 将已验证的文档回填到父层；不得在此回调中自动生成媒体。 */
   onApply: (document: PromptDocument) => void;
+  /** 撤销最近一次直接回填的 Skill 文档；不得触发媒体生成。 */
+  onUndo?: (document: PromptDocument) => void;
 };
 
 /** 当前账户身份用于恢复隔离，令牌不进入恢复记录。 */
@@ -110,14 +115,20 @@ function PromptSkillPanelSession({
   skillsError,
   onOpenWorkbench,
   disabled = false,
+  applyMode = 'preview',
   onSkillChange,
   onApply,
+  onUndo,
   storageKey,
 }: PromptSkillPanelProps & { storageKey: string }) {
   const isInline = presentation === 'inline';
   const isAuthoring = presentation === 'skill-authoring';
+  const directApply = applyMode === 'direct' && !isAuthoring;
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsPinned, setSettingsPinned] = useState(false);
+  const [lastApplied, setLastApplied] = useState<
+    { before: PromptDocument; after: PromptDocument } | undefined
+  >();
 
   /** 最近一次打开浮卡前的焦点；悬停打开时 Escape 应回到原输入控件，而非抢到 Skill 按钮。 */
   const settingsFocusReturnRef = useRef<HTMLElement | null>(null);
@@ -176,6 +187,12 @@ function PromptSkillPanelSession({
     })),
   ];
   const draft = pending?.draft;
+  const canUndoAppliedPrompt =
+    directApply &&
+    onUndo !== undefined &&
+    lastApplied !== undefined &&
+    samePromptDocument(promptDocument, lastApplied.after);
+
   /** 编辑中的输入可能超出文档上限，保留已有预览而不是在渲染期间抛错。 */
   const inputDocument = promptDocumentSchema.safeParse(promptDocument);
   const inputIssue = inputDocument.success
@@ -253,8 +270,26 @@ function PromptSkillPanelSession({
             result,
             draft: result.status === 'succeeded' ? result.promptDocument : undefined,
           };
+          if (result.status === 'succeeded') {
+            persist(current);
+            if (directApply) {
+              try {
+                if (!current.draft) throw new Error('优化结果缺少提示词文档');
+                const document = validateOptimizedPromptDocument(
+                  current.draft,
+                  current.request.promptDocument,
+                );
+                onApply(document);
+                setLastApplied({ before: current.request.promptDocument, after: document });
+                release(current);
+                setError(undefined);
+              } catch (cause) {
+                setError(errorMessage(cause));
+              }
+            }
+            return;
+          }
           persist(current);
-          if (result.status === 'succeeded') return;
           if (result.status === 'failed' || result.status === 'cancelled') {
             release(current);
             setError(
@@ -289,7 +324,7 @@ function PromptSkillPanelSession({
         }
       }
     },
-    [persist, release],
+    [directApply, onApply, persist, release],
   );
 
   useEffect(() => {
@@ -400,9 +435,11 @@ function PromptSkillPanelSession({
         ? '正在优化提示词'
         : draft
           ? '优化预览待应用'
-          : pending
-            ? '优化任务待确认'
-            : '悬停配置 Skill');
+          : canUndoAppliedPrompt
+            ? '最近一次 Skill 优化已回填，可撤销'
+            : pending
+              ? '优化任务待确认'
+              : '悬停配置 Skill');
 
   /** 待确认任务和可编辑预览与配置入口分离，完整编辑器可以复用而不打开悬浮卡片。 */
   const pendingContent = (
@@ -670,6 +707,25 @@ function PromptSkillPanelSession({
         )}
         {busy ? (isAuthoring ? '升级中' : '优化中') : isAuthoring ? '生成升级预览' : '优化提示词'}
       </Button>
+      {canUndoAppliedPrompt && lastApplied && onUndo && (
+        <Button
+          type="button"
+          className="button button-secondary prompt-skill-undo"
+          disabled={disabled || busy || skillsLoading}
+          onClick={() => {
+            try {
+              onUndo(lastApplied.before);
+              setLastApplied(undefined);
+              setError(undefined);
+            } catch (cause) {
+              setError(errorMessage(cause));
+            }
+          }}
+        >
+          <Undo2 size={14} aria-hidden="true" />
+          撤销提示词
+        </Button>
+      )}
       {!projectId && (
         <p className="prompt-skill-status">
           {isAuthoring ? '打开已保存项目后可调用文字模型升级 Skill' : '保存项目后可优化提示词'}
@@ -811,6 +867,17 @@ function requestBaseline(request: PromptOptimizationRequest): string {
     request.skillId,
     request.promptDocument,
   ]);
+}
+
+/** 只在当前输入仍等于最近一次 Skill 回填结果时允许撤销，避免覆盖后续手工编辑。 */
+function samePromptDocument(left: PromptDocument, right: PromptDocument): boolean {
+  const leftParsed = promptDocumentSchema.safeParse(left);
+  const rightParsed = promptDocumentSchema.safeParse(right);
+  return (
+    leftParsed.success &&
+    rightParsed.success &&
+    JSON.stringify(leftParsed.data) === JSON.stringify(rightParsed.data)
+  );
 }
 
 /** 保留可读错误上下文，非 Error 异常使用稳定兜底。 */

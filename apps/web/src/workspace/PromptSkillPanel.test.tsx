@@ -429,6 +429,60 @@ describe('PromptSkillPanel', () => {
     );
   });
 
+  it('节点直写模式把完整结果回填并只允许撤销最近一次回填', async () => {
+    const user = userEvent.setup();
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(result());
+    vi.stubGlobal('fetch', fetcher);
+    const onApply = vi.fn();
+    const onUndo = vi.fn();
+    const inputs = props({ applyMode: 'direct', onApply, onUndo });
+    const view = render(<PromptSkillPanel {...inputs} />);
+    const optimized: PromptDocument = {
+      ...source,
+      blocks: [{ type: 'text', text: '优化后的角色 ' }, ...source.blocks.slice(1)],
+    };
+
+    const settings = await openSkillSettings(user);
+    await user.click(within(settings).getByRole('button', { name: '优化提示词' }));
+    await waitFor(() => expect(onApply).toHaveBeenCalledExactlyOnceWith(optimized));
+    expect(screen.queryByRole('group', { name: '优化预览' })).not.toBeInTheDocument();
+    expect(sessionStorage.length).toBe(0);
+
+    view.rerender(<PromptSkillPanel {...inputs} promptDocument={optimized} />);
+    const updatedSettings = await screen.findByRole('group', { name: 'Skill 配置' });
+    const undo = within(updatedSettings).getByRole('button', { name: '撤销提示词' });
+    expect(undo).toBeEnabled();
+    await user.click(undo);
+
+    expect(onUndo).toHaveBeenCalledExactlyOnceWith(source);
+    expect(onApply).toHaveBeenCalledOnce();
+  });
+
+  it('节点提示词在 Skill 回填后被再次编辑时不覆盖新输入', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(result()));
+    const onApply = vi.fn();
+    const onUndo = vi.fn();
+    const inputs = props({ applyMode: 'direct', onApply, onUndo });
+    const view = render(<PromptSkillPanel {...inputs} />);
+    const optimized: PromptDocument = {
+      ...source,
+      blocks: [{ type: 'text', text: '优化后的角色 ' }, ...source.blocks.slice(1)],
+    };
+
+    await openSkillSettings(user);
+    await user.click(screen.getByRole('button', { name: '优化提示词' }));
+    await waitFor(() => expect(onApply).toHaveBeenCalledOnce());
+    view.rerender(
+      <PromptSkillPanel
+        {...inputs}
+        promptDocument={{ version: 1, blocks: [{ type: 'text', text: '用户后续编辑' }] }}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: '撤销提示词' })).not.toBeInTheDocument();
+    expect(onUndo).not.toHaveBeenCalled();
+  });
+
   it('popover 生成的结果切换为 inline 后可编辑并采用，采用后预览消失', async () => {
     const user = userEvent.setup();
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(result());
