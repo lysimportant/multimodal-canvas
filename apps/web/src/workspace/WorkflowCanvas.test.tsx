@@ -2,14 +2,19 @@ import '@testing-library/jest-dom/vitest';
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { memo, useContext } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { AssetFlowNode } from '../canvas-utils';
+import { NodeDeleteContext, NodePromptContext, NodeSelectionContext } from './AssetNode';
+import { GenerationBatchViewContext } from './generation-batch-view';
 
 const reactFlowMock = vi.hoisted(() => ({
   getNodesBounds: vi.fn(() => ({ x: 0, y: 0, width: 180, height: 120 })),
   getZoom: vi.fn(() => 1),
   viewportZoom: 1,
+  nodeProbe: undefined as React.ElementType | undefined,
+  onNodesChange: undefined as WorkflowCanvasProps['onNodesChange'] | undefined,
   setCenter: vi.fn(),
   fitView: vi.fn(() => Promise.resolve(true)),
   onConnectStart: undefined as
@@ -24,6 +29,7 @@ vi.mock('@xyflow/react', async () => {
 
   function ReactFlow({
     nodes,
+    onNodesChange,
     nodeTypes,
     onNodeClick,
     onNodeMouseEnter,
@@ -41,6 +47,7 @@ vi.mock('@xyflow/react', async () => {
     children,
   }: {
     nodes: AssetFlowNode[];
+    onNodesChange?: WorkflowCanvasProps['onNodesChange'];
     nodeTypes?: Record<string, React.ElementType>;
     edgeTypes?: Record<string, React.ElementType>;
     defaultEdgeOptions?: { animated?: boolean; type?: string; style?: Record<string, unknown> };
@@ -60,6 +67,7 @@ vi.mock('@xyflow/react', async () => {
     deleteKeyCode?: string | null;
     children?: React.ReactNode;
   }) {
+    reactFlowMock.onNodesChange = onNodesChange;
     reactFlowMock.onConnectStart = onConnectStart;
     reactFlowMock.onConnectEnd = onConnectEnd;
     return (
@@ -81,7 +89,8 @@ vi.mock('@xyflow/react', async () => {
           onContextMenu={onPaneContextMenu}
         />
         {nodes.map((node) => {
-          const NodeComponent = node.type ? nodeTypes?.[node.type] : undefined;
+          const NodeComponent =
+            reactFlowMock.nodeProbe ?? (node.type ? nodeTypes?.[node.type] : undefined);
           return (
             <div
               key={node.id}
@@ -95,7 +104,12 @@ vi.mock('@xyflow/react', async () => {
               onContextMenu={(event) => onNodeContextMenu?.(event, node)}
             >
               {NodeComponent ? (
-                <NodeComponent id={node.id} data={node.data} selected={node.selected} />
+                <NodeComponent
+                  id={node.id}
+                  data={node.data}
+                  selected={node.selected}
+                  {...(reactFlowMock.nodeProbe ? { node, onNodeClick, onNodeContextMenu } : {})}
+                />
               ) : (
                 node.data.label
               )}
@@ -227,6 +241,8 @@ afterEach(() => {
   reactFlowMock.getNodesBounds.mockClear();
   reactFlowMock.getZoom.mockClear().mockReturnValue(1);
   reactFlowMock.viewportZoom = 1;
+  reactFlowMock.nodeProbe = undefined;
+  reactFlowMock.onNodesChange = undefined;
   reactFlowMock.setCenter.mockClear();
   reactFlowMock.fitView.mockClear();
   reactFlowMock.onConnectStart = undefined;
@@ -1242,5 +1258,142 @@ describe('WorkflowCanvas connection drop create', () => {
       targetHandle: null,
     });
     expect(screen.queryByRole('menu', { name: '选择要创建的节点' })).not.toBeInTheDocument();
+  });
+});
+
+/** 节点探针保留真实 Context 订阅，隔离媒体解码和 jsdom 布局耗时。 */
+const DragRenderProbe = memo(function DragRenderProbe({ node }: { node: AssetFlowNode }) {
+  const select = useContext(NodeSelectionContext);
+  const batch = useContext(GenerationBatchViewContext);
+  const remove = useContext(NodeDeleteContext);
+  const prompt = useContext(NodePromptContext);
+  dragNodeRender(node.id);
+  return (
+    <>
+      <button
+        onClick={() => select?.(node.data)}
+        data-batch-count={batch.views.get(node.id)?.count}
+        data-batch-expanded={String(batch.views.get(node.id)?.expanded)}
+        data-batch-hidden={String(batch.views.get(node.id)?.hidden)}
+        data-x={node.position.x}
+        data-y={node.position.y}
+      >
+        {node.data.label}
+      </button>
+      {remove && <button onClick={() => remove(node.id)}>{'删除 ' + node.data.label}</button>}
+      {prompt && <button onClick={() => prompt(node.id)}>{'提示词 ' + node.data.label}</button>}
+    </>
+  );
+});
+
+/** 每次节点内容提交的计数器；测试不触发项目保存或真实生成。 */
+const dragNodeRender = vi.fn();
+
+describe('WorkflowCanvas 拖动性能', () => {
+  it('48 节点连续 12 次位置更新的节点渲染计数，并使用最新选择回调和坐标', () => {
+    reactFlowMock.nodeProbe = DragRenderProbe;
+    let nodes = Array.from({ length: 48 }, (_, index) => ({
+      ...sourceNode,
+      id: 'drag-' + index,
+      position: { x: index * 100, y: 0 },
+      data: { ...sourceNode.data, label: '拖动节点 ' + index },
+    }));
+    const props = createProps({ nodes });
+    const selected = vi.fn();
+    const deleted = vi.fn();
+    const prompted = vi.fn();
+    const view = render(<WorkflowCanvas {...props} onOpenRequestPrompt={() => {}} />);
+    dragNodeRender.mockClear();
+    for (let step = 1; step <= 12; step++) {
+      nodes = nodes.map((node, index) =>
+        index === 0 ? { ...node, position: { x: step * 10, y: step * 5 }, dragging: true } : node,
+      );
+      view.rerender(
+        <WorkflowCanvas
+          {...props}
+          nodes={nodes}
+          onNodeSelect={(node) => selected(step, node)}
+          onDeleteNode={(id) => deleted(step, id)}
+          onOpenRequestPrompt={(id) => prompted(step, id)}
+        />,
+      );
+    }
+    expect(dragNodeRender).toHaveBeenCalledTimes(12);
+    expect(dragNodeRender.mock.calls.filter(([id]) => id !== 'drag-0')).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: '拖动节点 0' }));
+    expect(selected).toHaveBeenCalledWith(12, nodes[0]);
+    fireEvent.click(screen.getByRole('button', { name: '删除 拖动节点 0' }));
+    fireEvent.click(screen.getByRole('button', { name: '提示词 拖动节点 0' }));
+    expect(deleted).toHaveBeenCalledWith(12, 'drag-0');
+    expect(prompted).toHaveBeenCalledWith(12, 'drag-0');
+    expect(props.onDeleteNode).not.toHaveBeenCalled();
+    view.rerender(
+      <WorkflowCanvas
+        {...props}
+        nodes={nodes}
+        onDeleteNode={undefined}
+        onOpenRequestPrompt={undefined}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: '删除 拖动节点 0' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '提示词 拖动节点 0' })).not.toBeInTheDocument();
+    expect(props.onNodeSelect).not.toHaveBeenCalled();
+    expect(props.onNodesChange).not.toHaveBeenCalled();
+  });
+
+  it('批次拖动保留最新真实坐标，展开和成员移除仍发布显示状态', () => {
+    reactFlowMock.nodeProbe = DragRenderProbe;
+    let nodes: AssetFlowNode[] = [0, 1].map((index) => ({
+      ...sourceNode,
+      id: 'batch-' + index,
+      position: { x: 100 + index * 300, y: 100 },
+      data: {
+        ...sourceNode.data,
+        label: '批次节点 ' + index,
+        generationBatch: { id: 'batch', rootNodeId: 'batch-0', index },
+      },
+    }));
+    nodes.push({ ...sourceNode, id: 'unrelated' });
+    const props = createProps({ nodes });
+    const view = render(<WorkflowCanvas {...props} />);
+    dragNodeRender.mockClear();
+    nodes = nodes.map((node, index) =>
+      index < 2 ? { ...node, position: { x: node.position.x + 20, y: 110 }, dragging: true } : node,
+    );
+    view.rerender(<WorkflowCanvas {...props} nodes={nodes} />);
+    expect(dragNodeRender.mock.calls.filter(([id]) => id === 'unrelated')).toHaveLength(0);
+    expect(screen.getByRole('button', { name: '批次节点 1' })).toHaveAttribute('data-x', '130');
+    reactFlowMock.onNodesChange?.([
+      { id: 'batch-0', type: 'position', position: { x: 150, y: 140 }, dragging: false },
+      { id: 'batch-1', type: 'select', selected: true },
+    ]);
+    expect(props.onNodesChange).toHaveBeenLastCalledWith([
+      { id: 'batch-0', type: 'position', position: { x: 150, y: 140 }, dragging: false },
+      { id: 'batch-1', type: 'position', position: { x: 450, y: 140 }, dragging: false },
+    ]);
+    nodes = nodes.map((node, index) =>
+      index === 0 ? { ...node, data: { ...node.data, generationBatchExpanded: true } } : node,
+    );
+    view.rerender(<WorkflowCanvas {...props} nodes={nodes} />);
+    expect(screen.getByRole('button', { name: '批次节点 1' })).toHaveAttribute(
+      'data-batch-expanded',
+      'true',
+    );
+    expect(screen.getByRole('button', { name: '批次节点 1' })).toHaveAttribute(
+      'data-batch-hidden',
+      'false',
+    );
+    expect(screen.getByRole('button', { name: '批次节点 1' })).toHaveAttribute('data-x', '420');
+    const independentMove = [
+      { id: 'batch-1', type: 'position' as const, position: { x: 500, y: 200 } },
+    ];
+    reactFlowMock.onNodesChange?.(independentMove);
+    expect(props.onNodesChange).toHaveBeenLastCalledWith(independentMove);
+    view.rerender(
+      <WorkflowCanvas {...props} nodes={nodes.filter((node) => node.id !== 'batch-1')} />,
+    );
+    expect(screen.getByRole('button', { name: '批次节点 0' })).not.toHaveAttribute(
+      'data-batch-count',
+    );
   });
 });

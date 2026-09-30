@@ -47,9 +47,11 @@ import { isActiveRunStatus } from './empty-node-rules';
 import { resolveImageEditSourcePreview } from './image-edit-source-preview';
 import {
   GenerationBatchViewContext,
+  type GenerationBatchView,
   projectGenerationBatches,
   reconcileGenerationBatchChanges,
 } from './generation-batch-view';
+import { reuseGenerationBatchViews } from './canvas-drag-performance';
 import type { NodeRunTarget } from './fork-generate-node';
 import type { ClearActionCounts } from './ClearCanvasMenu';
 import { CanvasGroupLayer } from './CanvasGroupLayer';
@@ -369,7 +371,22 @@ export function WorkflowCanvas({
   const [videoImageRolePicker, setVideoImageRolePicker] =
     useState<VideoInputRolePickerTarget | null>(null);
   /** 批量折叠只投影显示坐标，不修改真实节点与连线。 */
-  const batchProjection = useMemo(() => projectGenerationBatches(nodes, edges), [nodes, edges]);
+  const previousBatchViews = useRef<ReadonlyMap<string, GenerationBatchView>>(new Map());
+  const batchProjection = useMemo(() => {
+    const projection = projectGenerationBatches(nodes, edges);
+    return {
+      ...projection,
+      views: reuseGenerationBatchViews(previousBatchViews.current, projection.views),
+    };
+  }, [nodes, edges]);
+  useLayoutEffect(() => {
+    previousBatchViews.current = batchProjection.views;
+  }, [batchProjection.views]);
+  /** 事件读取最近提交的节点和回调，位置变化不向所有节点广播选择上下文。 */
+  const nodeActionsRef = useRef({ nodes, onNodeSelect, onDeleteNode, onOpenRequestPrompt });
+  useLayoutEffect(() => {
+    nodeActionsRef.current = { nodes, onNodeSelect, onDeleteNode, onOpenRequestPrompt };
+  }, [nodes, onNodeSelect, onDeleteNode, onOpenRequestPrompt]);
   const batchContext = useMemo(
     () => ({ views: batchProjection.views, onExpandedChange: onBatchExpandedChange }),
     [batchProjection.views, onBatchExpandedChange],
@@ -472,20 +489,33 @@ export function WorkflowCanvas({
     });
   }, [fitView]);
 
-  const selectNodeByData = useCallback(
-    (data: AssetFlowNode['data']) => {
-      const node =
-        nodes.find((candidate) => candidate.data === data) ??
-        nodes.find(
-          (candidate) =>
-            candidate.data.label === data.label &&
-            candidate.data.mediaType === data.mediaType &&
-            candidate.data.mode === data.mode,
-        );
-      if (node) onNodeSelect(node);
-    },
-    [nodes, onNodeSelect],
-  );
+  /** 通过最新数据定位节点；兼容控件持有的历史数据对象，不冻结拖动后的坐标。 */
+  const selectNodeByData = useCallback((data: AssetFlowNode['data']) => {
+    const { nodes: currentNodes, onNodeSelect: select } = nodeActionsRef.current;
+    const node =
+      currentNodes.find((candidate) => candidate.data === data) ??
+      currentNodes.find(
+        (candidate) =>
+          candidate.data.label === data.label &&
+          candidate.data.mediaType === data.mediaType &&
+          candidate.data.mode === data.mode,
+      );
+    if (node) select(node);
+  }, []);
+
+  /** 保持 React Flow 节点包装器的点击回调引用稳定，选择仍交给当前 App 回调。 */
+  const handleNodeClick = useCallback((_event: ReactMouseEvent, node: AssetFlowNode) => {
+    nodeActionsRef.current.onNodeSelect(node);
+  }, []);
+
+  /** App 的内联动作保持最新语义，但不因坐标刷新而广播整个节点树。 */
+  const handleDeleteNode = useCallback((nodeId: string) => {
+    nodeActionsRef.current.onDeleteNode?.(nodeId);
+  }, []);
+  /** 提示词入口沿用当前回调；未提供入口时 Context 仍为 null。 */
+  const handleOpenRequestPrompt = useCallback((nodeId: string) => {
+    nodeActionsRef.current.onOpenRequestPrompt?.(nodeId);
+  }, []);
 
   const handleDrop = useCallback(
     (event: DragEvent) => {
@@ -530,7 +560,7 @@ export function WorkflowCanvas({
       if (shouldKeepNativeContextMenu(event.target)) return;
       event.preventDefault();
       event.stopPropagation();
-      onNodeSelect(node);
+      nodeActionsRef.current.onNodeSelect(node);
       setContextMenu({
         kind: 'node',
         clientPosition: { x: event.clientX, y: event.clientY },
@@ -538,7 +568,7 @@ export function WorkflowCanvas({
         returnFocusTo: getReturnFocusTarget(event),
       });
     },
-    [getReturnFocusTarget, onNodeSelect],
+    [getReturnFocusTarget],
   );
 
   const handleContextMenuClose = useCallback(
@@ -717,10 +747,12 @@ export function WorkflowCanvas({
             <NodeLabelChangeContext.Provider value={onNodeLabelChange ?? null}>
               <NodeEnabledContext.Provider value={onNodeEnabledChange}>
                 <NodeRetryContext.Provider value={onRetryNode}>
-                  <NodeDeleteContext.Provider value={onDeleteNode ?? null}>
+                  <NodeDeleteContext.Provider value={onDeleteNode ? handleDeleteNode : null}>
                     <NodeContentContext.Provider value={nodeContentHandlers ?? null}>
                       <NodeImageEditContext.Provider value={onEditImage ?? null}>
-                        <NodePromptContext.Provider value={onOpenRequestPrompt ?? null}>
+                        <NodePromptContext.Provider
+                          value={onOpenRequestPrompt ? handleOpenRequestPrompt : null}
+                        >
                           <NodeQuickEditorIdContext.Provider value={quickEditorNode?.id ?? null}>
                             <GenerationBatchViewContext.Provider value={batchContext}>
                               <CanvasEdgeAppearanceProvider appearance={edgeAppearance}>
@@ -773,10 +805,8 @@ export function WorkflowCanvas({
                                     event.preventDefault();
                                     event.dataTransfer.dropEffect = 'copy';
                                   }}
-                                  onNodeClick={(_, node) => onNodeSelect(node as AssetFlowNode)}
-                                  onNodeContextMenu={(event, node) =>
-                                    handleNodeContextMenu(event, node as AssetFlowNode)
-                                  }
+                                  onNodeClick={handleNodeClick}
+                                  onNodeContextMenu={handleNodeContextMenu}
                                   onPaneContextMenu={handlePaneContextMenu}
                                   onPaneClick={() => {
                                     if (suppressPaneClickRef.current) {

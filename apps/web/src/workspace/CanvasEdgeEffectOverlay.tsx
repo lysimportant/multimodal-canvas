@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 
 import { edgeEffectOverlayClassName, type CanvasEdgeEffect } from './canvas-edge-appearance';
 
@@ -14,12 +14,16 @@ function ShootingStarEdgeEffect({ path }: { path: string }) {
   const overlayRef = useRef<SVGGElement>(null);
   const headRef = useRef<SVGPathElement>(null);
 
-  useLayoutEffect(() => {
-    const length = headRef.current?.getTotalLength?.();
-    // 无 SVG 几何接口时保留 CSS 的相对长度；浏览器中把尾迹限制在 22 个画布单位内。
-    if (length === undefined) return;
-    const tailLength = length > 0 ? Math.min(0.22, 22 / length) : 0;
-    overlayRef.current?.style.setProperty('--canvas-edge-star-tail', `${tailLength}px`);
+  useEffect(() => {
+    /** 合并同一绘制帧内的路径变化，不在每次 React 提交时同步求 SVG 长度。 */
+    const frame = requestAnimationFrame(() => {
+      const length = headRef.current?.getTotalLength?.();
+      // 无 SVG 几何接口时保留 CSS 的相对长度；浏览器中把尾迹限制在 22 个画布单位内。
+      if (length === undefined) return;
+      const tailLength = length > 0 ? Math.min(0.22, 22 / length) : 0;
+      overlayRef.current?.style.setProperty('--canvas-edge-star-tail', `${tailLength}px`);
+    });
+    return () => cancelAnimationFrame(frame);
   }, [path]);
 
   return (

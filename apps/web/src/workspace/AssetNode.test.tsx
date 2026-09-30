@@ -746,6 +746,68 @@ describe('AssetNode result presentation', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 
+  it('图片显示实际像素，低于所选尺寸时提示但仍下载原文件', async () => {
+    const download = { blob: new Blob(['original']), filename: '原图.png' };
+    vi.mocked(fetchNodeAssetDownload).mockResolvedValueOnce(download);
+    renderNode(
+      makeNode({
+        mediaType: 'image',
+        modelAlias: 'gpt-image-2.5-sunburst',
+        parameters: { resolution: '4k', aspectRatio: '16:9' },
+        resultAsset: { assetId: 'result-image', version: 1, mimeType: 'image/png' },
+        runStatus: 'succeeded',
+      }),
+    );
+    const image = screen.getByRole('img');
+    Object.defineProperties(image, {
+      naturalWidth: { value: 1672 },
+      naturalHeight: { value: 941 },
+    });
+    fireEvent.load(image);
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      '实际 1672×941，未达到所选 3840×2160',
+    );
+    await userEvent.click(screen.getByRole('button', { name: '查看节点信息' }));
+    const dialog = await screen.findByRole('dialog', { name: '节点信息' });
+    expect(dialog).toHaveTextContent('实际像素1672×941');
+    expect(dialog).toHaveTextContent('当前设置3840×2160');
+    await userEvent.click(screen.getByRole('button', { name: '关闭节点信息' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: '下载图片' }));
+    await waitFor(() => expect(downloadProjectExport).toHaveBeenCalledWith(download));
+  });
+
+  it.each([
+    { label: '已达到尺寸', width: 3840, height: 2160, stale: false, manualOutput: false },
+    { label: '修改参数后的旧结果', width: 1672, height: 941, stale: true, manualOutput: false },
+    { label: '手动替换的图片', width: 1672, height: 941, stale: false, manualOutput: true },
+  ])('$label 不误报生成尺寸不足', async ({ width, height, stale, manualOutput }) => {
+    renderNode(
+      makeNode({
+        mediaType: 'image',
+        parameters: { resolution: '4k', aspectRatio: '16:9' },
+        assetId: 'manual-image',
+        mimeType: 'image/png',
+        contentUrl: '/v1/assets/manual-image/content',
+        resultAsset: { assetId: 'result-image', version: 1, mimeType: 'image/png' },
+        runStatus: 'succeeded',
+        stale,
+        manualOutput,
+      }),
+    );
+    const image = screen.getByRole('img');
+    Object.defineProperties(image, {
+      naturalWidth: { value: width },
+      naturalHeight: { value: height },
+    });
+    fireEvent.load(image);
+    expect(screen.queryByText(/未达到所选/)).not.toBeInTheDocument();
+    if (stale)
+      expect(screen.getByRole('status')).toHaveTextContent(
+        '当前原图 1672×941；当前设置 3840×2160（待更新）',
+      );
+  });
+
   it('信息按钮打开介绍对话框', async () => {
     const user = userEvent.setup();
     renderNode(makeNode({ stale: true }), undefined, vi.fn(), undefined, false, vi.fn(), vi.fn());

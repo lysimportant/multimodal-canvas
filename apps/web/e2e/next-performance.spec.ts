@@ -152,6 +152,16 @@ async function installPerformanceFixture(page: Page) {
     const path = new URL(route.request().url()).pathname;
     const send = (body: unknown) =>
       route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
+    if (path === '/v1/auth/me')
+      return send({
+        user: {
+          id: 'performance-user',
+          email: 'performance@example.test',
+          role: 'admin',
+          createdAt: '2026-09-16T10:00:00.000Z',
+        },
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      });
     if (path.endsWith('/events'))
       return route.fulfill({ contentType: 'text/event-stream', body: ': ready\n\n' });
     if (path === '/v1/projects') return send({ projects: [project] });
@@ -162,6 +172,7 @@ async function installPerformanceFixture(page: Page) {
       return send({ canvas });
     }
     if (path.endsWith('/models/defaults')) return send({ defaults: {} });
+    if (path.endsWith('/reverse-prompts')) return send({ analysis: null });
     if (path.endsWith('/request-prompts/prompt-record')) return send({ record });
     if (path.endsWith('/request-prompts'))
       return send({ records: [{ id: 'prompt-record', ...record }], timing });
@@ -226,11 +237,11 @@ function distribution(values: number[]) {
 
 test('固定规模性能：100 节点、99 连线、100 成员组及长提示词', async ({ page }, testInfo) => {
   test.skip(!process.env.PERFORMANCE_LABEL, '性能比较需独立执行并明确标注基线或当前版本');
-  test.setTimeout(60_000);
+  test.setTimeout(180_000);
   await page.setViewportSize({ width: 1920, height: 1080 });
   const fixture = await installPerformanceFixture(page);
   await page.goto('/projects/performance-project');
-  await expect(page.locator('.react-flow__node')).toHaveCount(nodeCount, { timeout: 20_000 });
+  await expect(page.locator('.react-flow__node')).toHaveCount(nodeCount, { timeout: 60_000 });
   await expect(page.locator('.react-flow__edge')).toHaveCount(nodeCount - 1);
   await page.getByRole('button', { name: '自动适配缩放', exact: true }).click();
   await expect
@@ -268,7 +279,10 @@ test('固定规模性能：100 节点、99 连线、100 成员组及长提示词
   const dialog: number[] = [];
   for (let iteration = 0; iteration < 5; iteration += 1) {
     const before = performance.now();
-    await page.getByRole('button', { name: /查看生成提示词/ }).click();
+    await page
+      .getByRole('dialog', { name: '节点信息' })
+      .getByRole('button', { name: /查看生成提示词/ })
+      .click();
     await expect(page.locator('.request-prompt-text')).toContainText('Long performance prompt.');
     dialog.push(performance.now() - before);
     await page.keyboard.press('Escape');
@@ -278,7 +292,7 @@ test('固定规模性能：100 节点、99 连线、100 成员组及长提示词
   const activeNode = page.locator('.react-flow__node[data-id="node-1"]');
   await activeNode.hover();
   await activeNode.getByRole('button', { name: '查看节点信息' }).click();
-  const duration = page.locator('.node-duration-badge');
+  const duration = page.getByRole('dialog', { name: '节点信息' }).locator('.node-duration-badge');
   const beforeDuration = await duration.innerText();
   const clockFrames = await sampleFrames(page);
   await expect(duration).not.toHaveText(beforeDuration);

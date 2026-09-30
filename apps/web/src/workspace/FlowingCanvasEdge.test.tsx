@@ -1,4 +1,5 @@
 import '@testing-library/jest-dom/vitest';
+import * as edgeAppearance from './canvas-edge-appearance';
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -448,5 +449,69 @@ describe('FlowingConnectionLine', () => {
 
     expect(container.querySelector('.canvas-flow-edge-path')).toBeInTheDocument();
     expect(container.querySelector('[data-testid="edge-effect-overlay"]')).toBeNull();
+  });
+});
+
+describe('FlowingCanvasEdge 拖动性能', () => {
+  it('12 次位置更新只计算端点变化的边，并保留选择与特效变化', () => {
+    const solve = vi.spyOn(edgeAppearance, 'resolveEdgePath');
+    /** 十条边中只有第一条随节点移动，其余边仅接收父组件更新。 */
+    const frame = (step: number) => (
+      <CanvasEdgeAppearanceProvider
+        appearance={{ pathStyle: 'bezier', effect: step % 2 ? 'none' : 'meteor' }}
+      >
+        <svg>
+          {Array.from({ length: 10 }, (_, index) => (
+            <FlowingCanvasEdge
+              key={index}
+              id={'perf-' + index}
+              source={'a-' + index}
+              target={'b-' + index}
+              {...edgeParams}
+              sourceX={edgeParams.sourceX + (index === 0 ? step : 0)}
+              selected={step % 2 === 1}
+            />
+          ))}
+        </svg>
+      </CanvasEdgeAppearanceProvider>
+    );
+    const view = render(frame(0));
+    expect(solve).toHaveBeenCalledTimes(10);
+    solve.mockClear();
+    for (let step = 1; step <= 12; step++) view.rerender(frame(step));
+    expect(solve).toHaveBeenCalledTimes(12);
+    expect(view.container.querySelectorAll('.canvas-edge-effect-meteor')).toHaveLength(10);
+    expect(view.container.querySelectorAll('.is-selected')).toHaveLength(0);
+    view.rerender(frame(13));
+    expect(view.container.querySelectorAll('.canvas-edge-effect-meteor')).toHaveLength(0);
+    expect(view.container.querySelectorAll('.is-selected')).toHaveLength(10);
+  });
+
+  it.each([
+    { sourceX: 80 },
+    { sourceY: 90 },
+    { targetX: 160 },
+    { targetY: 220 },
+    { sourcePosition: Position.Top },
+    { targetPosition: Position.Right },
+  ])('端点或方向变化 %j 时更新缓存的几何', (change) => {
+    /** 与边的实际端点参数共享类型，不使用生成或持久化数据。 */
+    const frame = (params: typeof edgeParams, pathStyle: CanvasEdgePathStyle = 'bezier') => (
+      <CanvasEdgeAppearanceProvider appearance={{ pathStyle, effect: 'none' }}>
+        <svg>
+          <FlowingCanvasEdge id="geometry" source="source" target="target" {...params} />
+        </svg>
+      </CanvasEdgeAppearanceProvider>
+    );
+    const view = render(frame(edgeParams));
+    const original = view.container.querySelector('.react-flow__edge-path')?.getAttribute('d');
+    const next = { ...edgeParams, ...change };
+    view.rerender(frame(next));
+    const changed = view.container.querySelector('.react-flow__edge-path')?.getAttribute('d');
+    expect(changed).not.toBe(original);
+    view.rerender(frame(next, 'straight'));
+    expect(view.container.querySelector('.react-flow__edge-path')?.getAttribute('d')).not.toBe(
+      changed,
+    );
   });
 });

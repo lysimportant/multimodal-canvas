@@ -34,6 +34,7 @@ import {
   useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useState,
   useRef,
   type KeyboardEvent,
@@ -47,6 +48,8 @@ import {
 import type { Asset, PortRole, RunStatus, VideoMode } from '@multimodal-canvas/domain';
 import {
   displayVideoMode,
+  ImageOutputParameterError,
+  resolveImageOutputParameters,
   isImageEditSourceNode,
   videoModeLabels,
 } from '@multimodal-canvas/domain';
@@ -226,6 +229,12 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [retryFile, setRetryFile] = useState<File | null>(null);
+  /** 像素来自原图解码，按资产版本隔离；不参与节点外框尺寸计算。 */
+  const [imageDimensions, setImageDimensions] = useState<{
+    identity: string;
+    width: number;
+    height: number;
+  }>();
   const [previewLoadState, setPreviewLoadState] = useState<AssetPreviewLoadState | null>(null);
   const [isRetrying, setIsRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
@@ -323,6 +332,51 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const previewIdentity = previewAsset
     ? `${previewAsset.id}:${previewAsset.contentUrl}:${previewAsset.mimeType}`
     : '';
+  const actualImageSize =
+    imageDimensions?.identity === previewIdentity ? imageDimensions : undefined;
+  /** 当前设置只用于对照，不能冒充历史请求或供应商实际返回的像素。 */
+  const selectedImageSize = useMemo(() => {
+    if (data.mediaType !== 'image') return undefined;
+    try {
+      return { output: resolveImageOutputParameters(data.parameters ?? {}, data.modelAlias) };
+    } catch (error) {
+      if (error instanceof ImageOutputParameterError) return { issue: error.message };
+      throw error;
+    }
+  }, [data.mediaType, data.parameters, data.modelAlias]);
+  const requestedSize = selectedImageSize?.output;
+  const imageSizeWarning =
+    data.resultAsset &&
+    !data.manualOutput &&
+    !isNodeRunning(data.runStatus) &&
+    actualImageSize &&
+    requestedSize?.width &&
+    requestedSize.height &&
+    (actualImageSize.width < requestedSize.width || actualImageSize.height < requestedSize.height)
+      ? data.stale
+        ? `当前原图 ${actualImageSize.width}×${actualImageSize.height}；当前设置 ${requestedSize.width}×${requestedSize.height}（待更新）`
+        : `实际 ${actualImageSize.width}×${actualImageSize.height}，未达到所选 ${requestedSize.width}×${requestedSize.height}`
+      : undefined;
+  /** 同一版本重复加载不触发额外渲染；切换版本后不沿用旧图尺寸。 */
+  const handleNaturalImageSize = useCallback(
+    (width: number, height: number) => {
+      if (
+        !Number.isSafeInteger(width) ||
+        !Number.isSafeInteger(height) ||
+        width <= 0 ||
+        height <= 0
+      )
+        return;
+      setImageDimensions((current) =>
+        current?.identity === previewIdentity &&
+        current.width === width &&
+        current.height === height
+          ? current
+          : { identity: previewIdentity, width, height },
+      );
+    },
+    [previewIdentity],
+  );
   const presentationState = getNodePresentationState(data, previewAsset);
   const writingDisabled = isNodeRunning(data.runStatus) || uploadProgress !== null;
   /** 仅图片和视频提供下载，下载内容始终与当前回显产物一致。 */
@@ -956,6 +1010,34 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
                 <dt>运行</dt>
                 <dd>{data.runStatus ? runStatusLabel(data.runStatus) : '未运行'}</dd>
               </div>
+              {data.mediaType === 'image' && previewAsset ? (
+                <>
+                  <div>
+                    <dt>实际像素</dt>
+                    <dd>
+                      {actualImageSize
+                        ? `${actualImageSize.width}×${actualImageSize.height}`
+                        : '等待原图加载'}
+                    </dd>
+                  </div>
+                  {requestedSize?.width && requestedSize.height ? (
+                    <div>
+                      <dt>当前设置</dt>
+                      <dd>{`${requestedSize.width}×${requestedSize.height}`}</dd>
+                    </div>
+                  ) : null}
+                  {selectedImageSize?.issue ? (
+                    <div>
+                      <dt>参数问题</dt>
+                      <dd>{selectedImageSize.issue}</dd>
+                    </div>
+                  ) : null}
+                  <div>
+                    <dt>下载方式</dt>
+                    <dd>原始文件（不缩放）</dd>
+                  </div>
+                </>
+              ) : null}
               {data.runError ? (
                 <div>
                   <dt>错误</dt>
@@ -1027,6 +1109,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
                 : undefined
             }
             onLoadStateChange={handlePreviewLoadState}
+            onNaturalSize={data.mediaType === 'image' ? handleNaturalImageSize : undefined}
           />
         </div>
       ) : (
@@ -1049,6 +1132,19 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
         />
       )}
       {!floatingControls && nodeLabel}
+      {imageSizeWarning &&
+        !isDownloading &&
+        !downloadError &&
+        !uploadError &&
+        uploadProgress === null && (
+          <div
+            className="flow-node-download-feedback nodrag nopan"
+            role="status"
+            title="下载保留原始图片，不会压缩或自动放大。所选尺寸不等于实际返回尺寸。"
+          >
+            {imageSizeWarning}
+          </div>
+        )}
       {isDownloading && (
         <span className="flow-node-download-feedback" role="status">
           正在准备下载…

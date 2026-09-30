@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import {
   BaseEdge,
   Position,
@@ -69,16 +70,19 @@ export function FlowingCanvasEdge({
   selected,
 }: EdgeProps) {
   const { pathStyle, effect } = useCanvasEdgeAppearance();
-  const source = centerHandlePoint(sourceX, sourceY, sourcePosition);
-  const target = centerHandlePoint(targetX, targetY, targetPosition);
-  const path = resolveEdgePath(pathStyle, {
-    sourceX: source.x,
-    sourceY: source.y,
-    targetX: target.x,
-    targetY: target.y,
-    sourcePosition,
-    targetPosition,
-  });
+  /** 选择、颜色或特效改变不影响几何，只在端点或路径形态改变时重新求解。 */
+  const path = useMemo(() => {
+    const source = centerHandlePoint(sourceX, sourceY, sourcePosition);
+    const target = centerHandlePoint(targetX, targetY, targetPosition);
+    return resolveEdgePath(pathStyle, {
+      sourceX: source.x,
+      sourceY: source.y,
+      targetX: target.x,
+      targetY: target.y,
+      sourcePosition,
+      targetPosition,
+    });
+  }, [pathStyle, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition]);
 
   return (
     <>

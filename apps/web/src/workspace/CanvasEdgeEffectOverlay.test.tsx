@@ -2,8 +2,8 @@ import '@testing-library/jest-dom/vitest';
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { cleanup, render } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, render } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CanvasEdgeEffectOverlay } from './CanvasEdgeEffectOverlay';
 import { canvasEdgeAppearanceDefaults, edgeEffectOverlayClassName } from './canvas-edge-appearance';
@@ -14,8 +14,31 @@ const originalLengthDescriptor = Object.getOwnPropertyDescriptor(
   'getTotalLength',
 );
 
+/** 当前绘制帧的待执行测量；以确定性调度替代墙钟耗时断言。 */
+const pendingFrames = new Map<number, FrameRequestCallback>();
+
+beforeEach(() => {
+  pendingFrames.clear();
+  let nextFrameId = 0;
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    pendingFrames.set(++nextFrameId, callback);
+    return nextFrameId;
+  });
+  vi.stubGlobal('cancelAnimationFrame', (id: number) => pendingFrames.delete(id));
+});
+
+/** 执行一次绘制帧；回调中新提交的测量保留到下一帧。 */
+function flushFrame() {
+  act(() => {
+    const callbacks = [...pendingFrames.values()];
+    pendingFrames.clear();
+    callbacks.forEach((callback) => callback(16));
+  });
+}
+
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   if (originalLengthDescriptor) {
     Object.defineProperty(SVGElement.prototype, 'getTotalLength', originalLengthDescriptor);
   } else {
@@ -59,6 +82,7 @@ describe('CanvasEdgeEffectOverlay', () => {
         <CanvasEdgeEffectOverlay path={`M 0,0 L ${length},0`} effect="shooting-star" />
       </svg>,
     );
+    flushFrame();
     const overlay = container.querySelector<SVGGElement>('.canvas-edge-effect-shooting-star');
     expect(measure).toHaveBeenCalledTimes(1);
     expect(
@@ -79,6 +103,7 @@ describe('CanvasEdgeEffectOverlay', () => {
         <CanvasEdgeEffectOverlay path="M 0,0 L 1000,0" effect="shooting-star" />
       </svg>,
     );
+    flushFrame();
     const head = container.querySelector('.canvas-edge-shooting-star-head');
     const overlay = container.querySelector<SVGGElement>('.canvas-edge-effect-shooting-star');
     expect(overlay?.style.getPropertyValue('--canvas-edge-star-tail')).toBe('0.022px');
@@ -89,6 +114,7 @@ describe('CanvasEdgeEffectOverlay', () => {
         <CanvasEdgeEffectOverlay path="M 200,0 L 0,0" effect="shooting-star" />
       </svg>,
     );
+    flushFrame();
     expect(measure).toHaveBeenCalledTimes(2);
     expect(container.querySelector('.canvas-edge-shooting-star-head')).toBe(head);
     expect(head).toHaveAttribute('d', 'M 200,0 L 0,0');
@@ -124,5 +150,84 @@ describe('CanvasEdgeEffectOverlay', () => {
       'stroke-dashoffset: calc(var(--canvas-edge-star-span) - 0.5px);',
     );
     expect(css).not.toContain('!important');
+  });
+});
+
+describe('CanvasEdgeEffectOverlay 拖动性能', () => {
+  it('同一绘制帧内连续 12 次更新只测量最终路径', () => {
+    const measure = mockPathLength(1000);
+    const view = render(
+      <svg>
+        <CanvasEdgeEffectOverlay path="M 0,0 L 1000,0" effect="shooting-star" />
+      </svg>,
+    );
+    flushFrame();
+    measure.mockClear();
+    for (let step = 1; step <= 12; step++) {
+      measure.mockReturnValue(1000 + step * 10);
+      view.rerender(
+        <svg>
+          <CanvasEdgeEffectOverlay
+            path={'M 0,0 L ' + (1000 + step * 10) + ',0'}
+            effect="shooting-star"
+          />
+        </svg>,
+      );
+    }
+    expect(measure).not.toHaveBeenCalled();
+    expect(pendingFrames.size).toBe(1);
+    flushFrame();
+    expect(measure).toHaveBeenCalledTimes(1);
+    expect(view.container.querySelector('.canvas-edge-effect-shooting-star')).toHaveStyle({
+      '--canvas-edge-star-tail': 22 / 1120 + 'px',
+    });
+    view.unmount();
+    expect(pendingFrames.size).toBe(0);
+  });
+
+  it('切换特效或卸载时取消待执行测量，跨帧仍会测量最新路径', () => {
+    const measure = mockPathLength(200);
+    const view = render(
+      <svg>
+        <CanvasEdgeEffectOverlay path="M 0,0 L 200,0" effect="shooting-star" />
+      </svg>,
+    );
+    expect(pendingFrames.size).toBe(1);
+    view.rerender(
+      <svg>
+        <CanvasEdgeEffectOverlay path="M 0,0 L 200,0" effect="none" />
+      </svg>,
+    );
+    expect(pendingFrames.size).toBe(0);
+    flushFrame();
+    expect(measure).not.toHaveBeenCalled();
+    view.rerender(
+      <svg>
+        <CanvasEdgeEffectOverlay path="M 0,0 L 200,0" effect="shooting-star" />
+      </svg>,
+    );
+    flushFrame();
+    expect(measure).toHaveBeenCalledTimes(1);
+    measure.mockReturnValue(1000);
+    view.rerender(
+      <svg>
+        <CanvasEdgeEffectOverlay path="M 0,0 L 1000,0" effect="shooting-star" />
+      </svg>,
+    );
+    flushFrame();
+    expect(measure).toHaveBeenCalledTimes(2);
+    expect(view.container.querySelector('.canvas-edge-effect-shooting-star')).toHaveStyle({
+      '--canvas-edge-star-tail': '0.022px',
+    });
+    view.rerender(
+      <svg>
+        <CanvasEdgeEffectOverlay path="M 0,0 L 500,0" effect="shooting-star" />
+      </svg>,
+    );
+    expect(pendingFrames.size).toBe(1);
+    view.unmount();
+    expect(pendingFrames.size).toBe(0);
+    flushFrame();
+    expect(measure).toHaveBeenCalledTimes(2);
   });
 });

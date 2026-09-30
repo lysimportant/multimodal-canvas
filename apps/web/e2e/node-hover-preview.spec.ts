@@ -79,7 +79,9 @@ async function json(route: Route, value: unknown) {
 }
 
 /** 安装图片结果、请求说明和资源预览的最小合同，收集所有页面错误。 */
-async function installFixture(page: Page) {
+async function installFixture(page: Page, parameters: Record<string, unknown> = {}) {
+  const fixtureCanvas = structuredClone(canvas);
+  fixtureCanvas.nodes[0]!.data.parameters = parameters;
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => {
@@ -112,13 +114,14 @@ async function installFixture(page: Page) {
         },
       });
     }
+    if (path.endsWith('/reverse-prompts')) return json(route, { analysis: null });
     if (path === '/v1/prompt-skills') return json(route, { skills: [] });
     if (path.endsWith('/events')) {
       return route.fulfill({ contentType: 'text/event-stream', body: ': ready\n\n' });
     }
     if (path === '/v1/projects') return json(route, { projects: [project] });
     if (path === `/v1/projects/${project.id}`) return json(route, { project });
-    if (path.endsWith('/canvas')) return json(route, { canvas });
+    if (path.endsWith('/canvas')) return json(route, { canvas: fixtureCanvas });
     if (path.endsWith('/models/defaults')) return json(route, { defaults: {} });
     if (path.endsWith('/runs')) {
       return json(route, {
@@ -137,9 +140,9 @@ async function installFixture(page: Page) {
               targetNodeId: record.nodeId,
               canvasRevision: 1,
               modelAlias: record.modelAlias,
-              parameters: {},
+              parameters,
               submittedAt: project.createdAt,
-              nodes: canvas.nodes,
+              nodes: fixtureCanvas.nodes,
               edges: [],
               inputs: [],
             },
@@ -291,9 +294,10 @@ for (const viewport of [
     await expect
       .poll(() => image.evaluate((element) => (element as HTMLImageElement).naturalWidth))
       .toBeGreaterThan(0);
+    // 等待 Tooltip 入场缩放结束，不把动画中间帧误判成布局变化。
+    await expect.poll(async () => (await tooltip.boundingBox())!.width).toBeCloseTo(280, 1);
+    await expect.poll(async () => (await tooltip.boundingBox())!.height).toBeCloseTo(210, 1);
     const previewBounds = await tooltip.boundingBox();
-    expect(previewBounds!.width).toBe(280);
-    expect(previewBounds!.height).toBe(210);
     expect(previewBounds!.x).toBeGreaterThanOrEqual(12);
     expect(previewBounds!.x + previewBounds!.width).toBeLessThanOrEqual(viewport.width - 12);
     expect(previewBounds!.y).toBeGreaterThanOrEqual(12);
@@ -315,18 +319,83 @@ for (const viewport of [
     await editor.getByRole('button', { name: '打开完整编辑器' }).click();
     const fullEditor = page.getByRole('dialog', { name: '图片结果 · 编辑设置' });
     await expect(fullEditor).toBeVisible();
+    // 悬停动作等待完整编辑器入场动画稳定后再取引用坐标。
+    await fullEditor.getByRole('textbox', { name: '提示词', exact: true }).hover();
     const fullTokenBounds = await fullEditor.locator('.resource-mention-token').boundingBox();
     await page.mouse.move(
       fullTokenBounds!.x + fullTokenBounds!.width / 2,
       fullTokenBounds!.y + fullTokenBounds!.height / 2,
     );
-    const fullPreview = page.locator('.resource-mention-hover-card-expanded');
+    const fullPreview = fullEditor.getByRole('region', { name: '预览 产品图' });
     await expect(fullPreview).toBeVisible();
     await expect(fullPreview.locator('img')).toHaveCSS('object-fit', 'contain');
-    const fullPreviewBounds = await fullPreview.boundingBox();
-    expect(fullPreviewBounds!.width).toBe(280);
-    expect(fullPreviewBounds!.height).toBe(210);
+    await expect.poll(async () => (await fullPreview.boundingBox())!.width).toBeCloseTo(280, 1);
+    await expect.poll(async () => (await fullPreview.boundingBox())!.height).toBeCloseTo(210, 1);
     await page.screenshot({ path: testInfo.outputPath('dialog-mention-preview.png') });
+    expect(errors).toEqual([]);
+  });
+}
+
+for (const viewport of [
+  { width: 1920, height: 1080 },
+  { width: 1366, height: 768 },
+]) {
+  test(`${viewport.width}x${viewport.height} 实际像素与原图下载、输入高度不撑大节点`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(viewport);
+    const errors = await installFixture(page, { resolution: '4k', aspectRatio: '16:9' });
+    await page.goto(`/projects/${project.id}`);
+    const node = page.locator('.react-flow__node[data-id="image-result"]');
+    const image = node.locator('img');
+    await expect(image).toBeVisible();
+    await expect
+      .poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth))
+      .toBeGreaterThan(0);
+    const pixels = await image.evaluate((element: HTMLImageElement) => ({
+      width: element.naturalWidth,
+      height: element.naturalHeight,
+    }));
+    expect(pixels.width).toBeLessThan(3840);
+    await expect(node.getByRole('status')).toContainText(
+      `实际 ${pixels.width}×${pixels.height}，未达到所选 3840×2160`,
+    );
+    const before = await node.boundingBox();
+    await node.hover();
+    const pending = page.waitForEvent('download');
+    await node.getByRole('button', { name: '下载图片', exact: true }).click();
+    const downloaded = await pending;
+    const path = await downloaded.path();
+    expect(path).not.toBeNull();
+    expect(readFileSync(path!)).toEqual(poster);
+    const input = page.getByRole('textbox', { name: '提示词', exact: true });
+    if (!(await input.isVisible())) await node.click({ position: { x: 40, y: 40 } });
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(input).toBeVisible();
+    expect(
+      await input.evaluate((element) => Number.parseFloat(getComputedStyle(element).height)),
+    ).toBe(180);
+    await input.fill('A synthetic long prompt for scroll verification.\n'.repeat(50));
+    expect(await input.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(
+      true,
+    );
+    expect((await node.boundingBox())!.width).toBeCloseTo(before!.width, 0);
+    expect((await node.boundingBox())!.height).toBeCloseTo(before!.height, 0);
+    const editor = await page.locator('.node-quick-editor').boundingBox();
+    expect(editor!.y).toBeGreaterThanOrEqual(0);
+    expect(editor!.y + editor!.height).toBeLessThanOrEqual(viewport.height);
+    // 小高度桌面沿用面板内部滚动，底部操作必须仍能到达。
+    const expand = page
+      .locator('.node-quick-editor')
+      .getByRole('button', { name: '打开完整编辑器' });
+    await expand.scrollIntoViewIfNeeded();
+    const expandBounds = await expand.boundingBox();
+    expect(expandBounds!.y).toBeGreaterThanOrEqual(editor!.y);
+    expect(expandBounds!.y + expandBounds!.height).toBeLessThanOrEqual(viewport.height);
+    await page.screenshot({
+      path: testInfo.outputPath('image-dimensions-input-height.png'),
+      animations: 'disabled',
+    });
     expect(errors).toEqual([]);
   });
 }
