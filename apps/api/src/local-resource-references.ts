@@ -9,7 +9,7 @@ import type { RunExecutor, RunExecutorRequest } from './runs';
 const imageSourceRoles = new Set(['imageEdit', 'content', 'referenceImage']);
 
 /**
- * 为 API 内存运行读取文字多模态输入和图片编辑原图的冻结内容。
+ * 为 API 内存运行读取各媒体节点的文字输入、聊天多模态输入和图片编辑原图。
  * @param executor 已配置的真实 Provider 执行器，不在此重试或下载外部 URL。
  * @param assetStore 已套用项目归属策略的资产存储。
  * @param projectStore 项目存储，执行前重新确认项目未归档且用户仍有访问权。
@@ -25,24 +25,21 @@ export function withLocalResourceReferences(
 ): RunExecutor {
   return async (request: RunExecutorRequest) => {
     const target = request.snapshot.nodes.find((node) => node.id === request.snapshot.targetNodeId);
-    if (
-      !target ||
-      !['text', 'image'].includes(target.data.mediaType) ||
-      target.data.mode !== 'generate'
-    ) {
+    if (!target || target.data.mode !== 'generate') {
       return typeof executor === 'function' ? executor(request) : executor.execute(request);
     }
     const resourceInputs = request.snapshot.inputs.filter((input) =>
-      target.data.mediaType === 'text'
-        ? (input.snapshot.data.mediaType === 'text' &&
-            ['prompt', 'content', 'transcript'].includes(input.role)) ||
-          (input.snapshot.data.mediaType === 'image' && input.role === 'content')
-        : imageSourceRoles.has(input.role) && input.snapshot.data.mediaType === 'image',
+      input.snapshot.data.mediaType === 'text'
+        ? ['prompt', 'content', 'transcript', 'negativePrompt'].includes(input.role)
+        : input.snapshot.data.mediaType === 'image' &&
+          ((target.data.mediaType === 'text' && input.role === 'content') ||
+            (target.data.mediaType === 'image' && imageSourceRoles.has(input.role))),
     );
     const frozenMentions = (request.snapshot.promptMentions ?? []).filter(
       (mention) =>
         (mention.nodeId ?? request.snapshot.targetNodeId) === target.id &&
-        (target.data.mediaType === 'text' || mention.mediaType === 'image'),
+        (target.data.mediaType === 'text' ||
+          (target.data.mediaType === 'image' && mention.mediaType === 'image')),
     );
     if (resourceInputs.length === 0 && frozenMentions.length === 0) {
       return typeof executor === 'function' ? executor(request) : executor.execute(request);
@@ -101,7 +98,11 @@ export function withLocalResourceReferences(
       ) {
         throw new Error(`资源 ${assetId} 的媒体类型或格式与冻结输入不一致`);
       }
-      if (target.data.mediaType === 'image' && !/^image\/(?:png|jpeg|webp)$/.test(mimeType)) {
+      if (
+        target.data.mediaType === 'image' &&
+        mediaType === 'image' &&
+        !/^image\/(?:png|jpeg|webp)$/.test(mimeType)
+      ) {
         throw new Error(`图片资产 ${assetId} 的格式不支持编辑`);
       }
       const selected = (await assetStore.listVersions(assetId, scope)).find(

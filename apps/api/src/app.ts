@@ -23,6 +23,7 @@ import {
 } from './projects';
 import { withLocalResourceReferences } from './local-resource-references';
 import { withConnectedImageResults } from './connected-image-results';
+import { withConnectedTextInputs } from './connected-text-inputs';
 import { RunImageParameterError, validateRunImageParameters } from './run-image-parameters';
 import {
   createRunSnapshot,
@@ -3163,12 +3164,20 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
             ),
           }
         : canvas;
-      const { canvas: canvasForRun, sourceVersions } = await withConnectedImageResults({
+      const imageInputs = await withConnectedImageResults({
         projectId: body.projectId,
         canvas: requestedCanvas,
         targetNodeId: request.params.nodeId,
         runService,
       });
+      const textInputs = await withConnectedTextInputs({
+        projectId: body.projectId,
+        canvas: imageInputs.canvas,
+        targetNodeId: request.params.nodeId,
+        runService,
+      });
+      const canvasForRun = textInputs.canvas;
+      const sourceVersions = { ...imageInputs.sourceVersions, ...textInputs.sourceVersions };
       if (maxActiveRunsPerProject !== undefined) {
         const activeRuns = await runService.listByProject(body.projectId);
         const activeCount = activeRuns.filter((run) =>
