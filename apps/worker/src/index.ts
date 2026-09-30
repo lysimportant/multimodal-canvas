@@ -1652,7 +1652,8 @@ export function createRunWorker(options: {
           if (!stagedResult && !provider)
             throw new Error('New API provider is not configured for this worker');
           const assetResolver =
-            stagedResult || nodeSnapshot.promptOptimization
+            stagedResult ||
+            (nodeSnapshot.promptOptimization && (nodeSnapshot.promptMentions?.length ?? 0) === 0)
               ? undefined
               : options.assetReferenceResolver;
           // 已提交的视频任务只按已验证的平台 ID 继续查询；原素材水合与可访问性

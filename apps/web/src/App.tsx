@@ -1820,20 +1820,36 @@ function WorkspaceApp({
         configuredSelection && typeof configuredSelection === 'object'
           ? configuredSelection
           : undefined;
-      let selection: ModelSelection | undefined = configuredIdentity?.modelAlias
-        ? {
-            modelAlias: configuredIdentity.modelAlias,
-            ...(configuredIdentity.credentialId
-              ? { credentialId: configuredIdentity.credentialId }
-              : {}),
-          }
-        : previous?.modelAlias
-          ? {
-              modelAlias: previous.modelAlias,
-              ...(previous.credentialId ? { credentialId: previous.credentialId } : {}),
-            }
+      /** 分叉节点的显式模型优先于项目默认，否则默认值会参与子节点参数补齐。 */
+      const overrideModelAlias =
+        typeof dataOverrides?.modelAlias === 'string' && dataOverrides.modelAlias.trim()
+          ? dataOverrides.modelAlias.trim()
           : undefined;
-      const inheritedSelection = Boolean(configuredSelection || previous?.modelAlias);
+      const overrideCredentialId =
+        typeof dataOverrides?.credentialId === 'string' && dataOverrides.credentialId.trim()
+          ? dataOverrides.credentialId.trim()
+          : undefined;
+      let selection: ModelSelection | undefined = overrideModelAlias
+        ? {
+            modelAlias: overrideModelAlias,
+            ...(overrideCredentialId ? { credentialId: overrideCredentialId } : {}),
+          }
+        : configuredIdentity?.modelAlias
+          ? {
+              modelAlias: configuredIdentity.modelAlias,
+              ...(configuredIdentity.credentialId
+                ? { credentialId: configuredIdentity.credentialId }
+                : {}),
+            }
+          : previous?.modelAlias
+            ? {
+                modelAlias: previous.modelAlias,
+                ...(previous.credentialId ? { credentialId: previous.credentialId } : {}),
+              }
+            : undefined;
+      const inheritedSelection = Boolean(
+        overrideModelAlias || configuredSelection || previous?.modelAlias,
+      );
       if (
         selection &&
         !modelCatalog.some(
@@ -2318,23 +2334,26 @@ function WorkspaceApp({
 
   const updateNodeDataAndMarkDownstreamStale = useCallback(
     (nodeId: string, update: (data: AssetFlowNode['data']) => AssetFlowNode['data']) => {
-      setNodes((current) =>
-        markDownstreamNodesStale(
-          current.map((node) =>
-            node.id === nodeId
-              ? {
-                  ...node,
-                  data: {
-                    ...update(node.data),
-                    ...(node.data.mode !== 'source' ? { stale: true } : {}),
-                  },
-                }
-              : node,
-          ),
-          edgesRef.current,
-          [nodeId],
+      // 生成到新节点可能紧跟在参数修改后触发；只等 useEffect 同步 ref 会让保存和
+      // 分叉读到上一帧的 parameters。这里以实时 ref 计算并立即回写，保证同一事件
+      // 窗口内的运行入口与 React 展示状态使用同一份节点数据。
+      const nextNodes = markDownstreamNodesStale(
+        nodesRef.current.map((node) =>
+          node.id === nodeId
+            ? {
+                ...node,
+                data: {
+                  ...update(node.data),
+                  ...(node.data.mode !== 'source' ? { stale: true } : {}),
+                },
+              }
+            : node,
         ),
+        edgesRef.current,
+        [nodeId],
       );
+      nodesRef.current = nextNodes;
+      setNodes(nextNodes);
     },
     [setNodes],
   );

@@ -1268,16 +1268,17 @@ export const runSnapshotSchema = z
         snapshot.nodes.length !== 1 ||
         snapshot.edges.length !== 0 ||
         snapshot.inputs.length !== 0 ||
-        (snapshot.promptMentions?.length ?? 0) !== 0 ||
+        (snapshot.promptMentions ?? []).some(
+          (mention) => mention.nodeId !== undefined && mention.nodeId !== target?.id,
+        ) ||
         target?.id !== 'prompt_skill_optimization' ||
         snapshot.targetNodeId !== target.id ||
         target.data.mediaType !== 'text' ||
-        target.data.mode !== 'generate' ||
-        target.data.promptDocument?.blocks.some((block) => block.type === 'mention')
+        target.data.mode !== 'generate'
       ) {
         context.addIssue({
           code: z.ZodIssueCode.custom,
-          message: 'Skill 优化必须是无媒体输入的独立文字任务',
+          message: 'Skill 优化必须是无媒体输出的独立文字任务',
           path: ['promptOptimization'],
         });
       }

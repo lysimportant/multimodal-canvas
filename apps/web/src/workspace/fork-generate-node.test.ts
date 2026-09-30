@@ -33,6 +33,34 @@ function imageNode(
 }
 
 describe('fork-generate-node', () => {
+  it('deep-clones complete 4K image output parameters and model identity', () => {
+    const parameters = {
+      resolution: '4k',
+      quality: 'high',
+      size: '2160x3840',
+      aspectRatio: '9:16',
+      providerOptions: { nested: { enabled: true } },
+    };
+    const inherited = inheritedGenerateData({
+      label: 'source-image',
+      mediaType: 'image',
+      mode: 'generate',
+      prompt: 'white background',
+      modelAlias: 'gpt-image-2.5-sunburst',
+      credentialId: 'cred_4k',
+      parameters,
+    } as AssetFlowNode['data']);
+    const inheritedParameters = inherited.parameters as typeof parameters | undefined;
+
+    expect(inherited).toMatchObject({
+      modelAlias: 'gpt-image-2.5-sunburst',
+      credentialId: 'cred_4k',
+      parameters,
+    });
+    expect(inheritedParameters).not.toBe(parameters);
+    expect(inheritedParameters?.providerOptions).not.toBe(parameters.providerOptions);
+    expect(inheritedParameters?.providerOptions.nested).not.toBe(parameters.providerOptions.nested);
+  });
   it('空节点不能分叉，来源节点也可以点生成', () => {
     const empty = imageNode();
     expect(canForkNewNode(empty)).toBe(false);

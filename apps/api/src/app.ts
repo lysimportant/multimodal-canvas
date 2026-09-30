@@ -131,7 +131,11 @@ import {
   resolveReversePromptDefault,
   reversePromptIdempotencyKey,
 } from './reverse-prompts';
-import { promptOptimizationIdempotencyKey, publicPromptOptimization } from './prompt-optimizations';
+import {
+  attachPromptOptimizationMentions,
+  promptOptimizationIdempotencyKey,
+  publicPromptOptimization,
+} from './prompt-optimizations';
 import {
   MemoryPromptSkillStore,
   PromptSkillStoreError,
@@ -2904,19 +2908,22 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
             let expectedPrompt: PromptDocument | undefined;
             if (source?.instruction) {
               try {
-                expectedPrompt = createPromptOptimizationCanvas({
-                  skillId: source.skillId,
-                  skill: {
-                    id: source.skillId,
-                    version: source.skillVersion,
-                    instruction: source.instruction,
-                    name: '',
-                    category: '',
-                    description: '',
-                  },
-                  input: body.promptDocument,
-                  mediaType: body.mediaType,
-                }).nodes[0]?.data.promptDocument;
+                expectedPrompt = attachPromptOptimizationMentions(
+                  createPromptOptimizationCanvas({
+                    skillId: source.skillId,
+                    skill: {
+                      id: source.skillId,
+                      version: source.skillVersion,
+                      instruction: source.instruction,
+                      name: '',
+                      category: '',
+                      description: '',
+                    },
+                    input: body.promptDocument,
+                    mediaType: body.mediaType,
+                  }),
+                  body.promptDocument,
+                ).nodes[0]?.data.promptDocument;
               } catch {
                 return reply.code(409).send({
                   code: 'idempotency_conflict',
@@ -2964,12 +2971,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
             });
           let canvas: CanvasDocument;
           try {
-            canvas = createPromptOptimizationCanvas({
-              skillId: skill.id,
-              skill,
-              input: body.promptDocument,
-              mediaType: body.mediaType,
-            });
+            canvas = attachPromptOptimizationMentions(
+              createPromptOptimizationCanvas({
+                skillId: skill.id,
+                skill,
+                input: body.promptDocument,
+                mediaType: body.mediaType,
+              }),
+              body.promptDocument,
+            );
           } catch {
             return reply.code(400).send({ error: '提示词无法优化，请检查内容或缩短后重试' });
           }
@@ -3016,6 +3026,29 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
               providerName === 'mock' && process.env.NODE_ENV !== 'production',
             requireCredentialReferences: providerName === 'newapi',
           });
+          const principal = requestPrincipals.get(request);
+          const frozenPromptMentions =
+            providerName === 'mock' && process.env.NODE_ENV !== 'production'
+              ? []
+              : await resolvePromptMentionRefs({
+                  assetStore,
+                  canvas,
+                  targetNodeId,
+                  projectId,
+                  ...(principal?.userId ? { ownerId: principal.userId } : {}),
+                  requestId: request.id,
+                });
+          const capabilityDiagnostics = validateRunPromptMentionCapabilities({
+            canvas,
+            targetNodeId,
+            frozenPromptMentions,
+            nodeModelAliases: resolution.nodeModelAliases,
+            nodeModels: resolution.nodeModels,
+            requestId: request.id,
+            allowMockPreview: providerName === 'mock' && process.env.NODE_ENV !== 'production',
+          });
+          if (capabilityDiagnostics.length > 0)
+            throw new ResourceMentionCapabilityError(capabilityDiagnostics);
           let snapshot = runSnapshotSchema.parse({
             ...createRunSnapshot(projectId, canvas, targetNodeId, {
               modelAlias: resolution.targetModelAlias,
@@ -3024,6 +3057,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
                 ? { nodeCredentialReferences: resolution.nodeCredentialReferences }
                 : {}),
               ...(resolution.nodeCredentialReferences[targetNodeId] ?? {}),
+              ...(frozenPromptMentions.length > 0 ? { frozenPromptMentions } : {}),
             }),
             promptOptimization: {
               nodeId: body.nodeId,
@@ -3033,7 +3067,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
               input: body.promptDocument,
             },
           });
-          const principal = requestPrincipals.get(request);
           if (options.newApiAccount)
             snapshot = await options.newApiAccount.freeze(
               requestSessions.get(request)!.user.id,
@@ -3046,6 +3079,19 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           return reply.code(202).send({ optimization: publicPromptOptimization(run) });
         } catch (error) {
           if (error instanceof NewApiAccountError || error instanceof ExecutionError) throw error;
+          if (
+            error instanceof ResourceMentionFreezeError ||
+            error instanceof ResourceMentionCapabilityError
+          )
+            return reply.code(400).send({
+              error: error.message,
+              code:
+                error instanceof ResourceMentionFreezeError
+                  ? 'RESOURCE_MENTION_FREEZE_FAILED'
+                  : 'RESOURCE_MENTION_CAPABILITY_UNSUPPORTED',
+              issues: error.diagnostics,
+              requestId: request.id,
+            });
           if (error instanceof AiSettingsError)
             return reply.code(400).send({ error: error.message, code: error.code });
           if (error instanceof AiCredentialNotFoundError)

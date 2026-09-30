@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { Button } from '@multimodal-canvas/ui';
 import type { ComponentProps } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { resolveImageOutputParameters } from '@multimodal-canvas/domain';
 import type {
   Asset,
   CanvasDocument,
@@ -1427,6 +1428,90 @@ describe('App 节点参数提交', () => {
       },
     });
     expect(canvas.nodes[0]!.data.parameters).toEqual(savedParameters);
+  });
+
+  it('修改图片清晰度后立即生成到新节点仍继承 4K 参数并按竖屏解析为 2160x3840', async () => {
+    const node = imageNode('image-node', 'exact-image-model', 'synthetic-image-credential');
+    node.data = {
+      ...node.data,
+      prompt: 'Change the lighting.',
+      assetId: asset.id,
+      contentUrl: asset.contentUrl,
+      parameters: {
+        quality: '1k',
+        aspectRatio: '9:16',
+        providerOption: 'preserved',
+      },
+    };
+    canvas.nodes = [node];
+
+    const api = fetchMock.getMockImplementation()!;
+    const submitted: Array<{ nodeId: string; body: Record<string, unknown> }> = [];
+    const runs = new Map<string, RunRecord>();
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(
+        typeof input === 'string' ? input : input instanceof URL ? input.href : input.url,
+        'http://localhost:3000',
+      );
+      const pathMatch = /^\/v1\/nodes\/([^/]+)\/runs$/.exec(url.pathname);
+      if (pathMatch && init?.method === 'POST' && pathMatch[1] !== node.id) {
+        const nodeId = pathMatch[1]!;
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        const run = runRecord({
+          id: 'run-' + nodeId,
+          targetNodeId: nodeId,
+          modelAlias: 'exact-image-model',
+          status: 'succeeded',
+          error: undefined,
+        });
+        submitted.push({ nodeId, body });
+        runs.set(run.id, run);
+        return json({ run }, 202);
+      }
+      const runMatch = /^\/v1\/runs\/([^/]+)$/.exec(url.pathname);
+      if (runMatch && runs.has(runMatch[1]!)) return json({ run: runs.get(runMatch[1]!) });
+      return api(input, init);
+    });
+
+    await renderCanvas(0);
+    const selectedNode = view.canvas!.nodes[0]!;
+    const selectedParameters = {
+      quality: '4k',
+      aspectRatio: '9:16',
+      providerOption: 'preserved',
+    };
+    act(() => view.canvas!.onParametersChange!(selectedParameters, selectedNode.id));
+    const updatedNode = view.canvas!.nodes[0]!;
+    expect(updatedNode.data.parameters).toEqual(selectedParameters);
+
+    await act(async () => view.canvas!.onRunNode(updatedNode, 'newNode'));
+
+    const child = view.canvas!.nodes.find((candidate) => candidate.id !== node.id);
+    expect(child).toBeDefined();
+    expect(child!.data.modelAlias).toBe('exact-image-model');
+    expect(child!.data.credentialId).toBe('synthetic-image-credential');
+    expect(child!.data.parameters).toEqual(selectedParameters);
+    expect(
+      resolveImageOutputParameters(child!.data.parameters ?? {}, child!.data.modelAlias),
+    ).toEqual(
+      expect.objectContaining({
+        resolution: '4k',
+        width: 2160,
+        height: 3840,
+        size: '2160x3840',
+      }),
+    );
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0]!.nodeId).toBe(child!.id);
+    expect(submitted[0]!.body).toEqual({
+      projectId: project.id,
+      modelAlias: 'exact-image-model',
+      credentialId: 'synthetic-image-credential',
+      parameters: {
+        ...selectedParameters,
+        prompt: 'Change the lighting.',
+      },
+    });
   });
 
   it.each([undefined, 'low'] as const)(

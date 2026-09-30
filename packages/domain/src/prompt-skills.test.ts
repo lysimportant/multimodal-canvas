@@ -141,7 +141,7 @@ describe('提示词 Skill 契约', () => {
   );
 
   it.each(['scene', 'character', 'xianxia-dress-character'])(
-    '冻结 %s 的优化版本与规则，并拒绝与反推、媒体提及混用',
+    '冻结 %s 的优化版本与规则，允许输入提及但拒绝媒体输出混用',
     (skillId) => {
       const skill = getPromptSkill(skillId)!;
       const canvas = createPromptOptimizationCanvas({ skillId, input, mediaType: 'image' });
@@ -173,7 +173,13 @@ describe('提示词 Skill 契约', () => {
         }).success,
       ).toBe(false);
       snapshot.nodes[0]!.data.promptDocument!.blocks.push(input.blocks[1]!);
-      expect(runSnapshotSchema.safeParse(snapshot).success).toBe(false);
+      expect(runSnapshotSchema.safeParse(snapshot).success).toBe(true);
+      const invalidOutput = structuredClone(snapshot);
+      invalidOutput.nodes[0] = {
+        ...invalidOutput.nodes[0]!,
+        data: { ...invalidOutput.nodes[0]!.data, mediaType: 'image' },
+      };
+      expect(runSnapshotSchema.safeParse(invalidOutput).success).toBe(false);
     },
   );
 

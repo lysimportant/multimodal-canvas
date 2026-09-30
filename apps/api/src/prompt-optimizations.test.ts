@@ -33,6 +33,11 @@ const input: PromptDocument = {
     { type: 'text', text: ' 绘制近景。' },
   ],
 };
+/** 默认 API 回归使用纯文字输入；真实资源提及由对应测试显式创建并冻结。 */
+const plainInput: PromptDocument = {
+  version: 1,
+  blocks: [{ type: 'text', text: '保持人物造型，绘制近景。' }],
+};
 /** 固定所有者身份用于鉴权边界测试。 */
 const ownerId = '123e4567-e89b-42d3-a456-426614174001';
 /** 构造仅供隔离测试的外部 JWT。 */
@@ -55,6 +60,7 @@ async function fixture(
     authenticated?: boolean;
     fetchImpl?: typeof fetch;
     stepDelayMs?: number;
+    promptDocument?: PromptDocument;
   } = {},
 ) {
   if (options.authenticated) vi.stubEnv('API_JWT_SECRET', 'synthetic-optimization-secret');
@@ -127,7 +133,7 @@ async function fixture(
     nodeId: 'unsaved-node',
     skillId: PROMPT_SKILLS[0]!.id,
     mediaType: 'image',
-    promptDocument: input,
+    promptDocument: options.promptDocument ?? plainInput,
     idempotencyKey: 'click-1',
   };
   const headers = options.authenticated ? { authorization: authorization(ownerId) } : {};
@@ -145,6 +151,35 @@ async function fixture(
     payload,
     headers,
     credentialId,
+  };
+}
+
+/** 为需要验证引用恢复的 API 测试创建项目内图片资产。 */
+async function createImageMentionDocument(
+  ctx: Awaited<ReturnType<typeof fixture>>,
+): Promise<PromptDocument> {
+  const asset = await ctx.assetStore.create({
+    name: '提示词参考图',
+    mediaType: 'image',
+    mimeType: 'image/png',
+    content: Buffer.from('synthetic-image'),
+    projectId: ctx.project.id,
+    ownerId,
+  });
+  return {
+    version: 1,
+    blocks: [
+      { type: 'text', text: '参考 ' },
+      {
+        type: 'mention',
+        mentionId: 'reference',
+        assetId: asset.id,
+        assetVersion: 1,
+        mediaType: 'image',
+        label: '提示词参考图',
+      },
+      { type: 'text', text: ' 绘制近景。' },
+    ],
   };
 }
 
@@ -188,7 +223,7 @@ describe('独立 Skill 提示词优化 API', () => {
     await vi.waitFor(async () => {
       const read = await fetch(`${address}${ctx.url}/${optimization.runId}`);
       expect(await read.json()).toMatchObject({
-        optimization: { status: 'succeeded', simulated: true, promptDocument: input },
+        optimization: { status: 'succeeded', simulated: true, promptDocument: plainInput },
       });
     });
     expect(ctx.archiver).not.toHaveBeenCalled();
@@ -520,7 +555,7 @@ describe('独立 Skill 提示词优化 API', () => {
     expect(service.executor).not.toHaveBeenCalled();
   });
 
-  it('接受未保存提示词，冻结文字默认及引用，既不读媒体也不改画布或归档资产', async () => {
+  it('接受未保存提示词，冻结文字默认，既不读媒体也不改画布或归档资产', async () => {
     const ctx = await fixture();
     ctx.settingsStore.update({
       defaultModels: { text: { modelAlias: 'beta-text', credentialId: ctx.credentialId } },
@@ -542,12 +577,12 @@ describe('独立 Skill 提示词优化 API', () => {
       status: 'succeeded',
       modelAlias: 'beta-text',
     });
-    expect(read.json().optimization.promptDocument.blocks).toContainEqual(input.blocks[1]);
+    expect(read.json().optimization.promptDocument).toEqual(plainInput);
     const request = ctx.executor.mock.calls[0]![0];
     expect(request.snapshot.promptOptimization).toMatchObject({
       nodeId: 'unsaved-node',
       skillId: ctx.payload.skillId,
-      input,
+      input: plainInput,
     });
     expect(request.snapshot.targetNodeId).toBe(PROMPT_OPTIMIZATION_NODE_ID);
     expect(request.snapshot.credentialId).toBe(
@@ -770,7 +805,12 @@ describe('独立 Skill 提示词优化 API', () => {
     '模型格式或引用损坏时失败且不归档：%s',
     async (output) => {
       const ctx = await fixture({ output });
-      const start = await ctx.app.inject({ method: 'POST', url: ctx.url, payload: ctx.payload });
+      const promptDocument = await createImageMentionDocument(ctx);
+      const start = await ctx.app.inject({
+        method: 'POST',
+        url: ctx.url,
+        payload: { ...ctx.payload, promptDocument },
+      });
       const runId = start.json().optimization.runId;
       await vi.waitFor(async () =>
         expect((await ctx.runService.get(runId))?.status).toBe('failed'),
@@ -800,7 +840,7 @@ describe('独立 Skill 提示词优化 API', () => {
   });
 
   it('Mock 明确展示模拟优化并完整保留引用，不伪装真实模型结果', async () => {
-    const ctx = await fixture({ mock: true });
+    const ctx = await fixture({ mock: true, promptDocument: input });
     const start = await ctx.app.inject({ method: 'POST', url: ctx.url, payload: ctx.payload });
     expect(start.statusCode, start.body).toBe(202);
     const runId = start.json().optimization.runId;
@@ -821,7 +861,7 @@ describe('独立 Skill 提示词优化 API', () => {
       async () =>
         new Response(
           JSON.stringify({
-            choices: [{ message: { content: createMockPromptOptimizationOutput(input) } }],
+            choices: [{ message: { content: createMockPromptOptimizationOutput(plainInput) } }],
           }),
           { status: 200, headers: { 'content-type': 'application/json' } },
         ),
@@ -844,6 +884,57 @@ describe('独立 Skill 提示词优化 API', () => {
     });
     expect(records.json().records).toHaveLength(1);
     expect(records.json().records[0]).not.toHaveProperty('assetId');
+  });
+
+  it('真实资源提及在提交时冻结身份，执行快照保留原始引用', async () => {
+    const ctx = await fixture();
+    const asset = await ctx.assetStore.create({
+      name: '人物参考',
+      mediaType: 'image',
+      mimeType: 'image/png',
+      content: Buffer.from('synthetic-image'),
+      projectId: ctx.project.id,
+      ownerId,
+    });
+    const document: PromptDocument = {
+      version: 1,
+      blocks: [
+        { type: 'text', text: '保持人物造型，参考 ' },
+        {
+          type: 'mention',
+          mentionId: 'reference',
+          assetId: asset.id,
+          assetVersion: 1,
+          mediaType: 'image',
+          label: '人物参考',
+        },
+        { type: 'text', text: ' 绘制近景。' },
+      ],
+    };
+    const response = await ctx.app.inject({
+      method: 'POST',
+      url: ctx.url,
+      payload: { ...ctx.payload, promptDocument: document },
+    });
+    expect(response.statusCode, response.body).toBe(202);
+    const runId = response.json().optimization.runId;
+    await vi.waitFor(async () =>
+      expect((await ctx.runService.get(runId))?.status).toBe('succeeded'),
+    );
+    const run = (await ctx.runService.get(runId))!;
+    expect(run.snapshot.promptMentions).toEqual([
+      {
+        nodeId: PROMPT_OPTIMIZATION_NODE_ID,
+        mentionId: 'reference',
+        assetId: asset.id,
+        assetVersion: 1,
+        mediaType: 'image',
+        label: '人物参考',
+        blockOrder: 1,
+      },
+    ]);
+    expect(run.snapshot.nodes[0]!.data.promptDocument?.blocks.at(-1)).toEqual(document.blocks[1]);
+    expect(run.snapshot.promptOptimization?.input).toEqual(document);
   });
 });
 

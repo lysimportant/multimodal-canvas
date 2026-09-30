@@ -875,6 +875,138 @@ describe('worker workflow DAG execution', () => {
     expect(provider.execute).toHaveBeenCalledTimes(1);
   });
 
+  it('带冻结资源提及的 Skill 优化由 Worker 水合并传给文字 Provider', async () => {
+    bullmqState.jobs.clear();
+    const runId = '123e4567-e89b-42d3-a456-426614174194';
+    const input: PromptDocument = {
+      version: 1,
+      blocks: [
+        { type: 'text', text: '参考人物 ' },
+        {
+          type: 'mention',
+          mentionId: 'reference',
+          assetId: 'asset-reference',
+          assetVersion: 2,
+          mediaType: 'image',
+          label: '人物参考',
+        },
+        { type: 'text', text: ' 绘制近景。' },
+      ],
+    };
+    const frozenMention = {
+      nodeId: PROMPT_OPTIMIZATION_NODE_ID,
+      mentionId: 'reference',
+      assetId: 'asset-reference',
+      assetVersion: 2,
+      mediaType: 'image' as const,
+      label: '人物参考',
+      blockOrder: 1,
+    };
+    const skill = PROMPT_SKILLS[0]!;
+    const canvas = createPromptOptimizationCanvas({ skillId: skill.id, input, mediaType: 'image' });
+    const baseNode = canvas.nodes[0]!;
+    const promptDocument = baseNode.data.promptDocument!;
+    const optimizationNode = {
+      ...baseNode,
+      data: {
+        ...baseNode.data,
+        promptDocument: {
+          ...promptDocument,
+          blocks: [...promptDocument.blocks, input.blocks[1]!],
+        },
+      },
+    };
+    const optimizationSnapshot: RunSnapshot = {
+      ...createTextSnapshot(),
+      nodes: [optimizationNode],
+      edges: [],
+      inputs: [],
+      targetNodeId: PROMPT_OPTIMIZATION_NODE_ID,
+      promptMentions: [frozenMention],
+      promptOptimization: {
+        nodeId: 'unsaved-node',
+        skillId: skill.id,
+        skillVersion: skill.version,
+        input,
+      },
+    };
+    const output = createMockPromptOptimizationOutput(input);
+    const expected = parsePromptOptimizationOutput(output, input);
+    const provider = {
+      execute: vi.fn(async (request: WorkerProviderRequest) => {
+        expect(request.resolvedMentions).toMatchObject([
+          {
+            ...frozenMention,
+            source: {
+              kind: 'data-url',
+              mimeType: 'image/png',
+              dataUrl: 'data:image/png;base64,aW1hZ2U=',
+            },
+          },
+        ]);
+        return {
+          ...createExecution(request.snapshot),
+          output: {
+            mediaType: 'text' as const,
+            kind: 'text' as const,
+            text: output,
+            mimeType: 'text/plain',
+          },
+        };
+      }),
+    };
+    const resolver = {
+      resolve: vi.fn(async (resolvedSnapshot: RunSnapshot) => ({
+        ...resolvedSnapshot,
+        nodes: resolvedSnapshot.nodes.map((node) => ({
+          ...node,
+          data: {
+            ...node.data,
+            promptDocument: node.data.promptDocument
+              ? {
+                  ...node.data.promptDocument,
+                  blocks: node.data.promptDocument.blocks.map((block) =>
+                    block.type === 'mention'
+                      ? {
+                          ...block,
+                          contentUrl: 'data:image/png;base64,aW1hZ2U=',
+                          mimeType: 'image/png',
+                        }
+                      : block,
+                  ),
+                }
+              : undefined,
+          },
+        })),
+      })),
+      assertAccessible: vi.fn(async () => undefined),
+    };
+    const archiver = vi.fn();
+    const job = createJob({
+      runId,
+      snapshot: optimizationSnapshot,
+      attempt: 1,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(runId, 'newapi'),
+      cancelRequested: false,
+    });
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      provider,
+      assetReferenceResolver: resolver,
+      stepDelayMs: 0,
+      resultArchiver: archiver,
+    });
+    const result = await bullmqState.processor?.(job);
+    expect(result).toMatchObject({ status: 'succeeded', result: { promptOptimization: expected } });
+    expect(resolver.resolve).toHaveBeenCalledOnce();
+    expect(resolver.assertAccessible).toHaveBeenCalledOnce();
+    expect(provider.execute).toHaveBeenCalledOnce();
+    expect(archiver).not.toHaveBeenCalled();
+    expect(JSON.stringify(job.data)).not.toContain('data:image/png');
+  });
+
   it.each(['not JSON', '{"prompt":"引用已丢失"}', '{"prompt":123}'])(
     'Skill 输出格式或引用损坏后重放不再次请求：%s',
     async (text) => {

@@ -438,18 +438,25 @@ function sanitizeRunErrorMessage(error: unknown): string {
       : typeof error === 'string' && error.trim()
         ? error
         : 'run execution failed';
-  return raw
-    .replace(
-      /(\b"?authorization"?\s*[:=]\s*"?)(?:(bearer|basic|token)(\s+))?[^"',;}\s]+/gi,
-      '$1$2$3[redacted]',
-    )
-    .replace(/Bearer\s+[^\s,;)}\]]+/gi, 'Bearer [redacted]')
-    .replace(
-      /(\b"?(?:api[-_]?key|access[-_]?token|refresh[-_]?token|token|secret|password)"?\s*[:=]\s*"?)[^"',;}\s]+/gi,
-      '$1[redacted]',
-    )
-    .replace(/https?:\/\/[^\s)]+/gi, '[provider-url-redacted]')
-    .slice(0, 2000);
+  return (
+    raw
+      .replace(
+        /(\b"?authorization"?\s*[:=]\s*"?)(?:(bearer|basic|token)(\s+))?[^"',;}\s]+/gi,
+        '$1$2$3[redacted]',
+      )
+      .replace(/Bearer\s+[^\s,;)}\]]+/gi, 'Bearer [redacted]')
+      .replace(
+        /(\b"?(?:api[-_]?key|access[-_]?token|refresh[-_]?token|token|secret|password)"?\s*[:=]\s*"?)[^"',;}\s]+/gi,
+        '$1[redacted]',
+      )
+      .replace(/https?:\/\/[^\s)]+/gi, '[provider-url-redacted]')
+      // 供应商错误可能在认证片段后继续回显请求正文或模型输入；只保留可诊断的前缀。
+      .replace(
+        /(\b(?:provider|upstream)\b.*?\breturned\s+Bearer\s+\[redacted\])(?:\s+.+)?$/i,
+        '$1 [provider-error-redacted]',
+      )
+      .slice(0, 2000)
+  );
 }
 
 function createProviderJob(
