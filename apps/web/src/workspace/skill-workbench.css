@@ -413,6 +413,87 @@
   min-width: 0;
 }
 
+.skill-authoring-context {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.skill-authoring-context-heading {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.skill-authoring-context-heading > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.skill-authoring-context-heading strong {
+  color: var(--mc-text, #18212f);
+  font-size: 12px;
+}
+
+.skill-authoring-context-heading span,
+.skill-authoring-context-note,
+.skill-authoring-context-error {
+  color: var(--mc-text-muted, #687386);
+  font-size: 11px;
+  line-height: 1.55;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.skill-context-upload {
+  background: var(--mc-surface, #fff);
+  border: 1px solid var(--mc-border-strong, #d3dce0);
+  border-radius: 5px;
+  color: var(--mc-text, #18212f);
+  cursor: pointer;
+  flex-shrink: 0;
+  font: inherit;
+  font-size: 11px;
+  padding: 6px 9px;
+}
+
+.skill-context-upload:hover:not(:disabled) {
+  background: var(--mc-surface-muted, #f0f3f5);
+  border-color: var(--mc-accent, #18794e);
+}
+
+.skill-context-upload:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.skill-context-file-input {
+  display: none;
+}
+
+.skill-context-editor {
+  border: 1px solid var(--mc-border, #e2e7eb);
+  border-radius: 6px;
+  min-width: 0;
+  padding: 8px;
+}
+
+/* 工作台统一使用上方按钮选择文件，保留引用组件的预览、提及和删除能力。 */
+.skill-context-editor .resource-mention-thumb-add {
+  display: none;
+}
+
+.skill-context-editor .resource-mention-strip {
+  min-height: 0;
+}
+
+.skill-authoring-context-error {
+  color: var(--mc-danger, #c13b46);
+}
+
 .skill-authoring-description,
 .skill-authoring-note {
   color: var(--mc-text-muted);

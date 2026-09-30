@@ -1,7 +1,7 @@
 import { ConfigProvider } from 'antd';
 import '@testing-library/jest-dom/vitest';
 
-import type { PromptSkill } from '@multimodal-canvas/domain';
+import type { Asset, PromptDocument, PromptSkill } from '@multimodal-canvas/domain';
 import { QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   act,
@@ -24,7 +24,7 @@ import {
   SkillLibraryError,
   updateSkill,
 } from '../skill-library';
-import { SkillWorkbench } from './SkillWorkbench';
+import { buildSkillAuthoringPrompt, SkillWorkbench } from './SkillWorkbench';
 
 vi.mock('../skill-library', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../skill-library')>()),
@@ -688,6 +688,77 @@ describe('Skill 工作台', () => {
     await user.click(screen.getByRole('checkbox'));
     expect(screen.getByRole('alert')).toHaveTextContent('缺少修订号');
     expect(updateSkill).not.toHaveBeenCalled();
+  });
+
+  it('上传文件只加入临时 Skill 优化上下文，不自动保存 Skill', async () => {
+    const contextAsset: Asset = {
+      id: 'skill-context-asset',
+      name: '人物设定.md',
+      mediaType: 'text',
+      mimeType: 'text/markdown',
+      sizeBytes: 18,
+      latestVersion: 1,
+      status: 'ready',
+      contentUrl: '/v1/assets/skill-context-asset/content',
+      tags: [],
+    };
+    const onUploadResource = vi.fn().mockResolvedValue(contextAsset);
+    render(
+      <SkillWorkbench
+        open
+        onOpenChange={vi.fn()}
+        onChanged={vi.fn()}
+        onUploadResource={onUploadResource}
+      />,
+    );
+    await screen.findByRole('button', { name: builtin.name });
+
+    const file = new File(['人物设定'], '人物设定.md', { type: 'text/markdown' });
+    fireEvent.change(screen.getByLabelText('上传 Skill 优化上下文'), {
+      target: { files: [file] },
+    });
+
+    await waitFor(() => expect(onUploadResource).toHaveBeenCalledWith(file));
+    await waitFor(() => expect(screen.getByRole('article')).toHaveAttribute('data-mention-id'));
+    expect(screen.getByRole('status')).toHaveTextContent('有未保存的更改');
+    expect(createSkill).not.toHaveBeenCalled();
+    expect(updateSkill).not.toHaveBeenCalled();
+  });
+
+  it('将临时上下文资源提及带入优化文档，但资源不属于 Skill 元数据', () => {
+    const context: PromptDocument = {
+      version: 1,
+      blocks: [
+        { type: 'text', text: '请参考这份设定。' },
+        {
+          type: 'mention',
+          mentionId: 'context-mention',
+          assetId: 'asset-context',
+          assetVersion: 2,
+          mediaType: 'image',
+          label: '人物.png',
+        },
+      ],
+    };
+    const document = buildSkillAuthoringPrompt({
+      draft: {
+        name: builtin.name,
+        category: builtin.category,
+        description: builtin.description,
+        instruction: builtin.instruction,
+      },
+      requirements: '补充边界条件',
+      contextDocument: context,
+    });
+    const metadata = JSON.parse((document.blocks[0] as { type: 'text'; text: string }).text) as {
+      temporaryContext?: string;
+    };
+    expect(metadata.temporaryContext).toContain('temporary context');
+    expect(document.blocks).toEqual([
+      document.blocks[0],
+      { type: 'text', text: '\n\nTemporary optimization context:\n' },
+      ...context.blocks,
+    ]);
   });
 
   it('写入期间阻止重复保存、关闭和切换，成功才通知父级', async () => {

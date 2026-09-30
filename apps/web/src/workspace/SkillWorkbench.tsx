@@ -2,6 +2,7 @@ import {
   PROMPT_SKILLS,
   SKILL_AUTHORING_SKILL_ID,
   renderPromptDocument,
+  type Asset,
   type PromptDocument,
   type PromptSkill,
 } from '@multimodal-canvas/domain';
@@ -37,8 +38,11 @@ import {
   updateSkill,
   type CreateSkillInput,
 } from '../skill-library';
+import { ResourceMentionEditor } from '../ResourceMentionEditor';
+import { createPromptMentionId } from '../resource-mention-sync';
 import { PromptSkillPanel } from './PromptSkillPanel';
 import type { ModelEntry } from './contracts';
+import { uploadSkillWorkbenchAsset } from './skill-workbench-assets';
 import './skill-workbench.css';
 
 /** 工作台受控开关；成功写入或手动刷新后通知父级失效共享目录缓存。 */
@@ -48,6 +52,8 @@ export type SkillWorkbenchProps = {
   projectId?: string;
   /** 当前用户可用模型；优化面板只显示文字模型，保留精确分组和凭据身份。 */
   models?: ModelEntry[];
+  /** 可复用宿主的项目资源上传器；省略时使用现有资源上传端点。 */
+  onUploadResource?: (file: File) => Promise<Asset>;
   onOpenChange: (open: boolean) => void;
   onChanged: () => void;
 };
@@ -58,6 +64,189 @@ type SkillDraft = Required<CreateSkillInput>;
 /** 离开草稿或删除持久化记录前的确认动作。 */
 type Confirmation =
   { kind: 'discard'; proceed: () => void } | { kind: 'delete'; skill: PromptSkill };
+
+type SkillContextResourcesProps = {
+  nodeId: string;
+  document: PromptDocument;
+  assets: readonly Asset[];
+  disabled: boolean;
+  onDocumentChange: (document: PromptDocument) => void;
+  onAssetsChange: (assets: Asset[]) => void;
+  onUploadResource?: (file: File) => Promise<Asset>;
+};
+
+/** 创建只存在于当前工作台会话的空资源上下文。 */
+function emptySkillContextDocument(): PromptDocument {
+  return { version: 1, blocks: [{ type: 'text', text: '' }] };
+}
+
+/** 资源上下文有文字或提及时才进入优化请求和离开确认。 */
+function hasSkillContext(document: PromptDocument): boolean {
+  return document.blocks.some(
+    (block) => block.type === 'mention' || (block.type === 'text' && block.text.trim()),
+  );
+}
+
+/** 将上传完成的资源追加为当前会话的提及，不保存到 Skill 定义。 */
+function appendSkillContextAsset(document: PromptDocument, asset: Asset): PromptDocument {
+  const mentionIds = document.blocks.flatMap((block) =>
+    block.type === 'mention' ? [block.mentionId] : [],
+  );
+  return {
+    version: 1,
+    blocks: [
+      ...document.blocks,
+      {
+        type: 'mention',
+        mentionId: createPromptMentionId(mentionIds),
+        assetId: asset.id,
+        assetVersion: asset.latestVersion,
+        mediaType: asset.mediaType,
+        label: asset.name,
+      },
+    ],
+  };
+}
+
+/**
+ * 组装 Skill 工作台的独立优化文档；资源提及只作为本次上下文，不进入 Skill 保存字段。
+ * @param input 当前草稿、升级要求和临时资源上下文。
+ * @returns 供 PromptSkillPanel 提交的结构化提示词文档。
+ */
+export function buildSkillAuthoringPrompt(input: {
+  draft: Pick<SkillDraft, 'name' | 'category' | 'description' | 'instruction'>;
+  requirements: string;
+  contextDocument: PromptDocument;
+}): PromptDocument {
+  const contextDirty = hasSkillContext(input.contextDocument);
+  return {
+    version: 1,
+    blocks: [
+      {
+        type: 'text',
+        text: JSON.stringify(
+          {
+            task: 'Improve this reusable prompt-optimization Skill. Do not perform its task.',
+            skill: input.draft,
+            requirements: input.requirements,
+            temporaryContext: contextDirty
+              ? 'The following text and resource references are temporary context for this optimization. Do not embed resource names or references in the reusable Skill instruction.'
+              : undefined,
+            output:
+              'Only the revised reusable Skill instruction, preserving its language and exact placeholders. Do not repeat the surrounding metadata. Maximum 12000 characters.',
+          },
+          null,
+          2,
+        ),
+      },
+      ...(contextDirty
+        ? [
+            { type: 'text' as const, text: '\n\nTemporary optimization context:\n' },
+            ...input.contextDocument.blocks,
+          ]
+        : []),
+    ],
+  };
+}
+
+/** 采用升级结果时去掉临时资源提及，避免把项目文件名写入可复用 Skill。 */
+function instructionWithoutSkillContext(document: PromptDocument): string {
+  const textBlocks = document.blocks.filter((block) => block.type === 'text');
+  if (textBlocks.length === 0) return '';
+  return renderPromptDocument({ version: 1, blocks: textBlocks });
+}
+
+/**
+ * 工作台的资源上下文编辑器；引用组件负责提及展示和删除，工作台只暂存会话文档。
+ * 上传不会保存 Skill，也不会触发图片、视频或其它媒体生成。
+ */
+function SkillContextResources({
+  nodeId,
+  document,
+  assets,
+  disabled,
+  onDocumentChange,
+  onAssetsChange,
+  onUploadResource,
+}: SkillContextResourcesProps) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState('');
+  const upload = onUploadResource ?? uploadSkillWorkbenchAsset;
+
+  async function uploadFiles(files: readonly File[]) {
+    if (disabled || uploading || files.length === 0) return;
+    setUploading(true);
+    setError('');
+    let nextDocument = document;
+    let nextAssets = [...assets];
+    try {
+      for (const file of files) {
+        const asset = await upload(file);
+        nextAssets = [...nextAssets.filter((item) => item.id !== asset.id), asset];
+        onAssetsChange(nextAssets);
+        nextDocument = appendSkillContextAsset(nextDocument, asset);
+        onDocumentChange(nextDocument);
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '资源上传失败');
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  return (
+    <section className="skill-authoring-context" aria-label="Skill 优化上下文">
+      <div className="skill-authoring-context-heading">
+        <div>
+          <strong>优化上下文</strong>
+          <span>上传文件或图片，作为本次 Skill 优化的临时参考</span>
+        </div>
+        <button
+          type="button"
+          className="skill-context-upload"
+          disabled={disabled || uploading}
+          onClick={() => fileInputRef.current?.click()}
+        >
+          {uploading ? '上传中…' : '添加文件或图片'}
+        </button>
+        <input
+          ref={fileInputRef}
+          className="skill-context-file-input"
+          type="file"
+          aria-label="上传 Skill 优化上下文"
+          accept="image/*,text/*,audio/*,video/*,.txt,.md,.json"
+          multiple
+          disabled={disabled || uploading}
+          onChange={(event) => {
+            const files = Array.from(event.currentTarget.files ?? []);
+            event.currentTarget.value = '';
+            void uploadFiles(files);
+          }}
+        />
+      </div>
+      <ResourceMentionEditor
+        nodeId={nodeId}
+        promptDocument={document}
+        assets={assets}
+        onDocumentChange={onDocumentChange}
+        onUploadResource={upload}
+        placeholder="补充文件用途、希望模型关注的内容或其它优化要求"
+        ariaLabel="Skill 优化上下文说明"
+        disabled={disabled || uploading}
+        className="skill-context-editor"
+      />
+      {error ? (
+        <p className="skill-authoring-context-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <p className="skill-authoring-context-note">
+        资源只参与当前优化预览，采用结果时不会写入 Skill 指令，也不会自动生成媒体。
+      </p>
+    </section>
+  );
+}
 
 /** 把已保存字段投影为草稿；省略 enabled 的旧目录条目视为启用。 */
 function draftFrom(skill?: PromptSkill): SkillDraft {
@@ -149,6 +338,7 @@ function SkillWorkbenchSession({
   onChanged,
   projectId,
   models = [],
+  onUploadResource,
 }: Omit<SkillWorkbenchProps, 'open'>) {
   const [skills, setSkills] = useState<PromptSkill[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -163,6 +353,10 @@ function SkillWorkbenchSession({
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [upgradeGoal, setUpgradeGoal] = useState('');
+  const [contextDocument, setContextDocument] = useState<PromptDocument>(() =>
+    emptySkillContextDocument(),
+  );
+  const [contextAssets, setContextAssets] = useState<Asset[]>([]);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const active = useRef(true);
   const writing = useRef(false);
@@ -170,6 +364,8 @@ function SkillWorkbenchSession({
   const selected = skills.find((skill) => skill.id === selectedId);
   const builtin = selected ? isBuiltin(selected) : false;
   const dirty = JSON.stringify(draft) !== JSON.stringify(draftFrom(selected));
+  const contextDirty = hasSkillContext(contextDocument);
+  const authoringDirty = dirty || contextDirty || upgradeGoal.trim().length > 0;
   const valid =
     Boolean(draft.name.trim() && draft.category.trim() && draft.instruction.trim()) &&
     draft.name.length <= SKILL_FIELD_LIMITS.name &&
@@ -177,31 +373,17 @@ function SkillWorkbenchSession({
     draft.description.length <= SKILL_FIELD_LIMITS.description &&
     draft.instruction.length <= SKILL_FIELD_LIMITS.instruction;
   const locked = busy || loading || !hasLoaded;
-  /** 当前草稿只作为文字上下文发送；不读取画布资源或更改已保存的 Skill。 */
-  const authoringPrompt: PromptDocument = {
-    version: 1,
-    blocks: [
-      {
-        type: 'text',
-        text: JSON.stringify(
-          {
-            task: 'Improve this reusable prompt-optimization Skill. Do not perform its task.',
-            skill: {
-              name: draft.name,
-              category: draft.category,
-              description: draft.description,
-              instruction: draft.instruction,
-            },
-            requirements: upgradeGoal,
-            output:
-              'Only the revised reusable Skill instruction, preserving its language and exact placeholders. Do not repeat the surrounding metadata. Maximum 12000 characters.',
-          },
-          null,
-          2,
-        ),
-      },
-    ],
-  };
+  /** 草稿和临时资源上下文一起发送；上下文不会自动保存 Skill 或生成媒体。 */
+  const authoringPrompt = buildSkillAuthoringPrompt({
+    draft: {
+      name: draft.name,
+      category: draft.category,
+      description: draft.description,
+      instruction: draft.instruction,
+    },
+    requirements: upgradeGoal,
+    contextDocument,
+  });
   const categories = [...new Set(skills.map((skill) => skill.category))].sort((a, b) =>
     a.localeCompare(b, 'zh-CN'),
   );
@@ -250,7 +432,7 @@ function SkillWorkbenchSession({
   }, [loadAttempt]);
 
   useEffect(() => {
-    if (!dirty && !upgradeGoal.trim()) return;
+    if (!authoringDirty) return;
     /** 浏览器关闭与刷新也保留未保存提醒。 */
     const preventUnload = (event: BeforeUnloadEvent) => {
       event.preventDefault();
@@ -258,12 +440,12 @@ function SkillWorkbenchSession({
     };
     window.addEventListener('beforeunload', preventUnload);
     return () => window.removeEventListener('beforeunload', preventUnload);
-  }, [dirty, upgradeGoal]);
+  }, [authoringDirty]);
 
   /** 普通导航先确认草稿；正在写入时禁止切换和关闭。 */
   function leaveDraft(proceed: () => void) {
     if (writing.current) return;
-    if (dirty || upgradeGoal.trim()) setConfirmation({ kind: 'discard', proceed });
+    if (authoringDirty) setConfirmation({ kind: 'discard', proceed });
     else proceed();
   }
 
@@ -272,6 +454,8 @@ function SkillWorkbenchSession({
     setSelectedId(skill?.id ?? null);
     setDraft(draftFrom(skill));
     setUpgradeGoal('');
+    setContextDocument(emptySkillContextDocument());
+    setContextAssets([]);
     setError('');
     setNotice('');
   }
@@ -324,7 +508,7 @@ function SkillWorkbenchSession({
   /** 采用只更新本地草稿；内置项转为未保存的自定义副本，服务端版本由显式保存更新。 */
   function applyUpgrade(document: PromptDocument) {
     if (locked) return;
-    const instruction = renderPromptDocument(document);
+    const instruction = instructionWithoutSkillContext(document);
     if (!instruction.trim() || instruction.length > SKILL_FIELD_LIMITS.instruction) {
       setError('Skill 指令不能为空或超过 12000 字符');
       return;
@@ -514,7 +698,7 @@ function SkillWorkbenchSession({
                         {selected
                           ? `${builtin ? '内置 · 内容只读' : '自定义'} · v${selected.version}`
                           : '自定义'}
-                        {dirty ? ' · 未保存' : ''}
+                        {authoringDirty ? ' · 未保存' : ''}
                       </span>
                     </div>
                     <div className="skill-workbench-actions">
@@ -652,6 +836,15 @@ function SkillWorkbenchSession({
                           onChange={(event) => setUpgradeGoal(event.target.value)}
                         />
                       </label>
+                      <SkillContextResources
+                        nodeId={`skill-workbench-context:${selectedId ?? 'new'}`}
+                        document={contextDocument}
+                        assets={contextAssets}
+                        disabled={locked}
+                        onDocumentChange={setContextDocument}
+                        onAssetsChange={setContextAssets}
+                        onUploadResource={onUploadResource}
+                      />
                       <PromptSkillPanel
                         presentation="skill-authoring"
                         nodeId={`skill-workbench:${selectedId ?? 'new'}`}
@@ -662,7 +855,10 @@ function SkillWorkbenchSession({
                         skills={skills}
                         skillsLoading={loading}
                         models={models}
-                        disabled={locked || (!draft.instruction.trim() && !upgradeGoal.trim())}
+                        disabled={
+                          locked ||
+                          (!draft.instruction.trim() && !upgradeGoal.trim() && !contextDirty)
+                        }
                         onSkillChange={() => undefined}
                         onApply={applyUpgrade}
                       />
@@ -693,7 +889,7 @@ function SkillWorkbenchSession({
                 ) : busy ? (
                   '正在保存…'
                 ) : (
-                  notice || (dirty ? '有未保存的更改' : '所有节点共用')
+                  notice || (authoringDirty ? '有未保存的更改' : '所有节点共用')
                 )}
               </p>
             )}
@@ -717,7 +913,7 @@ function SkillWorkbenchSession({
           </DialogTitle>
           <DialogDescription>
             {confirmation?.kind === 'delete'
-              ? `将删除“${confirmation.skill.name}”，此操作不可撤销。${dirty ? '当前未保存的更改也会丢失。' : ''}`
+              ? `将删除“${confirmation.skill.name}”，此操作不可撤销。${authoringDirty ? '当前未保存的更改也会丢失。' : ''}`
               : '当前编辑内容尚未保存，放弃后无法恢复。'}
           </DialogDescription>
           <div className="skill-confirm-actions">
