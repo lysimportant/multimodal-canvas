@@ -247,7 +247,8 @@ function PromptSkillPanelSession({
             runId: result.runId,
             model: {
               modelAlias: result.modelAlias,
-              credentialId: result.credentialId,
+              // 公共响应可能省略凭据 ID，恢复记录仍保留提交时选择的连接身份。
+              credentialId: result.credentialId ?? current.request.credentialId,
             },
             result,
             draft: result.status === 'succeeded' ? result.promptDocument : undefined,
@@ -682,7 +683,7 @@ function PromptSkillPanelSession({
       {!skillsLoading && skillId && !skillAvailable && (
         <p role={isAuthoring ? undefined : 'alert'}>
           {isAuthoring
-            ? '请先在左侧启用内置「Skill 升级助手」，或重新加载技能库。'
+            ? '请先在左侧启用内置「技能升级助手」，或重新加载技能库。'
             : '所选 Skill 已不可用或已停用，请在技能工作台修复或重新选择'}
         </p>
       )}

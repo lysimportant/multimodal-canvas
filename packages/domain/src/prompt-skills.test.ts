@@ -193,10 +193,25 @@ describe('Skill 升级元技能', () => {
     }
     expect(PROMPT_SKILLS.at(-1)).toMatchObject({
       id: SKILL_AUTHORING_SKILL_ID,
-      name: 'Skill 升级助手',
+      name: '技能升级助手',
       category: '技能创作',
       version: '1.0.0',
     });
+  });
+
+  it('内置技能的用户可见元数据使用中文，英文指令保持不变', () => {
+    for (const skill of PROMPT_SKILLS) {
+      expect(skill.name).not.toMatch(/[A-Za-z]/);
+      expect(skill.category).not.toMatch(/[A-Za-z]/);
+      expect(skill.description).not.toMatch(/[A-Za-z]/);
+    }
+    expect(getPromptSkill(SKILL_AUTHORING_SKILL_ID)).toMatchObject({
+      name: '技能升级助手',
+      description: '根据草稿与升级要求改进可复用的技能指令，保留约束和占位符，不执行技能对应任务。',
+    });
+    expect(getPromptSkill(SKILL_AUTHORING_SKILL_ID)?.instruction).toContain(
+      'reusable prompt-optimization Skill instruction',
+    );
   });
 
   it('英文规则只编辑可复用指令，将草稿当数据而不执行业务任务', () => {

@@ -132,6 +132,19 @@ function optimizationUrl(projectId: string, apiBaseUrl: string): string {
   return `${apiBaseUrl.replace(/\/$/, '')}/v1/projects/${encodeURIComponent(projectId)}/prompt-optimizations`;
 }
 
+/**
+ * 比较优化响应中的可选连接身份；响应省略 credentialId 时视为服务端脱敏，明确返回时必须与已知身份相等。
+ * @param actual 响应中的连接 ID；公开接口可能省略。
+ * @param expected 请求或恢复记录中冻结的连接 ID。
+ * @returns 响应未返回连接 ID，或返回值与冻结身份一致时为 true。
+ */
+function matchesOptionalCredentialId(
+  actual: string | undefined,
+  expected: string | undefined,
+): boolean {
+  return actual === undefined || actual === expected;
+}
+
 /** 校验协议、节点、技能版本、任务和精确模型身份，避免串任务结果进入预览。 */
 async function readOptimization(
   response: Response,
@@ -162,9 +175,11 @@ async function readOptimization(
     result.skillVersion !== request.skillVersion ||
     (runId !== undefined && result.runId !== runId) ||
     (request.modelAlias !== undefined && result.modelAlias !== request.modelAlias) ||
-    (request.credentialId !== undefined && result.credentialId !== request.credentialId) ||
+    (request.credentialId !== undefined &&
+      !matchesOptionalCredentialId(result.credentialId, request.credentialId)) ||
     (model !== undefined &&
-      (result.modelAlias !== model.modelAlias || result.credentialId !== model.credentialId))
+      (result.modelAlias !== model.modelAlias ||
+        !matchesOptionalCredentialId(result.credentialId, model.credentialId)))
   )
     throw new Error('提示词优化任务身份不一致');
   if (result.status === 'succeeded') {

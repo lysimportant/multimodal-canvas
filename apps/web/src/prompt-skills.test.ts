@@ -150,14 +150,14 @@ describe('提示词优化客户端', () => {
     ).rejects.toThrow();
   });
 
-  it('GET 核对任务与分组身份，缺少连接时拒绝且不重新提交', async () => {
+  it('GET 核对任务与分组身份，公开响应省略 credentialId 时仍可恢复且不重新提交', async () => {
     const fetcher = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(response())
       .mockResolvedValueOnce(response({ ...optimization, runId: 'wrong' }))
       .mockResolvedValueOnce(response({ ...optimization, credentialId: undefined }));
     const pending = {
-      request,
+      request: { ...request, modelAlias: 'text-model', credentialId: 'connection-a' },
       runId: 'run/a',
       model: { modelAlias: 'text-model', credentialId: 'connection-a' },
     };
@@ -169,30 +169,33 @@ describe('提示词优化客户端', () => {
     await expect(fetchPromptOptimization(pending, '', { fetcher: fetcher })).rejects.toThrow(
       '身份不一致',
     );
-    await expect(fetchPromptOptimization(pending, '', { fetcher: fetcher })).rejects.toThrow(
-      '身份不一致',
-    );
+    const redacted = await fetchPromptOptimization(pending, '', { fetcher: fetcher });
+    expect(redacted).toMatchObject({ runId: 'run/a', modelAlias: 'text-model' });
+    expect(redacted.credentialId).toBeUndefined();
     expect(fetcher).toHaveBeenCalledTimes(3);
     expect(fetcher.mock.calls.every(([, init]) => init?.method === undefined)).toBe(true);
   });
 
-  it('缺失分组身份或模型 alias 不一致时拒绝响应', async () => {
+  it('服务端省略凭据身份时接受，但模型 alias 不一致仍拒绝响应', async () => {
     const fetcher = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(response({ ...optimization, credentialId: undefined }))
       .mockResolvedValueOnce(
         response({ ...optimization, credentialId: undefined, modelAlias: 'other' }),
       );
-    const legacyRequest = {
+    const explicitRequest = {
       ...request,
       modelAlias: 'text-model',
       credentialId: 'connection-a',
     };
-    await expect(submitPromptOptimization(legacyRequest, '', { fetcher })).rejects.toThrow(
-      '身份不一致',
+    await expect(submitPromptOptimization(explicitRequest, '', { fetcher })).resolves.toMatchObject(
+      {
+        runId: 'run/a',
+        modelAlias: 'text-model',
+      },
     );
     await expect(
-      submitPromptOptimization(legacyRequest, '', {
+      submitPromptOptimization(explicitRequest, '', {
         fetcher: fetcher,
       }),
     ).rejects.toThrow('身份不一致');

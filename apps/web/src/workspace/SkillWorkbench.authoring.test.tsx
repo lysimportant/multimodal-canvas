@@ -256,7 +256,7 @@ describe('Skill 工作台模型辅助升级', () => {
     await screen.findByDisplayValue(custom.instruction);
     await waitFor(() =>
       expect(
-        screen.getByText('请先在左侧启用内置「Skill 升级助手」，或重新加载技能库。'),
+        screen.getByText('请先在左侧启用内置「技能升级助手」，或重新加载技能库。'),
       ).toBeVisible(),
     );
     expect(screen.getByRole('button', { name: '生成升级预览' })).toBeDisabled();

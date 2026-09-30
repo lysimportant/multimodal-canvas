@@ -882,6 +882,39 @@ describe('PromptSkillPanel', () => {
     });
   });
 
+  it('服务端隐藏凭据 ID 时仍完成优化并保留原连接身份', async () => {
+    const user = userEvent.setup();
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(result({ credentialId: undefined }));
+    vi.stubGlobal('fetch', fetcher);
+    render(
+      <PromptSkillPanel
+        {...props({
+          models: [
+            {
+              id: 'text-a',
+              name: '文字 A',
+              mediaTypes: ['text'],
+              credentialId: 'key-a',
+              group: '分组甲',
+            },
+          ],
+        })}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
+    await user.click(screen.getByRole('combobox', { name: '优化模型' }));
+    await user.click(screen.getByRole('option', { name: /文字 A.*分组甲/ }));
+    await user.click(screen.getByRole('button', { name: '优化提示词' }));
+    await screen.findByRole('button', { name: '应用' });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    const saved = JSON.parse(sessionStorage.getItem(sessionStorage.key(0)!)!);
+    expect(saved.model).toEqual({ modelAlias: 'text-a', credentialId: 'key-a' });
+    expect(JSON.parse(String(fetcher.mock.calls[0]![1]?.body))).toMatchObject({
+      modelAlias: 'text-a',
+      credentialId: 'key-a',
+    });
+  });
+
   it.each(['failed', 'cancelled'])('明确 %s 保留原文且允许重新优化', async (status) => {
     const user = userEvent.setup();
     vi.stubGlobal(
