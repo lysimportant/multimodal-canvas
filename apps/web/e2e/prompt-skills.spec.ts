@@ -425,68 +425,76 @@ test('完整编辑器不嵌套 Skill 配置，保持提示词编辑可用', asyn
   expect(fixture.errors).toEqual([]);
 });
 
-test('优化预览显式应用、资源不变、选择与结果可保存重载', async ({ page }, testInfo) => {
-  await page.setViewportSize({ width: 1440, height: 900 });
-  const fixture = await installFixture(page);
-  await page.goto(`/projects/${project.id}`);
-  const panel = await editor(page);
-  await panel.getByRole('button', { name: 'Skill 配置', exact: true }).click();
-  await page
-    .getByRole('group', { name: 'Skill 配置', exact: true })
-    .getByRole('combobox', { name: '提示词 Skill', exact: true })
-    .click();
-  await page.getByRole('option', { name: '生成人物', exact: true }).click();
-  await page
-    .getByRole('group', { name: 'Skill 配置', exact: true })
-    .getByRole('button', { name: '优化提示词', exact: true })
-    .click();
-  await expect(page.getByRole('group', { name: '优化预览', exact: true })).toBeVisible();
-  await expect(panel.getByRole('textbox', { name: '提示词', exact: true })).not.toContainText(
-    '优化后',
-  );
-  expect(fixture.submissions).toHaveLength(1);
-  expect(fixture.submissions[0]!.promptDocument).toEqual(original);
-  await page.getByRole('textbox', { name: '优化文字 1', exact: true }).fill('尚未应用的角色 ');
-  await expect(page.getByRole('group', { name: 'Skill 配置', exact: true })).toBeVisible();
-  await expect(page.getByRole('group', { name: '优化预览', exact: true })).toBeVisible();
-  await panel.getByRole('button', { name: '打开完整编辑器' }).click();
-  const expanded = page.getByRole('dialog', { name: '创作节点 · 编辑设置' });
-  await expect(expanded.getByRole('group', { name: '优化预览' })).toBeVisible();
-  await expect(expanded.getByRole('group', { name: 'Skill 配置', exact: true })).toBeHidden();
-  await expect(expanded.getByRole('textbox', { name: '优化文字 1' })).toHaveValue(
-    '尚未应用的角色 ',
-  );
-  await expanded.getByRole('textbox', { name: '优化文字 1' }).fill('优化后：庭院晨光，保持角色 ');
-  await page.screenshot({ path: testInfo.outputPath('skill-preview-desktop.png') });
-  await expanded.getByRole('button', { name: '应用', exact: true }).click();
-  await expect(expanded.getByRole('textbox', { name: '提示词', exact: true })).toContainText(
-    '庭院晨光',
-  );
-  await expanded.getByRole('button', { name: '关闭编辑器' }).click();
-  await expect
-    .poll(() => fixture.canvas().nodes[0]!.data.promptDocument?.blocks[0])
-    .toEqual({ type: 'text', text: '优化后：庭院晨光，保持角色 ' });
-  expect(
-    fixture
-      .canvas()
-      .nodes[0]!.data.promptDocument!.blocks.filter((block) => block.type === 'mention'),
-  ).toEqual(original.blocks.filter((block) => block.type === 'mention'));
-  await page.reload();
-  const restored = await editor(page);
-  await restored.getByRole('button', { name: 'Skill 配置', exact: true }).click();
-  await expect(
-    selectContainer(
-      page
-        .getByRole('group', { name: 'Skill 配置', exact: true })
-        .getByRole('combobox', { name: '提示词 Skill', exact: true }),
-    ),
-  ).toContainText('生成人物');
-  await expect(restored.getByRole('textbox', { name: '提示词', exact: true })).toContainText(
-    '庭院晨光',
-  );
-  expect(fixture.submissions).toHaveLength(1);
-  expect(fixture.errors).toEqual([]);
-});
+for (const skill of [
+  { id: 'character', name: '生成人物' },
+  { id: 'xianxia-dress-character', name: '仙妖同款裙装' },
+]) {
+  test(`${skill.name} 优化预览显式应用、资源不变、选择与结果可保存重载`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const fixture = await installFixture(page);
+    await page.goto(`/projects/${project.id}`);
+    const panel = await editor(page);
+    await panel.getByRole('button', { name: 'Skill 配置', exact: true }).click();
+    await page
+      .getByRole('group', { name: 'Skill 配置', exact: true })
+      .getByRole('combobox', { name: '提示词 Skill', exact: true })
+      .click();
+    await page.getByRole('option', { name: skill.name, exact: true }).click();
+    await page
+      .getByRole('group', { name: 'Skill 配置', exact: true })
+      .getByRole('button', { name: '优化提示词', exact: true })
+      .click();
+    await expect(page.getByRole('group', { name: '优化预览', exact: true })).toBeVisible();
+    await expect(panel.getByRole('textbox', { name: '提示词', exact: true })).not.toContainText(
+      '优化后',
+    );
+    expect(fixture.submissions).toHaveLength(1);
+    expect(fixture.submissions[0]!.skillId).toBe(skill.id);
+    expect(fixture.submissions[0]!.promptDocument).toEqual(original);
+    await page.getByRole('textbox', { name: '优化文字 1', exact: true }).fill('尚未应用的角色 ');
+    await expect(page.getByRole('group', { name: 'Skill 配置', exact: true })).toBeVisible();
+    await expect(page.getByRole('group', { name: '优化预览', exact: true })).toBeVisible();
+    await panel.getByRole('button', { name: '打开完整编辑器' }).click();
+    const expanded = page.getByRole('dialog', { name: '创作节点 · 编辑设置' });
+    await expect(expanded.getByRole('group', { name: '优化预览' })).toBeVisible();
+    await expect(expanded.getByRole('group', { name: 'Skill 配置', exact: true })).toBeHidden();
+    await expect(expanded.getByRole('textbox', { name: '优化文字 1' })).toHaveValue(
+      '尚未应用的角色 ',
+    );
+    await expanded.getByRole('textbox', { name: '优化文字 1' }).fill('优化后：庭院晨光，保持角色 ');
+    await page.screenshot({ path: testInfo.outputPath('skill-preview-desktop.png') });
+    await expanded.getByRole('button', { name: '应用', exact: true }).click();
+    await expect(expanded.getByRole('textbox', { name: '提示词', exact: true })).toContainText(
+      '庭院晨光',
+    );
+    await expanded.getByRole('button', { name: '关闭编辑器' }).click();
+    await expect
+      .poll(() => fixture.canvas().nodes[0]!.data.promptDocument?.blocks[0])
+      .toEqual({ type: 'text', text: '优化后：庭院晨光，保持角色 ' });
+    expect(
+      fixture
+        .canvas()
+        .nodes[0]!.data.promptDocument!.blocks.filter((block) => block.type === 'mention'),
+    ).toEqual(original.blocks.filter((block) => block.type === 'mention'));
+    await page.reload();
+    const restored = await editor(page);
+    await restored.getByRole('button', { name: 'Skill 配置', exact: true }).click();
+    await expect(
+      selectContainer(
+        page
+          .getByRole('group', { name: 'Skill 配置', exact: true })
+          .getByRole('combobox', { name: '提示词 Skill', exact: true }),
+      ),
+    ).toContainText(skill.name);
+    await expect(restored.getByRole('textbox', { name: '提示词', exact: true })).toContainText(
+      '庭院晨光',
+    );
+    expect(fixture.submissions).toHaveLength(1);
+    expect(fixture.errors).toEqual([]);
+  });
+}
 
 test('原文变化后旧预览不可覆盖，丢弃不调用生成', async ({ page }) => {
   const fixture = await installFixture(page, 'text');

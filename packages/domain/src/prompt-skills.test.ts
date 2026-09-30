@@ -50,6 +50,11 @@ describe('提示词 Skill 契约', () => {
         expect(
           canvas.nodes[0]!.data.promptDocument!.blocks.every((block) => block.type === 'text'),
         ).toBe(true);
+        expect(canvas.nodes[0]!.data.label).toBe(`Skill · ${skill.name}`);
+        const block = canvas.nodes[0]!.data.promptDocument!.blocks[0]!;
+        if (block.type !== 'text') throw new Error('优化任务必须只包含文字');
+        expect(block.text).toContain(skill.instruction);
+        expect(block.text).toContain('Return only JSON {"prompt":"..."}');
         expect(JSON.stringify(canvas)).not.toContain('asset-one');
         expect(JSON.stringify(canvas)).toContain('[[SKILL_REF_1]]');
       }
@@ -123,51 +128,79 @@ describe('提示词 Skill 契约', () => {
       expect(() => parsePromptOptimizationOutput(text, input)).toThrow();
   });
 
-  it('旧画布保持兼容，新选择经过序列化后保留', () => {
-    const canvas = createPromptOptimizationCanvas({ skillId: 'scene', input, mediaType: 'image' });
-    expect(canvasDocumentSchema.parse(canvas).nodes[0]!.data.promptSkillId).toBeUndefined();
-    canvas.nodes[0]!.data.promptSkillId = 'scene';
-    expect(
-      canvasDocumentSchema.parse(JSON.parse(JSON.stringify(canvas))).nodes[0]!.data.promptSkillId,
-    ).toBe('scene');
-  });
+  it.each(['scene', 'character', 'xianxia-dress-character'])(
+    '旧画布保持兼容，选择 %s 后经序列化保留',
+    (skillId) => {
+      const canvas = createPromptOptimizationCanvas({ skillId, input, mediaType: 'image' });
+      expect(canvasDocumentSchema.parse(canvas).nodes[0]!.data.promptSkillId).toBeUndefined();
+      canvas.nodes[0]!.data.promptSkillId = skillId;
+      expect(
+        canvasDocumentSchema.parse(JSON.parse(JSON.stringify(canvas))).nodes[0]!.data.promptSkillId,
+      ).toBe(skillId);
+    },
+  );
 
-  it('冻结优化任务并拒绝与反推、媒体提及混用', () => {
-    const canvas = createPromptOptimizationCanvas({ skillId: 'scene', input, mediaType: 'image' });
-    const snapshot = {
-      projectId: 'project',
-      canvasRevision: 0,
-      targetNodeId: canvas.nodes[0]!.id,
-      modelAlias: 'text-model',
-      parameters: {},
-      submittedAt: new Date().toISOString(),
-      nodes: canvas.nodes,
-      edges: [],
-      inputs: [],
-      promptOptimization: {
-        nodeId: 'original-node',
-        skillId: 'scene',
-        skillVersion: '1.0.0',
-        input,
-      },
-    };
-    expect(runSnapshotSchema.safeParse(snapshot).success).toBe(true);
-    expect(
-      runSnapshotSchema.safeParse({
-        ...snapshot,
-        reversePrompt: { assetId: 'asset-one', assetVersion: 1, automatic: false },
-      }).success,
-    ).toBe(false);
-    snapshot.nodes[0]!.data.promptDocument!.blocks.push(input.blocks[1]!);
-    expect(runSnapshotSchema.safeParse(snapshot).success).toBe(false);
+  it.each(['scene', 'character', 'xianxia-dress-character'])(
+    '冻结 %s 的优化版本与规则，并拒绝与反推、媒体提及混用',
+    (skillId) => {
+      const skill = getPromptSkill(skillId)!;
+      const canvas = createPromptOptimizationCanvas({ skillId, input, mediaType: 'image' });
+      const snapshot = {
+        projectId: 'project',
+        canvasRevision: 0,
+        targetNodeId: canvas.nodes[0]!.id,
+        modelAlias: 'text-model',
+        parameters: {},
+        submittedAt: new Date().toISOString(),
+        nodes: canvas.nodes,
+        edges: [],
+        inputs: [],
+        promptOptimization: {
+          nodeId: 'original-node',
+          skillId,
+          skillVersion: skill.version,
+          instruction: skill.instruction,
+          input,
+        },
+      };
+      expect(
+        runSnapshotSchema.parse(JSON.parse(JSON.stringify(snapshot))).promptOptimization,
+      ).toEqual(snapshot.promptOptimization);
+      expect(
+        runSnapshotSchema.safeParse({
+          ...snapshot,
+          reversePrompt: { assetId: 'asset-one', assetVersion: 1, automatic: false },
+        }).success,
+      ).toBe(false);
+      snapshot.nodes[0]!.data.promptDocument!.blocks.push(input.blocks[1]!);
+      expect(runSnapshotSchema.safeParse(snapshot).success).toBe(false);
+    },
+  );
+
+  it('仙妖同款裙装可独立选择，不替代通用人物技能', () => {
+    expect(getPromptSkill('xianxia-dress-character')).toMatchObject({
+      id: 'xianxia-dress-character',
+      name: '仙妖同款裙装',
+      category: '人物与场景',
+      version: '1.0.0',
+    });
+    expect(getPromptSkill('character')).toMatchObject({
+      id: 'character',
+      name: '生成人物',
+      category: '人物与场景',
+      description: '补充人物外貌、发型、服装、气质和材质，生成单人物图的提示词。',
+      version: '1.0.0',
+      instruction:
+        'Refine a character image prompt. Preserve stated identity, age, skin tone, body proportions, clothing, and reference bindings. Organize appearance, hair, clothing layers, accessories, pose, material, lighting, and composition. Add only compatible visual detail. Do not replace the character with an example character, change ethnicity or skin tone, or impose a genre. Default to a single character image, not a multi-view board.',
+    });
   });
 });
 
 describe('Skill 升级元技能', () => {
-  it('目录 ID 稳定唯一，只追加元技能且不升级既有版本', () => {
+  it('目录 ID 稳定唯一，新增裙装技能不替代既有技能或升级版本', () => {
     expect(SKILL_AUTHORING_SKILL_ID).toBe('skill-authoring');
     const ids = PROMPT_SKILLS.map((skill) => skill.id);
-    expect(ids).toEqual([
+    expect(ids.filter((id) => id !== 'xianxia-dress-character')).toEqual([
       'novel-premise',
       'novel-outline',
       'novel-draft',
@@ -191,7 +224,7 @@ describe('Skill 升级元技能', () => {
       expect(getPromptSkill(skill.id)).toBe(skill);
       expect(skill.version).toBe('1.0.0');
     }
-    expect(PROMPT_SKILLS.at(-1)).toMatchObject({
+    expect(getPromptSkill(SKILL_AUTHORING_SKILL_ID)).toMatchObject({
       id: SKILL_AUTHORING_SKILL_ID,
       name: '技能升级助手',
       category: '技能创作',
