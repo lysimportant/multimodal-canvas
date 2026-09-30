@@ -29,6 +29,71 @@ function makeAsset(overrides: Partial<Asset> = {}): Asset {
   };
 }
 
+/**
+ * 模拟图片舞台的实际布局与尺寸观察，避免使用窗口尺寸代替 Dialog 内部可用空间。
+ * @param width 初始可用宽度，单位为 CSS 像素。
+ * @param height 初始可用高度，单位为 CSS 像素。
+ * @returns 调整舞台矩形并发出 ResizeObserver 通知的函数。
+ */
+function mockImageStageSize(width = 800, height = 600) {
+  vi.stubGlobal('devicePixelRatio', 1);
+  let rect = new DOMRect(0, 0, width, height);
+  let observed:
+    { target: Element; observer: ResizeObserver; callback: ResizeObserverCallback } | undefined;
+  const readWidth = Object.getOwnPropertyDescriptor(Element.prototype, 'clientWidth')!.get!;
+  const readHeight = Object.getOwnPropertyDescriptor(Element.prototype, 'clientHeight')!.get!;
+  vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (
+    this: HTMLElement,
+  ) {
+    return this.classList.contains('artifact-preview-image-stage')
+      ? rect.width
+      : readWidth.call(this);
+  });
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (
+    this: HTMLElement,
+  ) {
+    return this.classList.contains('artifact-preview-image-stage')
+      ? rect.height
+      : readHeight.call(this);
+  });
+  const measure = HTMLElement.prototype.getBoundingClientRect;
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+    this: HTMLElement,
+  ) {
+    return this.classList.contains('artifact-preview-image-stage') ? rect : measure.call(this);
+  });
+  vi.stubGlobal(
+    'ResizeObserver',
+    class implements ResizeObserver {
+      /** 保存浏览器尺寸回调，通知时仍执行组件自身的测量逻辑。 */
+      constructor(private readonly callback: ResizeObserverCallback) {}
+      /** 仅接管图片舞台，不为 Dialog 内其他组件虚构布局。 */
+      observe(target: Element) {
+        if (target.classList.contains('artifact-preview-image-stage'))
+          observed = { target, observer: this, callback: this.callback };
+      }
+      /** 停止指定图片舞台的观察。 */
+      unobserve(target: Element) {
+        if (observed?.target === target) observed = undefined;
+      }
+      /** 换资源卸载时仅清理当前观察器，避免误删新舞台。 */
+      disconnect() {
+        if (observed?.observer === this) observed = undefined;
+      }
+    },
+  );
+  return (nextWidth: number, nextHeight: number) => {
+    rect = new DOMRect(0, 0, nextWidth, nextHeight);
+    act(() => {
+      if (observed)
+        observed.callback(
+          [{ target: observed.target, contentRect: rect } as ResizeObserverEntry],
+          observed.observer,
+        );
+    });
+  };
+}
+
 afterEach(() => {
   cleanup();
   clearAuthSession();
@@ -299,7 +364,8 @@ describe('AssetPreview', () => {
     await waitFor(() => expect(onLoadStateChange).toHaveBeenLastCalledWith('ready'));
   });
 
-  it('预览对话框滚轮放大图片，并可重置缩放', async () => {
+  it('预览对话框按实际尺寸缩放原图，并区分适应窗口与1:1', async () => {
+    mockImageStageSize(400, 300);
     const user = userEvent.setup();
     render(
       <AssetPreview
@@ -314,29 +380,28 @@ describe('AssetPreview', () => {
     );
     await user.click(screen.getByRole('button', { name: '预览图片：城市夜景' }));
     const viewer = screen.getByRole('dialog', { name: '城市夜景' });
-    expect(screen.getByRole('button', { name: '恢复原始大小' })).toBeDisabled();
-    const stage = viewer.querySelector('.artifact-preview-viewer-stage');
-    expect(stage).not.toBeNull();
-    vi.spyOn(stage as HTMLElement, 'getBoundingClientRect').mockReturnValue({
-      x: 0,
-      y: 0,
-      top: 0,
-      left: 0,
-      right: 400,
-      bottom: 300,
-      width: 400,
-      height: 300,
-      toJSON: () => ({}),
-    } as DOMRect);
-    fireEvent.wheel(stage as HTMLElement, { deltaY: -100, clientX: 200, clientY: 150 });
-    const layer = viewer.querySelector('.artifact-preview-viewer-transform') as HTMLElement;
-    expect(layer.style.transform).toContain('scale(1.12)');
-    expect(screen.getByRole('button', { name: '重置预览缩放' })).toHaveTextContent('112%');
-    expect(screen.getByRole('button', { name: '恢复原始大小' })).toBeEnabled();
-    await user.click(screen.getByRole('button', { name: '恢复原始大小' }));
-    expect(layer.style.transform).toBe('translate(0px, 0px) scale(1)');
-    expect(screen.getByRole('button', { name: '重置预览缩放' })).toHaveTextContent('100%');
-    expect(screen.getByRole('button', { name: '恢复原始大小' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '原图 1:1' })).toBeDisabled();
+    const stage = viewer.querySelector<HTMLElement>('.artifact-preview-image-stage')!;
+    const image = stage.querySelector('img')!;
+    Object.defineProperties(image, {
+      naturalWidth: { value: 1600 },
+      naturalHeight: { value: 1200 },
+    });
+    fireEvent.load(image);
+    expect(image).toHaveStyle({ width: '400px', height: '300px' });
+    expect(screen.getByLabelText('图片缩放比例')).toHaveTextContent(/^25%$/);
+    fireEvent.wheel(stage, { deltaY: -100, clientX: 200, clientY: 150 });
+    expect(image).toHaveStyle({ width: '500px', height: '375px' });
+    expect(screen.getByLabelText('图片缩放比例')).toHaveTextContent(/^31\.3%$/);
+    const content = viewer.querySelector<HTMLElement>('.artifact-preview-image-content')!;
+    expect(content.style.transform).not.toMatch(/scale/i);
+    await user.click(screen.getByRole('button', { name: '原图 1:1' }));
+    expect(image).toHaveStyle({ width: '1600px', height: '1200px' });
+    expect(screen.getByLabelText('图片缩放比例')).toHaveTextContent(/^100%$/);
+    await user.click(screen.getByRole('button', { name: '适应窗口' }));
+    expect(image).toHaveStyle({ width: '400px', height: '300px' });
+    expect(screen.getByLabelText('图片缩放比例')).toHaveTextContent(/^25%$/);
+    expect(image).toHaveAttribute('src', 'https://assets.example/city.png');
   });
 
   it('图片首次按下后即使节点变为选中也只打开编辑器，再次点击才预览', async () => {
@@ -380,9 +445,8 @@ describe('AssetPreview', () => {
     { label: '横图', width: 1920, height: 1080 },
     { label: '竖图', width: 1080, height: 1920 },
     { label: '小图', width: 160, height: 90 },
-  ])('$label 预览按原比例适配视口，小图保持原尺寸', ({ width, height }) => {
-    vi.stubGlobal('innerWidth', 1280);
-    vi.stubGlobal('innerHeight', 900);
+  ])('$label 预览按原比例适配舞台，小图保持原尺寸', ({ width, height }) => {
+    mockImageStageSize();
     render(
       <AssetViewerDialog
         asset={makeAsset({ mediaType: 'image', mimeType: 'image/png' })}
@@ -397,23 +461,20 @@ describe('AssetPreview', () => {
       naturalHeight: { value: height },
     });
     fireEvent.load(image);
-    const stage = viewer.querySelector('.artifact-preview-viewer-stage') as HTMLElement;
-    const shownWidth = Number.parseFloat(stage.style.width);
-    const shownHeight = Number.parseFloat(stage.style.height);
-    expect(shownWidth / shownHeight).toBeCloseTo(width / height);
-    expect(shownWidth).toBeLessThanOrEqual(1222);
-    expect(shownHeight).toBeLessThanOrEqual(796);
-    expect(shownWidth).toBeLessThanOrEqual(width);
-    expect(shownHeight).toBeLessThanOrEqual(height);
-    if (width === 160) {
-      expect(shownWidth).toBe(160);
-      expect(shownHeight).toBe(90);
-    }
+    const scale = Math.min(1, 800 / width, 600 / height);
+    expect(image).toHaveStyle({ width: width * scale + 'px', height: height * scale + 'px' });
+    expect(screen.getByText('原图 ' + width + ' × ' + height)).toBeInTheDocument();
+    expect(
+      Number.parseFloat(image.style.width) / Number.parseFloat(image.style.height),
+    ).toBeCloseTo(width / height);
+    expect(screen.getByRole('button', { name: '适应窗口' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
   });
 
-  it('切换资源清除旧尺寸，窗口变化后重新适配当前资源', () => {
-    vi.stubGlobal('innerWidth', 1280);
-    vi.stubGlobal('innerHeight', 900);
+  it('切换资源清除旧尺寸，舞台变化后重新适配当前资源', () => {
+    const resizeStage = mockImageStageSize();
     const view = render(
       <AssetViewerDialog
         asset={makeAsset({ mediaType: 'image', mimeType: 'image/png' })}
@@ -427,10 +488,7 @@ describe('AssetPreview', () => {
       naturalHeight: { value: 1920 },
     });
     fireEvent.load(image);
-    expect(
-      (screen.getByRole('dialog').querySelector('.artifact-preview-viewer-stage') as HTMLElement)
-        .style.height,
-    ).toBe('796px');
+    expect(image).toHaveStyle({ width: '337.5px', height: '600px' });
     view.rerender(
       <AssetViewerDialog
         asset={makeAsset({
@@ -443,21 +501,69 @@ describe('AssetPreview', () => {
         onOpenChange={vi.fn()}
       />,
     );
-    const viewer = screen.getByRole('dialog');
-    const nextImage = viewer.querySelector('img')!;
-    const nextStage = viewer.querySelector('.artifact-preview-viewer-stage') as HTMLElement;
-    expect(nextStage.style.height).toBe('');
+    const nextImage = screen.getByRole('dialog').querySelector('img')!;
+    expect(nextImage).not.toBe(image);
+    expect(screen.queryByText('原图 1080 × 1920')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('图片缩放比例')).toHaveTextContent('—');
+    expect(screen.getByRole('button', { name: '原图 1:1' })).toBeDisabled();
     Object.defineProperties(nextImage, {
       naturalWidth: { value: 180 },
       naturalHeight: { value: 120 },
     });
     fireEvent.load(nextImage);
-    expect(nextStage).toHaveStyle({ width: '180px', height: '120px' });
-    vi.stubGlobal('innerWidth', 400);
-    vi.stubGlobal('innerHeight', 200);
-    fireEvent.resize(window);
-    expect(nextStage).toHaveStyle({ width: '144px', height: '96px' });
+    expect(nextImage).toHaveStyle({ width: '180px', height: '120px' });
+    resizeStage(144, 96);
+    expect(nextImage).toHaveStyle({ width: '144px', height: '96px' });
+    expect(screen.getByLabelText('图片缩放比例')).toHaveTextContent(/^80%$/);
   });
+
+  it.each(['切换同地址资源', '关闭重开'])(
+    '%s按Dialog身份重建图片视图，不保留旧旋转和缩放',
+    (method) => {
+      mockImageStageSize();
+      const asset = makeAsset({ mediaType: 'image', mimeType: 'image/png' });
+      const onOpenChange = vi.fn();
+      const view = render(<AssetViewerDialog asset={asset} open onOpenChange={onOpenChange} />);
+      const image = screen.getByRole('dialog').querySelector('img')!;
+      Object.defineProperties(image, {
+        naturalWidth: { value: 1600 },
+        naturalHeight: { value: 1200 },
+      });
+      fireEvent.load(image);
+      fireEvent.click(screen.getByRole('button', { name: '原图 1:1' }));
+      fireEvent.click(screen.getByRole('button', { name: '向右旋转90度' }));
+      fireEvent.click(screen.getByRole('button', { name: '水平翻转' }));
+      if (method === '切换同地址资源') {
+        view.rerender(
+          <AssetViewerDialog
+            asset={{ ...asset, id: 'asset_2' }}
+            open
+            onOpenChange={onOpenChange}
+          />,
+        );
+      } else {
+        view.rerender(<AssetViewerDialog asset={asset} open={false} onOpenChange={onOpenChange} />);
+        view.rerender(<AssetViewerDialog asset={asset} open onOpenChange={onOpenChange} />);
+      }
+      const nextImage = screen.getByRole('dialog').querySelector('img')!;
+      expect(nextImage).not.toBe(image);
+      expect(screen.getByLabelText('图片缩放比例')).toHaveTextContent('—');
+      Object.defineProperties(nextImage, {
+        naturalWidth: { value: 1600 },
+        naturalHeight: { value: 1200 },
+      });
+      fireEvent.load(nextImage);
+      expect(nextImage).toHaveStyle({ width: '800px', height: '600px', transform: 'rotate(0deg)' });
+      expect(screen.getByRole('button', { name: '水平翻转' })).toHaveAttribute(
+        'aria-pressed',
+        'false',
+      );
+      expect(screen.getByRole('button', { name: '适应窗口' })).toHaveAttribute(
+        'aria-pressed',
+        'true',
+      );
+    },
+  );
 
   it('视频预览使用解码尺寸适配并保留原生播放控件', () => {
     vi.stubGlobal('innerWidth', 1280);

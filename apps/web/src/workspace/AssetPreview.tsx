@@ -28,6 +28,7 @@ import { downloadProjectExport } from '../export-utils';
 import { isApiOriginUrl, resolveUploadUrl } from '../upload-utils';
 import { API_BASE_URL } from './contracts';
 import { fetchNodeAssetDownload } from './node-asset-download';
+import { ImagePreviewStage } from './ImagePreviewStage';
 import './artifact-preview.css';
 
 /** 资源预览展示方式：紧凑图标或完整内容。 */
@@ -574,10 +575,13 @@ export function AssetViewerDialog({ asset, open, onOpenChange, src }: AssetViewe
   const downloadAbort = useRef<AbortController | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  /** 图片铺满仅改变对话框，不触发节点尺寸或资源数据更新。 */
+  const [imageExpanded, setImageExpanded] = useState(false);
 
   useEffect(() => {
     setIsDownloading(false);
     setDownloadError(null);
+    setImageExpanded(false);
     return () => {
       downloadAbort.current?.abort();
       downloadAbort.current = null;
@@ -626,7 +630,7 @@ export function AssetViewerDialog({ asset, open, onOpenChange, src }: AssetViewe
         <DialogContent
           className={`artifact-preview-viewer overflow-hidden${
             kind === 'image' || kind === 'video' ? ' is-zoomable' : ''
-          }`}
+          }${kind === 'image' ? ` is-image-viewer${imageExpanded ? ' is-expanded' : ''}` : ''}`}
           overlayClassName="artifact-preview-viewer-backdrop"
           // 居中 Modal 默认 inline-block，显式保留预览网格与尺寸计算依赖的内边距。
           style={{
@@ -634,6 +638,12 @@ export function AssetViewerDialog({ asset, open, onOpenChange, src }: AssetViewe
             padding: '12px 12px 16px',
           }}
           aria-labelledby={viewerTitleId}
+          onEscapeKeyDown={(event) => {
+            if (kind === 'image' && imageExpanded) {
+              event.preventDefault();
+              setImageExpanded(false);
+            }
+          }}
           onPointerDown={(event) => event.stopPropagation()}
           onWheel={(event) => event.stopPropagation()}
         >
@@ -704,7 +714,15 @@ export function AssetViewerDialog({ asset, open, onOpenChange, src }: AssetViewe
               state="missing"
               message="产物不存在或已失效"
             />
-          ) : kind === 'image' || kind === 'video' ? (
+          ) : kind === 'image' ? (
+            <ImagePreviewStage
+              key={resetKey}
+              src={resolvedSrc}
+              name={asset.name}
+              expanded={imageExpanded}
+              onExpandedChange={setImageExpanded}
+            />
+          ) : kind === 'video' ? (
             <NaturalMediaViewer
               key={resetKey}
               resetKey={resetKey}
