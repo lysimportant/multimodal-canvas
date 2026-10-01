@@ -1369,7 +1369,11 @@ test('上传中禁止生成且删除节点后不会被晚到上传复活', async
   await expect(page.getByRole('button', { name: /^(生成|生成中)$/ })).toBeDisabled();
   await node.getByRole('button', { name: /^删除节点：/ }).click();
   releaseUpload();
-  await expect(page.locator('.asset-card').filter({ hasText: 'late.png' })).toBeVisible();
+  await expect(
+    page
+      .locator('.asset-card')
+      .filter({ has: page.getByRole('button', { name: '预览 late.png', exact: true }) }),
+  ).toBeVisible();
   await expect(node).toHaveCount(0);
 });
 
@@ -1829,7 +1833,9 @@ test('supports theme/sidebar controls, node body connections, and corner resizin
     mimeType: 'image/png',
     buffer: validPng,
   });
-  const assetCard = page.locator('.asset-card').filter({ hasText: 'body-reference.png' });
+  const assetCard = page
+    .locator('.asset-card')
+    .filter({ has: page.getByRole('button', { name: '预览 body-reference.png', exact: true }) });
   await expect(assetCard).toBeVisible();
   await assetCard.getByRole('button', { name: '添加 body-reference.png 到画布' }).click();
   await expect
@@ -2083,7 +2089,9 @@ test('uploads an asset and adds it to the workflow canvas with the add button', 
     buffer: Buffer.from('A short story reference.'),
   });
 
-  const assetCard = page.locator('.asset-card').filter({ hasText: 'story.txt' });
+  const assetCard = page
+    .locator('.asset-card')
+    .filter({ has: page.getByRole('button', { name: '预览 story.txt', exact: true }) });
   await expect(assetCard).toBeVisible();
   await expect(page.getByRole('status').filter({ hasText: '1 个资源已加入项目' })).toBeVisible();
 
@@ -2105,7 +2113,11 @@ test('connects three image references to one video generation node', async ({ pa
       mimeType: 'image/png',
       buffer: validPng,
     });
-    await expect(page.locator('.asset-card').filter({ hasText: name })).toBeVisible();
+    await expect(
+      page
+        .locator('.asset-card')
+        .filter({ has: page.getByRole('button', { name: `预览 ${name}`, exact: true }) }),
+    ).toBeVisible();
   }
 
   await page.getByRole('button', { name: '新建视频生成节点' }).click();
@@ -2256,7 +2268,11 @@ test('connects mixed text, image, and audio references to one video generation n
 
   for (const reference of references) {
     await page.locator('.resource-panel input[type="file"]').setInputFiles(reference);
-    await expect(page.locator('.asset-card').filter({ hasText: reference.name })).toBeVisible();
+    await expect(
+      page
+        .locator('.asset-card')
+        .filter({ has: page.getByRole('button', { name: `预览 ${reference.name}`, exact: true }) }),
+    ).toBeVisible();
   }
 
   await page.getByRole('button', { name: '新建视频生成节点' }).click();

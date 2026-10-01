@@ -127,6 +127,24 @@ describe('ResourcePanel search input', () => {
     vi.restoreAllMocks();
   });
 
+  it.each([false, true])(
+    '资源卡片不显示名称行但保留悬停提示和操作名称（归档：%s）',
+    (showArchived) => {
+      render(<ResourcePanelHarness onQueryCommit={vi.fn()} showArchived={showArchived} />);
+
+      for (const asset of assets) {
+        const preview = screen.getByRole('button', { name: `预览 ${asset.name}` });
+        expect(preview).toHaveAttribute('title', asset.name);
+        expect(within(preview).queryByText(asset.name)).not.toBeInTheDocument();
+        expect(preview.querySelector('.asset-card-copy strong')).not.toBeInTheDocument();
+        expect(screen.getByRole('button', { name: `重命名 ${asset.name}` })).toBeEnabled();
+      }
+      expect(screen.getByRole('button', { name: '预览 中文参考素材' })).toHaveTextContent(
+        '文字 · 12 B',
+      );
+    },
+  );
+
   it('删除需确认，已归档资源显示恢复和永久删除', async () => {
     const archive = vi.fn();
     const remove = vi.fn();
@@ -228,8 +246,8 @@ describe('ResourcePanel search input', () => {
     fireEvent.keyUp(filter, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13 });
     await waitFor(() => expect(filter).toHaveAttribute('aria-expanded', 'false'));
     expect(filter).toHaveFocus();
-    expect(screen.getByText('中文参考素材')).toBeInTheDocument();
-    expect(screen.queryByText('图片参考')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '预览 中文参考素材' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '预览 图片参考' })).not.toBeInTheDocument();
   });
 
   it('keeps a Chinese composition draft across a parent render and commits once', () => {
@@ -244,8 +262,8 @@ describe('ResourcePanel search input', () => {
 
     expect(input).toHaveValue('中文');
     expect(onQueryCommit).not.toHaveBeenCalled();
-    expect(screen.getByText('中文参考素材')).toBeInTheDocument();
-    expect(screen.getByText('English reference')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '预览 中文参考素材' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '预览 English reference' })).toBeInTheDocument();
 
     fireEvent.compositionEnd(input, { target: { value: '中文' } });
     fireEvent.change(input, { target: { value: '中文' } });
@@ -253,8 +271,10 @@ describe('ResourcePanel search input', () => {
     expect(input).toHaveValue('中文');
     expect(onQueryCommit).toHaveBeenCalledTimes(1);
     expect(onQueryCommit).toHaveBeenCalledWith('中文');
-    expect(screen.getByText('中文参考素材')).toBeInTheDocument();
-    expect(screen.queryByText('English reference')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '预览 中文参考素材' })).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: '预览 English reference' }),
+    ).not.toBeInTheDocument();
   });
 
   it('supports ordinary English input, paste updates, and deletion', async () => {
@@ -265,8 +285,8 @@ describe('ResourcePanel search input', () => {
 
     await user.type(input, 'English');
     expect(input).toHaveValue('English');
-    expect(screen.getByText('English reference')).toBeInTheDocument();
-    expect(screen.queryByText('中文参考素材')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '预览 English reference' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '预览 中文参考素材' })).not.toBeInTheDocument();
 
     fireEvent.paste(input, {
       clipboardData: { getData: () => ' reference' },
@@ -277,8 +297,8 @@ describe('ResourcePanel search input', () => {
 
     await user.clear(input);
     expect(input).toHaveValue('');
-    expect(screen.getByText('中文参考素材')).toBeInTheDocument();
-    expect(screen.getByText('English reference')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '预览 中文参考素材' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '预览 English reference' })).toBeInTheDocument();
   });
 
   it('filters assets from the sidebar and keeps archive as a separate view', async () => {
@@ -287,8 +307,8 @@ describe('ResourcePanel search input', () => {
 
     await user.click(screen.getByRole('combobox', { name: '资源类型' }));
     await user.click(screen.getByRole('option', { name: '图片（1）' }));
-    expect(screen.getByText('图片参考')).toBeInTheDocument();
-    expect(screen.queryByText('中文参考素材')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '预览 图片参考' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '预览 中文参考素材' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '归档 图片参考' })).not.toBeInTheDocument();
   });
 });
@@ -445,7 +465,7 @@ describe('ResourcePanel 自动收起抽屉', () => {
     expect(panel).toHaveClass('is-expanded');
     await user.click(option);
     expect(screen.getByRole('button', { name: '预览 图片参考' })).toBeInTheDocument();
-    expect(screen.queryByText('中文参考素材')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '预览 中文参考素材' })).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '触发父级重渲染' }));
     expect(panel).toHaveClass('is-collapsed');
     await user.hover(panel);

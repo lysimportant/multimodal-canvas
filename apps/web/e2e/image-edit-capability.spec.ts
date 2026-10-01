@@ -74,7 +74,12 @@ test.describe('图片编辑能力可见性（只读）', () => {
       mimeType: 'image/png',
       buffer: png,
     });
-    await expect(page.locator('.asset-card').filter({ hasText: fileName }).first()).toBeVisible({
+    await expect(
+      page
+        .locator('.asset-card')
+        .filter({ has: page.getByRole('button', { name: `预览 ${fileName}`, exact: true }) })
+        .first(),
+    ).toBeVisible({
       timeout: 60_000,
     });
     await page

@@ -105,7 +105,10 @@ test.describe('真实栈图片编辑验收', () => {
     const uploadedAsset = ((await (await uploadResponse).json()) as { asset: { id: string } })
       .asset;
     expect(uploadedAsset.id).toMatch(/^[0-9a-f-]{36}$/);
-    const assetCard = page.locator('.asset-card').filter({ hasText: fileName }).first();
+    const assetCard = page
+      .locator('.asset-card')
+      .filter({ has: page.getByRole('button', { name: `预览 ${fileName}`, exact: true }) })
+      .first();
     await expect(assetCard).toBeVisible({ timeout: 60_000 });
     await page
       .getByRole('button', { name: `添加 ${fileName} 到画布` })

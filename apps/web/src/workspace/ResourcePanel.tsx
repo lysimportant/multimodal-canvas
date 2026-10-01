@@ -418,12 +418,12 @@ export function ResourcePanel({
               role="button"
               tabIndex={0}
               aria-label={`预览 ${asset.name}`}
+              title={asset.name}
               onClick={() => openPreview(asset)}
               onKeyDown={(event) => handlePreviewKeyDown(event, asset)}
             >
               <AssetPreview asset={asset} thumbnail className="asset-card-preview" />
               <div className="asset-card-copy">
-                <strong title={asset.name}>{asset.name}</strong>
                 <span>
                   {mediaLabels[asset.mediaType]} · {formatBytes(asset.sizeBytes)}
                 </span>
