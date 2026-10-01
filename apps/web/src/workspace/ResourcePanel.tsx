@@ -27,7 +27,7 @@ import type { Asset } from '@multimodal-canvas/domain';
 import { useImeDraft } from '../ime';
 import { AssetPreview, AssetViewerDialog } from './AssetPreview';
 import { AssetGenerationHistory } from './AssetGenerationHistory';
-import { formatBytes, mediaLabels, type AssetFilter } from './contracts';
+import { mediaLabels, type AssetFilter } from './contracts';
 import './CompactSelect.css';
 import './ResourcePanel.css';
 
@@ -423,11 +423,6 @@ export function ResourcePanel({
               onKeyDown={(event) => handlePreviewKeyDown(event, asset)}
             >
               <AssetPreview asset={asset} thumbnail className="asset-card-preview" />
-              <div className="asset-card-copy">
-                <span>
-                  {mediaLabels[asset.mediaType]} · {formatBytes(asset.sizeBytes)}
-                </span>
-              </div>
             </div>
             <div className="asset-card-actions">
               <Button

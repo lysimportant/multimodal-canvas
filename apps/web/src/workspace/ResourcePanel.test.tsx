@@ -128,20 +128,20 @@ describe('ResourcePanel search input', () => {
   });
 
   it.each([false, true])(
-    '资源卡片不显示名称行但保留悬停提示和操作名称（归档：%s）',
+    '资源卡片只显示缩略图和操作，保留名称提示与无障碍名称（归档：%s）',
     (showArchived) => {
       render(<ResourcePanelHarness onQueryCommit={vi.fn()} showArchived={showArchived} />);
 
       for (const asset of assets) {
         const preview = screen.getByRole('button', { name: `预览 ${asset.name}` });
+        if (asset.mediaType === 'image') fireEvent.load(within(preview).getByRole('img'));
         expect(preview).toHaveAttribute('title', asset.name);
         expect(within(preview).queryByText(asset.name)).not.toBeInTheDocument();
-        expect(preview.querySelector('.asset-card-copy strong')).not.toBeInTheDocument();
+        expect(preview.querySelector('.asset-card-copy')).not.toBeInTheDocument();
+        expect(preview.textContent).toBe('');
+        expect(preview.querySelector('.asset-card-preview')).toBeInTheDocument();
         expect(screen.getByRole('button', { name: `重命名 ${asset.name}` })).toBeEnabled();
       }
-      expect(screen.getByRole('button', { name: '预览 中文参考素材' })).toHaveTextContent(
-        '文字 · 12 B',
-      );
     },
   );
 
