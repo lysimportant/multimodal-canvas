@@ -857,6 +857,8 @@ export function getNodeGenerationCount(data: { generationCount?: unknown }): num
 
 export const nodeDataSchema = z.object({
   label: z.string().min(1),
+  /** 节点实例首次创建时间（UTC ISO 8601）；复制的新节点重新记录，历史缺失不补写。 */
+  createdAt: z.string().datetime().optional(),
   mediaType: mediaTypeSchema,
   mode: nodeModeSchema,
   /** Whether this node contributes inputs to downstream runs. Omitted means enabled for legacy canvases. */

@@ -87,6 +87,15 @@ async function installFixture(page: Page) {
   await page.route('**/v1/**', async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
+    if (path === '/v1/auth/me')
+      return json(route, {
+        user: {
+          id: 'canvas-user',
+          email: 'canvas@example.test',
+          role: 'admin',
+          createdAt: '2026-09-17T10:00:00.000Z',
+        },
+      });
     if (path === '/v1/prompt-skills') return json(route, { skills: [] });
     if (path.endsWith('/events'))
       return route.fulfill({ contentType: 'text/event-stream', body: ': ready\n\n' });
@@ -301,11 +310,17 @@ for (const viewport of [
     await page.mouse.click(viewport.width - 32, viewport.height - 120, { button: 'right' });
     const menu = page.getByRole('menu', { name: '画布操作' });
     await expect(menu).toBeVisible();
-    const items = await menu.locator('.canvas-context-menu-list [role="menuitem"]').all();
-    const positions = await Promise.all(items.map((item) => item.boundingBox()));
-    expect(positions).toHaveLength(4);
+    // 同一帧读取所有矩形，避免菜单入场动画让相邻边界取自不同帧。
+    const positions = await menu.getByRole('menuitem').evaluateAll((items) =>
+      items.map((item) => {
+        const { x, y, width, height } = item.getBoundingClientRect();
+        return { x, y, width, height };
+      }),
+    );
+    expect(positions).toHaveLength(12);
     for (let i = 1; i < positions.length; i++) {
-      expect(positions[i]!.x).toBeCloseTo(positions[0]!.x, 1);
+      // 创建分组有菜单库自带的缩进，两组各自保持竖向对齐。
+      expect(positions[i]!.x).toBeCloseTo(positions[i < 4 ? 0 : 4]!.x, 1);
       expect(positions[i]!.y).toBeGreaterThanOrEqual(
         positions[i - 1]!.y + positions[i - 1]!.height,
       );
@@ -324,7 +339,10 @@ for (const viewport of [
     await expect(page.locator('.canvas-group')).toHaveCount(2);
     const newGroup = page.locator('.canvas-group').last();
     const before = (await newGroup.boundingBox())!;
-    await drag(page, newGroup.locator('.canvas-group-name'), 35, 20);
+    // 较窄窗口中组标题可能位于资源侧栏下方，使用始终可见的分组浮栏拖柄。
+    const handle = page.getByRole('button', { name: '拖动组 组 2', exact: true });
+    await handle.click({ trial: true });
+    await drag(page, handle, 35, 20);
     const after = (await newGroup.boundingBox())!;
     expect(after.x - before.x).toBeCloseTo(35, 0);
     expect(after.y - before.y).toBeCloseTo(20, 0);

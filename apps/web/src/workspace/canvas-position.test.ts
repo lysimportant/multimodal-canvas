@@ -5,6 +5,7 @@ import {
   DEFAULT_NODE_FLOW_WIDTH,
   NEW_NODE_PLACEMENT_GAP,
   getCenteredCanvasNodePosition,
+  getToolbarCanvasNodePosition,
   getNodePlacementRightOf,
 } from './canvas-position';
 
@@ -69,5 +70,27 @@ describe('new node placement', () => {
       x: startX,
       y: 50 + 266 + NEW_NODE_PLACEMENT_GAP,
     });
+  });
+});
+
+describe('胶囊新建节点定位', () => {
+  it.each([0.5, 1, 2])('缩放 %s 时固定靠上，并水平居中', (zoom) => {
+    const bounds = { left: 80, top: 64, width: 1200, height: 800 };
+    const position = getToolbarCanvasNodePosition(
+      bounds,
+      ({ x, y }) => ({ x: (x - 80) / zoom, y: (y - 64) / zoom }),
+      imageDimensions,
+    )!;
+    expect(position.x * zoom + (imageDimensions.width * zoom) / 2).toBe(600);
+    expect(position.y * zoom).toBe(80);
+    expect(position.y * zoom).toBeLessThan(bounds.height / 2);
+  });
+  it('小视口保留顶部空间，不对不可用画布生成坐标', () => {
+    expect(
+      getToolbarCanvasNodePosition({ left: 0, top: 0, width: 600, height: 200 }, (p) => p)?.y,
+    ).toBe(50);
+    expect(
+      getToolbarCanvasNodePosition({ left: 0, top: 0, width: 0, height: 800 }, (p) => p),
+    ).toBeUndefined();
   });
 });

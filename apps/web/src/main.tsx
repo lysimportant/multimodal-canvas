@@ -5,6 +5,7 @@ import { App } from './App';
 import { UiProvider } from '@multimodal-canvas/ui';
 import '@multimodal-canvas/ui/styles.css';
 import './index.css';
+import './native-scrollbars.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

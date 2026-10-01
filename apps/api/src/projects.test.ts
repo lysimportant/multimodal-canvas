@@ -247,6 +247,7 @@ describe('PrismaProjectStore canvas mapping', () => {
           contentUrl: null,
           data: {
             label: 'Image generator',
+            createdAt: '2026-10-01T10:00:00.000Z',
             mediaType: 'image',
             mode: 'generate',
             enabled: false,
@@ -288,6 +289,7 @@ describe('PrismaProjectStore canvas mapping', () => {
       height: 480,
       data: {
         label: 'Image generator',
+        createdAt: '2026-10-01T10:00:00.000Z',
         mediaType: 'image',
         mode: 'generate',
         enabled: false,

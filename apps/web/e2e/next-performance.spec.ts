@@ -251,6 +251,19 @@ test('固定规模性能：100 节点、99 连线、100 成员组及长提示词
         .evaluate((element) => new DOMMatrix(getComputedStyle(element).transform).a),
     )
     .toBeLessThan(0.5);
+  // 只统计项目草稿落盘；不采集正文、资源地址或身份信息。
+  await page.evaluate(() => {
+    const original = Storage.prototype.setItem;
+    Object.assign(window, { draftWrites: 0, draftBytes: 0 });
+    Storage.prototype.setItem = function (key, value) {
+      if (key.startsWith('multimodal-canvas:canvas:')) {
+        const counters = window as typeof window & { draftWrites: number; draftBytes: number };
+        counters.draftWrites += 1;
+        counters.draftBytes += value.length;
+      }
+      return original.call(this, key, value);
+    };
+  });
   const frames = await sampleFrames(page);
   const movement: number[] = [];
   for (let iteration = 0; iteration < 5; iteration += 1) {
@@ -271,6 +284,10 @@ test('固定规模性能：100 节点、99 连线、100 成员组及长提示词
     );
     movement.push(performance.now() - before);
   }
+  const draftWritesDuringDrag = await page.evaluate(() => {
+    const counters = window as typeof window & { draftWrites: number; draftBytes: number };
+    return { writes: counters.draftWrites, characters: counters.draftBytes };
+  });
   await page.keyboard.press('Control+s');
   await expect.poll(() => fixture.canvas().nodes[0]!.position.x).toBeGreaterThan(100);
   const node = page.locator('.react-flow__node[data-id="node-0"]');
@@ -301,6 +318,7 @@ test('固定规模性能：100 节点、99 连线、100 成员组及长提示词
     nodeCount,
     edgeCount: nodeCount - 1,
     groupMembers: nodeCount,
+    draftWritesDuringDrag,
     viewport: '1920x1080',
     browser: 'Chromium headless',
     animationFrames: distribution(frames),

@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import type { CanvasDocument } from '@multimodal-canvas/domain';
+import { describe, expect, it, vi } from 'vitest';
+import { canvasDocumentSchema, type CanvasDocument } from '@multimodal-canvas/domain';
 
 import {
   DEFAULT_FLOW_NODE_HEIGHT,
@@ -98,6 +98,17 @@ describe('stale propagation', () => {
 });
 
 describe('canvas document conversion', () => {
+  it('新节点创建时间经过保存和恢复保持不变，历史节点不会被补写', () => {
+    const createdAt = '2026-10-01T08:00:00.000Z';
+    const nodes = [flowNode('new', 'image', { createdAt }), flowNode('legacy')];
+    const saved = canvasDocumentSchema.parse(toCanvasDocument(nodes, [], 1));
+    const restored = fromCanvasDocument(JSON.parse(JSON.stringify(saved)));
+    expect(restored.nodes[0].data.createdAt).toBe(createdAt);
+    expect(restored.nodes[1].data).not.toHaveProperty('createdAt');
+    expect(toCanvasDocument(restored.nodes, [], 2).nodes[0].data.createdAt).toBe(createdAt);
+    expect(toCanvasDocument(restored.nodes, [], 2).nodes[1].data).not.toHaveProperty('createdAt');
+  });
+
   it('maps API edges and supplies a safe MIME type for nodes without one', () => {
     const document: CanvasDocument = {
       revision: 4,
@@ -342,6 +353,44 @@ describe('cycle detection', () => {
 });
 
 describe('clipboard graph transformations', () => {
+  it('复制不改变原创建时间，粘贴为新节点时统一记录本次时间并可落盘', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-10-01T08:00:00.000Z'));
+      const original = flowNode('source', 'image', { createdAt: '2026-09-01T08:00:00.000Z' });
+      const legacy = flowNode('legacy');
+      const clipboard = copyCanvasSelection(
+        [
+          { ...original, selected: true },
+          { ...legacy, selected: true },
+        ],
+        [],
+      );
+      expect(clipboard.nodes[0].data.createdAt).toBe(original.data.createdAt);
+      expect(clipboard.nodes[1].data).not.toHaveProperty('createdAt');
+      let id = 0;
+      const pasted = pasteCanvasClipboard(clipboard, () => String(++id));
+      expect(pasted.nodes.map((node) => node.data.createdAt)).toEqual([
+        '2026-10-01T08:00:00.000Z',
+        '2026-10-01T08:00:00.000Z',
+      ]);
+      expect(pasted.nodes.map((node) => node.id)).toEqual(['node_copy_1', 'node_copy_2']);
+      expect(original.data.createdAt).toBe('2026-09-01T08:00:00.000Z');
+      expect(legacy.data).not.toHaveProperty('createdAt');
+      expect(clipboard.nodes[0].data.createdAt).toBe(original.data.createdAt);
+      expect(clipboard.nodes[1].data).not.toHaveProperty('createdAt');
+      const restored = fromCanvasDocument(
+        canvasDocumentSchema.parse(toCanvasDocument(pasted.nodes, [], 1)),
+      );
+      expect(restored.nodes[0].data.createdAt).toBe('2026-10-01T08:00:00.000Z');
+      vi.setSystemTime(new Date('2026-10-01T08:01:00.000Z'));
+      const pastedAgain = pasteCanvasClipboard(clipboard, () => String(++id));
+      expect(pastedAgain.nodes[0].data.createdAt).toBe('2026-10-01T08:01:00.000Z');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('copies selected nodes and contained edges only', () => {
     const nodes = [flowNode('a'), flowNode('b'), flowNode('c')];
     nodes[1].selected = true;

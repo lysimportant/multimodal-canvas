@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { canvasDocumentSchema } from '@multimodal-canvas/domain';
 import { pasteCanvasClipboard, toCanvasDocument, type AssetFlowNode } from '../canvas-utils';
 import { createGenerationBatch } from './generation-batch';
@@ -35,6 +35,37 @@ function sourceNode(count = 3): AssetFlowNode {
 }
 
 describe('批量生成画布', () => {
+  it.each(['2026-09-01T08:00:00.000Z', undefined])(
+    '批量子节点记录本次创建时间且不修改原节点：%s',
+    (createdAt) => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        const now = '2026-10-01T08:00:00.000Z';
+        vi.setSystemTime(new Date(now));
+        const source = sourceNode();
+        if (createdAt !== undefined) source.data.createdAt = createdAt;
+        const original = structuredClone(source);
+        const result = createGenerationBatch(source, [source], []);
+        const saved = canvasDocumentSchema.parse(toCanvasDocument(result.nodes, result.edges, 1));
+
+        expect(result.targets).toHaveLength(3);
+        expect(new Set(result.targets.map((node) => node.id)).size).toBe(3);
+        expect(result.targets[0]!.id).toBe(source.id);
+        expect(result.targets[0]!.data.createdAt).toBe(createdAt);
+        expect(saved.nodes[0]!.data.createdAt).toBe(createdAt);
+        if (createdAt === undefined) {
+          expect(result.targets[0]!.data).not.toHaveProperty('createdAt');
+          expect(saved.nodes[0]!.data).not.toHaveProperty('createdAt');
+        }
+        expect(result.targets.slice(1).map((node) => node.data.createdAt)).toEqual([now, now]);
+        expect(saved.nodes.slice(1).map((node) => node.data.createdAt)).toEqual([now, now]);
+        expect(source).toEqual(original);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it('每份继承输入参数和边，但不继承产物或扩散生成数量', () => {
     const source = sourceNode();
     const input: AssetFlowNode = {

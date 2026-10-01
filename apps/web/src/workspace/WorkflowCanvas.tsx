@@ -6,6 +6,7 @@ import {
   ReactFlow,
   useReactFlow,
   useViewport,
+  useStore,
   type Connection,
   type ConnectionLineComponentProps,
   type FinalConnectionState,
@@ -16,6 +17,7 @@ import {
 import { FileText, LayoutGrid, Upload } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -23,6 +25,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ComponentProps,
   type DragEvent,
   type MouseEvent as ReactMouseEvent,
   type RefObject,
@@ -92,7 +95,7 @@ import {
   type InferenceStrength,
   type NodeQuickEditorProps,
 } from './NodeQuickEditor';
-import { getCenteredCanvasNodePosition } from './canvas-position';
+import { getCenteredCanvasNodePosition, getToolbarCanvasNodePosition } from './canvas-position';
 import { getQuickEditorLayout, type QuickEditorPlacementState } from './quick-editor-layout';
 import {
   getConnectionDropCreateGroups,
@@ -361,8 +364,6 @@ export function WorkflowCanvas({
   onOpenProjectHub,
 }: WorkflowCanvasProps) {
   const { screenToFlowPosition, getNodesBounds, getZoom, setCenter, fitView } = useReactFlow();
-  /** 组区域层按视口换算位置与尺寸，缩放画布时与成员保持对齐。 */
-  const viewport = useViewport();
   const canvasAreaRef = useRef<HTMLElement>(null);
   const connectionStartRef = useRef<OnConnectStartParams | null>(null);
   /** 吞掉拖线松手后紧随而来的 pane click，避免菜单刚弹出就被关掉。 */
@@ -474,8 +475,20 @@ export function WorkflowCanvas({
   }, [reportCanvasCenter]);
 
   const handleAddGenerateNode = useCallback(
-    (mediaType: MediaType) => onAddGenerateNode(mediaType, getCanvasNodePosition(mediaType)),
-    [getCanvasNodePosition, onAddGenerateNode],
+    (mediaType: MediaType) => {
+      const bounds = canvasAreaRef.current?.getBoundingClientRect();
+      onAddGenerateNode(
+        mediaType,
+        bounds
+          ? getToolbarCanvasNodePosition(
+              bounds,
+              screenToFlowPosition,
+              getNewNodeDimensions(mediaType),
+            )
+          : undefined,
+      );
+    },
+    [onAddGenerateNode, screenToFlowPosition],
   );
 
   /** 将视口缩放到能完整看到当前画布节点的范围。 */
@@ -757,10 +770,9 @@ export function WorkflowCanvas({
                             <GenerationBatchViewContext.Provider value={batchContext}>
                               <CanvasEdgeAppearanceProvider appearance={edgeAppearance}>
                                 {/* 组空白区域可选中、拖动，端口、连线与节点仍在组上层交互。 */}
-                                <CanvasGroupLayer
+                                <ViewportGroupLayer
                                   groups={groups}
                                   nodes={nodes}
-                                  viewport={viewport}
                                   {...(dropTargetGroupId ? { dropTargetGroupId } : {})}
                                   {...(selectedGroupId ? { selectedGroupId } : {})}
                                   {...(onSelectGroup
@@ -871,7 +883,6 @@ export function WorkflowCanvas({
           models={models}
           busy={isNodeBusy(quickEditorNode)}
           canvasAreaRef={canvasAreaRef}
-          viewportZoom={viewport.zoom}
           assets={assets}
           connectedAssets={collectConnectedPromptAssets(quickEditorNode.id, nodes, edges, assets)}
           onConnectedResourceRename={
@@ -1014,14 +1025,21 @@ export function WorkflowCanvas({
   );
 }
 
+/** 视口坐标仅向组区域层广播，平移不重渲染画布全部节点和菜单。 */
+function ViewportGroupLayer(props: Omit<ComponentProps<typeof CanvasGroupLayer>, 'viewport'>) {
+  const viewport = useViewport();
+  return <CanvasGroupLayer {...props} viewport={viewport} />;
+}
+
+/** 浮层跟随视口移动时复用输入控件，只在节点内容或参数变化时重渲染。 */
+const MemoizedNodeQuickEditor = memo(NodeQuickEditor);
+
 /** 快速编辑器 portal 所需的节点与画布引用。 */
 type QuickEditorOverlayProps = Omit<NodeQuickEditorProps, 'node'> & {
   /** 当前选中的生成节点。 */
   node: AssetFlowNode;
   /** 用于约束浮层可见范围的画布容器引用。 */
   canvasAreaRef: RefObject<HTMLElement | null>;
-  /** 画布当前缩放比例；用于将独立 portal 与节点保持同倍率。 */
-  viewportZoom: number;
 };
 
 /**
@@ -1029,12 +1047,9 @@ type QuickEditorOverlayProps = Omit<NodeQuickEditorProps, 'node'> & {
  * portal 避免被节点的 overflow 裁剪；碰撞检测使用屏幕像素，最终尺寸换回画布像素，
  * 使输入内容不影响节点外框；贴边等待换向时允许暂时重叠节点，但始终留在可见画布内。
  */
-function QuickEditorOverlay({
-  node,
-  canvasAreaRef,
-  viewportZoom,
-  ...editorProps
-}: QuickEditorOverlayProps) {
+function QuickEditorOverlay({ node, canvasAreaRef, ...editorProps }: QuickEditorOverlayProps) {
+  // 平移位置由视口 DOM 观察器更新；不让平移重渲染整个编辑器。
+  const viewportZoom = useStore((state) => state.transform[2]);
   const overlayRef = useRef<HTMLDivElement>(null);
   /** portal 宿主在客户端挂载后确定，服务端渲染阶段保持为空。 */
   const [portalHost, setPortalHost] = useState<HTMLElement | null>(null);
@@ -1251,7 +1266,7 @@ function QuickEditorOverlay({
       data-placement={layout.placement}
       style={style}
     >
-      <NodeQuickEditor node={node} {...editorProps} />
+      <MemoizedNodeQuickEditor node={node} {...editorProps} />
     </div>,
     portalHost,
   );

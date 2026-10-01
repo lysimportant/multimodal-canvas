@@ -18,7 +18,7 @@ export type GenerationBatch = {
  * @param source 本次运行的节点；数量缺省为 1。
  * @param nodes 当前画布节点，不会原地修改。
  * @param edges 当前画布连线，复制输入边，不复制输出边。
- * @returns 新画布与运行目标；数量为 1 时保持原图。
+ * @returns 新画布与运行目标；新子节点记录本次创建时间，原节点时间不变；数量为 1 时保持原图。
  * @throws RangeError 数量不在允许的整数范围内。
  */
 export function createGenerationBatch(
@@ -76,6 +76,7 @@ export function createGenerationBatch(
       height: source.height,
       data: {
         ...structuredClone(configuration),
+        createdAt: new Date().toISOString(),
         label: `${source.data.label} ${index + 1}`,
         mode: 'generate',
         generationCount: 1,

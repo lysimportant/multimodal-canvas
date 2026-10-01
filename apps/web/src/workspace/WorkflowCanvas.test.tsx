@@ -133,6 +133,8 @@ vi.mock('@xyflow/react', async () => {
     Position: { Top: 'top', Bottom: 'bottom' },
     ReactFlow,
     useViewport: () => ({ x: 0, y: 0, zoom: reactFlowMock.viewportZoom }),
+    useStore: (selector: (state: { transform: [number, number, number] }) => unknown) =>
+      selector({ transform: [0, 0, reactFlowMock.viewportZoom] }),
     useEdges: () => [],
     useUpdateNodeInternals: () => React.useCallback(() => {}, []),
     useReactFlow: () => ({

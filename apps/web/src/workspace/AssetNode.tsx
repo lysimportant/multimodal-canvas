@@ -23,7 +23,7 @@ import {
   NodeResizer,
   useEdges,
   useUpdateNodeInternals,
-  useViewport,
+  useStore,
   type NodeProps,
 } from '@xyflow/react';
 import {
@@ -71,6 +71,7 @@ import { fetchNodeAssetDownload } from './node-asset-download';
 import { mediaIcons, mediaLabels, modeLabels } from './contracts';
 import { NodeDurationBadge, useSharedNodeClock } from './NodeDurationBadge';
 import { GenerationBatchViewContext } from './generation-batch-view';
+import { getNodeInfoTimes } from './node-info';
 import './asset-node.css';
 
 export type NodeSelectionHandler = (data: AssetFlowNode['data']) => void;
@@ -197,7 +198,6 @@ function isNodeRunning(status: RunStatus | undefined): boolean {
 
 /** 展示节点占位或产物；生成节点的控制栏悬浮在内容上方，不参与尺寸计算。 */
 export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
-  const { zoom } = useViewport();
   const incomingEdges = useEdges();
   const updateNodeInternals = useUpdateNodeInternals();
   // 模式或模型变化会增删语义端口，必须重新测量才能显示已有连线。
@@ -242,8 +242,20 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const [infoOpen, setInfoOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
   const [focusWithin, setFocusWithin] = useState(false);
+  /** 隐藏悬浮栏只订阅缩放；可见时同时订阅平移，以重新计算屏幕边界。 */
+  const controlsVisible = Boolean(hovered || focusWithin || selected) && !batchView?.hidden;
+  const [, , zoom] = useStore(
+    (state) =>
+      [
+        controlsVisible ? state.transform[0] : 0,
+        controlsVisible ? state.transform[1] : 0,
+        state.transform[2],
+      ] as const,
+    (previous, next) =>
+      previous[0] === next[0] && previous[1] === next[1] && previous[2] === next[2],
+  );
   useLayoutEffect(() => {
-    if ((!hovered && !focusWithin && !selected) || batchView?.hidden) return;
+    if (!controlsVisible) return;
     const controls = floatingControlsRef.current;
     const canvas = controls?.closest('.react-flow');
     const node = controls?.closest('.react-flow__node');
@@ -324,6 +336,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
           tags: [],
         } satisfies Asset)
       : undefined);
+  const infoTimes = getNodeInfoTimes(id, data);
   const displayedTiming = data.manualOutput
     ? undefined
     : previewAsset
@@ -348,14 +361,13 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const imageSizeWarning =
     data.resultAsset &&
     !data.manualOutput &&
+    !data.stale &&
     !isNodeRunning(data.runStatus) &&
     actualImageSize &&
     requestedSize?.width &&
     requestedSize.height &&
     (actualImageSize.width < requestedSize.width || actualImageSize.height < requestedSize.height)
-      ? data.stale
-        ? `当前原图 ${actualImageSize.width}×${actualImageSize.height}；当前设置 ${requestedSize.width}×${requestedSize.height}（待更新）`
-        : `实际 ${actualImageSize.width}×${actualImageSize.height}，未达到所选 ${requestedSize.width}×${requestedSize.height}`
+      ? `实际 ${actualImageSize.width}×${actualImageSize.height}，未达到所选 ${requestedSize.width}×${requestedSize.height}`
       : undefined;
   /** 同一版本重复加载不触发额外渲染；切换版本后不沿用旧图尺寸。 */
   const handleNaturalImageSize = useCallback(
@@ -1010,6 +1022,29 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
                 <dt>运行</dt>
                 <dd>{data.runStatus ? runStatusLabel(data.runStatus) : '未运行'}</dd>
               </div>
+              <div>
+                <dt>节点创建时间</dt>
+                <dd>
+                  {infoTimes.createdAt ? (
+                    <time dateTime={infoTimes.createdAt.dateTime}>{infoTimes.createdAt.label}</time>
+                  ) : (
+                    '未记录'
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>结果回显时间</dt>
+                <dd title="当前展示结果的服务端完成时间，不是浏览器首次加载或新任务的执行时间。">
+                  {infoTimes.resultAt ? (
+                    <>
+                      <time dateTime={infoTimes.resultAt.dateTime}>{infoTimes.resultAt.label}</time>
+                      （服务端完成）
+                    </>
+                  ) : (
+                    '未记录'
+                  )}
+                </dd>
+              </div>
               {data.mediaType === 'image' && previewAsset ? (
                 <>
                   <div>
@@ -1030,6 +1065,12 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
                     <div>
                       <dt>参数问题</dt>
                       <dd>{selectedImageSize.issue}</dd>
+                    </div>
+                  ) : null}
+                  {imageSizeWarning ? (
+                    <div>
+                      <dt>像素提示</dt>
+                      <dd>{imageSizeWarning}</dd>
                     </div>
                   ) : null}
                   <div>
@@ -1132,19 +1173,6 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
         />
       )}
       {!floatingControls && nodeLabel}
-      {imageSizeWarning &&
-        !isDownloading &&
-        !downloadError &&
-        !uploadError &&
-        uploadProgress === null && (
-          <div
-            className="flow-node-download-feedback nodrag nopan"
-            role="status"
-            title="下载保留原始图片，不会压缩或自动放大。所选尺寸不等于实际返回尺寸。"
-          >
-            {imageSizeWarning}
-          </div>
-        )}
       {isDownloading && (
         <span className="flow-node-download-feedback" role="status">
           正在准备下载…

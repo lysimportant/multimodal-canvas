@@ -2,15 +2,51 @@ import '@testing-library/jest-dom/vitest';
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { Profiler } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-/** 用于验证悬浮栏在不同缩放级别下提供反向缩放值。 */
-const viewportMock = vi.hoisted(() => ({ zoom: 1 }));
+/** 模拟视口外部存储，真实触发订阅更新而不是依赖父组件重新渲染。 */
+const viewportMock = vi.hoisted(() => ({
+  x: 0,
+  y: 0,
+  zoom: 1,
+  listeners: new Set<() => void>(),
+  /** 注册视口变更监听，返回卸载清理函数。 */
+  subscribe(listener: () => void) {
+    viewportMock.listeners.add(listener);
+    return () => {
+      viewportMock.listeners.delete(listener);
+    };
+  },
+}));
 const updateNodeInternalsMock = vi.hoisted(() => vi.fn());
 
 vi.mock('@xyflow/react', async () => {
+  const { useRef, useSyncExternalStore } = await import('react');
+  /** 按 selector 与 equalityFn 缓存快照，复现 React Flow 的订阅语义。 */
+  function useStoreMock<T>(
+    selector: (state: { transform: [number, number, number] }) => T,
+    equalityFn: (previous: T, next: T) => boolean = Object.is,
+  ): T {
+    const selected = useRef({
+      value: selector({ transform: [viewportMock.x, viewportMock.y, viewportMock.zoom] }),
+    });
+    const getSnapshot = () => {
+      const value = selector({ transform: [viewportMock.x, viewportMock.y, viewportMock.zoom] });
+      if (!equalityFn(selected.current.value, value)) selected.current.value = value;
+      return selected.current.value;
+    };
+    return useSyncExternalStore(viewportMock.subscribe, getSnapshot, getSnapshot);
+  }
   return {
-    useViewport: () => ({ x: 0, y: 0, zoom: viewportMock.zoom }),
+    useStore: useStoreMock,
+    useViewport: () => {
+      const [x, y, zoom] = useStoreMock(
+        (state) => state.transform,
+        (previous, next) => previous.every((value, index) => value === next[index]),
+      );
+      return { x, y, zoom };
+    },
     useEdges: () => [],
     useUpdateNodeInternals: () => updateNodeInternalsMock,
     Handle: () => null,
@@ -53,6 +89,14 @@ import {
   type NodeImageEditHandler,
   type NodePromptHandler,
 } from './AssetNode';
+
+/** 更新测试视口并广播一次变更；调用返回前完成由订阅触发的 React 更新。 */
+function updateViewport(patch: Partial<Pick<typeof viewportMock, 'x' | 'y' | 'zoom'>>) {
+  act(() => {
+    Object.assign(viewportMock, patch);
+    viewportMock.listeners.forEach((listener) => listener());
+  });
+}
 
 /** 构造节点数据；未覆盖的字段保持现有文字生成节点契约。 */
 function makeNode(overrides: Partial<AssetFlowNode['data']> = {}): AssetFlowNode {
@@ -121,6 +165,8 @@ afterEach(() => {
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
+  viewportMock.x = 0;
+  viewportMock.y = 0;
   viewportMock.zoom = 1;
 });
 
@@ -267,6 +313,7 @@ describe('AssetNode result presentation', () => {
 
   it('旧结果与新执行分别显示计时，手动版本不继承旧生成耗时', async () => {
     const base = makeNode({
+      createdAt: '2026-09-15T09:30:00.000Z',
       assetId: 'asset-1',
       contentUrl: '/v1/assets/asset-1/versions/1/content',
       runStatus: 'running',
@@ -289,6 +336,13 @@ describe('AssetNode result presentation', () => {
     expect(info.getByText('耗时')).toBeInTheDocument();
     expect(info.getByText('12秒')).toBeInTheDocument();
     expect(info.getByText('当前执行')).toBeInTheDocument();
+    expect(
+      info.getByText('节点创建时间').nextElementSibling?.querySelector('time'),
+    ).toHaveAttribute('datetime', '2026-09-15T09:30:00.000Z');
+    expect(
+      info.getByText('结果回显时间').nextElementSibling?.querySelector('time'),
+    ).toHaveAttribute('datetime', '2026-09-16T10:00:12.400Z');
+    expect(info.getByText('结果回显时间').nextElementSibling).toHaveTextContent('服务端完成');
     view.rerender(
       <AssetNode
         {...({
@@ -300,9 +354,14 @@ describe('AssetNode result presentation', () => {
     );
     await userEvent.click(screen.getByRole('button', { name: '查看节点信息' }));
     expect(screen.queryByText('12秒')).not.toBeInTheDocument();
+    const manualInfo = within(screen.getByRole('dialog', { name: '节点信息' }));
+    expect(manualInfo.getByText('耗时', { selector: 'dt' }).nextElementSibling).toHaveTextContent(
+      '未记录',
+    );
+    expect(manualInfo.getByText('结果回显时间').nextElementSibling).toHaveTextContent('未记录');
     expect(
-      within(screen.getByRole('dialog', { name: '节点信息' })).getByText('未记录'),
-    ).toBeInTheDocument();
+      manualInfo.getByText('节点创建时间').nextElementSibling?.querySelector('time'),
+    ).toHaveAttribute('datetime', '2026-09-15T09:30:00.000Z');
   });
 
   it('新生成失败仍展示旧结果，同时在信息面板保留失败原因和旧结果耗时', async () => {
@@ -428,6 +487,95 @@ describe('AssetNode result presentation', () => {
     expect(asset.style.width).toBe('');
     expect(asset.style.height).toBe('');
   });
+
+  it('41 个隐藏悬浮栏节点不因视口平移重渲染，缩放仍更新', () => {
+    const onRender = vi.fn();
+    const view = render(
+      <>
+        {Array.from({ length: 41 }, (_, index) => {
+          const node = makeNode({ label: '节点 ' + index });
+          const id = 'node-' + index;
+          return (
+            <Profiler key={id} id={id} onRender={onRender}>
+              <AssetNode
+                {...({ id, data: node.data, selected: false } as NodeProps<AssetFlowNode>)}
+              />
+            </Profiler>
+          );
+        })}
+      </>,
+    );
+    onRender.mockClear();
+    updateViewport({ x: 120, y: -40 });
+    expect(onRender).not.toHaveBeenCalled();
+    updateViewport({ zoom: 0.5 });
+    expect(onRender).toHaveBeenCalledTimes(41);
+    for (const toolbar of view.container.querySelectorAll<HTMLElement>(
+      '.flow-node-floating-controls',
+    )) {
+      expect(toolbar.style.getPropertyValue('--flow-node-inverse-zoom')).toBe('2');
+    }
+  });
+
+  it.each(['hovered', 'focusWithin', 'selected'] as const)(
+    '%s 可见悬浮栏随视口平移重新约束，隐藏后停止平移订阅',
+    (visibility) => {
+      const node = makeNode();
+      /** 只切换选中状态，不重建节点或更改尺寸。 */
+      const scene = (selected: boolean) => (
+        <div className="react-flow">
+          <div className="react-flow__node">
+            <AssetNode
+              {...({ id: node.id, data: node.data, selected } as NodeProps<AssetFlowNode>)}
+            />
+          </div>
+        </div>
+      );
+      const view = render(scene(false));
+      const canvas = view.container.querySelector('.react-flow')!;
+      const asset = view.container.querySelector<HTMLElement>('.flow-asset-node')!;
+      const toolbar = screen.getByRole('group', { name: '节点操作：文案生成' });
+      const button = within(toolbar).getByRole('button', { name: '查看节点信息' });
+      vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
+        left: 260,
+        top: 50,
+        right: 1366,
+        bottom: 900,
+        width: 1106,
+        height: 850,
+      } as DOMRect);
+      const measure = vi.spyOn(toolbar, 'getBoundingClientRect').mockImplementation(
+        () =>
+          ({
+            left: 300 + viewportMock.x,
+            top: 80 + viewportMock.y,
+            right: 1100 + viewportMock.x,
+            bottom: 126 + viewportMock.y,
+            width: 800,
+            height: 46,
+          }) as DOMRect,
+      );
+      if (visibility === 'hovered') fireEvent.mouseEnter(asset);
+      else if (visibility === 'focusWithin') fireEvent.focus(button);
+      else view.rerender(scene(true));
+      expect(toolbar.style.getPropertyValue('--flow-node-toolbar-shift-x')).toBe('0px');
+      updateViewport({ x: -180, y: -50 });
+      expect(toolbar.style.getPropertyValue('--flow-node-toolbar-shift-x')).toBe('148px');
+      expect(toolbar.style.getPropertyValue('--flow-node-toolbar-shift-y')).toBe('28px');
+      updateViewport({ x: 1000, y: 900 });
+      expect(toolbar.style.getPropertyValue('--flow-node-toolbar-shift-x')).toBe('-742px');
+      expect(toolbar.style.getPropertyValue('--flow-node-toolbar-shift-y')).toBe('-134px');
+      expect(asset.style.width).toBe('');
+      expect(asset.style.height).toBe('');
+      if (visibility === 'hovered') fireEvent.mouseLeave(asset);
+      else if (visibility === 'focusWithin')
+        fireEvent.blur(button, { relatedTarget: document.body });
+      else view.rerender(scene(false));
+      const count = measure.mock.calls.length;
+      updateViewport({ x: 1100, y: 1000 });
+      expect(measure).toHaveBeenCalledTimes(count);
+    },
+  );
 
   it('悬浮栏一开始就同时显示图标和功能简述', () => {
     renderNode(makeNode(), undefined, vi.fn(), undefined, false, vi.fn(), vi.fn());
@@ -764,13 +912,12 @@ describe('AssetNode result presentation', () => {
       naturalHeight: { value: 941 },
     });
     fireEvent.load(image);
-    expect(await screen.findByRole('status')).toHaveTextContent(
-      '实际 1672×941，未达到所选 3840×2160',
-    );
+    expect(screen.queryByText(/未达到所选/)).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: '查看节点信息' }));
     const dialog = await screen.findByRole('dialog', { name: '节点信息' });
     expect(dialog).toHaveTextContent('实际像素1672×941');
     expect(dialog).toHaveTextContent('当前设置3840×2160');
+    expect(dialog).toHaveTextContent('像素提示实际 1672×941，未达到所选 3840×2160');
     await userEvent.click(screen.getByRole('button', { name: '关闭节点信息' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     await userEvent.click(screen.getByRole('button', { name: '下载图片' }));
@@ -802,10 +949,13 @@ describe('AssetNode result presentation', () => {
     });
     fireEvent.load(image);
     expect(screen.queryByText(/未达到所选/)).not.toBeInTheDocument();
-    if (stale)
-      expect(screen.getByRole('status')).toHaveTextContent(
-        '当前原图 1672×941；当前设置 3840×2160（待更新）',
-      );
+    expect(screen.queryByText(/当前原图/)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: '查看节点信息' }));
+    const dialog = await screen.findByRole('dialog', { name: '节点信息' });
+    expect(dialog).toHaveTextContent(`实际像素${width}×${height}`);
+    expect(dialog).toHaveTextContent('当前设置3840×2160');
+    expect(dialog).toHaveTextContent('原始文件（不缩放）');
+    expect(within(dialog).queryByText(/未达到所选|当前原图/)).not.toBeInTheDocument();
   });
 
   it('信息按钮打开介绍对话框', async () => {
@@ -817,6 +967,8 @@ describe('AssetNode result presentation', () => {
     expect(dialog).toHaveTextContent('生成文字节点，根据提示词和上游输入生成文字。');
     expect(dialog).toHaveTextContent('文案生成');
     expect(dialog).toHaveTextContent('上游已变更，节点待更新');
+    expect(within(dialog).getByText('节点创建时间').nextElementSibling).toHaveTextContent('未记录');
+    expect(within(dialog).getByText('结果回显时间').nextElementSibling).toHaveTextContent('未记录');
     await user.click(screen.getByRole('button', { name: '关闭节点信息' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });

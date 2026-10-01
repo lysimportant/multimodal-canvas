@@ -747,13 +747,20 @@ export function copyCanvasSelection(
   };
 }
 
-/** Paste a clipboard snapshot with fresh node/edge IDs and a stable position offset. */
+/**
+ * 将剪贴板快照粘贴为新节点、新边与新组，保留原节点尺寸和稳定的位置偏移。
+ * @param clipboard 待复制的画布片段；不会修改原节点或原创建时间。
+ * @param createId 新身份后缀生成器，默认使用随机 UUID。
+ * @param offset 粘贴的画布坐标偏移，单位为画布像素，默认 48。
+ * @returns 复制出的画布片段；节点创建时间统一记录为本次粘贴时刻（UTC ISO 8601）。
+ */
 export function pasteCanvasClipboard(
   clipboard: CanvasClipboard,
   createId: () => string = () => crypto.randomUUID(),
   offset = 48,
 ): CanvasClipboard {
   const idMap = new Map<string, string>();
+  const createdAt = new Date().toISOString();
   const nodes = clipboard.nodes.map((node) => {
     const id = `node_copy_${createId()}`;
     idMap.set(node.id, id);
@@ -762,7 +769,10 @@ export function pasteCanvasClipboard(
       id,
       selected: true,
       position: { x: node.position.x + offset, y: node.position.y + offset },
-      data: remapPromptMentionIds(structuredClone(node.data), createId),
+      data: {
+        ...remapPromptMentionIds(structuredClone(node.data), createId),
+        createdAt,
+      },
     });
   });
   const edges = clipboard.edges.map((edge) => ({

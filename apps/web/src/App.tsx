@@ -1,3 +1,4 @@
+import { useCanvasDraft } from './use-canvas-draft';
 import { Dropdown, Modal } from 'antd';
 import { Input as UiInput, Button as UiButton } from '@multimodal-canvas/ui';
 import {
@@ -1517,13 +1518,22 @@ function WorkspaceApp({
     );
   }, [initialProject, loadAssets, loadProjectCanvas, refreshProjects]);
 
-  useEffect(() => {
-    if (!isCanvasReady || !projectId) return;
-    localStorage.setItem(
-      canvasDraftKey(projectId, authUser?.id),
-      JSON.stringify(toCanvasDocument(nodes, edges, canvasRevision, groups)),
-    );
-  }, [authUser?.id, canvasRevision, edges, groups, isCanvasReady, nodes, projectId]);
+  const serializeDraft = useCallback(
+    () => JSON.stringify(toCanvasDocument(nodes, edges, canvasRevision, groups)),
+    [nodes, edges, canvasRevision, groups],
+  );
+  useCanvasDraft(
+    isCanvasReady && projectId ? canvasDraftKey(projectId, authUser?.id) : null,
+    serializeDraft,
+    (error) =>
+      setNotice({
+        kind: 'error',
+        message:
+          '本地草稿保存失败：' +
+          (error instanceof Error ? error.message : '浏览器存储不可用') +
+          '；请手动保存到项目',
+      }),
+  );
 
   const saveCanvas = useCallback(async () => {
     if (!projectId) return;
@@ -1785,6 +1795,7 @@ function WorkspaceApp({
           label,
           mediaType: asset.mediaType,
           mode: 'source',
+          createdAt: new Date().toISOString(),
           generationCount: useWorkspacePreferences.getState().defaultGenerationCount,
           assetId: asset.id,
           contentUrl: asset.contentUrl,
@@ -1912,6 +1923,7 @@ function WorkspaceApp({
               : {}),
             ...(mediaType === 'video' ? { videoMode: 'text_to_video' as const } : {}),
             ...(dataOverrides ?? {}),
+            createdAt: new Date().toISOString(),
           },
           model,
         ),
@@ -1940,7 +1952,7 @@ function WorkspaceApp({
    * 资产来源节点不能直接 POST /runs。提升为 generate 并保留当前回显，
    * 这样独立节点也可以点「生成」把结果写回自己。
    * @param source 当前来源节点。
-   * @returns 同一 ID 的可运行节点。
+   * @returns 同一 ID 的可运行节点，保留原创建时间及缺失状态。
    */
   const promoteSourceNodeToGenerate = useCallback(
     (source: AssetFlowNode): AssetFlowNode => {
@@ -1959,8 +1971,9 @@ function WorkspaceApp({
       });
       const promoted: AssetFlowNode = {
         ...source,
-        data: template.data,
+        data: { ...template.data, createdAt: source.data.createdAt },
       };
+      if (source.data.createdAt === undefined) delete promoted.data.createdAt;
       rememberHistory();
       const next = nodesRef.current.map((node) => (node.id === source.id ? promoted : node));
       nodesRef.current = next;

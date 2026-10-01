@@ -26,6 +26,7 @@ const canvas: CanvasDocument = {
       width: 320,
       height: 240,
       data: {
+        createdAt: project.createdAt,
         label: '图片结果',
         mediaType: 'image',
         mode: 'generate',
@@ -298,6 +299,9 @@ for (const viewport of [
     await expect(duration).toHaveText('耗时 12秒');
     await toolbar.getByRole('button', { name: '查看节点信息' }).click();
     const info = page.getByRole('dialog', { name: '节点信息', exact: true });
+    await expect(info.locator(`time[datetime="${project.createdAt}"]`)).toBeVisible();
+    await expect(info.locator(`time[datetime="${timing.finishedAt}"]`)).toBeVisible();
+    await expect(info).toContainText('服务端完成');
     await expect(info.locator('.node-duration-badge')).toHaveText('12秒');
     await info.getByRole('button', { name: '关闭节点信息' }).click();
     await node.hover();
@@ -430,9 +434,14 @@ for (const viewport of [
       height: element.naturalHeight,
     }));
     expect(pixels.width).toBeLessThan(3840);
-    await expect(node.getByRole('status')).toContainText(
+    await expect(node.locator('.flow-node-download-feedback')).toHaveCount(0);
+    await node.hover();
+    await node.getByRole('button', { name: '查看节点信息', exact: true }).click();
+    const information = page.getByRole('dialog', { name: '节点信息', exact: true });
+    await expect(information).toContainText(
       `实际 ${pixels.width}×${pixels.height}，未达到所选 3840×2160`,
     );
+    await information.getByRole('button', { name: '关闭节点信息', exact: true }).click();
     const before = await node.boundingBox();
     await node.hover();
     const pending = page.waitForEvent('download');

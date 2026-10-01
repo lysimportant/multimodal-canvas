@@ -309,6 +309,8 @@ vi.mock('@xyflow/react', async () => {
     useNodesState,
     useReactFlow,
     useViewport: () => ({ x: 0, y: 0, zoom: 1 }),
+    useStore: (selector: (state: { transform: [number, number, number] }) => unknown) =>
+      selector({ transform: [0, 0, 1] }),
     useEdges: () => [],
     useUpdateNodeInternals: () => React.useCallback(() => {}, []),
   };
@@ -827,6 +829,8 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     await user.click(screen.getByRole('button', { name: '新建图片生成节点' }));
     await waitFor(() => expect(canvas.nodes).toHaveLength(2));
     const created = canvas.nodes.find((node) => node.id !== 'old-image')!;
+    expect(created.data.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(canvas.nodes.find((node) => node.id === 'old-image')!.data.createdAt).toBeUndefined();
     expect(created.data.modelAlias).toBe('image-plain-model');
     expect(created.data.credentialId).toBe(modelCredentialId);
     expect(created.data.parameters).not.toHaveProperty('legacyOption');
@@ -2110,6 +2114,43 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     expect(edge).toHaveAttribute('data-target', created.getAttribute('data-id'));
     expect(edge).toHaveAttribute('data-target-handle', 'input:firstFrame');
   });
+
+  it.each(['2026-09-01T08:00:00.000Z', undefined])(
+    '来源节点原地生成保留创建时间及缺失状态：%s',
+    async (createdAt) => {
+      const source: CanvasDocument['nodes'][number] = {
+        id: 'source-created-at',
+        type: 'image',
+        position: { x: 0, y: 0 },
+        data: {
+          label: '来源图片',
+          mediaType: 'image',
+          mode: 'source',
+          assetId: assets[0].id,
+          contentUrl: assets[0].contentUrl,
+          mimeType: assets[0].mimeType,
+          prompt: 'Draw a new landscape.',
+          modelAlias: 'image-plain-model',
+          credentialId: modelCredentialId,
+          ...(createdAt !== undefined ? { createdAt } : {}),
+        },
+      };
+      canvas.nodes = [source];
+      const { user } = await renderCanvas();
+      await user.click(findNodeByLabel(source.data.label)!);
+      const editor = screen.getByRole('region', { name: '来源图片生成设置' });
+      await user.click(within(editor).getByRole('button', { name: '生成' }));
+      await waitFor(() => expect(nodeRunRequestCounts.get(source.id)).toBe(1));
+
+      expect(canvas.nodes).toHaveLength(1);
+      expect(canvas.nodes[0]).toMatchObject({ id: source.id, data: { mode: 'generate' } });
+      if (createdAt === undefined) {
+        expect(canvas.nodes[0].data).not.toHaveProperty('createdAt');
+      } else {
+        expect(canvas.nodes[0].data.createdAt).toBe(createdAt);
+      }
+    },
+  );
 
   it('只有回显图片的节点才显示“修改图片”入口', async () => {
     const { user } = await renderCanvas();

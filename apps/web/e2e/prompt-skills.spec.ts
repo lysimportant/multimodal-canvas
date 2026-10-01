@@ -789,6 +789,181 @@ test('已确认的资源-only成功结果允许手动重新优化且保留原文
   expect(fixture.errors).toEqual([]);
 });
 
+/** 比较普通、悬停与键盘焦点状态的真实几何，防止 Ant 边框恢复后多出滚动条。 */
+test('工作台列表 hover 不增高、不横向溢出或新增内部滚动条', async ({ page }, testInfo) => {
+  const fixture = await installFixture(page);
+  const longName = 'SkillLongName'.repeat(9);
+  fixture.skills().push({
+    id: 'long-workbench-entry',
+    name: longName,
+    category: 'LongCategory'.repeat(6),
+    description: 'UnbrokenDescription'.repeat(100),
+    instruction: 'Preserve {{subject}} exactly.',
+    version: '1.0.0',
+    revision: 1,
+    builtin: false,
+    enabled: true,
+  });
+  await page.goto(`/projects/${project.id}`);
+  const panel = await editor(page);
+  await panel.getByRole('button', { name: 'Skill 配置', exact: true }).click();
+  await page.getByRole('button', { name: '技能工作台', exact: true }).click();
+  const workbench = page.getByRole('dialog', { name: 'Skill 工作台', exact: true });
+  const list = workbench.getByRole('list', { name: 'Skill 列表' });
+  const items = list.locator('.skill-library-item');
+  for (const viewport of [
+    { width: 1366, height: 768 },
+    { width: 1440, height: 900 },
+    { width: 1920, height: 1080 },
+  ]) {
+    await page.setViewportSize(viewport);
+    for (const index of [0, Math.floor(fixture.skills().length / 2), fixture.skills().length - 1]) {
+      const item = items.nth(index);
+      await item.scrollIntoViewIfNeeded();
+      await workbench.getByRole('heading', { name: 'Skill 工作台', exact: true }).hover();
+      const before = await item.evaluate((element) => {
+        const bounds = element.getBoundingClientRect();
+        const list = element.closest('.skill-library-list')!;
+        return {
+          width: bounds.width,
+          height: bounds.height,
+          clientWidth: list.clientWidth,
+          scrollWidth: list.scrollWidth,
+          scrollHeight: list.scrollHeight,
+        };
+      });
+      await item.hover();
+      await expect
+        .poll(() =>
+          item.evaluate((element) => {
+            const bounds = element.getBoundingClientRect();
+            const list = element.closest('.skill-library-list')!;
+            return {
+              width: bounds.width,
+              height: bounds.height,
+              clientWidth: list.clientWidth,
+              scrollWidth: list.scrollWidth,
+              scrollHeight: list.scrollHeight,
+            };
+          }),
+        )
+        .toEqual(before);
+      expect(before.scrollWidth).toBeLessThanOrEqual(before.clientWidth);
+      await item.focus();
+      await expect(item).toBeFocused();
+      const innerScrollers = await list.evaluate((element) =>
+        [...element.querySelectorAll('*')]
+          .filter((child) => {
+            const style = getComputedStyle(child);
+            return (
+              (['auto', 'scroll'].includes(style.overflowX) &&
+                child.scrollWidth > child.clientWidth) ||
+              (['auto', 'scroll'].includes(style.overflowY) &&
+                child.scrollHeight > child.clientHeight)
+            );
+          })
+          .map((child) => child.className),
+      );
+      expect(innerScrollers).toEqual([]);
+    }
+    expect(await workbench.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
+      true,
+    );
+  }
+  await workbench.getByRole('searchbox', { name: '搜索 Skill' }).fill(longName);
+  await expect(items).toHaveCount(1);
+  await items.first().hover();
+  expect(
+    await list.evaluate((element) => ({
+      width: element.scrollWidth <= element.clientWidth,
+      height: element.scrollHeight <= element.clientHeight,
+    })),
+  ).toEqual({ width: true, height: true });
+  await items.first().press('Enter');
+  await expect(workbench.getByRole('textbox', { name: '名称', exact: true })).toHaveValue(longName);
+  await page.screenshot({ path: testInfo.outputPath('skill-workbench-hover.png') });
+  expect(fixture.writes).toEqual([]);
+  expect(fixture.submissions).toEqual([]);
+  expect(fixture.errors).toEqual([]);
+});
+
+/** 中文只作读取视图；切换、复制与保存均校验服务端模型中的执行原文。 */
+test('工作台中文说明与执行原文切换，复制及导入内容保持原文', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const fixture = await installFixture(page);
+  const builtin = structuredClone(fixture.skills()[0]!);
+  const imported: PromptSkill = {
+    ...builtin,
+    id: 'imported-english-skill',
+    name: '导入英文指令',
+    builtin: false,
+    instruction:
+      'Preserve {{subject}}, model-id and "quoted literals". Do not translate this instruction.',
+  };
+  fixture.skills().push(imported);
+  const originals = structuredClone(fixture.skills());
+  await page.goto(`/projects/${project.id}`);
+  const panel = await editor(page);
+  await panel.getByRole('button', { name: 'Skill 配置', exact: true }).click();
+  await page.getByRole('button', { name: '技能工作台', exact: true }).click();
+  const workbench = page.getByRole('dialog', { name: 'Skill 工作台', exact: true });
+  const chinese = workbench.getByRole('region', { name: '指令中文说明' });
+  const original = workbench.getByRole('textbox', { name: '指令', exact: true });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await expect(chinese).toBeVisible();
+    await expect(chinese).toContainText('主角欲望');
+    await expect(chinese).toContainText('不照搬参考故事');
+    await expect(chinese).toContainText('不写故事本身');
+    await workbench.getByRole('button', { name: '执行原文', exact: true }).click();
+    await expect(original).toHaveValue(builtin.instruction);
+    await expect(original).toHaveAttribute('readonly', '');
+    await workbench.getByRole('button', { name: '中文说明', exact: true }).click();
+  }
+  const dress = fixture.skills().find((skill) => skill.id === 'xianxia-dress-character')!;
+  await workbench.getByRole('button', { name: dress.name, exact: true }).click();
+  await expect(chinese).toContainText('明确为未成年时');
+  await expect(chinese).toContainText('资源标记仍只按原顺序出现一次');
+  await expect(chinese).toContainText('不声称看过图像');
+  await expect(chinese).toContainText('Stable Diffusion');
+  await chinese.locator('p').last().scrollIntoViewIfNeeded();
+  expect(await chinese.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
+    true,
+  );
+  await workbench.getByRole('button', { name: '执行原文', exact: true }).click();
+  await expect(original).toHaveValue(dress.instruction);
+  await workbench.getByRole('button', { name: builtin.name, exact: true }).click();
+  expect(fixture.skills()).toEqual(originals);
+  expect(fixture.writes).toEqual([]);
+  expect(fixture.submissions).toEqual([]);
+  await page.screenshot({ path: testInfo.outputPath('skill-workbench-chinese.png') });
+  await workbench.getByRole('button', { name: '复制为新 Skill', exact: true }).click();
+  await expect(original).toHaveValue(builtin.instruction);
+  await expect(original).not.toHaveAttribute('readonly', '');
+  await expect(workbench.getByRole('group', { name: '指令显示' })).toHaveCount(0);
+  expect(fixture.writes).toHaveLength(1);
+  expect(fixture.writes[0]).toMatchObject({
+    method: 'POST',
+    path: '/v1/prompt-skills',
+    body: { instruction: builtin.instruction },
+  });
+  await workbench.getByRole('button', { name: imported.name, exact: true }).click();
+  await expect(original).toHaveValue(imported.instruction);
+  await expect(chinese).toHaveCount(0);
+  await expect(
+    workbench.getByText('执行原文保持原样；自定义、导入或未匹配本地版本的指令不自动翻译。'),
+  ).toBeVisible();
+  await workbench.getByRole('textbox', { name: '说明', exact: true }).fill('只更新说明');
+  await workbench.getByRole('button', { name: '保存 Skill', exact: true }).click();
+  await expect.poll(() => fixture.writes.length).toBe(2);
+  expect(fixture.writes[1]).toMatchObject({
+    method: 'PATCH',
+    body: { instruction: imported.instruction, description: '只更新说明' },
+  });
+  expect(fixture.skills().find((skill) => skill.id === builtin.id)).toEqual(builtin);
+  expect(fixture.submissions).toEqual([]);
+  expect(fixture.errors).toEqual([]);
+});
+
 test('工作台增改查复制启停删除，所有节点同步目录', async ({ page }, testInfo) => {
   const fixture = await installFixture(page);
   await page.goto(`/projects/${project.id}`);
@@ -799,6 +974,8 @@ test('工作台增改查复制启停删除，所有节点同步目录', async ({
     .getByRole('button', { name: '技能工作台', exact: true })
     .click();
   const workbench = page.getByRole('dialog', { name: 'Skill 工作台', exact: true });
+  await expect(workbench.getByRole('region', { name: '指令中文说明' })).toBeVisible();
+  await workbench.getByRole('button', { name: '执行原文', exact: true }).click();
   await expect(workbench.getByRole('textbox', { name: '指令', exact: true })).toHaveAttribute(
     'readonly',
     '',
@@ -892,6 +1069,7 @@ for (const sourceKind of ['custom', 'builtin'] as const) {
     await page.getByRole('button', { name: '技能工作台', exact: true }).click();
     const workbench = page.getByRole('dialog', { name: 'Skill 工作台', exact: true });
     await workbench.getByRole('button', { name: source.name, exact: true }).click();
+    if (builtin) await workbench.getByRole('button', { name: '执行原文', exact: true }).click();
     const instruction = workbench.getByRole('textbox', { name: '指令', exact: true });
     await expect(instruction).toHaveValue(source.instruction);
     const assistant = workbench.getByRole('complementary', { name: 'AI 升级 Skill', exact: true });

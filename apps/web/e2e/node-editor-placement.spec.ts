@@ -333,8 +333,9 @@ async function moveNode(page: Page, x: number, y: number) {
   } finally {
     await page.mouse.up();
   }
-  await expect.poll(async () => Math.abs((await node.boundingBox())!.y - y)).toBeLessThan(1);
-  await expect.poll(async () => Math.abs((await node.boundingBox())!.x - x)).toBeLessThan(1);
+  // 缩放后的鼠标坐标会取整，允许最多一个 CSS 像素的落点误差。
+  await expect.poll(async () => Math.abs((await node.boundingBox())!.y - y)).toBeLessThanOrEqual(1);
+  await expect.poll(async () => Math.abs((await node.boundingBox())!.x - x)).toBeLessThanOrEqual(1);
   await samplePanel(page, 3);
 }
 
@@ -605,3 +606,29 @@ test('1.5 倍长提示词失焦后拖小节点，面板不产生横向溢出', a
     expect(state.editorScrollWidth - state.editorClientWidth).toBeLessThanOrEqual(1);
   expectIsolated(fixture);
 });
+
+for (const size of [
+  { width: 1600, height: 1000 },
+  { width: 1280, height: 800 },
+]) {
+  test(`胶囊新建图片靠上且媒体参数可见 ${size.width}x${size.height}`, async ({
+    page,
+    baseURL,
+  }, testInfo) => {
+    await page.setViewportSize(size);
+    const fixture = await installFixture(page, baseURL);
+    await page.getByRole('button', { name: '新建图片生成节点', exact: true }).click();
+    const node = page.locator('.react-flow__node.selected');
+    await expect(node).toHaveCount(1);
+    const nodeBounds = (await node.boundingBox())!;
+    const canvas = (await page.locator('.canvas-area').boundingBox())!;
+    expect(nodeBounds.y - canvas.y).toBeGreaterThanOrEqual(60);
+    expect(nodeBounds.y - canvas.y).toBeLessThanOrEqual(100);
+    const parameters = page.getByRole('button', { name: '媒体参数', exact: true });
+    await expect(parameters).toBeInViewport({ ratio: 0.999 });
+    await parameters.click();
+    await expect(page.getByRole('region', { name: '生成参数', exact: true })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath('toolbar-node-top.png') });
+    expectIsolated(fixture);
+  });
+}

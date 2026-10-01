@@ -1,0 +1,20 @@
+/** 主题可位于根元素或应用外壳；复用现有令牌，保留系统原生滚动条宽度和交互。 */
+:root,
+[data-theme] {
+  color-scheme: light;
+  scrollbar-color: var(--mc-text-muted) var(--mc-surface-muted);
+}
+
+[data-theme='dark'],
+[data-theme='midnight'] {
+  color-scheme: dark;
+}
+
+/** 高对比度系统接管配色，不用应用颜色覆盖用户的可访问性设置。 */
+@media (forced-colors: active) {
+  :root,
+  [data-theme] {
+    color-scheme: light dark;
+    scrollbar-color: auto;
+  }
+}

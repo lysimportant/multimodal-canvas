@@ -33,6 +33,27 @@ export function getCenteredCanvasNodePosition(
   };
 }
 
+/**
+ * 胶囊创建的节点水平居中、顶部留出操作栏，下方为参数编辑器保留空间。
+ * @param bounds 画布的屏幕边界，单位为 CSS 像素。
+ * @param screenToFlowPosition 将屏幕坐标转换为当前缩放下的画布坐标。
+ * @param dimensions 新节点的画布尺寸；不改变节点本身大小。
+ * @returns 节点左上角；画布不可见时返回 undefined。
+ */
+export function getToolbarCanvasNodePosition(
+  bounds: CanvasViewportBounds,
+  screenToFlowPosition: ScreenToFlowPosition,
+  dimensions = { width: DEFAULT_NODE_FLOW_WIDTH, height: DEFAULT_NODE_FLOW_HEIGHT },
+): FlowPosition | undefined {
+  if (bounds.width <= 0 || bounds.height <= 0) return undefined;
+  const topInset = Math.min(96, Math.max(64, bounds.height * 0.1));
+  const anchor = screenToFlowPosition({
+    x: bounds.left + bounds.width / 2,
+    y: bounds.top + Math.min(topInset, bounds.height / 4),
+  });
+  return { x: anchor.x - dimensions.width / 2, y: anchor.y };
+}
+
 /** 新节点与已有节点之间保留的最小间距，单位为画布像素。 */
 export const NEW_NODE_PLACEMENT_GAP = 22;
 /**

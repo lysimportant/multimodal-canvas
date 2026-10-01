@@ -209,6 +209,7 @@ describe('Skill 工作台模型辅助升级', () => {
       revision: 1,
     });
     showWorkbench();
+    await user.click(await screen.findByRole('button', { name: '执行原文' }));
     await screen.findByDisplayValue(builtin.instruction);
     expect(screen.getByRole('textbox', { name: /^指令$/ })).toHaveAttribute('readonly');
     await user.click(screen.getByRole('button', { name: '生成升级预览' }));
