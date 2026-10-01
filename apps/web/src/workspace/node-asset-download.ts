@@ -7,6 +7,7 @@ import {
 } from '../export-utils';
 import { isApiOriginUrl, resolveUploadUrl } from '../upload-utils';
 import { API_BASE_URL } from './contracts';
+import { resolveOriginalImageAsset } from './image-thumbnail-cache';
 
 /** 常见图片、视频 MIME 对应扩展名，用于没有后缀的节点名称。 */
 const mediaExtensions: Readonly<Record<string, string>> = {
@@ -25,15 +26,16 @@ const mediaExtensions: Readonly<Record<string, string>> = {
 /**
  * 下载节点当前回显的资产或版本，复用 API 会话认证与已有文件名处理。
  * 仅 API 同源地址接收 Bearer；CDN、data 和 blob 地址不携带认证信息。
- * @param asset 当前回显资产；contentUrl 已指向来源、手动替换或指定结果版本。
+ * @param inputAsset 当前回显资产；contentUrl 已指向来源、手动替换或指定结果版本。
  * @param signal 节点切换或卸载时取消请求。
  * @returns 文件内容与安全文件名，交由已有浏览器下载工具保存。
  * @throws 地址无效、网络失败、HTTP 失败、内容为空或请求取消时拒绝。
  */
 export async function fetchNodeAssetDownload(
-  asset: Asset,
+  inputAsset: Asset,
   signal?: AbortSignal,
 ): Promise<ProjectExportDownload> {
+  const asset = resolveOriginalImageAsset(inputAsset);
   if (!asset.contentUrl) throw new Error('暂无可下载内容');
   const contentUrl = resolveUploadUrl(asset.contentUrl, API_BASE_URL);
   let parsedUrl: URL;

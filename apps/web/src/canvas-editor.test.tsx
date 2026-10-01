@@ -319,6 +319,11 @@ vi.mock('@xyflow/react', async () => {
 import { App } from './App';
 import * as authClient from './auth-client';
 import { clearAuthSession, persistAuthSession } from './auth-client';
+import { clearImageThumbnailCache } from './workspace/image-thumbnail-cache';
+
+/** 恢复测试前对象 URL 实现；缩略图夹具不访问真实网络。 */
+const originalCreateObjectURL = Object.getOwnPropertyDescriptor(URL, 'createObjectURL');
+const originalRevokeObjectURL = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL');
 
 class ResizeObserverStub {
   observe() {}
@@ -462,6 +467,14 @@ function installApiMock() {
           .map((record) => ({ ...record, id: record.recordId })),
       });
     if (url.pathname === '/v1/assets' && method === 'GET') return jsonResponse({ assets });
+    if (url.pathname.endsWith('/derivatives/thumbnail') && method === 'GET')
+      return new Response('synthetic-thumbnail', {
+        headers: {
+          'content-type': 'image/jpeg',
+          'x-original-width': '3840',
+          'x-original-height': '2160',
+        },
+      });
     if (url.pathname.endsWith('/access-url') && method === 'POST')
       return jsonResponse({
         url: `${url.pathname.replace('/access-url', '/content')}?access_token=synthetic-unit`,
@@ -766,6 +779,12 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
         createdAt: '2026-01-01T00:00:00.000Z',
       },
     });
+    let thumbnailSerial = 0;
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: vi.fn(() => `blob:canvas-thumbnail-${++thumbnailSerial}`),
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
     clipboardText = '';
     canvas = structuredClone(emptyCanvas);
     projectRuns = [];
@@ -786,6 +805,13 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
 
   afterEach(() => {
     cleanup();
+    clearImageThumbnailCache();
+    if (originalCreateObjectURL)
+      Object.defineProperty(URL, 'createObjectURL', originalCreateObjectURL);
+    else Reflect.deleteProperty(URL, 'createObjectURL');
+    if (originalRevokeObjectURL)
+      Object.defineProperty(URL, 'revokeObjectURL', originalRevokeObjectURL);
+    else Reflect.deleteProperty(URL, 'revokeObjectURL');
     vi.restoreAllMocks();
     clearAuthSession();
     window.history.replaceState(null, '', '/');
@@ -1379,7 +1405,14 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
       const restoredImageNode = findNodeByLabel('图片生成节点');
       const image = restoredImageNode?.querySelector('img');
       expect(image).toBeTruthy();
-      expect(image?.getAttribute('src')).toContain(imageRun.result?.asset?.contentUrl);
+      expect(image?.getAttribute('src')).toMatch(/^blob:canvas-thumbnail-/);
+      expect(
+        fetchMock.mock.calls.some(([input]) =>
+          String(input).includes(
+            `/v1/assets/${imageRun.result?.asset?.assetId}/versions/${imageRun.result?.asset?.version}/derivatives/thumbnail`,
+          ),
+        ),
+      ).toBe(true);
     });
     await waitFor(() => {
       const restoredVideoNode = findNodeByLabel('视频生成节点');

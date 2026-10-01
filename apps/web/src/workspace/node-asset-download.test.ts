@@ -40,6 +40,18 @@ afterEach(() => {
 });
 
 describe('节点媒体下载', () => {
+  it('索引latestVersion冻结到同版原文件，不会下载随后变化的latest内容', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response('original-v2', { headers: { 'content-type': 'image/png' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    await fetchNodeAssetDownload(makeAsset({ latestVersion: 2 }));
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      '/v1/assets/asset-image/versions/2/content',
+    );
+    expect(String(fetchMock.mock.calls[0][0])).not.toContain('thumbnail');
+  });
+
   it('携带 API 会话下载指定版本并保留服务端文件名', async () => {
     signIn();
     const fetchMock = vi.fn().mockResolvedValue(

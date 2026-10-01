@@ -159,7 +159,8 @@ export class FfmpegMediaDerivativeGenerator implements MediaDerivativeGenerator 
                 '-i',
                 sourcePath,
                 '-vf',
-                'scale=640:-2',
+                // 长边不超过 640 像素；按源宽高同比缩小，禁止放大短图或拉长竖图。
+                "scale=w='max(1,trunc(iw*min(1,640/max(iw,ih))))':h='max(1,trunc(ih*min(1,640/max(iw,ih))))'",
                 '-frames:v',
                 '1',
                 '-f',

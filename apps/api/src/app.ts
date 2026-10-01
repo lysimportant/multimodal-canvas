@@ -1,4 +1,5 @@
 import { accountError } from './account-errors';
+import { AssetThumbnailService, sendAssetThumbnail } from './asset-thumbnails';
 import multipart from '@fastify/multipart';
 import cors from '@fastify/cors';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
@@ -1415,6 +1416,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const mediaMetadataExtractor = options.mediaMetadataExtractor ?? new NoopMediaMetadataExtractor();
   const mediaDerivativeGenerator =
     options.mediaDerivativeGenerator ?? new NoopMediaDerivativeGenerator();
+  const assetThumbnails = new AssetThumbnailService(assetStore, mediaDerivativeGenerator);
   const eventStreamCleanups = new Set<() => void>();
   const uploadSessionStore = options.uploadSessionStore ?? new MemoryUploadSessionStore();
   const authToken = process.env.API_AUTH_TOKEN?.trim();
@@ -1461,7 +1463,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     // Browser downloads need to read the server-provided attachment name.
     // These are metadata headers only; credentials remain in the body/auth
     // boundary and are never exposed here.
-    exposedHeaders: ['content-disposition', 'content-length', 'x-server-time'],
+    exposedHeaders: [
+      'content-disposition',
+      'content-length',
+      'x-server-time',
+      'etag',
+      'x-original-width',
+      'x-original-height',
+    ],
   });
   app.register(multipart, {
     limits: { files: 1, fileSize: MAX_UPLOAD_BYTES },
@@ -3975,11 +3984,55 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     },
   );
 
-  app.get<{ Params: { assetId: string; kind: string } }>(
+  app.get<{ Params: { assetId: string; version: string } }>(
+    '/v1/assets/:assetId/versions/:version/derivatives/thumbnail',
+    async (request, reply) => {
+      if (!/^\d+$/.test(request.params.version)) {
+        return reply
+          .header('cache-control', 'private, no-store')
+          .code(400)
+          .send({ error: 'invalid asset version' });
+      }
+      return sendAssetThumbnail(
+        assetThumbnails,
+        {
+          assetId: request.params.assetId,
+          scope: assetScope(requestPrincipals, request),
+          version: Number(request.params.version),
+        },
+        reply,
+        request.headers['if-none-match'],
+      );
+    },
+  );
+
+  app.get<{ Params: { assetId: string; kind: string }; Querystring: { v?: string } }>(
     '/v1/assets/:assetId/derivatives/:kind',
     async (request, reply) => {
       if (!['thumbnail', 'poster', 'waveform', 'final_frame'].includes(request.params.kind)) {
         return reply.code(404).send({ error: 'derivative not found' });
+      }
+      // 已签名地址保留现有存储衍生图合同；新版前端使用 Cookie/Bearer 会话进入版本感知缓存。
+      if (
+        request.params.kind === 'thumbnail' &&
+        !new URL(request.url, 'http://localhost').searchParams.has('access_token')
+      ) {
+        if (request.query.v !== undefined && typeof request.query.v !== 'string') {
+          return reply
+            .header('cache-control', 'private, no-store')
+            .code(400)
+            .send({ error: 'invalid thumbnail revision' });
+        }
+        return sendAssetThumbnail(
+          assetThumbnails,
+          {
+            assetId: request.params.assetId,
+            scope: assetScope(requestPrincipals, request),
+            revision: request.query.v,
+          },
+          reply,
+          request.headers['if-none-match'],
+        );
       }
       const derivative = await assetStore.getDerivative(
         request.params.assetId,

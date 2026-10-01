@@ -73,6 +73,7 @@ import type { NodeProps } from '@xyflow/react';
 import type { AssetFlowNode } from '../canvas-utils';
 import { downloadProjectExport } from '../export-utils';
 import { fetchNodeAssetDownload } from './node-asset-download';
+import * as thumbnails from './image-thumbnail-cache';
 import {
   AssetNode,
   NodeContentContext,
@@ -155,6 +156,18 @@ function renderNode(
   );
 }
 
+/** 节点测试隔离网络，像素来自缩略图响应的原文件尺寸头。 */
+function mockThumbnail(width: number, height: number) {
+  vi.spyOn(thumbnails, 'acquireImageThumbnail').mockReturnValue({
+    promise: Promise.resolve({
+      url: 'blob:node-thumbnail',
+      originalWidth: width,
+      originalHeight: height,
+    }),
+    release: vi.fn(),
+  });
+}
+
 beforeEach(() => {
   /** rc-util 测试环境固定 Portal ID；恢复唯一 ID，避免 Tooltip 卸载清掉 Modal 的 Escape 注册。 */
   vi.stubEnv('NODE_ENV', 'development');
@@ -165,6 +178,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
+  vi.restoreAllMocks();
   viewportMock.x = 0;
   viewportMock.y = 0;
   viewportMock.zoom = 1;
@@ -895,6 +909,7 @@ describe('AssetNode result presentation', () => {
   });
 
   it('图片显示实际像素，低于所选尺寸时提示但仍下载原文件', async () => {
+    mockThumbnail(1672, 941);
     const download = { blob: new Blob(['original']), filename: '原图.png' };
     vi.mocked(fetchNodeAssetDownload).mockResolvedValueOnce(download);
     renderNode(
@@ -906,10 +921,10 @@ describe('AssetNode result presentation', () => {
         runStatus: 'succeeded',
       }),
     );
-    const image = screen.getByRole('img');
+    const image = await screen.findByRole('img');
     Object.defineProperties(image, {
-      naturalWidth: { value: 1672 },
-      naturalHeight: { value: 941 },
+      naturalWidth: { value: 640 },
+      naturalHeight: { value: 360 },
     });
     fireEvent.load(image);
     expect(screen.queryByText(/未达到所选/)).not.toBeInTheDocument();
@@ -929,6 +944,7 @@ describe('AssetNode result presentation', () => {
     { label: '修改参数后的旧结果', width: 1672, height: 941, stale: true, manualOutput: false },
     { label: '手动替换的图片', width: 1672, height: 941, stale: false, manualOutput: true },
   ])('$label 不误报生成尺寸不足', async ({ width, height, stale, manualOutput }) => {
+    mockThumbnail(width, height);
     renderNode(
       makeNode({
         mediaType: 'image',
@@ -942,10 +958,10 @@ describe('AssetNode result presentation', () => {
         manualOutput,
       }),
     );
-    const image = screen.getByRole('img');
+    const image = await screen.findByRole('img');
     Object.defineProperties(image, {
-      naturalWidth: { value: width },
-      naturalHeight: { value: height },
+      naturalWidth: { value: 640 },
+      naturalHeight: { value: 360 },
     });
     fireEvent.load(image);
     expect(screen.queryByText(/未达到所选/)).not.toBeInTheDocument();

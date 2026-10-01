@@ -66,6 +66,7 @@ import type { AssetFlowNode } from '../canvas-utils';
 import { isImeKeyboardEvent } from '../ime';
 import { NodeHandles, videoInputRoleLabel } from '../NodeHandles';
 import { AssetPreview, type AssetPreviewLoadState } from './AssetPreview';
+import { resolveOriginalImageAsset } from './image-thumbnail-cache';
 import { downloadProjectExport } from '../export-utils';
 import { fetchNodeAssetDownload } from './node-asset-download';
 import { mediaIcons, mediaLabels, modeLabels } from './contracts';
@@ -314,6 +315,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
           mediaType: data.mediaType,
           mimeType: data.resultAsset.mimeType ?? data.mimeType ?? 'application/octet-stream',
           sizeBytes: data.resultAsset.sizeBytes ?? 0,
+          latestVersion: data.resultAsset.version,
           status: 'ready',
           // 公共运行记录会省略 contentUrl，但生成资产仍可通过受保护的资产边界访问。
           contentUrl:
@@ -322,7 +324,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
           tags: [],
         } satisfies Asset)
       : undefined;
-  const previewAsset =
+  const rawPreviewAsset =
     resultPreviewAsset ??
     (data.assetId && data.contentUrl
       ? ({
@@ -336,6 +338,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
           tags: [],
         } satisfies Asset)
       : undefined);
+  const previewAsset = rawPreviewAsset ? resolveOriginalImageAsset(rawPreviewAsset) : undefined;
   const infoTimes = getNodeInfoTimes(id, data);
   const displayedTiming = data.manualOutput
     ? undefined
@@ -1052,7 +1055,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
                     <dd>
                       {actualImageSize
                         ? `${actualImageSize.width}×${actualImageSize.height}`
-                        : '等待原图加载'}
+                        : '原图尺寸待获取'}
                     </dd>
                   </div>
                   {requestedSize?.width && requestedSize.height ? (
@@ -1141,6 +1144,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
         <div className="flow-node-preview">
           <AssetPreview
             asset={previewAsset}
+            thumbnail
             className="flow-node-preview-content"
             mode="content"
             mediaClickPreviewEnabled={quickEditorNodeId === id}

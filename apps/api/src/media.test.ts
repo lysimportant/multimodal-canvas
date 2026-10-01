@@ -121,7 +121,9 @@ describe('media derivative generation', () => {
     const generator = new FfmpegMediaDerivativeGenerator({
       runner: async (_binary, args) => {
         expect(args).toContain('-vf');
-        expect(args).toContain('scale=640:-2');
+        expect(args).toContain(
+          "scale=w='max(1,trunc(iw*min(1,640/max(iw,ih))))':h='max(1,trunc(ih*min(1,640/max(iw,ih))))'",
+        );
         expect(args.at(-1)).toBe('pipe:1');
         return Buffer.from('jpeg');
       },
@@ -152,4 +154,41 @@ describe('media derivative generation', () => {
       }),
     ).resolves.toEqual([{ kind: 'waveform', mimeType: 'image/png', content: Buffer.from('png') }]);
   });
+});
+
+describe.skipIf(process.env.MEDIA_REAL_TESTS !== 'true')('图片缩略图真实尺寸上限', () => {
+  it.each([
+    [1920, 1080, 640, 360],
+    [1080, 1920, 360, 640],
+    [80, 60, 80, 60],
+    [640, 640, 640, 640],
+    [641, 359, 640, 358],
+    [1, 1000, 1, 640],
+    [1, 1, 1, 1],
+  ])(
+    '%ix%i 缩放为 %ix%i，不放大且长边封顶',
+    async (width, height, expectedWidth, expectedHeight) => {
+      const content = Buffer.concat([
+        Buffer.from(`P6\n${width} ${height}\n255\n`),
+        Buffer.alloc(width * height * 3, 120),
+      ]);
+      const [thumbnail] = await new FfmpegMediaDerivativeGenerator().generate({
+        content,
+        mimeType: 'image/ppm',
+        mediaType: 'image',
+      });
+      const metadata = await new FfprobeMediaMetadataExtractor().extract({
+        ...thumbnail,
+        mediaType: 'image',
+      });
+      expect(metadata).toMatchObject({
+        width: expectedWidth,
+        height: expectedHeight,
+        codec: 'mjpeg',
+      });
+      expect(Math.max(expectedWidth, expectedHeight)).toBeLessThanOrEqual(640);
+      expect(expectedWidth).toBeLessThanOrEqual(width);
+      expect(expectedHeight).toBeLessThanOrEqual(height);
+    },
+  );
 });

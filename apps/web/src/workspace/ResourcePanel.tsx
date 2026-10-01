@@ -421,7 +421,7 @@ export function ResourcePanel({
               onClick={() => openPreview(asset)}
               onKeyDown={(event) => handlePreviewKeyDown(event, asset)}
             >
-              <AssetPreview asset={asset} className="asset-card-preview" />
+              <AssetPreview asset={asset} thumbnail className="asset-card-preview" />
               <div className="asset-card-copy">
                 <strong title={asset.name}>{asset.name}</strong>
                 <span>

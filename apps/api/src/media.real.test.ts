@@ -114,8 +114,8 @@ describe.skipIf(process.env.MEDIA_REAL_TESTS !== 'true')(
         const derivative = derivatives[0];
         expect(await extractor.extract({ ...derivative, mediaType: 'image' })).toMatchObject({
           codec,
-          width: 640,
-          height: mediaType === 'audio' ? 160 : 480,
+          width: mediaType === 'image' ? 80 : 640,
+          height: mediaType === 'image' ? 60 : mediaType === 'audio' ? 160 : 480,
         });
         if (codec === 'png')
           expect(derivative.content.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');

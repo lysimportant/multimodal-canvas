@@ -18,6 +18,8 @@ export type ImagePreviewStageProps = {
   src: string;
   /** 图片可访问名称，不包含鉴权或签名参数。 */
   name: string;
+  /** 原文件成功解码后的真实像素，供节点信息显示；不改变节点尺寸。 */
+  onNaturalSize?: (width: number, height: number) => void;
   /** 是否由父对话框铺满当前窗口，不修改浏览器或系统设置。 */
   expanded: boolean;
   /** 请求切换查看区域；不得写回资源或节点的外框尺寸。 */
@@ -95,6 +97,7 @@ function centeredView(
 export function ImagePreviewStage({
   src,
   name,
+  onNaturalSize,
   expanded,
   onExpandedChange,
 }: ImagePreviewStageProps) {
@@ -467,6 +470,7 @@ export function ImagePreviewStage({
             }}
             onLoad={(event) => {
               const { naturalWidth: width, naturalHeight: height } = event.currentTarget;
+              if (width > 0 && height > 0) onNaturalSize?.(width, height);
               if (
                 !Number.isFinite(width) ||
                 !Number.isFinite(height) ||

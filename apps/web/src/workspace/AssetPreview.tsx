@@ -29,6 +29,8 @@ import { isApiOriginUrl, resolveUploadUrl } from '../upload-utils';
 import { API_BASE_URL } from './contracts';
 import { fetchNodeAssetDownload } from './node-asset-download';
 import { ImagePreviewStage } from './ImagePreviewStage';
+import { getImageThumbnailSource, resolveOriginalImageAsset } from './image-thumbnail-cache';
+import { useImageThumbnail } from './use-image-thumbnail';
 import './artifact-preview.css';
 
 /** 资源预览展示方式：紧凑图标或完整内容。 */
@@ -42,6 +44,8 @@ export type AssetPreviewProps = {
   className?: string;
   interactive?: boolean;
   mode?: AssetPreviewMode;
+  /** 画布和资源栏只读展示缩略图；Dialog 和下载始终保留 asset 的原文件地址。 */
+  thumbnail?: boolean;
   /** 是否允许直接点击图片打开预览；节点应在输入编辑器打开后启用，展开按钮始终可用。 */
   mediaClickPreviewEnabled?: boolean;
   /** 覆盖默认点开行为；紧凑缩略图也可打开大图预览。 */
@@ -121,6 +125,7 @@ export function AssetPreview({
   className = '',
   interactive = false,
   mode,
+  thumbnail = false,
   mediaClickPreviewEnabled = true,
   allowOpen,
   onLoadStateChange,
@@ -129,8 +134,24 @@ export function AssetPreview({
 }: AssetPreviewProps) {
   const [reloadKey, setReloadKey] = useState(0);
   const kind = resolveArtifactKind(asset);
-  const access = useAuthenticatedAssetUrl(asset, reloadKey, kind !== 'text');
+  const thumbnailSource = thumbnail ? getImageThumbnailSource(asset) : null;
+  const thumbnailState = useImageThumbnail(thumbnailSource, reloadKey);
+  const originalAccess = useAuthenticatedAssetUrl(
+    asset,
+    reloadKey,
+    kind !== 'text' && !thumbnailSource,
+  );
+  const access = thumbnailSource ? thumbnailState : originalAccess;
   const src = access.url;
+  useEffect(() => {
+    if (thumbnailSource && thumbnailState.originalWidth && thumbnailState.originalHeight)
+      onNaturalSize?.(thumbnailState.originalWidth, thumbnailState.originalHeight);
+  }, [
+    thumbnailSource?.url,
+    thumbnailState.originalWidth,
+    thumbnailState.originalHeight,
+    onNaturalSize,
+  ]);
   const previewMode = mode ?? (interactive ? 'content' : 'compact');
   const retry = () => setReloadKey((current) => current + 1);
 
@@ -202,6 +223,7 @@ export function AssetPreview({
       asset={asset}
       kind={kind}
       src={src}
+      isThumbnail={!!thumbnailSource}
       className={className}
       controls={interactive || previewMode === 'content'}
       allowOpen={allowOpen ?? previewMode === 'content'}
@@ -551,7 +573,9 @@ export type AssetViewerDialogProps = {
   asset: Asset;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** 已解析的媒体地址；节点预览可传入，避免重复签名。 */
+  /** 原图尺寸就绪通知；不能用展示缩略图的尺寸代替。 */
+  onNaturalSize?: (width: number, height: number) => void;
+  /** 已解析的原文件地址；不得传入展示缩略图。 */
   src?: string;
 };
 
@@ -562,11 +586,19 @@ export type AssetViewerDialogProps = {
  * @param onOpenChange 开关变化回调。
  * @param src 已解析地址；缺省时在对话框内自行解析。
  */
-export function AssetViewerDialog({ asset, open, onOpenChange, src }: AssetViewerDialogProps) {
+export function AssetViewerDialog({
+  asset: inputAsset,
+  open,
+  onOpenChange,
+  src,
+  onNaturalSize,
+}: AssetViewerDialogProps) {
+  const asset = resolveOriginalImageAsset(inputAsset);
   const kind = resolveArtifactKind(asset);
-  const needsSign = src == null && kind !== 'text';
+  const originalSrc = asset.contentUrl === inputAsset.contentUrl ? src : undefined;
+  const needsSign = open && originalSrc == null && kind !== 'text';
   const access = useAuthenticatedAssetUrl(asset, 0, needsSign);
-  const resolvedSrc = src ?? access.url;
+  const resolvedSrc = originalSrc ?? access.url;
   const viewerTitleId = useId();
   const resetKey = `${asset.id}:${resolvedSrc}:${open ? 'open' : 'closed'}`;
   const canDownload = kind === 'image' || kind === 'video' || kind === 'audio';
@@ -719,6 +751,7 @@ export function AssetViewerDialog({ asset, open, onOpenChange, src }: AssetViewe
               key={resetKey}
               src={resolvedSrc}
               name={asset.name}
+              onNaturalSize={onNaturalSize}
               expanded={imageExpanded}
               onExpandedChange={setImageExpanded}
             />
@@ -758,6 +791,7 @@ function MediaArtifactPreview({
   asset,
   kind,
   src,
+  isThumbnail = false,
   className,
   controls,
   allowOpen,
@@ -769,6 +803,7 @@ function MediaArtifactPreview({
   asset: Asset;
   kind: 'image' | 'video' | 'audio';
   src: string;
+  isThumbnail?: boolean;
   className: string;
   controls: boolean;
   allowOpen: boolean;
@@ -832,9 +867,11 @@ function MediaArtifactPreview({
         src={src}
         alt={asset.name}
         draggable={false}
+        decoding="async"
         onLoad={(event) => {
           markReady();
-          onNaturalSize?.(event.currentTarget.naturalWidth, event.currentTarget.naturalHeight);
+          if (!isThumbnail)
+            onNaturalSize?.(event.currentTarget.naturalWidth, event.currentTarget.naturalHeight);
         }}
         onError={markError}
         onPointerDown={() => {
@@ -941,7 +978,13 @@ function MediaArtifactPreview({
         </Button>
       )}
       {canPreviewInDialog && (
-        <AssetViewerDialog asset={asset} open={viewerOpen} onOpenChange={setViewerOpen} src={src} />
+        <AssetViewerDialog
+          asset={asset}
+          open={viewerOpen}
+          onOpenChange={setViewerOpen}
+          src={isThumbnail ? undefined : src}
+          onNaturalSize={onNaturalSize}
+        />
       )}
       {loadState === 'loading' && (
         <span className="artifact-preview-loading" aria-live="polite">
