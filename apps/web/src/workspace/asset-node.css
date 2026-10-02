@@ -528,3 +528,27 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* 分级显示只替换节点内部内容，外框和端口仍由 React Flow 测量。 */
+.flow-asset-node > .flow-node-summary {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+  padding: 16px;
+  color: var(--mc-text-secondary);
+}
+
+.flow-node-summary-label {
+  color: var(--mc-text);
+  font-weight: 600;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flow-node-summary-status {
+  font-size: 12px;
+}

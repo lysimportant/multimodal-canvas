@@ -1,7 +1,11 @@
 import { applyNodeChanges } from '@xyflow/react';
 import { describe, expect, it } from 'vitest';
 import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
-import { projectGenerationBatches, reconcileGenerationBatchChanges } from './generation-batch-view';
+import {
+  createGenerationBatchProjector,
+  projectGenerationBatches,
+  reconcileGenerationBatchChanges,
+} from './generation-batch-view';
 
 /** 三个独立真实节点，宽高由用户设置，坐标为展开布局。 */
 function batchNodes(): AssetFlowNode[] {
@@ -231,4 +235,80 @@ it('无新增批次隐藏时复用边列表，避免纯位置更新重建连接�
     { ...visibleEdges[0], hidden: true },
   ]);
   expect(visibleEdges[0]?.hidden).toBe(false);
+});
+
+describe('批次投影实例缓存', () => {
+  it('只移动一个展开节点时复用其它节点、批次状态和边', () => {
+    const project = createGenerationBatchProjector();
+    const nodes = batchNodes().map((node) => ({
+      ...node,
+      data: { ...node.data, generationBatchExpanded: true },
+    }));
+    const edges: FlowEdge[] = [{ id: 'edge', source: 'result-0', target: 'result-1' }];
+    const first = project(nodes, edges);
+    const moved = [
+      { ...nodes[0]!, position: { x: 700, y: 900 }, dragging: true },
+      ...nodes.slice(1),
+    ];
+    const next = project(moved, edges);
+    expect(next.nodes[0]).not.toBe(first.nodes[0]);
+    expect(next.nodes[1]).toBe(first.nodes[1]);
+    expect(next.nodes[2]).toBe(first.nodes[2]);
+    expect(next.views).toBe(first.views);
+    expect(next.edges).toBe(first.edges);
+    expect(next).toEqual(projectGenerationBatches(moved, edges));
+  });
+
+  it('收起批次移动时跟随首节点，隐藏边不重复创建；展开和删除正确失效', () => {
+    const project = createGenerationBatchProjector();
+    const nodes = batchNodes();
+    const edges: FlowEdge[] = [{ id: 'edge', source: 'result-0', target: 'result-1' }];
+    const first = project(nodes, edges);
+    const moved = [
+      { ...nodes[0]!, position: { x: 700, y: 900 }, dragging: true },
+      ...nodes.slice(1),
+    ];
+    const next = project(moved, edges);
+    expect(next.nodes[1]!.position).toEqual({ x: 710, y: 910 });
+    expect(next.views).toBe(first.views);
+    expect(next.edges).toBe(first.edges);
+    const expanded = [
+      { ...moved[0]!, data: { ...moved[0]!.data, generationBatchExpanded: true } },
+      ...moved.slice(1),
+    ];
+    expect(project(expanded, edges)).toEqual(projectGenerationBatches(expanded, edges));
+    expect(project(expanded.slice(1), edges)).toEqual(
+      projectGenerationBatches(expanded.slice(1), edges),
+    );
+    expect(project([], []).views.size).toBe(0);
+  });
+
+  it('内容、层级、选中和成员排序变化仍与无缓存投影一致', () => {
+    const project = createGenerationBatchProjector();
+    let nodes = batchNodes();
+    const edges: FlowEdge[] = [];
+    project(nodes, edges);
+    nodes = nodes.map((node, index) => ({
+      ...node,
+      selected: index === 1,
+      zIndex: index * 10,
+      data: { ...node.data, label: '新内容' },
+    }));
+    expect(project(nodes, edges)).toEqual(projectGenerationBatches(nodes, edges));
+    nodes = nodes.slice().reverse();
+    expect(project(nodes, edges)).toEqual(projectGenerationBatches(nodes, edges));
+  });
+
+  it('没有批次时不复制节点数组，多个画布实例互不干扰', () => {
+    const a = createGenerationBatchProjector();
+    const b = createGenerationBatchProjector();
+    const plain = batchNodes().map((node) => ({
+      ...node,
+      data: { ...node.data, generationBatch: undefined },
+    }));
+    const nodes = batchNodes();
+    const first = a(nodes, []);
+    expect(b(plain, []).nodes).toBe(plain);
+    expect(a(nodes, []).views).toBe(first.views);
+  });
 });

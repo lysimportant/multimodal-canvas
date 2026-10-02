@@ -312,6 +312,7 @@ vi.mock('@xyflow/react', async () => {
     useStore: (selector: (state: { transform: [number, number, number] }) => unknown) =>
       selector({ transform: [0, 0, 1] }),
     useEdges: () => [],
+    useNodeConnections: () => [],
     useUpdateNodeInternals: () => React.useCallback(() => {}, []),
   };
 });

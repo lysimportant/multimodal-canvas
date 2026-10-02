@@ -14,6 +14,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Profiler, useState, type ComponentProps } from 'react';
 
 import type { Asset } from '@multimodal-canvas/domain';
+import type { ProjectAssetPagination } from '../use-project-assets';
+import * as assetDownload from './node-asset-download';
+import * as exportDownload from '../export-utils';
 import { ResourcePanel } from './ResourcePanel';
 
 /** 将 Profiler 放在资源预览内部，仅统计侧栏实际更新的子树，不统计外层父级提交。 */
@@ -104,6 +107,7 @@ function ResourcePanelHarness({
   onFiles = vi.fn(),
   onDrop = vi.fn(),
   uploading = false,
+  pagination,
 }: {
   onQueryCommit: (value: string) => void;
   onArchive?: (asset: Asset) => void;
@@ -117,6 +121,7 @@ function ResourcePanelHarness({
   onFiles?: (files: FileList | File[]) => void;
   onDrop?: (event: React.DragEvent) => void;
   uploading?: boolean;
+  pagination?: ProjectAssetPagination;
 }) {
   const [collapsed, setCollapsed] = useState(initiallyCollapsed);
   const [query, setQuery] = useState('');
@@ -133,6 +138,7 @@ function ResourcePanelHarness({
       <output data-testid="render-version">{renderVersion}</output>
       <ResourcePanel
         assets={showArchived ? assets.map((asset) => ({ ...asset, status: 'archived' })) : assets}
+        pagination={pagination}
         collapsed={collapsed}
         isRenameDialogOpen={isRenameDialogOpen}
         showArchived={showArchived}
@@ -728,5 +734,208 @@ describe('ResourcePanel 自动收起抽屉', () => {
     expect(within(panel).getByRole('status')).toHaveTextContent('35%');
     expect(screen.getByRole('button', { name: '上传资源' })).toBeDisabled();
     expect(panel).toHaveClass('is-collapsed');
+  });
+});
+
+/** 页控件只接受服务端当前页总数，不把夹具中的三条资源当作完整目录。 */
+function paginationProps(patch: Partial<ProjectAssetPagination> = {}): ProjectAssetPagination {
+  return {
+    page: 1,
+    pageSize: 50,
+    total: 101,
+    loading: false,
+    error: null,
+    onPageChange: vi.fn(),
+    onRetry: vi.fn(),
+    ...patch,
+  };
+}
+
+describe('ResourcePanel 服务端分页', () => {
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it('显示服务端总数和显式上一页/下一页，滚动不追加资源', () => {
+    const pagination = paginationProps();
+    const props = panelProps({ pagination });
+    const view = render(<ResourcePanel {...props} />);
+    expect(screen.getByText('共 101 项')).toBeInTheDocument();
+    expect(screen.getByText('第 1 / 3 页')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '上一页资源' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '下一页资源' }));
+    expect(pagination.onPageChange).toHaveBeenCalledExactlyOnceWith(2);
+    const list = screen.getByRole('region', { name: '资源列表' });
+    list.scrollTop = 500;
+    fireEvent.scroll(list);
+    expect(pagination.onPageChange).toHaveBeenCalledTimes(1);
+    view.rerender(
+      <ResourcePanel {...props} assets={[assets[0]]} pagination={{ ...pagination, page: 3 }} />,
+    );
+    expect(list.scrollTop).toBe(0);
+    expect(screen.getByText('第 3 / 3 页')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '下一页资源' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '上一页资源' }));
+    expect(pagination.onPageChange).toHaveBeenLastCalledWith(2);
+  });
+
+  it('不对服务端命中结果再次做名称搜索，也不使用当前页数量冒充分类统计', async () => {
+    const props = panelProps({
+      assets: [assets[2]],
+      activeFilter: 'image',
+      query: '元数据别名',
+      pagination: paginationProps({ total: 4001 }),
+    });
+    render(<ResourcePanel {...props} />);
+    const preview = screen.getByRole('button', { name: '预览 图片参考' });
+    fireEvent.load(within(preview).getByRole('img'));
+    expect(preview.textContent).toBe('');
+    expect(preview).toHaveAttribute('title', '图片参考');
+    expect(screen.getByText('共 4001 项')).toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('combobox', { name: '资源类型' }));
+    expect(await screen.findByRole('option', { name: '全部资源' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: '图片' })).toBeInTheDocument();
+    expect(screen.queryByText(/全部资源（/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole('option', { name: '音频' }));
+    expect(props.onFilterChange).toHaveBeenCalledExactlyOnceWith('audio', {
+      value: 'audio',
+      label: '音频',
+    });
+    await user.click(screen.getByRole('button', { name: '查看已归档资源' }));
+    expect(props.onToggleArchived).toHaveBeenCalledTimes(1);
+  });
+
+  it('加载和失败不同于空数据，错误可以重试且不展示过期卡片', () => {
+    const pagination = paginationProps({ loading: true, total: null });
+    const props = panelProps({ pagination });
+    const view = render(<ResourcePanel {...props} />);
+    expect(screen.getByRole('region', { name: '资源列表' })).toHaveAttribute('aria-busy', 'true');
+    expect(screen.getByRole('status')).toHaveTextContent('正在加载资源');
+    expect(screen.queryByText('还没有资源')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '预览 图片参考' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '下一页资源' })).toBeDisabled();
+    expect(screen.getByText('总数待查询')).toBeInTheDocument();
+    view.rerender(
+      <ResourcePanel
+        {...props}
+        pagination={{ ...pagination, loading: false, error: '连接中断' }}
+      />,
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent('连接中断');
+    expect(screen.queryByText('没有匹配资源')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '重试加载资源' }));
+    expect(pagination.onRetry).toHaveBeenCalledTimes(1);
+    view.rerender(
+      <ResourcePanel {...props} pagination={{ ...pagination, loading: false, total: 101 }} />,
+    );
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '预览 图片参考' })).toBeInTheDocument();
+  });
+
+  it.each([
+    { query: '', showArchived: false, title: '还没有资源' },
+    { query: '无结果', showArchived: false, title: '没有匹配资源' },
+    { query: '', showArchived: true, title: '暂无已归档资源' },
+  ])('空列表保留筛选语义：$title', ({ query, showArchived, title }) => {
+    render(
+      <ResourcePanel
+        {...panelProps({
+          assets: [],
+          query,
+          showArchived,
+          pagination: paginationProps({ total: 0 }),
+        })}
+      />,
+    );
+    expect(screen.getByText(title)).toBeInTheDocument();
+    expect(screen.getByText('共 0 项')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '上一页资源' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '下一页资源' })).toBeDisabled();
+  });
+
+  it('分页控制仍随 hover 展开并退出收起态交互，IME 草稿只在提交后回调', async () => {
+    const onQueryCommit = vi.fn();
+    const pagination = paginationProps();
+    render(
+      <ResourcePanelHarness
+        onQueryCommit={onQueryCommit}
+        pagination={pagination}
+        initiallyCollapsed
+      />,
+    );
+    const panel = screen.getByRole('complementary');
+    const nav = panel.querySelector('.resource-pagination');
+    expect(nav).toHaveAttribute('inert');
+    const user = userEvent.setup();
+    await user.hover(panel);
+    expect(nav).not.toHaveAttribute('inert');
+    const input = screen.getByPlaceholderText('搜索资源');
+    await user.click(input);
+    fireEvent.compositionStart(input);
+    fireEvent.change(input, { target: { value: '中文查询' } });
+    fireEvent.click(screen.getByRole('button', { name: '触发父级重渲染' }));
+    expect(input).toHaveValue('中文查询');
+    expect(onQueryCommit).not.toHaveBeenCalled();
+    fireEvent.compositionEnd(input, { data: '中文查询' });
+    expect(onQueryCommit).toHaveBeenCalledExactlyOnceWith('中文查询');
+    await user.click(screen.getByRole('button', { name: '清除搜索' }));
+    expect(onQueryCommit).toHaveBeenLastCalledWith('');
+    await user.click(screen.getByRole('button', { name: '下一页资源' }));
+    expect(pagination.onPageChange).toHaveBeenCalledExactlyOnceWith(2);
+  });
+
+  it('选择使用完整资源；翻页不替换已打开预览和原文件下载目标', async () => {
+    const downloadResult = {
+      blob: new Blob(['original'], { type: 'image/png' }),
+      filename: 'original.png',
+    };
+    const fetchDownload = vi
+      .spyOn(assetDownload, 'fetchNodeAssetDownload')
+      .mockResolvedValue(downloadResult);
+    const saveDownload = vi
+      .spyOn(exportDownload, 'downloadProjectExport')
+      .mockImplementation(() => {});
+    const props = panelProps({ assets: [assets[2]], pagination: paginationProps() });
+    const view = render(<ResourcePanel {...props} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: '添加 图片参考 到画布' }));
+    expect(props.onAddAsset).toHaveBeenCalledExactlyOnceWith(assets[2]);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '预览 图片参考' }));
+    const dialog = await screen.findByRole('dialog', { name: '图片参考' });
+    view.rerender(
+      <ResourcePanel
+        {...props}
+        assets={[assets[0]]}
+        pagination={{ ...props.pagination!, page: 2 }}
+      />,
+    );
+    expect(dialog).toBeInTheDocument();
+    expect(dialog.querySelector('img')).toHaveAttribute('src', assets[2].contentUrl);
+    await user.click(within(dialog).getByRole('button', { name: '下载原文件' }));
+    await waitFor(() => expect(saveDownload).toHaveBeenCalledExactlyOnceWith(downloadResult));
+    expect(fetchDownload).toHaveBeenCalledExactlyOnceWith(assets[2], expect.any(AbortSignal));
+  });
+
+  it('归档页禁止拖拽和添加，仍支持恢复、预览与永久删除确认', async () => {
+    const archived = { ...assets[0], status: 'archived' as const };
+    const props = panelProps({
+      assets: [archived],
+      showArchived: true,
+      pagination: paginationProps({ total: 1 }),
+    });
+    render(<ResourcePanel {...props} />);
+    expect(screen.getByRole('article')).toHaveAttribute('draggable', 'false');
+    expect(screen.queryByRole('button', { name: /添加.*到画布/ })).not.toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: `恢复 ${archived.name}` }));
+    expect(props.onArchiveAsset).toHaveBeenCalledExactlyOnceWith(archived);
+    await user.click(screen.getByRole('button', { name: `永久删除 ${archived.name}` }));
+    const dialog = await screen.findByRole('dialog', { name: '永久删除资源' });
+    expect(props.onDeleteAsset).not.toHaveBeenCalled();
+    await user.click(within(dialog).getByRole('button', { name: '永久删除' }));
+    await waitFor(() => expect(props.onDeleteAsset).toHaveBeenCalledExactlyOnceWith(archived));
   });
 });

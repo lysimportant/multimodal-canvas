@@ -4,6 +4,8 @@ import {
   LoaderCircle,
   History,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Pencil,
   Plus,
   RotateCcw,
@@ -26,6 +28,7 @@ import {
 
 import type { Asset } from '@multimodal-canvas/domain';
 import { useImeDraft } from '../ime';
+import type { ProjectAssetPagination } from '../use-project-assets';
 import { AssetPreview, AssetViewerDialog } from './AssetPreview';
 import { AssetGenerationHistory } from './AssetGenerationHistory';
 import { mediaLabels, type AssetFilter } from './contracts';
@@ -39,6 +42,7 @@ import './ResourcePanel.css';
  */
 export const ResourcePanel = memo(function ResourcePanel({
   assets,
+  pagination,
   collapsed,
   isRenameDialogOpen = false,
   showArchived,
@@ -59,7 +63,10 @@ export const ResourcePanel = memo(function ResourcePanel({
   onToggleCollapsed,
   uploadInputRef,
 }: {
+  /** 分页模式下仅传 pageAssets，不传供画布解析的 knownAssets。 */
   assets: Asset[];
+  /** 省略时兼容本地列表；提供时搜索、筛选和总数均以服务端查询为准。 */
+  pagination?: ProjectAssetPagination;
   /** true 表示自动收起，false 表示固定展开；临时悬停/焦点不修改此值。 */
   collapsed: boolean;
   /** 父级重命名弹窗打开时保留资源列表与返回焦点，不因 portal 移出而收起。 */
@@ -83,6 +90,7 @@ export const ResourcePanel = memo(function ResourcePanel({
   uploadInputRef?: RefObject<HTMLInputElement | null>;
 }) {
   const panelRef = useRef<HTMLElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const collapseButtonRef = useRef<HTMLButtonElement>(null);
   const listId = useId();
   const localInputRef = useRef<HTMLInputElement>(null);
@@ -186,27 +194,42 @@ export const ResourcePanel = memo(function ResourcePanel({
     value: query,
     onCommit: onQueryChange,
   });
-  const filteredAssets = assets.filter((asset) => {
-    if (showArchived !== (asset.status === 'archived')) return false;
-    const matchesFilter = activeFilter === 'all' || asset.mediaType === activeFilter;
-    return matchesFilter && asset.name.toLowerCase().includes(query.toLowerCase());
-  });
+  const filteredAssets = pagination
+    ? pagination.loading || pagination.error
+      ? []
+      : assets
+    : assets.filter((asset) => {
+        if (showArchived !== (asset.status === 'archived')) return false;
+        const matchesFilter = activeFilter === 'all' || asset.mediaType === activeFilter;
+        return matchesFilter && asset.name.toLowerCase().includes(query.toLowerCase());
+      });
   const visibleAssets = assets.filter((asset) =>
     showArchived ? asset.status === 'archived' : asset.status !== 'archived',
   );
   const resourceOptions = [
-    { value: 'all', label: `全部资源（${visibleAssets.length}）` },
+    { value: 'all', label: pagination ? '全部资源' : `全部资源（${visibleAssets.length}）` },
     ...(Object.keys(mediaLabels) as Array<Exclude<AssetFilter, 'all'>>).map((mediaType) => ({
       value: mediaType,
-      label: `${mediaLabels[mediaType]}（${
-        assets.filter(
-          (asset) =>
-            (showArchived ? asset.status === 'archived' : asset.status !== 'archived') &&
-            asset.mediaType === mediaType,
-        ).length
-      }）`,
+      label: pagination
+        ? mediaLabels[mediaType]
+        : `${mediaLabels[mediaType]}（${
+            assets.filter(
+              (asset) =>
+                (showArchived ? asset.status === 'archived' : asset.status !== 'archived') &&
+                asset.mediaType === mediaType,
+            ).length
+          }）`,
     })),
   ];
+  const totalPages =
+    pagination?.total == null
+      ? null
+      : Math.max(1, Math.ceil(pagination.total / pagination.pageSize));
+  const hasFilters = Boolean(query.trim() || activeFilter !== 'all');
+  const emptyTitle = hasFilters ? '没有匹配资源' : showArchived ? '暂无已归档资源' : '还没有资源';
+  useEffect(() => {
+    if (listRef.current) listRef.current.scrollTop = 0;
+  }, [pagination?.page, query, activeFilter, showArchived]);
   return (
     <aside
       ref={panelRef}
@@ -345,7 +368,7 @@ export const ResourcePanel = memo(function ResourcePanel({
       </div>
       <label className="search-field">
         <Search size={15} aria-hidden="true" />
-        <Input type="search" placeholder="搜索资源" {...queryBinding} />
+        <Input type="search" placeholder="搜索资源" maxLength={512} {...queryBinding} />
         {queryBinding.value && (
           <Button
             type="button"
@@ -370,10 +393,12 @@ export const ResourcePanel = memo(function ResourcePanel({
       )}
       <div
         id={listId}
+        ref={listRef}
         className="asset-list"
         role="region"
         aria-label="资源列表"
         aria-live="polite"
+        aria-busy={pagination?.loading ?? false}
         aria-hidden={!expanded}
         inert={!expanded}
       >
@@ -506,18 +531,68 @@ export const ResourcePanel = memo(function ResourcePanel({
             </div>
           </article>
         ))}
-        {filteredAssets.length === 0 && (
+        {pagination?.loading && (
+          <div className="empty-panel compact-empty" role="status">
+            <LoaderCircle className="spin" size={22} aria-hidden="true" />
+            <span>正在加载资源…</span>
+          </div>
+        )}
+        {pagination?.error && (
+          <div className="empty-panel compact-empty resource-page-error" role="alert">
+            <strong>资源加载失败</strong>
+            <p>{pagination.error}</p>
+            <Button type="button" onClick={pagination.onRetry}>
+              重试加载资源
+            </Button>
+          </div>
+        )}
+        {!pagination?.loading && !pagination?.error && filteredAssets.length === 0 && (
           <div className="empty-panel compact-empty">
             <Upload size={22} aria-hidden="true" />
-            <strong>{assets.length === 0 ? '还没有资源' : '没有匹配资源'}</strong>
+            <strong>
+              {pagination ? emptyTitle : assets.length === 0 ? '还没有资源' : '没有匹配资源'}
+            </strong>
             <p>
-              {assets.length === 0
+              {(pagination ? !hasFilters && !showArchived : assets.length === 0)
                 ? '点击右上角上传，或将文件拖到这里。'
                 : '尝试调整搜索或筛选条件。'}
             </p>
           </div>
         )}
       </div>
+      {pagination && (
+        <nav
+          className="resource-pagination"
+          aria-label="资源分页"
+          aria-hidden={!expanded}
+          inert={!expanded}
+        >
+          <Button
+            type="button"
+            className="icon-button"
+            aria-label="上一页资源"
+            disabled={pagination.loading || pagination.page <= 1}
+            onClick={() => pagination.onPageChange(pagination.page - 1)}
+          >
+            <ChevronLeft size={16} aria-hidden="true" />
+          </Button>
+          <div className="resource-page-summary" aria-live="polite">
+            <span>
+              第 {pagination.page} / {totalPages ?? '—'} 页
+            </span>
+            <span>{pagination.total === null ? '总数待查询' : `共 ${pagination.total} 项`}</span>
+          </div>
+          <Button
+            type="button"
+            className="icon-button"
+            aria-label="下一页资源"
+            disabled={pagination.loading || totalPages === null || pagination.page >= totalPages}
+            onClick={() => pagination.onPageChange(pagination.page + 1)}
+          >
+            <ChevronRight size={16} aria-hidden="true" />
+          </Button>
+        </nav>
+      )}
       {modalContextHolder}
       {previewAsset ? (
         <AssetViewerDialog

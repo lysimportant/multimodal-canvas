@@ -1,6 +1,7 @@
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CANVAS_DRAFT_DELAY_MS, useCanvasDraft } from './use-canvas-draft';
+import { CanvasPersistence, type CanvasSnapshot } from './canvas-persistence';
 
 describe('画布草稿合并落盘', () => {
   beforeEach(() => {
@@ -102,5 +103,50 @@ describe('画布草稿合并落盘', () => {
     expect(storage).toHaveBeenCalledTimes(2);
     expect(localStorage.getItem('a')).toBe('second');
     hook.unmount();
+  });
+  it('待落盘草稿固定旧项目引用，切项目及保存修订变化仍复用各自快照', () => {
+    const persistence = new CanvasPersistence();
+    const makeCanvas = (id: string): CanvasSnapshot => ({
+      nodes: [
+        {
+          id,
+          type: 'text',
+          position: { x: 0, y: 0 },
+          data: { label: id, mode: 'generate', mediaType: 'text' },
+        },
+      ],
+      edges: [],
+      groups: [],
+    });
+    const first = makeCanvas('first');
+    const second = makeCanvas('second');
+    const error = vi.fn();
+    const encode = vi.spyOn(JSON, 'stringify');
+    const hook = renderHook(
+      ({ key, graph, revision }) =>
+        useCanvasDraft(key, () => persistence.capture(graph).serialize(revision), error),
+      {
+        initialProps: { key: 'a', graph: first, revision: 1 },
+      },
+    );
+    const request = persistence.capture(first);
+    request.serialize(1);
+    hook.rerender({ key: 'a', graph: first, revision: 2 });
+    act(() => vi.advanceTimersByTime(CANVAS_DRAFT_DELAY_MS));
+    expect(encode.mock.calls.filter(([value]) => typeof value === 'object')).toHaveLength(1);
+    hook.rerender({ key: 'a', graph: first, revision: 3 });
+    hook.rerender({ key: 'b', graph: second, revision: 7 });
+    expect(JSON.parse(localStorage.getItem('a')!)).toMatchObject({
+      revision: 3,
+      nodes: [{ id: 'first' }],
+    });
+    expect(localStorage.getItem('b')).toBeNull();
+    hook.unmount();
+    expect(JSON.parse(localStorage.getItem('b')!)).toMatchObject({
+      revision: 7,
+      nodes: [{ id: 'second' }],
+    });
+    expect(JSON.parse(request.serialize(3)).nodes[0].id).toBe('first');
+    expect(error).not.toHaveBeenCalled();
   });
 });

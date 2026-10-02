@@ -55,6 +55,8 @@ export type AssetPreviewProps = {
   onNaturalSize?: (width: number, height: number) => void;
   /** 双击编辑后的持久化回调；失败拒绝 Promise，编辑器保留草稿。 */
   onTextSave?: (text: string) => Promise<void>;
+  /** 编辑、播放或原图预览期间通知画布保留组件；结束与卸载时释放。 */
+  onInteractionChange?: (active: boolean) => void;
 };
 
 type ArtifactKind = MediaType | 'file';
@@ -131,6 +133,7 @@ export function AssetPreview({
   onLoadStateChange,
   onNaturalSize,
   onTextSave,
+  onInteractionChange,
 }: AssetPreviewProps) {
   const [reloadKey, setReloadKey] = useState(0);
   const kind = resolveArtifactKind(asset);
@@ -198,6 +201,7 @@ export function AssetPreview({
         className={`artifact-preview-text ${className}`}
         copyable
         onSave={onTextSave}
+        onInteractionChange={onInteractionChange}
         onRetry={retry}
         onLoadStateChange={onLoadStateChange}
       />
@@ -228,6 +232,7 @@ export function AssetPreview({
       controls={interactive || previewMode === 'content'}
       allowOpen={allowOpen ?? previewMode === 'content'}
       mediaClickPreviewEnabled={mediaClickPreviewEnabled}
+      onInteractionChange={onInteractionChange}
       onRetry={retry}
       onLoadStateChange={onLoadStateChange}
       onNaturalSize={onNaturalSize}
@@ -799,6 +804,7 @@ function MediaArtifactPreview({
   onRetry,
   onLoadStateChange,
   onNaturalSize,
+  onInteractionChange,
 }: {
   asset: Asset;
   kind: 'image' | 'video' | 'audio';
@@ -811,11 +817,16 @@ function MediaArtifactPreview({
   onRetry: () => void;
   onLoadStateChange?: (state: AssetPreviewLoadState) => void;
   onNaturalSize?: (width: number, height: number) => void;
+  onInteractionChange?: (active: boolean) => void;
 }) {
   const [attempt, setAttempt] = useState(0);
   const [loadState, setLoadState] = useState<AssetPreviewLoadState>('loading');
   const [viewerOpen, setViewerOpen] = useState(false);
   const [videoPlaying, setVideoPlaying] = useState(false);
+  useEffect(() => {
+    onInteractionChange?.(viewerOpen || videoPlaying);
+    return () => onInteractionChange?.(false);
+  }, [onInteractionChange, viewerOpen, videoPlaying]);
   /** 缓存图片可能在 effect 前完成加载，复核元素状态以免重新盖上加载遮罩。 */
   const imageRef = useRef<HTMLImageElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -919,6 +930,9 @@ function MediaArtifactPreview({
         src={src}
         controls={controls}
         preload="metadata"
+        onPlay={() => setVideoPlaying(true)}
+        onPause={() => setVideoPlaying(false)}
+        onEnded={() => setVideoPlaying(false)}
         onLoadedMetadata={markReady}
         onError={markError}
       />
@@ -1128,6 +1142,7 @@ export function TextResultContent({
   onSave,
   onRetry,
   onLoadStateChange,
+  onInteractionChange,
 }: {
   url: string;
   className?: string;
@@ -1140,6 +1155,8 @@ export function TextResultContent({
   onSave?: (value: string) => Promise<void>;
   onRetry?: () => void;
   onLoadStateChange?: (state: AssetPreviewLoadState) => void;
+  /** 草稿与保存期间阻止画布卸载文字编辑器。 */
+  onInteractionChange?: (active: boolean) => void;
 }) {
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1149,6 +1166,10 @@ export function TextResultContent({
   const [draft, setDraft] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    onInteractionChange?.(draft !== null || saving);
+    return () => onInteractionChange?.(false);
+  }, [onInteractionChange, draft, saving]);
   const savingRef = useRef(false);
   const composingRef = useRef(false);
   const cancelRef = useRef(false);

@@ -4148,14 +4148,19 @@ function assetListScopes(
 }
 
 /**
- * 在项目资源和个人资源两个授权范围上执行同一组索引条件，并在 API 边界
- * 完成去重、总数和分页。AssetStore 的单范围接口保持不变，旧实现也可复用。
+ * 优先由已授权的仓库完成跨范围去重、计数和分页；未提供 listPage 的旧仓库
+ * 继续使用原有单范围接口，在 API 边界合并，不改变公开响应格式。
  */
 async function listAssetsForScopes(
   assetStore: AssetStore,
   scopes: readonly AssetScope[],
   options: AssetListOptions,
 ): Promise<{ assets: Awaited<ReturnType<AssetStore['list']>>; total: number }> {
+  if (typeof assetStore.listPage === 'function') {
+    const { assets, total } = await assetStore.listPage(scopes, options);
+    return { assets, total };
+  }
+
   if (scopes.length === 1) {
     const scope = scopes[0];
     const { page: _page, pageSize: _pageSize, ...countOptions } = options;

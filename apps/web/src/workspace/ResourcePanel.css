@@ -45,6 +45,34 @@
   overscroll-behavior: contain;
 }
 
+/* 页码固定在列表下方，滚动只发生在当前页，不触发追加或预取。 */
+.resource-pagination {
+  align-items: center;
+  border-top: 1px solid var(--mc-border);
+  display: grid;
+  flex: 0 0 auto;
+  gap: 4px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  padding-top: 8px;
+}
+
+.resource-page-summary {
+  display: grid;
+  font-size: 12px;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+.resource-page-error p {
+  overflow-wrap: anywhere;
+}
+
+.resource-drawer.is-collapsed > .resource-pagination {
+  display: none;
+}
+
 /* 不卸载拖拽源；压缩实际高度，同时从点击命中和键盘导航中移除隐藏列表。 */
 .resource-drawer.is-collapsed > .asset-list {
   flex: 0 0 0;

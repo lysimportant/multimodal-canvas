@@ -25,9 +25,11 @@ vi.mock('./NodeQuickEditor', async (importOriginal) => {
 const reactFlowMock = vi.hoisted(() => ({
   getNodesBounds: vi.fn(() => ({ x: 0, y: 0, width: 180, height: 120 })),
   getZoom: vi.fn(() => 1),
+  screenToFlowPosition: ({ x, y }: { x: number; y: number }) => ({ x: x - 100, y: y - 50 }),
   viewportZoom: 1,
   nodeProbe: undefined as React.ElementType | undefined,
   edges: [] as WorkflowCanvasProps['edges'],
+  storeProps: {} as Record<string, unknown>,
   onNodesChange: undefined as WorkflowCanvasProps['onNodesChange'] | undefined,
   setCenter: vi.fn(),
   fitView: vi.fn(() => Promise.resolve(true)),
@@ -45,6 +47,9 @@ vi.mock('@xyflow/react', async () => {
     nodes,
     edges,
     onNodesChange,
+    onConnect,
+    onNodeDrag,
+    onNodeDragStop,
     nodeTypes,
     onNodeClick,
     onNodeMouseEnter,
@@ -64,6 +69,9 @@ vi.mock('@xyflow/react', async () => {
     nodes: AssetFlowNode[];
     edges: WorkflowCanvasProps['edges'];
     onNodesChange?: WorkflowCanvasProps['onNodesChange'];
+    onConnect?: WorkflowCanvasProps['onConnect'];
+    onNodeDrag?: WorkflowCanvasProps['onNodeDrag'];
+    onNodeDragStop?: WorkflowCanvasProps['onNodeDragStop'];
     nodeTypes?: Record<string, React.ElementType>;
     edgeTypes?: Record<string, React.ElementType>;
     defaultEdgeOptions?: { animated?: boolean; type?: string; style?: Record<string, unknown> };
@@ -83,6 +91,16 @@ vi.mock('@xyflow/react', async () => {
     deleteKeyCode?: string | null;
     children?: React.ReactNode;
   }) {
+    reactFlowMock.storeProps = {
+      onNodesChange,
+      onConnect,
+      onConnectEnd,
+      onNodeDrag,
+      onNodeDragStop,
+      onConnectStart,
+      defaultEdgeOptions,
+      fitViewOptions,
+    };
     reactFlowMock.edges = edges;
     reactFlowMock.onNodesChange = onNodesChange;
     reactFlowMock.onConnectStart = onConnectStart;
@@ -153,12 +171,10 @@ vi.mock('@xyflow/react', async () => {
     useStore: (selector: (state: { transform: [number, number, number] }) => unknown) =>
       selector({ transform: [0, 0, reactFlowMock.viewportZoom] }),
     useEdges: () => [],
+    useNodeConnections: () => [],
     useUpdateNodeInternals: () => React.useCallback(() => {}, []),
     useReactFlow: () => ({
-      screenToFlowPosition: ({ x, y }: { x: number; y: number }) => ({
-        x: x - 100,
-        y: y - 50,
-      }),
+      screenToFlowPosition: reactFlowMock.screenToFlowPosition,
       getNodesBounds: reactFlowMock.getNodesBounds,
       getZoom: reactFlowMock.getZoom,
       setCenter: reactFlowMock.setCenter,
@@ -1310,6 +1326,41 @@ const DragRenderProbe = memo(function DragRenderProbe({ node }: { node: AssetFlo
 const dragNodeRender = vi.fn();
 
 describe('WorkflowCanvas 拖动性能', () => {
+  it('位置帧不更换 store 配置和事件引用，稳定入口仍读取最新节点变化回调', () => {
+    reactFlowMock.nodeProbe = DragRenderProbe;
+    const props = createProps({
+      nodes: [generateNode],
+      onNodeDrag: vi.fn(),
+      onNodeDragStop: vi.fn(),
+    });
+    const view = render(<WorkflowCanvas {...props} />);
+    const initial = reactFlowMock.storeProps;
+    for (let frame = 1; frame <= 20; frame++) {
+      view.rerender(
+        <WorkflowCanvas
+          {...props}
+          nodes={[
+            {
+              ...generateNode,
+              position: { x: frame * 10, y: 20 },
+              dragging: true,
+            },
+          ]}
+        />,
+      );
+      for (const key of Object.keys(initial))
+        expect(reactFlowMock.storeProps[key], key).toBe(initial[key]);
+    }
+    const replacement = vi.fn();
+    view.rerender(<WorkflowCanvas {...props} onNodesChange={replacement} />);
+    expect(reactFlowMock.onNodesChange).toBe(initial.onNodesChange);
+    const changes = [
+      { id: generateNode.id, type: 'position' as const, position: { x: 50, y: 70 } },
+    ];
+    act(() => reactFlowMock.onNodesChange!(changes));
+    expect(replacement).toHaveBeenCalledWith(changes);
+    expect(props.onNodesChange).not.toHaveBeenCalled();
+  });
   it('参数表单仍响应内容、上游资源、连线、目录和忙碌状态，并使用替换后的回调', () => {
     reactFlowMock.nodeProbe = DragRenderProbe;
     const node = { ...generateNode, data: { ...generateNode.data, prompt: 'Draw a boat.' } };
@@ -1518,6 +1569,7 @@ describe('WorkflowCanvas 拖动时暂隐连线', () => {
         nodes={nodes.map((node, index) => (index === 0 ? { ...node, dragging: true } : node))}
       />,
     );
+    expect(screen.getByRole('region', { name: '工作流画布' })).toHaveClass('is-node-dragging');
     const hiddenEdges = reactFlowMock.edges;
     const hidden = hiddenEdges[0];
     expect(hidden).toEqual({ ...edge, hidden: true });
@@ -1539,6 +1591,7 @@ describe('WorkflowCanvas 拖动时暂隐连线', () => {
     );
     expect(reactFlowMock.edges[0]).toBe(edge);
     expect(reactFlowMock.edges[1]).toBe(unrelated);
+    expect(screen.getByRole('region', { name: '工作流画布' })).not.toHaveClass('is-node-dragging');
     expect(props.onNodesChange).not.toHaveBeenCalled();
     expect(props.onEdgesChange).not.toHaveBeenCalled();
     expect(props.onConnect).not.toHaveBeenCalled();

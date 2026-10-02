@@ -1,4 +1,6 @@
 import { useCanvasDraft } from './use-canvas-draft';
+import { CanvasHistory } from './canvas-history';
+import { CanvasPersistence, type CanvasSnapshot } from './canvas-persistence';
 import { Dropdown, Modal } from 'antd';
 import { Input as UiInput, Button as UiButton } from '@multimodal-canvas/ui';
 import {
@@ -74,7 +76,6 @@ import {
   pasteCanvasClipboard,
   parseCanvasClipboard,
   serializeCanvasClipboard,
-  toCanvasDocument,
   markDownstreamNodesStale,
   withNodeAutoGrowthLimit,
   getNewNodeDimensions,
@@ -179,6 +180,7 @@ import {
 } from './routing';
 import { runStatusLabel } from './workspace/AssetNode';
 import { ResourcePanel } from './workspace/ResourcePanel';
+import { canvasAssetSeeds, useProjectAssets } from './use-project-assets';
 import { SettingsPanel } from './workspace/SettingsPanel';
 import { AppearancePicker } from './workspace/AppearancePicker';
 import { WorkflowCanvas } from './workspace/WorkflowCanvas';
@@ -436,13 +438,6 @@ function AssetRenameDialog({
   );
 }
 
-type CanvasHistorySnapshot = {
-  nodes: AssetFlowNode[];
-  edges: FlowEdge[];
-  /** 组只属于画布布局，与节点、边一起进入同一条撤销记录。 */
-  groups: CanvasGroup[];
-};
-
 /**
  * 生成“清空画布”确认框的作用范围描述。
  *
@@ -606,7 +601,6 @@ function WorkspaceApp({
   const [renamingAsset, setRenamingAsset] = useState<Asset | null>(null);
   /** 清理确认异步等待期间只允许一个清理事务，避免重复确认与历史快照。 */
   const clearActionPendingRef = useRef(false);
-  const [assets, setAssets] = useState<Asset[]>([]);
   const [showArchived, setShowArchived] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const previousAuthRoleRef = useRef<AuthUser['role'] | null>(authUser?.role ?? null);
@@ -619,6 +613,21 @@ function WorkspaceApp({
   }, [authUser]);
   const [activeFilter, setActiveFilter] = useState<AssetFilter>('all');
   const [query, setQuery] = useState('');
+  const {
+    knownAssets: assets,
+    pageAssets,
+    pagination,
+    seedAssets,
+    upsertAssets,
+    removeAsset,
+    reload: loadAssets,
+  } = useProjectAssets({
+    projectId: initialProject.id,
+    userId: authUser?.id ?? null,
+    query,
+    activeFilter,
+    showArchived,
+  });
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [notice, setNotice] = useState<{ kind: 'error' | 'success'; message: string } | null>(null);
@@ -721,10 +730,11 @@ function WorkspaceApp({
   const forkElevationTimersRef = useRef(new Map<string, number>());
   const edgesRef = useRef<FlowEdge[]>([]);
   const groupsRef = useRef<CanvasGroup[]>([]);
-  const historyRef = useRef<{ past: CanvasHistorySnapshot[]; future: CanvasHistorySnapshot[] }>({
-    past: [],
-    future: [],
-  });
+  /** 历史、待保存请求与本地草稿共享不可变画布对象。 */
+  const historyRef = useRef(new CanvasHistory());
+  const persistenceRef = useRef(new CanvasPersistence());
+  /** NodeResizer 的连续 dimensions 事件属于同一条历史。 */
+  const resizingNodeIdsRef = useRef(new Set<string>());
   const clipboardRef = useRef<CanvasClipboard | null>(null);
   const [nodes, setNodes, applyNodesChange] = useNodesState<AssetFlowNode>([]);
   const [edges, setEdges, applyEdgesChange] = useEdgesState<FlowEdge>([]);
@@ -836,47 +846,47 @@ function WorkspaceApp({
     groupsRef.current = groups;
   }, [edges, groups, nodes]);
 
+  /** 只捕获不可变引用；事件回调与保存请求都能同步读取最新图。 */
+  const currentCanvasSnapshot = useCallback(
+    (): CanvasSnapshot => ({
+      nodes: nodesRef.current,
+      edges: edgesRef.current,
+      groups: groupsRef.current,
+    }),
+    [],
+  );
+
+  /** 在用户编辑前记录引用；非 resize 操作同时结束尺寸合并窗口。 */
   const rememberHistory = useCallback(() => {
-    const current: CanvasHistorySnapshot = {
-      nodes: structuredClone(nodesRef.current),
-      edges: structuredClone(edgesRef.current),
-      groups: structuredClone(groupsRef.current),
-    };
-    const past = historyRef.current.past;
-    const previous = past[past.length - 1];
-    if (previous && JSON.stringify(previous) === JSON.stringify(current)) return;
-    historyRef.current = { past: [...past.slice(-49), current], future: [] };
-  }, []);
+    resizingNodeIdsRef.current.clear();
+    historyRef.current.remember(currentCanvasSnapshot());
+  }, [currentCanvasSnapshot]);
 
+  /** 同步更新 refs，避免同一事件内连续撤销、重做或保存读到上一帧。 */
+  const applyHistorySnapshot = useCallback(
+    (snapshot: CanvasSnapshot | undefined) => {
+      if (!snapshot) return;
+      nodesRef.current = snapshot.nodes;
+      edgesRef.current = snapshot.edges;
+      groupsRef.current = snapshot.groups;
+      setNodes(snapshot.nodes);
+      setEdges(snapshot.edges);
+      setGroups(snapshot.groups);
+      resizingNodeIdsRef.current.clear();
+      canvasDirtyRef.current = true;
+    },
+    [setEdges, setNodes],
+  );
+
+  /** 撤销用户编辑，运行状态从当前会话合并而非从历史回滚。 */
   const undoCanvas = useCallback(() => {
-    const history = historyRef.current;
-    const previous = history.past.pop();
-    if (!previous) return;
-    history.future.push({
-      nodes: structuredClone(nodesRef.current),
-      edges: structuredClone(edgesRef.current),
-      groups: structuredClone(groupsRef.current),
-    });
-    setNodes(structuredClone(previous.nodes));
-    setEdges(structuredClone(previous.edges));
-    setGroups(structuredClone(previous.groups));
-    canvasDirtyRef.current = true;
-  }, [setEdges, setNodes]);
+    applyHistorySnapshot(historyRef.current.undo(currentCanvasSnapshot(), runRecordsRef.current));
+  }, [applyHistorySnapshot, currentCanvasSnapshot]);
 
+  /** 重做布局与配置，仍保留异步更新后的最新运行展示。 */
   const redoCanvas = useCallback(() => {
-    const history = historyRef.current;
-    const next = history.future.pop();
-    if (!next) return;
-    history.past.push({
-      nodes: structuredClone(nodesRef.current),
-      edges: structuredClone(edgesRef.current),
-      groups: structuredClone(groupsRef.current),
-    });
-    setNodes(structuredClone(next.nodes));
-    setEdges(structuredClone(next.edges));
-    setGroups(structuredClone(next.groups));
-    canvasDirtyRef.current = true;
-  }, [setEdges, setNodes]);
+    applyHistorySnapshot(historyRef.current.redo(currentCanvasSnapshot(), runRecordsRef.current));
+  }, [applyHistorySnapshot, currentCanvasSnapshot]);
 
   /**
    * 清空当前画布中的节点、连线与组。
@@ -1201,12 +1211,15 @@ function WorkspaceApp({
       ) {
         canvasDirtyRef.current = true;
       }
+      const dimensions = documentChanges.filter((change) => change.type === 'dimensions');
       if (
-        documentChanges.some((change) =>
-          ['dimensions', 'add', 'remove', 'replace'].includes(change.type),
-        )
+        documentChanges.some((change) => ['add', 'remove', 'replace'].includes(change.type)) ||
+        dimensions.some((change) => !resizingNodeIdsRef.current.has(change.id))
       ) {
         rememberHistory();
+      }
+      for (const change of dimensions) {
+        if (change.resizing) resizingNodeIdsRef.current.add(change.id);
       }
       applyNodesChange(changes);
     },
@@ -1251,7 +1264,8 @@ function WorkspaceApp({
 
   const handleResizeNode = useCallback(
     (nodeId: string, width: number, height: number) => {
-      rememberHistory();
+      if (!resizingNodeIdsRef.current.has(nodeId)) rememberHistory();
+      resizingNodeIdsRef.current.delete(nodeId);
       canvasDirtyRef.current = true;
       setNodes((current) =>
         current.map((node) =>
@@ -1264,17 +1278,19 @@ function WorkspaceApp({
 
   const handleResizeStart = useCallback(
     (nodeId: string) => {
+      rememberHistory();
+      resizingNodeIdsRef.current.add(nodeId);
       setNodes((current) =>
         current.map((node) => (node.id === nodeId ? withoutNodeAutoGrowthLimit(node) : node)),
       );
     },
-    [setNodes],
+    [rememberHistory, setNodes],
   );
 
   const handleEdgesChange: OnEdgesChange<FlowEdge> = useCallback(
     (changes) => {
-      canvasDirtyRef.current = true;
       if (changes.some((change) => ['add', 'remove', 'replace'].includes(change.type))) {
+        canvasDirtyRef.current = true;
         rememberHistory();
       }
       applyEdgesChange(changes);
@@ -1282,46 +1298,42 @@ function WorkspaceApp({
     [applyEdgesChange, rememberHistory],
   );
 
-  const loadAssets = useCallback(async () => {
-    try {
-      const search = new URLSearchParams({ projectId: initialProject.id });
-      const response = await apiFetch(`${API_BASE_URL}/v1/assets?${search.toString()}`);
-      if (!response.ok) throw new Error('资源加载失败');
-      const result = (await response.json()) as { assets: Asset[] };
-      setAssets(result.assets);
-    } catch (error) {
-      setNotice({
-        kind: 'error',
-        message: error instanceof Error ? error.message : '资源加载失败',
+  const updateAsset = useCallback(
+    async (asset: Asset, patch: { name?: string }) => {
+      const response = await apiFetch(`${API_BASE_URL}/v1/assets/${asset.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(patch),
       });
-    }
-  }, [initialProject.id]);
+      const result = (await response.json().catch(() => ({}))) as { asset?: Asset; error?: string };
+      if (!response.ok || !result.asset) throw new Error(result.error ?? '资源更新失败');
+      upsertAssets([result.asset]);
+    },
+    [upsertAssets],
+  );
 
-  const updateAsset = useCallback(async (asset: Asset, patch: { name?: string }) => {
-    const response = await apiFetch(`${API_BASE_URL}/v1/assets/${asset.id}`, {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(patch),
-    });
-    const result = (await response.json().catch(() => ({}))) as { asset?: Asset; error?: string };
-    if (!response.ok || !result.asset) throw new Error(result.error ?? '资源更新失败');
-    setAssets((current) => current.map((item) => (item.id === asset.id ? result.asset! : item)));
-  }, []);
-
-  const archiveAsset = useCallback(async (asset: Asset) => {
-    const action = asset.status === 'archived' ? 'restore' : 'archive';
-    const response = await apiFetch(`${API_BASE_URL}/v1/assets/${asset.id}/${action}`, {
-      method: 'POST',
-    });
-    const result = (await response.json().catch(() => ({}))) as { asset?: Asset; error?: string };
-    if (!response.ok || !result.asset) throw new Error(result.error ?? '资源状态更新失败');
-    setAssets((current) => current.map((item) => (item.id === asset.id ? result.asset! : item)));
-  }, []);
-  const deleteAsset = useCallback(async (asset: Asset) => {
-    const response = await apiFetch(`${API_BASE_URL}/v1/assets/${asset.id}`, { method: 'DELETE' });
-    if (!response.ok) throw new Error('资源永久删除失败');
-    setAssets((current) => current.filter((item) => item.id !== asset.id));
-  }, []);
+  const archiveAsset = useCallback(
+    async (asset: Asset) => {
+      const action = asset.status === 'archived' ? 'restore' : 'archive';
+      const response = await apiFetch(`${API_BASE_URL}/v1/assets/${asset.id}/${action}`, {
+        method: 'POST',
+      });
+      const result = (await response.json().catch(() => ({}))) as { asset?: Asset; error?: string };
+      if (!response.ok || !result.asset) throw new Error(result.error ?? '资源状态更新失败');
+      upsertAssets([result.asset]);
+    },
+    [upsertAssets],
+  );
+  const deleteAsset = useCallback(
+    async (asset: Asset) => {
+      const response = await apiFetch(`${API_BASE_URL}/v1/assets/${asset.id}`, {
+        method: 'DELETE',
+      });
+      if (!response.ok) throw new Error('资源永久删除失败');
+      removeAsset(asset.id);
+    },
+    [removeAsset],
+  );
 
   const refreshProjects = useCallback(async (includeArchived = false) => {
     const query = includeArchived ? '?includeArchived=true' : '';
@@ -1455,6 +1467,7 @@ function WorkspaceApp({
         canvasRevisionRef.current = result.canvas.revision;
         setCanvasRevision(result.canvas.revision);
         const flowCanvas = fromCanvasDocument(result.canvas);
+        seedAssets(canvasAssetSeeds(flowCanvas.nodes));
         setNodes(flowCanvas.nodes);
         setEdges(flowCanvas.edges);
         setGroups(flowCanvas.groups);
@@ -1465,7 +1478,8 @@ function WorkspaceApp({
         promptRequestRef.current += 1;
         setPromptDialog(undefined);
         refreshedResultAssetKeysRef.current.clear();
-        historyRef.current = { past: [], future: [] };
+        historyRef.current = new CanvasHistory();
+        resizingNodeIdsRef.current.clear();
         canvasDirtyRef.current = false;
         setSaveState(result.canvas.revision > 0 ? '已从项目恢复' : '项目已连接');
       } catch (error) {
@@ -1490,10 +1504,13 @@ function WorkspaceApp({
             canvasRevisionRef.current = parsed.revision ?? 0;
             setCanvasRevision(parsed.revision ?? 0);
             const flowCanvas = fromCanvasDocument(parsed);
+            if (fallbackProjectId === initialProject.id)
+              seedAssets(canvasAssetSeeds(flowCanvas.nodes));
             setNodes(flowCanvas.nodes);
             setEdges(flowCanvas.edges);
             setGroups(flowCanvas.groups);
-            historyRef.current = { past: [], future: [] };
+            historyRef.current = new CanvasHistory();
+            resizingNodeIdsRef.current.clear();
             canvasDirtyRef.current = false;
             setSaveState('本地草稿已恢复');
           }
@@ -1505,13 +1522,12 @@ function WorkspaceApp({
         setIsProjectLoading(false);
       }
     },
-    [authUser?.id, setEdges, setNodes],
+    [authUser?.id, initialProject.id, seedAssets, setEdges, setNodes],
   );
 
   useEffect(() => {
     if (initializedRef.current) return;
     initializedRef.current = true;
-    void loadAssets();
     void loadProjectCanvas(initialProject.id, initialProject);
     void refreshProjects().catch((error: unknown) =>
       setNotice({
@@ -1519,10 +1535,10 @@ function WorkspaceApp({
         message: error instanceof Error ? error.message : '项目列表加载失败',
       }),
     );
-  }, [initialProject, loadAssets, loadProjectCanvas, refreshProjects]);
+  }, [initialProject, loadProjectCanvas, refreshProjects]);
 
   const serializeDraft = useCallback(
-    () => JSON.stringify(toCanvasDocument(nodes, edges, canvasRevision, groups)),
+    () => persistenceRef.current.capture({ nodes, edges, groups }).serialize(canvasRevision),
     [nodes, edges, canvasRevision, groups],
   );
   useCanvasDraft(
@@ -1544,25 +1560,12 @@ function WorkspaceApp({
     while (saveRequestRef.current) await saveRequestRef.current;
     if (!canvasDirtyRef.current) return;
     const request = (async () => {
-      const snapshotNodes = structuredClone(nodesRef.current);
-      const snapshotEdges = structuredClone(edgesRef.current);
-      const snapshotGroups = structuredClone(groupsRef.current);
-      const snapshot = JSON.stringify({
-        nodes: snapshotNodes,
-        edges: snapshotEdges,
-        groups: snapshotGroups,
-      });
+      const snapshot = persistenceRef.current.capture(currentCanvasSnapshot());
       setSaveState('保存中');
-      const document = toCanvasDocument(
-        snapshotNodes,
-        snapshotEdges,
-        canvasRevisionRef.current,
-        snapshotGroups,
-      );
       const response = await apiFetch(`${API_BASE_URL}/v1/projects/${projectId}/canvas`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(document),
+        body: snapshot.serialize(canvasRevisionRef.current),
       });
       const result = (await response.json().catch(() => ({}))) as {
         canvas?: CanvasApiDocument;
@@ -1583,16 +1586,10 @@ function WorkspaceApp({
         }
         canvasRevisionRef.current = latestResult.canvas.revision;
         setCanvasRevision(latestResult.canvas.revision);
-        const retryDocument = toCanvasDocument(
-          snapshotNodes,
-          snapshotEdges,
-          latestResult.canvas.revision,
-          snapshotGroups,
-        );
         const retryResponse = await apiFetch(`${API_BASE_URL}/v1/projects/${projectId}/canvas`, {
           method: 'PATCH',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(retryDocument),
+          body: snapshot.serialize(latestResult.canvas.revision),
         });
         const retryResult = (await retryResponse.json().catch(() => ({}))) as {
           canvas?: CanvasApiDocument;
@@ -1603,31 +1600,15 @@ function WorkspaceApp({
         }
         canvasRevisionRef.current = retryResult.canvas.revision;
         setCanvasRevision(retryResult.canvas.revision);
-        if (
-          JSON.stringify({
-            nodes: nodesRef.current,
-            edges: edgesRef.current,
-            groups: groupsRef.current,
-          }) === snapshot
-        ) {
-          canvasDirtyRef.current = false;
-        }
-        setSaveState('已保存到项目');
+        canvasDirtyRef.current = !snapshot.matches(currentCanvasSnapshot());
+        setSaveState(canvasDirtyRef.current ? '有未保存更改' : '已保存到项目');
         return;
       }
       if (!response.ok || !result.canvas) throw new Error(result.error ?? '画布保存失败');
       canvasRevisionRef.current = result.canvas.revision;
       setCanvasRevision(result.canvas.revision);
-      if (
-        JSON.stringify({
-          nodes: nodesRef.current,
-          edges: edgesRef.current,
-          groups: groupsRef.current,
-        }) === snapshot
-      ) {
-        canvasDirtyRef.current = false;
-      }
-      setSaveState('已保存到项目');
+      canvasDirtyRef.current = !snapshot.matches(currentCanvasSnapshot());
+      setSaveState(canvasDirtyRef.current ? '有未保存更改' : '已保存到项目');
     })();
     saveRequestRef.current = request;
     try {
@@ -1635,7 +1616,7 @@ function WorkspaceApp({
     } finally {
       if (saveRequestRef.current === request) saveRequestRef.current = null;
     }
-  }, [projectId]);
+  }, [projectId, currentCanvasSnapshot]);
 
   /**
    * 离开画布前先保存当前编辑。
@@ -1769,6 +1750,8 @@ function WorkspaceApp({
 
   useEffect(() => {
     if (!isCanvasReady || !projectId || !canvasDirtyRef.current) return;
+    // 连续交互只保留本地草稿；松手后沿用 400ms 防抖，显式保存入口不受此门控影响。
+    if (nodes.some((node) => node.dragging || node.resizing)) return;
     const timer = window.setTimeout(async () => {
       try {
         await saveCanvas();
@@ -1781,7 +1764,7 @@ function WorkspaceApp({
       }
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [edges, isCanvasReady, nodes, projectId, saveCanvas]);
+  }, [edges, groups, isCanvasReady, nodes, projectId, saveCanvas]);
 
   const createNodeForAsset = useCallback(
     (asset: Asset, position: { x: number; y: number }): AssetFlowNode => {
@@ -2020,21 +2003,24 @@ function WorkspaceApp({
   );
 
   /** 把本地文件收成项目资源，不在画布上新建节点，供提示词资源条引用。 */
-  const uploadProjectAsset = useCallback(async (file: File) => {
-    setIsUploading(true);
-    setUploadProgress(0);
-    try {
-      const asset = await uploadAsset(file, setUploadProgress);
-      setAssets((current) => [asset, ...current]);
-      return asset;
-    } catch (error) {
-      setNotice({ kind: 'error', message: error instanceof Error ? error.message : '上传失败' });
-      throw error;
-    } finally {
-      setIsUploading(false);
+  const uploadProjectAsset = useCallback(
+    async (file: File) => {
+      setIsUploading(true);
       setUploadProgress(0);
-    }
-  }, []);
+      try {
+        const asset = await uploadAsset(file, setUploadProgress);
+        upsertAssets([asset]);
+        return asset;
+      } catch (error) {
+        setNotice({ kind: 'error', message: error instanceof Error ? error.message : '上传失败' });
+        throw error;
+      } finally {
+        setIsUploading(false);
+        setUploadProgress(0);
+      }
+    },
+    [upsertAssets],
+  );
 
   const uploadFiles = useCallback(
     async (files: File[], position?: { x: number; y: number }) => {
@@ -2047,7 +2033,7 @@ function WorkspaceApp({
         for (const file of files) {
           uploaded.push(await uploadAsset(file, setUploadProgress));
         }
-        setAssets((current) => [...uploaded, ...current]);
+        upsertAssets(uploaded);
         if (position) {
           rememberHistory();
           canvasDirtyRef.current = true;
@@ -2065,7 +2051,7 @@ function WorkspaceApp({
         setUploadProgress(null);
       }
     },
-    [appendNodesAndSelect, createNodeForAsset, rememberHistory],
+    [appendNodesAndSelect, createNodeForAsset, rememberHistory, upsertAssets],
   );
 
   /** 将手动文件保存为独立资产并替换当前节点引用，失败保留草稿与已上传资源。 */
@@ -2090,9 +2076,7 @@ function WorkspaceApp({
           pending?.file === originalFile ? pending.asset : await uploadAsset(file, onProgress);
         pendingNodeUploadsRef.current.set(nodeId, { file: originalFile, asset });
         if (!lifecycle.active) throw new Error('已离开项目，上传资源已保留在资源库');
-        setAssets((current) =>
-          current.some((entry) => entry.id === asset.id) ? current : [asset, ...current],
-        );
+        upsertAssets([asset]);
         const currentNode = nodesRef.current.find((candidate) => candidate.id === nodeId);
         if (!currentNode) throw new Error('节点已删除，上传资源已保留在资源库');
         if (currentNode.data.assetId !== asset.id || !currentNode.data.manualOutput) {
@@ -2129,7 +2113,7 @@ function WorkspaceApp({
         if (lifecycle.active) syncNodeLocks();
       }
     },
-    [isNodeBusy, projectId, rememberHistory, saveCanvas, setNodes, syncNodeLocks],
+    [isNodeBusy, projectId, rememberHistory, saveCanvas, setNodes, syncNodeLocks, upsertAssets],
   );
 
   /** 正文编辑复用文件上传与保存契约；相同失败草稿重试沿用原文件身份。 */
@@ -2810,6 +2794,7 @@ function WorkspaceApp({
     [rememberHistory, effectiveSelectedNodeId, updateNodeDataAndMarkDownstreamStale],
   );
 
+  /** 删除选区及关联边、组成员引用，保留空组；整个变更只占一条撤销记录。 */
   const deleteCanvasSelection = useCallback(
     (nodeIds?: readonly string[]) => {
       const selectedNodeIds = new Set(
@@ -2820,15 +2805,23 @@ function WorkspaceApp({
       );
       if (selectedNodeIds.size === 0 && selectedEdgeIds.size === 0) return false;
       rememberHistory();
-      setNodes((current) => current.filter((node) => !selectedNodeIds.has(node.id)));
-      setEdges((current) =>
-        current.filter(
-          (edge) =>
-            !selectedEdgeIds.has(edge.id) &&
-            !selectedNodeIds.has(edge.source) &&
-            !selectedNodeIds.has(edge.target),
-        ),
+      const remainingNodes = nodesRef.current.filter((node) => !selectedNodeIds.has(node.id));
+      const remainingEdges = edgesRef.current.filter(
+        (edge) =>
+          !selectedEdgeIds.has(edge.id) &&
+          !selectedNodeIds.has(edge.source) &&
+          !selectedNodeIds.has(edge.target),
       );
+      const remainingGroups = pruneGroupMembers(
+        groupsRef.current,
+        remainingNodes.map((node) => node.id),
+      );
+      nodesRef.current = remainingNodes;
+      edgesRef.current = remainingEdges;
+      groupsRef.current = remainingGroups;
+      setNodes(remainingNodes);
+      setEdges(remainingEdges);
+      setGroups(remainingGroups);
       setSelectedNodeId((current) => (current && selectedNodeIds.has(current) ? null : current));
       canvasDirtyRef.current = true;
       return true;
@@ -4198,7 +4191,8 @@ function WorkspaceApp({
 
         <div className="workspace">
           <ResourcePanel
-            assets={assets}
+            assets={pageAssets}
+            pagination={pagination}
             collapsed={isResourceCollapsed}
             isRenameDialogOpen={renamingAsset !== null}
             showArchived={showArchived}

@@ -1063,3 +1063,68 @@ describe('AssetViewerDialog 原文件下载', () => {
     expect(fetchDownload).not.toHaveBeenCalled();
   });
 });
+
+describe('预览交互的按需挂载保护', () => {
+  it('原图 Dialog 打开期间保持交互锁，关闭和卸载时释放', async () => {
+    const change = vi.fn();
+    const view = render(
+      <AssetPreview
+        asset={makeAsset({
+          mediaType: 'image',
+          mimeType: 'image/png',
+          contentUrl: 'https://assets.example/original.png',
+        })}
+        mode="content"
+        onInteractionChange={change}
+      />,
+    );
+    fireEvent.load(screen.getByRole('img', { name: '生成结果' }));
+    fireEvent.click(screen.getByRole('button', { name: '预览图片：生成结果' }));
+    await waitFor(() => expect(change).toHaveBeenLastCalledWith(true));
+    fireEvent.click(screen.getByRole('button', { name: '关闭预览' }));
+    await waitFor(() => expect(change).toHaveBeenLastCalledWith(false));
+    view.unmount();
+    expect(change).toHaveBeenLastCalledWith(false);
+  });
+
+  it('文字编辑草稿未提交时保持交互锁，取消编辑才释放', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('待编辑原文')));
+    const change = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <AssetPreview
+        asset={makeAsset()}
+        mode="content"
+        onTextSave={vi.fn()}
+        onInteractionChange={change}
+      />,
+    );
+    await user.dblClick(await screen.findByLabelText('文字结果'));
+    expect(change).toHaveBeenLastCalledWith(true);
+    const editor = screen.getByRole('textbox', { name: '编辑文字结果' });
+    fireEvent.change(editor, { target: { value: '未提交草稿' } });
+    expect(change).toHaveBeenLastCalledWith(true);
+    fireEvent.keyDown(editor, { key: 'Escape' });
+    expect(change).toHaveBeenLastCalledWith(false);
+  });
+
+  it('音频播放不因移出视口而卸载，暂停后允许释放', () => {
+    const change = vi.fn();
+    const view = render(
+      <AssetPreview
+        asset={makeAsset({
+          mediaType: 'audio',
+          mimeType: 'audio/mpeg',
+          contentUrl: 'https://assets.example/audio.mp3',
+        })}
+        mode="content"
+        onInteractionChange={change}
+      />,
+    );
+    const audio = view.container.querySelector('audio')!;
+    fireEvent.play(audio);
+    expect(change).toHaveBeenLastCalledWith(true);
+    fireEvent.pause(audio);
+    expect(change).toHaveBeenLastCalledWith(false);
+  });
+});

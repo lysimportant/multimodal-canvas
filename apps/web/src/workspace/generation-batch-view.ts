@@ -1,6 +1,7 @@
 import { createContext } from 'react';
 import type { NodeChange } from '@xyflow/react';
 import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
+import { reuseGenerationBatchViews } from './canvas-drag-performance';
 
 /** 批量卡牌的显示状态，只由画布计算，不写入节点数据。 */
 export type GenerationBatchView = {
@@ -20,81 +21,171 @@ export const GenerationBatchViewContext = createContext<{
   onExpandedChange?: ((rootNodeId: string, expanded: boolean) => void) | undefined;
 }>({ views: new Map() });
 
-/**
- * 将同批节点投影为卡牌堆叠，保留真实尺寸、数据和展开坐标。
- * 拖动类只用于显示：收起时整叠跟随首节点，展开时各成员独立。
- * @param nodes 持久化坐标对应的节点列表。
- * @param edges 全部连线；收起成员的连线只在显示层隐藏。
- * @returns 显示节点、显示连线和节点交互状态；找不到有效首节点时保持成员可访问。
- */
-export function projectGenerationBatches(nodes: AssetFlowNode[], edges: FlowEdge[]) {
-  const nodesById = new Map(nodes.map((node) => [node.id, node]));
-  const batches = new Map<string, AssetFlowNode[]>();
-  for (const node of nodes) {
+/** 批次成员索引与显示状态；位置变化不重建成员表。 */
+type BatchTopology = {
+  batches: Array<{ rootIndex: number; members: number[]; expanded: boolean }>;
+  views: ReadonlyMap<string, GenerationBatchView>;
+};
+
+/** 只比较批次拓扑字段，坐标、运行进度与其它参数不使成员缓存失效。 */
+function sameBatchTopology(previous: AssetFlowNode[], next: AssetFlowNode[]): boolean {
+  return (
+    previous.length === next.length &&
+    next.every((node, index) => {
+      const prior = previous[index]!;
+      const a = prior.data.generationBatch;
+      const b = node.data.generationBatch;
+      return (
+        prior.id === node.id &&
+        a?.id === b?.id &&
+        a?.rootNodeId === b?.rootNodeId &&
+        a?.index === b?.index &&
+        prior.data.generationBatchExpanded === node.data.generationBatchExpanded
+      );
+    })
+  );
+}
+
+/** 建立有效批次与稳定显示状态；缺失首节点的成员保持可访问。 */
+function buildBatchTopology(nodes: AssetFlowNode[]): BatchTopology {
+  const indexes = new Map(nodes.map((node, index) => [node.id, index]));
+  const membersByRoot = new Map<number, number[]>();
+  nodes.forEach((node, index) => {
     const batch = node.data.generationBatch;
-    if (!batch) continue;
-    const root = nodesById.get(batch.rootNodeId);
+    if (!batch) return;
+    const rootIndex = indexes.get(batch.rootNodeId);
+    if (rootIndex === undefined) return;
+    const root = nodes[rootIndex]!;
     if (
-      !root ||
       root.data.generationBatch?.id !== batch.id ||
       root.data.generationBatch.rootNodeId !== root.id ||
       root.data.generationBatch.index !== 0
-    ) {
-      continue;
-    }
-    const members = batches.get(root.id) ?? [];
-    members.push(node);
-    batches.set(root.id, members);
-  }
-
+    )
+      return;
+    const members = membersByRoot.get(rootIndex) ?? [];
+    members.push(index);
+    membersByRoot.set(rootIndex, members);
+  });
   const views = new Map<string, GenerationBatchView>();
-  const projected = new Map<string, AssetFlowNode>();
-  for (const [rootId, members] of batches) {
+  const batches: BatchTopology['batches'] = [];
+  for (const [rootIndex, members] of membersByRoot) {
     if (members.length < 2) continue;
-    const root = nodesById.get(rootId)!;
+    const root = nodes[rootIndex]!;
     const expanded = root.data.generationBatchExpanded === true;
     members.sort(
-      (left, right) => left.data.generationBatch!.index - right.data.generationBatch!.index,
+      (a, b) => nodes[a]!.data.generationBatch!.index - nodes[b]!.data.generationBatch!.index,
     );
-    const baseZIndex = Math.max(...members.map((node) => node.zIndex ?? 0));
-    members.forEach((node, index) => {
-      const hidden = !expanded && node.id !== rootId;
-      /** 后卡禁用原生拖动，没有 React Flow 自身的拖动类，需沿用首节点状态。 */
-      const dragging = expanded ? node.dragging === true : root.dragging === true;
-      views.set(node.id, { rootNodeId: rootId, count: members.length, expanded, hidden });
-      projected.set(node.id, {
-        ...node,
-        className:
-          `${node.className ?? ''} is-generation-batch${hidden ? ' is-generation-batch-hidden' : ''}${dragging ? ' is-generation-batch-dragging' : ''}`.trim(),
-        ...(!expanded ? { zIndex: baseZIndex + members.length - index } : {}),
-        ...(hidden
-          ? {
-              position: { x: root.position.x + index * 10, y: root.position.y + index * 10 },
-              selected: false,
-              draggable: false,
-              selectable: false,
-              connectable: false,
-              focusable: false,
-              domAttributes: { ...node.domAttributes, 'aria-hidden': true },
-            }
-          : {}),
+    batches.push({ rootIndex, members, expanded });
+    for (const index of members) {
+      const node = nodes[index]!;
+      views.set(node.id, {
+        rootNodeId: root.id,
+        count: members.length,
+        expanded,
+        hidden: !expanded && node.id !== root.id,
       });
-    });
-  }
-  /** 没有新增批次隐藏时复用显示边列表，保留拖动暂隐投影的缓存。 */
-  let projectedEdges = edges;
-  for (let index = 0; index < edges.length; index++) {
-    const edge = edges[index]!;
-    if (!edge.hidden && (views.get(edge.source)?.hidden || views.get(edge.target)?.hidden)) {
-      if (projectedEdges === edges) projectedEdges = edges.slice();
-      projectedEdges[index] = { ...edge, hidden: true };
     }
   }
-  return {
-    nodes: nodes.map((node) => projected.get(node.id) ?? node),
-    edges: projectedEdges,
-    views,
+  return { batches, views };
+}
+
+/** 单个批次节点最近一次几何投影；不保存历史帧。 */
+type ProjectedBatchNode = {
+  input: AssetFlowNode;
+  dragging: boolean;
+  zIndex: number | undefined;
+  x: number;
+  y: number;
+  output: AssetFlowNode;
+};
+
+/**
+ * 创建画布实例独享的批次投影缓存；只重建改变的节点，纯位移复用成员表和边。
+ * @returns 接收真实节点/显示边并返回只读显示投影的函数；缓存不用于持久化。
+ * @remarks 同一实例可反复调用；删除/换项目会替换拓扑并释放旧节点缓存。
+ */
+export function createGenerationBatchProjector() {
+  let previousNodes: AssetFlowNode[] = [];
+  let topology: BatchTopology = { batches: [], views: new Map() };
+  const projected = new Map<string, ProjectedBatchNode>();
+  let previousEdges: FlowEdge[] | undefined;
+  let projectedEdges: FlowEdge[] = [];
+  return (nodes: AssetFlowNode[], edges: FlowEdge[]) => {
+    const topologyChanged = !sameBatchTopology(previousNodes, nodes);
+    if (topologyChanged) {
+      const next = buildBatchTopology(nodes);
+      topology = { ...next, views: reuseGenerationBatchViews(topology.views, next.views) };
+      projected.clear();
+    }
+    previousNodes = nodes;
+    const displayNodes = topology.batches.length ? nodes.slice() : nodes;
+    for (const { rootIndex, members, expanded } of topology.batches) {
+      const root = nodes[rootIndex]!;
+      const baseZIndex = expanded
+        ? 0
+        : Math.max(...members.map((index) => nodes[index]!.zIndex ?? 0));
+      members.forEach((nodeIndex, index) => {
+        const node = nodes[nodeIndex]!;
+        const hidden = !expanded && node.id !== root.id;
+        const dragging = expanded ? node.dragging === true : root.dragging === true;
+        const zIndex = expanded ? node.zIndex : baseZIndex + members.length - index;
+        const x = hidden ? root.position.x + index * 10 : node.position.x;
+        const y = hidden ? root.position.y + index * 10 : node.position.y;
+        const cached = projected.get(node.id);
+        if (
+          cached?.input === node &&
+          cached.dragging === dragging &&
+          cached.zIndex === zIndex &&
+          cached.x === x &&
+          cached.y === y
+        ) {
+          displayNodes[nodeIndex] = cached.output;
+          return;
+        }
+        const output: AssetFlowNode = {
+          ...node,
+          className:
+            `${node.className ?? ''} is-generation-batch${hidden ? ' is-generation-batch-hidden' : ''}${dragging ? ' is-generation-batch-dragging' : ''}`.trim(),
+          ...(!expanded ? { zIndex } : {}),
+          ...(hidden
+            ? {
+                position: { x, y },
+                selected: false,
+                draggable: false,
+                selectable: false,
+                connectable: false,
+                focusable: false,
+                domAttributes: { ...node.domAttributes, 'aria-hidden': true },
+              }
+            : {}),
+        };
+        projected.set(node.id, { input: node, dragging, zIndex, x, y, output });
+        displayNodes[nodeIndex] = output;
+      });
+    }
+    if (topologyChanged || previousEdges !== edges) {
+      previousEdges = edges;
+      projectedEdges = edges;
+      edges.forEach((edge, index) => {
+        if (
+          !edge.hidden &&
+          (topology.views.get(edge.source)?.hidden || topology.views.get(edge.target)?.hidden)
+        ) {
+          if (projectedEdges === edges) projectedEdges = edges.slice();
+          projectedEdges[index] = { ...edge, hidden: true };
+        }
+      });
+    }
+    return { nodes: displayNodes, edges: projectedEdges, views: topology.views };
   };
+}
+
+/**
+ * 一次性投影批量卡牌，保留原始坐标、尺寸、连接与参数；画布热路径应复用 projector。
+ * @returns 不可写回文档的显示节点、显示边及批次状态。
+ */
+export function projectGenerationBatches(nodes: AssetFlowNode[], edges: FlowEdge[]) {
+  return createGenerationBatchProjector()(nodes, edges);
 }
 
 /**

@@ -1,3 +1,4 @@
+import './canvas-drag-performance.css';
 import { Button } from '@multimodal-canvas/ui';
 import {
   Background,
@@ -10,6 +11,7 @@ import {
   type Connection,
   type ConnectionLineComponentProps,
   type FinalConnectionState,
+  type OnConnectStart,
   type OnConnectStartParams,
   type OnEdgesChange,
   type OnNodesChange,
@@ -51,15 +53,10 @@ import { isActiveRunStatus } from './empty-node-rules';
 import { resolveImageEditSourcePreview } from './image-edit-source-preview';
 import {
   GenerationBatchViewContext,
-  type GenerationBatchView,
-  projectGenerationBatches,
+  createGenerationBatchProjector,
   reconcileGenerationBatchChanges,
 } from './generation-batch-view';
-import {
-  projectDraggingEdges,
-  reuseGenerationBatchViews,
-  reuseNodeContentSnapshot,
-} from './canvas-drag-performance';
+import { projectDraggingEdges, reuseNodeContentSnapshot } from './canvas-drag-performance';
 import type { NodeRunTarget } from './fork-generate-node';
 import type { ClearActionCounts } from './ClearCanvasMenu';
 import { CanvasGroupLayer } from './CanvasGroupLayer';
@@ -81,6 +78,7 @@ import {
   type NodeResizeHandler,
 } from './AssetNode';
 import { CanvasNodeToolbar } from './CanvasNodeToolbar';
+import { CanvasPerformanceContext, LARGE_CANVAS_NODE_COUNT } from './canvas-render-detail';
 import {
   CanvasEdgeAppearanceProvider,
   canvasEdgeAppearanceDefaults,
@@ -132,6 +130,14 @@ const NATIVE_CONTEXT_MENU_SELECTOR = [
 
 // Large persisted canvases must be able to fit below React Flow's default 0.5 zoom.
 const FIT_VIEW_MIN_ZOOM = 0.25;
+/** 静态配置不随拖动重建，避免 React Flow 对每个新引用分别广播全图 store。 */
+const FLOW_FIT_VIEW_OPTIONS = { padding: 0.3, maxZoom: 1.1, minZoom: FIT_VIEW_MIN_ZOOM };
+/** 新连线保留既有默认路径与静止外观。 */
+const FLOW_DEFAULT_EDGE_OPTIONS = { type: 'default', animated: false };
+/** 未完成连接的预览样式不依赖节点位置。 */
+const FLOW_CONNECTION_LINE_STYLE = { stroke: '#18794e', strokeWidth: 2 };
+/** 归属展示选项固定，不在位置帧中创建新对象。 */
+const FLOW_PRO_OPTIONS = { hideAttribution: true };
 /** 画布连线使用带路径形态与特效的默认边，几何与叠加层都由偏好驱动。 */
 const canvasEdgeTypes = { default: FlowingCanvasEdge };
 
@@ -388,22 +394,40 @@ export function WorkflowCanvas({
     [edges, draggingNodeIdsKey],
   );
   /** 拖动和批量折叠都只投影显示状态，不修改真实节点与连线。 */
-  const previousBatchViews = useRef<ReadonlyMap<string, GenerationBatchView>>(new Map());
-  const batchProjection = useMemo(() => {
-    const projection = projectGenerationBatches(nodes, dragDisplayEdges);
-    return {
-      ...projection,
-      views: reuseGenerationBatchViews(previousBatchViews.current, projection.views),
-    };
-  }, [nodes, dragDisplayEdges]);
-  useLayoutEffect(() => {
-    previousBatchViews.current = batchProjection.views;
-  }, [batchProjection.views]);
+  const projectBatches = useMemo(() => createGenerationBatchProjector(), []);
+  const batchProjection = useMemo(
+    () => projectBatches(nodes, dragDisplayEdges),
+    [nodes, dragDisplayEdges, projectBatches],
+  );
   /** 事件读取最近提交的节点和回调，位置变化不向所有节点广播选择上下文。 */
-  const nodeActionsRef = useRef({ nodes, onNodeSelect, onDeleteNode, onOpenRequestPrompt });
+  const nodeActionsRef = useRef({
+    nodes,
+    onNodeSelect,
+    onDeleteNode,
+    onOpenRequestPrompt,
+    onNodesChange,
+    onConnect,
+    batchViews: batchProjection.views,
+  });
   useLayoutEffect(() => {
-    nodeActionsRef.current = { nodes, onNodeSelect, onDeleteNode, onOpenRequestPrompt };
-  }, [nodes, onNodeSelect, onDeleteNode, onOpenRequestPrompt]);
+    nodeActionsRef.current = {
+      nodes,
+      onNodeSelect,
+      onDeleteNode,
+      onOpenRequestPrompt,
+      onNodesChange,
+      onConnect,
+      batchViews: batchProjection.views,
+    };
+  }, [
+    nodes,
+    onNodeSelect,
+    onDeleteNode,
+    onOpenRequestPrompt,
+    onNodesChange,
+    onConnect,
+    batchProjection.views,
+  ]);
   const batchContext = useMemo(
     () => ({ views: batchProjection.views, onExpandedChange: onBatchExpandedChange }),
     [batchProjection.views, onBatchExpandedChange],
@@ -423,11 +447,30 @@ export function WorkflowCanvas({
   const isNodeBusy = (node: AssetFlowNode) =>
     Boolean(busyNodeIds?.has(node.id)) || isActiveRunStatus(node.data.runStatus);
   /** React Flow 只接收显示坐标；历史记录和保存始终接收真实坐标。 */
-  const handleNodesChange = useCallback<OnNodesChange<AssetFlowNode>>(
-    (changes) =>
-      onNodesChange(reconcileGenerationBatchChanges(changes, nodes, batchProjection.views)),
-    [batchProjection.views, nodes, onNodesChange],
-  );
+  const handleNodesChange = useCallback<OnNodesChange<AssetFlowNode>>((changes) => {
+    const current = nodeActionsRef.current;
+    current.onNodesChange(
+      reconcileGenerationBatchChanges(changes, current.nodes, current.batchViews),
+    );
+  }, []);
+  /** 连线起点只写 ref，拖动节点无需重新注册连接事件。 */
+  const handleConnectStart = useCallback<OnConnectStart>((_event, params) => {
+    connectionStartRef.current = params;
+  }, []);
+  /** 拖线后的首个背景点击不清空新菜单，普通点击仍清除节点选择。 */
+  const handlePaneClick = useCallback(() => {
+    if (suppressPaneClickRef.current) {
+      suppressPaneClickRef.current = false;
+      return;
+    }
+    setContextMenu(null);
+    onClearNodeSelection();
+  }, [onClearNodeSelection]);
+  /** 资源拖入画布保持复制语义，不随节点位置重新绑定。 */
+  const handleDragOver = useCallback((event: DragEvent) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+  }, []);
   /** 连接线外观；路径形态与特效互相独立，选择任一都不会重置另一个。 */
   const edgeAppearance = useMemo<CanvasEdgeAppearance>(
     () => ({ pathStyle: edgePathStyle, effect: edgeEffect }),
@@ -622,6 +665,7 @@ export function WorkflowCanvas({
 
   const handleConnectEnd = useCallback(
     (event: MouseEvent | TouchEvent, state: FinalConnectionState) => {
+      const { nodes, onConnect } = nodeActionsRef.current;
       const start = connectionStartRef.current;
       connectionStartRef.current = null;
       if (!start?.nodeId || state.toHandle) return;
@@ -698,26 +742,24 @@ export function WorkflowCanvas({
         returnFocusTo: canvasAreaRef.current,
       });
     },
-    [nodes, onConnect, screenToFlowPosition],
+    [screenToFlowPosition],
   );
 
-  const handleFlowConnect = useCallback(
-    (connection: Connection) => {
-      if (needsVideoImageRoleChoice(connection, nodes)) {
-        const nodeElement = document.querySelector(
-          `.react-flow__node[data-id="${CSS.escape(connection.target ?? '')}"]`,
-        );
-        const rect = nodeElement?.getBoundingClientRect();
-        setVideoImageRolePicker({
-          connection,
-          clientPosition: rect ? { x: rect.left, y: rect.top + rect.height / 2 } : { x: 24, y: 24 },
-        });
-        return;
-      }
-      onConnect(connection);
-    },
-    [nodes, onConnect],
-  );
+  const handleFlowConnect = useCallback((connection: Connection) => {
+    const { nodes, onConnect } = nodeActionsRef.current;
+    if (needsVideoImageRoleChoice(connection, nodes)) {
+      const nodeElement = document.querySelector(
+        `.react-flow__node[data-id="${CSS.escape(connection.target ?? '')}"]`,
+      );
+      const rect = nodeElement?.getBoundingClientRect();
+      setVideoImageRolePicker({
+        connection,
+        clientPosition: rect ? { x: rect.left, y: rect.top + rect.height / 2 } : { x: 24, y: 24 },
+      });
+      return;
+    }
+    onConnect(connection);
+  }, []);
 
   const handleVideoImageRoleSelect = useCallback(
     (role: PortRole) => {
@@ -866,7 +908,7 @@ export function WorkflowCanvas({
   return (
     <section
       ref={canvasAreaRef}
-      className={`canvas-area${quickEditorNode ? ' has-quick-editor' : ''}`}
+      className={`canvas-area${quickEditorNode ? ' has-quick-editor' : ''}${draggingNodeIdsKey !== '[]' ? ' is-node-dragging' : ''}`}
       data-edge-path-style={edgePathStyle}
       data-edge-effect={edgeEffect}
       aria-label="工作流画布"
@@ -915,99 +957,77 @@ export function WorkflowCanvas({
                           value={onOpenRequestPrompt ? handleOpenRequestPrompt : null}
                         >
                           <NodeQuickEditorIdContext.Provider value={quickEditorNode?.id ?? null}>
-                            <GenerationBatchViewContext.Provider value={batchContext}>
-                              <CanvasEdgeAppearanceProvider appearance={edgeAppearance}>
-                                {/* 组空白区域可选中、拖动，端口、连线与节点仍在组上层交互。 */}
-                                <ViewportGroupLayer
-                                  groups={groups}
-                                  nodes={nodes}
-                                  {...(dropTargetGroupId ? { dropTargetGroupId } : {})}
-                                  {...(selectedGroupId ? { selectedGroupId } : {})}
-                                  {...(onSelectGroup
-                                    ? { onSelectGroup: (id) => onSelectGroup(id) }
-                                    : {})}
-                                  {...(onRenameGroup ? { onRenameGroup } : {})}
-                                  {...(onDissolveGroup ? { onDissolveGroup } : {})}
-                                  {...(onTranslateGroup ? { onTranslateGroup } : {})}
-                                  {...(onResizeGroup ? { onResizeGroup } : {})}
-                                  {...(onGroupInteractionStart ? { onGroupInteractionStart } : {})}
-                                />
-                                <ReactFlow
-                                  nodes={batchProjection.nodes}
-                                  edges={batchProjection.edges}
-                                  nodeTypes={nodeTypes}
-                                  edgeTypes={canvasEdgeTypes}
-                                  connectionLineComponent={connectionLineComponent}
-                                  onNodesChange={handleNodesChange}
-                                  onEdgesChange={onEdgesChange}
-                                  // 删除统一走 App 的控件边界、历史记录及保存，避免库默认 Backspace 穿透菜单。
-                                  deleteKeyCode={null}
-                                  onConnect={handleFlowConnect}
-                                  onConnectStart={(_event, params) => {
-                                    connectionStartRef.current = params;
-                                  }}
-                                  onConnectEnd={handleConnectEnd}
-                                  onNodeDragStart={onNodeDragStart}
-                                  onNodeDrag={
-                                    onNodeDrag
-                                      ? (event, node) => onNodeDrag(event, node as AssetFlowNode)
-                                      : undefined
-                                  }
-                                  onNodeDragStop={
-                                    onNodeDragStop
-                                      ? (event, node) =>
-                                          onNodeDragStop(event, node as AssetFlowNode)
-                                      : undefined
-                                  }
-                                  onMove={reportCanvasCenter}
-                                  onDrop={handleDrop}
-                                  onDragOver={(event) => {
-                                    event.preventDefault();
-                                    event.dataTransfer.dropEffect = 'copy';
-                                  }}
-                                  onNodeClick={handleNodeClick}
-                                  onNodeContextMenu={handleNodeContextMenu}
-                                  onPaneContextMenu={handlePaneContextMenu}
-                                  onPaneClick={() => {
-                                    if (suppressPaneClickRef.current) {
-                                      suppressPaneClickRef.current = false;
-                                      return;
-                                    }
-                                    setContextMenu(null);
-                                    onClearNodeSelection();
-                                  }}
-                                  fitView
-                                  minZoom={FIT_VIEW_MIN_ZOOM}
-                                  fitViewOptions={{
-                                    padding: 0.3,
-                                    maxZoom: 1.1,
-                                    minZoom: FIT_VIEW_MIN_ZOOM,
-                                  }}
-                                  connectionLineStyle={{ stroke: '#18794e', strokeWidth: 2 }}
-                                  defaultEdgeOptions={{
-                                    type: 'default',
-                                    animated: false,
-                                  }}
-                                  proOptions={{ hideAttribution: true }}
-                                >
-                                  {background !== 'blank' && (
-                                    <Background
-                                      color="#cbd5d0"
-                                      gap={background === 'lines' ? 28 : 24}
-                                      size={background === 'cross' ? 7 : 1.2}
-                                      variant={
-                                        background === 'lines'
-                                          ? BackgroundVariant.Lines
-                                          : background === 'cross'
-                                            ? BackgroundVariant.Cross
-                                            : BackgroundVariant.Dots
-                                      }
-                                    />
-                                  )}
-                                  <Controls showInteractive={false} position="bottom-right" />
-                                </ReactFlow>
-                              </CanvasEdgeAppearanceProvider>
-                            </GenerationBatchViewContext.Provider>
+                            <CanvasPerformanceContext.Provider
+                              value={nodes.length >= LARGE_CANVAS_NODE_COUNT}
+                            >
+                              <GenerationBatchViewContext.Provider value={batchContext}>
+                                <CanvasEdgeAppearanceProvider appearance={edgeAppearance}>
+                                  {/* 组空白区域可选中、拖动，端口、连线与节点仍在组上层交互。 */}
+                                  <ViewportGroupLayer
+                                    groups={groups}
+                                    nodes={nodes}
+                                    {...(dropTargetGroupId ? { dropTargetGroupId } : {})}
+                                    {...(selectedGroupId ? { selectedGroupId } : {})}
+                                    {...(onSelectGroup
+                                      ? { onSelectGroup: (id) => onSelectGroup(id) }
+                                      : {})}
+                                    {...(onRenameGroup ? { onRenameGroup } : {})}
+                                    {...(onDissolveGroup ? { onDissolveGroup } : {})}
+                                    {...(onTranslateGroup ? { onTranslateGroup } : {})}
+                                    {...(onResizeGroup ? { onResizeGroup } : {})}
+                                    {...(onGroupInteractionStart
+                                      ? { onGroupInteractionStart }
+                                      : {})}
+                                  />
+                                  <ReactFlow
+                                    nodes={batchProjection.nodes}
+                                    edges={batchProjection.edges}
+                                    nodeTypes={nodeTypes}
+                                    edgeTypes={canvasEdgeTypes}
+                                    connectionLineComponent={connectionLineComponent}
+                                    onNodesChange={handleNodesChange}
+                                    onEdgesChange={onEdgesChange}
+                                    // 删除统一走 App 的控件边界、历史记录及保存，避免库默认 Backspace 穿透菜单。
+                                    deleteKeyCode={null}
+                                    onConnect={handleFlowConnect}
+                                    onConnectStart={handleConnectStart}
+                                    onConnectEnd={handleConnectEnd}
+                                    onNodeDragStart={onNodeDragStart}
+                                    onNodeDrag={onNodeDrag}
+                                    onNodeDragStop={onNodeDragStop}
+                                    onMove={reportCanvasCenter}
+                                    onDrop={handleDrop}
+                                    onDragOver={handleDragOver}
+                                    onNodeClick={handleNodeClick}
+                                    onNodeContextMenu={handleNodeContextMenu}
+                                    onPaneContextMenu={handlePaneContextMenu}
+                                    onPaneClick={handlePaneClick}
+                                    fitView
+                                    minZoom={FIT_VIEW_MIN_ZOOM}
+                                    fitViewOptions={FLOW_FIT_VIEW_OPTIONS}
+                                    connectionLineStyle={FLOW_CONNECTION_LINE_STYLE}
+                                    defaultEdgeOptions={FLOW_DEFAULT_EDGE_OPTIONS}
+                                    proOptions={FLOW_PRO_OPTIONS}
+                                  >
+                                    {background !== 'blank' && (
+                                      <Background
+                                        color="#cbd5d0"
+                                        gap={background === 'lines' ? 28 : 24}
+                                        size={background === 'cross' ? 7 : 1.2}
+                                        variant={
+                                          background === 'lines'
+                                            ? BackgroundVariant.Lines
+                                            : background === 'cross'
+                                              ? BackgroundVariant.Cross
+                                              : BackgroundVariant.Dots
+                                        }
+                                      />
+                                    )}
+                                    <Controls showInteractive={false} position="bottom-right" />
+                                  </ReactFlow>
+                                </CanvasEdgeAppearanceProvider>
+                              </GenerationBatchViewContext.Provider>
+                            </CanvasPerformanceContext.Provider>
                           </NodeQuickEditorIdContext.Provider>
                         </NodePromptContext.Provider>
                       </NodeImageEditContext.Provider>

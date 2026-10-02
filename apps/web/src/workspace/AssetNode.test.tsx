@@ -3,6 +3,7 @@ import '@testing-library/jest-dom/vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Profiler } from 'react';
+import { CanvasPerformanceContext } from './canvas-render-detail';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /** 模拟视口外部存储，真实触发订阅更新而不是依赖父组件重新渲染。 */
@@ -20,19 +21,28 @@ const viewportMock = vi.hoisted(() => ({
   },
 }));
 const updateNodeInternalsMock = vi.hoisted(() => vi.fn());
+const nodeConnectionsMock = vi.hoisted(() => vi.fn(() => []));
 
 vi.mock('@xyflow/react', async () => {
   const { useRef, useSyncExternalStore } = await import('react');
   /** 按 selector 与 equalityFn 缓存快照，复现 React Flow 的订阅语义。 */
   function useStoreMock<T>(
-    selector: (state: { transform: [number, number, number] }) => T,
+    selector: (state: { transform: [number, number, number]; width: number; height: number }) => T,
     equalityFn: (previous: T, next: T) => boolean = Object.is,
   ): T {
     const selected = useRef({
-      value: selector({ transform: [viewportMock.x, viewportMock.y, viewportMock.zoom] }),
+      value: selector({
+        transform: [viewportMock.x, viewportMock.y, viewportMock.zoom],
+        width: 1280,
+        height: 720,
+      }),
     });
     const getSnapshot = () => {
-      const value = selector({ transform: [viewportMock.x, viewportMock.y, viewportMock.zoom] });
+      const value = selector({
+        transform: [viewportMock.x, viewportMock.y, viewportMock.zoom],
+        width: 1280,
+        height: 720,
+      });
       if (!equalityFn(selected.current.value, value)) selected.current.value = value;
       return selected.current.value;
     };
@@ -48,6 +58,7 @@ vi.mock('@xyflow/react', async () => {
       return { x, y, zoom };
     },
     useEdges: () => [],
+    useNodeConnections: nodeConnectionsMock,
     useUpdateNodeInternals: () => updateNodeInternalsMock,
     Handle: () => null,
     NodeResizer: ({
@@ -1388,4 +1399,89 @@ describe('AssetNode result presentation', () => {
     );
     expect(screen.getByRole('alert')).toHaveTextContent('产物不存在或已失效');
   });
+});
+
+describe('大画布按需显示', () => {
+  it('图片节点不订阅全图连线；视频仅订阅自身入边', () => {
+    renderNode(makeNode({ mediaType: 'image' }));
+    expect(nodeConnectionsMock).not.toHaveBeenCalled();
+    renderNode(makeNode({ mediaType: 'video' }));
+    expect(nodeConnectionsMock).toHaveBeenCalledWith({ id: makeNode().id, handleType: 'target' });
+  });
+
+  it('视口外只留摘要和外壳；选中与移入视口恢复，尺寸不由内容改变', () => {
+    const node = makeNode();
+    const scene = (selected: boolean) => (
+      <CanvasPerformanceContext.Provider value={true}>
+        <AssetNode
+          {...({
+            id: node.id,
+            data: node.data,
+            selected,
+            positionAbsoluteX: 2200,
+            positionAbsoluteY: 100,
+            width: 220,
+            height: 160,
+          } as NodeProps<AssetFlowNode>)}
+        />
+      </CanvasPerformanceContext.Provider>
+    );
+    const view = render(scene(false));
+    const shell = view.container.querySelector('.flow-asset-node')!;
+    expect(shell).toHaveAttribute('data-render-detail', 'offscreen');
+    expect(view.container.querySelector('.flow-node-floating-controls')).toBeNull();
+    view.rerender(scene(true));
+    expect(shell).toHaveAttribute('data-render-detail', 'full');
+    expect(screen.getByRole('button', { name: '查看节点信息' })).toBeVisible();
+    view.rerender(scene(false));
+    updateViewport({ x: -1700 });
+    expect(shell).toHaveAttribute('data-render-detail', 'full');
+    expect(shell).not.toHaveStyle({ width: '220px' });
+    expect(view.container.querySelector('.flow-node-floating-controls')).toBeNull();
+  });
+
+  it('远景使用摘要，悬停恢复完整操作，隐藏控件不订阅每一级缩放', () => {
+    const node = makeNode();
+    const onRender = vi.fn();
+    const view = render(
+      <CanvasPerformanceContext.Provider value={true}>
+        <Profiler id="large-node" onRender={onRender}>
+          <AssetNode
+            {...({
+              id: node.id,
+              data: node.data,
+              positionAbsoluteX: 100,
+              positionAbsoluteY: 100,
+              width: 220,
+              height: 160,
+            } as NodeProps<AssetFlowNode>)}
+          />
+        </Profiler>
+      </CanvasPerformanceContext.Provider>,
+    );
+    const shell = view.container.querySelector('.flow-asset-node')!;
+    updateViewport({ zoom: 0.3 });
+    expect(shell).toHaveAttribute('data-render-detail', 'compact');
+    onRender.mockClear();
+    updateViewport({ zoom: 0.31 });
+    expect(onRender).not.toHaveBeenCalled();
+    fireEvent.mouseEnter(shell);
+    expect(shell).toHaveAttribute('data-render-detail', 'full');
+    expect(screen.getByRole('button', { name: '查看节点信息' })).toBeVisible();
+    fireEvent.mouseLeave(shell);
+    expect(shell).toHaveAttribute('data-render-detail', 'compact');
+  });
+});
+
+it('首次挂载沿用共享端口测量，只有语义端口布局改变才强制重测', () => {
+  const node = makeNode({ mediaType: 'video' });
+  const scene = (data: AssetFlowNode['data']) => (
+    <AssetNode {...({ id: node.id, data } as NodeProps<AssetFlowNode>)} />
+  );
+  const view = render(scene(node.data));
+  expect(updateNodeInternalsMock).not.toHaveBeenCalled();
+  view.rerender(scene({ ...node.data, prompt: '仅提示词变化' }));
+  expect(updateNodeInternalsMock).not.toHaveBeenCalled();
+  view.rerender(scene({ ...node.data, videoMode: 'first_last_frame' }));
+  expect(updateNodeInternalsMock).toHaveBeenCalledExactlyOnceWith(node.id);
 });

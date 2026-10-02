@@ -83,28 +83,42 @@ export async function createImages(page: Page): Promise<ImageSet> {
 async function json(route: Route, body: unknown) {
   await route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
 }
-/** 创建纯内存画布；图片大小不会改变节点外框，五个文字节点不含远程内容。 */
-function makeCanvas(): CanvasDocument {
+/** 合成场景规模；可增加连线以验证按需内容不破坏端口。 */
+type FixtureScale = Pick<typeof scenario, 'nodes' | 'imageNodes' | 'sidebarImages'> & {
+  withEdges?: boolean;
+};
+
+/** 创建指定规模的纯内存画布，不改变节点固定外框。 */
+function makeCanvas(scale: FixtureScale = scenario): CanvasDocument {
   return {
     revision: 1,
-    nodes: Array.from({ length: scenario.nodes }, (_, index) => ({
+    nodes: Array.from({ length: scale.nodes }, (_, index) => ({
       id: `thumb-node-${index}`,
-      type: index < scenario.imageNodes ? ('image' as const) : ('text' as const),
+      type: index < scale.imageNodes ? ('image' as const) : ('text' as const),
       position: { x: 90 + (index % 7) * 250, y: 110 + Math.floor(index / 7) * 190 },
       width: 220,
       height: 160,
       data: {
         label: `图片 ${String(index).padStart(2, '0')}`,
-        mediaType: index < scenario.imageNodes ? ('image' as const) : ('text' as const),
+        mediaType: index < scale.imageNodes ? ('image' as const) : ('text' as const),
         mode: 'generate' as const,
         enabled: true,
         prompt: 'Synthetic isolated thumbnail performance scene.',
-        ...(index < scenario.imageNodes
+        ...(index < scale.imageNodes
           ? { assetId: assetId(index), mimeType: 'image/png', contentUrl: contentUrl(index) }
           : {}),
       },
     })),
-    edges: [],
+    edges: scale.withEdges
+      ? Array.from({ length: Math.max(0, scale.imageNodes - 7) }, (_, index) => ({
+          id: `thumb-edge-${index}`,
+          sourceNodeId: `thumb-node-${index}`,
+          targetNodeId: `thumb-node-${index + 7}`,
+          sourceHandle: 'output:image',
+          targetHandle: 'input:content',
+          order: 0,
+        }))
+      : [],
   };
 }
 /**
@@ -112,7 +126,12 @@ function makeCanvas(): CanvasDocument {
  * @param baseURL 独立本机 Vite 地址；8080、非本机地址与缺少端口立即拒绝。
  * @returns 请求计数、错误、合成原图、版本切换入口；不会写真实项目或调用 Provider。
  */
-export async function installFixture(page: Page, baseURL: string | undefined) {
+export async function installFixture(
+  page: Page,
+  baseURL: string | undefined,
+  options: Partial<FixtureScale> = {},
+) {
+  const scale = { ...scenario, ...options };
   page.setDefaultTimeout(15000);
   if (!baseURL) throw new Error('缺少隔离 Vite baseURL');
   const origin = new URL(baseURL);
@@ -135,7 +154,7 @@ export async function installFixture(page: Page, baseURL: string | undefined) {
   const errors: string[] = [];
   const token = `synthetic-thumbnail-${randomBytes(16).toString('hex')}`;
   const versions = new Map<string, number>();
-  let canvas = makeCanvas();
+  let canvas = makeCanvas(scale);
   let canvasWrites = 0;
   let blockedRequests = 0;
   const user = {
@@ -254,7 +273,7 @@ export async function installFixture(page: Page, baseURL: string | undefined) {
     if (path.endsWith('/request-prompts')) return json(route, { records: [] });
     if (path === '/v1/assets')
       return json(route, {
-        assets: Array.from({ length: scenario.sidebarImages }, (_, index) => ({
+        assets: Array.from({ length: scale.sidebarImages }, (_, index) => ({
           id: assetId(index),
           name: `素材 ${String(index).padStart(2, '0')}`,
           mediaType: 'image',

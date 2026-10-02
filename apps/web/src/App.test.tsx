@@ -235,7 +235,12 @@ function installApi() {
     if (name === '/v1/assets' && method === 'GET') return json({ assets: resourceAssets });
     if (name === '/v1/assets/' + asset.id && method === 'PATCH') {
       if (renameFailure) return json({ error: renameFailure }, 500);
-      return json({ asset: { ...asset, ...JSON.parse(String(init?.body)) } });
+      const updated = {
+        ...resourceAssets.find((entry) => entry.id === asset.id)!,
+        ...JSON.parse(String(init?.body)),
+      };
+      resourceAssets = resourceAssets.map((entry) => (entry.id === asset.id ? updated : entry));
+      return json({ asset: updated });
     }
     if (name === '/v1/projects' && method === 'GET')
       return json({ projects: [project, secondProject] });
@@ -481,14 +486,18 @@ describe('App 资源抽屉集成', () => {
       const path = new URL(String(input), 'http://localhost:3000').pathname;
       if (path === '/v1/assets/' + asset.id + '/archive' && init?.method === 'POST') {
         currentAsset = { ...currentAsset, status: 'archived' };
+        resourceAssets = [currentAsset];
         return json({ asset: currentAsset });
       }
       if (path === '/v1/assets/' + asset.id + '/restore' && init?.method === 'POST') {
         currentAsset = { ...currentAsset, name: '最新资源', status: 'ready', latestVersion: 2 };
+        resourceAssets = [currentAsset];
         return json({ asset: currentAsset });
       }
-      if (path === '/v1/assets/' + asset.id && init?.method === 'DELETE')
+      if (path === '/v1/assets/' + asset.id && init?.method === 'DELETE') {
+        resourceAssets = [];
         return new Response(null, { status: 204 });
+      }
       return api(input, init);
     });
     await renderCanvas(0);
@@ -496,14 +505,14 @@ describe('App 资源抽屉集成', () => {
     const previousRename = view.canvas!.onConnectedResourceRename;
     const actions = view.resource!;
     act(() => {
-      actions.onQueryChange('最新');
+      actions.onQueryChange('资源');
       actions.onFilterChange('image');
       actions.onToggleArchived();
       actions.onArchiveAsset(actions.assets[0]);
     });
-    await waitFor(() => expect(view.resource!.assets[0].status).toBe('archived'));
+    await waitFor(() => expect(view.resource!.assets[0]?.status).toBe('archived'));
     expect(view.resource).toMatchObject({
-      query: '最新',
+      query: '资源',
       activeFilter: 'image',
       showArchived: true,
     });
@@ -511,7 +520,7 @@ describe('App 资源抽屉集成', () => {
       actions.onToggleArchived();
       actions.onArchiveAsset(view.resource!.assets[0]);
     });
-    await waitFor(() => expect(view.resource!.assets[0].name).toBe('最新资源'));
+    await waitFor(() => expect(view.resource!.assets[0]?.name).toBe('最新资源'));
     expect(view.resource!.showArchived).toBe(false);
     expect(view.canvas!.onConnectedResourceRename).not.toBe(previousRename);
     act(() => view.canvas!.onConnectedResourceRename!(asset.id, '最新引用'));
@@ -591,6 +600,7 @@ describe('App 资源抽屉集成', () => {
       expect(view.resource!.uploadProgress).toBe(45);
       await act(async () => request.onload!());
       expect(view.resource).toMatchObject({ isUploading: true, uploadProgress: 90 });
+      resourceAssets = [uploadedAsset, ...resourceAssets];
       await act(async () => complete.resolve(json({ asset: uploadedAsset })));
       await waitFor(() =>
         expect(view.resource).toMatchObject({ isUploading: false, uploadProgress: null }),
@@ -1598,7 +1608,8 @@ describe('App 组件库迁移', () => {
     fireEvent.submit(input.closest('form')!);
     expect(dialog).toBeInTheDocument();
     expect(renameRequests()).toHaveLength(1);
-    await act(async () => finishRename!(json({ asset: { ...asset, name: '等待保存的名称' } })));
+    resourceAssets = [{ ...asset, name: '等待保存的名称' }];
+    await act(async () => finishRename!(json({ asset: resourceAssets[0] })));
     await waitFor(() =>
       expect(screen.queryByRole('dialog', { name: '重命名资源' })).not.toBeInTheDocument(),
     );
@@ -1848,4 +1859,292 @@ describe('App 节点参数提交', () => {
       expect(view.canvas!.nodes[0]!.data.inferenceStrength).toBeUndefined();
     },
   );
+});
+
+describe('App 历史与共享保存快照', () => {
+  /** 只读取合成项目的画布保存请求，不包含资源或真实 Provider 请求。 */
+  function canvasRequests() {
+    return fetchMock.mock.calls.filter(
+      ([url, init]) => String(url).endsWith('/canvas') && init?.method === 'PATCH',
+    );
+  }
+
+  it('长时间拖动不反复自动保存，松手后仍按 400ms 保存最新位置', async () => {
+    await renderCanvas();
+    const id = view.canvas!.nodes[0].id;
+    vi.useFakeTimers();
+    try {
+      act(() => {
+        view.canvas!.onNodeDragStart();
+        view.canvas!.onNodesChange([
+          { type: 'position', id, position: { x: 300, y: 180 }, dragging: true },
+        ]);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+      expect(canvasRequests()).toHaveLength(0);
+      act(() =>
+        view.canvas!.onNodesChange([
+          { type: 'position', id, position: { x: 420, y: 230 }, dragging: false },
+        ]),
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(399);
+      });
+      expect(canvasRequests()).toHaveLength(0);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(canvasRequests()).toHaveLength(1);
+      expect(JSON.parse(String(canvasRequests()[0][1]?.body)).nodes[0].position).toEqual({
+        x: 420,
+        y: 230,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('连续 resize 的位置/尺寸事件合并为一次历史，下一轮 resize 独立撤销', async () => {
+    await renderCanvas();
+    const initial = view.canvas!.nodes[0];
+    const resize = (width: number) => {
+      act(() => view.canvas!.onResizeStart?.(initial.id));
+      for (let step = 0; step < 5; step++) {
+        act(() =>
+          view.canvas!.onNodesChange([
+            { type: 'position', id: initial.id, position: { x: 90 - step, y: 80 - step } },
+            {
+              type: 'dimensions',
+              id: initial.id,
+              resizing: true,
+              setAttributes: true,
+              dimensions: { width: width - 4 + step, height: 350 },
+            },
+          ]),
+        );
+      }
+      act(() => view.canvas!.onResizeNode(initial.id, width, 350));
+      act(() =>
+        view.canvas!.onNodesChange([
+          {
+            type: 'dimensions',
+            id: initial.id,
+            resizing: false,
+            dimensions: { width, height: 350 },
+          },
+        ]),
+      );
+    };
+    resize(400);
+    resize(500);
+    act(() => view.canvas!.onUndoCanvas?.());
+    expect(view.canvas!.nodes[0].width).toBe(400);
+    act(() => view.canvas!.onUndoCanvas?.());
+    expect(view.canvas!.nodes[0]).toMatchObject({
+      width: initial.width,
+      height: initial.height,
+      position: initial.position,
+    });
+    expect(view.canvas!.canUndo).toBe(false);
+    act(() => view.canvas!.onRedoCanvas?.());
+    expect(view.canvas!.nodes[0].width).toBe(400);
+    act(() => view.canvas!.onRedoCanvas?.());
+    expect(view.canvas!.nodes[0].width).toBe(500);
+  });
+
+  it('多选拖动与删除恢复节点、连线和组成员，整组移动和解散也可撤销', async () => {
+    canvas.edges = [
+      {
+        id: 'ab',
+        sourceNodeId: 'empty-one',
+        targetNodeId: 'empty-two',
+        sourceHandle: 'output:content',
+        targetHandle: 'input:content',
+        order: 0,
+      },
+    ];
+    canvas.groups = [
+      {
+        id: 'group-a',
+        name: '组',
+        position: { x: 0, y: 0 },
+        width: 700,
+        height: 500,
+        nodeIds: ['empty-one', 'empty-two'],
+      },
+    ];
+    await renderCanvas(1);
+    act(() =>
+      view.canvas!.onNodesChange(
+        view.canvas!.nodes.map((node) => ({ type: 'select', id: node.id, selected: true })),
+      ),
+    );
+    const positions = view.canvas!.nodes.map((node) => node.position);
+    act(() => view.canvas!.onNodeDragStart());
+    for (let step = 0; step < 4; step++) {
+      act(() =>
+        view.canvas!.onNodesChange(
+          view.canvas!.nodes.map((node) => ({
+            type: 'position',
+            id: node.id,
+            position: { x: 200 + step, y: 150 + step },
+          })),
+        ),
+      );
+    }
+    act(() => view.canvas!.onUndoCanvas?.());
+    expect(view.canvas!.nodes.map((node) => node.position)).toEqual(positions);
+    act(() => view.canvas!.onRedoCanvas?.());
+    fireEvent.keyDown(window, { key: 'Delete' });
+    expect(view.canvas!.nodes).toHaveLength(0);
+    expect(view.canvas!.edges).toHaveLength(0);
+    expect(view.canvas!.groups![0].nodeIds).toEqual([]);
+    act(() => view.canvas!.onUndoCanvas?.());
+    expect(view.canvas!.nodes).toHaveLength(2);
+    expect(view.canvas!.edges).toHaveLength(1);
+    expect(view.canvas!.groups![0].nodeIds).toEqual(['empty-one', 'empty-two']);
+    act(() => view.canvas!.onGroupInteractionStart?.());
+    act(() => view.canvas!.onTranslateGroup?.('group-a', { x: 30, y: 40 }));
+    act(() => view.canvas!.onUndoCanvas?.());
+    expect(view.canvas!.groups![0].position).toEqual({ x: 0, y: 0 });
+    act(() => view.canvas!.onDissolveGroup?.('group-a'));
+    expect(view.canvas!.groups).toHaveLength(0);
+    act(() => view.canvas!.onUndoCanvas?.());
+    expect(view.canvas!.groups).toHaveLength(1);
+  });
+
+  it('SSE 的进度、结果以及删除期间收到的完成事件不被用户撤销/重做回滚', async () => {
+    let emit: Parameters<typeof auth.openAuthEventStream>[1] | undefined;
+    vi.mocked(auth.openAuthEventStream).mockImplementation(async (_url, onEvent) => {
+      emit = onEvent;
+    });
+    await renderCanvas();
+    fillNode('empty-one', '用户编辑');
+    const running = runRecord({
+      id: 'run-one',
+      targetNodeId: 'empty-one',
+      status: 'running',
+      progress: 60,
+      error: undefined,
+    });
+    act(() => emit!('run.updated', JSON.stringify(running)));
+    act(() => view.canvas!.onUndoCanvas?.());
+    expect(view.canvas!.nodes[0].data).toMatchObject({ runStatus: 'running', runProgress: 60 });
+    expect(view.canvas!.nodes[0].data.prompt).toBeUndefined();
+    act(() => view.canvas!.onRedoCanvas?.());
+    expect(view.canvas!.nodes[0].data).toMatchObject({ prompt: '用户编辑', runProgress: 60 });
+    act(() => view.canvas!.onNodesChange([{ type: 'remove', id: 'empty-one' }]));
+    const resultAsset = {
+      assetId: 'synthetic-result',
+      version: 1,
+      contentUrl: '/synthetic/result',
+    };
+    act(() =>
+      emit!(
+        'run.updated',
+        JSON.stringify({
+          ...running,
+          status: 'succeeded',
+          progress: 100,
+          updatedAt: '2026-10-02T00:01:00Z',
+          result: { asset: resultAsset },
+        }),
+      ),
+    );
+    act(() => view.canvas!.onUndoCanvas?.());
+    expect(view.canvas!.nodes[0].data).toMatchObject({
+      prompt: '用户编辑',
+      runStatus: 'succeeded',
+      runProgress: 100,
+      resultAsset,
+    });
+  });
+
+  it('保存进行中继续编辑保留原请求，新编辑在下一修订串行保存', async () => {
+    await renderCanvas();
+    const api = fetchMock.getMockImplementation()!;
+    const pending: Array<{ response: ReturnType<typeof pendingResponse>; body: CanvasDocument }> =
+      [];
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/canvas') && init?.method === 'PATCH') {
+        const response = pendingResponse();
+        pending.push({ response, body: JSON.parse(String(init.body)) });
+        return response.promise;
+      }
+      return api(input, init);
+    });
+    fillNode('empty-one', '第一次编辑');
+    fireEvent.keyDown(window, { key: 's', ctrlKey: true });
+    await waitFor(() => expect(pending).toHaveLength(1));
+    fillNode('empty-one', '保存中的新编辑');
+    fireEvent.keyDown(window, { key: 's', ctrlKey: true });
+    expect(pending).toHaveLength(1);
+    await act(async () =>
+      pending[0].response.resolve(json({ canvas: { ...pending[0].body, revision: 2 } })),
+    );
+    await waitFor(() => expect(pending).toHaveLength(2));
+    expect(pending[0].body.nodes[0].data.prompt).toBe('第一次编辑');
+    expect(pending[1].body).toMatchObject({
+      revision: 2,
+      nodes: [{ data: { prompt: '保存中的新编辑' } }, expect.anything()],
+    });
+    await act(async () =>
+      pending[1].response.resolve(json({ canvas: { ...pending[1].body, revision: 3 } })),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole('status', { name: '已保存到项目' })).toBeInTheDocument(),
+    );
+    expect(pending).toHaveLength(2);
+  });
+
+  it('409 只重试冻结内容，重试期间的编辑仍在后续修订保存', async () => {
+    await renderCanvas();
+    const api = fetchMock.getMockImplementation()!;
+    const retry = pendingResponse();
+    const requests: CanvasDocument[] = [];
+    let conflict = false;
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/canvas') && init?.method === 'PATCH') {
+        requests.push(JSON.parse(String(init.body)));
+        if (requests.length === 1) {
+          conflict = true;
+          return Promise.resolve(json({ revision: 7 }, 409));
+        }
+        if (requests.length === 2) return retry.promise;
+        return Promise.resolve(json({ canvas: { ...requests.at(-1), revision: 9 } }));
+      }
+      if (String(input).endsWith('/canvas') && conflict)
+        return Promise.resolve(json({ canvas: { ...canvas, revision: 7 } }));
+      return api(input, init);
+    });
+    fillNode('empty-one', '冲突前编辑');
+    fireEvent.keyDown(window, { key: 's', ctrlKey: true });
+    await waitFor(() => expect(requests).toHaveLength(2));
+    expect(requests[1]).toEqual({ ...requests[0], revision: 7 });
+    fillNode('empty-one', '重试中的编辑');
+    fireEvent.keyDown(window, { key: 's', ctrlKey: true });
+    await act(async () => retry.resolve(json({ canvas: { ...requests[1], revision: 8 } })));
+    await waitFor(() => expect(requests).toHaveLength(3));
+    expect(requests[2].revision).toBe(8);
+    expect(requests[2].nodes[0].data.prompt).toBe('重试中的编辑');
+  });
+
+  it('只修改组名也会触发既有 400ms 自动保存', async () => {
+    canvas.groups = [
+      {
+        id: 'group-a',
+        name: '原组名',
+        position: { x: 0, y: 0 },
+        width: 700,
+        height: 500,
+        nodeIds: [],
+      },
+    ];
+    await renderCanvas();
+    act(() => view.canvas!.onRenameGroup?.('group-a', '新组名'));
+    await waitFor(() => expect(canvasRequests()).toHaveLength(1));
+    expect(JSON.parse(String(canvasRequests()[0][1]?.body)).groups[0].name).toBe('新组名');
+  });
 });

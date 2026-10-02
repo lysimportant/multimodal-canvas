@@ -1,4 +1,10 @@
-import type { AssetScope, AssetStore, AssetListOptions } from './assets';
+import {
+  assetPageOptions,
+  type AssetScope,
+  type AssetStore,
+  type AssetListOptions,
+  type AuthorizedProjectAssetPageInput,
+} from './assets';
 import type { ProjectStore } from './projects';
 
 /**
@@ -32,6 +38,30 @@ export function withAssetOwnershipPolicy(store: AssetStore, projects: ProjectSto
     return entries.filter((_asset, index) => scopes[index] !== null);
   };
   return {
+    ...(typeof store.listAuthorizedProjectPage === 'function'
+      ? {
+          /** 只把已核验的标准 project + personal 查询交给 SQL 权限分页；其它组合沿用逐项鉴权。 */
+          async listPage(scopes: readonly AssetScope[], options: AssetListOptions = {}) {
+            const input = authorizedProjectPageInput(scopes);
+            if (input) {
+              const project = await projects.get(input.projectId, { ownerId: input.ownerId });
+              if (project?.id === input.projectId && project.ownerId === input.ownerId) {
+                return store.listAuthorizedProjectPage!(input, options);
+              }
+            }
+            const { page, pageSize } = assetPageOptions(options);
+            const lists = await Promise.all(scopes.map((scope) => filtered(scope, options)));
+            const assets = [...new Map(lists.flat().map((asset) => [asset.id, asset])).values()];
+            const start = (page - 1) * pageSize;
+            return {
+              assets: assets.slice(start, start + pageSize),
+              total: assets.length,
+              page,
+              pageSize,
+            };
+          },
+        }
+      : {}),
     create: (input) => store.create(input),
     async list(scope, options = {}) {
       const entries = await filtered(scope, options);
@@ -87,4 +117,30 @@ export function withAssetOwnershipPolicy(store: AssetStore, projects: ProjectSto
       : {}),
     getOwnership: (id) => store.getOwnership!(id),
   };
+}
+
+/**
+ * 只识别路由的精确双范围合同，拒绝缺少身份、空项目、多余授权字段和不同的 scope 顺序。
+ * 未匹配只表示无法证明快路径等价，调用方仍需走原有权限过滤，不能直接调用底层 listPage。
+ */
+function authorizedProjectPageInput(
+  scopes: readonly AssetScope[],
+): AuthorizedProjectAssetPageInput | undefined {
+  if (scopes.length !== 2) return undefined;
+  const [project, personal] = scopes;
+  if (
+    !project ||
+    !personal ||
+    Object.keys(project).length !== 1 ||
+    Object.keys(project).some((key) => key !== 'projectId') ||
+    typeof project.projectId !== 'string' ||
+    !project.projectId.trim() ||
+    Object.keys(personal).length !== 2 ||
+    Object.keys(personal).some((key) => key !== 'projectId' && key !== 'ownerId') ||
+    personal.projectId !== null ||
+    typeof personal.ownerId !== 'string' ||
+    !personal.ownerId.trim()
+  )
+    return undefined;
+  return { projectId: project.projectId, ownerId: personal.ownerId };
 }

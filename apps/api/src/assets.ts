@@ -219,7 +219,7 @@ export type AssetScope = {
 
 /**
  * 资源索引查询条件。`list` 仍返回数组以兼容旧调用；分页参数只在
- * 同时提供时生效，调用方可通过 `count` 获取同一条件的总数。
+ * 任一提供时生效，调用方可通过 `count` 获取同一条件的总数。
  */
 export type AssetListOptions = {
   query?: string;
@@ -232,6 +232,12 @@ export type AssetListOptions = {
   /** 每页数量，最大 200。 */
   pageSize?: number;
 };
+
+/**
+ * 内部授权分页输入：调用方必须先确认 projectId 属于 ownerId；不接受客户端直接指定授权条件。
+ * 项目资源允许同 owner 或历史空 owner，个人资源只允许该 owner 的全局资源。
+ */
+export type AuthorizedProjectAssetPageInput = { projectId: string; ownerId: string };
 
 /** 资源列表的分页结果，供 API 层构造稳定的分页元数据。 */
 export type AssetListPage = {
@@ -351,6 +357,13 @@ export type StoredAssetDerivative = {
 export interface AssetStore {
   create(input: CreateAssetInput): Promise<StoredAsset>;
   list(scope?: AssetScope, options?: AssetListOptions): Promise<Asset[]>;
+  /** 按授权范围的先后顺序去重分页；旧仓库未实现时，API 可继续使用 list/count。 */
+  listPage?(scopes: readonly AssetScope[], options?: AssetListOptions): Promise<AssetListPage>;
+  /** 内部能力：在分页和计数之前应用已核验项目的归属约束，不支持时由权限包装器回退。 */
+  listAuthorizedProjectPage?(
+    input: AuthorizedProjectAssetPageInput,
+    options?: AssetListOptions,
+  ): Promise<AssetListPage>;
   /** 管理与个人资源库共享的元数据索引，不读取对象内容。 */
   listManagement?(scope?: AssetScope): Promise<ManagementAsset[]>;
   /** 定点读取归属以检查历史资源和项目之间的冲突。 */
@@ -460,6 +473,53 @@ export class MemoryAssetStore implements AssetStore {
         withLatestAssetVersion(asset, this.latestVersionFor(asset.id)),
       );
     return paginateAssets(filtered, options);
+  }
+
+  /** 保留内存仓库的插入顺序，并在范围合并去重后计算总数和分页。 */
+  async listPage(
+    scopes: readonly AssetScope[],
+    options: AssetListOptions = {},
+  ): Promise<AssetListPage> {
+    const { page, pageSize } = assetPageOptions(options);
+    const { page: _page, pageSize: _pageSize, ...filters } = options;
+    const lists = await Promise.all(scopes.map((scope) => this.list(scope, filters)));
+    const assets = [...new Map(lists.flat().map((asset) => [asset.id, asset])).values()];
+    return {
+      assets: paginateAssets(assets, { page, pageSize }),
+      total: assets.length,
+      page,
+      pageSize,
+    };
+  }
+
+  /** 已核验项目的归属条件先过滤再分页；保持项目优先、范围内插入顺序和版本字段。 */
+  async listAuthorizedProjectPage(
+    input: AuthorizedProjectAssetPageInput,
+    options: AssetListOptions = {},
+  ): Promise<AssetListPage> {
+    assertAuthorizedProjectPageInput(input);
+    const { page, pageSize } = assetPageOptions(options);
+    const candidates = Array.from(this.assets.values());
+    const projectAssets = candidates.filter((asset) => {
+      const ownerId = this.owners.get(asset.id);
+      return (
+        this.matchesScope(asset.id, { projectId: input.projectId }) &&
+        (!ownerId || ownerId === input.ownerId) &&
+        matchesAssetListOptions(asset, options)
+      );
+    });
+    const personalAssets = candidates.filter(
+      (asset) =>
+        this.matchesScope(asset.id, { projectId: null, ownerId: input.ownerId }) &&
+        matchesAssetListOptions(asset, options),
+    );
+    const start = (page - 1) * pageSize;
+    const assets = [...projectAssets, ...personalAssets]
+      .slice(start, start + pageSize)
+      .map(({ content: _content, ...asset }) =>
+        withLatestAssetVersion(asset, this.latestVersionFor(asset.id)),
+      );
+    return { assets, total: projectAssets.length + personalAssets.length, page, pageSize };
   }
 
   /** 将私有归属索引与资源元数据合并，不返回资源内容。 */
@@ -718,22 +778,59 @@ export class PrismaAssetStore implements AssetStore {
     }
   }
 
+  /** 简单条件直接数据库分页；复杂搜索先精确匹配再截页，不下载对象内容。 */
   async list(scope: AssetScope = {}, options: AssetListOptions = {}): Promise<Asset[]> {
-    const rows = await this.prisma.asset.findMany({
-      where: this.scopeWhere(scope),
-      orderBy: { updatedAt: 'desc' },
-      include: {
-        versions: {
-          orderBy: { version: 'desc' },
-          take: 1,
-          select: { version: true },
+    return this.listWhere(
+      this.listWhereForScope(scope, options),
+      options,
+      assetPagination(options),
+    );
+  }
+
+  /**
+   * 按首个命中的 scope 分区，保持项目优先等已有顺序；分区互斥，因此无需全量读取去重。
+   * 默认第一页、每页 50，最大 200；空 scopes 不扩大为无权限限制的查询。
+   */
+  async listPage(
+    scopes: readonly AssetScope[],
+    options: AssetListOptions = {},
+  ): Promise<AssetListPage> {
+    const previous: AssetScope[] = [];
+    const partitions: Prisma.AssetWhereInput[] = [];
+    for (const scope of scopes) {
+      const effectiveScope = this.scopeWhere(scope);
+      const where = this.listWhereForScope(scope, options);
+      partitions.push(
+        previous.length === 0 ? where : { AND: [where, ...previous.map(excludeAssetScope)] },
+      );
+      previous.push(effectiveScope);
+      if (Object.keys(effectiveScope).length === 0) break;
+    }
+    return this.listPageWhere(partitions, options);
+  }
+
+  /**
+   * 已授权的两个分区在 SQL 计数/分页前排除冲突 owner，空 owner 的历史项目资源仍可见。
+   * 项目关系同时检查当前 owner，避免项目归属在上层核验后变化时泄露其资源；不影响旧无范围接口。
+   */
+  async listAuthorizedProjectPage(
+    input: AuthorizedProjectAssetPageInput,
+    options: AssetListOptions = {},
+  ): Promise<AssetListPage> {
+    assertAuthorizedProjectPageInput(input);
+    return this.listPageWhere(
+      [
+        {
+          AND: [
+            this.listWhereForScope({ projectId: input.projectId }, options),
+            { OR: [{ ownerId: input.ownerId }, { ownerId: null }] },
+            { project: { is: { ownerId: input.ownerId } } },
+          ],
         },
-      },
-    });
-    const assets = rows
-      .map((row) => mapAsset(row, this.contentUrl, row.versions?.[0]?.version))
-      .filter((asset) => matchesAssetListOptions(asset, options));
-    return paginateAssets(assets, options);
+        this.listWhereForScope({ projectId: null, ownerId: input.ownerId }, options),
+      ],
+      options,
+    );
   }
 
   /** 后台索引只读取数据库元数据，不下载 S3 或本地资源内容。 */
@@ -764,28 +861,12 @@ export class PrismaAssetStore implements AssetStore {
     );
   }
 
+  /** 无复杂搜索时使用 COUNT，不拉取资源或版本；搜索计数只扫描精简候选字段。 */
   async count(
     scope: AssetScope = {},
     options: Omit<AssetListOptions, 'page' | 'pageSize'> = {},
   ): Promise<number> {
-    const rows = await this.prisma.asset.findMany({
-      where: this.scopeWhere(scope),
-      select: {
-        id: true,
-        name: true,
-        mediaType: true,
-        mimeType: true,
-        sizeBytes: true,
-        sha256: true,
-        status: true,
-        tags: true,
-        archivedAt: true,
-        metadata: true,
-      },
-    });
-    return rows
-      .map((row) => mapAsset(row, this.contentUrl))
-      .filter((asset) => matchesAssetListOptions(asset, options)).length;
+    return this.countWhere(this.listWhereForScope(scope, options), options);
   }
 
   async get(id: string, scope: AssetScope = {}): Promise<StoredAsset | undefined> {
@@ -1030,6 +1111,138 @@ export class PrismaAssetStore implements AssetStore {
     });
   }
 
+  /** 对互斥且有序的分区计数并取页；原始 scope 去重与已授权项目查询共用同一页边界。 */
+  private async listPageWhere(
+    partitions: readonly Prisma.AssetWhereInput[],
+    options: AssetListOptions,
+  ): Promise<AssetListPage> {
+    const { page, pageSize } = assetPageOptions(options);
+    const counts = await Promise.all(partitions.map((where) => this.countWhere(where, options)));
+    const total = counts.reduce((sum, count) => sum + count, 0);
+    let skip = (page - 1) * pageSize;
+    const assets: Asset[] = [];
+    if (skip < total) {
+      for (const [index, where] of partitions.entries()) {
+        if (skip >= counts[index]!) {
+          skip -= counts[index]!;
+          continue;
+        }
+        assets.push(
+          ...(await this.listWhere(where, options, { skip, take: pageSize - assets.length })),
+        );
+        skip = 0;
+        if (assets.length >= pageSize) break;
+      }
+    }
+    return { assets, total, page, pageSize };
+  }
+
+  /** 权限、媒体类型和归档状态始终在数据库过滤，不依赖应用侧排除越权记录。 */
+  private listWhereForScope(scope: AssetScope, options: AssetListOptions): Prisma.AssetWhereInput {
+    return {
+      ...this.scopeWhere(scope),
+      ...(options.mediaType ? { mediaType: toPrismaMediaType(options.mediaType) } : {}),
+      ...(options.status ? { status: options.status.toUpperCase() as 'READY' | 'ARCHIVED' } : {}),
+    };
+  }
+
+  /** 读取请求页的公开元数据和最新版本；深页超出 JS 安全整数时返回空数组。 */
+  private async listWhere(
+    where: Prisma.AssetWhereInput,
+    options: AssetListOptions,
+    pagination: { skip?: number; take?: number },
+  ): Promise<Asset[]> {
+    let skip = pagination.skip ?? 0;
+    if (!Number.isSafeInteger(skip)) return [];
+    if (!hasAssetSearch(options)) {
+      const rows = await this.prisma.asset.findMany({
+        where,
+        orderBy: assetListOrderBy,
+        ...pagination,
+        select: assetListSelect,
+      });
+      return rows.map((row) => mapAsset(row, this.contentUrl, row.versions?.[0]?.version));
+    }
+
+    const assets: Asset[] = [];
+    let remaining = pagination.take ?? Infinity;
+    for await (const ids of this.matchingAssetIds(where, options)) {
+      const selected = ids.slice(skip, skip + remaining);
+      skip = Math.max(0, skip - ids.length);
+      if (selected.length > 0) {
+        const rows = await this.prisma.asset.findMany({
+          where: { AND: [where, { id: { in: selected } }] },
+          orderBy: assetListOrderBy,
+          take: selected.length,
+          select: assetListSelect,
+        });
+        assets.push(
+          ...rows.map((row) => mapAsset(row, this.contentUrl, row.versions?.[0]?.version)),
+        );
+        remaining -= selected.length;
+      }
+      if (remaining <= 0) break;
+    }
+    return assets;
+  }
+
+  /** 复杂条件仍精确计数，但不保留所有匹配 ID，也不读取版本或内容键。 */
+  private async countWhere(
+    where: Prisma.AssetWhereInput,
+    options: AssetListOptions,
+  ): Promise<number> {
+    if (!hasAssetSearch(options)) return this.prisma.asset.count({ where });
+    let total = 0;
+    for await (const ids of this.matchingAssetIds(where, options)) total += ids.length;
+    return total;
+  }
+
+  /**
+   * Prisma 的数组/JSON 过滤不能等价表达标签 trim、别名子串和 JS locale 大小写语义。
+   * 用稳定复合游标逐批校验候选，避免先 LIMIT 后过滤漏项；搜索仍为 O(候选数)，并非索引搜索。
+   */
+  private async *matchingAssetIds(
+    where: Prisma.AssetWhereInput,
+    options: AssetListOptions,
+  ): AsyncGenerator<string[]> {
+    let after: { id: string; updatedAt: Date } | undefined;
+    while (true) {
+      const rows = await this.prisma.asset.findMany({
+        where: after
+          ? {
+              AND: [
+                where,
+                {
+                  OR: [
+                    { updatedAt: { lt: after.updatedAt } },
+                    { updatedAt: after.updatedAt, id: { gt: after.id } },
+                  ],
+                },
+              ],
+            }
+          : where,
+        orderBy: assetListOrderBy,
+        take: assetSearchBatchSize,
+        select: assetSearchSelect,
+      });
+      yield rows
+        .filter((row) =>
+          matchesAssetListOptions(
+            {
+              ...row,
+              mediaType: row.mediaType.toLowerCase() as MediaType,
+              status: row.status.toLowerCase() as AssetStatus,
+              metadata: asRecord(row.metadata),
+            },
+            options,
+          ),
+        )
+        .map((row) => row.id);
+      if (rows.length < assetSearchBatchSize) break;
+      after = rows[rows.length - 1]!;
+    }
+  }
+
   private scopeWhere(scope: AssetScope = {}): { projectId?: string | null; ownerId?: string } {
     const projectId = scope.projectId !== undefined ? scope.projectId : this.projectId;
     const ownerId = scope.ownerId ?? this.ownerId;
@@ -1073,7 +1286,92 @@ export function detectMediaType(name: string, mimeType: string): MediaType | und
   return undefined;
 }
 
-function matchesAssetListOptions(asset: Asset, options: AssetListOptions): boolean {
+/** 列表只传输公开字段，版本子查询每个资源最多读取一个版本号。 */
+const assetListSelect = {
+  id: true,
+  name: true,
+  mediaType: true,
+  mimeType: true,
+  sizeBytes: true,
+  sha256: true,
+  status: true,
+  tags: true,
+  archivedAt: true,
+  metadata: true,
+  versions: { orderBy: { version: 'desc' }, take: 1, select: { version: true } },
+} satisfies Prisma.AssetSelect;
+
+/** 时间相同的资源以 ID 决定次序，防止分页边界随机重排。 */
+const assetListOrderBy = [
+  { updatedAt: 'desc' },
+  { id: 'asc' },
+] satisfies Prisma.AssetOrderByWithRelationInput[];
+
+/** 搜索批次上限限制驻留内存；不改变公开的每页数量上限。 */
+const assetSearchBatchSize = 200;
+
+/** 候选扫描不读取资源体积、摘要、对象键或版本关系。 */
+const assetSearchSelect = {
+  id: true,
+  updatedAt: true,
+  name: true,
+  mimeType: true,
+  mediaType: true,
+  status: true,
+  tags: true,
+  metadata: true,
+} satisfies Prisma.AssetSelect;
+
+/** 返回某个授权范围的补集；显式处理 NULL，避免 SQL 三值逻辑误删旧的无 owner 资源。 */
+function excludeAssetScope(scope: AssetScope): Prisma.AssetWhereInput {
+  const alternatives: Prisma.AssetWhereInput[] = [];
+  if (scope.projectId !== undefined) {
+    if (scope.projectId !== null) alternatives.push({ projectId: null });
+    alternatives.push({ projectId: { not: scope.projectId } });
+  }
+  if (scope.ownerId) {
+    alternatives.push({ ownerId: null }, { ownerId: { not: scope.ownerId } });
+  }
+  return { OR: alternatives };
+}
+
+/** 空白查询和标签不启用兼容扫描，保持与旧过滤器相同的空条件语义。 */
+function hasAssetSearch(options: AssetListOptions): boolean {
+  return Boolean(options.query?.trim() || options.tags?.some((tag) => tag.trim()));
+}
+
+/** 内部授权输入不允许空项目或空 owner，避免意外退化为无范围查询；无效输入抛出 TypeError。 */
+function assertAuthorizedProjectPageInput(input: AuthorizedProjectAssetPageInput): void {
+  if (
+    typeof input.projectId !== 'string' ||
+    !input.projectId.trim() ||
+    typeof input.ownerId !== 'string' ||
+    !input.ownerId.trim()
+  ) {
+    throw new TypeError('授权分页需要非空 projectId 和 ownerId');
+  }
+}
+
+/** 内存、Prisma 和权限包装器共用页码归一化；默认第 1 页、50 条，上限 200。 */
+export function assetPageOptions(options: AssetListOptions): { page: number; pageSize: number } {
+  return {
+    page: normalizePage(options.page, 1),
+    pageSize: normalizePageSize(options.pageSize, 50),
+  };
+}
+
+/** 不传分页参数时保留旧的无分页调用；公开分页请求返回 Prisma 的 skip/take。 */
+function assetPagination(options: AssetListOptions): { skip?: number; take?: number } {
+  if (options.page === undefined && options.pageSize === undefined) return {};
+  const { page, pageSize } = assetPageOptions(options);
+  return { skip: (page - 1) * pageSize, take: pageSize };
+}
+
+/** 复用内存仓库的精确搜索语义，只依赖可搜索字段，不需要内容字节和版本关系。 */
+function matchesAssetListOptions(
+  asset: Pick<Asset, 'name' | 'mimeType' | 'mediaType' | 'status' | 'tags' | 'metadata'>,
+  options: AssetListOptions,
+): boolean {
   if (options.mediaType && asset.mediaType !== options.mediaType) return false;
   if (options.status && asset.status !== options.status) return false;
 
