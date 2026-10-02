@@ -15,3 +15,16 @@
   .react-flow__edge-path {
   animation-play-state: paused;
 }
+
+/* Tab 框选让 Pane 接收指针，不触发路径经过的节点/组 hover；可见内容与几何保持。 */
+.canvas-area.is-tab-selecting
+  :is(.react-flow__node, .react-flow__edge, .react-flow__nodesselection, .canvas-group-layer),
+.canvas-area.is-tab-selecting
+  :is(.react-flow__node, .react-flow__edge, .react-flow__nodesselection, .canvas-group-layer)
+  * {
+  pointer-events: none !important;
+}
+
+.quick-editor-overlay[hidden] {
+  display: none;
+}

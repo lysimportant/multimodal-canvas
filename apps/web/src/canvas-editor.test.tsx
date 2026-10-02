@@ -69,6 +69,7 @@ vi.mock('@xyflow/react', async (importOriginal) => {
   const React = await import('react');
   /** 画布浮层直接读取当前视口；替身保持稳定的 store 身份。 */
   const storeApi = {
+    setState: vi.fn(),
     getState: () => ({
       transform: [0, 0, 1] as const,
       domNode: document.querySelector<HTMLElement>('[data-testid="rf__wrapper"]'),

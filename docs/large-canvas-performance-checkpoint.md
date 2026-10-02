@@ -160,3 +160,42 @@
 - 独立匿名浏览器从首页进入工作台成功，未创建真实项目。无页面异常或非预期控制台错误；`/v1/auth/me`、`/v1/auth/refresh` 的三次匿名 401 已单独记录，是未登录会话检查，不写成控制台完全无输出。证据见 `deployed-smoke-final.json`。
 - 更新前镜像为 `multimodal-canvas-web:rollback-wheel-followup-20261003-005507`；已核对其 amd64 manifest 与当时运行的 Web 相同，入口及业务文件哈希相同。容器 config digest 不能直接作为当前 Docker image store 的 tag 源，第一次失败未改变运行容器；核对后使用原 local 镜像创建回退标签。
 - 回退只需将该标签重新标记为 `multimodal-canvas-web:local`，再执行 `docker compose -f compose.yaml up -d --no-deps web`；不替换其它服务。任务实现、本地同机验证与本地交付完成，Git 提交及远端核验以本轮记录为准，P2-07 不关闭。
+
+## 2026-10-03 Tab 框选与松手引用新建
+
+### 交互边界与实现
+
+- P1，从 `codex/generate-to-new-node@9f0bf4d` 继续。默认空白处左键拖动平移；按住 Tab 临时框选，提前松开 Tab 不截断已开始的指针手势。输入框、按钮、菜单、弹窗等保留原生 Tab；Escape、窗口失焦和 pointercancel 取消框选并清理 React Flow 自动平移。
+- 框选松手从实时 store 读取可见选区，非空时打开现有菜单的文字、图片、音频、视频四项。复用已有选区引用创建链路，保留真实 assetId 与版本、原选区、源节点和边，创建可撤销；缺资源或版本时继续整次拒绝，不自动运行、不调用 Provider。
+- Tab 待选/框选、多选和选区菜单期间不挂载节点悬浮操作栏，也不因 selected/hover/focus 激活测量、观察器或隐藏计时。只有正在框选时让节点/边/组的指针命中透传给 Pane；松手后仍能正常操作节点，不隐藏图片、端口或改变外框尺寸。
+- 框选期间保留并隐藏原快速编辑器，暂停浮层测量，避免瞬时单节点选中造成反复挂载。文字草稿、原生选区、已打开的预览/重命名/信息面板保留。没有修改依赖、数据格式、服务端或付费生成协议；复用现有 Ant Design 菜单和业务引用逻辑，不引入第二套组件。
+
+### 同机固定场景对照
+
+Node 24.12.0、pnpm 11.19.0、Chromium 151.0.7922.34，1600×900、DPR 1。60 个节点、52 条边，三轮分别重新加载，同样 fitView 后缩小两档、相同视口矩阵/选区和 28 次指针移动，每步等待 16ms。旧版普通拖动框选与新版 Tab 框选比较；两边都选中 60 个节点，尺寸和位置不变。采样期间没有并发测试或构建。
+
+| 指标                     | 基线三轮                | 本轮三轮             |
+| ------------------------ | ----------------------- | -------------------- |
+| 悬浮栏边界读取           | 376 / 376 / 376         | 0 / 0 / 0            |
+| 同时可见节点操作卡片峰值 | 60 / 60 / 60            | 0 / 0 / 0            |
+| 帧间隔 P95               | 233.3 / 200.0 / 183.4ms | 33.4 / 33.4 / 33.4ms |
+| 主线程长任务数           | 8 / 8 / 8               | 1 / 1 / 0            |
+| 主线程长任务总耗时       | 合计 5450ms             | 合计 121ms           |
+
+- 数据来自 `.local-tests/tab-selection-20261003/{before,after}-60-final.json`。固定夹具、本机对照不代表所有项目的固定提速，也不表示滚轮缩放或千节点场景已经没有长帧；TODO P2-07 保持未完成。
+- 隔离夹具没有业务 API 代理，只在内存保存合成项目；未知 API、夹具违规和生成 POST 均为 0。测试辅助代码没有写入产品运行路径。
+
+### 回归与桌面烟测
+
+- Web 全量 110 文件 / 1892 用例通过；Web lint、typecheck、标准生产 build、定向生产构建和 `git diff --check` 通过。标准构建仅在该进程设置 TEMP/TMP，保留既有大包警告，没有安装依赖。
+- 1600×900/1280×800 烟测覆盖默认平移、Tab 框选、提前松 Tab、四项菜单、真实版本引用、撤销/重做、连续框选、单节点框选、键盘 Enter 创建、输入框原生 Tab、空选区、Escape、blur/pointercancel 取消。后两项在真实浏览器中派发对应原生事件验证清理路径，不是操作系统窗口切换测试。
+- 引用两个来源图片创建的新图片节点保存 `drag-image-004@1` 与 `drag-image-005@1`，不产生生成请求；原 8 条边和来源选区保留。1280px 键盘创建文字节点保留单个精确资源引用。页面异常和控制台错误均为 0；已检查菜单与引用编辑器截图。
+- 最终烟测证据为 `after-16-smoke-final.json`。初次 1280px 连续框选探针落在资源侧栏遮挡的节点，另一次使用了不存在的“文本”菜单文案；改用未遮挡节点和现有“文字”标签后通过，未因此改产品逻辑。烟测同时运行过其它检查，其帧耗时不用于性能对比。
+- 原用户 `index.css`、`CanvasNodeToolbar.test.tsx` 两项 SHA-256 与备份一致，文档删除仍保持；三项均排除本轮提交。
+
+### 本地交付与回退
+
+- 仅构建 Web 并执行 `docker compose -f compose.yaml up -d --no-deps web`。六个服务健康，API、worker、PostgreSQL、Redis、MinIO 的容器 ID 与操作前一致，没有运行迁移或写入真实项目。
+- `http://localhost:8080` 的 HTML/health 为 200；实际业务分包 `/assets/main-DMCz5Dma.js` 的 SHA-256 为 `cd7918926501d1b94f6c522fca82c2d0a69ffe9d77dbe76ef1eb9e27fa98750f`，CSS 为 `e5995bec51371c56bf653e0816c398ff163792b91ab92cef4660997d28548488`，均与最终测量的构建逐字节一致。标准 Web build 使用项目默认 API 地址；最终测量和 Docker 均显式 `VITE_API_BASE_URL=""` 使用同源入口，因此只以这两者的业务分包核对部署。
+- 匿名首页进入工作台通过，没有创建真实项目；无页面异常或非预期控制台错误，三次 `/v1/auth/me`、`/v1/auth/refresh` 401 属于预期匿名检查。证据为 `deployed-smoke-final.json` 与 `containers-{before,after}.json`。
+- 回退镜像 `multimodal-canvas-web:rollback-tab-selection-20261003-025456` 已在更新前核对 amd64 manifest 与运行 Web 一致；需要回退时将其重新标记为 `multimodal-canvas-web:local`，再执行 `docker compose -f compose.yaml up -d --no-deps web`，不替换其它服务。

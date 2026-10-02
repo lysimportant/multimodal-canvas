@@ -31,6 +31,7 @@ import {
   type ComponentProps,
   type DragEvent,
   type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
   type RefObject,
   type ReactNode,
   type WheelEvent as ReactWheelEvent,
@@ -73,6 +74,7 @@ import {
   NodeLabelChangeContext,
   NodeRetryContext,
   NodeSelectionContext,
+  CanvasSelectionModeContext,
   NodeQuickEditorIdContext,
   nodeTypes,
   type NodeEnabledHandler,
@@ -175,8 +177,9 @@ type QuickEditorLayout = {
   ready: boolean;
 };
 
-/** 桌面框选保留中键及空格平移；稳定数组避免坐标帧重置 React Flow 配置。 */
-const FLOW_PAN_ON_DRAG = [1];
+/** 默认左键/中键平移；Tab 框选期间只保留中键，数组不随指针帧重建。 */
+const FLOW_PAN_ON_DRAG = [0, 1];
+const FLOW_SELECTION_PAN_ON_DRAG = [1];
 /** 跨平台修饰键点击使用 React Flow 的增减选择语义。 */
 const FLOW_MULTI_SELECTION_KEYS = ['Control', 'Meta', 'Shift'];
 
@@ -410,6 +413,116 @@ export function WorkflowCanvas({
   /** 吞掉拖线松手后紧随而来的 pane click，避免菜单刚弹出就被关掉。 */
   const suppressPaneClickRef = useRef(false);
   const [contextMenu, setContextMenu] = useState<CanvasContextMenuTarget | null>(null);
+  const [tabSelectionHeld, setTabSelectionHeld] = useState(false);
+  const tabSelectionHeldRef = useRef(false);
+  const [selectionDragging, setSelectionDragging] = useState(false);
+  /** 指针按下后保持本次框选，即使用户先松开 Tab；取消时不弹创建菜单。 */
+  const selectionGesture = useRef<{ target: HTMLElement; pointerId: number } | null>(null);
+  const pointerInsideCanvas = useRef(false);
+  const selectionDrawing = tabSelectionHeld || selectionDragging;
+  /** 框选经过单个节点时不反复挂载编辑器，原有草稿只隐藏、不卸载。 */
+  const editorBeforeSelection = useRef(selectedNode);
+  useLayoutEffect(() => {
+    if (!selectionDrawing) editorBeforeSelection.current = selectedNode;
+  }, [selectedNode, selectionDrawing]);
+
+  /** 取消库内的指针捕获与自动平移，然后恢复普通画布操作。 */
+  const cancelSelectionGesture = useCallback(() => {
+    const gesture = selectionGesture.current;
+    selectionGesture.current = null;
+    tabSelectionHeldRef.current = false;
+    setTabSelectionHeld(false);
+    setSelectionDragging(false);
+    if (gesture) {
+      // 先让 React Flow 清理自己的自动平移 RAF，单独清 store 会遗留循环。
+      gesture.target.dispatchEvent(
+        new PointerEvent('pointercancel', { bubbles: true, pointerId: gesture.pointerId }),
+      );
+      if (gesture.target.hasPointerCapture?.(gesture.pointerId))
+        gesture.target.releasePointerCapture(gesture.pointerId);
+    }
+    flowStore.setState({ userSelectionActive: false, userSelectionRect: null });
+  }, [flowStore]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && (tabSelectionHeldRef.current || selectionGesture.current)) {
+        cancelSelectionGesture();
+        return;
+      }
+      if (
+        event.key !== 'Tab' ||
+        event.isComposing ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.altKey ||
+        event.shiftKey ||
+        event.defaultPrevented
+      )
+        return;
+      const canvas = canvasAreaRef.current;
+      const target = event.target instanceof Element ? event.target : document.activeElement;
+      // 表单、菜单和弹窗保留原生 Tab 导航；只有当前画布接管无修饰键的 Tab。
+      if (
+        !canvas ||
+        target?.closest(
+          NATIVE_CONTEXT_MENU_SELECTOR + ',[role="menu"],[role="dialog"],[role="listbox"]',
+        ) ||
+        (!canvas.contains(target) && !(target === document.body && pointerInsideCanvas.current))
+      )
+        return;
+      event.preventDefault();
+      tabSelectionHeldRef.current = true;
+      setTabSelectionHeld(true);
+    };
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab') return;
+      tabSelectionHeldRef.current = false;
+      setTabSelectionHeld(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', cancelSelectionGesture);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', cancelSelectionGesture);
+    };
+  }, [cancelSelectionGesture]);
+
+  /** 按下时锁定本次手势，只有库实际完成非空框选才显示菜单。 */
+  const handleSelectionPointerDown = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    const target = event.target as HTMLElement;
+    if (target.classList.contains('react-flow__pane') && event.button === 0)
+      canvasAreaRef.current?.focus({ preventScroll: true });
+    if (!tabSelectionHeldRef.current || event.button !== 0 || event.isPrimary === false) return;
+    if (!target.closest('.react-flow__pane')) return;
+    selectionGesture.current = { target, pointerId: event.pointerId };
+    setContextMenu(null);
+    setSelectionDragging(true);
+  }, []);
+  const handleSelectionPointerUp = useCallback(() => {
+    selectionGesture.current = null;
+    setSelectionDragging(false);
+  }, []);
+  /** 使用鼠标松开时已提交的 store 选区，避免闭包停留在上一指针帧。 */
+  const handleSelectionEnd = useCallback(
+    (event: ReactMouseEvent) => {
+      if (!selectionGesture.current) return;
+      selectionGesture.current = null;
+      setSelectionDragging(false);
+      const selected = flowStore.getState().nodes.filter((node) => node.selected && !node.hidden);
+      if (selected.length === 0 || !onAddSelectionGenerateNode) return;
+      setContextMenu({
+        kind: 'selection',
+        count: selected.length,
+        clientPosition: { x: event.clientX, y: event.clientY },
+        flowPosition: screenToFlowPosition({ x: event.clientX, y: event.clientY }),
+        returnFocusTo: canvasAreaRef.current,
+      });
+    },
+    [flowStore, onAddSelectionGenerateNode, screenToFlowPosition],
+  );
   const [videoImageRolePicker, setVideoImageRolePicker] =
     useState<VideoInputRolePickerTarget | null>(null);
   /** 只按拖动成员缓存，避免每一帧都重建隐藏边对象并触发节点的连线订阅。 */
@@ -460,11 +573,16 @@ export function WorkflowCanvas({
     [batchProjection.views, onBatchExpandedChange],
   );
   /** 收起后的后方卡牌不能继续显示输入编辑器。 */
+  const editorCandidate = selectionDrawing ? editorBeforeSelection.current : selectedNode;
   const quickEditorNode =
-    selectedNode && !batchProjection.views.get(selectedNode.id)?.hidden ? selectedNode : null;
+    editorCandidate && !batchProjection.views.get(editorCandidate.id)?.hidden
+      ? editorCandidate
+      : null;
   const selectedResourceNodes = batchProjection.nodes.filter(
     (node) => node.selected && !node.hidden,
   );
+  const suppressNodeInteractions =
+    selectionDrawing || selectedResourceNodes.length > 1 || contextMenu?.kind === 'selection';
   /** 菜单打开后仍读取实时节点，避免恢复/SSE 更新被右键快照遮住。 */
   const currentContextMenu =
     contextMenu?.kind === 'node'
@@ -1010,7 +1128,7 @@ export function WorkflowCanvas({
   return (
     <section
       ref={canvasAreaRef}
-      className={`canvas-area${quickEditorNode ? ' has-quick-editor' : ''}${draggingNodeIdsKey !== '[]' ? ' is-node-dragging' : ''}${viewportMoving.current ? ' is-viewport-moving' : ''}`}
+      className={`canvas-area${quickEditorNode ? ' has-quick-editor' : ''}${draggingNodeIdsKey !== '[]' ? ' is-node-dragging' : ''}${viewportMoving.current ? ' is-viewport-moving' : ''}${selectionDrawing ? ' is-tab-selecting' : ''}${suppressNodeInteractions ? ' is-selection-mode' : ''}`}
       data-edge-path-style={edgePathStyle}
       data-edge-effect={edgeEffect}
       aria-label="工作流画布"
@@ -1018,6 +1136,15 @@ export function WorkflowCanvas({
       // 在捕获阶段拦截 Ctrl+滚轮，避免事件先冒泡到页面触发浏览器缩放；
       // 不阻止继续传播，React Flow 仍可在其内部处理画布缩放。
       onWheelCapture={handleCanvasWheelCapture}
+      onPointerEnter={() => {
+        pointerInsideCanvas.current = true;
+      }}
+      onPointerLeave={() => {
+        pointerInsideCanvas.current = false;
+      }}
+      onPointerDownCapture={handleSelectionPointerDown}
+      onPointerUp={handleSelectionPointerUp}
+      onPointerCancel={cancelSelectionGesture}
       onContextMenu={(event) => {
         if (!shouldKeepNativeContextMenu(event.target)) event.preventDefault();
       }}
@@ -1048,113 +1175,122 @@ export function WorkflowCanvas({
         canUndo={canUndo}
         canRedo={canRedo}
       />
-      <NodeSelectionContext.Provider value={selectNodeByData}>
-        <NodeResizeContext.Provider value={onResizeNode}>
-          <NodeResizeStartContext.Provider value={onResizeStart ?? null}>
-            <NodeLabelChangeContext.Provider value={onNodeLabelChange ?? null}>
-              <NodeEnabledContext.Provider value={onNodeEnabledChange}>
-                <NodeRetryContext.Provider value={onRetryNode}>
-                  <NodeDeleteContext.Provider value={onDeleteNode ? handleDeleteNode : null}>
-                    <NodeContentContext.Provider value={nodeContentHandlers ?? null}>
-                      <NodeImageEditContext.Provider value={onEditImage ?? null}>
-                        <NodePromptContext.Provider
-                          value={onOpenRequestPrompt ? handleOpenRequestPrompt : null}
-                        >
-                          <NodeQuickEditorIdContext.Provider value={quickEditorNode?.id ?? null}>
-                            <CanvasPerformanceContext.Provider
-                              value={nodes.length >= LARGE_CANVAS_NODE_COUNT}
-                            >
-                              <GenerationBatchViewContext.Provider value={batchContext}>
-                                <CanvasEdgeAppearanceProvider appearance={edgeAppearance}>
-                                  {/* 组背景接受空白拖动，标题和外框在节点之上，正文仍保留节点与端口交互。 */}
-                                  <ViewportGroupLayer
-                                    groups={groups}
-                                    nodes={nodes}
-                                    {...(dropTargetGroupId ? { dropTargetGroupId } : {})}
-                                    {...(selectedGroupId ? { selectedGroupId } : {})}
-                                    {...(onSelectGroup
-                                      ? { onSelectGroup: (id) => onSelectGroup(id) }
-                                      : {})}
-                                    {...(onRenameGroup ? { onRenameGroup } : {})}
-                                    {...(onDissolveGroup ? { onDissolveGroup } : {})}
-                                    {...(onTranslateGroup ? { onTranslateGroup } : {})}
-                                    {...(onResizeGroup ? { onResizeGroup } : {})}
-                                    {...(onGroupInteractionStart
-                                      ? { onGroupInteractionStart }
-                                      : {})}
-                                    {...(onGroupInteractionEnd ? { onGroupInteractionEnd } : {})}
-                                  />
-                                  <ReactFlow
-                                    nodes={batchProjection.nodes}
-                                    edges={batchProjection.edges}
-                                    nodeTypes={nodeTypes}
-                                    edgeTypes={canvasEdgeTypes}
-                                    connectionLineComponent={connectionLineComponent}
-                                    onNodesChange={handleNodesChange}
-                                    onEdgesChange={onEdgesChange}
-                                    // 删除统一走 App 的控件边界、历史记录及保存，避免库默认 Backspace 穿透菜单。
-                                    deleteKeyCode={null}
-                                    onConnect={handleFlowConnect}
-                                    onConnectStart={handleConnectStart}
-                                    onConnectEnd={handleConnectEnd}
-                                    onNodeDragStart={onNodeDragStart}
-                                    onNodeDrag={onNodeDrag}
-                                    onNodeDragStop={onNodeDragStop}
-                                    onMoveStart={handleViewportMoveStart}
-                                    onMove={handleViewportMove}
-                                    onMoveEnd={handleViewportMoveEnd}
-                                    onDrop={handleDrop}
-                                    onDragOver={handleDragOver}
-                                    onNodeClick={handleNodeClick}
-                                    onNodeContextMenu={handleNodeContextMenu}
-                                    onPaneContextMenu={handlePaneContextMenu}
-                                    onSelectionContextMenu={handlePaneContextMenu}
-                                    selectionOnDrag
-                                    panOnDrag={FLOW_PAN_ON_DRAG}
-                                    multiSelectionKeyCode={FLOW_MULTI_SELECTION_KEYS}
-                                    onPaneClick={handlePaneClick}
-                                    fitView
-                                    minZoom={FIT_VIEW_MIN_ZOOM}
-                                    fitViewOptions={FLOW_FIT_VIEW_OPTIONS}
-                                    connectionLineStyle={FLOW_CONNECTION_LINE_STYLE}
-                                    defaultEdgeOptions={FLOW_DEFAULT_EDGE_OPTIONS}
-                                    proOptions={FLOW_PRO_OPTIONS}
-                                  >
-                                    {background !== 'blank' && (
-                                      <Background
-                                        color="#cbd5d0"
-                                        gap={background === 'lines' ? 28 : 24}
-                                        size={background === 'cross' ? 7 : 1.2}
-                                        variant={
-                                          background === 'lines'
-                                            ? BackgroundVariant.Lines
-                                            : background === 'cross'
-                                              ? BackgroundVariant.Cross
-                                              : BackgroundVariant.Dots
-                                        }
-                                      />
-                                    )}
-                                    <Controls showInteractive={false} position="bottom-right" />
-                                  </ReactFlow>
-                                </CanvasEdgeAppearanceProvider>
-                              </GenerationBatchViewContext.Provider>
-                            </CanvasPerformanceContext.Provider>
-                          </NodeQuickEditorIdContext.Provider>
-                        </NodePromptContext.Provider>
-                      </NodeImageEditContext.Provider>
-                    </NodeContentContext.Provider>
-                  </NodeDeleteContext.Provider>
-                </NodeRetryContext.Provider>
-              </NodeEnabledContext.Provider>
-            </NodeLabelChangeContext.Provider>
-          </NodeResizeStartContext.Provider>
-        </NodeResizeContext.Provider>
-      </NodeSelectionContext.Provider>
+      <CanvasSelectionModeContext.Provider value={suppressNodeInteractions}>
+        <NodeSelectionContext.Provider value={selectNodeByData}>
+          <NodeResizeContext.Provider value={onResizeNode}>
+            <NodeResizeStartContext.Provider value={onResizeStart ?? null}>
+              <NodeLabelChangeContext.Provider value={onNodeLabelChange ?? null}>
+                <NodeEnabledContext.Provider value={onNodeEnabledChange}>
+                  <NodeRetryContext.Provider value={onRetryNode}>
+                    <NodeDeleteContext.Provider value={onDeleteNode ? handleDeleteNode : null}>
+                      <NodeContentContext.Provider value={nodeContentHandlers ?? null}>
+                        <NodeImageEditContext.Provider value={onEditImage ?? null}>
+                          <NodePromptContext.Provider
+                            value={onOpenRequestPrompt ? handleOpenRequestPrompt : null}
+                          >
+                            <NodeQuickEditorIdContext.Provider value={quickEditorNode?.id ?? null}>
+                              <CanvasPerformanceContext.Provider
+                                value={nodes.length >= LARGE_CANVAS_NODE_COUNT}
+                              >
+                                <GenerationBatchViewContext.Provider value={batchContext}>
+                                  <CanvasEdgeAppearanceProvider appearance={edgeAppearance}>
+                                    {/* 组背景接受空白拖动，标题和外框在节点之上，正文仍保留节点与端口交互。 */}
+                                    <ViewportGroupLayer
+                                      groups={groups}
+                                      nodes={nodes}
+                                      {...(dropTargetGroupId ? { dropTargetGroupId } : {})}
+                                      {...(selectedGroupId ? { selectedGroupId } : {})}
+                                      {...(onSelectGroup
+                                        ? { onSelectGroup: (id) => onSelectGroup(id) }
+                                        : {})}
+                                      {...(onRenameGroup ? { onRenameGroup } : {})}
+                                      {...(onDissolveGroup ? { onDissolveGroup } : {})}
+                                      {...(onTranslateGroup ? { onTranslateGroup } : {})}
+                                      {...(onResizeGroup ? { onResizeGroup } : {})}
+                                      {...(onGroupInteractionStart
+                                        ? { onGroupInteractionStart }
+                                        : {})}
+                                      {...(onGroupInteractionEnd ? { onGroupInteractionEnd } : {})}
+                                    />
+                                    <ReactFlow
+                                      nodes={batchProjection.nodes}
+                                      edges={batchProjection.edges}
+                                      nodeTypes={nodeTypes}
+                                      edgeTypes={canvasEdgeTypes}
+                                      connectionLineComponent={connectionLineComponent}
+                                      onNodesChange={handleNodesChange}
+                                      onEdgesChange={onEdgesChange}
+                                      // 删除统一走 App 的控件边界、历史记录及保存，避免库默认 Backspace 穿透菜单。
+                                      deleteKeyCode={null}
+                                      onConnect={handleFlowConnect}
+                                      onConnectStart={handleConnectStart}
+                                      onConnectEnd={handleConnectEnd}
+                                      onNodeDragStart={onNodeDragStart}
+                                      onNodeDrag={onNodeDrag}
+                                      onNodeDragStop={onNodeDragStop}
+                                      onMoveStart={handleViewportMoveStart}
+                                      onMove={handleViewportMove}
+                                      onMoveEnd={handleViewportMoveEnd}
+                                      onDrop={handleDrop}
+                                      onDragOver={handleDragOver}
+                                      onNodeClick={handleNodeClick}
+                                      onNodeContextMenu={handleNodeContextMenu}
+                                      onPaneContextMenu={handlePaneContextMenu}
+                                      onSelectionContextMenu={handlePaneContextMenu}
+                                      selectionKeyCode={null}
+                                      selectionOnDrag={selectionDrawing}
+                                      panOnDrag={
+                                        selectionDrawing
+                                          ? FLOW_SELECTION_PAN_ON_DRAG
+                                          : FLOW_PAN_ON_DRAG
+                                      }
+                                      onSelectionEnd={handleSelectionEnd}
+                                      multiSelectionKeyCode={FLOW_MULTI_SELECTION_KEYS}
+                                      onPaneClick={handlePaneClick}
+                                      fitView
+                                      minZoom={FIT_VIEW_MIN_ZOOM}
+                                      fitViewOptions={FLOW_FIT_VIEW_OPTIONS}
+                                      connectionLineStyle={FLOW_CONNECTION_LINE_STYLE}
+                                      defaultEdgeOptions={FLOW_DEFAULT_EDGE_OPTIONS}
+                                      proOptions={FLOW_PRO_OPTIONS}
+                                    >
+                                      {background !== 'blank' && (
+                                        <Background
+                                          color="#cbd5d0"
+                                          gap={background === 'lines' ? 28 : 24}
+                                          size={background === 'cross' ? 7 : 1.2}
+                                          variant={
+                                            background === 'lines'
+                                              ? BackgroundVariant.Lines
+                                              : background === 'cross'
+                                                ? BackgroundVariant.Cross
+                                                : BackgroundVariant.Dots
+                                          }
+                                        />
+                                      )}
+                                      <Controls showInteractive={false} position="bottom-right" />
+                                    </ReactFlow>
+                                  </CanvasEdgeAppearanceProvider>
+                                </GenerationBatchViewContext.Provider>
+                              </CanvasPerformanceContext.Provider>
+                            </NodeQuickEditorIdContext.Provider>
+                          </NodePromptContext.Provider>
+                        </NodeImageEditContext.Provider>
+                      </NodeContentContext.Provider>
+                    </NodeDeleteContext.Provider>
+                  </NodeRetryContext.Provider>
+                </NodeEnabledContext.Provider>
+              </NodeLabelChangeContext.Provider>
+            </NodeResizeStartContext.Provider>
+          </NodeResizeContext.Provider>
+        </NodeSelectionContext.Provider>
+      </CanvasSelectionModeContext.Provider>
       {quickEditorNode && (
         <QuickEditorOverlay
           key={quickEditorNode.id}
           nodeId={quickEditorNode.id}
           canvasAreaRef={canvasAreaRef}
+          hidden={selectionDrawing || contextMenu?.kind === 'selection'}
         >
           {quickEditor}
         </QuickEditorOverlay>
@@ -1240,6 +1376,8 @@ const MemoizedNodeQuickEditor = memo(NodeQuickEditor);
 
 /** 快速编辑器 portal 所需的节点与画布引用。 */
 type QuickEditorOverlayProps = {
+  /** 框选期间保留表单状态，但不显示或测量浮层。 */
+  hidden?: boolean;
   /** 当前编辑节点身份，几何从实时 DOM 读取，不与表单内容绑定。 */
   nodeId: string;
   /** 已按内容依赖缓存的参数表单。 */
@@ -1253,7 +1391,12 @@ type QuickEditorOverlayProps = {
  * portal 避免被节点的 overflow 裁剪；碰撞检测使用屏幕像素，最终尺寸换回画布像素，
  * 使输入内容不影响节点外框；贴边等待换向时允许暂时重叠节点，但始终留在可见画布内。
  */
-function QuickEditorOverlay({ nodeId, canvasAreaRef, children }: QuickEditorOverlayProps) {
+function QuickEditorOverlay({
+  nodeId,
+  canvasAreaRef,
+  children,
+  hidden = false,
+}: QuickEditorOverlayProps) {
   // 视口由 DOM 观察器跟踪；测量时读取最新倍率，不为每个缩放帧重建 React 订阅和监听器。
   const store = useStoreApi();
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -1400,7 +1543,7 @@ function QuickEditorOverlay({ nodeId, canvasAreaRef, children }: QuickEditorOver
   }, [canvasAreaRef, nodeId, store]);
 
   useLayoutEffect(() => {
-    if (!portalHost) return;
+    if (!portalHost || hidden) return;
     let disposed = false;
     let frame: number | null = null;
     /** 同一帧的尺寸、DOM 和滚动通知共用一次测量，且在 React Flow 写完视口后读取。 */
@@ -1458,7 +1601,7 @@ function QuickEditorOverlay({ nodeId, canvasAreaRef, children }: QuickEditorOver
       resizeObserver?.disconnect();
       mutationObserver?.disconnect();
     };
-  }, [canvasAreaRef, measure, nodeId, portalHost]);
+  }, [canvasAreaRef, hidden, measure, nodeId, portalHost]);
 
   if (!portalHost) return null;
 
@@ -1476,6 +1619,8 @@ function QuickEditorOverlay({ nodeId, canvasAreaRef, children }: QuickEditorOver
     <div
       ref={overlayRef}
       className="quick-editor-overlay"
+      hidden={hidden}
+      inert={hidden || undefined}
       data-node-id={nodeId}
       data-placement={layout.placement}
       style={style}

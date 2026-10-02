@@ -348,6 +348,8 @@ describe('CanvasContextMenu selection', () => {
       onAddSelectionGenerateNode: vi.fn(),
     });
     render(<CanvasContextMenu {...inputs} />);
+    expect(screen.getAllByRole('menuitem')).toHaveLength(4);
+    expect(screen.queryByRole('menuitem', { name: '上传资源' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('menuitem', { name: '引用选区新建' + label + '节点' }));
     expect(inputs.onAddSelectionGenerateNode).toHaveBeenCalledWith(mediaType, { x: 200, y: 100 });
     expect(inputs.onAddGenerateNode).not.toHaveBeenCalled();

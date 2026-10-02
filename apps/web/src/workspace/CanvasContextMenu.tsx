@@ -381,36 +381,39 @@ function canvasMenuItems(
   run: (action: () => void) => void,
   selectedCount?: number,
 ): MenuProps['items'] {
+  const creationGroup = {
+    type: 'group' as const,
+    key: 'create',
+    label: (
+      <span className="canvas-context-menu-label">
+        <Sparkles size={12} aria-hidden="true" />
+        {selectedCount === undefined ? '创建生成节点' : '引用选中节点新建'}
+      </span>
+    ),
+    children: mediaTypes.map((mediaType) =>
+      menuItem(
+        `create-${mediaType}`,
+        mediaIcons[mediaType],
+        selectedCount === undefined
+          ? `创建${mediaLabels[mediaType]}生成节点`
+          : `引用选区新建${mediaLabels[mediaType]}节点`,
+        selectedCount === undefined
+          ? `在此处添加${mediaLabels[mediaType]}生成节点`
+          : '引用可见选区中的已保存素材，不运行，保留来源选择',
+        () =>
+          run(() =>
+            selectedCount === undefined
+              ? props.onAddGenerateNode(mediaType, position)
+              : props.onAddSelectionGenerateNode?.(mediaType, position),
+          ),
+        selectedCount !== undefined && (selectedCount === 0 || !props.onAddSelectionGenerateNode),
+      ),
+    ),
+  };
+  // 选区松手只需选择生成类型，避免每次弹出上传、清空等无关命令。
+  if (selectedCount !== undefined) return creationGroup.children;
   return [
-    {
-      type: 'group',
-      key: 'create',
-      label: (
-        <span className="canvas-context-menu-label">
-          <Sparkles size={12} aria-hidden="true" />
-          {selectedCount === undefined ? '创建生成节点' : '引用选中节点新建'}
-        </span>
-      ),
-      children: mediaTypes.map((mediaType) =>
-        menuItem(
-          `create-${mediaType}`,
-          mediaIcons[mediaType],
-          selectedCount === undefined
-            ? `创建${mediaLabels[mediaType]}生成节点`
-            : `引用选区新建${mediaLabels[mediaType]}节点`,
-          selectedCount === undefined
-            ? `在此处添加${mediaLabels[mediaType]}生成节点`
-            : '引用可见选区中的已保存素材，不运行，保留来源选择',
-          () =>
-            run(() =>
-              selectedCount === undefined
-                ? props.onAddGenerateNode(mediaType, position)
-                : props.onAddSelectionGenerateNode?.(mediaType, position),
-            ),
-          selectedCount !== undefined && (selectedCount === 0 || !props.onAddSelectionGenerateNode),
-        ),
-      ),
-    },
+    creationGroup,
     { type: 'divider' },
     menuItem('upload', Upload, '上传资源', '选择本地文件并加入项目资源', () =>
       run(props.onRequestUpload),

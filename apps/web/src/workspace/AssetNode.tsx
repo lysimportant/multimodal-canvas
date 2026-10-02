@@ -80,6 +80,8 @@ import './asset-node.css';
 /** 节点本体把点击修饰键交给画布，避免捕获阶段覆盖 React Flow 的多选。 */
 export type NodeSelectionHandler = (data: AssetFlowNode['data'], event?: MouseEvent) => void;
 export const NodeSelectionContext = createContext<NodeSelectionHandler | null>(null);
+/** Tab 待框选、框选手势、引用选区菜单或多选期间暂停节点悬浮栏；默认保留单节点交互。 */
+export const CanvasSelectionModeContext = createContext<boolean>(false);
 /** 当前已打开输入编辑器的节点 ID；框选或全选状态不能代替实际编辑器状态。 */
 export const NodeQuickEditorIdContext = createContext<string | null>(null);
 /** 节点名称变更回调；由画布统一负责历史记录和持久化。 */
@@ -211,6 +213,7 @@ export function AssetNode({
   height,
 }: NodeProps<AssetFlowNode>) {
   const largeCanvas = useContext(CanvasPerformanceContext);
+  const selectionMode = useContext(CanvasSelectionModeContext);
   const updateNodeInternals = useUpdateNodeInternals();
   /** 首次测量由 React Flow 的共享 ResizeObserver 完成，不为每个节点再触发一次全图更新。 */
   const measuredPortLayout = useRef([
@@ -265,11 +268,9 @@ export function AssetNode({
   const [hovered, setHovered] = useState(false);
   const [focusWithin, setFocusWithin] = useState(false);
   const [previewInteracting, setPreviewInteracting] = useState(false);
-  /** 交互期间保留编辑草稿、播放器和原图 Dialog，不随平移或缩放卸载。 */
+  /** 框选经过节点不强制挂载重内容；实际编辑草稿、播放器和原图 Dialog 仍保留。 */
   const keepDetail = Boolean(
-    selected ||
-    hovered ||
-    focusWithin ||
+    (!selectionMode && (selected || hovered || focusWithin)) ||
     previewInteracting ||
     infoOpen ||
     renameOpen ||
@@ -287,8 +288,9 @@ export function AssetNode({
           height: height ?? 160,
         }),
   );
-  /** 隐藏悬浮栏不订阅视口；显示时读取当前平移和缩放以保持屏幕尺寸及避让。 */
-  const controlsVisible = Boolean(hovered || focusWithin || selected) && !batchView?.hidden;
+  /** 选区模式和隐藏悬浮栏保持固定视口快照，不因 hover 或 selected 恢复逐帧测量。 */
+  const controlsVisible =
+    !selectionMode && Boolean(hovered || focusWithin || selected) && !batchView?.hidden;
   const [viewportX, viewportY, zoom] = useStore(
     (state) =>
       [
@@ -359,7 +361,7 @@ export function AssetNode({
   ]);
   // 仅可见悬浮卡片或信息面板中的活动计时订阅共享时钟。
   const durationNow = useSharedNodeClock(
-    (infoOpen || hovered || focusWithin || Boolean(selected)) && isNodeRunning(data.runStatus),
+    (infoOpen || controlsVisible) && isNodeRunning(data.runStatus),
   );
   const [draftLabel, setDraftLabel] = useState(data.label);
   const renameTitleId = useId();
@@ -616,8 +618,13 @@ export function AssetNode({
       inert={batchView?.hidden || undefined}
       data-batch-root={batchView?.rootNodeId}
       data-render-detail={renderDetail}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      data-selection-mode={selectionMode}
+      onMouseEnter={() => {
+        if (!selectionMode) setHovered(true);
+      }}
+      onMouseLeave={() => {
+        if (hovered) setHovered(false);
+      }}
       onFocusCapture={() => setFocusWithin(true)}
       onBlurCapture={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
@@ -711,7 +718,7 @@ export function AssetNode({
           }}
         />
       ) : null}
-      {(!largeCanvas || controlsVisible) && (
+      {!selectionMode && (!largeCanvas || controlsVisible) && (
         <div
           ref={floatingControlsRef}
           className={`flow-node-header${floatingControls ? ' flow-node-floating-controls' : ''}`}

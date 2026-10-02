@@ -60,7 +60,24 @@ vi.mock('@xyflow/react', async () => {
     useEdges: () => [],
     useNodeConnections: nodeConnectionsMock,
     useUpdateNodeInternals: () => updateNodeInternalsMock,
-    Handle: () => null,
+    Handle: ({
+      id,
+      type,
+      position,
+      className,
+    }: {
+      id: string;
+      type: string;
+      position: string;
+      className?: string;
+    }) => (
+      <span
+        className={'react-flow__handle ' + (className ?? '')}
+        data-handleid={id}
+        data-handletype={type}
+        data-handlepos={position}
+      />
+    ),
     NodeResizer: ({
       isVisible,
       onResizeStart,
@@ -87,6 +104,7 @@ import { fetchNodeAssetDownload } from './node-asset-download';
 import * as thumbnails from './image-thumbnail-cache';
 import {
   AssetNode,
+  CanvasSelectionModeContext,
   NodeContentContext,
   NodeImageEditContext,
   NodeDeleteContext,
@@ -1402,6 +1420,347 @@ describe('AssetNode result presentation', () => {
       </NodeRetryContext.Provider>,
     );
     expect(screen.getByRole('alert')).toHaveTextContent('产物不存在或已失效');
+  });
+});
+
+describe('画布选区模式', () => {
+  it.each([
+    [false, 'selected'],
+    [false, 'hovered'],
+    [false, 'focusWithin'],
+    [true, 'selected'],
+    [true, 'hovered'],
+    [true, 'focusWithin'],
+  ] as const)('大画布=%s，%s 不激活隐藏悬浮栏，退出后恢复视口响应', (largeCanvas, visibility) => {
+    const observer = mockToolbarResizeObserver();
+    const onRender = vi.fn();
+    const measure = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect');
+    const node = makeNode();
+    const scene = (selectionMode: boolean) => (
+      <CanvasSelectionModeContext.Provider value={selectionMode}>
+        <CanvasPerformanceContext.Provider value={largeCanvas}>
+          <div className="react-flow">
+            <div className="react-flow__node" style={{ width: 220, height: 160 }}>
+              <Profiler id="selection-node" onRender={onRender}>
+                <AssetNode
+                  {...({
+                    id: node.id,
+                    data: node.data,
+                    selected: visibility === 'selected',
+                  } as NodeProps<AssetFlowNode>)}
+                />
+              </Profiler>
+            </div>
+          </div>
+        </CanvasPerformanceContext.Provider>
+      </CanvasSelectionModeContext.Provider>
+    );
+    const view = render(scene(true));
+    const shell = view.container.querySelector<HTMLElement>('.flow-asset-node')!;
+    const wrapper = view.container.querySelector<HTMLElement>('.react-flow__node')!;
+    if (visibility === 'hovered') {
+      onRender.mockClear();
+      fireEvent.mouseEnter(shell);
+      fireEvent.mouseLeave(shell);
+      fireEvent.mouseEnter(shell);
+      expect(onRender).not.toHaveBeenCalled();
+    }
+    if (visibility === 'focusWithin') fireEvent.focus(shell);
+    const initialReads = measure.mock.calls.length;
+    measure.mockClear();
+    onRender.mockClear();
+    updateViewport({ x: 120, y: -40, zoom: 0.5 });
+    updateViewport({ x: 140, y: -60, zoom: 0.6 });
+    expect(initialReads).toBe(0);
+    expect(shell).toHaveAttribute('data-selection-mode', 'true');
+    expect(screen.queryByRole('group', { name: '节点操作：文案生成' })).not.toBeInTheDocument();
+    expect(observer.create).not.toHaveBeenCalled();
+    fireEvent.transitionEnd(wrapper);
+    expect(onRender).not.toHaveBeenCalled();
+    expect(measure).not.toHaveBeenCalled();
+
+    view.rerender(scene(false));
+    if (visibility === 'hovered') {
+      expect(observer.create).not.toHaveBeenCalled();
+      expect(measure).not.toHaveBeenCalled();
+      fireEvent.mouseEnter(shell);
+    }
+    const toolbar = screen.getByRole('group', { name: '节点操作：文案生成' });
+    expect(observer.create).toHaveBeenCalledTimes(1);
+    expect(observer.observe).toHaveBeenCalledTimes(3);
+    expect(measure).toHaveBeenCalled();
+    expect(toolbar.style.getPropertyValue('--flow-node-zoom')).toBe('0.6');
+    measure.mockClear();
+    onRender.mockClear();
+    updateViewport({ x: 160, zoom: 0.25 });
+    expect(onRender).toHaveBeenCalled();
+    expect(measure).toHaveBeenCalled();
+    expect(toolbar.style.getPropertyValue('--flow-node-inverse-zoom')).toBe('4');
+
+    view.rerender(scene(true));
+    expect(observer.disconnect).toHaveBeenCalledTimes(1);
+    expect(toolbar).not.toBeInTheDocument();
+    if (visibility === 'hovered') fireEvent.mouseLeave(shell);
+    measure.mockClear();
+    onRender.mockClear();
+    // 已排队的尺寸通知和过渡事件也不能继续测量已卸载的操作栏。
+    observer.notify();
+    fireEvent.transitionEnd(wrapper);
+    updateViewport({ x: 180, zoom: 0.3 });
+    expect(onRender).not.toHaveBeenCalled();
+    expect(measure).not.toHaveBeenCalled();
+    expect(wrapper).toHaveStyle({ width: '220px', height: '160px' });
+    expect(updateNodeInternalsMock).not.toHaveBeenCalled();
+    if (visibility === 'hovered') {
+      view.rerender(scene(false));
+      expect(observer.create).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('进入选区模式关闭已打开的 Tooltip，退出后可再次悬浮', async () => {
+    const user = userEvent.setup();
+    const node = makeNode();
+    const scene = (selectionMode: boolean) => (
+      <CanvasSelectionModeContext.Provider value={selectionMode}>
+        <AssetNode
+          {...({ id: node.id, data: node.data, selected: true } as NodeProps<AssetFlowNode>)}
+        />
+      </CanvasSelectionModeContext.Provider>
+    );
+    const view = render(scene(false));
+    await user.hover(screen.getByRole('button', { name: '查看节点信息' }));
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(
+      '查看节点类型、运行状态与资源信息',
+    );
+    view.rerender(scene(true));
+    await waitFor(() => expect(screen.queryByRole('tooltip')).not.toBeInTheDocument());
+    expect(screen.queryByRole('group')).not.toBeInTheDocument();
+    view.rerender(scene(false));
+    await user.hover(screen.getByRole('button', { name: '查看节点信息' }));
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(
+      '查看节点类型、运行状态与资源信息',
+    );
+  });
+
+  it.each([
+    ['offscreen', 2400, 1],
+    ['compact', 100, 0.3],
+  ] as const)(
+    '选区经过 %s 节点不强制挂载预览，离开选区后恢复单节点悬浮',
+    async (detail, x, zoom) => {
+      mockThumbnail(640, 480);
+      viewportMock.zoom = zoom;
+      const node = makeNode({
+        mediaType: 'image',
+        assetId: 'source-image',
+        mimeType: 'image/png',
+        contentUrl: '/v1/assets/source-image/versions/1/content',
+      });
+      const scene = (selectionMode: boolean, selected: boolean) => (
+        <CanvasSelectionModeContext.Provider value={selectionMode}>
+          <CanvasPerformanceContext.Provider value={true}>
+            <AssetNode
+              {...({
+                id: node.id,
+                data: node.data,
+                selected,
+                positionAbsoluteX: x,
+                positionAbsoluteY: 100,
+                width: 220,
+                height: 160,
+              } as NodeProps<AssetFlowNode>)}
+            />
+          </CanvasPerformanceContext.Provider>
+        </CanvasSelectionModeContext.Provider>
+      );
+      const view = render(scene(true, false));
+      const shell = view.container.querySelector('.flow-asset-node')!;
+      const handles = Array.from(shell.querySelectorAll('.react-flow__handle'));
+      expect(handles.length).toBeGreaterThan(0);
+      view.rerender(scene(true, true));
+      fireEvent.mouseEnter(shell);
+      expect(shell).toHaveAttribute('data-render-detail', detail);
+      expect(shell.querySelector('img')).toBeNull();
+      expect(thumbnails.acquireImageThumbnail).not.toHaveBeenCalled();
+      view.rerender(scene(true, false));
+      expect(shell).toHaveAttribute('data-render-detail', detail);
+      expect(Array.from(shell.querySelectorAll('.react-flow__handle'))).toEqual(handles);
+      expect(updateNodeInternalsMock).not.toHaveBeenCalled();
+      view.rerender(scene(false, false));
+      expect(shell).toHaveAttribute('data-render-detail', detail);
+      expect(thumbnails.acquireImageThumbnail).not.toHaveBeenCalled();
+      fireEvent.mouseEnter(shell);
+      await waitFor(() =>
+        expect(shell.querySelector('img')).toHaveAttribute('src', 'blob:node-thumbnail'),
+      );
+      expect(thumbnails.acquireImageThumbnail).toHaveBeenCalledTimes(1);
+      expect(shell).toHaveAttribute('data-render-detail', 'full');
+      expect(screen.getByRole('button', { name: '查看节点信息' })).toBeInTheDocument();
+    },
+  );
+
+  it('选区切换保留视口内同一张图片、端口与用户尺寸，不重复加载缩略图', async () => {
+    mockThumbnail(640, 480);
+    const node = makeNode({
+      mediaType: 'image',
+      assetId: 'source-image',
+      mimeType: 'image/png',
+      contentUrl: '/v1/assets/source-image/versions/1/content',
+    });
+    const scene = (selectionMode: boolean) => (
+      <CanvasSelectionModeContext.Provider value={selectionMode}>
+        <CanvasPerformanceContext.Provider value={true}>
+          <div className="react-flow__node" style={{ width: 320, height: 240 }}>
+            <AssetNode
+              {...({
+                id: node.id,
+                data: node.data,
+                selected: true,
+                positionAbsoluteX: 100,
+                positionAbsoluteY: 100,
+                width: 320,
+                height: 240,
+              } as NodeProps<AssetFlowNode>)}
+            />
+          </div>
+        </CanvasPerformanceContext.Provider>
+      </CanvasSelectionModeContext.Provider>
+    );
+    const view = render(scene(false));
+    const shell = view.container.querySelector('.flow-asset-node')!;
+    const wrapper = view.container.querySelector('.react-flow__node')!;
+    await waitFor(() =>
+      expect(shell.querySelector('img')).toHaveAttribute('src', 'blob:node-thumbnail'),
+    );
+    const image = shell.querySelector('img');
+    const handles = Array.from(shell.querySelectorAll('.react-flow__handle'));
+    const ports = handles.map((handle) => handle.outerHTML);
+    expect(handles.length).toBeGreaterThan(0);
+    for (const mode of [true, false, true]) {
+      view.rerender(scene(mode));
+      expect(view.container.querySelector('.flow-asset-node')).toBe(shell);
+      expect(shell).toHaveAttribute('data-render-detail', 'full');
+      expect(shell.querySelector('img')).toBe(image);
+      expect(Array.from(shell.querySelectorAll('.react-flow__handle'))).toEqual(handles);
+      expect(handles.map((handle) => handle.outerHTML)).toEqual(ports);
+      expect(wrapper).toHaveStyle({ width: '320px', height: '240px' });
+    }
+    expect(thumbnails.acquireImageThumbnail).toHaveBeenCalledTimes(1);
+    expect(updateNodeInternalsMock).not.toHaveBeenCalled();
+  });
+
+  it('选区模式和平移保留文字编辑草稿，不触发保存或重新读取正文', async () => {
+    const fetchText = vi.fn().mockResolvedValue(new Response('原始正文', { status: 200 }));
+    vi.stubGlobal('fetch', fetchText);
+    const content = { upload: vi.fn(), saveText: vi.fn().mockResolvedValue(undefined) };
+    const node = makeNode({
+      assetId: 'source-text',
+      mimeType: 'text/plain',
+      contentUrl: 'https://example.test/text.txt',
+    });
+    const scene = (selectionMode: boolean) => (
+      <CanvasSelectionModeContext.Provider value={selectionMode}>
+        <CanvasPerformanceContext.Provider value={true}>
+          <NodeContentContext.Provider value={content}>
+            <AssetNode
+              {...({
+                id: node.id,
+                data: node.data,
+                selected: true,
+                width: 220,
+                height: 160,
+              } as NodeProps<AssetFlowNode>)}
+            />
+          </NodeContentContext.Provider>
+        </CanvasPerformanceContext.Provider>
+      </CanvasSelectionModeContext.Provider>
+    );
+    const view = render(scene(false));
+    fireEvent.doubleClick(await screen.findByText('原始正文'));
+    const editor = screen.getByRole('textbox', { name: '编辑文字结果' });
+    fireEvent.change(editor, { target: { value: '尚未提交的草稿' } });
+    view.rerender(scene(true));
+    updateViewport({ x: -2400, zoom: 0.3 });
+    expect(screen.getByRole('textbox', { name: '编辑文字结果' })).toBe(editor);
+    expect(editor).toHaveValue('尚未提交的草稿');
+    expect(view.container.querySelector('.flow-asset-node')).toHaveAttribute(
+      'data-render-detail',
+      'full',
+    );
+    expect(screen.queryByRole('group')).not.toBeInTheDocument();
+    expect(content.saveText).not.toHaveBeenCalled();
+    view.rerender(scene(false));
+    expect(editor).toHaveValue('尚未提交的草稿');
+    expect(fetchText).toHaveBeenCalledTimes(1);
+  });
+
+  it('选区模式保留已打开的重命名草稿和信息面板，信息面板继续显示执行计时', async () => {
+    const interval = vi.spyOn(window, 'setInterval');
+    const clearInterval = vi.spyOn(window, 'clearInterval');
+    const onLabelChange = vi.fn();
+    const node = makeNode({
+      runStatus: 'running',
+      nodeTiming: { nodeId: 'node_1', startedAt: new Date().toISOString() },
+    });
+    const scene = (selectionMode: boolean) => (
+      <CanvasSelectionModeContext.Provider value={selectionMode}>
+        <NodeLabelChangeContext.Provider value={onLabelChange}>
+          <AssetNode
+            {...({ id: node.id, data: node.data, selected: true } as NodeProps<AssetFlowNode>)}
+          />
+        </NodeLabelChangeContext.Provider>
+      </CanvasSelectionModeContext.Provider>
+    );
+    const view = render(scene(false));
+    await userEvent.click(screen.getByRole('button', { name: '重命名节点：文案生成' }));
+    const labelInput = screen.getByRole('textbox', { name: '编辑节点名称' });
+    fireEvent.change(labelInput, { target: { value: '未提交的新名称' } });
+    view.rerender(scene(true));
+    expect(screen.getByRole('textbox', { name: '编辑节点名称' })).toBe(labelInput);
+    expect(labelInput).toHaveValue('未提交的新名称');
+    expect(onLabelChange).not.toHaveBeenCalled();
+    view.rerender(scene(false));
+    await userEvent.click(screen.getByRole('button', { name: '取消' }));
+    await userEvent.click(screen.getByRole('button', { name: '查看节点信息' }));
+    const info = screen.getByRole('dialog', { name: '节点信息' });
+    interval.mockClear();
+    clearInterval.mockClear();
+    view.rerender(scene(true));
+    expect(screen.getByRole('dialog', { name: '节点信息' })).toBe(info);
+    expect(within(info).getByText('运行', { selector: 'dt' }).nextElementSibling).toHaveTextContent(
+      '运行中',
+    );
+    expect(interval).not.toHaveBeenCalled();
+    expect(clearInterval).not.toHaveBeenCalled();
+    expect(screen.queryByRole('group')).not.toBeInTheDocument();
+  });
+
+  it('暂停隐藏悬浮卡片的计时，但运行进度继续更新且退出后恢复计时', () => {
+    const interval = vi.spyOn(window, 'setInterval');
+    const clearInterval = vi.spyOn(window, 'clearInterval');
+    const node = makeNode({
+      runStatus: 'running',
+      nodeTiming: { nodeId: 'node_1', startedAt: new Date().toISOString() },
+    });
+    const scene = (selectionMode: boolean, runProgress: number) => (
+      <CanvasSelectionModeContext.Provider value={selectionMode}>
+        <AssetNode
+          {...({
+            id: node.id,
+            data: { ...node.data, runProgress },
+            selected: true,
+          } as NodeProps<AssetFlowNode>)}
+        />
+      </CanvasSelectionModeContext.Provider>
+    );
+    const view = render(scene(false, 12));
+    expect(interval).toHaveBeenCalledTimes(1);
+    view.rerender(scene(true, 48));
+    expect(clearInterval).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText('运行进度 48%')).toHaveTextContent('48%');
+    view.rerender(scene(false, 60));
+    expect(interval).toHaveBeenCalledTimes(2);
+    expect(screen.getByLabelText('运行进度 60%')).toHaveTextContent('60%');
   });
 });
 

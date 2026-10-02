@@ -34,6 +34,30 @@ describe('桌面节点输入区高度', () => {
     expect(nodeCss).not.toMatch(/\.react-flow__node \{[^}]*content-visibility:/);
   });
 
+  it('选区模式覆盖悬停、选中与焦点的操作栏显示，不隐藏节点或预览', () => {
+    const parentSelector =
+      '.canvas-area.is-selection-mode .flow-asset-node > .flow-node-header.flow-node-floating-controls';
+    const isolatedSelector =
+      ".flow-asset-node[data-selection-mode='true'] > .flow-node-header.flow-node-floating-controls";
+    const suppression = nodeCss.slice(nodeCss.indexOf(parentSelector)).split('}')[0];
+    expect(suppression).toContain(parentSelector + ', ' + isolatedSelector + ' {');
+    expect(suppression).toContain('content-visibility: hidden;');
+    expect(suppression).toContain('visibility: hidden;');
+    expect(suppression).toContain('opacity: 0;');
+    expect(suppression).toContain('pointer-events: none;');
+    expect(suppression).toContain('transition: none;');
+    expect(nodeCss.indexOf(parentSelector)).toBeGreaterThan(
+      nodeCss.indexOf('.react-flow__node:focus-within .flow-node-floating-controls'),
+    );
+    const modeRules = nodeCss
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('}')
+      .filter((rule) => /is-selection-mode|data-selection-mode/.test(rule));
+    expect(modeRules).toHaveLength(1);
+    expect(modeRules[0]?.split('{')[0].trim()).toBe(parentSelector + ', ' + isolatedSelector);
+    expect(suppression).not.toMatch(/(?:display|width|height):/);
+  });
+
   it('设置栏可换行且放大固定在顶部右侧，不改变节点或输入框尺寸规则', () => {
     expect(indexCss).toMatch(
       /:is\(\.node-quick-editor, \.node-quick-editor-dialog\) \.node-quick-editor-controls\.node-quick-editor-topbar \{ align-items: start; display: grid; grid-template-columns: minmax\(0, 1fr\) auto; \}/,

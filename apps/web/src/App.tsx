@@ -2362,7 +2362,7 @@ function WorkspaceApp({
   /**
    * 用实时可见选区的真实资产新建引用节点，不触发运行或改变来源选择。
    * @param mediaType 目标生成类型；模型默认值沿用普通新建流程。
-   * @param position 右键菜单所在画布位置。
+   * @param position 框选松手或右键菜单所在画布位置。
    * 空资源或版本不明时整次拒绝；成功只增加节点并记录一次撤销。
    */
   const handleAddSelectionGenerateNode = useCallback(
