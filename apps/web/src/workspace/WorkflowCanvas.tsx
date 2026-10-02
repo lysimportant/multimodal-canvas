@@ -413,26 +413,24 @@ export function WorkflowCanvas({
   /** 吞掉拖线松手后紧随而来的 pane click，避免菜单刚弹出就被关掉。 */
   const suppressPaneClickRef = useRef(false);
   const [contextMenu, setContextMenu] = useState<CanvasContextMenuTarget | null>(null);
-  const [tabSelectionHeld, setTabSelectionHeld] = useState(false);
-  const tabSelectionHeldRef = useRef(false);
-  const [selectionDragging, setSelectionDragging] = useState(false);
-  /** 指针按下后保持本次框选，即使用户先松开 Tab；取消时不弹创建菜单。 */
+  /** 单次 Tab 锁存一次框选，松鼠标或取消后恢复默认平移。 */
+  const [tabSelectionActive, setTabSelectionActive] = useState(false);
+  const tabSelectionActiveRef = useRef(false);
+  /** 手势进行时再次按 Tab 不截断指针；取消时不弹创建菜单。 */
   const selectionGesture = useRef<{ target: HTMLElement; pointerId: number } | null>(null);
   const pointerInsideCanvas = useRef(false);
-  const selectionDrawing = tabSelectionHeld || selectionDragging;
   /** 框选经过单个节点时不反复挂载编辑器，原有草稿只隐藏、不卸载。 */
   const editorBeforeSelection = useRef(selectedNode);
   useLayoutEffect(() => {
-    if (!selectionDrawing) editorBeforeSelection.current = selectedNode;
-  }, [selectedNode, selectionDrawing]);
+    if (!tabSelectionActive) editorBeforeSelection.current = selectedNode;
+  }, [selectedNode, tabSelectionActive]);
 
   /** 取消库内的指针捕获与自动平移，然后恢复普通画布操作。 */
   const cancelSelectionGesture = useCallback(() => {
     const gesture = selectionGesture.current;
     selectionGesture.current = null;
-    tabSelectionHeldRef.current = false;
-    setTabSelectionHeld(false);
-    setSelectionDragging(false);
+    tabSelectionActiveRef.current = false;
+    setTabSelectionActive(false);
     if (gesture) {
       // 先让 React Flow 清理自己的自动平移 RAF，单独清 store 会遗留循环。
       gesture.target.dispatchEvent(
@@ -446,7 +444,7 @@ export function WorkflowCanvas({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && (tabSelectionHeldRef.current || selectionGesture.current)) {
+      if (event.key === 'Escape' && (tabSelectionActiveRef.current || selectionGesture.current)) {
         cancelSelectionGesture();
         return;
       }
@@ -472,20 +470,14 @@ export function WorkflowCanvas({
       )
         return;
       event.preventDefault();
-      tabSelectionHeldRef.current = true;
-      setTabSelectionHeld(true);
-    };
-    const handleKeyUp = (event: KeyboardEvent) => {
-      if (event.key !== 'Tab') return;
-      tabSelectionHeldRef.current = false;
-      setTabSelectionHeld(false);
+      if (event.repeat || selectionGesture.current) return;
+      tabSelectionActiveRef.current = !tabSelectionActiveRef.current;
+      setTabSelectionActive(tabSelectionActiveRef.current);
     };
     window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
     window.addEventListener('blur', cancelSelectionGesture);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
       window.removeEventListener('blur', cancelSelectionGesture);
     };
   }, [cancelSelectionGesture]);
@@ -495,22 +487,22 @@ export function WorkflowCanvas({
     const target = event.target as HTMLElement;
     if (target.classList.contains('react-flow__pane') && event.button === 0)
       canvasAreaRef.current?.focus({ preventScroll: true });
-    if (!tabSelectionHeldRef.current || event.button !== 0 || event.isPrimary === false) return;
+    if (!tabSelectionActiveRef.current || event.button !== 0 || event.isPrimary === false) return;
     if (!target.closest('.react-flow__pane')) return;
     selectionGesture.current = { target, pointerId: event.pointerId };
     setContextMenu(null);
-    setSelectionDragging(true);
   }, []);
+  /** 空框或点击也会消费本次框选，不要求 React Flow 触发 onSelectionEnd。 */
   const handleSelectionPointerUp = useCallback(() => {
     selectionGesture.current = null;
-    setSelectionDragging(false);
+    tabSelectionActiveRef.current = false;
+    setTabSelectionActive(false);
   }, []);
   /** 使用鼠标松开时已提交的 store 选区，避免闭包停留在上一指针帧。 */
   const handleSelectionEnd = useCallback(
     (event: ReactMouseEvent) => {
       if (!selectionGesture.current) return;
-      selectionGesture.current = null;
-      setSelectionDragging(false);
+      handleSelectionPointerUp();
       const selected = flowStore.getState().nodes.filter((node) => node.selected && !node.hidden);
       if (selected.length === 0 || !onAddSelectionGenerateNode) return;
       setContextMenu({
@@ -521,7 +513,7 @@ export function WorkflowCanvas({
         returnFocusTo: canvasAreaRef.current,
       });
     },
-    [flowStore, onAddSelectionGenerateNode, screenToFlowPosition],
+    [flowStore, handleSelectionPointerUp, onAddSelectionGenerateNode, screenToFlowPosition],
   );
   const [videoImageRolePicker, setVideoImageRolePicker] =
     useState<VideoInputRolePickerTarget | null>(null);
@@ -573,7 +565,7 @@ export function WorkflowCanvas({
     [batchProjection.views, onBatchExpandedChange],
   );
   /** 收起后的后方卡牌不能继续显示输入编辑器。 */
-  const editorCandidate = selectionDrawing ? editorBeforeSelection.current : selectedNode;
+  const editorCandidate = tabSelectionActive ? editorBeforeSelection.current : selectedNode;
   const quickEditorNode =
     editorCandidate && !batchProjection.views.get(editorCandidate.id)?.hidden
       ? editorCandidate
@@ -582,7 +574,7 @@ export function WorkflowCanvas({
     (node) => node.selected && !node.hidden,
   );
   const suppressNodeInteractions =
-    selectionDrawing || selectedResourceNodes.length > 1 || contextMenu?.kind === 'selection';
+    tabSelectionActive || selectedResourceNodes.length > 1 || contextMenu?.kind === 'selection';
   /** 菜单打开后仍读取实时节点，避免恢复/SSE 更新被右键快照遮住。 */
   const currentContextMenu =
     contextMenu?.kind === 'node'
@@ -1128,7 +1120,7 @@ export function WorkflowCanvas({
   return (
     <section
       ref={canvasAreaRef}
-      className={`canvas-area${quickEditorNode ? ' has-quick-editor' : ''}${draggingNodeIdsKey !== '[]' ? ' is-node-dragging' : ''}${viewportMoving.current ? ' is-viewport-moving' : ''}${selectionDrawing ? ' is-tab-selecting' : ''}${suppressNodeInteractions ? ' is-selection-mode' : ''}`}
+      className={`canvas-area${quickEditorNode ? ' has-quick-editor' : ''}${draggingNodeIdsKey !== '[]' ? ' is-node-dragging' : ''}${viewportMoving.current ? ' is-viewport-moving' : ''}${tabSelectionActive ? ' is-tab-selecting' : ''}${suppressNodeInteractions ? ' is-selection-mode' : ''}`}
       data-edge-path-style={edgePathStyle}
       data-edge-effect={edgeEffect}
       aria-label="工作流画布"
@@ -1238,9 +1230,9 @@ export function WorkflowCanvas({
                                       onPaneContextMenu={handlePaneContextMenu}
                                       onSelectionContextMenu={handlePaneContextMenu}
                                       selectionKeyCode={null}
-                                      selectionOnDrag={selectionDrawing}
+                                      selectionOnDrag={tabSelectionActive}
                                       panOnDrag={
-                                        selectionDrawing
+                                        tabSelectionActive
                                           ? FLOW_SELECTION_PAN_ON_DRAG
                                           : FLOW_PAN_ON_DRAG
                                       }
@@ -1290,7 +1282,7 @@ export function WorkflowCanvas({
           key={quickEditorNode.id}
           nodeId={quickEditorNode.id}
           canvasAreaRef={canvasAreaRef}
-          hidden={selectionDrawing || contextMenu?.kind === 'selection'}
+          hidden={tabSelectionActive || contextMenu?.kind === 'selection'}
         >
           {quickEditor}
         </QuickEditorOverlay>

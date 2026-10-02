@@ -2363,7 +2363,7 @@ function WorkspaceApp({
    * 用实时可见选区的真实资产新建引用节点，不触发运行或改变来源选择。
    * @param mediaType 目标生成类型；模型默认值沿用普通新建流程。
    * @param position 框选松手或右键菜单所在画布位置。
-   * 空资源或版本不明时整次拒绝；成功只增加节点并记录一次撤销。
+   * 资源、版本或连线无效时整次拒绝；新节点和所有来源边共用一次撤销。
    */
   const handleAddSelectionGenerateNode = useCallback(
     (mediaType: MediaType, position: { x: number; y: number }) => {
@@ -2377,11 +2377,31 @@ function WorkspaceApp({
           prompt: renderPromptDocument(promptDocument),
           ...(mediaType === 'video' ? { videoMode: 'omni_reference' as const } : {}),
         });
+        // 先验证完整图，再一起写入，不能留下缺来源边的半成品节点。
+        const next = [...nodesRef.current, { ...node, selected: false }];
+        const nextEdges = [...edgesRef.current];
+        for (const source of selected) {
+          const validation = validateResolvedCanvasConnection(
+            { source: source.id, target: node.id, sourceHandle: null, targetHandle: null },
+            next,
+            nextEdges,
+          );
+          if (!validation.ok)
+            throw new Error(
+              '「' + source.data.label + '」无法连接到新节点，请检查资源类型与输入模式',
+            );
+          nextEdges.push({
+            ...validation.connection,
+            id: `edge_${source.id}_${node.id}`,
+            animated: true,
+          });
+        }
         rememberHistory();
         // 不调用独占选择的 appendNodesAndSelect，来源的选择和所有数据保持原样。
-        const next = [...nodesRef.current, { ...node, selected: false }];
         nodesRef.current = next;
+        edgesRef.current = nextEdges;
         setNodes(next);
+        setEdges(nextEdges);
         canvasDirtyRef.current = true;
         const count = promptDocument.blocks.filter((block) => block.type === 'mention').length;
         setNotice({
@@ -2389,7 +2409,7 @@ function WorkspaceApp({
           message:
             '已引用 ' +
             count +
-            ' 个资源新建节点，原选区保留，未开始生成' +
+            ' 个资源新建节点并连线，原选区保留，未开始生成' +
             (nodePreferenceNoticeRef.current ? '；' + nodePreferenceNoticeRef.current : ''),
         });
       } catch (error) {
@@ -2399,7 +2419,7 @@ function WorkspaceApp({
         });
       }
     },
-    [assets, createGenerateNode, rememberHistory, setNodes],
+    [assets, createGenerateNode, rememberHistory, setEdges, setNodes],
   );
 
   /**

@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   renderPromptDocument,
+  canvasDocumentSchema,
   type Asset,
   type CanvasDocument,
   type PromptDocument,
@@ -564,7 +565,7 @@ describe('连线资源别名同步到提示词', () => {
 /** 只操作内存模拟项目，禁止创建真实任务、上传素材或修改 Provider。 */
 describe('选区资源新建节点', () => {
   it.each(['text', 'image', 'audio', 'video'] as const)(
-    '创建 %s 使用真实历史版本并保留来源、选区、连线和一次撤销',
+    '创建 %s 保留真实历史版本和来源选区，来源连线与新节点共用一次撤销',
     async (mediaType) => {
       restoreLegacyCanvas();
       await openLegacyEditor();
@@ -596,10 +597,41 @@ describe('选区资源新建节点', () => {
       ]);
       expect(added.data.prompt).toBe(renderPromptDocument(added.data.promptDocument!));
       expect(view.canvas!.nodes.slice(0, sources.length)).toEqual(sources);
-      expect(view.canvas!.edges).toEqual(edges);
+      expect(view.canvas!.edges.slice(0, edges.length)).toEqual(edges);
+      const createdEdges = view.canvas!.edges.slice(edges.length);
+      expect(createdEdges).toHaveLength(2);
+      expect(
+        createdEdges.map(({ source, target, sourceHandle, targetHandle }) => ({
+          source,
+          target,
+          sourceHandle,
+          targetHandle,
+        })),
+      ).toEqual(
+        sources.slice(0, 2).map((source) => ({
+          source: source.id,
+          target: added.id,
+          sourceHandle: 'output:image',
+          targetHandle: mediaType === 'video' ? 'input:referenceImage' : 'input:content',
+        })),
+      );
+      expect(new Set(view.canvas!.edges.map((edge) => edge.id)).size).toBe(
+        view.canvas!.edges.length,
+      );
       expect(view.canvas!.selectedNode).toBeNull();
       await waitFor(() =>
         expect(canvas.nodes.at(-1)?.data.promptDocument).toEqual(added.data.promptDocument),
+      );
+      expect(canvasDocumentSchema.safeParse(canvas).success).toBe(true);
+      expect(canvas.edges.filter((edge) => edge.targetNodeId === added.id)).toEqual(
+        createdEdges.map((edge, order) => ({
+          id: edge.id,
+          sourceNodeId: edge.source,
+          targetNodeId: edge.target,
+          sourceHandle: edge.sourceHandle,
+          targetHandle: edge.targetHandle,
+          order,
+        })),
       );
       expect(
         fetchMock.mock.calls.filter(
@@ -612,8 +644,124 @@ describe('选区资源新建节点', () => {
       act(() => view.canvas!.onRedoCanvas?.());
       expect(view.canvas!.nodes.at(-1)?.data.promptDocument).toEqual(added.data.promptDocument);
       expect(view.canvas!.nodes.slice(0, sources.length)).toEqual(sources);
+      expect(view.canvas!.edges).toEqual([...edges, ...createdEdges]);
     },
   );
+
+  it.each(['text', 'image', 'audio', 'video'] as const)(
+    '混合文字、图片、音频、视频来源连接到 %s 的合法输入口',
+    async (mediaType) => {
+      restoreLegacyCanvas();
+      await openLegacyEditor();
+      const template = view.canvas!.nodes[0];
+      const extraSources = (['text', 'audio', 'video'] as const).map((sourceType, index) => ({
+        ...template,
+        id: 'mixed-source-' + sourceType,
+        selected: true,
+        position: { x: 0, y: 400 + index * 200 },
+        data: {
+          label: sourceType + '来源',
+          mediaType: sourceType,
+          mode: 'source' as const,
+          assetId: 'mixed-asset-' + sourceType,
+          contentUrl: '/v1/assets/mixed-asset-' + sourceType + '/versions/3/content',
+        },
+      }));
+      act(() =>
+        view.canvas!.onNodesChange([
+          { type: 'select', id: template.id, selected: true },
+          ...extraSources.map((source) => ({ type: 'add' as const, item: source })),
+        ]),
+      );
+      const before = structuredClone(view.canvas!.nodes);
+      act(() => view.canvas!.onAddSelectionGenerateNode?.(mediaType, { x: 900, y: 80 }));
+      const added = view.canvas!.nodes.at(-1)!;
+      expect(view.canvas!.nodes.slice(0, before.length)).toEqual(before);
+      expect(
+        added.data.promptDocument!.blocks.filter((block) => block.type === 'mention'),
+      ).toHaveLength(4);
+      const inputs = view.canvas!.edges.filter((edge) => edge.target === added.id);
+      expect(
+        inputs.map(({ source, sourceHandle, targetHandle }) => ({
+          source,
+          sourceHandle,
+          targetHandle,
+        })),
+      ).toEqual([
+        {
+          source: template.id,
+          sourceHandle: 'output:image',
+          targetHandle: mediaType === 'video' ? 'input:referenceImage' : 'input:content',
+        },
+        {
+          source: 'mixed-source-text',
+          sourceHandle: 'output:text',
+          targetHandle: mediaType === 'text' ? 'input:content' : 'input:prompt',
+        },
+        {
+          source: 'mixed-source-audio',
+          sourceHandle: 'output:audio',
+          targetHandle:
+            mediaType === 'text'
+              ? 'input:transcript'
+              : mediaType === 'video'
+                ? 'input:audioTrack'
+                : 'input:content',
+        },
+        {
+          source: 'mixed-source-video',
+          sourceHandle: 'output:video',
+          targetHandle: 'input:content',
+        },
+      ]);
+      await waitFor(() => expect(canvas.nodes.at(-1)?.id).toBe(added.id));
+      expect(canvasDocumentSchema.safeParse(canvas).success).toBe(true);
+      expect(canvas.edges.filter((edge) => edge.targetNodeId === added.id)).toHaveLength(4);
+      expect(
+        fetchMock.mock.calls.filter(
+          ([input, init]) => init?.method === 'POST' && String(input).endsWith('/runs'),
+        ),
+      ).toEqual([]);
+    },
+  );
+
+  it('同资产同版本只提及一次，但每个来源节点仍各自连线；不同版本不会合并', async () => {
+    restoreLegacyCanvas();
+    await openLegacyEditor();
+    const source = view.canvas!.nodes[0];
+    const duplicate = { ...source, id: 'duplicate-source', selected: true };
+    const otherVersion = {
+      ...source,
+      id: 'other-version-source',
+      selected: true,
+      data: { ...source.data, resultAsset: { ...source.data.resultAsset!, version: 2 } },
+    };
+    act(() =>
+      view.canvas!.onNodesChange([
+        { type: 'select', id: source.id, selected: true },
+        { type: 'add', item: duplicate },
+        { type: 'add', item: otherVersion },
+      ]),
+    );
+    act(() => view.canvas!.onAddSelectionGenerateNode?.('image', { x: 900, y: 80 }));
+    const added = view.canvas!.nodes.at(-1)!;
+    expect(
+      added.data
+        .promptDocument!.blocks.filter((block) => block.type === 'mention')
+        .map(({ assetId, assetVersion }) => [assetId, assetVersion]),
+    ).toEqual([
+      [image.id, 1],
+      [image.id, 2],
+    ]);
+    const inputs = view.canvas!.edges.filter((edge) => edge.target === added.id);
+    expect(inputs.map((edge) => edge.source)).toEqual([source.id, duplicate.id, otherVersion.id]);
+    expect(new Set(inputs.map((edge) => edge.id)).size).toBe(3);
+    await waitFor(() => expect(canvas.nodes.at(-1)?.id).toBe(added.id));
+    expect(
+      canvas.edges.filter((edge) => edge.targetNodeId === added.id).map((edge) => edge.order),
+    ).toEqual([0, 1, 2]);
+    expect(canvasDocumentSchema.safeParse(canvas).success).toBe(true);
+  });
 
   it('选区包含空节点时不部分创建、不保存、不清空选择或已有文档', async () => {
     restoreLegacyCanvas();
@@ -654,6 +802,11 @@ describe('选区资源新建节点', () => {
       .data.promptDocument!.blocks.filter((block) => block.type === 'mention');
     expect(mentions).toHaveLength(1);
     expect(mentions[0]).toMatchObject({ assetId: image.id, assetVersion: 1 });
+    expect(
+      view
+        .canvas!.edges.filter((edge) => edge.target === view.canvas!.nodes.at(-1)!.id)
+        .map((edge) => edge.source),
+    ).toEqual(['image-node-six']);
     expect(view.canvas!.nodes.slice(0, before.length)).toEqual(before);
     act(() => view.canvas!.onUndoCanvas?.());
     const expanded = { ...before[0], data: { ...before[0].data, generationBatchExpanded: true } };

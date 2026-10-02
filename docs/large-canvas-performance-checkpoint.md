@@ -199,3 +199,28 @@ Node 24.12.0、pnpm 11.19.0、Chromium 151.0.7922.34，1600×900、DPR 1。60 �
 - `http://localhost:8080` 的 HTML/health 为 200；实际业务分包 `/assets/main-DMCz5Dma.js` 的 SHA-256 为 `cd7918926501d1b94f6c522fca82c2d0a69ffe9d77dbe76ef1eb9e27fa98750f`，CSS 为 `e5995bec51371c56bf653e0816c398ff163792b91ab92cef4660997d28548488`，均与最终测量的构建逐字节一致。标准 Web build 使用项目默认 API 地址；最终测量和 Docker 均显式 `VITE_API_BASE_URL=""` 使用同源入口，因此只以这两者的业务分包核对部署。
 - 匿名首页进入工作台通过，没有创建真实项目；无页面异常或非预期控制台错误，三次 `/v1/auth/me`、`/v1/auth/refresh` 401 属于预期匿名检查。证据为 `deployed-smoke-final.json` 与 `containers-{before,after}.json`。
 - 回退镜像 `multimodal-canvas-web:rollback-tab-selection-20261003-025456` 已在更新前核对 amd64 manifest 与运行 Web 一致；需要回退时将其重新标记为 `multimodal-canvas-web:local`，再执行 `docker compose -f compose.yaml up -d --no-deps web`，不替换其它服务。
+
+## 2026-10-03 单次 Tab 与来源自动连线
+
+### 本轮更正与图操作
+
+- 本轮从 `21672da` 继续，用户明确要求按一下 Tab，而不是一直按住。本节替代上一轮按住 Tab 的交互说明：一次按键后保持待框选，松鼠标消费该模式，非空选区弹创建菜单并恢复默认平移；等待期间再次 Tab 或 Escape 可取消。自动重复键不会反复切换，拖动中再次 Tab 不截断手势。
+- 输入框、按钮和菜单保留原生 Tab，取消/失焦/空框选沿用清理路径；等待和拖动期间仍不显示/测量节点悬浮栏，不改变节点大小、草稿或原生选区。
+- 新节点保留真实资产及版本提及，并从每个可见来源节点添加一条到新节点的边。复用现有 `validateResolvedCanvasConnection` 选择合法输入口：例如图片到视频使用 `referenceImage`，文字到图片使用 `prompt`；先验证完整图，再写入节点、边和同一撤销记录。失败不留半成品节点或部分连线，不触发生成。
+- 同资产同版本的提示词引用仍去重，但不同来源节点各自连线；不同版本分别保留。收起批次的隐藏成员不新建边，已有节点、选区和边不改动。结构沿用现有 CanvasDocument，保存边仍含明确 sourceHandle/targetHandle/order；没有依赖、接口或数据库迁移。
+
+### 验证证据
+
+- 修改前 App/连接/资源测试 53 项和 WorkflowCanvas 70 项通过；新交互在旧代码上 9 项预期失败，四种媒体来源连线要求在旧代码上 4 项预期失败。实现后 WorkflowCanvas 75 项及四种目标类型、混合四媒体、重复来源/版本、隐藏批次、原子保存/撤销重做回归通过。
+- Chromium 151.0.7922.34 的 1600×900/1280×800 隔离烟测使用 `keyboard.press("Tab")` 完成按下和松开后再拖动；来源两条边实际渲染并保存，撤销时 17 节点/10 边回到 16 节点/8 边，重做一起恢复。创建后普通拖动仍平移，单节点文字创建也保存对应来源边。
+- 连续框选、再次 Tab 取消、空选区、原生输入 Tab、Escape、blur/pointercancel、键盘 Enter 创建，以及从节点上开始框选均通过。节点上开始的探针按现有“完整包含节点”规则选择下一行节点，不改变选择规则。框选悬浮卡片数与布局读取均为 0；页面异常、未知 API、夹具违规和生成 POST 均为 0。
+- 证据位于 `.local-tests/tab-click-connect-20261003/` 的 `after-16-smoke-final.json`、`connected-nodes-final.png`、`created-references-final.png` 及菜单截图。仅操作合成内存项目，未写真实项目。烟测曾与其它检查并行，帧间隔不作为本轮性能提升证据；TODO P2-07 保持未完成。
+- Web 类型检查、lint、标准生产构建和同源烟测构建通过，保留既有大包警告。构建仅对该进程设置 TEMP/TMP 和同源 VITE_API_BASE_URL，不改用户环境或安装依赖。
+- 第一轮全量 1901 项通过、1 项 `SkillWorkbench.presentation` 超过既有 15s 限制；停止并发构建/浏览器后单文件 10 项通过（该项 10.282s）。没有更改该测试或放宽超时；随后独占重跑全量，110 文件 / 1902 项全部通过，耗时 563.35s。
+
+### 本地交付与回退
+
+- 仅执行 Web 构建与 `docker compose -f compose.yaml up -d --no-deps web`，六服务健康，其余五个容器 ID 不变。没有运行迁移、付费生成或修改真实项目。
+- `http://localhost:8080` 的 HTML/health 均为 200；实际业务分包 `/assets/main-Bbeh3PMX.js` 的 SHA-256 为 `6af41386466eef82616b3ea93ccc2d3e777e10e997acfafe1ba51f3d609d6273`，与浏览器烟测/标准同源构建一致；CSS 哈希 `e5995bec51371c56bf653e0816c398ff163792b91ab92cef4660997d28548488` 也一致。
+- 匿名首页到工作台通过，无页面异常和非预期控制台错误；三个匿名会话检查 401 单独记录在 `deployed-smoke-final.json`。部署前后容器信息、回退镜像信息均保存在本轮隔离目录。
+- 已保留并核验 `multimodal-canvas-web:rollback-tab-click-connect-20261003-034935`。回退时重新标记为 `multimodal-canvas-web:local` 后执行 Web 的 `up -d --no-deps`；原用户 CSS/工具栏测试修改及文档删除保持原样、不纳入提交。

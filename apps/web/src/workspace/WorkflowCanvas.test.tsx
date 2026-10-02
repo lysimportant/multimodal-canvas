@@ -117,7 +117,7 @@ vi.mock('@xyflow/react', async () => {
     onSelectionContextMenu?: React.MouseEventHandler<HTMLDivElement>;
     selectionOnDrag?: boolean;
     selectionKeyCode?: string | null;
-    onSelectionEnd?: React.PointerEventHandler;
+    onSelectionEnd?: React.MouseEventHandler;
     panOnDrag?: boolean | number[];
     multiSelectionKeyCode?: string[];
     onConnectStart?: (event: MouseEvent, params: Record<string, unknown>) => void;
@@ -1955,7 +1955,7 @@ describe('WorkflowCanvas 拖动时暂隐连线', () => {
 
 /** 覆盖真实节点捕获回调与画布冒泡回调，不改编辑器和工具栏测试。 */
 describe('WorkflowCanvas 选区资源入口', () => {
-  it('默认左键平移，仅按住 Tab 临时框选，松键恢复且不改变修饰键点击', () => {
+  it('默认左键平移，按一次 Tab 锁存框选，再按取消且忽略自动重复', () => {
     render(<WorkflowCanvas {...createProps()} />);
     const canvas = screen.getByRole('region', { name: '工作流画布' });
     expect(reactFlowMock.storeProps).toMatchObject({
@@ -1965,14 +1965,40 @@ describe('WorkflowCanvas 选区资源入口', () => {
       multiSelectionKeyCode: ['Control', 'Meta', 'Shift'],
     });
     expect(fireEvent.keyDown(canvas, { key: 'Tab', code: 'Tab' })).toBe(false);
+    expect(fireEvent.keyDown(canvas, { key: 'Tab', repeat: true })).toBe(false);
     expect(reactFlowMock.storeProps).toMatchObject({ selectionOnDrag: true, panOnDrag: [1] });
+    fireEvent.keyUp(window, { key: 'Tab', code: 'Tab' });
     expect(canvas).toHaveClass('is-tab-selecting', 'is-selection-mode');
+    expect(reactFlowMock.storeProps).toMatchObject({ selectionOnDrag: true, panOnDrag: [1] });
+    expect(fireEvent.keyDown(canvas, { key: 'Tab', code: 'Tab' })).toBe(false);
+    expect(fireEvent.keyDown(canvas, { key: 'Tab', repeat: true })).toBe(false);
     fireEvent.keyUp(window, { key: 'Tab', code: 'Tab' });
     expect(reactFlowMock.storeProps).toMatchObject({ selectionOnDrag: false, panOnDrag: [0, 1] });
-    expect(canvas).not.toHaveClass('is-tab-selecting');
+    expect(canvas).not.toHaveClass('is-tab-selecting', 'is-selection-mode');
   });
 
-  it('输入、按钮、菜单及带修饰键的 Tab 保留原生焦点导航', () => {
+  it('松开 Tab 后等待框选时仍禁止节点悬浮操作卡片，不改变节点尺寸', () => {
+    const props = createProps({ nodes: [sourceNode] });
+    render(<WorkflowCanvas {...props} />);
+    const canvas = screen.getByRole('region', { name: '工作流画布' });
+    const node = screen
+      .getByTestId('canvas-node-' + sourceNode.id)
+      .querySelector('.flow-asset-node')!;
+    fireEvent.keyDown(canvas, { key: 'Tab' });
+    fireEvent.keyUp(window, { key: 'Tab' });
+    fireEvent.pointerMove(node, { clientX: 400, clientY: 250 });
+    fireEvent.mouseEnter(node);
+    expect(node).toHaveAttribute('data-selection-mode', 'true');
+    expect(
+      within(node as HTMLElement).queryByRole('group', {
+        name: '节点操作：' + sourceNode.data.label,
+      }),
+    ).not.toBeInTheDocument();
+    expect(props.onResizeNode).not.toHaveBeenCalled();
+    expect(props.onNodeSelect).not.toHaveBeenCalled();
+  });
+
+  it('输入、按钮、菜单及带修饰键的 Tab 保留原生焦点导航', async () => {
     render(
       <WorkflowCanvas {...createProps({ nodes: [generateNode], selectedNode: generateNode })} />,
     );
@@ -1984,37 +2010,54 @@ describe('WorkflowCanvas 选区资源入口', () => {
       expect(fireEvent.keyDown(target, { key: 'Tab', code: 'Tab' })).toBe(true);
       expect(canvas).not.toHaveClass('is-tab-selecting');
     }
-    expect(fireEvent.keyDown(canvas, { key: 'Tab', shiftKey: true })).toBe(true);
+    for (const modifier of ['shiftKey', 'ctrlKey', 'metaKey', 'altKey', 'isComposing'])
+      expect(fireEvent.keyDown(canvas, { key: 'Tab', [modifier]: true })).toBe(true);
     expect(fireEvent.keyDown(document.body, { key: 'Tab' })).toBe(true);
+    fireEvent.contextMenu(screen.getByTestId('canvas-pane'));
+    const menu = await screen.findByRole('menu');
+    expect(fireEvent.keyDown(menu, { key: 'Tab' })).toBe(true);
     expect(canvas).not.toHaveClass('is-tab-selecting');
   });
 
-  it('Tab 框选松手即弹引用菜单，先松 Tab 仍完成手势，四类操作沿用引用创建', async () => {
-    const nodes = [sourceNode, generateNode].map((node) => ({ ...node, selected: true }));
-    const props = createProps({ nodes, onAddSelectionGenerateNode: vi.fn() });
-    render(<WorkflowCanvas {...props} />);
-    const canvas = screen.getByRole('region', { name: '工作流画布' });
-    const pane = screen.getByTestId('canvas-pane');
-    fireEvent.keyDown(canvas, { key: 'Tab' });
-    // jsdom 没有原生 PointerEvent，测试保留指针事件需要的按钮和坐标语义。
-    fireEvent(pane, new MouseEvent('pointerdown', { bubbles: true, button: 0 }));
-    fireEvent.keyUp(window, { key: 'Tab' });
-    expect(canvas).toHaveClass('is-tab-selecting');
-    const end = reactFlowMock.storeProps.onSelectionEnd as React.PointerEventHandler;
-    act(() => end({ clientX: 720, clientY: 410 } as React.PointerEvent));
-    expect(await screen.findByRole('menu', { name: '引用选中节点新建' })).toBeInTheDocument();
-    expect(canvas).not.toHaveClass('is-tab-selecting');
-    expect(canvas).toHaveClass('is-selection-mode');
-    for (const label of ['文字', '图片', '音频', '视频'])
-      expect(screen.getByRole('menuitem', { name: '引用选区新建' + label + '节点' })).toBeEnabled();
-    fireEvent.click(screen.getByRole('menuitem', { name: '引用选区新建图片节点' }));
-    expect(props.onAddSelectionGenerateNode).toHaveBeenCalledWith('image', { x: 620, y: 360 });
-    expect(props.onClearNodeSelection).not.toHaveBeenCalled();
-    expect(props.onRunNode).not.toHaveBeenCalled();
-    expect(props.onAddGenerateNode).not.toHaveBeenCalled();
-  });
+  it.each(['先松键再拖动', '拖动中再次按 Tab', '松鼠标时仍按住 Tab'])(
+    '%s：一次框选松手即退出模式并弹出四项引用创建菜单',
+    async (sequence) => {
+      const nodes = [sourceNode, generateNode].map((node) => ({ ...node, selected: true }));
+      const props = createProps({ nodes, onAddSelectionGenerateNode: vi.fn() });
+      render(<WorkflowCanvas {...props} />);
+      const canvas = screen.getByRole('region', { name: '工作流画布' });
+      const pane = screen.getByTestId('canvas-pane');
+      fireEvent.keyDown(canvas, { key: 'Tab' });
+      if (sequence !== '松鼠标时仍按住 Tab') fireEvent.keyUp(window, { key: 'Tab' });
+      // jsdom 没有原生 PointerEvent，测试保留指针事件需要的按钮和坐标语义。
+      fireEvent(pane, new MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+      if (sequence === '拖动中再次按 Tab') {
+        expect(fireEvent.keyDown(canvas, { key: 'Tab' })).toBe(false);
+        fireEvent.keyUp(window, { key: 'Tab' });
+      }
+      expect(canvas).toHaveClass('is-tab-selecting');
+      const end = reactFlowMock.storeProps.onSelectionEnd as React.MouseEventHandler;
+      act(() => end({ clientX: 720, clientY: 410 } as React.MouseEvent));
+      fireEvent(pane, new MouseEvent('pointerup', { bubbles: true, button: 0 }));
+      expect(await screen.findByRole('menu', { name: '引用选中节点新建' })).toBeInTheDocument();
+      expect(canvas).not.toHaveClass('is-tab-selecting');
+      expect(canvas).toHaveClass('is-selection-mode');
+      expect(reactFlowMock.storeProps).toMatchObject({ selectionOnDrag: false, panOnDrag: [0, 1] });
+      fireEvent.keyUp(window, { key: 'Tab' });
+      expect(screen.getAllByRole('menuitem')).toHaveLength(4);
+      for (const label of ['文字', '图片', '音频', '视频'])
+        expect(
+          screen.getByRole('menuitem', { name: '引用选区新建' + label + '节点' }),
+        ).toBeEnabled();
+      fireEvent.click(screen.getByRole('menuitem', { name: '引用选区新建图片节点' }));
+      expect(props.onAddSelectionGenerateNode).toHaveBeenCalledWith('image', { x: 620, y: 360 });
+      expect(props.onClearNodeSelection).not.toHaveBeenCalled();
+      expect(props.onRunNode).not.toHaveBeenCalled();
+      expect(props.onAddGenerateNode).not.toHaveBeenCalled();
+    },
+  );
 
-  it('按住 Tab 只隐藏原编辑器，框选途经单节点不挂载新表单，取消后保留草稿与尺寸', () => {
+  it('一次 Tab 只隐藏原编辑器，松键后仍冻结，取消后恢复草稿光标与尺寸', () => {
     const props = createProps({ nodes: [sourceNode, generateNode], selectedNode: generateNode });
     const view = render(<WorkflowCanvas {...props} />);
     const canvas = screen.getByRole('region', { name: '工作流画布' });
@@ -2023,12 +2066,13 @@ describe('WorkflowCanvas 选区资源入口', () => {
     textarea.setSelectionRange(3, 7);
     const overlay = textarea.closest<HTMLElement>('.quick-editor-overlay')!;
     fireEvent.keyDown(canvas, { key: 'Tab' });
+    fireEvent.keyUp(window, { key: 'Tab' });
     expect(overlay.hidden).toBe(true);
     view.rerender(<WorkflowCanvas {...props} selectedNode={sourceNode} />);
     expect(document.querySelectorAll('.node-quick-editor')).toHaveLength(1);
     expect(document.querySelector('.node-quick-editor textarea')).toBe(textarea);
     view.rerender(<WorkflowCanvas {...props} selectedNode={generateNode} />);
-    fireEvent.keyUp(window, { key: 'Tab' });
+    fireEvent.keyDown(canvas, { key: 'Escape' });
     expect(overlay.hidden).toBe(false);
     expect(screen.getByLabelText('提示词')).toBe(textarea);
     expect(textarea).toHaveValue('尚未提交的长文本草稿 🙂');
@@ -2036,35 +2080,78 @@ describe('WorkflowCanvas 选区资源入口', () => {
     expect(props.onResizeNode).not.toHaveBeenCalled();
   });
 
-  it('空框选、普通拖动和取消手势不弹菜单；失焦和 Escape 恢复平移', () => {
-    vi.stubGlobal('PointerEvent', MouseEvent);
-    const props = createProps({ onAddSelectionGenerateNode: vi.fn() });
-    render(<WorkflowCanvas {...props} />);
-    const canvas = screen.getByRole('region', { name: '工作流画布' });
-    const pane = screen.getByTestId('canvas-pane');
-    const end = () =>
-      act(() =>
-        (reactFlowMock.storeProps.onSelectionEnd as React.PointerEventHandler)({
-          clientX: 700,
-          clientY: 400,
-        } as React.PointerEvent),
-      );
-    end();
-    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
-    for (const cancel of ['empty', 'escape', 'blur', 'pointercancel']) {
+  it.each(['空选区', '只按下松开未拖动'])(
+    '%s也在松鼠标后恢复默认平移，不弹菜单或沿用旧选区',
+    (selection) => {
+      const props = createProps({
+        nodes: selection === '空选区' ? [] : [{ ...sourceNode, selected: true }],
+        onAddSelectionGenerateNode: vi.fn(),
+      });
+      render(<WorkflowCanvas {...props} />);
+      const canvas = screen.getByRole('region', { name: '工作流画布' });
+      const pane = screen.getByTestId('canvas-pane');
       fireEvent.keyDown(canvas, { key: 'Tab' });
-      fireEvent.pointerDown(pane, { button: 0 });
-      if (cancel === 'escape') fireEvent.keyDown(canvas, { key: 'Escape' });
-      if (cancel === 'blur') fireEvent(window, new Event('blur'));
-      if (cancel === 'pointercancel')
-        fireEvent(pane, new MouseEvent('pointercancel', { bubbles: true }));
-      end();
-      fireEvent.keyUp(window, { key: 'Tab' });
-      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
-      expect(canvas).not.toHaveClass('is-tab-selecting');
+      fireEvent(pane, new MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+      const end = reactFlowMock.storeProps.onSelectionEnd as React.MouseEventHandler;
+      if (selection === '空选区')
+        act(() => end({ clientX: 700, clientY: 400 } as React.MouseEvent));
+      fireEvent(pane, new MouseEvent('pointerup', { bubbles: true, button: 0 }));
       expect(reactFlowMock.storeProps).toMatchObject({ selectionOnDrag: false, panOnDrag: [0, 1] });
+      expect(canvas).not.toHaveClass('is-tab-selecting');
+      fireEvent.keyUp(window, { key: 'Tab' });
+      // 下一次普通拖动不能沿用已经消费的一次框选。
+      fireEvent(pane, new MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+      act(() => end({ clientX: 700, clientY: 400 } as React.MouseEvent));
+      fireEvent(pane, new MouseEvent('pointerup', { bubbles: true, button: 0 }));
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+      expect(props.onAddSelectionGenerateNode).not.toHaveBeenCalled();
+    },
+  );
+
+  it('框选等待和拖动中均可用 Escape、失焦、pointercancel 取消，不弹旧选区菜单', () => {
+    vi.stubGlobal('PointerEvent', MouseEvent);
+    try {
+      const props = createProps({
+        nodes: [{ ...sourceNode, selected: true }],
+        onAddSelectionGenerateNode: vi.fn(),
+      });
+      render(<WorkflowCanvas {...props} />);
+      const canvas = screen.getByRole('region', { name: '工作流画布' });
+      const pane = screen.getByTestId('canvas-pane');
+      const end = () =>
+        act(() =>
+          (reactFlowMock.storeProps.onSelectionEnd as React.MouseEventHandler)({
+            clientX: 700,
+            clientY: 400,
+          } as React.MouseEvent),
+        );
+      end();
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+      for (const dragging of [false, true]) {
+        for (const cancel of ['escape', 'blur', 'pointercancel']) {
+          fireEvent.keyDown(canvas, { key: 'Tab' });
+          fireEvent.keyUp(window, { key: 'Tab' });
+          if (dragging) fireEvent.pointerDown(pane, { button: 0 });
+          expect(canvas).toHaveClass('is-tab-selecting');
+          if (cancel === 'escape') fireEvent.keyDown(canvas, { key: 'Escape' });
+          if (cancel === 'blur') fireEvent(window, new Event('blur'));
+          if (cancel === 'pointercancel') fireEvent.pointerCancel(pane);
+          end();
+          expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+          expect(canvas).not.toHaveClass('is-tab-selecting');
+          expect(reactFlowMock.storeProps).toMatchObject({
+            selectionOnDrag: false,
+            panOnDrag: [0, 1],
+          });
+          expect(reactFlowMock.setState).toHaveBeenLastCalledWith({
+            userSelectionActive: false,
+            userSelectionRect: null,
+          });
+        }
+      }
+    } finally {
+      vi.unstubAllGlobals();
     }
-    vi.unstubAllGlobals();
   });
 
   it.each(['ctrlKey', 'metaKey', 'shiftKey'])('%s 点击节点本体不触发独占选择', (modifier) => {
