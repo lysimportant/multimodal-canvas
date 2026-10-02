@@ -86,6 +86,8 @@ async function json(route: Route, body: unknown) {
 /** 合成场景规模；可增加连线以验证按需内容不破坏端口。 */
 type FixtureScale = Pick<typeof scenario, 'nodes' | 'imageNodes' | 'sidebarImages'> & {
   withEdges?: boolean;
+  /** 自定义边优先于 withEdges；空数组表示显式无连线，不改变默认场景。 */
+  edges?: CanvasDocument['edges'];
 };
 
 /** 创建指定规模的纯内存画布，不改变节点固定外框。 */
@@ -109,16 +111,18 @@ function makeCanvas(scale: FixtureScale = scenario): CanvasDocument {
           : {}),
       },
     })),
-    edges: scale.withEdges
-      ? Array.from({ length: Math.max(0, scale.imageNodes - 7) }, (_, index) => ({
-          id: `thumb-edge-${index}`,
-          sourceNodeId: `thumb-node-${index}`,
-          targetNodeId: `thumb-node-${index + 7}`,
-          sourceHandle: 'output:image',
-          targetHandle: 'input:content',
-          order: 0,
-        }))
-      : [],
+    edges:
+      scale.edges ??
+      (scale.withEdges
+        ? Array.from({ length: Math.max(0, scale.imageNodes - 7) }, (_, index) => ({
+            id: `thumb-edge-${index}`,
+            sourceNodeId: `thumb-node-${index}`,
+            targetNodeId: `thumb-node-${index + 7}`,
+            sourceHandle: 'output:image',
+            targetHandle: 'input:content',
+            order: 0,
+          }))
+        : []),
   };
 }
 /**

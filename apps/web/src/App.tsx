@@ -886,7 +886,7 @@ function WorkspaceApp({
     const current = currentCanvasSnapshot();
     if (current.nodes.some((node) => node.dragging || node.resizing)) return;
     try {
-      const arranged = arrangeCanvasNodes(current.nodes, current.groups);
+      const arranged = arrangeCanvasNodes(current.nodes, current.groups, current.edges);
       if (arranged.nodes === current.nodes && arranged.groups === current.groups) return;
       rememberHistory();
       applyHistorySnapshot({ ...current, ...arranged });
@@ -4027,7 +4027,7 @@ function WorkspaceApp({
                 type="button"
                 className="icon-button canvas-arrange-trigger"
                 aria-label="整理节点"
-                title="整理全部节点：从左到右排列，每行最多 30 个；保留分组，可撤销"
+                title="整理全部节点：从左到右排列，独立节点每行最多 10 个，相连节点按层级排列，父节点居中；保留分组，可撤销"
                 onClick={arrangeCanvas}
                 disabled={!isCanvasReady || isProjectLoading || nodes.length < 2}
               >

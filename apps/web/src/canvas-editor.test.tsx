@@ -2710,13 +2710,25 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     const { user } = await renderCanvas();
     const arrange = screen.getByRole('button', { name: '整理节点' });
     await waitFor(() => expect(arrange).toBeEnabled());
+    expect(arrange).toHaveAttribute('title', expect.stringContaining('每行最多 10 个'));
+    expect(arrange).toHaveAttribute('title', expect.stringContaining('相连节点按层级排列'));
     await user.click(screen.getByRole('button', { name: '整理画布节点' }));
-    const positions = [
-      { x: 100, y: 90 },
-      { x: 360, y: 90 },
-      { x: 690, y: 90 },
-    ];
-    await waitFor(() => expect(canvas.nodes.map((node) => node.position)).toEqual(positions));
+    await waitFor(() =>
+      expect(canvas.nodes.map((node) => node.position)).not.toEqual(
+        original.nodes.map((node) => node.position),
+      ),
+    );
+    const positions = canvas.nodes.map((node) => node.position);
+    const [parent, child, isolated] = canvas.nodes;
+    expect(isolated!.position).toEqual({ x: 100, y: 90 });
+    expect(child!.position.x).toBe(parent!.position.x + parent!.width! + 60);
+    expect(parent!.position.y + parent!.height! / 2).toBeCloseTo(
+      child!.position.y + child!.height! / 2,
+      6,
+    );
+    expect(Math.min(parent!.position.y, child!.position.y)).toBe(
+      isolated!.position.y + isolated!.height! + 80,
+    );
     expect(canvas.nodes.map(({ position: _position, ...node }) => node)).toEqual(
       original.nodes.map(({ position: _position, ...node }) => node),
     );
@@ -2728,6 +2740,158 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     await user.click(screen.getByRole('button', { name: '重做' }));
     await waitFor(() => expect(canvas.nodes.map((node) => node.position)).toEqual(positions));
     expect(canvas.edges).toEqual(original.edges);
+    expect(nodeRunRequestCounts.size).toBe(0);
+  });
+  it('整理简单分叉时父节点在第一列并垂直居中于第二列子节点', async () => {
+    // 原数组不是拓扑顺序，父节点高度也不同，居中需要比较外框中心而不是顶部坐标。
+    canvas.nodes = ['center-3', 'center-1', 'center-2'].map((id, index) => ({
+      id,
+      type: 'text' as const,
+      position: { x: 900 - index * 150, y: 500 + index * 230 },
+      width: 220,
+      height: id === 'center-1' ? 200 : 160,
+      data: {
+        label: id,
+        mediaType: 'text' as const,
+        mode: 'generate' as const,
+        enabled: true,
+        prompt: '保留父子居中内容',
+        mimeType: 'text/plain',
+      },
+    }));
+    canvas.edges = ['center-2', 'center-3'].map((targetNodeId, index) => ({
+      id: 'center-edge-' + index,
+      sourceNodeId: 'center-1',
+      targetNodeId,
+      sourceHandle: 'output:text',
+      targetHandle: 'input:content',
+      order: 0,
+    }));
+    const original = structuredClone(canvas);
+    const { user } = await renderCanvas();
+    await user.click(screen.getByRole('button', { name: '整理节点' }));
+    await waitFor(() =>
+      expect(canvas.nodes.map((node) => node.position)).not.toEqual(
+        original.nodes.map((node) => node.position),
+      ),
+    );
+    const nodeById = new Map(canvas.nodes.map((node) => [node.id, node]));
+    const parent = nodeById.get('center-1')!;
+    const children = [nodeById.get('center-3')!, nodeById.get('center-2')!];
+    expect(children[0]!.position.x).toBe(parent.position.x + parent.width! + 60);
+    expect(children[1]!.position.x).toBe(children[0]!.position.x);
+    expect(children[1]!.position.y).toBe(children[0]!.position.y + children[0]!.height! + 80);
+    expect(parent.position.y + parent.height! / 2).toBeCloseTo(
+      children.reduce((total, child) => total + child.position.y + child.height! / 2, 0) / 2,
+      6,
+    );
+    expect(canvas.nodes.map(({ position: _position, ...node }) => node)).toEqual(
+      original.nodes.map(({ position: _position, ...node }) => node),
+    );
+    expect(canvas.edges).toEqual(original.edges);
+    expect(canvas.groups ?? []).toEqual(original.groups ?? []);
+    expect(nodeRunRequestCounts.size).toBe(0);
+  });
+  it('整理十一层连接链持续向右递进，不按独立节点的十列上限折行', async () => {
+    const ids = Array.from({ length: 11 }, (_, index) => 'long-chain-' + index);
+    canvas.nodes = [...ids].reverse().map((id, index) => ({
+      id,
+      type: 'text' as const,
+      position: { x: 100 + index * 150, y: 90 + index * 100 },
+      width: 220,
+      height: 160,
+      data: {
+        label: id,
+        mediaType: 'text' as const,
+        mode: 'generate' as const,
+        enabled: true,
+        prompt: '保留长链内容',
+        mimeType: 'text/plain',
+      },
+    }));
+    canvas.edges = ids.slice(1).map((targetNodeId, index) => ({
+      id: 'long-edge-' + index,
+      sourceNodeId: ids[index]!,
+      targetNodeId,
+      sourceHandle: 'output:text',
+      targetHandle: 'input:content',
+      order: 0,
+    }));
+    const original = structuredClone(canvas);
+    const { user } = await renderCanvas();
+    await user.click(screen.getByRole('button', { name: '整理节点' }));
+    await waitFor(() =>
+      expect(canvas.nodes.map((node) => node.position)).not.toEqual(
+        original.nodes.map((node) => node.position),
+      ),
+    );
+    const nodeById = new Map(canvas.nodes.map((node) => [node.id, node]));
+    for (const edge of canvas.edges) {
+      const source = nodeById.get(edge.sourceNodeId)!;
+      const target = nodeById.get(edge.targetNodeId)!;
+      expect(target.position.x).toBe(source.position.x + source.width! + 60);
+      expect(target.position.y).toBe(source.position.y);
+    }
+    expect(canvas.nodes.map(({ position: _position, ...node }) => node)).toEqual(
+      original.nodes.map(({ position: _position, ...node }) => node),
+    );
+    expect(canvas.edges).toEqual(original.edges);
+    expect(canvas.groups ?? []).toEqual(original.groups ?? []);
+    expect(nodeRunRequestCounts.size).toBe(0);
+  });
+  it('整理分叉与合流从左到右递进，同层节点处于同一列', async () => {
+    // 原节点顺序与依赖顺序不同，且合流节点的两个父节点分属不同层级。
+    canvas.nodes = ['merge', 'deep-child', 'right', 'root', 'left', 'tail'].map((id, index) => ({
+      id,
+      type: 'text' as const,
+      position: { x: 100 + index * 150, y: 90 + index * 100 },
+      width: 220,
+      height: 160,
+      data: {
+        label: id,
+        mediaType: 'text' as const,
+        mode: 'generate' as const,
+        enabled: true,
+        prompt: '保留分叉合流内容',
+        mimeType: 'text/plain',
+      },
+    }));
+    canvas.edges = [
+      ['root', 'left'],
+      ['root', 'right'],
+      ['left', 'deep-child'],
+      ['right', 'merge'],
+      ['deep-child', 'merge'],
+      ['merge', 'tail'],
+    ].map(([sourceNodeId, targetNodeId], index, edges) => ({
+      id: 'branch-edge-' + index,
+      sourceNodeId: sourceNodeId!,
+      targetNodeId: targetNodeId!,
+      sourceHandle: 'output:text',
+      targetHandle: 'input:content',
+      // 所有边使用 input:content；按目标节点分别从 0 编号，与保存合同一致。
+      order: edges.slice(0, index).filter(([, target]) => target === targetNodeId).length,
+    }));
+    const original = structuredClone(canvas);
+    const { user } = await renderCanvas();
+    await user.click(screen.getByRole('button', { name: '整理节点' }));
+    await waitFor(() =>
+      expect(canvas.nodes.map((node) => node.position)).not.toEqual(
+        original.nodes.map((node) => node.position),
+      ),
+    );
+    const nodeById = new Map(canvas.nodes.map((node) => [node.id, node]));
+    expect(nodeById.get('right')!.position.x).toBe(nodeById.get('left')!.position.x);
+    for (const edge of canvas.edges) {
+      const source = nodeById.get(edge.sourceNodeId)!;
+      const target = nodeById.get(edge.targetNodeId)!;
+      expect(target.position.x).toBeGreaterThanOrEqual(source.position.x + source.width! + 60);
+    }
+    expect(canvas.nodes.map(({ position: _position, ...node }) => node)).toEqual(
+      original.nodes.map(({ position: _position, ...node }) => node),
+    );
+    expect(canvas.edges).toEqual(original.edges);
+    expect(canvas.groups ?? []).toEqual(original.groups ?? []);
     expect(nodeRunRequestCounts.size).toBe(0);
   });
   it('组内节点无法容纳时明确提示并保留原布局，不新增撤销历史', async () => {
@@ -2763,11 +2927,24 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     expect(screen.getByRole('button', { name: '撤销' })).toBeDisabled();
     expect(nodeRunRequestCounts.size).toBe(0);
   });
-  it('胶囊整理保留分组归属并将更新的组框一起保存和撤销', async () => {
-    canvas.nodes = ['free', 'member-a', 'member-b'].map((id, index) => ({
+  it('胶囊整理保留跨组连线和手动归属，组框包含成员且可一起撤销重做', async () => {
+    canvas.nodes = [
+      'free-a',
+      'member-a',
+      'free-b',
+      'free-isolated',
+      'member-isolated',
+      'member-b',
+      'other-a',
+      'other-isolated',
+      'other-b',
+      'free-c',
+      'member-c',
+      'other-c',
+    ].map((id, index) => ({
       id,
       type: 'text' as const,
-      position: { x: 500 - index * 150, y: 500 + index * 230 },
+      position: { x: 900 - index * 30, y: 500 + index * 230 },
       width: 220,
       height: 160,
       data: {
@@ -2783,39 +2960,77 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
       {
         id: 'keep-group',
         name: '保留分组',
-        position: { x: 150, y: 650 },
+        position: { x: 100, y: 650 },
         width: 800,
         height: 800,
-        nodeIds: ['member-b', 'member-a'],
+        nodeIds: ['member-c', 'member-b', 'member-isolated', 'member-a'],
+      },
+      {
+        id: 'other-group',
+        name: '另一分组',
+        position: { x: 100, y: 2000 },
+        width: 800,
+        height: 900,
+        nodeIds: ['other-c', 'other-b', 'other-isolated', 'other-a'],
       },
     ];
+    // 后出现的分量先提供边；A 分量经另一组跨接，层级按全局有向关系计算。
+    canvas.edges = [
+      ['member-c', 'free-c'],
+      ['other-c', 'member-c'],
+      ['other-b', 'other-a'],
+      ['free-b', 'other-a'],
+      ['other-a', 'free-a'],
+      ['member-b', 'free-b'],
+      ['free-a', 'member-a'],
+    ].map(([sourceNodeId, targetNodeId], index, edges) => ({
+      id: 'group-edge-' + index,
+      sourceNodeId: sourceNodeId!,
+      targetNodeId: targetNodeId!,
+      sourceHandle: 'output:text',
+      targetHandle: 'input:content',
+      // 所有边使用 input:content；按目标节点分别从 0 编号，与保存合同一致。
+      order: edges.slice(0, index).filter(([, target]) => target === targetNodeId).length,
+    }));
     const original = structuredClone(canvas);
     const { user } = await renderCanvas();
     await user.click(screen.getByRole('button', { name: '整理画布节点' }));
     await waitFor(() =>
       expect(canvas.groups?.[0]?.position).not.toEqual(original.groups?.[0]?.position),
     );
-    const group = canvas.groups![0]!;
-    expect(group).toMatchObject({
-      id: 'keep-group',
-      name: '保留分组',
-      nodeIds: ['member-b', 'member-a'],
-    });
-    const free = canvas.nodes[0]!;
-    expect(group.position.y).toBeGreaterThanOrEqual(free.position.y + free.height! + 80);
-    for (const node of canvas.nodes.slice(1)) {
-      expect(node.position.x).toBeGreaterThanOrEqual(group.position.x + 24);
-      expect(node.position.y).toBeGreaterThanOrEqual(group.position.y + 24);
-      expect(node.position.x + node.width! + 24).toBeLessThanOrEqual(
-        group.position.x + group.width,
-      );
-      expect(node.position.y + node.height! + 24).toBeLessThanOrEqual(
-        group.position.y + group.height,
-      );
+    const arranged = structuredClone(canvas);
+    expect(arranged.groups).toHaveLength(2);
+    expect(arranged.groups?.map(({ id, name, nodeIds }) => ({ id, name, nodeIds }))).toEqual(
+      original.groups?.map(({ id, name, nodeIds }) => ({ id, name, nodeIds })),
+    );
+    const nodeById = new Map(arranged.nodes.map((node) => [node.id, node]));
+    for (const group of arranged.groups!) {
+      for (const id of group.nodeIds) {
+        const node = nodeById.get(id)!;
+        expect(node.position.x).toBeGreaterThanOrEqual(group.position.x + 24);
+        expect(node.position.y).toBeGreaterThanOrEqual(group.position.y + 24);
+        expect(node.position.x + node.width! + 24).toBeLessThanOrEqual(
+          group.position.x + group.width,
+        );
+        expect(node.position.y + node.height! + 24).toBeLessThanOrEqual(
+          group.position.y + group.height,
+        );
+      }
     }
+    expect(arranged.nodes.map(({ position: _position, ...node }) => node)).toEqual(
+      original.nodes.map(({ position: _position, ...node }) => node),
+    );
+    expect(arranged.edges).toEqual(original.edges);
+    await user.click(screen.getByRole('button', { name: '整理节点' }));
     await user.click(screen.getByRole('button', { name: '撤销' }));
     await waitFor(() => expect(canvas.groups).toEqual(original.groups));
     expect(canvas.nodes).toEqual(original.nodes);
+    expect(canvas.edges).toEqual(original.edges);
+    expect(screen.getByRole('button', { name: '撤销' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: '重做' }));
+    await waitFor(() => expect(canvas.groups).toEqual(arranged.groups));
+    expect(canvas.nodes).toEqual(arranged.nodes);
+    expect(canvas.edges).toEqual(original.edges);
     expect(nodeRunRequestCounts.size).toBe(0);
   });
 });

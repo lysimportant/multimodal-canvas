@@ -66,7 +66,7 @@ export function CanvasNodeToolbar({
   clearCounts?: ClearActionCounts;
   /** 按当前选区或视口中心创建布局区域组。 */
   onCreateGroup?: () => void;
-  /** 整理全部节点，每行最多 30 个；历史记录和保存由 App 统一处理。 */
+  /** 整理全部节点，独立节点每行最多 10 个，相连节点按层级排列，父节点居中；历史记录和保存由 App 统一处理。 */
   onArrangeNodes?: () => void;
   /** 项目装载完成且至少有两个节点时允许整理。 */
   canArrangeNodes?: boolean;
@@ -169,7 +169,7 @@ export function CanvasNodeToolbar({
         type="button"
         className="canvas-node-tool canvas-node-action-tool"
         aria-label="整理画布节点"
-        title="整理节点（每行最多 30 个，保留分组，可撤销）"
+        title="整理节点（独立节点每行最多 10 个，相连节点按层级排列，父节点居中，保留分组，可撤销）"
         key="arrange"
         disabled={!canArrangeNodes}
         onPointerDown={stopCanvasEvent}
