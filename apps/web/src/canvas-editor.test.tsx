@@ -3000,8 +3000,13 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     );
     const arranged = structuredClone(canvas);
     expect(arranged.groups).toHaveLength(2);
+    // free-c 的中心位于另一分组内，整理应补齐归属；原有成员与顺序不能被抢占。
     expect(arranged.groups?.map(({ id, name, nodeIds }) => ({ id, name, nodeIds }))).toEqual(
-      original.groups?.map(({ id, name, nodeIds }) => ({ id, name, nodeIds })),
+      original.groups?.map(({ id, name, nodeIds }) => ({
+        id,
+        name,
+        nodeIds: id === 'other-group' ? [...nodeIds, 'free-c'] : nodeIds,
+      })),
     );
     const nodeById = new Map(arranged.nodes.map((node) => [node.id, node]));
     for (const group of arranged.groups!) {

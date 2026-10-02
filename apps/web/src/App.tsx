@@ -88,6 +88,7 @@ import {
   nodeCenter,
   normalizeCanvasGroups,
   pruneGroupMembers,
+  reconcileCanvasGroupMembers,
   resizeCanvasGroup,
   resolveDropTargetGroup,
   translateGroup,
@@ -734,6 +735,8 @@ function WorkspaceApp({
   const groupsRef = useRef<CanvasGroup[]>([]);
   /** 本次整组移动的成员，仅用于临时拖动显示，不写入文档。 */
   const groupDragNodeIdsRef = useRef(new Set<string>());
+  /** 本次框编辑的目标；归属只在交互边界同步，不在移动帧中扫描。 */
+  const interactingGroupIdRef = useRef<string | undefined>(undefined);
   /** 历史、待保存请求与本地草稿共享不可变画布对象。 */
   const historyRef = useRef(new CanvasHistory());
   const persistenceRef = useRef(new CanvasPersistence());
@@ -888,7 +891,8 @@ function WorkspaceApp({
     const current = currentCanvasSnapshot();
     if (current.nodes.some((node) => node.dragging || node.resizing)) return;
     try {
-      const arranged = arrangeCanvasNodes(current.nodes, current.groups, current.edges);
+      const groups = reconcileCanvasGroupMembers(current.groups, current.nodes);
+      const arranged = arrangeCanvasNodes(current.nodes, groups, current.edges);
       if (arranged.nodes === current.nodes && arranged.groups === current.groups) return;
       rememberHistory();
       applyHistorySnapshot({ ...current, ...arranged });
@@ -1133,7 +1137,7 @@ function WorkspaceApp({
   /**
    * 创建布局区域。
    *
-   * 有选中节点时包围选区，没有选区时在视口中心附近创建固定尺寸空组。
+   * 有选中节点时包围选区，没有选区时在视口中心附近创建固定尺寸组框；吸纳框内无归属节点。
    * 组只表达布局，不新增生成调用，也不改变节点输入输出语义。
    */
   const createGroupFromSelection = useCallback(() => {
@@ -1145,25 +1149,59 @@ function WorkspaceApp({
       ...(selected.length > 0 ? { selectedNodes: selected } : {}),
       ...(center ? { fallbackCenter: center } : {}),
     });
+    let nextGroups: CanvasGroup[];
+    try {
+      nextGroups = reconcileCanvasGroupMembers(
+        normalizeCanvasGroups(
+          [...groupsRef.current, group],
+          nodesRef.current.map((n) => n.id),
+        ),
+        nodesRef.current,
+        group.id,
+      );
+    } catch (error) {
+      setNotice({
+        kind: 'error',
+        message: error instanceof Error ? error.message : '创建分组失败',
+      });
+      return;
+    }
     rememberHistory();
-    setGroups(
-      normalizeCanvasGroups(
-        [...groupsRef.current, group],
-        nodesRef.current.map((n) => n.id),
-      ),
-    );
+    groupsRef.current = nextGroups;
+    setGroups(nextGroups);
     selectCanvasGroup(group.id);
     canvasDirtyRef.current = true;
     setNotice({
       kind: 'success',
-      message: selected.length > 0 ? `已把 ${selected.length} 个节点放入新组` : '已创建空组',
+      message:
+        nextGroups.at(-1)!.nodeIds.length > 0
+          ? `已把 ${nextGroups.at(-1)!.nodeIds.length} 个节点放入新组`
+          : '已创建空组',
     });
   }, [rememberHistory, selectCanvasGroup]);
 
-  /** 记录一次历史，并让整组成员复用单节点拖动的轻量显示与连线投影。 */
+  /** 在同一次组编辑中吸纳覆盖节点；失败时保留原成员并明确提示，不额外记录历史。 */
+  const reconcileGroupMembership = useCallback((groupId: string) => {
+    try {
+      const next = reconcileCanvasGroupMembers(groupsRef.current, nodesRef.current, groupId);
+      if (next === groupsRef.current) return;
+      groupsRef.current = next;
+      setGroups(next);
+      canvasDirtyRef.current = true;
+    } catch (error) {
+      setNotice({
+        kind: 'error',
+        message: error instanceof Error ? error.message : '同步分组成员失败',
+      });
+    }
+  }, []);
+
+  /** 先保存历史再补齐框内成员，让首次整组拖动也能带走此前遗漏的节点。 */
   const startGroupInteraction = useCallback(
     (groupId: string, kind: 'move' | 'resize') => {
       rememberHistory();
+      interactingGroupIdRef.current = groupId;
+      reconcileGroupMembership(groupId);
       if (kind !== 'move') return;
       const members = new Set(
         groupsRef.current.find((group) => group.id === groupId)?.nodeIds ?? [],
@@ -1175,11 +1213,14 @@ function WorkspaceApp({
       nodesRef.current = next;
       setNodes(next);
     },
-    [rememberHistory, setNodes],
+    [reconcileGroupMembership, rememberHistory, setNodes],
   );
 
-  /** 仅清除本次移动成员的临时状态，松手后恢复连线、内容与自动保存。 */
+  /** 组框松手后吸纳新覆盖节点，再清理拖动态；归属、几何与移动共用一次撤销。 */
   const endGroupInteraction = useCallback(() => {
+    const groupId = interactingGroupIdRef.current;
+    interactingGroupIdRef.current = undefined;
+    if (groupId) reconcileGroupMembership(groupId);
     const members = groupDragNodeIdsRef.current;
     if (members.size === 0) return;
     groupDragNodeIdsRef.current = new Set();
@@ -1188,7 +1229,7 @@ function WorkspaceApp({
     );
     nodesRef.current = next;
     setNodes(next);
-  }, [setNodes]);
+  }, [reconcileGroupMembership, setNodes]);
 
   /** 整组移动：组与成员使用同一位移，成员之间保持相对位置。 */
   const translateGroupBy = useCallback(
@@ -1215,13 +1256,13 @@ function WorkspaceApp({
       groupId: string,
       size: { width: number; height: number; position?: { x: number; y: number } },
     ) => {
-      setGroups((current) =>
-        current.map((group) => {
-          if (group.id !== groupId) return group;
-          const repositioned = size.position ? { ...group, position: size.position } : group;
-          return resizeCanvasGroup(repositioned, nodesRef.current, size);
-        }),
-      );
+      const next = groupsRef.current.map((group) => {
+        if (group.id !== groupId) return group;
+        const repositioned = size.position ? { ...group, position: size.position } : group;
+        return resizeCanvasGroup(repositioned, nodesRef.current, size);
+      });
+      groupsRef.current = next;
+      setGroups(next);
       canvasDirtyRef.current = true;
     },
     [],

@@ -16,6 +16,7 @@ import {
   parseCanvasClipboard,
   pasteCanvasClipboard,
   pruneGroupMembers,
+  reconcileCanvasGroupMembers,
   resizeCanvasGroup,
   resolveDropTargetGroup,
   serializeCanvasClipboard,
@@ -314,5 +315,67 @@ describe('group persistence and clipboard', () => {
       groups: [group({ id: 'g1', nodeIds: ['outside'] })],
     });
     expect(parseCanvasClipboard(payload)).toBeUndefined();
+  });
+});
+
+describe('组框归属同步', () => {
+  it('吸纳框内无归属节点，保留节点绝对坐标、尺寸和对象', () => {
+    const nodes = [node('a', 100, 100), node('outside', 900, 900)];
+    const groups = [group()];
+    const result = reconcileCanvasGroupMembers(groups, nodes);
+    expect(result[0].nodeIds).toEqual(['a']);
+    expect(groups[0].nodeIds).toEqual([]);
+    expect(result[0].position).toBe(groups[0].position);
+    expect([result[0].width, result[0].height]).toEqual([640, 420]);
+    expect(nodes[0]).toEqual(node('a', 100, 100));
+    expect(reconcileCanvasGroupMembers(result, nodes)).toBe(result);
+  });
+
+  it('沿用节点中心和内边距规则，忽略非有限坐标', () => {
+    const nodes = [node('edge', -99, -49), node('center', -60, -10), node('invalid', NaN, 100)];
+    expect(reconcileCanvasGroupMembers([group()], nodes)[0].nodeIds).toEqual(['center']);
+  });
+
+  it('重叠组择最小区域，不抢其他组现有成员、不移除暂在框外成员', () => {
+    const groups = [
+      group({ nodeIds: ['existing', 'outside'] }),
+      group({ id: 'small', width: 350, height: 250 }),
+    ];
+    const nodes = [node('existing', 100, 100), node('new', 100, 100), node('outside', 900, 900)];
+    const result = reconcileCanvasGroupMembers(groups, nodes);
+    expect(result[0]).toBe(groups[0]);
+    expect(result[1].nodeIds).toEqual(['new']);
+  });
+
+  it('指定交互组时只更新该组，不改其他空组，并保持成员顺序', () => {
+    const groups = [
+      group({ nodeIds: ['b'] }),
+      group({ id: 'other', position: { x: 900, y: 900 } }),
+    ];
+    const nodes = [node('a', 100, 100), node('b', 300, 100), node('c', 950, 950)];
+    const result = reconcileCanvasGroupMembers(groups, nodes, 'g1');
+    expect(result[0].nodeIds).toEqual(['b', 'a']);
+    expect(result[1]).toBe(groups[1]);
+    expect(reconcileCanvasGroupMembers(groups, nodes, 'missing')).toBe(groups);
+  });
+
+  it('扩大组框松手后吸纳，再移动时所有成员保持相对位置', () => {
+    const nodes = [node('a', 100, 100), node('b', 500, 100)];
+    const original = group({ width: 400, nodeIds: ['a'] });
+    const resized = resizeCanvasGroup(original, nodes, { width: 750, height: 420 });
+    const groups = reconcileCanvasGroupMembers([resized], nodes, 'g1');
+    expect(groups[0].nodeIds).toEqual(['a', 'b']);
+    const moved = translateGroup({ groups, nodes, groupId: 'g1', delta: { x: 100, y: 20 } })!;
+    expect(moved.nodes.map((n) => n.position)).toEqual([
+      { x: 200, y: 120 },
+      { x: 600, y: 120 },
+    ]);
+  });
+
+  it('超过领域成员上限明确拒绝，不部分修改归属或改变框尺寸', () => {
+    const groups = [group()];
+    const nodes = Array.from({ length: 501 }, (_, index) => node(String(index), 100, 100));
+    expect(() => reconcileCanvasGroupMembers(groups, nodes)).toThrow(/成员上限/);
+    expect(groups[0].nodeIds).toEqual([]);
   });
 });

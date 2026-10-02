@@ -512,6 +512,50 @@ export function assignNodeToGroup(
 }
 
 /**
+ * 在组框编辑边界补齐框内未归属节点；已有归属（包括暂在框外的成员）保持不变。
+ * 沿用节点中心、内边距及重叠组优先级，不改变节点或外框，也不在拖动帧中执行。
+ *
+ * @param groups 当前组，成员应已通过领域规范化。
+ * @param nodes 画布绝对坐标节点，非有限中心忽略。
+ * @param groupId 只吸纳到指定交互组；省略时处理所有组（整理前）。
+ * @returns 不可变的新组列表；没有新增成员时保留原数组引用。
+ * @throws 超过单组成员上限时拒绝整次归属同步，不部分写入。
+ */
+export function reconcileCanvasGroupMembers(
+  groups: readonly CanvasGroup[],
+  nodes: readonly AssetFlowNode[],
+  groupId?: string,
+): CanvasGroup[] {
+  const claimed = new Set(groups.flatMap((group) => group.nodeIds));
+  const additions = new Map<string, string[]>();
+  for (const node of nodes) {
+    if (claimed.has(node.id)) continue;
+    const center = nodeCenter(node);
+    if (!Number.isFinite(center.x) || !Number.isFinite(center.y)) continue;
+    const target = resolveDropTargetGroup(groups, center);
+    if (!target || (groupId !== undefined && target.id !== groupId)) continue;
+    const members = additions.get(target.id) ?? [];
+    if (target.nodeIds.length + members.length >= CANVAS_GROUP_NODE_LIMIT) {
+      throw new Error(
+        '分组“' +
+          target.name +
+          '”超过 ' +
+          CANVAS_GROUP_NODE_LIMIT +
+          ' 个成员上限，请拆分组框后重试',
+      );
+    }
+    members.push(node.id);
+    additions.set(target.id, members);
+    claimed.add(node.id);
+  }
+  if (additions.size === 0) return groups as CanvasGroup[];
+  return groups.map((group) => {
+    const members = additions.get(group.id);
+    return members ? { ...group, nodeIds: [...group.nodeIds, ...members] } : group;
+  });
+}
+
+/**
  * 扩展组区域以包容新成员。
  *
  * 只扩大组的外框，不改变成员尺寸；成员本来就在组内时不做任何调整，

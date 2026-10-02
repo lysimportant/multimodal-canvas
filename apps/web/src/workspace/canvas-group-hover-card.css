@@ -65,6 +65,10 @@
   z-index: 4;
 }
 
+/* 浮卡挂在 body 下，整理或平移会让锚点离开视口；固定定位避免离场动画撑开文档滚动范围。 */
+.canvas-group-popover.ant-popover {
+  position: fixed;
+}
 /* 保留悬浮卡片 DOM 和焦点，仅在交互期间停止展示，避免对齐动画留下闪影。 */
 .canvas-group-popover.is-interacting {
   visibility: hidden;
