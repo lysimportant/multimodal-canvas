@@ -1,3 +1,4 @@
+import type { AssetFlowNode } from '../canvas-utils';
 import type { GenerationBatchView } from './generation-batch-view';
 
 /**
@@ -21,6 +22,24 @@ export function reuseGenerationBatchViews(
       prior.expanded !== view.expanded ||
       prior.hidden !== view.hidden
     )
+      return next;
+  }
+  return previous;
+}
+
+/**
+ * 为参数表单复用内容快照，过滤纯坐标、选择与尺寸变化造成的整表单更新。
+ * @param previous 上次提交给表单的节点，仅用于名称、内容和引用解析。
+ * @param next 当前完整节点列表；新增、删除、顺序或 data 变化时必须发布新列表。
+ * @returns 内容相同返回 previous。返回值可能保留旧坐标，不能用于拖动、保存或执行操作。
+ */
+export function reuseNodeContentSnapshot(
+  previous: readonly AssetFlowNode[],
+  next: readonly AssetFlowNode[],
+): readonly AssetFlowNode[] {
+  if (previous.length !== next.length) return next;
+  for (let index = 0; index < next.length; index++) {
+    if (previous[index]!.id !== next[index]!.id || previous[index]!.data !== next[index]!.data)
       return next;
   }
   return previous;

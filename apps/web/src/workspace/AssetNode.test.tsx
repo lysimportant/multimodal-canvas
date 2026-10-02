@@ -99,6 +99,29 @@ function updateViewport(patch: Partial<Pick<typeof viewportMock, 'x' | 'y' | 'zo
   });
 }
 
+/** 模拟浏览器返回的已平移边界；输入为未避让的屏幕坐标，不执行真实布局。 */
+function toolbarRect(toolbar: HTMLElement, left: number, top: number, width = 800, height = 46) {
+  const shiftX =
+    Number.parseFloat(toolbar.style.getPropertyValue('--flow-node-toolbar-shift-x')) || 0;
+  const shiftY =
+    Number.parseFloat(toolbar.style.getPropertyValue('--flow-node-toolbar-shift-y')) || 0;
+  return new DOMRect(left + shiftX, top + shiftY, width, height);
+}
+
+/** 记录观察器生命周期；notify 显式模拟尺寸通知，不把 jsdom 当作布局引擎。 */
+function mockToolbarResizeObserver() {
+  const observe = vi.fn();
+  const disconnect = vi.fn();
+  let notify = () => {};
+  const create = vi.fn(function (callback: ResizeObserverCallback) {
+    const observer = { observe, disconnect, unobserve: vi.fn() };
+    notify = () => callback([], observer);
+    return observer;
+  });
+  vi.stubGlobal('ResizeObserver', create);
+  return { create, observe, disconnect, notify: () => act(notify) };
+}
+
 /** 构造节点数据；未覆盖的字段保持现有文字生成节点契约。 */
 function makeNode(overrides: Partial<AssetFlowNode['data']> = {}): AssetFlowNode {
   return {
@@ -502,6 +525,172 @@ describe('AssetNode result presentation', () => {
     expect(asset.style.height).toBe('');
   });
 
+  it('工具栏连续移动 60 次只保留一个观察器，每次先读边界再写改变的偏移', () => {
+    const observer = mockToolbarResizeObserver();
+    const node = makeNode();
+    let x = 140;
+    const scene = (selected: boolean) => (
+      <div className="react-flow">
+        <div className="react-flow__node" style={{ width: 210, height: 160 }}>
+          <AssetNode
+            {...({
+              id: node.id,
+              data: node.data,
+              selected,
+              positionAbsoluteX: x,
+              positionAbsoluteY: 30,
+            } as NodeProps<AssetFlowNode>)}
+          />
+        </div>
+      </div>
+    );
+    const view = render(scene(false));
+    const canvas = view.container.querySelector('.react-flow')!;
+    const wrapper = view.container.querySelector<HTMLElement>('.react-flow__node')!;
+    const toolbar = screen.getByRole('group', { name: '节点操作：文案生成' });
+    const events: string[] = [];
+    vi.spyOn(canvas, 'getBoundingClientRect').mockImplementation(() => {
+      events.push('canvas');
+      return new DOMRect(260, 50, 1106, 850);
+    });
+    const measure = vi.spyOn(toolbar, 'getBoundingClientRect').mockImplementation(() => {
+      events.push('toolbar');
+      return toolbarRect(toolbar, x, 30);
+    });
+    const setProperty = toolbar.style.setProperty.bind(toolbar.style);
+    const write = vi
+      .spyOn(toolbar.style, 'setProperty')
+      .mockImplementation((name, value, priority) => {
+        events.push('write:' + name + ':' + value);
+        setProperty(name, value, priority);
+      });
+    view.rerender(scene(true));
+    observer.notify();
+    measure.mockClear();
+    write.mockClear();
+    events.length = 0;
+
+    for (let frame = 1; frame <= 60; frame++) {
+      x = 140 + frame;
+      view.rerender(scene(true));
+      expect(events.splice(0)).toEqual([
+        'canvas',
+        'toolbar',
+        'write:--flow-node-toolbar-shift-x:' + (128 - frame) + 'px',
+      ]);
+    }
+    expect(measure).toHaveBeenCalledTimes(60);
+    expect(write).toHaveBeenCalledTimes(60);
+    expect(observer.create).toHaveBeenCalledTimes(1);
+    expect(observer.observe).toHaveBeenCalledTimes(3);
+    expect(observer.disconnect).not.toHaveBeenCalled();
+    expect(toolbar.style.getPropertyValue('--flow-node-toolbar-shift-y')).toBe('28px');
+
+    view.rerender(scene(true));
+    expect(measure).toHaveBeenCalledTimes(60);
+    observer.notify();
+    fireEvent.transitionEnd(wrapper);
+    expect(measure).toHaveBeenCalledTimes(62);
+    expect(write).toHaveBeenCalledTimes(60);
+    expect(wrapper.style.width).toBe('210px');
+    expect(wrapper.style.height).toBe('160px');
+
+    view.rerender(scene(false));
+    expect(observer.disconnect).toHaveBeenCalledTimes(1);
+    const hiddenMeasureCount = measure.mock.calls.length;
+    fireEvent.transitionEnd(wrapper);
+    expect(measure).toHaveBeenCalledTimes(hiddenMeasureCount);
+    view.rerender(scene(true));
+    expect(observer.create).toHaveBeenCalledTimes(2);
+    expect(write).toHaveBeenCalledTimes(60);
+    view.unmount();
+    expect(observer.disconnect).toHaveBeenCalledTimes(2);
+  });
+
+  it('工具栏扣除已有屏幕偏移后可从四边回到内部，重复尺寸通知不累加避让', () => {
+    const observer = mockToolbarResizeObserver();
+    const node = makeNode();
+    let left = 140;
+    let top = 30;
+    const view = render(
+      <div className="react-flow">
+        <div className="react-flow__node">
+          <AssetNode {...({ id: node.id, data: node.data } as NodeProps<AssetFlowNode>)} />
+        </div>
+      </div>,
+    );
+    const canvas = view.container.querySelector('.react-flow')!;
+    const asset = view.container.querySelector<HTMLElement>('.flow-asset-node')!;
+    const toolbar = screen.getByRole('group', { name: '节点操作：文案生成' });
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue(new DOMRect(260, 50, 1106, 850));
+    vi.spyOn(toolbar, 'getBoundingClientRect').mockImplementation(() =>
+      toolbarRect(toolbar, left, top),
+    );
+    fireEvent.mouseEnter(asset);
+    const write = vi.spyOn(toolbar.style, 'setProperty');
+    for (const [nextLeft, nextTop, shiftX, shiftY] of [
+      [140, 30, 128, 28],
+      [1300, 980, -742, -134],
+      [300, 80, 0, 0],
+      [140.25, 30.5, 127.75, 27.5],
+    ]) {
+      left = nextLeft;
+      top = nextTop;
+      observer.notify();
+      expect(toolbar.style.getPropertyValue('--flow-node-toolbar-shift-x')).toBe(shiftX + 'px');
+      expect(toolbar.style.getPropertyValue('--flow-node-toolbar-shift-y')).toBe(shiftY + 'px');
+      write.mockClear();
+      observer.notify();
+      expect(write).not.toHaveBeenCalled();
+    }
+    expect(asset.style.width).toBe('');
+    expect(asset.style.height).toBe('');
+  });
+
+  it('画布限宽变化先应用新宽度，再按工具栏换行后的高度约束边界', () => {
+    const observer = mockToolbarResizeObserver();
+    const node = makeNode();
+    let canvasWidth = 1106;
+    const view = render(
+      <div className="react-flow">
+        <div className="react-flow__node">
+          <AssetNode {...({ id: node.id, data: node.data } as NodeProps<AssetFlowNode>)} />
+        </div>
+      </div>,
+    );
+    const canvas = view.container.querySelector('.react-flow')!;
+    const asset = view.container.querySelector<HTMLElement>('.flow-asset-node')!;
+    const toolbar = screen.getByRole('group', { name: '节点操作：文案生成' });
+    vi.spyOn(canvas, 'getBoundingClientRect').mockImplementation(
+      () => new DOMRect(260, 50, canvasWidth, 850),
+    );
+    vi.spyOn(toolbar, 'getBoundingClientRect').mockImplementation(() => {
+      const width = Math.min(
+        800,
+        Number.parseFloat(toolbar.style.getPropertyValue('--flow-node-toolbar-max-width')),
+      );
+      const height = width < 800 ? 92 : 46;
+      return toolbarRect(toolbar, 140, 76 - height, width, height);
+    });
+    fireEvent.mouseEnter(asset);
+    const write = vi.spyOn(toolbar.style, 'setProperty');
+    canvasWidth = 600;
+    observer.notify();
+    expect(toolbar.style.getPropertyValue('--flow-node-toolbar-max-width')).toBe('584px');
+    expect(toolbar.style.getPropertyValue('--flow-node-toolbar-shift-y')).toBe('74px');
+    expect(write.mock.calls.map(([name]) => name)).toEqual([
+      '--flow-node-toolbar-max-width',
+      '--flow-node-toolbar-shift-y',
+    ]);
+    write.mockClear();
+    observer.notify();
+    expect(write).not.toHaveBeenCalled();
+    canvasWidth = 1106;
+    observer.notify();
+    expect(toolbar.style.getPropertyValue('--flow-node-toolbar-shift-y')).toBe('28px');
+    expect(observer.create).toHaveBeenCalledTimes(1);
+  });
+
   it('41 个隐藏悬浮栏节点不因视口平移重渲染，缩放仍更新', () => {
     const onRender = vi.fn();
     const view = render(
@@ -558,17 +747,15 @@ describe('AssetNode result presentation', () => {
         width: 1106,
         height: 850,
       } as DOMRect);
-      const measure = vi.spyOn(toolbar, 'getBoundingClientRect').mockImplementation(
-        () =>
-          ({
-            left: 300 + viewportMock.x,
-            top: 80 + viewportMock.y,
-            right: 1100 + viewportMock.x,
-            bottom: 126 + viewportMock.y,
-            width: 800,
-            height: 46,
-          }) as DOMRect,
-      );
+      const measure = vi
+        .spyOn(toolbar, 'getBoundingClientRect')
+        .mockImplementation(() =>
+          toolbarRect(
+            toolbar,
+            300 * viewportMock.zoom + viewportMock.x,
+            80 * viewportMock.zoom + viewportMock.y,
+          ),
+        );
       if (visibility === 'hovered') fireEvent.mouseEnter(asset);
       else if (visibility === 'focusWithin') fireEvent.focus(button);
       else view.rerender(scene(true));
@@ -579,6 +766,12 @@ describe('AssetNode result presentation', () => {
       updateViewport({ x: 1000, y: 900 });
       expect(toolbar.style.getPropertyValue('--flow-node-toolbar-shift-x')).toBe('-742px');
       expect(toolbar.style.getPropertyValue('--flow-node-toolbar-shift-y')).toBe('-134px');
+      updateViewport({ x: 0, y: 0, zoom: 0.5 });
+      expect(toolbar.style.getPropertyValue('--flow-node-toolbar-shift-x')).toBe('118px');
+      expect(toolbar.style.getPropertyValue('--flow-node-toolbar-shift-y')).toBe('18px');
+      updateViewport({ zoom: 2 });
+      expect(toolbar.style.getPropertyValue('--flow-node-toolbar-shift-x')).toBe('-42px');
+      expect(toolbar.style.getPropertyValue('--flow-node-toolbar-shift-y')).toBe('0px');
       expect(asset.style.width).toBe('');
       expect(asset.style.height).toBe('');
       if (visibility === 'hovered') fireEvent.mouseLeave(asset);

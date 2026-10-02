@@ -198,7 +198,13 @@ function isNodeRunning(status: RunStatus | undefined): boolean {
 }
 
 /** 展示节点占位或产物；生成节点的控制栏悬浮在内容上方，不参与尺寸计算。 */
-export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
+export function AssetNode({
+  id,
+  data,
+  selected,
+  positionAbsoluteX,
+  positionAbsoluteY,
+}: NodeProps<AssetFlowNode>) {
   const incomingEdges = useEdges();
   const updateNodeInternals = useUpdateNodeInternals();
   // 模式或模型变化会增删语义端口，必须重新测量才能显示已有连线。
@@ -245,7 +251,7 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
   const [focusWithin, setFocusWithin] = useState(false);
   /** 隐藏悬浮栏只订阅缩放；可见时同时订阅平移，以重新计算屏幕边界。 */
   const controlsVisible = Boolean(hovered || focusWithin || selected) && !batchView?.hidden;
-  const [, , zoom] = useStore(
+  const [viewportX, viewportY, zoom] = useStore(
     (state) =>
       [
         controlsVisible ? state.transform[0] : 0,
@@ -255,35 +261,41 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
     (previous, next) =>
       previous[0] === next[0] && previous[1] === next[1] && previous[2] === next[2],
   );
+  /** 按屏幕像素避让；已有偏移经 CSS 反向缩放抵消，可从测量结果直接扣除。 */
+  const constrainControls = useCallback(() => {
+    const controls = floatingControlsRef.current;
+    const canvas = controls?.closest('.react-flow');
+    if (!controls || !canvas) return;
+
+    const canvasBounds = canvas.getBoundingClientRect();
+    const maxWidth = Math.max(1, canvasBounds.width - 16) + 'px';
+    // 仅容器限宽改变时先更新宽度，保证随后测到换行后的高度；拖动不重复写入。
+    if (controls.style.getPropertyValue('--flow-node-toolbar-max-width') !== maxWidth) {
+      controls.style.setProperty('--flow-node-toolbar-max-width', maxWidth);
+    }
+    const bounds = controls.getBoundingClientRect();
+    const previousX = controls.style.getPropertyValue('--flow-node-toolbar-shift-x');
+    const previousY = controls.style.getPropertyValue('--flow-node-toolbar-shift-y');
+    const left = bounds.left - (Number.parseFloat(previousX) || 0);
+    const top = bounds.top - (Number.parseFloat(previousY) || 0);
+    const shiftX =
+      Math.max(canvasBounds.left + 8, Math.min(left, canvasBounds.right - bounds.width - 8)) - left;
+    const shiftY =
+      Math.max(canvasBounds.top + 8, Math.min(top, canvasBounds.bottom - bounds.height - 8)) - top;
+    if (previousX !== shiftX + 'px') {
+      controls.style.setProperty('--flow-node-toolbar-shift-x', shiftX + 'px');
+    }
+    if (previousY !== shiftY + 'px') {
+      controls.style.setProperty('--flow-node-toolbar-shift-y', shiftY + 'px');
+    }
+  }, []);
+
   useLayoutEffect(() => {
     if (!controlsVisible) return;
     const controls = floatingControlsRef.current;
     const canvas = controls?.closest('.react-flow');
     const node = controls?.closest('.react-flow__node');
     if (!controls || !canvas || !node) return;
-
-    /** 按屏幕像素约束悬浮栏，位移经反向缩放后不改变节点尺寸。 */
-    const constrainControls = () => {
-      const canvasBounds = canvas.getBoundingClientRect();
-      controls.style.setProperty(
-        '--flow-node-toolbar-max-width',
-        `${Math.max(1, canvasBounds.width - 16)}px`,
-      );
-      controls.style.setProperty('--flow-node-toolbar-shift-x', '0px');
-      controls.style.setProperty('--flow-node-toolbar-shift-y', '0px');
-      const bounds = controls.getBoundingClientRect();
-      const left = Math.max(
-        canvasBounds.left + 8,
-        Math.min(bounds.left, canvasBounds.right - bounds.width - 8),
-      );
-      const top = Math.max(
-        canvasBounds.top + 8,
-        Math.min(bounds.top, canvasBounds.bottom - bounds.height - 8),
-      );
-      controls.style.setProperty('--flow-node-toolbar-shift-x', `${left - bounds.left}px`);
-      controls.style.setProperty('--flow-node-toolbar-shift-y', `${top - bounds.top}px`);
-    };
-    constrainControls();
     const observer =
       typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(constrainControls);
     observer?.observe(canvas);
@@ -294,7 +306,19 @@ export function AssetNode({ id, data, selected }: NodeProps<AssetFlowNode>) {
       observer?.disconnect();
       node.removeEventListener('transitionend', constrainControls);
     };
-  });
+  }, [constrainControls, controlsVisible]);
+
+  useLayoutEffect(() => {
+    if (controlsVisible) constrainControls();
+  }, [
+    constrainControls,
+    controlsVisible,
+    positionAbsoluteX,
+    positionAbsoluteY,
+    viewportX,
+    viewportY,
+    zoom,
+  ]);
   // 仅可见悬浮卡片或信息面板中的活动计时订阅共享时钟。
   const durationNow = useSharedNodeClock(
     (infoOpen || hovered || focusWithin || Boolean(selected)) && isNodeRunning(data.runStatus),

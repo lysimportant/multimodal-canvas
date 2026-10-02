@@ -14,6 +14,7 @@ import {
   X,
 } from 'lucide-react';
 import {
+  memo,
   useEffect,
   useId,
   useRef,
@@ -36,7 +37,7 @@ import './ResourcePanel.css';
  * 仅显式固定操作通知父级保存偏好；弹层交互期间保持展开，拖出资源时保留拖拽源 DOM。
  * 拖到提示词仍用于引用；放入画布请用添加按钮。
  */
-export function ResourcePanel({
+export const ResourcePanel = memo(function ResourcePanel({
   assets,
   collapsed,
   isRenameDialogOpen = false,
@@ -536,4 +537,4 @@ export function ResourcePanel({
       ) : null}
     </aside>
   );
-}
+});

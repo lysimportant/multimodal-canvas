@@ -2,7 +2,7 @@ import '@testing-library/jest-dom/vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Button } from '@multimodal-canvas/ui';
-import type { ComponentProps } from 'react';
+import type { ComponentProps, DragEvent } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolveImageOutputParameters } from '@multimodal-canvas/domain';
 import type {
@@ -210,6 +210,8 @@ function pendingNodeRuns(nodeIds: string[], delayCreation = false) {
   return { posts, creates, polls, runs };
 }
 let canvas: CanvasDocument;
+/** 每个用例独立设置资源列表，拖拽回归使用 50 个合成资源。 */
+let resourceAssets: Asset[];
 let fetchMock: ReturnType<typeof vi.fn>;
 let renameFailure: string | null;
 let createFailure: string | null;
@@ -230,7 +232,7 @@ function installApi() {
     if (name === '/v1/settings/ai') return json({ settings: { defaultModels: {} } });
     if (name.endsWith('/models/defaults')) return json({ defaults: {} });
     if (name === '/v1/prompt-skills') return json({ skills: [] });
-    if (name === '/v1/assets' && method === 'GET') return json({ assets: [asset] });
+    if (name === '/v1/assets' && method === 'GET') return json({ assets: resourceAssets });
     if (name === '/v1/assets/' + asset.id && method === 'PATCH') {
       if (renameFailure) return json({ error: renameFailure }, 500);
       return json({ asset: { ...asset, ...JSON.parse(String(init?.body)) } });
@@ -309,6 +311,7 @@ beforeEach(() => {
   vi.spyOn(auth, 'openAuthEventStream').mockResolvedValue(undefined);
   vi.spyOn(exports, 'downloadProjectExport').mockImplementation(() => {});
   canvas = { revision: 1, nodes: [emptyNode('empty-one'), emptyNode('empty-two')], edges: [] };
+  resourceAssets = [asset];
   view.canvas = null;
   view.resource = null;
   renameFailure = null;
@@ -327,6 +330,294 @@ afterEach(() => {
 });
 
 describe('App 资源抽屉集成', () => {
+  it('50 个资源与已选节点连续 20 次位置更新保持侧栏和编辑回调稳定', async () => {
+    resourceAssets = Array.from({ length: 50 }, (_, index) => ({
+      ...asset,
+      id: 'drag-asset-' + index,
+    }));
+    await renderCanvas();
+    await waitFor(() => expect(view.resource!.assets).toHaveLength(50));
+    const resourceChanges: Partial<Record<keyof ComponentProps<typeof ResourcePanel>, number>> = {};
+    act(() => view.canvas!.onNodeSelect(view.canvas!.nodes[0]));
+    await waitFor(() => expect(view.canvas!.skillLibraryLoading).toBe(false));
+    expect(view.canvas!.selectedNode?.id).toBe('empty-one');
+    const canvasChanges = {
+      onRunNode: 0,
+      onOpenSkillWorkbench: 0,
+      onRetryNode: 0,
+      onNodeLabelChange: 0,
+      onNodeEnabledChange: 0,
+      onPromptDocumentChange: 0,
+      onConnectedResourceRename: 0,
+      onPromptSkillChange: 0,
+      onUploadResource: 0,
+      onParametersChange: 0,
+      onGenerationCountChange: 0,
+      onBatchExpandedChange: 0,
+      onCompletionActionChange: 0,
+      onVideoModeChange: 0,
+      onCompletionTargetNodeIdChange: 0,
+      onModelChange: 0,
+      onInferenceStrengthChange: 0,
+      nodeContentHandlers: 0,
+    };
+    const expectedCanvasChanges = { ...canvasChanges };
+    let previousResource = view.resource!;
+    let previousCanvas = view.canvas!;
+
+    for (let frame = 1; frame <= 20; frame += 1) {
+      const position = { x: 100 + frame, y: 100 + frame * 2 };
+      act(() =>
+        view.canvas!.onNodesChange([
+          { type: 'position', id: 'empty-one', position, dragging: true },
+        ]),
+      );
+      expect(view.canvas!.nodes).not.toBe(previousCanvas.nodes);
+      expect(view.canvas!.nodes.find((node) => node.id === 'empty-one')!.position).toEqual(
+        position,
+      );
+      for (const key of Object.keys(previousResource) as Array<keyof typeof previousResource>) {
+        if (!Object.is(previousResource[key], view.resource![key])) {
+          resourceChanges[key] = (resourceChanges[key] ?? 0) + 1;
+        }
+      }
+      for (const key of Object.keys(canvasChanges) as Array<keyof typeof canvasChanges>) {
+        if (previousCanvas[key] !== view.canvas![key]) canvasChanges[key] += 1;
+      }
+      previousResource = view.resource!;
+      previousCanvas = view.canvas!;
+    }
+
+    expect.soft(resourceChanges).toEqual({});
+    // onRetryNode 的依赖链包含 runNode，避免仅稳定外层回调却忽略运行入口变化。
+    expect(canvasChanges).toEqual(expectedCanvasChanges);
+  });
+
+  it('稳定的编辑回调保留最新节点数据，切换或移除选中节点后使用有效身份', async () => {
+    canvas.nodes = ['first', 'second'].map((id) => ({
+      ...emptyNode(id),
+      type: 'video',
+      data: { ...emptyNode(id).data, mediaType: 'video' },
+    }));
+    await renderCanvas(2);
+    act(() => view.canvas!.onNodeSelect(view.canvas!.nodes[0]));
+    const firstActions = view.canvas!;
+    act(() => {
+      view.canvas!.onNodesChange([
+        { type: 'position', id: 'first', position: { x: 760, y: 420 }, dragging: true },
+      ]);
+    });
+    act(() => view.canvas!.onNodeLabelChange!('first', '实时标题'));
+    act(() => {
+      firstActions.onModelChange({ modelAlias: 'fixture-video' });
+      firstActions.onParametersChange!({ duration: 8 });
+      firstActions.onPromptDocumentChange!({
+        version: 1,
+        blocks: [{ type: 'text', text: 'Latest prompt.' }],
+      });
+      firstActions.onPromptSkillChange!('current-skill');
+      firstActions.onGenerationCountChange!(3);
+      firstActions.onVideoModeChange!('first_frame');
+      firstActions.onCompletionActionChange!('fill_designated_image_node');
+      firstActions.onCompletionTargetNodeIdChange!('image-target');
+      firstActions.onInferenceStrengthChange('medium');
+    });
+    expect(view.canvas!.nodes[0]).toMatchObject({
+      position: { x: 760, y: 420 },
+      data: {
+        label: '实时标题',
+        modelAlias: 'fixture-video',
+        parameters: { duration: 8 },
+        prompt: 'Latest prompt.',
+        promptSkillId: 'current-skill',
+        generationCount: 3,
+        videoMode: 'first_frame',
+        completionAction: 'fill_designated_image_node',
+        completionTargetNodeId: 'image-target',
+        inferenceStrength: 'medium',
+      },
+    });
+    act(() => view.canvas!.onNodeSelect(view.canvas!.nodes[1]));
+    expect(view.canvas!.onParametersChange).not.toBe(firstActions.onParametersChange);
+    act(() => view.canvas!.onParametersChange!({ duration: 5 }));
+    expect(view.canvas!.nodes[1].data.parameters).toEqual({ duration: 5 });
+    expect(view.canvas!.nodes[0].data.parameters).toEqual({ duration: 8 });
+
+    act(() => view.canvas!.onNodesChange([{ type: 'remove', id: 'second' }]));
+    expect(view.canvas!.selectedNode).toBeNull();
+    const remainingNodes = view.canvas!.nodes;
+    act(() => view.canvas!.onParametersChange!({ duration: 99 }));
+    expect(view.canvas!.nodes).toBe(remainingNodes);
+    expect(() => view.canvas!.onConnectedResourceRename!(asset.id, '不存在的目标')).toThrow(
+      '目标节点已不存在',
+    );
+  });
+
+  it('资源回调在归档恢复后使用最新资产和画布中心，新增节点后更新默认落点', async () => {
+    canvas.nodes = [
+      {
+        ...imageNode('source', 'image-model'),
+        data: { label: '关联源', mediaType: 'image', mode: 'source', assetId: asset.id },
+      },
+      {
+        ...emptyNode('target'),
+        type: 'video',
+        data: { ...emptyNode('target').data, mediaType: 'video', videoMode: 'first_frame' },
+      },
+    ];
+    canvas.edges = [
+      {
+        id: 'source-target',
+        sourceNodeId: 'source',
+        targetNodeId: 'target',
+        sourceHandle: 'output:image',
+        targetHandle: 'input:firstFrame',
+        order: 0,
+      },
+    ];
+    const api = fetchMock.getMockImplementation()!;
+    let currentAsset = asset;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(input), 'http://localhost:3000').pathname;
+      if (path === '/v1/assets/' + asset.id + '/archive' && init?.method === 'POST') {
+        currentAsset = { ...currentAsset, status: 'archived' };
+        return json({ asset: currentAsset });
+      }
+      if (path === '/v1/assets/' + asset.id + '/restore' && init?.method === 'POST') {
+        currentAsset = { ...currentAsset, name: '最新资源', status: 'ready', latestVersion: 2 };
+        return json({ asset: currentAsset });
+      }
+      if (path === '/v1/assets/' + asset.id && init?.method === 'DELETE')
+        return new Response(null, { status: 204 });
+      return api(input, init);
+    });
+    await renderCanvas(0);
+    act(() => view.canvas!.onNodeSelect(view.canvas!.nodes[1]));
+    const previousRename = view.canvas!.onConnectedResourceRename;
+    const actions = view.resource!;
+    act(() => {
+      actions.onQueryChange('最新');
+      actions.onFilterChange('image');
+      actions.onToggleArchived();
+      actions.onArchiveAsset(actions.assets[0]);
+    });
+    await waitFor(() => expect(view.resource!.assets[0].status).toBe('archived'));
+    expect(view.resource).toMatchObject({
+      query: '最新',
+      activeFilter: 'image',
+      showArchived: true,
+    });
+    act(() => {
+      actions.onToggleArchived();
+      actions.onArchiveAsset(view.resource!.assets[0]);
+    });
+    await waitFor(() => expect(view.resource!.assets[0].name).toBe('最新资源'));
+    expect(view.resource!.showArchived).toBe(false);
+    expect(view.canvas!.onConnectedResourceRename).not.toBe(previousRename);
+    act(() => view.canvas!.onConnectedResourceRename!(asset.id, '最新引用'));
+    expect(view.canvas!.nodes[1].data.resourceRefs).toEqual([
+      expect.objectContaining({ assetId: asset.id, name: '最新引用', assetVersion: 2 }),
+    ]);
+    act(() => actions.onAddAsset(view.resource!.assets[0]));
+    expect(view.canvas!.nodes.at(-1)).toMatchObject({
+      position: { x: 540, y: 80 },
+      data: { label: '最新资源', assetId: asset.id },
+    });
+    expect(view.resource!.onAddAsset).not.toBe(actions.onAddAsset);
+    act(() => view.resource!.onAddAsset(view.resource!.assets[0]));
+    expect(view.canvas!.nodes.at(-1)!.position).toEqual({ x: 80, y: 290 });
+    const addAtCenter = view.resource!.onAddAsset;
+    act(() => view.canvas!.onCanvasCenterChange!({ x: 900, y: 600 }));
+    act(() => addAtCenter(view.resource!.assets[0]));
+    expect(view.canvas!.nodes.at(-1)!.position).toEqual({ x: 900, y: 600 });
+    act(() => actions.onDeleteAsset!(view.resource!.assets[0]));
+    await waitFor(() => expect(view.resource!.assets).toHaveLength(0));
+  });
+
+  it.each(['选择文件', '拖入文件'] as const)(
+    '%s 回调持续同步上传状态、进度和新增资源',
+    async (entry) => {
+      const api = fetchMock.getMockImplementation()!;
+      const complete = pendingResponse();
+      const uploadedAsset = { ...asset, id: 'uploaded-asset', name: 'uploaded.png' };
+      fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = new URL(String(input), 'http://localhost:3000').pathname;
+        if (path === '/v1/assets/uploads/init')
+          return json({
+            uploadId: 'test-upload',
+            uploadUrl: '/test-upload',
+            completeUrl: '/v1/assets/uploads/complete',
+          });
+        if (path === '/v1/assets/uploads/complete') return complete.promise;
+        return api(input, init);
+      });
+      const request = {
+        open: vi.fn(),
+        send: vi.fn(),
+        setRequestHeader: vi.fn(),
+        status: 200,
+        upload: { onprogress: null as ((event: ProgressEvent) => void) | null },
+        onload: null as (() => void) | null,
+      };
+      vi.stubGlobal(
+        'XMLHttpRequest',
+        vi.fn(function () {
+          return request;
+        }),
+      );
+      await renderCanvas();
+      const file = new File(['image'], 'uploaded.png', { type: 'image/png' });
+      Object.defineProperty(file, 'arrayBuffer', {
+        value: async () => new Uint8Array([1, 2, 3]).buffer,
+      });
+      const preventDefault = vi.fn();
+      act(() => {
+        if (entry === '选择文件') view.resource!.onFilesSelected([file]);
+        else
+          view.resource!.onDrop({
+            preventDefault,
+            dataTransfer: { files: [file] },
+          } as unknown as DragEvent);
+      });
+      expect(view.resource).toMatchObject({ isUploading: true, uploadProgress: 0 });
+      await waitFor(() => expect(request.send).toHaveBeenCalledTimes(1));
+      act(() =>
+        request.upload.onprogress!({
+          lengthComputable: true,
+          loaded: 1,
+          total: 2,
+        } as ProgressEvent),
+      );
+      expect(view.resource!.uploadProgress).toBe(45);
+      await act(async () => request.onload!());
+      expect(view.resource).toMatchObject({ isUploading: true, uploadProgress: 90 });
+      await act(async () => complete.resolve(json({ asset: uploadedAsset })));
+      await waitFor(() =>
+        expect(view.resource).toMatchObject({ isUploading: false, uploadProgress: null }),
+      );
+      expect(view.resource!.assets.map((entry) => entry.id)).toEqual(['uploaded-asset', asset.id]);
+      expect(view.canvas!.nodes).toHaveLength(2);
+      expect(preventDefault).toHaveBeenCalledTimes(entry === '拖入文件' ? 1 : 0);
+    },
+  );
+
+  it('鉴权身份变化重建资源状态，退出后卸载资源库', async () => {
+    await renderCanvas();
+    const previous = view.resource!;
+    act(() => previous.onQueryChange('旧账户搜索'));
+    resourceAssets = [{ ...asset, id: 'new-account-asset', name: '新账户资源' }];
+    act(() =>
+      auth.persistAuthSession({ ...session, user: { ...session.user, id: 'new-account' } }),
+    );
+    await waitFor(() => expect(view.resource!.assets[0]?.id).toBe('new-account-asset'));
+    expect(view.resource!.query).toBe('');
+    expect(view.resource!.onAddAsset).not.toBe(previous.onAddAsset);
+    act(() => auth.clearAuthSession());
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: '测试资源库' })).not.toBeInTheDocument(),
+    );
+  });
+
   it('默认紧凑且工作区不保留折叠侧栏列，显式切换仍由偏好状态控制', async () => {
     const user = userEvent.setup();
     await renderCanvas();
@@ -1430,7 +1721,7 @@ describe('App 节点参数提交', () => {
     expect(canvas.nodes[0]!.data.parameters).toEqual(savedParameters);
   });
 
-  it('修改图片清晰度后立即生成到新节点仍继承 4K 参数并按竖屏解析为 2160x3840', async () => {
+  it('拖动并修改图片参数后，旧运行入口仍按最新位置生成新节点并继承 4K 竖屏参数', async () => {
     const node = imageNode('image-node', 'exact-image-model', 'synthetic-image-credential');
     node.data = {
       ...node.data,
@@ -1475,6 +1766,7 @@ describe('App 节点参数提交', () => {
 
     await renderCanvas(0);
     const selectedNode = view.canvas!.nodes[0]!;
+    const runFromCanvas = view.canvas!.onRunNode;
     const selectedParameters = {
       quality: '4k',
       aspectRatio: '9:16',
@@ -1484,10 +1776,18 @@ describe('App 节点参数提交', () => {
     const updatedNode = view.canvas!.nodes[0]!;
     expect(updatedNode.data.parameters).toEqual(selectedParameters);
 
-    await act(async () => view.canvas!.onRunNode(updatedNode, 'newNode'));
+    act(() =>
+      view.canvas!.onNodesChange([
+        { type: 'position', id: selectedNode.id, position: { x: 720, y: 480 }, dragging: false },
+      ]),
+    );
+    expect(view.canvas!.onRunNode).toBe(runFromCanvas);
+    await act(async () => runFromCanvas(selectedNode, 'newNode'));
 
     const child = view.canvas!.nodes.find((candidate) => candidate.id !== node.id);
     expect(child).toBeDefined();
+    expect(child!.position.x).toBeGreaterThan(720);
+    expect(child!.position.y).toBe(480);
     expect(child!.data.modelAlias).toBe('exact-image-model');
     expect(child!.data.credentialId).toBe('synthetic-image-credential');
     expect(child!.data.parameters).toEqual(selectedParameters);

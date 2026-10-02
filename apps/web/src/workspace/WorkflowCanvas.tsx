@@ -29,6 +29,7 @@ import {
   type DragEvent,
   type MouseEvent as ReactMouseEvent,
   type RefObject,
+  type ReactNode,
   type WheelEvent as ReactWheelEvent,
 } from 'react';
 
@@ -54,7 +55,7 @@ import {
   projectGenerationBatches,
   reconcileGenerationBatchChanges,
 } from './generation-batch-view';
-import { reuseGenerationBatchViews } from './canvas-drag-performance';
+import { reuseGenerationBatchViews, reuseNodeContentSnapshot } from './canvas-drag-performance';
 import type { NodeRunTarget } from './fork-generate-node';
 import type { ClearActionCounts } from './ClearCanvasMenu';
 import { CanvasGroupLayer } from './CanvasGroupLayer';
@@ -108,6 +109,9 @@ import {
   type ModelEntry,
   type ModelSelection,
 } from './contracts';
+
+/** 缺省目录保持引用稳定，空画布拖动时不会使参数表单失去缓存。 */
+const EMPTY_ASSETS: readonly Asset[] = [];
 
 type CanvasContextMouseEvent = MouseEvent | ReactMouseEvent<Element>;
 
@@ -295,7 +299,7 @@ export function WorkflowCanvas({
   nodes,
   edges,
   selectedNode,
-  assets = [],
+  assets = EMPTY_ASSETS,
   models,
   busyNodeIds,
   background,
@@ -715,6 +719,138 @@ export function WorkflowCanvas({
     [onConnect, videoImageRolePicker],
   );
 
+  /** 位置变化只移动 portal 外壳，引用、参数和目录不变时复用完整表单。 */
+  const previousEditorNodes = useRef<readonly AssetFlowNode[]>([]);
+  const editorNodes = reuseNodeContentSnapshot(previousEditorNodes.current, nodes);
+  useLayoutEffect(() => {
+    previousEditorNodes.current = editorNodes;
+  }, [editorNodes]);
+  const editorNode = quickEditorNode
+    ? (editorNodes.find((candidate) => candidate.id === quickEditorNode.id) ?? quickEditorNode)
+    : null;
+  const editorBusy = editorNode ? isNodeBusy(editorNode) : false;
+  const quickEditor = useMemo(() => {
+    if (!editorNode) return null;
+    return (
+      <MemoizedNodeQuickEditor
+        key={editorNode.id}
+        projectId={projectId}
+        promptSkills={promptSkills}
+        onOpenSkillWorkbench={onOpenSkillWorkbench}
+        skillLibraryError={skillLibraryError}
+        skillLibraryLoading={skillLibraryLoading}
+        node={editorNode}
+        models={models}
+        busy={editorBusy}
+        assets={assets}
+        connectedAssets={collectConnectedPromptAssets(editorNode.id, editorNodes, edges, assets)}
+        onConnectedResourceRename={
+          onConnectedResourceRename
+            ? (assetId, name) => onConnectedResourceRename(assetId, name, editorNode.id)
+            : undefined
+        }
+        onPromptChange={
+          onPromptChange ? (value) => onPromptChange(value, editorNode.id) : undefined
+        }
+        onPromptDocumentChange={
+          onPromptDocumentChange
+            ? (document) => onPromptDocumentChange(document, editorNode.id)
+            : undefined
+        }
+        onUploadResource={onUploadResource}
+        onPromptSkillChange={
+          onPromptSkillChange ? (id) => onPromptSkillChange(id, editorNode.id) : undefined
+        }
+        onParametersChange={
+          onParametersChange ? (value) => onParametersChange(value, editorNode.id) : undefined
+        }
+        onGenerationCountChange={
+          onGenerationCountChange
+            ? (value) => onGenerationCountChange(value, editorNode.id)
+            : undefined
+        }
+        onCompletionActionChange={
+          onCompletionActionChange
+            ? (value) => onCompletionActionChange(value, editorNode.id)
+            : undefined
+        }
+        onCompletionTargetNodeIdChange={
+          onCompletionTargetNodeIdChange
+            ? (value) => onCompletionTargetNodeIdChange(value, editorNode.id)
+            : undefined
+        }
+        onVideoModeChange={
+          onVideoModeChange ? (value) => onVideoModeChange(value, editorNode.id) : undefined
+        }
+        connectedInputRoles={edges.flatMap((edge) => {
+          if (edge.target !== editorNode.id || !edge.targetHandle?.startsWith('input:')) {
+            return [];
+          }
+          const role = edge.targetHandle.slice('input:'.length);
+          return portRoles.includes(role as PortRole) ? [role as PortRole] : [];
+        })}
+        imageEditSource={resolveImageEditSourcePreview(editorNode, editorNodes, assets)}
+        onFocusImageEditSource={(sourceNodeId) => {
+          const source = nodeActionsRef.current.nodes.find(
+            (candidate) => candidate.id === sourceNodeId,
+          );
+          if (source) handleCenterNode(source);
+        }}
+        emptyImageNodes={editorNodes
+          .filter(
+            (item) =>
+              item.id !== editorNode.id &&
+              item.data.mediaType === 'image' &&
+              !item.data.assetId &&
+              !item.data.contentUrl &&
+              !item.data.resultAsset,
+          )
+          .map((item) => ({ id: item.id, label: item.data.label }))}
+        onModelChange={(value) => onModelChange(value, editorNode.id)}
+        onInferenceStrengthChange={(value) => onInferenceStrengthChange(value, editorNode.id)}
+        hasConnectedInput={edges.some((edge) => edge.target === editorNode.id)}
+        onRun={() => {
+          const current = nodeActionsRef.current.nodes.find(
+            (candidate) => candidate.id === editorNode.id,
+          );
+          if (current) onRunNode(current, 'sameNode');
+        }}
+        onRunNewNode={() => {
+          const current = nodeActionsRef.current.nodes.find(
+            (candidate) => candidate.id === editorNode.id,
+          );
+          if (current) onRunNode(current, 'newNode');
+        }}
+      />
+    );
+  }, [
+    editorNode,
+    editorNodes,
+    editorBusy,
+    edges,
+    assets,
+    models,
+    projectId,
+    promptSkills,
+    onOpenSkillWorkbench,
+    skillLibraryError,
+    skillLibraryLoading,
+    onConnectedResourceRename,
+    onPromptChange,
+    onPromptDocumentChange,
+    onUploadResource,
+    onPromptSkillChange,
+    onParametersChange,
+    onGenerationCountChange,
+    onCompletionActionChange,
+    onCompletionTargetNodeIdChange,
+    onVideoModeChange,
+    onModelChange,
+    onInferenceStrengthChange,
+    onRunNode,
+    handleCenterNode,
+  ]);
+
   return (
     <section
       ref={canvasAreaRef}
@@ -874,87 +1010,11 @@ export function WorkflowCanvas({
       {quickEditorNode && (
         <QuickEditorOverlay
           key={quickEditorNode.id}
-          projectId={projectId}
-          promptSkills={promptSkills}
-          onOpenSkillWorkbench={onOpenSkillWorkbench}
-          skillLibraryError={skillLibraryError}
-          skillLibraryLoading={skillLibraryLoading}
-          node={quickEditorNode}
-          models={models}
-          busy={isNodeBusy(quickEditorNode)}
+          nodeId={quickEditorNode.id}
           canvasAreaRef={canvasAreaRef}
-          assets={assets}
-          connectedAssets={collectConnectedPromptAssets(quickEditorNode.id, nodes, edges, assets)}
-          onConnectedResourceRename={
-            onConnectedResourceRename
-              ? (assetId, name) => onConnectedResourceRename(assetId, name, quickEditorNode.id)
-              : undefined
-          }
-          onPromptChange={
-            onPromptChange ? (value) => onPromptChange(value, quickEditorNode.id) : undefined
-          }
-          onPromptDocumentChange={
-            onPromptDocumentChange
-              ? (document) => onPromptDocumentChange(document, quickEditorNode.id)
-              : undefined
-          }
-          onUploadResource={onUploadResource}
-          onPromptSkillChange={
-            onPromptSkillChange ? (id) => onPromptSkillChange(id, quickEditorNode.id) : undefined
-          }
-          onParametersChange={
-            onParametersChange
-              ? (value) => onParametersChange(value, quickEditorNode.id)
-              : undefined
-          }
-          onGenerationCountChange={
-            onGenerationCountChange
-              ? (value) => onGenerationCountChange(value, quickEditorNode.id)
-              : undefined
-          }
-          onCompletionActionChange={
-            onCompletionActionChange
-              ? (value) => onCompletionActionChange(value, quickEditorNode.id)
-              : undefined
-          }
-          onCompletionTargetNodeIdChange={
-            onCompletionTargetNodeIdChange
-              ? (value) => onCompletionTargetNodeIdChange(value, quickEditorNode.id)
-              : undefined
-          }
-          onVideoModeChange={
-            onVideoModeChange ? (value) => onVideoModeChange(value, quickEditorNode.id) : undefined
-          }
-          connectedInputRoles={edges.flatMap((edge) => {
-            if (edge.target !== quickEditorNode.id || !edge.targetHandle?.startsWith('input:')) {
-              return [];
-            }
-            const role = edge.targetHandle.slice('input:'.length);
-            return portRoles.includes(role as PortRole) ? [role as PortRole] : [];
-          })}
-          imageEditSource={resolveImageEditSourcePreview(quickEditorNode, nodes, assets)}
-          onFocusImageEditSource={(sourceNodeId) => {
-            const source = nodes.find((candidate) => candidate.id === sourceNodeId);
-            if (source) handleCenterNode(source);
-          }}
-          emptyImageNodes={nodes
-            .filter(
-              (item) =>
-                item.id !== quickEditorNode.id &&
-                item.data.mediaType === 'image' &&
-                !item.data.assetId &&
-                !item.data.contentUrl &&
-                !item.data.resultAsset,
-            )
-            .map((item) => ({ id: item.id, label: item.data.label }))}
-          onModelChange={(value) => onModelChange(value, quickEditorNode.id)}
-          onInferenceStrengthChange={(value) =>
-            onInferenceStrengthChange(value, quickEditorNode.id)
-          }
-          hasConnectedInput={edges.some((edge) => edge.target === quickEditorNode.id)}
-          onRun={() => onRunNode(quickEditorNode, 'sameNode')}
-          onRunNewNode={() => onRunNode(quickEditorNode, 'newNode')}
-        />
+        >
+          {quickEditor}
+        </QuickEditorOverlay>
       )}
       {nodes.length === 0 && (
         <div className="canvas-welcome">
@@ -1035,9 +1095,11 @@ function ViewportGroupLayer(props: Omit<ComponentProps<typeof CanvasGroupLayer>,
 const MemoizedNodeQuickEditor = memo(NodeQuickEditor);
 
 /** 快速编辑器 portal 所需的节点与画布引用。 */
-type QuickEditorOverlayProps = Omit<NodeQuickEditorProps, 'node'> & {
-  /** 当前选中的生成节点。 */
-  node: AssetFlowNode;
+type QuickEditorOverlayProps = {
+  /** 当前编辑节点身份，几何从实时 DOM 读取，不与表单内容绑定。 */
+  nodeId: string;
+  /** 已按内容依赖缓存的参数表单。 */
+  children: ReactNode;
   /** 用于约束浮层可见范围的画布容器引用。 */
   canvasAreaRef: RefObject<HTMLElement | null>;
 };
@@ -1047,7 +1109,7 @@ type QuickEditorOverlayProps = Omit<NodeQuickEditorProps, 'node'> & {
  * portal 避免被节点的 overflow 裁剪；碰撞检测使用屏幕像素，最终尺寸换回画布像素，
  * 使输入内容不影响节点外框；贴边等待换向时允许暂时重叠节点，但始终留在可见画布内。
  */
-function QuickEditorOverlay({ node, canvasAreaRef, ...editorProps }: QuickEditorOverlayProps) {
+function QuickEditorOverlay({ nodeId, canvasAreaRef, children }: QuickEditorOverlayProps) {
   // 平移位置由视口 DOM 观察器更新；不让平移重渲染整个编辑器。
   const viewportZoom = useStore((state) => state.transform[2]);
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -1075,7 +1137,7 @@ function QuickEditorOverlay({ node, canvasAreaRef, ...editorProps }: QuickEditor
   const measure = useCallback(() => {
     const canvas = canvasAreaRef.current;
     const overlay = overlayRef.current;
-    const nodeElement = findReactFlowNodeElement(node.id);
+    const nodeElement = findReactFlowNodeElement(nodeId);
     if (
       !canvas ||
       !overlay ||
@@ -1190,7 +1252,7 @@ function QuickEditorOverlay({ node, canvasAreaRef, ...editorProps }: QuickEditor
         ? current
         : nextLayout,
     );
-  }, [canvasAreaRef, node.id, viewportZoom]);
+  }, [canvasAreaRef, nodeId, viewportZoom]);
 
   useLayoutEffect(() => {
     if (!portalHost) return;
@@ -1207,7 +1269,7 @@ function QuickEditorOverlay({ node, canvasAreaRef, ...editorProps }: QuickEditor
     const resizeObserver =
       typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(update);
     const canvas = canvasAreaRef.current;
-    const nodeElement = findReactFlowNodeElement(node.id);
+    const nodeElement = findReactFlowNodeElement(nodeId);
     const overlay = overlayRef.current;
     if (canvas) resizeObserver?.observe(canvas);
     if (nodeElement) resizeObserver?.observe(nodeElement);
@@ -1244,7 +1306,7 @@ function QuickEditorOverlay({ node, canvasAreaRef, ...editorProps }: QuickEditor
       resizeObserver?.disconnect();
       mutationObserver?.disconnect();
     };
-  }, [canvasAreaRef, measure, node.id, portalHost]);
+  }, [canvasAreaRef, measure, nodeId, portalHost]);
 
   if (!portalHost) return null;
 
@@ -1262,11 +1324,11 @@ function QuickEditorOverlay({ node, canvasAreaRef, ...editorProps }: QuickEditor
     <div
       ref={overlayRef}
       className="quick-editor-overlay"
-      data-node-id={node.id}
+      data-node-id={nodeId}
       data-placement={layout.placement}
       style={style}
     >
-      <MemoizedNodeQuickEditor node={node} {...editorProps} />
+      {children}
     </div>,
     portalHost,
   );

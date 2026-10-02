@@ -758,6 +758,9 @@ function WorkspaceApp({
     [nodes, selectedNodeId],
   );
 
+  /** 编辑回调只依赖仍存在的选中身份；位置变化不换回调，节点数据在执行时读取。 */
+  const effectiveSelectedNodeId = selectedNode?.id;
+
   /** 本地提交窗口与服务端恢复的活动运行都只占用各自节点。 */
   const busyNodeIds = useMemo(() => {
     const ids = new Set(lockedNodeIds);
@@ -2208,6 +2211,33 @@ function WorkspaceApp({
     [archiveAsset],
   );
 
+  /** 切换归档视图，不捕获当前开关值。 */
+  const handleToggleArchived = useCallback(() => setShowArchived((current) => !current), []);
+
+  /** 文件选择只上传到资源库，保留 uploadFiles 的当前依赖。 */
+  const handleResourceFilesSelected = useCallback(
+    (files: FileList | File[]) => void uploadFiles(Array.from(files)),
+    [uploadFiles],
+  );
+
+  /** 资源区接收文件时阻止浏览器默认打开，不创建画布节点。 */
+  const handleResourceDrop = useCallback(
+    (event: DragEvent) => {
+      event.preventDefault();
+      void uploadFiles(Array.from(event.dataTransfer.files));
+    },
+    [uploadFiles],
+  );
+
+  /** 转交当前资源的永久删除操作，保留原有异步处理语义。 */
+  const handleDeleteAsset = useCallback((asset: Asset) => void deleteAsset(asset), [deleteAsset]);
+
+  /** 只在显式切换时更新抽屉偏好，使用 store 的当前值。 */
+  const handleToggleResourceCollapsed = useCallback(
+    () => setIsResourceCollapsed((current) => !current),
+    [setIsResourceCollapsed],
+  );
+
   const handleAddGenerateNode = useCallback(
     (mediaType: MediaType, position?: { x: number; y: number }) => {
       const column = nodes.length % 3;
@@ -2402,9 +2432,10 @@ function WorkspaceApp({
     [setEdges],
   );
 
+  /** 修改指定或选中节点的视频模式，并按实时数据清理不兼容连线。 */
   const updateSelectedVideoMode = useCallback(
     (videoMode: VideoMode, nodeId?: string) => {
-      const targetNodeId = nodeId ?? selectedNode?.id;
+      const targetNodeId = nodeId ?? effectiveSelectedNodeId;
       if (!targetNodeId) return;
       rememberHistory();
       canvasDirtyRef.current = true;
@@ -2415,14 +2446,15 @@ function WorkspaceApp({
     [
       pruneIncompatibleTargetEdges,
       rememberHistory,
-      selectedNode,
+      effectiveSelectedNodeId,
       updateNodeDataAndMarkDownstreamStale,
     ],
   );
 
+  /** 按当前目录选择模型并保存账户偏好，目标节点数据在调用时读取。 */
   const updateSelectedModel = useCallback(
     ({ modelAlias, credentialId }: ModelSelection, nodeId?: string) => {
-      const targetNodeId = nodeId ?? selectedNode?.id;
+      const targetNodeId = nodeId ?? effectiveSelectedNodeId;
       if (!targetNodeId) return;
       const targetNode = nodesRef.current.find((node) => node.id === targetNodeId);
       if (!targetNode) return;
@@ -2470,7 +2502,7 @@ function WorkspaceApp({
       modelCatalog,
       pruneIncompatibleTargetEdges,
       rememberHistory,
-      selectedNode,
+      effectiveSelectedNodeId,
       updateNodeDataAndMarkDownstreamStale,
     ],
   );
@@ -2488,17 +2520,19 @@ function WorkspaceApp({
     canvasCenterPositionRef.current = position;
   }, []);
 
+  /** 修改仍存在的选中节点的启用状态；没有选中节点时不操作。 */
   const updateSelectedEnabled = useCallback(
     (enabled: boolean) => {
-      if (!selectedNode) return;
-      updateNodeEnabled(selectedNode.id, enabled);
+      if (!effectiveSelectedNodeId) return;
+      updateNodeEnabled(effectiveSelectedNodeId, enabled);
     },
-    [selectedNode, updateNodeEnabled],
+    [effectiveSelectedNodeId, updateNodeEnabled],
   );
 
+  /** 更新指定或选中节点的纯文本提示词，并冻结当前连线资源引用。 */
   const updateSelectedPrompt = useCallback(
     (prompt: string, nodeId?: string) => {
-      const targetNodeId = nodeId ?? selectedNode?.id;
+      const targetNodeId = nodeId ?? effectiveSelectedNodeId;
       if (!targetNodeId) return;
       const connectedAssets = collectConnectedPromptAssets(
         targetNodeId,
@@ -2524,13 +2558,13 @@ function WorkspaceApp({
           : {}),
       }));
     },
-    [assets, rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
+    [assets, rememberHistory, effectiveSelectedNodeId, updateNodeDataAndMarkDownstreamStale],
   );
 
   /** 保存结构化提示词，并同步维护旧节点仍读取的纯文本派生字段。 */
   const updateSelectedPromptDocument = useCallback(
     (document: PromptDocument, nodeId?: string) => {
-      const targetNodeId = nodeId ?? selectedNode?.id;
+      const targetNodeId = nodeId ?? effectiveSelectedNodeId;
       if (!targetNodeId) return;
       rememberHistory();
       canvasDirtyRef.current = true;
@@ -2581,7 +2615,7 @@ function WorkspaceApp({
       assets,
       pruneIncompatibleTargetEdges,
       rememberHistory,
-      selectedNode,
+      effectiveSelectedNodeId,
       updateNodeDataAndMarkDownstreamStale,
     ],
   );
@@ -2596,7 +2630,7 @@ function WorkspaceApp({
    */
   const renameConnectedResource = useCallback(
     (assetId: string, name: string, nodeId?: string) => {
-      const targetNodeId = nodeId ?? selectedNode?.id;
+      const targetNodeId = nodeId ?? effectiveSelectedNodeId;
       const current = nodesRef.current.find((node) => node.id === targetNodeId);
       if (!current) throw new Error('目标节点已不存在');
       const connectedAssets = collectConnectedPromptAssets(
@@ -2656,12 +2690,13 @@ function WorkspaceApp({
         };
       });
     },
-    [assets, rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
+    [assets, rememberHistory, effectiveSelectedNodeId, updateNodeDataAndMarkDownstreamStale],
   );
 
+  /** 替换指定或选中节点的参数，保留执行时最新的其余节点数据。 */
   const updateSelectedParameters = useCallback(
     (parameters: Record<string, unknown>, nodeId?: string) => {
-      const targetNodeId = nodeId ?? selectedNode?.id;
+      const targetNodeId = nodeId ?? effectiveSelectedNodeId;
       if (!targetNodeId) return;
       rememberHistory();
       canvasDirtyRef.current = true;
@@ -2670,13 +2705,13 @@ function WorkspaceApp({
         parameters,
       }));
     },
-    [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
+    [rememberHistory, effectiveSelectedNodeId, updateNodeDataAndMarkDownstreamStale],
   );
 
   /** 仅保存 Skill 选择；实际提示词未改变时不把已有产物标记为过期。 */
   const updateSelectedPromptSkill = useCallback(
     (promptSkillId: string | undefined, nodeId?: string) => {
-      const targetNodeId = nodeId ?? selectedNode?.id;
+      const targetNodeId = nodeId ?? effectiveSelectedNodeId;
       const current = nodesRef.current.find((node) => node.id === targetNodeId);
       if (!current || current.data.promptSkillId === promptSkillId) return;
       rememberHistory();
@@ -2687,19 +2722,19 @@ function WorkspaceApp({
       setNodes(next);
       canvasDirtyRef.current = true;
     },
-    [rememberHistory, selectedNode, setNodes],
+    [rememberHistory, effectiveSelectedNodeId, setNodes],
   );
 
   /** 保存节点的批量数量；非法值保留在编辑器中，不进入画布和运行请求。 */
   const updateSelectedGenerationCount = useCallback(
     (generationCount: number, nodeId?: string) => {
-      const targetNodeId = nodeId ?? selectedNode?.id;
+      const targetNodeId = nodeId ?? effectiveSelectedNodeId;
       if (!targetNodeId || !isValidGenerationCount(generationCount)) return;
       rememberHistory();
       canvasDirtyRef.current = true;
       updateNodeDataAndMarkDownstreamStale(targetNodeId, (data) => ({ ...data, generationCount }));
     },
-    [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
+    [rememberHistory, effectiveSelectedNodeId, updateNodeDataAndMarkDownstreamStale],
   );
 
   /** 只更新卡牌展示状态，保持节点尺寸及生成结果不变，并支持保存与撤销。 */
@@ -2718,9 +2753,10 @@ function WorkspaceApp({
     [rememberHistory, setNodes],
   );
 
+  /** 更新完成动作；离开指定回填模式时清除原目标节点。 */
   const updateSelectedCompletionAction = useCallback(
     (completionAction: VideoCompletionAction, nodeId?: string) => {
-      const targetNodeId = nodeId ?? selectedNode?.id;
+      const targetNodeId = nodeId ?? effectiveSelectedNodeId;
       if (!targetNodeId) return;
       rememberHistory();
       canvasDirtyRef.current = true;
@@ -2732,12 +2768,13 @@ function WorkspaceApp({
           : { completionTargetNodeId: undefined }),
       }));
     },
-    [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
+    [rememberHistory, effectiveSelectedNodeId, updateNodeDataAndMarkDownstreamStale],
   );
 
+  /** 更新指定或选中节点的回填目标，undefined 表示清除目标。 */
   const updateSelectedCompletionTarget = useCallback(
     (completionTargetNodeId: string | undefined, nodeId?: string) => {
-      const targetNodeId = nodeId ?? selectedNode?.id;
+      const targetNodeId = nodeId ?? effectiveSelectedNodeId;
       if (!targetNodeId) return;
       rememberHistory();
       canvasDirtyRef.current = true;
@@ -2746,7 +2783,7 @@ function WorkspaceApp({
         completionTargetNodeId,
       }));
     },
-    [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
+    [rememberHistory, effectiveSelectedNodeId, updateNodeDataAndMarkDownstreamStale],
   );
 
   const updateSelectedLabel = useCallback(
@@ -2758,9 +2795,10 @@ function WorkspaceApp({
     [rememberHistory, updateNodeDataAndMarkDownstreamStale],
   );
 
+  /** 更新指定或选中节点的推理强度，并标记下游结果过期。 */
   const updateSelectedInferenceStrength = useCallback(
     (inferenceStrength: InferenceStrength, nodeId?: string) => {
-      const targetNodeId = nodeId ?? selectedNode?.id;
+      const targetNodeId = nodeId ?? effectiveSelectedNodeId;
       if (!targetNodeId) return;
       rememberHistory();
       canvasDirtyRef.current = true;
@@ -2769,7 +2807,7 @@ function WorkspaceApp({
         inferenceStrength,
       }));
     },
-    [rememberHistory, selectedNode, updateNodeDataAndMarkDownstreamStale],
+    [rememberHistory, effectiveSelectedNodeId, updateNodeDataAndMarkDownstreamStale],
   );
 
   const deleteCanvasSelection = useCallback(
@@ -3582,6 +3620,15 @@ function WorkspaceApp({
     ],
   );
 
+  /** 画布运行入口跟随 runNode 的实际依赖，节点内容仍由 runNode 读取最新快照。 */
+  const handleRunNode = useCallback(
+    (node: AssetFlowNode, target?: NodeRunTarget) => void runNode(node, target),
+    [runNode],
+  );
+
+  /** 打开共用 Skill 库，不捕获画布节点或选中状态。 */
+  const handleOpenSkillWorkbench = useCallback(() => setShowSkillWorkbench(true), []);
+
   /**
    * 图片悬浮栏「修改图片」只创建带原图引用的草稿，选中后等待用户手动生成。
    * @param sourceNodeId 被引用的图片节点 ID；来源缺失或正忙时提示错误，不创建节点。
@@ -4159,20 +4206,17 @@ function WorkspaceApp({
             query={query}
             isUploading={isUploading}
             uploadProgress={uploadProgress}
-            onToggleArchived={() => setShowArchived((current) => !current)}
+            onToggleArchived={handleToggleArchived}
             onFilterChange={setActiveFilter}
             onQueryChange={setQuery}
-            onFilesSelected={(files) => void uploadFiles(Array.from(files))}
+            onFilesSelected={handleResourceFilesSelected}
             onAssetDragStart={handleAssetDragStart}
             onAddAsset={handleAddAsset}
             onRenameAsset={handleRenameAsset}
             onArchiveAsset={handleArchiveAsset}
-            onDeleteAsset={(asset) => void deleteAsset(asset)}
-            onDrop={(event) => {
-              event.preventDefault();
-              void uploadFiles(Array.from(event.dataTransfer.files));
-            }}
-            onToggleCollapsed={() => setIsResourceCollapsed((current) => !current)}
+            onDeleteAsset={handleDeleteAsset}
+            onDrop={handleResourceDrop}
+            onToggleCollapsed={handleToggleResourceCollapsed}
             uploadInputRef={uploadInputRef}
           />
           <SkillWorkbench
@@ -4194,7 +4238,7 @@ function WorkspaceApp({
                 ? `Skill 目录读取失败：${skillLibraryQuery.error.message}`
                 : undefined
             }
-            onOpenSkillWorkbench={() => setShowSkillWorkbench(true)}
+            onOpenSkillWorkbench={handleOpenSkillWorkbench}
             nodes={nodes}
             edges={edges}
             selectedNode={selectedNode}
@@ -4225,7 +4269,7 @@ function WorkspaceApp({
             onCompletionTargetNodeIdChange={updateSelectedCompletionTarget}
             onModelChange={updateSelectedModel}
             onInferenceStrengthChange={updateSelectedInferenceStrength}
-            onRunNode={(node, target) => void runNode(node, target)}
+            onRunNode={handleRunNode}
             onDeleteNode={(nodeId) => deleteCanvasSelection([nodeId])}
             nodeContentHandlers={nodeContentHandlers}
             onAddGenerateNode={handleAddGenerateNode}

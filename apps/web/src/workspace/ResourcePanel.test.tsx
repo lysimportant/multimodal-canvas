@@ -11,10 +11,51 @@ import {
 } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { useState } from 'react';
+import { Profiler, useState, type ComponentProps } from 'react';
 
 import type { Asset } from '@multimodal-canvas/domain';
 import { ResourcePanel } from './ResourcePanel';
+
+/** 将 Profiler 放在资源预览内部，仅统计侧栏实际更新的子树，不统计外层父级提交。 */
+const previewProfiler = vi.hoisted(() => ({ onRender: vi.fn() }));
+vi.mock('./AssetPreview', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./AssetPreview')>();
+  return {
+    ...actual,
+    AssetPreview: (props: ComponentProps<typeof actual.AssetPreview>) => (
+      <Profiler id={props.asset.id} onRender={previewProfiler.onRender}>
+        <actual.AssetPreview {...props} />
+      </Profiler>
+    ),
+  };
+});
+
+/** 为受控更新提供独立回调；单个用例复用返回对象时所有 props 引用保持不变。 */
+function panelProps(
+  overrides: Partial<ComponentProps<typeof ResourcePanel>> = {},
+): ComponentProps<typeof ResourcePanel> {
+  return {
+    assets,
+    collapsed: false,
+    showArchived: false,
+    activeFilter: 'all',
+    query: '',
+    isUploading: false,
+    uploadProgress: null,
+    onToggleArchived: vi.fn(),
+    onFilterChange: vi.fn(),
+    onQueryChange: vi.fn(),
+    onFilesSelected: vi.fn(),
+    onAssetDragStart: vi.fn(),
+    onAddAsset: vi.fn(),
+    onRenameAsset: vi.fn(),
+    onArchiveAsset: vi.fn(),
+    onDeleteAsset: vi.fn(),
+    onDrop: vi.fn(),
+    onToggleCollapsed: vi.fn(),
+    ...overrides,
+  };
+}
 
 const assets: Asset[] = [
   {
@@ -120,6 +161,101 @@ function ResourcePanelHarness({
     </>
   );
 }
+
+describe('ResourcePanel 拖拽渲染边界', () => {
+  afterEach(() => cleanup());
+
+  it('50 个资源的相同 props 连续更新 20 次不重渲染预览', () => {
+    const props = panelProps({
+      assets: Array.from({ length: 50 }, (_, index) => ({
+        ...assets[2],
+        id: 'drag-image-' + index,
+      })),
+    });
+    previewProfiler.onRender.mockClear();
+    const view = render(<ResourcePanel {...props} />);
+    expect(previewProfiler.onRender).toHaveBeenCalledTimes(50);
+    previewProfiler.onRender.mockClear();
+
+    for (let frame = 0; frame < 20; frame += 1) view.rerender(<ResourcePanel {...props} />);
+
+    expect(previewProfiler.onRender.mock.calls.length).toBe(0);
+    expect(screen.getAllByRole('article')).toHaveLength(50);
+  });
+});
+
+describe('ResourcePanel 受控更新', () => {
+  afterEach(() => cleanup());
+
+  it('资源、搜索、分类、归档和上传进度变化仍更新可见内容', () => {
+    let props = panelProps();
+    const view = render(<ResourcePanel {...props} />);
+    expect(screen.getAllByRole('article')).toHaveLength(3);
+    props = {
+      ...props,
+      assets: [
+        { ...assets[0], name: '更新后的素材' },
+        assets[1],
+        assets[2],
+        { ...assets[2], id: 'archived-image', name: '归档图片', status: 'archived' },
+      ],
+    };
+    view.rerender(<ResourcePanel {...props} />);
+    expect(screen.getByRole('button', { name: '预览 更新后的素材' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '预览 中文参考素材' })).not.toBeInTheDocument();
+
+    props = { ...props, query: 'English' };
+    view.rerender(<ResourcePanel {...props} />);
+    expect(screen.getAllByRole('article')).toHaveLength(1);
+    expect(screen.getByRole('button', { name: '预览 English reference' })).toBeInTheDocument();
+    props = { ...props, activeFilter: 'image' };
+    view.rerender(<ResourcePanel {...props} />);
+    expect(screen.queryAllByRole('article')).toHaveLength(0);
+    props = { ...props, query: '' };
+    view.rerender(<ResourcePanel {...props} />);
+    expect(screen.getByRole('button', { name: '预览 图片参考' })).toBeInTheDocument();
+    props = { ...props, showArchived: true };
+    view.rerender(<ResourcePanel {...props} />);
+    expect(screen.getAllByRole('article')).toHaveLength(1);
+    expect(screen.getByRole('button', { name: '恢复 归档图片' })).toBeInTheDocument();
+
+    props = { ...props, isUploading: true, uploadProgress: 0 };
+    view.rerender(<ResourcePanel {...props} />);
+    expect(screen.getByRole('button', { name: '上传资源' })).toBeDisabled();
+    expect(screen.getByRole('status')).toHaveTextContent('0%');
+    props = { ...props, uploadProgress: 68 };
+    view.rerender(<ResourcePanel {...props} />);
+    expect(screen.getByRole('status')).toHaveTextContent('68%');
+    props = { ...props, isUploading: false, uploadProgress: null };
+    view.rerender(<ResourcePanel {...props} />);
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '上传资源' })).toBeEnabled();
+  });
+
+  it.each([
+    ['onAddAsset', '添加 中文参考素材 到画布'],
+    ['onRenameAsset', '重命名 中文参考素材'],
+    ['onArchiveAsset', '恢复 中文参考素材'],
+    ['onDeleteAsset', '永久删除 中文参考素材'],
+  ] as const)('只替换 %s 也调用最新回调，不能在 memo 比较中忽略函数', async (key, label) => {
+    const archived = key === 'onArchiveAsset' || key === 'onDeleteAsset';
+    const currentAsset = {
+      ...assets[0],
+      status: archived ? ('archived' as const) : ('ready' as const),
+    };
+    const props = panelProps({ assets: [currentAsset], showArchived: archived });
+    const view = render(<ResourcePanel {...props} />);
+    const currentAction = vi.fn();
+    view.rerender(<ResourcePanel {...props} {...{ [key]: currentAction }} />);
+    fireEvent.click(screen.getByRole('button', { name: label }));
+    if (key === 'onDeleteAsset') {
+      const dialog = await screen.findByRole('dialog', { name: '永久删除资源' });
+      fireEvent.click(within(dialog).getByRole('button', { name: '永久删除' }));
+    }
+    await waitFor(() => expect(currentAction).toHaveBeenCalledExactlyOnceWith(currentAsset));
+    expect(props[key]).not.toHaveBeenCalled();
+  });
+});
 
 describe('ResourcePanel search input', () => {
   afterEach(() => {

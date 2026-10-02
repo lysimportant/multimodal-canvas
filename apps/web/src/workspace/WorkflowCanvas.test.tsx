@@ -9,6 +9,19 @@ import type { AssetFlowNode } from '../canvas-utils';
 import { NodeDeleteContext, NodePromptContext, NodeSelectionContext } from './AssetNode';
 import { GenerationBatchViewContext } from './generation-batch-view';
 
+/** 记录参数编辑器真正进入渲染的次数，几何拖动不应重新构造整套表单。 */
+const quickEditorRender = vi.hoisted(() => vi.fn());
+vi.mock('./NodeQuickEditor', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./NodeQuickEditor')>();
+  return {
+    ...actual,
+    NodeQuickEditor: (props: import('./NodeQuickEditor').NodeQuickEditorProps) => {
+      quickEditorRender(props);
+      return <actual.NodeQuickEditor {...props} />;
+    },
+  };
+});
+
 const reactFlowMock = vi.hoisted(() => ({
   getNodesBounds: vi.fn(() => ({ x: 0, y: 0, width: 180, height: 120 })),
   getZoom: vi.fn(() => 1),
@@ -1292,6 +1305,92 @@ const DragRenderProbe = memo(function DragRenderProbe({ node }: { node: AssetFlo
 const dragNodeRender = vi.fn();
 
 describe('WorkflowCanvas 拖动性能', () => {
+  it('参数表单仍响应内容、上游资源、连线、目录和忙碌状态，并使用替换后的回调', () => {
+    reactFlowMock.nodeProbe = DragRenderProbe;
+    const node = { ...generateNode, data: { ...generateNode.data, prompt: 'Draw a boat.' } };
+    let props = createProps({ nodes: [node, sourceNode], selectedNode: node });
+    const view = render(<WorkflowCanvas {...props} />);
+    const currentEditor = () =>
+      quickEditorRender.mock.lastCall![0] as import('./NodeQuickEditor').NodeQuickEditorProps;
+    quickEditorRender.mockClear();
+    props = { ...props, busyNodeIds: new Set() };
+    view.rerender(<WorkflowCanvas {...props} />);
+    expect(quickEditorRender).not.toHaveBeenCalled();
+    const changed = { ...node, data: { ...node.data, prompt: 'Draw a red boat.' } };
+    props = { ...props, nodes: [changed, sourceNode], selectedNode: changed };
+    view.rerender(<WorkflowCanvas {...props} />);
+    expect(currentEditor().node.data.prompt).toBe('Draw a red boat.');
+    const input = {
+      ...sourceNode,
+      data: {
+        ...sourceNode.data,
+        label: '新来源',
+        assetId: 'upstream',
+        contentUrl: '/v1/assets/upstream/content',
+      },
+    };
+    props = {
+      ...props,
+      nodes: [changed, input],
+      edges: [
+        {
+          id: 'edge',
+          source: input.id,
+          target: changed.id,
+          sourceHandle: 'output:image',
+          targetHandle: 'input:reference',
+        },
+      ],
+    };
+    view.rerender(<WorkflowCanvas {...props} />);
+    expect(currentEditor().connectedAssets?.[0]?.name).toBe('新来源');
+    expect(currentEditor().hasConnectedInput).toBe(true);
+    props = { ...props, busyNodeIds: new Set([changed.id]) };
+    view.rerender(<WorkflowCanvas {...props} />);
+    expect(currentEditor().busy).toBe(true);
+    const replacement = vi.fn();
+    props = {
+      ...props,
+      busyNodeIds: new Set(),
+      onPromptChange: replacement,
+      assets: [
+        {
+          id: 'catalog',
+          contentUrl: '/v1/assets/catalog/content',
+          name: '目录资源',
+          mediaType: 'text',
+          mimeType: 'text/plain',
+          status: 'ready',
+          sizeBytes: 1,
+          tags: [],
+        },
+      ],
+    };
+    view.rerender(<WorkflowCanvas {...props} />);
+    expect(currentEditor().busy).toBe(false);
+    expect(currentEditor().assets?.[0]?.name).toBe('目录资源');
+    currentEditor().onPromptChange?.('更新');
+    expect(replacement).toHaveBeenLastCalledWith('更新', changed.id);
+    props = { ...props, nodes: [input], selectedNode: null };
+    view.rerender(<WorkflowCanvas {...props} />);
+    expect(document.querySelector('.quick-editor-overlay')).not.toBeInTheDocument();
+  });
+
+  it('参数编辑器在 30 次位置更新中不重渲染，运行时仍读取最新坐标', () => {
+    reactFlowMock.nodeProbe = DragRenderProbe;
+    let node = { ...generateNode, data: { ...generateNode.data, prompt: 'Draw a boat.' } };
+    const props = createProps({ nodes: [node, sourceNode], selectedNode: node });
+    const view = render(<WorkflowCanvas {...props} />);
+    quickEditorRender.mockClear();
+    for (let step = 1; step <= 30; step++) {
+      node = { ...node, position: { x: step * 5, y: step * 3 }, dragging: true };
+      view.rerender(<WorkflowCanvas {...props} nodes={[node, sourceNode]} selectedNode={node} />);
+    }
+    expect(quickEditorRender).toHaveBeenCalledTimes(0);
+    fireEvent.click(screen.getByRole('button', { name: /^生成$/ }));
+    expect(props.onRunNode).toHaveBeenLastCalledWith(node, 'sameNode');
+  });
+
   it('48 节点连续 12 次位置更新的节点渲染计数，并使用最新选择回调和坐标', () => {
     reactFlowMock.nodeProbe = DragRenderProbe;
     let nodes = Array.from({ length: 48 }, (_, index) => ({

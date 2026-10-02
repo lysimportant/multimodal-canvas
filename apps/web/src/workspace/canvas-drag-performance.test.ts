@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { GenerationBatchView } from './generation-batch-view';
-import { reuseGenerationBatchViews } from './canvas-drag-performance';
+import type { AssetFlowNode } from '../canvas-utils';
+import { reuseGenerationBatchViews, reuseNodeContentSnapshot } from './canvas-drag-performance';
 
 /** 不含几何坐标的批次状态；位置变化不能改变这些节点交互语义。 */
 const collapsed: GenerationBatchView = {
@@ -50,6 +51,46 @@ describe('reuseGenerationBatchViews', () => {
       ]),
     ]) {
       expect(reuseGenerationBatchViews(previous, next)).toBe(next);
+    }
+  });
+});
+
+/** 内容快照的节点夹具；位置、尺寸和选择态只属于画布几何。 */
+const contentNode: AssetFlowNode = {
+  id: 'content',
+  type: 'image',
+  position: { x: 0, y: 0 },
+  data: { label: '内容', mediaType: 'image', mode: 'generate' },
+};
+
+describe('reuseNodeContentSnapshot', () => {
+  it('位置、尺寸、拖动和选择态变化复用内容快照，但不修改实时节点', () => {
+    const previous = [contentNode];
+    const next = [
+      {
+        ...contentNode,
+        position: { x: 300, y: 200 },
+        width: 600,
+        height: 400,
+        selected: true,
+        dragging: true,
+      },
+    ];
+    expect(reuseNodeContentSnapshot(previous, next)).toBe(previous);
+    expect(next[0]?.position).toEqual({ x: 300, y: 200 });
+  });
+  it('内容、引用、成员和顺序变化都发布新快照', () => {
+    const other = { ...contentNode, id: 'other' };
+    const previous = [contentNode, other];
+    for (const next of [
+      [{ ...contentNode, data: { ...contentNode.data, prompt: '新内容' } }, other],
+      [contentNode, { ...other, data: { ...other.data, contentUrl: '/v1/assets/new/content' } }],
+      [other, contentNode],
+      [contentNode],
+      [contentNode, other, { ...contentNode, id: 'added' }],
+      [contentNode, { ...other, id: 'replaced' }],
+    ]) {
+      expect(reuseNodeContentSnapshot(previous, next)).toBe(next);
     }
   });
 });
