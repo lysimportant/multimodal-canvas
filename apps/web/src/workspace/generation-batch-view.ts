@@ -81,13 +81,18 @@ export function projectGenerationBatches(nodes: AssetFlowNode[], edges: FlowEdge
       });
     });
   }
+  /** 没有新增批次隐藏时复用显示边列表，保留拖动暂隐投影的缓存。 */
+  let projectedEdges = edges;
+  for (let index = 0; index < edges.length; index++) {
+    const edge = edges[index]!;
+    if (!edge.hidden && (views.get(edge.source)?.hidden || views.get(edge.target)?.hidden)) {
+      if (projectedEdges === edges) projectedEdges = edges.slice();
+      projectedEdges[index] = { ...edge, hidden: true };
+    }
+  }
   return {
     nodes: nodes.map((node) => projected.get(node.id) ?? node),
-    edges: edges.map((edge) =>
-      views.get(edge.source)?.hidden || views.get(edge.target)?.hidden
-        ? { ...edge, hidden: true }
-        : edge,
-    ),
+    edges: projectedEdges,
     views,
   };
 }

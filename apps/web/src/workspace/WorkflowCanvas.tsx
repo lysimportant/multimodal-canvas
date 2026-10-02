@@ -55,7 +55,11 @@ import {
   projectGenerationBatches,
   reconcileGenerationBatchChanges,
 } from './generation-batch-view';
-import { reuseGenerationBatchViews, reuseNodeContentSnapshot } from './canvas-drag-performance';
+import {
+  projectDraggingEdges,
+  reuseGenerationBatchViews,
+  reuseNodeContentSnapshot,
+} from './canvas-drag-performance';
 import type { NodeRunTarget } from './fork-generate-node';
 import type { ClearActionCounts } from './ClearCanvasMenu';
 import { CanvasGroupLayer } from './CanvasGroupLayer';
@@ -375,15 +379,23 @@ export function WorkflowCanvas({
   const [contextMenu, setContextMenu] = useState<CanvasContextMenuTarget | null>(null);
   const [videoImageRolePicker, setVideoImageRolePicker] =
     useState<VideoInputRolePickerTarget | null>(null);
-  /** 批量折叠只投影显示坐标，不修改真实节点与连线。 */
+  /** 只按拖动成员缓存，避免每一帧都重建隐藏边对象并触发节点的连线订阅。 */
+  const draggingNodeIdsKey = JSON.stringify(
+    nodes.filter((node) => node.dragging).map((node) => node.id),
+  );
+  const dragDisplayEdges = useMemo(
+    () => projectDraggingEdges(edges, JSON.parse(draggingNodeIdsKey) as string[]),
+    [edges, draggingNodeIdsKey],
+  );
+  /** 拖动和批量折叠都只投影显示状态，不修改真实节点与连线。 */
   const previousBatchViews = useRef<ReadonlyMap<string, GenerationBatchView>>(new Map());
   const batchProjection = useMemo(() => {
-    const projection = projectGenerationBatches(nodes, edges);
+    const projection = projectGenerationBatches(nodes, dragDisplayEdges);
     return {
       ...projection,
       views: reuseGenerationBatchViews(previousBatchViews.current, projection.views),
     };
-  }, [nodes, edges]);
+  }, [nodes, dragDisplayEdges]);
   useLayoutEffect(() => {
     previousBatchViews.current = batchProjection.views;
   }, [batchProjection.views]);

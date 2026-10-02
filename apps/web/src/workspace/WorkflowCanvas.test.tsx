@@ -27,6 +27,7 @@ const reactFlowMock = vi.hoisted(() => ({
   getZoom: vi.fn(() => 1),
   viewportZoom: 1,
   nodeProbe: undefined as React.ElementType | undefined,
+  edges: [] as WorkflowCanvasProps['edges'],
   onNodesChange: undefined as WorkflowCanvasProps['onNodesChange'] | undefined,
   setCenter: vi.fn(),
   fitView: vi.fn(() => Promise.resolve(true)),
@@ -42,6 +43,7 @@ vi.mock('@xyflow/react', async () => {
 
   function ReactFlow({
     nodes,
+    edges,
     onNodesChange,
     nodeTypes,
     onNodeClick,
@@ -60,6 +62,7 @@ vi.mock('@xyflow/react', async () => {
     children,
   }: {
     nodes: AssetFlowNode[];
+    edges: WorkflowCanvasProps['edges'];
     onNodesChange?: WorkflowCanvasProps['onNodesChange'];
     nodeTypes?: Record<string, React.ElementType>;
     edgeTypes?: Record<string, React.ElementType>;
@@ -80,6 +83,7 @@ vi.mock('@xyflow/react', async () => {
     deleteKeyCode?: string | null;
     children?: React.ReactNode;
   }) {
+    reactFlowMock.edges = edges;
     reactFlowMock.onNodesChange = onNodesChange;
     reactFlowMock.onConnectStart = onConnectStart;
     reactFlowMock.onConnectEnd = onConnectEnd;
@@ -257,6 +261,7 @@ afterEach(() => {
   reactFlowMock.getZoom.mockClear().mockReturnValue(1);
   reactFlowMock.viewportZoom = 1;
   reactFlowMock.nodeProbe = undefined;
+  reactFlowMock.edges = [];
   reactFlowMock.onNodesChange = undefined;
   reactFlowMock.setCenter.mockClear();
   reactFlowMock.fitView.mockClear();
@@ -1496,5 +1501,100 @@ describe('WorkflowCanvas 拖动性能', () => {
     expect(screen.getByRole('button', { name: '批次节点 0' })).not.toHaveAttribute(
       'data-batch-count',
     );
+  });
+});
+
+describe('WorkflowCanvas 拖动时暂隐连线', () => {
+  it('持续拖动复用隐藏边，松手恢复原边，不发布删除或新增事件', () => {
+    const nodes = [sourceNode, { ...sourceNode, id: 'target' }, { ...sourceNode, id: 'other' }];
+    const edge = { id: 'drag-edge', source: sourceNode.id, target: 'target' };
+    const unrelated = { id: 'other-edge', source: 'target', target: 'other' };
+    const props = createProps({ nodes, edges: [edge, unrelated] });
+    const view = render(<WorkflowCanvas {...props} />);
+    expect(reactFlowMock.edges[0]).toBe(edge);
+    view.rerender(
+      <WorkflowCanvas
+        {...props}
+        nodes={nodes.map((node, index) => (index === 0 ? { ...node, dragging: true } : node))}
+      />,
+    );
+    const hiddenEdges = reactFlowMock.edges;
+    const hidden = hiddenEdges[0];
+    expect(hidden).toEqual({ ...edge, hidden: true });
+    expect(reactFlowMock.edges[1]).toBe(unrelated);
+    for (let step = 1; step <= 20; step++) {
+      view.rerender(
+        <WorkflowCanvas
+          {...props}
+          nodes={nodes.map((node, index) =>
+            index === 0 ? { ...node, dragging: true, position: { x: step * 10, y: 0 } } : node,
+          )}
+        />,
+      );
+      expect(reactFlowMock.edges).toBe(hiddenEdges);
+      expect(reactFlowMock.edges[0]).toBe(hidden);
+    }
+    view.rerender(
+      <WorkflowCanvas {...props} nodes={nodes.map((node) => ({ ...node, dragging: false }))} />,
+    );
+    expect(reactFlowMock.edges[0]).toBe(edge);
+    expect(reactFlowMock.edges[1]).toBe(unrelated);
+    expect(props.onNodesChange).not.toHaveBeenCalled();
+    expect(props.onEdgesChange).not.toHaveBeenCalled();
+    expect(props.onConnect).not.toHaveBeenCalled();
+  });
+
+  it('多选拖动与中途连线更新读取最新数据，结束不恢复已删除边', () => {
+    const nodes = [sourceNode, { ...sourceNode, id: 'second' }, { ...sourceNode, id: 'target' }];
+    const edges = [
+      { id: 'first', source: sourceNode.id, target: 'target' },
+      { id: 'second', source: 'second', target: 'target' },
+    ];
+    const props = createProps({ nodes, edges });
+    const view = render(
+      <WorkflowCanvas
+        {...props}
+        nodes={nodes.map((node) => ({ ...node, dragging: node.id !== 'target' }))}
+      />,
+    );
+    expect(reactFlowMock.edges.every((edge) => edge.hidden)).toBe(true);
+    const latestEdges = [{ ...edges[1]!, selected: true }];
+    view.rerender(
+      <WorkflowCanvas
+        {...props}
+        edges={latestEdges}
+        nodes={nodes.map((node) => ({ ...node, dragging: node.id === 'second' }))}
+      />,
+    );
+    expect(reactFlowMock.edges).toEqual([{ ...latestEdges[0], hidden: true }]);
+    view.rerender(<WorkflowCanvas {...props} edges={latestEdges} />);
+    expect(reactFlowMock.edges).toEqual(latestEdges);
+    expect(reactFlowMock.edges[0]).toBe(latestEdges[0]);
+    expect(props.onEdgesChange).not.toHaveBeenCalled();
+  });
+
+  it('批次收起时的隐藏状态不会被松手恢复覆盖', () => {
+    const nodes = [0, 1].map((index) => ({
+      ...sourceNode,
+      id: 'batch-' + index,
+      data: { ...sourceNode.data, generationBatch: { id: 'batch', rootNodeId: 'batch-0', index } },
+    }));
+    nodes.push({ ...sourceNode, id: 'target' } as (typeof nodes)[number]);
+    const edges = [
+      { id: 'root-edge', source: 'batch-0', target: 'target' },
+      { id: 'child-edge', source: 'batch-1', target: 'target' },
+    ];
+    const props = createProps({ nodes, edges });
+    const view = render(
+      <WorkflowCanvas
+        {...props}
+        nodes={nodes.map((node) => ({ ...node, dragging: node.id !== 'target' }))}
+      />,
+    );
+    expect(reactFlowMock.edges.every((edge) => edge.hidden)).toBe(true);
+    view.rerender(<WorkflowCanvas {...props} />);
+    expect(reactFlowMock.edges[0]).toBe(edges[0]);
+    expect(reactFlowMock.edges[1]).toEqual({ ...edges[1], hidden: true });
+    expect(edges.some((edge) => 'hidden' in edge)).toBe(false);
   });
 });

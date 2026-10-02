@@ -211,3 +211,24 @@ describe('批量卡牌显示投影', () => {
     expect(moved[2]!.measured).toEqual({ width: 420, height: 300 });
   });
 });
+
+it('无新增批次隐藏时复用边列表，避免纯位置更新重建连接索引', () => {
+  const nodes = batchNodes();
+  const edges: FlowEdge[] = [
+    { id: 'root', source: 'source', target: 'result-0' },
+    { id: 'hidden-child', source: 'source', target: 'result-1', hidden: true },
+  ];
+  expect(projectGenerationBatches(nodes, edges).edges).toBe(edges);
+  nodes[0]!.dragging = true;
+  nodes[0]!.position = { x: 300, y: 500 };
+  expect(projectGenerationBatches(nodes, edges).edges).toBe(edges);
+  const visibleEdges = [{ ...edges[1]!, hidden: false }];
+  expect(projectGenerationBatches([], visibleEdges).edges).toBe(visibleEdges);
+  nodes[0]!.data.generationBatchExpanded = true;
+  expect(projectGenerationBatches(nodes, visibleEdges).edges).toBe(visibleEdges);
+  nodes[0]!.data.generationBatchExpanded = false;
+  expect(projectGenerationBatches(nodes, visibleEdges).edges).toEqual([
+    { ...visibleEdges[0], hidden: true },
+  ]);
+  expect(visibleEdges[0]?.hidden).toBe(false);
+});

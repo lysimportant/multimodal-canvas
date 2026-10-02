@@ -1,5 +1,25 @@
-import type { AssetFlowNode } from '../canvas-utils';
+import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
 import type { GenerationBatchView } from './generation-batch-view';
+
+/**
+ * 暂隐拖动节点的相邻连线，停止路径与特效渲染，但保留 React Flow 的连接关系。
+ * @param edges 真实连线，不修改其属性、端口、顺序或已有隐藏状态。
+ * @param draggingNodeIds 当前正在拖动的节点 ID；多选拖动时包含所有移动节点。
+ * @returns 仅供显示的连线列表；无相邻可见边时复用原列表，不能用于保存或历史记录。
+ */
+export function projectDraggingEdges(edges: FlowEdge[], draggingNodeIds: readonly string[]) {
+  if (draggingNodeIds.length === 0) return edges;
+  const dragging = new Set(draggingNodeIds);
+  let changed = false;
+  const projected = edges.map((edge) => {
+    if (!edge.hidden && (dragging.has(edge.source) || dragging.has(edge.target))) {
+      changed = true;
+      return { ...edge, hidden: true };
+    }
+    return edge;
+  });
+  return changed ? projected : edges;
+}
 
 /**
  * 复用未改变的批次显示状态，避免位置更新让每个节点的 Context 订阅失效。
